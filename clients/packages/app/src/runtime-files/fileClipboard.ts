@@ -12,6 +12,8 @@ export function canCopyFile() {
     bridge.platform === "electron" && (bridge.os === "macos" || bridge.os === "windows")
   );
 }
+/** What the copied toast names: a video's file, or any file. */
+type CopiedKind = "file" | "video";
 /** A file saved into Downloads: its handle and the name it took. */
 type SavedCopy = { downloadRef: string; fileName: string };
 const savedCopies = new WeakMap<
@@ -28,7 +30,8 @@ const streamedCopies = new WeakMap<object, SavedCopy>();
 export async function copySavedFile(
   save: () => Promise<SavedCopy | null>,
   locale: CommaLocale,
-  signal: AbortSignal
+  signal: AbortSignal,
+  { kind = "video" }: { kind?: CopiedKind } = {}
 ) {
   signal.throwIfAborted();
   if (!canCopyFile()) throw new Error("File copy is unavailable.");
@@ -40,7 +43,7 @@ export async function copySavedFile(
     streamedCopies.set(save, saved);
   }
   signal.throwIfAborted();
-  await copyDownloadToClipboard(saved, locale, signal, () =>
+  await copyDownloadToClipboard(saved, locale, signal, kind, () =>
     streamedCopies.delete(save)
   );
 }
@@ -72,7 +75,7 @@ export async function copyFile(
     names.set(fileName, saved);
   }
   signal.throwIfAborted();
-  await copyDownloadToClipboard(saved, locale, signal, () =>
+  await copyDownloadToClipboard(saved, locale, signal, "video", () =>
     savedCopies.get(blob)?.delete(fileName)
   );
 }
@@ -82,6 +85,7 @@ async function copyDownloadToClipboard(
   saved: SavedCopy,
   locale: CommaLocale,
   signal: AbortSignal,
+  kind: CopiedKind,
   forget: () => void
 ) {
   const copied = await getNativeBridge().files.copyDownload({
@@ -92,12 +96,17 @@ async function copyDownloadToClipboard(
     throw new Error("File could not be copied.");
   }
   signal.throwIfAborted();
-  toast.success(messages.video_context_file_copied(undefined, { locale }), {
-    description: messages.video_context_file_copied_description(
-      { name: saved.fileName },
-      { locale }
-    ),
-    id: "video-file-copy",
-    testId: "video-file-copy",
-  });
+  toast.success(
+    kind === "file"
+      ? messages.file_copied(undefined, { locale })
+      : messages.video_context_file_copied(undefined, { locale }),
+    {
+      description: messages.video_context_file_copied_description(
+        { name: saved.fileName },
+        { locale }
+      ),
+      id: `${kind}-file-copy`,
+      testId: `${kind}-file-copy`,
+    }
+  );
 }

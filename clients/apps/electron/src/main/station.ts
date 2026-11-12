@@ -45,7 +45,7 @@ export class LocalStation implements StationHost, ConnectorStation {
       "mesh",
       "target",
       "release",
-      WINDOWS ? "stillfail-station.exe" : "stillfail-station"
+      WINDOWS ? "comma-station.exe" : "comma-station"
     );
   }
 
@@ -83,7 +83,14 @@ export class LocalStation implements StationHost, ConnectorStation {
     const path = Object.entries(process.env).find(
       ([key]) => key.toUpperCase() === "PATH"
     )?.[1];
-    return { ...env, STILLFAIL_DATA: this.#options.data, PATH: stationPath(path) };
+    // COMMA_APP_PID: this app's process, whose tree's sound a Windows screen view leaves out (comma-desktop-screen's
+    // audio.rs), so a computer's sound that this app plays back is not sent to it again.
+    return {
+      ...env,
+      COMMA_STATION_DATA: this.#options.data,
+      COMMA_APP_PID: String(process.pid),
+      PATH: stationPath(path),
+    };
   }
 
   start(): void {

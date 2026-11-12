@@ -157,12 +157,17 @@ defmodule KernelAgentTest do
     assert :committed = KernelAgent.send(agent, "alice", "read the pipe")
 
     # The file server holds the read, so the unblocking write must not use it.
-    # Opening the FIFO read-write never blocks.
+    # Opening the FIFO read-write never blocks. The session also reads its
+    # snapshot through the file server, so wait until the session itself is in
+    # the tool's read.
     server = Process.whereis(:file_server_2)
 
     wait_until(fn ->
-      Process.info(server, :current_function) ==
-        {:current_function, {:prim_file, :read_file_nif, 1}}
+      {:current_stacktrace, stack} = Process.info(agent, :current_stacktrace)
+
+      Enum.any?(stack, &match?({KernelAgent.Tools, :fs, 3, _}, &1)) and
+        Process.info(server, :current_function) ==
+          {:current_function, {:prim_file, :read_file_nif, 1}}
     end)
 
     Process.exit(agent, :kill)

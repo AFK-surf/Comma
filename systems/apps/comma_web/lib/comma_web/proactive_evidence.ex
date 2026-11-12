@@ -2,9 +2,11 @@ defmodule CommaWeb.ProactiveEvidence do
   @moduledoc """
   The current state of a matter's links, read once before the matter reaches
   the Router: whether a GitHub Actions run is still failing, whether a pull
-  request or issue is still open, and who spoke last in the Slack thread. The
-  Router decides with it, for example to stay quiet about a failure that a
-  rerun already fixed.
+  request or issue is still open, who spoke last in the Slack thread, and,
+  for a message posted straight in a channel, what the channel said in the
+  hour after it. The Router decides with it, for example to stay quiet about
+  a failure that a rerun already fixed or a mention the owner already
+  answered in the channel.
 
   Only matters that the proactive check hands to the Router are read, at most
   three links each, with the owner's own managed GitHub or Slack grant. A link
@@ -16,6 +18,10 @@ defmodule CommaWeb.ProactiveEvidence do
   @limit 3
   @thread_tail 3
   @text_bytes 200
+  # People answer a channel message in the channel as often as in its thread;
+  # the hour after it holds the answer.
+  @channel_window 3600
+  @channel_limit 100
 
   @doc "The links of a matter to read, newest item first, at most #{@limit}."
   def targets(matter) do
@@ -40,9 +46,11 @@ defmodule CommaWeb.ProactiveEvidence do
           do:
             {:github, "https://api.github.com/repos/#{repo}/#{endpoint(kind)}/#{number}", :issue}
 
+    owner = item["recipient"]
+
     threads =
-      case Regex.run(~r<archives/(C[A-Z0-9]+)/p\d+\?thread_ts=([\d.]+)>, item["url"] || "") do
-        [_, channel, thread] ->
+      case Regex.run(~r<archives/(C[A-Z0-9]+)/p(\d+)(\?thread_ts=([\d.]+))?>, item["url"] || "") do
+        [_, channel, digits, _query, thread] ->
           url =
             CommaWeb.SlackWebAPI.url("conversations.replies", %{
               "channel" => channel,
@@ -50,7 +58,25 @@ defmodule CommaWeb.ProactiveEvidence do
               "limit" => 50
             })
 
-          [{:slack, url, :thread}]
+          since = with {ts, _seconds} <- permalink_ts(digits), do: ts
+          [{:slack, url, {:thread, owner, since}}]
+
+        [_, channel, digits] ->
+          case permalink_ts(digits) do
+            {ts, seconds} ->
+              url =
+                CommaWeb.SlackWebAPI.url("conversations.history", %{
+                  "channel" => channel,
+                  "oldest" => ts,
+                  "latest" => Integer.to_string(seconds + @channel_window),
+                  "limit" => @channel_limit
+                })
+
+              [{:slack, url, {:channel_after, owner}}]
+
+            nil ->
+              []
+          end
 
         _ ->
           []
@@ -58,6 +84,14 @@ defmodule CommaWeb.ProactiveEvidence do
 
     threads ++ runs ++ pulls
   end
+
+  # A permalink's `p` digits are the message ts without its dot.
+  defp permalink_ts(digits) when byte_size(digits) > 6 do
+    {seconds, micros} = String.split_at(digits, -6)
+    {seconds <> "." <> micros, String.to_integer(seconds)}
+  end
+
+  defp permalink_ts(_digits), do: nil
 
   defp endpoint("pull"), do: "pulls"
   defp endpoint("issues"), do: "issues"
@@ -114,21 +148,50 @@ defmodule CommaWeb.ProactiveEvidence do
       "merged" => issue["merged"]
     }
 
-  defp summarize(:thread, %{"ok" => true, "messages" => [_ | _] = messages}),
+  defp summarize({:thread, owner, since}, %{"ok" => true, "messages" => [_ | _] = messages}),
     do: %{
       "kind" => "slack_thread",
       "replies" => length(messages) - 1,
-      "latest" =>
-        messages
-        |> Enum.take(-@thread_tail)
-        |> Enum.map(fn message ->
-          %{
-            "from" => message["user"] || message["username"] || message["bot_id"],
-            "ts" => message["ts"],
-            "text" => String.slice(message["text"] || "", 0, @text_bytes)
-          }
-        end)
+      "owner_replied" => owner_spoke?(Enum.filter(tl(messages), &later?(&1["ts"], since)), owner),
+      "latest" => messages |> Enum.take(-@thread_tail) |> Enum.map(&brief/1)
     }
 
+  # The channel's messages after a message posted straight in it, newest
+  # first as Slack returns them. Its thread replies stay in the thread.
+  defp summarize({:channel_after, owner}, %{"ok" => true, "messages" => messages})
+       when is_list(messages) do
+    after_it = Enum.reverse(messages)
+
+    %{
+      "kind" => "slack_channel_after",
+      "window_seconds" => @channel_window,
+      "messages" => length(after_it),
+      "owner_replied" => owner_spoke?(after_it, owner),
+      "first" => after_it |> Enum.take(@thread_tail) |> Enum.map(&brief/1)
+    }
+  end
+
   defp summarize(_kind, _body), do: nil
+
+  # After the item's message; without its ts, any reply counts.
+  defp later?(_ts, nil), do: true
+  defp later?(ts, since) when is_binary(ts), do: ts_value(ts) > ts_value(since)
+  defp later?(_ts, _since), do: false
+
+  defp ts_value(ts) do
+    case Float.parse(ts) do
+      {value, _} -> value
+      :error -> 0.0
+    end
+  end
+
+  defp owner_spoke?(_messages, nil), do: nil
+  defp owner_spoke?(messages, owner), do: Enum.any?(messages, &(&1["user"] == owner))
+
+  defp brief(message),
+    do: %{
+      "from" => message["user"] || message["username"] || message["bot_id"],
+      "ts" => message["ts"],
+      "text" => String.slice(message["text"] || "", 0, @text_bytes)
+    }
 end

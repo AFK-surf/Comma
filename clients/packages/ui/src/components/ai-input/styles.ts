@@ -323,6 +323,15 @@ export const aiInputFileMeta =
  */
 export const aiInputSnippetAttachment = `${aiInputAttachmentCard} flex w-60 flex-col justify-between p-md`;
 
+/** A selection's card: its picture, then what the person wrote about it. As wide as a snippet's. */
+export const aiInputSelectionAttachment = `${aiInputAttachmentCard} flex w-60 items-center gap-md p-md`;
+
+/** The selection's picture, whole in its square: an element or an area is often far wider than tall. */
+export const aiInputSelectionPicture =
+  "flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-md bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-full [&>img]:object-contain [&>svg]:size-5";
+
+export const aiInputSelectionNote = `line-clamp-3 min-w-0 flex-1 ${aiInputAttachmentCloseClearance} text-xs leading-[18px] text-ai-input-panel-text-attachment-primary [overflow-wrap:anywhere]`;
+
 /** The file chip's icon surface; a brand mark sits on it at glyph size. */
 export const aiInputSnippetIconSurface = aiInputFileIconSurface;
 

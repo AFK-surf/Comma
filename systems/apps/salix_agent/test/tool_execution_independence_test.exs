@@ -137,7 +137,7 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
     })
 
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{
           "type" => "session_created",
           "session_id" => @session_id,
@@ -235,7 +235,7 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
 
   defp ack_setup_input!(agent_id, session_id) do
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent_id, session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
         %{"type" => "ack", "session_id" => session_id, "last_ack_message_id" => 1}
       ])
   end

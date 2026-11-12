@@ -159,6 +159,7 @@ defmodule SalixAgent.Tools.Web do
          "Returns status, ok, headers and the parsed JSON body (body_text when not JSON); a non-2xx status is a result, not an error, so check ok. " <>
          "Redirects are not followed and requests are never retried. Only public http(s) hosts are reachable, " <>
          "unless via_tailnet is true: then the host is a device in the Group's tailnet (a MagicDNS name or Tailscale address from tailnet.peers). " <>
+         "With tailcat set to a Tailcat address (tc..., as a user's tailcat serve prints it), the request goes to the URL's port on that Tailcat server instead; the URL host only names the Host header. " <>
          "To use a group OAuth credential, reference it with credential_env and write ${ENV_VAR} in the header value. " <>
          "The same call works from script.run through the salix.call gateway and from a background loop through sf_host_call.",
        &SalixAgent.Tools.HttpRequest.request/2, @normal_auto_wait_seconds, @write_opts}

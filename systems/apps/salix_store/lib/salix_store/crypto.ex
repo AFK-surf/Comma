@@ -9,7 +9,6 @@ defmodule SalixStore.Crypto do
   """
 
   @runtime_capability_aad "salix.compute.runtime.input.capability.v1"
-  @install_material_aad "salix.agent-vmm.install-material.v1"
 
   @doc "Lowercase hex digest used for deterministic, content-addressed keys."
   @spec hex(iodata()) :: String.t()
@@ -60,45 +59,6 @@ defmodule SalixStore.Crypto do
   end
 
   def unseal_runtime_capability(_), do: {:error, :invalid_runtime_capability_ciphertext}
-
-  @doc "Envelope-encrypt one bounded Agent VMM install exchange response."
-  def seal_install_material(material) when is_binary(material) and material != "" do
-    with {:ok, key} <- derived_key("agent-vmm-install-material-seal") do
-      iv = SystemsRuntime.Proc.random_bytes(12)
-
-      {ciphertext, tag} =
-        :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, material, @install_material_aad, true)
-
-      {:ok, "v1." <> Base.url_encode64(iv <> tag <> ciphertext, padding: false)}
-    end
-  end
-
-  def seal_install_material(_), do: {:error, :invalid_install_material}
-
-  @doc "Decrypt install material only while its ticket recovery window is open."
-  def unseal_install_material("v1." <> encoded) do
-    with {:ok, key} <- derived_key("agent-vmm-install-material-seal"),
-         {:ok, <<iv::binary-size(12), tag::binary-size(16), ciphertext::binary>>} <-
-           Base.url_decode64(encoded, padding: false),
-         plaintext when is_binary(plaintext) <-
-           :crypto.crypto_one_time_aead(
-             :aes_256_gcm,
-             key,
-             iv,
-             ciphertext,
-             @install_material_aad,
-             tag,
-             false
-           ) do
-      {:ok, plaintext}
-    else
-      _ -> {:error, :invalid_install_material_ciphertext}
-    end
-  rescue
-    _ -> {:error, :invalid_install_material_ciphertext}
-  end
-
-  def unseal_install_material(_), do: {:error, :invalid_install_material_ciphertext}
 
   # Reuse the deployment's existing credential root with a separate purpose.
   # Tenant-bound AEAD prevents copying a configuration token into another

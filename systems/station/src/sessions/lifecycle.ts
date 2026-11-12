@@ -10,7 +10,7 @@ import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { type MachineSession, type Roots, rolloutOf, rolloutsIn } from "../read/machine.ts";
 import { readTimeline, transcriptPath } from "../read/transcript.ts";
-import { AUTO, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow } from "../store/store.ts";
+import { AUTO, type Attachment, MANUAL, type Quote, COMMA_STATION_SURFACE, type ThreadRow } from "../store/store.ts";
 import type { SessionChange } from "./accounts.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
 import { roomOf } from "./footprint.ts";
@@ -60,27 +60,27 @@ export function bindSingle(hub: Hub, connectId: string, target: string | null, t
 
 /// Opens a chat on the station's pages with a session in it. More sessions can join it later (addToThread).
 export function openChat(hub: Hub, session: string, createdBy: string, title: string | null): ThreadRow {
-  if (!hub.internal) throw new Error("still.fail chat is not available");
+  if (!hub.internal) throw new Error("Comma chat is not available");
   const row = hub.store.getSession(session);
   if (!row) throw new Error(`unknown session ${session}`);
   // The first chat made with a session is its own; later ones are chats of their own (ThreadRow.home).
   const home = hub.store.homeChat(session) !== null ? null : session;
   // Its own chat keeps the name the session was given before it had one.
   const name = title ?? (home !== null ? row.title : null);
-  const thread = hub.store.openThreadOf(STILLFAIL_SURFACE, INTERNAL_CHANNEL, hub.nextTs(), name, createdBy, home);
+  const thread = hub.store.openThreadOf(COMMA_STATION_SURFACE, INTERNAL_CHANNEL, hub.nextTs(), name, createdBy, home);
   hub.store.joinThread(thread.id, session, INTERNAL_CONNECT);
   return thread;
 }
 
-function stillfailChat(hub: Hub, thread: number): ThreadRow {
+function stationChat(hub: Hub, thread: number): ThreadRow {
   const row = hub.store.getThread(thread);
-  if (!row || row.surface !== STILLFAIL_SURFACE) throw new Error(`no still.fail chat ${thread}`);
+  if (!row || row.surface !== COMMA_STATION_SURFACE) throw new Error(`no Comma chat ${thread}`);
   return row;
 }
 
 /// Brings another session into a chat on the station's pages; it hears what is said from then on.
 export function addToThread(hub: Hub, thread: number, session: string) {
-  stillfailChat(hub, thread);
+  stationChat(hub, thread);
   if (hub.store.getSession(session) === null) throw new Error(`unknown session ${session}`);
   hub.store.joinThread(thread, session, INTERNAL_CONNECT);
 }
@@ -88,7 +88,7 @@ export function addToThread(hub: Hub, thread: number, session: string) {
 /// A person's message in a chat on the station's pages: recorded with its quotes and files and delivered to every
 /// session in the chat, like a Slack message. `client`: the app it was sent from, as it said. Its entry number.
 export function say(hub: Hub, thread: number, user: string, text: string, attachments: Attachment[] = [], quotes: Quote[] = [], client: string | null = null): number {
-  stillfailChat(hub, thread);
+  stationChat(hub, thread);
   const [n] = hub.store.insertMessage({ thread, ts: hub.nextTs(), authorKind: "person", author: user, text, attachments, quotes, client });
   const sessions = hub.store.threadSessions(thread).map((m) => m.session);
   hub.deliver(thread, n, sessions, text);
@@ -217,7 +217,7 @@ export const archive = (hub: Hub, key: string, archived: boolean) => archiveBy(h
 /// Archives a chat on the pages, or shows it again: a session's own chat goes with its session; a chat of its own goes
 /// alone, its sessions staying as they are.
 export function archiveChat(hub: Hub, thread: number, archived: boolean): void | Promise<void> {
-  const chat = stillfailChat(hub, thread);
+  const chat = stationChat(hub, thread);
   if (chat.home !== null) return archive(hub, chat.home, archived);
   hub.store.setThreadHidden(thread, archived, MANUAL);
 }
@@ -231,7 +231,7 @@ export function autoArchive(hub: Hub, now: number) {
   const after = hub.config().autoArchiveMs;
   if (after <= 0) return;
   const idle = (at: (number | null | undefined)[]) => now - Math.max(0, ...at.filter((x): x is number => typeof x === "number")) >= after;
-  const unread = (t: ThreadRow) => t.createdBy !== null && t.surface === STILLFAIL_SURFACE && store.unreadCount(t.createdBy, t.id) > 0;
+  const unread = (t: ThreadRow) => t.createdBy !== null && t.surface === COMMA_STATION_SURFACE && store.unreadCount(t.createdBy, t.id) > 0;
   const bound = store.listBindings();
   const stats = store.sessionStats(null);
   const jobs = new Set(store.listJobs(null).filter((j) => j.state === "running" || (j.port !== null && j.state === "exited")).map((j) => j.sessionKey));

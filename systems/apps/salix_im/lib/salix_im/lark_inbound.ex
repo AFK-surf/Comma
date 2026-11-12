@@ -19,6 +19,12 @@ defmodule SalixIM.LarkInbound do
       request and never reaches the Router. A press on a question card
       (`SalixIM.QuestionCard`) is the presser's message to the Router. Either
       way the answer to the callback is the card that replaces the question.
+    * `im.chat.member.bot.added_v1`: the bot was added to a group chat. The
+      Router decides whether to introduce itself there
+      (`SalixIM.LarkChatJoin`).
+    * `vc.bot.meeting_invited_v1`, `vc.bot.meeting_ended_v1`: the bot in a Lark
+      video meeting. They go to the meeting product
+      (`SalixIM.Ports.LarkMeetingBot`) and never reach the Router.
 
   A message for the bot enters the Group's Router Conversation through
   `ProviderConnects.enqueue_group_router_im_provider_message/5`.
@@ -54,6 +60,17 @@ defmodule SalixIM.LarkInbound do
   not start and gives the receipt back; a delivery that stopped after its
   claim is not run again.
 
+  ## Long connection
+
+  A connect with `"events" => "socket"` (an app made by a scan) gets its
+  events through the long connection instead (`SalixIM.LarkSocket`), which
+  hands each one to `handle_socket_event/2`. The connection is opened with
+  the connect's own App Secret, so an event on it needs no further check.
+
+  A connect with `owner_only` (a person's own bot in Comma) takes messages
+  and card presses from its `owner_open_id` only, and from nobody when that
+  is missing; anyone else's is acknowledged and dropped.
+
   ## Diagnostics
 
   Each callback of a known connect emits one `lark.callback.*` diagnostic
@@ -67,6 +84,7 @@ defmodule SalixIM.LarkInbound do
   alias SalixIM.{
     Diagnostics,
     LarkFiles,
+    LarkMessageAck,
     LarkMessageRecord,
     LarkThreads,
     ProviderConnects,
@@ -77,7 +95,8 @@ defmodule SalixIM.LarkInbound do
   }
 
   alias SalixIM.IFC.LarkConfirmation
-  alias SalixIM.Provider.Lark.Message
+  alias SalixIM.Ports.LarkMeetingBot, as: LarkMeetingBotPort
+  alias SalixIM.Provider.Lark.{Message, MeetingBot}
 
   @ack %{"ok" => true}
 
@@ -102,6 +121,21 @@ defmodule SalixIM.LarkInbound do
     emit_diagnostic(connect, seen, request_id, outcome)
     answer(outcome)
   end
+
+  @doc """
+  Handles one event of `connect`'s long connection. The answer is what goes
+  back on the connection; an error leaves the event unacknowledged, so Lark
+  sends it again.
+  """
+  @spec handle_socket_event(map(), map()) :: {:ok, map()} | {:error, term()}
+  def handle_socket_event(%{"events" => "socket"} = connect, envelope) when is_map(envelope) do
+    request_id = text(map(envelope["header"])["event_id"])
+    outcome = verified(connect, envelope, request_id)
+    emit_diagnostic(connect, envelope, request_id, outcome)
+    answer(outcome)
+  end
+
+  def handle_socket_event(_connect, _envelope), do: {:error, :invalid_envelope}
 
   defp verified(connect, decoded, request_id) do
     with :ok <- validate_shape(decoded) do
@@ -249,6 +283,9 @@ defmodule SalixIM.LarkInbound do
       own_message?(connect, sender) ->
         {:ignored, :own_message}
 
+      not from_owner?(connect, text(map(sender["sender_id"])["open_id"])) ->
+        {:ignored, :not_owner}
+
       not for_bot?(connect, message) ->
         {:ignored, :not_for_bot}
 
@@ -259,9 +296,16 @@ defmodule SalixIM.LarkInbound do
           end
         end
 
-        if command?(connect, message, sender),
-          do: at_most_once(connect, message_id, deliver),
-          else: until_received(connect, message_id, deliver)
+        if command?(connect, message, sender) do
+          at_most_once(connect, message_id, deliver)
+        else
+          with {:ok, :queued} = delivered <- until_received(connect, message_id, deliver) do
+            if addressed?(connect, message),
+              do: LarkMessageAck.acknowledge(:lark, connect, message_id)
+
+            delivered
+          end
+        end
     end
   end
 
@@ -278,6 +322,9 @@ defmodule SalixIM.LarkInbound do
       not card_action_shape?(envelope) ->
         {:error, :invalid_envelope}
 
+      not from_owner?(connect, text(map(map(envelope["event"])["operator"])["open_id"])) ->
+        {:ignored, :not_owner}
+
       QuestionCard.feishu_action?(envelope) ->
         answer_question(connect, envelope, request_id)
 
@@ -293,7 +340,47 @@ defmodule SalixIM.LarkInbound do
     end
   end
 
+  defp dispatch(
+         connect,
+         %{"header" => %{"event_type" => "vc.bot.meeting_invited_v1"}} = envelope,
+         _request_id
+       ) do
+    inviter = MeetingBot.open_id(map(envelope["event"])["inviter"])
+
+    if from_owner?(connect, inviter),
+      do: LarkMeetingBotPort.handle_event(connect, envelope),
+      else: {:ignored, :not_owner}
+  end
+
+  defp dispatch(
+         connect,
+         %{"header" => %{"event_type" => "vc.bot.meeting_ended_v1"}} = envelope,
+         _request_id
+       ),
+       do: LarkMeetingBotPort.handle_event(connect, envelope)
+
+  defp dispatch(
+         connect,
+         %{"header" => %{"event_type" => "im.chat.member.bot.added_v1"}} = envelope,
+         _request_id
+       ),
+       do: SalixIM.LarkChatJoin.enqueue("lark", connect, envelope)
+
   defp dispatch(_connect, _envelope, _request_id), do: {:ignored, :event_not_routed}
+
+  # A shared bot takes everyone the app hears. One person's bot takes its
+  # owner only, and nobody when the owner is missing.
+  defp from_owner?(%{"owner_only" => true} = connect, open_id) do
+    owner = text(connect["owner_open_id"])
+    owner != "" and open_id == owner
+  end
+
+  defp from_owner?(connect, open_id) do
+    case text(connect["owner_open_id"]) do
+      "" -> true
+      owner -> open_id == owner
+    end
+  end
 
   # A press on a question card (`SalixIM.QuestionCard`). The answer is that
   # person's message in the card's chat, the card's own message ID standing
@@ -425,7 +512,7 @@ defmodule SalixIM.LarkInbound do
   # thread the bot answered in is only talk that goes on.
   defp command_text(connect, message, sender) do
     if text(sender["sender_type"]) == "user" and addressed?(connect, message),
-      do: message_text(connect, message)
+      do: message_text(connect, message, :drop)
   end
 
   # Lark names a chat and a person by ID only. The lists show what an event
@@ -442,8 +529,7 @@ defmodule SalixIM.LarkInbound do
       ProviderObservations.upsert_lark_user(connect, %{
         "open_id" => text(sender_id["open_id"]),
         "union_id" => text(sender_id["union_id"]),
-        "user_id" => text(sender_id["user_id"]),
-        "name" => text(sender["sender_type"])
+        "user_id" => text(sender_id["user_id"])
       })
     end
   end
@@ -509,13 +595,16 @@ defmodule SalixIM.LarkInbound do
       |> Enum.map(&text/1)
       |> Enum.find("", &(&1 != ""))
 
+    command = command_text(connect, message, sender)
+    SalixIM.MentionReplyLatency.provider_mention(source_id, metadata, command)
+
     connect["group_id"]
     |> ProviderConnects.enqueue_group_router_im_provider_message(
       "Lark message from #{name} in #{text(message["chat_id"])}:\n" <> body,
       metadata,
       source_id,
       trusted_source_text: body,
-      command_text: command_text(connect, message, sender),
+      command_text: command,
       attachments: attachments(connect, message, message_id)
     )
     |> case do
@@ -548,27 +637,39 @@ defmodule SalixIM.LarkInbound do
   defp permanent?({:bad_request, _message}), do: true
   defp permanent?(_reason), do: false
 
-  defp message_text(connect, message) do
-    bot = text(connect["bot_open_id"])
-
-    # Lark writes a mention as a key (`@_user_1`). The bot's own mention is
-    # not part of the request; any other reads as `@name`.
-    body =
-      message
-      |> mentions()
-      |> Enum.reject(&(text(&1["key"]) == ""))
-      |> Enum.reduce(Message.text(message), fn mention, acc ->
-        if bot != "" and text(map(mention["id"])["open_id"]) == bot,
-          do: String.replace(acc, text(mention["key"]), ""),
-          else: String.replace(acc, text(mention["key"]), "@" <> text(mention["name"]))
-      end)
-      |> String.trim()
+  # The text the Router reads. Lark writes a mention as a key (`@_user_1`),
+  # and each reads as `@name`, the bot's own one too, so a message that
+  # mentions the bot and another bot shows both. A command is read with the
+  # bot's own mention dropped (`own_mention` `:drop`), and a message that only
+  # mentions the bot is a bare mention.
+  defp message_text(connect, message, own_mention \\ :keep) do
+    request = render_mentions(connect, message, :drop)
+    visible? = SalixIM.Provider.Feishu.Message.visible_text?(request)
 
     cond do
-      body != "" -> body
+      visible? and own_mention == :drop -> request
+      visible? -> render_mentions(connect, message, :keep)
       Message.attachments(message) != [] -> "[Lark message with attachment]"
+      mentions_bot?(connect, message) -> "[mentioned the bot with no text]"
       true -> "[non-text Lark message]"
     end
+  end
+
+  defp render_mentions(connect, message, own_mention) do
+    bot = text(connect["bot_open_id"])
+
+    message
+    |> mentions()
+    |> Enum.reject(&(text(&1["key"]) == ""))
+    |> Enum.reduce(Message.text(message), fn mention, acc ->
+      name = text(mention["name"])
+      own? = bot != "" and text(map(mention["id"])["open_id"]) == bot
+
+      if own? and (own_mention == :drop or name == ""),
+        do: String.replace(acc, text(mention["key"]), ""),
+        else: String.replace(acc, text(mention["key"]), "@" <> name)
+    end)
+    |> String.trim()
   end
 
   defp structured_mentions(connect, message) do
@@ -788,6 +889,9 @@ defmodule SalixIM.LarkInbound do
 
   defp diagnostic_outcome({:ok, :queued}),
     do: {"queued", "info", nil, "lark.callback.queued", "Lark callback queued"}
+
+  defp diagnostic_outcome({:ok, :handled}),
+    do: {"handled", "info", nil, "lark.callback.handled", "Lark callback handled"}
 
   defp diagnostic_outcome({:ok, :command}),
     do: {"command", "info", nil, "lark.callback.command", "Lark control command handled"}

@@ -172,9 +172,82 @@ defmodule SalixStore.StationTaskSessions do
     )
   end
 
+  @doc """
+  At most `limit` Tasks of Group `group` that the station `device` takes part
+  in, after Task `cursor` (nil: from the first), in id order: each as
+  `%{conversation_id, agent_id}`, the Worker of its first Session.
+  """
+  def tasks_of_device(tenant, group, device, cursor, limit)
+      when is_integer(limit) and limit > 0 do
+    case query(
+           """
+           SELECT DISTINCT ON (conversation_id) conversation_id, agent_id
+           FROM station_task_sessions
+           WHERE tenant_id = $1 AND group_id = $2 AND device_id = $3 AND conversation_id > $4
+           ORDER BY conversation_id, session
+           LIMIT $5
+           """,
+           [tenant, group, device, cursor || "", limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [conversation, agent] ->
+           %{conversation_id: conversation, agent_id: agent}
+         end)}
+
+      error ->
+        error
+    end
+  end
+
   @doc "Every Session of another station taking part in a Task here: what Salix gives on starting."
   def all do
     rows("SELECT #{@columns} FROM station_task_sessions", [])
+  end
+
+  @doc """
+  At most `limit` active Tasks (`salix_conversations`: kind `agent_task`,
+  status `active`, not deleted) that a station takes part in, as
+  `{group_id, conversation_id}` in key order after `cursor` (the last pair
+  read, or nil from the first): what `SalixIM.StationTaskWatchRecovery`
+  starts the owners of when a node starts. One page per call; a Task with
+  several stations is one pair. `group: group_id` keeps to one Group.
+  """
+  def active_tasks(cursor, limit, opts \\ []) when is_integer(limit) and limit > 0 do
+    {after_key, params} =
+      case cursor do
+        nil ->
+          {"", [limit]}
+
+        {group, conversation} ->
+          {"AND (s.group_id, s.conversation_id) > ($2, $3)", [limit, group, conversation]}
+      end
+
+    {in_group, params} =
+      case Keyword.get(opts, :group) do
+        nil -> {"", params}
+        group -> {"AND s.group_id = $#{length(params) + 1}", params ++ [group]}
+      end
+
+    case query(
+           """
+           SELECT DISTINCT s.group_id, s.conversation_id
+           FROM station_task_sessions s
+           JOIN salix_conversations c
+             ON c.group_id = s.group_id AND c.conversation_id = s.conversation_id
+           WHERE c.kind = 'agent_task' AND c.status = 'active' AND c.deleted_at IS NULL
+             #{after_key} #{in_group}
+           ORDER BY s.group_id, s.conversation_id
+           LIMIT $1
+           """,
+           params
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [group, conversation] -> {group, conversation} end)}
+
+      error ->
+        error
+    end
   end
 
   @doc """

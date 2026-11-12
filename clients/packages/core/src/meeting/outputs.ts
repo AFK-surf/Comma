@@ -6,6 +6,7 @@
 // One job: read the Task, save what is new (each save checkpointed in the journal), and wait for the Task to change
 // (one Task-list stream the server keeps open up to 30 s) before reading it again; it ends once all three are saved,
 // fails when the Task settled without them, and gives up after 30 minutes. The lane (tasks.ts) runs two jobs at a time.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, fromUtf8 } from "@comma/core-kernel";
 import { Cause, Duration, Effect, Exit } from "effect";
 import { z } from "zod";
@@ -36,32 +37,37 @@ export interface MeetingOutputJob {
   completed: MeetingOutputExtension[];
 }
 
-const conversationSchema = z
-  .object({
-    status: z.string().optional(),
-    title: z.string().optional(),
-    messages: z
-      .array(
-        z
-          .object({
-            message_id: z.string(),
-            actor_type: z.string(),
-            content: z.array(z.unknown()),
-          })
-          .loose()
-      )
-      .optional(),
-  })
-  .loose();
+const conversationSchema = lazySchema(() =>
+  z
+    .object({
+      status: z.string().optional(),
+      title: z.string().optional(),
+      messages: z
+        .array(
+          z
+            .object({
+              message_id: z.string(),
+              seq: z.number().int().optional(),
+              actor_type: z.string(),
+              content: z.array(z.unknown()),
+            })
+            .loose()
+        )
+        .optional(),
+    })
+    .loose()
+);
 type Conversation = z.infer<typeof conversationSchema>;
 
-const fileBlockSchema = z
-  .object({
-    type: z.literal("file"),
-    file_name: z.string().optional(),
-    path: z.string().optional(),
-  })
-  .loose();
+const fileBlockSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal("file"),
+      file_name: z.string().optional(),
+      path: z.string().optional(),
+    })
+    .loose()
+);
 
 const SETTLED = new Set([
   "completed",
@@ -108,14 +114,23 @@ export function archiveMeetingOutputs(
     if (`${account.lease.audience}:${account.userId}` !== job.account)
       return yield* Effect.fail(new CoreError("signed_out", "Another account."));
     const events = `${route`/v1/comma/groups/${job.groupId}/conversations/events`}?wait=${STREAM_WAIT_MS}&conversation_id=${encodeURIComponent(job.taskId)}`;
+    // The newest message seq read and saved from: each read after it carries only the messages after it.
+    let heldThrough: number | undefined;
     for (;;) {
+      const task = route`/v1/comma/groups/${job.groupId}/conversations/${job.taskId}`;
       const snapshot = yield* ctx.api.request(
         account,
         "GET",
-        route`/v1/comma/groups/${job.groupId}/conversations/${job.taskId}`,
+        heldThrough === undefined ? task : `${task}?after_seq=${heldThrough}`,
         conversationSchema
       );
       yield* saveOutputs(ctx, ports, account, job, snapshot, checkpoint);
+      for (const message of snapshot.messages ?? [])
+        if (
+          message.seq !== undefined &&
+          (heldThrough === undefined || message.seq > heldThrough)
+        )
+          heldThrough = message.seq;
       if (job.completed.length === 3) return;
       if (SETTLED.has(snapshot.status ?? ""))
         return yield* Effect.fail(

@@ -2,6 +2,10 @@ defmodule SalixAgent.Tools.CloudVM do
   @moduledoc """
   `cloud_vm.start`: the agent turns on its Group's Cloud VM itself, and sees
   it come up, before giving it work (`SalixAgent.CloudVM.start/3`).
+
+  Where the Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`)
+  the tool is not offered (`SalixAgent.ToolDisclosure`), and a call that
+  reaches it answers `cloud_vm_retired`.
   """
 
   alias SalixAgent.Tools.AsyncPolicy
@@ -36,11 +40,17 @@ defmodule SalixAgent.Tools.CloudVM do
         _ -> nil
       end
 
-    case SalixAgent.CloudVM.start(
-           ctx[:agent_id],
-           worker_id,
-           AsyncPolicy.exec_readiness_timeout_ms()
-         ) do
+    result =
+      if SalixAgent.Sandboxes.cloud_vm_retired?(group_id(ctx)),
+        do: {:error, :cloud_vm_retired, []},
+        else:
+          SalixAgent.CloudVM.start(
+            ctx[:agent_id],
+            worker_id,
+            AsyncPolicy.exec_readiness_timeout_ms()
+          )
+
+    case result do
       {:ok, result} ->
         Jason.encode!(result)
 
@@ -53,6 +63,20 @@ defmodule SalixAgent.Tools.CloudVM do
     end
   end
 
+  # The Group of the agent that calls: its Cloud VM is the one started.
+  defp group_id(ctx) do
+    case ctx[:agent_id] do
+      agent_id when is_binary(agent_id) and agent_id != "" ->
+        SalixStore.Ids.group_id_from_agent!(agent_id)
+
+      _none ->
+        nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp code(:cloud_vm_retired), do: "cloud_vm_retired"
   defp code(:cloud_vm_disabled), do: "cloud_vm_disabled"
   defp code(:worker_not_found), do: "agent_not_found"
   defp code({:runner_offline, _runner}), do: "runner_offline"
@@ -61,8 +85,13 @@ defmodule SalixAgent.Tools.CloudVM do
   defp code(:not_configured), do: "cloud_vm_unavailable"
   defp code(_reason), do: "cloud_vm_start_failed"
 
+  defp describe(:cloud_vm_retired),
+    do:
+      ~s(The Cloud VM is retired here: sandboxes have taken its place. Run commands in a sandbox Task: im_api.internal.task.create with runs_on {"kind":"sandbox"} and model {"kind":"runtime","provider":"codex"|"claude"}.)
+
   defp describe(:cloud_vm_disabled),
-    do: "The Workspace's Cloud VM switch is off, so no Agent of it can start its Cloud VM."
+    do:
+      "The Workspace has no Cloud VM available now: none is set up for it, or its setup was not read. No Agent of it can start one."
 
   defp describe(:worker_not_found), do: "No Worker with that agent_id is in this Workspace."
 

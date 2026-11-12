@@ -74,7 +74,7 @@ defmodule CommaProduct.Telemetry do
   }
   @operations @operation_providers |> Map.keys() |> Enum.map(&Atom.to_string/1)
   @providers @operation_providers |> Map.values() |> Enum.uniq() |> Kernel.++(["s3", "other"])
-  @queues ~w(comma_external comma_recommendations comma_recommendation_control comma_notifications other)
+  @queues ~w(comma_external comma_drive comma_recommendations comma_recommendation_control comma_notifications other)
   @recommendation_triggers ~w(manual schedule agent_tool other)
   @recommendation_outcomes ~w(requested published superseded failed rate_limited other)
   @recommendation_variants ~w(generic member other)

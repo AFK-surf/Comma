@@ -1,21 +1,14 @@
 package surf.comma.android.chat
 
-import android.content.ClipboardManager
 import android.text.style.TypefaceSpan
-import android.view.View
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowLooper
 import surf.comma.android.R
-import surf.comma.android.chat.live.LiveRowKinds
-import surf.comma.android.chat.live.ReplyAction
-import surf.comma.android.chat.live.ReplyActionsRow
 import surf.comma.android.chat.model.ChatMessage
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.render.MessageLayoutPrecomputer
@@ -24,24 +17,21 @@ import surf.comma.android.chat.render.SelectableText
 import surf.comma.android.chat.render.Md
 import surf.comma.android.chat.render.MessageContent
 import surf.comma.android.ui.MessageActionsPopup
-import java.util.concurrent.TimeUnit
 
 // Invented test data only.
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "en-rUS-xxhdpi")
 class ChatCopySelectTest {
-    private val context: android.app.Application get() = RuntimeEnvironment.getApplication()
-
     private fun prepared(message: ChatMessage, previousRole: ChatRole? = ChatRole.AGENT): PreparedChatMessage = runBlocking {
         MessageLayoutPrecomputer().prepareChanged(emptyList(), listOf(message), viewportWidthPx = 1080, density = 3f,
             fontScale = 1f, darkTheme = false, firstPreviousRole = previousRole).single()
     }
 
-    private fun message(text: String, role: ChatRole = ChatRole.AGENT, kind: String? = null, payload: String? = null) =
+    private fun message(text: String, role: ChatRole = ChatRole.AGENT) =
         ChatMessage(id = text.hashCode().toLong(), conversationId = "cnv_1", turnId = "r:req-1", role = role, text = text,
-            createdAt = 0L, cardKind = kind, cardPayload = payload,
+            createdAt = 0L,
             // An agent's text as the core parsed it.
-            markdown = if (role == ChatRole.AGENT && kind == null && text.isNotEmpty()) Md.of(text) else null)
+            markdown = if (role == ChatRole.AGENT && text.isNotEmpty()) Md.of(text) else null)
 
     @Test fun `the long-press menu keeps both copies and adds select text with the whole message`() {
         val item = prepared(message("Run:\n```sh\nls\n```"))
@@ -57,38 +47,6 @@ class ChatCopySelectTest {
             listOf(MessageContent.Paragraph(Md.plain("hello there"))))
         assertEquals(listOf(R.string.action_copy_message, R.string.action_select_text), user.map { it.labelRes })
         assertTrue(MessageActionsPopup.entriesFor(prepared(message("")), emptyList()).isEmpty())
-    }
-
-    @Test fun `the reply's copy button copies through the callback and turns into a check for a moment`() {
-        val row = ReplyActionsRow(context)
-        val item = prepared(message("", kind = LiveRowKinds.REPLY_ACTIONS, payload = "r:req-1"))
-        row.bind(item)
-        val copied = ArrayList<Pair<ReplyAction, Long>>()
-        row.onAction = { action, bound ->
-            copied += action to bound.message.id
-            MessageActionsPopup.copyMessage(context, "**the** reply")
-            true
-        }
-        row.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-        assertEquals(item.cellHeightPx, row.measuredHeight)
-        val button = row.getChildAt(0)
-        assertEquals(context.getString(R.string.chat_reply_copy), button.contentDescription)
-        assertTrue(button.performClick())
-        assertEquals(listOf(ReplyAction.COPY to item.message.id), copied)
-        val clipboard = context.getSystemService(ClipboardManager::class.java)
-        assertEquals("**the** reply", clipboard.primaryClip!!.getItemAt(0)!!.text.toString())
-        assertEquals(context.getString(R.string.copied), button.contentDescription)
-        ShadowLooper.idleMainLooper(2_100, TimeUnit.MILLISECONDS)
-        assertEquals(context.getString(R.string.chat_reply_copy), button.contentDescription)
-    }
-
-    @Test fun `a copy that did not happen shows no check`() {
-        val row = ReplyActionsRow(context)
-        row.bind(prepared(message("", kind = LiveRowKinds.REPLY_ACTIONS, payload = "r:req-1")))
-        row.onAction = { _, _ -> false }
-        row.getChildAt(0).performClick()
-        assertEquals(context.getString(R.string.chat_reply_copy), row.getChildAt(0).contentDescription)
     }
 
     @Test fun `select text shows the core's parse of the message without its syntax`() {

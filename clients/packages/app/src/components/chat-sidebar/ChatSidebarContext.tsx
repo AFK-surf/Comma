@@ -1,3 +1,4 @@
+import type { ListedScreen } from "@comma/core-client";
 import { openMiniAppRunLink } from "../../miniAppRunLink";
 import {
   getNativeBridge,
@@ -25,6 +26,7 @@ import {
   type ConversationFileSource,
 } from "../../runtime-files/fileSources";
 import type { ChatParticipantStatus } from "@comma/core/chat";
+import { focusScreenWindow } from "../remote-screen/screenWindows";
 
 export type ChatSidebarHost = {
   conversationId: string;
@@ -103,11 +105,25 @@ export type ChatSidebarScreenPage = {
   device: string;
   /** The apps an app stream shows; empty for the frontmost app. */
   apps: string[];
+  /**
+   * What it shows first, when not an app's windows: a computer opened for itself shows its display; `models`, the
+   * computer's simulators and emulators to start, where none runs.
+   */
+  target?: "display" | "models" | undefined;
+  /** One of the computer's devices this page shows, instead of the computer's own screen. */
+  screen?: ListedScreen | undefined;
 };
 
 /** A screen page's id: one tab per computer and set of apps. */
-export function screenPageId(page: Pick<ChatSidebarScreenPage, "device" | "apps">) {
-  return JSON.stringify([page.device, ...page.apps]);
+export function screenPageId(
+  page: Pick<ChatSidebarScreenPage, "device" | "apps" | "screen" | "target">
+) {
+  return JSON.stringify([
+    page.device,
+    ...page.apps,
+    ...(page.screen ? [page.screen.id, page.screen.instance] : []),
+    ...(!page.screen && page.target === "models" ? ["models"] : []),
+  ]);
 }
 
 /** A Mini App running beside the chat: one tab per app. */
@@ -148,6 +164,8 @@ export type ChatSidebarSession = {
   activeScreenPageId?: string | undefined;
   appPages?: ChatSidebarAppPage[];
   activeAppPageId?: string | undefined;
+  /** Tabs the reader pinned, by tab id, in the order they were pinned: they lead the strip. */
+  pinnedTabIds?: string[] | undefined;
 };
 
 export type ChatSidebarContextValue = {
@@ -164,6 +182,8 @@ export type ChatSidebarContextValue = {
   closeChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   closeScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   closeAppPage: (host: ChatSidebarHost, pageId: string) => void;
+  /** Opens a web page's address again in a new tab right after it, and selects it. */
+  duplicateBrowserPage: (host: ChatSidebarHost, pageId: string) => void;
   getNativeBrowserCapacityBlockedEpoch: (sessionId: string) => number | undefined;
   isOpen: boolean;
   nativeBrowserCapacityEpoch: number;
@@ -210,6 +230,7 @@ export type ChatSidebarContextValue = {
   selectChangesPage: (host: ChatSidebarHost, pageId: string) => void;
   selectScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   selectAppPage: (host: ChatSidebarHost, pageId: string) => void;
+  setTabPinned: (host: ChatSidebarHost, tabId: string, pinned: boolean) => void;
   toggle: (host: ChatSidebarHost) => void;
   toggleActive: () => void;
   /** The sidebar aside; the surface that renders it attaches the element. */
@@ -675,6 +696,70 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
           sessions,
         };
+      });
+    },
+    []
+  );
+
+  const duplicateBrowserPage = useCallback<
+    ChatSidebarContextValue["duplicateBrowserPage"]
+  >((host, pageId) => {
+    const copyId = createBrowserPageId();
+    setRegistry((current) => {
+      const source = current.sessions
+        .get(chatSidebarHostKey(host))
+        ?.browserPages.find((page) => page.id === pageId);
+      // A terminal is its Task's one tab, and a blank tab has nothing to copy.
+      if (!source?.url || source.kind === "terminal") return current;
+      const sessions = updateSidebarSession(
+        current.sessions,
+        host,
+        (session) => {
+          const copy: ChatSidebarBrowserPage = {
+            ...(source.favicon ? { favicon: source.favicon } : {}),
+            id: copyId,
+            navigationRevision: 1,
+            title: source.title,
+            url: source.url,
+          };
+          const browserPages = [...session.browserPages];
+          browserPages.splice(
+            browserPages.findIndex((page) => page.id === pageId) + 1,
+            0,
+            copy
+          );
+          return {
+            ...session,
+            activeBrowserPageId: copy.id,
+            activeSurface: "browser",
+            browserPages,
+          };
+        },
+        copyId
+      );
+      return {
+        ...current,
+        openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+        sessions,
+      };
+    });
+  }, []);
+
+  const setTabPinned = useCallback<ChatSidebarContextValue["setTabPinned"]>(
+    (host, tabId, pinned) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        const pinnedTabIds = session?.pinnedTabIds ?? [];
+        if (!session || pinnedTabIds.includes(tabId) === pinned) return current;
+        const sessions = new Map(current.sessions);
+        sessions.set(key, {
+          ...session,
+          pinnedTabIds: pinned
+            ? [...pinnedTabIds, tabId]
+            : pinnedTabIds.filter((id) => id !== tabId),
+        });
+        return { ...current, sessions };
       });
     },
     []
@@ -1164,6 +1249,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
   const openScreen = useCallback<ChatSidebarContextValue["openScreen"]>(
     (host, target) => {
       const id = screenPageId(target);
+      // A screen in a window of its own shows there: that window comes forward, and the panel stays as it is.
+      if (focusScreenWindow(id)) return;
       setRegistry((current) => {
         const sessions = updateSidebarSession(current.sessions, host, (session) => {
           const pages = session.screenPages ?? [];
@@ -1498,6 +1585,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChangesPage,
       closeScreenPage,
       closeAppPage,
+      duplicateBrowserPage,
       getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
       openBrowser,
@@ -1520,6 +1608,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChangesPage,
       selectScreenPage,
       selectAppPage,
+      setTabPinned,
       toggle,
       toggleActive,
       trailingRef,
@@ -1535,6 +1624,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChangesPage,
       closeScreenPage,
       closeAppPage,
+      duplicateBrowserPage,
       getActiveHost,
       getNativeBrowserCapacityBlockedEpoch,
       openBrowser,
@@ -1557,6 +1647,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChangesPage,
       selectScreenPage,
       selectAppPage,
+      setTabPinned,
       toggle,
       toggleActive,
       updateBrowserPage,

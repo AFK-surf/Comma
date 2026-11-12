@@ -91,6 +91,31 @@ describe("AI input rich-text helpers", () => {
     ).toEqual(["code-review"]);
   });
 
+  it("lists a search-only row once something is typed", () => {
+    const items = [
+      { id: "vendor:openai", label: "OpenAI" },
+      { id: "model:gpt-5.5", label: "GPT 5.5", searchOnly: true },
+    ];
+    expect(filterAiInputMenuItems(items, "").map((item) => item.id)).toEqual([
+      "vendor:openai",
+    ]);
+    expect(filterAiInputMenuItems(items, "gpt").map((item) => item.id)).toEqual([
+      "model:gpt-5.5",
+    ]);
+  });
+
+  it("does not match a row's opaque id", () => {
+    const channel = {
+      id: "T1/C1",
+      opaqueId: true,
+      label: "#general",
+      searchText: "general",
+    };
+    expect(filterAiInputMenuItems([channel], "c1")).toEqual([]);
+    expect(filterAiInputMenuItems([channel], "gen")).toEqual([channel]);
+    expect(filterAiInputMenuItems([channel], "#gen")).toEqual([channel]);
+  });
+
   it("keeps rich tokens separate while producing a backwards-compatible prompt", () => {
     const value = createAiInputRichValue([
       { type: "text", text: "Use " },

@@ -275,8 +275,7 @@ defmodule SalixAgent.SSHToolsTest do
             {:env_tunnel_frame, id, %{"channel" => "tcp", "eof" => true}}
           )
 
-        {:env_tunnel_send, ^relay, ^id, %{"channel" => "tcp", "data" => data}} ->
-          bytes = Base.decode64!(data)
+        {:env_tunnel_send, ^relay, ^id, %{"channel" => "tcp", "bytes" => bytes}} ->
           :ok = :gen_tcp.send(socket, bytes)
           written = state.written + byte_size(bytes)
 
@@ -342,7 +341,7 @@ defmodule SalixAgent.SSHToolsTest do
 
   # SSH sessions live under the Agent session's actor.
   defp start_actor!(ctx) do
-    case SalixAgent.InternalSessionStore.prepare_create(ctx.agent_id, ctx.session_id, %{}) do
+    case SalixAgent.TestSupport.SessionFixture.create(ctx.agent_id, ctx.session_id, %{}) do
       {:ok, _} -> :ok
       {:error, :exists} -> :ok
     end
@@ -623,6 +622,93 @@ defmodule SalixAgent.SSHToolsTest do
     assert reopened["host_key"]["status"] == "trusted_on_first_use"
     assert reopened["host_key"]["fingerprint"] == mismatch["presented_fingerprint"]
   end
+
+  test "a restricted host serves only people cleared for its tag, and its output keeps the host's audience",
+       %{ctx: ctx, root: root} do
+    alias SalixAgent.SSH.KnownHosts
+
+    server = daemon(ctx, root)
+    as = fn user, call -> Map.merge(ctx, %{tool_call_id: call, trusted_origin: origin(user)}) end
+
+    # An unrestricted host: anyone may use it, and what it returns has the
+    # Group's audience rather than the round's.
+    labelled = Map.put(as.("U_ANY", "call-any"), :ifc, %{})
+
+    assert {:tool_ifc, opened, [], %{"label" => group_label}} =
+             SSH.open(
+               %{"host" => "127.0.0.1", "port" => server.port, "user" => "deploy"},
+               labelled
+             )
+
+    assert group_label == ["group|" <> ctx.group_id]
+
+    %{"ssh_session_id" => id, "host_key" => %{"fingerprint" => fingerprint}} =
+      Jason.decode!(opened)
+
+    # An operator restricts the host key. The open session is admitted again
+    # on its next call, and a new one is refused before any output returns.
+    assert :ok = KnownHosts.restrict(ctx.group_id, fingerprint, "db")
+
+    assert {:ok, %{"hosts" => [%{"fingerprint" => ^fingerprint, "ifc_tag" => "db"}]}} =
+             decode(SSH.known_hosts_list(%{}, ctx))
+
+    outsider = as.("U_OUT", "call-out")
+
+    assert {:error, %{"code" => "host_restricted"}} =
+             decode(SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, outsider))
+
+    assert {:error, %{"code" => "host_restricted"}} =
+             decode(
+               SSH.open(
+                 %{"host" => "localhost", "port" => server.port, "user" => "deploy"},
+                 outsider
+               )
+             )
+
+    # A Group supervisor reads every tag, so a restricted host serves them too.
+    {:ok, _} =
+      SalixStore.CasRecord.update(SalixStore.Keys.ctl_group(ctx.group_id), fn group ->
+        Map.put(group || %{}, "ifc", %{"supervisors" => ["provider_user|cnx_ssh|U_SUP"]})
+      end)
+
+    assert {:ok, %{"stdout" => "out\n"}} =
+             decode(
+               SSH.exec(
+                 %{"ssh_session_id" => id, "command" => "report"},
+                 as.("U_SUP", "call-sup")
+               )
+             )
+
+    # A schedule or work nobody asked for names no cleared person either.
+    assert {:error, %{"code" => "host_restricted"}} =
+             decode(SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, ctx))
+
+    {:ok, _} =
+      SalixStore.IFC.put_tag_clearance(
+        ctx.tenant_id,
+        ctx.group_id,
+        "cnx_ssh",
+        "db",
+        "provider_user|cnx_ssh|U_DBA"
+      )
+
+    cleared = Map.put(as.("U_DBA", "call-dba"), :ifc, %{})
+
+    assert {:tool_ifc, report, [], %{"label" => restricted_label}} =
+             SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, cleared)
+
+    assert %{"stdout" => "out\n"} = Jason.decode!(report)
+    assert Enum.sort(restricted_label) == Enum.sort(["group|" <> ctx.group_id, "tag|db"])
+
+    # Lifting the restriction admits everyone again.
+    assert :ok = KnownHosts.restrict(ctx.group_id, fingerprint, "")
+
+    assert {:ok, %{"stdout" => "out\n"}} =
+             decode(SSH.exec(%{"ssh_session_id" => id, "command" => "report"}, outsider))
+  end
+
+  defp origin(user),
+    do: %{"principal_ref" => %{"connect_id" => "cnx_ssh", "subject_id" => user}}
 
   test "rejected authentication and private destinations return actionable diagnostics",
        %{ctx: ctx, root: root} do

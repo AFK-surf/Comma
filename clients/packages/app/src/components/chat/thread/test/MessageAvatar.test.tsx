@@ -10,4 +10,12 @@ describe("MessageAvatar", () => {
     expect(container.querySelector(".comma-worker-model-mark")).toBeNull();
     expect(container.querySelectorAll("svg")).toHaveLength(1);
   });
+
+  it("wears Comma's mark for a Worker while its model's maker is not known", () => {
+    const { container } = render(<MessageAvatar actorRole="worker" />);
+
+    expect(container.querySelector(".comma-worker-model-mark")).not.toBeNull();
+    expect(container.querySelector('[data-slot="comma-product-mark"]')).not.toBeNull();
+    expect(container.querySelectorAll("svg")).toHaveLength(1);
+  });
 });

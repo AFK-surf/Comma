@@ -342,6 +342,29 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
       assert alias_of.(%{"alias" => "Ops"}) == "Ops"
     end
 
+    test "a secret needs a name and no OAuth app, is the group's, and keeps a member's own", %{
+      org: org,
+      project: project
+    } do
+      start = &ProjectOAuthConnections.start_connection(org.id, project.id, "secret", &1)
+
+      assert {:error, :alias_required} = start.(%{"alias" => " "})
+
+      assert {:ok, %{"authorization_url" => url, "state" => state}} =
+               start.(%{"alias" => "expense-api"})
+
+      assert URI.parse(url).path == "/v1/oauth/secret/callback"
+      {:ok, record} = SalixStore.OAuth.AuthState.get(state)
+      assert %{"provider" => "secret", "alias" => "expense-api", "bft_member" => nil} = record
+
+      # A member's own secret under that name stays theirs.
+      binding = seed_connection(org, project, "secret", "ann-key")
+      {:ok, connection} = SalixStore.OAuth.get(binding["connection_id"])
+      :ok = SalixStore.OAuth.put(binding["connection_id"], Map.put(connection, "owner", "ann"))
+
+      assert {:error, :alias_taken} = start.(%{"alias" => "ann-key"})
+    end
+
     test "builds an authorization URL for a configured provider", %{org: org, project: project} do
       configure_provider(org, "notion")
 

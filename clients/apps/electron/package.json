@@ -36,6 +36,7 @@
     "@grpc/proto-loader": "^0.8.1",
     "@noble/hashes": "^2.4.0",
     "@recappi/sdk": "^1.2.0",
+    "bonjour-service": "1.4.4",
     "cborg": "^6.1.3",
     "electron-log": "^5.4.4",
     "extract-zip": "2.0.1",

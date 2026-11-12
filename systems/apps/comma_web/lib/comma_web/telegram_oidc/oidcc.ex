@@ -45,7 +45,12 @@ defmodule CommaWeb.TelegramOIDC.Oidcc do
       {:error, {type, status, _body}} when type == :http_error and status >= 500 ->
         {:error, :telegram_provider_unavailable}
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.warning("Telegram authorization-code exchange rejected",
+          event: "telegram_oidc_exchange_rejected",
+          reason_class: rejection_class(reason)
+        )
+
         {:error, :invalid_telegram_credential}
 
       _other ->
@@ -61,4 +66,19 @@ defmodule CommaWeb.TelegramOIDC.Oidcc do
   catch
     :exit, _reason -> {:error, :telegram_provider_unavailable}
   end
+
+  # Bounded classes only: a rejection can carry tokens, claims or response bytes.
+  defp rejection_class({:http_error, status, %{"error" => error}})
+       when is_integer(status) and is_binary(error),
+       do: "http_error_#{status}_#{String.slice(error, 0, 64)}"
+
+  defp rejection_class({:http_error, status, _body}) when is_integer(status),
+    do: "http_error_#{status}"
+
+  defp rejection_class(reason) when is_atom(reason), do: reason
+
+  defp rejection_class(reason) when is_tuple(reason) and is_atom(elem(reason, 0)),
+    do: elem(reason, 0)
+
+  defp rejection_class(_reason), do: :other
 end

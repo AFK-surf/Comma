@@ -6,7 +6,7 @@ import type {
 } from "@comma/core/contract";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
-import { render, screen, waitFor, within } from "@comma/test-utils/render";
+import { cleanup, render, screen, waitFor, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { useVoiceSettingsCategory } from "../components/voice/useVoiceSettingsCategory";
@@ -56,6 +56,7 @@ async function openVoice(
   },
   calls = false
 ) {
+  let customVoices = 0;
   let preferences: VoicePreferences = state.preferences ?? {
     voice: null,
     custom_voice: null,
@@ -121,11 +122,18 @@ async function openVoice(
             : { router_calls: params.routerCalls as boolean }),
         };
         return null;
+      case "voice.preview":
+        return { contentType: "audio/wav", audio: "UklGRg==" };
       case "voice.createCustomVoice":
+        customVoices += 1;
         preferences = {
           ...preferences,
           voice: { kind: "custom" },
-          custom_voice: { name: "", description: params.description as string },
+          custom_voice: {
+            name: "",
+            description: params.description as string,
+            sample_key: `voice-${customVoices}`,
+          },
         };
         return null;
       default:
@@ -320,4 +328,123 @@ it("with voice labs, calls the Router and makes a custom voice", async () => {
   expect(setting("voice.calls.custom")).toHaveTextContent(
     "A warm voice speaking Mandarin."
   );
+});
+
+it("with voice labs, plays a sample of the chosen voice, stops it, and plays it again without asking twice", async () => {
+  const play = vi
+    .spyOn(window.HTMLMediaElement.prototype, "play")
+    .mockResolvedValue(undefined);
+  const pause = vi
+    .spyOn(window.HTMLMediaElement.prototype, "pause")
+    .mockReturnValue(undefined);
+  const t = await openVoice(
+    {
+      numbers: [],
+      keys: [],
+      preferences: {
+        voice: { kind: "preset", name: "gleam" },
+        custom_voice: null,
+        router_calls: false,
+      },
+    },
+    true
+  );
+  const row = () => within(setting("voice.calls.preview")!);
+
+  await t.user.click(row().getByRole("button", { name: "Play" }));
+  await t.user.click(await row().findByRole("button", { name: "Stop" }));
+  expect(t.called("voice.preview")).toEqual([
+    { workspace, voice: { kind: "preset", name: "gleam" }, language: "en" },
+  ]);
+  expect(play).toHaveBeenCalledTimes(1);
+  expect(pause).toHaveBeenCalled();
+
+  await t.user.click(await row().findByRole("button", { name: "Play" }));
+  await row().findByRole("button", { name: "Stop" });
+  expect(play).toHaveBeenCalledTimes(2);
+  expect(t.called("voice.preview")).toHaveLength(1);
+});
+
+it("with voice labs, asks for a sample of a custom voice made again, a new voice even from the same description", async () => {
+  vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockReturnValue(undefined);
+  const t = await openVoice({ numbers: [], keys: [] }, true);
+  const row = () => within(setting("voice.calls.preview")!);
+  const makeVoice = async (button: string) => {
+    await t.user.click(
+      within(setting("voice.calls.custom")!).getByRole("button", { name: button })
+    );
+    const dialog = within(
+      await screen.findByRole("dialog", { name: "Create a custom voice" })
+    );
+    await t.user.click(dialog.getByRole("textbox", { name: "Description" }));
+    await t.user.paste("A warm voice speaking Mandarin.");
+    await t.user.click(dialog.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Create a custom voice" })).toBeNull()
+    );
+  };
+  const sample = async () => {
+    await t.user.click(await row().findByRole("button", { name: "Play" }));
+    await t.user.click(await row().findByRole("button", { name: "Stop" }));
+  };
+
+  await makeVoice("Create");
+  await sample();
+  await sample();
+  expect(t.called("voice.preview")).toEqual([
+    { workspace, voice: { kind: "custom" }, language: "en" },
+  ]);
+
+  await makeVoice("Make again");
+  await sample();
+  expect(t.called("voice.preview")).toHaveLength(2);
+});
+
+it("with voice labs, keeps each voice's sample on the device and plays it on the next visit without asking", async () => {
+  vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  vi.spyOn(window.HTMLMediaElement.prototype, "pause").mockReturnValue(undefined);
+  const kept = new Map<string, Blob>();
+  vi.stubGlobal("caches", {
+    open: async () => ({
+      match: async (url: string) => {
+        const blob = kept.get(url);
+        return blob ? { blob: async () => blob } : undefined;
+      },
+      put: async (url: string, response: Response) => {
+        kept.set(url, await response.blob());
+      },
+    }),
+  });
+  const visit = async (name: string) => {
+    const t = await openVoice(
+      {
+        numbers: [],
+        keys: [],
+        preferences: {
+          voice: { kind: "preset", name },
+          custom_voice: null,
+          router_calls: false,
+        },
+      },
+      true
+    );
+    const row = within(setting("voice.calls.preview")!);
+    await t.user.click(row.getByRole("button", { name: "Play" }));
+    await t.user.click(await row.findByRole("button", { name: "Stop" }));
+    return t.called("voice.preview").length;
+  };
+
+  try {
+    expect(await visit("gleam")).toBe(1);
+    expect(kept.size).toBe(1);
+    cleanup();
+    // The next visit plays it from the device; another voice is kept apart.
+    expect(await visit("gleam")).toBe(0);
+    cleanup();
+    expect(await visit("harema")).toBe(1);
+    expect(kept.size).toBe(2);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

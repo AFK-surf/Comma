@@ -137,24 +137,22 @@ class TimelinePinTest {
             timeline.viewForRow(1)?.bottom?.let { it <= timeline.paddingTop } ?: true)
     }
 
-    @Test fun `typing and hidden action reservation add no visual gutter`() {
+    @Test fun `typing adds no visual gutter and a finished reply keeps its end in place`() {
         ShadowChoreographer.setFrameDelay(Duration.ofMillis(16))
         assertTrue(android.animation.ValueAnimator.areAnimatorsEnabled())
         inset(64)
         val question = message(1, "t", ChatRole.USER, "layout sample")
         val typing = message(2, "t", ChatRole.AGENT, "").copy(cardKind = TimelineBlockKinds.LIVE_STATUS)
-        val reserve = message(3, "t", ChatRole.AGENT, "").copy(cardKind = LiveRowKinds.REPLY_ACTIONS_RESERVED)
-        submit(listOf(question, typing, reserve))
+        submit(listOf(question, typing))
         assertGap(2)
         inset(380)
         assertGap(2)
         val answer = message(2, "t", ChatRole.AGENT, "sample reply", MessageStatus.STREAMING)
-        submit(listOf(question, answer, reserve))
+        submit(listOf(question, answer))
         assertGap(2)
         val before = timeline.viewForRow(2)!!.bottom
         val completed = runBlocking {
-            MessageLayoutPrecomputer().prepare(listOf(question, answer.copy(status = MessageStatus.COMPLETED),
-                reserve.copy(id = 4, cardKind = LiveRowKinds.REPLY_ACTIONS)),
+            MessageLayoutPrecomputer().prepare(listOf(question, answer.copy(status = MessageStatus.COMPLETED)),
                 viewportWidthPx = timeline.width, density = density, fontScale = 1f, darkTheme = false)
         }
         val frames = mutableListOf<Int>()
@@ -169,12 +167,8 @@ class TimelinePinTest {
             timeline.viewForRow(2)?.let { frames += it.bottom }
         }
         timeline.viewTreeObserver.removeOnPreDrawListener(listener)
-        val after = timeline.viewForRow(2)!!.bottom
-        assertTrue("buttons displace the reply gradually: $before -> $after; ${frames.distinct()}", frames.any { it in (after + 1) until before })
-        assertTrue("no one-frame reservation jump", (listOf(before) + frames).zipWithNext().all {
-            kotlin.math.abs(it.second - it.first) < (before - after) / 2
-        })
-        assertGap(4) // The button hit area's bottom, not the text or its glyph.
+        assertEquals("the reply's end does not move: ${frames.distinct()}", listOf(before), frames.distinct())
+        assertGap(2)
     }
 
     @Test fun `new turns and resizing do not pull a history reader to latest`() {

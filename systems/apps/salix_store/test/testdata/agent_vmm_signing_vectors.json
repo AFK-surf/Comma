@@ -1,0 +1,233 @@
+[
+  {
+    "type": "PersonalMeshDescriptor",
+    "message": {
+      "meshId": "mesh-1",
+      "genesisDeviceId": "device-a",
+      "genesisRootPublicKey": "A2sX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKW",
+      "registryAudience": "registry.test",
+      "policyEpoch": "1",
+      "createdAt": "2033-05-18T03:33:20Z"
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f763100506572736f6e616c4d65736844657363726970746f72000a066d6573682d3112086465766963652d611a21036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296220d72656769737472792e74657374280132060880a8d6b907",
+    "digest_hex": "41d207f2789106cebc07ad773d9af100c8547797e29a83db787611761597c9d5",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "e9987a0a473dd2782f2bf4e1c9ae698811b7685e9fd7858ca2d41e9ea0a5e1a1467739e74bb3d29c92bf41082f2b4ab4b0bd23d610cd1561ca29e0d9a2d7be8c"
+  },
+  {
+    "type": "MembershipCredential",
+    "message": {
+      "authority": {
+        "authorityId": "managed:test",
+        "authorityClass": "AUTHORITY_CLASS_MANAGED_CONTROLLER",
+        "keyId": "key-1",
+        "trustDomainRef": "AQID",
+        "revision": "7"
+      },
+      "subjectDeviceId": "device-a",
+      "subjectRootKeyRevision": "3",
+      "opaqueClaimsDigest": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+      "policyRevision": "9",
+      "expiresAt": "2033-05-18T03:33:20Z",
+      "subjectRootPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f7631004d656d6265727368697043726564656e7469616c000a1e0a0c6d616e616765643a7465737410011a056b65792d312203010203280712086465766963652d61180322200404040404040404040404040404040404040404040404040404040404040404280932060880a8d6b9074221000000000000000000000000000000000000000000000000000000000000000000",
+    "digest_hex": "21cecdee164e716f119b1d59e1865decaf870efbd27710f49ac2a10b483d8d1f",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "dede3d257ada1ed7b0e08e8bf4c4418a0ef6acc394068ce8331682d454dd25ae1ffe115e8042b22de29c2f4a09fc975978a00fb74aee2e3b882e3f662cd8084f"
+  },
+  {
+    "type": "EndpointObservation",
+    "message": {
+      "deviceId": "device-golden",
+      "rootKeyRevision": "7",
+      "endpointNodeId": "ZW5kcG9pbnQtbm9kZS0wMQ==",
+      "endpointGeneration": "11",
+      "supportedAlpns": [
+        "agent-vmm/mesh-control/1",
+        "agent-vmm/service-tunnel/1"
+      ],
+      "featureSet": [
+        "direct",
+        "relay"
+      ],
+      "observedAddressesDigest": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "expiresAt": "2033-05-18T03:33:20Z"
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f763100456e64706f696e744f62736572766174696f6e000a0d6465766963652d676f6c64656e10071a10656e64706f696e742d6e6f64652d3031200b2a186167656e742d766d6d2f6d6573682d636f6e74726f6c2f312a1a6167656e742d766d6d2f736572766963652d74756e6e656c2f313206646972656374320572656c61793a20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f42060880a8d6b907",
+    "digest_hex": "119c317e06bbbe94c770dbef2b8cd6ff929c1feb1ed7802761edb8b2853b5bae",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "ed1094d0c603b776dcb9acf08bd147c71865bfe4f6a4bb614e029651a2f22c7a62f937a654a35560ce2e9c755502220101f6edf75dd5e8ade88f80b64b5f0312"
+  },
+  {
+    "type": "PairingProof",
+    "message": {
+      "sessionId": "MDEyMzQ1Njc4OWFiY2RlZg==",
+      "meshId": "mesh-1",
+      "inviteRevision": "7",
+      "role": "PAIRING_ROLE_JOINER",
+      "deviceId": "device-a",
+      "rootKeyRevision": "3",
+      "rootPublicKey": "A2sX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKW",
+      "permissions": [
+        "MESH_PERMISSION_USE_SERVICES"
+      ],
+      "contextDigest": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+      "expiresAt": "2033-05-18T03:33:20Z"
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f76310050616972696e6750726f6f66000a103031323334353637383961626364656612066d6573682d31180720022a086465766963652d6130033a21036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964201014a20040404040404040404040404040404040404040404040404040404040404040452060880a8d6b907",
+    "digest_hex": "1782821e5fb3a76aa1de87df6959a71c084560bd7b18936a378cb1228bc71183",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "95894feb6e6d2d43c737f5294e094a917e646f0371e55665d26c281da766676f3b9ed14739ed2dde29af4528d267675332c5dbf92581c99595fe4c4e8e120e6a"
+  },
+  {
+    "type": "RouteCapability",
+    "message": {
+      "capabilityId": "route-1",
+      "authority": {
+        "authorityId": "managed:test",
+        "authorityClass": "AUTHORITY_CLASS_MANAGED_CONTROLLER",
+        "keyId": "key-1",
+        "trustDomainRef": "AQID",
+        "revision": "7"
+      },
+      "sourceDeviceId": "device-a",
+      "sourceAllocationId": "alloc-1",
+      "destinationDeviceId": "device-b",
+      "destinationExportId": "export-1",
+      "allowedProtocol": "tcp",
+      "allowedVerbs": [
+        "connect"
+      ],
+      "routeGeneration": "2",
+      "policyRevision": "9",
+      "budget": {
+        "connectionLimit": 3,
+        "byteLimit": "4096",
+        "concurrencyLimit": 2
+      },
+      "notBefore": "2033-05-18T03:31:40Z",
+      "expiresAt": "2033-05-18T03:33:20Z",
+      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
+      "audience": "agent-vmm/service-tunnel/1",
+      "issuerKeyId": "key-1",
+      "routeClass": "compute",
+      "sourceMembershipCredential": {
+        "authority": {
+          "authorityId": "managed:test",
+          "authorityClass": "AUTHORITY_CLASS_MANAGED_CONTROLLER",
+          "keyId": "key-1",
+          "trustDomainRef": "AQID",
+          "revision": "7"
+        },
+        "subjectDeviceId": "device-a",
+        "subjectRootKeyRevision": "3",
+        "opaqueClaimsDigest": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+        "policyRevision": "9",
+        "expiresAt": "2033-05-18T03:33:20Z",
+        "signature": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ==",
+        "subjectRootPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f763100526f7574654361706162696c697479000a07726f7574652d31121e0a0c6d616e616765643a7465737410011a056b65792d31220301020328071a086465766963652d612207616c6c6f632d312a086465766963652d6232086578706f72742d313a037463704207636f6e6e656374480250095a07080310802018026206089ca7d6b9076a060880a8d6b907722006060606060606060606060606060606060606060606060606060606060606067a1a6167656e742d766d6d2f736572766963652d74756e6e656c2f318201056b65792d319a0107636f6d70757465a201bd010a1e0a0c6d616e616765643a7465737410011a056b65792d312203010203280712086465766963652d61180322200404040404040404040404040404040404040404040404040404040404040404280932060880a8d6b9073a40050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505054221000000000000000000000000000000000000000000000000000000000000000000",
+    "digest_hex": "fa37b567d74edd504ba560b5f4080a70d767475dc6d6c8ce39ff67838654f013",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "9cea39fa41c1cd15e7eae6af2ece596762b712e6167c32ab036610fbcf18f40f1a129e4c401b8991e31a09cfc11d22f2ca6a4e99eb980752dcc4562bb005a0ea"
+  },
+  {
+    "type": "RegistryOperation",
+    "message": {
+      "operationId": "join-1",
+      "kind": "REGISTRY_OPERATION_KIND_JOIN",
+      "meshId": "mesh-1",
+      "expectedRevision": "7",
+      "policyEpoch": "1",
+      "issuerDeviceId": "device-manager",
+      "issuerRootKeyRevision": "2",
+      "membership": {
+        "meshId": "mesh-1",
+        "deviceId": "device-a",
+        "rootPublicKey": "A2sX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKW",
+        "rootKeyRevision": "3",
+        "permissions": [
+          "MESH_PERMISSION_USE_SERVICES"
+        ],
+        "state": "MESH_MEMBERSHIP_STATE_ACTIVE"
+      },
+      "inviteId": "invite-1",
+      "expiresAt": "2033-05-18T03:33:20Z",
+      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+      "pairingProof": "c2lnbmVkLXBhaXJpbmctcHJvb2Y="
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f76310052656769737472794f7065726174696f6e000a066a6f696e2d3110021a066d6573682d3120072801320e6465766963652d6d616e616765723802423c0a066d6573682d3112086465766963652d611a21036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c29620032a010130024a08696e766974652d3152060880a8d6b9075a2004040404040404040404040404040404040404040404040404040404040404046a147369676e65642d70616972696e672d70726f6f66",
+    "digest_hex": "75616acf1b8b93433e1db440855c5346f7935c1e6bc3436c654b4441f116358c",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "0df0e5141f2d11e360352b5c508721d6ae0ee937c09c77791bf337fab7a47253514aeec727552d7bf9530ea6f181560b128420f480dc77600810f63f34c48e07"
+  },
+  {
+    "type": "RegistryReceipt",
+    "message": {
+      "registryAudience": "registry.test",
+      "meshId": "mesh-1",
+      "revision": "8",
+      "policyEpoch": "1",
+      "snapshotDigest": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+      "issuedAt": "2033-05-18T03:31:40Z",
+      "expiresAt": "2033-05-18T03:33:20Z",
+      "keyId": "registry-key"
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f763100526567697374727952656365697074000a0d72656769737472792e7465737412066d6573682d31180820012a2004040404040404040404040404040404040404040404040404040404040404043206089ca7d6b9073a060880a8d6b907420c72656769737472792d6b6579",
+    "digest_hex": "2a080ffde6460554a7ed3569871709eba4a73adeb0deaf0482f588dbc72339be",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "3f3271ba564473c0a8dc4bb7cbecb3e24193fea44d0a415fe77ca754c0257e4905cfe4b9ca50454b4ea733f88a5a83a27e4b824c653ed0d1f48ec6346d5bd71e"
+  },
+  {
+    "type": "PersonalRouteRequest",
+    "message": {
+      "requestId": "route-request",
+      "meshId": "mesh-1",
+      "sourceDeviceId": "device-a",
+      "sourceRootKeyRevision": "3",
+      "sourceEnvironmentId": "environment",
+      "sourceContainerInstanceId": "container",
+      "destinationExportId": "export-1",
+      "routeGeneration": "2",
+      "policyEpoch": "1",
+      "budget": {
+        "connectionLimit": 3,
+        "byteLimit": "4096",
+        "concurrencyLimit": 2
+      },
+      "expiresAt": "2033-05-18T03:33:20Z",
+      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ="
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f763100506572736f6e616c526f75746552657175657374000a0d726f7574652d7265717565737412066d6573682d311a086465766963652d6120032a0b656e7669726f6e6d656e743209636f6e7461696e65723a086578706f72742d31400248015207080310802018025a060880a8d6b90762200404040404040404040404040404040404040404040404040404040404040404",
+    "digest_hex": "56b91eed62582e0effd9ac07527955fc514c670709938b1dce5c52e96294d010",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "0ec86ada0e8502df3d49f14d027ce7064b60bc2158172811bdbcf03200c053f0124ab94975ea7af2b57fa768aec6798c4b0747549aa0dd133ca04a3ff0bc6196"
+  },
+  {
+    "type": "ApplianceLaunchClaim",
+    "message": {
+      "installationId": "installation",
+      "artifactId": "artifact",
+      "bootId": "boot",
+      "systemNamespace": "system.appliance",
+      "containerInstance": "container",
+      "bootNonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+      "configRevision": "1",
+      "expiresUnixMillis": "2000000000000",
+      "registrationId": "registration",
+      "deviceIdentity": {
+        "deviceId": "device-a",
+        "rootPublicKey": "A2sX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKW",
+        "rootKeyRevision": "3",
+        "signatureSuite": "SIGNATURE_SUITE_P256_SHA256"
+      }
+    },
+    "canonical_hex": "6167656e742d766d6d2f7369676e61747572652f7631004170706c69616e63654c61756e6368436c61696d000a0c696e7374616c6c6174696f6e120861727469666163741a04626f6f74221073797374656d2e6170706c69616e63652a09636f6e7461696e65723220040404040404040404040404040404040404040404040404040404040404040440015080c0a8ca9a3a720c726567697374726174696f6e7a310a086465766963652d611221036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c29618032001",
+    "digest_hex": "81a791f907365752c151e9fa51b800a89c14fb8babe242958dcb57a31b350789",
+    "public_key_hex": "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+    "signature_hex": "2c1184c7d2197df05a1524ff6af96d0b55e7e9dc1c0eed798bb7ad5a1f8f33593338f67f1ede3f60109aecd531bfc104830ba8e8ffcd96290805a7475467fbaf"
+  }
+]

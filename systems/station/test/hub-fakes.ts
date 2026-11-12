@@ -144,6 +144,8 @@ export class FakeDriver implements AgentDriver {
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
+  /// Runtime session ids whose process is stale for their profile (AgentDriver.stale).
+  staleIds = new Set<string>();
   private n = 1;
   /// Times every process it started was ended.
   shutdowns = 0;
@@ -167,6 +169,9 @@ export class FakeDriver implements AgentDriver {
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
     this.sessions.push(session);
     return session;
+  }
+  stale(session: AgentSession) {
+    return this.staleIds.has(session.id());
   }
   async adopt(options: OpenOptions, snapshot: unknown, events: (event: RuntimeEvent) => void) {
     const handed = snapshot as { id: string; busy: boolean } | null;

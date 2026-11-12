@@ -1,0 +1,6 @@
+## Flags given to the release VM: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+## -mode/-name/-sname/-setcookie come from environment variables.
+
+## Dirty CPU scheduler threads run the verified kernel's Lean code with an
+## 8 MiB stack (1024 kilowords) instead of the 320 KiB default.
++sssdcpu 1024

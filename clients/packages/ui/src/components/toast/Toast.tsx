@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { cx, definedProps } from "../utils";
 import { ToastActions, ToastCloseButton } from "./ToastActions";
 import {
@@ -37,10 +38,13 @@ const glyphIcon = { gauge: ToastGaugeIcon } satisfies Record<ToastGlyph, unknown
 const ToastStatusIcon = ({
   icon,
   intent,
+  leading,
 }: {
   icon?: ToastGlyph;
   intent: ToastIntent;
+  leading?: ReactNode;
 }) => {
+  if (leading) return <span className={cx(toastStatusIcon, "flex")}>{leading}</span>;
   const Icon = icon ? glyphIcon[icon] : intentIcon[intent];
   return <Icon className={cx(toastStatusIcon, intentColor[intent])} />;
 };
@@ -51,6 +55,7 @@ export const Toast = ({
   variant = "single",
   intent = variant === "action" ? "success" : "info",
   icon,
+  leading,
   onClose,
   actions,
   className,
@@ -64,7 +69,7 @@ export const Toast = ({
       <output aria-live="polite" className={shellClass} {...shellTestId}>
         <div className="flex w-full flex-col">
           <div className={cx("flex w-full items-center", toastRowGap)}>
-            <ToastStatusIcon {...definedProps({ icon })} intent={intent} />
+            <ToastStatusIcon {...definedProps({ icon, leading })} intent={intent} />
             <p className={cx("min-w-0 flex-1", toastTitleSmAction)}>{title}</p>
             <ToastCloseButton {...definedProps({ onPress: onClose })} />
           </div>
@@ -84,7 +89,7 @@ export const Toast = ({
     return (
       <output aria-live="polite" className={shellClass} {...shellTestId}>
         <div className={cx("flex w-full items-start", toastRowGap)}>
-          <ToastStatusIcon {...definedProps({ icon })} intent={intent} />
+          <ToastStatusIcon {...definedProps({ icon, leading })} intent={intent} />
           <div className="flex min-w-0 flex-1 flex-col items-start gap-xxs">
             <p className={toastTitleMd}>{title}</p>
             {description && <p className={toastDescription}>{description}</p>}
@@ -98,7 +103,7 @@ export const Toast = ({
   return (
     <output aria-live="polite" className={shellClass} {...shellTestId}>
       <div className={cx("flex w-full items-center", toastRowGap)}>
-        <ToastStatusIcon {...definedProps({ icon })} intent={intent} />
+        <ToastStatusIcon {...definedProps({ icon, leading })} intent={intent} />
         <p className={cx("min-w-0 flex-1", toastTitleMd)}>{title}</p>
         <ToastCloseButton {...definedProps({ onPress: onClose })} />
       </div>

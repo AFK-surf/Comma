@@ -35,7 +35,12 @@ import surf.comma.android.tasks.list.originName
 import surf.comma.android.tasks.list.statusTint
 import surf.comma.android.tasks.ui.TaskStatusIconView
 import surf.comma.android.tasks.ui.TaskTheme
+import surf.comma.android.remote.RemoteBrowser
+import surf.comma.android.remote.RemoteBrowserSheet
+import surf.comma.android.remote.RemoteBrowserView
 import surf.comma.android.ui.ActionMenu
+import surf.comma.android.ui.kit.CornerRadii
+import surf.comma.android.ui.kit.DisplayCorners
 import surf.comma.android.ui.kit.GlassIconButton
 import surf.comma.android.ui.kit.dp
 import surf.comma.android.ui.kit.dpf
@@ -49,6 +54,7 @@ import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
 import surf.comma.android.ui.theme.DesignTypography.Level
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The open Task as a panel over the app, as the iOS app's dock: minimized, only its bar (close, title and status,
@@ -67,15 +73,42 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         alpha = 0f
         isClickable = false
     }
+    /** The panel's corners now: the bar's beside the display's bottom corners, growing to the sheet's. */
+    private var panelRadii = CornerRadii(0f, 0f, 0f, 0f)
     private val panel = FrameLayout(activity).apply {
         id = R.id.task_dock
         background = rounded(activity.getColor(R.color.token_bg_primary), activity.dpf(BAR_RADIUS_DP))
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) = panelRadii.outline(view, outline)
+        }
         clipToOutline = true
         elevation = activity.dpf(16f)
         isClickable = true
     }
     private val content = FrameLayout(activity)
+    /** The Task's conversation, header and details; on a wide screen with the browser open, the leading column. */
+    private val column = FrameLayout(activity).apply { clipChildren = false }
+    /** The remote browser beside the conversation on a wide screen. */
+    private val browserFrame = FrameLayout(activity).apply { visibility = GONE }
+    private var browser: RemoteBrowser? = null
+    private var browserSheet: RemoteBrowserSheet? = null
+    private var browserInline: RemoteBrowserView? = null
+    private var safeEnd = 0
+    private var displayCorners = DisplayCorners.UNKNOWN
     private val header = Header()
+    /** Only a sign that the sheet drags: the header under it takes the touches. */
+    private val grabber = View(activity).apply {
+        id = R.id.task_dock_grabber
+        background = rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(activity.getColor(R.color.token_text_placeholder),
+            (0.6f * 255).roundToInt()), activity.dpf(2.5f))
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+    private val capsule = android.graphics.RectF()
+    /** 0 while the details card covers the grabber's spot, 1 once it closes; the sheet's rise scales it. */
+    private var grabberShown = 1f
+    /** Where [grabberShown] is going: a fade already on its way there goes on. */
+    private var grabberTarget = 1f
+    private var grabberFade: android.animation.ValueAnimator? = null
     private val details = Details()
     private val outside = View(activity).apply {
         visibility = GONE
@@ -113,26 +146,34 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         visibility = GONE
         clipChildren = false
         addView(dimmer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        panel.addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        panel.addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        panel.addView(browserFrame, LayoutParams(0, LayoutParams.MATCH_PARENT, Gravity.END))
+        column.addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         // The conversation fades out under the header, so the title and its buttons read over any message.
         val page = activity.getColor(R.color.token_bg_primary)
-        panel.addView(View(activity).apply {
+        column.addView(View(activity).apply {
             background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(page, page, page, androidx.core.graphics.ColorUtils.setAlphaComponent(page, 0)))
             importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         }, LayoutParams(LayoutParams.MATCH_PARENT, activity.dp(BAR_DP + 24), Gravity.TOP))
         // While the details card is open, a tap anywhere outside it closes it.
-        panel.addView(outside, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        panel.addView(details, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
-        panel.addView(header, LayoutParams(LayoutParams.MATCH_PARENT, activity.dp(BAR_DP), Gravity.TOP))
+        column.addView(outside, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        column.addView(details, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP))
+        column.addView(header, LayoutParams(LayoutParams.MATCH_PARENT, activity.dp(BAR_DP), Gravity.TOP))
         // The header stays over the details card that grows out of it.
         header.translationZ = activity.dpf(12f)
+        column.addView(grabber, LayoutParams(activity.dp(36), activity.dp(5), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         addView(panel, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         dimmer.setOnClickListener { minimize() }
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             safeTop = bars.top
             safeBottom = bars.bottom
+            // The browser beside the conversation keeps clear of the system bars and a camera in the trailing edge.
+            safeEnd = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()).let {
+                if (layoutDirection == LAYOUT_DIRECTION_RTL) it.left else it.right
+            }
+            displayCorners = DisplayCorners.of(insets.toWindowInsets())
             requestLayout()
             insets
         }
@@ -150,6 +191,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         // The same Task opened again while it slides away stays.
         dismissing = false
         if (taskId != id) {
+            // Another Task closes the old one's browser viewer.
+            closeBrowser()
             releaseChat()
             taskId = id
             details.reset()
@@ -165,8 +208,18 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             screen.setTopChrome(activity.dp(BAR_DP))
             screen.onOpenTaskCard = { taskId, _ -> store.openTask(taskId) }
             screen.bind()
-            life.lifecycleScope.launch { opened.view.state.collect { if (details.open) details.render() } }
-            life.lifecycleScope.launch { opened.worker.collect { details.render() } }
+            life.lifecycleScope.launch {
+                opened.view.state.collect {
+                    if (details.open) details.render()
+                    browser?.setParticipant(participant())
+                }
+            }
+            life.lifecycleScope.launch {
+                opened.worker.collect {
+                    details.render()
+                    browser?.setParticipant(participant())
+                }
+            }
             header.render()
             details.render()
             activity.lifecycleScope.launch { details.load(id) }
@@ -222,6 +275,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     fun release() {
         dismissing = false
         back.isEnabled = false
+        closeBrowser()
         releaseChat()
         content.removeAllViews()
         taskId = null
@@ -240,11 +294,116 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         dismissing = false
         back.isEnabled = false
         visibility = GONE
+        closeBrowser()
         releaseChat()
         content.removeAllViews()
         taskId = null
         store.closeTask()
         onState(false, false)
+    }
+
+    // MARK: Remote browser
+
+    /** The participant whose browser the Task's viewer shows: its bound Worker, else the conversation's participant. */
+    private fun participant(): String = conversation?.worker?.value?.participantId
+        ?: conversation?.view?.state?.value?.participant?.participantId.orEmpty()
+
+    /** The open viewer's id, to keep it across the activity being recreated; null without one. */
+    val browserViewer: String? get() = browser?.viewer
+
+    /**
+     * Opens the Task's agent browser: beside the conversation on a wide screen, else in a sheet. [viewer] continues a
+     * viewer from before a rotation. [raise] false leaves a minimized dock as it is.
+     */
+    fun openBrowser(viewer: String? = null, raise: Boolean = true) {
+        val id = taskId ?: return
+        details.toggle(false)
+        if (browser == null) {
+            val calls = store.workspaceCalls() ?: return
+            browser = if (viewer != null) RemoteBrowser(calls, id, participant(), viewer) else RemoteBrowser(calls, id, participant())
+        }
+        presentBrowser()
+        if (raise && progress < 1f) expand()
+    }
+
+    /** Closing the viewer gives the conversation its whole width back. */
+    fun closeBrowser() {
+        val open = browser ?: return
+        browser = null
+        open.stop()
+        browserInline?.let(browserFrame::removeView)
+        browserInline = null
+        browserSheet?.dismiss()
+        browserSheet = null
+        requestLayout()
+    }
+
+    /** Wide enough for two columns, held sideways: the browser goes beside the conversation. */
+    private fun wide(width: Int = this.width, height: Int = this.height): Boolean =
+        conversationColumn(width, height, activity.dp(MIN_COLUMN_DP)) != null
+
+    /** Shows the open viewer the way the screen now suits; the same viewer moves between the sheet and the column. */
+    private fun presentBrowser() {
+        val model = browser ?: return
+        if (width > 0 && wide()) {
+            browserSheet?.let { sheet -> browserSheet = null; sheet.dismiss() }
+            if (browserInline == null) {
+                val view = RemoteBrowserView(activity, model, close = ::closeBrowser)
+                browserInline = view
+                browserFrame.addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            }
+        } else {
+            browserInline?.let(browserFrame::removeView)
+            browserInline = null
+            if (browserSheet == null) {
+                val sheet = RemoteBrowserSheet(activity, model)
+                sheet.onDismissed = {
+                    // Closed by the member, not moved beside the conversation: the viewer ends.
+                    if (browserSheet === sheet) { browserSheet = null; if (browser === model) closeBrowser() }
+                }
+                browserSheet = sheet
+                sheet.show()
+            }
+        }
+        requestLayout()
+    }
+
+    /** The conversation keeps a column; the browser takes the rest of the width, clear of the bars and cutouts. */
+    private fun placeBrowser(width: Int, height: Int) {
+        val model = browser
+        if (model != null && (browserInline != null) != wide(width, height)) post { if (browser === model) presentBrowser() }
+        val inline = browserInline != null
+        val split = conversationColumn(width, height, activity.dp(MIN_COLUMN_DP)) ?: width
+        val columnWidth = if (inline) split else LayoutParams.MATCH_PARENT
+        val columnParams = column.layoutParams as LayoutParams
+        if (columnParams.width != columnWidth) {
+            columnParams.width = columnWidth
+            columnParams.gravity = Gravity.START
+            column.requestLayout()
+        }
+        browserFrame.visibility = if (!inline) GONE else if (content.alpha > 0f) VISIBLE else INVISIBLE
+        val browserWidth = if (inline) width - split else 0
+        val browserParams = browserFrame.layoutParams as LayoutParams
+        if (browserParams.width != browserWidth) {
+            browserParams.width = browserWidth
+            browserFrame.requestLayout()
+        }
+        browserFrame.setPaddingRelative(0, 0, safeEnd, safeBottom)
+    }
+
+    /**
+     * The panel's corners at [clamped] (0 minimized, 1 open): minimized, the bar's top corners are no rounder than the
+     * display's bottom corners they sit by, so a small-cornered screen gets small corners; open, the sheet's.
+     */
+    internal fun panelRadii(clamped: Float): CornerRadii {
+        val expanded = activity.dpf(SHEET_RADIUS_DP)
+        fun near(corner: Float): Float {
+            val minimized = DisplayCorners.cap(activity.dpf(BAR_RADIUS_DP), corner)
+            return minimized + (expanded - minimized) * clamped
+        }
+        val left = near(displayCorners.bottomLeft)
+        val right = near(displayCorners.bottomRight)
+        return CornerRadii(left, right, right, left)
     }
 
     private fun sheetTop(): Float = (safeTop + activity.dp(SHEET_TOP_GAP_DP)).toFloat()
@@ -256,11 +415,16 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         val top = barTop() + (sheetTop() - barTop()) * p
         panel.translationY = top
         val clamped = p.coerceIn(0f, 1f)
-        (panel.background as android.graphics.drawable.GradientDrawable).cornerRadius =
-            activity.dpf(BAR_RADIUS_DP + (SHEET_RADIUS_DP - BAR_RADIUS_DP) * clamped)
+        panelRadii = panelRadii(clamped)
+        (panel.background as android.graphics.drawable.GradientDrawable).cornerRadii = panelRadii.array()
+        panel.invalidateOutline()
         dimmer.alpha = 0.3f * clamped
+        grabber.alpha = clamped * grabberShown
         dimmer.isClickable = clamped > 0.5f
         content.alpha = ((p - 0.1f) / 0.4f).coerceIn(0f, 1f)
+        browserFrame.alpha = content.alpha
+        // Minimized, the bar covers the conversation and the browser beside it alike.
+        if (browserInline != null) browserFrame.visibility = if (content.alpha > 0f) VISIBLE else INVISIBLE
         // [gone] clears [dismissing]: the spring keeps moving the sheet below this line until it settles, but the
         // Task is let go only once.
         if (dismissing && p <= -0.3f) gone()
@@ -273,7 +437,31 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             panel.layoutParams.height = height
             panel.requestLayout()
         }
+        placeBrowser(right - left, bottom - top)
+        placeGrabber()
         applyProgress()
+    }
+
+    /** Midway between the sheet's top edge and the title capsule, and at least 2dp below the edge. */
+    private fun placeGrabber() {
+        header.capsuleBounds(capsule)
+        grabber.translationY = maxOf(activity.dpf(2f), (capsule.top - grabber.height) / 2f)
+    }
+
+    /** The details card covers the grabber's spot: it fades out while the card is open and back once it closes. */
+    private fun showGrabber(show: Boolean) {
+        val target = if (show) 1f else 0f
+        if (target == grabberTarget) return
+        grabberTarget = target
+        grabberFade?.cancel()
+        grabberFade = android.animation.ValueAnimator.ofFloat(grabberShown, target).apply {
+            duration = DesignMotion.durationMillis(200)
+            addUpdateListener {
+                grabberShown = it.animatedValue as Float
+                grabber.alpha = progress.coerceIn(0f, 1f) * grabberShown
+            }
+            start()
+        }
     }
 
     // MARK: Dragging the bar and the open sheet's header
@@ -344,7 +532,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         }
 
         init {
-            setPadding(activity.dp(16), 0, activity.dp(16), 0)
+            // The row centres 35dp below the sheet's top edge, as on iOS: room above the title for the grabber.
+            setPadding(activity.dp(16), activity.dp(10), activity.dp(16), 0)
             addView(close, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL or Gravity.START))
             addView(titleBlock, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
                 marginStart = activity.dp(56); marginEnd = activity.dp(56)
@@ -354,7 +543,9 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             titleBlock.setOnClickListener { if (progress < 0.5f) expand() else details.toggle(!details.open) }
             more.setOnClickListener { anchor ->
                 val task = task() ?: return@setOnClickListener
-                shell.actions.menu(task, archive = {
+                shell.actions.menu(task, leading = {
+                    item(activity.getString(R.string.remote_browser_title), R.drawable.ic_settings_globe) { openBrowser() }
+                }, archive = {
                     close()
                     store.setArchived(task, true) { archived ->
                         store.showToast(activity.getString(R.string.task_archived_toast), undo = { store.setArchived(archived, false) })
@@ -409,8 +600,15 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             }
         }
 
-        /** The title and its status line as they rest, in this header's coordinates: where the card grows from. */
-        fun titleBounds(into: android.graphics.RectF) {
+        /** The capsule around the title and its status line, in this header's coordinates: where the card grows from. */
+        fun capsuleBounds(into: android.graphics.RectF) {
+            titleBounds(into)
+            if (into.isEmpty) into.set(activity.dpf(8f), activity.dpf(8f), width - activity.dpf(8f), activity.dpf(BAR_DP - 8f))
+            into.inset(-activity.dpf(14f), -activity.dpf(5f))
+        }
+
+        /** The title and its status line as they rest, in this header's coordinates. */
+        private fun titleBounds(into: android.graphics.RectF) {
             val status = statusText.parent as View
             val left = titleBlock.left + minOf(title.left, status.left)
             val right = titleBlock.left + maxOf(title.right, status.right)
@@ -430,6 +628,11 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
         private val machine = FlowLayout(activity, activity.dp(6))
         private val worker = FlowLayout(activity, activity.dp(6))
         private val labels = FlowLayout(activity, activity.dp(6))
+        private val codeCaption = caption(R.string.task_details_code)
+        private val code = FlowLayout(activity, activity.dp(6))
+        private val browserCaption = caption(R.string.task_details_browser)
+        private val browserRow = FlowLayout(activity, activity.dp(6))
+        private val files = FlowLayout(activity, activity.dp(6))
         private var catalog: List<TaskLabel>? = null
         private var busy = false
         /** The label change [busy] waits for; an older change's answer or timeout leaves a newer one waiting. */
@@ -479,8 +682,14 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             addView(worker, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             addView(machineCaption, LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
             addView(machine, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
+            addView(codeCaption, LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
+            addView(code, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
+            addView(browserCaption, LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
+            addView(browserRow, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             addView(caption(R.string.task_details_labels), LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
             addView(labels, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
+            addView(caption(R.string.task_details_files), LayoutParams(-2, -2).apply { topMargin = activity.dp(18) })
+            addView(files, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(8) })
             setContentAlpha(0f)
         }
 
@@ -495,9 +704,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
 
         /** The card between the title capsule and the full card, each axis on its own spring. */
         private fun place() {
-            header.titleBounds(closed)
-            if (closed.isEmpty) closed.set(activity.dpf(8f), activity.dpf(8f), width - activity.dpf(8f), activity.dpf(BAR_DP - 8f))
-            closed.inset(-activity.dpf(14f), -activity.dpf(5f))
+            header.capsuleBounds(closed)
             val inset = activity.dpf(8f)
             val openBottom = maxOf(height.toFloat(), activity.dpf(BAR_DP.toFloat()))
             shape.set(
@@ -565,6 +772,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             outside.visibility = GONE
             header.setChevronFlipped(false)
             header.setButtonsOnCard(false)
+            showGrabber(true)
         }
 
         suspend fun load(id: String) {
@@ -579,6 +787,7 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
             open = show
             header.setChevronFlipped(show)
             header.setButtonsOnCard(show)
+            showGrabber(!show)
             outside.visibility = if (show) VISIBLE else GONE
             if (show) {
                 render()
@@ -598,7 +807,8 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
 
         fun render() {
             val task = task() ?: return
-            val key = listOf(task, catalog, busy, open, conversation?.worker?.value)
+            val chatState = conversation?.view?.state?.value
+            val key = listOf(task, catalog, busy, open, conversation?.worker?.value, chatState?.codingSandbox, chatState?.participant != null)
             if (key == shown) return
             shown = key
             properties.removeAllViews()
@@ -642,6 +852,26 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
                     imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_quaternary))
                 }, if (host.online == false) activity.getString(R.string.task_offline, name) else name))
             }
+            // A coding Task's review, and the browser of a Task an Agent works on.
+            val coding = chatState?.codingSandbox == true
+            codeCaption.isVisible = coding
+            code.isVisible = coding
+            code.removeAllViews()
+            if (coding) code.addView(pill(glyph(R.drawable.ic_media_file_code), activity.getString(R.string.task_details_code_review)).apply {
+                setOnClickListener { openCodeReview(task) }
+            })
+            val browses = bound != null || chatState?.participant != null
+            browserCaption.isVisible = browses
+            browserRow.isVisible = browses
+            browserRow.removeAllViews()
+            if (browses) browserRow.addView(pill(glyph(R.drawable.ic_settings_globe), activity.getString(R.string.remote_browser_title)).apply {
+                setOnClickListener { openBrowser() }
+            })
+            files.removeAllViews()
+            files.addView(pill(glyph(R.drawable.ic_media_file), activity.getString(R.string.task_files_title), chevron = true, forward = true).apply {
+                id = R.id.task_details_files
+                setOnClickListener { openFiles(task) }
+            })
             labels.removeAllViews()
             val known = catalog
             val applied = known.orEmpty().filter { it.id in task.labelIds }
@@ -665,6 +895,24 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
                 alpha = if (busy) 0.4f else 1f
                 setOnClickListener { labelMenu(it, task, known) }
             }, LayoutParams(activity.dp(32), activity.dp(32)))
+        }
+
+        private fun glyph(icon: Int) = ImageView(activity).apply {
+            setImageResource(icon)
+            imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_quaternary))
+        }
+
+        private fun openCodeReview(task: TaskSummary) {
+            val calls = store.workspaceCalls() ?: return
+            surf.comma.android.tasks.coding.CodingReviewSheet(activity, surf.comma.android.tasks.coding.CodingReview(calls, task.id)).show()
+        }
+
+        /** The Task's files; adding one stages it in this Task's draft. */
+        private fun openFiles(task: TaskSummary) {
+            val calls = store.workspaceCalls() ?: return
+            val view = conversation?.view ?: return
+            val model = surf.comma.android.tasks.files.TaskFilesModel(calls, task.id) { files -> view.attachConversationFiles(files) }
+            surf.comma.android.tasks.files.TaskFilesSheet(activity, model) { view.state.value.attachments.size }.show()
         }
 
         private fun statusMenu(anchor: View, task: TaskSummary, bucket: TaskStatusBucket) {
@@ -744,10 +992,19 @@ class TaskDock(private val shell: Shell, private val onState: (open: Boolean, ra
     companion object {
         const val BAR_DP = 60
         const val BAR_RADIUS_DP = 22f
-        const val SHEET_RADIUS_DP = 32f
+        const val SHEET_RADIUS_DP = 38f
         const val SHEET_TOP_GAP_DP = 10
+        /** The narrowest column a wide screen splits into, as on iOS: below twice this, the browser is a sheet. */
+        const val MIN_COLUMN_DP = 350
         /** Room the minimized bar takes at the foot of the app, with the gap above it. */
         fun reserve(context: android.content.Context, safeBottom: Int) = context.dp(BAR_DP + 6) + safeBottom
+
+        /**
+         * The conversation's width when the Task's browser goes beside it: half of a window held sideways that has
+         * room for two columns of at least [minColumn]; null for a narrower or upright one, where it is a sheet.
+         */
+        fun conversationColumn(width: Int, height: Int, minColumn: Int): Int? =
+            if (width > height && width >= minColumn * 2) width / 2 else null
 
         /** The iOS card's two axes: response 0.25 s and 0.38 s, critically damped. */
         private const val LEADING_STIFFNESS = 632f

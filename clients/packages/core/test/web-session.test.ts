@@ -1585,3 +1585,137 @@ describe("a web sign-in, recorded", () => {
     });
   });
 });
+
+describe("web registration CAPTCHA", () => {
+  it("lets another Cookie context recover and sign in during CAPTCHA, then fences the old attempt", async () => {
+    const t = setup(undefined);
+    await t.time.pass(20);
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/email/login",
+      json(428, {
+        error: "captcha_required",
+        challenge: {
+          id: "abuse_web_email",
+          secret: "private_credential",
+          expires_at: 2_000_000_000,
+          method: "captcha",
+          enforce: true,
+          action: "email_login",
+          email: "a@example.com",
+          captcha_url: `${ORIGIN}/v1/comma/auth/captcha?challenge_id=abuse_web_email&action=email_login`,
+        },
+      })
+    );
+    const old = t.client.call("session.email.request", {
+      email: "a@example.com",
+      expected: t.expected(),
+    });
+    await t.time.pass(20);
+    const waiting = t.shown().attempt!;
+    expect(waiting.captcha?.challengeId).toBe("abuse_web_email");
+    expect(t.host.locks.active).toBe(0);
+    // Another owner of the same Cookie can recover its record and finish normal authentication.
+    const next = start(t.server, {
+      storage: t.host.storage,
+      locks: t.host.locks,
+      hints: t.host.hints,
+      time: t.time,
+      randomFrom: 2_000,
+    });
+    await next.time.pass(20);
+    t.api.on("POST", "/v1/comma/auth/email/login", {
+      challenge_id: "peer-code",
+      code: "123456",
+    });
+    const prepared = await next.ask<{ ok: true; value: { attempt: unknown } }>(
+      "session.email.request",
+      {
+        email: "b@example.com",
+        expected: next.expected(),
+      }
+    );
+    expect(prepared.ok).toBe(true);
+    expect(
+      await next.ask("session.email.verify", {
+        attempt: prepared.value.attempt,
+        challengeId: "peer-code",
+        code: "123456",
+      })
+    ).toMatchObject({ ok: true });
+    const posted = t.api.seen("POST", "/v1/comma/auth/email/login").length;
+    await t.ask("session.captcha.answer", {
+      attempt: waiting.ref,
+      challengeId: "abuse_web_email",
+      token: "late-token",
+    });
+    expect(await old).toMatchObject({ ok: false });
+    expect(t.api.seen("POST", "/v1/comma/auth/email/login")).toHaveLength(posted);
+    expect(t.server.session?.session_id).toBe(sessionA.session_id);
+    await signedInAs(t, sessionA.session_id);
+    expect(t.record()).toMatchObject({
+      kind: "stable",
+      state: { kind: "present", sessionId: sessionA.session_id },
+    });
+    await next.core.close();
+    await t.core.close();
+  });
+
+  it("settles the no-effect Cookie marker while CAPTCHA waits, then completes the same verified OAuth continuation", async () => {
+    const t = setup(undefined);
+    await t.time.pass(20);
+    const prepared = await t.ask<{
+      ok: true;
+      value: { attempt: unknown; nonce: string; providerAttemptId: string };
+    }>("session.google.attempt", { expected: t.expected() });
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/google",
+      json(428, {
+        error: "captcha_required",
+        registration_continuation: "private_registration_continuation",
+        challenge: {
+          id: "abuse_web_registration",
+          secret: "private_challenge_credential",
+          expires_at: 2_000_000_000,
+          method: "captcha",
+          enforce: true,
+          action: "registration",
+          email: "a@example.com",
+          captcha_url: `${ORIGIN}/v1/comma/auth/captcha?challenge_id=abuse_web_registration&action=registration`,
+        },
+      })
+    );
+    t.api.on("POST", "/v1/comma/auth/registration/complete", (request: SeenRequest) => {
+      expect(request.body).toMatchObject({
+        registration_continuation: "private_registration_continuation",
+        abuse: { provider: "turnstile", captcha_token: "local_captcha_result" },
+      });
+      expect(request.body).not.toHaveProperty("credential");
+      t.server.session = sessionA;
+      return json(200, sessionA);
+    });
+    const done = t.client.call("session.google.complete", {
+      attempt: prepared.value.attempt,
+      nonce: prepared.value.nonce,
+      providerAttemptId: prepared.value.providerAttemptId,
+      credential: "verified_provider_token",
+    });
+    await t.time.pass(20);
+    expect(t.record().kind).toBe("authenticating");
+    expect(t.host.locks.active).toBe(0);
+    const attempt = t.shown().attempt!;
+    expect(attempt.captcha?.challengeId).toBe("abuse_web_registration");
+    expect(JSON.stringify(attempt)).not.toContain("private_");
+    expect(t.rawRecord()).not.toContain("private_");
+    await t.ask("session.captcha.answer", {
+      attempt: attempt.ref,
+      challengeId: "abuse_web_registration",
+      token: "local_captcha_result",
+    });
+    expect(await done).toMatchObject({ ok: true, value: { status: "signed_in" } });
+    expect(t.record().kind).toBe("stable");
+    expect(t.api.seen("POST", "/v1/comma/auth/google")).toHaveLength(1);
+    await t.core.close();
+  });
+});

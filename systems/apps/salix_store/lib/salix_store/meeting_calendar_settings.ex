@@ -23,26 +23,25 @@ defmodule SalixStore.MeetingCalendarSettings do
     end
   end
 
-  # Only enabled enrollments and explicit overrides of the bounded deployment
-  # defaults are loaded. Disabled historical settings do not grow a worker pass.
-  def list(default_group_ids, limit) when limit in 1..100 do
+  # Only enabled enrollments are loaded. Disabled historical settings do not
+  # grow a worker pass.
+  def list(limit) when limit in 1..100 do
     rows =
       Repo.all(
         from(r in Row,
-          where: r.enabled == true or r.group_id in ^default_group_ids,
+          where: r.enabled == true,
           order_by: r.group_id,
-          limit: ^(limit + length(default_group_ids) + 1)
+          limit: ^(limit + 1)
         )
       )
 
-    if Enum.count(rows, & &1.enabled) <= limit,
+    if length(rows) <= limit,
       do: {:ok, Enum.map(rows, &record/1)},
       else: {:error, :meeting_calendar_capacity_exceeded}
   end
 
   # Serialize admission against the existing worker's total work budget.
-  # The caller validates the combined saved settings and deployment defaults
-  # inside this transaction. No provider requests belong in this callback.
+  # The caller validates the combined saved settings inside this transaction. No provider requests belong in this callback.
   def put(group_id, tenant_id, configuration, validate) do
     Repo.transaction(fn ->
       Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_xact_lock(726191, 1)", [])

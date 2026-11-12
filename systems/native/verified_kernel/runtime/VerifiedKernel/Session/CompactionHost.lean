@@ -45,10 +45,14 @@ def minWindow : Int := 4096
 def reasonMaxBytes : Nat := 2048
 def truncationSuffix : String := "...[truncated]"
 
-/-- Willow's compaction instruction, verbatim. -/
+/-- Willow's compaction instruction, plus the questions still open: a short
+answer such as `1` or `yes` that comes after compaction names only an option
+of a question the summary keeps. -/
 def instruction : String :=
   "Summarize the conversation so far. Preserve key facts, decisions, " ++
   "file paths, tool results, and any state needed to continue working. " ++
+  "Quote verbatim every question still waiting for an answer, with its " ++
+  "conversation and each of its numbered or named options. " ++
   "Output only the summary, wrapped in a single " ++
   "<compaction-summary>...</compaction-summary> block. Do not call any " ++
   "tools; respond with the tagged summary text only."
@@ -177,13 +181,14 @@ earliest boundary that must reach a model round verbatim. -/
 def dropUnfinished (state : Term) (messages : List Term) : KernelM (List Term) := do
   let start ← CompactionQuery.unfinishedActivationStartId state (list messages)
   if start == nil then return messages
-  let rec keep : List Term → KernelM (List Term)
-    | [] => pure []
+  let rec keep (kept : List Term) : List Term → KernelM (List Term)
+    | [] => pure kept.reverse
     | message :: rest => do
       if ← greater start (CompactionQuery.compactionMessageId message) then
-        return message :: (← keep rest)
-      return []
-  keep messages
+        keep (message :: kept) rest
+      else
+        return kept.reverse
+  keep [] messages
 
 private def sanitize (messages : List Term) : KernelM (List Term) := do
   asList (← Presentation.sanitizeContext messages)

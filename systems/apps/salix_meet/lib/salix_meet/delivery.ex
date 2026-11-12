@@ -22,6 +22,7 @@ defmodule SalixMeet.Delivery do
   @status_refresh_retry_ms 5_000
   @summary_derivation_version 2
   @summary_derivation_kind "meeting_summary"
+  @max_participants 100
   @duplicate_slack_error "duplicate Slack thread meeting; canonical owner retained"
 
   @delivery_telemetry_outcomes %{
@@ -101,6 +102,7 @@ defmodule SalixMeet.Delivery do
         fail_activation(meeting_id, claim, :invalid_meeting_state)
 
       {:error, {:not_terminal, doc}} ->
+        SalixMeet.LarkBot.resume(meeting_id, doc)
         watchdog_check(meeting_id, doc, opts)
 
       {:error, :not_claimable} ->
@@ -628,6 +630,8 @@ defmodule SalixMeet.Delivery do
 
   defp publish_after_attribution_gate_with_refresh(meeting_id, state, summary, claim) do
     with :ok <- Store.check_delivery_claim(meeting_id, claim),
+         # A Feishu/Lark meeting's own Minutes and AI notes go with the minutes.
+         :ok <- SalixMeet.LarkBot.collect_links(meeting_id, state),
          {:ok, meeting_agent} <-
            Runtime.status_for_group(state["tenant_id"], state["group_id"]),
          {:ok, _result} <-
@@ -747,6 +751,15 @@ defmodule SalixMeet.Delivery do
     do: is_binary(reason) and String.contains?(reason, "connect disabled")
 
   defp fail_claimed_terminal(meeting_id, claim, failure_kind, reason) do
+    with {:ok, %{"state" => state}, _} <- Store.get(meeting_id),
+         :ok <- SalixMeet.MeetingTaskCompletion.finish(state) do
+      do_fail_claimed_terminal(meeting_id, claim, failure_kind, reason)
+    else
+      {:error, _} -> :failed
+    end
+  end
+
+  defp do_fail_claimed_terminal(meeting_id, claim, failure_kind, reason) do
     case Store.fail_delivery_terminal(
            meeting_id,
            claim,
@@ -909,6 +922,7 @@ defmodule SalixMeet.Delivery do
       |> maybe_put_dual_source_context(version, captions, asr)
       |> put_calibration_metadata(context["calibration"])
       |> Map.put("duration_seconds", duration_seconds)
+      |> Map.put("participants", participant_names(context["participants"]))
       |> put_valid_summary_fingerprint(context["summary_fingerprint"])
 
     {:ok, normalized}
@@ -942,6 +956,17 @@ defmodule SalixMeet.Delivery do
   end
 
   defp put_calibration_metadata(context, _metadata), do: context
+
+  defp participant_names(names) when is_list(names) do
+    names
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&(&1 |> String.trim() |> String.slice(0, 100)))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(@max_participants)
+  end
+
+  defp participant_names(_names), do: []
 
   defp text_or_empty(value) when is_binary(value), do: value
   defp text_or_empty(_value), do: ""
@@ -1477,7 +1502,15 @@ defmodule SalixMeet.Delivery do
     state = Map.put(state, "meeting_id", meeting_id)
     summary = state["summary"]
 
-    case safe_activation_handoff(state, summary) do
+    # Subscribers get meeting.completed whether or not the Router handoff runs.
+    # It goes first, so its failure never repeats a handoff that succeeded; a
+    # retry repeats only the event, which its event_id makes a duplicate.
+    result =
+      with :ok <- SalixMeet.MeetingTaskCompletion.finish(state),
+           :ok <- SalixMeet.Ports.Events.meeting_completed(state),
+           do: safe_activation_handoff(state, summary)
+
+    case result do
       :ok ->
         complete_activation(meeting_id, claim, :queued, :activated)
 

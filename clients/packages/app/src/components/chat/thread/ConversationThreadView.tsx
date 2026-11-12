@@ -1,6 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { ChatPanelVideoSurfaceProvider } from "@comma/ui/components/chat-panel";
 import { useRef } from "react";
+import { hidesRouterIdentity } from "./replies/messageRelationships";
 import { MessageReplyLines } from "./replies/MessageReplyLines";
 import { ReplyThreadOverlay } from "./replies/ReplyThreadOverlay";
 import { EmptyThread } from "./EmptyThread";
@@ -44,6 +45,13 @@ export function ConversationThreadView({
   const messagesApi = useCommaMessages();
   const displayOnly = contentMode === "display-only";
   const columnRef = useRef<HTMLDivElement>(null);
+  // Where a reply line runs down through the New timestamp's row, so its left
+  // rule starts past it: at the bubbles' text inset beside a Router in Home, in
+  // the avatar gutter otherwise (MessageReplyLines).
+  const newTimestampLine =
+    newTimestampId === undefined
+      ? undefined
+      : replies.relationships.crossedByLine.get(newTimestampId);
   const turns: ThreadTurnsProps = {
     afterMessages,
     anchoredTailsFor: layout.anchoredTailsFor,
@@ -51,6 +59,13 @@ export function ConversationThreadView({
     historyBoundaryMessageId,
     lastTurnKey: layout.lastTurnKey,
     newTimestampId,
+    newTimestampReplyLine:
+      newTimestampLine === undefined
+        ? undefined
+        : newTimestampLine.role !== "user" &&
+            hidesRouterIdentity(newTimestampLine.actorRole, defaultAssistantActorRole)
+          ? "bubble"
+          : "gutter",
     outgoing: layout.outgoing,
     replyChainState: replies.replyChainState,
     responseFeedback,
@@ -91,7 +106,7 @@ export function ConversationThreadView({
               >
                 <div
                   className="comma-chat-thread"
-                  data-content-mode={contentMode}
+                  data-display-only={displayOnly ? "" : undefined}
                   data-comma-hidden-older-count={turnWindow.hiddenOlderCount}
                   data-comma-turn-window-start={turnWindow.visibleStart}
                   data-empty={isEmpty ? "true" : undefined}
@@ -109,7 +124,7 @@ export function ConversationThreadView({
                       replies={replies.relationships.replies}
                       chainState={replies.replyChainState}
                     />
-                    {turnWindow.hasOlder ? (
+                    {turnWindow.olderAbove ? (
                       <div aria-hidden className="h-0" data-comma-load-older="" />
                     ) : null}
                     {isEmpty ? <EmptyThread /> : null}

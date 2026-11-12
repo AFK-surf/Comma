@@ -8,7 +8,7 @@
 // - the cloud's names (`deps.names`): those of the members who asked since the station started (`Store.names`);
 // - the config's connects are read from config.json in the data directory for the names
 //   agents go by; none when it has none.
-// Words are in the language the request asks in (`stillfail-lang`, else Accept-Language, else Chinese).
+// Words are in the language the request asks in (`comma-station-lang`, else Accept-Language, else Chinese).
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Viewer } from "../mesh/credential.ts";
@@ -17,7 +17,7 @@ import * as store from "./store.ts";
 
 export { makeStore, openStore } from "./store.ts";
 import { knownChannel, knownPerson, slackCreator, teamName } from "./slack-known.ts";
-import { type AuthorKind, type EntryRow, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, STILLFAIL_SURFACE, takeChars } from "./store.ts";
+import { type AuthorKind, type EntryRow, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, COMMA_STATION_SURFACE, takeChars } from "./store.ts";
 
 /// How much of a chat's last message the sidebar gets.
 const LAST_CHARS = 200;
@@ -134,7 +134,7 @@ export function titleOf(thread: ThreadRow, firstText: string | null, channelName
   if (first !== undefined) return first;
   const name = channelName === null ? "" : trim(channelName);
   if (name !== "") return `#${name}`;
-  if (thread.surface !== STILLFAIL_SURFACE && thread.channel.startsWith("D")) return tr("station.chat.directMessage");
+  if (thread.surface !== COMMA_STATION_SURFACE && thread.channel.startsWith("D")) return tr("station.chat.directMessage");
   return noWords();
 }
 
@@ -221,7 +221,7 @@ export function authorNames(api: Api, thread: number): Names {
     const key = `${kind}:${author}`;
     if (names.has(key)) return names.get(key)!;
     let name: string | null;
-    if (kind === "ember") name = "still.fail";
+    if (kind === "ember") name = "Comma";
     else if (kind === "agent") {
       // An agent goes by the name of the connect it posts through (on the page, of the connect that started it).
       const session = store.getSession(api.store, author);
@@ -229,7 +229,7 @@ export function authorNames(api: Api, thread: number): Names {
       const connect = via !== undefined && via !== INTERNAL_CONNECT ? via : (session?.connect ?? null);
       const c = api.connects.find((c) => c.id === connect);
       name = c ? c.name : (session?.title ?? null);
-    } else if (th !== null && th.surface === STILLFAIL_SURFACE) {
+    } else if (th !== null && th.surface === COMMA_STATION_SURFACE) {
       name = author === "local" ? tr("station.author.admin") : (api.store.names.get(author) ?? author);
     } else {
       // A Slack person: by the name their connect's Slack gives them, as far as known.
@@ -369,7 +369,7 @@ export function chats(station: Store, viewer: Viewer, archived: boolean): Json[]
   const chatted = new Set<string>();
   for (const t of threads) {
     for (const m of t.sessions) {
-      if (t.thread.surface === STILLFAIL_SURFACE) {
+      if (t.thread.surface === COMMA_STATION_SURFACE) {
         if (listed(t)) chatted.add(m.session);
       } else if (!origins.has(m.session)) {
         origins.set(m.session, t);
@@ -390,7 +390,7 @@ export function chats(station: Store, viewer: Viewer, archived: boolean): Json[]
       answered.set(a.question.thread, list);
     }
   }
-  for (const t of threads.filter((t) => t.thread.surface === STILLFAIL_SURFACE && listed(t) && inChat(t).length > 0)) {
+  for (const t of threads.filter((t) => t.thread.surface === COMMA_STATION_SURFACE && listed(t) && inChat(t).length > 0)) {
     const from = t.sessions.map((m) => origins.get(m.session)).find((o) => o !== undefined) ?? null;
     const agents = inChat(t).map(agent);
     const origin_ = from === null ? null : origin(from);

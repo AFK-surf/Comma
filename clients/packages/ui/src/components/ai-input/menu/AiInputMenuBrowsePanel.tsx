@@ -3,6 +3,7 @@ import {
   startTransition,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,7 +11,7 @@ import {
   type KeyboardEvent,
   type UIEvent,
 } from "react";
-import { ChevronLeftSmallIcon } from "../../icons";
+import { ChevronLeftSmallIcon, ChevronRightSmallIcon } from "../../icons";
 import { InputBase } from "../../input/InputBase";
 import { menuFilterFieldClasses } from "../../menu/styles";
 import { ScrollArea, ScrollAreaLoadMore } from "../../scroll-area";
@@ -28,6 +29,8 @@ import {
 } from "../richText";
 import {
   AI_INPUT_MENU_MAX_HEIGHT_PX,
+  aiInputMenuPanel,
+  aiInputMenuItemChevron,
   aiInputMenuBrowse,
   aiInputMenuBrowseBack,
   aiInputMenuBrowseBody,
@@ -49,6 +52,20 @@ import {
  * light and the rest arrives as the reader scrolls toward it.
  */
 const RENDER_CHUNK = 24;
+const CHOICES_WIDTH = 220;
+/** The choices keep this far from the edge of where they can show (px). */
+const CHOICES_EDGE_MARGIN = 8;
+/**
+ * With no room beside the panel the choices cover it whole, border on
+ * border, and keep its bottom edge: taller than the panel, they rise above it.
+ */
+const CHOICES_OVER_PANEL = {
+  bottom: "calc(-1 * var(--border-width-default))",
+  left: "calc(-1 * var(--border-width-default))",
+  width: "calc(100% + 2 * var(--border-width-default))",
+  maxWidth: "none",
+  minHeight: "calc(100% + 2 * var(--border-width-default))",
+};
 /** Distance from the bottom edge (px) at which the next chunk is committed. */
 const RENDER_AHEAD_PX = 96;
 
@@ -57,6 +74,8 @@ export interface AiInputMenuBrowsePanelProps {
   browse: AiInputMenuBrowse;
   /** False for the exit ghost, which must never take focus. */
   focusOnMount: boolean;
+  /** Choices opened beside a row: the pointer can pick them unfocused. */
+  nested?: boolean;
   /** The group behind the panel; its status is the source's. */
   group: AiInputMenuGroup;
   /** The trigger query typed so far, carried into the search. */
@@ -83,6 +102,7 @@ export const AiInputMenuBrowsePanel = ({
   focusOnMount,
   group,
   initialQuery,
+  nested = false,
   listId,
   onBack,
   onBlur,
@@ -92,6 +112,79 @@ export const AiInputMenuBrowsePanel = ({
 }: AiInputMenuBrowsePanelProps) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const [submenu, setSubmenu] = useState<{
+    item: AiInputMenuItem;
+    top: number;
+    left: boolean;
+    overlay: boolean;
+    keyboard: boolean;
+  } | null>(null);
+  const openSubmenu = (item: AiInputMenuItem, keyboard = false) => {
+    if (!item.browse) {
+      setSubmenu(null);
+      return;
+    }
+    const row = document.getElementById(optionId(item.id) ?? "");
+    const root = rootRef.current;
+    if (!row || !root) return;
+    const bounds = root.getBoundingClientRect();
+    const visible = visibleBounds(root);
+    if (!keyboard && submenuRef.current?.contains(document.activeElement)) {
+      inputRef.current?.focus();
+    }
+    // Beside the panel where there is room: after it, else before it, else over it.
+    const left = bounds.right + CHOICES_WIDTH > visible.right;
+    setSubmenu({
+      item,
+      top: Math.max(0, row.getBoundingClientRect().top - bounds.top),
+      left,
+      overlay: left && bounds.left - CHOICES_WIDTH < visible.left,
+      keyboard,
+    });
+  };
+  const [submenuTop, setSubmenuTop] = useState(0);
+  useLayoutEffect(() => {
+    const panel = submenuRef.current;
+    const root = rootRef.current;
+    if (!submenu || submenu.overlay || !panel || !root) return;
+    // Near the bottom of where they can show, the choices rise past the
+    // panel's own top, as far as the top edge. They grow as their rows arrive.
+    const place = () => {
+      const rootTop = root.getBoundingClientRect().top;
+      const visible = visibleBounds(root);
+      const bottom =
+        visible.bottom - CHOICES_EDGE_MARGIN - rootTop - panel.offsetHeight;
+      setSubmenuTop(
+        Math.max(
+          visible.top + CHOICES_EDGE_MARGIN - rootTop,
+          Math.min(submenu.top, bottom)
+        )
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [submenu]);
+  // The pointer's previous position over the rows. A move from there that
+  // heads into the open choices crosses other rows on its way; it must not
+  // swap the choices for theirs.
+  const pointerRef = useRef<Point | null>(null);
+  const headsIntoSubmenu = (from: Point | null, x: number, y: number) => {
+    const panel = submenuRef.current;
+    if (!from || !panel || !submenu || submenu.overlay) return false;
+    const bounds = panel.getBoundingClientRect();
+    const edge = submenu.left ? bounds.right : bounds.left;
+    return insideTriangle(
+      { x, y },
+      from,
+      { x: edge, y: bounds.top },
+      { x: edge, y: bounds.bottom }
+    );
+  };
+  const pickItem = (item: AiInputMenuItem) =>
+    item.browse ? openSubmenu(item, true) : onSelectItem(item);
   const [query, setQuery] = useState(initialQuery);
   // Filtering a whole source is deferred: keystrokes land in the field at
   // once, the rows follow, and the gap between the two — real only for a
@@ -100,10 +193,10 @@ export const AiInputMenuBrowsePanel = ({
   const searching = deferredQuery !== query;
   const queryChanged = browse.onQueryChange;
   useEffect(() => {
-    if (!focusOnMount) return;
+    if (!focusOnMount && !nested) return;
     queryChanged?.(query);
     return () => queryChanged?.(null);
-  }, [focusOnMount, query, queryChanged]);
+  }, [focusOnMount, nested, query, queryChanged]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [renderLimit, setRenderLimit] = useState(RENDER_CHUNK);
   const [committing, setCommitting] = useState(false);
@@ -168,18 +261,19 @@ export const AiInputMenuBrowsePanel = ({
   );
 
   useEffect(() => {
-    if (focusOnMount) inputRef.current?.focus();
+    if (focusOnMount) inputRef.current?.focus({ preventScroll: true });
   }, [focusOnMount]);
 
   const handlePointerMove = useAiInputMenuNavigation(
     optionId(items[activeIndex]?.id),
     items,
     setActiveIndex,
-    focusOnMount
+    focusOnMount || nested
   );
 
   const handleScroll = (event: UIEvent<HTMLDivElement>) => {
     if (committing) return;
+    setSubmenu(null);
     const viewport = event.currentTarget;
     const remaining =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -199,6 +293,16 @@ export const AiInputMenuBrowsePanel = ({
     const input = event.currentTarget;
     if (isImeKeyEvent(event.nativeEvent)) return;
 
+    if (
+      event.key === "ArrowRight" &&
+      items[activeIndex]?.browse &&
+      input.selectionStart === input.value.length &&
+      input.selectionEnd === input.value.length
+    ) {
+      event.preventDefault();
+      openSubmenu(items[activeIndex]!, true);
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (
@@ -211,6 +315,7 @@ export const AiInputMenuBrowsePanel = ({
       }
       if (items.length === 0) return;
       const delta = event.key === "ArrowDown" ? 1 : -1;
+      setSubmenu(null);
       setActiveIndex((current) => (current + delta + items.length) % items.length);
       return;
     }
@@ -218,7 +323,7 @@ export const AiInputMenuBrowsePanel = ({
     if (event.key === "Enter" || event.key === "Tab") {
       event.preventDefault();
       const item = items[activeIndex] ?? items[0];
-      if (item) onSelectItem(item);
+      if (item) pickItem(item);
       return;
     }
 
@@ -244,11 +349,15 @@ export const AiInputMenuBrowsePanel = ({
   };
 
   const loading = (browse.status ?? group.status) === "loading";
+  // The open row as it is now: what stands behind it can arrive while it is open.
+  const submenuBrowse =
+    submenu &&
+    (items.find((item) => item.id === submenu.item.id) ?? submenu.item).browse;
   const activeOptionId = optionId(items[activeIndex]?.id);
 
   return (
     <div
-      className={aiInputMenuBrowse}
+      className={`${aiInputMenuBrowse} relative`}
       data-testid="ai-input-menu-browse"
       ref={rootRef}
       style={
@@ -279,7 +388,10 @@ export const AiInputMenuBrowsePanel = ({
           </button>
         }
         onBlur={handleBlur}
-        onChange={(event) => setQuery(event.currentTarget.value)}
+        onChange={(event) => {
+          setSubmenu(null);
+          setQuery(event.currentTarget.value);
+        }}
         onKeyDown={handleKeyDown}
         placeholder={browse.searchPlaceholder}
         ref={inputRef}
@@ -332,11 +444,11 @@ export const AiInputMenuBrowsePanel = ({
           </div>
         ) : (
           <ScrollArea
-            className="min-h-0 w-full flex-1"
+            className="flex min-h-0 w-full flex-1 flex-col"
             contentClassName={aiInputMenuScrollContent}
             onScroll={handleScroll}
             orientation="vertical"
-            viewportClassName="h-full"
+            viewportClassName="min-h-0 flex-1"
             viewportProps={{
               "aria-label": browse.title,
               id: listId,
@@ -360,9 +472,19 @@ export const AiInputMenuBrowsePanel = ({
                       key={item.id}
                       onMouseDown={(event) => {
                         event.preventDefault();
-                        onSelectItem(item);
+                        pickItem(item);
                       }}
-                      onPointerMove={(event) => handlePointerMove(event, itemIndex)}
+                      onPointerMove={(event) => {
+                        const from = pointerRef.current;
+                        const { clientX: x, clientY: y } = event;
+                        pointerRef.current = { x, y };
+                        if (submenu?.item.id === item.id) {
+                          handlePointerMove(event, itemIndex);
+                          return;
+                        }
+                        if (headsIntoSubmenu(from, x, y)) return;
+                        if (handlePointerMove(event, itemIndex)) openSubmenu(item);
+                      }}
                       role="option"
                       type="button"
                     >
@@ -384,6 +506,11 @@ export const AiInputMenuBrowsePanel = ({
                       >
                         {item.label}
                       </span>
+                      {item.browse ? (
+                        <span aria-hidden className={aiInputMenuItemChevron}>
+                          <ChevronRightSmallIcon />
+                        </span>
+                      ) : null}
                       {item.description ? (
                         <span
                           className={
@@ -415,6 +542,88 @@ export const AiInputMenuBrowsePanel = ({
           </ScrollArea>
         )}
       </div>
+      {submenuBrowse && submenu ? (
+        <div
+          className={aiInputMenuPanel}
+          ref={submenuRef}
+          style={
+            submenu.overlay
+              ? CHOICES_OVER_PANEL
+              : {
+                  top: submenuTop,
+                  width: CHOICES_WIDTH,
+                  ...(submenu.left ? { right: "100%" } : { left: "100%" }),
+                }
+          }
+        >
+          <AiInputMenuBrowsePanel
+            key={submenu.item.id}
+            backLabel={backLabel}
+            browse={submenuBrowse}
+            focusOnMount={submenu.keyboard}
+            nested
+            group={{ id: submenu.item.id, items: [], browse: submenuBrowse }}
+            initialQuery=""
+            listId={`${listId}-choices`}
+            onBack={() => {
+              setSubmenu(null);
+              inputRef.current?.focus();
+            }}
+            onBlur={(next) => {
+              if (!next || !rootRef.current?.contains(next)) onBlur(next);
+            }}
+            onSelectItem={onSelectItem}
+            optionId={optionId}
+            searchingLabel={searchingLabel}
+          />
+        </div>
+      ) : null}
     </div>
   );
 };
+
+/**
+ * Where a box placed against `element` can show: the window, cut down by each
+ * ancestor that clips its overflow. A pane narrower than the window clips the
+ * choices at its own edge, not the window's.
+ */
+function visibleBounds(element: HTMLElement) {
+  const visible = {
+    top: 0,
+    left: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  };
+  let position = getComputedStyle(element).position;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    // An absolutely positioned box is clipped from its containing block up:
+    // the unpositioned ancestors below that do not hold it.
+    if (position === "absolute" && style.position === "static") continue;
+    position = style.position;
+    const box = node.getBoundingClientRect();
+    if (style.overflowX !== "visible") {
+      const left = box.left + node.clientLeft;
+      visible.left = Math.max(visible.left, left);
+      visible.right = Math.min(visible.right, left + node.clientWidth);
+    }
+    if (style.overflowY !== "visible") {
+      const top = box.top + node.clientTop;
+      visible.top = Math.max(visible.top, top);
+      visible.bottom = Math.min(visible.bottom, top + node.clientHeight);
+    }
+  }
+  return visible;
+}
+
+type Point = { x: number; y: number };
+
+/** Whether `p` lies inside the triangle `a`, `b`, `c` (either winding). */
+function insideTriangle(p: Point, a: Point, b: Point, c: Point) {
+  const side = (from: Point, to: Point) =>
+    (to.x - from.x) * (p.y - from.y) - (to.y - from.y) * (p.x - from.x);
+  const ab = side(a, b);
+  const bc = side(b, c);
+  const ca = side(c, a);
+  return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
+}

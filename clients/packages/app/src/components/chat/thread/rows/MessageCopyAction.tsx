@@ -1,16 +1,12 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { CheckIcon, CopyIcon } from "@comma/ui/components/icons";
 import { Tooltip } from "@comma/ui/components/tooltip";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback } from "@comma/ui/components/toast";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { memo, useEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { copyTextToClipboard } from "../inline/linkActions";
 import { MessagePlatformBadge } from "../../MessagePlatformBadge";
-
-// Shared id so copying several messages in a row updates one toast in place
-// instead of stacking, and a failure replaces the success it invalidates.
-const COPY_TOAST_ID = "copy-feedback";
 
 export const MessageCopyAction = memo(function MessageCopyAction({
   ariaLabel,
@@ -37,22 +33,15 @@ export const MessageCopyAction = memo(function MessageCopyAction({
   );
 
   const handleCopy = async () => {
-    try {
-      await copyTextToClipboard(copyText);
-    } catch {
-      // The clipboard write used to fail silently; say so instead.
-      toast.error(messagesApi.copy_failed_title(), {
-        description: messagesApi.copy_failed_detail(),
-        id: COPY_TOAST_ID,
-        testId: "copy-feedback",
-      });
-      return;
-    }
-    toast.info(messagesApi.copy_message_title(), {
-      description: messagesApi.copy_message_detail(),
-      id: COPY_TOAST_ID,
-      testId: "copy-feedback",
-    });
+    const copiedMessage = await copyWithFeedback(
+      () => copyTextToClipboard(copyText),
+      messagesApi,
+      {
+        copied: messagesApi.copy_message_title(),
+        copiedDetail: messagesApi.copy_message_detail(),
+      }
+    );
+    if (!copiedMessage) return;
     setCopied(true);
     if (copiedTimerRef.current) {
       copiedTimerRef.current();

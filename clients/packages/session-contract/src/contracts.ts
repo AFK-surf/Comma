@@ -289,6 +289,9 @@ export const sessionOperationNameSchema = z.enum([
   "sign_out",
   "start_guest_session",
   "begin_guest_sign_up",
+  "add_account",
+  "switch_account",
+  "sign_out_account",
 ]);
 
 export const sessionOperationErrorCodeSchema = z.enum([
@@ -416,6 +419,33 @@ export const sessionOperationErrorPolicy = {
     credential_store_unreadable: waitForHostChange,
     network_unavailable: retryOperation,
     protocol_mismatch: waitForHostChange,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
+  add_account: {
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    credential_store_unreadable: waitForHostChange,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
+  switch_account: {
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    credential_store_unreadable: waitForHostChange,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
+  sign_out_account: {
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    credential_store_unreadable: waitForHostChange,
     unsupported: noRetry,
     unknown: noRetry,
   },

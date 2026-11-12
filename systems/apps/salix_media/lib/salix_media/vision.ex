@@ -6,7 +6,10 @@ defmodule SalixMedia.Vision do
   api key/env, default_prompt, and max_tokens drive an OpenAI-compatible chat
   completions request containing text + image_url content blocks. Newer OpenAI
   chat model families receive `max_completion_tokens`; legacy chat models keep
-  `max_tokens`.
+  `max_tokens`. The newer families reason before they answer and their token
+  cap covers that reasoning, so they get low reasoning effort and a larger
+  default cap: with 1024 tokens a reasoning model can spend the whole cap
+  thinking and return empty content.
 
   `generate/2` remains as the older Salix mock `/v1/vision` facade.
   """
@@ -17,6 +20,8 @@ defmodule SalixMedia.Vision do
 
   @default_prompt "Describe this image. Focus on text content, UI elements, and any actionable details. Do not speculate."
   @default_max_tokens 1024
+  @default_reasoning_max_tokens 4096
+  @default_reasoning_effort "low"
 
   @impl true
   def generate(image_url, opts \\ []) do
@@ -34,9 +39,12 @@ defmodule SalixMedia.Vision do
       Keyword.get(opts, :question) || Keyword.get(opts, :query) ||
         default_prompt(Keyword.get(opts, :config, %{}))
 
+    cfg = Keyword.get(opts, :config, %{})
+    reasoning? = SalixMedia.OpenAICompat.uses_max_completion_tokens?(provider.model)
+
     max_tokens =
-      Keyword.get(opts, :max_tokens) ||
-        config_value(Keyword.get(opts, :config, %{}), "max_tokens") || @default_max_tokens
+      Keyword.get(opts, :max_tokens) || config_value(cfg, "max_tokens") ||
+        if(reasoning?, do: @default_reasoning_max_tokens, else: @default_max_tokens)
 
     body =
       %{
@@ -52,6 +60,10 @@ defmodule SalixMedia.Vision do
         ]
       }
       |> SalixMedia.OpenAICompat.put_chat_max_tokens(provider.model, max_tokens)
+      |> put_if(
+        "reasoning_effort",
+        reasoning? && (config_value(cfg, "reasoning_effort") || @default_reasoning_effort)
+      )
 
     with {:ok, resp} <-
            HTTP.post(String.trim_trailing(provider.base_url, "/") <> "/chat/completions", body,
@@ -111,5 +123,6 @@ defmodule SalixMedia.Vision do
   defp normalize(map) when is_map(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
 
   defp put_if(map, _k, nil), do: map
+  defp put_if(map, _k, false), do: map
   defp put_if(map, k, v), do: Map.put(map, k, v)
 end

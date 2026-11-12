@@ -119,3 +119,40 @@ fn an_operation_on_no_handle_fails_and_is_answered() {
     mesh.call(2, "mesh.nothing".into(), b"{}", None);
     assert_eq!(answers.to(2).1, "no operation mesh.nothing");
 }
+
+#[test]
+fn a_stream_stopped_is_told_to_the_station_whose_writes_then_end() {
+    let station_runtime = tokio::runtime::Runtime::new().unwrap();
+    let endpoint = station_runtime.block_on(async {
+        Endpoint::builder(Minimal).secret_key(SecretKey::from_bytes(&[8; 32])).alpns(vec![ALPN.to_vec()]).relay_mode(RelayMode::Disabled).bind().await.unwrap()
+    });
+    let station = hex::encode(endpoint.id().as_bytes());
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], endpoint.bound_sockets().iter().find(|a| a.is_ipv4()).unwrap().port()));
+    // The station answers each stream with more than the phone reads, and says what stopped it.
+    let (told, stopped) = std::sync::mpsc::channel();
+    station_runtime.spawn(async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let _ = recv.read_to_end(1 << 20).await;
+        send.write_all(b"first").await.unwrap();
+        let _ = told.send(send.stopped().await.ok().flatten().map(|code| code.into_inner()));
+        drop(endpoint);
+    });
+    let answers = Answers::default();
+    let mesh = Mesh::start(complete, &answers as *const Answers as *mut c_void).unwrap();
+    let call = |id: u64, op: &str, args: Value, bytes: Option<&[u8]>| mesh.call(id, op.into(), args.to_string().as_bytes(), bytes.map(<[u8]>::to_vec));
+    call(1, "mesh.bind", json!({ "relayUrls": [], "salixRelay": false }), Some(&[2; 32]));
+    let endpoint = answers.to(1).0["id"].as_u64().unwrap();
+    call(2, "mesh.connect", json!({ "id": endpoint, "addr": { "id": station, "ips": [at.to_string()] } }), Some(ALPN));
+    let conn = answers.to(2).0["id"].as_u64().unwrap();
+    call(3, "mesh.openBi", json!({ "id": conn }), None);
+    let stream = answers.to(3).0["id"].as_u64().unwrap();
+    call(4, "mesh.finish", json!({ "id": stream }), None);
+    assert_eq!(answers.to(4).1, "");
+    call(5, "mesh.read", json!({ "id": stream }), None);
+    assert_eq!(answers.to(5).2.as_deref(), Some(&b"first"[..]));
+    call(6, "mesh.stop", json!({ "id": stream, "code": 5 }), None);
+    assert_eq!(answers.to(6).1, "");
+    assert_eq!(stopped.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), Some(5));
+    drop(mesh);
+}

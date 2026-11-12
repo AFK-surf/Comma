@@ -16,8 +16,10 @@ import {
   productInboxErrorMessage,
   useProductInboxProjection,
 } from "../../product-inbox";
+import { taskLoopStop } from "./taskLoopLabels";
 import { taskOriginKey, type TaskOriginKey } from "./taskOrigin";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
+import { useHeldWhileDisabled } from "../useHeldWhileDisabled";
 
 /** Where a Task a station hosts runs (a station's own chat, listed from the Task index). */
 export interface TaskHost {
@@ -36,8 +38,14 @@ export type TaskViewModel = TaskWorkspaceTask & {
   host?: TaskHost | undefined;
   labels?: readonly string[] | undefined;
   clientPlatform?: string | undefined;
+  /** Set on a Task accepted from another person's request: who sent it. */
+  requestedBy?: ProductInboxItem["requestedBy"];
   /** Set on a Loop Task only: its cards wear the Loops chip. */
   loop?: TaskLoop | undefined;
+  /** When the Task's latest run started (Unix milliseconds); absent for a Task from before it was kept. */
+  runStartedAt?: number | undefined;
+  /** When the Task was created (Unix milliseconds); absent where its server did not say. */
+  createdAt?: number | undefined;
 };
 
 export interface UseWorkspaceTasksOptions {
@@ -103,7 +111,7 @@ export function useWorkspaceTasks({
     const list = result.items
       .filter((item) => item.kind === "agent_task" && item.status !== "archived")
       .map((item) => {
-        const fresh = toTaskViewModel(item);
+        const fresh = toTaskViewModel(item, messages);
         fresh.archiveVersion = item.archiveVersion;
         // One the core says cannot be archived from here (a Task a station hosts) offers no archive.
         if (!item.unsupported?.includes("archive"))
@@ -192,15 +200,13 @@ export function useWorkspaceTasks({
   };
 }
 
-/** `value` while `enabled`; while not, the value it had when last enabled. */
-function useHeldWhileDisabled<T>(enabled: boolean, value: T): T {
-  const held = useRef(value);
-  if (enabled) held.current = value;
-  return held.current;
-}
-
-function toTaskViewModel(item: ProductInboxItem): TaskViewModel {
+function toTaskViewModel(
+  item: ProductInboxItem,
+  messages: ReturnType<typeof useCommaMessages>
+): TaskViewModel {
   const host = item.host;
+  const statusBucket = taskStatusBucket(item.status);
+  const loopStop = taskLoopStop(statusBucket, item.loop, messages);
   return {
     activityStatus:
       item.status === "active" && item.meetingPhase
@@ -213,11 +219,15 @@ function toTaskViewModel(item: ProductInboxItem): TaskViewModel {
     origin: taskOriginKey(item.origin),
     labels: item.labels,
     clientPlatform: item.clientPlatform,
+    ...(item.requestedBy ? { requestedBy: item.requestedBy } : {}),
     loop: item.loop,
-    statusBucket: taskStatusBucket(item.status),
+    ...(loopStop === undefined ? {} : { loopStop }),
+    statusBucket,
     title: item.title,
     updatedAt: item.updatedAt,
     workspaceId: item.workspaceId,
+    ...(item.runStartedAt === undefined ? {} : { runStartedAt: item.runStartedAt }),
+    ...(item.createdAt === undefined ? {} : { createdAt: item.createdAt }),
     // A Task a station hosts: where it runs, and what runs it.
     ...(host ? { host: toTaskHost(host) } : {}),
     ...(host?.runtime === "codex" || host?.runtime === "claude"
@@ -243,13 +253,20 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
     a.groupId === b.groupId &&
     a.origin === b.origin &&
     a.clientPlatform === b.clientPlatform &&
+    a.requestedBy?.id === b.requestedBy?.id &&
+    a.requestedBy?.name === b.requestedBy?.name &&
+    a.requestedBy?.avatar?.revision === b.requestedBy?.avatar?.revision &&
     (a.labels === b.labels ||
       (a.labels !== undefined &&
         b.labels !== undefined &&
         a.labels.length === b.labels.length &&
         a.labels.every((label, index) => label === b.labels?.[index]))) &&
     sameLoop(a.loop, b.loop) &&
+    a.runStartedAt === b.runStartedAt &&
+    a.createdAt === b.createdAt &&
     a.statusBucket === b.statusBucket &&
+    a.loopStop?.text === b.loopStop?.text &&
+    a.loopStop?.failed === b.loopStop?.failed &&
     a.title === b.title &&
     a.updatedAt === b.updatedAt &&
     a.workspaceId === b.workspaceId &&

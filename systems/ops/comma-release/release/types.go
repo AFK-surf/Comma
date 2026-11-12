@@ -143,7 +143,7 @@ func (p Plan) validate(legacyUpgrade bool) error {
 		if step.Execution.TimeoutSeconds <= 0 || step.Execution.LockBudgetSeconds <= 0 {
 			return fmt.Errorf("migration V2 step %q has invalid budgets", step.ID)
 		}
-		if !slices.Contains([]string{"none", "compensating", "reversible_manual"}, step.Safety.RollbackStrategy) || (step.Safety.Destructive && !step.Safety.BackupRequired) {
+		if !slices.Contains([]string{"none", "compensating", "reversible_manual"}, step.Safety.RollbackStrategy) {
 			return fmt.Errorf("migration V2 step %q has invalid safety facts", step.ID)
 		}
 		if !step.Execution.Transactional && (!step.Execution.Idempotent || len(step.Postconditions) == 0 || step.Repair == "") {

@@ -6,7 +6,12 @@ private struct SendableInput: @unchecked Sendable {
     init(_ value: [String: Any]) { self.value = value }
 }
 
-/// What the iPhone's Sign in with Apple sheet gave: an identity token bound to the attempt's nonce, or why none.
+/// A Google ID token bound to the server's login attempt nonce.
+protocol GoogleIdentityTokens: Sendable {
+    func request(clientId: String, nonce: String) async throws -> String
+}
+
+/// An Apple identity token bound to the server's login attempt nonce.
 protocol AppleIdentityTokens: Sendable {
     /// Shows the sheet for the server's client and nonce; the identity token once the person chose.
     func request(clientId: String, nonce: String) async throws -> String
@@ -21,7 +26,7 @@ protocol AppleIdentityTokens: Sendable {
  *   redirect.
  * - Auth requests (`auth.fetch`) carry the credential the core names by reference; a bearer in the answer stays in
  *   `custody`.
- * - The session ports (`session.*`) are `custody`'s and `apple`'s.
+ * - Session ports (`session.*`) use `custody`, native sign-in, and bounded abuse verification.
  * - The databases (`sql.*`) are SQLite files in `dataDirectory`, used at once on the core's thread.
  */
 final class CoreHost: CoreHostOps, @unchecked Sendable {
@@ -37,6 +42,8 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     /// Files picks left with the app, which a request may send as its body (`localFileRef`).
     let localFiles: HostLocalFiles?
     private let apple: any AppleIdentityTokens
+    private let abuseProof = AbuseProof()
+    private let google: any GoogleIdentityTokens
     private let network: StreamSession
     private let deviceRecords: DeviceSetupRecords
     @MainActor private var deviceBluetooth: DeviceBluetooth?
@@ -57,12 +64,13 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     private var downloadLeases: [Int: LeasedBearer] = [:]
 
     init(custody: SessionCustody, dataDirectory: URL, downloads: HostDownloads, localFiles: HostLocalFiles? = nil,
-         apple: any AppleIdentityTokens, configuration: URLSessionConfiguration = .default,
+         apple: any AppleIdentityTokens, google: any GoogleIdentityTokens = GoogleSignInSheet(), configuration: URLSessionConfiguration = .default,
          networkFailure: @escaping @Sendable (Int?) -> Void = { _ in }) {
         self.custody = custody
         self.downloads = downloads
         self.localFiles = localFiles
         self.apple = apple
+        self.google = google
         self.networkFailure = networkFailure
         self.deviceRecords = DeviceSetupRecords(directory: dataDirectory)
         self.sql = HostSQL(directory: dataDirectory)
@@ -209,6 +217,32 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
                 let value = try self.custody.change(input["change"] as? [String: Any] ?? [:])
                 reply.ok(["value": value ?? NSNull()])
             }
+        case "session.sha256":
+            run(id, reply, box) { input in
+                guard let inputs = input["inputs"] as? [String], inputs.count <= 256,
+                      inputs.allSatisfy({ $0.utf8.count <= 4096 }) else { throw HostFailure(message: "Invalid digest batch.") }
+                reply.ok(["digests": inputs.map { AbuseProof.digest($0).base64EncodedString() }])
+            }
+        case "session.abuseProof":
+            run(id, reply, box) { input in
+                let value = try await self.abuseProof.request(input, audience: self.custody.audience)
+                if !Task.isCancelled { reply.ok(value) }
+            }
+        case "session.captcha":
+            run(id, reply, box) { input in
+                let token = try await CaptchaSheet().request(url: try Self.string(input, "url"),
+                    challengeId: try Self.string(input, "challengeId"), audience: self.custody.audience)
+                if !Task.isCancelled { reply.ok(["token": token as Any? ?? NSNull()]) }
+            }
+        case "session.google":
+            run(id, reply, box) { input in
+                do {
+                    let token = try await self.google.request(clientId: try Self.string(input, "clientId"), nonce: try Self.string(input, "nonce"))
+                    reply.ok(["idToken": token, "grant": ""])
+                } catch is CancellationError {
+                    if !Task.isCancelled { reply.fail("cancelled") }
+                }
+            }
         case "session.apple":
             run(id, reply, box) { input in
                 let token = try await self.apple.request(clientId: try Self.string(input, "clientId"), nonce: try Self.string(input, "nonce"))
@@ -222,15 +256,16 @@ final class CoreHost: CoreHostOps, @unchecked Sendable {
     /// Runs `body` for operation `id`, which `abort` cancels; a failure answers the operation.
     private func run(_ id: UInt64, _ reply: CoreReply, _ input: SendableInput,
                      _ body: @escaping @Sendable (_ input: [String: Any]) async throws -> Void) {
-        let task = Task {
-            do { try await body(input.value) } catch is CancellationError {
-                // Given up by the core: never answered.
-            } catch {
-                if !Task.isCancelled { reply.fail(Self.describe(error)) }
+        lock.withLock {
+            tasks[id] = Task {
+                do { try await body(input.value) } catch is CancellationError {
+                    // Given up by the core: never answered.
+                } catch {
+                    if !Task.isCancelled { reply.fail(Self.describe(error)) }
+                }
+                _ = self.lock.withLock { self.tasks.removeValue(forKey: id) }
             }
-            _ = self.lock.withLock { self.tasks.removeValue(forKey: id) }
         }
-        lock.withLock { tasks[id] = task }
     }
 
     private static func describe(_ error: any Error) -> String {

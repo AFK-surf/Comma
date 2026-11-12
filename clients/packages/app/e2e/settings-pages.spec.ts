@@ -64,7 +64,8 @@ test("web routes and every Settings category open, scroll and can be revisited",
         });
       }
     }
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Account", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
     const sidebar = page.locator('[data-slot="settings-sidebar-item"]');
     await expect(sidebar.first()).toBeVisible();
     const categories = await sidebar.allTextContents();

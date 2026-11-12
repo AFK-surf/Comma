@@ -1,0 +1,15 @@
+# The Debian/Ubuntu packages that the systems umbrella's native parts need to
+# build and test, one per line: the salix_signal_proto (libsodium) and
+# salix_signal (libopus) NIFs, ex_libsrtp and ex_dtls (salix_meet_native), the
+# verified kernel (cmake, libuv, OpenSSL), and FFmpeg. CI
+# (.github/actions/systems-test-build) and the coding sandbox image (its
+# Dockerfile) install this list, so a package that CI needs is also in the
+# sandbox.
+libsodium-dev
+libopus-dev
+libsrtp2-dev
+pkg-config
+cmake
+libuv1-dev
+libssl-dev
+ffmpeg

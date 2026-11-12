@@ -22,6 +22,13 @@
       ]
     },
     {
+      "id": "comma_analytics",
+      "kind": "package",
+      "name": "@comma/analytics",
+      "path": "clients/packages/analytics/package.json",
+      "dependencies": []
+    },
+    {
       "id": "comma_app",
       "kind": "package",
       "name": "@comma/app",
@@ -33,6 +40,14 @@
         },
         {
           "name": "@comma/config",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-client",
           "scope": "dependencies"
         },
         {
@@ -48,10 +63,6 @@
           "scope": "dependencies"
         },
         {
-          "name": "@comma/product-inbox-runtime",
-          "scope": "dependencies"
-        },
-        {
           "name": "@comma/recommendation-contract",
           "scope": "dependencies"
         },
@@ -60,11 +71,11 @@
           "scope": "dependencies"
         },
         {
-          "name": "@comma/session-history-runtime",
+          "name": "@comma/ui",
           "scope": "dependencies"
         },
         {
-          "name": "@comma/ui",
+          "name": "@comma/analytics",
           "scope": "dependencies"
         }
       ]
@@ -86,13 +97,77 @@
       "kind": "package",
       "name": "@comma/chat-contract",
       "path": "clients/packages/chat-contract/package.json",
-      "dependencies": []
+      "dependencies": [
+        {
+          "name": "@comma/miniapp-sdk",
+          "scope": "dependencies"
+        }
+      ]
     },
     {
       "id": "comma_config",
       "kind": "package",
       "name": "@comma/config",
       "path": "clients/packages/config/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_core",
+      "kind": "package",
+      "name": "@comma/core",
+      "path": "clients/packages/core/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-kernel",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/mesh",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/recommendation-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/session-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/miniapp-sdk",
+          "scope": "devDependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_core-client",
+      "kind": "package",
+      "name": "@comma/core-client",
+      "path": "clients/packages/core-client/package.json",
+      "dependencies": [
+        {
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-kernel",
+          "scope": "dependencies"
+        }
+      ]
+    },
+    {
+      "id": "comma_core-kernel",
+      "kind": "package",
+      "name": "@comma/core-kernel",
+      "path": "clients/packages/core-kernel/package.json",
       "dependencies": []
     },
     {
@@ -114,7 +189,23 @@
           "scope": "dependencies"
         },
         {
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-client",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-kernel",
+          "scope": "dependencies"
+        },
+        {
           "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/mesh",
           "scope": "dependencies"
         },
         {
@@ -122,15 +213,7 @@
           "scope": "dependencies"
         },
         {
-          "name": "@comma/product-inbox-runtime",
-          "scope": "dependencies"
-        },
-        {
           "name": "@comma/session-contract",
-          "scope": "dependencies"
-        },
-        {
-          "name": "@comma/session-history-runtime",
           "scope": "dependencies"
         }
       ]
@@ -155,6 +238,20 @@
       ]
     },
     {
+      "id": "comma_mesh",
+      "kind": "package",
+      "name": "@comma/mesh",
+      "path": "clients/packages/mesh/package.json",
+      "dependencies": []
+    },
+    {
+      "id": "comma_miniapp-sdk",
+      "kind": "package",
+      "name": "@comma/miniapp-sdk",
+      "path": "clients/packages/miniapp-sdk/package.json",
+      "dependencies": []
+    },
+    {
       "id": "comma_native-bridge",
       "kind": "package",
       "name": "@comma/native-bridge",
@@ -162,22 +259,6 @@
       "dependencies": [
         {
           "name": "@comma/chat-contract",
-          "scope": "dependencies"
-        },
-        {
-          "name": "@comma/session-contract",
-          "scope": "dependencies"
-        }
-      ]
-    },
-    {
-      "id": "comma_product-inbox-runtime",
-      "kind": "package",
-      "name": "@comma/product-inbox-runtime",
-      "path": "clients/packages/product-inbox-runtime/package.json",
-      "dependencies": [
-        {
-          "name": "@comma/native-bridge",
           "scope": "dependencies"
         },
         {
@@ -201,27 +282,31 @@
       "dependencies": []
     },
     {
-      "id": "comma_session-history-runtime",
-      "kind": "package",
-      "name": "@comma/session-history-runtime",
-      "path": "clients/packages/session-history-runtime/package.json",
-      "dependencies": [
-        {
-          "name": "@comma/native-bridge",
-          "scope": "dependencies"
-        },
-        {
-          "name": "@comma/session-contract",
-          "scope": "dependencies"
-        }
-      ]
-    },
-    {
       "id": "comma_test-utils",
       "kind": "package",
       "name": "@comma/test-utils",
       "path": "clients/packages/test-utils/package.json",
       "dependencies": [
+        {
+          "name": "@comma/chat-contract",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-client",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-kernel",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/i18n",
+          "scope": "dependencies"
+        },
         {
           "name": "@comma/native-bridge",
           "scope": "dependencies"
@@ -234,6 +319,10 @@
       "name": "@comma/ui",
       "path": "clients/packages/ui/package.json",
       "dependencies": [
+        {
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
         {
           "name": "@comma/i18n",
           "scope": "dependencies"
@@ -271,15 +360,15 @@
           "scope": "dependencies"
         },
         {
-          "name": "@comma/product-inbox-runtime",
-          "scope": "dependencies"
-        },
-        {
           "name": "@comma/session-contract",
           "scope": "dependencies"
         },
         {
-          "name": "@comma/session-history-runtime",
+          "name": "@comma/core",
+          "scope": "dependencies"
+        },
+        {
+          "name": "@comma/core-client",
           "scope": "dependencies"
         }
       ]
@@ -291,6 +380,14 @@
       "name": "alert_router",
       "path": "systems/apps/alert_router/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
+        },
         {
           "name": "systems_observability",
           "scope": "runtime"
@@ -307,6 +404,10 @@
       "path": "systems/apps/billing_commerce/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "billing_core",
           "scope": "runtime"
         },
@@ -322,6 +423,14 @@
       "path": "systems/apps/billing_core/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
+        },
+        {
           "name": "systems_observability",
           "scope": "runtime"
         },
@@ -336,6 +445,10 @@
       "name": "billing_stripe",
       "path": "systems/apps/billing_stripe/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
         {
           "name": "billing_commerce",
           "scope": "runtime"
@@ -353,6 +466,14 @@
       "dependencies": [
         {
           "name": "systems_observability",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
           "scope": "runtime"
         },
         {
@@ -387,6 +508,10 @@
       "path": "systems/apps/bridge_for_teams_web/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "systems_observability",
           "scope": "runtime"
         },
@@ -417,6 +542,14 @@
       "path": "systems/apps/comma_core/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
+        },
+        {
           "name": "systems_observability",
           "scope": "runtime"
         },
@@ -440,6 +573,10 @@
       "path": "systems/apps/comma_log/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "systems_observability",
           "scope": "runtime"
         }
@@ -452,6 +589,14 @@
       "dependencies": [
         {
           "name": "comma_core",
+          "scope": "runtime"
+        },
+        {
+          "name": "comma_tui",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
           "scope": "runtime"
         }
       ]
@@ -467,6 +612,10 @@
       "name": "comma_web",
       "path": "systems/apps/comma_web/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
         {
           "name": "systems_observability",
           "scope": "runtime"
@@ -506,6 +655,10 @@
         {
           "name": "salix_web",
           "scope": "runtime"
+        },
+        {
+          "name": "salix_meet_native",
+          "scope": "runtime"
         }
       ]
     },
@@ -529,6 +682,14 @@
         {
           "name": "salix_media",
           "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_sim",
+          "scope": "development"
         }
       ]
     },
@@ -537,6 +698,10 @@
       "name": "salix_analytics",
       "path": "systems/apps/salix_analytics/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
         {
           "name": "salix_store",
           "scope": "runtime"
@@ -553,6 +718,10 @@
       "path": "systems/apps/salix_calendar/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "salix_store",
           "scope": "runtime"
         }
@@ -565,6 +734,10 @@
       "dependencies": [
         {
           "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
           "scope": "runtime"
         },
         {
@@ -597,6 +770,10 @@
         {
           "name": "systems_observability",
           "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
         }
       ]
     },
@@ -611,6 +788,14 @@
       "name": "salix_im",
       "path": "systems/apps/salix_im/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
+        },
         {
           "name": "salix_ifc",
           "scope": "runtime"
@@ -631,6 +816,10 @@
       "path": "systems/apps/salix_llm/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "systems_observability",
           "scope": "runtime"
         },
@@ -650,6 +839,10 @@
       "path": "systems/apps/salix_mcp/mix.exs",
       "dependencies": [
         {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
           "name": "salix_agent",
           "scope": "runtime"
         },
@@ -667,13 +860,22 @@
       "id": "salix_media",
       "name": "salix_media",
       "path": "systems/apps/salix_media/mix.exs",
-      "dependencies": []
+      "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        }
+      ]
     },
     {
       "id": "salix_meet",
       "name": "salix_meet",
       "path": "systems/apps/salix_meet/mix.exs",
       "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
         {
           "name": "systems_observability",
           "scope": "runtime"
@@ -701,16 +903,12 @@
       ]
     },
     {
-      "id": "salix_migrate",
-      "name": "salix_migrate",
-      "path": "systems/apps/salix_migrate/mix.exs",
+      "id": "salix_meet_native",
+      "name": "salix_meet_native",
+      "path": "systems/apps/salix_meet_native/mix.exs",
       "dependencies": [
         {
-          "name": "salix_store",
-          "scope": "runtime"
-        },
-        {
-          "name": "salix_agent",
+          "name": "systems_clock",
           "scope": "runtime"
         }
       ]
@@ -735,6 +933,10 @@
         {
           "name": "salix_cluster",
           "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
         }
       ]
     },
@@ -742,7 +944,12 @@
       "id": "salix_signal_proto",
       "name": "salix_signal_proto",
       "path": "systems/apps/salix_signal_proto/mix.exs",
-      "dependencies": []
+      "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        }
+      ]
     },
     {
       "id": "salix_store",
@@ -756,6 +963,14 @@
         {
           "name": "systems_observability",
           "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
         }
       ]
     },
@@ -766,6 +981,10 @@
       "dependencies": [
         {
           "name": "salix_store",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
           "scope": "runtime"
         },
         {
@@ -808,6 +1027,10 @@
           "scope": "runtime"
         },
         {
+          "name": "salix_meet_native",
+          "scope": "runtime"
+        },
+        {
           "name": "salix_calendar",
           "scope": "runtime"
         },
@@ -842,6 +1065,21 @@
         {
           "name": "systems_observability",
           "scope": "runtime"
+        },
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "systems_clock",
+      "name": "systems_clock",
+      "path": "systems/apps/systems_clock/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
         }
       ]
     },
@@ -849,7 +1087,33 @@
       "id": "systems_observability",
       "name": "systems_observability",
       "path": "systems/apps/systems_observability/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        },
+        {
+          "name": "systems_runtime",
+          "scope": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "systems_runtime",
+      "name": "systems_runtime",
+      "path": "systems/apps/systems_runtime/mix.exs",
       "dependencies": []
+    },
+    {
+      "id": "systems_sim",
+      "name": "systems_sim",
+      "path": "systems/apps/systems_sim/mix.exs",
+      "dependencies": [
+        {
+          "name": "systems_clock",
+          "scope": "runtime"
+        }
+      ]
     }
   ],
   "subsystemSource": "systems/apps/comma/lib/comma.ex",
@@ -878,8 +1142,8 @@
         "salix_signal_proto",
         "salix_signal",
         "salix_mcp",
+        "salix_meet_native",
         "salix_web",
-        "salix_migrate",
         "salix_media",
         "salix_meet"
       ]
@@ -955,6 +1219,11 @@
         "namespace": "appPreferences"
       },
       {
+        "id": "appPreferences.openLoginItemsSettings",
+        "kind": "capability",
+        "namespace": "appPreferences"
+      },
+      {
         "id": "appPreferences.requestNotificationAuthorization",
         "kind": "capability",
         "namespace": "appPreferences"
@@ -980,6 +1249,46 @@
         "namespace": "connectorRuntime"
       },
       {
+        "id": "macApps.state",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.state.changed",
+        "kind": "event",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.state",
+        "kind": "state",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.setEnabled",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.openPrivacySettings",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.openItem",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.calendarEvents",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
+        "id": "macApps.icons",
+        "kind": "capability",
+        "namespace": "macApps"
+      },
+      {
         "id": "connectorRuntime.setScope",
         "kind": "capability",
         "namespace": "connectorRuntime"
@@ -988,6 +1297,26 @@
         "id": "connectorRuntime.copyConnectCommand",
         "kind": "capability",
         "namespace": "connectorRuntime"
+      },
+      {
+        "id": "localStation.accounts",
+        "kind": "capability",
+        "namespace": "localStation"
+      },
+      {
+        "id": "localStation.setAccountSource",
+        "kind": "capability",
+        "namespace": "localStation"
+      },
+      {
+        "id": "localStation.signIn",
+        "kind": "capability",
+        "namespace": "localStation"
+      },
+      {
+        "id": "localStation.stopSignIn",
+        "kind": "capability",
+        "namespace": "localStation"
       },
       {
         "id": "appearance.setResolvedTheme",
@@ -1090,6 +1419,26 @@
         "namespace": "surfaces"
       },
       {
+        "id": "surfaces.windowMaximized",
+        "kind": "capability",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowMaximized.changed",
+        "kind": "event",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowMaximized",
+        "kind": "state",
+        "namespace": "surfaces"
+      },
+      {
+        "id": "surfaces.windowControl",
+        "kind": "capability",
+        "namespace": "surfaces"
+      },
+      {
         "id": "onboarding.presentWindow",
         "kind": "capability",
         "namespace": "onboarding"
@@ -1101,6 +1450,11 @@
       },
       {
         "id": "onboarding.window",
+        "kind": "capability",
+        "namespace": "onboarding"
+      },
+      {
+        "id": "onboarding.outputVolume",
         "kind": "capability",
         "namespace": "onboarding"
       },
@@ -1138,41 +1492,6 @@
         "id": "clipboard.writeImage",
         "kind": "capability",
         "namespace": "clipboard"
-      },
-      {
-        "id": "tokenDanceAuthorization.start",
-        "kind": "capability",
-        "namespace": "tokenDanceAuthorization"
-      },
-      {
-        "id": "tokenDanceAuthorization.status",
-        "kind": "capability",
-        "namespace": "tokenDanceAuthorization"
-      },
-      {
-        "id": "tokenDanceAuthorization.save",
-        "kind": "capability",
-        "namespace": "tokenDanceAuthorization"
-      },
-      {
-        "id": "tokenDanceAuthorization.cancel",
-        "kind": "capability",
-        "namespace": "tokenDanceAuthorization"
-      },
-      {
-        "id": "subscriptionAuthorization.start",
-        "kind": "capability",
-        "namespace": "subscriptionAuthorization"
-      },
-      {
-        "id": "subscriptionAuthorization.status",
-        "kind": "capability",
-        "namespace": "subscriptionAuthorization"
-      },
-      {
-        "id": "subscriptionAuthorization.cancel",
-        "kind": "capability",
-        "namespace": "subscriptionAuthorization"
       },
       {
         "id": "shell.openExternal",
@@ -1235,6 +1554,11 @@
         "namespace": "browserSidebar"
       },
       {
+        "id": "browserSidebar.dismissPasskey",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
         "id": "browserSidebar.inspect",
         "kind": "capability",
         "namespace": "browserSidebar"
@@ -1265,6 +1589,16 @@
         "namespace": "browserSidebar"
       },
       {
+        "id": "browserSidebar.listImportProfiles",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
+        "id": "browserSidebar.importCookies",
+        "kind": "capability",
+        "namespace": "browserSidebar"
+      },
+      {
         "id": "browserSidebar.changed",
         "kind": "event",
         "namespace": "browserSidebar"
@@ -1278,6 +1612,11 @@
         "id": "peers.connect",
         "kind": "capability",
         "namespace": "peers"
+      },
+      {
+        "id": "core.open",
+        "kind": "capability",
+        "namespace": "core"
       },
       {
         "id": "notch.event",
@@ -1295,282 +1634,12 @@
         "namespace": "surfaces"
       },
       {
-        "id": "productInbox.state",
-        "kind": "capability",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "productInbox.state.changed",
-        "kind": "event",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "productInbox.state",
-        "kind": "state",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "productInbox.retain",
-        "kind": "capability",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "productInbox.release",
-        "kind": "capability",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "productInbox.refresh",
-        "kind": "capability",
-        "namespace": "productInbox"
-      },
-      {
-        "id": "sessionHistory.state",
-        "kind": "capability",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "sessionHistory.load",
-        "kind": "capability",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "sessionHistory.retain",
-        "kind": "capability",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "sessionHistory.release",
-        "kind": "capability",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "sessionHistory.state.changed",
-        "kind": "event",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "sessionHistory.state",
-        "kind": "state",
-        "namespace": "sessionHistory"
-      },
-      {
-        "id": "chat.state",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.state.changed",
-        "kind": "event",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.state",
-        "kind": "state",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.drafts",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.drafts.changed",
-        "kind": "event",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.drafts",
-        "kind": "state",
-        "namespace": "chat"
-      },
-      {
         "id": "messageNotifications.event",
         "kind": "event",
         "namespace": "messageNotifications"
       },
       {
-        "id": "sideChat.presentation",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.presentation.changed",
-        "kind": "event",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.presentation",
-        "kind": "state",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.debugSettings",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.debugSettings.changed",
-        "kind": "event",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.debugSettings",
-        "kind": "state",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.updateDebugSettings",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.resetDebugSettings",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.setContentSize",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.setInteractiveProgress",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.finishInteractiveProgress",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.updateShortcut",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.close",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.openSettings",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.openTestWindow",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "sideChat.closeTestWindow",
-        "kind": "capability",
-        "namespace": "sideChat"
-      },
-      {
-        "id": "chat.retain",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.release",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.clearPresentation",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.setDraft",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.beginSendIntent",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.cancelSendIntent",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.send",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.retry",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.discard",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.acceptTaskReview",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.refresh",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.attach",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.attachLocalFiles",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
         "id": "chat.pickAttachments",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.presentInSideChat",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.resolveWorkspaceChat",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.listSkills",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.readGroupImage",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.acknowledgeIntakeFailures",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.removeAttachment",
-        "kind": "capability",
-        "namespace": "chat"
-      },
-      {
-        "id": "chat.retryAttachment",
         "kind": "capability",
         "namespace": "chat"
       },
@@ -1590,41 +1659,6 @@
         "namespace": "session"
       },
       {
-        "id": "session.requestEmailLogin",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.verifyEmailLogin",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.signInWithGoogle",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.verifyGoogleLink",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.cancelAuthAttempt",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.reconcile",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
-        "id": "session.signOut",
-        "kind": "capability",
-        "namespace": "session"
-      },
-      {
         "id": "localFiles.pick",
         "kind": "capability",
         "namespace": "localFiles"
@@ -1635,9 +1669,19 @@
         "namespace": "localFiles"
       },
       {
-        "id": "localData.status",
+        "id": "computeNode.hostMaintenanceState",
         "kind": "capability",
-        "namespace": "localData"
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.maintainHost",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.resumeHostMaintenance",
+        "kind": "capability",
+        "namespace": "computeNode"
       },
       {
         "id": "computeNode.localOverview",
@@ -1716,6 +1760,11 @@
       },
       {
         "id": "computeNode.abandon",
+        "kind": "capability",
+        "namespace": "computeNode"
+      },
+      {
+        "id": "computeNode.resetLocalRecord",
         "kind": "capability",
         "namespace": "computeNode"
       },
@@ -1810,31 +1859,6 @@
         "namespace": "meetingPresence"
       },
       {
-        "id": "meetingRecorder.state",
-        "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.retryTaskSync",
-        "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.action",
-        "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.selectMicrophone",
-        "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.acknowledgeSaved",
-        "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
         "id": "meetingRecorder.setInteractive",
         "kind": "capability",
         "namespace": "meetingRecorder"
@@ -1847,16 +1871,6 @@
       {
         "id": "meetingRecorder.dragWindow",
         "kind": "capability",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.state.changed",
-        "kind": "event",
-        "namespace": "meetingRecorder"
-      },
-      {
-        "id": "meetingRecorder.state",
-        "kind": "state",
         "namespace": "meetingRecorder"
       },
       {
@@ -1895,32 +1909,17 @@
         "namespace": "synchronicity"
       },
       {
-        "id": "driveCatalog.query",
-        "kind": "capability",
-        "namespace": "driveCatalog"
-      },
-      {
-        "id": "driveCatalog.state",
-        "kind": "capability",
-        "namespace": "driveCatalog"
-      },
-      {
-        "id": "driveCatalog.state.changed",
-        "kind": "event",
-        "namespace": "driveCatalog"
-      },
-      {
-        "id": "driveCatalog.state",
-        "kind": "state",
-        "namespace": "driveCatalog"
-      },
-      {
         "id": "synchronicity.read",
         "kind": "capability",
         "namespace": "synchronicity"
       },
       {
         "id": "synchronicity.saveDownload",
+        "kind": "capability",
+        "namespace": "synchronicity"
+      },
+      {
+        "id": "synchronicity.openStream",
         "kind": "capability",
         "namespace": "synchronicity"
       },
@@ -1940,7 +1939,7 @@
         "namespace": "synchronicity"
       },
       {
-        "id": "synchronicity.importFile",
+        "id": "synchronicity.stageImport",
         "kind": "capability",
         "namespace": "synchronicity"
       },
@@ -2018,6 +2017,21 @@
         "id": "applicationMenu.command",
         "kind": "event",
         "namespace": "applicationMenu"
+      },
+      {
+        "id": "voiceCall.microphone",
+        "kind": "capability",
+        "namespace": "voiceCall"
+      },
+      {
+        "id": "voiceCall.played",
+        "kind": "capability",
+        "namespace": "voiceCall"
+      },
+      {
+        "id": "voiceCall.audio",
+        "kind": "event",
+        "namespace": "voiceCall"
       }
     ],
     "namespaces": [
@@ -2055,11 +2069,12 @@
       },
       {
         "name": "appPreferences",
-        "commands": 5,
+        "commands": 6,
         "events": 1,
         "states": 1,
         "leafIds": [
           "appPreferences.initializeClientSettings",
+          "appPreferences.openLoginItemsSettings",
           "appPreferences.openNotificationSettings",
           "appPreferences.requestNotificationAuthorization",
           "appPreferences.state",
@@ -2089,14 +2104,17 @@
       },
       {
         "name": "browserSidebar",
-        "commands": 7,
+        "commands": 10,
         "events": 2,
         "states": 0,
         "leafIds": [
           "browserSidebar.capture",
           "browserSidebar.changed",
           "browserSidebar.close",
+          "browserSidebar.dismissPasskey",
+          "browserSidebar.importCookies",
           "browserSidebar.inspect",
+          "browserSidebar.listImportProfiles",
           "browserSidebar.navigate",
           "browserSidebar.open",
           "browserSidebar.openTabRequested",
@@ -2106,35 +2124,11 @@
       },
       {
         "name": "chat",
-        "commands": 23,
-        "events": 2,
-        "states": 2,
+        "commands": 1,
+        "events": 0,
+        "states": 0,
         "leafIds": [
-          "chat.acceptTaskReview",
-          "chat.acknowledgeIntakeFailures",
-          "chat.attach",
-          "chat.attachLocalFiles",
-          "chat.beginSendIntent",
-          "chat.cancelSendIntent",
-          "chat.clearPresentation",
-          "chat.discard",
-          "chat.drafts",
-          "chat.drafts.changed",
-          "chat.listSkills",
-          "chat.pickAttachments",
-          "chat.presentInSideChat",
-          "chat.readGroupImage",
-          "chat.refresh",
-          "chat.release",
-          "chat.removeAttachment",
-          "chat.resolveWorkspaceChat",
-          "chat.retain",
-          "chat.retry",
-          "chat.retryAttachment",
-          "chat.send",
-          "chat.setDraft",
-          "chat.state",
-          "chat.state.changed"
+          "chat.pickAttachments"
         ]
       },
       {
@@ -2151,7 +2145,7 @@
       },
       {
         "name": "computeNode",
-        "commands": 14,
+        "commands": 18,
         "events": 1,
         "states": 1,
         "leafIds": [
@@ -2159,14 +2153,18 @@
           "computeNode.configure",
           "computeNode.disposeLocal",
           "computeNode.drain",
+          "computeNode.hostMaintenanceState",
           "computeNode.localOverview",
           "computeNode.localWorkloads",
+          "computeNode.maintainHost",
           "computeNode.rebuild",
           "computeNode.recover",
           "computeNode.recoveryCandidates",
           "computeNode.refresh",
           "computeNode.remove",
           "computeNode.repair",
+          "computeNode.resetLocalRecord",
+          "computeNode.resumeHostMaintenance",
           "computeNode.resumeLocalDisposal",
           "computeNode.state",
           "computeNode.state.changed"
@@ -2196,14 +2194,12 @@
         ]
       },
       {
-        "name": "driveCatalog",
-        "commands": 2,
-        "events": 1,
-        "states": 1,
+        "name": "core",
+        "commands": 1,
+        "events": 0,
+        "states": 0,
         "leafIds": [
-          "driveCatalog.query",
-          "driveCatalog.state",
-          "driveCatalog.state.changed"
+          "core.open"
         ]
       },
       {
@@ -2220,15 +2216,6 @@
         ]
       },
       {
-        "name": "localData",
-        "commands": 1,
-        "events": 0,
-        "states": 0,
-        "leafIds": [
-          "localData.status"
-        ]
-      },
-      {
         "name": "localFiles",
         "commands": 2,
         "events": 0,
@@ -2236,6 +2223,33 @@
         "leafIds": [
           "localFiles.pick",
           "localFiles.preview"
+        ]
+      },
+      {
+        "name": "localStation",
+        "commands": 4,
+        "events": 0,
+        "states": 0,
+        "leafIds": [
+          "localStation.accounts",
+          "localStation.setAccountSource",
+          "localStation.signIn",
+          "localStation.stopSignIn"
+        ]
+      },
+      {
+        "name": "macApps",
+        "commands": 6,
+        "events": 1,
+        "states": 1,
+        "leafIds": [
+          "macApps.calendarEvents",
+          "macApps.icons",
+          "macApps.openItem",
+          "macApps.openPrivacySettings",
+          "macApps.setEnabled",
+          "macApps.state",
+          "macApps.state.changed"
         ]
       },
       {
@@ -2251,19 +2265,13 @@
       },
       {
         "name": "meetingRecorder",
-        "commands": 8,
-        "events": 1,
-        "states": 1,
+        "commands": 3,
+        "events": 0,
+        "states": 0,
         "leafIds": [
-          "meetingRecorder.acknowledgeSaved",
-          "meetingRecorder.action",
           "meetingRecorder.dragWindow",
           "meetingRecorder.layoutWindow",
-          "meetingRecorder.retryTaskSync",
-          "meetingRecorder.selectMicrophone",
-          "meetingRecorder.setInteractive",
-          "meetingRecorder.state",
-          "meetingRecorder.state.changed"
+          "meetingRecorder.setInteractive"
         ]
       },
       {
@@ -2305,12 +2313,13 @@
       },
       {
         "name": "onboarding",
-        "commands": 3,
+        "commands": 4,
         "events": 2,
         "states": 1,
         "leafIds": [
           "onboarding.closeWindow",
           "onboarding.handoff",
+          "onboarding.outputVolume",
           "onboarding.presentWindow",
           "onboarding.window",
           "onboarding.window.changed"
@@ -2326,19 +2335,6 @@
         ]
       },
       {
-        "name": "productInbox",
-        "commands": 4,
-        "events": 1,
-        "states": 1,
-        "leafIds": [
-          "productInbox.refresh",
-          "productInbox.release",
-          "productInbox.retain",
-          "productInbox.state",
-          "productInbox.state.changed"
-        ]
-      },
-      {
         "name": "recommendationMedia",
         "commands": 1,
         "events": 0,
@@ -2349,32 +2345,12 @@
       },
       {
         "name": "session",
-        "commands": 8,
+        "commands": 1,
         "events": 1,
         "states": 1,
         "leafIds": [
-          "session.cancelAuthAttempt",
-          "session.reconcile",
-          "session.requestEmailLogin",
-          "session.signInWithGoogle",
-          "session.signOut",
           "session.state",
-          "session.state.changed",
-          "session.verifyEmailLogin",
-          "session.verifyGoogleLink"
-        ]
-      },
-      {
-        "name": "sessionHistory",
-        "commands": 4,
-        "events": 1,
-        "states": 1,
-        "leafIds": [
-          "sessionHistory.load",
-          "sessionHistory.release",
-          "sessionHistory.retain",
-          "sessionHistory.state",
-          "sessionHistory.state.changed"
+          "session.state.changed"
         ]
       },
       {
@@ -2384,28 +2360,6 @@
         "states": 0,
         "leafIds": [
           "shell.openExternal"
-        ]
-      },
-      {
-        "name": "sideChat",
-        "commands": 12,
-        "events": 2,
-        "states": 2,
-        "leafIds": [
-          "sideChat.close",
-          "sideChat.closeTestWindow",
-          "sideChat.debugSettings",
-          "sideChat.debugSettings.changed",
-          "sideChat.finishInteractiveProgress",
-          "sideChat.openSettings",
-          "sideChat.openTestWindow",
-          "sideChat.presentation",
-          "sideChat.presentation.changed",
-          "sideChat.resetDebugSettings",
-          "sideChat.setContentSize",
-          "sideChat.setInteractiveProgress",
-          "sideChat.updateDebugSettings",
-          "sideChat.updateShortcut"
         ]
       },
       {
@@ -2420,41 +2374,33 @@
         ]
       },
       {
-        "name": "subscriptionAuthorization",
-        "commands": 3,
-        "events": 0,
-        "states": 0,
-        "leafIds": [
-          "subscriptionAuthorization.cancel",
-          "subscriptionAuthorization.start",
-          "subscriptionAuthorization.status"
-        ]
-      },
-      {
         "name": "surfaces",
-        "commands": 2,
-        "events": 3,
-        "states": 2,
+        "commands": 4,
+        "events": 4,
+        "states": 3,
         "leafIds": [
           "surfaces.changed",
           "surfaces.state",
+          "surfaces.windowControl",
           "surfaces.windowFullScreen",
           "surfaces.windowFullScreen.changed",
+          "surfaces.windowMaximized",
+          "surfaces.windowMaximized.changed",
           "surfaces.windowResizeSettled"
         ]
       },
       {
         "name": "synchronicity",
-        "commands": 21,
+        "commands": 22,
         "events": 0,
         "states": 0,
         "leafIds": [
           "synchronicity.adopt",
           "synchronicity.adoptTree",
           "synchronicity.delete",
-          "synchronicity.importFile",
           "synchronicity.list",
           "synchronicity.openLocalRoot",
+          "synchronicity.openStream",
           "synchronicity.pickFolder",
           "synchronicity.pin",
           "synchronicity.read",
@@ -2467,21 +2413,10 @@
           "synchronicity.setSpaceSettings",
           "synchronicity.sourceAdd",
           "synchronicity.sourceRemove",
+          "synchronicity.stageImport",
           "synchronicity.state",
           "synchronicity.versions",
           "synchronicity.write"
-        ]
-      },
-      {
-        "name": "tokenDanceAuthorization",
-        "commands": 4,
-        "events": 0,
-        "states": 0,
-        "leafIds": [
-          "tokenDanceAuthorization.cancel",
-          "tokenDanceAuthorization.save",
-          "tokenDanceAuthorization.start",
-          "tokenDanceAuthorization.status"
         ]
       },
       {
@@ -2491,6 +2426,17 @@
         "states": 0,
         "leafIds": [
           "transport.status"
+        ]
+      },
+      {
+        "name": "voiceCall",
+        "commands": 2,
+        "events": 1,
+        "states": 0,
+        "leafIds": [
+          "voiceCall.audio",
+          "voiceCall.microphone",
+          "voiceCall.played"
         ]
       },
       {
@@ -2513,11 +2459,7 @@
         "comma:connector:start",
         "comma:connector:status",
         "comma:connector:stop",
-        "comma:connector:uninstall",
-        "comma:updates:apply",
-        "comma:updates:check",
-        "comma:updates:download",
-        "comma:updates:status"
+        "comma:connector:uninstall"
       ]
     }
   },

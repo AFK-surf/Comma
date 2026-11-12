@@ -59,14 +59,24 @@ export function insertMention(
   };
 }
 
+/**
+ * Each `/<skill_id>` in the text, where it sits: the words a sent message
+ * attaches skills by, and its bubble shows as them.
+ */
+export function* skillMentionMatches(text: string) {
+  for (const match of text.matchAll(mentionedSkillPattern)) {
+    const start = match.index + (match[1]?.length ?? 0);
+    yield { end: match.index + match[0].length, skillId: match[2]!, start };
+  }
+}
+
 export function deriveMentionedSkills(text: string, skills: CommaSkill[]) {
   const byId = new Map(skills.map((skill) => [skill.skill_id.toLowerCase(), skill]));
   const seen = new Set<string>();
   const selected: { location: string }[] = [];
 
-  for (const match of text.matchAll(mentionedSkillPattern)) {
-    const token = match[2]?.toLowerCase();
-    const skill = token ? byId.get(token) : undefined;
+  for (const { skillId } of skillMentionMatches(text)) {
+    const skill = byId.get(skillId.toLowerCase());
     if (!skill || seen.has(skill.location)) {
       continue;
     }

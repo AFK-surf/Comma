@@ -11,6 +11,7 @@ import {
   type ChatPickAttachmentError,
   type ChatAttachmentSource,
 } from "@comma/chat-contract";
+import { stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { BrowserWindow, dialog, nativeImage, webContents } from "electron";
 import { getCurrentNativeCallerContext } from "../ipc";
@@ -127,6 +128,8 @@ export type ChatAttachmentPickItem =
 export type ChatAttachmentPickResult = Readonly<{
   cancelled: boolean;
   errors: ChatPickAttachmentError[];
+  /** Dropped or pasted folders, by their paths: the draft takes each as text, not as an attachment. */
+  folderPaths?: string[];
   items: ChatAttachmentPickItem[];
 }>;
 
@@ -394,6 +397,7 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     if (selected.canceled) return { cancelled: true, errors: [], items: [] };
 
     const errors: ChatPickAttachmentError[] = [];
+    const folderPaths: string[] = [];
     const maxFiles = Math.min(MAX_LOCAL_FILES_PER_PICK, input.maxFiles);
     const maxTotalSize = Math.min(MAX_LOCAL_FILES_TOTAL_BYTES, input.maxTotalSize);
     const maxUploadFiles = Math.max(
@@ -431,6 +435,10 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
         continue;
       }
       const sourcePath = source.sourcePath;
+      if (await isDirectory(sourcePath)) {
+        folderPaths.push(sourcePath);
+        continue;
+      }
       const sourceName = sanitizeLocalFileDisplayName(basename(sourcePath));
       const sourceIsImage = this.#uploadImageExtensions.has(
         extname(sourceName).toLowerCase()
@@ -525,11 +533,23 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
       candidates.push({ file: snapshot, kind: "local_file" });
     }
 
-    // A regular file stays a draft snapshot here: the client core uploads it from Main as soon as it reaches the
-    // draft (`fetch` with its `localFileRef`), so no route for the server to read it from this device is made. The
-    // draft snapshot goes with the 24-hour draft cleanup.
-    return { cancelled: false, errors, items: candidates };
+    // A regular file stays a draft snapshot here: the client core uploads it in parts read from Main as soon as it
+    // reaches the draft (`local-read` of its `localFileRef`), so no route for the server to read it from this device
+    // is made. The draft snapshot goes with the 24-hour draft cleanup.
+    return {
+      cancelled: false,
+      errors,
+      ...(folderPaths.length > 0 ? { folderPaths } : {}),
+      items: candidates,
+    };
   }
+}
+
+function isDirectory(path: string) {
+  return stat(path).then(
+    (info) => info.isDirectory(),
+    () => false
+  );
 }
 
 type PreviewWork<T> = {

@@ -28,7 +28,7 @@ function container(options = {}) {
   };
   // The release's Node runs the station's `restore-archive`: what it was given, and its result.
   command("opt/comma-station/node/bin/node", `echo "restore args=$* root=$SALIX_CONNECTOR_ROOT archive=\${SALIX_RESTORE_ARCHIVE:-none}" >> "${log}"\nexit ${options.restoreExit ?? 0}`);
-  command("opt/comma-station/mesh/target/release/stillfail-station", `echo "station root=$SALIX_CONNECTOR_ROOT archive=\${SALIX_RESTORE_ARCHIVE:-none} credential=$SALIX_WORKLOAD_CREDENTIAL" >> "${log}"\nexec sleep 600`);
+  command("opt/comma-station/mesh/target/release/comma-station", `echo "station root=$SALIX_CONNECTOR_ROOT archive=\${SALIX_RESTORE_ARCHIVE:-none} credential=$SALIX_WORKLOAD_CREDENTIAL" >> "${log}"\nexec sleep 600`);
   // The sandbox server is what the Container runs as: here it ends once the station has started.
   command("container-server/sandbox", `echo "sandbox" >> "${log}"\nfor _ in $(seq 1 200); do grep -q '^station' "${log}" && exit 0; sleep 0.05; done\nexit 1`);
   const script = join(root, "entrypoint.sh");

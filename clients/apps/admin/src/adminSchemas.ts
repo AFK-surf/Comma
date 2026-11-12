@@ -97,12 +97,6 @@ export const AdminSessionPage = Schema.Struct({
   next_cursor: Schema.NullOr(Schema.String),
 });
 
-export const AdminWorkspaceVm = Schema.Struct({
-  workspace_id: Schema.String,
-  enabled: Schema.Boolean,
-  convergence_status: Schema.NullOr(Schema.String),
-});
-
 const AdminSignalAccount = Schema.Struct({
   e164: nullish(Schema.String),
   state: nullish(Schema.String),
@@ -132,7 +126,6 @@ export const AdminWorkspaceBilling = Schema.Struct({
       tenant_id: Schema.String,
       group_id: Schema.String,
       billing_account_id: Schema.String,
-      cloud_vm: Schema.optional(AdminWorkspaceVm),
       created_at: Schema.Finite,
       updated_at: Schema.Finite,
     })
@@ -186,7 +179,7 @@ export const AdminWorkspaceAgentSelection = Schema.Union([
 export const AdminWorkspaceAgentModel = Schema.Struct({
   agent_id: Schema.String,
   name: Schema.optional(Schema.String),
-  scope: nullish(Schema.Literals(["global", "tenant"])),
+  scope: nullish(Schema.Literals(["platform", "global", "tenant"])),
   role: AdminWorkspaceAgentRole,
   // Whether the agent chose its model or follows the platform model.
   source: Schema.optional(Schema.Literals(["pinned", "platform_default"])),
@@ -494,16 +487,10 @@ export const AgentVmmNode = passthrough({
     status: Schema.String,
     desired_enabled: Schema.Boolean,
     revision: WholeNonNegative,
+    request_status: Schema.String,
+    error_code: Schema.NullOr(Schema.String),
+    retryable: Schema.Boolean,
   }),
-  installation: Schema.NullOr(
-    passthrough({
-      id: Schema.String,
-      revision: WholeNonNegative,
-      status: Schema.String,
-      error_code: Schema.NullOr(Schema.String),
-      retryable: Schema.Boolean,
-    })
-  ),
   connection: passthrough({
     status: Schema.String,
     last_observed_at: Schema.NullOr(Schema.String),

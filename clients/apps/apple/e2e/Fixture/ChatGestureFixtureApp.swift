@@ -1,5 +1,6 @@
 import SwiftUI
 import CommaCore
+import notify
 
 @MainActor @Observable final class Metrics {
     var listLoads = 0
@@ -92,10 +93,21 @@ import CommaCore
                         // Screenshots leave the counters out; the UI tests read them.
                         .opacity(ProcessInfo.processInfo.arguments.contains("--hide-metrics") ? 0 : 1)
                     }
+                    .onChange(of: store.router.pane?.messages.count) { _, count in
+                        if ProcessInfo.processInfo.arguments.contains("--startup-short-chat"), let count, count > 0 {
+                            store.router.pane?.draftText = "在测试群里说一下周四周五参加AI Engineer"
+                        }
+                    }
                     .task {
                         // Once per launch, as the app starts at bootstrap: after a `--login` sign-in the shell
                         // appears again and must not reload what signing in already loaded.
                         if !Self.started { Self.started = true; await store.start() }
+                        if ProcessInfo.processInfo.arguments.contains("--mini-app") {
+                            MiniAppWindowCapture.start()
+                            let landscape = ProcessInfo.processInfo.arguments.contains("--mini-app-landscape")
+                            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?
+                                .requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeLeft : .portrait))
+                        }
                         metrics.windowBottomInset = UIApplication.shared.connectedScenes
                             .compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
                             .first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
@@ -111,4 +123,50 @@ final class FixtureCredentials: CredentialRecord, @unchecked Sendable {
     func read() throws -> Data? { lock.withLock { data } }
     func write(_ data: Data) throws { lock.withLock { self.data = data } }
     func delete() throws { lock.withLock { data = nil } }
+}
+
+/// Native window captures keep scene coordinates when the Duo simulator compositor crops landscape screenshots.
+@MainActor private enum MiniAppWindowCapture {
+    private static var started = false
+    private static var sequence = 0
+
+    static func start() {
+        guard !started else { return }
+        started = true
+        var token: Int32 = 0
+        notify_register_dispatch(PerfSignal.captureMiniApp.name, &token, .main) { _ in
+            MainActor.assumeIsolated { capture() }
+        }
+    }
+
+    private static func capture() {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first(where: \.isKeyWindow) else { return }
+        window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            for visible in scene.windows where !visible.isHidden {
+                visible.drawHierarchy(in: visible.convert(visible.bounds, to: window), afterScreenUpdates: true)
+            }
+        }
+        sequence += 1
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            ProcessInfo.processInfo.arguments.contains("--app-detail") ? "mini-app-detail-shots"
+                : ProcessInfo.processInfo.arguments.contains("--photo-picker") ? "mini-app-photo-shots"
+                : ProcessInfo.processInfo.arguments.contains("--chrome-mode") ? "mini-app-chrome-shots"
+                : ProcessInfo.processInfo.arguments.contains("--card-polish") ? "mini-app-card-shots" : "mini-app-window-shots")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let direction = scene.interfaceOrientation.isLandscape ? "landscape" : "portrait"
+            let stem = "\(direction)-\(sequence)"
+            try image.pngData()?.write(to: directory.appendingPathComponent(stem + ".png"))
+            if ProcessInfo.processInfo.arguments.contains("--chrome-mode"), let status = scene.statusBarManager {
+                let frame = status.statusBarFrame
+                let facts: [String: Any] = ["hidden": status.isStatusBarHidden,
+                    "statusFrame": [frame.minX, frame.minY, frame.width, frame.height],
+                    "window": [window.bounds.width, window.bounds.height],
+                    "safeArea": [window.safeAreaInsets.top, window.safeAreaInsets.left, window.safeAreaInsets.bottom, window.safeAreaInsets.right]]
+                try JSONSerialization.data(withJSONObject: facts).write(to: directory.appendingPathComponent(stem + ".json"))
+            }
+        } catch { print("Mini App window capture failed: \(error)") }
+    }
 }

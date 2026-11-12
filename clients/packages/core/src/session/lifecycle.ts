@@ -27,15 +27,27 @@ import {
   type TerminalSessionSnapshot,
 } from "@comma/session-contract";
 import type { Runner } from "@comma/core-kernel";
-import { Effect, type Fiber } from "effect";
+import { Deferred, Effect, type Fiber } from "effect";
 import type {
   SessionAttempt,
   SessionEmailChallenge,
   SessionEmailCooldown,
 } from "../contract.ts";
 import type { Host, SessionAuthorityResume } from "../host.ts";
-import type { Session } from "../session.ts";
-import type { SessionProjection } from "./web-auth.ts";
+import type { KeptAccount, Session } from "../session.ts";
+import {
+  solveGuestPow,
+  type AuthResponse,
+  type SessionProjection,
+} from "./web-auth.ts";
+import {
+  AbuseError,
+  abuseProofInput,
+  abuseRequired,
+  captchaPage,
+  type AbuseChallenge,
+  type AbuseEvidence,
+} from "./abuse.ts";
 
 /**
  * Background re-probes after a signed-in probe could not reach the server. After the last one the session stays
@@ -136,6 +148,8 @@ export abstract class SessionLifecycle<
   protected gateSeq = 0;
   /** Guest chats imported since the core started (the web's). */
   protected guestImports = 0;
+  /** The accounts kept signed in besides the one in use (a bearer host's store); null where a device keeps one. */
+  protected kept: KeptAccount[] | null = null;
   protected closed = false;
   /** The session the core before this one gave a lease for: found again, its lease goes on (no new generation). */
   #resumedSessionId: string | null | undefined;
@@ -156,6 +170,12 @@ export abstract class SessionLifecycle<
   readonly #recoveryListeners = new Set<() => void>();
   /** Wakes the snapshot when a countdown it shows moves to its next second. */
   #countdown: Fiber.Fiber<unknown, unknown> | null = null;
+  #captcha: {
+    challengeId: string;
+    url: string;
+    attempt: SessionAuthAttemptRef;
+    answer: Deferred.Deferred<string | null>;
+  } | null = null;
 
   constructor(
     deps: LifecycleDeps,
@@ -212,6 +232,7 @@ export abstract class SessionLifecycle<
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.#cancelCaptcha();
     this.cancelBackground();
     if (this.#countdown !== null) this.runner.interrupt(this.#countdown);
     this.#countdown = null;
@@ -685,6 +706,14 @@ export abstract class SessionLifecycle<
       ? {
           ref: attempt.attempt,
           method: attempt.kind,
+          ...(this.#captcha
+            ? {
+                captcha: {
+                  challengeId: this.#captcha.challengeId,
+                  url: this.#captcha.url,
+                },
+              }
+            : {}),
           ...(attempt.challengeId
             ? {
                 challenge: {
@@ -718,6 +747,7 @@ export abstract class SessionLifecycle<
       attempt: view,
       emailCooldown: cooldown ?? null,
       guestImports: this.guestImports,
+      kept: this.kept,
     });
     this.#tick(attempt?.expiresAt, [attempt?.resendAt, this.#cooldown?.until], now);
   }
@@ -859,8 +889,181 @@ export abstract class SessionLifecycle<
   }
 
   protected nextEpoch(): number {
+    this.#cancelCaptcha();
     this.epoch += 1;
     return this.epoch;
+  }
+
+  /** A public iframe can answer only the core's current challenge and attempt. */
+  answerCaptcha(input: {
+    attempt: SessionAuthAttemptRef;
+    challengeId: string;
+    token: string | null;
+  }): Effect.Effect<boolean> {
+    return Effect.suspend(() => {
+      const current = this.#captcha;
+      if (
+        !current ||
+        current.challengeId !== input.challengeId ||
+        current.attempt.attemptId !== input.attempt.attemptId ||
+        !this.isCurrentAttempt(input.attempt)
+      )
+        return Effect.succeed(false);
+      return Deferred.succeed(current.answer, input.token);
+    });
+  }
+
+  #cancelCaptcha(): void {
+    const current = this.#captcha;
+    if (current) this.runner.fork(Deferred.succeed(current.answer, null));
+  }
+
+  /** At most one native attempt followed by one CAPTCHA. The server owns each successor challenge. */
+  protected protectedAuthRequest<E = never>(
+    path: string,
+    body: Record<string, unknown>,
+    send: (
+      path: string,
+      body: Record<string, unknown>
+    ) => Effect.Effect<AuthResponse | null, E>,
+    afterChallenge: () => Effect.Effect<void, E> = () => Effect.void,
+    collectEvidence: <A>(
+      work: Effect.Effect<A, AbuseError>
+    ) => Effect.Effect<A, AbuseError | E> = (work) => work
+  ): Effect.Effect<AuthResponse | null, AbuseError | E> {
+    return Effect.gen({ self: this }, function* () {
+      const attempt = this.attempt?.attempt;
+      let route = path;
+      const platform = this.host.bearerSession?.clientKind;
+      const nativeIntent = platform === "ios" || platform === "android";
+      let payload = nativeIntent ? { ...body, native_proof: true } : body;
+      let nativeTried = false;
+      let captchaTried = false;
+      for (let step = 0; step < 3; step += 1) {
+        if (!attempt || !this.isCurrentAttempt(attempt))
+          return yield* Effect.fail(new AbuseError("cancelled"));
+        const response = yield* send(route, payload);
+        if (!response || response.status !== 428) return response;
+        const error = (response.body as { error?: unknown } | null)?.error;
+        if (error !== "captcha_required" && error !== "native_proof_required")
+          return response;
+        // These action refusals cannot change a Cookie, even when their payload is malformed.
+        yield* afterChallenge();
+        const required = abuseRequired.safeParse(response.body);
+        if (!required.success)
+          return yield* Effect.fail(new AbuseError("protocol_mismatch"));
+        const challenge = required.data.challenge;
+        if ((challenge.method === "native" && nativeTried) || captchaTried)
+          return yield* Effect.fail(new AbuseError("provider_unavailable"));
+        if (challenge.method === "native") nativeTried = true;
+        else captchaTried = true;
+        const evidence = this.#abuseEvidence(challenge, attempt);
+        const abuse = yield* collectEvidence(
+          challenge.enforce
+            ? evidence
+            : evidence.pipe(
+                Effect.orElseSucceed(() => ({
+                  challenge_id: challenge.id,
+                  challenge_secret: challenge.secret,
+                  provider: "unavailable" as const,
+                }))
+              )
+        );
+        if (!this.isCurrentAttempt(attempt))
+          return yield* Effect.fail(new AbuseError("cancelled"));
+        const continuation = required.data.registration_continuation;
+        if (continuation) {
+          route = "/v1/comma/auth/registration/complete";
+          payload = {
+            registration_continuation: continuation,
+            abuse,
+            ...(nativeIntent ? { native_proof: true } : {}),
+          };
+        } else payload = { ...payload, abuse };
+      }
+      return yield* Effect.fail(new AbuseError("provider_unavailable"));
+    });
+  }
+
+  #abuseEvidence(
+    challenge: AbuseChallenge,
+    attempt: SessionAuthAttemptRef
+  ): Effect.Effect<AbuseEvidence, AbuseError> {
+    const credential = {
+      challenge_id: challenge.id,
+      challenge_secret: challenge.secret,
+    };
+    if (challenge.expires_at * 1000 <= this.now())
+      return Effect.fail(new AbuseError("provider_unavailable"));
+    const ports = this.host.bearerSession;
+    if (challenge.method === "native" || !challenge.enforce) {
+      if (
+        !ports?.abuseProof ||
+        !ports.sha256 ||
+        !challenge.pow_difficulty ||
+        (ports.clientKind !== "ios" && ports.clientKind !== "android")
+      )
+        return Effect.succeed({ ...credential, provider: "unavailable" });
+      return Effect.gen(function* () {
+        const solution = yield* solveGuestPow(
+          abuseProofInput(challenge),
+          challenge.pow_difficulty!,
+          ports.sha256!
+        );
+        if (!solution) return { ...credential, provider: "unavailable" as const };
+        const proof = yield* ports.abuseProof!(challenge).pipe(
+          Effect.orElseSucceed(() => ({ provider: "unavailable" as const }))
+        );
+        return { ...credential, ...proof, pow_nonce: solution.nonce };
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: 30_000,
+          orElse: () => Effect.fail(new AbuseError("provider_unavailable")),
+        }),
+        Effect.orElseSucceed(() => ({
+          ...credential,
+          provider: "unavailable" as const,
+        }))
+      );
+    }
+    const url = captchaPage(challenge, this.audience());
+    if (!url) return Effect.fail(new AbuseError("protocol_mismatch"));
+    const token = ports?.captcha
+      ? ports
+          .captcha({ url, challengeId: challenge.id })
+          .pipe(Effect.mapError(() => new AbuseError("provider_unavailable")))
+      : Effect.gen({ self: this }, function* () {
+          const answer = yield* Deferred.make<string | null>();
+          const pending = { challengeId: challenge.id, url, attempt, answer };
+          this.#captcha = pending;
+          this.sync();
+          return yield* Deferred.await(answer).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (this.#captcha === pending) this.#captcha = null;
+                this.sync();
+              })
+            )
+          );
+        });
+    return token.pipe(
+      Effect.timeoutOrElse({
+        duration: Math.min(
+          300_000,
+          Math.max(1, challenge.expires_at * 1000 - this.now())
+        ),
+        orElse: () => Effect.succeed(null),
+      }),
+      Effect.flatMap((value) =>
+        value && value.length <= 2048
+          ? Effect.succeed({
+              ...credential,
+              provider: "turnstile" as const,
+              captcha_token: value,
+            })
+          : Effect.fail(new AbuseError("cancelled"))
+      )
+    );
   }
 
   protected isCurrentEpoch(epoch: number): boolean {

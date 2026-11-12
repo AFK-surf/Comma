@@ -17,9 +17,11 @@ defmodule SalixStore.QueueCase do
 
   alias SalixStore.{Repo, RepoTestSetup}
 
-  # A queue's tables: the one its reader claims from and those that refer to
-  # its rows.
+  # A queue's tables: the one its reader claims from, those that refer to its
+  # rows, and those its reader consults to choose a row.
   @queues %{
+    # The archive worker pages through idle bodies of every Conversation.
+    conversation_archive: ~w(salix_conversation_messages),
     conversation_log_recovery: ~w(conversation_log_recovery),
     conversation_search_jobs: ~w(conversation_search_jobs),
     feishu_mirror_backfill: ~w(feishu_mirror_backfill_connects),
@@ -27,6 +29,8 @@ defmodule SalixStore.QueueCase do
     lark_mirror_backfill: ~w(lark_mirror_backfill_connects),
     lark_mirror_outbox: ~w(lark_mirror_outbox),
     qq_mirror_outbox: ~w(qq_mirror_outbox),
+    # The engine claims only live jobs while a live search source is due.
+    slack_semantic: ~w(slack_semantic.oban_jobs slack_semantic.search_sources),
     slack_mirror_backfill: ~w(slack_mirror_backfill_connects),
     slack_mirror_outbox: ~w(slack_mirror_outbox slack_mirror_source_writes),
     triage_patrol_cursors: ~w(triage_patrol_cursors),

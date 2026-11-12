@@ -19,7 +19,7 @@ theorem encoded_preserves_work {framing : CodecFraming} {objects : Objects} {own
     ∃ snapshot bytes rest,
       Lifecycle.persistable stamped [] = .ok (snapshot, rest) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧
       PhysicalHistory framing objects owner session snapshot sealed ∧
       snapshot.get (a "segment_catalog") = cursor.working.get (a "segment_catalog") ∧
       ∀ item, ValueSemantics.Represented cursor.working sealed item →

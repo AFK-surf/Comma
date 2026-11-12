@@ -61,9 +61,6 @@ test("remote browser paints frames and admits mouse and keyboard only after take
   await browserButton.click();
   await expect(browserButton).toHaveAttribute("aria-expanded", "true");
   const panel = page.getByRole("region", { name: "Agent browser" });
-  await expect(
-    panel.getByText("Logins and website storage are shared", { exact: false })
-  ).toBeVisible();
   const canvas = panel.locator("canvas");
   await stepUntil(
     async () => (await canvas.evaluate((node: HTMLCanvasElement) => node.width)) === 16
@@ -72,6 +69,9 @@ test("remote browser paints frames and admits mouse and keyboard only after take
   expect((await state()).inputs).toHaveLength(0);
   await panel.getByRole("button", { name: "Take control", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Return to agent" })).toBeVisible();
+  await expect(
+    panel.getByText("Logins and website storage are shared", { exact: false })
+  ).toBeVisible();
   await canvas.click({ position: { x: 30, y: 20 } });
   await canvas.press("Tab");
   await panel
@@ -88,7 +88,7 @@ test("remote browser paints frames and admits mouse and keyboard only after take
     inputs.some((input) => input.type === "text" && input.text === "中文輸入")
   );
   await panel.getByRole("button", { name: "Return to agent" }).click();
-  await expect(panel.getByRole("textbox")).toBeDisabled();
+  await expect(panel.getByRole("textbox")).toHaveCount(0);
   await expect(panel.getByRole("alert")).toHaveText(
     "Some browser changes were saved. Recent changes on other sites may be missing after recovery."
   );
@@ -99,19 +99,25 @@ test("remote browser paints frames and admits mouse and keyboard only after take
   await testClock().advance(500);
   expect((await state()).streams).toBe(stopped);
   await browserButton.click();
-  await panel.getByRole("button", { name: "Close browser", exact: true }).click();
+  await panel.getByRole("button", { name: "More browser actions" }).click();
+  await page.getByRole("menuitem", { name: "Close browser", exact: true }).click();
   await expect(browserButton).toHaveCount(0);
   await expect(panel).not.toBeVisible();
   await app.stub().call("setBrowserActive", true);
   await stepUntil(() => browserButton.isVisible(), nextRead);
   await browserButton.click();
-  await panel.getByRole("button", { name: "Clear shared logins…" }).click();
-  const confirmation = panel.getByRole("group", { name: "Clear shared browser data" });
+  const clearSharedLogins = async () => {
+    await panel.getByRole("button", { name: "More browser actions" }).click();
+    await page.getByRole("menuitem", { name: "Clear shared logins…" }).click();
+  };
+  await clearSharedLogins();
+  const confirmation = page.getByRole("dialog", { name: "Clear shared browser data" });
   await expect(confirmation).toBeVisible();
   expect((await state()).cleared).toBe(false);
   await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(confirmation).not.toBeVisible();
   expect((await state()).cleared).toBe(false);
-  await panel.getByRole("button", { name: "Clear shared logins…" }).click();
+  await clearSharedLogins();
   await confirmation.getByRole("button", { name: "Clear and close" }).click();
   await eventually(({ cleared }) => cleared);
   await expect(browserButton).toHaveCount(0);

@@ -32,7 +32,7 @@ test("web app renders the authenticated Comma shell controls", async ({ page }) 
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
   await expect(page.getByTestId("comma-window-bar")).toBeVisible();
   await expect(
-    page.getByRole("button", { exact: true, name: "Settings" })
+    page.getByRole("button", { exact: true, name: "Account" })
   ).toBeVisible();
 
   // Search is the window bar's pill (and its chord): a palette over the

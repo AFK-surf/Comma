@@ -28,8 +28,12 @@ import {
 } from "react";
 import type { CommaConversationPreview } from "@comma/core/api-schemas";
 import { useProductInboxItem } from "../../../../product-inbox";
+import {
+  hasUserMessageMentionCandidates,
+  userMessageMentionNodes,
+} from "./UserMessageMentions";
 import { inlineMessagePartPlainText } from "@comma/core/chat";
-import { modelMentionsAsWords, splitUserTaskMentionParts } from "@comma/core/chat";
+import { splitUserTaskMentionParts } from "@comma/core/chat";
 export { messagePartsHaveInlineElements, sameMessageParts } from "@comma/core/chat";
 import { stripCommaProtocolMarkersPreservingWhitespace } from "@comma/core/chat";
 import type { ChatMessage } from "@comma/core/chat";
@@ -40,6 +44,12 @@ import {
   partsDocument,
   type MarkdownTree,
 } from "@comma/core/markdown";
+import { withoutAttachedImages } from "../rows/assistant/messageMarkdownImages";
+import { ScreenLinkCard } from "../../../remote-screen/ScreenLink";
+import {
+  screenLinkCards,
+  withoutScreenLinks,
+} from "../../../remote-screen/screenLinks";
 import {
   escapeReservedInlineTags,
   type CompiledTrustedInlineDocument,
@@ -158,6 +168,8 @@ type InlineElementRenderContext = {
   live?: boolean | undefined;
   groupId: string;
   workspaceId: string;
+  /** A link to a screen, alone on its line, is the screen's card, where the mesh is on (`useScreenDevicesEnabled`). */
+  screenCards?: boolean | undefined;
 };
 
 type InlineElementRendererAdapter<Kind extends ChatInlineMessagePartKind> = {
@@ -234,22 +246,28 @@ function renderInlineMessagePart(
 /**
  * Inline content for a user bubble: the user's own `[title](comma:task/<id>)`
  * mention links render as the same InlineTask chips assistant references use,
- * splicing the pill into the sentence position the mention was typed at.
- * Plain HTTP(S) URLs use the existing chat link routing. All other text stays literal.
- * Returns undefined when neither a mention nor a URL needs a rendered element.
+ * splicing the pill into the sentence position the mention was typed at. The
+ * models, skills and tools they mentioned show as their icon and name.
+ * Plain HTTP(S) URLs use the existing chat link routing. A screen the message is about
+ * (`[name · time](comma:screen/…)`, written with its picture) stands as its name, as a
+ * reply's excerpt shows it. All other text stays literal.
+ * Returns undefined when nothing needs a rendered element.
  */
 export function userMessageContentWithMentions(
   text: string,
   context: InlineElementRenderContext
 ): ReactNode | undefined {
-  const shown = modelMentionsAsWords(text);
-  const parts = splitUserTaskMentionParts(shown);
-  // A model mention changed the words: they are rendered even without a link.
-  if (!parts) return plainTextWithLinks(shown) ?? (shown === text ? undefined : shown);
+  const named = withoutScreenLinks(text);
+  if (named !== text) return userMessageContentWithMentions(named, context) ?? named;
+  const parts = splitUserTaskMentionParts(text);
+  if (!parts)
+    return hasUserMessageMentionCandidates(text)
+      ? userMessageMentionNodes(text, context)
+      : plainTextWithLinks(text);
   return parts.map((part, index) =>
     part.kind === "markdown" ? (
       // eslint-disable-next-line react/no-array-index-key -- static split of one string
-      <span key={index}>{plainTextWithLinks(part.text) ?? part.text}</span>
+      <span key={index}>{userMessageMentionNodes(part.text, context)}</span>
     ) : (
       // eslint-disable-next-line react/no-array-index-key -- static split of one string
       <span key={index}>{renderInlineMessagePart(part, context)}</span>
@@ -274,6 +292,16 @@ export function messageMarkdownElements(
     if (part.kind !== "markdown" && shown.has(elementKey(index)))
       inlineElements.set(elementKey(index), renderInlineMessagePart(part, context));
   });
+  const tree = withoutAttachedImages(
+    message.markdown as MarkdownTree,
+    message.attachments
+  );
+  const cards = context.screenCards ? screenLinkCards(tree) : undefined;
+  for (const [key, link] of cards?.links ?? [])
+    inlineElements.set(
+      key,
+      <ScreenLinkCard link={link} workspaceId={context.workspaceId} />
+    );
   return {
     // The document's text, each element as its tag: the source the renderer's nodes came from.
     content: partsDocument(message.parts ?? [], {
@@ -287,7 +315,7 @@ export function messageMarkdownElements(
       sanitizeMarkdown: stripCommaProtocolMarkersPreservingWhitespace,
     }).content,
     inlineElements,
-    nodes: fromMarkdownTree(message.markdown as MarkdownTree),
+    nodes: fromMarkdownTree(cards?.tree ?? tree),
   };
 }
 

@@ -1,6 +1,7 @@
 import { Button } from "@comma/ui/components/Button";
 import { Dialog } from "@comma/ui/components/dialog";
 import { Dropdown } from "@comma/ui/components/dropdown";
+import { InputField } from "@comma/ui/components/input";
 import {
   Menu,
   MenuItem,
@@ -9,15 +10,7 @@ import {
   MenuTrigger,
 } from "@comma/ui/components/menu";
 import { MoreHorizontalIcon } from "@comma/ui/components/icons";
-import { Toggle } from "@comma/ui/components/toggle";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import type {
   BftAndroidDevice,
   BftCloudVm,
@@ -28,19 +21,14 @@ import type {
 } from "./api";
 import { DialogError, writeErrorMessage } from "./dialogs";
 import { InstallCommand, installErrorMessage } from "./AddRunnerDialog";
+import { HardwareSetupDialog } from "./HardwareSetupDialog";
 import { showFlash } from "./flash";
 import { formatBytes, formatRelative, humanize } from "./format";
 import { messages } from "./messages";
 import { projectHref } from "./navSpec";
 import { useApi, useResource, type Resource } from "./resource";
 import { spaLinkClick } from "./router";
-import {
-  FormSection,
-  SettingsPage,
-  TextField,
-  useConfirm,
-  useWrite,
-} from "./settingsForm";
+import { FormSection, SettingsPage, useConfirm, useWrite } from "./settingsForm";
 import { Skeleton } from "./states";
 
 const t = messages.swarmDevices;
@@ -105,12 +93,10 @@ export function SwarmDevicesPage({
   first: Resource<BftSwarmDevices>;
   onRetry: () => void;
 }) {
-  const api = useApi();
   const last = useRef<BftSwarmDevices | undefined>(undefined);
   if (first.state === "ready") last.current = first.data;
   const data = first.state === "ready" ? first.data : last.current;
   const resource: Resource<BftSwarmDevices> = data ? { state: "ready", data } : first;
-  const [adding, setAdding] = useState(false);
   const devicesPath = projectHref(org, project, "/devices");
   const notify = useCallback(
     (notice: string) => {
@@ -129,30 +115,9 @@ export function SwarmDevicesPage({
     [devicesPath, onRetry]
   );
 
-  // Each page read that still shows a request in flight starts the poll over.
-  useWhileActive(
-    data?.provisioning === true ? data : null,
-    (signal) =>
-      api.deviceProvisioning(org, project, signal).then((status) => status.active),
-    onRetry
-  );
-
-  const manage = data?.project.role === "admin";
-
   return (
     <>
       <SettingsPage
-        actions={
-          manage ? (
-            <button
-              className="bft-btn bft-btn-primary"
-              onClick={() => setAdding(true)}
-              type="button"
-            >
-              {t.addDevice}
-            </button>
-          ) : undefined
-        }
         description={data ? t.description(data.project.name) : undefined}
         onRetry={onRetry}
         resource={resource}
@@ -161,16 +126,17 @@ export function SwarmDevicesPage({
       >
         {(page) => (
           <>
-            <CloudVmSection
-              data={page.cloud_vm}
-              fail={fail}
-              loading={first.state === "loading"}
-              notify={notify}
-              org={org}
-              project={project}
-            />
+            {page.cloud_vm ? (
+              <CloudVmSection
+                data={page.cloud_vm}
+                notify={notify}
+                org={org}
+                project={project}
+              />
+            ) : null}
             <DevicesSection
               data={page}
+              fail={fail}
               loading={first.state === "loading"}
               notify={notify}
               onRetry={onRetry}
@@ -191,82 +157,8 @@ export function SwarmDevicesPage({
           </>
         )}
       </SettingsPage>
-      {adding ? (
-        <AddDeviceDialog
-          onClose={() => setAdding(false)}
-          onCreated={(notice) => {
-            setAdding(false);
-            notify(notice);
-          }}
-          org={org}
-          project={project}
-        />
-      ) : null}
     </>
   );
-}
-
-/**
- * Calls `check` every 2 s while `active` is set and the page is visible; one
- * call at a time, and a reply that arrives after a stop is dropped. When
- * `check` answers false the poll stops and `onDone` runs once.
- */
-function useWhileActive(
-  active: object | null,
-  check: (signal: AbortSignal) => Promise<boolean>,
-  onDone: () => void,
-  intervalMs = 2000
-) {
-  const latest = useRef({ check, onDone });
-  latest.current = { check, onDone };
-  useEffect(() => {
-    if (active === null) return undefined;
-    let stopped = false;
-    let timer: number | undefined;
-    let inflight: AbortController | null = null;
-    const schedule = () => {
-      if (!stopped && !document.hidden && timer === undefined && !inflight)
-        timer = window.setTimeout(tick, intervalMs);
-    };
-    const tick = () => {
-      timer = undefined;
-      if (stopped || document.hidden || inflight) return;
-      const controller = new AbortController();
-      inflight = controller;
-      latest.current.check(controller.signal).then(
-        (still) => {
-          if (stopped || controller.signal.aborted) return;
-          inflight = null;
-          if (still) schedule();
-          else {
-            stopped = true;
-            latest.current.onDone();
-          }
-        },
-        () => {
-          if (stopped || controller.signal.aborted) return;
-          inflight = null;
-          schedule();
-        }
-      );
-    };
-    const onVisibility = () => {
-      if (document.hidden) {
-        window.clearTimeout(timer);
-        timer = undefined;
-        inflight?.abort();
-        inflight = null;
-      } else if (timer === undefined && !inflight) tick();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    schedule();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      inflight?.abort();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [active, intervalMs]);
 }
 
 function Cell({ main, sub }: { main: ReactNode; sub?: ReactNode }) {
@@ -339,60 +231,28 @@ const locationText = (location: BftCloudVm["next_location"]) => {
 
 /**
  * The swarm's Cloud VM and its separate VMM Station Host.
- * An admin controls the Cloud VM switch and the Host authorization.
+ * An admin controls the Host authorization.
  */
 function CloudVmSection({
   org,
   project,
   data,
-  loading,
   notify,
-  fail,
 }: {
   org: string;
   project: string;
   data: BftCloudVm;
-  loading: boolean;
   notify: (notice: string) => void;
-  fail: (error: unknown) => void;
 }) {
   const api = useApi();
   const confirm = useConfirm();
-  const [saving, setSaving] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const { vm, runner } = data;
-  const toggle = (enabled: boolean) => {
-    setSaving(true);
-    api.setCloudComputer(org, project, enabled).then(
-      ({ notice }) => {
-        setSaving(false);
-        notify(notice);
-      },
-      (error: unknown) => {
-        setSaving(false);
-        fail(error);
-      }
-    );
-  };
   const runnerName = runner?.name ?? t.otherHost;
   const status = !data.enabled && !vm ? null : (vm?.status ?? null);
 
   return (
-    <FormSection
-      action={
-        data.manageable ? (
-          <Toggle
-            aria-label={t.cloudVmToggle}
-            checked={data.enabled}
-            disabled={saving || loading}
-            onChange={(event) => toggle(event.target.checked)}
-            size="sm"
-          />
-        ) : undefined
-      }
-      description={t.cloudVmNote}
-      title={t.cloudVmTitle}
-    >
+    <FormSection description={t.cloudVmNote} title={t.cloudVmTitle}>
       <dl className="bft-kv">
         <div>
           <dt>{t.cloudVmStatus}</dt>
@@ -601,6 +461,7 @@ function DevicesSection({
   data,
   loading,
   notify,
+  fail,
   onRetry,
 }: {
   org: string;
@@ -608,31 +469,54 @@ function DevicesSection({
   data: BftSwarmDevices;
   loading: boolean;
   notify: (notice: string) => void;
+  fail: (error: unknown) => void;
   onRetry: () => void;
 }) {
   const api = useApi();
   const confirm = useConfirm();
   const manage = data.project.role === "admin";
+  const [settingUp, setSettingUp] = useState(false);
+  const [addingComputer, setAddingComputer] = useState(false);
+  // The list is a server-side copy the registry refreshes in turn; read the
+  // registry for this swarm first so a board just set up shows at once.
+  const refresh = () => api.refreshDevices(org, project).then(onRetry, fail);
 
   return (
     <FormSection
       action={
-        <Button
-          className="bft-panel-link"
-          hierarchy="tertiary-gray"
-          isDisabled={loading}
-          onPress={onRetry}
-          size="xs"
-        >
-          {t.refresh}
-        </Button>
+        <>
+          <Button
+            className="bft-panel-link"
+            hierarchy="tertiary-gray"
+            isDisabled={loading}
+            onPress={refresh}
+            size="xs"
+          >
+            {t.refresh}
+          </Button>
+          {manage ? (
+            <>
+              <Button
+                hierarchy="secondary-gray"
+                onPress={() => setSettingUp(true)}
+                size="sm"
+              >
+                {t.addHardware}
+              </Button>
+              <Button
+                hierarchy="primary"
+                onPress={() => setAddingComputer(true)}
+                size="sm"
+              >
+                {t.addComputer}
+              </Button>
+            </>
+          ) : null}
+        </>
       }
       description={t.listNote}
       title={t.listTitle}
     >
-      {data.provisioning ? (
-        <output className="bft-quiet bft-quiet-inline">{t.provisioning}</output>
-      ) : null}
       {data.devices.length === 0 ? (
         <p className="bft-quiet bft-quiet-inline">{t.noDevices}</p>
       ) : (
@@ -669,6 +553,15 @@ function DevicesSection({
                       <Cell
                         main={
                           <span title={deviceName(device)}>{deviceName(device)}</span>
+                        }
+                        sub={
+                          device.hardware
+                            ? `${t.hardwareGateway} · ${
+                                device.allows_operations
+                                  ? t.operationsAllowed
+                                  : t.readOnly
+                              }`
+                            : undefined
                         }
                       />
                     </td>
@@ -729,6 +622,25 @@ function DevicesSection({
                       {manage ? (
                         <RowMenu
                           items={[
+                            ...(device.hardware
+                              ? [
+                                  {
+                                    id: "operations",
+                                    label: device.allows_operations
+                                      ? t.blockOperations
+                                      : t.allowOperations,
+                                    onAction: () =>
+                                      api
+                                        .setDeviceOperations(
+                                          org,
+                                          project,
+                                          device.id,
+                                          !device.allows_operations
+                                        )
+                                        .then(({ notice }) => notify(notice), fail),
+                                  },
+                                ]
+                              : []),
                             ...(device.disconnectable
                               ? [
                                   {
@@ -783,8 +695,103 @@ function DevicesSection({
           </table>
         </div>
       )}
+      {settingUp ? (
+        <HardwareSetupDialog
+          onClose={() => {
+            setSettingUp(false);
+            void refresh();
+          }}
+          org={org}
+          project={project}
+        />
+      ) : null}
+      {addingComputer ? (
+        <AddComputerDialog
+          onClose={() => {
+            setAddingComputer(false);
+            void refresh();
+          }}
+          org={org}
+          project={project}
+        />
+      ) : null}
       {confirm.dialog}
     </FormSection>
+  );
+}
+
+/** The one-time command that installs the station on a computer of this swarm. */
+function AddComputerDialog({
+  org,
+  project,
+  onClose,
+}: {
+  org: string;
+  project: string;
+  onClose: () => void;
+}) {
+  const api = useApi();
+  const [name, setName] = useState("");
+  const [issued, setIssued] = useState<BftComputeInstallCommand>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const generate = () => {
+    setBusy(true);
+    setError(undefined);
+    void api.createStationInstallCommand(org, project, name.trim()).then(
+      (answer) => {
+        setIssued(answer);
+        setBusy(false);
+      },
+      (caught: unknown) => {
+        setError(writeErrorMessage(caught));
+        setBusy(false);
+      }
+    );
+  };
+  return (
+    <Dialog
+      isOpen
+      isDismissable={!busy}
+      className="bft-dialog-wide"
+      title={t.addComputer}
+      description={t.addComputerBody}
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+      actions={[
+        {
+          label: messages.runners.done,
+          hierarchy: "secondary-gray",
+          onPress: onClose,
+          disabled: busy,
+        },
+      ]}
+    >
+      {issued ? (
+        <InstallCommand issued={issued} />
+      ) : (
+        <>
+          <InputField
+            className="w-full"
+            disabled={busy}
+            fieldSize="sm"
+            label={t.computerName}
+            onChange={(event) => setName(event.target.value)}
+            value={name}
+            wrapperClassName="bft-form-field"
+          />
+          <Button
+            hierarchy="primary"
+            isDisabled={busy || name.trim() === ""}
+            onPress={generate}
+          >
+            {t.generateComputerCommand}
+          </Button>
+        </>
+      )}
+      {error ? <DialogError message={error} /> : null}
+    </Dialog>
   );
 }
 
@@ -822,19 +829,19 @@ function ComputeSection({
       description={t.computeNote}
       title={t.computeTitle}
       action={
-        manage && !data.cloud_vm.runner ? (
+        manage && !data.cloud_vm?.runner ? (
           <Button
             hierarchy="secondary-gray"
             size="sm"
             onPress={() => setInstallOpen(true)}
           >
-            {t.installLinux}
+            {t.installHost}
           </Button>
         ) : undefined
       }
     >
       {installOpen ? (
-        <LinuxComputeInstallDialog
+        <ComputeHostInstallDialog
           key={`${org}:${project}`}
           org={org}
           project={project}
@@ -1048,126 +1055,7 @@ function AndroidDevice({
   );
 }
 
-/**
- * Add a device on an online runner. The runner list is read when the dialog
- * opens and again on "Check for runners"; one dialog serves every state.
- */
-function AddDeviceDialog({
-  org,
-  project,
-  onClose,
-  onCreated,
-}: {
-  org: string;
-  project: string;
-  onClose: () => void;
-  onCreated: (notice: string) => void;
-}) {
-  const api = useApi();
-  const write = useWrite();
-  const [runners, retry] = useResource(`device-runners:${org}:${project}`, (signal) =>
-    api.deviceRunners(org, project, signal)
-  );
-  const [name, setName] = useState("");
-  const [alias, setAlias] = useState("");
-  const [runner, setRunner] = useState<string>();
-  const choices = runners.state === "ready" ? runners.data.runners : [];
-  const none = runners.state === "ready" && choices.length === 0;
-  const chosen = runner ?? choices[0]?.id ?? "";
-  const close = () => {
-    if (!write.busy) onClose();
-  };
-  const submit = () =>
-    write.run(
-      () =>
-        api.createDevice(org, project, {
-          name: name.trim(),
-          alias: alias.trim(),
-          runner_id: chosen,
-        }),
-      ({ notice }) => onCreated(notice)
-    );
-
-  return (
-    <Dialog
-      actions={[
-        {
-          label: messages.common.cancel,
-          hierarchy: "secondary-gray",
-          onPress: close,
-          disabled: write.busy,
-        },
-        none || runners.state === "error"
-          ? { label: t.checkRunners, hierarchy: "primary", onPress: retry }
-          : {
-              label: write.busy ? messages.settings.saving : t.createOnRunner,
-              hierarchy: "primary",
-              onPress: submit,
-              disabled: write.busy || choices.length === 0,
-            },
-      ]}
-      description={none ? t.noRunnersBody : t.addBody}
-      isDismissable={!write.busy}
-      isOpen
-      onOpenChange={(open) => {
-        if (!open) close();
-      }}
-      title={none ? t.noRunnersTitle : t.addDevice}
-    >
-      <div className="bft-form">
-        {runners.state === "loading" ? (
-          <output className="bft-rows-skeleton bft-rows-skeleton-flush">
-            <Skeleton height={32} />
-            <span className="bft-sr-only">{t.runnersLoading}</span>
-          </output>
-        ) : runners.state === "error" ? (
-          <p className="bft-dialog-error" role="alert">
-            {t.runnersUnavailable}
-          </p>
-        ) : none ? (
-          <a
-            className="bft-link"
-            href={runners.data.runners_href}
-            onClick={spaLinkClick}
-          >
-            {t.openRunners}
-          </a>
-        ) : (
-          <>
-            <TextField
-              disabled={write.busy}
-              error={write.fields.name}
-              label={t.nameLabel}
-              onChange={setName}
-              placeholder={t.namePlaceholder}
-              value={name}
-            />
-            <TextField
-              disabled={write.busy}
-              error={write.fields.alias ?? write.fields.env_alias}
-              label={t.aliasLabel}
-              onChange={setAlias}
-              placeholder={t.aliasPlaceholder}
-              value={alias}
-            />
-            <Dropdown
-              className="bft-form-field"
-              disabled={write.busy}
-              items={choices.map((choice) => ({ id: choice.id, label: choice.label }))}
-              label={t.runnerLabel}
-              onChange={setRunner}
-              size="sm"
-              value={chosen}
-            />
-          </>
-        )}
-        <DialogError message={write.error} />
-      </div>
-    </Dialog>
-  );
-}
-
-function LinuxComputeInstallDialog({
+function ComputeHostInstallDialog({
   org,
   project,
   onClose,
@@ -1201,8 +1089,8 @@ function LinuxComputeInstallDialog({
       isOpen
       isDismissable={!busy}
       className="bft-dialog-wide"
-      title={t.installLinux}
-      description={t.installLinuxBody}
+      title={t.installHost}
+      description={t.installHostBody}
       onOpenChange={(open) => {
         if (!open && !busy) onClose();
       }}
@@ -1219,7 +1107,7 @@ function LinuxComputeInstallDialog({
         <InstallCommand issued={issued} />
       ) : (
         <Button hierarchy="primary" isDisabled={busy} onPress={generate}>
-          {t.generateLinuxCommand}
+          {t.generateHostCommand}
         </Button>
       )}
       {error ? <DialogError message={error} /> : null}

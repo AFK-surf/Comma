@@ -114,9 +114,8 @@ defmodule Comma.MiniApps do
     end
   end
 
-  # An app the Router made has no creator: its members all see it.
   defp owner_visible?(%App{visibility: "private", created_by: creator}, user),
-    do: is_nil(creator) or creator == user["id"]
+    do: creator == user["id"]
 
   defp owner_visible?(_app, _user), do: true
 
@@ -159,7 +158,9 @@ defmodule Comma.MiniApps do
 
   @doc """
   Inserts the app row of `workspace` for the repository it names. The caller
-  made (or checked) the repository first.
+  made (or checked) the repository first. `user_id` is who made it: the
+  signed-in member, or who asked the Router (nil when the Router knows none).
+  `attrs.visibility` defaults to `private`; the Router's apps are `workspace`.
   """
   def insert_app(%Workspace{} = workspace, user_id, attrs) do
     now = SystemsClock.utc_now()
@@ -174,7 +175,7 @@ defmodule Comma.MiniApps do
       description: attrs.description,
       repo_owner: attrs.repo_owner,
       repo_name: attrs.repo_name,
-      visibility: "private",
+      visibility: Map.get(attrs, :visibility, "private"),
       status: "active",
       inserted_at: now,
       updated_at: now
@@ -204,8 +205,7 @@ defmodule Comma.MiniApps do
           where:
             app.status != "deleted" and
               ((app.workspace_id == ^workspace.id and
-                  (app.visibility != "private" or is_nil(app.created_by) or
-                     app.created_by == ^user["id"])) or
+                  (app.visibility != "private" or app.created_by == ^user["id"])) or
                  app.id in subquery(installed_ids)),
           order_by: [desc: app.updated_at, desc: app.id],
           limit: @list_limit
@@ -226,7 +226,7 @@ defmodule Comma.MiniApps do
         where:
           app.status != "deleted" and
             ((app.workspace_id == ^workspace.id and
-                (app.visibility != "private" or is_nil(app.created_by))) or
+                app.visibility != "private") or
                app.id in subquery(installed_ids)),
         order_by: [desc: app.updated_at, desc: app.id],
         limit: ^limit
@@ -239,8 +239,8 @@ defmodule Comma.MiniApps do
   @doc "One shared or installed app. Member-private apps remain outside the Router's scope."
   def router_app(%Workspace{} = workspace, app_id) do
     case get_app(app_id) do
-      %App{workspace_id: id, visibility: visibility, created_by: creator} = app
-      when id == workspace.id and (visibility != "private" or is_nil(creator)) ->
+      %App{workspace_id: id, visibility: visibility} = app
+      when id == workspace.id and visibility != "private" ->
         {:ok, app}
 
       %App{workspace_id: id} = app when id != workspace.id ->
@@ -343,7 +343,7 @@ defmodule Comma.MiniApps do
       if creators == [],
         do: %{},
         else:
-          from(u in User, where: u.id in ^creators, select: {u.id, u.name})
+          from(u in User, where: u.id in ^creators, select: {u.id, {u.name, u.avatar_id}})
           |> Repo.all()
           |> Map.new()
 
@@ -360,6 +360,16 @@ defmodule Comma.MiniApps do
 
     %{live: live, latest: latest, installs: installs, pinned: pinned, authors: authors}
   end
+
+  # Who made the app (`created_by`), as its viewers see it.
+  defp author_view(%App{id: id}, {name, avatar_id}),
+    do: %{
+      "name" => name || "Comma user",
+      "avatar_url" =>
+        if(is_binary(avatar_id), do: "/v1/comma/apps/#{id}/author-avatar/#{avatar_id}")
+    }
+
+  defp author_view(_app, nil), do: %{"name" => "Comma user", "avatar_url" => nil}
 
   @doc """
   The contract's app object as `workspace_id` sees it (nil for a link
@@ -396,12 +406,13 @@ defmodule Comma.MiniApps do
         if(shown && is_binary(manifest["cover"]),
           do: "/v1/comma/apps/#{app.id}/cover?v=#{shown.number}"
         ),
+      "screenshot_urls" => screenshot_urls(app.id, shown),
       "repo" => %{"owner" => app.repo_owner, "name" => app.repo_name},
       "visibility" => app.visibility,
       "status" => app.status,
       "live_version" => live && live.number,
       "latest_version" => latest && latest.number,
-      "author" => %{"name" => ctx.authors[app.created_by] || "Comma user"},
+      "author" => author_view(app, ctx.authors[app.created_by]),
       "capabilities" => manifest["capabilities"] || [],
       "egress" => get_in(manifest, ["backend", "egress"]) || [],
       "storage" => manifest["storage"] || [],
@@ -455,16 +466,30 @@ defmodule Comma.MiniApps do
             error -> {:halt, error}
           end
 
+        {"visibility", {:ok, value}} when value == app.visibility ->
+          {:cont, {:ok, acc}}
+
         {"visibility", {:ok, value}} when value in @visibilities ->
-          if value == app.visibility,
-            do: {:cont, {:ok, acc}},
-            else: {:cont, {:ok, Map.put(acc, :visibility, value)}}
+          case visibility_allowed(app, value) do
+            :ok -> {:cont, {:ok, Map.put(acc, :visibility, value)}}
+            error -> {:halt, error}
+          end
 
         {"visibility", _} ->
           {:halt, {:error, {:bad_request, "visibility is private, workspace or link"}}}
       end
     end)
   end
+
+  @doc """
+  Whether `app` may take `visibility`. A private app is its creator's alone,
+  so one with no creator (the Router knew nobody, or its creator deleted their
+  account) cannot become private: nobody would see it.
+  """
+  def visibility_allowed(%App{created_by: nil}, "private"),
+    do: {:error, {:bad_request, "an app with no creator cannot be private"}}
+
+  def visibility_allowed(_app, _visibility), do: :ok
 
   @doc "Marks an app deleted and removes its sharing now; the cleanup worker removes the rest."
   def delete(user, session, workspace_id, app_id) do
@@ -1080,6 +1105,18 @@ defmodule Comma.MiniApps do
     end
   end
 
+  @doc "The avatar of who made the app (`created_by`), to a viewer who reaches the app."
+  def author_avatar(user, session, app_id, via, avatar_id) do
+    with {:ok, rt} <- runtime(user, session, app_id, via),
+         author when is_binary(author) <- rt.app.created_by,
+         {:ok, _type, _body} = avatar <- Comma.ProfileAvatar.fetch(author, avatar_id) do
+      avatar
+    else
+      {:error, :signup_required} = error -> error
+      _ -> {:error, :not_found}
+    end
+  end
+
   @doc "The icon of Version `number` (a ready Version the viewer reaches)."
   def icon(user, session, app_id, via, number),
     do: version_image(user, session, app_id, via, number, "icon")
@@ -1102,6 +1139,33 @@ defmodule Comma.MiniApps do
            Repo.get_by(Version, app_id: rt.app.id, number: number),
          {:ok, body} <- Blobs.get(key.(rt.app.id, number)) do
       {:ok, body, type.(path) || "application/octet-stream"}
+    else
+      {:error, :signup_required} = error -> error
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp screenshot_urls(_app, nil), do: []
+
+  defp screenshot_urls(app, version) do
+    (version.manifest["screenshots"] || [])
+    |> Enum.with_index()
+    |> Enum.map(fn {_, index} ->
+      "/v1/comma/apps/#{app}/screenshots/#{index}?v=#{version.number}"
+    end)
+  end
+
+  @doc "A screenshot of a ready Version the viewer reaches."
+  def screenshot(user, session, app_id, via, number, index) do
+    with {:ok, rt} <- runtime(user, session, app_id, via),
+         {:ok, number} <- positive(number),
+         true <- number == rt.version.number or rt.kind == :owner,
+         {index, ""} when index in 0..5 <- Integer.parse(index),
+         %Version{state: "ready"} = version <-
+           Repo.get_by(Version, app_id: rt.app.id, number: number),
+         path when is_binary(path) <- Enum.at(version.manifest["screenshots"] || [], index),
+         {:ok, body} <- Blobs.get(Blobs.screenshot_key(rt.app.id, number, index)) do
+      {:ok, body, Manifest.cover_type(path)}
     else
       {:error, :signup_required} = error -> error
       _ -> {:error, :not_found}

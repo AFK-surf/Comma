@@ -1,9 +1,11 @@
 import Foundation
+import SwiftUI
 
 /// An Agent's request to the person in a conversation, as the client core's `agentRequests` topic reads it (a
 /// Capability Request). The server owns its status and outcome: the first ending wins, and every device shows it.
-/// Only connecting an account (`oauth_authorization`) has a card so far; its success is the provider's verified
-/// callback, so the person here opens the provider's page or declines.
+/// Connecting an account (`oauth_authorization`) succeeds on the provider's verified callback, so the person here opens
+/// the provider's page or declines. A location request (`location`) ends when the person shares this device's position
+/// once or declines; its `provider` is `locationProvider`, since no account stands behind it.
 struct AgentRequest: Sendable, Equatable, Identifiable {
     enum Status: String, Sendable {
         case pending, completed
@@ -14,7 +16,11 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
         case failed
     }
 
-    enum Outcome: String, Sendable { case connected, declined }
+    enum Outcome: String, Sendable { case connected, shared, declined }
+
+    static let locationProvider = "location"
+    /// This device's position is asked for, not an account.
+    var isLocation: Bool { provider == Self.locationProvider }
 
     let id: String
     let status: Status
@@ -32,9 +38,60 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
     let authorizationURL: URL?
     /// The account it connected.
     let account: String?
+    /// The name the Agent gave the account.
+    let alias: String?
+    /// What a secret is called, in the Agent's words.
+    let label: String?
+    /// What the person fills in first, while the request waits.
+    let input: Input?
+
+    /// A `secret` value ends the request; the Workspace's own `app` leaves it waiting on the provider's page.
+    struct Input: Sendable, Equatable {
+        enum Kind: String, Sendable { case secret, app, device, open, paste }
+
+        let kind: Kind
+        /// Where the person finds it (always https).
+        let helpURL: URL?
+        /// The address an app has to allow.
+        let redirectURI: String?
+        /// A CLI login's device code, to confirm on the page.
+        let code: String?
+
+        /// The card's button asks for what the person fills in, not for a page to open.
+        var fills: Bool { kind == .secret || kind == .app || kind == .paste }
+
+        init?(_ json: NSDictionary?) {
+            guard let json, let kind = json.string("kind").flatMap(Kind.init(rawValue:)) else { return nil }
+            self.kind = kind
+            helpURL = json.string("helpUrl").flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+            redirectURI = json.string("redirectUri")
+            code = json.string("code")
+        }
+    }
+
+    /// The card's title: a secret by what the Agent calls it, an account by its provider.
+    var title: LocalizedStringKey {
+        switch provider {
+        case Self.locationProvider: "Share your location"
+        case "secret": "Fill in \(secretName)"
+        case "cli": "Log in to \(alias ?? "") CLI"
+        default: "Connect \(providerName)"
+        }
+    }
+
+    var secretName: String { label ?? alias ?? providerName }
 
     /// Nil for a request the app draws no card for.
     init?(_ json: NSDictionary) {
+        if json.string("type") == "location" {
+            guard let id = json.string("id"), let status = json.string("status").flatMap(Status.init(rawValue:)),
+                  let location = json.object("location") else { return nil }
+            self.init(id: id, status: status, outcome: json.string("outcome").flatMap(Outcome.init(rawValue:)),
+                      expiresAt: json.double("expiresAt"), createdAt: json.double("createdAt"),
+                      sourceMessageID: json.string("sourceMessageId"), provider: Self.locationProvider,
+                      reason: location.text("reason") ?? "")
+            return
+        }
         guard json.string("type") == "oauth_authorization", let id = json.string("id"),
               let status = json.string("status").flatMap(Status.init(rawValue:)),
               let oauth = json.object("oauth"), let provider = oauth.string("provider") else { return nil }
@@ -43,14 +100,15 @@ struct AgentRequest: Sendable, Equatable, Identifiable {
                   sourceMessageID: json.string("sourceMessageId"), provider: provider, reason: oauth.text("reason") ?? "",
                   // It opens in the browser: only an https page.
                   authorizationURL: oauth.string("authorizationUrl").flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil },
-                  account: oauth.string("account"))
+                  account: oauth.string("account"), alias: oauth.string("alias"), label: oauth.string("label"), input: Input(oauth.object("input")))
     }
 
     init(id: String, status: Status, outcome: Outcome? = nil, expiresAt: Double? = nil, createdAt: Double? = nil,
-         sourceMessageID: String? = nil, provider: String, reason: String, authorizationURL: URL? = nil, account: String? = nil) {
+         sourceMessageID: String? = nil, provider: String, reason: String, authorizationURL: URL? = nil, account: String? = nil,
+         alias: String? = nil, label: String? = nil, input: Input? = nil) {
         self.id = id; self.status = status; self.outcome = outcome; self.expiresAt = expiresAt; self.createdAt = createdAt
         self.sourceMessageID = sourceMessageID; self.provider = provider; self.reason = reason
-        self.authorizationURL = authorizationURL; self.account = account
+        self.authorizationURL = authorizationURL; self.account = account; self.alias = alias; self.label = label; self.input = input
     }
 
     /// The requests of the core's `agentRequests` value, newest first as it gives them.

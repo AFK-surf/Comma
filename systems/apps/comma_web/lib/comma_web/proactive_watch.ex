@@ -342,7 +342,8 @@ defmodule CommaWeb.ProactiveWatch do
     if Comma.MemberSourceConsents.binding(
          binding["workspace_id"],
          binding["user_id"],
-         binding["toolkit"]
+         binding["toolkit"],
+         binding["connection_id"]
        ) == Map.take(binding, ~w(connection_id consent_revision)),
        do: :ok,
        else: {:error, :proactive_source_revoked}
@@ -381,7 +382,7 @@ defmodule CommaWeb.ProactiveWatch do
     with true <- is_binary(toolkit) and is_binary(account) and is_map(args["arguments"]),
          true <- bounded_read?(args),
          %{"connection_id" => ^account} = receipt <-
-           Comma.MemberSourceConsents.binding(workspace["id"], user, toolkit),
+           Comma.MemberSourceConsents.binding(workspace["id"], user, toolkit, account),
          {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
          {:ok, connected} <-
            client().get_connected_account(settings, account, error_mode: :structured),
@@ -530,9 +531,15 @@ defmodule CommaWeb.ProactiveWatch do
   """
   def project_result(row, tool, content) do
     if tool in pinned_tools(row),
-      do: Jason.encode!(CommaWeb.ProactiveSourceProjection.project(content)),
+      do: Jason.encode!(loop_projection(tool, content)),
       else: content
   end
+
+  # A thread grows at its end, where a reply must stay visible to the watch.
+  defp loop_projection("mcp.slack.slack_read_thread", content),
+    do: CommaWeb.ProactiveSourceProjection.newest(content)
+
+  defp loop_projection(_tool, content), do: CommaWeb.ProactiveSourceProjection.project(content)
 
   def provider(%{"tool" => "recommendation.read"}), do: "Routine"
   def provider(nil), do: "Gmail"
@@ -845,7 +852,7 @@ defmodule CommaWeb.ProactiveWatch do
         is_binary(args["intent"]) and byte_size(args["intent"]) in 1..500 and
         is_map(source) and is_map(source["arguments"]) and
         byte_size(Jason.encode!([source, args["related"]])) <= 5000 and
-        is_integer(interval) and (interval == 0 or interval in 300_000..86_400_000) and
+        is_integer(interval) and (interval == 0 or interval in 60_000..86_400_000) and
         (interval > 0 or is_map(args["trigger"])) and
         (is_nil(source["event_argument"]) or
            (is_binary(source["event_argument"]) and is_binary(source["event_field"]) and

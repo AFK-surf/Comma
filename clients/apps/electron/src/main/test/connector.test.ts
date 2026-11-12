@@ -22,7 +22,7 @@ beforeEach(async () => {
   stationDir = join(tempDir, "station-release");
   await mkdir(join(stationDir, "mesh", "target", "release"), { recursive: true });
   await writeFile(
-    join(stationDir, "mesh", "target", "release", "stillfail-station"),
+    join(stationDir, "mesh", "target", "release", "comma-station"),
     "#!/bin/sh\n",
     { mode: 0o755 }
   );
@@ -115,7 +115,7 @@ describe("ConnectorService", () => {
     );
     const plist = await readFile(plistPath, "utf8");
     expect(plist).toContain(
-      `<string>${join(stationDir, "mesh", "target", "release", "stillfail-station")}</string>
+      `<string>${join(stationDir, "mesh", "target", "release", "comma-station")}</string>
     <string>run</string>
     <string>--app</string>
     <string>${stationDir}</string>

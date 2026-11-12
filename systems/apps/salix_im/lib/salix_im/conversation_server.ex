@@ -8,8 +8,8 @@ defmodule SalixIM.ConversationServer do
 
   require SystemsRuntime.Proc, as: Proc
 
-  alias SalixIM.SourceRefProtection
-  alias SalixStore.{CasRecord, Crypto, Ids, Keys, S3}
+  alias SalixIM.{ConversationCreateRequests, SourceRefProtection}
+  alias SalixStore.{Crypto, Ids}
 
   @owner_call_timeout_ms 30_000
   @generated_id_retries 8
@@ -39,24 +39,8 @@ defmodule SalixIM.ConversationServer do
   def recover_log(group_id, conversation_id, target),
     do: call(group_id, conversation_id, {:recover_log, target})
 
-  def complete_log_recovery(group_id, conversation_id, target, observed_memberships),
-    do: call(group_id, conversation_id, {:complete_log_recovery, target, observed_memberships})
-
-  def delivery_sources(group_id, conversation_id),
-    do: call(group_id, conversation_id, :delivery_sources)
-
-  @doc false
-  def repair_display_projection(group_id, conversation_id),
-    do: call(group_id, conversation_id, :repair_display_projection)
-
-  @doc false
-  def repair_task_activity_projection(group_id, conversation_id),
-    do: call(group_id, conversation_id, :repair_task_activity_projection, wake_on_recovery: false)
-
-  def list_group_activity_tasks(group_id) do
-    with :ok <- call_group(group_id, :activity_tasks),
-         do: SalixIM.Conversations.list_group_activity_tasks(group_id)
-  end
+  def list_group_activity_tasks(group_id),
+    do: SalixIM.Conversations.list_group_activity_tasks(group_id)
 
   def create_group_conversation(group_id, attrs) when is_map(attrs) do
     with :ok <- SalixIM.TaskArchive.ordinary_update(%{}, attrs),
@@ -99,6 +83,10 @@ defmodule SalixIM.ConversationServer do
       call(group_id, conversation_id, {:update_group_conversation, attrs})
     end
   end
+
+  def finish_meeting_plan(group_id, conversation_id, plan_id, status)
+      when is_binary(plan_id) and status in ~w(completed failed cancelled),
+      do: call(group_id, conversation_id, {:finish_meeting_plan, plan_id, status})
 
   def link_task_mail(group_id, conversation_id, router_id, ref) when is_map(ref),
     do: call(group_id, conversation_id, {:link_task_mail, router_id, ref})
@@ -411,6 +399,14 @@ defmodule SalixIM.ConversationServer do
       )
 
   @doc false
+  def archive_messages(group_id, conversation_id, limit \\ 1_000),
+    do: call(group_id, conversation_id, {:archive_messages, limit}, wake_on_recovery: false)
+
+  @doc false
+  def cleanup_archive_bodies(group_id, conversation_id, limit \\ 1_000),
+    do: call(group_id, conversation_id, {:cleanup_archive_bodies, limit}, wake_on_recovery: false)
+
+  @doc false
   def migrate_participant_notification_filter(group_id, conversation_id, participant_id),
     do:
       call(
@@ -544,9 +540,7 @@ defmodule SalixIM.ConversationServer do
       when is_binary(request_identity) and byte_size(request_identity) in 1..512 do
     with {:ok, group_id} <- require_group_id(group_id),
          {:ok, _group} <- SalixIM.GroupDirectory.get_group(group_id) do
-      key = Keys.ctl_group_conversation_create_request(group_id, Crypto.hex(request_identity))
-
-      case CasRecord.get(key, :invalid_conversation_create_request) do
+      case ConversationCreateRequests.read(group_id, request_identity) do
         {:ok,
          %{
            "group_id" => ^group_id,
@@ -573,9 +567,7 @@ defmodule SalixIM.ConversationServer do
   @doc "The automatic target already reserved by this exact creation request, if any."
   def task_request_placement(group_id, request_identity)
       when is_binary(request_identity) and request_identity != "" do
-    key = Keys.ctl_group_conversation_create_request(group_id, Crypto.hex(request_identity))
-
-    case CasRecord.get(key, :invalid_conversation_create_request) do
+    case ConversationCreateRequests.read(group_id, request_identity) do
       {:ok, %{"group_id" => ^group_id, "request_identity" => ^request_identity} = binding} ->
         {:ok, binding["task_placement"]}
 
@@ -632,6 +624,10 @@ defmodule SalixIM.ConversationServer do
   """
   def task_loop_wake(group_id, conversation_id, loop, payload, source_id),
     do: call(group_id, conversation_id, {:task_loop_wake, loop, payload, source_id})
+
+  @doc "The Session of the Task's Worker that the Loop `loop` wakes: the Loop's Agent in the Task."
+  def task_loop_worker(group_id, conversation_id, loop),
+    do: call(group_id, conversation_id, {:task_loop_worker, loop})
 
   @doc "Reopen an ended Loop Task with the command for its new Loop request."
   def restart_task_loop(group_id, conversation_id, request, command, router_id, source, human_at),
@@ -919,7 +915,6 @@ defmodule SalixIM.ConversationServer do
   defp ensure_conversation_create_request(group_id, request_identity, attrs) do
     request_identity = trim(request_identity)
     fingerprint = create_request_fingerprint(attrs)
-    key = Keys.ctl_group_conversation_create_request(group_id, Crypto.hex(request_identity))
 
     candidate = %{
       "version" => 1,
@@ -937,23 +932,7 @@ defmodule SalixIM.ConversationServer do
 
     with {:ok, _group} <- SalixIM.GroupDirectory.get_group(group_id),
          :ok <- require_nonblank(request_identity, "client_request_id") do
-      CasRecord.update(key, fn
-        nil ->
-          candidate
-
-        %{
-          "group_id" => ^group_id,
-          "request_identity" => ^request_identity,
-          "request_fingerprint" => ^fingerprint,
-          "conversation_id" => conversation_id
-        } = existing ->
-          if Ids.valid_conversation_id?(conversation_id),
-            do: {:unchanged, existing},
-            else: {:error, :invalid_conversation_create_request}
-
-        _existing ->
-          {:error, {:conflict, "conversation create request was reused with different content"}}
-      end)
+      ConversationCreateRequests.reserve(candidate)
     end
   end
 
@@ -968,8 +947,10 @@ defmodule SalixIM.ConversationServer do
   end
 
   defp ensure_conversation_id_available(group_id, conversation_id) do
-    case S3.get(Keys.ctl_group_conversation(group_id, conversation_id)) do
-      {:ok, _conversation} -> {:error, :exists}
+    case SalixIM.ConversationPGStore.read_creation(
+           SalixIM.ConversationPGStore.new(group_id, conversation_id)
+         ) do
+      {:ok, _conversation, _revision} -> {:error, :exists}
       {:error, :not_found} -> :ok
       {:error, _reason} = error -> error
     end

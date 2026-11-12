@@ -33,6 +33,8 @@ enum TransportType {
     Primary,
     /// A backup path: only used when no primary path is available.
     Backup,
+    /// comma: the last resort, used only when no other path is available (`custom_transports_last`).
+    LastResort,
 }
 
 /// Bias configuration for a single transport kind.
@@ -89,6 +91,8 @@ impl TransportBias {
 #[derive(Debug, Clone)]
 pub(crate) struct BiasedRttPathSelector {
     biases: Arc<FxHashMap<AddrKind, TransportBias>>,
+    /// comma: custom transports go after the relay, however fast they are.
+    custom_last: bool,
 }
 
 impl Default for BiasedRttPathSelector {
@@ -102,11 +106,20 @@ impl Default for BiasedRttPathSelector {
         map.insert(AddrKind::Relay, TransportBias::backup());
         Self {
             biases: Arc::new(map),
+            custom_last: false,
         }
     }
 }
 
 impl BiasedRttPathSelector {
+    /// comma: direct, then the relay, then custom transports.
+    pub(crate) fn custom_transports_last() -> Self {
+        Self {
+            custom_last: true,
+            ..Self::default()
+        }
+    }
+
     /// Returns a new selector with the given bias added or updated for `kind`.
     #[cfg(all(test, feature = "unstable-custom-transports"))]
     pub(crate) fn with_bias(self, kind: AddrKind, bias: TransportBias) -> Self {
@@ -114,11 +127,18 @@ impl BiasedRttPathSelector {
         map.insert(kind, bias);
         Self {
             biases: Arc::new(map),
+            custom_last: self.custom_last,
         }
     }
 
     /// Looks up the bias for an address.  Defaults to primary with no RTT bias.
     fn bias_for(&self, addr: &FourTuple) -> TransportBias {
+        if self.custom_last && matches!(addr.addr_kind(), AddrKind::Custom(_)) {
+            return TransportBias {
+                transport_type: TransportType::LastResort,
+                rtt_bias: 0,
+            };
+        }
         self.biases
             .get(&addr.addr_kind())
             .copied()

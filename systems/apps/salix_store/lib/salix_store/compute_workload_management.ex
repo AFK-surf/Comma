@@ -49,8 +49,18 @@ defmodule SalixStore.ComputeWorkloadManagement do
     end
   end
 
-  # The retry targets the observed generation. It replays no command, so an
-  # unknown command outcome stays as it is and does not block the retry.
+  @doc """
+  Whether a member's Retry may reopen this Workload: a Shell, or the Group's
+  own Station (`SalixStore.ComputeGroupStation`), which no other owner brings
+  back from `action_required`. Other business owners recover their own.
+  """
+  def member_retryable?(workload), do: workload.kind == "shell" or group_station?(workload)
+
+  defp group_station?(workload),
+    do:
+      workload.kind == "service" and workload.template_key == "station.default" and
+        match?(%{"kind" => "group"}, workload.owner_ref)
+
   def retry(tenant, project, id, generation, authorize) do
     Repo.transaction(fn ->
       workload =
@@ -61,45 +71,160 @@ defmodule SalixStore.ComputeWorkloadManagement do
 
       if workload.generation != generation, do: Repo.rollback(:revision_conflict)
 
-      if workload.kind != "shell", do: Repo.rollback(:business_owner_required)
-      allocation = Repo.get!(Compute.Allocation, workload.allocation_id)
-      binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
-      if binding.provider != "agent_vmm", do: Repo.rollback(:unsupported_provider)
+      if not member_retryable?(workload), do: Repo.rollback(:business_owner_required)
 
-      if SalixStore.ComputeWorkloadUpdate.active?(workload),
-        do: Repo.rollback(:update_in_progress)
+      reopen!(workload)
+    end)
+  end
 
-      if workload.deletion || workload.desired_state != "ready",
-        do: Repo.rollback(:deletion_in_progress)
+  # Host-side failures that a new Host connection can clear. Other parked
+  # errors need a person to look first.
+  @healable_codes ~w(provider_command_failed provider_command_outcome_unknown)
 
-      now = SystemsClock.utc_now()
+  @doc """
+  Reopens the Group Station once its Host connects again, when its current
+  generation is parked on a Host-side failure. Answers `:ok` when nothing
+  needs reopening.
+  """
+  def heal_group_station(workload_id) do
+    Repo.transaction(fn ->
+      workload =
+        Repo.one(from(w in Compute.Workload, where: w.id == ^workload_id, lock: "FOR UPDATE")) ||
+          Repo.rollback(:not_found)
 
-      claim =
+      parked =
         Repo.one(
           from(c in Compute.ReconcilerClaim,
-            where: c.workload_id == ^id and c.generation == ^generation,
+            where: c.workload_id == ^workload.id and c.generation == ^workload.generation,
+            select: c.last_error
+          )
+        ) || %{}
+
+      if group_station?(workload) and parked["kind"] == "action_required" and parked["code"] in @healable_codes,
+         do: reopen!(workload),
+         else: :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:ok, %Compute.Workload{}} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  # The reopen preserves commands and their outcomes. A parked allocation
+  # projection can authorize one new desired-state attempt on the same target.
+  defp reopen!(workload) do
+    id = workload.id
+    generation = workload.generation
+
+    allocation =
+      Repo.one!(
+        from(a in Compute.Allocation,
+          where: a.id == ^workload.allocation_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    environment = Repo.get!(Compute.Environment, allocation.environment_id)
+    binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
+    if binding.provider != "agent_vmm", do: Repo.rollback(:unsupported_provider)
+
+    if SalixStore.ComputeWorkloadUpdate.active?(workload),
+      do: Repo.rollback(:update_in_progress)
+
+    if workload.deletion || workload.desired_state != "ready",
+      do: Repo.rollback(:deletion_in_progress)
+
+    if allocation.status == "released" or allocation.generation != environment.generation or
+         environment.desired_state != "ready" or binding.status == "revoked" or
+         (allocation.provider_observation || %{})["allocation_state"] in [
+           "retained",
+           "discarded"
+         ] or
+         Compute.allocation_release_requested?(allocation),
+       do: Repo.rollback(:allocation_scope_changed)
+
+    now = SystemsClock.utc_now()
+
+    claim =
+      Repo.one(
+        from(c in Compute.ReconcilerClaim,
+          where: c.workload_id == ^id and c.generation == ^generation,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    if claim && claim.lease_expires_at && DateTime.compare(claim.lease_expires_at, now) == :gt,
+      do: Repo.rollback(:update_in_progress)
+
+    retry_allocation_projection!(allocation, workload, claim, now)
+
+    # Reopen observation without replacing the allocation or execution identity.
+    Repo.update_all(
+      from(c in Compute.ReconcilerClaim,
+        where: c.workload_id == ^id and c.generation == ^generation
+      ),
+      set: [last_error: %{}, next_retry_at: now, updated_at: now]
+    )
+
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^id),
+      set: [observed_state: "pending", updated_at: now],
+      inc: [revision: 1]
+    )
+
+    Repo.get!(Compute.Workload, id)
+  end
+
+  defp retry_allocation_projection!(allocation, workload, claim, now) do
+    error = (claim && claim.last_error) || %{}
+
+    if allocation.status != "ready" and error["kind"] == "action_required" and
+         error["resource"] == "storage_headroom" do
+      command =
+        Repo.one(
+          from(c in Compute.Command,
+            where:
+              c.allocation_id == ^allocation.id and c.workload_id == ^workload.id and
+                c.kind == "allocation.ensure" and c.target_generation == ^allocation.generation,
+            order_by: [desc: c.target_revision, desc: c.created_at, desc: c.id],
+            limit: 1,
             lock: "FOR UPDATE"
           )
         )
 
-      if claim && claim.lease_expires_at && DateTime.compare(claim.lease_expires_at, now) == :gt,
-        do: Repo.rollback(:update_in_progress)
+      if command && command.status == "unknown_outcome" do
+        ensure = get_in(command.payload || %{}, ["command_json", "ensureAllocation"])
+        resources = (workload.spec || %{})["resources"] || %{}
+        binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
+        pool = Repo.get!(Compute.Pool, binding.pool_id)
+        intent = Map.merge(pool.provider_policy || %{}, workload.spec || %{})
 
-      # Reopen observation of the same desired operation. No command, credential,
-      # allocation, or execution identity is replaced by a foreground retry.
-      Repo.update_all(
-        from(c in Compute.ReconcilerClaim,
-          where: c.workload_id == ^id and c.generation == ^generation
-        ),
-        set: [last_error: %{}, next_retry_at: now, updated_at: now]
-      )
+        egress =
+          if intent["egress_mode"] == "deny_all",
+            do: "EGRESS_MODE_DENY_ALL",
+            else: "EGRESS_MODE_PUBLIC_INTERNET"
 
-      Repo.update_all(from(w in Compute.Workload, where: w.id == ^id),
-        set: [observed_state: "pending", updated_at: now],
-        inc: [revision: 1]
-      )
+        unless command.classification == "desired_state" and
+                 (allocation.provider_observation || %{})["allocation_state"] == "draining" and
+                 get_in(command.evidence || %{}, ["result", "capacityDimension"]) ==
+                   "CAPACITY_DIMENSION_STORAGE_HEADROOM" and is_map(ensure) and
+                 ensure["allocationId"] == allocation.id and
+                 ensure["generation"] == allocation.generation and
+                 ensure["egressMode"] == egress and
+                 ensure["limits"] == %{
+                   "pids" => resources["pid_max"],
+                   "diskBytes" => resources["writable_quota_bytes"]
+                 },
+               do: Repo.rollback(:allocation_scope_changed)
 
-      Repo.get!(Compute.Workload, id)
-    end)
+        # Model anchor: ComputeCapacityAction.OperatorRetries. The new revision
+        # changes only desired-state command deduplication. Old UNKNOWN evidence
+        # and allocation generation remain intact.
+        Repo.update_all(from(a in Compute.Allocation, where: a.id == ^allocation.id),
+          set: [status: "allocating", operation_outcome: "pending", updated_at: now],
+          inc: [revision: 1]
+        )
+      end
+    end
   end
 end

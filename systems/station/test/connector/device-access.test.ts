@@ -147,3 +147,25 @@ test("TestRuntimeProbeReportsThePathRuntimeAndItsSignIn", async () => {
   );
   await Effect.runPromise(c.close());
 });
+
+test("a desktop Workspace's connection takes the local sign-in from Salix, and nothing else", async () => {
+  const asked: Array<[unknown, string]> = [];
+  const accounts = { chooseLocal: async (runtime: unknown, by: string) => (asked.push([runtime, by]), { runtime, source: "local", signed_in: true }) };
+  const c = makeConnector({ root: tempDir(), deviceMode: true, configPath: join(tempDir(), "instance.json"), scope: "", env: { HOME: tempDir() } }, undefined, { access: computerAccess(stationConfig()), accounts });
+  assert.equal(c.metadata().capabilities!.account_source, 1);
+  const ask = (params: Record<string, unknown>) => Effect.runPromiseExit(c.dispatchForTest("s", "account_source", params));
+  for (const source of ["workspace", "endpoint", "none", undefined]) {
+    assert.ok(Exit.isFailure(await ask({ runtime: "claude", source, by: "usr_owner" })), `${source} was taken from Salix`);
+  }
+  assert.deepEqual(asked, [], "a refused source reached the accounts");
+  const answer = await ask({ runtime: "claude", source: "local", by: "usr_owner" });
+  assert.ok(Exit.isSuccess(answer));
+  assert.deepEqual(asked, [["claude", "usr_owner"]]);
+  await Effect.runPromise(c.close());
+
+  // A connection with no Workspace of a person's (a Workload's, the station's own) does not offer it.
+  const own = makeConnector({ root: tempDir(), deviceMode: true, scope: "", env: { HOME: tempDir() } }, undefined, { access: computerAccess(stationConfig()) });
+  assert.equal(own.metadata().capabilities!.account_source, undefined);
+  assert.ok(Exit.isFailure(await Effect.runPromiseExit(own.dispatchForTest("s", "account_source", { runtime: "claude", source: "local" }))));
+  await Effect.runPromise(own.close());
+});

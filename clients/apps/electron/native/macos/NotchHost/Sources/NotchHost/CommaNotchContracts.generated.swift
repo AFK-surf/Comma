@@ -358,6 +358,7 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
     public let airDrop: CommaNotchScenePayloadAirDrop?
     public let compactSideWidth: Int?
     public let detail: String?
+    public let dismissTaskLabel: String?
     public let hasActivity: Bool?
     public let listSubtitle: String?
     public let listTitle: String?
@@ -371,6 +372,7 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
         airDrop: CommaNotchScenePayloadAirDrop? = nil,
         compactSideWidth: Int? = nil,
         detail: String? = nil,
+        dismissTaskLabel: String? = nil,
         hasActivity: Bool? = nil,
         listSubtitle: String? = nil,
         listTitle: String? = nil,
@@ -383,6 +385,7 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
         self.airDrop = airDrop
         self.compactSideWidth = compactSideWidth
         self.detail = detail
+        self.dismissTaskLabel = dismissTaskLabel
         self.hasActivity = hasActivity
         self.listSubtitle = listSubtitle
         self.listTitle = listTitle
@@ -398,6 +401,7 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
         self.airDrop = try CommaNativeContractValidation.decodeOptional(CommaNotchScenePayloadAirDrop.self, from: container, forKey: .airDrop)
         self.compactSideWidth = try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .compactSideWidth, minimum: 32, maximum: 240)
         self.detail = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .detail)
+        self.dismissTaskLabel = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .dismissTaskLabel, minimumLength: nil, maximumLength: 128)
         self.hasActivity = try CommaNativeContractValidation.decodeOptional(Bool.self, from: container, forKey: .hasActivity)
         self.listSubtitle = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .listSubtitle, minimumLength: nil, maximumLength: 2048)
         self.listTitle = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .listTitle, minimumLength: nil, maximumLength: 256)
@@ -416,6 +420,10 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
         }
         try container.encodeIfPresent(self.compactSideWidth, forKey: .compactSideWidth)
         try container.encodeIfPresent(self.detail, forKey: .detail)
+        if let value = dismissTaskLabel {
+            try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: nil, maximumLength: 128, codingPath: container.codingPath + [CodingKeys.dismissTaskLabel])
+        }
+        try container.encodeIfPresent(self.dismissTaskLabel, forKey: .dismissTaskLabel)
         try container.encodeIfPresent(self.hasActivity, forKey: .hasActivity)
         if let value = listSubtitle {
             try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: nil, maximumLength: 2048, codingPath: container.codingPath + [CodingKeys.listSubtitle])
@@ -442,6 +450,7 @@ public struct CommaNotchScenePayload: Codable, Equatable, Sendable {
         case airDrop = "airDrop"
         case compactSideWidth = "compactSideWidth"
         case detail = "detail"
+        case dismissTaskLabel = "dismissTaskLabel"
         case hasActivity = "hasActivity"
         case listSubtitle = "listSubtitle"
         case listTitle = "listTitle"
@@ -571,6 +580,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
     public let conversationId: String
     public let groupId: String
     public let id: String
+    public let runStartedAt: Int?
     public let status: CommaNotchScenePayloadTaskStatus
     public let subtitle: String
     public let title: String
@@ -581,6 +591,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         conversationId: String,
         groupId: String,
         id: String,
+        runStartedAt: Int? = nil,
         status: CommaNotchScenePayloadTaskStatus,
         subtitle: String,
         title: String,
@@ -590,6 +601,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         self.conversationId = conversationId
         self.groupId = groupId
         self.id = id
+        self.runStartedAt = runStartedAt
         self.status = status
         self.subtitle = subtitle
         self.title = title
@@ -602,6 +614,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         self.conversationId = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: 256)
         self.groupId = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: 256)
         self.id = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .id, minimumLength: 1, maximumLength: 256)
+        self.runStartedAt = try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .runStartedAt, minimum: 1, maximum: 9007199254740991)
         self.status = try container.decode(CommaNotchScenePayloadTaskStatus.self, forKey: .status)
         self.subtitle = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subtitle, minimumLength: nil, maximumLength: 2048)
         self.title = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .title, minimumLength: nil, maximumLength: 2048)
@@ -617,6 +630,10 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         try container.encode(self.groupId, forKey: .groupId)
         try CommaNativeContractValidation.validateStringForEncoding(id, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.id])
         try container.encode(self.id, forKey: .id)
+        if let value = runStartedAt {
+            try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: 1, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.runStartedAt])
+        }
+        try container.encodeIfPresent(self.runStartedAt, forKey: .runStartedAt)
         try container.encode(self.status, forKey: .status)
         try CommaNativeContractValidation.validateStringForEncoding(subtitle, minimumLength: nil, maximumLength: 2048, codingPath: container.codingPath + [CodingKeys.subtitle])
         try container.encode(self.subtitle, forKey: .subtitle)
@@ -631,6 +648,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         case conversationId = "conversationId"
         case groupId = "groupId"
         case id = "id"
+        case runStartedAt = "runStartedAt"
         case status = "status"
         case subtitle = "subtitle"
         case title = "title"

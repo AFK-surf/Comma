@@ -1,4 +1,4 @@
-// This station's version, as still.fail cloud and `stillfail update` are told it: its release's (`0.1.<n>`, from the
+// This station's version, as still.fail cloud and `comma-station update` are told it: its release's (`0.1.<n>`, from the
 // BUILD file of the release it runs from: <app>/station/main.js, so <app> is two up), else this package's. Read once:
 // an update puts the next release's in its place before this one hands over.
 import { readFileSync } from "node:fs";

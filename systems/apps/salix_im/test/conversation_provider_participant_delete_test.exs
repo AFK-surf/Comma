@@ -139,7 +139,8 @@ defmodule SalixIM.ConversationProviderParticipantDeleteTest do
                ConversationParticipantActor.key(group_id, conversation_id, participant_id)
              )
 
-    pending = append_pending!(group_id, conversation_id, participant_id, participant_owner)
+    {pending, unblock} =
+      append_pending!(group_id, conversation_id, participant_id, participant_owner)
 
     assert {:ok, %{"state" => "inactive"}} =
              ConversationServer.deactivate_group_conversation_participant(
@@ -148,7 +149,7 @@ defmodule SalixIM.ConversationProviderParticipantDeleteTest do
                participant_id
              )
 
-    :ok = S3.Fake.clear_blackhole()
+    :ok = unblock.()
     :ok = ConversationServer.wake_participant(group_id, conversation_id, participant_id)
 
     assert eventually(fn ->
@@ -223,15 +224,33 @@ defmodule SalixIM.ConversationProviderParticipantDeleteTest do
         "delivery_filter" => %{"participant_ids" => [participant]}
       })
 
-    id = Enum.join([group, conversation, message["message_id"], participant], ":")
+    name = "provider_delivery_fault_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    key =
-      Keys.ctl_group_conversation_participant_delivery_state(group, conversation, participant, id)
+    SalixStore.Repo.query!("""
+    CREATE FUNCTION #{name}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.group_id = '#{group}' AND NEW.conversation_id = '#{conversation}'
+         AND NEW.participant_id = '#{participant}' AND NEW.status = 'delivering' THEN
+        RAISE EXCEPTION 'test provider delivery unavailable';
+      END IF;
+      RETURN NEW;
+    END $$
+    """)
 
-    :ok = S3.Fake.blackhole({:fail, 503, :put, key})
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
+    SalixStore.Repo.query!(
+      "CREATE TRIGGER #{name} BEFORE INSERT OR UPDATE ON salix_conversation_deliveries " <>
+        "FOR EACH ROW EXECUTE FUNCTION #{name}()"
+    )
+
+    unblock = fn ->
+      SalixStore.Repo.query!("DROP TRIGGER IF EXISTS #{name} ON salix_conversation_deliveries")
+      SalixStore.Repo.query!("DROP FUNCTION IF EXISTS #{name}()")
+      :ok
+    end
+
+    on_exit(unblock)
     :ok = :sys.resume(owner, :infinity)
-    message
+    {message, unblock}
   end
 
   defp create_meeting_plan!(group_id, label) do

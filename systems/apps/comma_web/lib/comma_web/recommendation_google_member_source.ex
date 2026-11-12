@@ -294,6 +294,14 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
          if(is_binary(text) and text != "", do: ~w(sender messageText), else: ~w(sender snippet))
        )
        |> Map.take(~w(messageId threadId subject sender messageTimestamp context))
+       # The pool keeps no attachment. The proactive check reads a mail's
+       # attachments before it judges one marked unread.
+       |> then(
+         &if(CommaWeb.ProactiveMailSource.attachments?(message),
+           do: put_in(&1, ["context", "attachments"], "unread"),
+           else: &1
+         )
+       )
        |> Map.put(
          "webUrl",
          "https://mail.google.com/mail/?authuser=" <>

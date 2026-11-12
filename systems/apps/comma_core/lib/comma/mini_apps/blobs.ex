@@ -4,7 +4,8 @@ defmodule Comma.MiniApps.Blobs do
   under `miniapps/apps/<app_id>/`:
 
     * `versions/<n>/bundle.tar`, `versions/<n>/source.tar.gz`,
-      `versions/<n>/icon`, `versions/<n>/cover`: one Version's files;
+      `versions/<n>/icon`, `versions/<n>/cover`, `versions/<n>/screenshots/<index>`:
+      one Version's files;
     * `docs/app/…` and `docs/user/<viewer id>/…`: app documents
       (`Comma.MiniApps.Documents`).
 
@@ -22,6 +23,9 @@ defmodule Comma.MiniApps.Blobs do
   def source_key(app_id, number), do: version_prefix(app_id, number) <> "source.tar.gz"
   def icon_key(app_id, number), do: version_prefix(app_id, number) <> "icon"
   def cover_key(app_id, number), do: version_prefix(app_id, number) <> "cover"
+
+  def screenshot_key(app_id, number, index),
+    do: version_prefix(app_id, number) <> "screenshots/#{index}"
 
   @doc "The documents prefix of one scope: `app`, or `{:user, viewer_id}`."
   def docs_prefix(app_id, :app), do: app_prefix(app_id) <> "docs/app/"

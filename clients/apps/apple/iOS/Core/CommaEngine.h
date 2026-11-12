@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)engineEmit:(NSData *)json;
 /// The core cannot go on; nothing else comes from it.
 - (void)engineFatal:(NSString *)reason;
+/// A screen view's picture for the decoder `sink` (engine.h `EngineHost::screenFrame`): `bytes` valid only during the
+/// call.
+- (void)engineScreenFrame:(uint32_t)sink kind:(int)kind ts:(double)ts width:(int)width height:(int)height bytes:(const void *)bytes length:(size_t)length;
 @end
 
 @interface CommaEngine : NSObject

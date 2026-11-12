@@ -117,9 +117,9 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
     cleanup = Live.install_runtime!()
 
     # The shared test config disables cluster background sweeps. Run the real
-    # timer owner here so a live model's intentional wait_for call can expire
+    # due dispatcher here so a live model's intentional wait_for call can expire
     # through the same durable delivery path used in production.
-    start_supervised!(SalixCluster.Timers)
+    start_supervised!(SalixCluster.Recovery)
 
     on_exit(cleanup)
     :ok

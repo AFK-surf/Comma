@@ -24,7 +24,7 @@ if [ ! -f "$HANDOFF_TEST_DIR/first" ]; then
   echo 'COMMA_AGENT_TRANSFER_RESULT:{"processed":20,"next_cursor":"cGFnZTI="}'
 elif [ ! -f "$HANDOFF_TEST_DIR/retried" ]; then
   touch "$HANDOFF_TEST_DIR/retried"
-  echo '** (RuntimeError) Agent configuration handoff paused; core remains online. Retry this page: :agent_configuration_state_unavailable' >&2
+  echo 'error: EOF' >&2
   exit 1
 else
   echo 'COMMA_AGENT_TRANSFER_RESULT:{"processed":1,"next_cursor":null}'
@@ -57,6 +57,7 @@ func TestAgentHandoffRetryClassificationAndBound(t *testing.T) {
 		{"connection refused", 12},
 		{"connection reset by peer", 12},
 		{"unexpected EOF", 12},
+		{"kubectl failed: exit status 1: error: EOF\n", 12},
 		{`unable to upgrade connection: container not found ("comma")`, 12},
 		{":nodedown", 12},
 		{":agent_configuration_rollout_pending", 1},

@@ -15,6 +15,13 @@ import surf.comma.android.ui.theme.DesignSpring
 internal class ButtonScale(private val view: View, private val action: Boolean) {
     private val x = DesignSpring(view, DynamicAnimation.SCALE_X, DesignMotion.springScale)
     private val y = DesignSpring(view, DynamicAnimation.SCALE_Y, DesignMotion.springScale)
+    /** Runs on every step of the scale, for what follows the button. */
+    var onChanged: (() -> Unit)? = null
+    init {
+        y.animation.addUpdateListener { _, _, _ -> onChanged?.invoke() }
+        x.animation.addUpdateListener { _, _, _ -> generateSequence(view.parent) { it.parent }.filterIsInstance<ComposerView>().firstOrNull()?.invalidate() }
+        y.animation.addUpdateListener { _, _, _ -> generateSequence(view.parent) { it.parent }.filterIsInstance<ComposerView>().firstOrNull()?.invalidate() }
+    }
     private var shown = true
     private var pressed = false
 
@@ -40,6 +47,7 @@ internal class ButtonScale(private val view: View, private val action: Boolean) 
             y.cancel()
             view.scaleX = target
             view.scaleY = target
+            onChanged?.invoke()
         }
     }
 

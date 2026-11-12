@@ -27,4 +27,23 @@ def base64Url : List UInt8 → List UInt8
       alphabet (a.toNat / 4) :: alphabet ((a.toNat % 4) * 16 + b.toNat / 16) ::
       alphabet ((b.toNat % 16) * 4 + c.toNat / 64) :: alphabet (c.toNat % 64) :: base64Url rest
 
+def base64UrlTR (bytes : List UInt8) : List UInt8 := go bytes []
+where
+  go : List UInt8 → List UInt8 → List UInt8
+    | [], acc => acc.reverse
+    | [a], acc => acc.reverse ++ [alphabet (a.toNat / 4), alphabet ((a.toNat % 4) * 16)]
+    | [a, b], acc => acc.reverse ++
+        [alphabet (a.toNat / 4), alphabet ((a.toNat % 4) * 16 + b.toNat / 16), alphabet ((b.toNat % 16) * 4)]
+    | a :: b :: c :: rest, acc => go rest
+        (alphabet (c.toNat % 64) :: alphabet ((b.toNat % 16) * 4 + c.toNat / 64) ::
+          alphabet ((a.toNat % 4) * 16 + b.toNat / 16) :: alphabet (a.toNat / 4) :: acc)
+
+private theorem base64UrlTR_go_eq (bytes acc : List UInt8) :
+    base64UrlTR.go bytes acc = acc.reverse ++ base64Url bytes := by
+  fun_induction base64Url bytes generalizing acc <;> simp_all [base64UrlTR.go, List.append_assoc]
+
+@[csimp] theorem base64Url_eq_base64UrlTR : @base64Url = @base64UrlTR := by
+  funext bytes
+  simp [base64UrlTR, base64UrlTR_go_eq]
+
 end VerifiedKernel.ByteDigest

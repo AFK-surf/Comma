@@ -67,6 +67,65 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
             updateBack()
         }
 
+    /**
+     * Wide windows show two columns: the first page (the Settings list) stays at the leading edge and the pages over
+     * it push in beside it. Narrow windows stack every page full width.
+     */
+    var columns = false
+        private set
+    /** Told when the pages change, so the list can mark the page shown beside it. */
+    var onStackChanged: (() -> Unit)? = null
+    private val leadingWidth get() = (width * LEADING_FRACTION).toInt().coerceIn(dp(LEADING_MIN_DP), dp(LEADING_MAX_DP))
+    /** How far a page slides: the detail column's width, or the whole host's. */
+    private val slideWidth get() = if (columns) width - leadingWidth else width
+    private val divider = android.graphics.Paint().apply { color = context.color(R.color.token_border_primary) }
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    /** Whether [entry] moves when a page is pushed over it or popped off it; the leading column never does. */
+    private fun moves(entry: Entry?) = entry != null && !(columns && entry === entries.firstOrNull())
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val wide = MeasureSpec.getSize(widthMeasureSpec) / resources.displayMetrics.density >= COLUMNS_MIN_DP &&
+            MeasureSpec.getSize(heightMeasureSpec) / resources.displayMetrics.density >= COLUMNS_MIN_HEIGHT_DP
+        if (wide != columns) {
+            columns = wide
+            entries.forEach { it.spring.cancel(); it.page.view.translationX = 0f }
+            scrimAnimator?.cancel()
+            scrim.alpha = 0f
+            setWillNotDraw(!wide)
+            onStackChanged?.invoke()
+        }
+        if (!columns) return super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val height = MeasureSpec.getSize(heightMeasureSpec)
+        setMeasuredDimension(width, height)
+        val leading = (width * LEADING_FRACTION).toInt().coerceIn(dp(LEADING_MIN_DP), dp(LEADING_MAX_DP))
+        val root = entries.firstOrNull()?.page?.view
+        for (index in 0 until childCount) {
+            val child = getChildAt(index)
+            val childWidth = if (child === root) leading else width - leading
+            child.measure(MeasureSpec.makeMeasureSpec(childWidth, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
+        }
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        if (!columns) return super.onLayout(changed, left, top, right, bottom)
+        val root = entries.firstOrNull()?.page?.view
+        val leading = leadingWidth
+        for (index in 0 until childCount) {
+            val child = getChildAt(index)
+            val x = if (child === root) 0 else leading
+            child.layout(x, 0, x + child.measuredWidth, child.measuredHeight)
+        }
+    }
+
+    override fun dispatchDraw(canvas: android.graphics.Canvas) {
+        super.dispatchDraw(canvas)
+        if (columns) canvas.drawRect(leadingWidth.toFloat(), 0f, leadingWidth + maxOf(1f, resources.displayMetrics.density * 0.5f),
+            height.toFloat(), divider)
+    }
+
     val keys: List<String> get() = entries.map { it.page.key }
     val top: SettingsPage? get() = entries.lastOrNull()?.page
     fun pages(): List<SettingsPage> = entries.map { it.page }
@@ -82,6 +141,8 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
     }
 
     init {
+        // The detail column shows the page colour while no page is open beside the list.
+        setBackgroundColor(context.color(R.color.token_bg_primary))
         addView(scrim, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 
@@ -100,14 +161,16 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
 
         override fun handleOnBackProgressed(backEvent: BackEventCompat) {
             val entry = entries.lastOrNull() ?: return
+            // Beside the list, the first page leaves with back but does not follow the finger: the list stays put.
+            if (columns && entries.size == 2) return
             val now = SystemClock.uptimeMillis()
             val progress = backEvent.progress
             if (now > lastProgressAt) velocity = (progress - lastProgress) * width * 1000f / (now - lastProgressAt)
             lastProgress = progress
             lastProgressAt = now
             // Driven by the finger, not animated.
-            entry.page.view.translationX = progress * width
-            below(entry)?.page?.view?.translationX = -PARALLAX * width * (1 - progress)
+            entry.page.view.translationX = progress * slideWidth
+            below(entry)?.takeIf(::moves)?.page?.view?.translationX = -PARALLAX * slideWidth * (1 - progress)
             scrim.alpha = SCRIM_ALPHA * (1 - progress)
         }
 
@@ -120,7 +183,7 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
         override fun handleOnBackCancelled() {
             val entry = entries.lastOrNull() ?: return
             entry.spring.animateTo(0f)
-            below(entry)?.spring?.animateTo(-PARALLAX * width)
+            below(entry)?.takeIf(::moves)?.spring?.animateTo(-PARALLAX * slideWidth)
             fadeScrim(SCRIM_ALPHA, entering = true)
         }
     }
@@ -148,10 +211,11 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
             scrim.alpha = 0f
             return
         }
+        onStackChanged?.invoke()
         whenLaidOut {
-            view.translationX = width.toFloat()
+            view.translationX = slideWidth.toFloat()
             entry.spring.animateTo(0f)
-            below?.spring?.animateTo(-PARALLAX * width)
+            below?.takeIf(::moves)?.spring?.animateTo(-PARALLAX * slideWidth)
             below?.onSettled = null
             fadeScrim(SCRIM_ALPHA, entering = true)
             // Once in place the page below needs no dimming or offset; they are restored when popping.
@@ -174,11 +238,11 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
         // From rest, put the dimming and the page below back where the slide starts.
         if (entry.page.view.translationX == 0f) {
             scrim.alpha = SCRIM_ALPHA
-            if (below != null && below.page.view.translationX == 0f) below.page.view.translationX = -PARALLAX * width
+            if (below != null && moves(below) && below.page.view.translationX == 0f) below.page.view.translationX = -PARALLAX * slideWidth
         }
         entry.onSettled = { remove(entry) }
-        entry.spring.animateTo(width.toFloat(), velocity)
-        below?.spring?.animateTo(0f)
+        entry.spring.animateTo(slideWidth.toFloat(), velocity)
+        if (moves(below)) below?.spring?.animateTo(0f)
         fadeScrim(0f, entering = false)
         if (!entry.spring.isRunning) settle(entry)
     }
@@ -215,6 +279,7 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
     private fun remove(entry: Entry) {
         entries -= entry
         updateBack()
+        onStackChanged?.invoke()
         removeView(entry.page.view)
         release(entry.page)
         val top = entries.lastOrNull()
@@ -269,5 +334,11 @@ internal class PageHost(context: Context, private val onEmpty: () -> Unit) : Fra
         const val PARALLAX = 0.25f
         const val SCRIM_ALPHA = 0.24f
         const val VELOCITY_WINDOW_MS = 100L
+        /** Columns from a wide window that is not a phone on its side. */
+        const val COLUMNS_MIN_DP = 840
+        const val COLUMNS_MIN_HEIGHT_DP = 480
+        const val LEADING_FRACTION = 0.38f
+        const val LEADING_MIN_DP = 320
+        const val LEADING_MAX_DP = 420
     }
 }

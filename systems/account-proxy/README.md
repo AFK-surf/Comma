@@ -76,14 +76,25 @@ Concurrent additions serialize in a database transaction. Existing duplicate row
 
 The worker reads `rate_limit_reset_credits.available_count` from `GET /wham/usage`.
 The public snapshot stores it as `quota.reset_credits.available_count`.
-A missing or invalid count means unknown, not zero. Only Codex supports reset credits.
+A missing or invalid count means unknown, not zero.
 
 The reset operation posts to `/wham/rate-limit-reset-credits/consume` on the ChatGPT backend origin.
 It sends the selected account credentials and one `redeem_request_id`.
 The backend chooses an available credit. Salix does not list, select, or purchase credits.
 See the [upstream request implementation](https://github.com/openai/codex/blob/654b0a77d0d2f81aa21f61caf7af4be88fe550bb/codex-rs/backend-client/src/client/rate_limit_resets.rs).
 
-`AccountPool.reset_quota/3` accepts `version` and `request_id`.
+## Claude limit resets
+
+Claude lists limit resets only to Claude Code of a version that has them.
+The worker asks `GET /api/oauth/usage?at_wall=1&skip_spend=1` with Claude Code's `User-Agent`.
+Salix passes the version from `systems/runtime-images/runtime-dependencies.lock.json` as `client_version`.
+`juniper_tide` is a weekly 5-hour reset. `cedar_ember` lists granted resets, each with a count and an end date.
+The Profiles parser (`systems/profiles` `quota.rs`) lists them by kind in `quota.resets`.
+A person picks the kind. The worker picks the claim as Claude Code does and posts it to
+`/api/organizations/<organization>/reset_rate_limits`. A grant claim carries a request ID derived from the Salix key.
+The worker also reads `/api/oauth/profile` and adds its plan as `plan`. Profiles reads it as `quota.plan_type`.
+
+`AccountPool.reset_quota/3` accepts `version`, `request_id`, and an optional `kind`.
 A new request requires the current account version. The owner saves a pending `reset_attempt` before the provider call.
 Another request cannot replace a pending attempt. Retries reuse its key, including after a browser reconnect or process restart.
 The provider owns redemption deduplication. Salix keeps only the last attempt in the account JSON.
@@ -91,6 +102,7 @@ The stored key identifies an operation. It is not a credential or authorization 
 Credential replacement clears the attempt. A stale result cannot overwrite replaced credentials because the write checks the record version.
 
 The provider returns `reset`, `already_redeemed`, `no_credit`, or `nothing_to_reset`.
+Claude also returns `unavailable` when it refuses a reset for now.
 Transport errors and unknown responses leave the attempt pending. Retry that attempt, not a new request.
 After a confirmed result, the owner reads quota again. It never sets local allowance to 100 percent.
 A failed follow-up read returns the confirmed outcome with `quota_refreshed: false` and the previous snapshot.
@@ -100,6 +112,15 @@ The shared Salix and BFT dashboard shows the count and asks for confirmation bef
 BFT applies the organization owner/admin check. The workspace API applies its full-session owner check.
 Logs use `subscription_account_reset` and the worker operation events. They exclude credentials and redemption keys.
 A real reset consumes account rights and requires separate operator approval.
+
+## Codex plan credits
+
+`GET /wham/usage` also reports the plan's paid credits (`credits.has_credits`, `unlimited`, `balance`).
+The snapshot stores them as `quota.credits`.
+An account with a used-up window is not a candidate, unless its record has `use_credits: true` and the snapshot reports credits.
+Such an account ranks after every ready account that still has allowance, and before any account a provider asked to wait. The provider charges its credits.
+Only the account's owner sets `use_credits`. It is off by default. Only Codex accounts accept it.
+When a used-up account has credits but `use_credits` is off, the `quota_exhausted` stop names it with `funding.credits: true`.
 
 ## Subprocess protocol
 

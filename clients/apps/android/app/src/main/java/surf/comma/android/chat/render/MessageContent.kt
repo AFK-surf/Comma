@@ -108,13 +108,6 @@ object MessageCopy {
             if (full.isNotEmpty()) add(CopyTarget.FULL to full)
         }
     }
-
-    /**
-     * A whole reply that came as several messages, as one markdown document: each message's
-     * source, separated by a blank line so each one starts a new block.
-     */
-    fun reply(messages: List<String>): String =
-        messages.map(String::trim).filter(String::isNotEmpty).joinToString("\n\n")
 }
 
 /**

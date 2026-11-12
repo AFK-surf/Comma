@@ -2,19 +2,22 @@ import { openMiniAppRunLink } from "../../miniAppRunLink";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useTaskSummary } from "../tasks/useTaskArchive";
+import { taskLoopStoppedOnError } from "../tasks/taskLoopLabels";
 import { openUrlInExternalBrowser } from "../chat/thread/inline/linkActions";
 import { Button } from "@comma/ui/components/Button";
 import {
   BranchIcon,
   ConsoleSimpleIcon,
   ExpandSimpleIcon,
-  FileIcon,
   GlobeIcon,
   MacbookIcon,
+  PhoneDynamicIslandIcon,
   SquareGridCircleIcon,
   WindowAppIcon,
 } from "@comma/ui/components/icons";
 import { DeviceScreenPanel } from "../remote-screen/DeviceScreenPanel";
+import { screenName } from "../remote-screen/useScreenListing";
+import { useScreenWindows } from "../remote-screen/screenWindows";
 import { SidebarMiniApp } from "../apps/SidebarMiniApp";
 import { miniAppWindowRoute, useMiniAppWindows } from "../apps/miniAppOpen";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
@@ -24,6 +27,7 @@ import {
   RightSidebarToolbarButton,
   type RightSidebarTab,
 } from "@comma/ui/components/right-sidebar";
+import { FileTypeIcon } from "@comma/ui/components/file-type-icon";
 import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
 import {
   claimToastObstructionRight,
@@ -34,8 +38,10 @@ import { useNativeSurfaceSuppressed } from "@comma/ui/components/native-surface/
 import { useCommaMessages } from "@comma/i18n/react";
 import {
   getNativeBridge,
+  type BrowserSidebarCornerRadii,
   type BrowserSidebarInspectResult,
   type BrowserSidebarState,
+  type SurfaceBounds,
 } from "@comma/native-bridge";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -82,10 +88,8 @@ import {
   useChatSidebarOpen,
   useChatSidebarWidth,
 } from "./ChatSidebarContext";
-import {
-  browserElementInspectionFiles,
-  buildBrowserElementInspectionMessage,
-} from "./browserElementInspection";
+import { useStageDraftSelection } from "../chat/composer/draftSelections";
+import { browserElementSelection } from "./browserElementInspection";
 import { FilePreviewPanel } from "./FilePreviewPanel";
 import { CodingChangesPanel } from "../chat/tasks/CodingChangesPanel";
 import { DrivePreviewPanel } from "../drive/DrivePreviewPanel";
@@ -200,6 +204,7 @@ export function ChatSidebarSurface({
     closeChangesPage,
     closeScreenPage,
     closeAppPage,
+    duplicateBrowserPage,
     getNativeBrowserCapacityBlockedEpoch,
     isOpen,
     toggleActive,
@@ -215,6 +220,7 @@ export function ChatSidebarSurface({
     selectChangesPage,
     selectScreenPage,
     selectAppPage,
+    setTabPinned,
     trailingRef,
     updateBrowserPage,
     updateBrowserPageMetadata,
@@ -270,19 +276,22 @@ export function ChatSidebarSurface({
   );
   const inspectionChannel = inspectionConversation.channel;
   const sendInspection = inspectionConversation.send;
+  // A picked element, with what the person wrote about it, waits in the chat's composer as an attachment: they pick
+  // as many as they want, and send them from there.
+  const stageSelection = useStageDraftSelection();
+  const inspectedConversationId = canSendBrowserInspection
+    ? displayedHost?.conversationId
+    : undefined;
   const handleBrowserInspection = useCallback(
     (inspection: Extract<BrowserSidebarInspectResult, { status: "selected" }>) => {
-      if (!inspectionChannel) {
+      if (!stageSelection || !inspectedConversationId) {
         toast.error("The chat is not ready to receive browser context yet.");
         return;
       }
-      const files = browserElementInspectionFiles(inspection);
-      sendInspection(buildBrowserElementInspectionMessage(inspection), {
-        consumeDraft: false,
-        ...(files.length > 0 ? { files } : {}),
-      });
+      if (!stageSelection(inspectedConversationId, browserElementSelection(inspection)))
+        toast.warning(messages.chat_selections_full());
     },
-    [inspectionChannel, sendInspection]
+    [inspectedConversationId, messages, stageSelection]
   );
 
   const attachPreviewImage = useCallback(
@@ -347,6 +356,7 @@ export function ChatSidebarSurface({
     screenPages[0];
   const appPages = displayedSession?.appPages ?? [];
   const appWindows = useMiniAppWindows();
+  const screenWindows = new Set(useScreenWindows().map((shown) => shown.id));
   const activeAppPage =
     appPages.find((page) => page.id === displayedSession?.activeAppPageId) ??
     appPages[0];
@@ -423,7 +433,7 @@ export function ChatSidebarSurface({
     }
   };
   const hostKey = displayedHost ? chatSidebarHostKey(displayedHost) : "";
-  const sidebarTabs: RightSidebarTab[] = [
+  const kindOrderedTabs: RightSidebarTab[] = [
     ...chats.map((chat) => ({
       closable: true,
       icon: <SidebarTaskIcon target={chat} />,
@@ -433,14 +443,20 @@ export function ChatSidebarSurface({
     })),
     ...filePreviews.map((preview) => ({
       closable: true,
-      icon: <FileIcon className="size-5" />,
+      icon: (
+        <FileTypeIcon
+          className="size-5"
+          fileName={preview.source.fileName}
+          mimeType={preview.source.mimeType}
+        />
+      ),
       id: `${fileTabPrefix}${preview.id}`,
       label: preview.source.fileName,
       panelId: "chat-sidebar-file-panel",
     })),
     ...drivePreviews.map((preview) => ({
       closable: true,
-      icon: <FileIcon className="size-5" />,
+      icon: <FileTypeIcon className="size-5" fileName={preview.name} />,
       id: driveTabId(preview.id),
       label: preview.name,
       panelId: `chat-sidebar-drive-panel-${preview.id}`,
@@ -459,9 +475,22 @@ export function ChatSidebarSurface({
     })),
     ...screenPages.map((page) => ({
       closable: true,
-      icon: <MacbookIcon className="size-5" />,
+      // A screen in a window of its own says so on its tab, as an app does.
+      icon: screenWindows.has(page.id) ? (
+        <WindowAppIcon className="size-5" />
+      ) : page.screen || page.target === "models" ? (
+        <PhoneDynamicIslandIcon className="size-5" />
+      ) : (
+        <MacbookIcon className="size-5" />
+      ),
       id: `${screenTabPrefix}${page.id}`,
-      label: page.apps.length ? page.apps.join(", ") : messages.remote_screen_tab(),
+      label: page.screen
+        ? screenName(page.screen)
+        : page.target === "models"
+          ? messages.remote_screen_models_title()
+          : page.apps.length
+            ? page.apps.join(", ")
+            : messages.remote_screen_tab(),
       panelId: `chat-sidebar-screen-panel-${page.id}`,
     })),
     ...historyPages.map((page) => ({
@@ -481,6 +510,7 @@ export function ChatSidebarSurface({
     })),
     ...browserPages.map((page) => ({
       closable: true,
+      duplicable: page.kind !== "terminal" && Boolean(page.url),
       icon:
         page.kind === "terminal" ? (
           <ConsoleSimpleIcon className="size-5" />
@@ -491,6 +521,16 @@ export function ChatSidebarSurface({
       label: browserPageLabel(page),
       panelId: `chat-sidebar-browser-panel-${page.id}`,
     })),
+  ];
+  // Pinned tabs lead the strip in the order they were pinned; the rest keep
+  // their places by kind.
+  const pinnedTabIds = displayedSession?.pinnedTabIds ?? [];
+  const sidebarTabs: RightSidebarTab[] = [
+    ...pinnedTabIds.flatMap((tabId) => {
+      const tab = kindOrderedTabs.find((candidate) => candidate.id === tabId);
+      return tab ? [{ ...tab, pinned: true }] : [];
+    }),
+    ...kindOrderedTabs.filter((tab) => !pinnedTabIds.includes(tab.id)),
   ];
   const handleTabChange = (tabId: string) => {
     if (!displayedHost) return;
@@ -527,6 +567,7 @@ export function ChatSidebarSurface({
   };
   const handleTabClose = (tabId: string) => {
     if (!displayedHost) return;
+    if (pinnedTabIds.includes(tabId)) setTabPinned(displayedHost, tabId, false);
     if (tabId.startsWith(fileTabPrefix)) {
       closeFilePreview(displayedHost, tabId.slice(fileTabPrefix.length));
       return;
@@ -575,6 +616,20 @@ export function ChatSidebarSurface({
         if (activeTab) handleTabClose(activeTab);
       },
     },
+    ...(["browser-next-tab", "browser-previous-tab"] as const).map((id) => ({
+      id,
+      enabled: isOpen && sidebarTabs.length > 1,
+      run: () => {
+        const step = id === "browser-next-tab" ? 1 : -1;
+        const index = sidebarTabs.findIndex((tab) => tab.id === activeTab);
+        // Steps wrap around the strip, in the order it shows the tabs.
+        const next =
+          index === -1
+            ? sidebarTabs.at(step === 1 ? 0 : -1)
+            : sidebarTabs.at((index + step) % sidebarTabs.length);
+        if (next) handleTabChange(next.id);
+      },
+    })),
   ]);
   return (
     <RightSidebar
@@ -608,6 +663,12 @@ export function ChatSidebarSurface({
       onExitComplete={clearExitedContent}
       onTabChange={handleTabChange}
       onTabClose={handleTabClose}
+      onTabDuplicate={(tabId) => {
+        if (displayedHost) duplicateBrowserPage(displayedHost, tabId);
+      }}
+      onTabPinnedChange={(tabId, pinned) => {
+        if (displayedHost) setTabPinned(displayedHost, tabId, pinned);
+      }}
       onWidthChange={handleWidthChange}
       open={open}
       ref={trailingRef}
@@ -657,6 +718,35 @@ export function ChatSidebarSurface({
           {open && activeSurface === "file" && activeFilePreview ? (
             <FilePreviewPanel
               key={activeFilePreview.id}
+              annotationContext={
+                canSendBrowserInspection && inspectionChannel
+                  ? {
+                      scope: JSON.stringify(displayedHost),
+                      onSend: (text, files) => {
+                        if (files) {
+                          sendInspection(text, { consumeDraft: false, files });
+                        } else if (text.length <= 16000) {
+                          sendInspection(text, { consumeDraft: false });
+                        } else {
+                          const bytes = new TextEncoder().encode(text);
+                          sendInspection(
+                            "Please read the attached artifact annotations.",
+                            {
+                              consumeDraft: false,
+                              files: [
+                                {
+                                  bytes,
+                                  name: "artifact-annotations.txt",
+                                  size: bytes.byteLength,
+                                },
+                              ],
+                            }
+                          );
+                        }
+                      },
+                    }
+                  : undefined
+              }
               source={activeFilePreview.source}
               panelId="chat-sidebar-file-panel"
               onAttachFiles={attachPreviewImage}
@@ -875,6 +965,7 @@ function ChatSidebarConversation({
       ...(conversation.previewLocalFile
         ? { previewLocalFile: conversation.previewLocalFile }
         : {}),
+      older: conversation.older,
       readTaskActivity: conversation.readTaskActivity,
       refresh,
       removeAttachment: conversation.removeAttachment,
@@ -895,6 +986,7 @@ function ChatSidebarConversation({
       conversation.discard,
       conversation.pickAttachments,
       conversation.previewLocalFile,
+      conversation.older,
       conversation.readTaskActivity,
       refresh,
       conversation.removeAttachment,
@@ -1211,15 +1303,20 @@ function BrowserSidebarPanel({
 
     setInspecting(true);
     try {
-      const result = await bridge.browserSidebar.inspect({
-        action: "start",
-        sessionId,
-      });
-      if (inspectionGenerationRef.current !== generation) return;
-      if (result.status === "selected") {
-        onInspectElement?.(result);
-      } else if (result.status === "unavailable") {
-        toast.error(result.reason);
+      // Each picked element goes to the chat's composer, and the page picks on: until the person leaves the mode
+      // (the button again, or Escape on the page) or the page cannot be picked from.
+      for (;;) {
+        const result = await bridge.browserSidebar.inspect({
+          action: "start",
+          sessionId,
+        });
+        if (inspectionGenerationRef.current !== generation) return;
+        if (result.status === "selected") {
+          onInspectElement?.(result);
+          continue;
+        }
+        if (result.status === "unavailable") toast.error(result.reason);
+        break;
       }
     } catch (error: unknown) {
       if (inspectionGenerationRef.current !== generation) return;
@@ -1582,7 +1679,9 @@ function NativeBrowserViewport({
     [isCurrentViewportGeneration, onStateSettled, settleState]
   );
 
-  const readBounds = useCallback(() => {
+  // The native view paints above every DOM layer, so nothing in the DOM can
+  // clip it: Main gives it exactly this slot's box and rounded corners.
+  const readPlacement = useCallback(() => {
     const element = elementRef.current;
     if (!element) return undefined;
     const rect = element.getBoundingClientRect();
@@ -1597,12 +1696,14 @@ function NativeBrowserViewport({
       rect.width,
       Number.isFinite(liveWidth) ? liveWidth : rect.width
     );
-    return {
-      height: Math.max(1, Math.round(rect.height)),
-      width: Math.max(1, Math.round(width)),
-      x: Math.max(0, Math.round(rect.right - width)),
-      y: Math.max(0, Math.round(rect.y)),
-    };
+    const bounds = enclosedViewBounds({
+      bottom: rect.bottom,
+      left: rect.right - width,
+      right: rect.right,
+      top: rect.top,
+    });
+    const cornerRadii = viewCornerRadii(element);
+    return cornerRadii ? { bounds, cornerRadii } : { bounds };
   }, []);
 
   const syncBounds = useCallback(() => {
@@ -1611,12 +1712,12 @@ function NativeBrowserViewport({
       requestRecovery();
       return;
     }
-    const bounds = readBounds();
-    if (!bounds) return;
+    const placement = readPlacement();
+    if (!placement) return;
     const viewportGeneration = viewportGenerationRef.current;
     const requestIntent = requestedNavigationRef.current;
     void getNativeBridge()
-      .browserSidebar.update({ bounds, sessionId })
+      .browserSidebar.update({ ...placement, sessionId })
       .then((state) => settleState(state, viewportGeneration, undefined, requestIntent))
       .catch((error: unknown) => {
         if (!isCurrentViewportIntent(viewportGeneration, requestIntent)) return;
@@ -1627,7 +1728,7 @@ function NativeBrowserViewport({
   }, [
     isCurrentViewportIntent,
     onUnavailable,
-    readBounds,
+    readPlacement,
     requestRecovery,
     sessionId,
     settleState,
@@ -1635,8 +1736,8 @@ function NativeBrowserViewport({
 
   const openView = useCallback(() => {
     if (openingRef.current || openedRef.current) return false;
-    const bounds = readBounds();
-    if (!bounds) return false;
+    const placement = readPlacement();
+    if (!placement) return false;
     openingRef.current = true;
     const openingViewportGeneration = viewportGenerationRef.current;
     const openingRequestGeneration = openRequestGenerationRef.current + 1;
@@ -1649,7 +1750,7 @@ function NativeBrowserViewport({
     lastSubmittedNavigationRevisionRef.current = openingIntent.navigationRevision;
     void getNativeBridge()
       .browserSidebar.open({
-        bounds,
+        ...placement,
         closeBeforeOpenSessionIds: openingIntent.closeBeforeOpenSessionIds,
         navigationRevision: openingIntent.navigationRevision,
         sessionId,
@@ -1714,8 +1815,8 @@ function NativeBrowserViewport({
           openedRef.current &&
           requestedIntent.navigationRevision !== openingIntent.navigationRevision
         ) {
-          const latestBounds = readBounds();
-          if (!latestBounds) return;
+          const latestPlacement = readPlacement();
+          if (!latestPlacement) return;
           lastSubmittedNavigationRevisionRef.current =
             requestedIntent.navigationRevision;
           const latestViewportGeneration = viewportGenerationRef.current;
@@ -1724,7 +1825,7 @@ function NativeBrowserViewport({
           const latestCapacityEpoch = nativeCapacityEpochRef.current;
           void getNativeBridge()
             .browserSidebar.open({
-              bounds: latestBounds,
+              ...latestPlacement,
               closeBeforeOpenSessionIds: requestedIntent.closeBeforeOpenSessionIds,
               navigationRevision: requestedIntent.navigationRevision,
               sessionId,
@@ -1779,7 +1880,7 @@ function NativeBrowserViewport({
   }, [
     isCurrentViewportGeneration,
     onUnavailable,
-    readBounds,
+    readPlacement,
     sessionId,
     tabId,
     settleOpenState,
@@ -1987,8 +2088,8 @@ function NativeBrowserViewport({
     ) {
       return;
     }
-    const bounds = readBounds();
-    if (!bounds) return;
+    const placement = readPlacement();
+    if (!placement) return;
     lastSubmittedNavigationRevisionRef.current = navigationRevision;
     const viewportGeneration = viewportGenerationRef.current;
     const requestGeneration = openRequestGenerationRef.current + 1;
@@ -1996,7 +2097,7 @@ function NativeBrowserViewport({
     const openingCapacityEpoch = nativeCapacityEpochRef.current;
     void getNativeBridge()
       .browserSidebar.open({
-        bounds,
+        ...placement,
         closeBeforeOpenSessionIds: closeBeforeOpenSessionIds ?? [],
         navigationRevision,
         sessionId,
@@ -2031,7 +2132,7 @@ function NativeBrowserViewport({
     isCurrentViewportGeneration,
     navigationRevision,
     onUnavailable,
-    readBounds,
+    readPlacement,
     sessionId,
     tabId,
     settleOpenState,
@@ -2051,13 +2152,13 @@ function NativeBrowserViewport({
     nativeState.active;
 
   const publishToastObstruction = useCallback(() => {
-    const bounds = obstructsToasts ? readBounds() : undefined;
-    if (!bounds) {
+    const placement = obstructsToasts ? readPlacement() : undefined;
+    if (!placement) {
       releaseToastObstructionRight(sessionId);
       return;
     }
-    claimToastObstructionRight(sessionId, window.innerWidth - bounds.x);
-  }, [obstructsToasts, readBounds, sessionId]);
+    claimToastObstructionRight(sessionId, window.innerWidth - placement.bounds.x);
+  }, [obstructsToasts, readPlacement, sessionId]);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -2141,6 +2242,50 @@ function NativeBrowserViewport({
   );
 }
 
+/**
+ * Layout puts the slot's edges on fractions of a pixel; a native view takes
+ * whole pixels. Each edge snaps inward, so the view never covers what borders
+ * the slot. Rounding the origin and the size apart put the view's right edge
+ * a pixel past a slot that starts on a half pixel, as this one does beside
+ * the sidebar's 0.5px divider: onto the panel's border and out of the panel.
+ */
+function enclosedViewBounds(edges: {
+  bottom: number;
+  left: number;
+  right: number;
+  top: number;
+}): SurfaceBounds {
+  const x = Math.max(0, Math.ceil(edges.left));
+  const y = Math.max(0, Math.ceil(edges.top));
+  return {
+    height: Math.max(1, Math.floor(edges.bottom) - y),
+    width: Math.max(1, Math.floor(edges.right) - x),
+    x,
+    y,
+  };
+}
+
+/**
+ * The slot's rounded corners (styles.css), whole pixels down so the page
+ * stays inside the panel's curve; undefined while every corner is square.
+ */
+function viewCornerRadii(element: HTMLElement): BrowserSidebarCornerRadii | undefined {
+  const style = getComputedStyle(element);
+  const radii = {
+    bottomLeft: wholePixelsDown(style.borderBottomLeftRadius),
+    bottomRight: wholePixelsDown(style.borderBottomRightRadius),
+    topLeft: wholePixelsDown(style.borderTopLeftRadius),
+    topRight: wholePixelsDown(style.borderTopRightRadius),
+  };
+  return Object.values(radii).some((value) => value > 0) ? radii : undefined;
+}
+
+/** A computed length in whole pixels; 0 for anything not in pixels. */
+function wholePixelsDown(value: string) {
+  const pixels = Number.parseFloat(value);
+  return value.endsWith("px") && pixels > 0 ? Math.floor(pixels) : 0;
+}
+
 function BrowserUnavailable({
   canOpenExternal,
   reason,
@@ -2207,12 +2352,20 @@ function BrowserPageIcon({ favicon }: { favicon: string | undefined }) {
 
 function SidebarTaskIcon({ target }: { target: ChatSidebarConversationTarget }) {
   const task = useTaskSummary(target.groupId, target.conversationId);
+  const bucket = taskStatusBucket(task?.status ?? "unknown");
   return (
     <span
       className="comma-inline-task-icon"
       data-task-status={task?.status ?? "unknown"}
     >
-      {taskStatusIcon(taskStatusBucket(task?.status ?? "unknown"))}
+      {taskStatusIcon(bucket, {
+        spins: task !== undefined,
+        // A Task whose Loop stopped does not run, so its tab does not spin.
+        loopStop:
+          task?.loop?.state === "paused"
+            ? { failed: taskLoopStoppedOnError(task.loop) }
+            : undefined,
+      })}
     </span>
   );
 }

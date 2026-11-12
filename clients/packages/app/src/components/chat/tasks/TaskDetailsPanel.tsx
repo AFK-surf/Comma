@@ -17,10 +17,11 @@ import { Button as AriaButton } from "react-aria-components";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CommaConversation, CommaTaskLabel } from "@comma/core/api-schemas";
 import type { ChatTaskActivity } from "@comma/chat-contract";
-import type { TaskLoop } from "@comma/core-client";
+import type { TaskFile, TaskLoop } from "@comma/core-client";
 import { LabelDot } from "../../tasks/labelColor";
 import type { TasksFilterLink } from "../../tasks/taskChips";
 import { TaskOriginIcon, taskOriginKey, taskOriginLabel } from "../../tasks/taskOrigin";
+import { TaskRequestPersonSection } from "../../tasks/TaskRequestPersonSection";
 import { TaskLabelPicker } from "./labels/TaskLabelPicker";
 import {
   CodingChangesSection,
@@ -29,7 +30,9 @@ import {
   CodingSandboxRows,
   type CodingPanelTarget,
 } from "./CodingSession";
+import { TaskScreenRows } from "../../remote-screen/ScreenLink";
 import { TaskActivitySection } from "./TaskActivitySection";
+import { TaskFilesSection } from "./TaskFilesSection";
 import { TaskLoopSection } from "./TaskLoopSection";
 import { useTaskLabelsCatalog } from "./labels/useTaskLabelsCatalog";
 import type { ChatTaskRun } from "@comma/core/chat";
@@ -46,7 +49,13 @@ export interface TaskDetailsPanelProps {
   /** The Task's facts the panel shows; a Loop Task's Loop comes as `loop`. */
   conversation: Pick<
     CommaConversation,
-    "client_platform" | "id" | "labels" | "origin" | "status"
+    | "client_platform"
+    | "id"
+    | "labels"
+    | "origin"
+    | "requested_by"
+    | "requested_by_avatar"
+    | "status"
   >;
   groupId: string;
   /** A Loop Task's Loop, as the core read it; absent for every other Task. */
@@ -66,6 +75,10 @@ export interface TaskDetailsPanelProps {
   onSwitchRun?: (() => void) | undefined;
   /** Opens the Tasks page narrowed to the clicked property. */
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
+  /** Opens a file the Task's Agents attached (the sidebar's file preview); without it no Files section shows. */
+  onOpenFile?: ((file: TaskFile) => void) | undefined;
+  /** Adds one of those files to this chat's message by reference (a file row's context menu). */
+  onAttachFile?: ((file: TaskFile) => unknown) | undefined;
   /**
    * Ends an in-progress or in-review Task by hand; absent when the viewer
    * cannot change this Task's status.
@@ -143,6 +156,8 @@ export function TaskDetailsPanel({
   onOpenCodingTerminal,
   onSwitchRun,
   onOpenTasksFilter,
+  onOpenFile,
+  onAttachFile,
   onReadEarlierActivity,
   onRevealActivityStep,
   onSetLabels,
@@ -160,6 +175,12 @@ export function TaskDetailsPanel({
   const runModel = run ? taskRunModel(messages, run.model) : undefined;
   const platform =
     origin === "comma" ? platformKey(conversation.client_platform) : undefined;
+  // A Task someone asked for names them in a Request section of its own, in place of its origin.
+  const requester =
+    origin === "task_request" && conversation.requested_by
+      ? conversation.requested_by
+      : undefined;
+  const originLabel = origin ? taskOriginLabel(messages, origin) : undefined;
   // At most the visible route and sidebar panels read once per membership change.
   // A server-approved new label must become visible without reopening the Task.
   const labelsKey = JSON.stringify([conversation.id, conversation.labels ?? []]);
@@ -326,7 +347,7 @@ export function TaskDetailsPanel({
                   onAction={onStatusAction}
                 >
                   <MenuItem
-                    icon={taskStatusIcon(bucket)}
+                    icon={taskStatusIcon(bucket, { spins: false })}
                     // A stable id: React Aria refuses an item whose id changes,
                     // and the current status changes while the menu is mounted.
                     id={currentStatusKey}
@@ -356,7 +377,7 @@ export function TaskDetailsPanel({
               {messages.task_panel_status_failed()}
             </p>
           ) : null}
-          {origin ? (
+          {origin && !requester ? (
             <div className="comma-task-panel-row">
               {onOpenTasksFilter ? (
                 <button
@@ -368,7 +389,7 @@ export function TaskDetailsPanel({
                   type="button"
                 >
                   <TaskOriginIcon origin={origin} />
-                  {taskOriginLabel(messages, origin)}
+                  {originLabel}
                 </button>
               ) : (
                 <span
@@ -377,7 +398,7 @@ export function TaskDetailsPanel({
                   data-testid="task-panel-origin"
                 >
                   <TaskOriginIcon origin={origin} />
-                  {taskOriginLabel(messages, origin)}
+                  {originLabel}
                 </span>
               )}
             </div>
@@ -398,6 +419,19 @@ export function TaskDetailsPanel({
             </div>
           ) : null}
         </section>
+
+        {requester ? (
+          <TaskRequestPersonSection
+            avatar={
+              conversation.requested_by_avatar
+                ? { source: "sender-avatar", ...conversation.requested_by_avatar }
+                : undefined
+            }
+            heading={messages.task_panel_request()}
+            name={requester}
+            testId="task-panel-request"
+          />
+        ) : null}
 
         {labeled ? (
           <section className="comma-task-panel-section" data-testid="task-panel-labels">
@@ -473,6 +507,17 @@ export function TaskDetailsPanel({
           </section>
         ) : null}
 
+        {onOpenFile ? (
+          <TaskFilesSection
+            conversationId={conversation.id}
+            groupId={groupId}
+            key={conversation.id}
+            onAttachFile={onAttachFile}
+            onOpenFile={onOpenFile}
+            working={activityWorking}
+          />
+        ) : null}
+
         {run ? (
           <section
             className="comma-task-panel-section"
@@ -531,6 +576,9 @@ export function TaskDetailsPanel({
                   </span>
                 )}
               </div>
+            ) : null}
+            {run.place.kind === "station" ? (
+              <TaskScreenRows device={run.place.deviceId} />
             ) : null}
             {run.place.kind === "sandbox" ? (
               <CodingSandboxRows

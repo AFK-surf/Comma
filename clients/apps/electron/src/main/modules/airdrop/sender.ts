@@ -71,6 +71,8 @@ export interface AirDropOperation {
   error?: string;
   peerId?: string;
   paths?: string[];
+  /** The link a link send carries. */
+  url?: string;
   peers?: Peer[];
   truncated?: boolean;
 }
@@ -89,6 +91,8 @@ interface AirDropSenderOptions {
   /** Main's clock: operation and stop deadlines, and when a scan's peers expire. */
   clock?: MainClock;
   platform?: string;
+  /** Each change of the running operation: a peer found, its end. */
+  onChange?: (operation: AirDropOperation) => void;
   resolveVfs?: (path: string) => Promise<string>;
   spawn?: SpawnAirDropHelper;
 }
@@ -166,13 +170,7 @@ export class AirDropSender {
         throw new Error("This requestId belongs to another AirDrop operation.");
       return structuredClone(previous);
     }
-    if (
-      this.#clock.now() >= this.#peersExpireAt ||
-      !this.#peers.some((peer) => peer.id === input.peerId)
-    )
-      throw new Error(
-        "Run AirDrop find again and select a device from the completed scan."
-      );
+    this.#assertScanned(input.peerId);
     if (paths.some((path) => !isAbsolute(path) || path.includes("\0")))
       throw new Error("AirDrop requires absolute file paths on this Mac.");
     const active = this.#begin({
@@ -232,6 +230,56 @@ export class AirDropSender {
       }
     })();
     return structuredClone(active.value);
+  }
+
+  /**
+   * Sends one HTTP/HTTPS link, such as a Comma invite, to a device of the last
+   * completed scan. It succeeds only when the receiver accepts the offer.
+   */
+  sendLink(input: {
+    peerId: string;
+    requestId: string;
+    senderName: string;
+    url: string;
+  }) {
+    this.#options.bindSession().assertCurrent();
+    if (this.#history.has(input.requestId))
+      throw new Error("This requestId belongs to another AirDrop operation.");
+    if (!/^https?:\/\//.test(input.url))
+      throw new Error("AirDrop sends HTTP or HTTPS links.");
+    this.#assertScanned(input.peerId);
+    const active = this.#begin({
+      operationId: input.requestId,
+      kind: "send",
+      status: "running",
+      peerId: input.peerId,
+      url: input.url,
+    });
+    this.#spawn(active, [
+      "send",
+      "--name",
+      input.senderName,
+      "--to",
+      input.peerId,
+      "--url",
+      input.url,
+    ]);
+    return structuredClone(active.value);
+  }
+
+  /** Whether the last completed scan, still fresh, found this device. */
+  scanned(peerId: string) {
+    return (
+      this.#clock.now() < this.#peersExpireAt &&
+      this.#peers.some((peer) => peer.id === peerId)
+    );
+  }
+
+  #assertScanned(peerId: string) {
+    if (!this.scanned(peerId))
+      throw new Error(
+        "Run AirDrop find again and select a device from the completed scan."
+      );
   }
 
   operation(id: string) {
@@ -296,6 +344,7 @@ export class AirDropSender {
         cancelTimer();
         boundary.signal.removeEventListener("abort", abort);
         if (this.#active === active) this.#active = undefined;
+        this.#options.onChange?.(structuredClone(value));
         resolve();
       },
     };
@@ -372,6 +421,7 @@ export class AirDropSender {
             if (peers.length >= 64 || peers.some((peer) => peer.id === event.id))
               throw new Error("Invalid peer list.");
             peers.push(peerSchema.parse(event));
+            this.#options.onChange?.(structuredClone(active.value));
           } else if (event.type === "scan_completed" && active.value.kind === "find") {
             if (event.count !== active.value.peers!.length)
               throw new Error("Incomplete peer list.");

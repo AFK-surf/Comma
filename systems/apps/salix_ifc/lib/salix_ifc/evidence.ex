@@ -3,7 +3,8 @@ defmodule SalixIFC.Evidence do
   Why an effect was allowed. Plain data for the caller to archive verbatim.
 
   * `sources` — `{ref, clause}` per admitted source; clause is `:flow`,
-    `:in_place`, `:instruction`, or `{:receipt, receipt_id}`.
+    `:authored` (the requester's own message), `:in_place`, `:instruction`,
+    or `{:receipt, receipt_id}`.
   * `membership_revisions` — `{atom, revision}` for every known membership
     entry consulted, sorted, so the archive records the snapshot.
   """
@@ -13,7 +14,7 @@ defmodule SalixIFC.Evidence do
   @enforce_keys [:request, :requester, :destination, :sources, :membership_revisions]
   defstruct [:request, :requester, :destination, :sources, :membership_revisions]
 
-  @type clause :: :flow | :in_place | :instruction | {:receipt, binary}
+  @type clause :: :flow | :authored | :in_place | :instruction | {:receipt, binary}
   @type t :: %__MODULE__{
           request: binary,
           requester: Principal.key(),

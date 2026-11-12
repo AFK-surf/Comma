@@ -52,6 +52,39 @@ defmodule SalixIM.IFC.ReadLabels do
   def for_scope(_connect, _scope_id), do: nil
 
   @doc """
+  The `ifc` block for a read of the workspace's directory: people, departments
+  and the app's contact data range.
+
+  The tenant's directory is what every member of the workspace can look up
+  in the provider's own client, so its audience is the space, as a
+  tenant-wide document link is. A Group with the check off gets `nil`.
+  """
+  @spec for_space(map()) :: map() | nil
+  def for_space(connect) when is_map(connect) do
+    case labelling_scope(connect) do
+      %{} = scope -> %{"label" => encoded_atoms([{:space, scope.connect_id}])}
+      _off -> nil
+    end
+  end
+
+  def for_space(_connect), do: nil
+
+  @doc """
+  The `ifc` block for a read of the Group's own configuration, such as its
+  signed-in provider accounts: anyone in the Group can see it, so its
+  audience is the Group, as Group memory's is.
+  """
+  @spec for_group(map()) :: map() | nil
+  def for_group(connect) when is_map(connect) do
+    case labelling_scope(connect) do
+      %{} = scope -> %{"label" => encoded_atoms([{:group, scope.group_id}])}
+      _off -> nil
+    end
+  end
+
+  def for_group(_connect), do: nil
+
+  @doc """
   The `ifc` block for one indivisible thing that lives in several scopes at
   once — a file shared into three channels, a canvas attached to one.
 

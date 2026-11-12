@@ -1,6 +1,5 @@
 import VerifiedKernelProofs.Session.WorkPendingRevision
 import VerifiedKernelProofs.Session.WorkNativeCandidate
-
 namespace VerifiedKernel.Session.PendingRevision
 open Data WorkConservation
 set_option Elab.async false
@@ -30,7 +29,7 @@ theorem input_write_preserves {cursor final : Cursor} {inputEntry born result hw
     (input : Command.input cursor.working (.tuple [inputEntry, born]) j = .ok (result, r))
     (started : InputStart result batch)
     (execution : Execution (resident (some cursor.pack) (a "write") (.tuple [list batch, hwm])) final) :
-    final.baseline = cursor.baseline ∧ final.etag = cursor.etag ∧ final.events = cursor.events ++ batch ∧
+    final.baseline = cursor.baseline ∧ final.revision = cursor.revision ∧ final.events = cursor.events ++ batch ∧
       QueueReady final.working ∧ final.working.get (a "storage_format") = cursor.working.get (a "storage_format") ∧
       (∀ sealed old, ValueSemantics.Represented cursor.working sealed old → ValueSemantics.Represented final.working sealed old) ∧
       ∃ event now first last item,
@@ -67,10 +66,10 @@ theorem input_write_durable
       (BatchExecution.resident (some prepared) (a "start") (list metadata)) stamped)
     (metadataKeys : ∀ event ∈ metadata, BinaryKeys event)
     (metadataOnly : ∀ event ∈ metadata, CommitMetadata event)
-    (requested : StorageCommit.resident (some stamped) (a "start") (.tuple [key, cursor.etag]) = (some storageCursor, request))
+    (requested : StorageCommit.resident (some stamped) (a "start") (.tuple [key, cursor.revision]) = (some storageCursor, request))
     (primitive : ArchivePublication.SnapshotCASMeaning request result durable)
     (resumed : StorageCommit.resident (some storageCursor) (a "resume") result = (some stamped, .tuple [a "ok", etag])) :
-    staged.baseline = cursor.baseline ∧ staged.etag = cursor.etag ∧
+    staged.baseline = cursor.baseline ∧ staged.revision = cursor.revision ∧
       (∃ before after, effects = before ++
         [(.tuple [a "write", list batch, list []], DurableConfirmation.Result.ok),
           (a "durable_fence", DurableConfirmation.Result.ok)] ++ after) ∧

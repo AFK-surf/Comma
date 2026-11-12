@@ -6,7 +6,9 @@ activation: per-message
 
 # WLED Light Controllers
 
-Send every request with `device.lan_request` through a gateway. Follow the
+Send every request with `device.lan_request` through a gateway, or with
+`curl` through `env.exec` on a computer that has no `lan_gateway` (see the
+home-gateway skill). Follow the
 `/.runtime/skills/home-gateway/SKILL.md` instructions to find the gateway and
 the controller's address.
 

@@ -1,6 +1,6 @@
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
-import type { SessionHostController } from "./controller";
+import type { SessionHostController, SessionKeptAccount } from "./controller";
 
 const SessionHostContext = createContext<SessionHostController | undefined>(undefined);
 
@@ -41,7 +41,22 @@ export function useSessionLifecycleSnapshot(source: SessionLifecycleProjectionSo
   );
 }
 
+const noAccounts: readonly SessionKeptAccount[] = [];
+const noChanges = () => () => undefined;
+
+/** The accounts kept signed in besides the one in use (none where the host keeps one). */
+export function useSessionKeptAccounts(controller: SessionHostController) {
+  const accounts = controller.accounts;
+  return useSyncExternalStore(
+    accounts ? accounts.subscribe : noChanges,
+    () => accounts?.get() ?? noAccounts,
+    () => accounts?.get() ?? noAccounts
+  );
+}
+
 export type {
+  SessionAccountsController,
+  SessionKeptAccount,
   SessionAuthenticatorController,
   SessionGuestController,
   SessionHostController,

@@ -61,13 +61,8 @@ defmodule SalixAgent.Titles do
   @spec maybe_generate_async(%{agent_id: String.t()}, String.t()) :: :ok
   def maybe_generate_async(%{agent_id: agent_id}, session_id) do
     if enabled?() do
-      with {:ok, session} <- InternalSessionStore.read(agent_id, session_id),
-           true <- placeholder?(InternalSession.get(session, :name)),
-           true <- has_assistant?(session),
-           source when source != "" <- first_user_content(session) do
-        billing_context = session_billing_context(session)
-        own_session_id = InternalSession.session_id(session)
-
+      with {:ok, {source, billing_context, own_session_id}} <-
+             InternalSessionStore.with_session(agent_id, session_id, &title_source/1) do
         case DependencyRunner.start(
                :llm,
                dependency_tenant_id(agent_id),
@@ -95,6 +90,19 @@ defmodule SalixAgent.Titles do
     :ok
   rescue
     _ -> :ok
+  end
+
+  # The data a title needs, read and released in one step: the first user
+  # message when the session still has a placeholder name and an assistant
+  # reply, else `:skip`.
+  defp title_source(session) do
+    with true <- placeholder?(InternalSession.get(session, :name)),
+         true <- has_assistant?(session),
+         source when source != "" <- first_user_content(session) do
+      {:ok, {source, session_billing_context(session), InternalSession.session_id(session)}}
+    else
+      _ -> :skip
+    end
   end
 
   @doc false

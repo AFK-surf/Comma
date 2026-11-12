@@ -93,6 +93,7 @@ func retryableAgentHandoff(err error) bool {
 		"connection refused",
 		"connection reset by peer",
 		"unexpected EOF",
+		"error: EOF",
 		`unable to upgrade connection: container not found ("comma")`,
 		":nodedown",
 	} {

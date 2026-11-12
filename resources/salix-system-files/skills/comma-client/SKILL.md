@@ -5,7 +5,7 @@ description: Discover and use the live Comma desktop Client API from a Comma-lau
 
 # Comma Client
 
-Comma desktop exposes a Main-owned, self-describing Client API through the Connector it
+Comma desktop exposes a Main-owned, self-describing Client API through the station it
 launches. Use it when a request needs to inspect or control Comma desktop itself or one of
 its in-app surfaces. This is distinct from operating an arbitrary website, server-side
 Comma data, or the host machine in general.
@@ -13,6 +13,8 @@ Comma data, or the host machine in general.
 The API available in the running client is the authority. Discover it from the
 environment-provided `comma` command instead of relying on a fixed operation list in this
 skill or guessing from prior sessions.
+
+To find where a Comma setting is and who can change it, use the `comma-settings` skill.
 
 Treat a result as current only when the live Comma query succeeds. If environment
 discovery reports that Comma requires permission, ask the user to turn on Allow operations

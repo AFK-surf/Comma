@@ -1,3 +1,4 @@
+import userEvent from "@testing-library/user-event";
 import {
   Outlet,
   RouterProvider,
@@ -28,6 +29,10 @@ import { StrictMode, act, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { CommaAppShortcutsProvider } from "../../shortcuts/commaAppShortcuts";
 import { CommaWebClientSettingsProvider } from "../../commaClientSettings";
+import {
+  DraftSelectionsProvider,
+  useConversationDraftSelections,
+} from "../../chat/composer/draftSelections";
 import { ChatSidebar, ChatSidebarToggle } from "../ChatSidebar";
 import {
   ChatSidebarProvider,
@@ -38,6 +43,7 @@ import {
   type ChatSidebarHost,
 } from "../ChatSidebarContext";
 import { stubProperty } from "@comma/test-utils/stub-property";
+import { runApplicationMenuCommand } from "../../application-menu/useApplicationMenu";
 
 type BrowserSidebarBridge = CommaNativeBridge["browserSidebar"];
 
@@ -175,6 +181,12 @@ const frameMs = 16;
 
 const control = (name: string) => screen.getByRole("button", { name });
 
+/** The type whose artwork a file tab's icon draws. */
+const tabIcon = (name: string) =>
+  screen
+    .getByRole("tab", { name })
+    .querySelector<SVGElement>('[data-testid="file-type-icon"]')?.dataset.fileType;
+
 const commaCenterHost: ChatSidebarHost = {
   conversationId: "comma-center",
   groupId: "grp_test",
@@ -226,6 +238,8 @@ function otherCapacityHost(index: number): ChatSidebarHost {
     workspaceId: "workspace-1",
   };
 }
+
+const selectedTab = () => screen.getByRole("tab", { selected: true }).textContent;
 
 describe("ChatSidebarContext", () => {
   it("creates and selects the exact tab id requested by Main", async () => {
@@ -721,6 +735,53 @@ describe("ChatSidebar", () => {
     }
   });
 
+  it("keeps the native page inside its slot's pixels and gives it the slot's rounded corner", async () => {
+    resetBrowserSidebarMocks();
+    nativeBridge.platform = "electron";
+    // The slot starts on a half pixel beside the sidebar's 0.5px divider and
+    // stops half a pixel inside the content panel's edges and hairline.
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({
+        bottom: 639.5,
+        height: 599.5,
+        left: 800.5,
+        right: 1_239.5,
+        toJSON: () => ({}),
+        top: 40,
+        width: 439,
+        x: 800.5,
+        y: 40,
+      });
+    const panelCorner = document.createElement("style");
+    panelCorner.textContent =
+      ".comma-chat-sidebar-browser-viewport { border-bottom-right-radius: 11.5px; }";
+    document.head.append(panelCorner);
+
+    try {
+      const { router } = renderSidebarRouter();
+      await act(() => router.navigate({ to: "/plugins" }));
+      fireEvent.click(await screen.findByTestId("chat-sidebar-toggle"));
+      fireEvent.change(screen.getByRole("textbox", { name: "Address" }), {
+        target: { value: "example.com/first" },
+      });
+      fireEvent.submit(screen.getByRole("form", { name: "Browser navigation" }));
+
+      await waitFor(() =>
+        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bounds: { height: 599, width: 438, x: 801, y: 40 },
+            cornerRadii: { bottomLeft: 0, bottomRight: 11, topLeft: 0, topRight: 0 },
+          })
+        )
+      );
+    } finally {
+      panelCorner.remove();
+      bounds.mockRestore();
+      resetBrowserSidebarMocks();
+    }
+  });
+
   it("does not hide the first navigation during a StrictMode remount", async () => {
     resetBrowserSidebarMocks();
     nativeBridge.platform = "electron";
@@ -761,23 +822,14 @@ describe("ChatSidebar", () => {
     }
   });
 
-  it("sends selected browser element details through the active chat channel", async () => {
+  it("stages each picked element for the chat's next message, and picks on until the person leaves the mode", async () => {
     resetBrowserSidebarMocks();
     nativeBridge.platform = "electron";
-    nativeBridge.browserSidebar.inspect.mockResolvedValueOnce({
-      element: {
-        attributes: { "aria-label": "Save", role: "button" },
-        outerHTML: '<button aria-label="Save">Save</button>',
-        rect: { height: 32, width: 80, x: 20, y: 40 },
-        selector: "main > button",
-        tagName: "button",
-        text: "Save",
-      },
-      inspectionId: "inspection-1",
-      page: { title: "Example", url: "https://example.com/docs" },
-      status: "selected",
-      userMessage: "Explain this control",
-    });
+    // Two picks, each with its note; then the person leaves the mode (Escape on the page).
+    nativeBridge.browserSidebar.inspect
+      .mockResolvedValueOnce(picked("inspection-1", "Explain this control"))
+      .mockResolvedValueOnce(picked("inspection-2", "And this one"))
+      .mockResolvedValueOnce({ status: "cancelled" });
     const bounds = mockBrowserSidebarBounds();
 
     try {
@@ -790,18 +842,25 @@ describe("ChatSidebar", () => {
       fireEvent.click(inspectButton);
 
       await waitFor(() =>
-        expect(nativeBridge.browserSidebar.inspect).toHaveBeenCalledWith({
-          action: "start",
-          sessionId: expect.stringContaining(`${commaCenterSessionId}::`),
-        })
+        expect(nativeBridge.browserSidebar.inspect).toHaveBeenCalledTimes(3)
       );
-      await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
-      expect(sendMessage.mock.calls[0]?.[0]).toContain("Explain this control");
-      expect(sendMessage.mock.calls[0]?.[0]).toContain(
-        '<browser-element-inspection id="inspection-1" />'
+      expect(nativeBridge.browserSidebar.inspect).toHaveBeenCalledWith({
+        action: "start",
+        sessionId: expect.stringContaining(`${commaCenterSessionId}::`),
+      });
+      // Both wait in the chat's composer, as they were picked. Nothing is sent.
+      await waitFor(() =>
+        expect(screen.getByTestId("staged-selections")).toHaveTextContent(
+          "inspection-1: Explain this control | inspection-2: And this one"
+        )
       );
-      expect(sendMessage.mock.calls[0]?.[0]).toContain("Selector: main > button");
-      expect(sendMessage.mock.calls[0]?.[1]).toEqual({ consumeDraft: false });
+      expect(sendMessage).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Select element" })).toHaveAttribute(
+          "aria-pressed",
+          "false"
+        )
+      );
     } finally {
       bounds.mockRestore();
       resetBrowserSidebarMocks();
@@ -853,6 +912,65 @@ describe("ChatSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open task" }));
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/tasks/workspace-1/grp_test/task-a")
+    );
+  });
+
+  it("steps through the tabs in strip order and closes the selected one from Main's tab keys", async () => {
+    nativeBridge.platform = "electron";
+    try {
+      renderSidebarRouter();
+      expect(await screen.findByTestId("mock-conversation-task-a")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Open nested task B" }));
+      expect(await screen.findByTestId("mock-conversation-task-b")).toBeVisible();
+
+      // The steps wrap at both ends of the strip.
+      act(() => runApplicationMenuCommand("browser-next-tab"));
+      await waitFor(() => expect(selectedTab()).toBe("Task A"));
+      act(() => runApplicationMenuCommand("browser-previous-tab"));
+      await waitFor(() => expect(selectedTab()).toBe("Task B"));
+
+      act(() => runApplicationMenuCommand("browser-close-tab"));
+      await waitFor(() =>
+        expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+          "Task A",
+        ])
+      );
+    } finally {
+      nativeBridge.platform = "web";
+    }
+  });
+
+  it("shows each file tab with its file type's icon", async () => {
+    renderSidebarRouter();
+    expect(await screen.findByTestId("mock-conversation-task-a")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open file preview" }));
+    expect(tabIcon("report.pdf")).toBe("pdf");
+    fireEvent.click(screen.getByRole("button", { name: "Open Drive preview" }));
+    expect(tabIcon("notes.md")).toBe("md");
+  });
+
+  it("moves a tab pinned from its menu to the front of the strip without a close button", async () => {
+    const user = userEvent.setup();
+    renderSidebarRouter();
+    expect(await screen.findByTestId("mock-conversation-task-a")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open nested task B" }));
+    expect(await screen.findByTestId("mock-conversation-task-b")).toBeVisible();
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Task B" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin tab" }));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Task B",
+      "Task A",
+    ]);
+    expect(
+      screen.queryByRole("button", { name: "Close Task B" })
+    ).not.toBeInTheDocument();
+
+    // A pinned tab stays when the others close, so Task A has none to close.
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Task A" }));
+    expect(screen.getByRole("menuitem", { name: "Close other tabs" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
     );
   });
 
@@ -2679,12 +2797,50 @@ function SidebarLayout() {
       <Outlet />
       <ChatSidebarToggle />
       <ChatSidebar />
+      <StagedSelections />
     </>
   );
 }
 
+/** What the page answers as an element is picked, with what the person wrote about it. */
+const picked = (id: string, userMessage: string) => ({
+  element: {
+    attributes: { "aria-label": "Save", role: "button" },
+    outerHTML: '<button aria-label="Save">Save</button>',
+    rect: { height: 32, width: 80, x: 20, y: 40 },
+    selector: "main > button",
+    tagName: "button",
+    text: "Save",
+  },
+  inspectionId: id,
+  page: { title: "Example", url: "https://example.com/docs" },
+  status: "selected" as const,
+  userMessage,
+});
+
+/** What the sidebar staged for the Comma Center chat's next message: each pick's id and note. */
+function StagedSelections() {
+  const { items } = useConversationDraftSelections(commaCenterHost.conversationId);
+  return (
+    <output data-testid="staged-selections">
+      {items
+        .map(({ about, note }) =>
+          about.kind === "element" ? `${about.inspectionId}: ${note}` : note
+        )
+        .join(" | ")}
+    </output>
+  );
+}
+
 function CommaCenterRoute() {
-  const { activeSession, openBrowser, openChat, updateBrowserPage } = useChatSidebar();
+  const {
+    activeSession,
+    openBrowser,
+    openChat,
+    openDrivePreview,
+    openFilePreview,
+    updateBrowserPage,
+  } = useChatSidebar();
   useRegisterChatSidebarHost(commaCenterHost, { commaCenter: true });
   const activeBrowserPage = activeSession?.browserPages.find(
     (page) => page.id === activeSession.activeBrowserPageId
@@ -2718,6 +2874,29 @@ function CommaCenterRoute() {
         type="button"
       >
         Open next browser
+      </button>
+      <button
+        onClick={() =>
+          openFilePreview(commaCenterHost, {
+            attachmentIndex: 0,
+            conversationId: "comma-center",
+            fileName: "report.pdf",
+            groupId: "grp_test",
+            messageId: "message-1",
+            mimeType: "application/pdf",
+          })
+        }
+        type="button"
+      >
+        Open file preview
+      </button>
+      <button
+        onClick={() =>
+          openDrivePreview(commaCenterHost, { id: "drive-1", name: "notes.md" })
+        }
+        type="button"
+      >
+        Open Drive preview
       </button>
       <button
         onClick={() => {
@@ -2849,7 +3028,9 @@ function renderSidebarRouter({ strictMode = false } = {}) {
     <CommaWebClientSettingsProvider>
       <CommaAppShortcutsProvider>
         <ChatSidebarProvider>
-          <RouterProvider router={router} />
+          <DraftSelectionsProvider>
+            <RouterProvider router={router} />
+          </DraftSelectionsProvider>
         </ChatSidebarProvider>
       </CommaAppShortcutsProvider>
     </CommaWebClientSettingsProvider>
@@ -2877,7 +3058,9 @@ function renderCapacityFenceRouter() {
     <CommaWebClientSettingsProvider>
       <CommaAppShortcutsProvider>
         <ChatSidebarProvider>
-          <RouterProvider router={router} />
+          <DraftSelectionsProvider>
+            <RouterProvider router={router} />
+          </DraftSelectionsProvider>
         </ChatSidebarProvider>
       </CommaAppShortcutsProvider>
     </CommaWebClientSettingsProvider>

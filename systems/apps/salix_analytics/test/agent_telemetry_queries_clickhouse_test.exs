@@ -254,6 +254,54 @@ defmodule SalixAnalytics.AgentTelemetryQueriesClickHouseTest do
     assert row["actor_failed"] == 0
   end
 
+  test "routing usage keeps tenant, group, cohort and time scope while converging repeated facts" do
+    at = ~U[2026-07-10 14:00:00Z]
+    window = [group_id: "routing-group", from: at, to: DateTime.add(at, 3600)]
+
+    base = [
+      tenant_id: "routing-tenant",
+      group_id: "routing-group",
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      usage: %{usage_reported: true},
+      version: 1
+    ]
+
+    rows = [
+      llm("routing:call", "routed-session", "worker", at, base),
+      llm(
+        "routing:call",
+        "routed-session",
+        "worker",
+        at,
+        Keyword.merge(base, version: 2, prompt_tokens: 200)
+      ),
+      llm(
+        "routing:other-group",
+        "routed-session",
+        "worker",
+        at,
+        Keyword.put(base, :group_id, "other")
+      ),
+      llm(
+        "routing:other-tenant",
+        "routed-session",
+        "worker",
+        at,
+        Keyword.put(base, :tenant_id, "other")
+      ),
+      llm("routing:other-session", "explicit-session", "worker", at, base),
+      llm("routing:old", "routed-session", "worker", DateTime.add(at, -3600), base)
+    ]
+
+    assert {:ok, 6} = ClickHouseTyped.insert(rows)
+    assert {:ok, [row]} = Queries.routing_calls("routing-tenant", ["routed-session"], window)
+    assert row["prompt_tokens"] == 200 and row["completion_tokens"] == 10
+    assert row["usage_reported"] == true and row["status"] == "ok"
+    assert Map.has_key?(row, "sku") and Map.has_key?(row, "cache_read_tokens_reported")
+    assert {:ok, []} = Queries.routing_calls("routing-tenant", [], window)
+  end
+
   test "run_outcomes counts guard parks and repair failures apart from crashes" do
     # These four statuses all reached ClickHouse as `actor_failed` until the
     # runtime stopped flattening them. Its own tenant AND its own time range:

@@ -22,8 +22,9 @@ defmodule SalixAgent.Drive do
     * A delete withdraws the hosted replica's version only. `still_published:
       true` means a user's device still asserts the path, which is not a
       failure and must not be retried.
-    * Reads serve what the hosted replica holds; a file the user just saved on
-      a device may not be there yet.
+    * Reads serve the newest version a user's device or the hosted replica
+      holds, so a read sees every acknowledged write. With the devices offline,
+      a file the user just saved on one may not be there yet.
   """
 
   alias SalixAgent.OAuthStore

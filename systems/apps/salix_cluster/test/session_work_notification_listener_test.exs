@@ -56,10 +56,10 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
            SystemsRuntime.Proc.send(owner, :notification_listener_catch_up)
            :ok
          end,
-         wake_fn: fn agent_id, target, candidate_token ->
+         wake_fn: fn agent_id, target, revision ->
            SystemsRuntime.Proc.send(
              owner,
-             {:notification_listener_wake, agent_id, target, candidate_token}
+             {:notification_listener_wake, agent_id, target, revision}
            )
 
            :ok
@@ -74,7 +74,7 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
 
     payload =
       SessionWorkNotifications.encode!(%{
-        "token" => "candidate-one",
+        "revision" => 7,
         "agent_id" => "agent-one",
         "runtime_kind" => "internal",
         "session_id" => "session-one"
@@ -84,7 +84,7 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
 
     settle_receive(
       {:notification_listener_wake, "agent-one", %{runtime: :internal, session_id: "session-one"},
-       "candidate-one"}
+       7}
     )
 
     Agent.update(ownership, fn _ -> :another@node end)

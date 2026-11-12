@@ -112,6 +112,8 @@ defmodule SalixIM.SlackTaskCard do
                "content" => attrs["payload"]["task_id"]
              }
            ) do
+      SalixIM.MentionReplyLatency.card_requested(conversation_id)
+
       {:ok,
        %{
          "conversation_id" => conversation_id,

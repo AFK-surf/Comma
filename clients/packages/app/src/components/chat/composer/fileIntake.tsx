@@ -159,7 +159,7 @@ export type IntakeUpload = {
   status: "uploading" | "uploaded" | "failed";
   error?: string | undefined;
   /** Why it failed where trying again changes nothing (too many files, too large): the toast offers no retry for it. */
-  refused?: string | undefined;
+  refused?: string | true | undefined;
 };
 
 /**

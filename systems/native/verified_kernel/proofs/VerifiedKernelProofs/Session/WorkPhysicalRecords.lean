@@ -182,13 +182,14 @@ theorem PhysicalHistory.publish_records {framing : CodecFraming} {objects nextOb
     {owner session : ByteArray} {state event next : Term} {sealed records : List Term}
     {ceiling line : Int} {final : ArchivePublication.Output}
     (history : PhysicalHistory framing objects owner session state sealed)
+    (physical : ArchiveProjection.UnarchivedWindow state)
     (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0) (publication : Execution (start state (i line)) objects final nextObjects)
     (emitted : final.2 = .tuple [a "advance", event]) (applied : ResidentBatch state [event] next) :
     ∀ reference, PhysicalIdentityFact objects state (.record reference) →
       PhysicalIdentityFact nextObjects next (.record reference) := by
   obtain ⟨dropped, kept, read, after, nextHistory, _⟩ :=
-    history.publish_resident window positive publication emitted applied
+    history.publish_resident physical window positive publication emitted applied
   apply physical_record_transport (execution_objects_extend publication)
     (nextHistory.invariant.owned.trans history.invariant.owned.symm)
     (nextHistory.invariant.identified.trans history.invariant.identified.symm)

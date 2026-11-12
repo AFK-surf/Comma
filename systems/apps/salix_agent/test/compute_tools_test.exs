@@ -6,6 +6,8 @@ defmodule SalixAgent.ComputeToolsTest do
 
   defmodule Adapter do
     def dispatch_workload(operation, args, workload_id) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:adapter_env, args["env"]})
+
       {:ok,
        %{
          "operation" => operation,
@@ -16,6 +18,8 @@ defmodule SalixAgent.ComputeToolsTest do
     end
 
     def call_workload(operation, args, workload_id) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:adapter_env, args["env"]})
+
       {:ok,
        %{
          "operation" => to_string(operation),
@@ -309,7 +313,9 @@ defmodule SalixAgent.ComputeToolsTest do
       args = %{"command" => ["gh", "api", "user"], "credential_env" => [ref]}
       result = elem(entry, 3).(args, ctx) |> Jason.decode!()
       assert result["workload_id"] == context.workload.id
-      assert result["args"]["env"] == ["GH_TOKEN=test-oauth-token"]
+      assert_received {:adapter_env, ["GH_TOKEN=test-oauth-token"]}
+      # What the command prints reaches the model with the credential taken out.
+      assert result["args"]["env"] == ["GH_TOKEN=[redacted credential]"]
       refute Map.has_key?(result["args"], "credential_env")
 
       assert_raise RuntimeError, ~r/not bound to this agent group/, fn ->

@@ -4,7 +4,7 @@
 import { type Request, type Answer, error, json, percentDecode } from "../request.ts";
 import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
-import { STILLFAIL_SURFACE, type TaskMark, cardOfEntry } from "../../store/rows.ts";
+import { COMMA_STATION_SURFACE, type TaskMark, cardOfEntry } from "../../store/rows.ts";
 import { TASK_LABELS_MAX, type Store } from "../../store/store.ts";
 
 const segment = (s: string) => percentDecode(s.replace(/\+/g, "%2B"));
@@ -142,14 +142,14 @@ export const routes = ({ read, store }: Tools): Route[] => {
             }
             // A chat named by hand; no name (or an empty one) names it by its first message again.
             case "title": {
-              if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.renameOnlyStillfail"));
+              if (t.surface !== COMMA_STATION_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.renameOnlyComma"));
               s.setThreadTitle(t.id, title(input(r)));
               return threadView(r, t.id);
             }
             // A Task (a chat on this station's page) marked done or cancelled by a person, or (in_progress) left to
             // what its chat shows again: answered with the status it has then.
             case "status": {
-              if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.statusOnlyStillfail"));
+              if (t.surface !== COMMA_STATION_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.statusOnlyComma"));
               const asked = input(r).status;
               const mark = typeof asked === "string" && Object.hasOwn(MARKS, asked) ? MARKS[asked] : undefined;
               if (mark === undefined) throw new Refused(400, tr(r.lang, "station.admin.badTaskStatus"));
@@ -157,7 +157,7 @@ export const routes = ({ read, store }: Tools): Route[] => {
             }
             // A Task's labels (the Group's label ids), as a person sets them: answered with the labels it has then.
             case "labels": {
-              if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.labelsOnlyStillfail"));
+              if (t.surface !== COMMA_STATION_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.labelsOnlyComma"));
               const asked = input(r).labels;
               if (
                 !Array.isArray(asked) ||

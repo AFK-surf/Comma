@@ -3,7 +3,7 @@ import posthog, { type PostHog, type CaptureResult } from "posthog-js";
 import { uiClock } from "@comma/ui/clock";
 import { getActiveCommaConfig } from "@comma/config";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
-import type { NativeInfo } from "@comma/native-bridge";
+import type { AudioCaptureTranscriptionFailed, NativeInfo } from "@comma/native-bridge";
 import type { CoreFailure } from "@comma/core-client";
 import type { SessionLifecycleProjectionSource } from "../session/react";
 
@@ -41,6 +41,8 @@ const eventNames = new Set([
   "comma_message_send_requested",
   "comma_message_send_accepted",
   "comma_message_send_failed",
+  "comma_recording_transcribe_failed",
+  "comma_widget_failed",
 ]);
 
 // PostHog enriches even manually captured events. Keep that enrichment bounded:
@@ -85,6 +87,7 @@ const propertyNames = new Set([
   "login_error_code",
   "source_message_id",
   "launch_kind",
+  "widget_reason",
 ]);
 
 export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
@@ -100,6 +103,7 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
   if (!loginFailureCodes.has(properties.login_error_code))
     delete properties.login_error_code;
   if (!errorDetails.has(properties.error_detail)) delete properties.error_detail;
+  if (!isWidgetReason(properties.widget_reason)) delete properties.widget_reason;
   if (event.event === "$pageview") {
     // A stable product route, never a filesystem URL or a URL with OAuth handles.
     properties.$current_url = `comma://client${properties.route}`;
@@ -360,6 +364,7 @@ export function startCommaAnalytics({
     window.removeEventListener("unhandledrejection", onRejection);
     reportedErrors = new WeakMap<Error, ClientErrorKind>();
     errorReportCounts = {};
+    widgetFailureCount = 0;
     uiCommitted = false;
     if (active === analytics) active = undefined;
   };
@@ -377,7 +382,8 @@ export function beginCommaMessageSend(surface: ChatSurface) {
     safely(() => analytics.client.capture("comma_message_send_requested", { surface }));
   return (
     result: "accepted" | "failed",
-    boundary: "runtime" | "server" | "dispatch"
+    boundary: "runtime" | "server" | "dispatch",
+    error?: unknown
   ) => {
     // A late result from a previous account must not become the next user's event.
     if (!analytics || active !== analytics || analytics.userId !== userId) return;
@@ -386,9 +392,38 @@ export function beginCommaMessageSend(surface: ChatSurface) {
         surface,
         boundary,
         duration_ms: Math.round(uiClock.monotonic() - start),
+        ...(result === "failed" ? { error_kind: sendFailureKind(error) } : {}),
       })
     );
   };
+}
+
+// The core's error codes a send can fail with; the message text is never sent.
+const sendFailureCodes = new Set<unknown>([
+  "session_changed",
+  "not_retained",
+  "chat_not_retained",
+  "stale_lease",
+  "send_in_progress",
+  "send_not_reserved",
+  "already_sent",
+  "draft_changed",
+  "attachment_not_ready",
+  "chat_refused",
+  "signed_out",
+  "invalid_params",
+  "internal",
+  "host",
+  "closed",
+  "no_core",
+  "core_restarted",
+  "cancelled",
+]);
+
+/** Why a send failed, as a bounded code: the core's code, or `other`. */
+function sendFailureKind(error: unknown): string {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return sendFailureCodes.has(code) ? (code as string) : "other";
 }
 
 function safely(action: () => unknown) {
@@ -406,6 +441,89 @@ let reportedErrors = new WeakMap<Error, ClientErrorKind>();
 let errorReportCounts: Partial<
   Record<ClientErrorKind | "resize_observer_loop", number>
 > = {};
+
+let widgetFailureCount = 0;
+
+// The reasons the widget runtime (packages/chat-contract/src/dynamic-ui/runtime.ts)
+// and its host write themselves. Any other text, such as a script's exception
+// or a server message, can carry the widget's data and is reported as a class.
+const widgetReasons = new Set([
+  "A UI supports at most eight charts",
+  "A linked item cannot contain other interactive controls",
+  "Images require alt text",
+  "Inline script elements are unavailable; use the script field",
+  "Invalid CSS class name",
+  "Invalid UI payload",
+  "Invalid UI update",
+  "UI needs a newer runtime",
+  "Invalid chart data",
+  "Invalid follow-up request",
+  "Invalid or duplicate element id",
+  "Invalid table data. Use up to 6 column labels and 24 rows of plain values.",
+  "Invalid text update",
+  "Invalid timer",
+  "Invalid value update",
+  "Invalid visibility update",
+  "Links require an HTTPS URL without credentials",
+  "Only stylesheet links are supported",
+  "Resource URLs must use HTTPS without credentials",
+  "Saved UI state could not be read",
+  "UI could not start",
+  "UI exceeds 256 KiB",
+  "UI failed",
+  "UI message budget exceeded",
+  "UI script timed out",
+  "UI startup timed out",
+  "UI state could not be saved",
+  "UI stopped",
+  "UI tree exceeds its budget",
+  "UI tree exceeds its depth budget",
+  "UI tree exceeds its node budget",
+  "UI update rate exceeded",
+  "UI update target is no longer present",
+  "Unsupported Comma icon",
+  "Unsupported UI attribute",
+  "Unsupported UI operation",
+  "Unsupported input type",
+  "Unsupported resource attribute",
+  "comma.card needs the id of an element in html",
+  "comma.text accepts plain text, not table rows. Use comma.table on a table element.",
+]);
+const widgetReasonClasses: Array<[prefix: string, reason: string]> = [
+  ["UI script failed", "UI script failed"],
+  ["Unsupported UI element", "Unsupported UI element"],
+  ["Card data", "Card data invalid"],
+  ["Unsupported card kind", "Card data invalid"],
+  ["Bar values", "Card data invalid"],
+];
+
+function isWidgetReason(value: unknown) {
+  return (
+    typeof value === "string" &&
+    (value === "other" ||
+      widgetReasons.has(value) ||
+      widgetReasonClasses.some(([, reason]) => reason === value))
+  );
+}
+
+/** A widget that could not show, or one part of it, by a reason the runtime names. */
+export function captureCommaWidgetFailure(
+  kind: "load" | "display" | "part",
+  reason: string
+) {
+  if (!active?.sessionResolved || widgetFailureCount >= 50) return;
+  widgetFailureCount++;
+  const widgetReason = widgetReasons.has(reason)
+    ? reason
+    : (widgetReasonClasses.find(([prefix]) => reason.startsWith(prefix))?.[1] ??
+      "other");
+  safely(() =>
+    active?.client.capture("comma_widget_failed", {
+      error_kind: kind,
+      widget_reason: widgetReason,
+    })
+  );
+}
 
 export function markCommaClientReady() {
   uiCommitted = true;
@@ -428,6 +546,18 @@ export function captureCommaExperience(
   }
 ) {
   if (active?.sessionResolved) safely(() => active?.client.capture(event, properties));
+}
+
+/** A saved recording's transcription failed: the kind Main reported, never the text or the recording. */
+export function captureCommaRecordingTranscriptionFailed(
+  failure: AudioCaptureTranscriptionFailed
+) {
+  if (active?.sessionResolved)
+    safely(() =>
+      active?.client.capture("comma_recording_transcribe_failed", {
+        error_kind: failure.reason,
+      })
+    );
 }
 
 export function commaAnalyticsIdentity() {

@@ -98,6 +98,8 @@ defmodule CommaWeb.MemberSourceIngest do
          {:ok, true} <- Proactive.automatic?(group, owner) do
       # Task matters the owner already answered in the Task close here.
       CommaWeb.ProactiveTask.reconcile(ctx, home, owner)
+      # Station chats that wait for the owner, and those that moved on.
+      CommaWeb.ProactiveStationTask.reconcile(ctx, home, owner)
 
       case ingest(workspace, owner, proactive: true) do
         {:ok, outcome} ->
@@ -150,6 +152,10 @@ defmodule CommaWeb.MemberSourceIngest do
         MemberSourceTriggers.ensure(workspace, profile.id)
         # The portrait tells the consumer which arrivals are the owner's.
         CommaWeb.MemberPortrait.enqueue(profile)
+        # The same day's glossary refresh reads the same Home conversation.
+        CommaWeb.MemberGlossary.enqueue(workspace["id"])
+        # What the owner left open in their own messages, for the notebook.
+        CommaWeb.OpenThreads.enqueue(profile)
         # The notebook shows each source's latest read.
         CommaWeb.ProactiveNotebook.enqueue(workspace["default_group_id"], owner)
 

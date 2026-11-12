@@ -45,7 +45,7 @@ services:
       REBAR_CACHE_DIR: /var/lib/comma-dev/rebar
       CARGO_HOME: /var/lib/comma-dev/cargo-home
       CARGO_TARGET_DIR: /var/lib/comma-dev/cargo-target
-      STILLFAIL_NATIVE_CACHE: /var/lib/comma-dev/native-cache
+      COMMA_STATION_NATIVE_CACHE: /var/lib/comma-dev/native-cache
       COMMA_TOOL_CACHE: /var/lib/comma-dev/tool-cache
       SYSTEMS_TEST_DB_HOST: postgres
     depends_on:

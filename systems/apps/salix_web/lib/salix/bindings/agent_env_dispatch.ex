@@ -8,6 +8,14 @@ defmodule Salix.Bindings.AgentEnvDispatch do
     do: SalixWeb.EnvDispatch.create_device_install(agent_id, name, requester)
 
   @impl true
+  def local_account_card(agent_id, device_id, runtime, locale, requester),
+    do: SalixWeb.LocalAccountChoice.card(agent_id, device_id, runtime, locale, requester)
+
+  @impl true
+  def use_local_account(agent_id, device_id, runtime, requester),
+    do: SalixWeb.LocalAccountChoice.choose(agent_id, device_id, runtime, requester)
+
+  @impl true
   def list_devices(agent_id, opts), do: SalixWeb.EnvDispatch.list_devices(agent_id, opts)
 
   @impl true
@@ -35,6 +43,10 @@ defmodule Salix.Bindings.AgentEnvDispatch do
   @impl true
   def android(agent_id, target, action),
     do: SalixWeb.EnvDispatch.android(agent_id, target, action)
+
+  @impl true
+  def screen(agent_id, target, action),
+    do: SalixWeb.EnvDispatch.screen(agent_id, target, action)
 
   @impl true
   def process_list(agent_id, target),

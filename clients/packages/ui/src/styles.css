@@ -17,6 +17,7 @@
 @import "./components/selection-action-bar/selection-action-bar.css";
 @import "./components/side-chat/side-chat.css";
 @import "./components/chat-panel/chat-panel-media.css";
+@import "./components/file-type-icon/file-type-icon.css";
 @import "./components/chat-panel/chat-panel-image-group.css";
 @import "./components/chat-panel/chat-panel-image-filmstrip.css";
 @import "./components/comma-mascot/comma-mascot.css";
@@ -298,6 +299,29 @@
     animation: comma-shiny-text-shine var(--motion-duration-loading-shine)
       steps(var(--comma-loading-shine-steps)) infinite;
   }
+}
+
+/* A running Task's status glyph turns, at the pace of the iOS and Android glyphs. It moves in 2.5° steps (144 over
+   its 2.4 s), within the 60-a-second bound above. Reduced motion stops it with every other loop. */
+:root {
+  --comma-task-status-spin-steps: 144;
+}
+
+.comma-task-status-spin {
+  animation: comma-task-status-spin var(--motion-duration-task-status-spin)
+    steps(var(--comma-task-status-spin-steps)) infinite;
+}
+
+@keyframes comma-task-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A Task whose Loop is paused: the filled pause glyph is drawn a size smaller than the outlined status glyphs, so
+   it weighs the same. */
+.comma-task-status-paused {
+  padding: var(--spacing-xxs);
 }
 
 @keyframes comma-shiny-text-shine {
@@ -777,8 +801,34 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* A window app region stays on the box that declares it. Electron gives
+     each box its parent's region, and after every layout and every scroll it
+     maps each box that has one to its unclipped rect and sends the list to
+     Main. Inherited from the shell, the region reached every box: a long
+     transcript cost milliseconds per frame, and content scrolled out of a
+     no-drag panel cut holes into the window bar. Only `initial` clears the
+     region; an explicit `none` computes as no-drag. Every declared region
+     outranks this layer. A pseudo-element keeps its element's region, so a
+     control's hit area keeps the control's. A box that paints outside the
+     box that declares a region (a toast card outside its empty stack)
+     declares its own. */
   * {
     box-sizing: border-box;
+    -webkit-app-region: initial;
+  }
+
+  /* While an element fills the screen, no box has a region. Electron keeps
+     the regions of the page under the full screen element at their places in
+     the window, and a press over a drag region never reaches the page: the
+     controls of an expanded screen view took no clicks where the window bar
+     lay under them. A window in full screen does not move. The root says so
+     (window-regions/fullscreenWindowRegions.ts), not `:has(:fullscreen)`,
+     which would restyle the whole page on each insertion. */
+  :root[data-comma-fullscreen],
+  :root[data-comma-fullscreen] *,
+  :root[data-comma-fullscreen] *::before,
+  :root[data-comma-fullscreen] *::after {
+    -webkit-app-region: initial !important;
   }
 
   /* Tailwind's numeric size utilities use --spacing; icon slots stay pixel-based. */
@@ -996,16 +1046,9 @@
      the scrollbars and edge layers; a descendant that resolved against it
      stayed put while the viewport scrolled (react-aria's visually hidden
      radio input), and focusing it then scrolled the root's overflow-hidden
-     box to reveal it. Overlays pinned to the area go beside it, not inside.
-
-     The content does not inherit the area's window app region. Electron
-     inherits the region and registers every box that has one at its unclipped
-     rect, so a transcript scrolled up cut no-drag holes into the window bar
-     above it. The viewport's own region covers what shows. Only `initial`
-     clears the region; an explicit `none` computes as no-drag. */
+     box to reveal it. Overlays pinned to the area go beside it, not inside. */
   .comma-scroll-area__content {
     position: relative;
-    -webkit-app-region: initial;
   }
 
   .comma-scroll-area[data-freeze-content-inline-size="true"]
@@ -1597,7 +1640,10 @@
     text-decoration-color: currentColor;
   }
 
-  .markdown-stream ::selection {
+  /* On the root, not on each descendant: descendants inherit a highlight
+     style from their parent's, so every element of a long transcript does not
+     compute its own selection style on each restyle. */
+  .markdown-stream::selection {
     background: color-mix(
       in srgb,
       var(--color-markdown-text-primary) 24%,

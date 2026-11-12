@@ -610,6 +610,19 @@ describe("message inline elements", () => {
     expect(screen.queryByRole("link", { name: "Open task: Old task" })).toBeNull();
   });
 
+  it("shows the screen a person's message is about by its name, not its link", () => {
+    const content = userMessageContentWithMentions(
+      "Check the Orders screen\n\n[iPhone 18 Pro · 12:00:20](comma:screen/dev/simulator%3AA119)",
+      { groupId: "grp_1", workspaceId: "wsp_1" }
+    );
+    render(<span data-testid="user-bubble-content">{content}</span>);
+    const bubble = screen.getByTestId("user-bubble-content");
+    expect(bubble).toHaveTextContent(
+      "Check the Orders screen iPhone 18 Pro · 12:00:20"
+    );
+    expect(bubble.textContent).not.toContain("comma:screen");
+  });
+
   it("splices a user message's comma:task mention into the sentence as an InlineTask chip", async () => {
     const content = userMessageContentWithMentions(
       "Check [Fix login](comma:task/cnv1_menu) today",
@@ -626,6 +639,128 @@ describe("message inline elements", () => {
     expect(screen.getByTestId("chat-inline-task-cnv1_menu")).toHaveTextContent(
       "Fix login"
     );
+  });
+
+  it("shows a user message's models, skills and tools as their icon and name", async () => {
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "skills"
+          ? {
+              status: "ready",
+              skills: [
+                {
+                  skill_id: "google",
+                  name: "Google",
+                  location: "/.runtime/skills/google/SKILL.md",
+                },
+              ],
+            }
+          : topic.topic === "models"
+            ? {
+                catalog: true,
+                models: [{ id: "gpt-5.5", name: "GPT 5.5", vendor: "openai" }],
+              }
+            : undefined,
+    });
+    const text =
+      "/google，[GPT 5.5](comma:model/gpt-5.5) /computer-use and /browser-use, not /Users/admin";
+    render(
+      core.wrap(
+        <span data-testid="user-bubble-content">
+          {userMessageContentWithMentions(text, {
+            live: true,
+            groupId: "grp_1",
+            workspaceId: "wsp_1",
+          })}
+        </span>
+      )
+    );
+    await flush();
+
+    const bubble = screen.getByTestId("user-bubble-content");
+    expect(bubble).toHaveTextContent(
+      "Google，GPT 5.5 Computer use and Browser use, not /Users/admin"
+    );
+    expect(
+      Array.from(bubble.querySelectorAll(".comma-chat-user-mention")).map((chip) => [
+        chip.querySelector(".comma-chat-user-mention-label")?.textContent,
+        Boolean(chip.querySelector(".comma-chat-user-mention-icon")?.firstElementChild),
+      ])
+    ).toEqual([
+      ["Google", true],
+      ["GPT 5.5", true],
+      ["Computer use", true],
+      ["Browser use", true],
+    ]);
+  });
+
+  it("shows a Slack channel and a person in it by name and logo, not their links", () => {
+    const core = createScriptedCore({ values: () => undefined });
+    render(
+      core.wrap(
+        <span data-testid="user-bubble-content">
+          {userMessageContentWithMentions(
+            "[Slack #comma-app](https://app.slack.com/client/T1/C1) [Slack @CatsJuice](https://app.slack.com/team/U1) test [Slack DM @Amy](https://app.slack.com/team/U2)",
+            { live: true, groupId: "grp_1", workspaceId: "wsp_1" }
+          )}
+        </span>
+      )
+    );
+
+    const bubble = screen.getByTestId("user-bubble-content");
+    expect(bubble).toHaveTextContent("#comma-app · CatsJuice test Amy");
+    expect(
+      Array.from(bubble.querySelectorAll(".comma-chat-user-mention-icon svg"))
+    ).toHaveLength(2);
+    expect(bubble.querySelector("a")).toBeNull();
+  });
+
+  it("shows a person the message asked by name and avatar", async () => {
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "taskRequests"
+          ? {
+              workspace: "wsp_1",
+              targets: [
+                {
+                  grant_id: "trg_1",
+                  workspace: {
+                    id: "w_cat",
+                    name: "Cats",
+                    owner: {
+                      id: "u_cat",
+                      name: "CatsJuice",
+                      email: null,
+                      avatar_id: "avt_1",
+                    },
+                  },
+                },
+              ],
+            }
+          : undefined,
+    });
+    render(
+      core.wrap(
+        <span data-testid="user-bubble-content">
+          {userMessageContentWithMentions(
+            "[CatsJuice](comma:request/trg_1) review the deck",
+            { live: true, groupId: "grp_1", workspaceId: "wsp_1" }
+          )}
+        </span>
+      )
+    );
+    await flush();
+    const bubble = screen.getByTestId("user-bubble-content");
+    expect(bubble).toHaveTextContent("review the deck");
+    expect(
+      Array.from(bubble.querySelectorAll(".comma-chat-user-mention-label")).map(
+        (label) => label.textContent
+      )
+    ).toEqual(["CatsJuice"]);
+    // Their avatar, read through the reader's grant.
+    expect(core.sentTo("files.read")).toEqual([
+      { source: "target-avatar", grant: "trg_1", revision: "avt_1" },
+    ]);
   });
 
   it("links plain HTTP URLs in user bubbles without changing their text", () => {

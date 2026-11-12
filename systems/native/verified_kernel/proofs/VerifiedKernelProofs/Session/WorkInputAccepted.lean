@@ -219,7 +219,7 @@ theorem inputEvent_append_identity {s t session payload now event : Term} {sourc
         exact List.mem_cons_self
     have kind := (inputEvent_source_fields generated).1
     refine ⟨[keys], first, last, ?_, by simpa using sourceMember⟩
-    simp +decide only [Command.inputIdentityGroups, kind]
+    simp +decide only [Command.inputIdentityGroups, StorageDelta.identityGroups, kind]
     simp only [↓reduceIte, Bind.bind, StateT.bind, Except.bind, normalizedRead, keysRead,
       Pure.pure, StateT.pure, Except.pure]
 

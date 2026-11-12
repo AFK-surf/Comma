@@ -117,21 +117,10 @@ test("sidebar navigation tooltips stay beside their item with the matching short
       label: "Go to Plugins",
       keys: ["G", "P"],
     },
-    {
-      // Settings raises a modal instead of navigating, so its rail item is a
-      // button.
-      itemName: "Settings",
-      label: "Go to Settings",
-      keys: [primaryIsCommand ? "⌘" : "Ctrl", ","],
-      role: "button" as const,
-    },
   ] as const;
 
-  for (const { itemName, keys, label, ...rest } of cases) {
-    const item = page.getByRole("role" in rest ? rest.role : "link", {
-      name: itemName,
-      exact: true,
-    });
+  for (const { itemName, keys, label } of cases) {
+    const item = page.getByRole("link", { name: itemName, exact: true });
     await item.hover();
 
     const tooltip = page.getByRole("tooltip").filter({ hasText: label });
@@ -161,6 +150,16 @@ test("sidebar navigation tooltips stay beside their item with the matching short
       })
       .toBe(true);
   }
+
+  // The account's item at the foot of the rail names itself (it opens a menu,
+  // so no shortcut of its own); Settings in that menu names its shortcut.
+  const account = page.getByRole("button", { name: "Account", exact: true });
+  await account.hover();
+  await expect(page.getByRole("tooltip").filter({ hasText: "Account" })).toBeVisible();
+  await account.click();
+  await expect(page.getByRole("menuitem", { name: /^Settings/ })).toContainText(
+    primaryIsCommand ? "⌘," : "Ctrl,"
+  );
 });
 
 test("the window bar search hint names the search shortcut and opens the palette", async ({

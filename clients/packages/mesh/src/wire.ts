@@ -33,6 +33,12 @@ export const StreamCode = {
 
 export type Headers = [string, string][];
 
+/**
+ * The path a client asks on a request stream to learn whether the peer is still there (`MeshClient.ping`). A peer
+ * answers it at once with 204; one older than it answers whatever it answers an unknown path, which tells as much.
+ */
+export const PING_PATH = "/.mesh/ping";
+
 export type ControlFrame =
   | { type: "hello"; version: 1; credential: string }
   | { type: "credential"; credential: string }

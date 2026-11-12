@@ -1,6 +1,5 @@
 import VerifiedKernelProofs.Session.WorkPendingInput
 import VerifiedKernelProofs.Session.WorkRevisionFence
-
 namespace VerifiedKernel.Session.PendingRevision
 open Data WorkConservation
 set_option Elab.async false
@@ -13,7 +12,7 @@ theorem materialize_write_preserves {cursor final : Cursor} {events j r : List T
       .ok (.tuple [list events, Term.bool wake, hwm], r))
     (execution : Execution
       (resident (some cursor.pack) (a "write") (.tuple [list events, hwm])) final) :
-    final.baseline = cursor.baseline ∧ final.etag = cursor.etag ∧
+    final.baseline = cursor.baseline ∧ final.revision = cursor.revision ∧
       final.events = cursor.events ++ events ∧
       (∃ merged, mergeHwm cursor.hwm hwm [] = .ok (merged, []) ∧ final.hwm = merged) ∧
       QueueReady final.working ∧
@@ -55,7 +54,7 @@ theorem materialize_durable {cursor staged : PendingRevision.Cursor}
       (a "encode") nil = (some saved, request))
     (primitive : ArchivePublication.SnapshotCASMeaning request result durable)
     (resumed : resident (some saved) (a "cas_result") result = (some restored, .tuple [a "ok", etag])) :
-    staged.baseline = cursor.baseline ∧ staged.etag = cursor.etag ∧
+    staged.baseline = cursor.baseline ∧ staged.revision = cursor.revision ∧
       staged.events = cursor.events ++ events ∧ restored = stamped ∧
       ∃ snapshot, durable key etag snapshot ∧ QueueReady snapshot ∧
         snapshot.get (a "storage_format") = i 3 ∧

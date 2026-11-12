@@ -1,5 +1,6 @@
 defmodule Comma.Accounts.SessionsTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   alias Comma.Accounts.{AuthSession, Repository, SessionIssuer, Sessions, SSHIdentities, User}
 
@@ -111,7 +112,9 @@ defmodule Comma.Accounts.SessionsTest do
     email = unique_email("otp")
 
     assert {:ok, %{"challenge_id" => challenge_id, "code" => code}} =
-             Comma.AuthChallenges.request_email_login(%{"email" => "  #{String.upcase(email)} "})
+             Comma.AuthAbuseTestSupport.request_email_login(%{
+               "email" => "  #{String.upcase(email)} "
+             })
 
     assert {:ok, %{"token" => token, "user" => user}} =
              Comma.AuthChallenges.verify_email_login(%{
@@ -141,6 +144,28 @@ defmodule Comma.Accounts.SessionsTest do
     refute Map.has_key?(validated_session, "consumed_interaction_ids")
     refute Map.has_key?(validated_session, "token")
     refute Map.has_key?(Sessions.public_session(stored_session), "token")
+  end
+
+  test "an Email OTP signup's registration names the client the code was entered in" do
+    %{analytics_worker: worker} = Comma.AnalyticsTestSupport.setup_collector()
+    {challenge_id, code} = request_code(unique_email("otp-client"))
+
+    assert {:ok, %{"user" => user}} =
+             Comma.AuthChallenges.verify_email_login(%{
+               "challenge_id" => challenge_id,
+               "code" => code,
+               "client_kind" => "android",
+               "client_platform" => "android"
+             })
+
+    assert [registration] =
+             worker
+             |> Comma.AnalyticsTestSupport.collect()
+             |> Enum.filter(&(&1["event"] == "comma_user_registered"))
+
+    assert registration["distinct_id"] == user["id"]
+    assert registration["properties"]["client_kind"] == "android"
+    assert registration["properties"]["client_platform"] == "android"
   end
 
   test "OTP replay is rejected and repeated login converges on the same user" do
@@ -335,7 +360,7 @@ defmodule Comma.Accounts.SessionsTest do
 
   defp request_code(email) do
     {:ok, %{"challenge_id" => challenge_id, "code" => code}} =
-      Comma.AuthChallenges.request_email_login(%{"email" => email})
+      Comma.AuthAbuseTestSupport.request_email_login(%{"email" => email})
 
     {challenge_id, code}
   end

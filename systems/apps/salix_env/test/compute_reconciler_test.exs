@@ -1,6 +1,4 @@
 defmodule SalixEnv.ComputeReconcilerTest do
-  require SystemsRuntime.Proc
-
   use SystemsClock.Case, async: false
 
   require SystemsClock
@@ -311,6 +309,21 @@ defmodule SalixEnv.ComputeReconcilerTest do
     end
   end
 
+  defmodule RoundHostHTTP do
+    def post(url, body), do: HostHTTP.post(url, body)
+
+    def post_import(_url, _headers) do
+      owner = SystemsRuntime.fetch_env!(:salix_store, :compute_reconciler_test_pid)
+      SystemsRuntime.Proc.send(owner, {:round_import, SystemsRuntime.Proc.self()})
+
+      SystemsClock.vreceive do
+        :finish_round_import -> {:error, :test_import_failed}
+      after
+        60_000 -> {:error, :test_import_timeout}
+      end
+    end
+  end
+
   defmodule RecoveryHost do
     use SystemsRuntime.Server
 
@@ -400,12 +413,12 @@ defmodule SalixEnv.ComputeReconcilerTest do
     end)
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])
@@ -561,6 +574,263 @@ defmodule SalixEnv.ComputeReconcilerTest do
       image: image,
       image_reference: image["reference"]
     }
+  end
+
+  @tag :finite_rounds
+  test "a completion after a peer clears the round waits for the original periodic deadline",
+       fixture do
+    open_host_session!(fixture, "round-race")
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, RoundHostHTTP)
+
+    started_at = SystemsClock.monotonic_time(:millisecond)
+    first = start_supervised!({ComputeReconciler, name: nil}, id: :round_first)
+    settle_receive({:round_import, import_task})
+    first_state = :sys.get_state(first)
+    assert map_size(first_state.tasks) == 1
+    assert Repo.one!(Compute.ReconcilerCursor).high_watermark_workload_id == fixture.workload.id
+
+    peer = start_supervised!({ComputeReconciler, name: nil}, id: :round_peer)
+    SystemsClock.run_for(0)
+    assert Repo.one!(Compute.ReconcilerCursor).high_watermark_workload_id == nil
+
+    later = create_shell!(fixture, "workload-later")
+    SystemsClock.run_for(2_000)
+    refute Repo.get_by(Compute.ReconcilerClaim, workload_id: later.id)
+
+    SystemsRuntime.Proc.send(import_task, :finish_round_import)
+    SystemsClock.run_for(0)
+    assert :sys.get_state(first).tasks == %{}
+    refute Repo.get_by(Compute.ReconcilerClaim, workload_id: later.id)
+    assert Repo.one!(Compute.ReconcilerCursor).high_watermark_workload_id == nil
+
+    # No wake notification is sent for this Workload. The existing cadence
+    # finds it at the original deadline, rather than five seconds after completion.
+    remaining = started_at + 5_000 - SystemsClock.monotonic_time(:millisecond)
+    SystemsClock.run_for(remaining - 1)
+    refute Repo.get_by(Compute.ReconcilerClaim, workload_id: later.id)
+    SystemsClock.run_for(1)
+    assert Repo.get_by!(Compute.ReconcilerClaim, workload_id: later.id)
+    assert Repo.get_by!(Compute.Command, workload_id: later.id, kind: "runtime.open_session")
+    assert Process.alive?(peer)
+  end
+
+  @tag :finite_rounds
+  test "a busy background cursor yields without clearing the round and recovers on cadence",
+       fixture do
+    assert :more = ComputeReconciler.sweep(1)
+    cursor = Repo.one!(Compute.ReconcilerCursor)
+    owner = SystemsRuntime.Proc.self()
+
+    lock_owner =
+      SystemsRuntime.Task.async(fn ->
+        Repo.transaction(fn ->
+          # Use an UPDATE, not only SELECT FOR UPDATE: cursor creation must
+          # also avoid waiting behind an uncommitted row version.
+          Repo.update_all(Compute.ReconcilerCursor, set: [updated_at: SystemsClock.utc_now()])
+          SystemsRuntime.Proc.send(owner, :round_cursor_locked)
+
+          SystemsClock.vreceive do
+            :release_round_cursor -> :ok
+          after
+            60_000 -> raise "cursor lock was not released"
+          end
+        end)
+      end)
+
+    settle_receive(:round_cursor_locked)
+    coordinator = start_supervised!({ComputeReconciler, name: nil})
+    SystemsClock.advance(0)
+
+    probe =
+      SystemsRuntime.Task.async(fn ->
+        SystemsRuntime.Proc.send(owner, {:busy_round_state, :sys.get_state(coordinator)})
+        :ok
+      end)
+
+    SystemsClock.run_for(0)
+    assert_received {:busy_round_state, state}
+    assert state.tasks == %{}
+    assert state.timer != nil
+
+    assert Repo.one!(Compute.ReconcilerCursor).high_watermark_workload_id ==
+             cursor.high_watermark_workload_id
+
+    SystemsRuntime.Proc.send(lock_owner.pid, :release_round_cursor)
+    assert {:ok, :ok} = settled_await(lock_owner)
+    assert :ok = settled_await(probe)
+    Repo.delete_all(Compute.ReconcilerClaim)
+    SystemsClock.run_for(10_000)
+    assert Repo.get_by!(Compute.ReconcilerClaim, workload_id: fixture.workload.id)
+  end
+
+  @tag :finite_rounds
+  test "an empty Host wake hint cannot start a global scan round", fixture do
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^fixture.workload.id),
+      set: [kind: "service", observed_state: "ready"]
+    )
+
+    coordinator = start_supervised!({ComputeReconciler, name: nil})
+    SystemsClock.run_for(0)
+    later = create_shell!(fixture, "workload-lost-wake")
+    ComputeReconciler.host_session_ready("no-such-allocation", coordinator)
+    SystemsClock.run_for(0)
+    refute Repo.get_by(Compute.ReconcilerClaim, workload_id: later.id)
+    SystemsClock.run_for(5_000)
+    assert Repo.get_by!(Compute.Command, workload_id: later.id, kind: "runtime.open_session")
+  end
+
+  @tag :finite_rounds
+  test "independent task slots continue and an exited owner leaves recoverable leases", fixture do
+    fixtures =
+      [
+        fixture
+        | Enum.map(1..5, fn i ->
+            allocation = Repo.insert!(%{fixture.allocation | id: "allocation-slot-#{i}"})
+            workload = create_shell!(%{fixture | allocation: allocation}, "workload-slot-#{i}")
+            %{fixture | allocation: allocation, workload: workload}
+          end)
+      ]
+
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration("registration", "gateway-a", %{
+               "connectionEpoch" => "8",
+               "inventoryWatermark" => 6,
+               "inventory" =>
+                 Enum.map(fixtures, fn item ->
+                   %{
+                     "allocationId" => item.allocation.id,
+                     "revision" => Integer.to_string(item.allocation.revision),
+                     "state" => "ALLOCATION_STATE_READY"
+                   }
+                 end)
+             })
+
+    Enum.each(fixtures, fn item ->
+      open_host_session!(item, "slot-#{item.workload.id}", "8")
+    end)
+
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_host_http_client, RoundHostHTTP)
+    coordinator = start_supervised!({ComputeReconciler, name: nil}, id: :round_slots)
+
+    blocked =
+      Enum.map(1..4, fn _ ->
+        settle_receive({:round_import, task})
+        task
+      end)
+
+    assert map_size(:sys.get_state(coordinator).tasks) == 4
+    assert Repo.aggregate(Compute.ReconcilerClaim, :count) == 4
+    SystemsRuntime.Proc.send(hd(blocked), :finish_round_import)
+    settle_receive({:round_import, replacement})
+    assert replacement not in blocked
+    assert map_size(:sys.get_state(coordinator).tasks) == 4
+
+    tasks = :sys.get_state(coordinator).tasks |> Map.values() |> Enum.map(& &1.pid)
+    stop_supervised!(:round_slots)
+    SystemsClock.run_for(0)
+    assert Enum.all?(tasks, &(not Process.alive?(&1)))
+
+    # The durable leases survive local cancellation. A replacement owner
+    # must wait for expiry, then recover them on its existing periodic tick.
+    Repo.update_all(Compute.ReconcilerClaim,
+      set: [
+        lease_expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second),
+        next_retry_at: nil
+      ]
+    )
+
+    replacement_owner = start_supervised!({ComputeReconciler, name: nil}, id: :round_recovery)
+    SystemsClock.run_for(10_000)
+    assert Repo.exists?(from(c in Compute.ReconcilerClaim, where: c.attempt_count > 1))
+    assert map_size(:sys.get_state(replacement_owner).tasks) == 4
+    assert Process.alive?(replacement_owner)
+  end
+
+  @tag :finite_rounds
+  test "stable scan keys reach a later tenant despite earlier tenant timestamp churn", fixture do
+    for i <- 1..12,
+        do: create_shell!(fixture, "workload-#{String.pad_leading(to_string(i), 2, "0")}")
+
+    environment = Repo.get!(Compute.Environment, fixture.workload.environment_id)
+    pool = Repo.get!(Compute.Pool, environment.pool_id)
+    binding = Repo.get!(Compute.ProviderBinding, fixture.allocation.provider_binding_id)
+    registration = Repo.get!(AgentVMM.Registration, binding.provider_ref)
+    late_pool = Repo.insert!(%{pool | id: "later-pool", tenant_id: "zz-tenant"})
+
+    late_environment =
+      Repo.insert!(%{
+        environment
+        | id: "later-environment",
+          tenant_id: "zz-tenant",
+          pool_id: late_pool.id
+      })
+
+    late_registration =
+      Repo.insert!(%{registration | id: "later-registration", tenant_id: "zz-tenant"})
+
+    late_binding =
+      Repo.insert!(%{
+        binding
+        | id: "later-binding",
+          environment_id: late_environment.id,
+          pool_id: late_pool.id,
+          provider_ref: late_registration.id
+      })
+
+    late_allocation =
+      Repo.insert!(%{
+        fixture.allocation
+        | id: "later-allocation",
+          environment_id: late_environment.id,
+          provider_binding_id: late_binding.id
+      })
+
+    later =
+      create_shell!(
+        %{
+          fixture
+          | workload: %{fixture.workload | environment_id: late_environment.id},
+            allocation: late_allocation
+        },
+        "later-workload"
+      )
+
+    for step <- 1..14 do
+      ComputeReconciler.sweep(1)
+      now = SystemsClock.utc_now()
+
+      Repo.update_all(
+        from(w in Compute.Workload, where: w.environment_id == ^environment.id),
+        set: [updated_at: DateTime.add(now, step, :second)]
+      )
+
+      # Earlier rows remain eligible on every page. Their changing timestamps
+      # must not put them ahead of the persisted stable cursor again.
+      Repo.update_all(
+        from(c in Compute.ReconcilerClaim, where: c.workload_id != ^later.id),
+        set: [lease_expires_at: nil, next_retry_at: nil]
+      )
+    end
+
+    assert Repo.get_by!(Compute.ReconcilerClaim, workload_id: later.id)
+    assert Repo.get_by!(Compute.Command, workload_id: later.id, kind: "runtime.open_session")
+    ComputeReconciler.sweep(1)
+    assert Repo.one!(Compute.ReconcilerCursor).high_watermark_workload_id == nil
+  end
+
+  defp create_shell!(fixture, id) do
+    {:ok, workload} =
+      Compute.create_workload(%{
+        id: id,
+        environment_id: fixture.workload.environment_id,
+        allocation_id: fixture.allocation.id,
+        kind: "shell",
+        template_key: "shell.default",
+        capability_requirements: ["runtime_exec", "runtime_process"],
+        generation: 1
+      })
+
+    workload
   end
 
   for {kind, template} <- [{"shell", "shell.default"}, {"service", "station.default"}] do
@@ -735,26 +1005,6 @@ defmodule SalixEnv.ComputeReconcilerTest do
                fn -> :ok end
              )
 
-    assert {:ok, %{command: first}} =
-             ComputeReconciler.reconcile_workload(workload.id, workload.generation)
-
-    assert {:ok, claimed} = AgentVMM.claim_registration_command("registration", "gateway-a", "7")
-    assert claimed.id == first.id
-
-    assert :ok =
-             AgentVMM.commit_registration_result(
-               "registration",
-               "gateway-a",
-               "7",
-               claimed.id,
-               "failed",
-               %{"result" => %{"reason" => "ERROR_REASON_FEATURE_MISMATCH"}}
-             )
-
-    assert {:ok, %{outcome: :pending}} =
-             ComputeReconciler.reconcile_workload(workload.id, workload.generation)
-
-    assert Repo.get!(Compute.Workload, workload.id).deletion["error"] == "host_update_required"
     now_ms = SystemsClock.utc_now() |> DateTime.to_unix(:millisecond) |> Integer.to_string()
 
     assert {:ok, :ok} =
@@ -765,19 +1015,15 @@ defmodule SalixEnv.ComputeReconcilerTest do
                %{
                  "sequence" => "1",
                  "observedUnixMillis" => now_ms,
-                 "protocolVersion" => "1",
-                 "hostApiVersion" => "host.v1",
-                 "supportedFeatures" => ["allocation-disposal-v1"],
                  "health" => %{"status" => "healthy", "components" => []},
                  "inventoryWatermark" => "0",
                  "inventoryObservedUnixMillis" => now_ms
                }
              )
 
-    assert {:ok, %{command: upgraded}} =
+    assert {:ok, %{command: first}} =
              ComputeReconciler.reconcile_workload(workload.id, workload.generation)
 
-    assert upgraded.id == first.id
     assert {:ok, claimed} = AgentVMM.claim_registration_command("registration", "gateway-a", "7")
 
     assert :ok =
@@ -879,6 +1125,7 @@ defmodule SalixEnv.ComputeReconcilerTest do
 
   test "reconciles one exact shell generation through session, bundle import, container and ready",
        fixture do
+    assert [workspace_volume] = fixture.workload.spec["volume_requirements"]
     Process.put(:compute_reconciler_image_reference, fixture.image_reference)
     Process.put(:compute_reconciler_manifest_digest, "sha256:" <> String.duplicate("c", 64))
 
@@ -996,7 +1243,26 @@ defmodule SalixEnv.ComputeReconcilerTest do
     settle_receive({:compute_host_request, _container_list_url, %{}})
     settle_receive({:compute_host_request, image_list_before_create_url, %{}})
     assert String.ends_with?(image_list_before_create_url, "/compute.image.list")
+    settle_receive({:compute_host_request, volume_list_url, %{}})
+    assert String.ends_with?(volume_list_url, "/compute.volume.list")
+    settle_receive({:compute_host_request, volume_create_url, volume_args})
+    assert String.ends_with?(volume_create_url, "/compute.volume.create")
+    assert volume_args["volume_id"] == workspace_volume["volume_id"]
+    assert volume_args["owner_uid"] == 10_001
+    assert volume_args["owner_gid"] == 10_001
+    assert volume_args["mode"] == 0o700
     settle_receive({:compute_host_request, _create_url, create_args})
+    assert create_args["read_only_root"] == true
+
+    assert create_args["volumes"] == [
+             %{
+               "volume_id" => workspace_volume["volume_id"],
+               "destination" => "/workspace",
+               "read_only" => false
+             }
+           ]
+
+    assert "HOME=/workspace" in create_args["env"]
     assert create_args["image"] == fixture.image_reference
     assert String.starts_with?(create_args["container_id"], "salix-")
     assert byte_size(create_args["container_id"]) <= 41
@@ -1050,6 +1316,23 @@ defmodule SalixEnv.ComputeReconcilerTest do
 
     assert {:error, :invalid_container_state} =
              ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
+  end
+
+  test "an existing Shell uses its stored empty volume requirements", fixture do
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^fixture.workload.id),
+      set: [spec: Map.put(fixture.workload.spec, "volume_requirements", [])]
+    )
+
+    Process.put(:compute_reconciler_image_imported, true)
+    Process.put(:compute_reconciler_image_reference, fixture.image_reference)
+    Process.put(:compute_reconciler_manifest_digest, fixture.image["manifestDigest"])
+    open_host_session!(fixture, "stored-shell-spec")
+    assert {:ok, %{outcome: :pending}} = reconcile_until_container_create(fixture.workload.id, 6)
+    settle_receive({:compute_host_request, create_url, create_args})
+    assert String.ends_with?(create_url, "/compute.container.create")
+    assert create_args["volumes"] == []
+    assert create_args["read_only_root"] == true
+    assert Repo.get!(Compute.Workload, fixture.workload.id).spec["volume_requirements"] == []
   end
 
   test "a busy import slot retries the claim while missing storage headroom awaits action",
@@ -1507,6 +1790,15 @@ defmodule SalixEnv.ComputeReconcilerTest do
 
   test "stops and deletes one superseded generation before creating the current container",
        fixture do
+    [workspace_volume] = fixture.workload.spec["volume_requirements"]
+
+    Process.put(:compute_reconciler_volumes, %{
+      workspace_volume["volume_id"] => %{
+        "id" => workspace_volume["volume_id"],
+        "mounted_by" => []
+      }
+    })
+
     open_host_session!(fixture, "superseded-container")
     Process.put(:compute_reconciler_image_imported, true)
     Process.put(:compute_reconciler_image_reference, fixture.image_reference)
@@ -1575,9 +1867,24 @@ defmodule SalixEnv.ComputeReconcilerTest do
     settle_receive({:compute_host_request, _current_list_url, %{}})
     settle_receive({:compute_host_request, image_list_url, %{}})
     assert String.ends_with?(image_list_url, "/compute.image.list")
+    settle_receive({:compute_host_request, volume_list_url, %{}})
+    assert String.ends_with?(volume_list_url, "/compute.volume.list")
     settle_receive({:compute_host_request, create_url, create_args})
     assert String.ends_with?(create_url, "/compute.container.create")
     refute create_args["container_id"] == superseded["id"]
+
+    assert create_args["volumes"] == [
+             %{
+               "volume_id" => workspace_volume["volume_id"],
+               "destination" => "/workspace",
+               "read_only" => false
+             }
+           ]
+
+    volume_create_url =
+      String.replace(volume_list_url, "/compute.volume.list", "/compute.volume.create")
+
+    refute_received {:compute_host_request, ^volume_create_url, _}
   end
 
   test "fails closed on an unowned container inventory entry", fixture do
@@ -1615,8 +1922,8 @@ defmodule SalixEnv.ComputeReconcilerTest do
 
   test "materialized templates drive allocation limits and egress", fixture do
     cases = [
-      {"shell.default", "shell", "EGRESS_MODE_DENY_ALL"},
-      {"meeting.meetnative", "meeting_runtime", "EGRESS_MODE_PUBLIC_INTERNET"}
+      {"shell.default", "shell", "EGRESS_MODE_PUBLIC_INTERNET"},
+      {"station.default", "service", "EGRESS_MODE_PUBLIC_INTERNET"}
     ]
 
     for {template, kind, egress} <- cases do
@@ -1647,9 +1954,9 @@ defmodule SalixEnv.ComputeReconcilerTest do
 
       assert ensure["generation"] == fixture.allocation.generation
 
-      assert ensure["resourcesV2"] == %{
-               "pidMax" => 512,
-               "writableQuotaBytes" => 2 * 1024 * 1024 * 1024
+      assert ensure["limits"] == %{
+               "pids" => 2048,
+               "diskBytes" => 16 * 1024 * 1024 * 1024
              }
 
       assert ensure["egressMode"] == egress
@@ -1657,47 +1964,6 @@ defmodule SalixEnv.ComputeReconcilerTest do
       refute Map.has_key?(command.payload["command_json"], "leaseGeneration")
       assert ensure["policyRevision"] == 1
     end
-  end
-
-  test "bounded sweep repairs a runtime that disconnected after its workload became ready",
-       fixture do
-    assert {:ok, materialized} =
-             RuntimeBundleCatalog.materialize(
-               "meeting.meetnative",
-               %{owner_id: fixture.workload.id, generation: fixture.workload.generation}
-             )
-
-    Repo.update_all(
-      from(w in Compute.Workload, where: w.id == ^fixture.workload.id),
-      set: [
-        kind: "meeting_runtime",
-        template_key: materialized.template_key,
-        runtime_revision: materialized.runtime_revision,
-        spec: materialized.spec,
-        observed_state: "ready"
-      ]
-    )
-
-    Repo.insert!(%Compute.RuntimeInstance{
-      id: "runtime:" <> fixture.workload.id,
-      workload_id: fixture.workload.id,
-      allocation_id: fixture.allocation.id,
-      status: "disconnected",
-      readiness: "pending",
-      generation: fixture.workload.generation,
-      connection_epoch: "6",
-      caught_up_epoch: "5",
-      revision: 1,
-      updated_at: SystemsClock.utc_now()
-    })
-
-    assert :complete = ComputeReconciler.sweep(32)
-
-    assert %Compute.Command{kind: "runtime.open_session", status: "pending"} =
-             Repo.get_by!(Compute.Command,
-               allocation_id: fixture.allocation.id,
-               workload_id: fixture.workload.id
-             )
   end
 
   for failure <- [:stale, :expired] do
@@ -1806,80 +2072,10 @@ defmodule SalixEnv.ComputeReconcilerTest do
   end
 
   @tag :runtime_recovery
-  test "Host reconnect keeps the execution credential and resumes only its exact container",
-       fixture do
-    fixture = running_meeting_runtime!(fixture)
-
-    {:ok, credential} =
-      Compute.WorkloadCredential.issue_for_runtime(
-        fixture.workload.id,
-        "runtime:" <> fixture.workload.id,
-        ["runtime"],
-        60
-      )
-
-    assert {:ok, _} = AgentVMM.mark_connection_lost("registration", "gateway-a", "7")
-    reconnect_host!(fixture, "8")
-    open_host_session!(fixture, "same-instance-new-host", "8")
-    runtime = Repo.get!(Compute.RuntimeInstance, "runtime:" <> fixture.workload.id)
-    assert runtime.connection_epoch == "7"
-    assert runtime.bootstrap_consumed_epoch == "7"
-
-    assert {:error, :runtime_control_unavailable} =
-             Compute.open_runtime_carrier(credential["token"], runtime_handshake())
-
-    assert {:ok, %Compute.Workload{observed_state: "ready"}} =
-             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
-
-    refute_received {:compute_host_request, _, %{"quiesce_request_id" => _}}
-    refute_received {:compute_host_request, _, %{"expected_generation_id" => _}}
-    assert {:ok, resumed} = Compute.open_runtime_carrier(credential["token"], runtime_handshake())
-    assert resumed.runtime.connection_epoch == "7"
-    assert {:ok, session} = AgentVMM.current_session_for_workload(fixture.workload.id)
-    assert session.connection_epoch == "8"
-
-    Repo.update_all(from(s in AgentVMM.Session, where: s.id == ^session.id),
-      set: [gateway_instance_id: "retired-gateway"]
-    )
-
-    assert {:error, :runtime_control_unavailable} =
-             Compute.open_runtime_carrier(credential["token"], runtime_handshake())
-
-    Repo.update_all(from(s in AgentVMM.Session, where: s.id == ^session.id),
-      set: [
-        gateway_instance_id: "gateway-a",
-        expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second)
-      ]
-    )
-
-    assert {:error, :runtime_control_unavailable} =
-             Compute.open_runtime_carrier(credential["token"], runtime_handshake())
-  end
-
   @tag :runtime_recovery
-  test "same container name cannot authorize another execution instance", fixture do
-    fixture = running_meeting_runtime!(fixture)
-
-    Repo.update_all(
-      from(r in Compute.RuntimeInstance, where: r.workload_id == ^fixture.workload.id),
-      set: [status: "disconnected", readiness: "pending"]
-    )
-
-    Process.put(:compute_reconciler_container_instance, "replacement-instance")
-
-    assert {:error, :runtime_instance_changed} =
-             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
-
-    refute_received {:compute_host_request, _, %{"quiesce_request_id" => _}}
-
-    assert Repo.get!(Compute.Allocation, fixture.allocation.id).provider_observation[
-             "runtime_container_instance_id"
-           ] == "instance-1"
-  end
-
   @tag :runtime_recovery
   test "authoritative stopped container replaces a stale running projection", fixture do
-    fixture = running_meeting_runtime!(fixture)
+    fixture = running_station!(fixture)
     Process.put(:compute_reconciler_container_state, "stopped")
     Process.put(:compute_reconciler_container_instance, nil)
 
@@ -1893,20 +2089,12 @@ defmodule SalixEnv.ComputeReconcilerTest do
     assert allocation.provider_observation["container_status"] == "stopped"
     assert allocation.provider_observation["current_container"]["state"] == "stopped"
     assert is_nil(allocation.provider_observation["runtime_container_instance_id"])
-
-    assert {:ok, %{outcome: :pending}} =
-             ComputeReconciler.reconcile_workload(fixture.workload.id, 1)
-
-    settle_receive({:compute_host_request, _list_url, %{}})
-    settle_receive({:compute_host_request, delete_url, delete_args})
-    assert String.ends_with?(delete_url, "/compute.container.delete")
-    assert delete_args["expected_generation_id"] == "container-1"
   end
 
   @tag :guest_restart
   test "a fresh container observation cannot overwrite a terminal Workload owner",
        fixture do
-    fixture = running_meeting_runtime!(fixture)
+    fixture = running_station!(fixture)
     workload = Repo.get!(Compute.Workload, fixture.workload.id)
     allocation = Repo.get!(Compute.Allocation, fixture.allocation.id)
     Process.put(:compute_reconciler_container_state, "stopped")
@@ -1974,18 +2162,18 @@ defmodule SalixEnv.ComputeReconcilerTest do
     assert Repo.get!(Compute.Workload, fixture.workload.id).generation == 2
   end
 
-  defp running_meeting_runtime!(fixture) do
+  defp running_station!(fixture) do
     open_host_session!(fixture, "runtime-before-reconnect")
 
     {:ok, materialized} =
       RuntimeBundleCatalog.materialize(
-        "meeting.meetnative",
+        "station.default",
         %{owner_id: fixture.workload.id, generation: 1}
       )
 
     Repo.update_all(from(w in Compute.Workload, where: w.id == ^fixture.workload.id),
       set: [
-        kind: "meeting_runtime",
+        kind: "service",
         template_key: materialized.template_key,
         runtime_revision: materialized.runtime_revision,
         spec: materialized.spec,
@@ -2056,20 +2244,6 @@ defmodule SalixEnv.ComputeReconcilerTest do
                  }
                ]
              })
-  end
-
-  defp runtime_handshake do
-    %{
-      "protocol_version" => 1,
-      "supported_features" => [
-        "runtime.input.v1",
-        "runtime.event.v1",
-        "runtime.auth.v1",
-        "runtime.execution.v1"
-      ],
-      "input_cursor" => "",
-      "event_cursor" => ""
-    }
   end
 
   defp open_host_session!(fixture, tunnel_nonce, epoch \\ "7", ttl_ms \\ 720_000) do

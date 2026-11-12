@@ -31,8 +31,8 @@ defmodule SalixAgent.SessionResidency do
   def eviction_allowed?, do: SystemsRuntime.ETS.lookup(@table, :pressure) == [{:pressure, :high}]
 
   def admission(table \\ @table) do
-    case SystemsRuntime.ETS.lookup(table, :pressure) do
-      [{:pressure, :normal}] -> :ok
+    case SystemsRuntime.ETS.lookup(table, :admission) do
+      [{:admission, :open}] -> :ok
       _ -> {:error, :session_memory_pressure}
     end
   end
@@ -200,8 +200,10 @@ defmodule SalixAgent.SessionResidency do
         when is_integer(used) and used >= 0 and is_integer(limit) and limit > 0 ->
           working = max(used - Map.get(sample, :reclaimable, 0), 0)
 
+          over = working >= limit * state.high or used >= limit * 0.95
+
           pressure =
-            working >= limit * state.high or used >= limit * 0.95 or
+            over or
               (state.pressure and (working > limit * state.low or used >= limit * 0.90))
 
           # An eviction batch must show actual charge reduction before another
@@ -209,10 +211,14 @@ defmodule SalixAgent.SessionResidency do
           stalled =
             pressure and state.attempted and state.previous != nil and used >= state.previous
 
-          SystemsRuntime.ETS.insert(
-            state.table,
-            {:pressure, if(pressure, do: :high, else: :normal)}
-          )
+          # Eviction keeps running down to the low mark, but a new session is
+          # refused only while the node is over the high mark. A node whose
+          # memory outside sessions stays above the low mark would otherwise
+          # refuse every evicted session forever (#5046).
+          SystemsRuntime.ETS.insert(state.table, [
+            {:pressure, if(pressure, do: :high, else: :normal)},
+            {:admission, if(over, do: :closed, else: :open)}
+          ])
 
           next = %{state | pressure: pressure, previous: used, stalled: stalled}
 
@@ -221,7 +227,7 @@ defmodule SalixAgent.SessionResidency do
             else: %{next | attempted: state.attempted and pressure}
 
         _ ->
-          SystemsRuntime.ETS.insert(state.table, {:pressure, :unknown})
+          SystemsRuntime.ETS.insert(state.table, [{:pressure, :unknown}, {:admission, :closed}])
           state
       end
 

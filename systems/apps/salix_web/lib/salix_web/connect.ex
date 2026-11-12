@@ -1,6 +1,6 @@
 defmodule SalixWeb.Connect do
   @moduledoc """
-  The `GET /v1/connect` WebSocket upgrade. A `salix-connect` client opens this
+  The `GET /v1/connect` WebSocket upgrade. A station opens this
   socket; the server allocates a connector run, writes the durable record stamped
   with THIS node, and upgrades the connection to
   `SalixWeb.ConnectorSocket`.
@@ -10,6 +10,9 @@ defmodule SalixWeb.Connect do
     * `name`     — human-readable connector/device name (required)
     * `alias`    — tool-facing alias (defaults to `name`)
     * `os`, `arch` — advertised metadata
+    * `stillfail_workspace` — the still.fail workspace a still.fail station's
+      connect is of; a Group takes one connect of a workspace (409 for a
+      second device of it)
     * `scope` — optional Connector-owned current scope (`local_file_read` or
       the existing full empty value), used only for generation-fenced routing
       projection; token scope remains authoritative for socket authorization
@@ -31,6 +34,8 @@ defmodule SalixWeb.Connect do
   @max_connector_message_bytes 16 * 1024 * 1024
 
   @connector_instance_header "x-salix-connector-instance-id"
+  # A station that takes stream chunks as binary frames (SalixEnv.Protocol).
+  @stream_frames_header "x-salix-connector-stream-frames"
 
   @spec upgrade(Plug.Conn.t(), String.t()) :: Plug.Conn.t()
   def upgrade(conn, tenant_id) do
@@ -55,22 +60,48 @@ defmodule SalixWeb.Connect do
         json_error(conn, 400, "group_id is required")
 
       true ->
-        case connector_reported_scope(params) do
-          {:ok, connector_scope} ->
-            do_upgrade(
-              conn,
-              tenant_id,
-              params,
-              name,
-              group_id,
-              Map.put(scope, :connector_scope, connector_scope)
-            )
-
-          {:error, message} ->
-            json_error(conn, 400, message)
+        with {:ok, scope} <- stillfail_workspace(scope, params),
+             {:ok, connector_scope} <- connector_reported_scope(params) do
+          do_upgrade(
+            conn,
+            tenant_id,
+            params,
+            name,
+            group_id,
+            Map.put(scope, :connector_scope, connector_scope)
+          )
+        else
+          {:error, {status, message}} -> json_error(conn, status, message)
+          {:error, message} -> json_error(conn, 400, message)
         end
     end
   end
+
+  # A still.fail station names the workspace its connect is of; another device
+  # of the Group already of it is refused, so its usage is not counted twice.
+  defp stillfail_workspace(%{meta: %{"device_kind" => "stillfail"} = meta} = scope, params) do
+    case trimmed(params["stillfail_workspace"]) do
+      "" ->
+        {:ok, scope}
+
+      workspace ->
+        case SalixEnv.StillfailDevices.workspace_held(
+               scope.group_id,
+               meta["device_id"],
+               workspace
+             ) do
+          nil ->
+            {:ok, %{scope | meta: Map.put(meta, "stillfail_workspace", workspace)}}
+
+          name ->
+            {:error,
+             {409,
+              "this still.fail workspace is connected to this Comma workspace already, as #{name}; disconnect that one in Comma's still.fail plugin first"}}
+        end
+    end
+  end
+
+  defp stillfail_workspace(scope, _params), do: {:ok, scope}
 
   defp do_upgrade(conn, tenant_id, params, name, group_id, scope) do
     process_instance_id = connector_process_instance_id(conn)
@@ -118,7 +149,8 @@ defmodule SalixWeb.Connect do
              scope: meta["scope"],
              token_expires_at: Map.get(scope, :token_expires_at),
              token_hash: Map.get(scope, :token_hash),
-             process_instance_id: record["process_instance_id"]
+             process_instance_id: record["process_instance_id"],
+             binary_streams: get_req_header(conn, @stream_frames_header) == ["binary"]
            ],
            [
              compress: false,
@@ -167,7 +199,7 @@ defmodule SalixWeb.Connect do
 
     cond do
       query_group != "" ->
-        {:error, {400, "group_id is not accepted with connector credential auth"}}
+        {:error, {400, "group_id is not accepted with station credential auth"}}
 
       true ->
         with :ok <- validate_connector_token_scope(token, tenant_id, token_group) do
@@ -193,7 +225,7 @@ defmodule SalixWeb.Connect do
                |> put_token_scope(token["scope"])
            }}
         else
-          _ -> {:error, {403, "connector credential scope is not available"}}
+          _ -> {:error, {403, "station credential scope is not available"}}
         end
     end
   end
@@ -203,7 +235,7 @@ defmodule SalixWeb.Connect do
     do: workload_scope(workload, tenant_id)
 
   defp connector_scope(_conn, _tenant_id, _params),
-    do: {:error, {403, "connector credential is required"}}
+    do: {:error, {403, "station credential is required"}}
 
   # Each owner projects only its exact Workload into the shared Station transport.
   defp workload_scope(workload, tenant_id) do
@@ -250,7 +282,7 @@ defmodule SalixWeb.Connect do
        do: name
 
   defp connector_name(token, dialed),
-    do: default_to(dialed, token["name"] || "Group Connector")
+    do: default_to(dialed, token["name"] || "Group Station")
 
   # Registration uses the resource owner's lock and exact Workload generation.
   defp register(%{workload: workload}, connect),
@@ -310,7 +342,7 @@ defmodule SalixWeb.Connect do
     case Map.fetch(params, "scope") do
       :error -> {:ok, nil}
       {:ok, scope} when scope in ["", "local_file_read"] -> {:ok, scope}
-      {:ok, _invalid} -> {:error, "unsupported connector-reported scope"}
+      {:ok, _invalid} -> {:error, "unsupported station-reported scope"}
     end
   end
 

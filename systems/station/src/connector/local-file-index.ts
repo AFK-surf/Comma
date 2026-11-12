@@ -386,7 +386,7 @@ function streamObject(
       sent += n;
       streamHash.update(chunk);
       seq++;
-      const frame: Message = { id, type: "stream", stream: { channel: "data", data: chunk.toString("base64"), eof: false, seq } };
+      const frame: Message = { id, type: "stream", stream: { channel: "data", data: chunk, eof: false, seq } };
       yield* session.sendReadStreamFrame(id, seq, frame);
     }
     const actual = streamHash.digest("hex");

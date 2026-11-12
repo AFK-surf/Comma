@@ -25,8 +25,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       for {app, key} <- [
             {:salix_store, :s3_backend},
             {:salix_store, :composio_base_url_override},
-            {:salix_im, :slack_api_base_url},
-            {:salix_meet, :calendar_autojoin_channels}
+            {:salix_im, :slack_api_base_url}
           ],
           do: {app, key, SystemsRuntime.get_env(app, key)}
 
@@ -40,7 +39,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
     SystemsRuntime.put_env(:salix_store, :composio_base_url_override, "http://127.0.0.1:#{port}")
     SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
     project = bare_project_fixture(org, %{name: "Product team"})
     fixture = MeetingPreparationFixture.seed(org, project)
 
@@ -148,6 +146,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
 
       overview = conn |> get(meetings_path(org, project)) |> json_response(200) |> data()
       assert %{"enabled" => true, "channel" => "team-meetings"} = overview["settings"]
+      # A Slack bot reads Google calendars; a dashboard save confirms where notices go.
+      assert overview["settings"]["calendar_source"] == "google"
+      assert is_integer(overview["settings"]["destination_confirmed_at"])
 
       assert Enum.find(overview["connects"], &(&1["connect_id"] == second))["preparation"] ==
                "enabled"

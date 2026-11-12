@@ -172,7 +172,7 @@ const createShell = async (target: Page, another = false) => {
   await target.getByRole("button", { name: "Confirm creation", exact: true }).click();
 };
 
-test("opens a workload's business owner and keeps deletion with that owner", async ({
+test("shows a workload's business owner and keeps deletion with that owner", async ({
   page,
 }) => {
   const base = "http://127.0.0.1:65534";
@@ -244,8 +244,11 @@ test("opens a workload's business owner and keeps deletion with that owner", asy
   await expect(
     page.getByRole("button", { name: "Delete Shell", exact: true })
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Weekly sync", exact: true }).click();
+  await expect(page.getByText("Weekly sync", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 1, name: "Weekly sync", exact: true })
+    page.getByText(
+      "Managed by its linked meeting or service. Use that feature to stop or remove it.",
+      { exact: true }
+    )
   ).toBeVisible();
 });

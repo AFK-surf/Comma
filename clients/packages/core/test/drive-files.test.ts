@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { DriveFileVersion, DriveValue } from "../src/contract.ts";
 import { DRIVE_POLL_MS, DRIVE_REFRESH_MS, HOSTED_SPACE } from "../src/drive/index.ts";
 import { SYSTEM_SPACE } from "../src/drive/system-files.ts";
+import { TASK_FILES_SPACE } from "../src/drive/task-files.ts";
 import {
   FakeHost,
   FakeLocalDrive,
@@ -168,6 +169,52 @@ describe("Drive on a device with a node", () => {
     expect(t.drive.pages).toBe(pages + 2);
     await t.settle(DRIVE_REFRESH_MS);
     expect(t.drive.pages).toBe(pages + 3);
+  });
+
+  it("reads the server's files once while the node starts, changes and is changed, and again on refresh and every 20 s", async () => {
+    const t = setup();
+    const server = () => ({
+      workspaces: t.host.api.seen("GET", WORKSPACES).length,
+      system: t.host.api.seen("GET", SYSTEM).length,
+      instructions: t.host.api.seen("GET", `${SYSTEM}/instructions`).length,
+      taskFiles: t.host.api.seen("GET", "/v1/comma/groups/grp_w1/task-files").length,
+    });
+    const once = { workspaces: 1, system: 3, instructions: 1, taskFiles: 1 };
+    t.drive.status = "starting";
+    t.drive.put("drive", [file("a.txt", 1)]);
+    t.watch();
+    await t.settle();
+    await t.settle(DRIVE_POLL_MS);
+    await t.settle(DRIVE_POLL_MS);
+    t.drive.status = "ready";
+    await t.settle(DRIVE_POLL_MS);
+    expect(t.value().node).toEqual({ status: "ready" });
+    expect(server()).toEqual(once);
+    t.drive.put("drive", [file("a.txt", 1), file("new.txt", 2)]);
+    t.drive.change();
+    await t.settle(200);
+    await t.client.call("drive.keepOffline", {
+      files: [t.value().files[0]!.id],
+      keepOffline: true,
+    });
+    await t.settle();
+    expect(t.paths("drive")).toEqual(["a.txt", "new.txt"]);
+    expect(server()).toEqual(once);
+    await t.client.call("drive.refresh", {});
+    await t.settle();
+    expect(server()).toEqual({
+      workspaces: 1,
+      system: 6,
+      instructions: 2,
+      taskFiles: 2,
+    });
+    await t.settle(DRIVE_REFRESH_MS);
+    expect(server()).toEqual({
+      workspaces: 1,
+      system: 9,
+      instructions: 3,
+      taskFiles: 3,
+    });
   });
 
   it("reads a diverged path's copies and settles it on one", async () => {
@@ -500,5 +547,100 @@ describe("Drive's System Files", () => {
     await t.settle();
     expect(instructions.content).toBe("");
     expect(listed().system).toMatchObject({ hash: "i-" });
+  });
+});
+
+const TASK_FILES = "/v1/comma/groups/grp_w1/task-files";
+const taskFile = (conversation: string, title: string, name: string, index = 0) => ({
+  conversation_id: conversation,
+  task_title: title,
+  message_id: `msg-${conversation}`,
+  seq: 1,
+  index,
+  type: "file",
+  file_name: name,
+  mime_type: null,
+  size: 3,
+  created_at: 50,
+});
+
+describe("Drive's Task Files", () => {
+  it("lists the Group's Task files one folder per Task, read-only, and reads one from its Message", async () => {
+    const t = setup(null);
+    t.host.api.on("GET", "/v1/comma/groups/grp_w1/drive/tree", { entries: [] });
+    t.host.api.on("GET", TASK_FILES, {
+      data: [
+        taskFile("cnv_aaaaaa111111", "Weekly / report", "summary.pdf"),
+        taskFile("cnv_bbbbbb222222", "Export", "rows.csv", 2),
+        taskFile("cnv_cccccc333333", "Export", "rows.csv"),
+      ],
+      next_cursor: null,
+    });
+    t.host.api.on(
+      "GET",
+      "/v1/comma/groups/grp_w1/conversations/cnv_bbbbbb222222/messages/msg-cnv_bbbbbb222222/attachments/2",
+      () => ({ status: 200, headers: [], body: new Uint8Array([7, 8, 9]) })
+    );
+    t.watch();
+    await t.settle();
+    expect(t.value().spaces.find((s) => s.id === TASK_FILES_SPACE)).toMatchObject({
+      remote: true,
+      writable: false,
+    });
+    // Tasks that share a title each add the end of their id.
+    expect(t.paths(TASK_FILES_SPACE)).toEqual([
+      "Weekly - report/summary.pdf",
+      "Export · 222222/rows.csv",
+      "Export · 333333/rows.csv",
+    ]);
+    const rows = t.value().files.filter((f) => f.spaceId === TASK_FILES_SPACE);
+    expect(rows.every((f) => !f.writable)).toBe(true);
+    expect(await t.client.call("drive.read", { file: rows[1]!.id })).toEqual({
+      bytes: new Uint8Array([7, 8, 9]),
+      mediaType: "text/csv",
+    });
+    expect(await t.client.call("drive.versions", { file: rows[1]!.id })).toEqual([]);
+  });
+
+  it("shows no Task Files space while Comma cannot list them", async () => {
+    const t = setup(null);
+    t.host.api.on("GET", "/v1/comma/groups/grp_w1/drive/tree", { entries: [] });
+    t.host.api.on("GET", TASK_FILES, json(503, { error: "task_files_indexing" }));
+    t.watch();
+    await t.settle();
+    expect(t.value().spaces.map((s) => s.id)).not.toContain(TASK_FILES_SPACE);
+    expect(t.value().spaces.map((s) => s.id)).toContain(SYSTEM_SPACE);
+  });
+});
+
+describe("Drive's Task Files across workspaces", () => {
+  it("shows no Task files of the workspace before when the new one's cannot be listed", async () => {
+    const t = setup(null);
+    t.host.api.on("GET", WORKSPACES, {
+      data: [
+        { id: "w1", group_id: "grp_w1", name: "One" },
+        { id: "w2", group_id: "grp_w2", name: "Two" },
+      ],
+    });
+    for (const group of ["grp_w1", "grp_w2"])
+      t.host.api.on("GET", `/v1/comma/groups/${group}/drive/tree`, { entries: [] });
+    t.host.api.on("GET", "/v1/comma/workspaces/w2/skills", { data: [] });
+    t.host.api.on("GET", TASK_FILES, {
+      data: [taskFile("cnv_aaaaaa111111", "Report", "summary.pdf")],
+      next_cursor: null,
+    });
+    t.host.api.on(
+      "GET",
+      "/v1/comma/groups/grp_w2/task-files",
+      json(503, { error: "task_files_indexing" })
+    );
+    t.watch();
+    await t.settle();
+    expect(t.paths(TASK_FILES_SPACE)).toEqual(["Report/summary.pdf"]);
+
+    await t.client.call("workspace.select", { workspace: "w2" });
+    await t.settle(DRIVE_REFRESH_MS);
+    expect(t.value().spaces.map((s) => s.id)).not.toContain(TASK_FILES_SPACE);
+    expect(t.paths(TASK_FILES_SPACE)).toEqual([]);
   });
 });

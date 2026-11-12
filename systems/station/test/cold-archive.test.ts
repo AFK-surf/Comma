@@ -187,7 +187,7 @@ test("archived git worktree survives prune and restores dirty files", async () =
   const gitdir = readFileSync(join(worktree, ".git"), "utf8").trim().slice("gitdir: ".length);
   await packWorkspace(room);
   assert.ok(existsSync(join(gitdir, "locked")));
-  assert.equal(readFileSync(join(gitdir, "locked"), "utf8"), `still.fail archived workspace: ${room}\n`);
+  assert.equal(readFileSync(join(gitdir, "locked"), "utf8"), `Comma archived workspace: ${room}\n`);
   assert.deepEqual(JSON.parse(readFileSync(join(room, "workspace-locks.json"), "utf8")), [join(realpathSync(gitdir), "locked")]);
   git(repo, ["worktree", "prune", "--expire", "now"]);
   assert.ok(existsSync(gitdir));

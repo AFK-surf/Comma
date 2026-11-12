@@ -9,6 +9,7 @@
 // from it. So a call that failed is made again with the same key.
 //
 // Bounds: one request per call, two for a new Task (its chat, then its first message, which the outbox sends).
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -20,25 +21,27 @@ import { hostedId, type StationTasks } from "../station-tasks.ts";
 import type { Stations } from "./index.ts";
 import { madeSchema } from "./station-api.ts";
 
-const name = z.string().max(4_096);
+const name = lazySchema(() => z.string().max(4_096));
 
 /** The profiles a new Task can run on (`GET /overview`'s `profiles`), with their models. */
-const profilesSchema = z.object({
-  profiles: z
-    .array(
-      z.object({
-        id: name,
-        machine: z.boolean().optional(),
-        name: name.nullish(),
-        runtime: name.nullish(),
-        runtimes: z.array(name).max(16).optional(),
-        model: name.nullish(),
-        models: z.array(name).max(200).nullish(),
-      })
-    )
-    .max(200)
-    .default([]),
-});
+const profilesSchema = lazySchema(() =>
+  z.object({
+    profiles: z
+      .array(
+        z.object({
+          id: name,
+          machine: z.boolean().optional(),
+          name: name.nullish(),
+          runtime: name.nullish(),
+          runtimes: z.array(name).max(16).optional(),
+          model: name.nullish(),
+          models: z.array(name).max(200).nullish(),
+        })
+      )
+      .max(200)
+      .default([]),
+  })
+);
 
 const params = {
   text(raw: unknown, key: string, max = 256): string {

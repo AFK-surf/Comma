@@ -4,7 +4,7 @@
 // message; they answer the same way. Nothing limits how long two agents talk: that is theirs to judge.
 import { threadAddress } from "../agents/instructions.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
-import { STILLFAIL_SURFACE, type SessionThread } from "../store/store.ts";
+import { COMMA_STATION_SURFACE, type SessionThread } from "../store/store.ts";
 import { type Args, jsString } from "./args.ts";
 import type { Hub } from "./hub.ts";
 import { Refused } from "./neighbours.ts";
@@ -25,7 +25,7 @@ const chars = (s: string) => Array.from(s).length;
 /// Who a message comes from, as its header shows it: the sender's chat by its title, linked when it has a link.
 function header(surface: string, title: string, link: string | null): string {
   let from: string;
-  if (link !== null && surface === STILLFAIL_SURFACE) from = `[${title.replace(/[[\]]/g, "")}](${link})`;
+  if (link !== null && surface === COMMA_STATION_SURFACE) from = `[${title.replace(/[[\]]/g, "")}](${link})`;
   else if (link !== null) from = `<${link}|${title.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "/")}>`;
   else from = title;
   return tr(stationLang(), "station.session.from", { from });

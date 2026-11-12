@@ -20,7 +20,7 @@ use iroh::endpoint::{Connection, presets::Minimal};
 use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode};
 use serde_json::{Value, json};
 
-const ALPN: &[u8] = b"stillfail/admin/1";
+const ALPN: &[u8] = b"comma-station/admin/1";
 const WORKSPACE: &str = "test-workspace";
 
 #[tokio::main]

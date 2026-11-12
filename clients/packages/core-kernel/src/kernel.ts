@@ -14,6 +14,7 @@ import {
   type Topic,
   type TopicSpecs,
 } from "./protocol.ts";
+import type { Meter } from "./meter.ts";
 import type { Runner } from "./runtime.ts";
 import { Store, type Source, type Value } from "./store.ts";
 
@@ -43,6 +44,8 @@ export type KernelOptions = {
   topics: TopicSpecs;
   /// Where a topic's keyed lists are.
   specOf?(topic: Topic): Spec | null;
+  /// Counts the work of each emission (a test's core).
+  meter?: Meter;
   coalesceMs?: number;
   evictAfterMs?: number;
 };
@@ -77,6 +80,7 @@ export class Kernel {
         if (this.#clients.has(client)) options.emit(client, message);
       },
       specOf: (topic) => options.specOf?.(topic) ?? null,
+      ...(options.meter ? { meter: options.meter } : {}),
       sourceOf: (topic) => this.#sources.get(topic.topic),
       ...(options.coalesceMs !== undefined ? { coalesceMs: options.coalesceMs } : {}),
       ...(options.evictAfterMs !== undefined
@@ -135,12 +139,7 @@ export class Kernel {
     }
     switch (message.kind) {
       case "subscribe":
-        return this.store.subscribe(
-          client,
-          message.id,
-          message.subscribe,
-          message.keyed === true
-        );
+        return this.store.subscribe(client, message.id, message.subscribe);
       case "unsubscribe":
         return this.store.unsubscribe(client, message.id);
       case "cancel": {

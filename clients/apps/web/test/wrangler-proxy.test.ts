@@ -6,6 +6,40 @@ describe("Comma web static worker", () => {
     vi.unstubAllGlobals();
   });
 
+  it("associates only public Mini App links with the signed iOS app on both app domains", async () => {
+    const assetsFetch = vi.fn();
+    for (const host of ["app.comma.surf", "app-staging.comma.surf"]) {
+      const response = await worker.fetch(
+        new Request(`https://${host}/.well-known/apple-app-site-association`),
+        { ASSETS: { fetch: assetsFetch } }
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(response.headers.get("location")).toBeNull();
+      expect(await response.json()).toEqual({
+        applinks: {
+          details: [
+            { appIDs: ["D9AAN3VJK8.surf.comma.ios"], components: [{ "/": "/a/*" }] },
+          ],
+        },
+      });
+    }
+    const head = await worker.fetch(
+      new Request("https://app.comma.surf/.well-known/apple-app-site-association", {
+        method: "HEAD",
+      }),
+      { ASSETS: { fetch: assetsFetch } }
+    );
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+    const preview = await worker.fetch(
+      new Request("https://preview.workers.dev/.well-known/apple-app-site-association"),
+      { ASSETS: { fetch: assetsFetch } }
+    );
+    expect(preview.status).toBe(404);
+    expect(assetsFetch).not.toHaveBeenCalled();
+  });
+
   it("does not expose a second same-origin Comma API ingress", async () => {
     const fetchMock = vi.fn();
     const assetsFetch = vi.fn(async (_request: Request) => {

@@ -80,7 +80,7 @@ theorem InputCommitTrace.confirms_same_input {context : Context} {entry born che
     (sourceValue : RoundQuery.atomFirst entry "source_message_id" = .binary source)
     (ready : QueueReady context.candidate.working)
     (format : context.candidate.working.get (a "storage_format") = i 3) :
-    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.etag = context.candidate.etag ∧
+    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.revision = context.candidate.revision ∧
       ∃ etag snapshot event now first last item,
         durable trace.key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
         Command.inputEvent (context.candidate.working.get (a "session_id")) (.binary source)

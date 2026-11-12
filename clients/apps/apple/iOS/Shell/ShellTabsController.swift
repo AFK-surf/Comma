@@ -10,11 +10,14 @@ final class ShellTabsController<Page: View>: UIViewController {
     private var pages: [AppTab: UIHostingController<HostedContent<Page>>] = [:]
     private let pagesView = UIView()
     private var selection: AppTab
+    private var contentLeadingInset: CGFloat
 
-    init(store: CommaStore, navigation: AppNavigation, bar state: ShellTabBar, page: (AppTab) -> HostedContent<Page>) {
+    init(store: CommaStore, navigation: AppNavigation, bar state: ShellTabBar, contentLeadingInset: CGFloat = 0, page: (AppTab) -> HostedContent<Page>) {
         bar = ShellTabBarController(store: store, navigation: navigation, bar: state)
         selection = state.selection
+        self.contentLeadingInset = contentLeadingInset
         super.init(nibName: nil, bundle: nil)
+        bar.contentLayoutChanged = { [weak self] in self?.invalidatePageInsets() }
         for tab in AppTab.allCases {
             let host = UIHostingController(rootView: page(tab))
             host.view.backgroundColor = .clear
@@ -46,28 +49,78 @@ final class ShellTabsController<Page: View>: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        pagesView.frame = view.bounds
-        bar.view.frame = view.bounds
+        if pagesView.frame != view.bounds { pagesView.frame = view.bounds }
+        var barFrame = view.bounds
+        // Duo owns one vertical system bar for the full viewport. On other devices the
+        // bottom tab bar belongs to the trailing content column.
+        if !usesVerticalBar {
+            barFrame.origin.x += contentLeadingInset
+            barFrame.size.width = max(0, barFrame.width - contentLeadingInset)
+        }
+        if bar.view.frame != barFrame { bar.view.frame = barFrame }
         bar.view.layoutIfNeeded()
-        // The bar's controller gives its stand-in the room the bar takes, wherever the bar is; every page gets the
-        // same.
-        let room = bar.standIn.map { Self.room(in: $0.safeAreaInsets, beyond: view.safeAreaInsets) } ?? .zero
-        for host in pages.values {
-            host.view.frame = pagesView.bounds
-            if host.additionalSafeAreaInsets != room { host.additionalSafeAreaInsets = room }
+        for host in pages.values where host.view.frame != pagesView.bounds { host.view.frame = pagesView.bounds }
+        synchronizePageInsets()
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        invalidatePageInsets()
+    }
+
+    private func invalidatePageInsets() {
+        guard let room = pageInsets(), pages.contains(where: { $0.value.additionalSafeAreaInsets != pageInsets(for: $0.key, base: room) }) else { return }
+        view.setNeedsLayout()
+    }
+
+    private func pageInsets() -> UIEdgeInsets? {
+        guard isViewLoaded, view.window != nil, bar.isViewLoaded, let standIn = bar.standIn else { return nil }
+        return Self.room(in: standIn.safeAreaInsets, beyond: view.safeAreaInsets)
+    }
+
+    private func pageInsets(for tab: AppTab, base: UIEdgeInsets) -> UIEdgeInsets {
+        var room = base
+        // Settings owns both columns from the start. Its persistent master slides between them;
+        // changing the page's safe area during a push would resize and replace its contents.
+        if tab != .settings || pages[tab]?.rootView.environment.settingsColumnsFolded == nil {
+            room.left += contentLeadingInset
+        }
+        return room
+    }
+
+    private var usesVerticalBar: Bool {
+        #if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) { return traitCollection.verticalBarEdge != .unspecified }
+        #endif
+        return false
+    }
+
+    /// UIKit can settle the system bar after the container's first layout.
+    /// Update the pages when either owner's safe area changes, without waiting for a tab switch.
+    private func synchronizePageInsets() {
+        guard let room = pageInsets() else { return }
+        for (tab, host) in pages {
+            let insets = pageInsets(for: tab, base: room)
+            if host.additionalSafeAreaInsets != insets { host.additionalSafeAreaInsets = insets }
         }
     }
 
     /// Shows the selected tab's page and `state` in the bar; gives the pages the environment again when it changed.
-    func update(bar state: ShellTabBar, environment: EnvironmentValues, page: (AppTab) -> HostedContent<Page>) {
+    func update(bar state: ShellTabBar, environment: EnvironmentValues, contentLeadingInset: CGFloat = 0, page: (AppTab) -> HostedContent<Page>) {
         if pages[.home]?.rootView.environment != HostedEnvironment(environment) {
             for (tab, host) in pages { host.rootView = page(tab) }
+            view.setNeedsLayout()
         }
         if state.selection != selection {
             selection = state.selection
             for (tab, host) in pages { host.view.isHidden = tab != selection }
         }
         bar.apply(state)
+        if self.contentLeadingInset != contentLeadingInset {
+            self.contentLeadingInset = contentLeadingInset
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        }
     }
 
     private static func room(in standIn: UIEdgeInsets, beyond own: UIEdgeInsets) -> UIEdgeInsets {

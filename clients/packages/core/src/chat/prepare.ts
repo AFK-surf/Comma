@@ -4,6 +4,7 @@
 // private delivery records answers nothing: they cannot say its transcript is empty.
 //
 // Bounds: one read per call, at most 24 messages; the caller bounds how many it asks for at a time.
+import { lazySchema } from "@comma/chat-contract";
 import type { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -20,9 +21,11 @@ import {
 import { transcriptMessages } from "./model/taskActivity.ts";
 
 const MESSAGE_LIMIT = 24;
-const id = z.string().min(1).max(256);
+const id = lazySchema(() => z.string().min(1).max(256));
 
-export const prepareInputSchema = z.object({ groupId: id, conversationId: id });
+export const prepareInputSchema = lazySchema(() =>
+  z.object({ groupId: id, conversationId: id })
+);
 
 /** A conversation's canonical fields (without its messages) and its last messages, as a window shows them. */
 export type PreparedConversation = {

@@ -1,6 +1,7 @@
 defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
   @moduledoc """
-  Periodically reconciles runner-backed project device provision requests.
+  Periodically refreshes the project device projection from the Salix
+  registry and records runner status changes.
 
   The deterministic `drain_once/1` entrypoint is shared by direct callers and
   the GenServer loop, which only schedules that same pass.
@@ -13,23 +14,18 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
   alias BridgeForTeams.Telemetry
 
   @default_interval_ms 10_000
-  @default_limit 50
-  @default_attach_timeout_ms 300_000
 
-  @doc "Start the provision-request reconcile worker."
+  @doc "Start the device reconcile worker."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """
-  Reconcile active runner-backed provision requests once.
+  Reconcile one page of project devices.
 
   Options:
 
-    * `:limit` — max active requests to scan.
-    * `:attach_timeout_ms` — how long `waiting_for_attach` may wait after its
-      last status update before being classified as `connector.attach_timeout`.
     * `:now` — deterministic clock override for tests.
   """
   @spec drain_once(keyword()) ::
@@ -38,7 +34,7 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
     started = SystemsClock.monotonic_time()
 
     try do
-      result = Environments.reconcile_device_provision_requests(opts)
+      result = Environments.reconcile_devices(opts)
       outcome = if match?({:ok, _}, result), do: "ok", else: "error"
 
       Telemetry.emit_operation(
@@ -70,9 +66,6 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
 
     state = %{
       interval_ms: opts[:interval_ms] || cfg[:interval_ms] || @default_interval_ms,
-      limit: opts[:limit] || cfg[:limit] || @default_limit,
-      attach_timeout_ms:
-        opts[:attach_timeout_ms] || cfg[:attach_timeout_ms] || @default_attach_timeout_ms,
       enabled: Keyword.get(opts, :enabled, Keyword.get(cfg, :enabled, true))
     }
 
@@ -82,11 +75,7 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
 
   @impl true
   def handle_info(:drain, state) do
-    _ =
-      drain_once(
-        limit: state.limit,
-        attach_timeout_ms: state.attach_timeout_ms
-      )
+    _ = drain_once()
 
     schedule(state.interval_ms)
     {:noreply, state}

@@ -1,21 +1,21 @@
 defmodule SalixWeb.ConnectorMultinodeTest do
   @moduledoc """
   Real two-node remote-connector test (the multi-node claim, end to end with the
-  actual Go connector):
+  actual station):
 
     * **Node B** (a `:peer` BEAM node) runs `salix_web` — the `/v1/connect`
       WebSocket endpoint and the `SalixEnv.Bridges` registry.
-    * The **real Go connector** (`connector/salix-connect`) attaches to
+    * The **real station** (its release at `STATION_E2E_APP`) attaches to
       node B's WebSocket. Its group-owned device points at a current connector
       run stamped with node B.
     * **Node A** (this VM) runs the agent dispatch. `SalixEnv.Connector.Live`
       reads the record, sees the owner is node B, and forwards the RPC via
       `:erpc` to `SalixEnv.Bridge.rpc/3` on B — which runs the WebSocket round
-      trip to the Go process. There is NO local connector socket on A.
+      trip to the station. There is NO local connector socket on A.
 
   Both nodes share the same MinIO bucket (`salix-test`) so the durable record is
-  visible cross-node. Requires BEAM distribution + MinIO + Go; the module fails
-  if distribution is unavailable.
+  visible cross-node. Requires BEAM distribution + MinIO + a station release
+  (`systems/station/scripts/bundle.sh`); the module fails if either is unavailable.
   """
   use SystemsClock.Case, async: false
 
@@ -26,19 +26,9 @@ defmodule SalixWeb.ConnectorMultinodeTest do
   alias SalixWeb.MockCloudflareGateway
   @root "/tmp/salix-mn-connector-#{SystemsClock.system_time(:second)}"
 
-  @binary_dir @root <> "-binary"
   setup_all do
-    File.mkdir_p!(@binary_dir)
-    source = Path.expand("../../../connector/salix-connect", __DIR__)
-
-    {output, status} =
-      System.cmd("go", ["build", "-o", Path.join(@binary_dir, "salix-connect"), "."],
-        cd: source,
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, output
-    on_exit(fn -> File.rm_rf(@binary_dir) end)
+    app = System.get_env("STATION_E2E_APP") || flunk("STATION_E2E_APP names no station release")
+    assert File.exists?(Path.join(app, "mesh/target/release/comma-station"))
     _ = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
 
     case ensure_distribution() do
@@ -219,7 +209,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
       assert eventually(fn -> :erpc.call(node, SalixEnv.Bridge, :local?, [connector_run_id]) end),
              "connector socket must be bridged on node B"
 
-      # env.exec from node A → routed by :erpc to node B → WebSocket → Go → /bin/sh.
+      # env.exec from node A → routed by :erpc to node B → WebSocket → station → /bin/sh.
       assert {:ok, %{"exit_code" => 0, "stdout" => out}} =
                SalixWeb.EnvDispatch.exec(
                  agent_id,
@@ -382,13 +372,22 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     Map.put(ctx, :tool_disclosure, ToolDisclosure.materialize("worker", :internal, ctx))
   end
 
-  # ---- the real Go connector, attached to node B ----
+  # ---- the real station, attached to node B ----
 
   defp start_connector(peer_port, _group_id, connector_token) do
-    Port.open({:spawn_executable, Path.join(@binary_dir, "salix-connect")}, [
+    app = System.fetch_env!("STATION_E2E_APP")
+
+    Port.open({:spawn_executable, Path.join(app, "mesh/target/release/comma-station")}, [
       :binary,
       :exit_status,
       args: [
+        "run",
+        "--app",
+        app,
+        "--data",
+        Path.join(@root, "station"),
+        "--with-parent",
+        "--",
         "--server",
         "ws://127.0.0.1:#{peer_port}",
         "--name",
@@ -403,10 +402,18 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     ])
   end
 
+  # The station has left its data directory once its launcher has exited: a
+  # station started on the same directory before then finds it taken.
   defp stop_connector(port_proc) do
     case Port.info(port_proc, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", [Integer.to_string(os_pid)])
-      _ -> :ok
+      {:os_pid, os_pid} ->
+        System.cmd("kill", [Integer.to_string(os_pid)])
+        receive do
+          {^port_proc, {:exit_status, _status}} -> :ok
+        end
+
+      _ ->
+        :ok
     end
   end
 
@@ -531,6 +538,9 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     :ok = :erpc.call(node, Application, :put_env, [:salix_env, :transfer_port, free_tcp_port()])
     :ok = :erpc.call(node, Application, :put_env, [:salix_env, :advertise_host, "127.0.0.1"])
     {:ok, _} = :erpc.call(node, Application, :ensure_all_started, [:salix_web])
+    # The ring reads the peer's readiness on its own; telling it here orders the
+    # peer before any placement this test makes.
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.whereis(SalixCluster.Ring), {:ring_ready, node})
     :erpc.call(node, SalixWeb.Application, :http_port, [])
   end
 

@@ -139,6 +139,69 @@ defmodule SalixLlm.AudioChunkerTest do
   end
 
   @tag :ffmpeg
+  test "with voice, cuts in pauses and says how much speech each chunk holds" do
+    ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
+
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-voice-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    source = Path.join(dir, "source.wav")
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    # A tone for speech at 0-8.3 s and 9.7-20 s, silence elsewhere, 30 s.
+    {_output, 0} =
+      System.cmd(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          "aevalsrc=0.2*sin(2*PI*440*t)*(lt(t\\,8.3)+gte(t\\,9.7)*lt(t\\,20)):s=16000:d=30",
+          source
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert {:ok, chunks} =
+             AudioChunker.with_mp3_chunks(
+               File.read!(source),
+               "audio.wav",
+               fn chunks ->
+                 {:ok,
+                  Enum.map(chunks, fn chunk ->
+                    samples = ffmpeg |> decoded_mono_16k_pcm(chunk.path) |> pcm_sample_count()
+
+                    {chunk.offset_seconds, samples, chunk.voiced_seconds,
+                     chunk.speech_end_seconds}
+                  end)}
+               end,
+               voice: true,
+               segment_seconds: 10,
+               max_chunks: 5,
+               timeout_ms: 30_000
+             )
+
+    # The first cut is in the pause at 9 s, not in the tone at 10 s; the
+    # second finds no pause by 19 s; the third ends where the silence
+    # around the cut is longest.
+    assert Enum.map(chunks, &elem(&1, 0)) == [0, 9, 19, 28]
+    assert Enum.map(chunks, &elem(&1, 1)) == [144_000, 160_000, 144_000, 32_000]
+
+    for {{_offset, _samples, voiced, speech_end}, {want_voiced, want_end}} <-
+          Enum.zip(chunks, [{8.3, 8.3}, {9.3, 10.0}, {1.0, 1.0}, {0.0, 0.0}]) do
+      assert_in_delta voiced, want_voiced, 0.05
+      assert_in_delta speech_end, want_end, 0.05
+    end
+  end
+
+  @tag :ffmpeg
   test "merges an MP3-subframe tail into the preceding chunk" do
     ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
 

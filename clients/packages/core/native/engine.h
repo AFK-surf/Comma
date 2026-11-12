@@ -26,6 +26,13 @@ class EngineHost {
   virtual std::optional<std::string> callSync(const std::string& op, const std::string& json) = 0;
   /** What the core says to the app's UI, as UTF-8 JSON. */
   virtual void emit(const std::string& json) = 0;
+  /**
+   * One frame of a screen view the app opened with `sink` (core screen-views.ts, `commaNative.screenFrame`): `kind` 1
+   * is an H.264 config and 2 an H.265 one (`data` its avcC or hvcC, `width` and `height` the picture's), 3 a video
+   * frame and 4 a key frame (`data` its access unit, as the config says, `ts` its time). `data` is the script's memory,
+   * valid only during the call: the app copies what it keeps. Called on the core's thread, once a frame; no JSON.
+   */
+  virtual void screenFrame(uint32_t sink, int kind, double ts, int width, int height, const uint8_t* data, size_t size) {}
   /** The core cannot go on; nothing else comes from it. */
   virtual void fatal(const std::string& reason) = 0;
   /** A line for the platform's log: 0 debug, 1 info, 2 warning, 3 error. */

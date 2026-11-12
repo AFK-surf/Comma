@@ -10,14 +10,22 @@ import {
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type { ProductInboxItem } from "@comma/core-client";
 import { TaskListItem } from "@comma/ui/components/TaskListItem";
-import { getMenuPointerOffsets } from "@comma/ui/components/menu";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { taskLoopFilterKey, taskLoopLabel } from "../tasks/taskLoopLabels";
-import { TaskScheduleChip, useOpenTasksFilter } from "../tasks/taskChips";
-import { InboxItemMenuPopover, useInboxItemMenu } from "./InboxItemMenu";
+import { requestPersonKey } from "../tasks/requestPeople";
+import {
+  TaskRequestChip,
+  TaskScheduleChip,
+  useOpenTasksFilter,
+} from "../tasks/taskChips";
+import {
+  inboxItemMenuTrigger,
+  InboxItemMenuPopover,
+  useInboxItemMenu,
+} from "./InboxItemMenu";
 
-export type InboxGroupModel = {
-  items: ProductInboxItem[];
+export type InboxGroupModel<T extends { updatedAt: number } = ProductInboxItem> = {
+  items: T[];
   key: string;
   label: string;
 };
@@ -30,6 +38,8 @@ export const InboxRow = memo(function InboxRow({
   status,
   updatedAt,
   loop,
+  origin,
+  requestedBy,
   selected,
   unread,
   onDelete,
@@ -42,6 +52,9 @@ export const InboxRow = memo(function InboxRow({
 > & {
   /** The row names the Loop's trigger type. */
   loop: ProductInboxItem["loop"];
+  origin?: string | undefined;
+  /** A Task from a request names who sent it. */
+  requestedBy?: ProductInboxItem["requestedBy"];
   selected: boolean;
   unread: boolean;
   minute: number;
@@ -63,7 +76,6 @@ export const InboxRow = memo(function InboxRow({
     <>
       <Link
         aria-current={selected ? "page" : undefined}
-        aria-haspopup="menu"
         aria-label={[title, loop ? taskLoopLabel(loop, messages) : undefined]
           .filter(Boolean)
           .join(", ")}
@@ -71,20 +83,7 @@ export const InboxRow = memo(function InboxRow({
         data-task-status={status}
         data-testid="inbox-item"
         onClick={onOpen}
-        onContextMenu={(event) => {
-          if (!rowRef.current) return;
-          event.preventDefault();
-          menu.open(
-            getMenuPointerOffsets(rowRef.current, event.clientX, event.clientY)
-          );
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) {
-            return;
-          }
-          event.preventDefault();
-          menu.open(null);
-        }}
+        {...inboxItemMenuTrigger(menu, rowRef)}
         params={{
           conversationId,
           groupId,
@@ -95,14 +94,39 @@ export const InboxRow = memo(function InboxRow({
       >
         <TaskListItem
           badges={
-            loop ? (
-              <TaskScheduleChip
-                loop={loop}
-                iconOnly
-                nested
-                onOpen={() => openTasksFilter({ schedule: taskLoopFilterKey(loop) })}
-                testId="inbox-item-schedule"
-              />
+            loop || (origin === "task_request" && requestedBy) ? (
+              <>
+                {loop ? (
+                  <TaskScheduleChip
+                    loop={loop}
+                    iconOnly
+                    nested
+                    onOpen={() =>
+                      openTasksFilter({ schedule: taskLoopFilterKey(loop) })
+                    }
+                    testId="inbox-item-schedule"
+                  />
+                ) : null}
+                {origin === "task_request" && requestedBy ? (
+                  <TaskRequestChip
+                    avatar={
+                      requestedBy.avatar
+                        ? { source: "sender-avatar", ...requestedBy.avatar }
+                        : undefined
+                    }
+                    direction="from"
+                    iconOnly
+                    name={requestedBy.name}
+                    nested
+                    onOpen={() =>
+                      openTasksFilter({
+                        request: requestPersonKey("from", requestedBy),
+                      })
+                    }
+                    testId="inbox-item-request"
+                  />
+                ) : null}
+              </>
             ) : undefined
           }
           dot={unread}
@@ -116,6 +140,7 @@ export const InboxRow = memo(function InboxRow({
         />
       </Link>
       <InboxItemMenuPopover
+        actions={[unread ? "mark-read" : "mark-unread", "delete"]}
         isOpen={menu.isOpen}
         onAction={(action) => {
           if (action === "delete") onDelete();
@@ -125,20 +150,19 @@ export const InboxRow = memo(function InboxRow({
         onOpenChange={menu.onOpenChange}
         pointerOffsets={menu.pointerOffsets}
         triggerRef={rowRef}
-        unread={unread}
       />
     </>
   );
 });
 
-export function groupInboxItems(
-  items: ProductInboxItem[],
+export function groupInboxItems<T extends { updatedAt: number }>(
+  items: T[],
   locale: CommaLocale,
   now = uiClock.now()
 ) {
   const today = startOfDay(now);
   const yesterday = startOfPreviousDay(now);
-  const groups = new Map<string, InboxGroupModel>();
+  const groups = new Map<string, InboxGroupModel<T>>();
 
   for (const item of items) {
     const timestamp = normalizeTimestamp(item.updatedAt);
@@ -192,7 +216,7 @@ export function formatCompactRelative(
   );
 }
 
-function normalizeTimestamp(timestamp: number) {
+export function normalizeTimestamp(timestamp: number) {
   return timestamp > 0 && timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
 }
 

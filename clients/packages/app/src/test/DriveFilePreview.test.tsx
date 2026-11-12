@@ -60,8 +60,9 @@ const renderPreview = () =>
       </StrictMode>
     )
   );
+/** Where the desktop opens files in apps, the download button lists them after the download itself. */
 async function chooseApp() {
-  fireEvent.click(screen.getByRole("button", { name: "Choose application" }));
+  fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
   fireEvent.click(await screen.findByRole("menuitem", { name: /Preview/ }));
 }
 
@@ -114,6 +115,12 @@ describe("Drive uses the shared file reader", () => {
     );
     expect(saveDownload).toHaveBeenCalledOnce();
     expect(core.sentTo("drive.read")).toEqual([{ file: file.id }]);
+    // The same menu downloads the file, named by its format.
+    fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "MD" }));
+    await waitFor(() =>
+      expect(core.sentTo("drive.download")).toEqual([{ file: file.id }])
+    );
   });
   it("downloads through the core and reports failed preview reads in the common error UI", async () => {
     const rendererSave = vi.fn();
@@ -130,11 +137,9 @@ describe("Drive uses the shared file reader", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not preview this file."
     );
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Choose application" })
-    ).not.toBeInTheDocument();
+    // With no bytes to open in an app, the button downloads at once.
     fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     await waitFor(() =>
       expect(core.sentTo("drive.download")).toEqual([{ file: file.id }])
     );

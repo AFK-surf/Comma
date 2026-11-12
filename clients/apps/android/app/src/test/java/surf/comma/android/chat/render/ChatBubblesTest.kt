@@ -67,6 +67,99 @@ class ChatBubblesTest {
     private fun bubbleLeft(item: PreparedChatMessage, viewport: Int = width) =
         if (item.message.role == ChatRole.USER) viewport - item.sideMarginPx - item.bubbleWidthPx else item.sideMarginPx
 
+    @Test fun `bubble body gaps match iOS in both directions and within a speaker`() {
+        val rows = prepare(message(1, ChatRole.USER), message(2, ChatRole.AGENT),
+            message(3, ChatRole.AGENT), message(4, ChatRole.USER), message(5, ChatRole.USER))
+        val gaps = rows.zipWithNext { previous, next ->
+            previous.cellHeightPx - previous.bubbleTopPx - previous.bubbleHeightPx + next.bubbleTopPx
+        }
+        assertEquals(listOf(12f, 6f, 20f, 6f).map(::dp), gaps)
+    }
+
+    @Test fun `cards and bubbles use the same speaker gaps`() {
+        for (kind in listOf(LiveRowKinds.TASK_REF, LiveRowKinds.AGENT_REQUEST, LiveRowKinds.QUESTION,
+            LiveRowKinds.CALL_LOG, LiveRowKinds.ATTACHMENT)) {
+            val role = if (kind == LiveRowKinds.CALL_LOG) ChatRole.USER else ChatRole.AGENT
+            val rows = prepare(message(1, ChatRole.USER), message(2, role, "", kind),
+                message(3, role), message(4, role, "", kind), message(5, ChatRole.USER))
+            fun bodyEnd(row: PreparedChatMessage) = if (row.bubbleHeightPx > 0)
+                row.bubbleTopPx + row.bubbleHeightPx else row.cellHeightPx - row.tailPx
+            val expected = if (role == ChatRole.USER) listOf(6f, 6f, 6f, 6f) else listOf(12f, 6f, 6f, 20f)
+            assertEquals(kind, expected.map(::dp), rows.zipWithNext { a, b ->
+                a.cellHeightPx - bodyEnd(a) + b.bubbleTopPx
+            })
+        }
+    }
+
+    @Test fun `a same turn card follows the visible bubble by six dp without a tail`() {
+        val rows = prepare(message(1, ChatRole.AGENT, "五。"),
+            message(2, ChatRole.AGENT, "", LiveRowKinds.TASK_REF))
+        val bitmap = drawn(rows[0])
+        val visibleBottom = (bitmap.height - 1 downTo 0).first { y ->
+            (0 until bitmap.width).any { x -> android.graphics.Color.alpha(bitmap.getPixel(x, y)) > 0 }
+        } + 1
+        val cardTop = rows[0].cellHeightPx + rows[1].topMarginPx
+        assertEquals("visible bubble to same-turn card", dp(6f), cardTop - visibleBottom)
+        assertEquals("the card continues the speaker's run", 0, rows[0].tailPx)
+    }
+
+    @Test fun `inline code ending in punctuation stays inside its bubble at 200 percent text size`() {
+        val row = prepare(message(1, ChatRole.AGENT, "`五。`"), fontScale = 2f).single()
+        val bitmap = drawn(row)
+        val right = bubbleLeft(row) + row.bubbleWidthPx
+        val overflow = (row.bubbleTopPx until row.bubbleTopPx + row.bubbleHeightPx).sumOf { y ->
+            (right until bitmap.width).count { x -> android.graphics.Color.alpha(bitmap.getPixel(x, y)) > 0 }
+        }
+        assertEquals("inline code background pixels outside the bubble", 0, overflow)
+    }
+
+    @Test fun `reply error and skeleton preserve the assistant tail without overlapping it`() {
+        for (following in listOf(
+            message(2, ChatRole.AGENT, "Failed", TimelineBlockKinds.REPLY_ERROR),
+            message(2, ChatRole.AGENT, "", TimelineBlockKinds.LIVE_STATUS)
+                .copy(cardPayload = TimelineBlockKinds.LIVE_STATUS_SKELETON),
+        )) {
+            val rows = prepare(message(1, ChatRole.AGENT), following)
+            assertTrue(rows[0].tailPx > 0)
+            assertTrue("next row must start after the reserved tail", rows[1].topMarginPx >= 0)
+            val image = drawn(rows[0])
+            val visibleBottom = (image.height - 1 downTo 0).first { y ->
+                (0 until image.width).any { x -> android.graphics.Color.alpha(image.getPixel(x, y)) > 0 }
+            } + 1
+            assertTrue(rows[0].cellHeightPx + rows[1].topMarginPx - visibleBottom >= 0)
+        }
+    }
+
+    @Test fun `trailing CJK punctuation keeps short replies visually centred`() {
+        for (text in listOf("五", "五。", "五，", "五、", "五；", "五：", "五！", "五？", "五）", "五」", "五』", "五》", "五】", "五”", "五’")) {
+            val row = prepare(message(1, ChatRole.AGENT, text)).single()
+            val block = row.blocks.single() as PreparedContentBlock.Text
+            val layout = block.layout
+            val bounds = android.graphics.Rect()
+            layout.paint.getTextBounds(text, 0, text.length, bounds)
+            val left = row.horizontalPaddingPx + block.leftInsetPx + bounds.left
+            val right = row.bubbleWidthPx - row.horizontalPaddingPx - block.leftInsetPx - bounds.right
+            assertTrue("$text left $left right $right", abs(left - right) <= 2)
+            assertTrue("$text must remain inside the bubble", right >= 0)
+        }
+        val wrapped = prepare(message(1, ChatRole.USER, "五。".repeat(60))).single()
+        val block = wrapped.blocks.single() as PreparedContentBlock.Text
+        val layout = block.layout
+        val untrimmed = android.text.StaticLayout.Builder.obtain(layout.text, 0, layout.text.length,
+            layout.paint, layout.width)
+            .setBreakStrategy(android.graphics.text.LineBreaker.BREAK_STRATEGY_SIMPLE)
+            .setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            .setIncludePad(false).build()
+        assertTrue(layout.lineCount > 1)
+        assertEquals((0 until untrimmed.lineCount).map(untrimmed::getLineEnd),
+            (0 until layout.lineCount).map(layout::getLineEnd))
+        for (line in 0 until layout.lineCount) {
+            val bounds = android.graphics.Rect()
+            layout.paint.getTextBounds(layout.text.toString(), layout.getLineStart(line), layout.getLineEnd(line), bounds)
+            assertTrue("line $line glyphs must fit", wrapped.horizontalPaddingPx + block.leftInsetPx + bounds.right <= wrapped.bubbleWidthPx)
+        }
+    }
+
     @Test fun `both speakers get bubbles, and only the last of a run gets a tail`() {
         val rows = prepare(message(1, ChatRole.USER), message(2, ChatRole.USER),
             message(3, ChatRole.AGENT), message(4, ChatRole.AGENT))
@@ -101,16 +194,15 @@ class ChatBubblesTest {
         assertEquals(before[1].cellHeightPx, again[1].cellHeightPx)
     }
 
-    @Test fun `cards, attachments, reply buttons, status lines and gaps break a run and get no tail`() {
+    @Test fun `cards continue their speaker run while cards and gaps get no tail`() {
         val rows = prepare(message(1, ChatRole.AGENT), message(2, ChatRole.AGENT, "", LiveRowKinds.TASK_REF),
-            message(3, ChatRole.AGENT), message(4, ChatRole.AGENT, "", LiveRowKinds.REPLY_ACTIONS),
-            message(5, ChatRole.SYSTEM, "Loading missed messages…"),
-            message(6, ChatRole.AGENT, "Something went wrong", TimelineBlockKinds.REPLY_ERROR, MessageStatus.FAILED))
-        assertTrue(rows[0].tailPx > 0)
+            message(3, ChatRole.AGENT), message(4, ChatRole.SYSTEM, "Loading missed messages…"),
+            message(5, ChatRole.AGENT, "Something went wrong", TimelineBlockKinds.REPLY_ERROR, MessageStatus.FAILED))
+        assertEquals(0, rows[0].tailPx)
         assertTrue(rows[2].tailPx > 0)
-        listOf(1, 3, 4, 5).forEach { assertEquals(0, rows[it].tailPx) }
-        assertFalse("a gap is not an agent bubble", rows[4].tailable)
-        assertFalse(rows[5].tailable)
+        listOf(1, 3, 4).forEach { assertEquals(0, rows[it].tailPx) }
+        assertFalse("a gap is not an agent bubble", rows[3].tailable)
+        assertFalse(rows[4].tailable)
     }
 
     @Test fun `short messages hug their text, long ones stop at the available width`() {

@@ -41,6 +41,9 @@ If `agent_website_url_template` is present, the platform can publish the site pu
 - Directory requests resolve to `index.html`.
 - Paths starting with `/_` are reserved and are never served as static files.
 - Never put public assets under `/_*`.
+- Link previews use a screenshot of the home page by default. To show a specific
+  image, add a 1200x630 `og-image.png` at the site root, or set `og:image` in the
+  page.
 
 ## Site APIs
 

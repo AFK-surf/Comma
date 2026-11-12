@@ -8,6 +8,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -21,6 +22,7 @@ import surf.comma.android.conversation.FakeSessions
 import surf.comma.android.conversation.scope
 import surf.comma.android.core.CoreBytes
 import surf.comma.android.core.CoreError
+import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -120,8 +122,9 @@ class SettingsRepositoryTest {
 
     @Test fun avatarsTheServerWouldRefuseAreNotSent() = runBlocking<Unit> {
         signedIn()
-        val big = folder.newFile("big.jpg").apply { writeBytes(ByteArray(102_401)) }
-        repository.changeAvatar(big, "image/jpeg")
+        val big = folder.newFile("big.webp").apply { writeBytes(ByteArray(2_097_153)) }
+        repository.changeAvatar(big, "image/webp")
+        // A picked GIF goes up as WebP; the server keeps no GIF.
         val gif = folder.newFile("a.gif").apply { writeBytes(ByteArray(10)) }
         repository.changeAvatar(gif, "image/gif")
         until { notices.size >= 2 }
@@ -192,6 +195,43 @@ class SettingsRepositoryTest {
 
         repository.removeOtherSessions()
         until { core.called("accountSessions.revokeOthers").isNotEmpty() }
+    }
+
+    @Test fun emailChangeSaysWhatEachStepCameTo() = runBlocking<Unit> {
+        signedIn()
+        assertEquals(EmailChange.CodeSent("current-1"), repository.requestEmailChange())
+        core.refuse = { name, params ->
+            when {
+                name != "emailChange.requestNewCode" -> null
+                params.getString("email") == "taken@example.com" -> CoreError("email_taken", "taken", 409)
+                params.getString("email") == "pending@example.com" -> CoreError("email_pending_deletion", "pending", 409,
+                    JSONObject().put("error", "email_pending_deletion")
+                        .put("deletion_scheduled_at", "2026-11-08T12:00:00Z"))
+                else -> null
+            }
+        }
+        assertEquals(EmailChange.Taken, repository.requestNewEmailCode("current-1", "111111", "taken@example.com"))
+        assertEquals(EmailChange.PendingDeletion(Instant.parse("2026-11-08T12:00:00Z").toEpochMilli()),
+            repository.requestNewEmailCode("current-1", "111111", "pending@example.com"))
+        assertEquals(EmailChange.CodeSent("new-1", "ada@home.example"),
+            repository.requestNewEmailCode("current-1", "111111", "ada@home.example"))
+        assertEquals(EmailChange.Changed, repository.confirmEmailChange("new-1", "222222"))
+        assertEquals(listOf("new-1"), core.called("emailChange.confirm").map { it.getString("challengeId") })
+    }
+
+    @Test fun accountDeletionSaysWhatEachStepCameTo() = runBlocking<Unit> {
+        signedIn()
+        assertEquals(AccountDeletion.CodeSent("chl-1"), repository.requestAccountDeletion())
+        core.refuse = { name, params ->
+            if (name == "accountDeletion.delete" && params.getString("code") != "123456")
+                CoreError("invalid_verification_code", "wrong code", 400) else null
+        }
+        assertEquals(AccountDeletion.InvalidCode, repository.deleteAccount("chl-1", "000000"))
+        assertEquals(AccountDeletion.Deleted, repository.deleteAccount("chl-1", "123456"))
+        assertEquals(listOf("000000", "123456"), core.called("accountDeletion.delete").map { it.getString("code") })
+
+        core.fail["accountDeletion.requestCode"] = CoreError("subscription_active", "renews", 409)
+        assertEquals(AccountDeletion.SubscriptionActive, repository.requestAccountDeletion())
     }
 
     @Test fun anotherAccountShowsOnlyItsOwnValues() = runBlocking<Unit> {

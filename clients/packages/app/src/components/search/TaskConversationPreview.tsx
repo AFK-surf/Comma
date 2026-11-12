@@ -2,7 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { cx } from "@comma/ui/components/utils";
 import { spacing } from "@comma/ui/tokens";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ChatMessage } from "@comma/core/chat";
 import { ConversationThread } from "../chat/thread/ConversationThread";
 import {
@@ -27,6 +27,8 @@ export type TaskConversationPreviewProps = {
   className?: string;
   /** Use a bounded tail for small embedded views. The search preview keeps its full snapshot. */
   messageLimit?: number;
+  /** A Message to scroll to once the preview shows, such as the one a search hit matched. */
+  revealMessageId?: string | undefined;
   searchQuery?: string;
   /** False when the host already names the Task, as the share dialog's title does. */
   showTitle?: boolean;
@@ -39,6 +41,7 @@ const COMMAND_PREVIEW_EDGE_MASK = { size: spacing["4xl"] } as const;
 export function TaskConversationPreview({
   className,
   messageLimit,
+  revealMessageId,
   searchQuery = "",
   showTitle = true,
   task,
@@ -57,6 +60,11 @@ export function TaskConversationPreview({
       ? { status: "error" }
       : { status: "loading" };
   usePreviewSearchHighlight(contentRef, highlightOverlayRef, searchQuery);
+  const revealMessageHandle = useRef<((messageId: string) => void) | null>(null);
+  const shown = visibleState.status === "ready" && visibleState.messages.length > 0;
+  useEffect(() => {
+    if (shown && revealMessageId) revealMessageHandle.current?.(revealMessageId);
+  }, [revealMessageId, shown]);
 
   return (
     <section
@@ -118,6 +126,7 @@ export function TaskConversationPreview({
                 messages={visibleState.messages}
                 onDiscard={ignoreMessageAction}
                 onRetry={ignoreMessageAction}
+                revealMessageHandle={revealMessageHandle}
                 scrollAreaEdgeMask={COMMAND_PREVIEW_EDGE_MASK}
                 showMessageActions={false}
                 workspaceId={workspaceId}

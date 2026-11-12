@@ -391,22 +391,115 @@ defmodule SalixIM.TaskRunTest do
     assert messages_of_type(ctx, conversation_id, @switched) == []
   end
 
-  test "a coding Task stays on its sandbox", ctx do
+  test "a coding Task stays on its sandbox, and no other Task moves to one", ctx do
     {conversation_id, _worker} =
       start_task(ctx, "coding", nil, %{
         "runs_on" => %{"kind" => "sandbox"},
         "repo" => %{"owner" => "afk-surf", "name" => "cue"}
       })
 
-    assert {:error, {:bad_request, "a sandbox Task runs on its own sandbox" <> _}} =
+    assert {:error, {:bad_request, "a coding Task runs on its own sandbox" <> _}} =
              TaskRun.switch(
                ctx.group_id,
                conversation_id,
-               %{"runs_on" => %{"kind" => "salix"}, "model" => @catalog},
+               %{
+                 "runs_on" => %{"kind" => "sandbox"},
+                 "model" => %{"kind" => "runtime", "provider" => "claude"}
+               },
+               "usr_ann"
+             )
+
+    {inside, _worker} = start_task(ctx, "inside-salix-to-sandbox", nil)
+
+    assert {:error, {:bad_request, "a Task is not moved to a sandbox" <> _}} =
+             TaskRun.switch(
+               ctx.group_id,
+               inside,
+               %{
+                 "runs_on" => %{"kind" => "sandbox"},
+                 "model" => %{"kind" => "runtime", "provider" => "claude"}
+               },
                "usr_ann"
              )
 
     assert Stations.asked() == []
+  end
+
+  test "a sandbox Task without a repository switches its runtime model on its sandbox: a new Session replaces the old one",
+       ctx do
+    {conversation_id, before} =
+      start_task(ctx, "plain-sandbox", nil, %{"runs_on" => %{"kind" => "sandbox"}})
+
+    device = SalixStore.CodingSandboxes.device_id(conversation_id)
+    place = %{"kind" => "sandbox", "device_id" => device}
+    assert TaskConversationInput.station_worker?(before)
+    Stations.answer(:sessions, %{device => "ember:c-1"})
+    Stations.answer(:invite, {:ok, "ember:c-2"})
+
+    # It stays on its sandbox, with a runtime model: anything else is refused before any station is asked.
+    for {params, why} <- [
+          {%{"runs_on" => %{"kind" => "salix"}, "model" => @catalog},
+           "a sandbox Task stays on its sandbox"},
+          {%{"runs_on" => %{"kind" => "sandbox"}, "model" => @catalog},
+           "a sandbox Task's model is {kind: runtime"},
+          {%{
+             "runs_on" => %{"kind" => "sandbox"},
+             "model" => %{"kind" => "runtime", "provider" => "gemini"}
+           }, "a sandbox Task's model is {kind: runtime"}
+        ] do
+      assert {:error, {:bad_request, message}} =
+               TaskRun.switch(ctx.group_id, conversation_id, params, "usr_ann")
+
+      assert String.starts_with?(message, why)
+    end
+
+    assert Stations.asked() == []
+
+    model = %{"kind" => "runtime", "provider" => "claude"}
+
+    assert {:ok, %{"runs_on" => ^place}} =
+             TaskRun.switch(
+               ctx.group_id,
+               conversation_id,
+               %{"runs_on" => %{"kind" => "sandbox"}, "model" => model},
+               "usr_ann"
+             )
+
+    start = TaskConversationInput.station_start(ctx.worker_id, model)
+    assert %{"runtime" => "claude"} = start
+    refute Map.has_key?(start, "repo")
+
+    # The sandbox's station is asked to replace its Session, and the new one takes part there.
+    assert [
+             {:invite, %{device_id: ^device, start: ^start, replace: true}},
+             {:moved, %{to: %{device_id: ^device, session: "ember:c-2", start: ^start}}}
+           ] = Stations.asked()
+
+    worker = worker(ctx, conversation_id)
+    assert TaskConversationInput.station_worker?(worker)
+    assert worker["participant_id"] == before["participant_id"]
+    assert [notice] = messages_of_type(ctx, conversation_id, @switched)
+    assert notice["metadata"][@switched]["runs_on"] == place
+    assert text(notice["content"]) =~ "its sandbox"
+
+    # A sandbox that is not running takes no Session now: nothing changes.
+    Stations.answer(:asked, [])
+    Stations.answer(:sessions, %{device => "ember:c-2"})
+    Stations.answer(:invite, {:error, :device_offline})
+
+    assert {:error, {:station, :sandbox_not_running}} =
+             TaskRun.switch(
+               ctx.group_id,
+               conversation_id,
+               %{
+                 "runs_on" => %{"kind" => "sandbox"},
+                 "model" => %{"kind" => "runtime", "provider" => "codex"}
+               },
+               "usr_ann"
+             )
+
+    assert [{:invite, %{device_id: ^device, replace: true}}] = Stations.asked()
+    assert [^notice] = messages_of_type(ctx, conversation_id, @switched)
   end
 
   defp start_task(ctx, request_id, station, extra \\ %{}) do

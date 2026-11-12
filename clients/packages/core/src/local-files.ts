@@ -10,6 +10,7 @@
 // must still be its draft's.
 //
 // Bounds: two requests per registration at most, each given up after 15 s.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, fromUtf8, utf8, type ClientId } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -21,21 +22,25 @@ import type { Ctx } from "./ctx.ts";
 
 const REGISTRATION_TIMEOUT_MS = 15_000;
 
-const registeredSchema = z
-  .object({
-    local_file_ref: z.string().regex(/^lfi1_[A-Za-z0-9_-]{43}$/),
-    state: z.literal("registered"),
-  })
-  .strict();
+const registeredSchema = lazySchema(() =>
+  z
+    .object({
+      local_file_ref: z.string().regex(/^lfi1_[A-Za-z0-9_-]{43}$/),
+      state: z.literal("registered"),
+    })
+    .strict()
+);
 
-const ownerUpgradeSchema = z
-  .object({
-    action: z.literal("reissue_connector_token"),
-    connector_token_endpoint: z.string().min(1),
-    error: z.literal("connector_reconfiguration_required"),
-    reason: z.literal("connector_owner_missing"),
-  })
-  .strict();
+const ownerUpgradeSchema = lazySchema(() =>
+  z
+    .object({
+      action: z.literal("reissue_connector_token"),
+      connector_token_endpoint: z.string().min(1),
+      error: z.literal("connector_reconfiguration_required"),
+      reason: z.literal("connector_owner_missing"),
+    })
+    .strict()
+);
 
 function unavailable(
   outcome: "ambiguous" | "rejected",
@@ -190,7 +195,7 @@ export class LocalFiles {
                 return Effect.fail(
                   unavailable(
                     outcome,
-                    "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again.",
+                    "Reconnect this workspace's Comma station with a newly issued token, then select the file again.",
                     "reissue_connector_token",
                     true
                   )

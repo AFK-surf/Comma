@@ -11,7 +11,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   alias Salix.Control.{Groups, Plugins, Tenants}
   alias SalixEnv.Registry
   alias SalixIM.{ConversationInput, Conversations}
-  alias SalixStore.{Ids, Keys, RuntimeIds, S3}
+  alias SalixStore.{Ids, Keys, RuntimeIds}
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
@@ -77,7 +77,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
       create_agent_task_conversation!(group_id, router["agent_id"], worker["agent_id"])
 
     assert {:ok, _session} =
-             SalixAgent.InternalSessionStore.prepare_create(worker["agent_id"], session_id)
+             SalixAgent.TestSupport.SessionFixture.create(worker["agent_id"], session_id)
 
     assert {:ok, disconnected} = Registry.mark_disconnected(connector_run_id)
     assert disconnected["status"] == "disconnected"
@@ -163,23 +163,21 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
              _other -> false
            end)
 
-    participant_key =
-      Keys.ctl_group_conversation_participant_state(
-        group_id,
-        conversation_id,
-        participant_id
-      )
+    scope = SalixIM.ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
+    assert {:ok, participant, revision} = SalixIM.ConversationParticipantPGStore.read(scope)
+    mismatched_participant = Map.put(participant, "participant_id", Ids.new_participant_id())
 
-    assert {:ok, %{body: participant_body, etag: participant_etag}} = S3.get(participant_key)
-
-    mismatched_participant =
-      participant_body
-      |> Jason.decode!()
-      |> Map.put("participant_id", Ids.new_participant_id())
-
-    assert {:ok, _result} =
-             S3.put(participant_key, Jason.encode!(mismatched_participant),
-               if_match: participant_etag
+    assert %{num_rows: 1} =
+             SalixStore.Repo.query!(
+               "UPDATE salix_conversation_participants SET payload=$5 " <>
+                 "WHERE group_id=$1 AND conversation_id=$2 AND participant_id=$3 AND revision=$4",
+               [
+                 group_id,
+                 conversation_id,
+                 participant_id,
+                 revision,
+                 :erlang.term_to_binary(mismatched_participant)
+               ]
              )
 
     mismatched_read =

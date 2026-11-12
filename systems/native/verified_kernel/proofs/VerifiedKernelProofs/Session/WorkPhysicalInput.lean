@@ -79,7 +79,7 @@ theorem InputCommitTrace.physical_input {framing : CodecFraming} {objects : Obje
     (trace : InputCommitTrace context entry born checkpoint durable)
     (history : PhysicalHistory framing objects owner session context.candidate.working sealed)
     (sourceValue : RoundQuery.atomFirst entry "source_message_id" = .binary source) :
-    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.etag = context.candidate.etag ∧
+    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.revision = context.candidate.revision ∧
       ∃ etag snapshot bytes event now first last item,
         ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
         Lifecycle.persistable trace.stamped [] = .ok (snapshot, []) ∧

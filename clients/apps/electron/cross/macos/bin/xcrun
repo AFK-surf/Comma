@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sdk=${MACOS_SDK:?MACOS_SDK is not set; run prepare-sdk.sh first}
+export SDKROOT=$sdk
+case "${COMMA_TARGET_ARCH:-arm64}" in
+  x64 | x86_64) arch=x86_64 ;;
+  *) arch=arm64 ;;
+esac
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sdk | -sdk | --toolchain | -toolchain) shift 2 ;;
+    --show-sdk-path) echo "$sdk"; exit 0 ;;
+    --show-sdk-version)
+      node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).Version' "$sdk/SDKSettings.json"
+      exit 0
+      ;;
+    --show-sdk-platform-path) dirname "$(dirname "$sdk")"; exit 0 ;;
+    -f | --find) command -v "$2"; exit $? ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+
+tool=${1:?usage: xcrun TOOL [ARGS...]}
+shift
+
+has_target() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in -target | --target=* | -triple) return 0 ;; esac
+  done
+  return 1
+}
+
+target=()
+has_target "$@" || target=(-target "${arch}-apple-macosx${MACOSX_DEPLOYMENT_TARGET:-13.0}")
+
+plugins=()
+if [ -n "${MACOS_SWIFT_PLUGIN_DIR:-}" ]; then
+  for module in SwiftUIMacros PreviewsMacros; do
+    plugins+=(-load-plugin-executable "$MACOS_SWIFT_PLUGIN_DIR/$module#$module")
+  done
+fi
+
+case "$tool" in
+  swiftc)
+    exec /opt/swift/usr/bin/swiftc "${target[@]}" -sdk "$sdk" \
+      -resource-dir "$SWIFT_DARWIN_RESOURCE_DIR" "-ld-path=$MACOS_LD" \
+      -Xclang-linker -mlinker-version=1166 -module-cache-path "${COMMA_CROSS_CACHE:-/cache}/swift-module-cache" \
+      "${plugins[@]}" "$@"
+    ;;
+  clang | clang++ | cc | c++)
+    case "$tool" in cc) tool=clang ;; c++) tool=clang++ ;; esac
+    exec "/opt/swift/usr/bin/$tool" "${target[@]}" -isysroot "$sdk" \
+      "--ld-path=$MACOS_LD" -mlinker-version=1166 -Wno-unused-command-line-argument "$@"
+    ;;
+  stapler | notarytool | altool | actool | ibtool)
+    echo "xcrun: $tool is not available in the Linux macOS cross build" >&2
+    exit 1
+    ;;
+  *) exec "$tool" "$@" ;;
+esac

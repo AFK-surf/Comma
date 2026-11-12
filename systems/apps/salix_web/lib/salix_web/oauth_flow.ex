@@ -70,6 +70,7 @@ defmodule SalixWeb.OAuthFlow do
 
     with {:ok, adapter} <- lookup_adapter(provider),
          {:ok, alias_name} <- require_alias(params),
+         {:ok, fields} <- secret_fields(provider, params["fields"]),
          :ok <- app_source_owner(opts),
          {:ok, app} <- require_app(tenant_id, provider, Keyword.get(opts, :app_source)) do
       scopes = clean_scopes(params["scopes"])
@@ -96,6 +97,7 @@ defmodule SalixWeb.OAuthFlow do
             "session_id" => nil,
             "provider" => provider,
             "alias" => alias_name,
+            "fields" => fields,
             "scopes" => scopes,
             "code_verifier" => verifier,
             "redirect_uri" => redirect_uri,
@@ -152,7 +154,7 @@ defmodule SalixWeb.OAuthFlow do
           continue_callback(
             auth,
             provider,
-            blank_to_nil(query["code"]),
+            callback_code(provider, query["code"]),
             blank_to_nil(query["error"])
           )
 
@@ -193,7 +195,8 @@ defmodule SalixWeb.OAuthFlow do
         ctx = %{
           "redirect_uri" => auth["redirect_uri"] || callback_url(provider),
           "code_verifier" => auth["code_verifier"],
-          "scopes" => auth["scopes"] || []
+          "scopes" => auth["scopes"] || [],
+          "fields" => auth["fields"] || []
         }
 
         case adapter.exchange_code(app, ctx, code) do
@@ -343,6 +346,8 @@ defmodule SalixWeb.OAuthFlow do
       "provider" => provider,
       "comma_member" => auth["comma_member"],
       "bft_member" => auth["bft_member"],
+      "app_source" => auth["app_source"],
+      "owner" => auth["owner"],
       "provider_account_id" => account["provider_account_id"] || "",
       "provider_account_name" => account["provider_account_name"] || "",
       "metadata" => extra_metadata,
@@ -488,6 +493,198 @@ defmodule SalixWeb.OAuthFlow do
   defp delete_connection_record(connection_id),
     do: SalixStore.S3.delete(SalixStore.Keys.oauth_connection(connection_id))
 
+  @doc "The form a secret's link opens. Showing it consumes nothing; posting it does."
+  def secret_form(query) do
+    with state when is_binary(state) <- blank_to_nil(query["state"]),
+         {:ok, %{"provider" => "secret", "status" => "pending", "alias" => alias_name} = auth} <-
+           AuthState.get(state) do
+      {:page, 200,
+       SalixWeb.OAuthCallbackPage.render_secret_form(state, alias_name, auth["fields"] || [])}
+    else
+      _ -> finish(nil, "secret", nil, "authorization session expired")
+    end
+  end
+
+  @doc """
+  The value a person typed on a request's card, for `state`: the secret's
+  callback, as its form posts it. The callback's own ending ends the request.
+  """
+  def submit_secret(state, value),
+    do: handle_callback("secret", %{"state" => state, "code" => value})
+
+  @doc """
+  The app a person gave on a request's card: the tenant's own from now on,
+  unless it got one meanwhile, which stands. Returns the provider's page for
+  `state`; the flow goes on from there as any other does.
+  """
+  def submit_app(state, client_id, client_secret) do
+    with {:ok, %{"status" => "pending", "tenant" => tenant, "provider" => provider} = auth} <-
+           AuthState.get(state),
+         {:ok, app} <- own_app(tenant, provider, client_id, client_secret),
+         {:ok, adapter} <- lookup_adapter(provider) do
+      challenge =
+        Base.url_encode64(:crypto.hash(:sha256, auth["code_verifier"]), padding: false)
+
+      adapter.authorization_url(app, %{
+        "redirect_uri" => auth["redirect_uri"],
+        "state" => state,
+        "scopes" => auth["scopes"],
+        "code_challenge" => challenge
+      })
+    end
+  end
+
+  @doc """
+  Keeps a CLI login's files for `owner`, as a secret credential of theirs with
+  the alias `cli-login-<program>`: they can see it among their credentials and
+  delete it. Keeping again replaces it.
+  """
+  def keep_login(tenant, group, owner, program, archive) do
+    auth = %{
+      "tenant" => tenant,
+      "group_id" => group,
+      "provider" => "secret",
+      "alias" => login_alias(program),
+      "owner" => owner,
+      "scopes" => []
+    }
+
+    with {:ok, adapter} <- lookup_adapter("secret"),
+         {:ok, %{"tokens" => tokens, "account" => account}} <-
+           adapter.exchange_code(%{}, %{}, archive) do
+      persist_connection_and_binding(auth, "secret", tokens, account)
+    end
+  end
+
+  @doc "What `keep_login/5` kept for `owner`: `{:ok, archive}`, or `:none`."
+  def kept_login(_tenant, group, owner, program) do
+    with {:ok, bindings} <- SalixAgent.OAuthStore.bindings_for_group(group),
+         %{"connection_id" => connection} <-
+           Enum.find(bindings, fn binding ->
+             binding["provider"] == "secret" and binding["alias"] == login_alias(program) and
+               SalixAgent.OAuthCredentials.usable_by?(binding, owner)
+           end),
+         {:ok, %{"access_token" => archive}} when is_binary(archive) <-
+           Connections.get(connection) do
+      {:ok, archive}
+    else
+      _none -> :none
+    end
+  end
+
+  defp login_alias(program), do: "cli-login-" <> program
+
+  defp own_app(tenant, provider, client_id, client_secret) do
+    case OAuthApps.get_own(tenant, provider) do
+      {:ok, app} ->
+        {:ok, app}
+
+      {:error, :not_configured} ->
+        attrs = %{"client_id" => client_id, "client_secret" => client_secret}
+
+        with {:ok, _saved} <- OAuthApps.put(tenant, provider, attrs),
+             do: OAuthApps.get_own(tenant, provider)
+
+      error ->
+        error
+    end
+  end
+
+  # ---- device authorization (RFC 8628) ----
+
+  @doc """
+  One poll of a device authorization, asked for by `oauth.complete_authorization`:
+  there is no callback, and nothing polls on its own. Confirmed, it connects the
+  account as a callback does. A state another poll consumed answers as it stands.
+  """
+  def poll_device(
+        %{"state" => state, "provider" => "custom." <> _ = provider, "device_code" => code} =
+          record
+      ) do
+    with {:ok, app} <- OAuthApps.get(record["tenant"], provider) do
+      case SalixWeb.OAuthCustomAdapter.device_poll(app, code) do
+        :pending ->
+          {:ok, record}
+
+        {:ok, %{"tokens" => tokens, "account" => account}} ->
+          with {:ok, auth} <- AuthState.consume(state) do
+            case persist_connection_and_binding(auth, provider, tokens, account) do
+              {:ok, completion} -> finish(auth, provider, completion, nil)
+              {:error, reason} -> finish(auth, provider, nil, reason)
+            end
+          end
+
+          AuthState.get(state)
+
+        {:error, reason} ->
+          with {:ok, auth} <- AuthState.consume(state),
+               do: finish(auth, provider, nil, format_reason(reason))
+
+          AuthState.get(state)
+      end
+    end
+  end
+
+  # ---- a member's Feishu or Lark sign-in with their own bot app ----
+
+  @doc """
+  Begins a Comma member's Feishu or Lark sign-in by a device code
+  (`SalixStore.OAuth.LarkDevice`) with the bot app their scan made (`source`,
+  kind `lark_im_connect`). The answer has the link the member confirms.
+  """
+  def begin_member_device(tenant_id, provider, scopes, source)
+      when provider in ~w(feishu lark) and is_map(source) do
+    with {:ok, app} <- require_app(tenant_id, provider, source) do
+      SalixStore.OAuth.LarkDevice.begin(provider, app, scopes)
+    end
+  end
+
+  @doc """
+  Asks once whether the member confirmed a sign-in `begin_member_device/4`
+  began. Confirmed, it becomes the Group's `provider` binding under
+  `alias_name` for `comma_member`, refreshed with the same bot app, and
+  replaces that binding's earlier grant.
+
+  Only the person whose scan made the app can confirm it: a sign-in by
+  anyone else (the code forwarded to them) is refused. The binding belongs
+  to the member: an Agent uses it only for work done for them
+  (`SalixAgent.OAuthCredentials.usable_by?/2`).
+  """
+  def poll_member_device(
+        tenant_id,
+        group_id,
+        provider,
+        device_code,
+        source,
+        comma_member,
+        alias_name
+      )
+      when provider in ~w(feishu lark) and is_map(source) and is_map(comma_member) do
+    with {:ok, app} <- require_app(tenant_id, provider, source) do
+      case SalixStore.OAuth.LarkDevice.poll(provider, app, device_code) do
+        {:ok, %{"tokens" => tokens, "account" => account}} ->
+          if account["provider_account_id"] == app["owner_open_id"] do
+            auth = %{
+              "tenant" => tenant_id,
+              "group_id" => group_id,
+              "alias" => alias_name,
+              "scopes" => [],
+              "comma_member" => comma_member,
+              "owner" => SalixIFC.Codec.encode_principal!({:comma_user, comma_member["user_id"]}),
+              "app_source" => source
+            }
+
+            persist_connection_and_binding(auth, provider, tokens, account)
+          else
+            {:error, {:device_refused, "not_app_owner"}}
+          end
+
+        other ->
+          other
+      end
+    end
+  end
+
   # ---- terminal outcome + response rendering (willow finishOAuthCallback) ----
 
   defp finish(auth, provider, completion, error_message) do
@@ -511,9 +708,15 @@ defmodule SalixWeb.OAuthFlow do
 
       true ->
         status = if error_message, do: 400, else: 200
-        {:page, status, SalixWeb.OAuthCallbackPage.render(provider, error_message)}
+        {:page, status, result_page(provider, auth, error_message)}
     end
   end
+
+  defp result_page("secret", %{"alias" => alias_name}, nil) when is_binary(alias_name),
+    do: SalixWeb.OAuthCallbackPage.render_secret_saved(alias_name)
+
+  defp result_page(provider, _auth, error_message),
+    do: SalixWeb.OAuthCallbackPage.render(provider, error_message)
 
   # A Comma conversation's request card for this account ends here, and the
   # Agent waiting on it goes on (SalixAgent.CapabilityRequests).
@@ -596,10 +799,36 @@ defmodule SalixWeb.OAuthFlow do
   # A bot-app grant is only ever a member's personal grant: it must never
   # become a Group binding that Agents resolve.
   defp app_source_owner(opts) do
-    if is_nil(Keyword.get(opts, :app_source)) or is_map(Keyword.get(opts, :bft_member)),
-      do: :ok,
-      else: {:error, {:bad_request, "app source requires a member grant"}}
+    if is_nil(Keyword.get(opts, :app_source)) or is_map(Keyword.get(opts, :bft_member)) or
+         is_map(Keyword.get(opts, :comma_member)),
+       do: :ok,
+       else: {:error, {:bad_request, "app source requires a member grant"}}
   end
+
+  @doc """
+  The client app of a connection made with an app source (a member's own bot
+  app), for its refresh: the source as it stands now, or an error when the
+  app is gone.
+  """
+  def source_app(tenant_id, provider, source) when is_map(source) do
+    case require_app(tenant_id, provider, source) do
+      {:ok, app} -> {:ok, app}
+      {:error, {_kind, message}} -> {:error, message}
+    end
+  end
+
+  # A secret's form posts its fields together, by name; any other code is text.
+  defp callback_code("secret", %{} = fields), do: fields
+  defp callback_code(_provider, code), do: blank_to_nil(code)
+
+  defp secret_fields("secret", fields) do
+    case SalixStore.OAuth.Adapters.Secret.fields(fields) do
+      {:ok, fields} -> {:ok, fields}
+      {:error, message} -> {:error, {:bad_request, message}}
+    end
+  end
+
+  defp secret_fields(_provider, _fields), do: {:ok, []}
 
   # Checked at both legs: the bot app must still differ from the tenant's
   # Slack OAuth app, or the grant's scopes would join a Group-bound token.
@@ -621,9 +850,38 @@ defmodule SalixWeb.OAuthFlow do
     end
   end
 
+  # A member's own Feishu or Lark bot app, made by their scan: only its
+  # owner's connect in the Group, and only for the brand the app is on.
+  defp require_app(tenant_id, provider, %{"kind" => "lark_im_connect"} = source)
+       when provider in ~w(feishu lark) do
+    with {:ok, connect} <-
+           SalixIM.ProviderConnects.get_active_connect_by_id(
+             source["group_id"],
+             source["connect_id"],
+             provider
+           ),
+         true <- connect["tenant_id"] == tenant_id and connect["owner_only"] == true,
+         id when is_binary(id) and id != "" <- connect["app_id"],
+         secret when is_binary(secret) and secret != "" <-
+           SalixIM.ProviderConnects.app_secret(connect) do
+      {:ok,
+       %{
+         "client_id" => id,
+         "client_secret" => secret,
+         "source" => "lark_im_connect",
+         "owner_open_id" => connect["owner_open_id"]
+       }}
+    else
+      _unavailable ->
+        {:error, {:precondition_failed, "#{provider} bot app is not usable for a member grant"}}
+    end
+  end
+
   defp require_app(_tenant_id, _provider, source) when not is_nil(source),
     do: {:error, {:bad_request, "unsupported app source"}}
 
+  # A secret is typed into Salix's own form: there is no provider app.
+  defp require_app(_tenant_id, "secret", nil), do: {:ok, %{}}
   defp require_app(tenant_id, provider, nil), do: require_provider_app(tenant_id, provider)
 
   defp tenant_app_client_id(tenant_id) do

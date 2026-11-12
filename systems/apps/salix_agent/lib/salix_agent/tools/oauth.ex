@@ -29,6 +29,12 @@ defmodule SalixAgent.Tools.OAuth do
       through `SalixAgent.CapabilityRequestStore`, marks the tool call as
       async-running, and returns a generic `wait_set` session fact, from which
       an idle session derives the product `waiting` state.
+    * `oauth.request_authorization`'s result labels itself `{public}` in a
+      labelling session. `SalixAgent.IFC.Destination` gives the tool no effect,
+      so no `ifc.sources` is declared and the round's label would join the whole
+      context; one `agent_private` item then makes the link unsendable anywhere.
+      The result holds what the runtime just minted, so the model's `reason`
+      is not echoed in it.
     * `oauth.complete_authorization` is only a status polling tool. User/UI
       completion of the capability request resolves the async tool call through
       `SalixAgent.complete_async_tool_call/6`.
@@ -54,13 +60,23 @@ defmodule SalixAgent.Tools.OAuth do
       `async_tool_call_started` plus `%{"type" => "wait_set", "session_id" => sid, "wait" => wait_payload}`
   """
 
-  alias SalixAgent.{CapabilityRequestStore, OAuthStore, Waits}
+  alias SalixAgent.{CapabilityRequestStore, OAuthCredentials, OAuthStore, Waits}
   alias SalixAgent.Tools.AsyncPolicy
+  alias SalixIFC.{Codec, Label}
   alias SalixStore.OAuth.AuthState
 
   # willow request_oauth_auth.go: default 10min, max 30min.
   @default_timeout_seconds 600
   @max_timeout_seconds 1800
+  # A card the person fills in: they may first have to find the value in a console.
+  @input_timeout_seconds @max_timeout_seconds
+  # The account comes through the customer's own app: its card first asks for the app.
+  @own_app_consoles %{
+    "lark" => "https://open.larksuite.com/app",
+    "feishu" => "https://open.feishu.cn/app"
+  }
+  # A station's call waits this long for the person; the call's own deadline is a little longer.
+  @station_wait_ms 18 * 60 * 1000
   @normal_auto_wait_seconds AsyncPolicy.normal_tool_auto_wait_seconds()
   @user_interaction_auto_wait_seconds AsyncPolicy.user_interaction_tool_auto_wait_seconds()
   @visible_request_opts [safety: "write"]
@@ -80,21 +96,29 @@ defmodule SalixAgent.Tools.OAuth do
       {"oauth.list_credentials",
        "List OAuth credential aliases available to this agent group.\n\n" <>
          "Returns one entry per (provider, alias) binding, including disabled bindings. " <>
-         "Only entries with enabled=true can be passed into credential_env on compute.exec, process.start, or env.exec. Token values are never returned.",
+         "An entry with usable=false is another person's. Only entries with enabled=true and usable=true can be passed into credential_env on compute.exec, process.start, or env.exec. Token values are never returned.",
        &__MODULE__.list_oauth_credentials/2, @normal_auto_wait_seconds},
       {"oauth.request_authorization",
        "Start a managed OAuth authorization flow for this agent group.\n\n" <>
          "Returns an authorization URL and waits until the user completes or rejects it. " <>
          "In a Comma conversation the app shows the user a request card with the reason and an authorize button: do not post the URL there. For an external provider the URL is NOT surfaced automatically: post it to the requester yourself; call the matching im_api.* operation directly when provider/connect/API are known, and use IM discovery/help only when those facts are missing. " <>
          "Returns a deferred result with the provider binding when completed. " <>
-         "Use the resulting provider and alias in a credential_env entry on compute.exec, process.start, or env.exec, with env_var and value.",
+         "Use the resulting provider and alias in a credential_env entry on compute.exec, process.start, or env.exec, with env_var and value. " <>
+         "The credential belongs to the person who asked: only work done for them can use it. Pass shared: true only for an account the whole group is meant to use.",
        &__MODULE__.request_oauth_authorization/2, @user_interaction_auto_wait_seconds,
        @visible_request_opts},
+      {"oauth.login_card", "Used by the sandbox's login tool: do not call it yourself.",
+       &__MODULE__.login_card/2, @normal_auto_wait_seconds, @visible_request_opts},
       {"oauth.complete_authorization",
        "Verify the outcome of an authorization flow previously started by oauth.request_authorization.\n\n" <>
          "Returns status=completed with the (provider, alias) once the user finishes the browser flow, status=pending if they have not finished yet, or status=failed/expired with an error reason. " <>
          "Idempotent: completed/failed flows return the same result on subsequent calls until the auth state row is purged.",
        &__MODULE__.complete_oauth_authorization/2, @normal_auto_wait_seconds},
+      {"oauth.define_provider",
+       "Define this Workspace's own OAuth provider as custom.<key>, for a service Comma has no built-in provider for: its client id and standard OAuth 2.0 endpoints. " <>
+         "Then use it with oauth.request_authorization; the person registers the redirect_uri this returns with the service. " <>
+         "A client secret never goes in arguments: the person enters it first as a secret (oauth.request_authorization with provider secret), and client_secret_alias names that credential.",
+       &__MODULE__.define_provider/2, @normal_auto_wait_seconds, @visible_request_opts},
       {"oauth.delete_credential",
        "Delete (disconnect) an OAuth credential for this agent group.\n\n" <>
          "Identify the credential by provider and alias (as returned by oauth.list_credentials). " <>
@@ -114,7 +138,7 @@ defmodule SalixAgent.Tools.OAuth do
           {:ok, bindings} ->
             entries =
               bindings
-              |> Enum.map(&credential_entry/1)
+              |> Enum.map(&credential_entry(&1, OAuthCredentials.acting_for(ctx)))
               |> Enum.sort_by(fn e -> {e["provider"], e["alias"]} end)
 
             Jason.encode!(%{"credentials" => entries})
@@ -129,7 +153,7 @@ defmodule SalixAgent.Tools.OAuth do
     end
   end
 
-  defp credential_entry(binding) do
+  defp credential_entry(binding, acting_for) do
     provider = to_string(binding["provider"] || "")
     alias_ = to_string(binding["alias"] || "")
     enabled = Map.get(binding, "enabled", true) != false
@@ -142,7 +166,38 @@ defmodule SalixAgent.Tools.OAuth do
     }
     |> put_usage(enabled, provider, alias_)
     |> put_present("provider_account_name", binding["provider_account_name"])
+    |> Map.put("personal", binding["owner"] not in [nil, ""])
+    |> Map.put("usable", OAuthCredentials.usable_by?(binding, acting_for))
     |> put_scopes(binding["scopes"])
+    |> put_fields(binding["fields"])
+  end
+
+  # A secret with fields: what each is called (its credential_env value) and
+  # whether it is a secret. Never a value.
+  defp put_fields(%{"usage" => _} = map, [_ | _] = fields) do
+    map
+    |> Map.put("fields", Enum.map(fields, &Map.take(&1, ["name", "secret"])))
+    |> Map.put("usage", fields_usage_hint(map["provider"], map["alias"], fields))
+  end
+
+  defp put_fields(map, [_ | _] = fields),
+    do: Map.put(map, "fields", Enum.map(fields, &Map.take(&1, ["name", "secret"])))
+
+  defp put_fields(map, _fields), do: map
+
+  defp fields_usage_hint(provider, alias_, fields) do
+    entries =
+      Enum.map(fields, fn %{"name" => name} ->
+        %{
+          "env_var" => String.upcase(name),
+          "provider" => provider,
+          "alias" => alias_,
+          "value" => name
+        }
+      end)
+
+    "credential_env for compute.exec, process.start, or env.exec, one entry per field, its name as value: " <>
+      Jason.encode!(entries)
   end
 
   defp put_usage(map, true, provider, alias_),
@@ -176,17 +231,96 @@ defmodule SalixAgent.Tools.OAuth do
 
   # ---- oauth.request_authorization (willow request_oauth_auth.go) ----
 
+  # A credential is the person's who asked for it unless the request shares it
+  # with the group; no person to own it means it has to say so.
+  defp requested_owner!(args, ctx) do
+    cond do
+      raw(args, "shared") == true ->
+        nil
+
+      owner = OAuthCredentials.acting_for(ctx) ->
+        owner
+
+      true ->
+        raise "no person asked for this authorization, so it has no owner; pass shared: true for a credential the whole group may use"
+    end
+  end
+
+  # Authorizing an alias replaces its connection and revokes the old one, so
+  # nobody takes over another person's alias.
+  defp ensure_alias_free!(group_id, provider, alias_, owner) do
+    case OAuthStore.bindings_for_group(group_id) do
+      {:ok, bindings} ->
+        taken =
+          Enum.find(bindings, fn binding ->
+            to_string(binding["provider"]) == provider and to_string(binding["alias"]) == alias_
+          end)
+
+        if taken && not OAuthCredentials.usable_by?(taken, owner) do
+          raise "alias #{alias_} is another person's credential; choose another alias"
+        end
+
+      {:error, reason} ->
+        raise "list oauth bindings: #{format_reason(reason)}"
+    end
+  end
+
   @doc false
-  def request_oauth_authorization(args, ctx) do
-    provider = args |> required_arg("provider") |> String.downcase()
-    alias_ = required_arg(args, "alias")
-    reason = required_arg(args, "reason")
-    timeout_seconds = timeout_seconds(raw(args, "timeout_seconds"))
-    scopes = clean_scopes(raw(args, "scopes"))
+  def define_provider(args, ctx) do
+    key = args |> required_arg("key") |> String.downcase()
+    provider = "custom." <> key
+    {tenant, _group_id} = oauth_context!(ctx.agent_id)
 
-    {tenant, group_id} = oauth_context!(ctx.agent_id)
-    app = provider_app!(tenant, provider)
+    attrs =
+      args
+      |> Map.take(
+        ~w(client_id authorize_url token_url device_authorization_url scopes client_auth)
+      )
+      |> maybe_put_client_secret(args, ctx)
 
+    case OAuthStore.define_provider(tenant, provider, attrs) do
+      {:ok, defined} ->
+        Jason.encode!(%{
+          "provider" => defined["provider"],
+          "redirect_uri" => redirect_uri!(provider)
+        })
+
+      {:error, {:bad_request, message}} ->
+        raise message
+
+      {:error, why} ->
+        raise "define provider: #{format_reason(why)}"
+    end
+  end
+
+  defp maybe_put_client_secret(attrs, args, ctx) do
+    case arg_or_nil(args, "client_secret_alias") do
+      nil ->
+        attrs
+
+      secret_alias ->
+        reference = %{
+          "env_var" => "CLIENT_SECRET",
+          "provider" => "secret",
+          "alias" => secret_alias,
+          "value" => "access_token"
+        }
+
+        case OAuthCredentials.resolve_for_call(ctx, ctx.agent_id, [reference]) do
+          {:ok, %{"CLIENT_SECRET" => secret}} -> Map.put(attrs, "client_secret", secret)
+          {:error, message} -> raise message
+        end
+    end
+  end
+
+  defp arg_or_nil(args, key) do
+    case raw(args, key) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp redirect_uri!(provider) do
     base = String.trim(to_string(OAuthStore.public_base_url() || ""))
 
     if base == "" do
@@ -194,7 +328,104 @@ defmodule SalixAgent.Tools.OAuth do
     end
 
     # willow buildOAuthRedirectURI: base path + /v1/oauth/{provider}/callback.
-    redirect_uri = String.trim_trailing(base, "/") <> "/v1/oauth/" <> provider <> "/callback"
+    String.trim_trailing(base, "/") <> "/v1/oauth/" <> provider <> "/callback"
+  end
+
+  @doc false
+  def request_oauth_authorization(args, ctx) do
+    provider = args |> required_arg("provider") |> String.downcase()
+    alias_ = required_arg(args, "alias")
+    required_arg(args, "reason")
+
+    {_tenant, group_id} = oauth_context!(ctx.agent_id)
+    owner = requested_owner!(args, ctx)
+    ensure_alias_free!(group_id, provider, alias_, owner)
+
+    if raw(args, "flow") == "device",
+      do: request_device_authorization(args, ctx, provider, alias_, owner),
+      else: request_browser_authorization(args, ctx, provider, alias_, owner)
+  end
+
+  # There is no callback to wait for: the person confirms on the provider's
+  # page, and oauth.complete_authorization asks the provider once per call.
+  defp request_device_authorization(args, ctx, provider, alias_, owner) do
+    {tenant, group_id} = oauth_context!(ctx.agent_id)
+    app = provider_app!(tenant, provider)
+    scopes = clean_scopes(raw(args, "scopes"))
+
+    adapter =
+      case adapters_fn().(provider) do
+        {:ok, adapter} -> adapter
+        {:error, _} -> raise "oauth provider #{inspect(provider)} is not supported"
+      end
+
+    unless Code.ensure_loaded?(adapter) and function_exported?(adapter, :device_authorize, 2) do
+      raise "oauth provider #{provider} has no device flow; omit flow"
+    end
+
+    device =
+      case adapter.device_authorize(app, %{"scopes" => scopes}) do
+        {:ok, device} -> device
+        {:error, why} -> raise "start device authorization: #{format_reason(why)}"
+      end
+
+    state = random_token()
+    now = SystemsClock.system_time(:millisecond)
+
+    expires_at =
+      now +
+        min(int_seconds(device["expires_in"]) || @default_timeout_seconds, @max_timeout_seconds) *
+          1000
+
+    :ok =
+      AuthState.create(%{
+        "state" => state,
+        "tenant" => tenant,
+        "group_id" => group_id,
+        "agent_id" => ctx.agent_id,
+        "session_id" => request_session_id(ctx),
+        "provider" => provider,
+        "alias" => alias_,
+        "owner" => owner,
+        "scopes" => scopes,
+        "device_code" => device["device_code"],
+        "origin" => "agent",
+        "status" => "pending",
+        "expires_at" => expires_at,
+        "created_at" => now
+      })
+
+    Jason.encode!(%{
+      "status" => "pending",
+      "state" => state,
+      "user_code" => device["user_code"],
+      "verification_uri" => device["verification_uri"],
+      "verification_uri_complete" => device["verification_uri_complete"],
+      "instructions" =>
+        "Send the verification link and user code to the person. After they say they confirmed, call oauth.complete_authorization with state."
+    })
+  end
+
+  defp int_seconds(value) when is_integer(value) and value > 0, do: value
+  defp int_seconds(_value), do: nil
+
+  defp request_browser_authorization(args, ctx, provider, alias_, owner) do
+    reason = required_arg(args, "reason")
+    scopes = clean_scopes(raw(args, "scopes"))
+
+    {tenant, group_id} = oauth_context!(ctx.agent_id)
+    surface = conversation_surface(ctx)
+    redirect_uri = redirect_uri!(provider)
+    fields = requested_fields!(args, provider)
+    input = if fields == [], do: request_input(args, tenant, provider, surface, redirect_uri)
+
+    timeout_seconds =
+      case raw(args, "timeout_seconds") do
+        nil when is_map(input) -> @input_timeout_seconds
+        seconds -> timeout_seconds(seconds)
+      end
+
+    app = if input["kind"] == "app", do: %{}, else: provider_app!(tenant, provider)
 
     state = random_token()
     code_verifier = random_token()
@@ -206,15 +437,20 @@ defmodule SalixAgent.Tools.OAuth do
         {:error, _} -> raise "oauth provider #{inspect(provider)} is not supported"
       end
 
+    # With no app yet there is no page: the card asks for the app, then has one.
     authorization_url =
-      case adapter.authorization_url(app, %{
-             "redirect_uri" => redirect_uri,
-             "state" => state,
-             "scopes" => scopes,
-             "code_challenge" => code_challenge
-           }) do
-        {:ok, url} -> url
-        {:error, why} -> raise "build authorization url: #{format_reason(why)}"
+      if input["kind"] == "app" do
+        nil
+      else
+        case adapter.authorization_url(app, %{
+               "redirect_uri" => redirect_uri,
+               "state" => state,
+               "scopes" => scopes,
+               "code_challenge" => code_challenge
+             }) do
+          {:ok, url} -> url
+          {:error, why} -> raise "build authorization url: #{format_reason(why)}"
+        end
       end
 
     now = SystemsClock.system_time(:millisecond)
@@ -225,9 +461,11 @@ defmodule SalixAgent.Tools.OAuth do
       "tenant" => tenant,
       "group_id" => group_id,
       "agent_id" => ctx.agent_id,
-      "session_id" => session_id(ctx),
+      "session_id" => request_session_id(ctx),
       "provider" => provider,
       "alias" => alias_,
+      "owner" => owner,
+      "fields" => fields,
       "scopes" => scopes,
       "code_verifier" => code_verifier,
       "redirect_uri" => redirect_uri,
@@ -286,83 +524,242 @@ defmodule SalixAgent.Tools.OAuth do
         ctx
       )
     else
-      surface = conversation_surface(ctx)
-
       request =
         create_capability_request!(
           %{
             "tenant_id" => tenant,
             "group_id" => group_id,
             "source_agent_id" => ctx.agent_id,
-            "source_session_id" => session_id(ctx),
+            "source_session_id" => record["session_id"],
             "tool_call_id" => tool_call_id,
             "request_type" => "oauth_authorization",
             "request_payload" => %{
-              "oauth_authorization" => %{
-                "provider" => provider,
-                "alias" => alias_,
-                "state" => state,
-                "reason" => reason,
-                "scopes" => scopes,
-                "authorization_url" => authorization_url
-              }
+              "oauth_authorization" =>
+                %{
+                  "provider" => provider,
+                  "alias" => alias_,
+                  "state" => state,
+                  "reason" => reason,
+                  "scopes" => scopes
+                }
+                |> put_present("authorization_url", authorization_url)
+                |> then(&if(input, do: Map.put(&1, "input", input), else: &1))
+                |> then(&if(station_call?(ctx), do: Map.put(&1, "station_call", true), else: &1))
             },
             "expires_at" => div(expires_at, 1000)
           }
           |> Map.merge(surface || %{})
         )
 
-      content =
+      if station_call?(ctx) do
+        await_station_request(request, state, provider, alias_)
+      else
+        content =
+          Jason.encode!(%{
+            "status" => "running",
+            "request_id" => request["request_id"],
+            "tool_call_id" => tool_call_id,
+            "provider" => provider,
+            "alias" => alias_,
+            "state" => state,
+            "authorization_url" => authorization_url,
+            "expires_at" => expires_at,
+            "message" => "oauth authorization request is pending",
+            "instructions" => authorization_instructions(surface)
+          })
+
+        wait =
+          Waits.build(
+            "oauth authorization: " <> provider <> "/" <> alias_,
+            @user_interaction_auto_wait_seconds,
+            "auto_wait",
+            %{
+              "tool_call_id" => tool_call_id,
+              "tool_name" => "oauth.request_authorization"
+            }
+          )
+
+        wait_set = Waits.event(session_id(ctx), wait)
+
+        {content,
+         [
+           %{
+             "type" => "async_tool_call_started",
+             "session_id" => session_id(ctx),
+             "tool_call_id" => tool_call_id,
+             "tool_name" => "oauth.request_authorization",
+             "input" =>
+               Jason.encode!(%{
+                 "provider" => provider,
+                 "alias" => alias_,
+                 "reason" => reason,
+                 "scopes" => scopes,
+                 "timeout_seconds" => timeout_seconds
+               }),
+             "status" => "running",
+             "completion_mode" => "external_callback",
+             "started_at" => now,
+             "auto_wait_seconds" => @user_interaction_auto_wait_seconds
+           }
+           |> Map.merge(CapabilityRequestStore.execution_fields(request)),
+           wait_set
+         ]}
+        |> public_link(ctx)
+      end
+    end
+  end
+
+  # A Worker in a station has no Session here to be told later: its call waits
+  # for the person, with the card in its Task. Still unanswered when the call
+  # must return, the Worker ends its turn and looks again when it next runs.
+  defp await_station_request(request, state, provider, alias_) do
+    case OAuthStore.await_request(request, @station_wait_ms) do
+      {:ok, %{"result" => %{"content" => content}}} when is_binary(content) ->
+        content
+
+      _still_waiting ->
         Jason.encode!(%{
-          "status" => "running",
-          "request_id" => request["request_id"],
-          "tool_call_id" => tool_call_id,
+          "status" => "pending",
           "provider" => provider,
           "alias" => alias_,
           "state" => state,
-          "authorization_url" => authorization_url,
-          "expires_at" => expires_at,
-          "message" => "oauth authorization request is pending",
-          "instructions" => authorization_instructions(surface),
-          "reason" => reason
+          "message" =>
+            "The card is still waiting for the person. End your turn with need_human; when you run again, call oauth.complete_authorization with this state."
         })
+    end
+  end
 
-      wait =
-        Waits.build(
-          "oauth authorization: " <> provider <> "/" <> alias_,
-          @user_interaction_auto_wait_seconds,
-          "auto_wait",
-          %{
-            "tool_call_id" => tool_call_id,
-            "tool_name" => "oauth.request_authorization"
-          }
-        )
+  defp station_call?(ctx), do: is_binary(ctx[:task_conversation_id])
 
-      wait_set = Waits.event(session_id(ctx), wait)
+  @doc """
+  The card of a CLI login that runs in a Task's sandbox (the station's
+  `logins/tool.ts`): put up or changed as the login goes, and ended with it. It
+  is a request to connect an account whose `input` says what the person does, so
+  a client that does not draw it still offers the page. The login's id is the
+  flow's `state`, and makes this the one card of that login.
+  """
+  def login_card(args, ctx) do
+    unless station_call?(ctx), do: raise("only a sandbox's login tool puts up this card")
+    {tenant, group_id} = oauth_context!(ctx.agent_id)
+    login = required_arg(args, "login")
+    program = required_arg(args, "program")
 
-      {content,
-       [
-         %{
-           "type" => "async_tool_call_started",
-           "session_id" => session_id(ctx),
-           "tool_call_id" => tool_call_id,
-           "tool_name" => "oauth.request_authorization",
-           "input" =>
-             Jason.encode!(%{
-               "provider" => provider,
-               "alias" => alias_,
-               "reason" => reason,
-               "scopes" => scopes,
-               "timeout_seconds" => timeout_seconds
-             }),
-           "status" => "running",
-           "completion_mode" => "external_callback",
-           "started_at" => now,
-           "auto_wait_seconds" => @user_interaction_auto_wait_seconds
-         }
-         |> Map.merge(CapabilityRequestStore.execution_fields(request)),
-         wait_set
-       ]}
+    case arg_or_nil(args, "ended") do
+      nil ->
+        input =
+          cond do
+            raw(args, "paste") == true -> %{"kind" => "paste"}
+            is_binary(arg_or_nil(args, "code")) -> %{"kind" => "device", "code" => args["code"]}
+            true -> %{"kind" => "open"}
+          end
+
+        request =
+          create_capability_request!(
+            %{
+              "tenant_id" => tenant,
+              "group_id" => group_id,
+              "source_agent_id" => ctx.agent_id,
+              "source_session_id" => SalixStore.Ids.new_session_id(),
+              "tool_call_id" => "login:" <> login,
+              "request_id" => "cap-login-" <> login,
+              "request_type" => "oauth_authorization",
+              "request_payload" => %{
+                "oauth_authorization" =>
+                  %{
+                    "provider" => "cli",
+                    "alias" => program,
+                    "state" => login,
+                    "login" => login,
+                    "owner" => OAuthCredentials.acting_for(ctx),
+                    "reason" => required_arg(args, "reason"),
+                    "scopes" => [],
+                    "station_call" => true,
+                    "input" => input
+                  }
+                  |> put_present("authorization_url", https_url(arg_or_nil(args, "url")))
+              },
+              "expires_at" => div(SystemsClock.system_time(:millisecond), 1000) + 15 * 60
+            }
+            |> Map.merge(conversation_surface(ctx))
+          )
+
+        Jason.encode!(%{"request" => request["request_id"]})
+
+      "done" ->
+        {:ok, _ended} =
+          SalixAgent.CapabilityRequests.complete_oauth_authorization(group_id, tenant, %{
+            "state" => login
+          })
+
+        Jason.encode!(%{"ended" => true})
+
+      _failed ->
+        _ =
+          SalixAgent.CapabilityRequests.fail_login(group_id, "cap-login-" <> login, tenant)
+
+        Jason.encode!(%{"ended" => true})
+    end
+  end
+
+  # A station's call has no Session of its own in Salix.
+  defp request_session_id(ctx) do
+    if station_call?(ctx), do: SalixStore.Ids.new_session_id(), else: session_id(ctx)
+  end
+
+  # The values a secret asks for by name. A card has one input, so a request
+  # with fields has no input: every surface gives the link to Salix's form.
+  defp requested_fields!(args, provider) do
+    case {raw(args, "fields"), provider} do
+      {nil, _provider} ->
+        []
+
+      {fields, "secret"} ->
+        case SalixStore.OAuth.Adapters.Secret.fields(fields) do
+          {:ok, fields} -> fields
+          {:error, message} -> raise message
+        end
+
+      {_fields, _provider} ->
+        raise "fields is only for provider secret"
+    end
+  end
+
+  # What the person's card asks them to fill in, before anything else happens.
+  # Only a card asks for an app: a link in a provider chat proves no one's
+  # standing in the Workspace (`CommaWeb.AgentRequestEndpoints`).
+  defp request_input(args, _tenant, "secret", surface, _redirect_uri) when is_map(surface) do
+    %{"kind" => "secret"}
+    |> put_present("label", arg_or_nil(args, "label"))
+    |> put_present("help_url", https_url(arg_or_nil(args, "help_url")))
+  end
+
+  defp request_input(args, tenant, provider, surface, redirect_uri)
+       when is_map(surface) and is_map_key(@own_app_consoles, provider) do
+    wanted =
+      if raw(args, "own_app") == true,
+        do: not OAuthStore.own_provider_app?(tenant, provider),
+        else: match?({:error, :not_configured}, OAuthStore.provider_app(tenant, provider))
+
+    if wanted do
+      %{
+        "kind" => "app",
+        "help_url" => @own_app_consoles[provider],
+        "redirect_uri" => redirect_uri
+      }
+    end
+  end
+
+  defp request_input(_args, _tenant, _provider, _surface, _redirect_uri), do: nil
+
+  defp https_url("https://" <> _ = url), do: url
+  defp https_url(_url), do: nil
+
+  # Silent for a session that is not labelling, as `SalixAgent.IFC.ConnectorLabels` is.
+  defp public_link({content, events} = result, ctx) do
+    if is_map(Map.get(ctx, :ifc)) do
+      {:tool_ifc, content, events, %{"label" => Codec.encode_label(Label.new([:public]))}}
+    else
+      result
     end
   end
 
@@ -397,6 +794,26 @@ defmodule SalixAgent.Tools.OAuth do
 
       {:error, why} ->
         raise "load agent: #{format_reason(why)}"
+    end
+  end
+
+  defp poll_device_once(%{"status" => "pending", "device_code" => code} = record)
+       when is_binary(code) and code != "" do
+    case OAuthStore.poll_device(record) do
+      {:ok, polled} -> polled
+      {:error, why} -> raise "check device authorization: #{format_reason(why)}"
+    end
+  end
+
+  defp poll_device_once(record), do: record
+
+  defp provider_app!(_tenant, "secret"), do: %{}
+
+  defp provider_app!(tenant, "custom." <> _ = provider) do
+    case OAuthStore.provider_app(tenant, provider) do
+      {:ok, %{} = app} -> app
+      {:error, :not_configured} -> raise "#{provider} is not defined; call oauth.define_provider"
+      {:error, why} -> raise "load provider app: #{format_reason(why)}"
     end
   end
 
@@ -462,6 +879,7 @@ defmodule SalixAgent.Tools.OAuth do
       raise "authorization state was not initiated by an agent; use oauth.request_authorization to start an agent-initiated flow"
     end
 
+    record = poll_device_once(record)
     provider = record["provider"]
     alias_ = record["alias"]
 
@@ -533,7 +951,11 @@ defmodule SalixAgent.Tools.OAuth do
       nil ->
         not_found_result(provider, alias_)
 
-      %{"binding_id" => binding_id} ->
+      %{"binding_id" => binding_id} = binding ->
+        unless OAuthCredentials.usable_by?(binding, OAuthCredentials.acting_for(ctx)) do
+          raise "this credential belongs to another person; only they can delete it"
+        end
+
         case OAuthStore.delete_binding(tenant, group_id, binding_id) do
           :ok ->
             Jason.encode!(%{
@@ -586,7 +1008,20 @@ defmodule SalixAgent.Tools.OAuth do
   end
 
   # A request from a Comma conversation is shown there as a card, under the reply to the message the turn serves.
-  defp conversation_surface(ctx) do
+  # A station's call has no message of its own: its card goes with the Task's
+  # latest, so its receipt has a reply to stay under once it ends.
+  @doc false
+  def conversation_surface(%{task_conversation_id: conversation_id} = ctx)
+      when is_binary(conversation_id) and conversation_id != "" do
+    %{
+      "surface_kind" => "conversation",
+      "surface_ref" =>
+        %{"conversation_id" => conversation_id}
+        |> put_present("message_id", latest_task_message(ctx, conversation_id))
+    }
+  end
+
+  def conversation_surface(ctx) do
     case Map.get(ctx, :trusted_origin) do
       %{"provider" => "internal", "conversation_id" => conversation_id} = origin
       when is_binary(conversation_id) and conversation_id != "" ->
@@ -602,9 +1037,15 @@ defmodule SalixAgent.Tools.OAuth do
     end
   end
 
+  defp latest_task_message(ctx, conversation_id) do
+    {_tenant, group_id} = oauth_context!(ctx.agent_id)
+    OAuthStore.latest_message(group_id, conversation_id)
+  end
+
   defp authorization_instructions(nil),
     do:
       "Post the authorization_url to the requester yourself through the current visible reply path; it is not delivered automatically. " <>
+        "The link carries nothing from the conversation, so send it with ifc sources []. " <>
         "Call the matching im_api.* operation directly when provider/connect/API are known; use IM discovery/help only when those facts are missing. " <>
         "Ask the user to complete the browser flow, then call oauth.complete_authorization with this state to verify the outcome."
 

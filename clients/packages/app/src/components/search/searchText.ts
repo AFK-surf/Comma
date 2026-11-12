@@ -109,3 +109,25 @@ export function titleMatches(query: string, ...titles: string[]) {
     return tokens.every((token) => haystack.includes(token));
   });
 }
+
+/**
+ * Whether the palette shows its loading state: only while it has no action to
+ * show (the shortcuts' and the menu's alike) and the Tasks it waits for have not
+ * come, those found for the words typed or, with none, the latest.
+ */
+export function waitsForTasks({
+  actions,
+  history,
+  loadingHistory,
+  query,
+  searching,
+}: {
+  actions: number;
+  history: number;
+  loadingHistory: boolean;
+  query: string;
+  searching: boolean;
+}) {
+  if (actions > 0) return false;
+  return query ? searching : loadingHistory && history === 0;
+}

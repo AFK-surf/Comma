@@ -38,6 +38,8 @@ defmodule Salix.Control.VoiceNumbers do
   @custom_voices_per_day 5
   @day_ms 86_400_000
   @max_voice_description 1_000
+  # Each sample is a GPT-Live session.
+  @previews_per_hour 30
   @default_preferences %{"voice" => nil, "custom_voice" => nil, "router_calls" => false}
 
   @type error ::
@@ -45,6 +47,7 @@ defmodule Salix.Control.VoiceNumbers do
           | :not_configured
           | :voice_number_in_use
           | :rate_limited
+          | :budget_exhausted
           | :invalid_code
           | {:bad_request, String.t()}
           | {:unavailable, String.t()}
@@ -52,7 +55,9 @@ defmodule Salix.Control.VoiceNumbers do
   @doc """
   The Group's voice status: `"lines"` (platform lines), `"numbers"` (the
   connect's public number projections), `"connect"` (the public connect or
-  nil), `"readiness"` (`%{"ready", "reason"}`), `"urls"` (see
+  nil), `"readiness"` (`%{"ready", "reason"}`: phone calls, see
+  `readiness/1`), `"call_readiness"` (the same for calls over the voice API,
+  see `call_readiness/0`), `"urls"` (see
   `voice_urls/1`), `"preferences"` (the call preferences) and `"voices"` (the
   preset voice names).
   """
@@ -73,6 +78,7 @@ defmodule Salix.Control.VoiceNumbers do
          "numbers" => if(connect, do: connect["numbers"] || [], else: []),
          "connect" => connect,
          "readiness" => readiness(settings),
+         "call_readiness" => call_readiness(),
          "urls" => voice_urls(group_id),
          "preferences" => (connect && connect["preferences"]) || @default_preferences,
          "voices" => SalixVoice.Voices.presets()
@@ -202,12 +208,33 @@ defmodule Salix.Control.VoiceNumbers do
       # The replaced voice counts against the organization's limit. Its
       # deletion is best effort: the new voice is already in use.
       if previous && previous != id, do: OpenAIVoices.delete(settings, previous)
+
       status(group_id, tenant_id)
     end
   end
 
   def create_custom_voice(_group_id, _tenant_id, _attrs),
     do: {:error, {:bad_request, "invalid request body"}}
+
+  @doc """
+  A short WAV sample of `attrs["voice"]` (as in `set_preferences/3`; the
+  custom voice must exist) speaking `attrs["language"]`, as `%{"audio" =>
+  wav}` (`SalixVoice.Preview`: made for each ask, kept by the client). A
+  Group takes at most #{@previews_per_hour} per hour (`:rate_limited`
+  otherwise); a custom voice's is billed to it as a call,
+  `:budget_exhausted` when its billing refuses.
+  """
+  @spec preview(String.t(), String.t(), map()) :: {:ok, map()} | {:error, error()}
+  def preview(group_id, tenant_id, attrs) when is_map(attrs) do
+    with {:ok, _group} <- group(group_id, tenant_id),
+         :ok <- preset(attrs["voice"]),
+         {:ok, voice} <- preview_voice(attrs["voice"], group_id, tenant_id),
+         {:ok, audio} <- preview_sample(group_id, voice, attrs["language"]) do
+      {:ok, %{"audio" => audio}}
+    end
+  end
+
+  def preview(_group_id, _tenant_id, _attrs), do: {:error, {:bad_request, "invalid request body"}}
 
   @doc """
   Public voice API URLs of a Group: `"readiness_url"` (HTTPS) and
@@ -246,6 +273,22 @@ defmodule Salix.Control.VoiceNumbers do
             List.wrap(settings["twilio_numbers"]) == [] -> "no_platform_lines"
             true -> nil
           end
+      end
+
+    %{"ready" => is_nil(reason), "reason" => reason}
+  end
+
+  @doc """
+  Readiness for calls over the voice API (the desktop app's calls and voice
+  clients with a key): voice enabled and configured on this node, as the
+  `comma.voice.v1` readiness URL answers. They need no Twilio line.
+  """
+  @spec call_readiness() :: map()
+  def call_readiness do
+    reason =
+      case SalixVoice.readiness() do
+        :ok -> nil
+        {:error, reason} -> Atom.to_string(reason)
       end
 
     %{"ready" => is_nil(reason), "reason" => reason}
@@ -291,8 +334,11 @@ defmodule Salix.Control.VoiceNumbers do
     end
   end
 
-  defp custom_voice_limit(group_id) do
-    case RateLimit.admit("voice-custom:" <> group_id, @day_ms, @custom_voices_per_day) do
+  defp custom_voice_limit(group_id),
+    do: admit("voice-custom:" <> group_id, @day_ms, @custom_voices_per_day)
+
+  defp admit(bucket, window_ms, count) do
+    case RateLimit.admit(bucket, window_ms, count) do
       {:allow, _} -> :ok
       {:deny, _ms} -> {:error, :rate_limited}
     end
@@ -300,6 +346,51 @@ defmodule Salix.Control.VoiceNumbers do
     _ -> {:error, {:unavailable, "rate limiter unavailable"}}
   catch
     :exit, _ -> {:error, {:unavailable, "rate limiter unavailable"}}
+  end
+
+  # The session voice to sample: nil is the platform voice.
+  defp preview_voice(nil, _group_id, _tenant_id), do: {:ok, nil}
+
+  defp preview_voice(%{"kind" => "preset", "name" => name}, _group_id, _tenant_id),
+    do: {:ok, name}
+
+  defp preview_voice(%{"kind" => "custom"}, group_id, tenant_id) do
+    case custom_voice_id(group_id, tenant_id) do
+      nil -> {:error, {:bad_request, "the custom voice does not exist"}}
+      id -> {:ok, %{"id" => id}}
+    end
+  end
+
+  defp preview_voice(_voice, _group_id, _tenant_id),
+    do: {:error, {:bad_request, "voice is null, a preset or the custom voice"}}
+
+  defp preview_sample(group_id, voice, language) do
+    language =
+      if is_binary(language), do: language |> String.split("-") |> hd() |> String.downcase()
+
+    # A preset's sample is the platform's; a custom voice's is its Group's.
+    billed = if is_map(voice), do: group_id
+    limit = fn -> admit("voice-preview:" <> group_id, @hour_ms, @previews_per_hour) end
+
+    case SalixVoice.Preview.sample(voice, language, group_id: billed, admit: limit) do
+      {:ok, audio} ->
+        {:ok, audio}
+
+      {:error, reason} when reason in [:disabled, :not_configured] ->
+        {:error, :not_configured}
+
+      {:error, reason} when reason == :rate_limited or is_tuple(reason) ->
+        {:error, reason}
+
+      {:error, %{"retryable" => false}} ->
+        {:error, :budget_exhausted}
+
+      {:error, %{"reason" => reason}} ->
+        {:error, {:unavailable, "voice preview billing #{reason}"}}
+
+      {:error, reason} ->
+        {:error, {:unavailable, "voice preview #{inspect(reason)}"}}
+    end
   end
 
   defp group(group_id, tenant_id) do

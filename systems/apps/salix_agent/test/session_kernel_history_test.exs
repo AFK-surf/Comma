@@ -90,7 +90,7 @@ defmodule SalixAgent.SessionKernelHistoryTest do
              }
   end
 
-  test "archive advance replaces sorted valid catalog and removes only covered records" do
+  test "archive advance replaces sorted valid catalog and retains uncompacted records" do
     kept_message = %{id: 2, seq: 3, content: "keep"}
     kept_event = %{"seq" => 3, "kind" => "fact"}
     kept_result = %{"seq" => 3, "tool_call_id" => "call"}
@@ -108,22 +108,28 @@ defmodule SalixAgent.SessionKernelHistoryTest do
 
     catalog = [[2, 2, 0, 20], [1, 1, 1, 10], [0, 0, 0, 1], [1, 1, 2, 1], :invalid]
 
+    released = %{
+      before
+      | archived_through: 2,
+        segment_catalog: [[1, 1, 1, 10], [2, 2, 0, 20]],
+        messages: [kept_message],
+        events: [kept_event],
+        async_results: [kept_result],
+        live_context_bytes: 4
+    }
+
     assert apply_event(before, "archive_advance", %{
              "archived_through" => 2,
              "segments" => catalog
-           }) ===
-             %{
-               before
-               | archived_through: 2,
-                 segment_catalog: [[1, 1, 1, 10], [2, 2, 0, 20]],
-                 messages: [kept_message],
-                 events: [kept_event],
-                 async_results: [kept_result],
-                 live_context_bytes: 4
-             }
+           }) === released
+
+    assert apply_event(before, "archive_advance", %{
+             "archived_through" => 3,
+             "segments" => [[1, 3, 2, 30]]
+           }) === %{released | archived_through: 3, segment_catalog: [[1, 3, 2, 30]]}
 
     for fields <- [
-          %{"archived_through" => 3, "segments" => []},
+          %{"archived_through" => 4, "segments" => []},
           %{"archived_through" => 0, "segments" => []},
           %{"archived_through" => 2, "segments" => false}
         ] do
@@ -148,25 +154,22 @@ defmodule SalixAgent.SessionKernelHistoryTest do
     }
   end
 
-  test "stored results validate Unicode graphemes and remain idempotent while referenced" do
-    before = state(last_seq: 3)
-    ev = stored_event(before, "e\u0301👩‍💻")
+  test "stored results validate Unicode graphemes and remain idempotent through PG reload" do
+    agent = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(agent)
+    session = Ids.new_session_id()
+    ev = stored_event(%{session_id: session}, "e\u0301👩‍💻")
+    assert {:ok, written} = SalixAgent.TestSupport.SessionFixture.commit(agent, session, [ev])
+    assert {:ok, reloaded} = SalixAgent.InternalSessionStore.read(agent, session)
+    record = SalixAgent.InternalSession.get(reloaded, :async_results) |> hd()
+    assert record["result_json"] == ev["result_json"]
+    assert record["result_chars"] == 2
+    assert {:ok, duplicate} = SalixAgent.TestSupport.SessionFixture.commit(agent, session, [ev])
 
-    record =
-      ev |> Map.drop(["type", "session_id"]) |> Map.merge(%{"kind" => "tool_result", "seq" => 4})
+    assert SalixAgent.InternalSession.get(duplicate, :last_seq) ==
+             SalixAgent.InternalSession.get(written, :last_seq)
 
-    expected = %{
-      before
-      | last_seq: 4,
-        async_results: [record],
-        async_result_refs: %{ev["result_ref"] => 4},
-        last_activity_at: 20
-    }
-
-    assert SessionData.apply_event(before, ev) === expected
-    assert SessionData.apply_event(expected, ev) === expected
-    archived = %{expected | async_results: []}
-    assert SessionData.apply_event(archived, ev) === archived
+    assert SalixAgent.InternalSession.get(duplicate, :async_results) == [record]
   end
 
   test "invalid stored results cannot change durable state even with malformed append fields" do

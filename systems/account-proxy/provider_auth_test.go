@@ -13,6 +13,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 
 type stubResponse struct {
@@ -140,9 +142,9 @@ func TestDeviceSignInForNewProviders(t *testing.T) {
 
 func TestGeminiCallbackSignInResolvesProject(t *testing.T) {
 	stubProviders(t, map[string][]stubResponse{
-		"oauth2.googleapis.com/token":                           {{200, `{"access_token":"gemini-access","refresh_token":"gemini-refresh","expires_in":3600,"token_type":"Bearer"}`}},
-		"www.googleapis.com/oauth2/v2/userinfo":                 {{200, `{"email":"gemini@example.com"}`}},
-		"cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": {{200, `{"cloudaicompanionProject":"project-1"}`}},
+		"oauth2.googleapis.com/token":                                 {{200, `{"access_token":"gemini-access","refresh_token":"gemini-refresh","expires_in":3600,"token_type":"Bearer"}`}},
+		"www.googleapis.com/oauth2/v2/userinfo":                       {{200, `{"email":"gemini@example.com"}`}},
+		"daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": {{200, `{"cloudaicompanionProject":"project-1"}`}},
 	}, func(r *http.Request) {
 		if r.URL.Path == "/token" {
 			_ = r.ParseForm()
@@ -232,6 +234,10 @@ func TestQuotaForNewProviders(t *testing.T) {
 			stubProviders(t, map[string][]stubResponse{tc.route: {{200, tc.body}}}, func(r *http.Request) {
 				if r.Header.Get("Authorization") == "" {
 					panic("quota request has no credential")
+				}
+				// chat-proxy answers an outdated client version with HTTP 426.
+				if r.URL.Host == "cli-chat-proxy.grok.com" && r.Header.Get("x-grok-client-version") != cliproxy.XAIClientVersion() {
+					panic("grok quota request presents client version " + r.Header.Get("x-grok-client-version"))
 				}
 			})
 			credentials := providerCredentials(tc.provider)

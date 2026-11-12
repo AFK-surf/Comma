@@ -4,7 +4,9 @@ defmodule Comma.OauthIdp.ResourceOwners do
 
   The OIDC subject (`sub`) is the stable public `comma_users.id` (`usr_*`),
   per decision D6 of docs/identity-security.md. Only `active` users
-  resolve; a disabled account fails closed on every lookup.
+  resolve; a disabled account fails closed on every lookup, and so does a
+  restricted email (`Comma.Auth.EmailRestriction`), so its codes, tokens
+  and refreshes stop working too.
 
   Comma is passwordless, so `check_password/2` always fails: the resource
   owner password grant stays disabled on every client, and the authorize
@@ -18,19 +20,17 @@ defmodule Comma.OauthIdp.ResourceOwners do
   alias Comma.Accounts
 
   @impl Boruta.Oauth.ResourceOwners
-  def get_by(sub: sub) do
-    case Accounts.get_user(sub) do
-      {:ok, %{"status" => "active"} = user} -> {:ok, to_resource_owner(user)}
-      _ -> {:error, "User not found."}
-    end
+  def get_by(sub: sub), do: Accounts.get_user(sub) |> resolve()
+
+  def get_by(username: email), do: Accounts.get_user_by_email(email) |> resolve()
+
+  defp resolve({:ok, %{"status" => "active"} = user}) do
+    if Comma.Auth.EmailRestriction.restricted?(user["email"]),
+      do: {:error, "User not found."},
+      else: {:ok, to_resource_owner(user)}
   end
 
-  def get_by(username: email) do
-    case Accounts.get_user_by_email(email) do
-      {:ok, %{"status" => "active"} = user} -> {:ok, to_resource_owner(user)}
-      _ -> {:error, "User not found."}
-    end
-  end
+  defp resolve(_lookup), do: {:error, "User not found."}
 
   @impl Boruta.Oauth.ResourceOwners
   def check_password(_resource_owner, _password) do

@@ -41,8 +41,10 @@
   transition-duration: var(--motion-duration-hover-card-exit);
 }
 
-/* Card-to-card handoff: while another card was open, enter and exit both
-   skip their animations so adjacent hovers read as one card moving. */
+/* Without motion: a card that takes over from another enters at once and the
+   card it replaces leaves at once, so adjacent hovers read as one card moving.
+   A card the person dismisses (a press, Escape, a menu) also leaves at once.
+   A card the pointer leaves fades out. */
 .comma-hover-card[data-instant="true"] {
   transition-duration: 0ms;
 }

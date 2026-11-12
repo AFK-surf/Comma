@@ -3,6 +3,7 @@ defmodule Comma.AuthChallenges do
 
   alias Comma.Accounts
   alias Comma.Accounts.Email
+  alias Comma.Auth.{Abuse, Registration}
   alias Comma.Accounts.{SessionClientMetadata, SessionIssuer}
 
   @default_ttl_seconds 900
@@ -37,7 +38,7 @@ defmodule Comma.AuthChallenges do
          {:ok, challenge} <- store_verify(id, hashed),
          :ok <- require_purpose(challenge, "ssh_enrollment"),
          true <- challenge["binding"] == binding,
-         {:ok, user} <- user_for_email(challenge["email"]) do
+         {:ok, user} <- user_for_email(challenge["email"], %{"client_kind" => "ssh"}) do
       {:ok, user}
     else
       _ -> {:error, :invalid_verification_code}
@@ -46,8 +47,20 @@ defmodule Comma.AuthChallenges do
 
   def request_email_login(attrs) when is_map(attrs) do
     with {:ok, email} <- Email.normalize_recipient(attrs["email"] || attrs[:email]),
+         :ok <-
+           Abuse.check(
+             "email_login",
+             email,
+             attrs["platform"] || "web",
+             attrs["abuse"],
+             Registration.context(attrs)
+           ),
          {:ok, response} <- request_login_challenge(email, attrs) do
       {:ok, response}
+    else
+      {:challenge, reason, challenge} -> {:challenge, reason, %{"challenge" => challenge}}
+      {:error, {:rate_limited, retry_after}} -> {:error, :rate_limited, retry_after}
+      error -> error
     end
   end
 
@@ -61,7 +74,7 @@ defmodule Comma.AuthChallenges do
          {:ok, review_candidate} <- code_hash(id, "email_login", review_hash),
          {:ok, challenge} <- store_verify(id, hashed_code, review_candidate),
          :ok <- require_purpose(challenge, "email_login"),
-         {:ok, user} <- login_user(challenge),
+         {:ok, user} <- login_user(challenge, attrs),
          {:ok, response} <-
            SessionIssuer.issue(
              user,
@@ -83,6 +96,53 @@ defmodule Comma.AuthChallenges do
       {:error, :wrong_purpose} -> {:error, :invalid_verification_code}
       {:error, :rate_limited, retry_after} -> {:error, :rate_limited, retry_after}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Mails a signed-in User a code that confirms deleting their account. A User
+  with a review login code confirms with that code, as it signs in with it.
+  """
+  def request_account_deletion(%{id: user_id, email: email} = user, attrs) when is_map(attrs) do
+    case user do
+      %{review_login_code_hash: hash} when is_binary(hash) ->
+        id = random_challenge_id()
+
+        with {:ok, email_fingerprint} <- fingerprint("email", email),
+             {:ok, ip_fingerprint} <- fingerprint("ip", remote_ip(attrs)),
+             {:ok, challenge} <-
+               challenge(id, email, email_fingerprint, hash, "account_deletion", %{
+                 "user_id" => user_id,
+                 "review_user_id" => user_id,
+                 "review_code_hash" => hash
+               }),
+             :ok <- store_reserve(challenge, ip_fingerprint) do
+          {:ok, %{"challenge_id" => id}}
+        end
+
+      _user ->
+        request_challenge(email, "account_deletion", %{"user_id" => user_id}, attrs)
+    end
+  end
+
+  @doc "Checks a deletion code for the signed-in User it was mailed to."
+  def verify_account_deletion(user_id, attrs) when is_binary(user_id) and is_map(attrs) do
+    id = trim(attrs["challenge_id"])
+    code = trim(attrs["code"])
+
+    with true <- id != "" and code =~ ~r/^\d{6}$/,
+         {:ok, hashed_code} <- code_hash(id, "account_deletion", code),
+         {:ok, review_hash} <- review_code_hash(code),
+         {:ok, review_candidate} <- code_hash(id, "account_deletion", review_hash),
+         {:ok, challenge} <- store_verify(id, hashed_code, review_candidate),
+         :ok <- require_purpose(challenge, "account_deletion"),
+         true <- challenge["user_id"] == user_id do
+      :ok
+    else
+      {:error, :rate_limited, _retry_after} = error -> error
+      {:error, :auth_unavailable} = error -> error
+      {:error, :auth_not_configured} -> {:error, :auth_unavailable}
+      _ -> {:error, :invalid_verification_code}
     end
   end
 
@@ -190,6 +250,38 @@ defmodule Comma.AuthChallenges do
 
   def verify_apple_link_challenge(_), do: {:error, :invalid_verification_code}
 
+  @email_change_purposes ~w(email_change_current email_change_new)
+
+  @doc """
+  Mails a code for one step of a signed-in User's email change
+  (`Comma.EmailChange`): `email_change_current` to the account email,
+  `email_change_new` to the new one. `extra` travels with the challenge.
+  """
+  def request_email_change(purpose, email, user_id, extra, attrs)
+      when purpose in @email_change_purposes and is_binary(user_id) and is_map(extra) do
+    request_challenge(email, purpose, Map.put(extra, "user_id", user_id), attrs)
+  end
+
+  @doc "Checks an email-change code for the signed-in User it was mailed to."
+  def verify_email_change(purpose, user_id, attrs)
+      when purpose in @email_change_purposes and is_binary(user_id) and is_map(attrs) do
+    id = trim(attrs["challenge_id"])
+    code = trim(attrs["code"])
+
+    with true <- id != "" and code =~ ~r/^\d{6}$/,
+         {:ok, hashed_code} <- code_hash(id, purpose, code),
+         {:ok, challenge} <- store_verify(id, hashed_code),
+         :ok <- require_purpose(challenge, purpose),
+         true <- challenge["user_id"] == user_id do
+      {:ok, challenge}
+    else
+      {:error, :rate_limited, _retry_after} = error -> error
+      {:error, :auth_unavailable} = error -> error
+      {:error, :auth_not_configured} -> {:error, :auth_unavailable}
+      _ -> {:error, :invalid_verification_code}
+    end
+  end
+
   # The database owns the credential. The existing auth key prevents database-only
   # readers from enumerating six-digit codes. Key rotation requires saving the code again.
   def review_code_hash(code) when is_binary(code) do
@@ -234,7 +326,7 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp login_user(%{"review_user_id" => user_id, "review_code_hash" => hash} = challenge) do
+  defp login_user(%{"review_user_id" => user_id, "review_code_hash" => hash} = challenge, _attrs) do
     with {:ok, user} <- Accounts.Repository.get_user(user_id),
          true <- user.email == challenge["email"] and user.review_login_code_hash == hash do
       {:ok, user}
@@ -243,7 +335,7 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp login_user(challenge), do: user_for_email(challenge["email"])
+  defp login_user(challenge, attrs), do: user_for_email(challenge["email"], attrs)
 
   defp request_challenge(email, purpose, extra, attrs) do
     started_at = SystemsClock.monotonic_time(:millisecond)
@@ -276,9 +368,9 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp user_for_email(email) do
+  defp user_for_email(email, client) do
     if auto_create_users?() do
-      Accounts.get_or_create_user_by_email(email)
+      Accounts.get_or_create_user_by_email(email, client, %{email_verified: true})
     else
       Accounts.get_user_by_email(email)
     end
@@ -299,6 +391,9 @@ defmodule Comma.AuthChallenges do
        |> Base.encode16(case: :lower)}
     end
   end
+
+  @doc false
+  def email_fingerprint(email), do: fingerprint("email", email)
 
   defp fingerprint(kind, value) do
     with {:ok, secret} <- configured_secret(:rate_limit_secret) do

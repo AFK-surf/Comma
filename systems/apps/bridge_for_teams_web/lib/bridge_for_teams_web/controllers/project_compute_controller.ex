@@ -112,7 +112,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
          {:ok, project} <- ProjectScope.require_project_for_conn(conn, org, params["project"]),
          :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
          {:ok, base_url} <-
-           SalixStore.AgentVMMInstallations.Headless.delivery(
+           SalixStore.AgentVMMRegistrations.Headless.delivery(
              SystemsRuntime.get_env(:salix_web, :public_base_url)
            ),
          {:ok, descriptor} <-
@@ -128,7 +128,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
              end
            ),
          {:ok, command} <-
-           SalixStore.AgentVMMInstallations.Headless.command(
+           SalixStore.AgentVMMRegistrations.Headless.command(
              descriptor,
              base_url
            ) do
@@ -147,7 +147,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
         send_error(
           conn,
           409,
-          "operation_not_retryable",
+          "registration_not_retryable",
           "Check the existing install operation.",
           %{}
         )
@@ -178,50 +178,103 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
     )
   end
 
-  def get_agent_vmm_install(conn, %{"operation_id" => operation_id} = params),
+  def get_agent_vmm_install(conn, %{"registration_id" => registration_id} = params),
     do:
       with_scope(
         put_resp_header(conn, "cache-control", "no-store"),
         params,
         :read,
-        &Compute.get_agent_vmm_install(&1, &2, operation_id)
+        &Compute.get_agent_vmm_install(&1, &2, registration_id)
       )
 
-  def retry_agent_vmm_install(conn, %{"operation_id" => operation_id} = params),
+  def retry_agent_vmm_install(conn, %{"registration_id" => registration_id} = params),
     do:
       with_scope(
         put_resp_header(conn, "cache-control", "no-store"),
         params,
         :write,
-        &Compute.retry_agent_vmm_install(&1, &2, operation_id)
+        &Compute.retry_agent_vmm_install(&1, &2, registration_id)
       )
 
-  def revoke_agent_vmm_install(conn, %{"operation_id" => operation_id} = params),
+  def revoke_agent_vmm_install(conn, %{"registration_id" => registration_id} = params),
     do:
       with_scope(
         put_resp_header(conn, "cache-control", "no-store"),
         params,
         :write,
-        &Compute.revoke_agent_vmm_install(&1, &2, operation_id)
+        &Compute.revoke_agent_vmm_install(&1, &2, registration_id)
       )
 
-  def enable_agent_vmm_install(conn, %{"operation_id" => operation_id} = params),
+  def enable_agent_vmm_install(conn, %{"registration_id" => registration_id} = params),
     do:
       with_scope(
         put_resp_header(conn, "cache-control", "no-store"),
         params,
         :write,
-        &Compute.configure_agent_vmm_install(&1, &2, operation_id, true)
+        &Compute.configure_agent_vmm_install(&1, &2, registration_id, true)
       )
 
-  def disable_agent_vmm_install(conn, %{"operation_id" => operation_id} = params),
+  def disable_agent_vmm_install(conn, %{"registration_id" => registration_id} = params),
     do:
       with_scope(
         put_resp_header(conn, "cache-control", "no-store"),
         params,
         :write,
-        &Compute.configure_agent_vmm_install(&1, &2, operation_id, false)
+        &Compute.configure_agent_vmm_install(&1, &2, registration_id, false)
       )
+
+  def agent_vmm_recovery_challenge(conn, params),
+    do: credential_recovery(conn, params, :challenge)
+
+  def agent_vmm_replace_credential(conn, params), do: credential_recovery(conn, params, :replace)
+
+  defp credential_recovery(conn, params, action) do
+    conn = put_resp_header(conn, "cache-control", "no-store")
+    user = ProjectScope.current_user(conn)
+    token = conn.assigns[:current_cli_token] || conn.assigns[:current_session_token]
+
+    with {:ok, org} <- ProjectScope.require_org(params["org"]),
+         {:ok, project} <- ProjectScope.require_project_for_conn(conn, org, params["project"]),
+         {:ok, session} <- BridgeForTeams.Auth.Sessions.fetch(token, touch: false),
+         authorize = fn ->
+           with {:ok, current} <- BridgeForTeams.Auth.Sessions.fetch(token, touch: false),
+                true <- current.id == session.id,
+                :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
+                :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
+                :ok <-
+                  BridgeForTeams.Memberships.authorize(user.id, :write, %{
+                    project_id: project.id,
+                    min_project_role: "admin"
+                  }),
+                do: :ok
+         end,
+         :ok <- authorize.(),
+         {:ok, result} <-
+           Compute.credential_recovery(
+             org,
+             project,
+             user,
+             session,
+             params["registration_id"],
+             action,
+             params,
+             authorize
+           ) do
+      if action == :challenge do
+        json(conn, result)
+      else
+        case SalixStore.AgentVMMConnectionConfig.issue(%{
+               id: result.id,
+               environment_id: result.environment_id
+             }) do
+          {:ok, config} -> json(conn, Map.put(config, :registration, result))
+          error -> send_project_error(conn, error, "Credential recovery is unavailable.")
+        end
+      end
+    else
+      error -> send_project_error(conn, error, "Credential recovery is unavailable.")
+    end
+  end
 
   def retain(conn, %{"environment_id" => id} = params),
     do: with_scope(conn, params, :write, &Compute.retain(&1, &2, id, params))
@@ -249,12 +302,12 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
       {:error, :already_exists} ->
         send_error(conn, 409, "already_exists", "Compute resource already exists.", %{})
 
-      {:error, :operation_not_retryable} ->
+      {:error, :registration_not_retryable} ->
         send_error(
           conn,
           409,
-          "operation_not_retryable",
-          "This install operation is terminal; start a new install operation.",
+          "registration_not_retryable",
+          "This Registration needs credential reauthorization or has been revoked.",
           %{}
         )
 

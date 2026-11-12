@@ -9,17 +9,32 @@ struct MessageExtras: View {
     /// Current Task summary for a referenced id, when the task list has it.
     var taskSummary: ((String) -> TaskSummary?)?
     var openTask: ((String) -> Void)?
+    var openMiniApp: ((MiniAppCardValue) -> Void)?
+    var openDynamicUI: ((PhoneDynamicUI) -> Void)?
     var openAttachment: ((ChatAttachment) -> Void)?
+    @Environment(\.chatMedia) private var images
 
     /// Whether anything renders under the text bubbles, a question card included; the last bubble then gives up its tail.
     static func hasContent(_ message: ChatItem) -> Bool { hasChips(message) || message.question != nil }
 
     /// Whether the message has Task references or attachments, which this view draws.
-    static func hasChips(_ message: ChatItem) -> Bool { !message.refs.isEmpty || !message.attachments.isEmpty }
+    static func hasChips(_ message: ChatItem) -> Bool { !message.refs.isEmpty || !message.attachments.isEmpty || !message.miniApps.isEmpty || !message.dynamicUIs.isEmpty }
 
     var body: some View {
         if Self.hasChips(message) {
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
+                ForEach(message.dynamicUIs) { ui in
+                    Button { openDynamicUI?(ui) } label: {
+                        HStack {
+                            Text(verbatim: ui.summary).font(.body).multilineTextAlignment(.leading)
+                            CentralIcon("central-chevron-right-small", relativeTo: .body)
+                        }.foregroundStyle(CommaTheme.textPrimary).padding(GroupedSurface.margin)
+                            .background(CommaTheme.bgSecondary, in: RoundedRectangle(cornerRadius: GroupedSurface.radius))
+                    }.buttonStyle(TactileButtonStyle()).disabled(openDynamicUI == nil)
+                }
+                ForEach(message.miniApps) { app in
+                    MiniAppChatCard(app: app) { openMiniApp?(app) }.disabled(openMiniApp == nil)
+                }
                 ForEach(Array(message.refs.enumerated()), id: \.offset) { _, ref in
                     Button { openTask?(ref.conversationID) } label: {
                         TaskReferenceLabel(title: ref.title, task: taskSummary?(ref.conversationID))
@@ -28,13 +43,21 @@ struct MessageExtras: View {
                     .disabled(openTask == nil)
                     .accessibilityIdentifier("task-ref-" + ref.conversationID)
                 }
-                ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                    Button { openAttachment?(attachment) } label: {
-                        // The desktop's file and image glyphs.
-                        FileChip(name: attachment.name, icon: attachment.blockType == "image" ? "central-images-1" : "central-file-bend")
+                if !message.attachments.isEmpty {
+                    FlowLayout(spacing: CommaTheme.imageSpacing) {
+                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { position, attachment in
+                            if let images, let item = images.item(message: message, position: position, attachment: attachment) {
+                                ChatMediaThumbnail(item: item, context: images) { openAttachment?(attachment) }
+                                    .id(item.cacheKey)
+                            } else {
+                                Button { openAttachment?(attachment) } label: {
+                                    FileChip(name: attachment.name, icon: attachment.blockType == "image" ? "central-images-1" : "central-file-bend")
+                                }
+                                .buttonStyle(TactileButtonStyle())
+                                .disabled(openAttachment == nil || attachment.index == nil)
+                            }
+                        }
                     }
-                    .buttonStyle(TactileButtonStyle())
-                    .disabled(openAttachment == nil || attachment.index == nil)
                 }
             }
         }

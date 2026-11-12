@@ -1,7 +1,7 @@
 defmodule SalixStore.Stations do
   @moduledoc """
   The station roster Salix keeps as the stations' control plane: the
-  still.fail stations of each Group (docs/architecture/DOMAIN_CONCEPTS.md,
+  Comma stations of each Group (docs/architecture/DOMAIN_CONCEPTS.md,
   "Station"), keyed by `(tenant_id, group_id)`. A Salix Group is the
   workspace: every station, on someone's machine (`device`) or on the Group's
   Cloud VM (`cloud_vm`), is a station of its Group. The id that workspace
@@ -24,7 +24,7 @@ defmodule SalixStore.Stations do
 
   import Ecto.Query
 
-  alias SalixStore.{Repo, StationMembers, StationTaskIndex}
+  alias SalixStore.{Repo, StationMembers, StationStatsIndex, StationTaskIndex}
   alias SalixStore.Stations.{Credential, Revocations, SigningKeys, Station, Workspaces}
 
   @max_stations 64
@@ -121,7 +121,10 @@ defmodule SalixStore.Stations do
             if existing && is_nil(existing.removed_at),
               do: {existing.tenant_id, existing.group_id}
 
-          if existing, do: StationTaskIndex.delete_station(station_id)
+          if existing do
+            StationTaskIndex.delete_station(station_id)
+            StationStatsIndex.delete_station(station_id)
+          end
 
           row =
             write(existing, station_id, %{
@@ -212,6 +215,7 @@ defmodule SalixStore.Stations do
          ) do
       {1, _} ->
         StationTaskIndex.delete_station(previous_station_id)
+        StationStatsIndex.delete_station(previous_station_id)
         previous_station_id
 
       {0, _} ->
@@ -241,7 +245,7 @@ defmodule SalixStore.Stations do
 
   @doc """
   Removes a station of the Group: its signed requests answer
-  `station_removed`, and the Task index it sent is deleted.
+  `station_removed`, and the Task and Stats indexes it sent are deleted.
   """
   def remove(tenant_id, group_id, station_id) do
     now = SystemsClock.utc_now()
@@ -251,8 +255,12 @@ defmodule SalixStore.Stations do
              from(s in in_group(tenant_id, group_id), where: s.id == ^station_id),
              set: [removed_at: now, updated_at: now]
            ) do
-        {1, _} -> StationTaskIndex.delete_station(station_id)
-        {0, _} -> Repo.rollback(:not_found)
+        {1, _} ->
+          StationTaskIndex.delete_station(station_id)
+          StationStatsIndex.delete_station(station_id)
+
+        {0, _} ->
+          Repo.rollback(:not_found)
       end
     end)
     |> case do
@@ -304,6 +312,27 @@ defmodule SalixStore.Stations do
          "station" => station.id,
          "grant_keys" => SigningKeys.grant_keys()
        })}
+    end
+  end
+
+  @doc """
+  What a device's own station is told of a Group it runs in (the Connector
+  run's `relay_register`, `SalixWeb.StationPlace`): the workspace ids a member
+  credential may name, the keys it is verified with and the Group's
+  revocations. A device's station has no roster row: a key has one row, in one
+  Group, and a desktop runs in several, so this reads the Group alone.
+  """
+  def device_mesh(tenant_id, group_id) when is_binary(tenant_id) and is_binary(group_id) do
+    with {:ok, _signer} <- SigningKeys.signer() do
+      told = Workspaces.told(tenant_id, group_id)
+
+      {:ok,
+       %{
+         "workspace" => told.id,
+         "workspace_was" => told.was,
+         "grant_keys" => SigningKeys.grant_keys(),
+         "revocations" => Revocations.list(tenant_id, group_id)
+       }}
     end
   end
 

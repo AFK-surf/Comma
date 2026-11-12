@@ -30,19 +30,38 @@ struct ChatTranscriptView: View {
     @State private var scroll = TranscriptScroll()
     /// Advances on each release that loads earlier messages; it plays the release haptic.
     @State private var pullLoads = 0
+    /// The transcript's room inside its safe area, which a short transcript fills.
+    @State private var fillHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// Visible transcript row positions, kept outside the layout of the flying reply copies.
     @State var replyFrames = ReplyFlightFrames()
+    @State var images = ChatMediaGallery()
 
     /// Pull distance past the top at which releasing loads earlier messages.
     private static let pullThreshold: CGFloat = 64
 
+    @State var dynamicUI: PhoneDynamicUI?
     var body: some View {
         ZStack {
+            // The room the transcript is offered inside its safe area, which a short transcript fills. A clear view
+            // takes the offer as it is, so the fill follows neither the scroll offset nor the scroll view's own size.
+            Color.clear
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fillHeight = $0 }
             transcript
             if let replyThread {
                 threadLayer(replyThread).transition(replyLayerTransition)
             }
+        }
+        .environment(\.chatMedia, pane.target.map {
+            ChatMediaContext(gallery: images, store: store, group: $0.groupID, conversation: $0.conversationID)
+        })
+        .sheet(item: $dynamicUI) { ui in
+            NavigationStack { PhoneDynamicUIView(model: PhoneDynamicUIModel(store: store, workspace: pane.workspace, ui: ui), pane: pane) }.commaSheet([.large])
+        }
+        .background { ChatMediaPresentation(gallery: images, store: store) }
+        .onChange(of: rows, initial: true) { _, rows in
+            guard let target = pane.target else { images.items = []; return }
+            images.items = ChatMediaItem.items(in: rows, group: target.groupID, conversation: target.conversationID)
         }
     }
 
@@ -58,8 +77,12 @@ struct ChatTranscriptView: View {
                 // bottom anchor, the rows rode a top inset the scroll view set for them, and each change in their height
                 // pushed them under the composer by that inset once more for a frame or two: a first send's rows
                 // vanished and its bubble dropped back into the composer.
+                // The fill is not `containerRelativeFrame`: content under a top inset measured that frame from where it
+                // was scrolled to, so the content height followed the offset, the bottom anchor moved the offset back,
+                // and rotating a short Task froze in that loop. Nor is it the scroll view's own geometry: its size and
+                // insets can follow the content, and the fill then held any oversized frame in place.
                 ZStack(alignment: .bottom) {
-                    Color.clear.containerRelativeFrame(.vertical)
+                    Color.clear.frame(height: fillHeight)
                     // Not lazy: the window's rows are all laid out, so the content's height is theirs and not an
                     // estimate (`TranscriptWindow`). Typing in the composer leaves the transcript as it is.
                     VStack(spacing: 0) {
@@ -107,6 +130,11 @@ struct ChatTranscriptView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, rows.isEmpty ? 0 : 12)
                         }
+                        if shown.upperBound == rows.count, replyThread == nil, !pane.suggestions.isEmpty {
+                            ChatSuggestionChips(pane: pane)
+                                .padding(.top, GroupedSurface.groupSpacing)
+                                .padding(.leading, isTask ? CommaTheme.avatarGutter : 0)
+                        }
                         // The end, and the space below the last row: scrolling to it shows the whole stack.
                         Color.clear.frame(height: 12).id("tail")
                     }
@@ -125,9 +153,17 @@ struct ChatTranscriptView: View {
                 .overlay(alignment: .top) { ScrollMark(scroll: scroll, proxy: proxy) }
             }
             .scrollDismissesKeyboard(.immediately)
+            .onChange(of: images.returnMessageID) { _, messageID in
+                guard let messageID, let row = rows.first(where: { $0.message?.id == messageID }) else { return }
+                // Paging in the viewer brings its return thumbnail into the mounted window underneath it.
+                followTail = false
+                if window.reveal(row.id, in: rows) { scroll.revealing = row.id }
+                else { proxy.scrollTo(row.id, anchor: .center) }
+            }
             // A sent mention's `comma:task/<id>` link opens that Task; every other link opens as it always has.
             .environment(\.inlineTaskStore, store)
             .environment(\.openURL, OpenURLAction { url in
+                if store.openMiniApp(url) { return .handled }
                 guard let id = TaskMention.conversationID(from: url) else { return .systemAction }
                 openTask(id)
                 return .handled

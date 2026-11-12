@@ -23,6 +23,7 @@ import {
   CircleMinusOutlineIcon,
   DragHandleIcon,
   LoadingCircleIcon,
+  PinIcon,
   ReloadIcon,
   SettingsSliderThreeIcon,
 } from "@comma/ui/components/icons";
@@ -39,6 +40,7 @@ import {
   isReducedMotionEnabled,
   motionDuration,
   motionEasing,
+  motionScale,
   spacing,
 } from "@comma/ui/tokens";
 import {
@@ -51,7 +53,7 @@ import {
 } from "@comma/ui/components/menu";
 import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -84,6 +86,7 @@ import {
   openNativePlatformExternalUrl,
 } from "../../nativePlatformActions";
 import { ShellIconButtonControl } from "../ShellIconButton";
+import { useHeldWhileDisabled } from "../useHeldWhileDisabled";
 import { showOutOfCreditsToast } from "../billing/outOfCredits";
 import {
   boundPointerReorderTranslation,
@@ -318,13 +321,18 @@ export const RecommendationRail = memo(function RecommendationRail({
 }: RecommendationRailProps) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
-  // The core reads the briefing while the rail shows (and again as runs, discovery and the delivery need).
+  // The core reads the briefing while the rail shows (and again as runs, discovery and the delivery need). While
+  // Home is hidden the rail reads nothing and keeps the briefing it showed, so no loading skeleton mounts in the hidden
+  // surface. Home shown again while the topic lingers keeps the same cards; after that the rail reads the briefing anew.
   const call = useCall();
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
-  const { value: shown } = useTopic(
-    active
-      ? { topic: "recommendations", workspace: workspaceId, timezone, locale }
-      : null
+  const shown = useHeldWhileDisabled(
+    active,
+    useTopic(
+      active
+        ? { topic: "recommendations", workspace: workspaceId, timezone, locale }
+        : null
+    ).value
   );
   // Home shown again while the topic lingered: discovery checks start over.
   const wasActiveRef = useRef(active);
@@ -536,16 +544,18 @@ export const RecommendationRail = memo(function RecommendationRail({
   };
 
   // The member does not want to hear about this item again; the core shows the
-  // briefing the server answers, without it.
+  // briefing the server answers, without it. Says whether the server took it.
   const dismiss = async (item: RecommendationSourceItem) => {
     try {
       await call("recommendations.dismiss", { workspace: workspaceId, ...item });
+      return true;
     } catch {
       toast.error(messages.recommendations_title(), {
         id: `routine-dismiss-failed:${workspaceId}`,
         description: messages.recommendations_dismiss_failed(),
         testId: "routine-problem-toast",
       });
+      return false;
     }
   };
 
@@ -607,9 +617,10 @@ export const RecommendationRail = memo(function RecommendationRail({
         onOpenUrl(url);
         return;
       }
-      if (action === "copy-link") void nativePlatformClipboard.writeText(url);
+      if (action === "copy-link")
+        void copyWithFeedback(() => nativePlatformClipboard.writeText(url), messages);
     },
-    [onOpenUrl]
+    [onOpenUrl, messages]
   );
 
   const handleLinkMenuOpenChange = useCallback(
@@ -741,7 +752,7 @@ export const RecommendationRail = memo(function RecommendationRail({
                     card={card}
                     key={card.id}
                     onAction={(action) => performAction(action, card)}
-                    onDismiss={(item) => void dismiss(item)}
+                    onDismiss={dismiss}
                     onOpenTask={onOpenTask}
                     onOpenUrl={onOpenUrl}
                     sources={envelope?.settings.sources ?? []}
@@ -1506,7 +1517,7 @@ function RecommendationGeneratedCardView({
 }: {
   card: RecommendationGeneratedCard;
   onAction: (action: RecommendationAction) => void;
-  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
+  onDismiss?: RecommendationDismiss | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   sources: readonly RecommendationSource[];
@@ -1535,7 +1546,7 @@ export function RecommendationTextListCard({
 }: {
   card: Extract<RecommendationGeneratedCard, { template: "text-list@1" }>;
   onAction: (action: RecommendationAction) => void;
-  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
+  onDismiss?: RecommendationDismiss | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   sources?: readonly RecommendationSource[];
@@ -1596,6 +1607,82 @@ type RecommendationTextListItem = Extract<
 
 /** The source item a row stands for: what the member dismisses. */
 export type RecommendationSourceItem = { sourceId: string; sourceUrl: string };
+
+/** Dismisses a row's source item; resolves whether the server took it. */
+type RecommendationDismiss = (item: RecommendationSourceItem) => Promise<boolean>;
+
+// A dismissed row leaves before the briefing comes back without it: it fades
+// and shrinks where it sits, then gives up its place at once while everything
+// below glides up from where it was (only transform and opacity animate, so no
+// frame lays out the rail). A source left with no other row gives up its place
+// as a whole, taking the column's gap with it. Resolves once the place is
+// given up, so the dismissal goes out while the glide plays, with what puts
+// the row back when the server refuses. Reduced motion keeps only the fade.
+async function leaveRecommendationRow(row: HTMLElement): Promise<() => void> {
+  if (typeof row.animate !== "function") return () => {};
+  const reduced = isReducedMotionEnabled();
+  const source = row.parentElement;
+  const place = source?.childElementCount === 1 ? source : row;
+  const animations: Animation[] = [];
+  const restore = () => {
+    for (const animation of animations) animation.cancel();
+    place.style.removeProperty("display");
+  };
+  const fade = row.animate(
+    reduced
+      ? [{ opacity: 1 }, { opacity: 0 }]
+      : [
+          { opacity: 1, transform: "scale(1)" },
+          { opacity: 0, transform: `scale(${motionScale.routineDismiss})` },
+        ],
+    {
+      duration: motionDuration.routineDismissFade,
+      easing: motionEasing.smoothOut,
+      fill: "forwards",
+    }
+  );
+  animations.push(fade);
+  try {
+    await fade.finished;
+  } catch {
+    // Cancelled: the row is gone already.
+    return restore;
+  }
+  if (reduced) {
+    place.style.display = "none";
+    return restore;
+  }
+  // What sits below the row inside the rail's content moves up by its place.
+  const below: HTMLElement[] = [];
+  for (
+    let node: Element | null = place;
+    node && !node.classList.contains("comma-recommendations-content");
+    node = node.parentElement
+  )
+    for (let next = node.nextElementSibling; next; next = next.nextElementSibling)
+      if (next instanceof HTMLElement) below.push(next);
+  const before = below.map((element) => element.getBoundingClientRect().top);
+  place.style.display = "none";
+  const glides = below.flatMap((element, index) => {
+    const shift = before[index]! - element.getBoundingClientRect().top;
+    return shift
+      ? [
+          element.animate(
+            [{ transform: `translateY(${shift}px)` }, { transform: "translateY(0)" }],
+            {
+              // Added to a glide still under way from an earlier dismissal,
+              // so that one finishes its own way instead of jumping.
+              composite: "add",
+              duration: motionDuration.routineDismissClose,
+              easing: motionEasing.spatialMove,
+            }
+          ),
+        ]
+      : [];
+  });
+  animations.push(...glides);
+  return restore;
+}
 
 // A row names its source item with its source link. A row that stands for an
 // existing Task leaves with that Task instead.
@@ -1673,7 +1760,7 @@ function RecommendationTextItem({
 }: {
   item: RecommendationTextListItem;
   onAction: (action: RecommendationAction) => void;
-  onDismiss?: ((item: RecommendationSourceItem) => void) | undefined;
+  onDismiss?: RecommendationDismiss | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   origin: RecommendationOrigin;
@@ -1681,6 +1768,20 @@ function RecommendationTextItem({
 }) {
   const messages = useCommaMessages();
   const sourceItem = onDismiss ? rowSourceItem(item) : undefined;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [leaving, setLeaving] = useState(false);
+  // The row fades out first and is dismissed once it has given up its place;
+  // a refusal brings it back.
+  const leave = async () => {
+    if (!sourceItem || !onDismiss || leaving) return;
+    setLeaving(true);
+    const restore = rowRef.current
+      ? await leaveRecommendationRow(rowRef.current)
+      : () => {};
+    if (await onDismiss(sourceItem)) return;
+    restore();
+    setLeaving(false);
+  };
   // A row that is only its source link is the member's task: the card leads
   // with the task's objective (the link's label without one), then quotes the
   // source words.
@@ -1691,7 +1792,11 @@ function RecommendationTextItem({
   const linkedTask = linkedRowTask(item);
 
   return (
-    <div className="comma-recommendation-task-card comma-recommendation-text-item">
+    <div
+      className="comma-recommendation-task-card comma-recommendation-text-item"
+      inert={leaving}
+      ref={rowRef}
+    >
       <button
         aria-label={linkedTask?.label ?? item.action.label}
         className="comma-recommendation-text-item-action"
@@ -1727,15 +1832,14 @@ function RecommendationTextItem({
       <RecommendationSourceOrigin {...origin} />
       {sourceItem && onDismiss ? (
         <Tooltip content={messages.recommendations_dismiss()} placement="top">
-          <button
+          <AriaButton
             aria-label={messages.recommendations_dismiss()}
             className="comma-recommendation-row-dismiss"
             data-testid="routine-row-dismiss"
-            onClick={() => onDismiss(sourceItem)}
-            type="button"
+            onPress={() => void leave()}
           >
             <CircleMinusOutlineIcon aria-hidden="true" />
-          </button>
+          </AriaButton>
         </Tooltip>
       ) : null}
     </div>
@@ -2117,7 +2221,9 @@ export function RecommendationDocument({
                   type="button"
                   {...{ [recommendationLinkHrefAttribute]: part.link.href }}
                 >
-                  <LinkProviderIcon source={source} />
+                  {part.link.sourceId === addedSourceId ? null : (
+                    <LinkProviderIcon source={source} />
+                  )}
                   <span>{part.link.label}</span>
                 </button>
               </RecommendationLinkHoverCard>
@@ -2194,10 +2300,18 @@ function RecommendationCardLogo({
   );
 }
 
+/**
+ * The source of matters the member added through their Router
+ * (Comma.Recommendations.add_item/4). No connection stands behind it, so it
+ * shows a pin, not a provider mark.
+ */
+const addedSourceId = "comma-added";
+
 /** The source a Routine card names under its words: its mark and app name. */
 type RecommendationOrigin = {
   name: string;
   source: RecommendationSource | undefined;
+  added?: boolean;
 };
 
 function recommendationCardOrigin(
@@ -2206,6 +2320,7 @@ function recommendationCardOrigin(
 ): RecommendationOrigin {
   return {
     name: recommendationCardDisplayTitle(card, sources),
+    added: card.sourceIds.length === 1 && card.sourceIds[0] === addedSourceId,
     source:
       card.sourceIds.length === 1
         ? resolveRecommendationSource(sources, card.sourceIds[0])
@@ -2213,11 +2328,11 @@ function recommendationCardOrigin(
   };
 }
 
-function RecommendationSourceOrigin({ name, source }: RecommendationOrigin) {
+function RecommendationSourceOrigin({ added, name, source }: RecommendationOrigin) {
   return (
     <span className="comma-recommendation-source-origin">
       <span aria-hidden="true" className="comma-recommendation-source-origin-mark">
-        <LinkProviderIcon source={source} />
+        {added ? <PinIcon /> : <LinkProviderIcon source={source} />}
       </span>
       <span className="comma-recommendation-source-origin-name">{name}</span>
     </span>

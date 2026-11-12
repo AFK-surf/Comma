@@ -9,7 +9,7 @@ defmodule SalixMeet.FeishuProvider do
   alias SalixIM.Ports.FeishuDirectDelivery
   alias SalixIM.Provider.Feishu
   alias SalixIM.Provider.Feishu.Message, as: FeishuMessage
-  alias SalixMeet.{MeetingState, OwnerAttributionSnapshot, Runtime, RuntimeEvents, Store}
+  alias SalixMeet.{LarkBot, MeetingState, OwnerAttributionSnapshot, Runtime, RuntimeEvents, Store}
   alias SalixStore.{Crypto, S3}
 
   @meet_url ~r|https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[^\s<>]*)?|iu
@@ -168,7 +168,7 @@ defmodule SalixMeet.FeishuProvider do
       when is_binary(meeting_id) and is_map(state) and is_map(event) do
     event = stringify(event)
 
-    case status_text(event) do
+    case status_text(event, state) do
       nil ->
         :ok
 
@@ -648,7 +648,7 @@ defmodule SalixMeet.FeishuProvider do
                connect,
                state,
                "meeting:#{meeting_id}:summary",
-               terminal_text(state),
+               Enum.join([terminal_text(state) | LarkBot.link_lines(state, "zh")], "\n"),
                terminal_mentions(state)
              )
            end),
@@ -669,8 +669,10 @@ defmodule SalixMeet.FeishuProvider do
   end
 
   defp publish_terminal_artifacts(meeting_agent, connect, meeting_id, state, claim) do
-    if state["status"] in ["failed", "cancelled"] and
-         not SalixMeet.Outcome.partial_recording?(state) do
+    # The bot in a Feishu meeting records no files: Feishu keeps its own Minutes.
+    if state["runtime_source"] == "lark_bot" or
+         (state["status"] in ["failed", "cancelled"] and
+            not SalixMeet.Outcome.partial_recording?(state)) do
       delivery = stringify(state["delivery"] || %{})
 
       with :ok <- checkpoint_piece_if_missing(meeting_id, claim, delivery, "feishu_transcript"),
@@ -1090,6 +1092,19 @@ defmodule SalixMeet.FeishuProvider do
       else:
         SystemsRuntime.get_env(:salix_meet, :default_caption_language, @default_caption_language)
   end
+
+  defp status_text(%{"type" => "status", "status" => "in_meeting"}, %{
+         "runtime_source" => "lark_bot"
+       }),
+       do: {"in_meeting", "已加入飞书会议。"}
+
+  defp status_text(%{"type" => "status", "status" => "left"}, %{"runtime_source" => "lark_bot"}),
+    do: {"left", "已离开会议，正在整理摘要…"}
+
+  defp status_text(%{"type" => "status", "status" => "lark_join_blocked"} = event, _state),
+    do: {"lark_join_blocked", LarkBot.blocked_text(trim(event["lark_reason"]), "zh")}
+
+  defp status_text(event, _state), do: status_text(event)
 
   defp status_text(%{"type" => "status", "status" => "error", "reason_code" => code})
        when code in ~w(admission_denied meeting_full removed_from_meeting admission_timeout),

@@ -1,3 +1,4 @@
+import VerifiedKernel.Session.RevisionFence
 import VerifiedKernel.ETF
 import VerifiedKernel.Session.Kernel
 import VerifiedKernel.Schema
@@ -8,7 +9,6 @@ import VerifiedKernel.Provider.Dispatch
 import VerifiedKernel.Session.ArchivePublication
 import VerifiedKernel.Session.BatchExecution
 import VerifiedKernel.Session.PendingRevision
-import VerifiedKernel.Session.RevisionFence
 import VerifiedKernel.Session.CommandDriver
 import VerifiedKernel.Session.Loop
 import VerifiedKernel.Session.Drive
@@ -110,6 +110,8 @@ def loadSnapshot (bytes : ByteArray) (prelude : List Term) : Option Term × Term
         else (none, ok (.tuple [a "failed", a "invalid_snapshot"]))
       | other => other
     | none => (none, ok (.tuple [a "failed", a "invalid_snapshot"]))
+
+
 
 namespace ReadRevision
 

@@ -43,8 +43,8 @@ msgid "Android admission status is unavailable. Try again shortly."
 msgstr "Android 准入状态暂不可用，请稍后重试。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
-msgid "Android connector access is not enabled for this organization."
-msgstr "此组织未开通 Android 连接器访问。"
+msgid "Android device access is not enabled for this organization."
+msgstr "此组织未开通 Android 设备访问。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
 msgid "Can't demote the last owner."
@@ -1436,6 +1436,11 @@ msgstr "请重新连接 Slack 后重试。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_meetings.ex
 #, elixir-autogen, elixir-format
+msgid "Feishu/Lark calendars can send notices only to a Feishu or Lark bot. Choose that bot, or Google Calendar."
+msgstr "飞书/Lark 日历的通知只能由飞书或 Lark 机器人发送。请选择这样的机器人，或改用 Google 日历。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_meetings.ex
+#, elixir-autogen, elixir-format
 msgid "Check the selected calendars, meeting and channel, then save again."
 msgstr "请检查所选日历、会议和频道后重新保存。"
 
@@ -1625,6 +1630,11 @@ msgstr "该号码未在此服务器上注册 Signal。"
 #, elixir-autogen, elixir-format
 msgid "A tag cannot be empty or contain the | character."
 msgstr "标签不能为空，也不能包含 | 字符。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
+#, elixir-autogen, elixir-format
+msgid "Choose a host from the list."
+msgstr "请从列表中选择一台主机。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
 #, elixir-autogen, elixir-format
@@ -1910,11 +1920,6 @@ msgstr "设备已断开连接。请重新连接后再检查。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 #, elixir-autogen, elixir-format
-msgid "This device's Connector cannot check runtimes on demand. Update the Connector."
-msgstr "此设备的 Connector 不支持即时检查运行时。请更新 Connector。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-#, elixir-autogen, elixir-format
 msgid "The device did not answer in time. Check again shortly."
 msgstr "设备未及时响应。请稍后再检查。"
 
@@ -1937,11 +1942,6 @@ msgstr "只有绑定在已连接设备上的 Codex 或 Claude Code Worker 才能
 #, elixir-autogen, elixir-format
 msgid "The Worker's device is not connected. Connect it and detect again."
 msgstr "Worker 所在的设备未连接。请连接后重新检测。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-#, elixir-autogen, elixir-format
-msgid "Update the connector on the Worker's device to detect its models."
-msgstr "请先更新 Worker 所在设备上的连接器，再检测模型。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 #, elixir-autogen, elixir-format
@@ -1973,12 +1973,12 @@ msgid "Couldn't update the runner."
 msgstr "无法更新 Runner。"
 
 #: lib/bridge_for_teams_web/station_notice.ex
-msgid "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma."
-msgstr "此设备运行的是旧版连接器，无法接任务。请在该设备上安装 Comma 桌面应用（内含工作站），或用 Comma 中「添加工作站」给出的命令安装工作站。"
+msgid "This device has no station, so it cannot take tasks. Install the station on it with the command from Add computer."
+msgstr "此设备没有工作站，无法接任务。请用「添加电脑」给出的命令在该设备上安装工作站。"
 
 #: lib/bridge_for_teams_web/station_notice.ex
-msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page."
-msgstr "此设备的工作站版本过旧，无法接任务。请更新 Comma 桌面应用；单独安装的工作站请运行 `stillfail update`，或在其「更新」页面更新。"
+msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `comma-station update` or use its Updates page."
+msgstr "此设备的工作站版本过旧，无法接任务。请更新 Comma 桌面应用；单独安装的工作站请运行 `comma-station update`，或在其「更新」页面更新。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
 #, elixir-autogen, elixir-format
@@ -2102,13 +2102,26 @@ msgstr "无法保存任务的默认运行位置。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
 #, elixir-autogen, elixir-format
-msgid "The Cloud VM is turned off for this swarm."
-msgstr "此 Agent Swarm 的云电脑已关闭。"
+msgid "No Cloud VM is set up for this swarm."
+msgstr "此 Agent Swarm 没有设置云电脑。"
+
+msgid "Sandboxes are not set up here."
+msgstr "这里没有配置沙箱。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
 #, elixir-autogen, elixir-format
-msgid "Choose Salix, the Cloud VM or a station that takes Tasks."
-msgstr "请选择 Salix、云电脑或可以接收任务的工作站。"
+msgid "The Cloud VM is retired here: a sandbox takes its place."
+msgstr "这里的云电脑已退役，由沙箱接替。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "A sandbox"
+msgstr "沙箱"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, a sandbox, the Cloud VM or a station that takes Tasks."
+msgstr "请选择 Salix、沙箱、云电脑或可以接收任务的工作站。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
 #, elixir-autogen, elixir-format
@@ -2122,8 +2135,8 @@ msgstr "请说明这个任务要做什么。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
 #, elixir-autogen, elixir-format
-msgid "Choose Salix, the Cloud VM or a station of this swarm."
-msgstr "请选择 Salix、云电脑或此 Agent Swarm 的工作站。"
+msgid "Choose Salix, a sandbox, the Cloud VM or a station of this swarm."
+msgstr "请选择 Salix、沙箱、云电脑或此 Agent Swarm 的工作站。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
 #, elixir-autogen, elixir-format
@@ -2169,3 +2182,112 @@ msgstr "Agent Swarm 默认（%{model}）"
 #, elixir-autogen, elixir-format
 msgid "Swarm default"
 msgstr "Agent Swarm 默认"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "The Slack app joins new public channels by itself."
+msgstr "Slack 应用会自动加入新建的公开频道。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "The Slack app no longer joins new public channels by itself. Invite it to a channel to add it."
+msgstr "Slack 应用不再自动加入新建的公开频道。要让它进入某个频道，请邀请它。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send enabled as true or false."
+msgstr "enabled 只能是 true 或 false。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+msgid "Salix cannot answer this yet."
+msgstr "Salix 暂时无法回答。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+msgid "Salix did not answer: %{reason}"
+msgstr "Salix 没有回答：%{reason}"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Enter a device name of at most 63 bytes."
+msgstr "请输入不超过 63 字节的设备名称。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't create the device credentials."
+msgstr "无法创建设备凭证。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't create the install command."
+msgstr "无法创建安装命令。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device can now run operations."
+msgstr "设备现在可以执行操作。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device is now read-only."
+msgstr "设备现在是只读的。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device is offline. Turn it on and try again."
+msgstr "设备离线。请打开设备后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't refresh the devices."
+msgstr "无法刷新设备列表。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't change the device's access."
+msgstr "无法更改设备的访问权限。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Choose whether to allow operations."
+msgstr "请选择是否允许操作。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram bot connected. Add it to a group, then allow that group on this page."
+msgstr "Telegram bot 已连接。把它拉进群后，在此页放行这个群。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This Telegram bot is already connected. One bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr "这个 Telegram bot 已被连接。一个 bot 只服务一个 Agent Swarm；请删除现有连接或换一个 bot。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram rejected this token. Copy it again from BotFather and retry."
+msgstr "Telegram 拒绝了这个 token。请从 BotFather 重新复制后再试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram chats saved."
+msgstr "Telegram 会话已保存。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send the chats as a list of ids."
+msgstr "请以 id 列表的形式提交会话。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm no longer has still.fail stations."
+msgstr "这个 Agent Swarm 已没有 still.fail station。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change this."
+msgstr "只有 Agent Swarm 管理员可以修改。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Give the key a name."
+msgstr "给这个密钥起个名字。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Check the field names: letters, numbers and _, starting with a letter, up to 32 characters, each name once, up to 8 fields."
+msgstr "请检查字段名：由字母、数字和 _ 组成，以字母开头，最多 32 个字符，名称不能重复，最多 8 个字段。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "A member already keeps a key under this name. Choose another name."
+msgstr "已有成员用这个名字保存了密钥，请换一个名字。"

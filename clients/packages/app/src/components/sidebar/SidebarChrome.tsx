@@ -1,5 +1,16 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { CallIcon } from "@comma/ui/components/icons";
+import { CallIcon, CheckIcon, ChevronRightSmallIcon } from "@comma/ui/components/icons";
+import {
+  Menu,
+  MenuItem,
+  MenuPopover,
+  MenuSeparator,
+  MenuTrigger,
+  SubmenuTrigger,
+  menuCompactClasses,
+} from "@comma/ui/components/menu";
+import { toast } from "@comma/ui/components/toast";
+import { motionDuration } from "@comma/ui/tokens";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
 import { cx } from "@comma/ui/components/utils";
@@ -23,6 +34,11 @@ import {
   useInboxDeletedMarks,
   useInboxUnreadMarks,
 } from "../inbox/inboxDeletion";
+import {
+  useInboxRequestRows,
+  useRefreshRequestsOnReturn,
+  useRequestArrivalToasts,
+} from "../inbox/TaskRequestInbox";
 import { useCommaAuth } from "../auth-context";
 import { useCommaClientSettings } from "../commaClientSettings";
 import { UserAvatar } from "../UserAvatar";
@@ -134,43 +150,130 @@ export function SidebarChrome() {
   );
 }
 
-// Settings is a modal over the current surface, so its rail item is a button:
-// pressing it must not take the user off the route they are working on.
+// The account's item at the foot of the rail opens its menu: Settings (a modal over the current surface, so the route
+// the user is working on stays), the accounts signed in on this device to switch between and adding another, and
+// signing out.
 function SidebarSettingsItem() {
   const messages = useCommaMessages();
   const auth = useCommaAuth();
   const avatarUrl = useProfileAvatarUrl(auth.avatarRevision);
   const { open, openSettings } = useCommaSettingsOverlay();
   const iconRef = useRef<HTMLSpanElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const others = auth.otherAccounts;
+  const label = messages.nav_account_menu();
+  // Settings' own shortcut, as the person bound it: a chord reads as one run of keys, a sequence key by key.
+  const settingsBinding = useAppShortcutBinding("go-settings");
+  const settingsKeys = appKeybindingKeycaps(settingsBinding).join(
+    settingsBinding?.kind === "sequence" ? " " : ""
+  );
 
   return (
-    <SidebarItemTooltip
-      label={messages.nav_go_settings()}
-      shortcutId="go-settings"
-      triggerRef={iconRef}
-    >
-      <LeftRailItemControl
-        item={{
-          className: cx("comma-sidebar-link", open && "comma-sidebar-link-active"),
-          hideLabel: true,
-          icon: (
-            <span aria-hidden="true" className="flex">
-              <UserAvatar
-                displayName={auth.userDisplayName}
-                email={auth.userEmail}
-                size="sm"
-                {...(avatarUrl ? { avatarUrl } : {})}
-              />
-            </span>
-          ),
-          iconRef,
-          id: "settings",
-          label: messages.nav_settings(),
-          onPress: openSettings,
-          selected: open,
-        }}
-      />
-    </SidebarItemTooltip>
+    <MenuTrigger isOpen={menuOpen} onOpenChange={setMenuOpen}>
+      <SidebarItemTooltip isDisabled={menuOpen} label={label} triggerRef={iconRef}>
+        <LeftRailItemControl
+          item={{
+            className: cx(
+              "comma-sidebar-link",
+              (open || menuOpen) && "comma-sidebar-link-active"
+            ),
+            hideLabel: true,
+            icon: (
+              <span aria-hidden="true" className="flex">
+                <UserAvatar
+                  displayName={auth.userDisplayName}
+                  email={auth.userEmail}
+                  size="sm"
+                  {...(avatarUrl ? { avatarUrl } : {})}
+                />
+              </span>
+            ),
+            iconRef,
+            id: "settings",
+            label,
+            selected: open || menuOpen,
+          }}
+        />
+      </SidebarItemTooltip>
+      <MenuPopover placement="right bottom">
+        <Menu aria-label={label} className={cx(menuCompactClasses, "min-w-56")}>
+          <MenuItem
+            id="settings"
+            onAction={openSettings}
+            {...(settingsKeys ? { shortcut: settingsKeys } : {})}
+          >
+            {messages.nav_settings()}
+          </MenuItem>
+          <MenuSeparator />
+          {others ? (
+            <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
+              <MenuItem
+                id="switch-account"
+                shortcut={<ChevronRightSmallIcon className="size-4" />}
+              >
+                {messages.nav_switch_account()}
+              </MenuItem>
+              <MenuPopover offset={0} placement="right bottom">
+                <Menu
+                  aria-label={messages.nav_switch_account()}
+                  className={cx(menuCompactClasses, "min-w-64")}
+                  data-testid="sidebar-account-switcher"
+                >
+                  <MenuItem
+                    icon={
+                      <UserAvatar
+                        displayName={auth.userDisplayName}
+                        email={auth.userEmail}
+                        size="xs"
+                        {...(avatarUrl ? { avatarUrl } : {})}
+                      />
+                    }
+                    id="current-account"
+                    shortcut={<CheckIcon className="size-4" />}
+                    textValue={auth.userEmail}
+                  >
+                    {auth.userEmail}
+                  </MenuItem>
+                  {others.list.map((account) => (
+                    <MenuItem
+                      icon={<UserAvatar email={account.email} size="xs" />}
+                      id={`account-${account.userId}`}
+                      key={account.userId}
+                      onAction={() =>
+                        void others
+                          .switchTo(account.userId)
+                          .catch(() =>
+                            toast.error(messages.settings_switch_account_failed())
+                          )
+                      }
+                      textValue={account.email}
+                    >
+                      {account.email}
+                    </MenuItem>
+                  ))}
+                  <MenuSeparator />
+                  <MenuItem
+                    id="add-account"
+                    onAction={() =>
+                      void others
+                        .add()
+                        .catch(() =>
+                          toast.error(messages.settings_add_account_failed())
+                        )
+                    }
+                  >
+                    {messages.nav_add_account()}
+                  </MenuItem>
+                </Menu>
+              </MenuPopover>
+            </SubmenuTrigger>
+          ) : null}
+          <MenuItem id="sign-out" onAction={auth.signOut}>
+            {messages.nav_sign_out()}
+          </MenuItem>
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
   );
 }
 
@@ -319,5 +422,12 @@ function useInboxTabUnread() {
   const deletedMarks = useInboxDeletedMarks();
   const unreadMarks = useInboxUnreadMarks();
   const seenMarks = useTaskReviewSeenMarks();
-  return inboxHasUnread(items ?? [], seenMarks, unreadMarks, deletedMarks);
+  // A request waiting for the owner carries the attention dot until answered.
+  const waitingRequests = useInboxRequestRows().length;
+  useRefreshRequestsOnReturn();
+  useRequestArrivalToasts();
+  return (
+    waitingRequests > 0 ||
+    inboxHasUnread(items ?? [], seenMarks, unreadMarks, deletedMarks)
+  );
 }

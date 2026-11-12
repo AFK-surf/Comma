@@ -201,6 +201,7 @@ defmodule SalixIFC.Codec do
       %{
         "scopes" => %{atom => %{"kind" => "room", "within" => atom | nil}},
         "membership" => %{atom => %{"members" => [principal], "revision" => 3} | "unknown"},
+        "cleared" => %{atom => [principal]},
         "placements" => %{principal => %{connect => "internal" | "external"}},
         "receipts" => [%{"id" =>, "requester" =>, "sources" => [atom],
                          "destination" => [atom], "expires_at" => int | nil}],
@@ -217,6 +218,7 @@ defmodule SalixIFC.Codec do
     Facts.new(
       scopes: decode_scopes(get(wire, "scopes")),
       membership: decode_membership(get(wire, "membership")),
+      cleared: decode_cleared(get(wire, "cleared")),
       placements: decode_placements(get(wire, "placements")),
       receipts: decode_receipts(get(wire, "receipts")),
       policy: decode_policy(get(wire, "policy")),
@@ -357,6 +359,30 @@ defmodule SalixIFC.Codec do
   end
 
   defp decode_membership(_wire), do: %{}
+
+  defp decode_cleared(wire) when is_map(wire) do
+    wire
+    |> Enum.flat_map(fn {atom, principals} ->
+      case decode_atom(atom) do
+        {:ok, atom} -> [{atom, decode_principal_keys(principals)}]
+        :error -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp decode_cleared(_wire), do: %{}
+
+  defp decode_principal_keys(principals) do
+    principals
+    |> List.wrap()
+    |> Enum.flat_map(fn principal ->
+      case decode_principal(principal) do
+        {:ok, principal} -> [Principal.key(principal)]
+        :error -> []
+      end
+    end)
+  end
 
   defp decode_membership_entry(entry) when is_map(entry) do
     members =

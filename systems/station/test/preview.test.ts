@@ -63,7 +63,7 @@ test("a web service on the machine is reached as it answers, framing allowed", a
   const port = s.port;
   const asked: [string, string][] = [
     ["traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"],
-    ["x-stillfail-mesh", "secret"],
+    ["x-comma-station-mesh", "secret"],
     ["x-ember-mesh", "secret"],
     ["content-type", "text/plain"],
   ];
@@ -92,7 +92,7 @@ async function socketService(): Promise<{ port: number; close: () => Promise<voi
   await new Promise<void>((resolve) => server.on("listening", resolve));
   server.on("connection", (ws, request) => {
     const h = (n: string) => (request.headers[n] as string | undefined) ?? "-";
-    const seen = `${request.url} ${h("origin")} ${h("sec-websocket-protocol")} ${h("x-stillfail-mesh")} ${h("x-ember-mesh")}`;
+    const seen = `${request.url} ${h("origin")} ${h("sec-websocket-protocol")} ${h("x-comma-station-mesh")} ${h("x-ember-mesh")}`;
     ws.on("message", (data, isBinary) => {
       if (isBinary) return ws.send(data, { binary: true });
       const t = data.toString();
@@ -146,7 +146,7 @@ function client() {
 test("a service's websocket passes messages both ways, framed, until it closes", async () => {
   const s = await socketService();
   const port = s.port;
-  const asked: [string, string][] = [["sec-websocket-protocol", "vite-hmr"], ["x-stillfail-mesh", "secret"], ["x-ember-mesh", "secret"]];
+  const asked: [string, string][] = [["sec-websocket-protocol", "vite-hmr"], ["x-comma-station-mesh", "secret"], ["x-ember-mesh", "secret"]];
   const socket = await openSocket(asked, port, "/hmr?token=1", "zh");
   assert.equal(socket.protocol, "vite-hmr");
   const c = client();
@@ -154,7 +154,7 @@ test("a service's websocket passes messages both ways, framed, until it closes",
   await c.up.write(frame(FRAME_TEXT, Buffer.from("hi")));
   await c.up.write(frame(FRAME_BINARY, Buffer.from([0, 1, 2])));
   const got = (await c.reading.next())!;
-  assert.deepEqual([got[0], got[1].toString()], [FRAME_TEXT, `/hmr?token=1 http://localhost:${port} vite-hmr - - | hi`], "the path, the service's own origin, the sub-protocol; none of still.fail's headers (either name)");
+  assert.deepEqual([got[0], got[1].toString()], [FRAME_TEXT, `/hmr?token=1 http://localhost:${port} vite-hmr - - | hi`], "the path, the service's own origin, the sub-protocol; none of Comma's headers (either name)");
   assert.deepEqual(await c.reading.next(), [FRAME_BINARY, Buffer.from([0, 1, 2])]);
   await c.up.write(frame(FRAME_TEXT, Buffer.from("bye")));
   const [kind, payload] = (await c.reading.next())!;

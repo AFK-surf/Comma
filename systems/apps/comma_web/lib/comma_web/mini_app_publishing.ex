@@ -9,6 +9,7 @@ defmodule CommaWeb.MiniAppPublishing do
   def publish(user, session, ws, id, body, opts \\ []) do
     with {:ok, workspace, app} <- MiniApps.owner_app(user, session, ws, id),
          {:ok, params} <- publish_params(body),
+         :ok <- MiniApps.visibility_allowed(app, body["visibility"]),
          :ok <-
            if(params.group_id == workspace.salix_group_id, do: :ok, else: {:error, :not_found}),
          {:ok, version} <- MiniApps.ready_version(app, params.version),

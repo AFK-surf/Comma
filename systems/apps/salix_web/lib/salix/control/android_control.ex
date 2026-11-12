@@ -5,12 +5,19 @@ defmodule Salix.Control.AndroidControl do
   This record owns tenant admission and lease duration. The Connector enforces
   its single runtime slot. Connector metadata,
   plugin visibility, and skill projection are not substitutes for it.
+
+  `allowed_modes` names what the tenant admits: `connected`, a station-hosted
+  emulator started from an installed profile (protocol 2), and `device`, a
+  computer's own emulators and the phones its owner offers to agents
+  (protocol 3, systems/station/docs/android-screen.md). A record admits only the
+  modes it names; profiles are required while it names `connected`.
   """
 
   alias Salix.Control.Tenants
 
   @profile_id ~r/^[a-z0-9][a-z0-9._-]{0,63}$/
-  @mode "connected"
+  @modes ~w(connected device)
+  @device_target ~r/^android:[^\s\/?#]{1,200}$/
 
   @spec authorize(String.t()) :: {:ok, map()} | {:error, atom()}
   def authorize(tenant_id) when is_binary(tenant_id) do
@@ -40,9 +47,9 @@ defmodule Salix.Control.AndroidControl do
       ~w(version enabled allowed_modes allowed_profiles max_concurrent_leases max_lease_seconds)
 
     if Map.keys(config) |> Enum.all?(&(&1 in allowed_keys)) and
-         modes == [@mode] and valid_profiles?(profiles) and leases == 1 and
+         valid_modes?(modes) and profiles_for?(modes, profiles) and leases == 1 and
          seconds >= 60 and seconds <= 3600 do
-      {:ok, %{max_lease_seconds: seconds, allowed_profiles: profiles}}
+      {:ok, %{max_lease_seconds: seconds, allowed_profiles: profiles, allowed_modes: modes}}
     else
       {:error, :android_not_authorized}
     end
@@ -50,13 +57,50 @@ defmodule Salix.Control.AndroidControl do
 
   defp validate(_config), do: {:error, :android_not_authorized}
 
+  defp valid_modes?(modes) do
+    modes != [] and length(Enum.uniq(modes)) == length(modes) and
+      Enum.all?(modes, &(&1 in @modes))
+  end
+
+  defp profiles_for?(modes, profiles),
+    do:
+      if("connected" in modes,
+        do: valid_profiles?(profiles),
+        else: profiles == [] or valid_profiles?(profiles)
+      )
+
   defp valid_profiles?(profiles) do
     length(profiles) in 1..8 and length(Enum.uniq(profiles)) == length(profiles) and
       Enum.all?(profiles, &(is_binary(&1) and Regex.match?(@profile_id, &1)))
   end
 
-  @doc "Resolve the requested profile before dispatch to a version-two Connector."
+  @doc """
+  Resolve the requested profile before dispatch to a version-two Connector, or
+  the device a version-three Connector names in its `device` mode.
+  """
+  def authorize_action(policy, %{"protocol_version" => 3, "mode" => "device"}, action) do
+    cond do
+      "device" not in Map.get(policy, :allowed_modes, []) ->
+        {:error, :android_mode_not_allowed}
+
+      action["action"] == "start" and
+          not (is_binary(action["target"]) and Regex.match?(@device_target, action["target"])) ->
+        {:error, :android_target_required}
+
+      true ->
+        {:ok, Map.delete(action, "profile")}
+    end
+  end
+
   def authorize_action(policy, %{"protocol_version" => 2} = android, action) do
+    if "connected" in Map.get(policy, :allowed_modes, ["connected"]),
+      do: authorize_profile(policy, android, action),
+      else: {:error, :android_mode_not_allowed}
+  end
+
+  def authorize_action(_policy, _android, _action), do: {:error, :android_profile_unavailable}
+
+  defp authorize_profile(policy, android, action) do
     with {:ok, installed} <- installed_profiles(android) do
       profile =
         if action["action"] == "start",
@@ -81,8 +125,6 @@ defmodule Salix.Control.AndroidControl do
       end
     end
   end
-
-  def authorize_action(_policy, _android, _action), do: {:error, :android_profile_unavailable}
 
   defp installed_profiles(%{"profiles" => profiles, "profile_details" => details})
        when is_list(profiles) and is_list(details) and length(profiles) in 1..8 and

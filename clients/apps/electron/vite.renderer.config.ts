@@ -35,6 +35,9 @@ export default defineConfig({
       "@comma/chat-contract/dynamic-ui-cards": resolve(
         "../../packages/chat-contract/src/dynamic-ui/cardsEntry.ts"
       ),
+      "@comma/chat-contract/dynamic-ui-level": resolve(
+        "../../packages/chat-contract/src/dynamic-ui/level.ts"
+      ),
       "@comma/chat-contract/mini-app-runtime": resolve(
         "../../packages/chat-contract/src/mini-app/runtime.ts"
       ),
@@ -47,6 +50,7 @@ export default defineConfig({
         "../../packages/core/src/comma/api-schemas.ts"
       ),
       "@comma/core-client": resolve("../../packages/core-client/src/index.tsx"),
+      "@comma/i18n/messages": resolve("../../packages/i18n/src/paraglide/messages.js"),
       "@comma/i18n/react": resolve("../../packages/i18n/src/react.tsx"),
       "@comma/i18n": resolve("../../packages/i18n/src/index.ts"),
       "@comma/native-bridge": resolve("../../packages/native-bridge/src/index.ts"),

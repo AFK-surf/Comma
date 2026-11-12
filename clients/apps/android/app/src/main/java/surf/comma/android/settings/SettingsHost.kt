@@ -18,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import surf.comma.android.R
 import surf.comma.android.auth.AuthGraph
 import surf.comma.android.auth.AuthState
@@ -27,6 +28,7 @@ import surf.comma.android.notify.ReplyNotifications
 import surf.comma.android.notify.ReplyNotifier
 import surf.comma.android.settings.devices.HomeDeviceNotice
 import surf.comma.android.settings.devices.HomeDevices
+import surf.comma.android.ui.Background
 import java.io.File
 
 /**
@@ -39,6 +41,8 @@ internal class SettingsHost(
     private val embedded: Boolean,
     /** Shows a short notice; `true` marks a failure. */
     toast: (String, Boolean) -> Unit,
+    /** What Settings opens in the rest of the app; the settings activity has none of it. */
+    private val links: SettingsLinks? = null,
     onEmpty: () -> Unit = {},
 ) : SettingsContext {
     private val showToast = toast
@@ -47,6 +51,24 @@ internal class SettingsHost(
     override val local: LocalSettings by lazy { SettingsGraph.local(activity) }
     override val auth: AuthState get() = authRepository.state.value
     override val devices: HomeDevices by lazy { SettingsGraph.devices(activity) }
+    private val sessions by lazy { surf.comma.android.conversation.AuthConversationSessions(authRepository) }
+    override val apiHost: String get() = android.net.Uri.parse(surf.comma.android.BuildConfig.BACKEND_BASE_URL).host.orEmpty()
+
+    override fun workspaceScope(): surf.comma.android.settings.desktop.WorkspaceScope? {
+        val core = AuthGraph.core(activity) ?: return null
+        val session = sessions.scopes.value?.takeIf { it.workspaceId.isNotEmpty() } ?: return null
+        return surf.comma.android.settings.desktop.WorkspaceScope(core, sessions, session, activity.lifecycleScope)
+    }
+
+    override fun openTask(id: String) {
+        surf.comma.android.workspace.WorkspaceGraph.get(activity).openTask(id)
+        links?.shown?.invoke()
+    }
+
+    override fun openRouter() { links?.openRouter?.invoke() }
+
+    override suspend fun attachToRouter(name: String, bytes: ByteArray): Boolean = links?.attachToRouter?.invoke(name, bytes) == true
+
     override val workspaces get() = surf.comma.android.workspace.WorkspaceGraph.get(activity).tasks.state.value.workspaces
 
     val host = PageHost(activity, onEmpty).apply { keepsRoot = embedded }
@@ -119,6 +141,7 @@ internal class SettingsHost(
     }
 
     init {
+        host.onStackChanged = { host.post { (host.pages().firstOrNull() as? RootPage)?.markShown() } }
         ViewCompat.setOnApplyWindowInsetsListener(host) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             insetTop = bars.top
@@ -137,10 +160,26 @@ internal class SettingsHost(
                 launch { devices.notices.collect(::showDeviceNotice) }
             }
         }
+        // A Workspace page belongs to the account and Workspace it opened in; after a change the list opens it again.
+        activity.lifecycleScope.launch {
+            authRepository.conversationScope.collect { scope ->
+                val stale = host.pages().any { it is surf.comma.android.settings.desktop.WorkspacePage && !it.belongsTo(scope) }
+                if (stale) host.popToRoot()
+            }
+        }
     }
 
     /** Whether this is the Settings tab, whose root has no back button. */
     val isTab: Boolean get() = embedded
+
+    /** From the list: beside it in columns, a new page replaces the one shown, as the iOS app's do. */
+    override fun openFromList(page: SettingsPage) {
+        if (host.columns) host.popToRoot()
+        open(page)
+    }
+
+    /** The page shown beside the list, while there are columns. */
+    override val shownBesideList: String? get() = if (host.columns) host.keys.getOrNull(1) else null
 
     override fun open(page: SettingsPage) {
         inset(page)
@@ -192,11 +231,19 @@ internal class SettingsHost(
             try {
                 val prepared = AndroidImagePreprocessor(activity.contentResolver, directory, targetBytes = AVATAR_TARGET_BYTES).prepare(uri)
                 if (prepared.format == UploadImageFormat.GIF) {
-                    prepared.close()
-                    showNotice(SettingsNotice(SettingsAction.CHANGE_AVATAR, SettingsProblem.AVATAR_TYPE))
-                    return@launch
+                    // The server keeps no GIF: its middle goes up as a WebP, which moves when the GIF does.
+                    val webp = try {
+                        withContext(Background.files) {
+                            val bytes = MovingAvatar.webp(prepared.file.readBytes(), SettingsRepository.AVATAR_MAX_BYTES)
+                            File.createTempFile("avatar-", ".webp", directory).also { it.writeBytes(bytes) }
+                        }
+                    } finally {
+                        prepared.close()
+                    }
+                    account.changeAvatar(webp, "image/webp")
+                } else {
+                    account.changeAvatar(prepared.file, prepared.format.mime)
                 }
-                account.changeAvatar(prepared.file, prepared.format.mime)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -226,7 +273,15 @@ internal class SettingsHost(
     private companion object {
         const val PERMISSION_PREFS = "settings.permissions"
         const val BLUETOOTH_ASKED = "bluetooth.asked"
-        /** Under the server's 100 KB limit with some margin. */
+        /** What a still picture is compressed to; avatars render small. */
         const val AVATAR_TARGET_BYTES = 96L * 1024
     }
 }
+
+/** The app around the Settings tab. */
+internal class SettingsLinks(
+    val openRouter: () -> Unit,
+    val attachToRouter: suspend (String, ByteArray) -> Boolean,
+    /** A Task opened from Settings is shown over it. */
+    val shown: () -> Unit = {},
+)

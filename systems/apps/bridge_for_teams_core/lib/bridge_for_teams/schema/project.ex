@@ -22,9 +22,6 @@ defmodule BridgeForTeams.Schema.Project do
     # The Project <-> Salix link (design §2): the canonical Salix group id.
     field :salix_group_id, :string
     field :archived_at, :utc_datetime_usec
-    # Whether this swarm's agents provision a managed cloud VM (needed for
-    # OAuth-backed work — the agent uses credentials via env.exec). Default on.
-    field :vm_enabled, :boolean, default: true
 
     belongs_to :org, BridgeForTeams.Schema.Organization
     # Who created the Agent Swarm; nil for rows predating the column and for
@@ -48,8 +45,7 @@ defmodule BridgeForTeams.Schema.Project do
       :status,
       :salix_group_id,
       :archived_at,
-      :created_by_user_id,
-      :vm_enabled
+      :created_by_user_id
     ])
     |> reject_identity_update(attrs, :salix_group_id)
     |> validate_required([:org_id, :name, :salix_group_id])

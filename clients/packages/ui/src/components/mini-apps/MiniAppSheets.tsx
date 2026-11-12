@@ -1,8 +1,9 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "../Button";
 import { Dialog } from "../dialog";
-import { CircleInfoIcon, PauseIcon, WindowAppIcon } from "../icons";
+import { CircleInfoIcon, PauseIcon } from "../icons";
+import { InWindowNotice } from "../in-window-notice";
 
 type Messages = ReturnType<typeof useCommaMessages>;
 
@@ -31,6 +32,28 @@ export function miniAppCapabilityLabel(messages: Messages, capability: string): 
       return messages.mini_app_capability_clipboard_write();
     case "links.open":
       return messages.mini_app_capability_links_open();
+    case "microphone":
+      return messages.mini_app_capability_microphone();
+    case "camera":
+      return messages.mini_app_capability_camera();
+    case "location":
+      return messages.mini_app_capability_location();
+    case "screen.wake":
+      return messages.mini_app_capability_screen_wake();
+    case "fullscreen":
+      return messages.mini_app_capability_fullscreen();
+    case "clipboard.read":
+      return messages.mini_app_capability_clipboard_read();
+    case "share":
+      return messages.mini_app_capability_share();
+    case "haptics":
+      return messages.mini_app_capability_haptics();
+    case "midi":
+      return messages.mini_app_capability_midi();
+    case "usb":
+      return messages.mini_app_capability_usb();
+    case "bluetooth":
+      return messages.mini_app_capability_bluetooth();
     default:
       return capability;
   }
@@ -166,6 +189,80 @@ export function MiniAppConfirmSheet({
   );
 }
 
+export type MiniAppCameraSheetProps = {
+  appName: string;
+  /** The camera's live picture; null while it starts or when it failed. */
+  stream: MediaStream | null;
+  /** Why the camera cannot be used, when it failed. */
+  error?: string | undefined;
+  /** Takes the photo from the preview that the viewer sees now. */
+  onTake: (preview: HTMLVideoElement) => void;
+  onCancel: () => void;
+};
+
+/** Host UI for `camera.capture`: the viewer sees the camera and takes the one photo the app gets. */
+export function MiniAppCameraSheet({
+  appName,
+  stream,
+  error,
+  onTake,
+  onCancel,
+}: MiniAppCameraSheetProps) {
+  const messages = useCommaMessages();
+  const preview = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    const video = preview.current;
+    if (!video) return;
+    video.srcObject = stream;
+    setPlaying(false);
+  }, [stream]);
+  return (
+    <Dialog
+      actions={[
+        {
+          label: messages.mini_app_cancel(),
+          hierarchy: "secondary-gray",
+          onPress: onCancel,
+        },
+        {
+          label: messages.mini_app_camera_take(),
+          hierarchy: "primary",
+          disabled: !stream || !playing,
+          onPress: () => {
+            if (preview.current) onTake(preview.current);
+          },
+        },
+      ]}
+      description={messages.mini_app_camera_description()}
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title={messages.mini_app_camera_title({ name: appName })}
+    >
+      <div
+        className="relative flex aspect-4/3 w-full items-center justify-center overflow-hidden rounded-lg bg-tertiary"
+        data-testid="mini-app-camera-sheet"
+      >
+        <video
+          autoPlay
+          className="size-full object-cover"
+          muted
+          onPlaying={() => setPlaying(true)}
+          playsInline
+          ref={preview}
+        />
+        {error ? (
+          <p className="absolute inset-x-md text-center text-sm text-secondary">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
 export type MiniAppNoticeProps = {
   kind: "paused" | "failed" | "stalled" | "stopped" | "disabled" | "unavailable";
   /** Why it failed, when the host knows. */
@@ -220,25 +317,12 @@ export function MiniAppInWindowNotice({
 }: MiniAppInWindowNoticeProps) {
   const messages = useCommaMessages();
   return (
-    <output
-      className="flex flex-1 flex-col items-center justify-center gap-sm px-xl py-3xl text-center"
-      data-testid="mini-app-notice-in-window"
-    >
-      <WindowAppIcon className="size-5 text-fg-quaternary" />
-      <p className="text-sm font-semibold text-primary">
-        {messages.mini_app_in_window_title()}
-      </p>
-      <p className="max-w-(--container-xs) text-sm text-tertiary">
-        {messages.mini_app_in_window_description()}
-      </p>
-      <div className="flex flex-wrap justify-center gap-sm">
-        <Button hierarchy="secondary-gray" onPress={onShowWindow} size="sm">
-          {messages.mini_app_show_window()}
-        </Button>
-        <Button hierarchy="tertiary-gray" onPress={onMoveBack} size="sm">
-          {messages.mini_app_move_back()}
-        </Button>
-      </div>
-    </output>
+    <InWindowNotice
+      description={messages.mini_app_in_window_description()}
+      onMoveBack={onMoveBack}
+      onShowWindow={onShowWindow}
+      testId="mini-app-notice-in-window"
+      title={messages.mini_app_in_window_title()}
+    />
   );
 }

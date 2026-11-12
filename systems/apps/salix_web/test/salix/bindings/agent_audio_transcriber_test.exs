@@ -49,6 +49,90 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     assert_receive {:transcribed, ^size, ^size, "audio.ogg", _prompt}
   end
 
+  # 2026-10-29: the recording ASR wrote "Steel.fall" and "Cloud Code" and took
+  # names addressed in speech for speakers.
+  test "a meeting recording asks for the meeting's own spellings, and no others" do
+    stream_fun = fn _scope, _path -> {:ok, ["audio"], 5} end
+
+    assert {:ok, _} =
+             AgentAudioTranscriber.transcribe("agent-1", "/meetings/test/audio.ogg",
+               config_fun: fn -> {:ok, %{}} end,
+               stream_fun: stream_fun,
+               transcriber: RecordingTranscriber,
+               terms: ["JINFEI YANG", "Zijian Zuo", " ", "CFT", "JINFEI YANG"]
+             )
+
+    assert_received {:transcribed, 5, 5, "audio.ogg", prompt}
+    assert prompt =~ "Spell these names as written here: JINFEI YANG, Zijian Zuo, CFT."
+    # Every customer's meetings go through it, so it names no product itself.
+    refute prompt =~ "still.fail"
+  end
+
+  # 2026-11-10: a desktop recording wrote the team's people and products by
+  # sound ("金飞" for Jimmfly, "Steeltoe" for still.fail).
+  test "a desktop recording asks for its Group glossary's names and corrects only the text" do
+    stream_fun = fn _scope, _path -> {:ok, ["audio"], 5} end
+
+    glossary_fun = fn "group-1", "tenant-1" ->
+      {["still.fail", "Jimmfly"], [{"Speaker", "Talker"}]}
+    end
+
+    assert {:ok, result} =
+             AgentAudioTranscriber.transcribe("agent-1", "/meetings/test/audio.ogg",
+               config_fun: fn -> {:ok, %{}} end,
+               stream_fun: stream_fun,
+               transcriber: RecordingTranscriber,
+               glossary_of: {"group-1", "tenant-1"},
+               glossary_fun: glossary_fun
+             )
+
+    assert_received {:transcribed, 5, 5, "audio.ogg", prompt}
+    assert prompt =~ "still.fail, Jimmfly"
+    assert result.transcript == "[00:00:01] Talker: streamed"
+    assert [%{transcript: "[00:00:01] Speaker: streamed"}] = result.chunks
+  end
+
+  # Spoken Mandarin came back in traditional characters for a zh-CN user
+  # (Cue #5141); the audio does not decide the script, the person's locale does.
+  test "a desktop recording writes Chinese in the script of the person's locale" do
+    stream_fun = fn _scope, _path -> {:ok, ["audio"], 5} end
+
+    prompt_for = fn locale ->
+      assert {:ok, _} =
+               AgentAudioTranscriber.transcribe("agent-1", "/meetings/test/audio.ogg",
+                 config_fun: fn -> {:ok, %{}} end,
+                 stream_fun: stream_fun,
+                 transcriber: RecordingTranscriber,
+                 glossary_of: {"group-1", "tenant-1"},
+                 glossary_fun: fn _group, _tenant -> {[], []} end,
+                 locale: locale
+               )
+
+      assert_received {:transcribed, 5, 5, "audio.ogg", prompt}
+      prompt
+    end
+
+    assert prompt_for.("zh-TW") =~ "traditional Chinese"
+    assert prompt_for.("zh_CN") =~ "simplified Chinese"
+    refute prompt_for.("en-US") =~ ~r/(simplified|traditional) Chinese/
+  end
+
+  test "a desktop recording whose glossary cannot be read is still transcribed" do
+    stream_fun = fn _scope, _path -> {:ok, ["audio"], 5} end
+
+    assert {:ok, %{transcript: "[00:00:01] Speaker: streamed"}} =
+             AgentAudioTranscriber.transcribe("agent-1", "/meetings/test/audio.ogg",
+               config_fun: fn -> {:ok, %{}} end,
+               stream_fun: stream_fun,
+               transcriber: RecordingTranscriber,
+               glossary_of: {"group-1", "tenant-1"},
+               glossary_fun: fn _group, _tenant -> raise "control db unavailable" end
+             )
+
+    assert_received {:transcribed, 5, 5, "audio.ogg", prompt}
+    refute prompt =~ "Names:"
+  end
+
   test "rejects paths outside the normal agent-visible workspace" do
     opts = [config_fun: fn -> {:ok, %{}} end]
 
@@ -75,8 +159,8 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
 
     assert {:ok, _} = upload.([])
     assert_received {:transcribed, 3, 3, "recording.m4a", recording_prompt}
-    # A meeting recording keeps the tier's own settings.
-    assert_received {:asked, %{}, []}
+    # A meeting recording keeps the tier's own settings and is cut at pauses.
+    assert_received {:asked, %{}, [voice: true]}
     assert {:ok, _} = upload.(purpose: :dictation)
     assert_received {:transcribed, 3, 3, "recording.m4a", dictation_prompt}
     refute dictation_prompt == recording_prompt
@@ -84,6 +168,8 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     assert_received {:asked, %{"reasoning_effort" => "low"}, opts}
     assert is_function(opts[:transcribe_fun], 4)
     assert opts[:batch_timeout_ms] < 10_000
+    # Audio without speech is told from speech before the model is asked.
+    assert opts[:voice]
   end
 
   defmodule DictationTranscriber do
@@ -115,18 +201,36 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     assert rem(div(data_size, 2), 1_152) == 0
   end
 
-  test "more words than a second of speech can hold are refused" do
-    # A second of speech, then two of silence, which hold no words.
-    pcm = :binary.copy(<<1_000::signed-little-16>>, 16_000) <> :binary.copy(<<0, 0>>, 32_000)
+  @tag :ffmpeg
+  test "dictation without a voiced sound is not asked, and words its speech cannot hold are dropped" do
+    test = SystemsRuntime.Proc.self()
+
+    dictate = fn pcm, answer ->
+      AgentAudioTranscriber.transcribe_dictation(pcm,
+        config_fun: fn -> {:ok, %{}} end,
+        transcribe_fun: fn _cfg, _audio, "mp3", _prompt ->
+          SystemsRuntime.Proc.send(test, :asked)
+          {:ok, answer}
+        end
+      )
+    end
 
     made_up =
       "Help me update my project schedule on Notion and check for new notifications on GitHub."
 
-    assert {:error, :asr_words_exceed_audio} = dictate(pcm, made_up)
+    # Three seconds of a quiet room: the model, which would make a request up, is not asked.
+    quiet = :binary.copy(<<20::signed-little-16>>, 48_000)
+    assert {:error, :asr_empty_transcript} = dictate.(quiet, made_up)
+    refute_received :asked
 
-    assert {:error, :asr_words_exceed_audio} =
-             dictate(pcm, "帮我把 Comma 那个群里的消息转发到 Slack 的通知频道里面去。")
+    # A second of speech, then two of silence, which hold no words.
+    pcm = :binary.copy(<<1_000::signed-little-16>>, 16_000) <> :binary.copy(<<0, 0>>, 32_000)
+    assert {:error, :asr_empty_transcript} = dictate.(pcm, made_up)
+    assert_received :asked
 
-    assert {:ok, "好的，谢谢"} = dictate(pcm, "好的，谢谢")
+    assert {:error, :asr_empty_transcript} =
+             dictate.(pcm, "帮我把 Comma 那个群里的消息转发到 Slack 的通知频道里面去。")
+
+    assert {:ok, "好的，谢谢"} = dictate.(pcm, "好的，谢谢")
   end
 end

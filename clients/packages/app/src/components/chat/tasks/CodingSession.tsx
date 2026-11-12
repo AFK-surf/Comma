@@ -46,6 +46,7 @@ import { toast } from "@comma/ui/components/toast";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import { Button as AriaButton } from "react-aria-components";
 import {
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -119,10 +120,17 @@ export function Code({ lang, text }: { lang: string; text: string }) {
 /**
  * A unified diff line by line, whole: its hunk headers, the lines added and removed in their colours, the rest as it
  * is. Where the hunk headers give them, a gutter shows each line's number in the file (the old file's for a removed
- * line). Wrapped to the width when `wrap`, else as wide as its longest line, scrolled.
+ * line). Wrapped to the width when `wrap`, else as wide as its longest line, scrolled. A diff can run to thousands of
+ * lines, so it renders again only when it or `wrap` changes, not with each change of the panel around it.
  */
-export function DiffBlock({ diff, wrap = false }: { diff: string; wrap?: boolean }) {
-  const rows = diffRows(diff);
+export const DiffBlock = memo(function DiffBlock({
+  diff,
+  wrap = false,
+}: {
+  diff: string;
+  wrap?: boolean;
+}) {
+  const rows = useMemo(() => diffRows(diff), [diff]);
   const numbered = rows.some((row) => row.number !== null);
   return (
     <div
@@ -142,7 +150,7 @@ export function DiffBlock({ diff, wrap = false }: { diff: string; wrap?: boolean
       ))}
     </div>
   );
-}
+});
 
 type DiffLineKind = "hunk" | "meta" | "add" | "del" | "context";
 type DiffRow = { kind: DiffLineKind; text: string; number: number | null };

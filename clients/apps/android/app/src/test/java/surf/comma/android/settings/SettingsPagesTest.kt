@@ -63,6 +63,7 @@ class SettingsPagesTest {
             override fun applyTheme(value: Appearance) = Unit
             override fun applyTextSize(value: TextSize) = Unit
             override fun applyLanguage(value: Language) = Unit
+            override fun applyGlass(value: Boolean) = Unit
         })
         override val auth: AuthState = AuthState.Connected(Account("usr_test_a", "ada@example.test", null, "active"),
             WorkspaceSelection(Workspace("wsp_test", "grp_test_1", "Test"), "cnv_test_main"))
@@ -122,6 +123,24 @@ class SettingsPagesTest {
         assertNotNull("a confirmation is shown", dialog)
         assertTrue(dialog.isShowing)
         return dialog.window!!.decorView.findViewById(R.id.settings_dialog_confirm)
+    }
+
+    @Test fun deletingTheAccountAsksForTheEmailBeforeTheCode() {
+        val root = show(RootPage(ctx))
+        find(root, R.id.settings_delete_account)!!.performClick()
+        confirmDialog().performClick()
+        settle()
+        val dialog = ShadowDialog.getLatestDialog().window!!.decorView
+        val email = dialog.findViewById<android.widget.EditText>(R.id.settings_delete_account_email_input)
+        val send = dialog.findViewById<View>(R.id.settings_dialog_confirm)
+        assertFalse("nothing to send before the email is typed", send.isEnabled)
+        email.setText("someone@example.test")
+        assertFalse("another email does not confirm", send.isEnabled)
+        email.setText("Ada@Example.test")
+        assertTrue(send.isEnabled)
+        assertTrue("no code before the email is confirmed", core.called("accountDeletion.requestCode").isEmpty())
+        send.performClick()
+        waitFor { core.called("accountDeletion.requestCode").size == 1 }
     }
 
     @Test fun signingOutAsksFirst() {

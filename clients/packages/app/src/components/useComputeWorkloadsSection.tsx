@@ -10,15 +10,12 @@ const preparing = (w: CommaComputeWorkload) =>
   (w.desired_state === "ready" &&
     ["waiting_connection", "allocating", "starting"].includes(w.phase ?? ""));
 
-const locationUnknown = (w: CommaComputeWorkload) =>
-  w.location?.provider !== "agent_vmm" && w.location?.provider !== "cloudflare";
-
 const workloadLabel = (w: CommaComputeWorkload) =>
   w.name || `${w.kind === "shell" ? "Shell" : w.kind} ${w.id.slice(-8)}`;
 
-/** Only a problem that does not retry by itself needs the member's retry. */
-const needsRetry = (w: Pick<CommaComputeWorkload, "problem" | "generation">) =>
-  w.problem?.retryable === false && w.generation !== undefined;
+/** The server says whether a member may retry; business owners recover their own Workloads. */
+const needsRetry = (w: Pick<CommaComputeWorkload, "actions" | "generation">) =>
+  w.actions?.retry === true && w.generation !== undefined;
 
 /** The devices list's names, by Comma Device id, and this device's id. */
 export interface ComputeWorkloadDevices {
@@ -66,9 +63,25 @@ export function useComputeWorkloadsSection(
     ? environmentChoice
     : (projection?.environments.find((e) => e.can_create)?.id ?? "");
   const [pending, setPending] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const error = actionError || (shown?.error ? m.compute_read_failed() : "");
-  const [mode, setMode] = useState<"create" | "workload" | "owner">();
+  const [createActionError, setCreateError] = useState("");
+  const createError: string =
+    createActionError ||
+    (shown?.creationReadError ? m.compute_detail_read_failed() : "");
+  const [detailError, setDetailError] = useState("");
+  const [dialogError, setDialogError] = useState("");
+  const [retryError, setRetryError] = useState<{
+    id: string;
+    message: string;
+    revision?: number | undefined;
+    generation?: number | undefined;
+  }>();
+  const error: string = shown?.error ? m.compute_read_failed() : "";
+  const deletion = shown?.deletion;
+  const rowActionError: { id: string; message: string } | undefined =
+    deletion?.uncertain
+      ? { id: deletion.workloadId, message: m.compute_operation_unknown() }
+      : retryError;
+  const [mode, setMode] = useState<"create" | "workload">();
   const [name, setName] = useState("");
   const [dialog, setDialog] = useState<"rename" | "delete">();
   const [selectedUse, setSelectedUse] =
@@ -83,7 +96,10 @@ export function useComputeWorkloadsSection(
     setEnvironmentChoice("");
     setWorkloadAfter("");
     setPending(false);
-    setActionError("");
+    setCreateError("");
+    setDetailError("");
+    setDialogError("");
+    setRetryError(undefined);
     setMode(undefined);
     selectionEpoch.current++;
     setSelected(undefined);
@@ -94,9 +110,9 @@ export function useComputeWorkloadsSection(
 
   // The local node's tick drives the reads while it is available.
   useEffect(() => {
-    if (observationTick !== undefined && enabled)
+    if (observationTick !== undefined && enabled && !hidden)
       void call("compute.observe", {}).catch(() => undefined);
-  }, [call, enabled, observationTick]);
+  }, [call, enabled, hidden, observationTick]);
   const refresh = useCallback(
     () => void call("compute.refresh", {}).catch(() => undefined),
     [call]
@@ -113,7 +129,7 @@ export function useComputeWorkloadsSection(
     lock.current = true;
     try {
       setPending(true);
-      setActionError("");
+      setCreateError("");
       await call("compute.create", {
         workspace: workspaceId,
         environment: target.environmentId,
@@ -124,7 +140,7 @@ export function useComputeWorkloadsSection(
       if (scope.current === targetScope) {
         setMode(undefined);
         const failure = reason as { code?: unknown; status?: unknown } | null;
-        setActionError(
+        setCreateError(
           failure?.code === "node_offline"
             ? m.compute_node_offline()
             : failure?.code === "capacity_unavailable"
@@ -143,7 +159,31 @@ export function useComputeWorkloadsSection(
       if (scope.current === targetScope) setPending(false);
     }
   }, [cloud, call, workspaceId, environmentId, name, creation, m]);
-  const close = () => setMode(undefined);
+  const close = () => {
+    selectionEpoch.current++;
+    setDetailError("");
+    setMode(undefined);
+  };
+  const observedCreation = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (creation) observedCreation.current = creation.requestId;
+    else if (observedCreation.current) {
+      observedCreation.current = undefined;
+      setCreateError("");
+    }
+  }, [creation]);
+  useEffect(() => {
+    if (!retryError) return;
+    const row = projection?.workloads.find((w) => w.id === retryError.id);
+    if (
+      row &&
+      row.generation === retryError.generation &&
+      (row.revision ?? 0) > (retryError.revision ?? 0) &&
+      ((row.phase === "ready" && row.observed_state === "ready" && !row.problem) ||
+        ["deleted", "cloud_retired"].includes(row.phase ?? ""))
+    )
+      setRetryError(undefined);
+  }, [projection, retryError]);
   const stateLabel = (w: CommaComputeWorkload): string =>
     w.desired_state === "draining" || w.observed_state === "draining"
       ? m.compute_work_draining()
@@ -160,19 +200,65 @@ export function useComputeWorkloadsSection(
                 : w.observed_state === "failed"
                   ? m.compute_work_failed()
                   : m.compute_work_other();
-  const rows = [...(projection?.workloads ?? [])];
+  const observed = deletion?.workload;
+  const terminalTarget = (w: CommaComputeWorkload) =>
+    !!deletion?.terminal &&
+    w.id === deletion.workloadId &&
+    w.generation === deletion.generation;
+  const rows = [...(projection?.workloads ?? [])]
+    .map((row) =>
+      observed?.id === row.id && (observed.revision ?? 0) >= (row.revision ?? 0)
+        ? observed
+        : row
+    )
+    .filter(
+      (row) =>
+        !terminalTarget(row) &&
+        !["deleted", "cloud_retired"].includes(row.phase ?? "") &&
+        !["complete", "cloud_retired"].includes(row.deletion?.phase ?? "")
+    );
+  if (
+    observed &&
+    !["deleted", "cloud_retired"].includes(observed.phase ?? "") &&
+    !["complete", "cloud_retired"].includes(observed.deletion?.phase ?? "") &&
+    !rows.some((row) => row.id === observed.id)
+  )
+    rows.unshift(observed);
   if (
     accepted &&
+    !terminalTarget(accepted) &&
     !["deleted", "cloud_retired"].includes(accepted.phase ?? "") &&
     !["complete", "cloud_retired"].includes(accepted.deletion?.phase ?? "") &&
     !rows.some((w) => w.id === accepted.id)
   )
     rows.unshift(accepted);
   const row = rows.find((w) => w.id === selected?.id);
-  const current =
+  const observedDeletion =
+    selected && deletion?.workload?.id === selected.id ? deletion.workload : undefined;
+  const listedCurrent =
     selected && (!row || (selected.revision ?? 0) >= (row.revision ?? 0))
       ? selected
-      : row;
+      : row && selected?.generation === row.generation
+        ? { ...selected, ...row }
+        : row;
+  // Lists omit detail-only facts. An exact detail wins ties; matching owner receipts can still advance its status.
+  const current =
+    observedDeletion &&
+    (!listedCurrent ||
+      observedDeletion.generation === undefined ||
+      listedCurrent.generation === undefined ||
+      observedDeletion.generation >= listedCurrent.generation) &&
+    (!listedCurrent ||
+      (observedDeletion.revision ?? 0) >= (listedCurrent.revision ?? 0))
+      ? listedCurrent && listedCurrent.generation === observedDeletion.generation
+        ? {
+            ...listedCurrent,
+            ...observedDeletion,
+            name: observedDeletion.name ?? listedCurrent.name,
+            location: observedDeletion.location ?? listedCurrent.location,
+          }
+        : observedDeletion
+      : listedCurrent;
   const location = (w: Pick<CommaComputeWorkload, "location">): string => {
     if (w.location?.provider === "cloudflare") return m.compute_location_cloud();
     if (w.location?.provider !== "agent_vmm") return m.compute_location_unknown();
@@ -203,18 +289,25 @@ export function useComputeWorkloadsSection(
     if (!workspaceId || !cloud) return;
     const epoch = ++selectionEpoch.current;
     setSelected(w);
+    setCreateError("");
+    setDetailError("");
     setMode("workload");
     const targetScope = workspaceId;
     void call("compute.workload", { workspace: workspaceId, id: w.id }).then(
       (workload) => {
-        if (scope.current === targetScope && selectionEpoch.current === epoch)
+        if (scope.current === targetScope && selectionEpoch.current === epoch) {
           setSelected(workload);
+          setDetailError("");
+        }
       },
       () => {
         if (scope.current === targetScope && selectionEpoch.current === epoch)
-          setActionError(m.compute_read_failed());
+          setDetailError(m.compute_detail_read_failed());
       }
     );
+  };
+  const refreshDetail = () => {
+    if (selected) openWorkload(selected);
   };
   const retry = async (w: Pick<CommaComputeWorkload, "id" | "generation">) => {
     if (!workspaceId || !cloud || lock.current || w.generation === undefined) return;
@@ -229,11 +322,17 @@ export function useComputeWorkloadsSection(
       });
       if (scope.current === targetScope) {
         setSelected(workload);
-        setActionError("");
+        setRetryError(undefined);
       }
     } catch {
       if (scope.current === targetScope)
-        setActionError(m.compute_workload_mutation_failed());
+        setRetryError({
+          id: w.id,
+          message: m.compute_workload_mutation_failed(),
+          revision: projection?.workloads.find((candidate) => candidate.id === w.id)
+            ?.revision,
+          generation: w.generation,
+        });
     } finally {
       lock.current = false;
       if (scope.current === targetScope) setPending(false);
@@ -244,7 +343,7 @@ export function useComputeWorkloadsSection(
     if (!targetWorkload || !workspaceId || !cloud || lock.current) return;
     lock.current = true;
     setPending(true);
-    setActionError("");
+    setDialogError("");
     const targetScope = workspaceId;
     try {
       let workload: CommaComputeWorkload;
@@ -260,6 +359,8 @@ export function useComputeWorkloadsSection(
           workspace: workspaceId,
           id: targetWorkload.id,
           generation: targetWorkload.generation,
+          // Every explicit Delete dialog is a fresh confirmation; core checks whether legacy recovery needs it.
+          confirmLegacy: true,
           ...(targetWorkload.deletion?.request_id
             ? { request: targetWorkload.deletion.request_id }
             : {}),
@@ -269,9 +370,85 @@ export function useComputeWorkloadsSection(
         setSelected(workload);
         setDialog(undefined);
       }
+    } catch (reason) {
+      if (scope.current === targetScope) {
+        const code = (reason as { code?: string } | null)?.code;
+        const refused =
+          code &&
+          [
+            "invalid_deletion_request",
+            "revision_conflict",
+            "stale_generation",
+            "deletion_in_progress",
+            "business_owner_required",
+            "update_in_progress",
+            "unsupported_provider",
+            "shared_allocation",
+          ].includes(code);
+        if (dialog === "delete" && !refused) setDialog(undefined);
+        else
+          setDialogError(
+            dialog === "delete"
+              ? code === "revision_conflict" || code === "stale_generation"
+                ? m.compute_delete_generation_changed()
+                : code === "business_owner_required"
+                  ? m.compute_delete_business_owner()
+                  : code === "shared_allocation"
+                    ? m.compute_delete_shared_allocation()
+                    : code === "update_in_progress"
+                      ? m.compute_delete_update_in_progress()
+                      : code === "deletion_in_progress"
+                        ? m.compute_delete_in_progress()
+                        : code === "unsupported_provider"
+                          ? m.compute_delete_unsupported_provider()
+                          : m.compute_delete_refused()
+              : m.compute_workload_mutation_failed()
+          );
+      }
+    } finally {
+      lock.current = false;
+      if (scope.current === targetScope) setPending(false);
+    }
+  };
+  const checkDeletion = async () => {
+    if (!workspaceId || !deletion || lock.current) return;
+    const targetScope = workspaceId;
+    lock.current = true;
+    setPending(true);
+    try {
+      await call("compute.workload", {
+        workspace: workspaceId,
+        id: deletion.workloadId,
+      });
     } catch {
-      if (scope.current === targetScope)
-        setActionError(m.compute_workload_mutation_failed());
+      /* The original request stays uncertain; absence or an unreadable owner is not completion. */
+    } finally {
+      lock.current = false;
+      if (scope.current === targetScope) setPending(false);
+    }
+  };
+  const resumeDeletion = async () => {
+    if (
+      !workspaceId ||
+      !deletion?.uncertain ||
+      deletion.generation === undefined ||
+      lock.current
+    )
+      return;
+    const targetScope = workspaceId;
+    lock.current = true;
+    setPending(true);
+    try {
+      const workload = await call("compute.delete", {
+        workspace: workspaceId,
+        id: deletion.workloadId,
+        generation: deletion.generation,
+        request: deletion.requestId,
+      });
+      if (scope.current === targetScope && selected?.id === workload.id)
+        setSelected(workload);
+    } catch {
+      /* Core retains the same request and its result-check feedback. */
     } finally {
       lock.current = false;
       if (scope.current === targetScope) setPending(false);
@@ -290,11 +467,15 @@ export function useComputeWorkloadsSection(
   };
   const openCreate = () => {
     if (creation) return;
+    setCreateError("");
     setName(m.compute_ui_new_name());
     setMode("create");
   };
   const openDialog = (kind: "rename" | "delete", workload: CommaComputeWorkload) => {
     selectionEpoch.current++;
+    setDialogError("");
+    setCreateError("");
+    setDetailError("");
     setDialogTarget(workload);
     setSelected(workload);
     setName(workloadLabel(workload));
@@ -304,19 +485,19 @@ export function useComputeWorkloadsSection(
     w.kind === "shell" ? m.compute_delete_shell() : m.compute_ui_delete_section();
   const openUse = (use: NonNullable<CommaComputeWorkload["uses"]>[number]) => {
     setSelectedUse(use);
-    setMode("owner");
+    setMode("workload");
   };
   const overlay =
     dialog && dialogTarget ? (
       <Dialog
         isOpen
         isDismissable={!pending}
-        title={dialog === "rename" ? m.compute_rename() : deleteLabel(dialogTarget)}
-        description={
-          dialog === "delete"
-            ? m.compute_delete_shell_confirm({ name: workloadLabel(dialogTarget) })
-            : undefined
+        title={
+          dialog === "rename"
+            ? m.compute_rename()
+            : m.compute_delete_workload_title({ name: workloadLabel(dialogTarget) })
         }
+        description={dialog === "delete" ? m.compute_delete_shell_confirm() : undefined}
         variant={dialog === "rename" ? "input" : "default"}
         {...(dialog === "rename"
           ? {
@@ -343,21 +524,23 @@ export function useComputeWorkloadsSection(
             label:
               dialog === "rename"
                 ? m.compute_save_name()
-                : m.compute_ui_delete_section(),
+                : m.compute_delete_workload_action(),
             hierarchy: dialog === "delete" ? "destructive" : "primary",
             disabled: pending || (dialog === "rename" && !name.trim()),
             onPress: () => void mutate(),
           },
         ]}
       >
-        {dialog === "delete" && (
-          <p className="break-words text-xs font-regular text-quaternary">
-            {m.compute_location()}: {location(dialogTarget)}.
-            {locationUnknown(dialogTarget) &&
-              ` ${m.compute_delete_shell_node_unknown()}`}
-          </p>
-        )}
-        {error ? <p role="alert">{error}</p> : null}
+        {dialog === "delete" &&
+          (dialogTarget.location?.provider === "cloudflare" ||
+            (dialogTarget.location?.device_id &&
+              (dialogTarget.location.device_id === devices?.localId ||
+                devices?.names.get(dialogTarget.location.device_id)))) && (
+            <p className="break-words text-xs font-regular text-quaternary">
+              {m.compute_location()}: {location(dialogTarget)}.
+            </p>
+          )}
+        {dialogError ? <p role="alert">{dialogError}</p> : null}
       </Dialog>
     ) : undefined;
   return {
@@ -372,6 +555,21 @@ export function useComputeWorkloadsSection(
     setName,
     pending,
     error,
+    observationPaused: shown?.observationPaused ?? false,
+    createError,
+    detailError,
+    rowActionError,
+    deleteUncertainId: deletion?.uncertain ? deletion.workloadId : undefined,
+    legacyDeleteTargetId:
+      deletion?.uncertain && deletion.generation === undefined
+        ? deletion.workloadId
+        : undefined,
+    canContinueDeletion:
+      !!deletion?.uncertain &&
+      deletion.generation !== undefined &&
+      deletion.canContinue !== false,
+    resumeDeletion,
+    checkDeletion,
     creation,
     canCreate,
     canPrepare,
@@ -386,6 +584,7 @@ export function useComputeWorkloadsSection(
     backToWorkload: () => setMode("workload"),
     retry,
     refresh,
+    refreshDetail,
     workloadLabel,
     deleteLabel,
     stateLabel,

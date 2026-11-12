@@ -32,6 +32,15 @@ describe("toNotchTaskItems", () => {
     ]);
   });
 
+  it("carries when each Task's run started, so a dismissed row comes back at the next run", () => {
+    expect(
+      toNotchTaskItems(
+        [{ ...task("running", "in_progress", 20), runStartedAt: 15 }],
+        "In progress"
+      )
+    ).toMatchObject([{ id: "running", runStartedAt: 15 }]);
+  });
+
   it("returns an empty projection when no task is in progress", () => {
     expect(
       toNotchTaskItems([task("review", "needs_review", 10)], "In progress")

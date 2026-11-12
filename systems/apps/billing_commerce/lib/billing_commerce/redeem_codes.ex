@@ -209,7 +209,7 @@ defmodule BillingCommerce.RedeemCodes do
          end) do
       {:ok, result} ->
         project_redemption(result)
-        {:ok, result}
+        {:ok, issue_current_cycles(result, command)}
 
       {:error, reason} ->
         {:error, reason}
@@ -221,6 +221,24 @@ defmodule BillingCommerce.RedeemCodes do
       apply_code(command)
     end
   end
+
+  # A redeemed subscription's credits for the current period are issued before the redeem answers, so the
+  # balance read right after it shows them. Later periods, and a failed issue here, are left to the scheduler.
+  defp issue_current_cycles(%{cycles: [_ | _] = cycles, idempotent: false} = result, command) do
+    {:ok, at} = resolve_command_datetime(command.at)
+
+    {:ok, _issued} =
+      Subscriptions.run_due_cycles(%{
+        repo: repo(command),
+        sql_runner: sql(command),
+        at: at,
+        cycle_ids: Enum.map(cycles, & &1.id)
+      })
+
+    result
+  end
+
+  defp issue_current_cycles(result, _command), do: result
 
   defp apply_redemption(
          repo,

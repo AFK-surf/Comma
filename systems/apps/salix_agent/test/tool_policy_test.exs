@@ -85,13 +85,14 @@ defmodule SalixAgent.ToolPolicyTest do
     assert worker_content =~ "base"
   end
 
-  test "a concise reply style adds its section to the Router prompt only" do
+  test "a concise reply style adds its section to the Router and Worker prompts" do
     concise = %{"reply_style" => "concise"}
 
     refute session_prompt("router", %{}) =~ "## Reply style: concise"
     refute session_prompt("router", %{"reply_style" => "default"}) =~ "## Reply style: concise"
     assert session_prompt("router", concise) =~ "## Reply style: concise"
-    refute session_prompt("worker", concise) =~ "## Reply style: concise"
+    assert session_prompt("worker", concise) =~ "## Reply style: concise"
+    refute session_prompt("worker", %{}) =~ "## Reply style: concise"
 
     # The owner's own instructions follow the preset, so theirs decide.
     prompt =

@@ -34,6 +34,17 @@ defmodule Comma.OauthIdp.ResourceOwnersTest do
     assert {:error, _} = ResourceOwners.get_by(username: "idp-ro@example.com")
   end
 
+  test "a restricted email resolves on neither lookup" do
+    Comma.TestSupport.MxRecords.put(%{"catchall.test" => ["route1.mx.cloudflare.net"]})
+
+    for email <- ["idp-ro@catchall.test", "idp-ro@0r9.org"] do
+      {:ok, user} = Comma.Accounts.get_or_create_user_by_email(email)
+
+      assert {:error, _} = ResourceOwners.get_by(sub: user["id"])
+      assert {:error, _} = ResourceOwners.get_by(username: email)
+    end
+  end
+
   test "check_password always fails", %{user: user} do
     {:ok, owner} = ResourceOwners.get_by(sub: user["id"])
 

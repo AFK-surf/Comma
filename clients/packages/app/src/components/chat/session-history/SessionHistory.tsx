@@ -88,6 +88,7 @@ export function usePresentedRecords(
             lark: "Lark",
             wechat: "WeChat",
             imessage: "iMessage",
+            line: "LINE",
             voice: m.session_source_voice(),
             signal: "Signal",
           }[provider];

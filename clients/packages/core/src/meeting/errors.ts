@@ -39,9 +39,9 @@ export function meetingSubmissionError(
     const failure = error.failure;
     if (failure.kind === "registration")
       detail = failure.remediation
-        ? "Reconnect the workspace Connector."
+        ? "Reconnect the workspace's station."
         : failure.retryable
-          ? "The Connector or file registration is temporarily unavailable."
+          ? "The station or file registration is temporarily unavailable."
           : "File registration was rejected or local confirmation failed.";
     else if (failure.kind === "snapshot")
       detail = `Local file error: ${failure.errorClass}.`;

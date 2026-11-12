@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="mini_app_artwork_job" type="id" />
+    <item name="tab_apps" type="id" />
+    <item name="mini_app_back" type="id" />
+    <item name="mini_app_menu" type="id" />
+    <item name="mini_app_run" type="id" />
+    <item name="mini_app_search" type="id" />
+</resources>

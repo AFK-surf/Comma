@@ -33,6 +33,24 @@ data class MarkdownSpan(
     val latex: String? = null,
 )
 
+internal fun MarkdownText.taskAt(offset: Int): String? = spans.firstOrNull {
+    it.style == MarkdownStyle.LINK && offset >= it.start && offset < it.end
+}?.href?.takeIf { it.startsWith("comma:task/") }?.removePrefix("comma:task/")?.takeIf { it.isNotBlank() }
+
+internal fun MarkdownSpan.webUrl(): String? =
+    href?.takeIf { style == MarkdownStyle.LINK && WEB_URL.containsMatchIn(it) }
+
+private val WEB_URL = Regex("^https?://", RegexOption.IGNORE_CASE)
+
+/** What a tap on a link in a message opens. */
+internal sealed class LinkSpan : android.text.style.CharacterStyle() {
+    override fun updateDrawState(paint: android.text.TextPaint) = Unit
+}
+
+internal data class TaskLinkSpan(val taskId: String) : LinkSpan()
+
+internal data class WebLinkSpan(val url: String) : LinkSpan()
+
 enum class MarkdownStyle { BOLD, ITALIC, STRIKE, CODE, LINK, MATH }
 
 /**
@@ -382,6 +400,8 @@ object MarkdownSpans {
                     colors?.let { mark(InlineCodeSpan(it.inlineCodeText, it.inlineCodeBackground)) }
                 }
                 MarkdownStyle.LINK -> {
+                    text.taskAt(span.start)?.let { mark(TaskLinkSpan(it)) }
+                    span.webUrl()?.let { mark(WebLinkSpan(it)) }
                     mark(UnderlineSpan())
                     colors?.let { mark(ForegroundColorSpan(it.link)) }
                 }

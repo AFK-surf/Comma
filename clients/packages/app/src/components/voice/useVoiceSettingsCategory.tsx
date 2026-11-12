@@ -17,6 +17,7 @@ import {
   VoiceDialog,
   type VoiceDialogState,
 } from "./VoiceSettings";
+import { useVoicePreview } from "./useVoicePreview";
 
 type Messages = ReturnType<typeof useCommaMessages>;
 
@@ -162,6 +163,7 @@ export function useVoiceSettingsCategory(
   const [created, setCreated] = useState<VoiceKeyCreated>();
   const [dialog, setDialog] = useState<VoiceDialogState>();
   const [dialogError, setDialogError] = useState<string>();
+  const preview = useVoicePreview(activeWorkspaceId, locale);
   const load = useCallback(
     () =>
       call("voice.refresh", {}).then(
@@ -171,11 +173,13 @@ export function useVoiceSettingsCategory(
     [call]
   );
 
+  const stopPreview = preview.stop;
   useEffect(() => {
     if (enabled) return;
     setCreated(undefined);
     setDialog(undefined);
-  }, [enabled]);
+    stopPreview();
+  }, [enabled, stopPreview]);
 
   const openDialog = useCallback((next: VoiceDialogState | undefined) => {
     setDialogError(undefined);
@@ -539,6 +543,35 @@ export function useVoiceSettingsCategory(
             }),
           ],
           onChange: (id) => setPreferences({ voice: voiceChoice(id) }),
+        },
+      },
+      {
+        id: "voice.calls.preview",
+        title: m.settings_voice_preview(),
+        description: m.settings_voice_preview_description(),
+        ...(preview.failed ? { errorMessage: m.settings_voice_preview_failed() } : {}),
+        control: {
+          type: "button",
+          label:
+            preview.phase === "loading"
+              ? m.settings_voice_preview_loading()
+              : preview.phase === "playing"
+                ? m.settings_voice_preview_stop()
+                : m.settings_voice_preview_play(),
+          disabled: !activeWorkspaceId || preview.phase === "loading",
+          onPress: () => {
+            if (preview.phase === "playing") {
+              preview.stop();
+              return;
+            }
+            // Each voice's sample is kept apart: a preset by name, a custom voice by its own key (a new voice, a new key).
+            const choice = prefs.voice;
+            const key =
+              choice?.kind === "custom"
+                ? `custom:${custom?.sample_key ?? custom?.description ?? ""}`
+                : voiceId(choice);
+            void preview.play(choice, key);
+          },
         },
       },
       {

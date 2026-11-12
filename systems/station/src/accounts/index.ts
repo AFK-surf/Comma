@@ -709,6 +709,27 @@ export class Accounts {
     return { state, url: job.url, error: failed ? (asked.error ?? job.error ?? null) : null };
   }
 
+  /// Salix's `account_source` on the desktop connection `host`: the computer's owner, answering a confirmation in a
+  /// Comma conversation, chose this machine's own login of `runtime` for that connection's Workspace. Only `local` is
+  /// set this way; Salix checks that the owner answered. Answers once the login is read and, when it is signed in, its
+  /// profile made, so the Workspace's Tasks may run on it as soon as the answer arrives.
+  async chooseLocalForHost(host: string, runtime: unknown, by: string, lang: Lang = stationLang()): Promise<Json> {
+    const r = runtimeOf(runtime);
+    if (!r) throw new Refusal(400, `unknown runtime ${text(runtime)}`, "unknown_runtime");
+    if (this.deps.managed) throw new Refusal(409, tr(lang, "station.source.noWorkspace"), "managed_station");
+    const workspace = this.sources.workspaceOfHost(host);
+    if (workspace === null) throw new Refusal(409, tr(lang, "station.source.noWorkspace"), "unknown_workspace");
+    this.setSource(workspace, r, "local", by, false);
+    await this.machine?.refreshNew().catch(() => undefined);
+    const login = this.machine?.get().find((l) => l.runtime === r);
+    const signedIn = login?.loggedIn === true && login.usable === true;
+    const id = `machine-${r}`;
+    if (signedIn && !this.profile(id)) this.saveMachineProfile(login!, by, lang);
+    // Its check enables the models it finds: what the Workspace's Tasks may run on it (`task_models`).
+    if (this.profile(id)) await this.check(id, lang).catch((e) => log.warn("accounts", "check of the chosen local login failed", { profile: id, error: (e as Error).message }));
+    return { workspace, runtime: r, source: "local", signed_in: signedIn };
+  }
+
   /// The Workspace named, refused when this computer neither is connected to it nor chose a source for it.
   private localWorkspace(workspace: string, runtime: string, lang: Lang): Runtime {
     const known = this.sources.instances().some((i) => i.workspaceId === workspace) || this.sources.chosenWorkspaces().includes(workspace);

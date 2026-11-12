@@ -68,6 +68,46 @@ defmodule SalixAgent.OAuthStore do
   @callback delete_binding(tenant :: String.t(), group_id :: String.t(), binding_id :: String.t()) ::
               :ok | {:error, term()}
 
+  @doc "Defines the tenant's own provider `custom.<key>` (`Salix.Control.OAuthApps.put_custom/3`)."
+  @callback define_provider(tenant :: String.t(), provider :: String.t(), attrs :: map()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  One poll of a device authorization: `{:ok, record}` with the auth state as it
+  now stands, connected when the person confirmed.
+  """
+  @callback poll_device(record :: map()) :: {:ok, map()} | {:error, term()}
+
+  @doc "A remote MCP connection's access token, refreshed when it expires."
+  @callback remote_mcp_token(tenant :: String.t(), connection_id :: String.t()) ::
+              {:ok, String.t()} | {:error, term()}
+
+  @doc "The client app of an app source a connection was made with (a member's own bot app)."
+  @callback source_app(tenant :: String.t(), provider :: String.t(), source :: map()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc "Whether the tenant has its own app for `provider`, not the deployment's default."
+  @callback own_provider_app?(tenant :: String.t(), provider :: String.t()) :: boolean()
+
+  @doc """
+  Waits until the capability request `request` is no longer pending, at most `wait_ms`.
+  Returns the request as it stands.
+  """
+  @callback await_request(request :: map(), wait_ms :: non_neg_integer()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc "The id of a Conversation's latest Message, or nil."
+  @callback latest_message(group_id :: String.t(), conversation_id :: String.t()) ::
+              String.t() | nil
+
+  @optional_callbacks latest_message: 2,
+                      source_app: 3,
+                      define_provider: 3,
+                      poll_device: 1,
+                      remote_mcp_token: 2,
+                      own_provider_app?: 2,
+                      await_request: 2
+
   @doc "The configured implementation module, or nil."
   @spec impl() :: module() | nil
   def impl, do: SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
@@ -98,6 +138,32 @@ defmodule SalixAgent.OAuthStore do
       mod -> mod.bindings_for_group(group_id)
     end
   end
+
+  def source_app(tenant, provider, source) do
+    mod = impl()
+
+    if mod && function_exported?(mod, :source_app, 3),
+      do: mod.source_app(tenant, provider, source),
+      else: {:error, "provider app for #{provider} is not configured"}
+  end
+
+  def define_provider(tenant, provider, attrs),
+    do: impl().define_provider(tenant, provider, attrs)
+
+  def poll_device(record), do: impl().poll_device(record)
+
+  def own_provider_app?(tenant, provider), do: impl().own_provider_app?(tenant, provider)
+
+  def latest_message(group_id, conversation_id) do
+    mod = impl()
+
+    if function_exported?(mod, :latest_message, 2),
+      do: mod.latest_message(group_id, conversation_id)
+  end
+
+  def await_request(request, wait_ms), do: impl().await_request(request, wait_ms)
+
+  def remote_mcp_token(tenant, connection_id), do: impl().remote_mcp_token(tenant, connection_id)
 
   @spec public_base_url() :: String.t() | nil
   def public_base_url do

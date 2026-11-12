@@ -64,6 +64,116 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
     %{workspace: workspace, source: source, connection: connection}
   end
 
+  test "Slack directory reads one page with its cursor, and nothing without a grant", ctx do
+    last = %{"data" => [], "next_cursor" => nil}
+    assert {:ok, ^last} = CommaWeb.SlackDirectory.channels_page(ctx.workspace, "user", nil)
+    assert {:ok, ^last} = CommaWeb.SlackDirectory.people_page(ctx.workspace, "user", nil)
+
+    slack_source(ctx)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer member-token"]
+      cursor = Plug.Conn.fetch_query_params(conn).query_params["cursor"]
+
+      case {conn.request_path, cursor} do
+        {"/api/conversations.list", nil} ->
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "channels" => [
+              %{"id" => "C1", "name" => "alpha", "is_member" => true},
+              %{"id" => "C3"}
+            ],
+            "response_metadata" => %{"next_cursor" => "next"}
+          })
+
+        {"/api/conversations.list", "next"} ->
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "channels" => [%{"id" => "C2", "name" => "zulu"}],
+            "response_metadata" => %{"next_cursor" => ""}
+          })
+
+        {"/api/users.list", nil} ->
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "members" => [
+              %{
+                "id" => "U2",
+                "name" => "zed",
+                "profile" => %{
+                  "display_name" => "Zed",
+                  "image_48" => "https://avatars.slack-edge.com/zed_48.png"
+                }
+              },
+              %{
+                "id" => "U1",
+                "name" => "amy",
+                "profile" => %{"display_name" => "", "real_name" => "Amy Li"}
+              },
+              %{"id" => "U3", "name" => "gone", "deleted" => true},
+              %{"id" => "U4", "name" => "claude", "is_bot" => true},
+              %{"id" => "USLACKBOT", "name" => "slackbot"}
+            ]
+          })
+      end
+    end)
+
+    assert {:ok,
+            %{
+              "data" => [
+                %{"id" => "C1", "name" => "alpha", "member" => true, "team_id" => "TWORKSPACE"}
+              ],
+              "next_cursor" => "next"
+            }} = CommaWeb.SlackDirectory.channels_page(ctx.workspace, "user", nil)
+
+    assert {:ok,
+            %{
+              "data" => [%{"id" => "C2", "member" => false}],
+              "next_cursor" => nil
+            }} = CommaWeb.SlackDirectory.channels_page(ctx.workspace, "user", "next")
+
+    assert {:ok,
+            %{
+              "data" => [
+                %{"id" => "U2", "name" => "Zed", "handle" => "zed", "avatar_ref" => "v1." <> _},
+                %{"id" => "U1", "name" => "Amy Li", "handle" => "amy"},
+                %{"id" => "U4", "name" => "claude", "handle" => "claude"}
+              ],
+              "next_cursor" => nil
+            }} = CommaWeb.SlackDirectory.people_page(ctx.workspace, "user", nil)
+
+    assert {:ok, ^last} =
+             CommaWeb.SlackDirectory.channels_page(ctx.workspace, "someone-else", nil)
+  end
+
+  test "Slack directory reads a channel's members by id with their cursor", ctx do
+    slack_source(ctx)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert conn.request_path == "/api/conversations.members"
+      params = Plug.Conn.fetch_query_params(conn).query_params
+      assert params["channel"] == "C1"
+      assert params["cursor"] == "next"
+
+      Req.Test.json(conn, %{
+        "ok" => true,
+        "members" => ["U1", "U2"],
+        "response_metadata" => %{"next_cursor" => "after"}
+      })
+    end)
+
+    assert {:ok, %{"data" => ["U1", "U2"], "next_cursor" => "after"}} =
+             CommaWeb.SlackDirectory.channel_members_page(ctx.workspace, "user", "C1", "next")
+  end
+
+  test "Slack directory fails a page Slack refuses", ctx do
+    slack_source(ctx)
+    Req.Test.stub(__MODULE__, &Plug.Conn.send_resp(&1, 403, ""))
+
+    assert {:error, {:unavailable, _}} =
+             CommaWeb.SlackDirectory.channels_page(ctx.workspace, "user", nil)
+  end
+
   test "Outlook collected resource ids follow only exact admitted URLs" do
     mail_url = "https://outlook.office.com/mail/id/AAMk1"
     event_url = "https://outlook.office.com/calendar/item/AAEv1"
@@ -189,11 +299,24 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
           })
 
         "/api/conversations.replies" ->
-          assert conn.query_params == %{"channel" => "C1", "ts" => "1.000001", "limit" => "1"}
+          assert %{"channel" => "C1", "ts" => "1.000001"} = conn.query_params
 
+          # The portrait reads the thread's start; open threads read on.
           Req.Test.json(conn, %{
             "ok" => true,
-            "messages" => [%{"ts" => "1.000001", "text" => "Patrol failed: 401 token"}]
+            "messages" =>
+              Enum.take(
+                [
+                  %{"ts" => "1.000001", "user" => "UOTHER", "text" => "Patrol failed: 401 token"},
+                  %{"ts" => "2.000001", "user" => "UMEMBER", "text" => "Renewed the token"},
+                  %{
+                    "ts" => "2.500001",
+                    "user" => "UOTHER",
+                    "text" => "Confirmed, patrol is green"
+                  }
+                ],
+                String.to_integer(conn.query_params["limit"])
+              )
           })
       end
     end)
@@ -204,6 +327,49 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
     assert own["text"] == "Renewed the token"
     assert own["thread"] == "Patrol failed: 401 token"
     assert own["channel"] == "alerts"
+    refute Map.has_key?(own, "replies")
+
+    # With replies, a message carries the thread's later messages.
+    assert {:ok, [own], _subject} =
+             RecommendationOAuthSource.own_slack_messages(
+               ctx.workspace,
+               "user",
+               source,
+               CommaWeb.RecommendationMemberRead.deadline(),
+               replies: true
+             )
+
+    assert own["thread"] == "Patrol failed: 401 token"
+    assert own["replies"] == [%{"from" => "other", "text" => "Confirmed, patrol is green"}]
+  end
+
+  test "Slack thread news reads each tracked thread after its last check", ctx do
+    source = slack_source(ctx)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.request_path do
+        "/api/auth.test" ->
+          Req.Test.json(conn, %{"ok" => true, "user_id" => "UMEMBER", "team_id" => "TWORKSPACE"})
+
+        "/api/conversations.replies" ->
+          assert %{"channel" => "C1", "ts" => "1.000001", "oldest" => "2.000001"} =
+                   conn.query_params
+
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "messages" => [
+              %{"ts" => "1.000001", "user" => "UOTHER", "text" => "Patrol failed"},
+              %{"ts" => "3.000001", "user" => "UOTHER", "text" => "Rotated, all green"}
+            ]
+          })
+      end
+    end)
+
+    assert {:ok,
+            %{"t1" => [%{"ts" => "3.000001", "from" => "other", "text" => "Rotated, all green"}]}} =
+             RecommendationOAuthSource.slack_thread_news(ctx.workspace, "user", source, %{
+               "t1" => {"C1", "1.000001", "2.000001"}
+             })
   end
 
   test "a handoff reads its matter's GitHub run with the member's managed grant", ctx do
@@ -227,6 +393,87 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
     }
 
     assert [%{"kind" => "github_actions_run", "conclusion" => "success", "attempt" => 2}] =
+             CommaWeb.ProactiveEvidence.linked(ctx.workspace, "user", [source], matter)
+  end
+
+  test "a handoff about a channel message reads the channel's hour after it", ctx do
+    source = Map.put(slack_source(ctx), "enabled", true)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.request_path do
+        "/api/auth.test" ->
+          Req.Test.json(conn, %{"ok" => true, "user_id" => "UMEMBER", "team_id" => "TWORKSPACE"})
+
+        "/api/conversations.history" ->
+          assert %{
+                   "channel" => "C1",
+                   "oldest" => "1793954161.799279",
+                   "latest" => "1793957761"
+                 } = conn.query_params
+
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "messages" => [
+              %{
+                "ts" => "1793954218.817859",
+                "user" => "UMEMBER",
+                "text" => "Google sign-in fails"
+              },
+              %{
+                "ts" => "1793954180.798509",
+                "user" => "UMEMBER",
+                "text" => "ok, I forgot to check"
+              },
+              %{"ts" => "1793954164.620479", "user" => "UASKER", "text" => "never seen it"}
+            ]
+          })
+      end
+    end)
+
+    matter = %{
+      "url" => "https://acme.slack.com/archives/C1/p1793954161799279",
+      "recipient" => "UMEMBER",
+      "excerpt" => "<@UMEMBER> how does Comma look on Android foldables?"
+    }
+
+    assert [
+             %{
+               "kind" => "slack_channel_after",
+               "messages" => 3,
+               "owner_replied" => true,
+               "first" => [%{"from" => "UASKER"}, %{"text" => "ok, I forgot to check"} | _]
+             }
+           ] = CommaWeb.ProactiveEvidence.linked(ctx.workspace, "user", [source], matter)
+  end
+
+  test "a reply the owner wrote before the thread message does not answer it", ctx do
+    source = Map.put(slack_source(ctx), "enabled", true)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.request_path do
+        "/api/auth.test" ->
+          Req.Test.json(conn, %{"ok" => true, "user_id" => "UMEMBER", "team_id" => "TWORKSPACE"})
+
+        "/api/conversations.replies" ->
+          assert %{"channel" => "C1", "ts" => "1.000001"} = conn.query_params
+
+          Req.Test.json(conn, %{
+            "ok" => true,
+            "messages" => [
+              %{"ts" => "1.000001", "user" => "UASKER", "text" => "Release plan"},
+              %{"ts" => "2.000001", "user" => "UMEMBER", "text" => "Looks fine"},
+              %{"ts" => "3.000001", "user" => "UASKER", "text" => "<@UMEMBER> can you sign it?"}
+            ]
+          })
+      end
+    end)
+
+    matter = %{
+      "url" => "https://acme.slack.com/archives/C1/p3000001?thread_ts=1.000001",
+      "recipient" => "UMEMBER"
+    }
+
+    assert [%{"kind" => "slack_thread", "replies" => 2, "owner_replied" => false}] =
              CommaWeb.ProactiveEvidence.linked(ctx.workspace, "user", [source], matter)
   end
 
@@ -1492,6 +1739,226 @@ defmodule CommaWeb.RecommendationMemberSourceTest do
                source["connectionId"],
                "user"
              )
+  end
+
+  for provider <- ~w(feishu lark) do
+    test "#{provider} reads what waits for the member with their own sign-in", ctx do
+      provider = unquote(provider)
+      source = lark_source(ctx, provider)
+      host = "#{provider}.test"
+      key = :"#{provider}_api_base_url"
+      previous = SystemsRuntime.get_env(:salix_im, key)
+      SystemsRuntime.put_env(:salix_im, key, "https://#{host}/open-apis")
+      on_exit(fn -> SystemsRuntime.put_env(:salix_im, key, previous) end)
+      now = SystemsClock.utc_now() |> DateTime.to_unix(:millisecond)
+
+      message = fn id, chat, sender, text, ago_ms ->
+        %{
+          "message_id" => id,
+          "chat_id" => chat,
+          "msg_type" => "text",
+          "create_time" => Integer.to_string(now - ago_ms),
+          "sender" => %{"id" => sender, "sender_name" => sender <> " name"},
+          "mentions" => [%{"key" => "@_user_1", "id" => "ou_me", "name" => "Ada"}],
+          "body" => %{"content" => Jason.encode!(%{"text" => text})}
+        }
+      end
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        assert conn.host == host
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer member-token"]
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        query = Plug.Conn.fetch_query_params(conn).query_params
+
+        data =
+          case conn.request_path do
+            "/open-apis/authen/v1/user_info" ->
+              %{"open_id" => "ou_me"}
+
+            "/open-apis/im/v1/messages/search" ->
+              filter = Jason.decode!(body)["filter"]
+              assert filter["time_range"]["start_time"] < filter["time_range"]["end_time"]
+
+              ids =
+                if filter["is_at_me"],
+                  do: ["om_mention_old", "om_mention", "om_mine"],
+                  else: ["om_direct"]
+
+              %{"items" => Enum.map(ids, &%{"meta_data" => %{"message_id" => &1}})}
+
+            "/open-apis/im/v1/messages/mget" ->
+              assert query["with_sender_name"] == "true"
+
+              asked =
+                for {"message_ids", id} <- URI.query_decoder(conn.query_string), do: id
+
+              # Direct messages need their own scope: this sign-in lacks it,
+              # and the group messages of the other batch stay readable.
+              if asked == ["om_direct"] do
+                :missing_scope
+              else
+                %{
+                  "items" =>
+                    Enum.filter(
+                      [
+                        message.("om_mention_old", "oc_launch", "ou_bo", "earlier", 60_000),
+                        message.(
+                          "om_mention",
+                          "oc_launch",
+                          "ou_bo",
+                          "@_user_1 can you sign off?",
+                          1_000
+                        ),
+                        message.("om_mine", "oc_other", "ou_me", "@_user_1 note to self", 1_000)
+                      ],
+                      &(&1["message_id"] in asked)
+                    )
+                }
+              end
+
+            "/open-apis/im/v1/chats/batch_query" ->
+              assert Jason.decode!(body)["chat_ids"] == ["oc_launch"]
+              %{"items" => [%{"chat_id" => "oc_launch", "name" => "Launch"}]}
+
+            "/open-apis/calendar/v4/calendars/primary/events/instance_view" ->
+              %{
+                "items" => [
+                  %{
+                    "summary" => "Design review",
+                    "self_rsvp_status" => "needs_action",
+                    "app_link" => "https://applink.example/event/1",
+                    "start_time" => %{"timestamp" => "1800000000"}
+                  },
+                  %{
+                    "summary" => "Accepted already",
+                    "self_rsvp_status" => "accept",
+                    "app_link" => "https://applink.example/event/2"
+                  }
+                ]
+              }
+          end
+
+        case data do
+          :missing_scope ->
+            conn
+            |> Plug.Conn.put_status(400)
+            |> Req.Test.json(%{"code" => 99_991_679, "msg" => "missing scope"})
+
+          data ->
+            Req.Test.json(conn, %{"code" => 0, "data" => data})
+        end
+      end)
+
+      assert {:ok, %{"messages" => %{"matches" => records}} = read, identity} =
+               RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+
+      assert %{"provider_user_id" => "ou_me", "provider_workspace_id" => "tk"} = identity
+
+      applink = if provider == "feishu", do: "applink.feishu.cn", else: "applink.larksuite.com"
+
+      # The newest mention per chat, the direct message, the unanswered
+      # invitation; never the member's own message.
+      assert read[:source_warnings] == [{:member_provider_error, "99991679"}]
+
+      assert [
+               %{
+                 "text" => "@Ada can you sign off?",
+                 "permalink" => mention_link,
+                 "memberRelation" => "mentioned_you",
+                 "chat" => "Launch"
+               },
+               %{
+                 "text" => "Design review",
+                 "permalink" => "https://applink.example/event/1",
+                 "memberRelation" => "invited_you"
+               }
+             ] = records
+
+      assert mention_link == "https://#{applink}/client/chat/open?openChatId=oc_launch"
+
+      fact = %{
+        "sourceId" => source["connectionId"],
+        "appId" => provider,
+        "appName" => "x",
+        "toolkit" => provider,
+        "data" => %{
+          "messages" => %{"matches" => Enum.map(records, &Map.drop(&1, ~w(context quote)))}
+        }
+      }
+
+      items = CommaWeb.MemberSourceIngest.items([fact])[source["connectionId"]]
+
+      assert Enum.map(items, & &1["title"]) == ["@Ada can you sign off?", "Design review"]
+    end
+  end
+
+  test "a Lark sign-in without a scope it needs is a reconnect failure", ctx do
+    source = Map.merge(lark_source(ctx, "lark"), %{"enabled" => true, "appName" => "Lark"})
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      if conn.request_path == "/open-apis/authen/v1/user_info" do
+        Req.Test.json(conn, %{"code" => 0, "data" => %{"open_id" => "ou_me"}})
+      else
+        conn
+        |> Plug.Conn.put_status(400)
+        |> Req.Test.json(%{"code" => 99_991_679, "msg" => "missing scope"})
+      end
+    end)
+
+    assert {:ok, %{facts: [], failures: [%{"class" => "reconnect", "appId" => "lark"}]}} =
+             CommaWeb.RecommendationSourceCollector.collect(ctx.workspace, [source],
+               member_user_id: "user"
+             )
+  end
+
+  test "Lark throttling stays a 429, which the read waits out", ctx do
+    source = lark_source(ctx, "lark")
+    {:ok, asked} = Agent.start_link(fn -> 0 end)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      if conn.request_path == "/open-apis/authen/v1/user_info" do
+        Req.Test.json(conn, %{"code" => 0, "data" => %{"open_id" => "ou_me"}})
+      else
+        Agent.update(asked, &(&1 + 1))
+
+        conn
+        |> Plug.Conn.put_status(429)
+        |> Req.Test.json(%{"code" => 99_991_400, "msg" => "too many requests"})
+      end
+    end)
+
+    assert {:error, {:oauth_provider_http, 429}} =
+             RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+
+    # Each of the three reads was asked again after the first throttle.
+    assert Agent.get(asked, & &1) > 3
+  end
+
+  test "a Lark sign-in of another user is not read", ctx do
+    source = lark_source(ctx, "lark")
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert conn.request_path == "/open-apis/authen/v1/user_info"
+      Req.Test.json(conn, %{"code" => 0, "data" => %{"open_id" => "ou_someone_else"}})
+    end)
+
+    assert {:error, :member_source_identity_mismatch} =
+             RecommendationOAuthSource.read_member(ctx.workspace, "user", source)
+  end
+
+  defp lark_source(ctx, provider) do
+    connection = %{
+      ctx.connection
+      | "provider" => provider,
+        "metadata" => %{"metadata" => %{"open_id" => "ou_me", "tenant_key" => "tk"}}
+    }
+
+    :ok = SalixStore.OAuth.put("conn-1", connection)
+
+    {:ok, binding, nil} =
+      OAuthBindings.put("tenant", "group", provider, provider <> "-member", "conn-1")
+
+    %{"appId" => provider, "kind" => "managed_oauth", "connectionId" => binding["binding_id"]}
   end
 
   defp slack_source(ctx) do

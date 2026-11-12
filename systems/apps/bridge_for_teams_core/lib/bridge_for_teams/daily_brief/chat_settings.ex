@@ -1,9 +1,10 @@
 defmodule BridgeForTeams.DailyBrief.ChatSettings do
   @moduledoc """
   Changes to the daily brief that a member asks the Swarm's bot for in Slack.
-  Salix's Router tool `daily_brief.set_time` calls this with the signed origin
-  of the current message, so the requester is the Slack user who wrote it,
-  never a name in its text.
+  Salix's Router tools `daily_brief.set_time`, `daily_brief.set_channel`, and
+  `daily_brief.set_project` call this with the signed origin of the current
+  message, so the requester is the Slack user who wrote it, never a name in
+  its text. Channels and projects change only the requester's own brief.
 
     * `"mine"` sets the requester's own brief time; any enabled brief member
       may, through the bot that sends the brief. Today's brief, if sent, is
@@ -15,8 +16,12 @@ defmodule BridgeForTeams.DailyBrief.ChatSettings do
   import Ecto.Query
 
   alias BridgeForTeams.{DailyBrief, Memberships, Repo}
-  alias BridgeForTeams.DailyBrief.{Compose, Members}
-  alias BridgeForTeams.Schema.{DailyBriefMember, DailyBriefSetting, Project}
+  alias BridgeForTeams.DailyBrief.{Compose, Focus, Members}
+  alias BridgeForTeams.DailyBrief.Sources.Slack
+  alias BridgeForTeams.Schema.{DailyBriefAlias, DailyBriefMember, DailyBriefSetting, Project}
+
+  @channel_modes ~w(follow follow_with_bots ignore default)
+  @project_modes ~w(add remove)
 
   @spec set_time(String.t(), map(), String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
   def set_time(group_id, origin, brief, time) when brief in ["mine", "team"] do
@@ -29,6 +34,123 @@ defmodule BridgeForTeams.DailyBrief.ChatSettings do
   end
 
   def set_time(_group_id, _origin, _brief, _time), do: {:error, :invalid_request}
+
+  @doc """
+  Changes one of the requester's main channels: `follow` reads all of its
+  human messages, `follow_with_bots` its bot messages too, `ignore` drops it
+  from the defaults, `default` forgets the choice. `channel` is a channel id,
+  a Slack channel link, or a name. Answers the requester's main channels now.
+  """
+  @spec set_channel(String.t(), map(), String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
+  def set_channel(group_id, origin, channel, mode)
+      when is_binary(channel) and mode in @channel_modes do
+    with {:ok, requester} <- requester(group_id, origin),
+         {:ok, settings} <- settings(group_id, requester.connect_id),
+         {:ok, member} <- member(settings, requester),
+         names = Slack.channel_names(settings),
+         {:ok, channel_id} <- channel_id(channel, names),
+         :ok <- put_choice(member, channel_id, Focus.kinds(), channel_kind(mode)) do
+      focus(settings, member, names)
+    end
+  end
+
+  def set_channel(_group_id, _origin, _channel, _mode), do: {:error, :invalid_request}
+
+  @doc "Adds or removes one of the requester's project terms."
+  @spec set_project(String.t(), map(), String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
+  def set_project(group_id, origin, term, mode) when is_binary(term) and mode in @project_modes do
+    term = String.trim(term)
+
+    with true <- (term != "" and String.length(term) <= 128) || {:error, :invalid_project},
+         {:ok, requester} <- requester(group_id, origin),
+         {:ok, settings} <- settings(group_id, requester.connect_id),
+         {:ok, member} <- member(settings, requester),
+         :ok <-
+           put_choice(member, term, ["project"], if(mode == "add", do: "project", else: nil)) do
+      projects =
+        Repo.all(
+          from(a in DailyBriefAlias,
+            where: a.member_id == ^member.id and a.kind == "project",
+            order_by: a.term,
+            select: a.term
+          )
+        )
+
+      {:ok, %{"projects" => projects}}
+    end
+  end
+
+  def set_project(_group_id, _origin, _term, _mode), do: {:error, :invalid_request}
+
+  defp channel_kind("follow"), do: "channel"
+  defp channel_kind("follow_with_bots"), do: "channel_bots"
+  defp channel_kind("ignore"), do: "channel_off"
+  defp channel_kind("default"), do: nil
+
+  # One choice per term: the old one of these kinds goes, the new one (if
+  # any) is written.
+  defp put_choice(member, term, kinds, kind) do
+    Repo.transaction(fn ->
+      Repo.delete_all(
+        from(a in DailyBriefAlias,
+          where:
+            a.member_id == ^member.id and a.kind in ^kinds and
+              fragment("lower(?)", a.term) == ^String.downcase(term)
+        )
+      )
+
+      with kind when is_binary(kind) <- kind,
+           {:error, _changeset} <-
+             %DailyBriefAlias{}
+             |> DailyBriefAlias.changeset(%{member_id: member.id, term: term, kind: kind})
+             |> Repo.insert() do
+        Repo.rollback(:term_taken)
+      end
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp channel_id(channel, names) do
+    wanted = channel |> String.trim() |> String.trim_leading("#")
+
+    id =
+      case Regex.run(~r/^<#([CG][A-Z0-9_]+)(?:\|[^>]*)?>$/, String.trim(channel)) do
+        [_, id] -> id
+        nil -> if Map.has_key?(names, wanted), do: wanted, else: by_name(names, wanted)
+      end
+
+    if is_binary(id) and Map.has_key?(names, id),
+      do: {:ok, id},
+      else: {:error, :channel_not_readable_by_the_bot}
+  end
+
+  defp by_name(names, name) do
+    Enum.find_value(names, fn {id, n} ->
+      if String.downcase(n) == String.downcase(name), do: id
+    end)
+  end
+
+  defp focus(settings, member, names) do
+    member = Repo.preload(member, :aliases, force: true)
+
+    with {:ok, source} <- Members.source(settings) do
+      focus =
+        source
+        |> Focus.for_members([member], Map.keys(names), SystemsClock.utc_now())
+        |> Map.get(member.id, Focus.none())
+
+      label = fn ids -> ids |> Enum.map(&("#" <> Map.get(names, &1, &1))) |> Enum.sort() end
+
+      {:ok,
+       %{
+         "main_channels" => label.(focus.humans),
+         "with_bot_messages" => label.(focus.bots)
+       }}
+    end
+  end
 
   # Today's brief, if it went out, is not sent again at the new time: its
   # claim moves to today's new time, so the next one is tomorrow's.

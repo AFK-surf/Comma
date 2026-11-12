@@ -12,6 +12,10 @@
     <string name="devices_add_bluetooth_off">Bluetooth is off. Turn it on to find your device.</string>
     <string name="devices_add_allow_bluetooth">Allow Bluetooth</string>
     <string name="devices_add_turn_on_bluetooth">Turn on Bluetooth</string>
+    <string name="devices_nearby_permission_title">Find Comma devices near you</string>
+    <string name="devices_nearby_permission_body">Allow Nearby devices to find a new Comma device when you open the app.</string>
+    <string name="devices_nearby_permission_not_now">Not now</string>
+    <string name="devices_nearby_permission_continue">Continue</string>
 
     <string name="devices_add_scan_title">Looking for your device</string>
     <string name="devices_add_scan_body">Plug in your Comma device. A new device with a screen says “Hello” on it. To set up a device again, hold its button for 3 seconds, then let go.</string>
@@ -82,6 +86,7 @@
     <string name="devices_kind">Type</string>
     <string name="devices_kind_comma">Comma device</string>
     <string name="devices_kind_computer">Computer</string>
+    <string name="devices_kind_stillfail">still.fail station</string>
     <string name="devices_remove">Remove device</string>
     <string name="devices_remove_description">Revokes its access to Comma.</string>
     <string name="devices_removing">Removing…</string>
@@ -103,4 +108,15 @@
     <string name="devices_access_server">Comma couldn’t change the device’s access. Try again later.</string>
     <string name="devices_password_show">Show password</string>
     <string name="devices_password_hide">Hide password</string>
+
+    <string name="devices_offer_done">Set up</string>
+    <string name="devices_offer_dismissed">Dismissed</string>
+    <string name="devices_offer_expired">Expired</string>
+    <string name="devices_offer_unavailable">Unavailable</string>
+    <string name="devices_offer_nearby_phone">Set up from the phone near it</string>
+    <string name="devices_offer_started">Setup started</string>
+    <string name="devices_offer_ready">Ready to set up</string>
+    <string name="devices_offer_connect">Connect</string>
+    <string name="devices_offer_update_failed">Could not update the device setup. Try again.</string>
+    <string name="devices_offer_continue">Setup can continue. The chat card could not be updated.</string>
 </resources>

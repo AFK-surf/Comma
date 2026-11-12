@@ -15,7 +15,7 @@ defmodule SalixStore.ConversationSearchTest do
 
     Repo.query!(
       "TRUNCATE conversation_search_gc_runs, conversation_search_states, " <>
-        "conversation_search_discovery_cursors, conversation_search_backfill_runs CASCADE"
+        "conversation_search_backfill_runs CASCADE"
     )
 
     Repo.query!("DELETE FROM salix_cutover_markers WHERE name = $1", [@marker])
@@ -56,7 +56,18 @@ defmodule SalixStore.ConversationSearchTest do
 
     assert {:ok, []} = ConversationSearch.mail_tasks("other-group", "account-a", ["thread-a"])
     assert {:ok, []} = ConversationSearch.mail_tasks("group-mail", "other-account", ["thread-a"])
-    assert :ok = ConversationSearch.enqueue_message("group-mail", "task-mail", "mail-2", 2)
+
+    assert {:ok, :ok} =
+             Repo.transaction(fn ->
+               ConversationSearch.enqueue_source!(
+                 "group-mail",
+                 "task-mail",
+                 :message,
+                 "mail-2",
+                 2
+               )
+             end)
+
     assert {:ok, append} = ConversationSearch.claim_one("mail-projector", 30_000)
     changed = %{snapshot | source_version: 2, message_tail_seq: 2, mail_thread_id: "thread-b"}
 
@@ -92,12 +103,45 @@ defmodule SalixStore.ConversationSearchTest do
     assert title_hit["updated_at"] == 2
     assert_utf16_highlight(title_hit, "Alpha")
 
+    refute Map.has_key?(title_hit, "message_id")
     assert %{"snippet" => content_snippet} = content_match = title_hit["content_match"]
     assert content_snippet == "a much longer alpha message with many different bigrams"
     assert_utf16_highlight(content_match, "alpha")
+    # The Message the content match came from, by id and `seq`.
+    assert %{"message_id" => "message-b", "message_seq" => 2} = content_match
 
-    assert {:ok, [%{"conversation_id" => "task-a", "matched_field" => "content"}]} =
-             ConversationSearch.search("group-a", "longer alpha")
+    assert {:ok,
+            [
+              %{
+                "conversation_id" => "task-a",
+                "matched_field" => "content",
+                "message_id" => "message-b",
+                "message_seq" => 2
+              }
+            ]} = ConversationSearch.search("group-a", "longer alpha")
+
+    assert {:ok, [%{"message_id" => "message-a", "message_seq" => 1}]} =
+             ConversationSearch.search("group-a", "tiny alpha")
+  end
+
+  test "message matches list every matching Message of one Task, oldest first" do
+    project("group-a", "task-a", "Release plan", [
+      message("message-1", 1, "Detached HEAD on round4"),
+      message("message-2", 2, "nothing here"),
+      message("message-3", 3, "round5 is detached too")
+    ])
+
+    project("group-a", "task-b", "Other", [message("message-b", 1, "detached elsewhere")])
+    project("group-b", "task-a", "Same id, other Group", [message("message-x", 1, "detached")])
+
+    assert {:ok,
+            [
+              %{"message_id" => "message-1", "message_seq" => 1},
+              %{"message_id" => "message-3", "message_seq" => 3}
+            ]} = ConversationSearch.message_matches("group-a", "task-a", "detached")
+
+    assert {:ok, []} = ConversationSearch.message_matches("group-a", "task-a", "plan")
+    assert {:error, :invalid} = ConversationSearch.message_matches("group-a", "task-a", "d")
   end
 
   test "two-codepoint CJK and English plus punctuation use bigram acceleration and exact fold" do
@@ -127,14 +171,57 @@ defmodule SalixStore.ConversationSearchTest do
     assert {:error, :not_ready} = ConversationSearch.seal_backfill(@generation)
   end
 
+  test "the release opens a fresh generation once and its bounded PG scan permits sealing" do
+    SystemsRuntime.put_env(:salix_store, :conversation_search_writer_generation, "generation-c")
+
+    assert {:ok, :opened} = ConversationSearch.open_after_rollout("comma-release:test")
+
+    assert {:ok, %{writer_barrier_authority: "comma-release:test", sealed_at: nil}} =
+             ConversationSearch.backfill_state("generation-c")
+
+    assert {:ok, :indexing} = ConversationSearch.open_after_rollout("comma-release:later")
+    refute ConversationSearch.ready?()
+
+    assert {:ok, %{complete: true}} = ConversationSearch.scan_page("generation-c")
+
+    assert :ok = ConversationSearch.seal_backfill("generation-c")
+    assert {:ok, :ready} = ConversationSearch.open_after_rollout("comma-release:later")
+
+    SystemsRuntime.delete_env(:salix_store, :conversation_search_writer_generation)
+    assert {:ok, :not_configured} = ConversationSearch.open_after_rollout("comma-release:test")
+  end
+
   test "queue coalesces per Task and fences stale or expired claimants" do
-    assert :ok = ConversationSearch.enqueue_message("group-job", "task-job", "message-1", 1)
-    assert :ok = ConversationSearch.enqueue_message("group-job", "task-job", "message-2", 2)
+    assert {:ok, :ok} =
+             Repo.transaction(fn ->
+               ConversationSearch.enqueue_source!(
+                 "group-job",
+                 "task-job",
+                 :message,
+                 "message-1",
+                 1
+               )
+             end)
+
+    assert {:ok, :ok} =
+             Repo.transaction(fn ->
+               ConversationSearch.enqueue_source!(
+                 "group-job",
+                 "task-job",
+                 :message,
+                 "message-2",
+                 2
+               )
+             end)
 
     assert {:ok, first} = ConversationSearch.claim_one("worker-a", 30_000)
     assert first.operation == :rebuild
 
-    assert :ok = ConversationSearch.enqueue_delete("group-job", "task-job")
+    assert {:ok, :ok} =
+             Repo.transaction(fn ->
+               ConversationSearch.enqueue_source!("group-job", "task-job", :delete, "", nil)
+             end)
+
     assert {:error, :claim_lost} = ConversationSearch.complete(first)
 
     assert {:ok, second} = ConversationSearch.claim_one("worker-b", 30_000)
@@ -168,18 +255,8 @@ defmodule SalixStore.ConversationSearchTest do
       """
       INSERT INTO conversation_search_backfill_runs
         (writer_generation, writer_barrier_authority, writer_barrier_at,
-         required_discovery_cycle, sealed_at, inserted_at, updated_at)
-      VALUES ($1, 'test-fixture', now(), 1, now(), now(), now())
-      """,
-      [generation]
-    )
-
-    Repo.query!(
-      """
-      INSERT INTO conversation_search_discovery_cursors
-        (id, writer_generation, completed_cycles, cycle_started_at,
-         last_cycle_completed_at, inserted_at, updated_at)
-      VALUES ('main', $1, 1, now(), now(), now(), now())
+         scan_completed_at, sealed_at, inserted_at, updated_at)
+      VALUES ($1, 'test-fixture', now(), now(), now(), now(), now())
       """,
       [generation]
     )

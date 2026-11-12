@@ -19,8 +19,8 @@ test "$(lock_value claudeAmd64.version)" = "$(lock_value claude.version)"
 context=$(mktemp -d)
 trap 'rm -rf -- "$context"' EXIT
 mkdir -p "$context/systems/runtime-images/station" "$context/systems/runtime-images/coding-sandbox"
-cp systems/runtime-images/station/{entrypoint.sh,silk2wav,file-tools-packages,file-tools-requirements.txt} "$context/systems/runtime-images/station/"
-cp systems/runtime-images/coding-sandbox/{comma-station.service,comma-station-start,tmp.mount,docker-daemon.json} "$context/systems/runtime-images/coding-sandbox/"
+cp systems/runtime-images/station/{apt-package-recovery.mjs,entrypoint.sh,initialize-access.mjs,silk2wav,file-tools-packages,file-tools-requirements.txt} "$context/systems/runtime-images/station/"
+cp systems/runtime-images/coding-sandbox/{comma-display.service,comma-station.service,comma-station-start,tmp.mount,docker-daemon.json,native-build-packages} "$context/systems/runtime-images/coding-sandbox/"
 
 args=()
 for pair in \
@@ -42,10 +42,12 @@ for pair in \
   args+=(--build-arg "${pair%%=*}=$(lock_value "${pair#*=}")")
 done
 
-"$engine" build --platform linux/amd64 -f systems/runtime-images/station/Dockerfile \
+"$engine" build --platform linux/amd64 -f systems/runtime-images/station/Dockerfile --target comma-station \
   --build-context "station=$station" --build-arg DEBIAN_SUITE=trixie "${args[@]}" -t comma-station-runtime:amd64 "$context"
 "$engine" build --platform linux/amd64 -f systems/runtime-images/coding-sandbox/Dockerfile \
-  --build-arg STATION_RUNTIME_IMAGE=comma-station-runtime:amd64 -t comma-coding-sandbox:amd64 "$context"
+  --build-arg STATION_RUNTIME_IMAGE=comma-station-runtime:amd64 \
+  --build-arg "PACKAGE_SNAPSHOT=$(lock_value packageSnapshot)" \
+  --build-arg "ELAN_TARBALL=$(lock_value elanAmd64.tarball)" --build-arg "ELAN_INTEGRITY=$(lock_value elanAmd64.integrity)" -t comma-coding-sandbox:amd64 "$context"
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -53,11 +55,11 @@ container=$("$engine" create --platform linux/amd64 comma-coding-sandbox:amd64)
 trap 'rm -rf -- "$context"; "$engine" rm -f "$container" >/dev/null' EXIT
 # The image tools from Debian trixie at the locked snapshot: mkfs.erofs (erofs-utils 1.8: Ubuntu 24.04's 1.7.1 writes,
 # for this image, big-pcluster indexes that its superblock does not announce, which the sandbox kernel refuses) and
-# veritysetup.
+# veritysetup. The coding sandbox's Debian trixie base brings node for apt-package-recovery.mjs.
 snapshot=$(lock_value packageSnapshot)
-printf '%s\n' "FROM $(lock_value baseImages.imageTools)" \
-  "RUN printf 'Types: deb\\nURIs: http://snapshot.debian.org/archive/debian/$snapshot\\nSuites: trixie\\nComponents: main\\nCheck-Valid-Until: no\\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\\n' > /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends erofs-utils cryptsetup-bin && rm -rf /var/lib/apt/lists/*" |
-  "$engine" build --platform linux/amd64 -t comma-image-tools:amd64 -
+printf '%s\n' "FROM $(lock_value baseImages.codingSandbox)" \
+  "RUN --mount=type=bind,source=systems/runtime-images/station/apt-package-recovery.mjs,target=/tmp/apt-package-recovery.mjs printf 'Types: deb\\nURIs: http://snapshot.debian.org/archive/debian/$snapshot\\nSuites: trixie\\nComponents: main\\nCheck-Valid-Until: no\\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\\n' > /etc/apt/sources.list.d/debian.sources && apt-get update && node /tmp/apt-package-recovery.mjs $snapshot install -y --no-install-recommends erofs-utils cryptsetup-bin && rm -rf /var/lib/apt/lists/*" |
+  "$engine" build --platform linux/amd64 -t comma-image-tools:amd64 -f - "$context"
 # L4ES boots a verified system image (l4h-sandbox image/verity.py, README "Custom system images"): the EROFS file
 # system, then its dm-verity hash tree (format 1, SHA-256, 4 KiB blocks, no superblock), salted with the file system's
 # SHA-256 so that a rebuild of the same files is the same image. The tree is checked against its root hash once made.

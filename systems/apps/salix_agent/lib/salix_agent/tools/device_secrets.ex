@@ -2,7 +2,7 @@ defmodule SalixAgent.Tools.DeviceSecrets do
   @moduledoc """
   `device.secret_*`: the Group's saved secrets for devices on the user's
   local network (`SalixAgent.DeviceSecrets`). The model writes a value once
-  and then names it (`token_ref` on `device.miio_request`, `auth.secret_ref`
+  and then names it (`secrets` on `device.lan_script`, `auth.secret_ref`
   on `device.lan_request`); no result contains a value.
   """
 
@@ -13,7 +13,7 @@ defmodule SalixAgent.Tools.DeviceSecrets do
   def defs do
     [
       {"device.secret_save",
-       "Save a secret for a device on the user's local network, such as a Xiaomi lamp's miIO token or an ONVIF camera's password, so later conversations use it by name without the user giving it again. Saving an existing name replaces it. The result never contains the value. After saving, never repeat or quote the value or any part of it; refer to the secret by its name.",
+       "Save a secret for a device on the user's local network, such as a Xiaomi lamp's miIO token, an ONVIF camera's password or a Home Assistant access token (api_token), so later conversations use it by name without the user giving it again. Saving an existing name replaces it. The result never contains the value. After saving, never repeat or quote the value or any part of it; refer to the secret by its name.",
        %{
          "type" => "object",
          "additionalProperties" => false,
@@ -114,7 +114,7 @@ defmodule SalixAgent.Tools.DeviceSecrets do
   defp describe(:invalid_value),
     do:
       {"invalid_value",
-       "The value does not have the format of this kind. A miio_token is 32 hex characters; an onvif_password is 4 to 64 printable ASCII characters without spaces. Ask the user to check it."}
+       "The value does not have the format of this kind. A miio_token is 32 hex characters; an onvif_password is 4 to 64 printable ASCII characters without spaces; an api_token is 8 to 512. Ask the user to check it."}
 
   defp describe(:invalid_host), do: {"invalid_host", "host must be at most 253 characters."}
   defp describe(:invalid_model), do: {"invalid_model", "model must be at most 128 characters."}

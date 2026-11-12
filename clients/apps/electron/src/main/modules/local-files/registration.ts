@@ -122,7 +122,7 @@ export class LocalFileRouteRegistrationService implements LocalFileRouteRegistra
     ) {
       throw unavailable(
         "rejected",
-        "This workspace's Comma Connector is not ready yet. Select the file again to retry.",
+        "This workspace's Comma station is not ready yet. Select the file again to retry.",
         undefined,
         true
       );

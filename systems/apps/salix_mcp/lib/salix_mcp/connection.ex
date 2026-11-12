@@ -960,7 +960,7 @@ defmodule SalixMCP.Connection do
     end
   end
 
-  # The Comma desktop app's own MCP servers (the Mac apps) are not reached over
+  # The Comma desktop app's own MCP servers (Mac apps, Blender) are not reached over
   # HTTP: the device's Connector hands each message to the app's Main with
   # `client_mcp`, so no port, URL or token on the device reaches Salix. Main
   # answers only for the apps the user turned on, whatever Salix sends.
@@ -973,7 +973,7 @@ defmodule SalixMCP.Connection do
          timeout,
          _opts
        ) do
-    if state.definition["mcp_id"] == SalixMCP.Builtins.mac_apps_mcp_id() do
+    if SalixMCP.Builtins.client_mcp_id?(state.definition["mcp_id"]) do
       client_jsonrpc(state, config, payload, timeout)
     else
       # Only Comma's own definition reaches the desktop app (SalixMCP.Store

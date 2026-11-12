@@ -5,12 +5,11 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
 
   @templates [
     "shell.default",
-    "meeting.meetnative",
     "station.default"
   ]
   @root Path.expand("fixtures/runtime-bundle", __DIR__)
 
-  test "maps the three fixed product templates onto the three release-bundled images" do
+  test "maps the fixed product templates onto the release-bundled images" do
     assert RuntimeBundleCatalog.keys() == Enum.sort(@templates)
 
     for key <- @templates do
@@ -56,8 +55,8 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
     assert materialized.spec["log_limit_bytes"] == 1_048_576
 
     assert %{
-             "pid_max" => 512,
-             "writable_quota_bytes" => 2_147_483_648
+             "pid_max" => 2048,
+             "writable_quota_bytes" => 17_179_869_184
            } = materialized.spec["resources"]
 
     assert [volume] = materialized.spec["volume_requirements"]
@@ -77,31 +76,39 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
     refute Map.has_key?(materialized.spec, "command")
   end
 
-  test "keeps the provider volume stable across generations of one workload" do
-    assert {:ok, first} =
-             RuntimeBundleCatalog.materialize(
-               "station.default",
-               %{owner_id: "workload-1", generation: 1},
-               root: @root
-             )
+  test "keeps each template's provider volume stable across generations of one workload" do
+    for {template, owner} <- [{"station.default", 1_000}, {"shell.default", 10_001}] do
+      assert {:ok, first} =
+               RuntimeBundleCatalog.materialize(
+                 template,
+                 %{owner_id: "workload-1", generation: 1},
+                 root: @root
+               )
 
-    assert {:ok, replacement} =
-             RuntimeBundleCatalog.materialize(
-               "station.default",
-               %{owner_id: "workload-1", generation: 2},
-               root: @root
-             )
+      assert [volume] = first.spec["volume_requirements"]
+      assert volume["owner_uid"] == owner
+      assert volume["owner_gid"] == owner
+      assert volume["destination"] == "/workspace"
+      assert volume["read_only"] == false
 
-    assert first.spec["volume_requirements"] == replacement.spec["volume_requirements"]
+      assert {:ok, replacement} =
+               RuntimeBundleCatalog.materialize(
+                 template,
+                 %{owner_id: "workload-1", generation: 2},
+                 root: @root
+               )
 
-    assert {:ok, other} =
-             RuntimeBundleCatalog.materialize(
-               "station.default",
-               %{owner_id: "workload-2", generation: 1},
-               root: @root
-             )
+      assert first.spec["volume_requirements"] == replacement.spec["volume_requirements"]
 
-    refute first.spec["volume_requirements"] == other.spec["volume_requirements"]
+      assert {:ok, other} =
+               RuntimeBundleCatalog.materialize(
+                 template,
+                 %{owner_id: "workload-2", generation: 1},
+                 root: @root
+               )
+
+      refute first.spec["volume_requirements"] == other.spec["volume_requirements"]
+    end
   end
 
   test "recovers the image only from the stored descriptor" do

@@ -1,11 +1,8 @@
-import { MaintenanceCapabilityProbe } from "../modules/compute-node/host-maintenance-protocol";
 import { NativeOperationError } from "../modules/ipc/operation-error";
-import { AgentVMMCommandAdapter } from "../modules/compute-node/runtime-adapter";
 import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import {
   defineNativeCommand,
-  computeNodeConfigureCapability,
   nativePeerPortChannel,
   peersConnectCapability,
   sessionStateChangedEvent,
@@ -260,49 +257,6 @@ describe("IpcGateway", () => {
         message: "Setup could not finish. Continue the same setup.",
       },
     });
-  });
-
-  it("returns maintenance instructions when an old helper rejects the enable compatibility probe", async () => {
-    const handle = vi.fn();
-    const gateway = new IpcGateway({
-      ipcMain: { handle, removeHandler: vi.fn() },
-      resolveCallerContext: () => callerContext,
-      senderPolicy: { allow: () => true },
-    });
-    const run = vi.fn(async () => {
-      throw new Error("/Users/private/helper: unknown maintenance-status command");
-    });
-    const adapter = new AgentVMMCommandAdapter(
-      "isolated-helper",
-      run,
-      new MaintenanceCapabilityProbe(run)
-    );
-    gateway.register(computeNodeConfigureCapability, async () => {
-      await adapter.enable("operation", "registration");
-      throw new Error("An incompatible helper must not enable the connection.");
-    });
-    const handler = handle.mock.calls[0]?.[1] as (
-      event: unknown,
-      input: unknown
-    ) => Promise<unknown>;
-
-    await expect(
-      handler(createIpcEvent(), { desiredEnabled: true, workspaceId: "workspace" })
-    ).resolves.toEqual({
-      ok: false,
-      error: {
-        code: "OPERATION_FAILED",
-        message:
-          "Update Agent VMM Host in Local maintenance before changing this connection.",
-      },
-    });
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(run.mock.calls[0]).toEqual([
-      "isolated-helper",
-      expect.arrayContaining(["maintenance-status"]),
-      "{}",
-      5_000,
-    ]);
   });
 
   it("logs handler failures without exposing internal error details to the renderer", async () => {

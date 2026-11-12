@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const workspaceId = "wsp_models_e2e";
@@ -385,8 +386,10 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
   await page
     .getByRole("textbox", { name: "Base URL", exact: true })
     .fill("https://gateway.ai.cloudflare.com/v1/acct/gw/anthropic");
-  await page.getByRole("button", { name: /Protocol$/ }).click();
-  await page.getByRole("option", { name: "Anthropic Messages", exact: true }).click();
+  await chooseDropdownOption(
+    page.getByRole("button", { name: /Protocol$/ }),
+    "Anthropic Messages"
+  );
   await page.getByRole("textbox", { name: "API key", exact: true }).fill("cf-secret");
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect

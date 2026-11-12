@@ -2,7 +2,8 @@
 // account signs out of this device), in which what the Comma API gave is kept as it gave it (`doc`: a resource by
 // name, its JSON and when it was read). Nothing of one account is used for another: a session that changes to
 // another account closes this one, and what was under way for it finds it closed.
-import { migrate, SqlError, transaction, type Sql } from "@comma/core-kernel";
+import { migrate, share, SqlError, transaction, type Sql } from "@comma/core-kernel";
+import type { Meter } from "@comma/core-kernel";
 import type { SessionLease } from "./host.ts";
 
 /** The schema, step by step (`PRAGMA user_version`). */
@@ -58,6 +59,13 @@ const STEPS: ((sql: Sql) => void)[] = [
   // database opened: it goes, and those files download again when shown.
   (sql) => {
     sql.run("DELETE FROM doc WHERE name = 'downloads'");
+  },
+  // - `item`: a collection kept item by item (`putItems`): its name, each item's key and JSON. A change writes the
+  //   items that changed, not the collection again; `meta` `items:<name>` says it was kept (an empty one too).
+  (sql) => {
+    sql.exec(`
+      CREATE TABLE item (name TEXT NOT NULL, key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (name, key));
+    `);
   },
 ];
 
@@ -118,6 +126,15 @@ export class Account {
   /** Whether it is kept only this run (its file could not be opened). */
   readonly inMemory: boolean;
   readonly #sql: Sql;
+  readonly #meter: Meter | null;
+  /** With a meter: what each document was last written as, to count a write of the same bytes. */
+  readonly #written = new Map<string, string>();
+  /** Each document read or written this run, as `doc` gives it. */
+  readonly #docs = new Map<string, { value: unknown; readAt: number }>();
+  /** The same for `meta` and for each workspace's `stationList`. */
+  readonly #metas = new Map<string, unknown>();
+  readonly #stations = new Map<string, unknown[] | null>();
+  readonly #items = new Map<string, Map<string, unknown>>();
   #closed = false;
 
   constructor(
@@ -125,8 +142,10 @@ export class Account {
     lease: SessionLease,
     dbName: string,
     sql: Sql,
-    inMemory: boolean
+    inMemory: boolean,
+    meter?: Meter
   ) {
+    this.#meter = meter ?? null;
     this.userId = userId;
     this.lease = lease;
     this.dbName = dbName;
@@ -151,24 +170,65 @@ export class Account {
     this.#sql.close();
   }
 
-  /** A resource as last read, and when; null when it never was. */
+  /**
+   * A resource as last read, and when; null when it never was. The same object each time while it is unchanged (read
+   * from the disk once a run), so what is made of it is kept too (core-kernel keep.ts): a reader must not change it.
+   */
   doc<T>(name: string): { value: T; readAt: number } | null {
     if (this.#closed) return null;
+    const held = this.#docs.get(name);
+    if (held) return held as { value: T; readAt: number };
     const row = this.#sql.all("SELECT json, read_at FROM doc WHERE name = ?", [
       name,
     ])[0];
     if (!row) return null;
-    return { value: JSON.parse(row[0] as string) as T, readAt: row[1] as number };
+    const read = {
+      value: this.held(JSON.parse(row[0] as string)) as T,
+      readAt: row[1] as number,
+    };
+    this.#docs.set(name, read);
+    return read;
   }
 
-  /** Keeps a resource as read now. Does nothing once the account is closed (a read that came back too late). */
-  putDoc(name: string, value: unknown, now: number): boolean {
+  /**
+   * Keeps a resource as read now. Does nothing once the account is closed (a read that came back too late). A value
+   * equal to the one held is only marked read now.
+   */
+  putDoc(name: string, given: unknown, now: number): boolean {
     if (this.#closed) return false;
+    const held = this.#docs.get(name);
+    // What did not change keeps the objects held (core-kernel keep.ts): readers' parts made of them are kept, and a
+    // document that did not change at all is not written again.
+    const value = share(held?.value, given);
+    if (held && held.value === value) {
+      held.readAt = now;
+      this.#sql.run("UPDATE doc SET read_at = ? WHERE name = ?", [now, name]);
+      return true;
+    }
+    const json = JSON.stringify(value);
+    this.#wrote(`doc:${name}`, json);
     this.#sql.run(
       "INSERT INTO doc (name, json, read_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET json = excluded.json, read_at = excluded.read_at",
-      [name, JSON.stringify(value), now]
+      [name, json, now]
     );
+    this.#docs.set(name, { value: this.held(value), readAt: now });
     return true;
+  }
+
+  /**
+   * A value held for readers to share (a document, a GET's answer); frozen with a meter (a test's core), so a reader
+   * that changes it fails.
+   */
+  held<T>(value: T): T {
+    return this.#meter ? deepFreeze(value) : value;
+  }
+
+  /** Counts a write for the meter: by the kind of what was written (a document's name up to its first `.`/`:`). */
+  #wrote(key: string, json: string): void {
+    if (!this.#meter) return;
+    const same = this.#written.get(key) === json;
+    this.#written.set(key, json);
+    this.#meter.wrote(key.split(/[.:]/, 2).join(":"), json.length, same);
   }
 
   /** Changes a resource kept already (an answer that carries part of it); false when there is none. */
@@ -182,24 +242,98 @@ export class Account {
     });
   }
 
+  /**
+   * A collection as kept item by item, in no order of its own (its items say theirs); null when it never was. The same
+   * objects each time while they are unchanged, as `doc` gives its documents.
+   */
+  items<T>(name: string): T[] | null {
+    const held = this.#heldItems(name);
+    return held ? ([...held.values()] as T[]) : null;
+  }
+
+  /**
+   * Keeps a collection as it is now, by each item's `key`: only the items that changed are written (an item equal to
+   * the one kept keeps that one's object), and those gone are deleted.
+   */
+  putItems<T>(name: string, items: readonly T[], key: (item: T) => string): void {
+    if (this.#closed) return;
+    const held = this.#heldItems(name) ?? new Map<string, unknown>();
+    const next = new Map<string, unknown>();
+    transaction(this.#sql, () => {
+      for (const item of items) {
+        const k = key(item);
+        const was = held.get(k);
+        const kept = share(was, item);
+        next.set(k, kept === was ? was : this.held(kept));
+        if (kept === was) continue;
+        const json = JSON.stringify(kept);
+        this.#wrote(`item:${name}/${k}`, json);
+        this.#sql.run(
+          "INSERT OR REPLACE INTO item (name, key, json) VALUES (?, ?, ?)",
+          [name, k, json]
+        );
+      }
+      for (const k of held.keys())
+        if (!next.has(k))
+          this.#sql.run("DELETE FROM item WHERE name = ? AND key = ?", [name, k]);
+      if (!this.#items.has(name)) this.setMeta(`items:${name}`, true);
+    });
+    this.#items.set(name, next);
+  }
+
+  /** Lets a collection go. */
+  deleteItems(name: string): void {
+    if (this.#closed) return;
+    this.#items.delete(name);
+    this.#sql.run("DELETE FROM item WHERE name = ?", [name]);
+    this.#sql.run("DELETE FROM meta WHERE key = ?", [`items:${name}`]);
+    this.#metas.delete(`items:${name}`);
+  }
+
+  #heldItems(name: string): Map<string, unknown> | null {
+    if (this.#closed) return null;
+    const held = this.#items.get(name);
+    if (held) return held;
+    if (this.meta<boolean>(`items:${name}`) !== true) return null;
+    const rows = this.#sql.all(
+      "SELECT key, json FROM item WHERE name = ? ORDER BY key",
+      [name]
+    );
+    const read = new Map(
+      rows.map((row) => [String(row[0]), this.held(JSON.parse(row[1] as string))])
+    );
+    this.#items.set(name, read);
+    return read;
+  }
+
   /** Lets a kept resource go (bounded caches drop their oldest). */
   deleteDoc(name: string): void {
     if (this.#closed) return;
+    this.#docs.delete(name);
     this.#sql.run("DELETE FROM doc WHERE name = ?", [name]);
   }
 
   meta<T>(key: string): T | null {
     if (this.#closed) return null;
+    if (this.#metas.has(key)) return this.#metas.get(key) as T | null;
     const row = this.#sql.all("SELECT json FROM meta WHERE key = ?", [key])[0];
-    return row ? (JSON.parse(row[0] as string) as T) : null;
+    const value = row ? this.held(JSON.parse(row[0] as string) as T) : null;
+    this.#metas.set(key, value);
+    return value;
   }
 
+  /** Keeps `value` under `key`; a value equal to the one held is not written again. */
   setMeta(key: string, value: unknown): void {
     if (this.#closed) return;
+    const held = this.meta(key);
+    if (held !== null && share(held, value) === held) return;
+    const json = JSON.stringify(value);
+    this.#wrote(`meta:${key}`, json);
     this.#sql.run(
       "INSERT INTO meta (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json",
-      [key, JSON.stringify(value)]
+      [key, json]
     );
+    this.#metas.set(key, this.held(value));
   }
 
   // ── stations (stations/index.ts) ─────────────────────────────────────
@@ -207,22 +341,71 @@ export class Account {
   /** A workspace's stations as last listed, in the list's order; null when it never was. */
   stationList<T>(workspace: string): T[] | null {
     if (this.#closed) return null;
+    if (this.#stations.has(workspace))
+      return this.#stations.get(workspace) as T[] | null;
     const rows = this.#sql.all(
       "SELECT json FROM station WHERE workspace = ? ORDER BY ord",
       [workspace]
     );
-    if (rows.length === 0 && this.meta(listedKey(workspace)) === null) return null;
-    return rows.map((row) => JSON.parse(row[0] as string) as T);
+    const list =
+      rows.length === 0 && this.meta(listedKey(workspace)) === null
+        ? null
+        : this.held(rows.map((row) => JSON.parse(row[0] as string) as T));
+    this.#stations.set(workspace, list);
+    return list;
   }
 
-  /** Keeps a workspace's stations as listed now, in place of those kept. */
+  /**
+   * Keeps a workspace's stations as listed now, in place of those kept: only the rows that changed or moved are
+   * written, and those no longer listed removed.
+   */
   putStationList(
     workspace: string,
     rows: readonly { id: string }[],
     now: number
   ): void {
     if (this.#closed) return;
-    transaction(this.#sql, () => putStations(this.#sql, workspace, rows, now));
+    const listed = rows.filter(
+      (row) => typeof (row as { id?: unknown }).id === "string"
+    );
+    const held = this.stationList<{ id: string }>(workspace);
+    const was = new Map((held ?? []).map((row, ord) => [row.id, { row, ord }]));
+    const ids = new Set(listed.map((row) => row.id));
+    const kept = listed.map((row) => {
+      const before = was.get(row.id);
+      return before ? share(before.row, row) : row;
+    });
+    transaction(this.#sql, () => {
+      for (const id of was.keys())
+        if (!ids.has(id))
+          this.#sql.run("DELETE FROM station WHERE workspace = ? AND id = ?", [
+            workspace,
+            id,
+          ]);
+      kept.forEach((row, ord) => {
+        const before = was.get(row.id);
+        if (before && before.row === row && before.ord === ord) return;
+        const json = JSON.stringify(row);
+        this.#wrote(`station:${workspace}/${row.id}`, json);
+        this.#sql.run(
+          "INSERT OR REPLACE INTO station (workspace, id, ord, json, read_at) VALUES (?, ?, ?, ?, ?)",
+          [workspace, row.id, ord, json, now]
+        );
+      });
+      if (held === null)
+        this.#sql.run(
+          "INSERT INTO meta (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json",
+          [listedKey(workspace), JSON.stringify(now)]
+        );
+    });
+    if (
+      held !== null &&
+      kept.length === held.length &&
+      kept.every((row, i) => row === held[i])
+    )
+      return;
+    this.#stations.set(workspace, this.held(kept));
+    if (held === null) this.#metas.set(listedKey(workspace), this.held(now));
   }
 
   /** Changes one kept station's row (renamed, its presence moved); nothing when it is not kept. */
@@ -238,10 +421,17 @@ export class Account {
       [workspace, id]
     )[0];
     if (!row) return;
+    const changed = change(JSON.parse(row[0] as string) as T);
     this.#sql.run(
       "UPDATE station SET json = ?, read_at = ? WHERE workspace = ? AND id = ?",
-      [JSON.stringify(change(JSON.parse(row[0] as string) as T)), now, workspace, id]
+      [JSON.stringify(changed), now, workspace, id]
     );
+    const list = this.#stations.get(workspace);
+    if (list)
+      this.#stations.set(
+        workspace,
+        this.held(list.map((s) => ((s as { id?: unknown }).id === id ? changed : s)))
+      );
   }
 
   /** The workspace a kept station is listed in; null when none lists it. */
@@ -337,7 +527,8 @@ export class Account {
             thread,
           ]);
       }
-      for (const t of tasks)
+      for (const t of tasks) {
+        this.#wrote(`station_task:${t.station}/${t.thread}`, JSON.stringify(t.value));
         this.#sql.run(
           "INSERT INTO station_task (station, thread, workspace, status, last_activity_at, rev, json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(station, thread) DO UPDATE SET workspace = excluded.workspace, status = excluded.status, last_activity_at = excluded.last_activity_at, rev = excluded.rev, json = excluded.json",
           [
@@ -350,6 +541,7 @@ export class Account {
             JSON.stringify(t.value),
           ]
         );
+      }
     });
   }
 
@@ -361,3 +553,11 @@ export class Account {
 }
 
 export { SqlError };
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value)) deepFreeze(v);
+  }
+  return value;
+}

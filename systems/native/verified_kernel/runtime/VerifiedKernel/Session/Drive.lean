@@ -423,7 +423,7 @@ private def run (state machine instr : Term) : KernelM Step := do
       let recovery ← observeRecovery state machine
       return emitIn (set machine [("recovery", recovery)]) "repaired" (.tuple [a "apply_recovery", recovery])
     | .tuple [.atom "ok", events, _] =>
-      return emitIn machine "repair_commit" (plainCommit events [(b "timers", a "true")])
+      return emitIn machine "repair_commit" (plainCommit events [])
     | .tuple [.atom "error", reason] => return finish (.tuple [a "recovery_failure", a "repair_read", reason])
     | other => fail "invalid_repair" [other]
   | .atom "process_fast" =>
@@ -466,7 +466,7 @@ private def run (state machine instr : Term) : KernelM Step := do
     let machine := set machine [("changed", changed)]
     match outcome with
     | .atom "run" => return emitIn machine "round_config" (a "round_config")
-    | .atom "wait" => return emitIn (set machine [("outcome", outcome)]) "plan_wait" (.tuple [a "set_timer", a "wait", nil])
+    | .atom "wait" => return settle machine outcome
     | .atom "fallback" => return .next machine (a "fast_fallback")
     | .atom "idle" | .atom "continue" =>
       if get machine "entry_kind" == b "full" then return settle machine outcome
@@ -597,7 +597,6 @@ private def resume (state machine event : Term) : KernelM Step := do
     if is "abandon" then return .next machine (.tuple [a "round_failed", get machine "reason"])
     -- Activation.
     if is "plan" then return .next machine (.tuple [a "planned", value])
-    if is "plan_wait" then return settle machine (get machine "outcome")
     if is "settle" then
       if !isOk value then return activationFailure machine (materializationError (errorReason value))
       return if get machine "outcome" == a "continue" then finish (a "reprocess") else finish (a "idle")

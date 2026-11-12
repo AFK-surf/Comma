@@ -106,24 +106,25 @@ def atomString (value : Term) : Bool :=
     | ["task", id] => id != ""
     | _ => false
 
-private def decodePrincipalFuel : Nat → String → Option Term
-  | 0, _ => none
-  | fuel + 1, value =>
+private def decodePrincipalDeferred : Nat → String → Stackless.OptionEval Term
+  | 0, _ => Stackless.liftOption none
+  | fuel + 1, value => Stackless.deferOption fun _ => do
     match split3 value with
-    | ["system"] => some (a "system")
-    | ["comma_user", id] => if id != "" then some (.tuple [a "comma_user", b id]) else none
-    | ["agent", id] => if id != "" then some (.tuple [a "agent", b id]) else none
+    | ["system"] => return a "system"
+    | ["comma_user", id] => Stackless.liftOption (if id != "" then some (.tuple [a "comma_user", b id]) else none)
+    | ["agent", id] => Stackless.liftOption (if id != "" then some (.tuple [a "agent", b id]) else none)
     | ["provider_user", c, u] =>
-      if c != "" && u != "" then some (.tuple [a "provider_user", b c, b u]) else none
+      Stackless.liftOption (if c != "" && u != "" then some (.tuple [a "provider_user", b c, b u]) else none)
     | ["schedule", id, creator] =>
-      match decodePrincipalFuel fuel creator with
-      | some creator => if id != "" then some (.tuple [a "schedule", b id, creator]) else none
-      | none => none
+      let creator ← decodePrincipalDeferred fuel creator
+      Stackless.liftOption (if id != "" then some (.tuple [a "schedule", b id, creator]) else none)
     | ["api_key", id, creator] =>
-      match decodePrincipalFuel fuel creator with
-      | some creator => if id != "" then some (.tuple [a "api_key", b id, creator]) else none
-      | none => none
-    | _ => none
+      let creator ← decodePrincipalDeferred fuel creator
+      Stackless.liftOption (if id != "" then some (.tuple [a "api_key", b id, creator]) else none)
+    | _ => Stackless.liftOption none
+
+private def decodePrincipalFuel (fuel : Nat) (value : String) : Option Term :=
+  Stackless.runOption (decodePrincipalDeferred fuel value)
 
 /-- `Codec.decode_principal/1`. Only a binary decodes; every other term is
 `:error`, which every caller here reads as `nil`. -/
@@ -132,28 +133,30 @@ def decodePrincipal (value : Term) : Option Term :=
   | some raw => decodePrincipalFuel (raw.length + 1) raw
   | none => none
 
-private def encodePrincipalFuel : Nat → Term → Option String
-  | 0, _ => none
-  | fuel + 1, value =>
+private def encodePrincipalDeferred : Nat → Term → Stackless.OptionEval String
+  | 0, _ => Stackless.liftOption none
+  | fuel + 1, value => Stackless.deferOption fun _ => do
     match value with
-    | .atom "system" => some "system"
+    | .atom "system" => return "system"
     | .tuple [.atom "provider_user", c, u] =>
-      match partText c, partText u with
-      | some c, some u => joinParts ["provider_user", c, u]
-      | _, _ => none
+      Stackless.liftOption <| do
+        let c ← partText c
+        let u ← partText u
+        joinParts ["provider_user", c, u]
     | .tuple [.atom "comma_user", id] =>
-      match partText id with | some id => joinParts ["comma_user", id] | none => none
+      Stackless.liftOption (partText id >>= fun id => joinParts ["comma_user", id])
     | .tuple [.atom "agent", id] =>
-      match partText id with | some id => joinParts ["agent", id] | none => none
+      Stackless.liftOption (partText id >>= fun id => joinParts ["agent", id])
     | .tuple [.atom "schedule", id, creator] =>
-      match encodePrincipalFuel fuel creator, partText id with
-      | some tail, some id => joinTail ["schedule", id] tail
-      | _, _ => none
+      let tail ← encodePrincipalDeferred fuel creator
+      Stackless.liftOption (partText id >>= fun id => joinTail ["schedule", id] tail)
     | .tuple [.atom "api_key", id, creator] =>
-      match encodePrincipalFuel fuel creator, partText id with
-      | some tail, some id => joinTail ["api_key", id] tail
-      | _, _ => none
-    | _ => none
+      let tail ← encodePrincipalDeferred fuel creator
+      Stackless.liftOption (partText id >>= fun id => joinTail ["api_key", id] tail)
+    | _ => Stackless.liftOption none
+
+private def encodePrincipalFuel (fuel : Nat) (value : Term) : Option String :=
+  Stackless.runOption (encodePrincipalDeferred fuel value)
 
 /-- `Codec.encode_principal/1` as the wire binary, or `nil` for `:error`. An id
 that would break the grammar is refused rather than round-tripping wrong. -/

@@ -10,7 +10,7 @@ import { unified } from "../agents/unified.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Lang, tr } from "../ops/i18n.ts";
-import { type Json, STILLFAIL_SURFACE, type Store, type UsageGroup, usageGroups, usageSince, usageThreads } from "./store.ts";
+import { type Json, COMMA_STATION_SURFACE, type Store, type UsageGroup, usageGroups, usageSince, usageThreads } from "./store.ts";
 import { titleOf } from "./views.ts";
 
 // ── prices (usage.rs) ──
@@ -128,7 +128,7 @@ export function usage(s: Store, lang: Lang, from: bigint, to: bigint, utcOffsetM
   const threads: Record<string, Json> = {};
   for (const [t, first] of usageThreads(s, wanted)) {
     // A Slack channel's name, as far as known (`known_channel`).
-    const title = titleOf(t, first, t.surface === STILLFAIL_SURFACE ? null : knownChannel(s, threadConnect(s, t.id), t.channel));
+    const title = titleOf(t, first, t.surface === COMMA_STATION_SURFACE ? null : knownChannel(s, threadConnect(s, t.id), t.channel));
     threads[String(t.id)] = { title, surface: t.surface, home: t.home, archived: t.hiddenAt !== null };
   }
   const refs = [...new Set(rows.map((r) => r.person).filter((p): p is string => p !== null))].sort(byBytes);

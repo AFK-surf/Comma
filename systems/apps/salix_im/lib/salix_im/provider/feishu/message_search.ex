@@ -25,6 +25,7 @@ defmodule SalixIM.Provider.Feishu.MessageSearch do
   @params ~w(query count cursor sort sort_dir thread_id)
   @default_count 30
   @max_count 200
+  @container_page_size 50
 
   @doc """
   Runs one search page. `normalize` turns a reconstructed Feishu message object
@@ -61,6 +62,71 @@ defmodule SalixIM.Provider.Feishu.MessageSearch do
       {:error, reason} -> {:error, error(reason)}
     end
   end
+
+  @doc """
+  One page of a chat or a thread out of the local index, in the shape of a
+  history page, for a read Feishu refused. It holds what Feishu delivered to the
+  bot, thread replies included. `next_page_token` continues it.
+  """
+  @spec container_page(map(), String.t(), String.t(), map(), (map() -> map())) ::
+          {:ok, map()} | {:error, term()}
+  def container_page(connect, container_type, container_id, params, normalize) do
+    sort_dir = if params["sort_type"] == "ByCreateTimeAsc", do: :asc, else: :desc
+
+    with {:ok, reader} <- reader(),
+         {:ok, cursor} <- decode_cursor(params["page_token"], sort_dir),
+         scope = scope(connect),
+         {:ok, page} <-
+           reader.search(
+             scope,
+             container_opts(container_type, container_id, params, sort_dir, cursor)
+           ) do
+      messages = Enum.map(page.messages, &message(&1, normalize))
+      chat_id = if container_type == "chat", do: container_id, else: first_chat(messages)
+
+      {:ok,
+       %{
+         "messages" => mark_stale(scope, messages),
+         "has_more" => page.has_more? == true,
+         "next_page_token" => encode_cursor(page.next_cursor, sort_dir),
+         "source" => "local_index",
+         "note" =>
+           "Feishu refused this read because the chat has members of another organization. These are the messages Feishu delivered to the bot, thread replies included; older ones may be missing. A member who signed in can read all of it: pass account (feishu.list_accounts)."
+       }
+       |> put_incomplete(scope, %{channel_id: chat_id, after_date: nil})}
+    end
+  end
+
+  defp container_opts(container_type, container_id, params, sort_dir, cursor) do
+    [
+      limit: min(positive_or(params["page_size"], @container_page_size), @container_page_size),
+      chat_id: if(container_type == "chat", do: container_id),
+      thread_id: if(container_type == "thread", do: container_id),
+      after_us: seconds_us(params["start_time"]),
+      before_us: seconds_us(params["end_time"]),
+      sort_dir: sort_dir,
+      cursor_ts_us: cursor && elem(cursor, 0),
+      cursor_message_id: cursor && elem(cursor, 1)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp positive_or(value, default) do
+    case int_or(value, 0) do
+      n when n > 0 -> n
+      _none -> default
+    end
+  end
+
+  defp seconds_us(value) do
+    case int_or(value, 0) do
+      seconds when seconds > 0 -> seconds * 1_000_000
+      _none -> nil
+    end
+  end
+
+  defp first_chat([%{"chat_id" => chat_id} | _rest]) when is_binary(chat_id), do: chat_id
+  defp first_chat(_messages), do: nil
 
   # The reader returns mirror rows. They are put back into the Feishu message
   # object shape so attachments get the same resource refs as history pages;

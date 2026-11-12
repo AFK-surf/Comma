@@ -60,6 +60,33 @@ defmodule SalixAnalytics.AgentTelemetryQueries do
   # only "unaccounted for" once it has been silent past this grace window.
   @stale_grace_seconds 900
 
+  @doc "Recorded model calls for a bounded routed-Task cohort, with normal seam deduplication."
+  def routing_calls(_tenant_id, [], _opts), do: {:ok, []}
+
+  def routing_calls(tenant_id, sessions, opts) when length(sessions) <= 1_000 do
+    sql = fn db ->
+      """
+      SELECT session_id, sku, model, status, prompt_tokens, completion_tokens,
+             cache_read_input_tokens, cache_write_input_tokens,
+             usage_reported, prompt_tokens_reported, completion_tokens_reported,
+             cache_read_tokens_reported, duration_ms
+      FROM #{events(db, "llm_call_events")}
+      WHERE #{scope(opts)}
+        AND session_id IN (SELECT arrayJoin(JSONExtract({sessions:String}, 'Array(String)')))
+      ORDER BY observed_at DESC, source, source_key
+      LIMIT 20001
+      FORMAT JSONEachRow
+      """
+    end
+
+    case ClickHouseRead.run(sql, binds(tenant_id, opts) ++ [sessions: Jason.encode!(sessions)],
+           query: "routing_calls"
+         ) do
+      {:ok, rows} when length(rows) > 20_000 -> {:error, :too_many_calls}
+      result -> result
+    end
+  end
+
   # ============================ agent_run_events ============================
 
   @doc """

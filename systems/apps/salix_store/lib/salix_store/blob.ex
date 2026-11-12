@@ -19,10 +19,16 @@ defmodule SalixStore.Blob do
   @max_bytes 10 * 1024 * 1024
   @stream_chunk_size 256 * 1024
   @multipart_part_size 5 * 1024 * 1024
+  # A body uploaded in parts (`begin_parts/2`): every part but the last has
+  # this size, so each part request stays well inside a proxy's body limit.
+  @upload_part_size 16 * 1024 * 1024
+  @digest_chunk_size 8 * 1024 * 1024
 
   @type ref :: %{kind: String.t(), uuid: String.t(), size: non_neg_integer(), hash: String.t()}
 
   def max_bytes, do: @max_bytes
+
+  def upload_part_size, do: @upload_part_size
 
   @doc """
   Store `content` immutably and return a content ref. Rejects bodies over the
@@ -246,6 +252,122 @@ defmodule SalixStore.Blob do
   @spec put_stream_abort(stream_state()) :: :ok
   def put_stream_abort(state), do: abort_multipart(state)
 
+  @doc """
+  Begin a body of `size` bytes that arrives in parts, each in a request of its
+  own and on any node: `put_part/4` for parts `1..n`, then `finish_parts/3`.
+  Every part but the last is `upload_part_size/0` bytes. The body is an
+  uncommitted preparation with durable cleanup ownership: the cleanup sweeper
+  removes it once no part has arrived for its grace period. Returns the
+  upload's id.
+  """
+  @spec begin_parts(String.t(), non_neg_integer()) :: {:ok, String.t()} | {:error, term()}
+  def begin_parts(agent_id, size) when is_binary(agent_id) and is_integer(size) and size >= 0 do
+    with {:ok, state} <- put_stream_init_prepared(agent_id),
+         {:ok, upload_id} <- S3.multipart_create(state.key) do
+      state = %{state | mode: :multipart, upload_id: upload_id}
+
+      case update_cleanup_intent(state.cleanup_key, fn record ->
+             record
+             |> Map.put("upload_id", upload_id)
+             |> Map.put("status", "uploading")
+             |> Map.put("size", size)
+           end) do
+        :ok ->
+          {:ok, key_uuid(state.key)}
+
+        {:error, _} = error ->
+          abort_multipart(state)
+          error
+      end
+    end
+  end
+
+  @doc """
+  Store part `number` of upload `upload` (`begin_parts/2`). Sending a part
+  again replaces it. Returns the part's etag, which `finish_parts/3` takes.
+  """
+  @spec put_part(String.t(), String.t(), pos_integer(), binary()) ::
+          {:ok, String.t()} | {:error, term()}
+  def put_part(agent_id, upload, number, body) when is_binary(body) do
+    with {:ok, record} <- upload_record(agent_id, upload),
+         :ok <- validate_part(record["size"], number, byte_size(body)),
+         {:ok, %{etag: etag}} <-
+           S3.multipart_upload_part(record["blob_key"], record["upload_id"], number, body),
+         # A part that arrived keeps the upload from the sweeper's grace.
+         :ok <- update_cleanup_intent(Keys.prepared_blob_cleanup(upload), & &1) do
+      {:ok, etag}
+    end
+  end
+
+  @doc """
+  Complete upload `upload` from the etags of its parts, in part order, and
+  return the body's ref (still a preparation until a manifest commits it).
+  """
+  @spec finish_parts(String.t(), String.t(), [String.t()]) :: {:ok, ref()} | {:error, term()}
+  def finish_parts(agent_id, upload, etags) when is_list(etags) do
+    with {:ok, record} <- upload_record(agent_id, upload),
+         size = record["size"],
+         true <-
+           (length(etags) == part_count(size) and Enum.all?(etags, &is_binary/1)) ||
+             {:error, :upload_incomplete},
+         key = record["blob_key"],
+         {:ok, _} <- complete_parts(key, record["upload_id"], etags),
+         {:ok, hash} <- digest(key, size),
+         :ok <- mark_prepared(%{cleanup_key: Keys.prepared_blob_cleanup(upload)}) do
+      {:ok, ref_for(key, size, hash)}
+    end
+  end
+
+  defp upload_record(agent_id, upload) when is_binary(upload) do
+    with true <- Regex.match?(~r/\A[0-9a-f]{32}\z/, upload),
+         {:ok, %{body: body}} <- S3.get(Keys.prepared_blob_cleanup(upload)),
+         {:ok, %{"agent_id" => ^agent_id, "status" => "uploading"} = record} <- Jason.decode(body),
+         true <- is_binary(record["upload_id"]) and is_integer(record["size"]) do
+      {:ok, record}
+    else
+      {:error, %Jason.DecodeError{}} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+      _other -> {:error, :not_found}
+    end
+  end
+
+  defp upload_record(_agent_id, _upload), do: {:error, :not_found}
+
+  # An empty body has no part to complete: it is written as it is.
+  defp complete_parts(key, upload_id, []) do
+    _ = S3.multipart_abort(key, upload_id)
+    S3.put(key, "")
+  end
+
+  defp complete_parts(key, upload_id, etags) do
+    parts = for {etag, n} <- Enum.with_index(etags, 1), do: %{part_number: n, etag: etag}
+    S3.multipart_complete(key, upload_id, parts)
+  end
+
+  defp part_count(size), do: div(size + @upload_part_size - 1, @upload_part_size)
+
+  defp validate_part(size, number, length) do
+    count = part_count(size)
+
+    expected =
+      if number == count, do: size - (count - 1) * @upload_part_size, else: @upload_part_size
+
+    if is_integer(number) and number >= 1 and number <= count and length == expected,
+      do: :ok,
+      else: {:error, :invalid_part}
+  end
+
+  defp digest(key, size) do
+    key
+    |> ranged_stream(0, size, @digest_chunk_size)
+    |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+    |> then(&{:ok, &1})
+  rescue
+    e -> {:error, e}
+  end
+
   @doc "Release durable cleanup ownership after a manifest has committed this ref."
   @spec adopt(ref()) :: :ok | {:error, term()}
   def adopt(%{} = ref) do
@@ -268,16 +390,18 @@ defmodule SalixStore.Blob do
 
   # ---- internal ----
 
-  defp ranged_stream(_key, from, to) when from >= to, do: []
+  defp ranged_stream(key, from, to, chunk_size \\ @stream_chunk_size)
 
-  defp ranged_stream(key, from, to) do
+  defp ranged_stream(_key, from, to, _chunk_size) when from >= to, do: []
+
+  defp ranged_stream(key, from, to, chunk_size) do
     Stream.resource(
       fn -> from end,
       fn offset ->
         if offset >= to do
           {:halt, offset}
         else
-          len = min(@stream_chunk_size, to - offset)
+          len = min(chunk_size, to - offset)
 
           case S3.get(key, range: {offset, len}) do
             {:ok, %{body: body}} when byte_size(body) > 0 ->

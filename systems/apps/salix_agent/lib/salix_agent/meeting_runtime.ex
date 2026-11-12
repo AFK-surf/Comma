@@ -13,14 +13,13 @@ defmodule SalixAgent.MeetingRuntime do
     AgentActor,
     AgentWorkspace,
     FileBackend,
-    InternalSession,
     InternalSessionStore,
     Placement,
     StorageAuthorization
   }
 
   alias SalixStore.Agent, as: StoreAgent
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.{AgentPGStore, Ids}
 
   @doc "Ensure the hidden meeting agent record and state exist."
   @spec ensure_agent(map()) :: :ok | {:error, term()}
@@ -112,13 +111,7 @@ defmodule SalixAgent.MeetingRuntime do
           {:ok, boolean()} | {:error, term()}
   def event_committed?(agent_id, session_id, source_id)
       when is_binary(agent_id) and is_binary(session_id) and is_binary(source_id) do
-    case InternalSessionStore.read(agent_id, session_id) do
-      {:ok, session} ->
-        {:ok, InternalSession.query(session, :input_dedupe_member?, source_id)}
-
-      {:error, _} = error ->
-        error
-    end
+    InternalSessionStore.input_committed?(agent_id, session_id, source_id)
   end
 
   @doc "Check whether this source already committed its deterministic workspace operation."
@@ -171,19 +164,19 @@ defmodule SalixAgent.MeetingRuntime do
   end
 
   defp ensure_agent_state(request) do
-    case StoreAgent.peek(request["agent_id"]) do
-      {:ok, _head} ->
-        verify_agent_state(request["agent_id"], request["session_id"])
+    case InternalSessionStore.hidden(request["agent_id"], request["session_id"]) do
+      {:ok, hidden} ->
+        expect(hidden, :agent_state_visibility_mismatch)
 
       {:error, :not_found} ->
-        with {:ok, _pid} <- Placement.ensure_started(request["agent_id"], create: true),
+        with {:ok, _pid} <- Placement.ensure_started(request["agent_id"], create: false),
              {:ok, status} when status in [:committed, :duplicate] <-
                stage_meeting_session_create(request) do
           :ok
         end
 
-      {:error, _} = err ->
-        err
+      error ->
+        error
     end
   end
 
@@ -226,11 +219,20 @@ defmodule SalixAgent.MeetingRuntime do
       "tool_router_enabled" => false
     }
 
-    case S3.put(Keys.ctl_agent(request["agent_id"]), Jason.encode!(rec), if_none_match: "*") do
-      {:ok, _} ->
-        :ok
+    result =
+      StoreAgent.create(
+        request["agent_id"],
+        to_string(SystemsRuntime.Proc.node()),
+        SalixAgent.State,
+        config: rec
+      )
+      |> settle_creation()
 
-      {:error, :precondition_failed} ->
+    case result do
+      {:ok, owned} ->
+        StoreAgent.release(owned) |> settle_creation()
+
+      {:error, :exists} ->
         verify_agent_record(
           request["tenant_id"],
           request["group_id"],
@@ -243,6 +245,13 @@ defmodule SalixAgent.MeetingRuntime do
     end
   end
 
+  defp settle_creation(result) do
+    case AgentPGStore.settle_result(result) do
+      {:error, :commit_indeterminate} -> {:error, :mutation_outcome_unknown}
+      result -> result
+    end
+  end
+
   defp verify_existing_agent_slot(tenant_id, group_id, agent_id, session_id) do
     with :ok <- verify_existing_agent_record(tenant_id, group_id, agent_id, session_id) do
       verify_existing_agent_state(agent_id, session_id)
@@ -250,7 +259,7 @@ defmodule SalixAgent.MeetingRuntime do
   end
 
   defp verify_existing_agent_record(tenant_id, group_id, agent_id, session_id) do
-    case read_json(Keys.ctl_agent(agent_id)) do
+    case read_agent_record(agent_id) do
       {:ok, record} -> validate_agent_record(record, tenant_id, group_id, agent_id, session_id)
       {:error, :not_found} -> :ok
       {:error, _} = err -> err
@@ -266,7 +275,7 @@ defmodule SalixAgent.MeetingRuntime do
   end
 
   defp verify_agent_record(tenant_id, group_id, agent_id, session_id) do
-    case read_json(Keys.ctl_agent(agent_id)) do
+    case read_agent_record(agent_id) do
       {:ok, record} -> validate_agent_record(record, tenant_id, group_id, agent_id, session_id)
       {:error, :not_found} -> invalid(:missing_agent_record)
       {:error, _} = err -> err
@@ -288,17 +297,11 @@ defmodule SalixAgent.MeetingRuntime do
     validate_agent_state(agent_id, session_id)
   end
 
+  # Every calendar scan validates the Group's meeting agent once per meeting,
+  # so this reads the session row only, never the session's records.
   defp validate_agent_state(agent_id, session_id) do
-    with {:ok, session} <- fetch_meeting_session(agent_id, session_id),
-         :ok <-
-           expect(InternalSession.get(session, :hidden) == true, :agent_state_visibility_mismatch) do
-      :ok
-    end
-  end
-
-  defp fetch_meeting_session(agent_id, session_id) do
-    case InternalSessionStore.read(agent_id, session_id) do
-      {:ok, session} -> {:ok, session}
+    case InternalSessionStore.hidden(agent_id, session_id) do
+      {:ok, hidden} -> expect(hidden, :agent_state_visibility_mismatch)
       {:error, :not_found} -> invalid(:missing_meeting_session)
       {:error, _} = err -> err
     end
@@ -345,12 +348,8 @@ defmodule SalixAgent.MeetingRuntime do
   defp delivery_workspace_operation_id(agent_id, session_id, source_id),
     do: "delivery-workspace:" <> agent_id <> ":" <> session_id <> ":" <> source_id
 
-  defp read_json(key) do
-    case S3.get(key) do
-      {:ok, %{body: body}} -> Jason.decode(body)
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, _} = err -> err
-    end
+  defp read_agent_record(agent_id) do
+    with {:ok, %{record: record}} <- AgentPGStore.read_config(agent_id), do: {:ok, record}
   end
 
   defp expect(true, _reason), do: :ok

@@ -38,6 +38,8 @@ Internal subscription redemption starts in the current UTC calendar month. Month
 Each Cycle issues the package's monthly credits through the existing scheduler. Credits expire at that Cycle's end. The subscription does not renew beyond the redeemed term.
 Existing redemptions keep their recorded Cycles. Repair missing annual Cycles through the subscription command with the original redemption identity and month, after checking existing Cycles.
 
+A Grant with `usage_credits.resource_kinds` pays only for those kinds. Monthly free credits pay only for Cloud VM and storage ([rule](architecture/DOMAIN_CONCEPTS.md)).
+
 ## Comma BYOK
 
 Dispatch and metering carry validated `credential_scope`.
@@ -78,11 +80,9 @@ Workspace-owner APIs at `/v1/comma/workspaces/:workspace_id/subscription-account
 The owner enforces tenant scope, encryption, versions, and OAuth ownership. Credential-free responses set `Cache-Control: no-store`.
 UI pages show 25 accounts, with no account or quota polling. JSON imports (BFT only) allow two megabytes and clear on category or workspace change or cancellation.
 
-Codex menus show `Reset quota (N resets left)` and require confirmation. Unknown counts show `count unknown`. Unknown or zero counts disable new resets.
-Pending attempts retry with the same key across reloads. Claude cannot reset.
-
-`POST /:id/quota` refreshes quota and the optional Codex reset-credit count.
-`POST /:id/quota/reset` can consume one Codex reset credit. Pass `version` and `request_id`.
+Codex and Claude menus show `Reset quota (N resets left)` and require confirmation. Unknown or zero counts disable new resets.
+`quota.resets` lists one entry per reset kind (`session`, `weekly`, `model`, `full`, `credit`) with `left`, `expiries` and `usable`.
+`POST /:id/quota/reset` uses one reset. Pass `version`, `request_id` and, for Claude, `kind`.
 Reuse `request_id` for retries. A pending `reset_attempt` in the account response supplies the recovery key.
 Responses and Settings separate `outcome` from `quota_refreshed`. Refresh failure cannot undo a confirmed reset. Resets do not purchase credits.
 
@@ -98,10 +98,26 @@ The Usage and Model pages read on each entry, because the menu can hold their to
 Cycle use compares the remaining credits of the subscription cycle grants with their issued credits (`original_credits` in the billing summary).
 [Code](../clients/apps/electron/src/main/status-tray-usage.ts).
 
+## Sandbox starts
+
+A [sandbox Task](compute-devices.md#coding-sandboxes) starts a VM the Workspace pays for, so its start is authorized first, as a Group Cloud VM's is: a typed `resource_kind = vm` fee-control decision for provider `l4es` and SKU `sandbox-<size>` (`SalixWeb.CodingSandboxes.authorize/4`, through `vm_authorization_mod`).
+Placement asks when a Task is placed on a sandbox (`entrypoint` `sandbox_place`, the user's action): a refusal makes no Task, and the Router is told why (`insufficient_credits`, `account_inactive`, `sandbox_restricted`, or a temporary outage). The product asks again when a Message wakes a stopped sandbox (`sandbox_wake`, the system's, for the sandbox's own size): a refusal leaves the sandbox stopped and posts one notice into the Task per reason and generation; a reply once credits are there wakes it. A fee control that does not answer is a temporary outage: the Task is not made, or the sandbox stays stopped with a notice, and a later reply asks again.
+A Workspace with no billing account is neither authorized nor charged. Sandbox time from `ready` to stop is metered on the same SKU. By owner decision (2026-10-27) the SKU has no catalog price yet: sandbox time is recorded, not charged, and its meter rows stay `pending_pricing`. A price seeded later charges the pending rows of the past month (`replay_pending_charges`), so seed it with that in mind.
+
+## Runtime agent pages
+
+Billing inventory reads `GET /v1/runtime/agents/page` with a required, tenant-authorized `group_id`.
+`limit` accepts 1 through 100 and defaults to 100. The response contains `data`, `next_cursor`, and `has_more`.
+The cursor is the existing opaque group/lifecycle cursor over PostgreSQL Agent IDs.
+Status and visibility filters apply to one storage page. They do not scan ahead to fill the result.
+Follow the cursor while `has_more` is true, including empty `data` pages.
+Task Agents remain included. Hidden Agents stay excluded. `include_archived=true` also includes archived Agents.
+The existing `GET /v1/runtime/agents` endpoint retains its array response.
+
 ## Bounded diagnosis
 
 Before mutation, read active grants, source, redemption and Stripe events, errors, and idempotency keys. Delayed dashboards cannot prove credits.
-VM availability uses typed `resource_kind = vm` decisions and grant transitions. Best-effort wakes require reconciliation from PostgreSQL facts.
+VM and sandbox availability use typed `resource_kind = vm` decisions and grant transitions. Best-effort wakes require reconciliation from PostgreSQL facts.
 
 ## LLM usage delivery
 
@@ -134,3 +150,77 @@ Without a pin, it serves the choice when an enabled, signed-in Codex subscriptio
 This configuration replaces the platform image settings for that Agent. Other choices use the platform image settings.
 The Agent's Tenant is the pool tenant. User-supplied tenant fields, endpoints, keys, and headers cannot change that route.
 Claude image pools are unsupported. Empty or unavailable pools fail without platform fallback.
+
+## Task model selection
+
+The Dashboard Group page edits a route table with Key, Description, Model and Reasoning effort columns.
+Keys are unique, case-sensitive strings. Descriptions guide classification. Row order does not set priority.
+Users can add or delete entries, then save. The table permits up to 32 entries and 8 KiB of JSON.
+Keys permit 128 UTF-8 bytes. Descriptions permit 1024 UTF-8 bytes.
+Catalog candidates follow enabled tenant accounts, the saved Profile and the owner's model policy. Efforts follow the model.
+Save rechecks availability and policy. An unchanged table can be disabled without a model-list read.
+An empty table can be saved without a model-list read. Empty and disabled tables use the same normal Worker model selection path.
+Neither case calls Jev, overrides the Task model, nor adds routing-specific tool restrictions.
+The enable switch is preserved for empty tables. Adding entries and saving activates an enabled table.
+A conditional Group write rejects a stale editor without replacing newer routing or unrelated Group fields.
+The stored revision identifies the configuration used by historical decisions. It is not a separate authorization boundary.
+
+The route-table editor imports and exports JSON files with `mode: routes`, `schema_version: 2`, and `entries`.
+Export uses the current draft, including unsaved edits. It works when a saved model is unavailable.
+Import replaces the draft entries after format validation. Save applies the entries through the normal model-access and concurrent-edit checks.
+Invalid files leave the draft unchanged. Discard changes restores the saved table.
+Files omit the enable switch, table-level Profile and revision. Save keeps the destination settings and assigns a new revision.
+Files can contain at most 64 KiB, including whitespace. The existing 32-entry and 8 KiB compact-table limits still apply.
+
+Stored tables also carry `revision` and `enabled`.
+Each entry holds `key`, `description`, and a catalog or platform Model Choice, including its payment and Profile settings.
+Table-level `profile_id` constrains every entry.
+Other experiment modes keep their existing callers.
+API Key choices are labeled "Pay-per-use". Unpinned tables also offer the platform Task model.
+A Group without its own table routes built-in-model Tasks by the platform route table, with platform-owned learning ([Platform Model](architecture/DOMAIN_CONCEPTS.md#adaptive-task-routing)).
+An empty organization allowlist still requires tenant accounts to serve catalog models.
+Save, file transfer and Task creation preserve each choice under normal Task authorization and account selection.
+
+The optional Group value `task_model_selection` selects an internal Task's Session model before its first Conversation commit.
+Without this value, the Router can choose a model through the normal Task tool.
+Automatic routing applies only to internal Tasks without an explicit Session model.
+The Router still supplies `runs_on`. Explicit places, Worker Station bindings and Group default places keep the normal placement rules.
+Station and sandbox Tasks keep their runtime models. An explicit model keeps the normal product authorization checks.
+For an internal Task without an explicit model, omit `model` and let the Group policy select it.
+In `explicit` mode, every internal Task creation path must supply an allowed model, reasoning effort and configured Profile pin.
+The common creation entry rejects missing or unsupported choices from Router tools, product APIs and scheduled callers.
+Station and sandbox Tasks keep their runtime model rules.
+An optional `profile_id` pins the normal tenant-owned Profile. It does not bypass model authorization or payment policy.
+The Conversation owner builds the Jev request from the exact delegated content and the Group policy.
+Product-created Tasks need no active Router round. Their prepared delegator Participant supplies the Session identity and Group-owned billing context.
+`routes` mode classifies the Task against the entry descriptions and uses the selected entry's model.
+Request-local choice IDs support arbitrary user keys. Responses resolve against the same configuration snapshot.
+One entry selects its model directly, without a Jev call. Unknown choices fail Task selection.
+Model choice and inference retain the existing Group policy and Profile authorization checks. Failures do not act as empty tables.
+Decision evidence retains the key, configuration revision and complete Model Choice.
+`jev` mode asks for one configured candidate. Jev receives no model table or cost facts.
+A route table holds at most 32 entries in 8 KiB. It adds no per-child polling.
+Server-owned Task decisions accept at most 64 KiB of encoded input, including the complete Task command and question configuration.
+All selection failures use `task_model_selection_failed`. An oversized request includes `input_too_large` before inference or Task commit. Shorten the content or routing descriptions, supply an authorized model explicitly, or disable routing.
+The server does not truncate the command. A single-entry table makes no decision call and has no decision-input limit.
+The public `decide` tool keeps its 12 KiB limit.
+
+The normal product model authorization applies. A standalone Salix Group uses its Tenant's catalog choices; a Bridge Group keeps its organization policy.
+A decision failure leaves the Task uncommitted. It never substitutes `default_task_model`.
+Errors name the cause and recovery action. Retry `timeout` and `rate_limited`. Fix decision-provider configuration or model/Profile access when those checks fail.
+A retry of a committed automatic Task command keeps the stored Participant model and does not call Jev again.
+Task metadata stores `policy_mode` (`routes`, `jev`) and `decision_source` (`direct`, `jev`).
+It also stores the configuration revision, matched key, Model Choice, original Worker Session ID, usage and elapsed time.
+It does not duplicate the Task body, question descriptions, complete answer or route object. A direct selection reports no decision usage.
+Full provider requests and responses use the existing encrypted, best-effort archive. A configuration revision identifies provenance. It does not retain historical tables or guarantee replay.
+Rule updates affect new Tasks only. Salix never changes an active Session model for learning.
+The route table's `learning` switch enables Salix-owned feedback and statistics.
+Salix stores one receipt per Task and a bounded evidence window in PostgreSQL. No Evalens process must update the table.
+A review accepted by a person counts as a completion and a failed Task as a failure. Tenant APIs read the learned evidence and submit explicit grades.
+Infrastructure failures do not count as model failures.
+See [learning](architecture/DOMAIN_CONCEPTS.md#adaptive-task-routing) and [routing usage](architecture/DOMAIN_CONCEPTS.md#routing-usage-statistics).
+
+`agent.models` and the BFT model list read the local catalog and Profile state, without remote discovery or credential refresh.
+The routing editor uses the same local list, scoped to its optional Profile and product model policy.
+Page loads and saves do not call subscription `/models` endpoints. Actual selection uses normal Model Choice authorization.
+An account-store failure preserves saved configuration and prevents unverified edits from being saved.

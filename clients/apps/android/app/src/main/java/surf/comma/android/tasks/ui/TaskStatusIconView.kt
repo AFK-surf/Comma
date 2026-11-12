@@ -13,7 +13,7 @@ import androidx.core.graphics.withTranslation
 import surf.comma.android.tasks.TaskStatusBucket
 
 /** One full turn of the in-progress glyph. */
-internal const val SPIN_PERIOD_MS = 2_000L
+internal const val SPIN_PERIOD_MS = 2_400L
 
 /**
  * Status glyph. The in-progress glyph turns, but only while the view can actually be seen:

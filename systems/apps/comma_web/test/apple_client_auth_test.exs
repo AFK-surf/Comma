@@ -1,5 +1,6 @@
 defmodule CommaWeb.AppleClientAuthTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   alias Comma.Accounts.AuthSession
   alias Comma.Accounts
@@ -68,6 +69,7 @@ defmodule CommaWeb.AppleClientAuthTest do
     |> Plug.Conn.put_req_header("x-comma-session-transport", "bearer")
     |> bearer(token)
     |> CommaWeb.Router.call(CommaWeb.Router.init([]))
+    |> CommaWeb.AuthAbuseTestSupport.continue_http()
   end
 
   defp get(path, token),
@@ -76,6 +78,7 @@ defmodule CommaWeb.AppleClientAuthTest do
       |> Plug.Conn.put_req_header("x-comma-session-transport", "bearer")
       |> bearer(token)
       |> CommaWeb.Router.call(CommaWeb.Router.init([]))
+      |> CommaWeb.AuthAbuseTestSupport.continue_http()
 
   defp bearer(conn, nil), do: conn
 

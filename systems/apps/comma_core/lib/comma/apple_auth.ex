@@ -8,7 +8,7 @@ defmodule Comma.AppleAuth do
   """
   import Ecto.Query
   alias Comma.Accounts.{Email, Identity, Repository, SessionClientMetadata, SessionIssuer, User}
-  alias Comma.Auth.{AppleToken, OneTimeCredentials}
+  alias Comma.Auth.{AppleToken, OneTimeCredentials, Registration}
   alias Comma.{AuthChallenges, Repo}
 
   @issuer "https://appleid.apple.com"
@@ -46,29 +46,9 @@ defmodule Comma.AppleAuth do
          {:ok, attempt} <- OneTimeCredentials.consume(@purpose, id, secret),
          true <- attempt["client_id"] == client_id,
          {:ok, claims} <- AppleToken.verify(attrs["identity_token"], attempt),
-         {:ok, outcome} <- transaction(fn -> resolve_claims(claims) end) do
-      case outcome do
-        {%User{} = user, identity, creation} ->
-          # The account and identity transaction has committed before capture.
-          if creation == :created, do: Comma.Analytics.registered(user.id)
-          issue_session(user, identity, attrs)
-
-        {user, identity} ->
-          issue_session(user, identity, attrs)
-
-        {:otp, user, email} ->
-          AuthChallenges.request_apple_link_verification(
-            %{
-              "user_id" => user.id,
-              "issuer" => @issuer,
-              "subject" => claims["sub"],
-              "email" => email,
-              "email_verified" => true,
-              "remote_ip" => attrs["remote_ip"] || "unknown"
-            }
-            |> Map.merge(SessionClientMetadata.attributes(attrs))
-          )
-      end
+         {:ok, outcome} <-
+           transaction(fn -> resolve_claims(claims, not Registration.required?("ios", attrs)) end) do
+      finish(outcome, claims, attrs)
     else
       {:error, :invalid_one_time_credential} -> {:error, :invalid_apple_attempt}
       {:error, _} = error -> error
@@ -98,7 +78,48 @@ defmodule Comma.AppleAuth do
     end
   end
 
-  defp resolve_claims(claims) do
+  @doc false
+  def finish_registration(claims, attrs) do
+    with {:ok, outcome} <- transaction(fn -> resolve_claims(claims, true) end) do
+      finish(outcome, claims, attrs)
+    end
+  end
+
+  defp finish(outcome, claims, attrs) do
+    case outcome do
+      {:registration_required, email} ->
+        Registration.start(
+          "apple",
+          %{"sub" => claims["sub"], "email" => email, "email_verified" => true},
+          email,
+          "ios",
+          attrs
+        )
+
+      {%User{} = user, identity, creation} ->
+        # The account and identity transaction has committed before capture.
+        if creation == :created, do: Comma.Analytics.registered(user.id, attrs)
+        issue_session(user, identity, attrs)
+
+      {user, identity} ->
+        issue_session(user, identity, attrs)
+
+      {:otp, user, email} ->
+        AuthChallenges.request_apple_link_verification(
+          %{
+            "user_id" => user.id,
+            "issuer" => @issuer,
+            "subject" => claims["sub"],
+            "email" => email,
+            "email_verified" => true,
+            "remote_ip" => attrs["remote_ip"] || "unknown"
+          }
+          |> Map.merge(SessionClientMetadata.attributes(attrs))
+        )
+    end
+  end
+
+  defp resolve_claims(claims, allow_create) do
     lock_identity!(claims["sub"])
 
     email =
@@ -136,9 +157,15 @@ defmodule Comma.AppleAuth do
             {:otp, user, email}
 
           nil ->
-            {:ok, user, creation} = Repository.ensure_user_by_email(email)
-            require_active!(user)
-            {user, link_identity!(user, claims["sub"], email), creation}
+            if not allow_create do
+              {:registration_required, email}
+            else
+              {:ok, user, creation} =
+                Repository.ensure_user_by_email(email, %{email_verified: true})
+
+              require_active!(user)
+              {user, link_identity!(user, claims["sub"], email), creation}
+            end
         end
     end
   end

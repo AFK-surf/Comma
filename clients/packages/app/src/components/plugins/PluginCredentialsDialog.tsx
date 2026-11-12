@@ -1,9 +1,13 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
 import { useState } from "react";
 import type { Plugin as CommaPlugin } from "@comma/core-client";
-import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
+import {
+  nativePlatformClipboard,
+  openNativePlatformExternalUrl,
+} from "../../nativePlatformActions";
 
 export function PluginCredentialsDialog({
   plugin,
@@ -22,6 +26,50 @@ export function PluginCredentialsDialog({
 }) {
   const messages = useCommaMessages();
   const [value, setValue] = useState("");
+  const [copied, setCopied] = useState(false);
+  if (configuration.format === "show")
+    return (
+      <Dialog
+        isOpen
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+        title={messages.plugins_show_title({ name: plugin.name })}
+        description={messages.plugins_show_description({ name: plugin.name })}
+        actions={[
+          {
+            label: messages.plugins_show_done(),
+            hierarchy: "primary",
+            onPress: onClose,
+          },
+        ]}
+      >
+        <div className="flex w-full flex-col gap-md">
+          <div className="flex w-full items-end gap-sm">
+            <InputField
+              readOnly
+              className="min-w-0 flex-1 ph-no-capture"
+              label={configuration.label}
+              value={configuration.value ?? ""}
+              onFocus={(event) => event.target.select()}
+            />
+            <Button
+              hierarchy="secondary-gray"
+              onPress={() =>
+                void nativePlatformClipboard
+                  .writeText(configuration.value ?? "")
+                  .then(() => setCopied(true))
+              }
+            >
+              {copied ? messages.common_copied() : messages.common_copy()}
+            </Button>
+          </div>
+          <p className="m-0 text-sm text-secondary">
+            {messages.plugins_show_once({ name: plugin.name })}
+          </p>
+        </div>
+      </Dialog>
+    );
   const trimmed = value.trim();
   const valid = trimmed.length > 0 && trimmed.length <= 4096 && !/\s/.test(trimmed);
   const submit = () => {
@@ -40,7 +88,10 @@ export function PluginCredentialsDialog({
           ? messages.plugins_credentials_update_title({ name: plugin.name })
           : messages.plugins_credentials_title({ name: plugin.name })
       }
-      description={messages.plugins_credentials_description({ name: plugin.name })}
+      description={messages.plugins_credentials_description({
+        name: plugin.name,
+        credential: configuration.label,
+      })}
       actions={[
         {
           label: messages.plugins_personal_source_cancel(),
@@ -74,14 +125,17 @@ export function PluginCredentialsDialog({
           onChange={(event) => setValue(event.target.value)}
         />
         <p className="m-0 text-sm text-secondary">
-          {messages.plugins_credentials_scope()}
+          {messages.plugins_credentials_scope({
+            name: plugin.name,
+            credential: configuration.label,
+          })}
         </p>
         <button
           className="w-fit text-sm text-brand-secondary underline underline-offset-2"
           onClick={() => void openNativePlatformExternalUrl(configuration.helpUrl)}
           type="button"
         >
-          {messages.plugins_credentials_help()}
+          {messages.plugins_credentials_help({ credential: configuration.label })}
         </button>
         {error ? (
           <p className="m-0 text-sm text-error-primary" role="alert">

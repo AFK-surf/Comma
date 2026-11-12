@@ -37,7 +37,7 @@ export type Platform = {
   goOs: string;
 
   // Commands and their environment.
-  /// An executable's file name (`stillfail-runner` → `stillfail-runner.exe` on Windows).
+  /// An executable's file name (`comma-runner` → `comma-runner.exe` on Windows).
   exe(name: string): string;
   /// The user's home as `env` says it.
   home(env: Env): string | undefined;
@@ -55,7 +55,7 @@ export type Platform = {
   /// `command` run by PowerShell (a device command that asks for it): pwsh where there is one, else Windows' own
   /// powershell.exe; none on a machine with neither. Its output is UTF-8 whatever the console's code page.
   powerShell(command: string, env: NodeJS.ProcessEnv): How | null;
-  /// A command as a group of its own, ended whole (as spawned detached on Unix; under `stillfail-runner --job` on
+  /// A command as a group of its own, ended whole (as spawned detached on Unix; under `comma-runner --job` on
   /// Windows).
   grouped(program: string, args: string[]): [string, string[]];
   /// A command started `by` lower in CPU priority than this process (ops/nice.ts): under nice where there is one; as
@@ -156,6 +156,10 @@ export type Platform = {
   hasComputerUse: boolean;
   /// Computer Use through Cua Driver (native/windows/cua-driver.exe), which the desktop app carries on Windows.
   hasWindowsComputerUse: boolean;
+  /// The main display as a screen through comma-desktop-screen (native/desktop-screen), which Windows' release carries.
+  hasWindowsScreen: boolean;
+  /// The station user's X11 desktop as a screen (screens/linux-desktop.ts): ffmpeg and xdotool, the machine's or prepared.
+  hasLinuxDesktop: boolean;
   /// Homebrew's bin directories, looked in for runtimes beside PATH (a launchd PATH has neither).
   hasHomebrew: boolean;
 };

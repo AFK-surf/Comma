@@ -1,4 +1,4 @@
-// The write side over a COPY of a real station's data (the Rust station's ~/.stillfail, or $STILLFAIL_COMPAT_DATA): it
+// The write side over a COPY of a real station's data (the Rust station's ~/.comma-station, or $COMMA_STATION_COMPAT_DATA): it
 // opens as it is (version 12, nothing added), reads as read/store.ts reads it, and a write cycle leaves the database as
 // the Rust schema has it, with archive files byte for byte as the Rust wrote them. Skipped where there is no station.
 // The live database is never opened: the copy is made with cp (db, -wal, -shm, archive/threads) and removed after.
@@ -14,8 +14,8 @@ import * as read from "../src/read/store.ts";
 import { SCHEMA } from "../src/store/schema.ts";
 import { MANUAL, Store, newMessage, turnSummaryJson } from "../src/store/store.ts";
 
-const live = process.env.STILLFAIL_COMPAT_DATA ?? join(homedir(), ".stillfail");
-const present = existsSync(join(live, "stillfail.db"));
+const live = process.env.COMMA_STATION_COMPAT_DATA ?? join(homedir(), ".comma-station");
+const present = existsSync(join(live, "station.db"));
 const dir = present ? mkdtempSync(join(tmpdir(), "store-compat-")) : "";
 after(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
@@ -56,10 +56,10 @@ const noToken = <T extends { token: string }>(r: T) => {
 
 test("a copy of a real station's data opens, reads the same, and takes a write cycle", { skip: !present && "no station data here" }, (t) => {
   for (const suffix of ["", "-wal", "-shm"]) {
-    if (existsSync(join(live, `stillfail.db${suffix}`))) cpSync(join(live, `stillfail.db${suffix}`), join(dir, `stillfail.db${suffix}`));
+    if (existsSync(join(live, `station.db${suffix}`))) cpSync(join(live, `station.db${suffix}`), join(dir, `station.db${suffix}`));
   }
   if (existsSync(join(live, "archive", "threads"))) cpSync(join(live, "archive", "threads"), join(dir, "archive", "threads"), { recursive: true });
-  const path = join(dir, "stillfail.db");
+  const path = join(dir, "station.db");
   const before = shape(path);
 
   const store = Store.open(path);

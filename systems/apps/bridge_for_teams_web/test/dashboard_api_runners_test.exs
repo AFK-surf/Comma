@@ -3,8 +3,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
 
   @moduledoc """
   The Runners API behind the React Runners page (`/orgs/:org/fin`): the paged
-  fleet with connector summaries, per-runner connector pages, the onboarding
-  guide, install commands, runner key revoke/rotate, runner removal, and the
+  fleet, the onboarding guide, install commands, runner key revoke/rotate, runner removal, and the
   member/admin authorization split.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
@@ -13,12 +12,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
     scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Auth, Environments, MacMiniOnboarding, Memberships, Observability, Repo}
-  alias BridgeForTeams.Schema.{EnvironmentProvisionRequest, MacMiniInstallCode}
+  alias BridgeForTeams.Schema.MacMiniInstallCode
 
   setup :register_and_log_in_user
 
   describe "GET /dashboard/api/v1/orgs/:org/runners" do
-    test "lists runners with status, versions, capacity and connector counts",
+    test "lists runners with status and versions",
          %{conn: conn, org: org} do
       {:ok, runner} =
         Environments.register_mac_mini_provisioner(org.id, %{
@@ -28,14 +27,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
           "host_identity" => "lab-host",
           "os_summary" => "macOS arm64",
           "version" => "0.1.0",
-          "capabilities" => %{"component_versions" => %{"salix-connect" => "2026.06.18"}},
-          "capacity" => 3,
-          "current_connector_count" => 1,
+          "capabilities" => %{"component_versions" => %{"agent-vmm-host" => "2026.06.18"}},
           "last_seen_at" => SystemsClock.utc_now()
         })
-
-      project = bare_project_fixture(org)
-      insert_connectors(org, project, runner, ~w(connected connected stopped))
 
       data = conn |> get(runners_path(org)) |> json_response(200) |> Map.fetch!("data")
 
@@ -53,49 +47,25 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
                  "host_identity" => "lab-host",
                  "os_summary" => "macOS arm64",
                  "version" => "0.1.0",
-                 "component_versions" => %{"salix-connect" => "2026.06.18"},
-                 "capacity" => 3,
-                 "current_connector_count" => 1,
-                 "connectors" => %{"total" => 3, "by_status" => by_status},
+                 "component_versions" => %{"agent-vmm-host" => "2026.06.18"},
                  "credential" => %{"active" => false, "key_id" => nil}
                }
              ] = data["runners"]
 
       assert id == runner.id
-
-      assert Enum.sort_by(by_status, & &1["status"]) == [
-               %{"count" => 2, "status" => "connected"},
-               %{"count" => 1, "status" => "stopped"}
-             ]
     end
 
-    test "a member sees the fleet, only granted connectors, and no credentials",
-         %{org: org} do
+    test "a member sees the fleet and no credentials", %{org: org} do
       member = add_member(org, "member")
       runner = register_runner(org, "shared", "Shared")
       bind_runner_key(org, runner.stable_id)
-
-      visible = bare_project_fixture(org, %{name: "Visible"})
-      hidden = bare_project_fixture(org, %{name: "Hidden"})
-      {:ok, _} = Memberships.put_project_member(visible.id, member.id, "user")
-      [visible_connector] = insert_connectors(org, visible, runner, ~w(pending))
-      _hidden = insert_connectors(org, hidden, runner, ~w(pending))
 
       member_conn = log_in_user(build_conn(), member)
       data = member_conn |> get(runners_path(org)) |> json_response(200) |> Map.fetch!("data")
 
       assert data["viewer"] == %{"can_manage" => false}
-
-      assert [%{"connectors" => %{"total" => 1}, "credential" => nil}] = data["runners"]
-
-      assert %{"entries" => [entry], "next_cursor" => nil} =
-               member_conn
-               |> get(~p"/dashboard/api/v1/orgs/#{org.slug}/runners/#{runner.id}/connectors")
-               |> json_response(200)
-               |> Map.fetch!("data")
-
-      assert entry["id"] == visible_connector.id
-      assert entry["project_name"] == "Visible"
+      assert [%{"id" => id, "credential" => nil}] = data["runners"]
+      assert id == runner.id
     end
 
     test "answers 404 to a non-member", %{org: org} do
@@ -106,25 +76,19 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
                |> json_response(404)
     end
 
-    test "uses the same number of queries however many runners and connectors exist",
+    test "uses the same number of queries however many runners exist",
          %{conn: conn, org: org} do
       runner = register_runner(org, "count-0", "Count 0")
       bind_runner_key(org, runner.stable_id)
       small = query_count(conn, runners_path(org))
 
-      project = bare_project_fixture(org)
-
       for n <- 1..6 do
         runner = register_runner(org, "count-#{n}", "Count #{n}")
         bind_runner_key(org, runner.stable_id)
-        insert_connectors(org, project, runner, ~w(pending connected))
       end
 
       assert query_count(conn, runners_path(org)) == small
     end
-  end
-
-  describe "GET /dashboard/api/v1/orgs/:org/runners/:id/connectors" do
   end
 
   describe "GET /dashboard/api/v1/orgs/:org/runners/onboarding" do
@@ -295,31 +259,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
       })
 
     runner
-  end
-
-  defp insert_connectors(org, project, runner, statuses) do
-    now = SystemsClock.utc_now()
-
-    rows =
-      for {status, index} <- Enum.with_index(statuses) do
-        %{
-          id: SystemsRuntime.Proc.uuid(),
-          org_id: org.id,
-          project_id: project.id,
-          provisioner_id: runner.id,
-          salix_group_id: project.salix_group_id,
-          name: "connector #{index}",
-          env_alias: "connector-#{runner.stable_id}-#{index}",
-          status: status,
-          spec: %{},
-          progress: %{},
-          created_at: now,
-          updated_at: now
-        }
-      end
-
-    {_count, nil} = Repo.insert_all(EnvironmentProvisionRequest, rows)
-    rows
   end
 
   defp bind_runner_key(org, stable_id, audit_metadata \\ %{}) do

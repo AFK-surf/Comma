@@ -90,10 +90,10 @@ defmodule Comma.Workers.WorkspaceConvergence do
       try do
         with :ok <- ensure_billing(payload),
              :ok <- Comma.Billing.SignupCredits.ensure(payload),
+             :ok <- Comma.Billing.FreeMonthlyCredits.ensure(payload),
              :ok <- ensure_selfhost_entitlement(payload),
              :ok <- Comma.Salix.Client.impl().provision_workspace_scope(payload),
-             :ok <- maybe_update_vm(payload, operation),
-             :ok <- ensure_synchronicity(workspace) do
+             :ok <- maybe_update_vm(payload, operation) do
           :ok
         end
       rescue
@@ -121,10 +121,19 @@ defmodule Comma.Workers.WorkspaceConvergence do
 
       case {current, desired_generation(operation)} do
         {%Workspace{} = current, generation} when generation == operation.generation ->
-          if operation.generation == 1 and current.status == "provisioning" do
+          became_ready? = current.status == "provisioning"
+
+          if became_ready? do
             current
             |> Ecto.Changeset.change(status: "active")
             |> Repo.update!()
+          end
+
+          # This transaction stores the Drive job, but makes no Drive call.
+          # The separate queue cannot consume core convergence slots.
+          case Comma.Synchronicity.enqueue(current.id) do
+            {:ok, _job_or_skipped} -> :ok
+            {:error, reason} -> Repo.rollback(reason)
           end
 
           case Operations.succeed(
@@ -133,7 +142,7 @@ defmodule Comma.Workers.WorkspaceConvergence do
                  workspace.salix_group_id,
                  %{"provider_status" => "ready"}
                ) do
-            {:ok, {:updated, succeeded}} -> {:ok, succeeded}
+            {:ok, {:updated, succeeded}} -> {:ok, succeeded, became_ready?}
             {:ok, {:complete, complete}} -> {:complete, complete}
             {:error, reason} -> Repo.rollback(reason)
           end
@@ -149,8 +158,8 @@ defmodule Comma.Workers.WorkspaceConvergence do
       end
     end)
     |> case do
-      {:ok, {:ok, succeeded}} ->
-        if operation.generation == 1 do
+      {:ok, {:ok, succeeded, became_ready?}} ->
+        if became_ready? do
           Comma.Analytics.capture(
             workspace.owner_user_id,
             "comma_workspace_ready",
@@ -280,7 +289,8 @@ defmodule Comma.Workers.WorkspaceConvergence do
           )
         )
 
-      if operation.generation == 1 and match?(%Workspace{status: "provisioning"}, workspace) do
+      if match?(%Workspace{status: "provisioning"}, workspace) and
+           desired_generation(operation) == operation.generation do
         workspace
         |> Ecto.Changeset.change(status: "provisioning_failed")
         |> Repo.update!()
@@ -302,51 +312,13 @@ defmodule Comma.Workers.WorkspaceConvergence do
     end
   end
 
-  # Provisions the Workspace's Synchronicity org + default network and stores
-  # the returned ids on the Workspace. Off (a no-op) unless the integration is
-  # configured, so convergence is unchanged where Synchronicity is not in use.
-  # A guest's placeholder email never leaves Comma.
-  defp ensure_synchronicity(%Workspace{kind: "guest"}), do: :ok
-
-  defp ensure_synchronicity(workspace) do
-    if Comma.Synchronicity.configured?() do
-      with {:ok, _result} <-
-             synchronicity_outcome(Comma.Synchronicity.provision_workspace(workspace)),
-           {:ok, _key} <- synchronicity_outcome(Comma.Synchronicity.ensure_agent_key(workspace)) do
-        :ok
-      end
-    else
-      :ok
-    end
-  end
-
-  # Flattens the Synchronicity client's error set into this worker's atoms;
-  # only `:synchronicity_unavailable` stays retryable (`terminal?/1`).
-  defp synchronicity_outcome(result) do
-    case result do
-      {:ok, _} = ok -> ok
-      {:error, :explicit_link_required} -> {:error, :synchronicity_link_required}
-      {:error, :auth} -> {:error, :synchronicity_auth}
-      {:error, :owner_not_found} -> {:error, :synchronicity_owner_missing}
-      {:error, :workspace_not_found} -> {:error, :workspace_not_found}
-      {:error, :not_provisioned} -> {:error, :synchronicity_invalid}
-      {:error, :not_configured} -> {:error, :synchronicity_invalid}
-      {:error, {:invalid, _reason}} -> {:error, :synchronicity_invalid}
-      {:error, {:retryable, _reason}} -> {:error, :synchronicity_unavailable}
-    end
-  end
-
   defp terminal?(reason),
     do:
       reason in [
         :billing_account_surface_mismatch,
         :invalid_workspace_configuration,
         :missing_billing_account_id,
-        :workspace_not_found,
-        :synchronicity_link_required,
-        :synchronicity_auth,
-        :synchronicity_owner_missing,
-        :synchronicity_invalid
+        :workspace_not_found
       ]
 
   defp classify({:provider_exception, module}) when is_atom(module),

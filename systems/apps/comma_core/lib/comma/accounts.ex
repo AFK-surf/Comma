@@ -20,7 +20,7 @@ defmodule Comma.Accounts do
         status: attrs["status"] || "active"
       })
 
-    case Repo.insert(changeset) do
+    case Repository.insert_user(changeset) do
       {:ok, user} ->
         Comma.Analytics.registered(user.id)
         {:ok, public_user(user)}
@@ -117,10 +117,11 @@ defmodule Comma.Accounts do
     end
   end
 
-  def get_or_create_user_by_email(email) do
-    case Repository.ensure_user_by_email(email) do
+  # `client` names the sign-in request. Verification evidence comes from its auth owner.
+  def get_or_create_user_by_email(email, client \\ %{}, attrs \\ %{}) do
+    case Repository.ensure_user_by_email(email, attrs) do
       {:ok, user, creation} ->
-        if creation == :created, do: Comma.Analytics.registered(user.id)
+        if creation == :created, do: Comma.Analytics.registered(user.id, client)
         {:ok, public_user(user)}
 
       {:error, :invalid_email} ->

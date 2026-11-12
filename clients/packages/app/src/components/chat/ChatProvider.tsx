@@ -17,6 +17,7 @@ import type { CommaConversation } from "@comma/core/api-schemas";
 import type { SessionProductLease } from "@comma/session-contract";
 import type { ChatChannel } from "./channel/ChatChannel";
 import { CoreConversationChannel } from "./channel/CoreConversationChannel";
+import { DraftSelectionsProvider } from "./composer/draftSelections";
 import { DraftSnippetsProvider } from "./composer/draftSnippets";
 import {
   idleConversationChannelState,
@@ -233,9 +234,11 @@ export function ChatSessionProvider({
     };
   }, [session]);
 
+  // What is staged for a conversation's next message from beside it (a picked element, a selection of a screen) is
+  // the session's: the sidebar that stages it and the conversation that sends it are separate consumer boundaries.
   return (
     <ChatSessionContext.Provider value={session}>
-      {children}
+      <DraftSelectionsProvider scope={session}>{children}</DraftSelectionsProvider>
     </ChatSessionContext.Provider>
   );
 }

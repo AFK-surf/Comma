@@ -71,16 +71,18 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
     private val routineActions = RoutineActions(activity, usePrompt = shell::insertIntoRouter, openTask = store::openTask)
 
     /** What the list shows: the switcher and the filter sheet edit the same filter. Home opens on Needs review. */
-    private var filter = INITIAL_FILTER
+    private val savedFilter = HomeFilterState(activity.savedStateRegistry)
+    private var filter = savedFilter.filter
         set(value) {
             if (field != value) fillPages = 0
             field = value
+            savedFilter.filter = value
         }
     private var fillPages = 0
     private var topInset = 0
     private var bottomReserve = 0
     private var filterSheet: FilterSheet? = null
-    private var workspaceId: String? = null
+    private var workspaceId: String? = savedFilter.workspaceId
 
     init {
         setBackgroundColor(activity.getColor(R.color.token_bg_primary))
@@ -100,8 +102,9 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
             marginStart = activity.dp(16); marginEnd = activity.dp(16)
         })
         switcher.addOnLayoutChangeListener { v, l, t, r, b, _, _, _, _ ->
-            frost.setFloatingPatch("switcher", if (v.visibility == VISIBLE) android.graphics.Rect(l, t, r, b) else null, (b - t) / 2f)
+            frost.setFloatingPatch("switcher", if (v.visibility == VISIBLE) android.graphics.Rect(l, t, r, b) else null, (b - t) / 2f, frosted = true)
         }
+        switcher.onGlassTouch = { frost.trackPress("switcher", it) }
         switcher.select(selectedBucket, animate = false)
         switcher.onSelect = { bucket ->
             filter = filter.copy(statuses = setOf(bucket))
@@ -136,11 +139,14 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
                 launch { SettingsGraph.account(activity).state.collect { greeting.render() } }
                 launch {
                     store.auth.state.collect { state ->
+                        // Transient session validation must not discard restored workspace state.
+                        if (state !is AuthState.Connected && state !is AuthState.Login && state != AuthState.Unconfigured) return@collect
                         val id = (state as? AuthState.Connected)?.selection?.workspace?.id
                         if (id != workspaceId) {
                             workspaceId = id
                             // A new workspace opens on Needs review again.
-                            filter = INITIAL_FILTER
+                            savedFilter.selectWorkspace(id)
+                            filter = savedFilter.filter
                             switcher.select(selectedBucket, animate = false)
                             if (id != null) store.routines.reloadIfStale()
                         }
@@ -290,6 +296,12 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
 
     private fun openPlatform(platform: PlatformRoutine) = PreTaskSheet(activity, store, platform, routineActions).show()
 
+    /** New task for the Workspace shown; the Task it makes opens in the dock. */
+    private fun openNewTask() {
+        val calls = store.workspaceCalls() ?: return
+        surf.comma.android.tasks.coding.NewTaskSheet(activity, calls) { id -> store.openTask(id) }.show()
+    }
+
     private fun openFilters() {
         val state = store.tasks.state.value
         filterSheet = FilterSheet(activity, filter, TaskListFilter.Field.entries, FilterChoices(activity, state.snapshot.tasks.filterNot { it.isArchived },
@@ -305,7 +317,7 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
 
     /**
      * Home's first row: a greeting for the time of day. Once the routine has anything to show, the greeting carries
-     * a small chevron and opens the whole routine.
+     * a small chevron and opens the whole routine. Task search opens beside it, as on iOS.
      */
     private inner class Greeting : LinearLayout(activity) {
         private val text = activity.label(Level.LARGE, R.color.token_text_primary, DesignFonts.semibold, lines = 0)
@@ -318,9 +330,23 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = activity.dp(44)
-            setPadding(activity.dp(20), activity.dp(8), activity.dp(20), 0)
-            addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { weight = 0f })
-            addView(chevron, LayoutParams(activity.dp(22), activity.dp(22)).apply { marginStart = activity.dp(2) })
+            setPadding(activity.dp(20), activity.dp(8), activity.dp(10), 0)
+            addView(LinearLayout(activity).apply {
+                orientation = HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+                addView(chevron, LayoutParams(activity.dp(22), activity.dp(22)).apply { marginStart = activity.dp(2) })
+            }, LayoutParams(0, LayoutParams.WRAP_CONTENT).apply { weight = 1f })
+            addView(FrameLayout(activity).apply {
+                id = R.id.home_search
+                contentDescription = activity.getString(R.string.shell_tab_search)
+                addView(ImageView(activity).apply {
+                    setImageResource(R.drawable.ic_tab_search)
+                    imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_secondary))
+                }, FrameLayout.LayoutParams(activity.dp(24), activity.dp(24), Gravity.CENTER))
+                tactile(0.9f)
+                setOnClickListener { shell.openSearch() }
+            }, LayoutParams(activity.dp(44), activity.dp(44)))
             text.isAccessibilityHeading = true
             tactile(0.97f)
             setOnClickListener { RoutineSheet(activity, store, routineActions, store::openTask).show() }
@@ -366,15 +392,25 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(activity.dp(20), activity.dp(12), activity.dp(16), activity.dp(4))
             addView(title, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-            val capsule = LinearLayout(activity).apply {
+            val capsule = surf.comma.android.ui.widget.GlassCapsule(activity).apply {
                 orientation = HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                glass(elevated = false)
+                glassOver(R.color.token_bg_primary) { glass(elevated = false) }
+                // New task, as on iOS: the first of the list's actions.
+                addView(FrameLayout(activity).apply {
+                    id = R.id.home_new_task
+                    setPadding(activity.dp(12), 0, activity.dp(8), 0)
+                    addView(icon(R.drawable.ic_plus_small), FrameLayout.LayoutParams(activity.dp(20), activity.dp(20), Gravity.CENTER))
+                    minimumWidth = activity.dp(44)
+                    contentDescription = activity.getString(R.string.new_task_title)
+                    tactile(0.92f)
+                    setOnClickListener { openNewTask() }
+                }, LayoutParams(LayoutParams.WRAP_CONTENT, activity.dp(44)))
                 addView(LinearLayout(activity).apply {
                     orientation = HORIZONTAL
                     gravity = Gravity.CENTER
                     minimumWidth = activity.dp(44)
-                    setPadding(activity.dp(12), 0, activity.dp(8), 0)
+                    setPadding(activity.dp(8), 0, activity.dp(8), 0)
                     addView(icon(R.drawable.ic_list_filter))
                     addView(count, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginStart = activity.dp(4) })
                     contentDescription = activity.getString(R.string.home_filters)
@@ -391,6 +427,11 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
                 }, LayoutParams(LayoutParams.WRAP_CONTENT, activity.dp(44)))
             }
             addView(capsule, LayoutParams(LayoutParams.WRAP_CONTENT, activity.dp(44)))
+            // Over the rows after it, which its glass's shadow and press reach into.
+            if (surf.comma.android.ui.widget.LiquidGlass.enabled) {
+                outlineProvider = null
+                translationZ = activity.dp(1).toFloat()
+            }
             layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
         }
 
@@ -409,7 +450,6 @@ class HomePage(private val shell: Shell) : FrameLayout(shell.activity) {
     }
 
     private companion object {
-        val INITIAL_FILTER = TaskListFilter(statuses = setOf(TaskStatusBucket.NEEDS_REVIEW))
         const val FILL_TARGET = 20
         const val FILL_LIMIT = 5
         const val SWITCHER_GAP_DP = 12

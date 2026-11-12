@@ -33,6 +33,27 @@ class ImageViewerLayout(context: Context) : FrameLayout(context) {
         fun onDismissProgress(fraction: Float) {}
         fun onDismissed() {}
         fun onTap() {}
+        /**
+         * A drag released far enough to close. True when the binder closes the viewer itself (by returning the
+         * picture to where it came from); false lets the picture fly off the screen.
+         */
+        fun onDismissRequested(velocityY: Float): Boolean = false
+    }
+
+    /** The current page's vertical drag-to-close offset; the binder's own close animation moves it to rest. */
+    var dismissTranslation: Float
+        get() = dismissOffset
+        set(value) {
+            dismissSpring.cancel()
+            dismissOffset = value
+            position()
+        }
+
+    /** Ignores gestures from now on: the viewer is closing. */
+    fun freeze() {
+        dismissing = true
+        pageSpring.cancel()
+        dismissSpring.cancel()
     }
 
     var binder: PageBinder? = null
@@ -276,7 +297,9 @@ class ImageViewerLayout(context: Context) : FrameLayout(context) {
     private fun settleDismiss(vy: Float) {
         val threshold = height * 0.15f
         val away = (abs(dismissOffset) > threshold && vy * dismissOffset >= 0) || (abs(vy) > flingVelocity && vy * dismissOffset > 0)
-        if (away) {
+        if (away && binder?.onDismissRequested(vy) == true) {
+            dismissing = true
+        } else if (away) {
             dismissing = true
             val direction = if (dismissOffset != 0f) sign(dismissOffset) else sign(vy)
             dismissSpring.animateTo(direction * height, vy)

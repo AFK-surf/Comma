@@ -10,13 +10,17 @@ defmodule BridgeForTeams.DailyBrief.SharedSource do
   messages are picked out (`relevant`); the team brief reads with none.
   """
 
-  alias BridgeForTeams.DailyBrief.{Classifier, Members}
+  alias BridgeForTeams.DailyBrief.{Classifier, Focus, Members}
   alias BridgeForTeams.Salix.Client, as: Salix
   alias BridgeForTeams.Schema.{DailyBriefMember, DailyBriefSetting}
 
   @page_limit 200
+  # Main-channel talk a member was not part of, newest kept: the messages
+  # that concern them always go in, and the model stays within its time.
+  @max_channel_only 250
   @default_page_budget 500
-  @thread_lookback_us 30 * 86_400 * 1_000_000
+  # The most threads one member lookup takes.
+  @thread_batch 500
 
   @type window :: %{after: DateTime.t(), before: DateTime.t()}
 
@@ -30,12 +34,13 @@ defmodule BridgeForTeams.DailyBrief.SharedSource do
     with {:ok, source} <- Members.source(settings),
          {:ok, channels} <-
            Salix.impl().daily_brief_channels(Map.put(source, :member_slack_ids, [])) do
-      channel_ids = Enum.map(channels.channels, & &1.id)
-
       {messages, read_report} =
         read_channels(source, channels.channels, after_us, before_us, budget)
 
-      {matchers, thread_report} = matchers(source, members, channel_ids, after_us)
+      focus =
+        Focus.for_members(source, members, Enum.map(channels.channels, & &1.id), before_at)
+
+      {matchers, thread_report} = matchers(source, members, messages, focus)
 
       {:ok,
        %{
@@ -113,26 +118,68 @@ defmodule BridgeForTeams.DailyBrief.SharedSource do
     end
   end
 
-  defp matchers(source, members, channel_ids, after_us) do
-    Enum.reduce(members, {%{}, %{}}, fn %DailyBriefMember{} = member, {matchers, report} ->
-      {threads, complete?} =
-        case Salix.impl().daily_brief_member_threads(
-               Map.merge(source, %{
-                 slack_user_id: member.slack_user_id,
-                 channel_ids: channel_ids,
-                 after_us: after_us - @thread_lookback_us
-               })
-             ) do
-          {:ok, %{threads: threads, complete?: complete?}} -> {threads, complete?}
-          {:error, _reason} -> {[], false}
-        end
+  # A member's threads are the window's threads they wrote in, at any time:
+  # one lookup per batch of the window's thread roots.
+  defp matchers(source, members, messages, focus) do
+    threads =
+      for %{thread_ts: ts} = message <- messages,
+          is_binary(ts),
+          uniq: true,
+          do: %{channel_id: message.channel_id, thread_ts: ts}
 
+    Enum.reduce(members, {%{}, %{}}, fn %DailyBriefMember{} = member, {matchers, report} ->
+      {wrote, complete?} = member_threads(source, member, threads)
       aliases = Enum.map(member.aliases, &%{term: &1.term, kind: &1.kind})
 
-      {Map.put(matchers, member.id, Classifier.member(member.slack_user_id, aliases, threads)),
-       Map.put(report, member.id, complete?)}
+      channels = Map.get(focus, member.id, Focus.none())
+
+      {Map.put(
+         matchers,
+         member.id,
+         Classifier.member(member.slack_user_id, aliases, wrote, channels)
+       ), Map.put(report, member.id, complete?)}
     end)
   end
+
+  defp member_threads(source, member, threads) do
+    threads
+    |> Enum.chunk_every(@thread_batch)
+    |> Enum.reduce({[], true}, fn batch, {wrote, complete?} ->
+      case Salix.impl().daily_brief_member_threads(
+             Map.merge(source, %{slack_user_id: member.slack_user_id, threads: batch})
+           ) do
+        {:ok, %{threads: found}} -> {wrote ++ found, complete?}
+        {:error, _reason} -> {wrote, false}
+      end
+    end)
+  end
+
+  defp cap_channel_only(picked) do
+    {channel_only, rest} = Enum.split_with(picked, &(&1.reasons == [:channel]))
+
+    if length(channel_only) <= @max_channel_only do
+      picked
+    else
+      kept =
+        channel_only
+        |> Enum.sort_by(&ts_value(&1.message.ts), :desc)
+        |> Enum.take(@max_channel_only)
+        |> MapSet.new(&{&1.message.channel_id, &1.message.ts})
+
+      Enum.filter(picked, fn entry ->
+        entry in rest or MapSet.member?(kept, {entry.message.channel_id, entry.message.ts})
+      end)
+    end
+  end
+
+  defp ts_value(ts) when is_binary(ts) do
+    case Float.parse(ts) do
+      {value, _} -> value
+      :error -> 0.0
+    end
+  end
+
+  defp ts_value(_ts), do: 0.0
 
   defp relevant(messages, members, matchers) do
     Map.new(members, fn member ->
@@ -145,7 +192,7 @@ defmodule BridgeForTeams.DailyBrief.SharedSource do
             not is_nil(tier),
             do: %{message: message, reasons: reasons, tier: tier}
 
-      {member.id, picked}
+      {member.id, cap_channel_only(picked)}
     end)
   end
 end

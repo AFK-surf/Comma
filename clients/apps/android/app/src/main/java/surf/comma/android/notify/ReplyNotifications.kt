@@ -24,6 +24,7 @@ import surf.comma.android.auth.AuthGraph
 import surf.comma.android.auth.AuthState
 import surf.comma.android.auth.ConversationScope
 import surf.comma.android.chat.live.ChatGraph
+import surf.comma.android.conversation.ChatView
 import surf.comma.android.conversation.ConversationState
 import surf.comma.android.conversation.TimelineEntry
 import surf.comma.android.core.CoreApi
@@ -256,7 +257,7 @@ class ReplyNotifications internal constructor(
             return ReplyNotifications(
                 chat = object : ChatStream {
                     override val state get() = repository.state
-                    override fun setBackgroundHold(hold: Boolean) = repository.setBackgroundHold(hold)
+                    override fun setBackgroundHold(hold: Boolean) = repository.setHold(ChatView.Hold.REPLY, hold)
                 },
                 notices = AuthGraph.core(app)?.let(::appendedNotices) ?: emptyFlow(),
                 scopes = auth.conversationScope,

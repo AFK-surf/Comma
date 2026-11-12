@@ -18,7 +18,6 @@ defmodule SalixAgent.RoundRuntimeTest do
     InternalSession,
     InternalSessionStore,
     Round,
-    SessionWorkIndex,
     ToolResultProjection
   }
 
@@ -459,7 +458,7 @@ defmodule SalixAgent.RoundRuntimeTest do
     })
 
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, "ses1_0000000000000000902", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, "ses1_0000000000000000902", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000902",
@@ -526,7 +525,7 @@ defmodule SalixAgent.RoundRuntimeTest do
     assert {:ok, _} = SkillStore.commit_operation("miniskill-runtime", %{}, [event])
 
     assert {:ok, _} =
-             InternalSessionStore.prepare_commit(context.agent_id, context.session_id, [
+             SalixAgent.TestSupport.SessionFixture.commit(context.agent_id, context.session_id, [
                %{
                  "type" => "delivery",
                  "from_queue" => true,
@@ -713,15 +712,7 @@ defmodule SalixAgent.RoundRuntimeTest do
                assertion_ids: ["assertion-atlas-owner"]
              )
 
-    prefix = Keys.agent_internal_runtime_sessions_prefix(agent)
-
-    assert {:list, ^prefix, list_opts} =
-             Enum.find(S3.Fake.read_log(SystemsRuntime.Proc.self()), fn
-               {:list, ^prefix, _opts} -> true
-               _ -> false
-             end)
-
-    assert list_opts[:max_keys] == 100
+    assert S3.Fake.read_log(SystemsRuntime.Proc.self()) == []
 
     :ok = S3.Fake.reset_read_log()
 
@@ -859,7 +850,7 @@ defmodule SalixAgent.RoundRuntimeTest do
       })
 
     assert {:ok, _session} =
-             InternalSessionStore.prepare_commit(agent, "ses1_0000000000000000902", [
+             SalixAgent.TestSupport.SessionFixture.commit(agent, "ses1_0000000000000000902", [
                %{
                  "type" => "assistant",
                  "session_id" => "ses1_0000000000000000902",
@@ -1101,7 +1092,7 @@ defmodule SalixAgent.RoundRuntimeTest do
     ack_setup_input!(context.agent_id, sid)
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(context.agent_id, sid, [
+      SalixAgent.TestSupport.SessionFixture.commit(context.agent_id, sid, [
         %{
           "type" => "delivery",
           "from_queue" => true,
@@ -1151,7 +1142,7 @@ defmodule SalixAgent.RoundRuntimeTest do
   } do
     session_id = context.session_id
     ack_setup_input!(agent, session_id)
-    session_key = Keys.agent_internal_runtime_session(agent, session_id)
+    on_exit(&SalixAgent.TestSupport.SessionFixture.allow_writes/0)
     tool_call_id = "intent-commit-fence"
 
     response = fn ->
@@ -1172,7 +1163,7 @@ defmodule SalixAgent.RoundRuntimeTest do
       fn _messages, _tools ->
         # Fail only after the provider has produced a real tool request. An
         # earlier activation failure would not exercise the dispatch bracket.
-        :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, session_key})
+        :ok = SalixAgent.TestSupport.SessionFixture.reject_writes(agent)
         response.()
       end
     ])
@@ -1192,7 +1183,7 @@ defmodule SalixAgent.RoundRuntimeTest do
 
     # A positive control uses the same request and production dispatch seam.
     # The failed attempt must neither execute it nor permanently poison it.
-    :ok = SalixStore.S3.Fake.clear_blackhole()
+    :ok = SalixAgent.TestSupport.SessionFixture.allow_writes()
     FunLLM.script([fn _messages, _tools -> response.() end])
 
     # A failed response leaves activation repair work. A new user request must
@@ -1341,6 +1332,51 @@ defmodule SalixAgent.RoundRuntimeTest do
                &(&1[:content] == "first round finished")
              )
            end)
+  end
+
+  # An archive publication from another node advanced the Session revision
+  # while the model call ran; the response must still commit. Dropping it
+  # left a recovery message that was archived in turn, so a staging Worker
+  # retried for more than a day.
+  test "a model response commits over an archive publication made during the call", %{
+    agent: agent,
+    context: context
+  } do
+    session_id = context.session_id
+    ack_setup_input!(agent, session_id)
+    test_pid = SystemsRuntime.Proc.self()
+
+    FunLLM.script([
+      fn _messages, _tools ->
+        SystemsRuntime.Proc.send(test_pid, {:llm_blocked, SystemsRuntime.Proc.self()})
+
+        SystemsRuntime.Proc.receive do
+          :release_llm -> {:final, "answer after archive"}
+        end
+      end
+    ])
+
+    assert {:ok, _context, {:llm_pending, _pending}} =
+             SalixAgent.InternalSessionFleet.run_round(agent, session_id, context, [])
+
+    settle_receive({:llm_blocked, llm_pid})
+
+    assert {:ok, head} = SalixAgent.InternalSessionStore.PG.archive_head(agent, session_id)
+    assert {:ok, :archived} = SalixAgent.InternalSessionStore.archive_captured(head)
+
+    SystemsRuntime.Proc.send(llm_pid, :release_llm)
+
+    assert eventually(fn ->
+             Enum.any?(
+               SalixAgent.InternalSession.get(read_session!(agent, session_id), :messages),
+               &(&1[:content] == "answer after archive")
+             )
+           end)
+
+    refute Enum.any?(
+             SalixAgent.InternalSession.get(read_session!(agent, session_id), :messages),
+             &(&1[:type] == "runtime_recovered")
+           )
   end
 
   for {label, session_id, events} <- [
@@ -1761,7 +1797,7 @@ defmodule SalixAgent.RoundRuntimeTest do
     }
 
     assert {:ok, _queued} =
-             InternalSessionStore.prepare_commit(
+             SalixAgent.TestSupport.SessionFixture.commit(
                agent,
                "ses1_0000000000000000902",
                [%{"type" => "session_created", "session_id" => "ses1_0000000000000000902"}] ++
@@ -1820,7 +1856,7 @@ defmodule SalixAgent.RoundRuntimeTest do
 
   defp ack_setup_input!(agent_id, session_id) do
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent_id, session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
         %{"type" => "ack", "session_id" => session_id, "last_ack_message_id" => 1}
       ])
   end

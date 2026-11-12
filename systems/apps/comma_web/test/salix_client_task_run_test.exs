@@ -76,6 +76,50 @@ defmodule CommaWeb.SalixClientTaskRunTest do
            }
   end
 
+  test "a sandbox Task's model is the one its station's Session runs now, and its station's models are listed while it is connected",
+       f do
+    conversation = task!(f, %{"runs_on" => %{"kind" => "sandbox"}})
+    device = CodingSandboxes.device_id(conversation)
+
+    {:ok, _workload} =
+      CodingSandboxes.create(%{
+        tenant_id: f.tenant,
+        group_id: f.group,
+        conversation_id: conversation,
+        workspace: "comma:" <> f.group,
+        start: %{"runtime" => "codex"}
+      })
+
+    # Switched to Claude Code: the Session taking part now was started with it.
+    join!(f, conversation, device, %{"runtime" => "claude"})
+
+    assert {:ok, %{"place" => place, "model" => %{"provider" => "claude"}}} =
+             SalixClient.task_run(f.workspace, conversation)
+
+    refute Map.has_key?(place, "repo")
+    refute Map.has_key?(place, "task_models")
+
+    {:ok, _transport, _record} =
+      SalixEnv.Registry.connect(
+        to_string(node()),
+        %{
+          "tenant_id" => f.tenant,
+          "group_id" => f.group,
+          "device_id" => device,
+          "connector_id" => CodingSandboxes.connector_id(conversation),
+          "capabilities" => %{
+            "tasks" => 2,
+            "task_models" => %{"claude" => ["claude-opus-5-5"], "codex" => []}
+          }
+        },
+        transport_id: CodingSandboxes.transport_id(conversation)
+      )
+
+    assert {:ok,
+            %{"place" => %{"task_models" => %{"claude" => ["claude-opus-5-5"], "codex" => []}}}} =
+             SalixClient.task_run(f.workspace, conversation)
+  end
+
   test "a dynamic Group VMM Station reports the platform default and keeps an explicit model",
        f do
     device = vmm_station!(f)
@@ -145,12 +189,12 @@ defmodule CommaWeb.SalixClientTaskRunTest do
     id = "host-task-run-" <> f.group
 
     {:ok, _registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: id,
         tenant_id: f.tenant,
         group_id: f.group,
         device_id: "host-device-" <> f.group,
-        enrollment_token: String.duplicate("e", 32)
+        credential: String.duplicate("e", 32)
       })
 
     {:ok, pool} = Compute.ensure_managed_default_pool(f.tenant, "agent_vmm")
@@ -164,7 +208,7 @@ defmodule CommaWeb.SalixClientTaskRunTest do
         pool_id: pool.id
       })
 
-    {:ok, binding} =
+    {:ok, _binding} =
       Compute.create_provider_binding(%{
         id: "binding-" <> f.group,
         pool_id: pool.id,
@@ -177,12 +221,12 @@ defmodule CommaWeb.SalixClientTaskRunTest do
       set: [status: "ready", desired_enabled: true]
     )
 
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [
-        status: "available",
-        observation: %{"gateway_instance_id" => "test", "connection_epoch" => "1"}
-      ]
-    )
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration(id, "test", %{
+               "connectionEpoch" => "1",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
 
     {:ok, _workload} = Compute.ensure_group_station(f.tenant, f.group)
     {:ok, record} = Compute.group_station(f.tenant, f.group)

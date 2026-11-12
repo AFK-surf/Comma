@@ -2,7 +2,6 @@ defmodule SalixAnalytics.SlackSemanticJob do
   @moduledoc """
   Reference-only Oban work. Live observations never coalesce, including while
   an old executor has been rescued: old completion cannot remove a new job.
-  Modeled in tla/salix/SemanticIndexScheduling.tla.
   """
   use Oban.Worker, max_attempts: 20
   alias SalixAnalytics.{SlackSemanticIndex, SlackMessageSearchIndexer, SlackSemanticQueue}
@@ -10,7 +9,7 @@ defmodule SalixAnalytics.SlackSemanticJob do
   @impl true
   def perform(%Oban.Job{args: args} = job) do
     started = SystemsClock.monotonic_time()
-    result = execute(args)
+    result = execute(args, job.attempt)
 
     operation =
       if args["kind"] == "text", do: "slack_semantic_index", else: "slack_semantic_file_index"
@@ -28,11 +27,12 @@ defmodule SalixAnalytics.SlackSemanticJob do
     result
   end
 
-  defp execute(args) do
+  defp execute(args, attempt) do
     scope = args["scope"]
     timestamp = args["timestamp"]
     live = args["live"]
-    cancelled = fn -> not live and SlackSemanticQueue.pending_live?() end
+    lane = if args["kind"] == "text", do: :semantic_text, else: :all
+    cancelled = fn -> not live and SlackSemanticQueue.pending_live?(lane) end
 
     result =
       cond do
@@ -55,27 +55,30 @@ defmodule SalixAnalytics.SlackSemanticJob do
     case result do
       {:error, reason}
       when reason in [:source_pending, :source_changed, :file_changed, :superseded_build] ->
-        {:snooze, 1}
+        {:snooze, retry_delay(attempt, 5)}
 
       {:error, :source_initializing} ->
-        {:snooze, 30}
+        {:snooze, retry_delay(attempt, 30)}
 
       {:error, :preempted} ->
         {:snooze, 1}
 
       {:error, reason} when reason in [:semantic_unavailable, :semantic_attachment_unavailable] ->
-        {:snooze, 5}
+        {:snooze, retry_delay(attempt, 5)}
 
       {:error, :unsupported_attachment} ->
         {:cancel, :unsupported_attachment}
 
       {:error, :attachment_inaccessible} ->
-        {:cancel, :attachment_inaccessible}
+        {:snooze, retry_delay(attempt, 5)}
 
       result ->
         result
     end
   end
+
+  defp retry_delay(attempt, base),
+    do: min(300, base * Integer.pow(2, min(max(attempt - 1, 0), 6)))
 
   defp text(scope, timestamp, start, live, cancelled) do
     result =

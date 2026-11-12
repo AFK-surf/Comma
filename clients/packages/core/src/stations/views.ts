@@ -137,7 +137,30 @@ function oneLine(text: string | null): string {
 }
 
 /** One chat's row. */
+/**
+ * Each row's item as last made, with the station it was made for: a row that did not change (rows are replaced, never
+ * changed) keeps its item, so the list's delta passes over it.
+ */
+const madeItems = new WeakMap<
+  StationChatRow,
+  { station: StationNamed; item: StationChatItem }
+>();
+
 export function chatItem(row: StationChatRow, station: StationNamed): StationChatItem {
+  const made = madeItems.get(row);
+  if (
+    made &&
+    made.station.id === station.id &&
+    made.station.name === station.name &&
+    made.station.online === station.online
+  )
+    return made.item;
+  const item = itemOf(row, station);
+  madeItems.set(row, { station: { ...station }, item });
+  return item;
+}
+
+function itemOf(row: StationChatRow, station: StationNamed): StationChatItem {
   const states = row.agents.map(agentState);
   const marks = states.map(markOf);
   const mark: Mark = marks.includes("block")
@@ -209,7 +232,22 @@ function lineOf(
 }
 
 /** Calendar parts of `ms` in `zone` (this device's time zone). */
+/** Days already worked out, by time zone and instant: a row's day is the same at every change of the list. */
+const knownDays = new Map<string, ReturnType<typeof dayOf>>();
+const MAX_DAYS = 4_096;
+
 function calendar(ms: number, zone: DateTime.TimeZone) {
+  const key = `${DateTime.zoneToString(zone)} ${ms}`;
+  let day = knownDays.get(key);
+  if (!day) {
+    if (knownDays.size >= MAX_DAYS) knownDays.clear();
+    day = dayOf(ms, zone);
+    knownDays.set(key, day);
+  }
+  return day;
+}
+
+function dayOf(ms: number, zone: DateTime.TimeZone) {
   const date = DateTime.toParts(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
   return {
     key: Date.UTC(date.year, date.month - 1, date.day),

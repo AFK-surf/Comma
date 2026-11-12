@@ -2,10 +2,10 @@ defmodule SalixWeb.StationLLMTest do
   @moduledoc """
   The platform's worker model lent to a Workload's station
   (`SalixWeb.StationLLM`, `SalixWeb.StationProfiles`): the station's profile
-  points at Salix with a key of its connection, never the platform's; Salix
+  points at Salix with a key of its station, never the platform's; Salix
   passes what Codex sends, with the tier's model, to the tier's endpoint and
-  streams the answer back as it came, metering the usage it reports; a key of
-  a connection that is not the device's own any more opens nothing.
+  streams the answer back as it came, metering the usage it reports; a key
+  outlives a reconnect of its station and ends with its Workload generation.
   """
   use SystemsClock.Case, async: false
   use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixWeb", "Elixir.SalixEnv"]
@@ -163,7 +163,7 @@ defmodule SalixWeb.StationLLMTest do
     {:ok, connection: connection}
   end
 
-  test "the station is lent the platform model as a profile here, with a key of its connection",
+  test "the station is lent the platform model as a profile here, with a key of its station",
        %{
          connection: connection
        } do
@@ -221,19 +221,47 @@ defmodule SalixWeb.StationLLMTest do
            }
   end
 
-  test "a key of a connection that is not the device's own any more opens nothing", %{
+  test "a reconnect keeps the key; a station that is not connected is refused", %{
     connection: connection
   } do
     {:ok, [shared]} = SalixWeb.StationProfiles.profiles(connection)
     key = shared["profile"]["key"]
 
-    _ = connect!(connection.tenant_id, connection.group_id, connection.device_id)
-    conn = ask(key, %{"input" => []})
-    assert conn.status == 401
+    run = connect!(connection.tenant_id, connection.group_id, connection.device_id)
+    assert ask(key, %{"input" => []}).status == 200
+    assert_received {:provider, _, _, _}
+
+    # The new connection's profile keeps its version: the station keeps the key it has.
+    {:ok, [again]} = SalixWeb.StationProfiles.profiles(%{connection | connector_run_id: run})
+    assert again["version"] == shared["version"]
+
+    _ = Registry.mark_disconnected(run)
+    assert ask(key, %{"input" => []}).status == 401
     refute_received {:provider, _, _, _}
 
     assert ask("slm1.forged", %{"input" => []}).status == 401
     assert ask(nil, %{"input" => []}).status == 401
+  end
+
+  test "a sandbox's key outlives a reconnect of the same Workload generation", %{
+    connection: connection
+  } do
+    {workload, socket, profiles} = coding_connection(connection)
+    platform = Enum.find(profiles, &(&1["profile"]["runtime"] == "codex"))
+    Process.exit(socket, :kill)
+
+    {:ok, token} =
+      SalixStore.Compute.WorkloadCredential.issue_connect(workload.id, workload.generation)
+
+    {:ok, next_socket} = Socket.start(token, self())
+    on_exit(fn -> if Process.alive?(next_socket), do: Process.exit(next_socket, :kill) end)
+    settle_receive({:coding_profiles, next_profiles})
+
+    assert Enum.find(next_profiles, &(&1["id"] == platform["id"]))["version"] ==
+             platform["version"]
+
+    assert ask(platform["profile"]["key"], %{"input" => []}).status == 200
+    assert_received {:provider, _, _, _}
   end
 
   defmodule Station do

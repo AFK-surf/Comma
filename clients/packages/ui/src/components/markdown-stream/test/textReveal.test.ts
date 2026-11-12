@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { writeDocumentReducedMotion } from "../../../tokens";
 import { createTextReveal as createRootTextReveal } from "../textReveal";
 
 // Single-leaf commits exercise the same document painter as multi-leaf roots.
@@ -460,7 +461,7 @@ describe("streaming text reveal paint", () => {
       const h = harness();
       const reduce = (value: boolean) => {
         if (source === "media") h.reduce(value);
-        else document.documentElement.dataset.commaReducedMotion = String(value);
+        else writeDocumentReducedMotion(value);
       };
       reduce(true);
       const painter = createTextReveal(220);

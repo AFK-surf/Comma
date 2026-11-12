@@ -5,7 +5,8 @@
 //
 // Bounds: one read in flight per shown list, at most five pages of 100; each change is one request, then one read; a
 // pairing is one request.
-import { CoreError, Priority, type Value } from "@comma/core-kernel";
+import { lazySchema } from "@comma/chat-contract";
+import { CoreError, Priority, share, type Value } from "@comma/core-kernel";
 import { Effect, Option } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -14,28 +15,32 @@ import type { AccountSession, AccountSessionsValue } from "./contract.ts";
 import { API_LANE, type Ctx, Live } from "./ctx.ts";
 
 const PAGES = 5;
-const currentSchema = z.object({ session_id: z.string() });
-const watchPairingSchema = z.object({
-  pairing_id: z.string().min(1).max(256),
-  pairing_secret: z.string().min(1).max(1_024),
-  expires_at: z.number(),
-});
-const pageSchema = z.object({
-  data: z.array(
-    z.object({
-      id: z.string().min(1),
-      device_label: z.string().nullish(),
-      client_kind: z.string().nullish(),
-      client_platform: z.string().nullish(),
-      authenticated_at: z.number().nullish(),
-      last_seen_at: z.number().nullish(),
-      expires_at: z.number().nullish(),
-      revoked_at: z.unknown().optional(),
-    })
-  ),
-  has_more: z.boolean().optional(),
-  next_cursor: z.string().nullish(),
-});
+const currentSchema = lazySchema(() => z.object({ session_id: z.string() }));
+const watchPairingSchema = lazySchema(() =>
+  z.object({
+    pairing_id: z.string().min(1).max(256),
+    pairing_secret: z.string().min(1).max(1_024),
+    expires_at: z.number(),
+  })
+);
+const pageSchema = lazySchema(() =>
+  z.object({
+    data: z.array(
+      z.object({
+        id: z.string().min(1),
+        device_label: z.string().nullish(),
+        client_kind: z.string().nullish(),
+        client_platform: z.string().nullish(),
+        authenticated_at: z.number().nullish(),
+        last_seen_at: z.number().nullish(),
+        expires_at: z.number().nullish(),
+        revoked_at: z.unknown().optional(),
+      })
+    ),
+    has_more: z.boolean().optional(),
+    next_cursor: z.string().nullish(),
+  })
+);
 
 export class AccountSessions {
   readonly #ctx: Ctx;
@@ -133,7 +138,8 @@ export class AccountSessions {
   }
 
   #set(value: AccountSessionsValue): void {
-    this.#value = value;
+    // A list read again keeps the sessions that did not change (keep.ts).
+    this.#value = share(this.#value, value);
     const { store } = this.#ctx.kernel;
     for (const topic of store.liveTopics())
       if (topic.topic === "accountSessions") store.invalidate(topic);

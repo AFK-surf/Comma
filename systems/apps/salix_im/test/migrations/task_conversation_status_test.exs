@@ -1,10 +1,8 @@
 defmodule SalixIM.Migrations.TaskConversationStatusTest do
   use SystemsClock.Case, async: false
 
-  use SalixAgent.TestSupport.Settle
-  alias SalixIM.Migrations.TaskConversationStatus
-  alias SalixIM.{Conversations, Release}
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixIM.{ConversationPGStore, ConversationServer, Conversations, Release}
+  alias SalixStore.Ids
 
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
@@ -85,10 +83,15 @@ defmodule SalixIM.Migrations.TaskConversationStatusTest do
       "schedule" => %{"schedule_id" => Ids.new_schedule_id()}
     })
 
-    assert {:ok, stats} = TaskConversationStatus.run(limit: 1)
-    assert stats.migrated == 2
-    assert stats.skipped >= 1
-    assert stats.complete
+    task_ids = [completed_id, reopened_id, manually_completed_id, escalated_id, scheduled_id]
+
+    results =
+      Enum.map(task_ids, fn id ->
+        assert {:ok, result} = ConversationServer.migrate_legacy_task_status(group_id, id)
+        result
+      end)
+
+    assert Enum.count(results, & &1["migrated"]) == 2
 
     assert {:ok, completed} = Conversations.get_group_conversation(group_id, completed_id)
     assert completed["status"] == "ready_for_review"
@@ -127,41 +130,16 @@ defmodule SalixIM.Migrations.TaskConversationStatusTest do
     assert Enum.find(listed, &(&1["conversation_id"] == escalated_id))["status"] ==
              "escalated"
 
-    assert {:ok, rerun} = TaskConversationStatus.run(limit: 2)
-    assert rerun.migrated == 0
-    assert rerun.failed == []
+    for id <- task_ids do
+      assert {:ok, %{"migrated" => false}} =
+               ConversationServer.migrate_legacy_task_status(group_id, id)
+    end
   end
 
-  test "release command requires an explicit no-writer gate", %{group_id: group_id} do
-    _conversation_id = create_task!(group_id, "Release migration Task")
-
+  test "release command requires an explicit no-writer gate" do
     assert_raise RuntimeError, ~r/confirm_no_writers/, fn ->
       Release.migrate_task_statuses()
     end
-
-    assert %{complete: true} =
-             Release.migrate_task_statuses(confirm_no_writers: true, limit: 1)
-  end
-
-  test "migration does not accumulate one live owner tree per scanned Conversation", %{
-    group_id: group_id
-  } do
-    conversation_ids =
-      for index <- 1..3 do
-        create_task!(group_id, "Bounded migration Task #{index}")
-      end
-
-    SalixIM.TestSupport.Fleet.stop_all!()
-    refute Enum.any?(conversation_ids, &SalixIM.ConversationFleet.running?(group_id, &1))
-
-    assert {:ok, %{complete: true}} = TaskConversationStatus.run(limit: 1)
-
-    assert eventually(fn ->
-             not Enum.any?(
-               conversation_ids,
-               &SalixIM.ConversationFleet.running?(group_id, &1)
-             )
-           end)
   end
 
   defp create_task!(group_id, title) do
@@ -175,15 +153,11 @@ defmodule SalixIM.Migrations.TaskConversationStatusTest do
   end
 
   defp put_meta!(group_id, conversation_id, fields) do
-    key = Keys.ctl_group_conversation(group_id, conversation_id)
-    assert {:ok, %{body: body, etag: etag}} = S3.get(key)
-    current = Jason.decode!(body)
-    assert {:ok, _} = S3.put(key, Jason.encode!(Map.merge(current, fields)), if_match: etag)
+    scope = ConversationPGStore.new(group_id, conversation_id)
+    assert {:ok, _, revision} = ConversationPGStore.read(scope)
+    assert {:ok, _, _, _} = ConversationPGStore.update(scope, revision, &Map.merge(&1, fields))
   end
 
   defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
-
-  # Settles until the condition holds; it fails on clock time if it never does.
-  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

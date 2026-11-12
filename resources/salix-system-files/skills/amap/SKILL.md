@@ -8,6 +8,9 @@ Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
 
 ## Official MCP
 
+The Comma plugin `amap` binds this server with the user's key. Use
+`mcp.amap.*` when it is installed. Otherwise bind it yourself:
+
 Bind `https://mcp.amap.com/mcp?key={api_key}` (streamable HTTP; SSE at
 `/sse`). The key is a Web服务 key from console.amap.com/dev/key. Stdio
 alternative: `npx -y @amap/amap-maps-mcp-server` with `AMAP_MAPS_API_KEY`.

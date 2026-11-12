@@ -478,6 +478,9 @@ defmodule SalixIM.AgentDeliveryPayload do
         "sender_union_id",
         "sender_user_id",
         "sender_type",
+        # Whether a Feishu or Lark message mentions the Router itself; its
+        # text names every mention, the Router's own one too.
+        "bot_mentioned",
         "api_key_name",
         "sender_name",
         "sender_id"
@@ -529,7 +532,7 @@ defmodule SalixIM.AgentDeliveryPayload do
 
   defp provider_reply_help_hint("slack", _metadata),
     do:
-      "For a visible Slack reply from this source, read help for im_api.slack.reply_message before first call unless that manual is already visible. If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live card to this source channel and thread. Check task_card.status in the result; do not publish again when queued. If publication failed, retry only im_api.slack.post_task_card for the existing conversation_id. For product-authored Triage investigations, execute the Worker's final reply, reaction or silence decision at the authorized source; they do not require a card. Polish the designated public reply in your own established persona and conversational voice before delivery. You may adjust wording, tone and structure. Preserve its conclusions, factual claims, source attribution, links, material caveats and uncertainty. Do not add claims, omit substantive content, expose private evidence or decision reasons, or change reply, reaction or silence. Return new messages or concrete evidence or authorization problems to the same Worker for correction before delivery; do not replace its decision with your own. Images staged from the current Slack trigger are included as native image input. Every other attachment is announced with its VFS path only; read it with fs.read_file, or stage it on a connected runner with env.copy and convert it with env.exec. Report an explicit read or conversion failure instead of pretending you read the file."
+      "For a visible Slack reply from this source, read help for im_api.slack.reply_message before first call unless that manual is already visible. If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live card to this source channel and thread. Check task_card.status in the result; do not publish again when queued. If publication failed, retry only im_api.slack.post_task_card for the existing conversation_id. When people in this thread tell you to stop following it or to be quiet (stop watching, shut up, 别跟了, 闭嘴), staying silent is not enough: reply there in one short line that a mention brings you back, then call im_api.slack.leave_thread as your last action in this thread; the runtime then marks your reply as left. For product-authored Triage investigations, execute the Worker's final reply, reaction or silence decision at the authorized source; they do not require a card. Polish the designated public reply in your own established persona and conversational voice before delivery. You may adjust wording, tone and structure. Preserve its conclusions, factual claims, source attribution, links, material caveats and uncertainty. Do not add claims, omit substantive content, expose private evidence or decision reasons, or change reply, reaction or silence. Return new messages or concrete evidence or authorization problems to the same Worker for correction before delivery; do not replace its decision with your own. Images staged from the current Slack trigger are included as native image input. Every other attachment is announced with its VFS path only; read it with fs.read_file, or stage it on a connected runner with env.copy and convert it with env.exec. Report an explicit read or conversion failure instead of pretending you read the file."
 
   defp provider_reply_help_hint("telegram", _metadata),
     do:
@@ -570,10 +573,23 @@ defmodule SalixIM.AgentDeliveryPayload do
         "If no clear request can be recovered, send a brief clarification in this QQ chat. Never silently end a bare mention. " <>
         "Read help for im_api.qq operations before their first call."
 
+  defp provider_reply_help_hint("line", _metadata),
+    do:
+      "Reply in this LINE chat with im_api.line.send_message using the source connect_id; chat_id defaults to this chat. " <>
+        "LINE shows plain text without Markdown and cannot edit a sent message. The first send after this message is a free reply; later sends are push messages that use the account's monthly quota, so answer in one message and do not send placeholders. " <>
+        "Read help for im_api.line operations before their first call."
+
   defp provider_reply_help_hint("lark", metadata),
     do:
       "Reply in this Lark chat with im_api.lark.send_message using the source connect_id; chat_id defaults to this chat. In a group, pass reply_to with the source message_id so the answer goes into the thread of that message. " <>
         "A group mention carries only its own text; read the conversation before it with im_api.lark.get_chat_history or im_api.lark.search_messages when the request depends on it. " <>
+        Enum.map_join(
+          [
+            ProviderRouterGuidance.replied_message_instruction("lark", metadata),
+            ProviderRouterGuidance.bare_mention_instruction()
+          ],
+          &if(&1 == "", do: "", else: &1 <> " ")
+        ) <>
         "If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live Task card as a reply to this source. Check task_card.status in the result; do not publish again when it is queued. If publication failed, retry only im_api.lark.post_task_card for the existing conversation_id; never create another Task to repair the card. " <>
         "Read help for im_api.lark operations before their first call. " <>
         SalixIM.Provider.Lark.RouterGuidance.meetings_and_calendar(metadata)
@@ -593,6 +609,7 @@ defmodule SalixIM.AgentDeliveryPayload do
   defp source_context_title("signal"), do: "Signal message context."
   defp source_context_title("qq"), do: "QQ message context."
   defp source_context_title("lark"), do: "Lark message context."
+  defp source_context_title("line"), do: "LINE message context."
   defp source_context_title(_provider), do: "IM provider message context."
 
   defp slack_thread_context_lines("slack", %{"slack_thread_context" => context})

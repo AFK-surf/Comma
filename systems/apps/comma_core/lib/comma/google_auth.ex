@@ -4,7 +4,7 @@ defmodule Comma.GoogleAuth do
   import Ecto.Query
 
   alias Comma.Accounts.{Identity, Repository, SessionClientMetadata, SessionIssuer, User}
-  alias Comma.Auth.{GoogleClaims, GoogleEmailAuthority, GoogleLoginAttempts}
+  alias Comma.Auth.{GoogleClaims, GoogleEmailAuthority, GoogleLoginAttempts, Registration}
   alias Comma.{AuthChallenges, Repo}
   alias CommaProduct.Telemetry
 
@@ -25,8 +25,21 @@ defmodule Comma.GoogleAuth do
          {:ok, attempt} <- GoogleLoginAttempts.consume(attrs, platform),
          {:ok, raw_claims} <- verified_claims(attempt, attrs),
          {:ok, claims} <- GoogleClaims.from_verified(raw_claims),
-         {:ok, outcome} <- resolve_claims(claims) do
-      finish(outcome, claims, attrs)
+         {:ok, outcome} <-
+           resolve_claims(claims, not Registration.required?(attempt["platform"], attrs)) do
+      case outcome do
+        :registration_required ->
+          Registration.start(
+            "google",
+            registration_claims(claims),
+            claims.email,
+            attempt["platform"],
+            attrs
+          )
+
+        _ ->
+          finish(outcome, claims, attrs)
+      end
     else
       {:error, _reason} = error -> error
     end
@@ -34,11 +47,12 @@ defmodule Comma.GoogleAuth do
 
   def complete(_attrs), do: {:error, :invalid_google_credential}
 
-  defp verified_claims(%{"platform" => "web"} = attempt, attrs) do
+  defp verified_claims(%{"platform" => platform} = attempt, attrs)
+       when platform in ["web", "ios"] do
     adapter().verify_id_token(trim(value(attrs, "credential")),
       client_id: attempt["client_id"],
       nonce: attempt["nonce"],
-      platform: "web"
+      platform: platform
     )
   end
 
@@ -107,11 +121,13 @@ defmodule Comma.GoogleAuth do
     end
   end
 
-  # Web and Android both submit an ID token; the attempt ID selects the platform.
+  # ID-token clients share completion. The stored attempt still verifies the platform and audience.
   defp credential_platform(attrs) do
-    if String.starts_with?(trim(value(attrs, "attempt_id")) || "", "gla_android_"),
-      do: "android",
-      else: "web"
+    case trim(value(attrs, "attempt_id")) do
+      "gla_android_" <> _ -> "android"
+      "gla_ios_" <> _ -> "ios"
+      _ -> "web"
+    end
   end
 
   defp valid_desktop_redirect?(redirect_uri) do
@@ -143,13 +159,33 @@ defmodule Comma.GoogleAuth do
 
   def verify_link(_attrs), do: {:error, :invalid_verification_code}
 
-  defp resolve_claims(%GoogleClaims{} = claims) do
+  @doc false
+  def finish_registration(state, attrs) do
+    with {:ok, claims} <- GoogleClaims.from_verified(state),
+         {:ok, outcome} <- resolve_claims(claims, true) do
+      finish(outcome, claims, attrs)
+    end
+  end
+
+  defp registration_claims(claims) do
+    %{
+      "iss" => claims.issuer,
+      "sub" => claims.subject,
+      "email" => claims.email,
+      "email_verified" => claims.email_verified,
+      # JSON false preserves the conservative invalid hosted-domain state.
+      "hd" => if(claims.hosted_domain == :invalid, do: false, else: claims.hosted_domain),
+      "name" => claims.name
+    }
+  end
+
+  defp resolve_claims(%GoogleClaims{} = claims, allow_create) do
     serializable_transaction(fn ->
       lock_identity_key!(claims)
 
       case identity_for_update(claims) do
         %Identity{} = identity -> resolve_returning_identity(identity, claims)
-        nil -> resolve_first_identity(claims)
+        nil -> resolve_first_identity(claims, allow_create)
       end
     end)
     |> normalize_transaction()
@@ -165,10 +201,10 @@ defmodule Comma.GoogleAuth do
     end
   end
 
-  defp resolve_first_identity(%GoogleClaims{email: nil}),
+  defp resolve_first_identity(%GoogleClaims{email: nil}, _allow_create),
     do: Repo.rollback(:invalid_google_identity)
 
-  defp resolve_first_identity(%GoogleClaims{email: email} = claims) do
+  defp resolve_first_identity(%GoogleClaims{email: email} = claims, allow_create) do
     case Repo.one(from(user in User, where: user.email == ^email, lock: "FOR UPDATE")) do
       %User{} = user ->
         require_active!(user)
@@ -180,13 +216,21 @@ defmodule Comma.GoogleAuth do
 
       nil ->
         if claims.email_verified == true do
-          case Repository.ensure_user_by_email(email, %{name: claims.name}, repo: Repo) do
-            {:ok, user, creation} ->
-              user = user_for_update!(user.id)
-              {:signed_in, link_identity_locked!(user, claims), creation}
+          if not allow_create do
+            :registration_required
+          else
+            case Repository.ensure_user_by_email(
+                   email,
+                   %{name: claims.name, email_verified: true},
+                   repo: Repo
+                 ) do
+              {:ok, user, creation} ->
+                user = user_for_update!(user.id)
+                {:signed_in, link_identity_locked!(user, claims), creation}
 
-            {:error, reason} ->
-              Repo.rollback(reason)
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
           end
         else
           Repo.rollback(:invalid_google_identity)
@@ -333,7 +377,7 @@ defmodule Comma.GoogleAuth do
 
   defp finish({:signed_in, %User{} = user, creation}, _claims, attrs) do
     # The account and identity transaction has committed before capture.
-    if creation == :created, do: Comma.Analytics.registered(user.id)
+    if creation == :created, do: Comma.Analytics.registered(user.id, attrs)
     issue_session(user, attrs)
   end
 

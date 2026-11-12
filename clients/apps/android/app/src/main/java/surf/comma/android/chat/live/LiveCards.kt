@@ -13,6 +13,7 @@ import surf.comma.android.chat.render.ChatPalette
 import surf.comma.android.chat.render.PreparedChatMessage
 import surf.comma.android.chat.render.messageTextColor
 import surf.comma.android.tasks.TaskSummary
+import surf.comma.android.tasks.ui.KnownTasks
 import surf.comma.android.tasks.ui.TaskRefCardView
 import surf.comma.android.tasks.ui.TaskRefDirectory
 import surf.comma.android.ui.theme.DesignTypography
@@ -48,11 +49,11 @@ internal sealed interface TaskRefDisplay {
     data object Unavailable : TaskRefDisplay
 }
 
-internal fun taskRefDisplay(ref: LiveRowKinds.TaskRef, directory: TaskRefDirectory?): TaskRefDisplay {
+internal fun taskRefDisplay(ref: LiveRowKinds.TaskRef, known: KnownTasks?): TaskRefDisplay {
     val id = ref.conversationId
     if (ref.unavailable || id.isNullOrBlank()) return TaskRefDisplay.Unavailable
-    directory?.summary(id)?.let { return TaskRefDisplay.Ready(it) }
-    if (directory?.isMissing(id) == true) return TaskRefDisplay.Unavailable
+    known?.summary(id)?.let { return TaskRefDisplay.Ready(it) }
+    if (known?.isMissing(id) == true) return TaskRefDisplay.Unavailable
     return TaskRefDisplay.Loading(id, ref.title?.takeIf { it.isNotBlank() })
 }
 
@@ -103,7 +104,7 @@ internal class TaskRefRow(context: Context) : FrameLayout(context) {
     /** The row's height is fixed by the layout pass, so a new title or state never moves the list. */
     private fun render() {
         val current = item ?: return
-        when (val display = taskRefDisplay(LiveRowKinds.decodeTask(current.message.cardPayload), directory)) {
+        when (val display = taskRefDisplay(LiveRowKinds.decodeTask(current.message.cardPayload), directory?.known)) {
             is TaskRefDisplay.Ready -> card.bind(display.task)
             is TaskRefDisplay.Loading ->
                 card.bindPlaceholder(display.taskId, display.title ?: context.getString(R.string.chat_task_ref))

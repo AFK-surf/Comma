@@ -8,7 +8,7 @@ load=${E2E_LOAD:-$(node "$here/../scripts/native.ts" file station-load)} # prebu
 node=${NODE:-node}
 NODE_ARGS=${NODE_ARGS:-}
 id=$(cat "$work/station-id")
-threads=$(sqlite3 "$work/ts/stillfail.db" "select id from threads order by id desc limit 8" | tr '\n' ' ')
+threads=$(sqlite3 "$work/ts/station.db" "select id from threads order by id desc limit 8" | tr '\n' ' ')
 paths="/admin/api/chats /admin/api/chats?archived=1"
 for t in $threads; do paths="$paths /admin/api/threads/$t/entries"; done
 stop() { pkill -f "data $work/" 2>/dev/null; sleep 2; }
@@ -37,6 +37,6 @@ measure() { # measure <name> <data dir name> <command…>
   echo "{\"station\":\"$name\",\"footprint\":{\"idle\":$fidle,\"peak\":$fpeak,\"after\":$fafter,\"later\":$flater},\"rss\":{\"idle\":$((idle/1024)),\"peak\":$((peak/1024)),\"after\":$((after/1024)),\"later\":$((later/1024))},\"load\":$(cat "$work/load-$name.json")}"
 }
 measure rust rust "$rust" run --app "$(dirname "$(dirname "$(dirname "$(dirname "$rust")")")")" --data "$work/rust"
-# ENTRY=dist/main.js measures the bundle (STILLFAIL_MESH_NATIVE then says where the addon is).
+# ENTRY=dist/main.js measures the bundle (COMMA_STATION_MESH_NATIVE then says where the addon is).
 measure ts ts "$node" $NODE_ARGS "$here/${ENTRY:-src/main.ts}" run --app "$here" --data "$work/ts"
 stop

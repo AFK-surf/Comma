@@ -45,6 +45,7 @@ type WindowChange =
   | { kind: "show" }
   | { kind: "hide" }
   | { kind: "focus" }
+  | { kind: "minimize" }
   | { kind: "close" }
   | { kind: "destroy" };
 
@@ -111,6 +112,13 @@ async function changeWindow(
                 await focused;
                 break;
               }
+              case "minimize": {
+                if (window.isMinimized()) break;
+                const minimized = next("minimize");
+                window.minimize();
+                await minimized;
+                break;
+              }
               case "close":
                 return {
                   closed: await new Promise<boolean>((settle) => {
@@ -147,6 +155,7 @@ async function changeWindow(
               change.kind !== "show" &&
               change.kind !== "hide" &&
               change.kind !== "focus" &&
+              change.kind !== "minimize" &&
               window.isVisible() &&
               !window.isMinimized() &&
               !contents.isCrashed() &&
@@ -289,6 +298,14 @@ export async function hideElectronWindow(
   window: ElectronWindow
 ): Promise<void> {
   await changeWindowState(app, window, { kind: "hide" });
+}
+
+/** Minimizes the window, on a turn of Main's own: returns after its `minimize` event. */
+export async function minimizeElectronWindow(
+  app: ElectronApplication,
+  window: ElectronWindow
+): Promise<void> {
+  await changeWindowState(app, window, { kind: "minimize" });
 }
 
 /**
@@ -441,6 +458,94 @@ export async function quitElectronApp(app: ElectronApplication): Promise<void> {
   }
 }
 
+/**
+ * Starts keeping, in Main, each WebContents' latest main-frame navigation events for a failed test's report (once per
+ * app; again is a no-op). `electronPageNavigation` reads a page's.
+ */
+export async function recordElectronContents(app: ElectronApplication): Promise<void> {
+  await app.evaluate(({ app: main, BrowserWindow, webContents }) => {
+    // For a failed test's report: what each WebContents loaded since the first call.
+    const scope = globalThis as ElectronContentsRecords;
+    if (!scope.commaE2eContents) {
+      const records = new Map<number, ElectronContentsRecord>();
+      scope.commaE2eContents = records;
+      const record = (contents: Electron.WebContents) => {
+        const kept: ElectronContentsRecord = { loadsEnded: 0, navigation: [] };
+        records.set(contents.id, kept);
+        // Whether the native view that holds the page is visible (a browser view the app hides and shows).
+        const viewShown = (view: Electron.View): boolean | undefined => {
+          for (const child of view.children) {
+            if ("webContents" in child && child.webContents === contents)
+              return child.getVisible();
+            const within = viewShown(child);
+            if (within !== undefined) return within && child.getVisible();
+          }
+          return undefined;
+        };
+        const note = (event: string) => {
+          // Inside the app's own event dispatch, where nothing may throw: a view that is going away reads
+          // as no view.
+          let shown: boolean | undefined;
+          try {
+            shown = BrowserWindow.getAllWindows()
+              .map((window) => viewShown(window.contentView))
+              .find((visible) => visible !== undefined);
+          } catch {
+            shown = undefined;
+          }
+          // ast-grep-ignore: ts-test-clock -- a time of day in a failed test's report: nothing waits on it or compares it.
+          const at = new Date().toISOString().slice(11, 23);
+          kept.navigation = [
+            ...kept.navigation.slice(-39),
+            `${at} ${event}${shown === undefined ? "" : shown ? " (view shown)" : " (view hidden)"}`,
+          ];
+        };
+        contents.on("did-start-loading", () => note("did-start-loading"));
+        contents.on("did-start-navigation", (details) => {
+          if (details.isMainFrame)
+            note(
+              `did-start-navigation ${details.url}${details.isSameDocument ? " (same document)" : ""}`
+            );
+        });
+        contents.on("did-navigate", (_event, address, status) =>
+          note(`did-navigate ${address} ${status}`)
+        );
+        contents.on(
+          "did-fail-load",
+          (_event, code, description, address, isMainFrame) => {
+            if (isMainFrame) note(`did-fail-load ${code} ${description} ${address}`);
+          }
+        );
+        contents.on("did-finish-load", () => note("did-finish-load"));
+        contents.on("did-stop-loading", () => {
+          kept.loadsEnded += 1;
+          note("did-stop-loading");
+        });
+      };
+      for (const contents of webContents.getAllWebContents()) record(contents);
+      main.on("web-contents-created", (_event, contents) => record(contents));
+    }
+  });
+}
+
+/** The navigation events Main kept of `page` (`recordElectronContents`), or why they could not be read. */
+export async function electronPageNavigation(
+  app: ElectronApplication,
+  page: Page
+): Promise<string[]> {
+  try {
+    const window = await app.browserWindow(page);
+    return await window.evaluate(
+      (browserWindow) =>
+        (globalThis as ElectronContentsRecords).commaE2eContents?.get(
+          browserWindow.webContents.id
+        )?.navigation ?? ["(none kept)"]
+    );
+  } catch (error: unknown) {
+    return [`(could not be read: ${String(error)})`];
+  }
+}
+
 /** Playwright's rejection of an evaluate whose Main went away under it. */
 function lostMain(error: unknown) {
   return /Execution context was destroyed|has been closed|Target closed/.test(
@@ -448,7 +553,7 @@ function lostMain(error: unknown) {
   );
 }
 
-/** What Main keeps about a WebContents for the report of a wait that never ends, from the app's first such wait. */
+/** What Main keeps about a WebContents for a failed test's report, from `recordElectronContents` on. */
 interface ElectronContentsRecord {
   /** Loads that ended. */
   loadsEnded: number;
@@ -466,8 +571,8 @@ type ElectronContentsRecords = typeof globalThis & {
  * starts): the answer is read again at each end of a load, at each navigation and for each new WebContents, never
  * on a timer. `expected` is compared as JSON. When several WebContents show `url`, one that answers is enough.
  *
- * The report of a wait that never ends has, for each WebContents at `url`, its navigation events since the app's
- * first wait of this kind. A load that began and was stopped before it committed leaves the old page: Electron
+ * The report of a wait that never ends has, for each WebContents at `url`, its navigation events since
+ * `recordElectronContents`. A load that began and was stopped before it committed leaves the old page: Electron
  * emits no failure for it, and it reads as a `did-start-navigation` and a `did-stop-loading` with no `did-navigate`
  * between. `testSaw` adds what the test itself knows (what its server was asked, what a session of the app holds).
  */
@@ -510,81 +615,20 @@ export async function expectElectronContents(
       { url, script }
     ),
   });
+  await recordElectronContents(app);
   await electronWait(
     app,
     `a loaded page at ${url} to answer ${JSON.stringify(expected)} to ${script}`,
     observe,
     () =>
       app.evaluate(
-        async ({ app: main, BrowserWindow, webContents }, page) => {
+        async ({ app: main, webContents }, page) => {
           const events = [
             "did-stop-loading",
             "did-navigate",
             "did-navigate-in-page",
             "destroyed",
           ] as const;
-          // For a failed test's report: what each WebContents loaded since this first wait.
-          const scope = globalThis as ElectronContentsRecords;
-          if (!scope.commaE2eContents) {
-            const records = new Map<number, ElectronContentsRecord>();
-            scope.commaE2eContents = records;
-            const record = (contents: Electron.WebContents) => {
-              const kept: ElectronContentsRecord = { loadsEnded: 0, navigation: [] };
-              records.set(contents.id, kept);
-              // Whether the native view that holds the page is visible (a browser view the app hides and shows).
-              const viewShown = (view: Electron.View): boolean | undefined => {
-                for (const child of view.children) {
-                  if ("webContents" in child && child.webContents === contents)
-                    return child.getVisible();
-                  const within = viewShown(child);
-                  if (within !== undefined) return within && child.getVisible();
-                }
-                return undefined;
-              };
-              const note = (event: string) => {
-                // Inside the app's own event dispatch, where nothing may throw: a view that is going away reads
-                // as no view.
-                let shown: boolean | undefined;
-                try {
-                  shown = BrowserWindow.getAllWindows()
-                    .map((window) => viewShown(window.contentView))
-                    .find((visible) => visible !== undefined);
-                } catch {
-                  shown = undefined;
-                }
-                // ast-grep-ignore: ts-test-clock -- a time of day in a failed test's report: nothing waits on it or compares it.
-                const at = new Date().toISOString().slice(11, 23);
-                kept.navigation = [
-                  ...kept.navigation.slice(-39),
-                  `${at} ${event}${shown === undefined ? "" : shown ? " (view shown)" : " (view hidden)"}`,
-                ];
-              };
-              contents.on("did-start-loading", () => note("did-start-loading"));
-              contents.on("did-start-navigation", (details) => {
-                if (details.isMainFrame)
-                  note(
-                    `did-start-navigation ${details.url}${details.isSameDocument ? " (same document)" : ""}`
-                  );
-              });
-              contents.on("did-navigate", (_event, address, status) =>
-                note(`did-navigate ${address} ${status}`)
-              );
-              contents.on(
-                "did-fail-load",
-                (_event, code, description, address, isMainFrame) => {
-                  if (isMainFrame)
-                    note(`did-fail-load ${code} ${description} ${address}`);
-                }
-              );
-              contents.on("did-finish-load", () => note("did-finish-load"));
-              contents.on("did-stop-loading", () => {
-                kept.loadsEnded += 1;
-                note("did-stop-loading");
-              });
-            };
-            for (const contents of webContents.getAllWebContents()) record(contents);
-            main.on("web-contents-created", (_event, contents) => record(contents));
-          }
           // The read after the latest change is the one that counts: each round arms its own wake first.
           let wake: (() => void) | undefined;
           const changed = () => wake?.();

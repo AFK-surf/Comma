@@ -31,7 +31,7 @@
 
 ## 站间方法
 
-走 `stillfail/station/1`（`jobs/remote.ts` 的 `handle` 把 `share.*` 交给 `share/index.ts`）。跟 `session.message` 一样，只要求对方是同 workspace 的 station，不需要 `remoteJobs.allow`。host 再检查对方在 `allow` 里，或 `allow` 为 null。
+走 `comma-station/station/1`（`jobs/remote.ts` 的 `handle` 把 `share.*` 交给 `share/index.ts`）。跟 `session.message` 一样，只要求对方是同 workspace 的 station，不需要 `remoteJobs.allow`。host 再检查对方在 `allow` 里，或 `allow` 为 null。
 
 | 方法 | 谁问谁 | 做什么 |
 |---|---|---|

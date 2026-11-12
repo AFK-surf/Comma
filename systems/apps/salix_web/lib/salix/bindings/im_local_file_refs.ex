@@ -3,6 +3,6 @@ defmodule Salix.Bindings.IMLocalFileRefs do
   @behaviour SalixIM.Ports.LocalFileRefs
 
   @impl true
-  def bind_message(group_id, conversation_id, message),
-    do: SalixEnv.LocalFileRefs.bind_message(group_id, conversation_id, message)
+  def bind_message(group_id, conversation_id, message, now),
+    do: SalixEnv.LocalFileRefs.bind_message(group_id, conversation_id, message, now)
 end

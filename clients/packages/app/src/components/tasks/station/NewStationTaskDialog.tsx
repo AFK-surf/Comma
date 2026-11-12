@@ -3,10 +3,12 @@ import type {
   ModelsValue,
   ShownProfile,
   StationProfile,
+  TaskRequestRun,
+  TaskRequestTarget,
 } from "@comma/core/contract";
 import { useCall, useTopic } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { Dialog } from "@comma/ui/components/dialog";
+import { Dialog, DialogPanel, dialogComposeShell } from "@comma/ui/components/dialog";
 import { Button } from "@comma/ui/components/Button";
 import type { DropdownItem } from "@comma/ui/components/dropdown";
 import {
@@ -20,9 +22,18 @@ import {
 } from "@comma/ui/components/icons";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
+import { toast } from "@comma/ui/components/toast";
 import { cx, isImeKeyEvent } from "@comma/ui/components/utils";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Button as AriaButton } from "react-aria-components";
 import type { AiInputAttachment } from "@comma/ui/components/ai-input";
 import { AiInputAttachmentRow } from "@comma/ui/components/ai-input/attachments/AiInputAttachmentRow";
@@ -40,6 +51,16 @@ import {
 } from "../../chat/composer/fileIntake";
 import { openTaskTarget } from "../openTaskTarget";
 import { useTaskAttachments } from "./useTaskAttachments";
+import { RequestPersonAvatar } from "../RequestPersonAvatar";
+
+/** A Task request the window shows as a card: its id, a title for the card, who sent it, and the words it opens with. */
+export interface TaskRequestCard {
+  id: string;
+  title: string;
+  /** The sender, shown above the words: their avatar and name. */
+  sender?: ReactNode;
+  content: string;
+}
 
 /** A choice of what to run: a profile of the machine's station, and one of its models (null: the profile's own). */
 type Run = { profile: StationProfile; model: string | null };
@@ -53,6 +74,11 @@ const SALIX = "salix";
  * runtime's own default model, or one the catalog says that subscription serves.
  */
 const SANDBOX = "sandbox";
+/**
+ * The same sandbox with nothing checked out: a plain sandbox Task for work that needs a machine, offered where the
+ * deployment has Task sandboxes (`task_place.sandboxes` of the models topic), where the Cloud VM is retired.
+ */
+const PLAIN_SANDBOX = "plain_sandbox";
 const SANDBOX_RUNTIMES = ["codex", "claude"] as const;
 type SandboxRuntime = (typeof SANDBOX_RUNTIMES)[number];
 type SandboxProfile = ShownProfile;
@@ -201,6 +227,40 @@ function PropertyChip({
   );
 }
 
+/** What the window makes: a Task here, or a request to a workspace whose invite the person accepted. */
+type Kind = "task" | "request";
+
+/** Who a request goes to: the workspace's owner, by name. */
+const targetLabel = (target: TaskRequestTarget) =>
+  target.workspace.owner?.name ||
+  target.workspace.owner?.email ||
+  target.workspace.name ||
+  target.workspace.id;
+
+/** The owner's avatar, read through the person's grant; their initials without one. */
+function TargetAvatar({ target }: { target: TaskRequestTarget }) {
+  const owner = target.workspace.owner;
+  return (
+    <RequestPersonAvatar
+      email={owner?.email}
+      name={targetLabel(target)}
+      source={
+        owner?.avatar_id
+          ? {
+              source: "target-avatar",
+              grant: target.grant_id,
+              revision: owner.avatar_id,
+            }
+          : undefined
+      }
+    />
+  );
+}
+
+/** A target takes no request now: its daily or waiting limit is reached. */
+const targetFull = (target: TaskRequestTarget) =>
+  target.sent_today >= target.daily_limit || target.pending >= target.pending_limit;
+
 /** A random key for one Task being made: made again with it (a retry), it is the same Task. */
 function newKey() {
   const bytes = new Uint8Array(16);
@@ -212,13 +272,30 @@ function newKey() {
  * Makes a Task on one of the workspace's machines (its station hosts it) or in Comma's cloud: the machine, what runs it
  * (a profile and its model, or a model of the workspace's catalog), and the first message. Only machines this device
  * reaches now can be chosen; with none once the machines are known, the cloud is chosen. Each opens as soon as it is
- * made.
+ * made. Where the person may send requests, it can make a request to another person's workspace instead (`requestTo`).
  */
 export function NewStationTaskDialog({
+  onAccepted,
   onClose,
+  request,
+  requestTo,
   workspace,
 }: {
+  /** With a request: where its Task goes once made, instead of opening it among the Tasks. */
+  onAccepted?: ((task: { id: string; group_id: string }) => void) | undefined;
   onClose: () => void;
+  /**
+   * Someone's Task request to this workspace: the window shows as a card (not a dialog) with the request's words, and
+   * making the Task accepts the request (`taskRequests.accept`) with the place and model chosen here. It can also go to
+   * the Router or be declined. Files cannot be added to it.
+   */
+  request?: TaskRequestCard | undefined;
+  /**
+   * Opens as a New request to this target (its `grant_id`). Where the person may send requests, the window's title is a
+   * menu that switches between a Task and a request: a request goes to the chosen workspace's owner with the words
+   * alone (`taskRequests.send`); its owner chooses where it runs and on what when they accept it.
+   */
+  requestTo?: string | undefined;
   workspace: string;
 }) {
   const messages = useCommaMessages();
@@ -231,7 +308,7 @@ export function NewStationTaskDialog({
   const [profiles, setProfiles] = useState<StationProfile[] | null>(null);
   const [profilesFailed, setProfilesFailed] = useState<string>();
   const [run, setRun] = useState<string>();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(request?.content ?? "");
   // The message is where the person starts.
   const messageRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -241,6 +318,43 @@ export function NewStationTaskDialog({
   const [error, setError] = useState<string>();
   const [key, setKey] = useState(newKey);
   const locale = useCommaLocale();
+  // Where the person may send requests: the workspaces whose invite they accepted. A request's own card sends none.
+  const targetsTopic = useTopic(
+    request ? null : { topic: "taskRequests", prefer: workspace }
+  );
+  const targets = targetsTopic.value?.targets ?? null;
+  const [kind, setKind] = useState<Kind>(requestTo ? "request" : "task");
+  const asking = kind === "request";
+  // The recipient the person chose (or the window was opened for) stays chosen, also once it can take no more
+  // requests (Send waits until they choose another); without one, the first who can take one is chosen.
+  const [chosenId, setTarget] = useState(requestTo);
+  const target = chosenId ?? targets?.find((t) => !targetFull(t))?.grant_id;
+  const chosenTarget = targets?.find((t) => t.grant_id === target);
+  const canSend = !!chosenTarget && !targetFull(chosenTarget);
+  // The first default holds: a later read of the list does not move the request to someone else.
+  useEffect(() => {
+    if (chosenId === undefined && target !== undefined) setTarget(target);
+  }, [chosenId, target]);
+  // Two people of one name are told apart by their workspace.
+  const targetItems: DropdownItem[] = (targets ?? []).map((t, _i, all) => {
+    const label = targetLabel(t);
+    const twin = all.some((o) => o !== t && targetLabel(o) === label);
+    return {
+      id: t.grant_id,
+      label,
+      leading: <TargetAvatar target={t} />,
+      subtitle: [
+        twin ? t.workspace.name : null,
+        messages.task_requests_sent_today({
+          count: String(t.sent_today),
+          limit: String(t.daily_limit),
+        }),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      disabled: targetFull(t),
+    };
+  });
 
   const reached = stations.filter((s) => s.link.state === "online");
   // Once the machines are known, the first one reached is chosen, or the cloud with none; it stays chosen until the
@@ -254,6 +368,9 @@ export function NewStationTaskDialog({
   }, [firstReached, known]);
   const inCloud = chosen === SALIX;
   const inSandbox = chosen === SANDBOX;
+  const inPlainSandbox = chosen === PLAIN_SANDBOX;
+  const inAnySandbox = inSandbox || inPlainSandbox;
+  const sandboxes = shownModels?.agents?.task_place.sandboxes === true;
   // A coding session's repository (one page of the account's, recently pushed first), base branch and runtime.
   const [repos, setRepos] = useState<CodingRepo[] | null>(null);
   const [reposFailed, setReposFailed] = useState<string>();
@@ -322,7 +439,7 @@ export function NewStationTaskDialog({
     setProfiles(null);
     setProfilesFailed(undefined);
     setRun(undefined);
-    if (chosen === undefined || inCloud || inSandbox) return undefined;
+    if (chosen === undefined || inCloud || inAnySandbox) return undefined;
     let live = true;
     call("stations.profiles", { station: chosen, workspace }).then(
       (answer) => live && setProfiles(answer),
@@ -331,7 +448,7 @@ export function NewStationTaskDialog({
     return () => {
       live = false;
     };
-  }, [call, chosen, inCloud, inSandbox, workspace]);
+  }, [call, chosen, inCloud, inAnySandbox, workspace]);
 
   const runs = useMemo(() => runsOf(profiles ?? []), [profiles]);
   const profileCount = new Set(runs.map((r) => r.profile.id)).size;
@@ -347,6 +464,16 @@ export function NewStationTaskDialog({
       label: messages.coding_sandbox(),
       leading: <CodeIcon className="size-4" />,
     },
+    // A request's Task runs where its acceptance can name (`TaskRequestRun`): no plain sandbox.
+    ...(sandboxes && !request
+      ? [
+          {
+            id: PLAIN_SANDBOX,
+            label: messages.station_task_sandbox(),
+            leading: <CodeIcon className="size-4" />,
+          },
+        ]
+      : []),
     ...stations.map((s) => ({
       id: s.id,
       label: s.name || s.id,
@@ -372,7 +499,7 @@ export function NewStationTaskDialog({
     label: messages.coding_from_branch({ branch: b }),
     leading: <BranchIcon className="size-4" />,
   }));
-  const runItems: DropdownItem[] = inSandbox
+  const runItems: DropdownItem[] = inAnySandbox
     ? sandboxRuns.map((r) => ({
         id: sandboxRunKey(r),
         // Its default model goes by the runtime's name.
@@ -405,20 +532,22 @@ export function NewStationTaskDialog({
           // The profile names whose account runs it, where the machine has more than one.
           ...(profileCount > 1 ? { subtitle: r.profile.name } : {}),
         }));
-  // The files go where the Task runs, each as it is added, as the composer's go up.
-  // A coding session takes no files (its repository is its files): none goes up for it.
+  // The files go where the Task runs, each as it is added, as the composer's go up. A sandbox Task's (a coding
+  // session's or a plain one's) go up as the cloud's do, to the Router chat: its sandbox's station fetches those its
+  // first message names.
   const files = useTaskAttachments({
     cloud: SALIX,
-    place: chosen === SANDBOX ? undefined : chosen,
+    place: inAnySandbox ? SALIX : chosen,
     workspace,
   });
   // While the Task is being made, its files are those it goes with: none is added or taken away.
   const { attach, remove, retry } = files;
+  // A request goes with its words alone: it takes no files.
   const attachFiles = useCallback(
     (added: Parameters<typeof attach>[0]) => {
-      if (!pending) attach(added);
+      if (!pending && !asking) attach(added);
     },
-    [attach, pending]
+    [asking, attach, pending]
   );
   const removeFile = useCallback(
     (id: string) => {
@@ -437,7 +566,9 @@ export function NewStationTaskDialog({
     clipboard: nativePlatformClipboard,
     onPasteFiles: intake.transferFiles,
   });
-  const { dropActive, shellDropProps } = useFileDrop(intake.transferFiles);
+  const { dropActive, shellDropProps } = useFileDrop(
+    asking ? undefined : intake.transferFiles
+  );
   useUploadFailureToast(
     files.attachments,
     `new-task-upload-error-${useId()}`,
@@ -477,25 +608,110 @@ export function NewStationTaskDialog({
   const body = text.trim();
   const ready =
     chosen !== undefined &&
-    (inSandbox ? !!chosenRepo : inCloud ? !!chosenCloudModel : !!chosenRun);
+    (inSandbox
+      ? !!chosenRepo
+      : inPlainSandbox
+        ? true
+        : inCloud
+          ? !!chosenCloudModel
+          : !!chosenRun);
   // A file still uploading goes with the Task, which waits for it; a failed one holds it back.
   const hasContent = body !== "" || files.attachments.length > 0;
+  const send = async () => {
+    if (!chosenTarget || !canSend || body === "" || pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      await call("taskRequests.send", {
+        grant: chosenTarget.grant_id,
+        content: body,
+        key,
+        workspace,
+      });
+      onClose();
+      toast.success(
+        messages.task_requests_sent_to({ name: targetLabel(chosenTarget) })
+      );
+    } catch (failure) {
+      setError((failure as Error).message || messages.task_requests_failed());
+    } finally {
+      setPending(false);
+    }
+  };
   const create = async () => {
+    if (asking) return send();
     if (!ready || !hasContent || files.anyFailed || pending) return;
     setPending(true);
     setError(undefined);
     try {
-      if (inSandbox) {
-        if (!chosenRepo) return;
+      if (request) {
+        const requestRun: TaskRequestRun | undefined = inSandbox
+          ? chosenRepo && {
+              kind: "sandbox",
+              repo: {
+                owner: chosenRepo.owner,
+                name: chosenRepo.name,
+                ...(chosenBase ? { baseRef: chosenBase } : {}),
+              },
+              provider: chosenSandboxRun?.runtime ?? "codex",
+              ...(chosenSandboxRun?.model ? { model: chosenSandboxRun.model } : {}),
+              ...(chosenSandboxRun?.profile
+                ? { accountId: chosenSandboxRun.profile.id }
+                : {}),
+            }
+          : inCloud
+            ? chosenCloudModel && { kind: "cloud", model: chosenCloudModel.id }
+            : chosenRun && chosen !== undefined
+              ? {
+                  kind: "station",
+                  station: chosen,
+                  provider: chosenRun.profile.runtimes[0]!,
+                  ...(chosenRun.model ? { model: chosenRun.model } : {}),
+                }
+              : undefined;
+        if (!requestRun) return;
+        const accepted = await call("taskRequests.accept", {
+          workspace,
+          request: request.id,
+          to: "task",
+          content: body,
+          run: requestRun,
+        });
+        if (onAccepted && accepted.task?.group_id) {
+          onAccepted({ id: accepted.task.id, group_id: accepted.task.group_id });
+          return;
+        }
+        onClose();
+        if (accepted.task?.group_id)
+          await navigate(
+            openTaskTarget({
+              conversationId: accepted.task.id,
+              groupId: accepted.task.group_id,
+              workspaceId: workspace,
+            })
+          );
+        return;
+      }
+      const uploads = await files.uploads();
+      if (inAnySandbox) {
+        if (inSandbox && !chosenRepo) return;
         const made = await call("coding.start", {
           workspaceId: workspace,
           key,
           text: body,
-          repo: {
-            owner: chosenRepo.owner,
-            name: chosenRepo.name,
-            ...(chosenBase ? { baseRef: chosenBase } : {}),
-          },
+          ...(uploads.length > 0
+            ? { uploads: uploads.map(({ name, path }) => ({ name, path })) }
+            : {}),
+          // A plain sandbox Task checks nothing out.
+          ...(inSandbox && chosenRepo
+            ? {
+                repo: {
+                  owner: chosenRepo.owner,
+                  name: chosenRepo.name,
+                  ...(chosenBase ? { baseRef: chosenBase } : {}),
+                },
+              }
+            : {}),
           model: {
             provider: chosenSandboxRun?.runtime ?? "codex",
             ...(chosenSandboxRun?.model ? { model: chosenSandboxRun.model } : {}),
@@ -514,7 +730,6 @@ export function NewStationTaskDialog({
         );
         return;
       }
-      const uploads = await files.uploads();
       if (inCloud) {
         const made = await call("chat.startTask", {
           workspaceId: workspace,
@@ -573,27 +788,72 @@ export function NewStationTaskDialog({
     }
   };
 
-  return (
-    <Dialog
-      isOpen
-      showCloseButton
-      title={messages.station_task_new()}
-      // Where it runs leads the title, as the team leads Linear's New issue.
-      titleLeading={
-        <PropertyChip
-          disabled={pending}
-          items={machineItems}
-          label={messages.station_task_machine()}
-          loading={!known}
-          onChange={setChosen}
-          value={chosen}
-        />
+  // Where it runs leads the title, as the team leads Linear's New issue; a request's, whom it goes to.
+  const titleLeading = asking ? (
+    <PropertyChip
+      disabled={pending || targetItems.length === 0}
+      items={targetItems}
+      label={messages.task_requests_recipient()}
+      loading={targets === null}
+      onChange={setTarget}
+      value={chosenTarget?.grant_id}
+    />
+  ) : (
+    <PropertyChip
+      disabled={pending}
+      items={machineItems}
+      label={messages.station_task_machine()}
+      loading={!known}
+      onChange={setChosen}
+      value={chosen}
+    />
+  );
+  // Where the person may send requests, the title is a chip as the place's is: it switches what the window makes.
+  const title =
+    !request && (asking || (targets?.length ?? 0) > 0) ? (
+      <PropertyChip
+        disabled={pending}
+        items={[
+          { id: "task", label: messages.station_task_new() },
+          { id: "request", label: messages.station_task_new_request() },
+        ]}
+        label={messages.station_task_kind()}
+        onChange={(next) => {
+          if (next !== "task" && next !== "request") return;
+          setKind(next);
+          setError(undefined);
+        }}
+        value={kind}
+      />
+    ) : (
+      messages.station_task_new()
+    );
+  const answer = (to: "router" | "decline") => {
+    if (!request || pending) return;
+    setPending(true);
+    setError(undefined);
+    void (
+      to === "router"
+        ? call("taskRequests.accept", {
+            workspace,
+            request: request.id,
+            to: "router",
+            content: body,
+          })
+        : call("taskRequests.decline", { workspace, request: request.id })
+    ).then(
+      () => {
+        setPending(false);
+        onClose();
+      },
+      (failure: unknown) => {
+        setPending(false);
+        setError((failure as Error).message || messages.task_requests_failed());
       }
-      variant="compose"
-      onOpenChange={(open) => {
-        if (!open && !pending) onClose();
-      }}
-    >
+    );
+  };
+  const form = (
+    <>
       {/* Not positioned: the drop overlay covers the whole window, inset as on the composer. */}
       <div
         className="flex flex-col gap-lg"
@@ -602,6 +862,7 @@ export function NewStationTaskDialog({
         {...shellDropProps}
       >
         {intake.fileInput}
+        {request?.sender ?? null}
         <textarea
           aria-label={messages.station_task_first_message()}
           ref={messageRef}
@@ -619,98 +880,144 @@ export function NewStationTaskDialog({
           placeholder={messages.station_task_first_message()}
           value={text}
         />
-        <AiInputAttachmentRow
-          attachments={fileTiles}
-          onRemove={(attachment) => removeFile(attachment.id)}
-          preview={preview}
-          rowRef={fileRowRef}
-        />
-        {profilesFailed || error || (inSandbox && reposFailed) ? (
+        {request || asking ? null : (
+          <AiInputAttachmentRow
+            attachments={fileTiles}
+            onRemove={(attachment) => removeFile(attachment.id)}
+            preview={preview}
+            rowRef={fileRowRef}
+          />
+        )}
+        {error || (!asking && (profilesFailed || (inSandbox && reposFailed))) ? (
           <p className="m-0 text-sm text-error-primary" role="alert">
             {error ?? (inSandbox ? reposFailed : profilesFailed)}
           </p>
         ) : null}
-        {/* Its files and what runs it, beside the button that makes it. */}
+        {/* Its files and what runs it, beside the button that makes it. A request has neither: its owner picks what runs it. */}
         <div className="flex items-center gap-md">
-          {/* A coding session's files are its repository's: it takes none here. */}
-          {inSandbox ? (
-            <>
-              <PropertyChip
-                disabled={pending || repoItems.length === 0}
-                items={repoItems}
-                label={
-                  repos?.length === 0
-                    ? messages.coding_repo_none()
-                    : messages.coding_repo()
-                }
-                loading={repos === null && !reposFailed}
-                onChange={setRepo}
-                raised
-                value={chosenRepo ? repoKey(chosenRepo) : undefined}
-              />
-              <PropertyChip
-                disabled={pending || branchItems.length === 0}
-                items={branchItems}
-                label={messages.coding_base_branch()}
-                loading={!!chosenRepo && branches === null}
-                onChange={setBase}
-                raised
-                value={chosenBase}
-              />
-            </>
-          ) : (
-            <AriaButton
-              aria-label={messages.chat_add_attachment()}
-              // The Inbox toolbar's button, as tall as the chips beside it.
-              className={cx(
-                taskToolbarIconButtonClassName,
-                "size-[calc(var(--spacing-3xl)+var(--spacing-xs))] [&_svg]:size-4"
-              )}
-              data-testid="new-station-task-attach"
-              isDisabled={pending}
-              onPress={() => void intake.attachPress?.()}
+          {asking ? (
+            <Button
+              className="ml-auto"
+              hierarchy="primary"
+              {...(pending
+                ? { iconLeading: <LoadingCircleIcon className="animate-spin" /> }
+                : {})}
+              isDisabled={pending || !canSend || body === ""}
+              onPress={() => void send()}
+              size="xs"
             >
-              <PaperclipIcon />
-            </AriaButton>
+              {messages.task_requests_send()}
+            </Button>
+          ) : (
+            <>
+              {request ? null : (
+                <AriaButton
+                  aria-label={messages.chat_add_attachment()}
+                  // The Inbox toolbar's button, as tall as the chips beside it.
+                  className={cx(
+                    taskToolbarIconButtonClassName,
+                    "size-[calc(var(--spacing-3xl)+var(--spacing-xs))] [&_svg]:size-4"
+                  )}
+                  data-testid="new-station-task-attach"
+                  isDisabled={pending}
+                  onPress={() => void intake.attachPress?.()}
+                >
+                  <PaperclipIcon />
+                </AriaButton>
+              )}
+              {/* A coding session picks its repository; a plain sandbox Task has none to pick. */}
+              {inPlainSandbox ? null : inSandbox ? (
+                <>
+                  <PropertyChip
+                    disabled={pending || repoItems.length === 0}
+                    items={repoItems}
+                    label={
+                      repos?.length === 0
+                        ? messages.coding_repo_none()
+                        : messages.coding_repo()
+                    }
+                    loading={repos === null && !reposFailed}
+                    onChange={setRepo}
+                    raised
+                    value={chosenRepo ? repoKey(chosenRepo) : undefined}
+                  />
+                  <PropertyChip
+                    disabled={pending || branchItems.length === 0}
+                    items={branchItems}
+                    label={messages.coding_base_branch()}
+                    loading={!!chosenRepo && branches === null}
+                    onChange={setBase}
+                    raised
+                    value={chosenBase}
+                  />
+                </>
+              ) : null}
+              <PropertyChip
+                disabled={pending || runItems.length === 0}
+                items={runItems}
+                label={messages.station_task_model()}
+                loading={
+                  chosen === undefined
+                    ? false
+                    : inAnySandbox || inCloud
+                      ? !shownModels?.catalog && !shownModels?.error
+                      : profiles === null && !profilesFailed
+                }
+                onChange={
+                  inAnySandbox ? setSandboxRun : inCloud ? setCloudModel : setRun
+                }
+                raised
+                value={
+                  inAnySandbox
+                    ? chosenSandboxRun
+                      ? sandboxRunKey(chosenSandboxRun)
+                      : undefined
+                    : inCloud
+                      ? chosenCloudModel?.id
+                      : chosenRun
+                        ? runKey(chosenRun)
+                        : undefined
+                }
+              />
+              {request ? (
+                <>
+                  {/* Declining is the quiet choice: no stroke or shadow, its hover only. */}
+                  <Button
+                    className="ml-auto"
+                    hierarchy="tertiary-gray"
+                    isDisabled={pending}
+                    onPress={() => answer("decline")}
+                    size="xs"
+                  >
+                    {messages.task_requests_decline()}
+                  </Button>
+                  <Button
+                    hierarchy="secondary-gray"
+                    isDisabled={pending || !hasContent}
+                    onPress={() => answer("router")}
+                    size="xs"
+                  >
+                    {messages.task_requests_to_router()}
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                {...(request ? {} : { className: "ml-auto" })}
+                hierarchy="primary"
+                // While the Task is made (its files still going up first), the button spins.
+                {...(pending
+                  ? { iconLeading: <LoadingCircleIcon className="animate-spin" /> }
+                  : {})}
+                isDisabled={pending || !ready || !hasContent || files.anyFailed}
+                onPress={() => void create()}
+                size="xs"
+              >
+                {request
+                  ? messages.task_requests_accept()
+                  : messages.station_task_create()}
+              </Button>
+            </>
           )}
-          <PropertyChip
-            disabled={pending || runItems.length === 0}
-            items={runItems}
-            label={messages.station_task_model()}
-            loading={
-              chosen === undefined
-                ? false
-                : inSandbox || inCloud
-                  ? !shownModels?.catalog && !shownModels?.error
-                  : profiles === null && !profilesFailed
-            }
-            onChange={inSandbox ? setSandboxRun : inCloud ? setCloudModel : setRun}
-            raised
-            value={
-              inSandbox
-                ? chosenSandboxRun
-                  ? sandboxRunKey(chosenSandboxRun)
-                  : undefined
-                : inCloud
-                  ? chosenCloudModel?.id
-                  : chosenRun
-                    ? runKey(chosenRun)
-                    : undefined
-            }
-          />
-          <Button
-            className="ml-auto"
-            hierarchy="primary"
-            // While the Task is made (its files still going up first), the button spins.
-            {...(pending
-              ? { iconLeading: <LoadingCircleIcon className="animate-spin" /> }
-              : {})}
-            isDisabled={pending || !ready || !hasContent || files.anyFailed}
-            onPress={() => void create()}
-            size="xs"
-          >
-            {messages.station_task_create()}
-          </Button>
         </div>
         <AiInputDropOverlay
           active={dropActive}
@@ -719,6 +1026,39 @@ export function NewStationTaskDialog({
         />
         <AiInputImagePreview {...preview.dialogProps} />
       </div>
+    </>
+  );
+
+  if (request)
+    return (
+      <section
+        aria-label={request.title}
+        // Where the Task's message box would be: as wide as it.
+        className={cx(dialogComposeShell, "w-full")}
+        data-testid="task-request-card"
+      >
+        <DialogPanel
+          title={request.title}
+          titleLeading={titleLeading}
+          variant="compose"
+        >
+          {form}
+        </DialogPanel>
+      </section>
+    );
+
+  return (
+    <Dialog
+      isOpen
+      showCloseButton
+      title={title}
+      titleLeading={titleLeading}
+      variant="compose"
+      onOpenChange={(open) => {
+        if (!open && !pending) onClose();
+      }}
+    >
+      {form}
     </Dialog>
   );
 }

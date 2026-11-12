@@ -1,5 +1,25 @@
 package surf.comma.android.voice.ui
 
+import androidx.activity.ComponentActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import org.robolectric.Robolectric
+import surf.comma.android.R
+import surf.comma.android.auth.AuthGraph
+import surf.comma.android.auth.AuthState
+import surf.comma.android.auth.MemorySessions
+import surf.comma.android.auth.TestAuthRepository
+import surf.comma.android.auth.awaitState
+import surf.comma.android.chat.live.LiveChatScreen
+import surf.comma.android.conversation.ChatView
+import surf.comma.android.conversation.FakeChatViewCore
+import surf.comma.android.conversation.FakeSessions
+import surf.comma.android.conversation.awaitState
+import surf.comma.android.conversation.scope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -47,6 +67,55 @@ class CallLogTest {
         assertNull(CallLog.recordFor(over.copy(connectedAtElapsedRealtime = null), 150_000, 1_000_000))
         assertNull(CallLog.recordFor(over.copy(busy = true), 150_000, 1_000_000))
         assertNull(CallLog.recordFor(over.copy(id = 0), 150_000, 1_000_000))
+    }
+
+    @Test fun `a main chat call never enters a task timeline when its dock observes the finished call`() = runBlocking {
+        Robolectric.buildActivity(ComponentActivity::class.java).use { controller ->
+            val activity = controller.get()
+            activity.setTheme(R.style.Theme_Chat)
+            controller.create()
+            val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val auth = TestAuthRepository(MemorySessions())
+            AuthGraph.install(auth, lifetime)
+            auth.start()
+            auth.awaitState<AuthState.Login>()
+            val views = mutableListOf<ChatView>()
+            val screens = mutableListOf<LiveChatScreen>()
+            suspend fun screen(id: String, embedded: Boolean): LiveChatScreen {
+                val core = FakeChatViewCore().apply {
+                    show(emptyList(), fields = JSONObject().put("conversation", JSONObject().put("id", id)))
+                }
+                val sessions = FakeSessions().apply { scopes.value = scope(1) }
+                val view = ChatView(sessions, core, main = false).also { views += it }
+                view.start()
+                view.open(id)
+                view.setForeground(true)
+                view.awaitState { it.conversationId == id && it.cacheLoaded }
+                return LiveChatScreen(activity, view, auth.state, retrySession = {}, onOpenAccount = {},
+                    embedded = embedded).also { screens += it }
+            }
+            try {
+                val main = screen("main", embedded = false)
+                val task = screen("task", embedded = true)
+                val over = CallControllerState(id = 9, call = CallState(phase = CallPhase.Ended, result = CallResult.Ended),
+                    connectedAtElapsedRealtime = 1_000, endedAtElapsedRealtime = 43_000)
+                // Both screens receive the same global event, also replayed when a dock opens later.
+                val log = LiveChatScreen::class.java.getDeclaredMethod("logCall", CallControllerState::class.java)
+                    .apply { isAccessible = true }
+                log.invoke(main, over)
+                log.invoke(task, over)
+                log.invoke(task, over)
+                val store = CallLogStore(activity)
+                val mainRows = CallLog.withRecords(emptyList(), store.records("main"), "main", ::label)
+                assertEquals(listOf("0:42 · Call ended"), mainRows.map { it.text })
+                val taskRows = listOf(row(1, ChatRole.USER, 110_000).copy(conversationId = "task"))
+                assertEquals(taskRows, CallLog.withRecords(taskRows, store.records("task"), "task", ::label))
+            } finally {
+                screens.forEach { it.release() }
+                views.forEach { it.close() }
+                lifetime.cancel()
+            }
+        }
     }
 
     @Test fun `the store keeps each call once per conversation`() {

@@ -109,6 +109,10 @@ export default defineConfig({
         // Effect is plain ES modules; served as its own files, no response is
         // a 4 MB bundle (clients/vite/no-dependency-source-maps.ts).
         optimizeDeps: { exclude: ["effect"] },
+        // The server transforms every story file and what it imports as it
+        // starts, while Vitest opens its pages: a file's first story no longer
+        // waits for its own transform inside the story's 15 s.
+        server: { warmup: { clientFiles: browserStoryFiles() } },
         test: {
           name: "storybook",
           // Chromium keeps frame state for every story iframe a page has

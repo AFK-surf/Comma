@@ -26,6 +26,8 @@ export interface NativeStream<B = Uint8Array> {
   write(bytes: B): Promise<void>;
   finish(): Promise<void>;
   reset(code: number): Promise<void>;
+  /** Stops reading: the peer's writes fail with `code` (an addon from before does not have it). */
+  stop?(code: number): Promise<void>;
 }
 
 export interface NativeConnection<B = Uint8Array> {
@@ -166,8 +168,9 @@ function nativeStream<B>(native: NativeStream<B>, bytes: ToNative<B>): BiStream 
         carry = chunk.subarray(max);
         return chunk.subarray(0, max);
       },
-      // The binding cannot stop a stream's reading half: what the peer still sends is left unread.
-      stop: () => {},
+      // A stream lasts until both of its halves are done: one left unread would hold it, counted against the streams the
+      // peer lets be open. (An addon from before cannot stop it: what the peer still sends is left unread.)
+      stop: (code) => void native.stop?.(code).catch(() => undefined),
     },
   };
 }

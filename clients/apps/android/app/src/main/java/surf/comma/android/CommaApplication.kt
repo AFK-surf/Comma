@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.work.Configuration
 import surf.comma.android.chat.math.MathTypesetter
 import surf.comma.android.settings.OpenActivities
+import surf.comma.android.settings.GlassStore
 import surf.comma.android.settings.TextSizeStore
 
 /** WorkManager is initialized on demand so fixture launches keep their direct startup path. */
@@ -17,6 +18,7 @@ open class CommaApplication : Application(), Configuration.Provider {
         MathTypesetter.install(this)
         // Before any screen binds its typography.
         TextSizeStore.load(this)
+        GlassStore.load(this)
         OpenActivities.register(this)
     }
 

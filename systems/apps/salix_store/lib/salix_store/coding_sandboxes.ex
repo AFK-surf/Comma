@@ -289,6 +289,59 @@ defmodule SalixStore.CodingSandboxes do
     end)
   end
 
+  @doc """
+  Marks the `lost` Workload `id` of `generation` as owing the Task its
+  notice, due for a check now. Nothing else of the Workload changes.
+  `{:error, :not_lost}` or `{:error, :stale_generation}` changes nothing.
+  """
+  def mark_lost_notice(id, generation) when is_binary(id) and is_integer(generation) do
+    Repo.transaction(fn ->
+      workload = lock!(id)
+
+      cond do
+        workload.generation != generation -> Repo.rollback(:stale_generation)
+        workload.spec["state"] != "lost" -> Repo.rollback(:not_lost)
+        true -> mark_lost!(workload, DateTime.to_iso8601(SystemsClock.utc_now()))
+      end
+
+      id
+    end)
+  end
+
+  @doc """
+  Marks up to `limit` `lost` Workloads after id `cursor` as owing the Task
+  their notice, due for a check now. Nothing else of a Workload changes.
+  Answers the ids marked, in id order.
+  """
+  def mark_lost_notices(cursor, limit) when is_integer(limit) and limit > 0 do
+    now_iso = DateTime.to_iso8601(SystemsClock.utc_now())
+
+    Repo.transaction(fn ->
+      from(w in Workload,
+        where:
+          w.kind == @kind and fragment("?->>'state' = 'lost'", w.spec) and
+            fragment("?->>'lost_notice' IS NULL", w.spec),
+        order_by: [asc: w.id],
+        limit: ^limit,
+        lock: "FOR UPDATE"
+      )
+      |> after_id(cursor)
+      |> Repo.all()
+      |> Enum.map(fn workload ->
+        mark_lost!(workload, now_iso)
+        workload.id
+      end)
+    end)
+  end
+
+  defp mark_lost!(workload, now_iso) do
+    spec = Map.merge(workload.spec, %{"lost_notice" => true, "next_check_at" => now_iso})
+    write!(workload, spec, workload.observed_state)
+  end
+
+  defp after_id(query, nil), do: query
+  defp after_id(query, cursor), do: from(w in query, where: w.id > ^cursor)
+
   @doc "How many of the Group's coding Tasks have a sandbox now (not stopped or ended)."
   def live_count(tenant, group) do
     from(w in Workload,
@@ -301,6 +354,36 @@ defmodule SalixStore.CodingSandboxes do
       select: count(w.id)
     )
     |> Repo.one()
+  end
+
+  @doc """
+  How many sandbox Workloads stand in each state, and when the oldest
+  `starting` one entered it: `{:ok, [%{state, count, oldest_ms}]}`, one row
+  per state that has a Workload (`oldest_ms` for `starting` only, else nil).
+  """
+  def fleet do
+    rows =
+      from(w in Workload,
+        where: w.kind == @kind,
+        group_by: fragment("?->>'state'", w.spec),
+        select: %{
+          state: fragment("?->>'state'", w.spec),
+          count: count(w.id),
+          oldest_ms:
+            min(
+              fragment(
+                "CASE WHEN ?->>'state' = 'starting' THEN (EXTRACT(EPOCH FROM (?->>'state_at')::timestamptz) * 1000)::bigint END",
+                w.spec,
+                w.spec
+              )
+            )
+        }
+      )
+      |> Repo.all()
+
+    {:ok, rows}
+  rescue
+    exception -> {:error, exception}
   end
 
   @doc "The sandbox state as Compute's observed state."

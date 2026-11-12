@@ -30,7 +30,7 @@ import { allLeft, findRunner } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, type TimelineEntry, type Transcript, transcriptPaths } from "../read/transcript.ts";
-import { type Attachment, type SessionRow, type Store, STILLFAIL_SURFACE, slackSurface, type ThreadRow } from "../store/store.ts";
+import { type Attachment, type SessionRow, type Store, COMMA_STATION_SURFACE, slackSurface, type ThreadRow } from "../store/store.ts";
 import { Accounts, type AccountsDeps } from "./accounts.ts";
 import { SessionActor, type SessionDeps, type SessionStatus, type Snapshot, openOptions } from "./actor.ts";
 import { isStopCommand } from "./args.ts";
@@ -40,7 +40,7 @@ import { type Connect, type HubConfig, runtimeNamed } from "./config.ts";
 import { INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./internal.ts";
 import { TASK_CONNECT, TASK_SURFACE } from "../tasks/names.ts";
 import type { Coding } from "../tasks/coding.ts";
-import { codingInstructions } from "../agents/instructions.ts";
+import { codingInstructions, salixToolsInstructions } from "../agents/instructions.ts";
 import { ChainTail, LiveHub, type TranscriptUsage } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths } from "./agent-home.ts";
@@ -68,6 +68,10 @@ export const newToken = () => randomBytes(24).toString("base64url");
 /// - unbound: the station is in no workspace (never joined one, or removed from it): it does no work until it is.
 /// - starting: the agents' door (their MCP endpoint) is not open yet: a runtime started now has no station tools.
 export type Hold = "drain" | "unbound" | "starting";
+
+/// The surface of Tasks of other stations (tasks/tasks.ts), which also says whose Sessions take part in a Task Salix
+/// keeps (`salixHost`): those are told of Salix's tools (tools/salix.ts).
+export type TasksSurface = ChatSurface & { salixHost?(session: string): { station: string; task: string } | null };
 
 /// Cold storage of archived sessions' files (archive.rs, footprint.rs): an archived, idle session's workspace and
 /// transcripts packed, and restored before its runtime starts again or when it is shown again. The station's is
@@ -98,7 +102,7 @@ export type HubOptions = {
   mcpUrl: string | (() => string);
   /// The station's own chat on its pages; sessions can be talked to there too.
   internal?: InternalChat | null;
-  /// A session's page in still.fail (its /o/ link), when the station is in a workspace.
+  /// A session's page in Comma (its /o/ link), when the station is in a workspace.
   link?: (key: string) => string | undefined;
   /// The runners there on this machine now, by id (default: those of <data>/run/runners whose socket answers).
   runners?: () => string[];
@@ -132,8 +136,9 @@ export class Hub {
   readonly fibers = new Set<Fiber.Fiber<void>>();
   /// Why turns are held (SessionDeps.held): held while any reason stands.
   private holdsNow = new Set<Hold>();
-  /// Sessions whose workspace is being prepared (a coding Session's checkout): they start no turn until it is.
-  private preparing = new Set<string>();
+  /// Sessions whose workspace is being prepared (a coding Session's checkout), with that work: they start no turn
+  /// until it is done, and no file is put in the workspace before (`prepared`).
+  private preparing = new Map<string, Promise<unknown>>();
   /// Coding Sessions' repositories (tasks/coding.ts), on a station that runs them.
   coding: Coding | null = null;
   /// Sessions taken up from the previous station: their turns run on, not cut off.
@@ -149,7 +154,8 @@ export class Hub {
   jobs: Jobs | null = null;
   private closedHook: ((key: string) => void) | null = null;
   private peersHook: ((station: string, request: Json) => Promise<Json>) | null = null;
-  private tasks: ChatSurface | null = null;
+  private tasks: TasksSurface | null = null;
+  // (The Tasks of other stations also say whose Sessions take part in a Task Salix keeps, tasks.ts `salixHost`.)
   readonly deps: SessionDeps;
 
   constructor(options: HubOptions) {
@@ -235,13 +241,20 @@ export class Hub {
   /// Holds session `key`'s turns until `work` is done (its workspace is being prepared), then lets what waited go on.
   /// Answers `work`.
   prepare<A>(key: string, work: Promise<A>): Promise<A> {
-    this.preparing.add(key);
-    return work.finally(() => {
+    const done = work.finally(() => {
       this.preparing.delete(key);
       if (this.holdsNow.size > 0) return;
       const row = this.store.getSession(key);
       if (row) void this.actor(row).release();
     });
+    this.preparing.set(key, done);
+    return done;
+  }
+
+  /// Settles once session `key`'s workspace is prepared, made or not: a checkout is made only into a workspace with
+  /// nothing in it, so what is written there (a Task's files) waits for it.
+  async prepared(key: string): Promise<void> {
+    await this.preparing.get(key)?.catch(() => undefined);
   }
 
   /// The station's own words about session `key`, in the thread people spoke in last.
@@ -583,10 +596,8 @@ export class Hub {
     }
   }
 
-  /// A process went idle: look again when it has idled past warmMs. A coding Session's branch is pushed: its turn
-  /// ended (tasks/coding.ts).
+  /// A process went idle: look again when it has idled past warmMs.
   idleNow(key: string) {
-    this.pushAfterTurn(key);
     // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; never sweep old
     // directories on a clock or at startup.
     const row = this.store.getSession(key);
@@ -608,13 +619,6 @@ export class Hub {
     );
     this.deadlines.set(key, fiber);
     this.evictIdle();
-  }
-
-  private pushAfterTurn(key: string) {
-    const coding = this.coding;
-    const row = this.store.getSession(key);
-    if (coding === null || !row || this.preparing.has(key) || coding.get(row.workspace) === null) return;
-    coding.push(row.workspace).catch((error) => log.warn("coding", "the session branch was not pushed", { session: key, error: (error as Error).message }));
   }
 
   /// Ends the session's runtime process if it is idle; the conversation resumes on the next message.
@@ -688,7 +692,7 @@ export class Hub {
   }
 
   /// The surface of Tasks of other stations (tasks.ts), once it is made.
-  setTasks(tasks: ChatSurface) {
+  setTasks(tasks: TasksSurface) {
     this.tasks = tasks;
   }
 
@@ -756,7 +760,7 @@ export class Hub {
 
   /// Where a connect's threads live; the rule the v10 migration follows too.
   surface(connect: string): string {
-    if (connect === INTERNAL_CONNECT) return STILLFAIL_SURFACE;
+    if (connect === INTERNAL_CONNECT) return COMMA_STATION_SURFACE;
     if (connect === TASK_CONNECT) return TASK_SURFACE;
     return slackSurface(connect, this.chatOf(connect)?.workspace() ?? null);
   }
@@ -848,9 +852,13 @@ export class Hub {
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       reposDir: () => this.reposDir(),
       memoryPath: () => agentHomePaths(this.config().agentHome)[0],
-      workspaceInstructions: (workspace) => {
+      workspaceInstructions: (workspace, key) => {
         const checkout = this.coding?.get(workspace) ?? null;
-        return checkout ? codingInstructions(checkout.owner, checkout.name, checkout.branch, checkout.pull_request) : null;
+        const parts = [
+          checkout ? codingInstructions(checkout.owner, checkout.name, checkout.branch, checkout.pull_request) : null,
+          this.tasks?.salixHost?.(key) ? salixToolsInstructions : null,
+        ].filter((p): p is string => p !== null);
+        return parts.length === 0 ? null : parts.join("\n\n");
       },
       maxNudges: () => this.config().maxNudges,
       backgroundOnMessage: (key) => {

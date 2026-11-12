@@ -9,13 +9,14 @@ defmodule SalixIM.Conversations do
   alias SalixIM.{
     ConversationGroupActor,
     ConversationMessage,
-    ConversationMessageCodec,
+    ConversationPGStore,
+    ConversationParticipantPGStore,
     ConversationParticipantActivity,
     GroupDirectory
   }
 
   alias SalixIM.Ports.AgentDelivery
-  alias SalixStore.{CasRecord, ConversationSearch, Crypto, Ids, Keys, S3, SearchDocumentEnvelope}
+  alias SalixStore.{CasRecord, ConversationSearch, Ids, Keys, SearchDocumentEnvelope}
 
   @default_limit 200
   @max_limit 1_000
@@ -26,16 +27,6 @@ defmodule SalixIM.Conversations do
   @pin_limit 200
   @search_conversation_limit 200
   @search_message_limit 200
-  @list_page_multiplier 4
-  @list_scan_pages 2
-  @list_scan_objects 2_000
-  @conversation_list_read_concurrency 16
-  @conversation_list_read_concurrency_cap 64
-  @conversation_list_read_timeout 5_000
-  @list_timestamp_max 9_999_999_999_999_999_999
-  @list_timestamp_width 19
-  @message_segment_scan_limit 32
-  @task_search_segment_bytes 1_000_000
   @participant_status_read_concurrency 8
   @participant_status_read_timeout 2_500
   @internal_conversation_fields [
@@ -54,14 +45,7 @@ defmodule SalixIM.Conversations do
          {:ok, limit} <- strict_limit(opts[:limit]),
          {:ok, kind} <- strict_conversation_kind(opts[:kind]),
          {:ok, records} <-
-           list_conversation_records(
-             group_id,
-             conversation_list_start_after(group_id, cursor),
-             limit + 1,
-             kind
-           ) do
-      # A Conversation that changed while the page was listed is read at its old entry but belongs at its new one.
-      records = Enum.sort_by(records, &conversation_index_key(group_id, &1))
+           list_conversation_records(group_id, cursor, limit + 1, kind, opts[:active_since]) do
       {data, rest} = Enum.split(records, limit)
 
       {:ok,
@@ -100,9 +84,12 @@ defmodule SalixIM.Conversations do
         {:error, {:bad_request, "invalid conversation_id"}}
 
       true ->
-        case read_json(Keys.ctl_group_conversation(group_id, conversation_id)) do
-          {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) ->
+        case ConversationPGStore.read(ConversationPGStore.new(group_id, conversation_id)) do
+          {:ok, %{"deleted_at" => deleted_at}, _revision} when not is_nil(deleted_at) ->
             {:error, :not_found}
+
+          {:ok, conversation, _revision} ->
+            {:ok, conversation}
 
           other ->
             other
@@ -185,6 +172,21 @@ defmodule SalixIM.Conversations do
     with {:ok, q} <- task_search_query(query),
          {:ok, search_opts} <- task_search_options(opts) do
       search_projection(group_id, q, search_opts)
+    end
+  end
+
+  @doc "The Messages of one Task that match `query`, oldest first (`ConversationSearch.message_matches/3`)."
+  def task_message_matches(group_id, conversation_id, query) do
+    with {:ok, q} <- task_search_query(query),
+         true <- Ids.valid_conversation_id?(conversation_id),
+         {:ok, _group} <- GroupDirectory.get_group(group_id),
+         {:ok, matches} <- ConversationSearch.message_matches(group_id, conversation_id, q) do
+      {:ok, matches}
+    else
+      false -> {:error, {:bad_request, "invalid conversation_id"}}
+      {:error, :invalid} -> {:error, {:bad_request, "invalid search parameters"}}
+      {:error, :unavailable} -> {:error, :conversation_search_unavailable}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -366,24 +368,21 @@ defmodule SalixIM.Conversations do
     else
       start_seq = SearchDocumentEnvelope.message_window_start(head_seq, tail_seq)
 
-      with {:ok, %{"segment_id" => segment_id}} <-
-             message_pointer_by_seq(group_id, conversation_id, start_seq) do
-        collect_task_search_segments(
-          conversation,
-          group_id,
-          conversation_id,
-          segment_id,
-          start_seq,
-          tail_seq,
+      with {:ok, messages} <-
+             ConversationPGStore.messages(
+               ConversationPGStore.new(group_id, conversation_id),
+               start_seq,
+               tail_seq,
+               SearchDocumentEnvelope.message_slots()
+             ),
+           {:ok, slots} <- project_task_search_slots(messages) do
+        finish_task_search_window(
+          Enum.reverse(slots),
           head_seq,
-          [],
-          0,
-          0,
-          SearchDocumentEnvelope.message_slots()
+          tail_seq,
+          Enum.sum(Enum.map(messages, &:erlang.external_size/1)),
+          0
         )
-      else
-        {:error, :not_found} -> {:error, :message_sequence_index_missing}
-        {:error, _reason} = error -> error
       end
     end
   end
@@ -613,391 +612,62 @@ defmodule SalixIM.Conversations do
   defp after_pin_cursor(pins, cursor), do: Enum.filter(pins, &(pin_sort_key(&1) < cursor))
   defp pin_sort_key(pin), do: {pin["pinned_at"], pin["conversation_id"]}
 
-  # Bounded conversation list projection.
+  # Group/kind and list position are canonical query columns.
+  defp list_conversation_records(group_id, cursor, limit, kind, active_since) do
+    {timestamp, id} = cursor || {nil, ""}
+    filters = [{"kind=", kind}, {"COALESCE(list_timestamp,0)>=", active_since}]
+    filters = Enum.reject(filters, fn {_sql, value} -> is_nil(value) end)
 
-  defp list_conversation_records(group_id, start_after, desired_count, nil) do
-    started_at = SystemsClock.monotonic_time()
-    page_size = min(max(desired_count * @list_page_multiplier, 100), @max_limit)
+    condition =
+      filters
+      |> Enum.with_index(5)
+      |> Enum.map_join(fn {{sql, _value}, index} -> " AND #{sql}$#{index}" end)
 
-    opts =
-      [max_keys: page_size]
-      |> maybe_put(:start_after, start_after)
+    params = [group_id, timestamp, id, limit] ++ Enum.map(filters, &elem(&1, 1))
 
-    result =
-      collect_conversation_records(
-        group_id,
-        start_after,
-        opts,
-        desired_count,
-        [],
-        @list_scan_pages,
-        @list_scan_objects
-      )
-
-    emit_conversation_list_read(result, desired_count - 1, started_at)
-    result
+    case SalixStore.Repo.query(
+           """
+           SELECT conversation_id,metadata,kind,status,updated_at,message_tail_seq,
+                  message_head_seq,log_start_seq,provider_status_version,membership_revision,
+                  deleted_at,list_timestamp
+           FROM salix_conversations WHERE group_id=$1 AND revision>0 AND deleted_at IS NULL
+             AND ($2::bigint IS NULL OR COALESCE(list_timestamp,0)<$2 OR
+                  (COALESCE(list_timestamp,0)=$2 AND conversation_id COLLATE "C">$3))
+             #{condition}
+           ORDER BY COALESCE(list_timestamp,0) DESC,conversation_id COLLATE "C" ASC LIMIT $4
+           """,
+           params
+         ) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &decode_conversation_row(group_id, &1))}
+      _ -> {:error, :unavailable}
+    end
   end
 
-  defp list_conversation_records(group_id, start_after, desired_count, kind) do
-    started_at = SystemsClock.monotonic_time()
-    page_size = min(max(desired_count * @list_page_multiplier, 100), @max_limit)
-
-    opts =
-      [max_keys: page_size]
-      |> maybe_put(:start_after, start_after)
-
-    result =
-      collect_filtered_conversation_records(
-        group_id,
-        start_after,
-        opts,
-        kind,
-        desired_count,
-        [],
-        @list_scan_pages,
-        @list_scan_objects
-      )
-
-    emit_conversation_list_read(result, desired_count - 1, started_at)
-    result
-  end
-
-  defp collect_filtered_conversation_records(
-         group_id,
-         start_after,
-         opts,
+  defp decode_conversation_row(group_id, [
+         id,
+         payload,
          kind,
-         desired_count,
-         acc,
-         pages_remaining,
-         objects_remaining
-       ) do
-    with {:ok, %{objects: objects, next: next}} <-
-           S3.list(Keys.ctl_group_conversation_list_prefix(group_id), opts),
-         true <- length(objects) <= objects_remaining,
-         {:ok, hydrated} <-
-           hydrate_conversation_indexes(group_id, start_after, objects, length(objects)) do
-      matches = Enum.filter(hydrated, &(&1["kind"] == kind))
-      acc = acc ++ new_conversations(acc, matches)
-      remaining = objects_remaining - length(objects)
-      continuation? = is_binary(next) and next != ""
-
-      cond do
-        length(acc) >= desired_count ->
-          {:ok, Enum.take(acc, desired_count)}
-
-        not continuation? ->
-          {:ok, acc}
-
-        pages_remaining <= 1 or remaining <= 0 ->
-          {:error, :conversation_list_scan_limit_exceeded}
-
-        true ->
-          next_opts =
-            opts
-            |> Keyword.put(:continuation_token, next)
-            |> Keyword.delete(:start_after)
-            |> Keyword.update!(:max_keys, &min(&1, remaining))
-
-          collect_filtered_conversation_records(
-            group_id,
-            start_after,
-            next_opts,
-            kind,
-            desired_count,
-            acc,
-            pages_remaining - 1,
-            remaining
-          )
-      end
-    else
-      false -> {:error, :conversation_list_scan_limit_exceeded}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp collect_conversation_records(
-         group_id,
-         start_after,
-         opts,
-         desired_count,
-         acc,
-         pages_remaining,
-         objects_remaining
-       ) do
-    with {:ok, %{objects: objects, next: next}} <-
-           S3.list(Keys.ctl_group_conversation_list_prefix(group_id), opts),
-         true <- length(objects) <= objects_remaining,
-         {:ok, hydrated} <-
-           hydrate_conversation_indexes(
-             group_id,
-             start_after,
-             objects,
-             desired_count - length(acc)
-           ) do
-      acc = acc ++ new_conversations(acc, hydrated)
-      remaining = objects_remaining - length(objects)
-      continuation? = is_binary(next) and next != ""
-
-      cond do
-        length(acc) >= desired_count ->
-          {:ok, Enum.take(acc, desired_count)}
-
-        not continuation? ->
-          {:ok, acc}
-
-        pages_remaining <= 1 or remaining <= 0 ->
-          {:error, :conversation_list_scan_limit_exceeded}
-
-        true ->
-          next_opts =
-            opts
-            |> Keyword.put(:continuation_token, next)
-            |> Keyword.delete(:start_after)
-            |> Keyword.update!(:max_keys, &min(&1, remaining))
-
-          collect_conversation_records(
-            group_id,
-            start_after,
-            next_opts,
-            desired_count,
-            acc,
-            pages_remaining - 1,
-            remaining
-          )
-      end
-    else
-      false -> {:error, :conversation_list_scan_limit_exceeded}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp hydrate_conversation_indexes(_group_id, _start_after, [], _desired_count), do: {:ok, []}
-
-  defp hydrate_conversation_indexes(group_id, start_after, objects, desired_count) do
-    started_at = SystemsClock.monotonic_time()
-
-    result =
-      hydrate_conversation_index_batches(group_id, start_after, objects, desired_count, [], 0)
-
-    {records, object_count} =
-      case result do
-        {:ok, records, object_count} -> {records, object_count}
-        {:error, _reason, object_count} -> {[], object_count}
-      end
-
-    SystemsRuntime.Telemetry.execute(
-      [:salix_im, :conversations, :list_hydration],
-      %{
-        duration: SystemsClock.monotonic_time() - started_at,
-        object_count: object_count,
-        hydrated_count: length(records),
-        dropped_count: object_count - length(records)
-      },
-      %{
-        concurrency: conversation_list_read_concurrency(),
-        status: if(match?({:ok, _records, _object_count}, result), do: :ok, else: :error)
-      }
-    )
-
-    case result do
-      {:ok, _records, _object_count} -> {:ok, records}
-      {:error, reason, _object_count} -> {:error, reason}
-    end
-  end
-
-  defp hydrate_conversation_index_batches(
-         _group_id,
-         _start_after,
-         _objects,
-         desired_count,
-         records,
-         object_count
-       )
-       when desired_count <= 0,
-       do: {:ok, records, object_count}
-
-  defp hydrate_conversation_index_batches(
-         _group_id,
-         _start_after,
-         [],
-         _desired_count,
-         records,
-         object_count
-       ),
-       do: {:ok, records, object_count}
-
-  defp hydrate_conversation_index_batches(
-         group_id,
-         start_after,
-         objects,
-         desired_count,
-         records,
-         object_count
-       ) do
-    # The raw page overfetches to tolerate stale indexes. Hydrate the exact
-    # initial window, then use a concurrency-sized recovery batch only after
-    # that window proves to contain stale indexes.
-    batch_size =
-      if object_count == 0,
-        do: desired_count,
-        else: max(desired_count, conversation_list_read_concurrency())
-
-    {batch, rest} = Enum.split(objects, batch_size)
-
-    case hydrate_conversation_index_batch(group_id, start_after, batch) do
-      {:ok, hydrated} ->
-        added = new_conversations(records, hydrated)
-
-        hydrate_conversation_index_batches(
-          group_id,
-          start_after,
-          rest,
-          desired_count - length(added),
-          records ++ added,
-          object_count + length(batch)
-        )
-
-      {:error, reason} ->
-        {:error, reason, object_count + length(batch)}
-    end
-  end
-
-  defp hydrate_conversation_index_batch(group_id, start_after, objects) do
-    objects
-    |> SystemsClock.async_stream(
-      &conversation_from_list_index(group_id, start_after, &1),
-      ordered: true,
-      max_concurrency: conversation_list_read_concurrency(),
-      timeout: conversation_list_read_timeout(),
-      on_timeout: :kill_task
-    )
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, {:ok, conversation}}, {:ok, records} ->
-        {:cont, {:ok, [conversation | records]}}
-
-      {:ok, :stale}, {:ok, records} ->
-        {:cont, {:ok, records}}
-
-      {:ok, {:error, reason}}, {:ok, _records} ->
-        {:halt, {:error, {:conversation_list_hydration_failed, reason}}}
-
-      {:exit, reason}, {:ok, _records} ->
-        {:halt, {:error, {:conversation_list_hydration_failed, reason}}}
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp conversation_from_list_index(group_id, start_after, object) do
-    case read_json(object.key) do
-      {:ok, %{"conversation_id" => conversation_id}} ->
-        case get_group_conversation_record(group_id, conversation_id) do
-          {:ok, conversation} ->
-            if listed_at?(group_id, start_after, conversation, object.key),
-              do: {:ok, conversation},
-              else: :stale
-
-          {:error, :not_found} ->
-            :stale
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:ok, _invalid} ->
-        :stale
-
-      {:error, :not_found} ->
-        :stale
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp conversation_list_read_concurrency do
-    :salix_im
-    |> SystemsRuntime.get_env(
-      :conversation_list_read_concurrency,
-      @conversation_list_read_concurrency
-    )
-    |> normalize_positive_integer(@conversation_list_read_concurrency)
-    |> min(@conversation_list_read_concurrency_cap)
-  end
-
-  defp conversation_list_read_timeout do
-    :salix_im
-    |> SystemsRuntime.get_env(:conversation_list_read_timeout, @conversation_list_read_timeout)
-    |> normalize_positive_integer(@conversation_list_read_timeout)
-  end
-
-  defp normalize_positive_integer(value, _default) when is_integer(value) and value > 0,
-    do: value
-
-  defp normalize_positive_integer(_value, default), do: default
-
-  defp emit_conversation_list_read(result, limit, started_at) do
-    hydrated_count = if match?({:ok, _}, result), do: result |> elem(1) |> length(), else: 0
-
-    SystemsRuntime.Telemetry.execute(
-      [:salix_im, :conversations, :list_page],
-      %{
-        duration: SystemsClock.monotonic_time() - started_at,
-        hydrated_count: hydrated_count
-      },
-      %{
-        limit: limit,
-        concurrency: conversation_list_read_concurrency(),
-        status: if(match?({:ok, _records}, result), do: :ok, else: :error)
-      }
-    )
-  end
-
-  # Whether an index entry lists its Conversation in a page that starts after `start_after`. A change writes the
-  # Conversation's newer entry before it commits and deletes the older one after (ConversationStore), so a listing
-  # that ran before the newer entry existed reads the older one and finds the Conversation already moved: its place
-  # is then the newer entry, earlier in this page. An entry whose Conversation is elsewhere otherwise (deleted, at
-  # an entry of a change that did not commit, moved to a page before this one) is stale.
-  defp listed_at?(group_id, start_after, conversation, key) do
-    current = conversation_index_key(group_id, conversation)
-    current == key or (current < key and (is_nil(start_after) or current > start_after))
-  end
-
-  # The hydrated Conversations that `acc` does not hold yet, each once: a Conversation that moved can be read at
-  # both its entries.
-  defp new_conversations(acc, hydrated) do
-    seen = MapSet.new(acc, & &1["conversation_id"])
-
-    {added, _seen} =
-      Enum.flat_map_reduce(hydrated, seen, fn conversation, seen ->
-        id = conversation["conversation_id"]
-        if MapSet.member?(seen, id), do: {[], seen}, else: {[conversation], MapSet.put(seen, id)}
-      end)
-
-    added
-  end
-
-  defp conversation_index_key(group_id, conversation) do
-    Keys.ctl_group_conversation_list_entry(
-      group_id,
-      reverse_timestamp(SalixIM.TaskArchive.list_timestamp(conversation)),
-      conversation["conversation_id"] || ""
-    )
-  end
-
-  defp reverse_timestamp(value) do
-    timestamp =
-      case Integer.parse(to_string(value)) do
-        {number, ""} when number >= 0 -> min(number, @list_timestamp_max)
-        _ -> 0
-      end
-
-    (@list_timestamp_max - timestamp)
-    |> Integer.to_string()
-    |> String.pad_leading(@list_timestamp_width, "0")
+         status,
+         updated,
+         tail,
+         head,
+         start,
+         provider,
+         membership,
+         deleted,
+         _timestamp
+       ]) do
+    ConversationPGStore.decode_projection(group_id, id, payload, %{
+      "kind" => kind,
+      "status" => status,
+      "updated_at" => updated,
+      "message_tail_seq" => tail,
+      "message_head_seq" => head,
+      "log_start_seq" => start,
+      "provider_status_version" => provider,
+      "membership_revision" => membership,
+      "deleted_at" => deleted
+    })
   end
 
   # Participant reads.
@@ -1006,57 +676,33 @@ defmodule SalixIM.Conversations do
     limit = clamp_limit(opts[:limit], @participant_page_limit, @participant_page_limit)
 
     with {:ok, cursor} <- decode_participant_cursor(opts[:cursor]),
-         prefix <-
-           Keys.ctl_group_conversation_participant_states_prefix(group_id, conversation_id),
-         {:ok, %{objects: objects}} <-
-           S3.list(prefix,
-             max_keys: limit + 1,
-             start_after: if(cursor == "", do: nil, else: cursor)
-           ),
-         {selected, rest} <- Enum.split(objects, limit),
-         {:ok, participants} <- hydrate_participants(selected) do
+         {:ok, records} <-
+           ConversationParticipantPGStore.page(group_id, conversation_id, cursor, limit + 1) do
+      {selected, rest} = Enum.split(records, limit)
+
       {:ok,
        %{
-         data: participants,
+         data: selected,
          has_more: rest != [],
          next_cursor:
-           if(rest != [], do: selected |> List.last() |> then(&encode_participant_cursor(&1.key)))
+           if(rest != [],
+             do:
+               selected
+               |> List.last()
+               |> Map.fetch!("participant_id")
+               |> encode_participant_cursor()
+           )
        }}
     end
   end
 
-  defp hydrate_participants(objects) do
-    Enum.reduce_while(objects, {:ok, []}, fn object, {:ok, participants} ->
-      case read_json(object.key) do
-        {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) ->
-          {:cont, {:ok, participants}}
-
-        {:ok, %{"participant_id" => _participant_id} = participant} ->
-          {:cont, {:ok, [participant | participants]}}
-
-        {:ok, _invalid} ->
-          {:halt, {:error, {:participant_read_failed, object.key, :invalid_participant_state}}}
-
-        {:error, reason} ->
-          {:halt, {:error, {:participant_read_failed, object.key, reason}}}
-      end
-    end)
-    |> case do
-      {:ok, participants} ->
-        {:ok, Enum.reverse(participants)}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
   defp get_participant(group_id, conversation_id, participant_id) do
-    group_id
-    |> Keys.ctl_group_conversation_participant_state(conversation_id, participant_id)
-    |> read_json()
-    |> case do
-      {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) -> {:error, :not_found}
-      other -> other
+    case ConversationParticipantPGStore.read(
+           ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
+         ) do
+      {:ok, %{"deleted_at" => deleted_at}, _} when not is_nil(deleted_at) -> {:error, :not_found}
+      {:ok, record, _} -> {:ok, record}
+      error -> error
     end
   end
 
@@ -1136,147 +782,12 @@ defmodule SalixIM.Conversations do
         {:error, :invalid_message_sequence}
 
       true ->
-        collect_messages_from_index(
-          group_id,
-          conversation_id,
+        ConversationPGStore.messages(
+          ConversationPGStore.new(group_id, conversation_id),
           start_seq,
           tail_seq,
           limit
         )
-    end
-  end
-
-  defp collect_messages_from_index(group_id, conversation_id, start_seq, tail_seq, limit) do
-    case message_pointer_by_seq(group_id, conversation_id, start_seq) do
-      {:ok, %{"segment_id" => segment_id}} ->
-        collect_message_segments(
-          group_id,
-          conversation_id,
-          segment_id,
-          start_seq,
-          tail_seq,
-          limit,
-          [],
-          @message_segment_scan_limit
-        )
-
-      {:error, :not_found} ->
-        {:error, :message_sequence_index_missing}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp collect_task_search_segments(
-         _conversation,
-         _group_id,
-         _conversation_id,
-         _segment_id,
-         _next_seq,
-         _tail_seq,
-         _head_seq,
-         _projected,
-         _source_bytes,
-         _segment_count,
-         0
-       ),
-       do: {:error, :task_search_segment_limit_exceeded}
-
-  defp collect_task_search_segments(
-         conversation,
-         group_id,
-         conversation_id,
-         segment_id,
-         next_seq,
-         tail_seq,
-         head_seq,
-         projected,
-         source_bytes,
-         segment_count,
-         segments_remaining
-       ) do
-    key = Keys.ctl_group_conversation_message_segment(group_id, conversation_id, segment_id)
-
-    with {:ok, {rows, body}} <- read_task_search_segment(key),
-         {:ok, segment_index} <-
-           required_message_segment_index(group_id, conversation_id, segment_id),
-         {:ok, selected} <- select_task_search_rows(rows, next_seq, tail_seq),
-         {:ok, slots} <- project_task_search_slots(selected) do
-      projected =
-        slots
-        |> Enum.reverse(projected)
-
-      last_seq = selected |> List.last() |> Map.fetch!("seq")
-      source_bytes = source_bytes + byte_size(body)
-      segment_count = segment_count + 1
-
-      cond do
-        last_seq >= tail_seq ->
-          finish_task_search_window(
-            projected,
-            head_seq,
-            tail_seq,
-            source_bytes,
-            segment_count
-          )
-
-        is_binary(segment_index["next_segment_id"]) and
-            segment_index["next_segment_id"] != "" ->
-          collect_task_search_segments(
-            conversation,
-            group_id,
-            conversation_id,
-            segment_index["next_segment_id"],
-            last_seq + 1,
-            tail_seq,
-            head_seq,
-            projected,
-            source_bytes,
-            segment_count,
-            segments_remaining - 1
-          )
-
-        true ->
-          {:error, :message_segment_index_missing}
-      end
-    end
-  end
-
-  defp read_task_search_segment(key) do
-    case S3.get(key, range: {0, @task_search_segment_bytes + 1}) do
-      {:ok, %{body: body}} when byte_size(body) <= @task_search_segment_bytes ->
-        with {:ok, rows} <- ConversationMessageCodec.decode_segment(body),
-             do: {:ok, {rows, body}}
-
-      {:ok, %{body: _oversized}} ->
-        {:error, :task_search_segment_too_large}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp select_task_search_rows(rows, next_seq, tail_seq) do
-    selected =
-      rows
-      |> Enum.filter(&(&1["seq"] >= next_seq and &1["seq"] <= tail_seq))
-      |> Enum.sort_by(& &1["seq"])
-
-    expected = Enum.to_list(next_seq..min(tail_seq, next_seq + length(selected) - 1))
-
-    cond do
-      selected == [] ->
-        {:error, :message_sequence_gap}
-
-      ConversationMessageCodec.validate_rows(selected) != :ok ->
-        {:error, :invalid_message_segment}
-
-      Enum.map(selected, & &1["seq"]) != expected ->
-        {:error, :message_sequence_gap}
-
-      true ->
-        {:ok, selected}
     end
   end
 
@@ -1322,158 +833,27 @@ defmodule SalixIM.Conversations do
     end
   end
 
-  defp collect_message_segments(
-         _group_id,
-         _conversation_id,
-         _segment_id,
-         _start_seq,
-         _tail_seq,
-         _limit,
-         _acc,
-         0
-       ),
-       do: {:error, :message_segment_scan_limit_exceeded}
-
-  defp collect_message_segments(
-         group_id,
-         conversation_id,
-         segment_id,
-         start_seq,
-         tail_seq,
-         limit,
-         acc,
-         pages_remaining
-       ) do
-    with {:ok, {rows, segment_index}} <-
-           read_indexed_message_segment(group_id, conversation_id, segment_id),
-         {:ok, acc} <- merge_message_rows(acc, rows, start_seq, tail_seq) do
-      last_seq = acc |> List.last() |> then(&if(&1, do: &1["seq"], else: start_seq - 1))
-
-      cond do
-        length(acc) >= limit ->
-          {:ok, Enum.take(acc, limit)}
-
-        last_seq >= tail_seq ->
-          {:ok, acc}
-
-        is_binary(segment_index["next_segment_id"]) and
-            segment_index["next_segment_id"] != "" ->
-          collect_message_segments(
-            group_id,
-            conversation_id,
-            segment_index["next_segment_id"],
-            start_seq,
-            tail_seq,
-            limit,
-            acc,
-            pages_remaining - 1
-          )
-
-        true ->
-          {:error, :message_segment_index_missing}
-      end
-    end
-  end
-
   defp message_pointer_by_id(group_id, conversation_id, message_id) do
-    group_id
-    |> Keys.ctl_group_conversation_message_identity(conversation_id, Crypto.hex(message_id))
-    |> read_message_pointer(message_id: message_id)
-  end
-
-  defp message_pointer_by_seq(group_id, conversation_id, seq) do
-    group_id
-    |> Keys.ctl_group_conversation_message_seq_index(conversation_id, seq)
-    |> read_message_pointer(seq: seq)
-  end
-
-  defp read_message_pointer(key, expected) do
-    case CasRecord.get(key) do
-      {:ok, pointer} ->
-        with :ok <- ConversationMessageCodec.validate_pointer(pointer, expected),
-             do: {:ok, pointer}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp message_from_pointer(group_id, conversation_id, pointer, expected) do
-    with {:ok, {rows, _body}} <-
-           read_message_segment(
-             Keys.ctl_group_conversation_message_segment(
-               group_id,
-               conversation_id,
-               pointer["segment_id"]
-             )
-           ),
-         {:ok, message} <- ConversationMessageCodec.target_row(rows, pointer, expected) do
-      {:ok, message}
-    else
-      {:error, :not_found} -> {:error, :message_pointer_target_missing}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp read_message_segment(key) do
-    case S3.get(key) do
-      {:ok, %{body: body}} ->
-        with {:ok, rows} <- ConversationMessageCodec.decode_segment(body),
-             do: {:ok, {rows, body}}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp required_message_segment_index(group_id, conversation_id, segment_id) do
-    case read_json(
-           Keys.ctl_group_conversation_message_segment_index(
-             group_id,
-             conversation_id,
-             segment_id
-           )
+    case ConversationPGStore.identity_by_id(
+           ConversationPGStore.new(group_id, conversation_id),
+           message_id
          ) do
-      {:ok, index} -> {:ok, index}
-      {:error, :not_found} -> {:error, :message_segment_index_missing}
-      {:error, _reason} = error -> error
+      {:ok, %{"seq" => seq, "tombstone" => false} = identity} when is_integer(seq) ->
+        {:ok, identity}
+
+      {:ok, _} ->
+        {:error, :not_found}
+
+      error ->
+        error
     end
   end
 
-  defp read_indexed_message_segment(group_id, conversation_id, segment_id) do
-    segment_key =
-      Keys.ctl_group_conversation_message_segment(group_id, conversation_id, segment_id)
-
-    with {:ok, {rows, body}} <- read_message_segment(segment_key),
-         {:ok, index} <- required_message_segment_index(group_id, conversation_id, segment_id) do
-      {:ok, {rows, Map.merge(index, ConversationMessageCodec.segment_facts(rows, body))}}
-    end
-  end
-
-  defp merge_message_rows(acc, rows, start_seq, tail_seq) do
-    selected =
-      rows
-      |> Enum.filter(&(&1["seq"] >= start_seq and &1["seq"] <= tail_seq))
-      |> Enum.sort_by(& &1["seq"])
-
-    merged = acc ++ selected
-    row_validation = ConversationMessageCodec.validate_rows(merged)
-    expected_start = if acc == [], do: start_seq, else: List.first(merged)["seq"]
-    expected_seqs = Enum.to_list(expected_start..(expected_start + length(merged) - 1))
-
-    cond do
-      selected == [] ->
-        {:error, :message_sequence_gap}
-
-      Enum.map(merged, & &1["seq"]) != expected_seqs ->
-        {:error, :message_sequence_gap}
-
-      row_validation != :ok ->
-        row_validation
-
-      true ->
-        {:ok, merged}
-    end
+  defp message_from_pointer(group_id, conversation_id, pointer, _expected) do
+    ConversationPGStore.message_by_id(
+      ConversationPGStore.new(group_id, conversation_id),
+      pointer["message_id"]
+    )
   end
 
   # Delivery diagnostic reads.
@@ -1496,17 +876,13 @@ defmodule SalixIM.Conversations do
       participant_id != "" and message_id != "" ->
         delivery_id = Enum.join([group_id, conversation_id, message_id, participant_id], ":")
 
-        case read_json(
-               Keys.ctl_group_conversation_participant_delivery_state(
-                 group_id,
-                 conversation_id,
-                 participant_id,
-                 delivery_id
-               )
+        case ConversationParticipantPGStore.read_delivery(
+               ConversationParticipantPGStore.new(group_id, conversation_id, participant_id),
+               delivery_id
              ) do
-          {:ok, record} -> {:ok, [record]}
+          {:ok, record, _} -> {:ok, [record]}
           {:error, :not_found} -> {:ok, []}
-          {:error, _reason} = error -> error
+          error -> error
         end
 
       participant_id != "" ->
@@ -1536,37 +912,16 @@ defmodule SalixIM.Conversations do
   end
 
   defp participant_delivery_records(group_id, conversation_id, participant_id, limit) do
-    prefix =
-      Keys.ctl_group_conversation_participant_deliveries_prefix(
-        group_id,
-        conversation_id,
-        participant_id
-      )
+    case SalixStore.Repo.query(
+           "SELECT payload FROM salix_conversation_deliveries WHERE group_id=$1 AND conversation_id=$2 AND participant_id=$3 ORDER BY delivery_id COLLATE \"C\" LIMIT $4",
+           [group_id, conversation_id, participant_id, limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [payload] -> :erlang.binary_to_term(payload, [:safe]) end)}
 
-    with {:ok, %{objects: objects}} <-
-           S3.list(prefix, max_keys: max(limit * 4, @participant_limit)) do
-      objects
-      |> Enum.map(& &1.key)
-      |> Enum.filter(&delivery_state_key?(prefix, &1))
-      |> Enum.take(limit)
-      |> Enum.reduce_while({:ok, []}, fn key, {:ok, records} ->
-        case read_json(key) do
-          {:ok, record} -> {:cont, {:ok, [record | records]}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
-      |> case do
-        {:ok, records} -> {:ok, Enum.reverse(records)}
-        {:error, _reason} = error -> error
-      end
+      _ ->
+        {:error, :unavailable}
     end
-  end
-
-  defp delivery_state_key?(prefix, key) do
-    suffix = String.replace_prefix(key, prefix, "")
-
-    String.starts_with?(key, prefix) and String.ends_with?(suffix, "/state.json") and
-      length(String.split(suffix, "/")) == 2
   end
 
   defp delivery_matches?(record, participant_id, message_id) do
@@ -1988,15 +1343,6 @@ defmodule SalixIM.Conversations do
 
   defp valid_participant?(_participant), do: false
 
-  defp conversation_list_start_after(_group_id, nil), do: nil
-
-  defp conversation_list_start_after(group_id, {updated_at, conversation_id}),
-    do:
-      conversation_index_key(group_id, %{
-        "updated_at" => updated_at,
-        "conversation_id" => conversation_id
-      })
-
   defp encode_conversation_cursor(conversation) do
     %{
       "updated_at" => SalixIM.TaskArchive.list_timestamp(conversation),
@@ -2027,11 +1373,6 @@ defmodule SalixIM.Conversations do
       :error -> {:error, :invalid_cursor}
     end
   end
-
-  defp read_json(key), do: CasRecord.get(key)
-
-  defp maybe_put(opts, _key, value) when value in [nil, ""], do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp put_optional(map, _key, value) when value in [nil, ""], do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

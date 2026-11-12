@@ -15,7 +15,8 @@ export const MAX_FOCUS_TASK_FEEDS = 2;
 
 /**
  * - `following`: the Router answers input from these Tasks, such as Worker reports.
- * - `waiting`: the Router waits, and the current turn delegated these Tasks.
+ * - `waiting`: the Router waits on these running Tasks: the ones the current turn
+ *   delegated, else every running Task this chat created.
  * - `working`: the Router is idle, and Workers run Tasks that this chat created.
  */
 export type ActivityFocusMode = "following" | "waiting" | "working";
@@ -83,6 +84,7 @@ export function selectActivityFocusTarget({
   currentTurnKey: string | undefined;
   participantStatus: ChatParticipantStatus | undefined;
 }): ActivityFocusTarget | undefined {
+  const running = createdTasks.filter((task) => task.statusBucket === "in_progress");
   if (participantStatus?.state === "active" && participantStatus.loopWake !== true) {
     const ids = participantStatus.workingConversationIds;
     if (ids?.length) {
@@ -93,16 +95,17 @@ export function selectActivityFocusTarget({
       };
     }
     if (participantStatus.waiting) {
+      // The Router's Session takes part in every Task it delegated, so a
+      // report from any running Task ends the wait. The Tasks the current
+      // turn delegated come first; after a follow-up message, such as a
+      // question about progress, the wait is still on the earlier ones.
+      const ofTurn =
+        currentTurnKey === undefined
+          ? []
+          : running.filter((task) => task.requestTurnKey === currentTurnKey);
       return {
         mode: "waiting",
-        tasks:
-          currentTurnKey === undefined
-            ? []
-            : createdTasks.filter(
-                (task) =>
-                  task.statusBucket === "in_progress" &&
-                  task.requestTurnKey === currentTurnKey
-              ),
+        tasks: ofTurn.length ? ofTurn : running,
       };
     }
     return undefined;
@@ -110,7 +113,6 @@ export function selectActivityFocusTarget({
   // An error notice owns the slot; a Loop wake is the Router's own background
   // work. Otherwise an idle Router leaves the slot to its running Tasks.
   if (participantStatus?.state === "error") return undefined;
-  const running = createdTasks.filter((task) => task.statusBucket === "in_progress");
   return running.length
     ? { mode: "working", tasks: running.slice(-MAX_FOCUS_TASK_FEEDS) }
     : undefined;

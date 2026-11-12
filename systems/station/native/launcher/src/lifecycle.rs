@@ -33,7 +33,7 @@ impl Options {
     }
 }
 
-/// How long things may take. Tests shorten them (STILLFAIL_LAUNCHER_TIMES: `ready=ms,exit=ms,…`).
+/// How long things may take. Tests shorten them (COMMA_STATION_LAUNCHER_TIMES: `ready=ms,exit=ms,…`).
 #[derive(Clone, Copy, Debug)]
 pub struct Times {
     /// A new Node's wait to say ready on a handover, before the handover is given up.
@@ -69,7 +69,7 @@ impl Times {
     pub fn of_env() -> Times {
         let s = Duration::from_secs;
         let mut times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(60), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10) };
-        for pair in std::env::var("STILLFAIL_LAUNCHER_TIMES").unwrap_or_default().split(',') {
+        for pair in std::env::var("COMMA_STATION_LAUNCHER_TIMES").unwrap_or_default().split(',') {
             let Some((key, ms)) = pair.split_once('=') else { continue };
             let Ok(ms) = ms.trim().parse::<u64>() else { continue };
             let slot = match key.trim() {

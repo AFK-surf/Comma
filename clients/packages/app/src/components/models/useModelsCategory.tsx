@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
+import { ChoiceList } from "@comma/ui/components/choice-list";
 import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
 import {
@@ -12,7 +13,7 @@ import {
 import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
 import { EditBigIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
 import { Toggle } from "@comma/ui/components/toggle";
-import { toast } from "@comma/ui/components/toast";
+import { COPY_FEEDBACK_TOAST_ID, toast } from "@comma/ui/components/toast";
 import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   type SettingsCategoryDefinition,
@@ -26,6 +27,8 @@ import {
   type CatalogModel,
   type ModelProtocol,
   type ProviderPreset,
+  type QuotaResetKind,
+  type QuotaResetOffer,
   type SettingsAgent,
   type ShownModel,
   type ShownProfile,
@@ -89,6 +92,26 @@ const tileClass =
 /** Custom has no brand to show, so it reads as a plain button instead of a logo tile. */
 const customTileClass =
   "flex min-w-0 cursor-pointer items-center justify-self-start rounded-lg bg-secondary px-md py-sm text-left text-sm text-primary transition-colors duration-150 ease-out hover:bg-tertiary focus-visible:bg-tertiary focus-visible:outline-none";
+
+/** The resets a plan holds, a kind each (a ChatGPT plan's reset credits, one kind). */
+const resetOffers = (account: ShownProfile): QuotaResetOffer[] => {
+  if (account.quota?.resets?.length) return account.quota.resets;
+  const credits = account.quota?.reset_credits?.available_count ?? 0;
+  return credits > 0 ? [{ kind: "credit", left: credits, usable: true }] : [];
+};
+
+/** How many resets a plan has left in all, where known. */
+const resetsLeft = (account: ShownProfile): number | undefined =>
+  account.quota?.resets?.length
+    ? account.quota.resets.reduce((sum, offer) => sum + offer.left, 0)
+    : (account.quota?.reset_credits?.available_count ?? undefined);
+
+const expiryTime = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 /** Which form a view is, whatever its field values. */
 const formKey = (view: View) =>
@@ -228,6 +251,8 @@ export function useModelsCategory(enabled: boolean): {
   const [resetting, setResetting] = useState<{
     id: string;
     busy: boolean;
+    /** The kind of reset picked (an account with more than one kind). */
+    kind?: QuotaResetKind | undefined;
     outcome?: string;
     /** The provider answered; nothing is left to retry. */
     settled?: boolean;
@@ -410,6 +435,13 @@ export function useModelsCategory(enabled: boolean): {
     );
   };
   // The first one the reader turns on waits for them to agree the Router may use it.
+  // A ChatGPT plan going on with its credits once its quota runs out.
+  const setUseCredits = (account: ShownProfile, on: boolean) => {
+    if (!workspace) return;
+    void write(() =>
+      call("models.updateProfile", { workspace, profile: account.id, use_credits: on })
+    );
+  };
   const toggleProfile = (account: ShownProfile) => {
     if (account.disabled && !clientSettings.settings.routerProfileNoticeSeen)
       setEnabling({ id: account.id, added: false });
@@ -475,11 +507,75 @@ export function useModelsCategory(enabled: boolean): {
     beginSignIn(entry, { account_id: account.id, version: account.version });
   };
 
-  const resetQuota = (account: ShownProfile) => {
+  // The dialog opens on the first kind there to use now.
+  const openReset = (account: ShownProfile) => {
+    const offers = resetOffers(account);
+    const first = offers.find((offer) => offer.usable) ?? offers[0];
+    setResetting({
+      id: account.id,
+      busy: false,
+      kind: offers.length > 1 || first?.kind !== "credit" ? first?.kind : undefined,
+    });
+  };
+
+  const resetOfferLabel = (offer: QuotaResetOffer) => {
+    const model = offer.model?.trim() || "Fable";
+    switch (offer.kind) {
+      case "session":
+        return [
+          m.settings_providers_reset_kind_session(),
+          m.settings_providers_reset_kind_session_hint(),
+        ];
+      case "weekly":
+        return [
+          m.settings_providers_reset_kind_weekly(),
+          m.settings_providers_reset_kind_weekly_hint(),
+        ];
+      case "full":
+        return [
+          m.settings_providers_reset_kind_full(),
+          m.settings_providers_reset_kind_full_hint(),
+        ];
+      case "model":
+        return [
+          m.settings_providers_reset_kind_model({ model }),
+          m.settings_providers_reset_kind_model_hint({ model }),
+        ];
+      default:
+        return [m.settings_providers_reset_kind_credit(), ""];
+    }
+  };
+
+  const resetOfferDetail = (offer: QuotaResetOffer) => {
+    const [, hint] = resetOfferLabel(offer);
+    const first = offer.expiries?.[0];
+    return [
+      hint,
+      [
+        m.settings_providers_reset_left({ count: offer.left }),
+        first
+          ? m.settings_providers_reset_expires({
+              time: expiryTime.format(new Date(first)),
+            })
+          : "",
+        offer.usable ? "" : m.settings_providers_reset_at_limit(),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  };
+
+  const resetQuota = (account: ShownProfile, kind: QuotaResetKind | undefined) => {
     if (!workspace || resetting?.busy) return;
     const current = generation.current;
-    setResetting({ id: account.id, busy: true });
-    call("models.resetQuota", { workspace, profile: account.id }).then(
+    setResetting({ id: account.id, busy: true, kind });
+    call("models.resetQuota", {
+      workspace,
+      profile: account.id,
+      ...(kind ? { kind } : {}),
+    }).then(
       (result) => {
         if (current !== generation.current) return;
         const outcomes = {
@@ -487,10 +583,12 @@ export function useModelsCategory(enabled: boolean): {
           already_redeemed: m.settings_providers_reset_redeemed(),
           nothing_to_reset: m.settings_providers_reset_unneeded(),
           no_credit: m.settings_providers_reset_no_credit(),
+          unavailable: m.settings_providers_reset_unavailable(),
         };
         setResetting({
           id: account.id,
           busy: false,
+          kind,
           settled: true,
           outcome:
             outcomes[result.outcome] +
@@ -509,6 +607,7 @@ export function useModelsCategory(enabled: boolean): {
           setResetting({
             id: account.id,
             busy: false,
+            kind,
             outcome:
               code === "reset_in_progress"
                 ? m.settings_providers_reset_in_progress()
@@ -521,6 +620,7 @@ export function useModelsCategory(enabled: boolean): {
           setResetting({
             id: account.id,
             busy: false,
+            kind,
             settled: true,
             outcome: m.settings_providers_reset_refused(),
           });
@@ -530,6 +630,7 @@ export function useModelsCategory(enabled: boolean): {
         setResetting({
           id: account.id,
           busy: false,
+          kind,
           outcome: m.settings_providers_reset_pending(),
         });
       }
@@ -546,19 +647,12 @@ export function useModelsCategory(enabled: boolean): {
     const entry = presetById(account.preset);
     const meters = account.subscription && !account.disabled ? account.meters : [];
     const signedIn = ["active", "connected"].includes(account.status);
+    // A plan whose sign-in lapsed serves nothing, on or off, until it is renewed.
     const expired =
       account.subscription &&
-      !account.disabled &&
       !signedIn &&
       account.status !== "checking" &&
       !checking.has(account.id);
-    // A Codex plan running low, with a reset left to spend.
-    const resettable =
-      account.source === "codex" &&
-      signedIn &&
-      !account.disabled &&
-      (account.quota?.reset_credits?.available_count ?? 0) > 0 &&
-      meters.some((meter) => meter.percent <= 10);
     return {
       id: `models.profile.${account.id}`,
       title: name,
@@ -570,7 +664,7 @@ export function useModelsCategory(enabled: boolean): {
       ),
       description: profileSummary(account),
       // A row offering its fix needs no status beside it.
-      ...(expired || resettable ? {} : { status: profileStatus(account) }),
+      ...(expired ? {} : { status: profileStatus(account) }),
       controlLeading: (
         <span className="flex items-center gap-md">
           {/* An expired plan shows no quota: renewing it is what matters. */}
@@ -585,20 +679,12 @@ export function useModelsCategory(enabled: boolean): {
             >
               {m.settings_providers_reauth()}
             </Button>
-          ) : resettable ? (
-            <Button
-              hierarchy="secondary-gray"
-              size="xs"
-              aria-label={m.settings_providers_reset_named({ name })}
-              onPress={() => setResetting({ id: account.id, busy: false })}
-            >
-              {m.settings_providers_reset_short()}
-            </Button>
           ) : null}
           <Toggle
             size="sm"
             aria-label={m.settings_providers_enable({ name })}
-            checked={!account.disabled}
+            checked={!account.disabled && !expired}
+            disabled={expired}
             onChange={() => toggleProfile(account)}
           />
         </span>
@@ -634,20 +720,29 @@ export function useModelsCategory(enabled: boolean): {
                 ...(account.source === "codex"
                   ? [
                       {
+                        id: "credits",
+                        label: m.settings_providers_credits_menu(),
+                        onPress: () => setView({ kind: "profile", id: account.id }),
+                      },
+                    ]
+                  : []),
+                ...(account.source === "codex" || account.source === "claude"
+                  ? [
+                      {
                         id: "reset",
                         label:
-                          account.quota?.reset_credits?.available_count == null
+                          resetsLeft(account) == null
                             ? m.settings_providers_reset_menu_unknown()
                             : m.settings_providers_reset_menu({
-                                count: account.quota.reset_credits.available_count,
+                                count: resetsLeft(account) ?? 0,
                               }),
                         // A pending reset stays open so it can be confirmed.
                         disabled:
                           account.disabled ||
                           !["active", "connected"].includes(account.status) ||
                           (account.reset_attempt?.outcome !== "pending" &&
-                            !account.quota?.reset_credits?.available_count),
-                        onPress: () => setResetting({ id: account.id, busy: false }),
+                            !resetsLeft(account)),
+                        onPress: () => openReset(account),
                       },
                     ]
                   : []),
@@ -718,9 +813,11 @@ export function useModelsCategory(enabled: boolean): {
       setTaskPlaceError(
         code === "cloud_vm_disabled"
           ? m.settings_providers_task_place_cloud_vm_off()
-          : code === "not_found"
-            ? m.settings_providers_task_place_missing()
-            : message(reason)
+          : code === "cloud_vm_retired"
+            ? m.settings_providers_task_place_cloud_vm_retired()
+            : code === "not_found"
+              ? m.settings_providers_task_place_missing()
+              : message(reason)
       );
     });
   };
@@ -801,7 +898,7 @@ export function useModelsCategory(enabled: boolean): {
             ? meters
                 .map(
                   (meter) =>
-                    `${meter.window === "5h" ? m.settings_providers_quota_5h() : m.settings_providers_quota_week()} ${meter.percent}%`
+                    `${meter.window === "5h" ? m.settings_providers_quota_5h() : meter.window === "model" && meter.model ? meter.model : m.settings_providers_quota_week()} ${meter.percent}%`
                 )
                 .join(" · ")
             : profileSummary(account),
@@ -822,10 +919,13 @@ export function useModelsCategory(enabled: boolean): {
       return serving.some((account) => account.id === pinned)
         ? undefined
         : m.settings_providers_pinned_unavailable();
-    if (paid) return serving.length ? undefined : m.settings_providers_no_profile();
-    return serving.some((account) => account.subscription)
-      ? undefined
-      : m.settings_providers_allow_paid_none();
+    if (!serving.length) return m.settings_providers_no_profile();
+    if (paid || serving.some((account) => account.subscription)) return undefined;
+    // Only API keys serve it: name them, so the member sees that pay-per-use
+    // means their own key, not Comma's billing.
+    return m.settings_providers_allow_paid_none({
+      names: serving.map((account) => profileName(account)).join(", "),
+    });
   };
 
   const pickerLabels = {
@@ -955,18 +1055,42 @@ export function useModelsCategory(enabled: boolean): {
   };
 
   /**
-   * Where Tasks run when the Router names no place: Comma's cloud, the Cloud
-   * VM when the workspace has one, or one of the person's computers. The place
-   * held shows even when the list does not offer it (yet).
+   * Where Tasks run when the Router names no place: Comma's cloud, a sandbox
+   * where sandboxes are set up, the Cloud VM when the workspace has one and it
+   * is not retired (on an Agent VMM Host, as that Host's station, retired or
+   * not), or one of the person's computers. The place held shows even when the
+   * list does not offer it (yet, or any more).
    */
-  const placeRow = (held: TaskPlace): SettingsPanelItem => {
+  const placeRow = ({
+    place: held,
+    sandboxes,
+    cloud_vm_retired: cloudVmRetired,
+    cloud_vm_station: cloudVmStation,
+  }: {
+    place: TaskPlace;
+    sandboxes?: boolean;
+    cloud_vm_retired?: boolean;
+    cloud_vm_station?: string;
+  }): SettingsPanelItem => {
     const places = new Map<string, { place: TaskPlace; label: string }>([
       [
         "salix",
         { place: { kind: "salix" }, label: m.settings_providers_task_place_salix() },
       ],
     ]);
-    if (shownDevices?.cloud || held.kind === "cloud_vm")
+    if (sandboxes || held.kind === "sandbox")
+      places.set("sandbox", {
+        place: { kind: "sandbox" },
+        label: m.settings_providers_task_place_sandbox(),
+      });
+    // One entry names the Cloud VM: its station where the server names one,
+    // unless the place held still names it as the Cloud VM.
+    if (cloudVmStation && held.kind !== "cloud_vm")
+      places.set(`station:${cloudVmStation}`, {
+        place: { kind: "station", device_id: cloudVmStation },
+        label: m.settings_providers_task_place_cloud_vm(),
+      });
+    else if ((shownDevices?.cloud && !cloudVmRetired) || held.kind === "cloud_vm")
       places.set("cloud_vm", {
         place: { kind: "cloud_vm" },
         label: m.settings_providers_task_place_cloud_vm(),
@@ -1011,7 +1135,7 @@ export function useModelsCategory(enabled: boolean): {
             selectTaskModel
           ),
         },
-        placeRow(agents.task_place.place),
+        placeRow(agents.task_place),
       ]
     : [
         {
@@ -1028,6 +1152,7 @@ export function useModelsCategory(enabled: boolean): {
   );
   const resettingProfile =
     resetting && profiles.find((entry) => entry.id === resetting.id);
+  const resetPickId = `models-reset-kind-${resetting?.id ?? ""}`;
   const resetSettled = !!resetting?.settled;
   const renamingAgent =
     rename?.kind === "agent" && agents?.agents.router.agent_id === rename.id
@@ -1079,7 +1204,16 @@ export function useModelsCategory(enabled: boolean): {
     icon: "models-api-keys",
     label: m.settings_models_title(),
     keywords: ["BYOK", "API Key", "Codex", "Claude", "OAuth", "Provider", "Profile"],
+    // What runs comes first: the Agents run Comma built-in unless set
+    // otherwise, and a profile only spends its allowance when a Task runs
+    // one of its models.
     sections: [
+      {
+        id: "models.agents",
+        title: m.settings_providers_agents(),
+        items: agentItems,
+        description: m.settings_providers_agents_hint(),
+      },
       {
         id: "models.profiles",
         title: m.settings_providers_profiles(),
@@ -1124,7 +1258,6 @@ export function useModelsCategory(enabled: boolean): {
           ? { note: m.settings_providers_router_may_use_profiles() }
           : {}),
       },
-      { id: "models.agents", title: m.settings_providers_agents(), items: agentItems },
     ],
     ...(removingProfile
       ? {
@@ -1186,11 +1319,37 @@ export function useModelsCategory(enabled: boolean): {
                             ? m.settings_providers_resetting()
                             : m.settings_providers_reset_confirm(),
                           disabled: resetting.busy,
-                          onPress: () => resetQuota(resettingProfile),
+                          onPress: () => resetQuota(resettingProfile, resetting.kind),
                         },
                       ]),
                 ]}
               >
+                {resetting.kind && resetOffers(resettingProfile).length ? (
+                  <>
+                    <span id={resetPickId} className="text-sm text-secondary">
+                      {m.settings_providers_reset_pick()}
+                    </span>
+                    <ChoiceList
+                      name={resetPickId}
+                      labelledBy={resetPickId}
+                      disabled={resetting.busy || resetSettled}
+                      options={resetOffers(resettingProfile).map((offer) => ({
+                        id: offer.kind,
+                        label: resetOfferLabel(offer)[0],
+                        description: resetOfferDetail(offer),
+                      }))}
+                      value={[resetting.kind]}
+                      onChange={([kind]) =>
+                        setResetting((open) => {
+                          if (!open || !kind) return open;
+                          // A new choice clears the last answer.
+                          const { outcome: _outcome, ...rest } = open;
+                          return { ...rest, kind: kind as QuotaResetKind };
+                        })
+                      }
+                    />
+                  </>
+                ) : null}
                 {resetting.outcome ? (
                   <output className="text-sm text-secondary">
                     {resetting.outcome}
@@ -1583,9 +1742,14 @@ export function useModelsCategory(enabled: boolean): {
                   onPress={() => {
                     void openNativePlatformExternalUrlFromUserAction(async () => {
                       await nativePlatformClipboard.writeText(attempt.user_code ?? "");
+                      toast.success(m.common_copied(), { id: COPY_FEEDBACK_TOAST_ID });
                       return attempt.url;
                     }).catch(() => {
-                      toast.error(m.settings_providers_copy_and_open_failed());
+                      // Replaces the confirmation when the code was copied
+                      // but the sign-in page did not open.
+                      toast.error(m.settings_providers_copy_and_open_failed(), {
+                        id: COPY_FEEDBACK_TOAST_ID,
+                      });
                     });
                   }}
                 >
@@ -1800,6 +1964,43 @@ export function useModelsCategory(enabled: boolean): {
           ],
         };
       });
+      // A ChatGPT plan may go on with its credits: its owner's choice.
+      const credits = account.quota?.credits;
+      const balance = credits?.balance;
+      const creditsState =
+        credits && !credits.has_credits && !credits.unlimited
+          ? m.settings_providers_credits_none()
+          : balance
+            ? m.settings_providers_credits_balance({
+                balance: Number.isFinite(Number(balance))
+                  ? Math.floor(Number(balance)).toLocaleString()
+                  : balance,
+              })
+            : undefined;
+      const creditsSection =
+        account.subscription && account.source === "codex"
+          ? [
+              {
+                id: "models.profile.credits",
+                title: m.settings_providers_credits(),
+                items: [
+                  {
+                    id: "models.profile.credits.use",
+                    title: m.settings_providers_use_credits(),
+                    description: [m.settings_providers_use_credits_hint(), creditsState]
+                      .filter(Boolean)
+                      .join(" "),
+                    control: {
+                      type: "toggle" as const,
+                      checked: account.use_credits === true,
+                      onChange: () =>
+                        setUseCredits(account, account.use_credits !== true),
+                    },
+                  },
+                ],
+              },
+            ]
+          : [];
       return {
         id: `models.profile.${account.id}`,
         title: profileName(account),
@@ -1824,8 +2025,9 @@ export function useModelsCategory(enabled: boolean): {
             }
           : {}),
         sections: sections.length
-          ? sections
+          ? [...creditsSection, ...sections]
           : [
+              ...creditsSection,
               {
                 id: "models.profile.models",
                 title: m.settings_providers_models(),

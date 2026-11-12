@@ -36,6 +36,7 @@ defmodule Comma.Accounts.User do
     field(:auth_epoch, :integer, default: 0)
     field(:review_login_code_hash, :string, redact: true)
     field(:signup_credit_eligible, :boolean, default: false)
+    field(:signup_credit_gmail_claimed, :boolean, default: false)
     # Set only by Comma.GuestMode; a guest never becomes a registered User.
     field(:kind, :string, default: "registered")
     field(:guest_pow_id, :string)
@@ -44,6 +45,10 @@ defmodule Comma.Accounts.User do
     field(:guest_imported_into_user_id, :string)
     # The account's app language, shared by every device and server-written text.
     field(:locale, :string)
+    # Set only by Comma.AccountDeletion.
+    field(:deletion_scheduled_at, :utc_datetime_usec)
+    field(:deleted_at, :utc_datetime_usec)
+    field(:deleted_email_hash, :binary, redact: true)
 
     timestamps()
   end

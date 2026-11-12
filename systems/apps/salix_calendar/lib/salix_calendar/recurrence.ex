@@ -218,8 +218,8 @@ defmodule SalixCalendar.Recurrence do
 
     allowed_keys =
       case frequency do
-        "weekly" -> ~w(@type frequency interval byDay byHour byMinute firstDayOfWeek)
-        "daily" -> ~w(@type frequency interval byDay byHour byMinute)
+        "weekly" -> ~w(@type frequency interval byDay byHour byMinute firstDayOfWeek until)
+        "daily" -> ~w(@type frequency interval byDay byHour byMinute until)
         _ -> ~w(@type frequency interval)
       end
 
@@ -244,12 +244,30 @@ defmodule SalixCalendar.Recurrence do
 
     if Map.keys(rule) -- allowed_keys == [] and rule["@type"] in [nil, "RecurrenceRule"] and
          frequency in ~w(minutely daily weekly) and is_integer(interval) and interval > 0 and
-         valid_by_day? and valid_clock? and valid_first_day? do
+         valid_by_day? and valid_clock? and valid_first_day? and valid_until?(rule["until"]) do
       {:ok, [Map.put(rule, "interval", interval)]}
     else
       {:error, :unsupported_recurrence}
     end
   end
+
+  # JSCalendar `until`: the last local start the rule may generate, in the
+  # item's time zone. A series that ends is generated up to it, inclusive.
+  defp valid_until?(nil), do: true
+
+  defp valid_until?(value) when is_binary(value),
+    do:
+      Regex.match?(~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, value) and
+        match?({:ok, _}, NaiveDateTime.from_iso8601(value))
+
+  defp valid_until?(_value), do: false
+
+  defp within_until?(_naive, %{"until" => nil}), do: true
+
+  defp within_until?(naive, %{"until" => until}),
+    do: NaiveDateTime.compare(naive, NaiveDateTime.from_iso8601!(until)) != :gt
+
+  defp within_until?(_naive, _rule), do: true
 
   defp valid_single_integer?(nil, _range), do: true
 
@@ -334,7 +352,8 @@ defmodule SalixCalendar.Recurrence do
           |> Date.range(to_date)
           |> Enum.reduce_while({:ok, []}, fn date, {:ok, views} ->
             cond do
-              member?(date, anchor.date, rule) ->
+              member?(date, anchor.date, rule) and
+                  within_until?(NaiveDateTime.new!(date, anchor.time), rule) ->
                 case occurrence(item, anchor, date, from, to) do
                   {:ok, nil} ->
                     {:cont, {:ok, views}}
@@ -400,7 +419,7 @@ defmodule SalixCalendar.Recurrence do
        when frequency in ~w(daily weekly),
        do:
          NaiveDateTime.to_time(naive) == anchor.time and
-           member?(NaiveDateTime.to_date(naive), anchor.date, rule)
+           member?(NaiveDateTime.to_date(naive), anchor.date, rule) and within_until?(naive, rule)
 
   defp occurrence_member?(naive, anchor, %{"frequency" => "minutely", "interval" => interval}) do
     with {:ok, anchor_ms} <-

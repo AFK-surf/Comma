@@ -22,7 +22,7 @@ test("a new session first says where it can be followed, multi-session connects 
   await r.accept(m);
   await settle();
   assert.equal(r.chat.posts.length, 1);
-  assert.equal(r.chat.posts[0]![1], `<https://ember.test/o/ws/st/cl%3AC1%3A${m.threadTs}|在 still.fail 里查看这个会话>`);
+  assert.equal(r.chat.posts[0]![1], `<https://ember.test/o/ws/st/cl%3AC1%3A${m.threadTs}|在 Comma 里查看这个会话>`);
   assert.deepEqual(r.chat.posts[0]![0], { channel: "C1", threadTs: m.threadTs });
   // Its next message is the same session: nothing more.
   await r.accept({ ...say("<@UBOT> and the tests"), threadTs: m.threadTs });
@@ -204,7 +204,7 @@ test("a turn that did not start: the thread is told why once, the message stays 
   const open = r.claude.open.bind(r.claude);
   r.claude.open = async (options, events) => {
     tries++;
-    if (failing-- > 0) throw new Error("the runner did not start: stillfail-runner: cc is already kept by a runner");
+    if (failing-- > 0) throw new Error("the runner did not start: comma-runner: cc is already kept by a runner");
     return open(options, events);
   };
   const m = say("<@UBOT> fix the build");
@@ -212,7 +212,7 @@ test("a turn that did not start: the thread is told why once, the message stays 
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
   const notices = () => r.chat.texts().filter((t) => t.includes("无法启动 agent"));
-  assert.deepEqual(notices(), ["⚠️ 无法启动 agent：the runner did not start: stillfail-runner: cc is already kept by a runner"]);
+  assert.deepEqual(notices(), ["⚠️ 无法启动 agent：the runner did not start: comma-runner: cc is already kept by a runner"]);
   assert.equal(tries, 1);
   assert.equal(r.store.pendingMessages(key).length, 1, "the message is still to be given");
   assert.ok(!stationIdle(r.store), "a station that holds a message not given is not idle");
@@ -746,6 +746,29 @@ test("when the runtime session cannot be resumed, a new one starts and is told t
   assert.notEqual(now, old);
   assert.equal(now.options.resume, undefined);
   assert.ok(matches(now.prompts[0]!, ["could not be restored", "still there?"]));
+  await r.close();
+});
+
+test("a session whose runtime process is stale for its profile goes on in a new one, resumed, before its next turn", async () => {
+  const r = new Rig();
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const old = r.claude.last();
+  // Ended as a turn that is not nudged: the session is idle.
+  old.end({ kind: "aborted" });
+  await settle();
+  // Its profile changed meanwhile (edited, or a key lent to the station renewed): the driver says the idle process
+  // is stale. The next turn does not run on it.
+  r.claude.staleIds.add(old.sessionId);
+  await r.accept(reply(m, "9999.4", "and now?"));
+  await settle();
+  const now = r.claude.last();
+  assert.notEqual(now, old);
+  assert.ok(old.disposed, "the stale session is let go");
+  assert.equal(now.options.resume, old.sessionId, "the thread goes on, in a new process");
+  assert.ok(now.prompts[0]!.includes("and now?"));
+  assert.ok(!matches(now.prompts[0]!, ["could not be restored"]), "nothing was lost");
   await r.close();
 });
 
@@ -1424,7 +1447,7 @@ test("a session from before a change is told it once, and a new one never", asyn
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
-  assert.ok(!r.claude.last().prompts[0]!.includes("still.fail changed how you work"), "a new session has today's instructions");
+  assert.ok(!r.claude.last().prompts[0]!.includes("Comma changed how you work"), "a new session has today's instructions");
   await r.call(key, "chat_state", { kind: "all_done", done: "答完了它问的事" });
   r.claude.last().complete();
   await settle();
@@ -1433,8 +1456,8 @@ test("a session from before a change is told it once, and a new one never", asyn
   await r.accept(reply(m, "9999.1", "还有一件"));
   await settle();
   const prompts = r.claude.last().prompts;
-  assert.ok(prompts.at(-1)!.startsWith("[still.fail changed how you work"), prompts.at(-1));
-  const full = join(r.session(key).workspace, ".stillfail-instructions.md");
+  assert.ok(prompts.at(-1)!.startsWith("[Comma changed how you work"), prompts.at(-1));
+  const full = join(r.session(key).workspace, ".comma-station-instructions.md");
   assert.ok(prompts.at(-1)!.includes(full), "it says where today's instructions are");
   assert.equal(readFileSync(full, "utf8"), r.claude.last().options.instructions, "the file contains the full current instructions");
   assert.equal(r.store.toldNotes(key), latest());
@@ -1443,7 +1466,7 @@ test("a session from before a change is told it once, and a new one never", asyn
   await settle();
   await r.accept(reply(m, "9999.2", "再一件"));
   await settle();
-  assert.ok(!r.claude.last().prompts.at(-1)!.includes("still.fail changed how you work"));
+  assert.ok(!r.claude.last().prompts.at(-1)!.includes("Comma changed how you work"));
   await r.close();
 });
 
@@ -1544,14 +1567,14 @@ test("a session the machine kept goes on in a chat, run in its own directory, wi
   assert.equal(opened.options.instructions, "", "its system prompt is left as it began");
   assert.equal(opened.prompts.length, 1);
   const first = opened.prompts[0]!;
-  assert.ok(first.startsWith("This session began in a terminal and now goes on in still.fail"), first);
-  assert.ok(first.includes("<stillfail-instructions>") && first.includes("and the tests"));
+  assert.ok(first.startsWith("This session began in a terminal and now goes on in Comma"), first);
+  assert.ok(first.includes("<comma-instructions>") && first.includes("and the tests"));
   assert.ok(first.includes(`- Project directory: ${project}.`));
   opened.complete();
   await settle();
   sayIn(r.hub, thread.id, "local", "one more");
   await settle();
-  assert.ok(!r.claude.last().prompts.at(-1)!.includes("<stillfail-instructions>"), "said once");
+  assert.ok(!r.claude.last().prompts.at(-1)!.includes("<comma-instructions>"), "said once");
 
   // Going on with it again is the same chat.
   const again = find(roots, "claude", found.id)!;

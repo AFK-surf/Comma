@@ -195,10 +195,7 @@ defmodule MailAcceptance do
           })
 
         {user,
-         Comma.WorkspaceTestSupport.create_ready_workspace!(user, %{
-           "name" => "Mail acceptance",
-           "vm" => %{"enabled" => false}
-         })}
+         Comma.WorkspaceTestSupport.create_ready_workspace!(user, %{"name" => "Mail acceptance"})}
       end
 
     {:ok, workspace} = CommaWeb.SalixClient.resolve_workspace_scope(workspace)

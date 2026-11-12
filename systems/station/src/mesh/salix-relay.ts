@@ -1,4 +1,4 @@
-// Salix as the relay of last resort, on the station's side: the iroh endpoint (bound with the Salix transport,
+// Salix as a relay, on the station's side: the iroh endpoint (bound with the Salix transport,
 // native/mesh/src/salix.rs) hands its packets for Salix here, and the connector's connection to Salix carries them
 // (src/connector/connector.ts, `StationRelay`). While no connection carries them, packets for Salix are dropped, as
 // any lost path's are: QUIC sends them again, and iroh tries its other paths.
@@ -11,6 +11,7 @@ import { Context, Effect, Layer } from "effect";
 import type { StationRelay } from "../connector/connector.ts";
 import { log } from "../ops/log.ts";
 import { Key } from "../services.ts";
+import { DeviceMeshAdmissions, deviceMeshFacts } from "./device-mesh.ts";
 import type { Endpoint } from "./native.ts";
 
 const BATCH = 64;
@@ -21,6 +22,8 @@ type Send = (to: string, data: Buffer) => void;
 
 export class SalixRelayHub implements StationRelay {
   readonly endpointId: string;
+  /// Whom this station admits on the mesh for each connection whose Salix said so (a desktop's, device-mesh.ts).
+  readonly admissions = new DeviceMeshAdmissions();
   readonly #sign: (message: Buffer) => Buffer;
   #endpoint: Endpoint | null = null;
   /// The connections carrying packets, each by the key it attached with.
@@ -55,6 +58,11 @@ export class SalixRelayHub implements StationRelay {
     }
     this.#sends.delete(via);
     for (const [peer, on] of this.#heard) if (on === via) this.#heard.delete(peer);
+    this.admissions.dropped(via);
+  }
+
+  meshTold(via: object, facts: unknown): void {
+    this.admissions.set(via, deviceMeshFacts(facts));
   }
 
   #send(to: string, data: Buffer): void {
@@ -83,7 +91,7 @@ export class SalixRelayHub implements StationRelay {
 }
 
 /// The station's hub, signing with its key.
-export class SalixRelay extends Context.Service<SalixRelay, SalixRelayHub>()("stillfail/SalixRelay") {
+export class SalixRelay extends Context.Service<SalixRelay, SalixRelayHub>()("comma-station/SalixRelay") {
   static readonly layer = Layer.effect(
     SalixRelay,
     Effect.gen(function* () {

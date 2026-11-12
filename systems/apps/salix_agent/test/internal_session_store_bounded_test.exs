@@ -1,35 +1,33 @@
 defmodule SalixAgent.InternalSessionStoreBoundedTest do
   use SystemsClock.Case, async: false
 
-  alias SalixAgent.InternalSessionStore
-  alias SalixStore.{Keys, S3}
+  alias SalixAgent.{InternalSession, InternalSessionStore, TestSupport}
+  alias SalixAgent.TestSupport.SessionFixture
 
-  test "bounded session folds stop at the object budget and report an incomplete prefix" do
-    agent_id = "bounded-scan-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    prefix = Keys.agent_internal_runtime_sessions_prefix(agent_id)
+  test "bounded Session folds stop at the row budget and report an incomplete prefix" do
+    agent_id = TestSupport.new_agent_id()
+    TestSupport.create_control_agent!(agent_id)
+    sessions = for _ <- 1..3, do: SalixStore.Ids.new_session_id()
+    for session <- sessions, do: assert({:ok, _} = SessionFixture.create(agent_id, session))
 
-    for suffix <- ~w(a b c) do
-      assert {:ok, _etag} = S3.put(prefix <> suffix <> ".metadata", suffix, if_none_match: "*")
-    end
+    fold = fn session, acc -> {:cont, [InternalSession.session_id(session) | acc]} end
 
-    :ok = S3.Fake.reset_read_log()
-
-    assert {:ok, :none_loaded, false} =
-             InternalSessionStore.reduce_sessions_bounded(
-               agent_id,
-               :none_loaded,
-               fn _session, _acc -> flunk("metadata objects must not be loaded as sessions") end,
+    assert {:ok, loaded, false} =
+             InternalSessionStore.reduce_sessions_bounded(agent_id, [], fold,
                page_size: 1,
                max_objects: 2,
                max_pages: 2
              )
 
-    assert [
-             {:list, ^prefix, [max_keys: 1]},
-             {:list, ^prefix, second_page_opts}
-           ] = S3.Fake.read_log(SystemsRuntime.Proc.self())
+    assert Enum.sort(loaded) == sessions |> Enum.sort() |> Enum.take(2)
 
-    assert second_page_opts[:max_keys] == 1
-    assert is_binary(second_page_opts[:continuation_token])
+    assert {:ok, all, true} =
+             InternalSessionStore.reduce_sessions_bounded(agent_id, [], fold,
+               page_size: 2,
+               max_objects: 4,
+               max_pages: 2
+             )
+
+    assert Enum.sort(all) == Enum.sort(sessions)
   end
 end

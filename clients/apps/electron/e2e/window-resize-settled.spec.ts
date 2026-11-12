@@ -373,17 +373,25 @@ test(
           const win = BrowserWindow.getAllWindows().find(
             (candidate) => candidate.webContents.getURL() === "assets://./"
           );
-          const view = (win?.contentView.children ?? []).find((child) =>
+          // The page sits in a clip View that rounds its corners.
+          // oxlint-disable-next-line unicorn/consistent-function-scoping -- Playwright serializes this Main callback without outer functions.
+          const views = (view: Electron.View): Electron.View[] => [
+            view,
+            ...view.children.flatMap(views),
+          ];
+          const view = (win ? views(win.contentView) : []).find((child) =>
             (child as { webContents?: { getURL(): string } }).webContents
               ?.getURL()
               .startsWith("http")
-          ) as { getBounds(): { width: number } } | undefined;
+          );
           return view?.getBounds().width ?? -1;
         });
+      // The view takes the whole pixels inside the slot's edges.
       const slotWidth = () =>
-        viewportSlot.evaluate((element) =>
-          Math.round(element.getBoundingClientRect().width)
-        );
+        viewportSlot.evaluate((element) => {
+          const { left, right } = element.getBoundingClientRect();
+          return Math.floor(right) - Math.ceil(left);
+        });
       // The fold settles after the last frame of the move, and Main places the
       // view from the slot the renderer reports after that layout: read both
       // together until they agree.

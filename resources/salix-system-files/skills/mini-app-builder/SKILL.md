@@ -66,6 +66,12 @@ owned app:
   `repo` and `mini_app` (from `apps.list` or `apps.get`). Do not call
   `apps.create` again.
 
+Icon and screenshot changes are source changes. Send them through the same build Task, not `apps.update`.
+Each new app needs its own icon and real screenshots of its main pages. Include the user's artwork and capture requirements in the Task.
+For UI changes, tell the coding agent to refresh affected screenshots. Keep the icon unless branding changes or the user requests it.
+Screenshots show on the app's details page; the gallery shows its `cover`. The coding agent deploys the media with
+the app's Version.
+
 ## Publish and manage an app
 
 Use `im_api.internal.apps.*` for the user's requested app actions. Do not send

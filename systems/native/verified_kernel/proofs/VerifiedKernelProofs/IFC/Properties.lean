@@ -8,35 +8,35 @@ theorem conjunction_permission (x y : Tri) :
     x.and y = .yes ↔ x = .yes ∧ y = .yes := by
   cases x <;> cases y <;> simp [Tri.and]
 
-theorem sealed_blocks_declassification (flow readable : Tri) (inPlace instruction : Bool)
+theorem sealed_blocks_declassification (flow readable : Tri) (authored inPlace instruction : Bool)
     (receipt : Option Term) (notFlow : flow ≠ .yes) :
-    selectAdmission flow readable true inPlace instruction receipt = .error .sealed := by
+    selectAdmission flow readable true authored inPlace instruction receipt = .error .sealed := by
   cases flow <;> simp_all [selectAdmission]
 
-theorem receipt_requires_read_permission (flow readable : Tri) (locked inPlace instruction : Bool)
+theorem receipt_requires_read_permission (flow readable : Tri) (locked authored inPlace instruction : Bool)
     (receipt : Option Term) (id : Term)
-    (allowed : selectAdmission flow readable locked inPlace instruction receipt = .ok (.receipt id)) :
+    (allowed : selectAdmission flow readable locked authored inPlace instruction receipt = .ok (.receipt id)) :
     readable = .yes := by
-  cases flow <;> cases readable <;> cases locked <;> cases inPlace <;> cases instruction <;>
+  cases flow <;> cases readable <;> cases locked <;> cases authored <;> cases inPlace <;> cases instruction <;>
     cases receipt <;> simp_all [selectAdmission]
 
-theorem in_place_requires_read_permission (flow readable : Tri) (locked inPlace instruction : Bool)
+theorem in_place_requires_read_permission (flow readable : Tri) (locked authored inPlace instruction : Bool)
     (receipt : Option Term)
-    (allowed : selectAdmission flow readable locked inPlace instruction receipt = .ok .inPlace) :
+    (allowed : selectAdmission flow readable locked authored inPlace instruction receipt = .ok .inPlace) :
     readable = .yes := by
-  cases flow <;> cases readable <;> cases locked <;> cases inPlace <;> cases instruction <;>
+  cases flow <;> cases readable <;> cases locked <;> cases authored <;> cases inPlace <;> cases instruction <;>
     cases receipt <;> simp_all [selectAdmission]
 
-theorem instruction_requires_read_permission (flow readable : Tri) (locked inPlace instruction : Bool)
+theorem instruction_requires_read_permission (flow readable : Tri) (locked authored inPlace instruction : Bool)
     (receipt : Option Term)
-    (allowed : selectAdmission flow readable locked inPlace instruction receipt = .ok .instruction) :
+    (allowed : selectAdmission flow readable locked authored inPlace instruction receipt = .ok .instruction) :
     readable = .yes := by
-  cases flow <;> cases readable <;> cases locked <;> cases inPlace <;> cases instruction <;>
+  cases flow <;> cases readable <;> cases locked <;> cases authored <;> cases inPlace <;> cases instruction <;>
     cases receipt <;> simp_all [selectAdmission]
 
-theorem unknown_is_not_permission (locked inPlace instruction : Bool) (receipt : Option Term)
+theorem unknown_is_not_permission (locked authored inPlace instruction : Bool) (receipt : Option Term)
     (admission : Admission) :
-    selectAdmission .unknown .unknown locked inPlace instruction receipt ≠ .ok admission := by
+    selectAdmission .unknown .unknown locked authored inPlace instruction receipt ≠ .ok admission := by
   cases locked <;> simp [selectAdmission]
 
 theorem data_request_denied (item activation : Term) (data : f item "integrity" = a "data") :

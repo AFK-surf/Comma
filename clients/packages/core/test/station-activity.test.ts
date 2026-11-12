@@ -166,6 +166,34 @@ describe("Station activity", () => {
     });
   });
 
+  it("goes on from the last event heard when its stream comes back, reading nothing again where the station resumes it", async () => {
+    const t = setup();
+    const now = t.time.now();
+    t.a.resumes = true;
+    t.a.chats = [row("s_1", 1, { agents: [running], lastActiveAt: now })];
+    const chats = t.watch<StationChatsValue>({ topic: "stationChats", workspace: WS });
+    await t.time.pass(100);
+    t.a.feed!.say("chat", row("s_1", 1, { agents: [done], lastActiveAt: now }), "ab.7");
+    await t.time.pass(100);
+
+    // The link went: the next stream asks since what it heard last, and is told what it missed on it.
+    t.a.feed!.end();
+    await t.time.pass(1_100);
+    expect(t.a.asked.filter((r) => r.startsWith("GET /events"))).toEqual([
+      "GET /events",
+      "GET /events?since=ab.7",
+    ]);
+    expect(t.a.asked.filter((r) => r === "GET /chats")).toHaveLength(1);
+    expect(t.a.asked.filter((r) => r === "GET /jobs")).toHaveLength(1);
+    t.a.feed!.say("chat", row("s_2", 2, { agents: [done], lastActiveAt: now }), "ab.8");
+    await t.time.pass(100);
+    expect(
+      chats()!
+        .days[0]!.items.map((i) => i.id)
+        .toSorted()
+    ).toEqual(["s_1", "s_2"]);
+  });
+
   it("lists the cards waiting for the viewer, the set-aside ones last, and answers them on the station", async () => {
     const t = setup();
     const card = (seq: number, extra: Record<string, unknown> = {}) => ({
@@ -413,5 +441,49 @@ describe("Station activity", () => {
     await expect(
       t.client.call("stations.newChat", { workspace: WS, station: "st_a" })
     ).rejects.toMatchObject({ code: "no_runtime" });
+  });
+
+  it("sends a chat that changed and moved as that chat's own change, and keeps the chats once they rest", async () => {
+    const t = setup();
+    const now = t.time.now();
+    t.a.chats = Array.from({ length: 30 }, (_, i) =>
+      row(`s_${i + 1}`, i + 1, { agents: [done], lastActiveAt: now - (i + 1) * 60_000 })
+    );
+    const chats = t.watch<StationChatsValue>({ topic: "stationChats", workspace: WS });
+    await t.time.pass(1_500);
+    // The chats are kept row by row: what the device holds of the one that changes.
+    const keptRow = () =>
+      [...t.host.dbs.values()]
+        .map(
+          (sql) =>
+            sql.db
+              .prepare("SELECT json FROM item WHERE name = ? AND key = ?")
+              .get("stations.chats.st_a", "s_30") as { json: string } | undefined
+        )
+        .find(Boolean)?.json;
+    const kept = keptRow();
+    expect(kept).toBeDefined();
+
+    // The oldest chat comes back to life: it moves to the top of today, and the others stay where they were.
+    const sent = t.host.emitted.length;
+    for (let i = 0; i < 5; i++) {
+      t.a.feed!.say(
+        "chat",
+        row("s_30", 30, { agents: [running], lastActiveAt: t.time.now() }),
+        `ab.${i + 1}`
+      );
+      await t.time.pass(100);
+    }
+    expect(chats()!.days[0]!.items[0]).toMatchObject({ id: "s_30", tone: "busy" });
+    const deltas = t.host.emitted
+      .slice(sent)
+      .flatMap(([, sentOut]) => ("delta" in sentOut ? sentOut.delta : []));
+    expect(deltas.length).toBeGreaterThan(0);
+    expect(deltas.every((op) => "key" in op)).toBe(true);
+    // Written once they rested, not at each change.
+    expect(keptRow()).toBe(kept);
+    await t.time.pass(1_000);
+    expect(JSON.parse(keptRow()!)).toMatchObject({ lastActiveAt: expect.any(Number) });
+    expect(keptRow()).not.toBe(kept);
   });
 });

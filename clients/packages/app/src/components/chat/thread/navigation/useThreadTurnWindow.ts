@@ -5,7 +5,10 @@ import {
   visibleConversationTurns,
   CONVERSATION_TURN_WINDOW,
 } from "./conversationTurnWindow";
-import { useConversationTurnWindow } from "./useConversationTurnWindow";
+import {
+  useConversationTurnWindow,
+  type EarlierHistory,
+} from "./useConversationTurnWindow";
 import type { useStickToBottom } from "../scroll/useStickToBottom";
 import { conversationMessageTurnKey as messageTurnKey } from "@comma/core/chat";
 import {
@@ -27,6 +30,7 @@ export function useThreadTurnWindow({
   assistantResponseSlotId,
   canonicalLayout,
   draftTimestamp,
+  earlier,
   follow: { isFollowing, isRevealingMessage, scrollRootRef },
   outgoing: { outgoingPresentations, outgoingTurnKeys },
   pendingUserMessage,
@@ -36,6 +40,7 @@ export function useThreadTurnWindow({
   assistantResponseSlotId: string;
   canonicalLayout: ConversationLayout;
   draftTimestamp: EntryTimestamp | undefined;
+  earlier: EarlierHistory;
   follow: Pick<Follow, "isFollowing" | "isRevealingMessage" | "scrollRootRef">;
   outgoing: Pick<OutgoingPresentations, "outgoingPresentations" | "outgoingTurnKeys">;
   pendingUserMessage: ChatMessage | undefined;
@@ -67,21 +72,20 @@ export function useThreadTurnWindow({
     const keys = new Set<string>();
     for (const key of outgoingTurnKeys) keys.add(key);
     if (pendingUserMessage) keys.add(messageTurnKey(pendingUserMessage));
+    return keys;
+  }, [outgoingTurnKeys, pendingUserMessage]);
+  // Only a question holds its reply's turn mounted. A settled node shows when
+  // the reader reaches that turn, like the rest of the history, and a node
+  // with no reply is on the newest turn, which the window always holds.
+  const heldTurnKeys = useMemo(() => {
+    const keys = new Set<string>();
     for (const tail of anchoredTails ?? []) {
-      // A tail belongs after its message, not after an unbounded history prefix.
-      const key = tail.messageId
-        ? windowKeyByMessage.get(tail.messageId)
-        : turnKeys.at(-1);
+      if (!tail.awaitsDecision || tail.messageId === undefined) continue;
+      const key = windowKeyByMessage.get(tail.messageId);
       if (key) keys.add(key);
     }
     return keys;
-  }, [
-    anchoredTails,
-    windowKeyByMessage,
-    turnKeys,
-    outgoingTurnKeys,
-    pendingUserMessage,
-  ]);
+  }, [anchoredTails, windowKeyByMessage]);
   const getWindowViewport = useCallback(() => {
     const root = scrollRootRef.current;
     if (root?.getAttribute("data-slot") === "scroll-area-viewport") {
@@ -94,11 +98,14 @@ export function useThreadTurnWindow({
   const {
     hasOlder,
     hiddenOlderCount,
+    olderAbove,
     reconcileViewport: reconcileWindowViewport,
     revealTurn: revealWindowTurn,
     visibleStart,
   } = useConversationTurnWindow({
+    earlier,
     getViewport: getWindowViewport,
+    heldTurnKeys,
     requiredTurnKeys,
     turnKeys,
   });
@@ -173,6 +180,7 @@ export function useThreadTurnWindow({
     hasMeasuredContentRef,
     hasOlder,
     hiddenOlderCount,
+    olderAbove,
     reconcileViewport,
     revealWindowTurn,
     visibleCanonicalTurns,

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { toast as sonnerToast, type ExternalToast } from "sonner";
 import { definedProps } from "../utils";
 import { FileTransferToast, type FileTransferToastProps } from "./FileTransferToast";
@@ -10,6 +11,8 @@ export type ToastOptions = {
   description?: string;
   intent?: ToastIntent;
   icon?: ToastGlyph;
+  /** In place of the status icon: whom the toast is about, as their 20px avatar. */
+  leading?: ReactNode;
   duration?: number;
   actions?: ToastAction[];
   onClose?: () => void;
@@ -69,6 +72,7 @@ const showCommaToast = (title: string, options?: ToastOptions) => {
       {...definedProps({
         description: options?.description,
         icon: options?.icon,
+        leading: options?.leading,
         actions: options?.actions,
         testId: options?.testId,
       })}

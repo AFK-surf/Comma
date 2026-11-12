@@ -8,6 +8,8 @@ const ATTACHED_FILE_LINE_PATTERN =
   /^- (.+?) \(workspace file: (\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+)\)$/;
 
 export const MAX_ATTACHMENT_BYTES = 10_000_000;
+/** A file uploaded in parts (`ChatApi.uploadLocalFile`): the server's bound (`Comma.GroupFiles`). */
+export const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 export const ATTACHMENT_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 /**
@@ -283,6 +285,11 @@ export function draftUploadIdOfPreviewRef(value: string) {
   return value.startsWith(DRAFT_UPLOAD_PREVIEW_PREFIX)
     ? value.slice(DRAFT_UPLOAD_PREVIEW_PREFIX.length) || undefined
     : undefined;
+}
+
+/** A file uploaded to the group (`/uploads/<token>-<name>`), of any type. */
+export function isGroupUploadPath(value: string) {
+  return /^\/uploads\/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+$/.test(value);
 }
 
 export function isGroupImagePreviewPath(value: string) {

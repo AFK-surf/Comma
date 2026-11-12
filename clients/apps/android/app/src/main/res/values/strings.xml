@@ -41,16 +41,16 @@
         <item quantity="other">已添加 %1$d 个附件，达到上限</item>
     </plurals>
     <string name="composer_send">发送</string>
-    <string name="composer_mic">语音输入。点一下听写，按住说话</string>
-    <string name="composer_voice_unavailable">语音暂不可用</string>
-    <string name="composer_dictation_cancel">取消听写</string>
-    <string name="composer_dictation_confirm">完成听写</string>
-    <string name="composer_listening">正在听…</string>
-    <string name="composer_recognizing">正在识别…</string>
-    <string name="composer_hold_hint">松手发送，上滑取消</string>
-    <string name="composer_hold_cancel_hint">松手取消</string>
-    <string name="composer_hold_auto_end">%1$d 秒后自动发送</string>
-    <string name="composer_voice_empty">没有听清，再说一次</string>
+    <string name="composer_dictate">语音输入消息</string>
+    <string name="composer_dictate_stop">停止语音输入</string>
+    <string name="composer_dictate_cancel">取消语音输入</string>
+    <string name="composer_dictation_transcribing">转录中</string>
+    <string name="composer_dictation_denied">请在“设置”中允许访问麦克风，以便语音输入消息。</string>
+    <string name="composer_dictation_unavailable">无法启动麦克风，请重试。</string>
+    <string name="composer_dictation_in_call">语音通话中无法使用语音输入。</string>
+    <string name="composer_dictation_nothing">没有录到声音，请重试。</string>
+    <string name="composer_dictation_no_speech">未识别到语音，请重试。</string>
+    <string name="composer_dictation_failed">录音转录失败，请重试。</string>
     <string name="composer_attach_limit">最多添加 %1$d 个附件</string>
     <string name="composer_attach_dropped">最多 %1$d 个，多选的 %2$d 个没有添加</string>
     <string name="composer_attach_too_large">文件不能超过 512 MB</string>
@@ -58,10 +58,5 @@
     <string name="composer_uploads_pending">附件还在上传，稍等一下</string>
     <string name="composer_attachment_remove">移除附件</string>
     <string name="composer_attachment_retry">上传失败，轻点重试</string>
-    <string name="composer_mic_denied">没有麦克风权限，无法使用语音输入</string>
-    <string name="composer_mic_denied_forever">麦克风权限已被拒绝，请到系统设置中开启</string>
-    <string name="composer_mic_granted_hold">麦克风已开启，按住即可说话</string>
-    <string name="composer_asr_network">语音识别连接失败，请检查网络</string>
-    <string name="composer_asr_microphone">麦克风被占用，无法录音</string>
-    <string name="composer_asr_failed">语音识别出错了，请再试一次</string>
+    <string name="composer_uploads_failed">有附件上传失败，重试或删除后再发送</string>
 </resources>

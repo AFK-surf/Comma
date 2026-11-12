@@ -11,6 +11,9 @@ defmodule SalixAgent.Tools.LoopsTest do
 
   defmodule TaskOwnerStub do
     @behaviour SalixAgent.Loops.TaskOwner
+
+    @impl true
+    def loop_worker(_loop), do: {:error, :task_worker_missing}
     @impl true
     def loop_ended(_, _), do: :ok
     @impl true
@@ -162,9 +165,8 @@ defmodule SalixAgent.Tools.LoopsTest do
     assert %{"paused_by" => "user"} = Jason.decode!(LoopTools.pause(%{"loop_id" => a}, woken))
     assert %{"status" => "active"} = Jason.decode!(LoopTools.resume(%{"loop_id" => a}, task_a))
 
-    assert_raise RuntimeError, ~r/this Task already has background loop #{a}/, fn ->
-      LoopTools.create(%{"path" => "/loops/main.elf"}, task_a)
-    end
+    # Creating again in Task A gives its one loop a new program.
+    assert %{"loop_id" => ^a, "status" => "active"} = create.(task_a)
 
     assert %{"status" => "deleted"} = Jason.decode!(LoopTools.delete(%{"loop_id" => a}, task_a))
     assert [%{"loop_id" => ^legacy}] = Jason.decode!(LoopTools.list(%{}, task_a))

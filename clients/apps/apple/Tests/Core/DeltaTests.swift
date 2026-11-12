@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import Comma
 
-/// A topic's deltas applied as the core sends them (the core's `delta.ts` and `collections.ts` make them), as
-/// Android's `DeltaTest` checks its own.
+/// A topic's deltas applied as the core sends them (the core's `collections.ts` makes them), as Android's
+/// `DeltaTest` checks its own.
 final class DeltaTests: XCTestCase {
     private func json(_ text: String) -> Any { try! JSONSerialization.jsonObject(with: Data(text.utf8), options: .fragmentsAllowed) }
     private func apply(_ value: String, _ ops: String) -> Any? { Delta.apply(json(value), json(ops) as! NSArray) }
@@ -11,36 +11,21 @@ final class DeltaTests: XCTestCase {
         XCTAssertEqual(actual as? NSObject, json(expected) as? NSObject, file: file, line: line)
     }
 
-    func testSetsAppendsAndRemovesAtAPath() {
-        same(#"{"a":{"b":2},"list":[1,2,3],"n":null}"#, apply(#"{"a":{"b":1,"c":1},"list":[1]}"#, """
-            [{"path":["a","b"],"set":2},{"path":["a","c"],"remove":true},
-             {"path":["list"],"append":[2,3]},{"path":["n"],"set":null}]
-            """))
-    }
-
-    func testExtendsAStringByTheTextItGained() {
-        same(#"{"draft":{"text":"Hello there"}}"#,
-             apply(#"{"draft":{"text":"Hel"}}"#, #"[{"path":["draft","text"],"extend":"lo there"}]"#))
-        // Not a string there: skipped.
-        same(#"{"n":1}"#, apply(#"{"n":1}"#, #"[{"path":["n"],"extend":"x"}]"#))
-    }
-
-    func testReplacesTheWholeValue() {
-        same(#"{"x":1}"#, apply(#"{"a":1}"#, #"[{"path":[],"set":{"x":1}}]"#))
+    /// The cases the core's own test (core-kernel `delta-cases.test.ts`) makes the ops of: each applies to its value after.
+    func testAppliesEveryCaseTheCoreMakes() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../../../../packages/core-kernel/test/fixtures/delta-cases.json")
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [NSDictionary])
+        XCTAssertFalse(cases.isEmpty)
+        for c in cases {
+            let applied = Delta.apply(c["old"] as Any, try XCTUnwrap(c["ops"] as? NSArray))
+            XCTAssertEqual(applied as? NSObject, c["next"] as? NSObject, c["name"] as? String ?? "")
+        }
     }
 
     func testSkipsAnOpWhosePathDoesNotFit() {
         same(#"{"a":1}"#, apply(#"{"a":1}"#, #"[{"path":["b","c"],"set":2},{"path":["a",0],"set":2}]"#))
-    }
-
-    func testPutsPatchesMovesAndDropsItemsByTheirKey() {
-        let start = #"{"items":[{"id":"a","n":1},{"id":"b","n":1},{"id":"c","n":1}]}"#
-        same(#"{"items":[{"id":"z","n":9},{"id":"c","n":1},{"id":"a","n":2}]}"#, apply(start, """
-            [{"path":["items"],"key":["id"],"drop":"b"},
-             {"path":["items"],"key":["id"],"patch":"a","ops":[{"path":["n"],"set":2}]},
-             {"path":["items"],"key":["id"],"move":"a","before":null},
-             {"path":["items"],"key":["id"],"put":{"id":"z","n":9},"before":"c"}]
-            """))
     }
 
     func testPutWithoutAPlaceReplacesTheItemWithItsKey() {

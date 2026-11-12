@@ -1,7 +1,7 @@
+import VerifiedKernelProofs.Session.WorkSemanticExecution
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkSemanticExecution
 import VerifiedKernel.Session.Query.Storage
 
 namespace VerifiedKernel.Session.WorkConservation
@@ -117,34 +117,105 @@ theorem window_contains_messages {s record : Term} {live records : List Term} {j
   exact ⟨next, (sortBy_permutation ordered).mem_iff.mpr
     (List.mem_append_left _ (List.mem_append_left _ present)), fields⟩
 
+/-- PG constructs the publication input from records strictly after its captured frontier. -/
+def UnarchivedWindow (state : Term) : Prop :=
+  ∃ base : Int, (state.get (a "archived_through")).default (i 0) = i base ∧
+    ∀ record, ContainsRecord state record → base < integerValue (record.get (a "seq"))
+
+theorem MessageRecord.sequence {record projected : Term} (projection : MessageRecord record projected) :
+    projected.get (a "seq") = record.get (a "seq") := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, equal⟩ := projection
+  rw [equal]
+  rfl
+
+theorem filterAuxM_contains {f : Term → KernelM Bool} {xs acc ys : List Term}
+    {record : Term} {j r : List Term}
+    (present : record ∈ xs ∨ record ∈ acc) (kept : Runs f record true)
+    (h : List.filterAuxM f xs acc j = .ok (ys, r)) : record ∈ ys := by
+  induction xs generalizing acc j with
+  | nil =>
+    simp only [List.filterAuxM, pure_ok_iff, Prod.mk.injEq] at h
+    rw [h.1]
+    exact present.resolve_left (by simp)
+  | cons head tail ih =>
+    simp only [List.filterAuxM] at h
+    obtain ⟨value, middle, call, h⟩ := bind_ok h
+    cases value with
+    | false =>
+      apply ih (acc := acc) (j := middle) _ h
+      rcases present with member | member
+      · rcases List.mem_cons.mp member with equal | later
+        · subst head
+          rw [kept j] at call
+          simp at call
+        · exact Or.inl later
+      · exact Or.inr member
+    | true =>
+      apply ih (acc := head :: acc) (j := middle) _ h
+      rcases present with member | member
+      · rcases List.mem_cons.mp member with equal | later
+        · subst head
+          exact Or.inr (List.mem_cons_self ..)
+        · exact Or.inl later
+      · exact Or.inr (List.mem_cons_of_mem _ member)
+
+theorem filterM_contains {f : Term → KernelM Bool} {xs ys : List Term}
+    {record : Term} {j r : List Term} (present : record ∈ xs) (kept : Runs f record true)
+    (h : xs.filterM f j = .ok (ys, r)) : record ∈ ys := by
+  unfold List.filterM at h
+  obtain ⟨reversed, _, filtered, h⟩ := bind_ok h
+  rw [pure_ok h]
+  exact List.mem_reverse.mpr (filterAuxM_contains (Or.inl present) kept filtered)
+
 theorem archiveWindow_records {s ceiling : Term} {records : List Term} {j r : List Term}
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
-    ∃ first last, StorageQuery.windowRecords s first = .ok (list records, last) := by
+    ∃ projected first last middle final,
+      StorageQuery.windowRecords s first = .ok (list projected, last) ∧
+      projected.filterM (fun record => greater (record.get (a "seq"))
+        ((s.get (a "archived_through")).default (i 0))) middle = .ok (records, final) := by
   unfold StorageQuery.archiveWindow at h
-  obtain ⟨projected, afterProjection, projectedRead, h⟩ := bind_ok h
+  obtain ⟨stored, _, storedRead, h⟩ := bind_ok h
+  obtain ⟨_, afterCeiling, _, h⟩ := bind_ok h
+  obtain ⟨raw, afterProjection, projectedRead, h⟩ := bind_ok h
+  obtain ⟨projected, afterList, listed, h⟩ := bind_ok h
+  obtain ⟨selected, afterFilter, filtered, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h
-  obtain ⟨_, _, _, h⟩ := bind_ok h
-  obtain ⟨checked, _, _, h⟩ := bind_ok h
   split at h
   · have impossible := pure_ok h
     simp [a, Term.tuple.injEq] at impossible
-  · obtain ⟨_, _, _, h⟩ := bind_ok h
-    have equal := pure_ok h
-    simp only [Term.tuple.injEq, List.cons.injEq, true_and, and_true] at equal
-    have same := equal.1
-    subst projected
-    exact ⟨j, afterProjection, projectedRead⟩
+  · have equal := pure_ok h
+    simp only [Term.tuple.injEq, List.cons.injEq, Term.list.injEq, true_and, and_true] at equal
+    have same : records = selected := Term.list.inj equal.1
+    subst records
+    have rawEq := (asList_ok_iff.mp listed).1
+    rw [rawEq] at projectedRead
+    rw [field_value storedRead] at filtered
+    exact ⟨projected, afterCeiling, afterProjection, afterList, afterFilter, projectedRead, filtered⟩
 
 theorem archiveWindow_messages {s record ceiling : Term} {live records : List Term} {j r : List Term}
-    (inv : SeqSorted s) (read : s.get (a "messages") = list live) (member : record ∈ live)
+    (inv : SeqSorted s) (physical : UnarchivedWindow s)
+    (read : s.get (a "messages") = list live) (member : record ∈ live)
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records, MessageRecord record projected := by
-  obtain ⟨first, last, projected⟩ := archiveWindow_records h
-  exact window_contains_messages inv read member projected
+  obtain ⟨all, _, _, _, _, projected, filtered⟩ := archiveWindow_records h
+  obtain ⟨next, included, image⟩ := window_contains_messages inv read member projected
+  refine ⟨next, filterM_contains included ?_ filtered, image⟩
+  obtain ⟨base, numeric, above⟩ := physical
+  obtain ⟨messages, _, messageRead, _, stamped, _⟩ := inv
+  have same := Term.list.inj (messageRead.symm.trans read)
+  subst messages
+  obtain ⟨stamp, seq, _⟩ := stamped record member
+  have ahead := above record ⟨live, read, member⟩
+  rw [seq] at ahead
+  simp only [integerValue, i] at ahead
+  intro journal
+  change greater (next.get (a "seq")) ((s.get (a "archived_through")).default (i 0)) journal = _
+  rw [image.sequence, seq, numeric]
+  simpa [i, ahead] using greater_integer stamp base journal
 
 theorem removed_records_projected {s e t ceiling : Term} {live records j r first last : List Term}
-    (inv : SeqSorted s) (read : s.get (a "messages") = list live)
+    (inv : SeqSorted s) (physical : UnarchivedWindow s) (read : s.get (a "messages") = list live)
     (plain : ∀ record ∈ live, (record.isMap && !record.has (a "__struct__")) = true)
     (window : StorageQuery.archiveWindow s first = .ok (.tuple [a "ok", list records, ceiling], last))
     (advance : archiveAdvance s e j = .ok (t, r)) :
@@ -153,7 +224,7 @@ theorem removed_records_projected {s e t ceiling : Term} {live records j r first
   obtain ⟨dropped, kept, partition, after, _⟩ := archiveAdvance_prefix inv read plain advance
   refine ⟨dropped, kept, partition, after, ?_⟩
   intro record member
-  apply archiveWindow_messages inv read _ window
+  apply archiveWindow_messages inv physical read _ window
   rw [partition]
   exact List.mem_append_left _ member
 

@@ -8,9 +8,11 @@
 // which are small and short: a Quick Chat asks about at most two pauses at once (a third fails at once), and a send
 // waits for its turn, so the sends waiting number at most the Returns under way. Audio up to 30 MiB; one request each,
 // given up after a little over ten minutes (dictation: 10 s, the wait included).
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect, Option, Semaphore } from "effect";
 import { z } from "zod";
+import type { TranscriptionFailureKind } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
 import { readEvents } from "./sse.ts";
 
@@ -21,28 +23,33 @@ const MAX_DICTATIONS_IN_FLIGHT = 3;
 const TRANSCRIBE_TIMEOUT_MS = 620_000;
 const DICTATION_TIMEOUT_MS = 10_000;
 
-const transcriptSchema = z.object({
-  transcript: z.string().max(8_000_000),
-  duration_seconds: z.number().int().nonnegative(),
-  chunks: z
-    .array(
-      z.object({
-        index: z.number().int().nonnegative(),
-        offset_seconds: z.number().nonnegative(),
-        transcript: z.string().max(8_000_000),
-      })
-    )
-    .max(48),
-});
-const transcriptionSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("ready"), result: transcriptSchema }),
-  z.object({ status: z.literal("error"), reason: z.string().max(500) }),
-]);
+const transcriptSchema = lazySchema(() =>
+  z.object({
+    transcript: z.string().max(8_000_000),
+    duration_seconds: z.number().int().nonnegative(),
+    chunks: z
+      .array(
+        z.object({
+          index: z.number().int().nonnegative(),
+          offset_seconds: z.number().nonnegative(),
+          transcript: z.string().max(8_000_000),
+        })
+      )
+      .max(48),
+  })
+);
+const transcriptionSchema = lazySchema(() =>
+  z.discriminatedUnion("status", [
+    z.object({ status: z.literal("ready"), result: transcriptSchema }),
+    z.object({ status: z.literal("error"), reason: z.string().max(500) }),
+  ])
+);
 
 export type Transcript = z.infer<typeof transcriptSchema>;
 
-/** Why there is no transcript, as Main writes it beside the audio. */
-const unavailable = (message: string) => new CoreError("transcription_failed", message);
+/** Why there is no transcript, as Main writes it beside the audio, and the kind of failure it was. */
+const unavailable = (message: string, kind: TranscriptionFailureKind) =>
+  new CoreError("transcription_failed", message, undefined, { kind });
 
 export class Recordings {
   /** Transcriptions in flight: one permit each, never waited for (a third fails at once). */
@@ -69,7 +76,8 @@ export class Recordings {
           if (audio.length > MAX_TRANSCRIBED_BYTES)
             return Effect.fail(
               unavailable(
-                "ASR accepts recordings up to 30 MiB. The audio remains in Drive."
+                "ASR accepts recordings up to 30 MiB. The audio remains in Drive.",
+                "too_large"
               )
             );
           const dictation = purpose !== undefined;
@@ -86,7 +94,8 @@ export class Recordings {
                       onNone: () =>
                         Effect.fail(
                           unavailable(
-                            "Transcription is busy. The audio remains in Drive."
+                            "Transcription is busy. The audio remains in Drive.",
+                            "busy"
                           )
                         ),
                       onSome: Effect.succeed,
@@ -99,7 +108,8 @@ export class Recordings {
               orElse: () =>
                 Effect.fail(
                   unavailable(
-                    "Transcription took too long. The audio remains in Drive."
+                    "Transcription took too long. The audio remains in Drive.",
+                    "timeout"
                   )
                 ),
             })
@@ -126,7 +136,10 @@ function transcribe(
         })
         .pipe(
           Effect.mapError(() =>
-            unavailable("Transcription is unavailable. The audio remains in Drive.")
+            unavailable(
+              "Transcription is unavailable. The audio remains in Drive.",
+              "unavailable"
+            )
           )
         );
       // The first transcription event is the answer: the stream is let go then (`taken`, carrying it). A stream that
@@ -138,7 +151,8 @@ function transcribe(
           parsed.success
             ? new CoreError("taken", "", undefined, parsed.data)
             : unavailable(
-                "Transcription answered unexpectedly. The audio remains in Drive."
+                "Transcription answered unexpectedly. The audio remains in Drive.",
+                "unexpected"
               )
         );
       }).pipe(
@@ -153,10 +167,13 @@ function transcribe(
       );
       if (!result)
         return yield* Effect.fail(
-          unavailable("Transcription was interrupted. The audio remains in Drive.")
+          unavailable(
+            "Transcription was interrupted. The audio remains in Drive.",
+            "interrupted"
+          )
         );
       if (result.status === "error")
-        return yield* Effect.fail(unavailable(result.reason));
+        return yield* Effect.fail(unavailable(result.reason, "server"));
       return result.result;
     })
   );

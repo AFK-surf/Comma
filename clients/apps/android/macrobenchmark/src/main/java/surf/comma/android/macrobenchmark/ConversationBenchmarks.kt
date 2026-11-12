@@ -31,7 +31,7 @@ internal fun MacrobenchmarkScope.launchConversation(scene: String): String {
         setClassName(TARGET_PACKAGE, "surf.comma.android.MainActivity")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         putExtra("scenario", scene)
-        // blur (the default), fade or off: compares the frosted top band with its fallbacks.
+        // blur (the default), glass, fade or off: compares the frosted top band with the glass and its fallbacks.
         InstrumentationRegistry.getArguments().getString("comma.topBackdrop")?.let { putExtra("top_backdrop", it) }
     })
     val status = device.wait(Until.findObject(

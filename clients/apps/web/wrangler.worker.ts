@@ -15,6 +15,14 @@ const publicSharePath = /^\/s\/[^/]+\/?$/;
 const miniAppLinkPath = /^\/a\/[^/]+\/?$/;
 // Only production is for search. Staging and preview hosts stay out of indexes.
 const indexedHost = "app.comma.surf";
+const appLinkHosts = new Set([indexedHost, "app-staging.comma.surf"]);
+
+// The configured Apple signing team and phone bundle own /a/ links. Apple verifies the signed App's association.
+const appAssociation = {
+  applinks: {
+    details: [{ appIDs: ["D9AAN3VJK8.surf.comma.ios"], components: [{ "/": "/a/*" }] }],
+  },
+};
 
 // A public Task Share link: the token stays out of referrers and indexes.
 async function servePublicShare(request: Request, env: Env): Promise<Response> {
@@ -70,6 +78,23 @@ export default {
 };
 
 function serve(request: Request, pathname: string, env: Env): Promise<Response> {
+  if (pathname === "/.well-known/apple-app-site-association") {
+    if (!appLinkHosts.has(new URL(request.url).hostname))
+      return Promise.resolve(new Response(null, { status: 404 }));
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return Promise.resolve(
+        new Response(null, { status: 405, headers: { allow: "GET, HEAD" } })
+      );
+    return Promise.resolve(
+      new Response(request.method === "HEAD" ? null : JSON.stringify(appAssociation), {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "public, max-age=3600",
+          "x-content-type-options": "nosniff",
+        },
+      })
+    );
+  }
   if (pathname === commaApiPrefix || pathname.startsWith(`${commaApiPrefix}/`)) {
     return Promise.resolve(
       Response.json(

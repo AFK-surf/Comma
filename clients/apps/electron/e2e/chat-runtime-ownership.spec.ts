@@ -190,10 +190,8 @@ test("a renderer-selected file over 10 MB uploads from Main as it is attached an
           size: chatAttachmentUploadMaxBytes + 1,
         },
       ]);
-    // Main sent the file chunked as it read it; the server got no route to read it from this device.
-    expect(stub.uploads).toMatchObject([
-      { filename: "large-report.pdf", transferEncoding: "chunked" },
-    ]);
+    // The core sent it in parts, each read from Main; the server got no route to read it from this device.
+    expect(stub.uploads).toMatchObject([{ filename: "large-report.pdf", parts: 3 }]);
     expect(stub.uploads[0]?.bytes.byteLength).toBe(chatAttachmentUploadMaxBytes + 1);
     expect(stub.localFileRegistrations).toHaveLength(0);
     await appWindow.getByRole("button", { name: "Send immediately" }).click();
@@ -508,6 +506,82 @@ test(
       await restorePicker(launched.app);
       await stub.close();
       await rm(sourceDirectory, { force: true, recursive: true });
+    }
+  }
+);
+
+test(
+  "the configured CAPTCHA iframe has no native bridge or account credential",
+  { tag: "@mac" },
+  async () => {
+    const trusted = await startChatRuntimeStub();
+    const other = await startChatRuntimeStub();
+    const launched = await launchRuntimeApp({
+      baseUrl: trusted.baseUrl,
+      email: runtimeAccountB.email,
+      token: runtimeAccountB.token,
+    });
+    try {
+      const page = await loadedMainWindow(launched.app);
+      const url = `${trusted.baseUrl}/v1/comma/auth/captcha?challenge_id=public_fixture&action=email_login`;
+      await page.evaluate((src) => {
+        const frame = document.createElement("iframe");
+        frame.title = "CAPTCHA isolation fixture";
+        frame.sandbox.add("allow-scripts", "allow-same-origin");
+        frame.src = src;
+        document.body.append(frame);
+      }, url);
+      const frame = page.frameLocator('iframe[title="CAPTCHA isolation fixture"]');
+      await expect(
+        frame.getByRole("heading", { name: "Security check fixture" })
+      ).toBeVisible();
+      expect(
+        await frame.locator("body").evaluate(() => {
+          const scope = window as unknown as {
+            commaNative?: unknown;
+            __commaNativePreload?: unknown;
+          };
+          let parentBridge = false;
+          try {
+            parentBridge = Boolean(
+              (window.parent as unknown as { commaNative?: unknown }).commaNative
+            );
+          } catch {
+            /* Cross-origin isolation. */
+          }
+          return {
+            bridge: typeof scope.commaNative,
+            preload: typeof scope["__commaNativePreload"],
+            parentBridge,
+          };
+        })
+      ).toEqual({ bridge: "undefined", preload: "undefined", parentBridge: false });
+      expect(
+        trusted.requests.find((request) => request.path === "/v1/comma/auth/captcha")
+          ?.token
+      ).toBe("");
+      const blocked = await page.evaluate(
+        (src) =>
+          new Promise<string>((answer) => {
+            const report = (event: SecurityPolicyViolationEvent) => {
+              if (event.violatedDirective !== "frame-src") return;
+              window.removeEventListener("securitypolicyviolation", report);
+              answer(event.blockedURI);
+            };
+            window.addEventListener("securitypolicyviolation", report);
+            const blockedFrame = document.createElement("iframe");
+            blockedFrame.src = src;
+            document.body.append(blockedFrame);
+          }),
+        `${other.baseUrl}/v1/comma/auth/captcha`
+      );
+      expect(blocked).toContain(other.baseUrl);
+      expect(other.requests).toHaveLength(0);
+    } finally {
+      await closeElectronTestApp(launched.app);
+      await trusted.close();
+      await other.close();
+      await rm(launched.userDataDir, { recursive: true, force: true });
     }
   }
 );
@@ -2353,11 +2427,11 @@ function normalizedUrl(value: string) {
   return value.replace(/\/+$/, "");
 }
 
-// The rail shows no account any more: a signed-in product shell is the rail
-// with its Settings item, and the account behind it is read from Main.
+// A signed-in product shell is the rail
+// with its account item, and the account behind it is read from Main.
 async function expectSignedInShellAs(appWindow: Page, email: string) {
   await expect(
-    appWindow.getByRole("button", { exact: true, name: "Settings" })
+    appWindow.getByRole("button", { exact: true, name: "Account" })
   ).toBeVisible();
   await expect
     .poll(() => sessionState(appWindow).then((state) => state.email))
@@ -2371,7 +2445,8 @@ async function expectSignedInShellAs(appWindow: Page, email: string) {
 // click away from Home.
 async function signOutFromSettings(appWindow: Page) {
   const previousHash = await appWindow.evaluate(() => window.location.hash);
-  await appWindow.getByRole("button", { exact: true, name: "Settings" }).click();
+  await appWindow.getByRole("button", { exact: true, name: "Account" }).click();
+  await appWindow.getByRole("menuitem", { exact: true, name: "Settings" }).click();
   await appWindow.getByRole("button", { exact: true, name: "Profile" }).click();
   await appWindow.getByRole("button", { exact: true, name: "Sign out" }).click();
   await expect(

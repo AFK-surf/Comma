@@ -1,7 +1,6 @@
 import VerifiedKernel.Session.CommandDriver
 import VerifiedKernelProofs.Session.WorkRevision
 import VerifiedKernelProofs.Session.WorkInputTimestamp
-
 namespace VerifiedKernel.Session.CommandDriver
 open Data WorkConservation
 set_option Elab.async false
@@ -179,7 +178,7 @@ theorem confirmed_snapshot {context : Context} {cursor : PendingRevision.Cursor}
       confirmed = .tuple [a "session_command_driver_confirmed", (Revision.Cursor.committed state etag).pack, continuation] ∧
       Lifecycle.persistable state [] = .ok (snapshot, []) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ durable key etag snapshot := by
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ durable key etag snapshot := by
   have actual : acceptCAS context continuation (RevisionFence.resident (some saved) (a "cas_revision") result) =
       (some confirmed, .tuple [a "committed"]) := by
     cases context <;> exact resumed
@@ -207,7 +206,7 @@ theorem issued_confirmation {context : Context} {cursor : PendingRevision.Cursor
       Lifecycle.persistable state [] = .ok (snapshot, []) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       (.tuple [a "cas", requestedKey, requestedBytes, requestedBase] : Term) =
-        .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ durable key etag snapshot := by
+        .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ durable key etag snapshot := by
   rw [encode_captured] at encoded
   obtain ⟨fence, inner, captured⟩ := accept_fence_cas_capture encoded
   rw [captured] at resumed
@@ -236,7 +235,7 @@ theorem input_confirmation_durable {context : Context} {staged : PendingRevision
     (primitive : ArchivePublication.SnapshotCASMeaning
       (.tuple [a "cas", requestedKey, requestedBytes, requestedBase]) result durable)
     (resumed : resident (some saved) (a "cas_result") result = (some confirmed, .tuple [a "committed"])) :
-    staged.baseline = context.candidate.baseline ∧ staged.etag = context.candidate.etag ∧
+    staged.baseline = context.candidate.baseline ∧ staged.revision = context.candidate.revision ∧
       ∃ etag snapshot event now first last item,
         confirmed = .tuple [a "session_command_driver_confirmed", (Revision.Cursor.committed stamped etag).pack, continuation] ∧
         durable key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧

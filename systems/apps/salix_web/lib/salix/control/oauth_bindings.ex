@@ -467,6 +467,7 @@ defmodule Salix.Control.OAuthBindings do
       "alias" => binding["alias"],
       "connection_id" => binding["connection_id"],
       "enabled" => enabled,
+      "owner" => conn["owner"],
       "provider_account_id" => conn["provider_account_id"] || "",
       "provider_account_name" => conn["provider_account_name"] || "",
       "scopes" => conn["scopes"] || [],
@@ -479,7 +480,12 @@ defmodule Salix.Control.OAuthBindings do
         ),
       "created_at" => binding["created_at"]
     }
+    |> put_fields(SalixStore.OAuth.Adapters.Secret.field_names(conn))
   end
+
+  # A secret's fields by name, never their values.
+  defp put_fields(detail, []), do: detail
+  defp put_fields(detail, fields), do: Map.put(detail, "fields", fields)
 
   defp binding_enabled(attrs, binding) do
     if Map.has_key?(attrs, "enabled") do

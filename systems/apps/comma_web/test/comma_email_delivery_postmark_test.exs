@@ -1,5 +1,6 @@
 defmodule CommaWeb.EmailDeliveryPostmarkTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Plug.Conn
@@ -194,6 +195,7 @@ defmodule CommaWeb.EmailDeliveryPostmarkTest do
     |> put_req_header("content-type", "application/json")
     |> put_req_header("x-comma-session-transport", "bearer")
     |> CommaWeb.Router.call(@router_opts)
+    |> CommaWeb.AuthAbuseTestSupport.continue_http()
   end
 
   defp delete_redis_keys(prefix) do

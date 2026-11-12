@@ -1,4 +1,4 @@
-// POST /updates…, as admin/mod.rs answers them (admin/tests.rs), and `stillfail-station channel` asking a running
+// POST /updates…, as admin/mod.rs answers them (admin/tests.rs), and `comma-station channel` asking a running
 // station (the Rust station's main.rs's tests). Temporary data directories, a cloud that answers nothing.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { channelCommand, setChannel } from "../src/updates/channel.ts";
 import { CHANNEL_ANSWER, CHANNEL_ASK, Updates, answerChannelAsk } from "../src/updates/updates.ts";
 import type { Channel } from "../src/updates/versions.ts";
 
-delete process.env.STILLFAIL_CONFIG;
+delete process.env.COMMA_STATION_CONFIG;
 delete process.env.EMBER_CONFIG;
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "stillfail-updates-")));

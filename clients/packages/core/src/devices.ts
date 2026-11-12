@@ -4,11 +4,19 @@
 // read by its id wherever it falls in the list, and each one's Agent runtimes. While shown, the first page and this
 // computer are read every 15 s; each runtime's readiness says until when it holds, and the core shows it as stale from
 // that moment (`fresh`), without a request. On the first read of a visit, a connected computer that allows operations
-// and has a stale or expired runtime is checked once (its Connector probes it); a person can check one again.
+// and has a stale or expired runtime is checked once (its Connector probes it); a person can check one again. A
+// still.fail station (`device_kind` `stillfail`) is never checked.
 //
 // Bounds: one list read in flight per page shown; probes two at a time, at most 50 queued per visit, each given up after
 // 35 s; one timer for the next readiness expiry. Changes are one request each, then one read.
-import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
+import { lazySchema } from "@comma/chat-contract";
+import {
+  CoreError,
+  madeOnce,
+  Priority,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Effect, Fiber, Option, Semaphore } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -18,8 +26,8 @@ import { enrollmentSchema } from "./stations/control.ts";
 import type {
   Device,
   DeviceEnrollment,
+  DeviceRuntime,
   DevicesValue,
-  ScreenStreamIceServer,
   ShownDevice,
 } from "./contract.ts";
 import type { ChatDeviceSetupOffer } from "@comma/chat-contract";
@@ -32,6 +40,10 @@ export const isCommaDevice = (source: string | undefined | null): boolean =>
     source ?? ""
   );
 
+/** A still.fail station: it takes Tasks only, so it has no access value and is never checked for coding agents. */
+export const isStillfailStation = (device: Pick<Device, "device_kind">): boolean =>
+  device.device_kind === "stillfail";
+
 const POLL_MS = 15_000;
 const PAGE = 20;
 const KEPT = 50;
@@ -42,47 +54,40 @@ const devicesPath = (ws: string) => route`/v1/comma/workspaces/${ws}/devices`;
 const devicePath = (ws: string, id: string) =>
   route`/v1/comma/workspaces/${ws}/devices/${id}`;
 // A row this client cannot read is left out rather than failing the page, as the server skips a device it cannot project.
-const pageSchema = z.object({
-  devices: z.array(z.unknown()).transform((rows) =>
-    rows.flatMap((row) => {
-      const read = deviceSchema.safeParse(row);
-      return read.success ? [read.data] : [];
-    })
-  ),
-  cloud_vm: z
-    .unknown()
-    .optional()
-    .transform((row) => {
-      const read = deviceSchema.safeParse(row);
-      return read.success ? read.data : null;
-    }),
-  next_cursor: z.string().nullable(),
-});
+const pageSchema = lazySchema(() =>
+  z.object({
+    devices: z.array(z.unknown()).transform((rows) =>
+      rows.flatMap((row) => {
+        const read = deviceSchema.safeParse(row);
+        return read.success ? [read.data] : [];
+      })
+    ),
+    cloud_vm: z
+      .unknown()
+      .optional()
+      .transform((row) => {
+        const read = deviceSchema.safeParse(row);
+        return read.success ? read.data : null;
+      }),
+    next_cursor: z.string().nullable(),
+  })
+);
 
 /** What the server answers for a reported device that is, or was, offered: the phone says no more of it. */
 const NEARBY_TAKEN = new Set(["offered", "duplicate", "already_connected", "ignored"]);
-const nearbySchema = z.object({
-  reporter: z.string().min(1).max(256),
-  request: z.string().min(1).max(256),
-  device: z.object({
-    name: z.string().min(1).max(256),
-    model: z.string().min(1).max(256),
-    state: z.string().max(64),
-    shortId: z.string().regex(/^[0-9A-Fa-f]{4}$/),
-    rssi: z.number().int(),
-  }),
-});
-
-const iceServerSchema = z.object({
-  urls: z.array(z.string()).min(1).max(8),
-  username: z.string().optional(),
-  credential: z.string().optional(),
-});
-const iceServer = (server: z.infer<typeof iceServerSchema>): ScreenStreamIceServer => ({
-  urls: server.urls,
-  ...(server.username === undefined ? {} : { username: server.username }),
-  ...(server.credential === undefined ? {} : { credential: server.credential }),
-});
+const nearbySchema = lazySchema(() =>
+  z.object({
+    reporter: z.string().min(1).max(256),
+    request: z.string().min(1).max(256),
+    device: z.object({
+      name: z.string().min(1).max(256),
+      model: z.string().min(1).max(256),
+      state: z.string().max(64),
+      shortId: z.string().regex(/^[0-9A-Fa-f]{4}$/),
+      rssi: z.number().int(),
+    }),
+  })
+);
 
 type Shown = {
   workspace: string | null;
@@ -115,6 +120,23 @@ const params = {
 
 const keyOf = (topic: Topic) =>
   `${topic.prefer ?? ""}\n${topic.local ?? ""}\n${topic.visit ?? ""}`;
+
+/** A device as shown, with which of its runtimes are fresh (`fresh`, one mark each): made once for the same two. */
+const shownDevice = madeOnce(
+  (device: Device, fresh: string): ShownDevice => ({
+    ...device,
+    isCommaDevice: isCommaDevice(device.system_info?.client_source),
+    isStillfailStation: isStillfailStation(device),
+    device_runtimes: device.device_runtimes.map((runtime, i) =>
+      shownRuntime(runtime, fresh[i] === "1")
+    ),
+  })
+);
+
+const shownRuntime = madeOnce((runtime: DeviceRuntime, fresh: boolean) => ({
+  ...runtime,
+  fresh,
+}));
 
 export class Devices {
   readonly #ctx: Ctx;
@@ -231,69 +253,6 @@ export class Devices {
               })
             )
           ),
-      },
-      "devices.screenStreamIce": {
-        run: (p) =>
-          this.#send(
-            "POST",
-            `${devicePath(params.string(p, "workspace"), params.string(p, "device"))}/screen-stream`,
-            z.object({ ice_servers: z.array(iceServerSchema).max(4) }),
-            { op: "ice" }
-          ).pipe(
-            Effect.map((answer) => ({ servers: answer.ice_servers.map(iceServer) }))
-          ),
-      },
-      "devices.startScreenStream": {
-        run: (p) => {
-          const input = p as {
-            target?: unknown;
-            apps?: unknown;
-            control?: unknown;
-            background?: unknown;
-          } | null;
-          const sdp = (p as { sdp?: unknown } | null)?.sdp;
-          if (typeof sdp !== "string" || sdp === "" || sdp.length > 65_536)
-            throw CoreError.invalid("sdp is required");
-          if (input?.target !== "app" && input?.target !== "display")
-            throw CoreError.invalid("target is required");
-          const apps = Array.isArray(input.apps)
-            ? input.apps
-                .filter((app): app is string => typeof app === "string")
-                .slice(0, 8)
-            : [];
-          return this.#send(
-            "POST",
-            `${devicePath(params.string(p, "workspace"), params.string(p, "device"))}/screen-stream`,
-            z.object({ sdp: z.string(), stream_id: z.string() }),
-            {
-              op: "start",
-              sdp,
-              target: input.target,
-              apps,
-              control: input.control === true,
-              ...(typeof input.background === "string" &&
-              /^#[0-9a-f]{6}$/.test(input.background)
-                ? { background: input.background }
-                : {}),
-              ice_servers: z
-                .array(iceServerSchema)
-                .max(4)
-                .catch([])
-                .parse((p as { servers?: unknown } | null)?.servers),
-            }
-          ).pipe(
-            Effect.map((answer) => ({ sdp: answer.sdp, stream: answer.stream_id }))
-          );
-        },
-      },
-      "devices.stopScreenStream": {
-        run: (p) =>
-          this.#send(
-            "POST",
-            `${devicePath(params.string(p, "workspace"), params.string(p, "device"))}/screen-stream`,
-            z.object({}),
-            { op: "stop", stream_id: params.string(p, "stream") }
-          ).pipe(Effect.as(null)),
       },
       "devices.rename": {
         doing: true,
@@ -668,6 +627,7 @@ export class Devices {
       if (
         device.status === "connected" &&
         device.allows_operations &&
+        !isStillfailStation(device) &&
         device.device_runtimes.some(
           (runtime) =>
             AGENTS.has(runtime.provider) &&
@@ -686,6 +646,13 @@ export class Devices {
     const key = keyOf(topic);
     const shown = this.#shown.get(key);
     if (!shown?.workspace || shown.probing.has(device) || shown.probing.size >= KEPT)
+      return;
+    // A still.fail station answers no coding-agent check (the server refuses one).
+    if (
+      [...shown.devices, ...(shown.cloud ? [shown.cloud] : [])].some(
+        (row) => row.device_id === device && isStillfailStation(row)
+      )
+    )
       return;
     const workspace = shown.workspace;
     shown.probing.add(device);
@@ -755,15 +722,18 @@ export class Devices {
   #value(topic: Topic): DevicesValue {
     const shown = this.#shown.get(keyOf(topic));
     const now = this.#ctx.now();
-    const show = (device: Device): ShownDevice => ({
-      ...device,
-      isCommaDevice: isCommaDevice(device.system_info?.client_source),
-      device_runtimes: device.device_runtimes.map((runtime) => ({
-        ...runtime,
-        fresh:
-          !!runtime.readiness_valid_until && runtime.readiness_valid_until * 1000 > now,
-      })),
-    });
+    // Which runtimes are fresh now, one mark each: a device is shown again only when one of them changes.
+    const show = (device: Device): ShownDevice =>
+      shownDevice(
+        device,
+        device.device_runtimes
+          .map((r) =>
+            !!r.readiness_valid_until && r.readiness_valid_until * 1000 > now
+              ? "1"
+              : "0"
+          )
+          .join("")
+      );
     return {
       workspace: shown?.workspace ?? null,
       devices: (shown?.devices ?? []).map(show),

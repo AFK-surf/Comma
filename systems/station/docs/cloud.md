@@ -1,6 +1,6 @@
 # still.fail cloud：账号、workspace 与 station
 
-still.fail 的执行节点叫 **station**。一个人可以登录多个 Google 账号。一个账号可以建多个 **workspace**，也可以被邀请进别人的 workspace。一个 workspace 里可以有多台 station。客户端通过 iroh 连到 station，不经过任何业务服务器。
+Comma 的执行节点叫 **station**。一个人可以登录多个 Google 账号。一个账号可以建多个 **workspace**，也可以被邀请进别人的 workspace。一个 workspace 里可以有多台 station。客户端通过 iroh 连到 station，不经过任何业务服务器。
 
 ```
 浏览器 ──(iroh，只走 relay)───────────────┐
@@ -25,11 +25,11 @@ Cloudflare：still.fail cloud（stillfail-cloud API、stillfail-relay、stillfai
 | 账号 | 一个 Google 身份 | Google `sub` |
 | 客户端 | 一个浏览器或 App 安装，持有一把 iroh 设备密钥，可以同时登录多个账号 | 设备公钥 |
 | workspace | 一组人和一组 station。账号在其中的角色是 owner / admin / member | ULID |
-| station | 一台 still.fail 节点，属于一个 workspace | station 的 iroh 公钥 |
+| station | 一台 Comma 节点，属于一个 workspace | station 的 iroh 公钥 |
 
 - 一个账号可以创建多个 workspace（成为 owner），也可以接受邀请加入别人的。
 - owner / admin 可以邀请成员、登记 station、移除成员和 station。owner 还可以改角色、删除 workspace。workspace 至少保留一个 owner。
-- 邀请按邮箱发出。对方用这个邮箱登录 still.fail，就会在 workspace 切换菜单里看到邀请。
+- 邀请按邮箱发出。对方用这个邮箱登录 Comma，就会在 workspace 切换菜单里看到邀请。
 - 没有 workspace 的账号登录后会自动得到一个自己的 workspace。
 - 客户端里每个已登录的账号各自持有会话（access / refresh token），互不影响。
 
@@ -54,7 +54,7 @@ Google OAuth（`openid email profile`）。access token 5 分钟。refresh token
 - **吊销**：成员被移除或改角色（`sub`）、登录会话被注销（`sid`）时，still.fail cloud 通过 station 的控制通道推一条吊销（`revoke` 帧。`state` 帧里也带着最近 31 天的吊销）。station 拒绝签发时间不晚于吊销时间的凭证，并断开已连着的连接。station 不在线时错过的吊销，下次连上 still.fail cloud 时从 `state` 里补上。
 - still.fail cloud 下线时，已登录过的设备凭缓存的凭证照常连 station（局域网直连或 relay）。只有新登录、新成员需要它。
 
-连接用 ALPN `stillfail/admin/1`，也接受旧版 `ember/admin/1`。第一个流交换凭证。之后每个流承载一个管理 API 请求：请求头是一行 JSON（method、path、headers），随后是请求体。回应头是一行 JSON（status、headers），随后是回应体。流结束即回应结束（SSE 就是一直不结束的回应）。
+连接用 ALPN `comma-station/admin/1`，也接受旧版 `ember/admin/1`。第一个流交换凭证。之后每个流承载一个管理 API 请求：请求头是一行 JSON（method、path、headers），随后是请求体。回应头是一行 JSON（status、headers），随后是回应体。流结束即回应结束（SSE 就是一直不结束的回应）。
 
 station 端在 `station/src/mesh/serve.ts`（iroh 在 Node 插件 `station/native/mesh` 里）。它把请求交给 station 的管理 API，带上已验证的用户身份。
 
@@ -62,9 +62,9 @@ station 端在 `station/src/mesh/serve.ts`（iroh 在 Node 插件 `station/nativ
 
 A station and the client core talk to "the control plane" through one interface. The same station and core can be enrolled in still.fail cloud or, experimentally, in Comma (AFK-surf/Cue). still.fail cloud is the default.
 
-- **Station** (`station/src/cloud/plane.ts`): `cloud/provider.ts` holds what differs per provider (paths, signing tags, header names, credential `iss`/`typ`). `cloud.json` has `provider` (absent means `"stillfail"`). The station reads it at each use, so no restart is needed. Feedback (`/v1/feedback`) and session page links are still.fail only.
-- **Enrolling in Comma**: `stillfail station enroll <origin> <token> --provider comma` posts to `/v1/comma/stations/enroll` (`comma-station-enroll-v1` proof). Presence is `/v1/comma/stations/connect` (`comma-station-connect-v1`, `x-stillfail-*` headers only); its `state` frames also carry `gateway_keys`, kept in cloud.json. On it the station sends `{type: "reach", home_relay, addrs}` (its endpoint's home relay and direct addresses, `mesh/reach.ts`) at connect and whenever they change; Comma gives them, while the station is online, to its peers in `peers` and to members in the stations list, as hints for dialing: a station dials a peer there besides the relays and Salix (`mesh/peer.ts` `peerAddr`), the Comma client core a station (`clients/packages/core/src/hosts/mesh.ts`: on the desktop through this addon, on the phones through `clients/packages/mesh/native`); each is still known by its key, and one that gave none is found by its id. Notices go to `/v1/comma/stations/notify` (`comma-station-notify-v1`). Comma takes no traces yet. Releases and the installer are under `<origin>/stations` (`releases/station.json`, `install.sh`); `stillfail update` follows cloud.json's provider.
-- **Credentials**: Comma's are `typ: comma-member+jwt`, `iss: comma`, checked like still.fail's. Role `viewer` is read-only on every station: reads (GET/HEAD) and the viewer's own read/dismissed marks only. Other requests and phone sharing answer 403. Every other member may start a Task (a chat on the station's page, `POST /sessions`) and write in one on any station of the workspace, a Cloud VM's included; no station keeps it to its owner (decided by 左子健, 2026-10-19).
+- **Station** (`station/src/cloud/plane.ts`): `cloud/provider.ts` holds what differs per provider (paths, signing tags, header names, credential `iss`/`typ`). `cloud.json` has `provider` (absent means `"stillfail"`). The station reads it at each use, so no restart is needed. Feedback (`/v1/feedback`) and session page links are Comma only.
+- **Enrolling in Comma**: `comma-station station enroll <origin> <token> --provider comma` posts to `/v1/comma/stations/enroll` (`comma-station-enroll-v1` proof). Presence is `/v1/comma/stations/connect` (`comma-station-connect-v1`, `x-comma-station-*` headers only); its `state` frames also carry `gateway_keys`, kept in cloud.json. On it the station sends `{type: "reach", home_relay, addrs}` (its endpoint's home relay and direct addresses, `mesh/reach.ts`) at connect and whenever they change; Comma gives them, while the station is online, to its peers in `peers` and to members in the stations list, as hints for dialing: a station dials a peer there besides the relays and Salix (`mesh/peer.ts` `peerAddr`), the Comma client core a station (`clients/packages/core/src/hosts/mesh.ts`: on the desktop through this addon, on the phones through `clients/packages/mesh/native`); each is still known by its key, and one that gave none is found by its id. Notices go to `/v1/comma/stations/notify` (`comma-station-notify-v1`). Comma takes no traces yet. Releases and the installer are under `<origin>/stations` (`releases/station.json`, `install.sh`); `comma-station update` follows cloud.json's provider.
+- **Credentials**: Comma's are `typ: comma-member+jwt`, `iss: comma`, checked like Comma's. Role `viewer` is read-only on every station: reads (GET/HEAD) and the viewer's own read/dismissed marks only. Other requests and phone sharing answer 403. Every other member may start a Task (a chat on the station's page, `POST /sessions`) and write in one on any station of the workspace, a Cloud VM's included; no station keeps it to its owner (decided by 左子健, 2026-10-19).
 - **Device tools** (`station/src/mesh/tools.ts`, `station/src/device/tools.ts`) reach the station two ways, with the same requests and answers.
   - Comma pushes them on the presence socket by default: `{type: "tool", id, request}`, answered on the socket with `{type: "tool_result", id, response}`. Being on the socket the station signed into is the admission.
   - Or a gateway calls `comma/tools/1`, an iroh ALPN on the station's endpoint. Only ids in `gateway_keys` are admitted (rechecked per request). One request per stream: a JSON line `{op, id, context, args}`, answered by `{ok, result}` or `{ok: false, error: {code, message}}`.
@@ -72,6 +72,10 @@ A station and the client core talk to "the control plane" through one interface.
   - The computer's one access value decides what runs (`device/access.ts`): `tools.access` in config.json (`off` | `read` | `full`, default `off`). The station's device connection to Salix follows the same value (see below). Any member can read it with `GET /tools/access`. `PUT /tools/access` is for the computer's owner (`tools.owner`, the user its device connection belongs to); a station without a device connection (a Cloud VM, a still.fail cloud station) takes it from the workspace's owners and admins. `read` allows reads of files, processes, runtimes and chat states (the op list is `READ_OPS` in `device/tools.ts`). `full` allows all ops, including `exec`, `fs.write` and `process.*`, which run as the station's user and can reach what that user can.
   - The device connection: `full` allows operations; `read` and `off` make it read-only (`local_file_read`), and `off` also refuses its file reads. Its metadata says the value (`capabilities.access`). Salix's `device_access` sets the value: `{access}` (off | read | full), or the 2-level `{allow_operations}` of servers from before (true is `full`; false is `read`, and an `off` computer stays `off`). A desktop app's connection file whose `scope` alone changed sets it the same 2-level way (`""` is true). Once the computer has a value (`tools.computer: true`), a connection's own scope says nothing.
   - A station from before has only the device tools' value. The first device connection that starts gives the computer its value: the access that connection was configured with (the desktop app's choice, or a standalone device's `device-access.json`), `read` or `full`, whatever `tools.access` said before.
+  - A new VMM Station image configuration starts with `tools.access: full`. Its initializer creates only a missing file, using `COMMA_STATION_CONFIG`, `EMBER_CONFIG`, then data/config.json. Every existing file is kept, including explicit off/read and malformed configurations. Physical Stations keep their default off. The same owner/admin API controls later changes.
+  - Comma resolves the caller from the turn's sealed principal. An ordinary Task's first Worker command may use the human request that created it. The current assigned Worker, Session, consumed command and source message must match. Later Task commands, scheduled Tasks and Loop Tasks do not inherit that request. Current Group membership and viewer restrictions still apply to every call.
+  - Calls with workspace, agent and conversation use a default directory under `home/.comma-work/`, keyed by the stable Workspace key and that Agent conversation. Renames retain it. Relative files and relative `cwd` resolve there. A command or process creates its default directory when needed. Calls without that context retain home-relative paths.
+  - `exec` and `process.start` return `cwd`. Process listings include `cwd` and the caller's original workspace, agent and conversation. These are coordination facts, not process permissions. Stop only processes started for your work. Absolute paths remain shared. Existing files and `HOME` do not move.
   - At every level, file ops and working directories refuse the station's data directory (its key, cloud.json, the profiles' homes), its config and the machine's Claude/Codex logins, also through symlinks.
   - `session.start`/`session.say` create and drive normal station chats through the admin API as the requester (`requester_email`).
 - **A workspace told by a new id**: the control plane may rename a workspace. The enroll answer and every `state` frame carry `workspace` (the id now) and `workspace_was` (the earlier ids, oldest first, absent means none). `cloud.json` keeps both (`cloud/state.ts`).
@@ -96,17 +100,17 @@ The wire contract shared with Comma is "Station ↔ Comma control-plane contract
 
 Cloudflare Container 里跑官方 `iroh-relay`，前面由 Worker（`stillfail-relay`，`cloud/src/relay-worker.ts`）转发 WebSocket。总量限制（RelayBudget）只在建连接时检查：当天流量超额就重启容器、拒绝新连接。单个客户端的速率由 iroh-relay 自己限。relay 是单独的 Worker，部署 API 不会断开 relay 连接。
 
-station 平时只以 still.fail 的 relay 为家（浏览器只认它）。still.fail 的 relay 都连不上时，station 才临时加入 iroh 官方的公共 relay，恢复后撤掉（`station/src/mesh/relays.ts`）。
+station 平时只以 Comma 的 relay 为家（浏览器只认它）。Comma 的 relay 都连不上时，station 才临时加入 iroh 官方的公共 relay，恢复后撤掉（`station/src/mesh/relays.ts`）。
 
 station 在哪、怎么连，设备自己找，不经过 still.fail cloud：
 
 - **局域网**：mDNS（服务名见 `station/native/mesh/src/lib.rs` 的 `MDNS_SERVICE`）。只有 station 广播，设备只查询。
 - station 的 QUIC 端口默认每次启动随机。防火墙要放行局域网直连时，在 `config.json` 设 `mesh.port` 固定它，见 [operations.md](operations.md#configjson)。
 - **公网**：station 把自己所在的 relay 发布到 Mainline DHT，设备查得到它换过的 relay。
-- 浏览器（wasm）只能走 relay：still.fail 的，或下面说的 workspace 自己的。
+- 浏览器（wasm）只能走 relay：Comma 的，或下面说的 workspace 自己的。
 
 **workspace 自己的 relay**：owner 和 admin 可以给 workspace 加自己部署的 iroh-relay（`PUT /v1/workspaces/:id/relays {relays: [url]}`，要 https）。云不检查它们能不能连上。它们只给这个 workspace 用：
-- station：state 帧的 `relay_urls` 在 still.fail 的 relay 后面接上它们（`relay_url` 不变）。station 按远近选家。
+- station：state 帧的 `relay_urls` 在 Comma 的 relay 后面接上它们（`relay_url` 不变）。station 按远近选家。
 - 设备：`/v1/me` 和 `/v1/workspaces/:id` 的 workspace 带 `relays`。设备连这个 workspace 的 station 时，拨号和测速才加上它们。连不上的不会被选。
 - 网页版要求 relay 用公开签发的证书（如 Let's Encrypt，iroh-relay 自带 ACME）。
 - 不做访问控制：relay 只转发端到端加密的 QUIC，看不到内容。谁能用它由部署者在 iroh-relay 里配。
@@ -122,7 +126,7 @@ API Worker 的密钥都可以不设。没有 VAPID 就没有 Web Push（`/v1/pus
 - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`：`deploy.py` 从部署目录的 `vapid.json`（`{public, private, subject}`）读。只生成一次，之后别换。换了，浏览器的订阅全部作废：
 
   ```sh
-  node -e 'const j=require("crypto").generateKeyPairSync("ec",{namedCurve:"P-256"}).privateKey.export({format:"jwk"});console.log(JSON.stringify({public:Buffer.concat([Buffer.from([4]),Buffer.from(j.x,"base64url"),Buffer.from(j.y,"base64url")]).toString("base64url"),private:j.d,subject:"mailto:<运维邮箱>"}))' > "$STILLFAIL_DEPLOY_DIR/vapid.json"
+  node -e 'const j=require("crypto").generateKeyPairSync("ec",{namedCurve:"P-256"}).privateKey.export({format:"jwk"});console.log(JSON.stringify({public:Buffer.concat([Buffer.from([4]),Buffer.from(j.x,"base64url"),Buffer.from(j.y,"base64url")]).toString("base64url"),private:j.d,subject:"mailto:<运维邮箱>"}))' > "$COMMA_STATION_DEPLOY_DIR/vapid.json"
   ```
 
 - `FCM_SERVICE_ACCOUNT`：Firebase 项目的服务账号 JSON（Firebase 控制台 → 项目设置 → 服务账号 → 生成新的私钥），原样放在部署目录的 `fcm-service-account.json`。
@@ -138,14 +142,14 @@ still.fail cloud 由以下 Worker 组成（`cloud/wrangler*.jsonc`）：
 | `stillfail-web` | 网页版，纯静态 | `app.still.fail`（Custom Domain） |
 | `stillfail-admin` | 管理后台，纯静态 | `admin.still.fail`（Custom Domain） |
 | `stillfail-preview` | 预览页，纯静态 | `preview.still.fail`（Custom Domain） |
-| `still-fail-site` | 官网，纯静态（`pnpm build:site`，`python3 cloud/deploy.py site`） | `still.fail`（Custom Domain） |
+| `still-fail-site` | 官网，纯静态（`pnpm build:site`，`python3 cloud/deploy.py site`） | `Comma`（Custom Domain） |
 
 同一个域名上，路由优先于 Custom Domain，所以 API 和 relay 的路径到各自的 Worker，其余都是静态站点。
 
 `cloud/deploy.py [api relay web admin preview]` 逐个部署，不写就是全部。它在维护者的部署机上运行，需要 `wrangler login` 和 docker。只部署改动涉及的 Worker。只有部署 relay 才会断开 relay 连接。
 
 - 线上地址 `https://app.still.fail`。
-- 部署目录默认是 `~/stillfail-deploy`（`STILLFAIL_DEPLOY_DIR` 可覆盖。只有旧 `~/ember-deploy` 存在时仍沿用它）。
+- 部署目录默认是 `~/stillfail-deploy`（`COMMA_STATION_DEPLOY_DIR` 可覆盖。只有旧 `~/ember-deploy` 存在时仍沿用它）。
 - Google 登录用单独的 OAuth 客户端，客户端 JSON 在部署目录的 `google-oauth.json`。
 - 密钥在 `keys.json`。丢了会让所有人重新登录，所有 station 需要重新加入。
 - PostHog 的项目 key 在 `posthog.json`，构建网页版时带进去。

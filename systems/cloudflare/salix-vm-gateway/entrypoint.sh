@@ -46,7 +46,7 @@ connector_loop() {
         # The station connects out to SALIX_SERVER with SALIX_WORKLOAD_CREDENTIAL (from the Container's start). Its
         # databases live under the workspace, so the VM's archive carries its chats, and a restored disk has them.
         if SALIX_CONNECTOR_ROOT="$SALIX_VM_WORKSPACE" SALIX_CONNECTOR_NAME="Cloud VM" \
-          /opt/comma-station/mesh/target/release/stillfail-station run \
+          /opt/comma-station/mesh/target/release/comma-station run \
           --app /opt/comma-station \
           --data "$station_data"; then
           echo "Station exited; restarting" >&2

@@ -291,7 +291,6 @@ views '04 · 系统与运行时' {
     include model_providers
     include collaboration_providers
     include comma_platform.edge_runtimes.connector
-    include comma_platform.edge_runtimes.runtime_agent
     include comma_platform.edge_runtimes.vm_gateway
   }
 

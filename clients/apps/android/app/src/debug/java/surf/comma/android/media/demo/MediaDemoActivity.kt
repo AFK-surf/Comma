@@ -104,7 +104,7 @@ class MediaDemoActivity : ComponentActivity() {
         column.addView(failSwitch)
         // Untick once a download has used it up.
         lifecycleScope.launch { failNext.collect { if (!it) failSwitch.isChecked = false } }
-        val covers = VideoCovers(AspectRatioCache.memory())
+        val covers = VideoCovers(AspectRatioCache.memory(), java.io.File(cacheDir, "demo-video-covers"))
         listOf(
             Triple("landscape.mp4", R.raw.media_demo_landscape, null),
             Triple("portrait.webm", R.raw.media_demo_portrait, ImageDimensions(360, 640)),

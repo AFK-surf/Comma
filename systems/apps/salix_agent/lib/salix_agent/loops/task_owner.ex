@@ -20,6 +20,7 @@ defmodule SalixAgent.Loops.TaskOwner do
   @callback loop_wake(loop(), map(), String.t()) ::
               {:ok, :created | :duplicate} | {:error, term()}
   @callback loop_ended(loop(), map()) :: :ok | {:error, term()}
+  @callback loop_worker(loop()) :: {:ok, String.t()} | {:error, term()}
 
   @doc "Deliver a wake of a Task Loop into its Task, or `:default` for any other Loop."
   def wake(record, payload, source_id) do
@@ -27,6 +28,9 @@ defmodule SalixAgent.Loops.TaskOwner do
       do: invoke(record, :loop_wake, [payload, source_id]),
       else: :default
   end
+
+  @doc "The Session of the Task Loop's Worker in its Task now, or why there is none."
+  def worker_session(record), do: invoke(record, :loop_worker, [])
 
   @doc "Tell the Task of an ended Loop now; the Reconciler retries a failure."
   def settle_soon(%{"task_settle_pending" => true} = record) do

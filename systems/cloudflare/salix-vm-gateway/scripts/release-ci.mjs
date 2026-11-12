@@ -30,9 +30,6 @@ export function inferWorkerReleaseKind(event, fallback = "gateway_only") {
   }
 
   const changedFiles = [...files];
-  const hasConnector = changedFiles.some((file) =>
-    file.startsWith("systems/connector/salix-connect/"),
-  );
   const hasSandboxImage = changedFiles.some(
     (file) =>
       file === "systems/cloudflare/salix-vm-gateway/Dockerfile" ||
@@ -47,7 +44,6 @@ export function inferWorkerReleaseKind(event, fallback = "gateway_only") {
   );
 
   if (hasSandboxImage) return "sandbox_image";
-  if (hasConnector) return "breaking_connector";
   assertReleaseKind(fallback);
   return fallback;
 }
@@ -84,7 +80,7 @@ export function resolveReleaseFacts({
     workerReleaseKind === "gateway_only" ? "candidate_worker" : "check_only";
   return {
     gateway_build_id: shortSha,
-    connector_image_version: `salix-connect-${shortSha}`,
+    connector_image_version: `station-${shortSha}`,
     tag: `ci-${target}-${runId}-${runAttempt}`,
     worker_release_kind: workerReleaseKind,
     publish_mode: publishMode,
@@ -296,7 +292,6 @@ export function requireInactiveContainerInstances(instances, workloads = []) {
 }
 
 const SANDBOX_RUNTIME_PATHS = [
-  ":(top)systems/connector/salix-connect",
   // The Container's station (scripts/build-connector.sh bundles it) and the toolchain its Linux parts are built with.
   ":(top)systems/station",
   ":(top)systems/profiles",
@@ -1025,10 +1020,12 @@ function imageProbePath(profileKey, sandboxId) {
 async function stopImageProbe({ baseUrl, secret, profileKey, control }, sandboxId, request = signedGatewayRequest) {
   maskSecret(secret);
   const path = imageProbePath(profileKey, sandboxId);
-  const sealed = await request(baseUrl, secret, "POST", `${path}/control`,
-    { action: "seal", control: { ...control, claim_id: "probe-seal" } });
-  if (!sealed.ok) {
-    console.warn(`Disposable image probe ${sandboxId} seal failed: HTTP ${sealed.status}`);
+  try {
+    const sealed = await request(baseUrl, secret, "POST", `${path}/control`,
+      { action: "seal", control: { ...control, claim_id: "probe-seal" } });
+    if (!sealed.ok) throw new Error(`HTTP ${sealed.status}`);
+  } catch (error) {
+    console.warn(`Disposable image probe ${sandboxId} seal failed: ${error.message}`);
     return;
   }
   for (const [action, body] of [["keepalive", { keep_alive: false }], ["destroy", {}]]) {

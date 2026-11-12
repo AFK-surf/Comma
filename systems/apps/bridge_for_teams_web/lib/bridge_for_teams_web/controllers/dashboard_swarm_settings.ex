@@ -137,13 +137,20 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   end
 
   defp place_label(_project, %{"kind" => "cloud_vm"}), do: gettext("The Cloud VM")
+  defp place_label(_project, %{"kind" => "sandbox"}), do: gettext("A sandbox")
 
+  # The Group's own VM on its Agent VMM Host is stored as that Host's station
+  # (`SalixWeb.Migrations.CloudVMCutover`); it keeps the Cloud VM's name.
   defp place_label(project, %{"kind" => "station", "device_id" => device_id}) do
-    {:ok, %{"stations" => stations}} = Agents.list_stations(project)
+    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(project.salix_group_id) do
+      place_label(project, %{"kind" => "cloud_vm"})
+    else
+      {:ok, %{"stations" => stations}} = Agents.list_stations(project)
 
-    case Enum.find(stations, &(&1["device_id"] == device_id)) do
-      %{"name" => name} when is_binary(name) and name != "" -> name
-      _gone -> device_id
+      case Enum.find(stations, &(&1["device_id"] == device_id)) do
+        %{"name" => name} when is_binary(name) and name != "" -> name
+        _gone -> device_id
+      end
     end
   end
 
@@ -265,9 +272,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
 
   @doc """
   Set the default place to run Tasks: `place` is `{kind: salix}`,
-  `{kind: cloud_vm}` while the swarm's Cloud VM is on, or
-  `{kind: station, device_id}` for one of its stations that takes Tasks.
-  Answers the page.
+  `{kind: sandbox}` where sandboxes are set up, `{kind: cloud_vm}` while the
+  swarm's Cloud VM is on and the deployment has not retired it, or
+  `{kind: station, device_id}` for
+  one of its stations that takes Tasks. Answers the page.
   """
   def set_task_place(org, user, project, role, params) do
     with :ok <-
@@ -284,12 +292,19 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
           write_failed(gettext("Could not save the default place to run Tasks."))
 
         {:error, :cloud_vm_disabled} ->
-          {:error, 422, "cloud_vm_disabled",
-           gettext("The Cloud VM is turned off for this swarm."), %{}}
+          {:error, 422, "cloud_vm_disabled", gettext("No Cloud VM is set up for this swarm."),
+           %{}}
+
+        {:error, :cloud_vm_retired} ->
+          {:error, 422, "cloud_vm_retired",
+           gettext("The Cloud VM is retired here: a sandbox takes its place."), %{}}
+
+        {:error, :sandbox_unavailable} ->
+          {:error, 422, "sandbox_unavailable", gettext("Sandboxes are not set up here."), %{}}
 
         {:error, _refused} ->
           {:error, 422, "invalid_place",
-           gettext("Choose Salix, the Cloud VM or a station that takes Tasks."), %{}}
+           gettext("Choose Salix, a sandbox, the Cloud VM or a station that takes Tasks."), %{}}
       end
     end
   end

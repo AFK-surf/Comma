@@ -1,5 +1,5 @@
-// Electron's Main as the core's session lifecycle sees it, in memory: the credential store (an active credential and
-// the queue of credentials to revoke), the bearers it keeps out of the core (it attaches the one a request names, and
+// Electron's Main as the core's session lifecycle sees it, in memory: the credential store (an active credential, the
+// other accounts' kept signed in, and the queue of credentials to revoke), the bearers it keeps out of the core (it attaches the one a request names, and
 // takes any bearer out of an answer, keeping it and answering a reference), its gate (what the core told it last, and
 // whether a request for a lease would be let through), and its Google window. The server behind it is a FakeCommaApi
 // whose handlers see the bearer as the real server would (`authorization: Bearer …`). A test makes a store write
@@ -23,6 +23,7 @@ import type {
   SessionAuthorityResume,
   SessionLease,
 } from "../host.ts";
+import { MAX_KEPT_CREDENTIALS } from "../hosts/utility-protocol.ts";
 import { type FakeCommaApi, type FakeHost, json, NO_LEASE } from "./index.ts";
 
 /** A credential as Main keeps it: the bearer, and whose it is. */
@@ -42,6 +43,8 @@ export class FakeMain {
   readonly api: FakeCommaApi;
   readonly origin: string;
   active: StoredCredential | null = null;
+  /** The other accounts signed in, set aside. */
+  kept: StoredCredential[] = [];
   pending: StoredCredential[] = [];
   /** Bearers taken out of answers, by the reference the core was given, until a change settles them. */
   readonly issued = new Map<CredentialRef, StoredCredential>();
@@ -85,7 +88,6 @@ export class FakeMain {
       origin?: string;
       resumed?: SessionAuthorityResume;
       clientPlatform?: BearerSessionPorts["clientPlatform"];
-      showsKeptAccount?: boolean;
       clientKind?: BearerSessionPorts["clientKind"];
     } = {}
   ) {
@@ -96,7 +98,6 @@ export class FakeMain {
       apiOrigin: this.origin,
       clientPlatform: options.clientPlatform ?? "macos",
       ...(options.resumed ? { resumed: options.resumed } : {}),
-      ...(options.showsKeptAccount ? { showsKeptAccount: true } : {}),
       ...(options.clientKind ? { clientKind: options.clientKind } : {}),
       vault: this.#change("read", () => this.vault()).pipe(
         Effect.filterOrFail(
@@ -111,10 +112,10 @@ export class FakeMain {
           lease: lease ? { ...lease } : null,
         });
       },
+      google: (input) => this.google(input),
       ...(options.clientKind === "ios"
         ? { apple: (input) => this.apple(input) }
         : {
-            google: (input) => this.google(input),
             googleDone: (grant, ok) =>
               Effect.sync(() => void this.googleDone.push([grant, ok])),
           }),
@@ -159,6 +160,7 @@ export class FakeMain {
     const tokens = [
       this.active?.token,
       ...this.pending.map((p) => p.token),
+      ...this.kept.map((k) => k.token),
       ...[...this.issued.values()].map((c) => c.token),
       ...this.#refs.keys(),
     ].filter((t): t is string => Boolean(t));
@@ -166,19 +168,21 @@ export class FakeMain {
   }
 
   vault(): BearerVault {
+    const view = (credential: StoredCredential) => ({
+      ref: this.#ref(credential.token),
+      audience: credential.audience,
+      sessionId: credential.sessionId ?? "",
+      userId: credential.userId ?? "",
+      email: credential.email ?? "",
+      expiresAtEpochSeconds: credential.expiresAtEpochSeconds ?? 1,
+    });
     return {
       status: "readable",
       active:
         this.active && this.active.sessionId && this.active.userId
-          ? {
-              ref: this.#ref(this.active.token),
-              audience: this.active.audience,
-              sessionId: this.active.sessionId,
-              userId: this.active.userId,
-              email: this.active.email ?? "",
-              expiresAtEpochSeconds: this.active.expiresAtEpochSeconds ?? 1,
-            }
+          ? view(this.active)
           : null,
+      ...(this.kept.length > 0 ? { kept: this.kept.map(view) } : {}),
       pending: this.pending.map((p) => ({
         ref: this.#ref(p.token),
         audience: p.audience,
@@ -265,6 +269,8 @@ export class FakeMain {
     const issued = this.issued.get(ref);
     if (issued) return issued;
     if (this.active && this.#ref(this.active.token) === ref) return this.active;
+    const kept = this.kept.find((k) => this.#ref(k.token) === ref);
+    if (kept) return kept;
     return this.pending.find((p) => this.#ref(p.token) === ref);
   }
 
@@ -297,6 +303,10 @@ export class FakeMain {
         }
         if (this.active && this.active.token !== credential.token)
           this.#queue(this.active);
+        // The same account kept signed in before: its older credential goes.
+        for (const kept of this.kept.filter((k) => k.userId === credential.userId))
+          this.#queue(kept);
+        this.kept = this.kept.filter((k) => k.userId !== credential.userId);
         this.active = credential;
         this.issued.delete(change.issued);
         this.#committed.add(change.issued);
@@ -347,7 +357,29 @@ export class FakeMain {
           (p) => this.#ref(p.token) !== change.pending
         );
         return this.vault();
+      case "keep": {
+        if (!this.active || this.kept.length >= MAX_KEPT_CREDENTIALS) return null;
+        this.kept.push(this.active);
+        this.active = null;
+        return this.vault();
+      }
+      case "activate": {
+        const kept = this.kept.find((k) => this.#ref(k.token) === change.kept);
+        if (!kept) return null;
+        this.kept = this.kept.filter((k) => k !== kept);
+        if (this.active) this.kept.push(this.active);
+        this.active = kept;
+        return this.vault();
+      }
+      case "forget": {
+        const kept = this.kept.find((k) => this.#ref(k.token) === change.kept);
+        if (!kept) return null;
+        this.kept = this.kept.filter((k) => k !== kept);
+        this.#queue(kept);
+        return this.vault();
+      }
       case "retainAudience":
+        this.kept = this.kept.filter((k) => k.audience === this.origin);
         if (this.active && this.active.audience !== this.origin) this.active = null;
         this.pending = this.pending.filter((p) => p.audience === this.origin);
         return this.vault();

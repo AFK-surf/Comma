@@ -31,7 +31,6 @@ defmodule SalixMeet.Store do
 
   alias SalixMeet.FallbackMessageManifest
   alias SalixStore.{Keys, MeetingGroupProjections, S3}
-  require Logger
 
   @type doc :: %{
           required(String.t()) => term()
@@ -213,11 +212,14 @@ defmodule SalixMeet.Store do
     do_claim_join_dispatch(id, stringify(claim), opts, retries)
   end
 
-  @doc "Checkpoint a claimed join dispatch as dispatched or failed under its generation fence."
+  @doc """
+  Checkpoint a claimed join dispatch under its generation fence: dispatched,
+  failed (an attempt), deferred (pending again, no attempt) or abandoned.
+  """
   @spec checkpoint_join_dispatch(
           String.t(),
           String.t(),
-          :dispatched | {:failed, term()},
+          :dispatched | {:failed | :deferred | :abandoned, term()},
           keyword()
         ) ::
           result() | {:error, :fenced | :lost}
@@ -261,8 +263,7 @@ defmodule SalixMeet.Store do
       {:ok,
        state
        |> Map.put("runtime_target", target)
-       |> Map.put("runtime_source", target["source"])
-       |> Map.merge(Map.take(target, ~w(compute_environment_id workload_id)))}
+       |> Map.put("runtime_source", target["source"])}
     else
       {:error, :meeting_runtime_pinned}
     end
@@ -274,7 +275,7 @@ defmodule SalixMeet.Store do
 
       {:ok,
        state
-       |> Map.drop(~w(runtime_target compute_environment_id workload_id))
+       |> Map.drop(~w(runtime_target))
        |> Map.put("runtime_source", "automatic")
        |> Map.update!("join_dispatch", fn dispatch ->
          Map.update(dispatch, "runtime_rejections", [rejected], &Enum.take(&1 ++ [rejected], -3))
@@ -821,8 +822,7 @@ defmodule SalixMeet.Store do
     delivery_reclaim_after = opts[:reclaim_after_ms] || @delivery_reclaim_after_ms
     activation_reclaim_after = opts[:reclaim_after_ms] || @activation_reclaim_after_ms
 
-    with {:ok, doc, etag} <- get(id),
-         :ok <- settle_terminal_workload(doc) do
+    with {:ok, doc, etag} <- get(id) do
       state = stringify(doc["state"] || %{})
       delivery = stringify(state["delivery"] || %{})
 
@@ -1324,28 +1324,9 @@ defmodule SalixMeet.Store do
          true <-
            dispatch["status"] == "dispatching" and dispatch["generation"] == generation do
       completed_at = opts[:now] || now_ms()
+      {next_doc, next_state} = checkpointed_join(doc, state, dispatch, outcome, completed_at)
 
-      completed =
-        case outcome do
-          :dispatched ->
-            dispatch
-            |> Map.put("status", "dispatched")
-            |> Map.put("completed_at", completed_at)
-            |> Map.put("last_error", nil)
-
-          {:failed, reason} ->
-            dispatch
-            |> Map.put("status", "failed")
-            |> Map.put("completed_at", completed_at)
-            |> Map.put("last_error", inspect(reason))
-        end
-
-      next_state =
-        state
-        |> Map.put("join_dispatch", completed)
-        |> maybe_mark_join_failed(outcome)
-
-      case cas_put(id, Map.put(doc, "state", next_state), etag) do
+      case cas_put(id, Map.put(next_doc, "state", next_state), etag) do
         {:error, :lost} ->
           do_checkpoint_join_dispatch(id, generation, outcome, opts, retries - 1)
 
@@ -1356,6 +1337,65 @@ defmodule SalixMeet.Store do
       false -> {:error, :fenced}
       {:error, _} = error -> error
     end
+  end
+
+  defp checkpointed_join(doc, state, dispatch, :dispatched, completed_at) do
+    completed =
+      dispatch
+      |> Map.put("status", "dispatched")
+      |> Map.put("completed_at", completed_at)
+      |> Map.put("last_error", nil)
+
+    {doc, Map.put(state, "join_dispatch", completed)}
+  end
+
+  defp checkpointed_join(doc, state, dispatch, {:failed, reason} = outcome, completed_at) do
+    completed =
+      dispatch
+      |> Map.put("status", "failed")
+      |> Map.put("completed_at", completed_at)
+      |> Map.put("last_error", inspect(reason))
+
+    {doc, state |> Map.put("join_dispatch", completed) |> maybe_mark_join_failed(outcome)}
+  end
+
+  # The meeting cannot take the bot yet (a Feishu/Lark meeting not started,
+  # or one its settings refuse for now): the outbox is pending again, as if
+  # never claimed, so the next join pass asks again. It is no attempt.
+  defp checkpointed_join(doc, state, dispatch, {:deferred, reason}, completed_at) do
+    pending = %{
+      "status" => "pending",
+      "attempt_count" => max(join_attempts(dispatch) - 1, 0),
+      "deferred_at" => completed_at,
+      "last_error" => inspect(reason)
+    }
+
+    status = if state["status"] == "joining", do: "provisioning", else: state["status"]
+
+    {Map.put(doc, "join_requested_at", nil),
+     state
+     |> Map.put("join_dispatch", pending)
+     |> Map.put("status", status)
+     |> Map.delete("join_requested_at")}
+  end
+
+  # The meeting will never take the bot (it ended, it does not exist, or the
+  # bot is in it as another Meeting). The Meeting stays as it was before the
+  # claim, as `abandon_join_dispatch/3` leaves one.
+  defp checkpointed_join(doc, state, dispatch, {:abandoned, reason}, completed_at) do
+    abandoned =
+      dispatch
+      |> Map.put("status", "abandoned")
+      |> Map.put("completed_at", completed_at)
+      |> Map.put("last_error", inspect(reason))
+
+    status = if state["status"] == "joining", do: "provisioning", else: state["status"]
+
+    {doc,
+     state
+     |> Map.put("join_dispatch", abandoned)
+     |> Map.put("status", status)
+     |> Map.put("calendar_autojoin_abandoned_at", completed_at)}
   end
 
   defp do_abandon_join_dispatch(_id, _reason, _opts, 0), do: {:error, :lost}
@@ -1478,8 +1518,6 @@ defmodule SalixMeet.Store do
       get_in(state, ["calendar_root", "status"]) == "abandoned"
   end
 
-  defp maybe_mark_join_failed(state, :dispatched), do: state
-
   defp maybe_mark_join_failed(state, {:failed, reason}) do
     # Meeting-level terminal failure is written only when the attempt budget
     # is exhausted; an in-budget failure stays "joining" and the claim guard
@@ -1556,40 +1594,11 @@ defmodule SalixMeet.Store do
   end
 
   defp cas_put(id, doc, etag) do
-    result =
-      case S3.put(Keys.meet_state(id), Jason.encode!(doc), if_match: etag) do
-        {:ok, %{etag: new_etag}} -> {:ok, doc, new_etag}
-        {:error, :precondition_failed} -> {:error, :lost}
-        {:error, {:ambiguous, _}} -> verify(id, doc)
-        other -> other
-      end
-
-    with {:ok, committed, _etag} <- result,
-         :ok <- settle_terminal_workload(committed) do
-      result
-    end
-  end
-
-  # Every terminal writer uses this commit seam. The existing delivery reader
-  # retries cleanup after a committed state whose Compute stop was unavailable.
-  defp settle_terminal_workload(%{"id" => meeting_id, "state" => state}) do
-    if state["status"] in @terminal_statuses and
-         state["runtime_source"] in ["automatic", "compute_workload"] do
-      case SalixMeet.MeetingComputeCarrier.terminal(Map.put(state, "meeting_id", meeting_id)) do
-        {:ok, _stopped} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "Meeting Workload cleanup deferred: #{inspect(reason, limit: 5, printable_limit: 200)}",
-            meeting_id: meeting_id,
-            workload_id: state["workload_id"]
-          )
-
-          :ok
-      end
-    else
-      :ok
+    case S3.put(Keys.meet_state(id), Jason.encode!(doc), if_match: etag) do
+      {:ok, %{etag: new_etag}} -> {:ok, doc, new_etag}
+      {:error, :precondition_failed} -> {:error, :lost}
+      {:error, {:ambiguous, _}} -> verify(id, doc)
+      other -> other
     end
   end
 

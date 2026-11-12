@@ -132,7 +132,7 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
     id = source["connectionId"]
 
     with %{"connection_id" => ^id} = consent <-
-           Comma.MemberSourceConsents.binding(workspace["id"], user_id, toolkit),
+           Comma.MemberSourceConsents.binding(workspace["id"], user_id, toolkit, id),
          true <- workspace["owner_user_id"] == user_id and is_binary(id) and id != "",
          {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
          {:ok, data, identity} <-
@@ -144,7 +144,7 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
              deadline,
              &provider_read(toolkit, &1, now)
            ),
-         ^consent <- Comma.MemberSourceConsents.binding(workspace["id"], user_id, toolkit) do
+         ^consent <- Comma.MemberSourceConsents.binding(workspace["id"], user_id, toolkit, id) do
       subject =
         Map.merge(identity, Map.merge(consent, %{"user_id" => user_id, "toolkit" => toolkit}))
 
@@ -219,7 +219,12 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
       source["toolkit"] == subject["toolkit"] and
       source["connectionId"] == subject["connection_id"] and
       subject["user_id"] == user_id and
-      Comma.MemberSourceConsents.binding(workspace["id"], user_id, subject["toolkit"]) ==
+      Comma.MemberSourceConsents.binding(
+        workspace["id"],
+        user_id,
+        subject["toolkit"],
+        subject["connection_id"]
+      ) ==
         Map.take(subject, ~w(connection_id consent_revision))
   end
 

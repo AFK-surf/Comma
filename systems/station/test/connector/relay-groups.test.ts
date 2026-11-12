@@ -132,3 +132,81 @@ test("a station in two Groups keeps relaying on one connection when the other en
       yield* stop;
     }),
   ));
+
+test("a device connection asks for the mesh's facts only when its file says so, and hears a change at any access", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+      const endpointId = Buffer.from(publicKey.export({ format: "jwk" }).x as string, "base64url").toString("hex");
+      const hub = new SalixRelayHub(endpointId, (message) => sign(null, message, privateKey));
+      const salix = yield* memorySockets();
+      const told = { workspace: "wsA", grant_keys: { keys: [] }, revocations: [], owner: "u_owner", relay_urls: ["https://relay.test"] };
+      const connect = (run: string, input: Record<string, unknown>) =>
+        Effect.gen(function* () {
+          const c = makeConnector({ ...isolated, server: "https://salix.test", token: `token-${run}`, name: run, root: tempDir(), testClock: true, deviceMode: true, ...input }, salix.layer, { relay: hub });
+          const running = yield* Effect.forkChild(c.runRemoteOnce);
+          const peer = yield* Queue.take(salix.accepted);
+          yield* peer.receive;
+          yield* peer.send({ type: "connected", connector_run_id: run, relay_challenge: `nonce-${run}` });
+          const register = yield* peer.receive;
+          assert.equal(register.method, "relay_register");
+          return { c, running, peer, register };
+        });
+
+      // By default it asks for nothing. A Salix that grants it anyway, in its answer or by a request, is not heard.
+      const plain = yield* connect("plain", {});
+      assert.equal(plain.register.params.mesh, undefined);
+      yield* plain.peer.send({ id: plain.register.id, type: "response", result: { ok: true, mesh: told, mesh_seq: 0 } });
+      yield* settle;
+      assert.equal(hub.admissions.active(), false, "an answer it did not ask for turned the mesh on");
+      yield* plain.peer.send({ id: "unasked", type: "request", method: "station_mesh", params: { seq: 1, mesh: told } });
+      yield* plain.peer.receive;
+      yield* settle;
+      assert.equal(hub.admissions.active(), false, "a push it did not ask for turned the mesh on");
+
+      // Asked for, at read-only access: told in the answer, and again when a revocation comes.
+      const asked = yield* connect("asked", { deviceMesh: true, scope: "local_file_read" });
+      assert.equal(asked.register.params.mesh, true);
+      yield* asked.peer.send({ id: asked.register.id, type: "response", result: { ok: true, mesh: told, mesh_seq: 0 } });
+      yield* settle;
+      assert.equal(hub.admissions.active(), true);
+      assert.deepEqual(hub.admissions.relays(), ["https://relay.test"]);
+
+      yield* asked.peer.send({ id: "change", type: "request", method: "station_mesh", params: { seq: 2, mesh: null } });
+      const answered = yield* asked.peer.receive;
+      assert.equal(answered.type, "response");
+      assert.equal(hub.admissions.active(), false);
+
+      // An older grant, arriving after the newer revocation, does not stand over it.
+      yield* asked.peer.send({ id: "older", type: "request", method: "station_mesh", params: { seq: 1, mesh: told } });
+      yield* asked.peer.receive;
+      assert.equal(hub.admissions.active(), false, "an older grant stood over a newer revocation");
+
+      // And its connection going takes back what it was told.
+      yield* asked.peer.send({ id: "again", type: "request", method: "station_mesh", params: { seq: 3, mesh: told } });
+      yield* asked.peer.receive;
+      assert.equal(hub.admissions.active(), true);
+      yield* asked.peer.close;
+      yield* Fiber.await(asked.running);
+      assert.equal(hub.admissions.active(), true, "a blip to Salix took down what runs directly");
+
+      // It comes back, and Salix now admits no one: what the dropped connection said ends at once, not after its grace.
+      const again = yield* Effect.forkChild(asked.c.runRemoteOnce);
+      const peer2 = yield* Queue.take(salix.accepted);
+      yield* peer2.receive;
+      yield* peer2.send({ type: "connected", connector_run_id: "asked2", relay_challenge: "nonce-asked2" });
+      const register2 = yield* peer2.receive;
+      assert.equal(register2.method, "relay_register");
+      yield* peer2.send({ id: register2.id, type: "response", result: { ok: true } });
+      yield* settle;
+      assert.equal(hub.admissions.active(), false, "an old grant outlived Salix's word on the next connection");
+      yield* peer2.close;
+      yield* Fiber.await(again);
+
+      yield* plain.peer.close;
+      yield* Fiber.await(plain.running);
+      yield* plain.c.close();
+      yield* asked.c.close();
+      assert.equal(hub.admissions.active(), false);
+    }),
+  ));

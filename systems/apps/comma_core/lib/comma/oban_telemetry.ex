@@ -12,7 +12,7 @@ defmodule Comma.ObanTelemetry do
     [:oban, :job, :exception],
     [:oban, :queue, :shutdown]
   ]
-  @queues ~w(comma_external comma_recommendations comma_recommendation_control other)
+  @queues ~w(comma_external comma_drive comma_recommendations comma_recommendation_control other)
   @states ~w(success failure cancelled discard snoozed exception other)
 
   def attach do

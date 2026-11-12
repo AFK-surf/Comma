@@ -186,11 +186,12 @@ defmodule SalixAgent.Tools.AgentManagement do
       )
 
     cloud_vm = object(%{"kind" => enum(["cloud_vm"])}, ["kind"])
+    sandbox = object(%{"kind" => enum(["sandbox"])}, ["kind"])
 
     variants =
       if internal?,
-        do: [object(%{"kind" => enum(["internal"])}, ["kind"]), station, cloud_vm],
-        else: [station, cloud_vm]
+        do: [object(%{"kind" => enum(["internal"])}, ["kind"]), station, cloud_vm, sandbox],
+        else: [station, cloud_vm, sandbox]
 
     %{"oneOf" => variants}
   end

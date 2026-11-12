@@ -21,6 +21,7 @@ import (
 	remotev1 "github.com/AFK-surf/agent-vmm/api/remote/v1"
 	trustv1 "github.com/AFK-surf/agent-vmm/api/trust/v1"
 	controllerremote "github.com/AFK-surf/agent-vmm/controller/remote"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -36,7 +37,6 @@ const (
 )
 
 type controlClient interface {
-	Enroll(context.Context, *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error)
 	Authenticate(context.Context, string, []byte) error
 	Observe(context.Context, string, *remotev1.HostHello) error
 	SettleObservation(context.Context, string, string, *remotev1.RemoteObservationRenewal) error
@@ -47,7 +47,9 @@ type controlClient interface {
 }
 
 type liveConnection struct {
-	epoch uint64
+	epoch      uint64
+	handshake  chan struct{}
+	references int
 }
 
 type sessionKey struct {
@@ -147,30 +149,37 @@ type gateway struct {
 	imageImportStale          atomic.Uint64
 	imageImportBytes          atomic.Uint64
 	imageImportDurationMillis atomic.Uint64
-	connectionMu              sync.Mutex
 }
 
 func newGateway(id string, control controlClient, logger *slog.Logger) *gateway {
 	return &gateway{id: id, control: control, logger: logger, live: make(map[string]liveConnection), sessions: make(map[sessionKey]*runtimeSession)}
 }
 
-func (g *gateway) Enroll(ctx context.Context, request *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error) {
-	if g.draining.Load() {
-		return nil, status.Error(codes.Unavailable, "gateway is draining")
+// Keep one handshake owner while a stream or waiter uses this registration.
+// The last stream removes it, including after a failed first handshake.
+func (g *gateway) retainRegistration(registrationID string) chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	current := g.live[registrationID]
+	if current.handshake == nil {
+		current.handshake = make(chan struct{}, 1)
+		current.handshake <- struct{}{}
 	}
-	if request.GetRegistrationId() == "" || len(request.GetEnrollmentToken()) < 16 {
-		return nil, status.Error(codes.InvalidArgument, "registration and enrollment token are required")
+	current.references++
+	g.live[registrationID] = current
+	return current.handshake
+}
+
+func (g *gateway) releaseRegistration(registrationID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	current := g.live[registrationID]
+	current.references--
+	if current.references == 0 {
+		delete(g.live, registrationID)
+	} else {
+		g.live[registrationID] = current
 	}
-	response, err := g.control.Enroll(ctx, request)
-	if err != nil {
-		g.controlErrors.Add(1)
-		g.logger.Warn("managed enrollment control request failed", "error", err)
-		if reason := enrollmentRejectionReason(err); reason != "" {
-			return nil, status.Error(codes.PermissionDenied, "enrollment rejected: "+reason)
-		}
-		return nil, status.Error(codes.PermissionDenied, "enrollment rejected")
-	}
-	return response, nil
 }
 
 func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer) error {
@@ -190,15 +199,26 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 	session, err := controllerremote.AcceptControl(stream, registrationID)
 	if err != nil {
 		g.logger.Warn("registration control handshake rejected", "registration_id", registrationID, "error", err)
+		for _, detail := range status.Convert(err).Details() {
+			if info, ok := detail.(*errdetails.ErrorInfo); ok && info.GetDomain() == hostv1.ErrorDomain && info.GetReason() == "REMOTE_PROTOCOL_UNSUPPORTED" {
+				return err
+			}
+		}
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	hello := session.Hello()
+	handshake := g.retainRegistration(registrationID)
+	defer g.releaseRegistration(registrationID)
 	// Observe and publish the local owner as one ordered handshake. Connection
 	// epochs are opaque random fences supplied by the pinned connector, so the
-	// most recently admitted handshake wins; numeric ordering has no meaning.
-	g.connectionMu.Lock()
+	// most recently admitted handshake wins; unrelated registrations proceed independently.
+	select {
+	case <-handshake:
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
 	if err := g.control.Observe(stream.Context(), g.id, hello); err != nil {
-		g.connectionMu.Unlock()
+		handshake <- struct{}{}
 		g.controlErrors.Add(1)
 		g.logger.Warn("registration connection observation failed", "registration_id", registrationID, "connection_epoch", hello.GetConnectionEpoch(), "gateway_instance_id", g.id, "error", err)
 		return observationControlError(err)
@@ -206,21 +226,24 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 	g.mu.Lock()
 	if current, exists := g.live[registrationID]; exists && current.epoch == hello.GetConnectionEpoch() {
 		g.mu.Unlock()
-		g.connectionMu.Unlock()
+		handshake <- struct{}{}
 		return status.Error(codes.Aborted, "stale connection epoch")
 	}
-	_, existed := g.live[registrationID]
-	g.live[registrationID] = liveConnection{epoch: hello.GetConnectionEpoch()}
+	current := g.live[registrationID]
+	existed := current.epoch != 0
+	current.epoch = hello.GetConnectionEpoch()
+	g.live[registrationID] = current
 	if !existed {
 		g.connections.Add(1)
 	}
 	g.mu.Unlock()
-	g.connectionMu.Unlock()
+	handshake <- struct{}{}
 	g.logger.Info("registration connected", "registration_id", registrationID, "connection_epoch", hello.GetConnectionEpoch(), "gateway_instance_id", g.id)
 	defer func() {
 		g.mu.Lock()
 		if current := g.live[registrationID]; current.epoch == hello.GetConnectionEpoch() {
-			delete(g.live, registrationID)
+			current.epoch = 0
+			g.live[registrationID] = current
 			g.connections.Add(-1)
 		}
 		g.mu.Unlock()
@@ -232,7 +255,7 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 	// Observe is the durable server-side settlement of this exact HostHello.
 	// Only acknowledge readiness after it succeeds; Ready also starts the
 	// controller receive loop, so no command may be claimed before this fence.
-	if err := session.Ready(); err != nil {
+	if err := session.Ready(controllerremote.RemoteObservationFeature); err != nil {
 		g.logger.Warn("registration readiness acknowledgement failed", "registration_id", registrationID, "connection_epoch", hello.GetConnectionEpoch(), "error", err)
 		return status.Error(codes.Unavailable, "controller readiness acknowledgement failed")
 	}
@@ -281,8 +304,7 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 			return status.Error(codes.Unavailable, "control claim failed")
 		}
 		retryDelay = 200 * time.Millisecond
-		deadline := time.UnixMilli(command.GetDeadlineUnixMillis())
-		ctx, cancel := context.WithDeadline(stream.Context(), deadline)
+		ctx, cancel := context.WithTimeout(stream.Context(), time.Duration(command.GetTimeoutMillis())*time.Millisecond)
 		transcript, dispatchErr := session.Dispatch(ctx, command)
 		cancel()
 		settleContext, settleCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -348,7 +370,7 @@ func (g *gateway) ServeSession(stream remotev1.RemoteControllerService_ServeSess
 	g.mu.RLock()
 	live, ok := g.live[registrationID]
 	g.mu.RUnlock()
-	if !ok {
+	if !ok || live.epoch == 0 {
 		return status.Error(codes.FailedPrecondition, "registration is not connected to this gateway")
 	}
 	header, transport, err := controllerremote.AcceptSession(stream, registrationID, live.epoch)
@@ -533,7 +555,7 @@ func retryableControlClaim(err error) bool {
 		(errors.As(err, &networkErr) && networkErr.Timeout())
 }
 
-// VMMRemoteEnrollment maps an unavailable Server control boundary to ordinary
+// Authentication maps an unavailable Server control boundary to ordinary
 // reconnect, while only an authoritative 401/403 stops the Host connector for
 // operator repair. Collapsing transport failure into Unauthenticated strands
 // an enabled registration after a transient rollout or network interruption.
@@ -557,21 +579,6 @@ func observationControlError(err error) error {
 		return status.Error(codes.PermissionDenied, controlErr.reason)
 	}
 	return status.Error(codes.Unavailable, "connection observation failed")
-}
-
-func enrollmentRejectionReason(err error) string {
-	var controlErr *controlStatusError
-	if !errors.As(err, &controlErr) {
-		return ""
-	}
-	switch controlErr.reason {
-	case "device_identity_mismatch", "managed_anchor_unavailable", "managed_trust_signer_unavailable",
-		"managed_trust_unavailable", "anchor_inactive", "authority_mismatch", "invalid_expiry",
-		"signer_unavailable", "already_exists", "control_unavailable":
-		return controlErr.reason
-	default:
-		return ""
-	}
 }
 
 func (client *httpControlClient) call(ctx context.Context, method, path string, input, output any) error {
@@ -618,21 +625,6 @@ func (client *httpControlClient) call(ctx context.Context, method, path string, 
 	return json.NewDecoder(io.LimitReader(response.Body, maxControlResponse)).Decode(output)
 }
 
-func (client *httpControlClient) Enroll(ctx context.Context, request *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error) {
-	input, _ := protojson.Marshal(request)
-	var result struct {
-		Response string `json:"response_b64"`
-	}
-	if err := client.call(ctx, http.MethodPost, "/v1/compute/enroll", map[string]string{"request_b64": base64.StdEncoding.EncodeToString(input)}, &result); err != nil {
-		return nil, err
-	}
-	raw, err := base64.StdEncoding.DecodeString(result.Response)
-	if err != nil {
-		return nil, err
-	}
-	response := new(remotev1.EnrollResponse)
-	return response, protojson.Unmarshal(raw, response)
-}
 func (client *httpControlClient) Authenticate(ctx context.Context, registrationID string, credential []byte) error {
 	return client.call(ctx, http.MethodPost, "/v1/compute/authenticate", map[string]string{"registration_id": registrationID, "credential_b64": base64.StdEncoding.EncodeToString(credential)}, nil)
 }

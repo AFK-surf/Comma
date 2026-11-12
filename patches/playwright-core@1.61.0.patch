@@ -1,0 +1,47 @@
+diff --git a/lib/coreBundle.js b/lib/coreBundle.js
+index 1d36a373cb14a856c9a69e218df5183bb250d2f0..1c149174b09de1709db97257d4a4e687716eca42 100644
+--- a/lib/coreBundle.js
++++ b/lib/coreBundle.js
+@@ -38782,6 +38782,20 @@ var init_backendAdb = __esm({
+ });
+ 
+ // packages/playwright-core/src/server/pipeTransport.ts
++function parsePipeFrame(message) {
++  try {
++    return JSON.parse(message);
++  } catch (error) {
++    let kernel = "";
++    if (process.platform === "darwin") {
++      try {
++        kernel = " netstat -m: " + require("child_process").execFileSync("netstat", ["-m"], { encoding: "utf8" }).split("\n").filter((line) => /clusters in use|denied|delayed/.test(line)).map((line) => line.trim()).join("; ");
++      } catch {
++      }
++    }
++    throw new Error(`Chromium sent a ${Buffer.byteLength(message)}-byte frame on its debugging pipe that is not whole JSON (${error.message}). Chromium drops the rest of a message when a write into the pipe fails.${kernel}`);
++  }
++}
+ var PipeTransport2;
+ var init_pipeTransport2 = __esm({
+   "packages/playwright-core/src/server/pipeTransport.ts"() {
+@@ -38830,17 +38844,17 @@ var init_pipeTransport2 = __esm({
+         }
+         this._pendingBuffers.push(buffer.slice(0, end));
+         const message = Buffer.concat(this._pendingBuffers).toString();
+-        this._waitForNextTask(() => {
++        if (message) this._waitForNextTask(() => {
+           if (this.onmessage)
+-            this.onmessage.call(null, JSON.parse(message));
++            this.onmessage.call(null, parsePipeFrame(message));
+         });
+         let start3 = end + 1;
+         end = buffer.indexOf("\0", start3);
+         while (end !== -1) {
+           const message2 = buffer.toString(void 0, start3, end);
+-          this._waitForNextTask(() => {
++          if (message2) this._waitForNextTask(() => {
+             if (this.onmessage)
+-              this.onmessage.call(null, JSON.parse(message2));
++              this.onmessage.call(null, parsePipeFrame(message2));
+           });
+           start3 = end + 1;
+           end = buffer.indexOf("\0", start3);

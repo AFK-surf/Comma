@@ -7,39 +7,91 @@ import {
   MeetingPresenceService,
   matchMeetingApp,
 } from "../modules/meeting-presence";
-import type {
-  NativeAudioApplication,
-  NativeAudioCapture,
-} from "../modules/audio-capture/native-audio";
+import type { NativeAudioApplication } from "../modules/audio-capture/native-audio";
+import type { MicrophoneWatch } from "../modules/meeting-presence/microphone-watch";
 
-class FakeNative implements NativeAudioCapture {
+/**
+ * The worker side of the microphone watch, answered in this thread. Every
+ * request is answered by a promise, as a worker's reply is. `pollNow` is the
+ * worker's own 2 s check: it calls back only when the answer changes.
+ */
+class FakeWatch implements MicrophoneWatch {
   apps: NativeAudioApplication[] = [];
   mic = new Set<number>();
-  listeners: Array<() => void> = [];
   listReads = 0;
+  closed = 0;
   unsubscribed = 0;
+  /** The worker stopped too often to start again. */
+  gaveUp = false;
+  /** The requests Main sent, in order. */
+  requests: Array<"applications" | "watch"> = [];
+  /** The watch lists Main sent. */
+  watched: number[][][] = [];
+  #held: Promise<void> | undefined;
+  #asked: (() => void) | undefined;
+  #groups: number[][] = [];
+  #live: number[] = [];
+  #listListeners: Array<() => void> = [];
+  #microphoneListeners: Array<() => void> = [];
 
-  applications() {
+  async applications() {
+    if (this.gaveUp) throw new Error("stopped too often");
+    this.requests.push("applications");
+    this.#asked?.();
+    await this.#held;
     this.listReads += 1;
-    return this.apps;
+    return this.apps.map((application) => ({ ...application }));
   }
-  isUsingMicrophone(processId: number) {
-    return this.mic.has(processId);
+  async watch(groups: readonly (readonly number[])[]) {
+    this.requests.push("watch");
+    this.#groups = groups.map((group) => [...group]);
+    this.watched.push(this.#groups);
+    this.#live = this.#check();
+  }
+  microphones() {
+    return this.#live;
+  }
+  available() {
+    return !this.gaveUp;
   }
   onApplicationListChanged(listener: () => void) {
-    this.listeners.push(listener);
+    this.#listListeners.push(listener);
     return () => {
       this.unsubscribed += 1;
     };
   }
-  tapApplication(): never {
-    throw new Error("not used");
+  onMicrophonesChanged(listener: () => void) {
+    this.#microphoneListeners.push(listener);
+    return () => {
+      this.unsubscribed += 1;
+    };
   }
-  tapSystem(): never {
-    throw new Error("not used");
+  async close() {
+    this.closed += 1;
   }
   emitListChanged() {
-    for (const listener of this.listeners) listener();
+    for (const listener of this.#listListeners) listener();
+  }
+  /** The worker's 2 s check of the watched processes. */
+  pollNow() {
+    const next = this.#check();
+    if (next.join() === this.#live.join()) return;
+    this.#live = next;
+    for (const listener of this.#microphoneListeners) listener();
+  }
+  /** Holds the process list back until `release`, as a busy worker does. */
+  holdApplications() {
+    const asked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    this.#asked = asked.resolve;
+    this.#held = release.promise;
+    return { asked: asked.promise, release: () => release.resolve() };
+  }
+  #check() {
+    return this.#groups.flatMap((group) => {
+      const processId = group.find((id) => this.mic.has(id));
+      return processId === undefined ? [] : [processId];
+    });
   }
 }
 
@@ -54,7 +106,7 @@ function harness(
     globalTimers?: boolean;
   } = {}
 ) {
-  const native = new FakeNative();
+  const native = new FakeWatch();
   const published: MeetingPresenceState[] = [];
   const publishWaiters: Array<(state: MeetingPresenceState) => void> = [];
   let nowMs = 1_700_000_000_000;
@@ -134,6 +186,46 @@ describe("matchMeetingApp", () => {
 });
 
 describe("MeetingPresenceService", () => {
+  it("reports detection unavailable and ends its calls once the worker stops for good", async () => {
+    const h = harness();
+    h.native.apps = [zoom];
+    h.native.mic.add(zoom.processId);
+    expect((await h.service.start()).meetings).toMatchObject([
+      { bundleIdentifier: "us.zoom.xos", status: "active" },
+    ]);
+
+    // The worker crashed three times in a row; it answers no more.
+    h.native.gaveUp = true;
+    await h.service.refresh();
+
+    expect(h.published.at(-1)).toMatchObject({ available: false, meetings: [] });
+    expect(h.cancelledCount()).toBe(1);
+  });
+
+  // CoreAudio calls took Main's thread 6-20 ms every 2 s, and Main's thread
+  // also routes input. A worker makes them now, so each answer is a message
+  // the service waits for.
+  it("takes every CoreAudio answer from the worker asynchronously", async () => {
+    const h = harness();
+    h.native.apps = [zoom, zoomHelper, spotify];
+    h.native.mic.add(zoomHelper.processId);
+    const list = h.native.holdApplications();
+
+    const started = h.service.start();
+    await list.asked;
+    // The process list is still in the worker: nothing is derived from it yet.
+    expect(h.published).toEqual([]);
+    list.release();
+
+    expect((await started).meetings).toMatchObject([
+      { bundleIdentifier: "us.zoom.xos", processId: 4243, status: "active" },
+    ]);
+    // One group per meeting app, helpers included: the helper holds Zoom's mic.
+    expect(h.native.requests).toEqual(["applications", "watch"]);
+    expect(h.native.watched).toEqual([[[4242, 4243]]]);
+    await h.service.close();
+  });
+
   it("detects in-app joined calls without mic activity and ends them despite Comma microphone use", async () => {
     let joined = false;
     const h = harness({
@@ -316,24 +408,33 @@ describe("MeetingPresenceService", () => {
 
   // The fakes answer at once, so a poll's tick has settled by the time
   // advancing the fake clock past it returns.
-  it("polls known meeting apps' microphones and re-lists processes only on list events", async () => {
+  it("follows the worker's microphone changes and re-lists processes only on list events", async () => {
     vi.useFakeTimers({ now: testEpoch });
     const h = harness({ globalTimers: true });
     h.native.apps = [zoom, spotify];
     await h.service.start();
     const reads = h.native.listReads;
+    const requests = h.native.requests.length;
 
-    // The 2 s backstop sees a mic flip without listing every audio process.
-    h.native.mic.add(4242);
+    // Main's 2 s tick asks the worker nothing, and an unchanged check posts nothing.
     await vi.advanceTimersByTimeAsync(2_000);
-    expect((await h.service.state()).meetings).toMatchObject([
+    h.native.pollNow();
+    expect(h.native.requests).toHaveLength(requests);
+
+    // The worker's 2 s check sees a mic flip without listing every audio process.
+    h.native.mic.add(4242);
+    const flipped = h.nextPublished();
+    h.native.pollNow();
+    expect((await flipped).meetings).toMatchObject([
       { name: "Zoom", status: "active" },
     ]);
     expect(h.native.listReads).toBe(reads);
+    expect(h.native.requests).toHaveLength(requests);
 
     // A meeting app that starts audio later arrives with a process-list event.
     h.native.apps = [zoom, spotify, chrome];
     h.native.mic.add(900);
+    h.native.pollNow();
     await vi.advanceTimersByTimeAsync(2_000);
     expect((await h.service.state()).meetings.map(({ name }) => name)).toEqual([
       "Zoom",
@@ -370,12 +471,13 @@ describe("MeetingPresenceService", () => {
     await h.service.close();
   });
 
-  it("stops polling and listening on close", async () => {
+  it("stops polling, listening and the worker on close", async () => {
     const h = harness();
     await h.service.start();
     expect(h.timers).toHaveLength(1);
     await h.service.close();
     expect(h.cancelledCount()).toBe(1);
-    expect(h.native.unsubscribed).toBe(1);
+    expect(h.native.unsubscribed).toBe(2);
+    expect(h.native.closed).toBe(1);
   });
 });

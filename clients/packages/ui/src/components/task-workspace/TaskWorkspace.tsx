@@ -59,6 +59,7 @@ import {
   TaskWorkspaceToolbarActions,
   isTaskFilterSectionNarrowed,
   type TaskFilterSection,
+  type TaskFilterSectionGroup,
 } from "./TaskWorkspaceToolbarActions";
 
 export type TaskWorkspaceTask = TaskSummaryViewModel & {
@@ -71,8 +72,8 @@ export type TaskWorkspaceTask = TaskSummaryViewModel & {
 export type TaskWorkspaceProps = {
   capabilityState?: "ready" | "planned";
   className?: string;
-  /** Extra filter dimensions (labels, platforms) the caller resolves and narrows by. */
-  filterSections?: readonly TaskFilterSection[] | undefined;
+  /** Extra filter dimensions (labels, platforms, dates) the caller resolves and narrows by. */
+  filterSections?: readonly (TaskFilterSection | TaskFilterSectionGroup)[] | undefined;
   /** Chips under a card's title, e.g. its labels and where it was asked for. */
   renderTaskBadges?: ((task: TaskWorkspaceTask) => ReactNode) | undefined;
   hasMore?: boolean | undefined;
@@ -988,8 +989,14 @@ const TaskWorkspaceListRow = memo(function TaskWorkspaceListRow({
         }}
         checked={checked}
         data-task-navigation-id={task.id}
-        icon={taskStatusIcon(task.statusBucket)}
-        iconKey={task.statusBucket}
+        icon={taskStatusIcon(task.statusBucket, { loopStop: task.loopStop })}
+        iconKey={
+          task.loopStop
+            ? task.loopStop.failed
+              ? "loop-failed"
+              : "loop-paused"
+            : task.statusBucket
+        }
         layout="content"
         titleIdentity={task.id}
         {...(onToggleChecked

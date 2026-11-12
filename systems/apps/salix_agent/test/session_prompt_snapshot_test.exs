@@ -150,7 +150,7 @@ defmodule SalixAgent.SessionPromptSnapshotTest do
         custom
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id},
         %{
           "type" => "session_system_prompt",

@@ -5,7 +5,9 @@ import {
   formatNumber,
   formatTimeZoneName,
   type CommaLocale,
+  type TaskStatusBucket,
 } from "@comma/i18n";
+import type { TaskLoopStop } from "@comma/ui/components/task-workspace";
 import type { useCommaMessages } from "@comma/i18n/react";
 import { uiClock } from "@comma/ui/clock";
 
@@ -89,6 +91,31 @@ export function taskLoopPausedLabel(
     default:
       return undefined;
   }
+}
+
+/**
+ * Why a Task in progress does not run: its Loop stopped. A stopped Loop does
+ * not change the Task's status, so every surface that would show the Task as
+ * running shows this instead. A Loop that stopped on an error (its program
+ * failed or exited, or its wakes cannot reach the Task) is `failed`; one
+ * paused by a person, a limit or a wait is not. Undefined when the Task is
+ * not in progress or its Loop is not paused.
+ */
+export function taskLoopStop(
+  bucket: TaskStatusBucket,
+  loop: Pick<TaskLoop, "reason" | "state"> | undefined,
+  messages: CommaMessages
+): TaskLoopStop | undefined {
+  if (loop?.state !== "paused" || bucket !== "in_progress") return undefined;
+  return {
+    text: taskLoopPausedLabel(loop, messages) ?? messages.task_loop_paused(),
+    failed: taskLoopStoppedOnError(loop),
+  };
+}
+
+/** A paused Loop that stopped on an error rather than by a person, a limit or a wait. */
+export function taskLoopStoppedOnError({ reason }: Pick<TaskLoop, "reason">): boolean {
+  return reason === "failed" || reason === "exited" || reason === "undeliverable";
 }
 
 /**

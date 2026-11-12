@@ -1,4 +1,5 @@
-import type { Session, WebContents } from "electron";
+import type { BrowserWindowConstructorOptions, Session, WebContents } from "electron";
+import { miniAppRuntimeUrl } from "@comma/chat-contract/mini-app-runtime";
 import { realMainClock, type MainClock } from "./clock";
 
 interface SecurityLogger {
@@ -12,7 +13,6 @@ type PermissionSessionTarget = Pick<
 >;
 
 const packagedRendererOrigin = "assets://.";
-const miniAppRuntimeUrl = "comma-app://runtime/";
 
 /** A dynamic UI widget or Comma app frame: it never navigates or redirects. */
 const isSandboxedFrameUrl = (url: string | undefined) =>
@@ -23,12 +23,19 @@ export function installWindowSecurity({
   allowedWindowOpenOrigins = [],
   logger,
   handleAppLink,
+  childWindowOptions,
   webContents,
 }: {
   allowedNavigationOrigins?: string[];
   allowedWindowOpenOrigins?: string[];
   logger?: SecurityLogger;
   handleAppLink?: (url: string) => boolean;
+  /** A child window of the page's own it may open (a screen window: screen-windows.ts), with its options. */
+  childWindowOptions?: (details: {
+    url: string;
+    frameName: string;
+    features: string;
+  }) => BrowserWindowConstructorOptions | undefined;
   webContents: WebContentsSecurityTarget;
 }) {
   const navigationOrigins = normalizeOriginSet([
@@ -37,8 +44,14 @@ export function installWindowSecurity({
   ]);
   const windowOpenOrigins = normalizeOriginSet(allowedWindowOpenOrigins);
 
-  webContents.setWindowOpenHandler(({ url }) => {
+  webContents.setWindowOpenHandler(({ url, frameName, features }) => {
     if (handleAppLink?.(url)) return { action: "deny" };
+    const child = childWindowOptions?.({
+      url,
+      frameName: frameName ?? "",
+      features: features ?? "",
+    });
+    if (child) return { action: "allow", overrideBrowserWindowOptions: child };
     if (isAllowedUrl(url, windowOpenOrigins)) {
       return { action: "allow" };
     }
@@ -180,46 +193,93 @@ export function installDynamicUiNetworkSecurity(
 }
 
 /**
- * Every permission is refused, except the microphone alone for the app's own page (`microphoneOrigins`, its top
- * frame) while `microphoneAllowed` says so (voice labs on): the desktop's voice call records it there. Cameras,
- * screens and other origins stay refused.
+ * What the app's own page may use: its voice call and the device capabilities that Comma apps use through it.
+ * `keyboardLock`: a remote screen that fills the screen while the person controls it takes Escape for the computer
+ * (`navigator.keyboard.lock`); holding Escape still leaves full screen. Electron refuses the lock without it.
+ */
+const appPagePermissions = new Set([
+  "media",
+  "midi",
+  "midiSysex",
+  "fullscreen",
+  "keyboardLock",
+  "screen-wake-lock",
+  "geolocation",
+]);
+
+/** What a screen window may ask (screen-windows.ts): its screen fills the screen, and takes Escape while controlled. */
+const screenWindowPermissions = new Set(["fullscreen", "keyboardLock"]);
+
+/**
+ * Every permission is refused, except for the app's own page (`appOrigins`, its top frame): the microphone and camera
+ * (requested, and checked so the page sees the devices' names),
+ * MIDI, full screen, the keyboard lock and the screen wake lock. Electron reports all MIDI requests as midiSysex.
+ * The SDK requests MIDI without system exclusive messages. Mini-app frames may request USB
+ * devices through the device chooser when their iframe policy permits it. Their origin stays opaque.
+ * Screen capture and other origins stay refused.
  */
 export function installSessionSecurity(
   session: PermissionSessionTarget,
   {
-    microphoneOrigins = [],
-    microphoneAllowed = async () => false,
+    appOrigins = [],
+    appChildWindow = () => false,
   }: {
-    microphoneOrigins?: readonly string[];
-    microphoneAllowed?: () => Promise<boolean>;
+    appOrigins?: readonly string[];
+    /** A screen window of the app's page (screen-windows.ts): its blank top document is the page's own. */
+    appChildWindow?: (webContents: WebContents | null) => boolean;
   } = {}
 ) {
-  const microphone = normalizeOriginSet([...microphoneOrigins]);
-  session.setPermissionCheckHandler(() => false);
-  session.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    const media = (details ?? {}) as {
+  const app = normalizeOriginSet([...appOrigins]);
+  const appTop = (url: string | undefined, isMainFrame: boolean | undefined) => {
+    const origin = url ? normalizeOrigin(url) : undefined;
+    return isMainFrame === true && origin !== undefined && app.has(origin);
+  };
+  // The page's own media check: without it the browser hides the names and IDs of audio inputs, and a Comma app
+  // cannot choose one.
+  session.setPermissionCheckHandler(
+    (webContents, permission, requestingOrigin, details) => {
+      const check = (details ?? {}) as {
+        mediaType?: string;
+        isMainFrame?: boolean;
+        requestingUrl?: string;
+      };
+      if (permission === "usb")
+        return (
+          check.isMainFrame === false &&
+          check.requestingUrl === miniAppRuntimeUrl &&
+          Boolean(webContents && isAllowedUrl(webContents.getURL(), app))
+        );
+      return (
+        permission === "media" &&
+        (check.mediaType === "audio" || check.mediaType === "video") &&
+        appTop(check.requestingUrl ?? requestingOrigin, check.isMainFrame)
+      );
+    }
+  );
+  session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const request = (details ?? {}) as {
       mediaTypes?: string[];
       isMainFrame?: boolean;
       requestingUrl?: string;
     };
-    const origin = media.requestingUrl
-      ? normalizeOrigin(media.requestingUrl)
-      : undefined;
-    const appMicrophone =
-      permission === "media" &&
-      media.isMainFrame === true &&
-      Array.isArray(media.mediaTypes) &&
-      media.mediaTypes.length > 0 &&
-      media.mediaTypes.every((type) => type === "audio") &&
-      origin !== undefined &&
-      microphone.has(origin);
-    if (!appMicrophone) {
-      callback(false);
+    const media =
+      permission !== "media" ||
+      (Array.isArray(request.mediaTypes) &&
+        request.mediaTypes.length > 0 &&
+        request.mediaTypes.every((type) => type === "audio" || type === "video"));
+    // A screen window's blank document is the app's page's own: it may fill the screen and take Escape, nothing else.
+    if (
+      request.isMainFrame === true &&
+      request.requestingUrl === "about:blank" &&
+      appChildWindow(webContents)
+    ) {
+      callback(screenWindowPermissions.has(permission));
       return;
     }
-    microphoneAllowed().then(
-      (allowed) => callback(allowed),
-      () => callback(false)
+    callback(
+      appPagePermissions.has(permission) &&
+        media &&
+        appTop(request.requestingUrl, request.isMainFrame)
     );
   });
 }

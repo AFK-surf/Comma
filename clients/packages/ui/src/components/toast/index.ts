@@ -23,3 +23,5 @@ export type {
   ToastProps,
   ToastVariant,
 } from "./types";
+export { COPY_FEEDBACK_TOAST_ID, copyWithFeedback } from "./copyWithFeedback";
+export type { CopyFeedbackOptions } from "./copyWithFeedback";

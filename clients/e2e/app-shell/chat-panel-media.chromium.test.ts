@@ -1162,7 +1162,11 @@ test("video controls rise on hover and stay keyboard reachable", async ({ page }
   await page.mouse.move(0, 0);
   await expect(videoCard).toHaveCSS("padding", "0px");
   await expect(videoCard).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(videoCard).toHaveCSS("box-shadow", "none");
+  await expect(videoCard).toHaveCSS(
+    "box-shadow",
+    "rgba(16, 24, 40, 0.05) 0px 1px 2px 0px"
+  );
+  await expect(videoStage).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(videoPlayer).toHaveCSS("opacity", "0");
   await expect(videoPlayer).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 12)");
   await expect(videoPlayer).toHaveCSS("transition-duration", "0.12s, 0.12s");

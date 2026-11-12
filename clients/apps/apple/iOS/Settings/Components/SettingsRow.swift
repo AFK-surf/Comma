@@ -19,12 +19,17 @@ enum SettingsRowRole {
 struct SettingsLabel: View {
     let title: Text
     var icon: String?
+    var provider: String?
     var role = SettingsRowRole.standard
     @Environment(\.isEnabled) private var isEnabled
+    @ScaledMetric(relativeTo: .body) private var providerSide: CGFloat = 20
 
     var body: some View {
         HStack(spacing: 8) {
-            if let icon {
+            if let provider {
+                Image(decorative: "provider-" + provider).resizable().scaledToFit()
+                    .frame(width: providerSide, height: providerSide).foregroundStyle(role.title)
+            } else if let icon {
                 CentralIcon(icon, size: 20, relativeTo: .body)
                     .foregroundStyle(isEnabled ? role.icon : CommaTheme.textPlaceholder)
             }
@@ -45,9 +50,9 @@ struct SettingsRow<Trailing: View>: View {
     /// The icon column and its gap, which a stacked value is indented by to sit under the title.
     @ScaledMetric(relativeTo: .body) private var iconColumn: CGFloat = 28
 
-    init(_ title: Text, icon: String? = nil, role: SettingsRowRole = .standard, value: Text? = nil,
+    init(_ title: Text, icon: String? = nil, provider: String? = nil, role: SettingsRowRole = .standard, value: Text? = nil,
          @ViewBuilder trailing: () -> Trailing) {
-        label = SettingsLabel(title: title, icon: icon, role: role)
+        label = SettingsLabel(title: title, icon: icon, provider: provider, role: role)
         self.value = value
         self.trailing = trailing()
     }
@@ -62,7 +67,7 @@ struct SettingsRow<Trailing: View>: View {
                 if let value {
                     value.font(.body).foregroundStyle(CommaTheme.textTertiary)
                         .lineLimit(stacked ? nil : 1)
-                        .padding(.leading, stacked && label.icon != nil ? iconColumn : 0)
+                        .padding(.leading, stacked && (label.icon != nil || label.provider != nil) ? iconColumn : 0)
                 }
             }
             trailing
@@ -110,6 +115,13 @@ struct SettingsToggle: View {
         Toggle(isOn: $isOn) { SettingsLabel(title: title, icon: icon) }
             .tint(CommaTheme.brandSolid)
             .surfaceRowFrame()
+    }
+}
+
+extension View {
+    /// Menu-style pickers keep their label on the row, including outside a system Form.
+    func settingsPickerRow(_ title: LocalizedStringKey) -> some View {
+        SettingsRow(Text(title)) { self }
     }
 }
 

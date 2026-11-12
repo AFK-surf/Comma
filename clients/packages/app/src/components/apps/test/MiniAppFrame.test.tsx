@@ -52,7 +52,7 @@ const info = {
   storage: ["device"],
 };
 
-let invoke: (params: { op: string; confirmed?: boolean }) => unknown;
+let invoke: (params: { op: string; args?: unknown; confirmed?: boolean }) => unknown;
 let core: ReturnType<typeof createScriptedCore>;
 function render(ui: ReactElement) {
   return baseRender(ui, {
@@ -113,6 +113,21 @@ const results = (port: TestPort) =>
   port.sent.map((s) => s.data as { type: string }).filter((d) => d.type === "result");
 
 describe("an app's host", () => {
+  it("delegates only the session's declared hardware capabilities without changing the sandbox origin", async () => {
+    core = createScriptedCore({
+      calls: (name) => {
+        if (name === "miniApps.session.open")
+          return { ...info, capabilities: ["usb", "bluetooth", "microphone"] };
+        if (name === "miniApps.bundle") return { digest: "d", files: [] };
+        return null;
+      },
+    });
+    render(<MiniAppFrame appId="a1" via={{ workspace: "wsp" }} />);
+    const frame = await screen.findByTestId("mini-app-frame");
+    expect(frame.getAttribute("allow")).toBe("usb *; bluetooth *");
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
+    expect(new URL(frame.getAttribute("src")!).pathname).toBe("/app-runtime/");
+  });
   it("hands its port only to its own frame, then the app's files", async () => {
     render(<MiniAppFrame appId="a1" via={{ workspace: "wsp" }} />);
     const frame = (await screen.findByTestId("mini-app-frame")) as HTMLIFrameElement;
@@ -261,6 +276,216 @@ describe("an app's host", () => {
       })
     );
     expect(core.sentTo("miniApps.invoke")).toHaveLength(3);
+  });
+
+  it("records the microphone in the host and streams its samples to the app until it stops", async () => {
+    invoke = (params) => ({ status: "host", op: params.op, args: params.args });
+    const track = Object.assign(new EventTarget(), {
+      stop: vi.fn(),
+      label: "USB Audio",
+      getSettings: () => ({ deviceId: "usb" }),
+    });
+    const media = { getTracks: () => [track], getAudioTracks: () => [track] };
+    const getUserMedia = vi.fn(async () => media);
+    stubProperty(navigator, "mediaDevices", { value: { getUserMedia } });
+    const processor = Object.assign(new EventTarget(), {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    });
+    const close = vi.fn(async () => undefined);
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        sampleRate = 48_000;
+        destination = {};
+        createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+        createScriptProcessor = () => processor;
+        close = close;
+      }
+    );
+    render(<MiniAppFrame appId="a1" via={{ workspace: "wsp" }} />);
+    const frame = (await screen.findByTestId("mini-app-frame")) as HTMLIFrameElement;
+    const app = ready(frame, frame.contentWindow).port()!;
+    act(() =>
+      app.postMessage({
+        type: "call",
+        id: 5,
+        op: "microphone.start",
+        args: { deviceId: "usb" },
+      })
+    );
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual({
+        type: "result",
+        id: 5,
+        ok: true,
+        value: {
+          stream: 1,
+          sampleRate: 48_000,
+          device: { id: "usb", name: "USB Audio" },
+        },
+      })
+    );
+    // The chosen input, raw: no echo cancellation, noise suppression or gain.
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        deviceId: { exact: "usb" },
+        echoCancellation: false,
+        autoGainControl: false,
+      }),
+    });
+    const chunk = Float32Array.from([0.25, -0.25]);
+    act(() => {
+      processor.dispatchEvent(
+        Object.assign(new Event("audioprocess"), {
+          inputBuffer: { getChannelData: () => chunk },
+        })
+      );
+    });
+    const streamed = app.peer!.sent.find(
+      (s) => (s.data as { type: string }).type === "stream"
+    )!;
+    expect(streamed.data).toEqual({ type: "stream", stream: 1, data: chunk });
+    // The samples are a copy, transferred to the frame.
+    expect(streamed.transfer).toHaveLength(1);
+
+    act(() =>
+      app.postMessage({
+        type: "call",
+        id: 6,
+        op: "microphone.stop",
+        args: { stream: 1 },
+      })
+    );
+    await waitFor(() => expect(track.stop).toHaveBeenCalled());
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("lists the audio inputs and tells the app when they change", async () => {
+    invoke = (params) => ({ status: "host", op: params.op, args: params.args });
+    const usb = { kind: "audioinput", deviceId: "usb", label: "USB Audio" };
+    let devices: { kind: string; deviceId: string; label: string }[] = [
+      { kind: "audioinput", deviceId: "", label: "" },
+      { kind: "videoinput", deviceId: "", label: "" },
+    ];
+    const getUserMedia = vi.fn(async () => {
+      // The page may use the microphone now: the browser shows the inputs.
+      devices = [{ kind: "audioinput", deviceId: "mac", label: "MacBook Microphone" }];
+      return { getTracks: () => [{ stop: vi.fn() }] };
+    });
+    const mediaDevices = Object.assign(new EventTarget(), {
+      getUserMedia,
+      enumerateDevices: vi.fn(async () => devices),
+    });
+    stubProperty(navigator, "mediaDevices", { value: mediaDevices });
+    render(<MiniAppFrame appId="a1" via={{ workspace: "wsp" }} />);
+    const frame = (await screen.findByTestId("mini-app-frame")) as HTMLIFrameElement;
+    const app = ready(frame, frame.contentWindow).port()!;
+    act(() =>
+      app.postMessage({ type: "call", id: 5, op: "microphone.devices", args: {} })
+    );
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual({
+        type: "result",
+        id: 5,
+        ok: true,
+        value: { devices: [{ id: "mac", name: "MacBook Microphone" }] },
+      })
+    );
+    expect(getUserMedia).toHaveBeenCalledOnce();
+
+    act(() =>
+      app.postMessage({ type: "call", id: 6, op: "microphone.watch", args: {} })
+    );
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual({
+        type: "result",
+        id: 6,
+        ok: true,
+        value: { stream: 1, devices: [{ id: "mac", name: "MacBook Microphone" }] },
+      })
+    );
+    devices = [...devices, usb];
+    act(() => {
+      mediaDevices.dispatchEvent(new Event("devicechange"));
+    });
+    await waitFor(() =>
+      expect(app.peer!.sent.map((s) => s.data)).toContainEqual({
+        type: "stream",
+        stream: 1,
+        data: [
+          { id: "mac", name: "MacBook Microphone" },
+          { id: "usb", name: "USB Audio" },
+        ],
+      })
+    );
+    // The labels show without asking for the microphone again.
+    expect(getUserMedia).toHaveBeenCalledOnce();
+
+    act(() =>
+      app.postMessage({
+        type: "call",
+        id: 7,
+        op: "microphone.stop",
+        args: { stream: 1 },
+      })
+    );
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual({
+        type: "result",
+        id: 7,
+        ok: true,
+        value: null,
+      })
+    );
+    // A stopped watch no longer listens.
+    const listed = mediaDevices.enumerateDevices.mock.calls.length;
+    act(() => {
+      mediaDevices.dispatchEvent(new Event("devicechange"));
+    });
+    expect(mediaDevices.enumerateDevices).toHaveBeenCalledTimes(listed);
+  });
+
+  it("reads the clipboard only after the viewer confirms each read", async () => {
+    invoke = (params) =>
+      params.confirmed
+        ? { status: "host", op: "clipboard.read", args: {} }
+        : {
+            status: "confirm",
+            capability: "clipboard.read",
+            op: "clipboard.read",
+            args: {},
+          };
+    const readText = vi.fn(async () => "pasted");
+    stubProperty(navigator, "clipboard", { value: { readText } });
+    render(<MiniAppFrame appId="a1" via={{ workspace: "wsp" }} />);
+    const frame = (await screen.findByTestId("mini-app-frame")) as HTMLIFrameElement;
+    const app = ready(frame, frame.contentWindow).port()!;
+    act(() => app.postMessage({ type: "call", id: 8, op: "clipboard.read", args: {} }));
+    const cancel = await screen.findByRole("button", { name: /Cancel/ });
+    act(() => cancel.click());
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual(
+        expect.objectContaining({
+          id: 8,
+          ok: false,
+          error: expect.objectContaining({ code: "denied" }),
+        })
+      )
+    );
+    expect(readText).not.toHaveBeenCalled();
+
+    act(() => app.postMessage({ type: "call", id: 9, op: "clipboard.read", args: {} }));
+    const paste = await screen.findByRole("button", { name: /Paste/ });
+    act(() => paste.click());
+    await waitFor(() =>
+      expect(results(app.peer!)).toContainEqual({
+        type: "result",
+        id: 9,
+        ok: true,
+        value: { text: "pasted" },
+      })
+    );
   });
 
   it("replaces the frame when the app is paused", async () => {

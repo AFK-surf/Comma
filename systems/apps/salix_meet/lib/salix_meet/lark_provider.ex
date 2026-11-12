@@ -1,7 +1,8 @@
 defmodule SalixMeet.LarkProvider do
   @moduledoc """
   Google Meet meetings a person starts from Lark, and what the bot says
-  about them in Lark.
+  about them in Lark. A Lark video meeting the bot is invited to starts in
+  `SalixMeet.LarkBot` and is published here.
 
   The Router's `meeting.join` tool is the only entry. The meeting is the one
   Meet link of the person's message, or the one link of its thread. The thread
@@ -13,7 +14,7 @@ defmodule SalixMeet.LarkProvider do
   alias SalixIM.Ports.LarkDirectDelivery
   alias SalixIM.Provider.Lark
   alias SalixIM.Provider.Lark.Message, as: LarkMessage
-  alias SalixMeet.{MeetingState, OwnerAttributionSnapshot, Runtime, RuntimeEvents, Store}
+  alias SalixMeet.{LarkBot, MeetingState, OwnerAttributionSnapshot, Runtime, RuntimeEvents, Store}
   alias SalixStore.{Crypto, S3}
 
   @meet_url ~r|https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[^\s<>]*)?|iu
@@ -144,7 +145,7 @@ defmodule SalixMeet.LarkProvider do
       when is_binary(meeting_id) and is_map(state) and is_map(event) do
     event = stringify(event)
 
-    case status_text(event) do
+    case status_text(event, state) do
       nil ->
         :ok
 
@@ -587,7 +588,7 @@ defmodule SalixMeet.LarkProvider do
                connect,
                state,
                "meeting:#{meeting_id}:summary",
-               terminal_text(state),
+               Enum.join([terminal_text(state) | LarkBot.link_lines(state, "en")], "\n"),
                terminal_mentions(state)
              )
            end),
@@ -608,8 +609,10 @@ defmodule SalixMeet.LarkProvider do
   end
 
   defp publish_terminal_artifacts(meeting_agent, connect, meeting_id, state, claim) do
-    if state["status"] in ["failed", "cancelled"] and
-         not SalixMeet.Outcome.partial_recording?(state) do
+    # The bot in a Lark meeting records no files: Lark keeps its own Minutes.
+    if state["runtime_source"] == "lark_bot" or
+         (state["status"] in ["failed", "cancelled"] and
+            not SalixMeet.Outcome.partial_recording?(state)) do
       delivery = stringify(state["delivery"] || %{})
 
       with :ok <- checkpoint_piece_if_missing(meeting_id, claim, delivery, "lark_transcript"),
@@ -1037,6 +1040,19 @@ defmodule SalixMeet.LarkProvider do
       else:
         SystemsRuntime.get_env(:salix_meet, :default_caption_language, @default_caption_language)
   end
+
+  defp status_text(%{"type" => "status", "status" => "in_meeting"}, %{
+         "runtime_source" => "lark_bot"
+       }),
+       do: {"in_meeting", "Joined the Lark meeting."}
+
+  defp status_text(%{"type" => "status", "status" => "left"}, %{"runtime_source" => "lark_bot"}),
+    do: {"left", "Left the meeting. Preparing the summary…"}
+
+  defp status_text(%{"type" => "status", "status" => "lark_join_blocked"} = event, _state),
+    do: {"lark_join_blocked", LarkBot.blocked_text(trim(event["lark_reason"]), "en")}
+
+  defp status_text(event, _state), do: status_text(event)
 
   defp status_text(%{"type" => "status", "status" => "error", "reason_code" => code})
        when code in ~w(admission_denied meeting_full removed_from_meeting admission_timeout),

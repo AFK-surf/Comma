@@ -19,8 +19,13 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
     @behaviour SalixMeet.Ports.CalendarOccurrences
 
     @impl true
-    def list(_group, _t0_ms, _t1_ms),
-      do: {:ok, SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_runtime_test_events, [])}
+    def list(group, t0_ms, t1_ms) do
+      case SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_runtime_test_events, []) do
+        events when is_function(events, 3) -> events.(group, t0_ms, t1_ms)
+        events when is_function(events, 1) -> {:ok, events.(group)}
+        events -> {:ok, events}
+      end
+    end
 
     @impl true
     def revalidate(_group, event) do
@@ -48,6 +53,16 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
          "thread_ts" => "111.222"
        }}
     end
+
+    # Members' meetings each get their own thread, as the Slack binding's
+    # root message gives them.
+    @impl true
+    def resolve(group, %{"meeting_identity" => "meet", "meet_url" => url}) do
+      with {:ok, target} <- resolve(group),
+           do: {:ok, Map.put(target, "thread_ts", "#{:erlang.phash2(url)}.000")}
+    end
+
+    def resolve(group, _event), do: resolve(group)
   end
 
   defmodule RuntimeDriver do
@@ -67,6 +82,11 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
 
     @impl true
     def join(doc) do
+      case SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_runtime_test_join_hook) do
+        hook when is_function(hook, 1) -> hook.(doc)
+        _ -> :ok
+      end
+
       Agent.get_and_update(__MODULE__, fn state ->
         {result, remaining} = pop_result(state.results)
         {result, %{state | calls: state.calls ++ [doc], results: remaining}}
@@ -279,6 +299,353 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
 
     assert {:ok, %{"meeting_id" => ^meeting_id}} =
              SlackThreadIndex.fetch(state, "C-runtime-test", "111.222")
+  end
+
+  describe "members' own calendars" do
+    setup %{group: group} do
+      members = Map.put(group, "calendar_scope", "members")
+      alice = Map.put(members, "calendar_id", Ids.new_calendar_id())
+      bob = Map.put(members, "calendar_id", Ids.new_calendar_id())
+      {:ok, alice: alice, bob: bob}
+    end
+
+    test "one meeting on two members' calendars is joined once", %{alice: alice, bob: bob} do
+      set_events(&[member_event(&1, "standup", @now + 30_000)])
+
+      assert [_, _] = CalendarAutojoin.scan_once([alice, bob], now: @now)
+
+      assert CalendarAutojoin.meeting_id(alice, member_event(alice, "standup", @now + 30_000)) ==
+               CalendarAutojoin.meeting_id(bob, member_event(bob, "standup", @now + 30_000))
+
+      results = CalendarAutojoin.join_sweep([alice, bob], now: @now)
+      assert Enum.count(results, &(&1.action == :joined)) == 1
+      assert Enum.all?(results, &(&1.action in [:joined, :already]))
+      assert [_one] = RuntimeDriver.calls()
+    end
+
+    test "a member who drops a meeting leaves it to the members who still have it",
+         %{alice: alice, bob: bob, tenant_id: tenant_id, group_id: group_id} do
+      alice_event = member_event(alice, "review", @now + 30_000)
+      set_events(&[member_event(&1, "review", @now + 30_000)])
+      assert [_, _] = CalendarAutojoin.scan_once([alice, bob], now: @now)
+
+      # Alice's calendar created the meeting, which was never dispatched.
+      meeting_id = CalendarAutojoin.meeting_id(alice, alice_event)
+      assert {:ok, meeting_agent} = Runtime.start_for_group(tenant_id, group_id, now: @now)
+      state = durable_calendar_state(alice, meeting_agent, alice_event, meeting_id)
+      assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state, now: @now)
+
+      # While Alice's calendar still holds it, Bob's calendar leaves it alone.
+      assert Enum.all?(
+               CalendarAutojoin.join_sweep([bob], now: @now),
+               &(&1.action == :already)
+             )
+
+      assert RuntimeDriver.calls() == []
+
+      # Alice declines: her copy is gone and the scan drops it without
+      # abandoning the shared meeting.
+      alice_calendar = alice["calendar_id"]
+
+      set_events(fn
+        %{"calendar_id" => ^alice_calendar} -> []
+        unit -> [member_event(unit, "review", @now + 30_000)]
+      end)
+
+      SystemsRuntime.put_env(
+        :salix_meet,
+        :calendar_autojoin_runtime_test_revalidation,
+        fn
+          %{"calendar_id" => ^alice_calendar} -> {:error, :calendar_event_cancelled}
+          _event -> :ok
+        end
+      )
+
+      assert [_, _] = CalendarAutojoin.scan_once([alice, bob], now: @now)
+      assert {:ok, doc, _etag} = Store.get(meeting_id)
+      refute is_integer(doc["state"]["calendar_autojoin_abandoned_at"])
+
+      assert [%{action: :joined, mid: ^meeting_id}] =
+               CalendarAutojoin.join_sweep([bob], now: @now)
+
+      assert [joined] = RuntimeDriver.calls()
+      assert joined["state"]["source"]["calendar_id"] == bob["calendar_id"]
+    end
+  end
+
+  test "the worker scans 100 member calendars and dispatches the meetings that start together in one pass",
+       %{group: group} do
+    base = Map.put(group, "calendar_scope", "members")
+    units = Enum.map(1..100, fn _ -> Map.put(base, "calendar_id", Ids.new_calendar_id()) end)
+    index = units |> Enum.with_index() |> Map.new(fn {unit, i} -> {unit["calendar_id"], i} end)
+    later = SystemsClock.system_time(:millisecond) + 3 * 60 * 60 * 1_000
+
+    # Thirty members have ten meetings, three members each; member 99 alone
+    # has ten more that start at the same time.
+    events_at = fn start_ms ->
+      fn unit ->
+        case index[unit["calendar_id"]] do
+          i when i < 30 -> [room_event(unit, div(i, 3), start_ms)]
+          99 -> Enum.map(10..19, &room_event(unit, &1, start_ms))
+          _ -> []
+        end
+      end
+    end
+
+    set_events(events_at.(later))
+
+    worker =
+      start_supervised!(
+        {CalendarAutojoin,
+         [
+           name: :calendar_autojoin_members_capacity_test,
+           node: "calendar-autojoin-members-capacity-test",
+           groups: units,
+           scan_interval_ms: 3_600_000,
+           join_interval_ms: 3_600_000,
+           max_groups_per_pass: 25,
+           max_events_per_group: 10
+         ]}
+      )
+
+    # The first pass came from init; three more cover every member calendar.
+    for _ <- 1..3, do: tick(worker, :scan_tick)
+    assert map_size(:sys.get_state(worker).windows) == 100
+    assert RuntimeDriver.calls() == []
+
+    # The meetings move to the next minute; the changed calendars are read
+    # before the rotation.
+    soon = SystemsClock.system_time(:millisecond) + 60_000
+    set_events(events_at.(soon))
+
+    for unit <-
+          Enum.filter(units, &(index[&1["calendar_id"]] < 30 or index[&1["calendar_id"]] == 99)),
+        do:
+          SalixMeet.CalendarChanges.source_changed(
+            unit["group_id"],
+            unit["calendar_id"],
+            "google_calendar"
+          )
+
+    for _ <- 1..2, do: tick(worker, :scan_tick)
+    tick(worker, :join_tick)
+
+    joined = RuntimeDriver.calls() |> Enum.map(& &1["state"]["meet_url"]) |> Enum.sort()
+    assert joined == Enum.map(0..19, &room_url/1) |> Enum.sort()
+  end
+
+  test "ten meetings that start together on one member's calendar are dispatched in one pass",
+       %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    set_events(fn unit -> Enum.map(0..9, &room_event(unit, &1, @now + 30_000)) end)
+    assert [_] = CalendarAutojoin.scan_once([unit], now: @now, max_events_per_group: 20)
+
+    results =
+      CalendarAutojoin.join_sweep([unit],
+        now: @now,
+        group_bounded: true,
+        max_events_per_group: 20
+      )
+
+    assert Enum.count(results, &(&1.action == :joined)) == 10
+    joined = RuntimeDriver.calls() |> Enum.map(& &1["state"]["meet_url"]) |> Enum.sort()
+    assert joined == Enum.map(0..9, &room_url/1) |> Enum.sort()
+  end
+
+  test "a stalled dispatch delays only its own meeting", %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    set_events(fn unit -> Enum.map(0..9, &room_event(unit, &1, @now + 30_000)) end)
+    assert [_] = CalendarAutojoin.scan_once([unit], now: @now, max_events_per_group: 20)
+
+    stalled = room_url(0)
+
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_runtime_test_join_hook, fn doc ->
+      if doc["state"]["meet_url"] == stalled, do: receive(do: (:never -> :ok))
+    end)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin_runtime_test_join_hook)
+    end)
+
+    results =
+      CalendarAutojoin.join_sweep([unit],
+        now: @now,
+        group_bounded: true,
+        max_events_per_group: 20,
+        task_timeout_ms: 1_000
+      )
+
+    assert Enum.count(results, &(&1.action == :joined)) == 9
+    joined = RuntimeDriver.calls() |> Enum.map(& &1["state"]["meet_url"]) |> Enum.sort()
+    assert joined == Enum.map(1..9, &room_url/1) |> Enum.sort()
+  end
+
+  test "a calendar with more events than one query returns is read over a shorter horizon",
+       %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    set_events(fn unit, t0_ms, t1_ms ->
+      if t1_ms - t0_ms > 2 * 60 * 60 * 1_000,
+        do: {:error, :occurrence_limit_exceeded},
+        else: {:ok, [room_event(unit, 0, @now + 30_000)]}
+    end)
+
+    assert [{_group_id, 1}] = CalendarAutojoin.scan_once([unit], now: @now)
+
+    assert [%{action: :joined}] =
+             CalendarAutojoin.join_sweep([unit], now: @now, group_bounded: true)
+  end
+
+  test "201 meetings that start together on one member's calendar are found and joined over passes",
+       %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    meetings =
+      for n <- 0..200 do
+        code = for d <- [div(n, 676), rem(div(n, 26), 26), rem(n, 26)], into: "", do: <<?a + d>>
+
+        unit
+        |> member_event("many-#{String.pad_leading(Integer.to_string(n), 3, "0")}", @now + 30_000)
+        |> Map.put("meet_url", "https://meet.google.com/#{code}-abcd-efg")
+      end
+
+    # The test calendar pages like the real one: by calendar item id, at most
+    # max_events items per page, after the item the scan sends.
+    set_events(fn unit, _t0_ms, _t1_ms ->
+      after_item = unit["page_after"]
+
+      remaining =
+        meetings
+        |> Enum.sort_by(& &1["calendar_item_id"])
+        |> Enum.filter(&(is_nil(after_item) or &1["calendar_item_id"] > after_item))
+
+      {page, rest} = Enum.split(remaining, unit["max_events"])
+      next = if rest == [], do: nil, else: List.last(page)["calendar_item_id"]
+      {:ok, Enum.map(page, &Map.put(&1, "calendar_id", unit["calendar_id"])), next}
+    end)
+
+    per_pass =
+      for _pass <- 1..30 do
+        CalendarAutojoin.scan_once([unit], now: @now, max_events_per_group: 20)
+
+        CalendarAutojoin.join_sweep([unit],
+          now: @now,
+          group_bounded: true,
+          max_events_per_group: 20
+        )
+        |> Enum.count(&(&1.action == :joined))
+      end
+
+    assert Enum.all?(per_pass, &(&1 <= 20))
+    joined = RuntimeDriver.calls() |> Enum.map(& &1["state"]["meet_url"]) |> Enum.uniq()
+    assert length(joined) == 201
+  end
+
+  test "prepare-only meetings filling a member's projection never push a Google Meet out",
+       %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    set_events(fn unit, _t0_ms, _t1_ms ->
+      zooms =
+        for n <- 1..5 do
+          unit
+          |> member_event("zoom-#{n}", @now + 10_000 + n)
+          |> Map.put("meet_url", "https://us02web.zoom.us/j/8123456789#{n}")
+        end
+
+      events = zooms ++ [room_event(unit, 1, @now + 30_000)]
+      if unit["paged"], do: {:ok, events, nil}, else: {:ok, events}
+    end)
+
+    CalendarAutojoin.scan_once([unit], now: @now, max_events_per_group: 3)
+
+    assert [%{action: :joined}] =
+             CalendarAutojoin.join_sweep([unit],
+               now: @now,
+               group_bounded: true,
+               max_events_per_group: 3
+             )
+             |> Enum.filter(&(&1.action == :joined))
+
+    assert Enum.map(RuntimeDriver.calls(), & &1["state"]["meet_url"]) == [room_url(1)]
+  end
+
+  test "a meeting created to start now on a busy member calendar joins on the next passes",
+       %{group: group} do
+    unit =
+      group
+      |> Map.put("calendar_scope", "members")
+      |> Map.put("calendar_id", Ids.new_calendar_id())
+
+    soon = SystemsClock.system_time(:millisecond) + 60_000
+    later = soon + 20 * 60 * 60 * 1_000
+
+    # Thirty meetings tomorrow fill the first pages; the new meeting's item
+    # sorts last.
+    calendar = fn unit ->
+      Enum.map(0..29, &room_event(unit, &1, later)) ++
+        [unit |> member_event("zzz-now", soon) |> Map.put("meet_url", room_url(25))]
+    end
+
+    set_events(fn unit, t0_ms, t1_ms ->
+      events =
+        calendar.(unit) |> Enum.filter(&(&1["start_ms"] >= t0_ms and &1["start_ms"] <= t1_ms))
+
+      if unit["paged"] do
+        after_item = unit["page_after"]
+
+        remaining =
+          events
+          |> Enum.sort_by(& &1["calendar_item_id"])
+          |> Enum.filter(&(is_nil(after_item) or &1["calendar_item_id"] > after_item))
+
+        {page, rest} = Enum.split(remaining, unit["max_events"])
+        {:ok, page, if(rest == [], do: nil, else: List.last(page)["calendar_item_id"])}
+      else
+        {:ok, events}
+      end
+    end)
+
+    worker =
+      start_supervised!(
+        {CalendarAutojoin,
+         [
+           name: :calendar_autojoin_near_first_test,
+           node: "calendar-autojoin-near-first-test",
+           groups: [unit],
+           scan_interval_ms: 3_600_000,
+           join_interval_ms: 3_600_000,
+           max_events_per_group: 8
+         ]}
+      )
+
+    SalixMeet.CalendarChanges.source_changed(
+      unit["group_id"],
+      unit["calendar_id"],
+      "google_calendar"
+    )
+
+    tick(worker, :scan_tick)
+    tick(worker, :join_tick)
+
+    assert room_url(25) in Enum.map(RuntimeDriver.calls(), & &1["state"]["meet_url"])
   end
 
   defmodule StaleDispatchPort do
@@ -564,6 +931,41 @@ defmodule SalixMeet.CalendarAutojoinRuntimeTest do
       "meet_url" => "https://meet.google.com/abc-defg-hij",
       "title" => "Calendar #{id}"
     }
+  end
+
+  defp member_event(unit, id, start_ms) do
+    calendar_id = unit["calendar_id"]
+
+    %{
+      "event_id" => "#{calendar_id}-#{id}",
+      "calendar_id" => calendar_id,
+      "calendar_item_id" => "item-#{calendar_id}-#{id}",
+      "occurrence_ref" => %{
+        "calendar_id" => calendar_id,
+        "scheduling_link_id" => "link-#{calendar_id}-#{id}",
+        "recurrence_key" => %{"kind" => "single"}
+      },
+      "meeting_plan_id" => "plan-#{calendar_id}-#{id}",
+      "meeting_identity" => "meet",
+      "start_ms" => start_ms,
+      "end_ms" => start_ms + 1_800_000,
+      "meet_url" => "https://meet.google.com/abc-defg-hij",
+      "title" => "Calendar #{id}"
+    }
+  end
+
+  defp room_event(unit, room, start_ms) do
+    unit
+    |> member_event("room-#{room}", start_ms)
+    |> Map.put("meet_url", room_url(room))
+  end
+
+  defp room_url(room), do: "https://meet.google.com/abc-defg-#{<<?a + room>>}aa"
+
+  defp tick(worker, message) do
+    SystemsRuntime.Proc.send(worker, message)
+    _ = :sys.get_state(worker, :infinity)
+    :ok
   end
 
   defp occurrence_ref(id, start_ms) do

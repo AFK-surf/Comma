@@ -46,6 +46,15 @@
   color: var(--color-fg-error-primary);
 }
 
+/* A notice that stacks actions under its copy is taller than its icon, so the
+   icon pins to the copy's first line (icon and line are both 20px, and both
+   start at the frame's top padding) instead of floating between the copy and
+   the actions. Only the icon moves; the frame's own alignment stays shared. */
+.comma-chat-notice-card:has(.comma-chat-notice-card-actions)
+  > .comma-chat-notice-card-icon {
+  align-self: flex-start;
+}
+
 /* The copy owns the row and wraps inside it, so trailing controls — the
    activity's disclosure chevron — stay pinned to the end. */
 .comma-chat-notice-card-copy {
@@ -80,10 +89,10 @@
 }
 
 /* ── Actions ──────────────────────────────────────────────────────────────
-   The recovering action sits opposite the pair that leaves the message
-   behind, so the two outcomes never land under one thumb. When the row runs
-   out of width the groups wrap instead of letting a label truncate: every
-   action here has to stay readable. */
+   The actions that carry on lead the row; the one that leaves the message
+   behind sits opposite them, so the two outcomes never land under one thumb.
+   When the row runs out of width the groups wrap instead of letting a label
+   truncate: every action here has to stay readable. */
 .comma-chat-notice-card-actions {
   display: flex;
   width: 100%;

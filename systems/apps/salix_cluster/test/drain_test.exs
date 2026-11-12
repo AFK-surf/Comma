@@ -126,6 +126,44 @@ defmodule SalixCluster.DrainTest do
     assert Enum.any?(session.messages, &(&1.content == "again"))
   end
 
+  # Rolling-release regression: the draining pod stayed in the ring, so an
+  # agent whose ring owner was the pod itself got no hand-off, and the next
+  # inbound event started it on the pod again; the SIGKILL then lost the round
+  # in flight. The node now leaves the ring: the agent goes to the peer, and
+  # placement on the draining node routes there instead of starting it here.
+  test "drain hands an agent the draining node owned to the peer and does not restart it here" do
+    remote = :"salix-drain-peer@127.0.0.1"
+    ring = SystemsRuntime.Proc.whereis(SalixCluster.Ring)
+    on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
+    SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+    SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+
+    a = agent_owned_by(Node.self())
+    Mock.script([{:final, "parked reply"}])
+    SalixAgent.TestSupport.create_control_agent!(a)
+
+    assert {:ok, :created} =
+             SalixAgent.deliver(a, %{content: "hi", session_id: "ses1_1200000000000000001"},
+               source_message_id: "drain-peer-hi-#{a}"
+             )
+
+    assert eventually(fn ->
+             parked?(a) and session_has_content?(a, "parked reply") and
+               internal_sessions_settled?(a)
+           end)
+
+    assert {:ok, %{drained: [^a], handed_off: 1, failed: []}} = Drain.drain()
+    assert SalixCluster.Ring.owner(a) == remote
+    assert eventually(fn -> not Fleet.running?(a) end)
+
+    # An inbound event or a Recovery wake on the draining node goes to the
+    # peer; the peer is not reachable here, and nothing starts locally.
+    assert {:error, {:owner_unreachable, ^remote, _reason}} =
+             SalixCluster.Placement.ensure_started(a, create: false)
+
+    refute Fleet.running?(a)
+  end
+
   test "drain marks node draining and summarizes what it stopped" do
     refute SalixCluster.NodeLifecycle.draining?()
 
@@ -180,6 +218,13 @@ defmodule SalixCluster.DrainTest do
 
   # Settles until the condition holds; it fails on clock time if it never does.
   defp eventually(fun, _retries \\ nil), do: settle_until(fun)
+
+  defp agent_owned_by(owner) do
+    Enum.find_value(1..10_000, fn _idx ->
+      agent_id = SalixAgent.TestSupport.new_agent_id()
+      if SalixCluster.Ring.owner(agent_id) == owner, do: agent_id
+    end) || flunk("no agent id mapped to #{inspect(owner)}")
+  end
 
   defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)

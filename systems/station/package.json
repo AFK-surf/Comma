@@ -2,16 +2,17 @@
   "name": "@comma/station",
   "private": true,
   "type": "module",
-  "description": "The Comma station: still.fail's station extended with the connector's environment work (systems/station/README.md)",
+  "description": "The Comma station: Comma's station extended with the connector's environment work (systems/station/README.md)",
   "scripts": {
     "check": "tsgo --noEmit",
     "build": "esbuild src/main.ts src/read/worker.ts --outbase=src --bundle --platform=node --format=esm --target=node24 --outdir=dist --external:*.node --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" && node scripts/skills.mjs",
-    "test": "node scripts/native.ts run mesh runner archive-rs -- node --import ../../scripts/test-network-guard.mjs --test --test-force-exit --test-timeout=600000 test/*.test.ts test/connector/*.test.ts",
+    "test": "node scripts/native.ts run mesh runner archive-rs -- node test/support/supervise.mjs node --import ../../scripts/test-network-guard.mjs --import ./test/support/watchdog.mjs --test --test-timeout=120000 test/*.test.ts test/connector/*.test.ts",
     "test:side": "node scripts/native.ts run mesh runner archive-rs -- node --import ../../scripts/test-network-guard.mjs --test side/*.test.ts"
   },
   "dependencies": {
     "@comma/mesh": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@xterm/headless": "6.0.0",
     "effect": "4.0.0",
     "ws": "8.22.0"
   },

@@ -1,0 +1,8 @@
+@layer components {
+  /* The page follows the theme in dark mode; light mode keeps the artwork's own page colors, each file's
+     fallbacks. The badge keeps its color in both. */
+  :where(.dark, [data-theme="Dark mode"]) .comma-file-type-icon {
+    --file-type-icon-page: var(--color-bg-popup-secondary);
+    --file-type-icon-edge: var(--color-fg-quinary);
+  }
+}

@@ -907,11 +907,11 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         case vm_maintenance() do
           %{
             "maintenance_id" => ^id,
-            "phase" => "prepared",
+            "phase" => phase,
             "started_at" => started,
             "enabled" => true
           }
-          when is_integer(started) ->
+          when phase in ["prepared", "deploying"] and is_integer(started) ->
             if now_ms() < started + 75 * 60_000,
               do: :ok,
               else: {:error, :image_release_drain_timeout}
@@ -2125,7 +2125,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
             wake_failed(rec, opts[:wake_operation_id], failure)
 
           {{:error, :timeout}, false} ->
-            _ = mark_failed(group_id, "cloud-vm connector did not attach")
+            _ = mark_failed(group_id, "cloud-vm station did not attach")
             {:ok, :failed}
 
           {{:error, reason}, false} ->
@@ -2484,9 +2484,28 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp teardown_cloudflare(%{"group_id" => group_id, "status" => "archived"}, _opts),
     do: delete_record(group_id)
 
+  # The VM is wanted stopped: its archive waits for no idle time and for no
+  # operation still counted active (`idle_archive_eligible?/2`,
+  # `abandon_operations/2`).
   defp teardown_cloudflare(%{"status" => "ready"} = rec, opts) do
-    with {:ok, _} <- archive_cloudflare_idle(rec, Keyword.put(opts, :force, true)),
-         do: delete_record(rec["group_id"])
+    opts = opts |> Keyword.put(:force, true) |> Keyword.put(:abandon_operations, true)
+    with {:ok, _} <- archive_cloudflare_idle(rec, opts), do: delete_record(rec["group_id"])
+  end
+
+  # No container runs: billing refused its start, or none was made. Released
+  # as an archived VM is; an earlier archive stays where it is.
+  defp teardown_cloudflare(%{"group_id" => group_id, "status" => status}, _opts)
+       when status in ~w(billing_suspended eligible_for_resume absent),
+       do: delete_record(group_id)
+
+  # A start that failed may have left a container: destroyed if it is there,
+  # with no new archive (its disk is disposable, docs/agent-runtime.md "Cloud
+  # VM cutover"). A VM that is creating, waking or archiving is waited for.
+  defp teardown_cloudflare(%{"status" => "failed"} = rec, opts) do
+    case teardown_orphan(rec, opts) do
+      {:error, {:api_error, 404, _}} -> delete_record(rec["group_id"])
+      result -> result
+    end
   end
 
   defp teardown_cloudflare(_rec, _opts), do: {:error, :group_release_recovery_required}
@@ -2534,6 +2553,12 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
       (rec["runtime_selection_until"] || 0) > now ->
         {:skip, :runtime_selection}
+
+      # A teardown abandons the operations still counted active (one that
+      # never finished would hold the stop for good, `abandon_operations/2`)
+      # and waits for no agent settle: the VM is wanted stopped.
+      Keyword.get(opts, :abandon_operations, false) ->
+        :ok
 
       active_count > 0 ->
         {:skip, :active_operations}
@@ -2642,6 +2667,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                    |> Map.delete("archive_progress")
                    |> Map.delete("archive_cancel_requested")
                    |> Map.put("last_error", nil)
+                   |> abandon_operations(opts)
                  else
                    {:error, :archive_gc_backlog}
                  end
@@ -2807,6 +2833,26 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         {:error, :archive_operation_lost}
       end
     end)
+  end
+
+  # A teardown's archive abandons the operations still counted active
+  # (`idle_archive_eligible?/2`): they move to `abandoned_operations`, so the
+  # count the archive's end requires is zero, and a finish for one of them
+  # afterwards finds nothing to count down.
+  defp abandon_operations(rec, opts) do
+    operations = rec["active_operations"] || %{}
+
+    if Keyword.get(opts, :abandon_operations, false) and map_size(operations) > 0 do
+      rec
+      |> Map.put(
+        "abandoned_operations",
+        Map.merge(rec["abandoned_operations"] || %{}, operations)
+      )
+      |> Map.put("active_operations", %{})
+      |> Map.put("active_operation_count", 0)
+    else
+      rec
+    end
   end
 
   defp record_idle_archive_start_delay(rec, opts) do

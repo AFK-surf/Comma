@@ -148,3 +148,20 @@ func auditedLegacyUpgradePlan(t *testing.T) Plan {
 	}
 	return plan
 }
+
+func TestPlanAcceptsOwnerClassifiedBackupRequirement(t *testing.T) {
+	for _, backup := range []bool{false, true} {
+		plan := testPlan(t, ModeOnline)
+		step := testMigrationStep("salix-retired-projection", "expand")
+		step.Safety.Destructive = true
+		step.Safety.BackupRequired = backup
+		plan.PendingIDs = []string{step.ID}
+		plan.PendingSteps = []MigrationStepV2{step}
+		if err := plan.Validate(); err != nil {
+			t.Fatalf("explicit backup requirement %t rejected: %v", backup, err)
+		}
+		if plan.PendingSteps[0].Safety.BackupRequired != backup {
+			t.Fatal("plan changed the owner's backup requirement")
+		}
+	}
+}

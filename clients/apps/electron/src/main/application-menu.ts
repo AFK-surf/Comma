@@ -1,5 +1,11 @@
 import { applicationMenuIcons } from "./generated/application-menu-icons";
-import { app, Menu, nativeImage, type MenuItemConstructorOptions } from "electron";
+import {
+  app,
+  Menu,
+  nativeImage,
+  type Input,
+  type MenuItemConstructorOptions,
+} from "electron";
 import type {
   ApplicationMenuCommand,
   ApplicationMenuItems,
@@ -18,6 +24,21 @@ const accelerators = (entries: ApplicationMenuItems) =>
       .map((item) => [item.id, item.accelerator])
       .toSorted(([left], [right]) => left!.localeCompare(right!))
   );
+
+/** ⌃Tab, ⌃⇧Tab and ⌘W (Ctrl+W off macOS) as the Chat sidebar's tab commands. */
+export function sidebarTabCommand(
+  input: Pick<Input, "type" | "key" | "control" | "meta" | "alt" | "shift">,
+  platform: NodeJS.Platform = process.platform
+): ApplicationMenuCommand | undefined {
+  if (input.type !== "keyDown" || input.alt) return undefined;
+  if (input.key === "Tab" && input.control && !input.meta)
+    return input.shift ? "browser-previous-tab" : "browser-next-tab";
+  const command =
+    platform === "darwin" ? input.meta && !input.control : input.control && !input.meta;
+  return command && !input.shift && input.key.toLowerCase() === "w"
+    ? "browser-close-tab"
+    : undefined;
+}
 
 export function installApplicationMenu(options: Options) {
   const images = new Map(
@@ -53,6 +74,7 @@ export function installApplicationMenu(options: Options) {
     Stations: "工作站",
     Plugins: "插件",
     "Search Tasks…": "搜索任务…",
+    "New Task": "新建 Task",
     Back: "后退",
     Forward: "前进",
     "Show Left Sidebar": "显示左侧栏",
@@ -141,6 +163,8 @@ export function installApplicationMenu(options: Options) {
       {
         label: t("File"),
         submenu: [
+          command("new-task", "New Task"),
+          separator,
           command("record-start", "Start Recording"),
           command("record-pause", "Pause Recording"),
           command("record-resume", "Resume Recording"),
@@ -217,5 +241,18 @@ export function installApplicationMenu(options: Options) {
   });
   app.on("browser-window-focus", update);
   app.on("browser-window-blur", update);
+  // The sidebar's tab keys show in no menu. They act wherever the main
+  // window's focus is, a browser tab's page included, and only while the
+  // sidebar has a tab for them, so ⌘W otherwise closes the window as before.
+  // Preventing the input also keeps it from the menu.
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("before-input-event", (inputEvent, input) => {
+      const id = sidebarTabCommand(input);
+      if (!id || !options.isMainFocused()) return;
+      if (!items.some((item) => item.id === id && item.enabled)) return;
+      inputEvent.preventDefault();
+      options.dispatch(id);
+    });
+  });
   build();
 }

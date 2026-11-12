@@ -1,20 +1,27 @@
 // Runs the phone apps' bundle in Hermes's command-line runtime, the release the apps carry, with the app's side of
 // the bridge faked (mobile-check-native.js): the core must start there, as each app starts it, and say that nobody is
-// signed in.
+// signed in. The bundle must also stay within MAX_BUNDLE_BYTES: what the phones load before the core can start.
 //
 //   node scripts/mobile-check.ts
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundle, hermesTools } from "./mobile-bundle.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+/** The bundle's size now (1.72 MB on 2026-11-08), with a little room: a change that needs more raises it, saying why. */
+const MAX_BUNDLE_BYTES = 1_750_000;
 const dir = mkdtempSync(join(tmpdir(), "comma-mobile-check-"));
 try {
   const script = join(dir, "core.js");
   await bundle(script);
+  const bytes = statSync(script).size;
+  if (bytes > MAX_BUNDLE_BYTES)
+    throw new Error(
+      `the phones' core bundle is ${bytes} bytes, above MAX_BUNDLE_BYTES (${MAX_BUNDLE_BYTES}): load less at start, or raise it saying why`
+    );
   for (const platform of ["android", "ios"]) {
     const whole = join(dir, `check-${platform}.js`);
     writeFileSync(

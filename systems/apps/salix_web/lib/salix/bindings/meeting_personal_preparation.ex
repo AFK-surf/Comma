@@ -2,7 +2,12 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
   @moduledoc "Current organization meeting attendees and source audiences for personal meeting reports."
   @behaviour SalixMeet.Ports.PersonalPreparation
 
-  alias Salix.Bindings.{GoogleGroupAttendees, MeetingCalendarPreparation}
+  alias Salix.Bindings.{
+    GoogleGroupAttendees,
+    LarkMeetingPersonalPreparation,
+    MeetingCalendarPreparation
+  }
+
   alias SalixIM.Provider.Slack.API
   alias SalixIM.ProviderConnects
   alias SalixMeet.{CalendarEnrollmentCache, PersonalPreparation}
@@ -10,8 +15,41 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
 
   @batch_size 20
 
+  # A meeting on members' calendars is prepared once, for the first of its
+  # plan's recipients (the organizer, then the member whose calendar holds it)
+  # who has an account in the Slack workspace.
+  # A Feishu/Lark plan has its own recipients (`LarkMeetingPersonalPreparation`).
   @impl true
-  def roster(plan) do
+  def roster(plan) when is_map(plan) do
+    if LarkMeetingPersonalPreparation.provider?(plan),
+      do: LarkMeetingPersonalPreparation.roster(plan),
+      else: slack_roster(plan)
+  end
+
+  defp slack_roster(%{"personal_recipients" => candidates} = plan) when is_list(candidates) do
+    with {:ok, _entry} <- enrollment(plan),
+         {:ok, connect} <- connect(plan) do
+      token = API.installation(connect)
+
+      candidates
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.downcase(String.trim(&1)))
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.reduce_while({:ok, []}, fn email, acc ->
+        case lookup(token, connect, email) do
+          {:ok, _recipient} -> {:halt, {:ok, [email]}}
+          {:error, :slack_attendee_not_found} -> {:cont, acc}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+    else
+      {:error, :personal_preparation_not_enrolled} -> {:ok, []}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp slack_roster(plan) do
     with {:ok, _entry} <- enrollment(plan),
          {:ok, attendees} <- MeetingCalendarPreparation.read_attendees(plan),
          true <- is_list(attendees) do
@@ -32,11 +70,21 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
   end
 
   @impl true
-  def expand_groups(plan, emails), do: GoogleGroupAttendees.expand(plan, emails)
+  def expand_groups(plan, emails) do
+    if LarkMeetingPersonalPreparation.provider?(plan),
+      do: LarkMeetingPersonalPreparation.expand_groups(plan, emails),
+      else: GoogleGroupAttendees.expand(plan, emails)
+  end
 
   @impl true
   def current_recipients(plan, pending)
       when is_list(pending) and length(pending) <= @batch_size do
+    if LarkMeetingPersonalPreparation.provider?(plan),
+      do: LarkMeetingPersonalPreparation.current_recipients(plan, pending),
+      else: slack_current_recipients(plan, pending)
+  end
+
+  defp slack_current_recipients(plan, pending) do
     with {:ok, emails} <- roster(plan),
          {:ok, sources} <- Store.group_sources(identity(plan), Enum.map(pending, & &1["email"])),
          {:ok, members} <- current_group_members(plan, pending, emails, sources) do
@@ -71,6 +119,12 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
   @impl true
   def recipients(plan, current_emails)
       when is_list(current_emails) and length(current_emails) <= @batch_size do
+    if LarkMeetingPersonalPreparation.provider?(plan),
+      do: LarkMeetingPersonalPreparation.recipients(plan, current_emails),
+      else: slack_recipients(plan, current_emails)
+  end
+
+  defp slack_recipients(plan, current_emails) do
     with {:ok, _entry} <- enrollment(plan),
          {:ok, connect} <- connect(plan) do
       token = API.installation(connect)
@@ -118,6 +172,12 @@ defmodule Salix.Bindings.MeetingPersonalPreparation do
 
   @impl true
   def open_dm(plan, recipient) do
+    if LarkMeetingPersonalPreparation.provider?(plan),
+      do: LarkMeetingPersonalPreparation.open_dm(plan, recipient),
+      else: slack_open_dm(plan, recipient)
+  end
+
+  defp slack_open_dm(plan, recipient) do
     with {:ok, connect} <- connect(plan) do
       result =
         API.request_form(

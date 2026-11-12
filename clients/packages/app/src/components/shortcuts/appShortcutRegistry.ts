@@ -13,6 +13,7 @@ export type AppShortcutId =
   | "go-drive"
   | "go-tasks"
   | "go-plugins"
+  | "new-task"
   | "toggle-left-sidebar"
   | "history-back"
   | "history-forward"
@@ -32,6 +33,7 @@ export const appShortcutDefinitions = [
   { id: "go-drive", settingsItemId: "keyboard.go-drive" },
   { id: "go-tasks", settingsItemId: "keyboard.go-tasks" },
   { id: "go-plugins", settingsItemId: "keyboard.go-plugins" },
+  { id: "new-task", settingsItemId: "keyboard.new-task" },
   { id: "toggle-left-sidebar", settingsItemId: "keyboard.toggle-left-sidebar" },
   { id: "history-back", settingsItemId: "keyboard.history-back" },
   { id: "history-forward", settingsItemId: "keyboard.history-forward" },
@@ -42,7 +44,8 @@ export type AppShortcutBindings = Record<AppShortcutId, AppKeybinding | null>;
 export type AppShortcutPlatform = AppKeybindingPlatform;
 
 export const createDefaultAppShortcutBindings = (
-  platform: AppShortcutPlatform
+  platform: AppShortcutPlatform,
+  { browser = false }: { browser?: boolean } = {}
 ): AppShortcutBindings => {
   const primary =
     platform === "macos" ? ({ meta: true } as const) : ({ control: true } as const);
@@ -55,6 +58,8 @@ export const createDefaultAppShortcutBindings = (
     "go-drive": sequenceKeybinding("KeyG", "KeyD"),
     "go-tasks": sequenceKeybinding("KeyG", "KeyT"),
     "go-plugins": sequenceKeybinding("KeyG", "KeyP"),
+    // A browser keeps ⌘/Ctrl+N for its own new window: the page never sees it.
+    "new-task": browser ? null : chordKeybinding("KeyN", primary),
     "toggle-left-sidebar": chordKeybinding("KeyB", primary),
     "history-back": chordKeybinding("BracketLeft", primary),
     "history-forward": chordKeybinding("BracketRight", primary),

@@ -38,6 +38,7 @@ defmodule Comma.Admin.AuditEvent do
     enable_mini_app
     update_workspace_sandbox_limit
     update_workspace_signal_number
+    change_user_email
   )
 
   @primary_key {:id, :binary_id, autogenerate: true}

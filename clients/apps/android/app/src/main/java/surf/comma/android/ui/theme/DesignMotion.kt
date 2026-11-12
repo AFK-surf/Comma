@@ -77,6 +77,12 @@ object DesignMotion {
     const val pressed = 0.98f
     const val actionPressed = 0.94f
 
+    /** At this scale or below, something coming or going is not seen (docs/DESIGN.md §6). */
+    const val unseenScale = 0.5f
+
+    /** The opacity for something coming or going at [scale]: 0 at [unseenScale] or below, 1 at full size. */
+    fun seenAt(scale: Float): Float = ((scale - unseenScale) / (1f - unseenScale)).coerceIn(0f, 1f)
+
     /** Resolve at animation start so changes to the system animation setting take effect. */
     fun durationMillis(token: Long): Long = if (ValueAnimator.areAnimatorsEnabled()) token else 0L
     fun pressScale(action: Boolean = false): Float = when {

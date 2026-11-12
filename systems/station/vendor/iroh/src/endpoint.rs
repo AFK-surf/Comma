@@ -815,6 +815,13 @@ impl Builder {
         self
     }
 
+    /// comma: chooses paths direct first, then the relay, then custom transports however fast they are, where by
+    /// default a custom transport ranks with direct paths, ahead of the relay.
+    pub fn custom_transports_last(mut self) -> Self {
+        self.path_selector = Arc::new(BiasedRttPathSelector::custom_transports_last());
+        self
+    }
+
     /// Sets a custom [`PathSelector`] for this endpoint.
     ///
     /// The path selector decides which path to use among the candidate paths to a

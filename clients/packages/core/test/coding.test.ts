@@ -66,6 +66,60 @@ describe("coding sessions", () => {
     );
   });
 
+  it("browses owners and sends a scoped repository search to the server", async () => {
+    const t = setup();
+    t.host.api
+      .on("GET", `${BASE}/repo-owners`, {
+        owners: [
+          {
+            login: "acme",
+            kind: "organization",
+            avatar_url: "https://avatars.githubusercontent.com/u/2?v=4",
+          },
+        ],
+        has_more: true,
+      })
+      .on("GET", `${BASE}/repo-search`, {
+        repos: [
+          { owner: "acme", name: "ios-app", private: true, default_branch: "main" },
+        ],
+        has_more: false,
+        limited: false,
+      });
+    expect(
+      await t.client.call("coding.repoOwners", { workspaceId: WS, page: 2 })
+    ).toEqual({
+      owners: [
+        {
+          login: "acme",
+          kind: "organization",
+          avatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
+        },
+      ],
+      hasMore: true,
+    });
+    expect(
+      await t.client.call("coding.repoSearch", {
+        workspaceId: WS,
+        owner: "acme",
+        kind: "organization",
+        query: "ios app",
+        page: 3,
+      })
+    ).toEqual({
+      repos: [{ owner: "acme", name: "ios-app", private: true, defaultBranch: "main" }],
+      hasMore: false,
+      limited: false,
+    });
+    const request = new URL(t.host.api.requests.at(-1)!.path, "http://localhost");
+    expect(Object.fromEntries(request.searchParams)).toEqual({
+      owner: "acme",
+      kind: "organization",
+      q: "ios app",
+      page: "3",
+    });
+  });
+
   it("starts a session once per key, with its repository and runtime, as the person's", async () => {
     const t = setup();
     t.host.api.on(
@@ -87,6 +141,37 @@ describe("coding sessions", () => {
       repo: { owner: "acme", name: "api", base_ref: "main" },
       model: { provider: "claude" },
     });
+  });
+
+  it("lists the files a session starts with in its first message, which may be them alone", async () => {
+    const t = setup();
+    t.host.api.on(
+      "POST",
+      `${BASE}/sessions`,
+      json(201, { task_id: "cnv_1", group_id: "grp_1" })
+    );
+    const shot = { name: "shot.png", path: `/uploads/${"a".repeat(22)}-shot.png` };
+    await t.client.call("coding.start", {
+      workspaceId: WS,
+      key: "k3",
+      text: "Match this",
+      repo: { owner: "acme", name: "api" },
+      uploads: [shot],
+    });
+    await t.client.call("coding.start", {
+      workspaceId: WS,
+      key: "k4",
+      text: "",
+      repo: { owner: "acme", name: "api" },
+      uploads: [shot],
+    });
+    const sent = t.host.api.requests
+      .slice(-2)
+      .map((r) => (r.body as { text: string }).text);
+    expect(sent).toEqual([
+      `Match this\n\nAttached files in your workspace:\n- shot.png (workspace file: ${shot.path})`,
+      `I've attached some files:\n\nAttached files in your workspace:\n- shot.png (workspace file: ${shot.path})`,
+    ]);
   });
 
   it("says why a session did not start: no GitHub account connected", async () => {

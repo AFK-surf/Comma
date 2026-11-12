@@ -28,7 +28,7 @@ systems/native/verified_kernel/.lake/
 systems/native/verified_kernel/.native/
 systems/native/verified_kernel/_build/
 systems/native/verified_kernel/priv/
-systems/connector/salix-connect/native/macos/ComputerUseHost/.build/
+systems/station/computer-use/native/macos/ComputerUseHost/.build/
 
 # The canonical install-artifacts workspace is deliberately included. Reject
 # local release residue that is not part of that fixed directory.

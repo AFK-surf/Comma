@@ -23,6 +23,7 @@ import surf.comma.android.core.CoreBytes
 import surf.comma.android.core.CoreError
 import surf.comma.android.core.TopicValue
 import java.io.File
+import java.time.Instant
 
 /**
  * Account settings for the signed-in session, as the client core keeps them: its `profile` topic (the name and avatar),
@@ -206,6 +207,75 @@ class SettingsRepository internal constructor(
             ?.let { if (isCurrent(scope)) notice(SettingsAction.REMOVE_OTHER_DEVICES, it) }
     }
 
+    /** Mails the account's email the code that confirms deleting the account. */
+    suspend fun requestAccountDeletion(): AccountDeletion = deletion {
+        val answer = core?.call("accountDeletion.requestCode") as? JSONObject
+        answer?.string("challengeId")?.let { AccountDeletion.CodeSent(it) } ?: AccountDeletion.Failed
+    }
+
+    /** Deletes the account with the mailed [code]; the core then ends the session. */
+    suspend fun deleteAccount(challengeId: String, code: String): AccountDeletion = deletion {
+        core?.call("accountDeletion.delete", JSONObject().put("challengeId", challengeId).put("code", code))
+        AccountDeletion.Deleted
+    }
+
+    private suspend fun deletion(step: suspend () -> AccountDeletion): AccountDeletion {
+        if (core == null || synchronized(lock) { scope } == null) return AccountDeletion.Failed
+        return try {
+            step()
+        } catch (e: Exception) {
+            rethrowCancellation(e)
+            when ((e as? CoreError)?.code) {
+                "subscription_active" -> AccountDeletion.SubscriptionActive
+                "invalid_verification_code" -> AccountDeletion.InvalidCode
+                "rate_limited" -> AccountDeletion.RateLimited
+                else -> AccountDeletion.Failed
+            }
+        }
+    }
+
+    /** Mails the account's email the code that starts changing it. */
+    suspend fun requestEmailChange(): EmailChange = emailChange {
+        val answer = core?.call("emailChange.requestCode") as? JSONObject
+        answer?.string("challengeId")?.let { EmailChange.CodeSent(it) } ?: EmailChange.Failed
+    }
+
+    /** Checks the current email's [code] and mails a code to [email]. */
+    suspend fun requestNewEmailCode(challengeId: String, code: String, email: String): EmailChange = emailChange {
+        val answer = core?.call("emailChange.requestNewCode",
+            JSONObject().put("email", email).put("challengeId", challengeId).put("code", code)) as? JSONObject
+        answer?.string("challengeId")?.let { EmailChange.CodeSent(it, email) } ?: EmailChange.Failed
+    }
+
+    /** Changes the email with the new email's [code]; the core then reads the session and profile again. */
+    suspend fun confirmEmailChange(challengeId: String, code: String): EmailChange = emailChange {
+        core?.call("emailChange.confirm", JSONObject().put("challengeId", challengeId).put("code", code))
+        EmailChange.Changed
+    }
+
+    private suspend fun emailChange(step: suspend () -> EmailChange): EmailChange {
+        if (core == null || synchronized(lock) { scope } == null) return EmailChange.Failed
+        return try {
+            step()
+        } catch (e: Exception) {
+            rethrowCancellation(e)
+            val error = e as? CoreError
+            when (error?.code) {
+                "invalid_verification_code" -> EmailChange.InvalidCode
+                "invalid_email" -> EmailChange.InvalidEmail
+                "same_email" -> EmailChange.SameEmail
+                "email_taken" -> EmailChange.Taken
+                "email_pending_deletion" ->
+                    ((error.detail as? JSONObject)?.optString("deletion_scheduled_at")
+                        ?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() })
+                        ?.let { EmailChange.PendingDeletion(it) } ?: EmailChange.Taken
+                "email_changed" -> EmailChange.Stale
+                "rate_limited" -> EmailChange.RateLimited
+                else -> EmailChange.Failed
+            }
+        }
+    }
+
     /** The current account's avatar image; null once the account has changed. */
     suspend fun avatarBytes(avatarId: String): ByteArray? {
         val scope = synchronized(lock) { scope } ?: return null
@@ -277,7 +347,8 @@ class SettingsRepository internal constructor(
 
     internal companion object {
         /** The server rejects larger avatars with `avatar_too_large`. */
-        const val AVATAR_MAX_BYTES = 102_400L
+        const val AVATAR_MAX_BYTES = 2_097_152L
+        /** A picked GIF goes up as WebP (MovingAvatar). */
         val AVATAR_TYPES = setOf("image/jpeg", "image/png", "image/webp")
 
         fun problem(e: Exception): SettingsProblem = when {

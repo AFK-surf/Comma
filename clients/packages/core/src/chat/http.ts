@@ -2,6 +2,7 @@
 // credential (Electron's Main) or cookie (the web); each answer read through its schema. A request the server refused
 // fails with a CommaApiError (its status and body); one that got no answer fails with a plain Error, which the
 // engine treats as the network. Interrupting one stops the request.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, utf8 } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -11,6 +12,7 @@ import {
   commaConversationEventSchema,
   commaConversationListEventSchema,
   commaConversationSchema,
+  type CommaGroupFile,
   commaGroupFileSchema,
   commaMessagePageSchema,
   commaSkillSchema,
@@ -54,8 +56,30 @@ export function clientTimezone(): { client_timezone?: string } {
 const credentialRenewed = (error: CoreError) =>
   error.code === "network" && /Session lease changed/.test(error.message);
 
-const wait = (waitMs: number | undefined) =>
-  waitMs === undefined ? "" : `?${new URLSearchParams({ wait: String(waitMs) })}`;
+/**
+ * Messages a conversation stream's snapshot carries at most: its newest ones, as a window first shows them. A stream
+ * opens again every window (30 s) and on each new message; one asked after the newest seq held carries only what came
+ * since, and what is older than this the channel pages in.
+ */
+const STREAM_MESSAGE_LIMIT = 24;
+
+const uploadSchema = lazySchema(() =>
+  z.object({
+    upload_id: z.string().min(1),
+    part_size: z.number().int().positive(),
+  })
+);
+const uploadPartSchema = lazySchema(() => z.object({ etag: z.string().min(1) }));
+
+/** An upload's JSON answer, read through `schema`. */
+const parsed = <S extends z.ZodType>(schema: S, body: Uint8Array) => {
+  const out = schema.safeParse(JSON.parse(new TextDecoder().decode(body)));
+  return out.success
+    ? Effect.succeed(out.data as z.output<S>)
+    : Effect.fail(
+        new CoreError("bad_response", "an upload's answer was not as expected")
+      );
+};
 
 export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi {
   const lift = <A>(effect: Effect.Effect<A, CoreError>): Effect.Effect<A, Error> =>
@@ -105,6 +129,46 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
         Effect.retry({ times: 1, while: credentialRenewed })
       )
     );
+  // A file sent in parts: `POST …/uploads` begins it, a `PUT` per part, then `…/complete`. No request carries more
+  // than a part, so a file larger than a proxy lets one request carry still arrives.
+  const uploadInParts = (
+    groupId: string,
+    file: { name: string; size: number },
+    read: (offset: number, length: number) => Effect.Effect<Uint8Array, CoreError>
+  ): Effect.Effect<CommaGroupFile, Error> =>
+    Effect.gen(function* () {
+      const upload = yield* json(
+        "POST",
+        route`/v1/comma/groups/${groupId}/uploads`,
+        uploadSchema,
+        { size: file.size }
+      );
+      const path = route`/v1/comma/groups/${groupId}/uploads/${upload.upload_id}`;
+      const etags: string[] = [];
+      for (let offset = 0; offset < file.size; offset += upload.part_size) {
+        const body = yield* lift(
+          read(offset, Math.min(upload.part_size, file.size - offset))
+        );
+        const answer = yield* lift(
+          ctx.api.raw(account, "PUT", `${path}/parts/${etags.length + 1}`, {
+            headers: [["content-type", "application/octet-stream"]],
+            body,
+            // The request's own bound plus a second for every 32 KiB: a slow uplink still finishes.
+            timeoutMs: REQUEST_TIMEOUT_MS + Math.ceil(body.length / 32_768) * 1_000,
+          })
+        );
+        etags.push((yield* lift(parsed(uploadPartSchema, answer.body))).etag);
+      }
+      const done = yield* lift(
+        ctx.api.raw(account, "POST", `${path}/complete`, {
+          headers: [["content-type", "application/json"]],
+          body: utf8(JSON.stringify({ name: file.name, etags })),
+          // The server reads the whole file back once to hash it.
+          timeoutMs: REQUEST_TIMEOUT_MS + Math.ceil(file.size / 8_388_608) * 1_000,
+        })
+      );
+      return yield* lift(parsed(commaGroupFileSchema, done.body));
+    });
   return {
     // Each run asks again, with the account's credential as it is then.
     bootstrapWorkspace: Effect.suspend(() =>
@@ -194,7 +258,9 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
         ctx.api
           .get(
             account,
-            conversationPath(groupId, conversationId),
+            opts.afterSeq === undefined
+              ? conversationPath(groupId, conversationId)
+              : `${conversationPath(groupId, conversationId)}?after_seq=${opts.afterSeq}`,
             commaConversationSchema,
             opts.etag
           )
@@ -254,45 +320,19 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
             )
         );
       }),
-    ...(ctx.host.uploadsLocalFiles
+    ...(ctx.host.uploadsLocalFiles && ctx.host.readLocalFile
       ? {
           uploadLocalFile: (
             groupId: string,
             attrs: { localFileRef: string; name: string; size: number }
-          ) =>
-            lift(
-              ctx.api
-                .raw(
-                  account,
-                  "PUT",
-                  `${route`/v1/comma/groups/${groupId}/files`}?${new URLSearchParams({
-                    name: attrs.name,
-                    size: String(attrs.size),
-                  })}`,
-                  {
-                    headers: [["content-type", "application/octet-stream"]],
-                    localFileRef: attrs.localFileRef,
-                    // The request's own bound plus a second for every 32 KiB: a slow uplink still finishes.
-                    timeoutMs:
-                      REQUEST_TIMEOUT_MS + Math.ceil(attrs.size / 32_768) * 1_000,
-                  }
-                )
-                .pipe(
-                  Effect.flatMap((response) => {
-                    const out = commaGroupFileSchema.safeParse(
-                      JSON.parse(new TextDecoder().decode(response.body))
-                    );
-                    return out.success
-                      ? Effect.succeed(out.data)
-                      : Effect.fail(
-                          new CoreError(
-                            "bad_response",
-                            "an upload's answer was not a file"
-                          )
-                        );
-                  })
-                )
-            ),
+          ) => {
+            const read = ctx.host.readLocalFile!.bind(ctx.host);
+            return uploadInParts(groupId, attrs, (offset, length) =>
+              read(attrs.localFileRef, offset, length).pipe(
+                Effect.mapError((error) => new CoreError("network", error.message))
+              )
+            );
+          },
         }
       : {}),
     storeConversationFile: (groupId, file) =>
@@ -350,16 +390,23 @@ export function createChatApi(ctx: Ctx, account: Account, env: ChatEnv): ChatApi
             ? { reply_to_message_id: attrs.replyToMessageId }
             : {}),
           ...(attrs.clientDeviceId ? { client_device_id: attrs.clientDeviceId } : {}),
+          ...(attrs.messageType ? { message_type: attrs.messageType } : {}),
           ...clientTimezone(),
           ...(attrs.skills?.length ? { skills: attrs.skills } : {}),
         }
       );
     },
-    streamConversationEvents: (groupId, conversationId, opts) =>
-      stream(
-        `${conversationPath(groupId, conversationId)}/events${wait(opts.waitMs)}`,
+    streamConversationEvents: (groupId, conversationId, opts) => {
+      const query = new URLSearchParams({
+        message_limit: String(STREAM_MESSAGE_LIMIT),
+      });
+      if (opts.afterSeq !== undefined) query.set("after_seq", String(opts.afterSeq));
+      if (opts.waitMs !== undefined) query.set("wait", String(opts.waitMs));
+      return stream(
+        `${conversationPath(groupId, conversationId)}/events?${query}`,
         (value, name) => opts.onEvent(commaConversationEventSchema.parse(value), name)
-      ),
+      );
+    },
     streamConversationListEvents: (groupId, opts) => {
       const query = new URLSearchParams();
       if (opts.waitMs !== undefined) query.set("wait", String(opts.waitMs));

@@ -9,6 +9,7 @@
 // A conversation the coordinator does not hold (a Task a station hosts) is shown and acted on by `hosted`, which takes
 // each call as the coordinator does (`ConversationHolder`): the window sees and does to it what it sees and does to any
 // Task.
+import { lazySchema } from "@comma/chat-contract";
 import {
   chatConversationFileSchema,
   chatLocalFileSchema,
@@ -38,6 +39,12 @@ import type { ChatEnv } from "./env.ts";
 import type { ConversationChannelState } from "./model/conversationChannel.ts";
 import { pickQuota } from "./model/attachmentQuota.ts";
 import { attachTextsToMessage, MAX_ATTACHMENTS_PER_MESSAGE } from "./model/protocol.ts";
+import {
+  isPictureOf,
+  SCREEN_PICTURE_TYPES,
+  sharedScreenFileName,
+  sharedScreenLine,
+} from "./model/screenShare.ts";
 import { projectionToChannelState } from "./view-state.ts";
 
 /** A failed pick's row (coordinator/intake/intakeOutcomes.ts); `hosted` names its own so too. */
@@ -127,38 +134,44 @@ export interface ChatViewHost {
   ): Effect.Effect<ChatPickAttachmentsResult, Error>;
 }
 
-const targetSchema = z.object({
-  workspace: z.string().min(1),
-  group: z.string().min(1),
-  conversation: z.string().min(1),
-  surface: z.string().min(1),
-});
+const targetSchema = lazySchema(() =>
+  z.object({
+    workspace: z.string().min(1),
+    group: z.string().min(1),
+    conversation: z.string().min(1),
+    surface: z.string().min(1),
+  })
+);
 
-const sendSchema = targetSchema.extend({
-  text: z.string(),
-  consumeDraft: z.literal(false).optional(),
-  clientRequestId: z.string().min(8).max(128).optional(),
-  replyToMessageId: z.string().min(1).optional(),
-  skills: z
-    .array(z.object({ location: z.string().min(1) }))
-    .max(50)
-    .optional(),
-  attachedTexts: z
-    .array(z.object({ source: z.string().min(1).optional(), text: z.string().min(1) }))
-    .max(50)
-    .optional(),
-  files: z
-    .array(
-      z.object({
-        name: z.string().min(1).max(1024),
-        size: z.number().int().nonnegative(),
-        bytes: z.instanceof(Uint8Array),
-      })
-    )
-    .min(1)
-    .max(MAX_ATTACHMENTS_PER_MESSAGE)
-    .optional(),
-});
+const sendSchema = lazySchema(() =>
+  targetSchema.extend({
+    text: z.string(),
+    consumeDraft: z.literal(false).optional(),
+    clientRequestId: z.string().min(8).max(128).optional(),
+    replyToMessageId: z.string().min(1).optional(),
+    skills: z
+      .array(z.object({ location: z.string().min(1) }))
+      .max(50)
+      .optional(),
+    attachedTexts: z
+      .array(
+        z.object({ source: z.string().min(1).optional(), text: z.string().min(1) })
+      )
+      .max(50)
+      .optional(),
+    files: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(1024),
+          size: z.number().int().nonnegative(),
+          bytes: z.instanceof(Uint8Array),
+        })
+      )
+      .min(1)
+      .max(MAX_ATTACHMENTS_PER_MESSAGE)
+      .optional(),
+  })
+);
 
 type Target = z.output<typeof targetSchema>;
 
@@ -374,7 +387,7 @@ export class ChatViews {
         ? last.state.draft === projection.draft
           ? last.state
           : { ...last.state, draft: projection.draft }
-        : projectionToChannelState(projection);
+        : projectionToChannelState(projection, last);
     view.shown = { projection, state };
     return state;
   }
@@ -433,6 +446,7 @@ export class ChatViews {
       if ("done" in started.value) return started.value.done;
       return yield* Fiber.join(started.value.work).pipe(
         Effect.flatten,
+        Effect.catchDefect((defect) => Effect.fail(asCoreError(defect))),
         Effect.mapError(asCoreError)
       );
     });
@@ -443,6 +457,32 @@ export class ChatViews {
     /** Who takes a call on `view`'s conversation. */
     const c = (view: View): ConversationHolder =>
       this.#hosted(view.lease.conversationId) ?? this.#host.coordinator();
+    /** Sends a message on `view`'s conversation, its place among the sends kept from the call on. */
+    const sendNow = (
+      view: View,
+      call: { progress(value: unknown): void },
+      message: Omit<
+        Parameters<ConversationHolder["send"]>[0],
+        keyof ReturnType<typeof leased> | "sendIntentId"
+      >
+    ) => {
+      const intent = { ...leased(view), sendIntentId: this.#host.env.uuid() };
+      const holder = c(view);
+      holder.beginSendIntent(intent);
+      return holder
+        .send({ ...intent, ...message }, () => call.progress({ accepted: true }))
+        .pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              try {
+                holder.cancelSendIntent(intent);
+              } catch {
+                // Committed, or the lease is gone: nothing is reserved.
+              }
+            })
+          )
+        );
+    };
     const on = <S extends z.ZodType, A>(
       name: string,
       schema: S,
@@ -477,38 +517,18 @@ export class ChatViews {
       on("chatView.prefillDraft", withDraft, (v, i) =>
         c(v).prefillDraft({ ...leased(v), draft: i.draft })
       ),
-      on("chatView.send", sendSchema, (v, i, call) => {
-        const sendIntentId = this.#host.env.uuid();
-        const intent = { ...leased(v), sendIntentId };
-        const holder = c(v);
-        holder.beginSendIntent(intent);
-        return holder
-          .send(
-            {
-              ...intent,
-              text: i.attachedTexts?.length
-                ? attachTextsToMessage(i.text, i.attachedTexts)
-                : i.text,
-              ...(i.consumeDraft === false ? { consumeDraft: false } : {}),
-              ...(i.clientRequestId ? { clientRequestId: i.clientRequestId } : {}),
-              ...(i.replyToMessageId ? { replyToMessageId: i.replyToMessageId } : {}),
-              ...(i.skills ? { skills: i.skills } : {}),
-              ...(i.files ? { files: i.files } : {}),
-            },
-            () => call.progress({ accepted: true })
-          )
-          .pipe(
-            Effect.tapError(() =>
-              Effect.sync(() => {
-                try {
-                  holder.cancelSendIntent(intent);
-                } catch {
-                  // Committed, or the lease is gone: nothing is reserved.
-                }
-              })
-            )
-          );
-      }),
+      on("chatView.send", sendSchema, (v, i, call) =>
+        sendNow(v, call, {
+          text: i.attachedTexts?.length
+            ? attachTextsToMessage(i.text, i.attachedTexts)
+            : i.text,
+          ...(i.consumeDraft === false ? { consumeDraft: false } : {}),
+          ...(i.clientRequestId ? { clientRequestId: i.clientRequestId } : {}),
+          ...(i.replyToMessageId ? { replyToMessageId: i.replyToMessageId } : {}),
+          ...(i.skills ? { skills: i.skills } : {}),
+          ...(i.files ? { files: i.files } : {}),
+        })
+      ),
       on("chatView.retry", withRequest, (v, i) =>
         c(v).retry({ ...v.lease, clientRequestId: i.clientRequestId })
       ),
@@ -572,6 +592,55 @@ export class ChatViews {
           let receipt: ChatCommandReceipt | undefined;
           for (const file of i.files) receipt = c(v).attach({ ...leased(v), ...file });
           return receipt!;
+        }
+      ),
+      on(
+        "chatView.attachScreen",
+        targetSchema.extend({
+          device: z.string().min(1).max(256),
+          screen: z.string().min(1).max(256),
+          name: z.string().max(200).optional(),
+          picture: z.instanceof(Uint8Array),
+          pictureType: z.enum(SCREEN_PICTURE_TYPES),
+          marked: z.boolean().optional(),
+          message: z.string().min(1).optional(),
+          files: z
+            .array(
+              z.object({
+                name: z.string().min(1).max(1024),
+                size: z.number().int().nonnegative(),
+                bytes: z.instanceof(Uint8Array),
+              })
+            )
+            .max(MAX_ATTACHMENTS_PER_MESSAGE - 1)
+            .optional(),
+        }),
+        (v, i, call) => {
+          if (!isPictureOf(i.picture, i.pictureType))
+            throw CoreError.invalid(`The picture is not ${i.pictureType}.`);
+          const at = this.#host.env.now();
+          const shared = { device: i.device, screen: i.screen, name: i.name };
+          const holder = c(v);
+          const files = [
+            {
+              name: sharedScreenFileName(at, i.pictureType, i.marked),
+              size: i.picture.byteLength,
+              bytes: i.picture,
+            },
+            ...(i.files ?? []),
+          ];
+          // What the person wrote beside the screen goes at once, with these as its own files: the draft stays as it is.
+          if (i.message !== undefined)
+            return sendNow(v, call, {
+              text: `${i.message}\n\n${sharedScreenLine(shared, at)}`,
+              consumeDraft: false,
+              files,
+            });
+          for (const file of files) holder.attach({ ...leased(v), ...file });
+          return holder.prefillDraft({
+            ...leased(v),
+            draft: sharedScreenLine(shared, at),
+          });
         }
       ),
       on(

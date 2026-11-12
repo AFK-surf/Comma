@@ -47,9 +47,12 @@ defmodule SalixAgent.OAuthCredentials do
   """
 
   alias SalixAgent.OAuthStore
+  alias SalixIFC.Codec
 
   # willow resolver.go: refreshLeeway = 60 * time.Second.
   @refresh_leeway_ms 60_000
+  @redacted "[redacted credential]"
+  @remote_mcp "remote_mcp"
 
   @typedoc "One normalized credential reference."
   @type ref :: %{
@@ -67,7 +70,11 @@ defmodule SalixAgent.OAuthCredentials do
   partial result is discarded and `{:error, message}` is returned for the
   offending entry (willow: ResolveAll discards partial output).
 
-  Options (tests): `:now` — clock in ms (default `SystemsClock.system_time/1`).
+  Options: `:acting_for` — the encoded person a tool call acts for, or nil for
+  none; a binding with an `"owner"` then resolves only for that person. Salix's
+  own reads (a Lark connect reading as a signed-in member) pass no `:acting_for`
+  and label what they read. `:now` — clock in ms (default
+  `SystemsClock.system_time/1`).
   """
   @spec resolve(String.t(), term(), keyword()) ::
           {:ok, %{String.t() => String.t()}} | {:error, String.t()}
@@ -80,17 +87,99 @@ defmodule SalixAgent.OAuthCredentials do
   def resolve(_agent_id, [], _opts), do: {:ok, %{}}
 
   def resolve(agent_id, entries, opts) do
+    with {:ok, resolved} <- resolve_entries(agent_id, entries, opts),
+         do: {:ok, Map.new(resolved, fn {env_var, value, _secret} -> {env_var, value} end)}
+  end
+
+  defp resolve_entries(_agent_id, entries, _opts) when not is_list(entries),
+    do: {:error, "invalid credential_env: must be an array"}
+
+  defp resolve_entries(_agent_id, [], _opts), do: {:ok, []}
+
+  defp resolve_entries(agent_id, entries, opts) do
     with {:ok, refs} <- normalize_entries(entries),
          {:ok, %{tenant: tenant, group_id: group_id}} <- agent_context(agent_id),
          {:ok, bindings} <- group_bindings(group_id) do
-      Enum.reduce_while(refs, {:ok, %{}}, fn ref, {:ok, acc} ->
+      Enum.reduce_while(refs, {:ok, []}, fn ref, {:ok, acc} ->
         case resolve_one(ref, tenant, bindings, opts) do
-          {:ok, value} -> {:cont, {:ok, Map.put(acc, ref.env_var, value)}}
+          {:ok, value, secret} -> {:cont, {:ok, [{ref.env_var, value, secret} | acc]}}
           {:error, reason} -> {:halt, {:error, resolve_error(ref, reason)}}
         end
       end)
+      |> case do
+        {:ok, resolved} -> {:ok, Enum.reverse(resolved)}
+        error -> error
+      end
     end
   end
+
+  @doc """
+  `resolve/3` for a tool call that hands the values to a subprocess or a
+  request: a personal credential resolves only for its owner.
+  """
+  @spec resolve_for_call(map(), String.t(), term()) ::
+          {:ok, %{String.t() => String.t()}} | {:error, String.t()}
+  def resolve_for_call(ctx, agent_id, entries),
+    do: resolve(agent_id, entries, acting_for: acting_for(ctx))
+
+  @doc """
+  `resolve_for_call/3` for a command whose output reaches the model: also the
+  values `redact/2` takes out of it. A secret's field marked not secret (a
+  tenant id, a base URL) stays readable in the output.
+  """
+  @spec resolve_for_command(map(), String.t(), term()) ::
+          {:ok, %{String.t() => String.t()}, [String.t()]} | {:error, String.t()}
+  def resolve_for_command(ctx, agent_id, entries) do
+    with {:ok, resolved} <- resolve_entries(agent_id, entries, acting_for: acting_for(ctx)) do
+      {:ok, Map.new(resolved, fn {env_var, value, _secret} -> {env_var, value} end),
+       for({_env_var, value, true} <- resolved, do: value)}
+    end
+  end
+
+  @doc """
+  The person a tool call acts for, encoded as a credential's `"owner"` is, or
+  nil: an agent, or a delivery no person authored, is nobody's person.
+  """
+  @spec acting_for(map()) :: String.t() | nil
+  def acting_for(ctx) do
+    ctx[:trusted_origin] |> SalixAgent.IFC.principal() |> person_ref()
+  end
+
+  defp person_ref({:provider_user, _, _} = person), do: Codec.encode_principal!(person)
+  defp person_ref({:comma_user, _} = person), do: Codec.encode_principal!(person)
+  # A station or a schedule acts for the person it was delegated by.
+  defp person_ref({:schedule, _, person}), do: person_ref(person)
+  defp person_ref(_), do: nil
+
+  @doc "True when the person `acting_for` (encoded, or nil) may use `binding`."
+  @spec usable_by?(map(), String.t() | nil) :: boolean()
+  def usable_by?(binding, acting_for) do
+    case binding["owner"] do
+      owner when owner in [nil, ""] -> true
+      owner -> owner == acting_for
+    end
+  end
+
+  @doc """
+  `result` with every credential value in `values` replaced, in each string of
+  it. A command can print its environment; what it prints reaches the model and
+  the archive.
+  """
+  @spec redact(term(), [String.t()]) :: term()
+  def redact(result, values) do
+    case Enum.filter(values, &(is_binary(&1) and &1 != "")) do
+      [] -> result
+      values -> scrub(result, values)
+    end
+  end
+
+  defp scrub(text, values) when is_binary(text), do: String.replace(text, values, @redacted)
+  defp scrub(list, values) when is_list(list), do: Enum.map(list, &scrub(&1, values))
+
+  defp scrub(%{} = map, values),
+    do: Map.new(map, fn {key, value} -> {key, scrub(value, values)} end)
+
+  defp scrub(other, _values), do: other
 
   # ---- entry normalization (willow ResolveExecCredentials) ----
 
@@ -166,13 +255,52 @@ defmodule SalixAgent.OAuthCredentials do
 
   defp resolve_one(ref, tenant, bindings, opts) do
     with :ok <- require_fields(ref),
-         {:ok, adapter} <- adapter_for(ref.provider),
          {:ok, binding} <- find_binding(bindings, ref),
+         :ok <- check_owner(binding, opts),
          :ok <- check_binding_enabled(binding),
          {:ok, conn_id} <- connection_id(binding),
          {:ok, conn} <- load_connection(conn_id),
          :ok <- check_status(conn),
-         :ok <- validate_value(adapter, ref.value, conn),
+         {:ok, value} <- resolve_conn_value(ref, tenant, conn_id, conn, opts) do
+      {:ok, value, secret_value?(ref, conn)}
+    end
+  end
+
+  defp resolve_conn_value(ref, tenant, conn_id, conn, opts) do
+    if ref.provider == @remote_mcp do
+      remote_mcp_value(ref, tenant, conn_id)
+    else
+      with {:ok, adapter} <- adapter_for(ref.provider),
+           do: resolve_value(ref, adapter, tenant, conn_id, conn, opts)
+    end
+  end
+
+  defp secret_value?(%{provider: "secret", value: value}, conn),
+    do: SalixStore.OAuth.Adapters.Secret.secret_value?(conn, value)
+
+  defp secret_value?(_ref, _conn), do: true
+
+  # A remote MCP connection has its own client and endpoints, and its owner
+  # refreshes it for the MCP gateway too.
+  defp remote_mcp_value(%{value: "access_token"}, tenant, conn_id) do
+    case OAuthStore.remote_mcp_token(tenant, conn_id) do
+      {:ok, token} -> {:ok, token}
+      {:error, reason} -> {:error, "refresh failed: #{format_reason(reason)}"}
+    end
+  end
+
+  defp remote_mcp_value(%{value: value}, _tenant, _conn_id),
+    do: {:error, "remote_mcp: unsupported credential value #{inspect(value)}"}
+
+  # The app's public id: a CLI that takes a token from its environment asks
+  # which app the token is for.
+  defp resolve_value(%{value: "client_id"} = ref, _adapter, tenant, _conn_id, _conn, _opts) do
+    with {:ok, %{"client_id" => client_id}} <- refresh_app(tenant, ref.provider),
+         do: {:ok, client_id}
+  end
+
+  defp resolve_value(ref, adapter, tenant, conn_id, conn, opts) do
+    with :ok <- validate_value(adapter, ref.value, conn),
          {:ok, conn} <- maybe_refresh(adapter, tenant, ref.provider, conn_id, conn, opts) do
       case adapter.resolve_credential_value(conn, ref.value) do
         {:ok, value} -> {:ok, value}
@@ -203,6 +331,14 @@ defmodule SalixAgent.OAuthCredentials do
       nil -> {:error, "is not bound to this agent group"}
       binding -> {:ok, binding}
     end
+  end
+
+  defp check_owner(binding, opts) do
+    if not Keyword.has_key?(opts, :acting_for) or usable_by?(binding, opts[:acting_for]),
+      do: :ok,
+      else:
+        {:error,
+         "belongs to another person; the person this work is for connects their own account with oauth.request_authorization under another alias"}
   end
 
   defp check_binding_enabled(binding) do
@@ -262,7 +398,7 @@ defmodule SalixAgent.OAuthCredentials do
   end
 
   defp do_refresh(adapter, tenant, provider, conn_id, conn, now) do
-    with {:ok, app} <- refresh_app(tenant, provider) do
+    with {:ok, app} <- connection_app(tenant, provider, conn) do
       refresher = fn record ->
         case refresher_fn().(adapter, app, record) do
           {:ok, tokens} when is_map(tokens) -> {:ok, sanitize_tokens(tokens, record)}
@@ -295,11 +431,24 @@ defmodule SalixAgent.OAuthCredentials do
     end
   end
 
+  # A grant made with a member's own bot app refreshes with that app, not the
+  # tenant's provider app.
+  defp connection_app(tenant, provider, %{"app_source" => source}) when is_map(source),
+    do: OAuthStore.source_app(tenant, provider, source)
+
+  defp connection_app(tenant, provider, _conn), do: refresh_app(tenant, provider)
+
   defp refresh_app(tenant, provider) do
     case OAuthStore.provider_app(tenant, provider) do
       {:ok, %{"client_id" => cid, "client_secret" => secret} = app}
       when is_binary(cid) and cid != "" and is_binary(secret) and secret != "" ->
         {:ok, app}
+
+      # A provider a Workspace defined can be a public client.
+      {:ok, %{"client_id" => cid} = app} when is_binary(cid) and cid != "" ->
+        if SalixStore.OAuth.Adapters.custom?(provider),
+          do: {:ok, app},
+          else: {:error, "provider app for #{provider} is not configured"}
 
       _ ->
         {:error, "provider app for #{provider} is not configured"}

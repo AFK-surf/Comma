@@ -128,3 +128,16 @@ class CallController private constructor(private val app: Context) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 }
+
+/** What the Call button does once the system answers its microphone request. */
+internal enum class CallMicrophone { START_CALL, NONE, OPEN_SETTINGS }
+
+/**
+ * A call starts only with the microphone. Denied with a rationale, the system shows its dialog on the next tap;
+ * denied without one, it was denied for good, and only the app's settings can grant it.
+ */
+internal fun callMicrophone(granted: Boolean, showsRationale: Boolean): CallMicrophone = when {
+    granted -> CallMicrophone.START_CALL
+    showsRationale -> CallMicrophone.NONE
+    else -> CallMicrophone.OPEN_SETTINGS
+}

@@ -122,6 +122,18 @@ theorem anyM {α : Type} {p : α → KernelM Bool} (hp : ∀ x, Stateless (p x))
 
 end Stateless
 
+theorem KernelEval.run_forIn {α β : Type} (f : α → β → KernelEval (ForInStep β))
+    (xs : List α) (initial : β) :
+    KernelEval.run (ForIn.forIn xs initial f) =
+      ForIn.forIn xs initial (fun x acc => KernelEval.run (f x acc)) := by
+  induction xs generalizing initial with
+  | nil => simp
+  | cons x xs ih =>
+    rw [List.forIn_cons, List.forIn_cons, KernelEval.run_bind]
+    congr 1
+    funext step
+    cases step <;> simp [ih]
+
 /-! ### The `stateless` tactic -/
 
 open Lean Elab Tactic Meta in
@@ -132,6 +144,7 @@ def statelessUnfold (allowRec : Bool) : Lean.Elab.Tactic.TacticM Unit := open Le
   let goal ← instantiateMVars (← getMainTarget)
   let some m := (if goal.isAppOfArity ``Stateless 2 then some goal.appArg! else none)
     | throwError "stateless_unfold: expected a Stateless goal"
+  let m := if m.isAppOfArity ``KernelEval.run 2 then m.appArg! else m
   let .const name _ := m.headBeta.getAppFn | throwError "stateless_unfold: no head constant"
   if [``Bind.bind, ``Pure.pure, ``ForIn.forIn, ``List.mapM, ``List.foldlM, ``List.filterM,
       ``List.anyM, ``ite, ``dite].contains name then
@@ -164,7 +177,19 @@ elab "stateless_step" : tactic => withMainContext do
   let run (t : TSyntax `tactic) : TacticM Unit := evalTactic t
   match fn with
   | .const name _ =>
-    if name == ``Bind.bind then run (← `(tactic| refine Stateless.bind ?_ fun _ => ?_))
+    if name == ``KernelEval.run then
+      run (← `(tactic| first
+        | rw [KernelEval.run_defer]
+        | rw [KernelEval.run_pure]
+        | rw [KernelEval.run_bind]
+        | rw [KernelEval.run_lift]
+        | rw [KernelEval.run_ite]
+        | rw [KernelEval.run_dite]
+        | rw [KernelEval.run_mapM]
+        | rw [KernelEval.run_foldlM]
+        | rw [KernelEval.run_forIn]
+        | split))
+    else if name == ``Bind.bind then run (← `(tactic| refine Stateless.bind ?_ fun _ => ?_))
     else if name == ``Pure.pure then run (← `(tactic| exact Stateless.pure _))
     else if name == ``VerifiedKernel.fail then run (← `(tactic| exact Stateless.fail _ _))
     else if name == ``MonadExcept.throw then run (← `(tactic| exact Stateless.throw _))
@@ -199,6 +224,7 @@ open Data
 theorem Data.stringChars.stateless (v : Term) : Stateless (stringChars v) := by stateless
 theorem Json.encode.stateless (value : Term) : Stateless (Json.encode value) := by
   unfold Json.encode
+  stateless_unfold
   generalize value.depth + 1 = fuel
   induction fuel generalizing value with
   | zero => stateless_unfold_rec; stateless

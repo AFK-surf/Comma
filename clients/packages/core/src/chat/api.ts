@@ -31,13 +31,30 @@ export type CommaApiErrorBody = { error?: unknown; [key: string]: unknown };
 export class ChatError extends Data.TaggedError("ChatError")<{
   readonly message: string;
   readonly cause?: unknown;
+  /** Why it was refused, as the core's error code says it (`chat_refused` when unnamed). */
+  readonly code?: ChatRefusal;
 }> {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(
-      options?.cause === undefined ? { message } : { message, cause: options.cause }
-    );
+  constructor(
+    message: string,
+    options?: { readonly cause?: unknown; readonly code?: ChatRefusal }
+  ) {
+    super({
+      message,
+      ...(options?.cause === undefined ? {} : { cause: options.cause }),
+      ...(options?.code === undefined ? {} : { code: options.code }),
+    });
   }
 }
+
+/** Why a chat command was refused before it reached the server: stable codes for callers and diagnostics. */
+export type ChatRefusal =
+  | "chat_not_retained"
+  | "stale_lease"
+  | "send_in_progress"
+  | "send_not_reserved"
+  | "already_sent"
+  | "draft_changed"
+  | "attachment_not_ready";
 
 /** A request the server answered with an error status (`status`), and its body. */
 export class CommaApiError extends Error {
@@ -88,7 +105,8 @@ export interface ChatApi {
   pollConversation(
     groupId: string,
     conversationId: string,
-    opts?: { etag?: string }
+    /** `afterSeq`: the newest message seq held; the answer then carries only the messages after it. */
+    opts?: { etag?: string; afterSeq?: number }
   ): Effect.Effect<
     { conversation?: CommaConversation; etag?: string; notModified: boolean },
     Error
@@ -110,8 +128,9 @@ export interface ChatApi {
     attrs: { data: Blob; name: string }
   ): Effect.Effect<CommaGroupFile, Error>;
   /**
-   * Uploads a file a pick left with the host (`localFileRef`), its bytes read from there as they are sent. Absent where
-   * the host cannot (`Host.uploadsLocalFiles`).
+   * Uploads a file a pick left with the host (`localFileRef`) in parts, one request each, every part read from there as
+   * it is sent: its size is bound by the server, not by what one request may carry. Absent where the host does not
+   * upload its picks (`Host.uploadsLocalFiles`, `Host.readLocalFile`).
    */
   uploadLocalFile?(
     groupId: string,
@@ -135,6 +154,8 @@ export interface ChatApi {
       text: string;
       clientRequestId?: string;
       clientDeviceId?: string;
+      /** Marks how the words came (`quick_chat`); it grants no authority. */
+      messageType?: "quick_chat";
       replyToMessageId?: string;
       localFiles?: CommaLocalFileRef[];
       /** The question card the message answers: sent as its `question_answer` block. */
@@ -152,6 +173,8 @@ export interface ChatApi {
     conversationId: string,
     opts: {
       waitMs?: number;
+      /** The newest message seq held: the snapshot then carries only those after it. */
+      afterSeq?: number;
       onEvent: (event: CommaConversationEvent, eventName: string) => void;
     }
   ): Effect.Effect<void, Error>;

@@ -1,7 +1,7 @@
 defmodule SalixAgent.InternalSessionFormat2Cutover do
   @moduledoc """
   Historical format-2 completion metadata retained for old backup cleanup.
-  The old writer is retired; current conversion is InternalSessionFormat3Cutover.
+  The old writer is retired. PGImport owns the current offline authority handoff.
   """
   alias SalixStore.Repo
   @marker_name "internal_session_format2_v1"

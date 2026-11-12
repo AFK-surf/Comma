@@ -50,13 +50,22 @@ defmodule CommaWeb.TelegramTaskCards do
          true <-
            target["connect_id"] == connect["connect_id"] and
              target["connect_id"] == payload["connect_id"] and
-             target["chat_id"] == to_string(payload["chat_id"]) do
+             target["chat_id"] == to_string(payload["chat_id"]),
+         {:ok, task} <-
+           SalixIM.Conversations.get_group_conversation(group, rec["conversation_id"]) do
       language = owner_language(workspace["id"], owner)
 
-      case rec["conversation_status"] do
-        status when status in @attention -> send_card(rec, workspace, target, language)
-        status when status in @endings -> retire_card(rec, status, language)
-        _other -> retire_card(rec, :updated, language)
+      # A Task created before cards followed the Task's origin keeps its
+      # Participant: one asked for elsewhere sends nothing new here.
+      case {rec["conversation_status"], get_in(task, ["metadata", "origin", "provider"])} do
+        {status, "telegram"} when status in @attention ->
+          send_card(rec, workspace, target, language)
+
+        {status, _origin} when status in @endings ->
+          retire_card(rec, status, language)
+
+        _other ->
+          retire_card(rec, :updated, language)
       end
     else
       _ -> {:error, :task_card_delivery_no_longer_current}

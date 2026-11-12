@@ -20,6 +20,9 @@ defmodule Comma.Recommendations do
 
   @manual_runs_per_hour 6
   @dismissal_limit 200
+  # One Routine card holds four rows, and added matters fill one card.
+  @added_limit 4
+  @added_source "comma-added"
   @source_kinds ~w(native_mcp_oauth managed_oauth composio im_connect)
 
   def sync_sources(user, session, workspace_id, discovered) when is_list(discovered) do
@@ -522,6 +525,12 @@ defmodule Comma.Recommendations do
   #{@dismissal_limit} most recent keys as digests; the item's later versions stay
   dismissed.
   """
+  def dismiss(user, session, workspace_id, @added_source, url) when is_binary(url) do
+    with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      update_added(workspace_id, user["id"], &Enum.reject(&1, fn item -> item["url"] == url end))
+    end
+  end
+
   def dismiss(user, session, workspace_id, source_id, url)
       when is_binary(source_id) and byte_size(source_id) in 1..128 and is_binary(url) and
              byte_size(url) in 1..65_536 do
@@ -546,6 +555,153 @@ defmodule Comma.Recommendations do
 
   def dismiss(_user, _session, _workspace_id, _source_id, _url),
     do: {:error, :invalid_recommendation_dismissal}
+
+  @doc """
+  Adds a matter the member asked for to their Routine. It stays until they
+  remove it: "Don't remind me" on its row when it has a URL, or their Router
+  (`remove_added/4`). Routine holds #{@added_limit}; a fifth is refused, so the
+  member chooses what to drop. Every envelope with a briefing shows them as its
+  first card.
+  """
+  def add_item(user, session, workspace_id, attrs) when is_map(attrs) do
+    with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, item} <- added_item(attrs) do
+      Repo.transaction(fn ->
+        profile = locked_profile(workspace_id, user["id"])
+
+        if length(profile.added_items) >= @added_limit,
+          do: Repo.rollback(:routine_added_items_full)
+
+        {:ok, updated} =
+          profile
+          |> Ecto.Changeset.change(added_items: [item | profile.added_items])
+          |> Repo.update()
+
+        %{"item" => item, "envelope" => public_envelope(updated)}
+      end)
+    end
+  end
+
+  @doc "Removes one matter the member added, by its id."
+  def remove_added(user, session, workspace_id, id) when is_binary(id) do
+    with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      update_added(workspace_id, user["id"], &Enum.reject(&1, fn item -> item["id"] == id end))
+    end
+  end
+
+  @doc "The matters the member added, newest first."
+  def added_items(%RecommendationProfile{added_items: items}), do: items
+
+  defp update_added(workspace_id, user_id, fun) do
+    Repo.transaction(fn ->
+      profile = locked_profile(workspace_id, user_id)
+      items = fun.(profile.added_items)
+
+      if items == profile.added_items do
+        public_envelope(profile)
+      else
+        {:ok, updated} = profile |> Ecto.Changeset.change(added_items: items) |> Repo.update()
+        public_envelope(updated)
+      end
+    end)
+  end
+
+  defp added_item(attrs) do
+    title = clean_line(attrs["title"])
+    detail = clean_line(attrs["detail"])
+    url = attrs["url"]
+
+    cond do
+      not (is_binary(title) and String.length(title) in 1..120) ->
+        {:error, :invalid_routine_item_title}
+
+      not (is_nil(detail) or String.length(detail) <= 400) ->
+        {:error, :invalid_routine_item_detail}
+
+      not (is_nil(url) or RecommendationContract.valid_url?(url)) ->
+        {:error, :invalid_routine_item_url}
+
+      true ->
+        {:ok,
+         %{
+           "id" => Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false),
+           "title" => title,
+           "detail" => detail,
+           "url" => url,
+           "addedAt" => SystemsClock.system_time(:millisecond)
+         }}
+    end
+  end
+
+  # Row text is one line of prose: a line break or an HTML anchor in it would
+  # fail the projection contract.
+  defp clean_line(value) when is_binary(value) do
+    case value
+         |> String.replace(~r/\s+/u, " ")
+         |> String.replace(~r/<\/?a[\s>]/i, "")
+         |> String.trim() do
+      "" -> nil
+      line -> line
+    end
+  end
+
+  defp clean_line(_value), do: nil
+
+  # The added matters lead the briefing as one card. The briefing then keeps
+  # the card and row bounds clients read it with: the added card stays whole
+  # and the briefing's last rows give way.
+  defp with_added(snapshot, %RecommendationProfile{added_items: []}), do: snapshot
+
+  defp with_added(snapshot, profile) do
+    zh? = String.starts_with?(Comma.Accounts.locale(profile.user_id), "zh")
+
+    rows =
+      Enum.map(profile.added_items, fn item ->
+        detail =
+          if item["detail"],
+            do: [%{"kind" => "markdown", "text" => " · " <> item["detail"]}],
+            else: []
+
+        title =
+          if item["url"],
+            do: %{
+              "kind" => "inline-link",
+              "link" => %{
+                "label" => item["title"],
+                "href" => item["url"],
+                "sourceId" => @added_source
+              }
+            },
+            else: %{"kind" => "markdown", "text" => item["title"]}
+
+        %{
+          "id" => "added-" <> item["id"],
+          "parts" => [title | detail],
+          "action" => %{
+            "type" => "send_to_comma",
+            "label" => if(zh?, do: "处理", else: "Work on it"),
+            "prompt" => Enum.join(Enum.reject([item["title"], item["url"]], &is_nil/1), "\n"),
+            "requiresConfirmation" => true
+          }
+        }
+      end)
+
+    card = %{
+      "id" => "routine-added",
+      "template" => "text-list@1",
+      "title" => if(zh?, do: "你加的事项", else: "Added by you"),
+      "sourceIds" => [@added_source],
+      "fallbackText" => Enum.map_join(profile.added_items, "; ", & &1["title"]),
+      "items" => rows
+    }
+
+    snapshot = RecommendationContract.bound_after(snapshot, card)
+
+    # A row that gave way leaves no prompt behind: clients reject a briefing
+    # with a prompt nothing refers to.
+    referenced = prompt_ids(Map.delete(snapshot, "prompts"))
+    update_present(snapshot, "prompts", &Map.take(&1, referenced))
+  end
 
   @doc "Whether the member dismissed this source item."
   def dismissed?(%RecommendationProfile{dismissed_items: dismissed}, source_id, url),
@@ -1070,7 +1226,8 @@ defmodule Comma.Recommendations do
   end
 
   defp source_app_key(%{"appId" => app, "kind" => kind})
-       when app in ~w(github linear notion slack) and kind in ~w(composio managed_oauth),
+       when app in ~w(feishu github lark linear notion slack) and
+              kind in ~w(composio managed_oauth),
        do: {:oauth_app, app}
 
   defp source_app_key(source),
@@ -1474,7 +1631,8 @@ defmodule Comma.Recommendations do
       if profile.snapshot_source_revision == profile.source_revision and
            (profile.published_metrics["variant"] || "generic") == relevance_mode(profile) and
            identity_valid?,
-         do: without_dismissed(profile.snapshot, profile.dismissed_items),
+         do:
+           profile.snapshot |> without_dismissed(profile.dismissed_items) |> with_added(profile),
          else: nil
 
     enabled_sources? = Enum.any?(profile.sources, &(&1["enabled"] == true))

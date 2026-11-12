@@ -22,6 +22,13 @@ defmodule SalixAgent.LLMMeteringTest do
       })
     end
 
+    def complete(_messages, _tools, %{"rejected_key" => true}) do
+      SalixAgent.LLM.Error.http("anthropic", 401, %{
+        "type" => "error",
+        "error" => %{"type" => "authentication_error", "message" => "invalid x-api-key"}
+      })
+    end
+
     def complete(_messages, _tools, %{"gateway_credits" => true}) do
       SalixAgent.LLM.Error.http("anthropic", 402, %{
         "name" => "AiGatewayError",
@@ -145,6 +152,53 @@ defmodule SalixAgent.LLMMeteringTest do
                  "metering_disabled" => true
                })
     end
+  end
+
+  # Production 2026-11-12: the platform's Claude API account ran out of
+  # credits and every member on the Comma model stopped, with no alert. Each
+  # refusal of a platform-funded account is now counted for the
+  # `platform_model_account_failed` alert; a member's own account is not.
+  test "a refused platform provider account is counted for the operator alert" do
+    owner = SystemsRuntime.Proc.self()
+    id = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+
+    :ok =
+      SystemsRuntime.Telemetry.attach(
+        id,
+        [:salix, :llm, :platform_account_failure],
+        fn _event, _measurements, metadata, _ ->
+          if SystemsRuntime.Proc.self() == owner,
+            do: SystemsRuntime.Proc.send(owner, {:platform_account_failure, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(id) end)
+
+    base = %{"model" => "claude-x", "metering_disabled" => true}
+
+    assert {:error, %{"reason" => "model_unavailable"}} =
+             SalixAgent.LLM.complete([], [], Map.put(base, "gateway_credits", true))
+
+    assert_received {:platform_account_failure,
+                     %{provider: "anthropic", reason: "quota_exhausted"}}
+
+    assert {:error, %{"status" => 401}} =
+             SalixAgent.LLM.complete([], [], Map.put(base, "rejected_key", true))
+
+    assert_received {:platform_account_failure,
+                     %{provider: "anthropic", reason: "credentials_rejected"}}
+
+    assert {:error, %{"reason" => "provider_quota_exhausted"}} =
+             SalixAgent.LLM.complete(
+               [],
+               [],
+               base |> Map.put("gateway_credits", true) |> Map.put("credential_scope", "tenant")
+             )
+
+    assert {:error, _} = SalixAgent.LLM.complete([], [], Map.put(base, :return_error, true))
+
+    refute_received {:platform_account_failure, _}
   end
 
   test "generic LLM dispatch meters non-Round call sites" do

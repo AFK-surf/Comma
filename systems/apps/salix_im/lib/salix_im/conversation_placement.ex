@@ -22,6 +22,9 @@ defmodule SalixIM.ConversationPlacement do
               mutation :: map()
             ) :: :ok
 
+  @doc "Whether placement puts the conversation's owner on this node."
+  @callback owner?(group_id :: String.t(), conversation_id :: String.t()) :: boolean()
+
   @spec ensure_started(String.t(), String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(group_id, conversation_id, opts \\ []),
     do: impl().ensure_started(group_id, conversation_id, opts)
@@ -33,6 +36,9 @@ defmodule SalixIM.ConversationPlacement do
   @spec notify_group_conversation_mutation_if_running(String.t(), map()) :: :ok
   def notify_group_conversation_mutation_if_running(group_id, mutation),
     do: impl().notify_group_conversation_mutation_if_running(group_id, mutation)
+
+  @spec owner?(String.t(), String.t()) :: boolean()
+  def owner?(group_id, conversation_id), do: impl().owner?(group_id, conversation_id)
 
   defp impl, do: SystemsRuntime.get_env(:salix_im, :conversation_placement, __MODULE__.LocalFleet)
 
@@ -55,5 +61,9 @@ defmodule SalixIM.ConversationPlacement do
           group_id,
           mutation
         )
+
+    # One node owns everything.
+    @impl true
+    def owner?(_group_id, _conversation_id), do: true
   end
 end

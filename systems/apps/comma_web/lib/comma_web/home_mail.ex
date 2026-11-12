@@ -27,6 +27,14 @@ defmodule CommaWeb.HomeMail do
            budget(MailInteraction.automatic_budget(conversation, user["id"], now)),
          "notification_budget" =>
            budget(MailInteraction.notification_budget(conversation, user["id"], now)),
+         # What only a reserve-eligible matter (`pool` "reserve") may still
+         # spend once the ordinary pools are closed.
+         "reserve_budget" => %{
+           "handoff" =>
+             budget(MailInteraction.reserve_budget(conversation, user["id"], :handoff, now)),
+           "notification" =>
+             budget(MailInteraction.reserve_budget(conversation, user["id"], :notification, now))
+         },
          "monitors" => Enum.map(monitors, &monitor/1),
          "sources" => entries,
          # Whether the owner used the desktop App in the last ten minutes.
@@ -35,7 +43,8 @@ defmodule CommaWeb.HomeMail do
          "personal_targets" => CommaWeb.ProactiveDelivery.personal_targets(workspace, user["id"]),
          # The owner's notebook in the Router's VFS, when it exists.
          "notebook" => CommaWeb.ProactiveNotebook.locate(ctx)
-       }}
+       }
+       |> Map.merge(CommaWeb.ProactiveNotebook.pool_lists(workspace, user["id"]))}
     end
   end
 
@@ -424,7 +433,8 @@ defmodule CommaWeb.HomeMail do
              do: {:ok, MailInteraction.public(current)}
       else
         with :ok <- valid_action_target(args, ctx) do
-          command = Map.take(args, ~w(key action generation request_id run_at task_id reason))
+          command =
+            Map.take(args, ~w(key action generation request_id run_at task_id reason reason_kind))
 
           ConversationServer.mail_interaction(ctx.group_id, home, user, ctx.agent_id, command)
         end

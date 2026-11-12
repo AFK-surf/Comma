@@ -37,10 +37,6 @@ import {
   type Failures,
 } from "./adminModel";
 import {
-  makeWorkspaceCloudVmModel,
-  type WorkspaceCloudVmModel,
-} from "./WorkspaceCloudVmModel";
-import {
   makeWorkspaceSignalModel,
   type WorkspaceSignalModel,
 } from "./WorkspaceSignalModel";
@@ -63,8 +59,6 @@ export type BillingWorkspace = NonNullable<AdminWorkspaceBilling["workspace"]>;
 export interface WorkspaceSections {
   /** Present when the Workspace is ready. */
   readonly agentModels: WorkspaceAgentModelsModel | undefined;
-  /** Present when the Workspace reports a Cloud VM. */
-  readonly cloudVm: WorkspaceCloudVmModel | undefined;
   /** Present when the Workspace is ready. */
   readonly sandboxLimit: WorkspaceSandboxLimitModel | undefined;
   /** Present when the Workspace is ready. */
@@ -175,13 +169,6 @@ export const makeUserWorkspaceBillingModel = (
           const sections: WorkspaceSections = {
             agentModels: ready
               ? yield* makeWorkspaceAgentModelsModel(user.id, workspace.id)
-              : undefined,
-            cloudVm: workspace.cloud_vm
-              ? yield* makeWorkspaceCloudVmModel({
-                  current: workspace.cloud_vm,
-                  ready,
-                  userId: user.id,
-                })
               : undefined,
             sandboxLimit: ready
               ? yield* makeWorkspaceSandboxLimitModel(user.id)

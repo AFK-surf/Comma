@@ -253,6 +253,33 @@ defmodule SalixIM.FeishuDocsTest do
   defp requests(method, path),
     do: Enum.filter(FakeFeishu.requests(), &(&1.method == method and &1.path == path))
 
+  describe "who a person is" do
+    test "the app says a person's name, email and tenant", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/contact/v3/users/ou_alice",
+        ok(%{"user" => %{"name" => "Alice", "enterprise_email" => "alice@acme.test"}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/tenant/v2/tenant/query",
+        ok(%{"tenant" => %{"name" => "Acme"}})
+      )
+
+      assert Feishu.account(ctx.connect, "ou_alice") == %{
+               "name" => "Alice",
+               "email" => "alice@acme.test",
+               "workspace" => "Acme"
+             }
+    end
+
+    test "what the app may not read stays out, and nothing fails", ctx do
+      assert %{"name" => nil, "email" => nil, "workspace" => nil} =
+               Feishu.account(ctx.connect, "ou_nobody")
+    end
+  end
+
   describe "reading a document" do
     test "a wiki link is read as the bot and labelled by the chat it is shared with", ctx do
       ifc_mode(ctx.group_id, "enforce")
@@ -354,6 +381,81 @@ defmodule SalixIM.FeishuDocsTest do
                })
 
       assert shut["__ifc__"] == %{"label" => ["agent_private"]}
+    end
+  end
+
+  describe "reading the directory and chats" do
+    test "the directory reads as the space and a chat's members as that chat", ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/contact/v3/users/ou_alice",
+        ok(%{"user" => %{"open_id" => "ou_alice", "name" => "Alice"}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/im/v1/chats/oc_team/members",
+        ok(%{"items" => [%{"member_id" => "ou_alice", "name" => "Alice"}], "has_more" => false})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/im/v1/chats",
+        ok(%{
+          "items" => [%{"chat_id" => "oc_team", "name" => "Team"}, %{"chat_id" => "oc_ops"}],
+          "has_more" => false
+        })
+      )
+
+      assert {:ok, user} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_user", %{
+                 "user_id" => "ou_alice"
+               })
+
+      assert user["__ifc__"] == %{"label" => ["space|#{@connect_id}"]}
+
+      assert {:ok, members} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.list_chat_members", %{
+                 "chat_id" => "oc_team"
+               })
+
+      assert members["__ifc__"] == %{"label" => ["scope|#{@connect_id}|oc_team"]}
+
+      assert {:ok, chats} = Feishu.call(ctx.router_id, ctx.connect, "feishu.list_chats", %{})
+
+      assert %{"items" => [%{"index" => 0, "label" => team}, %{"index" => 1, "label" => ops}]} =
+               chats["__ifc__"]
+
+      assert team == ["scope|#{@connect_id}|oc_team"]
+      assert ops == ["scope|#{@connect_id}|oc_ops"]
+    end
+
+    test "a mobile number the person hid is not returned", ctx do
+      hidden = %{"open_id" => "ou_hid", "mobile" => "+8613800000001", "mobile_visible" => false}
+      shown = %{"open_id" => "ou_shown", "mobile" => "+8613800000002", "mobile_visible" => true}
+
+      FakeFeishu.route("GET", "/open-apis/contact/v3/users/ou_hid", ok(%{"user" => hidden}))
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/contact/v3/users/find_by_department",
+        ok(%{"items" => [hidden, shown], "has_more" => false})
+      )
+
+      assert {:ok, %{"user" => user}} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_user", %{"user_id" => "ou_hid"})
+
+      assert user == %{"open_id" => "ou_hid", "mobile_visible" => false}
+
+      assert {:ok, %{"users" => [first, second]}} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.list_department_users", %{
+                 "department_id" => "od_eng"
+               })
+
+      refute Map.has_key?(first, "mobile")
+      assert second["mobile"] == "+8613800000002"
     end
   end
 
@@ -659,6 +761,526 @@ defmodule SalixIM.FeishuDocsTest do
     end
   end
 
+  describe "reading a Base and a spreadsheet" do
+    test "a Base link is read as the bot, its table and view are the defaults, and the read is labelled",
+         ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001",
+        ok(%{"app" => %{"app_token" => "BaseApp0001", "name" => "销售数据", "is_advanced" => false}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables",
+        ok(%{
+          "items" => [%{"table_id" => "tblOrders", "name" => "销售订单"}],
+          "has_more" => false,
+          "page_token" => ""
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/fields",
+        ok(%{
+          "items" => [%{"field_id" => "fld1", "field_name" => "订单号", "type" => 1}],
+          "has_more" => false
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/views",
+        ok(%{"items" => [%{"view_id" => "vew2026", "view_name" => "2026"}]})
+      )
+
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search",
+        ok(%{
+          "items" => [%{"record_id" => "rec1", "fields" => %{"订单号" => "SO-2026-001"}}],
+          "has_more" => true,
+          "page_token" => "next1",
+          "total" => 2
+        })
+      )
+
+      audience_routes("BaseApp0001", "closed", [
+        %{"member_type" => "openchat", "member_id" => "oc_team", "perm" => "view"}
+      ])
+
+      link = "https://acme.feishu.cn/base/BaseApp0001?table=tblOrders&view=vew2026"
+
+      assert {:ok, base} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_base", %{"base" => link})
+
+      assert base["name"] == "销售数据"
+      assert base["default_table_id"] == "tblOrders"
+      assert base["default_view_id"] == "vew2026"
+      assert [%{"table_id" => "tblOrders"}] = base["tables"]
+      assert base["__ifc__"] == %{"label" => ["scope|#{@connect_id}|oc_team"]}
+
+      # A Base's permissions are a bitable's, not a document's.
+      assert [members] = requests("GET", "/open-apis/drive/v1/permissions/BaseApp0001/members")
+      assert members.query["type"] == "bitable"
+
+      assert {:ok, fields} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.list_base_fields", %{
+                 "base" => link
+               })
+
+      assert [%{"field_name" => "订单号"}] = fields["fields"]
+      assert [%{"view_id" => "vew2026"}] = fields["views"]
+
+      assert [list] =
+               requests("GET", "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/fields")
+
+      assert list.query["view_id"] == "vew2026"
+
+      # A Worker reads the rows; the link's view keeps the person's filter.
+      assert {:ok, records} =
+               SalixIM.Provider.call_api(ctx.worker_id, "feishu", "feishu.list_base_records", %{
+                 "connect_id" => @connect_id,
+                 "params" => %{"base" => link, "field_names" => ["订单号"]}
+               })
+
+      assert [%{"record_id" => "rec1"}] = records["records"]
+      assert records["has_more"] == true
+      assert records["next_page_token"] == "next1"
+      assert records["total"] == 2
+      assert records["__ifc__"] == %{"label" => ["scope|#{@connect_id}|oc_team"]}
+
+      assert [search] =
+               requests(
+                 "POST",
+                 "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search"
+               )
+
+      assert search.query["page_size"] == "100"
+      assert search.body["view_id"] == "vew2026"
+      assert search.body["field_names"] == ["订单号"]
+      refute Map.has_key?(search.body, "filter")
+
+      # A search with filter or sort runs over the whole table and the view's
+      # filter does not apply, so the two are never combined.
+      assert {:error, "filter and sort search the whole table" <> _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => link,
+                 "filter" => ~s({"conjunction":"and","conditions":[]})
+               })
+
+      assert {:ok, _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "BaseApp0001",
+                 "table_id" => "tblOrders",
+                 "filter" => ~s({"conjunction":"and","conditions":[]})
+               })
+
+      assert [_, search] =
+               requests(
+                 "POST",
+                 "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search"
+               )
+
+      refute Map.has_key?(search.body, "view_id")
+      assert search.body["filter"] == %{"conjunction" => "and", "conditions" => []}
+
+      # An empty view_id does not drop the link's view.
+      assert {:ok, _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => link,
+                 "view_id" => ""
+               })
+
+      assert %{body: %{"view_id" => "vew2026"}} =
+               requests(
+                 "POST",
+                 "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search"
+               )
+               |> List.last()
+
+      # Without a table in the link or the call, there is nothing to read.
+      assert {:error, "table_id is required" <> _} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "BaseApp0001"
+               })
+
+      # Every table operation is a read in information flow control: its
+      # result is labelled, and it sends nothing anywhere.
+      for api <- SalixIM.Provider.OperationRegistry.feishu_table_api_names() do
+        assert {:read, _} = SalixAgent.IFC.Destination.describe("im_api." <> api, %{}, %{})
+      end
+    end
+
+    test "a page of records larger than one tool result is staged in the workspace", ctx do
+      rows =
+        for n <- 1..500,
+            do: %{"record_id" => "rec#{n}", "fields" => %{"备注" => String.duplicate("x", 200)}}
+
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search",
+        ok(%{"items" => rows, "has_more" => false, "page_token" => ""})
+      )
+
+      assert {:ok, %{"truncated" => true, "records" => [], "vfs_path" => path}} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "BaseApp0001",
+                 "table_id" => "tblOrders",
+                 "page_size" => 500
+               })
+
+      assert String.starts_with?(path, "/feishu/base/BaseApp0001-tblOrders-")
+      assert Jason.decode!(FakeWorkspace.get(path)) == rows
+
+      # Another read of the same table, selecting other columns, keeps its own file.
+      assert {:ok, %{"vfs_path" => other}} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "BaseApp0001",
+                 "table_id" => "tblOrders",
+                 "page_size" => 500,
+                 "field_names" => ["备注"]
+               })
+
+      assert other != path
+      assert Jason.decode!(FakeWorkspace.get(path)) == rows
+
+      assert [search, _other] =
+               requests(
+                 "POST",
+                 "/open-apis/bitable/v1/apps/BaseApp0001/tables/tblOrders/records/search"
+               )
+
+      assert search.query["page_size"] == "500"
+    end
+
+    test "a spreadsheet link is read in bounded ranges and labelled by its link setting", ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001",
+        ok(%{
+          "spreadsheet" => %{
+            "title" => "应收单",
+            "url" => "https://acme.feishu.cn/sheets/Sheet0000001"
+          }
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001/sheets/query",
+        ok(%{
+          "sheets" => [
+            %{
+              "sheet_id" => "sh01",
+              "title" => "2026",
+              "index" => 0,
+              "grid_properties" => %{"row_count" => 1000, "column_count" => 3}
+            }
+          ]
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v2/spreadsheets/Sheet0000001/values/sh01!A1:C3",
+        ok(%{
+          "revision" => 12,
+          "valueRange" => %{
+            "range" => "sh01!A1:C3",
+            "values" => [["单号", "金额"], ["AR-1", "100"], ["AR-2", "250"]]
+          }
+        })
+      )
+
+      audience_routes("Sheet0000001", "tenant_readable", [])
+
+      link = "https://acme.feishu.cn/sheets/Sheet0000001?sheet=sh01"
+
+      assert {:ok, sheet} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_sheet", %{"sheet" => link})
+
+      assert sheet["title"] == "应收单"
+      assert sheet["default_sheet_id"] == "sh01"
+
+      assert [%{"sheet_id" => "sh01", "grid_properties" => %{"row_count" => 1000}}] =
+               sheet["sheets"]
+
+      assert sheet["__ifc__"] == %{"label" => ["space|#{@connect_id}"]}
+
+      assert [members] = requests("GET", "/open-apis/drive/v1/permissions/Sheet0000001/members")
+      assert members.query["type"] == "sheet"
+
+      assert {:ok, range} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.get_sheet_range", %{
+                 "sheet" => link,
+                 "range" => "a1:c3"
+               })
+
+      assert range["rows"] == [["单号", "金额"], ["AR-1", "100"], ["AR-2", "250"]]
+      assert range["row_count"] == 3
+      assert range["revision"] == 12
+
+      # The sheet is longer than the range: the next range continues it, and
+      # no column lies to the right.
+      assert range["has_more"] == true
+      assert range["next_range"] == "A4:C6"
+      assert range["sheet_row_count"] == 1000
+      assert range["__ifc__"] == %{"label" => ["space|#{@connect_id}"]}
+
+      assert [read] =
+               requests("GET", "/open-apis/sheets/v2/spreadsheets/Sheet0000001/values/sh01!A1:C3")
+
+      assert read.query["valueRenderOption"] == "ToString"
+
+      # A range is bounded per call; the next range continues it.
+      assert {:error, "range covers 600 rows" <> _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.get_sheet_range", %{
+                 "sheet" => link,
+                 "range" => "A1:C600"
+               })
+
+      assert {:error, "range must be an A1 range" <> _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.get_sheet_range", %{
+                 "sheet" => link,
+                 "range" => "sh01!A1:C3"
+               })
+    end
+
+    test "an advanced-permission Base is private to the agent, a share link names no Base, and views page",
+         ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseAdv0001",
+        ok(%{"app" => %{"name" => "工资表", "is_advanced" => true}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseAdv0001/tables",
+        ok(%{"items" => [%{"table_id" => "tblPay", "name" => "工资"}], "has_more" => false})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/fields",
+        ok(%{"items" => [%{"field_name" => "姓名"}], "has_more" => false})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/views",
+        ok(%{"items" => [%{"view_id" => "vewAll"}], "has_more" => true, "page_token" => "v2"})
+      )
+
+      FakeFeishu.route(
+        "POST",
+        "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/records/search",
+        ok(%{
+          "items" => [%{"record_id" => "rec1", "fields" => %{"姓名" => "Ann"}}],
+          "has_more" => false
+        })
+      )
+
+      # The Base is shared with a chat, but advanced permissions give each
+      # collaborator its own rows: the chat is not the audience of what the
+      # app read.
+      audience_routes("BaseAdv0001", "closed", [
+        %{"member_type" => "openchat", "member_id" => "oc_team", "perm" => "view"}
+      ])
+
+      assert {:ok, %{"is_advanced" => true, "__ifc__" => %{"label" => ["agent_private"]}}} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_base", %{
+                 "base" => "BaseAdv0001"
+               })
+
+      assert {:ok, fields} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_fields", %{
+                 "base" => "BaseAdv0001",
+                 "table_id" => "tblPay"
+               })
+
+      assert fields["__ifc__"] == %{"label" => ["agent_private"]}
+      assert [%{"view_id" => "vewAll"}] = fields["views"]
+      assert fields["views_has_more"] == true
+      assert fields["views_next_page_token"] == "v2"
+
+      assert {:ok, %{"__ifc__" => %{"label" => ["agent_private"]}}} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "BaseAdv0001",
+                 "table_id" => "tblPay"
+               })
+
+      # A second page of fields does not fetch the views again; views page alone.
+      assert {:ok, page2} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_fields", %{
+                 "base" => "BaseAdv0001",
+                 "table_id" => "tblPay",
+                 "page_token" => "f2"
+               })
+
+      refute Map.has_key?(page2, "views")
+
+      assert {:ok, %{"views_next_page_token" => "v2"} = views_only} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_fields", %{
+                 "base" => "BaseAdv0001",
+                 "table_id" => "tblPay",
+                 "views_page_token" => "v2"
+               })
+
+      refute Map.has_key?(views_only, "fields")
+
+      assert [_, _] =
+               requests("GET", "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/fields")
+
+      # An empty filter is no filter, so it keeps the link's view.
+      assert {:ok, _} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.list_base_records", %{
+                 "base" => "https://acme.feishu.cn/base/BaseAdv0001?table=tblPay&view=vewAll",
+                 "filter" => %{}
+               })
+
+      assert %{body: %{"view_id" => "vewAll"} = body} =
+               requests(
+                 "POST",
+                 "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/records/search"
+               )
+               |> List.last()
+
+      refute Map.has_key?(body, "filter")
+
+      assert [_, %{query: %{"page_token" => "v2"}}] =
+               requests("GET", "/open-apis/bitable/v1/apps/BaseAdv0001/tables/tblPay/views")
+
+      # A share link of a view or form carries no app token.
+      assert {:error, "this is a share link" <> _} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_base", %{
+                 "base" => "https://acme.feishu.cn/share/base/view/shrcnAbCdEfGh"
+               })
+
+      assert [] = requests("GET", "/open-apis/bitable/v1/apps/view")
+    end
+
+    test "next_range walks a sheet to its end and reads each cell once", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000002/sheets/query",
+        ok(%{
+          "sheets" => [
+            %{"sheet_id" => "sh02", "grid_properties" => %{"row_count" => 7, "column_count" => 3}}
+          ]
+        })
+      )
+
+      for block <- ~w(A1:C7 A1:B3 A4:B6 A7:B7 C1:C7) do
+        FakeFeishu.route(
+          "GET",
+          "/open-apis/sheets/v2/spreadsheets/Sheet0000002/values/sh02!#{block}",
+          ok(%{"valueRange" => %{"range" => "sh02!#{block}", "values" => [[block]]}})
+        )
+      end
+
+      # Without a range, the first block covers every column of the sheet.
+      assert {:ok, %{"range" => "sh02!A1:C7", "has_more" => false} = whole} =
+               Feishu.call(ctx.worker_id, ctx.connect, "feishu.get_sheet_range", %{
+                 "sheet" => "Sheet0000002",
+                 "sheet_id" => "sh02"
+               })
+
+      refute Map.has_key?(whole, "next_range")
+
+      # A smaller block walks rows first, then the next columns at full
+      # height, each cell once.
+      walk = fn walk, range, acc ->
+        assert {:ok, result} =
+                 Feishu.call(ctx.worker_id, ctx.connect, "feishu.get_sheet_range", %{
+                   "sheet" => "Sheet0000002",
+                   "sheet_id" => "sh02",
+                   "range" => range
+                 })
+
+        acc = acc ++ [range]
+
+        case result do
+          %{"has_more" => true, "next_range" => next} -> walk.(walk, next, acc)
+          %{"has_more" => false} -> acc
+        end
+      end
+
+      assert walk.(walk, "A1:B3", []) == ~w(A1:B3 A4:B6 A7:B7 C1:C7)
+    end
+
+    test "a wiki page that holds a Base is read through the node, and a document read of a Base says where to go",
+         ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/wiki/v2/spaces/get_node",
+        ok(%{
+          "node" => %{
+            "obj_type" => "bitable",
+            "obj_token" => "BaseApp0002",
+            "node_token" => "WikiBase0001",
+            "title" => "订单台账"
+          }
+        })
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0002",
+        ok(%{"app" => %{"name" => "订单台账"}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0002/tables",
+        ok(%{"items" => [], "has_more" => false})
+      )
+
+      assert {:ok, base} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_base", %{
+                 "base" => "https://acme.feishu.cn/wiki/WikiBase0001"
+               })
+
+      assert base["app_token"] == "BaseApp0002"
+      assert base["wiki_node"]["node_token"] == "WikiBase0001"
+
+      assert {:error, error} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.fetch_doc", %{
+                 "doc" => "https://acme.feishu.cn/wiki/WikiBase0001"
+               })
+
+      assert error =~ "feishu.get_base"
+
+      assert {:error, error} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.fetch_doc", %{
+                 "doc" => "https://acme.feishu.cn/base/BaseApp0001?table=tblOrders"
+               })
+
+      assert error =~ "feishu.get_base"
+
+      assert {:error, error} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.fetch_doc", %{
+                 "doc" => "https://acme.feishu.cn/sheets/Sheet0000001"
+               })
+
+      assert error =~ "feishu.get_sheet"
+
+      # A spreadsheet link is not a Base, and the other way round.
+      assert {:error, "this link is a spreadsheet, not a base" <> _} =
+               Feishu.call(ctx.router_id, ctx.connect, "feishu.get_base", %{
+                 "base" => "https://acme.feishu.cn/sheets/Sheet0000001"
+               })
+    end
+  end
+
   describe "who may call the document operations" do
     test "a worker holds every read and document operation and no messaging write", ctx do
       FakeFeishu.route(
@@ -766,6 +1388,35 @@ defmodule SalixIM.FeishuDocsTest do
         "connect_id" => @connect_id,
         "params" => params
       })
+    end
+
+    test "a chat the bot cannot read is read as a signed-in member", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/im/v1/messages",
+        ok(%{
+          "items" => [
+            %{
+              "message_id" => "om_ext",
+              "chat_id" => "oc_external",
+              "msg_type" => "text",
+              "create_time" => "1793785000000",
+              "sender" => %{"id" => "ou_ann", "sender_type" => "user"},
+              "body" => %{"content" => ~s({"text":"hello"})}
+            }
+          ],
+          "has_more" => false
+        })
+      )
+
+      assert {:ok, %{"messages" => [%{"message_id" => "om_ext"}]}} =
+               worker_call(ctx, "feishu.get_chat_history", %{
+                 "chat_id" => "oc_external",
+                 "account" => "feishu-ann"
+               })
+
+      assert FakeFeishu.requests() |> Enum.map(& &1.authorization) |> Enum.uniq() ==
+               ["Bearer u-feishu-ann"]
     end
 
     test "a search runs as the app and every active account and names who found each meeting",
@@ -960,6 +1611,92 @@ defmodule SalixIM.FeishuDocsTest do
                  "account" => "feishu-ray",
                  "include_transcript" => "true"
                })
+    end
+
+    test "a shared message link is read as the first identity that may open it", ctx do
+      url = "https://applink.feishu.cn/client/message/link/open?token=AmT%2Fab%2BQ%3D"
+
+      # The app holds no grant for message links; Ray may read this one.
+      FakeFeishu.route("POST", "/open-apis/im/v1/message_links/query", fn
+        %{"__authorization" => "Bearer t-docs"} ->
+          %{"code" => 99_991_672, "msg" => "Access denied"}
+
+        _person ->
+          ok(%{
+            "messages" => [
+              %{
+                "message" => %{
+                  "message_id" => "om_src",
+                  "msg_type" => "text",
+                  "sender" => %{"id" => "ou_bo", "sender_type" => "user"},
+                  "body" => %{"content" => ~s({"text":"the build fails on main"})}
+                }
+              }
+            ],
+            "chat_info" => %{"chat_id" => "oc_pilot", "name" => "Pilot", "is_authorized" => true}
+          })
+      end)
+
+      assert {:ok,
+              %{
+                "account" => "feishu-ray",
+                "url" => ^url,
+                "messages" => [%{"message_id" => "om_src", "text" => "the build fails on main"}],
+                "chat_id" => "oc_pilot",
+                "chat" => %{"name" => "Pilot"}
+              }} = worker_call(ctx, "feishu.read_message_link", %{"url" => url})
+
+      # The link goes to Feishu whole, as the person shared it.
+      assert [app, ray] = requests("POST", "/open-apis/im/v1/message_links/query")
+      assert app.body == %{"message_link_url" => url}
+      assert ray.authorization == "Bearer u-feishu-ray"
+
+      # Refused everywhere, the read says where else the messages are.
+      assert {:error, refused} =
+               worker_call(ctx, "feishu.read_message_link", %{"url" => url, "account" => "app"})
+
+      assert refused =~ "find the messages with feishu.search_chats"
+
+      assert {:error, "url must be a Feishu message link" <> _} =
+               worker_call(ctx, "feishu.read_message_link", %{
+                 "url" => "https://applink.feishu.cn/client/chat/open?openChatId=oc_pilot"
+               })
+    end
+
+    test "a merged forward is read with the messages it carries", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/im/v1/messages/om_fwd",
+        ok(%{
+          "items" => [
+            %{
+              "message_id" => "om_fwd",
+              "chat_id" => "oc_here",
+              "msg_type" => "merge_forward",
+              "body" => %{"content" => "Merged and Forwarded Message"}
+            },
+            %{
+              "message_id" => "om_one",
+              "upper_message_id" => "om_fwd",
+              "msg_type" => "text",
+              "sender" => %{"id" => "ou_bo", "sender_type" => "user"},
+              "body" => %{"content" => ~s({"text":"the build fails on main"})}
+            }
+          ]
+        })
+      )
+
+      assert {:ok,
+              %{
+                "message" => %{"message_id" => "om_fwd", "message_type" => "merge_forward"},
+                "forwarded_messages" => [
+                  %{
+                    "message_id" => "om_one",
+                    "upper_message_id" => "om_fwd",
+                    "text" => "the build fails on main"
+                  }
+                ]
+              }} = worker_call(ctx, "feishu.get_message", %{"message_id" => "om_fwd"})
     end
 
     test "a read tries each account until one may see the meeting", ctx do
@@ -1191,6 +1928,46 @@ defmodule SalixIM.FeishuDocsTest do
              |> Enum.map(& &1.authorization) == ["Bearer u-p9"]
     end
 
+    test "a document's owner is asked for access as the person, never as the app", ctx do
+      wiki = "/open-apis/drive/v1/permissions/WikiNode0001/members/apply"
+      docx = "/open-apis/drive/v1/permissions/DocxTok00001/members/apply"
+      FakeFeishu.route("POST", wiki, ok(%{}))
+
+      assert {:ok, %{"doc" => "WikiNode0001", "doc_type" => "wiki", "requested" => "view"}} =
+               worker_call(ctx, "feishu.request_doc_access", %{
+                 "doc" => "https://acme.feishu.cn/wiki/WikiNode0001",
+                 "account" => "feishu-ann",
+                 "remark" => "Needs the launch plan"
+               })
+
+      assert [asked] = requests("POST", wiki)
+      assert asked.authorization == "Bearer u-feishu-ann"
+      assert asked.query == %{"type" => "wiki"}
+      assert asked.body == %{"perm" => "view", "remark" => "Needs the launch plan"}
+
+      for params <- [%{}, %{"account" => "app"}] do
+        assert {:error, "Feishu takes an access request only from a person" <> _} =
+                 worker_call(
+                   ctx,
+                   "feishu.request_doc_access",
+                   Map.put(params, "doc", "DocxTok00001")
+                 )
+      end
+
+      assert requests("POST", docx) == []
+
+      FakeFeishu.route("POST", docx, 400, %{"code" => 1_063_006, "msg" => "apply quota exceeded"})
+
+      assert {:error, "Feishu API error 1063006: this person has asked" <> _} =
+               worker_call(ctx, "feishu.request_doc_access", %{
+                 "doc" => "DocxTok00001",
+                 "account" => "feishu-ray",
+                 "perm" => "edit"
+               })
+
+      assert [%{query: %{"type" => "docx"}, body: %{"perm" => "edit"}}] = requests("POST", docx)
+    end
+
     test "a cloud space and the wiki are walked as the app or as a person", ctx do
       FakeFeishu.route(
         "GET",
@@ -1227,6 +2004,241 @@ defmodule SalixIM.FeishuDocsTest do
 
       assert requests("GET", "/open-apis/wiki/v2/spaces") |> Enum.map(& &1.authorization) ==
                ["Bearer u-feishu-ray", "Bearer t-docs"]
+    end
+  end
+
+  describe "documents, spreadsheets and Base as the person who asked" do
+    setup do
+      previous = SystemsRuntime.get_env(:salix_im, :feishu_user_accounts_mod)
+      SystemsRuntime.put_env(:salix_im, :feishu_user_accounts_mod, FakeAccounts)
+
+      on_exit(fn ->
+        if previous,
+          do: SystemsRuntime.put_env(:salix_im, :feishu_user_accounts_mod, previous),
+          else: SystemsRuntime.delete_env(:salix_im, :feishu_user_accounts_mod)
+      end)
+
+      :ok
+    end
+
+    test "a spreadsheet and a Base are read and labelled as the account", ctx do
+      ifc_mode(ctx.group_id, "enforce")
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001",
+        ok(%{"spreadsheet" => %{"title" => "AR"}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001/sheets/query",
+        ok(%{"sheets" => [%{"sheet_id" => "sh01", "title" => "2026"}]})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001",
+        ok(%{"app" => %{"name" => "Sales", "is_advanced" => false}})
+      )
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001/tables",
+        ok(%{"items" => [%{"table_id" => "tblOrders"}], "has_more" => false})
+      )
+
+      audience_routes("Sheet0000001", "closed", [
+        %{"member_type" => "openchat", "member_id" => "oc_team", "perm" => "view"}
+      ])
+
+      audience_routes("BaseApp0001", "closed", [
+        %{"member_type" => "openchat", "member_id" => "oc_team", "perm" => "view"}
+      ])
+
+      assert {:ok, %{"sheets" => [%{"sheet_id" => "sh01"}]} = sheet} =
+               worker_call(ctx, "feishu.get_sheet", %{
+                 "sheet" => "https://acme.feishu.cn/sheets/Sheet0000001",
+                 "account" => "feishu-ann"
+               })
+
+      assert {:ok, %{"tables" => [%{"table_id" => "tblOrders"}]} = base} =
+               worker_call(ctx, "feishu.get_base", %{
+                 "base" => "BaseApp0001",
+                 "account" => "feishu-ann"
+               })
+
+      # The audience the person may list labels the read, as for a document.
+      assert sheet["__ifc__"] == %{"label" => ["scope|#{@connect_id}|oc_team"]}
+      assert base["__ifc__"] == sheet["__ifc__"]
+
+      # Every table, wiki and permission read runs as the person. The app
+      # only classifies the chat the label names, for the IFC projection
+      # (`SalixIM.IFC.Projection`), never a read of the table.
+      as_app =
+        for %{authorization: "Bearer t-docs"} = request <- FakeFeishu.requests(),
+            uniq: true,
+            do: {request.method, request.path}
+
+      assert as_app == [{"GET", "/open-apis/im/v1/chats/oc_team"}]
+
+      assert Enum.count(FakeFeishu.requests(), &(&1.authorization == "Bearer u-feishu-ann")) >= 6
+    end
+
+    test "a content write runs as the account, and sharing or deleting refuses one", ctx do
+      FakeFeishu.route(
+        "PUT",
+        "/open-apis/docs_ai/v1/documents/DocxTok00001",
+        ok(%{"result" => "success", "document" => %{"revision_id" => 3}})
+      )
+
+      assert {:ok, %{"revision_id" => 3}} =
+               worker_call(ctx, "feishu.update_doc", %{
+                 "doc" => "DocxTok00001",
+                 "command" => "append",
+                 "content" => "- done",
+                 "account" => "feishu-ann"
+               })
+
+      assert [%{authorization: "Bearer u-feishu-ann"}] =
+               requests("PUT", "/open-apis/docs_ai/v1/documents/DocxTok00001")
+
+      for {api, params} <- [
+            {"feishu.share_doc", %{"member_type" => "chat", "member_id" => "oc_team"}},
+            {"feishu.delete_doc", %{}}
+          ] do
+        assert {:error, message} =
+                 worker_call(
+                   ctx,
+                   api,
+                   Map.merge(params, %{"doc" => "DocxTok00001", "account" => "feishu-ann"})
+                 )
+
+        assert message =~ "#{api} runs as the app only"
+      end
+
+      assert length(FakeFeishu.requests()) == 1
+    end
+
+    test "a denial names the next step for the identity that was denied", ctx do
+      fetch = "/open-apis/docs_ai/v1/documents/DocxTok00001/fetch"
+      update = "/open-apis/docs_ai/v1/documents/DocxTok00001"
+      FakeFeishu.route("POST", fetch, 403, %{"code" => 3_380_002, "msg" => "no permission"})
+      FakeFeishu.route("PUT", update, 403, %{"code" => 1_770_032, "msg" => "forbidden"})
+
+      read = %{"doc" => "DocxTok00001"}
+      write = Map.merge(read, %{"command" => "append", "content" => "x"})
+
+      # The app: read or write as the person who asked, signing them in first.
+      assert {:error, as_app} = worker_call(ctx, "feishu.fetch_doc", read)
+      assert as_app =~ "3380002"
+      assert as_app =~ "account="
+      assert as_app =~ "oauth.request_authorization"
+      refute as_app =~ "request_doc_access"
+
+      assert {:error, write_as_app} = worker_call(ctx, "feishu.update_doc", write)
+      assert write_as_app =~ "account="
+      assert write_as_app =~ "agree"
+      assert write_as_app =~ "oauth.request_authorization"
+      assert write_as_app =~ "docs:document.comment:create"
+      refute as_app =~ "sheets:spreadsheet:readonly"
+
+      # A table read as the app names the table scopes for the sign-in.
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001",
+        403,
+        %{"code" => 131_006, "msg" => "permission denied"}
+      )
+
+      assert {:error, table_as_app} =
+               worker_call(ctx, "feishu.get_sheet", %{"sheet" => "Sheet0000001"})
+
+      assert table_as_app =~ "oauth.request_authorization"
+      assert table_as_app =~ "scopes [sheets:spreadsheet:readonly, bitable:app:readonly]"
+
+      # The person: ask the owner for access as them.
+      assert {:error, as_person} =
+               worker_call(ctx, "feishu.fetch_doc", Map.put(read, "account", "feishu-ann"))
+
+      assert as_person =~ "feishu.request_doc_access"
+      refute as_person =~ "oauth.request_authorization"
+
+      assert {:error, write_as_person} =
+               worker_call(ctx, "feishu.update_doc", Map.put(write, "account", "feishu-ann"))
+
+      assert write_as_person =~ "feishu.request_doc_access and perm edit"
+
+      for message <- [as_app, write_as_app, as_person, write_as_person],
+          do: refute(message =~ ~r/Excel|CSV/)
+    end
+
+    test "a missing scope names the tenant admin, not sharing", ctx do
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/sheets/v3/spreadsheets/Sheet0000001",
+        400,
+        %{
+          "code" => 99_991_672,
+          "msg" =>
+            "Access denied. One of the following scopes is required: [sheets:spreadsheet:readonly, sheets:spreadsheet]"
+        }
+      )
+
+      assert {:error, message} =
+               worker_call(ctx, "feishu.get_sheet", %{"sheet" => "Sheet0000001"})
+
+      assert message =~ "sheets:spreadsheet:readonly"
+      assert message =~ "developer console"
+      assert message =~ "Sharing the document does not help"
+
+      FakeFeishu.route(
+        "GET",
+        "/open-apis/bitable/v1/apps/BaseApp0001",
+        400,
+        %{
+          "code" => 99_991_679,
+          "msg" =>
+            "Unauthorized. required one of these privileges under the user identity: [bitable:app:readonly]"
+        }
+      )
+
+      assert {:error, message} =
+               worker_call(ctx, "feishu.get_base", %{
+                 "base" => "BaseApp0001",
+                 "account" => "feishu-ann"
+               })
+
+      assert message =~ "scopes [bitable:app:readonly]"
+      assert message =~ "oauth.request_authorization"
+      assert message =~ "20027"
+    end
+
+    test "the owner of a spreadsheet or a Base is asked by its own type", ctx do
+      sheet = "/open-apis/drive/v1/permissions/Sheet0000001/members/apply"
+      base = "/open-apis/drive/v1/permissions/BaseApp0001/members/apply"
+      FakeFeishu.route("POST", sheet, ok(%{}))
+      FakeFeishu.route("POST", base, ok(%{}))
+
+      assert {:ok, %{"doc_type" => "sheet"}} =
+               worker_call(ctx, "feishu.request_doc_access", %{
+                 "doc" => "https://acme.feishu.cn/sheets/Sheet0000001?sheet=sh01",
+                 "account" => "feishu-ann"
+               })
+
+      assert {:ok, %{"doc_type" => "bitable"}} =
+               worker_call(ctx, "feishu.request_doc_access", %{
+                 "doc" => "BaseApp0001",
+                 "doc_type" => "bitable",
+                 "account" => "feishu-ann",
+                 "perm" => "edit"
+               })
+
+      assert [%{query: %{"type" => "sheet"}, authorization: "Bearer u-feishu-ann"}] =
+               requests("POST", sheet)
+
+      assert [%{query: %{"type" => "bitable"}, body: %{"perm" => "edit"}}] =
+               requests("POST", base)
     end
   end
 end

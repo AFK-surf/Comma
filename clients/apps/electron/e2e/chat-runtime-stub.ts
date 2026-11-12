@@ -52,14 +52,17 @@ export type RuntimeLocalFileRegistration = {
   token: string;
 };
 
+/** The part size the stub gives an upload in parts: small, so a test's file comes in several. */
+const STUB_PART_SIZE = 4 * 1024 * 1024;
+
 export type RuntimeUpload = {
   bytes: Buffer;
   contentType: string;
   filename: string;
   path: string;
   token: string;
-  /** How a streamed upload's body came (`PUT`): `chunked` when Main sent it as it read the file. */
-  transferEncoding?: string | undefined;
+  /** How many requests an upload in parts (`…/uploads`) came in; absent for a single one. */
+  parts?: number | undefined;
   workspaceId: string;
 };
 
@@ -105,6 +108,7 @@ export async function startChatRuntimeStub({
   const googleLinkVerifications: unknown[] = [];
   const emailVerifications: unknown[] = [];
   const uploads: RuntimeUpload[] = [];
+  const partUploads = new Map<string, { size: number; parts: Map<number, Buffer> }>();
   const workspaceFileReads: RuntimeWorkspaceFileRead[] = [];
   const serverMessages = new Map<string, ReturnType<typeof userMessage>[]>();
   const delayedAResponses: ServerResponse[] = [];
@@ -141,6 +145,12 @@ export async function startChatRuntimeStub({
     const path = url.pathname;
     const token = bearerToken(req);
     requests.push({ method, path, token });
+
+    if (method === "GET" && path === "/v1/comma/auth/captcha") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><h1>Security check fixture</h1>");
+      return;
+    }
 
     if (method === "POST" && path === "/v1/comma/auth/email/login") {
       const body = (await readJson(req)) as { email?: string };
@@ -372,27 +382,54 @@ export async function startChatRuntimeStub({
       return;
     }
 
-    // A file the core uploads from Main as it is attached: the raw body, sent chunked as Main reads the file.
-    if (method === "PUT" && path === `/v1/comma/groups/${account.groupId}/files`) {
+    // A file the core uploads from Main as it is attached, in parts read from Main: begun, a `PUT` per part, then
+    // completed.
+    const uploadsPath = `/v1/comma/groups/${account.groupId}/uploads`;
+    if (method === "POST" && path === uploadsPath) {
+      const { size } = (await readJson(req)) as { size: number };
+      const id = `up_${partUploads.size + 1}`;
+      partUploads.set(id, { size, parts: new Map() });
+      writeJson(res, { upload_id: id, part_size: STUB_PART_SIZE }, 201);
+      return;
+    }
+    const part = path.match(new RegExp(`^${uploadsPath}/([^/]+)/parts/(\\d+)$`));
+    if (method === "PUT" && part) {
+      const pending = partUploads.get(part[1]!);
       const bytes = await readBuffer(req);
-      const filename = url.searchParams.get("name") ?? "file.bin";
+      if (!pending || bytes.byteLength > STUB_PART_SIZE) {
+        writeJson(res, { error: "invalid_part" }, 400);
+        return;
+      }
+      pending.parts.set(Number(part[2]), bytes);
+      writeJson(res, { etag: `etag_${part[2]}` });
+      return;
+    }
+    const complete = path.match(new RegExp(`^${uploadsPath}/([^/]+)/complete$`));
+    if (method === "POST" && complete) {
+      const pending = partUploads.get(complete[1]!);
+      const { name, etags } = (await readJson(req)) as {
+        name: string;
+        etags: string[];
+      };
+      const bytes = Buffer.concat(
+        etags.map((_etag, index) => pending?.parts.get(index + 1) ?? Buffer.alloc(0))
+      );
+      if (!pending || bytes.byteLength !== pending.size) {
+        writeJson(res, { error: "upload_incomplete" }, 400);
+        return;
+      }
+      partUploads.delete(complete[1]!);
       const upload = {
         bytes,
-        contentType: imageContentType(filename),
-        filename,
-        path: `/uploads/${String(uploads.length + 1).padStart(22, "0")}-${filename}`,
+        contentType: imageContentType(name),
+        filename: name,
+        parts: etags.length,
+        path: `/uploads/${String(uploads.length + 1).padStart(22, "0")}-${name}`,
         token,
-        transferEncoding: req.headers["transfer-encoding"],
         workspaceId: account.workspaceId,
       };
       uploads.push(upload);
-      writeJson(
-        res,
-        Number(url.searchParams.get("size")) === bytes.byteLength
-          ? { name: upload.filename, path: upload.path, size: bytes.byteLength }
-          : { error: "upload_incomplete" },
-        Number(url.searchParams.get("size")) === bytes.byteLength ? 201 : 400
-      );
+      writeJson(res, { name, path: upload.path, size: bytes.byteLength }, 201);
       return;
     }
 

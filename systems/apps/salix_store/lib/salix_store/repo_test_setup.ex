@@ -57,6 +57,10 @@ defmodule SalixStore.RepoTestSetup do
     # table and then asks for an earlier one deadlocks against it.
     exclusively(fn ->
       Repo.query!(
+        "TRUNCATE salix_agents, salix_conversations, salix_conversation_create_requests, salix_capability_requests CASCADE"
+      )
+
+      Repo.query!(
         "TRUNCATE runtime_subscription_bindings, meeting_calendar_settings, triage_record_body_sizes, subscription_accounts, subscription_oauth_attempts"
       )
 
@@ -65,8 +69,7 @@ defmodule SalixStore.RepoTestSetup do
       )
 
       Repo.query!(
-        "TRUNCATE station_device_lookup, conversation_log_recovery, station_task_sessions, salix_stations, salix_station_task_index, salix_station_signing_keys, salix_station_revocations, salix_station_workspaces, conversation_search_gc_runs, conversation_search_backfill_runs, " <>
-          "conversation_search_discovery_cursors"
+        "TRUNCATE station_device_lookup, conversation_log_recovery, station_task_sessions, salix_stations, salix_station_task_index, salix_station_signing_keys, salix_station_revocations, salix_station_workspaces, conversation_search_gc_runs, conversation_search_backfill_runs"
       )
 
       Repo.query!(
@@ -129,6 +132,7 @@ defmodule SalixStore.RepoTestSetup do
       ('conversation_search_projection_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline","writer_generation":"test-search-generation"}'::jsonb),
       ('slack_triage_channels_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('station_roster_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"phase":"complete"}'::jsonb),
+      ('task_files_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"phase":"complete"}'::jsonb),
       ('oauth_apps_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('internal_session_format2_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline"}'::jsonb),
       ('session_work_candidates_v1', TIMESTAMPTZ '2026-01-01 00:00:00Z', '{"mode":"test-baseline","uncovered_authoritative_work":0}'::jsonb)
@@ -138,18 +142,10 @@ defmodule SalixStore.RepoTestSetup do
     query.("""
     INSERT INTO conversation_search_backfill_runs
       (writer_generation, writer_barrier_authority, writer_barrier_at,
-       required_discovery_cycle, sealed_at, inserted_at, updated_at)
+       scan_completed_at, sealed_at, inserted_at, updated_at)
     VALUES
-      ('test-search-generation', 'test-fixture', TIMESTAMPTZ '2026-01-01 00:00:00Z', 1, TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')
+      ('test-search-generation', 'test-fixture', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')
     ON CONFLICT (writer_generation) DO NOTHING
-    """)
-
-    query.("""
-    INSERT INTO conversation_search_discovery_cursors
-      (id, writer_generation, completed_cycles, cycle_started_at,
-       last_cycle_completed_at, inserted_at, updated_at)
-    VALUES ('main', 'test-search-generation', 1, TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')
-    ON CONFLICT (id) DO NOTHING
     """)
 
     :ok

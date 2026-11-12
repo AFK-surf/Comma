@@ -169,7 +169,10 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     }
 
     assert {:ok, _} = CasRecord.create(Keys.ctl_group(group_id), group)
-    assert {:ok, _} = CasRecord.create(Keys.ctl_agent(agent_id), agent)
+
+    assert {:ok, _} =
+             SalixStore.AgentPGStore.create(agent_id, to_string(node()), SalixAgent.State, agent)
+
     assert {:ok, _} = CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), connect)
 
     on_exit(fn ->
@@ -272,7 +275,7 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     assert press.("U_TRIAGE_HUMAN") == {:ok, :accepted}
     settle_receive({:explicit_mention_delivery, agent_id, payload, _opts})
     assert agent_id == connect["inbound_agent_id"]
-    assert inspect(payload) =~ "Yes"
+    assert inspect(payload, printable_limit: :infinity, limit: :infinity) =~ "Yes"
     settle_receive({:slack_write, "/api/chat.update", %{"ts" => "1787019050.000001"}})
 
     assert press.("U_OTHER_HUMAN") == {:ok, :accepted}
@@ -298,6 +301,58 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
     refute_received {:triage_consumer_called, _, _}
   end
 
+  test "leaving a command thread blocks human and peer continuations until a human mention", %{
+    connect: connect
+  } do
+    root = human_mention_envelope(connect, "Ev-leave-root", "1787019060.000001")
+    assert callback(connect, root) == {:ok, :accepted}
+    settle_receive({:explicit_mention_delivery, _, _, _})
+
+    identity = [
+      connect["group_id"],
+      connect["connect_id"],
+      connect["workspace_id"],
+      connect["bot_user_id"],
+      root["event"]["channel"],
+      root["event"]["ts"]
+    ]
+
+    assert :ok = apply(SalixStore.SlackRouterThreadParticipations, :mark_left, identity)
+
+    peer = bot_reply_envelope(connect, "Ev-left-peer", "1787019061.000001", root["event"]["ts"])
+
+    human =
+      human_mention_envelope(connect, "Ev-left-human", "1787019062.000001")
+      |> put_in(["event", "type"], "message")
+      |> put_in(["event", "text"], "we are talking to each other")
+      |> put_in(["event", "thread_ts"], root["event"]["ts"])
+
+    peer_mention =
+      peer
+      |> Map.put("event_id", "Ev-left-peer-mention")
+      |> put_in(["event", "ts"], "1787019062.000002")
+      |> put_in(["event", "text"], "<@#{connect["bot_user_id"]}> still here?")
+
+    for event <- [human, peer, peer_mention] do
+      assert callback(connect, event) == {:error, :ignored}
+      settle_refute_receive({:explicit_mention_delivery, _, _, _})
+    end
+
+    assert apply(SalixStore.SlackRouterThreadParticipations, :status, identity) == :left
+
+    mention =
+      human_mention_envelope(connect, "Ev-return-human", "1787019063.000001")
+      |> put_in(["event", "thread_ts"], root["event"]["ts"])
+
+    assert callback(connect, mention) == {:ok, :accepted}
+    settle_receive({:explicit_mention_delivery, _, _, _})
+    assert apply(SalixStore.SlackRouterThreadParticipations, :status, identity) == :participating
+
+    peer = bot_reply_envelope(connect, "Ev-return-peer", "1787019064.000001", root["event"]["ts"])
+    assert callback(connect, peer) == {:ok, :accepted}
+    settle_receive({:explicit_mention_delivery, _, _, _})
+  end
+
   for subtype <- ["", "bot_message", "file_share"] do
     test "a peer's #{inspect(subtype)} file reply continues a human command on a projected Triage thread",
          %{connect: connect} do
@@ -318,7 +373,7 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
 
       assert callback(connect, reply) == {:ok, :accepted}
       settle_receive({:explicit_mention_delivery, _, payload, delivery_opts})
-      assert inspect(payload) =~ "change.patch"
+      assert inspect(payload, printable_limit: :infinity, limit: :infinity) =~ "change.patch"
       assert payload.trusted_origin["provider_context"]["app_authored"] == true
       assert ThreadRouteOwner.verify_claim(scope, :triage, identity) == {:ok, :triage}
 
@@ -360,7 +415,7 @@ defmodule SalixIM.SlackTriageCallbackRouteTest do
 
     assert callback(connect, reply) == {:ok, :accepted}
     settle_receive({:explicit_mention_delivery, _, payload, _})
-    assert inspect(payload) =~ "result.txt"
+    assert inspect(payload, printable_limit: :infinity, limit: :infinity) =~ "result.txt"
 
     own_reply =
       reply

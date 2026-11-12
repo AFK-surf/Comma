@@ -31,8 +31,8 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
   each doing one Slack request per `pace_ms` on its own installation. Per
   discovery tick: one page of connects. A Pod's Slack request rate is bounded
   by pacing and concurrency alone regardless of how many connects, channels or
-  messages exist, and adding Pods adds claimants for DISTINCT installations
-  rather than duplicate work on the same one.
+  messages exist. The ledger leases avoid concurrent claims until expiry.
+  Leases are a courtesy, not an ownership fence for a stalled pass.
   """
 
   use SystemsRuntime.Server
@@ -72,41 +72,29 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
 
   @impl true
   def init(opts) do
-    state = %{opts: opts, passes: %{}, discover_task: nil, discover_cursor: nil}
+    state = %{
+      opts: opts,
+      passes: %{},
+      claim_task: nil,
+      claim_again: false,
+      work_timer: nil,
+      discover_task: nil,
+      discover_cursor: nil
+    }
 
     delay = setting(opts, :start_delay_ms, 0)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, delay)
-
-    {:ok, state}
+    {:ok, schedule_work(state, delay)}
   end
 
-  # `async_nolink`, not `async`. A linked task's abnormal exit is delivered to
-  # this process as an exit signal, and since it does not trap exits the
-  # scheduler would die with the pass rather than reschedule it. The claim a
-  # crashed pass held expires on its own.
-  #
-  # A tick fills every free slot at once and never ticks itself: a pass that
-  # failed at once had freed its slot before a self-sent tick arrived, so
-  # those ticks started pass after pass without end. Every finished pass
-  # schedules exactly one tick, so the passes running never exceed the slots.
-  # An empty queue costs one claim per slot per `work_idle_ms`.
+  # One pump owns claims and wakeups. Empty claims never start pass tasks.
   @impl true
+  def handle_info({:timeout, ref, :work_tick}, %{work_timer: {ref, _}} = state) do
+    {:noreply, pump(%{state | work_timer: nil})}
+  end
+
   def handle_info(:work_tick, state) do
-    slots = setting(state.opts, :max_concurrent_passes, @default_max_concurrent_passes)
-    opts = state.opts
-
-    passes =
-      Enum.reduce((map_size(state.passes) + 1)..slots//1, state.passes, fn _slot, passes ->
-        task =
-          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
-            run_once(opts)
-          end)
-
-        Map.put(passes, task.ref, task)
-      end)
-
-    {:noreply, %{state | passes: passes}}
+    {:noreply, state |> cancel_work() |> pump()}
   end
 
   def handle_info(:discover_tick, %{discover_task: nil} = state) do
@@ -127,14 +115,42 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
     {cursor, delay} = discover_next(state, result)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
-    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :work_tick)
-    {:noreply, %{state | discover_task: nil, discover_cursor: cursor}}
+    {:noreply, schedule_work(%{state | discover_task: nil, discover_cursor: cursor}, 0)}
   end
 
-  def handle_info({ref, result}, state) when is_map_key(state.passes, ref) do
+  def handle_info({ref, result}, %{claim_task: %Task{ref: ref}} = state) do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, work_delay(state, result))
-    {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
+    state = %{state | claim_task: nil}
+
+    case result do
+      {:ok, claimed} ->
+        task =
+          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+            run_claimed(claimed, state.opts)
+          end)
+
+        state = %{state | passes: Map.put(state.passes, task.ref, task)}
+        {:noreply, pump(state)}
+
+      # Work woke while this claim ran (a discovery that recorded new
+      # installations, a pass that finished): the claim may have read the
+      # ledger before that, so claim once more.
+      :empty when state.claim_again ->
+        {:noreply, pump(state)}
+
+      :empty ->
+        {:noreply,
+         schedule_work(state, setting(state.opts, :work_idle_ms, @default_work_idle_ms))}
+
+      {:error, _reason} ->
+        {:noreply, schedule_work(state, @failure_backoff_ms)}
+    end
+  end
+
+  def handle_info({ref, _result}, state) when is_map_key(state.passes, ref) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    # Each installation's durable due time includes its error backoff.
+    {:noreply, schedule_work(%{state | passes: Map.delete(state.passes, ref)}, 0)}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{discover_task: %Task{ref: ref}} = state) do
@@ -143,11 +159,15 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
     {:noreply, %{state | discover_task: nil, discover_cursor: nil}}
   end
 
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{claim_task: %Task{ref: ref}} = state) do
+    Logger.warning("slack mirror backfill claim crashed: #{inspect(reason)}")
+    {:noreply, schedule_work(%{state | claim_task: nil}, @failure_backoff_ms)}
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
       when is_map_key(state.passes, ref) do
     Logger.warning("slack mirror backfill pass crashed: #{inspect(reason)}")
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, @failure_backoff_ms)
-    {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
+    {:noreply, schedule_work(%{state | passes: Map.delete(state.passes, ref)}, 0)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -182,17 +202,57 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
   """
   @spec run_once(keyword()) :: :empty | {:ok, Backfill.outcome()} | {:error, term()}
   def run_once(opts \\ []) do
-    if not SlackMessageMirror.enabled?() do
-      :empty
-    else
-      ledger = ledger(opts)
-
-      case ledger.claim_due_connect(setting(opts, :lease_ttl_ms, @default_lease_ttl_ms)) do
-        {:ok, claimed} -> run_claimed(claimed, opts)
-        :empty -> :empty
-        {:error, reason} -> {:error, reason}
-      end
+    case claim_once(opts) do
+      {:ok, claimed} -> run_claimed(claimed, opts)
+      result -> result
     end
+  end
+
+  defp claim_once(opts) do
+    if SlackMessageMirror.enabled?(),
+      do: ledger(opts).claim_due_connect(setting(opts, :lease_ttl_ms, @default_lease_ttl_ms)),
+      else: :empty
+  end
+
+  defp pump(state) do
+    slots = setting(state.opts, :max_concurrent_passes, @default_max_concurrent_passes)
+
+    cond do
+      state.claim_task != nil ->
+        %{state | claim_again: true}
+
+      map_size(state.passes) < slots ->
+        task =
+          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+            claim_once(state.opts)
+          end)
+
+        %{state | claim_task: task, claim_again: false}
+
+      true ->
+        state
+    end
+  end
+
+  defp schedule_work(state, delay) do
+    due = SystemsClock.monotonic_time(:millisecond) + delay
+
+    case state.work_timer do
+      {_ref, earlier} when earlier <= due ->
+        state
+
+      _ ->
+        state = cancel_work(state)
+        ref = SystemsClock.start_timer(delay, SystemsRuntime.Proc.self(), :work_tick)
+        %{state | work_timer: {ref, due}}
+    end
+  end
+
+  defp cancel_work(%{work_timer: nil} = state), do: state
+
+  defp cancel_work(%{work_timer: {ref, _}} = state) do
+    SystemsClock.cancel_timer(ref)
+    %{state | work_timer: nil}
   end
 
   defp run_claimed(claimed, opts) do
@@ -320,12 +380,6 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
       end
     end
   end
-
-  # A pass that did work is followed immediately by the next claim; an empty
-  # queue is not polled tightly.
-  defp work_delay(state, :empty), do: setting(state.opts, :work_idle_ms, @default_work_idle_ms)
-  defp work_delay(_state, {:ok, _outcome}), do: 0
-  defp work_delay(_state, _error), do: @failure_backoff_ms
 
   defp discover_next(state, {:ok, %{scan_complete: true}}),
     do: {nil, setting(state.opts, :discover_interval_ms, @default_discover_interval_ms)}

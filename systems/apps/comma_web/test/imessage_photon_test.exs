@@ -37,6 +37,14 @@ defmodule CommaWeb.IMessagePhotonTest do
       end
     end
 
+    defp respond(conn, "GET", "/platforms/imessage"),
+      do: json(conn, 200, %{"mode" => setting(:photon_test_mode, "shared")})
+
+    defp respond(conn, "GET", "/platforms/resources") do
+      notify({:photon_resources, conn.query_params})
+      json(conn, 200, %{"resources" => setting(:photon_test_resources, [])})
+    end
+
     defp respond(conn, "POST", "/users"),
       do: json(conn, 200, %{"id" => "pho_usr_0000000000000000000000alice"})
 
@@ -61,7 +69,11 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     defp respond(conn, "GET", "/messages") do
       notify({:photon_list, conn.query_params})
-      json(conn, 200, %{"items" => setting(:photon_test_received, [])})
+
+      case setting(:photon_test_list_status, 200) do
+        200 -> json(conn, 200, %{"items" => setting(:photon_test_received, [])})
+        status -> json(conn, status, %{"code" => "UPSTREAM_FAILURE"})
+      end
     end
 
     # Messages a reply, a reaction or a quote can name.
@@ -133,16 +145,34 @@ defmodule CommaWeb.IMessagePhotonTest do
       end
     end
 
-    defp respond(conn, "GET", "/attachments/att-in"),
-      do:
-        json(conn, 200, %{
-          "contentType" => "image/png",
-          "filename" => "../in.png",
-          "sizeBytes" => 16
-        })
+    # Received attachments: content type, file name, declared size and bytes.
+    @attachments %{
+      "att-in" => {"image/png", "../in.png", 16, "test image bytes"},
+      "att-video" => {"video/quicktime", "IMG_0001.MOV", 16, "test video bytes"},
+      "att-voice" => {"audio/x-caf", nil, 16, "test voice bytes"},
+      "att-big" => {"video/mp4", "long.mp4", 100 * 1024 * 1024 + 1, nil}
+    }
 
-    defp respond(conn, "GET", "/attachments/att-in/content"),
-      do: conn |> put_resp_content_type("image/png") |> send_resp(200, "test image bytes")
+    defp respond(conn, "GET", "/attachments/" <> rest) do
+      case String.split(rest, "/") do
+        [id] when is_map_key(@attachments, id) ->
+          {type, name, size, _bytes} = @attachments[id]
+
+          json(
+            conn,
+            200,
+            %{"contentType" => type, "filename" => name, "sizeBytes" => size}
+            |> Map.reject(fn {_key, value} -> is_nil(value) end)
+          )
+
+        [id, "content"] when is_map_key(@attachments, id) ->
+          {type, _name, _size, bytes} = @attachments[id]
+          conn |> put_resp_content_type(type) |> send_resp(200, bytes)
+
+        _ ->
+          json(conn, 404, %{"code" => "ATTACHMENT_NOT_FOUND"})
+      end
+    end
 
     defp respond(conn, _method, _path), do: json(conn, 404, %{"code" => "NOT_FOUND"})
 
@@ -160,6 +190,24 @@ defmodule CommaWeb.IMessagePhotonTest do
   defmodule Workspace do
     def read_upload(_agent_id, path, _title),
       do: {:ok, %{path: path, filename: "result.png", data: "result image bytes"}}
+
+    # The size comes before the bytes. Reading an oversized file is a test failure.
+    def read_stream(_agent_id, "/huge.mp4") do
+      stream =
+        Stream.map([nil], fn _ ->
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:comma_web, :photon_test_pid),
+            :huge_file_read
+          )
+
+          ""
+        end)
+
+      {:ok, stream, 100 * 1024 * 1024 + 1, "huge.mp4"}
+    end
+
+    def read_stream(_agent_id, "/clip.mp4"),
+      do: {:ok, ["video ", "bytes"], 11, "clip.mp4"}
 
     def put_ref(agent_id, path, ref) do
       SystemsRuntime.Proc.send(
@@ -204,6 +252,8 @@ defmodule CommaWeb.IMessagePhotonTest do
             {:comma_web, :photon_test_pid},
             {:comma_web, :photon_test_received},
             {:comma_web, :photon_test_assignments},
+            {:comma_web, :photon_test_mode},
+            {:comma_web, :photon_test_resources},
             {:comma_web, :photon_test_send_response}
           ],
           do: {app, key, SystemsRuntime.get_env(app, key)}
@@ -350,6 +400,195 @@ defmodule CommaWeb.IMessagePhotonTest do
     assert attempt["sender_handle"] == @alice
   end
 
+  test "a dedicated project binds on its own line, with no assignment", %{
+    workspace: workspace,
+    session: session
+  } do
+    SystemsRuntime.put_env(:comma_web, :photon_test_mode, "dedicated")
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_resources, [
+      %{"resourceId" => "pho_res_1", "detail" => %{"phoneNumber" => @line}}
+    ])
+
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"handle" => @alice}) |> json(201)
+
+    assert attempt["line_handle"] == @line
+    assert_received {:photon_resources, %{"ability" => "imessage", "state" => "active"}}
+    refute_received {:photon, "POST", "/users", _, _}
+    refute_received {:photon, "POST", "/platforms/imessage/assignments", _, _}
+
+    assert :ok = IMessageIntegration.handle_event(event("m-code", @alice, attempt["code"]))
+
+    assert %{transport: "photon", sender_handle: @alice, assignment_id: nil} =
+             IMessageLinks.get_link(workspace["id"])
+
+    assert api(session, :delete, path(workspace)) |> json(200) == %{"disconnected" => true}
+    refute_received {:photon, "DELETE", "/platforms/imessage/assignments/" <> _, _, _}
+  end
+
+  test "a dedicated project attempt with no handle binds whoever sends the code", %{
+    workspace: workspace,
+    session: session
+  } do
+    SystemsRuntime.put_env(:comma_web, :photon_test_mode, "dedicated")
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_resources, [
+      %{"resourceId" => "pho_res_1", "detail" => %{"phoneNumber" => @line}}
+    ])
+
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"transport" => "photon"})
+      |> json(201)
+
+    assert attempt["line_handle"] == @line
+    assert attempt["sender_handle"] == nil
+    assert api(session, :get, path(workspace)) |> json(200) |> get_in(["pending_claim", "code"])
+    refute MapSet.member?(IMessageLinks.photon_handles_in_use(), nil)
+
+    assert :ok = IMessageIntegration.handle_event(event("d1", @alice, "hello?"))
+    assert [hint] = drain_sends()
+    assert Jason.decode!(hint)["content"]["text"] =~ "Connect iMessage"
+    refute IMessageLinks.get_link(workspace["id"])
+
+    assert :ok = IMessageIntegration.handle_event(event("d2", @alice, attempt["code"]))
+
+    assert %{transport: "photon", sender_handle: @alice, assignment_id: nil} =
+             IMessageLinks.get_link(workspace["id"])
+
+    # The attempt is spent: nobody else can take the binding with the same code.
+    assert :ok = IMessageIntegration.handle_event(event("d3", "+15550199", attempt["code"]))
+    assert %{sender_handle: @alice} = IMessageLinks.get_link(workspace["id"])
+  end
+
+  test "a taken attempt stays pending while its binding is made", %{
+    workspace: workspace,
+    session: session
+  } do
+    SystemsRuntime.put_env(:comma_web, :photon_test_mode, "dedicated")
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_resources, [
+      %{"resourceId" => "pho_res_1", "detail" => %{"phoneNumber" => @line}}
+    ])
+
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"transport" => "photon"})
+      |> json(201)
+
+    assert {:ok, _taken} = IMessageLinks.take_claim(attempt["code"], "photon", @alice)
+
+    state = api(session, :get, path(workspace)) |> json(200)
+    assert state["pending_claim"]["code"] == attempt["code"]
+    assert state["link"] == nil
+
+    # The code is spent: it binds nobody while it is shown.
+    refute IMessageLinks.photon_claim_code?(@alice, attempt["code"])
+
+    # A binding that never completes ends the wait.
+    Comma.Repo.update_all(Comma.Data.IMessageDMClaimCode,
+      set: [consumed_at: DateTime.add(SystemsClock.utc_now(), -61, :second)]
+    )
+
+    refute api(session, :get, path(workspace)) |> json(200) |> Map.get("pending_claim")
+  end
+
+  test "a shared project needs a handle", %{workspace: workspace, session: session} do
+    conn = api(session, :post, path(workspace) <> "/connect", %{"transport" => "photon"})
+
+    assert conn.status == 409
+    assert Jason.decode!(conn.resp_body)["error"] =~ "imessage_handle_required"
+    refute IMessageLinks.get_active_claim(workspace["id"])
+    refute_received {:photon, "POST", "/platforms/imessage/assignments", _, _}
+  end
+
+  test "a sender with no binding gets one guidance reply a day" do
+    stranger = "+15550199"
+
+    assert :ok = IMessageIntegration.handle_event(event("g1", stranger, "hello"))
+    assert [guidance] = drain_sends()
+    assert Jason.decode!(guidance)["content"]["text"] =~ "Connect iMessage"
+
+    assert :ok = IMessageIntegration.handle_event(event("g2", stranger, "hello again"))
+    assert :ok = IMessageIntegration.handle_event(event("g3", stranger, "bridgebot status"))
+    assert :ok = IMessageIntegration.handle_event(event("g4", stranger, "bridgebot connect nope"))
+    assert [] = drain_sends()
+
+    assert :ok = IMessageIntegration.handle_event(event("g5", "+15550198", "hello"))
+    assert [_] = drain_sends()
+
+    Comma.Repo.query!(
+      "UPDATE comma_imessage_guidance_replies SET replied_at = replied_at - interval '25 hours' WHERE sender_handle = $1",
+      [stranger]
+    )
+
+    assert :ok = IMessageIntegration.handle_event(event("g6", stranger, "hello later"))
+    assert [_] = drain_sends()
+  end
+
+  test "NUL characters in a pasted code do not stop the receiver", %{
+    workspace: workspace,
+    user: user
+  } do
+    {:ok, attempt} =
+      IMessageIntegration.start_connect(user, %{}, workspace["id"], %{"handle" => @alice})
+
+    pasted = attempt["code"] <> String.duplicate(<<0>>, 12)
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_received, [
+      received(
+        "m-nul",
+        @alice,
+        %{"type" => "text", "format" => "plain", "text" => pasted},
+        DateTime.to_iso8601(SystemsClock.utc_now())
+      )
+    ])
+
+    assert :ok = IMessagePhotonRuntime.run_once()
+    assert %{sender_handle: @alice} = IMessageLinks.get_link(workspace["id"])
+  end
+
+  test "a code sent from another account says so, every time", %{
+    workspace: workspace,
+    user: user
+  } do
+    {:ok, attempt} =
+      IMessageIntegration.start_connect(user, %{}, workspace["id"], %{"handle" => "+15550111"})
+
+    flush_requests()
+
+    for id <- ["w1", "w2"] do
+      assert :ok = IMessageIntegration.handle_event(event(id, @alice, attempt["code"]))
+      assert [reply] = drain_sends()
+      assert Jason.decode!(reply)["content"]["text"] =~ "different iMessage account"
+    end
+
+    assert is_nil(IMessageLinks.get_link(workspace["id"]))
+  end
+
+  test "disconnecting gives the sender a new guidance reply", %{
+    workspace: workspace,
+    user: user,
+    session: session
+  } do
+    assert :ok = IMessageIntegration.handle_event(event("r1", @alice, "hello"))
+    assert [_guidance] = drain_sends()
+
+    bind(workspace, user)
+    assert api(session, :delete, path(workspace)) |> json(200) == %{"disconnected" => true}
+    flush_requests()
+
+    assert :ok = IMessageIntegration.handle_event(event("r2", @alice, "still there?"))
+    assert [guidance] = drain_sends()
+    assert Jason.decode!(guidance)["content"]["text"] =~ "Connect iMessage"
+  end
+
+  test "a dedicated project with no active line reports no capacity" do
+    SystemsRuntime.put_env(:comma_web, :photon_test_mode, "dedicated")
+    SystemsRuntime.put_env(:comma_web, :photon_test_resources, [])
+
+    assert {:error, :imessage_capacity_reached} = PhotonIMessage.line_for(@alice)
+  end
+
   test "webhook needs a fresh Photon signature over the raw body" do
     body = ~s({ "type": "message.received", "data": {} })
     now = DateTime.to_unix(SystemsClock.utc_now())
@@ -369,6 +608,87 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     SystemsRuntime.put_env(:salix_im, :imessage_photon, enabled: false)
     assert webhook(body, now, sign(body, now)).status == 503
+  end
+
+  test "a pushed Message is handled before it is listed, and once", %{
+    workspace: workspace,
+    session: session
+  } do
+    SystemsRuntime.put_env(:comma_web, :photon_test_mode, "dedicated")
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_resources, [
+      %{"resourceId" => "pho_res_1", "detail" => %{"phoneNumber" => @line}}
+    ])
+
+    attempt =
+      api(session, :post, path(workspace) <> "/connect", %{"transport" => "photon"})
+      |> json(201)
+
+    message =
+      received(
+        "m-pushed",
+        @alice,
+        %{"type" => "text", "format" => "plain", "text" => attempt["code"]},
+        DateTime.to_iso8601(SystemsClock.utc_now())
+      )
+
+    body =
+      Jason.encode!(%{
+        "type" => "message.received",
+        "data" => %{"object" => Map.put(message, "platform", "imessage")}
+      })
+
+    assert %{"id" => "m-pushed"} = pushed = PhotonIMessage.webhook_message(body)
+    refute PhotonIMessage.webhook_message(~s({ "type": "message.received", "data": {} }))
+    refute PhotonIMessage.webhook_message("not json")
+
+    # The list does not answer: the Message still binds.
+    SystemsRuntime.put_env(:comma_web, :photon_test_list_status, 502)
+    assert :ok = IMessagePhotonRuntime.run_once(pushed: [pushed])
+    assert %{sender_handle: @alice} = IMessageLinks.get_link(workspace["id"])
+    assert [_connected] = drain_sends()
+
+    # The same Message listed later is not handled again.
+    SystemsRuntime.put_env(:comma_web, :photon_test_list_status, 200)
+    SystemsRuntime.put_env(:comma_web, :photon_test_received, [message])
+    assert :ok = IMessagePhotonRuntime.run_once()
+    assert [] = drain_sends()
+  end
+
+  test "a pushed Message stays until a pass handles it" do
+    ref = make_ref()
+
+    running = %{
+      task: %{ref: ref},
+      kind: :poke,
+      failures: 0,
+      again: false,
+      busy: 0,
+      timer: nil,
+      pushed: %{},
+      passing: ["m-old"]
+    }
+
+    message = %{"id" => "m-new"}
+
+    assert {:noreply, state} = IMessagePhotonRuntime.handle_info({:webhook, message}, running)
+    assert state.again
+    assert state.pushed == %{"m-new" => message}
+
+    state = %{state | again: false, passing: ["m-new"]}
+
+    assert {:noreply, %{pushed: kept}} =
+             IMessagePhotonRuntime.handle_info({ref, {:hold, 1_000}}, state)
+
+    assert Map.has_key?(kept, "m-new")
+
+    assert {:noreply, %{pushed: kept}} =
+             IMessagePhotonRuntime.handle_info({ref, {:error, :failed}}, state)
+
+    assert Map.has_key?(kept, "m-new")
+
+    assert {:noreply, %{pushed: pushed}} = IMessagePhotonRuntime.handle_info({ref, :ok}, state)
+    assert pushed == %{}
   end
 
   test "receiver reads received Messages once across overlapping passes", %{
@@ -468,7 +788,8 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     for {api, params} <- [
           {"imessage.send_message", %{"text" => "The blue plan."}},
-          {"imessage.send_image", %{"path" => "/result.png"}}
+          {"imessage.send_image", %{"path" => "/result.png"}},
+          {"imessage.send_file", %{"path" => "/clip.mp4"}}
         ] do
       assert {:ok, %{"message_id" => "pho_msg_sent", "reply_fallback" => "ordinary_message"}} =
                imessage_call(
@@ -490,9 +811,9 @@ defmodule CommaWeb.IMessagePhotonTest do
     {:ok, manual} = SalixIM.Provider.provider_manual("imessage", agent)
 
     assert Enum.map(manual["apis"], & &1["name"]) ==
-             ["imessage.send_message", "imessage.send_image"]
+             ["imessage.send_message", "imessage.send_image", "imessage.send_file"]
 
-    for api <- manual["apis"], do: refute(Map.has_key?(api["parameters"], "reply_to_message_id"))
+    for api <- manual["apis"], do: assert(Map.has_key?(api["parameters"], "reply_to_message_id"))
 
     # An uncertain ordinary send must not be tried again after the refused reply.
     SystemsRuntime.put_env(:comma_web, :photon_test_send_response, %{
@@ -530,6 +851,29 @@ defmodule CommaWeb.IMessagePhotonTest do
              })
 
     assert [_] = drain_sends()
+
+    SystemsRuntime.put_env(
+      :comma_web,
+      :photon_test_send_response,
+      {422, %{"code" => "UNSUPPORTED_CONTENT", "detail" => "Cannot be sent to this Space."}}
+    )
+
+    assert {:error, %{"code" => "imessage_reaction_unsupported", "delivery_status" => "not_sent"}} =
+             imessage_call(agent, connect_id, "imessage.react", %{
+               "emoji" => "👍",
+               "message_id" => "pho_msg_mine"
+             })
+
+    assert [_] = drain_sends()
+
+    assert {:error, %{"code" => "imessage_reaction_unsupported", "delivery_status" => "not_sent"}} =
+             imessage_call(agent, connect_id, "imessage.react", %{
+               "emoji" => "👍",
+               "message_id" => "pho_msg_mine",
+               "remove" => true
+             })
+
+    assert [] = drain_sends()
 
     for {response, code} <- [
           {{409, %{"code" => "SPACE_NOT_SENDABLE", "detail" => "Space is not active"}},
@@ -627,8 +971,10 @@ defmodule CommaWeb.IMessagePhotonTest do
 
     assert %{
              "parentMessageId" => "pho_msg_mine",
-             "content" => %{"type" => "reaction", "reaction" => "❤️", "action" => "add"}
+             "content" => content
            } = Jason.decode!(reaction)
+
+    assert content == %{"type" => "reaction", "reaction" => "❤️"}
 
     assert {:error, reason} = call.("imessage.react", %{"emoji" => "👍"})
     assert reason =~ "message_id is required"
@@ -729,6 +1075,111 @@ defmodule CommaWeb.IMessagePhotonTest do
     settle_refute_receive({:router_input, _, _, _})
   end
 
+  test "a video goes out as one streamed upload; an oversized file sends nothing", %{
+    workspace: workspace,
+    user: user
+  } do
+    agent = bind(workspace, user)
+    connect_id = IMessageLinks.get_link(workspace["id"]).connect_id
+
+    assert {:ok, %{"message_id" => "pho_msg_sent"}} =
+             imessage_call(agent, connect_id, "imessage.send_file", %{
+               "path" => "/clip.mp4",
+               "caption" => "Here is the clip."
+             })
+
+    settle_receive({:photon, "POST", "/attachments", upload, _})
+    [_preamble, meta, file | _] = String.split(upload, ~r/--[0-9a-f]{32}(--)?\r\n/)
+    [_headers, meta] = String.split(meta, "\r\n\r\n", parts: 2)
+
+    assert Jason.decode!(String.trim_trailing(meta, "\r\n")) == %{
+             "contentType" => "video/mp4",
+             "sizeBytes" => 11,
+             "filename" => "clip.mp4"
+           }
+
+    assert file == "content-type: video/mp4\r\n\r\nvideo bytes\r\n"
+
+    assert [attachment, caption] = Enum.map(drain_sends(), &Jason.decode!/1)
+    assert attachment["content"] == %{"type" => "attachment", "attachmentId" => "att-out"}
+    assert caption["content"]["text"] == "Here is the clip."
+
+    # The workspace size refuses the file before any byte is read or sent.
+    flush_requests()
+
+    assert {:error,
+            %{
+              "code" => "imessage_file_too_large",
+              "delivery_status" => "not_sent",
+              "retryable" => false
+            }} = imessage_call(agent, connect_id, "imessage.send_file", %{"path" => "/huge.mp4"})
+
+    settle_refute_receive({:photon, "POST", _, _, _})
+    refute_received :huge_file_read
+  end
+
+  test "a video and its text reach the Agent as one input; an oversized file is named, not read",
+       %{workspace: workspace, user: user} do
+    agent = bind(workspace, user)
+    video_at = SystemsClock.utc_now()
+
+    video =
+      received(
+        "pho_msg_00000000000000000000000011",
+        @alice,
+        %{"type" => "attachment", "attachmentId" => "att-video"},
+        DateTime.to_iso8601(video_at)
+      )
+
+    text =
+      received(
+        "pho_msg_00000000000000000000000012",
+        @alice,
+        %{"type" => "text", "format" => "plain", "text" => "Watch this"},
+        DateTime.to_iso8601(DateTime.add(video_at, 150, :millisecond))
+      )
+
+    SystemsRuntime.put_env(:comma_web, :photon_test_received, [video, text])
+    assert {:hold, _} = IMessagePhotonRuntime.run_once()
+    SystemsClock.run_for(2_100)
+    assert :ok = IMessagePhotonRuntime.run_once()
+
+    settle_receive({:published, ^agent, path, ref})
+    assert path =~ "/imessage/attachments/" and path =~ "IMG_0001.MOV"
+    assert {:ok, "test video bytes"} = SalixStore.Blob.get(agent, ref)
+    settle_receive({:router_input, ^agent, payload, opts})
+    assert opts[:source_message_id] =~ "burst:"
+    assert inspect(payload) =~ "Watch this"
+    assert inspect(payload) =~ path
+    assert inspect(payload) =~ "video/quicktime"
+    settle_refute_receive({:router_input, _, _, _})
+
+    # A voice memo alone is named by its kind. An oversized file is not downloaded.
+    for {id, attachment_id, placeholder} <- [
+          {"pho_msg_00000000000000000000000013", "att-voice", "[iMessage audio]"},
+          {"pho_msg_00000000000000000000000014", "att-big", "[iMessage video]"}
+        ] do
+      {:ok, event} =
+        PhotonIMessage.to_event(
+          received(id, @alice, %{"type" => "attachment", "attachmentId" => attachment_id}, nil)
+        )
+
+      assert :ok = IMessageIntegration.handle_event(event)
+      settle_receive({:router_input, ^agent, payload, _})
+      assert inspect(payload) =~ placeholder
+
+      if attachment_id == "att-big" do
+        assert inspect(payload) =~ "size_limit"
+        assert inspect(payload) =~ "long.mp4"
+        settle_refute_receive({:published, _, _, _})
+        refute_received {:photon, "GET", "/attachments/att-big/content", _, _}
+      else
+        assert_received {:published, ^agent, voice_path, _}
+        assert voice_path =~ "audio.caf"
+      end
+    end
+  end
+
   defp bind(workspace, user) do
     {:ok, attempt} =
       IMessageIntegration.start_connect(user, %{}, workspace["id"], %{"handle" => @alice})
@@ -743,6 +1194,14 @@ defmodule CommaWeb.IMessagePhotonTest do
       "connect_id" => connect_id,
       "params" => Map.put(params, "chat_id", @space)
     })
+  end
+
+  defp flush_requests do
+    receive do
+      {:photon, _, _, _, _} -> flush_requests()
+    after
+      0 -> :ok
+    end
   end
 
   defp drain_sends(acc \\ []) do

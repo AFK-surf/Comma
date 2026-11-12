@@ -39,6 +39,7 @@ defmodule Comma.ConversationsParticipantStatusTest do
       "profile_id" => "prof_1-A",
       "profile_name" => "Team Claude key",
       "reset_at" => 1_790_000_000,
+      "credits" => true,
       "message" => "provider text"
     }
 

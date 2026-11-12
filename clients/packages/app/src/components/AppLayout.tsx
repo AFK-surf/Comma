@@ -17,7 +17,6 @@ import { Toaster } from "@comma/ui/components/toast";
 import {
   Suspense,
   useCallback,
-  createContext,
   lazy,
   useContext,
   useEffect,
@@ -29,9 +28,13 @@ import {
 } from "react";
 import { scrubLegacyRendererAuthMetadata } from "../apiBaseUrl";
 import { AutomaticUpdates } from "./AutomaticUpdates";
+import { NativeInfoContext } from "./nativeInfoContext";
 import { DesktopAppPromptHost, needsDesktopApp } from "./DesktopAppPrompt";
 import { AppSettingsRoute } from "./AppSettingsRoute";
 import { CommaAuthGate, useCommaAuth } from "./AuthGate";
+import { useCommaWindowTransparencyTarget } from "./commaAppearance";
+import { finishHiddenSurfaceMotion } from "./commaSurfaceMotion";
+import { useSelectionAsideWhilePaused } from "./commaSurfacePause";
 import { WindowBar } from "./WindowBar";
 import { MiniAppFrameKeeper } from "./apps/MiniAppFrame";
 import { ChatConsumerBoundary, ChatSessionProvider } from "./chat/ChatProvider";
@@ -42,6 +45,7 @@ import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation
 import { ChatSidebar } from "./chat-sidebar/ChatSidebar";
 import {
   ChatSidebarProvider,
+  useChatSidebarActions,
   useChatSidebarOpen,
 } from "./chat-sidebar/ChatSidebarContext";
 import { CommaSidebarPanel } from "./sidebar/SidebarPanel";
@@ -71,7 +75,11 @@ import {
   useWindowResizingFlag,
 } from "./shellResizeSettle";
 import { SidebarChrome } from "./sidebar/SidebarChrome";
-import { CommandPaletteProvider } from "./search/CommandPaletteContext";
+import {
+  CommandPaletteProvider,
+  useProvideCommandPaletteFilePreview,
+} from "./search/CommandPaletteContext";
+import { NewTaskDialogProvider } from "./tasks/station/NewTaskDialogContext";
 import {
   CommaCenterStatusOwner,
   CommaCenterStatusProvider,
@@ -84,10 +92,12 @@ import { TaskStepsProvider } from "./tasks/taskSteps";
 import { InboxFiltersProvider } from "./inbox/filters/InboxFiltersState";
 import { MessageNotificationSync } from "./notifications/MessageNotificationSync";
 import { AirDropToasts } from "./airdrop/AirDropToasts";
+import { NearbyInvites } from "./nearby/NearbyInvites";
 import { CommaConnectorRuntimeOwner } from "./useCommaConnectorScope";
 import { OnboardingHost } from "./onboarding/OnboardingHost";
 import { WebIntroCard } from "./web-intro/WebIntroCard";
 import { LegacyActiveWorkspace } from "./activeWorkspace";
+import { ScreenWindowHost } from "./remote-screen/ScreenWindowHost";
 
 declare const COMMA_DEFINED_BUILD_FLAVOR: string | undefined;
 
@@ -112,12 +122,6 @@ const CommaNavTraceRoot = import.meta.env.DEV
       }))
     )
   : null;
-
-const NativeInfoContext = createContext<NativeInfo>({
-  appVersion: "unknown",
-  os: "unknown",
-  platform: "web",
-});
 
 const DevLayoutInspector = import.meta.env.DEV
   ? lazy(() =>
@@ -181,23 +185,28 @@ function CommaAuthenticatedSession() {
     <ChatSessionProvider productLease={productLease} sessionSignal={sessionSignal}>
       <RouterIdentityProvider>
         <LegacyActiveWorkspace />
-        <CommandPaletteProvider>
-          <CommaCenterStatusProvider>
-            <TaskStepsProvider>
-              <InboxFiltersProvider>
-                {/* A guest Session has only its Router chat: no AirDrop owner.
+        {/* Outside the palette, which offers New Task beside its other commands. */}
+        <NewTaskDialogProvider>
+          <CommandPaletteProvider>
+            <CommaCenterStatusProvider>
+              <TaskStepsProvider>
+                <InboxFiltersProvider>
+                  {/* A guest Session has only its Router chat: no AirDrop owner.
                     AirDrop toasts are the window's own: each shows the
                     transfers sent to it. */}
-                {isGuest ? null : (
-                  <ChatConsumerBoundary>
-                    <AirDropToasts />
-                  </ChatConsumerBoundary>
-                )}
-                <Outlet />
-              </InboxFiltersProvider>
-            </TaskStepsProvider>
-          </CommaCenterStatusProvider>
-        </CommandPaletteProvider>
+                  {isGuest ? null : (
+                    <ChatConsumerBoundary>
+                      <AirDropToasts />
+                    </ChatConsumerBoundary>
+                  )}
+                  {/* Someone nearby asked to connect, over AirDrop. */}
+                  {isGuest ? null : <NearbyInvites />}
+                  <Outlet />
+                </InboxFiltersProvider>
+              </TaskStepsProvider>
+            </CommaCenterStatusProvider>
+          </CommandPaletteProvider>
+        </NewTaskDialogProvider>
       </RouterIdentityProvider>
     </ChatSessionProvider>
   );
@@ -240,9 +249,10 @@ const productSessionLayout = <CommaProductSessionLayout />;
 // restyles only what changed. `visibility` and `inert` are inherited, so
 // toggling them restyled every Home element on each page switch. Skipped
 // content takes no focus or pointer; the paused marker tells chat image
-// observers not to drop preview leases. An animation in flight there waits
-// until Home shows again. Product portals render into the host below,
-// outside every chat-consumer boundary.
+// observers not to drop preview leases and holds Home's loops paused until it
+// shows again (commaSurfacePause.css), and a selection in Home waits outside
+// it (commaSurfacePause.ts). Product portals render into the host
+// below, outside every chat-consumer boundary.
 export function CommaProductLayout() {
   // State, not a ref: an overlay mounted in the host's own commit, such as
   // Settings opened by a `/#/settings` link, finds no host on its first render
@@ -292,6 +302,8 @@ function CommaProductSessionLayout() {
       <MiniAppFrameKeeper account={accountKey}>
         <CommaProductLayoutFrame nativeInfo={nativeInfo} />
       </MiniAppFrameKeeper>
+      {/* Screens shown in windows of their own, rendered from here into those windows. */}
+      <ScreenWindowHost key={accountKey} />
     </ChatSidebarProvider>
   );
 }
@@ -318,13 +330,22 @@ function usePrimaryContentMinWidth() {
 function CommaProductLayoutFrame({ nativeInfo }: { nativeInfo: NativeInfo }) {
   // Held as state so the rail-fit observer attaches once the shell exists.
   const [shellElement, setShellElement] = useState<HTMLElement | null>(null);
+  // The shell tints the window over its material, by the window transparency.
+  const { ref: windowTransparencyRef } = useCommaWindowTransparencyTarget();
+  const shellRef = useCallback(
+    (element: HTMLElement | null) => {
+      setShellElement(element);
+      windowTransparencyRef(element);
+    },
+    [windowTransparencyRef]
+  );
 
   return (
     <main
       className="comma-app-shell flex h-screen min-h-0 w-full min-w-0 bg-window pb-md pr-md text-primary"
       data-os={nativeInfo.os}
       data-platform={nativeInfo.platform}
-      ref={setShellElement}
+      ref={shellRef}
     >
       <CommaSettingsOverlayProvider>
         <CommaRailFitProvider shellElement={shellElement}>
@@ -402,6 +423,7 @@ function CommaProductFrame() {
   // descendants' layout effects have run.
   const [frameElement, setFrameElement] = useState<HTMLDivElement | null>(null);
   useWindowResizingFlag();
+  useProvideCommandPaletteFilePreview(useChatSidebarActions().openFilePreview);
 
   return (
     <div
@@ -442,6 +464,20 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
       return typeof search.workspace === "string" ? search.workspace : undefined;
     },
   });
+  const routeDraft = useRouterState({
+    select: (state) => {
+      const search = state.location.search as { draft?: unknown };
+      return typeof search.draft === "string" ? search.draft : undefined;
+    },
+  });
+  // Home writes the handed-over text into its composer once, then the URL drops it.
+  const takeRouteDraft = useCallback(() => {
+    void navigate({
+      replace: true,
+      search: (search) => ({ ...search, draft: undefined }),
+      to: "/",
+    });
+  }, [navigate]);
   const accountKey = useProductAccountKey();
   const homeVisible = isHomePath(pathname);
   const { open: settingsOpen } = useCommaSettingsOverlay();
@@ -462,6 +498,12 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
     workspace: routeWorkspace,
   }));
   const homeSurfaceRef = useRef<HTMLDivElement | null>(null);
+  // A Home hidden mid-transition would keep the main thread at display rate
+  // until it shows again (commaSurfaceMotion.ts).
+  useEffect(() => {
+    if (!homeVisible && homeSurfaceRef.current)
+      finishHiddenSurfaceMotion(homeSurfaceRef.current);
+  }, [homeVisible]);
   const [railFolds, setRailFolds] = useState(commaHomeRailFoldsOpen);
   // Collapsing a rail is a reading choice, not a geometry one: it survives
   // every window width the route can hold the rail at, route changes, and
@@ -494,6 +536,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
     setHomeSurface({ accountKey, mounted: homeVisible, workspace: routeWorkspace });
   }
   const homeMounted = homeSurface.mounted;
+  useSelectionAsideWhilePaused(homeSurfaceRef, homeMounted && !homeVisible);
 
   return (
     <section
@@ -527,6 +570,8 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
                     <HomeRoute
                       workspaceId={homeSurface.workspace}
                       onConnectApps={handleConnectApps}
+                      onRequestedDraftTaken={takeRouteDraft}
+                      requestedDraft={homeVisible ? routeDraft : undefined}
                       surfaceActive={homeVisible}
                     />
                   </HomeRailFoldProvider>

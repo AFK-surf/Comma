@@ -505,9 +505,8 @@ defmodule SalixCluster.Schedules do
   #
   # Sealed on the delivery, next to the label the prompt was written under, so
   # the model can neither supply it nor change it — the same seal an inbound
-  # provider message gets. A schedule made before this existed, or while its
-  # Group was `off`, carries nothing and authorizes nothing, which is the
-  # fail-closed reading.
+  # provider message gets. A schedule with no creator carries nothing and
+  # authorizes nothing, which is the fail-closed reading.
   defp put_ifc_origin(inbox_payload, id, payload) do
     case SalixAgent.IFC.schedule_origin(id, payload["ifc_creator"], payload["ifc_label"]) do
       nil -> inbox_payload

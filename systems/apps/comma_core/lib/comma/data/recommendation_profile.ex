@@ -28,6 +28,9 @@ defmodule Comma.Data.RecommendationProfile do
     field(:published_metrics, :map, default: %{})
     # Digest of a dismissed source item (its source and URL) => dismissal time in ms.
     field(:dismissed_items, :map, default: %{})
+    # Matters the member added themselves (`Comma.Recommendations.add_item/4`),
+    # newest first: %{"id", "title", "detail", "url", "addedAt"}.
+    field(:added_items, {:array, :map}, default: [])
     field(:last_error, :string)
     field(:last_requested_at, :utc_datetime_usec)
     field(:last_published_at, :utc_datetime_usec)
@@ -114,7 +117,8 @@ defmodule Comma.Data.RecommendationProfile do
   defp remember_native_choices(preferences, sources) when is_list(sources) do
     Enum.reduce(sources, preferences, fn
       %{"appId" => app, "kind" => kind, "enabled" => enabled}, acc
-      when app in ~w(github linear notion slack) and kind in ~w(composio managed_oauth) and
+      when app in ~w(feishu github lark linear notion slack) and
+             kind in ~w(composio managed_oauth) and
              is_boolean(enabled) ->
         Map.put(acc, app, enabled)
 

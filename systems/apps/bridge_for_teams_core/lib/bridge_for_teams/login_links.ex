@@ -21,6 +21,13 @@ defmodule BridgeForTeams.LoginLinks do
   default, same server token as agent owner notifications with a dedicated
   From address). Requests are rate-limited per IP and per org+email via
   `BridgeForTeams.RateLimit`.
+
+  Every request writes one private `login_link_request` log line with its
+  outcome (`accepted`, `org_not_found`, `not_member`, `rate_limited_email`,
+  `recipient_suppressed`, ...), the request id, and the internal org, user,
+  link and provider message ids it reached. It never logs the email address,
+  the org slug the visitor typed, the token, or provider error text.
+  `delivery_evidence/3` adds what the provider saw after acceptance.
   """
   import Ecto.Query
   require Logger
@@ -64,16 +71,61 @@ defmodule BridgeForTeams.LoginLinks do
     org_slug = normalize(org_slug)
     email = normalize(email)
 
-    with true <- enabled?(),
-         :ok <- check_rate_limits(org_slug, email, opts),
-         true <- valid_email?(email),
-         {:ok, %Organization{} = org} <- Orgs.get_org_by_slug(org_slug),
-         :ok <- ensure_no_sso(org),
-         {:ok, %User{status: "active"} = user} <- fetch_user_by_email(email),
-         {:ok, _role} <- Memberships.org_role(org.id, user.id) do
-      issue_and_deliver(org, user, email, opts)
+    {outcome, facts} =
+      with :ok <- check(enabled?(), :delivery_not_configured),
+           :ok <- check_rate_limits(org_slug, email, opts),
+           :ok <- check(valid_email?(email), :invalid_email),
+           {:ok, org, user} <- match_member(org_slug, email) do
+        issue_and_deliver(org, user, email, opts)
+      end
+
+    log_request(outcome, facts, opts)
+    :ok
+  end
+
+  @doc """
+  Operator diagnosis of a member's missing sign-in email, for `bin/comma rpc`:
+  whether a request would match now, the provider's suppression of the
+  member's address, and the latest `limit` (default 5, at most 20) links with
+  their request reference and delivery events.
+
+  Each link's `acceptance_recorded` says whether a `login_link.requested`
+  audit row exists. Only a recorded row is evidence of provider acceptance;
+  `false` means the outcome is unknown (the send failed, or the audit write
+  failed after acceptance), so `provider_events` is `nil` without a stored
+  message id rather than a provider answer.
+
+  Find `org_id` and `user_id` from the `login_link_request` log line or the
+  database. The result carries no email address, token, or provider free text.
+  """
+  @spec delivery_evidence(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, map()} | {:error, :not_found}
+  def delivery_evidence(org_id, user_id, opts \\ []) do
+    limit = opts |> Keyword.get(:limit, 5) |> min(20) |> max(1)
+
+    with {:ok, %Organization{} = org} <- Orgs.get_org(org_id),
+         %User{} = user <- Repo.get(User, user_id) do
+      links =
+        Repo.all(
+          from l in LoginEmailLink,
+            where: l.org_id == ^org.id and l.user_id == ^user.id,
+            order_by: [desc: l.created_at],
+            limit: ^limit
+        )
+
+      {:ok,
+       %{
+         org_id: org.id,
+         user_id: user.id,
+         delivery_configured: enabled?(),
+         sso_configured: ensure_no_sso(org) != :ok,
+         user_status: user.status,
+         member: match?({:ok, _role}, Memberships.org_role(org.id, user.id)),
+         suppression: provider_lookup(Delivery.impl().recipient_suppression(user.email)),
+         links: Enum.map(links, &link_evidence(org, &1))
+       }}
     else
-      _no_match -> :ok
+      _ -> {:error, :not_found}
     end
   end
 
@@ -124,6 +176,7 @@ defmodule BridgeForTeams.LoginLinks do
 
   defp issue_and_deliver(%Organization{} = org, %User{} = user, email, opts) do
     token = generate_token()
+    facts = %{org_id: org.id, user_id: user.id}
 
     insert_attrs = %{
       "user_id" => user.id,
@@ -132,17 +185,100 @@ defmodule BridgeForTeams.LoginLinks do
       "expires_at" => DateTime.add(now(), @ttl_seconds, :second)
     }
 
-    with {:ok, link} <-
-           %LoginEmailLink{} |> LoginEmailLink.changeset(insert_attrs) |> Repo.insert(),
-         :ok <- Delivery.impl().deliver_login_link(email, org.name, login_url(token, opts)) do
-      record_audit("login_link.requested", org, user, link, request_id: opts[:request_id])
-    else
-      {:error, reason} ->
-        Logger.warning("login link issue failed: org=#{org.id} reason=#{inspect(reason)}")
-    end
+    case %LoginEmailLink{} |> LoginEmailLink.changeset(insert_attrs) |> Repo.insert() do
+      {:ok, link} ->
+        facts = Map.put(facts, :link_id, link.id)
 
-    :ok
+        case Delivery.impl().deliver_login_link(email, org.name, login_url(token, opts)) do
+          {:ok, receipt} ->
+            message_id = receipt[:provider_message_id]
+
+            record_audit("login_link.requested", org, user, link,
+              request_id: opts[:request_id],
+              provider_message_id: message_id
+            )
+
+            {:accepted, Map.put(facts, :provider_message_id, message_id)}
+
+          {:error, reason} ->
+            delivery_failure(reason, facts)
+        end
+
+      {:error, _changeset} ->
+        {:link_insert_failed, facts}
+    end
   end
+
+  # Bounded outcome classes: a provider or transport reason can carry
+  # response bytes, so only its status and code are kept. Postmark answers
+  # ErrorCode 406 for a recipient on its suppression list.
+  defp delivery_failure({:postmark, _status, 406}, facts), do: {:recipient_suppressed, facts}
+
+  defp delivery_failure({:postmark, status, code}, facts) do
+    {:provider_rejected, Map.merge(facts, %{provider_status: status, provider_error_code: code})}
+  end
+
+  defp delivery_failure({:transport, _reason}, facts), do: {:provider_unreachable, facts}
+  defp delivery_failure(:not_configured, facts), do: {:delivery_not_configured, facts}
+  defp delivery_failure(_reason, facts), do: {:delivery_failed, facts}
+
+  @failure_outcomes [
+    :link_insert_failed,
+    :recipient_suppressed,
+    :provider_rejected,
+    :provider_unreachable,
+    :delivery_failed,
+    :rate_limiter_unavailable
+  ]
+
+  # One private line per request: the outcome the visitor's neutral notice
+  # hides, with internal ids only — never the email, slug, token, or link URL.
+  defp log_request(outcome, facts, opts) do
+    level = if outcome in @failure_outcomes, do: :warning, else: :info
+
+    metadata =
+      [event: "login_link_request", outcome: outcome, request_id: opts[:request_id]] ++
+        Enum.to_list(facts)
+
+    Logger.log(level, "Login link request #{outcome}", metadata)
+  end
+
+  defp link_evidence(%Organization{} = org, %LoginEmailLink{} = link) do
+    audit =
+      org.id
+      |> Observability.list_audit_logs(
+        action: "login_link.requested",
+        resource_type: "login_email_link",
+        resource_id: link.id,
+        limit: 1
+      )
+      |> List.first()
+
+    message_id = audit && audit.metadata["message_id"]
+
+    %{
+      link_id: link.id,
+      created_at: link.created_at,
+      expires_at: link.expires_at,
+      used_at: link.used_at,
+      request_id: audit && audit.request_id,
+      # Whether an acceptance audit row exists. Its absence is not a provider
+      # rejection: the audit write can fail after Postmark accepted the send.
+      acceptance_recorded: not is_nil(audit),
+      provider_message_id: message_id,
+      provider_events:
+        if(is_binary(message_id), do: provider_lookup(Delivery.impl().message_events(message_id)))
+    }
+  end
+
+  defp provider_lookup({:ok, value}), do: value
+
+  defp provider_lookup({:error, {:postmark, status, code}}),
+    do: %{error: {:provider, status, code}}
+
+  defp provider_lookup({:error, {:transport, _reason}}), do: %{error: :provider_unreachable}
+  defp provider_lookup({:error, reason}) when is_atom(reason), do: %{error: reason}
+  defp provider_lookup(_result), do: %{error: :lookup_failed}
 
   defp login_url(token, opts) do
     path = "/auth/email/verify?" <> URI.encode_query(%{"token" => token})
@@ -162,6 +298,35 @@ defmodule BridgeForTeams.LoginLinks do
   # ---- matching / policy checks ----
 
   defp valid_email?(email), do: String.contains?(email, "@")
+
+  defp check(true, _outcome), do: :ok
+  defp check(_false, outcome), do: {outcome, %{}}
+
+  defp match_member(org_slug, email) do
+    case Orgs.get_org_by_slug(org_slug) do
+      {:ok, %Organization{} = org} -> match_org_member(org, email)
+      _ -> {:org_not_found, %{}}
+    end
+  end
+
+  defp match_org_member(%Organization{} = org, email) do
+    facts = %{org_id: org.id}
+
+    with :ok <- ensure_no_sso(org) |> check_ok(:sso_configured, facts),
+         {:ok, user} <- fetch_user_by_email(email) |> check_ok(:user_not_found, facts) do
+      facts = Map.put(facts, :user_id, user.id)
+
+      cond do
+        user.status != "active" -> {:user_inactive, facts}
+        not match?({:ok, _role}, Memberships.org_role(org.id, user.id)) -> {:not_member, facts}
+        true -> {:ok, org, user}
+      end
+    end
+  end
+
+  defp check_ok(:ok, _outcome, _facts), do: :ok
+  defp check_ok({:ok, _value} = ok, _outcome, _facts), do: ok
+  defp check_ok(_error, outcome, facts), do: {outcome, facts}
 
   defp ensure_no_sso(%Organization{id: org_id}) do
     case Orgs.get_sso_connection(org_id) do
@@ -237,26 +402,29 @@ defmodule BridgeForTeams.LoginLinks do
 
     ip = normalize(opts[:remote_ip])
 
-    ip_ok? =
-      ip == "" or
-        match?(
-          {:ok, _},
-          RateLimit.hit({:login_link_ip, ip}, 1,
-            burst: Keyword.get(limits, :ip_burst, @ip_burst),
-            rate: Keyword.get(limits, :ip_rate, @ip_rate)
-          )
+    ip_result =
+      if ip == "" do
+        {:ok, :unlimited}
+      else
+        RateLimit.hit({:login_link_ip, ip}, 1,
+          burst: Keyword.get(limits, :ip_burst, @ip_burst),
+          rate: Keyword.get(limits, :ip_rate, @ip_rate)
         )
+      end
 
-    email_ok? =
-      match?(
-        {:ok, _},
-        RateLimit.hit({:login_link_email, org_slug, String.downcase(email)}, 1,
-          burst: Keyword.get(limits, :email_burst, @email_burst),
-          rate: Keyword.get(limits, :email_rate, @email_rate)
-        )
+    email_result =
+      RateLimit.hit({:login_link_email, org_slug, String.downcase(email)}, 1,
+        burst: Keyword.get(limits, :email_burst, @email_burst),
+        rate: Keyword.get(limits, :email_rate, @email_rate)
       )
 
-    if ip_ok? and email_ok?, do: :ok, else: {:error, :rate_limited}
+    # Fails closed: an unavailable limiter drops the request like a denial.
+    case {ip_result, email_result} do
+      {{:ok, _}, {:ok, _}} -> :ok
+      {{:error, :rate_limited}, _} -> {:rate_limited_ip, %{}}
+      {_, {:error, :rate_limited}} -> {:rate_limited_email, %{}}
+      _ -> {:rate_limiter_unavailable, %{}}
+    end
   end
 
   # ---- audit ----
@@ -273,10 +441,13 @@ defmodule BridgeForTeams.LoginLinks do
            resource_label: "Email sign-in link #{String.slice(link.id, 0, 8)}",
            result: "ok",
            request_id: opts[:request_id] || SystemsRuntime.Proc.uuid(),
-           metadata: %{
-             "user_id" => user.id,
-             "expires_at" => DateTime.to_iso8601(link.expires_at)
-           }
+           metadata:
+             %{
+               "user_id" => user.id,
+               "expires_at" => DateTime.to_iso8601(link.expires_at)
+             }
+             # The Postmark MessageID; audit redaction keeps the `message_id` key.
+             |> maybe_put("message_id", opts[:provider_message_id])
          }) do
       {:ok, _audit} -> :ok
       {:error, reason} -> Logger.warning("login link audit failed: #{inspect(reason)}")
@@ -284,6 +455,9 @@ defmodule BridgeForTeams.LoginLinks do
 
     :ok
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp normalize(value) when is_binary(value), do: String.trim(value)
   defp normalize(_value), do: ""

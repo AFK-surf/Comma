@@ -9,23 +9,6 @@ defmodule SalixStore.AgentVMMProviderTest do
   alias SalixStore.{AgentVMM, Compute, Repo}
 
   setup do
-    previous_gate =
-      SystemsRuntime.get_env(:salix_store, :agent_vmm_multi_scope_registration_enabled)
-
-    SystemsRuntime.delete_env(:salix_store, :agent_vmm_multi_scope_registration_enabled)
-
-    on_exit(fn ->
-      if is_nil(previous_gate) do
-        SystemsRuntime.delete_env(:salix_store, :agent_vmm_multi_scope_registration_enabled)
-      else
-        SystemsRuntime.put_env(
-          :salix_store,
-          :agent_vmm_multi_scope_registration_enabled,
-          previous_gate
-        )
-      end
-    end)
-
     Repo.query!(
       "TRUNCATE agent_vmm_audit_events, agent_vmm_sessions, compute_commands, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
     )
@@ -34,16 +17,15 @@ defmodule SalixStore.AgentVMMProviderTest do
   end
 
   test "reenabling an enrolled registration preserves credentials and accepts reconnection" do
-    token = String.duplicate("a", 32)
     credential = String.duplicate("b", 32)
 
     assert {:ok, registration} =
-             AgentVMM.create_registration(%{
+             SalixStore.AgentVMMFixtures.registration(%{
                id: "resume-registration",
                tenant_id: "tenant",
                group_id: "group",
                device_id: "device",
-               enrollment_token: token
+               credential: credential
              })
 
     assert {:ok, disabled} =
@@ -52,8 +34,8 @@ defmodule SalixStore.AgentVMMProviderTest do
     assert {:ok, pending} =
              AgentVMM.configure_registration(registration.id, disabled.revision, true)
 
-    assert pending.status == "enrolling"
-    assert {:ok, enrolled} = AgentVMM.enroll(registration.id, token, credential)
+    assert pending.status == "ready"
+    enrolled = pending
 
     assert {:ok, disabled} =
              AgentVMM.configure_registration(registration.id, enrolled.revision, false)
@@ -77,32 +59,30 @@ defmodule SalixStore.AgentVMMProviderTest do
              AgentVMM.configure_registration(registration.id, revoked.revision, true)
   end
 
-  test "gate enable isolates distinct project scopes on one Host" do
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_multi_scope_registration_enabled, true)
-
+  test "distinct Project Registrations on one Host keep separate authority" do
     attrs = %{
       id: "registration-a",
       tenant_id: "tenant",
       group_id: "group-a",
       device_id: "shared-device",
-      enrollment_token: String.duplicate("a", 32)
+      credential: String.duplicate("a", 32)
     }
 
-    assert {:ok, registration_a} = AgentVMM.create_registration(attrs)
+    assert {:ok, registration_a} = SalixStore.AgentVMMFixtures.registration(attrs)
 
     assert {:error, :already_exists} =
-             AgentVMM.create_registration(%{
+             SalixStore.AgentVMMFixtures.registration(%{
                attrs
                | id: "registration-a-retry",
-                 enrollment_token: String.duplicate("c", 32)
+                 credential: String.duplicate("c", 32)
              })
 
     assert {:ok, registration_b} =
-             AgentVMM.create_registration(%{
+             SalixStore.AgentVMMFixtures.registration(%{
                attrs
                | id: "registration-b",
                  group_id: "group-b",
-                 enrollment_token: String.duplicate("b", 32)
+                 credential: String.duplicate("b", 32)
              })
 
     assert Repo.aggregate(AgentVMM.Registration, :count) == 2
@@ -117,12 +97,12 @@ defmodule SalixStore.AgentVMMProviderTest do
 
   test "registration is Provider-private and revoke fences the referenced Compute generation" do
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])
@@ -178,9 +158,7 @@ defmodule SalixStore.AgentVMMProviderTest do
                "inventory" => []
              })
 
-    omitted = Repo.get!(Compute.ProviderBinding, binding.id)
-    assert omitted.status == "available"
-    assert omitted.observation["admission"] == "accepting"
+    assert AgentVMM.connected?(registration.id)
 
     ready = %{
       "allocationId" => "allocation",
@@ -211,7 +189,7 @@ defmodule SalixStore.AgentVMMProviderTest do
       assert {:ok, :ok} = AgentVMM.observe_registration(registration.id, "gateway", hello)
       assert Repo.get!(Compute.Allocation, "allocation").status == "ready"
 
-      assert Repo.get!(Compute.ProviderBinding, binding.id).observation["connection_epoch"] ==
+      assert Repo.get!(AgentVMM.Registration, registration.id).current_connection_epoch ==
                epoch
 
       refute Repo.get(AgentVMM.RegistrationObservation, registration.id)
@@ -286,6 +264,7 @@ defmodule SalixStore.AgentVMMProviderTest do
                ]
              })
 
+    assert {:ok, %{settled: 2}} = AgentVMM.settle_disconnected_commands(32)
     assert Repo.get!(Compute.Command, "side").status == "unknown_outcome"
     assert Repo.get!(Compute.Command, "read").status == "pending"
 
@@ -346,12 +325,12 @@ defmodule SalixStore.AgentVMMProviderTest do
 
   test "reconnect preserves the current durable allocation" do
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])
@@ -448,7 +427,7 @@ defmodule SalixStore.AgentVMMProviderTest do
                "inventory" => []
              })
 
-    assert Repo.get!(Compute.ProviderBinding, binding.id).status == "available"
+    assert AgentVMM.connected?(registration.id)
     assert Repo.get!(Compute.Allocation, allocation.id).status == "ready"
 
     Repo.update_all(from(a in Compute.Allocation, where: a.id == ^allocation.id),

@@ -9,7 +9,7 @@
   "stub": {
    "includeTaskInInbox": true,
    "inlineTaskReference": true,
-   "taskStatus": "completed"
+   "taskStatus": "ready_for_review"
   }
  },
  "entries": [
@@ -20,8 +20,7 @@
     "id": 1,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -146,8 +145,7 @@
     "id": 2,
     "subscribe": {
      "topic": "pluginNotices"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -157,8 +155,7 @@
     "id": 3,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -168,8 +165,7 @@
     "id": 4,
     "subscribe": {
      "topic": "workspace"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -180,8 +176,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": ""
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -192,8 +187,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxDeleted"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -204,8 +198,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxUnread"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -216,8 +209,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "taskReviewSeen"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -228,8 +220,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "chatTaskDismissed"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -239,8 +230,7 @@
     "id": 10,
     "subscribe": {
      "topic": "workspaceChat"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -250,8 +240,7 @@
     "id": 11,
     "subscribe": {
      "topic": "meetingRecorder"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -261,8 +250,7 @@
     "id": 12,
     "subscribe": {
      "topic": "profile"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -445,15 +433,24 @@
    "dir": "in",
    "data": {
     "id": 4,
-    "value": {
-     "status": "ready",
-     "workspace": {
-      "id": "ws-smoke",
-      "groupId": "grp-smoke",
-      "name": "Smoke Workspace"
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      },
-     "selected": false
-    }
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": {
+       "id": "ws-smoke",
+       "groupId": "grp-smoke",
+       "name": "Smoke Workspace"
+      }
+     }
+    ]
    }
   },
   {
@@ -464,8 +461,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -496,11 +492,9 @@
    "data": {
     "id": 16,
     "subscribe": {
-     "topic": "tasks",
-     "workspace": "ws-smoke",
-     "hosted": "1"
-    },
-    "keyed": true
+     "topic": "taskRequests",
+     "prefer": "ws-smoke"
+    }
    }
   },
   {
@@ -508,6 +502,18 @@
    "dir": "out",
    "data": {
     "id": 17,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke",
+     "hosted": "1"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -518,13 +524,12 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 19,
     "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
      "read": "0"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -554,13 +559,15 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "reviewVersion": 2,
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
-       "status": "completed",
+       "status": "ready_for_review",
        "title": "冒烟任务",
        "updatedAt": 1720000003000,
        "workspaceId": "ws-smoke",
        "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
+       "statusBucket": "needs_review",
        "statusFailed": false
       }
      ],
@@ -574,22 +581,32 @@
    "dir": "in",
    "data": {
     "id": 12,
-    "value": {
-     "status": "ready",
-     "profile": {
-      "avatar_id": null,
-      "email": "smoke@comma.local",
-      "id": "e2e-user:smoke@comma.local",
-      "name": null
+    "delta": [
+     {
+      "path": [
+       "profile"
+      ],
+      "set": {
+       "avatar_id": null,
+       "email": "smoke@comma.local",
+       "id": "e2e-user:smoke@comma.local",
+       "name": null
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      }
-    }
+    ]
    }
   },
   {
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 20,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -601,31 +618,26 @@
    "dir": "in",
    "data": {
     "id": 10,
-    "value": {
-     "status": "ready",
-     "chat": {
-      "workspaceId": "ws-smoke",
-      "groupId": "grp-smoke",
-      "conversationId": "cnv_public_chat_smoke",
-      "createdAt": 1720000000,
-      "updatedAt": 1720000000
+    "delta": [
+     {
+      "path": [
+       "chat"
+      ],
+      "set": {
+       "workspaceId": "ws-smoke",
+       "groupId": "grp-smoke",
+       "conversationId": "cnv_public_chat_smoke",
+       "createdAt": 1720000000,
+       "updatedAt": 1720000000
+      }
      },
-     "kept": false
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 20,
-    "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "timezone": "UTC",
-     "locale": "en"
-    },
-    "keyed": true
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
    }
   },
   {
@@ -634,10 +646,11 @@
    "data": {
     "id": 21,
     "subscribe": {
-     "topic": "creditWarning",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "timezone": "UTC",
+     "locale": "en"
+    }
    }
   },
   {
@@ -646,10 +659,9 @@
    "data": {
     "id": 22,
     "subscribe": {
-     "topic": "mentionTasks",
-     "group": "grp-smoke"
-    },
-    "keyed": true
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -658,11 +670,9 @@
    "data": {
     "id": 23,
     "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "reads": "once"
-    },
-    "keyed": true
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    }
    }
   },
   {
@@ -671,10 +681,10 @@
    "data": {
     "id": 24,
     "subscribe": {
-     "topic": "plugins",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    }
    }
   },
   {
@@ -683,12 +693,9 @@
    "data": {
     "id": 25,
     "subscribe": {
-     "topic": "taskLabels",
-     "group": "grp-smoke",
-     "key": "",
-     "mode": ""
-    },
-    "keyed": true
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -697,13 +704,11 @@
    "data": {
     "id": 26,
     "subscribe": {
-     "topic": "chatView",
-     "workspace": "ws-smoke",
+     "topic": "taskLabels",
      "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke",
-     "surface": "web:4ad8c2d3-e2a2-4254-9b85-1ddbb0d8aa86"
-    },
-    "keyed": true
+     "key": "",
+     "mode": ""
+    }
    }
   },
   {
@@ -712,10 +717,12 @@
    "data": {
     "id": 27,
     "subscribe": {
-     "topic": "skills",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:4ad8c2d3-e2a2-4254-9b85-1ddbb0d8aa86"
+    }
    }
   },
   {
@@ -723,6 +730,17 @@
    "dir": "out",
    "data": {
     "id": 28,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 29,
     "call": "workspace.select",
     "params": {
      "workspace": "ws-smoke"
@@ -733,7 +751,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 30,
     "call": "chatView.setDraft",
     "params": {
      "draft": "创建可归档任务",
@@ -776,7 +794,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 18,
     "ok": null
    }
   },
@@ -788,7 +806,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 29,
     "ok": null
    }
   },
@@ -796,7 +814,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 30,
     "ok": {
      "revision": 3,
      "draftEpoch": 1
@@ -830,13 +848,15 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "reviewVersion": 2,
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
-       "status": "completed",
+       "status": "ready_for_review",
        "title": "冒烟任务",
        "updatedAt": 1720000003000,
        "workspaceId": "ws-smoke",
        "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
+       "statusBucket": "needs_review",
        "statusFailed": false
       }
      ],
@@ -850,6 +870,23 @@
    "dir": "in",
    "data": {
     "id": 16,
+    "value": {
+     "workspace": null,
+     "incoming": null,
+     "grants": null,
+     "targets": null,
+     "sent": null,
+     "links": null,
+     "own": null,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
     "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
@@ -872,13 +909,15 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "reviewVersion": 2,
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
-       "status": "completed",
+       "status": "ready_for_review",
        "title": "冒烟任务",
        "updatedAt": 1720000003000,
        "workspaceId": "ws-smoke",
        "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
+       "statusBucket": "needs_review",
        "statusFailed": false
       }
      ],
@@ -891,19 +930,18 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 31,
     "subscribe": {
      "topic": "taskOrder",
      "group": "grp-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 18,
+    "id": 19,
     "value": null
    }
   },
@@ -927,7 +965,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 21,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -935,14 +973,6 @@
      "discovering": false,
      "refreshing": false
     }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 21,
-    "value": null
    }
   },
   {
@@ -958,6 +988,14 @@
    "dir": "in",
    "data": {
     "id": 23,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -971,7 +1009,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 24,
+    "id": 25,
     "value": {
      "status": "loading"
     }
@@ -981,7 +1019,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 26,
     "value": {
      "catalog": null,
      "error": false,
@@ -993,7 +1031,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1033,7 +1071,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 28,
     "value": {
      "status": "loading",
      "skills": []
@@ -1063,7 +1101,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 20,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1081,7 +1119,28 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 21,
     "delta": [
      {
       "path": [
@@ -1111,11 +1170,11 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 22,
+    "id": 23,
     "value": [
      {
       "id": "cnv_public_task_smoke",
-      "status": "completed",
+      "status": "ready_for_review",
       "title": "冒烟任务",
       "updatedAt": 1720000003
      }
@@ -1126,7 +1185,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 23,
+    "id": 24,
     "delta": [
      {
       "path": [
@@ -1156,7 +1215,62 @@
    "at": 100,
    "dir": "in",
    "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
     "id": 26,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1194,20 +1308,19 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 32,
     "subscribe": {
      "topic": "agentRequests",
      "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 31,
     "value": {
      "orders": {},
      "sections": [
@@ -1217,13 +1330,13 @@
       },
       {
        "bucket": "needs_review",
-       "ids": []
-      },
-      {
-       "bucket": "done",
        "ids": [
         "cnv_public_task_smoke"
        ]
+      },
+      {
+       "bucket": "done",
+       "ids": []
       },
       {
        "bucket": "cancelled",
@@ -1241,95 +1354,61 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 5,
+    "id": 28,
     "delta": [
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      },
+      "before": null
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      "before": "weekly-reminder"
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 24,
-    "delta": [
-     {
-      "path": [
-       "error"
+      "key": [
+       "skill_id"
       ],
-      "set": {
-       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "status": 404,
-       "detail": {
-        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
-       }
-      }
+      "put": {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      "before": "code-review"
      },
      {
       "path": [
        "status"
       ],
-      "set": "error"
-     },
-     {
-      "path": [
-       "workspace"
-      ],
-      "set": "ws-smoke"
+      "set": "ready"
      }
     ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 25,
-    "value": {
-     "catalog": null,
-     "error": true,
-     "loading": false
-    }
    }
   },
   {
@@ -1337,37 +1416,6 @@
    "dir": "in",
    "data": {
     "id": 27,
-    "value": {
-     "status": "ready",
-     "skills": [
-      {
-       "skill_id": "weekly-summary",
-       "name": "周会总结",
-       "description": "整理会议要点和后续事项",
-       "location": "salix://skills/weekly-summary"
-      },
-      {
-       "skill_id": "code-review",
-       "name": "代码审查",
-       "description": "检查实现风险和测试缺口",
-       "location": "salix://skills/code-review"
-      },
-      {
-       "skill_id": "weekly-reminder",
-       "name": "周会提醒",
-       "description": "提醒周会议程",
-       "location": "salix://skills/weekly-reminder",
-       "activation": "per-message"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 26,
     "delta": [
      {
       "path": [
@@ -1402,21 +1450,20 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 32,
+    "id": 33,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
      "conversation": "cnv_public_chat_smoke",
      "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "value": {
      "requests": [],
      "loading": true,
@@ -1432,7 +1479,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "delta": [
      {
       "path": [
@@ -1453,7 +1500,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": null
    }
   },
@@ -1465,7 +1512,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 34,
     "call": "chatView.send",
     "params": {
      "text": "创建可归档任务",
@@ -1489,7 +1536,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "value": {
      "accepted": true
     }
@@ -1503,7 +1550,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": {
      "browser": null
     }
@@ -1513,7 +1560,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1639,21 +1686,13 @@
   },
   {
    "at": 128,
-   "dir": "out",
-   "data": {
-    "id": 32,
-    "unsubscribe": true
-   }
-  },
-  {
-   "at": 128,
    "dir": "rest"
   },
   {
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "ok": {
      "revision": 12,
      "draftEpoch": 2
@@ -1668,7 +1707,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1727,7 +1766,7 @@
        {
         "actorType": "agent",
         "attachments": [],
-        "blocksKey": "[{\"type\":\"text\",\"text\":\"收到，stub 已生成回复。 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"收到，stub 已生成回复。 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"ready_for_review\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
         "createdAt": 1720000002,
         "delivery": "sent",
         "messageId": "msg-assistant-smoke",
@@ -1746,8 +1785,8 @@
           "task": {
            "activityStatus": "idle",
            "conversationId": "cnv_public_task_smoke",
-           "status": "completed",
-           "statusBucket": "done",
+           "status": "ready_for_review",
+           "statusBucket": "needs_review",
            "title": "冒烟任务",
            "unavailable": false,
            "updatedAt": 1720000003
@@ -1832,7 +1871,7 @@
        {
         "actorType": "agent",
         "attachments": [],
-        "blocksKey": "[{\"type\":\"text\",\"text\":\"收到，stub 已生成回复。 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"收到，stub 已生成回复。 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"title\":\"冒烟任务\",\"status\":\"ready_for_review\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 已完成。\"}]",
         "createdAt": 1720000002,
         "delivery": "sent",
         "messageId": "msg-assistant-smoke",
@@ -1851,8 +1890,8 @@
           "task": {
            "activityStatus": "idle",
            "conversationId": "cnv_public_task_smoke",
-           "status": "completed",
-           "statusBucket": "done",
+           "status": "ready_for_review",
+           "statusBucket": "needs_review",
            "title": "冒烟任务",
            "unavailable": false,
            "updatedAt": 1720000003
@@ -1901,7 +1940,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 35,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -1912,28 +1951,12 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 36,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 128,
-   "dir": "out",
-   "data": {
-    "id": 36,
-    "subscribe": {
-     "topic": "chatSuggestions",
-     "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke",
-     "message": "msg-assistant-smoke",
-     "locale": "en"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -1942,12 +1965,12 @@
    "data": {
     "id": 37,
     "subscribe": {
-     "topic": "sessionBrowser",
-     "workspace": "ws-smoke",
+     "topic": "chatSuggestions",
+     "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke",
-     "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+     "message": "msg-assistant-smoke",
+     "locale": "en"
+    }
    }
   },
   {
@@ -1960,8 +1983,7 @@
      "group": "grp-smoke",
      "key": "",
      "mode": "known"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -1972,7 +1994,52 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 5,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -1987,14 +2054,14 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 35,
+    "id": 36,
     "value": {
      "summaries": [
       {
        "id": "cnv_public_task_smoke",
        "group_id": "grp-smoke",
        "kind": "agent_task",
-       "status": "completed",
+       "status": "ready_for_review",
        "title": "冒烟任务",
        "updated_at": 1720000003,
        "archive_availability": {
@@ -2002,19 +2069,11 @@
         "reason": null
        },
        "labels": [],
-       "status_bucket": "done",
+       "status_bucket": "needs_review",
        "status_failed": false
       }
      ]
     }
-   }
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 36,
-    "value": null
    }
   },
   {
@@ -2045,7 +2104,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 35,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -2068,56 +2127,7 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 5,
-    "delta": [
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "delta": [
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "rest"
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 25,
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -2147,18 +2157,8 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 36,
-    "value": []
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
     "id": 37,
-    "value": {
-     "browser": null
-    }
+    "value": []
    }
   },
   {
@@ -2170,16 +2170,12 @@
    "dir": "due"
   },
   {
-   "at": 200,
-   "dir": "due"
-  },
-  {
    "at": 400,
    "dir": "step",
    "data": {
     "name": "stub.conversationListRequestCount",
     "args": [],
-    "result": 9
+    "result": 4
    }
   },
   {
@@ -2187,6 +2183,15 @@
    "dir": "out",
    "data": {
     "id": 39,
+    "call": "taskRequests.refresh",
+    "params": {}
+   }
+  },
+  {
+   "at": 464,
+   "dir": "out",
+   "data": {
+    "id": 40,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -2197,7 +2202,7 @@
    "at": 464,
    "dir": "out",
    "data": {
-    "id": 22,
+    "id": 23,
     "unsubscribe": true
    }
   },
@@ -2205,7 +2210,7 @@
    "at": 464,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 32,
     "unsubscribe": true
    }
   },
@@ -2213,8 +2218,20 @@
    "at": 464,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 33,
     "unsubscribe": true
+   }
+  },
+  {
+   "at": 464,
+   "dir": "rest"
+  },
+  {
+   "at": 464,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "ok": null
    }
   },
   {
@@ -2247,7 +2264,7 @@
    "data": {
     "name": "stub.conversationListRequestCount",
     "args": [],
-    "result": 9
+    "result": 4
    }
   },
   {
@@ -2256,7 +2273,7 @@
    "data": {
     "name": "stub.conversationListRequestCount",
     "args": [],
-    "result": 10
+    "result": 5
    }
   },
   {
@@ -2265,15 +2282,15 @@
    "data": {
     "name": "stub.conversationListRequestCount",
     "args": [],
-    "result": 10
+    "result": 5
    }
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "due"
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "in",
    "data": {
     "id": 5,
@@ -2288,7 +2305,7 @@
    }
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "in",
    "data": {
     "id": 13,
@@ -2303,10 +2320,10 @@
    }
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 17,
     "delta": [
      {
       "path": [
@@ -2318,14 +2335,14 @@
    }
   },
   {
-   "at": 530,
+   "at": 514,
    "dir": "rest"
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "out",
    "data": {
-    "id": 40,
+    "id": 41,
     "call": "recommendations.visit",
     "params": {
      "workspace": "ws-smoke"
@@ -2333,22 +2350,21 @@
    }
   },
   {
-   "at": 560,
-   "dir": "out",
-   "data": {
-    "id": 41,
-    "subscribe": {
-     "topic": "mentionTasks",
-     "group": "grp-smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 560,
+   "at": 544,
    "dir": "out",
    "data": {
     "id": 42,
+    "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    }
+   }
+  },
+  {
+   "at": 544,
+   "dir": "out",
+   "data": {
+    "id": 43,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -2356,65 +2372,63 @@
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "out",
    "data": {
-    "id": 43,
+    "id": 44,
     "subscribe": {
      "topic": "agentRequests",
      "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "out",
    "data": {
-    "id": 44,
+    "id": 45,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
      "conversation": "cnv_public_chat_smoke",
      "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "rest"
   },
   {
-   "at": 560,
-   "dir": "in",
-   "data": {
-    "id": 40,
-    "ok": null
-   }
-  },
-  {
-   "at": 560,
-   "dir": "in",
-   "data": {
-    "id": 42,
-    "ok": null
-   }
-  },
-  {
-   "at": 560,
-   "dir": "rest"
-  },
-  {
-   "at": 560,
+   "at": 544,
    "dir": "in",
    "data": {
     "id": 41,
+    "ok": null
+   }
+  },
+  {
+   "at": 544,
+   "dir": "in",
+   "data": {
+    "id": 43,
+    "ok": null
+   }
+  },
+  {
+   "at": 544,
+   "dir": "rest"
+  },
+  {
+   "at": 544,
+   "dir": "in",
+   "data": {
+    "id": 42,
     "value": [
      {
       "id": "cnv_public_task_smoke",
-      "status": "completed",
+      "status": "ready_for_review",
       "title": "冒烟任务",
       "updatedAt": 1720000003
      }
@@ -2422,10 +2436,10 @@
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "in",
    "data": {
-    "id": 43,
+    "id": 44,
     "value": {
      "requests": [],
      "loading": false,
@@ -2434,33 +2448,33 @@
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 45,
     "value": null
    }
   },
   {
-   "at": 560,
+   "at": 544,
    "dir": "rest"
   },
   {
-   "at": 580,
+   "at": 564,
    "dir": "due"
   },
   {
-   "at": 580,
+   "at": 564,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 45,
     "value": {
      "browser": null
     }
    }
   },
   {
-   "at": 580,
+   "at": 564,
    "dir": "rest"
   }
  ]

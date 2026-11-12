@@ -1,66 +1,33 @@
 ------------------------- MODULE SessionHotArchive -------------------------
 (***************************************************************************)
-(* Internal-session storage: hot object and logical archive prefix         *)
-(* (docs/storage-search.md).                     *)
+(* Session PG revisions, frozen business submissions, and archive transfer. *)
+(* The hot cell abstracts committed PG control and the logical hot window. *)
+(* S3!Applied supplies only a versioned atomic cell, not an S3 hot backend. *)
+(* Business submissions carry fid (storage_revision) and a frozen revision.*)
+(* A lost response can leave an in-flight write. Retrying keeps that exact *)
+(* candidate. Upstream acknowledgement requires confirmed durability.      *)
 (*                                                                         *)
-(* The hot object is a single cell holding scalar state plus the live      *)
-(* window of log records; every flush is one CAS carrying a fresh          *)
-(* flush_id.  An ambiguous CAS (response lost) is settled by reading the   *)
-(* object back: exact post-image -> landed; own ETag unchanged -> unknown, *)
-(* retain the SAME materialization; a foreign version -> deposed.         *)
-(* The model appends summary-covered records to one logical archive.      *)
-(* It then advances archived_through through a normal hot-object CAS.     *)
-(* Publication is ATOMIC here, and monotonicity is ASSUMED.                *)
-(* ArchiveAppend checks conditional monotone publication separately.      *)
-(* Its NoFence case must violate the invariant: the write precondition    *)
-(* prevents a stale publisher from replacing a longer committed prefix.   *)
+(* ArchiveAppend captures a bounded prefix of committed records.          *)
+(* The archive value abstracts immutable segments; publication monotonicity*)
+(* is assumed here and checked separately by ArchiveAppend. ArchiveAdvance *)
+(* is an independent PG maintenance transaction. It advances SQL revision, *)
+(* preserves fid/control, and publishes the directory, watermark and      *)
+(* physical body removal in one transaction.                              *)
+(* A business settlement returns its original base+1 revision, even when   *)
+(* maintenance has advanced the row. A later write whose base fid is still *)
+(* the row's lands over that advance and reloads (ArchiveRebase).          *)
+(* This maps PG.apply_pending, PG.apply_locked and PG.publish_archive.     *)
+(* It does not prove SQL refinement, byte limits, or worker scheduling.   *)
 (*                                                                         *)
-(* Format-3 scope: the hot CAS and read-back pipeline stays unchanged.     *)
-(* The single archive value abstracts the published logical prefix.       *)
-(* Session/ArchivePublication.lean implements immutable segment creation,  *)
-(* adoption, and advance construction. InternalSessionStore executes I/O.  *)
-(* The sealer reads one durable revision for publication and its hot CAS. *)
-(* A rejected CAS reloads and republishes instead of reusing its advance. *)
-(* This model does not prove that implementation's refinement.             *)
-(* ArchiveAppend checks conditional monotone publication separately.      *)
-(* Historical SessionSegmentSeal references are not current proof evidence.*)
+(* log is the physical PG body range. Publication removes its cut         *)
+(* atomically. Runtime context can retain cold uncompacted records.        *)
+(* Runtime tests cover RR readers, context restoration and atomic DELETE. *)
 (*                                                                         *)
-(* Owners load the hot object and thereafter write from memory; two        *)
-(* believers may coexist (lease loss, paused process) and a crashed        *)
-(* owner's in-flight CAS may land late — the ETag is the only fence.       *)
-(*                                                                         *)
-(* The three boolean constants each guard one documented rule; the         *)
-(* expected-counterexample configs flip them:                              *)
-(*   SettleByFlushId    settle ambiguity by exact post-image; blind        *)
-(*                      ETag-refresh retry rematerializes a batch that     *)
-(*                      already landed (duplicate records).                *)
-(*   CreateBeforeAdvance append lands before the watermark CAS;           *)
-(*                      advancing first loses records at the crash point.  *)
-(*   LateApplyInFlight  a live owner's ambiguous CAS may still be IN       *)
-(*                      FLIGHT: it lands later, after the settlement read.  *)
-(*                      The read is therefore not a fence, and the          *)
-(*                      same-bytes retry can take a stale 412 for the       *)
-(*                      owner's OWN write.  With this enabled, a rejection  *)
-(*                      that our own write can explain must re-settle       *)
-(*                      instead of deposing — deposing hands the batch back *)
-(*                      to the caller, which re-materializes every record   *)
-(*                      that carries no dedupe key.  (SalixStore.S3.Fake's  *)
-(*                      `:apply_after_next_get` fault is this transition.)  *)
-(*   ChunkFromDurable   compaction and the append source read only the     *)
-(*                      durable-confirmed log.  The buggy variant treats   *)
-(*                      in-memory state as durable in BOTH the compaction  *)
-(*                      bound and the append source — one coherent wrong   *)
-(*                      worldview.  Its witness is the advertised split-   *)
-(*                      owner divergence: owner A archives an unflushed    *)
-(*                      record, owner B loads the durable log, appends a   *)
-(*                      different record at the same seq and flushes —     *)
-(*                      the settled log now contradicts the archived bytes *)
-(*                      (ChunkMatchesSettledLog).                          *)
-(*                                                                         *)
-(* Records are immutable from first durability by design (redaction is a  *)
-(* state-level overlay in the hot object, never a byte rewrite), so the   *)
-(* model's freeze of dur/evOf at first durability IS the documented       *)
-(* contract, not a strengthening.                                          *)
+(* Negative configs retain the original failures: blind rematerialization,*)
+(* watermark publication before content, and archiving uncommitted input.  *)
+(* LateApplyInFlight permits a still-pending request to land after a read.  *)
+(* Fault budgets bound crashes and ambiguous writes. FairSpec adds weak    *)
+(* owner-step fairness; it assumes available storage, not permanent faults.*)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -76,18 +43,16 @@ NodeSym == Permutations(Nodes)
 (* The archive is ONE append-only object holding a prefix of the log:     *)
 (* its value is the sequence of records 1..Len(val).                      *)
 (*                                                                        *)
-(* Unlike the hot object it carries no version: the implementation CASes   *)
-(* on the ETag, but nothing here reads it and the append-only construction *)
-(* (the durable prefix is carried over verbatim) already gives the         *)
-(* guarantee the ETag provides.  Keeping a counter would only split states *)
-(* that hold identical bytes by how many appends produced them — the same  *)
-(* content reached as 1+1 or as one 2 is the same object.                  *)
+(* Segment bytes are immutable. This value abstracts their logical prefix.*)
+(* Directory publication preserves that prefix; ArchiveAppend checks the  *)
+(* conditional monotone publication boundary separately. Versions of the  *)
+(* logical byte prefix are immaterial here.                               *)
 ArchiveApplied(v) == [present |-> TRUE, val |-> v, ver |-> 0]
 
-VARIABLES hot,      \* S3 cell: val = [last, arch, comp, fid, log]
+VARIABLES hot,      \* PG revision cell: val = [last, arch, comp, fid, log]
           arcv,     \* the ONE archive object: a cell holding a log prefix
           role,     \* [Nodes -> {"down","owner"}]
-          lver,     \* [Nodes -> Nat] ETag of the durable-confirmed base
+          lver,     \* [Nodes -> Nat] revision of the durable-confirmed base
           lval,     \* [Nodes -> hot val] durable-confirmed view
           mlog,     \* [Nodes -> partial fn] in-memory appends past lval.last
           mlast, mcomp, march,   \* [Nodes -> Nat] in-memory working values
@@ -214,52 +179,42 @@ Compact(n) ==
                  acked>>
 
 (***************************************************************************)
-(* Archive step 1: APPEND to the ONE archive object, up to the compaction  *)
-(* watermark.  There is no packing rule to hold records back, so the       *)
-(* append covers exactly what the summary now covers.  The object is the   *)
-(* authority on what is already durable: the writer extends it and never   *)
-(* rebuilds or shortens it, so a stale owner cannot roll it back and a     *)
-(* lost advance is resumed by appending only the gap.                      *)
+(* Archive step 1: create immutable content from a committed prefix.     *)
+(* The finite cut may stop before last. Existing content owns its boundary *)
+(* and stays unchanged while later committed records extend the prefix.   *)
 (***************************************************************************)
 ArchiveAppend(n) ==
-  /\ role[n] = "owner" /\ fpc[n] = "idle"
-  /\ LET src    == IF ChunkFromDurable THEN lval[n].log ELSE Full(n)
-         target == mcomp[n]
-         have   == Len(arcv.val)
-     IN (* The object already reaching the watermark is not a no-op to fix
-           up: it is either our own landed append or another owner's longer
-           one, and either way it must NOT be rewritten.  A stale owner
-           whose target is below the object's end therefore does nothing. *)
-        /\ target > have
-        (* Only the GAP has to be in the window.  Records at or below the
-           object's end have already been archived out of it — requiring the
-           whole prefix here is what wedged archival after the first
-           advance (liveness counterexample, 2026-08-09). *)
-        /\ \A i \in (have + 1)..target : i \in DOMAIN src
-        (* Append-only: the durable prefix is carried over verbatim, never
-           re-derived from a view that may be stale. *)
-        /\ arcv' = ArchiveApplied(
-                     [i \in 1..target |->
-                        IF i <= have THEN arcv.val[i] ELSE src[i]])
+  /\ LET src   == IF ChunkFromDurable THEN hot.val.log ELSE Full(n)
+         bound == IF ChunkFromDurable THEN hot.val.last ELSE mlast[n]
+         have  == Len(arcv.val)
+     IN \E target \in (have + 1)..bound :
+          /\ \A i \in (have + 1)..target : i \in DOMAIN src
+          /\ arcv' = ArchiveApplied(
+                       [i \in 1..target |->
+                          IF i <= have THEN arcv.val[i] ELSE src[i]])
   /\ UNCHANGED <<hot, role, lver, lval, mlog, mlast, mcomp, march, fpc, pend,
                  requeue, zomb, nextFid, nextEv, crashes, ambs, dur, evOf,
                  acked>>
 
-(* Archive step 2: adopt the advanced watermark in memory; it becomes     *)
-(* durable through a normal flush, which also drops the archived records  *)
-(* from the hot window.  The safe order gates this on the archive object  *)
-(* already holding the records.                                          *)
+(* Archive step 2: publish one landed cut and remove its PG bodies.        *)
+(* A later business append does not invalidate the captured prefix.       *)
+(* The SQL row lock preserves current control and the last business fid.  *)
 ArchiveAdvance(n) ==
-  /\ role[n] = "owner" /\ fpc[n] = "idle"
-  /\ mcomp[n] > march[n]
-  /\ CreateBeforeAdvance => Len(arcv.val) >= mcomp[n]
-  /\ march' = [march EXCEPT ![n] = mcomp[n]]
-  /\ UNCHANGED <<hot, arcv, role, lver, lval, mlog, mlast, mcomp, fpc, pend,
+  /\ LET upper == IF CreateBeforeAdvance
+                    THEN IF Len(arcv.val) < hot.val.last
+                         THEN Len(arcv.val) ELSE hot.val.last
+                    ELSE hot.val.last
+     IN \E through \in (hot.val.arch + 1)..upper :
+          LET value == [hot.val EXCEPT !.arch = through,
+                          !.log = [s \in {x \in DOMAIN hot.val.log : x > through}
+                                   |-> hot.val.log[s]]]
+          IN hot' = S3!Applied(hot, value)
+  /\ UNCHANGED <<arcv, role, lver, lval, mlog, mlast, mcomp, march, fpc, pend,
                  requeue, zomb, nextFid, nextEv, crashes, ambs, dur, evOf,
                  acked>>
 
 (***************************************************************************)
-(* The flush: one CAS on the hot object.                                   *)
+(* The business commit: one expected-revision PG transaction.                                   *)
 (***************************************************************************)
 BeginFlush(n) ==
   /\ role[n] = "owner" /\ fpc[n] = "idle" /\ nextFid <= MaxFid
@@ -273,7 +228,7 @@ BeginFlush(n) ==
                  requeue, zomb, nextEv, crashes, ambs, dur, evOf, acked>>
 
 AdoptPend(n) ==
-  /\ lver' = [lver EXCEPT ![n] = hot'.ver]
+  /\ lver' = [lver EXCEPT ![n] = @ + 1]
   /\ lval' = [lval EXCEPT ![n] = pend[n].val]
   /\ mlog' = [mlog EXCEPT ![n] = [s \in {} |-> <<>>]]
   /\ fpc' = [fpc EXCEPT ![n] = "idle"]
@@ -329,7 +284,7 @@ OwnWriteExplains(n) ==
 
 FlushReject(n) ==
   /\ fpc[n] = "inflight" /\ hot.ver # lver[n]
-  /\ ~OwnWriteExplains(n)
+  /\ ~OwnWriteExplains(n) /\ hot.val.fid # lval[n].fid
   /\ role' = [role EXCEPT ![n] = "down"]
   /\ fpc' = [fpc EXCEPT ![n] = "idle"]
   /\ pend' = [pend EXCEPT ![n] = NoPend]
@@ -347,20 +302,40 @@ FlushRejectResettle(n) ==
                  pend, requeue, zomb, nextFid, nextEv, crashes, ambs, dur,
                  evOf, acked>>
 
+(* Only maintenance moved the row since the writer's base: its fid is the   *)
+(* base's. The write lands over the advance: new records go into the hot   *)
+(* window above the published watermark, and the owner adopts the row.    *)
+(* A pending write of its own that already landed is ResolveLanded.        *)
+ArchiveRebase(n) ==
+  /\ fpc[n] \in {"inflight", "resolve"} /\ SettleByFlushId
+  /\ hot.ver # lver[n] /\ hot.val.fid = lval[n].fid
+  /\ hot.val.fid # pend[n].fid
+  /\ LET value == [pend[n].val EXCEPT !.arch = hot.val.arch,
+                      !.log = [s \in {x \in DOMAIN pend[n].val.log : x > hot.val.arch}
+                               |-> pend[n].val.log[s]]]
+     IN /\ hot' = S3!Applied(hot, value)
+        /\ FixDur(value)
+        /\ lver' = [lver EXCEPT ![n] = hot.ver + 1]
+        /\ lval' = [lval EXCEPT ![n] = value]
+        /\ march' = [march EXCEPT ![n] = hot.val.arch]
+  /\ mlog' = [mlog EXCEPT ![n] = [s \in {} |-> <<>>]]
+  /\ fpc' = [fpc EXCEPT ![n] = "idle"]
+  /\ acked' = acked \cup NewPairs(n, pend[n].val)
+  /\ UNCHANGED <<arcv, role, mlast, mcomp, pend, requeue, zomb, nextFid,
+                 nextEv, crashes, ambs>>
+
 (***************************************************************************)
-(* Ambiguity settlement: read the hot object back.                         *)
-(* Safe rule: exact post-image -> landed; own ETag -> retry the            *)
+(* Ambiguity settlement: read the committed Session row.                         *)
+(* Safe rule: own storage identity -> landed; unchanged base -> retry the            *)
 (* SAME pend (one flush_id, one materialization); else deposed.            *)
-(* Blind rule (violation): compare ETags only and rebase on any change,    *)
+(* Blind rule (violation): compare revisions only and rebase on any change,    *)
 (* requeueing the batch — which duplicates it when the write had landed.   *)
 (***************************************************************************)
-(* The design settles the landed branch by byte-exact post-image compare, *)
-(* not by flush_id alone; the extra conjunct is that comparison.  In the  *)
-(* model fid uniqueness makes it provably redundant — checking it keeps   *)
-(* the written rule, and a divergence would fail the guard, not pass it.  *)
+(* fid confirms the original business submission. Maintenance can change  *)
+(* the watermark and row revision without changing that identity.          *)
 ResolveLanded(n) ==
   /\ fpc[n] = "resolve" /\ SettleByFlushId
-  /\ hot.val.fid = pend[n].fid /\ hot.val = pend[n].val
+  /\ hot.val.fid = pend[n].fid
   /\ hot' = hot
   /\ AdoptPend(n)
   /\ UNCHANGED <<arcv, role, mlast, mcomp, march, pend, requeue, zomb,
@@ -377,6 +352,7 @@ ResolveNotLanded(n) ==
 ResolveDeposed(n) ==
   /\ fpc[n] = "resolve" /\ SettleByFlushId
   /\ hot.val.fid # pend[n].fid /\ hot.ver # lver[n]
+  /\ hot.val.fid # lval[n].fid
   /\ role' = [role EXCEPT ![n] = "down"]
   /\ fpc' = [fpc EXCEPT ![n] = "idle"]
   /\ pend' = [pend EXCEPT ![n] = NoPend]
@@ -426,7 +402,7 @@ ResolveBlindRebase(n) ==
 
 (***************************************************************************)
 (* Crashes.  An in-flight CAS survives its writer and may land late; the   *)
-(* ETag is what fences it once anyone else has written.                    *)
+(* SQL revision fences it once another transaction has written.                    *)
 (***************************************************************************)
 Crash(n) ==
   /\ role[n] = "owner" /\ crashes < MaxCrash
@@ -460,7 +436,7 @@ OwnerStep ==
   \/ \E n \in Nodes : AppendFresh(n) \/ AppendRequeued(n) \/ Compact(n)
   \/ \E n \in Nodes : ArchiveAppend(n) \/ ArchiveAdvance(n)
   \/ \E n \in Nodes : BeginFlush(n) \/ FlushOk(n) \/ FlushReject(n)
-                        \/ FlushRejectResettle(n)
+                        \/ FlushRejectResettle(n) \/ ArchiveRebase(n)
   \/ \E n \in Nodes : ResolveLanded(n) \/ ResolveNotLanded(n)
                         \/ ResolveDeposed(n)
   \/ \E n \in Nodes : ResolveBlindRetry(n) \/ ResolveBlindRebase(n)
@@ -486,6 +462,11 @@ FairSpec ==
 (***************************************************************************)
 (* Invariants.                                                             *)
 (***************************************************************************)
+
+(* A resident with the current SQL revision must represent that revision. *)
+ResidentRevisionSound ==
+  \A n \in Nodes :
+    (role[n] = "owner" /\ lver[n] = hot.ver) => lval[n] = hot.val
 
 (* The hot window never contradicts what first became durable: a payload  *)
 (* or event behind a seq is fixed at its first durability forever.        *)
@@ -518,7 +499,7 @@ WindowComplete ==
 
 (* ... and nothing else is: archived records must have left the window.   *)
 (* Together with WindowComplete the window is exactly (arch, last] — the  *)
-(* bounded-hot-object guarantee.  Retaining history would violate this.   *)
+(* PG body range. SQL refinement has separate runtime tests.             *)
 WindowExact ==
   \A s \in DOMAIN hot.val.log : s > hot.val.arch /\ s <= hot.val.last
 
@@ -539,12 +520,12 @@ ChunkMatchesSettledLog ==
     \A i \in 1..Len(arcv.val) :
       arcv.val[i] = [ev |-> evOf[i], p |-> dur[i]]
 
-(* Watermark order from the doc: archived_through <= compacted_through.   *)
-WatermarkOrder == hot.val.arch <= hot.val.comp /\ hot.val.comp <= hot.val.last
+(* Logical release and physical publication each stay within durability. *)
+WatermarkOrder == hot.val.arch <= hot.val.last /\ hot.val.comp <= hot.val.last
 
-(* Under fair owner progress, bounded faults, and a full compaction        *)
-(* watermark, everything compacted is eventually archived.                *)
+(* Fair eligible worker progress and bounded faults drain committed data. *)
+(* The abstraction omits the engineering microbatch/idle scheduling cost.  *)
 EventuallyArchived ==
-  (hot.val.comp = MaxSeq) ~> (hot.val.arch = MaxSeq)
+  (hot.val.last = MaxSeq) ~> (hot.val.arch = MaxSeq)
 
 =============================================================================

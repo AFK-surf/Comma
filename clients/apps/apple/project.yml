@@ -37,8 +37,15 @@ settings:
       COMMA_APP_NAME: Comma
       COMMA_PUSH_ENVIRONMENT: production
 packages:
+  AppAuth:
+    url: https://github.com/openid/AppAuth-iOS
+    exactVersion: 2.0.0
   CommaCore:
     path: ../../packages/apple-core
+  # Writes a moving avatar as an animated WebP, which ImageIO cannot write (BSD-3-Clause).
+  libwebp:
+    url: https://github.com/SDWebImage/libwebp-Xcode
+    exactVersion: 1.6.0
   # Apple's CommonMark + GFM parser; agent replies render from its syntax tree.
   Markdown:
     url: https://github.com/swiftlang/swift-markdown
@@ -103,9 +110,10 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSSupportsLiveActivities: true
         NSBluetoothAlwaysUsageDescription: Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.
-        NSCameraUsageDescription: Take photos to send in your chat or to use as your profile photo.
+        NSCameraUsageDescription: Take photos for your chats, profile, or a mini app you choose. You confirm each photo before sharing it with a mini app.
+        NSLocationWhenInUseUsageDescription: Lets an Agent read your location while you use Comma, when it needs to know where you are.
         NSPhotoLibraryUsageDescription: Show your recent photos so you can send them in your chat.
-        NSMicrophoneUsageDescription: Talk with Comma in a voice call.
+        NSMicrophoneUsageDescription: Talk with Comma in a voice call, or dictate a message.
         NSLocalNetworkUsageDescription: Comma connects straight to your computers on this network when it can.
         # audio: a voice call keeps its microphone and connection while the app is in the background.
         UIBackgroundModes: [audio, remote-notification]
@@ -116,8 +124,14 @@ targets:
       properties:
         aps-environment: $(COMMA_PUSH_ENVIRONMENT)
         com.apple.developer.applesignin: [Default]
+        com.apple.developer.devicecheck.appattest-environment: $(COMMA_PUSH_ENVIRONMENT)
+        com.apple.developer.associated-domains:
+          - applinks:app.comma.surf
+          - applinks:app-staging.comma.surf
     dependencies:
       - package: CommaCore
+      - package: AppAuth
+      - package: libwebp
       - framework: Vendor/hermes/hermes.xcframework
         embed: true
       - target: CommaLiveActivity

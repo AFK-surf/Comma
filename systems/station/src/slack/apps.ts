@@ -1,4 +1,4 @@
-// Managing a connect's Slack app from still.fail (chat/slack_apps.rs): its name, description, colour, icon and
+// Managing a connect's Slack app from Comma (chat/slack_apps.rs): its name, description, colour, icon and
 // permissions live in the app's manifest, which Slack lets a workspace member change with an app configuration token.
 // The token lasts 12 hours; its refresh token (single use) yields the next pair, so the station keeps both and rotates
 // as needed. Permission changes still need a person to approve them in Slack; the station hands them the link. Also the
@@ -129,7 +129,7 @@ export type SlackAppEdit = {
 };
 
 /// What a Slack app the station makes is called when nobody named it.
-export const DEFAULT_APP_NAME = "still.fail";
+export const DEFAULT_APP_NAME = "Comma";
 
 const at = (value: Json, path: string[]): Json => path.reduce((v, key) => (v !== null && typeof v === "object" && !Array.isArray(v) ? v[key] : undefined), value);
 const strings = (value: Json): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
@@ -225,7 +225,7 @@ export function withSocketMode(manifest: Json, on: boolean): Json {
 /// Every bot scope of every permission group.
 export const botScopes = (): string[] => unique(knownScopes());
 
-/// The Slack app manifest for a still.fail connect. Every permission group is on, so later features (file upload,
+/// The Slack app manifest for a Comma connect. Every permission group is on, so later features (file upload,
 /// reactions as status, co-author lookup) do not need a reinstall; people can turn groups off on the connect page.
 /// `redirectUrl`: where Slack sends a person who installed it (still.fail cloud's page that hands the code to the
 /// station), so the bot token is not copied by hand.
@@ -233,7 +233,7 @@ export function slackManifest(name: string, description: string | null = null, r
   const oauth: Json = { scopes: { bot: botScopes() } };
   if (redirectUrl !== null) oauth.redirect_urls = [redirectUrl];
   return {
-    display_information: { name, description: description ?? "Coding agent in your threads (still.fail)", background_color: "#7a2e0e" },
+    display_information: { name, description: description ?? "Coding agent in your threads (Comma)", background_color: "#7a2e0e" },
     // The Messages tab lets people message the bot directly; without it Slack says messaging the app is turned off.
     features: {
       bot_user: { display_name: name, always_online: true },

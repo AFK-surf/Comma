@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Task details sections -->
+    <string name="task_details_code">代码</string>
+    <string name="task_details_code_review">代码审查</string>
+    <string name="task_details_browser">浏览器</string>
+    <string name="task_details_files">文件</string>
+    <string name="task_tools_retry">重试</string>
+
+    <!-- Task files -->
+    <string name="task_files_title">任务文件</string>
+    <string name="task_files_search">搜索已加载文件</string>
+    <string name="task_files_indexing">正在为较早的任务文件建立索引，请稍后刷新。</string>
+    <string name="task_files_refresh">刷新</string>
+    <string name="task_files_empty">暂无文件</string>
+    <string name="task_files_loading">正在加载…</string>
+    <string name="task_files_load_more">加载更多</string>
+    <string name="task_files_failed">无法加载任务文件</string>
+    <string name="task_files_actions">%1$s 的操作</string>
+    <string name="task_files_preview">预览</string>
+    <string name="task_files_add_to_context">添加到上下文</string>
+
+    <!-- Remote browser -->
+    <string name="remote_browser_title">远程浏览器</string>
+    <string name="remote_browser_viewport">远程浏览器画面</string>
+    <string name="remote_browser_none">此对话暂无正在运行的浏览器。</string>
+    <string name="remote_browser_tab">Tab</string>
+    <string name="remote_browser_control">控制权</string>
+    <string name="remote_browser_you">你</string>
+    <string name="remote_browser_agent">Agent</string>
+    <string name="remote_browser_return_control">归还控制</string>
+    <string name="remote_browser_take_control">接管控制</string>
+    <string name="remote_browser_keyboard">键盘</string>
+    <string name="remote_browser_text_hint">要输入的文字</string>
+    <string name="remote_browser_type">输入文字</string>
+    <string name="remote_browser_key_tab">Tab</string>
+    <string name="remote_browser_key_enter">回车</string>
+    <string name="remote_browser_key_escape">Esc</string>
+    <string name="remote_browser_key_page_up">上一页</string>
+    <string name="remote_browser_key_page_down">下一页</string>
+    <string name="remote_browser_reconnect">重新连接</string>
+    <string name="remote_browser_clear">清除浏览器存储</string>
+    <string name="remote_browser_clear_title">清除浏览器存储？</string>
+    <string name="remote_browser_clear_message">将移除此浏览器中保存的网站会话。</string>
+    <string name="remote_browser_clear_confirm">清除存储</string>
+    <string name="remote_browser_failed">浏览器连接失败。</string>
+
+    <!-- Code review -->
+    <string name="coding_review_title">代码审查</string>
+    <string name="coding_environment">运行环境</string>
+    <string name="coding_repository">仓库</string>
+    <string name="coding_branch">分支</string>
+    <string name="coding_base_branch">基础分支</string>
+    <string name="coding_sandbox">沙盒</string>
+    <string name="coding_open_terminal">打开终端</string>
+    <string name="coding_history">执行历史</string>
+    <string name="coding_history_unavailable">沙盒运行时可查看执行历史。</string>
+    <string name="coding_thinking">思考中</string>
+    <string name="coding_changes">更改</string>
+    <string name="coding_compare">比较范围</string>
+    <string name="coding_all_changes">所有更改</string>
+    <string name="coding_uncommitted">未提交的更改</string>
+    <string name="coding_no_changes">没有更改</string>
+    <string name="coding_truncated">部分更改过大，无法显示。请在 GitHub 上审查完整分支。</string>
+    <string name="coding_no_diff">此文件没有文本差异，请打开 PR 审查。</string>
+    <string name="coding_pull_request">PR</string>
+    <string name="coding_checks">检查</string>
+    <string name="coding_checks_summary">%1$d 项通过 · %2$d 项失败 · 共 %3$d 项</string>
+    <string name="coding_open_github">在 GitHub 中打开</string>
+    <string name="coding_edit_pr">编辑 PR</string>
+    <string name="coding_ready_pr">标记为可审查</string>
+    <string name="coding_merge_pr">合并 PR</string>
+    <string name="coding_merge_title">合并 PR？</string>
+    <string name="coding_create_pr">创建 PR</string>
+    <string name="coding_pr_title">标题</string>
+    <string name="coding_pr_description">描述</string>
+    <string name="coding_pr_draft">草稿</string>
+    <string name="coding_pr_save">保存</string>
+    <string name="coding_state_ready">已就绪</string>
+    <string name="coding_state_starting">正在启动</string>
+    <string name="coding_state_stopped">已停止</string>
+    <string name="coding_state_lost">已断开</string>
+    <string name="coding_state_failed">失败</string>
+    <string name="coding_state_ended">已结束</string>
+    <string name="coding_state_open">已打开</string>
+    <string name="coding_state_draft">草稿</string>
+    <string name="coding_state_merged">已合并</string>
+    <string name="coding_state_closed">已关闭</string>
+
+    <!-- New task -->
+    <string name="new_task_title">新任务</string>
+    <string name="new_task_prompt">想让它做什么？</string>
+    <string name="new_task_instructions">任务说明</string>
+    <string name="new_task_run_in">运行环境</string>
+    <string name="new_task_cloud">Comma 云端</string>
+    <string name="new_task_code">写代码</string>
+    <string name="new_task_default_model">默认</string>
+    <string name="new_task_models_unavailable">此工作空间无法使用模型设置。</string>
+    <string name="new_task_create">创建 Task</string>
+    <string name="new_task_default_branch">默认分支</string>
+    <string name="new_task_more_branches">加载更多分支</string>
+    <string name="new_task_model">模型</string>
+    <string name="new_task_model_account">模型与账号</string>
+    <string name="new_task_confirm">确认</string>
+    <string name="new_task_search_owners">搜索组织</string>
+    <string name="new_task_search_in">在 %1$s 中搜索</string>
+    <string name="new_task_organizations">组织</string>
+    <string name="new_task_refine">请缩小搜索范围以查看更多结果。</string>
+    <string name="new_task_no_results">无结果</string>
+</resources>

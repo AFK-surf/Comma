@@ -3,7 +3,8 @@
 // - this installation's Drive node (desktop: the synchronicity daemon Main runs, the host's `localDrive`), read and
 //   changed through the host: its spaces and their listings, versions, pins, sync, and the files' bytes;
 // - without a node (the web), the Workspace's hosted Drive, read-only through Comma;
-// - the System Files of the workspace the app works in (system-files.ts), on every platform.
+// - the System Files of the workspace the app works in (system-files.ts), on every platform;
+// - the files Agents attached to that workspace's Tasks (task-files.ts), read-only, on every platform.
 //
 // While `drive` is shown one worker keeps it current: the node's state every 1.5 s while it starts; once it is ready
 // its listing every 20 s, 150 ms after its files last changed, and on `drive.refresh` (a window came back to the
@@ -13,9 +14,16 @@
 // it and reads Drive again after it, one at a time.
 //
 // Bounds: one load or change at a time per device; a load lists each space in pages of 500 entries and at most 50,000
-// files in all; a read takes at most 256 MiB from the node in ranges of 10 MB (10 MB of the hosted Drive); a write
-// at most 10 MB; the sync history keeps 500 lines.
-import { CoreError, type Scoped, type Value } from "@comma/core-kernel";
+// files in all, and Task Files in at most 5 requests of 200 files; a read takes at most 256 MiB from the node in ranges
+// of 10 MB (10 MB of the hosted Drive); a write at most 10 MB; the sync history keeps 500 lines.
+import { lazySchema } from "@comma/chat-contract";
+import {
+  CoreError,
+  madeOnce,
+  share,
+  type Scoped,
+  type Value,
+} from "@comma/core-kernel";
 import { Duration, Effect, Option, Queue, Result, Semaphore } from "effect";
 import { z } from "zod";
 import type { Account } from "../account.ts";
@@ -50,6 +58,8 @@ import {
   spaceToDrive,
   versionsToDrive,
 } from "./node-files.ts";
+import { readFile } from "../files.ts";
+import { loadTaskFiles, TASK_FILES_SPACE } from "./task-files.ts";
 import { DriveTransfers } from "./transfers.ts";
 import {
   deleteSystemFile,
@@ -76,26 +86,48 @@ const RANGE = 10_000_000;
 const HOSTED_READ_MAX = 10_000_000;
 const WRITE_MAX = 10_000_000;
 
-const hostedTreeSchema = z
-  .object({
-    entries: z.array(
-      z
-        .object({
-          path: z.string(),
-          name: z.string(),
-          kind: z.string(),
-          size: z.number().nullable().optional(),
-          modified_at: z.number().nullable().optional(),
-        })
-        .strip()
-    ),
-    truncated: z.boolean().optional(),
-  })
-  .strip();
+const hostedTreeSchema = lazySchema(() =>
+  z
+    .object({
+      entries: z.array(
+        z
+          .object({
+            path: z.string(),
+            name: z.string(),
+            kind: z.string(),
+            size: z.number().nullable().optional(),
+            modified_at: z.number().nullable().optional(),
+          })
+          .strip()
+      ),
+      truncated: z.boolean().optional(),
+    })
+    .strip()
+);
 
+/** `refresh`: read the server's sources too; `change`: the node changed, read it again. */
 type Wake = "refresh" | "change";
 
 const empty = { spaces: [] as DriveSpace[], files: [] as DriveFile[] };
+
+/** The spaces Drive adds of its own, read-only and remote: the same rows each time. */
+const SYSTEM_SPACE_ROW: DriveSpace = {
+  id: SYSTEM_SPACE,
+  name: "",
+  remote: true,
+  writable: false,
+};
+const TASK_FILES_SPACE_ROW: DriveSpace = {
+  id: TASK_FILES_SPACE,
+  name: "",
+  remote: true,
+  writable: false,
+};
+
+/** A file with the versions read of it, made once for the same file and versions. */
+const withVersions = madeOnce(
+  (file: DriveFile, versions: DriveFileVersion[]): DriveFile => ({ ...file, versions })
+);
 
 const fileIds = (p: unknown, name = "files"): string[] => {
   const ids = (p as Record<string, unknown> | null)?.[name];
@@ -132,6 +164,7 @@ export class DriveFiles {
   #devices: DriveDevice[] = [];
   #hosted = empty;
   #system: { groupId: string; files: DriveFile[] } | null = null;
+  #taskFiles: { groupId: string; files: DriveFile[] } | null = null;
   /** The device whose copies are listed; null: this one. */
   #origin: string | null = null;
   #policy: DriveVersionPolicy = "newest";
@@ -148,6 +181,15 @@ export class DriveFiles {
   /** A node that could not start is restarted at the next read. */
   #restartDue = false;
   #accountKey: string | null = null;
+  /**
+   * The Workspace the server's sources (the hosted tree, System Files, Task files) were last read for, as
+   * `#workspaceKey` names it; null: not read for this account yet. A read reads them again only for another Workspace
+   * or when `#serverDue` says so (a refresh, the 20 s timer, a System File changed): the node changing changes none.
+   */
+  #serverFor: string | null = null;
+  #serverDue = true;
+  /** A read is under way that has not yet seen which Workspace it reads for: a change of the list now is its. */
+  #resolving = false;
   #worker: { scope: Scoped; wakes: Queue.Queue<Wake> } | null = null;
   readonly #transfers: DriveTransfers;
 
@@ -186,14 +228,22 @@ export class DriveFiles {
       this.#accountKey = key;
       this.#hosted = empty;
       this.#system = null;
+      this.#taskFiles = null;
       this.#history = [];
       this.#versions.clear();
       this.#enrolled = false;
+      this.#serverFor = null;
       ctx.runner.fork(this.#transfers.clear());
       this.#changed();
       this.#wake("refresh");
     });
-    workspaces.onChange(() => this.#wake("refresh"));
+    // Another Workspace, or one first known: its sources are read. A list read again that names the same one changes
+    // none of them.
+    workspaces.onChange(() => {
+      if (this.#resolving) return;
+      if (this.#workspaceKey(workspaces.resolve("")) !== this.#serverFor)
+        this.#wake("change");
+    });
     this.#registerCalls();
   }
 
@@ -510,21 +560,21 @@ export class DriveFiles {
       ? { spaces: this.#nodeSpaces, files: this.#nodeFiles }
       : this.#hosted;
     const system = this.#system;
+    const taskFiles = this.#taskFiles;
     const files = source.files.map((file) => {
       const read = this.#versions.get(file.id);
       return read && read.hash === file.contentsHash && read.versions.length > 1
-        ? { ...file, versions: read.versions }
+        ? withVersions(file, read.versions)
         : file;
     });
     return {
       node: this.#status,
       spaces: [
         ...source.spaces,
-        ...(system
-          ? [{ id: SYSTEM_SPACE, name: "", remote: true, writable: false }]
-          : []),
+        ...(system ? [SYSTEM_SPACE_ROW] : []),
+        ...(taskFiles ? [TASK_FILES_SPACE_ROW] : []),
       ],
-      files: [...files, ...(system?.files ?? [])],
+      files: [...files, ...(system?.files ?? []), ...(taskFiles?.files ?? [])],
       devices: this.#devices,
       originDeviceId: this.#origin ?? this.#state?.origin ?? "",
       versionPolicy: this.#policy,
@@ -549,6 +599,7 @@ export class DriveFiles {
   // ---- keeping it current
 
   #wake(wake: Wake): void {
+    if (wake === "refresh") this.#serverDue = true;
     if (this.#worker) Queue.offerUnsafe(this.#worker.wakes, wake);
   }
 
@@ -565,6 +616,7 @@ export class DriveFiles {
   #restartAgain(): void {
     this.#restarts = 0;
     this.#restartDue = true;
+    this.#serverDue = true;
   }
 
   /**
@@ -589,7 +641,9 @@ export class DriveFiles {
           yield* Effect.raceFirst(Effect.sleep(Duration.millis(DRIVE_POLL_MS)), wake);
         else if (this.#node && this.#status.status === "ready")
           yield* Effect.raceFirst(
-            Effect.sleep(Duration.millis(DRIVE_REFRESH_MS)),
+            Effect.sleep(Duration.millis(DRIVE_REFRESH_MS)).pipe(
+              Effect.andThen(Effect.sync(() => (this.#serverDue = true)))
+            ),
             wake
           );
         else if (
@@ -608,7 +662,7 @@ export class DriveFiles {
     );
   }
 
-  /** Reads every source; one that fails keeps what it showed. */
+  /** Reads the node, and the server's sources when they are due (`#serverFor`); one that fails keeps what it showed. */
   #loadAll(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const account = yield* this.#ctx.session.account().pipe(Effect.option);
@@ -621,17 +675,42 @@ export class DriveFiles {
       let resolved = this.#workspaces.resolve("");
       if (resolved.status === "loading") {
         // Drive shows the workspace the app works in: its list is read first when no surface has read it yet.
-        yield* this.#workspaces.refresh().pipe(Effect.ignore);
+        this.#resolving = true;
+        yield* this.#workspaces
+          .refresh()
+          .pipe(
+            Effect.ignore,
+            Effect.ensuring(Effect.sync(() => (this.#resolving = false)))
+          );
         resolved = this.#workspaces.resolve("");
       }
       const workspace = resolved.status === "ready" ? resolved.workspace : null;
+      const key = this.#workspaceKey(resolved);
       if (this.#node) yield* this.#loadNode(this.#node);
-      else if (workspace) yield* this.#loadHosted(account.value, workspace.groupId);
-      if (workspace)
+      if (!this.#serverDue && key === this.#serverFor) {
+        this.#changed();
+        return;
+      }
+      this.#serverDue = false;
+      this.#serverFor = key;
+      if (workspace) {
+        if (!this.#node) yield* this.#loadHosted(account.value, workspace.groupId);
         yield* this.#loadSystem(account.value, workspace.id, workspace.groupId);
-      else if (resolved.status === "ready") this.#system = null;
+        yield* this.#loadTaskFiles(account.value, workspace.groupId);
+      } else if (resolved.status === "ready") {
+        this.#system = null;
+        this.#taskFiles = null;
+      }
       this.#changed();
     });
+  }
+
+  /** Which Workspace's sources a read is of: none while the list is not read. */
+  #workspaceKey(resolved: ReturnType<Workspaces["resolve"]>): string | null {
+    if (resolved.status !== "ready") return null;
+    return resolved.workspace
+      ? `${resolved.workspace.id}/${resolved.workspace.groupId}`
+      : "";
   }
 
   #loadNode(node: LocalDrivePorts): Effect.Effect<void> {
@@ -681,9 +760,10 @@ export class DriveFiles {
         this.#setStatus({ status: "error", reason: listed.failure.message });
         return;
       }
-      this.#nodeSpaces = listed.success.spaces;
-      this.#nodeFiles = listed.success.files;
-      this.#devices = devicesOf(state, listed.success.files);
+      // A listing read again keeps the rows that did not change (core-kernel keep.ts).
+      this.#nodeSpaces = share(this.#nodeSpaces, listed.success.spaces);
+      this.#nodeFiles = share(this.#nodeFiles, listed.success.files);
+      this.#devices = share(this.#devices, devicesOf(state, listed.success.files));
       if (this.#origin && !this.#devices.some((device) => device.id === this.#origin))
         this.#origin = null;
       this.#setStatus({ status: "ready" });
@@ -830,7 +910,7 @@ export class DriveFiles {
       )
       .pipe(
         Effect.map((tree) => {
-          this.#hosted = {
+          this.#hosted = share(this.#hosted, {
             spaces: [
               {
                 id: HOSTED_SPACE,
@@ -860,7 +940,7 @@ export class DriveFiles {
                 },
               ];
             }),
-          };
+          });
         }),
         Effect.ignore
       );
@@ -877,9 +957,23 @@ export class DriveFiles {
         loadSystemFiles(this.#ctx, account, { groupId, workspaceId, skills })
       ),
       Effect.map((files) => {
-        this.#system = { groupId, files };
+        this.#system = share(this.#system, { groupId, files });
       }),
       Effect.ignore
+    );
+  }
+
+  #loadTaskFiles(account: Account, groupId: string): Effect.Effect<void> {
+    return loadTaskFiles(this.#ctx, account, groupId).pipe(
+      Effect.map((files) => {
+        this.#taskFiles = share(this.#taskFiles, { groupId, files });
+      }),
+      // A failed read keeps what this Group showed, never another Group's files.
+      Effect.catch(() =>
+        Effect.sync(() => {
+          if (this.#taskFiles?.groupId !== groupId) this.#taskFiles = null;
+        })
+      )
     );
   }
 
@@ -889,7 +983,8 @@ export class DriveFiles {
     return (
       this.#nodeFiles.find((file) => file.id === id) ??
       this.#hosted.files.find((file) => file.id === id) ??
-      this.#system?.files.find((file) => file.id === id)
+      this.#system?.files.find((file) => file.id === id) ??
+      this.#taskFiles?.files.find((file) => file.id === id)
     );
   }
 
@@ -935,7 +1030,7 @@ export class DriveFiles {
   #readVersions(id: string): Effect.Effect<DriveFileVersion[], CoreError> {
     return Effect.gen({ self: this }, function* () {
       const file = this.#file(id);
-      if (!file || file.spaceId === SYSTEM_SPACE || this.#hostedFile(file)) return [];
+      if (!file || file.system || this.#hostedFile(file)) return [];
       const kept = this.#versions.get(id);
       if (kept && kept.hash === file.contentsHash) return kept.versions;
       if ((file.versionCount ?? 1) < 2) return [];
@@ -979,6 +1074,7 @@ export class DriveFiles {
         );
       if (file.system) {
         const account = yield* this.#ctx.session.account();
+        this.#serverDue = true;
         return yield* deleteSystemFile(this.#ctx, account, file);
       }
       const { node } = yield* this.#nodeFile(id);
@@ -1111,6 +1207,17 @@ export class DriveFiles {
           new CoreError("not_found", "The file is not in Drive.")
         );
       const account = yield* this.#ctx.session.account();
+      if (file.system?.kind === "task_file") {
+        const { group, conversation, message, index } = file.system;
+        const read = yield* readFile(this.#ctx, undefined, {
+          source: "attachment",
+          group,
+          conversation,
+          message,
+          index,
+        });
+        return { bytes: read.bytes, mediaType: read.type || driveMediaType(file.name) };
+      }
       if (file.system) {
         const read = yield* readSystemFile(this.#ctx, account, file);
         // A memory file or the instructions read with a newer hash than the listing's take it, so an edit starts
@@ -1222,6 +1329,7 @@ export class DriveFiles {
             new CoreError("not_found", "The file is not in Drive.")
           );
         const account = yield* this.#ctx.session.account();
+        this.#serverDue = true;
         const written = yield* saveSystemFile(
           this.#ctx,
           account,
@@ -1242,7 +1350,10 @@ export class DriveFiles {
                   )?.system;
                   return Effect.fail(
                     new CoreError("changed", error.message, error.status, {
-                      hash: latest && latest.kind !== "skill" ? latest.hash : undefined,
+                      hash:
+                        latest?.kind === "vfs" || latest?.kind === "instructions"
+                          ? latest.hash
+                          : undefined,
                     })
                   );
                 })
@@ -1255,7 +1366,7 @@ export class DriveFiles {
           contentsHash: written.hash ?? `saved:${this.#ctx.now()}`,
           modifiedAt: this.#ctx.now(),
           sizeBytes: written.size,
-          ...(file.system && file.system.kind !== "skill"
+          ...(file.system?.kind === "vfs" || file.system?.kind === "instructions"
             ? { system: { ...file.system, hash: written.hash ?? undefined } }
             : {}),
         });

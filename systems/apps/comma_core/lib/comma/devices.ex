@@ -1,6 +1,8 @@
 defmodule Comma.Devices do
   @moduledoc "Workspace-scoped device settings backed by the Salix device owner."
 
+  require Logger
+
   alias SalixEnv.Control
 
   def page(user, session, workspace_id, params) do
@@ -44,12 +46,18 @@ defmodule Comma.Devices do
     end
   end
 
-  defp cloud_vm(workspace, nil),
-    do:
-      Control.group_compute_environment(
-        workspace["default_group_id"],
-        workspace["salix_tenant_id"]
-      )
+  # Where the Cloud VM is retired the page lists it only while the Workspace
+  # still has one that is not archived (`SalixAgent.Sandboxes.cloud_vm_shown?/1`):
+  # people stop it or remove its runner there.
+  defp cloud_vm(workspace, nil) do
+    if SalixAgent.Sandboxes.cloud_vm_shown?(workspace["default_group_id"]),
+      do:
+        Control.group_compute_environment(
+          workspace["default_group_id"],
+          workspace["salix_tenant_id"]
+        ),
+      else: {:ok, nil}
+  end
 
   defp cloud_vm(_workspace, _cursor), do: {:ok, nil}
 
@@ -91,10 +99,16 @@ defmodule Comma.Devices do
            ) do
       {:ok, public_device(updated)}
     else
-      {:error, reason} when reason in [:forbidden, :not_found] -> {:error, reason}
-      {:error, _} -> {:error, {:unavailable, "Device runtime check failed"}}
+      {:error, reason} when reason in [:forbidden, :not_found, :unsupported_for_kind] ->
+        {:error, reason}
+
+      {:error, _} ->
+        {:error, {:unavailable, "Device runtime check failed"}}
     end
   end
+
+  # A still.fail station answers no coding-agent probe: it is never asked.
+  defp allow_probe(%{"device_kind" => "stillfail"}), do: {:error, :unsupported_for_kind}
 
   defp allow_probe(%{"status" => "connected"} = device) do
     if public_device(device)["allows_operations"], do: :ok, else: {:error, :forbidden}
@@ -114,6 +128,9 @@ defmodule Comma.Devices do
   as asked. An older station or Go connector knows two levels: Read and Full
   go to it as `allow_operations`, and Off is refused with its upgrade reason
   (`station_outdated` or `device_needs_station`), nothing changed.
+
+  A still.fail station has no access value (it takes Tasks only, never files
+  or commands): `:unsupported_for_kind`, nothing asked of it.
   """
   def set_access(_user, %{"restricted" => true}, _workspace_id, _device_id, _params),
     do: {:error, :forbidden}
@@ -128,6 +145,7 @@ defmodule Comma.Devices do
              workspace["salix_tenant_id"],
              user["id"]
            ),
+         :ok <- takes_access(device),
          {:ok, request} <- connector_access_request(device, wanted),
          {:ok, result} <-
            SalixEnv.Connector.Live.request(device["connector_run_id"], "device_access", request),
@@ -135,6 +153,9 @@ defmodule Comma.Devices do
       {:ok, %{access: access, allows_operations: access == "full"}}
     end
   end
+
+  defp takes_access(%{"device_kind" => "stillfail"}), do: {:error, :unsupported_for_kind}
+  defp takes_access(_device), do: :ok
 
   defp access_request(%{"access" => access}) when access in @access_levels,
     do: {:ok, {:level, access}}
@@ -183,69 +204,6 @@ defmodule Comma.Devices do
 
   defp confirmed_access(_wanted, _result), do: {:error, :device_access_unavailable}
 
-  @screen_stream_start_fields ~w(sdp target apps display control background)
-
-  @doc """
-  Relays one screen stream signaling step to the device's Connector.
-
-  `ice` returns the ICE servers for both peers. `start` carries the viewer's
-  WebRTC offer with those servers and returns the Connector's answer. Media and
-  input then travel peer to peer. The device must allow operations.
-  """
-  def screen_stream(_user, %{"restricted" => true}, _workspace_id, _device_id, _params),
-    do: {:error, :forbidden}
-
-  def screen_stream(user, session, workspace_id, device_id, params) do
-    with {:ok, request} <- screen_stream_request(params),
-         {:ok, workspace} <- scope(user, session, workspace_id),
-         {:ok, device} <-
-           Control.get_environment(
-             device_id,
-             workspace["default_group_id"],
-             workspace["salix_tenant_id"]
-           ),
-         :ok <- allow_probe(device),
-         {:ok, %{"ok" => true} = result} <- screen_stream_step(device, request) do
-      {:ok, Map.take(result, ~w(sdp stream_id geometry ice_servers))}
-    else
-      {:ok, %{"error" => message}} when is_binary(message) -> {:error, {:conflict, message}}
-      {:ok, _} -> {:error, {:unavailable, "Screen stream failed"}}
-      {:error, :connector_disconnected} -> {:error, {:unavailable, "Device is offline"}}
-      {:error, reason} when reason in [:forbidden, :not_found] -> {:error, reason}
-      {:error, {:bad_request, _} = reason} -> {:error, reason}
-      {:error, _} -> {:error, {:unavailable, "Screen stream failed"}}
-    end
-  end
-
-  defp screen_stream_step(_device, %{"op" => "ice"}),
-    do: {:ok, %{"ok" => true, "ice_servers" => Comma.ScreenStreamIce.servers()}}
-
-  defp screen_stream_step(device, request),
-    do: SalixEnv.Connector.Live.request(device["connector_run_id"], "screen_stream", request)
-
-  defp screen_stream_request(%{"op" => "ice"}), do: {:ok, %{"op" => "ice"}}
-
-  defp screen_stream_request(%{"op" => "start", "sdp" => sdp} = params)
-       when is_binary(sdp) and byte_size(sdp) in 1..65_536 do
-    request = params |> Map.take(@screen_stream_start_fields) |> Map.put("op", "start")
-
-    case params["ice_servers"] do
-      servers when is_list(servers) and length(servers) in 1..4 ->
-        {:ok, Map.put(request, "ice_servers", servers)}
-
-      _ ->
-        {:ok, request}
-    end
-  end
-
-  defp screen_stream_request(%{"op" => "stop", "stream_id" => stream_id})
-       when is_binary(stream_id) and byte_size(stream_id) in 1..64 do
-    {:ok, %{"op" => "stop", "stream_id" => stream_id}}
-  end
-
-  defp screen_stream_request(_params),
-    do: {:error, {:bad_request, "op must be ice, start with sdp, or stop with stream_id"}}
-
   def rename(_user, %{"restricted" => true}, _, _, _), do: {:error, :forbidden}
 
   def rename(user, session, workspace_id, device_id, params) do
@@ -264,14 +222,29 @@ defmodule Comma.Devices do
   def remove(_user, %{"restricted" => true}, _, _), do: {:error, :forbidden}
 
   def remove(user, session, workspace_id, device_id) do
-    with {:ok, workspace} <- scope(user, session, workspace_id),
-         {:ok, _device} <-
-           Control.remove_environment(
+    with {:ok, workspace} <- scope(user, session, workspace_id) do
+      case Control.remove_environment(
              device_id,
              workspace["default_group_id"],
              workspace["salix_tenant_id"]
            ) do
-      {:ok, %{removed: true}}
+        {:ok, _device} ->
+          {:ok, %{removed: true}}
+
+        # A server that owned one of its connections has not confirmed that it
+        # stopped (for example, it left the cluster). The device stays until an
+        # operator proves that the connection stopped.
+        {:error, {:owner_stop_unconfirmed, reason}} ->
+          Logger.warning(
+            "device not removed: owner stop unconfirmed device=#{device_id} " <>
+              "group=#{workspace["default_group_id"]} reason=#{inspect(reason)}"
+          )
+
+          {:error, :device_stop_unconfirmed}
+
+        {:error, _} = error ->
+          error
+      end
     end
   end
 
@@ -298,11 +271,14 @@ defmodule Comma.Devices do
   # this client projection narrow; discovery does not trigger provider probes.
   # Readiness and models come from the device record already read, so a page
   # makes no call per device. `station_id` is the station the device's
-  # Connector proved it runs, absent until one did.
+  # Connector proved it runs, absent until one did. `screen_view`: whether
+  # that station serves the computer's display on the mesh, as it says.
+  # `device_kind`: what the device was set up as, absent for a computer
+  # (`stillfail` for a still.fail station, `hardware` for a Comma board).
   defp public_device(device) do
     device
     |> Map.take(
-      ~w(device_id station_id name alias status os arch connected_at disconnected_at updated_at environments device_runtimes system_info)
+      ~w(device_id device_kind station_id name alias status os arch connected_at disconnected_at updated_at environments device_runtimes system_info)
     )
     |> Map.put("name", display_name(device))
     |> Map.put(
@@ -313,6 +289,7 @@ defmodule Comma.Devices do
     )
     |> Map.put("tasks_readiness", tasks_readiness(device))
     |> Map.put("task_models", task_models(device))
+    |> Map.put("screen_view", get_in(device, ["capabilities", "screen_view"]) == true)
     |> put_access(device)
   end
 

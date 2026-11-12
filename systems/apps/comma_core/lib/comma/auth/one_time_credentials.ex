@@ -8,7 +8,21 @@ defmodule Comma.Auth.OneTimeCredentials do
   caller-supplied account authority. Expiry and revocation checks fail closed.
   """
 
-  def issue(purpose, context, ttl_seconds, peer) do
+  def pack(%{id: id, secret: secret}), do: Base.url_encode64(id <> ":" <> secret, padding: false)
+
+  def unpack(credential) when is_binary(credential) and byte_size(credential) <= 512 do
+    with {:ok, bytes} <- Base.url_decode64(credential, padding: false),
+         [id, secret] <- String.split(bytes, ":", parts: 2),
+         true <- byte_size(id) in 1..200 and byte_size(secret) in 1..200 do
+      {:ok, id, secret}
+    else
+      _ -> {:error, :invalid_one_time_credential}
+    end
+  end
+
+  def unpack(_), do: {:error, :invalid_one_time_credential}
+
+  def issue(purpose, context, ttl_seconds, peer, options \\ []) do
     id = purpose <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
     secret = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
     expires_at = SystemsClock.system_time(:second) + ttl_seconds
@@ -26,8 +40,8 @@ defmodule Comma.Auth.OneTimeCredentials do
          :ok <-
            store().reserve_attempt(challenge, ttl_seconds, %{
              ip_fingerprint: fingerprint,
-             ip_request_limit: 50,
-             ip_request_window_seconds: 900
+             ip_request_limit: Keyword.get(options, :ip_request_limit, 50),
+             ip_request_window_seconds: Keyword.get(options, :ip_request_window_seconds, 900)
            }) do
       {:ok, %{id: id, secret: secret, expires_at: expires_at}}
     else

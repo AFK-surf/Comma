@@ -3,7 +3,28 @@ defmodule BridgeForTeams.DailyBriefChatSettingsTest do
 
   alias BridgeForTeams.{Accounts, DailyBrief, Memberships, Orgs, Projects, Repo}
   alias BridgeForTeams.DailyBrief.{ChatSettings, Delivery}
-  alias BridgeForTeams.Schema.DailyBriefMember
+  alias BridgeForTeams.Schema.{DailyBriefAlias, DailyBriefMember}
+
+  defmodule FakeSalix do
+    def daily_brief_channels(_request),
+      do:
+        {:ok,
+         %{
+           workspace_id: "T1",
+           complete?: true,
+           channels: [
+             %{id: "C_APP", name: "comma-app"},
+             %{id: "C_ALERTS", name: "comma-app-alerts"},
+             %{id: "C_COOL", name: "watercooler"}
+           ],
+           gaps: %{}
+         }}
+
+    def daily_brief_active_channels(_request),
+      do:
+        {:ok,
+         %{"UBO1" => [%{channel_id: "C_COOL", count: 20}, %{channel_id: "C_APP", count: 12}]}}
+  end
 
   setup do
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
@@ -50,6 +71,63 @@ defmodule BridgeForTeams.DailyBriefChatSettingsTest do
       })
 
     %{group: group, settings: settings, admin: admin, member: member}
+  end
+
+  describe "channels and projects" do
+    setup ctx do
+      previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, FakeSalix)
+      on_exit(fn -> SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous) end)
+
+      Repo.update_all(
+        from(o in BridgeForTeams.Schema.Organization, where: o.id == ^ctx.settings.org_id),
+        set: [salix_tenant_id: "ten-chat"]
+      )
+
+      :ok
+    end
+
+    test "a member follows and drops channels of their own brief by asking", ctx do
+      bo = origin(ctx.group, "UBO1")
+
+      # By default: the channels they wrote most in.
+      assert {:ok,
+              %{"main_channels" => ["#comma-app", "#comma-app-alerts", "#watercooler"]} = now} =
+               ChatSettings.set_channel(
+                 ctx.group,
+                 bo,
+                 "<#C_ALERTS|comma-app-alerts>",
+                 "follow_with_bots"
+               )
+
+      assert now["with_bot_messages"] == ["#comma-app-alerts"]
+
+      assert {:ok, %{"main_channels" => ["#comma-app", "#comma-app-alerts"]}} =
+               ChatSettings.set_channel(ctx.group, bo, "#watercooler", "ignore")
+
+      assert {:ok, %{"main_channels" => ["#comma-app", "#comma-app-alerts", "#watercooler"]}} =
+               ChatSettings.set_channel(ctx.group, bo, "watercooler", "default")
+
+      assert {:error, :channel_not_readable_by_the_bot} =
+               ChatSettings.set_channel(ctx.group, bo, "#secret", "follow")
+
+      # Only the requester's own brief changes.
+      kinds = Repo.all(from(a in DailyBriefAlias, select: {a.member_id, a.kind, a.term}))
+      assert kinds == [{ctx.member.id, "channel_bots", "C_ALERTS"}]
+    end
+
+    test "a member adds and removes project terms", ctx do
+      bo = origin(ctx.group, "UBO1")
+
+      assert {:ok, %{"projects" => ["ScreenCam"]}} =
+               ChatSettings.set_project(ctx.group, bo, " ScreenCam ", "add")
+
+      assert {:ok, %{"projects" => ["Photon", "ScreenCam"]}} =
+               ChatSettings.set_project(ctx.group, bo, "Photon", "add")
+
+      assert {:ok, %{"projects" => ["Photon"]}} =
+               ChatSettings.set_project(ctx.group, bo, "screencam", "remove")
+    end
   end
 
   test "a member moves their own brief", ctx do

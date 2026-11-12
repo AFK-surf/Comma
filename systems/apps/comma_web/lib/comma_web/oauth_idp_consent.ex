@@ -71,6 +71,7 @@ defmodule CommaWeb.OauthIdpConsent do
     case {conn.query_params["resume"], current_user(conn)} do
       {nil, {:ok, user}} -> preauthorize(conn, user)
       {nil, :forbidden_session} -> render_forbidden_session(conn)
+      {_handle, :restricted_email} -> render_restricted_email(conn)
       {nil, :error} -> stash_and_redirect_to_login(conn)
       {handle, {:ok, user}} when is_binary(handle) -> resume(conn, user, handle)
       {handle, :forbidden_session} when is_binary(handle) -> render_forbidden_session(conn)
@@ -328,6 +329,9 @@ defmodule CommaWeb.OauthIdpConsent do
       :forbidden_session ->
         render_forbidden_session(conn)
 
+      :restricted_email ->
+        render_restricted_email(conn)
+
       :cross_origin ->
         render_error(conn, :invalid)
 
@@ -462,11 +466,18 @@ defmodule CommaWeb.OauthIdpConsent do
       # only ordinary user_login sessions qualify (stricter than the
       # bare restricted check on purpose).
       # A guest has only a placeholder email, so it has no identity to assert.
-      if session["restricted"] == true or session["session_source"] != "user_login" or
-           user["kind"] == "guest" do
-        :forbidden_session
-      else
-        {:ok, user}
+      # A restricted email (Comma.Auth.EmailRestriction) signs in to Comma
+      # only, never to another service through it.
+      cond do
+        session["restricted"] == true or session["session_source"] != "user_login" or
+            user["kind"] == "guest" ->
+          :forbidden_session
+
+        Comma.Auth.EmailRestriction.restricted?(user["email"]) ->
+          :restricted_email
+
+        true ->
+          {:ok, user}
       end
     else
       _missing_or_invalid -> :error
@@ -523,6 +534,16 @@ defmodule CommaWeb.OauthIdpConsent do
       body:
         "Signing in to another app requires a regular Comma login session. Sign in to Comma yourself, then start again from the app.",
       error_code: "restricted_session",
+      status: 403
+    )
+  end
+
+  defp render_restricted_email(conn) do
+    render_error(conn, :invalid,
+      title: "This account can’t sign in to other apps",
+      body:
+        "Comma accounts with this email address can’t be used to sign in to other apps. Sign in to Comma with a different email address, then start again from the app.",
+      error_code: "restricted_email",
       status: 403
     )
   end

@@ -1,9 +1,10 @@
 defmodule SalixWeb.ConnectorSocket do
   require SystemsClock
+  require SystemsRuntime.Proc
 
   @moduledoc """
   The connector-side of the bridge — a `WebSock` handler that owns one
-  `salix-connect` WebSocket.
+  station's connector WebSocket.
 
   This process is the socket owner registered in `SalixEnv.Bridge` (the local
   `SalixEnv.Bridges` registry) under the live connector run id. The underlying
@@ -51,6 +52,13 @@ defmodule SalixWeb.ConnectorSocket do
   @default_chunked_http_seconds 30
   # A Mini App deploy reads up to ~90 MB from its station and uploads it.
   @app_deploy_timeout_ms 300_000
+  # A station's list of its registry tools answers before the station stops
+  # waiting (30 s); a call has its tool's own deadline.
+  @tool_call_timeout_ms 25_000
+  # How often a device's station is told again what it may admit: one read a minute a run that asked.
+  @mesh_check_ms 60_000
+  # For a read and its push together: the push alone is given 20 seconds (StationPlace), a read nothing.
+  @mesh_read_deadline_ms 30_000
 
   defmodule State do
     @moduledoc false
@@ -80,6 +88,8 @@ defmodule SalixWeb.ConnectorSocket do
       :scope,
       :last_peer_heartbeat_ms,
       :disconnect_error,
+      # The station takes stream chunks as binary frames.
+      binary_streams: false,
       control_pending: nil,
       control_job: nil,
       control_retry_timer: nil,
@@ -98,7 +108,13 @@ defmodule SalixWeb.ConnectorSocket do
       tunnels: %{},
       relay_challenge: nil,
       relay: nil,
-      task_index_window: nil
+      # The station asked for the mesh's facts: the number of the last it was told, as they change.
+      mesh_seq: nil,
+      # The read and push under way, one at a time, and whether a change was heard since it began.
+      mesh_read: nil,
+      mesh_again: false,
+      task_index_window: nil,
+      stats_index_window: nil
     ]
   end
 
@@ -116,6 +132,7 @@ defmodule SalixWeb.ConnectorSocket do
       credential_generation: Keyword.get(opts, :credential_generation),
       token_expires_at: Keyword.get(opts, :token_expires_at),
       process_instance_id: Keyword.get(opts, :process_instance_id),
+      binary_streams: Keyword.get(opts, :binary_streams, false),
       connection_generation: connection_generation,
       tenant_id: Keyword.get(opts, :tenant_id),
       group_id: Keyword.get(opts, :group_id),
@@ -226,7 +243,7 @@ defmodule SalixWeb.ConnectorSocket do
 
     Logger.info("connector socket up: env=#{env_id} group=#{state.group_id} node=#{node()}")
 
-    # The station proves its iroh endpoint id against this challenge to use Salix as its relay of last resort.
+    # The station proves its iroh endpoint id against this challenge to use Salix as a relay.
     challenge = SalixWeb.StationRelay.challenge()
 
     # A Workload's station is given the workspace's accounts it runs with, once it is connected,
@@ -252,6 +269,7 @@ defmodule SalixWeb.ConnectorSocket do
         "owner_user_id" => state.owner_user_id,
         "connection_generation" => state.connection_generation,
         "relay_challenge" => challenge,
+        "binary_streams" => true,
         # A run admitted by a connector credential may present the device's next one.
         "credential_renewal" => is_binary(Keyword.get(opts, :token_hash))
       })}, %{state | relay_challenge: challenge}}
@@ -284,6 +302,98 @@ defmodule SalixWeb.ConnectorSocket do
   defp station_connection(state),
     do: Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id, :owner_user_id])
 
+  # A device's station asks for the Group's facts for the mesh with its proof of
+  # the key. One that does not ask, a Workload's above all, is told nothing.
+  defp mesh_listen(%State{managed_compute: true} = state, _params), do: state
+  defp mesh_listen(%State{mesh_seq: seq} = state, _params) when is_integer(seq), do: state
+
+  defp mesh_listen(state, %{"mesh" => true}) do
+    SalixStore.Stations.Events.subscribe(SalixStore.Stations.Events.group_topic(state.group_id))
+    SalixStore.Stations.Events.subscribe(SalixStore.Stations.Events.keys_topic())
+    SystemsClock.send_after(self(), :station_mesh_check, @mesh_check_ms)
+    %{state | mesh_seq: 0}
+  end
+
+  defp mesh_listen(state, _params), do: state
+
+  defp mesh_unlisten(state) do
+    SalixStore.Stations.Events.unsubscribe(SalixStore.Stations.Events.group_topic(state.group_id))
+    SalixStore.Stations.Events.unsubscribe(SalixStore.Stations.Events.keys_topic())
+    %{state | mesh_seq: nil}
+  end
+
+  defp device_mesh(%State{mesh_seq: nil}), do: nil
+  defp device_mesh(state), do: SalixWeb.StationPlace.device_mesh(station_connection(state))
+
+  # Revocations and keys must reach the station: a run that cannot be told ends,
+  # and the next is told all of it when it proves its key.
+  # One read and push at a time, numbered as it begins: a higher number was read after a
+  # lower one, and its station keeps the highest. Changes heard meanwhile are read once more
+  # when it ends, so that read comes after them all.
+  defp push_device_mesh(%State{mesh_read: read} = state) when not is_nil(read),
+    do: %{state | mesh_again: true}
+
+  defp push_device_mesh(state) do
+    connection = station_connection(state)
+
+    start_mesh_read(%{state | mesh_again: false}, :read, fn seq ->
+      SalixWeb.StationPlace.push_device_mesh(connection, seq)
+    end)
+  end
+
+  defp start_mesh_read(state, kind, push) do
+    seq = state.mesh_seq + 1
+    socket = self()
+
+    case SystemsRuntime.TaskSupervisor.start_child(
+           SalixWeb.ConnectorRequestTaskSupervisor,
+           fn ->
+             stop_with_socket(socket)
+             if push.(seq) != :ok, do: send(socket, :station_mesh_untold)
+           end
+         ) do
+      {:ok, pid} ->
+        monitor = SystemsRuntime.Proc.monitor(pid)
+
+        late =
+          SystemsClock.send_after(socket, {:station_mesh_late, monitor}, @mesh_read_deadline_ms)
+
+        %{state | mesh_seq: seq, mesh_read: %{monitor: monitor, pid: pid, kind: kind, late: late}}
+
+      _not_started ->
+        send(socket, :station_mesh_untold)
+        state
+    end
+  end
+
+  # However the socket goes, what it started goes too: a read that never returns would otherwise stay. The read
+  # binds itself before it reads, so none runs unbound while its socket is still returning from starting it.
+  defp stop_with_socket(socket) do
+    read = self()
+
+    SystemsRuntime.Proc.spawn(fn ->
+      gone = SystemsRuntime.Proc.monitor(socket)
+      done = SystemsRuntime.Proc.monitor(read)
+
+      SystemsRuntime.Proc.receive do
+        {:DOWN, ^gone, :process, _, _} -> SystemsRuntime.Proc.exit(read, :kill)
+        {:DOWN, ^done, :process, _, _} -> :ok
+      end
+    end)
+  end
+
+  defp mesh_read_ended(%State{mesh_read: read} = state) do
+    SystemsClock.cancel_timer(read.late)
+
+    case state do
+      %State{mesh_again: true, mesh_seq: seq} when is_integer(seq) ->
+        push_device_mesh(%{state | mesh_read: nil})
+
+      _ ->
+        %{state | mesh_read: nil, mesh_again: false}
+    end
+  end
+
   defp push_station_place(state) do
     connection =
       Map.take(state, [
@@ -311,9 +421,15 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  # Binary frames are iroh packets for Salix to forward (SalixWeb.StationRelay).
-  def handle_in({data, [opcode: :binary]}, state),
-    do: {:ok, %{state | relay: SalixWeb.StationRelay.outgoing(state.relay, data)}}
+  # Binary frames are stream chunks (SalixEnv.Protocol) or iroh packets for
+  # Salix to forward (SalixWeb.StationRelay).
+  def handle_in({data, [opcode: :binary]}, state) do
+    case Protocol.decode_stream_binary(data) do
+      {:ok, message} -> handle_message(message, state)
+      {:error, _} -> {:ok, state}
+      :not_stream -> {:ok, %{state | relay: SalixWeb.StationRelay.outgoing(state.relay, data)}}
+    end
+  end
 
   def handle_in({_data, [opcode: _other]}, state), do: {:ok, state}
 
@@ -344,11 +460,11 @@ defmodule SalixWeb.ConnectorSocket do
          %State{scope: "local_file_read"} = state
        )
        when is_binary(id) and
-              method in ~w(runtime_subscription_access runtime_proxy agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities task.post task.hello task.file task.index task.app_deploy task.app_logs relay_register) do
+              method in ~w(runtime_subscription_access runtime_proxy agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities task.post task.hello task.file task.index task.app_deploy task.app_logs task.tools task.tool_call relay_register) do
     reply = %{
       "id" => id,
       "type" => "error",
-      "error" => "connector scope forbids #{method}"
+      "error" => "station scope forbids #{method}"
     }
 
     {:push, {:text, Protocol.encode(reply)}, state}
@@ -389,7 +505,20 @@ defmodule SalixWeb.ConnectorSocket do
            scope
          ) do
       {:ok, relay} ->
-        reply = %{"id" => id, "type" => "response", "result" => %{"ok" => true}}
+        # Heard before it is read: a revocation between the two comes as a change after this answer.
+        state = mesh_listen(state, m["params"])
+        mesh = device_mesh(state)
+        state = if state.mesh_seq && is_nil(mesh), do: mesh_unlisten(state), else: state
+
+        reply = %{
+          "id" => id,
+          "type" => "response",
+          "result" =>
+            if(mesh,
+              do: %{"ok" => true, "mesh" => mesh, "mesh_seq" => state.mesh_seq},
+              else: %{"ok" => true}
+            )
+        }
 
         # A device's run is a station's once it proves one: it is given the workspace's accounts then, without
         # placement. A Workload's station was given them at connect.
@@ -439,7 +568,7 @@ defmodule SalixWeb.ConnectorSocket do
             "connector credential not renewed: env=#{state.env_id} reason=#{renewal_reason(reason)}"
           )
 
-          {%{"id" => id, "type" => "error", "error" => "connector credential not renewed"}, state}
+          {%{"id" => id, "type" => "error", "error" => "station credential not renewed"}, state}
       end
 
     {:push, {:text, Protocol.encode(reply)}, state}
@@ -525,6 +654,43 @@ defmodule SalixWeb.ConnectorSocket do
     )
   end
 
+  # A sandbox Task's Session lists or calls Salix registry tools as the Task's
+  # Worker (`SalixWeb.StationTasks.tool_call/2`): a call is answered within the
+  # tool's own timeout (`SalixAgent.StationToolCalls.deadline_ms/2`), inside
+  # the time the station waits.
+  defp handle_message(
+         %{"type" => "request", "method" => method, "id" => id} = m,
+         state
+       )
+       when is_binary(id) and
+              method in ["task.tools", "task.tool_call", "task.login_keep", "task.login_restore"] do
+    params = m["params"] || %{}
+    view = station_connection(state)
+
+    start_request_reply(
+      id,
+      state,
+      fn ->
+        result =
+          case method do
+            "task.tools" -> SalixWeb.StationTasks.tools(view, params)
+            "task.tool_call" -> SalixWeb.StationTasks.tool_call(view, params)
+            "task.login_keep" -> SalixWeb.StationTasks.login_keep(view, params)
+            "task.login_restore" -> SalixWeb.StationTasks.login_restore(view, params)
+          end
+
+        case result do
+          {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
+          {:error, reason} -> %{"id" => id, "type" => "error", "error" => inspect(reason)}
+        end
+      end,
+      if(method == "task.tool_call",
+        do: SalixAgent.StationToolCalls.deadline_ms(params["tool"], params["args"]),
+        else: @tool_call_timeout_ms
+      )
+    )
+  end
+
   # A page of the station's Task index (`SalixWeb.StationTaskIndex`), from
   # the station this run proved with `relay_register`.
   defp handle_message(%{"type" => "request", "method" => "task.index", "id" => id} = m, state)
@@ -537,6 +703,28 @@ defmodule SalixWeb.ConnectorSocket do
 
         start_request_reply(id, %{state | task_index_window: window}, fn ->
           case SalixWeb.StationTaskIndex.receive_page(station_id, view, params) do
+            {:ok, held} -> %{"id" => id, "type" => "response", "result" => held}
+            {:error, reason} -> %{"id" => id, "type" => "error", "error" => to_string(reason)}
+          end
+        end)
+
+      {:error, reason} ->
+        reply = %{"id" => id, "type" => "error", "error" => to_string(reason)}
+        {:push, {:text, Protocol.encode(reply)}, state}
+    end
+  end
+
+  # A page of the station's Stats index (`SalixWeb.StationStatsIndex`), as its Task index's.
+  defp handle_message(%{"type" => "request", "method" => "stats.index", "id" => id} = m, state)
+       when is_binary(id) do
+    case SalixWeb.StationTaskIndex.admit(state.stats_index_window, monotonic_ms()) do
+      {:ok, window} ->
+        station_id = SalixWeb.StationTaskIndex.station_id(state.relay)
+        view = station_connection(state)
+        params = m["params"] || %{}
+
+        start_request_reply(id, %{state | stats_index_window: window}, fn ->
+          case SalixWeb.StationStatsIndex.receive_page(station_id, view, params) do
             {:ok, held} -> %{"id" => id, "type" => "response", "result" => held}
             {:error, reason} -> %{"id" => id, "type" => "error", "error" => to_string(reason)}
           end
@@ -577,7 +765,7 @@ defmodule SalixWeb.ConnectorSocket do
        when is_binary(id) and channel in @tunnel_channels do
     case state.tunnels[id] do
       %{relay: relay} = tunnel ->
-        frame = Map.take(stream, ~w(channel data eof seq))
+        frame = Map.take(stream, ~w(channel data bytes eof seq))
         frame = if present?(m["error"]), do: Map.put(frame, "error", m["error"]), else: frame
         send(relay, {:env_tunnel_frame, id, frame})
 
@@ -640,10 +828,10 @@ defmodule SalixWeb.ConnectorSocket do
   defp handle_message(%{"id" => id} = m, state) when is_binary(id) do
     cond do
       Map.has_key?(state.write_streams, id) and (m["type"] == "error" or present?(m["error"])) ->
-        complete_write_stream_error(id, m["error"] || "connector error", state)
+        complete_write_stream_error(id, m["error"] || "station error", state)
 
       Map.has_key?(state.read_streams, id) and (m["type"] == "error" or present?(m["error"])) ->
-        complete_read_stream_error(id, m["error"] || "connector error", state)
+        complete_read_stream_error(id, m["error"] || "station error", state)
 
       Map.has_key?(state.write_streams, id) ->
         complete_write_stream_success(id, state)
@@ -1559,7 +1747,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp execute_registry_control(%{kind: :heartbeat}, state) do
-    Registry.update_meta(state.connector_run_id, & &1, control_registry_opts(state))
+    Registry.heartbeat(state.connector_run_id, control_registry_opts(state))
   end
 
   defp control_registry_opts(state) do
@@ -1593,6 +1781,23 @@ defmodule SalixWeb.ConnectorSocket do
     _ = push_station_place(state)
     {:ok, state}
   end
+
+  def handle_info({:comma_station_ws, :revoke, _revocation}, %State{mesh_seq: seq} = state)
+      when is_integer(seq),
+      do: {:ok, push_device_mesh(state)}
+
+  def handle_info({:comma_station_keys, :changed}, %State{mesh_seq: seq} = state)
+      when is_integer(seq),
+      do: {:ok, push_device_mesh(state)}
+
+  # Whether the owner still may: no event says a role changed, so it is read again.
+  def handle_info(:station_mesh_check, %State{mesh_seq: seq} = state) when is_integer(seq) do
+    SystemsClock.send_after(self(), :station_mesh_check, @mesh_check_ms)
+    {:ok, push_device_mesh(state)}
+  end
+
+  def handle_info(:station_mesh_untold, state),
+    do: {:stop, {:shutdown, :station_mesh_untold}, state}
 
   def handle_info({:station_relay_packet, from, scope, packet}, state) do
     case SalixWeb.StationRelay.incoming(state.relay, from, scope, packet) do
@@ -1765,8 +1970,7 @@ defmodule SalixWeb.ConnectorSocket do
   def handle_info({:env_tunnel_send, relay, id, frame}, state) when is_map(frame) do
     case state.tunnels[id] do
       %{relay: ^relay} = tunnel ->
-        frame = Map.take(frame, ~w(channel data eof seq))
-        push = {:text, Protocol.encode(%{"id" => id, "type" => "stream", "stream" => frame})}
+        push = stream_push(id, Map.take(frame, ~w(channel bytes eof seq)), state)
 
         if frame["eof"] == true,
           do: {:push, push, drop_tunnel(state, id, tunnel)},
@@ -1874,15 +2078,7 @@ defmodule SalixWeb.ConnectorSocket do
       info ->
         seq = Map.get(info, :seq, 0) + 1
 
-        frame = %{
-          "id" => id,
-          "type" => "stream",
-          "stream" => %{
-            "channel" => "data",
-            "data" => Base.encode64(chunk),
-            "seq" => seq
-          }
-        }
+        push = stream_push(id, %{"channel" => "data", "bytes" => chunk, "seq" => seq}, state)
 
         write_streams =
           Map.put(
@@ -1894,7 +2090,7 @@ defmodule SalixWeb.ConnectorSocket do
             |> reset_write_stream_timeout(id)
           )
 
-        {:push, {:text, Protocol.encode(frame)}, %{state | write_streams: write_streams}}
+        {:push, push, %{state | write_streams: write_streams}}
     end
   end
 
@@ -2174,6 +2370,40 @@ defmodule SalixWeb.ConnectorSocket do
         end
     end
   end
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, :normal},
+        %State{mesh_read: %{monitor: monitor}} = state
+      ),
+      do: {:ok, mesh_read_ended(state)}
+
+  # What ended it may have been a revocation's only word: this run ends, and the next is told all of it.
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %State{mesh_read: %{monitor: monitor}} = state
+      ),
+      do: {:stop, {:shutdown, :station_mesh_untold}, state}
+
+  # A read that has not answered in time says no one is admitted, as a read that failed does, and what was heard
+  # meanwhile is read after. A station that cannot be told even that is one this run cannot speak for.
+  def handle_info(
+        {:station_mesh_late, monitor},
+        %State{mesh_read: %{monitor: monitor, kind: :read, pid: pid}} = state
+      ) do
+    SystemsRuntime.Proc.demonitor(monitor, [:flush])
+    SystemsRuntime.Proc.exit(pid, :kill)
+    connection = station_connection(state)
+
+    {:ok,
+     start_mesh_read(%{state | mesh_read: nil}, :deny, fn seq ->
+       SalixWeb.StationPlace.tell_device_mesh(connection, seq, nil)
+     end)}
+  end
+
+  def handle_info({:station_mesh_late, monitor}, %State{mesh_read: %{monitor: monitor}} = state),
+    do: {:stop, {:shutdown, :station_mesh_untold}, state}
+
+  def handle_info({:station_mesh_late, _}, state), do: {:ok, state}
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Enum.find(state.tunnels, fn {_id, tunnel} -> tunnel.monitor == monitor end) do
@@ -2860,9 +3090,31 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
+  # A stream frame to the station: its `bytes` in a binary frame where the
+  # station takes them, else base64 in JSON.
+  defp stream_push(id, %{"bytes" => bytes} = stream, %{binary_streams: true})
+       when is_binary(bytes) do
+    {:binary,
+     Protocol.encode_stream_binary(
+       %{"id" => id, "type" => "stream", "stream" => Map.delete(stream, "bytes")},
+       bytes
+     )}
+  end
+
+  defp stream_push(id, stream, _state) do
+    stream =
+      case Map.pop(stream, "bytes") do
+        {bytes, rest} when is_binary(bytes) -> Map.put(rest, "data", Base.encode64(bytes))
+        {_none, rest} -> rest
+      end
+
+    {:text, Protocol.encode(%{"id" => id, "type" => "stream", "stream" => stream})}
+  end
+
   defp consume_read_stream_frame(sender, stream) do
     try do
-      with {:ok, ack?} <- consume_read_stream_data(sender, stream["data"]),
+      with {:ok, bytes} <- Protocol.stream_bytes(stream),
+           {:ok, ack?} <- consume_read_stream_data(sender, bytes),
            :ok <- maybe_finish_read_stream(sender, stream["eof"] == true) do
         {:ok, ack?}
       else
@@ -2877,20 +3129,12 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp consume_read_stream_data(_sender, nil), do: {:ok, false}
 
-  defp consume_read_stream_data(sender, data) when is_binary(data) do
-    case Base.decode64(data) do
-      {:ok, chunk} ->
-        case FrameStream.chunk(sender, chunk, read_stream_idle_timeout_ms()) do
-          :ok -> {:ok, true}
-          {:error, reason} -> {:error, reason}
-        end
-
-      :error ->
-        {:error, :invalid_base64}
+  defp consume_read_stream_data(sender, chunk) do
+    case FrameStream.chunk(sender, chunk, read_stream_idle_timeout_ms()) do
+      :ok -> {:ok, true}
+      {:error, reason} -> {:error, reason}
     end
   end
-
-  defp consume_read_stream_data(_sender, _data), do: {:error, :invalid_stream_data}
 
   defp maybe_finish_read_stream(sender, true),
     do: FrameStream.eof(sender, read_stream_idle_timeout_ms())

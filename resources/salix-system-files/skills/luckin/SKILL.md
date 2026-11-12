@@ -8,6 +8,9 @@ Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
 
 ## Official MCP
 
+The Comma plugin `luckin` binds this server with the user's key. Use
+`mcp.luckin.*` when it is installed. Otherwise bind it yourself:
+
 Bind `https://gwmcp.lkcoffee.com/order/user/mcp` (streamable HTTP) with
 header `Authorization: Bearer {api_key}`. The token comes from the Luckin AI open
 platform (open.luckincoffee.com/mcp). The token can place orders. MCP OAuth

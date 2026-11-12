@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { configureManagedWindow, type ManagedWindowBinding } from "../managed-window";
 
@@ -307,6 +308,127 @@ describe("configureManagedWindow", () => {
     expect(surfaceUnregisterWindow).not.toHaveBeenCalled();
   });
 
+  it("ends a reset's load with the new document's, when a route change of the page it replaces fails the load", async () => {
+    const page = new EventEmitter();
+    const loads: { reject: (error: Error) => void }[] = [];
+    let binding: ManagedWindowBinding | undefined;
+    const browserWindow = createWindowStub({
+      loadURL: vi.fn(
+        () =>
+          new Promise<unknown>((resolve, reject) => {
+            loads.push({ reject });
+            if (loads.length === 1) resolve(undefined);
+          })
+      ),
+      on: vi.fn(),
+      show: vi.fn(),
+      webContents: {
+        id: 88,
+        on: page.on.bind(page),
+        removeListener: page.removeListener.bind(page),
+      },
+    });
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    await configureManagedWindow({
+      browserWindow,
+      failureLabel: "main window",
+      id: "win_main",
+      installWindowSecurity: vi.fn(),
+      loadUrl: "assets://./",
+      logger,
+      role: "main-window",
+      route: "/",
+      ...services(),
+      onBound: (bound) => {
+        binding = bound;
+      },
+    });
+
+    const next = services();
+    let rebound = false;
+    const rebind = binding!.rebind(next).then(() => {
+      rebound = true;
+    });
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(loads).toHaveLength(2);
+    // The new document starts loading; the page it replaces changes its route, which stops that page's loading, and
+    // Electron fails the load (`ERR_FAILED`) though the new document goes on.
+    page.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    page.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+    loads[1]!.reject(
+      Object.assign(new Error("ERR_FAILED (-2) loading 'assets://./'"), {
+        code: "ERR_FAILED",
+        errno: -2,
+      })
+    );
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(rebound).toBe(false);
+
+    page.emit("did-finish-load");
+    await rebind;
+    // Loaded, and still the window of the new services.
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(next.webContentsRegistry.unregisterWindow).not.toHaveBeenCalled();
+    expect(next.surfaces.unregisterWindow).not.toHaveBeenCalled();
+  });
+
+  it("takes a reset's load as failed when its document fails, and unregisters the window", async () => {
+    const page = new EventEmitter();
+    const loads: { reject: (error: Error) => void }[] = [];
+    let binding: ManagedWindowBinding | undefined;
+    const browserWindow = createWindowStub({
+      loadURL: vi.fn(
+        () =>
+          new Promise<unknown>((resolve, reject) => {
+            loads.push({ reject });
+            if (loads.length === 1) resolve(undefined);
+          })
+      ),
+      on: vi.fn(),
+      show: vi.fn(),
+      webContents: {
+        id: 89,
+        on: page.on.bind(page),
+        removeListener: page.removeListener.bind(page),
+      },
+    });
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    await configureManagedWindow({
+      browserWindow,
+      failureLabel: "main window",
+      id: "win_main",
+      installWindowSecurity: vi.fn(),
+      loadUrl: "assets://./",
+      logger,
+      role: "main-window",
+      route: "/",
+      ...services(),
+      onBound: (bound) => {
+        binding = bound;
+      },
+    });
+
+    const next = services();
+    const rebind = binding!.rebind(next);
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    page.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    page.emit("did-fail-load", {}, -6, "ERR_FILE_NOT_FOUND", "assets://./", true);
+    loads[1]!.reject(
+      Object.assign(new Error("ERR_FILE_NOT_FOUND (-6) loading 'assets://./'"), {
+        code: "ERR_FILE_NOT_FOUND",
+        errno: -6,
+      })
+    );
+    await rebind;
+    expect(logger.error).toHaveBeenCalledWith(
+      "main window load failed: ERR_FILE_NOT_FOUND (-6) loading 'assets://./'"
+    );
+    expect(next.webContentsRegistry.unregisterWindow).toHaveBeenCalledWith(
+      "win_main",
+      browserWindow
+    );
+  });
+
   it("rolls back both registrations when renderer loading rejects", async () => {
     const loadError = new Error("renderer load failed");
     const logger = { error: vi.fn(), warn: vi.fn() };
@@ -345,8 +467,7 @@ describe("configureManagedWindow", () => {
     });
 
     rejectLoad?.(loadError);
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
 
     expect(logger.error).toHaveBeenCalledWith(
       "failed load window load failed: renderer load failed"
@@ -440,8 +561,10 @@ function createWindowStub(overrides: {
   on: (event: "closed" | "ready-to-show", listener: () => void) => void;
   show: () => void;
   showInactive?: () => void;
-  webContents: { id: number };
+  webContents: { id: number } & Partial<Pick<EventEmitter, "on" | "removeListener">>;
 }) {
+  // A page that says nothing of its loads unless the test has it say.
+  const page = new EventEmitter();
   return {
     close: vi.fn(),
     focus: vi.fn(),
@@ -453,5 +576,10 @@ function createWindowStub(overrides: {
     isVisible: () => true,
     showInactive: vi.fn(),
     ...overrides,
+    webContents: {
+      on: page.on.bind(page),
+      removeListener: page.removeListener.bind(page),
+      ...overrides.webContents,
+    },
   };
 }

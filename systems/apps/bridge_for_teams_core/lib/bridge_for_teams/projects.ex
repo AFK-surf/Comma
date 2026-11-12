@@ -411,86 +411,6 @@ defmodule BridgeForTeams.Projects do
   end
 
   @doc """
-  Toggle managed cloud VM for the swarm. Flips `vm_enabled` and enqueues the
-  same switch for the project's Salix group (`cloud_vm_enabled`), which decides
-  for every agent of the group — both in one transaction (transactional outbox).
-
-  Enabling requires a configured VM provider (tenant or platform default);
-  the reconcile fails soft if none exists (the group stays VM-less), so the
-  flag reflects intent and turning it on again catches up once a provider is set.
-  """
-  @spec set_vm_enabled(Project.t(), boolean(), keyword()) ::
-          {:ok, Project.t()} | {:error, term()}
-  def set_vm_enabled(%Project{} = project, enabled, opts \\ []) when is_boolean(enabled) do
-    changeset = Project.changeset(project, %{"vm_enabled" => enabled})
-
-    Repo.transaction(fn ->
-      with {:ok, updated} <- Repo.update(changeset),
-           %Organization{} = org <- Repo.get(Organization, updated.org_id) do
-        enqueue_vm_update(updated, org, enabled, SystemsClock.timestamp(:utc_datetime_usec))
-
-        with {:ok, _audit} <-
-               maybe_record_project_audit("project.vm_enabled_changed", updated, opts,
-                 redacted_diff: %{
-                   "vm_enabled" => %{"from" => project.vm_enabled, "to" => enabled}
-                 }
-               ) do
-          updated
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      else
-        nil -> Repo.rollback(:org_not_found)
-        {:error, cs} -> Repo.rollback(cs)
-      end
-    end)
-  end
-
-  @doc """
-  After the rollout that moved the Cloud VM switch onto the Salix group (the
-  release's post-rollout job, `Comma.Release`): enqueues the group switch of
-  at most 100 live projects after `after_id` (nil: the first) from
-  `Project.vm_enabled`, the product fact. A toggle a server of the release
-  before wrote only onto agents is kept that way, and a group no longer keeps
-  a switch its project has off. The project rows stay locked until the rows
-  are queued, so a toggle made meanwhile is queued after them. Answers the
-  cursor of the next page (nil: done).
-  """
-  def converge_group_cloud_vm_page(after_id) do
-    {:ok, projects} =
-      Repo.transaction(fn ->
-        projects =
-          from(p in Project,
-            where: not is_nil(p.salix_group_id) and is_nil(p.archived_at),
-            order_by: [asc: p.id],
-            limit: 100,
-            lock: "FOR UPDATE"
-          )
-          |> then(fn query ->
-            if after_id, do: where(query, [p], p.id > ^after_id), else: query
-          end)
-          |> Repo.all()
-
-        orgs =
-          Repo.all(from(o in Organization, where: o.id in ^Enum.map(projects, & &1.org_id)))
-          |> Map.new(&{&1.id, &1})
-
-        ts = SystemsClock.timestamp(:utc_datetime_usec)
-
-        for project <- projects,
-            %Organization{salix_tenant_id: tenant_id} = org <- [orgs[project.org_id]],
-            is_binary(tenant_id) do
-          enqueue_vm_update(project, org, project.vm_enabled == true, ts)
-        end
-
-        projects
-      end)
-
-    next = if length(projects) == 100, do: List.last(projects).id
-    {:ok, %{processed: length(projects), next_cursor: next}}
-  end
-
-  @doc """
   Rename a project (the Agent Swarm's user-facing display name). The slug is left
   untouched so existing URLs keep working. Updates the Postgres row and enqueues
   an `update_group` reconcile so the Salix group name stays in sync, both in the
@@ -995,9 +915,6 @@ defmodule BridgeForTeams.Projects do
     enqueue_default_router(project, org, router, DateTime.add(base, 1, :microsecond))
     enqueue_group_router(project, org, router, DateTime.add(base, 2, :microsecond))
 
-    if project.vm_enabled,
-      do: enqueue_vm_update(project, org, true, DateTime.add(base, 3, :microsecond))
-
     :ok
   end
 
@@ -1029,21 +946,6 @@ defmodule BridgeForTeams.Projects do
     }
 
     {:ok, _} = Outbox.enqueue("project", project.id, "update_group", payload, created_at: ts)
-  end
-
-  # The swarm's Cloud VM switch is its Salix group's (`cloud_vm_enabled`). A
-  # new group starts with it off; the reconciler turns it on when the project
-  # has it enabled (default) and fails soft when no VM provider is configured,
-  # so default-on never blocks swarm creation.
-  defp enqueue_vm_update(%Project{} = project, %Organization{} = org, enabled, ts) do
-    payload = %{
-      "group_id" => project.salix_group_id,
-      "tenant_id" => org.salix_tenant_id,
-      "attrs" => %{"cloud_vm_enabled" => enabled}
-    }
-
-    {:ok, _} = Outbox.enqueue("project", project.id, "update_group", payload, created_at: ts)
-    :ok
   end
 
   # Propagate a renamed project's display name to its Salix group.

@@ -5,7 +5,7 @@ defmodule SalixIM.ProviderConversationLogTest do
 
   use SalixAgent.TestSupport.Settle
   alias SalixIM.{ConversationServer, Conversations}
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.{Ids, Keys, Repo}
 
   setup do
     prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
@@ -100,14 +100,59 @@ defmodule SalixIM.ProviderConversationLogTest do
     assert delivery["delivery"]["attempts"] == 1
   end
 
-  # Each fault reaches a different read in the status projection: the exact
-  # state read for one message, the delivery listing, and the per-delivery
-  # state read that follows a successful listing.
-  for {name, fault, exact_message?} <- [
-        {"an exact delivery-state read fault", :state_get, true},
-        {"a delivery-state list fault", :deliveries_list, false},
-        {"a listed delivery-state read fault", :state_get, false}
-      ] do
+  test "an unknown claim resumes the same Store result before provider I/O", _context do
+    SystemsRuntime.put_env(
+      :salix_im,
+      :slack_conversation_delivery_mod,
+      __MODULE__.CaptureProviderDelivery
+    )
+
+    SystemsRuntime.put_env(:salix_im, :delivery_recovery_test_pid, SystemsRuntime.Proc.self())
+    ids = delivery_group_fixture!() |> create_delivery_conversation!("Unknown claim")
+
+    Repo.query!("""
+    CREATE FUNCTION provider_claim_disconnect() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.participant_id = '#{ids.participant}' AND NEW.status = 'delivering' THEN
+        PERFORM pg_terminate_backend(pg_backend_pid());
+      END IF;
+      RETURN NEW;
+    END $$
+    """)
+
+    Repo.query!(
+      "CREATE TRIGGER provider_claim_disconnect BEFORE INSERT OR UPDATE ON salix_conversation_deliveries FOR EACH ROW EXECUTE FUNCTION provider_claim_disconnect()"
+    )
+
+    on_exit(fn ->
+      Repo.query!(
+        "DROP TRIGGER IF EXISTS provider_claim_disconnect ON salix_conversation_deliveries"
+      )
+
+      Repo.query!("DROP FUNCTION IF EXISTS provider_claim_disconnect()")
+    end)
+
+    message = append_delivery!(ids, "unknown-claim")
+
+    {:ok, owner} =
+      SalixIM.ConversationFleet.ensure_participant_started(
+        ids.group,
+        ids.conversation,
+        ids.participant
+      )
+
+    settle_until(fn ->
+      state = :sys.get_state(owner)
+      match?(%{mode: :settle_claim}, state.active_delivery)
+    end)
+
+    refute_received {:provider_delivery_captured, _}
+    Repo.query!("DROP TRIGGER provider_claim_disconnect ON salix_conversation_deliveries")
+    Repo.query!("DROP FUNCTION provider_claim_disconnect()")
+    agent = ids.agent
+    settle_receive({:provider_delivery_captured, ^agent})
+    assert eventually(fn -> delivery_status(ids, message) == "delivered" end)
+    settle_refute_receive({:provider_delivery_captured, _}, 100)
   end
 
   test "shared recovery settles an inactive provider after owner loss without new sends" do
@@ -137,15 +182,16 @@ defmodule SalixIM.ProviderConversationLogTest do
     SalixIM.TestSupport.Fleet.stop_all!()
     [record] = active_delivery_records(ids)
 
-    key =
-      Keys.ctl_group_conversation_participant_delivery_state(
+    Repo.query!(
+      "UPDATE salix_conversation_deliveries SET payload=$5, revision=revision+1 WHERE group_id=$1 AND conversation_id=$2 AND participant_id=$3 AND delivery_id=$4",
+      [
         ids.group,
         ids.conversation,
         ids.participant,
-        record["delivery_id"]
-      )
-
-    {:ok, _} = SalixStore.CasRecord.update(key, &Map.put(&1, "delivery_started_at", 0))
+        record["delivery_id"],
+        :erlang.term_to_binary(Map.put(record, "delivery_started_at", 0))
+      ]
+    )
 
     SystemsRuntime.put_env(
       :salix_im,
@@ -261,21 +307,13 @@ defmodule SalixIM.ProviderConversationLogTest do
   end
 
   defp delivery_records(ids) do
-    prefix =
-      Keys.ctl_group_conversation_participant_deliveries_prefix(
-        ids.group,
-        ids.conversation,
-        ids.participant
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT payload FROM salix_conversation_deliveries WHERE group_id=$1 AND conversation_id=$2 AND participant_id=$3 ORDER BY delivery_id LIMIT 100",
+        [ids.group, ids.conversation, ids.participant]
       )
 
-    assert {:ok, objects} = S3.list_all(prefix)
-
-    objects
-    |> Enum.filter(&String.ends_with?(&1.key, "/state.json"))
-    |> Enum.map(fn %{key: key} ->
-      assert {:ok, %{body: body}} = S3.get(key)
-      Jason.decode!(body)
-    end)
+    Enum.map(rows, fn [body] -> :erlang.binary_to_term(body, [:safe]) end)
   end
 
   defp delivery_status(ids, message_id) do

@@ -4,20 +4,16 @@ import type {
   MeetingPresenceState,
 } from "@comma/native-bridge";
 
-import {
-  loadNativeAudioCapture,
-  type NativeAudioApplication,
-  type NativeAudioCapture,
-} from "../audio-capture/native-audio";
 import { clockInterval, realMainClock, type MainClock } from "../../clock";
+import type { MicrophoneWatch } from "./microphone-watch";
 
 /**
- * Mic-usage flips do not raise a process-list event, so poll the known
- * meeting apps' microphones as a backstop.
+ * Main's tick: it probes the in-app browser for meetings and ends calls whose
+ * grace period ran out. The worker checks microphones on its own 2 s poll.
  */
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 /**
- * The poll still re-lists processes this often, in case a process-list event
+ * The tick still re-lists processes this often, in case a process-list event
  * never arrives (the subscription failed, or the event carried an error).
  */
 const LIST_BACKSTOP_MS = 30_000;
@@ -86,14 +82,32 @@ type TrackedMeeting = {
   lastLiveAt: number;
 };
 
+type MeetingCandidate = { app: MeetingAppDescriptor; processId: number };
+
+/**
+ * The candidates' processes, one group per meeting app in list order. Helper
+ * processes stay in their app's group: browsers and Slack hold the
+ * microphone in a helper.
+ */
+function groupByApp(candidates: readonly MeetingCandidate[]): number[][] {
+  const groups = new Map<string, number[]>();
+  for (const { app, processId } of candidates) {
+    const group = groups.get(app.bundleIdentifier);
+    if (group) group.push(processId);
+    else groups.set(app.bundleIdentifier, [processId]);
+  }
+  return [...groups.values()];
+}
+
 /**
  * Main-owned "is the user in a call?" detector.
  *
  * Watches the audio process list from the capture SDK and reports meeting
- * apps that currently hold the microphone. It only observes; Main's
- * MeetingRecorderService applies startup consent and later-meeting auto-start.
- * Each detected call gets a stable key for its lifetime, so a dismissed prompt
- * is not re-raised on every mic flap.
+ * apps that currently hold the microphone. A worker makes the CoreAudio calls
+ * (`MicrophoneWatch`); this service keeps the state machine on Main. It only
+ * observes; Main's MeetingRecorderService applies startup consent and
+ * later-meeting auto-start. Each detected call gets a stable key for its
+ * lifetime, so a dismissed prompt is not re-raised on every mic flap.
  */
 export class MeetingPresenceService implements MeetingPresenceProvider {
   readonly #browserBundleIdentifier: string;
@@ -101,29 +115,29 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
   readonly #catalog: readonly MeetingAppDescriptor[];
   readonly #clock: MainClock;
   readonly #inactiveGraceMs: number;
-  readonly #loadNative: () => Promise<NativeAudioCapture | undefined>;
+  readonly #loadNative: () => Promise<MicrophoneWatch | undefined>;
   readonly #onStateChanged: (state: MeetingPresenceState) => void;
   readonly #pollIntervalMs: number;
   readonly #readAppIcon: (bundleIdentifier: string) => Promise<string | undefined>;
 
-  #native: NativeAudioCapture | undefined;
+  #native: MicrophoneWatch | undefined;
   #available = false;
   #revision = 1;
   #tracked = new Map<string, TrackedMeeting>();
   #stopPolling: (() => void) | undefined;
-  #unsubscribe: (() => void) | undefined;
+  #unsubscribe: Array<() => void> = [];
   #started = false;
   #closed = false;
   #refreshing: Promise<void> | undefined;
+  /** A tick was asked for while one ran: it runs once more afterwards. */
+  #tickAgain = false;
   /**
-   * Meeting-app processes from the last process-list read. Listing about 40
-   * audio processes costs Main's thread 6-20 ms of synchronous CoreAudio and
-   * LaunchServices calls, and up to about 90 ms when cold, which stalls an
-   * open menu. So a process-list event, an explicit refresh or the slow
-   * backstop reads the list again, and the poll re-checks just these
-   * processes' microphones (about 1 ms each).
+   * Meeting-app processes from the last process-list read, and the groups the
+   * worker watches (one per app). A process-list event, an explicit refresh
+   * or the slow backstop reads the list again; in between the worker
+   * re-checks just these processes' microphones.
    */
-  #candidates: Array<{ app: MeetingAppDescriptor; processId: number }> = [];
+  #candidates: MeetingCandidate[] = [];
   #listStale = true;
   #listedAt = 0;
 
@@ -133,7 +147,7 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     catalog = MEETING_APPS,
     clock = realMainClock,
     inactiveGraceMs = DEFAULT_INACTIVE_GRACE_MS,
-    loadNative = loadNativeAudioCapture,
+    loadNative,
     onStateChanged,
     readAppIcon = async () => undefined,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
@@ -141,10 +155,11 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     browserBundleIdentifier?: string | undefined;
     readBrowserMeetings?: () => Promise<BrowserMeeting[]>;
     catalog?: readonly MeetingAppDescriptor[];
-    /** Main's clock: the poll, the list backstop and the inactive grace. */
+    /** Main's clock: the tick, the list backstop and the inactive grace. */
     clock?: MainClock;
     inactiveGraceMs?: number;
-    loadNative?: () => Promise<NativeAudioCapture | undefined>;
+    /** Starts the CoreAudio worker; undefined where the capture SDK is unavailable. */
+    loadNative: () => Promise<MicrophoneWatch | undefined>;
     onStateChanged: (state: MeetingPresenceState) => void;
     readAppIcon?: (bundleIdentifier: string) => Promise<string | undefined>;
     pollIntervalMs?: number;
@@ -160,17 +175,27 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     this.#pollIntervalMs = pollIntervalMs;
   }
 
-  /** Resolve the native SDK and begin watching. Safe to call once. */
+  /** Start the CoreAudio worker and begin watching. Safe to call once. */
   async start(): Promise<MeetingPresenceState> {
     if (this.#started || this.#closed) return this.#snapshot();
     this.#started = true;
-    this.#native = await this.#loadNative();
-    this.#available = Boolean(this.#native);
-    if (!this.#native) return this.#publish();
+    const native = await this.#loadNative();
+    if (this.#closed) {
+      await native?.close();
+      return this.#snapshot();
+    }
+    this.#native = native;
+    this.#available = Boolean(native);
+    if (!native) return this.#publish();
 
-    this.#unsubscribe = this.#native.onApplicationListChanged(() => {
-      void this.refresh();
-    });
+    this.#unsubscribe = [
+      native.onApplicationListChanged(() => {
+        void this.refresh();
+      }),
+      native.onMicrophonesChanged(() => {
+        void this.#tickOnce();
+      }),
+    ];
     this.#stopPolling = clockInterval(this.#clock, this.#pollIntervalMs, () => {
       void this.#tickOnce();
     });
@@ -194,28 +219,39 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     return app ? ((await this.#readAppIcon(app.bundleIdentifier)) ?? null) : null;
   }
 
-  /** Re-derive presence from the live process list. Coalesces overlapping calls. */
+  /**
+   * Re-derive presence from a fresh process list and microphone check.
+   * Coalesces overlapping calls: a call during a tick runs one more after it.
+   */
   refresh(): Promise<void> {
     this.#listStale = true;
     return this.#tickOnce();
   }
 
   #tickOnce(): Promise<void> {
-    if (this.#refreshing) return this.#refreshing;
-    this.#refreshing = Promise.resolve()
-      .then(() => this.#tick())
-      .finally(() => {
+    if (this.#refreshing) {
+      this.#tickAgain = true;
+      return this.#refreshing;
+    }
+    this.#refreshing = (async () => {
+      try {
+        do {
+          this.#tickAgain = false;
+          await this.#tick();
+        } while (this.#tickAgain && !this.#closed);
+      } finally {
         this.#refreshing = undefined;
-      });
+      }
+    })();
     return this.#refreshing;
   }
 
   async close() {
     this.#closed = true;
-    this.#unsubscribe?.();
-    this.#unsubscribe = undefined;
+    for (const unsubscribe of this.#unsubscribe.splice(0)) unsubscribe();
     this.#stopPolling?.();
     this.#stopPolling = undefined;
+    await this.#native?.close();
   }
 
   async #tick() {
@@ -223,34 +259,43 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     if (!native || this.#closed) return;
 
     if (this.#listStale || this.#clock.now() - this.#listedAt >= LIST_BACKSTOP_MS) {
-      let applications: NativeAudioApplication[];
+      // Cleared first, so a list event during the read asks for another.
+      this.#listStale = false;
+      let candidates: MeetingCandidate[];
       try {
-        applications = native.applications();
+        candidates = (await native.applications()).flatMap((application) => {
+          const app = matchMeetingApp(application.bundleIdentifier, this.#catalog);
+          return app ? [{ app, processId: application.processId }] : [];
+        });
+        // Each re-list hands the worker its groups, and it checks their
+        // microphones before it answers.
+        await native.watch(groupByApp(candidates));
       } catch {
+        this.#listStale = true;
+        // The worker stopped too often to start again: no app's meeting can
+        // be seen, so detection reports itself unavailable.
+        if (!native.available()) this.#becomeUnavailable();
         return;
       }
-      this.#listStale = false;
+      if (this.#closed) return;
       this.#listedAt = this.#clock.now();
-      this.#candidates = applications.flatMap((application) => {
-        const app = matchMeetingApp(application.bundleIdentifier, this.#catalog);
-        return app ? [{ app, processId: application.processId }] : [];
-      });
+      this.#candidates = candidates;
     }
+
+    const browserMeetings = await this.#readBrowserMeetings();
+    if (this.#closed) return;
 
     const now = this.#clock.now();
     const live = new Map<
       string,
       { app: MeetingAppDescriptor; processId: number; browserTabId?: string }
     >();
-    for (const { app, processId } of this.#candidates) {
-      if (live.has(app.bundleIdentifier)) continue;
-      if (native.isUsingMicrophone(processId)) {
-        live.set(app.bundleIdentifier, { app, processId });
-      }
+    // The worker answers with each app's first process on the microphone.
+    for (const processId of native.microphones()) {
+      const candidate = this.#candidates.find((entry) => entry.processId === processId);
+      if (!candidate || live.has(candidate.app.bundleIdentifier)) continue;
+      live.set(candidate.app.bundleIdentifier, { app: candidate.app, processId });
     }
-
-    const browserMeetings = await this.#readBrowserMeetings();
-    if (this.#closed) return;
     for (const meeting of browserMeetings) {
       live.set(`browser:${meeting.id}`, {
         app: {
@@ -309,6 +354,16 @@ export class MeetingPresenceService implements MeetingPresenceProvider {
     }
 
     if (changed) this.#publish();
+  }
+
+  #becomeUnavailable() {
+    if (!this.#available) return;
+    this.#available = false;
+    this.#stopPolling?.();
+    this.#stopPolling = undefined;
+    this.#tracked.clear();
+    this.#candidates = [];
+    this.#publish();
   }
 
   #publish(): MeetingPresenceState {

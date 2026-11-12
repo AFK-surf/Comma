@@ -52,10 +52,12 @@ import type {
   Host,
   Pull,
   SessionLease,
+  ScreenFramePorts,
   StationMeshPorts,
   StreamResponse,
 } from "../host.ts";
 import type { MobileNative } from "./mobile-globals.ts";
+import type { NativeAbuseProof } from "../session/abuse.ts";
 import { mobileStations } from "./mobile-mesh.ts";
 import type {
   AppleGrant,
@@ -231,6 +233,7 @@ class MobileHost implements Host {
   readonly deviceSetup?: import("../host.ts").DeviceSetupPort;
   readonly downloads: DownloadPorts;
   readonly stationMesh?: StationMeshPorts;
+  readonly screenFrames?: ScreenFramePorts;
   readonly readLocalFile?: NonNullable<Host["readLocalFile"]>;
   readonly #bridge: Bridge;
   readonly #device: Sql;
@@ -251,6 +254,21 @@ class MobileHost implements Host {
             .pipe(Effect.map((answer) => (answer.json as { value: unknown }).value)),
       };
     if (bridge.native.mesh === true) this.stationMesh = mobileStations(bridge);
+    const screenFrame = bridge.native.screenFrame?.bind(bridge.native);
+    if (screenFrame)
+      this.screenFrames = {
+        frame: (sink, kind, ts, width, height, bytes) =>
+          screenFrame(
+            sink,
+            kind,
+            ts,
+            width,
+            height,
+            bytes.buffer as ArrayBuffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ),
+      };
     if (start.readsLocalFiles === true)
       this.readLocalFile = (ref, offset, length) =>
         Effect.map(
@@ -300,7 +318,6 @@ class MobileHost implements Host {
       apiOrigin: start.apiOrigin,
       clientKind: start.platform,
       clientPlatform: start.platform,
-      showsKeptAccount: true,
       resumed: start.resumed,
       vault: Effect.map(bridge.call("session.vault", {}), (a) => a.json as BearerVault),
       change: (change: BearerVaultChange) =>
@@ -310,6 +327,22 @@ class MobileHost implements Host {
         ),
       gate: (snapshot: SessionLifecycleSnapshot, lease: SessionLease | null) =>
         void bridge.sync("session.gate", { snapshot, lease }),
+      google: (input: { clientId: string; nonce: string }) =>
+        Effect.map(bridge.call("session.google", input), (a) => a.json as GoogleGrant),
+      abuseProof: (challenge) =>
+        Effect.map(
+          bridge.call("session.abuseProof", challenge),
+          (a) => a.json as NativeAbuseProof
+        ),
+      sha256: (inputs) =>
+        Effect.map(bridge.call("session.sha256", { inputs }), (a) =>
+          (a.json as { digests: string[] }).digests.map(fromBase64)
+        ),
+      captcha: (input) =>
+        Effect.map(
+          bridge.call("session.captcha", input),
+          (a) => (a.json as { token: string | null }).token
+        ),
       ...(ios
         ? {
             apple: (input: { clientId: string; nonce: string }) =>
@@ -319,11 +352,6 @@ class MobileHost implements Host {
               ),
           }
         : {
-            google: (input: { clientId: string; nonce: string }) =>
-              Effect.map(
-                bridge.call("session.google", input),
-                (a) => a.json as GoogleGrant
-              ),
             googleDone: (grant: string, ok: boolean) =>
               Effect.ignore(bridge.call("session.googleDone", { grant, ok })),
           }),

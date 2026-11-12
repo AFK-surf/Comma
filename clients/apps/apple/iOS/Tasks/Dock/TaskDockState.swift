@@ -6,6 +6,10 @@ import CommaCore
 /// and grabber follow it without a SwiftUI round trip, and the hosted views never need replacing.
 @MainActor @Observable
 final class TaskDockState {
+    var browser: PhoneBrowserModel? {
+        didSet { if browser !== oldValue { onBrowserChange?() } }
+    }
+    var browserInline = false
     var detailsOpen = false {
         didSet { if detailsOpen != oldValue { onDetailsChange?(detailsOpen) } }
     }
@@ -13,15 +17,21 @@ final class TaskDockState {
     var titlePressed = false
     /// What sits under the transcript: the Home indicator, or the keyboard while it is up.
     var bottomInset: CGFloat = 0
+    /// The full-height side panel keeps system clearance inside its surface.
+    var topInset: CGFloat = 0
     /// What sits at either side of the transcript: in landscape, the sensor housing on one side and its mirror on
     /// the other, so nothing (the composer's + least of all) lies under the Dynamic Island.
     var sideInset: CGFloat = 0
+    var browserTrailingInset: CGFloat = 0
+    /// Duo's bottom presentation keeps task actions beside the composer, below the camera.
+    var actionsByComposer = false
     /// The sheet rests minimized, so its cover hides the transcript and the transcript's loops can rest.
     var covered = false {
         didSet { if covered != oldValue { onCoveredChange?(covered) } }
     }
     @ObservationIgnored var onDetailsChange: ((Bool) -> Void)?
     @ObservationIgnored var onCoveredChange: ((Bool) -> Void)?
+    @ObservationIgnored var onBrowserChange: (() -> Void)?
     /// Top of the resting title capsule, from the sheet's top edge; the grabber centres above it.
     @ObservationIgnored var capsuleTop: CGFloat = 12 {
         didSet { if capsuleTop != oldValue { onCapsuleTopChange?() } }
@@ -38,6 +48,7 @@ struct TaskDockActions {
     var close: () -> Void = {}
     /// Slides the sheet away as `close` does, then archives the Task.
     var archive: (TaskSummary) -> Void = { _ in }
+    var openBrowser: () -> Void = {}
 }
 
 /// A button whose own press state drives the details card rather than the label alone.

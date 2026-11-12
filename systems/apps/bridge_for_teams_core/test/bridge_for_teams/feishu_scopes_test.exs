@@ -18,6 +18,11 @@ defmodule BridgeForTeams.FeishuScopesTest do
       assert scope in tenant
     end
 
+    # The bot asks whether the app is available to a person who asks for a
+    # station tool; a sign-in does not.
+    assert "application:application:self_manage" in tenant
+    refute "application:application:self_manage" in user
+
     for scope <- ~w(
       contact:user:search
       minutes:minutes.basic:read minutes:minutes.search:read
@@ -36,8 +41,13 @@ defmodule BridgeForTeams.FeishuScopesTest do
     ) do
       assert scope in user
 
+      # The bot keeps its own calendars too.
       refute scope in (tenant --
-                         ["vc:meeting.meetingevent:read" | FeishuScopes.document_scope_ids()])
+                         [
+                           "vc:meeting.meetingevent:read",
+                           "calendar:calendar:readonly",
+                           "calendar:calendar" | FeishuScopes.document_scope_ids()
+                         ])
     end
 
     # A signed-in person grants the meeting, notes, Minutes and document
@@ -84,5 +94,46 @@ defmodule BridgeForTeams.FeishuScopesTest do
     assert Jason.decode!(FeishuScopes.import_json(:sso)) == %{
              "scopes" => %{"user" => ["contact:user.base:readonly"]}
            }
+  end
+
+  test "the bot and a signed-in person get the daily work, without private chats or administration" do
+    tenant = FeishuScopes.required_scope_ids(:bot)
+    user = FeishuScopes.sign_in_user_scopes()
+
+    # Group messages, the directory, calendars and rooms, search, Minutes and
+    # video meetings, for both identities.
+    for scope <- ~w(im:chat.members:read directory:employee:search calendar:calendar.event:create
+                    calendar:room:readonly search:message minutes:minutes vc:room:readonly) do
+      assert scope in tenant
+      assert scope in user
+    end
+
+    assert "im:message.group_msg:get_as_user" in user
+    assert "im:message.send_as_user" in user
+    assert "docs:permission.member:apply" in user
+
+    # Table reads and document edits as a person ask for their scopes only
+    # when needed: the import offers them, a default sign-in does not ask.
+    imported = Jason.decode!(FeishuScopes.import_json(:combined))["scopes"]["user"]
+    on_demand = FeishuScopes.on_demand_user_scopes()
+
+    for scope <- ~w(sheets:spreadsheet:readonly bitable:app:readonly docx:document
+                    docs:document.comment:create docs:document.media:upload) do
+      assert scope in on_demand
+      refute scope in user
+    end
+
+    assert (user ++ on_demand) -- imported == []
+
+    assert user == Enum.uniq(user)
+
+    # A sign-in reads no private chat; neither identity administers.
+    refute Enum.any?(user, &String.contains?(&1, "p2p"))
+
+    for scope <- ~w(directory:employee.base.is_admin:read contact:role:readonly
+                    im:chat.managers:write_only im:chat:moderation:write_only) do
+      refute scope in tenant
+      refute scope in user
+    end
   end
 end

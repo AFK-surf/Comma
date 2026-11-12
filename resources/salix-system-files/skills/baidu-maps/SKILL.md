@@ -8,6 +8,9 @@ Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
 
 ## Official MCP
 
+The Comma plugin `baidu-maps` binds this server with the user's key. Use
+`mcp.baidu-maps.*` when it is installed. Otherwise bind it yourself:
+
 Bind `https://mcp.map.baidu.com/mcp?ak={api_key}` (streamable HTTP; SSE at
 `/sse`). The AK is a 服务端 (server) key from lbsyun.baidu.com with the MCP
 service turned on. Stdio alternative: `@baidumap/mcp-server-baidu-map` with the

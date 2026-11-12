@@ -11,9 +11,11 @@ import { ComputeNodeCommandError, runCommand } from "./command";
 
 const decimal = z
   .string()
-  .max(20)
-  .regex(/^(0|[1-9][0-9]*)$/)
-  .refine((value) => BigInt(value) <= 18446744073709551615n);
+  .refine(
+    (value) =>
+      /^(0|[1-9][0-9]*)$/.test(value) &&
+      (value.length < 20 || (value.length === 20 && value <= "18446744073709551615"))
+  );
 const environmentPage = z.object({
   bootId: z.string().default(""),
   collectedAt: z.string(),
@@ -35,6 +37,13 @@ const environmentPage = z.object({
     .max(32)
     .default([]),
 });
+const diskBreakdown = z.object({
+  imageRuntimeBytes: decimal,
+  buildCacheBytes: decimal,
+  privateBytes: decimal,
+  otherBytes: decimal,
+  breakdownSampledAt: z.string().datetime({ offset: true }),
+});
 const diskSummary = z.object({
   collectedAt: z.string(),
   bootId: z.string().default(""),
@@ -43,6 +52,17 @@ const diskSummary = z.object({
       usedBytes: decimal,
       capacityBytes: decimal,
       importReservationBytes: decimal,
+    })
+    .passthrough()
+    .transform((value) => {
+      const { usedBytes, capacityBytes, importReservationBytes } = value;
+      const breakdown = diskBreakdown.safeParse(value);
+      return {
+        usedBytes,
+        capacityBytes,
+        importReservationBytes,
+        ...(breakdown.success ? breakdown.data : {}),
+      };
     })
     .optional(),
 });
@@ -63,7 +83,16 @@ const planSchema = z.object({
 });
 const receiptSchema = z.object({
   operation: z
-    .object({ id: z.string().min(1), state: z.string().optional() })
+    .object({
+      id: z.string().min(1),
+      requestId: z.string().min(1),
+      kind: z.literal("local-disposal"),
+      resource: z.object({
+        kind: z.literal("environment"),
+        environmentId: z.string().min(1),
+      }),
+      state: z.string().optional(),
+    })
     .passthrough(),
 });
 const savedSchema = z.object({
@@ -73,6 +102,7 @@ const savedSchema = z.object({
     irreversibleConfirmation: z.literal(true),
   }),
   operationId: z.string().optional(),
+  operationRequestId: z.string().optional(),
 });
 const supersessionSchema = z.strictObject({
   version: z.literal(1),
@@ -143,32 +173,6 @@ export class LocalComputeOperator {
       );
   }
 
-  async recoveryProof(
-    challenge: import("./install-authorization").ComputeRecoveryChallenge["challenge"]
-  ) {
-    const result = z
-      .object({
-        identity: z.object({
-          deviceId: z.string().min(1),
-          rootPublicKey: z.string().min(1),
-          rootKeyRevision: decimal,
-          signatureSuite: z.string().optional(),
-        }),
-        signature: z.string().min(1),
-      })
-      .parse(await this.command("comma-recovery-proof", challenge));
-    const revision = Number(result.identity.rootKeyRevision);
-    if (!Number.isSafeInteger(revision) || revision <= 0)
-      throw new Error("Host root revision is unavailable.");
-    return {
-      device_id: result.identity.deviceId,
-      root_public_key: result.identity.rootPublicKey,
-      root_key_revision: revision,
-      signature: result.signature,
-      nonce: challenge.nonce,
-    };
-  }
-
   async overview(input: { cursor?: string }): Promise<LocalComputeOverview> {
     const disposal = await this.latestDisposal();
     try {
@@ -181,6 +185,7 @@ export class LocalComputeOperator {
       );
       const disk = diskSummary.parse(await this.command("local-disk", {}));
       const next = new Map<string, Target>();
+      const scopes = new Map<string, { key: string; label: string }>();
       const environments = page.environments.map((row) => {
         const target = {
           kind:
@@ -214,6 +219,11 @@ export class LocalComputeOperator {
         );
         const key = prior?.[0] ?? randomUUID();
         next.set(key, prior?.[1] ?? target);
+        let disposalScope: { key: string; label: string } | undefined;
+        if (row.origin === "remote" && target.id) {
+          disposalScope = scopes.get(target.id) ?? { key, label: target.id.slice(-8) };
+          scopes.set(target.id, disposalScope);
+        }
         return {
           key,
           label: row.id.slice(-8),
@@ -222,7 +232,8 @@ export class LocalComputeOperator {
           ...(row.privateDiskBytes && row.sampledAt
             ? { privateDiskBytes: row.privateDiskBytes, sampledAt: row.sampledAt }
             : {}),
-          canDisposeLocal: !!target.id,
+          canDisposeLocal: !!target.id && (!disposalScope || disposalScope.key === key),
+          ...(disposalScope ? { disposalScope } : {}),
           canReadWorkloads: false,
           canOperate: false,
         };
@@ -424,7 +435,12 @@ export class LocalComputeOperator {
       const receipt = receiptSchema.parse(
         await this.command("local-execute", request)
       ).operation;
-      await this.save(file, { request, operationId: receipt.id });
+      this.requireReceiptTarget(receipt, request.plan);
+      await this.save(file, {
+        request,
+        operationId: receipt.id,
+        operationRequestId: receipt.requestId,
+      });
       const completedReset = await this.superseded(request.requestId);
       if (completedReset) return completedReset;
       return {
@@ -461,9 +477,19 @@ export class LocalComputeOperator {
         ? await this.command("local-operation", { operationId: saved.operationId })
         : await this.command("local-execute", saved.request);
       const receipt = receiptSchema.parse(response).operation;
+      this.requireReceiptTarget(receipt, saved.request.plan);
       if (saved.operationId && receipt.id !== saved.operationId)
         throw new Error("Local deletion receipt identity changed.");
-      await this.save(file, { request: saved.request, operationId: receipt.id });
+      if (
+        saved.operationId &&
+        receipt.requestId !== (saved.operationRequestId ?? saved.request.requestId)
+      )
+        throw new Error("Local deletion receipt request identity changed.");
+      await this.save(file, {
+        request: saved.request,
+        operationId: receipt.id,
+        operationRequestId: receipt.requestId,
+      });
       return (
         (await this.superseded(requestId)) ?? {
           outcome:
@@ -483,6 +509,13 @@ export class LocalComputeOperator {
     const file = join(this.options.journalDirectory, "current.json");
     await writeFile(`${file}.tmp`, JSON.stringify({ requestId }), { mode: 0o600 });
     await rename(`${file}.tmp`, file);
+  }
+  private requireReceiptTarget(
+    receipt: z.infer<typeof receiptSchema>["operation"],
+    plan: z.infer<typeof planSchema>["plan"]
+  ) {
+    if (receipt.resource.environmentId !== plan.targetId)
+      throw new Error("Local deletion receipt belongs to another target.");
   }
 
   private async latestDisposal(): Promise<LocalComputeOverview["disposal"]> {
@@ -511,7 +544,11 @@ export class LocalComputeOperator {
         const receipt = receiptSchema.parse(
           await this.command("local-operation", { operationId: saved.operationId })
         ).operation;
-        if (receipt.id !== saved.operationId)
+        this.requireReceiptTarget(receipt, saved.request.plan);
+        if (
+          receipt.id !== saved.operationId ||
+          receipt.requestId !== (saved.operationRequestId ?? saved.request.requestId)
+        )
           return (
             (await this.superseded(pointer.requestId)) ?? {
               requestId: pointer.requestId,

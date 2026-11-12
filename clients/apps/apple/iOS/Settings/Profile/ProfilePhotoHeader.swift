@@ -5,7 +5,7 @@ import CommaCore
 /// The member's photo at the top of Profile. Tapping it, or Edit under it, offers taking a photo, choosing one
 /// or taking it down, as Contacts does; with nothing but the library to offer, it opens the library at once. A
 /// new photo goes through Move and Scale, then shows everywhere at once while it uploads; a failed upload keeps
-/// the photo for a retry.
+/// the photo for a retry. A GIF that moves is framed on its first frame and goes up as a moving WebP.
 struct ProfilePhotoHeader: View {
     let store: CommaStore
     /// The name being typed, whose initials the avatar previews.
@@ -69,7 +69,7 @@ struct ProfilePhotoHeader: View {
             if let image = current.image {
                 AvatarCropView(image: image) { crop in
                     flow = nil
-                    upload(image, crop: crop)
+                    upload(image, crop: crop, gif: current.gif)
                 } cancel: {
                     flow = nil
                 }
@@ -111,7 +111,7 @@ struct ProfilePhotoHeader: View {
                 guard let data = try await picked.loadTransferable(type: Data.self) else {
                     throw CommaError.invalidInput(String(localized: "That photo couldn’t be read."))
                 }
-                flow = PhotoFlow(image: try await AvatarImage.load(data))
+                flow = PhotoFlow(image: try await AvatarImage.load(data), gif: AvatarImage.isMovingGIF(data) ? data : nil)
             } catch {
                 fail(PhotoFailure(message: error.localizedDescription, retry: nil))
             }
@@ -132,12 +132,16 @@ struct ProfilePhotoHeader: View {
         failures += 1
     }
 
-    private func upload(_ image: UIImage, crop: CGRect) {
+    private func upload(_ image: UIImage, crop: CGRect, gif: Data?) {
         working = true
         failure = nil
         Task {
             do {
-                send(try await AvatarImage.jpeg(from: image, crop: crop))
+                if let gif {
+                    send(try await AvatarImage.webp(fromGIF: gif, image: image, crop: crop), contentType: "image/webp")
+                } else {
+                    send(try await AvatarImage.jpeg(from: image, crop: crop), contentType: "image/jpeg")
+                }
             } catch {
                 working = false
                 fail(PhotoFailure(message: error.localizedDescription, retry: nil))
@@ -145,10 +149,10 @@ struct ProfilePhotoHeader: View {
         }
     }
 
-    private func send(_ jpeg: Data) {
+    private func send(_ data: Data, contentType: String) {
         attempt(String(localized: "Couldn’t update your photo."), done: String(localized: "Photo updated"),
-                retry: { send(jpeg) }) {
-            try await store.uploadAvatar(jpeg, contentType: "image/jpeg")
+                retry: { send(data, contentType: contentType) }) {
+            try await store.uploadAvatar(data, contentType: contentType)
         }
     }
 
@@ -178,10 +182,12 @@ struct ProfilePhotoHeader: View {
     }
 }
 
-/// A new photo on its way to Move and Scale: none yet while the camera is open.
+/// A new photo on its way to Move and Scale: none yet while the camera is open. A moving GIF keeps its bytes, to
+/// be cut frame by frame.
 private struct PhotoFlow: Identifiable {
     let id = UUID()
     var image: UIImage?
+    var gif: Data?
 }
 
 /// What went wrong with the photo, and how to try again when trying again can help.

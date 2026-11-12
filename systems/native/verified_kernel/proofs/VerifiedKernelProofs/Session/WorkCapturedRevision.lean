@@ -19,7 +19,7 @@ def CapturedRevision.Valid (framing : CodecFraming) (objects : Objects) (version
   (∃ sealed, PhysicalHistory framing objects captured.owner captured.session captured.cursor.candidate.working sealed) ∧
   ∀ extended, ObjectsExtend objects extended → ∀ before after : HotStore, ∀ bytes : ByteArray, ∀ result : Term,
     before.versioned versions →
-    HotCAS before (.tuple [a "cas", captured.key, .binary bytes, captured.cursor.candidate.etag]) result after →
+    HotCAS before (.tuple [a "cas", captured.key, .binary bytes, captured.cursor.candidate.revision]) result after →
     ∀ fact, before.fact extended captured.key fact →
       PhysicalIdentityFact extended captured.cursor.candidate.working fact
 
@@ -44,7 +44,7 @@ theorem captured_read_valid {framing : CodecFraming} {objects : Objects} {versio
   have address := (SessionDomain.ReadRevision.dispatch_start_captured read.started).1
   change read.objectKey = StorageAddress.key read.agent read.session at address
   change HotCAS before (.tuple [a "cas", StorageAddress.key read.agent read.session,
-    .binary bytes, read.context.candidate.etag]) result after at cas
+    .binary bytes, read.context.candidate.revision]) result after at cas
   rw [← address, token] at cas
   change before.fact extended (StorageAddress.key read.agent read.session) fact at present
   rw [← address] at present
@@ -87,7 +87,7 @@ theorem CapturedRevision.Valid.landed {framing : CodecFraming} {objects nextObje
     write.current_identities nextHistory cas
   rw [address, token] at issued
   have applied : HotCAS before
-      (.tuple [a "cas", captured.key, .binary bytes, captured.cursor.candidate.etag]) result after := by
+      (.tuple [a "cas", captured.key, .binary bytes, captured.cursor.candidate.revision]) result after := by
     rwa [issued] at cas
   rw [address] at stored
   refine ⟨applied.lineage (HotStore.lineage_objects lineage extension) rfl encoded snapshotHistory, extension, ?_⟩

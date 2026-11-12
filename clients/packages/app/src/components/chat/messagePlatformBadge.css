@@ -1,3 +1,12 @@
+/* iMessage's sent-bubble green, one value for each theme. */
+:root {
+  --comma-chat-imessage-bubble: #4bde70;
+}
+
+[data-theme="Dark mode"] {
+  --comma-chat-imessage-bubble: #30d65b;
+}
+
 .comma-chat-platform-badge {
   display: inline-flex;
   width: 24px;

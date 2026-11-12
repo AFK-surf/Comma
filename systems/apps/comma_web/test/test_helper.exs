@@ -1,6 +1,9 @@
 Code.require_file("support/repo_sandbox.ex", __DIR__)
 Code.require_file("support/convergence.ex", __DIR__)
+Code.require_file("support/conversation_faults.ex", __DIR__)
 Code.require_file("support/workers.ex", __DIR__)
+
+Code.require_file("support/auth_abuse.ex", __DIR__)
 
 ExUnit.start(exclude: [:live_llm])
 

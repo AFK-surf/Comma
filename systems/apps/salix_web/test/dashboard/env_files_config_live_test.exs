@@ -46,7 +46,6 @@ defmodule SalixWeb.Dashboard.EnvFilesConfigLiveTest do
       |> render_submit()
 
     assert html =~ "Connector credential minted"
-    assert html =~ "salix-connect --server"
     assert html =~ "SALIX_CONNECTOR_TOKEN="
     refute html =~ "SALIX_GROUP_ID="
     refute html =~ "SALIX_AGENT_ID"

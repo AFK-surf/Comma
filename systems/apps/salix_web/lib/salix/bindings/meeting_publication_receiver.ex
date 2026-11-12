@@ -138,6 +138,27 @@ defmodule Salix.Bindings.MeetingPublicationReceiver do
     end
   end
 
+  # A personal notice on Feishu/Lark goes to one person's private chat with
+  # the bot, named by open_id (`MeetingPersonalPublication`).
+  defp participant_metadata(%{"provider" => provider, "params" => %{"user_id" => _} = params})
+       when provider in ["feishu", "lark"] do
+    params = stringify(params)
+    connect_id = trim(params["connect_id"])
+    open_id = trim(params["user_id"])
+
+    if connect_id == "" or not String.starts_with?(open_id, "ou_") do
+      {:error, :invalid_publication_target}
+    else
+      {:ok,
+       %{
+         "provider" => provider,
+         "connect_id" => connect_id,
+         "receive_open_id" => open_id,
+         "mentions" => %{"mode" => "none", "users" => []}
+       }}
+    end
+  end
+
   defp participant_metadata(%{"provider" => "feishu", "params" => params}) do
     params = stringify(params)
     connect_id = trim(params["connect_id"])

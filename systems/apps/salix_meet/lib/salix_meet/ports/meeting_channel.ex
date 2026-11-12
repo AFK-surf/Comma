@@ -7,10 +7,22 @@ defmodule SalixMeet.Ports.MeetingChannel do
   @callback ensure_root(group :: map(), meeting_id :: String.t(), event :: map(), target()) ::
               {:ok, String.t()} | {:error, term()}
 
-  @optional_callbacks ensure_root: 4
+  @callback resolve(group :: map(), event :: map()) :: {:ok, target()} | {:error, term()}
+
+  @optional_callbacks ensure_root: 4, resolve: 2
 
   @spec resolve(map()) :: {:ok, target()} | {:error, term()}
   def resolve(group), do: impl().resolve(group)
+
+  @doc "Resolve the target for one meeting; a target may depend on the meeting's organizer."
+  @spec resolve(map(), map()) :: {:ok, target()} | {:error, term()}
+  def resolve(group, event) do
+    implementation = impl()
+
+    if function_exported?(implementation, :resolve, 2),
+      do: implementation.resolve(group, event),
+      else: implementation.resolve(group)
+  end
 
   @spec ensure_root(map(), String.t(), map(), target()) ::
           {:ok, String.t()} | {:error, term()}

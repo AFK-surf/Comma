@@ -1,7 +1,7 @@
 defmodule SalixAgent.BillingAvailability do
   @moduledoc "Financial refusal results shared by paid runtime operations."
 
-  @denials ~w(insufficient_credits account_inactive missing_account)
+  @denials ~w(insufficient_credits account_inactive missing_account sandbox_restricted)
 
   def error({:billing_unavailable, decision}), do: error(decision)
 
@@ -29,5 +29,9 @@ defmodule SalixAgent.BillingAvailability do
   defp message("insufficient_credits"), do: "Not enough credits. Add credits and try again."
   defp message("account_inactive"), do: "This billing account is unavailable."
   defp message("missing_account"), do: "This operation has no billing account."
+
+  defp message("sandbox_restricted"),
+    do: "Managed sandboxes are not available for this account. Run the Task on your own station."
+
   defp message(_), do: "Billing is temporarily unavailable. Try again later."
 end

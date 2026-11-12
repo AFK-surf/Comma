@@ -208,6 +208,124 @@ describe("the mesh", () => {
     expect(t.verified).toHaveLength(2);
   });
 
+  it("a ping is answered while the peer is there, and not once its process went", async () => {
+    const t = setup(async (request) => ({ status: 200, body: text(request.path) }));
+    await expect(t.client.ping(t.peer)).rejects.toBeInstanceOf(MeshError);
+    await t.client.connect(t.peer);
+    await (
+      await t.client.ping(t.peer)
+    ).answered;
+    t.mesh.crash("station");
+    let answered = false;
+    void t.client.ping(t.peer).then(
+      ({ answered: said }) => said.then(() => (answered = true)),
+      () => undefined
+    );
+    // (what the memory mesh would deliver has been delivered)
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    expect(answered).toBe(false);
+  });
+
+  it("leaves no stream of a ping open, where a reader cannot stop one (the phones' and the desktop's binding)", async () => {
+    const t = setup(async (request) => ({ status: 200, body: text(request.path) }));
+    t.mesh.stopsNothing = true;
+    await t.client.connect(t.peer);
+    const open = t.mesh.unfinished("station");
+    for (let i = 0; i < 5; i++) await (await t.client.ping(t.peer)).answered;
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    expect(t.mesh.unfinished("station")).toBe(open);
+  });
+
+  it("a peer older than the ping answers it as any path it does not know, and the connection stays", async () => {
+    const mesh = new MemoryMesh();
+    const old = mesh.endpoint("old", [MESH_ALPN]);
+    // As a station before the ping: hello answered, then every request stream with a 404, and any other control frame
+    // closes the connection.
+    void (async () => {
+      const connection = await old.accept();
+      if (!connection) return;
+      const control = await connection.acceptBi();
+      if (!control) return;
+      const reader = new FrameReader((max) => control.recv.read(max));
+      await reader.frame();
+      await control.send.write(encodeFrame({ type: "welcome" }));
+      void reader.frame().then((frame) => {
+        if (frame !== null) connection.close(2, "protocol");
+      });
+      for (;;) {
+        const stream = await connection.acceptBi();
+        if (!stream) return;
+        await new FrameReader((max) => stream.recv.read(max)).frame();
+        await stream.send.write(
+          encodeFrame({ type: "response", status: 404, headers: [] })
+        );
+        await stream.send.finish();
+      }
+    })();
+    const client = new MeshClient({
+      endpoint: mesh.endpoint("app"),
+      credential: async () => "cred",
+    });
+    const peer: PeerAddr = { id: "old" };
+    const link = await client.connect(peer);
+    await (
+      await client.ping(peer)
+    ).answered;
+    await (
+      await client.ping(peer)
+    ).answered;
+    let closed = false;
+    void link.closed.then(() => (closed = true));
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    expect(closed).toBe(false);
+  });
+
+  it("replaces a connection whose peer went without a word with a new one; keeps it where none opens", async () => {
+    const t = setup(async (request) => ({ status: 200, body: text(request.path) }));
+    const link = await t.client.connect(t.peer);
+    // The peer's process goes: its connection stays open here, carrying nothing; no new one opens yet.
+    t.mesh.crash("station");
+    expect(await t.client.refresh(t.peer)).toBe(false);
+    const hung = t.client.request(t.peer, { method: "GET", path: "/hung" });
+
+    // It is back (a new process, the same key): a new connection takes the old one's place, and what waited on the
+    // old one fails, to be asked again.
+    serveMesh<Principal>({
+      endpoint: t.mesh.endpoint("station", [MESH_ALPN]),
+      verify: async (credential) => ({ principal: { user: credential } }),
+      handle: async (request) => ({ status: 200, body: text(`again ${request.path}`) }),
+    });
+    expect(await t.client.refresh(t.peer)).toBe(true);
+    expect((await link.closed).reason).toBe("replaced");
+    await expect(hung).rejects.toBeInstanceOf(MeshError);
+    const again = await t.client.request(t.peer, { method: "GET", path: "/a" });
+    expect(await readAll(again.body)).toBe("again /a");
+    expect(t.mesh.dialed).toBe(2);
+  });
+
+  it("keeps a connection that only paused, and what is on it", async () => {
+    const t = setup(async (request) => ({ status: 200, body: text(request.path) }));
+    await t.client.connect(t.peer);
+    const streamed = pieces();
+    const long = await t.client.request(t.peer, {
+      method: "POST",
+      path: "/long",
+      body: streamed.body(),
+    });
+    // The network pauses: no new connection opens, and the old one stays.
+    t.mesh.pause("station", true);
+    expect(await t.client.refresh(t.peer)).toBe(false);
+    t.mesh.pause("station", false);
+    // Back before a new one opened, and spoken on again: the new one is not wanted.
+    expect(await t.client.refresh(t.peer, () => false)).toBe(false);
+    streamed.push(null);
+    expect(await readAll(long.body)).toBe("/long");
+    expect(t.mesh.dialed).toBe(2);
+    expect((await t.client.request(t.peer, { method: "GET", path: "/b" })).status).toBe(
+      200
+    );
+  });
+
   it("renews an expired credential once and sends the request again; a streamed body is not sent twice", async () => {
     let now = 1_000;
     const handled: string[] = [];
@@ -251,6 +369,47 @@ describe("the mesh", () => {
       client.request(peer, { method: "POST", path: "/three", body: streamed.body() })
     ).rejects.toMatchObject({ code: "credential_expired" });
     expect(handled).toEqual(["c1 /one", "c2 /two"]);
+  });
+
+  it("reads the answer of a peer that stopped reading the request's body before it ended", async () => {
+    const mesh = new MemoryMesh();
+    const peerEnd = mesh.endpoint("peer", [MESH_ALPN]);
+    let stopped!: () => void;
+    const hasStopped = new Promise<void>((resolve) => (stopped = resolve));
+    let answer!: () => void;
+    const mayAnswer = new Promise<void>((resolve) => (answer = resolve));
+    // A peer that refuses the request once it has its head: it stops reading the body, then answers 403.
+    void (async () => {
+      const connection = (await peerEnd.accept())!;
+      const control = (await connection.acceptBi())!;
+      const said = new FrameReader((max) => control.recv.read(max));
+      await said.frame();
+      await control.send.write(encodeFrame({ type: "welcome" }));
+      const stream = (await connection.acceptBi())!;
+      await new FrameReader((max) => stream.recv.read(max)).frame();
+      stream.recv.stop(1);
+      stopped();
+      await mayAnswer;
+      await stream.send.write(
+        encodeFrame({ type: "response", status: 403, headers: [] })
+      );
+      await stream.send.finish();
+    })();
+    const client = new MeshClient({
+      endpoint: mesh.endpoint("app"),
+      credential: async () => "cred",
+    });
+    const body = pieces();
+    const response = client.request(
+      { id: "peer" },
+      { method: "POST", path: "/upload", body: body.body() }
+    );
+    await hasStopped;
+    // The rest of the body cannot go now.
+    body.push(text("more"));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    answer();
+    expect((await response).status).toBe(403);
   });
 
   it("gives a request up on both sides when the client aborts it", async () => {

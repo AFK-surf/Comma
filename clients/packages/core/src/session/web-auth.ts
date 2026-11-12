@@ -1,6 +1,7 @@
 // What the web session lifecycle reads from the auth endpoints, and how it words their refusals. The answers are read
 // as the page adapter read them: unknown fields are ignored (a newer server), and the Cookie transport never accepts
 // a bearer in an answer.
+import { lazySchema } from "@comma/chat-contract";
 import {
   guestPowMaxAttempts,
   hasLeadingZeroBits,
@@ -11,74 +12,105 @@ import { z } from "zod";
 import type { HostError } from "@comma/core-kernel";
 
 /** An auth endpoint's answer: its status and its JSON body (undefined when it had none that parsed). */
-export type AuthResponse = { ok: boolean; status: number; body: unknown };
+export type AuthResponse = {
+  ok: boolean;
+  status: number;
+  body: unknown;
+  headers?: [string, string][];
+};
 
-const sessionUser = z.object({
-  email: z.string().email(),
-  id: z.string().min(1).max(256),
-  // Older servers omit the kind; any value other than "guest" is registered.
-  kind: z.string().max(64).nullable().optional(),
-  name: z.string().min(1).max(512).nullable().optional(),
-  status: z.string().min(1).max(64).nullable().optional(),
-});
+const sessionUser = lazySchema(() =>
+  z.object({
+    email: z.string().email(),
+    id: z.string().min(1).max(256),
+    // Older servers omit the kind; any value other than "guest" is registered.
+    kind: z.string().max(64).nullable().optional(),
+    name: z.string().min(1).max(512).nullable().optional(),
+    status: z.string().min(1).max(64).nullable().optional(),
+  })
+);
 
-export const sessionProjection = z.object({
-  expires_at: z.number().int().positive(),
-  session_id: z.string().min(1).max(256),
-  token: z.never().optional(),
-  user: sessionUser,
-});
+export const sessionProjection = lazySchema(() =>
+  z.object({
+    expires_at: z.number().int().positive(),
+    session_id: z.string().min(1).max(256),
+    token: z.never().optional(),
+    user: sessionUser,
+  })
+);
 export type SessionProjection = z.output<typeof sessionProjection>;
 
-export const emailChallenge = z.object({
-  challenge_id: z.string().min(1).max(256),
-  code: z.string().min(1).max(32).optional(),
-});
+export const emailChallenge = lazySchema(() =>
+  z.object({
+    challenge_id: z.string().min(1).max(256),
+    code: z.string().min(1).max(32).optional(),
+  })
+);
 
-export const googleAttempt = z.object({
-  attempt_id: z.string().min(1).max(256),
-  client_id: z.string().min(1).max(2_048),
-  nonce: z.string().min(1).max(2_048),
-  platform: z.literal("web"),
-});
+export const googleAttempt = lazySchema(() =>
+  z.object({
+    attempt_id: z.string().min(1).max(256),
+    client_id: z.string().min(1).max(2_048),
+    nonce: z.string().min(1).max(2_048),
+    platform: z.literal("web"),
+  })
+);
 
-export const googleLinkChallenge = z.object({
-  challenge_id: z.string().min(1).max(256),
-  code: z.string().min(1).max(32).optional(),
-  email: z.string().email(),
-  status: z.literal("otp_required"),
-});
+export const googleLinkChallenge = lazySchema(() =>
+  z.object({
+    challenge_id: z.string().min(1).max(256),
+    code: z.string().min(1).max(32).optional(),
+    email: z.string().email(),
+    status: z.literal("otp_required"),
+  })
+);
 
-export const googleCompletion = z.union([sessionProjection, googleLinkChallenge]);
+export const googleCompletion = lazySchema(() =>
+  z.union([sessionProjection, googleLinkChallenge])
+);
 
-export const signedOutAnswer = z.object({ signed_out: z.literal(true) });
+export const signedOutAnswer = lazySchema(() =>
+  z.object({ signed_out: z.literal(true) })
+);
 
 /** The Cookie transport keeps the claim in an HttpOnly Cookie; the body says only how long it can be redeemed. */
-export const guestHandoff = z.object({
-  claim: z.never().optional(),
-  expires_at: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-});
-
-export const guestImportAnswer = z.object({ import_id: z.string().min(1).max(256) });
-
-export const guestImportMarker = z.strictObject({
-  expiresAtEpochSeconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-});
-
-export const unauthorized = z.object({ error: z.literal("unauthorized") });
-export const sessionChanged = z.object({ error: z.literal("session_changed") });
-const errorCode = z.object({ error: z.string() });
-
-const protocolError = z
-  .object({
-    contract_version: z.literal(1).optional(),
-    error: z.enum([
-      "invalid_session_precondition",
-      "session_lifecycle_version_required",
-      "unsupported_session_lifecycle_version",
-    ]),
+export const guestHandoff = lazySchema(() =>
+  z.object({
+    claim: z.never().optional(),
+    expires_at: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   })
-  .or(z.object({ error: z.literal("invalid_session_precondition") }));
+);
+
+export const guestImportAnswer = lazySchema(() =>
+  z.object({ import_id: z.string().min(1).max(256) })
+);
+
+export const guestImportMarker = lazySchema(() =>
+  z.strictObject({
+    expiresAtEpochSeconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+);
+
+export const unauthorized = lazySchema(() =>
+  z.object({ error: z.literal("unauthorized") })
+);
+export const sessionChanged = lazySchema(() =>
+  z.object({ error: z.literal("session_changed") })
+);
+const errorCode = lazySchema(() => z.object({ error: z.string() }));
+
+const protocolError = lazySchema(() =>
+  z
+    .object({
+      contract_version: z.literal(1).optional(),
+      error: z.enum([
+        "invalid_session_precondition",
+        "session_lifecycle_version_required",
+        "unsupported_session_lifecycle_version",
+      ]),
+    })
+    .or(z.object({ error: z.literal("invalid_session_precondition") }))
+);
 
 export function parsed<S extends z.ZodType>(
   response: AuthResponse,

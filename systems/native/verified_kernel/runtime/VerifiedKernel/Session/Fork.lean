@@ -265,8 +265,11 @@ def inlineResultSeqs (source args : Term) : KernelM Term := do
   let selectedSeqs := (stamps.filter (fun pair => selected.any (· == pair.1))).map Prod.snd
   let runtimeSeqs ← windowMsgs.mapM (fun message =>
     alias message (a "result_seq") (b "result_seq"))
+  let resident ← asList ((← field source "async_results").default (list []))
+  let residentSeqs ← resident.mapM (fun record => access record (b "seq"))
   let candidates ← (legacySeqs ++ selectedSeqs ++ runtimeSeqs).filterM (fun seq => do
-    return seq.isInteger && (← greater seq (i 0)) && (← atMost seq archived))
+    return seq.isInteger && (← greater seq (i 0)) && (← atMost seq archived) &&
+      !residentSeqs.any (· == seq))
   return list (← sorted (uniq candidates))
 
 /-- `fork` is a lifecycle operation whose `{:ok, state}` result the dispatcher unwraps;

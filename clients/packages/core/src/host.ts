@@ -15,6 +15,7 @@ import {
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
 import type { Effect, Scope } from "effect";
 import type { DriveEntry, StationVia } from "./contract.ts";
+import type { AbuseChallenge, NativeAbuseProof } from "./session/abuse.ts";
 import type {
   AppleGrant,
   AppRelease,
@@ -189,12 +190,6 @@ export interface BearerSessionPorts {
   /** The operating system the sign-in requests name. */
   readonly clientPlatform: ClientPlatform;
   /**
-   * The host shows what the device keeps for the stored credential's account while its session is checked, and when
-   * that check cannot reach the server (a phone opened offline): `Session.keep`. Without it, nothing is shown until
-   * the server confirmed the session.
-   */
-  readonly showsKeptAccount?: boolean | undefined;
-  /**
    * Where the host's gate is (the last snapshot the core before this one published, and the session its lease is
    * open for, or null): the core continues that authority, so a restart that finds the same session keeps its lease.
    */
@@ -228,6 +223,15 @@ export interface BearerSessionPorts {
     clientId: string;
     nonce: string;
   }): Effect.Effect<AppleGrant, HostError>;
+  /** Mobile platform evidence for this exact server challenge; no account bearer is exposed. */
+  abuseProof?(challenge: AbuseChallenge): Effect.Effect<NativeAbuseProof, HostError>;
+  /** Mobile host digests for the bounded PoW solver. */
+  sha256?(inputs: readonly string[]): Effect.Effect<Uint8Array[], HostError>;
+  /** Native mobile's isolated hosted CAPTCHA page; interrupted, it closes. */
+  captcha?(input: {
+    url: string;
+    challengeId: string;
+  }): Effect.Effect<string | null, HostError>;
 }
 
 /** Whether the person is at this computer (Main reads the system's idle time and its windows and settings). */
@@ -276,6 +280,8 @@ export interface AppUpdatePorts {
   readonly check: Effect.Effect<AppRelease | null, HostError>;
   /** Downloads `release`: true once it is on disk. */
   download(release: AppRelease): Effect.Effect<boolean, HostError>;
+  /** Told how far a download got, in percent (0–100), as it goes. */
+  onProgress(listener: (percent: number) => void): () => void;
   /** Quits and restarts into a downloaded release: false when the platform could not start it. */
   apply(release: AppRelease): Effect.Effect<boolean, HostError>;
 }
@@ -534,11 +540,16 @@ export interface LocalDrivePorts {
 }
 
 /** A request to a station over its direct connection: an admin API path (`/sessions`, `/threads/7/entries`). */
+/** How the core names a station to its links: that station in one workspace, whose credential it goes by. */
+export const stationLink = (workspace: string, station: string) =>
+  `${station}@${workspace}`;
+
 export interface StationRequest {
   method: string;
   path: string;
   headers: [string, string][];
-  body: Uint8Array | null;
+  /** The request's bytes, or as they come for as long as the request is open (a screen's view). */
+  body: Uint8Array | AsyncIterable<Uint8Array> | null;
 }
 
 /**
@@ -585,6 +596,23 @@ export interface StationLinks {
    * connection closes.
    */
   connect(station: string): Effect.Effect<Effect.Effect<void>, HostError>;
+  /**
+   * Opens a new connection to `station` beside the open one, which carries nothing though it is still open (the
+   * station's process was killed and started again), and puts it in that one's place, closing the old (what was on it
+   * fails). `wanted` is asked once the new one opened; false keeps the old one. True when it was replaced; false when
+   * none was open, none opened, or it was not wanted. Absent: the host cannot (each connection then lasts until its
+   * own idle timeout).
+   */
+  refresh?(station: string, wanted: () => boolean): Effect.Effect<boolean, HostError>;
+  /**
+   * Asks `station` on the open connection whether it is still there: succeeds once the question is written (a stream
+   * to write it on may be a while coming), with what waits for its answer: true once the station answered, false once
+   * the connection went. A station gone with the connection still open answers nothing; the caller gives it up after
+   * its own while. Absent: the host cannot.
+   */
+  ping?(station: string): Effect.Effect<Effect.Effect<boolean>, HostError>;
+  /** Closes the open connection to `station`, given up on: the next `connect` opens another. */
+  drop?(station: string): Effect.Effect<void>;
   /** One request; its body arrives as it comes, open while the scope is. */
   request(
     station: string,
@@ -611,16 +639,25 @@ export interface StationLinks {
 
 /** Direct connections to stations (Electron's host: iroh). A host without them reaches no station. */
 export interface StationMeshPorts {
-  /** Binds this device's endpoint with `secretKey` (32 bytes, kept by the core) and the relays the control plane named. */
+  /** Binds this device's endpoint with `secretKey` (32 bytes, kept by the core) and the relays and order of ways the control plane named. */
   open(input: {
     secretKey: Uint8Array;
     relays: readonly string[];
+    routePolicy?: string | undefined;
   }): Effect.Effect<StationLinks, HostError, Scope.Scope>;
   /**
    * The core keeps every station of the signed-in account's workspaces linked, shown or not (stations/always.ts). A
    * host that is plugged in and stays on (the desktop app) says so.
    */
   readonly alwaysLinked?: boolean;
+  /**
+   * Also keeps a connection to the desktop stations of the person's own computers in each shown workspace, and views
+   * their screens over it (screen-views.ts): every app with the mesh. They are in no roster: the Devices list names
+   * them.
+   */
+  readonly ownComputers?: boolean;
+  /** Stations are reached through Salix alone (Settings › Debug, to test that path): no other way is tried. */
+  readonly salixOnly?: boolean;
 }
 
 /**
@@ -683,6 +720,22 @@ export interface ClientIdentity {
   readonly version?: string | undefined;
 }
 
+/**
+ * A screen view's pictures to the app's decoder. `kind`: 1 an H.264 config, 2 an H.265 one (`bytes` its avcC or hvcC,
+ * `width` and `height` the picture's), 3 a frame, 4 a key frame (`bytes` its access unit, `ts` its time). The app copies
+ * `bytes` during the call.
+ */
+export interface ScreenFramePorts {
+  frame(
+    sink: number,
+    kind: number,
+    ts: number,
+    width: number,
+    height: number,
+    bytes: Uint8Array
+  ): void;
+}
+
 export interface Host {
   /** The app the core runs in, as its requests report it. A host without one reports only its capabilities. */
   readonly client?: ClientIdentity | undefined;
@@ -691,8 +744,9 @@ export interface Host {
   /** A request to the Comma API, with the session's credential added by the host. */
   fetch(request: ApiRequest): Effect.Effect<ApiResponse, HostError>;
   /**
-   * `fetch` sends a request's `localFileRef` as its body (Electron, whose picks leave files with Main; Android, whose
-   * picks stay with the provider that gave them).
+   * Picks upload as they reach a draft, in parts read with `readLocalFile` (Electron, whose picks leave files with
+   * Main; the phone apps, whose picks stay with the provider that gave them). `fetch` also sends a request's
+   * `localFileRef` as its body.
    */
   readonly uploadsLocalFiles?: boolean;
   /**
@@ -759,6 +813,11 @@ export interface Host {
 
   /** Direct connections to stations (stations/). Only Electron's host has them. */
   readonly stationMesh?: StationMeshPorts;
+  /**
+   * Hands a screen view's pictures to the app's own decoder (the phones'): a view opened with a `sink` gives its configs
+   * and frames here, as numbers and bytes, instead of as the call's progress (screen-views.ts).
+   */
+  readonly screenFrames?: ScreenFramePorts;
   /** Files of any size downloaded to the device's storage (downloads.ts). Only the Android app's host has them. */
   readonly downloads?: DownloadPorts;
 

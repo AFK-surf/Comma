@@ -7,10 +7,5 @@ defmodule CommaWeb.MacAppsRequester do
   and Loop Tasks, and other members' requests have no requester here.
   """
 
-  def requester(ctx) do
-    case CommaWeb.Stations.requester(ctx) do
-      {:ok, _user_id} = ok -> ok
-      _ -> SalixIM.TaskExecution.task_requester(ctx)
-    end
-  end
+  defdelegate requester(ctx), to: CommaWeb.Stations
 end

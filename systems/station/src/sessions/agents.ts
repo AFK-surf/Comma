@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { Context, Effect, Layer, Stream } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
+import { Logins } from "../logins/tool.ts";
 import { ClaudeDriver } from "../agents/claude.ts";
 import { CodexDriver } from "../agents/codex.ts";
 import { Jobs, notifyEndpoint } from "../jobs/jobs.ts";
@@ -30,6 +31,8 @@ import { type AgentsDoor, openAgentsDoor } from "../tools/http.ts";
 import { jobTools } from "../tools/jobs.ts";
 import { McpEndpoint, UNBOUND_REFUSAL } from "../tools/mcp.ts";
 import { remoteTools } from "../tools/remote.ts";
+import { salixTools } from "../tools/salix.ts";
+import { commaOnPath } from "../connector/comma-cli-bin.ts";
 import { UsageCounter } from "../usage/counter.ts";
 import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
 import { AccountSources } from "../accounts/sources.ts";
@@ -84,7 +87,7 @@ export type AgentsParts = {
   overview(viewer: Viewer, lang: Lang): Promise<unknown>;
 };
 
-export class Agents extends Context.Service<Agents, AgentsParts>()("stillfail/Agents") {}
+export class Agents extends Context.Service<Agents, AgentsParts>()("comma-station/Agents") {}
 
 /// Whether a process is alive (signal 0).
 function alive(pid: number): boolean {
@@ -198,6 +201,10 @@ export const AgentsLive = (control: Control, managed: boolean) =>
       hub.setTasks(tasks);
       remote.setTasks((peer, request) => tasks.handle(peer, request));
       tasks.begin();
+      // In a Task's sandbox (L4ES starts it with SALIX_CONNECTOR_JOIN=1, runtime-images/coding-sandbox), its Sessions
+      // reach Salix's tools (tools/salix.ts): Salix takes such calls from a sandbox alone, so a Group's Cloud VM or a
+      // VMM Station, managed too, is offered none.
+      tasks.offerSalixTools(managed && process.env.SALIX_CONNECTOR_JOIN === "1");
       // In a coding sandbox (one L4ES gave a GitHub grant), coding Sessions work in checkouts of their repositories
       // (tasks/coding.ts).
       const coding = new Coding({ reposDir: hub.reposDir() });
@@ -208,7 +215,23 @@ export const AgentsLive = (control: Control, managed: boolean) =>
           .catch((error) => log.warn("coding", "the git identity was not set", { error: (error as Error).message }));
       }
 
+      // A sandbox's CLI logins (logins/tool.ts), for the Task's person.
+      const logins = new Logins(
+        {
+          offered: (session) => tasks.salixHost(session) !== null,
+          call: (session, tool, args) => tasks.salixToolCall(session, tool, args),
+          keep: (session, program, archive) => tasks.salixLoginKeep(session, program, archive),
+          restore: (session, program) => tasks.salixLoginRestore(session, program),
+          notify: async (session, text) => hub.notify(session, text),
+          running: (session) => hub.processState(session) === "running",
+        },
+        new Fibers("logins", hub.clock),
+        data,
+      );
+      tasks.setLogins(logins);
+
       const tools = [
+        ...logins.tools(),
         ...chatTools(hub),
         ...archiveTools(hub),
         ...remoteTools(remote),
@@ -219,7 +242,15 @@ export const AgentsLive = (control: Control, managed: boolean) =>
         ...jobTools(jobs, (key) => store.getSession(key)?.workspace ?? null),
         // Only to coding Sessions of a Task that builds a Mini App.
         ...appTools(tasks),
+        // Only to Sessions of a Task Salix keeps: Salix's registry tools, as the Task's Worker.
+        ...salixTools(tasks),
       ];
+      // The agents' `comma` command (connector/comma-cli-bin.ts): first on the PATH of what the station starts.
+      try {
+        commaOnPath(data);
+      } catch (error) {
+        log.warn("station", "the comma command was not written", { error: (error as Error).message });
+      }
       // The station's and the runtimes' versions, read at start and every few hours; updated from the pages, or by
       // itself while nothing runs and nobody looks (auto update).
       const updates = makeUpdates({
@@ -232,10 +263,10 @@ export const AgentsLive = (control: Control, managed: boolean) =>
         inUse: () => events.inUse(),
       });
       updates.start();
-      // `stillfail update --beta|--stable` asks a running station by SIGHUP (run/channel-ask).
+      // `comma-station update --beta|--stable` asks a running station by SIGHUP (run/channel-ask).
       control.on("hup", () => updates.answerChannelAsk());
 
-      // Bug reports to the still.fail team, from stations on the stable channel (updates.rs `channel_of`), in still.fail
+      // Bug reports to the Comma team, from stations on the stable channel (updates.rs `channel_of`), in Comma
       // cloud only: feedback is no part of the control plane (another provider's stations send none).
       const stable = updates.channel() === "stable" && plane.spec().feedback;
       const sendReport = async (report: any) => {
@@ -245,7 +276,7 @@ export const AgentsLive = (control: Control, managed: boolean) =>
       };
       const fixed = async (told: string[]) => {
         if (cloud.removed()) return { fixed: [] };
-        return { ...(await signedPost(cloud, key, "/v1/feedback/fixed", "stillfail-station-feedback-fixed-v1", { told })), station: version() };
+        return { ...(await signedPost(cloud, key, "/v1/feedback/fixed", "comma-station-feedback-fixed-v1", { told })), station: version() };
       };
       if (stable) tools.push(...feedbackTools(store, (k) => pageOf(k) ?? null, () => (cloud.state ? sendReport : null)));
       // Outside a workspace its agents do not reach out of it: their outward tools are refused.

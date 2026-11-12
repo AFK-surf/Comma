@@ -5,8 +5,9 @@ defmodule CommaWeb.DriveBrowse do
 
   Reads go through the `SalixAgent.Drive` port with the Workspace group's
   Drive binding, the same way the Router's `/drive` mount reads. They serve
-  the hosted replica's selected version of each path: a file a device saved
-  moments ago may not be there yet, and nothing here writes.
+  the newest version an attached device or the hosted replica holds of each
+  path: with the devices offline, a file one saved moments ago may not be there
+  yet. Nothing here writes.
 
   The caller authorizes the group first (the router requires the owner's full
   Workspace session). Paths are Drive-relative, without a leading slash.

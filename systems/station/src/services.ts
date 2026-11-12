@@ -3,6 +3,7 @@
 // functions (src/read). docs/station-ts.md, 「模块划分」.
 import { Context, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 import { join } from "node:path";
+import { storeFile } from "./ops/files.ts";
 import { Admin } from "./api/admin.ts";
 import { Shares } from "./mesh/adb.ts";
 import { Events as EventStreams } from "./api/events.ts";
@@ -18,12 +19,12 @@ import { Readers as ReaderPool } from "./read/pool.ts";
 import { Agents } from "./sessions/agents.ts";
 
 /// Where the station keeps its data, and the release it runs from.
-export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string }>()("stillfail/Paths") {}
+export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string }>()("comma-station/Paths") {}
 
 /// The control plane this station is enrolled in (cloud/plane.ts): cloud.json and its changes, the presence socket,
 /// notices, traces, releases and which credentials it takes. `layer` follows cloud.json's provider (still.fail cloud
 /// when it names none); `layerFor` keeps to one (tests).
-export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShape>()("stillfail/ControlPlane") {
+export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShape>()("comma-station/ControlPlane") {
   static readonly layer = ControlPlane.make();
   static layerFor(provider: Provider) {
     return ControlPlane.make(provider);
@@ -50,7 +51,7 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
 }
 
 /// The station's key.
-export class Key extends Context.Service<Key, StationKey>()("stillfail/Key") {
+export class Key extends Context.Service<Key, StationKey>()("comma-station/Key") {
   static readonly layer = Layer.effect(
     Key,
     Effect.gen(function* () {
@@ -60,12 +61,12 @@ export class Key extends Context.Service<Key, StationKey>()("stillfail/Key") {
 }
 
 /// Whether the station answers now: its parts started, not stopping or handing over.
-export class Up extends Context.Service<Up, SubscriptionRef.SubscriptionRef<boolean>>()("stillfail/Up") {
+export class Up extends Context.Service<Up, SubscriptionRef.SubscriptionRef<boolean>>()("comma-station/Up") {
   static readonly layer = Layer.effect(Up, SubscriptionRef.make(false));
 }
 
 /// The readers (worker threads) answering the admin API's reads.
-export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/Readers") {
+export class Readers extends Context.Service<Readers, ReaderPool>()("comma-station/Readers") {
   static readonly layer = Layer.effect(
     Readers,
     Effect.gen(function* () {
@@ -75,14 +76,14 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
   );
 }
 
-/// The station's store (stillfail.db, archive/): what is written, on this thread; the readers read the same file.
-export class Store extends Context.Service<Store, StationStore>()("stillfail/Store") {
+/// The station's store (station.db, archive/): what is written, on this thread; the readers read the same file.
+export class Store extends Context.Service<Store, StationStore>()("comma-station/Store") {
   static readonly layer = Layer.effect(
     Store,
     Effect.gen(function* () {
       const { data } = yield* Paths;
       return yield* Effect.acquireRelease(
-        Effect.sync(() => StationStore.open(join(data, "stillfail.db"), join(data, "archive"))),
+        Effect.sync(() => StationStore.open(storeFile(data), join(data, "archive"))),
         (store) => Effect.sync(() => store.close()),
       );
     }),
@@ -90,7 +91,7 @@ export class Store extends Context.Service<Store, StationStore>()("stillfail/Sto
 }
 
 /// The event streams (GET /events): the store's changes, pushed.
-export class Events extends Context.Service<Events, EventStreams>()("stillfail/Events") {
+export class Events extends Context.Service<Events, EventStreams>()("comma-station/Events") {
   static readonly layer = Layer.effect(
     Events,
     Effect.gen(function* () {
@@ -111,7 +112,7 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
 }
 
 /// The machine's state, shared by GET /host and the events.
-export class AdminHost extends Context.Service<AdminHost, Host>()("stillfail/AdminHost") {
+export class AdminHost extends Context.Service<AdminHost, Host>()("comma-station/AdminHost") {
   static readonly layer = Layer.effect(
     AdminHost,
     Effect.gen(function* () {
@@ -121,7 +122,7 @@ export class AdminHost extends Context.Service<AdminHost, Host>()("stillfail/Adm
 }
 
 /// The admin API. Made after the agents' side (it runs sessions and jobs for the pages); the agents do not need it.
-export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/AdminApi") {
+export class AdminApi extends Context.Service<AdminApi, Admin>()("comma-station/AdminApi") {
   static readonly layer = Layer.effect(
     AdminApi,
     Effect.gen(function* () {
@@ -131,7 +132,7 @@ export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/Admi
 }
 
 /// Phones lent to the agents over members' links (src/mesh/adb.ts): offered on the mesh, listed to the agents.
-export class AdbShares extends Context.Service<AdbShares, Shares>()("stillfail/AdbShares") {
+export class AdbShares extends Context.Service<AdbShares, Shares>()("comma-station/AdbShares") {
   static readonly layer = Layer.effect(
     AdbShares,
     Effect.gen(function* () {
@@ -142,6 +143,6 @@ export class AdbShares extends Context.Service<AdbShares, Shares>()("stillfail/A
 }
 
 /// The native mesh addon.
-export class MeshNative extends Context.Service<MeshNative, Mesh>()("stillfail/MeshNative") {
+export class MeshNative extends Context.Service<MeshNative, Mesh>()("comma-station/MeshNative") {
   static readonly layer = Layer.effect(MeshNative, Effect.sync(loadMesh));
 }

@@ -223,16 +223,20 @@ defmodule BridgeForTeams.Models do
   `router_choice/2` accepts: every model when the allowed list is empty.
   Otherwise a model stays when an allowed choice names it, with an effort the
   model offers or none, and the org's Profiles can serve that choice: without
-  `allow_paid` only a subscription can. The model then keeps only the efforts
+  `allow_paid` or an explicit Profile pin only a subscription can. The model keeps only the efforts
   those choices allow, `requires_allow_paid` says whether all of them are
-  pay-per-use, and `choices` lists them.
+  pay-per-use, and `choices` lists them, including explicit Profile pins.
+  A `profile_id` option restricts pins to that Profile. The caller must
+  restrict its servable-model read to that Profile.
   """
   @spec router_model_filter(String.t()) :: {:ok, ([map()] -> [map()])} | {:error, term()}
-  def router_model_filter(project_id) do
+  def router_model_filter(project_id, opts \\ []) do
+    pin = Keyword.get(opts, :profile_id)
+
     case Repo.get(Project, project_id) |> Repo.preload(:org) do
       %Project{org: %Organization{allowed_models: [_ | _] = allowed}} ->
         allowed = Enum.map(allowed, &normalize/1)
-        {:ok, fn models -> Enum.flat_map(models, &allowed_model(&1, allowed)) end}
+        {:ok, fn models -> Enum.flat_map(models, &allowed_model(&1, allowed, pin)) end}
 
       %Project{org: %Organization{}} ->
         {:ok, &Function.identity/1}
@@ -242,14 +246,15 @@ defmodule BridgeForTeams.Models do
     end
   end
 
-  defp allowed_model(%{"id" => id} = model, allowed) do
+  defp allowed_model(%{"id" => id} = model, allowed, pin) do
     efforts = List.wrap(model["efforts"])
     subscription? = model["served_by"] == "subscription"
 
     choices =
       Enum.filter(allowed, fn choice ->
         choice["kind"] == "catalog" and choice["model"] == id and
-          (choice["allow_paid"] == true or subscription?) and
+          (is_nil(pin) or choice["profile_id"] in [nil, pin]) and
+          (choice["allow_paid"] == true or subscription? or is_binary(choice["profile_id"])) and
           (choice["reasoning_effort"] in [nil, ""] or choice["reasoning_effort"] in efforts)
       end)
 
@@ -272,7 +277,7 @@ defmodule BridgeForTeams.Models do
       ]
   end
 
-  defp allowed_model(_model, _allowed), do: []
+  defp allowed_model(_model, _allowed, _pin), do: []
 
   @doc """
   The platform model that each role follows, as `%{"label", "model_icon"}`,

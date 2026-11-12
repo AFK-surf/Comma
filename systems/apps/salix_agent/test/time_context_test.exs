@@ -21,6 +21,7 @@ defmodule SalixAgent.TimeContextTest do
              DateTime.to_iso8601(DateTime.from_unix!(@message.delivered_at_ms, :millisecond))
 
     assert message["content"] =~ "latest_message_timezone: unknown"
+    assert message["content"] =~ "say how long ago it was instead"
     assert message["content_kind"] == "model_context"
     known = %{"time_context" => state}
     assert {[], ^state} = TimeContext.prepare(session, known, DateTime.add(@now, 299))

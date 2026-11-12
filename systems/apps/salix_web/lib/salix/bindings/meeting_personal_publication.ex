@@ -114,6 +114,7 @@ defmodule Salix.Bindings.MeetingPersonalPublication do
     group_id = plan["group_id"]
     plan_id = plan["meeting_plan_id"]
     connect_id = get_in(plan, ["publication_target", "params", "connect_id"])
+    provider = get_in(plan, ["publication_target", "provider"])
     user_id = recipient["user_id"]
 
     with {:ok, true} <- PersonalPreparation.enabled?(group_id, connect_id, user_id),
@@ -123,9 +124,9 @@ defmodule Salix.Bindings.MeetingPersonalPublication do
          {:ok, action} <- MeetingPlan.card_action(group_id, plan_id, opts),
          {:ok, :queued} <-
            MeetingPublicationReceiver.queue_notice(group_id, plan_id, %{
-             "provider" => "slack",
-             "params" => %{"connect_id" => connect_id, "channel" => channel},
-             "text" => action["text"] <> advice,
+             "provider" => provider,
+             "params" => direct_params(provider, connect_id, channel),
+             "text" => action["text"] <> advice <> destination_hint(plan, provider),
              "not_after_ms" => action["not_after_ms"],
              "idempotency_key" => "calendar-personal:" <> plan_id <> ":" <> user_id
            }) do
@@ -141,6 +142,28 @@ defmodule Salix.Bindings.MeetingPersonalPublication do
         error
     end
   end
+
+  # Without a team notice, the first personal reminder says once that
+  # notices can go to the Group's other platform
+  # (`SalixMeet.CalendarConfiguration.destination_hint/2`).
+  defp destination_hint(plan, provider) do
+    with true <- plan["managed_calendar"] == true,
+         "none" <- get_in(plan, ["publication_target", "tool"]),
+         hint when hint != "" <-
+           SalixMeet.CalendarConfiguration.destination_hint(plan["group_id"], provider) do
+      "\n\n" <> hint
+    else
+      _ -> ""
+    end
+  end
+
+  # A Slack notice goes to the DM channel opened for the person; a
+  # Feishu/Lark notice to the person's private chat with the bot, by open_id.
+  defp direct_params(provider, connect_id, open_id) when provider in ["feishu", "lark"],
+    do: %{"connect_id" => connect_id, "user_id" => open_id}
+
+  defp direct_params(_provider, connect_id, channel),
+    do: %{"connect_id" => connect_id, "channel" => channel}
 
   defp authorized_advice(plan, %{"report" => %{"text" => text} = report} = recipient)
        when is_binary(text) and text != "" do

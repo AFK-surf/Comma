@@ -1,5 +1,5 @@
 // What the station posts to its control plane signed with its key (the Rust station's feedback.rs `send`, notify.rs):
-// the body's sha256 under "<tag>:<origin>:<station>:<ts>:<digest>", in the x-stillfail-* headers (and x-ember-* where
+// the body's sha256 under "<tag>:<origin>:<station>:<ts>:<digest>", in the x-comma-station-* headers (and x-ember-* where
 // the Rust sends those too). Comma reads the same headers (contract §1).
 import { nowSecs } from "../ops/files.ts";
 import { type StationKey, sha256hex } from "./key.ts";
@@ -12,7 +12,7 @@ export async function signedPost(cloud: Cloud, key: StationKey, path: string, ta
   const ts = nowSecs();
   const signature = key.sign(`${tag}:${s.origin}:${s.station}:${ts}:${sha256hex(body)}`);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  for (const prefix of former ? ["stillfail", "ember"] : ["stillfail"]) {
+  for (const prefix of former ? ["stillfail", "ember"] : ["comma-station", "stillfail"]) {
     headers[`x-${prefix}-station`] = s.station;
     headers[`x-${prefix}-ts`] = String(ts);
     headers[`x-${prefix}-signature`] = signature;

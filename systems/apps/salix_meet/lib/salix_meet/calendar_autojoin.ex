@@ -18,9 +18,11 @@ defmodule SalixMeet.CalendarAutojoin do
   require Logger
 
   alias SalixMeet.{
+    CalendarChanges,
     CalendarEnrollmentCache,
     CalendarEnrollmentGroups,
     CalendarProjection,
+    LarkBot,
     MeetingState,
     Ports,
     Runtime,
@@ -40,14 +42,25 @@ defmodule SalixMeet.CalendarAutojoin do
   @grace_ms 300_000
   @recovery_ms 15 * 60 * 1_000
   @horizon_ms 24 * 60 * 60 * 1_000
+  @min_horizon_ms 30 * 60 * 1_000
+  @near_horizon_ms 3 * 60 * 60 * 1_000
   @default_bot_name "Cirno"
   @default_caption_language "Chinese, Mandarin (Simplified)"
   @max_groups_per_pass 25
   @max_events_per_group 50
   @max_concurrency 5
   @task_timeout_ms 30_000
+  @max_dispatches_per_unit 25
+  @max_dispatch_concurrency 25
   @enrollment_ttl_ms 60 * 60 * 1_000
   @enrollment_retry_backoff_ms 60_000
+  # Members connect accounts at any time; each resolution lists a bounded
+  # number of new accounts, so it may run on every pass.
+  @member_enrollment_ttl_ms 60_000
+  # A Feishu/Lark calendar sends no change notice: its enrollment is resolved
+  # on every pass, and the resolution reads each calendar again when its
+  # last read is old enough (`Salix.Bindings.LarkCalendarEnrollment`).
+  @polled_enrollment_ttl_ms 60_000
 
   def start_link(opts \\ []) do
     SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
@@ -73,6 +86,10 @@ defmodule SalixMeet.CalendarAutojoin do
       groups_override: opts[:groups],
       groups: opts[:groups] || [],
       resolved: %{},
+      # Meeting windows each unit's projection last showed, so the join pass
+      # visits units with a meeting about to start before its rotation.
+      windows: %{},
+      enrollment: nil,
       enrollment_ttl_ms: opts[:enrollment_ttl_ms] || @enrollment_ttl_ms,
       enrollment_retry_backoff_ms:
         opts[:enrollment_retry_backoff_ms] || @enrollment_retry_backoff_ms,
@@ -89,15 +106,50 @@ defmodule SalixMeet.CalendarAutojoin do
     {:ok, state}
   end
 
+  # A scan tick resolves enrollments in a task of its own and scans when they
+  # arrive, so the worker keeps taking join ticks while members are enrolled.
+  # With fixed groups (tests, operators) it scans at once.
   @impl true
-  def handle_info(:scan_tick, state) do
+  def handle_info(:scan_tick, %{groups_override: override} = state) when is_list(override) do
     state = with_lease(state, &run_scan_pass/2)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :scan_tick, state.scan_ms)
     {:noreply, state}
   end
 
+  # Enrollment writes calendars and watches, so it starts only while this
+  # worker holds the lease; a tick without the lease takes it first.
+  def handle_info(:scan_tick, state) do
+    state = state |> take_lease() |> start_enrollment()
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :scan_tick, state.scan_ms)
+    {:noreply, state}
+  end
+
+  def handle_info({ref, prepared}, %{enrollment: %{ref: ref}} = state) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+
+    state =
+      %{state | enrollment: nil}
+      |> Map.put(:prepared_enrollment, prepared)
+      |> with_lease(&run_scan_pass/2)
+      |> Map.delete(:prepared_enrollment)
+
+    {:noreply, state}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{enrollment: %{ref: ref}} = state) do
+    Logger.warning("calendar_autojoin enrollment task exited: #{inspect(reason)}")
+    {:noreply, %{state | enrollment: nil}}
+  end
+
   def handle_info(:join_tick, state) do
-    state = with_lease(state, &run_join_pass/2)
+    # The join pass works from the enrollments the last scan pass resolved, so
+    # enrolling members never delays a meeting's dispatch.
+    state =
+      state
+      |> Map.put(:reuse_enrollment, true)
+      |> with_lease(&run_join_pass/2)
+      |> Map.put(:reuse_enrollment, false)
+
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :join_tick, state.join_ms)
     {:noreply, state}
   end
@@ -152,7 +204,12 @@ defmodule SalixMeet.CalendarAutojoin do
 
   defp refresh_groups_with_lease(state, lease) do
     started_at = SystemsClock.monotonic_time()
-    {prepared_state, actions, outcome} = prepare_enrollment(state)
+
+    {prepared_state, actions, outcome} =
+      case Map.get(state, :prepared_enrollment) do
+        {prepared, actions, outcome} -> {merge_prepared(state, prepared), actions, outcome}
+        nil -> prepare_enrollment(state)
+      end
 
     case renew_lease(lease, state) do
       {:ok, cache_lease} ->
@@ -172,6 +229,36 @@ defmodule SalixMeet.CalendarAutojoin do
         emit_enrollment_telemetry(started_at, enrollment_lease_outcome(reason))
         {:error, {:calendar_enrollment_pre_write_lease, reason}, state}
     end
+  end
+
+  # The enrollment task reads a snapshot of the worker's state; only what it
+  # resolved is taken back.
+  defp merge_prepared(state, prepared),
+    do: Map.merge(state, Map.take(prepared, [:groups, :channels, :resolved]))
+
+  defp take_lease(%{lease: nil} = state) do
+    case Lease.acquire(@lease_key, state.node, ttl_ms: @lease_ttl_ms) do
+      {:ok, lease} ->
+        %{state | lease: lease}
+
+      {:error, {:held_by, _, _}} ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("calendar_autojoin lease acquire failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp take_lease(state), do: state
+
+  defp start_enrollment(%{lease: nil} = state), do: state
+  defp start_enrollment(%{enrollment: %{}} = state), do: state
+
+  defp start_enrollment(state) do
+    snapshot = Map.drop(state, [:lease])
+    task = Task.async(fn -> prepare_enrollment(snapshot) end)
+    %{state | enrollment: %{ref: task.ref}}
   end
 
   defp enrollment_lease_outcome(:lost), do: "conflict"
@@ -217,15 +304,45 @@ defmodule SalixMeet.CalendarAutojoin do
           )
         end)
 
+        # Each enrollment resolves in its own task with the pass's task
+        # timeout: a slow account (listing calendars, setting up watches, a
+        # first sync) keeps what its enrollment had and is retried on a later
+        # pass, and cannot hold up the other enrollments or the meetings.
         actions =
-          Enum.map(candidates, fn candidate ->
-            prepare_enrollment_candidate(
-              candidate,
-              duplicate_groups,
-              now,
-              state.enrollment_ttl_ms,
-              state.enrollment_retry_backoff_ms
-            )
+          candidates
+          |> bounded_map(
+            Map.get(state, :max_concurrency, @max_concurrency),
+            Map.get(state, :task_timeout, @task_timeout_ms),
+            fn candidate ->
+              prepare_enrollment_candidate(
+                candidate,
+                duplicate_groups,
+                now,
+                state.enrollment_ttl_ms,
+                state.enrollment_retry_backoff_ms
+              )
+            end
+          )
+          |> Enum.zip(candidates)
+          |> Enum.map(fn
+            {{:ok, action}, _candidate} ->
+              action
+
+            {{:exit, reason}, candidate} ->
+              Logger.warning(
+                "calendar_autojoin enrollment #{inspect(candidate.connect_id)}: #{inspect({:task_exit, reason})}"
+              )
+
+              if is_map(candidate.cached),
+                do:
+                  {:activate, candidate,
+                   defer_enrollment_retry(
+                     candidate.cached,
+                     now,
+                     state.enrollment_ttl_ms,
+                     state.enrollment_retry_backoff_ms
+                   )},
+                else: :drop
           end)
 
         {state, actions, "ok"}
@@ -330,6 +447,13 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp prepare_enrollment_resolution(candidate, now, ttl, retry_backoff) do
+    ttl =
+      cond do
+        members?(candidate.entry) -> min(ttl, @member_enrollment_ttl_ms)
+        polled?(candidate) -> min(ttl, @polled_enrollment_ttl_ms)
+        true -> ttl
+      end
+
     if enrollment_cache_deferred?(candidate.cached, now, ttl) do
       {:activate, candidate, candidate.cached}
     else
@@ -338,7 +462,7 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp prepare_enrollment_target(candidate, now, ttl, retry_backoff) do
-    case Ports.CalendarEnrollment.resolve(candidate.entry, candidate.identity) do
+    case Ports.CalendarEnrollment.resolve(resolution_entry(candidate), candidate.identity) do
       {:ok, group} ->
         group = CalendarEnrollmentCache.sanitize_group(group)
         next = %{group: group, identity: candidate.identity, at: now}
@@ -368,6 +492,25 @@ defmodule SalixMeet.CalendarAutojoin do
     end
   end
 
+  # A members' resolution starts from the units it already has, so a pass
+  # lists only new or long-unlisted accounts.
+  defp resolution_entry(%{entry: entry, cached: %{group: group}}) when is_map(group) do
+    if members?(entry), do: Map.put(entry, "enrolled", group), else: entry
+  end
+
+  defp resolution_entry(%{entry: entry}), do: entry
+
+  defp members?(entry), do: is_map(entry) and entry["calendar_scope"] == "members"
+
+  # A Feishu/Lark connect reading its own calendars (not Google's).
+  defp polled?(%{entry: entry, identity: identity}),
+    do:
+      is_map(entry) and entry["mode"] in ["prepare", "join"] and
+        entry["calendar_source"] != "google" and is_map(identity) and
+        identity["provider"] in ["feishu", "lark"]
+
+  defp polled?(_candidate), do: false
+
   defp apply_enrollment_actions(state, :preserve), do: state
 
   defp apply_enrollment_actions(state, actions) do
@@ -378,13 +521,32 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp apply_enrollment_action({:put, candidate, next, now, _ttl, _retry_backoff}) do
-    CalendarEnrollmentCache.put(candidate.entry, candidate.identity, next.group, now)
+    with :ok <- CalendarEnrollmentCache.put(candidate.entry, candidate.identity, next.group, now) do
+      delete_removed_member_projections(candidate.cached, next.group)
+    end
   end
 
   defp apply_enrollment_action({:delete, candidate}),
     do: CalendarEnrollmentCache.delete(candidate.entry)
 
   defp apply_enrollment_action(_action), do: :ok
+
+  # A disconnected member's projection would still name meetings that another
+  # member's calendar should now own (see claim_member_scope/5).
+  defp delete_removed_member_projections(%{group: previous}, next) do
+    kept = MapSet.new(member_units(next), &unit_key/1)
+
+    previous
+    |> member_units()
+    |> Enum.reject(&MapSet.member?(kept, unit_key(&1)))
+    |> Enum.each(fn unit ->
+      with {:ok, key} <- CalendarProjection.projection_key(unit), do: S3.delete(key)
+    end)
+
+    :ok
+  end
+
+  defp delete_removed_member_projections(_cached, _next), do: :ok
 
   defp finalize_enrollment_actions(state, actions, results) do
     {resolved, groups} =
@@ -433,8 +595,40 @@ defmodule SalixMeet.CalendarAutojoin do
 
   defp activate_enrollment(entry, cached, {resolved, groups}) do
     key = CalendarEnrollmentCache.fingerprint(entry)
-    {Map.put(resolved, key, cached), [cached.group | groups]}
+    {Map.put(resolved, key, cached), Enum.reverse(scan_units(cached.group)) ++ groups}
   end
+
+  # A Group that enrolls its members' own calendars is scanned and joined per
+  # member calendar. Each unit carries the Group's settings.
+  defp scan_units(%{"calendar_scope" => "members"} = group) do
+    group
+    |> member_units()
+    |> Enum.filter(&(List.wrap(&1["calendars"]) != []))
+  end
+
+  defp scan_units(group), do: [group]
+
+  defp member_units(%{"calendar_scope" => "members", "units" => units} = group)
+       when is_list(units) do
+    base =
+      group
+      |> Map.drop(["units", "calendars", "calendar_id"])
+      |> Map.put(
+        "member_emails",
+        units |> Enum.map(& &1["account_email"]) |> Enum.filter(&is_binary/1)
+      )
+
+    Enum.map(units, fn unit ->
+      Map.merge(base, %{
+        "calendar_id" => unit["calendar_id"],
+        "calendars" => List.wrap(unit["calendars"]),
+        "member_account_id" => unit["account_id"],
+        "account_email" => unit["account_email"]
+      })
+    end)
+  end
+
+  defp member_units(_group), do: []
 
   defp enrollment_cache_result({:ok, :ok}), do: :ok
   defp enrollment_cache_result({:ok, {:error, reason}}), do: {:error, reason}
@@ -533,7 +727,7 @@ defmodule SalixMeet.CalendarAutojoin do
             {cache, groups}
 
           cached when is_map(cached) ->
-            {Map.put(cache, key, cached), [cached.group | groups]}
+            {Map.put(cache, key, cached), Enum.reverse(scan_units(cached.group)) ++ groups}
 
           _other ->
             {cache, groups}
@@ -579,6 +773,9 @@ defmodule SalixMeet.CalendarAutojoin do
     )
   end
 
+  defp finish_leased_work(%{reuse_enrollment: true} = state, lease, work),
+    do: finish_group_work(state, lease, work)
+
   defp finish_leased_work(state, lease, work) do
     case refresh_groups_with_lease(state, lease) do
       {:ok, refreshed_state, work_lease} ->
@@ -597,8 +794,9 @@ defmodule SalixMeet.CalendarAutojoin do
              :ok <- checkpoint_projection_intents(work_result.items, state),
              {:ok, cursor_lease} <- renew_lease(checkpoint_lease, state),
              :ok <- checkpoint_pass_cursor(work_result.pass_cursor, state),
+             :ok <- clear_scanned_changes(work_result),
              {:ok, final_lease} <- renew_lease(cursor_lease, state) do
-          %{state | lease: final_lease}
+          %{state | lease: final_lease, windows: next_windows(state, work_result)}
         else
           {:error, reason} ->
             Logger.warning("calendar_autojoin checkpoint failed: #{inspect(reason)}")
@@ -611,10 +809,29 @@ defmodule SalixMeet.CalendarAutojoin do
     end
   end
 
+  # A pass scans the calendars whose sources reported changes first, then
+  # continues the rotation, so a meeting added shortly before it starts is
+  # indexed on the next pass however many calendars the deployment scans.
   defp run_scan_pass(state, lease) do
-    with {:ok, groups, pass_cursor} <-
-           cursor_batch(state.groups, Keys.ctl_meet_calendar_scan_cursor(), state.max_groups),
+    changes = CalendarChanges.read(state.max_groups)
+    {changed, rest} = Enum.split_with(state.groups, &Map.has_key?(changes, change_key(&1)))
+    # A quarter of the pass stays with the rotation, so frequent changes in
+    # some calendars cannot keep the others from being scanned.
+    changed =
+      changed
+      |> Enum.sort_by(&group_key/1)
+      |> Enum.take(max(state.max_groups - div(state.max_groups, 4), 1))
+      |> Enum.map(&Map.put(&1, "near_first", true))
+
+    with {:ok, rotated, pass_cursor} <-
+           cursor_batch(
+             rest,
+             Keys.ctl_meet_calendar_scan_cursor(),
+             state.max_groups - length(changed)
+           ),
          {:ok, work_lease} <- renew_lease(lease, state) do
+      groups = changed ++ rotated
+
       items =
         prepare_scan_groups(groups,
           now: now_ms(),
@@ -624,25 +841,134 @@ defmodule SalixMeet.CalendarAutojoin do
           lease_epoch: work_lease.epoch
         )
 
-      {:ok, work_lease, %{pass_cursor: pass_cursor, items: items}}
+      {:ok, work_lease,
+       %{
+         pass_cursor: pass_cursor,
+         items: items,
+         groups: groups,
+         changes: scanned_changes(changes, state.groups, groups, items)
+       }}
     end
   end
 
+  # Units with a meeting inside its join window come first, one unit for each
+  # such meeting before the other units that show it; the rotation fills the
+  # rest of the pass. Meetings that start together are dispatched together.
   defp run_join_pass(state, lease) do
-    with {:ok, groups, pass_cursor} <-
-           cursor_batch(state.groups, Keys.ctl_meet_calendar_join_cursor(), state.max_groups),
+    now = now_ms()
+    {due, rest} = Enum.split_with(state.groups, &unit_due?(state.windows, &1, now))
+
+    due =
+      due
+      |> Enum.sort_by(&{next_window_start(state.windows, &1, now), group_key(&1)})
+      |> one_unit_per_meeting(state.windows, now)
+      |> Enum.take(state.max_groups)
+
+    with {:ok, rotated, pass_cursor} <-
+           cursor_batch(
+             rest,
+             Keys.ctl_meet_calendar_join_cursor(),
+             state.max_groups - length(due)
+           ),
          {:ok, work_lease} <- renew_lease(lease, state) do
+      groups = due ++ rotated
+
       items =
         prepare_join_groups(groups,
-          now: now_ms(),
+          now: now,
           max_events_per_group: state.max_events,
           max_concurrency: state.max_concurrency,
           task_timeout_ms: state.task_timeout,
           lease_epoch: work_lease.epoch
         )
 
-      {:ok, work_lease, %{pass_cursor: pass_cursor, items: items}}
+      {:ok, work_lease, %{pass_cursor: pass_cursor, items: items, groups: groups}}
     end
+  end
+
+  defp change_key(group), do: {group_id(group), trim(group["calendar_id"])}
+
+  # A mark is cleared when its calendar was scanned, or when no enrolled unit
+  # has that calendar any more.
+  defp scanned_changes(changes, enrolled, groups, items) do
+    scanned =
+      groups
+      |> Enum.zip(items)
+      |> Enum.filter(fn {_group, item} -> not is_nil(item.intent) end)
+      |> MapSet.new(fn {group, _item} -> change_key(group) end)
+
+    known = MapSet.new(enrolled, &change_key/1)
+
+    Map.filter(changes, fn {key, _etag} ->
+      MapSet.member?(scanned, key) or not MapSet.member?(known, key)
+    end)
+  end
+
+  defp clear_scanned_changes(%{changes: changes}) do
+    Enum.each(changes, fn {key, etag} -> CalendarChanges.clear(key, etag) end)
+    :ok
+  end
+
+  defp clear_scanned_changes(_work_result), do: :ok
+
+  defp next_windows(state, %{groups: groups, items: items}) do
+    current = MapSet.new(state.groups, &unit_key/1)
+
+    groups
+    |> Enum.zip(items)
+    |> Enum.reduce(Map.take(state.windows, MapSet.to_list(current)), fn {group, item}, acc ->
+      case item_windows(item) do
+        nil -> acc
+        windows -> Map.put(acc, unit_key(group), windows)
+      end
+    end)
+  end
+
+  defp next_windows(state, _work_result), do: state.windows
+
+  defp item_windows(%{windows: windows}) when is_list(windows), do: windows
+
+  defp item_windows(%{intent: %CalendarProjection{} = projection}),
+    do: projection_windows(projection)
+
+  defp item_windows(_item), do: nil
+
+  defp projection_windows(%CalendarProjection{fresh: fresh, recovery: recovery}) do
+    for %{"meeting_id" => mid, "event" => %{"start_ms" => start_ms} = event} <- fresh ++ recovery,
+        is_integer(start_ms) and is_binary(event["meet_url"]) do
+      end_ms = if is_integer(event["end_ms"]), do: event["end_ms"], else: start_ms + 3_600_000
+      {start_ms, max(end_ms, start_ms + @grace_ms), mid}
+    end
+  end
+
+  defp due_windows(windows, group, now),
+    do:
+      windows
+      |> Map.get(unit_key(group), [])
+      |> Enum.filter(fn {start_ms, end_ms, _mid} ->
+        now >= start_ms - @lead_ms and now <= end_ms
+      end)
+
+  defp unit_due?(windows, group, now), do: due_windows(windows, group, now) != []
+
+  defp next_window_start(windows, group, now) do
+    windows
+    |> due_windows(group, now)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.min(fn -> now end)
+  end
+
+  defp one_unit_per_meeting(units, windows, now) do
+    {first, others, _seen} =
+      Enum.reduce(units, {[], [], MapSet.new()}, fn unit, {first, others, seen} ->
+        mids = windows |> due_windows(unit, now) |> MapSet.new(&elem(&1, 2))
+
+        if MapSet.subset?(mids, seen),
+          do: {first, [unit | others], seen},
+          else: {[unit | first], others, MapSet.union(seen, mids)}
+      end)
+
+    Enum.reverse(first) ++ Enum.reverse(others)
   end
 
   @doc "Scan a bounded set of groups and checkpoint one projection per group."
@@ -677,9 +1003,104 @@ defmodule SalixMeet.CalendarAutojoin do
     end)
   end
 
+  # A member's calendar is read one page of calendar items per pass,
+  # continuing after the stored item on the next pass and starting over after
+  # the last page, so each pass's work is bounded however many meetings the
+  # calendar holds. The projection keeps the meetings outside the page it read
+  # and leaves out the ones already dispatched; only a meeting missing from
+  # its own page counts as gone. Other calendars are read whole, as before.
+  defp scan_request(%{"calendar_scope" => "members"} = group, projection, max_events),
+    do:
+      Map.merge(group, %{
+        "max_events" => max_events,
+        "paged" => true,
+        "page_after" => projection.page_after
+      })
+
+  defp scan_request(group, _projection, max_events), do: Map.put(group, "max_events", max_events)
+
+  # A member calendar that just changed also reads the next few hours whole,
+  # so a meeting created to start now joins without waiting for its page.
+  defp near_events(
+         %{"calendar_scope" => "members", "near_first" => true} = group,
+         max_events,
+         now
+       ) do
+    case list_occurrences(Map.put(group, "max_events", max_events), now, @near_horizon_ms) do
+      {:ok, events} when is_list(events) -> {:ok, events}
+      _ -> {:ok, []}
+    end
+  end
+
+  defp near_events(_group, _max_events, _now), do: {:ok, []}
+
+  defp read_page({:ok, events}, group, _projection, max_events, _now, _near)
+       when is_list(events),
+       do: {:ok, keep_events(group, events, max_events), MapSet.new(), nil}
+
+  defp read_page({:ok, events, next}, group, projection, max_events, now, near)
+       when is_list(events) do
+    after_item = projection.page_after
+
+    outside =
+      for %{"event" => event} <- projection.fresh,
+          item = event["calendar_item_id"] || "",
+          not ((is_nil(after_item) or item > after_item) and (is_nil(next) or item <= next)),
+          do: event
+
+    seen = Enum.uniq_by(near ++ events ++ outside, &meeting_id(group, &1))
+    present = MapSet.new(seen, &meeting_id(group, &1))
+
+    kept =
+      seen
+      |> Enum.reject(&dispatched?(group, &1, now))
+      |> then(&keep_events(group, &1, max_events))
+
+    {:ok, kept, present, next}
+  end
+
+  defp read_page(other, _group, _projection, _max_events, _now, _near), do: other
+
+  # The projection holds at most max_events meetings, nearest first. A meeting
+  # that is only prepared (a link that is not joined) takes a place only when
+  # no joinable one needs it, so prepare-only meetings can never push a
+  # joinable meeting out of joining. A placeholder keeps its place too: it
+  # stands for a meeting whose preparation failed and must not look gone.
+  defp keep_events(group, events, max_events) do
+    {first, rest} =
+      events
+      |> Enum.sort_by(&{&1["start_ms"], &1["event_id"]})
+      |> Enum.split_with(
+        &(joinable_url?(group, &1["meet_url"]) or is_binary(&1["prepare_error"]))
+      )
+
+    (first ++ rest)
+    |> Enum.take(max_events)
+    |> Enum.sort_by(&{&1["start_ms"], &1["event_id"]})
+  end
+
+  defp dispatched?(group, event, now) do
+    case resolve_dispatch_identity([meeting_id(group, event)]) do
+      {:ok, mid, _doc} -> not dispatch_needed?(mid, now)
+      _ -> false
+    end
+  end
+
+  # A calendar with more events in the horizon than one query returns is read
+  # over a shorter horizon instead of failing: the nearest meetings are the
+  # ones to join, and later ones come into range on later passes.
+  defp list_occurrences(request, now, horizon_ms) do
+    case Ports.CalendarOccurrences.list(request, now, now + horizon_ms) do
+      {:error, :occurrence_limit_exceeded} when horizon_ms > @min_horizon_ms ->
+        list_occurrences(request, now, max(div(horizon_ms, 2), @min_horizon_ms))
+
+      result ->
+        result
+    end
+  end
+
   defp prepare_scan_group(group, now, max_events, lease_epoch) do
     started_at = SystemsClock.monotonic_time()
-    request = Map.put(group, "max_events", max_events)
 
     with {:ok, projection} <-
            CalendarProjection.load(group,
@@ -687,17 +1108,28 @@ defmodule SalixMeet.CalendarAutojoin do
              now: now,
              max_events: max_events
            ),
-         {:ok, events} when is_list(events) <-
-           Ports.CalendarOccurrences.list(request, now, now + @horizon_ms) do
-      fresh_events = Enum.take(events, max_events)
-      fresh_ids = MapSet.new(fresh_events, &meeting_id(group, &1))
+         request = scan_request(group, projection, max_events),
+         {:ok, near} <- near_events(group, max_events, now),
+         {:ok, fresh_events, present_ids, page_after} <-
+           read_page(
+             list_occurrences(request, now, @horizon_ms),
+             group,
+             projection,
+             max_events,
+             now,
+             near
+           ) do
+      fresh_ids = MapSet.union(MapSet.new(fresh_events, &meeting_id(group, &1)), present_ids)
       recovery_results = recovery_results(projection, group, fresh_ids, now)
 
       {:ok, updated, %{partial_errors: partial_errors}} =
         CalendarProjection.reconcile(projection, fresh_events, recovery_results,
           max_events: max_events,
-          now: now
+          now: now,
+          present_ids: present_ids
         )
+
+      updated = %{updated | page_after: page_after}
 
       count = length(updated.fresh) + length(updated.recovery)
 
@@ -778,7 +1210,7 @@ defmodule SalixMeet.CalendarAutojoin do
         cond do
           recovery_open?(doc, now) -> revalidate_recovery(group, event, mid, now)
           recovery_abandoned?(doc) -> {:drop, :already_abandoned}
-          true -> abandon_recovery_decision(mid, event, now, :recovery_deadline_exceeded)
+          true -> abandon_recovery_decision(group, mid, event, now, :recovery_deadline_exceeded)
         end
 
       {:ok, _mid, nil} ->
@@ -796,7 +1228,7 @@ defmodule SalixMeet.CalendarAutojoin do
 
       {:error, reason} ->
         if terminal_recovery_revocation?(reason) do
-          abandon_recovery_decision(mid, event, now, reason)
+          abandon_recovery_decision(group, mid, event, now, reason)
         else
           {:retain, event, {:calendar_revalidation, mid, reason}}
         end
@@ -806,7 +1238,13 @@ defmodule SalixMeet.CalendarAutojoin do
     end
   end
 
-  defp abandon_recovery_decision(mid, event, now, reason) do
+  # One member's copy leaving (a decline, a removed invitee) says nothing about
+  # the other members' copies of the same meeting: drop it from this calendar
+  # only and leave the shared meeting to them.
+  defp abandon_recovery_decision(%{"calendar_scope" => "members"}, _mid, _event, _now, reason),
+    do: {:drop, reason}
+
+  defp abandon_recovery_decision(_group, mid, event, now, reason) do
     case abandon_recovery(mid, now, "calendar event revalidation failed: #{inspect(reason)}") do
       :ok -> {:drop, reason}
       {:error, :join_already_claimed} -> {:drop, :join_already_claimed}
@@ -866,7 +1304,107 @@ defmodule SalixMeet.CalendarAutojoin do
         emit_meet_operation("calendar_join_group", task_exit_outcome(reason))
         join_error_item(group, {:task_exit, reason})
     end)
+    |> dispatch_pending(now, timeout)
   end
+
+  # Every meeting the units' walks collected is dispatched as its own task with
+  # its own timeout, all in this pass: a slow dispatch delays only its own
+  # meeting. A dispatch that times out is not advanced past, so the next pass
+  # reads its meeting record again (a finished dispatch is then a no-op).
+  defp dispatch_pending(items, now, timeout) do
+    jobs =
+      for {item, index} <- Enum.with_index(items),
+          {candidate, mid} <- Enum.reverse(Map.get(item, :pending, [])),
+          do: {index, candidate, mid}
+
+    # The Group's meeting agent is started once before its meetings are
+    # dispatched in parallel, so they do not race to create it.
+    jobs
+    |> Enum.map(fn {index, _candidate, _mid} -> Enum.at(items, index).group end)
+    |> Enum.uniq_by(&group_id/1)
+    |> Enum.each(&Runtime.start_for_group(&1["tenant_id"], group_id(&1)))
+
+    outcomes =
+      jobs
+      |> bounded_map(min(max(length(jobs), 1), @max_dispatch_concurrency), timeout, fn {index,
+                                                                                        candidate,
+                                                                                        mid} ->
+        handle(Enum.at(items, index).group, candidate.event, mid, now, false)
+      end)
+      |> Enum.zip(jobs)
+      |> Enum.group_by(fn {_outcome, {index, _c, _m}} -> index end)
+
+    items
+    |> Enum.with_index()
+    |> Enum.map(fn {item, index} ->
+      item
+      |> fold_dispatches(Map.get(outcomes, index, []))
+      |> Map.drop([
+        :pending,
+        :group,
+        :order,
+        :walk_results,
+        :walk_projection,
+        :base_projection,
+        :done
+      ])
+    end)
+  end
+
+  defp fold_dispatches(%{pending: _} = item, outcomes) do
+    acc =
+      Enum.reduce(outcomes, %{results: item.walk_results, projection: item.walk_projection}, fn
+        {{:ok, result}, {_index, candidate, _mid}}, acc ->
+          emit_meet_operation("calendar_join_dispatch", dispatch_outcome(result))
+
+          if result.action == :already do
+            acc
+          else
+            log_join_result(result)
+
+            %{
+              acc
+              | results: [result | acc.results],
+                projection:
+                  advance_in_order(
+                    acc.projection || item.base_projection,
+                    candidate,
+                    item.order,
+                    item.base_projection.cursor
+                  )
+            }
+          end
+
+        {{:exit, reason}, {_index, _candidate, mid}}, acc ->
+          emit_meet_operation("calendar_join_dispatch", task_exit_outcome(reason))
+          result = index_error(item.group, {:dispatch_task_exit, mid, reason})
+          %{acc | results: [result | acc.results]}
+      end)
+
+    # A unit's windows leave out its meetings that are dispatched, so the next
+    # join pass goes to the units whose due meetings are still waiting. A
+    # deferred join still waits.
+    dispatched =
+      MapSet.new(
+        item.done ++
+          for(
+            {{:ok, %{action: action} = result}, {_index, _candidate, mid}} <- outcomes,
+            action != :error and not match?(%{reason: {:join_deferred, _}}, result),
+            do: mid
+          )
+      )
+
+    windows =
+      (acc.projection || item.base_projection)
+      |> projection_windows()
+      |> Enum.reject(fn {_start, _end, mid} -> MapSet.member?(dispatched, mid) end)
+
+    item.group
+    |> join_item(Enum.reverse(acc.results), acc.projection)
+    |> Map.put(:windows, windows)
+  end
+
+  defp fold_dispatches(item, _outcomes), do: item
 
   defp prepare_join_group(group, now, dry_run, max_events, lease_epoch) do
     case CalendarProjection.load(group,
@@ -901,26 +1439,40 @@ defmodule SalixMeet.CalendarAutojoin do
     end
   end
 
-  # The simplest correct boundary for the join pass: at most ONE real
-  # candidate step per group per pass. A deferred (or unreadable) queue-head
-  # candidate is recorded, rotated to the back, and the pass ends with its
-  # cursor durably checkpointed — the NEXT pass then starts at the rotated
-  # head with the whole task budget available for its revalidation + join.
-  # Starvation behind a stuck head is therefore bounded at one pass per
-  # stuck candidate instead of unbounded, while the pass's time envelope
-  # stays exactly the pre-existing single-step exposure: no shared-deadline
-  # arithmetic to get wrong (two review rounds proved every partial reserve
-  # under-counts something). Only cheap store-read skips continue within a
-  # pass.
+  # A unit's walk collects every due meeting that still needs a dispatch (at
+  # most @max_dispatches_per_unit); the pass then dispatches each of them as
+  # its own task (dispatch_pending/3). Cheap store-read skips continue within
+  # the walk; a deferred (or unreadable) candidate is recorded and rotated
+  # past, and what was collected before it is still dispatched.
   defp attempt_group_candidate(group, projection, candidates, now) do
-    initial = %{results: [], projection: nil}
+    initial = %{results: [], projection: nil, dispatches: [], done: []}
 
-    final =
+    walked =
       Enum.reduce_while(candidates, initial, fn candidate, acc ->
         step_group_candidate(group, projection, candidate, now, acc)
       end)
 
-    join_item(group, Enum.reverse(final.results), final.projection)
+    %{
+      group: group,
+      pending: walked.dispatches,
+      order: candidates |> Enum.with_index() |> Map.new(fn {c, i} -> {c.key, i} end),
+      walk_results: walked.results,
+      walk_projection: walked.projection,
+      done: walked.done,
+      base_projection: projection
+    }
+  end
+
+  # The walk may already have rotated past a later candidate; the cursor
+  # never moves back. Candidates are in rotated order, which starts right after
+  # the stored cursor, so the stored cursor counts as the start of that order.
+  defp advance_in_order(projection, candidate, order, base_cursor) do
+    current =
+      if projection.cursor == base_cursor, do: -1, else: Map.get(order, projection.cursor, -1)
+
+    if current < order[candidate.key],
+      do: CalendarProjection.advance(projection, candidate),
+      else: projection
   end
 
   defp step_group_candidate(group, projection, candidate, now, acc) do
@@ -929,37 +1481,14 @@ defmodule SalixMeet.CalendarAutojoin do
     case resolve_dispatch_identity(candidate.dispatch_meeting_ids) do
       {:ok, mid, doc} ->
         if dispatch_needed?(mid, now) do
-          result = handle(group, candidate.event, mid, now, false)
-          emit_meet_operation("calendar_join_dispatch", dispatch_outcome(result))
+          acc = %{acc | dispatches: [{candidate, mid} | acc.dispatches]}
 
-          cond do
-            result.action == :already ->
-              {:cont, acc}
-
-            deferred_projection_candidate?(result) ->
-              log_join_result(result)
-
-              # Rotate past the stuck head and END the pass: the next pass
-              # dispatches from the rotated order with a full budget.
-              {:halt,
-               %{
-                 acc
-                 | results: [result | acc.results],
-                   projection: CalendarProjection.advance(current_projection, candidate)
-               }}
-
-            true ->
-              log_join_result(result)
-
-              {:halt,
-               %{
-                 acc
-                 | results: [result | acc.results],
-                   projection: CalendarProjection.advance(current_projection, candidate)
-               }}
-          end
+          if length(acc.dispatches) >= @max_dispatches_per_unit,
+            do: {:halt, acc},
+            else: {:cont, acc}
         else
           note_skipped_dispatch(group, mid, doc)
+          acc = %{acc | done: [mid | acc.done]}
 
           case ensure_existing_thread_owner(group, candidate.event, mid, doc) do
             :ok ->
@@ -1170,12 +1699,16 @@ defmodule SalixMeet.CalendarAutojoin do
     join_item(group, [index_error(group, reason)], nil)
   end
 
+  # A Google Meet is joined, and a Feishu/Lark meeting when the Group has a
+  # bot of its platform (`lark_join/2`). A meeting that qualified by another
+  # recognized link (Zoom, Teams; `OccurrenceQualification`) is listed and
+  # prepared, and never reaches dispatch.
   defp joinable?(group, candidate, now) do
     event = candidate.event
 
     valid_event =
       present?(event["event_id"]) and is_integer(event["start_ms"]) and
-        google_meet_url?(event["meet_url"]) and is_map(event["occurrence_ref"])
+        joinable_url?(group, event["meet_url"]) and is_map(event["occurrence_ref"])
 
     valid_event and
       (within_dispatch_window?(group, event, now) or
@@ -1424,6 +1957,7 @@ defmodule SalixMeet.CalendarAutojoin do
   defp dispatch_revalidated(group, event, mid, now) do
     with {:ok, doc, target} <- load_or_create(group, event, mid, now),
          :ok <- ensure_not_abandoned(doc),
+         {:ok, doc} <- claim_member_scope(doc, group, event, mid, now),
          :ok <- validate_scope(doc, group, event, mid),
          {:ok, refreshed} <- refresh_mutable_calendar_state(mid, doc, group, event, now),
          :ok <- ensure_not_abandoned(refreshed),
@@ -1433,8 +1967,78 @@ defmodule SalixMeet.CalendarAutojoin do
       {:skip, reason} ->
         %{group: group_id(group), mid: mid, action: :skipped, reason: reason}
 
+      {:already, _reason} ->
+        %{group: group_id(group), mid: mid, action: :already}
+
       {:error, reason} ->
         %{group: group_id(group), mid: mid, action: :error, reason: reason}
+    end
+  end
+
+  # Several members' calendars name the same meeting. The first one to
+  # dispatch owns it; another member's calendar takes over only a meeting that
+  # was not dispatched (or awaits a retry) and that the owner's calendar no
+  # longer holds, so a member's decline cannot leave the meeting unjoined.
+  defp claim_member_scope(
+         %{"state" => state} = doc,
+         %{"calendar_scope" => "members"} = group,
+         event,
+         mid,
+         now
+       )
+       when is_map(state) do
+    owner = get_in(state, ["source", "calendar_id"])
+
+    cond do
+      calendar_scope_matches?(state, group, event) ->
+        {:ok, doc}
+
+      member_scope_open?(state, now) and member_owner_released?(group, owner, mid) ->
+        case Store.update_state_retrying(mid, fn current ->
+               if get_in(current, ["source", "calendar_id"]) == owner and
+                    member_scope_open?(current, now),
+                  do: put_mutable_calendar_state(current, group, event),
+                  else: current
+             end) do
+          {:ok, refreshed, _etag} -> {:ok, refreshed}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:already, :meeting_owned_by_member_calendar}
+    end
+  end
+
+  defp claim_member_scope(doc, _group, _event, _mid, _now), do: {:ok, doc}
+
+  defp member_scope_open?(state, now),
+    do:
+      never_dispatched?(state, map_or_empty(state["join_dispatch"])) or
+        Store.join_retry_candidate?(%{"state" => state}, now)
+
+  defp member_owner_released?(group, owner_calendar_id, mid) do
+    owner = Map.put(group, "calendar_id", owner_calendar_id)
+
+    with {:ok, key} <- CalendarProjection.projection_key(owner) do
+      case S3.get(key) do
+        {:error, :not_found} ->
+          true
+
+        {:ok, %{body: body}} ->
+          case Jason.decode(body) do
+            {:ok, %{"fresh" => fresh, "recovery" => recovery}}
+            when is_list(fresh) and is_list(recovery) ->
+              not Enum.any?(fresh ++ recovery, &(is_map(&1) and &1["meeting_id"] == mid))
+
+            _ ->
+              false
+          end
+
+        {:error, _reason} ->
+          false
+      end
+    else
+      {:error, _reason} -> false
     end
   end
 
@@ -1458,6 +2062,9 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp ensure_not_abandoned(_doc), do: {:error, :invalid_meeting_document}
+
+  # A join that waits for its meeting is asked again every pass: no log.
+  defp log_join_result(%{reason: {:join_deferred, _reason}}), do: :ok
 
   defp log_join_result(%{action: action, group: group, mid: mid, reason: reason})
        when action in [:error, :skipped] do
@@ -1554,7 +2161,22 @@ defmodule SalixMeet.CalendarAutojoin do
     |> Map.put("meet_url", event["meet_url"])
     |> Map.put("title", event_title(event))
     |> Map.put("source", source)
+    |> put_meeting_number(event["meet_url"])
   end
+
+  # A Feishu/Lark meeting moved to a new link is joined by its new number.
+  defp put_meeting_number(%{"runtime_source" => "lark_bot", "lark_bot" => bot} = state, url)
+       when is_map(bot) do
+    case LarkBot.meeting_link(url) do
+      {:ok, _platform, meeting_no} ->
+        Map.put(state, "lark_bot", Map.put(bot, "meeting_no", meeting_no))
+
+      :error ->
+        state
+    end
+  end
+
+  defp put_meeting_number(state, _url), do: state
 
   defp dispatch_or_resume(group, event, mid, doc, target, now) do
     if dispatch_needed_doc?(doc, now) do
@@ -1623,6 +2245,14 @@ defmodule SalixMeet.CalendarAutojoin do
               reason: :join_liveness_unavailable
             }
 
+          # A Feishu/Lark meeting that cannot take the bot yet (not started,
+          # or refused for now by its settings) is normal operation: its join
+          # is pending again with no attempt spent, and every pass until the
+          # meeting ends offers it again. One that will never take the bot is
+          # abandoned. Neither is an error of the pass.
+          {:error, {kind, _reason} = reason} when kind in [:join_deferred, :join_abandoned] ->
+            %{group: group_id(group), mid: mid, action: :skipped, reason: reason}
+
           {:error, reason} ->
             %{group: group_id(group), mid: mid, action: :error, reason: reason}
         end
@@ -1641,6 +2271,22 @@ defmodule SalixMeet.CalendarAutojoin do
              SlackThreadIndex.claim(state, channel, thread_ts, mid) do
         :ok
       end
+    end
+  end
+
+  # A Feishu/Lark Meeting has no thread to own: its first message in the
+  # destination chat (`Ports.MeetingChannel.ensure_root/4`) names the chat.
+  defp ensure_thread_owner(
+         group,
+         event,
+         mid,
+         %{"state" => %{"provider" => provider}} = doc,
+         target
+       )
+       when provider in ["feishu", "lark"] do
+    with {:ok, _chat_id} <- ensure_root(group, event, mid, doc, target),
+         {:ok, refreshed, _etag} <- Store.get(mid) do
+      {:ok, "", refreshed}
     end
   end
 
@@ -1707,34 +2353,73 @@ defmodule SalixMeet.CalendarAutojoin do
   @spec meeting_id(map(), map()) :: String.t()
   def meeting_id(group, event), do: CalendarProjection.meeting_id(group, event)
 
+  # The Meeting is of the destination's platform (`Ports.MeetingChannel`):
+  # a Slack thread, or a Feishu/Lark chat. A Feishu/Lark meeting link is
+  # joined by that platform's bot (`SalixMeet.LarkBot`), whatever the
+  # destination; any other link by a dispatched runtime.
   defp build_state(group, event, mid) do
-    with {:ok, target} <- Ports.MeetingChannel.resolve(group),
+    with {:ok, target} <- Ports.MeetingChannel.resolve(group, event),
          {:ok, meeting_agent} <- Runtime.start_for_group(group["tenant_id"], group_id(group)) do
       start_s = div(event["start_ms"], 1_000)
       source = Map.put(event_source(group, event), "workspace_id", target["workspace_id"])
+      bot = lark_join(group, event["meet_url"])
 
-      case MeetingState.new_slack(mid, meeting_agent, %{
-             "tenant_id" => group["tenant_id"],
-             "group_id" => group_id(group),
-             "connect_id" => target["connect_id"],
-             "slack_ref" => %{
-               "channel_id" => target["channel_id"],
-               "thread_ts" => trim(target["thread_ts"])
-             },
-             "meet_url" => event["meet_url"],
-             "title" => event_title(event),
-             "bot_name" => default_bot_name(),
-             "caption_language" => default_caption_language(),
-             "start_at" => start_s,
-             "end_at" => event_end_s(event),
-             "runtime_source" => SalixMeet.MeetingRuntimePolicy.default_source(),
-             "source" => source
-           }) do
-        {:ok, state} -> {:ok, state, target}
+      attrs = %{
+        "tenant_id" => group["tenant_id"],
+        "group_id" => group_id(group),
+        "connect_id" => target["connect_id"],
+        "meet_url" => event["meet_url"],
+        "title" => event_title(event),
+        "bot_name" => default_bot_name(),
+        "caption_language" => default_caption_language(),
+        "start_at" => start_s,
+        "end_at" => event_end_s(event),
+        "runtime_source" =>
+          if(match?({:ok, _}, bot),
+            do: LarkBot.source(),
+            else: SalixMeet.MeetingRuntimePolicy.default_source()
+          ),
+        "source" => source
+      }
+
+      case new_meeting_state(target, mid, meeting_agent, attrs) do
+        {:ok, state} -> {:ok, put_lark_bot(state, bot), target}
         {:error, _} = error -> error
       end
     end
   end
+
+  defp new_meeting_state(%{"provider" => provider} = target, mid, meeting_agent, attrs)
+       when provider in ["feishu", "lark"] do
+    # Without a chat the first message goes to `open_id` and names the
+    # private chat (`Ports.MeetingChannel.ensure_root/4`).
+    ref = %{
+      "chat_id" => trim(target["chat_id"]),
+      "open_id" => trim(target["open_id"]),
+      "chat_type" => "group",
+      "thread_id" => "",
+      "root_message_id" => "",
+      "trigger_message_id" => ""
+    }
+
+    if provider == "feishu",
+      do: MeetingState.new_feishu(mid, meeting_agent, Map.put(attrs, "feishu_ref", ref)),
+      else: MeetingState.new_lark(mid, meeting_agent, Map.put(attrs, "lark_ref", ref))
+  end
+
+  defp new_meeting_state(target, mid, meeting_agent, attrs) do
+    MeetingState.new_slack(
+      mid,
+      meeting_agent,
+      Map.put(attrs, "slack_ref", %{
+        "channel_id" => target["channel_id"],
+        "thread_ts" => trim(target["thread_ts"])
+      })
+    )
+  end
+
+  defp put_lark_bot(state, {:ok, bot}), do: Map.put(state, "lark_bot", bot)
+  defp put_lark_bot(state, :error), do: state
 
   defp validate_scope(%{"id" => mid, "state" => state}, group, event, mid)
        when is_map(state) do
@@ -1783,11 +2468,14 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   @spec enabled_groups() :: [map()]
-  def enabled_groups do
+  def enabled_groups, do: enabled_groups(configured_channels())
+
+  @spec enabled_groups([map()]) :: [map()]
+  def enabled_groups(entries) do
     refresh_groups(%{
       groups_override: nil,
-      channels: configured_channels(),
-      managed_channels: true,
+      channels: entries,
+      managed_channels: false,
       resolved: %{},
       groups: [],
       enrollment_ttl_ms: @enrollment_ttl_ms,
@@ -1801,7 +2489,7 @@ defmodule SalixMeet.CalendarAutojoin do
 
   defp dedup_groups(groups) do
     groups
-    |> Enum.group_by(&trim(&1["group_id"]))
+    |> Enum.group_by(&unit_key/1)
     |> Enum.flat_map(fn
       {_group_id, [single]} ->
         [single]
@@ -1912,7 +2600,13 @@ defmodule SalixMeet.CalendarAutojoin do
     |> Enum.to_list()
   end
 
-  defp group_key(group), do: trim(group["tenant_id"]) <> <<0>> <> group_id(group)
+  defp group_key(group), do: trim(group["tenant_id"]) <> <<0>> <> unit_key(group)
+
+  # A member calendar is its own scan unit inside its Group.
+  defp unit_key(%{"calendar_scope" => "members"} = group),
+    do: group_id(group) <> "/" <> trim(group["calendar_id"])
+
+  defp unit_key(group), do: group_id(group)
   defp group_id(group), do: trim(group["group_id"])
 
   defp positive(value, _fallback) when is_integer(value) and value > 0, do: value
@@ -1930,6 +2624,22 @@ defmodule SalixMeet.CalendarAutojoin do
 
       _ ->
         false
+    end
+  end
+
+  defp joinable_url?(group, url),
+    do: google_meet_url?(url) or match?({:ok, _bot}, lark_join(group, url))
+
+  # The bot that joins a Feishu/Lark meeting link: the Group's bot of the
+  # link's platform, as the enrollment names it (`lark_join`). Without one
+  # the meeting is only prepared.
+  defp lark_join(group, url) do
+    with {:ok, platform, meeting_no} <- LarkBot.meeting_link(url),
+         connect_id when is_binary(connect_id) and connect_id != "" <-
+           get_in(map_or_empty(group["lark_join"]), [platform]) do
+      {:ok, %{"connect_id" => connect_id, "provider" => platform, "meeting_no" => meeting_no}}
+    else
+      _ -> :error
     end
   end
 

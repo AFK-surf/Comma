@@ -1,4 +1,5 @@
 import VerifiedKernel.Session.TranscriptCore
+import VerifiedKernel.Session.Ops
 import VerifiedKernel.Session.Async
 import VerifiedKernel.Grapheme
 
@@ -48,7 +49,7 @@ def historyCompaction (state event : Term) (provider : Bool) : KernelM Term := d
   let compacted ← write state [("summary_sequence", sequence), ("compacted_through", through),
     ("compacted_seq", ← compactedSequence state through (← Data.event event "compacted_seq")),
     ("summary", summary), ("provider_compaction", providerRecord), ("compaction_failure", nil)]
-  let timed ← if provider then write compacted [("last_activity_at", (← Data.event event "created_at").default (← field state "last_activity_at"))] else pure compacted
+  let timed ← if provider then write compacted [("last_activity_at", metadataSeconds ((← Data.event event "created_at").default (← field state "last_activity_at")))] else pure compacted
   recomputeContext (← pruneCompactResults (← pruneResultRefs timed))
 
 def compactResult (state event : Term) : KernelM Term := do
@@ -60,7 +61,7 @@ def compactResult (state event : Term) : KernelM Term := do
   let nextResults ← if id == nil then pure results else put results id fact
   let next ← write state [("events", ← append ((← field state "events").default (list [])) (list [fact])),
     ("last_seq", seq), ("llm_failure_streak", nil), ("compact_results", nextResults),
-    ("last_activity_at", (← Data.event event "created_at").default (← field state "last_activity_at"))]
+    ("last_activity_at", metadataSeconds ((← Data.event event "created_at").default (← field state "last_activity_at")))]
   pruneCompactResults next
 
 def validSegment : Term → Bool
@@ -73,19 +74,21 @@ def archiveAdvance (state event : Term) : KernelM Term := do
   let segments ← Data.event event "segments"
   if !segments.isList || !through.isInteger then return state
   if !(← greater through ((← field state "archived_through").default (i 0))) then return state
-  if !(← atMost through ((← field state "compacted_seq").default (i 0))) then return state
+  if !(← atMost through ((← field state "last_seq").default (i 0))) then return state
+  let released := i (min (integerValue through)
+    (integerValue ((state.get (a "compacted_seq")).default (i 0))))
   let parsed := (wrap segments).filter validSegment
   let catalog ← sortBy parsed (fun entry => pure ((wrap entry).head?.getD nil))
   let messages ← enumMap ((← field state "messages").default (list [])) pure
   let messages ← messages.filterM (fun message => do
     let seq ← access message (a "seq")
-    if seq.isInteger then greater seq through else pure true)
+    if seq.isInteger then greater seq released else pure true)
   let events ← enumMap ((← field state "events").default (list [])) pure
   let events ← events.filterM (fun fact => do
     let seq ← Data.event fact "seq"
-    if seq.isInteger then greater seq through else pure true)
+    if seq.isInteger then greater seq released else pure true)
   let results ← enumMap ((← field state "async_results").default (list [])) pure
-  let results ← results.filterM (fun record => do greater (← Data.event record "seq") through)
+  let results ← results.filterM (fun record => do greater (← Data.event record "seq") released)
   let advanced ← write state [("archived_through", through), ("segment_catalog", list catalog),
     ("messages", list messages), ("events", list events), ("async_results", list results)]
   recomputeContext (← pruneResultRefs advanced)
@@ -125,6 +128,63 @@ def storedResult (state event : Term) : KernelM Term := do
   let ref ← Data.event event "result_ref"
   let refs ← put ((← field state "async_result_refs").default empty) ref seq
   write state [("async_results", results), ("async_result_refs", refs), ("last_seq", seq),
-    ("last_activity_at", (← Data.event event "stored_at_ms").default (← field state "last_activity_at"))]
+    ("last_activity_at", i (integerValue (← Data.event event "stored_at_ms") / 1000))]
+
+def storedResultFields : List String :=
+  ["result_ref", "tool_call_id", "tool_name", "result_json", "result_sha256", "result_bytes", "result_chars",
+    "status", "is_error", "ifc", "stored_at_ms"]
+
+/-- Only live pointers may request immutable archived result bodies. -/
+def storedResultRequests (state : Term) (events : List Term) : KernelM Term := do
+  let requests ← events.foldlM (fun requests raw => do
+    let event ← shallowStringify raw
+    if event.get (b "type") != b "tool_result_stored" then return requests
+    let ref := event.get (b "result_ref")
+    match ← resolveResult state ref with
+    | .tuple [.atom "archived", seq] => pure (.tuple [ref, seq] :: requests)
+    | _ => pure requests) []
+  return list (uniq requests.reverse)
+
+def validateStoredResults (state facts : Term) (events : List Term) (seen : Term := empty) : KernelM Term := do
+  match events with
+  | [] => pure (a "ok")
+  | raw :: rest =>
+    let event ← shallowStringify raw
+    let kind := event.get (b "type")
+    if (kind == b "tool_result_stored" || kind == a "tool_result_stored") &&
+        event.get (b "session_id") != (← field state "session_id") then
+      return .tuple [a "error", a "session_id_mismatch"]
+    if kind != b "tool_result_stored" then return ← validateStoredResults state facts rest seen
+    let ref := event.get (b "result_ref")
+    let resolved ← if seen.has ref then pure (.tuple [a "seen", seen.get ref]) else resolveResult state ref
+    let existing ← match resolved with
+      | .tuple [.atom "ok", record] =>
+        if record.get (b "kind") != b "tool_result" then
+          pure (.tuple [a "error", a "tool_result_ref_conflict"])
+        else pure record
+      | .tuple [.atom "archived", seq] =>
+        let found := (wrap facts).find? (fun fact => match fact with
+          | .tuple [key, position, _] => key == ref && position == seq
+          | _ => false)
+        match found with
+        | some (.tuple [_, _, record]) =>
+          if record.get (b "kind") == b "tool_result" then pure record
+          else pure (.tuple [a "error", a "tool_result_ref_conflict"])
+        | _ => pure (.tuple [a "error", a "not_found"])
+      | .tuple [.atom "seen", record] => pure record
+      | _ => pure nil
+    match existing with
+    | .tuple [.atom "error", _] => return existing
+    | _ => pure ()
+    if existing != nil then
+      if select (← shallowStringify existing) storedResultFields != select event storedResultFields then
+        return .tuple [a "error", a "tool_result_ref_conflict"]
+    validateStoredResults state facts rest (seen.put ref (if existing == nil then event else existing))
+
+def recordAdmissionTable : OpTable :=
+  [("stored_result_requests", fun state args => do storedResultRequests state (← asList args)),
+   ("validate_stored_results", fun state args => do
+     let .tuple [.list events, facts] := args | fail "function_clause"
+     validateStoredResults state facts events)]
 
 end VerifiedKernel.Session

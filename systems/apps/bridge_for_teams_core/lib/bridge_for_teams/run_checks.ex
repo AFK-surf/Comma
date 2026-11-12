@@ -80,7 +80,7 @@ defmodule BridgeForTeams.RunChecks do
              bot_chat_access_gate(project, connect, list_error),
              bot_calendar_gate(project, connect, list_error),
              bot_first_message_gate(connect, list_error),
-             bot_manual_gate(org)
+             bot_manual_gate(org, connect)
            ]
          }}
       end
@@ -300,6 +300,23 @@ defmodule BridgeForTeams.RunChecks do
     })
   end
 
+  # An app made by a scan owns its App Secret and has no Verification Token:
+  # its events come through the long connection Salix holds.
+  defp bot_credentials_gate(%{"events" => "socket"} = connect, _list_error) do
+    gate(%{
+      gate_id: "bot.credentials",
+      label: "App ID + Secret valid (tenant token)",
+      status: if(truthy?(connect["app_secret_configured"]), do: :skipped, else: :fail),
+      reason_class:
+        if(truthy?(connect["app_secret_configured"]),
+          do: :validated_on_save,
+          else: :secrets_not_configured
+        ),
+      next_action: "Validated when the scan connected the app.",
+      evidence: credential_evidence(connect)
+    })
+  end
+
   defp bot_credentials_gate(connect, _list_error) do
     required_configured? =
       truthy?(connect["app_secret_configured"]) and
@@ -346,6 +363,19 @@ defmodule BridgeForTeams.RunChecks do
       reason_class: :not_connected,
       next_action: "Create a Feishu connect first, then re-run checks.",
       evidence: %{}
+    })
+  end
+
+  # An app made by a scan has no request URL: its events come through the long
+  # connection Salix holds (`SalixIM.LarkSocket`), opened with its own secret.
+  defp bot_callback_gate(%{"events" => "socket"} = connect, _list_error) do
+    gate(%{
+      gate_id: "bot.callback",
+      label: "Callback reachable + URL verification",
+      status: :ok,
+      reason_class: :long_connection,
+      next_action: "Events come through the app's long connection; there is no request URL.",
+      evidence: %{"connect_id" => connect["connect_id"], "app_id" => connect["app_id"]}
     })
   end
 
@@ -1001,7 +1031,20 @@ defmodule BridgeForTeams.RunChecks do
     })
   end
 
-  defp bot_manual_gate(org) do
+  # A scan made and published the app with its scopes, events and callbacks.
+  defp bot_manual_gate(_org, %{"events" => "socket"} = connect) do
+    gate(%{
+      gate_id: "bot.manual",
+      label: "Feishu console steps completed",
+      status: :ok,
+      reason_class: :made_by_scan,
+      next_action:
+        "Feishu made and published the app with the bot, its scopes and events when it was scanned. Add the bot to a group, or message it directly.",
+      evidence: %{"app_id" => connect["app_id"]}
+    })
+  end
+
+  defp bot_manual_gate(org, _connect) do
     scopes = FeishuScopes.required_scope_ids(:bot)
 
     gate(%{

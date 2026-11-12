@@ -2,7 +2,11 @@ import { act, render, screen } from "@comma/test-utils/render";
 import { describe, expect, it } from "vitest";
 import { InlineTask } from "../../inline-task";
 import { TaskProgressContext, type TaskProgressSource } from "../taskProgress";
-import { TaskSummaryCard, type TaskSummaryViewModel } from "../TaskSummaryCard";
+import {
+  TaskSummaryCard,
+  taskStatusIcon,
+  type TaskSummaryViewModel,
+} from "../TaskSummaryCard";
 import type { TaskStatusBucket } from "../taskStatus";
 
 const RESTING_BUCKETS: TaskStatusBucket[] = ["needs_review", "done", "cancelled"];
@@ -31,6 +35,57 @@ it("shows a meeting waiting for recording without claiming the Worker is running
     />
   );
   expect(screen.getByText("Waiting for recording")).toBeInTheDocument();
+});
+
+const spinning = (root: HTMLElement) =>
+  root.querySelector("svg.comma-task-status-spin");
+
+describe("Task status glyph", () => {
+  it("turns while the Task runs, as on iOS and Android", () => {
+    const { container } = render(<TaskSummaryCard task={task("in_progress")} />);
+    expect(spinning(container)).toBeTruthy();
+  });
+
+  it.each(RESTING_BUCKETS)("holds still once the Task is %s", (bucket) => {
+    const { container } = render(<TaskSummaryCard task={task(bucket)} />);
+    expect(container.querySelector("svg")).toBeTruthy();
+    expect(spinning(container)).toBeNull();
+  });
+
+  it("pauses, and says why, while the Task's Loop is paused", () => {
+    const { container } = render(
+      <TaskSummaryCard
+        task={task("in_progress", {
+          loopStop: { text: "Paused · usage limit reached", failed: false },
+        })}
+      />
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-paused")).toBeTruthy();
+    expect(screen.getByText("Paused · usage limit reached")).toBeInTheDocument();
+    expect(container.querySelector(".comma-shiny-text")).toBeNull();
+  });
+
+  it("shows the error glyph once the Task's Loop stopped on an error", () => {
+    const { container } = render(
+      <TaskSummaryCard
+        task={task("in_progress", {
+          loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
+        })}
+      />
+    );
+    expect(spinning(container)).toBeNull();
+    expect(container.querySelector("svg.comma-task-status-loop-failed")).toBeTruthy();
+    expect(screen.getByText("Stopped · couldn’t reach this task")).toBeInTheDocument();
+  });
+
+  it("holds still where it only names the status", () => {
+    const { container } = render(
+      <>{taskStatusIcon("in_progress", { spins: false })}</>
+    );
+    expect(container.querySelector("svg")).toBeTruthy();
+    expect(spinning(container)).toBeNull();
+  });
 });
 
 describe("Task card progress line", () => {

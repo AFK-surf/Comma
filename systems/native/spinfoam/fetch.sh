@@ -54,14 +54,30 @@ if [ -z "$expected" ]; then
   exit 1
 fi
 
+digest() {
+  local sum
+  sum="$(sha256sum "$1" 2>/dev/null || shasum -a 256 "$1")"
+  printf '%s' "${sum%% *}"
+}
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL --retry 3 -o "$tmp/$package" "$url"
-actual="$(sha256sum "$tmp/$package" 2>/dev/null || shasum -a 256 "$tmp/$package")"
-actual="${actual%% *}"
-if [ "$actual" != "$expected" ]; then
-  echo "spinfoam: $package digest $actual does not match pinned $expected" >&2
-  exit 1
+# COMMA_TOOL_CACHE keeps the verified tarball between CI jobs, so a job does
+# not depend on GitHub release downloads.
+cached="${COMMA_TOOL_CACHE:+$COMMA_TOOL_CACHE/spinfoam-$version-$package}"
+if [ -n "$cached" ] && [ -f "$cached" ] && [ "$(digest "$cached")" = "$expected" ]; then
+  cp "$cached" "$tmp/$package"
+else
+  curl -fsSL --retry 3 -o "$tmp/$package" "$url"
+  actual="$(digest "$tmp/$package")"
+  if [ "$actual" != "$expected" ]; then
+    echo "spinfoam: $package digest $actual does not match pinned $expected" >&2
+    exit 1
+  fi
+  if [ -n "$cached" ]; then
+    mkdir -p "$COMMA_TOOL_CACHE"
+    cp "$tmp/$package" "$cached.$$" && mv -f "$cached.$$" "$cached"
+  fi
 fi
 tar -xzf "$tmp/$package" -C "$tmp" "spinfoam-$target/spinfoam"
 install -m 0755 "$tmp/spinfoam-$target/spinfoam" "$out"

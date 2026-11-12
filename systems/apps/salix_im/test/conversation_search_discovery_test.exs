@@ -1,100 +1,162 @@
 defmodule SalixIM.ConversationSearchDiscoveryTest do
   use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:conversation_search_jobs]
 
-  alias SalixIM.{ConversationSearchDiscovery, ConversationSearchSource}
-  alias SalixStore.{ConversationSearch, Ids, Keys, Repo, S3}
+  alias SalixIM.{ConversationPGStore, ConversationSearchDiscovery, ConversationSearchProjection}
+  alias SalixStore.{ConversationSearch, Ids, Repo, S3}
 
   @generation "test-search-generation"
 
   setup do
+    SalixIM.TestSupport.Fleet.stop_all!()
     previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
-    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
 
+    previous_generation =
+      SystemsRuntime.get_env(:salix_store, :conversation_search_writer_generation)
+
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :conversation_search_writer_generation, @generation)
     if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
 
-    Repo.query!(
-      "TRUNCATE conversation_search_gc_runs, conversation_search_jobs, " <>
-        "conversation_search_states, conversation_search_discovery_cursors, " <>
-        "conversation_search_backfill_runs CASCADE"
-    )
-
-    Repo.query!("""
-    INSERT INTO conversation_search_backfill_runs
-      (writer_generation, writer_barrier_authority, writer_barrier_at,
-       required_discovery_cycle, inserted_at, updated_at)
-    VALUES ('#{@generation}', 'discovery-test', now(), 1, now(), now())
-    """)
-
-    Repo.query!("""
-    INSERT INTO conversation_search_discovery_cursors
-      (id, writer_generation, completed_cycles, cycle_started_at, inserted_at, updated_at)
-    VALUES ('main', '#{@generation}', 0, now(), now(), now())
-    """)
-
-    on_exit(fn ->
-      if is_nil(previous_backend),
-        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
-        else: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
+    SalixStore.RepoTestSetup.exclusively(fn ->
+      Repo.query!(
+        "TRUNCATE salix_conversations, conversation_search_gc_runs, conversation_search_states, conversation_search_backfill_runs CASCADE"
+      )
     end)
 
-    :ok
+    Repo.query!(
+      "DELETE FROM salix_cutover_markers WHERE name = 'conversation_search_projection_v1'"
+    )
+
+    group = Ids.new_group_id(Ids.new_tenant_id())
+    SalixAgent.TestSupport.create_control_group!(group, %{"name" => "Search backfill"})
+
+    on_exit(fn ->
+      SalixIM.TestSupport.Fleet.stop_all!()
+      restore(:s3_backend, previous_backend)
+      restore(:conversation_search_writer_generation, previous_generation)
+    end)
+
+    %{group: group}
   end
 
-  test "scanner repairs source-version-only drift after a lost relay" do
-    group_id = Ids.new_group_id(Ids.new_tenant_id())
-    conversation_id = Ids.new_conversation_id()
-    title = "Version-only drift"
+  test "the bounded scan captures an upper key without losing incremental jobs", %{group: group} do
+    historical(group, 1, "agent_task")
+    historical(group, 2, "user_chat")
+    assert :ok = ConversationSearch.begin_backfill(@generation)
+    create(group, 3, "agent_task")
+    assert {:ok, 1} = ConversationSearch.pending_job_count()
+    assert :ok = ConversationSearch.record_writer_barrier(@generation, "release-test")
+    assert {:ok, 1} = ConversationSearch.pending_job_count()
 
-    put_json(
-      Keys.ctl_group_conversation(group_id, conversation_id),
-      meta(group_id, conversation_id, title)
-      |> Map.put("updated_at", 200)
-    )
+    create(group, 4, "agent_task")
+    assert {:ok, %{scanned: 1, complete: false}} = ConversationSearch.scan_page(@generation, 1)
+
+    assert {:ok, %{scan_conversation_id: first, scan_completed_at: nil}} =
+             ConversationSearch.backfill_state(@generation)
+
+    assert first == id(1)
+    assert {:ok, %{scanned: 1, complete: false}} = ConversationSearch.scan_page(@generation, 1)
+    assert {:ok, %{scanned: 1, complete: true}} = ConversationSearch.scan_page(@generation, 1)
+    assert {:ok, :draining} = ConversationSearch.scan_page(@generation, 1)
+    assert {:ok, 4} = ConversationSearch.pending_job_count()
+    assert {:error, :not_ready} = ConversationSearch.seal_backfill(@generation)
+
+    drain_jobs(4)
+    server = start_supervised!({ConversationSearchDiscovery, interval_ms: 3_600_000})
+    ConversationSearchDiscovery.drain_once(server)
+    assert ConversationSearch.ready?()
+
+    assert {:ok, %{scan_conversation_id: last, scan_completed_at: completed}} =
+             ConversationSearch.backfill_state(@generation)
+
+    assert last == id(3)
+    assert completed != nil
+    assert {:ok, [%{"conversation_id" => indexed}]} = ConversationSearch.search(group, "Task 4")
+    assert indexed == id(4)
+
+    create(group, 5, "agent_task")
+    assert :idle = ConversationSearchDiscovery.drain_once(server)
+    assert {:ok, 1} = ConversationSearch.pending_job_count()
+    assert ConversationSearch.ready?()
+
+    assert {:ok, %{scan_conversation_id: ^last, scan_completed_at: ^completed}} =
+             ConversationSearch.backfill_state(@generation)
+  end
+
+  test "a failed page commits neither jobs nor its cursor", %{group: group} do
+    historical(group, 11, "agent_task")
+    historical(group, 12, "agent_task")
+    assert :ok = ConversationSearch.begin_backfill(@generation)
+    assert :ok = ConversationSearch.record_writer_barrier(@generation, "release-test")
 
     Repo.query!(
-      """
-      INSERT INTO conversation_search_states
-        (writer_generation, agent_group_id, conversation_id, conversation_kind,
-         title, source_version, message_head_seq, message_tail_seq, updated_at)
-      VALUES ($1, $2, $3, 'agent_task', $4, 100, 0, 0, now())
-      """,
-      [@generation, group_id, conversation_id, title]
+      "ALTER TABLE conversation_search_jobs ADD CONSTRAINT reject_scan_page CHECK (conversation_id <> '#{id(12)}')"
     )
 
-    Repo.query!(
-      "UPDATE conversation_search_discovery_cursors " <>
-        "SET current_group_id = $1 WHERE id = 'main'",
-      [group_id]
-    )
+    try do
+      assert {:error, :unavailable} = ConversationSearch.scan_page(@generation, 2)
+      assert {:ok, 0} = ConversationSearch.pending_job_count()
 
-    assert {:ok, claim} =
-             ConversationSearch.claim_discovery_cursor("version-repair-scanner", 30_000)
+      assert {:ok, %{scan_conversation_id: nil, scan_completed_at: nil}} =
+               ConversationSearch.backfill_state(@generation)
+    after
+      Repo.query!("ALTER TABLE conversation_search_jobs DROP CONSTRAINT reject_scan_page")
+    end
 
-    assert :ok = ConversationSearchDiscovery.discover_claim_for_test(claim)
+    assert {:ok, %{scanned: 2, complete: true}} = ConversationSearch.scan_page(@generation, 2)
+    assert {:ok, 2} = ConversationSearch.pending_job_count()
+  end
 
-    assert %{rows: [["rebuild"]]} =
+  test "a canonical non-Task settles without creating a search projection", %{group: group} do
+    assert :ok = ConversationSearch.begin_backfill(@generation)
+    create(group, 21, "future_kind")
+    assert :ok = ConversationSearch.record_writer_barrier(@generation, "release-test")
+    assert {:ok, %{complete: true}} = ConversationSearch.scan_page(@generation)
+    drain_jobs(1)
+
+    assert %{rows: [[0]]} =
              Repo.query!(
-               "SELECT operation FROM conversation_search_jobs " <>
-                 "WHERE writer_generation = $1 AND agent_group_id = $2 " <>
-                 "AND conversation_id = $3",
-               [@generation, group_id, conversation_id]
+               "SELECT count(*) FROM conversation_search_states WHERE agent_group_id=$1",
+               [group]
              )
   end
 
-  defp meta(group_id, conversation_id, title) do
-    %{
-      "agent_group_id" => group_id,
-      "conversation_id" => conversation_id,
-      "kind" => "agent_task",
-      "title" => title,
-      "message_head_seq" => 0,
-      "message_tail_seq" => 0,
-      "created_at" => 1,
-      "updated_at" => 1
-    }
+  defp drain_jobs(count) do
+    for _ <- 1..count do
+      assert {:ok, claim} = ConversationSearch.claim_one("backfill-test", 30_000)
+      assert :ok = ConversationSearchProjection.process_claim(claim)
+      assert :ok = ConversationSearch.complete(claim)
+    end
+
+    assert {:ok, 0} = ConversationSearch.pending_job_count()
   end
 
-  defp put_json(key, value) do
-    assert {:ok, _result} = S3.put(key, Jason.encode!(value))
+  defp historical(group, n, kind) do
+    SystemsRuntime.delete_env(:salix_store, :conversation_search_writer_generation)
+
+    try do
+      create(group, n, kind)
+    after
+      SystemsRuntime.put_env(:salix_store, :conversation_search_writer_generation, @generation)
+    end
   end
+
+  defp create(group, n, kind) do
+    assert {:ok, :inserted, record, _} =
+             ConversationPGStore.create(ConversationPGStore.new(group, id(n)), %{
+               "kind" => kind,
+               "title" => "Task #{n}",
+               "status" => "completed",
+               "created_at" => 1,
+               "updated_at" => 1,
+               "participants" => []
+             })
+
+    record
+  end
+
+  defp id(n), do: "cnv1_" <> String.pad_leading(to_string(n), 19, "0")
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_store, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_store, key, value)
 end

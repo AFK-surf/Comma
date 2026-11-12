@@ -1,0 +1,19 @@
+#!/bin/sh
+# The Comma station's command line in a standalone install (<data>/app, /stations/install.sh).
+#   comma-station start [--port N]              runs the station (the release's service does this)
+#   comma-station status                        its workspace, whether it is online, why it does no work when it does none
+#   comma-station station enroll <origin> <token> --provider comma
+#   comma-station station id
+set -eu
+# Called through a link (~/.local/bin/comma-station): the app is where the link points.
+self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+here=$(cd "$(dirname "$self")/.." && pwd)
+data=${COMMA_STATION_DATA:-$HOME/.comma-station}
+station=$here/mesh/target/release/comma-station
+case "${1:-} ${2:-}" in
+  "start "*) shift; exec "$station" run --app "$here" --data "$data" "$@" ;;
+  "station enroll") shift 2; exec "$station" enroll "$@" --data "$data" ;;
+  "status "*|"station status") exec "$station" status --data "$data" ;;
+  "station id") exec "$station" id --data "$data" ;;
+  *) echo "usage: comma-station start [--port N] | comma-station status | comma-station station enroll <origin> <token> --provider comma | comma-station station id" >&2; exit 2 ;;
+esac

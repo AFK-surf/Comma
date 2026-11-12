@@ -57,7 +57,12 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
 
               existing ->
                 existing
-                |> Map.merge(Map.take(attrs, ~w(app_id client_id app_name inbound_agent_id)))
+                |> Map.merge(
+                  Map.take(
+                    attrs,
+                    ~w(app_id client_id app_name inbound_agent_id auto_join_public_channels)
+                  )
+                )
                 |> Map.put("group_id", group_id)
                 |> maybe_put_configured("client_secret_configured", attrs, "client_secret")
                 |> maybe_put_configured("signing_secret_configured", attrs, "signing_secret")
@@ -240,6 +245,28 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
     assert updated["connect"]["signing_secret_configured"] == true
     refute updated["connect"]["client_secret"]
     refute updated["connect"]["signing_secret"]
+  end
+
+  test "project Slack connect API turns off joining new public channels alone", %{
+    org: org,
+    project: project,
+    inbound_agent_id: inbound_agent_id,
+    token: token
+  } do
+    base = project_slack_path(org.slug, project.slug)
+    _created = api(:post, base, token, slack_create_body(inbound_agent_id)) |> json_data()
+
+    updated =
+      api(:patch, base <> "/conn_slack_1", token, %{"auto_join_public_channels" => false})
+      |> json_data()
+
+    assert updated["mode"] == "project_im_connect_update"
+    assert updated["connect"]["auto_join_public_channels"] == false
+    assert updated["connect"]["inbound_agent_id"] == inbound_agent_id
+
+    missing = api(:patch, base <> "/conn_slack_1", token, %{})
+    assert missing.status == 400
+    assert Jason.decode!(missing.resp_body)["error"]["code"] == "missing_inbound_agent"
   end
 
   test "project Slack connect API enforces project read and write permissions", %{

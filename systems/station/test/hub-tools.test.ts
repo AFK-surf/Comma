@@ -250,7 +250,7 @@ test("a post records milestones: with words on its message, alone shown nowhere 
   await r.accept(m);
   await settle();
   const slack = sessionKey("cl", "C1", m.threadTs);
-  assert.ok((await r.refused(slack, "chat_post", { to: `C1/${m.threadTs}`, text: "done", milestones: ["Sent"] })).includes("only in still.fail chats"));
+  assert.ok((await r.refused(slack, "chat_post", { to: `C1/${m.threadTs}`, text: "done", milestones: ["Sent"] })).includes("only in Comma chats"));
   assert.deepEqual(r.chat.texts(), []);
   await r.close();
 });
@@ -329,8 +329,8 @@ test("options are refused in a Slack thread", async () => {
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
-  assert.ok((await r.refused(key, "chat_post", { to: `C1/${m.threadTs}`, text: "选哪个？", kind: "need_decision", options: [{ label: "A" }] })).includes("only in still.fail chats"));
-  assert.ok((await r.refused(key, "chat_post", { to: `C1/${m.threadTs}`, text: "key？", card: { type: "text" } })).includes("only in still.fail chats"));
+  assert.ok((await r.refused(key, "chat_post", { to: `C1/${m.threadTs}`, text: "选哪个？", kind: "need_decision", options: [{ label: "A" }] })).includes("only in Comma chats"));
+  assert.ok((await r.refused(key, "chat_post", { to: `C1/${m.threadTs}`, text: "key？", card: { type: "text" } })).includes("only in Comma chats"));
   await r.close();
 });
 
@@ -367,7 +367,7 @@ test("a card is pending until a person writes, and a newer one replaces it", asy
   await r.call(key, "chat_post", { to, text: "域名填哪个？", card: { type: "text", placeholder: "example.com" } });
   const text = r.said(thread.id).at(-1)!.n;
   assert.deepEqual(pending(), [text, { type: "text", placeholder: "example.com" }]);
-  sayIn(r.hub, thread.id, "ada@x.com", "still.fail");
+  sayIn(r.hub, thread.id, "ada@x.com", "Comma");
   assert.equal(pending(), null);
   await settle();
   await r.close();
@@ -493,7 +493,7 @@ test("web posts deliver local file links, and refuse missing files before postin
   await r.close();
 });
 
-test("files posted to Slack go into the thread; apps without files:write link to still.fail", async () => {
+test("files posted to Slack go into the thread; apps without files:write link to Comma", async () => {
   const r = new Rig({ link: true });
   const m = say("<@UBOT> chart it");
   await r.accept(m);
@@ -509,10 +509,10 @@ test("files posted to Slack go into the thread; apps without files:write link to
   assert.equal(r.chat.lastText(), "图表");
   assert.deepEqual(r.chat.files.at(-1), ["shot.png", "weather.html"]);
   const last = r.said(r.thread("C1", m.threadTs).id).at(-1)!;
-  assert.deepEqual([last.text, last.attachments.length], ["图表\n\n[weather.html](weather.html)", 2], "still.fail keeps both, the figure placed");
+  assert.deepEqual([last.text, last.attachments.length], ["图表\n\n[weather.html](weather.html)", 2], "Comma keeps both, the figure placed");
   r.chat.noFiles = true;
   await r.call(key, "chat_post", { to, text: "再看", files: ["shot.png"] });
-  assert.equal(r.chat.lastText(), `再看\n\n<${link}?file=shot.png|在 still.fail 里查看附件>`, "no files:write: linked as before");
+  assert.equal(r.chat.lastText(), `再看\n\n<${link}?file=shot.png|在 Comma 里查看附件>`, "no files:write: linked as before");
   assert.deepEqual(r.chat.files.at(-1), []);
   await r.close();
 });
@@ -727,7 +727,7 @@ test("a chat on another station of the workspace is read there, by its link", as
     asked.push([station, request]);
     return { text: "Conversation EMBER/2.000001; its agents: s:1.\nit works" };
   });
-  // A still.fail link and a chat's page (as a reference is written) both name the station.
+  // A Comma link and a chat's page (as a reference is written) both name the station.
   for (const chat of ["https://ember.test/o/ws/far/s%3A1", "/w/ws/s/far/chats/s%3A1?history=s%3A1&entry=3"]) {
     const read = await r.call(keyB, "chat_read", { chat, limit: 5 });
     assert.ok(matches(read, ["station far", "it works"]), read);
@@ -943,7 +943,7 @@ test("station_* reach the transport, pretty-printed; adb_devices and feedback_se
   const [key] = newSession(r.hub, web("local"));
   const sent: Json[] = [];
   const feedback = feedbackTools(r.store, () => "https://x/o/1", () => async (report) => (sent.push(report), { number: 7 }))[0]!;
-  assert.equal(await feedback.run(key, { to: "EMBER/1.1", title: "chat_post fails", body: "it said 500", area: "station", reporter: "Ada" }), "Sent to the still.fail team as FB-7.");
+  assert.equal(await feedback.run(key, { to: "EMBER/1.1", title: "chat_post fails", body: "it said 500", area: "station", reporter: "Ada" }), "Sent to the Comma team as FB-7.");
   assert.deepEqual([sent[0].area, sent[0].context.session, sent[0].context.thread, sent[0].context.link], ["station", key, "EMBER/1.1", "https://x/o/1"]);
   await assert.rejects(feedbackTools(r.store, () => null, () => null)[0]!.run(key, { title: "a", body: "b" }), /not connected to still.fail cloud/);
   await r.close();

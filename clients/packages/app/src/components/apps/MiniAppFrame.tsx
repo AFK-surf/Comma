@@ -4,6 +4,7 @@ import type {
   MiniAppInit,
 } from "@comma/chat-contract/mini-app-runtime";
 import {
+  miniAppFrameAllow,
   miniAppFrameSandbox,
   miniAppRuntimeUrl,
   miniAppWebRuntimePath,
@@ -21,6 +22,7 @@ import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { Dialog } from "@comma/ui/components/dialog";
 import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import {
+  MiniAppCameraSheet,
   MiniAppChrome,
   MiniAppConfirmSheet,
   MiniAppGrantSheet,
@@ -46,8 +48,9 @@ import {
 } from "../../nativePlatformActions";
 import { useActiveWorkspaceId } from "../activeWorkspace";
 import { useCommaUiThemeName } from "../commaUiTheme";
+import { MINI_APP_DEVICE_OPS, MiniAppDevices } from "./miniAppDevices";
 import { useMiniAppHomeDraft } from "./miniAppHomeDraft";
-import { useMiniAppIcon } from "./miniAppIcon";
+import { useMiniAppImage, useMiniAppIcon } from "./miniAppIcon";
 
 /** Where an app's `chat.draft` text goes: the chat the app runs beside, else Home's composer (`useMiniAppHomeDraft`). */
 export const MiniAppDraftContext = createContext<
@@ -67,6 +70,10 @@ const PING_EVERY_MS = 1000;
 const STALL_AFTER_MS = 5000;
 const MAX_PICKED_FILES = 10;
 const MAX_PICKED_BYTES = 20 * 1_048_576;
+/** A photo's longer side at most: the app gets a JPEG of about 1 MB or less. */
+const MAX_PHOTO_SIDE = 2048;
+
+type Photo = { mime: string; width: number; height: number; data: ArrayBuffer };
 
 /**
  * Frames that run an app now, oldest first: a fourth stops a kept frame waiting off screen, else the oldest (it can run
@@ -370,6 +377,11 @@ type Prompt =
       op: string;
       args: Record<string, unknown>;
       resolve: (confirmed: boolean) => void;
+    }
+  | {
+      kind: "camera";
+      facing: "user" | "environment" | undefined;
+      resolve: (photo: Photo | null) => void;
     };
 
 type State =
@@ -593,12 +605,19 @@ function MiniAppChromeHost({
   const name = shown?.name ?? known?.name ?? "";
   const author = shown?.author.name ?? known?.author ?? "";
   const iconUrl = useMiniAppIcon(shown?.icon_url, via);
+  const authorAvatarUrl = useMiniAppIcon(shown?.author.avatar_url, via);
+  const coverUrl = useMiniAppImage(
+    variant === "cover" ? shown?.cover_url : null,
+    via,
+    true
+  );
   const reportWorkspace = "workspace" in via ? via.workspace : activeWorkspace;
   return (
     <>
       <MiniAppChrome
         actions={actions}
         author={author}
+        authorAvatarUrl={authorAvatarUrl}
         bodyHeight={height}
         className={className}
         detail={detail}
@@ -613,7 +632,20 @@ function MiniAppChromeHost({
         trailing={trailing}
         variant={variant}
       >
-        {body}
+        {variant === "cover" ? (
+          <div className="relative flex size-full min-h-0 flex-col">
+            {body}
+            {coverUrl ? (
+              <img
+                src={coverUrl}
+                alt={name}
+                className="absolute inset-0 size-full bg-primary object-contain"
+              />
+            ) : null}
+          </div>
+        ) : (
+          body
+        )}
       </MiniAppChrome>
       {reporting ? (
         <Dialog
@@ -773,6 +805,12 @@ function RunningFrame({
       onEndRef.current(next);
     };
     const release = acquirePlace(key, () => end({ status: "stopped" }), parked);
+    const devices = new MiniAppDevices(
+      (message, transfer = []) => {
+        if (!stopped) port.current?.postMessage(message, transfer);
+      },
+      () => anchor.current
+    );
     const bundle = call("miniApps.bundle", { session: info.session });
     bundle.catch(() => undefined);
 
@@ -870,8 +908,19 @@ function RunningFrame({
             await openNativePlatformExternalUrl(String(args.url));
             reply(id, { ok: true, value: { opened: true } });
             return;
-          default:
+          default: {
+            if (MINI_APP_DEVICE_OPS.has(op)) {
+              const result = await devices.run(op, args);
+              if (!result.ok) fail(id, result.code, result.message);
+              else if (!stopped)
+                port.current?.postMessage(
+                  { type: "result", id, ok: true, value: result.value },
+                  result.transfer ?? []
+                );
+              return;
+            }
             fail(id, "unsupported", `${op} is not available here.`);
+          }
         }
       } catch (error) {
         fail(id, "failed", error instanceof Error ? error.message : "The call failed.");
@@ -972,6 +1021,35 @@ function RunningFrame({
           );
           return;
         }
+        if (op === "camera.capture") {
+          // The camera sheet is the confirmation: the viewer takes the one photo the app gets.
+          const photo = await ask<Photo | null>((resolve) => ({
+            kind: "camera",
+            facing:
+              shown.facing === "user" || shown.facing === "environment"
+                ? shown.facing
+                : undefined,
+            resolve,
+          }));
+          if (!photo) {
+            reply(id, { ok: true, value: null });
+            return;
+          }
+          const allowed = await call("miniApps.invoke", {
+            session: info.session,
+            op,
+            args,
+            confirmed: true,
+          }).catch(() => undefined);
+          if (allowed?.status !== "host") {
+            reply(id, allowed ?? { status: "error", code: "unavailable", message: "" });
+            return;
+          }
+          port.current?.postMessage({ type: "result", id, ok: true, value: photo }, [
+            photo.data,
+          ]);
+          return;
+        }
         if (op === "links.open" && getNativeBridge().platform !== "electron") {
           // On the web the press opens the tab, then the core's answer gives it its address.
           let opened: Promise<Window | undefined> | undefined;
@@ -1012,7 +1090,9 @@ function RunningFrame({
           resolve,
         }));
         if (!agreed) {
-          reply(id, { ok: true, value: declined(op) });
+          if (op === "clipboard.read")
+            fail(id, "denied", "The viewer did not allow it.");
+          else reply(id, { ok: true, value: declined(op) });
           return;
         }
         await invoke(id, op, args, true);
@@ -1114,6 +1194,7 @@ function RunningFrame({
       stopped = true;
       startup?.();
       watchdog?.();
+      devices.stop();
       release();
       window.removeEventListener("message", onWindowMessage);
       channel?.port1.postMessage({ type: "stop", reason: "closed" });
@@ -1128,7 +1209,7 @@ function RunningFrame({
     <div ref={anchor} className="relative flex min-h-0 flex-1 flex-col">
       <iframe
         ref={frame}
-        allow=""
+        allow={miniAppFrameAllow(info.capabilities)}
         className="block min-h-0 w-full flex-1 border-0"
         data-testid="mini-app-frame"
         inert={inert}
@@ -1149,6 +1230,12 @@ function RunningFrame({
           egress={info.app.egress}
           onAllow={() => prompt.resolve(true)}
           onDeny={() => prompt.resolve(false)}
+        />
+      ) : prompt?.kind === "camera" ? (
+        <CameraCapture
+          appName={info.app.name}
+          facing={prompt.facing}
+          onDone={prompt.resolve}
         />
       ) : prompt?.kind === "confirm" ? (
         <MiniAppConfirmSheet
@@ -1173,6 +1260,12 @@ function confirmCopy(
       detail: String(args.text ?? ""),
       confirmLabel: messages.mini_app_confirm_task_action(),
     };
+  if (op === "clipboard.read")
+    return {
+      title: messages.mini_app_confirm_clipboard_title({ name }),
+      description: messages.mini_app_confirm_clipboard_description(),
+      confirmLabel: messages.mini_app_confirm_clipboard_action(),
+    };
   if (op === "links.open")
     return {
       title: messages.mini_app_confirm_link_title({ name }),
@@ -1185,6 +1278,78 @@ function confirmCopy(
     description: messages.mini_app_confirm_files_description(),
     confirmLabel: messages.mini_app_confirm_files_action(),
   };
+}
+
+/** The camera sheet: the camera runs only while it shows, and the app gets the photo the viewer takes. */
+function CameraCapture({
+  appName,
+  facing,
+  onDone,
+}: {
+  appName: string;
+  facing: "user" | "environment" | undefined;
+  onDone: (photo: Photo | null) => void;
+}) {
+  const messages = useCommaMessages();
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let closed = false;
+    let opened: MediaStream | undefined;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(messages.mini_app_camera_failed());
+      return;
+    }
+    navigator.mediaDevices
+      .getUserMedia({ video: facing ? { facingMode: facing } : true, audio: false })
+      .then(
+        (media) => {
+          opened = media;
+          if (closed) for (const track of media.getTracks()) track.stop();
+          else setStream(media);
+        },
+        () => {
+          if (!closed) setError(messages.mini_app_camera_failed());
+        }
+      );
+    return () => {
+      closed = true;
+      for (const track of opened?.getTracks() ?? []) track.stop();
+    };
+    // The sheet opens the camera once; the language does not reopen it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facing]);
+  return (
+    <MiniAppCameraSheet
+      appName={appName}
+      error={error}
+      onCancel={() => onDone(null)}
+      onTake={(preview) => {
+        void takePhoto(preview).then(onDone, () => onDone(null));
+      }}
+      stream={stream}
+    />
+  );
+}
+
+/** A JPEG of what the preview shows now, its longer side at most MAX_PHOTO_SIDE. */
+async function takePhoto(preview: HTMLVideoElement): Promise<Photo | null> {
+  const scale = Math.min(
+    1,
+    MAX_PHOTO_SIDE / Math.max(preview.videoWidth, preview.videoHeight, 1)
+  );
+  const width = Math.round(preview.videoWidth * scale);
+  const height = Math.round(preview.videoHeight * scale);
+  if (!width || !height) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d")?.drawImage(preview, 0, 0, width, height);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.9)
+  );
+  if (!blob) return null;
+  return { mime: "image/jpeg", width, height, data: await blob.arrayBuffer() };
 }
 
 /** The viewer's IANA time zone. */

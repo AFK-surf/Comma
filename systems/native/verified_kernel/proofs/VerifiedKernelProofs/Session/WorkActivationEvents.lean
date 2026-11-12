@@ -1,8 +1,8 @@
+import VerifiedKernelProofs.Session.WorkRevisionExpiry
+import VerifiedKernelProofs.Session.WorkPendingInput
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkRevisionExpiry
-import VerifiedKernelProofs.Session.WorkPendingInput
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -289,7 +289,7 @@ set_option Elab.async false
 theorem activation_write_preserves {cursor final : Cursor} {events : List Term} {hwm : Term}
     (ready : QueueReady cursor.working) (batch : ActivationBatch events)
     (execution : Execution (resident (some cursor.pack) (a "write") (.tuple [list events, hwm])) final) :
-    final.baseline = cursor.baseline ∧ final.etag = cursor.etag ∧ final.events = cursor.events ++ events ∧
+    final.baseline = cursor.baseline ∧ final.revision = cursor.revision ∧ final.events = cursor.events ++ events ∧
       QueueReady final.working ∧ final.working.get (a "storage_format") = cursor.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.working sealed item →
         ValueSemantics.Represented final.working sealed item := by

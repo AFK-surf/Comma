@@ -13,5 +13,5 @@ mkdir -p "$data" "$HOME/.tmp"
 SALIX_WORKLOAD_CREDENTIAL=$(cat "$secrets/SALIX_WORKLOAD_CREDENTIAL")
 export SALIX_WORKLOAD_CREDENTIAL TMPDIR="$HOME/.tmp"
 exec env SALIX_CONNECTOR_ROOT="$HOME" SALIX_CONNECTOR_NAME="Coding sandbox" SALIX_CONNECTOR_JOIN=1 \
-  /opt/comma-station/mesh/target/release/stillfail-station run \
+  /opt/comma-station/mesh/target/release/comma-station run \
   --app /opt/comma-station --data "$data"

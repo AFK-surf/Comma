@@ -55,6 +55,8 @@ type Socket = {
   closed: boolean;
   /** What it sends next. */
   next(): Promise<string | Uint8Array>;
+  /** What it says it has not written yet. */
+  unwritten: number;
 };
 
 /** Sockets the relay opens, each driven by the test as Comma would. */
@@ -68,9 +70,11 @@ function sockets() {
       on,
       closed: false,
       next: () => new Promise((done) => (waiting = done)),
+      unwritten: 0,
     };
     opened.push(socket);
     return {
+      buffered: () => socket.unwritten,
       send: (data) => {
         socket.sent.push(data);
         waiting?.(data);
@@ -165,6 +169,27 @@ describe("SalixRelay", () => {
     a.close();
     await a.closed;
     mesh.close();
+  });
+
+  it("drops a packet rather than pile it up in front of a socket that has not written what it holds", async () => {
+    const mesh = endpoint();
+    const { opened, open } = sockets();
+    const relay = new SalixRelay(mesh.native, SIGN, open);
+    const carrying = relay.carry(URL, "t1.secret");
+    await register(opened[0]!, "t1", "c1");
+    await carrying;
+    const socket = opened[0]!;
+    const sent = socket.sent.length;
+
+    socket.unwritten = 200 * 1024;
+    mesh.send(PEER, "behind");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.sent).toHaveLength(sent);
+
+    socket.unwritten = 0;
+    mesh.send(PEER, "again");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.sent.at(-1)).toEqual(frame(PEER, "again"));
   });
 
   it("fails a socket that closes before it registered, and one given up or not registered in 30 s", async () => {

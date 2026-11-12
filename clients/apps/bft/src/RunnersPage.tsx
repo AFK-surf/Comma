@@ -13,8 +13,6 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   BftInstallCommand,
   BftRunner,
-  BftRunnerConnector,
-  BftRunnerConnectors,
   BftRunnerOnboarding,
   BftRunnersPage,
   BftRunnerStatus,
@@ -25,7 +23,7 @@ import {
   installErrorMessage,
 } from "./AddRunnerDialog";
 import { ConfirmDialog, writeErrorMessage } from "./dialogs";
-import { formatInteger, formatRelative, humanize } from "./format";
+import { formatInteger, formatRelative } from "./format";
 import { MetricCards } from "./MetricCards";
 import { messages } from "./messages";
 import type { Resource } from "./resource";
@@ -43,31 +41,11 @@ export const runnerTones: Record<BftRunnerStatus, Tone> = {
   unknown: "neutral",
 };
 
-const connectorTone = (status: string): Tone => {
-  switch (status) {
-    case "connected":
-    case "running":
-      return "ok";
-    case "failed":
-    case "error":
-      return "error";
-    case "stopped":
-      return "neutral";
-    default:
-      return "warn";
-  }
-};
-
 export const runnerName = (runner: BftRunner) =>
   runner.name ?? runner.stable_id ?? t.unnamed;
 
 export interface RunnerApi {
   page: (cursor: string | null, signal: AbortSignal) => Promise<BftRunnersPage>;
-  connectors: (
-    runnerId: string,
-    cursor: string | null,
-    signal: AbortSignal
-  ) => Promise<BftRunnerConnectors>;
   onboarding: (signal: AbortSignal) => Promise<BftRunnerOnboarding>;
   createInstallCommand: () => Promise<BftInstallCommand>;
   rotateKey: (keyId: string) => Promise<BftInstallCommand>;
@@ -296,7 +274,6 @@ export function RunnersPage({
         <>
           <Summary fleet={fleet} />
           <FleetPanel
-            api={api}
             canManage={canManage}
             expanded={expanded}
             fleet={fleet}
@@ -390,13 +367,6 @@ function Summary({ fleet }: { fleet: Fleet }) {
             value: count((runner) => runner.update_available),
             ...(partial ? { detail: partial } : {}),
           },
-          {
-            label: t.metricConnectors,
-            value: formatInteger(
-              runners.reduce((sum, runner) => sum + runner.connectors.total, 0)
-            ),
-            ...(partial ? { detail: partial } : {}),
-          },
         ]
       }
     />
@@ -405,21 +375,19 @@ function Summary({ fleet }: { fleet: Fleet }) {
 
 function FleetPanel({
   fleet,
-  api,
   canManage,
   expanded,
   onToggle,
   onAction,
 }: {
   fleet: Fleet;
-  api: RunnerApi;
   canManage: boolean;
   expanded: string | null;
   onToggle: (id: string) => void;
   onAction: (kind: "rotate" | "revoke" | "remove", runner: BftRunner) => void;
 }) {
   const runners = fleet.runners;
-  const columns = canManage ? 6 : 5;
+  const columns = canManage ? 5 : 4;
   return (
     <section aria-labelledby="bft-fleet-title" className="bft-panel bft-panel-table">
       <div className="bft-panel-header">
@@ -457,9 +425,6 @@ function FleetPanel({
                 <th className="bft-col-version" scope="col">
                   {t.columnVersion}
                 </th>
-                <th className="bft-col-num bft-col-connectors" scope="col">
-                  {t.columnConnectors}
-                </th>
                 <th className="bft-col-refreshed" scope="col">
                   {t.columnLastSeen}
                 </th>
@@ -483,7 +448,7 @@ function FleetPanel({
                   {expanded === runner.id ? (
                     <tr className="bft-runner-detail-row">
                       <td colSpan={columns} id={`bft-runner-${runner.id}`}>
-                        <RunnerDetail api={api} runner={runner} />
+                        <RunnerDetail runner={runner} />
                       </td>
                     </tr>
                   ) : null}
@@ -541,7 +506,7 @@ function RunnerRow({
         <button
           aria-controls={expanded ? `bft-runner-${runner.id}` : undefined}
           aria-expanded={expanded}
-          aria-label={t.showConnectors(name)}
+          aria-label={t.showDetails(name)}
           className="bft-runner-toggle"
           onClick={onToggle}
           type="button"
@@ -571,9 +536,6 @@ function RunnerRow({
             <span className="bft-update">{t.updateAvailable}</span>
           ) : null}
         </span>
-      </td>
-      <td className="bft-col-num bft-col-connectors">
-        {formatInteger(runner.connectors.total)}
       </td>
       <td className="bft-col-refreshed" title={runner.last_seen_at ?? undefined}>
         {seen ?? t.never}
@@ -629,7 +591,7 @@ function RunnerStatus({ status }: { status: BftRunnerStatus }) {
   );
 }
 
-function RunnerDetail({ runner, api }: { runner: BftRunner; api: RunnerApi }) {
+function RunnerDetail({ runner }: { runner: BftRunner }) {
   const components = Object.entries(runner.component_versions);
   const credential = runner.credential;
   const keyCreated = credential?.created_at
@@ -646,10 +608,6 @@ function RunnerDetail({ runner, api }: { runner: BftRunner; api: RunnerApi }) {
             </dd>
           </div>
         ) : null}
-        <div>
-          <dt>{t.detailCapacity}</dt>
-          <dd>{t.capacityValue(runner.current_connector_count, runner.capacity)}</dd>
-        </div>
         {components.length > 0 ? (
           <div>
             <dt>{t.detailComponents}</dt>
@@ -671,139 +629,6 @@ function RunnerDetail({ runner, api }: { runner: BftRunner; api: RunnerApi }) {
           </div>
         ) : null}
       </dl>
-      <ConnectorList api={api} runner={runner} />
     </div>
-  );
-}
-
-function ConnectorList({ runner, api }: { runner: BftRunner; api: RunnerApi }) {
-  const [entries, setEntries] = useState<BftRunnerConnector[]>();
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const controller = useRef<AbortController | null>(null);
-  const load = useRef(api.connectors);
-  load.current = api.connectors;
-
-  const fetchPage = useCallback(
-    (after: string | null) => {
-      const abort = new AbortController();
-      controller.current?.abort();
-      controller.current = abort;
-      setLoading(true);
-      setFailed(false);
-      load.current(runner.id, after, abort.signal).then(
-        (page) => {
-          if (abort.signal.aborted) return;
-          setEntries((previous) => {
-            const known = after ? (previous ?? []) : [];
-            const seen = new Set(known.map((entry) => entry.id));
-            return [...known, ...page.entries.filter((entry) => !seen.has(entry.id))];
-          });
-          setCursor(page.next_cursor);
-          setLoading(false);
-        },
-        () => {
-          if (abort.signal.aborted) return;
-          setFailed(true);
-          setLoading(false);
-        }
-      );
-    },
-    [runner.id]
-  );
-
-  useEffect(() => {
-    fetchPage(null);
-    return () => controller.current?.abort();
-  }, [fetchPage]);
-
-  const onLoadMore = () => {
-    if (cursor && !loading) fetchPage(cursor);
-  };
-
-  return (
-    <section aria-label={t.connectorsTitle} className="bft-connectors">
-      <h3 className="bft-connectors-title">
-        {t.connectorsTitle}
-        <span className="bft-count">{formatInteger(runner.connectors.total)}</span>
-      </h3>
-      {!entries ? (
-        failed ? (
-          <div className="bft-quiet-row bft-connectors-state" role="alert">
-            <p className="bft-quiet bft-quiet-inline">{t.connectorsLoadFailed}</p>
-            <button
-              className="bft-btn bft-btn-sm"
-              onClick={() => fetchPage(null)}
-              type="button"
-            >
-              {messages.states.retry}
-            </button>
-          </div>
-        ) : (
-          <div className="bft-rows-skeleton bft-rows-skeleton-flush">
-            <Skeleton height={12} width="60%" />
-            <Skeleton height={12} width="45%" />
-          </div>
-        )
-      ) : entries.length === 0 ? (
-        <p className="bft-quiet bft-quiet-inline">{t.connectorsEmpty}</p>
-      ) : (
-        <ScrollArea
-          className="bft-connectors-scroll"
-          edgeEffect="none"
-          orientation="vertical"
-          scrollbarVisibility="hover"
-          viewportClassName="bft-connectors-viewport"
-        >
-          <ul className="bft-connector-list">
-            {entries.map((entry) => (
-              <li className="bft-connector" key={entry.id}>
-                <span
-                  className="bft-truncate bft-connector-name"
-                  title={entry.name ?? entry.id}
-                >
-                  {entry.name ?? entry.id}
-                </span>
-                <span
-                  className="bft-truncate bft-connector-swarm"
-                  title={entry.project_name ?? undefined}
-                >
-                  {entry.project_name ?? t.noSwarm}
-                </span>
-                <span
-                  className="bft-status bft-connector-status"
-                  data-tone={connectorTone(entry.provisioning_status)}
-                >
-                  <span className="bft-truncate">
-                    {t.connectorStatuses[entry.provisioning_status] ??
-                      humanize(entry.provisioning_status)}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
-          <ScrollAreaLoadMore
-            failed={failed}
-            hasMore={cursor !== null}
-            loading={loading}
-            onLoadMore={onLoadMore}
-            quiet
-          />
-          {loading ? (
-            <output className="bft-quiet bft-connectors-more">
-              {t.connectorsLoadingMore}
-            </output>
-          ) : failed ? (
-            <div className="bft-quiet-row bft-connectors-more" role="alert">
-              <p className="bft-quiet bft-quiet-inline">{t.connectorsLoadFailed}</p>
-              <button className="bft-btn bft-btn-sm" onClick={onLoadMore} type="button">
-                {messages.states.retry}
-              </button>
-            </div>
-          ) : null}
-        </ScrollArea>
-      )}
-    </section>
   );
 }

@@ -1,0 +1,318 @@
+{
+  "name": "gtd_pools_2026_10_29",
+  "description": "Production-shaped mails from the owner's week of 2026-10-21..28 (content rewritten, no private mail). Each scenario judges one arrival: whose move it is, whether it may spend the reserve, and whether it only repeats an earlier quiet matter. A sign-in the owner may not recognize names no time but cannot wait; a deletion notice in the junk folder with a near deadline is real; another person's CI and a review someone else is doing are not the owner's move; a meeting next week is not urgent yet; a CI run blocked on a runner for the owner's own pull request is the owner's move.",
+  "now": "2026-10-28T09:05:00Z",
+  "pending_since": "2026-10-28T00:00:00Z",
+  "locale": "en",
+  "timezone": "Asia/Singapore",
+  "owner": {
+    "user": "outlook-user-1",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "user_md": "<!-- comma:portrait -->\n- About you · duty: maintains the Comma app and the recappi macOS app · 2026-10-27 · watch: repo:kai/comma\n- About you · ongoing: drives pull requests in kai/comma, often written by a coding agent · 2026-10-27\n<!-- comma:portrait -->\n",
+  "home": [],
+  "outlook": [
+    {
+      "id": "nintendo_signin",
+      "conversationId": "c-nintendo_signin",
+      "subject": "Nintendo Account: New sign-in",
+      "from": {
+        "emailAddress": {
+          "address": "no-reply@accounts.nintendo.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T08:50:00Z",
+      "bodyPreview": "Kai, your Nintendo Account was signed in to from a new device.\r\nDate: 2026-10-28 16:49 SGT\r\nDevice: Chrome on Windows\r\nRegion: Tokyo, Japan\r\nIf you did not sign in, change your password now and remove the device from your account at accounts.nintendo",
+      "webLink": "https://outlook.office.com/mail/inbox/id/nintendo_signin",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Kai, your Nintendo Account was signed in to from a new device.\r\nDate: 2026-10-28 16:49 SGT\r\nDevice: Chrome on Windows\r\nRegion: Tokyo, Japan\r\nIf you did not sign in, change your password now and remove the device from your account at accounts.nintendo.com. Otherwise no action is needed."
+      }
+    },
+    {
+      "id": "ci_runner_blocked",
+      "conversationId": "c-ci_runner_blocked",
+      "subject": "[kai/comma] Run failed: Client Checks - claude/home-later-motion (5f2a9c1)",
+      "from": {
+        "emailAddress": {
+          "address": "notifications@github.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T03:55:00Z",
+      "bodyPreview": "Client Checks: Some jobs were not successful\r\nBrowser Component Test (self-hosted macOS ARM64): This job was cancelled after waiting 6 hours for a runner. No runner with the label macos-arm64 is online.\r\nYou are receiving this because you triggered t",
+      "webLink": "https://outlook.office.com/mail/inbox/id/ci_runner_blocked",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Client Checks: Some jobs were not successful\r\nBrowser Component Test (self-hosted macOS ARM64): This job was cancelled after waiting 6 hours for a runner. No runner with the label macos-arm64 is online.\r\nYou are receiving this because you triggered this workflow run on your pull request #4371 (opened by you, written by your coding agent)."
+      }
+    },
+    {
+      "id": "teammate_pr_failed",
+      "conversationId": "c-teammate_pr_failed",
+      "subject": "[kai/comma] Run failed: Systems CI - ana/fix-sync (8d1e2b0)",
+      "from": {
+        "emailAddress": {
+          "address": "notifications@github.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T04:10:00Z",
+      "bodyPreview": "Systems CI: test-beam failed.\r\nPull request #4380 by ana: fix(sync): retry the cursor read.\r\nYou are receiving this because you are watching kai/comma.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/teammate_pr_failed",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Systems CI: test-beam failed.\r\nPull request #4380 by ana: fix(sync): retry the cursor read.\r\nYou are receiving this because you are watching kai/comma."
+      }
+    },
+    {
+      "id": "own_pr_in_review",
+      "conversationId": "c-own_pr_in_review",
+      "subject": "Re: [kai/comma] fix(brief): read member threads from the window (PR #4329)",
+      "from": {
+        "emailAddress": {
+          "address": "notifications@github.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T05:00:00Z",
+      "bodyPreview": "ana commented on this pull request: I am going through the test changes now and will finish the review this afternoon. No changes needed from you yet.\r\nYou are receiving this because you authored the thread.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/own_pr_in_review",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "ana commented on this pull request: I am going through the test changes now and will finish the review this afternoon. No changes needed from you yet.\r\nYou are receiving this because you authored the thread."
+      }
+    },
+    {
+      "id": "sentry_repeat",
+      "conversationId": "c-sentry_repeat",
+      "subject": "APPLE-MACOS-3H - App Hanging: App hanging for at least 2000 ms.",
+      "from": {
+        "emailAddress": {
+          "address": "noreply@md.getsentry.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T06:00:00Z",
+      "bodyPreview": "New issue in recappi-macos: APPLE-MACOS-3H App Hanging: App hanging for at least 2000 ms. Release 1.0.174 (187). 1 event, 1 user, same device as earlier reports.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/sentry_repeat",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "New issue in recappi-macos: APPLE-MACOS-3H App Hanging: App hanging for at least 2000 ms. Release 1.0.174 (187). 1 event, 1 user, same device as earlier reports."
+      }
+    },
+    {
+      "id": "meeting_next_week",
+      "conversationId": "c-meeting_next_week",
+      "subject": "Invitation: AFK All-Hands Meeting @ Tue Nov 4, 2026 10:30 - 11:30 (SGT)",
+      "from": {
+        "emailAddress": {
+          "address": "calendar-notification@google.com"
+        }
+      },
+      "receivedDateTime": "2026-10-28T02:35:00Z",
+      "bodyPreview": "You have been invited to AFK All-Hands Meeting. When: Tuesday Nov 4, 2026 10:30 - 11:30 Singapore Standard Time. Join with Google Meet. Organizer: ops@afk.example. This is the weekly company all-hands; attendance is expected.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/meeting_next_week",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "You have been invited to AFK All-Hands Meeting. When: Tuesday Nov 4, 2026 10:30 - 11:30 Singapore Standard Time. Join with Google Meet. Organizer: ops@afk.example. This is the weekly company all-hands; attendance is expected."
+      }
+    }
+  ],
+  "outlook_junk": [
+    {
+      "id": "cdg_final_reminder",
+      "conversationId": "c-cdg_final_reminder",
+      "subject": "Final Reminder: Log in to Keep Your CDG Zig Account",
+      "from": {
+        "emailAddress": {
+          "address": "no-reply@cdgzig.example"
+        }
+      },
+      "receivedDateTime": "2026-10-28T09:00:00Z",
+      "bodyPreview": "Dear Kai,\r\nYour CDG Zig account has been inactive for 23 months. If you do not log in by 30 October 2026 23:59 SGT, your account, saved addresses and stored rewards will be permanently deleted. This cannot be undone.\r\nLog in on the CDG Zig app to kee",
+      "webLink": "https://outlook.office.com/mail/inbox/id/cdg_final_reminder",
+      "importance": "normal",
+      "toRecipients": [
+        {
+          "emailAddress": {
+            "address": "kai@example.com"
+          }
+        }
+      ],
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "Dear Kai,\r\nYour CDG Zig account has been inactive for 23 months. If you do not log in by 30 October 2026 23:59 SGT, your account, saved addresses and stored rewards will be permanently deleted. This cannot be undone.\r\nLog in on the CDG Zig app to keep your account."
+      }
+    }
+  ],
+  "labels": {
+    "nintendo_signin": "https://outlook.office.com/mail/inbox/id/nintendo_signin",
+    "ci_runner_blocked": "https://outlook.office.com/mail/inbox/id/ci_runner_blocked",
+    "teammate_pr_failed": "https://outlook.office.com/mail/inbox/id/teammate_pr_failed",
+    "own_pr_in_review": "https://outlook.office.com/mail/inbox/id/own_pr_in_review",
+    "sentry_repeat": "https://outlook.office.com/mail/inbox/id/sentry_repeat",
+    "meeting_next_week": "https://outlook.office.com/mail/inbox/id/meeting_next_week",
+    "cdg_final_reminder": "https://outlook.office.com/mail/inbox/id/cdg_final_reminder"
+  },
+  "scenarios": [
+    {
+      "name": "signin_without_time",
+      "only": [
+        "nintendo_signin"
+      ],
+      "read_channels": false,
+      "expect": {
+        "routed_any": [
+          "nintendo_signin"
+        ],
+        "role_any": [
+          "act"
+        ],
+        "reserve": true
+      }
+    },
+    {
+      "name": "deletion_in_junk",
+      "only": [
+        "cdg_final_reminder"
+      ],
+      "read_channels": false,
+      "expect": {
+        "routed_any": [
+          "cdg_final_reminder"
+        ],
+        "role_any": [
+          "act"
+        ],
+        "reserve": true
+      }
+    },
+    {
+      "name": "own_pr_blocked_on_runner",
+      "only": [
+        "ci_runner_blocked"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "ci_runner_blocked"
+        ],
+        "role_any": [
+          "act"
+        ]
+      }
+    },
+    {
+      "name": "teammate_pr_failed",
+      "only": [
+        "teammate_pr_failed"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "teammate_pr_failed"
+        ],
+        "role_any": [
+          "reference",
+          "waiting"
+        ]
+      }
+    },
+    {
+      "name": "own_pr_in_review",
+      "only": [
+        "own_pr_in_review"
+      ],
+      "read_channels": false,
+      "expect": {
+        "not_routed": [
+          "own_pr_in_review"
+        ],
+        "role_any": [
+          "waiting"
+        ]
+      }
+    },
+    {
+      "name": "sentry_repeat",
+      "only": [
+        "sentry_repeat"
+      ],
+      "read_channels": false,
+      "expect": {
+        "repeats": true,
+        "continues_any": [
+          "APPLE-MACOS-3G - App Hanging: App hanging for at least 2000 ms."
+        ]
+      },
+      "matters": [
+        {
+          "subject": "APPLE-MACOS-3G - App Hanging: App hanging for at least 2000 ms.",
+          "state": "quiet",
+          "urgency": "high",
+          "decision": "quiet",
+          "reason": "Another App Hanging alert of the same series (2S/37/38/39/3A-3F), same user and device; no scale change. Left for the briefing.",
+          "changedAt": "2026-10-28T02:12:00Z",
+          "cost": "A desktop app hang you maintain stays uninvestigated."
+        }
+      ]
+    },
+    {
+      "name": "meeting_next_week",
+      "only": [
+        "meeting_next_week"
+      ],
+      "read_channels": false,
+      "expect": {
+        "reserve": false
+      }
+    }
+  ]
+}

@@ -35,7 +35,7 @@ type Setup = { cloud?: string; teamId?: string; tokens?: Json[] };
 
 async function rig(o: Setup = {}) {
   const data = mkdtempSync(join(tmpdir(), "sr-"));
-  delete process.env.STILLFAIL_CONFIG;
+  delete process.env.COMMA_STATION_CONFIG;
   delete process.env.EMBER_CONFIG;
   const path = join(data, "config.json");
   writeFileSync(
@@ -60,7 +60,7 @@ async function rig(o: Setup = {}) {
   const fake = await FakeSlack.start();
   bot(fake, { teamId: o.teamId ?? "T1" });
   const config = new ConfigFile(data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const claude = new FakeDriver("claude");
   let hub: Hub | undefined;
   const slack = makeConnections({

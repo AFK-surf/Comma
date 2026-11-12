@@ -3,18 +3,26 @@ package surf.comma.android.conversation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import surf.comma.android.auth.ConversationScope
@@ -30,8 +38,8 @@ import java.util.UUID
 /**
  * One conversation as the client core shows it to a window: its `chatView` topic and the `chatView.*` calls, the
  * same ones the desktop's windows use. The core keeps the conversation (the event stream, history and its gaps, the
- * streaming reply, what is being sent, the composer's files); this class shows the topic while the chat is on screen
- * (or a reply is waited for in the background) and passes on what the person does.
+ * streaming reply, what is being sent, the composer's draft and files); this class shows the topic while the chat is
+ * on screen (or while a [Hold] keeps it in the background) and passes on what the person does.
  *
  * The main chat's view follows the session's scope. A view made with [main] false shows the conversation given to
  * [open] instead (a task's), in the same Group.
@@ -67,12 +75,20 @@ class ChatView internal constructor(
     private var opened: String? = null
     private var target: Target? = null
     private var foreground = false
-    /** Keeps the conversation shown to the core while the chat is hidden, for a reply the user is waiting on. */
-    private var backgroundHold = false
+    /** What keeps the conversation shown to the core while the chat is hidden; see [setHold]. */
+    private val holds = mutableSetOf<Hold>()
     private var showing: Job? = null
     private var started = false
+    /** The draft as last edited here, not handed to the core yet; see [editDraft]. */
+    private var unsavedDraft: String? = null
     /** One file is attached at a time, so the row the core makes for it is known. */
     private val attaching = Mutex()
+    private val mutableDraftEdits = MutableStateFlow(0)
+    /**
+     * Draft edits made here that [state] does not show yet: the one not handed to the core, and those the core has
+     * not answered. Until none is left, [ConversationState.draft] may be older than the composer's text.
+     */
+    val draftEdits: StateFlow<Int> = mutableDraftEdits.asStateFlow()
 
     /** Follows [ConversationSessions.scopes] until [close]. Call once. */
     fun start() {
@@ -103,6 +119,14 @@ class ChatView internal constructor(
 
     /** Call under [lock]. */
     private fun retarget() {
+        // The last edit is the conversation's it was typed for, or of an account that is gone.
+        flushDraft()
+        if (unsavedDraft != null) {
+            unsavedDraft = null
+            mutableDraftEdits.update { it - 1 }
+        }
+        // A picker opened over the conversation shown before holds nothing of the next one.
+        holds -= Hold.PICKER
         val current = scope
         val conversation = if (main) current?.conversationId else opened
         target = if (current != null && conversation != null) Target(current, conversation) else null
@@ -117,23 +141,56 @@ class ChatView internal constructor(
     /** The core keeps the event stream only while the chat is visible; returning resumes and fills any gap. */
     fun setForeground(visible: Boolean) = synchronized(lock) {
         foreground = visible
+        mutableShown.value = visible
         show()
     }
 
+    private val mutableShown = MutableStateFlow(false)
+    /** Whether the chat is on screen, as [setForeground] last said; holds do not count. */
+    val shown: StateFlow<Boolean> = mutableShown.asStateFlow()
+
     /**
-     * Keeps the event stream open while the chat is hidden, so a reply that is on its way still arrives. Releasing
-     * it while the chat is hidden lets the stream go exactly as leaving does.
+     * The core's follow-up suggestions for the settled agent message [messageId] of the conversation [state] shows, in
+     * [locale] (`chatSuggestions`). Values for another account or conversation are dropped.
      */
-    fun setBackgroundHold(hold: Boolean) = synchronized(lock) {
-        backgroundHold = hold
+    fun suggestions(state: ConversationState, messageId: String, locale: String): Flow<List<surf.comma.android.chat.live.ChatSuggestion>> {
+        val scope = state.scope ?: return emptyFlow()
+        val conversation = state.conversationId ?: return emptyFlow()
+        val core = core ?: return emptyFlow()
+        val topic = JSONObject().put("topic", "chatSuggestions").put("group", scope.groupId).put("conversation", conversation)
+            .put("message", messageId).put("locale", locale)
+        return core.subscribe(topic, surf.comma.android.chat.live.ChatSuggestion::list)
+            .mapNotNull { (it as? TopicValue.Value)?.value }
+            .filter { sessions.isCurrent(scope) && this.state.value.conversationId == conversation }
+    }
+
+    /** Why the conversation stays shown to the core while the chat is hidden. Each is held and let go on its own. */
+    enum class Hold {
+        /** A reply the person waits on, so it still arrives and can be notified. */
+        REPLY,
+        /**
+         * A picker or the camera opened from the composer: the core keeps the draft's files only while it shows the
+         * conversation. Showing another conversation lets it go.
+         */
+        PICKER,
+    }
+
+    /**
+     * Keeps the event stream open while the chat is hidden, for [hold]'s reason; the stream stays while any reason
+     * holds it. Letting the last one go while the chat is hidden lets the stream go exactly as leaving does.
+     */
+    fun setHold(hold: Hold, held: Boolean) = synchronized(lock) {
+        if (held) holds += hold else holds -= hold
         show()
     }
 
     /** Shows the conversation to the core while it is wanted, and lets it go when it is not. Call under [lock]. */
     private fun show() {
         val current = target
-        val wanted = current != null && (foreground || backgroundHold) && core != null
+        val wanted = current != null && (foreground || holds.isNotEmpty()) && core != null
         if (!wanted) {
+            // The core takes an edit only for a conversation it shows.
+            flushDraft()
             showing?.cancel()
             showing = null
             val shown = mutableState.value
@@ -169,6 +226,11 @@ class ChatView internal constructor(
     /** One of the core's calls for the conversation shown; null when there is none or the core refused. */
     private suspend fun call(name: String, fill: JSONObject.() -> Unit = {}): Any? {
         val current = current() ?: return null
+        return call(current, name, fill)
+    }
+
+    /** One of the core's calls for [current]; null when the core refused. */
+    private suspend fun call(current: Target, name: String, fill: JSONObject.() -> Unit): Any? {
         return try {
             core?.call("chatView.$name", current.json().apply(fill))
         } catch (e: CancellationException) {
@@ -179,6 +241,17 @@ class ChatView internal constructor(
     }
 
     /**
+     * The words in [audio], a dictation in an m4a file: empty when none were heard. It belongs to no conversation.
+     * Throws the core's [CoreError] when there is no transcript.
+     */
+    suspend fun transcribeDictation(audio: ByteArray): String {
+        val running = core ?: throw CoreError("unavailable", "No client core")
+        val answer = running.call("recordings.transcribe",
+            JSONObject().put("audio", CoreBytes.json(audio)).put("purpose", "dictation"))
+        return (answer as? JSONObject)?.optString("transcript").orEmpty()
+    }
+
+    /**
      * Ends the Task this view shows by hand: `completed` or `cancelled`, at the version the member saw. Throws the
      * core's [CoreError] when the server refused it.
      */
@@ -186,6 +259,16 @@ class ChatView internal constructor(
         val current = current() ?: throw CoreError("unavailable", "No conversation")
         val running = core ?: throw CoreError("unavailable", "No client core")
         running.call("chatView.setTaskStatus", current.json().put("status", status).put("expectedUpdatedAt", expectedUpdatedAt))
+    }
+
+    /**
+     * Adds message attachments of the Group to the draft by reference (the server stores each as a composer file),
+     * keeping the draft's words; nothing is sent. Throws the core's [CoreError] when it refused.
+     */
+    suspend fun attachConversationFiles(files: org.json.JSONArray) {
+        val current = current() ?: throw CoreError("unavailable", "No conversation")
+        val running = core ?: throw CoreError("unavailable", "No client core")
+        running.call("chatView.attachConversationFiles", current.json().put("files", files))
     }
 
     /** Retries a paused stream or interrupts network backoff after an explicit recovery action. */
@@ -214,15 +297,20 @@ class ChatView internal constructor(
         skills: List<String> = emptyList(),
         /** Rechecked just before the message is handed over, so a draft cannot cross sessions. */
         canSend: () -> Boolean = { true },
+        /** False sends only [text]: the draft's text and files stay, as for a suggested reply. */
+        consumeDraft: Boolean = true,
     ): String? {
         require(clientRequestId.isNotBlank())
         if (!canSend()) return null
+        // The send takes the draft as it is now: the last edit first.
+        saveDraft()
         val sent = root.async {
             call("send") {
                 put("text", text)
                 put("clientRequestId", clientRequestId)
                 replyToMessageId?.let { put("replyToMessageId", it) }
                 if (skills.isNotEmpty()) put("skills", JSONArray(skills.map { JSONObject().put("location", it) }))
+                if (!consumeDraft) put("consumeDraft", false)
             }
         }
         val shown = root.async { state.first { it.has(clientRequestId) } }
@@ -241,6 +329,46 @@ class ChatView internal constructor(
             shown.cancel()
         }
         return clientRequestId.takeIf { admitted }
+    }
+
+    /**
+     * The person changed the draft of [conversationId] of [scope], the conversation the composer showed, to [draft],
+     * with each mention as its link. [saveDraft] hands it to the core, which keeps it on the device; so do a send and
+     * the conversation going out of sight. An edit for a conversation this view no longer shows is dropped: the
+     * composer typed it before it showed the switch.
+     */
+    fun editDraft(scope: ConversationScope, conversationId: String, draft: String) = synchronized(lock) {
+        if (target?.let { it.scope === scope && it.conversationId == conversationId } != true) return@synchronized
+        if (unsavedDraft == null) mutableDraftEdits.update { it + 1 }
+        unsavedDraft = draft
+    }
+
+    /** Hands the draft's last edit to the core now. */
+    fun saveDraft() = synchronized(lock) { flushDraft() }
+
+    /**
+     * Hands the draft's last edit to the core, ahead of any call or release asked after it: the call is queued before
+     * this returns. An edit waits while the conversation is not shown to the core, which takes edits only then. Call
+     * under [lock].
+     */
+    private fun flushDraft() {
+        val draft = unsavedDraft ?: return
+        val current = target?.takeIf { showing?.isActive == true && sessions.isCurrent(it.scope) } ?: return
+        unsavedDraft = null
+        // The core has it already, such as an empty draft after a send, and nothing else is on its way.
+        if (mutableDraftEdits.value == 1 && mutableState.value.draft == draft) {
+            mutableDraftEdits.update { it - 1 }
+            return
+        }
+        root.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val receipt = withContext(NonCancellable) { call(current, "setDraft") { put("draft", draft) } } as? JSONObject
+                val revision = receipt?.optLong("revision") ?: return@launch
+                state.first { it.revision >= revision || it.scope !== current.scope || it.conversationId != current.conversationId }
+            } finally {
+                mutableDraftEdits.update { it - 1 }
+            }
+        }
     }
 
     /** Resends a failed message with its original id and text. */
@@ -332,7 +460,45 @@ class ChatView internal constructor(
         }
     }
 
+    /**
+     * Sends what the person filled in on request [requestId]'s card to the server, through the core, which keeps none
+     * of it. False when it was refused; the card goes on as the core reads the request's answer.
+     */
+    suspend fun fillRequest(requestId: String, values: Map<String, String>): Boolean {
+        val current = current() ?: return false
+        return try {
+            core?.call("agentRequests.fill", JSONObject().put("group", current.scope.groupId)
+                .put("conversation", current.conversationId).put("request", requestId)
+                .put("values", JSONObject(values.toMap())))
+            core != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: CoreError) {
+            false
+        }
+    }
+
+    /**
+     * Sends this device's position for request [requestId] to the server, through the core, which keeps none of it.
+     * False when it was refused; the card closes as the core reads the request's answer.
+     */
+    suspend fun shareLocation(requestId: String, latitude: Double, longitude: Double, accuracy: Float?): Boolean {
+        val current = current() ?: return false
+        return try {
+            core?.call("agentRequests.shareLocation", JSONObject().put("group", current.scope.groupId)
+                .put("conversation", current.conversationId).put("request", requestId)
+                .put("latitude", latitude).put("longitude", longitude)
+                .apply { accuracy?.let { put("accuracy", it.toDouble()) } })
+            core != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: CoreError) {
+            false
+        }
+    }
+
     fun close() {
+        saveDraft()
         root.cancel()
     }
 
@@ -394,6 +560,7 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
             "not-found" -> ConversationProblem.NOT_FOUND
             else -> ConversationProblem.SERVER.takeIf { status == "error" }
         }
+        val loaded = rows.isNotEmpty() || status == "ready" || status == "error"
         return ConversationState(
             groupId = scope.groupId,
             conversationId = conversationId,
@@ -419,7 +586,8 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
             },
             problem = problem,
             // What the device kept shows before the server answered; an empty conversation is known once it did.
-            cacheLoaded = rows.isNotEmpty() || status == "ready" || status == "error",
+            cacheLoaded = loaded,
+            draft = json.optString("draft").takeIf { conversation != null || loaded },
             hasOlder = history?.optBoolean("hasOlder") == true,
             loadingOlder = history?.optBoolean("loadingOlder") == true,
             reply = json.optJSONObject("reply")?.let { said ->
@@ -430,6 +598,9 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
             questionAttachments = json.optJSONObject("questionAttachments")?.let { byQuestion ->
                 byQuestion.keys().asSequence().associateWith { attachments(byQuestion.optJSONArray(it)) }.filterValues { it.isNotEmpty() }
             }.orEmpty(),
+            codingSandbox = json.optJSONObject("taskRun")?.optJSONObject("place")?.let { place ->
+                place.optString("kind") == "sandbox" && place.optJSONObject("repo") != null
+            } == true,
             revision = revision,
             scope = scope,
         )
@@ -503,9 +674,11 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
                 task.string("status"), task.string("activityStatus"), unavailable || task.string("conversationId") == null)
         }
         "dynamic-ui" -> MessagePart.InteractiveSummary(json.string("summary"), json.string("uiRef"),
-            json.optLongOrNull("version"), json.string("originTaskId"), json.optInt("attachmentIndex"))
+            json.optLongOrNull("version"), json.string("originTaskId"), json.optInt("attachmentIndex"),
+            surf.comma.android.dynamicui.DynamicUiTarget.parse(json))
         "device-setup-offer" -> json.optJSONObject("offer")?.let(DeviceSetupOffer::parse)?.let(MessagePart::SetupOffer)
         "question" -> AgentQuestion.parse(json)?.let(MessagePart::Question)
+        "mini-app" -> surf.comma.android.miniapps.MiniAppCardValue.parse(json)?.let(MessagePart::MiniApp)
         // A person's answer to a question card shows as their words alone.
         "question-answer" -> null
         else -> null
@@ -517,7 +690,7 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
      */
     private fun trimEdges(parts: MutableList<MessagePart>) {
         (parts.firstOrNull() as? MessagePart.Text)?.let { parts[0] = MessagePart.Text(it.text.trimStart()) }
-        val last = parts.indexOfLast { it !is MessagePart.Question }
+        val last = parts.indexOfLast { it !is MessagePart.Question && it !is MessagePart.MiniApp }
         if (last >= 0 && parts[last] is MessagePart.Text) parts[last] = MessagePart.Text((parts[last] as MessagePart.Text).text.trimEnd())
     }
 
@@ -587,7 +760,7 @@ internal class ChatViewReader(private val scope: ConversationScope, private val 
                 "uploaded" -> DraftAttachmentStatus.UPLOADED
                 "failed" -> DraftAttachmentStatus.FAILED
                 else -> DraftAttachmentStatus.UPLOADING
-            }, json.string("path"), json.string("error"))
+            }, json.string("path"), json.string("error"), json.optBoolean("isImage"))
     }
 
     private fun objects(array: JSONArray?): List<JSONObject> =

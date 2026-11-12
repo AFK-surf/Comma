@@ -200,7 +200,10 @@ test.describe("onboarding window", () => {
         // and the main window presents the onboarding again and steps aside for
         // it, as after a sign-in. Its renderer closes the window after the exit
         // of a Start chatting, and the main window comes back on Home's composer.
-        await mainWindow.getByRole("button", { exact: true, name: "Settings" }).click();
+        await mainWindow.getByRole("button", { exact: true, name: "Account" }).click();
+        await mainWindow
+          .getByRole("menuitem", { exact: true, name: "Settings" })
+          .click();
         const settings = mainWindow.getByRole("dialog", { name: "Settings sections" });
         await expect(settings).toBeVisible();
         await mainWindow

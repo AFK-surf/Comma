@@ -1,4 +1,4 @@
-// What the station says about itself: one line each on stderr (launchd keeps it as stillfail.log), as the Rust
+// What the station says about itself: one line each on stderr (launchd keeps it as station.log), as the Rust
 // station's tracing lines read: time, level, where, message, fields.
 import { wall } from "./fibers.ts";
 

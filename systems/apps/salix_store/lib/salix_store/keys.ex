@@ -19,6 +19,10 @@ defmodule SalixStore.Keys do
   def agent_workspace_state(agent_id),
     do: agents_prefix() <> agent_id <> agent_workspace_state_suffix()
 
+  # One disposable home-page screenshot per public site, replaced in place.
+  def agent_site_og_image(agent_id, site_name),
+    do: "agents/#{agent_id}/site_og_image/#{site_name}.jpg"
+
   # Runtime-NEUTRAL, per-(agent, session) create-once birth marker: the
   # single durable authority for which store a session id is born in
   # (SalixAgent.SessionBirth, plan clause 2b). One small object per session
@@ -204,6 +208,9 @@ defmodule SalixStore.Keys do
 
   def ctl_oauth_remote_mcp_provider_app(tenant_id, provider_key),
     do: "ctl/tenants/#{tenant_id}/oauth/provider_apps/remote_mcp/#{provider_key}.json"
+
+  def ctl_oauth_custom_provider(tenant_id, key),
+    do: "ctl/tenants/#{tenant_id}/oauth/provider_apps/custom/#{key}.json"
 
   def ctl_oauth_remote_mcp_provider_apps_prefix(tenant_id),
     do: "ctl/tenants/#{tenant_id}/oauth/provider_apps/remote_mcp/"
@@ -479,6 +486,12 @@ defmodule SalixStore.Keys do
 
   def ctl_im_connects_all_prefix, do: "ctl/im_connects/"
 
+  # The Lark and Feishu connects whose events come through a long connection.
+  def ctl_im_socket_connect(connect_id),
+    do: ctl_im_socket_connects_prefix() <> "#{Crypto.hex(connect_id)}.json"
+
+  def ctl_im_socket_connects_prefix, do: "ctl/im_socket_connects/"
+
   def ctl_im_slack_thread_binding(group_id, connect_id, channel_id, thread_ts) do
     identity = Enum.join([connect_id, channel_id, thread_ts], ":")
     "ctl/im_slack_thread_bindings/#{group_id}/#{Crypto.hex(identity)}.json"
@@ -638,6 +651,11 @@ defmodule SalixStore.Keys do
 
   def ctl_im_qq_chats_prefix(connect_id), do: "ctl/im_qq_chats/#{connect_id}/"
 
+  def ctl_im_line_chat(connect_id, chat_id),
+    do: "ctl/im_line_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
+
+  def ctl_im_line_chats_prefix(connect_id), do: "ctl/im_line_chats/#{connect_id}/"
+
   def ctl_im_feishu_chat(connect_id, chat_id),
     do: "ctl/im_feishu_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
 
@@ -648,6 +666,9 @@ defmodule SalixStore.Keys do
 
   def ctl_im_feishu_users_prefix(connect_id), do: "ctl/im_feishu_users/#{connect_id}/"
 
+  # The stored copy of a Feishu connect's Contacts data range.
+  def ctl_im_feishu_directory(connect_id), do: "ctl/im_feishu_directory/#{connect_id}.json"
+
   def ctl_im_lark_chat(connect_id, chat_id),
     do: "ctl/im_lark_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
 
@@ -657,6 +678,9 @@ defmodule SalixStore.Keys do
     do: "ctl/im_lark_users/#{connect_id}/#{Crypto.hex(open_id)}.json"
 
   def ctl_im_lark_users_prefix(connect_id), do: "ctl/im_lark_users/#{connect_id}/"
+
+  # The stored copy of a Lark connect's Contacts data range.
+  def ctl_im_lark_directory(connect_id), do: "ctl/im_lark_directory/#{connect_id}.json"
 
   def ctl_mcp_system_definitions_prefix, do: "ctl/system/mcp/definitions/"
 
@@ -970,6 +994,10 @@ defmodule SalixStore.Keys do
 
   def ctl_meet_calendar_index(group_id), do: "ctl/meet/calendar/#{group_id}.json"
   def ctl_meet_calendar_prefix, do: "ctl/meet/calendar/"
+
+  def ctl_meet_member_preparer(group_id, meeting_digest),
+    do: "ctl/meet/member_preparer/#{group_id}/#{meeting_digest}.json"
+
   def ctl_meet_calendar_scan_cursor, do: "ctl/meet/calendar_autojoin/scan_cursor.json"
   def ctl_meet_calendar_join_cursor, do: "ctl/meet/calendar_autojoin/join_cursor.json"
 
@@ -983,4 +1011,14 @@ defmodule SalixStore.Keys do
 
   def ctl_meet_calendar_projection(group_id),
     do: "ctl/meet/calendar_autojoin/groups/#{group_id}.json"
+
+  @doc "Projection of one member's calendar in a Group that enrolls every member's own calendars."
+  def ctl_meet_calendar_member_projection(group_id, calendar_id),
+    do: "ctl/meet/calendar_autojoin/members/#{group_id}/#{calendar_id}.json"
+
+  def ctl_meet_calendar_changes_prefix, do: "ctl/meet/calendar_autojoin/changes/"
+
+  @doc "Marks a meeting calendar whose source reported a change, so the next scan reads it first."
+  def ctl_meet_calendar_change(group_id, calendar_id),
+    do: ctl_meet_calendar_changes_prefix() <> "#{group_id}/#{calendar_id}.json"
 end

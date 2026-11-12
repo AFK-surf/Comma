@@ -2,7 +2,7 @@ import SwiftUI
 import CommaCore
 
 /// The floating status switcher above the tab bar: In progress, Needs review, Done and Cancelled in one
-/// glass capsule. The chosen status shows its name on a grey pill and the others share the remaining width as glyphs,
+/// glass capsule. The chosen status shows its name on a grey pill and the others keep their compact glyph width,
 /// so all four fit on a phone. A filter that is not exactly one of these statuses highlights none.
 /// A touch chooses the status under the finger at once. Once the finger moves along the switcher it scrubs
 /// (`ScrubHold`): it passes from status to status at one steady pace, choosing each it is past halfway to, and
@@ -80,7 +80,7 @@ struct TaskStatusSwitcher: View {
                 .frame(width: named ? nil : 0, alignment: .leading)
         }
         .padding(.horizontal, named ? 14 : 0)
-        .frame(minWidth: named ? nil : 36, maxWidth: named ? nil : .infinity)
+        .frame(width: named ? nil : 36)
         .frame(height: Self.height - Self.inset * 2)
         .clipShape(Capsule())
         // Folded, the name hangs past the segment unseen; VoiceOver finds the segment as drawn.

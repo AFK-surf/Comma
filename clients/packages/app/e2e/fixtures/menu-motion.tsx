@@ -50,8 +50,10 @@ function Fixture() {
       <InboxActionsMenu
         canDeleteAll
         canDeleteRead
+        canMarkAllRead
         onDeleteAll={() => {}}
         onDeleteRead={() => {}}
+        onMarkAllRead={() => {}}
       />
       <div style={{ position: "fixed", bottom: 80, left: 300, width: 480 }}>
         <AiInput

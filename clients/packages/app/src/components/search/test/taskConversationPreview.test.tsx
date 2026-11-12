@@ -179,7 +179,7 @@ describe("task conversation preview", () => {
     );
     const thread = view.container.querySelector(".comma-chat-thread");
     const viewport = view.container.querySelector('[data-slot="scroll-area-viewport"]');
-    expect(thread).toHaveAttribute("data-content-mode", "display-only");
+    expect(thread).toHaveAttribute("data-display-only");
     expect(thread).toHaveAttribute("inert");
     expect(viewport).toHaveAttribute("aria-hidden", "true");
     expect(viewport).toHaveAttribute("tabindex", "-1");

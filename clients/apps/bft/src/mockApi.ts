@@ -731,8 +731,8 @@ function memberWrite(
 }
 
 /*
- * Runners: Acme has four (one offline, one lost, one with an update and 60
- * connectors to page through); Globex has none and no Server release, so its
+ * Runners: Acme has four (one offline, one lost, one with an update);
+ * Globex has none and no Server release, so its
  * install command fails with 503.
  */
 interface MockRunner {
@@ -746,11 +746,8 @@ interface MockRunner {
   version: string | null;
   component_versions: Record<string, string>;
   update_available: boolean;
-  capacity: number;
-  current_connector_count: number;
   last_seen_at: string | null;
   last_seen_age_seconds: number | null;
-  connectors: { total: number; by_status: { status: string; count: number }[] };
   credential: { active: boolean; key_id: string | null; created_at: string | null };
 }
 
@@ -769,13 +766,10 @@ const runner = (
   host_identity: `${id.replace(/^run_/, "")}.local`,
   os_summary: "macOS 26.0 arm64",
   version: "0.9.4",
-  component_versions: { "salix-connect": "2026.09.20", "bft-runner": "0.9.4" },
+  component_versions: { "agent-vmm-host": "2026.09.20", "bft-runner": "0.9.4" },
   update_available: false,
-  capacity: 4,
-  current_connector_count: 2,
   last_seen_at: seenMinutes === null ? null : minutesAgo(seenMinutes),
   last_seen_age_seconds: seenMinutes === null ? null : seenMinutes * 60,
-  connectors: { total: 2, by_status: [{ status: "connected", count: 2 }] },
   credential: {
     active: true,
     key_id: `key_${id}`,
@@ -786,27 +780,14 @@ const runner = (
 
 const runnerState: Record<string, MockRunner[]> = {
   acme: [
-    runner("run_office-1", "office-1", "online", 0, {
-      current_connector_count: 4,
-      capacity: 8,
-      connectors: {
-        total: 60,
-        by_status: [
-          { status: "connected", count: 52 },
-          { status: "pending", count: 6 },
-          { status: "failed", count: 2 },
-        ],
-      },
-    }),
+    runner("run_office-1", "office-1", "online", 0),
     runner("run_office-2", "office-2", "offline", 190, {
       version: "0.8.1",
-      component_versions: { "salix-connect": "2026.06.18" },
+      component_versions: { "agent-vmm-host": "2026.06.18" },
       update_available: true,
-      connectors: { total: 1, by_status: [{ status: "stopped", count: 1 }] },
     }),
     runner("run_lab-mini", "Lab Mac mini", "recently_lost", 3, {
       credential: { active: false, key_id: null, created_at: null },
-      connectors: { total: 0, by_status: [] },
     }),
     runner("run_studio", "Design studio Mac Studio (2nd floor, rack B)", "online", 1, {
       os_summary: "macOS 26.0 arm64, 128 GB",
@@ -828,29 +809,6 @@ function runnersPage(slug: string, cursor: string | null) {
     cursor,
     next_cursor: end < all.length ? String(end) : null,
     poll_interval_ms: 5_000,
-  };
-}
-
-const connectorStatuses = ["connected", "connected", "pending", "connected", "failed"];
-
-function runnerConnectors(slug: string, runnerId: string, cursor: string | null) {
-  const found = runnerState[slug]?.find((candidate) => candidate.id === runnerId);
-  if (!found) return undefined;
-  const swarms = slug === "globex" ? globexProjects : projects;
-  const all = Array.from({ length: found.connectors.total }, (_, index) => ({
-    id: `${runnerId}_c${index + 1}`,
-    name: `connector-${found.stable_id}-${index + 1}`,
-    provisioning_status: connectorStatuses[index % connectorStatuses.length],
-    project_id: swarms[index % swarms.length]?.id ?? null,
-    project_name:
-      index % 9 === 8 ? null : (swarms[index % swarms.length]?.name ?? null),
-  }));
-  const start = cursor ? Number(cursor) : 0;
-  const end = start + 50;
-  return {
-    entries: all.slice(start, end),
-    cursor,
-    next_cursor: end < all.length ? String(end) : null,
   };
 }
 
@@ -993,18 +951,16 @@ interface MockCloudVmRunner {
 }
 
 interface DeviceState {
-  cloud: boolean;
   removed: Set<string>;
-  until: number;
+  operations: Set<string>;
   runner: MockCloudVmRunner | null;
 }
 
 const deviceState: Record<string, DeviceState> = {};
 
 const newDeviceState = (projectId: string): DeviceState => ({
-  cloud: true,
   removed: new Set(),
-  until: 0,
+  operations: new Set(),
   runner:
     projectId === "prj_support" ? { name: "Lab Mac mini", status: "ready" } : null,
 });
@@ -1080,6 +1036,23 @@ function devicesData(slug: string, projectId: string) {
           },
         },
         {
+          id: "dev_comma_1a2b",
+          name: "Comma-1A2B",
+          status: "connected",
+          disconnectable: true,
+          runtimes: [],
+          host: "Comma-1A2B",
+          os: "esp-idf",
+          cpu_model: null,
+          cpu_count: null,
+          memory_bytes: null,
+          last_seen_at: minutesAgo(1),
+          info_updated_at: null,
+          android: null,
+          hardware: true,
+          allows_operations: state.operations.has("dev_comma_1a2b"),
+        },
+        {
           id: "dev_build_box",
           name: "Build box with a long descriptive name for the night builds",
           status: "disconnected",
@@ -1098,7 +1071,7 @@ function devicesData(slug: string, projectId: string) {
             tasks: null,
             required_tasks: 2,
             message:
-              "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma.",
+              "This device has no station, so it cannot take tasks. Install the station on it with the command from Add computer.",
           },
         },
       ].filter((device) => !state.removed.has(device.id))
@@ -1108,7 +1081,6 @@ function devicesData(slug: string, projectId: string) {
     project: { id, name, role },
     cloud_vm: cloudVmData(projectId, state, role === "admin"),
     devices,
-    provisioning: state.until > now,
     android: {
       status: sales ? "unavailable" : "ok",
       entitled: support,
@@ -1153,7 +1125,7 @@ function devicesData(slug: string, projectId: string) {
 function cloudVmData(projectId: string, state: DeviceState, admin: boolean) {
   const vm = mockVm(projectId);
   return {
-    enabled: state.cloud,
+    enabled: true,
     manageable: admin,
     vm,
     runner: state.runner,
@@ -1178,31 +1150,16 @@ function devicesReply(
   const admin = data.project.role === "admin";
   const forbidden = () =>
     failure(403, "forbidden", "Only Agent Swarm admins can manage devices.");
-  const key = `${method} ${rest.replace(/^\/(devices|compute)\/(?!cloud$|cloud-vm\/|runners$|provisioning$)[^/]+/, "/$1/:id")}`;
+  const key = `${method} ${rest.replace(/^\/(devices|compute)\/(?!cloud$|cloud-vm\/|runners$)[^/]+/, "/$1/:id")}`;
   switch (key) {
     case "GET /devices":
       return ok(data);
-    case "GET /devices/provisioning":
-      return ok({ active: state.until > Date.now() });
     case "GET /devices/runners":
       if (!admin) return forbidden();
       return ok({
         runners:
           projectId === "prj_oncall" ? [] : [{ id: "run_lab", label: "Lab Mac mini" }],
         runners_href: `/orgs/${slug}/fin`,
-      });
-    case "POST /devices":
-      if (!admin) return forbidden();
-      state.until = Date.now() + 8_000;
-      return ok({ notice: "Device connection request created." }, 201);
-    case "PUT /devices/cloud":
-      if (!admin) return forbidden();
-      state.cloud = body.enabled === true;
-      return ok({
-        enabled: state.cloud,
-        notice: state.cloud
-          ? "Cloud computer enabled for this Agent Swarm."
-          : "Cloud computer disabled for this Agent Swarm.",
       });
     case "PUT /devices/cloud-vm/runner":
       if (!admin) return forbidden();
@@ -1220,6 +1177,45 @@ function devicesReply(
       return ok({ notice: "Runner removed from this Agent Swarm." });
     case "POST /devices/:id/disconnect":
       return admin ? ok({ notice: "Device disconnected." }) : forbidden();
+    case "POST /devices/:id":
+      if (rest.split("/")[2] === "refresh") return ok({});
+      if (!admin) return forbidden();
+      if (rest.split("/")[2] === "station")
+        return ok(
+          {
+            command:
+              "curl -fsSL https://api.comma.surf/stations/install.sh | sh -s -- ten1_mock.grp1_mock.usr_mock.enroll_mock.mock",
+            expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+          },
+          201
+        );
+      return ok(
+        {
+          credentials: {
+            device_id: "dev_new_board",
+            server: "https://salix.example.test",
+            connect_url: "wss://salix.example.test/v1/connect",
+            workspace_id: projectId,
+            group_id: "grp1_mock",
+            connector_token: "salix_conn_mock",
+            voice_key: "salix_vk_mock",
+            device_name: typeof body.name === "string" ? body.name : "Comma",
+          },
+        },
+        201
+      );
+    case "PUT /devices/:id/operations": {
+      if (!admin) return forbidden();
+      const device = decodeURIComponent(rest.split("/")[2] ?? "");
+      if (body.allow === true) state.operations.add(device);
+      else state.operations.delete(device);
+      return ok({
+        notice:
+          body.allow === true
+            ? "The device can now run operations."
+            : "The device is now read-only.",
+      });
+    }
     case "DELETE /devices/:id":
       if (!admin) return forbidden();
       state.removed.add(decodeURIComponent(rest.split("/")[2] ?? ""));
@@ -1478,9 +1474,47 @@ const modelState = {
       provider: "claude",
       email: "research-team-shared-subscription@acme-robotics.com",
       name: null,
-      status: "reauthorization_required",
-      disabled: true,
-      quota: null,
+      status: "active",
+      disabled: false,
+      quota: {
+        plan_type: "ultra",
+        observed_at: minutesAgo(5),
+        windows: [
+          {
+            period: "short",
+            remaining_percent: 8,
+            reset_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+          },
+          {
+            period: "week",
+            remaining_percent: 61,
+            reset_at: new Date(Date.now() + 3.2 * 24 * 3600_000).toISOString(),
+          },
+          {
+            period: "week",
+            remaining_percent: 46,
+            reset_at: new Date(Date.now() + 3.2 * 24 * 3600_000).toISOString(),
+            model: "fable",
+          },
+        ],
+        reset_credits: null,
+        resets: [
+          { kind: "session", left: 1, expiries: [], usable: true },
+          {
+            kind: "model",
+            model: "Fable",
+            left: 2,
+            expiries: [new Date(Date.now() + 9 * 24 * 3600_000).toISOString()],
+            usable: true,
+          },
+          {
+            kind: "full",
+            left: 1,
+            expiries: [new Date(Date.now() + 20 * 24 * 3600_000).toISOString()],
+            usable: false,
+          },
+        ],
+      },
       reset_attempt: null,
       connection: null,
       compatible_runtimes: [],
@@ -2105,7 +2139,7 @@ function swarmPluginsReply(
       return failure(
         409,
         "android_not_entitled",
-        "Android connector access is not enabled for this organization."
+        "Android device access is not enabled for this organization."
       );
     if (body.enabled === true) state?.enabled.add(pluginId ?? "");
     else state?.enabled.delete(pluginId ?? "");
@@ -2134,13 +2168,22 @@ function swarmPluginsReply(
 const connectionState: Record<
   string,
   {
-    feishu: { connect_id: string; disabled: boolean }[];
+    feishu: {
+      connect_id: string;
+      disabled: boolean;
+      /** An app made by a scan: its own App ID, events through the long connection. */
+      app_id?: string;
+      events?: "socket";
+      /** Scopes Feishu refused the app for. */
+      missing_scopes?: string[];
+    }[];
     slack: {
       connect_id: string;
       disabled: boolean;
       installed: boolean;
       /** Where its messages go, as the connect row names it. */
       inbound_agent: string;
+      auto_join_public_channels: boolean;
     }[];
     lark: {
       connect_id: string;
@@ -2148,18 +2191,29 @@ const connectionState: Record<
       app_id: string;
       verification_token_configured: boolean;
       encrypt_key_configured: boolean;
+      events?: "webhook" | "socket";
+      /** Scopes Lark refused the app for. */
+      missing_scopes?: string[];
     }[];
+    /** The connect a scan under way updates. */
+    scanTarget?: string | undefined;
     qq: {
       connect_id: string;
       disabled: boolean;
       app_id: string;
       command_menu: BftQqMenuItem[];
     }[];
+    telegram: {
+      connect_id: string;
+      disabled: boolean;
+      chats: { id: string; title: string; type: string; allowed: boolean }[];
+    }[];
     accounts: {
       binding_id: string;
       provider: string;
       alias: string;
       enabled: boolean;
+      fields?: string[];
     }[];
     signal: { binding_id: string; display_name: string | null; kind: string }[];
     composio: Record<string, string>;
@@ -2200,11 +2254,26 @@ function connectionsData(slug: string, projectId: string) {
             disabled: false,
             installed: true,
             inbound_agent: "Router · router",
+            auto_join_public_channels: true,
           },
         ]
       : [],
-    lark: [],
+    // A scanned Lark app made before a scope was added to what a connect needs.
+    lark: support
+      ? [
+          {
+            connect_id: "imc1_lark_support",
+            disabled: false,
+            app_id: "cli_support_scan",
+            verification_token_configured: false,
+            encrypt_key_configured: false,
+            events: "socket",
+            missing_scopes: ["im:message.group_msg"],
+          },
+        ]
+      : [],
     qq: [],
+    telegram: [],
     accounts: support
       ? [{ binding_id: "ob_notion", provider: "notion", alias: "Docs", enabled: true }]
       : [],
@@ -2233,17 +2302,31 @@ function connectionsData(slug: string, projectId: string) {
       status: down ? "unavailable" : "ok",
       feishu: live({
         apps: [{ app_id: "cli_a1b2c3", name: "Acme Feishu" }],
-        connects: state.feishu.map((connect) => ({
-          ...connect,
-          status: "connected",
-          app_id: "cli_a1b2c3",
-          webhook_url:
-            "https://salix.example.com/v1/im/feishu/events?app_id=cli_a1b2c3",
-          app_secret_configured: true,
-          verification_token_configured: true,
-          encrypt_key_configured: false,
-          updated_at: minutesAgo(180),
-        })),
+        connects: state.feishu.map((connect) =>
+          connect.events === "socket"
+            ? {
+                ...connect,
+                status: "connected",
+                app_id: connect.app_id ?? "cli_scanned",
+                webhook_url: null,
+                app_secret_configured: true,
+                verification_token_configured: false,
+                encrypt_key_configured: false,
+                updated_at: minutesAgo(1),
+              }
+            : {
+                ...connect,
+                status: "connected",
+                app_id: "cli_a1b2c3",
+                webhook_url:
+                  "https://salix.example.com/v1/im/feishu/events?app_id=cli_a1b2c3",
+                app_secret_configured: true,
+                verification_token_configured: true,
+                encrypt_key_configured: false,
+                events: "webhook",
+                updated_at: minutesAgo(180),
+              }
+        ),
         route: {
           status:
             state.feishu.length === 0
@@ -2277,7 +2360,12 @@ function connectionsData(slug: string, projectId: string) {
           ...connect,
           status: "connected",
           app_name: "Acme Lark bot",
-          webhook_url: `https://salix.example.com/v1/im/lark/events?app_id=${connect.app_id}`,
+          events: connect.events ?? "webhook",
+          missing_scopes: connect.missing_scopes ?? [],
+          webhook_url:
+            connect.events === "socket"
+              ? null
+              : `https://salix.example.com/v1/im/lark/events?app_id=${connect.app_id}`,
           app_secret_configured: true,
           updated_at: minutesAgo(5),
         })),
@@ -2306,6 +2394,25 @@ function connectionsData(slug: string, projectId: string) {
           null,
           2
         ),
+      }),
+      telegram: live({
+        connects: state.telegram.map((connect) => ({
+          ...connect,
+          status: "connected",
+          bot_name: "acme_helper_bot",
+          reads_all_group_messages: false,
+          updated_at: minutesAgo(5),
+        })),
+        route: {
+          status:
+            state.telegram.length === 0
+              ? "not_connected"
+              : state.telegram.some((connect) => !connect.disabled)
+                ? "ready"
+                : "disabled",
+          connect_id: state.telegram[0]?.connect_id ?? null,
+          router: state.telegram.length === 0 ? null : "Router",
+        },
       }),
       qq: live({
         connects: state.qq.map((connect) => ({
@@ -2346,8 +2453,9 @@ function connectionsData(slug: string, projectId: string) {
           status: "ok",
           connections: state.accounts.map((account) => ({
             ...account,
-            account: "Acme Workspace",
-            scopes: ["read_content"],
+            account: account.provider === "secret" ? null : "Acme Workspace",
+            scopes: account.provider === "secret" ? [] : ["read_content"],
+            fields: account.fields ?? [],
             status: "active",
           })),
           providers: ["github", "google", "linear", "notion", "slack"].map(
@@ -2558,6 +2666,64 @@ function connectionsReply(
     state.feishu.push({ connect_id: `imc1_feishu_${Date.now()}`, disabled: false });
     return ok({ notice: "Feishu webhook connect ready." }, 201);
   }
+  if (method === "POST" && section === "feishu" && id === "registration") {
+    // The first ask is still waiting; the next one finds the app made, or
+    // updated when the scan named a connect.
+    if (action !== "poll") {
+      state.scanTarget =
+        typeof body.connect_id === "string" ? body.connect_id : undefined;
+      return ok({
+        url: "https://open.feishu.cn/page/cli?user_code=MOCK-CODE",
+        interval_s: 1,
+        expires_in_s: 600,
+        registration: "sealed-0",
+      });
+    }
+    if (body.registration === "sealed-0")
+      return ok({ state: "pending", registration: "sealed-1" });
+    const updated = state.feishu.find((item) => item.connect_id === state.scanTarget);
+    if (updated) {
+      updated.missing_scopes = [];
+      return ok({ state: "connected", notice: "Feishu app updated." });
+    }
+    state.feishu.push({
+      connect_id: `imc1_feishu_${Date.now()}`,
+      disabled: false,
+      app_id: "cli_scanned",
+      events: "socket",
+    });
+    return ok({ state: "connected", notice: "Feishu app made and connected." });
+  }
+  if (method === "POST" && section === "lark" && id === "registration") {
+    // The first ask is still waiting; the next one finds the app made, or
+    // updated when the scan named a connect.
+    if (action !== "poll") {
+      state.scanTarget =
+        typeof body.connect_id === "string" ? body.connect_id : undefined;
+      return ok({
+        url: "https://open.larksuite.com/page/cli?user_code=MOCK-CODE",
+        interval_s: 1,
+        expires_in_s: 600,
+        registration: "sealed-0",
+      });
+    }
+    if (body.registration === "sealed-0")
+      return ok({ state: "pending", registration: "sealed-1" });
+    const updated = state.lark.find((item) => item.connect_id === state.scanTarget);
+    if (updated) {
+      updated.missing_scopes = [];
+      return ok({ state: "connected", notice: "Lark app updated." });
+    }
+    state.lark.push({
+      connect_id: `imc1_lark_${Date.now()}`,
+      disabled: false,
+      app_id: "cli_scanned",
+      verification_token_configured: false,
+      encrypt_key_configured: false,
+      events: "socket",
+    });
+    return ok({ state: "connected", notice: "Lark app made and connected." });
+  }
   if (method === "POST" && section === "lark") {
     const appId = typeof body.app_id === "string" ? body.app_id : "";
     if (!appId || typeof body.app_secret !== "string" || !body.app_secret)
@@ -2596,6 +2762,40 @@ function connectionsReply(
       201
     );
   }
+  if (method === "POST" && section === "telegram") {
+    if (typeof body.bot_token !== "string" || !body.bot_token)
+      return failure(422, "missing_credentials", "Connect is missing required fields.");
+    state.telegram.push({
+      connect_id: `imc1_telegram_${Date.now()}`,
+      disabled: false,
+      chats: [
+        {
+          id: "-1002233445566",
+          title: "Acme support",
+          type: "supergroup",
+          allowed: false,
+        },
+      ],
+    });
+    return ok(
+      {
+        notice:
+          "Telegram bot connected. Add it to a group, then allow that group on this page.",
+      },
+      201
+    );
+  }
+  if (method === "PUT" && section === "telegram" && id && action === "chats") {
+    const connect = state.telegram.find((item) => item.connect_id === id);
+    if (!connect)
+      return failure(404, "connect_not_found", "That connect no longer exists.");
+    const allowed = Array.isArray(body.allowed_chat_ids) ? body.allowed_chat_ids : [];
+    connect.chats = connect.chats.map((chat) => ({
+      ...chat,
+      allowed: allowed.includes(chat.id),
+    }));
+    return ok({ notice: "Telegram chats saved." });
+  }
   if (method === "POST" && section === "qq") {
     const appId = typeof body.app_id === "string" ? body.app_id : "";
     if (!appId || typeof body.app_secret !== "string" || !body.app_secret)
@@ -2629,6 +2829,19 @@ function connectionsReply(
     connect.command_menu = items;
     return ok({ notice: "Menu saved and sent to QQ." });
   }
+  if (method === "PUT" && section === "slack" && id && action === "auto-join") {
+    const connect = state.slack.find((item) => item.connect_id === id);
+    if (!connect)
+      return failure(404, "connect_not_found", "That connect no longer exists.");
+    if (typeof body.enabled !== "boolean")
+      return failure(422, "invalid_auto_join", "Send enabled as true or false.");
+    connect.auto_join_public_channels = body.enabled;
+    return ok({
+      notice: body.enabled
+        ? "The Slack app joins new public channels by itself."
+        : "The Slack app no longer joins new public channels by itself. Invite it to a channel to add it.",
+    });
+  }
   if (method === "POST" && section === "slack") {
     const tasks = body.inbound_tasks as { model?: MockModelChoice | null } | undefined;
     const model = tasks?.model
@@ -2656,6 +2869,7 @@ function connectionsReply(
       inbound_agent: tasks
         ? `Tasks · ${model?.label ?? "default Task model"}`
         : "Router · router",
+      auto_join_public_channels: true,
     });
     return ok(
       {
@@ -2666,7 +2880,13 @@ function connectionsReply(
     );
   }
   if (section === "im" && id) {
-    const connects = [...state.feishu, ...state.lark, ...state.slack, ...state.qq];
+    const connects = [
+      ...state.feishu,
+      ...state.lark,
+      ...state.slack,
+      ...state.qq,
+      ...state.telegram,
+    ];
     const connect = connects.find((item) => item.connect_id === id);
     if (!connect)
       return failure(404, "connect_not_found", "That connect no longer exists.");
@@ -2675,6 +2895,7 @@ function connectionsReply(
       state.slack = state.slack.filter((item) => item.connect_id !== id);
       state.lark = state.lark.filter((item) => item.connect_id !== id);
       state.qq = state.qq.filter((item) => item.connect_id !== id);
+      state.telegram = state.telegram.filter((item) => item.connect_id !== id);
       return ok({ notice: "Connect deleted." });
     }
     connect.disabled = body.enabled !== true;
@@ -2688,6 +2909,26 @@ function connectionsReply(
   if (section === "signal" && id === "bindings") {
     state.signal = state.signal.filter((item) => item.binding_id !== action);
     return ok({ notice: "Signal chat disconnected." });
+  }
+  // The product sends the browser to Salix's form for the value and back here;
+  // the mock keeps the key at once.
+  if (section === "accounts" && !id && body.provider === "secret") {
+    const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+    if (!alias) return failure(422, "alias_required", "Give the key a name.");
+    state.accounts = state.accounts.filter(
+      (item) => !(item.provider === "secret" && item.alias === alias)
+    );
+    const fields = Array.isArray(body.fields)
+      ? (body.fields as { name: string }[]).map(({ name }) => name)
+      : [];
+    state.accounts.push({
+      binding_id: `ob_secret_${alias}`,
+      provider: "secret",
+      alias,
+      enabled: true,
+      fields,
+    });
+    return ok({ notice: "API key saved." });
   }
   if (section === "accounts" && !id)
     return failure(
@@ -2782,6 +3023,59 @@ const skillState: Record<string, MockSkill[]> = {};
 // The list carries no content; one skill's content is read when it opens.
 const listedSkills = (skills: MockSkill[]) =>
   skills.map(({ content: _content, ...fields }) => fields);
+
+/** The swarm's still.fail stations, one connected (DashboardSwarmStillfail). */
+function swarmStillfailReply(
+  slug: string,
+  projectId: string,
+  rest: string,
+  method: string
+) {
+  const ok = (data: unknown) => reply(200, { ok: true, data });
+  if (!orgs.some((org) => org.slug === slug)) return notFound();
+  const swarm = projectOverview(slug, projectId);
+  if (!swarm) return notFound("project_not_found", "Agent Swarm not found.");
+  if (rest === "/line" && method === "POST")
+    return ok({ line: "comma https://comma.example salix_conn_mockline0001" });
+  if (rest === "/stations" && method === "DELETE")
+    return ok({ notice: "This Agent Swarm no longer has still.fail stations." });
+  return ok({
+    project: {
+      id: projectId,
+      name: swarm.project.name,
+      role: projectId === "prj_sales" ? "member" : "admin",
+    },
+    days: 30,
+    stations: [
+      {
+        id: "dev_stillfail_1",
+        name: "Office Mac",
+        connected: true,
+        connected_at: Date.UTC(2026, 9, 29, 6, 20),
+      },
+    ],
+    usage: [
+      {
+        key: "lin@example.com",
+        calls: 412,
+        input: 1_820_000,
+        cache_read: 9_400_000,
+        cache_write: 210_000,
+        output: 96_000,
+        cost: 18.42,
+      },
+      {
+        key: "wu@example.com",
+        calls: 138,
+        input: 610_000,
+        cache_read: 2_100_000,
+        cache_write: 40_000,
+        output: 31_000,
+        cost: 5.07,
+      },
+    ],
+  });
+}
 
 function swarmSkillsReply(
   slug: string,
@@ -2942,6 +3236,8 @@ const meetingSettings: Record<string, unknown> = {
   connect_id: "slack-main",
   channel: "team-meetings",
   channel_id: "C-TEAM",
+  calendar_scope: "selected",
+  delivery: "channel",
   calendar_selections: [
     { account_id: "ca-1", calendar_id: "product@acme.test", name: "Product calendar" },
   ],
@@ -2961,8 +3257,10 @@ function meetingsOverview() {
       ["slack-main", "Meeting Assistant", "meeting-assistant", "connected", []],
       ["slack-ops", "Ops Bot", "ops-bot", "connected", ["im:write"]],
       ["slack-old", "Legacy Bot", "legacy", "unconnected", null],
+      ["lark-main", "会议助理", null, "connected", null],
     ].map(([connect_id, app_name, bot_username, state, missing]) => ({
       connect_id,
+      provider: String(connect_id).startsWith("lark") ? "lark" : "slack",
       app_name,
       bot_username,
       workspace_name: "Acme Robotics",
@@ -2987,7 +3285,8 @@ function meetingsOverview() {
       start_ms: hoursFromNow(1 + index * 4),
       status: statuses[index],
     })),
-    calendar_health: "ok",
+    calendar_health: meetingSettings.calendar_scope === "members" ? "members" : "ok",
+    member_calendars: meetingSettings.calendar_scope === "members" ? 214 : null,
     truncated: false,
     runtime_enabled: true,
   };
@@ -3017,6 +3316,7 @@ const dataPolicy = {
   mode: "audit",
   language: "en",
   audience_modes: ["space", "members"],
+  supervisors: [{ connect_id: "slack-main", id: "U01CEO" }],
   connects: [
     {
       connect_id: "slack-main",
@@ -3058,6 +3358,23 @@ const dataPolicy = {
       scopes: [],
       clearances: [],
       principals: [],
+    },
+  ],
+  ssh_hosts_available: true,
+  ssh_hosts: [
+    {
+      name: "db.acme.internal",
+      key_type: "ssh-ed25519",
+      fingerprint: "SHA256:q3Vt1xQm9kXhD2s4Rk2Vg7m0QhH8Q1sN3o5JbU0pZ8w",
+      first_seen_at: minutesAgo(600),
+      tag: "counsel" as string | null,
+    },
+    {
+      name: "[build.acme.internal]:2222",
+      key_type: "ssh-ed25519",
+      fingerprint: "SHA256:7cQm2Lx0Zt8pWv4Yb1Nf6Hs3Dk9Ra5Ue2Jo0Ti7Gy4c",
+      first_seen_at: minutesAgo(90),
+      tag: null as string | null,
     },
   ],
 };
@@ -3155,6 +3472,20 @@ function meetingsReply(
     Object.assign(meetingSettings, body.enabled === false ? { enabled: false } : body);
     return reply(200, { ok: true, data: { settings: meetingSettings } });
   }
+  if (method === "POST" && rest === "/calendars/subscribe") {
+    const id = String(body.calendar_id ?? "");
+    return reply(200, {
+      ok: true,
+      data: {
+        calendar: {
+          account_id: "app",
+          calendar_id: id,
+          name: id.includes("design") ? "设计评审" : id,
+          account_name: "app",
+        },
+      },
+    });
+  }
   const data =
     rest === ""
       ? meetingsOverview()
@@ -3162,42 +3493,133 @@ function meetingsReply(
         ? meetingHistory(url.searchParams.get("cursor"))
         : rest === "/detail"
           ? { report: "Agenda: launch checklist.\nOpen follow-ups: pricing page copy." }
-          : rest === "/series"
+          : rest === "/search_calendars"
             ? {
-                meetings: [
+                calendars: [
                   {
-                    account_id: "ca-1",
-                    calendar_id: "product@acme.test",
-                    event_id: "sync",
-                    title: "Weekly product sync",
+                    account_id: "app",
+                    calendar_id: "larksuite.com_design@group.calendar.larksuite.com",
+                    name: "设计评审",
+                    account_name: "app",
                   },
                 ],
-                next_cursor: null,
               }
-            : {
-                calendars: [
-                  ["ca-1", "product@acme.test", "Product calendar", "maya@acme.test"],
-                  ["ca-1", "eng@acme.test", "Engineering calendar", "maya@acme.test"],
-                  ["ca-2", "team@acme.test", "Team calendar", "ops@acme.test"],
-                ].map(([account_id, calendar_id, name, account_name]) => ({
-                  account_id,
-                  calendar_id,
-                  name,
-                  account_name,
-                })),
-                channels: [
-                  { id: "C-TEAM", name: "team-meetings" },
-                  { id: "C-ENG", name: "engineering" },
-                ],
-                next_cursor: null,
-              };
+            : rest === "/series"
+              ? {
+                  meetings: [
+                    {
+                      account_id: "ca-1",
+                      calendar_id: "product@acme.test",
+                      event_id: "sync",
+                      title: "Weekly product sync",
+                    },
+                  ],
+                  next_cursor: null,
+                }
+              : url.searchParams.get("connect_id")?.startsWith("lark")
+                ? {
+                    calendars: [
+                      [
+                        "app",
+                        "larksuite.com_team@group.calendar.larksuite.com",
+                        "团队例会",
+                        "app",
+                      ],
+                      [
+                        "app",
+                        "larksuite.com_eng@group.calendar.larksuite.com",
+                        "研发周会",
+                        "app",
+                      ],
+                      ["lark-maya", "maya@primary", "Maya 的日历", "Maya"],
+                    ].map(([account_id, calendar_id, name, account_name]) => ({
+                      account_id,
+                      calendar_id,
+                      name,
+                      account_name,
+                    })),
+                    member_accounts: 12,
+                    channels: [
+                      { id: "oc_team", name: "产品团队" },
+                      { id: "oc_eng", name: "研发群" },
+                    ],
+                    next_cursor: null,
+                  }
+                : {
+                    calendars: [
+                      [
+                        "ca-1",
+                        "product@acme.test",
+                        "Product calendar",
+                        "maya@acme.test",
+                      ],
+                      [
+                        "ca-1",
+                        "eng@acme.test",
+                        "Engineering calendar",
+                        "maya@acme.test",
+                      ],
+                      ["ca-2", "team@acme.test", "Team calendar", "ops@acme.test"],
+                    ].map(([account_id, calendar_id, name, account_name]) => ({
+                      account_id,
+                      calendar_id,
+                      name,
+                      account_name,
+                    })),
+                    member_accounts: 214,
+                    channels: [
+                      { id: "C-TEAM", name: "team-meetings" },
+                      { id: "C-ENG", name: "engineering" },
+                    ],
+                    next_cursor: null,
+                  };
   return reply(200, { ok: true, data });
 }
 
-function dataPolicyReply(method: string, rest: string, body: Record<string, unknown>) {
+const mockPeople = [
+  { id: "U01CEO", name: "Daniel Okafor", email: "daniel@acme-robotics.com" },
+  { id: "U01MAYA", name: "Maya Chen", email: "maya@acme-robotics.com" },
+  { id: "U03MAYB", name: "Maya Brooks", email: "maya.brooks@acme-robotics.com" },
+  { id: "U07GUEST", name: "Sam Rivera", email: "sam@globex.test" },
+];
+
+function dataPolicyReply(
+  method: string,
+  rest: string,
+  body: Record<string, unknown>,
+  url?: URL
+) {
   const [, connectId, kind, key] = rest.split("/").map(decodeURIComponent);
   const connect = dataPolicy.connects.find((item) => item.connect_id === connectId);
+  if (method === "GET" && rest.endsWith("/people")) {
+    const query = (url?.searchParams.get("query") ?? "").toLowerCase();
+    const ids = (url?.searchParams.get("ids") ?? "").split(",").filter(Boolean);
+    return reply(200, {
+      ok: true,
+      data: query
+        ? {
+            people: mockPeople.filter((person) =>
+              [person.id, person.name, person.email].some((value) =>
+                value.toLowerCase().includes(query)
+              )
+            ),
+          }
+        : {
+            people: Object.fromEntries(
+              mockPeople
+                .filter((person) => ids.includes(person.id))
+                .map((person) => [person.id, person])
+            ),
+          },
+    });
+  }
   if (method === "PATCH") Object.assign(dataPolicy, body);
+  if (rest === "/ssh-hosts" && method === "PUT") {
+    const host = dataPolicy.ssh_hosts.find(
+      (item) => item.fingerprint === body.fingerprint
+    );
+    if (host) host.tag = String(body.tag ?? "") || null;
+  }
   if (connect && kind === "placements") {
     const principal = connect.principals.find((item) => item.id === key);
     if (principal) principal.override = (body.placement as string) || null;
@@ -4453,7 +4875,7 @@ const mockStations = [
     label: "Linux CI runner / dev_linux_ci",
     connected: true,
     selectable: false,
-    issue: "This device runs an old connector. Update it to run a station.",
+    issue: "This device has no station. Install one to run tasks.",
     models: {},
   },
 ];
@@ -4663,7 +5085,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
         : {};
     return adminPage[2] === "meetings"
       ? meetingsReply(method, adminPage[3] ?? "", url, body)
-      : dataPolicyReply(method, adminPage[3] ?? "", body);
+      : dataPolicyReply(method, adminPage[3] ?? "", body, url);
   }
   const settingsPath = /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/settings(\/.*)$/.exec(
     url.pathname
@@ -4719,13 +5141,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
     if (!runnerState[slug]) return notFound();
     if (rest === "") return reply(200, { ok: true, data: runnersPage(slug, cursor) });
     if (rest === "/onboarding") return reply(200, { ok: true, data: onboarding(slug) });
-    const connectors = /^\/([^/]+)\/connectors$/.exec(rest);
-    const data = connectors
-      ? runnerConnectors(slug, decodeURIComponent(connectors[1] ?? ""), cursor)
-      : undefined;
-    return data
-      ? reply(200, { ok: true, data })
-      : failure(404, "runner_not_found", "Runner not found.");
+    return failure(404, "runner_not_found", "Runner not found.");
   }
 
   const cliLogin =
@@ -4777,6 +5193,17 @@ export const mockFetch: typeof fetch = async (input, init) => {
     typeof init?.body === "string"
       ? (JSON.parse(init.body) as Record<string, unknown>)
       : {};
+  const stillfail =
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/stillfail(\/line|\/stations)?$/.exec(
+      url.pathname
+    );
+  if (stillfail)
+    return swarmStillfailReply(
+      decodeURIComponent(stillfail[1] ?? ""),
+      decodeURIComponent(stillfail[2] ?? ""),
+      stillfail[3] ?? "",
+      method
+    );
   const swarmCatalog =
     /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(plugins|skills)(?:\/[^/]+){0,4})$/.exec(
       url.pathname

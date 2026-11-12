@@ -97,10 +97,6 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 	})
 	redisURL := stringField(redis, "REDIS_URL")
 	setNested(salix, "comma", commaBundleConfig(stringField(db, "BRIDGE_DATABASE_URL"), redisURL))
-	// The screen stream TURN key has its own environment secrets until it moves into SALIX_CONFIG_JSON.
-	if keyID, apiToken := os.Getenv("COMMA_SCREEN_STREAM_TURN_KEY_ID"), os.Getenv("COMMA_SCREEN_STREAM_TURN_API_TOKEN"); keyID != "" && apiToken != "" {
-		setNested(salix, "comma", map[string]any{"screen_stream_turn": map[string]any{"key_id": keyID, "api_token": apiToken}})
-	}
 	// Salix control metadata (tenant API keys and cutover markers) shares the
 	// same physical database as BridgeForTeams and Comma, exactly as Comma does:
 	// ownership comes from distinct table names plus an isolated
@@ -191,6 +187,10 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 	if manifest := os.Getenv("COMMA_SANDBOX_IMAGE_MANIFEST"); manifest != "" {
 		replacements["COMMA_SANDBOX_IMAGE_MANIFEST"] = manifest
 	}
+	// The Comma station's standalone release for this revision (comma-release.yml), for /stations/install.sh.
+	if manifest := os.Getenv("COMMA_STATION_RELEASE_MANIFEST_URL"); manifest != "" {
+		replacements["COMMA_STATION_RELEASE_MANIFEST_URL"] = manifest
+	}
 	if alertRouterEnabled {
 		replacements["ALERT_ROUTER_CONFIG_SECRET_NAME"] = byBase["alert-router-config"]
 		replacements["ALERT_ROUTER_CONFIG_SHA256"] = hashHex(alertRouterBody)
@@ -201,9 +201,9 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 	return json.Marshal(release.CandidateBundle{SchemaVersion: 1, Replacements: replacements, Resources: resources})
 }
 
-// injectAgentVMMTrustBundle binds Host enrollment to the CA that actually
+// injectAgentVMMTrustBundle binds Host control connections to the CA that actually
 // terminates the selected cluster's gateway. SALIX_CONFIG_JSON owns whether
-// remote enrollment is configured, while the release process owns discovery
+// remote connections is configured, while the release process owns discovery
 // of this infrastructure state. A missing or malformed CA fails the release
 // before it can publish a Host configuration that cannot connect.
 func injectAgentVMMTrustBundle(ctx context.Context, config map[string]any, kubectl release.Runner, namespace string) error {
@@ -211,13 +211,13 @@ func injectAgentVMMTrustBundle(ctx context.Context, config map[string]any, kubec
 	if !ok {
 		return nil
 	}
-	material, ok := agentVMM["install_material"].(map[string]any)
+	material, ok := agentVMM["connection_config"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	enrollment, ok := material["remote_enrollment"].(map[string]any)
+	enrollment, ok := material["remote_connection"].(map[string]any)
 	if !ok {
-		return errors.New("agent_vmm.install_material.remote_enrollment must be an object")
+		return errors.New("agent_vmm.connection_config.remote_connection must be an object")
 	}
 	encoded, err := kubectl.Run(ctx, nil, "-n", namespace, "get", "secret", "salix-vmm-gateway-tls", "-o", `jsonpath={.data.ca\.crt}`)
 	if err != nil {
@@ -252,9 +252,6 @@ func alertRouterDesiredState(spec release.EnvironmentSpec) (bool, string, string
 	}
 	liveChannelID := strings.TrimSpace(spec.AlertRouter.SlackChannelID)
 	if mode == "live" {
-		if spec.Environment != "staging" {
-			return false, "", "", errors.New("Alert Router live mode is currently allowed only in staging")
-		}
 		if !validPublicSlackChannelID(liveChannelID) {
 			return false, "", "", errors.New("environment spec alertRouter.slackChannelId must be a public Slack channel ID in live mode")
 		}

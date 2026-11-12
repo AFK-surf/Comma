@@ -1,6 +1,4 @@
 defmodule SalixAgent.DeliverIngressTest do
-  require SystemsRuntime.Proc
-
   @moduledoc """
   `SalixAgent.deliver/3` is the single delivery ingress: the source identity
   contract (no manufactured ids) and the per-caller `:session_check`
@@ -12,7 +10,6 @@ defmodule SalixAgent.DeliverIngressTest do
   """
   use SystemsClock.Case, async: false
 
-  use SalixAgent.TestSupport.Settle
   alias SalixAgent.TestSupport.RetiredSessionFixture
   @session "ses1_0000000000000000801"
 
@@ -43,9 +40,6 @@ defmodule SalixAgent.DeliverIngressTest do
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
       SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
-      # Staging marks the PG-backed session work index; leave no
-      # rows behind for suites that assert on the global discovery listing.
-      SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -127,7 +121,6 @@ defmodule SalixAgent.DeliverIngressTest do
   end
 
   describe "rpc delivery (A2, docs/salix/conversation-owner-actor.md; the only protocol since §3.2 step 4)" do
-
     test "delivers via the actor with NO inbox/marker write, dedupes on the session ledger",
          %{agent: a} do
       payload = %{content: "hello rpc", session_id: @session}
@@ -176,28 +169,6 @@ defmodule SalixAgent.DeliverIngressTest do
       assert {:ok, :duplicate} =
                SalixAgent.deliver(a, %{content: "one", session_id: @session},
                  source_message_id: "sat-1",
-                 no_wake: true
-               )
-    end
-
-    test "a failed session commit writes nothing and the same id retries clean", %{agent: a} do
-      key = SalixStore.Keys.agent_internal_runtime_session(a, @session)
-      :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, key})
-
-      assert {:error, _reason} =
-               SalixAgent.deliver(a, %{content: "x", session_id: @session},
-                 source_message_id: "cas-1",
-                 no_wake: true
-               )
-
-      # Failure matrix (plan §1.8): a failed commit is all-or-nothing — no
-      # ledger entry, so the caller's same-id retry lands as :created, not
-      # :duplicate, once the store recovers.
-      assert {:error, :not_found} = SalixAgent.InternalSessionStore.read(a, @session)
-
-      assert {:ok, :created} =
-               SalixAgent.deliver(a, %{content: "x", session_id: @session},
-                 source_message_id: "cas-1",
                  no_wake: true
                )
     end
@@ -331,7 +302,7 @@ defmodule SalixAgent.DeliverIngressTest do
                  no_wake: true
                )
 
-      assert {:error, :not_found} = SalixAgent.InternalSessionStore.read(a, @session)
+      assert {:error, :session_read_only} = SalixAgent.InternalSessionStore.read(a, @session)
 
       # A stored retired Session without a birth marker: its history is
       # read-only and no internal Session takes its id.
@@ -345,75 +316,28 @@ defmodule SalixAgent.DeliverIngressTest do
                  no_wake: true
                )
 
+      # The first delivery started the agent's Server but returned before its
+      # claim landed. A call to the Server returns after the claim, so
+      # prepare_create runs under this node's ownership.
+      _ = SalixAgent.Server.info(a)
+
       assert {:error, :session_read_only} =
                SalixAgent.InternalSessionStore.prepare_create(a, stored)
 
-      assert {:error, :not_found} = SalixAgent.InternalSessionStore.read(a, stored)
+      assert {:error, :session_read_only} = SalixAgent.InternalSessionStore.read(a, stored)
       assert {:error, :not_found} = SalixAgent.SessionBirth.side(a, stored)
 
-      assert %{rows: [[0]]} =
+      assert %{rows: rows} =
                SalixStore.Repo.query!(
-                 "SELECT count(*) FROM session_work_candidates WHERE session_id = ANY($1)",
-                 [[@session, stored]]
+                 "SELECT birth_kind,revision,control_payload,next_run_at FROM salix_sessions WHERE agent_id=$1 AND session_id=ANY($2)",
+                 [a, [@session, stored]]
                )
+
+      assert rows == [["retired", 0, nil, nil], ["retired", 0, nil, nil]]
     end
 
-    test "a transient probe error NEVER re-births a legacy markerless session", %{agent: a} do
-      # Round 7 P1: exists? collapsed every HEAD error into "absent", so a
-      # pre-marker (markerless) internal session + one transient 503 on its
-      # HEAD read as :new. Fail-closed birth: :new requires the internal
-      # store AND the retired history to CONFIRM not-found; a probe error
-      # refuses the delivery with zero writes and the same-id retry
-      # resolves it.
-      {:ok, _} =
-        SalixAgent.InternalSessionStore.prepare_commit(a, @session, [
-          %{"type" => "session_created", "session_id" => @session, "platform" => "raft"}
-        ])
-
-      # Since round 8 every store-layer creation claims a marker; a LEGACY
-      # pre-deploy session has none — simulate it by removing the marker
-      # the seeding just wrote.
-      :ok = SalixStore.S3.delete(SalixStore.Keys.agent_session_birth(a, @session))
-      assert {:error, :not_found} = SalixAgent.SessionBirth.side(a, @session)
-
-      internal_key = SalixStore.Keys.agent_internal_runtime_session(a, @session)
-      :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :head, internal_key})
-
-      assert {:error, {:unavailable, {:session_probe, {:http, 503}}}} =
-               SalixAgent.deliver(a, %{content: "x", role: "user", session_id: @session},
-                 source_message_id: "pr873-probe-1",
-                 no_wake: true
-               )
-
-      # Zero writes: no marker, the internal ledger untouched.
-      assert {:error, :not_found} = SalixAgent.SessionBirth.side(a, @session)
-      {:ok, before_retry} = SalixAgent.InternalSessionStore.read(a, @session)
-
-      refute MapSet.member?(
-               SalixAgent.InternalSession.get(before_retry, :input_dedupe),
-               "pr873-probe-1"
-             )
-
-      # The one-shot fault is consumed: the same-id retry probes cleanly,
-      # finds the birth store, and continues the legacy session there —
-      # still without ever creating a marker for it.
-      assert {:ok, :created} =
-               SalixAgent.deliver(a, %{content: "x", role: "user", session_id: @session},
-                 source_message_id: "pr873-probe-1",
-                 no_wake: true
-               )
-
-      {:ok, state} = SalixAgent.InternalSessionStore.read(a, @session)
-      assert MapSet.member?(SalixAgent.InternalSession.get(state, :input_dedupe), "pr873-probe-1")
-      assert {:error, :not_found} = SalixAgent.SessionBirth.side(a, @session)
-    end
-
-    test "a fork target racing a delivery converges on ONE session via the store-layer claim",
+    test "a fork cannot replace work already accepted at its target",
          %{agent: a} do
-      # Round 8 bypass 2: fork seeded its target without any birth claim.
-      # The seed now claims the marker BEFORE its create-once write, so a
-      # delivery racing the parked seed loses the claim and joins the same
-      # session.
       assert {:ok, :created} =
                SalixAgent.deliver(a, %{content: "src", role: "user", session_id: @session},
                  source_message_id: "pr873-fork-src",
@@ -421,58 +345,26 @@ defmodule SalixAgent.DeliverIngressTest do
                )
 
       target = "ses1_0000000000000000803"
-      target_key = SalixStore.Keys.agent_internal_runtime_session(a, target)
-      :ok = SalixStore.S3.Fake.set_fault({:pause, :put, target_key})
 
-      task_fork =
-        SystemsRuntime.Task.async(fn ->
-          SalixAgent.InternalAgentRuntime.fork_session(a, @session, %{
-            "fork_request_id" => "pr873-fork-1",
-            "target_session_id" => target
-          })
-        end)
+      assert {:ok, :created} =
+               SalixAgent.deliver(
+                 a,
+                 %{content: "accepted target work", role: "user", session_id: target},
+                 source_message_id: "pr873-fork-target",
+                 no_wake: true
+               )
 
-      assert eventually(fn -> SalixStore.S3.Fake.paused?() end)
-      # The fork claimed the target's birth BEFORE parking on the create.
-      assert {:ok, :internal} = SalixAgent.SessionBirth.side(a, target)
+      {:ok, before} = SalixAgent.InternalSessionStore.read(a, target)
 
-      # An ordinary delivery to the fork target while the seed is parked:
-      # it loses the birth claim to :internal and lands internally. It must
-      # run async — the internal path queues behind the agent actor the
-      # parked fork is holding — and the pause is released once the put_log
-      # shows the delivery's losing marker-claim attempt (the Fake logs
-      # precondition-rejected puts too).
-      marker_key = SalixStore.Keys.agent_session_birth(a, target)
-      claims_before = Enum.count(SalixStore.S3.Fake.put_log(), &(&1 == marker_key))
+      assert {:error, :fork_target_conflict} =
+               SalixAgent.InternalAgentRuntime.fork_session(a, @session, %{
+                 "fork_request_id" => "pr873-fork-1",
+                 "target_session_id" => target
+               })
 
-      task_deliver =
-        SystemsRuntime.Task.async(fn ->
-          SalixAgent.deliver(a, %{content: "x", role: "user", session_id: target},
-            source_message_id: "pr873-fork-race-1",
-            no_wake: true
-          )
-        end)
-
-      assert eventually(fn ->
-               Enum.count(SalixStore.S3.Fake.put_log(), &(&1 == marker_key)) > claims_before
-             end)
-
-      _ = SalixStore.S3.Fake.release_pause()
-      fork_result = settled_await(task_fork)
-      assert {:ok, :created} = settled_await(task_deliver)
-
-      # The fork either completed or truthfully reports the target already
-      # materialized (the racing delivery created it first) — never a
-      # second store.
-      assert match?({:ok, _}, fork_result) or match?({:error, :exists}, fork_result)
-
-      assert {:ok, :internal} = SalixAgent.SessionBirth.side(a, target)
+      assert {:ok, :internal} = SalixAgent.InternalSessionStore.PG.birth(a, target)
       {:ok, state} = SalixAgent.InternalSessionStore.read(a, target)
-
-      assert MapSet.member?(
-               SalixAgent.InternalSession.get(state, :input_dedupe),
-               "pr873-fork-race-1"
-             )
+      assert SalixAgent.InternalSession.export(state) == SalixAgent.InternalSession.export(before)
     end
   end
 
@@ -484,10 +376,9 @@ defmodule SalixAgent.DeliverIngressTest do
                Jason.encode!(%{"runtime" => "external"}),
                if_none_match: "*"
              )
-  end
 
-  # Settles until the condition holds; it fails on clock time if it never does.
-  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
+    :ok = SalixAgent.InternalSessionStore.PG.import_birth!(agent_id, session_id, :retired)
+  end
 
   defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)

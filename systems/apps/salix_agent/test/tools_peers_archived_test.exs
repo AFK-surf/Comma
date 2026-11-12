@@ -87,7 +87,9 @@ defmodule SalixAgent.ToolsPeersArchivedTest do
   defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
-  defp seed_agent(id, record), do: {:ok, _} = S3.put(Keys.ctl_agent(id), Jason.encode!(record))
+  defp seed_agent(id, record),
+    do:
+      {:ok, _} = SalixStore.Agent.create(id, to_string(node()), SalixAgent.State, config: record)
 
   defp seed_agent_record(id, group_id, extra \\ %{}) do
     seed_agent(

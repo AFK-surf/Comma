@@ -381,6 +381,105 @@ defmodule Salix.Bindings.MeetingSummaryTest do
       assert context["captions_transcript"] == captions_transcript
       assert context["asr_transcript"] == asr
     end
+
+    # 2026-10-29 stand-up: every calibration chunk fell back, and the Router
+    # summarized ASR whose labels were names heard in speech.
+    test "without complete calibration, ASR lines take the speakers of matching captions" do
+      captions = [
+        %{"speaker" => "Rui Ren", "text" => "现在一共有869个注册账户，昨天有46个人在用", "timestamp" => 1_130},
+        %{"speaker" => "Heyang Zhou", "text" => "这得做一下，可以加一个指标", "timestamp" => 1_141},
+        %{"speaker" => "JINFEI YANG", "text" => "我这边有几件事，一个是token数据开放", "timestamp" => 1_975},
+        %{"speaker" => "Zijian Zuo", "text" => "这个流量问题我来搞吧", "timestamp" => 1_340}
+      ]
+
+      state = %{
+        "meeting_id" => "aligned-asr",
+        "meeting_agent_id" => "agent-1",
+        "joined_at" => 1_074,
+        "captions" => captions,
+        "chats" => [%{"sender" => "Zanwei Guo", "text" => "我不太方便说话", "direction" => "incoming"}],
+        # The runtime roster also names Liren Feng, who never spoke.
+        "participants" => ["Liren Feng", "Rui Ren"]
+      }
+
+      asr =
+        Enum.join(
+          [
+            "[00:02:01] Speaker 1: 现在一共有 869 个注册账户，昨天有 46 个人在使用。",
+            "[00:02:12] Speaker 2: 这得做一下，可以加个指标。",
+            "[00:05:30] Unknown: 这个流量问题我来搞吧。",
+            "[00:16:07] Peifei: 我这边有几件事，一个是 token 数据开放。",
+            "[00:16:30] 那月: 嗯。"
+          ],
+          "\n"
+        )
+
+      failed = %{
+        "mode" => "chunked",
+        "complete" => false,
+        "transcript" => "",
+        "planned_chunks" => 1,
+        "calibrated_chunks" => 0,
+        "fallback_chunks" => 1
+      }
+
+      assert {:ok, context} =
+               M.prepare_context(
+                 state,
+                 fn _ -> {:ok, %{transcript: asr, duration_seconds: 1_200, chunks: []}} end,
+                 fn _, _, _, _ -> failed end
+               )
+
+      assert context["source"] == "asr_aligned"
+
+      assert context["transcript"] ==
+               Enum.join(
+                 [
+                   "[00:02:01] Rui Ren: 现在一共有 869 个注册账户，昨天有 46 个人在使用。",
+                   "[00:02:12] Heyang Zhou: 这得做一下，可以加个指标。",
+                   "[00:05:30] Zijian Zuo: 这个流量问题我来搞吧。",
+                   "[00:16:07] JINFEI YANG: 我这边有几件事，一个是 token 数据开放。",
+                   "[00:16:30] Unknown: 嗯。",
+                   "",
+                   "In-meeting chat:",
+                   "Zanwei Guo: 我不太方便说话"
+                 ],
+                 "\n"
+               )
+
+      assert context["asr_transcript"] == asr
+
+      assert Enum.sort(context["participants"]) ==
+               Enum.sort([
+                 "Rui Ren",
+                 "Heyang Zhou",
+                 "JINFEI YANG",
+                 "Zijian Zuo",
+                 "Zanwei Guo",
+                 "Liren Feng"
+               ])
+
+      assert List.last(context["participants"]) == "Liren Feng"
+    end
+
+    test "keeps raw ASR when too few lines match a caption" do
+      captions = [
+        %{"speaker" => "Alice", "text" => "an unrelated caption line", "timestamp" => 1_010}
+      ]
+
+      state = %{"meeting_id" => "unaligned", "joined_at" => 1_000, "captions" => captions}
+      asr = "[00:00:05] Speaker 1: completely different recording text here."
+
+      assert {:ok, context} =
+               M.prepare_context(
+                 state,
+                 fn _ -> {:ok, %{transcript: asr, duration_seconds: 60, chunks: []}} end,
+                 fn _, _, _, _ -> %{"mode" => "direct", "complete" => false} end
+               )
+
+      assert context["source"] == "asr"
+      assert context["transcript"] == asr
+    end
   end
 
   describe "generic ASR boundary" do
@@ -453,8 +552,31 @@ defmodule Salix.Bindings.MeetingSummaryTest do
     end
   end
 
-  describe "long transcript calibration" do
+  describe "calibration fallback reasons" do
+    # 2026-10-29: all five chunks fell back and the logs did not say why.
+    test "each fallback logs why the calibration was not used" do
+      {_state, captions_transcript, asr, _asr_result} = canonical_asr_fixture()
+      metadata = %{transcript: asr, duration_seconds: 600, chunks: []}
 
+      for {answer, reason} <- [
+            {{:ok, "  "}, "empty_output"},
+            {{:ok, "[00:00:01] Alice: short"}, "incomplete_output"},
+            {{:error, :timeout}, "model_error"}
+          ] do
+        log =
+          capture_log(fn ->
+            result =
+              M.calibrate_transcript([], captions_transcript, metadata, fn _, _ -> answer end)
+
+            refute result["complete"]
+          end)
+
+        assert log =~ "calibration fallback direct: :#{reason}"
+      end
+    end
+  end
+
+  describe "long transcript calibration" do
     test "accepts ordered chunk calibration only when every planned window is complete" do
       captions = long_window_captions()
       caption_transcript = M.build_transcript(captions)

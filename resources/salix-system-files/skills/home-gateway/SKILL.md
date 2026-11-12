@@ -1,6 +1,6 @@
 ---
 name: home-gateway
-description: "Find and operate devices on the user's home or office network (lights, smart plugs, air conditioners, cameras, ESPHome or Shelly devices) through a gateway device with device.lan_discover and device.lan_request. Use when the user asks what is on their network, or asks to read or change a local device that has no cloud account, including when they do not name its brand."
+description: "Find and operate devices on the user's home or office network (lights, smart plugs, air conditioners, cameras, printers, Home Assistant, ESPHome or Shelly devices) through a gateway device with device.lan_discover, device.lan_request and device.lan_script. Use when the user asks what is on their network, or asks to read or change a local device that has no cloud account, including when they do not name its brand."
 activation: per-message
 ---
 
@@ -15,10 +15,23 @@ not work for these devices.
 
 1. Call `device.list`, then `device.get` for likely devices. A gateway has
    `capabilities.lan_gateway`. Retain its `device_id`.
-2. If no device has `lan_gateway`, tell the user that no gateway is connected
-   and stop. Do not try `env.exec` with `curl` instead.
+2. If no device has `lan_gateway`, a computer on the user's network with a
+   command environment can still reach the device: send the request with
+   `env.exec` there (`curl`). If there is neither, tell the user that no
+   gateway is connected and stop.
 3. If several gateways exist, use the one on the network the user names. Ask
    when it is not clear.
+
+## Computer Gateways
+
+A computer running Comma is also a gateway, and `device.get` lists a command
+environment for it. Read each gateway's own limits from `device.get`
+(`lan_gateway.max_bytes`, `lan_gateway.script.max_request_bytes` and
+`max_result_bytes`); do not assume another gateway's. When a request does not
+fit them, or needs files or tools, use `env.exec` on the computer: long
+answers, files (printing, recordings) and tools the computer has (check with
+`command -v <tool>` first). Use a device's own skill first; it says when to
+use the computer.
 
 Use the gateway for every address on the user's LAN: private addresses such as
 `192.168.x.x` or `10.x.x.x`, and names such as `wled-kitchen.local`.
@@ -49,10 +62,14 @@ Use the gateway for every address on the user's LAN: private addresses such as
 ## Workflow
 
 1. Identify the device with a read request. Use the device skill when one
-   exists, for example `wled`, `tasmota`, `gree-ac`, `miio-lights` or
-   `onvif-cameras`. Devices that speak a UDP protocol, such as Gree air
-   conditioners and Xiaomi miIO lamps, use their own tool or the `udp` mode
-   of `device.lan_request` instead of HTTP. A
+   exists, for example `wled`, `tasmota`, `gree-ac`, `miio-lights`,
+   `onvif-cameras`, `lan-printer` or `home-assistant`. When the user has Home
+   Assistant, prefer it for the devices it controls. Devices that speak an encrypted or multi-step protocol,
+   such as Gree air conditioners and Xiaomi miIO lamps, use the script their
+   skill names with `device.lan_script` (`device.script` in a discovery
+   result); other UDP devices use the `udp` mode of `device.lan_request`. A
+   device that takes a raw TCP byte stream, such as a printer on port 9100,
+   uses `device.lan_tcp_send`. A
    device that needs a key, such as a miIO token or an ONVIF camera password,
    uses a saved device secret: check
    `device.secret_list`, ask the user once if it is missing, save it with
@@ -81,6 +98,8 @@ change state on GET.
 - Change only the device and the state the user asked for.
 - Before you switch a plug, find out what is connected to it. Ask before you
   switch a heater, a network device or a medical device.
+- Never send a file or a command to a printer again after a failure without
+  reading its state first: the first one may already be on paper.
 - Do not change Wi-Fi settings, update or reset firmware, or change passwords.
   These need their own explicit request.
 - Do not scan the network or probe ports beyond discovery and the requested

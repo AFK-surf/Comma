@@ -63,6 +63,29 @@ defmodule SalixAgent.WaitExtensionTest do
     assert again["extended_ms"] == 600_000
   end
 
+  # The status bubble counts from when the wait began; an extension must not
+  # restart that count.
+  test "a re-armed wait keeps the moment the wait began" do
+    SystemsRuntime.put_env(:salix_agent, :wait_extension_test_answer, true)
+    built = SalixAgent.Waits.build("worker report", 300, "wait_for")
+    assert {:extend, wait} = decide(built)
+    assert {:extend, again} = decide(wait)
+    assert again["started_at_ms"] == built["started_at_ms"]
+
+    session = %{
+      "runtime_kind" => "internal",
+      "session_id" => "ses1_s",
+      "status" => "active",
+      "activity_status" => "waiting",
+      "wait" => again
+    }
+
+    assert %{"wait" => %{"started_at_ms" => started}} =
+             SalixAgent.SessionActivity.project(session)
+
+    assert started == built["started_at_ms"]
+  end
+
   # The kernel's loop decides an expired wait during activation; the probe
   # answers its busy-delegate question.
   defp decide(wait) do

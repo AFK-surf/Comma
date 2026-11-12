@@ -388,3 +388,37 @@ func TestVMMStatusJSONUsesRawHelperFacts(t *testing.T) {
 		t.Fatalf("facts=%s err=%v", encoded, err)
 	}
 }
+
+func TestReauthorizePassesLoginOnlyThroughNativeStdin(t *testing.T) {
+	directory := t.TempDir()
+	helper := filepath.Join(directory, "lifecycle")
+	descriptorPath := filepath.Join(directory, "descriptor.json")
+	argumentsPath := filepath.Join(directory, "arguments")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argumentsPath + "'\ncat > '" + descriptorPath + "'\n"
+	if err := os.WriteFile(helper, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"compute-node", "reauthorize", "--org", "org", "--project", "project", "--registration", "registration", "--confirm-mutating", "--request", "recovery-request", "--url", "http://localhost:4101", "--json"},
+		map[string]string{vmmLifecycleEnv: helper, "BFT_CLI_TOKEN": "protected-login-token"})
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	body, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descriptor map[string]any
+	if err := json.Unmarshal(body, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if descriptor["authorization"] != "protected-login-token" || descriptor["registration_id"] != "registration" {
+		t.Fatalf("wrong recovery descriptor target")
+	}
+	args, _ := os.ReadFile(argumentsPath)
+	if strings.Contains(string(args)+stdout+stderr, "protected-login-token") {
+		t.Fatal("login leaked outside protected stdin")
+	}
+	if !strings.Contains(string(args), "registration-recover") || !strings.Contains(string(args), "--descriptor-stdin") {
+		t.Fatalf("args=%s", args)
+	}
+}

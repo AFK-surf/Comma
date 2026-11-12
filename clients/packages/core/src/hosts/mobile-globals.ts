@@ -21,6 +21,20 @@ export interface MobileNative {
   log(level: number, message: string): void;
   /** The engine carries the phones' iroh: it answers the `mesh.*` operations itself (hosts/mobile-mesh.ts). */
   mesh?: boolean;
+  /**
+   * A screen view's frame, straight to the app's decoder for `sink` (host.ts `ScreenFramePorts`): numbers and the
+   * bytes' place in `buffer`, no JSON.
+   */
+  screenFrame?(
+    sink: number,
+    kind: number,
+    ts: number,
+    width: number,
+    height: number,
+    buffer: ArrayBuffer,
+    offset: number,
+    length: number
+  ): void;
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any -- the global object, as each shim finds it

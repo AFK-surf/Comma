@@ -5,7 +5,7 @@
 // again.
 //
 // Bounds: one read in flight per Group; at most 128 Groups kept (the least recently shown go first, never one shown now).
-import type { Topic, Value, Watch } from "@comma/core-kernel";
+import { madeOnce, type Topic, type Value, type Watch } from "@comma/core-kernel";
 import { Effect, Option, Result } from "effect";
 import { route } from "./api.ts";
 import { taskPageSchema, taskSummarySchema } from "./comma/schemas.ts";
@@ -20,6 +20,21 @@ const FOCUSED: Topic = { topic: "tasks", workspace: "" };
 type Kept = { expiresAt: number; tasks: MentionTask[] };
 
 const groupOf = (topic: Topic) => String(topic.group);
+
+/** A Task as the menu lists it, made once per Task of an answer (the answers keep the Tasks that did not change). */
+const mentionTask = madeOnce(
+  (task: {
+    id: string;
+    status: string;
+    title: string;
+    updated_at?: number | undefined;
+  }) => ({
+    id: task.id,
+    status: task.status,
+    title: task.title,
+    updatedAt: task.updated_at ?? 0,
+  })
+);
 
 export class MentionTasks {
   readonly #ctx: Ctx;
@@ -128,12 +143,7 @@ export class MentionTasks {
                     task.status !== "archived" &&
                     task.title.trim().length > 0
                 )
-                .map((task) => ({
-                  id: task.id,
-                  status: task.status,
-                  title: task.title,
-                  updatedAt: task.updated_at ?? 0,
-                }))
+                .map(mentionTask)
                 .toSorted((a, b) => b.updatedAt - a.updatedAt),
             }
           : // No Tasks to show; the next showing asks again.

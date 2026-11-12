@@ -7,6 +7,7 @@
 // Bounds: one catalog read in flight per Group. A `taskLabels` topic reads when it starts (a surface opening, or its
 // `key` changing: the labels it shows changed), except `known` readers, which read only while nothing is kept. The
 // usage counts (`taskLabelCounts`) read the Group's first page of Tasks once per start.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
 import { Effect, Option, Semaphore } from "effect";
 import { z } from "zod";
@@ -20,11 +21,13 @@ import type { HostedTasks } from "./hosted-tasks.ts";
 const catalogDoc = (group: string) => `taskLabels:${group}`;
 const labelsPath = (group: string) => route`/v1/comma/groups/${group}/task-labels`;
 
-const assignedSchema = z.object({}).passthrough();
+const assignedSchema = lazySchema(() => z.object({}).passthrough());
 
-const countsSchema = z.object({
-  data: z.array(z.object({ labels: z.array(z.string()).nullish() }).passthrough()),
-});
+const countsSchema = lazySchema(() =>
+  z.object({
+    data: z.array(z.object({ labels: z.array(z.string()).nullish() }).passthrough()),
+  })
+);
 
 const params = {
   string(raw: unknown, name: string): string {

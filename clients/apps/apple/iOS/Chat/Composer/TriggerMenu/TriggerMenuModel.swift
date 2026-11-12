@@ -157,6 +157,34 @@ final class TriggerMenuModel {
         selection = TextSelection(insertionPoint: draft.endIndex)
     }
 
+    /// A hardware keyboard's Shift-Return: a line break replaces the selection, or goes at the end while the field
+    /// has reported no caret, and the caret follows it, as typing one does.
+    func insertLineBreak(pane: ConversationPane) {
+        let text = pane.draftText
+        let range = caretRange.flatMap { ComposerTrigger.validated($0, in: text) } ?? text.endIndex..<text.endIndex
+        let edit = text.replacingCharacters(in: range, with: "\n")
+        let caret = edit.index(edit.startIndex, offsetBy: text.distance(from: text.startIndex, to: range.lowerBound) + 1)
+        write(edit, selecting: caret..<caret, to: pane)
+    }
+
+    /// Dictated words: they replace the selection, or go at the end while the field has reported no caret, and the
+    /// caret follows them. A space keeps them apart from a word they would otherwise run into; text in a script
+    /// written without spaces (Chinese, Japanese) joins as it is.
+    func insertDictation(_ words: String, pane: ConversationPane) {
+        let text = pane.draftText
+        let range = caretRange.flatMap { ComposerTrigger.validated($0, in: text) } ?? text.endIndex..<text.endIndex
+        func spaced(_ a: Character?, _ b: Character?) -> Bool {
+            guard let a, let b, !a.isWhitespace, !b.isWhitespace else { return false }
+            return !(a.unicodeScalars.first!.value >= 0x2E80 || b.unicodeScalars.first!.value >= 0x2E80)
+        }
+        let before = range.lowerBound > text.startIndex ? text[text.index(before: range.lowerBound)] : nil
+        let after = range.upperBound < text.endIndex ? text[range.upperBound] : nil
+        let inserted = (spaced(before, words.first) ? " " : "") + words + (spaced(words.last, after) ? " " : "")
+        let edit = text.replacingCharacters(in: range, with: inserted)
+        let caret = edit.index(edit.startIndex, offsetBy: text.distance(from: text.startIndex, to: range.lowerBound) + inserted.count)
+        write(edit, selecting: caret..<caret, to: pane)
+    }
+
     /// The text changed: a dismissed menu may open again, as on the desktop. Text from outside the field drops the
     /// caret, which the field has put at the end. One Backspace at the end of a picked "@Title" or "/status" takes
     /// the whole pick, as deleting a desktop pill does; any other edit leaves a pick as text the ledger no longer

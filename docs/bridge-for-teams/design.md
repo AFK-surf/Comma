@@ -5,9 +5,7 @@
 BFT owns users, organizations, Projects, membership, setup, and product navigation.
 A Project maps one-to-one to a Salix Group.
 Salix owns execution identity, Conversations, Participants, device facts, and runtime dispatch.
-Web and CLI use the same product API and authorization boundary. A dashboard projection is not a second runtime authority.
-
-Generated PDFs and screenshots belong outside the tracked docs inventory.
+Web and CLI share the product API and authorization. Dashboard projections carry no runtime authority.
 
 ## Slack Task commands
 
@@ -18,43 +16,43 @@ The public endpoint `POST /v1/im/slack/commands` verifies the Slack signature, A
 One `conversations.info` read with the connected bot token then checks access. Commands require channel membership or an accessible bot DM.
 An inaccessible channel returns a private invitation prompt before Router delivery. Archived channels, missing read scopes, and failed checks return private repair or retry guidance.
 Channel checks use 500 ms phase timeouts. The whole callback has one 2.5-second deadline.
-This check does not prove that later replies can post.
-The trigger ID supplies the inbox deduplication key. Empty input returns a private usage message.
-The bot publishes attributed user input first. Router replies and Task cards use that thread. Success returns an empty ACK.
+This check does not prove later reply access.
+The trigger ID is the inbox deduplication key. Empty input returns private help.
+The bot first publishes attributed user input. Router replies and Task cards use that thread. Success returns an empty ACK.
 
 ### Admin-managed aliases
 
 Salix Admin, Slack commands, manages aliases for the selected organization's App. IM Connect owns each App's commands and synchronization state.
-An alias has a name, description, usage hint, literal prompt prefix, and enabled flag.
-The callback appends user input to the prefix, so include a separator. Router authorization and admission still apply.
-New Apps have no aliases.
-Tenant configs own organization presets. New catalogs start empty. System presets are separate.
-Selecting a preset fills an editable draft. Publishing saves independent App values without inheritance.
+An alias has a name, description, usage hint, literal prefix, and enabled flag.
+The callback appends input to the prefix. Include a separator. Router authorization and admission still apply.
+New Apps and tenant preset catalogs start empty. Tenant configs own organization presets. System presets remain separate.
+Selecting a preset fills a draft. Publishing saves independent App values without inheritance.
 Template changes never update Apps or Slack. Copies reject name conflicts and stale revisions.
 Templates never cross tenants. App rebinding resets local aliases.
 
-Only the authenticated admin dashboard exposes mutation, with tenant, connection, and revision checks.
+Mutations require the authenticated admin dashboard plus tenant, connection and revision checks.
 Callbacks read the current connection snapshot without cross-App fallback or a process-wide command cache.
 Local changes affect new submissions. Accepted tasks keep their content.
 Unknown or disabled commands return privately. Public roots omit the alias prefix.
 
-Each App save exports, merges, validates, and synchronizes its manifest. It keeps unrelated fields and commands.
+App saves export, merge, validate and synchronize manifests, preserving unrelated fields and commands.
 It adds the commands bot scope when needed but never removes scopes.
 If Slack already matches, prompt-only changes need no manifest update.
-Salix adopts an existing command only when its URL matches this deployment's callback. Other handlers cause conflicts.
+Salix adopts existing commands only for this deployment's callback URL. Other handlers conflict.
 Slack permits 50 commands across managed and unmanaged entries.
 
-Each App selects a tenant credential profile. Profiles can share an account without copying refresh tokens. Use separate profiles for different accounts.
+Apps select tenant credential profiles. Profiles can share accounts without copying refresh tokens. Different accounts use separate profiles.
 Enter a configuration refresh token, not a bot token, in the write-only form.
 Never copy tokens across tenants or into external tools.
 The deployment root seals credentials with a separate purpose and tenant/profile-bound associated data. Public projections never expose them.
 Rotation persists both returned tokens before further Slack requests. If persistence fails after Slack consumes the token, replace it.
 Refresh occurs near expiry on use, without a periodic worker.
 
-Attempts use bounded timeouts without automatic HTTP retries. Rate limits show the retry interval.
+Attempts use bounded timeouts without HTTP retries. Rate limits show the retry interval.
 Closing the page can interrupt synchronization. Reload and retry pending or failed attempts.
 Possible published names survive ambiguous responses so later deletion can remove them.
-Failures record the stage and outcome of the latest attempt on the App configuration:
+App configuration records the latest attempt stage and outcome:
+
 - Before update: this attempt sent no manifest update.
 - Known update rejection: Slack refused this attempt.
 - Unknown update result or failed verification: Slack might have received the update.
@@ -62,7 +60,7 @@ Failures record the stage and outcome of the latest attempt on the App configura
 Unknown provider errors stay unconfirmed, including [internal and fatal errors](https://docs.slack.dev/reference/methods/apps.manifest.update/), which can follow partial success. Success clears failure classification.
 
 Local save and Slack registration are not atomic. Deletion stops new local submissions before remote removal. Existing tasks continue.
-New permissions require OAuth reauthorization through the App link, then a synchronization retry.
+New permissions require OAuth reauthorization through the App link, then synchronization retry.
 Salix pushes App configuration. Slack does not query Salix for its slash menu.
 Duplicate names in one Slack workspace route to the most recently installed App.
 Do not edit the manifest concurrently through Slack or another tool. The Manifest API replaces it without conditional writes.
@@ -152,8 +150,9 @@ Do not scan every historical thread on an interactive status request.
 ## Daily brief
 
 `BridgeForTeams.DailyBrief` owns the settings, members, aliases, and runs. A run is the team's brief (`team_brief`) or a member's (`personal_brief`), with its window, tokens, coverage, and the text the model wrote.
-Briefs read only the bot's public, non-shared channels in the Salix Slack mirror, to 10 minutes ago; they store no message text. Direct messages are not read (owner, 2026-10-26).
-Once a day, one per Swarm at a time, the team brief is written from the window since the last one, with that brief as context. Each member's brief reads the member's messages since their last sent brief (mentions, aliases, threads they are in, their own), and the model writes it with the team brief and their last brief.
+Briefs read the bot's public, non-shared channels in the Salix Slack mirror, to 10 minutes ago; they store no message text.
+A member may turn on their direct messages (`DailyBrief.DirectMessages`) from the link at the end of their brief, with a read-only grant to the Swarm's bot app (`SalixIM.SlackScopes.daily_brief_user/0`; an admin adds these user scopes to the app and reinstalls it). The brief finds the window's direct and group direct messages through the member's Slack search when it is written and stores none; a revoked grant turns it off.
+Once a day, one per Swarm at a time, the team brief is written from the window since the last one, with that brief as context. Each member's brief reads the member's messages since their last sent brief (mentions, aliases, threads they are in with a bot's replies there, their own) and the human messages of their main channels (`DailyBrief.Focus`: the 6 public channels they wrote most in over 14 days, changed by asking the bot), and the model writes it by topic with the team brief and their last brief.
 The bot sends each member's brief on org workdays after `deliver_at` in their zone; an extra send keeps the next. The team brief goes to the team channel at `team_post_at`, once.
 A brief waits as `pending` until Slack takes it; a failed send is resent without another model call. A brief the model cannot write is not sent; a passing failure is tried again in about an hour, over the same window.
 Retention deletes runs older than the org's period (at most 90 days). Admin pages show counts, states, and errors, no brief text.
@@ -166,21 +165,24 @@ Selecting Feishu SSO replaces the organization's other active SSO provider. Memb
 See [Identity and security](../identity-security.md).
 
 For a bot connection, verify the selected app, published permissions, installation, callback configuration, and Group routing.
+A bot in a chat with members of another organization needs the app's External Sharing turned on in the provider console. Lark still refuses the app history reads there with error 230027, even with it on, so the bot reads what was delivered to it from the local index.
 Use the callback and redirect values that the product shows. Check the current provider console before setup.
 Never paste app secrets into a support thread or screenshot.
 
 The bot finds and reads content as the app and as people of the Agent Swarm who signed in with their Feishu account (under Connections → Accounts, or through the link the bot posts in a chat). A person sees what they took part in or may open; the app sees what was shared with it.
 The organization's OAuth app for `feishu` is the organization's Feishu app, with the redirect URL the dialog shows and the user scopes of the "SSO + group bot" import (`BridgeForTeams.FeishuScopes.sign_in_user_scopes/0`).
-A swarm holds any number of signed-in people. The bot finds content without a link: `feishu.search_docs`, `feishu.list_drive_files` and `feishu.search_meetings` run as the app and then as each active account, and `feishu.get_meeting` / `feishu.get_note` try them in that order, unless `account` names one (`app` for the app alone); `feishu.list_wiki_spaces`, `feishu.list_wiki_nodes` and `feishu.list_minutes` run as the app unless `account` names a person. It reads what it finds with the same `account`: `feishu.fetch_doc`, `feishu.get_minute`. A unified note's transcript is given only to a person.
+A swarm holds any number of signed-in people. The bot finds content without a link: `feishu.search_docs`, `feishu.list_drive_files` and `feishu.search_meetings` run as the app and then as each active account, and `feishu.get_meeting` / `feishu.get_note` try them in that order, unless `account` names one (`app` for the app alone); `feishu.list_wiki_spaces`, `feishu.list_wiki_nodes` and `feishu.list_minutes` run as the app unless `account` names a person. It reads what it finds with the same `account`: `feishu.fetch_doc`, `feishu.get_minute`. A unified note's transcript is given only to a person. An external chat (230027) is read as a member: `account` on the history, thread and message reads.
 
 ## Runner and devices
 
 BFT enrolls organization machines and controls which Projects can select them.
-The runner starts a separate Salix Connector for each Project Group.
-A provision request is progress, not stable runtime identity.
+The runner installs and maintains the Agent VMM Host that a Project's Cloud VM can run on. It starts no Connectors:
+a Project's devices are the stations connected to its Salix Group.
+Without a runner, a Project admin adds a Linux arm64 server or a Mac with Apple silicon as a VMM Station with the install command in Devices › Compute environments.
 Use [Compute and devices](../compute-devices.md) for IDs, reconnect, and launchd boundaries.
-System launchd recovery is an administrator action through the fixed Agent VMM service executor.
-BFT passes only the `runner` job selector. It does not pass a label, plist, program path, environment, or UID.
+System runner recovery uses the separately released `bft-runner-service-executor` at its protected root-owned path.
+Its fixed job belongs to BFT. It accepts no label, plist, program path, environment, or numeric identity.
+The Agent VMM executor controls only the Host job.
 Managed repair runs as the non-root service user. It can restart the existing VM and reconcile only the selected registration with one stable request ID.
 
 ## Model settings

@@ -95,7 +95,8 @@ test(
           probe.opened.push({ url, text: await clipboard.readText() });
         };
       });
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page.getByRole("button", { name: "Account", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
       await page.getByRole("button", { name: "Model & API", exact: true }).click();
       await page.getByRole("button", { name: "Add profile", exact: true }).click();
       await page.getByRole("button", { name: "GitHub Copilot", exact: true }).click();

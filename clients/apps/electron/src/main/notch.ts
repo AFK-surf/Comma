@@ -151,6 +151,25 @@ export function isNotchHostEvent(value: unknown): value is NotchHostEvent {
   );
 }
 
+/**
+ * The dismissed rows Main remembers, the most recent kept: more than the Notch
+ * ever lists, so only rows long gone are forgotten.
+ */
+const MAX_DISMISSED_TASKS = 200;
+
+/**
+ * The run a dismissal covers: when it started (`runStartedAt`), 0 for a row
+ * with none (a Quick Chat send, a Task from before runs were kept), or
+ * `nextRun` for the Task a dismissed Quick Chat row came to stand for before
+ * any renderer listed it.
+ */
+type DismissedRun = number | typeof nextRun;
+const nextRun = Symbol("next run");
+
+function runOf(task: NotchTaskItem) {
+  return task.runStartedAt ?? 0;
+}
+
 export class NotchService implements MainNotchTasks {
   readonly #clock: MainClock;
   readonly #isSupportedPlatform: () => boolean;
@@ -181,6 +200,15 @@ export class NotchService implements MainNotchTasks {
    */
   private rendererTasks: NotchTaskItem[] | undefined;
   private mainTasks: MainNotchTaskItem[] = [];
+  /**
+   * The rows the reader dismissed with their × button: the id the Notch showed
+   * each under (and the renderer Task a dismissed row of Main's stands for) →
+   * the run it dismissed. A row stays out while its Task's run is that one, so
+   * it comes back only when the Task runs anew, never because a writer's list
+   * left it out for a while (a renderer still loading, another workspace, the
+   * newest-first cap). The oldest are forgotten past MAX_DISMISSED_TASKS.
+   */
+  private dismissedTasks = new Map<string, DismissedRun>();
   private lastHostRestore = Number.NEGATIVE_INFINITY;
 
   constructor({
@@ -366,6 +394,7 @@ export class NotchService implements MainNotchTasks {
     // Tasks are part of the scene: neither the renderer's nor Main's come back after a reset.
     this.rendererTasks = undefined;
     this.mainTasks = [];
+    this.dismissedTasks.clear();
     this.lastHostRestore = Number.NEGATIVE_INFINITY;
     this.presentation = { sideWidth: notchSideWidthRange.default, visible: true };
   }
@@ -395,18 +424,24 @@ export class NotchService implements MainNotchTasks {
           standsFor === undefined ? undefined : rendererById.get(standsFor);
         if (!renderer) return task;
         shownInPlace.add(renderer.id);
-        return { ...renderer, id: task.id };
+        // The row is still Main's: dismissed, it stays out whatever run its Task is at.
+        const { runStartedAt: _run, ...shown } = renderer;
+        return { ...shown, id: task.id };
       });
+    this.settleDismissedRuns(rendererById);
     const tasks = [
       ...rendererTasks.filter((task) => !shownInPlace.has(task.id)),
       ...mainTasks,
     ]
+      .filter((task) => !this.isDismissed(task))
       .toSorted((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, NOTCH_TASK_LIST_LENGTH);
     const locale = { locale: readMainLocale(this.#locale) };
     return {
-      hasActivity: tasks.length > 0,
       // Until a renderer labels the list, Main does, so it reads in Main's language.
+      dismissTaskLabel:
+        this.retainedScene.dismissTaskLabel ?? messages.notch_task_dismiss({}, locale),
+      hasActivity: tasks.length > 0,
       listSubtitle:
         this.retainedScene.listSubtitle ?? messages.notch_tasks_subtitle({}, locale),
       listTitle: this.retainedScene.listTitle ?? messages.notch_tasks_title({}, locale),
@@ -414,6 +449,63 @@ export class NotchService implements MainNotchTasks {
         this.retainedScene.openChatLabel ?? messages.inbox_open_chat({}, locale),
       tasks,
     };
+  }
+
+  private isDismissed(task: NotchTaskItem) {
+    return this.dismissedTasks.get(task.id) === runOf(task);
+  }
+
+  /**
+   * Brings the dismissals up to the writers' lists: a dismissed row of Main's
+   * that stands for a Task keeps that Task out too, at the run it shows or,
+   * while no renderer lists it yet, the first run one does, so the Task stays
+   * out once the row goes; a Task listed at another run than the one
+   * dismissed ran anew, and shows.
+   */
+  private settleDismissedRuns(rendererById: ReadonlyMap<string, NotchTaskItem>) {
+    for (const { id, standsFor } of this.mainTasks) {
+      if (standsFor === undefined || !this.dismissedTasks.has(id)) continue;
+      const renderer = rendererById.get(standsFor);
+      const run = renderer
+        ? runOf(renderer)
+        : (this.dismissedTasks.get(standsFor) ?? nextRun);
+      if (this.dismissedTasks.get(standsFor) !== run)
+        this.rememberDismissal(standsFor, run);
+    }
+    for (const [id, run] of this.dismissedTasks) {
+      const renderer = rendererById.get(id);
+      if (!renderer) continue;
+      if (run === nextRun) this.dismissedTasks.set(id, runOf(renderer));
+      else if (run !== runOf(renderer)) this.dismissedTasks.delete(id);
+    }
+  }
+
+  private rememberDismissal(id: string, run: DismissedRun) {
+    this.dismissedTasks.delete(id);
+    this.dismissedTasks.set(id, run);
+    for (const oldest of this.dismissedTasks.keys()) {
+      if (this.dismissedTasks.size <= MAX_DISMISSED_TASKS) break;
+      this.dismissedTasks.delete(oldest);
+    }
+  }
+
+  /**
+   * The reader's × on a row: the row leaves the Notch at the run it shows,
+   * and so does the renderer Task a row of Main's stands for, which would
+   * otherwise take the row's place. The writers keep listing the Task; Main
+   * keeps it out.
+   */
+  private dismissTask(id: string) {
+    const shown =
+      this.rendererTasks?.find((task) => task.id === id) ??
+      this.mainTasks.find((task) => task.id === id);
+    if (!shown) return;
+    this.rememberDismissal(id, runOf(shown));
+    this.command("update", this.taskScene()).catch((error: unknown) => {
+      log.warn(
+        `NotchHost could not take out the dismissed Task: ${errorMessage(error)}`
+      );
+    });
   }
 
   /** What a new host, or a Notch turned back on, shows. */
@@ -538,6 +630,10 @@ export class NotchService implements MainNotchTasks {
     child.on("close", (code) => {
       this.handleHostExit(host, code);
     });
+    // A host that is going may not take a command written to it. Node raises
+    // that on the pipe too, an uncaught exception with no listener here. The
+    // command fails in `send`, and the host's exit retires it.
+    child.stdin.on("error", () => undefined);
 
     // Written ahead of the command that started this host, so the first scene
     // it draws already has the reader's width.
@@ -622,6 +718,10 @@ export class NotchService implements MainNotchTasks {
     }
 
     const action = event.payload?.action;
+    if (action === "task:dismiss") {
+      if (event.payload?.value) this.dismissTask(event.payload.value);
+      return;
+    }
     if (!action?.startsWith("window:")) {
       return;
     }

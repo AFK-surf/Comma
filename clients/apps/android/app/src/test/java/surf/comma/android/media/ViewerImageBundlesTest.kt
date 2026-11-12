@@ -32,6 +32,7 @@ class ViewerImageBundlesTest {
             ViewerImage.Remote(MediaImage(MediaSource.MessageAttachment("c", "m", 5, ref), "b.gif", null)),
             ViewerImage.Remote(MediaImage(MediaSource.UploadedFile(UPLOAD_PATH), null, "image/jpeg")),
             ViewerImage.Local(Uri.parse("content://picker/7"), "image/webp", "c.webp", ImageDimensions(10, 20)),
+            ViewerImage.Video(MediaSource.MessageAttachment("c", "m", 2, ref), "clip.mp4", "video/mp4", ImageDimensions(16, 9)),
         )
         images.forEach { assertEquals(it, roundTrip(it)) }
     }
@@ -44,5 +45,21 @@ class ViewerImageBundlesTest {
         assertNull(ViewerImageBundles.read(bundle))
         assertNull(ViewerImageBundles.read(Bundle().apply { putString("kind", "remote"); putString("source", "upload"); putString("path", "/etc/passwd") }))
         assertNull(ViewerImageBundles.read(Bundle()))
+        // A video page plays only what is a video.
+        val video = ViewerImageBundles.write(ViewerImage.Video(MediaSource.UploadedFile(UPLOAD_PATH), "clip.mp4", "video/mp4"))
+        video.putString("mime", "application/zip")
+        video.putString("file_name", "clip.zip")
+        assertNull(ViewerImageBundles.read(video))
+    }
+
+    @Test fun aChatAttachmentOpensAsItsPictureOrVideo() {
+        val source = MediaSource.MessageAttachment("c", "m", 0, null)
+        val picture = surf.comma.android.chat.model.ChatAttachment(MediaAttachment("a.png", "image/png", 10, source),
+            preview = ViewerImage.Local(Uri.parse("content://picker/1"), "image/png"))
+        // The viewer reads the original, never the sender's local preview.
+        assertEquals(ViewerImage.Remote(MediaImage(source, "a.png", "image/png")), picture.viewerItem())
+        val clip = surf.comma.android.chat.model.ChatAttachment(MediaAttachment("clip.mp4", null, 10, source), ImageDimensions(16, 9))
+        assertEquals(ViewerImage.Video(source, "clip.mp4", "video/mp4", ImageDimensions(16, 9)), clip.viewerItem())
+        assertNull(surf.comma.android.chat.model.ChatAttachment(MediaAttachment("notes.pdf", "application/pdf", 10, source)).viewerItem())
     }
 }

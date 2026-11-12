@@ -11,6 +11,7 @@ import surf.comma.android.chat.render.ChatTimelineView
 import surf.comma.android.scroll.widget.RecyclerView
 import surf.comma.android.ui.composer.ButtonScale
 import surf.comma.android.ui.theme.DesignMotion
+import surf.comma.android.ui.widget.LiquidGlass
 
 /**
  * The round "back to the latest message" button that floats centred above the composer.
@@ -34,10 +35,23 @@ internal class ScrollToLatestButton(context: Context) : FrameLayout(context) {
         // An opaque surface with a hairline reads over bubbles and images in both themes.
         background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(context.getColor(R.color.token_bg_primary))
-            setStroke(1, context.getColor(R.color.token_border_primary))
+            // The experimental glass under it draws the surface and the edge.
+            if (!LiquidGlass.enabled) {
+                setColor(context.getColor(R.color.token_bg_primary))
+                setStroke(1, context.getColor(R.color.token_border_primary))
+            }
         }
     }
+
+    /** Runs on every step of showing or hiding, for the glass under the button. */
+    var onShapeChanged: (() -> Unit)? = null
+        set(value) {
+            field = value
+            scale?.onChanged = value
+        }
+
+    /** The circle's radius in px, as it is drawn now. */
+    val circleRadius: Float get() = dp(CIRCLE_DP) * scaleX / 2f
 
     /** Whether the button is (or is becoming) shown. */
     var shown = false
@@ -63,10 +77,14 @@ internal class ScrollToLatestButton(context: Context) : FrameLayout(context) {
         if (value) {
             visibility = VISIBLE
             animate().alpha(1f).setDuration(DesignMotion.durationMillis(DesignMotion.feedbackIn))
-                .setInterpolator(DesignMotion.smoothOut)
+                .setInterpolator(DesignMotion.smoothOut).setUpdateListener { onShapeChanged?.invoke() }
         } else {
             animate().alpha(0f).setDuration(DesignMotion.durationMillis(DesignMotion.feedbackOut))
-                .setInterpolator(DesignMotion.softInOut).withEndAction { if (!shown) visibility = GONE }
+                .setInterpolator(DesignMotion.softInOut).setUpdateListener { onShapeChanged?.invoke() }
+                .withEndAction {
+                    if (!shown) visibility = GONE
+                    onShapeChanged?.invoke()
+                }
         }
         scale?.setShown(value, animated = true)
     }

@@ -138,6 +138,7 @@ For a UI fix or new UI, use the design system first:
 2. Use `src/styles/theme.css` tokens for color, spacing, type, radius, and motion. Do not write raw values.
 3. Read Figma node values with Figma MCP. Do not estimate them from screenshots.
 4. Follow a base component's `GUIDE.md` if present.
+5. Something that enters or leaves by its size keeps its whole scale range and is not visible at half its size or less, on every client, so it does not jump: its opacity follows its scale, 0 at 0.5 or below and 1 at full size.
 
 For icons and scrollbars, follow [`clients/packages/ui/GUIDE.md`](clients/packages/ui/GUIDE.md) and [`scroll-area/GUIDE.md`](clients/packages/ui/src/components/scroll-area/GUIDE.md).
 

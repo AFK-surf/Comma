@@ -1,7 +1,7 @@
 defmodule SalixStore.ComputeWorkloadDeletion do
   @moduledoc false
   import Ecto.Query
-  alias SalixStore.{Compute, ComputeRuntimeCarrier, ComputeWorkloadUpdate, Repo, ServiceRoutes}
+  alias SalixStore.{Compute, ComputeWorkloadUpdate, Repo, ServiceRoutes}
 
   # external_worker: stored Workloads of the retired External Worker templates.
   @deletable_kinds ["shell", "external_worker"]
@@ -404,12 +404,7 @@ defmodule SalixStore.ComputeWorkloadDeletion do
           c.allocation_id == ^workload.allocation_id and c.kind != "allocation.dispose" and
             c.status in ["pending", "admitted", "executing"]
       )
-    ) or
-      Repo.exists?(
-        from(i in ComputeRuntimeCarrier.Input,
-          where: i.workload_id == ^workload.id and i.status in ["pending", "in_flight"]
-        )
-      )
+    )
   end
 
   defp waiting(workload, phase, error) do
@@ -436,29 +431,16 @@ defmodule SalixStore.ComputeWorkloadDeletion do
     deletion = workload.deletion
     previous = Repo.get(Compute.Command, deletion["host_request_id"])
 
-    binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
-
-    connection =
-      Repo.get(SalixStore.AgentVMM.RegistrationObservation, deletion["registration_id"])
-
     current_connection =
-      connection && is_nil(connection.disconnected_at) &&
-        connection.connection_epoch == (binding.observation || %{})["connection_epoch"]
+      match?(
+        {:ok, _},
+        SalixStore.AgentVMM.current_connection(deletion["registration_id"])
+      )
 
-    unsupported =
-      current_connection &&
-        "allocation-disposal-v1" not in (connection.supported_features || [])
-
-    if unsupported ||
-         (!current_connection && previous && previous.status == "failed" &&
-            get_in(previous.evidence, ["result", "reason"]) == "ERROR_REASON_FEATURE_MISMATCH") do
-      waiting(workload, "cleaning", "host_update_required")
-    else
-      enqueue_supported(allocation, workload, observation, deletion, previous, current_connection)
-    end
+    enqueue_disposal(allocation, workload, observation, deletion, previous, current_connection)
   end
 
-  defp enqueue_supported(
+  defp enqueue_disposal(
          allocation,
          workload,
          observation,
@@ -510,7 +492,7 @@ defmodule SalixStore.ComputeWorkloadDeletion do
                  "workload_generation" => workload.generation,
                  "command_json" => %{
                    "commandId" => id,
-                   "deadlineUnixMillis" => DateTime.to_unix(deadline, :millisecond),
+                   "timeoutMillis" => 60_000,
                    "targetRevision" => revision,
                    "disposeAllocation" => %{
                      "allocationId" => allocation.id,

@@ -1,6 +1,6 @@
 import type { TaskStatusBucket } from "@comma/ui/components/task-workspace";
 import { useCommaMessages } from "@comma/i18n/react";
-import type { ProductInboxItem, TaskLoop } from "@comma/core-client";
+import type { FileSource, ProductInboxItem, TaskLoop } from "@comma/core-client";
 import type { TaskFilterOption } from "@comma/ui/components/task-workspace";
 import {
   CalendarIcon,
@@ -24,6 +24,8 @@ import {
   type TaskLoopFilterCounts,
 } from "./taskLoopLabels";
 import { LabelDot } from "./labelColor";
+import type { RequestDirection } from "./requestPeople";
+import { RequestPersonAvatar } from "./RequestPersonAvatar";
 import { TaskOriginIcon, type TaskOriginKey } from "./taskOrigin";
 
 /** A Tasks filter opened from a task property or chip. */
@@ -34,7 +36,9 @@ export type TasksFilterLink =
   | { clientPlatform: string }
   /** A Loop trigger type, or Tasks without a Loop. */
   | { schedule: TaskLoopFilterKey }
-  | { loopRule: string };
+  | { loopRule: string }
+  /** The people a Task's request came from (`requestPersonKey`). */
+  | { request: string };
 
 /** Opens Tasks with the selected property as its filter. */
 export function useOpenTasksFilter(): (filter: TasksFilterLink) => void {
@@ -219,6 +223,121 @@ export function TaskPullRequestChip({
       {/* A chip inside a card is a plain span, which carries no aria-label: the state is words in its text. */}
       <span className="app-sr-only">{`, ${state}`}</span>
     </Chip>
+  );
+}
+
+/**
+ * The person of a request by avatar and name: who it came from, or whom it went to (said in words to assistive
+ * technology and on hover). A Task from a request wears it in place of the Request platform chip. In the compact
+ * Inbox rail (`iconOnly`) it is the avatar alone, and hovering it shows the person in a card.
+ */
+export function TaskRequestChip({
+  avatar,
+  direction,
+  email,
+  iconOnly = false,
+  name,
+  nested,
+  onOpen,
+  testId,
+}: {
+  /** Their avatar, read through the request; their initials without one. */
+  avatar?: FileSource | undefined;
+  direction: RequestDirection;
+  email?: string | null | undefined;
+  iconOnly?: boolean;
+  name: string;
+  nested?: boolean;
+  onOpen?: (() => void) | undefined;
+  testId?: string | undefined;
+}) {
+  const messages = useCommaMessages();
+  const said =
+    direction === "from"
+      ? messages.task_request_chip_from({ name })
+      : messages.task_request_chip_to({ name });
+  return (
+    <Chip
+      className={`comma-task-label-chip comma-task-platform-chip${iconOnly ? " comma-task-request-chip-icon" : ""}`}
+      kind="platform"
+      nested={nested}
+      onOpen={onOpen}
+      testId={testId}
+      ariaLabel={iconOnly ? said : undefined}
+      {...(iconOnly
+        ? {
+            hoverClassName: "comma-task-request-hover-card",
+            hoverContent: (
+              <TaskRequestPersonHoverDetails
+                avatar={avatar}
+                direction={direction}
+                email={email}
+                name={name}
+              />
+            ),
+            // As the Loop icon beside it: the card opens beside the avatar, never over the row below.
+            hoverPlacement: "end" as const,
+          }
+        : {})}
+    >
+      <span
+        aria-hidden
+        className="inline-flex shrink-0"
+        data-direction={direction}
+        title={iconOnly ? undefined : said}
+      >
+        <RequestPersonAvatar
+          // Icon-only, the avatar fills the chip's whole box (styles.css).
+          className={
+            iconOnly
+              ? undefined
+              : "[&>img]:size-4! [&>span]:size-4! [&>span]:text-[8px]!"
+          }
+          email={email}
+          name={name}
+          source={avatar}
+        />
+      </span>
+      {iconOnly ? null : (
+        <span aria-hidden className="comma-task-label-chip-text" title={said}>
+          {name}
+        </span>
+      )}
+      <span className="app-sr-only">{said}</span>
+    </Chip>
+  );
+}
+
+/** The request chip's hover card: which way the request went, then the person by avatar, name and email. */
+function TaskRequestPersonHoverDetails({
+  avatar,
+  direction,
+  email,
+  name,
+}: {
+  avatar?: FileSource | undefined;
+  direction: RequestDirection;
+  email?: string | null | undefined;
+  name: string;
+}) {
+  const messages = useCommaMessages();
+  return (
+    <div className="flex flex-col gap-md">
+      <p className="text-xs font-medium text-quaternary">
+        {direction === "from"
+          ? messages.task_requests_from_label()
+          : messages.task_panel_to()}
+      </p>
+      <div className="flex min-w-0 items-center gap-md">
+        <RequestPersonAvatar email={email} name={name} source={avatar} />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-medium text-primary">{name}</span>
+          {email && email !== name ? (
+            <span className="truncate text-xs text-tertiary">{email}</span>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 

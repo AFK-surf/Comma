@@ -13,7 +13,7 @@ rule:
         - kind: call_expression
         - regex: "^(Thread\\.sleep|usleep|sleep|Task\\.sleep|try await Task\\.sleep|RunLoop\\.(current|main)\\.run)\\b"
 files:
-  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "systems/station/computer-use/native/**/Tests/**/*.swift"
   - "clients/packages/apple-core/Tests/**/*.swift"
 ---
 id: swift-test-deadline
@@ -35,7 +35,7 @@ rule:
         - kind: call_expression
         - regex: "\\.asyncAfter\\("
 files:
-  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "systems/station/computer-use/native/**/Tests/**/*.swift"
   - "clients/packages/apple-core/Tests/**/*.swift"
 ---
 id: swift-test-clock
@@ -55,5 +55,5 @@ rule:
         - kind: navigation_expression
         - regex: "^(Date\\.now|ProcessInfo\\.processInfo\\.systemUptime)$"
 files:
-  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "systems/station/computer-use/native/**/Tests/**/*.swift"
   - "clients/packages/apple-core/Tests/**/*.swift"

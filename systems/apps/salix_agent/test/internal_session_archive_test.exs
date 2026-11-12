@@ -1,13 +1,8 @@
 defmodule SalixAgent.InternalSessionArchiveTest do
-  @moduledoc """
-  Legacy archive read compatibility and business behavior over historical JSONL
-  fixtures. Fixture construction writes the retired layout directly; production
-  business commits always use the current writer.
-  """
+  @moduledoc "PG Session writes and immutable archive reads, with one historical JSONL reader fixture."
   use SystemsClock.Case, async: false
 
   alias SalixAgent.{
-    Compaction,
     InternalAgentRuntime,
     InternalSession,
     InternalSessionActor,
@@ -15,14 +10,21 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   }
 
   alias SalixAgent.InternalSession.State
-  alias SalixStore.{ArchiveLog, Codec, Keys, S3}
+  alias SalixStore.{ArchiveLog, Keys, S3}
 
   @session "ses1_0000000000000000800"
 
   setup do
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    previous_line = SystemsRuntime.get_env(:salix_store, :seal_line_bytes)
+
+    on_exit(fn ->
+      if is_nil(previous_line),
+        do: SystemsRuntime.delete_env(:salix_store, :seal_line_bytes),
+        else: SystemsRuntime.put_env(:salix_store, :seal_line_bytes, previous_line)
+    end)
+
     :ok
   end
 
@@ -108,35 +110,61 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   defp sha256(content),
     do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
-  defp seed_format2(agent_id, events) do
+  defp seed_session(agent_id, events) do
+    alias SalixAgent.InternalSessionStore.PGCodec
+
+    SalixAgent.TestSupport.SessionFixture.cleanup_on_exit(agent_id)
+
+    SalixStore.Repo.query!(
+      "INSERT INTO salix_agents (agent_id,tenant_id,group_id,role,config_revision,config_payload,owner_node,owner_epoch,root_revision) VALUES ($1,'tenant','group','worker',1,$2,'owner',1,1) ON CONFLICT (agent_id) DO NOTHING",
+      [agent_id, PGCodec.encode(%{})]
+    )
+
+    :ok = SalixAgent.OwnershipCell.install(agent_id, 1)
+    ExUnit.Callbacks.on_exit(fn -> SalixAgent.OwnershipCell.clear(agent_id) end)
+
     state =
       agent_id
       |> InternalSession.new(@session, %{})
-      |> InternalSession.export()
-      |> Map.put(:storage_format, 2)
-      |> InternalSession.open()
       |> InternalSession.apply_events(events)
       |> InternalSession.normalize()
-      |> InternalSession.export()
 
-    key = Keys.agent_internal_runtime_session(agent_id, @session)
-    {:ok, _} = S3.put(key, Codec.encode_snapshot(state))
+    assert :ok = InternalSessionStore.prepare_seed(agent_id, state)
 
     {:ok, _} =
-      Registry.register(SalixAgent.Registry, InternalSessionActor.key(agent_id, @session), nil)
+      Registry.register(SalixAgent.Registry, InternalSessionActor.key(agent_id, @session), %{
+        runtime_epoch: 1
+      })
 
-    key
+    :ok
+  end
+
+  defp archive_all(agent_id) do
+    {:ok, state} = InternalSessionStore.read(agent_id, @session)
+    archive_visits(agent_id, InternalSession.get(state, :last_seq) + 2, false)
+  end
+
+  defp archive_visits(_agent_id, 0, _advanced), do: flunk("archive target did not finish")
+
+  defp archive_visits(agent_id, left, advanced) do
+    case InternalSessionStore.archive_pending(agent_id, @session) do
+      {:ok, :archived} ->
+        archive_visits(agent_id, left - 1, true)
+
+      {:ok, :nothing_to_archive} ->
+        {:ok, head} = SalixAgent.InternalSessionStore.PG.archive_head(agent_id, @session)
+
+        if head.target,
+          do: archive_visits(agent_id, left - 1, advanced),
+          else: {:ok, if(advanced, do: :archived, else: :nothing_to_archive)}
+
+      error ->
+        error
+    end
   end
 
   defp archive_key(agent_id),
     do: Keys.agent_internal_runtime_session_archive(agent_id, @session)
-
-  defp archive_reads(read_log) do
-    Enum.count(read_log, fn
-      {:get, key} -> String.ends_with?(key, "archive.jsonl")
-      _other -> false
-    end)
-  end
 
   defp archive_lists(read_log) do
     Enum.count(read_log, fn
@@ -179,7 +207,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
           }
         ]
 
-    seed_format2(agent_id, events)
+    seed_session(agent_id, events)
 
     assert {:ok, compacted} = InternalSessionStore.commit(agent_id, @session, [compaction(511)])
 
@@ -192,7 +220,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert %{"call-arch" => result_seq} = InternalSession.get(compacted, :async_result_refs)
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
     assert InternalSession.archived_through(session) >= result_seq
@@ -220,7 +248,12 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert {:error, :not_found} =
              InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-arch")
 
-    assert {:ok, %{body: _}} = S3.get(archive_key(agent_id))
+    assert {:ok, %{body: _}} =
+             S3.get(
+               InternalSessionStore.normalized_catalog(session)
+               |> List.first()
+               |> Map.fetch!(:object_key)
+             )
   end
 
   test "a generic tool result survives snapshot reload and archive fetch by opaque ref" do
@@ -243,15 +276,15 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     mismatched_event =
       Map.put(stored_event, "session_id", "ses1_0000000000000000801")
 
-    assert {:error, :session_id_mismatch} =
-             InternalSessionStore.prepare_commit(agent_id, @session, [mismatched_event])
-
-    seed_format2(agent_id, [
+    seed_session(agent_id, [
       deliver(1),
       stored_event,
       stored_result_message(2, ref, :capsule),
       stored_result_message(3, ref, :page)
     ])
+
+    assert {:error, :session_id_mismatch} =
+             InternalSessionStore.prepare_commit(agent_id, @session, [mismatched_event])
 
     # Stable refs absorb exact producer retries, but they are never
     # last-write-wins aliases for different canonical bytes.
@@ -285,7 +318,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert InternalSession.get(compacted, :compacted_seq) == 3
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, archived_session} = InternalSessionStore.read(agent_id, @session)
     assert InternalSession.get(archived_session, :async_results) == []
@@ -331,8 +364,8 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     # reader, but a bare result_ref no longer opens deep history.
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(3)])
 
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+    assert {:ok, :nothing_to_archive} =
+             archive_all(agent_id)
 
     assert {:ok, retained} = InternalSessionStore.read(agent_id, @session)
     assert InternalSession.get(retained, :async_results) == []
@@ -349,9 +382,8 @@ defmodule SalixAgent.InternalSessionArchiveTest do
                hot_record["seq"]
              )
 
-    assert {:ok, %{body: archive_bytes}} = S3.get(archive_key(agent_id))
-
-    assert Enum.count(ArchiveLog.decode!(archive_bytes), &(&1.kind == "tool_result")) == 1
+    assert {:ok, records} = InternalSessionStore.archived_records(agent_id, retained)
+    assert Enum.count(records, &(&1.kind == "tool_result")) == 1
   end
 
   # The consequence the pinned watermark exists to prevent, driven through
@@ -364,7 +396,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   # docs/agent-runtime.md. These two tests pin the
   # consequence now so that change cannot land without it.
   defp seed_covered_message(agent_id) do
-    seed_format2(agent_id, [
+    seed_session(agent_id, [
       deliver(1),
       %{
         "type" => "async_tool_call_started",
@@ -419,7 +451,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
 
   defp archive_then_ack(agent_id) do
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
     queue_id = InternalSession.get(session, :input_queue) |> List.last() |> Map.fetch!("queue_id")
@@ -461,15 +493,15 @@ defmodule SalixAgent.InternalSessionArchiveTest do
 
   test "message search is a live-window surface that names unsearched archive" do
     agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    seed_format2(agent_id, Enum.map(1..300, &deliver/1))
+    seed_session(agent_id, Enum.map(1..300, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
-    assert InternalSession.archived_through(session) == 280
+    assert InternalSession.archived_through(session) == 300
 
     # Message 42 archived out of the window: search does not fan out into
     # the archive (limit must bound work) and SAYS so instead of silently
@@ -501,12 +533,12 @@ defmodule SalixAgent.InternalSessionArchiveTest do
       "created_at" => 5_000
     }
 
-    seed_format2(agent_id, Enum.map(1..300, &deliver/1) ++ [recovery_event])
+    seed_session(agent_id, Enum.map(1..300, &deliver/1) ++ [recovery_event])
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
     assert InternalSession.archived_through(session) > 0
@@ -529,29 +561,28 @@ defmodule SalixAgent.InternalSessionArchiveTest do
 
   test "tail and before pages read only the spans they need" do
     agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    seed_format2(agent_id, Enum.map(1..600, &deliver/1))
+    seed_session(agent_id, Enum.map(1..600, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(500)])
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
-    assert InternalSession.archived_through(session) == 500
-
-    # One PUT wrote the archive, but the catalog subdivides it: 1..256 and
-    # 257..500. A tail of 100 needs 0 archived messages beyond the window's
-    # 100 — force the archive by asking for more than the window holds.
-    assert [[1, 256, 256, 0, _], [257, 500, 244, _, _]] =
-             InternalSession.get(session, :archive_chunks)
+    assert InternalSession.archived_through(session) == 600
 
     SalixStore.S3.Fake.reset_read_log()
     assert {:ok, tail} = InternalSessionStore.transcript(agent_id, session, {:tail, 150})
     read_log = SalixStore.S3.Fake.read_log()
 
-    # ONE ranged read of the single span that holds the missing 50, and no
-    # LIST at any point: the catalog is the address book.
-    assert archive_reads(read_log) == 1
+    # The cursor crosses the 257..512 span. Its catalog count is not a
+    # count before the cursor, so the existing page plan also reads 1..256.
+    assert read_log ==
+             Enum.map(
+               [1, 257],
+               &{:get, Keys.agent_internal_runtime_session_segment(agent_id, @session, &1)}
+             )
+
     assert archive_lists(read_log) == 0
     assert length(tail.messages) == 150
     assert Enum.map(tail.messages, &(&1["seq"] || &1[:seq])) == Enum.to_list(451..600)
@@ -562,64 +593,66 @@ defmodule SalixAgent.InternalSessionArchiveTest do
 
     assert {:ok, older} = InternalSessionStore.transcript(agent_id, session, {:before, 451, 100})
 
-    assert archive_reads(SalixStore.S3.Fake.read_log()) == 1
+    assert SalixStore.S3.Fake.read_log() ==
+             Enum.map(
+               [1, 257],
+               &{:get, Keys.agent_internal_runtime_session_segment(agent_id, @session, &1)}
+             )
+
     assert Enum.map(older.messages, & &1["seq"]) == Enum.to_list(351..450)
     assert older.has_older?
   end
 
-  test "records appended past the watermark stay outside the committed read" do
-    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    seed_format2(agent_id, Enum.map(1..300, &deliver/1))
+  test "historical JSONL reads exclude bytes beyond its committed watermark" do
+    agent_id = "legacy-reader"
 
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
+    records =
+      for seq <- 1..3,
+          do: %{
+            seq: seq,
+            kind: "message",
+            data: %{"id" => seq, "role" => "user", "content" => "message #{seq}"}
+          }
 
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+    committed = Enum.take(records, 2)
+    {:ok, _} = S3.put(archive_key(agent_id), ArchiveLog.encode(records))
 
-    assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
-    assert InternalSession.archived_through(session) == 280
+    state =
+      InternalSession.new(agent_id, @session)
+      |> InternalSession.export()
+      |> Map.merge(%{
+        storage_format: 2,
+        archived_through: 2,
+        archive_chunks: ArchiveLog.spans(committed, 0)
+      })
+      |> InternalSession.open()
 
-    # A later archival's append landed but its advance CAS did not: seqs
-    # 281.. now live BOTH in the hot window and past the catalog's end of
-    # the object. The catalog bounds the read, so each seq appears once.
-    {:ok, %{body: committed, etag: etag}} = S3.get(archive_key(agent_id))
+    assert {:ok, ^committed} = InternalSessionStore.archived_records(agent_id, state)
 
-    trailing =
-      InternalSession.get(session, :messages)
-      |> Enum.map(&ArchiveLog.shape("message", &1[:seq], &1))
-      |> ArchiveLog.encode()
+    assert {:ok, %{messages: messages}} =
+             InternalSessionStore.transcript(agent_id, state, {:before, 3, 2})
 
-    {:ok, _} = S3.put(archive_key(agent_id), committed <> trailing, if_match: etag)
-
-    assert {:ok, transcript} = InternalSessionStore.transcript(agent_id, session, :full)
-    seqs = Enum.map(transcript.messages, &(&1["seq"] || &1[:seq]))
-    assert seqs == Enum.to_list(1..300)
-
-    # And the next archival truncates the uncommitted tail back to a pure
-    # function of session state instead of doubling it.
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(300)])
-
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
-
-    assert {:ok, done} = InternalSessionStore.read(agent_id, @session)
-    assert {:ok, records} = InternalSessionStore.archived_records(agent_id, done)
-    assert Enum.map(records, & &1.seq) == Enum.to_list(1..300)
+    assert Enum.map(messages, & &1["id"]) == [1, 2]
   end
 
   test "a missing archive object is a hard error, not a shortened history" do
     agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    seed_format2(agent_id, Enum.map(1..600, &deliver/1))
+    seed_session(agent_id, Enum.map(1..600, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(600)])
 
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
     assert InternalSession.archived_through(session) == 600
 
-    assert :ok = S3.delete(archive_key(agent_id))
+    assert :ok =
+             S3.delete(
+               InternalSessionStore.normalized_catalog(session)
+               |> List.first()
+               |> Map.fetch!(:object_key)
+             )
 
     assert {:error, {:archive_incomplete, _}} =
              InternalSessionStore.transcript(agent_id, session, :full)
@@ -633,6 +666,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
     marker = "PINNED-MARKER-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    seed_session(agent_id, [])
 
     {:ok, _} =
       InternalSessionStore.prepare_commit(agent_id, @session, [
@@ -705,7 +739,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
           }
         ]
 
-    seed_format2(agent_id, events)
+    seed_session(agent_id, events)
 
     # Compaction alone retires the pointer (no window tool_call protects it)
     # but the ladder's window tier still answers.
@@ -722,12 +756,12 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     # from. With the pointer already retired by compaction, the bare id is
     # the owner-signed not_found while the data stays in the archive.
     assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+             archive_all(agent_id)
 
     assert {:ok, after_archive} = InternalSessionStore.read(agent_id, @session)
 
     assert InternalSession.archived_through(after_archive) ==
-             InternalSession.get(after_archive, :compacted_seq)
+             InternalSession.get(after_archive, :last_seq)
 
     assert InternalSession.get(after_archive, :async_results) == []
 
@@ -741,10 +775,10 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   test "a page over a sparse archive transfers only the spans holding messages" do
     agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    # 256 messages, then three spans' worth of facts, then more messages: a
-    # one-message page must not transfer the fact-only spans in between.
+    SystemsRuntime.put_env(:salix_store, :seal_line_bytes, 256)
+    # A one-message page skips fact-only segments between message spans.
     facts =
-      for n <- 1..768 do
+      for n <- 1..20 do
         %{
           "type" => "session_event",
           "session_id" => @session,
@@ -754,22 +788,21 @@ defmodule SalixAgent.InternalSessionArchiveTest do
         }
       end
 
-    seed_format2(
+    seed_session(
       agent_id,
-      Enum.map(1..256, &deliver/1) ++ facts ++ Enum.map(257..300, &deliver/1)
+      Enum.map(1..3, &deliver/1) ++ facts ++ Enum.map(4..6, &deliver/1)
     )
 
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(290)])
+    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(5)])
 
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
+    assert {:ok, :archived} = archive_all(agent_id)
 
     assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
 
     # Fact-only spans are recorded with a zero message count.
     assert Enum.any?(
-             InternalSession.get(session, :archive_chunks),
-             &match?([_first, _last, 0, _offset, _length], &1)
+             InternalSession.get(session, :segment_catalog),
+             &match?([_first, _last, 0, _bytes], &1)
            )
 
     SalixStore.S3.Fake.reset_read_log()
@@ -781,10 +814,16 @@ defmodule SalixAgent.InternalSessionArchiveTest do
 
     assert length(page.messages) == 1
 
-    # One ranged read, and it addresses only the span that actually holds
-    # the newest archived message — the fact-only spans are never fetched.
+    # The straddling message span and its preceding message span suffice;
+    # the intervening fact-only spans are never fetched.
     read_log = SalixStore.S3.Fake.read_log()
-    assert archive_reads(read_log) == 1
+
+    assert read_log ==
+             Enum.map(
+               [23, 25],
+               &{:get, Keys.agent_internal_runtime_session_segment(agent_id, @session, &1)}
+             )
+
     assert archive_lists(read_log) == 0
   end
 

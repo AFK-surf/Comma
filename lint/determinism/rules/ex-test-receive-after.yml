@@ -12,7 +12,8 @@ rule:
     - kind: call
     - has:
         field: target
-        regex: "^receive$"
+        # SystemsRuntime.Proc.receive is receive.
+        regex: "^(receive|SystemsRuntime\\.Proc\\.receive)$"
     - has:
         kind: do_block
         has:

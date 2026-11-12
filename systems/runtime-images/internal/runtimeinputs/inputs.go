@@ -16,7 +16,7 @@ import (
 
 const schemaVersion = 1
 
-var classes = []string{"meeting", "shell", "station"}
+var classes = []string{"shell", "station"}
 
 type Manifest struct {
 	SchemaVersion int     `json:"schemaVersion"`
@@ -47,30 +47,21 @@ func Generate(root string) (Manifest, error) {
 		return Manifest{}, errors.New("runtime dependency lock schemaVersion must be 1")
 	}
 
-	connector := "systems/connector/salix-connect"
 	buildRecipe := "scripts/build-runtime-images.sh"
 	definitions := map[string]classInput{
-		"meeting": {
-			files: []string{
-				buildRecipe,
-				"systems/runtime-images/meeting/Dockerfile",
-				"systems/runtime-images/go.mod",
-				"systems/runtime-images/cmd/comma-meeting-runtime",
-				connector,
-			},
-			lockKeys: []string{"baseImages.go", "baseImages.meeting", "packageSnapshot", "meetnative"},
-		},
 		"shell": {
 			files: []string{
 				buildRecipe,
-				"systems/runtime-images/shell/Dockerfile",
+				"systems/runtime-images/station/Dockerfile",
+				"systems/runtime-images/station/apt-package-recovery.mjs",
 				"systems/runtime-images/go.mod",
 				"systems/runtime-images/cmd/comma-shell-runtime",
 			},
-			lockKeys: []string{"baseImages.go", "baseImages.shell", "packageSnapshot"},
+			lockKeys: []string{"baseImages.go", "baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches"},
 		},
 		// The station release (systems/station/scripts/bundle.sh): the station, the
-		// workspace package it bundles, and the pnpm lock that resolves the rest.
+		// workspace package it bundles, and the pnpm lock that resolves the rest;
+		// and meet-native, which the VMM Station runs for meetings.
 		"station": {
 			files: []string{
 				buildRecipe,
@@ -80,7 +71,7 @@ func Generate(root string) (Manifest, error) {
 				"clients/packages/mesh/src",
 				"pnpm-lock.yaml",
 			},
-			lockKeys: []string{"baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches", "codex", "claude", "silkV3Decoder"},
+			lockKeys: []string{"baseImages.go", "baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches", "codex", "claude", "silkV3Decoder", "meetnative"},
 		},
 	}
 
@@ -177,7 +168,7 @@ func inputFiles(root string, entries []string) ([]string, error) {
 				return err
 			}
 			relative = filepath.ToSlash(relative)
-			if item.IsDir() && (item.Name() == ".git" || (relative == "systems/connector/salix-connect/native") ||
+			if item.IsDir() && (item.Name() == ".git" || (relative == "systems/station/computer-use/native") ||
 				generatedDir(relative, item.Name())) {
 				return filepath.SkipDir
 			}

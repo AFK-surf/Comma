@@ -1,4 +1,4 @@
-//! The launcher's lines on stderr (launchd writes them to stillfail.log), shaped like the Rust station's: an RFC 3339
+//! The launcher's lines on stderr (launchd writes them to station.log), shaped like the Rust station's: an RFC 3339
 //! time, the level, what happened.
 
 pub fn info(text: &str) {
@@ -14,7 +14,7 @@ pub fn error(text: &str) {
 }
 
 fn line(level: &str, text: &str) {
-    let line = format!("{} {level:>5} stillfail-station: {text}", iso(crate::data::now_ms()));
+    let line = format!("{} {level:>5} comma-station: {text}", iso(crate::data::now_ms()));
     // In tests, where the harness keeps it to show with a failure.
     #[cfg(test)]
     eprintln!("{line}");

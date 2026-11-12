@@ -13,9 +13,17 @@ extension ChatTranscriptView {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: 6) {
                     if let message = row.message { extras(message) }
-                    // Above the text, as the composer held them over the field; the same chips from send to delivery.
+                    // Attachments stay above the person's message text.
                     ForEach(Array(row.attachedTexts.enumerated()), id: \.offset) { _, attached in AttachedTextChip(attached: attached) }
-                    ForEach(Array(row.files.enumerated()), id: \.offset) { _, name in FileChip(name: name) }
+                    ForEach(Array(row.files.enumerated()), id: \.offset) { position, name in
+                        if let message = row.message, let target = pane.target, position < message.files.count,
+                           let item = ChatMediaItem(message: message, file: message.files[position], position: position,
+                                                    group: target.groupID, conversation: target.conversationID) {
+                            ChatMediaThumbnail(item: item, context: ChatMediaContext(gallery: images, store: store,
+                                                                                   group: target.groupID, conversation: target.conversationID)) {}
+                                .id(item.cacheKey)
+                        } else { FileChip(name: name) }
+                    }
                     if !text.isEmpty {
                         Group {
                             if let flight {
@@ -69,7 +77,7 @@ extension ChatTranscriptView {
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         if showsIdentity(row), row.groupFirst {
-                            Text(row.actorRole == .router ? "Comma" : "Worker")
+                            Text(row.actorRole == .router ? pane.store?.router.name ?? "Comma" : String(localized: "Worker"))
                                 .font(.footnote).foregroundStyle(CommaTheme.textTertiary)
                                 .padding(.leading, 13)
                         }
@@ -115,7 +123,14 @@ extension ChatTranscriptView {
     }
 
     private func extras(_ message: ChatItem) -> some View {
-        MessageExtras(message: message, taskSummary: store.taskSummary(id:), openTask: openTask) { openAttachment(message, $0) }
+        MessageExtras(message: message, taskSummary: store.taskSummary(id:), openTask: openTask,
+                      openMiniApp: { app in
+            let review = pane.conversation
+            let publication = pane.isTask && pane.conversationID == app.conversationID && review?.canAcceptReview == true
+                ? review?.reviewVersion.map { MiniAppPublication(appID: app.appID, version: app.version,
+                                                                 conversationID: app.conversationID, reviewVersion: $0) } : nil
+            store.miniAppTarget = MiniAppTarget(workspaceID: pane.workspace.id, appID: app.appID, version: app.version, publication: publication)
+        }, openDynamicUI: { dynamicUI = $0 }) { openAttachment(message, $0) }
     }
 
     private func highlight(_ row: ChatRow) -> some View {

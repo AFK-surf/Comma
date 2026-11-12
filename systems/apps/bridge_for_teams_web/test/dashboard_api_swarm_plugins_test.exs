@@ -506,7 +506,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmPluginsTest do
       assert %{
                "error" => %{
                  "code" => "android_not_entitled",
-                 "message" => "Android connector access is not enabled for this organization."
+                 "message" => "Android device access is not enabled for this organization."
                }
              } = conn |> put(path, %{"enabled" => true}) |> json_response(409)
 

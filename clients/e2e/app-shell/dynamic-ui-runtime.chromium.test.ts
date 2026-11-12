@@ -10,6 +10,7 @@ import { IconRainy } from "@central-icons-react/round-outlined-radius-2-stroke-2
 import { IconSnowFlakes } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconSnowFlakes";
 import { IconTrainFrontView } from "@central-icons-react/round-outlined-radius-2-stroke-2/IconTrainFrontView";
 import { commands } from "vitest/browser";
+import { dynamicUiLevel } from "../../packages/chat-contract/src/dynamic-ui/level";
 import journeysDesigned from "./fixtures/dynamic-ui/journeys-designed-output.json";
 import weatherDesigned from "./fixtures/dynamic-ui/weather-designed-output.json";
 import weatherIllustrated from "./fixtures/dynamic-ui/weather-illustrated-output.json";
@@ -319,8 +320,11 @@ test("bounds chart allocation and recovers shared state without business calls",
     '<div class="stack"><p id="result">All</p><comma-chart id="trend"></comma-chart></div>'
   );
   const frame = page.frameLocator("iframe");
-  await expect(frame.locator("canvas")).toHaveAttribute("role", "img");
-  await expect(frame.locator("canvas")).toHaveAttribute("aria-label", /Mon/);
+  const chart = frame.locator(".comma-chart");
+  await expect(chart).toHaveAttribute("role", "img");
+  await expect(chart).toHaveAttribute("aria-label", /Mon/);
+  // Every point has its label under it.
+  await expect(chart.locator(".wc-bars-axis>span")).toHaveText(["Mon", "Tue"]);
   await page.evaluate(() =>
     (window as unknown as Host).uiPort.postMessage({
       type: "state",
@@ -332,11 +336,31 @@ test("bounds chart allocation and recovers shared state without business calls",
     []
   );
   expect(
-    await frame.locator("canvas").evaluate((node) => node.getBoundingClientRect().width)
+    await chart.evaluate((node) => node.getBoundingClientRect().width)
   ).toBeLessThanOrEqual(300);
   await eventually(
     async () => (await messages()).some((message) => message.type === "height"),
     (value) => expect(value).toBe(true)
+  );
+});
+
+/** Replaces the payload that mount sends with a widget of that version. */
+const widgetOfVersion = (version: number) => ({
+  payload: { version, html: "<p>Level</p>", script: "", data: {} },
+});
+test("shows a widget of its own level and stops for one above it", async ({
+  page: current,
+}) => {
+  await open(current);
+  await mount("", "", {}, undefined, widgetOfVersion(dynamicUiLevel));
+  await expect(current.frameLocator("iframe").locator("p")).toHaveText("Level");
+
+  await open(current);
+  await mount("", "", {}, undefined, widgetOfVersion(dynamicUiLevel + 1));
+  await eventually(
+    async () => (await messages()).filter((message) => message.type === "error"),
+    (value) =>
+      expect(value).toEqual([{ type: "error", reason: "UI needs a newer runtime" }])
   );
 });
 
@@ -512,17 +536,58 @@ test("HTML passed to a dynamic table text target fails visibly instead of leakin
 }) => {
   await open(current);
   await mount(
-    `const target='rows'; comma.text(target,'<tr><td>09/21 Mon</td></tr>');`,
-    '<table><tbody id="rows"></tbody></table>'
+    `const target='rows'; comma.text(target,'<tr><td>09/21 Mon</td></tr>');
+    comma.onState(()=>comma.table('days',{columns:['Day'],rows:[['09/22 Tue']]}));`,
+    '<table id="days"><tbody id="rows"></tbody></table>'
   );
   await eventually(
     async () =>
       (await messages()).some(
-        (item) => item.type === "error" && String(item.reason).includes("comma.table")
+        (item) =>
+          item.type === "part-error" && String(item.reason).includes("comma.table")
       ),
     (value) => expect(value).toBe(true)
   );
-  await expect(page.frameLocator("iframe").locator("body")).toBeEmpty();
+  const frame = page.frameLocator("iframe");
+  await expect(frame.getByRole("note")).toHaveText("This part couldn’t be shown");
+  await expect(frame.locator("body")).not.toContainText("09/21");
+  // A valid table replaces the failed rows and their note with them.
+  await page.evaluate(() =>
+    (window as unknown as Host).uiPort.postMessage({ type: "state", value: {} })
+  );
+  await expect(frame.getByRole("cell", { name: "09/22 Tue" })).toBeVisible();
+  await expect(frame.getByRole("note")).toHaveCount(0);
+});
+
+test("a part whose update fails shows a note in its place and the rest stays", async ({
+  page: current,
+}) => {
+  await open(current);
+  // A daily report aimed its last chart at a section: every card above it
+  // went with the whole widget.
+  await mount(
+    "comma.text('total','305');comma.chart('conversion',{labels:['a'],values:[1],type:'bar'});comma.text('after','Shown');comma.onState(()=>comma.text('conversion','Later'));",
+    '<div class="stack"><p id="total"></p><section id="conversion"></section><p id="after"></p></div>',
+    {},
+    undefined,
+    { copy: { partFailed: "这部分无法显示" } }
+  );
+  const frame = page.frameLocator("iframe");
+  await expect(frame.locator("#total")).toHaveText("305");
+  await expect(frame.locator("#after")).toHaveText("Shown");
+  await expect(frame.locator("#conversion").getByRole("note")).toHaveText(
+    "这部分无法显示"
+  );
+  const reported = await messages();
+  expect(reported.filter((item) => item.type === "error")).toEqual([]);
+  expect(reported.filter((item) => item.type === "part-error")).toEqual([
+    { type: "part-error", reason: "Invalid chart data" },
+  ]);
+  // The next valid update to that part takes the note's place.
+  await page.evaluate(() =>
+    (window as unknown as Host).uiPort.postMessage({ type: "state", value: {} })
+  );
+  await expect(frame.locator("#conversion")).toHaveText("Later");
 });
 
 test("table replacement is bounded across all tables and does not accumulate old rows", async ({
@@ -533,11 +598,17 @@ test("table replacement is bounded across all tables and does not accumulate old
     `
     const value={columns:['A','B','C','D','E','F'],rows:Array.from({length:24},()=>[1,2,3,4,5,6])};
     for(let i=0;i<4;i++)comma.table('first',value);
+    // Six full tables are within the rendered widget's 2,000 nodes; a seventh is not.
+    for(let i=1;i<6;i++)comma.table('filled'+i,value);
     comma.on('add','click',()=>comma.table('second',value));
   `,
-    '<section><table id="first"></table><table id="second"></table><button id="add">Add table</button></section>'
+    // The button leads: six tables are taller than the test's window.
+    `<section><button id="add">Add table</button><table id="first"></table>${Array.from({ length: 5 }, (_, i) => `<table id="filled${i + 1}"></table>`).join("")}<table id="second"></table></section>`
   );
   await expect(page.frameLocator("iframe").locator("#first tbody tr")).toHaveCount(24);
+  await expect(page.frameLocator("iframe").locator("#filled5 tbody tr")).toHaveCount(
+    24
+  );
   expect((await messages()).some((item) => item.type === "error")).toBe(false);
   await page.frameLocator("iframe").getByRole("button", { name: "Add table" }).click();
   await eventually(
@@ -606,9 +677,13 @@ test("text updates share the DOM budget and remove stale child targets", async (
   page: current,
 }) => {
   await open(current);
+  // Five full tables and 200 empty spans are within the 2,000 nodes; a text
+  // node in each span is not.
   await mount(
-    `for(let i=0;i<251;i++)comma.text('n'+i,'value');`,
-    Array.from({ length: 500 }, (_, i) => `<span id="n${i}"></span>`).join("")
+    `const value={columns:['A','B','C','D','E','F'],rows:Array.from({length:24},()=>[1,2,3,4,5,6])};
+     for(let i=0;i<5;i++)comma.table('t'+i,value);
+     for(let i=0;i<200;i++)comma.text('n'+i,'value');`,
+    `${Array.from({ length: 5 }, (_, i) => `<table id="t${i}"></table>`).join("")}${Array.from({ length: 200 }, (_, i) => `<span id="n${i}"></span>`).join("")}`
   );
   await eventually(
     async () =>
@@ -625,10 +700,12 @@ test("text updates share the DOM budget and remove stale child targets", async (
   await eventually(
     async () =>
       (await messages()).some(
-        (item) => item.type === "error" && String(item.reason).includes("Invalid table")
+        (item) =>
+          item.type === "part-error" && String(item.reason).includes("Invalid table")
       ),
     (value) => expect(value).toBe(true)
   );
+  await expect(page.frameLocator("iframe").locator("#parent")).toHaveText("Done");
 });
 
 test("static Agent HTML renders without script startup errors", async ({
@@ -827,14 +904,8 @@ for (const scenario of ["weather", "journeys"]) {
           await eventually(
             () =>
               frame
-                .locator("canvas")
-                .evaluate(
-                  (node: HTMLCanvasElement) =>
-                    Math.abs(
-                      node.getContext("2d")!.getTransform().a * node.clientWidth -
-                        node.width
-                    ) < 1
-                ),
+                .locator(".comma-chart")
+                .evaluate((node) => node.scrollWidth <= node.clientWidth),
             (value) => expect(value).toBe(true)
           );
         }
@@ -918,14 +989,8 @@ test("renders model-authored weather with semantic icons and motion", async ({
       await eventually(
         () =>
           frame
-            .locator("canvas")
-            .evaluate(
-              (node: HTMLCanvasElement) =>
-                Math.abs(
-                  node.getContext("2d")!.getTransform().a * node.clientWidth -
-                    node.width
-                ) < 1
-            ),
+            .locator(".comma-chart")
+            .evaluate((node) => node.scrollWidth <= node.clientWidth),
         (value) => expect(value).toBe(true)
       );
       await eventually(
@@ -1060,7 +1125,8 @@ test("a wheel over a widget scrolls the chat and tells the host first", async ({
 });
 
 // The height budget assumes the macOS system font, as the browser tests run
-// on macOS: Linux fallback fonts wrap the forecast rows taller.
+// on macOS: Linux fallback fonts wrap the forecast rows taller. In a wide
+// chat the widget is the card width, where its footer takes two lines.
 test("keeps a model-authored seven-day forecast compact at chat widths", async ({
   page: current,
 }) => {
@@ -1090,7 +1156,7 @@ test("keeps a model-authored seven-day forecast compact at chat widths", async (
       (value) => expect(value).toBe(true)
     );
     expect((await page.locator("iframe").boundingBox())!.height).toBeLessThan(
-      width === 760 ? 340 : 500
+      width === 760 ? 400 : 500
     );
   }
   expect((await messages()).filter((m) => m.type === "error")).toEqual([]);
@@ -1143,12 +1209,14 @@ test("uses Comma palette instead of OS appearance and updates without losing int
     "let n=0; comma.on('add','click',()=>comma.text('count',String(++n)));",
     '<section class="card"><strong id="count" class="metric">0</strong><p id="context">Local count</p><button id="add">Add</button></section>',
     {},
+    { scheme: "light" },
+    // The tokens a host resolves for its theme color authored html and cards alike.
     {
-      scheme: "light",
-      background: "rgb(247, 238, 226)",
-      foreground: "rgb(40, 35, 30)",
-      secondary: "rgb(85, 74, 61)",
-      surface: "rgb(235, 223, 206)",
+      tokens: {
+        "--color-bg-popup-secondary": "rgb(247, 238, 226)",
+        "--color-text-primary": "rgb(40, 35, 30)",
+        "--color-text-secondary": "rgb(85, 74, 61)",
+      },
     }
   );
   const frame = page.frameLocator("iframe");
@@ -1164,12 +1232,11 @@ test("uses Comma palette instead of OS appearance and updates without losing int
   await page.evaluate(() =>
     (window as unknown as Host).uiPort.postMessage({
       type: "theme",
-      theme: {
-        scheme: "dark",
-        background: "rgb(36, 39, 56)",
-        foreground: "rgb(238, 229, 248)",
-        secondary: "rgb(195, 181, 207)",
-        surface: "rgb(57, 48, 72)",
+      theme: { scheme: "dark" },
+      tokens: {
+        "--color-bg-popup-secondary": "rgb(36, 39, 56)",
+        "--color-text-primary": "rgb(238, 229, 248)",
+        "--color-text-secondary": "rgb(195, 181, 207)",
       },
     })
   );
@@ -1183,6 +1250,149 @@ test("uses Comma palette instead of OS appearance and updates without losing int
   await frame.locator("#add").click();
   await expect(frame.locator("#count")).toHaveText("2");
   expect((await messages()).filter((m) => m.type === "error")).toEqual([]);
+});
+
+test("a host that resolves no tokens shows cards on the design system's own, by scheme", async ({
+  page: current,
+}) => {
+  await open(current);
+  // The phone apps start a widget with no tokens: a card rule that read one
+  // was dropped, and cards showed with no surface, spacing or bars.
+  await mount(
+    "comma.card('card','bars',comma.data.sources);",
+    '<section id="card"></section>',
+    {
+      sources: {
+        title: "Top sources",
+        items: [
+          { label: "Direct", value: 118 },
+          { label: "google.com", value: 31 },
+        ],
+      },
+    },
+    { scheme: "light" }
+  );
+  const card = page.frameLocator("iframe").locator(".wc-card");
+  const look = () =>
+    card.evaluate((node) => {
+      const style = getComputedStyle(node);
+      const bar = getComputedStyle(node.querySelector(".wc-rank-track")!, "::before");
+      return {
+        padding: style.paddingTop,
+        surface: style.backgroundColor,
+        bar: bar.backgroundColor,
+        barWidth: Number.parseFloat(bar.width),
+      };
+    });
+  await eventually(look, (light) => {
+    expect(light.padding).toBe("16px");
+    expect(light.bar).toBe("rgb(32, 91, 255)");
+    expect(light.barWidth).toBeGreaterThan(100);
+  });
+  const light = await look();
+  await page.evaluate(() =>
+    (window as unknown as Host).uiPort.postMessage({
+      type: "theme",
+      theme: { scheme: "dark" },
+    })
+  );
+  await eventually(look, (dark) => {
+    expect(dark.surface).not.toBe(light.surface);
+    expect(dark.bar).toBe("rgb(59, 124, 255)");
+  });
+  expect((await messages()).filter((m) => m.type === "error")).toEqual([]);
+});
+
+test("content the html leaves outside a card shell gets one, beside the cards", async ({
+  page: current,
+}) => {
+  await open(current);
+  // A daily report set a heading, a chart and a list bare under its cards.
+  await mount(
+    "comma.card('kpi','metric',comma.data.kpi);comma.chart('events',{labels:['a','b'],values:[76,48],type:'bar'});",
+    '<section id="kpi"></section><h3>Events</h3><comma-chart id="events"></comma-chart><ul><li>Signups 76 / 48</li></ul><small id="source">PostHog</small>',
+    { kpi: { title: "Traffic", metrics: [{ label: "Visitors", value: "181" }] } }
+  );
+  const frame = page.frameLocator("iframe");
+  const shell = frame.locator(".comma-surface");
+  await expect(shell).toHaveCount(1);
+  await expect(shell.locator("h3")).toHaveText("Events");
+  await expect(shell.locator(".comma-chart .wc-bars-value")).toHaveText(["76", "48"]);
+  await expect(shell.locator("li")).toHaveText("Signups 76 / 48");
+  await expect(shell.locator("#source")).toHaveText("PostHog");
+  // The card's own element stays outside it, and the shell is the card's surface.
+  await expect(frame.locator(".comma-surface #kpi")).toHaveCount(0);
+  expect(await shell.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(
+    await frame
+      .locator(".wc-card")
+      .evaluate((node) => getComputedStyle(node).backgroundColor)
+  );
+
+  // A heading or a source line with no content beside it stays a label between cards.
+  await page.goto(fixtureUrl);
+  await mount(
+    "comma.card('kpi','metric',comma.data.kpi);",
+    '<h3>Yesterday</h3><section id="kpi"></section><small>PostHog</small>',
+    { kpi: { title: "Traffic", metrics: [{ label: "Visitors", value: "181" }] } }
+  );
+  await expect(page.frameLocator("iframe").locator(".wc-card")).toHaveCount(1);
+  await expect(page.frameLocator("iframe").locator(".comma-surface")).toHaveCount(0);
+});
+
+test("a chart draws several named series and refuses series of another length", async ({
+  page: current,
+}) => {
+  await open(current);
+  await mount(
+    "comma.chart('pair',{labels:['R&D','Sales'],series:[{name:'Budget',values:[420,150]},{name:'Actual',values:[451,162]}],type:'bar'});comma.chart('bad',{labels:['R&D','Sales'],series:[{name:'Budget',values:[420]}],type:'bar'});",
+    '<section class="card"><comma-chart id="pair"></comma-chart><comma-chart id="bad"></comma-chart></section>'
+  );
+  const frame = page.frameLocator("iframe");
+  await expect(frame.locator("#pair .wc-bar-col")).toHaveCount(4);
+  await expect(frame.locator("#pair")).toHaveAttribute(
+    "aria-label",
+    /Budget: R&D: 420/
+  );
+  await expect(
+    frame.locator("#pair .wc-rank-legend>span:not(.wc-rank-swatch)")
+  ).toHaveText(["Budget", "Actual"]);
+  await eventually(
+    async () => (await messages()).filter((item) => item.type === "part-error"),
+    (value) =>
+      expect(value).toEqual([{ type: "part-error", reason: "Invalid chart data" }])
+  );
+});
+
+test("a table card draws the rows a Worker sends, with an empty cell left empty", async ({
+  page: current,
+}) => {
+  await open(current);
+  await mount(
+    "comma.card('card','table',comma.data.hosts);",
+    '<section id="card"></section>',
+    {
+      hosts: {
+        title: "Hosts",
+        columns: ["Host", "CPU", "Status"],
+        rows: [
+          ["api-1", "72%", { text: "OK", tone: "success" }],
+          ["api-2", "91%", ""],
+        ],
+      },
+    }
+  );
+  const table = page.frameLocator("iframe").locator(".wc-table");
+  await expect(table.locator("thead th")).toHaveText(["Host", "CPU", "Status"]);
+  await expect(table.locator("tbody tr")).toHaveCount(2);
+  await expect(table.locator("tbody tr").first().locator("th,td")).toHaveText([
+    "api-1",
+    "72%",
+    "OK",
+  ]);
+  await expect(table.locator("tbody td:empty")).toHaveCount(1);
+  expect(
+    (await messages()).filter((m) => m.type === "error" || m.type === "part-error")
+  ).toEqual([]);
 });
 
 test("whole-item links require user activation and leave navigation to the host", async ({

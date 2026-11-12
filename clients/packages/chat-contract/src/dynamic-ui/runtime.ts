@@ -2,6 +2,8 @@
 /// <reference lib="dom" />
 import { cardEngine, type CardEngine, type CardOutgoing } from "./cards";
 import { cardCss } from "./cardStyles";
+import { cardTokenDefaults } from "./cardTokenDefaults";
+import { dynamicUiLevel } from "./level";
 
 /** Fixed package resources. Generated content enters only through the bound port. */
 export const dynamicUiUrl = "comma-ui://runtime/";
@@ -121,13 +123,19 @@ function workerBootstrap(resources: string[], data: unknown, state: unknown) {
   if (resources.length) loadDeclaredScripts(...resources);
 }
 
-function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) {
+function runtimeBootstrap(
+  workerSource: string,
+  createCards: typeof cardEngine,
+  level: number
+) {
   const messageEncoder = new TextEncoder();
   // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
   const applyTheme = (theme: Record<string, unknown> | undefined) => {
     if (theme && typeof theme === "object") {
-      document.documentElement.style.colorScheme =
-        theme.scheme === "dark" ? "dark" : "light";
+      const scheme = theme.scheme === "dark" ? "dark" : "light";
+      document.documentElement.style.colorScheme = scheme;
+      // The card tokens' own dark values, for a host that resolves none.
+      document.documentElement.dataset.commaScheme = scheme;
       for (const name of [
         "warm",
         "motion-enter",
@@ -414,12 +422,15 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
         }));
       if (
         !payload ||
-        payload.version !== 1 ||
+        !Number.isInteger(payload.version) ||
+        payload.version < 1 ||
         typeof payload.html !== "string" ||
         typeof payload.script !== "string" ||
         JSON.stringify(payload).length > 262144
       )
         throw Error("Invalid UI payload");
+      // A widget names the lowest runtime level that shows it (level.ts).
+      if (payload.version > level) throw Error("UI needs a newer runtime");
       const content = document.createElement("div");
       content.className = "wc-root";
       content.style.display = "flow-root";
@@ -431,34 +442,34 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       let nodes = 0;
       let charts = 0;
       const ids = new Map<string, HTMLElement>();
-      const chartViews = new Map<
-        HTMLCanvasElement,
-        { width: number; render: () => void }
-      >();
+      // A budget failure stops the whole widget, even inside one part's update.
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+      const overBudget = (reason: string) =>
+        Object.assign(Error(reason), { budget: true });
       // This bootstrap is serialized into the iframe; helpers must stay inside it.
       // eslint-disable-next-line unicorn/consistent-function-scoping
       const validateDepth = (node: Node, depth: number) => {
-        if (depth > 20) throw Error("UI tree exceeds its depth budget");
+        if (depth > 20) throw overBudget("UI tree exceeds its depth budget");
         for (const child of node.childNodes) validateDepth(child, depth + 1);
       };
       const replaceContent = (element: HTMLElement, fragment: DocumentFragment) => {
         if (!content.contains(element))
           throw Error("UI update target is no longer present");
+        // The shell the runtime puts around bare content is not the html's depth.
         let depth = 0;
         for (
           let parent = element.parentElement;
           parent && parent !== content;
           parent = parent.parentElement
         )
-          depth++;
+          if (!parent.classList.contains("comma-surface")) depth++;
         validateDepth(fragment, depth);
-        if (countNodes(content) - countNodes(element) + countNodes(fragment) > 500)
-          throw Error("UI tree exceeds its node budget");
+        // The html is at most 500 nodes. What the script renders into it (cards,
+        // tables, text) is bounded per element, and by this for the widget.
+        if (countNodes(content) - countNodes(element) + countNodes(fragment) > 2000)
+          throw overBudget("UI tree exceeds its node budget");
         for (const [id, child] of ids) {
           if (child !== element && element.contains(child)) ids.delete(id);
-        }
-        for (const chart of chartViews.keys()) {
-          if (element.contains(chart)) chartViews.delete(chart);
         }
         element.replaceChildren(fragment);
       };
@@ -503,7 +514,7 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
         }
         const element = document.createElement(
           node.localName === "comma-chart"
-            ? "canvas"
+            ? "figure"
             : node.localName === "comma-icon"
               ? "span"
               : node.localName
@@ -568,11 +579,8 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
           icon.innerHTML = icons[name];
           element.append(icon.content.cloneNode(true));
         }
-        if (element instanceof HTMLCanvasElement) {
-          element.width = 800;
-          element.height = 320;
-          element.style.width = "100%";
-          element.style.height = "160px";
+        if (node.localName === "comma-chart") {
+          element.classList.add("comma-chart");
           element.setAttribute("role", "img");
         }
         for (const child of node.childNodes)
@@ -584,6 +592,57 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
         content.append(construct(node, 0));
       if (countNodes(content) > 500) throw Error("UI tree exceeds its node budget");
       for (const node of content.childNodes) validateDepth(node, 0);
+      // Content the html leaves outside a card shell gets one, so a chart, a
+      // list, a table or a control never sits bare beside cards. A run of
+      // neighbours shares one shell. Headings and small print with no content
+      // beside them stay as they are: labels and source lines between cards.
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+      const blank = (node: Node) =>
+        node.nodeType === Node.TEXT_NODE && !node.textContent?.trim();
+      const role = (node: ChildNode): "frame" | "layout" | "quiet" | "content" => {
+        if (!(node instanceof HTMLElement)) return "content";
+        if (node.localName === "link") return "quiet";
+        if (node.localName === "section" || node.localName === "div") {
+          // A card shell, or an empty element a card will fill.
+          if (node.classList.contains("card") || [...node.childNodes].every(blank))
+            return "frame";
+          // An element that lays cards out holds them; anything else is content.
+          return [...node.querySelectorAll("section,div")].some(
+            (inner) =>
+              inner.classList.contains("card") || [...inner.childNodes].every(blank)
+          )
+            ? "layout"
+            : "content";
+        }
+        return ["h2", "h3", "small"].includes(node.localName) ||
+          ["muted", "sub", "widget-meta", "widget-title"].some((name) =>
+            node.classList.contains(name)
+          )
+          ? "quiet"
+          : "content";
+      };
+      const surface = (parent: Element) => {
+        let run: ChildNode[] = [];
+        const close = () => {
+          if (run.some((node) => !blank(node) && role(node) === "content")) {
+            const shell = document.createElement("section");
+            shell.className = "card comma-surface";
+            run[0]!.before(shell);
+            shell.append(...run);
+          }
+          run = [];
+        };
+        // A copy: closing a run moves its nodes out of this list.
+        for (const node of Array.from(parent.childNodes)) {
+          const kind = blank(node) ? "quiet" : role(node);
+          if (kind === "frame" || kind === "layout") {
+            close();
+            if (kind === "layout") surface(node as Element);
+          } else run.push(node);
+        }
+        close();
+      };
+      surface(content);
       applyTheme(theme);
       if (payload.script.trim() || externalScripts.length) {
         const source = `const __name = (fn) => fn; (${workerSource})(${JSON.stringify(externalScripts)},${JSON.stringify(payload.data ?? {})},${JSON.stringify(state ?? {})});\n${payload.script}\n`;
@@ -592,16 +651,87 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
         );
         worker = new Worker(url);
         URL.revokeObjectURL(url);
-        worker.addEventListener("error", () => stop("UI script failed"));
-        // Applies one SDK change. An invalid change throws and stops the widget.
+        worker.addEventListener("error", (event) =>
+          stop(
+            event.message ? `UI script failed: ${event.message}` : "UI script failed"
+          )
+        );
+        // An update to one part that fails shows a note in that part's place,
+        // so the rest of the widget stays. The host learns each reason once.
+        const parts = new Set(["text", "table", "value", "visible", "chart", "card"]);
+        const notes = new Map<HTMLElement, HTMLElement>();
+        const textless = new Set(
+          "input select option progress figure img br table thead tbody tr ul".split(
+            " "
+          )
+        );
+        const reported = new Set<string>();
+        const partFailed =
+          typeof copy?.partFailed === "string" &&
+          copy.partFailed.length > 0 &&
+          copy.partFailed.length <= 120
+            ? copy.partFailed
+            : "This part couldn’t be shown";
+        const failPart = (element: HTMLElement | undefined, reason: string) => {
+          if (!reported.has(reason) && reported.size < 8) {
+            reported.add(reason);
+            send({ type: "part-error", reason: reason.slice(0, 200) });
+          }
+          if (!element || !content.contains(element) || notes.has(element)) return;
+          const note = document.createElement("p");
+          note.className = "comma-part-failed";
+          note.setAttribute("role", "note");
+          if (typeof icons?.info === "string") {
+            const icon = document.createElement("span");
+            icon.setAttribute("data-comma-icon", "info");
+            icon.setAttribute("aria-hidden", "true");
+            const markup = document.createElement("template");
+            markup.innerHTML = icons.info;
+            icon.append(markup.content.cloneNode(true));
+            note.append(icon);
+          }
+          note.append(document.createTextNode(partFailed));
+          // Elements that hold no text keep their place hidden, the note beside
+          // them (beside its table for a table's rows).
+          if (textless.has(element.localName)) {
+            element.hidden = true;
+            (element.closest("table") ?? element).after(note);
+            notes.set(element, note);
+          } else {
+            const fragment = document.createDocumentFragment();
+            fragment.append(note);
+            replaceContent(element, fragment);
+          }
+        };
+        // Applies one SDK change. An invalid change to a part fails that part;
+        // any other invalid change throws and stops the widget.
         const apply = (message: MessageEvent["data"]) => {
           if (!message || typeof message !== "object")
             throw Error("Unsupported UI operation");
           const element = ids.get(message.id);
+          if (!parts.has(message.type)) return applyOther(message);
+          // A later update to a part takes the notes of it and of what it holds.
+          for (const [failed, note] of notes) {
+            if (!element?.contains(failed)) continue;
+            note.remove();
+            notes.delete(failed);
+            failed.hidden = false;
+          }
+          try {
+            applyPart(message, element);
+          } catch (error) {
+            if ((error as { budget?: boolean }).budget) throw error;
+            failPart(
+              element,
+              error instanceof Error ? error.message : "Invalid UI update"
+            );
+          }
+        };
+        const applyPart = (
+          message: MessageEvent["data"],
+          element: HTMLElement | undefined
+        ) => {
           switch (message.type) {
-            case "pong":
-              if (message.value === pendingPing) pendingPing = undefined;
-              break;
             case "text":
               if (
                 !element ||
@@ -707,82 +837,67 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
               break;
             case "chart": {
               const chart = message.value;
+              // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+              const numbers = (values: unknown, length: number) =>
+                Array.isArray(values) &&
+                values.length === length &&
+                values.every((v) => typeof v === "number" && Number.isFinite(v));
+              // One series as `values`, or up to four named ones as `series`.
+              const series: Array<{ name: string; values: number[] }> | undefined =
+                chart && Array.isArray(chart.series)
+                  ? chart.series
+                  : chart && Array.isArray(chart.values)
+                    ? [{ name: "", values: chart.values }]
+                    : undefined;
               if (
-                !(element instanceof HTMLCanvasElement) ||
+                !element?.classList.contains("comma-chart") ||
                 !chart ||
                 !["bar", "line"].includes(chart.type) ||
-                !Array.isArray(chart.values) ||
                 !Array.isArray(chart.labels) ||
-                chart.values.length === 0 ||
-                chart.values.length > 64 ||
-                chart.labels.length !== chart.values.length ||
-                chart.values.some(
-                  (v: unknown) => typeof v !== "number" || !Number.isFinite(v)
-                ) ||
+                chart.labels.length === 0 ||
+                chart.labels.length > 64 ||
                 chart.labels.some(
                   (v: unknown) => typeof v !== "string" || v.length > 80
-                )
+                ) ||
+                !series ||
+                series.length === 0 ||
+                series.length > 4 ||
+                series.some(
+                  (item: unknown) =>
+                    !item ||
+                    typeof item !== "object" ||
+                    typeof (item as { name?: unknown }).name !== "string" ||
+                    (item as { name: string }).name.length > 80 ||
+                    !numbers((item as { values?: unknown }).values, chart.labels.length)
+                ) ||
+                (series.length > 1 && series.some((item) => !item.name.trim()))
               )
                 throw Error("Invalid chart data");
-              const render = () => {
-                const width = Math.max(1, element.clientWidth);
-                const context = element.getContext("2d")!;
-                // Draw in CSS pixels so narrow cards retain readable type.
-                context.setTransform(800 / width, 0, 0, 2, 0, 0);
-                context.clearRect(0, 0, width, 160);
-                const magnitude = Math.max(
-                  1,
-                  ...chart.values.map((value: number) => Math.abs(value))
-                );
-                const values = chart.values.map((value: number) => value / magnitude);
-                const min = Math.min(0, ...values);
-                const max = Math.max(0, ...values);
-                const range = max - min || 1;
-                const y = (value: number) => 125 - ((value - min) / range) * 110;
-                const step = Math.max(1, width - 16) / values.length;
-                context.strokeStyle = context.fillStyle =
-                  getComputedStyle(document.documentElement)
-                    .getPropertyValue("--comma-accent")
-                    .trim() || "#6366f1";
-                context.lineWidth = 2;
-                context.beginPath();
-                values.forEach((value: number, index: number) => {
-                  const x = 8 + index * step;
-                  if (chart.type === "bar")
-                    context.fillRect(
-                      x + step * 0.15,
-                      Math.min(y(0), y(value)),
-                      step * 0.7,
-                      Math.max(1, Math.abs(y(value) - y(0)))
-                    );
-                  else if (index === 0) context.moveTo(x + step / 2, y(value));
-                  else context.lineTo(x + step / 2, y(value));
-                });
-                if (chart.type === "line") context.stroke();
-                const style = getComputedStyle(document.body);
-                context.fillStyle = style.color;
-                context.font = `${style.fontSize} ${style.fontFamily}`;
-                context.textAlign = "center";
-                const stride = Math.max(1, Math.ceil(64 / step));
-                chart.labels.forEach((label: string, index: number) => {
-                  if (index % stride === 0)
-                    context.fillText(
-                      label,
-                      8 + (index + 0.5) * step,
-                      150,
-                      Math.min(step * stride - 4, width)
-                    );
-                });
-                chartViews.set(element, { width, render });
-              };
-              render();
+              replaceContent(
+                element,
+                cardsFor().chart({
+                  type: chart.type,
+                  labels: chart.labels,
+                  series: series.map((item) => ({
+                    name: item.name,
+                    values: item.values,
+                  })),
+                })
+              );
               element.setAttribute(
                 "aria-label",
-                chart.labels
+                series
                   .map(
-                    (label: string, index: number) => `${label}: ${chart.values[index]}`
+                    (item) =>
+                      `${item.name ? `${item.name}: ` : ""}${chart.labels
+                        .map(
+                          (label: string, index: number) =>
+                            `${label}: ${item.values[index]}`
+                        )
+                        .join(", ")}`
                   )
-                  .join(", ")
+                  .join("; ")
+                  .slice(0, 4000)
               );
               break;
             }
@@ -801,6 +916,13 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
                   message.id
                 )
               );
+              break;
+          }
+        };
+        const applyOther = (message: MessageEvent["data"]) => {
+          switch (message.type) {
+            case "pong":
+              if (message.value === pendingPing) pendingPing = undefined;
               break;
             case "save":
               send({ type: "save", value: message.value });
@@ -896,9 +1018,6 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       let height = 0;
       timers.push(
         window.setInterval(() => {
-          for (const [element, view] of chartViews) {
-            if (element.clientWidth !== view.width) view.render();
-          }
           const bodyStyle = getComputedStyle(document.body);
           const naturalHeight =
             content.getBoundingClientRect().height +
@@ -934,23 +1053,45 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
 }
 
 export function dynamicUiDocument() {
+  // Authored html stands on the design system's tokens, as the card templates
+  // do (cardTokenDefaults gives every token a value; a host may resolve its
+  // own). A card shell, a button or a progress bar the Agent writes is the
+  // same surface and control a template draws.
   const css = `
-:root{color-scheme:light;--comma-background:light-dark(#fff,#18191b);--comma-foreground:light-dark(#222326,#f1f1f1);--comma-muted:light-dark(#70707b,#a4a5a9);--comma-border:light-dark(#e4e4e7,#343538);--comma-surface:light-dark(#f4f4f5,#27282b)}*{box-sizing:border-box;min-width:0}html{overflow:hidden;background:transparent}
-img{max-width:100%;height:auto}body{margin:0;padding:2px 2px 4px;background:transparent;color:var(--comma-secondary,var(--comma-foreground,CanvasText));font-family:var(--comma-font,system-ui);font-size:var(--comma-size,13px);font-weight:450;line-height:1.5;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}
-h2,h3,p{margin:0}h2,.widget-title{font-size:var(--comma-h2,12px);font-weight:500;color:var(--comma-muted,GrayText)}h3{font-size:var(--comma-h3,13px);font-weight:600}small,.sub,.widget-meta{font-size:var(--comma-small,12px);color:var(--comma-muted,GrayText)}
-.stack{display:flex;flex-direction:column;gap:var(--comma-control,8px)}.row,.widget-head,.widget-footer{display:flex;flex-wrap:wrap;align-items:center;gap:var(--comma-control,8px)}
-.grid,.widget-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,168px),1fr));gap:var(--comma-space,16px)}.span-2{grid-column:span 2}.muted{color:var(--comma-muted,GrayText)}
-.metric,.hero{color:var(--comma-foreground,CanvasText);font-size:var(--comma-metric,24px);line-height:1.3;letter-spacing:-.02em;font-weight:600;font-variant-numeric:tabular-nums}.unit{font-size:var(--comma-size,13px);font-weight:500;color:var(--comma-muted,GrayText);letter-spacing:normal}.grow{flex:1}.widget-head{gap:6px;min-height:20px}.widget-head [data-comma-icon]{width:16px;height:16px}.widget-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.widget-head .widget-meta{margin-inline-start:auto}.widget-body{display:flex;flex-direction:column;gap:var(--comma-control,8px);flex:1}.widget-footer{margin-block-start:auto;padding-block-start:var(--comma-control,8px)}
-.card{display:flex;flex-direction:column;gap:var(--comma-control,8px);padding:var(--comma-space,16px);border-radius:var(--comma-radius,16px);background:var(--comma-background,Canvas);box-shadow:inset 0 0 0 .5px var(--comma-border,GrayText),var(--comma-shadow,0 1px 2px #0000000d)}
-.divider{border:0;border-top:.5px solid var(--comma-border,GrayText);margin-block:var(--comma-control,8px)}.list-item{display:flex;align-items:center;gap:var(--comma-control,8px);padding-block:var(--comma-control,8px)}.list-item.stack{align-items:stretch}.list-item+.list-item{border-top:.5px solid var(--comma-border,GrayText)}.badge{border-radius:999px;padding:2px 8px;background:var(--comma-surface,ButtonFace);font-size:var(--comma-small,12px)}.success{color:var(--comma-success,#067647)}.danger{color:var(--comma-danger,#b42318)}
-button,input,select{font:inherit;color:inherit;background:var(--comma-surface,ButtonFace);border:.5px solid var(--comma-border,GrayText);border-radius:var(--comma-radius,16px);padding:var(--comma-control,8px) var(--comma-space,16px);max-width:100%;min-height:44px}input[type=checkbox]{min-height:24px;min-width:24px;margin:10px}input[type=range]{padding-inline:0}button{cursor:pointer;font-weight:500}button.primary{background:var(--comma-accent,Highlight);color:white;border-color:transparent}@media(hover:hover) and (pointer:fine){button:hover{filter:brightness(.96)}}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--comma-accent,Highlight);outline-offset:2px}
-[data-comma-icon]{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;color:inherit}[data-comma-icon]>svg{width:100%;height:100%}[data-comma-icon].icon-lg{width:32px;height:32px}[data-comma-icon].icon-hero{width:48px;height:48px}a{color:inherit;text-decoration:none;cursor:pointer;display:block;min-height:44px}a:hover{background:color-mix(in srgb,var(--comma-accent,#6366f1) 6%,transparent)}a:focus-visible{outline:2px solid var(--comma-accent,Highlight);outline-offset:2px;border-radius:8px}.tone-warm{color:var(--comma-warm,light-dark(#b54708,#fec84b))}.tone-cool{color:var(--comma-accent,light-dark(#4f46e5,#a5b4fc))}.feature{display:flex;flex-wrap:wrap;align-items:center;gap:var(--comma-space,16px);padding:var(--comma-space,16px);border-radius:var(--comma-radius,16px);background:color-mix(in srgb,var(--comma-accent,#6366f1) 6%,var(--comma-background,Canvas))}.compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,88px),1fr));gap:var(--comma-space,16px)}
-.display{font-size:56px;font-weight:300;line-height:1;letter-spacing:-.04em;font-variant-numeric:tabular-nums}.spread{display:flex;justify-content:space-between;align-items:center;gap:16px}.align-end{align-items:flex-end;text-align:end}.strip{display:flex;gap:4px;justify-content:space-between;padding-block:16px}.strip>*{flex:1;min-width:0;align-items:center;text-align:center;font-variant-numeric:tabular-nums}.strip strong{font-size:13px;white-space:nowrap}.surface-night{background:linear-gradient(155deg,#232638,#39475f);color:#fff;border-color:#ffffff20;--comma-foreground:#fff;--comma-secondary:#fff;--comma-muted:#cbd5e1;--comma-accent:#fff;--comma-warm:#fff;--comma-surface:#ffffff15}.surface-night .widget-title,.surface-night h2{color:inherit}.surface-night small{color:var(--comma-muted)}
-@media(max-width:420px){.strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));row-gap:16px}.display{font-size:48px}}
-button{transition:transform var(--comma-motion-feedback,120ms) var(--comma-motion-ease,cubic-bezier(.16,1,.3,1))}button:active:not(:disabled){transform:scale(.98)}
+:root{color-scheme:light}*{box-sizing:border-box;min-width:0}html{overflow:hidden;background:transparent}
+img{max-width:100%;height:auto}body{margin:0;padding:2px 2px 4px;background:transparent;color:var(--color-text-secondary);font-family:var(--comma-font,system-ui);font-size:var(--text-sm);line-height:var(--text-sm--line-height);font-weight:var(--font-weight-regular);overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}
+h2,h3,p,figure{margin:0}.comma-part-failed{display:flex;align-items:center;gap:var(--spacing-sm);font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--color-text-tertiary)}.comma-part-failed [data-comma-icon]{width:var(--spacing-xl);height:var(--spacing-xl)}
+h2,.widget-title{font-size:var(--text-sm);line-height:var(--text-sm--line-height);font-weight:var(--font-weight-medium);color:var(--color-text-secondary)}h3{font-size:var(--text-sm);line-height:var(--text-sm--line-height);font-weight:var(--font-weight-semibold);color:var(--color-text-primary)}strong{font-weight:var(--font-weight-semibold);color:var(--color-text-primary)}
+small,.sub,.widget-meta{font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--color-text-tertiary)}.widget-meta{font-variant-numeric:tabular-nums}.muted{color:var(--color-text-tertiary)}
+.stack{display:flex;flex-direction:column;gap:var(--spacing-md)}.row,.widget-footer{display:flex;flex-wrap:wrap;align-items:center;gap:var(--spacing-md)}.widget-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--spacing-xxs) var(--spacing-sm)}
+.grid,.widget-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--spacing-11xl)),1fr));gap:var(--spacing-lg)}.span-2{grid-column:span 2}
+.grid:has(>*>.wc-card),.widget-grid:has(>*>.wc-card){grid-template-columns:repeat(auto-fit,minmax(min(100%,calc(var(--spacing-10xl) * 2)),1fr))}
+.metric,.hero{color:var(--color-text-primary);font-size:var(--text-title-2);line-height:var(--text-title-2--line-height);letter-spacing:var(--text-title-2--letter-spacing);font-weight:var(--font-weight-semibold);font-variant-numeric:tabular-nums}.unit{margin-inline-start:var(--spacing-xxs);font-size:var(--text-sm);line-height:var(--text-sm--line-height);font-weight:var(--font-weight-medium);color:var(--color-text-tertiary);letter-spacing:normal}
+.grow{flex:1}.widget-head [data-comma-icon]{width:var(--spacing-xl);height:var(--spacing-xl)}.widget-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.widget-head .widget-meta{margin-inline-start:auto}.widget-body{display:flex;flex-direction:column;gap:var(--spacing-md);flex:1}.widget-footer{margin-block-start:auto;padding-block-start:var(--spacing-xs)}
+.card{display:flex;flex-direction:column;gap:var(--spacing-lg);height:100%;padding:var(--spacing-xl);border-radius:var(--radius-2xl);background:var(--color-bg-popup-secondary);box-shadow:0 0 0 var(--border-width-default) var(--color-border-primary),var(--shadow-sm)}
+.divider{border:0;border-top:var(--border-width-default) solid var(--color-border-secondary);margin-block:var(--spacing-md)}.list-item{display:flex;align-items:center;gap:var(--spacing-md);padding-block:var(--spacing-md)}.list-item.stack{align-items:stretch}.list-item+.list-item{border-top:var(--border-width-default) solid var(--color-border-secondary)}.list-item:first-child{padding-block-start:0}.list-item:last-child{padding-block-end:0}
+.badge{display:inline-block;padding:var(--spacing-xxs) var(--spacing-md);border-radius:999px;background:var(--color-utility-gray-50);box-shadow:inset 0 0 0 var(--border-width-default) var(--color-utility-gray-200);color:var(--color-utility-gray-700);font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-medium);white-space:nowrap}
+.success{color:var(--color-text-success-primary)}.danger{color:var(--color-text-error-primary)}.badge.success{background:var(--color-utility-success-50);box-shadow:inset 0 0 0 var(--border-width-default) var(--color-utility-success-200);color:var(--color-utility-success-700)}.badge.danger{background:var(--color-utility-error-50);box-shadow:inset 0 0 0 var(--border-width-default) var(--color-utility-error-200);color:var(--color-utility-error-700)}.badge.primary{background:var(--color-utility-brand-50);box-shadow:inset 0 0 0 var(--border-width-default) var(--color-utility-brand-200);color:var(--color-utility-brand-700)}
+button,input,select{font:inherit;color:inherit;max-width:100%}
+button,select,input:not([type=checkbox],[type=range]){min-height:calc(var(--spacing-4xl) + var(--spacing-xs));padding:var(--spacing-xs) var(--spacing-lg);border:var(--border-width-default) solid var(--color-button-secondary-border);border-radius:var(--radius-md);background:var(--color-button-secondary-bg);box-shadow:var(--shadow-xs);color:var(--color-button-secondary-fg)}
+button{display:inline-flex;align-items:center;justify-content:center;gap:var(--spacing-xs);cursor:pointer;font-weight:var(--font-weight-medium);text-align:center;transition:transform var(--motion-duration-feedback-out) var(--motion-easing-smooth-out)}
+button.primary{border-color:var(--color-button-primary-border);background:var(--color-button-primary-bg);color:var(--color-button-primary-fg)}@media(hover:hover) and (pointer:fine){button:hover{background:var(--color-bg-secondary);color:var(--color-text-primary)}button.primary:hover{background:var(--color-button-primary-bg-hover);color:var(--color-button-primary-fg)}}
+button:active:not(:disabled){transform:scale(var(--motion-scale-pressed));transition-duration:var(--motion-duration-feedback-in)}button:disabled,input:disabled,select:disabled{opacity:var(--opacity-disabled);cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--color-bg-brand-solid);outline-offset:2px}
+input[type=checkbox]{width:var(--spacing-xl);height:var(--spacing-xl);margin:var(--spacing-xs);accent-color:var(--color-bg-brand-solid)}input[type=range]{width:100%;min-height:calc(var(--spacing-4xl) + var(--spacing-xs));margin:0;accent-color:var(--color-bg-brand-solid)}
+@media(pointer:coarse){button,select,input:not([type=checkbox]){min-height:calc(var(--spacing-5xl) + var(--spacing-xs))}input[type=checkbox]{margin:calc(var(--spacing-lg) + var(--spacing-xxs))}}
+progress{display:block;width:100%;height:var(--spacing-sm);overflow:hidden;appearance:none;border:0;border-radius:999px;background:var(--color-bg-quaternary);accent-color:var(--color-bg-brand-solid)}progress::-webkit-progress-bar{border-radius:999px;background:var(--color-bg-quaternary)}progress::-webkit-progress-value{border-radius:999px;background:var(--color-bg-brand-solid)}
+[data-comma-icon]{display:inline-flex;align-items:center;justify-content:center;width:var(--spacing-2xl);height:var(--spacing-2xl);flex:none;color:inherit}[data-comma-icon]>svg{width:100%;height:100%}[data-comma-icon].icon-lg{width:var(--spacing-4xl);height:var(--spacing-4xl)}[data-comma-icon].icon-hero{width:var(--spacing-6xl);height:var(--spacing-6xl)}
+a{color:inherit;text-decoration:none;cursor:pointer;display:block;min-height:var(--spacing-5xl);border-radius:var(--radius-md)}a:hover{background:var(--color-bg-quaternary)}a:focus-visible{outline:2px solid var(--color-bg-brand-solid);outline-offset:2px}
+.tone-warm{color:var(--color-fg-warning-primary)}.tone-cool{color:var(--color-fg-brand-primary)}.feature{display:flex;flex-wrap:wrap;align-items:center;gap:var(--spacing-xl);padding:var(--spacing-xl);border-radius:var(--radius-lg);background:var(--color-bg-secondary)}.compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--spacing-8xl)),1fr));gap:var(--spacing-lg)}
+.display{font-size:var(--text-display-lg);font-weight:300;line-height:1;letter-spacing:var(--text-display-lg--letter-spacing);font-variant-numeric:tabular-nums}.spread{display:flex;justify-content:space-between;align-items:center;gap:var(--spacing-xl)}.align-end{align-items:flex-end;text-align:end}.strip{display:flex;gap:var(--spacing-xs);justify-content:space-between;padding-block:var(--spacing-xl)}.strip>*{flex:1;min-width:0;align-items:center;text-align:center;font-variant-numeric:tabular-nums}.strip strong{white-space:nowrap}
+.surface-night{background:linear-gradient(155deg,#232638,#39475f);box-shadow:none;color:var(--color-fg-white)}.surface-night .widget-title,.surface-night h2,.surface-night h3,.surface-night strong,.surface-night .metric,.surface-night .hero{color:inherit}.surface-night small,.surface-night .muted,.surface-night .widget-meta,.surface-night .sub,.surface-night .unit{color:var(--color-alpha-white-80)}
+@media(max-width:420px){.strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));row-gap:var(--spacing-xl)}}
 @media(prefers-reduced-motion:reduce){.motion-enter,.motion-stagger>*{animation:none}button{transition:none}button:active:not(:disabled){transform:none}}
-progress{width:100%;accent-color:var(--comma-accent,Highlight)}ul{padding-inline-start:var(--comma-space,16px);margin:0}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th{font-size:var(--comma-small,12px);font-weight:500;color:var(--comma-muted,GrayText)}td,th{text-align:start;padding:var(--comma-control,8px);border-bottom:.5px solid var(--comma-border,GrayText)}.comma-data-table td{vertical-align:top}.comma-data-table th{overflow-wrap:normal}
-@media(max-width:420px){.span-2{grid-column:1/-1}.comma-data-table,.comma-data-table tbody{display:block}.comma-data-table thead{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}.comma-data-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--comma-control,8px);padding:var(--comma-space,16px) 0;border-bottom:.5px solid var(--comma-border,GrayText)}.comma-data-table td{display:flex;flex-direction:column;padding:0;border:0}.comma-data-table td:first-child{grid-column:1/-1;font-weight:600}.comma-data-table td:not(:first-child)::before{content:attr(data-comma-label);font-size:var(--comma-small,12px);color:var(--comma-muted,GrayText)}}[hidden]{display:none!important}
+ul{margin:0;padding-inline-start:var(--spacing-xl)}ul:has(>.list-item){padding:0;list-style:none}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th{font-size:var(--text-xs);line-height:var(--text-xs--line-height);font-weight:var(--font-weight-regular);color:var(--color-text-tertiary)}td,th{text-align:start;padding:var(--spacing-md) var(--spacing-sm);border-bottom:var(--border-width-default) solid var(--color-border-secondary)}tr>:first-child{padding-inline-start:0}tr>:last-child{padding-inline-end:0}tbody tr:last-child>*{border-bottom:0;padding-bottom:0}thead th{padding-top:0}
+.comma-data-table td{vertical-align:top}.comma-data-table th{overflow-wrap:normal}
+.comma-chart{container-type:inline-size;display:block;min-height:var(--spacing-9xl)}
+@media(max-width:420px){.span-2{grid-column:1/-1}.comma-data-table,.comma-data-table tbody{display:block}.comma-data-table thead{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}.comma-data-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--spacing-md);padding:var(--spacing-xl) 0;border-bottom:var(--border-width-default) solid var(--color-border-secondary)}.comma-data-table td{display:flex;flex-direction:column;padding:0;border:0}.comma-data-table td:first-child{grid-column:1/-1;font-weight:var(--font-weight-semibold)}.comma-data-table td:not(:first-child)::before{content:attr(data-comma-label);font-size:var(--text-xs);line-height:var(--text-xs--line-height);color:var(--color-text-tertiary)}}[hidden]{display:none!important}
 `;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}${cardCss}</style></head><body><script>const __name = (fn) => fn; (${runtimeBootstrap.toString()})(${JSON.stringify(workerBootstrap.toString())}, ${cardEngine.toString()})</script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${cardTokenDefaults}${css}${cardCss}</style></head><body><script>const __name = (fn) => fn; (${runtimeBootstrap.toString()})(${JSON.stringify(workerBootstrap.toString())}, ${cardEngine.toString()}, ${dynamicUiLevel})</script></body></html>`;
 }

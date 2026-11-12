@@ -9,9 +9,12 @@ defmodule Salix.Drive.Files do
 
   What the API is, so callers do not expect more of it:
 
-    * Reads answer from whichever member is attached to the control plane —
-      the hosted replica `cloud-1` for a Comma Workspace — so they work with the
-      user's devices offline, once `cloud-1` has replicated the content.
+    * Reads answer from the member the control plane picks, usually a user's
+      device, or `cloud-1` with the devices offline. A device has not seen a
+      write until it syncs, so where a device and `cloud-1` both hold the
+      space, a read also compares `cloud-1`'s view: `cloud-1` answers when its
+      version is newer or the device has none. A failed answer from one of
+      them is served by the other.
     * A write is published as `cloud-1`'s own version of the path. It never
       alters a version a user's device published; where one exists, both are
       visible (divergence) and the newest is selected. Devices see the write
@@ -29,6 +32,9 @@ defmodule Salix.Drive.Files do
   alias Salix.Drive.Handle
 
   @read_timeout 60_000
+  # How long a read waits for the second view. The control plane gives up on a
+  # hung tunnel only after 15 s, and every read would wait for it.
+  @hosted_view_timeout 5_000
   @write_timeout 600_000
   # Pages of one directory followed before a listing is cut short.
   @max_list_pages 50
@@ -65,25 +71,24 @@ defmodule Salix.Drive.Files do
   """
   @spec list(Handle.t(), String.t()) :: {:ok, [entry()]} | error()
   def list(%Handle{} = drive, path) when is_binary(path) do
-    measured(fn -> list_pages(drive, path, "", [], 0) end)
+    measured(fn ->
+      case hosted_reader(drive) do
+        {:ok, origin} ->
+          merge_views(
+            list_pages(drive, path, [], "", [], 0),
+            list_pages(drive, path, hosted_view(origin), "", [], 0)
+          )
+
+        :none ->
+          list_pages(drive, path, [], "", [], 0)
+      end
+    end)
   end
 
   @doc "Every version of one path, newest first as the control plane orders them."
   @spec stat(Handle.t(), String.t()) :: {:ok, %{versions: [map()]}} | error()
   def stat(%Handle{} = drive, path) when is_binary(path) do
-    measured(fn ->
-      case request(drive, :get, "browse/stat", params: [space: drive.space, path: path]) do
-        {:ok, %Req.Response{status: 200, body: %{"versions" => versions}}}
-        when is_list(versions) ->
-          {:ok, %{versions: Enum.map(versions, &version/1)}}
-
-        {:ok, %Req.Response{status: status, body: body}} ->
-          {:error, classify(status, body)}
-
-        {:error, reason} ->
-          {:error, {:retryable, transport_reason(reason)}}
-      end
-    end)
+    measured(fn -> versions(drive, path, []) end)
   end
 
   @doc """
@@ -96,7 +101,7 @@ defmodule Salix.Drive.Files do
   def read(%Handle{} = drive, path, max_bytes)
       when is_binary(path) and is_integer(max_bytes) and max_bytes > 0 do
     measured(fn ->
-      with {:ok, stream, _size} <- open_stream(drive, path) do
+      with {:ok, stream, _size} <- open_newest(drive, path) do
         collect_bounded(stream, max_bytes)
       end
     end)
@@ -110,7 +115,7 @@ defmodule Salix.Drive.Files do
   @spec stream(Handle.t(), String.t()) ::
           {:ok, Enumerable.t(), non_neg_integer() | nil} | error()
   def stream(%Handle{} = drive, path) when is_binary(path) do
-    measured(fn -> open_stream(drive, path) end)
+    measured(fn -> open_newest(drive, path) end)
   end
 
   @doc """
@@ -265,20 +270,141 @@ defmodule Salix.Drive.Files do
       "/networks/" <> URI.encode(drive.network) <> "/" <> route
   end
 
-  defp list_pages(_drive, _path, _cursor, acc, @max_list_pages),
+  # The origin of the member that takes writes, when it and another member both
+  # hold the space. With one holder, the control plane's pick is the only view.
+  # `browse` is answered from the control plane's memory, without a tunnel hop.
+  defp hosted_reader(drive) do
+    case request(drive, :get, "browse", []) do
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{"devices" => devices, "writes" => %{"device" => writer}}
+       }}
+      when is_list(devices) and is_binary(writer) and writer != "" ->
+        holders =
+          Enum.filter(devices, fn device ->
+            is_map(device) and is_list(device["spaces"]) and drive.space in device["spaces"]
+          end)
+
+        case {length(holders), Enum.find(holders, &(&1["device"] == writer))} do
+          {count, %{"origin" => origin}} when count > 1 and is_binary(origin) and origin != "" ->
+            {:ok, origin}
+
+          _ ->
+            :none
+        end
+
+      _ ->
+        :none
+    end
+  end
+
+  defp hosted_view(origin), do: [origin: origin, receive_timeout: @hosted_view_timeout]
+
+  # The device's view, with what `cloud-1` holds that is newer or absent there.
+  # A view that failed for a reason the other can answer is left out.
+  defp merge_views({:ok, local}, {:ok, hosted}) do
+    merged =
+      Enum.reduce(hosted, Map.new(local, &{&1.path, &1}), fn entry, by_path ->
+        Map.update(by_path, entry.path, entry, fn kept ->
+          if entry.mtime_ns > kept.mtime_ns, do: entry, else: kept
+        end)
+      end)
+
+    {:ok, merged |> Map.values() |> Enum.sort_by(& &1.path)}
+  end
+
+  defp merge_views({:ok, _local} = local, {:error, _reason}), do: local
+
+  defp merge_views({:error, reason}, hosted) when reason in [:no_device_attached, :not_found],
+    do: with_fallback_error(hosted, reason)
+
+  defp merge_views({:error, {:retryable, _detail} = reason}, hosted),
+    do: with_fallback_error(hosted, reason)
+
+  defp merge_views({:error, _reason} = refused, _hosted), do: refused
+
+  defp with_fallback_error({:ok, _entries} = hosted, _reason), do: hosted
+  defp with_fallback_error({:error, _hosted_reason}, reason), do: {:error, reason}
+
+  # Opens the path from the device, unless `cloud-1` has a newer version or the
+  # device has none. Whichever reader fails, the other one is asked.
+  defp open_newest(drive, path) do
+    case hosted_reader(drive) do
+      {:ok, origin} ->
+        {first, second} =
+          if hosted_is_newer?(drive, path, origin),
+            do: {[origin: origin], []},
+            else: {[], [origin: origin]}
+
+        case open_stream(drive, path, first) do
+          {:error, reason} = failed
+          when reason in [:not_found, :no_device_attached] or
+                 (is_tuple(reason) and elem(reason, 0) == :retryable) ->
+            with {:error, _second_reason} <- open_stream(drive, path, second), do: failed
+
+          opened ->
+            opened
+        end
+
+      :none ->
+        open_stream(drive, path, [])
+    end
+  end
+
+  defp hosted_is_newer?(drive, path, origin) do
+    case {newest_mtime(drive, path, []), newest_mtime(drive, path, hosted_view(origin))} do
+      {local, hosted} when is_integer(hosted) -> is_nil(local) or hosted > local
+      _ -> false
+    end
+  end
+
+  defp newest_mtime(drive, path, reader) do
+    case versions(drive, path, reader) do
+      {:ok, %{versions: [_ | _] = versions}} -> versions |> Enum.map(& &1.mtime_ns) |> Enum.max()
+      _ -> nil
+    end
+  end
+
+  defp versions(drive, path, reader) do
+    {request_opts, params} = Keyword.split(reader, [:receive_timeout])
+
+    case request(
+           drive,
+           :get,
+           "browse/stat",
+           [params: [space: drive.space, path: path] ++ params] ++ request_opts
+         ) do
+      {:ok, %Req.Response{status: 200, body: %{"versions" => versions}}}
+      when is_list(versions) ->
+        {:ok, %{versions: Enum.map(versions, &version/1)}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, classify(status, body)}
+
+      {:error, reason} ->
+        {:error, {:retryable, transport_reason(reason)}}
+    end
+  end
+
+  defp list_pages(_drive, _path, _reader, _cursor, acc, @max_list_pages),
     do: {:ok, acc |> Enum.reverse() |> List.flatten()}
 
-  defp list_pages(drive, path, cursor, acc, page) do
-    params = [space: drive.space, path: path] ++ if(cursor == "", do: [], else: [cursor: cursor])
+  defp list_pages(drive, path, reader, cursor, acc, page) do
+    {request_opts, reader_params} = Keyword.split(reader, [:receive_timeout])
 
-    case request(drive, :get, "browse/ls", params: params) do
+    params =
+      [space: drive.space, path: path] ++
+        reader_params ++ if(cursor == "", do: [], else: [cursor: cursor])
+
+    case request(drive, :get, "browse/ls", [params: params] ++ request_opts) do
       {:ok, %Req.Response{status: 200, body: %{"entries" => entries} = body}}
       when is_list(entries) ->
         acc = [Enum.map(entries, &entry/1) | acc]
 
         case body["cursor"] do
           next when is_binary(next) and next != "" and next != cursor ->
-            list_pages(drive, path, next, acc, page + 1)
+            list_pages(drive, path, reader, next, acc, page + 1)
 
           _ ->
             {:ok, acc |> Enum.reverse() |> List.flatten()}
@@ -298,9 +424,9 @@ defmodule Salix.Drive.Files do
   # Opens the download and hands back a lazy stream over its chunks. The
   # response headers have arrived when this returns, so a refusal is
   # classified here; only the body is deferred.
-  defp open_stream(drive, path) do
+  defp open_stream(drive, path, reader) do
     case request(drive, :get, "browse/file",
-           params: [space: drive.space, path: path],
+           params: [space: drive.space, path: path] ++ reader,
            into: :self
          ) do
       {:ok, %Req.Response{status: 200} = response} ->

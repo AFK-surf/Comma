@@ -6,6 +6,7 @@ import {
   formatRelativeDate,
 } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { Avatar } from "@comma/ui/components/avatar";
 import {
   CircleCheckIcon,
   CircleDashedIcon,
@@ -21,6 +22,7 @@ import { resolveProviderBrandLogo } from "@comma/ui/components/provider-brand-lo
 import { type ReactNode, useEffect, useState } from "react";
 import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
 import { loadRecommendationMedia } from "../recommendations/recommendationMedia";
+import { useAvatarUrl } from "../useProfileAvatarUrl";
 
 // One card language for every rich link (Figma 1211-13555 … 1211-13953): a
 // tinted state pill (or the provider mark) and a short reference with the
@@ -201,23 +203,26 @@ function LinkCardChip({ children, tone }: { children: ReactNode; tone?: "diff" }
   );
 }
 
-// Provider mark, the person's real avatar and their name. Avatars ride the
-// pinned media loader (Electron Main fetches the public image); web, which
-// makes no unpinned renderer requests, and failed loads show a neutral disc.
+// Provider mark, the person's real avatar and their name. The avatar is the
+// one the server put on the preview (`avatarRef`), read through the core as a
+// `link-preview-avatar` file on web and desktop alike; without one, or until
+// it shows, their initials stand in.
 function LinkCardPerson({
-  avatarUrl,
+  avatarRef,
   gap,
   name,
   source,
   title,
 }: {
-  avatarUrl: string | null;
+  avatarRef: string | null | undefined;
   gap?: "sm";
   name: string;
   source?: LinkPreviewSourceLike | undefined;
   title: string;
 }) {
-  const safeAvatarUrl = useLinkPreviewMediaUrl(avatarUrl ?? undefined);
+  const avatarUrl = useAvatarUrl(
+    avatarRef ? { source: "link-preview-avatar", ref: avatarRef } : undefined
+  );
   return (
     <span
       className="comma-recommendation-link-card-person"
@@ -229,15 +234,13 @@ function LinkCardPerson({
           <LinkProviderIcon source={source} />
         </span>
       ) : null}
-      {safeAvatarUrl ? (
-        <img
-          alt=""
-          className="comma-recommendation-link-card-avatar"
-          src={safeAvatarUrl}
-        />
-      ) : (
-        <span aria-hidden="true" className="comma-recommendation-link-card-avatar" />
-      )}
+      <Avatar
+        alt=""
+        className="comma-recommendation-link-card-avatar [&>img]:size-5 [&>span]:size-5"
+        name={name}
+        size="xs"
+        {...(avatarUrl ? { src: avatarUrl } : {})}
+      />
       <span className="comma-recommendation-link-card-person-name">{name}</span>
     </span>
   );
@@ -286,7 +289,7 @@ function PullRequestPreviewCard({
           <div className="comma-recommendation-link-card-facts">
             {preview.author ? (
               <LinkCardPerson
-                avatarUrl={preview.author.avatarUrl}
+                avatarRef={preview.author.avatarRef}
                 name={preview.author.login}
                 source={source}
                 title={messages.recommendations_pr_author({
@@ -380,7 +383,7 @@ function LinearIssuePreviewCard({
           <div className="comma-recommendation-link-card-facts">
             {preview.assignee ? (
               <LinkCardPerson
-                avatarUrl={preview.assignee.avatarUrl}
+                avatarRef={preview.assignee.avatarRef}
                 name={preview.assignee.name}
                 source={source}
                 title={messages.recommendations_link_assignee({
@@ -482,7 +485,7 @@ function CalendarEventPreviewCard({ preview }: { preview: CalendarEventPreview }
       </div>
       {preview.organizer ? (
         <LinkCardPerson
-          avatarUrl={null}
+          avatarRef={null}
           gap="sm"
           name={preview.organizer.name}
           title={messages.recommendations_event_organizer({
@@ -523,7 +526,7 @@ function SlackMessagePreviewCard({
         {preview.author ? (
           <div className="comma-recommendation-link-card-facts">
             <LinkCardPerson
-              avatarUrl={preview.author.avatarUrl}
+              avatarRef={preview.author.avatarRef}
               gap="sm"
               name={preview.author.name}
               title={messages.recommendations_slack_author({
@@ -573,7 +576,7 @@ function DriveFilePreviewCard({
         {preview.owner ? (
           <div className="comma-recommendation-link-card-facts">
             <LinkCardPerson
-              avatarUrl={preview.owner.avatarUrl}
+              avatarRef={preview.owner.avatarRef}
               gap="sm"
               name={preview.owner.name}
               title={messages.recommendations_drive_owner({

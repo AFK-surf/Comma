@@ -1,6 +1,8 @@
 defmodule SalixAgent.Tools.Media do
   @moduledoc "Agent-facing image, video, and audio tools."
 
+  require Logger
+
   alias SalixAgent.{AudioTranscriber, FileBackend, MediaResolver, RuntimeFiles, SkillProjection}
 
   @image_desc """
@@ -18,7 +20,7 @@ defmodule SalixAgent.Tools.Media do
   @audio_transcribe_desc """
   Transcribe an audio or video file from the current agent-visible workspace and save the complete transcript as a text artifact.
 
-  Params: path (required absolute VFS file path, at most 30 MiB), output_path (optional absolute .txt artifact path).
+  Params: path (required absolute VFS file path, at most 30 MiB), output_path (optional absolute .txt artifact path), locale (optional app locale of the person the transcript is for, such as zh-CN; chooses the Chinese script).
 
   For video download and transcription requests, the Router delegates a Task to a Worker. The Worker completes these steps:
   1. Download the media in an authorized execution environment that permits file reads.
@@ -30,7 +32,7 @@ defmodule SalixAgent.Tools.Media do
 
   The Router reads the exact result Message with im_api.internal.read_conversation. It uses the returned reader-local attachment path to deliver the transcript to the original destination. For Slack, use im_api.slack.upload_file with that path and the original channel/thread. If an existing provider participant already delivers the attachment there, avoid duplicate delivery. A Slack Task card alone does not deliver the file.
 
-  With output_path, a .json sidecar preserves complete ASR chunks and the source path. For immutable meeting attachments, reuse the same source and output_path on retries. The tool reuses the committed transcript without another ASR request. Use a new output_path for changed source bytes. The result reports transcript_path, metadata_path, source duration, and chunk count. A file without recognizable speech returns speech_detected false and writes no transcript.
+  Audio the transcription model declines appears in the transcript as a "(Not transcribed: ...)" line with its time range; the rest is transcribed. With output_path, a .json sidecar preserves complete ASR chunks and the source path. For immutable meeting attachments, reuse the same source and output_path on retries. The tool reuses the committed transcript without another ASR request. Use a new output_path for changed source bytes. The result reports transcript_path, metadata_path, source duration, and chunk count. A file without recognizable speech returns speech_detected false and writes no transcript.
   """
 
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
@@ -167,12 +169,14 @@ defmodule SalixAgent.Tools.Media do
 
     case cached_transcript(ctx, path, output) do
       {:ok, content} -> {content, []}
-      :missing -> transcribe_audio_source(ctx, path, output)
+      :missing -> transcribe_audio_source(ctx, path, output, blank_nil(arg(args, "locale")))
     end
   end
 
-  defp transcribe_audio_source(ctx, path, output) do
-    case AudioTranscriber.transcribe(ctx.agent_id, path) do
+  defp transcribe_audio_source(ctx, path, output, locale) do
+    opts = glossary_opts(ctx) ++ if(locale, do: [locale: locale], else: [])
+
+    case AudioTranscriber.transcribe(ctx.agent_id, path, opts) do
       {:ok, %{transcript: transcript, duration_seconds: duration_seconds, chunks: chunks}}
       when is_binary(transcript) and transcript != "" and is_integer(duration_seconds) and
              duration_seconds > 0 and is_list(chunks) ->
@@ -198,12 +202,39 @@ defmodule SalixAgent.Tools.Media do
       {:error, :asr_empty_transcript} ->
         {Jason.encode!(%{"source_path" => path, "speech_detected" => false}), []}
 
+      {:error, :asr_declined} ->
+        log_transcription_failure(ctx, :asr_declined)
+        raise "the transcription model declined all of this audio"
+
       {:error, reason} when reason in [:asr_batch_timeout, :ffmpeg_timeout, :ffprobe_timeout] ->
+        log_transcription_failure(ctx, reason)
         raise "audio transcription timed out"
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        log_transcription_failure(ctx, reason)
         raise "audio transcription failed"
     end
+  end
+
+  # The Group's glossary spells the team's names in the transcript.
+  defp glossary_opts(ctx) do
+    case {Map.get(ctx, :group_id), Map.get(ctx, :tenant_id)} do
+      {group, tenant} when is_binary(group) and group != "" and is_binary(tenant) ->
+        [glossary_of: {group, tenant}]
+
+      _ ->
+        []
+    end
+  end
+
+  # The agent sees one sentence; the log keeps which step failed (reading the
+  # file, ffmpeg, a chunk's ASR request), never a path or provider text.
+  defp log_transcription_failure(ctx, reason) do
+    Logger.warning(
+      "audio.transcribe failed: agent=#{ctx.agent_id} reason=#{AudioTranscriber.failure_reason(reason)}"
+    )
+
+    Salix.Telemetry.emit_asr_failure("audio_transcribe", reason)
   end
 
   defp validate_audio_path!(path) do

@@ -25,6 +25,10 @@ defmodule CommaWeb.Application do
       CommaWeb.RecommendationRuntime
     )
 
+    SystemsRuntime.put_env(:salix_agent, :task_request_adapter_mod, CommaWeb.TaskRequestTools)
+    SystemsRuntime.put_env(:salix_agent, :channel_link_adapter_mod, CommaWeb.ChannelLinkTools)
+    SystemsRuntime.put_env(:salix_agent, :plugin_install_adapter_mod, CommaWeb.PluginInstallTools)
+    SystemsRuntime.put_env(:salix_im, :channel_links, CommaWeb.ChannelLinkTools)
     SystemsRuntime.put_env(:salix_agent, :proactive_mail_adapter, CommaWeb.ProactiveMail)
     SystemsRuntime.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
     SystemsRuntime.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
@@ -36,8 +40,8 @@ defmodule CommaWeb.Application do
       CommaWeb.LinearAgentSession
     )
 
-    SystemsRuntime.put_env(:salix_im, :task_status_observer, CommaWeb.ProactiveTask)
-    SystemsRuntime.put_env(:salix_env, :device_connect_observer, CommaWeb.DeviceSetupOffers)
+    SystemsRuntime.put_env(:salix_im, :task_status_observer, CommaWeb.TaskStatusObserver)
+    SalixEnv.Registry.observe_device_connects(CommaWeb.DeviceSetupOffers)
     SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
     SystemsRuntime.put_env(:salix_agent, :stations, CommaWeb.Stations)
     # The Mac apps MCP runs only for the requests of the member whose Mac it is.
@@ -49,6 +53,7 @@ defmodule CommaWeb.Application do
     # A coding sandbox commits as the Comma user who owns its Task.
     SystemsRuntime.put_env(:salix_web, :coding_git_author, CommaWeb.Coding.GitAuthor)
     SystemsRuntime.put_env(:salix_web, :coding_members, CommaWeb.Coding.Members)
+    SystemsRuntime.put_env(:salix_web, :sandbox_admission, CommaWeb.Coding.SandboxAdmission)
     SalixStore.StationMembers.register(Comma.Stations.Members)
 
     unless SystemsRuntime.get_env(:comma_web, :station_directory),
@@ -69,6 +74,7 @@ defmodule CommaWeb.Application do
     # Salix reaches the Mini App owner through these ports (CommaWeb.MiniAppPort).
     SystemsRuntime.put_env(:salix_im, :mini_apps, CommaWeb.MiniAppPort)
     SystemsRuntime.put_env(:salix_im, :task_panel_dismissals, CommaWeb.TaskPanelDismissalPort)
+    SystemsRuntime.put_env(:salix_im, :task_requests, CommaWeb.TaskRequestTools)
     SystemsRuntime.put_env(:salix_web, :mini_app_deploys, CommaWeb.MiniAppPort)
     SystemsRuntime.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
 
@@ -76,6 +82,7 @@ defmodule CommaWeb.Application do
       maybe_pubsub_child(pubsub_server()) ++
         [CommaWeb.StationPresence, CommaWeb.StationReleases, CommaWeb.DictationSocket] ++
         [{SystemsRuntime.TaskSupervisor, name: CommaWeb.LinearAgent.TaskSupervisor}] ++
+        [{SystemsRuntime.DynamicSupervisor, name: CommaWeb.ChannelLinkWatches}] ++
         CommaWeb.TelegramOIDC.child_specs() ++
         CommaWeb.IMessageRuntime.child_specs() ++
         CommaWeb.IMessagePhotonRuntime.child_specs() ++

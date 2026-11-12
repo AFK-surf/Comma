@@ -327,6 +327,12 @@ defmodule Comma.RecommendationMemberSelection do
   defp records("slack", %{"messages" => %{"matches" => records}}),
     do: {records, "text", "permalink"}
 
+  # Feishu and Lark messages and invitations share one list
+  # (`CommaWeb.RecommendationLarkMemberSource`).
+  defp records(toolkit, %{"messages" => %{"matches" => records}})
+       when toolkit in ~w(feishu lark),
+       do: {records, "text", "permalink"}
+
   defp records("gmail", %{"messages" => records}), do: {records, "subject", "webUrl"}
   defp records("googlecalendar", %{"items" => records}), do: {records, "summary", "htmlLink"}
 

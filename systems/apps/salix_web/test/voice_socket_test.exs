@@ -124,7 +124,7 @@ defmodule SalixWeb.VoiceSocketTest do
     %{opts: %{owner: call}} = :sys.get_state(model, :infinity)
     _ = :sys.get_state(call, :infinity)
     # Both ends are ready, so the call asks the model to greet the caller.
-    settle_receive({:fake_model, ^model, {:append, :instructions, nil, _greeting}})
+    settle_receive({:fake_model, ^model, {:append, :commentary, nil, _greeting}})
     {started, model}
   end
 
@@ -534,7 +534,7 @@ defmodule SalixWeb.VoiceSocketTest do
 
     settle_receive({:fake_model, model, {:started, _}})
     Fake.emit(model, {:started, "http_test"})
-    settle_receive({:fake_model, ^model, {:append, :instructions, nil, _}})
+    settle_receive({:fake_model, ^model, {:append, :commentary, nil, _}})
     {client, model, call_id}
   end
 
@@ -806,7 +806,7 @@ defmodule SalixWeb.VoiceSocketTest do
     Fake.emit(model, {:started, "swift_http"})
 
     SystemsRuntime.Proc.receive do
-      {:fake_model, ^model, {:append, :instructions, nil, _}} -> :ok
+      {:fake_model, ^model, {:append, :commentary, nil, _}} -> :ok
     end
 
     Fake.emit(model, {:audio, <<1, 0>>})

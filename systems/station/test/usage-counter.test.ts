@@ -318,10 +318,10 @@ const ROWS = "SELECT id, at, session, turn, thread, person, profile, runtime, mo
 test("on a real station's copy, the calls counted are the Rust's", { skip: !existsSync(SNAPSHOT) && `no ${SNAPSHOT}` }, async (t) => {
   // The copy holds what the Rust recorded; its transcripts (cut where the Rust's offsets stood) are at SNAPSHOT.
   const dir = tempdir();
-  copyFileSync(join(WORK, "stillfail.db"), join(dir, "stillfail.db"));
-  if (existsSync(join(WORK, "stillfail.db-wal"))) copyFileSync(join(WORK, "stillfail.db-wal"), join(dir, "stillfail.db-wal"));
+  copyFileSync(join(WORK, "station.db"), join(dir, "station.db"));
+  if (existsSync(join(WORK, "station.db-wal"))) copyFileSync(join(WORK, "station.db-wal"), join(dir, "station.db-wal"));
   symlinkSync(SNAPSHOT, join(dir, "transcripts"));
-  const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
+  const store = Store.open(join(dir, "station.db"), join(dir, "archive"));
   stores.push(store);
   store.db.exec("DELETE FROM usage; DELETE FROM usage_files");
   const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [] }) });
@@ -348,7 +348,7 @@ test("on a real station's copy, the calls counted are the Rust's", { skip: !exis
     `loop delay p50 ${(delay.percentile(50) / 1e6).toFixed(1)} ms, p99 ${(delay.percentile(99) / 1e6).toFixed(1)} ms, max ${(delay.max / 1e6).toFixed(1)} ms`);
   t.diagnostic(`second read: ${more} new calls in ${Math.round(tookAgain)} ms`);
 
-  const rust = new DatabaseSync(join(WORK, "stillfail.db"), { readOnly: true });
+  const rust = new DatabaseSync(join(WORK, "station.db"), { readOnly: true });
   const theirs = rust.prepare(DAYS).all() as DayTotal[];
   const ours = store.db.prepare(DAYS).all() as DayTotal[];
   const byId = (db: DatabaseSync) => new Map((db.prepare(ROWS).all() as any[]).map((r) => [r.id, r]));

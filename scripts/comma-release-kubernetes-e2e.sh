@@ -66,11 +66,15 @@ trap cleanup EXIT
 # it the role that reads extension-apiserver-authentication; it then exits and
 # takes the whole server down a few seconds after /readyz passed (main
 # ee78b012e). This single-node cluster has no cloud to control.
+# Its network policy controller lists the node's addresses while flannel is
+# still creating interfaces after a restart; an interrupted netlink dump
+# ("results may be incomplete or inconsistent") also takes the server down
+# (main a351d65c3). No test here applies a NetworkPolicy.
 docker create --privileged --name "${container}" \
   --publish 127.0.0.1::6443 \
   rancher/k3s:v1.35.5-k3s1 server \
   --disable=traefik --disable=servicelb --disable=metrics-server \
-  --disable-cloud-controller --tls-san=127.0.0.1 >/dev/null
+  --disable-cloud-controller --disable-network-policy --tls-san=127.0.0.1 >/dev/null
 # COMMA_K3S_IMAGES names images already in the Docker daemon that k3s imports
 # at start instead of pulling them: its system images and the tests' own.
 if [[ -n "${COMMA_K3S_IMAGES:-}" ]]; then
@@ -123,9 +127,9 @@ fi
 # disposable-namespace recovery matrix, `rest` everything else; unset, all.
 part="${COMMA_RELEASE_E2E_PART:-all}"
 case "${part}" in
-  all) tests='TestDisposableNamespaceRecoveryMatrix|TestHelmRecoveryE2E|TestHelmRepairE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' ;;
+  all) tests='TestDisposableNamespaceRecoveryMatrix|TestHelmRecoveryE2E|TestHelmRepairE2E|TestHelmExclusiveDrainE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' ;;
   matrix) tests='TestDisposableNamespaceRecoveryMatrix' ;;
-  rest) tests='TestHelmRecoveryE2E|TestHelmRepairE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' ;;
+  rest) tests='TestHelmRecoveryE2E|TestHelmRepairE2E|TestHelmExclusiveDrainE2E|TestRuntimeBundleActivationReceivesReleaseWorkerIdentity' ;;
   *) echo "unknown COMMA_RELEASE_E2E_PART: ${part}" >&2; exit 2 ;;
 esac
 if [[ "${part}" != matrix ]]; then

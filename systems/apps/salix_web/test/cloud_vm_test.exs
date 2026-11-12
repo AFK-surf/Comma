@@ -13,7 +13,6 @@ defmodule SalixWeb.CloudVMTest do
   alias SalixStore.Compute, as: GroupCompute
   alias SalixWeb.MockCloudflareGateway
 
-  @config_missing "the Cloud VM requires tenant vm provider configuration: cloudflare"
   @vm_events [
     [:salix, :vm, :wake, :stop],
     [:salix, :vm, :restore, :phase],
@@ -22,6 +21,11 @@ defmodule SalixWeb.CloudVMTest do
     [:salix, :vm, :ready_interval],
     [:salix, :vm, :container_loss]
   ]
+  defmodule SandboxesOn do
+    @moduledoc false
+    def enabled?, do: true
+  end
+
   defmodule MeteringFake do
     def meter_vm_interval(fact) do
       SystemsRuntime.Proc.send(
@@ -253,16 +257,9 @@ defmodule SalixWeb.CloudVMTest do
       })
   end
 
-  # Turns on the Group's Cloud VM switch, which needs the tenant's VM config.
-  defp enable_cloud_vm!(group \\ group_id()) do
-    {:ok, _group} = Salix.Control.Groups.update(group, %{"cloud_vm_enabled" => true})
-    :ok
-  end
-
   defp create_cloudflare_agent(attrs \\ %{}) do
     attrs = Map.merge(%{"group_id" => group_id()}, attrs)
     {:ok, agent} = SalixAgent.Control.create(attrs, tenant_id())
-    enable_cloud_vm!(attrs["group_id"])
     _ = SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
     agent
   end
@@ -461,7 +458,6 @@ defmodule SalixWeb.CloudVMTest do
   test "with the Group's Cloud VM switch on, its Router starts a new Group VM and an unbound Worker can place a Task there" do
     gateway = start_supervised!(MockCloudflareGateway)
     configure_tenant_cloudflare(tenant_id(), gateway)
-    enable_cloud_vm!()
 
     {:ok, router} =
       SalixAgent.Control.create(%{"group_id" => group_id(), "role" => "router"}, tenant_id())
@@ -479,7 +475,6 @@ defmodule SalixWeb.CloudVMTest do
              Salix.Bindings.AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"})
 
     {:ok, other_group} = Salix.Control.Groups.create(%{"name" => "Other Group"}, tenant_id())
-    enable_cloud_vm!(other_group["group_id"])
 
     {:ok, outsider} =
       SalixAgent.Control.create(%{"group_id" => other_group["group_id"]}, tenant_id())
@@ -510,7 +505,7 @@ defmodule SalixWeb.CloudVMTest do
              Salix.Bindings.AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"})
   end
 
-  test "the Group's Cloud VM switch alone decides who starts the archived Cloud VM and places Tasks there" do
+  test "who starts the archived Cloud VM and places Tasks there" do
     gateway = start_supervised!(MockCloudflareGateway)
     configure_tenant_cloudflare(tenant_id(), gateway)
     SystemsRuntime.put_env(:salix_web, :vm_authorization_mod, VMAuthorizationFake)
@@ -529,23 +524,6 @@ defmodule SalixWeb.CloudVMTest do
     worker = cloud_vm_worker!()
     scope = %{tenant_id: tenant_id(), group_id: group_id(), agent_id: worker["agent_id"]}
     unbound = %{tenant_id: tenant_id(), group_id: group_id(), agent_id: agent["agent_id"]}
-
-    # Switch off: no Agent, bound to the Cloud VM or not, starts it or places a Task there.
-    assert {:ok, _group} =
-             Salix.Control.Groups.update(group_id(), %{"cloud_vm_enabled" => false})
-
-    assert {:error, :cloud_vm_disabled, []} = CloudVM.Start.run(router["agent_id"], 300_000)
-
-    assert {:error, :cloud_vm_disabled, []} =
-             CloudVM.Start.run(router["agent_id"], 300_000, worker["agent_id"])
-
-    assert Salix.Bindings.AgentConversations.runs_on(scope, %{"kind" => "cloud_vm"}) ==
-             {:error, :cloud_vm_disabled}
-
-    assert Salix.Bindings.AgentConversations.runs_on(unbound, %{"kind" => "cloud_vm"}) ==
-             {:error, :cloud_vm_disabled}
-
-    enable_cloud_vm!()
 
     # Archived, a Task may still be placed on it: its station wakes it.
     assert {:ok, %{"kind" => "cloud_vm"}} =
@@ -845,7 +823,6 @@ defmodule SalixWeb.CloudVMTest do
       "providers" => %{"cloudflare" => %{"enabled" => true}}
     })
 
-    enable_cloud_vm!()
     {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group_id()}, tenant_id())
 
     assert {:error, :not_found} =
@@ -859,13 +836,7 @@ defmodule SalixWeb.CloudVMTest do
     {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group_id()}, tenant_id())
     target = cloud_target(agent["agent_id"], "cloud-vm")
 
-    # The Group's Cloud VM switch is off: no command creates its VM.
-    assert {:error, :no_environment} =
-             SalixWeb.EnvDispatch.exec(agent["agent_id"], target, "true", %{})
-
-    enable_cloud_vm!()
-    assert {:error, :not_found} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id())
-
+    # A command for another environment creates no VM.
     assert {:error, :no_environment} =
              SalixWeb.EnvDispatch.exec(
                agent["agent_id"],
@@ -909,8 +880,6 @@ defmodule SalixWeb.CloudVMTest do
   test "a rejected Android request on the absent default VM does not create a workload" do
     gateway = start_supervised!(MockCloudflareGateway)
     configure_tenant_cloudflare(tenant_id(), gateway)
-
-    enable_cloud_vm!()
 
     {:ok, agent} =
       SalixAgent.Control.create(%{"group_id" => group_id(), "role" => "worker"}, tenant_id())
@@ -969,7 +938,6 @@ defmodule SalixWeb.CloudVMTest do
         tenant_id()
       )
 
-    enable_cloud_vm!(group["group_id"])
     {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group["group_id"]}, tenant_id())
     target = cloud_target(agent["agent_id"], "cloud-vm")
 
@@ -1016,17 +984,16 @@ defmodule SalixWeb.CloudVMTest do
     group_id = group["group_id"]
 
     # No Host bound and no Cloudflare configured: no Cloud VM.
-    assert {:error, {:bad_request, "the Cloud VM requires tenant vm provider configuration" <> _}} =
-             Salix.Control.Groups.update(group_id, %{"cloud_vm_enabled" => true})
+    refute SalixAgent.CloudVM.available?(tenant_id(), group_id)
 
     # The Project's Runner is installed as the Group's Agent VMM Host.
     {:ok, _registration} =
-      SalixStore.AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: registration_id,
         tenant_id: tenant_id(),
         group_id: group_id,
         device_id: "host-device-" <> registration_id,
-        enrollment_token: String.duplicate("h", 32)
+        credential: String.duplicate("h", 32)
       })
 
     connect_agent_vmm_host!(registration_id)
@@ -1047,7 +1014,6 @@ defmodule SalixWeb.CloudVMTest do
         "created_at" => SystemsClock.system_time(:millisecond)
       })
 
-    enable_cloud_vm!(group_id)
     {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group_id}, tenant_id())
 
     assert {:ok, rec} = SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
@@ -1058,12 +1024,12 @@ defmodule SalixWeb.CloudVMTest do
 
     # A second Host bound later does not move the existing VM.
     {:ok, _second} =
-      SalixStore.AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: registration_id <> "-2",
         tenant_id: tenant_id(),
         group_id: group_id,
         device_id: "host-device-" <> registration_id <> "-2",
-        enrollment_token: String.duplicate("i", 32)
+        credential: String.duplicate("i", 32)
       })
 
     assert {:ok, %{"workload_id" => same, "provider_resource_id" => ^registration_id}} =
@@ -1077,17 +1043,16 @@ defmodule SalixWeb.CloudVMTest do
 
     for suffix <- ["-a", "-b"] do
       {:ok, _} =
-        SalixStore.AgentVMM.create_registration(%{
+        SalixStore.AgentVMMFixtures.registration(%{
           id: registration_id <> suffix,
           tenant_id: tenant_id(),
           group_id: other["group_id"],
           device_id: "host-device-" <> registration_id <> suffix,
-          enrollment_token: String.duplicate("j", 32)
+          credential: String.duplicate("j", 32)
         })
     end
 
-    assert {:error, {:bad_request, "the Cloud VM requires tenant vm provider configuration" <> _}} =
-             Salix.Control.Groups.update(other["group_id"], %{"cloud_vm_enabled" => true})
+    refute SalixAgent.CloudVM.available?(tenant_id(), other["group_id"])
 
     workload = SalixStore.Repo.get!(GroupCompute.Workload, rec["workload_id"])
     assert workload.template_key == "station.default"
@@ -1116,18 +1081,17 @@ defmodule SalixWeb.CloudVMTest do
     registration_id = "host-" <> SystemsRuntime.Proc.uuid()
 
     {:ok, _} =
-      SalixStore.AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: registration_id,
         tenant_id: tenant_id(),
         group_id: group_id(),
         device_id: "device-" <> registration_id,
-        enrollment_token: String.duplicate("h", 32)
+        credential: String.duplicate("h", 32)
       })
 
     connect_agent_vmm_host!(registration_id)
     {:ok, _} = SalixStore.AgentVMM.mark_connection_lost(registration_id, "gateway-test", "7")
     refute SalixStore.AgentVMM.connected?(registration_id)
-    enable_cloud_vm!()
     {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group_id()}, tenant_id())
 
     assert {:ok, %{"provider" => "cloudflare"} = rec} =
@@ -1136,7 +1100,7 @@ defmodule SalixWeb.CloudVMTest do
     assert rec["device_id"] == SalixStore.RuntimeIds.cloud_vm_device_id(group_id())
   end
 
-  # The Host's current connection made its Project Environment's binding available.
+  # The Host's current connection permits placement in its Project Environment.
   defp connect_agent_vmm_host!(registration_id) do
     {:ok, pool} =
       GroupCompute.create_pool(%{
@@ -1157,7 +1121,7 @@ defmodule SalixWeb.CloudVMTest do
         pool_id: pool.id
       })
 
-    {:ok, binding} =
+    {:ok, _binding} =
       GroupCompute.create_provider_binding(%{
         id: "host-binding-" <> registration_id,
         pool_id: pool.id,
@@ -1171,20 +1135,12 @@ defmodule SalixWeb.CloudVMTest do
       set: [status: "ready", desired_enabled: true]
     )
 
-    agent_vmm_host_connected!(binding)
-  end
-
-  # What a Host's hello does to its binding: available, on that connection.
-  defp agent_vmm_host_connected!(binding) do
-    SalixStore.Repo.update_all(
-      from(b in GroupCompute.ProviderBinding, where: b.id == ^binding.id),
-      set: [
-        status: "available",
-        observation: %{"gateway_instance_id" => "gateway-test", "connection_epoch" => "7"}
-      ]
-    )
-
-    binding
+    assert {:ok, :ok} =
+             SalixStore.AgentVMM.observe_registration(registration_id, "gateway-test", %{
+               "connectionEpoch" => "7",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
   end
 
   test "product profile selects the same SKU for start and interval metering" do
@@ -1418,18 +1374,8 @@ defmodule SalixWeb.CloudVMTest do
     {:ok, settle_until(fn -> Enum.find(MockCloudflareGateway.calls(gateway), &(&1.op == op)) end)}
   end
 
-  describe "the Group's Cloud VM switch" do
-    test "does not turn on when the tenant has no default provider config" do
-      tenant_id = create_tenant!()
-      group_id = create_group!(tenant_id)
-
-      assert {:error, {:bad_request, @config_missing}} =
-               Salix.Control.Groups.update(group_id, %{"cloud_vm_enabled" => true})
-
-      assert {:ok, %{"cloud_vm_enabled" => false}} = Salix.Control.Groups.get(group_id)
-    end
-
-    test "turns on under tenant VM config, and an Agent's vm is no setting" do
+  describe "the Group's Cloud VM" do
+    test "a Group created where sandboxes are set up has no Cloud VM; one created before keeps it" do
       tenant_id =
         create_tenant!(%{
           "config" =>
@@ -1441,26 +1387,84 @@ defmodule SalixWeb.CloudVMTest do
             })
         })
 
-      # An older caller's `vm` neither turns the switch on nor is stored.
+      before = create_group!(tenant_id)
+
+      sandboxes_mod = SystemsRuntime.get_env(:salix_agent, :sandboxes_mod)
+      SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SandboxesOn)
+
+      on_exit(fn ->
+        if sandboxes_mod,
+          do: SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, sandboxes_mod),
+          else: SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+      end)
+
+      created = create_group!(tenant_id)
+
+      assert SalixAgent.Sandboxes.cloud_vm_retired?(created)
+      refute SalixAgent.Sandboxes.cloud_vm_retired?(before)
+
+      refute SalixAgent.CloudVM.allowed?(%{"group_id" => created})
+      assert SalixAgent.CloudVM.allowed?(%{"group_id" => before})
+    end
+
+    test "an Agent has no Cloud VM when the tenant has no default provider config" do
+      tenant_id = create_tenant!()
+      group_id = create_group!(tenant_id)
+      refute SalixAgent.CloudVM.allowed?(%{"group_id" => group_id})
+    end
+
+    # A deleted account's Workspace Group (`CommaWeb.SalixClient.retire_workspace_scope/1`).
+    test "a Group whose Cloud VM is retired for good has none, whatever its Tenant has" do
+      tenant_id =
+        create_tenant!(%{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        })
+
+      group_id = create_group!(tenant_id)
+      assert SalixAgent.CloudVM.allowed?(%{"group_id" => group_id})
+
+      assert :ok = Salix.Control.Groups.retire_cloud_vm(group_id, tenant_id)
+      assert SalixAgent.Sandboxes.cloud_vm_retired?(group_id)
+      refute SalixAgent.CloudVM.allowed?(%{"group_id" => group_id})
+
+      assert {:error, :cloud_vm_retired} =
+               SalixAgent.TaskPlace.put(tenant_id, group_id, %{"kind" => "cloud_vm"})
+
+      # Retired already: as it is. Another Tenant's Group: not found.
+      assert :ok = Salix.Control.Groups.retire_cloud_vm(group_id, tenant_id)
+
+      assert {:error, :not_found} =
+               Salix.Control.Groups.retire_cloud_vm(group_id, create_tenant!())
+    end
+
+    test "an Agent has its Group's Cloud VM under tenant VM config, and its own vm is no setting" do
+      tenant_id =
+        create_tenant!(%{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        })
+
+      # An older caller's `vm` is not stored: the Cloud VM is the Group's.
       {:ok, agent} = create_agent!(tenant_id, %{"vm" => %{"enabled" => true}})
       refute Map.has_key?(agent, "vm")
-      refute SalixAgent.CloudVM.allowed?(agent)
-
-      assert {:ok, %{"cloud_vm_enabled" => true}} =
-               Salix.Control.Groups.update(agent["group_id"], %{"cloud_vm_enabled" => true})
-
       assert SalixAgent.CloudVM.allowed?(agent)
 
       assert {:error, :not_found} =
                SalixWeb.ComputeProviders.Cloudflare.get_record(agent["group_id"])
-
-      assert {:ok, %{"cloud_vm_enabled" => false}} =
-               Salix.Control.Groups.update(agent["group_id"], %{"cloud_vm_enabled" => false})
-
-      refute SalixAgent.CloudVM.allowed?(agent)
     end
 
-    test "does not turn on in a router-only (guest) Tenant" do
+    test "no Cloud VM in a router-only (guest) Tenant" do
       SystemsRuntime.put_env(:salix_web, :platform_vm, %{
         "default_provider" => "cloudflare",
         "providers" => %{"cloudflare" => %{"enabled" => true}}
@@ -1470,11 +1474,10 @@ defmodule SalixWeb.CloudVMTest do
       group_id = create_group!(tenant_id)
       {:ok, _profile} = SalixStore.TenantProfiles.put_router_only(tenant_id, 16)
 
-      assert {:error, {:bad_request, "this tenant has no Cloud VM"}} =
-               Salix.Control.Groups.update(group_id, %{"cloud_vm_enabled" => true})
+      refute SalixAgent.CloudVM.allowed?(%{"group_id" => group_id})
     end
 
-    test "turns on for tenants that follow platform VM config" do
+    test "a Cloud VM for tenants that follow platform VM config" do
       SystemsRuntime.put_env(:salix_web, :platform_vm, %{
         "default_provider" => "cloudflare",
         "providers" => %{"cloudflare" => %{"enabled" => true}}
@@ -1487,9 +1490,7 @@ defmodule SalixWeb.CloudVMTest do
 
       group_id = create_group!(tenant_id)
 
-      assert {:ok, %{"cloud_vm_enabled" => true}} =
-               Salix.Control.Groups.update(group_id, %{"cloud_vm_enabled" => true})
-
+      assert SalixAgent.CloudVM.allowed?(%{"group_id" => group_id})
       assert {:error, :not_found} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
     end
 
@@ -2028,6 +2029,58 @@ defmodule SalixWeb.CloudVMTest do
       assert keepalive_index < destroy_index
     end
 
+    test "a teardown abandons an operation still counted active and ends the VM; the operation's late finish changes nothing" do
+      gateway = start_supervised!(MockCloudflareGateway)
+      configure_tenant_cloudflare(tenant_id(), gateway)
+      agent = create_cloudflare_agent()
+      group_id = agent["group_id"]
+
+      assert {:ok, :ready} =
+               SalixWeb.ComputeProviders.Cloudflare.provision_once(group_id, force: true)
+
+      assert {:ok, exec} = SalixWeb.ComputeProviders.Cloudflare.begin_operation(group_id, "exec")
+
+      assert {:ok, %{"active_operation_count" => 1}} =
+               SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
+
+      # The exec never finishes. A forced idle archive waits for it; the
+      # teardown does not, and a finish while it archives counts nothing down.
+      assert {:skipped, :active_operations} =
+               SalixWeb.ComputeProviders.Cloudflare.archive_idle_once(group_id, force: true)
+
+      late_finish = fn ->
+        assert :ok =
+                 SalixWeb.ComputeProviders.Cloudflare.finish_operation(
+                   group_id,
+                   exec,
+                   "completed",
+                   %{ok: true}
+                 )
+
+        assert {:ok, %{"status" => "archiving", "active_operation_count" => 0}} =
+                 SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
+
+        :ok
+      end
+
+      assert :ok =
+               SalixWeb.ComputeProviders.Cloudflare.teardown(group_id,
+                 before_archive_persist: late_finish
+               )
+
+      assert {:error, :not_found} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id)
+      assert Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
+
+      # Finished again, after the record is gone: nothing to do.
+      assert :ok =
+               SalixWeb.ComputeProviders.Cloudflare.finish_operation(
+                 group_id,
+                 exec,
+                 "completed",
+                 %{ok: true}
+               )
+    end
+
     test "unused ready VM gets an idle grace period, archives, and wakes with its archive" do
       gateway = start_supervised!(MockCloudflareGateway)
       configure_tenant_cloudflare(tenant_id(), gateway)
@@ -2343,7 +2396,7 @@ defmodule SalixWeb.CloudVMTest do
       refute Enum.any?(calls_since(gateway, calls), &(&1.op == :ensure))
     end
 
-    test "image release discards a disk after a terminal archive export failure" do
+    test "deploying release takeover drains and discards a disk after a terminal archive export failure" do
       gateway = start_supervised!({MockCloudflareGateway, fail_ops: [:archive_export_failed]})
       configure_tenant_cloudflare(tenant_id(), gateway)
       agent = create_cloudflare_agent()
@@ -2358,9 +2411,33 @@ defmodule SalixWeb.CloudVMTest do
       assert {:ok, unchanged} = provider.get_record(group)
       assert unchanged["generation"] == before["generation"]
       refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
-      release = "failed-export-disposal"
-      assert {:ok, %{"phase" => "prepared"}} = provider.prepare_image_release(release)
-      on_exit(fn -> provider.cancel_image_release(release) end)
+      old_release = "failed-export-deploying"
+      release = "failed-export-takeover"
+      assert {:ok, %{"phase" => "prepared"}} = provider.prepare_image_release(old_release)
+      assert {:ok, %{"phase" => "deploying"}} = provider.mark_image_release_deploying(old_release)
+
+      assert {:ok, %{"phase" => "deploying", "superseded_maintenance_id" => ^old_release}} =
+               provider.prepare_image_release(release)
+
+      on_exit(fn -> provider.finish_image_release(release) end)
+
+      assert {:error, :vm_maintenance_owned_by_other_release} =
+               provider.finish_image_release(old_release)
+
+      assert {:error, :vm_maintenance_phase_mismatch} = provider.cancel_image_release(release)
+
+      target = "cf-standard-2:" <> before["provider_resource_name"]
+
+      assert {:error, {:vm_service_upgrading, %{"maintenance_id" => ^release}}} =
+               SalixStore.Compute.prepare_cloudflare_control(group, target, :open)
+
+      assert {:error, {:vm_service_upgrading, %{"maintenance_id" => ^release}}} =
+               SalixStore.Compute.begin_cloudflare_gateway_attempt(group, "ordinary-start")
+
+      assert {:error, {:vm_service_upgrading, %{"maintenance_id" => ^release}}} =
+               SalixStore.Compute.begin_cloudflare_direct_gateway_attempt("direct-start")
+
+      calls = MockCloudflareGateway.calls(gateway)
 
       assert {:ok, "started"} =
                provider.image_release_archive(
@@ -2381,6 +2458,11 @@ defmodule SalixWeb.CloudVMTest do
 
       assert [%{body: %{"discard" => true}}] =
                Enum.filter(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
+
+      refute Enum.any?(calls_since(gateway, calls), &(&1.op == :ensure))
+
+      assert %{"maintenance_id" => ^release, "phase" => "deploying", "enabled" => true} =
+               provider.vm_maintenance()
     end
 
     test "idle archive keeps the workload fenced when quiesce outcome is unknown" do
@@ -3379,7 +3461,6 @@ defmodule SalixWeb.CloudVMTest do
       configure_tenant_cloudflare(tenant_id(), gateway)
       SystemsRuntime.put_env(:salix_web, :vm_authorization_mod, VMAuthorizationFake)
       SystemsRuntime.put_env(:salix_web, :cloud_vm_auth_result, :allow)
-      enable_cloud_vm!()
 
       {:ok, worker} =
         SalixAgent.Control.create(%{"group_id" => group_id(), "role" => "worker"}, tenant_id())
@@ -3829,19 +3910,204 @@ defmodule SalixWeb.CloudVMTest do
     end
   end
 
-  describe "Group switch off" do
-    test "turning the Group's Cloud VM switch off preserves Group compute until explicit Group release" do
+  describe "Group release" do
+    test "Group compute stays until explicit Group release" do
       gateway = start_supervised!(MockCloudflareGateway)
       configure_tenant_cloudflare(tenant_id(), gateway)
       agent = create_cloudflare_agent()
       group = agent["group_id"]
 
-      assert {:ok, _} = Salix.Control.Groups.update(group, %{"cloud_vm_enabled" => false})
       assert {:ok, %{"desired_state" => "ready"}} = GroupCompute.group_workload(group)
 
       assert :ok = SalixWeb.ComputeProviders.Cloudflare.teardown_async(group)
       assert {:ok, %{"desired_state" => "stopped"}} = GroupCompute.group_workload(group)
     end
+  end
+
+  describe "the Cloud VM cutover" do
+    setup do
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+        SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
+      end)
+    end
+
+    test "where the Cloud VM is retired, a command for the Group's VM neither makes nor wakes it, and says why" do
+      gateway = start_supervised!(MockCloudflareGateway)
+      configure_tenant_cloudflare(tenant_id(), gateway)
+      {:ok, agent} = SalixAgent.Control.create(%{"group_id" => group_id()}, tenant_id())
+      target = cloud_target(agent["agent_id"], "cloud-vm")
+      retire_cloud_vm!()
+      # Missing L4ES configuration must not reopen the retired CF provider.
+      SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+
+      # Before the cutover this first command made the VM ("the selected default
+      # VM environment creates one Group workload on first exec").
+      assert {:error, %{"error_class" => "cloud_vm_retired", "retryable" => false}} =
+               SalixWeb.EnvDispatch.exec(agent["agent_id"], target, "true", %{})
+
+      assert {:error, :not_found} = SalixWeb.ComputeProviders.Cloudflare.get_record(group_id())
+
+      # A VM made before and archived since is not woken; one that failed is not made again.
+      vm_record!(group_id(), "archived")
+
+      assert {:error, %{"error_class" => "cloud_vm_retired"}} =
+               SalixWeb.EnvDispatch.exec(agent["agent_id"], target, "true", %{})
+
+      assert {:ok, %{"status" => "archived"} = vm} = GroupCompute.group_workload(group_id())
+      refute Map.has_key?(vm, "wake_requested_at")
+
+      update_vm_record(group_id(), &Map.put(&1, "status", "failed"))
+      SalixAgent.TestSupport.stop_all_agents()
+
+      assert {:error, %{"error_class" => "cloud_vm_retired"}} =
+               SalixWeb.EnvDispatch.exec(agent["agent_id"], target, "true", %{})
+
+      assert {:ok, %{"status" => "failed"}} = GroupCompute.group_workload(group_id())
+      assert MockCloudflareGateway.calls(gateway) == []
+    end
+
+    test "the cutover stops each Cloudflare VM not archived; the Compute reconciler archives a running one, releases those with no container, and retires them" do
+      gateway = start_supervised!(MockCloudflareGateway)
+      configure_tenant_cloudflare(tenant_id(), gateway)
+      running = create_group!(tenant_id(), "Cutover: running")
+      create_cloudflare_agent(%{"group_id" => running})
+
+      assert {:ok, :ready} =
+               SalixWeb.ComputeProviders.Cloudflare.provision_once(running, force: true)
+
+      suspended = create_group!(tenant_id(), "Cutover: billing suspended")
+      vm_record!(suspended, "billing_suspended")
+      failed = create_group!(tenant_id(), "Cutover: failed")
+      vm_record!(failed, "failed")
+      archived = create_group!(tenant_id(), "Cutover: archived")
+      vm_record!(archived, "archived")
+      host = create_group!(tenant_id(), "Cutover: Agent VMM Host")
+      host_vm!(host)
+
+      assert {:ok, %{"workloads" => 3}} =
+               SalixWeb.Migrations.CloudVMCutover.run(tenant: tenant_id())
+
+      for group <- [running, suspended, failed],
+          do: assert({:ok, %{"desired_state" => "stopped"}} = GroupCompute.group_workload(group))
+
+      assert {:ok, %{"desired_state" => "ready", "status" => "archived"}} =
+               GroupCompute.group_workload(archived)
+
+      assert {:ok, %{"desired_state" => "ready", "provider" => "agent_vmm"}} =
+               GroupCompute.group_workload(host)
+
+      # Run again, it asks nothing more.
+      assert {:ok, %{"workloads" => 0}} =
+               SalixWeb.Migrations.CloudVMCutover.run(tenant: tenant_id())
+
+      # A node's Compute reconciler carries each stop out. Before the cutover a
+      # VM with no container was not released (`group_release_recovery_required`).
+      for group <- [running, suspended, failed] do
+        {:ok, vm} = GroupCompute.group_workload(group)
+
+        assert {:ok, _} =
+                 SalixEnv.ComputeReconciler.reconcile_workload(
+                   vm["workload_id"],
+                   vm["generation"]
+                 )
+
+        assert {:error, :not_found} = GroupCompute.group_workload(group)
+      end
+
+      # Only the running VM is archived first.
+      ops = gateway |> MockCloudflareGateway.calls() |> Enum.map(& &1.op)
+      assert Enum.count(ops, &(&1 == :archive_export)) == 1
+    end
+  end
+
+  # The deployment retires every Group's Cloud VM (`SalixAgent.Sandboxes.cloud_vm_retired?/1`).
+  defp retire_cloud_vm! do
+    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SandboxesOn)
+    SystemsRuntime.put_env(:salix_agent, :cloud_vm_retired, true)
+  end
+
+  # The Group's VM on its connected Agent VMM Host (as `SalixWeb.AgentVMMCloudVMTest` makes it).
+  defp host_vm!(group) do
+    registration = "host-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    {:ok, _registration} =
+      SalixStore.AgentVMMFixtures.registration(%{
+        id: registration,
+        tenant_id: tenant_id(),
+        group_id: group,
+        device_id: "host-device",
+        credential: String.duplicate("h", 32)
+      })
+
+    {:ok, pool} =
+      GroupCompute.create_pool(%{
+        id: "host-pool-" <> registration,
+        tenant_id: tenant_id(),
+        name: "Host",
+        region: "local",
+        provider_policy: %{"providers" => ["agent_vmm"]},
+        capabilities: ["runtime_exec"]
+      })
+
+    {:ok, environment} =
+      GroupCompute.create_environment(%{
+        id: "host-project-" <> registration,
+        tenant_id: tenant_id(),
+        owner_type: "project",
+        owner_id: "project-" <> registration,
+        pool_id: pool.id
+      })
+
+    {:ok, _binding} =
+      GroupCompute.create_provider_binding(%{
+        id: "host-binding-" <> registration,
+        pool_id: pool.id,
+        environment_id: environment.id,
+        provider: "agent_vmm",
+        provider_ref: registration
+      })
+
+    SalixStore.Repo.update_all(
+      from(r in SalixStore.AgentVMM.Registration, where: r.id == ^registration),
+      set: [status: "ready", desired_enabled: true]
+    )
+
+    {:ok, :ok} =
+      SalixStore.AgentVMM.observe_registration(registration, "gateway-test", %{
+        "connectionEpoch" => "7",
+        "inventoryWatermark" => 0,
+        "inventory" => []
+      })
+
+    vm_record!(group, "ready", %{
+      "provider" => "agent_vmm",
+      "provider_resource_id" => registration,
+      "provider_spec" => %{"profile_key" => "vmm-station-1"}
+    })
+  end
+
+  # A Group VM a release before made, as Compute records it, with no Gateway asked.
+  defp vm_record!(group, status, attrs \\ %{}) do
+    {:ok, _vm, :created} =
+      GroupCompute.ensure_group_workload(
+        Map.merge(
+          %{
+            "tenant_id" => tenant_id(),
+            "group_id" => group,
+            "provider" => "cloudflare",
+            "provider_resource_name" =>
+              SalixStore.RuntimeIds.cloud_vm_provider_resource_name(group),
+            "env_id" => SalixStore.RuntimeIds.cloud_vm_env_id(group),
+            "device_id" => SalixStore.RuntimeIds.cloud_vm_device_id(group),
+            "connector_id" => SalixStore.RuntimeIds.cloud_vm_connector_id(group),
+            "alias" => "cloud-vm",
+            "status" => status,
+            "created_at" => SystemsClock.system_time(:millisecond)
+          },
+          attrs
+        )
+      )
   end
 
   # The Gateway's calls after those in `seen`, oldest first.
@@ -3858,5 +4124,25 @@ defmodule SalixWeb.CloudVMTest do
       environment_id:
         SalixStore.RuntimeIds.device_environment_id(device_id, "connector", "default")
     }
+  end
+
+  test "a teardown's archive is not held by an operation still counted active; a forced archive is" do
+    rec = %{
+      "provider" => "cloudflare",
+      "status" => "ready",
+      "active_operation_count" => 1,
+      "ready_at" => 1,
+      "last_agent_settled_after_vm_at" => 1
+    }
+
+    assert {:skip, :active_operations} =
+             SalixWeb.ComputeProviders.Cloudflare.idle_eligible(rec, now: 10, force: true)
+
+    assert :ok =
+             SalixWeb.ComputeProviders.Cloudflare.idle_eligible(rec,
+               now: 10,
+               force: true,
+               abandon_operations: true
+             )
   end
 end

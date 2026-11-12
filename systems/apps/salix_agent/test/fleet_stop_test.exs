@@ -22,7 +22,7 @@ defmodule SalixAgent.FleetStopTest do
   test "stopping an agent drains a session wake already in its coordinator", %{agent: a} do
     SalixAgent.TestSupport.create_control_agent!(a)
     session_id = "ses1_0000000000000000930"
-    {:ok, _} = SalixAgent.InternalSessionStore.prepare_create(a, session_id, %{})
+    {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(a, session_id, %{})
     {:ok, server} = Fleet.ensure_started(a, create: false, startup_mode: :passive)
 
     {:ok, _} =

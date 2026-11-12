@@ -8,8 +8,8 @@ defmodule SalixAgent.AgentManagement.Targets do
   def resolve(_scope, %{"kind" => "internal"} = input) when map_size(input) == 1,
     do: {:ok, %{"kind" => "internal"}}
 
-  def resolve(_scope, %{"kind" => kind} = input) when kind in ~w(station cloud_vm sandbox) do
-    case StationBinding.runs_on(input) do
+  def resolve(scope, %{"kind" => kind} = input) when kind in ~w(station cloud_vm sandbox) do
+    case StationBinding.runs_on(input, scope.group_id) do
       {:ok, runs_on} -> {:ok, %{"kind" => "station", "runs_on" => runs_on}}
       {:error, _reason} -> {:error, :invalid_arguments}
     end

@@ -1,12 +1,12 @@
 // The device tools (contract v1 §8), over the presence socket (`presenceTools`) or on the mesh: ALPN `comma/tools/1`, admitted only from the iroh ids the control
 // plane names as its gateways (`gateway_keys`, cloud.json, as the presence socket said last). One request a stream,
-// framed as `stillfail/admin/1` is: a JSON head line `{op, id, context, args}` (any body after it is read and left), answered
+// framed as `comma-station/admin/1` is: a JSON head line `{op, id, context, args}` (any body after it is read and left), answered
 // by one JSON line `{ok: true, result}` or `{ok: false, error: {code, message}}`. What an op may do is the station's
 // `tools.access` (src/device/tools.ts), read at each request. The chats it starts and drives are the pages' own: made and
 // said through the admin API, as the person it names.
 import { Effect } from "effect";
 import type { Admin } from "../api/admin.ts";
-import { type Cloud, workspaceIds } from "../cloud/state.ts";
+import { type Cloud, workspaceIds, workspaceKey } from "../cloud/state.ts";
 import { type Access, type DeviceTools, type Sessions, ToolError } from "../device/tools.ts";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
@@ -47,7 +47,7 @@ async function answer(d: ToolsDeps, head: any, refused: () => string | null): Pr
     const context = head.context !== null && typeof head.context === "object" ? head.context : {};
     // For this station's workspace only (contract §8), by any id it goes or went by: another's, or none said, is refused.
     if (d.cloud.state === null || !workspaceIds(d.cloud.state).includes(context.workspace)) throw new ToolError({ code: "forbidden", message: "the request is for another workspace than this station's" });
-    const result = await Effect.runPromise(Effect.result(d.tools.run(head.op, args, context, d.access())));
+    const result = await Effect.runPromise(Effect.result(d.tools.run(head.op, args, context, d.access(), workspaceKey(d.cloud.state))));
     log.info("tools", "device tool", { op: head.op, id: typeof head.id === "string" ? head.id : null, ok: result._tag === "Success", agent: context.agent ?? null });
     return result._tag === "Success" ? { ok: true, result: result.success } : { ok: false, error: { code: result.failure.code, message: result.failure.message } };
   } catch (e) {

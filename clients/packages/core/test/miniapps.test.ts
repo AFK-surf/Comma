@@ -33,6 +33,7 @@ const app = (id = "a1", extra: Record<string, unknown> = {}) => ({
   name: `App ${id}`,
   description: "Tracks habits",
   icon_url: null,
+  screenshot_urls: [],
   repo: { owner: "me", name: `comma-app-${id}` },
   visibility: "private",
   status: "active",
@@ -196,7 +197,7 @@ async function open(
     guest?: boolean;
     client?: CoreClient;
     token?: string;
-    platform?: "mac" | "web";
+    platform?: "mac" | "web" | "ios" | "android";
     version?: number;
   } = {}
 ) {
@@ -227,10 +228,14 @@ const invoke = (
 describe("a Workspace's apps", () => {
   it("lists them, shows a made app at once, and its settings page reads Versions and the link", async () => {
     const t = setup();
-    t.api.on("GET", appsPath, { data: [app("a1")] });
+    const screenshots = ["/v1/comma/apps/a1/screenshots/0?v=2"];
+    t.api.on("GET", appsPath, { data: [app("a1", { screenshot_urls: screenshots })] });
     const list = t.watch<MiniAppsValue>({ topic: "miniApps", workspace: "wsp" });
     await t.time.pass(100);
-    expect(list()).toMatchObject({ status: "ready", apps: [{ id: "a1" }] });
+    expect(list()).toMatchObject({
+      status: "ready",
+      apps: [{ id: "a1", screenshot_urls: screenshots }],
+    });
 
     t.api.on("POST", appsPath, app("a2"));
     await t.client.call("miniApps.create", { workspace: "wsp", name: "Habit tracker" });
@@ -324,6 +329,87 @@ describe("a Workspace's apps", () => {
 });
 
 describe("an opened app's calls", () => {
+  it.each(["ios", "android"] as const)(
+    "offers %s host actions with per-action consent and keeps Mac-only and device storage unavailable",
+    async (platform) => {
+      const t = setup();
+      const s = await open(
+        t,
+        "a1",
+        { grants: app().capabilities },
+        { platform, version: 2 }
+      );
+      expect(s.capabilities).toContain("tasks.create");
+      expect(s.capabilities).toContain("identity.basic");
+      expect(s.capabilities).not.toContain("calendar.read");
+      expect(s.storage).toEqual(["app", "user"]);
+      expect(s.viewer).toMatchObject({ name: "Ada Lovelace" });
+      expect(
+        await invoke(t, s.session, "chat.draft", { text: "Continue this" })
+      ).toMatchObject({ status: "host", op: "chat.draft" });
+      expect(
+        await invoke(t, s.session, "links.open", { url: "https://example.com" })
+      ).toMatchObject({ status: "confirm" });
+      expect(
+        await invoke(t, s.session, "links.open", { url: "https://example.com" }, true)
+      ).toMatchObject({ status: "host" });
+      expect(
+        await invoke(t, s.session, "tasks.propose", { text: "Review the patch" })
+      ).toMatchObject({ status: "confirm" });
+      expect(
+        await invoke(t, s.session, "storage.device.get", { key: "secret" })
+      ).toMatchObject({ status: "error", code: "unsupported" });
+    }
+  );
+
+  it.each(["ios", "android"] as const)(
+    "requires per-call photo confirmation on %s while keeping Mac Calendar and device storage unavailable",
+    async (platform) => {
+      const t = setup();
+      const s = await open(
+        t,
+        "a1",
+        { grants: app().capabilities },
+        { platform, version: 2 }
+      );
+      expect(s.storage).toEqual(["app", "user"]);
+      for (const op of ["calendar.events", "storage.device.get"]) {
+        expect(await invoke(t, s.session, op, {}, true)).toMatchObject({
+          status: "error",
+          code: "unsupported",
+        });
+      }
+      expect(
+        await invoke(t, s.session, "files.pick", { accept: ["image/*"] })
+      ).toMatchObject({ status: "confirm", capability: "files.pick" });
+      expect(
+        await invoke(t, s.session, "files.pick", { accept: ["image/*"] }, true)
+      ).toMatchObject({ status: "host", op: "files.pick" });
+      expect(await invoke(t, s.session, "files.pick", {})).toMatchObject({
+        status: "confirm",
+      });
+      t.api.on("POST", "/v1/comma/apps/a1/ai/chat", {
+        message: { role: "assistant", content: "Hello" },
+      });
+      expect(
+        await invoke(t, s.session, "ai.chat", {
+          messages: [{ role: "user", content: "Hi" }],
+        })
+      ).toMatchObject({ status: "done", value: { content: "Hello" } });
+      t.api.on("POST", "/v1/comma/apps/a1/web/search", { results: [] });
+      expect(await invoke(t, s.session, "web.search", { query: "weather" })).toEqual({
+        status: "done",
+        value: [],
+      });
+      expect(version(t.api.seen("POST", "/v1/comma/apps/a1/ai/chat")[0]!)).toBe("2");
+      await t.client.call("miniApps.session.close", { session: s.session });
+      expect(await invoke(t, s.session, "ai.chat", {})).toMatchObject({
+        status: "error",
+        code: "invalid",
+      });
+    }
+  );
+
   it("shares one AI grant for chat and decisions, with bounded decision input", async () => {
     const t = setup();
     const s = await open(t, "a1", { capabilities: ["ai.chat"] }, { version: 2 });
@@ -590,6 +676,150 @@ describe("an opened app's calls", () => {
       status: "done",
       value: null,
     });
+  });
+
+  it("gives the device capabilities to the web and Mac hosts, each behind its grant", async () => {
+    const t = setup();
+    const devices = [
+      "microphone",
+      "camera",
+      "location",
+      "screen.wake",
+      "fullscreen",
+      "clipboard.read",
+      "share",
+      "haptics",
+      "midi",
+      "usb",
+      "bluetooth",
+    ];
+    const s = await open(t, "a1", { capabilities: devices });
+    expect(s.capabilities).toEqual(devices);
+
+    expect(
+      await invoke(t, s.session, "microphone.startChannels", {
+        channelCount: 4,
+        channels: [2, 0],
+      })
+    ).toEqual({
+      status: "grant",
+      capability: "microphone",
+    });
+    // Once: the viewer allows it, then the host runs it.
+    expect(await invoke(t, s.session, "microphone.start")).toEqual({
+      status: "grant",
+      capability: "microphone",
+    });
+    t.api.on(
+      "PUT",
+      `${appsPath}/a1/grants`,
+      app("a1", { capabilities: devices, grants: ["microphone"] })
+    );
+    await t.client.call("miniApps.grant", {
+      session: s.session,
+      capability: "microphone",
+    });
+    expect(await invoke(t, s.session, "microphone.start")).toEqual({
+      status: "host",
+      op: "microphone.start",
+      args: {},
+    });
+    expect(await invoke(t, s.session, "microphone.start", { deviceId: "usb" })).toEqual(
+      { status: "host", op: "microphone.start", args: { deviceId: "usb" } }
+    );
+    expect(
+      await invoke(t, s.session, "microphone.startChannels", {
+        deviceId: "usb",
+        channelCount: 4,
+        channels: [2, 0],
+      })
+    ).toEqual({
+      status: "host",
+      op: "microphone.startChannels",
+      args: { deviceId: "usb", channelCount: 4, channels: [2, 0] },
+    });
+    for (const args of [
+      { channelCount: 33 },
+      { channelCount: 4, channels: [4] },
+      { channelCount: 4, channels: [1, 1] },
+    ])
+      expect(
+        await invoke(t, s.session, "microphone.startChannels", args)
+      ).toMatchObject({ status: "error", code: "invalid" });
+    expect(await invoke(t, s.session, "microphone.devices")).toMatchObject({
+      status: "host",
+    });
+    expect(
+      await invoke(t, s.session, "microphone.start", { deviceId: 1 })
+    ).toMatchObject({ status: "error", code: "invalid" });
+    expect(
+      await invoke(t, s.session, "microphone.stop", { stream: "x" })
+    ).toMatchObject({
+      status: "error",
+      code: "invalid",
+    });
+    expect(await invoke(t, s.session, "midi.start")).toMatchObject({ status: "grant" });
+    expect(await invoke(t, s.session, "location.current")).toMatchObject({
+      status: "grant",
+    });
+
+    // Each time: the camera sheet and the paste confirmation.
+    expect(
+      await invoke(t, s.session, "camera.capture", { facing: "user" })
+    ).toMatchObject({
+      status: "confirm",
+      capability: "camera",
+    });
+    expect(
+      await invoke(t, s.session, "camera.capture", { facing: "user" }, true)
+    ).toMatchObject({ status: "host", op: "camera.capture" });
+    expect(
+      await invoke(t, s.session, "camera.capture", { facing: "back" })
+    ).toMatchObject({
+      status: "error",
+      code: "invalid",
+    });
+    expect(await invoke(t, s.session, "clipboard.read")).toMatchObject({
+      status: "confirm",
+    });
+
+    // No grant: the host's own sheet or the viewer's press is the confirmation.
+    for (const [op, args] of [
+      ["screen.keepAwake", { on: true }],
+      ["screen.fullscreen", { on: false }],
+      ["share", { text: "My score", url: "https://example.com/s" }],
+      ["haptics", { pattern: [30, 50, 30] }],
+    ] as const)
+      expect(await invoke(t, s.session, op, args)).toEqual({
+        status: "host",
+        op,
+        args,
+      });
+    for (const [op, args] of [
+      ["screen.keepAwake", { on: "yes" }],
+      ["share", {}],
+      ["share", { url: "http://example.com" }],
+      ["haptics", { pattern: [] }],
+      ["haptics", { pattern: [6000] }],
+    ] as const)
+      expect(await invoke(t, s.session, op, args)).toMatchObject({
+        status: "error",
+        code: "invalid",
+      });
+
+    // The Mac app has no location, share sheet or vibration; the phone apps run none of them yet.
+    const mac = await open(t, "a1", { capabilities: devices }, { platform: "mac" });
+    expect(mac.capabilities).toEqual(
+      devices.filter((c) => !["location", "share", "haptics"].includes(c))
+    );
+    expect(await invoke(t, mac.session, "share", { text: "x" })).toMatchObject({
+      status: "error",
+      code: "unsupported",
+    });
+    for (const platform of ["ios", "android"] as const) {
+      const phone = await open(t, "a1", { capabilities: devices }, { platform });
+      expect(phone.capabilities).toEqual([]);
+    }
   });
 
   it("fails ops the manifest, the platform or the grants do not allow", async () => {
@@ -971,6 +1201,94 @@ describe("an opened app's calls", () => {
     await t.time.pass(100);
     expect(other.seen.error).toMatchObject({ code: "invalid_params" });
     expect(both.seen.error).toMatchObject({ code: "invalid_params" });
+  });
+
+  it("shows a Version's screenshots read with the access path, kept per path, and only screenshot URLs", async () => {
+    const t = setup();
+    t.api.on("GET", "/v1/comma/apps/a1/screenshots/0", {
+      status: 200,
+      headers: [["content-type", "image/png"]],
+      body: new Uint8Array([137, 80, 78, 71]),
+    });
+    const shown = (topic: Topic) => {
+      const seen: { value?: unknown; error?: unknown } = {};
+      const stop = t.client.subscribe(
+        topic,
+        (value) => (seen.value = value),
+        (error) => (seen.error = error)
+      );
+      return { seen, stop };
+    };
+    const shot = {
+      topic: "miniAppImage",
+      url: "/v1/comma/apps/a1/screenshots/0?v=2",
+      workspace: "wsp",
+    };
+    const first = shown(shot);
+    await t.time.pass(100);
+    expect(first.seen.value).toEqual({
+      status: "ready",
+      src: "data:image/png;base64,iVBORw==",
+    });
+    first.stop();
+    await t.time.pass(100);
+    const again = shown(shot);
+    await t.time.pass(100);
+    expect(again.seen.value).toMatchObject({ status: "ready" });
+    expect(t.api.seen("GET", "/v1/comma/apps/a1/screenshots/0")).toHaveLength(1);
+    const linked = shown({
+      topic: "miniAppImage",
+      url: shot.url,
+      link: "shared-token",
+    });
+    await t.time.pass(100);
+    expect(linked.seen.value).toMatchObject({ status: "ready" });
+    const seen = t.api.seen("GET", "/v1/comma/apps/a1/screenshots/0");
+    expect(via(seen[0]!)).toBe("workspace/wsp");
+    expect(via(seen[1]!)).toBe("link/shared-token");
+    for (const url of [
+      "https://example.com/cover.png",
+      "/v1/comma/workspaces",
+      "/v1/comma/apps/a1/screenshots/6?v=2",
+    ]) {
+      const refused = shown({ ...shot, url });
+      await t.time.pass(100);
+      expect(refused.seen.error).toMatchObject({ code: "invalid_params" });
+    }
+  });
+
+  it("shows the app author's avatar read with the access path, and only an author-avatar URL", async () => {
+    const t = setup();
+    t.api.on("GET", "/v1/comma/apps/a1/author-avatar/avt_bob", {
+      status: 200,
+      headers: [["content-type", "image/png"]],
+      body: new Uint8Array([137, 80, 78, 71]),
+    });
+    const shown = (topic: Topic) => {
+      const seen: { value?: unknown; error?: unknown } = {};
+      t.client.subscribe(
+        topic,
+        (value) => (seen.value = value),
+        (error) => (seen.error = error)
+      );
+      return seen;
+    };
+    const avatar = {
+      topic: "miniAppImage",
+      url: "/v1/comma/apps/a1/author-avatar/avt_bob",
+      workspace: "wsp",
+    };
+    const seen = shown(avatar);
+    const other = shown({ ...avatar, url: "/v1/comma/apps/a1/author-avatar/../icon" });
+    await t.time.pass(100);
+    expect(seen.value).toEqual({
+      status: "ready",
+      src: "data:image/png;base64,iVBORw==",
+    });
+    expect(via(t.api.seen("GET", "/v1/comma/apps/a1/author-avatar/avt_bob")[0]!)).toBe(
+      "workspace/wsp"
+    );
+    expect(other.error).toMatchObject({ code: "invalid_params" });
   });
 
   it("reads and writes the app's Drive folder through its own routes", async () => {

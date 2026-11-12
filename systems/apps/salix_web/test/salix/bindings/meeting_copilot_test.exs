@@ -21,6 +21,28 @@ defmodule Salix.Bindings.MeetingCopilotTest do
     end
   end
 
+  describe "new_captions/4" do
+    test "a sentence still growing waits, with the sentences after it" do
+      old = %{"text" => "Cirno, 帮我查一下", "revised_at" => 100}
+      growing = %{"text" => "上周的", "revised_at" => 102}
+      later = %{"text" => "好的", "revised_at" => 100}
+      other_runtime = %{"text" => "no revision"}
+      captions = [other_runtime, old, growing, later]
+
+      assert C.new_captions(captions, 0, 0, 100) == {[other_runtime, old], 2}
+      assert C.new_captions(captions, 2, 100, 102) == {[growing, later], 4}
+    end
+
+    test "a sentence the cursor passed comes again once, when a revision settled" do
+      revised = %{"text" => "Comma，帮我总结", "revised_at" => 120}
+      other = %{"text" => "好的", "revised_at" => 100}
+
+      assert C.new_captions([other, revised], 2, 110, 119) == {[], 2}
+      assert C.new_captions([other, revised], 2, 110, 120) == {[revised], 2}
+      assert C.new_captions([other, revised], 2, 120, 130) == {[], 2}
+    end
+  end
+
   describe "build_digest/3" do
     test "renders new transcript and incoming chat, skipping outgoing chat" do
       state = %{"title" => "周会"}

@@ -147,7 +147,7 @@ theorem encode_capture {cursor : PendingRevision.Cursor} {key state saved reques
     (h : resident (some (.tuple [a "session_fence_stamped", cursor.pack, key, state]))
       (a "encode") nil = (some saved, request)) :
     ∃ commit, saved = .tuple [a "session_fence_cas", commit] ∧
-      StorageCommit.resident (some state) (a "start") (.tuple [key, cursor.etag]) = (some commit, request) := by
+      StorageCommit.resident (some state) (a "start") (.tuple [key, cursor.revision]) = (some commit, request) := by
   change encode cursor key state = (some saved, request) at h
   unfold encode at h
   split at h
@@ -166,7 +166,7 @@ theorem confirmed_capture {cursor : PendingRevision.Cursor}
     restored = state ∧ ∃ snapshot bytes,
       Lifecycle.persistable state [] = .ok (snapshot, []) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ durable key etag snapshot := by
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ durable key etag snapshot := by
   obtain ⟨commit, same, started⟩ := encode_capture encoded
   subst saved
   exact StorageCommit.confirmed_candidate started primitive resumed
@@ -225,7 +225,7 @@ theorem input_durable {cursor staged : PendingRevision.Cursor}
       (a "encode") nil = (some saved, request))
     (primitive : ArchivePublication.SnapshotCASMeaning request result durable)
     (resumed : resident (some saved) (a "cas_result") result = (some restored, .tuple [a "ok", etag])) :
-    staged.baseline = cursor.baseline ∧ staged.etag = cursor.etag ∧ restored = stamped ∧
+    staged.baseline = cursor.baseline ∧ staged.revision = cursor.revision ∧ restored = stamped ∧
       ∃ snapshot event now first last item,
         durable key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
         Command.inputEvent (cursor.working.get (a "session_id")) (.binary source)

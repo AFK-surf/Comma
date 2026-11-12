@@ -85,6 +85,76 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     %{scope: scope}
   end
 
+  test "model routing preserves the default Station and commits its invited Task", %{scope: scope} do
+    {device, _run} = physical(scope, "routing-default", "alice")
+    Agent.update(Station, &%{&1 | lost: false})
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "station-test",
+      "entries" => [
+        %{
+          "key" => "all",
+          "description" => "All internal tasks",
+          "model" => %{"kind" => "catalog", "model" => "gpt-6-sol"}
+        }
+      ]
+    }
+
+    {:ok, _} =
+      SalixAgent.TaskPlace.put(scope.tenant_id, scope.group_id, %{
+        "kind" => "station",
+        "device_id" => device
+      })
+
+    {:ok, _} = Salix.Control.Groups.update(scope.group_id, %{"task_model_selection" => policy})
+
+    assert {:ok, created} =
+             TaskPlacement.create_task_conversation(
+               scope.group_id,
+               scope.agent_id,
+               %{"content" => "Build the project", "client_request_id" => "routing-station"},
+               %{requester_user_id: "alice"}
+             )
+
+    task = created["conversation_id"]
+
+    assert {:ok, conversation} =
+             SalixIM.Conversations.get_group_conversation(scope.group_id, task)
+
+    assert conversation["runs_on"]["device_id"] == device
+    assert [{_, ^task}] = Station.state().invites
+    assert {:ok, [_]} = StationTaskSessions.of_task(scope.group_id, task)
+    refute get_in(conversation, ["metadata", "task_model_selection"])
+
+    # Explicit policies constrain internal Tasks, never Station runtime choices.
+    {:ok, _} =
+      Salix.Control.Groups.update(scope.group_id, %{
+        "task_model_selection" => %{
+          "mode" => "explicit",
+          "actions" => [%{"model" => "gpt-6-sol", "reasoning_effort" => "medium"}]
+        }
+      })
+
+    assert {:ok, second} =
+             TaskPlacement.create_task_conversation(
+               scope.group_id,
+               scope.agent_id,
+               %{"content" => "Build another project", "client_request_id" => "explicit-station"},
+               %{requester_user_id: "alice"}
+             )
+
+    assert {:ok, second_conversation} =
+             SalixIM.Conversations.get_group_conversation(
+               scope.group_id,
+               second["conversation_id"]
+             )
+
+    assert second_conversation["runs_on"]["device_id"] == device
+    assert length(Station.state().invites) == 2
+  end
+
   test "a lost invitation reply pins the same Station across automatic candidate changes", %{
     scope: scope
   } do
@@ -221,6 +291,62 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     refute none == alice
   end
 
+  defmodule Signer do
+    @moduledoc false
+    def sign(claims), do: {:ok, claims}
+  end
+
+  test "where the Cloud VM is retired, automatic placement and a sandbox default end in a sandbox of the Task's own",
+       %{scope: scope} do
+    runtime = %{"kind" => "runtime", "provider" => "codex"}
+    request = Map.put(scope, :requester_user_id, "alice")
+
+    # Without sandboxes, automatic placement falls through to the Cloud VM.
+    assert {:error, :cloud_vm_disabled} = SalixWeb.TaskStations.resolve(request, runtime)
+
+    SystemsRuntime.put_env(:salix_web, :l4es, url: "https://l4es.test", max_sandboxes: 2)
+    SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, Signer)
+    sandboxes_mod = SystemsRuntime.get_env(:salix_agent, :sandboxes_mod)
+    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SalixWeb.L4ES)
+
+    on_exit(fn ->
+      for key <- [:l4es, :l4es_assertion_signer], do: SystemsRuntime.delete_env(:salix_web, key)
+      SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
+
+      if sandboxes_mod,
+        do: SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, sandboxes_mod),
+        else: SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+    end)
+
+    # Sandboxes set up, the Cloud VM not retired: automatic placement still ends at the Cloud VM.
+    assert {:error, :cloud_vm_disabled} = SalixWeb.TaskStations.resolve(request, runtime)
+
+    SystemsRuntime.put_env(:salix_agent, :cloud_vm_retired, true)
+
+    # No VMM Station, no personal Station of the requester: a sandbox.
+    assert {:ok, %{"kind" => "sandbox"}} = SalixWeb.TaskStations.resolve(request, runtime)
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}}} =
+             TaskPlacement.resolve(request, scope.agent_id, %{"model" => runtime}, false)
+
+    # The requester's own computer still comes first.
+    {alice, _} = physical(scope, "alice-first", "alice")
+
+    assert {:ok, %{"kind" => "station", "device_id" => ^alice}} =
+             SalixWeb.TaskStations.resolve(request, runtime)
+
+    # A Group whose default place is the sandbox places every runtime Task there.
+    assert {:ok, %{"kind" => "sandbox"}} =
+             SalixAgent.TaskPlace.put(scope.tenant_id, scope.group_id, %{"kind" => "sandbox"})
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}}} =
+             TaskPlacement.resolve(request, scope.agent_id, %{"model" => runtime}, false)
+
+    # A Loop Task takes no default: it runs inside Salix.
+    assert {:ok, %{runs_on: nil}} =
+             TaskPlacement.resolve(request, scope.agent_id, %{}, true)
+  end
+
   test "concurrent automatic creates invite only the winning receipt's Station", %{scope: scope} do
     {a, run_a} = physical(scope, "concurrent-a", "alice")
     {b, run_b} = physical(scope, "concurrent-b", "alice")
@@ -278,15 +404,130 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
              :count
            ) == 1
 
-    {_other, _, _} = host(scope, "second-observed")
+    {other, other_environment, _} = host(scope, "second-observed")
 
     assert {:error, :ambiguous_vmm_hosts} =
              Compute.group_vmm_placement(scope.tenant_id, scope.group_id)
 
-    assert {:error, :ambiguous_vmm_hosts} =
+    assert {:ok, first_workload} =
              SalixStore.ComputeGroupStation.prepare_registration(registration.id)
 
+    assert first_workload.id == first["workload_id"]
+
+    assert {:ok, second_workload} =
+             SalixStore.ComputeGroupStation.prepare_registration(other.id)
+
+    assert second_workload.environment_id == other_environment.id
+    refute second_workload.id == first_workload.id
+
+    # An offline Host keeps its work without blocking preparation here.
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^other.id),
+      set: [connected: false]
+    )
+
+    assert {:ok, same} = SalixStore.ComputeGroupStation.prepare_registration(registration.id)
+    assert same.id == first_workload.id
+    assert {:error, :not_found} = SalixStore.ComputeGroupStation.prepare_registration(other.id)
+    assert Repo.get!(Compute.Workload, second_workload.id).desired_state == "ready"
+
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^first_workload.id),
+      set: [desired_state: "stopped"]
+    )
+
+    assert {:ok, %{desired_state: "stopped"}} =
+             SalixStore.ComputeGroupStation.prepare_registration(registration.id, true)
+
     assert AgentVMM.connected?(registration.id)
+  end
+
+  test "a new Host connection reopens a Station parked on a Host-side failure", %{scope: scope} do
+    {registration, _, _} = host(scope, "parked")
+    hello = %{"connectionEpoch" => "2", "inventoryWatermark" => 0, "inventory" => []}
+    assert {:ok, :ok} = AgentVMM.observe_registration(registration.id, "gateway", hello)
+    assert {:ok, %{"workload_id" => id}} = Compute.group_station(scope.tenant_id, scope.group_id)
+    station = Repo.get!(Compute.Workload, id)
+    now = SystemsClock.utc_now()
+
+    park = fn code ->
+      Repo.delete_all(from(c in Compute.ReconcilerClaim, where: c.workload_id == ^id))
+
+      Repo.insert!(%Compute.ReconcilerClaim{
+        id: "parked-" <> code,
+        provider: "agent_vmm",
+        workload_id: id,
+        generation: station.generation,
+        claim_token: "parked",
+        attempt_count: 9,
+        last_error: %{"kind" => "action_required", "code" => code},
+        created_at: now,
+        updated_at: now
+      })
+    end
+
+    reconnect = fn epoch ->
+      assert {:ok, :ok} =
+               AgentVMM.observe_registration(
+                 registration.id,
+                 "gateway",
+                 Map.put(hello, "connectionEpoch", epoch)
+               )
+
+      Repo.get_by!(Compute.ReconcilerClaim, workload_id: id).last_error
+    end
+
+    # A person must inspect the old container first.
+    park.("container_start_evidence_unavailable")
+    assert %{"kind" => "action_required"} = reconnect.("3")
+
+    park.("provider_command_outcome_unknown")
+    assert reconnect.("4") == %{}
+    assert Repo.get!(Compute.Workload, id).observed_state == "pending"
+  end
+
+  test "concurrent preparation reuses one Station under its exact registration", %{scope: scope} do
+    {registration, environment, _} = host(scope, "concurrent-prepare", prepare: false)
+    {other, _, _} = host(scope, "unrelated-prepare")
+
+    results =
+      1..2
+      |> Task.async_stream(
+        fn _ ->
+          SalixStore.ComputeGroupStation.prepare_registration(registration.id)
+        end,
+        max_concurrency: 2
+      )
+      |> Enum.to_list()
+
+    assert [{:ok, {:ok, first}}, {:ok, {:ok, second}}] = results
+    assert first.id == second.id
+    assert first.environment_id == environment.id
+
+    assert Repo.aggregate(
+             from(w in Compute.Workload,
+               where: w.environment_id == ^environment.id and w.template_key == "station.default"
+             ),
+             :count
+           ) == 1
+
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^other.id),
+      set: [status: "revoked"]
+    )
+
+    assert {:error, :not_found} = SalixStore.ComputeGroupStation.prepare_registration(other.id)
+  end
+
+  test "a person's computers are their own connected Stations, whatever runtime they run", %{
+    scope: scope
+  } do
+    {laptop, _} = physical(scope, "own-laptop", "alice", %{"claude" => []})
+    {desk, _} = physical(scope, "own-desk", "alice", %{"codex" => ["codex-default"]})
+    physical(scope, "theirs", "bob")
+
+    assert {:ok, computers} =
+             SalixWeb.TaskStations.personal_computers(Map.put(scope, :requester_user_id, "alice"))
+
+    assert computers |> Enum.map(& &1["device_id"]) |> Enum.sort() == Enum.sort([laptop, desk])
+    assert Enum.all?(computers, &is_binary(&1["station_id"]))
   end
 
   test "a bounded personal candidate page does not claim later Stations are unavailable", %{
@@ -380,12 +621,14 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
       )
 
     {:ok, token} =
-      SalixWeb.StationLLM.token(
-        scope.tenant_id,
-        scope.group_id,
-        record["device_id"],
-        runtime_device["connector_run_id"]
-      )
+      SalixWeb.StationLLM.token(%{
+        tenant_id: scope.tenant_id,
+        group_id: scope.group_id,
+        device_id: record["device_id"],
+        connector_run_id: runtime_device["connector_run_id"],
+        workload_id: station.id,
+        workload_generation: station.generation
+      })
 
     refute SalixWeb.StationLLM.admit(Plug.Test.conn(:post, "/v1/station-llm/responses"), token).halted
 
@@ -588,16 +831,16 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
     {device, record["connector_run_id"]}
   end
 
-  defp host(scope, id) do
+  defp host(scope, id, opts \\ []) do
     id = id <> "-" <> scope.group_id
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: id,
         tenant_id: scope.tenant_id,
         group_id: scope.group_id,
         device_id: "device-" <> id,
-        enrollment_token: String.duplicate("e", 32)
+        credential: String.duplicate("e", 32)
       })
 
     {:ok, pool} = Compute.ensure_managed_default_pool(scope.tenant_id, "agent_vmm")
@@ -624,12 +867,18 @@ defmodule SalixWeb.RuntimeTaskPlacementTest do
       set: [status: "ready", desired_enabled: true]
     )
 
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [
-        status: "available",
-        observation: %{"gateway_instance_id" => "test", "connection_epoch" => "1"}
-      ]
-    )
+    if Keyword.get(opts, :prepare, true) do
+      assert {:ok, :ok} =
+               AgentVMM.observe_registration(id, "test", %{
+                 "connectionEpoch" => "1",
+                 "inventoryWatermark" => 0,
+                 "inventory" => []
+               })
+    else
+      Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^id),
+        set: [connected: true]
+      )
+    end
 
     {registration, environment, binding}
   end

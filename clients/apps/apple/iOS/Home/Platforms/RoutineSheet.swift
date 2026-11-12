@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import CommaCore
 
 /// The whole briefing in one sheet, opened from Home's greeting. The member comes to read the day, then act on
@@ -15,23 +16,76 @@ struct RoutineSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if let feed = store.routines.feed {
-                    briefing(feed)
-                        .padding(.horizontal, GroupedSurface.margin).padding(.top, 8).padding(.bottom, 24)
-                }
-            }
-            .background(CommaTheme.cardPrimary)
-            // A Task in the summary opens in the dock; a source opens in the browser.
-            .environment(\.openURL, OpenURLAction { url in
-                guard let task = RoutineLink.taskID(url) else { return .systemAction }
-                openTask(task)
-                return .handled
-            })
-            .pageTitle("Routines")
-            .sheetCloseButton { dismiss() }
+            RoutineContent(store: store, choose: choose, openTask: openTask)
+                .pageTitle("Routines")
+                .sheetCloseButton { dismiss() }
         }
         .commaSheet()
+    }
+}
+
+/// The persistent wide-shell column. Tab selection changes only the page beside it.
+struct RoutineSidebar: View {
+    let store: CommaStore
+    @Environment(AppNavigation.self) private var navigation
+    @Environment(\.openURL) private var openURL
+    @State private var inserts = 0
+
+    var body: some View {
+        RoutineContent(store: store, choose: perform, openTask: openTask, backgroundColor: CommaTheme.bgPrimary)
+            .pinnedTopBar {
+                HomeHeader(store: store, openBriefing: nil)
+                    .padding(.top, GroupedSurface.margin)
+            }
+            .refreshable { _ = await store.routines.load(store: store) }
+            .task(id: ReadKey(workspace: store.workspace?.id, resets: store.routines.resets)) {
+                await store.routines.reloadIfStale(store: store)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                Task { await store.routines.reloadIfStale(store: store) }
+            }
+            .sensoryFeedback(.impact(weight: .light), trigger: inserts)
+            .accessibilityIdentifier("homeRoutinesColumn")
+    }
+
+    private struct ReadKey: Equatable {
+        let workspace: String?
+        let resets: Int
+    }
+
+    private func openTask(_ id: String) {
+        Task { await store.openTask(id: id) }
+    }
+
+    private func perform(_ item: RecommendationItem, source: RecommendationSource?) {
+        RoutineActions(usePrompt: { prompt in
+            inserts += 1
+            navigation.attachToRouter(ChatAttachedText(source: source?.appName, text: prompt), store: store)
+        }, openTask: openTask, openURL: { openURL($0) }).perform(item)
+    }
+}
+
+/// The same complete briefing in the compact sheet and the wide Home column.
+struct RoutineContent: View {
+    let store: CommaStore
+    let choose: (RecommendationItem, RecommendationSource?) -> Void
+    let openTask: (String) -> Void
+    var backgroundColor: Color = CommaTheme.cardPrimary
+
+    var body: some View {
+        ScrollView {
+            if let feed = store.routines.feed {
+                briefing(feed)
+                    .padding(.horizontal, GroupedSurface.margin).padding(.top, 8).padding(.bottom, 24)
+            }
+        }
+        .background(backgroundColor)
+        // A Task in the summary opens in the dock; a source opens in the browser.
+        .environment(\.openURL, OpenURLAction { url in
+            guard let task = RoutineLink.taskID(url) else { return .systemAction }
+            openTask(task)
+            return .handled
+        })
     }
 
     /// The summary, the cards and the quiet line sit 24pt apart, three times the 8pt between two cards.

@@ -41,7 +41,6 @@ defmodule Comma do
       :salix_mcp,
       :salix_meet_native,
       :salix_web,
-      :salix_migrate,
       :salix_media,
       :salix_meet
     ],

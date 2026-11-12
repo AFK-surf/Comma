@@ -26,7 +26,7 @@ test("initialize, list and call run on behalf of the token's session", async () 
   const e = endpoint();
   const init: any = (await rpc(e, "good", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })).body;
   assert.equal(init.result.protocolVersion, "2025-06-18");
-  assert.equal(init.result.serverInfo.name, "still.fail");
+  assert.equal(init.result.serverInfo.name, "Comma");
   assert.equal((await rpc(e, "good", { jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
   const list: any = (await rpc(e, "good", { jsonrpc: "2.0", id: 2, method: "tools/list" })).body;
   assert.equal(list.result.tools[0].name, "echo");
@@ -38,7 +38,7 @@ test("initialize, list and call run on behalf of the token's session", async () 
 });
 
 test("while the station is in no workspace, outward tools are refused and the rest run", async () => {
-  const names = ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file", "chat_state", "chat_history", "chat_list", "chat_read", "session_history", "job_list", "job_log", "job_stop"];
+  const names = ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file", "salix_tools", "salix_call", "chat_state", "chat_history", "chat_list", "chat_read", "session_history", "job_list", "job_log", "job_stop"];
   let out = true;
   const e = new McpEndpoint(() => "s", tools(names), () => (out ? UNBOUND_REFUSAL : undefined));
   const call = async (name: string) => ((await rpc(e, "t", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } })).body as any).result;
@@ -47,7 +47,7 @@ test("while the station is in no workspace, outward tools are refused and the re
     if (OUTWARD.includes(name)) assert.deepEqual([result.isError, result.content[0].text], [true, UNBOUND_REFUSAL], name);
     else assert.deepEqual(result, { content: [{ type: "text", text: `${name} ran` }] }, name);
   }
-  assert.deepEqual(OUTWARD, ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file"]);
+  assert.deepEqual(OUTWARD, ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file", "salix_tools", "salix_call"]);
   // Listed all the same: an agent that read the list before keeps the same tools.
   const list: any = (await rpc(e, "t", { jsonrpc: "2.0", id: 2, method: "tools/list" })).body;
   assert.equal(list.result.tools.length, names.length);

@@ -173,7 +173,7 @@ test(
       // Main restarts the receiver under the new name.
       await expect
         .poll(() => receiverProcess(userDataDir))
-        .toContain("--name Studio Mac --directory");
+        .toContain("--name Studio Mac --model Comma --directory");
       expect(
         JSON.parse(await readFile(join(userDataDir, "app-preferences.json"), "utf8"))
       ).toMatchObject({ airDropName: "Studio Mac" });

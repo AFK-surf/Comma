@@ -17,7 +17,7 @@ import type {
   ChatMessagePart,
   ConversationProjection,
 } from "@comma/chat-contract";
-import { CoreError, type Topic } from "@comma/core-kernel";
+import { CoreError, LastMade, type Topic } from "@comma/core-kernel";
 import { route } from "../api.ts";
 import { deviceSchema } from "../comma/schemas.ts";
 import { Effect } from "effect";
@@ -90,6 +90,10 @@ function shownFile(f: ComposerFile) {
 /** What a call of the coordinator's takes. */
 type In<K extends keyof ConversationHolder> = Parameters<ConversationHolder[K]>[0];
 
+const PROJECTION_SPEC = {
+  fields: { messages: { key: ["messageId"] }, serverMessages: { key: ["messageId"] } },
+};
+
 export class StationConversations
   implements HostedTasks, HostedConversations, HostedFiles
 {
@@ -101,6 +105,8 @@ export class StationConversations
   readonly #composer: StationComposer;
   readonly #tasks: StationTasks;
   readonly #actions: StationTaskActions;
+  /** Each conversation's projection as last made, by group and conversation. */
+  readonly #projections = new LastMade<string, ConversationProjection>(PROJECTION_SPEC);
   /** Counts every change of what the views show: a call's receipt is in every later value. */
   #revision = 0;
   /** The reads of each shown Task's facts, by its view. */
@@ -185,7 +191,8 @@ export class StationConversations
       : chat.agents.some((agent) => agent.running);
     const offline = chat.link.state === "offline" || chat.link.state === "reconnecting";
     const failed = chat.error !== undefined && messages.length === 0;
-    return {
+    // Made again from the station's chat at each of its changes: what did not change stays as it was (keep.ts).
+    return this.#projections.of(`${target.group}/${target.conversation}`, {
       awaitingReply: false,
       awaitingTimedOut: false,
       connection:
@@ -278,7 +285,7 @@ export class StationConversations
       status:
         chat.loading && messages.length === 0 ? "loading" : failed ? "error" : "ready",
       ...(chat.activity ? { taskActivity: chat.activity } : {}),
-    };
+    });
   }
 
   /**

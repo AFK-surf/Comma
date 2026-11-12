@@ -46,6 +46,64 @@ defmodule CommaWeb.DictationSocketTest do
     end
   end
 
+  # A provider that recognizes all the audio and hears no word in it, as for noise.
+  defmodule SilentAsr do
+    def name, do: "silent"
+    def retryable?(_reason), do: false
+
+    def recognize(audio, _emit, _config) do
+      Enum.each(audio, fn _pcm -> :ok end)
+      :ok
+    end
+  end
+
+  # A provider that fails for good before it hears a word.
+  defmodule RefusingAsr do
+    def name, do: "refusing"
+    def retryable?(_reason), do: false
+
+    def recognize(audio, _emit, _config) do
+      Enum.take(audio, 1)
+      {:error, :refused}
+    end
+  end
+
+  # A provider that says when its connection starts, and hears words only when told to.
+  defmodule LateAsr do
+    def name, do: "late"
+    def retryable?(_reason), do: false
+
+    def recognize(audio, emit, config) do
+      send(config.test, {:recognizing, self()})
+      Enum.each(audio, fn _pcm -> :ok end)
+
+      receive do
+        :hear -> emit.(%{text: "late words", start_ms: 0, end_ms: 0, final: false})
+      end
+
+      :ok
+    end
+  end
+
+  # A provider that, when told to, answers with results that hold no text and ends.
+  defmodule EmptyAsr do
+    def name, do: "empty"
+    def retryable?(_reason), do: false
+
+    def recognize(audio, emit, config) do
+      send(config.test, {:recognizing, self()})
+      Enum.each(audio, fn _pcm -> :ok end)
+
+      receive do
+        :answer ->
+          emit.(%{text: "", start_ms: 0, end_ms: 0, final: false})
+          emit.(%{text: "", start_ms: 0, end_ms: 0, final: true})
+      end
+
+      :ok
+    end
+  end
+
   setup do
     unless SystemsRuntime.Proc.whereis(CommaWeb.DictationRegistry),
       do: start_supervised!(DictationSocket)
@@ -188,6 +246,119 @@ defmodule CommaWeb.DictationSocketTest do
       drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"type" => "final"}, &1)) end)
 
     assert %{"type" => "final", "segment" => 0, "text" => "said " <> _} = List.last(frames)
+  end
+
+  test "a segment in which the provider heard no word has none, whatever the transcription wrote" do
+    made_up = "把这周的周报发到 Slack 群里，同时也同步到 Notion 里面。"
+    state = open(SilentAsr, fn _pcm -> {:ok, made_up} end)
+    # A sound loud enough to open a segment, then the pause that seals it.
+    state = send_pcm(state, speech(25) <> silence(25))
+
+    {frames, state} =
+      drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"type" => "final"}, &1)) end)
+
+    assert [%{"type" => "final", "segment" => 0, "text" => ""}] = frames
+
+    assert {:stop, :normal, 1000, [{:text, done}], _state} =
+             wait_done(DictationSocket.handle_in({~s({"type":"end"}), opcode: :text}, state))
+
+    assert %{"type" => "done"} = Jason.decode!(done)
+  end
+
+  test "a transcription not yet started is not asked for a segment without words" do
+    test = self()
+
+    transcribe = fn _pcm ->
+      send(test, {:transcribing, self()})
+
+      receive do
+        :answer -> {:ok, "made-up words"}
+      end
+    end
+
+    state = open(SilentAsr, transcribe)
+    # Three segments: two are transcribed at once, the third waits its turn.
+    state = send_pcm(state, String.duplicate(speech(10) <> silence(25), 3))
+
+    {frames, state} =
+      drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"segment" => 2}, &1)) end)
+
+    assert [%{"type" => "final", "segment" => 2, "text" => ""}] = frames
+
+    for _ <- 1..2 do
+      receive do
+        {:transcribing, transcription} -> send(transcription, :answer)
+      end
+    end
+
+    {frames, _state} =
+      drain(state, [], fn frames -> Enum.count(frames, &match?(%{"type" => "final"}, &1)) == 2 end)
+
+    assert Enum.all?(frames, &match?(%{"type" => "final", "text" => ""}, &1))
+    refute_received {:transcribing, _third}
+  end
+
+  test "the transcription's words wait until the provider hears words too" do
+    state = open(LateAsr, fn _pcm -> {:ok, "written words"} end)
+
+    connection =
+      receive do
+        {:recognizing, connection} -> connection
+      end
+
+    state = send_pcm(state, speech(25) <> silence(25))
+
+    transcribed =
+      receive do
+        {:transcribed, _segment, {:ok, "written words"}} = message -> message
+      end
+
+    # The provider has heard no word yet: nothing is settled.
+    assert {:ok, state} = DictationSocket.handle_info(transcribed, state)
+
+    send(connection, :hear)
+
+    {frames, _state} =
+      drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"type" => "final"}, &1)) end)
+
+    assert [%{"type" => "final", "segment" => 0, "text" => "written words"}] = frames
+  end
+
+  test "a provider's results without text do not let a waiting transcription's words stand" do
+    state = open(EmptyAsr, fn _pcm -> {:ok, "made-up words"} end)
+
+    connection =
+      receive do
+        {:recognizing, connection} -> connection
+      end
+
+    state = send_pcm(state, speech(25) <> silence(25))
+
+    transcribed =
+      receive do
+        {:transcribed, _segment, {:ok, "made-up words"}} = message -> message
+      end
+
+    # The transcription answered first and waits for the provider.
+    assert {:ok, state} = DictationSocket.handle_info(transcribed, state)
+
+    send(connection, :answer)
+
+    {frames, _state} =
+      drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"type" => "final"}, &1)) end)
+
+    assert %{"type" => "final", "segment" => 0, "text" => ""} = List.last(frames)
+    refute Enum.any?(frames, &match?(%{"text" => "made-up words"}, &1))
+  end
+
+  test "when the provider failed before it heard a word, the transcription's words stand" do
+    state = open(RefusingAsr, fn _pcm -> {:ok, "多言語の言葉"} end)
+    state = send_pcm(state, speech(25) <> silence(25))
+
+    {frames, _state} =
+      drain(state, [], fn frames -> Enum.any?(frames, &match?(%{"type" => "final"}, &1)) end)
+
+    assert [%{"type" => "final", "segment" => 0, "text" => "多言語の言葉"}] = frames
   end
 
   test "the socket ends once the last segment's transcription has given its words" do

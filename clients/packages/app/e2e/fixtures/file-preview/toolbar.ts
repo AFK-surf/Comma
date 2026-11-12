@@ -13,15 +13,7 @@ export async function expectCompactPreviewToolbar(panel: Locator, fileName: stri
   });
   await expect(download).toBeVisible();
   await expect(download).toHaveText("");
-  // These browser scenarios do not claim to list native operating-system apps.
-  await expect(
-    toolbar.getByRole("button", { name: "Open in", exact: true })
-  ).toHaveCount(0);
-  await expect(toolbar.getByRole("button", { name: "Open", exact: true })).toHaveCount(
-    0
-  );
-  await expect(
-    toolbar.getByRole("button", { name: "Choose application", exact: true })
-  ).toHaveCount(0);
+  // A browser lists no operating-system apps, so the button downloads without a menu.
+  await expect(download).not.toHaveAttribute("aria-haspopup");
   return { toolbar, download };
 }

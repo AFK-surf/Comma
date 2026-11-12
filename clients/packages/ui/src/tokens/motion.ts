@@ -102,6 +102,8 @@ export const motionDuration = {
   loginStageExit: 380,
   caretBlink: 1100,
   loadingShine: 1600,
+  /** One turn of a running Task's status glyph; iOS and Android turn at the same pace. */
+  taskStatusSpin: 2400,
   /** Toast retimes sonner's 400ms default: strong ease-out in, faster out. */
   toastEnter: 250,
   toastExit: 200,
@@ -138,6 +140,17 @@ export const motionDuration = {
    */
   pictureInPictureEnter: 250,
   pictureInPictureExit: 150,
+  /**
+   * A Routine card the member dismissed: it fades and shrinks away where it
+   * sits, then the cards below glide up into its place rather than jump.
+   */
+  routineDismissFade: 120,
+  routineDismissClose: 220,
+  /**
+   * A tab closed from the pointer: it fades and shrinks where it stood while
+   * the tabs after it glide into its place (spatialMove).
+   */
+  tabCloseFade: 120,
   /**
    * First-launch onboarding. Before anything else, the screen dims from the
    * desktop (or the product) into the onboarding's light: slowly, so it is
@@ -331,6 +344,11 @@ export const motionLoop = {
   skeletonShimmer: loopEasing(motionEasing.iconSwap, 1400),
 } as const;
 
+/**
+ * Scales things are pressed, enter or leave at. Something that enters or leaves
+ * by its size keeps its whole scale range and is never seen at half of it or
+ * less: its opacity follows its scale, 0 at 0.5 or below, 1 at full size.
+ */
 export const motionScale = {
   pressed: 0.98,
   tactilePressed: 0.96,
@@ -351,6 +369,10 @@ export const motionScale = {
   onboardingCard: 0.98,
   /** The onboarding's Comma mark arriving in the middle of the screen. */
   onboardingLogo: 0.96,
+  /** A dismissed Routine card shrinking as it fades out. */
+  routineDismiss: 0.96,
+  /** A closed tab shrinking as it fades out. */
+  tabClose: 0.96,
 } as const;
 
 /** Pixel distances travelled by moving surfaces during stage transitions. */
@@ -466,6 +488,23 @@ export function afterAnimations(
 }
 
 export const commaReducedMotionAttribute = "data-comma-reduced-motion";
+
+/**
+ * Publishes Comma's effective reduced-motion state on the root: "true" while
+ * motion is reduced, and no attribute otherwise. The reduced-motion rules
+ * apply to every element under the root; while the attribute is absent, each
+ * element rejects them without checking them.
+ */
+export function writeDocumentReducedMotion(reduced: boolean): void {
+  const root = document.documentElement;
+  if (reduced) {
+    if (root.getAttribute(commaReducedMotionAttribute) !== "true") {
+      root.setAttribute(commaReducedMotionAttribute, "true");
+    }
+  } else if (root.hasAttribute(commaReducedMotionAttribute)) {
+    root.removeAttribute(commaReducedMotionAttribute);
+  }
+}
 
 const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
 

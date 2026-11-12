@@ -32,15 +32,24 @@ defmodule SalixAgent.ImageRefs do
   @max_inline_bytes 5 * 1024 * 1024
 
   # Keep the outbound image set to formats accepted by both OpenAI Responses
-  # and Anthropic. HEIC/HEIF, TIFF and SVG are common provider uploads but are
-  # not valid native image inputs; those need an explicit local conversion.
-  @native_image_mimes MapSet.new(~w(image/png image/jpeg image/webp image/gif))
+  # and Anthropic. `SalixMedia.ImageInput` converts HEIC/HEIF, BMP, TIFF and AVIF
+  # to JPEG. SVG is a common provider upload but is not a valid native image
+  # input; it needs an explicit local conversion.
+  @native_image_mimes MapSet.new(
+                        ~w(image/png image/jpeg image/webp image/gif image/heic image/heif image/bmp image/x-ms-bmp image/tiff image/avif)
+                      )
   @native_image_extensions %{
     ".png" => "image/png",
     ".jpg" => "image/jpeg",
     ".jpeg" => "image/jpeg",
     ".webp" => "image/webp",
-    ".gif" => "image/gif"
+    ".gif" => "image/gif",
+    ".heic" => "image/heic",
+    ".heif" => "image/heif",
+    ".bmp" => "image/bmp",
+    ".tif" => "image/tiff",
+    ".tiff" => "image/tiff",
+    ".avif" => "image/avif"
   }
 
   @doc "Inline activation-scoped native VFS blocks in request-bound messages."
@@ -321,8 +330,8 @@ defmodule SalixAgent.ImageRefs do
   end
 
   # Names the attachment, nothing more. Unlike `native_image_mime/2` this
-  # accepts the formats no provider takes natively — a HEIC photo is still an
-  # image to the person who sent it.
+  # accepts the formats no provider takes and nothing here converts — an SVG is
+  # still an image to the person who sent it.
   defp image_attachment?(block, path) do
     declared = block["mime_type"] |> to_string() |> String.downcase() |> String.trim()
 

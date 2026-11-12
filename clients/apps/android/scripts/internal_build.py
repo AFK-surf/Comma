@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only internal APK packaging helpers. Never print signing settings or ASR keys."""
+"""Local-only internal APK packaging helpers. Never print signing settings."""
 import argparse
 from datetime import date
 import hashlib
@@ -191,7 +191,7 @@ def latest_tag_code():
     return max(codes, default=None)
 
 
-def build(asr):
+def build():
     require_signing()
     build_tools = sdk_tools()
     before = version()
@@ -207,8 +207,7 @@ def build(asr):
         raise ValueError(f'versionCode {code} is lower than an earlier internal build ({newest}). '
                          'Increase versionCode in version.properties.')
     subprocess.run([*shlex.split(os.environ.get('COMMA_GRADLE_COMMAND', './gradlew --max-workers=2')),
-                    ':app:assembleStagingInternal',
-                    f'-Pcomma.internal.asr={str(asr).lower()}'], cwd=ROOT, check=True)
+                    ':app:assembleStagingInternal'], cwd=ROOT, check=True)
     output = ROOT / 'app/build/outputs/apk/staging/internal'
     metadata = json.loads((output / 'output-metadata.json').read_text())
     elements = metadata['elements']
@@ -223,11 +222,8 @@ def build(asr):
     if result.returncode:
         raise ValueError('APK signature verification failed; no distribution files or tag were created.')
     print('APK signature: PASS', flush=True)
-    command = [sys.executable, 'scripts/verify-release-isolation.py', '--dexdump',
-               str(build_tools / 'dexdump'), '--internal-only']
-    if asr:
-        command.append('--allow-internal-asr')
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run([sys.executable, 'scripts/verify-release-isolation.py', '--dexdump',
+                    str(build_tools / 'dexdump'), '--internal-only'], cwd=ROOT, check=True)
     mapping = ROOT / 'app/build/outputs/mapping/stagingInternal/mapping.txt'
     if not mapping.is_file() or mapping.stat().st_size == 0:
         raise ValueError('R8 mapping.txt is required; no distribution files or tag were created.')
@@ -235,8 +231,7 @@ def build(asr):
     revision_range = f'{previous}..{head}' if previous else head
     subjects = changelog_subjects(revision_range)
     changelog = (f'comma staging {name}\nVersion code: {code}\nCommit: {head}\n'
-                 f'Previous internal tag: {previous or "none (first internal build)"}\n'
-                 f'ASR: {"explicitly enabled" if asr else "disabled"}\n\n{subjects}\n')
+                 f'Previous internal tag: {previous or "none (first internal build)"}\n\n{subjects}\n')
     if dirty:
         changelog += '\nWARNING: This APK includes uncommitted changes; the tag records HEAD only.\n'
     dist = ROOT / 'dist'
@@ -266,14 +261,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('create-keystore')
-    package = commands.add_parser('build')
-    package.add_argument('-Pcomma.internal.asr', dest='asr', choices=('true', 'false'), default='false')
+    commands.add_parser('build')
     args = parser.parse_args()
     try:
         if args.command == 'create-keystore':
             create_keystore()
         else:
-            build(args.asr == 'true')
+            build()
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         # Subprocess/OSError messages can contain signing paths or settings; keep those private.
         message = str(error) if isinstance(error, ValueError) else 'Command or file operation failed; no secrets are logged.'

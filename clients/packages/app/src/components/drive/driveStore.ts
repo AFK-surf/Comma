@@ -37,6 +37,10 @@ export type DriveFile = CoreDriveFile & {
 
 /** The space Comma serves with the workspace's System Files (the core's). */
 export const driveSystemSpaceId = "comma-system-files";
+/** The files Agents attached to the workspace's Tasks, one folder per Task (read-only). */
+export const driveTaskFilesSpaceId = "comma-task-files";
+/** The spaces Comma serves rather than a device. */
+const commaSpaceIds = new Set([driveSystemSpaceId, driveTaskFilesSpaceId]);
 
 export interface DriveSnapshot {
   devices: readonly DriveDevice[];
@@ -120,21 +124,25 @@ export class DriveStore {
 
   #make(): DriveSnapshot {
     const core = this.#core;
-    // The core leaves System Files unnamed: its name is in the reader's language.
+    // The core leaves System Files and Task Files unnamed: their names are in the reader's language.
     if (this.#named?.from !== core.spaces)
       this.#named = {
         from: core.spaces,
         to: core.spaces.map((space) =>
-          space.id === driveSystemSpaceId && !space.name
-            ? { ...space, name: messages.drive_system_files_space() }
-            : space
+          space.name
+            ? space
+            : space.id === driveSystemSpaceId
+              ? { ...space, name: messages.drive_system_files_space() }
+              : space.id === driveTaskFilesSpaceId
+                ? { ...space, name: messages.drive_task_files_space() }
+                : space
         ),
       };
     const spaces = this.#named.to;
-    // The space shown: the one picked while it is there, else the first a device publishes, else System Files.
+    // The space shown: the one picked while it is there, else the first a device publishes, else one Comma serves.
     const selectedSpaceId = spaces.some((space) => space.id === this.#selected)
       ? this.#selected
-      : (spaces.find((space) => space.id !== driveSystemSpaceId)?.id ??
+      : (spaces.find((space) => !commaSpaceIds.has(space.id))?.id ??
         spaces[0]?.id ??
         "");
     return {

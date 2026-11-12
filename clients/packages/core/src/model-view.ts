@@ -170,22 +170,39 @@ function windowKind(period: string): QuotaMeter["window"] | undefined {
   return undefined;
 }
 
+const meterOrder: Record<QuotaMeter["window"], number> = { "5h": 0, week: 1, model: 2 };
+
+/** A one-model week's model as people know it: `fable` is Fable. */
+const modelName = (model: string) => model.charAt(0).toUpperCase() + model.slice(1);
+
+/**
+ * The account's two windows, then the weeks a model has to itself under them (Claude's Fable). Other one-model
+ * windows (Gemini's, a window per model) are not metered on the row.
+ */
 function quotaMeters(account: ModelProfile): QuotaMeter[] {
   const meters: QuotaMeter[] = [];
   for (const window of account.quota?.windows ?? []) {
-    const kind = windowKind(window.period);
-    // The row meters the whole account; a one-model window is not that.
-    if (!kind || window.remaining_percent == null || window.model) continue;
-    if (meters.some((meter) => meter.window === kind)) continue;
+    const period = windowKind(window.period);
+    const model = window.model?.trim();
+    if (!period || window.remaining_percent == null) continue;
+    if (model && (period !== "week" || account.source !== "claude")) continue;
+    const kind = model ? "model" : period;
+    if (
+      meters.some(
+        (meter) =>
+          meter.window === kind &&
+          meter.model === (model ? modelName(model) : undefined)
+      )
+    )
+      continue;
     meters.push({
       window: kind,
       percent: Math.max(0, Math.min(100, Math.round(window.remaining_percent))),
       ...(window.reset_at ? { resetAt: window.reset_at } : {}),
+      ...(model ? { model: modelName(model) } : {}),
     });
   }
-  return meters.toSorted(
-    (a, b) => Number(a.window === "week") - Number(b.window === "week")
-  );
+  return meters.toSorted((a, b) => meterOrder[a.window] - meterOrder[b.window]);
 }
 
 /** Subscription plans whose requests use the Responses protocol. */

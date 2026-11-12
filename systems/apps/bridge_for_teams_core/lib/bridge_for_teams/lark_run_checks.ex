@@ -191,7 +191,7 @@ defmodule BridgeForTeams.LarkRunChecks do
       chat_access_gate(project, connect),
       calendar_gate(project, connect),
       first_message_gate(connect),
-      manual_gate(org, project)
+      manual_gate(org, project, connect)
     ]
   end
 
@@ -254,6 +254,19 @@ defmodule BridgeForTeams.LarkRunChecks do
   end
 
   # ---- bot.callback ----
+
+  # An app made by a scan has no request URL: its events come through the long
+  # connection Salix holds (`SalixIM.LarkSocket`), opened with its own secret.
+  defp callback_gate(%{"events" => "socket"} = connect) do
+    gate(
+      Map.merge(head("bot.callback"), %{
+        status: :ok,
+        reason_class: :long_connection,
+        next_action: "Events come through the app's long connection; there is no request URL.",
+        evidence: %{"connect_id" => connect["connect_id"], "app_id" => connect["app_id"]}
+      })
+    )
+  end
 
   defp callback_gate(connect) do
     client = client()
@@ -625,13 +638,26 @@ defmodule BridgeForTeams.LarkRunChecks do
 
   # ---- bot.manual ----
 
-  defp manual_gate(org, project) do
+  # A scan made and published the app with its scopes, events and callbacks.
+  defp manual_gate(_org, _project, %{"events" => "socket"} = connect) do
+    gate(
+      Map.merge(head("bot.manual"), %{
+        status: :ok,
+        reason_class: :made_by_scan,
+        next_action:
+          "Lark made and published the app with the bot, its scopes and events when it was scanned. Add the bot to a group, or message it directly.",
+        evidence: %{"app_id" => connect["app_id"]}
+      })
+    )
+  end
+
+  defp manual_gate(org, project, _connect) do
     gate(
       Map.merge(head("bot.manual"), %{
         status: :needs_manual,
         reason_class: :lark_console_steps_required,
         next_action:
-          "In the Lark Developer Console: Permissions & Scopes → batch import, import the scope JSON of the Connections page or of bft lark scopes. On Events & Callbacks save the request URL, subscribe to im.message.receive_v1 and im.message.recalled_v1, and under Callbacks subscribe to card.action.trigger. Create a version of the app and publish it, then add the bot to the target group.",
+          "In the Lark Developer Console: Permissions & Scopes → batch import, import the scope JSON of the Connections page or of bft lark scopes. On Events & Callbacks save the request URL, subscribe to im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1, and under Callbacks subscribe to card.action.trigger. Create a version of the app and publish it, then add the bot to the target group.",
         evidence: %{
           "settings_path" => "/orgs/#{org.slug}/projects/#{project.id}/connections?provider=lark",
           "required_scopes" => LarkScopes.required_scope_ids(),

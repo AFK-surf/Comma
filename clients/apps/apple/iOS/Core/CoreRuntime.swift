@@ -44,12 +44,13 @@ final class CoreRuntime: Sendable {
 
     /// The client core with the credential store, directories and URL loading given (the app's, or a test's).
     static func make(custody: SessionCustody, dataDirectory: URL, downloadRoot: URL, localFilesRoot: URL? = nil,
-                     configuration: URLSessionConfiguration = .default) throws -> CoreRuntime {
+                     configuration: URLSessionConfiguration = .default,
+                     google: any GoogleIdentityTokens = GoogleSignInSheet()) throws -> CoreRuntime {
         let apple = AppleSignInSheet()
         // Picked files wait here to upload; by default beside the core's data (a test's own directory).
         let localFiles = HostLocalFiles(root: localFilesRoot ?? dataDirectory.appendingPathComponent("local-files"))
         let host = CoreHost(custody: custody, dataDirectory: dataDirectory, downloads: HostDownloads(root: downloadRoot),
-                            localFiles: localFiles, apple: apple, configuration: configuration)
+                            localFiles: localFiles, apple: apple, google: google, configuration: configuration)
         guard let url = Bundle.main.url(forResource: "core", withExtension: "hbc") else {
             throw HostFailure(message: "The app carries no client core (\(script)).")
         }

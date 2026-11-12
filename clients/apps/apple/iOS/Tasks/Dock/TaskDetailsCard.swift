@@ -19,6 +19,7 @@ struct TaskDetailsCard<Header: View>: View {
     let store: CommaStore
     @Bindable var pane: ConversationPane
     @Bindable var state: TaskDockState
+    let openBrowser: () -> Void
     @ViewBuilder let header: () -> Header
     @State private var naturalHeight: CGFloat = 0
     @State private var width: CGFloat = 0
@@ -58,7 +59,7 @@ struct TaskDetailsCard<Header: View>: View {
                         .padding(.top, Self.headerHeight - 50)
                         .padding(.horizontal, -Self.inset)
                     TaskDetailsContent(store: store, pane: pane, task: pane.summary ?? store.taskSummary(id: pane.taskID ?? ""),
-                                       shown: surfaceShown)
+                                       shown: surfaceShown, openBrowser: openBrowser)
                         .padding(.horizontal, 20)
                         .padding(.top, 6)
                         .padding(.bottom, 20)

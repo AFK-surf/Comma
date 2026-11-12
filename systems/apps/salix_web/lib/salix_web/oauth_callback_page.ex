@@ -21,7 +21,7 @@ defmodule SalixWeb.OAuthCallbackPage do
   # Remote MCP servers with a branded logo, matched by the resource server's
   # host (the domain or any subdomain), never by the user-chosen alias.
   # Logos are the vendors' published brand marks.
-  @mcp_brands %{"posthog.com" => "posthog"}
+  @mcp_brands %{"posthog.com" => "posthog", "stripe.com" => "stripe"}
 
   @svgs (for name <-
                ["comma", "arrow", "failed", "mcp" | Map.keys(@providers)] ++
@@ -75,6 +75,68 @@ defmodule SalixWeb.OAuthCallbackPage do
     render_page(name, {:mcp, mcp_brand(resource_server_url)}, error_message)
   end
 
+  @doc """
+  The page a saved secret ends on: it names the credential by its alias, since a
+  secret connects no provider account.
+  """
+  @spec render_secret_saved(String.t()) :: String.t()
+  def render_secret_saved(alias_name) do
+    render_page(String.trim(to_string(alias_name)), nil, nil, "Saved ")
+  end
+
+  @doc """
+  The page where a person types in a secret for `alias_name`. It posts to its own
+  path: one value, or with `fields` (`[%{"name", "label", "secret"}]`) one
+  labelled input each, all required, posted together as `fields[<name>]`.
+  """
+  @spec render_secret_form(String.t(), String.t(), [map()]) :: String.t()
+  def render_secret_form(state, alias_name, fields \\ []) do
+    heading = "Add " <> alias_name
+
+    {note, inputs} =
+      case fields do
+        [] ->
+          {"Comma keeps this value and gives it only to commands that use it. It does not go through the chat.",
+           ~s(<input type="password" name="value" aria-label="Value" required autofocus>)}
+
+        fields ->
+          {"Comma keeps these values and gives them only to commands that use them. They do not go through the chat.",
+           fields |> Enum.with_index() |> Enum.map_join(&secret_field/1)}
+      end
+
+    ~s(<!doctype html><html lang="en"><head><meta charset="utf-8"><title>) <>
+      escape(heading) <>
+      ~s(</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>) <>
+      @style <>
+      "form{display:flex;flex-direction:column;gap:12px;width:100%}" <>
+      "label{display:flex;flex-direction:column;gap:6px;text-align:left;font-size:14px;font-weight:500;color:#1b1c1d}" <>
+      "input:not([type=hidden]){box-sizing:border-box;width:100%;height:40px;padding:0 12px;font-size:14px;" <>
+      "border:1px solid #dfe0e2;border-radius:8px;background:#fff;color:#1b1c1d}" <>
+      "button{height:40px;font-size:14px;font-weight:500;color:#fff;background:#1b1c1d;border:0;border-radius:8px;cursor:pointer}" <>
+      ~s(</style></head><body><main><div class="text"><h1>) <>
+      escape(heading) <>
+      "</h1><p>" <>
+      note <>
+      "</p></div>" <>
+      ~s(<form method="post" action="/v1/oauth/secret/callback" autocomplete="off">) <>
+      ~s(<input type="hidden" name="state" value=") <>
+      escape(state) <>
+      ~s(">) <>
+      inputs <>
+      "<button>Save</button></form></main></body></html>"
+  end
+
+  # A secret field is typed unseen; any other is shown as it is typed.
+  defp secret_field({field, index}) do
+    type = if field["secret"] == false, do: "text", else: "password"
+
+    "<label>" <>
+      escape(field["label"] || field["name"]) <>
+      ~s(<input type="#{type}" name="fields[) <>
+      escape(field["name"]) <>
+      ~s(]" required) <> if(index == 0, do: " autofocus", else: "") <> "></label>"
+  end
+
   defp mcp_brand(url) when is_binary(url) do
     case URI.parse(url) do
       %URI{host: host} when is_binary(host) ->
@@ -91,11 +153,11 @@ defmodule SalixWeb.OAuthCallbackPage do
 
   defp mcp_brand(_url), do: nil
 
-  defp render_page(name, key, error_message) do
+  defp render_page(name, key, error_message, success \\ "Successfully connected to ") do
     {heading, body} =
       if error_message,
         do: {"Authorization failed", error_message},
-        else: {"Successfully connected to " <> name, "You can close this window now."}
+        else: {success <> name, "You can close this window now."}
 
     ~s(<!doctype html><html lang="en"><head><meta charset="utf-8"><title>) <>
       escape(heading) <>

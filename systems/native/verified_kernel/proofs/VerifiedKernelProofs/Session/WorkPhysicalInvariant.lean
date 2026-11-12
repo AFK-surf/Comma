@@ -214,6 +214,7 @@ theorem PhysicalInvariant.publication {objects nextObjects : Objects} {owner ses
     {state event next : Term} {sealed records live dropped kept journal rest : List Term}
     {ceiling line : Int} {final : Output}
     (before : PhysicalInvariant objects owner session state sealed) (framing : CodecFraming)
+    (physical : ArchiveProjection.UnarchivedWindow state)
     (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0) (execution : Execution (start state (i line)) objects final nextObjects)
     (emitted : final.2 = .tuple [a "advance", event])
@@ -229,7 +230,7 @@ theorem PhysicalInvariant.publication {objects nextObjects : Objects} {owner ses
       validSegment value = true := by
     simpa only [catalogRead, list, default_list, wrap] using valid
   obtain ⟨removed, retained, split, retainedRead, _, images⟩ := published_archive_sealed_images
-    framing before.history.invariant.sorted numeric nonnegative before.catalog catalogValid window positive
+    framing before.history.invariant.sorted physical numeric nonnegative before.catalog catalogValid window positive
       execution emitted read before.history.invariant.supported before.images reduced
   have sameKept : kept = retained := by
     simpa only [list, Term.list.injEq] using after.symm.trans retainedRead

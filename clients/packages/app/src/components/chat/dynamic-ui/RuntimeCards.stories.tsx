@@ -144,6 +144,7 @@ export const Schedule = gallery("schedule", [
 export const Checklist = gallery("checklist", [
   ["清单 A · 进度清单", "progress", fixtures.checklistFixture],
   ["清单 B · 分组清单", "grouped", fixtures.groupedChecklistFixture],
+  ["清单 C · 待办与后续", "progress", fixtures.todoChecklistFixture],
 ]);
 
 export const Composition = gallery("composition", [
@@ -164,6 +165,73 @@ export const Feed = gallery("feed", [
   ["动态 A · 新闻列表", "news", fixtures.newsFixture],
   ["动态 B · 各应用摘要", "digest", fixtures.digestFixture],
   ["动态 C · 状态列表", "list", fixtures.pullRequestsFixture],
+]);
+
+export const Order = gallery("order", [
+  ["订单 A · 物流进度", "tracking", fixtures.orderFixture],
+  ["订单 B · 订单明细", "receipt", fixtures.receiptFixture],
+  ["订单 C · 紧凑单行", "compact", fixtures.orderFixture],
+]);
+
+export const Ticket = gallery("ticket", [
+  ["票据 A · 火车票", "ticket", fixtures.trainTicketFixture],
+  ["票据 B · 登机牌", "pass", fixtures.boardingPassFixture],
+]);
+
+export const Ride = gallery("ride", [
+  ["打车 A · 等车（车牌）", "pickup", fixtures.rideFixture],
+  ["打车 B · 行程", "trip", fixtures.rideFixture],
+]);
+
+export const Product = gallery("product", [
+  [
+    "商品 A · 单个商品",
+    "hero",
+    {
+      ...fixtures.productFixture,
+      products: fixtures.productFixture.products.slice(0, 1),
+    },
+  ],
+  ["商品 B · 宫格", "grid", fixtures.productFixture],
+  ["商品 C · 列表", "list", fixtures.productFixture],
+]);
+
+export const Booking = gallery("booking", [
+  ["预订 A · 确认单", "confirmation", fixtures.bookingFixture],
+  ["预订 B · 紧凑", "compact", fixtures.bookingFixture],
+]);
+
+export const Device = gallery("device", [
+  ["设备 A · 单个设备", "single", fixtures.deviceFixture],
+  ["设备 B · 设备宫格", "grid", fixtures.devicesFixture],
+]);
+
+export const Payment = gallery("payment", [
+  ["支付 A · 回执", "receipt", fixtures.paymentFixture],
+  ["支付 B · 紧凑", "compact", fixtures.paymentFixture],
+]);
+
+export const Media = gallery("media", [
+  ["媒体 A · 正在播放", "player", fixtures.mediaFixture],
+  ["媒体 B · 播放队列", "queue", fixtures.mediaFixture],
+]);
+
+export const Bars = gallery("bars", [
+  ["分类柱 A · 逐行 + 对比序列", "rows", fixtures.eventBarsFixture],
+  ["分类柱 B · 紧凑单行", "compact", fixtures.sourceBarsFixture],
+  ["分类柱 C · 竖柱（少量短标签）", "columns", fixtures.ratingBarsFixture],
+  ["分类柱 D · 漏斗（附注 + 状态）", "rows", fixtures.funnelBarsFixture],
+  ["分类柱 E · 进度（统一满刻度 + 色调）", "rows", fixtures.progressBarsFixture],
+]);
+
+export const Table = gallery("table", [
+  ["表格 A · 排行（数字列右对齐 + 着色）", "grid", fixtures.leaderboardTableFixture],
+  ["表格 B · 网格（八列短内容，空单元格）", "grid", fixtures.cohortTableFixture],
+  [
+    "表格 C · 宽内容（列放不下，每行堆叠成标签和值）",
+    "grid",
+    fixtures.regionTableFixture,
+  ],
 ]);
 
 /** A countdown that really runs: the deadline is set when the story mounts. */
@@ -215,6 +283,7 @@ const conversation: Array<[CardKind, unknown]> = [
   ["composition", fixtures.compositionFixture],
   ["composition", fixtures.storageFixture],
   ["trend", fixtures.watchlistFixture],
+  ["order", fixtures.orderFixture],
 ];
 
 const AutoLayoutGallery = () => {

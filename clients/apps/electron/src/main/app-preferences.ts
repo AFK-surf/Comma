@@ -15,7 +15,17 @@ import {
   type GlobalShortcutBinding,
   type SystemNotificationsStatus,
 } from "@comma/native-bridge";
+import { realMainClock, type MainClock } from "./clock";
 import type { LaunchAtLoginReadback } from "./launch-at-login";
+
+/**
+ * Reading the login item is a synchronous query to macOS on Main's thread
+ * (6-18 ms), and every window open and preference update reads the state. So
+ * an ordinary read reuses a readback younger than this. Settings reads it
+ * fresh when it opens or regains focus, and a launch-at-login change reads it
+ * before it applies.
+ */
+const LAUNCH_AT_LOGIN_READBACK_MAX_AGE_MS = 30_000;
 
 export interface AppPreferencesPlatform {
   setOpenCommaShortcut?(shortcut: GlobalShortcutBinding): void;
@@ -37,6 +47,8 @@ export interface AppPreferencesPlatform {
   ): Promise<KeepAwakeWhenLidClosedStatus | void> | KeepAwakeWhenLidClosedStatus | void;
   /** macOS: opens Login Items, where the user allows the sleep guard daemon. */
   openLoginItemsSettings?(): { opened: boolean };
+  /** Quits through the app's ordinary shutdown and starts it again. */
+  relaunch?(): void;
   /**
    * Asks the OS to let Comma notify and resolves once it has answered. macOS
    * prompts only while it has not asked the user about Comma yet.
@@ -54,36 +66,46 @@ export interface AppPreferencesPlatform {
 }
 
 export class AppPreferencesService {
+  readonly #clock: MainClock;
   readonly #filePath: string;
   readonly #onStateChanged: (preferences: AppPreferences) => void;
   readonly #platform: AppPreferencesPlatform;
   #closed = false;
+  /** When Main last asked the OS for the login item. */
+  #launchAtLoginReadAt: number;
   #mutationInFlight = false;
   #preferences: AppPreferences;
   #updateTail: Promise<void> = Promise.resolve();
 
   private constructor({
+    clock,
     filePath,
     onStateChanged,
     platform,
     preferences,
   }: {
+    clock: MainClock;
     filePath: string;
     onStateChanged: (preferences: AppPreferences) => void;
     platform: AppPreferencesPlatform;
     preferences: AppPreferences;
   }) {
+    this.#clock = clock;
     this.#filePath = filePath;
     this.#onStateChanged = onStateChanged;
     this.#platform = platform;
     this.#preferences = preferences;
+    this.#launchAtLoginReadAt = clock.now();
   }
 
   static async open({
+    clock = realMainClock,
     filePath,
     onStateChanged = () => undefined,
     platform,
   }: {
+    /** Main's clock: how old the login-item readback is. */
+    clock?: MainClock;
     filePath: string;
     onStateChanged?: (preferences: AppPreferences) => void;
     platform: AppPreferencesPlatform;
@@ -94,21 +116,30 @@ export class AppPreferencesService {
       preferences: stored,
     } = await readStoredPreferences(filePath);
     const persisted =
-      defaultsRevision < currentDefaultsRevision ? withCurrentDefaults(stored) : stored;
+      defaultsRevision < currentDefaultsRevision
+        ? withCurrentDefaults(stored, defaultsRevision)
+        : stored;
     if (defaultsRevision < currentDefaultsRevision || !found) {
       // Saved now, so a shortcut the user sets later is never moved again, and
       // a later launch reads this install's defaults rather than guessing. A
       // failed write repeats this on the next launch, to the same value.
       await writePreferences(filePath, persisted).catch(() => undefined);
     }
-    const preferences = withKeepAwakeWhenLidClosedStatusReadback(
-      withSystemNotificationsStatusReadback(
-        withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
-        await platform.getSystemNotificationsStatus()
+    const preferences: AppPreferences = {
+      ...withKeepAwakeWhenLidClosedStatusReadback(
+        withSystemNotificationsStatusReadback(
+          withLaunchAtLoginReadback(persisted, platform.getLaunchAtLogin()),
+          await platform.getSystemNotificationsStatus()
+        ),
+        platform.getKeepAwakeWhenLidClosedStatus?.()
       ),
-      platform.getKeepAwakeWhenLidClosedStatus?.()
-    );
+      // What this process starts with; Settings compares the saved choice to it.
+      ...(persisted.clientSettings
+        ? { computerMeshAtLaunch: persisted.clientSettings.computerMesh }
+        : {}),
+    };
     const service = new AppPreferencesService({
+      clock,
       filePath,
       onStateChanged,
       platform,
@@ -163,7 +194,19 @@ export class AppPreferencesService {
 
   async update(patch: AppPreferencesPatch) {
     const queuedPatch = structuredClone(patch);
-    return this.#enqueue(() => this.#update(queuedPatch));
+    // A launch-at-login change applies against the current OS truth.
+    return this.#enqueue(() => this.#update(queuedPatch), {
+      freshLaunchAtLogin: queuedPatch.launchAtLogin !== undefined,
+    });
+  }
+
+  /**
+   * Reads the login item from the OS now and publishes a change. Settings
+   * shows the login item, so it asks for this when it opens: a change made in
+   * System Settings shows there even inside the readback's 30 s.
+   */
+  async refreshLaunchAtLogin() {
+    return this.#enqueue(async () => this.state(), { freshLaunchAtLogin: true });
   }
 
   /**
@@ -288,14 +331,17 @@ export class AppPreferencesService {
     };
   }
 
-  #enqueue<Result>(task: () => Promise<Result>): Promise<Result> {
+  #enqueue<Result>(
+    task: () => Promise<Result>,
+    { freshLaunchAtLogin = false } = {}
+  ): Promise<Result> {
     if (this.#closed) {
       return Promise.reject(new Error("Application preferences are closing."));
     }
     const queued = this.#updateTail.then(async () => {
       this.#mutationInFlight = true;
       try {
-        if (this.#refreshLaunchAtLogin()) {
+        if (this.#refreshLaunchAtLogin({ fresh: freshLaunchAtLogin })) {
           this.#onStateChanged(clonePreferences(this.#preferences));
         }
         return await task();
@@ -319,8 +365,23 @@ export class AppPreferencesService {
     return snapshot;
   }
 
-  #refreshLaunchAtLogin() {
+  /**
+   * Re-reads the login item when asked for a fresh read or when the last
+   * readback is 30 s old. A login item that waits for approval is read every
+   * time: the user approves it in System Settings, and coming back to Comma
+   * must show the approval.
+   */
+  #refreshLaunchAtLogin({ fresh = false } = {}) {
+    if (
+      !fresh &&
+      this.#preferences.launchAtLoginStatus !== "requires-approval" &&
+      this.#clock.now() - this.#launchAtLoginReadAt <
+        LAUNCH_AT_LOGIN_READBACK_MAX_AGE_MS
+    ) {
+      return false;
+    }
     const readback = this.#platform.getLaunchAtLogin();
+    this.#launchAtLoginReadAt = this.#clock.now();
     const refreshed = withLaunchAtLoginReadback(this.#preferences, readback);
     if (samePreferenceValues(refreshed, this.#preferences)) return false;
     this.#preferences = withNextRevision(refreshed, this.#preferences);
@@ -453,7 +514,8 @@ export class AppPreferencesService {
       await writePreferences(this.#filePath, next);
     } catch (error) {
       const rollbackErrors = await rollbackApplied(applied);
-      if (this.#refreshLaunchAtLogin()) {
+      // A rollback may leave the login item where the OS put it: read it back.
+      if (this.#refreshLaunchAtLogin({ fresh: true })) {
         this.#onStateChanged({ ...this.#preferences });
       }
       if (rollbackErrors.length > 0) {
@@ -498,8 +560,15 @@ export async function readStoredLocalePreference(filePath: string) {
  * file beside the preferences and never published. Main moves an older file
  * forward once as it opens it; a new install starts at the current one.
  * - 1: Open Comma moved from Option-Space to Option-Comma.
+ * - 2: Computers over the mesh (`computerMesh`) went from off to on, so screen cards and views work by default.
+ *
+ * A build from before a revision writes its own, lower revision on its next
+ * save, so after a downgrade and an upgrade again the file is carried forward
+ * again: revision 2 then turns a mesh chosen off back on. No other mark can
+ * prevent it: an older build parses client settings strictly and reads a file
+ * with a field it does not know as all defaults.
  */
-const currentDefaultsRevision = 1;
+const currentDefaultsRevision = 2;
 
 /** Open Comma's default before revision 1. */
 const optionSpace = {
@@ -512,22 +581,35 @@ const optionSpace = {
  * `currentDefaultsRevision`). The first launch saved every client setting,
  * defaults included, so a setting still equal to an old default is one the
  * user never chose: it takes the new default. Anything the user set stays,
- * and so does whatever they set once this has run.
+ * and so does whatever they set once this has run, except revision 2's mesh:
+ * by the owner's decision every saved off turns on once, chosen or not (Debug
+ * was the only place to choose it), and a downgrade can repeat that (above).
  */
-function withCurrentDefaults(preferences: AppPreferences): AppPreferences {
+function withCurrentDefaults(
+  preferences: AppPreferences,
+  fromRevision: number
+): AppPreferences {
   const settings = preferences.clientSettings;
-  const openComma = settings?.openCommaShortcut;
+  if (!settings) return preferences;
+  const openComma = settings.openCommaShortcut;
   const untouched =
+    fromRevision < 1 &&
     openComma?.key === optionSpace.key &&
     (
       Object.keys(optionSpace.modifiers) as (keyof typeof optionSpace.modifiers)[]
     ).every(
       (modifier) => openComma.modifiers[modifier] === optionSpace.modifiers[modifier]
     );
-  return settings && untouched
+  // (off was the default, and Settings › Debug the only place that changed it)
+  const meshOff = fromRevision < 2 && settings.computerMesh === "off";
+  return untouched || meshOff
     ? {
         ...preferences,
-        clientSettings: { ...settings, openCommaShortcut: defaultOpenCommaShortcut },
+        clientSettings: {
+          ...settings,
+          ...(untouched ? { openCommaShortcut: defaultOpenCommaShortcut } : {}),
+          ...(meshOff ? { computerMesh: defaultCommaClientSettings.computerMesh } : {}),
+        },
       }
     : preferences;
 }

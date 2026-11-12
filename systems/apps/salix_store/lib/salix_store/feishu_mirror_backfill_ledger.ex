@@ -10,7 +10,9 @@ defmodule SalixStore.FeishuMirrorBackfillLedger do
 
   Commits are monotone so any number of walkers can commit without a fence:
   `indexed_from_us` only moves down, `indexed_to_us` is set once, and
-  `exhausted` only becomes true. A stale walker can at worst write an older
+  `exhausted` only becomes true, but for a chat the provider refused
+  (`close_refused_container/2`), which the listing reopens. A stale walker
+  can at worst write an older
   page token, which costs a re-walk of rows the mirror absorbs. All clocks are
   the database's.
   """
@@ -140,7 +142,12 @@ defmodule SalixStore.FeishuMirrorBackfillLedger do
         SELECT $1, $2, r.container_type, r.container_id, r.chat_id, timezone('UTC', clock_timestamp())
         FROM jsonb_to_recordset($3::jsonb)
           AS r(container_type text, container_id text, chat_id text)
-        ON CONFLICT (tenant_id, app_id, container_type, container_id) DO NOTHING
+        ON CONFLICT (tenant_id, app_id, container_type, container_id) DO UPDATE
+        SET exhausted = false,
+            last_error = NULL,
+            updated_at = EXCLUDED.updated_at
+        WHERE feishu_mirror_containers.last_error = 'external_chat_refused'
+           OR feishu_mirror_containers.last_error LIKE 'missing\\_scope:%'
         """,
         [tenant_id, app_id, rows]
       )
@@ -246,6 +253,36 @@ defmodule SalixStore.FeishuMirrorBackfillLedger do
   end
 
   @doc """
+  Sets a chat Feishu refuses aside until `upsert_containers/2` lists it again.
+  `coverage/3` still counts it as not walked.
+  """
+  @spec close_refused_container(map(), map(), :external_chat | {:missing_scope, String.t()}) ::
+          :ok | {:error, term()}
+  def close_refused_container(scope, container, refusal \\ :external_chat) do
+    safe_query(fn ->
+      Repo.query!(
+        """
+        UPDATE feishu_mirror_containers
+        SET exhausted = true,
+            page_token = NULL,
+            last_error = $5,
+            updated_at = timezone('UTC', clock_timestamp())
+        WHERE tenant_id = $1 AND app_id = $2 AND container_type = $3 AND container_id = $4
+        """,
+        [
+          scope["tenant_id"],
+          scope["app_id"],
+          container["container_type"],
+          container["container_id"],
+          refusal_text(refusal)
+        ]
+      )
+
+      :ok
+    end)
+  end
+
+  @doc """
   Search coverage for one app, optionally one chat, from `after_us` onward.
 
   `:not_synced` when no container is known yet. Otherwise `:complete`, or
@@ -268,7 +305,9 @@ defmodule SalixStore.FeishuMirrorBackfillLedger do
                  max(indexed_from_us) FILTER (WHERE hole)
           FROM (
             SELECT indexed_from_us,
-                   NOT exhausted AND (indexed_from_us IS NULL OR indexed_from_us > $4) AS hole
+                   (NOT exhausted OR last_error = 'external_chat_refused'
+                      OR last_error LIKE 'missing\\_scope:%')
+                     AND (indexed_from_us IS NULL OR indexed_from_us > $4) AS hole
             FROM feishu_mirror_containers
             WHERE tenant_id = $1 AND app_id = $2 AND ($3::text IS NULL OR chat_id = $3)
           ) c
@@ -291,6 +330,9 @@ defmodule SalixStore.FeishuMirrorBackfillLedger do
   end
 
   defp valid_container?(_container), do: false
+
+  defp refusal_text(:external_chat), do: "external_chat_refused"
+  defp refusal_text({:missing_scope, scope}), do: "missing_scope:" <> String.slice(scope, 0, 200)
 
   defp error_text(nil), do: nil
   defp error_text(reason), do: reason |> inspect() |> String.slice(0, 500)

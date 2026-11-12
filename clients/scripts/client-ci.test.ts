@@ -18,10 +18,12 @@ describe("client CI CLI", () => {
       true
     );
     expect(clientCiChanged(["pnpm-lock.yaml"])).toBe(true);
-    expect(clientCiChanged(["systems/connector/salix-connect/main.go"])).toBe(true);
     expect(
       clientCiChanged([".github/actions/setup-macos-cache/install-node-modules.sh"])
     ).toBe(true);
+    expect(clientBuildChanged([".github/actions/station-native/action.yml"])).toBe(
+      true
+    );
     expect(
       clientCiChanged(["systems/apps/salix_agent/priv/dynamic_ui/card-contract.json"])
     ).toBe(true);
@@ -29,7 +31,7 @@ describe("client CI CLI", () => {
   });
 
   it("routes helper changes to native checks without browser or Electron suites", () => {
-    const root = "systems/connector/salix-connect/";
+    const root = "systems/station/computer-use/";
     const inputs = [
       `${root}native/macos/ComputerUseHost/Sources/CommaComputerUseDaemon/PermissionAuthWindow.swift`,
       `${root}native/macos/ComputerUseHost/Tests/CUTests/PermissionAuthorizationTests.swift`,
@@ -48,7 +50,7 @@ describe("client CI CLI", () => {
       true
     );
     expect(computerUseCiChanged(["pnpm-lock.yaml"])).toBe(true);
-    expect(computerUseCiChanged([`${root}main.go`])).toBe(false);
+    expect(computerUseCiChanged(["systems/station/src/main.ts"])).toBe(false);
     expect(computerUseCiChanged(["clients/packages/ui/src/button.tsx"])).toBe(false);
     expect(computerUseCiChanged(["clients/apps/electron/src/main/open-wait.ts"])).toBe(
       true
@@ -81,7 +83,6 @@ describe("client CI CLI", () => {
       "clients/packages/ui/src/button.tsx",
       "clients/e2e/p0/electron-smoke.spec.ts",
       "clients/playwright.config.ts",
-      "systems/connector/salix-connect/main.go",
       "pnpm-lock.yaml",
     ]) {
       expect(electronCiChanged([input])).toBe(true);

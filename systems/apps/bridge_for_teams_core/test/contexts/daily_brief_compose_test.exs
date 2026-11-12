@@ -3,6 +3,7 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
 
   alias BridgeForTeams.{Accounts, DailyBrief, Memberships, Orgs, Projects, Repo}
   alias BridgeForTeams.DailyBrief.{Compose, People}
+  alias BridgeForTeams.DailyBrief.Sources.Slack
 
   @now ~U[2026-10-23 02:00:00.000000Z]
   @window_after ~U[2026-10-22 02:00:00.000000Z]
@@ -210,6 +211,56 @@ defmodule BridgeForTeams.DailyBriefComposeTest do
              %{},
              People.build([], [])
            ) =~
-             "`http://host.docker.internal:11434` 这类地址"
+             "\u200B`http://host.docker.internal:11434`\u200B 这类地址"
+  end
+
+  test "a pull request number links to the one the window's messages carry" do
+    issues =
+      Compose.issue_links([
+        %{text: "<https://github.com/acme/app/pull/4255|#4255> merged"},
+        %{text: "see https://github.com/acme/app/issues/77"},
+        %{text: "https://github.com/acme/app/pull/12 and https://github.com/other/lib/pull/12"}
+      ])
+
+    assert issues == %{
+             "4255" => "https://github.com/acme/app/pull/4255",
+             "77" => "https://github.com/acme/app/issues/77"
+           }
+
+    assert Compose.link_issues(
+             "#4255 合了，#77 还开着，#12 不确定，#999 没有链接；<https://x.test|#4255> 和 `#77` 不动",
+             issues
+           ) ==
+             "<https://github.com/acme/app/pull/4255|#4255> 合了，<https://github.com/acme/app/issues/77|#77> 还开着，#12 不确定，#999 没有链接；<https://x.test|#4255> 和 `#77` 不动"
+  end
+
+  test "code next to Chinese text is set as code in Slack" do
+    request = %{"items" => []}
+
+    assert Compose.finish("看起来，`SEARCH_GENERATION` 没生效", request, %{}, People.build([], [])) ==
+             "看起来，\u200B`SEARCH_GENERATION`\u200B 没生效"
+  end
+
+  test "a ref written outside a link becomes a link to its message" do
+    request = %{
+      "items" => [
+        %{"ref" => "m1", "in" => "#dev", "at" => "10-29 17:14", "text" => "a"},
+        %{"ref" => "m2", "in" => "#dev", "at" => "10-29 18:45", "text" => "b"}
+      ]
+    }
+
+    links = %{"m1" => "https://x.test/1", "m2" => "https://x.test/2"}
+
+    assert Compose.finish("合了。[原消息](m1)(m2) 你说不用恢复（m2）", request, links, People.build([], [])) ==
+             "合了。<https://x.test/1|#dev · 10/29 17:14> <https://x.test/2|#dev · 10/29 18:45> 你说不用恢复 <https://x.test/2|#dev · 10/29 18:45>"
+  end
+
+  test "another app's mention chip reads as its name, not as a person" do
+    people = People.build([], ["slack:UBOB12345"], %{"slack:UBOB12345" => "Bob"})
+
+    assert Slack.label_text("在 <@USLACK> 菜单里问 <@UBOB12345>", people) ==
+             "在 @Slack 菜单里问 @Bob"
+
+    assert Slack.mentions("<@USLACK> 和 <@UBOB12345>") == ["slack:UBOB12345"]
   end
 end

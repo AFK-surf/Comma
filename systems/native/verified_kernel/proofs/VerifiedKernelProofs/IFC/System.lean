@@ -44,14 +44,15 @@ theorem join_labels_preserves_sources (hl : l ∈ inputs) : Flows w l (JoinLabel
   exact hp atom (List.mem_flatten.mpr ⟨l, hl, ha⟩)
 
 theorem source_authority (h : SourceAuthorized w policy a e src receipts now clause) :
-    Flows w src e.destination ∨ (Unsealed policy src ∧ Reads w a.requester src) := by
+    Flows w src.label e.destination ∨ (Unsealed policy src.label ∧ Reads w a.requester src.label) := by
   cases h with
   | flow h => exact Or.inl h
-  | inPlace hu hr _ _ | instruction hu hr _ | receipt hu hr _ _ _ => exact Or.inr ⟨hu, hr⟩
+  | authored hu hr _ _ | inPlace hu hr _ _ | instruction hu hr _ | receipt hu hr _ _ _ =>
+    exact Or.inr ⟨hu, hr⟩
 
 theorem sealed_requires_flow
     (h : SourceAuthorized w policy a e src receipts now clause)
-    (hs : ∃ atom ∈ src, policy.sealed atom) : Flows w src e.destination := by
+    (hs : ∃ atom ∈ src.label, policy.sealed atom) : Flows w src.label e.destination := by
   rcases source_authority h with flow | ⟨unsealed, _⟩
   · exact flow
   · obtain ⟨atom, ha, hs⟩ := hs

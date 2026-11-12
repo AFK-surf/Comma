@@ -4,7 +4,6 @@ import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import { FilePreviewLoading } from "./FilePreviewLoading";
-import { PdfFilePreview, type RangedFile } from "./PdfFilePreview";
 import { useDriveObjectUrl } from "../drive/useDriveObjectUrl";
 
 type PreviewKind =
@@ -54,7 +53,14 @@ const htmlPreviewCsp =
   "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 
 export const isolatedHtmlDocument = (html: string) => {
-  const body = DOMPurify.sanitize(html, {
+  // Fragment sanitization drops leading/head styles and the html/body attributes.
+  // Keep the document, then put our CSP before any user-authored styles.
+  // SAFE_FOR_XML drops a whole <style> whose CSS holds "<svg" or "<!--"; this
+  // output only reaches the opaque sandbox and CSP, which are the isolation.
+  const document = DOMPurify.sanitize(html, {
+    WHOLE_DOCUMENT: true,
+    RETURN_DOM: true,
+    SAFE_FOR_XML: false,
     FORBID_TAGS: [
       "script",
       "meta",
@@ -78,8 +84,12 @@ export const isolatedHtmlDocument = (html: string) => {
       "download",
     ],
     ALLOWED_URI_REGEXP: /^(?:#|data:image\/(?:png|gif|jpe?g|webp);)/i,
-  });
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${htmlPreviewCsp}"><meta charset="utf-8"></head><body>${body}</body></html>`;
+  }) as HTMLElement;
+  const policy = document.ownerDocument.createElement("meta");
+  policy.httpEquiv = "Content-Security-Policy";
+  policy.content = htmlPreviewCsp;
+  document.querySelector("head")!.prepend(policy);
+  return `<!doctype html>${document.outerHTML}`;
 };
 
 function TextPreview({
@@ -158,7 +168,6 @@ export function FilePreviewContent({
   blob,
   mediaUrl,
   mediaKey,
-  ranged,
   error,
   placeholder,
   onOpenBrowser,
@@ -170,8 +179,6 @@ export function FilePreviewContent({
   mediaUrl?: string | undefined;
   /** The file `mediaUrl` reads, when that URL can be renewed: a new URL of it keeps the playback position. */
   mediaKey?: string | undefined;
-  /** The file read in spans: a PDF renders its pages without the whole file. */
-  ranged?: RangedFile | undefined;
   error?: string | undefined;
   placeholder?: string | undefined;
   onOpenBrowser: (url: string) => void;
@@ -198,9 +205,12 @@ export function FilePreviewContent({
         src={mediaUrl}
       />
     );
-  if (ranged && kind === "pdf") return <PdfFilePreview ranged={ranged} />;
   if (!blob)
-    return placeholder === undefined ? <FilePreviewLoading /> : <p>{placeholder}</p>;
+    return placeholder === undefined ? (
+      <FilePreviewLoading />
+    ) : (
+      <p className="text-sm text-secondary">{placeholder}</p>
+    );
   return (
     <LoadedFilePreview
       key={blobKey(blob)}
@@ -226,7 +236,6 @@ function LoadedFilePreview({
   const messages = useCommaMessages();
   const url = useDriveObjectUrl(blob);
   const kind = filePreviewKind(fileName, mimeType || blob.type);
-  if (kind === "pdf") return <PdfFilePreview blob={blob} />;
   if (kind === "text" || kind === "markdown" || kind === "html")
     return <TextPreview blob={blob} kind={kind} onOpenBrowser={onOpenBrowser} />;
   if (!url) return <FilePreviewLoading />;
@@ -240,7 +249,9 @@ function LoadedFilePreview({
     );
   if (kind === "audio" || kind === "video")
     return <MediaPreview fileName={fileName} kind={kind} url={url} />;
-  return <p>{messages.file_preview_unavailable()}</p>;
+  return (
+    <p className="text-sm text-secondary">{messages.file_preview_unavailable()}</p>
+  );
 }
 
 function MediaPreview({

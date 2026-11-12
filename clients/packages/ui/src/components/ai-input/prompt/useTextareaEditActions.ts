@@ -1,3 +1,5 @@
+import { useCommaMessages } from "@comma/i18n/react";
+import { copyWithFeedback } from "../../toast";
 import { useCallback, type ChangeEvent, type RefObject } from "react";
 import { uiClock } from "../../../clock";
 import type { TextEditContextMenuAction } from "../../menu";
@@ -40,6 +42,7 @@ export function useTextareaEditActions({
   textareaRef,
   value,
 }: TextareaEditActionsOptions) {
+  const messages = useCommaMessages();
   const applyTextareaValue = useCallback(
     (nextValue: string, selectionStart: number, selectionEnd: number) => {
       const textarea = textareaRef.current;
@@ -94,7 +97,7 @@ export function useTextareaEditActions({
 
       if (action === "copy") {
         if (!selected) return;
-        await clipboard.writeText(selected);
+        await copyWithFeedback(() => clipboard.writeText(selected), messages);
         savedTextareaSelectionRef.current = { start, end };
         return;
       }
@@ -134,6 +137,7 @@ export function useTextareaEditActions({
     [
       applyTextareaValue,
       clipboard,
+      messages,
       maxLength,
       pasteFromMenu,
       restoreTextareaSelection,

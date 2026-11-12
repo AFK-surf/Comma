@@ -138,7 +138,8 @@ defmodule SalixCalendar.LocalStore do
   defp canonical(_owner), do: %{}
 
   defp valid_scope?(group_id, calendar_id),
-    do: SalixStore.Ids.valid_group_id?(group_id) and SalixStore.Ids.valid_calendar_id?(calendar_id)
+    do:
+      SalixStore.Ids.valid_group_id?(group_id) and SalixStore.Ids.valid_calendar_id?(calendar_id)
 
   defp valid_item?(item_id), do: SalixStore.Ids.valid_calendar_item_id?(item_id)
 

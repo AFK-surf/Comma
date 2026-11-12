@@ -8,7 +8,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
   deployment environment variables can substitute an image authority.
   """
 
-  @classes ~w(meeting shell station)
+  @classes ~w(shell station)
   @runtime_bundle_public_base_url "https://comma-release.afk.surf"
   @container_log_limit_bytes 1_048_576
   @provider_state_volume %{
@@ -19,20 +19,18 @@ defmodule SalixStore.RuntimeBundleCatalog do
     "mode" => 0o700,
     "read_only" => false
   }
-  @meeting_volume %{
-    @provider_state_volume
-    | "owner_uid" => 10_001,
-      "owner_gid" => 10_001
-  }
   @templates %{
     "shell.default" => %{
       class: "shell",
       capabilities: ["runtime_exec", "runtime_process"],
+      volume_requirements: [
+        %{@provider_state_volume | "owner_uid" => 10_001, "owner_gid" => 10_001}
+      ],
       resources: %{
-        "pid_max" => 512,
-        "writable_quota_bytes" => 2_147_483_648
+        "pid_max" => 2048,
+        "writable_quota_bytes" => 17_179_869_184
       },
-      egress_mode: "deny_all"
+      egress_mode: "public_internet"
     },
     # A Group's Cloud VM on an Agent VMM Host: the Comma station, which
     # connects out to Salix with its Workload's connect credential.
@@ -41,18 +39,8 @@ defmodule SalixStore.RuntimeBundleCatalog do
       capabilities: ["runtime_exec", "runtime_process"],
       volume_requirements: [@provider_state_volume],
       resources: %{
-        "pid_max" => 512,
-        "writable_quota_bytes" => 2_147_483_648
-      },
-      egress_mode: "public_internet"
-    },
-    "meeting.meetnative" => %{
-      class: "meeting",
-      capabilities: ["runtime_exec", "runtime_process"],
-      volume_requirements: [@meeting_volume],
-      resources: %{
-        "pid_max" => 512,
-        "writable_quota_bytes" => 2_147_483_648
+        "pid_max" => 2048,
+        "writable_quota_bytes" => 17_179_869_184
       },
       egress_mode: "public_internet"
     }

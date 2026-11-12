@@ -18,13 +18,13 @@ defmodule SalixAgent.IFC.Help do
   - `Ref` maps to a complete visible `src:…` reference. Inputs show `[src:…]`. Synchronous results use `src:t-` plus tool_call_id. Asynchronous notifications are runtime messages: use their `ref` or `[src:…]` marker, not the call ID. Read remaining pages before using a partial result to establish a fact.
   - `Effect.request` maps to `ifc.request`: the command you act on, including an assigned organization Task command.
   - `Effect.sources` and `Expression.sources` map to `ifc.sources`: refs whose content the effect carries or derives from. Instructions about action, destination, style, or format are not content sources unless you also use their content.
-  - Declare `sources: []` when the effect uses no source content. Omitted sources select `Sources.context`. Omitted request uses the activation's singular request authority.
+  - Declare `sources: []` when the effect uses no source content. Omitted sources select `Sources.context`. An activation can hold several requests from one thread: cite the one each effect acts on, and its sender is the requester. With several senders, an effect that omits request is refused.
   - Attach declarations to calls: `call(tool="im_api.slack.reply_message", params={…}, ifc={"request":"src:q-4471","sources":["src:t-88#2"]})`. External runtimes use the tool's disclosed IFC field.
   - `reply` accepts text only and uses context sources. Use `call` with `im_api.internal.send_message` when you need an explicit declaration.
   - `Atom.unrestricted` maps to `public`. `Atom.runtimePrivate` maps to `agent_private`. The runtime resolves `Effect.destination` from tool parameters.
   - `/memory/*` has a workspace-wide audience. Use `/memory/scoped/<name>.md` for private notes. Its audience comes from the note's declared sources.
   - A refusal returns `guidance`. Correct a real citation error, provide an authorized narrower answer, ask for confirmation, or explain the limitation. Never omit an actual source to obtain authorization. Do not repeat restricted content or source details in an explanation.
-  - A generic explanation without source content can declare `sources: []` with the valid request. You may continue other work or finish without sending. Use standalone `end_turn`: `blocked` with a private reason for unfinished work, or `done` when no work remains. Reply reminders do not require a successful send.
+  - A generic explanation without source content can declare `sources: []` with the valid request. A person waiting for an answer gets that explanation before you settle, unless they told you not to reply. You may also continue other work. Then use standalone `end_turn`: `blocked` with a private reason for unfinished work, or `done` when no work remains. If the explanation is refused too, settle anyway.
 
   ## IFC model
 

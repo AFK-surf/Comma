@@ -85,8 +85,8 @@ defmodule SalixWeb.Dashboard.CloudVMLive do
         <p class="mt-1 text-sm text-neutral-500">
           Deployment-wide provider credentials for tenants that explicitly follow platform
           <code>vm</code>
-          configuration. Organization-owned tenant config stays independent; Groups whose
-          Cloud VM switch is on use Cloudflare for cloud compute.
+          configuration. Organization-owned tenant config stays independent; Groups
+          with a Cloud VM use Cloudflare for cloud compute.
           Secrets are write-only and never shown back.
         </p>
       </div>

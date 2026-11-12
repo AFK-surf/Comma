@@ -47,13 +47,13 @@ theorem matched_archive_input_fact {item record projected : Term} {landed window
 
 /-- The actual reachable archive window supplies the message witness used by adoption. -/
 theorem reachable_archive_input_candidate {s ceiling item record : Term} {records j r : List Term}
-    (reachable : HistoryReachable s) (present : ContainsRecord s record) (recorded : Recorded item record)
+    (reachable : HistoryReachable s) (physical : ArchiveProjection.UnarchivedWindow s) (present : ContainsRecord s record) (recorded : Recorded item record)
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records, ArchiveProjection.MessageRecord record projected ∧
       Equivalent (queueWorkProjection item) ((projected.get (a "data")).get (b "accepted_input")) := by
   obtain ⟨messages, read, member⟩ := present
   obtain ⟨projected, included, projection⟩ :=
-    ArchiveProjection.archiveWindow_messages reachable.sequence.1 read member h
+    ArchiveProjection.archiveWindow_messages reachable.sequence.1 physical read member h
   exact ⟨projected, included, projection, projection.input_fact recorded⟩
 
 end ValueSemantics

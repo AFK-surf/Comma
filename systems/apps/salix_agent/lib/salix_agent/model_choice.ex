@@ -17,14 +17,15 @@ defmodule SalixAgent.ModelChoice do
       with its own login (`SalixAgent.StationBinding`).
     * `platform`: the platform model of a tier (`SalixAgent.PlatformModels`),
       which members see only by name. The platform decides what serves it
-      and pays for it.
+      and pays for it. A `worker` choice may also name the `model` the
+      platform route table returned for its Task.
 
   `record/2` answers the model record a choice stands for: its name, model id,
   provider, `provider_config`, limits and image input. That record is never
   stored. `llm_config/1`, `media/2` and `public_json/1` read it.
   """
 
-  alias SalixAgent.LLMProvider
+  alias SalixAgent.{LLMProvider, PlatformModels}
 
   @catalog_keys ~w(kind model reasoning_effort allow_paid profile_id)
   @runtime_keys ~w(kind provider model reasoning_effort)
@@ -91,7 +92,7 @@ defmodule SalixAgent.ModelChoice do
 
   def choose(%{"kind" => "platform", "tier" => tier} = choice, _tenant_id)
       when map_size(choice) == 2 do
-    if tier in SalixAgent.PlatformModels.agent_tiers(),
+    if tier in PlatformModels.agent_tiers(),
       do: {:ok, %{"kind" => "platform", "tier" => tier}},
       else: {:error, :invalid_model_configuration}
   end
@@ -141,8 +142,15 @@ defmodule SalixAgent.ModelChoice do
   def record(%{"kind" => "runtime"} = value, tenant_id),
     do: runtime_record(value["provider"], value["model"], value["reasoning_effort"], tenant_id)
 
+  # A model the platform route table returned for the `worker` tier.
+  def record(%{"kind" => "platform", "model" => model} = value, _tenant_id) do
+    if PlatformModels.routed_model?(value),
+      do: PlatformModels.routed_record(model, value["reasoning_effort"]),
+      else: {:error, :invalid_model_configuration}
+  end
+
   def record(%{"kind" => "platform", "tier" => tier}, _tenant_id),
-    do: SalixAgent.PlatformModels.record(tier)
+    do: PlatformModels.record(tier)
 
   def record(_value, _tenant_id), do: {:error, :invalid_model_configuration}
 

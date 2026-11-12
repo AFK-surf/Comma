@@ -92,19 +92,24 @@ def Unsealed (policy : Policy) (src : Label) : Prop :=
   ∀ atom ∈ src, ¬ policy.sealed atom
 
 inductive Clause where
-  | flow | inPlace | instruction | receipt (id : ReceiptId)
+  | flow | authored | inPlace | instruction | receipt (id : ReceiptId)
 
-/-- Sealed sources allow normal flow, not declassification. -/
+/-- Sealed sources allow normal flow, not declassification.
+A requester may send their own command items anywhere they can write. -/
 inductive SourceAuthorized (w : World) (policy : Policy) (a : Activation)
-    (e : Effect) (src : Label) (receipts : ReceiptId → Option Receipt) (now : Nat) :
+    (e : Effect) (src : Item) (receipts : ReceiptId → Option Receipt) (now : Nat) :
     Clause → Prop where
-  | flow : Flows w src e.destination → SourceAuthorized w policy a e src receipts now .flow
-  | inPlace : Unsealed policy src → Reads w a.requester src → policy.inPlace →
+  | flow : Flows w src.label e.destination → SourceAuthorized w policy a e src receipts now .flow
+  | authored : Unsealed policy src.label → Reads w a.requester src.label →
+      src.integrity = .command → src.principal = some a.requester →
+      SourceAuthorized w policy a e src receipts now .authored
+  | inPlace : Unsealed policy src.label → Reads w a.requester src.label → policy.inPlace →
       LabelEq e.destination a.sourceScope → SourceAuthorized w policy a e src receipts now .inPlace
-  | instruction : Unsealed policy src → Reads w a.requester src → policy.instruction →
+  | instruction : Unsealed policy src.label → Reads w a.requester src.label → policy.instruction →
       SourceAuthorized w policy a e src receipts now .instruction
-  | receipt {id : ReceiptId} {r : Receipt} : Unsealed policy src → Reads w a.requester src → policy.receipt →
-      receipts id = some r → Covers r a.requester src e.destination now →
+  | receipt {id : ReceiptId} {r : Receipt} : Unsealed policy src.label →
+      Reads w a.requester src.label → policy.receipt →
+      receipts id = some r → Covers r a.requester src.label e.destination now →
       SourceAuthorized w policy a e src receipts now (.receipt id)
 
 def RequestAuthorized (ctx : List Item) (a : Activation) (e : Effect) : Prop :=
@@ -161,7 +166,7 @@ def Authorized (w : World) (policy : Policy) (ctx : List Item) (a : Activation)
   RequestAuthorized ctx a e ∧ gates.Hold a e (evidence.map Admission.item) ∧
   Resolves ctx e.sources (evidence.map Admission.item) ∧
   ∀ entry ∈ evidence,
-    SourceAuthorized w policy a e entry.item.label receipts now entry.clause
+    SourceAuthorized w policy a e entry.item receipts now entry.clause
 
 end VerifiedKernel.IFC.System
 

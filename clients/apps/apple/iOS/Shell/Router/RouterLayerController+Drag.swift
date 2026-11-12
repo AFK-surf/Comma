@@ -1,4 +1,5 @@
 import UIKit
+import SwiftUI
 
 /// A finger holding the router chat: a downward drag on its header, or a drag toward the trailing edge that starts
 /// in the leading third of the screen and not on a message, which that drag answers instead, like going back. The
@@ -51,7 +52,12 @@ extension RouterLayerController: UIGestureRecognizerDelegate {
     }
 
     /// The navigation bar's band: there a drag down closes; below it, vertical drags belong to the transcript.
-    private var headerZone: CGFloat { view.safeAreaInsets.top + 52 }
+    private var headerZone: CGFloat {
+        #if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *), traitCollection.verticalBarEdge != .unspecified { return 0 }
+        #endif
+        return view.safeAreaInsets.top + 52
+    }
     /// 1 when the trailing edge is on the right, -1 when it is on the left.
     private var trailing: CGFloat { view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1 }
 
@@ -67,7 +73,7 @@ extension RouterLayerController: UIGestureRecognizerDelegate {
         let velocity = pan.velocity(in: view)
         let location = pan.location(in: view), translation = pan.translation(in: view)
         let origin = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
-        if origin.y <= headerZone, velocity.y > 0, velocity.y >= abs(velocity.x) { return .down }
+        if headerZone > 0, origin.y <= headerZone, velocity.y > 0, velocity.y >= abs(velocity.x) { return .down }
         // A sideways drag on a message is a reply (`ReplySwipe`); from the leading third, between messages, it closes.
         let routerPane = hosting.rootView.content.store.router.pane.map(ObjectIdentifier.init)
         if inLeadingZone(origin), velocity.x * trailing > 0, abs(velocity.x) > abs(velocity.y), !scrollsSideways(at: origin),

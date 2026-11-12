@@ -192,6 +192,7 @@ function summaryShape(summary: BillingSummary): string {
         ]
       : null,
     credits: summary.current_credits,
+    nonLlmCredits: summary.non_llm_credits ?? 0,
   });
 }
 

@@ -640,6 +640,71 @@ defmodule SalixWeb.ConnectorSocketTest do
     assert successor_run != run_id
   end
 
+  test "write chunks go as binary frames to a station that takes them, else as base64" do
+    alias SalixWeb.ConnectorSocket
+
+    chunk = <<0, 1, 2, 255>> <> String.duplicate("x", 1000)
+
+    pushed = fn binary_streams ->
+      ref = SystemsRuntime.Proc.make_ref()
+      begin = SalixEnv.Protocol.request("write_stream", %{"path" => "/f"}, "w-1")
+      state = %ConnectorSocket.State{binary_streams: binary_streams}
+      me = SystemsRuntime.Proc.self()
+
+      assert {:push, {:text, _}, state} =
+               ConnectorSocket.handle_info({:env_write_stream, :begin, ref, me, begin}, state)
+
+      assert {:push, frame, _state} =
+               ConnectorSocket.handle_info(
+                 {:env_write_stream, :chunk, ref, me, "w-1", chunk},
+                 state
+               )
+
+      frame
+    end
+
+    assert {:binary, frame} = pushed.(true)
+
+    assert {:ok,
+            %{
+              "id" => "w-1",
+              "type" => "stream",
+              "stream" => %{"channel" => "data", "seq" => 1, "bytes" => ^chunk}
+            }} = SalixEnv.Protocol.decode_stream_binary(frame)
+
+    assert {:text, encoded} = pushed.(false)
+
+    assert %{"stream" => %{"channel" => "data", "seq" => 1, "data" => data}} =
+             Jason.decode!(encoded)
+
+    assert Base.decode64!(data) == chunk
+  end
+
+  test "a binary stream frame from the station reaches a tunnel's relay as its bytes" do
+    alias SalixWeb.ConnectorSocket
+
+    dial =
+      SalixEnv.Protocol.request("lan_tcp_dial", %{"host" => "10.0.0.2", "port" => 22}, "tun-1")
+
+    me = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
+
+    assert {:push, {:text, _}, state} =
+             ConnectorSocket.handle_info(
+               {:env_tunnel_open, ref, me, me, dial},
+               %ConnectorSocket.State{binary_streams: true}
+             )
+
+    frame =
+      SalixEnv.Protocol.encode_stream_binary(
+        %{"id" => "tun-1", "type" => "stream", "stream" => %{"channel" => "tcp"}},
+        <<0, 255, 10>>
+      )
+
+    assert {:ok, _state} = ConnectorSocket.handle_in({frame, [opcode: :binary]}, state)
+    settle_receive({:env_tunnel_frame, "tun-1", %{"channel" => "tcp", "bytes" => <<0, 255, 10>>}})
+  end
+
   test "a tunnel opens through a pending dial and forwards frames to its relay only" do
     alias SalixWeb.ConnectorSocket
 
@@ -1194,7 +1259,13 @@ defmodule SalixWeb.ConnectorSocketTest do
     end
 
     defp reply(%{"id" => id, "method" => method, "params" => params})
-         when method in ["process_list", "process_write", "process_tail", "computer_use"] do
+         when method in [
+                "process_list",
+                "process_write",
+                "process_tail",
+                "computer_use",
+                "screen"
+              ] do
       %{"id" => id, "type" => "response", "result" => %{"method" => method, "params" => params}}
     end
 
@@ -1756,6 +1827,78 @@ defmodule SalixWeb.ConnectorSocketTest do
     assert [%{"type" => "text", "text" => summary}] = Jason.decode!(content)
     size = byte_size("body@" <> url)
     assert %{"status" => 200, "size_bytes" => ^size} = Jason.decode!(summary)
+  end
+
+  test "a simulator's lease goes only to a station that offers its simulators, and only for a Worker",
+       %{group_id: group_id, agent_id: agent_id, connector_token: token} do
+    device_id = Process.get(:test_device_id)
+    {pid, _connector_run_id} = connect(group_id, "sim-host", token)
+    # Through the agent-facing port with the adapter Salix.App installs in production.
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, Salix.Bindings.AgentEnvDispatch)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_agent, :env_dispatch, SalixWeb.EnvDispatch) end)
+    screen = &SalixAgent.EnvDispatch.screen/3
+
+    metadata = fn offers? ->
+      capabilities = if offers?, do: %{"screen_device_tool" => true}, else: %{}
+
+      %{
+        "type" => "metadata",
+        "capabilities" =>
+          Map.put(capabilities, "environments", [
+            %{
+              "environment_id" => "sim-host",
+              "environment_provider" => "connected",
+              "environment_runtime_id" => "host",
+              "alias" => "sim-host",
+              "name" => "Mac",
+              "capabilities" => capabilities
+            }
+          ])
+      }
+    end
+
+    offers? = fn ->
+      case EnvDispatch.list_envs(agent_id) do
+        {:ok, envs} ->
+          Enum.any?(envs, fn env ->
+            env["alias"] == "sim-host" and
+              get_in(env, ["capabilities", "screen_device_tool"]) == true
+          end)
+
+        _ ->
+          false
+      end
+    end
+
+    environment_id = SalixStore.RuntimeIds.device_environment_id(device_id, "connected", "host")
+    target = %{device_id: device_id, environment_id: environment_id}
+    action = %{"environment" => environment_id, "action" => "status", "args" => %{"x" => 1}}
+
+    # A station from before says nothing of simulators: refused, nothing sent to it.
+    SystemsRuntime.Proc.send(pid, {:send_frame, metadata.(false)})
+
+    assert eventually(fn ->
+             match?({:ok, [_ | _]}, EnvDispatch.list_envs(agent_id)) and not offers?.()
+           end)
+
+    assert {:error, :screen_capability_missing} = screen.(agent_id, target, action)
+
+    SystemsRuntime.Proc.send(pid, {:send_frame, metadata.(true)})
+    assert eventually(offers?)
+
+    {:ok, router} =
+      SalixAgent.Control.create(
+        %{"group_id" => group_id, "name" => "Router", "role" => "router"},
+        tenant_id()
+      )
+
+    assert {:error, :screen_not_authorized} =
+             screen.(router["agent_id"], target, action)
+
+    assert {:ok, %{"method" => "screen", "params" => %{"action" => "status", "x" => 1} = params}} =
+             screen.(agent_id, target, action)
+
+    refute Map.has_key?(params, "environment")
   end
 
   test "android admission is fail-closed, forwards once enabled, and revokes immediately",
@@ -3909,7 +4052,7 @@ defmodule SalixWeb.ConnectorSocketTest do
     assert %{"devices" => [%{"device_id" => ^device_id}], "next_cursor" => nil} =
              Jason.decode!(Peers.list_devices(%{"limit" => 1}, ctx))
 
-    assert [{:list, _, [max_keys: 1]}] =
+    assert [{:list, _, [max_keys: 100]}] =
              Enum.filter(S3.Fake.read_log(SystemsRuntime.Proc.self()), &match?({:list, _, _}, &1))
 
     :ok = S3.Fake.reset_read_log()

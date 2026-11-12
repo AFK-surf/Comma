@@ -4,6 +4,7 @@ import type { SettingsPanelItem, SettingsPanelSection } from "../settings-panel"
 export type SettingsCategoryIcon =
   | "archived-tasks"
   | "shared-tasks"
+  | "task-requests"
   | "apps"
   | "labels"
   | "general"
@@ -22,7 +23,8 @@ export type SettingsCategoryIcon =
   | "tailscale"
   | "computer-use"
   | "models-api-keys"
-  | "debug";
+  | "debug"
+  | "about";
 
 /**
  * A second-level page opened from inside a category. While one is set, the

@@ -17,6 +17,7 @@
 //
 // Bounds: one request at a time, at most 300 dismissals each; at most 300 waiting to be sent; at most one refresh read
 // per REFRESH_MS per device.
+import { lazySchema } from "@comma/chat-contract";
 import { Effect, Option } from "effect";
 import { z } from "zod";
 import type { Ctx } from "./ctx.ts";
@@ -29,20 +30,22 @@ const BATCH = 300;
 const MAX_WAITING = 300;
 const REFRESH_MS = 30_000;
 
-const answerSchema = z
-  .object({
-    data: z
-      .array(
-        z
-          .object({
-            task_id: z.string().min(1).max(256),
-            revision: z.number().int().nonnegative(),
-          })
-          .strip()
-      )
-      .max(BATCH),
-  })
-  .strip();
+const answerSchema = lazySchema(() =>
+  z
+    .object({
+      data: z
+        .array(
+          z
+            .object({
+              task_id: z.string().min(1).max(256),
+              revision: z.number().int().nonnegative(),
+            })
+            .strip()
+        )
+        .max(BATCH),
+    })
+    .strip()
+);
 
 /** Task id → the Task version the dismissal acknowledged. */
 type Marks = Record<string, number>;

@@ -33,9 +33,34 @@ const github = (status: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+const phone = (status: string, extra: Record<string, unknown> = {}) => ({
+  id: "cap-p",
+  type: "computer_use_start",
+  status,
+  outcome: null,
+  expires_at: 2_000,
+  created_at: 1_400,
+  phone: {
+    title: "Pixel 8 · Android 15",
+    target: "android:3B162S00P0N00000",
+    device_id: "dev_mac",
+  },
+  ...extra,
+});
+
+const ownAsked = (id: string, status: string) => ({
+  id,
+  type: "location",
+  status,
+  group_id: "group-2",
+  conversation_id: "conversation-2",
+  location: { reason: "Directions." },
+});
+
 function setup() {
   const host = new FakeHost({ time: new TestTime(1_500_000) });
   host.api.onStream(`${BASE}/events`);
+  host.api.onStream("/v1/comma/location-requests/events");
   const core = startTestCore(host);
   const client = new CoreClient(inProcessOpener(core, host), {
     schedule: () => undefined,
@@ -71,7 +96,7 @@ describe("An Agent's requests in a conversation", () => {
     const stream = t.host.api.open(`${BASE}/events`)!;
 
     stream.named("snapshot", {
-      data: [github("pending"), { id: "cap-x", type: "location", status: "pending" }],
+      data: [github("pending"), { id: "cap-x", type: "camera", status: "pending" }],
     });
     await t.time.pass(100);
     // A kind the app draws no card for is left out.
@@ -113,7 +138,7 @@ describe("An Agent's requests in a conversation", () => {
         oauth: { account: "octocat" },
       },
     ]);
-    expect(requests()?.requests[0]?.oauth.authorizationUrl).toBeUndefined();
+    expect(requests()?.requests[0]).not.toHaveProperty("oauth.authorizationUrl");
 
     // A second request, which the person declines; the answer replaces it at once.
     stream.named("request", github("pending", { id: "cap-2", created_at: 1_450 }));
@@ -130,6 +155,124 @@ describe("An Agent's requests in a conversation", () => {
     expect(requests()?.requests.find((r) => r.id === "cap-2")).toMatchObject({
       status: "completed",
       outcome: "declined",
+    });
+  });
+
+  it("passes what a card filled in to the server, and shows the request it answers with", async () => {
+    const t = setup();
+    const secret = github("pending", {
+      oauth: {
+        provider: "secret",
+        alias: "openai",
+        reason: "The script needs it.",
+        scopes: [],
+        input: {
+          kind: "secret",
+          label: "OpenAI API Key",
+          help_url: "http://not-https.example",
+        },
+      },
+    });
+    const get = t.watch({
+      topic: "agentRequests",
+      group: GROUP,
+      conversation: CONVERSATION,
+    });
+    await t.time.pass(100);
+    t.host.api.open(`${BASE}/events`)!.named("snapshot", { data: [secret] });
+    await t.time.pass(100);
+    // Only an https page opens.
+    expect(get()?.requests[0]).toHaveProperty("oauth.input", {
+      kind: "secret",
+      label: "OpenAI API Key",
+    });
+
+    t.host.api.on("POST", `${BASE}/cap-1/input`, () =>
+      json(200, github("completed", { outcome: "connected" }))
+    );
+    await t.client.call("agentRequests.fill", {
+      group: GROUP,
+      conversation: CONVERSATION,
+      request: "cap-1",
+      values: { value: "sk-typed" },
+    });
+    await t.time.pass(100);
+    expect(get()?.requests[0]?.outcome).toBe("connected");
+  });
+
+  it("follows the person's own location requests while the app is open, in every Group", async () => {
+    const t = setup();
+    const own = t.watch({ topic: "agentLocationRequests" });
+    await t.time.pass(100);
+    const stream = t.host.api.open("/v1/comma/location-requests/events")!;
+    stream.named("snapshot", { data: [ownAsked("cap-1", "pending")] });
+    await t.time.pass(100);
+    expect(own()?.requests).toEqual([
+      { id: "cap-1", group: "group-2", conversation: "conversation-2" },
+    ]);
+
+    stream.named("request", ownAsked("cap-2", "pending"));
+    stream.named("request", ownAsked("cap-1", "completed"));
+    await t.time.pass(100);
+    expect(own()?.requests).toEqual([
+      { id: "cap-2", group: "group-2", conversation: "conversation-2" },
+    ]);
+  });
+
+  it("shows a location request and sends the position once, keeping none of it", async () => {
+    const t = setup();
+    const requests = t.watch({
+      topic: "agentRequests",
+      group: GROUP,
+      conversation: CONVERSATION,
+    });
+    await t.time.pass(100);
+    const stream = t.host.api.open(`${BASE}/events`)!;
+    const asked = {
+      id: "cap-2",
+      type: "location",
+      status: "pending",
+      outcome: null,
+      expires_at: 2_000,
+      created_at: 1_400,
+      source_message_id: "msg-1",
+      location: { reason: "Find cafes near you." },
+    };
+    stream.named("snapshot", { data: [asked] });
+    await t.time.pass(100);
+    expect(requests()?.requests).toEqual([
+      {
+        id: "cap-2",
+        type: "location",
+        status: "pending",
+        outcome: null,
+        expiresAt: 2_000_000,
+        createdAt: 1_400_000,
+        sourceMessageId: "msg-1",
+        location: { reason: "Find cafes near you." },
+      },
+    ]);
+
+    t.host.api.on("POST", `${BASE}/cap-2/location`, () =>
+      json(200, { ...asked, status: "completed", outcome: "shared" })
+    );
+    await t.client.call("agentRequests.shareLocation", {
+      group: GROUP,
+      conversation: CONVERSATION,
+      request: "cap-2",
+      latitude: 35.67,
+      longitude: 139.76,
+      accuracy: 20,
+    });
+    expect(t.host.api.requests.at(-1)!.body).toEqual({
+      latitude: 35.67,
+      longitude: 139.76,
+      accuracy_m: 20,
+    });
+    await t.time.pass(100);
+    expect(requests()?.requests[0]).toMatchObject({
+      status: "completed",
+      outcome: "shared",
     });
   });
 
@@ -173,5 +316,89 @@ describe("An Agent's requests in a conversation", () => {
     await t.time.pass(100);
     expect(t.host.api.streams).toHaveLength(2);
     expect(t.host.api.open(`${BASE}/events`)).toBeDefined();
+  });
+
+  it("shows a phone's consent and passes its owner's answer on", async () => {
+    const t = setup();
+    const requests = t.watch({
+      topic: "agentRequests",
+      group: GROUP,
+      conversation: CONVERSATION,
+    });
+    await t.time.pass(100);
+    t.host.api.open(`${BASE}/events`)!.named("snapshot", { data: [phone("pending")] });
+    await t.time.pass(100);
+    expect(requests()?.requests).toMatchObject([
+      {
+        id: "cap-p",
+        type: "computer_use_start",
+        status: "pending",
+        phone: { title: "Pixel 8 · Android 15", deviceId: "dev_mac" },
+      },
+    ]);
+    let asked: unknown;
+    t.host.api.on("POST", `${BASE}/cap-p/decision`, (request) => {
+      asked = request.body;
+      return json(200, phone("completed", { outcome: "allowed" }));
+    });
+    await t.client.call("agentRequests.decide", {
+      group: GROUP,
+      conversation: CONVERSATION,
+      request: "cap-p",
+      approved: true,
+    });
+    await t.time.pass(100);
+    expect(asked).toEqual({ approved: true });
+    expect(requests()?.requests).toMatchObject([
+      { id: "cap-p", status: "completed", outcome: "allowed" },
+    ]);
+  });
+
+  it("shows a Router's plugin install request with the workspace it goes into", async () => {
+    const t = setup();
+    const requests = t.watch({
+      topic: "agentRequests",
+      group: GROUP,
+      conversation: CONVERSATION,
+    });
+    await t.time.pass(100);
+    t.host.api.open(`${BASE}/events`)!.named("snapshot", {
+      data: [
+        {
+          id: "cap-n",
+          type: "plugin_install",
+          status: "pending",
+          outcome: null,
+          expires_at: 2_000,
+          created_at: 1_400,
+          source_message_id: "msg-1",
+          plugin: {
+            id: "notion",
+            name: "Notion",
+            reason: "To save the notes.",
+            workspace_id: "wsp_1",
+          },
+        },
+      ],
+    });
+    await t.time.pass(100);
+    expect(requests()?.requests).toEqual([
+      {
+        id: "cap-n",
+        type: "plugin_install",
+        status: "pending",
+        outcome: null,
+        expiresAt: 2_000_000,
+        createdAt: 1_400_000,
+        sourceMessageId: "msg-1",
+        plugin: {
+          id: "notion",
+          name: "Notion",
+          reason: "To save the notes.",
+          brand: null,
+          workspace: "wsp_1",
+        },
+      },
+    ]);
   });
 });

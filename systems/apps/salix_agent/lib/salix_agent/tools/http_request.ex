@@ -36,6 +36,11 @@ defmodule SalixAgent.Tools.HttpRequest do
       is derived from it (`SalixAgent.Tools.tool_timeout_ms/2`).
     * `via_tailnet` — `true` sends the request to a device in the Group's
       tailnet (`SalixAgent.Tailnet`) instead of the public internet.
+    * `tailcat` — a Tailcat address (`tc…`, or a DNS name with a `tailcat=`
+      TXT record): the request goes to the URL's port on that Tailcat server,
+      through the node's Tailcat gateway (`SalixAgent.SSH.TailcatGateway`),
+      instead of the public internet. The URL host only names the `Host`
+      header (and the TLS name for `https`). Not with `via_tailnet`.
 
   ## Response
 
@@ -72,6 +77,10 @@ defmodule SalixAgent.Tools.HttpRequest do
   network map and dials it; it reaches only peers and approved subnet routes,
   never the internet or the platform's network. HTTPS verifies the
   certificate against the URL host as usual.
+
+  With `tailcat`, the gateway dials the Tailcat server with a new ephemeral
+  node key; the server forwards the port to its own machine. Only that
+  server is reached, never the platform's network.
   """
 
   alias SalixAgent.Egress.Destination
@@ -126,16 +135,24 @@ defmodule SalixAgent.Tools.HttpRequest do
     {headers, body} = body!(args, headers)
 
     connect =
-      if via_tailnet!(args) do
-        group_id = tailnet_group!(ctx)
-        fn scheme, timeout -> tailnet_connect(group_id, scheme, uri.host, uri.port, timeout) end
-      else
-        addresses = resolve_destination!(uri.host)
-        fn scheme, timeout -> connect(scheme, addresses, uri.host, uri.port, timeout) end
+      case {via_tailnet!(args), tailcat!(args)} do
+        {true, nil} ->
+          group_id = tailnet_group!(ctx)
+          fn scheme, timeout -> tailnet_connect(group_id, scheme, uri.host, uri.port, timeout) end
+
+        {true, _target} ->
+          raise "#{@tool}: tailcat and via_tailnet cannot be combined"
+
+        {false, target} when is_binary(target) ->
+          fn scheme, timeout -> tailcat_connect(target, scheme, uri.host, uri.port, timeout) end
+
+        {false, nil} ->
+          addresses = resolve_destination!(uri.host)
+          fn scheme, timeout -> connect(scheme, addresses, uri.host, uri.port, timeout) end
       end
 
     started = SystemsClock.monotonic_time(:millisecond)
-    result = perform(uri, connect, method, headers, body, timeout_ms)
+    result = perform(uri, connect, method, headers, body, timeout_ms, @max_response_bytes)
     elapsed = SystemsClock.monotonic_time(:millisecond) - started
 
     case result do
@@ -167,7 +184,7 @@ defmodule SalixAgent.Tools.HttpRequest do
   # checked. The IP tuple is the address Mint connects to; the URL host is
   # only the `:hostname` (Host header, SNI, certificate check), so nothing
   # resolves the name a second time.
-  defp perform(uri, connect, method, headers, body, timeout_ms) do
+  defp perform(uri, connect, method, headers, body, timeout_ms, max_bytes) do
     deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     scheme = if uri.scheme == "https", do: :https, else: :http
     body = if is_nil(body) and method not in ["GET", "HEAD"], do: "", else: body
@@ -177,7 +194,8 @@ defmodule SalixAgent.Tools.HttpRequest do
         exchange =
           with {:ok, conn, ref} <-
                  Mint.HTTP.request(conn, method, request_target(uri), headers, body),
-               {:ok, conn, response} <- receive_response(conn, ref, deadline, new_response()) do
+               {:ok, conn, response} <-
+                 receive_response(conn, ref, deadline, max_bytes, new_response()) do
             {:ok, conn, response}
           end
 
@@ -231,6 +249,24 @@ defmodule SalixAgent.Tools.HttpRequest do
     end
   end
 
+  # The Tailcat gateway dials the server's port with an ephemeral key; Mint
+  # takes over the connected socket, as for the tailnet.
+  defp tailcat_connect(target, scheme, host, port, timeout_ms) do
+    connect_timeout = min(timeout_ms, @connect_timeout_ms)
+
+    case SalixAgent.SSH.TailcatGateway.dial(target, port, connect_timeout) do
+      {:ok, socket, _node_key} ->
+        :ok = :inet.setopts(socket, [:binary])
+
+        with {:ok, socket} <- tls(scheme, socket, host, connect_timeout) do
+          Mint.HTTP.initiate(scheme, socket, host, port, mode: :passive)
+        end
+
+      {:error, %{"code" => code, "message" => message}} ->
+        raise "#{@tool}: #{code}: #{message}"
+    end
+  end
+
   defp tls(:http, socket, _host, _timeout), do: {:ok, socket}
 
   defp tls(:https, socket, host, timeout) do
@@ -260,6 +296,15 @@ defmodule SalixAgent.Tools.HttpRequest do
     end
   end
 
+  defp tailcat!(args) do
+    case raw(args, "tailcat") do
+      nil -> nil
+      "" -> nil
+      value when is_binary(value) and byte_size(value) <= 2048 -> value
+      _ -> raise "#{@tool}: tailcat must be a Tailcat address"
+    end
+  end
+
   defp tailnet_group!(ctx) do
     case Map.get(ctx, :group_id) do
       group when is_binary(group) and group != "" -> group
@@ -281,7 +326,7 @@ defmodule SalixAgent.Tools.HttpRequest do
 
   # Passive mode: read until `:done`, the deadline, or the body cap. A body
   # over the cap is cut there and the connection is closed unread.
-  defp receive_response(conn, ref, deadline, acc) do
+  defp receive_response(conn, ref, deadline, max_bytes, acc) do
     remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
@@ -289,14 +334,14 @@ defmodule SalixAgent.Tools.HttpRequest do
     else
       case Mint.HTTP.recv(conn, 0, remaining) do
         {:ok, conn, responses} ->
-          case fold_responses(responses, ref, acc) do
-            {:cont, acc} -> receive_response(conn, ref, deadline, acc)
+          case fold_responses(responses, ref, max_bytes, acc) do
+            {:cont, acc} -> receive_response(conn, ref, deadline, max_bytes, acc)
             {:halt, acc} -> {:ok, conn, acc}
             {:error, reason} -> {:error, conn, reason}
           end
 
         {:error, conn, reason, responses} ->
-          case fold_responses(responses, ref, acc) do
+          case fold_responses(responses, ref, max_bytes, acc) do
             {:halt, acc} -> {:ok, conn, acc}
             {:error, inner} -> {:error, conn, inner}
             {:cont, _acc} -> {:error, conn, reason}
@@ -305,7 +350,7 @@ defmodule SalixAgent.Tools.HttpRequest do
     end
   end
 
-  defp fold_responses(responses, ref, acc) do
+  defp fold_responses(responses, ref, max_bytes, acc) do
     Enum.reduce_while(responses, {:cont, acc}, fn
       {:status, ^ref, status}, {:cont, acc} ->
         {:cont, {:cont, %{acc | status: status}}}
@@ -316,8 +361,8 @@ defmodule SalixAgent.Tools.HttpRequest do
       {:data, ^ref, data}, {:cont, acc} ->
         body = acc.body <> data
 
-        if byte_size(body) > @max_response_bytes do
-          cut = %{acc | body: binary_part(body, 0, @max_response_bytes), truncated: true}
+        if byte_size(body) > max_bytes do
+          cut = %{acc | body: binary_part(body, 0, max_bytes), truncated: true}
           {:halt, {:halt, cut}}
         else
           {:cont, {:cont, %{acc | body: body}}}
@@ -419,7 +464,7 @@ defmodule SalixAgent.Tools.HttpRequest do
         if agent_id in [nil, ""],
           do: raise("#{@tool}: credential_env needs an agent context")
 
-        case OAuthCredentials.resolve(agent_id, entries) do
+        case OAuthCredentials.resolve_for_call(ctx, agent_id, entries) do
           {:ok, resolved} -> resolved
           {:error, message} -> raise "#{@tool}: #{message}"
         end

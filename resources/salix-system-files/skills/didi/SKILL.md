@@ -8,6 +8,9 @@ Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
 
 ## Official MCP
 
+The Comma plugin `didi` binds this server with the user's key. Use
+`mcp.didi.*` when it is installed. Otherwise bind it yourself:
+
 Bind `https://mcp.didichuxing.com/mcp-servers?key={api_key}` (streamable
 HTTP). Test with the sandbox `.../mcp-servers-sandbox?key={api_key}` (mock
 orders). The personal key comes from mcp.didichuxing.com/claw (the key page;

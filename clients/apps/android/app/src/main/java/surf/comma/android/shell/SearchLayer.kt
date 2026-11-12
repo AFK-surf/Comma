@@ -52,10 +52,14 @@ class SearchLayer(private val shell: Shell, private val onClosed: () -> Unit) : 
         clipToPadding = false
     }
     private val placeholder = EmptyStateView(activity)
-    private val hint = activity.label(Level.MINI, R.color.token_text_quaternary).apply { setText(R.string.search_hint) }
+    private val hint = activity.label(Level.MINI, R.color.token_text_quaternary).apply {
+        setText(R.string.search_hint)
+        gravity = Gravity.CENTER
+    }
     private val field = searchField(activity, activity.getString(R.string.search_prompt)).apply { glass(elevated = true) }
     private val input = field.getChildAt(1) as EditText
-    private val close = GlassIconButton(activity, R.drawable.ic_action_close, activity.getString(R.string.shell_close)).apply { glass(elevated = true) }
+    private val close = GlassIconButton(activity, R.drawable.ic_action_close, activity.getString(R.string.shell_close), backdrop = R.color.token_bg_primary)
+        .apply { if (!surf.comma.android.ui.widget.LiquidGlass.enabled) glass(elevated = true) }
     private val bar = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -75,7 +79,7 @@ class SearchLayer(private val shell: Shell, private val onClosed: () -> Unit) : 
         isClickable = true
         addView(list, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(placeholder, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        addView(hint, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        addView(hint, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL))
         bar.addView(field, LinearLayout.LayoutParams(0, activity.dp(48), 1f))
         bar.addView(close, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             marginStart = activity.dp(10)
@@ -94,10 +98,15 @@ class SearchLayer(private val shell: Shell, private val onClosed: () -> Unit) : 
         })
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            (bar.layoutParams as LayoutParams).bottomMargin = maxOf(ime, bars.bottom)
-            list.setPadding(0, bars.top, 0, maxOf(ime, bars.bottom) + activity.dp(64))
-            bar.requestLayout()
+            val bottom = maxOf(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom, bars.bottom)
+            // The field's own height; the first insets arrive before the first layout.
+            bar.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+            val above = bottom + bar.measuredHeight
+            (bar.layoutParams as LayoutParams).bottomMargin = bottom
+            list.setPadding(0, bars.top, 0, above)
+            // The prompt and the empty states are centred in the room between the status bar and the field.
+            for (view in listOf(hint, placeholder)) (view.layoutParams as LayoutParams).setMargins(0, bars.top, 0, above)
+            requestLayout()
             insets
         }
         activity.onBackPressedDispatcher.addCallback(activity, back)

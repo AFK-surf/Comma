@@ -11,7 +11,8 @@ defmodule Comma.Analytics.Export do
   def attempt(fun) do
     task = SystemsRuntime.Task.async(fn -> safely(fun) end)
 
-    case SystemsRuntime.Task.yield(task, 15_000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
+    case SystemsRuntime.Task.yield(task, 15_000) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> {:error, :retryable}
     end
@@ -94,7 +95,7 @@ defmodule Comma.Analytics.Export do
             cond do
               not eligible?(user) -> []
               entry.event == :profile -> profile_events(user)
-              entry.event == :registration -> profile_events(user) ++ [registration_event(user)]
+              entry.event == :registration -> registration_events(user, entry)
               user.status != "active" -> []
               true -> [activity_event(user, entry)]
             end
@@ -135,12 +136,21 @@ defmodule Comma.Analytics.Export do
     ]
   end
 
-  defp registration_event(user) do
-    envelope(user.id, "comma_user_registered", user.id, user.created_at, %{
-      "user_kind" => "registered",
-      "source" => "account_created",
-      "is_internal" => Analytics.internal_user?(user.email)
-    })
+  defp registration_events(user, entry) do
+    profile_events(user) ++
+      [
+        envelope(
+          user.id,
+          "comma_user_registered",
+          user.id,
+          user.created_at,
+          Map.merge(entry.properties, %{
+            "user_kind" => "registered",
+            "source" => "account_created",
+            "is_internal" => Analytics.internal_user?(user.email)
+          })
+        )
+      ]
   end
 
   defp activity_event(user, entry) do

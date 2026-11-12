@@ -63,7 +63,7 @@ data class StoredIdentity(val userId: String, val email: String, val sessionId: 
  * The app's part of the session, as Electron's main process has it. The client core runs the session lifecycle and
  * is its authority; the app keeps what the core must never see:
  *
- * - the bearer, in one encrypted file ([file], [sealer]). The core names credentials by opaque references and asks
+ * - the bearer, and those of the other accounts kept signed in, in one encrypted file ([file], [sealer]). The core names credentials by opaque references and asks
  *   for the store to be changed by reference ([vault], [change]);
  * - a bearer in an auth answer ([keepBearer]): taken out and kept here, the core answered a reference instead;
  * - the gate ([gate]): it follows each snapshot the core publishes and gives the bearer for exactly the current
@@ -85,6 +85,8 @@ class SessionCustody(
     private var loaded = false
     private var unreadable = false
     private var active: StoredCredential? = null
+    /** The other accounts signed in on this device, set aside (at most [MAX_KEPT]). */
+    private var kept = ArrayList<StoredCredential>()
     private var pending = ArrayList<PendingRevocation>()
 
     private val issued = HashMap<String, Issued>()
@@ -108,6 +110,7 @@ class SessionCustody(
         loaded = true
         unreadable = false
         active = null
+        kept = ArrayList()
         pending = ArrayList()
         if (!file.exists()) return
         try {
@@ -116,6 +119,8 @@ class SessionCustody(
             try {
                 val json = JSONObject(String(plaintext, Charsets.UTF_8))
                 active = json.optJSONObject("active")?.let(::credentialOf)
+                val others = json.optJSONArray("kept") ?: JSONArray()
+                for (index in 0 until others.length()) kept.add(credentialOf(others.getJSONObject(index)))
                 val list = json.optJSONArray("pending") ?: JSONArray()
                 for (index in 0 until list.length()) {
                     val item = list.getJSONObject(index)
@@ -126,6 +131,7 @@ class SessionCustody(
         } catch (_: Exception) {
             unreadable = true
             active = null
+            kept = ArrayList()
             pending = ArrayList()
         }
     }
@@ -133,14 +139,19 @@ class SessionCustody(
     private fun credentialOf(json: JSONObject) = StoredCredential(json.getString("token"), json.getString("audience"),
         json.getString("sessionId"), json.getString("userId"), json.getString("email"), json.getLong("expiresAtEpochSeconds"))
 
+    private fun credentialJson(it: StoredCredential) = JSONObject().put("token", it.token).put("audience", it.audience)
+        .put("sessionId", it.sessionId).put("userId", it.userId).put("email", it.email)
+        .put("expiresAtEpochSeconds", it.expiresAtEpochSeconds)
+
     /** Writes the store; a failure leaves memory as the file is (read again), and throws. */
-    private fun save(nextActive: StoredCredential?, nextPending: List<PendingRevocation>) {
+    private fun save(
+        nextActive: StoredCredential?,
+        nextPending: List<PendingRevocation>,
+        nextKept: List<StoredCredential> = kept,
+    ) {
         val json = JSONObject()
-        nextActive?.let {
-            json.put("active", JSONObject().put("token", it.token).put("audience", it.audience)
-                .put("sessionId", it.sessionId).put("userId", it.userId).put("email", it.email)
-                .put("expiresAtEpochSeconds", it.expiresAtEpochSeconds))
-        }
+        nextActive?.let { json.put("active", credentialJson(it)) }
+        if (nextKept.isNotEmpty()) json.put("kept", JSONArray().apply { for (item in nextKept) put(credentialJson(item)) })
         json.put("pending", JSONArray().apply {
             for (item in nextPending) put(JSONObject().put("token", item.token).put("audience", item.audience)
                 .apply { item.sessionId?.let { put("sessionId", it) } })
@@ -159,21 +170,24 @@ class SessionCustody(
             throw e
         } finally { plaintext.fill(0) }
         active = nextActive
+        kept = ArrayList(nextKept)
         pending = ArrayList(nextPending)
         unreadable = false
     }
 
     private fun queued(token: String) = pending.any { it.token == token }
 
+    private fun credentialView(it: StoredCredential) = JSONObject().put("ref", refFor(it.token)).put("audience", it.audience)
+        .put("sessionId", it.sessionId).put("userId", it.userId).put("email", it.email)
+        .put("expiresAtEpochSeconds", it.expiresAtEpochSeconds)
+
     private fun view(): JSONObject {
         if (unreadable) return JSONObject().put("status", "indeterminate").put("problem", JSONObject()
             .put("code", "credential_store_unreadable").put("operation", "initialize")
             .put("recovery", "after_host_change").put("retryable", false))
         val out = JSONObject().put("status", "readable")
-        out.put("active", active?.let {
-            JSONObject().put("ref", refFor(it.token)).put("audience", it.audience).put("sessionId", it.sessionId)
-                .put("userId", it.userId).put("email", it.email).put("expiresAtEpochSeconds", it.expiresAtEpochSeconds)
-        } ?: JSONObject.NULL)
+        out.put("active", active?.let(::credentialView) ?: JSONObject.NULL)
+        if (kept.isNotEmpty()) out.put("kept", JSONArray().apply { for (item in kept) put(credentialView(item)) })
         out.put("pending", JSONArray().apply {
             for (item in pending) put(JSONObject().put("ref", refFor(item.token)).put("audience", item.audience)
                 .apply { item.sessionId?.let { put("sessionId", it) } })
@@ -239,7 +253,11 @@ class SessionCustody(
                     val token = issued[other]?.token ?: continue
                     if (token != credential.token) retired.add(PendingRevocation(token, audience, issued[other]?.sessionId))
                 }
-                save(credential, (pending.filter { it.token != credential.token } + retired).distinctBy { it.token })
+                // The same account kept signed in before: its older credential is revoked.
+                val same = kept.filter { it.audience == credential.audience && it.userId == credential.userId }
+                for (old in same) retired.add(PendingRevocation(old.token, old.audience, old.sessionId))
+                save(credential, (pending.filter { it.token != credential.token } + retired).distinctBy { it.token },
+                    kept.filter { it !in same })
                 issued.remove(ref)
                 committed.add(ref)
                 for (index in 0 until supersede.length()) issued.remove(supersede.getString(index))
@@ -265,6 +283,25 @@ class SessionCustody(
                     .distinctBy { it.token })
                 view()
             }
+            "keep" -> {
+                val current = active ?: return null
+                if (kept.size >= MAX_KEPT) return null
+                save(null, pending, kept.filter { it.userId != current.userId || it.audience != current.audience } + current)
+                view()
+            }
+            "activate" -> {
+                val token = tokenFor(change.getString("kept"))
+                val next = kept.firstOrNull { it.token == token } ?: return null
+                save(next, pending, kept.filter { it !== next } + listOfNotNull(active))
+                view()
+            }
+            "forget" -> {
+                val token = tokenFor(change.getString("kept"))
+                val gone = kept.firstOrNull { it.token == token } ?: return null
+                save(active, (pending + PendingRevocation(gone.token, gone.audience, gone.sessionId)).distinctBy { it.token },
+                    kept.filter { it !== gone })
+                view()
+            }
             "quarantine" -> quarantine(change.getString("issued"))
             "release" -> {
                 issued.remove(change.getString("issued"))
@@ -278,7 +315,8 @@ class SessionCustody(
             }
             "retainAudience" -> {
                 closeGate()
-                save(active?.takeIf { it.audience == audience }, pending.filter { it.audience == audience })
+                save(active?.takeIf { it.audience == audience }, pending.filter { it.audience == audience },
+                    kept.filter { it.audience == audience })
                 view()
             }
             else -> null
@@ -341,7 +379,7 @@ class SessionCustody(
         if (token.isNullOrEmpty()) return value.toString().toByteArray()
         load()
         // A bearer the store already keeps (a probe that reflected it) is named, not taken into custody again.
-        if (active?.token == token || queued(token)) return value.put("credential", refFor(token)).toString().toByteArray()
+        if (active?.token == token || kept.any { it.token == token } || queued(token)) return value.put("credential", refFor(token)).toString().toByteArray()
         val user = value.optJSONObject("user")
         val sessionId = value.optString("session_id").takeIf { it.isNotEmpty() && it.length <= 256 }
         val expiresAt = value.optLong("expires_at")
@@ -426,6 +464,8 @@ class SessionCustody(
 
     companion object {
         private const val MAX_FILE_BYTES = 1_048_576L
+        /** The accounts kept signed in besides the one in use (the core's `MAX_KEPT_CREDENTIALS`). */
+        private const val MAX_KEPT = 7
 
         /** `scheme://host[:port]` with a default port left out, as the core names an audience. */
         fun canonicalAudience(origin: String): String {

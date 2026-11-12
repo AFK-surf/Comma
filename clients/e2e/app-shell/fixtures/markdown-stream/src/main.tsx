@@ -138,6 +138,13 @@ declare global {
       prepareQuoteAdmission: () => void;
       reject: () => boolean;
     };
+    newTimestampFixture?: {
+      /**
+       * The reminder lands from the Router, on its own or as a reply in the
+       * earlier message's thread, or from a Worker as such a reply.
+       */
+      arrive: (as: "router" | "router-reply" | "worker-reply") => void;
+    };
     delayedOutgoingActivityFixture?: {
       route?: {
         reset: () => void;
@@ -746,6 +753,8 @@ function MarkdownStreamFixture() {
           />
         </section>
 
+        <NewTimestampFixture data-testid="conversation-new-timestamp-fixture" />
+
         {/* Router and Worker replies are attributed, but they read in the same
             type as an unattributed assistant reply; the activity line below
             them keeps its own separation from the content it reports on. */}
@@ -932,6 +941,111 @@ function MarkdownStreamFixture() {
         </section>
       </FixtureScope>
     </CommaUiThemeProvider>
+  );
+}
+
+function newTimestampMessage(
+  fields: Pick<ChatMessage, "createdAt" | "messageId" | "role" | "text"> &
+    Partial<ChatMessage>
+): ChatMessage {
+  return {
+    attachments: [],
+    blocksKey: undefined,
+    clientRequestId: undefined,
+    createdBy: undefined,
+    delivery: "sent",
+    error: undefined,
+    parts: [{ kind: "markdown", text: fields.text }],
+    refs: [],
+    source: "server",
+    status: "completed",
+    ...fields,
+  };
+}
+
+const newTimestampHistory: ChatMessage[] = [
+  newTimestampMessage({
+    createdAt: timestampFixtureStartedAt,
+    messageId: "new-timestamp-ask",
+    role: "user",
+    text: "明天的站会几点开？",
+  }),
+  newTimestampMessage({
+    actorRole: "router",
+    createdAt: timestampFixtureStartedAt + 30_000,
+    messageId: "new-timestamp-answer",
+    replyToMessageId: "new-timestamp-ask",
+    role: "assistant",
+    text: "10 点，在三楼会议室，议程我稍后贴到频道里。",
+    threadRootMessageId: "new-timestamp-ask",
+  }),
+];
+
+/**
+ * Home's Router transcript: its replies carry no identity chrome, so a reply
+ * line runs down their bubbles' text inset; a Worker's runs down its avatar.
+ * The reminder lands while the window is away, so it reads New once the
+ * window is back.
+ */
+function NewTimestampFixture(props: { "data-testid": string }) {
+  const [reminder, setReminder] = useState<ChatMessage>();
+  useEffect(() => {
+    window.newTimestampFixture = {
+      arrive: (as) =>
+        setReminder(
+          newTimestampMessage({
+            actorRole: as === "worker-reply" ? "worker" : "router",
+            createdAt: timestampFixtureStartedAt + 20 * 60_000,
+            messageId: "new-timestamp-reminder",
+            role: "assistant",
+            text: "提醒一下：站会 10 分钟后开始，议程已经贴在频道里了。",
+            ...(as !== "router"
+              ? {
+                  replyToMessageId: "new-timestamp-answer",
+                  threadRootMessageId: "new-timestamp-ask",
+                }
+              : {}),
+          })
+        ),
+    };
+    return () => {
+      delete window.newTimestampFixture;
+    };
+  }, []);
+  const messages = useMemo(
+    () => (reminder ? [...newTimestampHistory, reminder] : newTimestampHistory),
+    [reminder]
+  );
+  return (
+    <section
+      aria-label="New timestamp"
+      className="comma-chat-route"
+      data-variant="route"
+      data-testid={props["data-testid"]}
+      style={{
+        border: "1px solid var(--color-border-primary)",
+        borderRadius: 12,
+        display: "flex",
+        flexDirection: "column",
+        height: 400,
+        margin: "0 auto",
+        maxWidth: 960,
+        overflow: "hidden",
+        padding: 24,
+        width: "calc(100vw - 64px)",
+      }}
+    >
+      <ConversationThread
+        conversationKind="user_chat"
+        defaultAssistantActorRole="router"
+        groupId="grp-markdown-e2e"
+        live
+        messages={messages}
+        onDiscard={() => undefined}
+        onRetry={() => undefined}
+        workspaceId="new-timestamp-e2e"
+      />
+    </section>
   );
 }
 

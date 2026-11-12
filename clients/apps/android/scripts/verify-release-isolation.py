@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify APK definitions against original R8 names, plus bundled fixture PNGs,
-the debug-only composer, task and media demos and settings developer section, and ASR credential
-isolation (internal requires opt-in)."""
+the debug-only composer, task and media demos and settings developer section, and the internal
+build's package and backend."""
 import argparse
 import hashlib
 import json
@@ -11,22 +11,12 @@ import struct
 import subprocess
 import tempfile
 import zipfile
-from internal_build import properties
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = 'Lsurf/comma/android/'
 COMPOSER_DEMO = PREFIX + 'ui/composer/demo/ComposerDemoActivity;'
 DEVELOPER_PAGE = PREFIX + 'settings/NetworkLogPage;'
-ASR_FIELDS = ('DOUBAO_ASR_API_KEY', 'DOUBAO_ASR_RESOURCE_ID')
 SIZES = [(640, 640), (960, 540), (540, 960), (1024, 256), (256, 1024)]
-
-
-def local_asr_key():
-    """The developer's local key, used only as a search needle. Never printed."""
-    path = ROOT / 'local.properties'
-    if not path.exists():
-        return None
-    return properties(path).get('DOUBAO_ASR_API_KEY', '').strip() or None
 
 
 def descriptor(name):
@@ -154,7 +144,7 @@ def build_config_values(dump, mapping=None):
             if holder == original and residual in fields}
 
 
-def inspect(apk, dexdump, fixtures, debug, internal=False, allow_internal_asr=False, mapping_path=None):
+def inspect(apk, dexdump, fixtures, debug, internal=False, mapping_path=None):
     descriptors = set()
     dumps = []
     dex_bytes = []
@@ -252,27 +242,16 @@ def inspect(apk, dexdump, fixtures, debug, internal=False, allow_internal_asr=Fa
         if internal:
             assert badging.startswith("package: name='surf.comma.android.staging' "), 'Internal application ID mismatch'
             assert 'profileable' not in manifest, 'Internal APK must not enable profiling'
-        # ASR credentials are permitted only in debug or explicitly opted-in internal builds.
         config = build_config_values(''.join(dumps), mapping)
-        asr_configured = all(config.get(field) for field in ASR_FIELDS)
         if internal:
             assert config.get('BACKEND_BASE_URL') == 'https://salix-staging.cue.surf', 'Internal backend mismatch'
             assert config.get('BUILD_TYPE') == 'internal', 'Internal build type mismatch'
-        allow_asr = debug or (internal and allow_internal_asr)
-        if not allow_asr:
-            for field in ASR_FIELDS:
-                assert config.get(field) == '', f'{field} is not empty in {apk.name}'
-        key = local_asr_key()
-        key_in_apk = bool(key) and any(key.encode() in archive.read(name) for name in archive.namelist())
-        if not allow_asr:
-            assert not key_in_apk, f'The local ASR key leaked into {apk.name}'
         return dict(apk=str(apk.relative_to(ROOT)), dex_files=len(dex_files),
                     classes=len(descriptors), mapping_id=mapping.id if mapping else None,
                     frame_telemetry_classes=len(telemetry),
                     fixture_classes=len(fixture_classes), metrics_classes=len(metrics),
                     fixture_pngs=len(images), composer_demo=has_demo, task_demo_classes=len(demo_classes),
-                    media_demo_classes=len(media_demo), settings_developer=has_developer,
-                    asr_configured=asr_configured, asr_key_bytes_in_apk=key_in_apk, result='PASS')
+                    media_demo_classes=len(media_demo), settings_developer=has_developer, result='PASS')
 
 
 def main():
@@ -289,8 +268,6 @@ def main():
     parser.add_argument('--variant', action='append', default=[],
                         help='Check only this variant (flavor/buildType, e.g. prod/release); repeatable. '
                              'For a CI job that built only some of the APKs.')
-    parser.add_argument('--allow-internal-asr', action='store_true',
-                        help='Allow credentials only in internal when it was built with explicit ASR opt-in.')
     args = parser.parse_args()
     variants = [('prod/release/app-prod-release-unsigned.apk', False, False),
                 ('dev/debug/app-dev-debug.apk', True, True),
@@ -313,8 +290,7 @@ def main():
             continue
         mapping_path = ROOT / 'app/build/outputs/mapping' / (flavor + build_type.title()) / 'mapping.txt'
         print(json.dumps(inspect(ROOT / 'app/build/outputs/apk' / variant, args.dexdump, fixtures, debug,
-                                 internal=variant == internal_variant[0],
-                                 allow_internal_asr=args.allow_internal_asr, mapping_path=mapping_path)))
+                                 internal=variant == internal_variant[0], mapping_path=mapping_path)))
 
 
 if __name__ == '__main__':

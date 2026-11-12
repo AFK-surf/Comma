@@ -3,6 +3,8 @@ defmodule Salix.Bindings.MeetingChannel do
 
   @behaviour SalixMeet.Ports.MeetingChannel
 
+  alias Salix.Bindings.LarkMeetingPersonalPreparation
+  alias SalixIM.Provider.Lark.MeetingBot, as: LarkMeetingBot
   alias SalixIM.Provider.Slack.API
   alias SalixIM.{GroupDirectory, ProviderConnects}
   alias SalixMeet.Store, as: MeetingStore
@@ -11,11 +13,37 @@ defmodule Salix.Bindings.MeetingChannel do
   @reconcile_grace_seconds 30
   @reconcile_min_attempts 1
   @max_history_pages 10
+  @lark_providers ~w(feishu lark)
 
   @impl true
+  def resolve(%{"provider" => provider} = group) when provider in @lark_providers,
+    do: lark_target(group, %{})
+
   def resolve(group) do
     with {:ok, target, _connect} <- resolve_with_connect(group), do: {:ok, target}
   end
+
+  # With organizer delivery, a meeting's thread starts in a direct message to
+  # its organizer, or to the member whose calendar holds it when the organizer
+  # has no account in this Slack workspace, and in the team channel when
+  # neither has one. Only Slack's answer that the person does not exist moves
+  # the thread on; a rate limit or another failure leaves the meeting to be
+  # resolved again on a later pass. A preparation without a team channel
+  # does not join a meeting whose people are not in the workspace.
+  @impl true
+  def resolve(%{"provider" => provider} = group, event) when provider in @lark_providers,
+    do: lark_target(group, event)
+
+  def resolve(%{"delivery" => "organizer"} = group, event) do
+    with {:ok, target, connect} <- resolve_with_connect(group),
+         {:ok, channel} <- direct_channel(connect, group, event, target["channel_id"]) do
+      if channel == "",
+        do: {:error, :meeting_direct_message_unavailable},
+        else: {:ok, Map.put(target, "channel_id", channel)}
+    end
+  end
+
+  def resolve(group, _event), do: resolve(group)
 
   defp resolve_with_connect(group) do
     tenant_id = trim(group["tenant_id"])
@@ -68,10 +96,16 @@ defmodule Salix.Bindings.MeetingChannel do
   end
 
   @impl true
+  def ensure_root(%{"provider" => provider} = group, meeting_id, event, _target)
+      when provider in @lark_providers,
+      do: ensure_lark_root(group, meeting_id, event)
+
   def ensure_root(group, meeting_id, event, target) do
     with {:ok, configured, connect} <- resolve_with_connect(group),
+         configured = delivered_target(group, configured, target),
          :ok <- same_target(configured, target),
          bot_token when bot_token != "" <- trim(connect["bot_token"]) do
+      event = Map.put(event, "group_id", trim(group["group_id"]))
       reuse_or_ensure_root(meeting_id, event, configured, API.installation(connect))
     else
       "" -> {:error, :meeting_slack_token_missing}
@@ -101,7 +135,10 @@ defmodule Salix.Bindings.MeetingChannel do
     workspace_id = trim(group["workspace_id"])
     channel_id = trim(group["channel_id"])
 
-    if connect_id != "" and workspace_id != "" and channel_id != "" do
+    # With organizer delivery the team channel is only the fallback, and a
+    # preparation may have none (CalendarConfiguration.team_channel_optional?/1).
+    if connect_id != "" and workspace_id != "" and
+         (channel_id != "" or group["delivery"] == "organizer") do
       {:ok,
        %{
          "connect_id" => connect_id,
@@ -111,6 +148,70 @@ defmodule Salix.Bindings.MeetingChannel do
     else
       {:error, :meeting_slack_target_not_configured}
     end
+  end
+
+  # The direct message chosen when the meeting was created stays its target.
+  defp delivered_target(%{"delivery" => "organizer"}, configured, target) do
+    channel = trim(target["channel_id"])
+
+    if Regex.match?(~r/^D[A-Z0-9]+$/, channel),
+      do: Map.put(configured, "channel_id", channel),
+      else: configured
+  end
+
+  defp delivered_target(_group, configured, _target), do: configured
+
+  defp direct_channel(connect, group, event, team_channel) do
+    token = API.installation(connect)
+
+    [event["organizer_email"], group["account_email"]]
+    |> Enum.map(&(&1 |> trim() |> String.downcase()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.reduce_while({:ok, team_channel}, fn email, fallback ->
+      with {:ok, user_id} <- slack_user(token, connect, email),
+           {:ok, channel} <- open_direct_message(token, user_id) do
+        {:halt, {:ok, channel}}
+      else
+        {:error, :slack_user_not_found} -> {:cont, fallback}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  @absent_user_errors ~w(users_not_found user_not_found user_disabled account_inactive)
+
+  defp slack_user(token, connect, email) do
+    user = API.request_form(token, "users.lookupByEmail", email: email)["user"] || %{}
+
+    if is_binary(user["id"]) and Regex.match?(~r/^[UW][A-Z0-9]+$/, user["id"]) and
+         user["team_id"] == connect["workspace_id"] and
+         String.downcase(trim(get_in(user, ["profile", "email"]))) == email and
+         not Enum.any?(~w(deleted is_bot is_app_user), &(user[&1] == true)),
+       do: {:ok, user["id"]},
+       else: {:error, :slack_user_not_found}
+  rescue
+    error in API.Error -> slack_failure(error)
+  end
+
+  defp open_direct_message(token, user_id) do
+    case get_in(API.request_form(token, "conversations.open", users: user_id), ["channel", "id"]) do
+      id when is_binary(id) ->
+        if Regex.match?(~r/^D[A-Z0-9]+$/, id),
+          do: {:ok, id},
+          else: {:error, :slack_dm_unavailable}
+
+      _ ->
+        {:error, :slack_dm_unavailable}
+    end
+  rescue
+    error in API.Error -> slack_failure(error)
+  end
+
+  defp slack_failure(%API.Error{message: message}) do
+    if message in @absent_user_errors,
+      do: {:error, :slack_user_not_found},
+      else: {:error, {:slack_direct_message, message}}
   end
 
   defp same_target(left, right) do
@@ -367,7 +468,12 @@ defmodule Salix.Bindings.MeetingChannel do
       |> String.slice(0, 300)
       |> escape_slack_text()
 
-    ":calendar: Joining #{title}. The meeting summary will be posted in this thread."
+    text = ":calendar: Joining #{title}. The meeting summary will be posted in this thread."
+
+    case SalixMeet.CalendarConfiguration.destination_hint(event["group_id"], "slack") do
+      "" -> text
+      hint -> text <> "\n\n" <> hint
+    end
   end
 
   defp root_event_type(meeting_id) do
@@ -423,6 +529,129 @@ defmodule Salix.Bindings.MeetingChannel do
 
   defp blank_default("", fallback), do: fallback
   defp blank_default(value, _fallback), do: value
+
+  # ---- a Feishu/Lark destination ----
+
+  # The delivery rules of a Slack destination, in a Feishu/Lark chat: with
+  # organizer delivery (or no notice chat) the bot's private chat with the
+  # organizer, else with the member whose calendar holds the meeting, else
+  # the notice chat. A person is found by open_id, or by email through the
+  # directory (`contact:user.id:readonly`). A meeting that reaches nobody is
+  # not joined.
+  defp lark_target(group, event) do
+    with {:ok, connect} <- lark_connect(group) do
+      chat_id = trim(group["chat_id"])
+
+      open_id =
+        if group["delivery"] == "organizer" or chat_id == "",
+          do: lark_person(connect, [event["organizer_email"], group["account_email"]])
+
+      base = %{"provider" => connect["provider"], "connect_id" => connect["connect_id"]}
+
+      cond do
+        is_binary(open_id) -> {:ok, Map.merge(base, %{"chat_id" => "", "open_id" => open_id})}
+        chat_id != "" -> {:ok, Map.put(base, "chat_id", chat_id)}
+        true -> {:error, :meeting_direct_message_unavailable}
+      end
+    end
+  end
+
+  defp lark_connect(group) do
+    case ProviderConnects.get_active_connect_by_id(
+           trim(group["group_id"]),
+           trim(group["connect_id"]),
+           group["provider"]
+         ) do
+      {:ok, %{"status" => "connected"} = connect} ->
+        if trim(connect["tenant_id"]) == trim(group["tenant_id"]),
+          do: {:ok, connect},
+          else: {:error, :meeting_lark_target_scope_mismatch}
+
+      _ ->
+        {:error, :meeting_lark_target_not_configured}
+    end
+  end
+
+  defp lark_person(connect, candidates) do
+    candidates = candidates |> Enum.map(&trim/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+    Enum.find_value(candidates, fn
+      "ou_" <> _ = open_id ->
+        open_id
+
+      email ->
+        LarkMeetingPersonalPreparation.open_ids(connect, [String.downcase(email)])
+        |> Map.get(String.downcase(email))
+    end)
+  end
+
+  # The Meeting's first message in its chat, once: it names the chat that
+  # status and the summary go to (a private chat is known only by the answer).
+  defp ensure_lark_root(group, meeting_id, event) do
+    ref_key = if group["provider"] == "feishu", do: "feishu_ref", else: "lark_ref"
+
+    with {:ok, doc, _etag} <- MeetingStore.get(meeting_id),
+         ref = as_map(get_in(doc, ["state", ref_key])) do
+      if trim(ref["trigger_message_id"]) != "" do
+        {:ok, trim(ref["chat_id"])}
+      else
+        post_lark_root(group, meeting_id, event, ref_key, ref)
+      end
+    end
+  end
+
+  defp post_lark_root(group, meeting_id, event, ref_key, ref) do
+    text = lark_root_text(group, event)
+    uuid = Crypto.hex(["comma-calendar-lark-root-v1", meeting_id]) |> binary_part(0, 32)
+
+    sent =
+      with {:ok, connect} <- lark_connect(group) do
+        case trim(ref["chat_id"]) do
+          "" -> LarkMeetingBot.post_direct_text(connect, trim(ref["open_id"]), text, uuid)
+          chat_id -> LarkMeetingBot.post_chat_text(connect, chat_id, text, uuid)
+        end
+      end
+
+    with {:ok, %{"message_id" => message_id} = data} when is_binary(message_id) <- sent,
+         chat_id when chat_id != "" <- trim(data["chat_id"] || ref["chat_id"]),
+         {:ok, _doc, _etag} <-
+           MeetingStore.update_state_retrying(meeting_id, fn state ->
+             current = as_map(state[ref_key])
+
+             Map.put(
+               state,
+               ref_key,
+               Map.merge(current, %{
+                 "chat_id" => chat_id,
+                 "chat_type" => if(trim(ref["chat_id"]) == "", do: "p2p", else: "group"),
+                 "trigger_message_id" => message_id
+               })
+             )
+           end) do
+      {:ok, chat_id}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :meeting_lark_root_unavailable}
+    end
+  end
+
+  defp lark_root_text(group, event) do
+    title = event["title"] |> trim() |> blank_default("") |> String.slice(0, 300)
+
+    text =
+      if group["provider"] == "feishu" do
+        name = if title == "", do: "会议", else: "会议「" <> title <> "」"
+        "正在加入" <> name <> "，会议纪要会发在这里。"
+      else
+        name = if title == "", do: "the meeting", else: title
+        "Joining " <> name <> ". The meeting summary will be posted here."
+      end
+
+    case SalixMeet.CalendarConfiguration.destination_hint(group["group_id"], group["provider"]) do
+      "" -> text
+      hint -> text <> "\n\n" <> hint
+    end
+  end
 
   defp trim(nil), do: ""
   defp trim(value), do: value |> to_string() |> String.trim()

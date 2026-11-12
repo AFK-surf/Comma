@@ -103,12 +103,12 @@ defmodule BridgeForTeamsWeb.RunnerController do
   defp current_user(conn), do: Map.fetch!(conn.assigns, :current_user)
 
   defp public_runner(%MacMiniProvisioner{} = provisioner) do
-    target = MacMiniRelease.updates(nil, provisioner)["salix-connect"]
+    target = MacMiniRelease.updates(nil, provisioner)["agent-vmm"]
 
     update_available =
       MacMiniRelease.component_update_available?(
         provisioner.capabilities,
-        "salix-connect",
+        "agent-vmm-host",
         target
       )
 
@@ -126,8 +126,6 @@ defmodule BridgeForTeamsWeb.RunnerController do
       "component_versions" => MacMiniRelease.component_versions_label(provisioner.capabilities),
       "component_digests" => Map.get(provisioner.capabilities || %{}, "component_digests", %{}),
       "update_available" => update_available,
-      "capacity" => provisioner.capacity,
-      "current_connector_count" => provisioner.current_connector_count,
       "capabilities" => provisioner.capabilities || %{}
     }
   end
@@ -155,7 +153,7 @@ defmodule BridgeForTeamsWeb.RunnerController do
         "A runner has not reached its exact target release. Keep bft-runner online and rerun `bft runners list --org #{org.slug}` to verify the reported version."
 
       Enum.any?(runners, &runner_ready?/1) ->
-        "A runner has a recent heartbeat; continue to project device creation or group onboarding."
+        "A runner has a recent heartbeat; continue to group onboarding."
 
       true ->
         "After operator approval, run `bft runners install-command --org <org> --confirm-mutating` on the target machine, then run `bft-runner` or start the runner service there before rerunning this list."

@@ -114,6 +114,40 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
   end
 
   describe "GitHub pull requests" do
+    test "names the author's avatar by a reference the avatar endpoint reads" do
+      respond(
+        {:ok,
+         %{
+           "successful" => true,
+           "data" => %{
+             "number" => 845,
+             "title" => "feat(chat): add inline task elements",
+             "state" => "open",
+             "html_url" => "https://github.com/AFK-surf/Comma/pull/845",
+             "user" => %{
+               "login" => "CatsJuice",
+               "avatar_url" => "https://avatars.githubusercontent.com/u/1?v=4"
+             },
+             "base" => %{"repo" => %{"full_name" => "AFK-surf/Comma"}},
+             "updated_at" => "2026-08-15T10:00:00Z"
+           }
+         }}
+      )
+
+      assert {:ok, preview} =
+               authorized_preview(
+                 workspace(),
+                 [source("github", "ca-github")],
+                 "https://github.com/AFK-surf/Comma/pull/845",
+                 "ca-github"
+               )
+
+      assert %{"login" => "CatsJuice", "avatarRef" => ref} = preview["author"]
+
+      assert CommaWeb.LinkPreviewAvatar.url(ref) ==
+               {:ok, "https://avatars.githubusercontent.com/u/1?v=4"}
+    end
+
     test "reads a merged pull request through the link's pinned GitHub account" do
       respond(
         {:ok,
@@ -151,7 +185,11 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "number" => 845,
                "title" => "feat(chat): add inline task elements",
                "state" => "merged",
-               "author" => %{"login" => "CatsJuice", "avatarUrl" => "https://avatars.example/1"},
+               "author" => %{
+                 "login" => "CatsJuice",
+                 "avatarUrl" => "https://avatars.example/1",
+                 "avatarRef" => nil
+               },
                "additions" => 12_593,
                "deletions" => 829,
                "changedFiles" => 147,
@@ -223,7 +261,8 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "assignee" => %{
                  "name" => "Zanwei Guo",
                  "displayName" => "zanwei",
-                 "avatarUrl" => "https://avatars.example/zanwei"
+                 "avatarUrl" => "https://avatars.example/zanwei",
+                 "avatarRef" => nil
                },
                "team" => %{"key" => "COMMA"},
                "project" => %{"name" => "Launch"}
@@ -248,7 +287,8 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "state" => %{"name" => "In Progress", "type" => "started", "color" => "#f2c94c"},
                "assignee" => %{
                  "name" => "zanwei",
-                 "avatarUrl" => "https://avatars.example/zanwei"
+                 "avatarUrl" => "https://avatars.example/zanwei",
+                 "avatarRef" => nil
                },
                "priority" => 2,
                "priorityLabel" => "High",
@@ -646,7 +686,8 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "channel" => %{"id" => "C01234567", "name" => "launch"},
                "author" => %{
                  "name" => "zanwei",
-                 "avatarUrl" => "https://avatars.example/zanwei-72"
+                 "avatarUrl" => "https://avatars.example/zanwei-72",
+                 "avatarRef" => nil
                },
                "text" => "Ship the launch review",
                "postedAt" => 1_786_900_000_000
@@ -796,7 +837,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       # The reply itself is previewed, not the thread parent Slack lists first.
       assert preview["text"] == "The reply"
       assert preview["postedAt"] == 1_786_900_000_000
-      assert preview["author"] == %{"name" => "zanwei", "avatarUrl" => nil}
+      assert preview["author"] == %{"name" => "zanwei", "avatarUrl" => nil, "avatarRef" => nil}
 
       assert_received {:slack, "/api/conversations.replies",
                        %{
@@ -976,7 +1017,11 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "href" => "https://docs.google.com/document/d/1AbC_def-123/edit",
                "title" => "Launch brief",
                "fileKind" => "document",
-               "owner" => %{"name" => "Dana Wu", "avatarUrl" => "https://avatars.example/dana"},
+               "owner" => %{
+                 "name" => "Dana Wu",
+                 "avatarUrl" => "https://avatars.example/dana",
+                 "avatarRef" => nil
+               },
                "modifiedAt" => 1_787_220_000_000,
                "size" => nil
              }

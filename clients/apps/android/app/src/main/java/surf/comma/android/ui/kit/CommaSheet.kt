@@ -92,6 +92,9 @@ open class CommaSheet(
             })
             addView(header, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, headerHeight, Gravity.BOTTOM))
         }
+        // Over the content, which a pressed header button swells into.
+        top.outlineProvider = null
+        top.translationZ = activity.dpf(1f)
         body.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, headerHeight + activity.dp(12)))
         body.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         sheetLayout.setSheet(body, headerHeight + activity.dp(12))

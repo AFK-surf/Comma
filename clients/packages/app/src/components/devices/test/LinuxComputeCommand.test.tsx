@@ -25,12 +25,12 @@ it("creates an installation only after the user chooses Linux and retries the sa
   await flush();
   expect(core.sent).toHaveLength(0);
   fireEvent.click(
-    screen.getByRole("button", { name: "Install on a Linux arm64 server" })
+    screen.getByRole("button", { name: "Run sandboxes on a Linux arm64 server" })
   );
   await flush();
   expect(screen.getByRole("alert")).toBeTruthy();
   fireEvent.click(
-    screen.getByRole("button", { name: "Install on a Linux arm64 server" })
+    screen.getByRole("button", { name: "Run sandboxes on a Linux arm64 server" })
   );
   await flush();
   expect(core.sent).toHaveLength(2);

@@ -25,10 +25,14 @@ export function commitSend(
     assertNotSent(entry, input.sendIntentId);
     const intent = entry.activeSendIntent;
     if (!intent || !isReservedBy(intent, input)) {
-      throw new ChatError("This send intent is not reserved by Main.");
+      throw new ChatError("This send intent is not reserved by Main.", {
+        code: "send_not_reserved",
+      });
     }
     if (intent.committing) {
-      throw new ChatError("A send is already in progress for this draft.");
+      throw new ChatError("A send is already in progress for this draft.", {
+        code: "send_in_progress",
+      });
     }
     const intentEntry = entry;
     let transportCommitted = false;
@@ -43,7 +47,8 @@ export function commitSend(
 
       if (dependsOnDraft && intent.draftEpoch !== entry.draftEpoch) {
         throw new ChatError(
-          "The draft changed after this send was started. Review it, then send again."
+          "The draft changed after this send was started. Review it, then send again.",
+          { code: "draft_changed" }
         );
       }
       if (dependsOnDraft) {
@@ -58,7 +63,8 @@ export function commitSend(
             const outcome = yield* drainAttachmentIntake(intake);
             if (outcome.errorCount > 0) {
               throw new ChatError(
-                "Some selected files could not be attached. Review the attachments, then send again."
+                "Some selected files could not be attached. Review the attachments, then send again.",
+                { code: "attachment_not_ready" }
               );
             }
           }
@@ -73,7 +79,8 @@ export function commitSend(
         (dependsOnDraft && intent.draftEpoch !== entry.draftEpoch)
       ) {
         throw new ChatError(
-          "The draft changed while attachments were settling. Review it, then send again."
+          "The draft changed while attachments were settling. Review it, then send again.",
+          { code: "draft_changed" }
         );
       }
       // Final linearization fence: no terminal outcome or newly claimed
@@ -82,12 +89,14 @@ export function commitSend(
       if (dependsOnDraft) assertNoAttachmentIntakeFailure(entry);
       if (dependsOnDraft && draftHasFailedAttachment(entry)) {
         return yield* new ChatError(
-          "An attachment failed to upload. Remove or retry it, then send again."
+          "An attachment failed to upload. Remove or retry it, then send again.",
+          { code: "attachment_not_ready" }
         );
       }
       if (dependsOnDraft && entry.attachmentIntakes.size > 0) {
         throw new ChatError(
-          "The message could not be sent because an attachment is not ready. Review the attachments, then send again."
+          "The message could not be sent because an attachment is not ready. Review the attachments, then send again.",
+          { code: "attachment_not_ready" }
         );
       }
 
@@ -116,7 +125,8 @@ export function commitSend(
       const enqueued = entry.channel.getSnapshot().pending.length > pendingCount;
       if (consumable && !enqueued) {
         throw new ChatError(
-          "The message could not be sent because an attachment is not ready. Review the attachments, then send again."
+          "The message could not be sent because an attachment is not ready. Review the attachments, then send again.",
+          { code: "attachment_not_ready" }
         );
       }
       if (enqueued) {

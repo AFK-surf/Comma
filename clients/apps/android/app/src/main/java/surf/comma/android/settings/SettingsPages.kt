@@ -41,6 +41,22 @@ internal interface SettingsContext {
     fun onRender(page: SettingsPage, render: () -> Unit)
     /** Shows a short notice; [failure] marks it as one. */
     fun toast(text: String, failure: Boolean)
+
+    /** Opens a page from the Settings list; in columns it replaces the page shown beside the list. */
+    fun openFromList(page: SettingsPage) = open(page)
+    /** The key of the page shown beside the list, while Settings shows columns. */
+    val shownBesideList: String? get() = null
+
+    /** A new page's view of the signed-in account and Workspace; null while there is none. */
+    fun workspaceScope(): surf.comma.android.settings.desktop.WorkspaceScope? = null
+    /** The API's host, which names the environment to channel connections. */
+    val apiHost: String get() = ""
+    /** Opens a Task over the app, as a Task card does. */
+    fun openTask(id: String) {}
+    /** Shows the Router chat. */
+    fun openRouter() {}
+    /** Adds a file to the Router chat's draft; false when it took none. */
+    suspend fun attachToRouter(name: String, bytes: ByteArray): Boolean = false
 }
 
 enum class ReplyNotificationState { ON, OFF, BLOCKED }
@@ -84,9 +100,9 @@ internal fun SettingsContext.email(): String =
 
 /**
  * The main list, as the iOS app's Settings tab: the member (photo, name and email, leading to the profile), the
- * Workspace, Comma's own settings (notifications and Task labels), devices, the app itself and sign-out. The
- * Android app adds its own appearance and text size, the open-source licenses and, in debug builds, the
- * developer settings.
+ * Workspace, then the desktop's groups (Comma, Preferences, Work, System, Archived, Shared, Advanced), other
+ * accounts, sign-out and account deletion. The Android app adds its own appearance and text size, the open-source
+ * licenses and, in debug builds, the developer settings.
  */
 internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
     override val key = KEY
@@ -108,7 +124,35 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
     private val language = SettingsRow(activity, R.drawable.ic_settings_globe, activity.getString(R.string.settings_language))
     private val theme = SettingsRow(activity, R.drawable.ic_settings_theme, activity.getString(R.string.settings_theme))
     private val textSize = SettingsRow(activity, R.drawable.ic_settings_text_size, activity.getString(R.string.settings_font_size))
+    private val glass = SettingsRow(activity, R.drawable.ic_settings_sparkles, activity.getString(R.string.settings_glass))
     private var developer: (() -> Unit)? = null
+    /** Rows that need a Workspace, hidden without one; a section left empty hides too. */
+    private val workspaceRows = mutableListOf<SettingsRow>()
+    private val commaSection = SettingsSection(activity, activity.getString(R.string.settings_section_comma))
+    private val workSection = SettingsSection(activity, activity.getString(R.string.ds_group_work))
+    private val archivedSection = SettingsSection(activity, activity.getString(R.string.ds_group_archived))
+    private val sharedSection = SettingsSection(activity, activity.getString(R.string.ds_group_shared))
+
+    /** Each row's page, which the row marks while that page is shown beside the list. */
+    private val pageRows = mutableMapOf<String, View>()
+
+    private fun link(icon: Int, title: Int, action: (SettingsRow) -> Unit) =
+        SettingsRow(activity, icon, activity.getString(title)).value(null, chevron = true).onClick(action)
+
+    private fun <T : View> T.opens(key: String): T = also { pageRows[key] = it }
+
+    /** Marks the row of the page shown beside the list. */
+    fun markShown() {
+        val shown = ctx.shownBesideList
+        pageRows.forEach { (key, row) ->
+            val selected = key == shown
+            row.isSelected = selected
+            row.foreground = if (selected) android.graphics.drawable.ColorDrawable(activity.color(R.color.token_surface_ink)) else null
+        }
+    }
+    /** The other accounts signed in on this device (switch to one, or sign it out), and adding another. */
+    private val accounts = SettingsSection(activity, activity.getString(R.string.settings_section_accounts))
+    private var shownAccounts: List<surf.comma.android.auth.Account>? = null
 
     init {
         val account = LinearLayout(activity).apply {
@@ -129,24 +173,25 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
             }, LinearLayout.LayoutParams(activity.dp(20), activity.dp(20)))
             contentDescription = activity.getString(R.string.settings_profile)
             PressFeedback(this, R.color.token_surface_ink, scale = false)
-            setOnClickListener { ctx.open(ProfilePage(ctx)) }
+            setOnClickListener { ctx.openFromList(ProfilePage(ctx)) }
+            opens(ProfilePage.KEY)
         }
         layout.section(SettingsSection(activity, null).add(account), top = 0)
 
         workspace.id = R.id.settings_workspace
+        workspace.opens(WorkspacePage.KEY)
         layout.section(workspaceSection)
 
+        // The desktop's groups. Comma holds Drive and Plugins, which are primary navigation entries on the desktop.
+        val open = { page: () -> SettingsPage -> { _: SettingsRow -> ctx.openFromList(page()) } }
+        val drive = link(R.drawable.ic_settings_file, R.string.ds_drive_and_files, open { surf.comma.android.settings.desktop.DrivePage(ctx) }).opens(surf.comma.android.settings.desktop.DrivePage.KEY)
+        val plugins = link(R.drawable.ic_routine_puzzle, R.string.ds_plugins, open { surf.comma.android.settings.desktop.PluginsPage(ctx) }).opens(surf.comma.android.settings.desktop.PluginsPage.KEY)
+        workspaceRows += listOf(drive, plugins)
+        layout.section(commaSection.add(drive).add(plugins))
+
+        val router = link(R.drawable.ic_settings_sparkles, R.string.ds_router_settings, open { surf.comma.android.settings.desktop.RouterSettingsPage(ctx) }).opens(surf.comma.android.settings.desktop.RouterSettingsPage.KEY)
         notifications.id = R.id.settings_reply_notifications
-        notifications.value(null, chevron = true).onClick { ctx.open(NotificationsPage(ctx)) }
-        labels.id = R.id.settings_label_changes
-        labels.value(null, chevron = true).onClick { ctx.open(surf.comma.android.labels.TaskLabelsPage(ctx)) }
-        layout.section(SettingsSection(activity, activity.getString(R.string.settings_section_comma)).add(notifications).add(labels))
-
-        val devices = SettingsRow(activity, R.drawable.ic_settings_signed_in, activity.getString(R.string.settings_signed_in_devices))
-            .value(null, chevron = true).onClick { ctx.open(DevicesPage(ctx)) }
-        devices.id = R.id.settings_devices
-        layout.section(SettingsSection(activity, activity.getString(R.string.settings_section_devices)).add(devices))
-
+        notifications.value(null, chevron = true).onClick { ctx.openFromList(NotificationsPage(ctx)) }
         language.id = R.id.settings_language
         language.onClick { row ->
             val options = Language.entries
@@ -166,22 +211,81 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
                 ctx.local.setTextSize(options[it])
             }
         }
+        glass.id = R.id.settings_glass
+        glass.onClick { row ->
+            val options = listOf(true, false)
+            ChoiceMenu.show(row, options.map(::glassLabel), options.indexOf(ctx.local.state.value.glass)) {
+                ctx.local.setGlass(options[it])
+            }
+        }
+        val usage = link(R.drawable.ic_settings_info, R.string.ds_usage, open { surf.comma.android.settings.desktop.UsagePage(ctx) }).opens(surf.comma.android.settings.desktop.UsagePage.KEY)
+        workspaceRows += listOf(router, usage)
+        layout.section(SettingsSection(activity, activity.getString(R.string.ds_group_preferences))
+            .add(router).add(notifications).add(language).add(theme).add(textSize).add(glass).add(usage))
+
+        val routines = link(R.drawable.ic_settings_sparkles, R.string.ds_routines, open { surf.comma.android.settings.desktop.RoutinesSettingsPage(ctx) }).opens(surf.comma.android.settings.desktop.RoutinesSettingsPage.KEY)
+        val channels = link(R.drawable.ic_settings_link, R.string.ds_channels, open { surf.comma.android.settings.desktop.ChannelsPage(ctx) }).opens(surf.comma.android.settings.desktop.ChannelsPage.KEY)
+        labels.opens(surf.comma.android.labels.TaskLabelsPage.KEY)
+        notifications.opens(NotificationsPage.KEY)
+        labels.id = R.id.settings_label_changes
+        labels.value(null, chevron = true).onClick { ctx.openFromList(surf.comma.android.labels.TaskLabelsPage(ctx)) }
+        val models = link(R.drawable.ic_history_thinking, R.string.ds_models, open { surf.comma.android.settings.desktop.ModelsPage(ctx) }).opens(surf.comma.android.settings.desktop.ModelsPage.KEY)
+        workspaceRows += listOf(routines, channels, labels, models)
+        workSection.add(routines).add(channels).add(labels).add(models)
+        layout.section(workSection)
+
+        val voice = link(R.drawable.ic_settings_info, R.string.ds_voice, open { surf.comma.android.settings.desktop.VoiceSettingsPage(ctx) }).opens(surf.comma.android.settings.desktop.VoiceSettingsPage.KEY)
+        workspaceRows += voice
         val version = SettingsRow(activity, R.drawable.ic_settings_info, activity.getString(R.string.settings_version))
             .value(activity.getString(R.string.settings_version_value, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE))
         version.id = R.id.settings_version
         val licenses = SettingsRow(activity, R.drawable.ic_settings_licenses, activity.getString(R.string.settings_licenses))
-            .value(null, chevron = true).onClick { ctx.open(LicensesPage(ctx)) }
+            .value(null, chevron = true).onClick { ctx.openFromList(LicensesPage(ctx)) }
         licenses.id = R.id.settings_licenses
-        layout.section(SettingsSection(activity, activity.getString(R.string.settings_section_general))
-            .add(language).add(theme).add(textSize).add(version).add(licenses))
+        licenses.opens(LicensesPage.KEY)
+        layout.section(SettingsSection(activity, activity.getString(R.string.ds_group_system)).add(voice).add(version).add(licenses))
+
+        val archived = SettingsRow(activity, R.drawable.ic_list_archive, activity.getString(R.string.ds_archived_tasks)).value(null, chevron = true)
+            .onClick {
+                val store = surf.comma.android.workspace.WorkspaceGraph.get(activity)
+                surf.comma.android.tasks.list.ArchivedTasksSheet(activity, store, surf.comma.android.tasks.list.TaskActions(activity, store)).show()
+            }
+        workspaceRows += archived
+        archivedSection.add(archived)
+        layout.section(archivedSection)
+
+        val shares = link(R.drawable.ic_settings_link, R.string.ds_shared_tasks, open { surf.comma.android.settings.desktop.SharedTasksPage(ctx) }).opens(surf.comma.android.settings.desktop.SharedTasksPage.KEY)
+        val requests = link(R.drawable.ic_share_os, R.string.ds_requests, open { surf.comma.android.settings.desktop.TaskRequestsPage(ctx) }).opens(surf.comma.android.settings.desktop.TaskRequestsPage.KEY)
+        workspaceRows += listOf(shares, requests)
+        sharedSection.add(shares).add(requests)
+        layout.section(sharedSection)
+
+        val routerKeys = link(R.drawable.ic_settings_info, R.string.ds_router_keys, open { surf.comma.android.settings.desktop.RouterKeysPage(ctx) }).opens(surf.comma.android.settings.desktop.RouterKeysPage.KEY)
+        workspaceRows += routerKeys
+        val devices = SettingsRow(activity, R.drawable.ic_settings_signed_in, activity.getString(R.string.settings_devices))
+            .value(null, chevron = true).onClick { ctx.openFromList(DevicesPage(ctx)) }
+        devices.id = R.id.settings_devices
+        devices.opens(DevicesPage.KEY)
+        val compute = link(R.drawable.ic_settings_devices, R.string.ds_compute, open { surf.comma.android.settings.desktop.ComputePage(ctx) })
+            .opens(surf.comma.android.settings.desktop.ComputePage.KEY)
+        workspaceRows += compute
+        layout.section(SettingsSection(activity, activity.getString(R.string.ds_group_advanced)).add(routerKeys).add(devices).add(compute))
 
         developer = DeveloperSettings.section(ctx)?.also { layout.section(it.first) }?.second
+
+        layout.section(accounts)
 
         val signOut = SettingsRow(activity, R.drawable.ic_settings_arrow_box_left, activity.getString(R.string.settings_sign_out),
             tint = R.color.token_text_error_primary).onClick { confirmSignOut() }
         signOut.id = R.id.settings_sign_out
         signOut.icon.imageTintList = android.content.res.ColorStateList.valueOf(activity.color(R.color.token_text_error_primary))
+        val deleteAccount = SettingsRow(activity, R.drawable.ic_settings_trash, activity.getString(R.string.settings_delete_account),
+            tint = R.color.token_text_error_primary).onClick { confirmDeleteAccount() }
+        deleteAccount.id = R.id.settings_delete_account
+        deleteAccount.icon.imageTintList = android.content.res.ColorStateList.valueOf(activity.color(R.color.token_text_error_primary))
         layout.section(SettingsSection(activity, null).add(signOut))
+        // Kept apart, last: what cannot be undone.
+        layout.section(SettingsSection(activity, activity.getString(R.string.settings_danger_zone)).add(deleteAccount))
 
         ctx.onRender(this, ::render)
         if (ctx.account.state.value.profile == null) ctx.account.refreshProfile()
@@ -192,6 +296,106 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
             activity.getString(R.string.settings_sign_out), destructive = true) { ctx.signOut() }.show()
     }
 
+    /** One row per other account signed in here (a tap offers switching to it or signing it out), then "add account". */
+    private fun renderAccounts(connected: AuthState.Connected?) {
+        accounts.isVisible = connected != null
+        val others = connected?.otherAccounts ?: return
+        if (others == shownAccounts) return
+        shownAccounts = others
+        accounts.card.removeAllViews()
+        for (other in others) {
+            val row = SettingsRow(activity, null, other.email).value(activity.getString(R.string.settings_switch_account), chevron = true)
+            row.onClick { anchor ->
+                ChoiceMenu.show(anchor, listOf(activity.getString(R.string.settings_switch_account),
+                    activity.getString(R.string.settings_sign_out_account)), -1) { choice ->
+                    surf.comma.android.auth.AuthGraph.scope.launch {
+                        val done = if (choice == 0) auth.switchAccount(other.id) else auth.signOutAccount(other.id)
+                        if (!done) activity.runOnUiThread {
+                            ctx.toast(activity.getString(if (choice == 0) R.string.settings_switch_account_failed
+                                else R.string.settings_sign_out_account_failed), failure = true)
+                        }
+                    }
+                }
+            }
+            accounts.add(row)
+        }
+        val add = SettingsRow(activity, R.drawable.ic_plus_small, activity.getString(R.string.settings_add_account))
+            .onClick {
+                surf.comma.android.auth.AuthGraph.scope.launch {
+                    if (!auth.addAccount()) activity.runOnUiThread {
+                        ctx.toast(activity.getString(R.string.settings_add_account_failed), failure = true)
+                    }
+                }
+            }
+        add.id = R.id.settings_add_account
+        accounts.add(add)
+    }
+
+    /** Explains what deletion takes away, then mails the code that confirms it. */
+    private fun confirmDeleteAccount() {
+        ConfirmDialog(activity, activity.getString(R.string.settings_delete_account),
+            activity.getString(R.string.settings_delete_account_message, ctx.email()),
+            activity.getString(R.string.settings_delete_account_continue), destructive = true) {
+            askDeletionEmail()
+        }.show()
+    }
+
+    /** The account email, typed to confirm, before the code is mailed. */
+    private fun askDeletionEmail() {
+        val email = ctx.email()
+        FieldDialog(
+            activity,
+            title = activity.getString(R.string.settings_delete_account),
+            hint = activity.getString(R.string.settings_delete_account_type_email),
+            current = "",
+            saveLabel = activity.getString(R.string.settings_delete_account_send_code),
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            maxLength = 320,
+            onSave = { activity.lifecycleScope.launch { deletionStep(ctx.account.requestAccountDeletion()) } },
+            description = activity.getString(R.string.settings_delete_account_type_email_message, email),
+            inputId = R.id.settings_delete_account_email_input,
+            keyboard = true,
+            refused = { !it.trim().equals(email, ignoreCase = true) },
+            destructive = true,
+        ).show()
+    }
+
+    private fun askDeletionCode(challengeId: String) {
+        FieldDialog(
+            activity,
+            title = activity.getString(R.string.settings_delete_account),
+            hint = activity.getString(R.string.settings_delete_account_code),
+            current = "",
+            saveLabel = activity.getString(R.string.settings_delete_account_confirm),
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER,
+            maxLength = 6,
+            onSave = { code -> activity.lifecycleScope.launch { deletionStep(ctx.account.deleteAccount(challengeId, code), challengeId) } },
+            description = activity.getString(R.string.settings_delete_account_code_message, ctx.email()),
+            inputId = R.id.settings_delete_account_code_input,
+            keyboard = true,
+            refused = { !it.matches(Regex("\\d{6}")) },
+            destructive = true,
+        ).show()
+    }
+
+    private fun deletionStep(outcome: AccountDeletion, challengeId: String? = null) {
+        when (outcome) {
+            is AccountDeletion.CodeSent -> askDeletionCode(outcome.challengeId)
+            AccountDeletion.Deleted -> Unit
+            AccountDeletion.SubscriptionActive -> ConfirmDialog(activity,
+                activity.getString(R.string.settings_delete_account_subscription_title),
+                activity.getString(R.string.settings_delete_account_subscription_message),
+                activity.getString(R.string.settings_ok), destructive = false) {}.show()
+            AccountDeletion.InvalidCode -> {
+                ctx.toast(activity.getString(R.string.settings_delete_account_invalid_code), failure = true)
+                challengeId?.let(::askDeletionCode)
+            }
+            AccountDeletion.RateLimited ->
+                ctx.toast(activity.getString(R.string.settings_delete_account_rate_limited), failure = true)
+            AccountDeletion.Failed -> ctx.toast(activity.getString(R.string.settings_delete_account_failed), failure = true)
+        }
+    }
+
     private fun render() {
         val state = ctx.account.state.value
         val shownName = ctx.displayName()
@@ -200,22 +404,27 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
         email.isVisible = email.text.isNotEmpty() && email.text != shownName
         avatar.show(state.avatar, shownName, state.generation)
         val connected = ctx.auth as? AuthState.Connected
+        renderAccounts(connected)
         val workspaces = ctx.workspaces
         workspace.value(connected?.selection?.workspace?.name ?: activity.getString(R.string.settings_choose_workspace),
             chevron = workspaces.size > 1)
-        workspace.onClick(if (workspaces.size > 1) { _ -> ctx.open(WorkspacePage(ctx)) } else null)
+        workspace.onClick(if (workspaces.size > 1) { _ -> ctx.openFromList(WorkspacePage(ctx)) } else null)
         workspaceSection.isVisible = connected != null
         notifications.value(activity.getString(when (ctx.replyNotifications.state) {
             ReplyNotificationState.ON -> R.string.settings_reply_notifications_on
             ReplyNotificationState.OFF -> R.string.settings_reply_notifications_off
             ReplyNotificationState.BLOCKED -> R.string.settings_reply_notifications_blocked
         }), chevron = true)
-        labels.isVisible = connected != null
+        val hasWorkspace = connected?.selection != null
+        workspaceRows.forEach { it.isVisible = hasWorkspace }
+        listOf(commaSection, workSection, archivedSection, sharedSection).forEach { it.isVisible = hasWorkspace }
         val local = ctx.local.state.value
         language.value(languageLabel(local.language))
         theme.value(themeLabel(local.theme))
         textSize.value(textSizeLabel(local.textSize))
+        glass.value(glassLabel(local.glass))
         developer?.invoke()
+        markShown()
     }
 
     private fun languageLabel(value: Language) = activity.getString(when (value) {
@@ -230,6 +439,8 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
         Appearance.DARK -> R.string.settings_theme_dark
     })
 
+    private fun glassLabel(on: Boolean) = activity.getString(if (on) R.string.settings_glass_on else R.string.settings_glass_off)
+
     private fun textSizeLabel(value: TextSize) = activity.getString(when (value) {
         TextSize.DEFAULT -> R.string.settings_font_size_default
         TextSize.LARGE -> R.string.settings_font_size_large
@@ -238,7 +449,7 @@ internal class RootPage(private val ctx: SettingsContext) : SettingsPage {
     companion object { const val KEY = "root" }
 }
 
-/** Picture and name. The email is shown but cannot be changed here. */
+/** Picture, name and email; the email row starts changing it, with a code from each mailbox. */
 internal class ProfilePage(private val ctx: SettingsContext) : SettingsPage {
     override val key = KEY
     private val activity = ctx.activity
@@ -268,8 +479,104 @@ internal class ProfilePage(private val ctx: SettingsContext) : SettingsPage {
         name.onClick {
             NameDialog(activity, ctx.account.state.value.profile?.name ?: ctx.displayName()) { ctx.account.rename(it) }.show()
         }
+        email.id = R.id.settings_email
+        email.onClick { confirmEmailChange() }
         layout.section(SettingsSection(activity, activity.getString(R.string.settings_account)).add(name).add(email))
         ctx.onRender(this, ::render)
+    }
+
+    /** Says what changes and what stays, then mails a code to the current email. */
+    private fun confirmEmailChange() {
+        ConfirmDialog(activity, activity.getString(R.string.settings_change_email),
+            activity.getString(R.string.settings_change_email_message, ctx.email()),
+            activity.getString(R.string.settings_change_email_send_code), destructive = false) {
+            activity.lifecycleScope.launch { emailChangeStep(ctx.account.requestEmailChange()) }
+        }.show()
+    }
+
+    private fun askCurrentCode(challengeId: String) {
+        codeDialog(activity.getString(R.string.settings_change_email_current_code_message, ctx.email()),
+            activity.getString(R.string.settings_change_email_continue)) { code -> askNewEmail(challengeId, code) }
+    }
+
+    private fun askNewEmail(challengeId: String, code: String) {
+        FieldDialog(
+            activity,
+            title = activity.getString(R.string.settings_change_email),
+            hint = activity.getString(R.string.settings_change_email_new_email),
+            current = "",
+            saveLabel = activity.getString(R.string.settings_change_email_send_code),
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            maxLength = 320,
+            onSave = { email ->
+                activity.lifecycleScope.launch {
+                    emailChangeStep(ctx.account.requestNewEmailCode(challengeId, code, email.trim()), challengeId)
+                }
+            },
+            description = activity.getString(R.string.settings_change_email_new_email_message),
+            inputId = R.id.settings_change_email_input,
+            keyboard = true,
+        ).show()
+    }
+
+    private fun askNewCode(challengeId: String, email: String) {
+        codeDialog(activity.getString(R.string.settings_change_email_new_code_message, email),
+            activity.getString(R.string.settings_change_email)) { code ->
+            activity.lifecycleScope.launch {
+                emailChangeStep(ctx.account.confirmEmailChange(challengeId, code), challengeId, email)
+            }
+        }
+    }
+
+    private fun codeDialog(description: String, saveLabel: String, onSave: (String) -> Unit) {
+        FieldDialog(
+            activity,
+            title = activity.getString(R.string.settings_change_email),
+            hint = activity.getString(R.string.settings_change_email_code),
+            current = "",
+            saveLabel = saveLabel,
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER,
+            maxLength = 6,
+            onSave = onSave,
+            description = description,
+            inputId = R.id.settings_change_email_code_input,
+            keyboard = true,
+            refused = { !it.matches(Regex("\\d{6}")) },
+        ).show()
+    }
+
+    /**
+     * Goes on from what a step came to. [challengeId] is the step's own challenge; [email] is set while the new
+     * email's code is asked for.
+     */
+    private fun emailChangeStep(outcome: EmailChange, challengeId: String? = null, email: String? = null) {
+        if (outcome is EmailChange.PendingDeletion) {
+            val date = DateUtils.formatDateTime(activity, outcome.until,
+                DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_YEAR)
+            ctx.toast(activity.getString(R.string.settings_change_email_pending_deletion, date), failure = true)
+            return
+        }
+        val failure = when (outcome) {
+            is EmailChange.PendingDeletion -> return
+            is EmailChange.CodeSent -> {
+                if (outcome.email == null) askCurrentCode(outcome.challengeId)
+                else askNewCode(outcome.challengeId, outcome.email)
+                return
+            }
+            EmailChange.Changed -> return
+            EmailChange.InvalidCode -> R.string.settings_change_email_invalid_code
+            EmailChange.InvalidEmail -> R.string.settings_change_email_invalid_email
+            EmailChange.SameEmail -> R.string.settings_change_email_same_email
+            EmailChange.Taken -> R.string.settings_change_email_taken
+            EmailChange.Stale -> R.string.settings_change_email_changed
+            EmailChange.RateLimited -> R.string.settings_change_email_rate_limited
+            EmailChange.Failed -> R.string.settings_change_email_failed
+        }
+        ctx.toast(activity.getString(failure), failure = true)
+        // A wrong code is typed again where it was asked for.
+        if (outcome == EmailChange.InvalidCode && challengeId != null) {
+            if (email != null) askNewCode(challengeId, email) else askCurrentCode(challengeId)
+        }
     }
 
     private fun render() {
@@ -278,7 +585,7 @@ internal class ProfilePage(private val ctx: SettingsContext) : SettingsPage {
         avatar.show(state.avatar, shown, state.generation)
         name.value(shown, chevron = true)
         name.isEnabled = state.profile != null
-        email.value(ctx.email())
+        email.value(ctx.email(), chevron = true)
         remove.isVisible = state.avatar != AvatarSource.None
         change.isEnabled = state.profile != null
     }

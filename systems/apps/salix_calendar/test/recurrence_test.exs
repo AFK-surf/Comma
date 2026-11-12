@@ -42,6 +42,49 @@ defmodule SalixCalendar.RecurrenceTest do
     assert {:error, :invalid_occurrence_ref} = Recurrence.resolve(item, mismatched_ref)
   end
 
+  test "an ending series generates no occurrence after its until" do
+    item =
+      put_in(
+        weekday_item(),
+        ["object", "recurrenceRules", Access.at(0), "until"],
+        "2026-07-22T10:00:00"
+      )
+
+    assert {:ok, views} =
+             Recurrence.expand(
+               item,
+               unix_ms(~D[2026-07-20], ~T[00:00:00]),
+               unix_ms(~D[2026-07-27], ~T[00:00:00])
+             )
+
+    assert Enum.map(views, &get_in(&1, ["occurrence_ref", "recurrence_key", "value"])) == [
+             "2026-07-20T10:00:00",
+             "2026-07-21T10:00:00",
+             "2026-07-22T10:00:00"
+           ]
+
+    after_until = %{
+      "calendar_id" => item["calendar_id"],
+      "scheduling_link_id" => item["scheduling_link_id"],
+      "recurrence_key" => %{
+        "kind" => "recurring",
+        "value" => "2026-07-23T10:00:00",
+        "value_kind" => "local_date_time",
+        "time_zone" => "Asia/Shanghai"
+      }
+    }
+
+    assert {:error, :occurrence_not_found} = Recurrence.resolve(item, after_until)
+
+    assert {:error, :unsupported_recurrence} =
+             item
+             |> put_in(["object", "recurrenceRules", Access.at(0), "until"], "2026-07-22")
+             |> Recurrence.expand(
+               unix_ms(~D[2026-07-20], ~T[00:00:00]),
+               unix_ms(~D[2026-07-27], ~T[00:00:00])
+             )
+  end
+
   test "interval queries include long recurrences that started before the range" do
     item =
       weekday_item()

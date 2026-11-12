@@ -6,6 +6,7 @@
 // on its own for a session that ends (the server delivers only to open sessions).
 //
 // Bounds: each call is one request.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -19,17 +20,23 @@ import type {
 } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
 
-const registrationSchema = z.object({
-  id: z.string().min(1).max(256),
-  status: z.string(),
-});
-const routerUnreadSchema = z.object({
-  conversation_id: z.string().min(1).max(256).nullable(),
-  unread_count: z.number().int().nonnegative(),
-  latest_message_id: z.string().max(256).nullable(),
-  latest_seq: z.number().int().nonnegative(),
-});
-const activitySchema = z.object({ data: z.array(taskConversationSchema).max(2) });
+const registrationSchema = lazySchema(() =>
+  z.object({
+    id: z.string().min(1).max(256),
+    status: z.string(),
+  })
+);
+const routerUnreadSchema = lazySchema(() =>
+  z.object({
+    conversation_id: z.string().min(1).max(256).nullable(),
+    unread_count: z.number().int().nonnegative(),
+    latest_message_id: z.string().max(256).nullable(),
+    latest_seq: z.number().int().nonnegative(),
+  })
+);
+const activitySchema = lazySchema(() =>
+  z.object({ data: z.array(taskConversationSchema).max(2) })
+);
 
 const REASONS = [
   "dismissed",

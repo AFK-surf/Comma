@@ -20,6 +20,47 @@ Credentials are backend-specific. Never clear a profile automatically to switch 
 Use `make dev-electron` for the local backend or deterministic fixtures.
 Package only to validate signing, keychain identity, installation, updates, or packaged resources.
 
+The server CAPTCHA option defaults off. Web and Electron keep their previous flow while it is off. Mobile submits native proof and PoW for server observation; every result permits the action and never opens CAPTCHA. When enabled, web and Electron use Turnstile Managed, and mobile uses native proof and PoW before CAPTCHA fallback. A missing proof dependency returns a bounded protected-action error only when enforcement is enabled. Existing sessions and returning OAuth login keep their normal paths. For local work, use the [deterministic abuse chain](testing.md#app-registration-abuse-checks); do not add fake proof acceptance to production configuration.
+
+## App proof provider configuration
+
+Use the `comma.auth.abuse` block in the [config example](../systems/config/config.example.json).
+Keep `enabled: false` during provider setup. Opted-in mobile clients still collect native proof for observation.
+Provider failures do not deny that observed action or open CAPTCHA. Ordinary login authentication still applies.
+The runtime reads this file at boot. Store real secrets in the environment's existing secret-mounted `config.json`.
+`comma.auth.redis_url` selects the auth challenge store. This owner does not read `REDIS_URL` or `COMMA_REDIS_URL`.
+
+| JSON field under `comma.auth.abuse` | Value and provider setup |
+| --- | --- |
+| `turnstile.site_key`, `turnstile.secret` | The Managed widget's site key and Siteverify secret. |
+| `apple.app_id` | The signed app's exact application identifier, such as `TEAMID.surf.comma.ios`. |
+| `apple.environment` | `production` for TestFlight and App Store builds, or `development` for development-signed builds. |
+| `play.project_number` | Decimal string for the Google Cloud project linked to the app in Play Console. |
+| `play.decoder_service_account` | Service account email in that linked project. The runtime identity needs permission to mint its access token. |
+| `play.certificate_digests` | List of URL-safe base64 SHA-256 digests for the Play app signing certificates. |
+
+The Turnstile page runs on the API origin. Allow `salix.comma.surf` and `salix-staging.comma.surf` on their respective widgets.
+Use Managed widgets without pre-clearance. The widget hostnames must match the API hostname checked by Siteverify.
+
+Enable App Attest for the main iOS App ID, then refresh its selected provisioning profile in the existing `IOS_TESTFLIGHT_CONFIG`.
+App Attest does not require replacement of Apple private keys or unrelated app profiles.
+Check that the signed main app contains the App Attest entitlement and that its environment matches server configuration.
+
+Enable Play Integrity for the linked project and the IAM Service Account Credentials API for token generation.
+Grant the runtime identity `iam.serviceAccounts.getAccessToken` on the selected decoder service account.
+The server uses its GKE metadata identity only to request a short-lived decoder token with the fixed `playintegrity` scope.
+It sends that scoped token to Google's decoder. No service account private key belongs in this configuration.
+
+Take the certificate from **Play Console → App integrity → App signing key certificate**.
+Decode the Console's colon-separated hexadecimal SHA-256 fingerprint to 32 bytes, then encode those bytes as unpadded URL-safe base64.
+An upload key or AAB upload certificate does not identify the Play-signed installation.
+The server checks package `surf.comma.android`. Use that package from a Play internal testing installation for real verdict acceptance.
+The staging and development packages have different application IDs.
+
+Run the [local chain](testing.md#app-registration-abuse-checks) before real-device checks.
+Local results prove the scripted chain, not provider-console or device acceptance.
+Use the existing [release flow](release-operations.md) for runtime configuration and application changes.
+
 ## Local model switching
 
 The dev-container runs `systems/devcontainer/bootstrap.exs` before backend startup.
@@ -56,12 +97,12 @@ Deployments use their own secret configuration, not this file.
 
 [Domain concepts](architecture/DOMAIN_CONCEPTS.md#cloud-vm-stations) describe the station, its profiles, and archive transport.
 Deploy image changes through the mainline release flow. A source change does not update an existing cloud resource.
-For a Cloudflare VM, configure Cloudflare for the tenant and turn on the Group's Cloud VM switch.
+For a Cloudflare VM, configure Cloudflare for the tenant.
 
-An authorized, enabled Group Host prepares a VMM Station in its Compute Environment.
+Each authorized, connected Host registration prepares a VMM Station in its existing Compute Environment.
 Comma and BFT use the same preparation path. BFT's Devices page manages its Project's Runner installation.
 The Host must connect to Salix; a Runner heartbeat alone does not establish that connection.
-Multiple eligible Host registrations require an explicit placement decision.
+Preparation is independent per registration. Multiple eligible Hosts still require an explicit automatic-placement decision.
 New Group Cloud VMs use Cloudflare. Existing Cloud VM records retain their provider and archive.
 VMM Station preparation leaves the Group's Cloudflare Station and accepted Tasks in place.
 Automatic runtime Tasks prefer VMM, the requester's authorized computer, then enabled Cloudflare.
@@ -89,14 +130,14 @@ Configure the Electron main process before launch:
 | `COMMA_VMM_SOURCE_PATH` | Dev-only VMM checkout. Without it, Comma uses the shared download. |
 
 A source checkout builds a local Host bundle, keyed by its canonical path. The path digest gives no integrity or authorization.
-Before enrollment, Comma repairs the shared VMM service to use that bundle. It shares runtime data and can interrupt other registrations.
+Before claim, Comma repairs the shared VMM service to use that bundle. It shares runtime data and can interrupt other registrations.
 Settings show the source, stage, and errors. A failed source build never falls back to a download.
 The local backend needs the [local VMM Gateway](#local-vmm-gateway).
-The published VMM requires an HTTPS exchange endpoint. The local VMM source also permits HTTP exchange on localhost, 127.0.0.1, or ::1. Gateway TLS stays required.
+Public claim endpoints require HTTPS. Local development permits HTTP only on localhost, 127.0.0.1, or ::1. Gateway TLS stays required.
 
 Preparation starts after an explicit enable. Main then continues it by itself, also after a Comma restart, within a bounded budget and deadline.
-Use **Rebuild Host** to prepare changed source.
-A rebuild uses the VMM update operation to replace and restart the Host. An explicit retry resumes an interrupted update before it builds another version.
+Use the development rebuild command to prepare changed source.
+A rebuild uses VMM update to replace and restart the Host. Continue retains an interrupted operation and its selected artifact.
 VMM owns runtime replacement and its recovery records.
 A whole-Host restart interrupts running work across all registrations on that Host.
 Disabling one registration stops admission and drains its workloads.

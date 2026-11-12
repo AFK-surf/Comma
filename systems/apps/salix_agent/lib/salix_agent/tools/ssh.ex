@@ -17,10 +17,12 @@ defmodule SalixAgent.Tools.SSH do
   Agent can act on.
 
   All `ssh.*` tools are public egress for information flow
-  (`SalixAgent.IFC.Destination`).
+  (`SalixAgent.IFC.Destination`). What a host returns carries the Group's
+  audience, and a host an operator restricted to a tag is used only for
+  people cleared for it (`SalixAgent.SSH.Audience`).
   """
 
-  alias SalixAgent.SSH.{Channels, Connection, Identity, KnownHosts, Session, Sessions}
+  alias SalixAgent.SSH.{Audience, Channels, Connection, Identity, KnownHosts, Session, Sessions}
 
   @short_wait SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
   # Output waits go up to 60 s; the round waits for them rather than turning
@@ -270,7 +272,24 @@ defmodule SalixAgent.Tools.SSH do
       rows: rows
     }
 
-    reply(Sessions.open(spec))
+    ctx = Map.put(ctx, :group_id, spec.group_id)
+
+    case Sessions.open(spec) do
+      {:ok, value} ->
+        # The host key is known only once the connection is up; nothing the
+        # host sent goes back before the requester is admitted to it.
+        case Audience.admit(ctx, get_in(value, ["host_key", "fingerprint"])) do
+          {:ok, tag} ->
+            Audience.label(ok(value), ctx, tag)
+
+          {:error, diagnostic} ->
+            Sessions.request(owner(ctx), spec.id, {:close, "host_restricted"}, 5_000)
+            failure(diagnostic)
+        end
+
+      other ->
+        reply(other)
+    end
   end
 
   def write(args, ctx) do
@@ -283,7 +302,11 @@ defmodule SalixAgent.Tools.SSH do
 
     if input == "" and keys == [], do: raise("ssh.write requires input or keys")
 
-    session_request(args, ctx, {:write, input, keys, output_opts(args, wait)}, wait * 1_000)
+    admitted(args, ctx, fn ctx, tag ->
+      args
+      |> session_request(ctx, {:write, input, keys, output_opts(args, wait)}, wait * 1_000)
+      |> Audience.label(ctx, tag)
+    end)
   end
 
   def read(args, ctx) do
@@ -295,10 +318,16 @@ defmodule SalixAgent.Tools.SSH do
       |> put_int(args, "from_offset", :from_offset)
       |> put_int(args, "tail_bytes", :tail_bytes)
 
-    session_request(args, ctx, {:read, opts}, wait * 1_000)
+    admitted(args, ctx, fn ctx, tag ->
+      args |> session_request(ctx, {:read, opts}, wait * 1_000) |> Audience.label(ctx, tag)
+    end)
   end
 
-  def screen(args, ctx), do: session_request(args, ctx, :screen, 0)
+  def screen(args, ctx) do
+    admitted(args, ctx, fn ctx, tag ->
+      args |> session_request(ctx, :screen, 0) |> Audience.label(ctx, tag)
+    end)
+  end
 
   def resize(args, ctx),
     do: session_request(args, ctx, {:resize, int(args, "cols", 120), int(args, "rows", 40)}, 0)
@@ -318,54 +347,74 @@ defmodule SalixAgent.Tools.SSH do
     if byte_size(command) > @max_command_bytes, do: raise("ssh.exec command is too long")
     if String.contains?(command, <<0>>), do: raise("ssh.exec command contains a NUL byte")
 
-    args
-    |> id!()
-    |> connection_call(ctx, {Channels, :exec, [command, stdin, seconds * 1_000]}, seconds * 1_000)
-    |> channel_reply("exec_failed")
+    admitted(args, ctx, fn ctx, tag ->
+      args
+      |> id!()
+      |> connection_call(
+        ctx,
+        {Channels, :exec, [command, stdin, seconds * 1_000]},
+        seconds * 1_000
+      )
+      |> channel_reply("exec_failed")
+      |> Audience.label(ctx, tag)
+    end)
   end
 
   def upload(args, ctx) do
     source = string!(args, "source")
     destination = string!(args, "destination")
 
-    args
-    |> id!()
-    |> connection_call(
-      ctx,
-      {Channels, :upload,
-       [transfer_ctx(ctx), source, destination, Map.get(args, "overwrite") == true]},
-      @transfer_timeout_ms
-    )
-    |> channel_reply("upload_failed")
+    admitted(args, ctx, fn ctx, tag ->
+      args
+      |> id!()
+      |> connection_call(
+        ctx,
+        {Channels, :upload,
+         [transfer_ctx(ctx), source, destination, Map.get(args, "overwrite") == true]},
+        @transfer_timeout_ms
+      )
+      |> channel_reply("upload_failed")
+      |> Audience.label(ctx, tag)
+    end)
   end
 
   def download(args, ctx) do
     source = string!(args, "source")
     destination = string!(args, "destination")
 
-    result =
-      args
-      |> id!()
-      |> connection_call(
-        ctx,
-        {Channels, :download,
-         [transfer_ctx(ctx), source, destination, Map.get(args, "overwrite") == true]},
-        @transfer_timeout_ms
-      )
+    admitted(args, ctx, fn ctx, tag ->
+      result =
+        args
+        |> id!()
+        |> connection_call(
+          ctx,
+          {Channels, :download,
+           [
+             ctx |> transfer_ctx() |> Audience.download_ctx(tag),
+             source,
+             destination,
+             Map.get(args, "overwrite") == true
+           ]},
+          @transfer_timeout_ms
+        )
 
-    case result do
-      {:ok, value, events} -> {Jason.encode!(value), events}
-      other -> channel_reply(other, "download_failed")
-    end
+      case result do
+        {:ok, value, events} -> Audience.label({Jason.encode!(value), events}, ctx, tag)
+        other -> channel_reply(other, "download_failed")
+      end
+    end)
   end
 
   def list_files(args, ctx) do
     path = Map.get(args, "path") || "."
 
-    args
-    |> id!()
-    |> connection_call(ctx, {Channels, :list_files, [path, int(args, "limit", 1_000)]}, 30_000)
-    |> channel_reply("list_failed")
+    admitted(args, ctx, fn ctx, tag ->
+      args
+      |> id!()
+      |> connection_call(ctx, {Channels, :list_files, [path, int(args, "limit", 1_000)]}, 30_000)
+      |> channel_reply("list_failed")
+      |> Audience.label(ctx, tag)
+    end)
   end
 
   def known_hosts_list(_args, ctx) do
@@ -439,6 +488,20 @@ defmodule SalixAgent.Tools.SSH do
 
       _ ->
         raise "via_tailnet must be a boolean"
+    end
+  end
+
+  # A session outlives the round that opened it and may serve another
+  # person's request later, so every call that reaches the host is admitted
+  # again by the session's host key.
+  defp admitted(args, ctx, fun) do
+    ctx = Map.put(ctx, :group_id, group_id!(ctx))
+
+    with {:ok, summary} <- Sessions.request(owner(ctx), id!(args), :info, 5_000),
+         {:ok, tag} <- Audience.admit(ctx, summary["host_fingerprint"]) do
+      fun.(ctx, tag)
+    else
+      other -> reply(other)
     end
   end
 

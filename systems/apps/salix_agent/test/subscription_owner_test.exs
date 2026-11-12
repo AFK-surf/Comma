@@ -480,6 +480,44 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     settle_refute_receive({:reset_key, _})
   end
 
+  test "a Claude reset asks the worker for the chosen kind as Claude Code", %{tenant: tenant} do
+    parent = SystemsRuntime.Proc.self()
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/quota/reset" ->
+          SystemsRuntime.Proc.send(parent, {:reset, cmd["body"]})
+          %{"code" => "reset"}
+
+        "/quota" ->
+          %{
+            "body" => %{
+              "seven_day" => %{"utilization" => 10, "resets_at" => "2026-12-31T00:00:00Z"}
+            }
+          }
+      end
+    end)
+
+    a = account(tenant, %{"prepared" => true, "source" => "claude"})
+    key = Store.id()
+    attrs = %{"version" => a["version"], "request_id" => key, "kind" => "model"}
+
+    assert {:ok, %{"outcome" => "reset", "quota_refreshed" => true}} =
+             AccountPool.reset_quota(tenant, a["id"], attrs)
+
+    settle_receive({:reset, body})
+
+    assert %{"provider" => "claude", "kind" => "model", "redeem_request_id" => ^key} = body
+    assert body["client_version"] =~ ~r/^\d+\.\d+\.\d+$/
+
+    assert {:error, :invalid_input} =
+             AccountPool.reset_quota(tenant, a["id"], %{
+               attrs
+               | "kind" => "everything",
+                 "request_id" => Store.id()
+             })
+  end
+
   test "uncertain reset keeps its key across reload and refuses a different attempt", %{
     tenant: tenant
   } do
@@ -644,16 +682,16 @@ defmodule SalixAgent.SubscriptionOwnerTest do
   } do
     server(fn _ -> flunk("must not contact provider") end)
     codex = account(tenant, %{"prepared" => true})
-    claude = account(tenant, %{"source" => "claude", "prepared" => true})
+    gemini = account(tenant, %{"source" => "gemini", "prepared" => true})
     attrs = %{"version" => codex["version"], "request_id" => Store.id()}
 
     assert {:error, :not_found} =
              AccountPool.reset_quota(SalixStore.Ids.new_tenant_id(), codex["id"], attrs)
 
     assert {:error, :invalid_input} =
-             AccountPool.reset_quota(tenant, claude["id"], %{
+             AccountPool.reset_quota(tenant, gemini["id"], %{
                attrs
-               | "version" => claude["version"]
+               | "version" => gemini["version"]
              })
 
     assert {:error, :conflict} =

@@ -2,6 +2,7 @@ package surf.comma.android.ui.composer
 
 import android.content.Context
 import android.graphics.Outline
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
@@ -13,9 +14,9 @@ import surf.comma.android.ui.theme.DesignSpring
 import kotlin.math.roundToInt
 
 /**
- * The rounded input surface: a white card raised off the page by a soft elevation shadow (drawn
- * by the render thread from the outline, so moving or typing never redraws it) and a faint edge.
- * Its height Its height follows its content through [DesignMotion.springSize],
+ * The rounded input surface: a card with a faint edge. [ComposerView] draws the soft shadow
+ * outside this view so the expanded outline does not clip it.
+ * Its height follows its content through [DesignMotion.springSize],
  * so a new line of text or the thumbnail row eases in instead of jumping.
  *
  * Children are bottom-anchored: while the spring catches up, the top of the content is what
@@ -24,9 +25,9 @@ import kotlin.math.roundToInt
 internal class ComposerPill(context: Context, private val style: ComposerStyle) : LinearLayout(context) {
 
     private val fill = GradientDrawable().apply {
-        setColor(style.composerBg)
+        setColor(style.composerSurface)
         setStroke(style.dp(BORDER_DP).roundToInt().coerceAtLeast(1), style.composerBorder)
-        cornerRadius = style.dp(CORNER_DP.toFloat())
+        cornerRadius = style.dp(22f)
     }
     /** Height currently drawn, in px; the spring moves it toward the content's natural height. */
     private var shownHeight = 0f
@@ -43,26 +44,47 @@ internal class ComposerPill(context: Context, private val style: ComposerStyle) 
     )
     private var naturalHeight = -1
 
+    private var surfaceInset = style.dp(52)
+    private var surfaceInsetRight = 0
+    private var surfaceRadius = style.dp(22f)
+
+    private var expandedSurface = false
+
     init {
         orientation = VERTICAL
         gravity = Gravity.BOTTOM
-        background = fill
-        clipToOutline = true
-        // The outline is the only clip: a field travelling between rows leaves its row's bounds.
+        background = InsetDrawable(fill, style.dp(52), 0, 0, 0)
+        setPadding(0, 0, 0, 0)
+        clipToOutline = false
+        // The separate attachment button sits outside the field outline.
         clipChildren = false
         outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, style.dp(CORNER_DP.toFloat()))
+                outline.setRoundRect(surfaceInset, 0, view.width - surfaceInsetRight, view.height, surfaceRadius)
             }
         }
-        elevation = style.dp(ELEVATION_DP.toFloat())
-        outlineAmbientShadowColor = style.composerShadowAmbient
-        outlineSpotShadowColor = style.composerShadowSpot
     }
 
-    /** Surface colour; hold-to-talk tints it while the finger is in the cancel zone. */
-    fun setFillColor(color: Int) {
-        fill.setColor(color)
+    override fun onRtlPropertiesChanged(layoutDirection: Int) {
+        super.onRtlPropertiesChanged(layoutDirection)
+        if (background != null) setExpanded(expandedSurface)
+    }
+
+    fun setExpanded(expanded: Boolean) {
+        expandedSurface = expanded
+        val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        val inset = if (expanded || rtl) 0 else style.dp(52)
+        val rightInset = if (!expanded && rtl) style.dp(52) else 0
+        val radius = style.dp(if (expanded) 24f else 22f)
+        if (inset == surfaceInset && rightInset == surfaceInsetRight && radius == surfaceRadius) return
+        clipToOutline = expanded
+        surfaceInset = inset
+        surfaceInsetRight = rightInset
+        surfaceRadius = radius
+        fill.cornerRadius = radius
+        background = InsetDrawable(fill, inset, 0, rightInset, 0)
+        setPadding(0, 0, 0, 0)
+        invalidateOutline()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -87,10 +109,6 @@ internal class ComposerPill(context: Context, private val style: ComposerStyle) 
     }
 
     companion object {
-        /** DESIGN radius 4xl; with the 48dp resting height this makes a full pill. */
-        const val CORNER_DP = 24
-        /** Low enough that the shadow stays a soft halo rather than a floating panel. */
-        const val ELEVATION_DP = 6
         /** The edge: two physical pixels at 3x, where a one-pixel line vanishes on the dark page. */
         const val BORDER_DP = 2f / 3f
     }

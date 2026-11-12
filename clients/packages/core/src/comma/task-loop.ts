@@ -1,6 +1,7 @@
 // A Loop Task's Loop as the Comma API says it (`loop`, sent only for a Task the person asked to repeat or keep
 // watching), read once for every client: the `tasks`, `taskSummaries` and `archivedTasks` topics carry what it reads.
 // A Task without `loop` is no Loop Task.
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 import type {
   TaskLoop,
@@ -10,50 +11,47 @@ import type {
   TaskRecurrencePattern,
 } from "../contract.ts";
 
-const instant = z.number().int().nonnegative();
+const instant = lazySchema(() => z.number().int().nonnegative());
 
-const cadenceSchema = z.union([
-  z.object({ every_minutes: z.number().int().positive() }),
+const cadenceSchema = lazySchema(() =>
+  z.union([
+    z.object({ every_minutes: z.number().int().positive() }),
+    z.object({
+      cron: z.string().min(1).max(256),
+      timezone: z.string().min(1).max(256),
+    }),
+    z.object({ events: z.string().min(1).max(2_048) }),
+  ])
+);
+
+const pauseReasonSchema = lazySchema(() =>
+  z.enum(["waiting", "budget", "exited", "failed", "quota", "undeliverable"])
+);
+const endReasonSchema = lazySchema(() =>
+  z.enum(["completed", "cancelled", "failed", "max_runs", "ends_at"])
+);
+
+const loopSchema = lazySchema(() =>
   z.object({
-    cron: z.string().min(1).max(256),
-    timezone: z.string().min(1).max(256),
-  }),
-  z.object({ events: z.string().min(1).max(2_048) }),
-]);
-
-const pauseReasonSchema = z.enum([
-  "waiting",
-  "budget",
-  "exited",
-  "failed",
-  "quota",
-  "undeliverable",
-]);
-const endReasonSchema = z.enum([
-  "completed",
-  "cancelled",
-  "failed",
-  "max_runs",
-  "ends_at",
-]);
-
-const loopSchema = z.object({
-  state: z.enum(["pending", "active", "paused", "ended"]),
-  // A cadence or a reason this client does not know yet leaves only itself unsaid.
-  reason: z.unknown().optional(),
-  cadence: cadenceSchema.optional().catch(undefined),
-  max_runs: z.number().int().positive().optional(),
-  ends_at: instant.optional(),
-  until: z.string().min(1).max(2_048).optional(),
-  started_at: instant,
-  wake_count: z.number().int().nonnegative(),
-  last_wake_at: instant.optional(),
-  next_run_at: instant.optional(),
-  ended_at: instant.optional(),
-});
+    state: z.enum(["pending", "active", "paused", "ended"]),
+    // A cadence or a reason this client does not know yet leaves only itself unsaid.
+    reason: z.unknown().optional(),
+    cadence: cadenceSchema.optional().catch(undefined),
+    max_runs: z.number().int().positive().optional(),
+    ends_at: instant.optional(),
+    until: z.string().min(1).max(2_048).optional(),
+    started_at: instant,
+    wake_count: z.number().int().nonnegative(),
+    last_wake_at: instant.optional(),
+    next_run_at: instant.optional(),
+    ended_at: instant.optional(),
+  })
+);
 
 /** A Task's `loop` as the Comma API sends it; undefined when it is no Loop's. */
 export function taskLoop(wire: unknown): TaskLoop | undefined {
+  // Most Tasks are none: a failed parse would build its error for each of them.
+  if (wire === undefined || wire === null) return undefined;
   const parsed = loopSchema.safeParse(wire);
   if (!parsed.success) return undefined;
   const loop = parsed.data;

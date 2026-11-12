@@ -7,9 +7,17 @@ import { platform } from "../platform/index.ts";
 export const goOs = (): string => platform.goOs;
 export const goArch = (): string => ({ x64: "amd64", arm64: "arm64", ia32: "386" } as Record<string, string>)[process.arch] ?? process.arch;
 
+/**
+ * The machine's name as a person calls it: its host name without the `.local` macOS gives it on the local network. The
+ * connector dials with it, so the device is named so where the app names it nothing else (still.fail names its station
+ * so: station/src/read/host.ts, screens/desktop.ts; as this station's read/host.ts does).
+ */
+export function machineName(name: string = osHostname()): string {
+  return name.endsWith(".local") ? name.slice(0, -".local".length) : name;
+}
+
 export function hostname(): string {
-  const name = osHostname();
-  return name || "salix-connect";
+  return machineName() || "station";
 }
 
 let cachedCpuModel: string | undefined;

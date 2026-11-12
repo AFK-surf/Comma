@@ -462,16 +462,15 @@ void app.whenReady().then(async () => {
       console.error("Fixture website permission failed", message),
   });
   const browserPresence = new MeetingPresenceService({
+    // No app on the machine holds a microphone: only the in-app browser's meetings count.
     loadNative: async () => ({
-      applications: () => [],
-      isUsingMicrophone: () => false,
+      applications: async () => [],
+      watch: async () => {},
+      microphones: () => [],
+      available: () => true,
       onApplicationListChanged: () => () => {},
-      tapApplication: () => {
-        throw new Error("fixture capture is owned above");
-      },
-      tapSystem: () => {
-        throw new Error("fixture capture is owned above");
-      },
+      onMicrophonesChanged: () => () => {},
+      close: async () => {},
     }),
     // No polling: the fixture moves the meetings itself.
     clock: { ...realMainClock, setTimer: () => () => {} },

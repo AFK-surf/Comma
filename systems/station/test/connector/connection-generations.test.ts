@@ -255,7 +255,7 @@ test("TestVMWebSocketRealBlockingRequestsHitAdmissionLimit", { skip: process.pla
       for (const [index, path] of paths.entries()) yield* ws.send({ id: `blocked-${index}`, type: "request", method: "read", params: { path: path.split("/").at(-1) } });
       yield* Effect.promise(() => eventually(() => c.requestSlotsInUse() === MAX_CONCURRENT_REQUESTS, "all filesystem request slots to fill"));
       const frame = yield* exchange(ws, { id: "over-limit", type: "request", method: "stat", params: { path: "." } });
-      assert.ok(frame.id === "over-limit" && frame.type === "error" && frame.error?.includes("connector request capacity exhausted"), `overload frame ${JSON.stringify(frame)}`);
+      assert.ok(frame.id === "over-limit" && frame.type === "error" && frame.error?.includes("station request capacity exhausted"), `overload frame ${JSON.stringify(frame)}`);
       paths.forEach(releaseFifo);
       yield* Effect.promise(() => eventually(() => c.requestSlotsInUse() === 0, "released filesystem requests to finish"));
       yield* c.close();
@@ -280,7 +280,7 @@ test("TestVMWebSocketRealBlockingStreamsHitAdmissionLimit", { skip: process.plat
       yield* Effect.promise(() => eventually(() => c.activeConnectionForTest()?.streamSlotsInUse() === MAX_CONCURRENT_STREAM_WRITES, "all stream worker slots to fill"));
       const overLimit = `stream-${MAX_CONCURRENT_STREAM_WRITES}`;
       const frame = yield* exchange(ws, { id: overLimit, type: "stream", stream: { channel: "data", seq: 1, data: Buffer.from("rejected").toString("base64") } });
-      assert.ok(frame.id === overLimit && frame.type === "stream" && frame.error?.includes("connector stream capacity exhausted"), `stream overload frame ${JSON.stringify(frame)}`);
+      assert.ok(frame.id === overLimit && frame.type === "stream" && frame.error?.includes("station stream capacity exhausted"), `stream overload frame ${JSON.stringify(frame)}`);
       readers.forEach((fd) => closeSync(fd));
       yield* Effect.promise(() => eventually(() => c.activeConnectionForTest()?.streamSlotsInUse() === 0, "released stream writes to finish"));
       yield* ws.close;

@@ -47,7 +47,7 @@ defmodule SalixAgent.ModelChoiceE2ETest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
 
     settings = [
       {:salix_store, :s3_backend},

@@ -1,5 +1,9 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import {
+  isBackgroundWorkspaceRead,
+  unconfiguredChannelRead,
+} from "../../../e2e/helpers/workspace-reads";
 
 // Nothing listens here: the page routes every request to the script below.
 const apiBaseUrl = "http://api.imessage-e2e.test";
@@ -43,6 +47,7 @@ for (const { kind, input, account } of [
     input: " Person.Name@Example.com ",
     account: "person.name@example.com",
   },
+  { kind: "dedicated line", input: null, account: "+14155550123" },
 ]) {
   test(`connects iMessage over a Photon line: ${kind}, code, reply, disconnect`, async ({
     page,
@@ -125,8 +130,11 @@ for (const { kind, input, account } of [
           server.attempt = null;
           return reply(200, { cancelled: true });
         }
-        const body = request.postDataJSON() as { handle: string };
+        const body = request.postDataJSON() as { handle?: string };
         server.started.push(body);
+        // A shared line needs the account first.
+        if (input && !body.handle)
+          return reply(409, { error: "imessage_handle_required" });
         // The server refuses a number Photon cannot register.
         if (body.handle === "+15550000000")
           return reply(400, { error: "invalid_imessage_handle" });
@@ -134,7 +142,7 @@ for (const { kind, input, account } of [
           code,
           expires_at: Math.floor(start / 1000) + 600,
           transport: "photon",
-          sender_handle: body.handle,
+          sender_handle: body.handle ?? null,
           line_handle: line,
         };
         return reply(201, server.attempt);
@@ -143,8 +151,11 @@ for (const { kind, input, account } of [
         return reply(200, {
           data: [{ group_id: "grp_imessage_e2e", id: workspaceId, name: "Main" }],
         });
-      if (url.pathname === `/v1/comma/workspaces/${workspaceId}/agent-models`)
+      // The client core reads the active workspace on its own; this test does not show it.
+      if (isBackgroundWorkspaceRead(request.method(), url.pathname))
         return route.fulfill({ body: "{}", headers, status: 404 });
+      const channel = unconfiguredChannelRead(request.method(), url.pathname);
+      if (channel) return reply(200, channel);
       throw new Error(`Unexpected request: ${request.method()} ${url.pathname}`);
     };
 
@@ -162,34 +173,46 @@ for (const { kind, input, account } of [
     await shoot(page, "imessage-empty");
 
     await card.getByRole("button", { name: "Connect", exact: true }).click();
-    const field = card.getByLabel(/Your iMessage phone number or email/);
-    await field.fill("4155550123");
-    await card.getByRole("button", { name: "Get code" }).click();
-    await expect(card).toContainText(
-      "Enter an iMessage email address or a full phone number"
-    );
-    expect(server.started).toEqual([]);
+    if (input) {
+      const field = card.getByLabel(/Your iMessage phone number or email/);
+      await field.fill("4155550123");
+      await card.getByRole("button", { name: "Get code" }).click();
+      await expect(card).toContainText(
+        "Enter an iMessage email address or a full phone number"
+      );
+      expect(server.started).toEqual([{ transport: "photon" }]);
 
-    await field.fill("+15550000000");
-    await expect(field).toHaveValue("+15550000000");
-    await card.getByRole("button", { name: "Get code" }).click();
-    await expect(card).toContainText("Comma could not use this account.");
-    await shoot(page, "imessage-error");
+      await field.fill("+15550000000");
+      await expect(field).toHaveValue("+15550000000");
+      await card.getByRole("button", { name: "Get code" }).click();
+      await expect(card).toContainText("Comma could not use this account.");
+      await shoot(page, "imessage-error");
 
-    await field.fill(input);
-    await expect(field).toHaveValue(input);
-    await card.getByRole("button", { name: "Get code" }).click();
+      await field.fill(input);
+      await expect(field).toHaveValue(input);
+      await card.getByRole("button", { name: "Get code" }).click();
+    }
     await expect(card.getByTestId("imessage-code-value")).toHaveText(code);
     await expect(card.getByTestId("imessage-line")).toHaveText(line);
-    await expect(card).toContainText(`from ${account}`);
+    await expect(card).toContainText(
+      input ? `from ${account}` : "The account that sends it connects"
+    );
+    await expect(card.getByTestId("imessage-qr").locator("svg")).toBeVisible();
     await expect(card.getByTestId("imessage-expiry")).toContainText(
       /Expires in (10:00|9:5\d)/
     );
     await expect(card).toContainText("Connecting");
-    expect(server.started.at(-1)).toEqual({ handle: account });
+    // One waiting line, and the scope only until the attempt starts.
+    await expect(card.getByText(/Waiting for your message/)).toHaveCount(1);
+    await expect(card).not.toContainText("Group chats are not supported");
+    await expect(card.getByRole("button", { name: "Copy code" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Copy number" })).toBeVisible();
+    expect(server.started.at(-1)).toEqual(
+      input ? { handle: account } : { transport: "photon" }
+    );
     await shoot(page, "imessage-pending");
 
-    // The person sends the code from that phone: the next read shows the connection.
+    // The person sends the code: the next read shows the connection.
     server.link = {
       sender_handle: account,
       sender_label: null,

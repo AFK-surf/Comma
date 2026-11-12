@@ -40,6 +40,10 @@
 //   the files named as a post's are (`files`), and read by Salix with task.posted_file under the request's `key` while
 //   it waits. Asked once more with the same key when it did not get through: one Version. task.app_logs reads the
 //   app's recent backend log lines (tool app_logs).
+// - task.tools, task.tool_call: a Session of a Task kept on Salix lists the Salix registry tools it may call as the
+//   Task's Worker (tool salix_tools), and calls one (tool salix_call, and the `comma` command line's Salix backend):
+//   `tool`, `args`; Salix answers the tool's `content` and `error` (`truncated` when cut at 1 MiB), or why the call was
+//   not made (`error`, `message`). Salix takes them only from the Task's own sandbox on its current generation.
 // The host gives a Station what it has not had when a Message is added, when it starts or connects, and when that
 // Station says hello. A Station that answered no put of a Station it could reach is given it again, backing off (1 s,
 // 2 s… up to a minute) until it has it; one it cannot reach is waited for to say hello.
@@ -53,7 +57,7 @@ import { Effect } from "effect";
 import { parseThreadAddress, threadAddress } from "../agents/instructions.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { type Attachment, type AuthorKind, type EntryRow, type NewMessage, STILLFAIL_SURFACE, type ThreadRow, milestoneTitles, onlyMilestones } from "../store/store.ts";
+import { type Attachment, type AuthorKind, type EntryRow, type NewMessage, COMMA_STATION_SURFACE, type ThreadRow, milestoneTitles, onlyMilestones } from "../store/store.ts";
 import type { ChatSurface, PostFrom, ThreadRef } from "../sessions/chat.ts";
 import type { Runtime } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
@@ -80,16 +84,24 @@ export const LEAVE = "task.leave";
 /// To a station host: a part of a file of the post a Session is about to make (`key`), before that post.
 export const POST_FILE = "task.post_file";
 export const METHODS = [INVITE, PUT, POST, HELLO, STATUS, FILE, LEAVE, POST_FILE];
-/// About a coding Session (tasks/coding.ts), from Salix only: its changes, saving its work, a pull request.
+/// About a coding Session (tasks/coding.ts), from Salix only: its changes and a pull request.
 export const DIFF = "task.diff";
-export const SAVE = "task.save";
 export const PULL_REQUEST = "task.pull_request";
-export const CODING_METHODS = [DIFF, SAVE, PULL_REQUEST];
+export const CODING_METHODS = [DIFF, PULL_REQUEST];
 /// From Salix only: a part of a file a Session's task.post named (`files`), while that post waits for its answer.
 export const POSTED_FILE = "task.posted_file";
 /// To Salix only, from a coding Session of a Task with a Mini App: a deploy of what it built, and the app's backend log.
 export const APP_DEPLOY = "task.app_deploy";
 export const APP_LOGS = "task.app_logs";
+export const TOOLS = "task.tools";
+export const TOOL_CALL = "task.tool_call";
+/// A Session of a Task kept on Salix keeps a finished CLI login's files for the Task's person, or gets them back
+/// (logins/tool.ts). Neither is a tool call: what is kept reaches no agent and no tool archive.
+export const LOGIN_KEEP = "task.login_keep";
+export const LOGIN_RESTORE = "task.login_restore";
+/// The host that is Salix itself over the connector's connection (connector/service.ts SALIX_HOST); a desktop
+/// connection's is `salix:<id>`.
+const SALIX = "salix";
 /// At most this much in a deploy's notes.
 const MAX_NOTES = 2000;
 /// From Salix only: a page of the execution history of the Session taking part in a Task, and its token usage.
@@ -380,7 +392,7 @@ export class Tasks implements ChatSurface {
 
   private hosted(thread: number): ThreadRow {
     const row = this.hub.store.getThread(thread);
-    if (!row || row.surface !== STILLFAIL_SURFACE) throw new Error(`no Task ${thread} here`);
+    if (!row || row.surface !== COMMA_STATION_SURFACE) throw new Error(`no Task ${thread} here`);
     return row;
   }
 
@@ -527,7 +539,7 @@ export class Tasks implements ChatSurface {
     const task = text(request, "task");
     const session = text(request, "session");
     const address = parseThreadAddress(task);
-    const thread = address && address[0] === INTERNAL_CHANNEL ? this.hub.store.threadAt(STILLFAIL_SURFACE, address[0], address[1]) : null;
+    const thread = address && address[0] === INTERNAL_CHANNEL ? this.hub.store.threadAt(COMMA_STATION_SURFACE, address[0], address[1]) : null;
     const takes = thread !== null && this.db.prepare("SELECT 1 FROM task_sessions WHERE thread = ? AND station = ? AND session = ?").get(thread.id, peer, session) !== undefined;
     if (!thread || !takes) throw new Error(`session ${session} of station ${peer} takes no part in Task ${task} here`);
     return { thread, session };
@@ -662,7 +674,7 @@ export class Tasks implements ChatSurface {
     for (const task of had?.keys() ?? []) {
       if (taking.has(task)) continue;
       const ref = parseThreadAddress(task);
-      if (!ref || ref[0] !== INTERNAL_CHANNEL || !this.hub.store.threadAt(STILLFAIL_SURFACE, ref[0], ref[1])) continue;
+      if (!ref || ref[0] !== INTERNAL_CHANNEL || !this.hub.store.threadAt(COMMA_STATION_SURFACE, ref[0], ref[1])) continue;
       this.via()(peer, { method: LEAVE, task }).catch((error) => log.info("tasks", "a station was not told to leave a task it runs no more", { station: peer, task, error: (error as Error).message }));
     }
     return {};
@@ -919,6 +931,8 @@ export class Tasks implements ChatSurface {
     const session = this.hub.store.threadSessions(thread)[0]?.session;
     const row = session ? this.hub.store.getSession(session) : null;
     if (!session || !row) throw new Missing("no Session here to give it to");
+    // A coding Session's checkout is made into its workspace only while it is empty: the file comes after it.
+    await this.hub.prepared(session);
     const dir = join(row.workspace, "uploads");
     const path = join(dir, `task-${m.seq}-${file.index}-${safeName(file.name)}`);
     const part = join(dir, `.part-task-${thread}-${m.seq}-${file.index}`);
@@ -1001,7 +1015,7 @@ export class Tasks implements ChatSurface {
     return { start, total: entries.length, entries: entries.slice(start, end), usage };
   }
 
-  /// task.diff, task.save, task.pull_request from Salix: about the coding Session taking part in its Task.
+  /// task.diff and task.pull_request from Salix: about the coding Session taking part in its Task.
   private async coding(peer: string, method: string, request: Json): Promise<Json> {
     const thread = this.elsewhere(peer, text(request, "task"));
     const session = thread === null ? undefined : this.hub.store.threadSessions(thread)[0]?.session;
@@ -1013,7 +1027,6 @@ export class Tasks implements ChatSurface {
       if (commit !== "" && !/^[0-9a-f]{40}$/.test(commit)) throw new Error("a commit is named by its full sha");
       return await coding.diff(row.workspace, commit !== "" ? { commit } : { uncommitted: request?.uncommitted === true });
     }
-    if (method === SAVE) return await coding.save(row.workspace);
     return await coding.pullRequest(row.workspace, {
       title: text(request, "title") || undefined,
       body: typeof request?.body === "string" ? request.body : undefined,
@@ -1036,6 +1049,7 @@ export class Tasks implements ChatSurface {
   /// A task.* request from `peer`, a Station of the workspace (the transport checked it).
   async handle(peer: string, request: Json): Promise<Json> {
     const method = text(request, "method");
+    if (method === "task.login_answer") return this.logins ? this.logins.answer(request) : { error: "no_such_login" };
     if (method === INVITE) return this.invited(peer, request);
     if (method === PUT) return this.put(peer, request);
     if (method === POST) return this.postHere(peer, request);
@@ -1055,7 +1069,7 @@ export class Tasks implements ChatSurface {
   /// A Task of this station's own: its page chat at `task` (its address, as the Task index gives it).
   private ownTask(request: Json): ThreadRow {
     const ref = parseThreadAddress(text(request, "task"));
-    const row = ref ? this.hub.store.threadAt(STILLFAIL_SURFACE, ref[0], ref[1]) : null;
+    const row = ref ? this.hub.store.threadAt(COMMA_STATION_SURFACE, ref[0], ref[1]) : null;
     if (!row) throw new Error(`no Task ${text(request, "task")} of this station`);
     return row;
   }
@@ -1181,10 +1195,11 @@ export class Tasks implements ChatSurface {
   }
 
   /// Deploys what the agent of coding Session `session` built as a new preview Version of its Task's Mini App: the
-  /// worktree saved and pushed (as task.save does), packed (coding.ts) beside the workspace, and named in
+  /// worktree committed and pushed, packed (coding.ts) beside the workspace, and named in
   /// task.app_deploy, whose files Salix reads (task.posted_file under its `key`) before it answers. Not got through,
-  /// asked once more with the same key: one Version. The Version Salix made, or why it made none.
-  async appDeploy(session: string, notes: string): Promise<Json> {
+  /// asked once more with the same key: one Version. Salix's `answer` (the Version it made, or why it made none), and
+  /// whether the manifest sent names a `cover`.
+  async appDeploy(session: string, notes: string): Promise<{ answer: Json; cover: boolean }> {
     const app = this.ofMiniApp(session);
     if (chars(notes) > MAX_NOTES) throw new Error(`notes are at most ${MAX_NOTES} characters`);
     const coding = this.hub.coding!;
@@ -1192,14 +1207,14 @@ export class Tasks implements ChatSurface {
     const out = join(dirname(app.workspace), "app-deploys", key);
     try {
       const subject = notes.split("\n")[0]!.trim().slice(0, 72);
-      const { commit, files } = await coding.packApp(app.workspace, out, subject !== "" ? `Deploy: ${subject}` : "Deploy the Mini App");
+      const { commit, files, cover } = await coding.packApp(app.workspace, out, subject !== "" ? `Deploy: ${subject}` : "Deploy the Mini App");
       const request = {
         method: APP_DEPLOY, task: app.task, session, key, app_id: app.appId, commit, notes,
         files: files.map((f, index) => ({ index, name: f.name, size: f.size })),
       };
       this.posting.set(key, { task: app.task, session, files });
       try {
-        return await askTwice(this.via(), app.station, request);
+        return { answer: await askTwice(this.via(), app.station, request), cover };
       } finally {
         this.posting.delete(key);
       }
@@ -1215,6 +1230,63 @@ export class Tasks implements ChatSurface {
     const answer = await this.via()(app.station, { method: APP_LOGS, task: app.task, session, app_id: app.appId, ...(version !== null ? { version } : {}) });
     if (typeof answer?.error === "string") throw new Error(typeof answer.message === "string" ? answer.message : answer.error);
     return Array.isArray(answer?.lines) ? answer.lines.filter((l: unknown) => typeof l === "string") : [];
+  }
+
+  /// Whether Sessions here are offered Salix's tools: on a station the platform manages (a Task's sandbox), whose
+  /// calls Salix takes; not on a person's own machine, whose calls Salix refuses as yet (not_a_sandbox).
+  private salixToolsOffered = false;
+  private logins: { answer(params: Json): Json } | null = null;
+
+  /// Who runs this sandbox's CLI logins (logins/tool.ts): a person's answer on a login's card goes to them.
+  setLogins(logins: { answer(params: Json): Json }): void {
+    this.logins = logins;
+  }
+
+  offerSalixTools(on: boolean): void {
+    this.salixToolsOffered = on;
+  }
+
+  /// The Task Session `session` takes part in, when Salix keeps it and is connected, and Salix's tools are offered
+  /// here: its host and the Task's address there; null otherwise. Only such a Session has Salix's tools (tools/salix.ts).
+  salixHost(session: string): { station: string; task: string } | null {
+    if (!this.salixToolsOffered) return null;
+    const where = this.db
+      .prepare("SELECT te.station, te.task FROM tasks_elsewhere te JOIN thread_sessions ts ON ts.thread = te.thread WHERE ts.session = ? ORDER BY te.thread DESC LIMIT 1")
+      .get(session) as { station: string; task: string } | undefined;
+    if (!where || (where.station !== SALIX && !where.station.startsWith(`${SALIX}:`)) || !this.hosts.get(where.station)) return null;
+    return { station: where.station, task: where.task };
+  }
+
+  private ofSalix(session: string) {
+    const host = this.salixHost(session);
+    if (host === null) throw new Error("This session takes part in no Task Salix keeps: salix_tools and salix_call work only in such a Task, while Salix is connected.");
+    return host;
+  }
+
+  /// The Salix registry tools Session `session`'s agent may call as its Task's Worker (task.tools): each `name`,
+  /// `description`, `input_schema`.
+  async salixTools(session: string): Promise<Json[]> {
+    const host = this.ofSalix(session);
+    const answer = await this.via()(host.station, { method: TOOLS, task: host.task, session });
+    if (typeof answer?.error === "string") throw new Error(typeof answer.message === "string" ? answer.message : answer.error);
+    return Array.isArray(answer?.tools) ? answer.tools : [];
+  }
+
+  /// Calls Salix tool `tool` with `args` as Session `session`'s Task's Worker (task.tool_call): Salix's answer, the
+  /// tool's result (`content`, `error`, `truncated`) or why the call was not made (`error`, `message`).
+  async salixToolCall(session: string, tool: string, args: Record<string, unknown>): Promise<Json> {
+    const host = this.ofSalix(session);
+    return await this.via()(host.station, { method: TOOL_CALL, task: host.task, session, tool, args });
+  }
+
+  async salixLoginKeep(session: string, program: string, archive: string): Promise<Json> {
+    const host = this.ofSalix(session);
+    return await this.via()(host.station, { method: LOGIN_KEEP, task: host.task, session, program, archive });
+  }
+
+  async salixLoginRestore(session: string, program: string): Promise<Json> {
+    const host = this.ofSalix(session);
+    return await this.via()(host.station, { method: LOGIN_RESTORE, task: host.task, session, program });
   }
 }
 

@@ -287,7 +287,7 @@ defmodule SalixMeet.PreparationAuthority do
   end
 
   defp enrolled(plan) do
-    with "slack" <- get_in(plan, ["publication_target", "provider"]),
+    with true <- MeetingPlan.system_track?(plan),
          {:ok, entry} <- SalixMeet.CalendarConfiguration.enrollment(plan),
          {:ok, %{group: group}} <- CalendarEnrollmentCache.load(entry),
          true <- group["group_id"] == plan["group_id"] do

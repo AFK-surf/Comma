@@ -32,7 +32,7 @@ defmodule SalixEnv.ConnectorTokens do
     do: create_connector_token(group_id, tenant_id, attrs, :user)
 
   def create_group_connector_token(_group_id, _tenant_id, _attrs),
-    do: {:error, {:bad_request, "connector attributes must be an object"}}
+    do: {:error, {:bad_request, "station attributes must be an object"}}
 
   @doc "Issue a credential for the existing Group Compute device. The caller authorizes Group access."
   def create_group_compute_connector_token(group_id, tenant_id) do
@@ -78,7 +78,7 @@ defmodule SalixEnv.ConnectorTokens do
       # A name the minter chose is the device's name; `/v1/connect` keeps it
       # over the name the client dials with. A defaulted one yields to it.
       pinned_name = nonblank(attrs["name"], nil)
-      name = pinned_name || nonblank(attrs["default_name"], "Group Connector")
+      name = pinned_name || nonblank(attrs["default_name"], "Group Station")
       alias_name = nonblank(attrs["alias"], name)
 
       with {:ok, credential_generation, _device, reservation} <-
@@ -658,6 +658,10 @@ defmodule SalixEnv.ConnectorTokens do
     with :ok <- revoke_device_credentials(device),
          {:ok, _record} <-
            Registry.delete_device(device["tenant_id"], device["group_id"], device["device_id"]) do
+      # A still.fail station's statistics go with its device.
+      if get_in(device, ["meta", "device_kind"]) == "stillfail",
+        do: SalixStore.StillfailStations.remove(device["device_id"])
+
       :ok
     end
   end
@@ -708,6 +712,7 @@ defmodule SalixEnv.ConnectorTokens do
     meta
     |> stringify_keys()
     |> Map.take([
+      "device_kind",
       "owner_user_id",
       "provision_request_id",
       "provisioner_id",
@@ -723,7 +728,7 @@ defmodule SalixEnv.ConnectorTokens do
   defp connector_token_scope(@scope_local_file_read), do: {:ok, @scope_local_file_read}
 
   defp connector_token_scope(_scope),
-    do: {:error, {:bad_request, "unsupported connector token scope"}}
+    do: {:error, {:bad_request, "unsupported station token scope"}}
 
   defp put_scope(rec, nil), do: rec
   defp put_scope(rec, scope), do: Map.put(rec, "scope", scope)

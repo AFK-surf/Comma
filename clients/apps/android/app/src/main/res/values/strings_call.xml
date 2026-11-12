@@ -2,6 +2,7 @@
 <resources>
     <string name="call_open">通话</string>
     <string name="call_calling">正在呼叫…</string>
+    <string name="call_active">语音通话中</string>
     <string name="call_ending">正在结束…</string>
     <string name="call_ended">通话已结束</string>
     <string name="call_failed">通话失败</string>
@@ -9,6 +10,9 @@
     <string name="call_not_connected">未接通</string>
     <string name="call_disabled">此工作区已关闭语音通话。</string>
     <string name="call_microphone_settings">请在 Android 设置里允许使用麦克风，然后重试。</string>
+    <string name="call_microphone_title">允许使用麦克风</string>
+    <string name="call_microphone_message">通话需要使用麦克风。请在 Android 设置里允许 Comma 使用麦克风，然后重新发起通话。</string>
+    <string name="call_microphone_open_settings">去设置</string>
     <string name="call_output_failed">无法切换音频输出。</string>
     <string name="call_minimize">缩小通话</string>
     <string name="call_expand">展开通话</string>
@@ -23,4 +27,5 @@
     <string name="call_output_selected">已选择</string>
     <string name="call_log_ended">%1$s · 通话已结束</string>
     <string name="call_end_call">结束通话</string>
+    <string name="call_channel">语音通话</string>
 </resources>

@@ -459,6 +459,157 @@ test("adds a QQ bot by its credentials, then shows the callback address to save"
   ]);
 });
 
+test("a Telegram bot is connected by token and serves only the groups allowed", async ({
+  page,
+}) => {
+  let connected = false;
+  let allowed: string[] = [];
+  const telegram = () => ({
+    connects: connected
+      ? [
+          {
+            connect_id: "imc1_tg",
+            status: "connected",
+            disabled: false,
+            bot_name: "acme_bot",
+            reads_all_group_messages: false,
+            chats: [
+              {
+                id: "-1001",
+                title: "Acme support",
+                type: "supergroup",
+                allowed: allowed.includes("-1001"),
+              },
+            ],
+            updated_at: null,
+          },
+        ]
+      : [],
+    route: {
+      status: connected ? "ready" : "not_connected",
+      connect_id: connected ? "imc1_tg" : null,
+      router: connected ? "Router" : null,
+    },
+  });
+  const requests = await open(page, (request) => {
+    if (request.method === "POST" && request.path === `${api}/telegram`) {
+      connected = true;
+      return {
+        status: 201,
+        body: { ok: true, data: { notice: "Telegram bot connected." } },
+      };
+    }
+    if (request.method === "PUT" && request.path === `${api}/telegram/imc1_tg/chats`) {
+      allowed = ["-1001"];
+      return ok({ notice: "Telegram chats saved." });
+    }
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({ messaging: { ...connections().messaging, telegram: telegram() } })
+      );
+    return undefined;
+  });
+  const telegramSection = section(page, "Telegram");
+  await expect(
+    telegramSection.getByText("No Telegram bots connected yet.")
+  ).toBeVisible();
+
+  await telegramSection.getByRole("button", { name: "Add Telegram bot" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Telegram bot" });
+  await dialog.getByLabel("Bot token").fill(" 123:token ");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+
+  const bots = telegramSection.getByRole("list", { name: "Telegram bots" });
+  await expect(bots.getByText("acme_bot")).toBeVisible();
+  const group = bots.getByRole("checkbox", { name: "Acme support" });
+  await expect(group).not.toBeChecked();
+
+  await bots.getByText("Acme support").click();
+  await expect(page.getByText("Telegram chats saved.")).toBeVisible();
+  await expect(group).toBeChecked();
+
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([
+    ["POST", `${api}/telegram`, { bot_token: "123:token" }],
+    ["PUT", `${api}/telegram/imc1_tg/chats`, { allowed_chat_ids: ["-1001"] }],
+  ]);
+});
+
+test("a bot's Telegram groups are filtered, searched by words and allowed together", async ({
+  page,
+}) => {
+  let allowed = ["-1003"];
+  const chat = (id: string, title: string) => ({
+    id,
+    title,
+    type: "supergroup",
+    allowed: allowed.includes(id),
+  });
+  const telegram = () => ({
+    connects: [
+      {
+        connect_id: "imc1_tg",
+        status: "connected",
+        disabled: false,
+        bot_name: "acme_bot",
+        reads_all_group_messages: false,
+        chats: [
+          chat("-1001", "[TD] Asia staff"),
+          chat("-1002", "[TD] Europe staff"),
+          chat("-1003", "Asia support"),
+          chat("-1004", "Asia sales"),
+        ],
+        updated_at: null,
+      },
+    ],
+    route: { status: "ready", connect_id: "imc1_tg", router: "Router" },
+  });
+  const requests = await open(page, (request) => {
+    if (request.method === "PUT" && request.path === `${api}/telegram/imc1_tg/chats`) {
+      allowed = (request.body as { allowed_chat_ids: string[] }).allowed_chat_ids;
+      return ok({ notice: "Telegram chats saved." });
+    }
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({ messaging: { ...connections().messaging, telegram: telegram() } })
+      );
+    return undefined;
+  });
+  const bots = section(page, "Telegram").getByRole("list", { name: "Telegram bots" });
+  await expect(bots.getByText("1 allowed of 4")).toBeVisible();
+  // Groups that wait for a decision come first; allowed ones are filtered out.
+  await expect(bots.getByRole("checkbox", { name: "[TD] Asia staff" })).toBeVisible();
+  await expect(bots.getByRole("checkbox", { name: "Asia support" })).toHaveCount(0);
+
+  // Every word must match, in any order.
+  await bots.getByRole("searchbox", { name: "Search groups" }).fill("staff asia");
+  await expect(bots.getByRole("checkbox", { name: "[TD] Europe staff" })).toHaveCount(
+    0
+  );
+  await bots.getByText("All 1 shown").click();
+  await expect(bots.getByText("2 allowed of 4")).toBeVisible();
+  // The group just allowed stays listed under the filter it was allowed in.
+  await expect(bots.getByRole("checkbox", { name: "[TD] Asia staff" })).toBeChecked();
+
+  await bots.getByRole("searchbox", { name: "Search groups" }).fill("asia");
+  await expect(bots.getByRole("checkbox", { name: "Asia sales" })).toBeVisible();
+  await expect(bots.getByRole("checkbox", { name: "[TD] Asia staff" })).toHaveCount(0);
+  await bots.getByText("All 1 shown").click();
+  await expect(bots.getByText("3 allowed of 4")).toBeVisible();
+
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([
+    ["PUT", `${api}/telegram/imc1_tg/chats`, { allowed_chat_ids: ["-1001", "-1003"] }],
+    [
+      "PUT",
+      `${api}/telegram/imc1_tg/chats`,
+      { allowed_chat_ids: ["-1001", "-1003", "-1004"] },
+    ],
+  ]);
+});
+
 test("a Lark app runs its own checks, and the section gives the scope JSON to import", async ({
   page,
 }) => {
@@ -544,6 +695,241 @@ test("a Lark app runs its own checks, and the section gives the scope JSON to im
   ).toEqual([["POST", `${api}/lark/imc1_lark/checks`, undefined]]);
 });
 
+test("makes a Feishu app by a scan: shows the code, asks until it is confirmed, then lists the app", async ({
+  page,
+}) => {
+  let connected = false;
+  const feishu = () => ({
+    apps: [],
+    connects: connected
+      ? [
+          {
+            connect_id: "imc1_feishu_scan",
+            status: "connected",
+            disabled: false,
+            app_id: "cli_scanned",
+            webhook_url: null,
+            events: "socket",
+            app_secret_configured: true,
+            verification_token_configured: false,
+            encrypt_key_configured: false,
+            updated_at: null,
+          },
+        ]
+      : [],
+    route: connected
+      ? { status: "ready", connect_id: "imc1_feishu_scan", router: "Router" }
+      : { status: "not_connected", connect_id: null, router: null },
+  });
+  let polls = 0;
+  const requests = await open(page, (request) => {
+    if (request.method === "POST" && request.path === `${api}/feishu/registration`)
+      return ok({
+        url: "https://open.feishu.cn/page/cli?user_code=ABCD-1234",
+        interval_s: 1,
+        expires_in_s: 600,
+        registration: "sealed-0",
+      });
+    if (
+      request.method === "POST" &&
+      request.path === `${api}/feishu/registration/poll`
+    ) {
+      polls += 1;
+      if (polls === 1) return ok({ state: "pending", registration: "sealed-1" });
+      connected = true;
+      return ok({
+        state: "connected",
+        app_id: "cli_scanned",
+        notice: "Feishu app made and connected.",
+      });
+    }
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({ messaging: { ...connections().messaging, feishu: feishu() } })
+      );
+    return undefined;
+  });
+  const feishuSection = section(page, "Feishu");
+  await feishuSection.getByRole("button", { name: "Scan to connect" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Connect Feishu by a scan" });
+  await expect(dialog.getByRole("link", { name: "Open in Feishu" })).toHaveAttribute(
+    "href",
+    "https://open.feishu.cn/page/cli?user_code=ABCD-1234"
+  );
+  await expect(dialog.getByRole("status")).toHaveText(
+    "Waiting for you to confirm in Feishu…"
+  );
+
+  await expect(page.getByText("Feishu app made and connected.")).toBeVisible();
+  await expect(dialog).toBeHidden();
+  const apps = feishuSection.getByRole("list", { name: "Feishu connects" });
+  await expect(
+    apps.getByText("Events come through Feishu's long connection (made by a scan).")
+  ).toBeVisible();
+
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([
+    ["POST", `${api}/feishu/registration`, {}],
+    ["POST", `${api}/feishu/registration/poll`, { registration: "sealed-0" }],
+    ["POST", `${api}/feishu/registration/poll`, { registration: "sealed-1" }],
+  ]);
+});
+
+test("makes a Lark app by a scan: shows the code, asks until it is confirmed, then lists the app", async ({
+  page,
+}) => {
+  let connected = false;
+  const lark = () => ({
+    connects: connected
+      ? [
+          {
+            connect_id: "imc1_lark",
+            status: "connected",
+            disabled: false,
+            app_id: "cli_scanned",
+            app_name: "Support Desk",
+            webhook_url: null,
+            events: "socket",
+            app_secret_configured: true,
+            verification_token_configured: false,
+            encrypt_key_configured: false,
+            updated_at: null,
+          },
+        ]
+      : [],
+    route: connected
+      ? { status: "ready", connect_id: "imc1_lark", router: "Router" }
+      : { status: "not_connected", connect_id: null, router: null },
+    scope_json: null,
+  });
+  let polls = 0;
+  const requests = await open(page, (request) => {
+    if (request.method === "POST" && request.path === `${api}/lark/registration`)
+      return ok({
+        url: "https://open.larksuite.com/page/cli?user_code=ABCD-1234",
+        interval_s: 1,
+        expires_in_s: 600,
+        registration: "sealed-0",
+      });
+    if (request.method === "POST" && request.path === `${api}/lark/registration/poll`) {
+      polls += 1;
+      if (polls === 1) return ok({ state: "pending", registration: "sealed-1" });
+      connected = true;
+      return ok({
+        state: "connected",
+        app_id: "cli_scanned",
+        notice: "Lark app made and connected.",
+      });
+    }
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({ messaging: { ...connections().messaging, lark: lark() } })
+      );
+    return undefined;
+  });
+  const larkSection = section(page, "Lark");
+  await larkSection.getByRole("button", { name: "Scan to connect" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Connect Lark by a scan" });
+  await expect(
+    dialog.getByRole("figure", { name: "Connect Lark by a scan" })
+  ).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "Open in Lark" })).toHaveAttribute(
+    "href",
+    "https://open.larksuite.com/page/cli?user_code=ABCD-1234"
+  );
+  await expect(dialog.getByRole("status")).toHaveText(
+    "Waiting for you to confirm in Lark…"
+  );
+
+  await expect(page.getByText("Lark app made and connected.")).toBeVisible();
+  await expect(dialog).toBeHidden();
+  const apps = larkSection.getByRole("list", { name: "Lark apps" });
+  await expect(apps.getByText("Support Desk")).toBeVisible();
+  await expect(
+    apps.getByText("Events come through Lark's long connection (made by a scan).")
+  ).toBeVisible();
+
+  // Each ask carries what the server sealed last.
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([
+    ["POST", `${api}/lark/registration`, {}],
+    ["POST", `${api}/lark/registration/poll`, { registration: "sealed-0" }],
+    ["POST", `${api}/lark/registration/poll`, { registration: "sealed-1" }],
+  ]);
+});
+
+test("a scanned Lark app that lacks a permission names it, and a scan updates the same app", async ({
+  page,
+}) => {
+  let missing = ["im:message.group_msg"];
+  const lark = () => ({
+    connects: [
+      {
+        connect_id: "imc1_lark",
+        status: "connected",
+        disabled: false,
+        app_id: "cli_scanned",
+        app_name: "Support Desk",
+        webhook_url: null,
+        events: "socket",
+        app_secret_configured: true,
+        verification_token_configured: false,
+        encrypt_key_configured: false,
+        missing_scopes: missing,
+        updated_at: null,
+      },
+    ],
+    route: { status: "ready", connect_id: "imc1_lark", router: "Router" },
+    scope_json: null,
+  });
+  const requests = await open(page, (request) => {
+    if (request.method === "POST" && request.path === `${api}/lark/registration`)
+      return ok({
+        url: "https://open.larksuite.com/page/cli?user_code=ABCD-1234&clientID=cli_scanned",
+        interval_s: 1,
+        expires_in_s: 600,
+        registration: "sealed-0",
+      });
+    if (request.method === "POST" && request.path === `${api}/lark/registration/poll`) {
+      missing = [];
+      return ok({
+        state: "connected",
+        app_id: "cli_scanned",
+        notice: "Lark app updated.",
+      });
+    }
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({ messaging: { ...connections().messaging, lark: lark() } })
+      );
+    return undefined;
+  });
+  const apps = section(page, "Lark").getByRole("list", { name: "Lark apps" });
+  await expect(
+    apps.getByText(
+      "The app lacks the permission im:message.group_msg. Scan again to give it to the app."
+    )
+  ).toBeVisible();
+
+  await apps.getByRole("button", { name: "Scan to update" }).click();
+  const dialog = page.getByRole("dialog", { name: "Update the Lark app by a scan" });
+  await expect(dialog.getByRole("link", { name: "Open in Lark" })).toBeVisible();
+
+  await expect(page.getByText("Lark app updated.")).toBeVisible();
+  await expect(dialog).toBeHidden();
+  await expect(apps.getByText(/lacks the permission/)).toBeHidden();
+  expect(
+    writes(requests).map((request) => [request.method, request.path, request.body])
+  ).toEqual([
+    ["POST", `${api}/lark/registration`, { connect_id: "imc1_lark" }],
+    ["POST", `${api}/lark/registration/poll`, { registration: "sealed-0" }],
+  ]);
+});
+
 test("adds a Lark app by its credentials, then shows the request URL to save", async ({
   page,
 }) => {
@@ -589,7 +975,7 @@ test("adds a Lark app by its credentials, then shows the request URL to save", a
   const larkSection = section(page, "Lark");
   await expect(larkSection.getByText("No Lark apps connected yet.")).toBeVisible();
 
-  await larkSection.getByRole("button", { name: "Add Lark app" }).click();
+  await larkSection.getByRole("button", { name: "Add by App ID" }).click();
   const dialog = page.getByRole("dialog", { name: "Add Lark app" });
   const connect = dialog.getByRole("button", { name: "Connect", exact: true });
   await dialog.getByRole("textbox", { name: "App ID" }).fill(" cli_lark1 ");
@@ -992,6 +1378,160 @@ test("connects an OAuth account and a Composio toolkit after confirming, then op
   ]);
 });
 
+test("an API key gets a name first, then Salix's form takes its value", async ({
+  page,
+}) => {
+  const form = "https://salix.example/v1/oauth/secret/callback?state=s-1";
+  await page.route("https://salix.example/**", (route) =>
+    route.fulfill({ status: 200, body: "<html><body>Secret form</body></html>" })
+  );
+  const requests = await open(page, (request) => {
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({
+          accounts: {
+            status: "ok",
+            connections: [
+              {
+                binding_id: "ob-secret",
+                provider: "secret",
+                alias: "ops-token",
+                account: null,
+                scopes: [],
+                status: "active",
+                enabled: true,
+              },
+            ],
+            providers: [],
+          },
+        })
+      );
+    if (request.method === "POST" && request.path === `${api}/accounts`)
+      return ok({ redirect_url: form });
+    return undefined;
+  });
+
+  // A saved one is listed by its name and managed like any account.
+  await expect(
+    section(page, "Connected accounts").getByRole("button", {
+      name: "Actions for API key · ops-token",
+    })
+  ).toBeVisible();
+
+  await section(page, "Connect an account")
+    .getByRole("button", { name: "Add API key or secret" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Add API key or secret" });
+  const save = dialog.getByRole("button", { name: "Continue" });
+  await expect(save).toBeDisabled();
+  await dialog.getByRole("textbox", { name: "Name" }).fill(" expense-api ");
+  await save.click();
+  await expect(page).toHaveURL(form);
+
+  expect(writes(requests).map((request) => [request.path, request.body])).toEqual([
+    [`${api}/accounts`, { provider: "secret", alias: "expense-api" }],
+  ]);
+});
+
+test("an API key can hold several named values, each secret unless unticked", async ({
+  page,
+}) => {
+  const form = "https://salix.example/v1/oauth/secret/callback?state=s-2";
+  await page.route("https://salix.example/**", (route) =>
+    route.fulfill({ status: 200, body: "<html><body>Secret form</body></html>" })
+  );
+  const requests = await open(page, (request) => {
+    if (request.method === "GET" && request.path === api)
+      return ok(
+        connections({
+          accounts: {
+            status: "ok",
+            connections: [
+              {
+                binding_id: "ob-hly",
+                provider: "secret",
+                alias: "hly",
+                account: null,
+                scopes: [],
+                status: "active",
+                enabled: true,
+                fields: ["app_id", "app_secret"],
+              },
+            ],
+            providers: [],
+          },
+        })
+      );
+    if (request.method === "POST" && request.path === `${api}/accounts`)
+      return ok({ redirect_url: form });
+    return undefined;
+  });
+
+  // A saved one lists its field names under its name.
+  await expect(
+    section(page, "Connected accounts").getByRole("listitem").filter({ hasText: "hly" })
+  ).toContainText("app_id, app_secret");
+
+  await section(page, "Connect an account")
+    .getByRole("button", { name: "Add API key or secret" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Add API key or secret" });
+  const save = dialog.getByRole("button", { name: "Continue" });
+  // A listed name is a replacement, said under the field; it does not block saving.
+  const replaces = dialog.getByText(
+    "A key named hly exists. Saving replaces its value and fields."
+  );
+  await dialog.getByRole("textbox", { name: "Name" }).fill("hl");
+  await expect(replaces).toHaveCount(0);
+  await dialog.getByRole("textbox", { name: "Name" }).fill("hly");
+  await expect(replaces).toBeVisible();
+  await expect(save).toBeEnabled();
+  const fields = dialog.getByRole("list", { name: "Fields" });
+  const addField = dialog.getByRole("button", { name: "Add a field" });
+
+  await addField.click();
+  await addField.click();
+  await addField.click();
+  await addField.click();
+  await expect(save).toBeDisabled();
+
+  await dialog.getByRole("textbox", { name: "Field 1 name" }).fill("app_id");
+  const row = (n: number) => fields.getByRole("listitem").nth(n);
+  await expect(row(0).getByRole("checkbox", { name: "Secret" })).toBeChecked();
+  await row(0).getByText("Secret", { exact: true }).click();
+  await expect(row(0).getByRole("checkbox", { name: "Secret" })).not.toBeChecked();
+  await dialog.getByRole("textbox", { name: "Field 2 name" }).fill("app_secret");
+  const third = dialog.getByRole("textbox", { name: "Field 3 name" });
+  await third.fill("1tenant");
+  await expect(
+    dialog.getByText("Use only letters, numbers and _, and start with a letter.")
+  ).toBeVisible();
+  await third.fill("APP_ID");
+  await expect(dialog.getByText("Another field already has this name.")).toBeVisible();
+  await third.fill("tenant");
+  await row(2).getByText("Secret", { exact: true }).click();
+  await dialog.getByRole("button", { name: "Remove field 4" }).click();
+  await expect(fields.getByRole("listitem")).toHaveCount(3);
+
+  await save.click();
+  await expect(page).toHaveURL(form);
+
+  expect(writes(requests).map((request) => [request.path, request.body])).toEqual([
+    [
+      `${api}/accounts`,
+      {
+        provider: "secret",
+        alias: "hly",
+        fields: [
+          { name: "app_id", secret: false },
+          { name: "app_secret", secret: true },
+          { name: "tenant", secret: false },
+        ],
+      },
+    ],
+  ]);
+});
+
 test("an account and a Composio toolkit are disconnected after confirming", async ({
   page,
 }) => {
@@ -1109,7 +1649,7 @@ test("a swarm member reads without write controls", async ({ page }) => {
   await expect(main(page).getByRole("button", { name: /^Actions for/ })).toHaveCount(0);
   await expect(
     main(page).getByRole("button", {
-      name: /^(Connect|Run checks|New code|Add Slack app)/,
+      name: /^(Connect|Run checks|New code|Add Slack app|Add API key)/,
     })
   ).toHaveCount(0);
   await expect(main(page).getByRole("textbox", { name: "Connect name" })).toHaveCount(

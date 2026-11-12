@@ -5,9 +5,11 @@ defmodule SalixSignal.Account.Keeper do
   (PLAN "Rollouts": the account moves with the ring, fenced by epoch).
 
   It reconciles at start and then every `interval_ms` (default 60 s) on one
-  periodic timer. A node joining or leaving adds one pass after
-  `membership_delay_ms` (default 1 s; changes inside that delay share the
-  pass) and does not start another periodic timer. Each pass reads the
+  periodic timer. A node joining or leaving, or a ring change
+  (`ring_changed/0`, the ring's `:on_change`: a peer becoming ready, a node
+  draining), adds one pass after `membership_delay_ms` (default 1 s; changes
+  inside that delay share the pass) and does not start another periodic
+  timer. Each pass reads the
   accounts in pages of 500; the `reconcile` option replaces the pass with a
   zero-arity function (tests). Without a storage key or database it logs and
   waits for the next pass. The keeper is enabled by
@@ -23,6 +25,17 @@ defmodule SalixSignal.Account.Keeper do
   @page 500
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @doc "Ring-change hook. Runs inside the ring process, so it only sends."
+  @spec ring_changed() :: :ok
+  def ring_changed do
+    case SystemsRuntime.Proc.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> SystemsRuntime.Proc.send(pid, :membership)
+    end
+
+    :ok
+  end
 
   @impl true
   def init(opts) do
@@ -53,21 +66,26 @@ defmodule SalixSignal.Account.Keeper do
     {:noreply, %{state | pending: nil}}
   end
 
-  def handle_info({event, _node, _info}, %{pending: nil} = state)
-      when event in [:nodeup, :nodedown] do
-    {:noreply,
-     %{
-       state
-       | pending:
-           SystemsClock.send_after(
-             SystemsRuntime.Proc.self(),
-             :reconcile,
-             state.membership_delay_ms
-           )
-     }}
-  end
+  def handle_info({event, _node, _info}, state) when event in [:nodeup, :nodedown],
+    do: {:noreply, schedule_pass(state)}
+
+  def handle_info(:membership, state), do: {:noreply, schedule_pass(state)}
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp schedule_pass(%{pending: nil} = state) do
+    %{
+      state
+      | pending:
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
+            :reconcile,
+            state.membership_delay_ms
+          )
+    }
+  end
+
+  defp schedule_pass(state), do: state
 
   @doc false
   def reconcile do

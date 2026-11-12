@@ -571,8 +571,8 @@ export function newTaskRequest(
     provider: draft.runtime,
     ...(draft.stationModel ? { model: draft.stationModel } : {}),
   };
-  return place.kind === "cloud_vm"
-    ? { ...task, runs_on: { kind: "cloud_vm" }, model }
+  return place.kind === "cloud_vm" || place.kind === "sandbox"
+    ? { ...task, runs_on: { kind: place.kind }, model }
     : {
         ...task,
         runs_on: { kind: "station", device_id: place.device_id ?? place.id },

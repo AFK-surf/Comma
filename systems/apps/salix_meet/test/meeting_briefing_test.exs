@@ -66,6 +66,37 @@ defmodule SalixMeet.MeetingBriefingTest do
     refute briefing =~ "{"
   end
 
+  test "a Zoom, Teams or Feishu/Lark link makes a complete card labelled Join meeting" do
+    for url <- [
+          "https://us02web.zoom.us/j/81234567890?pwd=abc",
+          "https://teams.live.com/meet/9312345678901",
+          "https://vc-sg.larksuite.com/j/123456789"
+        ] do
+      context =
+        put_in(
+          context(),
+          ["effective_occurrence", "effective", "virtualLocations"],
+          locations(url)
+        )
+
+      assert MeetingBriefing.card_completeness(context) == :complete
+      assert MeetingBriefing.render_card(context) =~ "· [Join meeting](<#{url}>)"
+    end
+
+    unsupported =
+      put_in(
+        context(),
+        ["effective_occurrence", "effective", "virtualLocations"],
+        locations("https://zoom.us.evil.test/j/1")
+      )
+
+    assert MeetingBriefing.card_completeness(unsupported) == :missing_meet_link
+    refute MeetingBriefing.render_card(unsupported) =~ "evil"
+  end
+
+  defp locations(url),
+    do: %{"conference" => %{"@type" => "VirtualLocation", "uri" => url}}
+
   defp context do
     %{
       "calendar_item" => %{

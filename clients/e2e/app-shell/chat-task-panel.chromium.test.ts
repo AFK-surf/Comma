@@ -7,6 +7,7 @@ import {
   testClock,
 } from "./support/virtual-time";
 import { useWebApp } from "./support/web-app";
+import { chatSmokeTaskLoop } from "../p0/chat-stub-records";
 
 // The Tasks panel and inline Tasks, on the web app as one world
 // (./support/web-app): the app, its client core's worker and the chat stub
@@ -26,8 +27,11 @@ const taskFleet = [
     status: "in_progress",
     title: "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
   },
-  { id: "cnv_task_fleet_4", status: "completed", title: "生成周报摘要" },
+  { id: "cnv_task_fleet_4", status: "needs_review", title: "生成周报摘要" },
   { id: "cnv_task_fleet_5", status: "in_progress", title: "排查构建缓存问题" },
+  // Ended Tasks: they never dock.
+  { id: "cnv_task_fleet_6", status: "completed", title: "归档上周会议纪要" },
+  { id: "cnv_task_fleet_7", status: "cancelled", title: "预订周五晚餐" },
 ] as const;
 
 // The second task of "inline tasks reuse independent sidebar tabs…".
@@ -92,7 +96,7 @@ const stubs: Record<string, WebAppStubOptions["stub"]> = {
   "archive sits with a settled task's reveal actions": {
     assistantReply: "我已经创建了任务",
     inlineTaskReference: true,
-    taskStatus: "completed",
+    taskStatus: "ready_for_review",
   },
   "a revealed task turn releases the bounded window after handoff": {
     assistantReply: "我已经创建了任务",
@@ -125,19 +129,19 @@ const stubs: Record<string, WebAppStubOptions["stub"]> = {
     {
       includeTaskInInbox: true,
       inlineTaskReference: true,
-      taskStatus: "completed",
+      taskStatus: "ready_for_review",
     },
   "Home task row stays mounted and does not reveal again across Inbox refresh: in-flight":
     {
       includeTaskInInbox: true,
       inlineTaskReference: true,
-      taskStatus: "completed",
+      taskStatus: "ready_for_review",
     },
   "Home task row stays mounted and does not reveal again across Inbox refresh: reduced-motion":
     {
       includeTaskInInbox: true,
       inlineTaskReference: true,
-      taskStatus: "completed",
+      taskStatus: "ready_for_review",
     },
   "archived inline tasks remain visible and inert, and task previews stay outside the browser sidebar":
     {
@@ -148,6 +152,11 @@ const stubs: Record<string, WebAppStubOptions["stub"]> = {
       taskLabels: [{ id: "lbl_work", name: "Work", color: "blue" }],
       taskStatus: "completed",
     },
+  "a Loop Task's inline hover card stays at its chip": {
+    inlineTaskReference: true,
+    taskLoop: chatSmokeTaskLoop,
+    taskStatus: "active",
+  },
   "inline tasks reuse independent sidebar tabs and route explicit opens to task details":
     {
       inlineTaskReference: true,
@@ -272,6 +281,30 @@ test("inline tasks reuse independent sidebar tabs and route explicit opens to ta
   await first.click();
   await sidebar.getByRole("button", { name: "Open task", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`#${taskPath}$`));
+});
+
+test("a Loop Task's inline hover card stays at its chip", async ({ page }) => {
+  await app.open(page);
+  const main = page.locator('.comma-chat-route[data-variant="home"]');
+  await main.getByRole("textbox", { name: "AI prompt" }).fill("Create tasks");
+  await main.getByRole("button", { name: "Send", exact: true }).click();
+  const chip = main.getByTestId(`chat-inline-task-${smokeTaskId}`);
+  await expect(chip).toBeVisible();
+  await stepUntilAnimationsFinish();
+  await chip.hover();
+  const card = page.locator('[data-slot="hover-card"]');
+  await expect(card).toBeVisible();
+  await expect(card.locator('[data-chip="schedule"]')).toBeVisible();
+  await eventually(
+    async () => {
+      const [cardBox, chipBox] = await Promise.all([
+        card.boundingBox(),
+        chip.boundingBox(),
+      ]);
+      return Math.abs(cardBox!.x - chipBox!.x);
+    },
+    (distance) => expect(distance).toBeLessThanOrEqual(1)
+  );
 });
 
 test("archived inline tasks remain visible and inert, and task previews stay outside the browser sidebar", async ({
@@ -440,11 +473,17 @@ test("agent-created task docks above the composer, reveals its turn, and opens i
   // Anywhere else on the row — here its leading inset, outside every
   // control's own box — opens the Task's chat beside this one, the way the
   // Task's chip in the transcript does. It is navigation: the row stays.
+  // This chat enters the reply thread of the message that announced the Task.
   const sidebarChat = page.getByTestId(`chat-sidebar-conversation-${smokeTaskId}`);
+  const replyThread = content.getByRole("region", { name: "Reply thread" });
   await expect(sidebarChat).toHaveCount(0);
+  await expect(replyThread).toHaveCount(0);
   await item.click({ position: { x: 2, y: 2 } });
   await expect(sidebarChat).toBeVisible();
   await expect(item).toBeVisible();
+  await expect(
+    replyThread.locator('[data-message-id="msg-assistant-smoke"]')
+  ).toBeVisible();
 });
 
 test("Quick Chat shows the person's words before a Router reply creates a Task card", async ({
@@ -795,8 +834,11 @@ test("six tasks keep creation order and scroll inside the panel", async ({ page 
     "Needs Review"
   );
   await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_4")).toContainText(
-    "Done"
+    "Needs Review"
   );
+  // A done or cancelled Task leaves the panel by itself.
+  await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_6")).toHaveCount(0);
+  await expect(panel.getByTestId("chat-task-item-cnv_task_fleet_7")).toHaveCount(0);
 
   // A row is the control that opens its Task, followed by its text actions
   // in reading order: a running row offers Reveal, a settled row Dismiss and
@@ -965,14 +1007,21 @@ test("focus returning to a chip the run has scrolled past leaves the reader at t
     const [box, view] = await Promise.all([chip.boundingBox(), viewport.boundingBox()]);
     return box!.y + box!.height - view!.y;
   };
-  await eventually(
-    async () => (await distanceFromBottom()) - (await chipBottom()),
-    (value) => expect(value).toBeGreaterThan(0)
-  );
+  // A fixed time, not until the layout shows it: how soon the thinking (a sentence every 140 ms) outgrows the
+  // viewport depends on the machine's fonts, and the run's next steps on the server would move with it (its record
+  // holds their times). Eight seconds outgrow it on every machine it runs on (four came within 15 px).
+  await testClock().advance(8_000);
+  expect(
+    (await distanceFromBottom()) - (await chipBottom()),
+    "more than a viewport of thinking lies below the chip"
+  ).toBeGreaterThan(0);
   const view = (await viewport.boundingBox())!;
   await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
   await page.mouse.wheel(0, 10_000);
-  await eventually(distanceFromBottom, (value) => expect(value).toBeLessThanOrEqual(1));
+  await testClock().advance(500);
+  expect(await distanceFromBottom(), "the reader is at the tail").toBeLessThanOrEqual(
+    1
+  );
   expect(await chipAboveViewport(), "the run scrolled the chip away").toBe(true);
   expect(
     await chipIsActive(),
@@ -1006,7 +1055,12 @@ test("focus returning to a chip the run has scrolled past leaves the reader at t
   // composer walks back into the transcript and lands on the chip: the reader
   // moved there, so the thread shows it and parks, and the next message is
   // announced in the pill.
-  await eventually(chipAboveViewport, (value) => expect(value).toBe(true));
+  // A fixed time again, as above: the thinking's growth past the chip depends on the machine's fonts.
+  await testClock().advance(8_000);
+  expect(
+    await chipAboveViewport(),
+    "the run's next thinking scrolled the chip away"
+  ).toBe(true);
   await prompt.click();
   for (let presses = 0; presses < 24 && !(await chipIsActive()); presses += 1) {
     await page.keyboard.press("Shift+Tab");

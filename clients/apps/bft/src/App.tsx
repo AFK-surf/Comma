@@ -57,6 +57,7 @@ import { SwarmConnectionsPage } from "./SwarmConnectionsPage";
 import { SwarmDevicesPage } from "./SwarmDevicesPage";
 import { SwarmPluginPage, SwarmPluginsPage } from "./SwarmPluginsPage";
 import { SwarmSettingsPage } from "./SwarmSettingsPage";
+import { SwarmStillfailPage } from "./SwarmStillfailPage";
 import { SwarmSkillsPage } from "./SwarmSkillsPage";
 import { SwarmsPage } from "./SwarmsPage";
 import { scheduledView, SwarmTasksPage } from "./SwarmTasksPage";
@@ -178,6 +179,7 @@ function OrgPage({ route }: { route: OrgPageRoute }) {
     case "project-devices":
     case "project-agents":
     case "project-skills":
+    case "project-stillfail":
       return (
         <SwarmPage
           agent={route.name === "project-agents" ? route.agent : undefined}
@@ -493,6 +495,7 @@ function SwarmPage({
     | "project-devices"
     | "project-plugins"
     | "project-skills"
+    | "project-stillfail"
     | "project-tasks"
     | "project-connections"
     | "project-settings";
@@ -588,6 +591,24 @@ function SwarmPage({
           {(skills, retry) => (
             <SwarmSkillsPage
               first={skills}
+              onRetry={retry}
+              org={org}
+              project={project}
+            />
+          )}
+        </SwarmRoute>
+      );
+    case "project-stillfail":
+      return (
+        <SwarmRoute
+          {...common}
+          load={(api, signal) => api.swarmStillfail(org, project, signal)}
+          resourceKey="swarm-stillfail"
+          title={(data) => `${messages.swarmStillfail.title} · ${data.project.name}`}
+        >
+          {(page, retry) => (
+            <SwarmStillfailPage
+              first={page}
               onRetry={retry}
               org={org}
               project={project}
@@ -854,8 +875,6 @@ function OrgRunners({ org }: { org: string }) {
       <RunnersPage
         api={{
           page: (cursor, signal) => api.runners(org, cursor, signal),
-          connectors: (runnerId, cursor, signal) =>
-            api.runnerConnectors(org, runnerId, cursor, signal),
           onboarding: (signal) => api.runnerOnboarding(org, signal),
           createInstallCommand: () => api.createInstallCommand(org),
           rotateKey: (keyId) => api.rotateRunnerKey(org, keyId),

@@ -306,7 +306,7 @@ defmodule BillingCommerce.RedeemCodesTest do
              RedeemCodes.list_redemptions(%{redeem_code_id: " "})
   end
 
-  test "internal subscription redeem creates schedule and scheduler issues redeem_subscription_cycle grant" do
+  test "internal subscription redeem issues the current redeem_subscription_cycle grant before it answers" do
     {:ok, %{code: code}} =
       RedeemCodes.create_code(%{
         code: "bridge-sub-1",
@@ -332,11 +332,12 @@ defmodule BillingCommerce.RedeemCodesTest do
     assert redemption.source_id == subscription.id
     assert cycle.grant_source_type == "redeem_subscription_cycle"
 
-    assert {:ok, %{cycles: [%{grant: grant}]}} =
-             Subscriptions.run_due_cycles(%{at: ~U[2026-06-02 00:00:00Z], limit: 10})
-
-    assert %{source_type: "redeem_subscription_cycle"} = grant_source(grant.id)
+    # The balance read right after the redeem already has the credits; the scheduler finds nothing left.
     assert grant_count("bridge-ba-org_redeem_sub") == 1
+    assert %{source_type: "redeem_subscription_cycle"} = grant_source(cycle_grant_id(cycle.id))
+
+    assert {:ok, %{processed: 0}} =
+             Subscriptions.run_due_cycles(%{at: ~U[2026-06-02 00:00:00Z], limit: 10})
   end
 
   test "redeem codes reject package surface mismatches" do
@@ -521,7 +522,10 @@ defmodule BillingCommerce.RedeemCodesTest do
 
     assert {:ok, %{idempotent: true}} = RedeemCodes.apply_code(attrs)
 
-    for offset <- 0..11 do
+    # The redeem issued the current month; the scheduler issues each later one when it starts.
+    assert grant_count(attrs.billing_account_id) == 1
+
+    for offset <- 1..11 do
       starts = DateTime.shift(~U[2026-12-01 00:00:00Z], month: offset)
       ends = DateTime.shift(starts, month: 1)
 
@@ -620,6 +624,17 @@ defmodule BillingCommerce.RedeemCodesTest do
       )
 
     surface
+  end
+
+  defp cycle_grant_id(cycle_id) do
+    %{rows: [[grant_id]]} =
+      Ecto.Adapters.SQL.query!(
+        BillingCore.Repo,
+        "SELECT credit_grant_id FROM billing_subscription_cycles WHERE id = $1",
+        [cycle_id]
+      )
+
+    grant_id
   end
 
   defp grant_source(grant_id) do

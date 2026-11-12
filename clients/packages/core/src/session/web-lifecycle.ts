@@ -70,6 +70,7 @@ import {
   type WebSessionPorts,
 } from "../host.ts";
 import { type LifecycleDeps, SessionLifecycle } from "./lifecycle.ts";
+import { AbuseError } from "./abuse.ts";
 import {
   authStartRefusal,
   type AuthResponse,
@@ -131,6 +132,9 @@ class Fault extends Error {
 }
 
 type Op<A> = Effect.Effect<A, Fault>;
+
+/** Release only while no Cookie request is outstanding, and reacquire before record work resumes. */
+type CookieHumanWait = <A, E>(work: Effect.Effect<A, E>) => Effect.Effect<A, E | Fault>;
 
 /** The Cookie as the core last adopted it from the record. */
 type Adopted = {
@@ -381,10 +385,11 @@ export class WebSessionLifecycle extends SessionLifecycle {
     const operation = "request_email_login" as const;
     return Effect.suspend(() => {
       const epoch = this.nextEpoch();
+      let peerChanged = false;
       const attempt = this.newAttempt(input.expected);
       if (!this.canStartAuthentication(input.expected))
         return Effect.succeed(this.failure(operation, "conflict"));
-      return this.#locked(
+      return this.#locked((humanWait) =>
         Effect.gen({ self: this }, function* () {
           const record = yield* this.#ensureSettledRecordForIntent();
           if (!this.#canCommitAuthAttempt(record, input.expected))
@@ -398,14 +403,28 @@ export class WebSessionLifecycle extends SessionLifecycle {
           this.attempt = { attempt, kind: "email", operationEpoch: epoch };
           this.#adopt(authenticating);
           this.publishTransient("authenticating");
-          const response = yield* this.#request(
-            "POST",
-            "/v1/comma/auth/email/login",
-            "none",
-            {
-              email: input.email.trim(),
-            }
+          const requested = yield* Effect.result(
+            this.protectedAuthRequest<Fault | AbuseError>(
+              "/v1/comma/auth/email/login",
+              { email: input.email.trim(), platform: "web" },
+              (path, body) =>
+                Effect.gen({ self: this }, function* () {
+                  yield* this.#resumeAuthAttempt(authenticating, attempt, () => {
+                    peerChanged = true;
+                  });
+                  return yield* this.#request("POST", path, "none", body);
+                }),
+              () => Effect.void,
+              humanWait
+            )
           );
+          if (Result.isFailure(requested)) {
+            if (!(requested.failure instanceof AbuseError))
+              return yield* Effect.fail(requested.failure);
+            yield* this.#clearAttemptIfCurrent(authenticating, attempt.attemptId);
+            return this.failure(operation, requested.failure.code);
+          }
+          const response = requested.success;
           if (!response) {
             yield* this.#clearAttemptIfCurrent(authenticating, attempt.attemptId);
             return this.failure(operation, "network_unavailable");
@@ -440,6 +459,11 @@ export class WebSessionLifecycle extends SessionLifecycle {
           return this.failure(operation, authStartRefusal(response));
         })
       ).pipe(
+        Effect.tap(() =>
+          peerChanged
+            ? this.reconcile({ expected: attempt.expected, reason: "peer_mutation" })
+            : Effect.void
+        ),
         Effect.catch((fault: Fault) =>
           Effect.sync(() => this.#operationFailure(operation, fault, epoch))
         )
@@ -1001,9 +1025,10 @@ export class WebSessionLifecycle extends SessionLifecycle {
     type Result = SessionOperationResult<Value, Operation>;
     return Effect.suspend((): Effect.Effect<Result> => {
       const epoch = this.nextEpoch();
+      let peerChanged = false;
       if (!this.isCurrentAttempt(input.attempt))
         return Effect.succeed(this.failure(operation, "conflict") as Result);
-      return this.#locked(
+      return this.#locked((humanWait) =>
         Effect.gen({ self: this }, function* () {
           const record = yield* this.#ensureSettledRecordForIntent();
           if (
@@ -1012,15 +1037,55 @@ export class WebSessionLifecycle extends SessionLifecycle {
             !this.isCurrentAttempt(input.attempt)
           )
             return this.failure(operation, "conflict") as Result;
-          const marker = yield* this.#writeInFlight(record, epoch, {
+          let settledRecord: SettledRecord = record;
+          let marker = yield* this.#writeInFlight(record, epoch, {
             authAttemptId: input.attempt.attemptId,
             expectedSessionId: "none",
             kind: input.kind,
           });
-          const response = yield* this.#request("POST", input.path, "none", {
-            ...input.body,
-            ...clientMetadata(this.#ports.userAgent),
-          });
+          const body = { ...input.body, ...clientMetadata(this.#ports.userAgent) };
+          let firstRequest = true;
+          const send = (path: string, payload: Record<string, unknown>) =>
+            Effect.gen({ self: this }, function* () {
+              if (!firstRequest) {
+                settledRecord = yield* this.#resumeAuthAttempt(
+                  settledRecord,
+                  input.attempt,
+                  () => {
+                    peerChanged = true;
+                  }
+                );
+                marker = yield* this.#writeInFlight(settledRecord, epoch, {
+                  authAttemptId: input.attempt.attemptId,
+                  expectedSessionId: "none",
+                  kind: input.kind,
+                });
+              }
+              firstRequest = false;
+              return yield* this.#request("POST", path, "none", payload);
+            });
+          const requested = yield* Effect.result(
+            input.kind === "complete_google_login"
+              ? this.protectedAuthRequest<Fault | AbuseError>(
+                  input.path,
+                  body,
+                  send,
+                  () =>
+                    Effect.gen({ self: this }, function* () {
+                      // A 428 has no Cookie effect. Do not keep a network mutation marker while the person solves CAPTCHA.
+                      settledRecord = yield* this.#restoreAfterResponse(marker);
+                    }),
+                  humanWait
+                )
+              : send(input.path, body)
+          );
+          if (Result.isFailure(requested)) {
+            if (!(requested.failure instanceof AbuseError))
+              return yield* Effect.fail(requested.failure);
+            yield* this.#clearAttemptIfCurrent(settledRecord, input.attempt.attemptId);
+            return this.failureOrUnknown(operation, requested.failure.code) as Result;
+          }
+          const response = requested.success;
           if (!response) {
             this.publishIndeterminate("credential_mutation_uncertain", "authenticate");
             return this.failure(operation, "credential_mutation_uncertain") as Result;
@@ -1093,6 +1158,14 @@ export class WebSessionLifecycle extends SessionLifecycle {
           ) as Result;
         })
       ).pipe(
+        Effect.tap(() =>
+          peerChanged
+            ? this.reconcile({
+                expected: input.attempt.expected,
+                reason: "peer_mutation",
+              })
+            : Effect.void
+        ),
         Effect.catch((fault: Fault) =>
           Effect.sync(() => this.#operationFailure(operation, fault, epoch) as Result)
         )
@@ -1488,6 +1561,35 @@ export class WebSessionLifecycle extends SessionLifecycle {
     });
   }
 
+  #resumeAuthAttempt(
+    previous: SettledRecord,
+    attempt: SessionAuthAttemptRef,
+    peerChanged: () => void
+  ): Effect.Effect<SettledRecord, Fault | AbuseError> {
+    return Effect.gen({ self: this }, function* () {
+      const read = yield* this.#read();
+      if (read.kind !== "valid")
+        return yield* Effect.fail(
+          new Fault("storage", "The Cookie record could not be read after CAPTCHA.")
+        );
+      if (
+        read.record.kind !== "authenticating" ||
+        read.record.cookieAuthorityId !== previous.cookieAuthorityId ||
+        read.record.cookieGeneration !== previous.cookieGeneration ||
+        read.record.activeAuthAttemptId !== attempt.attemptId ||
+        !this.isCurrentAttempt(attempt)
+      ) {
+        if (this.isCurrentAttempt(attempt)) {
+          this.attempt = undefined;
+          this.publishIndeterminate("session_probe_unavailable", "reconcile");
+          peerChanged();
+        }
+        return yield* Effect.fail(new AbuseError("cancelled"));
+      }
+      return read.record;
+    });
+  }
+
   #clearAttemptIfCurrent(
     previous: Extract<WebSessionRecord, { kind: "authenticating" }>,
     attemptId: string
@@ -1621,30 +1723,42 @@ export class WebSessionLifecycle extends SessionLifecycle {
     );
   }
 
-  /** The origin's Cookie lock (shared with the page adapter): waited for at most 2 s, held while `work` runs. */
-  #locked<A>(work: Op<A>): Op<A> {
+  /** Cookie work holds the shared lock; evidence collection may yield it and must fence its resumed request. */
+  #locked<A>(work: Op<A> | ((humanWait: CookieHumanWait) => Op<A>)): Op<A> {
     const ports = this.#ports;
     const name = this.#lockName;
     return Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        const release = yield* restore(
-          ports.lock(name).pipe(
-            Effect.mapError((e) =>
-              e instanceof HostUnsupported
-                ? new Fault(
-                    "unsupported",
-                    "Web Locks is required for the Cookie Session authority."
-                  )
-                : new Fault("other", e.message)
-            ),
-            Effect.timeoutOrElse({
-              duration: LOCK_ACQUIRE_TIMEOUT_MS,
-              orElse: () =>
-                Effect.fail(new Fault("lock_timeout", "Web Session lock timed out.")),
-            })
-          )
+        const acquire = Effect.suspend(() => ports.lock(name)).pipe(
+          Effect.mapError((e) =>
+            e instanceof HostUnsupported
+              ? new Fault(
+                  "unsupported",
+                  "Web Locks is required for the Cookie Session authority."
+                )
+              : new Fault("other", e.message)
+          ),
+          Effect.timeoutOrElse({
+            duration: LOCK_ACQUIRE_TIMEOUT_MS,
+            orElse: () =>
+              Effect.fail(new Fault("lock_timeout", "Web Session lock timed out.")),
+          })
         );
-        return yield* restore(work).pipe(Effect.ensuring(Effect.sync(release)));
+        let release: (() => void) | undefined = yield* restore(acquire);
+        const humanWait: CookieHumanWait = (waiting) =>
+          Effect.uninterruptibleMask((resume) =>
+            Effect.gen(function* () {
+              release?.();
+              release = undefined;
+              const outcome = yield* Effect.exit(resume(waiting));
+              release = yield* acquire;
+              return yield* outcome;
+            })
+          );
+        const run = typeof work === "function" ? work(humanWait) : work;
+        return yield* restore(run).pipe(
+          Effect.ensuring(Effect.sync(() => release?.()))
+        );
       })
     ).pipe(
       // A bug or a host port that threw (a rejected transition, random bytes refused) fails the operation as one

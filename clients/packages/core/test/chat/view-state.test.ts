@@ -111,4 +111,22 @@ describe("a conversation's projection as a window shows it", () => {
       conversation: { id: "cnv_1", review_version: 2, status: "ready_for_review" },
     });
   });
+
+  it("keeps each unchanged message the same object from one state to the next", () => {
+    const kept = message("m-kept", "Done");
+    const before = projectionToChannelState(
+      projection({
+        messages: [kept],
+        serverMessages: [kept],
+      } as Partial<ConversationProjection>)
+    );
+    const after = projectionToChannelState(
+      projection({
+        messages: [kept, message("m-new", "Next")],
+        serverMessages: [kept],
+      } as Partial<ConversationProjection>)
+    );
+    expect(after.messages[0]).toBe(before.messages[0]);
+    expect(after.serverMessages[0]).toBe(before.serverMessages[0]);
+  });
 });

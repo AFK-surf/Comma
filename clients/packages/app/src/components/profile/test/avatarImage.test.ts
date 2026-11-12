@@ -3,6 +3,7 @@ import {
   avatarCropAt,
   avatarOutputSideFor,
   canUploadOriginal,
+  encodeAnimatedAvatar,
   initialAvatarCrop,
   isAcceptedAvatarFile,
 } from "../avatarImage";
@@ -15,7 +16,8 @@ describe("avatar image preparation", () => {
     expect(isAcceptedAvatarFile(file(10 * 1024 * 1024))).toBe(true);
     expect(isAcceptedAvatarFile(file(10 * 1024 * 1024 + 1))).toBe(false);
     expect(isAcceptedAvatarFile(file(0))).toBe(false);
-    expect(isAcceptedAvatarFile(file(1024, "image/gif"))).toBe(false);
+    expect(isAcceptedAvatarFile(file(1024, "image/gif"))).toBe(true);
+    expect(isAcceptedAvatarFile(file(1024, "image/bmp"))).toBe(false);
   });
 
   it("keeps the square crop inside the image while zooming and panning", () => {
@@ -31,7 +33,7 @@ describe("avatar image preparation", () => {
   });
 
   it("re-encodes only when the upload would be cropped, large, or heavy", () => {
-    const small = { size: 50 * 1024 };
+    const small = { size: 50 * 1024, type: "image/png" };
     const square = { width: 400, height: 400 };
 
     expect(canUploadOriginal(small, square, initialAvatarCrop(square))).toBe(true);
@@ -39,10 +41,34 @@ describe("avatar image preparation", () => {
       canUploadOriginal(small, square, avatarCropAt(square, 1.5, { x: 0, y: 0 }))
     ).toBe(false);
     expect(
-      canUploadOriginal({ size: 300 * 1024 }, square, initialAvatarCrop(square))
+      canUploadOriginal(
+        { size: 300 * 1024, type: "image/png" },
+        square,
+        initialAvatarCrop(square)
+      )
     ).toBe(false);
     const large = { width: 2000, height: 2000 };
     expect(canUploadOriginal(small, large, initialAvatarCrop(large))).toBe(false);
     expect(avatarOutputSideFor(initialAvatarCrop(large))).toBe(512);
+  });
+
+  it("never uploads a GIF as it is: the server keeps JPEG, PNG and WebP", () => {
+    const square = { width: 100, height: 100 };
+    expect(
+      canUploadOriginal(
+        { size: 1024, type: "image/gif" },
+        square,
+        initialAvatarCrop(square)
+      )
+    ).toBe(false);
+  });
+
+  it("sends a moving GIF still where its frames cannot be read", async () => {
+    // jsdom has no ImageDecoder, like browsers without WebCodecs.
+    const gif = new File([new Uint8Array(1024)], "dance.gif", { type: "image/gif" });
+    const source = { width: 300, height: 200 };
+    await expect(
+      encodeAnimatedAvatar(gif, source, initialAvatarCrop(source))
+    ).resolves.toBeUndefined();
   });
 });

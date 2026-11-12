@@ -20,13 +20,10 @@ const runner = (id: string, name: string, extra = {}) => ({
   host_identity: `${id}.local`,
   os_summary: "macOS arm64",
   version: "0.9.4",
-  component_versions: { "salix-connect": "2026.09.20" },
+  component_versions: { "agent-vmm-host": "2026.09.20" },
   update_available: false,
-  capacity: 4,
-  current_connector_count: 1,
   last_seen_at: minutesAgo(1),
   last_seen_age_seconds: 60,
-  connectors: { total: 2, by_status: [{ status: "connected", count: 2 }] },
   credential: { active: true, key_id: `key-${id}`, created_at: minutesAgo(600) },
   ...extra,
 });
@@ -90,13 +87,6 @@ const command = (code: string) => ({
   runner_stable_id: null,
 });
 
-const connectorEntry = (index: number) => ({
-  id: `c-${index}`,
-  name: `connector-${index}`,
-  provisioning_status: index === 1 ? "failed" : "connected",
-  project_id: "p-1",
-  project_name: index === 2 ? null : "Support Desk",
-});
 async function openRunners(
   page: Page,
   handle: (
@@ -122,30 +112,8 @@ async function openRunners(
 const writes = (requests: RecordedRequest[]) =>
   requests.filter((request) => request.method !== "GET");
 
-test("lists the fleet and pages a runner's connectors as the list scrolls", async ({
-  page,
-}) => {
-  const big = runner("office-1", "office-1", {
-    connectors: { total: 51, by_status: [{ status: "connected", count: 51 }] },
-  });
-  const requests = await openRunners(
-    page,
-    (request) =>
-      request.path === "/orgs/acme/runners/office-1/connectors"
-        ? ok(
-            request.search.includes("cursor=page-2")
-              ? { entries: [connectorEntry(51)], cursor: "page-2", next_cursor: null }
-              : {
-                  entries: Array.from({ length: 50 }, (_, index) =>
-                    connectorEntry(index + 1)
-                  ),
-                  cursor: null,
-                  next_cursor: "page-2",
-                }
-          )
-        : undefined,
-    runnersPage([big, fleet[1]])
-  );
+test("lists the fleet and shows a runner's details", async ({ page }) => {
+  await openRunners(page);
 
   const metrics = page.locator(".bft-metrics");
   await expect(metrics).toContainText("Runners2");
@@ -160,18 +128,9 @@ test("lists the fleet and pages a runner's connectors as the list scrolls", asyn
   );
 
   await page.getByRole("button", { name: "Show details of office-1" }).click();
-  const connectors = page.getByRole("region", { name: "Connectors" });
-  await expect(connectors.getByRole("listitem")).toHaveCount(50);
-  await expect(connectors.getByText("No Agent Swarm")).toBeVisible();
-  expect(requests.filter((request) => request.search.includes("page-2"))).toEqual([]);
-
-  await connectors.getByText("connector-1", { exact: true }).hover();
-  for (let step = 0; step < 10; step += 1) {
-    if (requests.some((request) => request.search.includes("page-2"))) break;
-    await page.mouse.wheel(0, 400);
-    await page.waitForTimeout(100);
-  }
-  await expect(connectors.getByRole("listitem")).toHaveCount(51);
+  const detail = page.locator("#bft-runner-office-1");
+  await expect(detail).toContainText("office-1.local · macOS arm64");
+  await expect(detail).toContainText("agent-vmm-host 2026.09.20");
 });
 
 test("rotating a key is confirmed first and shows the new command once", async ({

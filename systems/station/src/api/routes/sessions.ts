@@ -90,7 +90,7 @@ async function onDisk(read: Tools["read"], r: Request, key: string, name: string
 const MAX_PART = 8 * 1024 * 1024;
 
 /// GET /sessions/:key/parts?name=&offset=&length=: `length` bytes of a file from `offset` (fewer at its end), with its
-/// whole size (`stillfail-total`): a big file is fetched a part at a time, onto the disk, never all in memory.
+/// whole size (`comma-station-total`): a big file is fetched a part at a time, onto the disk, never all in memory.
 async function part(read: Tools["read"], r: Request, key: string): Promise<Answer> {
   const num = (name: string, fallback: number) => {
     const v = param(r, name);
@@ -113,7 +113,7 @@ async function part(read: Tools["read"], r: Request, key: string): Promise<Answe
       if (bytesRead === 0) break;
       got += bytesRead;
     }
-    return answered(found.type, bytes.subarray(0, got), { "stillfail-total": String(total) });
+    return answered(found.type, bytes.subarray(0, got), { "comma-station-total": String(total), "stillfail-total": String(total) });
   } catch (e) {
     return error(500, ioMessage(e as NodeJS.ErrnoException));
   } finally {

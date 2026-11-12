@@ -72,6 +72,9 @@ def noteResult (state tool input status errorClass message content : Term) : Ker
   if !tool.isBinary || tool == b "wait_for" || tool == b "tool_call.get_result" ||
       status == b "async_running" || status == b "running" then return state
   let outcome := if status == b "error" then b "failed" else status
+  -- A refusal says nothing about its input, so a model that varies the input
+  -- of a refused call (a new runtime message id each round) still repeats it.
+  let input := if status == b "guidance" then nil else input
   let hash ← fingerprint (.tuple [tool, input, outcome, errorClass, message, content])
   let previous ← field state "repeated_tool_result_streak"
   let oldCount := previous.get (b "count")

@@ -171,7 +171,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     worker = worker!(project, "Investigation Worker")
     other_worker = worker!(project, "Another eligible Worker")
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(router_id, session_id)
+    :ok = create_session_fixture!(router_id, session_id)
     root_ts = Fixture.root_ts()
     source = Fixture.mirrored_message(root_ts, "U_SOURCE", "Inspect the token-expired rollout.")
     Fixture.put_thread([source])
@@ -313,7 +313,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     worker = worker!(project, "Source-isolated Worker")
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(router_id, session_id)
+    :ok = create_session_fixture!(router_id, session_id)
     Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_SOURCE", "Investigate.")])
     original = seed_original!(authority, project)
     ref = "triage-delegation:#{original.obligation_id}:0"
@@ -382,7 +382,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     worker = worker!(project, "Shared investigation Worker")
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(router_id, session_id)
+    :ok = create_session_fixture!(router_id, session_id)
 
     # The finite mirror fixture exposes each exact frozen thread while its
     # corresponding real Provider check runs; no other check runs during the
@@ -581,7 +581,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     worker = worker!(project, "Mixed-source Worker")
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(router_id, session_id)
+    :ok = create_session_fixture!(router_id, session_id)
     Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_SOURCE", "Investigate.")])
     original = seed_original!(authority, project)
     ref = "triage-delegation:#{original.obligation_id}:0"

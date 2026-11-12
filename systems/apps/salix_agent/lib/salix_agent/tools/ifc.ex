@@ -66,6 +66,11 @@ defmodule SalixAgent.Tools.IFC do
           "minItems" => 1,
           "description" => "src: refs of the information to carry across."
         },
+        "request" => %{
+          "type" => "string",
+          "description" =>
+            "src: ref of the request this is for, when the activation holds several. Its sender is who confirms."
+        },
         "summary" => %{
           "type" => "string",
           "description" =>
@@ -83,6 +88,7 @@ defmodule SalixAgent.Tools.IFC do
     params = if is_map(args["params"]), do: args["params"], else: %{}
     refs = args["sources"] |> List.wrap() |> Enum.filter(&is_binary/1)
     summary = String.trim(to_string(args["summary"] || ""))
+    ctx = Context.with_request(ctx, args["request"])
     wire = Map.get(ctx, :ifc)
 
     with :ok <- validate(target, refs, summary, wire),

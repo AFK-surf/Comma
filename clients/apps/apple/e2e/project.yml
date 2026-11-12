@@ -14,8 +14,14 @@ settings:
     CODE_SIGNING_ALLOWED: NO
     COMMA_APPLE_DIR: $(SRCROOT)/..
 packages:
+  AppAuth:
+    url: https://github.com/openid/AppAuth-iOS
+    exactVersion: 2.0.0
   CommaCore:
     path: ../../../packages/apple-core
+  libwebp:
+    url: https://github.com/SDWebImage/libwebp-Xcode
+    exactVersion: 1.6.0
 targets:
   # The production shell on the client core the app carries, which a fixture server answers in the process
   # (Fixture/FixtureServer.swift): no backend is contacted.
@@ -33,6 +39,7 @@ targets:
       - path: ../Resources/Assets.xcassets
       - path: ../Resources/AppIcon.icon
       - path: ../Resources/Localizable.xcstrings
+      - path: ../Tests/Fixtures
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture
@@ -40,6 +47,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # The composer's microphone records for dictation.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Talk with Comma in a voice call, or dictate a message.
         SWIFT_OBJC_BRIDGING_HEADER: $(COMMA_APPLE_DIR)/iOS/Core/Comma-Bridging-Header.h
         CLANG_CXX_LANGUAGE_STANDARD: c++20
         HEADER_SEARCH_PATHS:
@@ -53,6 +62,8 @@ targets:
         basedOnDependencyAnalysis: false
     dependencies:
       - package: CommaCore
+      - package: AppAuth
+      - package: libwebp
       - framework: ../Vendor/hermes/hermes.xcframework
         embed: true
   CommaGestureUITests:

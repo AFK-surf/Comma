@@ -331,6 +331,31 @@ const meta = {
 export default meta;
 type Story = StoryObj<StoryArgs>;
 
+/**
+ * With full motion the palette enters from opacity 0 and a smaller scale: an
+ * assertion of visibility or size holds only once the browser has drawn the
+ * transitions, which a busy runner may not do within waitFor's second. Waits
+ * for them to end instead. The transitions start once React Aria drops
+ * `data-entering`, which takes no frame. The loading mark's own loop never
+ * ends, so only transitions count.
+ */
+const paletteEntered = async (document: Document) => {
+  const overlay = document.querySelector<HTMLElement>(
+    '[data-slot="command-palette-overlay"]'
+  );
+  await expect(overlay).not.toBeNull();
+  await waitFor(() => {
+    expect(overlay).not.toHaveAttribute("data-entering");
+    expect(overlay!.querySelector("[data-entering]")).toBeNull();
+  });
+  await Promise.all(
+    overlay!
+      .getAnimations({ subtree: true })
+      .filter((animation) => animation instanceof CSSTransition)
+      .map((animation) => animation.finished)
+  );
+};
+
 const expectStateFillsContent = async (document: Document, slot: string) => {
   const content = document.querySelector<HTMLElement>(
     '[data-slot="command-palette-content"]'
@@ -555,7 +580,8 @@ export const LoadingResults: Story = {
     const scene = logo?.querySelector(".comma-logo-animation__scene");
 
     await expect(loading).toHaveAccessibleName("Loading results");
-    await waitFor(() => expect(logo).toBeVisible());
+    await paletteEntered(document);
+    await expect(logo).toBeVisible();
     await expect(scene).toBeInTheDocument();
 
     await expectStateFillsContent(document, "command-palette-loading");

@@ -32,6 +32,12 @@ defmodule Comma.Accounts.RuntimeConfigTest do
   IO.puts("AUTH_RATE_LIMIT_SECRET_TRIMMED=" <> inspect(auth[:rate_limit_secret] == String.duplicate("r", 32)))
   '''
 
+  @abuse_expression ~S'''
+  config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
+  abuse = get_in(config, [:comma_core, :auth_abuse])
+  IO.puts("ABUSE_SETTINGS=" <> Jason.encode!(%{enabled: abuse[:enabled], site_key: abuse[:turnstile][:site_key], secret_configured: is_binary(abuse[:turnstile][:secret]), apple: Map.new(abuse[:apple]), play: Map.new(abuse[:play])}))
+  '''
+
   @telegram_expression ~S'''
   telegram = get_in(Config.Reader.read!("config/runtime.exs", env: :prod, target: :host), [:comma_web, :telegram])
   IO.puts("TELEGRAM_ENABLED=" <> inspect(telegram[:enabled]))
@@ -133,6 +139,34 @@ defmodule Comma.Accounts.RuntimeConfigTest do
     refute output =~ "runtime-postmark-token"
   end
 
+  test "proof provider settings load from JSON without making optional providers a startup requirement",
+       %{results: results} do
+    {configured, 0} = results.production_abuse
+    assert configured =~ ~s|"enabled":true|
+    assert configured =~ ~s|"site_key":"json-site"|
+    assert configured =~ ~s|"secret_configured":true|
+    assert configured =~ ~s|"app_id":"TEAMID.surf.comma.ios"|
+    assert configured =~ ~s|"environment":"production"|
+
+    assert configured =~
+             ~s|"decoder_service_account":"decoder@example-project.iam.gserviceaccount.com"|
+
+    assert configured =~ ~s|"project_number":"123"|
+    assert configured =~ ~s|"certificate_digests":["release-digest"]|
+    refute configured =~ "json-turnstile-secret"
+    {default, 0} = results.default_abuse
+    assert default =~ ~s|"enabled":false|
+    assert default =~ ~s|"decoder_service_account":null|
+  end
+
+  test "an environment Redis URL cannot replace missing auth JSON configuration", %{
+    results: results
+  } do
+    {output, status} = results.missing_json_redis
+    refute status == 0
+    assert output =~ "comma.auth.redis_url is required"
+  end
+
   test "production rejects weak, reused, or malformed auth configuration", %{results: results} do
     for {{_override, expected_error}, index} <- Enum.with_index(@weak_auth) do
       {output, status} = Map.fetch!(results, {:weak_auth, index})
@@ -209,6 +243,28 @@ defmodule Comma.Accounts.RuntimeConfigTest do
            }
          }), comma_environment: "production", expression: @origins_expression},
       production_email: {base, comma_environment: "production", expression: @email_expression},
+      default_abuse: {base, comma_environment: "production", expression: @abuse_expression},
+      production_abuse:
+        {write_runtime_config!(dir, %{
+           comma: %{
+             auth: %{
+               abuse: %{
+                 enabled: true,
+                 turnstile: %{site_key: "json-site", secret: "json-turnstile-secret"},
+                 apple: %{app_id: "TEAMID.surf.comma.ios", environment: "production"},
+                 play: %{
+                   decoder_service_account: "decoder@example-project.iam.gserviceaccount.com",
+                   project_number: "123",
+                   certificate_digests: ["release-digest"]
+                 }
+               }
+             }
+           }
+         }), comma_environment: "production", expression: @abuse_expression},
+      missing_json_redis:
+        {write_runtime_config!(dir, %{comma: %{auth: %{redis_url: nil}}}),
+         comma_environment: "production",
+         extra_env: [{"COMMA_REDIS_URL", "redis://127.0.0.1:6379/0"}]},
       trimmed_auth:
         {write_runtime_config!(dir, %{
            comma: %{

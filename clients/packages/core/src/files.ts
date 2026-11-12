@@ -1,4 +1,4 @@
-// A chat file's bytes (`files.read`): a message's attachment, an agent's blob, an image uploaded to the group, or the
+// A chat file's bytes (`files.read`): a message's attachment, an agent's blob, a file uploaded to the group, or the
 // person's own avatar, read for the account's session and answered whole with the type the server gave. The UI shows,
 // saves, copies or opens them; it never names the request. A read is whole, so it is bounded at 10 MB and the bytes
 // come back through the core's channel like any answer; a larger attachment plays or downloads in ranges instead
@@ -18,6 +18,7 @@
 // Bounds: one request per call, stopped when the UI lets the call go; nothing kept and no automatic retry (the person's
 // next action reads again); a file over 10 MB fails `too_large` after at most 10 MB and a byte arrived; a read is given
 // up after 10 minutes.
+import { lazySchema } from "@comma/chat-contract";
 import {
   chatAgentBlobRefSchema,
   chatAttachmentDownloadMaxBytes,
@@ -27,7 +28,7 @@ import { Effect } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
-import { isGroupImagePreviewPath } from "./chat/model/protocol.ts";
+import { isGroupImagePreviewPath, isGroupUploadPath } from "./chat/model/protocol.ts";
 import type { FileBytes, FileRange } from "./contract.ts";
 
 type FileRequest =
@@ -38,34 +39,64 @@ import { header } from "./host.ts";
 
 export const FILE_READ_TIMEOUT_MS = 600_000;
 
-const id = z.string().min(1).max(160);
-export const fileSourceSchema = z.discriminatedUnion("source", [
-  z
-    .object({
-      source: z.literal("attachment"),
-      group: id,
-      conversation: id,
-      message: id,
-      index: z.number().int().nonnegative(),
-    })
-    .strict(),
-  z
-    .object({
-      source: z.literal("agent-blob"),
-      group: id,
-      agent: id,
-      blobRef: chatAgentBlobRefSchema,
-    })
-    .strict(),
-  z
-    .object({
-      source: z.literal("group-file"),
-      group: id,
-      path: z.string().max(1024).refine(isGroupImagePreviewPath),
-    })
-    .strict(),
-  z.object({ source: z.literal("avatar"), revision: id }).strict(),
-]);
+const id = lazySchema(() => z.string().min(1).max(160));
+export const fileSourceSchema = lazySchema(() =>
+  z.discriminatedUnion("source", [
+    z
+      .object({
+        source: z.literal("attachment"),
+        group: id,
+        conversation: id,
+        message: id,
+        index: z.number().int().nonnegative(),
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("agent-blob"),
+        group: id,
+        agent: id,
+        blobRef: chatAgentBlobRefSchema,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("group-file"),
+        group: id,
+        path: z.string().max(1024).refine(isGroupUploadPath),
+      })
+      .strict(),
+    z.object({ source: z.literal("avatar"), revision: id }).strict(),
+    z
+      .object({
+        source: z.literal("sender-avatar"),
+        workspace: id,
+        request: id,
+        revision: id,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("recipient-avatar"),
+        request: id,
+        revision: id,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("target-avatar"),
+        grant: id,
+        revision: id,
+      })
+      .strict(),
+    z
+      .object({
+        source: z.literal("link-preview-avatar"),
+        ref: z.string().min(1).max(4096),
+      })
+      .strict(),
+  ])
+);
 
 /** The most of a file of a Task a station hosts one read of a part takes: its station's part. */
 export const HOSTED_PART = 8 * 1024 * 1024;
@@ -190,15 +221,19 @@ export function registerFiles(
   });
 }
 
-const saveSchema = z.object({
-  source: fileSourceSchema,
-  name: z.string().min(1).max(1024),
-});
-const rangeSchema = z.object({
-  source: fileSourceSchema,
-  offset: z.number().int().nonnegative(),
-  length: z.number().int().positive().max(chatAttachmentDownloadMaxBytes),
-});
+const saveSchema = lazySchema(() =>
+  z.object({
+    source: fileSourceSchema,
+    name: z.string().min(1).max(1024),
+  })
+);
+const rangeSchema = lazySchema(() =>
+  z.object({
+    source: fileSourceSchema,
+    offset: z.number().int().nonnegative(),
+    length: z.number().int().positive().max(chatAttachmentDownloadMaxBytes),
+  })
+);
 const CONTENT_RANGE = /^bytes (?:\d+-\d+|\*)\/(\d+)$/;
 
 /**
@@ -312,12 +347,11 @@ function save(
     if (request.method !== "GET")
       return yield* Effect.fail(CoreError.invalid("not a file read with a GET"));
     const account = yield* ctx.session.account();
-    // An attachment is read from its media URL, so its bytes never pass through the Comma server; any other file
-    // through the API under the session.
-    const from =
-      source.source === "attachment"
-        ? { url: (yield* mintMediaUrl(ctx, account, request.path)).url }
-        : { path: request.path, lease: account.lease };
+    // An attachment or an upload is read from its media URL, so its bytes never pass through the Comma server; any
+    // other file through the API under the session.
+    const from = hasMediaUrl(source)
+      ? { url: (yield* mintMediaUrl(ctx, account, request.path)).url }
+      : { path: request.path, lease: account.lease };
     const saved = yield* desktop
       .saveStream({ ...from, fileName })
       .pipe(Effect.mapError((error) => CoreError.host(error)));
@@ -331,10 +365,23 @@ function save(
   });
 }
 
-const mediaSchema = z.object({
-  url: z.string().regex(/^https?:\/\//),
-  expires_at: z.number(),
-});
+const mediaSchema = lazySchema(() =>
+  z.object({
+    url: z.string().regex(/^https?:\/\//),
+    expires_at: z.number(),
+  })
+);
+
+/**
+ * Whether `source` has a media URL (`mintMediaUrl`): a message's attachment, or a file uploaded to the group other than
+ * an image preview (which the server reads only after checking it is the image it says).
+ */
+export function hasMediaUrl(source: Source): boolean {
+  return (
+    source.source === "attachment" ||
+    (source.source === "group-file" && !isGroupImagePreviewPath(source.path))
+  );
+}
 
 /**
  * The media URL for the attachment `path` names (`POST …/media`), and when it expires: a URL the blob store signed, which
@@ -370,9 +417,9 @@ function link(
           "A file on a machine has no link to download it from: it is read whole (`files.read`)."
         )
       );
-    if (source.source !== "attachment")
+    if (!hasMediaUrl(source))
       return yield* Effect.fail(
-        new CoreError("unsupported", "Not a message's attachment.")
+        new CoreError("unsupported", "Not a message's attachment or an upload.")
       );
     const account = yield* ctx.session.account();
     const media = yield* mintMediaUrl(ctx, account, fileRequest(source).path);
@@ -382,6 +429,26 @@ function link(
 
 /** The request that reads `source`: for the core's own read, and for a download to the device (downloads.ts). */
 export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequest {
+  if (source.source === "sender-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/workspaces/${source.workspace}/task-requests/${source.request}/sender-avatar/${source.revision}`,
+    };
+  if (source.source === "link-preview-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/link-preview-avatars/${source.ref}`,
+    };
+  if (source.source === "target-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/task-request-targets/${source.grant}/avatar/${source.revision}`,
+    };
+  if (source.source === "recipient-avatar")
+    return {
+      method: "GET" as const,
+      path: route`/v1/comma/sent-task-requests/${source.request}/recipient-avatar/${source.revision}`,
+    };
   const groupPath =
     source.source === "avatar" ? "" : route`/v1/comma/groups/${source.group}`;
   return source.source === "avatar"
@@ -397,10 +464,15 @@ export function fileRequest(source: z.output<typeof fileSourceSchema>): FileRequ
             path: `${groupPath}${route`/agents/${source.agent}/resources`}`,
             body: { ref: source.blobRef },
           }
-        : {
-            method: "GET" as const,
-            path: `${groupPath}/files?${new URLSearchParams({ path: source.path })}`,
-          };
+        : isGroupImagePreviewPath(source.path)
+          ? {
+              method: "GET" as const,
+              path: `${groupPath}/files?${new URLSearchParams({ path: source.path })}`,
+            }
+          : {
+              method: "GET" as const,
+              path: `${groupPath}${route`/uploads/${source.path.slice("/uploads/".length)}`}`,
+            };
 }
 
 /**

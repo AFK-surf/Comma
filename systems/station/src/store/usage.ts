@@ -1,7 +1,7 @@
 // What the agents spent, as the station records it (the Rust station's store/usage.rs): one row per model call, with the
 // turn it was in, whom that turn worked for, in which thread and on which profile. The Store's usage methods call these.
 import type { DatabaseSync } from "node:sqlite";
-import { type Json, STILLFAIL_SURFACE } from "./rows.ts";
+import { type Json, COMMA_STATION_SURFACE } from "./rows.ts";
 
 /// A model call read from a transcript. Tokens as the provider bills them.
 export type UsageCall = {
@@ -89,7 +89,7 @@ export function usageTurns(db: DatabaseSync, session: string): UsageTurn[] {
              JOIN thread_sessions ts ON ts.thread = d.thread AND ts.session = d.session
              WHERE d.session = ?1 AND d.delivered_at IS NOT NULL AND e.author_kind = 'person' ORDER BY d.delivered_at`,
           )
-          .all(session, STILLFAIL_SURFACE) as Json[]
+          .all(session, COMMA_STATION_SURFACE) as Json[]
       ).map((r) => [r.at, r.who, r.thread])
     : [];
   const out: UsageTurn[] = [];

@@ -15,6 +15,13 @@ defmodule SalixCluster.Application do
   def start(_type, _args) do
     # Route agent placement through the ring (no-op routing on a single node).
     SystemsRuntime.put_env(:salix_agent, :placement, SalixCluster.Placement)
+    # A draining node that places keys elsewhere starts no new agent Server.
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :start_admission,
+      &SalixCluster.NodeLifecycle.admit_start/0
+    )
+
     SystemsRuntime.put_env(:salix_calendar, :placement, SalixCluster.CalendarPlacement)
     SystemsRuntime.put_env(:salix_im, :conversation_placement, SalixCluster.ConversationPlacement)
 
@@ -40,7 +47,18 @@ defmodule SalixCluster.Application do
              :conversation_owner_keeper_interval_ms,
              :timer.seconds(60)
            )},
-        {SalixCluster.Ring, on_change: &SalixCluster.ConversationOwnerKeeper.ring_changed/0},
+        # Owners the ring places elsewhere are released; the owners of active
+        # station Tasks are started again, here or on their owner node, so
+        # their watches survive a restart and a placement change. Signal
+        # accounts move with the ring too (its app depends on this one, so
+        # the call is soft).
+        {SalixCluster.Ring,
+         on_change: fn ->
+           SalixCluster.ConversationOwnerKeeper.ring_changed()
+           SalixIM.StationTaskWatchRecovery.ring_changed()
+           soft_call(SalixSignal.Account.Keeper, :ring_changed)
+         end,
+         on_ready: &SalixIM.StationTaskWatchRecovery.node_ready/0},
         # Owns the non-linked housekeeping tasks (Recovery's async prune).
         # Started unconditionally — Recovery instances launched directly by
         # tests need it even where the production sweeps are disabled.
@@ -51,6 +69,13 @@ defmodule SalixCluster.Application do
 
     opts = [strategy: :one_for_one, name: SalixCluster.Supervisor]
     SystemsRuntime.Supervisor.start_link(children, opts)
+  end
+
+  defp soft_call(module, function) do
+    if Code.ensure_loaded?(module) and function_exported?(module, function, 0),
+      do: apply(module, function, [])
+
+    :ok
   end
 
   defp maybe_libcluster(children) do
@@ -69,7 +94,7 @@ defmodule SalixCluster.Application do
       recovery_children =
         [SalixCluster.Recovery] ++
           session_work_notification_children() ++
-          [SalixCluster.Timers, SalixCluster.Schedules]
+          [SalixCluster.Schedules]
 
       children ++ recovery_children
     else

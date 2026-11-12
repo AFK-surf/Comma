@@ -7,6 +7,8 @@ import Observation
 @MainActor @Observable
 final class RouterChatModel {
     private(set) var pane: ConversationPane?
+    private(set) var name = "Comma"
+    @ObservationIgnored private var identityWatch: Task<Void, Never>?
     private(set) var isVisible = false
     private(set) var visibleMessageIDs: Set<String> = []
     /// Advances when a notification tap asks to show the router chat.
@@ -29,8 +31,20 @@ final class RouterChatModel {
 
     /// A new pane for the selected Workspace; nothing of the previous transcript counts as seen.
     func install(_ pane: ConversationPane) {
+        identityWatch?.cancel()
         self.pane = pane
+        name = "Comma"
         visibleMessageIDs = []
+        // One cached Router identity for the current Workspace. No per-Task reads or polling.
+        if let store = pane.store {
+            let boundary = store.boundaryToken
+            identityWatch = Task { [weak self] in
+                for await value in store.core.subscribe(["topic": "router", "workspace": pane.workspace.id], read: { CoreJSON(value: $0) }) {
+                    guard let self, self.pane === pane, store.isCurrent(boundary), !Task.isCancelled else { return }
+                    if case .value(let next) = value, let name = next.object?.string("name") { self.name = name }
+                }
+            }
+        }
     }
 
     func setSurfaceVisible(_ visible: Bool) {
@@ -67,6 +81,8 @@ final class RouterChatModel {
     func reportUnread(_ count: Int) { unreadCount = max(0, count) }
 
     func reset() {
+        identityWatch?.cancel(); identityWatch = nil
+        name = "Comma"
         pane = nil
         isVisible = false
         visibleMessageIDs = []

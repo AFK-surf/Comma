@@ -2,6 +2,7 @@
 <resources>
     <string name="call_open">Call</string>
     <string name="call_calling">Calling…</string>
+    <string name="call_active">Voice call active</string>
     <string name="call_ending">Ending…</string>
     <string name="call_ended">Call ended</string>
     <string name="call_failed">Call failed</string>
@@ -9,6 +10,9 @@
     <string name="call_not_connected">Call not connected</string>
     <string name="call_disabled">Voice calls are disabled for this workspace.</string>
     <string name="call_microphone_settings">Allow microphone access in Android Settings, then try again.</string>
+    <string name="call_microphone_title">Allow microphone access</string>
+    <string name="call_microphone_message">Calls need the microphone. Allow Comma to use the microphone in Android Settings, then start the call again.</string>
+    <string name="call_microphone_open_settings">Open Settings</string>
     <string name="call_output_failed">Could not change audio output.</string>
     <string name="call_minimize">Minimize call</string>
     <string name="call_expand">Expand call</string>
@@ -23,4 +27,5 @@
     <string name="call_output_selected">Selected</string>
     <string name="call_log_ended">%1$s · Call ended</string>
     <string name="call_end_call">End call</string>
+    <string name="call_channel">Voice calls</string>
 </resources>

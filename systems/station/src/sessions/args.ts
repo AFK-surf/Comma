@@ -225,8 +225,8 @@ const isHtml = (f: Attachment) => {
   return name.endsWith(".html") || name.endsWith(".htm");
 };
 
-/// What still.fail keeps of a post to Slack: the text with each HTML file not yet placed in it placed on a line of its
-/// own (drawn there as a visualization, as the agent would place it in a still.fail chat).
+/// What Comma keeps of a post to Slack: the text with each HTML file not yet placed in it placed on a line of its
+/// own (drawn there as a visualization, as the agent would place it in a Comma chat).
 export function placeFigures(text: string, files: Attachment[]): string {
   let kept = text;
   for (const f of files.filter(isHtml)) {
@@ -236,8 +236,8 @@ export function placeFigures(text: string, files: Attachment[]): string {
 }
 
 /// A post with files to a Slack thread that cannot take them (an app without files:write): what Slack is sent, the text
-/// with a link to the session in still.fail that opens its first figure (else its first file) on its own; and what
-/// still.fail keeps (placeFigures).
+/// with a link to the session in Comma that opens its first figure (else its first file) on its own; and what
+/// Comma keeps (placeFigures).
 export function slackWithFiles(text: string, files: Attachment[], link: string): [string, string] {
   const figure = files.find(isHtml);
   const t = (key: string) => tr(stationLang(), key);

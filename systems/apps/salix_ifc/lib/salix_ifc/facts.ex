@@ -17,6 +17,9 @@ defmodule SalixIFC.Facts do
     `{:members, set_of_principal_keys, revision}` or `:unknown`. Absent atoms
     are `:unknown`. For `{:tag, name}` atoms this is the set of principals
     cleared for the tag. Revisions are echoed into evidence.
+  * `cleared` — for each atom, principals an administrator cleared to read
+    it without being on its roster: a Group's supervisors. A principal named
+    here reads the atom; one not named is decided by the rest of the facts.
   * `placements` — for provider users, whether they are an `:internal` member
     or an `:external` guest of a connect's space. Absent means unknown.
   * `receipts` — declassification receipts; validity at `now` is decided here.
@@ -28,6 +31,7 @@ defmodule SalixIFC.Facts do
 
   defstruct scopes: %{},
             membership: %{},
+            cleared: %{},
             placements: %{},
             receipts: MapSet.new(),
             policy: %Policy{},
@@ -40,6 +44,7 @@ defmodule SalixIFC.Facts do
   @type t :: %__MODULE__{
           scopes: %{Atom.t() => scope_fact},
           membership: %{Atom.t() => membership_entry},
+          cleared: %{Atom.t() => MapSet.t(Principal.key())},
           placements: %{Principal.key() => %{Atom.connect() => placement}},
           receipts: MapSet.t(Receipt.t()),
           policy: Policy.t(),
@@ -128,9 +133,19 @@ defmodule SalixIFC.Facts do
     unless is_integer(now) and now >= 0,
       do: raise(ArgumentError, "now must be a non-negative integer")
 
+    cleared =
+      overrides
+      |> Map.get(:cleared, %{})
+      |> SalixIFC.Native.entries()
+      |> Map.new(fn {atom, principals} ->
+        validate_atom!(atom)
+        {atom, MapSet.new(SalixIFC.Native.list(principals), &Principal.key/1)}
+      end)
+
     %__MODULE__{
       scopes: scopes,
       membership: membership,
+      cleared: cleared,
       placements: placements,
       receipts: receipts,
       policy: policy,

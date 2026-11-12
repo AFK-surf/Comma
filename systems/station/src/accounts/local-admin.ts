@@ -1,6 +1,6 @@
 // The local admin interface (RFC43 §3.3): what the desktop app's Main reads and sets of this computer's account sources
 // (sources.ts) without the mesh or the network. HTTP on the Unix socket <data>/run/local-admin.sock (on Windows the
-// named pipe \\.\pipe\stillfail-local-admin-<hash of the data directory>, one per user's station), each request
+// named pipe \\.\pipe\comma-station-local-admin-<hash of the data directory>, one per user's station), each request
 // carrying `Authorization: Bearer <token>`, the token in <data>/local-admin.token (0600, made at the first start; on
 // Windows the data directory's own access, under the user's profile). Where it listens is written to
 // <data>/run/local-admin.address once it does. Only a process that can read the station's data directory can ask.
@@ -47,7 +47,7 @@ export const addressFile = (data: string) => join(runtimeDir(data), "local-admin
 /// named after it.
 export function localAdminAddress(data: string, os: string): string {
   if (os !== "windows") return socketFile(data);
-  return `\\\\.\\pipe\\stillfail-local-admin-${createHash("sha256").update(data).digest("hex").slice(0, 24)}`;
+  return `\\\\.\\pipe\\comma-station-local-admin-${createHash("sha256").update(data).digest("hex").slice(0, 24)}`;
 }
 /// How long a pipe still held by the station process before (a handover) is waited for.
 const PIPE_WAIT_MS = 60_000;

@@ -64,6 +64,8 @@ defmodule BridgeForTeams.Salix.Erpc do
   @remote_mcp_oauth Salix.Control.RemoteMCPOAuth
   @oauth_bindings Salix.Control.OAuthBindings
   @oauth_flow SalixWeb.OAuthFlow
+  @station_stats SalixStore.StationStats
+  @stillfail_devices SalixEnv.StillfailDevices
   @conversations SalixIM.Conversations
   @conversation_attachments SalixIM.ConversationAttachments
   @conversation_input SalixIM.ConversationInput
@@ -72,9 +74,12 @@ defmodule BridgeForTeams.Salix.Erpc do
   @provider_connects SalixIM.ProviderConnects
   @slack_history_reader SalixIM.SlackHistoryReader
   @daily_brief_source SalixIM.DailyBriefSource
+  @daily_brief_member_auth Salix.Bindings.DailyBriefMemberAuth
+  @daily_brief_personal_source Salix.Bindings.DailyBriefPersonalSource
   @daily_brief_surface SalixIM.DailyBriefSurface
   @triage_read_model SalixIM.Triage.ReadModel
   @ifc_admin SalixIM.IFC.Admin
+  @ssh_known_hosts SalixAgent.SSH.KnownHosts
   @meet SalixMeet
   @provider_http SalixIM.ProviderHTTP
   @feishu_checks SalixIM.FeishuChecks
@@ -98,6 +103,7 @@ defmodule BridgeForTeams.Salix.Erpc do
   @skill_catalog SalixAgent.SkillCatalog
   @env_control SalixEnv.Control
   @connector_tokens SalixEnv.ConnectorTokens
+  @group_api_keys Salix.Control.GroupApiKeys
   @schedules SalixCluster.Schedules
   @task_schedules SalixCluster.TaskSchedules
 
@@ -127,6 +133,53 @@ defmodule BridgeForTeams.Salix.Erpc do
     do:
       call(@connector_tokens, :create_group_connector_token, [group_id, tenant_id, attrs],
         hint: tenant_id
+      )
+
+  @impl true
+  def create_station_install(group_id, tenant_id, name, user_id),
+    do:
+      call(
+        SalixEnv.DeviceInstall,
+        :create_command,
+        [tenant_id, group_id, name, [requester: %{user_id: user_id}]],
+        hint: tenant_id
+      )
+
+  @impl true
+  def revoke_group_connector_token(group_id, tenant_id, token),
+    do:
+      call(@connector_tokens, :revoke_group_connector_token, [group_id, tenant_id, token],
+        hint: tenant_id
+      )
+
+  # A voice key acts with its creator's authority; an org admin mints it through
+  # the product API, so its actor is "tenant_api".
+  @impl true
+  def create_group_voice_key(group_id, tenant_id, attrs),
+    do:
+      call(@group_api_keys, :create, [group_id, tenant_id, attrs, "tenant_api", "voice"],
+        hint: group_id
+      )
+
+  @impl true
+  def list_group_voice_keys(group_id, tenant_id),
+    do: call(@group_api_keys, :list, [group_id, tenant_id, "voice"], hint: group_id)
+
+  @impl true
+  def delete_group_voice_key(group_id, tenant_id, key_id),
+    do: call(@group_api_keys, :delete, [group_id, tenant_id, key_id, "voice"], hint: group_id)
+
+  @impl true
+  def group_voice_urls(group_id),
+    do: call(Salix.Control.VoiceNumbers, :voice_urls, [group_id], hint: group_id)
+
+  # SalixEnv answers within its own 30-second Connector budget.
+  @impl true
+  def connector_request(connector_run_id, method, params),
+    do:
+      call(SalixEnv.Connector.Live, :request, [connector_run_id, method, params],
+        hint: connector_run_id,
+        timeout: @runtime_auth_timeout
       )
 
   @impl true
@@ -421,6 +474,33 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
+  def create_telegram_im_connect(tenant_id, group_id, attrs),
+    do:
+      call(@provider_connects, :create_telegram_im_connect, [tenant_id, group_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def update_telegram_im_connect(tenant_id, group_id, connect_id, attrs),
+    do:
+      call(
+        @provider_connects,
+        :update_telegram_im_connect,
+        [tenant_id, group_id, connect_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def list_telegram_observed_chats(tenant_id, group_id, connect_id),
+    do:
+      call(
+        @provider_connects,
+        :list_telegram_observed_chats,
+        [tenant_id, group_id, connect_id],
+        hint: group_id
+      )
+
+  @impl true
   def create_qq_im_connect(tenant_id, group_id, attrs),
     do:
       call(@provider_connects, :create_qq_im_connect, [tenant_id, group_id, attrs],
@@ -443,6 +523,22 @@ defmodule BridgeForTeams.Salix.Erpc do
       call(@provider_connects, :create_lark_im_connect, [tenant_id, group_id, attrs],
         hint: group_id
       )
+
+  @impl true
+  def begin_feishu_registration(name, opts),
+    do: call(@provider_connects, :begin_feishu_registration, [name, opts])
+
+  @impl true
+  def poll_feishu_registration(domain, device_code),
+    do: call(@provider_connects, :poll_feishu_registration, [domain, device_code])
+
+  @impl true
+  def begin_lark_registration(name, opts),
+    do: call(@provider_connects, :begin_lark_registration, [name, opts])
+
+  @impl true
+  def poll_lark_registration(domain, device_code),
+    do: call(@provider_connects, :poll_lark_registration, [domain, device_code])
 
   @impl true
   def update_lark_im_connect(tenant_id, group_id, connect_id, attrs),
@@ -776,6 +872,25 @@ defmodule BridgeForTeams.Salix.Erpc do
         hint: group_id
       )
 
+  # A provider directory read for each of a few people: longer than a page read.
+  @impl true
+  # A Feishu or Lark name walks the Contacts data range: at most 120
+  # sequential directory requests (`SalixIM.Provider.Feishu.Directory`).
+  def ifc_people(tenant_id, group_id, connect_id, query),
+    do:
+      call(@ifc_admin, :people, [tenant_id, group_id, connect_id, query],
+        hint: group_id,
+        timeout: 60_000
+      )
+
+  @impl true
+  def ifc_describe_people(tenant_id, group_id, connect_id, ids),
+    do:
+      call(@ifc_admin, :describe_people, [tenant_id, group_id, connect_id, ids],
+        hint: group_id,
+        timeout: 15_000
+      )
+
   @impl true
   def ifc_put_placement_override(tenant_id, group_id, connect_id, user_id, placement),
     do:
@@ -785,6 +900,14 @@ defmodule BridgeForTeams.Salix.Erpc do
         [tenant_id, group_id, connect_id, user_id, placement],
         hint: group_id
       )
+
+  @impl true
+  def ssh_known_hosts(_tenant_id, group_id),
+    do: call(@ssh_known_hosts, :list, [group_id], hint: group_id)
+
+  @impl true
+  def ssh_restrict_host(_tenant_id, group_id, fingerprint, tag),
+    do: call(@ssh_known_hosts, :restrict, [group_id, fingerprint, tag], hint: group_id)
 
   @impl true
   def slack_history_source_authority(request),
@@ -815,6 +938,9 @@ defmodule BridgeForTeams.Salix.Erpc do
   def daily_brief_member_threads(request), do: daily_brief_call(:member_threads, request)
 
   @impl true
+  def daily_brief_active_channels(request), do: daily_brief_call(:active_channels, request)
+
+  @impl true
   def daily_brief_lookup_members(request), do: daily_brief_call(:lookup_members, request)
 
   @impl true
@@ -829,6 +955,26 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   @impl true
   def daily_brief_permalinks(request), do: daily_brief_call(:permalinks, request)
+
+  @impl true
+  def daily_brief_dm_start(request),
+    do: call(@daily_brief_member_auth, :start, [request], hint: request[:group_id])
+
+  @impl true
+  def daily_brief_dm_result(request),
+    do: call(@daily_brief_member_auth, :result, [request], hint: request[:tenant_id])
+
+  @impl true
+  def daily_brief_dm_delete(request),
+    do: call(@daily_brief_member_auth, :delete, [request], hint: request[:tenant_id])
+
+  @impl true
+  def daily_brief_direct_messages(request),
+    do:
+      call(@daily_brief_personal_source, :direct_messages, [request],
+        hint: request[:tenant_id],
+        timeout: @slack_history_read_timeout
+      )
 
   @impl true
   def daily_brief_post(request),
@@ -1152,6 +1298,15 @@ defmodule BridgeForTeams.Salix.Erpc do
       |> call(:put, [tenant_id, group_id, place], hint: group_id)
       |> unknown_before_release(@task_place)
 
+  @impl true
+  def sandbox_places(group_id) do
+    case call(SalixAgent.Sandboxes, :status, [group_id], hint: group_id) do
+      %{"sandboxes" => _} = places -> {:ok, places}
+      {:error, _} = error -> unknown_before_release(error, SalixAgent.Sandboxes)
+      other -> {:error, {:unexpected, other}}
+    end
+  end
+
   @doc """
   During a rolling release a Salix node of the release before has no `module`:
   the call is unavailable there, as on a node that is gone, and can be asked
@@ -1275,6 +1430,37 @@ defmodule BridgeForTeams.Salix.Erpc do
       activities when is_list(activities) -> {:ok, activities}
       {:error, _reason} = err -> err
       _other -> {:ok, []}
+    end
+  end
+
+  @impl true
+  def station_usage(group_id, from, to, by, source),
+    do: call(@station_stats, :usage, [group_id, from, to, by, source], hint: group_id)
+
+  @impl true
+  def stillfail_stations(group_id),
+    do: call(@stillfail_devices, :list, [group_id], hint: group_id)
+
+  @impl true
+  def stillfail_connect_line(tenant_id, group_id),
+    do:
+      call(@stillfail_devices, :connect_line, [group_id, tenant_id, %{"product" => "cft"}],
+        hint: group_id
+      )
+
+  @impl true
+  def remove_stillfail_stations(group_id) do
+    case call(@stillfail_devices, :remove_all, [group_id], hint: group_id) do
+      :ok -> {:ok, :removed}
+      other -> other
+    end
+  end
+
+  @impl true
+  def station_tasks(group_id, since) do
+    case call(@station_stats, :tasks, [group_id, since], hint: group_id) do
+      tasks when is_list(tasks) -> {:ok, tasks}
+      other -> other
     end
   end
 

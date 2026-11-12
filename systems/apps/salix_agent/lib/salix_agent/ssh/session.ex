@@ -474,6 +474,7 @@ defmodule SalixAgent.SSH.Session do
       "user" => spec.user,
       "term" => spec.term
     }
+    |> put_present("host_fingerprint", state.host_key && state.host_key["fingerprint"])
     |> put_present("close_reason", state.close_reason)
     |> put_present("close_detail", state.close_detail)
     |> put_present("exit_status", state.exit_status)

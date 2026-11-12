@@ -11,8 +11,11 @@ const toasterToastOptions: NonNullable<ToasterProps["toastOptions"]> = {
   classNames: {
     // The `!` resets keep sonner's own card chrome off; `Toast` owns padding,
     // background, border and shadow. The `comma-` class is also what lifts our
-    // motion overrides above sonner's unlayered stylesheet.
-    toast: "comma-sonner-toast w-full !p-0 !bg-transparent !border-0 !shadow-none",
+    // motion overrides above sonner's unlayered stylesheet. A card is
+    // positioned outside the stack's empty box, so it declares its own window
+    // no-drag; over the drag shell a press on it would move the window.
+    toast:
+      "comma-sonner-toast w-full !p-0 !bg-transparent !border-0 !shadow-none [-webkit-app-region:no-drag]",
     title: "w-full",
   },
 };

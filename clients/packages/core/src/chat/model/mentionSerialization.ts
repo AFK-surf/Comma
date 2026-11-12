@@ -85,6 +85,116 @@ export function modelMentionsAsWords(text: string): string {
   return text.replaceAll(MODEL_MENTION_PATTERN, (_full, name: string) => `@${name}`);
 }
 
+const REQUEST_MENTION_HREF_PREFIX = "comma:request/";
+const REQUEST_MENTION_PATTERN =
+  /\[([^\]\n]{1,200})\]\(comma:request\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\)/gu;
+
+/**
+ * A person mentioned in the Router chat to ask for a Task, `[CatsJuice](comma:request/trg_1)` (their grant): the server
+ * sends the rest of the message to them as a Task request, instead of the Router's turn (`SalixIM.RequestMention`).
+ */
+export function requestMentionPlainText(name: string, grantId: string) {
+  return `[${mentionLabel(name, grantId)}](${REQUEST_MENTION_HREF_PREFIX}${grantId})`;
+}
+
+export interface RequestMentionMatch {
+  grantId: string;
+  /** Offset just past the mention. */
+  end: number;
+  start: number;
+  /** The mention exactly as written. */
+  text: string;
+  name: string;
+}
+
+/** Every request mention in `text`, in order, with where it sits. */
+export function* requestMentionMatches(text: string): Generator<RequestMentionMatch> {
+  if (!text.includes(REQUEST_MENTION_HREF_PREFIX)) return;
+  for (const match of text.matchAll(REQUEST_MENTION_PATTERN)) {
+    const [full, name, grantId] = match;
+    if (!name || !grantId) continue;
+    yield {
+      grantId,
+      end: match.index + full.length,
+      start: match.index,
+      text: full,
+      name,
+    };
+  }
+}
+
+/** A person's words as shown: each request mention as `@name`. */
+export function requestMentionsAsWords(text: string): string {
+  if (!text.includes(REQUEST_MENTION_HREF_PREFIX)) return text;
+  return text.replaceAll(REQUEST_MENTION_PATTERN, (_full, name: string) => `@${name}`);
+}
+
+const SLACK_MENTION_HOST = "https://app.slack.com/";
+const SLACK_PERSON_LINK = String.raw`\(https://app\.slack\.com/team/([A-Za-z0-9]{1,64})\)`;
+const SLACK_MENTION_PATTERN = new RegExp(
+  String.raw`\[Slack #([^\]\n]{1,200})\]\(https://app\.slack\.com/client/([A-Za-z0-9]{1,64})/([A-Za-z0-9]{1,64})\)` +
+    String.raw`(?: \[Slack @([^\]\n]{1,200})\]${SLACK_PERSON_LINK})?` +
+    String.raw`|\[Slack (?:DM )?@([^\]\n]{1,200})\]${SLACK_PERSON_LINK}`,
+  "gu"
+);
+
+export interface SlackMentionMatch {
+  /** The channel it names, with or without a person in it. */
+  channel?: { id: string; name: string; teamId: string };
+  /** The person it names: in the channel, or alone for a direct message. */
+  person?: { id: string; name: string };
+  /** Offset just past the mention. */
+  end: number;
+  start: number;
+  /** The mention exactly as written. */
+  text: string;
+}
+
+/**
+ * Every Slack mention in `text`, in order: the links the "@" menu writes for a channel, a person in a channel
+ * (both links, one mention) and a direct message.
+ */
+export function* slackMentionMatches(text: string): Generator<SlackMentionMatch> {
+  if (!text.includes(SLACK_MENTION_HOST)) return;
+  for (const match of text.matchAll(SLACK_MENTION_PATTERN)) {
+    const [full, channel, teamId, channelId, member, memberId, direct, directId] =
+      match;
+    const name = member ?? direct;
+    const id = memberId ?? directId;
+    yield {
+      ...(channel && teamId && channelId
+        ? { channel: { id: channelId, name: channel, teamId } }
+        : {}),
+      ...(name && id ? { person: { id, name } } : {}),
+      end: match.index + full.length,
+      start: match.index,
+      text: full,
+    };
+  }
+}
+
+/** A Slack mention by name, as its chip and the composer's token show it. */
+export function slackMentionLabel({ channel, person }: SlackMentionMatch) {
+  if (!channel) return person?.name ?? "";
+  return person ? `#${channel.name} · ${person.name}` : `#${channel.name}`;
+}
+
+/** A person's words as shown: each Slack mention as `#channel` and `@name`. */
+export function slackMentionsAsWords(text: string): string {
+  if (!text.includes(SLACK_MENTION_HOST)) return text;
+  let words = "";
+  let offset = 0;
+  for (const mention of slackMentionMatches(text)) {
+    const { channel, person } = mention;
+    words += text.slice(offset, mention.start);
+    words += [channel && `#${channel.name}`, person && `@${person.name}`]
+      .filter(Boolean)
+      .join(" ");
+    offset = mention.end;
+  }
+  return words + text.slice(offset);
+}
+
 export interface TaskMentionMatch {
   conversationId: string;
   /** Offset just past the mention. */

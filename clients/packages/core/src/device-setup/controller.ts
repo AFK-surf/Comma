@@ -1,3 +1,4 @@
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, type Scoped } from "@comma/core-kernel";
 import { Effect, Option, Semaphore } from "effect";
 import { z } from "zod";
@@ -24,33 +25,37 @@ import {
   type Credentials,
 } from "./protocol.ts";
 
-const inputSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("pick"), id: z.string().min(1).max(256) }),
-  z.object({ type: z.literal("rename"), name: z.string().max(200) }),
-  z.object({
-    type: z.literal("join"),
-    ssid: z.string().max(32),
-    password: z.string().max(64),
-  }),
-  ...(["cancel", "retry", "rescan"] as const).map((type) =>
-    z.object({ type: z.literal(type) })
-  ),
-]);
+const inputSchema = lazySchema(() =>
+  z.discriminatedUnion("type", [
+    z.object({ type: z.literal("pick"), id: z.string().min(1).max(256) }),
+    z.object({ type: z.literal("rename"), name: z.string().max(200) }),
+    z.object({
+      type: z.literal("join"),
+      ssid: z.string().max(32),
+      password: z.string().max(64),
+    }),
+    ...(["cancel", "retry", "rescan"] as const).map((type) =>
+      z.object({ type: z.literal(type) })
+    ),
+  ])
+);
 export type SetupInput = z.infer<typeof inputSchema>;
 export interface SetupValue {
   supported: boolean;
   bluetooth: string;
   state: SetupState;
 }
-const recordSchema = z.object({
-  deviceId: z.string(),
-  connectorToken: z.string(),
-  voiceKeyId: z.string(),
-  name: z.string(),
-  createdAt: z.number(),
-  confirmed: z.boolean(),
-  revoking: z.boolean().optional(),
-});
+const recordSchema = lazySchema(() =>
+  z.object({
+    deviceId: z.string(),
+    connectorToken: z.string(),
+    voiceKeyId: z.string(),
+    name: z.string(),
+    createdAt: z.number(),
+    confirmed: z.boolean(),
+    revoking: z.boolean().optional(),
+  })
+);
 type Kept = z.infer<typeof recordSchema>;
 type Owner = { account: Account; workspace: string };
 type Session = Owner & {

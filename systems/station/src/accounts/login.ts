@@ -93,8 +93,12 @@ export class LoginManager {
     let command: string;
     let args: string[];
     if (profile.runtime === "claude") {
-      if (profile.machine !== true) env.CLAUDE_CONFIG_DIR = profile.home;
-      fileCredentials(env);
+      // A profile's login lives in its home; the machine's goes where Claude Code keeps it (the keychain on macOS),
+      // where it and the station read it first, so it replaces whatever item is there.
+      if (profile.machine !== true) {
+        env.CLAUDE_CONFIG_DIR = profile.home;
+        fileCredentials(env);
+      }
       [command, args] = [this.commands.claude, ["auth", "login", "--claudeai"]];
     } else {
       if (profile.machine !== true) env.CODEX_HOME = profile.home;

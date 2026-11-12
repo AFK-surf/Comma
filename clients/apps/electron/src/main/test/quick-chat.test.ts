@@ -108,6 +108,14 @@ function createFixture(overrides: Partial<QuickChatServiceOptions> = {}) {
     (_params: { client_request_id: string; text: string }) =>
       deferred<QuickChatMessage>().promise
   );
+  const prepareMessage = vi.fn(
+    (_params: { client_request_id: string; text: string; workspace: string }) =>
+      Promise.resolve<unknown>(null)
+  );
+  const failPreparation = vi.fn(
+    (_params: { client_request_id: string; workspace: string }) =>
+      Promise.resolve<unknown>(null)
+  );
   const transcribe = vi.fn(
     (_audio: Uint8Array, _purpose: "dictation" | "quick_chat_send") =>
       deferred<string>().promise
@@ -131,6 +139,8 @@ function createFixture(overrides: Partial<QuickChatServiceOptions> = {}) {
   const openRoute = vi.fn();
   const service = new QuickChatService({
     sendMessage,
+    prepareMessage,
+    failPreparation,
     hostPath: "/comma/QuickChatHost",
     isTestRun: () => false,
     locale: () => locale,
@@ -156,6 +166,8 @@ function createFixture(overrides: Partial<QuickChatServiceOptions> = {}) {
   });
   return {
     sendMessage,
+    prepareMessage,
+    failPreparation,
     transcribe,
     hosts,
     notch,
@@ -520,6 +532,7 @@ describe("QuickChatService", () => {
       expect.objectContaining({ id, title: "Plan the review", status: "in_progress" }),
     ]);
     expect(fixture.shown.filter((update) => update.notify)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(0);
     expect(fixture.sendMessage).toHaveBeenCalledExactlyOnceWith({
       client_request_id: requestId,
       text: "Plan the review",
@@ -546,6 +559,138 @@ describe("QuickChatService", () => {
       }),
     ]);
     expect(host.queuedCommands()).toEqual([]);
+    fixture.service.close();
+  });
+
+  it("shows preparing words in Home from Return, replaces them, and sends only after Home has them", async () => {
+    const fixture = createFixture();
+    const shownInHome = deferred<unknown>();
+    fixture.prepareMessage
+      .mockReturnValueOnce(Promise.resolve(null))
+      .mockReturnValueOnce(shownInHome.promise);
+    const host = await readyHost(fixture);
+    host.emitEvent({ requestId, text: "Plan the revue", type: "preparing" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.prepareMessage.mock.calls).toEqual([
+      [
+        {
+          client_request_id: requestId,
+          text: "Plan the revue",
+          workspace: "workspace-1",
+        },
+      ],
+    ]);
+
+    host.emitEvent({
+      requestId,
+      text: "Plan the revue\ntomorrow",
+      type: "preparing",
+      update: true,
+    });
+    host.emitEvent({
+      prepared: true,
+      requestId,
+      text: "Plan the review tomorrow",
+      type: "submit",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Home keeps the words whole; the Notch's title is their one line.
+    expect(fixture.prepareMessage).toHaveBeenLastCalledWith({
+      client_request_id: requestId,
+      text: "Plan the revue\ntomorrow",
+      workspace: "workspace-1",
+    });
+    expect(fixture.sendMessage).not.toHaveBeenCalled();
+
+    shownInHome.resolve(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.sendMessage).toHaveBeenCalledExactlyOnceWith({
+      client_request_id: requestId,
+      text: "Plan the review tomorrow",
+      workspace: "workspace-1",
+    });
+    expect(fixture.failPreparation).not.toHaveBeenCalled();
+    fixture.service.close();
+  });
+
+  it("ends the held Home message when Quick Chat stops while its preparation call is pending", async () => {
+    const fixture = createFixture();
+    const shownInHome = deferred<unknown>();
+    fixture.prepareMessage.mockReturnValueOnce(shownInHome.promise);
+    const host = await readyHost(fixture);
+    host.emitEvent({ requestId, text: "Book a table", type: "preparing" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.prepareMessage).toHaveBeenCalledOnce();
+    host.emitEvent({
+      prepared: true,
+      requestId,
+      text: "Book a table for four",
+      type: "submit",
+    });
+    fixture.service.setEnabled(false);
+    shownInHome.resolve(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.failPreparation).toHaveBeenCalledExactlyOnceWith({
+      client_request_id: requestId,
+      workspace: "workspace-1",
+    });
+    fixture.service.close();
+  });
+
+  it("ends the message Home shows when its preparation fails or Quick Chat stops, and only then", async () => {
+    const fixture = createFixture();
+    const host = await readyHost(fixture);
+    const second = nthRequest(2);
+    const third = nthRequest(3);
+    host.emitEvent({ requestId, text: "Too slow", type: "preparing" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fixture.failPreparation.mock.calls).toEqual([
+      [{ client_request_id: requestId, workspace: "workspace-1" }],
+    ]);
+
+    // A rejected send can fail before the core starts transmission, so end any held message too.
+    fixture.sendMessage.mockRejectedValueOnce(new Error("offline"));
+    host.emitEvent({ requestId: second, text: "Sent words", type: "preparing" });
+    host.emitEvent({
+      prepared: true,
+      requestId: second,
+      text: "Sent words",
+      type: "submit",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.sendMessage).toHaveBeenCalledOnce();
+    expect(fixture.failPreparation).toHaveBeenCalledTimes(2);
+
+    host.emitEvent({ requestId: third, text: "Still preparing", type: "preparing" });
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.service.setEnabled(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.failPreparation.mock.calls.at(-1)).toEqual([
+      { client_request_id: third, workspace: "workspace-1" },
+    ]);
+    expect(fixture.failPreparation).toHaveBeenCalledTimes(3);
+    fixture.service.close();
+  });
+
+  it("shows nothing in Home for words whose workspace the list has not named yet", async () => {
+    const fixture = createFixture();
+    const host = await readyHost(fixture, { list: false });
+    host.emitEvent({ requestId, text: "Plan the review", type: "preparing" });
+    host.emitEvent({
+      prepared: true,
+      requestId,
+      text: "Plan the review",
+      type: "submit",
+    });
+    fixture.publishList(list([]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.prepareMessage).not.toHaveBeenCalled();
+    expect(fixture.sendMessage).toHaveBeenCalledExactlyOnceWith({
+      client_request_id: requestId,
+      text: "Plan the review",
+      workspace: "workspace-1",
+    });
     fixture.service.close();
   });
 
@@ -1015,6 +1160,7 @@ describe("QuickChatService", () => {
       text: "Plan the review tomorrow",
       type: "submit",
     });
+    await vi.advanceTimersByTimeAsync(0);
     expect(fixture.sendMessage).toHaveBeenCalledExactlyOnceWith({
       client_request_id: requestId,
       text: "Plan the review tomorrow",
@@ -1123,6 +1269,7 @@ describe("QuickChatService", () => {
       type: "submit",
       prepared: true,
     });
+    await vi.advanceTimersByTimeAsync(0);
     expect(fixture.sendMessage).toHaveBeenCalledExactlyOnceWith({
       client_request_id: requestId,
       text: "First corrected words",
@@ -1248,6 +1395,8 @@ describe("QuickChatService", () => {
     });
     await vi.advanceTimersByTimeAsync(30_000);
     expect(fixture.sendMessage).not.toHaveBeenCalled();
+    // The next session's Home shows none of these words.
+    expect(fixture.prepareMessage).not.toHaveBeenCalled();
     expect(fixture.lastShown()).toEqual({ items: [], notify: undefined });
     expect(fixture.hosts).toHaveLength(1);
   });

@@ -29,20 +29,26 @@ const resetTime = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-/** What is left of each plan window, with its reset time on hover. */
+/**
+ * What is left of each plan window, with its reset time on hover. More than two windows (a Claude plan's Fable week
+ * beside its own two) show their figures without bars, so the row keeps room for its name.
+ */
 export function QuotaMeters({ meters }: { meters: readonly QuotaMeter[] }) {
   const m = useCommaMessages();
+  const bars = meters.length <= 2;
   return (
     <span className="flex items-center gap-md">
       {meters.map((meter) => {
         const label =
           meter.window === "5h"
             ? m.settings_providers_quota_5h()
-            : m.settings_providers_quota_week();
+            : meter.window === "model" && meter.model
+              ? meter.model
+              : m.settings_providers_quota_week();
         const left = m.settings_providers_quota_left({ percent: meter.percent });
         return (
           <Tooltip
-            key={meter.window}
+            key={`${meter.window}:${meter.model ?? ""}`}
             content={
               meter.resetAt
                 ? m.settings_providers_quota_reset({
@@ -58,16 +64,25 @@ export function QuotaMeters({ meters }: { meters: readonly QuotaMeter[] }) {
               className="flex cursor-default items-center gap-xs rounded-sm outline-none focus-visible:ring-2"
             >
               <span className="text-xs text-tertiary">{label}</span>
-              <span className="h-1.5 w-10 overflow-hidden rounded-full bg-tertiary">
-                <span
-                  className={
-                    "block h-full rounded-full " +
-                    (meter.percent < 10 ? "bg-error-solid" : "bg-brand-solid")
-                  }
-                  style={{ width: `${meter.percent}%` }}
-                />
-              </span>
-              <span className="w-[4ch] text-xs tabular-nums text-secondary">
+              {bars ? (
+                <span className="h-1.5 w-10 overflow-hidden rounded-full bg-tertiary">
+                  <span
+                    className={
+                      "block h-full rounded-full " +
+                      (meter.percent < 10 ? "bg-error-solid" : "bg-brand-solid")
+                    }
+                    style={{ width: `${meter.percent}%` }}
+                  />
+                </span>
+              ) : null}
+              <span
+                className={
+                  "w-[4ch] text-xs tabular-nums " +
+                  (!bars && meter.percent < 10
+                    ? "text-error-primary"
+                    : "text-secondary")
+                }
+              >
                 {meter.percent}%
               </span>
             </AriaButton>

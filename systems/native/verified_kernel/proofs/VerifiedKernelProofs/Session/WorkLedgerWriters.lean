@@ -54,7 +54,7 @@ theorem queueAppend_checked_ledger_absent {s e t key : Term} {groups : List (Lis
     (different : ∀ inserted ∈ groups.flatten, (inserted == key) = false)
     (absent : IdentityAbsent (s.get (a "input_dedupe")) key)
     (h : queueAppend s e j = .ok (t, r)) : IdentityAbsent (t.get (a "input_dedupe")) key := by
-  unfold Command.inputIdentityGroups at checked
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups at checked
   simp only [kind, ↓reduceIte] at checked
   obtain ⟨payload, _, payloadRead, checked⟩ := bind_ok checked
   obtain ⟨keys, _, keysRead, checked⟩ := bind_ok checked

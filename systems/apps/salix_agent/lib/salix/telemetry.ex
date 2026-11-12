@@ -9,14 +9,48 @@ defmodule Salix.Telemetry do
   @voice_call [1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600]
   @station_reply [1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200]
   # SalixIM.StationTaskWatch: why a station Task's delegation waits (phase),
-  # what kind of station runs it (kind), and whether the Task is the Cloud VM
-  # canary (canary, "true" or "false").
+  # what kind of station runs it (kind: the Group's Cloud VM, the Task's
+  # sandbox, a person's device).
   @station_task_phases ~w(vm_not_ready station_offline not_given given_no_reply idle_no_reply cannot_start station_left other)
-  @station_task_kinds ~w(cloud_vm device other)
+  @station_task_kinds ~w(cloud_vm sandbox device other)
+  # A sandbox Task's sandbox (SalixWeb.CodingSandboxes; docs/compute-devices.md).
+  # salix.sandbox.start.duration.seconds: from the Workload's `starting` (a
+  #   new Task's, reserved: create; a stopped, lost, failed or ended sandbox
+  #   started again for a Message: wake) to the write that makes it `ready`,
+  #   its station connected (ok), or to the write that gives up on it
+  #   (failed: no connection in 5 minutes, L4ES refused it, no GitHub token).
+  #   Emitted at those writes; nothing scans for them.
+  # salix.sandbox.ends.total: a run (a sandbox starting or ready) ended, by
+  #   the state recorded: stopped (idle), lost (L4ES no longer ran it),
+  #   failed, or ended (its Task did).
+  # salix.sandbox.records / salix.sandbox.starting.oldest.timestamp.seconds:
+  #   how many sandbox Workloads stand in each state, and the Unix time the
+  #   oldest `starting` one started (the time of publishing with none).
+  #   SalixWeb.CodingSandboxes.FleetMetrics publishes both once a minute per
+  #   node from one aggregate query, every state (0 when empty, so a series
+  #   falls back); take the max across pods. The oldest start's age is
+  #   `time() - max(...)`, which also grows when no node publishes.
+  # salix.station_tasks.lost_thread.total: a station that had no thread of a
+  #   Task it took part in was invited to it again (SalixWeb.StationTasks), by
+  #   the kind of station. For a sandbox: its disk started empty (L4ES gave
+  #   it up) or its station's state was lost.
+  # The sandbox and station Task counters and histograms read 0 from the
+  # reporter's start, one series per label value but `other`
+  # (`zero_series/1`), so an alert's `increase()` sees the first event after a
+  # pod restart. The gauges do not: they publish every state themselves.
+  # comma_alerting:sandbox_checks_stalled takes salix.sandbox.ends.total's
+  # zero series as proof that a pod runs the sandbox checks when no pod has
+  # published the oldest-start gauge.
+  @sandbox_states ~w(starting ready stopped lost failed ended other)
+  @sandbox_end_states ~w(stopped lost failed ended)
+  @sandbox_start_kinds ~w(create wake other)
+  @sandbox_start_outcomes ~w(ok failed other)
+  @agent_message_providers ~w(slack feishu lark other)
+  @agent_message_invalid_reasons ~w(missing_source_time missing_receipt missing_correlation uncertain_correlation invalid_clock overflow expired other)
   @voice_transports ~w(twilio websocket other)
   @voice_call_reasons ~w(completed caller_hangup agent_hangup busy timeout model_error carrier_error revoked draining other)
   @voice_delegation_outcomes ~w(answered failed abandoned other)
-  @voice_profile_outcomes ~w(ok empty timeout not_configured no_evidence egress_denied rate_limited error other)
+  @voice_profile_outcomes ~w(ok empty persona timeout not_configured no_evidence egress_denied rate_limited error other)
   @actor_queue [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
   @outcomes ~w(ok partial ignored error failed timeout in_doubt dropped unavailable unroutable unattributed conflict rejected cancelled cleaned retained scan_error over_budget dispatched already skipped other)
   @component_operations %{
@@ -31,6 +65,10 @@ defmodule Salix.Telemetry do
     # round_config_refresh: how long background configuration reads take and
     # whether failures are keeping sessions on their previous snapshots.
     # decide: do runtime classifiers fail, hit budgets, or exceed expected latency?
+    # ifc_resolve: how long do an effect's IFC facts take to read, before the
+    # kernel decides? Slow ones log `ifc_resolve_slow` with atom counts by kind.
+    # session_fence: how long does a Session's durable write take? Slow ones log
+    # `session_fence_slow` with the fence's kind, each phase and each freeze call.
     # web_http_request: do agent-authored API calls (`web.http_request`) get
     # answers (ok), get refused by the remote (rejected = 4xx, failed = 5xx),
     # or never complete (timeout, error = transport)? URLs stay out of labels.
@@ -44,7 +82,7 @@ defmodule Salix.Telemetry do
     # missing gateway or a full one. Hosts, users, addresses and fingerprints
     # stay out of labels.
     "salix_agent" =>
-      ~w(browser_command browser_storage_checkpoint conversation_log_consume conversation_log_admit ifc_decide round_config_refresh session_kernel session_history_recent session_history_index session_history_discovery activation round lease claim schedule prepared_blob_cleanup provider_reply_obligation_rejection router_wait_yield session_work_notification_admission session_work_notification_wake loop_host_call loop_notify loop_event loop_build loop_reconcile loop_host_restart spinfoam_build script_run web_http_request ssh_connect ssh_connect_tailcat decide other),
+      ~w(browser_command browser_storage_checkpoint conversation_log_consume conversation_log_admit ifc_decide ifc_resolve session_fence round_config_refresh session_kernel session_history_recent session_history_index session_history_discovery activation round lease claim schedule prepared_blob_cleanup provider_reply_obligation_rejection router_wait_yield session_work_notification_admission session_work_notification_wake loop_host_call loop_notify loop_event loop_build loop_reconcile loop_host_restart spinfoam_build script_run web_http_request ssh_connect ssh_connect_tailcat decide other),
     "salix_env" =>
       ~w(connector_metadata connector_heartbeat runtime_auth_read runtime_auth_status runtime_auth_verify runtime_auth_login_start runtime_auth_login_cancel runtime_auth_input_begin runtime_auth_input_submit runtime_auth_input_cancel other),
     "salix_calendar" => ~w(source_sync source_transition watch other),
@@ -56,10 +94,15 @@ defmodule Salix.Telemetry do
     # conversation_log_recovery: are indexed candidates completing, retained, or failing?
     # conversation_log_recovery_claim: can each Pod discover due work within its poll budget?
     # provider_log_delivery measures platform send/verification latency and failures.
+    # ifc_lark_members, ifc_feishu_members: does listing a Lark or Feishu
+    # group's members give the whole set (ok), a part (partial), a provider
+    # refusal (rejected), a provider failure (failed), or nothing (timeout,
+    # error)? Anything but ok leaves that group's writers unknown, so `enforce`
+    # refuses sends to it.
     # Which internal send stage accounts for latency or failure? Queue timing is local only.
     # Placement, call and actor are nested totals; do not sum all stages.
     "salix_im" =>
-      ~w(conversation_log_recovery conversation_log_recovery_claim provider_log_delivery im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result im_ingress provider_poll imessage_receive imessage_request telegram_send_message private_chat_status private_chat_status_start telegram_interaction_prompt telegram_interaction_response telegram_interaction_card slack_api_retry slack_task_card feishu_task_card lark_task_card control_command conversation_search_delete_admission other),
+      ~w(conversation_log_recovery conversation_log_recovery_claim provider_log_delivery im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result im_ingress provider_poll imessage_receive imessage_request telegram_send_message private_chat_status private_chat_status_start telegram_interaction_prompt telegram_interaction_response telegram_interaction_card slack_api_retry ifc_lark_members ifc_feishu_members slack_task_card feishu_task_card lark_task_card control_command conversation_search_delete_admission other),
     "salix_store" =>
       ~w(store_get store_put store_list compute_mutation compute_migration service_route other),
     # The agents' `/drive` mount: every list, read, write, delete and status
@@ -73,7 +116,7 @@ defmodule Salix.Telemetry do
       run_outcomes round_trends unknown_trends failed_rounds unconverged_sessions
       tool_rates tool_latency tool_error_types tool_top_sessions
       llm_overview llm_reliability llm_speed llm_trends
-      error_overview deploy_rates session_costs session_trace activity_trace
+      error_overview deploy_rates session_costs routing_calls session_trace activity_trace
       convergence_drift trajectory_eval slack_mirror_search other
       slack_mirror_tail slack_mirror_changes slack_mirror_latest_states
       slack_mirror_thread slack_mirror_thread_reactions
@@ -243,6 +286,91 @@ defmodule Salix.Telemetry do
         event_name: [:salix, :router_requests, :sample],
         measurement: :dropped
       ),
+      # Which delivery stage stalls, and do revision conflicts recover?
+      counter("salix.delivery.total",
+        event_name: [:salix, :delivery, :stop],
+        tags: [:phase, :outcome, :reason],
+        tag_values: &delivery_tags/1
+      ),
+      distribution("salix.delivery.duration.seconds",
+        event_name: [:salix, :delivery, :stop],
+        measurement: :duration,
+        unit: {:millisecond, :second},
+        tags: [:phase, :outcome, :reason],
+        tag_values: &delivery_tags/1,
+        reporter_options: [buckets: @operation]
+      ),
+      counter("salix.delivery.diagnostic_drops.total",
+        event_name: [:salix, :delivery, :diagnostic_drop],
+        tags: [:reason],
+        tag_values: fn meta ->
+          %{reason: finite(meta[:reason], ~w(buffer_full unavailable rate_limited other))}
+        end
+      ),
+      # How long does a person's Slack, Feishu or Lark @mention wait for the
+      # first causally matched visible reply (SalixIM.MentionReplyLatency)?
+      # Every pod holds the pending mentions and observed_at moves only while
+      # coverage is 1: read the age from pods whose observed_at is fresh.
+      distribution("salix.agent_message.latency.seconds",
+        event_name: [:salix, :agent_message, :reply],
+        measurement: :latency,
+        unit: {:millisecond, :second},
+        tags: [:provider],
+        tag_values: &agent_message_tags/1,
+        reporter_options: [
+          buckets: @station_reply,
+          zero_series: zero_series(provider: @agent_message_providers)
+        ]
+      ),
+      counter("salix.agent_message.mentions.total",
+        event_name: [:salix, :agent_message, :mention],
+        tags: [:provider],
+        tag_values: &agent_message_tags/1,
+        reporter_options: [zero_series: zero_series(provider: @agent_message_providers)]
+      ),
+      counter("salix.agent_message.no_reply.total",
+        event_name: [:salix, :agent_message, :no_reply],
+        tags: [:provider],
+        tag_values: &agent_message_tags/1,
+        reporter_options: [zero_series: zero_series(provider: @agent_message_providers)]
+      ),
+      counter("salix.agent_message.latency_invalid.total",
+        event_name: [:salix, :agent_message, :invalid],
+        tags: [:provider, :reason],
+        tag_values: &agent_message_tags/1,
+        reporter_options: [
+          zero_series:
+            zero_series(
+              provider: @agent_message_providers,
+              reason: @agent_message_invalid_reasons
+            )
+        ]
+      ),
+      last_value("salix.agent_message.pending_oldest_age.seconds",
+        event_name: [:salix, :agent_message, :pending],
+        measurement: :oldest_age,
+        unit: {:millisecond, :second},
+        tags: [:provider],
+        tag_values: &agent_message_tags/1
+      ),
+      last_value("salix.agent_message.latency_coverage",
+        event_name: [:salix, :agent_message, :observation],
+        measurement: :coverage,
+        tags: [:provider],
+        tag_values: &agent_message_tags/1
+      ),
+      last_value("salix.agent_message.latency_observed_at.seconds",
+        event_name: [:salix, :agent_message, :observed],
+        measurement: :observed_at,
+        tags: [:provider],
+        tag_values: &agent_message_tags/1
+      ),
+      # Oldest observed admitted input that has not started a model request.
+      last_value("salix.router.requests.oldest_age.seconds",
+        event_name: [:salix, :router_requests, :sample],
+        measurement: :oldest_age,
+        unit: {:millisecond, :second}
+      ),
       # How far behind is an observed Conversation source, and how old is its first unread record?
       # These histograms sample bounded drains. They do not measure unseen sources.
       distribution("salix.conversation.log.backlog",
@@ -268,16 +396,57 @@ defmodule Salix.Telemetry do
       # and how long each delegation waited for its first Worker Message.
       counter("salix.station_tasks.stalled.total",
         event_name: [:salix_im, :station_task, :stalled],
-        tags: [:phase, :kind, :canary],
-        tag_values: &station_task_tags/1
+        tags: [:phase, :kind],
+        tag_values: &station_task_tags/1,
+        reporter_options: [
+          zero_series: zero_series(phase: @station_task_phases, kind: @station_task_kinds)
+        ]
       ),
       distribution("salix.station_tasks.first_reply.seconds",
         event_name: [:salix_im, :station_task, :answered],
         measurement: :duration,
         unit: {:millisecond, :second},
-        tags: [:kind, :canary],
+        tags: [:kind],
         tag_values: &station_task_tags/1,
-        reporter_options: [buckets: @station_reply]
+        reporter_options: [
+          buckets: @station_reply,
+          zero_series: zero_series(kind: @station_task_kinds)
+        ]
+      ),
+      counter("salix.station_tasks.lost_thread.total",
+        event_name: [:salix_web, :station_task, :lost_thread],
+        tags: [:kind],
+        tag_values: &station_kind_tags/1,
+        reporter_options: [zero_series: zero_series(kind: @station_task_kinds)]
+      ),
+      # Sandboxes (SalixWeb.CodingSandboxes): how long a sandbox takes to come
+      # up, how its runs end, and how many stand in each state.
+      distribution("salix.sandbox.start.duration.seconds",
+        event_name: [:salix_web, :sandbox, :start],
+        measurement: :duration,
+        unit: {:millisecond, :second},
+        tags: [:kind, :outcome],
+        tag_values: &sandbox_start_tags/1,
+        reporter_options: [
+          buckets: @vm_lifecycle,
+          zero_series: zero_series(kind: @sandbox_start_kinds, outcome: @sandbox_start_outcomes)
+        ]
+      ),
+      counter("salix.sandbox.ends.total",
+        event_name: [:salix_web, :sandbox, :end],
+        tags: [:state],
+        tag_values: &sandbox_state_tags/1,
+        reporter_options: [zero_series: zero_series(state: @sandbox_end_states)]
+      ),
+      last_value("salix.sandbox.records",
+        event_name: [:salix_web, :sandbox, :fleet, :records],
+        measurement: :count,
+        tags: [:state],
+        tag_values: &sandbox_state_tags/1
+      ),
+      last_value("salix.sandbox.starting.oldest.timestamp.seconds",
+        event_name: [:salix_web, :sandbox, :fleet, :oldest_starting],
+        measurement: :timestamp_seconds
       ),
       # Is the historical Task display-index rebuild progressing or failing,
       # and how long does one bounded inventory page take?
@@ -291,6 +460,30 @@ defmodule Salix.Telemetry do
         unit: {:native, :second},
         tags: [:outcome],
         reporter_options: [buckets: @operation]
+      ),
+      # Which recording transcriptions fail, and why? `operation` is the entry
+      # point (the audio.transcribe tool or the recording upload API), `reason`
+      # the bounded class from `SalixAgent.AudioTranscriber.failure_class/1`.
+      counter("salix.asr.failures.total",
+        event_name: [:salix, :asr, :failure],
+        tags: [:operation, :reason],
+        tag_values: &asr_failure_tags/1
+      ),
+      # Model calls the platform pays for whose provider account refuses
+      # them: out of balance or quota, or its key rejected. Every member on
+      # that model is stopped until an operator acts, so one is an alert.
+      # The lowest prepaid balance of the platform's accounts per provider and
+      # currency (`kind`), from `SalixAgent.PlatformBalance`.
+      last_value("salix.llm.platform_account.balance",
+        event_name: [:salix, :llm, :platform_account_balance],
+        measurement: :balance,
+        tags: [:provider, :kind],
+        tag_values: &platform_account_balance_tags/1
+      ),
+      counter("salix.llm.platform_account_failures.total",
+        event_name: [:salix, :llm, :platform_account_failure],
+        tags: [:provider, :reason],
+        tag_values: &platform_account_failure_tags/1
       ),
       counter("salix.operations.total", operation_options),
       distribution(
@@ -810,6 +1003,33 @@ defmodule Salix.Telemetry do
     _, _ -> :ok
   end
 
+  defp agent_message_tags(metadata) do
+    %{
+      provider: finite(metadata[:provider], @agent_message_providers),
+      reason: finite(metadata[:reason], @agent_message_invalid_reasons)
+    }
+  end
+
+  def delivery_tags(metadata) do
+    %{
+      phase:
+        finite(
+          metadata[:phase],
+          ~w(admission_attempt admission_deferred retry_exhausted revision_conflict admission_committed archive_published model_started queue_wait conversation_committed slack_reply other)
+        ),
+      outcome:
+        finite(
+          metadata[:outcome],
+          ~w(ok stale_revision source_busy saturated retired remote error other)
+        ),
+      reason:
+        finite(
+          metadata[:reason],
+          ~w(none llm compaction session_retry pending_commit model_capacity ready other)
+        )
+    }
+  end
+
   def emit_conversation_log_sample(backlog, age) do
     SystemsRuntime.Telemetry.execute(
       [:salix, :conversation_log, :sample],
@@ -820,6 +1040,59 @@ defmodule Salix.Telemetry do
     _ -> :ok
   catch
     _, _ -> :ok
+  end
+
+  @asr_failure_operations ~w(audio_transcribe recording_upload dictation)
+
+  @doc "Counts one failed transcription at `operation`, by the class of `reason`."
+  def emit_asr_failure(operation, reason) do
+    SystemsRuntime.Telemetry.execute([:salix, :asr, :failure], %{}, %{
+      operation: operation,
+      reason: SalixAgent.AudioTranscriber.failure_class(reason)
+    })
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp asr_failure_tags(metadata) do
+    %{
+      operation: finite(metadata[:operation], @asr_failure_operations),
+      reason: finite(metadata[:reason], SalixAgent.AudioTranscriber.failure_classes())
+    }
+  end
+
+  @platform_account_providers ~w(anthropic openai gemini deepseek kimi glm xai groq)
+  @platform_account_failure_reasons ~w(quota_exhausted credentials_rejected)
+
+  @doc """
+  Counts one platform-funded model call whose provider account refused it,
+  by provider and `reason` (`quota_exhausted` or `credentials_rejected`).
+  """
+  def emit_platform_account_failure(provider, reason) do
+    SystemsRuntime.Telemetry.execute([:salix, :llm, :platform_account_failure], %{}, %{
+      provider: provider,
+      reason: reason
+    })
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp platform_account_balance_tags(metadata) do
+    %{
+      provider: finite(metadata[:provider], @platform_account_providers),
+      kind: finite(metadata[:kind], ~w(cny usd))
+    }
+  end
+
+  defp platform_account_failure_tags(metadata) do
+    %{
+      provider: finite(metadata[:provider], @platform_account_providers),
+      reason: finite(metadata[:reason], @platform_account_failure_reasons)
+    }
   end
 
   def emit_operation(component, operation, surface, outcome, duration) do
@@ -1222,9 +1495,29 @@ defmodule Salix.Telemetry do
   defp station_task_tags(metadata) do
     %{
       phase: finite(metadata[:phase], @station_task_phases),
-      kind: finite(metadata[:kind], @station_task_kinds),
-      canary: if(metadata[:canary] == true, do: "true", else: "false")
+      kind: finite(metadata[:kind], @station_task_kinds)
     }
+  end
+
+  defp station_kind_tags(metadata),
+    do: %{kind: finite(metadata[:kind], @station_task_kinds)}
+
+  defp sandbox_start_tags(metadata) do
+    %{
+      kind: finite(metadata[:kind], @sandbox_start_kinds),
+      outcome: finite(metadata[:outcome], @sandbox_start_outcomes)
+    }
+  end
+
+  defp sandbox_state_tags(metadata),
+    do: %{state: finite(metadata[:state], @sandbox_states)}
+
+  # Every combination of the given tag values but `other`, for
+  # `reporter_options: [zero_series: ...]` (SystemsObservability.Metrics).
+  defp zero_series(values) do
+    Enum.reduce(values, [%{}], fn {tag, allowed}, series ->
+      for labels <- series, value <- allowed, value != "other", do: Map.put(labels, tag, value)
+    end)
   end
 
   defp vm_record_cache_tags(metadata) do

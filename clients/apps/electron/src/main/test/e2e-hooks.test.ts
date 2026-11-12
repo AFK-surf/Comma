@@ -314,6 +314,8 @@ describe("Electron e2e hooks", () => {
       openLoginItemsSettings: vi.fn(async () => ({ opened: false })),
       openNotificationSettings: vi.fn(async () => ({ opened: false })),
       requestNotificationAuthorization: vi.fn(async () => "available" as const),
+      refreshLaunchAtLogin: vi.fn(async () => defaultAppPreferences),
+      relaunch: vi.fn(async () => ({ relaunching: false })),
       state: vi.fn(() => defaultAppPreferences),
       update: vi.fn(async () => snapshots[updateIndex++]!),
     };

@@ -24,6 +24,8 @@ import androidx.annotation.DrawableRes
 import androidx.core.view.isVisible
 import androidx.dynamicanimation.animation.DynamicAnimation
 import surf.comma.android.R
+import surf.comma.android.ui.widget.GlassPress
+import surf.comma.android.ui.widget.glassControl
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
@@ -85,11 +87,13 @@ fun View.clipRounded(radius: Float) {
  * soft shadow: the tab bar, the status switcher, the filter capsule, toasts and the floating close buttons.
  * A negative [radius] makes a capsule.
  */
-fun View.glass(radius: Float = -1f, elevated: Boolean = true, @ColorRes fill: Int = R.color.token_glass_over_page) {
-    val fillColor = context.getColor(fill)
+fun View.glass(radius: Float = -1f, elevated: Boolean = true, @ColorRes fill: Int = R.color.token_glass_over_page, lens: Boolean = false) {
+    // Over a patch of the experimental glass, the shader does the tinting and casts the shadow.
+    val liquid = lens && surf.comma.android.ui.widget.LiquidGlass.enabled
+    val fillColor = if (liquid) android.graphics.Color.TRANSPARENT else context.getColor(fill)
     val fill = GradientDrawable().apply {
         setColor(fillColor)
-        setStroke(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), context.getColor(R.color.token_glass_border))
+        if (!liquid) setStroke(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), context.getColor(R.color.token_glass_border))
     }
     background = fill
     addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
@@ -101,7 +105,7 @@ fun View.glass(radius: Float = -1f, elevated: Boolean = true, @ColorRes fill: In
             outline.setRoundRect(0, 0, view.width, view.height, r)
         }
     }
-    if (elevated) {
+    if (elevated && !liquid) {
         elevation = context.dpf(12f)
         outlineAmbientShadowColor = context.getColor(R.color.token_composer_shadow_ambient)
         outlineSpotShadowColor = context.getColor(R.color.token_composer_shadow_spot)
@@ -185,12 +189,12 @@ class AttentionDot(context: Context) : View(context) {
 }
 
 /**
- * The app's one empty state: a 24dp glyph, a title, an optional line of explanation and the ways out, centred
- * in the room it is given.
+ * The app's one empty state: a 24dp glyph, a semibold title at the headline size, an optional line of explanation
+ * and the ways out, centred in the room it is given.
  */
 class EmptyStateView(context: Context) : LinearLayout(context) {
     private val icon = context.glyph(R.drawable.ic_empty_planning, R.color.token_text_tertiary)
-    private val title = context.label(Level.SMALL, R.color.token_text_primary, DesignFonts.semibold, lines = 0)
+    private val title = context.label(Level.REGULAR, R.color.token_text_primary, DesignFonts.semibold, lines = 0)
     private val detail = context.label(Level.MINI, R.color.token_text_tertiary, lines = 0)
     private val actions = LinearLayout(context).apply {
         orientation = VERTICAL
@@ -228,8 +232,15 @@ class EmptyStateView(context: Context) : LinearLayout(context) {
 }
 
 /** A circular 44dp button on glass holding one glyph: the sheets' close button, the Task header's buttons. */
-class GlassIconButton(context: Context, @DrawableRes icon: Int, description: CharSequence, glass: Boolean = true) : FrameLayout(context) {
+class GlassIconButton(
+    context: Context,
+    @DrawableRes icon: Int,
+    description: CharSequence,
+    glass: Boolean = true,
+    @ColorRes backdrop: Int = R.color.token_card_primary,
+) : FrameLayout(context) {
     val image = context.glyph(icon, R.color.token_text_primary)
+    private var press: GlassPress? = null
 
     init {
         contentDescription = description
@@ -237,14 +248,22 @@ class GlassIconButton(context: Context, @DrawableRes icon: Int, description: Cha
         isFocusable = true
         addView(image, LayoutParams(context.dp(20), context.dp(20), Gravity.CENTER))
         if (glass) {
-            glass(elevated = false)
-            tactile(0.9f)
+            press = glassControl(backdrop, image)
+            if (press == null) {
+                glass(elevated = false)
+                tactile(0.9f)
+            }
         } else {
             // A view holds one touch listener, so the pressed fill and the shrink share it.
             val fill = fillPress(R.color.token_surface_ink, context.dpf(22f))
             val shrink = tactilePress(0.9f, this)
             setOnTouchListener { v, event -> fill(v, event); shrink(v, event); false }
         }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        press?.track(event)
+        return super.dispatchTouchEvent(event)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

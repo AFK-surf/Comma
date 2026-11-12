@@ -1,7 +1,7 @@
 defmodule Comma.Auth.GoogleLoginAttempts do
   @moduledoc "One-time, nonce-bound state issued before starting Google Identity Services."
 
-  @platforms ["web", "electron", "android"]
+  @platforms ["web", "electron", "android", "ios"]
 
   @purpose "google_login_attempt"
   @default_ttl_seconds 300
@@ -93,7 +93,7 @@ defmodule Comma.Auth.GoogleLoginAttempts do
     end
   end
 
-  defp platform_configured?("web"), do: true
+  defp platform_configured?(platform) when platform in ["web", "ios"], do: true
 
   defp platform_configured?("android"), do: android_client_ids() != []
 
@@ -111,6 +111,8 @@ defmodule Comma.Auth.GoogleLoginAttempts do
 
   # Android Credential Manager issues ID tokens whose audience is the web client.
   defp client_id_for("android"), do: client_id_for("web")
+
+  defp client_id_for("ios"), do: google_config()[:ios_client_id] |> normalize_client_id()
 
   defp client_id_for(_platform), do: nil
 

@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
 import { Button } from "../Button";
 import { CubeIcon } from "../icons";
+import { StillfailProviderLogo } from "../provider-brand-logos";
 import {
   DeviceSettings,
   type DeviceAccessLevel,
@@ -218,6 +219,90 @@ function Page({ stage }: { stage: Stage }) {
   );
 }
 
+/** A computer beside a still.fail station: its brand, label and connection, the models it runs, no access row. */
+function StillfailStationPage() {
+  const computer: DeviceSettingsItem = {
+    id: "mac",
+    name: "office-mini",
+    connected: true,
+    status: "Connected",
+    menu: [
+      { id: "rename", label: "Rename", onAction: () => undefined },
+      { id: "remove", label: "Remove", destructive: true, onAction: () => undefined },
+    ],
+    agents: [
+      {
+        id: "codex",
+        provider: "codex",
+        name: "Codex",
+        status: "Available",
+        ready: true,
+      },
+    ],
+    access: { level: "full", disabled: false, onChange: () => undefined },
+  };
+  const station: DeviceSettingsItem = {
+    id: "station",
+    name: "Acme · studio",
+    mark: <StillfailProviderLogo />,
+    badge: "still.fail station",
+    detail: "Connected",
+    connected: true,
+    status: "Connected",
+    menu: [
+      {
+        id: "disconnect",
+        label: "Disconnect",
+        destructive: true,
+        onAction: () => undefined,
+      },
+    ],
+    agents: [
+      {
+        id: "models_codex",
+        provider: "codex",
+        name: "Codex",
+        status: "",
+        ready: true,
+        models: "gpt-5.5, gpt-5.4-mini",
+      },
+      {
+        id: "models_claude",
+        provider: "claude",
+        name: "Claude Code",
+        status: "",
+        ready: true,
+        models: "opus",
+      },
+    ],
+    emptyAgentsLabel: null,
+  };
+  return (
+    <div className="h-[900px] w-[760px] bg-primary">
+      <DeviceSettings
+        title="Devices"
+        addLabel="Add device"
+        guidedLabel="Ask Comma to help"
+        localLabel="This device"
+        loadingLabel="Loading"
+        emptyLabel="No computers"
+        agentsLabel="Agents"
+        emptyAgentsLabel="No agents found"
+        accessLabel="Access"
+        detailsLabel="Details"
+        deviceLabel="Device"
+        moreLabel={(name) => `More actions for ${name}`}
+        offlineLabel={(count) => `Offline (${count})`}
+        accessLevels={accessLevels}
+        closeLabel="Close"
+        devices={[computer, station]}
+        onGuided={() => undefined}
+        onLoadMore={() => undefined}
+      />
+    </div>
+  );
+}
+
 const meta = {
   title: "Settings/DeviceSettings",
   component: Page,
@@ -235,3 +320,7 @@ export const SetupFailed: Story = { args: { stage: "setupFailed" } };
 export const ReadFailed: Story = { args: { stage: "readFailed" } };
 export const Details: Story = { args: { stage: "ready" } };
 export const Ready: Story = { args: { stage: "ready" } };
+export const StillfailStation: Story = {
+  args: { stage: "ready" },
+  render: () => <StillfailStationPage />,
+};

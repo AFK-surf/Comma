@@ -1,3 +1,5 @@
+import { useCommaMessages } from "@comma/i18n/react";
+import { copyWithFeedback } from "../../../toast";
 import { useCallback } from "react";
 import type { TextEditContextMenuAction } from "../../../menu";
 import type { AiInputClipboard } from "../../types";
@@ -31,6 +33,7 @@ export function useRichEditActions(
     restoreEditSelection,
   }: RichEditActionsOptions
 ) {
+  const messages = useCommaMessages();
   return useCallback(
     async (action: TextEditContextMenuAction) => {
       const editor = editorRef.current;
@@ -41,7 +44,7 @@ export function useRichEditActions(
 
       if (action === "copy") {
         const text = readSelectedPlainText(editor, tokenMapRef.current);
-        if (text) await clipboard.writeText(text);
+        if (text) await copyWithFeedback(() => clipboard.writeText(text), messages);
         captureEditSelectionAfterAction();
         return;
       }
@@ -77,6 +80,7 @@ export function useRichEditActions(
     [
       captureEditSelectionAfterAction,
       clipboard,
+      messages,
       onPasteFromMenu,
       commitEditor,
       editorRef,

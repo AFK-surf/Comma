@@ -287,15 +287,28 @@ class ReplayHost extends FakeHost {
       apiOrigin: input.apiOrigin,
       clientPlatform: input.clientPlatform,
       ...(input.clientKind ? { clientKind: input.clientKind } : {}),
-      ...(input.showsKeptAccount ? { showsKeptAccount: true } : {}),
       ...(input.resumed ? { resumed: input.resumed } : {}),
       vault: Effect.suspend(() => port("vault")),
       change: (change: { kind: string }) => port(`change:${change.kind}`),
-      // The iPhone signs in with Apple's sheet, the others with Google.
+      ...(input.abuseProof
+        ? {
+            abuseProof: () =>
+              port<import("../session/abuse.ts").NativeAbuseProof>("abuseProof"),
+          }
+        : {}),
+      ...(input.sha256
+        ? {
+            sha256: () =>
+              port<string[]>("sha256").pipe(
+                Effect.map((digests) => digests.map(fromBase64))
+              ),
+          }
+        : {}),
+      ...(input.captcha ? { captcha: () => port<string | null>("captcha") } : {}),
+      google: () => port("google"),
       ...(input.clientKind === "ios"
         ? { apple: () => port("apple") }
         : {
-            google: () => port("google"),
             googleDone: () => Effect.ignore(port("googleDone")),
           }),
       gate: () => undefined,
@@ -303,6 +316,7 @@ class ReplayHost extends FakeHost {
   }
 
   readonly #driveListeners = new Set<() => void>();
+  readonly #updateListeners = new Set<(percent: number) => void>();
 
   /** The local Drive node, answered from the log, when the recorded host had one. */
   serveLocalDrive(): void {
@@ -354,9 +368,15 @@ class ReplayHost extends FakeHost {
   }
 
   /** The station mesh, answered from the log (`MESH` requests), when the recorded host had one. */
-  serveStationMesh(alwaysLinked: boolean): void {
+  serveStationMesh(
+    alwaysLinked: boolean,
+    ownComputers = false,
+    salixOnly = false
+  ): void {
     this.stationMesh = {
       ...(alwaysLinked ? { alwaysLinked: true } : {}),
+      ...(ownComputers ? { ownComputers: true } : {}),
+      ...(salixOnly ? { salixOnly: true } : {}),
       open: () =>
         this.#port<{ id: string; salix?: true }>("MESH", "open").pipe(
           Effect.map(
@@ -373,6 +393,17 @@ class ReplayHost extends FakeHost {
                 this.#port("MESH", `connect:${station}`).pipe(
                   Effect.as(Effect.ignore(this.#port("MESH", `closed:${station}`)))
                 ),
+              refresh: (station) => this.#port<boolean>("MESH", `refresh:${station}`),
+              ping: (station) =>
+                this.#port("MESH", `ping:${station}`).pipe(
+                  Effect.as(
+                    Effect.suspend(() =>
+                      this.#port<boolean>("MESH", `pinged:${station}`)
+                    ).pipe(Effect.orElseSucceed(() => false))
+                  )
+                ),
+              drop: (station) =>
+                this.#port("MESH", `drop:${station}`).pipe(Effect.asVoid, Effect.orDie),
               request: (station, request) =>
                 this.#streamed({
                   method: `MESH ${request.method}`,
@@ -440,6 +471,11 @@ class ReplayHost extends FakeHost {
   /** The node said its files changed. */
   driveChanged(): void {
     for (const listener of this.#driveListeners) listener();
+  }
+
+  /** The app's update feed said how far a download got, as the log has it. */
+  updateProgress(percent: number): void {
+    for (const listener of this.#updateListeners) listener(percent);
   }
 
   /** What Main's meeting parts saw, as the log has it. */
@@ -515,6 +551,10 @@ class ReplayHost extends FakeHost {
               check: Effect.suspend(() => port<AppRelease | null>("update.check")),
               download: () => port<boolean>("update.download"),
               apply: () => port<boolean>("update.apply"),
+              onProgress: (listener) => {
+                this.#updateListeners.add(listener);
+                return () => void this.#updateListeners.delete(listener);
+              },
             },
           }
         : {}),
@@ -610,6 +650,7 @@ export async function replay(
     host.serveImages(capabilities.preview, capabilities.transcode);
     if (capabilities.meeting) host.serveMeeting();
     if (capabilities.voiceCall) host.serveVoiceCall();
+    if (capabilities.screenFrames) host.screenFrames = { frame: () => undefined };
     if (capabilities.localFiles) host.uploadsLocalFiles = true;
     if (capabilities.client) host.client = capabilities.client;
   }
@@ -618,7 +659,12 @@ export async function replay(
   if (inputs.some((input) => input.kind === "localDrive")) host.serveLocalDrive();
   if (inputs.some((input) => input.kind === "downloads")) host.serveDownloads();
   const mesh = inputs.find((input) => input.kind === "stationMesh");
-  if (mesh?.kind === "stationMesh") host.serveStationMesh(mesh.alwaysLinked === true);
+  if (mesh?.kind === "stationMesh")
+    host.serveStationMesh(
+      mesh.alwaysLinked === true,
+      mesh.ownComputers === true,
+      mesh.salixOnly === true
+    );
   if (inputs.some((input) => input.kind === "reset")) host.serveReset();
   const web = inputs.find((input) => input.kind === "web");
   if (web?.kind === "web") host.serveWeb(web);
@@ -849,6 +895,9 @@ export async function replay(
         break;
       case "voiceCall":
         host.voiceCallEvent(structuredClone(input.event));
+        break;
+      case "updateProgress":
+        host.updateProgress(input.percent);
         break;
       case "random":
       case "legacy":

@@ -114,7 +114,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
   """
   def targets(project, role) do
     with :ok <- admin(role) do
-      {:ok, %{"stations" => stations, "cloud_vm" => cloud_vm}} = Agents.list_stations(project)
+      {:ok, %{"stations" => stations, "cloud_vm" => cloud_vm, "sandbox" => sandbox}} =
+        Agents.list_stations(project)
 
       {:ok,
        %{
@@ -129,15 +130,25 @@ defmodule BridgeForTeamsWeb.DashboardSwarmAgents do
                "models" => station["task_models"]
              }
            end,
+         # Where sandboxes are set up the Cloud VM is retired: a sandbox of the
+         # Task's own takes its place.
          "cloud_vm" => %{
            "selectable" => cloud_vm["enabled"],
-           "issue" =>
-             if(!cloud_vm["enabled"], do: gettext("The Cloud VM is turned off for this swarm.")),
+           "retired" => cloud_vm["retired"] == true,
+           "issue" => cloud_vm_issue(cloud_vm),
            "models" => cloud_vm["task_models"]
-         }
+         },
+         "sandbox" => %{"selectable" => sandbox["enabled"] == true}
        }}
     end
   end
+
+  defp cloud_vm_issue(%{"enabled" => true}), do: nil
+
+  defp cloud_vm_issue(%{"retired" => true}),
+    do: gettext("The Cloud VM is retired here: a sandbox takes its place.")
+
+  defp cloud_vm_issue(_none), do: gettext("No Cloud VM is set up for this swarm.")
 
   defp station_issue("ready"), do: nil
   defp station_issue(reason), do: StationNotice.message(reason)

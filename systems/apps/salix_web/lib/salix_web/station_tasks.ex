@@ -63,8 +63,12 @@ defmodule SalixWeb.StationTasks do
     * `app_deploy/2` (`task.app_deploy`), `app_logs/2` (`task.app_logs`): the
       Session of a Mini App build Task deploys a preview Version of its app,
       or reads its backend's recent logs, from the Task's current sandbox.
+    * `tools/2` (`task.tools`), `tool_call/2` (`task.tool_call`): the Session
+      of a sandbox Task lists, and calls, Salix registry tools as the Task's
+      Worker (`SalixAgent.StationToolCalls`: the Worker's own disclosure),
+      with the authority of `app_deploy/2`.
     * `ask/4`: a request about the station's Session of a coding Task
-      (`task.diff`, `task.pull_request`, `task.save`).
+      (`task.diff`, `task.pull_request`).
     * `hello/2` (`task.hello`): the station connected; it is given what it
       missed, and told to leave (`task.leave`) each Task it names that it no
       longer takes part in (one that moved while it was not connected). With `tasks` (`[{task, fetched}]`, how far it has each), from
@@ -78,12 +82,14 @@ defmodule SalixWeb.StationTasks do
   require Logger
   require SystemsClock
 
-  alias SalixStore.StationTaskSessions
+  alias SalixStore.{StationMembers, StationTaskSessions}
 
   @put_limit 100
   @put_timeout_ms 30_000
   @invite_timeout_ms 60_000
   @status_timeout_ms 10_000
+  # How far back a reopened Task looks for a Message its Worker has not answered.
+  @recent_messages 50
   @last_failure_chars 200
   @session_states %{
     "running" => :running,
@@ -279,6 +285,34 @@ defmodule SalixWeb.StationTasks do
   @doc "Task `conversation`'s owner: `{:ok, user_id}`, or an error when it has none or cannot be read."
   def owner(group, conversation), do: conversations().owner(group, conversation)
 
+  @doc "Task `conversation`'s last Message, or an error when it has none or cannot be read."
+  def last_message(group, conversation), do: conversations().last(group, conversation)
+
+  @doc """
+  Whether Task `conversation`'s latest Message of a person or Agent is one its
+  Worker `agent_id` has not answered, among the last #{@recent_messages}.
+  System Messages (a status, a watch's) and Worker Messages of milestones alone
+  are passed over; Salix's notices are the Worker's own.
+  `{:ok, boolean}`, or an error when the Messages cannot be read.
+  """
+  def worker_owes_answer?(group, conversation, agent_id) do
+    with {:ok, messages} <- conversations().recent(group, conversation, @recent_messages) do
+      latest =
+        messages
+        |> Enum.reject(&passed_over?(&1, agent_id))
+        |> Enum.max_by(& &1["seq"], fn -> nil end)
+
+      {:ok, not is_nil(latest) and latest["agent_id"] != agent_id}
+    end
+  end
+
+  defp passed_over?(%{"actor_type" => "system"}, _agent_id), do: true
+
+  defp passed_over?(%{"agent_id" => agent_id} = message, agent_id),
+    do: SalixIM.ConversationMilestone.only_milestones?(message["content"])
+
+  defp passed_over?(_message, _agent_id), do: false
+
   @doc """
   Asks the station taking part in Task `conversation` `method` about its
   Session (`params` plus `task` and `session`), within `timeout` ms.
@@ -305,8 +339,12 @@ defmodule SalixWeb.StationTasks do
   @doc """
   Writes `text` into Task `conversation` as its Worker, as the station's
   Session would, for what Salix says about the Task's sandbox. Once per `key`.
+  It is for the person: on its own it wakes no sandbox
+  (`SalixWeb.CodingSandboxes.wake/2`). `kind` is the Message's
+  `metadata.kind`: `cloud_vm_notice` for the Cloud VM cutover
+  (`SalixWeb.Migrations.CloudVMCutover`).
   """
-  def notice(group, conversation, agent_id, key, text) do
+  def notice(group, conversation, agent_id, key, text, kind \\ "sandbox_notice") do
     row = %{conversation_id: conversation, agent_id: agent_id}
 
     with {:ok, participant_id} <- worker(group, row) do
@@ -317,7 +355,7 @@ defmodule SalixWeb.StationTasks do
         "participant_id" => participant_id,
         "content" => truncate(text),
         "client_request_id" => "sandbox-notice:" <> digest([conversation, key]),
-        "metadata" => %{"kind" => "sandbox_notice"}
+        "metadata" => %{"kind" => kind}
       })
     end
   end
@@ -409,13 +447,7 @@ defmodule SalixWeb.StationTasks do
       # One station runs a Task; were there more, the one given the least is
       # the one the Task waits on.
       %{tenant_id: tenant, device_id: device, sent: sent} = Enum.min_by(rows, & &1.sent)
-
-      place =
-        cond do
-          device == SalixStore.RuntimeIds.cloud_vm_device_id(group) -> :cloud_vm
-          SalixStore.CodingSandboxes.device?(device) -> :sandbox
-          true -> :device
-        end
+      place = place_of(group, device)
 
       with {:ok, vm_status} <- place_status(place, tenant, group, device) do
         {:ok,
@@ -722,9 +754,17 @@ defmodule SalixWeb.StationTasks do
 
   # The Group's VM is made for the Task's Worker, when the Group's Cloud VM
   # switch lets it (`SalixAgent.CloudVM.allowed?/1`); the Compute reconciler
-  # carries the creation out.
+  # carries the creation out. A retired Cloud VM is not made, and a retired
+  # one that sleeps is not woken (`SalixWeb.CloudVM.RuntimeLifecycle.wake/1`):
+  # the Task's watch tells the Router its station is not ready
+  # (`SalixIM.StationTaskWatch`).
   defp make_vm(group, conversation) do
-    with {:ok, [%{agent_id: agent_id} | _]} <- StationTaskSessions.of_task(group, conversation),
+    with :ok <-
+           if(SalixAgent.Sandboxes.cloud_vm_retired?(group),
+             do: {:error, :cloud_vm_retired},
+             else: :ok
+           ),
+         {:ok, [%{agent_id: agent_id} | _]} <- StationTaskSessions.of_task(group, conversation),
          {:ok, %{"group_id" => ^group} = agent} <- SalixAgent.Control.get_record(agent_id),
          true <- SalixAgent.CloudVM.allowed?(agent) || {:error, :cloud_vm_disabled},
          {:ok, _record} <- SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent) do
@@ -832,7 +872,7 @@ defmodule SalixWeb.StationTasks do
     params =
       %{
         "task" => conversation,
-        "messages" => Enum.map(messages, &message(&1, device)),
+        "messages" => messages |> Enum.map(&message(&1, device)) |> named(tenant, group),
         "through" => through
       }
       |> put_answered(answered)
@@ -877,10 +917,22 @@ defmodule SalixWeb.StationTasks do
     end
   end
 
+  # What kind of station `device` is: the Group's Cloud VM, a Task's sandbox,
+  # or a person's device.
+  defp place_of(group, device) do
+    cond do
+      device == SalixStore.RuntimeIds.cloud_vm_device_id(group) -> :cloud_vm
+      SalixStore.CodingSandboxes.device?(device) -> :sandbox
+      true -> :device
+    end
+  end
+
   # The station has no thread of the Task (it lost it): it is invited again as
   # it was first, told through which Message its Sessions answered the Task
   # already, and its new Session takes the place of the old, given nothing
-  # yet. Not connected, it says hello when it is.
+  # yet. Not connected, it says hello when it is. Counted by the kind of
+  # station (`salix.station_tasks.lost_thread.total`): a sandbox that lost
+  # its thread started from an empty disk.
   defp invite_again(row, answered) do
     start = start_of(row)
 
@@ -897,6 +949,12 @@ defmodule SalixWeb.StationTasks do
       {:ok, session} ->
         Logger.info(
           "a station that lost a Task was invited to it again: group=#{row.group_id} task=#{row.conversation_id} device=#{row.device_id} session=#{session}"
+        )
+
+        SystemsRuntime.Telemetry.execute(
+          [:salix_web, :station_task, :lost_thread],
+          %{},
+          %{kind: place_of(row.group_id, row.device_id)}
         )
 
         StationTaskSessions.rejoin(row, session, start, answered)
@@ -995,6 +1053,36 @@ defmodule SalixWeb.StationTasks do
     |> put_present("id", message["message_id"])
     |> put_files(message)
     |> put_milestones(message["content"])
+  end
+
+  # Who said each Message, by name and email, for a station that shows its
+  # people (a still.fail station's Comma connect): each member asked once a put.
+  defp named(messages, tenant, group) do
+    people =
+      for %{"author" => %{"kind" => "person", "id" => id}} <- messages,
+          uniq: true,
+          into: %{},
+          do: {id, StationMembers.member(tenant, group, id)}
+
+    Enum.map(messages, fn
+      %{"author" => %{"kind" => "person", "id" => id} = author} = m ->
+        case people[id] do
+          {:ok, person} ->
+            known =
+              for {k, v} <- Map.take(person, ["name", "email"]),
+                  is_binary(v),
+                  into: %{},
+                  do: {k, v}
+
+            %{m | "author" => Map.merge(author, known)}
+
+          :none ->
+            m
+        end
+
+      m ->
+        m
+    end)
   end
 
   # Both sources are owner-bound. User content and metadata alone grant no read.
@@ -1135,7 +1223,7 @@ defmodule SalixWeb.StationTasks do
         "actor_type" => "agent",
         "agent_id" => row.agent_id,
         "participant_id" => participant_id,
-        "content" => content(text, milestones, file_blocks),
+        "content" => content(text, milestones, file_blocks) |> asking(params["question"]),
         "client_request_id" => "station-task:" <> digest([view.device_id, row.session, key]),
         "metadata" =>
           %{"kind" => "station_task", "device_id" => view.device_id, "session" => row.session}
@@ -1341,6 +1429,130 @@ defmodule SalixWeb.StationTasks do
   end
 
   def app_logs(_view, _params), do: {:error, :bad_request}
+
+  @doc """
+  `task.tools` from the device of `view`: the Salix tools its Session may call
+  with `task.tool_call` (`SalixAgent.StationToolCalls.tools/1`), each with its
+  name, description and input schema. Only the station of the Task's current
+  sandbox may ask, over that sandbox generation's connection.
+  """
+  def tools(view, params) when is_map(params) do
+    with {:ok, row} <- taking_part(view, params),
+         :ok <- sandbox_authority(view, row) do
+      {:ok, %{"tools" => SalixAgent.StationToolCalls.tools(tool_ref(view, row))}}
+    end
+  end
+
+  def tools(_view, _params), do: {:error, :bad_request}
+
+  @doc """
+  `task.tool_call` from the device of `view`: its Session calls Salix tool
+  `tool` with `args` as the Task's Worker
+  (`SalixAgent.StationToolCalls.call/3`), with the authority of `tools/2`.
+
+  Answers the tool's result (`tool`, `error`, `content`, `truncated` when cut),
+  or `{"error": reason, "message"}` when the call is not made: arguments too
+  large, too many calls in flight, no requester. A request from a
+  station that has no such authority is an error.
+  """
+  def tool_call(view, params) when is_map(params) do
+    tool = params["tool"]
+    args = params["args"] || %{}
+
+    with true <- is_binary(tool) and tool != "" and is_map(args),
+         {:ok, row} <- taking_part(view, params),
+         :ok <- sandbox_authority(view, row) do
+      case SalixAgent.StationToolCalls.call(tool_ref(view, row), tool, args) do
+        {:ok, result} -> {:ok, result}
+        {:refused, error, message} -> {:ok, refusal(error, message)}
+      end
+    else
+      false -> {:error, :bad_request}
+      {:error, _} = error -> error
+    end
+  end
+
+  def tool_call(_view, _params), do: {:error, :bad_request}
+
+  @doc """
+  `task.login_keep`: the files of a CLI login finished in this sandbox, kept for
+  the Task's person as a credential of theirs (`SalixWeb.OAuthFlow.keep_login/5`).
+  It is no tool call, so what is kept reaches no agent and no tool archive.
+  """
+  def login_keep(view, %{"program" => program, "archive" => archive} = params)
+      when is_binary(program) and is_binary(archive) do
+    with {:ok, row} <- taking_part(view, params),
+         :ok <- sandbox_authority(view, row),
+         owner when is_binary(owner) <- login_owner(view, row) || {:error, :no_requester},
+         {:ok, _kept} <-
+           SalixWeb.OAuthFlow.keep_login(view.tenant_id, view.group_id, owner, program, archive) do
+      {:ok, %{"kept" => true}}
+    end
+  end
+
+  def login_keep(_view, _params), do: {:error, :bad_request}
+
+  @doc "`task.login_restore`: what `login_keep/2` kept of `program` for the Task's person, if anything."
+  def login_restore(view, %{"program" => program} = params) when is_binary(program) do
+    with {:ok, row} <- taking_part(view, params),
+         :ok <- sandbox_authority(view, row),
+         owner when is_binary(owner) <- login_owner(view, row) || {:error, :no_requester} do
+      case SalixWeb.OAuthFlow.kept_login(view.tenant_id, view.group_id, owner, program) do
+        {:ok, archive} -> {:ok, %{"archive" => archive}}
+        :none -> {:ok, %{}}
+      end
+    end
+  end
+
+  def login_restore(_view, _params), do: {:error, :bad_request}
+
+  defp login_owner(view, row),
+    do:
+      SalixAgent.OAuthCredentials.acting_for(%{
+        trusted_origin: SalixAgent.StationToolCalls.origin_of(tool_ref(view, row))
+      })
+
+  # The call acts for the person whose Task it is (`owner_user_id`, else the
+  # provider user who asked for it in a Slack or Feishu chat, `ifc_requester`),
+  # under the Task conversation's own IFC label (`SalixIM.IFC.Ingress`).
+  defp tool_ref(view, row) do
+    requester =
+      case conversations().owner(view.group_id, row.conversation_id) do
+        {:ok, owner} when is_binary(owner) and owner != "" -> owner
+        _ -> nil
+      end
+
+    principal =
+      with nil <- requester,
+           {:ok, task} <- conversations().task(view.group_id, row.conversation_id),
+           principal when is_binary(principal) <-
+             get_in(task, ["source_refs", "ifc_requester"]) do
+        principal
+      else
+        _ -> nil
+      end
+
+    label =
+      case SalixIM.IFC.Ingress.conversation_block(%{
+             "conversation_id" => row.conversation_id,
+             "conversation_kind" => "agent_task"
+           }) do
+        %{"label" => label} when is_list(label) -> label
+        _ -> nil
+      end
+
+    %{
+      tenant_id: view.tenant_id,
+      group_id: view.group_id,
+      agent_id: row.agent_id,
+      conversation_id: row.conversation_id,
+      device_id: view.device_id,
+      session: row.session,
+      requester: requester,
+      principal: principal,
+      label: label
+    }
+  end
 
   # The station of the Task's own sandbox, over the connection of its current
   # Workload generation: a sandbox that was replaced has no authority
@@ -1568,6 +1780,22 @@ defmodule SalixWeb.StationTasks do
   defp milestones_given(list) when is_list(list), do: Enum.filter(list, &is_binary/1)
   defp milestones_given(_list), do: []
 
+  # A question the Session asks with its post (a still.fail station's card) is
+  # Comma's question card (`SalixIM.ConversationQuestion`); one that is not a
+  # valid card leaves the words alone.
+  defp asking(content, %{} = question) do
+    blocks = if is_binary(content), do: [%{"type" => "text", "text" => content}], else: content
+
+    case SalixIM.ConversationQuestion.normalize_agent_content(
+           blocks ++ [Map.put(question, "type", "question")]
+         ) do
+      {:ok, asked} -> asked
+      {:error, _} -> content
+    end
+  end
+
+  defp asking(content, _question), do: content
+
   defp content(text, [], []), do: truncate(text)
 
   defp content(text, milestones, files) do
@@ -1750,6 +1978,26 @@ defmodule SalixWeb.StationTasks do
           after_seq: after_seq,
           limit: limit
         )
+
+    def last(group_id, conversation_id) do
+      case SalixIM.Conversations.list_group_conversation_message_page(group_id, conversation_id,
+             limit: 1
+           ) do
+        {:ok, %{"messages" => [message]}} -> {:ok, message}
+        {:ok, _none} -> {:error, :not_found}
+        {:error, _} = error -> error
+      end
+    end
+
+    def recent(group_id, conversation_id, limit) do
+      with {:ok, %{"messages" => messages}} <-
+             SalixIM.Conversations.list_group_conversation_message_page(
+               group_id,
+               conversation_id,
+               limit: limit
+             ),
+           do: {:ok, messages}
+    end
 
     def message(group_id, conversation_id, message_id),
       do:

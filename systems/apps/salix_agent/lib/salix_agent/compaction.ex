@@ -284,7 +284,7 @@ defmodule SalixAgent.Compaction do
 
     case committed do
       {:ok, revision, driver} ->
-        {:answer, :ok, archived(host, revision, mode), driver}
+        {:answer, :ok, with_revision(host, revision), driver}
 
       {:rerouted, revision, driver, effect} ->
         {:rerouted, with_revision(host, revision), driver, effect}
@@ -293,16 +293,6 @@ defmodule SalixAgent.Compaction do
         {:answer, error, host, driver}
     end
   end
-
-  # Archiving writes the session again behind this revision; the next owner
-  # step reads the archived state once.
-  defp archived(host, revision, %{"archive" => true}) do
-    InternalSessionStore.archive_compacted(host.agent_id, host.session_id)
-    host = with_revision(host, revision)
-    %{host | context: Map.delete(host.context, :revision)}
-  end
-
-  defp archived(host, revision, _mode), do: with_revision(host, revision)
 
   defp with_revision(host, revision),
     do: %{host | context: Map.put(host.context, :revision, revision), state: revision.state}

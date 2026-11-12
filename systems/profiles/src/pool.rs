@@ -3,14 +3,15 @@
 //!
 //! Only Profiles that serve the model qualify (not turned off for it; among the ones they list, when they list any). Of
 //! those, one that is turned off, cannot sign in or was refused, ran into its allowance since it was read, or has a
-//! window used up that has not refilled (a window of one model counts for that model only) is passed over. The rest
-//! go in this order:
+//! window used up that has not refilled (a window of one model counts for that model only) is passed over, unless its
+//! owner lets it spend the plan's credits and the plan has some. The rest go in this order:
 //! 1. one a provider asked to wait goes after the others, the soonest free first;
-//! 2. one whose short window (a day or less) is nearly full goes last of those, as a session sent there would soon run
+//! 2. then one that would spend credits goes after every one that still has its allowance;
+//! 3. one whose short window (a day or less) is nearly full goes last of those, as a session sent there would soon run
 //!    into it;
-//! 3. one whose long window (over a day) refills within a day, with some left, goes first, as what is left then is lost;
-//! 4. then the one that has to spend fastest not to lose any (left × window length ÷ time to refill);
-//! 5. then the one running fewer sessions, then the one picked least recently, then as given.
+//! 4. one whose long window (over a day) refills within a day, with some left, goes first, as what is left then is lost;
+//! 5. then the one that has to spend fastest not to lose any (left × window length ÷ time to refill);
+//! 6. then the one running fewer sessions, then the one picked least recently, then as given.
 //!
 //! A window whose refill is due counts as whole again, however long ago the allowance was read.
 
@@ -97,7 +98,23 @@ pub fn usable(profile: &Profile, signals: &Signals, model: Option<&str>, now: i6
     if profile.disabled || signals.spent || matches!(profile.status, Status::Login | Status::Failed) {
         return false;
     }
-    used_up(profile, model, now).next().is_none()
+    used_up(profile, model, now).next().is_none() || on_credits(profile)
+}
+
+/// Whether a Profile whose windows are used up may go on, paid by its plan's credits: its owner lets it, and the plan
+/// last said it has some.
+fn on_credits(profile: &Profile) -> bool {
+    profile.use_credits
+        && profile
+            .quota
+            .as_ref()
+            .and_then(|q| q.credits.as_ref())
+            .is_some_and(|c| c.has_credits || c.unlimited)
+}
+
+/// Whether serving this model now would spend a Profile's credits rather than its allowance.
+fn spends_credits(profile: &Profile, model: Option<&str>, now: i64) -> bool {
+    used_up(profile, model, now).next().is_some() && on_credits(profile)
 }
 
 /// The windows used up for this model that have not refilled.
@@ -227,6 +244,7 @@ pub fn rank(profiles: &[Profile], request: &Request) -> Result<Vec<String>, Stri
         let (sa, sb) = (signals(a), signals(b));
         (cooling(a).is_some().cmp(&cooling(b).is_some()))
             .then(cooling(a).cmp(&cooling(b)))
+            .then(spends_credits(a, asked, now).cmp(&spends_credits(b, asked, now)))
             .then(ua.crowded.cmp(&ub.crowded))
             .then(ub.soon.cmp(&ua.soon))
             .then(ub.pace.partial_cmp(&ua.pace).unwrap_or(std::cmp::Ordering::Equal))
@@ -302,6 +320,31 @@ mod tests {
             ["a"]
         );
         assert!(rank(&[a], &request(Some("gemini-2.5-flash"))).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_used_up_plan_whose_owner_lets_it_spend_credits_goes_on_after_the_ones_with_allowance() {
+        let mut a = profile("a");
+        a.quota = quota(vec![(100.0, 7 * 24 * 60, NOW + 5 * 24 * HOUR)]);
+        a.quota.as_mut().unwrap().credits = Some(crate::quota::Credits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("60470".into()),
+        });
+        let mut b = profile("b");
+        b.quota = quota(vec![(90.0, 7 * 24 * 60, NOW + 5 * 24 * HOUR)]);
+        // Credits alone do not spend: the owner has to let them.
+        assert_eq!(rank(&[a.clone(), b.clone()], &request(None)).unwrap(), ["b"]);
+        a.use_credits = true;
+        assert_eq!(rank(&[a.clone(), b.clone()], &request(None)).unwrap(), ["b", "a"]);
+        assert!(usable(&a, &Signals::default(), None, NOW));
+        // One a provider asked to wait goes after it: the plan's credits serve now.
+        let mut c = profile("c");
+        c.cooldown_until = Some(NOW + HOUR);
+        assert_eq!(rank(&[c.clone(), a.clone(), b.clone()], &request(None)).unwrap(), ["b", "a", "c"]);
+        // None left: held back again until the window refills.
+        a.quota.as_mut().unwrap().credits.as_mut().unwrap().has_credits = false;
+        assert_eq!(rank(&[a, b], &request(None)).unwrap(), ["b"]);
     }
 
     #[test]

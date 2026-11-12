@@ -13,6 +13,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   @proxy_session_path "/api/v3.1/tool_router/session"
   @proxy_execute_path "/api/v3.1/tool_router/session/trs-calendar/proxy_execute"
+  @personal_names ["peng", "jinfei", "guest", "missing"]
 
   defmodule MockExternalHTTP do
     use Agent
@@ -83,6 +84,16 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       |> put_resp_content_type("application/json")
       |> send_resp(status, Jason.encode!(response))
     end
+  end
+
+  defmodule JoinRecorder do
+    use Agent
+
+    def start_link(_ \\ []), do: Agent.start_link(fn -> [] end, name: __MODULE__)
+    def join(doc), do: Agent.update(__MODULE__, &[doc | &1])
+    def leave(_doc), do: :ok
+    def stop(_doc), do: :ok
+    def calls, do: Agent.get(__MODULE__, &Enum.reverse/1)
   end
 
   defmodule VersionedGoogleCalendarSource do
@@ -852,6 +863,543 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              )
   end
 
+  test "a member's calendar full of all-day and link-less events still lists its meeting", %{
+    group: group
+  } do
+    filler =
+      for n <- 1..60 do
+        %{
+          "id" => "all-day-#{n}",
+          "iCalUID" => "all-day-#{n}@example.com",
+          "summary" => "Out of office #{n}",
+          "status" => "confirmed",
+          "sequence" => 1,
+          "updated" => "2030-01-02T00:00:00Z",
+          "start" => %{"date" => "2030-01-14"},
+          "end" => %{"date" => "2030-01-15"},
+          "organizer" => %{"self" => true, "email" => "owner@example.com"}
+        }
+      end
+
+    stub_list(filler ++ [standalone_event("Standup", 1, "2030-01-02T00:00:00Z")], "sync-crowded")
+    assert {:ok, _} = sync_source(group)
+
+    assert {:error, :occurrence_limit_exceeded} =
+             MeetingCalendar.list(group, range_start(), range_end())
+
+    member = Map.put(group, "calendar_scope", "members")
+    assert {:ok, [event]} = MeetingCalendar.list(member, range_start(), range_end())
+    assert event["title"] == "Standup"
+  end
+
+  test "a paged member scan reads the meetings one page at a time and starts over after the last",
+       %{group: group} do
+    meetings =
+      for n <- 1..5 do
+        "Meeting #{n}"
+        |> standalone_event(1, "2030-01-02T00:00:00Z")
+        |> Map.merge(%{
+          "id" => "meeting-#{n}",
+          "iCalUID" => "meeting-#{n}@example.com",
+          "hangoutLink" => "https://meet.google.com/aaa-bbbb-cc#{n}"
+        })
+      end
+
+    stub_list(meetings, "sync-paged")
+    assert {:ok, _} = sync_source(group)
+
+    member =
+      Map.merge(group, %{"calendar_scope" => "members", "paged" => true, "max_events" => 2})
+
+    pages =
+      Enum.reduce_while(1..4, {nil, []}, fn _, {after_key, seen} ->
+        assert {:ok, events, next} =
+                 MeetingCalendar.list(
+                   Map.put(member, "page_after", after_key),
+                   range_start(),
+                   range_end()
+                 )
+
+        seen = seen ++ [Enum.map(events, & &1["title"])]
+        if next, do: {:cont, {next, seen}}, else: {:halt, {next, seen}}
+      end)
+
+    assert {nil, [first, second, third]} = pages
+    assert length(first) == 2 and length(second) == 2 and length(third) == 1
+    assert Enum.sort(first ++ second ++ third) == Enum.map(1..5, &"Meeting #{&1}")
+  end
+
+  test "a paged member scan keeps its place across a page with no meetings in range",
+       %{group: group} do
+    # Items sort by calendar item id (in sync order); the first pages' items
+    # are in the indexed month but have no occurrence in the range.
+    outside =
+      for n <- 1..3 do
+        "Old #{n}"
+        |> standalone_event(1, "2030-01-02T00:00:00Z")
+        |> Map.merge(%{
+          "id" => "old-#{n}",
+          "iCalUID" => "old-#{n}@example.com",
+          "start" => %{"dateTime" => "2030-01-20T10:00:00Z", "timeZone" => "Etc/UTC"},
+          "end" => %{"dateTime" => "2030-01-20T11:00:00Z", "timeZone" => "Etc/UTC"},
+          "hangoutLink" => "https://meet.google.com/old-ro#{n}-abc"
+        })
+      end
+
+    stub_list(outside ++ [standalone_event("Standup", 1, "2030-01-02T00:00:00Z")], "sync-gap")
+    assert {:ok, _} = sync_source(group)
+
+    member =
+      Map.merge(group, %{"calendar_scope" => "members", "paged" => true, "max_events" => 1})
+
+    titles =
+      Enum.reduce_while(1..10, {nil, []}, fn _, {after_item, seen} ->
+        assert {:ok, events, next} =
+                 MeetingCalendar.list(
+                   Map.put(member, "page_after", after_item),
+                   range_start(),
+                   range_end()
+                 )
+
+        seen = seen ++ Enum.map(events, & &1["title"])
+        if next, do: {:cont, {next, seen}}, else: {:halt, seen}
+      end)
+
+    assert "Standup" in titles
+  end
+
+  test "a paged member scan reads a month with more than 1000 indexed events", %{group: group} do
+    filler =
+      for n <- 1..1001 do
+        %{
+          "id" => "busy-#{n}",
+          "iCalUID" => "busy-#{n}@example.com",
+          "summary" => "Busy #{n}",
+          "status" => "confirmed",
+          "sequence" => 1,
+          "updated" => "2030-01-02T00:00:00Z",
+          "start" => %{"dateTime" => "2030-01-20T10:00:00Z", "timeZone" => "Etc/UTC"},
+          "end" => %{"dateTime" => "2030-01-20T10:30:00Z", "timeZone" => "Etc/UTC"},
+          "organizer" => %{"self" => true, "email" => "owner@example.com"}
+        }
+      end
+
+    all = filler ++ [standalone_event("Standup", 1, "2030-01-02T00:00:00Z")]
+
+    MockExternalHTTP.stub("POST", @proxy_execute_path, fn request ->
+      offset =
+        (request["parameters"] || [])
+        |> Enum.find_value("0", &(&1["name"] == "pageToken" && &1["value"]))
+        |> String.to_integer()
+
+      page = Enum.slice(all, offset, 200)
+
+      data =
+        if offset + 200 < length(all),
+          do: %{"items" => page, "nextPageToken" => Integer.to_string(offset + 200)},
+          else: %{"items" => page, "nextSyncToken" => "sync-busy"}
+
+      %{"status" => 200, "data" => data}
+    end)
+
+    assert {:ok, _} = sync_source(group)
+
+    assert {:error, :calendar_query_index_budget_exceeded} =
+             MeetingCalendar.list(group, range_start(), range_end())
+
+    member =
+      Map.merge(group, %{"calendar_scope" => "members", "paged" => true, "max_events" => 50})
+
+    titles =
+      Enum.reduce_while(1..30, {nil, []}, fn _, {after_item, seen} ->
+        assert {:ok, events, next} =
+                 MeetingCalendar.list(
+                   Map.put(member, "page_after", after_item),
+                   range_start(),
+                   range_end()
+                 )
+
+        seen = seen ++ Enum.map(events, & &1["title"])
+        if next, do: {:cont, {next, seen}}, else: {:halt, seen}
+      end)
+
+    assert titles == ["Standup"]
+  end
+
+  test "a member's weekly meeting across a daylight-saving change keeps its local time and crosses the date for Asia",
+       %{group: group} do
+    # 09:00 in Los Angeles every Monday: 17:00 UTC before 2030-03-10 (PST),
+    # 16:00 UTC after it (PDT). For an attendee in Shanghai it is Tuesday.
+    series =
+      recurring_master()
+      |> Map.merge(%{
+        "summary" => "Pacific weekly",
+        "start" => %{
+          "dateTime" => "2030-03-04T09:00:00-08:00",
+          "timeZone" => "America/Los_Angeles"
+        },
+        "end" => %{"dateTime" => "2030-03-04T09:30:00-08:00", "timeZone" => "America/Los_Angeles"}
+      })
+
+    stub_list([series], "sync-dst")
+    assert {:ok, _} = sync_source(group)
+
+    member =
+      Map.merge(group, %{"calendar_scope" => "members", "paged" => true, "max_events" => 50})
+
+    assert {:ok, events, nil} =
+             MeetingCalendar.list(
+               member,
+               unix_ms("2030-03-01T00:00:00Z"),
+               unix_ms("2030-03-15T00:00:00Z")
+             )
+
+    starts = Enum.map(events, &(&1["start_ms"] |> DateTime.from_unix!(:millisecond)))
+
+    assert Enum.map(starts, &DateTime.to_iso8601/1) == [
+             "2030-03-04T17:00:00.000Z",
+             "2030-03-11T16:00:00.000Z"
+           ]
+
+    assert Enum.map(starts, &(&1 |> DateTime.shift_zone!("Asia/Shanghai") |> DateTime.to_date())) ==
+             [~D[2030-03-05], ~D[2030-03-12]]
+  end
+
+  test "a meeting on members' calendars is prepared once, for its organizer or the first member",
+       %{group: group} do
+    stub_list([standalone_event("Standup", 1, "2030-01-02T00:00:00Z")], "sync-members-prep")
+    assert {:ok, _} = sync_source(group)
+
+    member =
+      Map.merge(group, %{
+        "calendar_scope" => "members",
+        "personal_preparation" => true,
+        "member_emails" => ["owner@example.com", "other@example.com"]
+      })
+
+    plan = fn unit ->
+      assert {:ok, [event]} = MeetingCalendar.list(unit, range_start(), range_end())
+      assert {:ok, plan} = SalixMeet.MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+      {plan["personal_preparation"], plan["personal_recipients"]}
+    end
+
+    # The organizer is a member: only the organizer's calendar prepares it.
+    assert {true, ["owner@example.com"]} =
+             plan.(Map.put(member, "account_email", "owner@example.com"))
+
+    assert {false, _} = plan.(Map.put(member, "account_email", "other@example.com"))
+
+    # The organizer is not a member: the first member calendar claims it.
+    outside = Map.put(member, "member_emails", ["first@example.com", "second@example.com"])
+
+    # The organizer still comes first: the report goes to them when they are
+    # in the Slack workspace, else to the member who claimed the meeting.
+    assert {true, ["owner@example.com", "first@example.com"]} =
+             plan.(Map.put(outside, "account_email", "first@example.com"))
+
+    assert {false, _} = plan.(Map.put(outside, "account_email", "second@example.com"))
+  end
+
+  # The whole chain with real modules: the bot's connection link, member
+  # enrollment, Google sync of each member's calendars, discovery and the
+  # production join worker. Per-pass bounds and scale have their own tests
+  # (`meeting_enrollment_test.exs`, salix_meet `calendar_autojoin_runtime_test.exs`).
+  test "members connect their Google accounts and every member's meetings are found through enrollment and sync",
+       %{group: group, router_id: router_id} do
+    ids = for n <- 1..3, do: "ca-m" <> String.pad_leading(Integer.to_string(n), 3, "0")
+
+    # A connect of this test's own: settings other tests saved stay in the
+    # shared database and name their own connects.
+    connect_id = "slack-members-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    # Meetings start on the hour after next, so the worker below only moves
+    # the clock by about two hours.
+    base = (div(SystemsClock.system_time(:millisecond), 3_600_000) + 2) * 3_600_000
+    at = fn offset_ms -> base + offset_ms end
+
+    iso = fn ms ->
+      ms
+      |> DateTime.from_unix!(:millisecond)
+      |> DateTime.truncate(:second)
+      |> DateTime.to_iso8601()
+    end
+
+    email = fn id -> "#{id}@acme.test" end
+
+    # The last member connects through the bot: the Composio link it posts is
+    # created for the Agent Swarm, so the finished connection is one of the
+    # Swarm's accounts.
+    MockExternalHTTP.stub("GET", "/api/v3/auth_configs", %{"items" => [%{"id" => "ac-cal"}]})
+
+    MockExternalHTTP.stub("POST", "/api/v3/connected_accounts/link", fn body ->
+      SystemsRuntime.put_env(:salix_web, :meeting_calendar_test_link_user, body["user_id"])
+
+      %{
+        "redirect_url" => "https://connect.composio.dev/link/ln-member",
+        "connected_account_id" => "ca-m003"
+      }
+    end)
+
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :meeting_calendar_test_link_user) end)
+
+    {content, _events} =
+      SalixAgent.Tools.Composio.request_connection(%{"toolkit" => "googlecalendar"}, %{
+        agent_id: router_id,
+        session_id: Ids.new_session_id()
+      })
+
+    assert %{"status" => "pending", "connected_account_id" => "ca-m003"} = Jason.decode!(content)
+
+    assert SystemsRuntime.get_env(:salix_web, :meeting_calendar_test_link_user) ==
+             group["group_id"]
+
+    MockExternalHTTP.stub("GET", "/api/v3/connected_accounts", %{
+      "items" =>
+        Enum.map(ids, fn id ->
+          %{
+            "id" => id,
+            "user_id" => group["group_id"],
+            "status" => "ACTIVE",
+            "toolkit" => %{"slug" => "googlecalendar"}
+          }
+        end)
+        |> Kernel.++([
+          %{
+            "id" => "ca-gmail",
+            "user_id" => group["group_id"],
+            "status" => "ACTIVE",
+            "toolkit" => %{"slug" => "gmail"}
+          }
+        ])
+    })
+
+    Enum.each(ids, &stub_account(group["group_id"], &1))
+    stub_watch()
+
+    # Each member owns a primary and a team calendar; the standup is on every
+    # member's primary calendar, as the same meeting.
+    MockExternalHTTP.stub(
+      "POST",
+      "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS",
+      fn body ->
+        id = body["connected_account_id"]
+
+        %{
+          "successful" => true,
+          "data" => %{
+            "calendars" => [
+              %{"id" => email.(id), "primary" => true, "accessRole" => "owner"},
+              %{"id" => "team-#{id}", "summary" => "Team", "accessRole" => "owner"},
+              %{"id" => "holidays", "accessRole" => "reader"}
+            ]
+          }
+        }
+      end
+    )
+
+    # A Meet code made of letters from a member number (Meet codes are letters).
+    code = fn id ->
+      n = id |> String.slice(-3, 3) |> String.to_integer()
+      for d <- [div(n, 676), rem(div(n, 26), 26), rem(n, 26)], into: "", do: <<?a + d>>
+    end
+
+    meeting = fn event_id, title, hour, room ->
+      "Standup"
+      |> standalone_event(1, "2030-01-02T00:00:00Z")
+      |> Map.merge(%{
+        "id" => event_id,
+        "iCalUID" => "#{event_id}@acme.test",
+        "summary" => title,
+        "start" => %{"dateTime" => iso.(at.(hour * 3_600_000)), "timeZone" => "Etc/UTC"},
+        "end" => %{"dateTime" => iso.(at.(hour * 3_600_000 + 1_800_000)), "timeZone" => "Etc/UTC"},
+        "hangoutLink" => "https://meet.google.com/#{room}"
+      })
+    end
+
+    MockExternalHTTP.stub("POST", @proxy_execute_path, fn request ->
+      endpoint = URI.decode(request["endpoint"] || "")
+
+      events_of = fn
+        "team-" <> id ->
+          [
+            meeting.(
+              "team-#{id}",
+              "Team review #{id}",
+              5,
+              "tea-#{String.slice(id, -3, 3)}r-vie"
+            )
+          ]
+
+        primary ->
+          id = String.replace_suffix(primary, "@acme.test", "")
+
+          [
+            meeting.("one-#{id}", "1:1 #{id}", 1, "one-oone-#{code.(id)}"),
+            meeting.("standup", "Standup", 0, "sta-ndup-all")
+          ]
+      end
+
+      case Regex.run(~r{/calendars/([^/]+)(/events)?(/[^/]+)?$}, endpoint,
+             capture: :all_but_first
+           ) do
+        [calendar_id, "/events", "/" <> event_id] ->
+          event = Enum.find(events_of.(calendar_id), &(&1["id"] == event_id))
+
+          if event,
+            do: %{"status" => 200, "data" => event},
+            else: %{"status" => 404, "data" => %{}}
+
+        [calendar_id, "/events" | _] ->
+          items =
+            case calendar_id do
+              "team-" <> id ->
+                [
+                  meeting.(
+                    "team-#{id}",
+                    "Team review #{id}",
+                    5,
+                    "tea-#{String.slice(id, -3, 3)}r-vie"
+                  )
+                ]
+
+              primary ->
+                id = String.replace_suffix(primary, "@acme.test", "")
+
+                [
+                  meeting.("one-#{id}", "1:1 #{id}", 1, "one-oone-#{code.(id)}"),
+                  meeting.("standup", "Standup", 0, "sta-ndup-all")
+                ]
+            end
+
+          %{"status" => 200, "data" => %{"items" => items, "nextSyncToken" => "sync-1"}}
+
+        [calendar_id | _] ->
+          %{"status" => 200, "data" => %{"id" => calendar_id, "timeZone" => "UTC"}}
+
+        _ ->
+          %{"status" => 404, "data" => %{}}
+      end
+    end)
+
+    seed_slack_connect(group, connect_id)
+
+    MockExternalHTTP.stub("POST", "/api/conversations.info", %{
+      "ok" => true,
+      "channel" => %{"id" => "C-members", "name" => "meetings", "is_member" => true}
+    })
+
+    entry = %{
+      "connect_id" => connect_id,
+      "calendar_scope" => "members",
+      "channel" => "meetings",
+      "channel_id" => "C-members",
+      "calendars" => []
+    }
+
+    enrolled =
+      Enum.reduce_while(1..3, nil, fn _pass, previous ->
+        entry = if previous, do: Map.put(entry, "enrolled", previous), else: entry
+        assert {:ok, resolved} = Salix.Bindings.MeetingEnrollment.resolve(entry)
+
+        if Enum.all?(resolved["units"], &(length(&1["calendars"]) == 2)) and
+             length(resolved["units"]) == length(ids),
+           do: {:halt, resolved},
+           else: {:cont, resolved}
+      end)
+
+    assert length(enrolled["units"]) == length(ids)
+    member_emails = Enum.map(enrolled["units"], & &1["account_email"])
+
+    titles =
+      Enum.flat_map(enrolled["units"], fn unit ->
+        member =
+          enrolled
+          |> Map.drop(["units"])
+          |> Map.merge(%{
+            "calendar_id" => unit["calendar_id"],
+            "calendars" => unit["calendars"],
+            "account_email" => unit["account_email"],
+            "member_emails" => member_emails,
+            "paged" => true,
+            "max_events" => 50
+          })
+
+        assert {:ok, events, nil} =
+                 MeetingCalendar.list(member, at.(-3_600_000), at.(24 * 3_600_000))
+
+        Enum.map(events, &{&1["title"], &1["meet_url"], &1["start_ms"]})
+      end)
+
+    for id <- ids do
+      assert Enum.any?(titles, &(elem(&1, 0) == "1:1 #{id}"))
+      assert Enum.any?(titles, &(elem(&1, 0) == "Team review #{id}"))
+    end
+
+    standups = Enum.filter(titles, &(elem(&1, 0) == "Standup"))
+    assert length(standups) == length(ids)
+    assert standups |> Enum.uniq() |> length() == 1
+
+    # The production worker takes over: configured with the members' entry, it
+    # enrolls the accounts, scans their calendars and joins. The standup on
+    # every member's calendar is joined once; the 1:1s that start together are
+    # all joined.
+    previous_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, JoinRecorder)
+    save_settings!(group, entry)
+
+    on_exit(fn ->
+      restore_env(:salix_meet, :runtime_driver, previous_driver)
+    end)
+
+    start_supervised!(JoinRecorder)
+
+    MockExternalHTTP.stub("POST", "/api/chat.postMessage", fn body ->
+      %{
+        "ok" => true,
+        "channel" => body["channel"],
+        "ts" => "#{SystemsRuntime.Proc.unique_integer([:positive])}.000100"
+      }
+    end)
+
+    SystemsClock.advance(at.(-40 * 60_000) - SystemsClock.system_time(:millisecond))
+
+    worker =
+      start_supervised!(
+        {SalixMeet.CalendarAutojoin,
+         [
+           name: :meeting_calendar_members_worker,
+           node: "members-worker",
+           scan_interval_ms: 1_000_000_000_000,
+           join_interval_ms: 1_000_000_000_000
+         ]}
+      )
+
+    tick = fn message ->
+      SystemsRuntime.Proc.send(worker, message)
+      settle_until(fn -> :sys.get_state(worker, :infinity).enrollment == nil end)
+    end
+
+    # Scan passes come a minute or more apart.
+    for _ <- 1..2 do
+      tick.(:scan_tick)
+      SystemsClock.advance(61_000)
+    end
+
+    assert length(:sys.get_state(worker, :infinity).groups) == length(ids)
+
+    joined = fn -> JoinRecorder.calls() |> Enum.map(& &1["state"]["meet_url"]) end
+
+    SystemsClock.advance(at.(-60_000) - SystemsClock.system_time(:millisecond))
+    tick.(:join_tick)
+    assert joined.() == ["https://meet.google.com/sta-ndup-all"]
+
+    SystemsClock.advance(at.(3_600_000 - 60_000) - SystemsClock.system_time(:millisecond))
+
+    tick.(:join_tick)
+    one_on_ones = joined.() |> Enum.filter(&String.contains?(&1, "one-oone-"))
+    assert one_on_ones |> Enum.uniq() |> length() == length(ids)
+  end
+
   test "saved series scope selects its occurrence and pause fences the actual publication receiver",
        %{group: group} do
     alias SalixStore.MeetingCalendarSettings
@@ -966,6 +1514,25 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert is_binary(event["meet_url"])
     assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
     assert plan["status"] == "planned"
+    assert {:error, :not_found} = Schedules.get(plan["preparation"]["schedule_ids"]["card"])
+  end
+
+  test "a group without a team channel plans its meetings for personal notices only", %{
+    group: group
+  } do
+    group = Map.merge(group, %{"channel_id" => "", "channel_notice" => false})
+    stub_list([moved_exception(), recurring_master()], "sync-no-team-channel")
+    assert {:ok, _} = sync_source(group)
+    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
+    assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+    assert plan["status"] == "planned"
+
+    assert plan["publication_target"] == %{
+             "provider" => "slack",
+             "tool" => "none",
+             "params" => %{"connect_id" => group["connect_id"]}
+           }
+
     assert {:error, :not_found} = Schedules.get(plan["preparation"]["schedule_ids"]["card"])
   end
 
@@ -2475,6 +3042,50 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert :ok = MeetingCalendar.revalidate(group, event)
   end
 
+  test "a Zoom, Teams or Feishu/Lark link in the location, description or conference data is prepared; a Meet link only in text is not",
+       %{group: group} do
+    zoom = "https://us02web.zoom.us/j/81234567890?pwd=abc"
+    teams = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0"
+    lark = "https://vc-sg.larksuite.com/j/123456789"
+
+    events = [
+      linked_event("zoom-location", "10", %{"location" => "Zoom: #{zoom}"}),
+      linked_event("teams-description", "11", %{
+        "description" => ~s(<p>Agenda</p><a href="#{teams}">Join Microsoft Teams</a>)
+      }),
+      linked_event("lark-add-on", "12", %{
+        "conferenceData" => %{
+          "entryPoints" => [%{"entryPointType" => "video", "uri" => lark}]
+        }
+      }),
+      linked_event("meet-text-only", "13", %{
+        "description" => "Join https://meet.google.com/abc-defg-hij"
+      }),
+      linked_event("meet-and-zoom", "14", %{
+        "hangoutLink" => "https://meet.google.com/abc-defg-hij",
+        "description" => "Backup: #{zoom}"
+      })
+    ]
+
+    stub_list(events, "sync-meeting-links")
+    assert {:ok, _} = sync_source(group)
+
+    assert {:ok, listed} = MeetingCalendar.list(group, range_start(), range_end())
+
+    assert listed |> Enum.sort_by(& &1["start_ms"]) |> Enum.map(&{&1["title"], &1["meet_url"]}) ==
+             [
+               {"zoom-location", zoom},
+               {"teams-description", teams},
+               {"lark-add-on", lark},
+               {"meet-and-zoom", "https://meet.google.com/abc-defg-hij"}
+             ]
+
+    for event <- listed do
+      assert {:ok, %{"status" => "planned"}} =
+               MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+    end
+  end
+
   test "unsupported Google recurrence is retained but cannot fabricate occurrences" do
     unsupported =
       recurring_master()
@@ -2624,6 +3235,66 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
 
     assert {:ok, [_plan]} = S3.list_all("ctl/meeting_plans/#{group["group_id"]}/plans/")
+  end
+
+  test "a normalization contract upgrade keeps each meeting's occurrence, plan and join identity",
+       %{group: group} do
+    previous_contract =
+      SystemsRuntime.get_env(:salix_web, :test_google_calendar_contract_id)
+
+    on_exit(fn ->
+      restore_env(:salix_web, :test_google_calendar_contract_id, previous_contract)
+    end)
+
+    SystemsRuntime.put_env(:salix_calendar, :source_adapters, %{
+      "google_calendar" => GoogleCalendarSource,
+      "versioned_google_calendar" => VersionedGoogleCalendarSource
+    })
+
+    source_attrs = %{
+      "adapter" => "versioned_google_calendar",
+      "source_locator" => %{
+        "connection_id" => "ca-cal",
+        "external_calendar_id" => "provider-calendar-identity-upgrade"
+      },
+      "access_profile" => "events_read",
+      "sync_policy" => %{"page_size" => 200}
+    }
+
+    listed = fn contract, sync_token ->
+      SystemsRuntime.put_env(:salix_web, :test_google_calendar_contract_id, contract)
+
+      assert {:ok, source} =
+               Calendar.ensure_source(
+                 group["group_id"],
+                 group["calendar_id"],
+                 Map.put(source_attrs, "adapter_contract_id", contract)
+               )
+
+      stub_list([standalone_event("Design review", 1, "2030-01-01T00:00:00Z")], sync_token)
+      assert {:ok, _} = refresh_source(group, source["source_id"])
+
+      selected = select_source(group, source["source_id"])
+      assert {:ok, [event]} = MeetingCalendar.list(selected, range_start(), range_end())
+      {source["source_id"], event}
+    end
+
+    {old_source, before} = listed.("google_calendar.events.v3", "sync-identity-old")
+
+    {new_source, after_upgrade} =
+      listed.(GoogleCalendarSource.adapter_contract_id(), "sync-identity-new")
+
+    # The new contract reads the calendar into a new source and new items, but
+    # the meeting keeps its scheduling link, so its occurrence, its plan (the
+    # notice and reminder keys) and its join identity stay the same.
+    refute new_source == old_source
+    refute after_upgrade["calendar_item_id"] == before["calendar_item_id"]
+    assert after_upgrade["occurrence_ref"] == before["occurrence_ref"]
+    assert after_upgrade["event_id"] == before["event_id"]
+    assert after_upgrade["meeting_plan_id"] == before["meeting_plan_id"]
+
+    assert SalixMeet.CalendarAutojoin.meeting_id(group, after_upgrade) ==
+             SalixMeet.CalendarAutojoin.meeting_id(group, before)
   end
 
   test "Google week start supports biweekly recurrence semantics", %{group: group} do
@@ -2794,7 +3465,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
         "https://www.google.com/calendar/event?eid=series%40example.com"
       )
 
-    assert GoogleCalendarSource.adapter_contract_id() == "google_calendar.events.v3"
     assert {:ok, normalized} = GoogleCalendarSource.normalize(event)
 
     assert get_in(normalized, ["object", "links", "event"]) == %{
@@ -2958,6 +3628,75 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
     assert provider_proxy_session_create_count() == 2
     assert length(provider_list_requests()) == 2
+  end
+
+  test "an event the adapter cannot represent is dropped without stopping the calendar sync",
+       %{group: group} do
+    existing = standalone_event("Becomes zero length", 1, "2030-01-01T00:00:00Z")
+
+    never_importable =
+      existing
+      |> Map.put("id", "zero-length-from-the-start")
+      |> Map.put("iCalUID", "zero-length-from-the-start@example.com")
+      |> Map.put("end", existing["start"])
+
+    stub_list([never_importable, existing], "sync-1")
+
+    first_log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, initial} = sync_source(group)
+        assert initial["sync"]["completed_cursor"] == "sync-1"
+      end)
+
+    assert first_log =~ "event=zero-length-from-the-start reason=:invalid_google_event_time"
+
+    assert {:ok, [%{"title" => "Becomes zero length"}]} =
+             MeetingCalendar.list(group, range_start(), range_end())
+
+    zero_length =
+      existing
+      |> Map.put("sequence", 2)
+      |> Map.put("updated", "2030-01-02T00:00:00Z")
+      |> Map.put("end", existing["start"])
+
+    added =
+      standalone_event("Importable meeting", 1, "2030-01-02T00:00:00Z")
+      |> Map.put("id", "importable-event")
+      |> Map.put("iCalUID", "importable-event@example.com")
+
+    stub_list([zero_length, added], "sync-2")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, refreshed} = sync_source(group)
+        assert refreshed["sync"]["completed_cursor"] == "sync-2"
+      end)
+
+    assert log =~ "event=standalone-event reason=:invalid_google_event_time"
+    assert {:ok, [event]} = MeetingCalendar.list(group, range_start(), range_end())
+    assert event["title"] == "Importable meeting"
+  end
+
+  test "an instance override the adapter cannot represent removes its occurrence",
+       %{group: group} do
+    stub_list([moved_exception(), recurring_master()], "sync-1")
+    assert {:ok, _initial} = sync_source(group)
+    assert {:ok, [_moved]} = MeetingCalendar.list(group, range_start(), range_end())
+
+    zero_length =
+      moved_exception()
+      |> Map.put("sequence", 5)
+      |> Map.put("updated", "2030-01-02T00:00:00Z")
+      |> Map.put("end", moved_exception()["start"])
+
+    stub_list([zero_length], "sync-2")
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, refreshed} = sync_source(group)
+      assert refreshed["sync"]["completed_cursor"] == "sync-2"
+    end)
+
+    assert {:ok, []} = MeetingCalendar.list(group, range_start(), range_end())
   end
 
   test "Google collection rejects malformed items instead of activating an empty page", %{
@@ -3298,10 +4037,20 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "calendar writeback requires the current enrollment opt-in, including after a plan was saved",
        %{group: group} do
-    previous = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
-    on_exit(fn -> restore_env(:salix_meet, :calendar_autojoin_channels, previous) end)
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
-    group = Map.put(group, "calendar_writeback", true)
+    entry = %{
+      "connect_id" => group["connect_id"],
+      "channel" => "meetings",
+      "calendars" => ["Team"],
+      "calendar_writeback" => true
+    }
+
+    saved_settings = save_settings!(group, entry)
+
+    group =
+      group
+      |> Map.put("calendar_writeback", true)
+      |> Map.put("settings_revision", saved_settings["settings_revision"])
+
     raw = standalone_event("Opt-in meeting", 1, "2030-01-02T00:00:00Z") |> Map.put("etag", "v1")
     {_item, event} = writeback_fixture(group, raw)
     assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
@@ -3325,29 +4074,16 @@ defmodule Salix.Bindings.MeetingCalendarTest do
                now: plan["preparation"]["publish_start_at"]
              )
 
-    assert {:error, :calendar_writeback_not_authorized} =
-             Salix.Bindings.MeetingCalendarPreparation.write(saved)
-
-    assert calendar_patch_requests() == []
-
-    entry = %{
-      "connect_id" => group["connect_id"],
-      "channel" => "meetings",
-      "calendars" => ["Team"],
-      "calendar_writeback" => true
-    }
-
     identity = Map.take(group, ~w(connect_id group_id tenant_id provider))
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
-               entry,
+               saved_settings,
                identity,
                group,
                SystemsClock.system_time(:millisecond)
              )
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
     MockExternalHTTP.stub("POST", @proxy_execute_path, %{"status" => 200, "data" => raw})
 
     assert {:ok, %{"status" => "written"}} =
@@ -3355,11 +4091,10 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
     assert [_one_write] = calendar_patch_requests()
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [
-      Map.delete(entry, "calendar_writeback")
-    ])
+    # Turning the opt-in off on the dashboard revokes the saved plan's writes.
+    save_settings!(group, Map.delete(entry, "calendar_writeback"))
 
-    assert {:error, :calendar_writeback_not_authorized} =
+    assert {:error, :meeting_preparation_settings_changed} =
              Salix.Bindings.MeetingCalendarPreparation.write(saved)
 
     assert [_one_write] = calendar_patch_requests()
@@ -3369,7 +4104,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
        %{
          group: group
        } do
-    {plan, _raw} = personal_fixture(group)
+    {plan, _raw, group} = personal_fixture(group)
     preparation = plan["preparation"]
 
     assert {:ok, _} =
@@ -3420,18 +4155,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
          group: group
        } do
     group = Map.put(group, "calendar_writeback", true)
-    {plan, raw} = personal_fixture(group)
-    [entry] = SystemsRuntime.fetch_env!(:salix_meet, :calendar_autojoin_channels)
-    entry = Map.put(entry, "calendar_writeback", true)
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
-
-    assert :ok =
-             SalixMeet.CalendarEnrollmentCache.put(
-               entry,
-               group,
-               group,
-               SystemsClock.system_time(:millisecond)
-             )
+    {plan, raw, group} = personal_fixture(group, @personal_names, %{"calendar_writeback" => true})
 
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
     assert Enum.map(context["recipients"], & &1["user_id"]) == ["UPENG", "UJINFEI"]
@@ -3554,7 +4278,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "public-source reports reject private, cross-connect and other-recipient sources with IFC off",
        %{group: group} do
-    {plan, _raw} = personal_fixture(group)
+    {plan, _raw, group} = personal_fixture(group)
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
     connect = context["connect_id"]
 
@@ -3577,7 +4301,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "public-channel revocation withholds advice while attendees still receive reminders",
        %{group: group} do
-    {plan, _raw} = personal_fixture(group)
+    {plan, _raw, group} = personal_fixture(group)
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
     connect = context["connect_id"]
 
@@ -3615,7 +4339,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "attachment sharing is checked before first save and again before queue admission",
        %{group: group} do
-    {plan, _raw} = personal_fixture(group)
+    {plan, _raw, group} = personal_fixture(group)
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
     connect = context["connect_id"]
 
@@ -3683,7 +4407,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "personal publication rechecks opt-out and a cancelled live occurrence before a DM opens",
        %{group: group} do
-    {plan, raw} = personal_fixture(group)
+    {plan, raw, group} = personal_fixture(group)
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
 
     for user <- ["UPENG", "UJINFEI"] do
@@ -3737,7 +4461,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     group: group
   } do
     names = Enum.map(1..29, &("p" <> String.pad_leading(to_string(&1), 2, "0")))
-    {plan, _raw} = personal_fixture(group, names)
+    {plan, _raw, group} = personal_fixture(group, names)
     schedule_id = plan["preparation"]["schedule_ids"]["personal"]
     assert {:ok, schedule} = Schedules.get(schedule_id)
     at = plan["preparation"]["card_at"]
@@ -3763,7 +4487,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   test "a Google group invite adds current user members across Directory pages", %{group: group} do
-    {plan, raw} = personal_fixture(group, ["peng", "developer"])
+    {plan, raw, group} = personal_fixture(group, ["peng", "developer"])
     stub_group_account(group)
 
     stub_group_proxy(raw, fn endpoint, token ->
@@ -3835,7 +4559,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   test "a former group member does not receive a reminder", %{group: group} do
-    {plan, raw} = personal_fixture(group, ["developer"])
+    {plan, raw, group} = personal_fixture(group, ["developer"])
     stub_group_account(group)
 
     stub_group_proxy(raw, fn endpoint, _token ->
@@ -3875,7 +4599,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   test "cross-domain fallback requires a complete current group listing", %{group: group} do
-    {plan, raw} = personal_fixture(group, ["developer"])
+    {plan, raw, group} = personal_fixture(group, ["developer"])
     stub_group_account(group)
 
     stub_group_proxy(raw, fn endpoint, _token ->
@@ -3931,7 +4655,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   test "reviewed no-advice and unresearched attendees both receive a basic reminder", %{
     group: group
   } do
-    {plan, _raw} = personal_fixture(group)
+    {plan, _raw, group} = personal_fixture(group)
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
     connect = context["connect_id"]
 
@@ -3959,7 +4683,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   test "basic reminders respect opt-out and removed attendees after discovery", %{group: group} do
-    {plan, raw} = personal_fixture(group, ["peng", "jinfei", "remaining"])
+    {plan, raw, group} = personal_fixture(group, ["peng", "jinfei", "remaining"])
     assert {:ok, _} = SalixMeet.PersonalPreparation.context(plan)
 
     origin = %{
@@ -4000,12 +4724,10 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     end
   end
 
-  defp personal_fixture(group, names \\ ["peng", "jinfei", "guest", "missing"]) do
-    previous = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
+  defp personal_fixture(group, names \\ @personal_names, settings \\ %{}) do
     previous_port = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
 
     on_exit(fn ->
-      restore_env(:salix_meet, :calendar_autojoin_channels, previous)
       restore_env(:salix_meet, :personal_preparation_mod, previous_port)
     end)
 
@@ -4015,17 +4737,22 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       Salix.Bindings.MeetingPersonalPreparation
     )
 
-    entry = %{
-      "connect_id" => group["connect_id"],
-      "channel" => group["channel_id"],
-      "calendars" => ["Meetings"]
-    }
+    entry =
+      Map.merge(
+        %{
+          "connect_id" => group["connect_id"],
+          "channel" => group["channel_id"],
+          "calendars" => ["Meetings"]
+        },
+        settings
+      )
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    saved_settings = save_settings!(group, entry)
+    group = Map.put(group, "settings_revision", saved_settings["settings_revision"])
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
-               entry,
+               saved_settings,
                group,
                group,
                SystemsClock.system_time(:millisecond)
@@ -4092,7 +4819,29 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     })
 
     assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
-    {plan, raw}
+    {plan, raw, group}
+  end
+
+  # The dashboard saves a Group's meeting settings; plans the worker makes
+  # from them carry their revision.
+  defp save_settings!(group, entry) do
+    assert {:ok, saved} =
+             SalixStore.MeetingCalendarSettings.put(
+               group["group_id"],
+               group["tenant_id"],
+               Map.put(entry, "enabled", true),
+               fn -> :ok end
+             )
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.query!(
+        SalixStore.Repo,
+        "DELETE FROM meeting_calendar_settings WHERE group_id = $1",
+        [group["group_id"]]
+      )
+    end)
+
+    saved
   end
 
   defp personal_posts,
@@ -4132,6 +4881,24 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       "hangoutLink" => "https://meet.google.com/abc-defg-hij",
       "organizer" => %{"self" => true, "email" => "owner@example.com"}
     }
+  end
+
+  defp linked_event(id, hour, fields) do
+    Map.merge(
+      %{
+        "id" => id,
+        "iCalUID" => id <> "@example.com",
+        "summary" => id,
+        "status" => "confirmed",
+        "sequence" => 1,
+        "updated" => "2030-01-01T00:00:00Z",
+        "start" => %{"dateTime" => "2030-01-14T#{hour}:00:00Z", "timeZone" => "Etc/UTC"},
+        "end" => %{"dateTime" => "2030-01-14T#{hour}:30:00Z", "timeZone" => "Etc/UTC"},
+        "htmlLink" => "https://www.google.com/calendar/event?eid=#{id}",
+        "organizer" => %{"self" => true, "email" => "owner@example.com"}
+      },
+      fields
+    )
   end
 
   defp standalone_event(title, sequence, updated) do
@@ -4289,6 +5056,22 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       &(&1.path == @proxy_execute_path and
           String.ends_with?(&1.body["endpoint"] || "", "/events/series/instances"))
     )
+  end
+
+  defp seed_slack_connect(group, connect_id) do
+    assert {:ok, _record} =
+             SalixStore.CasRecord.create(Keys.ctl_im_connect(group["group_id"], connect_id), %{
+               "tenant_id" => group["tenant_id"],
+               "group_id" => group["group_id"],
+               "connect_id" => connect_id,
+               "provider" => "slack",
+               "workspace_id" => "T-members",
+               "workspace_name" => "T-members",
+               "bot_token" => "xoxb-#{connect_id}",
+               "oauth_completed_at" => 1,
+               "created_at" => 100,
+               "updated_at" => 100
+             })
   end
 
   defp stub_account(group_id, account_id) do

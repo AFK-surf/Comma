@@ -17,6 +17,7 @@ import surf.comma.android.tasks.TaskSummary
 import surf.comma.android.tasks.data.ServerTaskRepository
 import surf.comma.android.tasks.data.TaskGraph
 import surf.comma.android.tasks.pages.TaskPages
+import surf.comma.android.tasks.ui.KnownTasks
 import surf.comma.android.tasks.ui.TaskDemand
 import surf.comma.android.tasks.ui.TaskRefDirectory
 import surf.comma.android.tasks.ui.referencedTaskIds
@@ -37,6 +38,8 @@ internal class ChatTasks(
     private val repository: ServerTaskRepository = TaskGraph.get(activity, AuthGraph.get(activity)),
 ) {
     private val refs = TaskRefDirectory(sessions, repository.state) { ids -> repository.setConversationTaskIds(cardRefs, ids) }
+    /** What the directory knows of the transcript's tasks; tasks in its running text take their titles from it. */
+    val known: StateFlow<KnownTasks> = refs.knownChanges()
     /** The conversation shown and its canonical messages; streaming drafts do not count. */
     private val transcript = MutableStateFlow<Pair<String, List<ChatMessage>>?>(null)
     /** Hands the transcript to the data layer, again for each new session. */

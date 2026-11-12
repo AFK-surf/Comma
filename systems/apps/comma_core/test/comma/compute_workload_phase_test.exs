@@ -34,6 +34,16 @@ defmodule Comma.ComputeWorkloadPhaseTest do
           observation: %{"connection_epoch" => "8"}
         }
       ],
+      registrations: %{
+        "registration" => %{
+          connected: true,
+          status: "ready",
+          desired_enabled: true,
+          current_connection_epoch: "8",
+          device_id: nil,
+          authorization_expires_at: ~U[2100-01-01 00:00:00Z]
+        }
+      },
       runtimes: Keyword.get(opts, :runtimes, []),
       claims:
         for error <- List.wrap(Keyword.get(opts, :claim_error)) do
@@ -65,7 +75,7 @@ defmodule Comma.ComputeWorkloadPhaseTest do
     assert %{"location" => %{"registration_id" => "registration", "device_id" => "device"}} =
              Comma.Compute.public_workload_phase(
                workload,
-               Map.put(page, :registration_devices, %{"registration" => "device"})
+               put_in(page, [:registrations, "registration", :device_id], "device")
              )
 
     # A missing registration has no Device.
@@ -133,73 +143,20 @@ defmodule Comma.ComputeWorkloadPhaseTest do
     assert %{"phase" => "starting"} =
              project(pending, claim_error: %{"kind" => "error", "reason" => ":timeout"})
   end
-end
 
-defmodule Comma.ComputeRegistrationDevicesTest do
-  use ExUnit.Case, async: false
+  test "a member may retry a Shell or the Group's own Station when it needs action" do
+    parked = %{"kind" => "action_required", "code" => "provider_command_outcome_unknown"}
+    station = %{workload("service", "pending") | template_key: "station.default"}
 
-  alias SalixStore.AgentVMM.Registration
-  alias SalixStore.Compute.ProviderBinding
-
-  setup do
-    SalixStore.RepoTestSetup.ensure!()
-    :ok
-  end
-
-  test "a page reads the Devices of all its registrations in one query" do
-    suffix = SystemsRuntime.Proc.uuid()
-    now = SystemsClock.utc_now()
-
-    ids =
-      for n <- 1..5 do
-        id = "reg-#{n}-#{suffix}"
-
-        SalixStore.Repo.insert!(%Registration{
-          id: id,
-          credential_hash: "credential",
-          tenant_id: "tenant-#{suffix}",
-          group_id: "group",
-          device_id: "device-#{n}",
-          status: "ready",
-          desired_enabled: true,
-          revision: 1,
-          policy_revision: 1,
-          next_controller_sequence: 1,
-          created_at: now,
-          updated_at: now
-        })
-
-        id
-      end
-
-    bindings =
-      Enum.map(ids, &%ProviderBinding{provider: "agent_vmm", provider_ref: &1}) ++
-        [
-          %ProviderBinding{provider: "agent_vmm", provider_ref: "missing-#{suffix}"},
-          %ProviderBinding{provider: "cloudflare", provider_ref: hd(ids)}
-        ]
-
-    handler = "registration-devices-#{suffix}"
-    test_pid = self()
-
-    :telemetry.attach(
-      handler,
-      [:salix_store, :repo, :query],
-      fn _event, _measurements, %{source: source}, _ ->
-        if self() == test_pid, do: send(test_pid, {:query, source})
-      end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
-
-    assert Comma.Compute.registration_devices(bindings) ==
-             Map.new(Enum.with_index(ids, 1), fn {id, n} -> {id, "device-#{n}"} end)
-
-    assert_received {:query, "agent_vmm_registrations"}
-    refute_received {:query, _}
-
-    assert Comma.Compute.registration_devices([%ProviderBinding{provider: "cloudflare"}]) == %{}
-    refute_received {:query, _}
+    for {retryable, expected} <- [
+          {workload("shell", "pending"), true},
+          {%{station | owner_ref: %{"kind" => "group", "id" => "group"}}, true},
+          # Another business owner recovers its own Workload.
+          {%{station | owner_ref: %{"kind" => "meeting", "id" => "meeting"}}, false},
+          {workload("meeting_runtime", "pending"), false}
+        ] do
+      assert %{"phase" => "action_required", "actions" => %{"retry" => ^expected}} =
+               project(retryable, claim_error: parked)
+    end
   end
 end

@@ -69,9 +69,12 @@ class EventFeed {
   #wake: (() => void) | null = null;
   ended = false;
 
-  say(name: string, data: unknown): void {
+  /** `id`: its number in the station's log (`<run>.<n>`), as the station gives what it tells everyone. */
+  say(name: string, data: unknown, id?: string): void {
     this.#push(
-      new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+      new TextEncoder().encode(
+        `${id ? `id: ${id}\n` : ""}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
+      )
     );
   }
 
@@ -125,6 +128,8 @@ export class FakeStation {
   readonly made: string[] = [];
   /** Event streams opened, in order: the last is the open one. */
   readonly feeds: EventFeed[] = [];
+  /** Whether a stream asked `since` an id goes on from it (`comma-station-resumed: 1`), as a station that keeps what it told. */
+  resumes = false;
   /** Writes to a chat (`/threads/:id/...`): a message, a dismissal, a closed card; answered `{n}` or `{}`. */
   readonly writes: { method: string; path: string; body: unknown; key?: string }[] = [];
   #nextThread = 100;
@@ -134,6 +139,9 @@ export class FakeStation {
   /** Credentials it admitted, in order. */
   readonly admitted: Claims[] = [];
   readonly #routes = new Map<string, Handler>();
+
+  /** Other workspaces it takes credentials for: one computer signed in to several. */
+  takesAlso: string[] = [];
 
   constructor(id: string, workspace: string) {
     this.id = id;
@@ -201,7 +209,7 @@ export class FakeStation {
 
   /**
    * A session's files, as the station serves them: whole (`GET /sessions/:key/files?name=`), or a part
-   * (`GET /sessions/:key/parts?name=&offset=&length=`, with the whole size in `stillfail-total`).
+   * (`GET /sessions/:key/parts?name=&offset=&length=`, with the whole size in `comma-station-total`).
    */
   #fileRoute(method: string, path: string, query: string): Handler | undefined {
     const at = /^\/sessions\/([^/]+)\/(files|parts)$/.exec(path);
@@ -224,7 +232,7 @@ export class FakeStation {
         status: 200,
         headers: [
           ["content-type", file.type],
-          ["stillfail-total", String(file.bytes.length)],
+          ["comma-station-total", String(file.bytes.length)],
         ],
         body: file.bytes.subarray(offset, offset + length),
       };
@@ -379,9 +387,15 @@ export class FakeStation {
     if (key === "GET /events") {
       const feed = new EventFeed();
       this.feeds.push(feed);
+      const since = new URLSearchParams(request.path.split("?")[1] ?? "").get("since");
       return {
         status: 200,
-        headers: [["content-type", "text/event-stream"]],
+        headers: [
+          ["content-type", "text/event-stream"],
+          ...(since !== null && this.resumes
+            ? [["comma-station-resumed", "1"] as [string, string]]
+            : []),
+        ],
         body: feed.body(request.signal),
       };
     }
@@ -442,7 +456,7 @@ export class FakeStations {
       now: this.#now,
       verify: async (credential, peer) => {
         const claims = JSON.parse(credential) as Claims;
-        if (claims.ws !== station.takes)
+        if (claims.ws !== station.takes && !station.takesAlso.includes(claims.ws))
           throw new MeshError("unauthorized", "credential is for another workspace");
         if (claims.device !== peer)
           throw new MeshError("unauthorized", "credential is for another device");

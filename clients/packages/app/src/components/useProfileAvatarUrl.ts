@@ -1,4 +1,4 @@
-import { useCall } from "@comma/core-client";
+import { useCall, type FileSource } from "@comma/core-client";
 import { useEffect, useState } from "react";
 import { readFileBlob } from "../runtime-files/fileSources";
 
@@ -7,21 +7,25 @@ import { readFileBlob } from "../runtime-files/fileSources";
  * image stays while a new revision loads, and its URL is revoked only once nothing shows it.
  */
 export function useProfileAvatarUrl(avatarRevision?: string) {
+  return useAvatarUrl(
+    avatarRevision ? { source: "avatar", revision: avatarRevision } : undefined
+  );
+}
+
+/** An avatar the core reads (`source`, by its revision); none without one. */
+export function useAvatarUrl(source: FileSource | undefined) {
   const call = useCall();
   const [url, setUrl] = useState<string>();
+  const key = source ? JSON.stringify(source) : undefined;
 
   useEffect(() => {
-    if (!avatarRevision) {
+    if (!key) {
       setUrl(undefined);
       return;
     }
 
     const controller = new AbortController();
-    void readFileBlob(
-      call,
-      { source: "avatar", revision: avatarRevision },
-      controller.signal
-    )
+    void readFileBlob(call, JSON.parse(key) as FileSource, controller.signal)
       .then((blob) => {
         if (!controller.signal.aborted) setUrl(URL.createObjectURL(blob));
       })
@@ -30,7 +34,7 @@ export function useProfileAvatarUrl(avatarRevision?: string) {
       });
 
     return () => controller.abort();
-  }, [avatarRevision, call]);
+  }, [key, call]);
 
   useEffect(() => {
     if (!url) return;

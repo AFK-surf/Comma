@@ -103,6 +103,37 @@ defmodule SalixIFCTest do
   defp assert_allow({:allow, %Evidence{} = evidence}), do: evidence
   defp assert_deny({:deny, %Reason{clause: clause}}, expected), do: assert(clause == expected)
 
+  describe "cleared readers" do
+    @dm_c Label.new([{:scope, @w, "D_c"}])
+
+    defp supervised(cleared, legal \\ {:members, [@a], 7}) do
+      Facts.new(
+        scopes: %{
+          {:scope, @w, "legal"} => [kind: :room, within: {:space, @w}],
+          {:scope, @w, "D_c"} => [kind: :direct, within: {:space, @w}]
+        },
+        membership: %{{:scope, @w, "legal"} => legal, {:scope, @w, "D_c"} => {:members, [@c], 1}},
+        cleared: cleared,
+        placements: %{@c => %{@w => :internal}}
+      )
+    end
+
+    test "a principal cleared for a room reads it and receives its content by flow" do
+      items = [item("q", @dm_c, :command, @c), item("legal", @legal)]
+      flow = effect(@dm_c, "q", sources: ["legal"])
+      act = activation(@c, @dm_c, ["q"])
+      cleared = %{{:scope, @w, "legal"} => [@c]}
+
+      assert_deny(SalixIFC.decide(flow, act, items, supervised(%{})), :flow_denied)
+      evidence = assert_allow(SalixIFC.decide(flow, act, items, supervised(cleared)))
+      assert {"legal", :flow} in evidence.sources
+
+      # The clearance stands where the room's roster is unknown.
+      assert SalixIFC.reader?(@c, @legal, supervised(cleared, :unknown)) == true
+      assert SalixIFC.reader?(@b, @legal, supervised(cleared, :unknown)) == :unknown
+    end
+  end
+
   describe "complete source rejection" do
     test "reports mixed failures once per source and admits a revised answer with only safe sources" do
       items = [
@@ -270,18 +301,48 @@ defmodule SalixIFCTest do
     test "a direct source flows nowhere else even when the destination's members are unknown", %{
       items: items
     } do
+      items = [item("note", @dm_a) | items]
       act = activation(@a, @dm_a, ["dm"])
       sparse = facts(membership: %{{:scope, @w, "D_a"} => {:members, [@a], 1}})
 
       assert_deny(
-        SalixIFC.decide(effect(@legal, "dm", sources: ["dm"]), act, items, sparse),
+        SalixIFC.decide(effect(@legal, "dm", sources: ["note"]), act, items, sparse),
         :flow_denied
       )
     end
 
-    test "A relaying the DM to a public room needs a receipt", %{items: items} do
+    test "A's own DM message goes wherever A sends it, and B cannot send it", %{items: items} do
+      own = effect(@space, "dm", sources: ["dm"])
+      evidence = assert_allow(SalixIFC.decide(own, activation(@a, @dm_a, ["dm"]), items, facts()))
+      assert evidence.sources == [{"dm", :authored}]
+
+      evidence =
+        assert_allow(
+          SalixIFC.decide(
+            effect(@group, "dm", sources: ["dm"]),
+            activation(@a, @dm_a, ["dm"]),
+            items,
+            facts(policy: [declassification: :none])
+          )
+        )
+
+      assert evidence.sources == [{"dm", :authored}]
+
+      assert_deny(
+        SalixIFC.decide(
+          effect(@space, "q", sources: ["dm"]),
+          activation(@b, @space, ["q"]),
+          items,
+          facts()
+        ),
+        :flow_denied
+      )
+    end
+
+    test "A relaying agent data from the DM to a public room needs a receipt", %{items: items} do
+      items = [item("note", @dm_a) | items]
       act = activation(@a, @dm_a, ["dm"])
-      relay = effect(@space, "dm", sources: ["dm"])
+      relay = effect(@space, "dm", sources: ["note"])
       assert_deny(SalixIFC.decide(relay, act, items, facts()), :flow_denied)
 
       receipt = %Receipt{
@@ -293,7 +354,7 @@ defmodule SalixIFCTest do
       }
 
       evidence = assert_allow(SalixIFC.decide(relay, act, items, facts(receipts: [receipt])))
-      assert evidence.sources == [{"dm", {:receipt, "r1"}}]
+      assert evidence.sources == [{"note", {:receipt, "r1"}}]
 
       assert_deny(
         SalixIFC.decide(relay, act, items, facts(receipts: [receipt], now: 200)),
@@ -302,12 +363,13 @@ defmodule SalixIFCTest do
     end
 
     test "a receipt held by someone else does not help", %{items: items} do
+      items = [item("note", @dm_a) | items]
       act = activation(@a, @dm_a, ["dm"])
       receipt = %Receipt{id: "r1", requester: @b, sources: @dm_a, destination: @space}
 
       assert_deny(
         SalixIFC.decide(
-          effect(@space, "dm", sources: ["dm"]),
+          effect(@space, "dm", sources: ["note"]),
           act,
           items,
           facts(receipts: [receipt])
@@ -429,9 +491,9 @@ defmodule SalixIFCTest do
 
   describe "T5: memory writes" do
     test "a DM fact cannot enter group memory without a receipt, and membership gaps fail closed" do
-      items = [item("dm", @dm_a, :command, @a), item("note", @legal)]
+      items = [item("dm", @dm_a, :command, @a), item("fact", @dm_a), item("note", @legal)]
       act = activation(@a, @dm_a, ["dm"])
-      write = effect(@group, "dm", sources: ["dm"])
+      write = effect(@group, "dm", sources: ["fact"])
 
       assert_deny(SalixIFC.decide(write, act, items, facts()), :flow_denied)
 
@@ -450,15 +512,48 @@ defmodule SalixIFCTest do
 
       receipt = %Receipt{id: "r", requester: @a, sources: @dm_a, destination: @group}
       evidence = assert_allow(SalixIFC.decide(write, act, items, facts(receipts: [receipt])))
-      assert evidence.sources == [{"dm", {:receipt, "r"}}]
+      assert evidence.sources == [{"fact", {:receipt, "r"}}]
     end
 
     test "trust_requester_instruction lets a readable source cross scopes on the requester's command" do
-      items = [item("dm", @dm_a, :command, @a)]
+      items = [item("dm", @dm_a, :command, @a), item("fact", @dm_a)]
       act = activation(@a, @dm_a, ["dm"])
       facts = facts(policy: [declassification: :trust_requester_instruction])
       evidence = assert_allow(SalixIFC.decide(effect(@group, "dm"), act, items, facts))
-      assert evidence.sources == [{"dm", :instruction}]
+      assert evidence.sources == [{"dm", :authored}, {"fact", :instruction}]
+    end
+  end
+
+  describe "authored sources" do
+    test "a requester's own group message goes where they send it; another member's does not" do
+      items = [item("mine", @finance, :command, @a), item("theirs", @finance, :command, @b)]
+      act = activation(@a, @finance, ["mine"])
+
+      evidence =
+        assert_allow(
+          SalixIFC.decide(effect(@group, "mine", sources: ["mine"]), act, items, facts())
+        )
+
+      assert evidence.sources == [{"mine", :authored}]
+
+      assert_deny(
+        SalixIFC.decide(effect(@group, "mine", sources: ["theirs"]), act, items, facts()),
+        :membership_unknown
+      )
+    end
+
+    test "sealing still keeps a requester's own message in its audience" do
+      items = [item("mine", @finance, :command, @a)]
+      act = activation(@a, @finance, ["mine"])
+      sealed = facts(policy: [sealed_atoms: [{:tag, "finance"}]])
+
+      assert_deny(SalixIFC.decide(effect(@group, "mine"), act, items, sealed), :sealed)
+    end
+
+    test "system commands are not authored by a person" do
+      items = [item("tick", @dm_a, :command, :system)]
+      act = activation(:system, @dm_a, ["tick"])
+      assert_deny(SalixIFC.decide(effect(@space, "tick"), act, items, facts()), :flow_denied)
     end
   end
 
@@ -480,12 +575,14 @@ defmodule SalixIFCTest do
     end
 
     test "space content needs a receipt to go public", %{items: items, act: act} do
+      items = [item("hit", @space) | items]
       publish = effect(@public, "q")
       assert_deny(SalixIFC.decide(publish, act, items, facts()), :flow_denied)
 
       receipt = %Receipt{id: "r", requester: @a, sources: @space, destination: @public}
       evidence = assert_allow(SalixIFC.decide(publish, act, items, facts(receipts: [receipt])))
-      assert {"q", {:receipt, "r"}} in evidence.sources
+      assert {"q", :authored} in evidence.sources
+      assert {"hit", {:receipt, "r"}} in evidence.sources
     end
 
     test "policy can forbid public egress of non-public content outright", %{
@@ -506,8 +603,8 @@ defmodule SalixIFCTest do
       assert evidence.sources == [{"dm", :flow}]
     end
 
-    test "delegating it to a Task shared with someone else needs a receipt" do
-      items = [item("dm", @dm_a, :command, @a)]
+    test "delegating DM data to a Task shared with someone else needs a receipt" do
+      items = [item("dm", @dm_a, :command, @a), item("fact", @dm_a)]
       act = activation(@a, @dm_a, ["dm"])
 
       wider =
@@ -767,5 +864,71 @@ defmodule SalixIFCTest do
   end
 
   describe "labels, facts and policy" do
+    # A staging Router context held 522 items. 124 of them carried the same
+    # ~250 Task atoms, the rest one atom each. Deduplication by pairwise
+    # comparison made one join over them take about 20 s.
+    @tag :ifc_label_latency
+    test "building and joining a Router-sized context stays linear" do
+      tasks = for n <- 1..250, do: {:task, "cnv1_#{n}"}
+      rooms = for n <- 0..6, do: {:scope, @w, "C#{n}"}
+
+      {us, joined} =
+        :timer.tc(fn ->
+          wide = for _ <- 1..124, do: Label.new([{:space, @w} | tasks])
+          narrow = for n <- 1..400, do: Label.new([Enum.at(rooms, rem(n, 7))])
+          Label.join_all(wide ++ narrow)
+        end)
+
+      assert MapSet.new(Label.atoms(joined)) == MapSet.new([{:space, @w} | tasks] ++ rooms)
+      assert us < 1_000_000, "took #{div(us, 1000)} ms"
+    end
+
+    # Each wide item checked every atom against a 252-entry membership table,
+    # comparing tuple keys by a depth-bounded walk: about 8.7 s per decision.
+    @tag :ifc_label_latency
+    test "deciding over a Router-sized context stays linear" do
+      tasks = for n <- 1..250, do: {:task, "cnv1_#{n}"}
+      room = Label.new([{:scope, @w, "C"}])
+      wide = Label.new([{:space, @w} | tasks])
+
+      items = [
+        item("q", room, :command, @a) | for(n <- 1..124, do: item("i#{n}", wide))
+      ]
+
+      membership = Map.new([{:space, @w}, {:scope, @w, "C"} | tasks], &{&1, {:members, [@a], 1}})
+      facts = Facts.new(membership: membership, now: 1)
+
+      {us, decision} =
+        :timer.tc(fn ->
+          SalixIFC.decide(effect(room, "q"), activation(@a, room, ["q"]), items, facts)
+        end)
+
+      assert_allow(decision)
+      assert us < 2_000_000, "took #{div(us, 1000)} ms"
+    end
+
+    test "membership keys match whole atoms, not their joined parts or another kind" do
+      facts =
+        Facts.new(
+          membership: %{
+            {:scope, "wa", "b"} => {:members, [@a], 1},
+            {:task, "x"} => {:members, [@a], 1}
+          },
+          now: 1
+        )
+
+      assert SalixIFC.reader?(@a, Label.new([{:scope, "wa", "b"}]), facts) == true
+      assert SalixIFC.reader?(@a, Label.new([{:scope, "w", "ab"}]), facts) == :unknown
+      assert SalixIFC.reader?(@a, Label.new([{:task, "x"}]), facts) == true
+      assert SalixIFC.reader?(@a, Label.new([{:conversation, "x"}]), facts) == :unknown
+    end
+
+    test "a join keeps public only as the sole atom" do
+      assert Label.join_all([]) == Label.bottom()
+      assert Label.join_all([@public, @public]) == Label.bottom()
+      assert Label.atoms(Label.join_all([@public, @legal, @legal])) == [{:scope, @w, "legal"}]
+      assert Label.atoms(Label.new([:public, {:task, "t1"}, {:task, "t1"}])) == [{:task, "t1"}]
+      assert_raise ArgumentError, fn -> Label.new([{:task, "t1"}, {:task, :t2}]) end
+    end
   end
 end

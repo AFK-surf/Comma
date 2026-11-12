@@ -10,6 +10,38 @@ defmodule SalixStore.ComputeGroupStation do
          do: {:ok, environment}
   end
 
+  @doc """
+  Whether the Group's own VM, the one `{kind: cloud_vm}` names
+  (`SalixStore.RuntimeIds.cloud_vm_device_id/1`), is on an Agent VMM Host:
+  its Group Workload's provider is `agent_vmm`. A Group with no Group Workload
+  has none there, as its first one is a Cloudflare VM
+  (`SalixWeb.ComputeProviders.Cloudflare.ensure_record/1`); a Host registered
+  for it runs a Station of its own (`get/2`), which `{kind: cloud_vm}` does not
+  name. Answers `{:ok, boolean}`, or `{:error, reason}` when the Workload
+  cannot be read.
+  """
+  def group_vm_on_vmm_host(group) do
+    case Compute.group_workload(group) do
+      {:ok, %{"provider" => provider}} -> {:ok, provider == "agent_vmm"}
+      {:error, :not_found} -> {:ok, false}
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc """
+  Whether `device` is the Group's own VM on its Agent VMM Host
+  (`group_vm_on_vmm_host/1`): that Host's Station, which a Worker binding, a
+  default place or a Task names as `{kind: station, device_id}`. The same
+  device of a Group whose VM is on Cloudflare is its Cloud VM, named only as
+  `{kind: cloud_vm}`.
+  """
+  def vmm_group_vm?(group, device) when is_binary(group) and is_binary(device),
+    do:
+      device == SalixStore.RuntimeIds.cloud_vm_device_id(group) and
+        group_vm_on_vmm_host(group) == {:ok, true}
+
+  def vmm_group_vm?(_group, _device), do: false
+
   def placement(tenant, group) do
     now = SystemsClock.utc_now()
 
@@ -47,7 +79,7 @@ defmodule SalixStore.ComputeGroupStation do
         where:
           e.tenant_id == ^registration.tenant_id and e.desired_state == "ready" and
             b.provider == "agent_vmm" and b.provider_ref == ^registration.id and
-            b.generation == e.generation and b.status == "available",
+            b.status != "revoked",
         select: {e, b},
         limit: 2
       )
@@ -74,50 +106,71 @@ defmodule SalixStore.ComputeGroupStation do
   end
 
   def ensure(tenant, group) do
-    with {:ok, {registration, environment, binding}} <- placement(tenant, group) do
-      Repo.transaction(fn ->
-        # Registration authorization and Environment generation are the existing
-        # owners. A replaced registration never reuses the old Station Workload.
-        current =
-          Repo.one!(
-            from(r in AgentVMM.Registration, where: r.id == ^registration.id, lock: "FOR UPDATE")
-          )
+    with {:ok, placement} <- placement(tenant, group), do: ensure_placement(placement)
+  end
 
-        if not current.desired_enabled or current.status != "ready" or
-             AgentVMM.authorization_expired?(current),
-           do: Repo.rollback(:provider_unavailable)
-
-        current_environment =
-          Repo.one!(
-            from(e in Compute.Environment, where: e.id == ^environment.id, lock: "FOR UPDATE")
-          )
-
-        if current_environment.generation != environment.generation,
-          do: Repo.rollback(:stale_generation)
-
-        case legacy_station(group, registration.id) ||
-               station_workload(environment, binding, group) do
-          %Compute.Workload{} = workload ->
-            workload
-
-          nil ->
-            case Compute.place_workload(%{
-                   tenant_id: tenant,
-                   environment_id: environment.id,
-                   provider_binding_id: binding.id,
-                   allocation_id: "allocation_" <> SystemsRuntime.Proc.uuid(),
-                   workload_id: "workload_" <> SystemsRuntime.Proc.uuid(),
-                   kind: "service",
-                   template_key: "station.default",
-                   owner_ref: %{"kind" => "group", "id" => group},
-                   capability_requirements: ["runtime_exec", "runtime_process"]
-                 }) do
-              {:ok, %{workload: workload}} -> workload
-              {:error, reason} -> Repo.rollback(reason)
-            end
-        end
-      end)
+  defp ensure_registration(registration_id) do
+    with %AgentVMM.Registration{} = registration <-
+           Repo.get(AgentVMM.Registration, registration_id),
+         true <- AgentVMM.connected?(registration_id),
+         {:ok, placement} <- environment_for_registration(registration) do
+      ensure_placement(placement)
+    else
+      nil -> {:error, :not_found}
+      false -> {:error, :not_found}
+      {:error, _} = error -> error
     end
+  end
+
+  defp ensure_placement({registration, environment, binding}) do
+    group = registration.group_id
+
+    Repo.transaction(fn ->
+      # Registration authorization and Environment generation are the existing
+      # owners. A replaced registration never reuses the old Station Workload.
+      current =
+        Repo.one!(
+          from(r in AgentVMM.Registration, where: r.id == ^registration.id, lock: "FOR UPDATE")
+        )
+
+      if not current.desired_enabled or current.status != "ready" or
+           AgentVMM.authorization_expired?(current),
+         do: Repo.rollback(:provider_unavailable)
+
+      current_environment =
+        Repo.one!(
+          from(e in Compute.Environment, where: e.id == ^environment.id, lock: "FOR UPDATE")
+        )
+
+      if current_environment.generation != environment.generation,
+        do: Repo.rollback(:stale_generation)
+
+      if current_environment.desired_state != "ready" or
+           Repo.get!(Compute.ProviderBinding, binding.id).status == "revoked",
+         do: Repo.rollback(:provider_unavailable)
+
+      case legacy_station(group, registration.id) ||
+             station_workload(environment, binding, group) do
+        %Compute.Workload{} = workload ->
+          workload
+
+        nil ->
+          case Compute.place_workload(%{
+                 tenant_id: registration.tenant_id,
+                 environment_id: environment.id,
+                 provider_binding_id: binding.id,
+                 allocation_id: "allocation_" <> SystemsRuntime.Proc.uuid(),
+                 workload_id: "workload_" <> SystemsRuntime.Proc.uuid(),
+                 kind: "service",
+                 template_key: "station.default",
+                 owner_ref: %{"kind" => "group", "id" => group},
+                 capability_requirements: ["runtime_exec", "runtime_process"]
+               }) do
+            {:ok, %{workload: workload}} -> workload
+            {:error, reason} -> Repo.rollback(reason)
+          end
+      end
+    end)
   end
 
   def get(tenant, group) do
@@ -343,7 +396,7 @@ defmodule SalixStore.ComputeGroupStation do
       allocation.environment_id == environment.id and
       environment.generation == workload.generation and environment.desired_state == "ready" and
       binding.provider == "agent_vmm" and binding.provider_ref == registration.id and
-      binding.environment_id == environment.id and binding.generation == environment.generation
+      binding.environment_id == environment.id
   end
 
   def wake_device(tenant, group, device) do
@@ -373,8 +426,10 @@ defmodule SalixStore.ComputeGroupStation do
   def prepare_registration(registration_id, refresh? \\ false) do
     result =
       case Repo.get(AgentVMM.Registration, registration_id) do
-        %AgentVMM.Registration{tenant_id: tenant, group_id: group} ->
-          with {:ok, workload} <- ensure(tenant, group) do
+        %AgentVMM.Registration{} ->
+          with {:ok, workload} <- ensure_registration(registration_id) do
+            workload = if refresh?, do: heal(workload), else: workload
+
             if refresh? and workload.desired_state == "ready" and is_nil(workload.deletion) and
                  workload.observed_state == "ready" and workload.spec["group_default"] != true do
               Compute.observe_workload(
@@ -403,6 +458,19 @@ defmodule SalixStore.ComputeGroupStation do
     result
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  # A new Host connection reopens a Station parked on a Host-side failure.
+  # A refused reopen leaves it parked for the member's Retry.
+  defp heal(workload) do
+    case SalixStore.ComputeWorkloadManagement.heal_group_station(workload.id) do
+      :ok ->
+        Repo.get!(Compute.Workload, workload.id)
+
+      {:error, reason} ->
+        Logger.warning("VMM Station reopen failed: #{inspect(reason)}")
+        workload
+    end
   end
 
   def with_connection(workload_id, generation, connect) do

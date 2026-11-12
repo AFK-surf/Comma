@@ -1,3 +1,30 @@
+defmodule Mix.Tasks.Compile.CommaAppAttest do
+  use Mix.Task.Compiler
+  @recursive true
+
+  def run(_args) do
+    source = Path.expand("src/CommaAppAttestNonce.asn1", __DIR__)
+    output = Mix.Project.compile_path()
+    beam = Path.join(output, "CommaAppAttestNonce.beam")
+
+    if Mix.Utils.stale?([source], [beam]) do
+      File.mkdir_p!(output)
+
+      case :asn1ct.compile(String.to_charlist(source), [
+             :der,
+             :undec_rest,
+             :deterministic,
+             {:outdir, String.to_charlist(output)}
+           ]) do
+        :ok -> {:ok, []}
+        {:error, reason} -> Mix.raise("App Attest ASN.1 compilation failed: #{inspect(reason)}")
+      end
+    else
+      {:noop, []}
+    end
+  end
+end
+
 defmodule CommaCore.MixProject do
   use Mix.Project
 
@@ -12,6 +39,7 @@ defmodule CommaCore.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:comma_app_attest] ++ Mix.compilers(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -19,7 +47,7 @@ defmodule CommaCore.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto],
+      extra_applications: [:logger, :crypto, :public_key, :asn1],
       mod: {CommaCore.Application, []}
     ]
   end
@@ -50,6 +78,8 @@ defmodule CommaCore.MixProject do
       {:sweet_xml, "~> 0.7"},
       {:plug_crypto, "~> 2.1"},
       {:jason, "~> 1.4"},
+      {:cbor, "~> 1.0"},
+      {:x509, "~> 0.9", only: :test},
       {:ex_json_schema, "~> 0.11"},
       {:req, "~> 0.6"},
       {:posthog, "~> 2.16"},

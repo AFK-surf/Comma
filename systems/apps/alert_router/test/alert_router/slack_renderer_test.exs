@@ -77,7 +77,7 @@ defmodule AlertRouter.SlackRendererTest do
              Enum.map(acknowledged_plan["tasks"], & &1["task_id"])
 
     assert Enum.map(firing_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)"
            ]
 
     assert Enum.map(firing_plan["tasks"], & &1["status"]) == [
@@ -85,8 +85,8 @@ defmodule AlertRouter.SlackRendererTest do
            ]
 
     assert Enum.map(acknowledged_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC",
-             "告警中 · acknowledged · 2026-04-24 03:14 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)",
+             "告警中 · 来源已确认收到 · 04-24 11:14 (UTC+8)"
            ]
 
     assert Enum.map(acknowledged_plan["tasks"], & &1["status"]) == [
@@ -95,9 +95,9 @@ defmodule AlertRouter.SlackRendererTest do
            ]
 
     assert Enum.map(terminal_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC",
-             "告警中 · acknowledged · 2026-04-24 03:14 UTC",
-             "来源已结束告警 · closed · 2026-04-24 03:21 UTC · 服务恢复待确认"
+             "告警中 · 04-24 11:06 (UTC+8)",
+             "告警中 · 来源已确认收到 · 04-24 11:14 (UTC+8)",
+             "指标已回落 · 04-24 11:21 (UTC+8)"
            ]
 
     assert Enum.map(terminal_plan["tasks"], & &1["status"]) == [
@@ -107,31 +107,23 @@ defmodule AlertRouter.SlackRendererTest do
            ]
 
     assert Enum.map(verified_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC",
-             "告警中 · acknowledged · 2026-04-24 03:14 UTC",
-             "来源已结束告警 · closed · 2026-04-24 03:21 UTC · 服务恢复待确认",
-             "已确认恢复 · closed · 2026-04-24 03:25 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)",
+             "告警中 · 来源已确认收到 · 04-24 11:14 (UTC+8)",
+             "指标已回落 · 04-24 11:21 (UTC+8)",
+             "已确认恢复 · 04-24 11:25 (UTC+8)"
            ]
 
     assert Enum.all?(verified_plan["tasks"], &(&1["status"] == "complete"))
 
     assert get_in(first, ["blocks", Access.at(0), "title", "emoji"]) == false
     assert get_in(first, ["blocks", Access.at(0), "title", "text"]) =~ "告警中"
-    assert get_in(second, ["blocks", Access.at(0), "title", "text"]) =~ "来源已结束告警"
+    assert get_in(second, ["blocks", Access.at(0), "title", "text"]) =~ "指标已回落"
     refute get_in(second, ["blocks", Access.at(0), "title", "text"]) =~ "已恢复"
     assert firing_plan["title"] == "告警生命周期"
 
-    assert get_in(child_block(first, "metrics"), ["rows", Access.at(0), Access.at(0), "text"]) ==
-             "最新值"
+    assert child_block(first, "status")["text"]["text"] =~ "*现在*"
 
-    assert get_in(first, [
-             "blocks",
-             Access.at(0),
-             "child_blocks",
-             Access.at(0),
-             "elements",
-             Access.at(0)
-           ]) == %{
+    assert get_in(child_block(first, "footer"), ["elements", Access.at(0)]) == %{
              "type" => "image",
              "image_url" =>
                "https://cloud.google.com/images/social-icon-google-cloud-1200-630.png",
@@ -146,8 +138,8 @@ defmodule AlertRouter.SlackRendererTest do
     verified_body =
       child_block(verified, "status")["text"]["text"]
 
-    assert unknown_body =~ "来源已结束告警，服务恢复待确认。"
-    assert second["text"] =~ "来源已结束告警，服务恢复待确认。"
+    assert unknown_body =~ "告警来源已关闭，指标回到阈值内；服务是否恢复还没有确认。"
+    assert second["text"] =~ "告警来源已关闭，指标回到阈值内；服务是否恢复还没有确认。"
     assert verified_body =~ "本次告警对应的故障已由正向证据确认恢复。"
     refute verified_body =~ "待确认"
     assert verified["text"] =~ "本次告警对应的故障已由正向证据确认恢复。"
@@ -182,9 +174,9 @@ defmodule AlertRouter.SlackRendererTest do
     }
 
     firing = Renderer.root(p0, 1, channel_mention: true)
-    assert child_block(firing, "progress")["text"]["text"] =~ "尚无调查回报"
+    assert child_block(firing, "progress") == nil
 
-    assert get_in(child_block(firing, "source"), ["elements", Access.at(0)]) == %{
+    assert get_in(child_block(firing, "footer"), ["elements", Access.at(0)]) == %{
              "type" => "image",
              "image_url" =>
                "https://cloud.google.com/images/social-icon-google-cloud-1200-630.png",
@@ -194,12 +186,10 @@ defmodule AlertRouter.SlackRendererTest do
     title = get_in(firing, ["blocks", Access.at(0), "title", "text"])
     assert title =~ "🔴 P0 · 告警中"
 
-    source = child_block(firing, "source") |> Jason.encode!()
-    assert source =~ "2026-04-24 03:06 UTC"
-    assert source =~ "负责人 未指派"
+    refute Jason.encode!(firing) =~ "负责人"
 
     assert get_in(firing, ["blocks", Access.at(0), "subtitle", "text"]) ==
-             "production · salix_agent · example-cluster"
+             "production · 04-24 11:06 (UTC+8) 开始"
 
     runtime = child_block(firing, "diagnostic-context") |> Jason.encode!()
 
@@ -212,13 +202,11 @@ defmodule AlertRouter.SlackRendererTest do
       assert runtime =~ value
     end
 
-    metrics = child_block(firing, "metrics")
-    assert metrics["type"] == "table"
-    assert Enum.map(Enum.at(metrics["rows"], 0), & &1["text"]) == ["最新值", "触发阈值", "窗口"]
-    status = child_block(firing, "status") |> Jason.encode!()
+    assert child_block(firing, "metrics") == nil
+    status = child_block(firing, "status")["text"]["text"]
     assert status =~ "recovery_exhausted"
     refute status =~ "Runtime 进程异常退出"
-    assert status =~ "告警状态"
+    assert status =~ "（当前 1，阈值 &gt;= 1 个自动恢复耗尽事件，单次事件）"
     assert status =~ "影响"
 
     actions = child_block(firing, "actions")
@@ -233,7 +221,7 @@ defmodule AlertRouter.SlackRendererTest do
       Renderer.root(%{p0 | state: "resolved", recovery_status: "verified"}, 3)
 
     assert get_in(source_terminal, ["blocks", Access.at(0), "title", "text"]) =~
-             "🟡 P0 · 来源已结束告警"
+             "🟡 P0 · 指标已回落"
 
     assert get_in(verified, ["blocks", Access.at(0), "title", "text"]) =~
              "🟢 P0 · 已确认恢复"
@@ -257,7 +245,7 @@ defmodule AlertRouter.SlackRendererTest do
       root = Renderer.root(%{incident(event) | route_id: "live"}, 1, channel_mention: true)
       assert get_in(root, ["blocks", Access.at(0), "title", "text"]) =~ "🔴 #{priority}"
       assert child_block(root, "status")["text"]["text"] =~ issue
-      assert child_block(root, "metrics")["type"] == "table"
+      assert child_block(root, "first-checks")["text"]["text"] =~ "plugin_projection:not_found"
       assert Jason.encode!(root) =~ "<!channel>" == priority in ["P0", "P1"]
 
       closed =
@@ -301,11 +289,11 @@ defmodule AlertRouter.SlackRendererTest do
     payload = Renderer.timeline(event, incident)
 
     assert [%{"type" => "container", "child_blocks" => child_blocks}] = payload["blocks"]
-    assert Enum.map(child_blocks, & &1["type"]) == ["context", "section", "context"]
+    assert Enum.map(child_blocks, & &1["type"]) == ["context", "section"]
     assert get_in(payload, ["blocks", Access.at(0), "title", "text"]) =~ "告警中"
 
     assert get_in(payload, ["blocks", Access.at(0), "child_blocks", Access.at(1), "text", "text"]) =~
-             "最新状态"
+             incident.latest
 
     assert %{kind: :timeline, render_revision: 1} = MessageMarker.identify(payload)
     refute Map.has_key?(payload, "metadata")
@@ -441,18 +429,41 @@ defmodule AlertRouter.SlackRendererTest do
     event = grafana_events() |> hd()
     payload = Renderer.root(incident(event), 1, lifecycle_events: [event_record(event, 1)])
 
-    assert get_in(payload, [
-             "blocks",
-             Access.at(0),
-             "child_blocks",
-             Access.at(0),
-             "elements",
-             Access.at(0)
-           ]) == %{
+    assert get_in(child_block(payload, "footer"), ["elements", Access.at(0)]) == %{
              "type" => "image",
              "image_url" => "https://grafana.com/static/assets/img/fav32.png",
              "alt_text" => "Grafana"
            }
+  end
+
+  test "a firing card states the measured value and where it fails, then the first checks" do
+    firing = %{
+      incident(gcp_event())
+      | evidence_values: %{
+          "observed" => "37%",
+          "scope" => "route=/v1/comma/groups/*",
+          "threshold" => "> 5%",
+          "duration" => "15 分钟"
+        },
+        policy_identity: ["gcp_monitoring", "comma_alerting", "im_ingress_5xx"]
+    }
+
+    card = Renderer.root(firing, 1)
+
+    assert child_block(card, "status")["text"]["text"] =~
+             "*现在*  #{firing.latest}（route=/v1/comma/groups/*，当前 37%，阈值 &gt; 5%，15 分钟）"
+
+    checks = child_block(card, "first-checks")["text"]["text"]
+    assert checks =~ "*先看*\n1. "
+    assert checks =~ "2. 在 BFT Operations"
+
+    without_value = %{firing | evidence_values: Map.drop(firing.evidence_values, ["observed"])}
+
+    assert child_block(Renderer.root(without_value, 1), "status")["text"]["text"] =~
+             "*现在*  #{firing.latest}（route=/v1/comma/groups/*，阈值 &gt; 5%，15 分钟）"
+
+    resolved = Renderer.root(%{firing | state: "resolved", recovery_status: "unknown"}, 2)
+    assert child_block(resolved, "first-checks") == nil
   end
 
   defp incident(event) do

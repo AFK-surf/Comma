@@ -13,7 +13,9 @@ import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
 import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useCall, type TaskSearchResult } from "@comma/core-client";
+import { useCall, type TaskFile, type TaskSearchResult } from "@comma/core-client";
+import { FileIcon, ImageIcon } from "@comma/ui/components/icons";
+import type { ChatSidebarActions } from "../chat-sidebar/ChatSidebarContext";
 import {
   runApplicationMenuCommand,
   useEnabledApplicationMenuCommands,
@@ -26,12 +28,14 @@ import {
   useOptionalAppShortcutBindings,
 } from "../shortcuts/commaAppShortcuts";
 import { useWorkspaceTasks, type TaskViewModel } from "../tasks/useWorkspaceTasks";
+import { useNewTaskDialog } from "../tasks/station/NewTaskDialogContext";
 import { normalizeUnixTimestampMs } from "./normalizeUnixTimestampMs";
 import { TaskConversationPreview } from "./TaskConversationPreview";
 import {
   firstHighlightExcerpt,
   findTextHighlights,
   titleMatches,
+  waitsForTasks,
   type TextHighlight,
 } from "./searchText";
 
@@ -49,6 +53,7 @@ const paletteActions = [
   { icon: "tasks", id: "go-tasks" },
   { icon: "drive", id: "go-drive" },
   { icon: "plugins", id: "go-plugins" },
+  { icon: "plus", id: "new-task" },
   { icon: "settings", id: "go-settings" },
   { icon: "layout-left", id: "toggle-left-sidebar" },
   { icon: "layout-right", id: "toggle-right-sidebar" },
@@ -107,6 +112,7 @@ const menuPaletteActions = [
 const actionValuePrefix = "action:";
 const menuValuePrefix = "menu:";
 const taskValuePrefix = "task:";
+const fileValuePrefix = "file:";
 
 function isTaskValue(value: string) {
   return value.startsWith(taskValuePrefix);
@@ -128,11 +134,18 @@ type TaskSearchState = {
 type PaletteTask = {
   conversationId: string;
   groupId: string;
+  /** The Message a search hit matched: the preview and the opened Task show it. */
+  messageId?: string | undefined;
   status?: string;
   title: string;
   updatedAt?: number;
   workspaceId: string;
 };
+
+/** A file a Task's Agents attached, found by its name, and where its Task opens. */
+type PaletteFile = { file: TaskFile; scope: SearchScope };
+
+type TaskFileSearchState = { files: TaskFile[]; scope?: SearchScope | undefined };
 
 const idleTaskSearch: TaskSearchState = {
   error: false,
@@ -204,6 +217,52 @@ function useTaskSearch(
   return answer.state;
 }
 
+/** File names that contain the query, as `useTaskSearch` asks: one core search per query, cancelled when it changes. */
+function useTaskFileSearch(
+  open: boolean,
+  query: string,
+  preferredScope: SearchScope | undefined,
+  preferredWorkspaceId: string | undefined
+): TaskFileSearchState {
+  const call = useCall();
+  const normalizedQuery = boundedTaskQuery(query);
+  const eligible =
+    open && Array.from(normalizedQuery).length >= taskSearchMinQueryCodepoints;
+  const requestKey = `${preferredScope?.groupId ?? ""}\u0000${preferredWorkspaceId ?? ""}\u0000${normalizedQuery}`;
+  const [answer, setAnswer] = useState<{ key: string; state: TaskFileSearchState }>();
+  useEffect(() => {
+    if (!eligible) return;
+    const controller = new AbortController();
+    call(
+      "search.taskFiles",
+      {
+        query: normalizedQuery,
+        group: preferredScope?.groupId ?? "",
+        prefer: preferredScope?.workspaceId ?? preferredWorkspaceId ?? "",
+      },
+      controller.signal
+    ).then(
+      (value) => {
+        if (!controller.signal.aborted)
+          setAnswer({
+            key: requestKey,
+            state: { files: value.files, scope: value.scope ?? undefined },
+          });
+      },
+      () => undefined
+    );
+    return () => controller.abort();
+  }, [
+    call,
+    eligible,
+    normalizedQuery,
+    preferredScope,
+    preferredWorkspaceId,
+    requestKey,
+  ]);
+  return eligible && answer?.key === requestKey ? answer.state : { files: [] };
+}
+
 function highlightedText(
   text: string,
   highlights: readonly TextHighlight[]
@@ -249,11 +308,14 @@ export function AppCommandPalette({
   onActionClose,
   onOpenChange,
   open,
+  openFilePreview,
   runShortcut,
 }: {
   onActionClose: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  /** Opens a found file in its Task's sidebar preview; without it a file opens its Task alone. */
+  openFilePreview?: ChatSidebarActions["openFilePreview"] | undefined;
   /** Runs an app command; without it the palette offers only Tasks. */
   runShortcut?: (id: AppShortcutId) => void;
 }) {
@@ -264,6 +326,7 @@ export function AppCommandPalette({
   const searchShortcutKeycaps = appKeybindingKeycaps(searchShortcut);
   const shortcutBindings = useOptionalAppShortcutBindings();
   const shortcutCopy = useAppShortcutCopy();
+  const newTask = useNewTaskDialog();
   const enabledMenuCommands = useEnabledApplicationMenuCommands();
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string>();
@@ -280,6 +343,12 @@ export function AppCommandPalette({
     [workspaceTasks.activeGroupId, workspaceTasks.activeWorkspaceId]
   );
   const taskSearch = useTaskSearch(
+    open,
+    query,
+    preferredScope,
+    workspaceTasks.activeWorkspaceId
+  );
+  const fileSearch = useTaskFileSearch(
     open,
     query,
     preferredScope,
@@ -315,9 +384,11 @@ export function AppCommandPalette({
     workspaceTasks.tasks.map((task) => [task.conversationId, task] as const)
   );
   const taskTargets = new Map<string, PaletteTask>();
+  const fileTargets = new Map<string, PaletteFile>();
 
   const actionItems: CommandPaletteItem<string>[] = runShortcut
     ? paletteActions.flatMap(({ icon, id }) => {
+        if (id === "new-task" && !newTask.available) return [];
         const title = shortcutCopy[id].title;
         if (
           normalizedQuery &&
@@ -377,10 +448,20 @@ export function AppCommandPalette({
     const knownTask = tasksByConversation.get(result.conversation_id);
     const scope = taskSearch.scope;
     const updatedAt = result.updated_at ?? knownTask?.updatedAt;
+    const contentMatch =
+      result.content_match ??
+      (result.matched_field === "content"
+        ? {
+            highlights: result.highlights,
+            message_id: result.message_id,
+            snippet: result.snippet,
+          }
+        : undefined);
     if (scope) {
       taskTargets.set(value, {
         conversationId: result.conversation_id,
         groupId: scope.groupId,
+        ...(contentMatch?.message_id ? { messageId: contentMatch.message_id } : {}),
         ...(knownTask?.activityStatus ? { status: knownTask.activityStatus } : {}),
         title: result.title,
         ...(updatedAt === undefined ? {} : { updatedAt }),
@@ -391,16 +472,14 @@ export function AppCommandPalette({
       result.matched_field === "title"
         ? result.highlights
         : findTextHighlights(result.title, normalizedQuery);
-    const contentMatch =
-      result.content_match ??
-      (result.matched_field === "content"
-        ? { highlights: result.highlights, snippet: result.snippet }
-        : undefined);
     const subtitleExcerpt = contentMatch
       ? firstHighlightExcerpt(contentMatch.snippet, contentMatch.highlights)
       : undefined;
     return {
-      icon: taskStatusIcon(knownTask?.statusBucket ?? "in_progress"),
+      // A Task whose status is not known yet shows the glyph still.
+      icon: taskStatusIcon(knownTask?.statusBucket ?? "in_progress", {
+        spins: knownTask !== undefined,
+      }),
       meta: taskUpdatedAt(updatedAt, locale),
       subtitle: subtitleExcerpt
         ? highlightedText(subtitleExcerpt.text, subtitleExcerpt.highlights)
@@ -409,6 +488,25 @@ export function AppCommandPalette({
       value,
     };
   });
+
+  const fileScope = fileSearch.scope;
+  const fileItems = fileScope
+    ? fileSearch.files.map<CommandPaletteItem<string>>((file) => {
+        const value = `${fileValuePrefix}${fileScope.groupId}:${file.conversation_id}:${file.message_id}:${file.index}`;
+        fileTargets.set(value, { file, scope: fileScope });
+        const Icon = file.type === "image" ? ImageIcon : FileIcon;
+        return {
+          icon: <Icon />,
+          meta: taskUpdatedAt(file.created_at, locale),
+          subtitle: file.task_title || undefined,
+          title: highlightedText(
+            file.file_name,
+            findTextHighlights(file.file_name, normalizedQuery)
+          ),
+          value,
+        };
+      })
+    : [];
 
   // An empty query keeps the newest Task first; a typed one that names an
   // action is most likely after it, so matching actions lead.
@@ -420,6 +518,11 @@ export function AppCommandPalette({
             heading: m.search_palette_tasks(),
             id: "tasks",
             items: searchItems,
+          },
+          {
+            heading: m.search_palette_files(),
+            id: "files",
+            items: fileItems,
           },
         ]
       : [
@@ -465,7 +568,11 @@ export function AppCommandPalette({
   const previewTask = previewValue ? taskTargets.get(previewValue) : undefined;
   const previewLabel = previewTask?.title;
   const preview = previewTask ? (
-    <TaskConversationPreview searchQuery={normalizedTaskQuery} task={previewTask} />
+    <TaskConversationPreview
+      revealMessageId={previewTask.messageId}
+      searchQuery={normalizedTaskQuery}
+      task={previewTask}
+    />
   ) : undefined;
 
   const handleQueryChange = (nextQuery: string) => {
@@ -506,7 +613,34 @@ export function AppCommandPalette({
         groupId: task.groupId,
         workspaceId: task.workspaceId,
       },
+      search: task.messageId ? { message: task.messageId, q: normalizedTaskQuery } : {},
     });
+  };
+
+  // A file opens its Task, with the file in that Task's sidebar preview.
+  const openFile = ({ file, scope }: PaletteFile) => {
+    openTask({
+      conversationId: file.conversation_id,
+      groupId: scope.groupId,
+      title: file.task_title,
+      workspaceId: scope.workspaceId,
+    });
+    openFilePreview?.(
+      {
+        conversationId: file.conversation_id,
+        groupId: scope.groupId,
+        workspaceId: scope.workspaceId,
+      },
+      {
+        groupId: scope.groupId,
+        conversationId: file.conversation_id,
+        messageId: file.message_id,
+        attachmentIndex: file.index,
+        fileName: file.file_name,
+        ...(file.mime_type ? { mimeType: file.mime_type } : {}),
+        size: file.size,
+      }
+    );
   };
 
   const runAction = (id: AppShortcutId) => {
@@ -532,11 +666,13 @@ export function AppCommandPalette({
   };
 
   // Actions show at once; only a list with nothing else waits for Tasks.
-  const loading =
-    actionItems.length === 0 &&
-    (normalizedQuery
-      ? taskSearch.loading
-      : workspaceTasks.loading && historyItems.length === 0);
+  const loading = waitsForTasks({
+    actions: actionGroup.items.length,
+    query: normalizedQuery,
+    searching: taskSearch.loading,
+    loadingHistory: workspaceTasks.loading,
+    history: historyItems.length,
+  });
   const unavailable = normalizedQuery
     ? taskSearch.error
     : Boolean(workspaceTasks.taskLoadError);
@@ -593,6 +729,11 @@ export function AppCommandPalette({
           runMenuCommand(
             item.value.slice(menuValuePrefix.length) as ApplicationMenuCommand
           );
+          return;
+        }
+        const file = fileTargets.get(item.value);
+        if (file) {
+          openFile(file);
           return;
         }
         const task = taskTargets.get(item.value);

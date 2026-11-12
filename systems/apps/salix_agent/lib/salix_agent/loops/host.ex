@@ -28,6 +28,12 @@ defmodule SalixAgent.Loops.Host do
       unloaded when it exits; an exited or faulted script object is reported
       to the owner, never to the Reconciler. At most `script_max_objects/0`
       script objects are resident per node;
+    * the last failed host call of each Loop object (`last_host_error/1`):
+      its capability and error message, bounded, kept in memory only while
+      the object is registered. A guest sees only `SF_HOST_ERROR`; the
+      Loop's author reads the reason in `loop.get` while the object runs,
+      and in the Loop's `failure` and exit notice once it exits with a
+      non-zero code (`SalixAgent.Loops.record_exit/4`);
     * the restart budget: a child that exits is respawned with backoff, at
       most `@max_restarts_per_hour` times per hour, then the Host stays
       `unavailable` and alerts. There is no unbounded retry.
@@ -61,6 +67,7 @@ defmodule SalixAgent.Loops.Host do
   @min_host_call_ms 100
   @max_host_call_ms 60_000
   @default_script_max_objects 64
+  @max_host_error_bytes 512
 
   @type loop_ref :: Capabilities.loop_ref()
 
@@ -170,6 +177,14 @@ defmodule SalixAgent.Loops.Host do
   @spec object_get(String.t()) :: {:ok, map()} | {:error, term()}
   def object_get(object_id), do: request("sf.object.get", %{"object_id" => object_id})
 
+  @doc """
+  The last failed host call of the Loop object `object_id` on this node:
+  `%{"capability" => name, "message" => text}`, or nil.
+  """
+  @spec last_host_error(String.t()) :: map() | nil
+  def last_host_error(object_id) when is_binary(object_id),
+    do: safe_call(__MODULE__, {:last_host_error, object_id}, 5_000, nil)
+
   @spec object_list(String.t() | nil, pos_integer()) :: {:ok, map()} | {:error, term()}
   def object_list(after_id \\ nil, limit \\ 100) do
     params =
@@ -276,8 +291,10 @@ defmodule SalixAgent.Loops.Host do
               queue: :queue.new(),
               # object_id => loop ref
               objects: %{},
-              # dependency token => %{rpc_id, job, object_id}
+              # dependency token => %{rpc_id, job, object_id, capability}
               host_calls: %{},
+              # Loop object_id => its last failed host call
+              host_errors: %{},
               rpc_tokens: %{},
               # forwarded script host.call: rpc_id => object_id
               script_calls: %{},
@@ -324,6 +341,9 @@ defmodule SalixAgent.Loops.Host do
   end
 
   def handle_call(:objects, _from, state), do: {:reply, state.objects, state}
+
+  def handle_call({:last_host_error, object_id}, _from, state),
+    do: {:reply, Map.get(state.host_errors, object_id), state}
 
   def handle_call({:request, method, params, timeout}, from, state) do
     if state.available,
@@ -466,9 +486,14 @@ defmodule SalixAgent.Loops.Host do
       {nil, _} ->
         {:noreply, state}
 
-      {%{job: job, rpc_id: rpc_id}, host_calls} ->
+      {%{job: job, rpc_id: rpc_id} = call, host_calls} ->
         :ok = DependencyJob.complete(job)
-        send_host_result(state, rpc_id, result)
+
+        state =
+          case send_host_result(state, rpc_id, result) do
+            :ok -> state
+            {:error, message} -> note_host_error(state, call.object_id, call.capability, message)
+          end
 
         {:noreply,
          %{state | host_calls: host_calls, rpc_tokens: Map.delete(state.rpc_tokens, rpc_id)}}
@@ -480,10 +505,12 @@ defmodule SalixAgent.Loops.Host do
       {nil, _} ->
         {:noreply, state}
 
-      {%{job: job, rpc_id: rpc_id, object_id: object_id}, host_calls} ->
+      {%{job: job, rpc_id: rpc_id, object_id: object_id} = call, host_calls} ->
         :ok = DependencyJob.cancel(job, :timeout)
         Logger.warning("loop object #{object_id} host call exceeded its deadline")
-        send_host_error(state, rpc_id, "DEADLINE_EXCEEDED", "capability deadline exceeded")
+        message = "capability deadline exceeded"
+        send_host_error(state, rpc_id, "DEADLINE_EXCEEDED", message)
+        state = note_host_error(state, object_id, call.capability, message)
 
         {:noreply,
          %{state | host_calls: host_calls, rpc_tokens: Map.delete(state.rpc_tokens, rpc_id)}}
@@ -495,16 +522,12 @@ defmodule SalixAgent.Loops.Host do
       {nil, _} ->
         {:noreply, state}
 
-      {%{job: job, rpc_id: rpc_id, object_id: object_id}, host_calls} ->
+      {%{job: job, rpc_id: rpc_id, object_id: object_id} = call, host_calls} ->
         :ok = DependencyJob.complete(job)
         Logger.warning("loop object #{object_id} host call crashed: #{inspect(reason)}")
-
-        send_host_error(
-          state,
-          rpc_id,
-          "HOST_ERROR",
-          "capability crashed: " <> (inspect(reason) |> String.slice(0, 200))
-        )
+        message = "capability crashed: " <> (inspect(reason) |> String.slice(0, 200))
+        send_host_error(state, rpc_id, "HOST_ERROR", message)
+        state = note_host_error(state, object_id, call.capability, message)
 
         {:noreply,
          %{state | host_calls: host_calls, rpc_tokens: Map.delete(state.rpc_tokens, rpc_id)}}
@@ -662,6 +685,7 @@ defmodule SalixAgent.Loops.Host do
         queue: :queue.new(),
         objects: %{},
         host_calls: %{},
+        host_errors: %{},
         rpc_tokens: %{},
         script_calls: %{},
         monitors: %{},
@@ -912,6 +936,8 @@ defmodule SalixAgent.Loops.Host do
       {loop, objects} ->
         reconciler = state.reconciler
         host = SystemsRuntime.Proc.self()
+        {host_error, host_errors} = Map.pop(state.host_errors, object_id)
+        status = terminal_status(status, host_error)
 
         SystemsRuntime.TaskSupervisor.start_child(SalixAgent.TaskSup, fn ->
           try do
@@ -921,7 +947,7 @@ defmodule SalixAgent.Loops.Host do
           end
         end)
 
-        %{state | objects: objects}
+        %{state | objects: objects, host_errors: host_errors}
     end
   end
 
@@ -935,6 +961,7 @@ defmodule SalixAgent.Loops.Host do
     %{
       state
       | objects: Map.delete(state.objects, object_id),
+        host_errors: Map.delete(state.host_errors, object_id),
         monitors: Map.new(monitors),
         script_calls: Map.reject(state.script_calls, fn {_rpc, id} -> id == object_id end)
     }
@@ -1011,7 +1038,7 @@ defmodule SalixAgent.Loops.Host do
 
         case DependencyJob.start(kind, loop.tenant_id, dependency, timeout_ms: deadline_ms) do
           {:ok, job} ->
-            entry = %{job: job, rpc_id: rpc_id, object_id: object_id}
+            entry = %{job: job, rpc_id: rpc_id, object_id: object_id, capability: capability}
 
             %{
               state
@@ -1020,21 +1047,16 @@ defmodule SalixAgent.Loops.Host do
             }
 
           {:error, :dependency_saturated} ->
-            log_refused_call(loop, capability, "dependency admission is saturated")
-            send_host_error(state, rpc_id, "BUSY", "dependency admission is saturated")
-            state
+            message = "dependency admission is saturated"
+            log_refused_call(loop, capability, message)
+            send_host_error(state, rpc_id, "BUSY", message)
+            note_host_error(state, object_id, capability, message)
 
           {:error, reason} ->
-            log_refused_call(loop, capability, "dependency could not start: " <> inspect(reason))
-
-            send_host_error(
-              state,
-              rpc_id,
-              "HOST_ERROR",
-              "dependency could not start: " <> inspect(reason)
-            )
-
-            state
+            message = "dependency could not start: " <> inspect(reason)
+            log_refused_call(loop, capability, message)
+            send_host_error(state, rpc_id, "HOST_ERROR", message)
+            note_host_error(state, object_id, capability, message)
         end
     end
   end
@@ -1077,21 +1099,71 @@ defmodule SalixAgent.Loops.Host do
         :ok
 
       {:error, _} ->
-        send_host_error(state, rpc_id, "HOST_ERROR", "capability result is not valid UTF-8 JSON")
+        failed_host_result(state, rpc_id, "capability result is not valid UTF-8 JSON")
     end
   end
 
   defp send_host_result(state, rpc_id, {:error, message}) when is_binary(message),
-    do: send_host_error(state, rpc_id, "HOST_ERROR", message)
+    do: failed_host_result(state, rpc_id, message)
 
   defp send_host_result(state, rpc_id, other),
     do:
-      send_host_error(
+      failed_host_result(
         state,
         rpc_id,
-        "HOST_ERROR",
         "capability returned " <> (inspect(other) |> String.slice(0, 200))
       )
+
+  # Answers the guest with the error and returns it for the object's record.
+  defp failed_host_result(state, rpc_id, message) do
+    :ok = send_host_error(state, rpc_id, "HOST_ERROR", message)
+    {:error, message}
+  end
+
+  @doc false
+  # Record `message` as the last failed host call of the Loop object
+  # `object_id`: valid UTF-8, at most 512 bytes. A
+  # script object or an object no longer registered records nothing.
+  @spec note_host_error(%State{}, String.t(), String.t(), String.t()) :: %State{}
+  def note_host_error(%State{} = state, object_id, capability, message) do
+    case Map.get(state.objects, object_id) do
+      %{kind: :script} ->
+        state
+
+      nil ->
+        state
+
+      _loop ->
+        error = %{
+          "capability" => bounded_text(capability),
+          "message" => bounded_text(message)
+        }
+
+        %{state | host_errors: Map.put(state.host_errors, object_id, error)}
+    end
+  end
+
+  @doc false
+  # The terminal status a Loop object's settlement receives: with the
+  # object's last failed host call when it has one.
+  @spec terminal_status(map(), map() | nil) :: map()
+  def terminal_status(status, nil), do: status
+  def terminal_status(status, host_error), do: Map.put(status, "last_host_error", host_error)
+
+  defp bounded_text(text) do
+    text = text |> to_string() |> String.replace_invalid()
+
+    if byte_size(text) <= @max_host_error_bytes,
+      do: text,
+      else: text |> binary_part(0, @max_host_error_bytes) |> trim_partial_char()
+  end
+
+  # Drop a code point that the byte cut split.
+  defp trim_partial_char(text) do
+    if String.valid?(text),
+      do: text,
+      else: trim_partial_char(binary_part(text, 0, byte_size(text) - 1))
+  end
 
   defp send_host_error(%State{port: nil}, _rpc_id, _kind, _message), do: :ok
 

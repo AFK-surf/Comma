@@ -46,13 +46,10 @@ const runner = {
   host_identity: null,
   os_summary: null,
   version: null,
-  component_versions: { "salix-connect": "2026.06.18" },
+  component_versions: { "agent-vmm-host": "2026.06.18" },
   update_available: true,
-  capacity: 3,
-  current_connector_count: 1,
   last_seen_at: null,
   last_seen_age_seconds: null,
-  connectors: { total: 3, by_status: [{ status: "connected", count: 3 }] },
   credential: null,
 };
 

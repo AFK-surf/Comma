@@ -207,6 +207,58 @@ describe("sidebar tab closing", () => {
   });
 });
 
+describe("the tab menu's actions", () => {
+  it("duplicates a page right after it and selects the copy, but not a terminal", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useRegisteredSidebar, {
+      wrapper: ChatSidebarProvider,
+    });
+    act(() =>
+      result.current.openBrowser(host, { title: "Docs", url: "https://docs.example/" })
+    );
+    act(() => result.current.openBrowser(host, { url: "https://example.com/" }));
+    act(() =>
+      result.current.openBrowser(host, {
+        kind: "terminal",
+        taskId: "cnv_1",
+        url: "https://sandbox.example/t",
+      })
+    );
+    const [docs, , terminal] = result.current.activeSession!.browserPages;
+
+    act(() => result.current.duplicateBrowserPage(host, docs!.id));
+    const pages = result.current.activeSession!.browserPages;
+    expect(pages.map((page) => page.url)).toEqual([
+      "https://docs.example/",
+      "https://docs.example/",
+      "https://example.com/",
+      "https://sandbox.example/t",
+    ]);
+    expect(pages[1]).toMatchObject({ title: "Docs" });
+    expect(pages[1]!.id).not.toBe(docs!.id);
+    expect(result.current.activeSession?.activeBrowserPageId).toBe(pages[1]!.id);
+
+    act(() => result.current.duplicateBrowserPage(host, terminal!.id));
+    expect(result.current.activeSession!.browserPages).toHaveLength(4);
+  });
+
+  it("pins tabs in the order they were pinned and unpins them", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useRegisteredSidebar, {
+      wrapper: ChatSidebarProvider,
+    });
+    act(() => result.current.openBrowser(host, { url: "https://example.com/" }));
+
+    act(() => result.current.setTabPinned(host, "b", true));
+    act(() => result.current.setTabPinned(host, "a", true));
+    act(() => result.current.setTabPinned(host, "b", true));
+    expect(result.current.activeSession?.pinnedTabIds).toEqual(["b", "a"]);
+
+    act(() => result.current.setTabPinned(host, "b", false));
+    expect(result.current.activeSession?.pinnedTabIds).toEqual(["a"]);
+  });
+});
+
 describe("a surface that only acts on the sidebar", () => {
   it("renders for none of the sidebar's changes, and reads the host it shows when it acts", () => {
     installNativeBridgeMock({ platform: "web" });

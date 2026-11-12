@@ -5,6 +5,7 @@ import type {
   RecommendationsValue,
 } from "@comma/core/contract";
 import { advance, flush } from "@comma/test-utils/fake-clock";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import { installUiClock, uiClock } from "@comma/ui/clock";
 import { createVirtualUiClock } from "@comma/ui/clock/virtual";
 import {
@@ -144,10 +145,12 @@ function railCore({
   shown,
   previewOf = () => undefined,
   refresh = () => ({ rateLimited: false }),
+  dismiss = () => null,
 }: {
   shown?: Partial<RecommendationsValue> | undefined;
   previewOf?: (href: string) => LinkPreview | undefined;
   refresh?: () => unknown;
+  dismiss?: () => unknown;
 } = {}) {
   let value: RecommendationsValue | undefined = shown && briefing(shown);
   const topics: Record<string, unknown>[] = [];
@@ -160,7 +163,12 @@ function railCore({
         preview ? { status: "ready", preview } : { status: "missing" }
       ) satisfies LinkPreviewValue;
     },
-    calls: (name) => (name === "recommendations.refresh" ? refresh() : null),
+    calls: (name) =>
+      name === "recommendations.refresh"
+        ? refresh()
+        : name === "recommendations.dismiss"
+          ? dismiss()
+          : null,
     onSubscribe: (topic) => topics.push(topic),
   });
   return {
@@ -485,6 +493,32 @@ describe("RecommendationRail", () => {
     await flush();
     view.rerender(<Rail {...props} active />);
     await flush();
+    expect(core.sentTo("recommendations.visit")).toEqual([{ workspace: "wsp_1" }]);
+  });
+
+  it("keeps its briefing while Home is hidden and shows the same cards again", async () => {
+    script();
+    const props = {
+      onOpenTask: vi.fn(),
+      onOpenUrl: vi.fn(),
+      onUsePrompt: vi.fn(),
+      workspaceId: "wsp_1",
+    };
+    const view = render(<Rail {...props} />);
+    await flush();
+    const card = screen.getByRole("group", { name: "Document" });
+
+    // Hidden, the rail reads nothing, yet it neither drops the briefing for a
+    // pulsing skeleton nor rebuilds its cards.
+    view.rerender(<Rail {...props} active={false} />);
+    await flush();
+    expect(screen.queryByTestId("recommendations-loading")).not.toBeInTheDocument();
+    expect(card).toBeInTheDocument();
+
+    view.rerender(<Rail {...props} active />);
+    await flush();
+    expect(screen.getByRole("group", { name: "Document" })).toBe(card);
+    // Shown again, the core still reads the briefing at once.
     expect(core.sentTo("recommendations.visit")).toEqual([{ workspace: "wsp_1" }]);
   });
 
@@ -2164,6 +2198,73 @@ describe("RecommendationRail", () => {
         sourceUrl: "https://example.com/report",
       },
     ]);
+  });
+
+  it("names the dismiss control in a tooltip on hover", async () => {
+    script();
+    render(
+      <Rail
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    await flush();
+    const user = pointerUser();
+    await user.hover(screen.getByTestId("routine-row-dismiss"));
+    await advance(500);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Don’t remind me");
+  });
+
+  it("fades a dismissed row out before dismissing it, and brings it back when refused", async () => {
+    const fades: { target: Element; finish: () => void; cancel: () => void }[] = [];
+    stubProperty(Element.prototype, "animate", {
+      value(this: Element) {
+        const done = pending<Animation>();
+        const cancel = vi.fn();
+        fades.push({ target: this, finish: () => done.resolve(animation), cancel });
+        const animation = { cancel, finished: done.promise } as unknown as Animation;
+        return animation;
+      },
+    });
+    let refuse!: (error: Error) => void;
+    script({
+      shown: { envelope: envelope() },
+      dismiss: () => new Promise((_, reject) => (refuse = reject)),
+    });
+    render(
+      <Rail
+        onOpenTask={vi.fn()}
+        onOpenUrl={vi.fn()}
+        onUsePrompt={vi.fn()}
+        workspaceId="wsp_1"
+      />
+    );
+
+    await flush();
+    const control = screen.getByTestId("routine-row-dismiss");
+    const row = control.closest<HTMLElement>(".comma-recommendation-text-item")!;
+    fireEvent.click(control);
+    await flush();
+    // The row fades where it sits; nothing is dismissed until it has gone.
+    const fade = fades.find((played) => played.target === row)!;
+    expect(fade).toBeDefined();
+    expect(row).toHaveAttribute("inert");
+    expect(core.sentTo("recommendations.dismiss")).toEqual([]);
+
+    await act(async () => fade.finish());
+    await flush();
+    // Gone from the column, the row is dismissed.
+    expect(row.style.display).toBe("none");
+    expect(core.sentTo("recommendations.dismiss")).toHaveLength(1);
+    // The server refused: the row comes back as it was.
+    await act(async () => refuse(new Error("unavailable")));
+    expect(await screen.findByTestId("routine-problem-toast")).toBeInTheDocument();
+    expect(fade.cancel).toHaveBeenCalled();
+    expect(row.style.display).toBe("");
+    expect(row).not.toHaveAttribute("inert");
   });
 
   it("dates a fresh briefing only once it is more than a day old", async () => {

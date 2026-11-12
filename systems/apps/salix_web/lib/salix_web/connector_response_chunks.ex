@@ -24,9 +24,8 @@ defmodule SalixWeb.ConnectorResponseChunks do
   defstruct parts: [], count: 0, bytes: 0, max_bytes: 0
 
   # Each frame is a list entry whatever its size, so the count is bounded as
-  # well as the bytes: 4 MiB in 8 KiB frames (the T-Circle) is 512 frames, in
-  # 32 KiB frames (salix-connect) 128. An empty frame carries nothing and is
-  # refused.
+  # well as the bytes: 4 MiB in 8 KiB frames (the T-Circle) is 512 frames. An
+  # empty frame carries nothing and is refused.
   @max_frames 1024
 
   @type t :: %__MODULE__{}

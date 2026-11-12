@@ -31,7 +31,7 @@ theorem WriteSubmission.current_facts {framing : CodecFraming} {objects : Object
     trace.key = StorageAddress.key owner session ∧ ∃ etag snapshot bytes,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       (.tuple [a "cas", trace.requestedKey, trace.requestedBytes, trace.requestedBase] : Term) =
-        .tuple [a "cas", trace.key, .binary bytes, cursor.etag] ∧
+        .tuple [a "cas", trace.key, .binary bytes, cursor.revision] ∧
       after.current trace.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       ∀ item, PhysicalIdentityFact objects cursor.working (.work item) → PhysicalIdentityFact objects snapshot (.work item) := by
   have encoded := trace.encoded
@@ -48,7 +48,7 @@ theorem InputSubmission.staged_physical {framing : CodecFraming} {objects : Obje
     (trace : InputSubmission context entry born checkpoint)
     (history : PhysicalHistory framing objects owner session context.candidate.working sealed)
     (sourceValue : RoundQuery.atomFirst entry "source_message_id" = source) :
-    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.etag = context.candidate.etag ∧
+    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.revision = context.candidate.revision ∧
       PhysicalHistory framing objects owner session trace.staged.working sealed ∧
       ∃ event now first last item,
         Command.inputEvent (context.candidate.working.get (a "session_id")) source
@@ -78,7 +78,7 @@ theorem InputSubmission.current_facts {framing : CodecFraming} {objects : Object
     trace.key = StorageAddress.key owner session ∧ ∃ etag snapshot bytes event now first last item,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       (.tuple [a "cas", trace.requestedKey, trace.requestedBytes, trace.requestedBase] : Term) =
-        .tuple [a "cas", trace.key, .binary bytes, context.candidate.etag] ∧
+        .tuple [a "cas", trace.key, .binary bytes, context.candidate.revision] ∧
       after.current trace.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       Command.inputEvent (context.candidate.working.get (a "session_id")) source
         (RoundQuery.atomFirst entry "payload") now first = .ok (event, last) ∧

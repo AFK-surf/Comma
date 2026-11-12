@@ -21,7 +21,7 @@ defmodule SalixIM.ConversationGroupActor do
 
   require Logger
 
-  alias SalixIM.{Conversations, GroupDirectory, TaskActivityProjection}
+  alias SalixIM.{Conversations, GroupDirectory}
   alias SalixStore.{CasRecord, Ids, Keys}
 
   @pin_limit 200
@@ -35,9 +35,6 @@ defmodule SalixIM.ConversationGroupActor do
             router_read_hint: nil,
             list_revisions: %{"agent_task" => 0, "user_chat" => 0},
             mutation_revision: 0,
-            activity_rebuild_task: nil,
-            activity_rebuild_retry: nil,
-            activity_projection_ready?: false,
             list_subscribers: %{},
             mutation_subscribers: %{}
 
@@ -126,22 +123,6 @@ defmodule SalixIM.ConversationGroupActor do
   @impl true
   def handle_call(:router_read_hint, _from, state),
     do: {:reply, state.router_read_hint, state}
-
-  def handle_call(:activity_tasks, _from, %{activity_projection_ready?: true} = state),
-    do: {:reply, :ok, state}
-
-  def handle_call(:activity_tasks, _from, state) do
-    with {:ok, _group} <- GroupDirectory.get_group(state.group_id) do
-      state = start_activity_rebuild(state)
-
-      reply =
-        if state.activity_projection_ready?, do: :ok, else: {:error, :activity_projection_pending}
-
-      {:reply, reply, state}
-    else
-      error -> {:reply, error, state}
-    end
-  end
 
   def handle_call({:router_read_hint, agent_id}, _from, state),
     do: {:reply, :ok, %{state | router_read_hint: agent_id}}
@@ -236,46 +217,6 @@ defmodule SalixIM.ConversationGroupActor do
   end
 
   @impl true
-  def handle_info(
-        {ref, {:ok, next_cursor}},
-        %{activity_rebuild_task: %{ref: ref, cursor: cursor}} = state
-      ) do
-    Proc.demonitor(ref, [:flush])
-    state = %{state | activity_rebuild_task: nil}
-
-    case TaskActivityProjection.advance_rebuild(
-           state.group_id,
-           next_cursor || cursor,
-           is_nil(next_cursor)
-         ) do
-      {:ok, %{"state" => "ready"}} ->
-        state = invalidate_conversation_lists(state, %{kind: "agent_task", conversation_id: nil})
-        {:noreply, %{state | activity_projection_ready?: true}}
-
-      {:ok, _building} ->
-        Proc.send(Proc.self(), :continue_activity_rebuild)
-        {:noreply, state}
-
-      {:error, _reason} ->
-        {:noreply, schedule_activity_rebuild(state)}
-    end
-  end
-
-  def handle_info({ref, {:error, _reason}}, %{activity_rebuild_task: %{ref: ref}} = state) do
-    Proc.demonitor(ref, [:flush])
-    {:noreply, schedule_activity_rebuild(%{state | activity_rebuild_task: nil})}
-  end
-
-  def handle_info(:continue_activity_rebuild, state),
-    do: {:noreply, start_activity_rebuild(%{state | activity_rebuild_retry: nil})}
-
-  def handle_info(
-        {:DOWN, ref, :process, _pid, _reason},
-        %{activity_rebuild_task: %{ref: ref}} = state
-      ) do
-    {:noreply, schedule_activity_rebuild(%{state | activity_rebuild_task: nil})}
-  end
-
   def handle_info({:DOWN, ref, :process, subscriber, _reason}, state) do
     state = drop_list_subscriber(state, subscriber, ref)
     {:noreply, drop_mutation_subscriber(state, subscriber, ref)}
@@ -284,59 +225,6 @@ defmodule SalixIM.ConversationGroupActor do
   # Placement moved this group to another node. Exiting closes each subscriber
   # stream, which reconnects to the current owner and resynchronizes.
   def handle_info(:release_non_owner, state), do: {:stop, :normal, state}
-
-  defp start_activity_rebuild(%{activity_rebuild_task: task} = state) when not is_nil(task),
-    do: state
-
-  defp start_activity_rebuild(%{activity_rebuild_retry: timer} = state) when not is_nil(timer),
-    do: state
-
-  defp start_activity_rebuild(state) do
-    case TaskActivityProjection.rebuild_state(state.group_id) do
-      {:ok, %{"state" => "ready"}} ->
-        %{state | activity_projection_ready?: true}
-
-      {:ok, %{"cursor" => cursor}} ->
-        start_activity_rebuild_page(state, cursor)
-
-      {:error, :not_found} ->
-        start_activity_rebuild_page(state, nil)
-
-      {:error, _reason} ->
-        schedule_activity_rebuild(state)
-    end
-  end
-
-  defp start_activity_rebuild_page(state, cursor) do
-    context = SystemsObservability.Context.capture()
-    group_id = state.group_id
-
-    try do
-      task =
-        SystemsRuntime.TaskSupervisor.async_nolink(SalixIM.ConversationProjectionTasks, fn ->
-          SystemsObservability.Context.run(context, fn ->
-            TaskActivityProjection.rebuild_page(group_id, cursor)
-          end)
-        end)
-
-      %{state | activity_rebuild_task: %{ref: task.ref, cursor: cursor}}
-    rescue
-      _error -> schedule_activity_rebuild(state)
-    catch
-      :exit, _reason ->
-        schedule_activity_rebuild(state)
-    end
-  end
-
-  defp schedule_activity_rebuild(%{activity_rebuild_retry: timer} = state) when not is_nil(timer),
-    do: state
-
-  defp schedule_activity_rebuild(state),
-    do: %{
-      state
-      | activity_rebuild_retry:
-          SystemsClock.send_after(Proc.self(), :continue_activity_rebuild, 5_000)
-    }
 
   defp put_task_order(group_id, bucket, conversation_ids) do
     now = SystemsClock.system_time(:millisecond)

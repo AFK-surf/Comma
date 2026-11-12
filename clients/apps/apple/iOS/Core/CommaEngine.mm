@@ -52,6 +52,12 @@ class SwiftHost : public comma::EngineHost {
     }
   }
 
+  void screenFrame(uint32_t sink, int kind, double ts, int width, int height, const uint8_t *data, size_t size) override {
+    @autoreleasepool {
+      [host_ engineScreenFrame:sink kind:kind ts:ts width:width height:height bytes:data length:size];
+    }
+  }
+
   void log(int level, const std::string &message) override {
     os_log_type_t type = level >= 3 ? OS_LOG_TYPE_ERROR : level == 2 ? OS_LOG_TYPE_DEFAULT : level == 1 ? OS_LOG_TYPE_INFO : OS_LOG_TYPE_DEBUG;
     os_log_with_type(coreLog(), type, "%{public}s", message.c_str());

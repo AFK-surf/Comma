@@ -45,7 +45,6 @@ defmodule SalixWeb.ApplicationTest do
     previous_calendar = SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod)
     previous_channel = SystemsRuntime.get_env(:salix_meet, :meeting_channel_mod)
     previous_worker = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
-    previous_groups = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
     previous_runtime_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
 
     stop_calendar_autojoin()
@@ -61,19 +60,14 @@ defmodule SalixWeb.ApplicationTest do
       task_timeout_ms: 1_000
     )
 
-    # Keep the worker's immediate ticks side-effect-free. ConfigJson behavior
-    # for populated group entries is covered in the store config tests.
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
     SystemsRuntime.put_env(:salix_meet, :runtime_driver, TestRuntimeDriver)
 
     on_exit(fn ->
       SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin)
-      SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin_channels)
       stop_calendar_autojoin()
       restore_env(:salix_meet, :calendar_occurrences_mod, previous_calendar)
       restore_env(:salix_meet, :meeting_channel_mod, previous_channel)
       restore_env(:salix_meet, :calendar_autojoin, previous_worker)
-      restore_env(:salix_meet, :calendar_autojoin_channels, previous_groups)
       restore_env(:salix_meet, :runtime_driver, previous_runtime_driver)
     end)
 
@@ -138,7 +132,6 @@ defmodule SalixWeb.ApplicationTest do
 
   test "configure refuses to start autojoin without a ready meeting runtime driver" do
     previous_worker = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
-    previous_groups = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
     previous_runtime_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
     previous_runtime_url = SystemsRuntime.get_env(:salix_meet, :runtime_base_url)
 
@@ -153,14 +146,12 @@ defmodule SalixWeb.ApplicationTest do
       task_timeout_ms: 1_000
     )
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
     SystemsRuntime.delete_env(:salix_meet, :runtime_driver)
     SystemsRuntime.delete_env(:salix_meet, :runtime_base_url)
 
     on_exit(fn ->
       stop_calendar_autojoin()
       restore_env(:salix_meet, :calendar_autojoin, previous_worker)
-      restore_env(:salix_meet, :calendar_autojoin_channels, previous_groups)
       restore_env(:salix_meet, :runtime_driver, previous_runtime_driver)
       restore_env(:salix_meet, :runtime_base_url, previous_runtime_url)
     end)

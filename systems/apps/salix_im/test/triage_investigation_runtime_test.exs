@@ -453,15 +453,22 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
           candidate = Enum.find(candidates, &(&1.conversation_id == f.task))
           assert candidate
 
-          key = Keys.ctl_group_conversation_meta(f.group, f.task)
-          SalixStore.S3.Fake.blackhole({:fail, 503, :put, key})
-          on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
-          assert {:ok, :pending} = SalixIM.ConversationSource.recover(candidate)
+          Repo.query!("""
+          ALTER TABLE salix_conversations ADD CONSTRAINT reject_retired_triage_escalation
+          CHECK (NOT (group_id = '#{f.group}' AND conversation_id = '#{f.task}' AND status = 'escalated'))
+          """)
 
-          assert {:ok, %{"status" => "active"}} =
-                   Conversations.get_group_conversation_record(f.group, f.task)
+          try do
+            assert {:error, _} = SalixIM.ConversationSource.recover(candidate)
 
-          SalixStore.S3.Fake.clear_blackhole()
+            assert {:ok, %{"status" => "active"}} =
+                     Conversations.get_group_conversation_record(f.group, f.task)
+          after
+            Repo.query!(
+              "ALTER TABLE salix_conversations DROP CONSTRAINT reject_retired_triage_escalation"
+            )
+          end
+
           assert SalixIM.ConversationSource.recover(candidate) in [:ok, {:ok, :pending}]
       end
 
@@ -469,7 +476,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
                Conversations.get_group_conversation_record(f.group, f.task)
 
       assert task["source_refs"]["triage_investigation"] == f.grant
-      assert {:error, :not_found} = InternalSessionStore.read(f.worker, session)
+      assert {:error, :session_read_only} = InternalSessionStore.read(f.worker, session)
 
       assert {:ok, %{"read_only" => true}} =
                SalixAgent.RetiredSessions.get_summary(worker, session)
@@ -970,11 +977,27 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     settle_refute_receive({:slack_post, _}, 50)
   end
 
-  test "owner recovery replays an accepted decision even when no completion Message was appended" do
+  test "background completion settles its original unknown append when PostgreSQL recovers" do
     f = fixture!()
     source = read_source!(f)
-    segment = Keys.ctl_group_conversation_message_segment(f.group, f.task, "000000000000000001")
-    :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, segment})
+    {:ok, current} = Conversations.get_group_conversation_record(f.group, f.task)
+    tail = current["message_tail_seq"]
+
+    Repo.query!(
+      "ALTER TABLE salix_conversation_messages ADD CONSTRAINT triage_completion_reject CHECK (conversation_id <> '#{f.task}' OR seq <= #{tail}) NOT VALID"
+    )
+
+    on_exit(fn ->
+      Repo.query!(
+        "ALTER TABLE salix_conversation_messages DROP CONSTRAINT IF EXISTS triage_completion_reject"
+      )
+
+      Repo.query!(
+        "DROP TRIGGER IF EXISTS triage_completion_disconnect ON salix_conversation_messages"
+      )
+
+      Repo.query!("DROP FUNCTION IF EXISTS triage_completion_disconnect()")
+    end)
 
     assert {:error, _} =
              complete(f, source, %{
@@ -988,8 +1011,35 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     {:ok, before} = Conversations.list_group_conversation_messages(f.group, f.task, limit: 30)
     refute Enum.any?(before, &get_in(&1, ["metadata", "triage_investigation_result"]))
     SalixIM.TestSupport.Fleet.stop_all!()
-    :ok = SalixStore.S3.Fake.clear_blackhole()
-    {:ok, _} = SalixIM.ConversationPlacement.ensure_started(f.group, f.task)
+    SalixAgent.TestSupport.stop_all_agents()
+
+    Repo.query!(
+      "ALTER TABLE salix_conversation_messages DROP CONSTRAINT triage_completion_reject"
+    )
+
+    Repo.query!("""
+    CREATE FUNCTION triage_completion_disconnect() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.conversation_id = '#{f.task}' AND NEW.seq > #{tail} THEN
+        PERFORM pg_terminate_backend(pg_backend_pid());
+      END IF;
+      RETURN NEW;
+    END $$
+    """)
+
+    Repo.query!(
+      "CREATE TRIGGER triage_completion_disconnect BEFORE INSERT ON salix_conversation_messages FOR EACH ROW EXECUTE FUNCTION triage_completion_disconnect()"
+    )
+
+    {:ok, actor} =
+      SalixIM.ConversationPlacement.ensure_started(f.group, f.task, wake_on_recovery: false)
+
+    eventually(fn -> not is_nil(:sys.get_state(:sys.get_state(actor).store_pid).pending) end)
+    pending = :sys.get_state(:sys.get_state(actor).store_pid).pending
+    original = pending.message
+    Repo.query!("DROP TRIGGER triage_completion_disconnect ON salix_conversation_messages")
+    Repo.query!("DROP FUNCTION triage_completion_disconnect()")
+    eventually(fn -> is_nil(:sys.get_state(:sys.get_state(actor).store_pid).pending) end)
     assert_completed(f)
 
     {:ok, after_recovery} =
@@ -997,6 +1047,13 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
     assert 1 ==
              Enum.count(after_recovery, &get_in(&1, ["metadata", "triage_investigation_result"]))
+
+    completion =
+      Enum.find(after_recovery, &get_in(&1, ["metadata", "triage_investigation_result"]))
+
+    assert completion["message_id"] == original["message_id"]
+    assert completion["created_at"] == original["created_at"]
+    refute :sys.get_state(actor).commit_indeterminate?
 
     assert Agent.get(Ports, & &1.posts) == %{}
   end
@@ -1189,7 +1246,12 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     })
 
     {:ok, session} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(router["agent_id"], session)
+
+    {:ok, :committed} =
+      SalixAgent.InternalSessionFleet.stage_control(router["agent_id"], session, %{
+        source_message_id: "triage-fixture-session-create:" <> session,
+        payload: %{kind: "session_create", session_id: session}
+      })
 
     worker =
       SalixAgent.TestSupport.create_control_agent_in_group!(router["tenant_id"], group, %{

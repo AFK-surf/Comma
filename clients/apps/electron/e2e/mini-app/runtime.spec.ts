@@ -54,29 +54,46 @@ test.beforeAll(async () => {
       format: "cjs",
       external: ["electron"],
     });
+    await build({
+      entryPoints: {
+        "device-choosers": resolve("apps/electron/src/main/mini-app-devices.ts"),
+        clock: resolve("apps/electron/src/main/clock.ts"),
+      },
+      outdir: output,
+      outExtension: { ".js": ".cjs" },
+      bundle: true,
+      platform: "node",
+      format: "cjs",
+      external: ["electron"],
+    });
     // The scheme and handler as Main registers them (src/main/protocol.ts).
     await writeFile(
       join(output, "main.cjs"),
       `
-      const {app,BrowserWindow,protocol,session}=require('electron');
+      const {app,BrowserWindow,protocol,session,webContents}=require('electron');
+      const {installMiniAppDeviceChoosers}=require('./device-choosers.cjs');
+      const {realMainClock}=require('./clock.cjs');
       const {installWindowSecurity,installSessionSecurity,installDynamicUiNetworkSecurity}=require('./security.cjs');
       const runtime=require('./runtime.cjs');
       const fs=require('node:fs');
       process.on('exit',()=>fs.writeSync(1,${JSON.stringify(`${MAIN_SHUTDOWN_COMPLETE_LINE}\n`)}));
       const report=(line)=>fs.appendFileSync(process.env.COMMA_APP_FIXTURE_LOG,line+'\\n');
       process.on('unhandledRejection',(error)=>report('startup failed: '+(error&&error.stack||error)));
-      protocol.registerSchemesAsPrivileged([{scheme:'comma-app',privileges:{standard:true,secure:true}}]);
+      protocol.registerSchemesAsPrivileged([{scheme:'comma-app',privileges:{standard:true,secure:true}},{scheme:'assets',privileges:{standard:true,secure:true}}]);
       app.whenReady().then(async()=>{
         report('ready');
         protocol.handle('comma-app',request=>request.url!==runtime.miniAppRuntimeUrl
           ?new Response('Not found',{status:404})
           :new Response(runtime.miniAppRuntimeDocument(),{headers:{'content-type':'text/html; charset=utf-8','content-security-policy':runtime.miniAppRuntimeCsp,'cache-control':'no-store'}}));
-        installSessionSecurity(session.defaultSession);installDynamicUiNetworkSecurity(session.defaultSession);
+        protocol.handle('assets',()=>new Response('<html><body></body></html>',{headers:{'content-type':'text/html'}}));
+        installSessionSecurity(session.defaultSession,{appOrigins:['assets://.']});installDynamicUiNetworkSecurity(session.defaultSession);
+        global.hardwareSelections=[];
+        installMiniAppDeviceChoosers({app,session:session.defaultSession,appOrigins:['assets://.'],ownerOfFrame:frame=>webContents.fromFrame(frame),clock:realMainClock,choose:async(kind,devices)=>{global.hardwareSelections.push({kind,count:devices.length});return undefined;}});
         const window=new BrowserWindow({show:true,webPreferences:{backgroundThrottling:false,sandbox:true,contextIsolation:true,nodeIntegration:false,preload:${JSON.stringify(join(output, "preload.cjs"))}}});
         report('window created');
         installWindowSecurity({webContents:window.webContents});
         if(process.platform==='linux')window.showInactive();
-        await window.loadURL('data:text/html,<html><body></body></html>');
+        await window.loadURL('assets://./index.html');
       });`
     );
   });
@@ -122,86 +139,90 @@ async function launch() {
   });
   // The window is first reported on its initial blank document; the fixture's
   // page is a navigation away, and evaluating before it lands loses the context.
-  await page.waitForURL((url) => url.protocol === "data:");
+  await page.waitForURL((url) => url.protocol === "assets:");
 }
 
 /** Opens an app frame as the host does and runs `script` as the app's module. */
-async function mount(script: string) {
-  await page.evaluate((source) => {
-    const host = window as unknown as {
-      appMessages: Record<string, unknown>[];
-      appDraft: Promise<Record<string, unknown>>;
-    };
-    host.appMessages = [];
-    let drafted!: (message: Record<string, unknown>) => void;
-    host.appDraft = new Promise((settle) => {
-      drafted = settle;
-    });
-    let opened = false;
-    window.addEventListener("message", (event) => {
-      const frame = document.querySelector("iframe")!;
-      if (
-        opened ||
-        event.source !== frame.contentWindow ||
-        event.data?.type !== "comma-app:ready"
-      )
-        return;
-      opened = true;
-      const channel = new MessageChannel();
-      channel.port1.addEventListener("message", (incoming) => {
-        host.appMessages.push(incoming.data);
-        if (incoming.data.op === "chat.draft") drafted(incoming.data);
-        if (incoming.data.type === "call")
-          channel.port1.postMessage({
-            type: "result",
-            id: incoming.data.id,
-            ok: true,
-            value: null,
-          });
+async function mount(script: string, permissionsPolicy = "") {
+  await page.evaluate(
+    ({ source, allow }) => {
+      const host = window as unknown as {
+        appMessages: Record<string, unknown>[];
+        appDraft: Promise<Record<string, unknown>>;
+      };
+      host.appMessages = [];
+      let drafted!: (message: Record<string, unknown>) => void;
+      host.appDraft = new Promise((settle) => {
+        drafted = settle;
       });
-      channel.port1.start();
-      frame.contentWindow!.postMessage(
-        {
-          type: "comma-app:init",
-          init: {
-            app: { id: "app-1", name: "Test app", version: 1 },
-            viewer: null,
-            theme: "light",
-            tokens: {},
-            locale: "en-US",
-            timeZone: "UTC",
-            capabilities: ["chat.draft"],
-            grants: ["chat.draft"],
-            storage: [],
-          },
-        },
-        "*",
-        [channel.port2]
-      );
-      const encoder = new TextEncoder();
-      channel.port1.postMessage({
-        type: "files",
-        files: [
+      let opened = false;
+      window.addEventListener("message", (event) => {
+        const frame = document.querySelector("iframe")!;
+        if (
+          opened ||
+          event.source !== frame.contentWindow ||
+          event.data?.type !== "comma-app:ready"
+        )
+          return;
+        opened = true;
+        const channel = new MessageChannel();
+        channel.port1.addEventListener("message", (incoming) => {
+          host.appMessages.push(incoming.data);
+          if (incoming.data.op === "chat.draft") drafted(incoming.data);
+          if (incoming.data.type === "call")
+            channel.port1.postMessage({
+              type: "result",
+              id: incoming.data.id,
+              ok: true,
+              value: null,
+            });
+        });
+        channel.port1.start();
+        frame.contentWindow!.postMessage(
           {
-            path: "index.html",
-            mime: "text/html",
-            data: encoder.encode(
-              '<p id="out">Loading</p><script type="module" src="app.js"></script>'
-            ).buffer,
+            type: "comma-app:init",
+            init: {
+              app: { id: "app-1", name: "Test app", version: 1 },
+              viewer: null,
+              theme: "light",
+              tokens: {},
+              locale: "en-US",
+              timeZone: "UTC",
+              capabilities: ["chat.draft"],
+              grants: ["chat.draft"],
+              storage: [],
+            },
           },
-          {
-            path: "app.js",
-            mime: "text/javascript",
-            data: encoder.encode(source).buffer,
-          },
-        ],
+          "*",
+          [channel.port2]
+        );
+        const encoder = new TextEncoder();
+        channel.port1.postMessage({
+          type: "files",
+          files: [
+            {
+              path: "index.html",
+              mime: "text/html",
+              data: encoder.encode(
+                '<p id="out">Loading</p><script type="module" src="app.js"></script>'
+              ).buffer,
+            },
+            {
+              path: "app.js",
+              mime: "text/javascript",
+              data: encoder.encode(source).buffer,
+            },
+          ],
+        });
       });
-    });
-    const frame = document.createElement("iframe");
-    frame.sandbox.add("allow-scripts", "allow-forms");
-    frame.src = "comma-app://runtime/";
-    document.body.append(frame);
-  }, script);
+      const frame = document.createElement("iframe");
+      frame.sandbox.add("allow-scripts", "allow-forms");
+      frame.allow = allow;
+      frame.src = "comma-app://runtime/";
+      document.body.append(frame);
+    },
+    { source: script, allow: permissionsPolicy }
+  );
 }
 
 test("an app frame has an opaque origin, no native bridge and no network", async () => {
@@ -267,6 +288,34 @@ test("an app frame cannot navigate itself or the window", async () => {
   }, target);
   expect(topNavigation).toBe("blocked");
   expect(page.frames()[1]!.url()).toBe("comma-app://runtime/");
-  expect(page.url()).toMatch(/^data:/);
+  expect(page.url()).toBe("assets://./index.html");
   expect(requests).toEqual([]);
+});
+
+test("an opaque mini-app reaches the USB chooser and cancellation grants no device", async () => {
+  await launch();
+  await mount(
+    `
+    const count = (await navigator.usb.getDevices()).length;
+    document.getElementById("out").textContent = "USB ready";
+    const button = document.createElement("button"); button.textContent = "Connect USB"; document.body.append(button);
+    button.onclick = async () => {
+      try { await navigator.usb.requestDevice({filters:[]}); document.getElementById("out").textContent = "allowed"; }
+      catch(error) { document.getElementById("out").textContent = error.name; }
+    };
+  `,
+    "usb *"
+  );
+  const frame = page.frameLocator("iframe");
+  await expect(frame.locator("#out")).toHaveText("USB ready");
+  await frame.getByRole("button", { name: "Connect USB" }).click();
+  await expect(frame.locator("#out")).toHaveText("NotFoundError");
+  expect(
+    await app.evaluate(
+      () =>
+        (globalThis as unknown as { hardwareSelections: { kind: string }[] })
+          .hardwareSelections
+    )
+  ).toMatchObject([{ kind: "usb" }]);
+  expect(await page.frames()[1]!.evaluate(() => globalThis.origin)).toBe("null");
 });

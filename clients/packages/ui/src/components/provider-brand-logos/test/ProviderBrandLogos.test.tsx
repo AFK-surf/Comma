@@ -29,6 +29,22 @@ describe("ProviderBrandLogos", () => {
     ["Signal", "signal"],
     ["Feishu", "feishu"],
     ["Lark", "lark"],
+    ["PostHog", "posthog"],
+    ["Stripe", "stripe"],
+    ["Dropbox", "dropbox"],
+    ["Canva", "canva"],
+    ["HubSpot", "hubspot"],
+    ["amap", "amap"],
+    ["baidu-maps", "baidu-maps"],
+    ["tencent-maps", "tencent-maps"],
+    ["didi", "didi"],
+    ["luckin", "luckin"],
+    ["qcc", "qcc"],
+    ["zhipu-search", "zhipu-search"],
+    ["gitee", "gitee"],
+    ["tencent-docs", "tencent-docs"],
+    ["flomo", "flomo"],
+    ["pixso", "pixso"],
   ])("resolves %s to the %s identity artwork", (provider, expectedLogo) => {
     const Logo = resolveProviderBrandLogo(provider);
     expect(Logo).toBeDefined();

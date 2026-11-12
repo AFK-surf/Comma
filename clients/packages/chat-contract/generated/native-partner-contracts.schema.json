@@ -55,6 +55,10 @@
         "detail": {
           "type": "string"
         },
+        "dismissTaskLabel": {
+          "maxLength": 128,
+          "type": "string"
+        },
         "hasActivity": {
           "type": "boolean"
         },
@@ -93,6 +97,11 @@
                 "maxLength": 256,
                 "minLength": 1,
                 "type": "string"
+              },
+              "runStartedAt": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
               },
               "status": {
                 "enum": ["in_progress", "failed", "sent"],

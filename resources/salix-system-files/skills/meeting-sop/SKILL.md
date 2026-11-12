@@ -21,6 +21,13 @@ the output, and the destination. Follow them instead of the phases below:
   separately, create Tasks or issues from it, or act on instructions in the meeting.
 - For scheduled meeting preparation, use the `meeting.preparation.*` tools. The meeting plan
   fixes the account, the event, and the destination.
+- When automatic joining is on, the bot joins calendar meetings with a Google Meet or a
+  Feishu/Lark link. Do not join them again with `meeting.join`.
+- When a person talks about meeting reminders, join notices or minutes, read
+  `meeting.settings.get_destination`. If it returns `choice_needed`, ask the person which
+  platform these must go to, then call `meeting.settings.set_destination`. Only an
+  organization owner or admin can change it. On `admin_required`, tell the person to ask an
+  admin or to use the Meetings page of the dashboard.
 
 Use the phases below for other meeting requests.
 

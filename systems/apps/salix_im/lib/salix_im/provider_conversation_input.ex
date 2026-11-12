@@ -116,7 +116,7 @@ defmodule SalixIM.ProviderConversationInput do
       endpoint =
         metadata
         |> Map.take(
-          ~w(workspace_id channel_id thread_ts chat_id chat_type message_thread_id root_message_id trigger_message_id wechat_id tenant_key)
+          ~w(workspace_id channel_id thread_ts chat_id chat_type message_thread_id root_message_id trigger_message_id wechat_id tenant_key receive_open_id)
         )
         |> Enum.reject(fn {_key, value} -> trim(value) == "" end)
         |> Map.new()

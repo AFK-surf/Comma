@@ -1,6 +1,6 @@
 defmodule Comma.Stations.Station do
   @moduledoc """
-  A still.fail station enrolled in a Comma Workspace (docs/architecture/DOMAIN_CONCEPTS.md,
+  A Comma station enrolled in a Comma Workspace (docs/architecture/DOMAIN_CONCEPTS.md,
   "Station"). The id is the station's Ed25519 public key in hex; the station
   proves it on every signed request. `removed_at` set means removed: signed
   requests and the presence socket answer `station_removed`. `enrolled_by` nil

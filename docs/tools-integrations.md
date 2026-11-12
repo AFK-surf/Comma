@@ -26,24 +26,28 @@ Owners confirm old accounts for personal use. Comma checks group, toolkit, activ
 The receipt pins the account. Newer accounts cannot replace it. Unavailable accounts fail collection.
 Confirmation queues source sync and one Routine run, even for the same source ID.
 Reconnect keeps the old account and receipt until the new grant completes. Then it retires only that account.
-Drive is optional. Gmail and Calendar are required. Settings links to Plugins. Display status grants no access.
+Drive is optional. Gmail and Calendar are required. Settings links to Plugins.
 
 GitHub, Linear, Notion, and Slack use Salix OAuth for APIs and recommendations. Notion alone needs separate MCP OAuth.
 Linear requests `read` and `write`.
+PostHog: MCP OAuth only; switches name its `features`.
+Stripe, Tencent Docs, flomo, Pixso: MCP OAuth. Other `ChinaServices`: user key.
+Dropbox, Canva, HubSpot: Composio; not personal sources.
 Native reauthorization gives the OAuth callback the attempt's 2-minute deadline.
 The callback checks generation before binding writes. Cancellation keeps old access if it wins. Otherwise it conflicts.
 Comma connects `setup.required_connections` in order and installs after all complete. MCP callbacks match the plugin and group.
 App credentials use tenant overrides or defaults. Grants remain group-scoped.
-Native sources need no Composio setup. Slack discovery and previews use only the managed binding.
+Slack discovery and previews use only the managed binding.
 Slack, GitHub, Linear, and Notion watches read `mcp.<provider>.*` on it.
 Other saved Composio sources or consents require Composio. Discovery errors block sync.
 Reauthorize old native grants. Removal disconnects declared native credentials. Clean old Composio accounts separately.
 [X](architecture/DOMAIN_CONCEPTS.md#x-plugin-credentials).
 
 `compute.exec`, `process.start`, connector `env.exec` and `web.http_request` accept `credential_env` references.
-After Workload authorization, Salix resolves them into that subprocess's environment.
-VMM Host/Guest Exec transports values without storing them in container configuration. Later commands need their own references.
-Agents must never put tokens in commands, files, or tool arguments.
+Salix fills the subprocess environment after authorization.
+VMM Host/Guest Exec sends values without storing them in container config.
+`env.exec` redacts the values from its result. A sandbox uses `comma exec --credential`.
+Agents never put tokens in commands, files, or arguments.
 
 ## Capability request recovery
 
@@ -60,14 +64,14 @@ After 30 seconds of unknown results, recovery records that uncertainty and never
 
 ### Request cards
 
-A request an Agent raises in a Comma Conversation records it (`surface_kind` `conversation`; `surface_ref` names the Conversation and the person's message the turn served).
-The web, desktop, Android, and iOS apps show them as cards under the Agent's reply to that message.
-A pending request with no reply yet goes on the newest turn. A finished request whose turn is not loaded is not shown.
-A per-Conversation index makes a read list only that Conversation's requests.
+Agent requests record their Comma Conversation (`surface_kind` `conversation`; `surface_ref` names that Conversation and the person's message served).
+Web, desktop, Android, and iOS show cards under the Agent's reply to that message.
+Pending requests without replies go on the newest turn. Finished requests appear only for loaded turns.
+A per-Conversation index limits reads to that Conversation's requests.
 `GET /v1/comma/groups/:g/conversations/:c/requests` lists every pending one, then the newest finished ones, at most 100. `/events` streams a snapshot and then each change. `POST …/:id/decline` declines one.
-A read fails when the store cannot be read.
-A member sees them only when they may read the Conversation. The projection omits the tenant, Session, Agent, and tool call.
-Only connect-account requests (`oauth_authorization`) have a card. The verified OAuth callback alone ends one as connected: the flow that started it, or another flow that connected the same provider and alias.
+Unreadable storage fails the read.
+Only members who may read the Conversation see its cards. The projection omits the tenant, Session, Agent, and tool call.
+For `oauth_authorization`, only the verified OAuth callback ends one as connected: the flow that started it, or another flow that connected the same provider and alias. Any install of its plugin ends a `plugin_install`.
 A decline stores the ending before the Agent is told; delivery replays it. Clients show a pending request past its deadline as expired.
 
 ### Runtime failure notification
@@ -132,25 +136,26 @@ See [Outbound SSH Session](architecture/DOMAIN_CONCEPTS.md#outbound-ssh-session)
 
 ## Mini-app build tools and backends
 
-The Router tool `internal.apps.create {name, description?, repo?}` is Router only. Guests never get it. It returns `{app_id, repo, url}`. A retry makes a second app and repository.
-`url` is `<web origin>/#/apps/<workspace_id>/<app_id>/run`. It runs the live Version, or the latest ready preview before Publish, for Workspace members. The Router gives it to a user in a chat that does not show app cards, such as Signal or Telegram.
-In the Workspace's Comma Telegram chat, each app URL in a Router message gets a button (at most 3) that opens the app inside Telegram, in the [embedded panel](clients.md#embedded-task-panel).
+`internal.apps.create {name, description?, repo?}` is Router only. Guests never get it. It returns `{app_id, repo, url}`. A retry makes a second app and repository.
+`url` is `<web origin>/#/apps/<workspace_id>/<app_id>/run`. Workspace members run the live Version, or the latest ready preview before Publish. The Router shares it in chats without app cards, such as Signal or Telegram.
+In the Workspace's Comma Telegram chat, Router app URLs get buttons (at most 3 per Message) that open the [embedded panel](clients.md#embedded-task-panel).
 The Router-only reads `internal.apps.list {}` (the 50 newest and `has_more`) and `internal.apps.get {app_id}` include shared and installed apps.
 They return app URLs, Versions, visibility, status, grants, capabilities and secret names. `get` adds up to 50 owner Versions.
 They omit a member's own `private` app, which only its creator sees.
 `internal.apps.publish {app_id, version, visibility?}` uses the user API's Task review and GitHub merge path. It derives the Task from the stored Version.
 The Router also has `update`, `rollback`, `disable`, `enable`, `delete`, `link.get/create/reset/revoke`, `grants.set`, `secrets.set/delete`, `install`, `uninstall`, `remix` and `report` under `internal.apps`.
-The product resolves the current Workspace Router and active owner permissions. Caller parameters cannot select a User or Workspace.
+The product resolves the current Workspace Router and active owner permissions. Callers cannot select a User or Workspace.
 Private-app access, install ownership, capability validation and platform takedown rules remain in force.
 The station builds previews. The Router can publish them after Task review is ready.
 `internal.task.create` takes `mini_app {app_id}` only with `runs_on {kind: sandbox}` and the app's repository. Placement refusals: `mini_app_requires_sandbox`, `mini_app_repo_mismatch`, `mini_app_not_found`, `mini_apps_unavailable`.
 The skill `mini-app-builder` tells the Router when to make an app.
 
-The station offers the tools `app_deploy {notes?}` and `app_logs {version?}` only to sessions of a Task with `mini_app` ([tools](../systems/station/src/tools/apps.ts)).
+The station offers `app_deploy {notes?}` and `app_logs {version?}` only to Task sessions with `mini_app` ([tools](../systems/station/src/tools/apps.ts)).
 `app_deploy` commits and pushes the worktree. Then it packs `dist/` as a deterministic ustar, `dist-worker/index.js` if the manifest has a backend, `comma-app.json`, and an archive of HEAD.
 It sends `task.app_deploy`. Salix reads the files through `task.posted_file`, as for `task.post`.
 Salix accepts the request only from a Session of the Task's sandbox device on its current Workload generation, for the Task's own app. It checks the generation again before the deploy.
 The commit must be on the pushed session branch. A repeated key makes one Version and one card Message.
+For a manifest without `cover`, the tool result has a `note` with the cover steps.
 `app_logs` returns the app's backend errors of the last 15 minutes, at most 200 lines.
 
 Backends run in Cloudflare Workers for Platforms ([dispatch Worker](../systems/cloudflare/miniapp-dispatch/README.md)). The Cloudflare API token stays in Salix server config (`comma.mini_apps`).
@@ -168,16 +173,17 @@ CI deploys both Workers from `main` (staging) and `prod` (stable).
 
 ## Verification
 
-Retain authorization, OAuth ownership, interruption, provider-error, rendering, and delivery tests. Source-string inventories cannot prove these boundaries.
+Retain authorization, OAuth ownership, interruption, provider-error, rendering, and delivery tests. Source inventories cannot prove them.
 
 ## Source-bound replies and explicit completion
 
 Send standalone replies with `call(tool=im_api.internal.send_message)`. Omit `reply_mode` and `final_outcome`.
 `TerminalReply` ignores them on standalone calls from stale prompts.
-A standalone send delivers without ending the activation. This includes Worker reports to a Task and Router deliveries after a Worker result.
+A standalone send, including a Worker report or a Router delivery, does not end the activation.
 After delivery, the agent continues unfinished work or calls `end_turn` without another reply. It must not repeat a successful send.
 
-The Router can send a current-source reply in the `end_turn` call that declares `outcome: "done"` or `outcome: "blocked"`.
+The Router can send a current-source reply, and a Worker a report to its own Task, in the `end_turn` call that declares `outcome: "done"` or `outcome: "blocked"`.
+All unacknowledged input of a Task report must come from that Task.
 `reply` contains a disclosed IM or Comma `tool` and its `params`, and can include an `ifc` source declaration.
 Before dispatch, the runtime checks source, destination, tool permission, and content label.
 It settles only after send success while the Session still matches the accepted source.
@@ -194,30 +200,30 @@ This guarantee does not cover audience filters in ordinary `call` streaming.
 Provider access controls and IFC checks still authorize delivery. No message content scanner decides completion.
 
 Dispatched terminal bindings keep their settlement and recovery semantics.
-Runtime failure notices, interactive Telegram cards, and optional channel welcomes keep their own lifecycle contracts.
+Runtime failure notices, interactive Telegram cards and optional channel welcomes keep their own lifecycles.
 The kernel still fences their ACK and settlement against later input. Reply and delivery journals are neither rewritten nor deleted.
-A channel welcome binds outcome `done`. An interactive Telegram card binds outcome `blocked`. The `end_turn` outcome does not change these values.
+A channel welcome binds outcome `done`, an interactive Telegram card `blocked`; the `end_turn` outcome does not change them.
 
 A plain Slack reply target is advisory. An explicit `end_turn` without a reply completes the turn and retires the target.
 Only a Task card obligation fences the ACK.
 A successful `im_api.internal.task.create` adds this obligation when a Slack reply target is pending, with four exceptions.
 The runtime already published the card, or the Task is a Triage delegation.
-The Task source is a Slack bot or app, or no person, such as a Worker report or a schedule.
-For the last two, `TaskCard` reports `task_card.status: not_applicable`, so the Task owes no card.
-A Slack reply target that a later person adds does not become a card obligation, and a generic `wait_for` can yield.
-A retryable model failure keeps the source and its target for the retry, unless a failure notice already reached the source.
-A final model failure or an exhausted guard without a destination settles locally when no send is pending.
+The Task source is a Slack bot or app, or no person: a Worker report or schedule, also after a person was answered, or `own_work`.
+For the last two, `TaskCard` reports `task_card.status: not_applicable` and owes no card.
+A later person's Slack reply target does not become a card obligation, and a generic `wait_for` can yield.
+A retryable model failure keeps the source and target for the retry, unless a failure notice already reached the source.
+A final model failure or exhausted guard without a destination settles locally if no send is pending.
 A Worker whose input came from a Task then sends that Task one failure report.
 
 Delivery is not a cross-provider transaction or an exactly-once guarantee.
-An external success followed by a crash before local recording remains ambiguous. The runtime does not retry blindly.
+An external success followed by a crash before local recording stays ambiguous; the runtime never retries blindly.
 
 ### Private diagnostics
 
 A tool failure without a public summary is a private diagnostic. It opens visible-reply repair.
 A model call of `get_runtime_message`, the runtime's own message name, runs no tool. Its guidance opens no repair and uses no attempt. Its round still does not settle.
 The model context keeps the diagnostic as committed, during and after repair. The request projection does not change an earlier message to enforce information flow.
-Containment depends on the model: the request shows the diagnostic behind a `[private diagnostic]` header, and a prompt rule tells the model not to quote it.
+Containment depends on the model: the request shows the diagnostic under a `[private diagnostic]` header, and a prompt rule forbids quoting it.
 A user-reportable failure shows only its public summary in every request.
 
 For a lasting fact (an ended call, an unknown send outcome, a rate limit), return a stable `error_class` or `code`.
@@ -225,22 +231,20 @@ For a lasting fact (an ended call, an unknown send outcome, a rate limit), retur
 
 #### Slack reply routing and Task sources
 
-Agent-facing Slack text sends use two separate operations:
+`slack.leave_thread` blocks Router continuation and message sends for 30 days, including `end_turn.reply`.
+Only a human @-mention restores participation before delivery. App replies, history, and outbound sends cannot cancel the leave.
 
-- `im_api.slack.reply_message` requires `channel`, `text`, and `thread_ts`.
-  Use the original source root (or the source message timestamp for a new incoming channel message), never the latest unrelated request's thread.
-- `im_api.slack.post_channel_message` starts an explicitly requested new topic and rejects `thread_ts`.
-  Never use it as a fallback for an unresolved reply destination.
+- `im_api.slack.reply_message` requires `channel`, `text`, and `thread_ts`. Use the source root (the message timestamp for a new channel message), never an unrelated thread.
+- `im_api.slack.post_channel_message` starts an explicitly requested topic and rejects `thread_ts`. It cannot replace an unresolved reply destination.
 
-`slack.post_message` remains for product-owned callers but is not disclosed as an agent operation.
-Both agent operations keep the existing renderer, provider access controls and IFC checks.
+`slack.post_message` stays product-only. Agent sends keep the renderer, provider access controls, and IFC checks.
 
-Ordinary Task creation captures the selected trusted Slack source in the runtime-owned `source_refs.task_reply_source` field, independent of IFC mode.
-Ordinary conversation updates cannot replace or remove it.
-Every delivered Task message carries those coordinates in its model-visible source context.
-The field is routing data, not an execution grant. Workers still report through the Task. Scheduled Task delivery restrictions are unchanged.
-Tasks without the field do not invent a source from the current turn.
+Task creation stores the selected trusted Slack source in runtime-owned `source_refs.task_reply_source`, independent of IFC mode.
+As for cards, an answered person followed by a non-person source, or an `own_work` Task, selects none.
+Conversation updates cannot replace or remove it. Every delivered Task message shows its coordinates to the model.
+It grants no execution authority. Workers report through Tasks. Scheduled delivery restrictions stay unchanged.
+Tasks without it cannot infer a source from the current turn.
 
-Existing Task execution grants keep their exact destination and installation.
-The runtime reads historical Slack operation names in grants as the matching reply or channel operation. New grants use the current catalog.
-Product-owned triage Tasks keep their read-only investigation sources, retry identity, and delivery policy.
+Existing Task execution grants retain their exact destination and installation.
+The runtime maps historical Slack operation names in grants to reply or channel operations. New grants use current names.
+Product-owned triage Tasks retain read-only investigation sources, retry identity, and delivery policy.

@@ -80,6 +80,7 @@ defmodule SalixAgent.AgentModelChoiceTest do
       })
 
     global_agent = agent
+    {:ok, _} = S3.put(Keys.ctl_agent(global_agent["agent_id"]), Jason.encode!(global_agent))
 
     catalog_agent =
       SalixAgent.TestSupport.create_control_agent_in_group!(tenant, agent["group_id"], %{
@@ -154,7 +155,7 @@ defmodule SalixAgent.AgentModelChoiceTest do
     assert stored(agent) == Map.put(before, "model", choice)
     # The choice still resolves; no Profile serves it, so dispatch stops the
     # input as `model_unavailable`.
-    assert {:ok, llm} = LlmResolver.resolve_runtime(agent["agent_id"])
+    assert {:ok, llm} = LlmResolver.resolve_runtime(agent["agent_id"], stored(agent))
 
     assert {:error, %{"reason" => "model_unavailable"}} =
              AccountPool.dispatch(llm, fn _ -> flunk("no Profile serves the model") end)
@@ -229,8 +230,7 @@ defmodule SalixAgent.AgentModelChoiceTest do
 
   defp pin_template!(agent, template_id) do
     key = Keys.ctl_agent(agent["agent_id"])
-    {:ok, %{body: body}} = S3.get(key)
-    record = body |> Jason.decode!() |> Map.put("template_id", template_id)
+    record = Map.put(agent, "template_id", template_id)
     {:ok, _} = S3.put(key, Jason.encode!(record))
   end
 

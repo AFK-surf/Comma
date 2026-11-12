@@ -20,7 +20,7 @@ defmodule SalixEnv.FrameStream do
         case SystemsRuntime.Server.call(pid, :next, :infinity) do
           {:chunk, chunk} -> {[chunk], pid}
           :eof -> {:halt, pid}
-          {:error, reason} -> raise "connector stream failed: #{inspect(reason)}"
+          {:error, reason} -> raise "station stream failed: #{inspect(reason)}"
         end
       end,
       fn pid -> SystemsRuntime.Server.cast(pid, :close) end

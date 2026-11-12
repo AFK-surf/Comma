@@ -20,7 +20,7 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
 
   @providers ~w(codex claude)
   @account_fields ~w(id version credential_kind provider name email status disabled quota
-                     reset_attempt connection compatible_runtimes)
+                     use_credits reset_attempt connection compatible_runtimes)
 
   # ---- Organization accounts ----
 
@@ -68,7 +68,7 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
   connection, or replace credentials. `version` must match the stored account.
   """
   def update_account(org, user, id, params) do
-    attrs = Map.take(params, ~w(version disabled name connection credentials))
+    attrs = Map.take(params, ~w(version disabled name connection credentials use_credits))
     write(org, user, params, &Subscriptions.update(&1, id, attrs))
   end
 

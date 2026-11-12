@@ -201,10 +201,12 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
                conn |> get(agent_path(org, project, router)) |> json_response(200) |> data()
 
       assert %{"router_session_id" => new, "notice" => "Started a new canonical Router session."} =
-               conn
-               |> post(agent_path(org, project, router, "/router-session"), %{
-                 "expected_session_id" => old
-               })
+               SystemsRuntime.Task.async(fn ->
+                 post(conn, agent_path(org, project, router, "/router-session"), %{
+                   "expected_session_id" => old
+                 })
+               end)
+               |> settled_await()
                |> json_response(200)
                |> data()
 
@@ -222,10 +224,12 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmAgentsTest do
       assert audit.redacted_diff["router_session_id"] == %{"from" => old, "to" => new}
 
       assert %{"error" => %{"code" => "stale_router_session", "details" => details}} =
-               conn
-               |> post(agent_path(org, project, router, "/router-session"), %{
-                 "expected_session_id" => old
-               })
+               SystemsRuntime.Task.async(fn ->
+                 post(conn, agent_path(org, project, router, "/router-session"), %{
+                   "expected_session_id" => old
+                 })
+               end)
+               |> settled_await()
                |> json_response(409)
 
       assert details["router_session_id"] == new

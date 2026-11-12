@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+const { readFileSync, readdirSync, writeFileSync } = require("node:fs");
+const { basename, join } = require("node:path");
+
+const types = {
+  "icon_16x16.png": "icp4",
+  "icon_16x16@2x.png": "ic11",
+  "icon_32x32.png": "icp5",
+  "icon_32x32@2x.png": "ic12",
+  "icon_128x128.png": "ic07",
+  "icon_128x128@2x.png": "ic13",
+  "icon_256x256.png": "ic08",
+  "icon_256x256@2x.png": "ic14",
+  "icon_512x512.png": "ic09",
+  "icon_512x512@2x.png": "ic10",
+};
+
+const args = process.argv.slice(2);
+const convert = args.indexOf("-c");
+if (convert < 0 || args[convert + 1] !== "icns") {
+  console.error("usage: iconutil -c icns ICONSET [-o OUTPUT]");
+  process.exit(1);
+}
+const outputFlag = args.indexOf("-o");
+const iconset = args.find(
+  (arg, index) =>
+    !arg.startsWith("-") && index !== convert + 1 && index !== outputFlag + 1
+);
+const output =
+  outputFlag >= 0 ? args[outputFlag + 1] : iconset.replace(/\.iconset\/?$/, ".icns");
+
+const chunks = readdirSync(iconset)
+  .filter((name) => types[name])
+  .sort()
+  .map((name) => {
+    const data = readFileSync(join(iconset, name));
+    const header = Buffer.alloc(8);
+    header.write(types[name], 0, "latin1");
+    header.writeUInt32BE(data.length + 8, 4);
+    return Buffer.concat([header, data]);
+  });
+if (chunks.length === 0) {
+  console.error(`iconutil: no icon_*.png files in ${basename(iconset)}`);
+  process.exit(1);
+}
+const body = Buffer.concat(chunks);
+const header = Buffer.alloc(8);
+header.write("icns", 0, "latin1");
+header.writeUInt32BE(body.length + 8, 4);
+writeFileSync(output, Buffer.concat([header, body]));

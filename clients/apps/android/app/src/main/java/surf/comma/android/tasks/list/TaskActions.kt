@@ -189,6 +189,8 @@ internal class ArchivedTasksSheet(
                 val swipe = view as SwipeRow
                 val row = swipe.row as TaskRowView
                 row.bind(task, pinned = false)
+                // On the sheet's surface, as the filter sheet's rows are, rather than the page's.
+                row.setBackgroundColor(activity.getColor(R.color.token_card_primary))
                 row.setOnClickListener { dismiss(); store.openTask(task.id) }
                 row.setOnLongClickListener {
                     actions.menu(task, archiveChanged = ::remove).show(it, haptic = true); true

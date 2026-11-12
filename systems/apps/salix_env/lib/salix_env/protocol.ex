@@ -62,6 +62,8 @@ defmodule SalixEnv.Protocol do
     "lan_discover" => 15_000,
     # The gateway collects UDP replies for at most 10 seconds.
     "udp_request" => 15_000,
+    # A LAN script runs for its timeout_ms (at most 30 seconds).
+    "lan_script" => 15_000,
     # Default for deployments without calendar autojoin (manual joins run in
     # no bounded task). Calendar deployments override this through
     # :protocol_timeouts with a bound derived from their configured
@@ -82,6 +84,8 @@ defmodule SalixEnv.Protocol do
     "computer_use" => 600_000,
     # Connector profile switching and cleanup have a combined 200-second budget.
     "android" => 220_000,
+    # A simulator's screenshot (at most 20 s) or a swipe (at most 5 s), and the turn before it.
+    "screen" => 60_000,
     "request_permission" => 30_000
   }
 
@@ -132,6 +136,9 @@ defmodule SalixEnv.Protocol do
 
       method in ["http_request", "lan_http_request"] and params["timeout_seconds"] ->
         timeout_from_param(params["timeout_seconds"], base)
+
+      method == "lan_script" and is_integer(params["timeout_ms"]) and params["timeout_ms"] > 0 ->
+        max(base, params["timeout_ms"] + 5_000)
 
       true ->
         process_tail_timeout(method, params, base)
@@ -244,6 +251,60 @@ defmodule SalixEnv.Protocol do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @stream_frame 2
+
+  @doc """
+  A stream frame whose chunk goes as its bytes in one binary WebSocket frame,
+  never as base64: `<<2, json_length::32, json, bytes>>`, the JSON being the
+  envelope without `stream.data`. Only for a peer that takes them (the station
+  dials with `x-salix-connector-stream-frames: binary`; Salix says
+  `binary_streams` on `connected`).
+  """
+  @spec encode_stream_binary(map(), binary()) :: binary()
+  def encode_stream_binary(message, bytes) do
+    head = Jason.encode!(message)
+    <<@stream_frame, byte_size(head)::32, head::binary, bytes::binary>>
+  end
+
+  @doc """
+  A binary stream frame as its envelope, the chunk's bytes under
+  `stream.bytes`. `:not_stream` for any other binary frame.
+  """
+  @spec decode_stream_binary(binary()) :: {:ok, map()} | {:error, term()} | :not_stream
+  def decode_stream_binary(<<@stream_frame, length::32, rest::binary>>)
+      when byte_size(rest) >= length do
+    <<head::binary-size(^length), bytes::binary>> = rest
+
+    case decode(head) do
+      {:ok, %{"stream" => %{} = stream} = m} ->
+        {:ok, Map.put(m, "stream", stream |> Map.delete("data") |> Map.put("bytes", bytes))}
+
+      {:ok, _other} ->
+        {:error, :invalid_stream_frame}
+
+      error ->
+        error
+    end
+  end
+
+  def decode_stream_binary(_frame), do: :not_stream
+
+  @doc """
+  A stream frame's chunk: its raw `bytes` (a binary frame) or its base64
+  `data` (a JSON frame). `{:ok, nil}` when it carries none.
+  """
+  @spec stream_bytes(map()) :: {:ok, binary() | nil} | {:error, :invalid_base64}
+  def stream_bytes(%{"bytes" => bytes}) when is_binary(bytes), do: {:ok, bytes}
+
+  def stream_bytes(%{"data" => data}) when is_binary(data) do
+    case Base.decode64(data) do
+      {:ok, bytes} -> {:ok, bytes}
+      :error -> {:error, :invalid_base64}
+    end
+  end
+
+  def stream_bytes(_stream), do: {:ok, nil}
 
   @doc """
   Interpret a decoded response envelope as an RPC outcome:

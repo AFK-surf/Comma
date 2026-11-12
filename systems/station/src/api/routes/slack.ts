@@ -557,7 +557,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
   };
 
   /// GET /slack/people: the people of the Slack workspaces this station's connects are in, once each by email, for
-  /// adding them to the still.fail workspace: bots and deactivated accounts left out; guests marked. Needs
+  /// adding them to the Comma workspace: bots and deactivated accounts left out; guests marked. Needs
   /// users:read.email to see emails.
   const people = async (r: Request) => {
     const found: Json[] = [];

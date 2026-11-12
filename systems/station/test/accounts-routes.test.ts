@@ -280,7 +280,7 @@ describe("the accounts routes", { concurrency: true }, () => {
 
   test("profile checks and quotas are kept so a restart shows them at once", async () => {
     const data = temp("restart");
-    const db = join(data, "stillfail.db");
+    const db = join(data, "station.db");
     const first = await rig({ data, store: Store.open(db, null), quota: { n: 0 } });
     await first.call("POST", "/profiles/cc/check");
     await first.call("POST", "/profiles/cc/quota");

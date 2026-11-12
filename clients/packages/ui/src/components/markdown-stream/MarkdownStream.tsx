@@ -1,3 +1,4 @@
+import { copyWithFeedback } from "../toast";
 import type {
   ComponentProps,
   CSSProperties,
@@ -259,6 +260,23 @@ export type MarkdownStreamLinkDecorator = (args: {
 // document.
 export const MarkdownStreamLinkDecoratorContext = createContext<
   MarkdownStreamLinkDecorator | undefined
+>(undefined);
+
+/**
+ * The text standing in for a Markdown image whose address only the host can
+ * read (an Agent's workspace path such as `/artifacts/chart.png`, which the
+ * app's own origin does not serve); empty draws nothing. `undefined` loads the
+ * address as written.
+ */
+export type MarkdownStreamImageResolver = (image: {
+  alt: string;
+  src: string;
+}) => string | undefined;
+
+// Its own context for the same reason as the link decorator: only
+// CommaImageNode reads it.
+export const MarkdownStreamImageResolverContext = createContext<
+  MarkdownStreamImageResolver | undefined
 >(undefined);
 
 // The app's appearance, provided once at its root, so every stream (chat,
@@ -1858,6 +1876,7 @@ function CommaInlineChildrenNode(
 
 function CommaInlineCodeNode(props: CommaNodeProps<MarkdownNode>) {
   const config = useContext(MarkdownStreamContext);
+  const insideLink = useContext(MarkdownStreamInsideLinkContext);
   const content =
     firstString(props.node.code, props.node.content, props.node.raw) ?? "";
 
@@ -1872,7 +1891,9 @@ function CommaInlineCodeNode(props: CommaNodeProps<MarkdownNode>) {
   }
 
   return (
-    <code className="markdown-stream-inline-code bg-markdown-bg-inline-code font-mono text-markdown-text-inline-code">
+    <code
+      className={`markdown-stream-inline-code bg-markdown-bg-inline-code font-mono${insideLink ? "" : " text-markdown-text-inline-code"}`}
+    >
       <CommaAnimatedText
         content={content}
         streamKey={`${String(props.indexKey ?? "inline-code")}:inline-code`}
@@ -2086,6 +2107,7 @@ function CommaImageNode(props: CommaNodeProps<MarkdownNode>) {
   const messages = useCommaMessages();
   const documentPolicy = useContext(MarkdownDocumentResourceContext);
   const insideLink = useContext(MarkdownStreamInsideLinkContext);
+  const resolveImage = useContext(MarkdownStreamImageResolverContext);
   if (
     !shouldRenderCompleteBlurNode(
       config.completeBlurTextQueue,
@@ -2105,6 +2127,9 @@ function CommaImageNode(props: CommaNodeProps<MarkdownNode>) {
   const alt = asString(props.node.alt);
   if (documentPolicy)
     return <span>{messages.file_preview_remote_image({ name: alt || "image" })}</span>;
+  const standIn =
+    !pending && src && resolveImage ? resolveImage({ alt, src }) : undefined;
+  if (standIn !== undefined) return standIn ? <span>{standIn}</span> : null;
   const Frame = insideLink ? "span" : "a";
   return (
     <Frame
@@ -3032,13 +3057,16 @@ const CommaStandardCodeBlock = memo(
     );
 
     const copyCode = async () => {
-      if (config.clipboard) {
-        await config.clipboard.writeText(code);
-      } else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(code);
-      } else {
-        throw new Error("Clipboard write is unavailable in this runtime.");
-      }
+      const success = await copyWithFeedback(async () => {
+        if (config.clipboard) {
+          await config.clipboard.writeText(code);
+        } else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(code);
+        } else {
+          throw new Error("Clipboard write is unavailable in this runtime.");
+        }
+      }, messages);
+      if (!success) return;
       config.onCopyCode?.(info);
       setCopied(true);
       if (resetTimer.current) resetTimer.current();
@@ -3299,13 +3327,16 @@ const CommaMermaidBlock = memo(
     }, [code, deferPreview, isDark, loading, messages, renderIdPrefix]);
 
     const copyCode = async () => {
-      if (config.clipboard) {
-        await config.clipboard.writeText(code);
-      } else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(code);
-      } else {
-        throw new Error("Clipboard write is unavailable in this runtime.");
-      }
+      const success = await copyWithFeedback(async () => {
+        if (config.clipboard) {
+          await config.clipboard.writeText(code);
+        } else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(code);
+        } else {
+          throw new Error("Clipboard write is unavailable in this runtime.");
+        }
+      }, messages);
+      if (!success) return;
       config.onCopyCode?.({ code, language, loading });
       setCopied(true);
       if (resetTimer.current) resetTimer.current();

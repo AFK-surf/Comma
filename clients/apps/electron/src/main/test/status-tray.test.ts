@@ -53,6 +53,7 @@ const task = (id: string, title = `Task ${id}`): StatusTrayTask => ({
 });
 
 const trayHandlers = () => ({
+  onCheckForUpdates: vi.fn(),
   onOpenMainApp: vi.fn(),
   onOpenSettings: vi.fn(),
   onOpenTask: vi.fn(),
@@ -147,6 +148,7 @@ function trayHarness(
     ...handlers,
     ...(now ? { clock: { ...realMainClock, now } } : {}),
     productName: "Comma",
+    version: "1.2.3",
   });
   const rows = () =>
     menus
@@ -185,6 +187,9 @@ describe("createCommaStatusTray", () => {
       "---",
       "Settings... [Super+,]",
       "---",
+      "# Comma 1.2.3",
+      "Check for Updates...",
+      "---",
       "Quit Comma",
     ]);
     const items = menus[0]!.items;
@@ -196,17 +201,28 @@ describe("createCommaStatusTray", () => {
     items[4]?.click?.();
     items[5]?.click?.();
     items[7]?.click?.();
+    items[10]?.click?.();
     expect(handlers.onOpenMainApp).toHaveBeenCalledOnce();
     expect(handlers.onOpenTask).toHaveBeenCalledWith(task("2"));
     expect(handlers.onOpenTasks).toHaveBeenCalledOnce();
     expect(handlers.onOpenSettings).toHaveBeenCalledOnce();
+    expect(handlers.onCheckForUpdates).toHaveBeenCalledOnce();
   });
 
   it("omits the Task section without an In progress Task, and unset shortcuts, in Simplified Chinese too", () => {
     const { rows, tray } = trayHarness({ inProgressTasks: [] }, { locale: "zh-CN" });
 
     expect(tray.setToolTip).toHaveBeenCalledWith("Comma");
-    expect(rows()).toEqual(["打开 Comma", "---", "设置...", "---", "退出 Comma"]);
+    expect(rows()).toEqual([
+      "打开 Comma",
+      "---",
+      "设置...",
+      "---",
+      "# Comma 1.2.3",
+      "检查更新...",
+      "---",
+      "退出 Comma",
+    ]);
   });
 
   it("switches its rows when the app language changes", () => {
@@ -380,6 +396,7 @@ function helperHarness(
     // The menu-bar helper is macOS's.
     platform: "darwin",
     productName: "Comma",
+    version: "1.2.3",
   });
   const select = (id: string) =>
     (helper.showStatusMenu.mock.lastCall![1] as (selected: string) => void)(id);
@@ -416,6 +433,9 @@ describe("helperStatusTrayHost", () => {
           { id: "more-tasks", kind: "item", title: "More..." },
           { kind: "separator" },
           { id: "settings", kind: "item", title: "Settings...", shortcut: "⌥⌘ J" },
+          { kind: "separator" },
+          { kind: "header", title: "Comma 1.2.3" },
+          { id: "check-updates", kind: "item", title: "Check for Updates..." },
           { kind: "separator" },
           { id: "quit", kind: "item", title: "Quit Comma", shortcut: "⌘ Q" },
         ],
@@ -684,6 +704,7 @@ describe("fallbackStatusTrayHost", () => {
         }),
       ...handlers,
       productName: "Comma",
+      version: "1.2.3",
     });
     expect(helper.showStatusMenu).toHaveBeenCalledOnce();
     expect(menus).toEqual([]);

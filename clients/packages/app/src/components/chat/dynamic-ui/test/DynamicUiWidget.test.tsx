@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@comma/test-utils/render";
 import type { ChatMessagePart } from "@comma/chat-contract";
+import { dynamicUiLevel } from "@comma/chat-contract/dynamic-ui-level";
 import type { ChatMessage } from "@comma/core/chat";
 import { messageMarkdown } from "@comma/core/markdown";
 import type { ReactElement, ReactNode } from "react";
@@ -894,6 +895,28 @@ describe("DynamicUiWidget host boundary", () => {
     expect(view.container.querySelector("iframe")).toBeNull();
     expect(screen.getByText(part.summary)).toBeTruthy();
   });
+});
+
+it("shows a widget of this client's runtime level and the summary of one above it", async () => {
+  const view = render(
+    <DynamicUiWidget
+      part={{ ...part, version: dynamicUiLevel }}
+      live
+      groupId="group"
+      workspaceId="workspace"
+    />
+  );
+  await waitFor(() => expect(view.container.querySelector("iframe")).not.toBeNull());
+  view.rerender(
+    <DynamicUiWidget
+      part={{ ...part, version: dynamicUiLevel + 1 }}
+      live
+      groupId="group"
+      workspaceId="workspace"
+    />
+  );
+  expect(view.container.querySelector("iframe")).toBeNull();
+  expect(screen.getByText(part.summary)).toBeTruthy();
 });
 
 it("routes valid widget links to the host sidebar callback and rejects unsafe URLs", async () => {

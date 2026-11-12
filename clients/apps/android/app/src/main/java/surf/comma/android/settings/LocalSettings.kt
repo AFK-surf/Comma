@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.update
 import surf.comma.android.ui.Appearance
 import surf.comma.android.ui.AppearanceStore
 import surf.comma.android.ui.theme.DesignTypography
+import surf.comma.android.ui.widget.LiquidGlass
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -38,7 +39,7 @@ enum class Language(val tag: String?) {
     }
 }
 
-data class LocalSettingsState(val theme: Appearance, val textSize: TextSize, val language: Language)
+data class LocalSettingsState(val theme: Appearance, val textSize: TextSize, val language: Language, val glass: Boolean = false)
 
 /** Where the device-only preferences live and how they take effect. */
 interface LocalSettingsBackend {
@@ -46,10 +47,11 @@ interface LocalSettingsBackend {
     fun applyTheme(value: Appearance)
     fun applyTextSize(value: TextSize)
     fun applyLanguage(value: Language)
+    fun applyGlass(value: Boolean)
 }
 
 /**
- * Theme, text size and language: kept on this device and applied at once. The new value shows
+ * Theme, text size, language and the experimental glass: kept on this device and applied at once. The new value shows
  * immediately; if applying it fails, the previous value comes back with a [SettingsNotice].
  */
 class LocalSettings(private val backend: LocalSettingsBackend) {
@@ -68,6 +70,10 @@ class LocalSettings(private val backend: LocalSettingsBackend) {
 
     fun setLanguage(value: Language) = change(SettingsAction.LANGUAGE, { it.language == value }, { it.copy(language = value) }) {
         backend.applyLanguage(value)
+    }
+
+    fun setGlass(value: Boolean) = change(SettingsAction.GLASS, { it.glass == value }, { it.copy(glass = value) }) {
+        backend.applyGlass(value)
     }
 
     private fun change(
@@ -91,18 +97,24 @@ class LocalSettings(private val backend: LocalSettingsBackend) {
 /**
  * The Android side: the theme through [AppearanceStore] (the platform's per-app night mode), the
  * language through [LocaleManager] (Android's per-app language, also shown in system settings), and
- * the text size as a preference that promotes [DesignTypography] one step. The first two restart
- * visible screens by themselves; a text size change recreates them through [OpenActivities].
+ * the text size as a preference that promotes [DesignTypography] one step, and the glass as a preference
+ * that [LiquidGlass] reads. The first two restart visible screens by themselves; the others recreate them
+ * through [OpenActivities].
  */
 class AndroidLocalSettings(context: Context) : LocalSettingsBackend {
     private val app = context.applicationContext
 
-    override fun read() = LocalSettingsState(AppearanceStore.get(app), TextSizeStore.get(app), readLanguage())
+    override fun read() = LocalSettingsState(AppearanceStore.get(app), TextSizeStore.get(app), readLanguage(), GlassStore.get(app))
 
     override fun applyTheme(value: Appearance) = AppearanceStore.set(app, value)
 
     override fun applyTextSize(value: TextSize) {
         TextSizeStore.set(app, value)
+        OpenActivities.recreateAll()
+    }
+
+    override fun applyGlass(value: Boolean) {
+        GlassStore.set(app, value)
         OpenActivities.recreateAll()
     }
 
@@ -133,6 +145,25 @@ object TextSizeStore {
 
     fun load(context: Context) {
         DesignTypography.promoteOneStep = get(context) == TextSize.LARGE
+    }
+}
+
+/** The experimental glass, off until the member turns it on. [load] runs before the first screen binds. */
+object GlassStore {
+    private const val PREFS = "appearance"
+    private const val KEY = "glass"
+
+    fun get(context: Context): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+
+    fun set(context: Context, value: Boolean) {
+        check(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY, value).commit()) { "Glass not saved" }
+        LiquidGlass.enabled = value
+    }
+
+    fun load(context: Context) {
+        LiquidGlass.enabled = get(context)
     }
 }
 

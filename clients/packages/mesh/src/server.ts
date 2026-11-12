@@ -9,6 +9,7 @@ import {
   StreamCode,
   controlFrame,
   encodeFrame,
+  PING_PATH,
   requestFrame,
   sendBody,
   type Body,
@@ -181,6 +182,12 @@ async function serveRequest<P>(
     const head = await reader.frame();
     if (head === null) return;
     const request = requestFrame(head);
+    if (request.path === PING_PATH) {
+      recv.stop(StreamCode.cancelled);
+      await send.write(encodeFrame({ type: "response", status: 204, headers: [] }));
+      await send.finish();
+      return;
+    }
     const admitted = admission();
     if (!admitted) {
       recv.stop(StreamCode.cancelled);

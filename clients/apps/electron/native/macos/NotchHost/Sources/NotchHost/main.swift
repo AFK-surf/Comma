@@ -70,6 +70,7 @@ final class NotchHost {
     private var listTitle = "Conversation activity"
     private var listSubtitle = "Open a conversation to inspect its latest state."
     private var openChatLabel = "Open chat"
+    private var dismissTaskLabel = "Dismiss"
 
     func start() {
         guard !running else { return }
@@ -188,6 +189,7 @@ final class NotchHost {
         if let value = payload?.listTitle { listTitle = value }
         if let value = payload?.listSubtitle { listSubtitle = value }
         if let value = payload?.openChatLabel { openChatLabel = value }
+        if let value = payload?.dismissTaskLabel { dismissTaskLabel = value }
 
         if let tasks = payload?.tasks {
             currentTasks = tasks.sorted { left, right in
@@ -394,12 +396,21 @@ final class NotchHost {
                     listTitle: listTitle,
                     listSubtitle: listSubtitle,
                     openChatLabel: openChatLabel,
+                    dismissTaskLabel: dismissTaskLabel,
                     onOpen: { [weak self] taskID in
                         guard let self else { return }
                         self.controller.close()
                         self.emit(
                             type: "action",
                             payload: .init(action: "task:open", value: taskID)
+                        )
+                    },
+                    // Main keeps the list: it answers with the list without
+                    // this row, which leaves with the other rows' animation.
+                    onDismiss: { [weak self] taskID in
+                        self?.emit(
+                            type: "action",
+                            payload: .init(action: "task:dismiss", value: taskID)
                         )
                     }
                 )

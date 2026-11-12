@@ -3,9 +3,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
 
   @moduledoc """
   The Devices API behind the React Devices page: the swarm's Cloud VM with
-  the org Runner it uses, the projected devices, Android setup, adding a
-  device on a runner with its provisioning poll, disconnect and delete, and
-  the Compute environments.
+  the org Runner it uses, the projected devices, Android setup, disconnect
+  and delete, and the Compute environments.
   Swarm admins write; a swarm member's device write is refused with a denied
   audit; someone outside the swarm gets 404.
   """
@@ -34,6 +33,32 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       do: raise("the Devices API must not page envs")
   end
 
+  # A live board's Connector answers `device_access` as the firmware does.
+  defmodule OperationsClient do
+    @moduledoc false
+
+    def get_env("device-offline" = device_id, _group_id, _tenant_id),
+      do: {:ok, %{"device_id" => device_id, "status" => "disconnected"}}
+
+    def get_env(device_id, _group_id, _tenant_id),
+      do:
+        {:ok,
+         %{
+           "device_id" => device_id,
+           "status" => "connected",
+           "connector_run_id" => "run-" <> device_id
+         }}
+
+    def page_group_envs(_group_id, _tenant_id, _opts),
+      do: {:ok, %{records: [], next_cursor: nil}}
+
+    def connector_request(run_id, method, params) do
+      test_pid = SystemsRuntime.get_env(:bridge_for_teams_core, :test_pid)
+      SystemsRuntime.Proc.send(test_pid, {:connector_request, run_id, method, params})
+      {:ok, %{"allows_operations" => params["allow_operations"]}}
+    end
+  end
+
   setup %{conn: conn} do
     SalixStore.S3.Fake.reset()
     %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
@@ -54,6 +79,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
         name: "Projected Mac",
         runtime_inventory: %{
           "items" => [codex_runtime("runtime-codex")],
+          "capabilities" => %{"exec" => true},
           "system_info" => %{
             "hostname" => "studio.local",
             "os_type" => "macOS",
@@ -78,8 +104,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
                "runner_choosable" => true,
                "runner_removable" => false
              }
-
-      assert data["provisioning"] == false
 
       assert [
                %{
@@ -107,7 +131,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
              ] = data["devices"]
 
       assert {:ok, _at, 0} = DateTime.from_iso8601(last_seen)
-      assert message =~ "Comma desktop app"
+      assert message =~ "Add computer"
     end
 
     test "costs the same queries for one device as for a hundred, and lists at most 100", %{
@@ -131,76 +155,13 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       plain = user_fixture()
       {:ok, _} = Memberships.put_org_member(org.id, plain.id, "member")
 
-      for path <- [devices_path(org, project), devices_path(org, project, "/provisioning")] do
+      for path <- [devices_path(org, project), devices_path(org, project, "/runners")] do
         assert %{"error" => %{"code" => "project_not_found"}} =
                  build_conn() |> log_in_user(plain) |> get(path) |> json_response(404)
 
         assert %{"error" => %{"code" => "org_not_found"}} =
                  build_conn() |> log_in_user(user_fixture()) |> get(path) |> json_response(404)
       end
-    end
-  end
-
-  describe "cloud computer" do
-    test "an admin turns it off and on with audits", %{conn: conn, org: org, project: project} do
-      assert %{"enabled" => false, "notice" => "Cloud computer disabled for this Agent Swarm."} =
-               conn
-               |> put(devices_path(org, project, "/cloud"), %{"enabled" => false})
-               |> json_response(200)
-               |> data()
-
-      assert {:ok, %{vm_enabled: false}} = Projects.get_project(project.id)
-      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
-      assert data["cloud_vm"]["enabled"] == false
-
-      assert %{"enabled" => true} =
-               conn
-               |> put(devices_path(org, project, "/cloud"), %{"enabled" => true})
-               |> json_response(200)
-               |> data()
-
-      assert {:ok, %{vm_enabled: true}} = Projects.get_project(project.id)
-
-      assert length(Observability.list_audit_logs(org.id, action: "project.vm_enabled_changed")) ==
-               2
-    end
-
-    test "a swarm member is refused with a denied audit; an archived swarm is refused", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      {member_conn, member} = member_conn(org, project)
-
-      assert %{"error" => %{"code" => "forbidden"}} =
-               member_conn
-               |> put(devices_path(org, project, "/cloud"), %{"enabled" => false})
-               |> json_response(403)
-
-      assert {:ok, %{vm_enabled: true}} = Projects.get_project(project.id)
-
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "project.vm_enabled_changed",
-                 result: "denied"
-               )
-
-      assert audit.actor_user_id == member.id
-
-      assert %{"error" => %{"code" => "invalid_cloud"}} =
-               conn
-               |> put(devices_path(org, project, "/cloud"), %{"enabled" => "off"})
-               |> json_response(422)
-
-      Repo.update_all(
-        from(p in BridgeForTeams.Schema.Project, where: p.id == ^project.id),
-        set: [status: "archived"]
-      )
-
-      assert %{"error" => %{"code" => "project_archived"}} =
-               conn
-               |> put(devices_path(org, project, "/cloud"), %{"enabled" => false})
-               |> json_response(409)
     end
   end
 
@@ -334,12 +295,8 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     end
   end
 
-  describe "add device" do
-    test "offers online runners only and creates a request on one", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
+  describe "Cloud VM runners" do
+    test "offers online runners only", %{conn: conn, org: org, project: project} do
       online = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
       _stale = runner(org, "stale-mac", "Stale Mac mini", seconds_ago(90))
 
@@ -351,90 +308,49 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
 
       assert id == online.id
       assert href == "/orgs/#{org.slug}/fin"
-
-      assert %{"notice" => "Device connection request created."} =
-               conn
-               |> post(devices_path(org, project), %{
-                 "name" => "production",
-                 "alias" => "prod-mac",
-                 "runner_id" => online.id
-               })
-               |> json_response(201)
-               |> data()
-
-      assert [request] = Environments.list_device_provision_requests(project.id)
-      assert request.provisioner_id == online.id
-      assert request.salix_group_id == project.salix_group_id
-      assert {:ok, []} = Environments.list_environments(project.id)
-
-      # The page polls a cheap status until the runner has attached it.
-      assert %{"active" => true} = provisioning(conn, org, project)
-
-      assert %{"provisioning" => true} =
-               conn |> get(devices_path(org, project)) |> json_response(200) |> data()
-
-      small = query_count(conn, devices_path(org, project, "/provisioning"))
-
-      Environments.update_device_provision_request_status(request, "failed", %{
-        "failure_code" => "attach_timeout"
-      })
-
-      assert %{"active" => false} = provisioning(conn, org, project)
-      assert query_count(conn, devices_path(org, project, "/provisioning")) == small
     end
 
-    test "a stale, foreign or missing runner is refused", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      stale = runner(org, "stale-mac", "Stale Mac mini", seconds_ago(90))
-      other = org_with_owner_fixture().org
-      foreign = runner(other, "foreign-mac", "Foreign Mac", SystemsClock.utc_now())
-
-      for runner_id <- [stale.id, foreign.id, "not-a-runner"] do
-        assert %{"error" => %{"code" => "runner_offline", "message" => "Runner is offline."}} =
-                 conn
-                 |> post(devices_path(org, project), %{"name" => "x", "runner_id" => runner_id})
-                 |> json_response(409)
-      end
-
-      assert %{"error" => %{"code" => "runner_required"}} =
-               conn |> post(devices_path(org, project), %{"name" => "x"}) |> json_response(422)
-
-      assert Environments.list_device_provision_requests(project.id) == []
-    end
-
-    test "a swarm member cannot list runners or create; the attempt is audited", %{
-      org: org,
-      project: project
-    } do
-      {member_conn, member} = member_conn(org, project)
-      online = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
+    test "a swarm member cannot list runners", %{org: org, project: project} do
+      {member_conn, _member} = member_conn(org, project)
+      _online = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
 
       assert %{"error" => %{"code" => "forbidden"}} =
                member_conn |> get(devices_path(org, project, "/runners")) |> json_response(403)
+    end
+  end
 
-      assert %{"error" => %{"code" => "forbidden"}} =
+  describe "refresh" do
+    test "a swarm member reads the registry into the page at once", %{
+      org: org,
+      project: project
+    } do
+      {member_conn, _member} = member_conn(org, project)
+      device_id = "device-" <> SystemsRuntime.Proc.uuid()
+
+      {:ok, _transport_id, _record} =
+        SalixEnv.Registry.connect(
+          "nonode@nohost",
+          %{
+            "tenant_id" => org.salix_tenant_id,
+            "group_id" => project.salix_group_id,
+            "device_id" => device_id,
+            "connector_id" => "connector-" <> device_id,
+            "name" => "new-box"
+          },
+          transport_id: "transport-" <> device_id
+        )
+
+      # A device that is gone from the registry leaves the page too.
+      project_device(project, "device-gone")
+
+      assert %{} =
                member_conn
-               |> post(devices_path(org, project), %{"name" => "forged", "runner_id" => online.id})
-               |> json_response(403)
+               |> post(devices_path(org, project, "/refresh"))
+               |> json_response(200)
+               |> data()
 
-      assert Environments.list_device_provision_requests(project.id) == []
-
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "device.provision_requested",
-                 result: "denied"
-               )
-
-      assert audit.actor_user_id == member.id
-      assert audit.resource_type == "device_provision_request"
-      assert audit.reason_class == "forbidden"
-      assert audit.metadata["project_id"] == project.id
-      assert audit.metadata["surface"] == "device"
-      assert audit.metadata["provisioner_id_configured"] in [true, "true"]
-      refute inspect(audit) =~ "forged"
+      assert %{"devices" => [%{"id" => ^device_id, "name" => "new-box"}]} =
+               member_conn |> get(devices_path(org, project)) |> json_response(200) |> data()
     end
   end
 
@@ -501,6 +417,266 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     end
   end
 
+  describe "computers" do
+    defmodule StationInstaller do
+      @moduledoc false
+      def station_command(tenant, group, name, %{user_id: user}) do
+        case SystemsRuntime.get_env(:bridge_for_teams_web, :test_station_install) do
+          :unavailable ->
+            {:error, :station_install_unavailable}
+
+          nil ->
+            {:ok,
+             %{
+               "kind" => "station",
+               "name" => name,
+               "command" => "install #{tenant} #{group} #{user}",
+               "expires_at" => 1_800_000_000
+             }}
+        end
+      end
+    end
+
+    setup do
+      prior = SystemsRuntime.get_env(:salix_env, :station_install)
+      SystemsRuntime.put_env(:salix_env, :station_install, StationInstaller)
+
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:bridge_for_teams_web, :test_station_install)
+
+        if prior,
+          do: SystemsRuntime.put_env(:salix_env, :station_install, prior),
+          else: SystemsRuntime.delete_env(:salix_env, :station_install)
+      end)
+    end
+
+    test "an admin gets a computer's install command, issued as that admin", %{
+      conn: conn,
+      org: org,
+      project: project,
+      user: user
+    } do
+      assert %{"command" => command, "expires_at" => "2027-01-15T08:00:00Z"} =
+               conn
+               |> post(devices_path(org, project, "/station"), %{"name" => "Jump"})
+               |> json_response(201)
+               |> data()
+
+      assert command == "install #{org.salix_tenant_id} #{project.salix_group_id} #{user.id}"
+
+      assert [%{resource_label: "Jump"}] =
+               Observability.list_audit_logs(org.id, action: "device.station_install_created")
+    end
+
+    test "a swarm member is refused, and an unavailable install says so", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      {member_conn, _member} = member_conn(org, project)
+
+      assert %{"error" => %{"code" => "forbidden"}} =
+               member_conn
+               |> post(devices_path(org, project, "/station"), %{"name" => "Jump"})
+               |> json_response(403)
+
+      assert [_denied] =
+               Observability.list_audit_logs(org.id, action: "device.station_install_created")
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :test_station_install, :unavailable)
+
+      response = post(conn, devices_path(org, project, "/station"), %{"name" => "Jump"})
+      assert response.status >= 500
+    end
+  end
+
+  describe "hardware boards" do
+    test "an admin mints a board's credentials; deleting the board removes its voice key", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      %{"credentials" => credentials} =
+        conn
+        |> post(devices_path(org, project, "/hardware"), %{"name" => "Kitchen"})
+        |> json_response(201)
+        |> data()
+
+      assert %{
+               "device_id" => device_id,
+               "server" => "http" <> _,
+               "connect_url" => "ws" <> _,
+               "workspace_id" => workspace_id,
+               "group_id" => group_id,
+               "connector_token" => "salix_conn_" <> _ = token,
+               "voice_key" => "salix_vk_" <> _,
+               "device_name" => "Kitchen"
+             } = credentials
+
+      assert workspace_id == project.id
+      assert group_id == project.salix_group_id
+
+      # The board shows at once, as a board, before it first connects.
+      assert [
+               %{
+                 "id" => ^device_id,
+                 "name" => "Kitchen",
+                 "status" => "disconnected",
+                 "hardware" => true,
+                 "station_notice" => nil
+               }
+             ] =
+               conn
+               |> get(devices_path(org, project))
+               |> json_response(200)
+               |> data()
+               |> Map.fetch!("devices")
+
+      assert {:ok, _tenant, %{"device_id" => ^device_id}} =
+               SalixEnv.ConnectorTokens.validate_connector_token(token)
+
+      assert {:ok, [%{"name" => "Kitchen (" <> _}]} = voice_keys(org, project)
+      assert [audit] = Observability.list_audit_logs(org.id, action: "device.provisioned")
+      assert audit.resource_id == device_id
+      refute inspect(audit) =~ token
+
+      assert %{"notice" => "Device deleted."} =
+               conn
+               |> delete(devices_path(org, project, "/#{device_id}"))
+               |> json_response(200)
+               |> data()
+
+      assert {:ok, []} = voice_keys(org, project)
+      assert {:error, :not_found} = Environments.get_environment(project.id, device_id)
+
+      assert %{"devices" => []} =
+               conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+    end
+
+    test "a board name must fit the board; a swarm member cannot mint credentials", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      assert %{"error" => %{"code" => "invalid_name"}} =
+               conn
+               |> post(devices_path(org, project, "/hardware"), %{
+                 "name" => String.duplicate("x", 64)
+               })
+               |> json_response(422)
+
+      {member_conn, _member} = member_conn(org, project)
+
+      assert %{"error" => %{"code" => "forbidden"}} =
+               member_conn
+               |> post(devices_path(org, project, "/hardware"), %{"name" => "Kitchen"})
+               |> json_response(403)
+
+      assert {:ok, []} = voice_keys(org, project)
+      assert [_denied] = Observability.list_audit_logs(org.id, action: "device.provisioned")
+    end
+
+    test "the page marks a board by how it was set up, not by what it relays", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      with_client(ProjectionOnlyClient)
+
+      lan_gateway = %{"lan_gateway" => %{"methods" => ["lan_http_request"]}}
+
+      project_device(project, "device-board", %{
+        runtime_inventory: %{
+          "items" => [],
+          "device_kind" => "hardware",
+          "capabilities" => lan_gateway,
+          "allows_operations" => true
+        }
+      })
+
+      # A board that has not connected yet has reported nothing.
+      project_device(project, "device-new-board", %{
+        status: "disconnected",
+        runtime_inventory: %{"items" => [], "device_kind" => "hardware", "capabilities" => %{}}
+      })
+
+      # A station that also relays LAN requests is not a board.
+      project_device(project, "device-sandbox", %{
+        runtime_inventory: %{
+          "items" => [],
+          "capabilities" => Map.put(lan_gateway, "tasks", 2),
+          "allows_operations" => true
+        }
+      })
+
+      project_device(project, "device-unreported", %{
+        status: "disconnected",
+        runtime_inventory: %{"items" => [], "capabilities" => %{}}
+      })
+
+      project_device(project, "device-mac", %{
+        runtime_inventory: %{"items" => [], "capabilities" => %{"exec" => true}}
+      })
+
+      devices = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+
+      assert %{
+               "device-board" => %{
+                 "hardware" => true,
+                 "allows_operations" => true,
+                 "station_notice" => nil
+               },
+               "device-new-board" => %{"hardware" => true, "station_notice" => nil},
+               "device-sandbox" => %{"hardware" => false, "station_notice" => nil},
+               "device-unreported" => %{"hardware" => false, "station_notice" => nil},
+               "device-mac" => %{
+                 "hardware" => false,
+                 "allows_operations" => false,
+                 "station_notice" => %{"reason" => "device_needs_station"}
+               }
+             } = Map.new(devices["devices"], &{&1["id"], &1})
+    end
+
+    test "an admin allows a board's operations through its Connector", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      put_env(:test_pid, SystemsRuntime.Proc.self())
+      with_client(OperationsClient)
+
+      assert %{"notice" => "The device can now run operations."} =
+               conn
+               |> put(devices_path(org, project, "/device-board/operations"), %{"allow" => true})
+               |> json_response(200)
+               |> data()
+
+      assert_received {:connector_request, "run-device-board", "device_access",
+                       %{"allow_operations" => true}}
+
+      assert [audit] =
+               Observability.list_audit_logs(org.id, action: "device.operations_allowed")
+
+      assert audit.resource_id == "device-board"
+
+      assert %{"error" => %{"code" => "device_offline"}} =
+               conn
+               |> put(devices_path(org, project, "/device-offline/operations"), %{
+                 "allow" => true
+               })
+               |> json_response(409)
+
+      {member_conn, _member} = member_conn(org, project)
+
+      assert %{"error" => %{"code" => "forbidden"}} =
+               member_conn
+               |> put(devices_path(org, project, "/device-board/operations"), %{"allow" => false})
+               |> json_response(403)
+
+      refute_received {:connector_request, _, _, %{"allow_operations" => false}}
+    end
+  end
+
   describe "Compute environments" do
     test "an admin creates a Shell workload and drains the environment", %{
       conn: conn,
@@ -555,6 +731,25 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       assert [%{"desired_state" => "draining"}] = data["compute"]["environments"]
     end
 
+    test "a revoked environment that never came up leaves the page", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      environment = compute_environment(org, project)
+      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+      assert [%{"revision" => revision}] = data["compute"]["environments"]
+
+      conn
+      |> post(compute_path(org, project, environment.id, "/revoke"), %{
+        "expected_revision" => revision
+      })
+      |> json_response(200)
+
+      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+      assert data["compute"]["environments"] == []
+    end
+
     test "a swarm member reads the environments but cannot change them", %{
       org: org,
       project: project
@@ -588,10 +783,10 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
   defp compute_path(org, project, environment, rest),
     do: "/dashboard/api/v1/orgs/#{org.slug}/projects/#{project.id}/compute/#{environment}#{rest}"
 
-  defp provisioning(conn, org, project),
-    do: conn |> get(devices_path(org, project, "/provisioning")) |> json_response(200) |> data()
-
   defp data(%{"data" => data}), do: data
+
+  defp voice_keys(org, project),
+    do: Salix.Control.GroupApiKeys.list(project.salix_group_id, org.salix_tenant_id, "voice")
 
   defp member_conn(org, project) do
     member = user_fixture()
@@ -712,14 +907,14 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
         pool_id: pool.id
       })
 
-    # Availability is a projection; the exact host retains enrollment authority.
+    # The exact Host owns enrollment and connection authority.
     {:ok, registration} =
-      SalixStore.AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "devices-host-#{suffix}",
         tenant_id: org.salix_tenant_id,
         group_id: project.salix_group_id,
         device_id: "devices-host-device-#{suffix}",
-        enrollment_token: String.duplicate("s", 32),
+        credential: String.duplicate("s", 32),
         desired_enabled: true
       })
 
@@ -727,18 +922,21 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     |> Ecto.Changeset.change(status: "ready")
     |> SalixStore.Repo.update!()
 
-    SalixStore.Repo.insert!(%SalixStore.Compute.ProviderBinding{
-      id: "devices-binding-#{suffix}",
-      pool_id: pool.id,
-      environment_id: environment.id,
-      provider: "agent_vmm",
-      provider_ref: registration.id,
-      status: "available",
-      generation: 1,
-      revision: 1,
-      observation: %{},
-      updated_at: SystemsClock.utc_now()
-    })
+    {:ok, _binding} =
+      SalixStore.Compute.create_provider_binding(%{
+        id: "devices-binding-#{suffix}",
+        pool_id: pool.id,
+        environment_id: environment.id,
+        provider: "agent_vmm",
+        provider_ref: registration.id
+      })
+
+    assert {:ok, :ok} =
+             SalixStore.AgentVMM.observe_registration(registration.id, "gateway", %{
+               "connectionEpoch" => "1",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
 
     environment
   end

@@ -299,9 +299,9 @@ pub fn run(options: Options) -> i32 {
         Ok(None) => {
             let dir = options.data.display();
             if config.english {
-                eprintln!("Another still.fail station is running on this data directory ({dir}); only one station can run on a data directory on one machine");
+                eprintln!("Another Comma station is running on this data directory ({dir}); only one station can run on a data directory on one machine");
             } else {
-                eprintln!("另一个 still.fail station 正在运行这个数据目录（{dir}）；同一台机器上的一个数据目录只能运行一个 station");
+                eprintln!("另一个 Comma station 正在运行这个数据目录（{dir}）；同一台机器上的一个数据目录只能运行一个 station");
             }
             return crate::HELD;
         }

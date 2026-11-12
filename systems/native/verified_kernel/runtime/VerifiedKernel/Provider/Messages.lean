@@ -212,6 +212,24 @@ def syntheticRuntime (messages : List Term) (reminders : Bool := true) (system :
   let placeholder := obj [("role", b "user"), ("content", b placeholderTurn)]
   return leading ++ placeholder :: result.drop leading.length
 
+/-- An assistant record of a settled `end_turn` keeps no calls; its
+`provider_meta.settled_call` holds the call and its result. Each such record
+becomes that call and a tool result, so the model sees how its turns end.
+Responses (`responses := true`) replays a record's own `responses_items`,
+which already hold the pair. Every other message stays as it is. -/
+def settledTurn (responses : Bool) (m : Term) : List Term :=
+  let metadata := field m "provider_meta"
+  let settled := if metadata.isMap then coalesce [get metadata "settled_call", metadata.get (a "settled_call")] else nil
+  let call := if settled.isMap then get settled "call" else nil
+  let replayed := responses && !(items (get metadata "responses_items")).isEmpty
+  if openaiRole m == b "assistant" && call.isMap && (items (field m "tool_calls")).isEmpty && !replayed then
+    [m.put (a "tool_calls") (list [call]),
+     host [("role", b "tool"), ("tool_call_id", callField call "id"), ("content", get settled "result")]]
+  else [m]
+
+def settledTurns (responses : Bool) (messages : List Term) : List Term :=
+  messages.flatMap (settledTurn responses)
+
 def thinking (blocks : List Term) : List Term := blocks.filter (fun v => v.isMap && member (get v "type") ["thinking", "redacted_thinking"])
 
 -- Every projection reads the role as `openaiRole`, the role that pairs calls with results.

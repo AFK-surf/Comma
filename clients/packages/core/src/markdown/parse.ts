@@ -542,8 +542,11 @@ function inline(node: Syntax, reading: Reading): MarkdownNode[] {
       const type = node.type === "delete" ? "strikethrough" : node.type;
       return [{ type, children, raw: textOf(children) }];
     }
-    case "inlineCode":
-      return [{ type: "inline_code", code: node.value ?? "", raw: node.value ?? "" }];
+    case "inlineCode": {
+      const code = node.value ?? "";
+      const inlineCode = { type: "inline_code", code, raw: code };
+      return [WEB_ADDRESS.test(code) ? link(code, null, [inlineCode]) : inlineCode];
+    }
     case "break":
       return [{ type: "hardbreak", raw: "\n" }];
     case "link":
@@ -671,6 +674,9 @@ const encodeUrl = (url: string) =>
   url.replace(/%(?![0-9A-Fa-f]{2})|[^\w;,/?:@&=+$\-.!~*'()#%[\]]/gu, (char) =>
     encodeURIComponent(char)
   );
+
+/** Code that is nothing but a web address opens like a link. A placeholder (`<id>`, `{host}`) is no address. */
+const WEB_ADDRESS = /^https?:\/\/[^\s<>{}"`]+$/i;
 
 function link(
   url: string,

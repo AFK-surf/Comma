@@ -20,8 +20,9 @@ defmodule BridgeForTeams.FeishuScopes do
   The SSO-only import keeps its identity-only permissions.
 
   The combined import also names the user scopes of a Feishu account sign-in
-  (`SalixStore.OAuth.Adapters.Feishu`): with them the bot reads meetings,
-  meeting notes, recordings and documents as the person who signed in.
+  (`SalixStore.OAuth.Adapters.Feishu`): with them the bot works as the person
+  who signed in: meetings, notes, recordings, documents, group chats, the
+  directory and calendars.
 
   The bot import also includes the cloud-document and Minutes permissions that
   Routers and Workers use as the bot (`SalixIM.Provider.Feishu.Docs` and
@@ -102,8 +103,8 @@ defmodule BridgeForTeams.FeishuScopes do
     approval:task
   )
 
-  # Cloud documents read and edited, and Minutes read, as the bot by Routers
-  # and Workers. The names follow the official Lark CLI.
+  # Cloud documents read and edited, Base and spreadsheets read, and Minutes
+  # read, as the bot by Routers and Workers. The names follow the official Lark CLI.
   @bot_document_scopes ~w(
     docx:document
     docx:document:readonly
@@ -132,6 +133,8 @@ defmodule BridgeForTeams.FeishuScopes do
     drive:drive.search:readonly
     space:document:delete
     space:document:retrieve
+    bitable:app:readonly
+    sheets:spreadsheet:readonly
     minutes:minutes.basic:read
     minutes:minutes.artifacts:read
     minutes:minutes.media:export
@@ -144,7 +147,98 @@ defmodule BridgeForTeams.FeishuScopes do
     vc:record:readonly
   )
 
-  @bot_tenant_scopes @bot_messaging_scopes ++ @bot_document_scopes
+  # The rest of the daily work as the bot: group messages and chats,
+  # the directory and organization, search, Minutes, calendars and meeting
+  # rooms, and video meetings. Taken from the official larksuite/cli and
+  # checked against the platform's scope catalog for the app identity; no
+  # administration (roles, resignations, group moderation).
+  @bot_work_scopes ~w(
+    calendar:calendar
+    calendar:calendar.event:create
+    calendar:calendar.event:delete
+    calendar:calendar.event:join
+    calendar:calendar.event:read
+    calendar:calendar.event:reply
+    calendar:calendar.event:transfer
+    calendar:calendar.event:update
+    calendar:calendar.free_busy:read
+    calendar:calendar:create
+    calendar:calendar:delete
+    calendar:calendar:read
+    calendar:calendar:readonly
+    calendar:calendar:update
+    calendar:room:readonly
+    contact:department.organize:readonly
+    contact:job_title:readonly
+    contact:user.basic_profile:readonly
+    contact:user.dotted_line_leader_info.read
+    contact:user.employee:readonly
+    contact:user.employee_id:readonly
+    contact:user.id:readonly
+    contact:user.phone:readonly
+    contact:work_city:readonly
+    directory:department.base:read
+    directory:department.count:read
+    directory:department.department_path:read
+    directory:department.has_child:read
+    directory:department.leader:read
+    directory:department.name:read
+    directory:department.organization:read
+    directory:department.parent_id:read
+    directory:department:list
+    directory:department:read
+    directory:department:search
+    directory:employee.base.avatar:read
+    directory:employee.base.base:read
+    directory:employee.base.department:read
+    directory:employee.base.department_path:read
+    directory:employee.base.description:read
+    directory:employee.base.dotted_line_leaders:read
+    directory:employee.base.email:read
+    directory:employee.base.enterprise_email:read
+    directory:employee.base.leader:read
+    directory:employee.base.leader_id:read
+    directory:employee.base.mobile:read
+    directory:employee.base.name.another_name:read
+    directory:employee.base.name.first_name:read
+    directory:employee.base.name.last_name:read
+    directory:employee.base.name.name:read
+    directory:employee.work.base_work:read
+    directory:employee.work.extension_number:read
+    directory:employee.work.job_number:read
+    directory:employee.work.job_title:read
+    directory:employee.work.join_date:read
+    directory:employee.work.positions:read
+    directory:employee.work.work_country_or_region:read
+    directory:employee.work.work_place:read
+    directory:employee.work.work_station:read
+    directory:employee:list
+    directory:employee:read
+    directory:employee:search
+    directory:job_title.base:read
+    directory:place.base:read
+    im:chat.announcement:read
+    im:chat.chat_pins:read
+    im:chat.members:bot_access
+    im:chat.members:write_only
+    im:chat:create
+    im:chat:readonly
+    im:message
+    im:message.group_msg.include_bot:read
+    im:message.urgent
+    minutes:minutes
+    search:message
+    vc:room:readonly
+  )
+
+  # Whether the app is available to a person who asks for a station tool
+  # (`SalixIM.Provider.Feishu.AppAvailability`).
+  @bot_station_scopes ~w(
+    application:application:self_manage
+  )
+
+  @bot_tenant_scopes @bot_messaging_scopes ++
+                       @bot_document_scopes ++ @bot_work_scopes ++ @bot_station_scopes
 
   @known_invalid_scopes ~w(
     im:message.history:readonly
@@ -203,7 +297,11 @@ defmodule BridgeForTeams.FeishuScopes do
     %{
       "scopes" => %{
         "tenant" => @bot_tenant_scopes,
-        "user" => Enum.uniq(@sso_user_scopes ++ @default_user_scopes ++ sign_in_user_scopes())
+        "user" =>
+          Enum.uniq(
+            @sso_user_scopes ++
+              @default_user_scopes ++ sign_in_user_scopes() ++ on_demand_user_scopes()
+          )
       }
     }
   end
@@ -221,6 +319,19 @@ defmodule BridgeForTeams.FeishuScopes do
   @doc "The scopes a person grants when they sign in for the bot."
   @spec sign_in_user_scopes() :: [String.t()]
   def sign_in_user_scopes, do: SalixStore.OAuth.Adapters.Feishu.default_scopes()
+
+  @doc """
+  The user scopes a person grants only when a need asks for them (table
+  reads, document edits). The import offers them, so a sign-in that asks for
+  them is not refused.
+  """
+  @spec on_demand_user_scopes() :: [String.t()]
+  def on_demand_user_scopes,
+    do:
+      SalixStore.OAuth.Adapters.Feishu.on_demand_scopes()
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.uniq()
 
   @spec document_scope_ids() :: [String.t()]
   def document_scope_ids, do: @bot_document_scopes

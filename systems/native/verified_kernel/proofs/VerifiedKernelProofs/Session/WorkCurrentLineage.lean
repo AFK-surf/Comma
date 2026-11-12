@@ -113,7 +113,7 @@ structure ReadCall (store : HotStore) where
 theorem ReadCall.history {store : HotStore} {framing : CodecFraming} {objects : Objects}
     (call : ReadCall store) (valid : store.lineage framing objects) (codec : SnapshotCodec) :
     ∃ sealed, PhysicalHistory framing objects call.agent call.session call.context.candidate.working sealed ∧
-      call.context.candidate.etag = .binary call.etag := by
+      call.context.candidate.revision = .binary call.etag := by
   obtain ⟨snapshot, sealed, current, history, equivalent⟩ :=
     SessionDomain.ReadRevision.read_lineage valid codec call.started call.read call.decoded call.loaded
   obtain ⟨_, state, captured, stateHistory, _⟩ :=

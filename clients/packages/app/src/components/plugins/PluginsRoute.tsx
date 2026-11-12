@@ -20,9 +20,14 @@ import {
   macAppsPlugin,
   useMacApps,
 } from "./MacApps";
+import { BLENDER_PLUGIN_ID, BlenderDetail, useBlender } from "./Blender";
+import { MCP_SERVER_KEYWORDS, McpServers } from "./McpServers";
 import { PluginBrandArtwork } from "./PluginBrandArtwork";
 import { usePluginInstall } from "./pluginInstall";
 import { PluginPersonalSources, withMcpGrants } from "./PluginPersonalSources";
+import { PluginStations } from "./PluginStations";
+import { PluginScanDialog } from "./PluginScanDialog";
+import { PluginToolGroups } from "./PluginToolGroups";
 import { SkillDetailPage } from "./SkillDetailPage";
 import { usePluginPersonalSources } from "./usePluginPersonalSources";
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
@@ -33,6 +38,8 @@ export function PluginsRoute() {
   const call = useCall();
   const messages = useCommaMessages();
   const navigate = useNavigate();
+  // Home's composer takes the text; the person finishes the message there.
+  const tryInChat = (draft: string) => void navigate({ search: { draft }, to: "/" });
   const catalogCopy: PluginCatalogCopy = {
     addLabel: messages.plugins_add(),
     addPluginAriaLabel: (name) => messages.plugins_add_named({ name }),
@@ -98,7 +105,9 @@ export function PluginsRoute() {
   const personalSources = usePluginPersonalSources({
     workspaceId,
     pluginId:
-      selectedPlugin?.installed && selectedPlugin.id !== MAC_APPS_PLUGIN_ID
+      selectedPlugin?.installed &&
+      selectedPlugin.id !== MAC_APPS_PLUGIN_ID &&
+      selectedPlugin.id !== BLENDER_PLUGIN_ID
         ? selectedPlugin.id
         : undefined,
   });
@@ -112,6 +121,8 @@ export function PluginsRoute() {
     installed: macAppsRow?.installed === true,
   });
 
+  const blender = useBlender({ workspaceId });
+
   const skillCatalog = useWorkspaceSkillsState(workspaceId ?? "");
   const skills = skillCatalog.skills;
 
@@ -119,6 +130,10 @@ export function PluginsRoute() {
     if (!workspaceId) return;
     if (pluginId === MAC_APPS_PLUGIN_ID) {
       void (installed ? macApps.install() : macApps.uninstall());
+      return;
+    }
+    if (pluginId === BLENDER_PLUGIN_ID && blender.available) {
+      void (installed ? blender.install() : blender.uninstall());
       return;
     }
     if (installed) {
@@ -174,6 +189,26 @@ export function PluginsRoute() {
     );
   }
 
+  // An install by a scan (Lark, Feishu) shows its code until the member confirms.
+  const scanning = state.plugins.find(
+    (plugin) => plugin.activity === "scanning" && plugin.scan
+  );
+  const withScan = (page: ReactNode) => (
+    <>
+      {page}
+      {scanning?.scan ? (
+        <PluginScanDialog
+          name={scanning.name}
+          onCancel={() =>
+            installation.cancel({ pluginId: scanning.id, workspaceId: state.workspace })
+          }
+          step={scanning.scan.step}
+          url={scanning.scan.url}
+        />
+      ) : null}
+    </>
+  );
+
   // A request in flight; an authorization waiting on the browser is not one.
   const pendingIds = new Set(
     state.plugins
@@ -198,15 +233,34 @@ export function PluginsRoute() {
       : undefined;
 
   if (macPlugin && macAppsRow && selectedPluginId === MAC_APPS_PLUGIN_ID) {
-    return (
+    return withScan(
       <MacAppsDetail
         copy={detailCopy}
         installed={macAppsRow.installed}
         installPending={pendingIds.has(MAC_APPS_PLUGIN_ID)}
         macApps={macApps}
         onBack={() => setSelectedPluginId(undefined)}
-        onTryInChat={() => void navigate({ to: "/" })}
+        onTryInChat={() =>
+          tryInChat(messages.plugins_try_in_chat_prompt({ name: macPlugin.name }))
+        }
         uninstallPending={macAppsRow.activity === "uninstalling"}
+      />
+    );
+  }
+
+  if (selectedPlugin?.id === BLENDER_PLUGIN_ID && blender.available) {
+    return withScan(
+      <BlenderDetail
+        blender={blender}
+        copy={detailCopy}
+        definition={definitionById.get(selectedPlugin.id)!}
+        installed={selectedPlugin.installed}
+        installPending={pendingIds.has(BLENDER_PLUGIN_ID)}
+        onBack={() => setSelectedPluginId(undefined)}
+        onTryInChat={() =>
+          tryInChat(messages.plugins_try_in_chat_prompt({ name: selectedPlugin.name }))
+        }
+        uninstallPending={selectedPlugin.activity === "uninstalling"}
       />
     );
   }
@@ -227,10 +281,17 @@ export function PluginsRoute() {
       pluginName: selectedPlugin.name,
       reauthorizingConnectionId,
     });
-    if (selectedPlugin.credentialSetup) {
+    // (a line shown for the member to copy, still.fail's, is no credential of theirs)
+    if (
+      selectedPlugin.credentialSetup &&
+      selectedPlugin.credentialSetup.format !== "show"
+    ) {
       plugin.description = [
         plugin.description ?? plugin.summary,
-        messages.plugins_credentials_description({ name: selectedPlugin.name }),
+        messages.plugins_credentials_description({
+          name: selectedPlugin.name,
+          credential: selectedPlugin.credentialSetup.label,
+        }),
       ].join(" ");
       if (selectedPlugin.installed) {
         plugin.mcps = (plugin.mcps ?? []).map((resource) => ({
@@ -250,7 +311,7 @@ export function PluginsRoute() {
       }
     }
 
-    return (
+    return withScan(
       <PluginDetail
         className="comma-plugins-route"
         copy={detailCopy}
@@ -258,7 +319,9 @@ export function PluginsRoute() {
         installPending={pendingIds.has(selectedPlugin.id)}
         onBack={() => setSelectedPluginId(undefined)}
         onInstall={() => mutatePlugin(selectedPlugin.id, true)}
-        onTryInChat={() => void navigate({ to: "/" })}
+        onTryInChat={() =>
+          tryInChat(messages.plugins_try_in_chat_prompt({ name: selectedPlugin.name }))
+        }
         plugin={plugin}
         {...(!selectedPlugin.locked
           ? {
@@ -268,12 +331,30 @@ export function PluginsRoute() {
           : {})}
       >
         {selectedPlugin.installed ? (
-          <PluginPersonalSources
-            onReauthorize={reauthorize}
-            personalSources={personalSources}
-            plugin={selectedPlugin}
-            reauthorizingConnectionId={reauthorizingConnectionId}
-          />
+          <>
+            {selectedPlugin.stations ? (
+              <PluginStations
+                icon={plugin.icon}
+                plugin={selectedPlugin.id}
+                workspace={state.workspace}
+                onConnectAnother={() => void mutatePlugin(selectedPlugin.id, true)}
+                connectPending={pendingIds.has(selectedPlugin.id)}
+              />
+            ) : null}
+            {selectedPlugin.toolGroups ? (
+              <PluginToolGroups
+                icon={plugin.icon}
+                plugin={selectedPlugin.id}
+                workspace={state.workspace}
+              />
+            ) : null}
+            <PluginPersonalSources
+              onReauthorize={reauthorize}
+              personalSources={personalSources}
+              plugin={selectedPlugin}
+              reauthorizingConnectionId={reauthorizingConnectionId}
+            />
+          </>
         ) : null}
       </PluginDetail>
     );
@@ -288,14 +369,15 @@ export function PluginsRoute() {
   const selectedSkill = skills.find((skill) => skill.skill_id === selectedSkillId);
 
   if (selectedSkill) {
-    return (
+    return withScan(
       <SkillDetailPage
         categoryName={
           skillCategories.find((category) => category.id === selectedSkill.source)?.name
         }
         copy={detailCopy}
         onBack={() => setSelectedSkillId(undefined)}
-        onTryInChat={() => void navigate({ to: "/" })}
+        // The skill's mention, as the composer's "/" menu writes it, attaches it.
+        onTryInChat={() => tryInChat(`/${selectedSkill.skill_id} `)}
         skill={selectedSkill}
         workspaceId={state.workspace}
       />
@@ -316,7 +398,7 @@ export function PluginsRoute() {
       plugins: [macPlugin],
     });
 
-  return (
+  return withScan(
     <PluginCatalog
       className="comma-plugins-route"
       categories={categories}
@@ -326,6 +408,10 @@ export function PluginsRoute() {
       onPluginOpen={(plugin) => setSelectedPluginId(plugin.id)}
       onTabChange={setCatalogTab}
       pendingPluginIds={pendingIds}
+      section={{
+        content: <McpServers workspace={state.workspace} />,
+        keywords: MCP_SERVER_KEYWORDS,
+      }}
       onSkillCategoryChange={setSkillCategoryId}
       onSkillOpen={(skill) => setSelectedSkillId(skill.id)}
       skillsStatus={

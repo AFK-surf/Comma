@@ -16,6 +16,7 @@ theorem archive_publication_cas_reachable {versions : VersionBytes}
       ∃ decoded, ETF.decode bytes = .ok decoded ∧ ValueSemantics.Equivalent value decoded)
     (prior : ByteResidentReachable versions before past)
     (member : source ∈ before.captured)
+    (physical : ArchiveProjection.UnarchivedWindow source.cursor.candidate.working)
     (window : StorageQuery.archiveWindow source.cursor.candidate.working [] =
       .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0)
@@ -36,6 +37,6 @@ theorem archive_publication_cas_reachable {versions : VersionBytes}
   obtain ⟨publishedPast, reached⟩ := publication.resident prior
   refine ⟨_, .next reached (.hot rfl ?_)⟩
   exact native_store_commit member
-    (publication.staging roundtrip window positive emitted written) native cas tokens
+    (publication.staging roundtrip physical window positive emitted written) native cas tokens
 
 end VerifiedKernel.Session.WorkConservation.CurrentExecution

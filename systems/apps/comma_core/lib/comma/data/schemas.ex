@@ -72,6 +72,9 @@ defmodule Comma.Data.Workspace do
     # The Workspace owner reads its existing Router Conversation. This map
     # holds positions and counts, never Message content or delivery authority.
     field(:router_notification_state, :map, default: %{})
+    # How the owner's own Task requests (from a chat app linked to them) are
+    # taken: `review` (each waits for them) or `auto_accept`.
+    field(:own_request_mode, :string, default: "review")
 
     timestamps(
       type: :utc_datetime_usec,

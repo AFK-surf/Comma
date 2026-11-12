@@ -12,6 +12,7 @@ defmodule SalixIM.Provider.Slack do
     SlackTaskCard
   }
 
+  alias SalixIM.MentionReplyLatency
   alias SalixIM.MessageRenderer.{Input, Surface}
   alias SalixIM.Provider.Slack.{API, ConversationIngress, MessageRead}
   alias SalixIM.Provider.Slack.QuestionCard, as: SlackQuestionCard
@@ -69,10 +70,12 @@ defmodule SalixIM.Provider.Slack do
     params = Map.update(params, "text", "", &normalize_slack_text/1)
 
     result =
-      write_slack_message(tenant, connect, :post, params,
-        block_policy: :tool_noninteractive,
-        request_options: [timeout_ms: @triage_effect_request_timeout_ms, pool_retries: 0]
-      )
+      with :ok <- thread_open(connect, params) do
+        write_slack_message(tenant, connect, :post, params,
+          block_policy: :tool_noninteractive,
+          request_options: [timeout_ms: @triage_effect_request_timeout_ms, pool_retries: 0]
+        )
+      end
 
     emit_slack_outbound_diagnostic(connect, "slack.post_message", params, result)
     result
@@ -165,11 +168,13 @@ defmodule SalixIM.Provider.Slack do
       "metadata" => SlackTaskCard.metadata(rec, desired)
     }
 
-    case write_slack_message(tenant, connect, action, params,
-           block_policy: :trusted_product,
-           ambiguous_write?: true,
-           request_options: task_card_request_options()
-         ) do
+    case MentionReplyLatency.with_card(rec["conversation_id"], fn ->
+           write_slack_message(tenant, connect, action, params,
+             block_policy: :trusted_product,
+             ambiguous_write?: true,
+             request_options: task_card_request_options()
+           )
+         end) do
       {:error, reason} = error when action == :update ->
         if task_card_message_missing?(reason),
           do: write_task_card(tenant, connect, rec, :post, desired, rendered),
@@ -259,7 +264,12 @@ defmodule SalixIM.Provider.Slack do
                durable_delivery_metadata?(params["metadata"])
              )
            ) do
-      {:ok, Map.take(response, ["channel", "ts"])}
+      result = {:ok, Map.take(response, ["channel", "ts"])}
+
+      if action == :post,
+        do: MentionReplyLatency.slack_reply(connect, params["thread_ts"], result)
+
+      result
     else
       false ->
         required = if action == :post, do: "channel and text", else: "channel, ts, and text"
@@ -416,6 +426,9 @@ defmodule SalixIM.Provider.Slack do
         "slack.bind_thread_to_task" ->
           ConversationIngress.bind_thread_to_task(scope, connect, params)
 
+        "slack.leave_thread" ->
+          leave_router_thread(scope, connect, params)
+
         _other ->
           call(agent_id, tenant, connect, api, params)
       end
@@ -440,9 +453,11 @@ defmodule SalixIM.Provider.Slack do
           |> Map.put("unfurl_links", false)
           |> Map.put("unfurl_media", false)
 
-        post_product_surface(tenant, connect, params, surface,
-          block_policy: :product_noninteractive
-        )
+        with :ok <- router_thread_open(agent_id, connect, params) do
+          post_product_surface(tenant, connect, params, surface,
+            block_policy: :product_noninteractive
+          )
+        end
       end
 
     notify_thread_reply(agent_id, connect, channel, params["thread_ts"], result)
@@ -474,7 +489,9 @@ defmodule SalixIM.Provider.Slack do
     params = Map.put(params, "text", normalize_slack_text(params["text"]))
 
     result =
-      write_slack_message(tenant, connect, :post, params, block_policy: :tool_noninteractive)
+      with :ok <- router_thread_open(agent_id, connect, params) do
+        write_slack_message(tenant, connect, :post, params, block_policy: :tool_noninteractive)
+      end
 
     notify_thread_reply(agent_id, connect, channel, params["thread_ts"], result)
     emit_slack_outbound_diagnostic(connect, "slack.post_message", params, result)
@@ -484,10 +501,11 @@ defmodule SalixIM.Provider.Slack do
   def call(_agent_id, tenant, connect, "slack.send_dm", params) do
     text = normalize_slack_text(params["text"])
     user_id = str(params["user_id"])
+    recipient = normalize_slack_user_query(params["recipient"])
 
     result =
-      if user_id == "" or String.trim(text) == "" do
-        {:error, "user_id and text are required"}
+      if user_id == "" or recipient == "" or String.trim(text) == "" do
+        {:error, "user_id, recipient and text are required"}
       else
         with {:ok, rendered} <-
                render_slack_message(
@@ -497,6 +515,8 @@ defmodule SalixIM.Provider.Slack do
                  :tool_noninteractive
                ),
              {:ok, token} <- slack_token(tenant, connect),
+             {:ok, user} <- slack_request(token, "users.info", %{"user" => user_id}),
+             :ok <- dm_recipient_matches(slack_user_summary(user), recipient),
              {:ok, conversation} <-
                slack_request(token, "conversations.open", %{"users" => user_id}),
              {:ok, channel_id} <- dm_channel_id(conversation),
@@ -896,7 +916,13 @@ defmodule SalixIM.Provider.Slack do
     files = Enum.map(files, &slack_upload_file/1)
 
     result =
-      with :ok <- require_slack_upload_files(files),
+      with :ok <-
+             router_thread_open(
+               agent_id,
+               connect,
+               Map.put(params, "channel", slack_file_channel_id(params))
+             ),
+           :ok <- require_slack_upload_files(files),
            {:ok, comment_fields} <- render_slack_upload_comment(params["initial_comment"]),
            {:ok, token} <- slack_token(tenant, connect),
            {:ok, uploaded_files} <- stage_slack_file_uploads(agent_id, token, files),
@@ -924,6 +950,13 @@ defmodule SalixIM.Provider.Slack do
       result
     )
 
+    MentionReplyLatency.slack_upload(
+      connect,
+      slack_file_channel_id(params),
+      params["thread_ts"],
+      result
+    )
+
     result
   end
 
@@ -941,6 +974,31 @@ defmodule SalixIM.Provider.Slack do
           {:error, _reason} = error ->
             error
         end
+    end
+  end
+
+  defp router_thread_open(agent_id, connect, params) do
+    case ProviderConnects.resolve_im_connect_inbound_agent(connect) do
+      {:ok, %{"role" => "router", "agent_id" => ^agent_id}} -> thread_open(connect, params)
+      _ -> :ok
+    end
+  end
+
+  defp thread_open(connect, params) do
+    if str(params["thread_ts"]) == "" do
+      :ok
+    else
+      case SlackRouterThreadParticipations.status(
+             connect["group_id"],
+             connect["connect_id"],
+             connect["workspace_id"],
+             connect["bot_user_id"],
+             str(params["channel"]),
+             str(params["thread_ts"])
+           ) do
+        :left -> {:error, "thread_left: do not send again; wait for a new human mention"}
+        _ -> :ok
+      end
     end
   end
 
@@ -980,6 +1038,103 @@ defmodule SalixIM.Provider.Slack do
       _ -> :ok
     end
   end
+
+  # The Router stops following one thread on request: its unmentioned replies
+  # no longer reach the Router until a new human mention restores participation.
+  defp leave_router_thread(%{agent: %{"role" => "router"}, agent_id: agent_id}, connect, params) do
+    channel_id = str(params["channel"])
+    thread_ts = str(params["thread_ts"])
+
+    with true <- channel_id != "" and Regex.match?(~r/\A\d{1,20}\.\d{1,12}\z/, thread_ts),
+         {:ok, %{"role" => "router"} = router} <-
+           ProviderConnects.resolve_im_connect_inbound_agent(connect),
+         true <- str(router["agent_id"]) == str(agent_id),
+         :ok <-
+           SlackRouterThreadParticipations.mark_left(
+             connect["group_id"],
+             connect["connect_id"],
+             connect["workspace_id"],
+             connect["bot_user_id"],
+             channel_id,
+             thread_ts
+           ) do
+      marked = mark_left_message(connect, channel_id, thread_ts, params["locale"])
+
+      {:ok,
+       %{
+         "channel" => channel_id,
+         "thread_ts" => thread_ts,
+         "status" => "left",
+         "marked" => marked
+       }}
+    else
+      {:error, reason} -> {:error, "Slack thread was not left: #{inspect(reason)}"}
+      _ -> {:error, "invalid Slack thread leave request"}
+    end
+  end
+
+  defp leave_router_thread(_scope, _connect, _params),
+    do: {:error, "only the connect's Router can leave a Slack thread"}
+
+  # How long before the leave the Router's goodbye may have been posted.
+  @left_mark_window_seconds 600
+
+  @left_mark_words %{
+    "en" => "Left this thread: mention me to bring me back",
+    "zh-CN" => "已退出这个 thread，@ 我即可回来"
+  }
+
+  defp left_mark_block(locale) do
+    words = Map.get(@left_mark_words, locale, @left_mark_words["en"])
+    %{"type" => "context", "elements" => [%{"type" => "mrkdwn", "text" => "🔕 " <> words}]}
+  end
+
+  # People in the thread see that the Router left it: the station, not the
+  # model, adds a small grey line under the Router's newest message there (its
+  # goodbye). Best effort: the thread is left even when the line cannot be
+  # added. Returns whether it was.
+  defp mark_left_message(connect, channel_id, thread_ts, locale) do
+    bot_user_id = str(connect["bot_user_id"])
+    oldest = SystemsClock.system_time(:second) - @left_mark_window_seconds
+
+    with true <- bot_user_id != "",
+         {:ok, token} <- slack_token(nil, connect),
+         {messages, _cursor} <-
+           API.conversation_replies(token, channel_id, thread_ts,
+             oldest: Integer.to_string(oldest),
+             limit: 200
+           ),
+         %{} = goodbye <-
+           messages
+           |> List.wrap()
+           |> Enum.filter(&(str(&1["user"]) == bot_user_id and str(&1["subtype"]) == ""))
+           |> List.last(),
+         blocks = goodbye_blocks(goodbye),
+         true <- length(blocks) < 50,
+         {:ok, _response} <-
+           slack_request(token, "chat.update", %{
+             "channel" => channel_id,
+             "ts" => str(goodbye["ts"]),
+             "text" => str(goodbye["text"]),
+             "blocks" => blocks ++ [left_mark_block(str(locale))]
+           }) do
+      true
+    else
+      other ->
+        Logger.info("slack router left thread without a mark: #{inspect(other)}")
+        false
+    end
+  rescue
+    error in API.Error ->
+      Logger.info("slack router left thread without a mark: #{API.error_message(error)}")
+      false
+  end
+
+  # Its blocks as Slack keeps them, or its words as one block when it has none.
+  defp goodbye_blocks(%{"blocks" => [_ | _] = blocks}), do: blocks
+
+  defp goodbye_blocks(message),
+    do: [%{"type" => "section", "text" => %{"type" => "mrkdwn", "text" => str(message["text"])}}]
 
   def find_conversation_delivery_message(tenant, connect, channel, thread_ts, operation_ref) do
     find_delivery_message(
@@ -1346,6 +1501,27 @@ defmodule SalixIM.Provider.Slack do
     |> put_present("display_name", profile["display_name"])
     |> put_present("email", profile["email"])
     |> put_present("title", profile["title"])
+  end
+
+  # A DM goes to whoever `user_id` names, so the caller also says whom it
+  # means, and a user it does not match is refused before anything is sent.
+  # The match is the one `slack.list_users` uses for its query, without the
+  # id and title, so an id a model guessed is caught however it was written.
+  defp dm_recipient_matches(entry, recipient) do
+    if slack_user_matches_query?(Map.drop(entry, ["id", "title"]), recipient) do
+      :ok
+    else
+      names =
+        ["real_name", "display_name", "name", "email"]
+        |> Enum.map(&str(entry[&1]))
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+        |> Enum.join(", ")
+
+      {:error,
+       "user_id #{entry["id"]} is #{names}, not #{inspect(recipient)}; nothing was sent. " <>
+         "Resolve the intended person with slack.list_users and retry with the returned id."}
+    end
   end
 
   defp slack_user_matches_query?(_entry, ""), do: true

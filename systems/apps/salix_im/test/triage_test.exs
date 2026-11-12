@@ -203,9 +203,23 @@ defmodule SalixIM.TriageTest do
 
     accept!(server, authority, thread_receipt!(authority, "Ev-gen-1", ts(1), text: "first"))
     settle_receive({:before_seal, _scope, first_generation, _pid, _at})
+
+    # The hook runs before each seal attempt, and an attempt can wait and run
+    # again for the same generation. Accept the second receipt only once the
+    # first generation is durably sealed.
+    assert eventually(fn ->
+             match?(
+               {:ok, %{"sealed_generations" => [%{"generation" => ^first_generation}]}},
+               Bucketing.load(namespace, scope(authority))
+             )
+           end)
+
     accept!(server, authority, thread_receipt!(authority, "Ev-gen-2", ts(2), text: "second"))
-    settle_receive({:before_seal, _scope, second_generation, _pid, _at})
-    refute second_generation == first_generation
+
+    settle_receive(
+      {:before_seal, _scope, second_generation, _pid, _at}
+      when second_generation != first_generation
+    )
 
     bucket =
       eventually(fn ->

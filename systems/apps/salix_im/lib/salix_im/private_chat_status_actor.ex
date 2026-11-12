@@ -122,8 +122,19 @@ defmodule SalixIM.PrivateChatStatusActor do
   def handle_info({:tick, token}, %{timer: {_, token}} = state) do
     state = %{state | timer: nil}
 
+    if SalixIM.PrivateChatStatus.enabled?() and
+         not PrivateChatStatusPlacement.local_owner?(state.agent_id) do
+      hand_off(state)
+      {:stop, :normal, state}
+    else
+      tick(state)
+    end
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp tick(state) do
     with true <- SalixIM.PrivateChatStatus.enabled?(),
-         true <- PrivateChatStatusPlacement.local_owner?(state.agent_id),
          {:ok, %{"router_agent_id" => agent_id}} when agent_id == state.agent_id <-
            GroupDirectory.get_group(state.group_id),
          {:ok, connect} <-
@@ -155,7 +166,37 @@ defmodule SalixIM.PrivateChatStatusActor do
     _, _ -> {:stop, :normal, state}
   end
 
-  def handle_info(_message, state), do: {:noreply, state}
+  # The ring placed the Router on another node (a draining node leaves the
+  # ring before its agents stop, so the Router can still run here for a
+  # while): the indicator is cleared here and the actor on the owner takes
+  # the accepted sources over, so the user's status does not go dark.
+  defp hand_off(%{session_id: nil}), do: :ok
+
+  defp hand_off(state) do
+    with {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(
+             state.group_id,
+             state.connect_id,
+             state.provider
+           ) do
+      _ = clear_typing(state, connect)
+
+      case PrivateChatStatusPlacement.ensure_started(state.agent_id, connect, state.target) do
+        {:ok, pid} when pid != self() ->
+          for source_id <- Enum.reverse(state.sources),
+              do: activate(pid, source_id, state.session_id)
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   @impl true
   def terminate(_reason, state) do

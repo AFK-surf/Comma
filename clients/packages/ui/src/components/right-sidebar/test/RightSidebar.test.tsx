@@ -8,7 +8,9 @@ import {
   RIGHT_SIDEBAR_MIN_WIDTH,
   RightSidebar,
   RightSidebarToolbarButton,
+  type RightSidebarTab,
 } from "../RightSidebar";
+import { isNativeSurfaceSuppressed } from "../../native-surface/nativeSurfaceSuppression";
 import { stubProperty } from "@comma/test-utils/stub-property";
 
 const tabs = [
@@ -513,6 +515,82 @@ describe("RightSidebar", () => {
     expect(successorTab).toHaveFocus();
   });
 
+  it("closes the other tabs from a tab's menu, keeping pinned tabs and selecting the tab", async () => {
+    const user = userEvent.setup();
+    const handleDuplicate = vi.fn();
+    render(<TabMenuHarness onTabDuplicate={handleDuplicate} />);
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Second" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Pin tab",
+      "Duplicate tab",
+      "Close tab",
+      "Close other tabs",
+      "Close tabs to the right",
+    ]);
+    await user.click(screen.getByRole("menuitem", { name: "Duplicate tab" }));
+    expect(handleDuplicate).toHaveBeenCalledWith("second");
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Second" }));
+    await user.click(screen.getByRole("menuitem", { name: "Close other tabs" }));
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Pinned",
+      "Second",
+    ]);
+    expect(screen.getByRole("tab", { name: "Second" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  });
+
+  it("closes the tabs to the right and disables it for the last tab", async () => {
+    const user = userEvent.setup();
+    render(<TabMenuHarness />);
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "Third" }));
+    expect(
+      screen.getByRole("menuitem", { name: "Close tabs to the right" })
+    ).toHaveAttribute("aria-disabled", "true");
+    // A tab that cannot be copied offers no Duplicate.
+    expect(
+      screen.queryByRole("menuitem", { name: "Duplicate tab" })
+    ).not.toBeInTheDocument();
+    // The menu drops over the browser page; its native view must step aside.
+    expect(isNativeSurfaceSuppressed()).toBe(true);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(isNativeSurfaceSuppressed()).toBe(false));
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "First" }));
+    await user.click(screen.getByRole("menuitem", { name: "Close tabs to the right" }));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Pinned",
+      "First",
+    ]);
+    // The selected tab was among them, so the menu's tab comes forward.
+    expect(screen.getByRole("tab", { name: "First" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  });
+
+  it("shows a pinned tab as its icon without a close button and unpins it from the keyboard menu", async () => {
+    const user = userEvent.setup();
+    const handlePinnedChange = vi.fn();
+    render(<TabMenuHarness onTabPinnedChange={handlePinnedChange} />);
+
+    const pinned = screen.getByRole("tab", { name: "Pinned" });
+    expect(pinned.querySelector(".truncate")).toHaveClass("sr-only");
+    expect(
+      screen.queryByRole("button", { name: "Close Pinned" })
+    ).not.toBeInTheDocument();
+
+    pinned.focus();
+    await user.keyboard("{Shift>}{F10}{/Shift}");
+    await user.click(screen.getByRole("menuitem", { name: "Unpin tab" }));
+    expect(handlePinnedChange).toHaveBeenCalledWith("pinned", false);
+  });
+
   it("falls back to the first available tab when the controlled id is invalid", () => {
     const handleTabChange = vi.fn();
     render(
@@ -644,6 +722,39 @@ const ClosableTabsHarness = () => {
         setCurrentTabs((current) => current.filter((tab) => tab.id !== tabId));
         if (tabId === activeTab) setActiveTab("second");
       }}
+      onWidthChange={vi.fn()}
+      open
+      tabs={currentTabs}
+      width={RIGHT_SIDEBAR_DEFAULT_WIDTH}
+    />
+  );
+};
+
+const TabMenuHarness = ({
+  onTabDuplicate = vi.fn(),
+  onTabPinnedChange = vi.fn(),
+}: {
+  onTabDuplicate?: (tabId: string) => void;
+  onTabPinnedChange?: (tabId: string, pinned: boolean) => void;
+}) => {
+  const [activeTab, setActiveTab] = useState("third");
+  const [currentTabs, setCurrentTabs] = useState<RightSidebarTab[]>([
+    { closable: true, icon: <svg />, id: "pinned", label: "Pinned", pinned: true },
+    { closable: true, id: "first", label: "First" },
+    { closable: true, duplicable: true, id: "second", label: "Second" },
+    { closable: true, id: "third", label: "Third" },
+  ]);
+
+  return (
+    <RightSidebar
+      activeTab={activeTab}
+      ariaLabel="Chat sidebar"
+      onTabChange={setActiveTab}
+      onTabClose={(tabId) => {
+        setCurrentTabs((current) => current.filter((tab) => tab.id !== tabId));
+      }}
+      onTabDuplicate={onTabDuplicate}
+      onTabPinnedChange={onTabPinnedChange}
       onWidthChange={vi.fn()}
       open
       tabs={currentTabs}

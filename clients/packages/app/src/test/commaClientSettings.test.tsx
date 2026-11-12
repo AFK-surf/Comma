@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { useCommaI18n } from "@comma/i18n/react";
+import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
 import {
   appPreferencesSchema,
   commaClientSettingsSchema,
@@ -307,6 +307,66 @@ describe("CommaElectronClientSettingsProvider", () => {
       String(!defaultCommaClientSettings.sessionHistoryEnabled)
     );
     expect(settingsRenders).toBe(settledSettings + 1);
+  });
+
+  it("re-renders message consumers for a locale change but not for another client setting", async () => {
+    let preferences = appPreferencesSchema.parse({
+      clientSettings: structuredClone(defaultCommaClientSettings),
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+    });
+    const listeners: Array<(snapshot: AppPreferences) => void> = [];
+    const state = createNativeStateBridgeMock(() => preferences);
+    state.subscribe = vi.fn((listener: (snapshot: AppPreferences) => void) => {
+      listeners.push(listener);
+      return () => {};
+    }) as typeof state.subscribe;
+    installNativeBridgeMock({
+      appPreferences: {
+        initializeClientSettings: vi.fn(async () => preferences),
+        state,
+        update: vi.fn(async () => preferences),
+      },
+      platform: "electron",
+    });
+    // Main publishes every change as a whole snapshot; IPC delivers a new copy.
+    const publishClientSettings = (patch: Partial<CommaClientSettings>) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        clientSettings: { ...preferences.clientSettings!, ...patch },
+        revision: preferences.revision + 1,
+      });
+      act(() => {
+        for (const listener of listeners) listener(structuredClone(preferences));
+      });
+    };
+
+    let messageRenders = 0;
+    function MessagesConsumer() {
+      const messages = useCommaMessages();
+      messageRenders += 1;
+      return <output aria-label="settings label">{messages.nav_settings()}</output>;
+    }
+
+    render(
+      <CommaElectronClientSettingsProvider initialPreferences={preferences}>
+        <CommaClientSettingsI18nProvider>
+          <MessagesConsumer />
+        </CommaClientSettingsI18nProvider>
+      </CommaElectronClientSettingsProvider>
+    );
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    const settled = messageRenders;
+
+    publishClientSettings({
+      sessionHistoryEnabled: !preferences.clientSettings!.sessionHistoryEnabled,
+    });
+    expect(messageRenders).toBe(settled);
+
+    publishClientSettings({ localePreference: "zh-CN" });
+    expect(screen.getByLabelText("settings label")).toHaveTextContent("设置");
+    expect(messageRenders).toBeGreaterThan(settled);
   });
 });
 

@@ -8,19 +8,20 @@ defmodule SalixIM.ConversationsTest do
   @participant_identity_slots_field "_participant_identity_slots"
 
   alias SalixIM.{
-    ConversationMessageCodec,
     ConversationParticipantActivity,
+    ConversationParticipantPGStore,
+    ConversationPGStore,
     ConversationPlacement,
     ConversationSearchProjection,
     ConversationServer,
     Conversations,
-    Provider,
     RouterConversationInput
   }
 
   alias SalixIM.Provider.Slack.ConversationIngress, as: SlackConversationIngress
   alias SalixIM.ConversationSeedInput
-  alias SalixStore.{CasRecord, ConversationSearch, Ids, Keys, Repo, S3, SearchDocumentEnvelope}
+  alias SalixStore.{CasRecord, ConversationSearch, Ids, Keys, Repo, S3}
+  alias SalixAgent.InternalSessionStore.PGCodec
 
   defmodule RealtimeSessionActivity do
     @moduledoc false
@@ -179,492 +180,6 @@ defmodule SalixIM.ConversationsTest do
 
       :ok
     end
-  end
-
-  defmodule ReadProbe do
-    @moduledoc false
-    use Agent
-
-    def start_link(_opts),
-      do:
-        Agent.start_link(
-          fn -> %{active: 0, max_active: 0, gets: %{}, owner: nil, key_prefix: nil} end,
-          name: __MODULE__
-        )
-
-    def reset(owner \\ nil, key_prefix \\ nil),
-      do:
-        Agent.update(__MODULE__, fn _ ->
-          %{active: 0, max_active: 0, gets: %{}, owner: owner, key_prefix: key_prefix}
-        end)
-
-    def begin_get(key) do
-      caller = SystemsRuntime.Proc.self()
-
-      Agent.get_and_update(__MODULE__, fn state ->
-        tracked_key? =
-          is_nil(state.key_prefix) or String.starts_with?(key, state.key_prefix)
-
-        if tracked_key? and (is_nil(state.owner) or state.owner == caller) do
-          active = state.active + 1
-
-          {true,
-           %{
-             state
-             | active: active,
-               max_active: max(state.max_active, active),
-               gets: Map.update(state.gets, key, 1, &(&1 + 1))
-           }}
-        else
-          {false, state}
-        end
-      end)
-    end
-
-    def end_get, do: Agent.update(__MODULE__, &%{&1 | active: &1.active - 1})
-    def snapshot, do: Agent.get(__MODULE__, & &1)
-
-    def handle_telemetry(event, _measurements, metadata, test_pid),
-      do: SystemsRuntime.Proc.send(test_pid, {event, metadata})
-  end
-
-  defmodule LegacyOrphanReadBarrier do
-    @moduledoc false
-    use Agent
-
-    def start_link(_opts),
-      do: Agent.start_link(fn -> %{key: nil, owner: nil, captured: 0} end, name: __MODULE__)
-
-    def arm(key, owner),
-      do: Agent.update(__MODULE__, fn _ -> %{key: key, owner: owner, captured: 0} end)
-
-    def capture(key) do
-      try do
-        Agent.get_and_update(__MODULE__, fn state ->
-          if state.key == key and state.captured < 2 do
-            {{:wait, state.owner}, %{state | captured: state.captured + 1}}
-          else
-            {:pass, state}
-          end
-        end)
-      catch
-        :exit, _reason -> :pass
-      end
-    end
-  end
-
-  defmodule LegacyOrphanBarrierS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def get(key, opts) do
-      result = SalixStore.S3.Fake.get(key, opts)
-
-      case LegacyOrphanReadBarrier.capture(key) do
-        {:wait, owner} ->
-          SystemsRuntime.Proc.send(
-            owner,
-            {:legacy_orphan_read_waiting, SystemsRuntime.Proc.self(), key}
-          )
-
-          SystemsRuntime.Proc.receive do
-            {:release_legacy_orphan_read, ^key} -> result
-          after
-            5_000 -> {:error, :legacy_orphan_read_timeout}
-          end
-
-        :pass ->
-          result
-      end
-    end
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule InstrumentedS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def get(key, opts) do
-      tracked? = ReadProbe.begin_get(key)
-      if tracked?, do: SystemsClock.sleep(20)
-
-      try do
-        SalixStore.S3.Fake.get(key, opts)
-      after
-        if tracked?, do: ReadProbe.end_get()
-      end
-    end
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule MessageSegmentReadBarrierS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @state_key {__MODULE__, :state}
-
-    def arm(key, reader, owner),
-      do: SystemsRuntime.PersistentTerm.put(@state_key, %{key: key, reader: reader, owner: owner})
-
-    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
-
-    @impl true
-    def get(key, opts) do
-      result = SalixStore.S3.Fake.get(key, opts)
-
-      systems_self = SystemsRuntime.Proc.self()
-
-      case SystemsRuntime.PersistentTerm.get(@state_key, nil) do
-        %{key: ^key, reader: reader, owner: owner} when reader == systems_self ->
-          SystemsRuntime.PersistentTerm.erase(@state_key)
-
-          SystemsRuntime.Proc.send(
-            owner,
-            {:message_segment_read_parked, SystemsRuntime.Proc.self(), key}
-          )
-
-          SystemsRuntime.Proc.receive do
-            {:release_message_segment_read, ^key} -> result
-          after
-            5_000 -> {:error, :message_segment_read_barrier_timeout}
-          end
-
-        _other ->
-          result
-      end
-    end
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ConversationHydrationErrorS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def get(key, opts) do
-      if String.contains?(key, "/cnv1_0000000000000000003/") do
-        {:error, {:http, 503}}
-      else
-        SalixStore.S3.Fake.get(key, opts)
-      end
-    end
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ConversationListScanProbe do
-    @moduledoc false
-    use Agent
-
-    def start_link(_opts),
-      do: Agent.start_link(fn -> %{gets: 0, lists: 0, owner: nil} end, name: __MODULE__)
-
-    def reset do
-      owner = SystemsRuntime.Proc.self()
-      Agent.update(__MODULE__, fn _ -> %{gets: 0, lists: 0, owner: owner} end)
-    end
-
-    def increment(kind) do
-      callers = [SystemsRuntime.Proc.self() | Process.get(:"$callers", [])]
-
-      Agent.update(__MODULE__, fn state ->
-        if is_nil(state.owner) or state.owner in callers,
-          do: Map.update!(state, kind, &(&1 + 1)),
-          else: state
-      end)
-    end
-
-    def snapshot, do: Agent.get(__MODULE__, &Map.take(&1, [:gets, :lists]))
-  end
-
-  defmodule CountingConversationListS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def get(key, opts) do
-      ConversationListScanProbe.increment(:gets)
-      SalixStore.S3.Fake.get(key, opts)
-    end
-
-    @impl true
-    def list(prefix, opts) do
-      ConversationListScanProbe.increment(:lists)
-      SalixStore.S3.Fake.list(prefix, opts)
-    end
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ParticipantStateScanProbe do
-    @moduledoc false
-    use Agent
-
-    def start_link(_opts),
-      do:
-        Agent.start_link(fn -> %{lists: 0, max_requested: 0, max_returned: 0} end,
-          name: __MODULE__
-        )
-
-    def reset,
-      do: Agent.update(__MODULE__, fn _ -> %{lists: 0, max_requested: 0, max_returned: 0} end)
-
-    def record(opts, result) do
-      returned =
-        case result do
-          {:ok, %{objects: objects}} -> length(objects)
-          _ -> 0
-        end
-
-      Agent.update(__MODULE__, fn state ->
-        %{
-          lists: state.lists + 1,
-          max_requested: max(state.max_requested, opts[:max_keys] || 0),
-          max_returned: max(state.max_returned, returned)
-        }
-      end)
-    end
-
-    def snapshot, do: Agent.get(__MODULE__, & &1)
-  end
-
-  defmodule CountingParticipantStateS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def list(prefix, opts) do
-      result = SalixStore.S3.Fake.list(prefix, opts)
-
-      if String.contains?(prefix, "/participant") do
-        ParticipantStateScanProbe.record(opts, result)
-      end
-
-      result
-    end
-
-    @impl true
-    defdelegate get(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ParticipantSecondPageFailureS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def list(prefix, opts) do
-      if String.contains?(prefix, "/participant_states/") and is_binary(opts[:start_after]) do
-        {:error, {:http, 503}}
-      else
-        SalixStore.S3.Fake.list(prefix, opts)
-      end
-    end
-
-    @impl true
-    defdelegate get(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
   end
 
   defmodule BlockingAgentDelivery do
@@ -858,395 +373,6 @@ defmodule SalixIM.ConversationsTest do
     end
   end
 
-  defmodule DeliveryAckFaultS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def put(key, body, opts) do
-      if SystemsRuntime.get_env(:salix_im, :drop_delivery_ack_once, false) and
-           delivered_record?(body) do
-        SystemsRuntime.put_env(:salix_im, :drop_delivery_ack_once, false)
-
-        SystemsRuntime.Proc.send(
-          SystemsRuntime.fetch_env!(:salix_im, :delivery_ack_fault_test_pid),
-          {:delivery_ack_write_dropped, key}
-        )
-
-        {:error, {:ambiguous, :injected}}
-      else
-        SalixStore.S3.Fake.put(key, body, opts)
-      end
-    end
-
-    @impl true
-    defdelegate get(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-
-    defp delivered_record?(body) do
-      case Jason.decode(IO.iodata_to_binary(body)) do
-        {:ok, %{"status" => "delivered"}} -> true
-        _ -> false
-      end
-    end
-  end
-
-  defmodule ConversationWriteFaultOnceS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def put(key, body, opts) do
-      cond do
-        SystemsRuntime.get_env(:salix_im, :fail_conversation_tombstone_once, false) and
-          key == SystemsRuntime.get_env(:salix_im, :conversation_tombstone_fault_key) and
-            tombstone?(body) ->
-          SystemsRuntime.put_env(:salix_im, :fail_conversation_tombstone_once, false)
-          {:error, {:http, 503}}
-
-        SystemsRuntime.get_env(:salix_im, :inject_participant_collision, false) and
-          String.contains?(key, "/participant_states/") and
-          String.ends_with?(key, ".json") and opts[:if_none_match] == "*" ->
-          SystemsRuntime.put_env(:salix_im, :inject_participant_collision, false)
-          SystemsRuntime.put_env(:salix_im, :participant_collision_key, key)
-          {:error, :precondition_failed}
-
-        SystemsRuntime.get_env(:salix_im, :fail_participant_state_once, false) and
-          String.contains?(key, "/participant_states/") and opts[:if_none_match] == "*" ->
-          SystemsRuntime.put_env(:salix_im, :fail_participant_state_once, false)
-          SystemsRuntime.put_env(:salix_im, :failed_participant_state_key, key)
-          {:error, {:http, 503}}
-
-        SystemsRuntime.get_env(:salix_im, :fail_message_segment_once, false) and
-            String.contains?(key, "/messages/segments/") ->
-          SystemsRuntime.put_env(:salix_im, :fail_message_segment_once, false)
-          {:error, {:http, 503}}
-
-        true ->
-          SalixStore.S3.Fake.put(key, body, opts)
-      end
-    end
-
-    @impl true
-    def get(key, opts) do
-      if key == SystemsRuntime.get_env(:salix_im, :participant_collision_key) do
-        {:ok, %{body: "{}", etag: "collision"}}
-      else
-        SalixStore.S3.Fake.get(key, opts)
-      end
-    end
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-
-    defp tombstone?(body) do
-      case Jason.decode(IO.iodata_to_binary(body)) do
-        {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) -> true
-        _ -> false
-      end
-    end
-  end
-
-  defmodule ConversationDeleteFaultOnceS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def delete(key, opts) do
-      conversation_prefix =
-        SystemsRuntime.get_env(:salix_im, :delete_fault_conversation_prefix, "")
-
-      if SystemsRuntime.get_env(:salix_im, :fail_conversation_child_delete_once, false) and
-           conversation_prefix != "" and String.starts_with?(key, conversation_prefix) and
-           not String.ends_with?(key, "/meta.json") do
-        SystemsRuntime.put_env(:salix_im, :fail_conversation_child_delete_once, false)
-
-        SystemsRuntime.Proc.send(
-          SystemsRuntime.fetch_env!(:salix_im, :conversation_delete_fault_test_pid),
-          {:conversation_child_delete_failed, key}
-        )
-
-        {:error, {:http, 503}}
-      else
-        SalixStore.S3.Fake.delete(key, opts)
-      end
-    end
-
-    @impl true
-    defdelegate get(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate list(prefix, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ConversationDeleteRaceS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def list(prefix, opts) do
-      cond do
-        SystemsRuntime.get_env(:salix_im, :drop_participant_state_after_list_once, false) and
-            prefix ==
-              SystemsRuntime.get_env(:salix_im, :delete_race_participant_states_prefix) ->
-          case SalixStore.S3.Fake.list(prefix, opts) do
-            {:ok, %{objects: [object | _rest]}} = result ->
-              SystemsRuntime.put_env(:salix_im, :drop_participant_state_after_list_once, false)
-              :ok = SalixStore.S3.Fake.delete(object.key, [])
-
-              SystemsRuntime.Proc.send(
-                SystemsRuntime.fetch_env!(:salix_im, :conversation_delete_race_test_pid),
-                {:participant_state_deleted_after_list, object.key}
-              )
-
-              result
-
-            result ->
-              result
-          end
-
-        SystemsRuntime.get_env(:salix_im, :fail_delete_cleanup_stage_not_found_once, false) and
-            prefix == SystemsRuntime.get_env(:salix_im, :delete_cleanup_stage_prefix) ->
-          SystemsRuntime.put_env(:salix_im, :fail_delete_cleanup_stage_not_found_once, false)
-
-          SystemsRuntime.Proc.send(
-            SystemsRuntime.fetch_env!(:salix_im, :conversation_delete_race_test_pid),
-            :conversation_cleanup_stage_not_found
-          )
-
-          {:error, :not_found}
-
-        true ->
-          SalixStore.S3.Fake.list(prefix, opts)
-      end
-    end
-
-    @impl true
-    defdelegate get(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put(key, body, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-  end
-
-  defmodule ConversationTombstoneOwnerCrashS3 do
-    @moduledoc false
-    @behaviour SalixStore.S3
-
-    @impl true
-    def put(key, body, opts) do
-      result = SalixStore.S3.Fake.put(key, body, opts)
-
-      if SystemsRuntime.get_env(:salix_im, :crash_tombstone_owner_once, false) and
-           key == SystemsRuntime.get_env(:salix_im, :crash_tombstone_key) and
-           tombstone?(body) and match?({:ok, _}, result) do
-        SystemsRuntime.put_env(:salix_im, :crash_tombstone_owner_once, false)
-
-        if SystemsRuntime.get_env(
-             :salix_im,
-             :fail_recovery_meta_get_after_tombstone_crash_once,
-             false
-           ) do
-          SystemsRuntime.put_env(
-            :salix_im,
-            :fail_recovery_meta_get_after_tombstone_crash_once,
-            false
-          )
-
-          SystemsRuntime.put_env(:salix_im, :fail_recovery_meta_get_once, true)
-        end
-
-        SystemsRuntime.Proc.send(
-          SystemsRuntime.fetch_env!(:salix_im, :crash_tombstone_test_pid),
-          :tombstone_committed
-        )
-
-        exit(:kill)
-      end
-
-      result
-    end
-
-    @impl true
-    def list(prefix, opts) do
-      cleanup_prefix =
-        SystemsRuntime.get_env(:salix_im, :crash_participant_states_prefix)
-
-      if SystemsRuntime.get_env(:salix_im, :block_deleted_participant_cleanup, false) and
-           is_binary(cleanup_prefix) and String.starts_with?(prefix, cleanup_prefix) do
-        SystemsRuntime.Proc.send(
-          SystemsRuntime.fetch_env!(:salix_im, :crash_tombstone_test_pid),
-          :deleted_participant_cleanup_blocked
-        )
-
-        {:error, {:http, 503}}
-      else
-        SalixStore.S3.Fake.list(prefix, opts)
-      end
-    end
-
-    @impl true
-    def get(key, opts) do
-      if SystemsRuntime.get_env(:salix_im, :fail_recovery_meta_get_once, false) and
-           key == SystemsRuntime.get_env(:salix_im, :crash_tombstone_key) do
-        SystemsRuntime.put_env(:salix_im, :fail_recovery_meta_get_once, false)
-
-        test_pid = SystemsRuntime.fetch_env!(:salix_im, :crash_tombstone_test_pid)
-        SystemsRuntime.Proc.send(test_pid, :recovery_meta_get_failed)
-
-        if SystemsRuntime.get_env(:salix_im, :block_recovery_meta_get_once, false) do
-          SystemsRuntime.Proc.send(
-            test_pid,
-            {:recovery_meta_get_blocked, SystemsRuntime.Proc.self()}
-          )
-
-          SystemsRuntime.Proc.receive do
-            :release_recovery_meta_get -> :ok
-          after
-            5_000 -> :ok
-          end
-        end
-
-        {:error, {:http, 503}}
-      else
-        SalixStore.S3.Fake.get(key, opts)
-      end
-    end
-
-    @impl true
-    defdelegate put_stream(key, stream, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate stream(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate head(key), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate delete(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_create(key, opts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_upload_part(key, upload_id, part_number, body),
-      to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_complete(key, upload_id, parts), to: SalixStore.S3.Fake
-
-    @impl true
-    defdelegate multipart_abort(key, upload_id), to: SalixStore.S3.Fake
-
-    defp tombstone?(body) do
-      case Jason.decode(IO.iodata_to_binary(body)) do
-        {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) -> true
-        _ -> false
-      end
-    end
-  end
-
   setup do
     SalixAgent.TestSupport.stop_all_agents()
     SalixIM.TestSupport.Fleet.stop_all!()
@@ -1278,26 +404,6 @@ defmodule SalixIM.ConversationsTest do
         restore(:salix_agent, :llm, prev_llm)
         restore(:salix_im, :agent_delivery_mod, prev_agent_delivery)
         restore(:salix_im, :session_activity_mod, prev_session_activity)
-        SystemsRuntime.delete_env(:salix_im, :delete_fault_conversation_prefix)
-        SystemsRuntime.delete_env(:salix_im, :fail_conversation_child_delete_once)
-        SystemsRuntime.delete_env(:salix_im, :conversation_delete_fault_test_pid)
-        SystemsRuntime.delete_env(:salix_im, :drop_participant_state_after_list_once)
-        SystemsRuntime.delete_env(:salix_im, :delete_race_participant_states_prefix)
-        SystemsRuntime.delete_env(:salix_im, :fail_delete_cleanup_stage_not_found_once)
-        SystemsRuntime.delete_env(:salix_im, :delete_cleanup_stage_prefix)
-        SystemsRuntime.delete_env(:salix_im, :conversation_delete_race_test_pid)
-        SystemsRuntime.delete_env(:salix_im, :fail_conversation_tombstone_once)
-        SystemsRuntime.delete_env(:salix_im, :conversation_tombstone_fault_key)
-        SystemsRuntime.delete_env(:salix_im, :crash_tombstone_owner_once)
-        SystemsRuntime.delete_env(:salix_im, :crash_tombstone_key)
-        SystemsRuntime.delete_env(:salix_im, :crash_tombstone_test_pid)
-        SystemsRuntime.delete_env(:salix_im, :fail_recovery_meta_get_after_tombstone_crash_once)
-        SystemsRuntime.delete_env(:salix_im, :fail_recovery_meta_get_once)
-        SystemsRuntime.delete_env(:salix_im, :block_recovery_meta_get_once)
-        SystemsRuntime.delete_env(:salix_im, :crash_participant_states_prefix)
-        SystemsRuntime.delete_env(:salix_im, :fail_participant_state_once)
-        SystemsRuntime.delete_env(:salix_im, :failed_participant_state_key)
-        SystemsRuntime.delete_env(:salix_im, :block_deleted_participant_cleanup)
         SystemsRuntime.delete_env(:salix_im, :blocking_agent_delivery_test_pid)
       end
     end)
@@ -1646,8 +752,8 @@ defmodule SalixIM.ConversationsTest do
              )
 
     settle_receive({:conversation_message_created, ^group_id, ^conversation_id, ^message_id, 1})
-    meta_key = Keys.ctl_group_conversation_meta(group_id, conversation_id)
-    meta_before_retry = SalixStore.S3.Fake.dump()[meta_key].body
+    scope = ConversationPGStore.new(group_id, conversation_id)
+    assert {:ok, meta_before_retry, revision} = ConversationPGStore.read(scope)
 
     assert {:ok, %{"inserted" => false, "seq" => 1}} =
              ConversationServer.append_group_conversation_message(
@@ -1656,7 +762,7 @@ defmodule SalixIM.ConversationsTest do
                attrs
              )
 
-    assert SalixStore.S3.Fake.dump()[meta_key].body == meta_before_retry
+    assert {:ok, ^meta_before_retry, ^revision} = ConversationPGStore.read(scope)
 
     settle_refute_receive(
       {:conversation_message_created, ^group_id, ^conversation_id, ^message_id, 1},
@@ -2354,102 +1460,6 @@ defmodule SalixIM.ConversationsTest do
     assert idempotent_message["client_request_id"] == "same-request"
   end
 
-  test "owner serialization cannot leave the same sequence in different segments", %{
-    group_id: group_id
-  } do
-    now = SystemsClock.system_time(:millisecond)
-
-    assert {:ok, %{"conversation_id" => conversation_id}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "title" => "Concurrent segment boundary",
-               "participants" => [user_participant(now)]
-             })
-
-    assert {:ok, %{"inserted" => true}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               %{
-                 "actor_type" => "user",
-                 "user_id" => "current",
-                 "content" => String.duplicate("s", 850_000),
-                 "client_request_id" => "segment-seed"
-               }
-             )
-
-    append = fn request_id, content ->
-      SystemsRuntime.Task.async(fn ->
-        ConversationServer.append_group_conversation_message(
-          group_id,
-          conversation_id,
-          %{
-            "actor_type" => "user",
-            "user_id" => "current",
-            "content" => content,
-            "client_request_id" => request_id
-          }
-        )
-      end)
-    end
-
-    small = append.("segment-small", "small")
-    large = append.("segment-large", String.duplicate("l", 200_000))
-
-    assert {:ok, small_result} = settled_await(small)
-    assert {:ok, large_result} = settled_await(large)
-    assert small_result["inserted"] == true
-    assert large_result["inserted"] == true
-
-    segment_prefix =
-      Keys.ctl_group_conversation_messages_segments_prefix(group_id, conversation_id)
-
-    assert {:ok, segment_objects} = SalixStore.S3.list_all(segment_prefix)
-
-    raw_messages =
-      Enum.flat_map(segment_objects, fn %{key: key} ->
-        assert {:ok, %{body: body}} = SalixStore.S3.get(key)
-
-        body
-        |> String.split("\n", trim: true)
-        |> Enum.map(&Jason.decode!/1)
-      end)
-
-    assert Enum.map(raw_messages, & &1["seq"]) |> Enum.sort() == [1, 2, 3]
-
-    assert raw_messages
-           |> Enum.group_by(& &1["seq"])
-           |> Enum.all?(fn {_seq, messages} -> length(messages) == 1 end)
-
-    assert MapSet.new(Enum.map(raw_messages, & &1["client_request_id"])) ==
-             MapSet.new(["segment-seed", "segment-small", "segment-large"])
-
-    raced_messages =
-      Enum.reject(raw_messages, &(&1["client_request_id"] == "segment-seed"))
-
-    assert MapSet.new([small_result["message_id"], large_result["message_id"]]) ==
-             MapSet.new(raced_messages, & &1["message_id"])
-
-    assert MapSet.new([small_result["seq"], large_result["seq"]]) == MapSet.new([2, 3])
-
-    segment_index_prefix =
-      Keys.ctl_group_conversation_message_segment_index_prefix(group_id, conversation_id)
-
-    assert {:ok, segment_index_objects} = SalixStore.S3.list_all(segment_index_prefix)
-
-    segment_ids =
-      MapSet.new(segment_objects, fn %{key: key} ->
-        key |> Path.basename() |> String.trim_trailing(".jsonl")
-      end)
-
-    segment_index_ids =
-      MapSet.new(segment_index_objects, fn %{key: key} ->
-        key |> Path.basename() |> String.trim_trailing(".json")
-      end)
-
-    assert MapSet.size(segment_ids) == 2
-    assert segment_index_ids == segment_ids
-  end
-
   test "generic append cannot forge recipient identity through a real Slack participant", %{
     group_id: group_id,
     router_id: router_id,
@@ -2660,60 +1670,6 @@ defmodule SalixIM.ConversationsTest do
            end)
   end
 
-  test "conversation owner completes one idempotent append across ambiguous segment and meta writes",
-       %{
-         group_id: group_id
-       } do
-    now = SystemsClock.system_time(:millisecond)
-
-    assert {:ok, %{"conversation_id" => conversation_id}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "title" => "Recovered append",
-               "participants" => [user_participant(now)]
-             })
-
-    segment_key =
-      Keys.ctl_group_conversation_message_segment(
-        group_id,
-        conversation_id,
-        "000000000000000001"
-      )
-
-    conversation_key = Keys.ctl_group_conversation(group_id, conversation_id)
-    sequence_key = Keys.ctl_group_conversation_message_seq_index(group_id, conversation_id, 1)
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, sequence_key})
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, segment_key})
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, conversation_key})
-
-    attrs = %{
-      "content" => "persist exactly once",
-      "client_request_id" => "ambiguous-append"
-    }
-
-    assert {:ok, %{"inserted" => true, "message_id" => message_id}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               attrs
-             )
-
-    assert {:ok, %{"inserted" => false, "message_id" => ^message_id}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               attrs
-             )
-
-    assert {:ok, [%{"message_id" => ^message_id, "content" => content}]} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               conversation_id,
-               limit: 20
-             )
-
-    assert content == [%{"type" => "text", "text" => "persist exactly once"}]
-  end
-
   test "conversation list owns bounded kind filtering and paginates canonical Tasks", %{
     group_id: group_id,
     router_id: router_id,
@@ -2775,7 +1731,7 @@ defmodule SalixIM.ConversationsTest do
   # A change writes the Conversation's newer list entry before it commits and deletes the older one after. A
   # listing that ran before the newer entry existed holds only the older one; the Conversation is still listed, once,
   # at its new place.
-  test "a conversation changed while the list was read is listed at its new place", %{
+  test "a renamed conversation is listed with its current fields and sort position", %{
     group_id: group_id
   } do
     assert {:ok, %{"conversation_id" => older_id}} =
@@ -2792,29 +1748,10 @@ defmodule SalixIM.ConversationsTest do
                "updated_at" => 20
              })
 
-    entry_of = fn conversation_id ->
-      assert {:ok, %{objects: objects}} =
-               S3.list(Keys.ctl_group_conversation_list_prefix(group_id))
-
-      Enum.find_value(objects, fn %{key: key} ->
-        assert {:ok, %{body: body}} = S3.get(key)
-        if Jason.decode!(body)["conversation_id"] == conversation_id, do: {key, body}
-      end)
-    end
-
-    {older_key, older_body} = entry_of.(changed_id)
-
     assert {:ok, _changed} =
              ConversationServer.update_group_conversation(group_id, changed_id, %{
                "title" => "Changed chat, renamed"
              })
-
-    {newer_key, _newer_body} = entry_of.(changed_id)
-    assert newer_key < older_key
-
-    # The store as that listing saw it: the older entry, not the newer one.
-    assert {:ok, _} = S3.put(older_key, older_body)
-    assert :ok = S3.delete(newer_key)
 
     assert {:ok, %{"data" => listed}} =
              Conversations.list_group_conversations(group_id, limit: 20)
@@ -2854,10 +1791,9 @@ defmodule SalixIM.ConversationsTest do
                bft_participant()
              )
 
-    conversation_meta_key = Keys.ctl_group_conversation(group_id, conversation_id)
-
-    assert {:ok, %{body: meta_body}} = SalixStore.S3.get(conversation_meta_key)
-    assert is_map(Jason.decode!(meta_body)[@participant_identity_slots_field])
+    scope = ConversationPGStore.new(group_id, conversation_id)
+    assert {:ok, meta, _} = ConversationPGStore.read(scope)
+    assert is_map(meta[@participant_identity_slots_field])
     assert {:ok, _pin} = ConversationServer.pin_conversation(group_id, conversation_id, tenant_id)
     assert {:ok, %{"data" => [_]}} = Conversations.list_conversation_pins(group_id, tenant_id)
 
@@ -2880,7 +1816,7 @@ defmodule SalixIM.ConversationsTest do
            end)
 
     assert eventually_value(fn ->
-             if SalixStore.S3.get(conversation_meta_key) == {:error, :not_found}, do: true
+             if ConversationPGStore.read(scope) == {:error, :not_found}, do: true
            end)
 
     assert {:ok, %{"data" => []}} = Conversations.list_conversation_pins(group_id, tenant_id)
@@ -2906,11 +1842,7 @@ defmodule SalixIM.ConversationsTest do
                "client_request_id" => "repair-search-subtitle"
              })
 
-    assert eventually_value(fn ->
-             if SalixIM.ConversationSearchEnqueuer.pending_count() == 0 and
-                  search_job_count(group_id, conversation_id) == 1,
-                do: true
-           end)
+    assert search_job_count(group_id, conversation_id) == 1
 
     assert {:ok, initial_claim} = ConversationSearch.claim_one("initial-projector", 30_000)
     assert initial_claim.conversation_id == conversation_id
@@ -2974,9 +1906,21 @@ defmodule SalixIM.ConversationsTest do
       })
     ]
 
-    segment_id = task_search_segment_id(1)
-    put_task_search_segment(group_id, conversation_id, segment_id, rows, nil)
-    put_task_search_pointer(group_id, conversation_id, hd(rows), segment_id)
+    scope = SalixIM.ConversationPGStore.new(group_id, conversation_id)
+
+    assert {:ok, :inserted, _, revision} =
+             SalixIM.ConversationPGStore.create(scope, %{
+               "kind" => "agent_task",
+               "title" => "Visible content",
+               "updated_at" => 1
+             })
+
+    Enum.reduce(rows, revision, fn row, current ->
+      assert {:ok, :inserted, _, _, next} =
+               SalixIM.ConversationPGStore.append(scope, current, row)
+
+      next
+    end)
 
     assert {:ok, window} =
              Conversations.task_search_content_window(
@@ -3012,20 +1956,15 @@ defmodule SalixIM.ConversationsTest do
     assert {:ok, _pin} =
              ConversationServer.pin_conversation(group_id, conversation_id, tenant_id)
 
-    prefix = Keys.ctl_group_conversation_dir(group_id, conversation_id)
-    SystemsRuntime.put_env(:salix_store, :s3_backend, ConversationDeleteFaultOnceS3)
-    SystemsRuntime.put_env(:salix_im, :delete_fault_conversation_prefix, prefix)
-    SystemsRuntime.put_env(:salix_im, :fail_conversation_child_delete_once, true)
-
-    SystemsRuntime.put_env(
-      :salix_im,
-      :conversation_delete_fault_test_pid,
-      SystemsRuntime.Proc.self()
-    )
+    assert {:ok, archive} = ConversationServer.archive_messages(group_id, conversation_id)
+    :ok = S3.Fake.blackhole({:fail, 503, :delete, archive.object_key})
+    on_exit(fn -> S3.Fake.clear_blackhole() end)
 
     assert :ok = ConversationServer.delete_group_conversation(group_id, conversation_id)
-    settle_receive({:conversation_child_delete_failed, failed_key})
-    assert String.starts_with?(failed_key, prefix)
+    assert {:ok, %{body: _}} = S3.get(archive.object_key)
+    scope = ConversationPGStore.new(group_id, conversation_id)
+    assert {:ok, %{"deleted_at" => deleted_at}, _} = ConversationPGStore.read(scope)
+    assert is_integer(deleted_at)
 
     assert {:error, :not_found} =
              Conversations.get_group_conversation(group_id, conversation_id)
@@ -3056,6 +1995,7 @@ defmodule SalixIM.ConversationsTest do
 
     assert {:ok, owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
     :ok = GenServer.stop(owner, :normal)
+    :ok = S3.Fake.clear_blackhole()
 
     assert {:ok, restarted_owner} =
              ConversationPlacement.ensure_started(group_id, conversation_id)
@@ -3063,15 +2003,8 @@ defmodule SalixIM.ConversationsTest do
     assert restarted_owner != owner
 
     assert eventually_value(fn ->
-             with {:ok, %{objects: []}} <- SalixStore.S3.list(prefix, max_keys: 1),
-                  {:ok, %{objects: []}} <-
-                    SalixStore.S3.list(
-                      Keys.ctl_group_conversation_delivery_wakeups_prefix(
-                        group_id,
-                        conversation_id
-                      ),
-                      max_keys: 1
-                    ),
+             with {:error, :not_found} <- ConversationPGStore.read(scope),
+                  {:error, :not_found} <- S3.get(archive.object_key),
                   {:ok, %{"data" => []}} <-
                     Conversations.list_conversation_pins(group_id, tenant_id) do
                true
@@ -3553,6 +2486,94 @@ defmodule SalixIM.ConversationsTest do
              eventually_value(fn -> :sys.get_state(watch, :infinity).review end)
   end
 
+  test "TaskWorkerWatch does not remind a running Loop's Worker after a Router note in the Task",
+       %{group_id: group_id, router_id: router_id, worker_id: worker_id} do
+    SalixIM.TestSupport.TaskLoops.install(
+      {:all, %{"status" => "active", "trigger" => %{"every_minutes" => 1440}}}
+    )
+
+    assert {:ok, %{"conversation_id" => parent_id}} =
+             SalixIM.ConversationInput.create_group_conversation(group_id, %{
+               "kind" => "user_chat",
+               "title" => "Home",
+               "owner_user_id" => "owner-user-1"
+             })
+
+    {conversation_id, watch, _router_session_id} =
+      watched_task_with_worker_result(
+        group_id,
+        router_id,
+        worker_id,
+        "loop-task-router-note",
+        %{
+          "loop" => %{"cadence" => %{"every_minutes" => 1440}},
+          "source_refs" => %{"parent_conversation_id" => parent_id}
+        }
+      )
+
+    # After a run's result the Router leaves a note in the Task. It reaches the
+    # Worker, which has nothing to answer and stops.
+    assert {:ok, _note} =
+             ConversationServer.append_group_conversation_agent_message(
+               group_id,
+               conversation_id,
+               router_id,
+               %{"content" => "Forwarded to Home.", "client_request_id" => "router-note"}
+             )
+
+    settle_receive({:captured_agent_delivery, ^worker_id, _note, _opts})
+    %{session_ref: {^worker_id, session_id}} = :sys.get_state(watch, :infinity)
+    stopped_at = SystemsClock.system_time(:millisecond) + 5_000
+    version = Integer.to_string(stopped_at)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_at)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version, :stopped, nil, _timer, token} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version, token}
+    )
+
+    assert eventually_value(fn ->
+             match?({:acted, ^version, _, _, _, _}, :sys.get_state(watch, :infinity).stop)
+           end)
+
+    settle_refute_receive({:captured_agent_delivery, _, _, _}, 100)
+
+    assert {:ok, messages} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 20)
+
+    refute Enum.any?(messages, &(&1["actor_type"] == "system"))
+
+    # A person's question is the Worker's to answer, Loop or not.
+    assert {:ok, _question} =
+             ConversationServer.append_group_conversation_message(group_id, conversation_id, %{
+               "actor_type" => "user",
+               "user_id" => "owner-user-1",
+               "content" => "Why is today's data missing?",
+               "client_request_id" => "loop-task-person-question"
+             })
+
+    settle_receive({:captured_agent_delivery, ^worker_id, _question, _opts})
+    stopped_again = stopped_at + 5_000
+    version_again = Integer.to_string(stopped_again)
+    TaskSessionActivity.set(worker_id, session_id, "stopped", stopped_again)
+    TaskSessionActivity.notify(worker_id, session_id)
+
+    assert {:scheduled, ^version_again, :stopped, nil, _timer, token_again} =
+             eventually_value(fn -> :sys.get_state(watch, :infinity).stop end)
+
+    SystemsRuntime.Proc.send(
+      watch,
+      {:task_worker_stopped_timeout, {worker_id, session_id}, version_again, token_again}
+    )
+
+    settle_receive({:captured_agent_delivery, ^worker_id, nudge, _opts})
+    assert nudge.content =~ "publish exactly one result Message"
+  end
+
   test "TaskWorkerWatch tells the Router at once when billing refuses the Worker", %{
     group_id: group_id,
     router_id: router_id,
@@ -4030,14 +3051,6 @@ defmodule SalixIM.ConversationsTest do
     assert Enum.map(messages, & &1["seq"]) == [1, 2, 3, 4, 5]
   end
 
-  # A change whose stale list-index delete failed leaves two index records;
-  # the restarted owner converges them to the canonical Task.
-  for {name, change, expected_status} <- [
-        {"Task list repair", :accept_review, "completed"},
-        {"message append list repair", :agent_message, "ready_for_review"}
-      ] do
-  end
-
   test "trusted ingress task retry rejects different content", %{
     group_id: group_id,
     worker_id: worker_id
@@ -4128,8 +3141,10 @@ defmodule SalixIM.ConversationsTest do
          router_session_id: router_session_id,
          worker_id: worker_id
        } do
-    :ok =
-      SalixStore.S3.delete(Keys.ctl_group_conversation(group_id, router_conversation_id))
+    Repo.query!(
+      "DELETE FROM salix_conversations WHERE group_id=$1 AND conversation_id=$2",
+      [group_id, router_conversation_id]
+    )
 
     assert {:error, :not_found} =
              SalixIM.RouterConversationProjection.get_group_router_conversation(group_id)
@@ -4204,8 +3219,7 @@ defmodule SalixIM.ConversationsTest do
         nil
       )
 
-    {:ok, session} = SalixAgent.InternalSessionStore.read(router_id, router_session_id)
-    assert SalixAgent.InternalSession.input_dedupe_member?(session, source)
+    assert session_input_admitted?(router_id, router_session_id, source)
     assert delivery_records(group_id, projection["conversation_id"]) == %{}
 
     assert {:ok, %{"state" => "active"}} =
@@ -4275,8 +3289,8 @@ defmodule SalixIM.ConversationsTest do
 
     assert length(all_test_participants(group_id, conversation_id)) == 2
 
-    durable_meta =
-      read_json_record!(Keys.ctl_group_conversation(group_id, conversation_id))
+    assert {:ok, durable_meta, _} =
+             ConversationPGStore.read(ConversationPGStore.new(group_id, conversation_id))
 
     refute Map.has_key?(durable_meta, "participant_count")
 
@@ -4324,6 +3338,95 @@ defmodule SalixIM.ConversationsTest do
                conversation_id,
                changed_seed
              )
+  end
+
+  test "Slack Task bindings enforce explicit choices only before the first commit", %{
+    tenant_id: tenant_id,
+    group_id: group_id,
+    worker_id: worker_id
+  } do
+    choice = %{
+      "kind" => "catalog",
+      "model" => "gpt-6-sol",
+      "reasoning_effort" => "medium",
+      "profile_id" => "required-profile"
+    }
+
+    policy = %{
+      "mode" => "explicit",
+      "profile_id" => "required-profile",
+      "actions" => [Map.take(choice, ~w(model reasoning_effort))]
+    }
+
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(group_id), &Map.put(&1, "task_model_selection", policy))
+
+    connect = slack_connect(tenant_id, group_id, worker_id)
+
+    attrs = %{
+      "channel_id" => "C-explicit",
+      "thread_ts" => "123.456",
+      "message_ts" => "123.456",
+      "source_message_id" => "slack-explicit-1",
+      "user_id" => "U-slack-user",
+      "content" => [%{"type" => "text", "text" => "please fix this"}],
+      "created_at" => SystemsClock.system_time(:millisecond)
+    }
+
+    for model <- [
+          nil,
+          Map.delete(choice, "profile_id"),
+          Map.put(choice, "reasoning_effort", "high")
+        ] do
+      assert {:error, {:bad_request, message}} =
+               SlackConversationIngress.append_worker_thread_message(
+                 Map.put(connect, "inbound_tasks", %{"model" => model}),
+                 worker_id,
+                 attrs
+               )
+
+      assert message =~ "choose an allowed model"
+    end
+
+    {:ok, binding} =
+      SlackConversationIngress.get_thread_binding(
+        group_id,
+        connect["connect_id"],
+        "C-explicit",
+        "123.456"
+      )
+
+    task_id = binding["conversation_id"]
+    assert {:error, :not_found} = Conversations.get_group_conversation(group_id, task_id)
+
+    assert {:ok, %{"conversation_id" => ^task_id}} =
+             SlackConversationIngress.append_worker_thread_message(
+               Map.put(connect, "inbound_tasks", %{"model" => choice}),
+               worker_id,
+               attrs
+             )
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(group_id, task_id)
+
+    worker = Enum.find(participants, &(&1["agent_id"] == worker_id))
+    assert worker["payload"]["session_model"] == choice
+
+    # A policy update cannot block redelivery or replace a committed Session choice.
+    changed =
+      Map.put(policy, "actions", [%{"model" => "gpt-6-luna", "reasoning_effort" => "low"}])
+
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(group_id), &Map.put(&1, "task_model_selection", changed))
+
+    assert {:ok, %{"conversation_id" => ^task_id}} =
+             SlackConversationIngress.append_worker_thread_message(connect, worker_id, attrs)
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(group_id, task_id)
+
+    assert Enum.find(participants, &(&1["agent_id"] == worker_id))["payload"]["session_model"] ==
+             choice
   end
 
   test "slack worker thread creates a task and sends one provider-only supervision link", %{
@@ -4438,13 +3541,12 @@ defmodule SalixIM.ConversationsTest do
                |> Map.delete("task_materialization")
              end)
 
-    assert {:ok, _legacy_conversation} =
-             CasRecord.update(
-               Keys.ctl_group_conversation(group_id, conversation_id),
-               fn conversation ->
-                 Map.delete(conversation, "task_materialization")
-               end
-             )
+    SalixIM.TestSupport.Fleet.stop_all!()
+    scope = ConversationPGStore.new(group_id, conversation_id)
+    assert {:ok, _, revision} = ConversationPGStore.read(scope)
+
+    assert {:ok, _, _, _} =
+             ConversationPGStore.update(scope, revision, &Map.delete(&1, "task_materialization"))
 
     assert {:ok, second} =
              SlackConversationIngress.append_worker_thread_message(
@@ -4620,86 +3722,6 @@ defmodule SalixIM.ConversationsTest do
                group_id,
                Map.put(attrs, "title", "Conflicting create")
              )
-  end
-
-  test "ambiguous appends remain idempotent across conversation owner restarts", %{
-    group_id: group_id
-  } do
-    assert {:ok, %{"conversation_id" => conversation_id}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "title" => "Restart-safe append",
-               "participants" => [user_participant(SystemsClock.system_time(:millisecond))]
-             })
-
-    first_attrs = %{
-      "content" => "ambiguous before",
-      "client_request_id" => "append-before-restart"
-    }
-
-    first_segment_key =
-      Keys.ctl_group_conversation_message_segment(
-        group_id,
-        conversation_id,
-        "000000000000000001"
-      )
-
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_before, :put, first_segment_key})
-
-    assert {:ok, %{"inserted" => true, "message_id" => first_message_id, "seq" => 1}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               first_attrs
-             )
-
-    assert {:ok, first_owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
-    :ok = GenServer.stop(first_owner, :normal)
-
-    assert {:ok, %{"inserted" => false, "message_id" => ^first_message_id, "seq" => 1}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               first_attrs
-             )
-
-    second_attrs = %{
-      "content" => "ambiguous after",
-      "client_request_id" => "append-after-restart"
-    }
-
-    second_segment_key =
-      Keys.ctl_group_conversation_message_segment(
-        group_id,
-        conversation_id,
-        "000000000000000001"
-      )
-
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, second_segment_key})
-
-    assert {:ok, %{"inserted" => true, "message_id" => second_message_id, "seq" => 2}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               second_attrs
-             )
-
-    assert {:ok, second_owner} = ConversationPlacement.ensure_started(group_id, conversation_id)
-    :ok = GenServer.stop(second_owner, :normal)
-
-    assert {:ok, %{"inserted" => false, "message_id" => ^second_message_id, "seq" => 2}} =
-             ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               second_attrs
-             )
-
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
-
-    assert Enum.map(messages, &{&1["message_id"], &1["seq"]}) == [
-             {first_message_id, 1},
-             {second_message_id, 2}
-           ]
   end
 
   test "delivery filters survive owner restart without widening or replaying", %{
@@ -5148,12 +4170,21 @@ defmodule SalixIM.ConversationsTest do
              participant["participant_id"],
              nil
            ),
-         {:ok, session} <-
-           SalixAgent.InternalSessionStore.read(agent, participant["payload"]["session_id"]) do
-      SalixAgent.InternalSession.input_dedupe_member?(session, source)
+         session_id when is_binary(session_id) <- participant["payload"]["session_id"] do
+      session_input_admitted?(agent, session_id, source)
     else
       _ -> false
     end
+  end
+
+  defp session_input_admitted?(agent_id, session_id, source) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT 1 FROM salix_session_input_dedupe WHERE agent_id=$1 AND session_id=$2 AND dedupe_key=$3 LIMIT 1",
+        [agent_id, session_id, PGCodec.identity(source)]
+      )
+
+    rows == [[1]]
   end
 
   defp delivery_records(group_id, conversation_id) do
@@ -5165,60 +4196,20 @@ defmodule SalixIM.ConversationsTest do
   end
 
   defp participant_delivery_records(group_id, conversation_id) do
-    case SalixIM.Conversations.list_group_conversation_participants(group_id, conversation_id,
-           limit: 1000
-         ) do
-      {:ok, %{"participants" => participants}} ->
-        participants
-        |> Enum.flat_map(fn participant ->
-          participant_id = participant["participant_id"] || ""
+    %{rows: ids} =
+      Repo.query!(
+        "SELECT participant_id,delivery_id FROM salix_conversation_deliveries WHERE group_id=$1 AND conversation_id=$2 ORDER BY participant_id,delivery_id LIMIT 1000",
+        [group_id, conversation_id]
+      )
 
-          group_id
-          |> Keys.ctl_group_conversation_participant_deliveries_prefix(
-            conversation_id,
-            participant_id
-          )
-          |> raw_delivery_records()
-        end)
+    Enum.flat_map(ids, fn [participant_id, delivery_id] ->
+      scope = ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
 
-      {:error, _reason} ->
-        []
-    end
-  end
-
-  defp raw_delivery_records(prefix) do
-    case SalixStore.S3.list_all(prefix) do
-      {:ok, objects} ->
-        objects
-        |> Enum.filter(&String.ends_with?(&1.key, "/state.json"))
-        |> Enum.flat_map(fn %{key: key} ->
-          case SalixStore.S3.get(key) do
-            {:ok, %{body: body, etag: etag}} -> [{key, Jason.decode!(body), etag}]
-            {:error, _reason} -> []
-          end
-        end)
-
-      {:error, _reason} ->
-        []
-    end
-  end
-
-  defp read_json_record!(key) do
-    assert {:ok, %{body: body}} = SalixStore.S3.get(key)
-    Jason.decode!(body)
-  end
-
-  defp task_search_row(seq, nil) do
-    %{
-      "message_id" => Ids.new_message_id(),
-      "seq" => seq,
-      "actor_type" => "user",
-      "kind" => "app_event",
-      "content" => [],
-      "metadata" => %{},
-      "request_fingerprint" => "task-search-fixture-#{seq}",
-      "created_at" => seq
-    }
+      case ConversationParticipantPGStore.read_delivery(scope, delivery_id) do
+        {:ok, record, revision} -> [{{participant_id, delivery_id}, record, revision}]
+        {:error, :not_found} -> []
+      end
+    end)
   end
 
   defp task_search_row(seq, text) when is_binary(text) do
@@ -5244,61 +4235,10 @@ defmodule SalixIM.ConversationsTest do
     }
   end
 
-  defp task_search_segment_id(seq) do
-    seq
-    |> Integer.to_string()
-    |> String.pad_leading(18, "0")
-  end
-
-  defp put_task_search_segment(group_id, conversation_id, segment_id, rows, next_segment_id) do
-    body =
-      rows
-      |> Enum.map(fn row ->
-        assert {:ok, line} = ConversationMessageCodec.encode_row(row)
-        line
-      end)
-      |> IO.iodata_to_binary()
-
-    assert byte_size(body) <= 1_000_000
-
-    segment_key =
-      Keys.ctl_group_conversation_message_segment(group_id, conversation_id, segment_id)
-
-    assert {:ok, _result} = S3.put(segment_key, body)
-
-    index =
-      rows
-      |> ConversationMessageCodec.segment_facts(body)
-      |> Map.put("segment_id", segment_id)
-      |> maybe_put_task_search_next_segment(next_segment_id)
-
-    index_key =
-      Keys.ctl_group_conversation_message_segment_index(group_id, conversation_id, segment_id)
-
-    assert {:ok, _result} = S3.put(index_key, Jason.encode!(index))
-  end
-
-  defp maybe_put_task_search_next_segment(index, next_segment_id)
-       when is_binary(next_segment_id),
-       do: Map.put(index, "next_segment_id", next_segment_id)
-
-  defp maybe_put_task_search_next_segment(index, _next_segment_id), do: index
-
-  defp put_task_search_pointer(group_id, conversation_id, row, segment_id) do
-    pointer = %{
-      "message_id" => row["message_id"],
-      "seq" => row["seq"],
-      "segment_id" => segment_id
-    }
-
-    key = Keys.ctl_group_conversation_message_seq_index(group_id, conversation_id, row["seq"])
-    assert {:ok, _result} = S3.put(key, Jason.encode!(pointer))
-  end
-
   defp reset_search_projection! do
     Repo.query!(
       "TRUNCATE conversation_search_gc_runs, conversation_search_jobs, " <>
-        "conversation_search_states, conversation_search_discovery_cursors, " <>
+        "conversation_search_states, " <>
         "conversation_search_backfill_runs CASCADE"
     )
 
@@ -5310,16 +4250,9 @@ defmodule SalixIM.ConversationsTest do
     Repo.query!("""
     INSERT INTO conversation_search_backfill_runs
       (writer_generation, writer_barrier_authority, writer_barrier_at,
-       required_discovery_cycle, sealed_at, inserted_at, updated_at)
+       scan_completed_at, sealed_at, inserted_at, updated_at)
     VALUES ('test-search-generation', 'conversation-test-fixture', now(),
-            1, now(), now(), now())
-    """)
-
-    Repo.query!("""
-    INSERT INTO conversation_search_discovery_cursors
-      (id, writer_generation, completed_cycles, cycle_started_at,
-       last_cycle_completed_at, inserted_at, updated_at)
-    VALUES ('main', 'test-search-generation', 1, now(), now(), now(), now())
+            now(), now(), now(), now())
     """)
 
     Repo.query!("""

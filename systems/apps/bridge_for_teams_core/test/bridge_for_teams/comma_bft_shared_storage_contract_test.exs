@@ -87,8 +87,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
 
     {:ok, comma_workspace} =
       Comma.Workspaces.create_for_user(comma_user["id"], %{
-        "name" => "Comma",
-        "vm" => %{"enabled" => false}
+        "name" => "Comma"
       })
 
     workspace_operation =

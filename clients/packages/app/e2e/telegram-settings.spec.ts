@@ -1,5 +1,10 @@
 import { expect, test, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
+import {
+  isBackgroundWorkspaceRead,
+  unconfiguredChannelRead,
+} from "../../../e2e/helpers/workspace-reads";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const workspaceId = "wsp_telegram_e2e";
@@ -152,13 +157,14 @@ test("connects the Comma-owned Telegram channel without exposing workspace selec
       return;
     }
 
-    // The task list (the client core's worker) names the active workspace, and
-    // the Router's label reads its models; this test does not show them.
-    if (
-      request.method() === "GET" &&
-      url.pathname === `/v1/comma/workspaces/${workspaceId}/agent-models`
-    ) {
+    // The client core reads the active workspace on its own; this test does not show it.
+    if (isBackgroundWorkspaceRead(request.method(), url.pathname)) {
       await route.fulfill({ body: "{}", headers, status: 404 });
+      return;
+    }
+    const channel = unconfiguredChannelRead(request.method(), url.pathname);
+    if (channel) {
+      await route.fulfill({ body: JSON.stringify(channel), headers, status: 200 });
       return;
     }
 
@@ -272,8 +278,10 @@ test("connects the Comma-owned Telegram channel without exposing workspace selec
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
-  await page.getByRole("button", { name: /Select theme/ }).click();
-  await page.getByRole("option", { name: "Dark", exact: true }).click();
+  await chooseDropdownOption(
+    page.getByRole("button", { name: /Select theme/ }),
+    "Dark"
+  );
   await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await expect(botAction).toBeVisible();

@@ -44,6 +44,27 @@ Tag: button
     });
   });
 
+  it("leaves a PDF area's context to the agent and shows the words and the area's screenshot", () => {
+    const wire = composeMessageWithAttachments(
+      `Make the title bigger
+
+<user-reminder>
+<pdf_region_context>
+File: Q3 review.pdf
+Page: 2 of 3
+Text in the area:
+Q3 Revenue
+</pdf_region_context>
+</user-reminder>`,
+      [{ name: "pdf-page-2-area.png", path: "/uploads/1-pdf-page-2-area.png" }]
+    );
+    expect(decodeUserMessage(wire)).toEqual({
+      body: "Make the title bigger",
+      quotes: [],
+      files: [{ name: "pdf-page-2-area.png", path: "/uploads/1-pdf-page-2-area.png" }],
+    });
+  });
+
   it("shows an attached text sent alone, and leaves a header without quoted lines as words", () => {
     expect(
       decodeUserMessage(

@@ -40,6 +40,7 @@ vi.mock("../shikiHighlightWorkerClient", () => ({
 
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import { StrictMode } from "react";
+import { toast } from "../../toast";
 import { componentsDark } from "../../../tokens/colors";
 import { ChevronDownSmallIcon, ChevronTopSmallIcon } from "../../icons";
 import {
@@ -218,6 +219,8 @@ describe("MarkdownStream", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    toast.dismissAll();
     vi.unstubAllGlobals();
   });
 
@@ -515,6 +518,7 @@ describe("MarkdownStream", () => {
   });
 
   it("copies code through the runtime-owned clipboard adapter", async () => {
+    const success = vi.spyOn(toast, "success");
     const writeText = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -534,6 +538,39 @@ describe("MarkdownStream", () => {
     expect(
       await screen.findByRole("button", { name: "Code copied" })
     ).toBeInTheDocument();
+    expect(success).toHaveBeenCalledWith(
+      "Copied",
+      expect.objectContaining({ id: "copy-feedback" })
+    );
+  });
+
+  it("reports a rejected code copy without confirming or notifying the caller of success", async () => {
+    const success = vi.spyOn(toast, "success");
+    const error = vi.spyOn(toast, "error");
+    const onCopyCode = vi.fn();
+    render(
+      <MarkdownStream
+        clipboard={{
+          writeText: async () => {
+            throw new Error("denied");
+          },
+        }}
+        content={"```ts\nconst value = true\n```"}
+        final
+        onCopyCode={onCopyCode}
+        streamId="failed-copy"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        "Couldn’t copy",
+        expect.objectContaining({ id: "copy-feedback" })
+      )
+    );
+    expect(success).not.toHaveBeenCalled();
+    expect(onCopyCode).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
   });
 
   it("activates syntax highlighting only when a code block nears the viewport", async () => {
@@ -775,6 +812,7 @@ describe("MarkdownStream", () => {
   });
 
   it("switches Mermaid modes and exposes icon-only copy feedback", async () => {
+    const success = vi.spyOn(toast, "success");
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubProperty(navigator, "clipboard", {
       configurable: true,
@@ -815,6 +853,10 @@ describe("MarkdownStream", () => {
     expect(
       await screen.findByRole("button", { name: "Mermaid code copied" })
     ).toBeInTheDocument();
+    expect(success).toHaveBeenCalledWith(
+      "Copied",
+      expect.objectContaining({ id: "copy-feedback" })
+    );
   });
 
   it("uses Comma dark tokens for Mermaid connectors and arrow markers", async () => {

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/oauth"
@@ -19,6 +20,9 @@ type Credential struct {
 	ForceRefresh bool           `json:"force_refresh,omitempty"`
 	Provider     string         `json:"provider"`
 	Credentials  map[string]any `json:"credentials"`
+	// The Claude Code version Salix runs. Claude's usage endpoint lists the
+	// limit resets only to Claude Code of a version that has them.
+	ClientVersion string `json:"client_version,omitempty"`
 }
 type operationError struct {
 	status int
@@ -130,22 +134,28 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 			}
 			return emitJSON(emit, models)
 		case "/quota/reset":
-			if c.Provider != "codex" {
-				return &operationError{400, "invalid_provider"}
-			}
 			var input struct {
 				RequestID string `json:"redeem_request_id"`
+				Kind      string `json:"kind"`
 			}
 			if json.Unmarshal(body, &input) != nil || !resetRequestID.MatchString(input.RequestID) {
 				return &operationError{400, "invalid_request"}
 			}
-			result, err := consumeReset(ctx, e, a, input.RequestID)
+			var result resetResult
+			switch {
+			case c.Provider == "codex":
+				result, err = consumeReset(ctx, e, a, input.RequestID)
+			case c.Provider == "claude" && claudeVersion.MatchString(c.ClientVersion) && (input.Kind == "" || slices.Contains(claudeResetKinds, input.Kind)):
+				result, err = claudeReset(ctx, e, a, c.ClientVersion, input.RequestID, input.Kind)
+			default:
+				return &operationError{400, "invalid_provider"}
+			}
 			if err != nil {
 				return &operationError{502, "reset_unavailable"}
 			}
 			return emitJSON(emit, result)
 		case "/quota":
-			b, err := queryQuota(ctx, c.Provider, e, a)
+			b, err := queryQuota(ctx, c, e, a)
 			if err != nil {
 				return &operationError{502, "quota_unavailable"}
 			}
@@ -175,7 +185,8 @@ func needsRefresh(a *auth.Auth, lead time.Duration) bool {
 
 // The provider's answer as it gave it: Salix reads it with the Profiles' logic
 // (systems/profiles quota.rs), as a station reads its own.
-func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a *auth.Auth) ([]byte, error) {
+func queryQuota(ctx context.Context, c Credential, e auth.ProviderExecutor, a *auth.Auth) ([]byte, error) {
+	provider := c.Provider
 	if provider == "github-copilot" {
 		return copilotQuota(ctx, a)
 	}
@@ -185,7 +196,7 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	case "codex":
 		endpoint = "https://chatgpt.com/backend-api/wham/usage"
 	case "claude":
-		endpoint = "https://api.anthropic.com/api/oauth/usage"
+		endpoint = "https://api.anthropic.com" + claudeUsagePath
 	case "gemini":
 		project, _ := a.Metadata["project_id"].(string)
 		data, _ := json.Marshal(map[string]string{"project": project})
@@ -203,7 +214,7 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	}
 	switch provider {
 	case "claude":
-		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+		setClaudeHeaders(req, c.ClientVersion)
 	case "codex":
 		if id, ok := a.Metadata["account_id"].(string); ok {
 			req.Header.Set("Chatgpt-Account-Id", id)
@@ -213,7 +224,7 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	case "grok":
 		// Grok Build CLI headers for its billing endpoint.
 		req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
-		req.Header.Set("x-grok-client-version", "0.2.120")
+		req.Header.Set("x-grok-client-version", cliproxy.XAIClientVersion())
 		if sub, ok := a.Metadata["sub"].(string); ok && sub != "" {
 			req.Header.Set("x-userid", sub)
 		}
@@ -226,5 +237,9 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("quota HTTP %d", resp.StatusCode)
 	}
-	return readQuotaBody(resp.Body)
+	b, err := readQuotaBody(resp.Body)
+	if err != nil || provider != "claude" {
+		return b, err
+	}
+	return withClaudePlan(ctx, e, a, c.ClientVersion, b), nil
 }

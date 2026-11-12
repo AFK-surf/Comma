@@ -55,7 +55,7 @@ def appendFields (state event message : Term) : KernelM Term := do
   let added ← messageBytes stamped
   let timestamp ← Data.event event "created_at"
   let activity ← if timestamp.truthy then pure timestamp else field state "last_activity_at"
-  write state [("messages", messages), ("last_seq", seq), ("live_context_bytes", ← add context added), ("last_activity_at", activity)]
+  write state [("messages", messages), ("last_seq", seq), ("live_context_bytes", ← add context added), ("last_activity_at", metadataSeconds activity)]
 
 def bumpHwm (state hwm : Term) : KernelM Term := do
   if hwm.isInteger && integerValue hwm ≥ 0 then

@@ -26,7 +26,7 @@ defmodule BridgeForTeams.Schema.DailyBriefAlias do
     |> update_change(:term, &String.trim/1)
     |> validate_required([:member_id, :term, :kind])
     |> validate_length(:term, max: 128)
-    |> validate_inclusion(:kind, ~w(name handle project))
+    |> validate_inclusion(:kind, ~w(name handle project channel channel_bots channel_off))
     |> unique_constraint([:member_id, :term], name: :daily_brief_aliases_member_term)
   end
 

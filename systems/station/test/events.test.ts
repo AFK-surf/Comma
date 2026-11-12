@@ -50,8 +50,9 @@ function reader(body: AsyncIterable<Buffer>) {
         const next = await it.next();
         if (next.done) return;
         const raw = next.value.toString();
-        const m = /^(?:id: (\d+)\n)?event: (.+)\ndata: (.*)\n\n$/.exec(raw);
-        got.push(m ? { id: m[1], event: m[2], data: JSON.parse(m[3]!), raw } : { raw });
+        const m = /^(?:id: ([0-9a-f]+\.\d+)\n)?event: (.+)\ndata: (.*)\n\n$/.exec(raw);
+        const at = /^id: ([0-9a-f]+\.\d+)\n\n$/.exec(raw);
+        got.push(m ? { id: m[1], event: m[2], data: JSON.parse(m[3]!), raw } : at ? { id: at[1], raw } : { raw });
       }
     })());
   more();
@@ -80,7 +81,8 @@ test("changes are told as events, rows by what changed, read only to its viewer"
   assert.deepEqual(ofB, [["read", { viewer: "b@x", thread: 3, n: 9 }], ["session", { key: "s" }]]);
   assert.equal(reads.filter((r) => r === "summary").length, 1);
   // Sequence numbers go up across the station.
-  const ids = [...a.got, ...b.got].filter((e) => e.id).map((e) => Number(e.id)).sort((x, y) => x - y);
+  const ids = a.got.filter((e) => e.event && e.id).map((e) => Number(e.id!.split(".")[1]));
+  assert.deepEqual(ids, [...ids].sort((x, y) => x - y));
   assert.equal(new Set(ids).size, ids.length);
   rows["a@x"] = [{ id: "2", title: "two" }];
   change({ type: "threadRemoved", id: 1 });
@@ -110,4 +112,38 @@ test("a job's log is told now and as it grows", async () => {
     { id: "j", lines: 50, text: "one\ntwo\n", outputAt: 7 },
   ]);
   await s.close();
+});
+
+test("a stream that comes back since the last id it heard is told what it missed, and reads nothing again", async () => {
+  const time = testClock();
+  const { events, rows, change, reads } = setup(time.clock);
+  const first = reader((await events.open(viewer("a@x"), "zh", false, [], [])).body as AsyncIterable<Buffer>);
+  await settle();
+  const since = first.got.findLast((e) => e.id)!.id!;
+  await first.close();
+
+  // While it was away: a session changed and a row came.
+  rows["a@x"] = [{ id: "1", title: "one" }, { id: "2", title: "two" }];
+  change({ type: "session", key: "s" });
+  await settle();
+  reads.length = 0;
+  const back = await events.open(viewer("a@x"), "zh", false, [], [], since);
+  assert.equal((back.headers as Record<string, string>)["stillfail-resumed"], "1");
+  const again = reader(back.body as AsyncIterable<Buffer>);
+  await settle();
+  assert.deepEqual(again.got.filter((e) => e.event).map((e) => [e.event, e.data]), [["session", { key: "s" }], ["chat", { id: "2", title: "two" }]]);
+  await again.close();
+
+  // An id of another run, or one past what is kept (an hour with nobody), reads the station again.
+  const stranger = await events.open(viewer("a@x"), "zh", false, [], [], "0.1");
+  assert.equal((stranger.headers as Record<string, string>)["stillfail-resumed"], undefined);
+  const told = reader(stranger.body as AsyncIterable<Buffer>);
+  await settle();
+  assert.deepEqual(told.got.filter((e) => e.event).map((e) => e.event), ["missed"]);
+  const last = told.got.findLast((e) => e.id)!.id!;
+  await told.close();
+  await time.adjust(3_600_001);
+  const late = await events.open(viewer("a@x"), "zh", false, [], [], last);
+  assert.equal((late.headers as Record<string, string>)["stillfail-resumed"], undefined);
+  await (late.body as AsyncIterableIterator<Buffer>).return?.();
 });

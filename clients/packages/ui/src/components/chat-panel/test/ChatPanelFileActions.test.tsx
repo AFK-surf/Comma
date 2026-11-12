@@ -145,208 +145,38 @@ describe("file card preview and Open in", () => {
   });
 });
 
-const firstApplication = {
-  id: "reader",
-  name: "Reader",
-  iconDataUrl:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6SAAAAABJRU5ErkJggg==",
-  isDefault: false,
-};
-const secondApplication = {
-  ...application,
-  iconDataUrl:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-};
-const createSplitAction = (): ChatPanelFileOpenInAction => ({
-  ...createAction(),
-  listApplications: vi.fn().mockResolvedValue([firstApplication, secondApplication]),
-});
-
-describe("active preview split Open control", () => {
-  it("preloads the first application icon and opens that exact first app directly", async () => {
+describe("Open in menu", () => {
+  it("drops a replaced source's discovery and ignores its late answer", async () => {
     const user = userEvent.setup();
-    const action = createSplitAction();
-    render(<ChatPanelFileOpenInMenu action={action} presentation="split" />);
-    const open = screen.getByRole("button", { name: "Open" });
-    await waitFor(() => expect(open).toBeEnabled());
-    expect(action.listApplications).toHaveBeenCalledOnce();
-    expect(open.querySelector("img")).toHaveAttribute(
-      "src",
-      firstApplication.iconDataUrl
-    );
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    // The OS list owns ordering; a later isDefault flag does not replace its first item.
-    await user.click(open);
+    const action = createAction();
+    let resolveOld!: (apps: (typeof application)[]) => void;
+    let oldSignal: AbortSignal | undefined;
+    action.listApplications = vi.fn((signal) => {
+      oldSignal = signal;
+      return new Promise<(typeof application)[]>((resolve) => {
+        resolveOld = resolve;
+      });
+    });
+    const nextAction = createAction();
+    nextAction.listApplications = vi
+      .fn()
+      .mockResolvedValue([{ id: "reader", name: "Reader" }]);
+    const { rerender } = render(<ChatPanelFileOpenInMenu action={action} />);
+    await user.click(screen.getByRole("button", { name: "Open in" }));
+    await waitFor(() => expect(action.listApplications).toHaveBeenCalledOnce());
+    rerender(<ChatPanelFileOpenInMenu action={nextAction} />);
+    expect(oldSignal?.aborted).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Open in" }));
+    expect(await screen.findByRole("menuitem", { name: "Reader" })).toBeVisible();
+    await act(async () => resolveOld([application]));
+    expect(screen.queryByRole("menuitem", { name: "Preview" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Reader" }));
     await waitFor(() =>
-      expect(action.openApplication).toHaveBeenCalledWith(
+      expect(nextAction.openApplication).toHaveBeenCalledWith(
         "reader",
         expect.any(AbortSignal)
       )
     );
-    expect(action.openApplication).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-  });
-
-  it("uses a separate arrow for application choices and keeps the folder action below them", async () => {
-    const user = userEvent.setup();
-    const action = createSplitAction();
-    render(<ChatPanelFileOpenInMenu action={action} presentation="split" />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Open" })).toBeEnabled()
-    );
-    await user.click(screen.getByRole("button", { name: "Choose application" }));
-    expect(await screen.findByRole("menuitem", { name: "Reader" })).toBeVisible();
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Reader",
-      "Preview",
-      "Reveal in Folder",
-    ]);
     expect(action.openApplication).not.toHaveBeenCalled();
-    expect(action.listApplications).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole("menuitem", { name: "Preview" }));
-    await waitFor(() =>
-      expect(action.openApplication).toHaveBeenCalledWith(
-        "preview",
-        expect.any(AbortSignal)
-      )
-    );
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Open" })).toBeEnabled()
-    );
-    await user.click(screen.getByRole("button", { name: "Choose application" }));
-    await user.click(screen.getByRole("menuitem", { name: "Reveal in Folder" }));
-    await waitFor(() =>
-      expect(action.reveal!.run).toHaveBeenCalledWith(expect.any(AbortSignal))
-    );
-    expect(action.openApplication).toHaveBeenCalledOnce();
-    expect(action.listApplications).toHaveBeenCalledOnce();
-  });
-
-  it("immediately clears the previous source's app while the next source is loading", async () => {
-    const user = userEvent.setup();
-    const action = createSplitAction();
-    const nextAction = createSplitAction();
-    let resolveNext!: (apps: (typeof secondApplication)[]) => void;
-    nextAction.listApplications = vi.fn(
-      () =>
-        new Promise<(typeof secondApplication)[]>((resolve) => {
-          resolveNext = resolve;
-        })
-    );
-    const { rerender } = render(
-      <ChatPanelFileOpenInMenu action={action} presentation="split" />
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Open" })).toBeEnabled()
-    );
-    expect(
-      screen.getByRole("button", { name: "Open" }).querySelector("img")
-    ).toHaveAttribute("src", firstApplication.iconDataUrl);
-    rerender(<ChatPanelFileOpenInMenu action={nextAction} presentation="split" />);
-    const open = screen.getByRole("button", { name: "Open" });
-    expect(open).toBeDisabled();
-    expect(open.querySelector("img")).toBeNull();
-    await waitFor(() => expect(nextAction.listApplications).toHaveBeenCalledOnce());
-    await act(async () => resolveNext([secondApplication]));
-    expect(open.querySelector("img")).toHaveAttribute(
-      "src",
-      secondApplication.iconDataUrl
-    );
-    await user.click(open);
-    await waitFor(() =>
-      expect(nextAction.openApplication).toHaveBeenCalledWith(
-        "preview",
-        expect.any(AbortSignal)
-      )
-    );
-    expect(action.openApplication).not.toHaveBeenCalled();
-  });
-
-  it("aborts old-source discovery and ignores its late response after the new source is ready", async () => {
-    const user = userEvent.setup();
-    const action = createSplitAction();
-    let resolveOld!: (apps: (typeof firstApplication)[]) => void;
-    let oldSignal: AbortSignal | undefined;
-    action.listApplications = vi.fn((signal) => {
-      oldSignal = signal;
-      return new Promise<(typeof firstApplication)[]>((resolve) => {
-        resolveOld = resolve;
-      });
-    });
-    const nextAction = createSplitAction();
-    nextAction.listApplications = vi.fn().mockResolvedValue([secondApplication]);
-    const { rerender } = render(
-      <ChatPanelFileOpenInMenu action={action} presentation="split" />
-    );
-    await waitFor(() => expect(action.listApplications).toHaveBeenCalledOnce());
-    rerender(<ChatPanelFileOpenInMenu action={nextAction} presentation="split" />);
-    expect(oldSignal?.aborted).toBe(true);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Open" })).toBeEnabled()
-    );
-    await act(async () => resolveOld([firstApplication]));
-    const open = screen.getByRole("button", { name: "Open" });
-    expect(open.querySelector("img")).toHaveAttribute(
-      "src",
-      secondApplication.iconDataUrl
-    );
-    await user.click(open);
-    await waitFor(() =>
-      expect(nextAction.openApplication).toHaveBeenCalledWith(
-        "preview",
-        expect.any(AbortSignal)
-      )
-    );
-    expect(action.openApplication).not.toHaveBeenCalled();
-  });
-
-  it("allows dismissing the menu and explicitly retrying failed discovery without opening a file", async () => {
-    const user = userEvent.setup();
-    const action = createSplitAction();
-    action.listApplications = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("OS unavailable"))
-      .mockResolvedValue([firstApplication]);
-    render(<ChatPanelFileOpenInMenu action={action} presentation="split" />);
-    await waitFor(() => expect(action.listApplications).toHaveBeenCalledOnce());
-    const open = screen.getByRole("button", { name: "Open" });
-    await user.click(screen.getByRole("button", { name: "Choose application" }));
-    expect(
-      await screen.findByRole("menuitem", { name: "Could not load apps" })
-    ).toBeVisible();
-    expect(open).toBeDisabled();
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(action.openApplication).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Choose application" }));
-    await user.click(screen.getByRole("menuitem", { name: "Try again" }));
-    expect(await screen.findByRole("menuitem", { name: "Reader" })).toBeVisible();
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "Open" })).toBeEnabled();
-    expect(action.listApplications).toHaveBeenCalledTimes(2);
-    expect(action.openApplication).not.toHaveBeenCalled();
-  });
-
-  it("shows a direct-open failure and retries only on another explicit Open press", async () => {
-    const user = userEvent.setup();
-    const action = createSplitAction();
-    action.openApplication = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("App unavailable"))
-      .mockResolvedValue(undefined);
-    render(<ChatPanelFileOpenInMenu action={action} presentation="split" />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Open" })).toBeEnabled()
-    );
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByText("Could not open the file.")).toBeVisible();
-    expect(action.openApplication).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    await waitFor(() =>
-      expect(screen.queryByText("Could not open the file.")).not.toBeInTheDocument()
-    );
-    expect(action.openApplication).toHaveBeenCalledTimes(2);
-    expect(action.listApplications).toHaveBeenCalledOnce();
   });
 });

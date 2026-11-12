@@ -31,21 +31,31 @@ defmodule SalixStore.SlackSearchCatalog do
       end
 
     safe(fn ->
-      Repo.query!(
-        """
-        INSERT INTO slack_semantic.search_connects
-          (tenant_id, group_id, connect_id, connect_generation, workspace_id, active)
-        SELECT tenant_id, group_id, connect_id, connect_generation, workspace_id, active
-        FROM jsonb_to_recordset($1::jsonb) AS r(tenant_id text, group_id text, connect_id text,
-          connect_generation text, workspace_id text, active boolean)
-        ON CONFLICT (tenant_id, group_id, connect_id) DO UPDATE SET
-          connect_generation=EXCLUDED.connect_generation, workspace_id=EXCLUDED.workspace_id,
-          active=EXCLUDED.active
-        """,
-        [rows]
-      )
-
-      :ok
+      Repo.transaction(fn ->
+        Repo.query!(
+          """
+          INSERT INTO slack_semantic.search_connects
+            (tenant_id, group_id, connect_id, connect_generation, workspace_id, active)
+          SELECT tenant_id, group_id, connect_id, connect_generation, workspace_id, active
+          FROM jsonb_to_recordset($1::jsonb) AS r(tenant_id text, group_id text, connect_id text,
+            connect_generation text, workspace_id text, active boolean)
+          ON CONFLICT (tenant_id, group_id, connect_id) DO UPDATE SET
+            connect_generation=EXCLUDED.connect_generation, workspace_id=EXCLUDED.workspace_id,
+            active=EXCLUDED.active,
+            initialization_pending=CASE WHEN search_connects.workspace_id<>EXCLUDED.workspace_id
+              OR (NOT search_connects.active AND EXCLUDED.active)
+              THEN true ELSE search_connects.initialization_pending END,
+            initialization_cursor=CASE WHEN search_connects.workspace_id<>EXCLUDED.workspace_id
+              OR (NOT search_connects.active AND EXCLUDED.active)
+              THEN '' ELSE search_connects.initialization_cursor END
+          """,
+          [rows]
+        )
+      end)
+      |> case do
+        {:ok, _} -> :ok
+        error -> error
+      end
     end)
   end
 
@@ -62,7 +72,11 @@ defmodule SalixStore.SlackSearchCatalog do
         end)
 
       safe(fn ->
-        insert_channels!(rows)
+        Repo.transaction(fn -> insert_channels!(rows) end)
+        |> case do
+          {:ok, :ok} -> :ok
+          error -> error
+        end
       end)
     else
       {:error, :search_scope_unavailable}
@@ -101,7 +115,153 @@ defmodule SalixStore.SlackSearchCatalog do
       [rows]
     )
 
+    seed_cursors!(rows)
     :ok
+  end
+
+  defp seed_cursors!(rows) do
+    Repo.query!(
+      """
+      INSERT INTO slack_semantic.search_cursors
+        (tenant_id, workspace_id, channel_id, group_id, connect_id)
+      SELECT tenant_id, workspace_id, channel_id, group_id, connect_id
+      FROM jsonb_to_recordset($1::jsonb) AS r(tenant_id text, workspace_id text, channel_id text,
+        group_id text, connect_id text)
+      ON CONFLICT DO NOTHING
+      """,
+      [rows]
+    )
+
+    :ok
+  end
+
+  @doc "Initialize at most twenty retained channels after a connect workspace or activation change."
+  def initialize_connect_page do
+    safe(fn ->
+      Repo.transaction(fn ->
+        case Repo.query!("""
+             SELECT tenant_id, group_id, connect_id, workspace_id, connect_generation, initialization_cursor
+             FROM slack_semantic.search_connects
+             WHERE active AND initialization_pending
+             ORDER BY initialization_due, tenant_id, group_id, connect_id
+             LIMIT 1 FOR UPDATE SKIP LOCKED
+             """).rows do
+          [] ->
+            :idle
+
+          [[tenant, group, connect, workspace, generation, cursor]] ->
+            channels =
+              Repo.query!(
+                """
+                SELECT channel_id FROM slack_semantic.search_channels
+                WHERE tenant_id=$1 AND group_id=$2 AND connect_id=$3 AND workspace_id=$4 AND channel_id>$5
+                ORDER BY channel_id LIMIT 20
+                """,
+                [tenant, group, connect, workspace, cursor]
+              ).rows
+
+            rows =
+              Enum.map(channels, fn [channel] ->
+                %{
+                  "tenant_id" => tenant,
+                  "group_id" => group,
+                  "connect_id" => connect,
+                  "workspace_id" => workspace,
+                  "connect_generation" => generation,
+                  "channel_id" => channel
+                }
+              end)
+
+            # Re-activation also needs one pass when its generation is unchanged.
+            Enum.each(rows, fn row ->
+              Repo.query!(
+                """
+                INSERT INTO slack_semantic.search_cursors
+                  (tenant_id, workspace_id, channel_id, group_id, connect_id)
+                VALUES ($1,$2,$3,$4,$5)
+                ON CONFLICT (tenant_id, workspace_id, channel_id, group_id, connect_id)
+                DO UPDATE SET before_ts_us=0, completed=false,
+                  due_at=timezone('UTC', clock_timestamp())
+                """,
+                Enum.map(
+                  ~w(tenant_id workspace_id channel_id group_id connect_id),
+                  &row[&1]
+                )
+              )
+            end)
+
+            Repo.query!(
+              """
+              UPDATE slack_semantic.search_connects SET initialization_cursor=$4,
+                initialization_pending=NOT $5,
+                initialization_due=timezone('UTC', clock_timestamp())+interval '1 millisecond'
+              WHERE tenant_id=$1 AND group_id=$2 AND connect_id=$3
+              """,
+              [
+                tenant,
+                group,
+                connect,
+                if(channels == [], do: cursor, else: hd(List.last(channels))),
+                length(channels) < 20
+              ]
+            )
+
+            :advanced
+        end
+      end)
+    end)
+  end
+
+  @doc "One unfinished exact channel snapshot. Canonical reads happen outside its transaction."
+  def next_initialization do
+    safe(fn ->
+      Repo.transaction(fn ->
+        rows =
+          Repo.query!("""
+          WITH candidates AS MATERIALIZED (
+            SELECT * FROM slack_semantic.search_cursors
+            WHERE NOT completed AND due_at <= timezone('UTC',clock_timestamp())
+            ORDER BY due_at,tenant_id,workspace_id,channel_id,group_id,connect_id
+            LIMIT 20 FOR UPDATE SKIP LOCKED
+          )
+          SELECT s.tenant_id,s.workspace_id,s.channel_id,s.group_id,s.connect_id,
+            s.before_ts_us,c.active,c.connect_generation,c.workspace_id
+          FROM candidates s LEFT JOIN slack_semantic.search_connects c
+            USING (tenant_id,group_id,connect_id)
+          ORDER BY s.due_at,s.tenant_id,s.workspace_id,s.channel_id,s.group_id,s.connect_id
+          """).rows
+
+        Enum.reduce(rows, nil, fn row, chosen ->
+          [tenant, workspace, channel, group, connect, cursor, active, current, current_workspace] =
+            row
+
+          scope =
+            Map.new(
+              Enum.zip(
+                ~w(tenant_id workspace_id channel_id group_id connect_id connect_generation),
+                [tenant, workspace, channel, group, connect, current]
+              )
+            )
+
+          if active == true and current_workspace == workspace do
+            chosen || {scope, cursor}
+          else
+            # Inactive cursors are complete. Their owner seeds
+            # a new finite pass on activation or workspace change.
+            Repo.query!(
+              """
+              UPDATE slack_semantic.search_cursors SET completed=$6,
+                due_at=timezone('UTC',clock_timestamp())+interval '5 seconds'
+              WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3 AND group_id=$4 AND connect_id=$5
+              """,
+              [tenant, workspace, channel, group, connect, not is_nil(active)]
+            )
+
+            chosen
+          end
+        end)
+      end)
+    end)
   end
 
   @doc "A finite candidate set must still have owner-observed channel provenance."

@@ -9,7 +9,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
 
   import Ecto.Query
 
-  alias SalixStore.{AgentVMM, AgentVMMInstallations, Compute, Repo}
+  alias SalixStore.{AgentVMM, AgentVMMRegistrations, Compute, Repo}
 
   @default_limit 50
   @max_limit 50
@@ -195,6 +195,8 @@ defmodule SalixStore.AgentVMMAdminProjection do
           on:
             b.environment_id == e.id and b.provider == "agent_vmm" and
               b.provider_ref == ^registration_id,
+          join: registration in AgentVMM.Registration,
+          on: registration.id == b.provider_ref,
           left_join: a in Compute.Allocation,
           on: a.provider_binding_id == b.id,
           left_join: w in Compute.Workload,
@@ -202,7 +204,14 @@ defmodule SalixStore.AgentVMMAdminProjection do
           left_join: r in Compute.RuntimeInstance,
           on: r.workload_id == w.id and r.allocation_id == a.id,
           where: e.tenant_id == ^tenant_id,
-          group_by: [e.id, b.status],
+          group_by: [
+            e.id,
+            b.status,
+            registration.connected,
+            registration.status,
+            registration.desired_enabled,
+            registration.authorization_expires_at
+          ],
           order_by: [desc: e.updated_at, desc: e.id],
           limit: 51,
           select: %{
@@ -210,10 +219,30 @@ defmodule SalixStore.AgentVMMAdminProjection do
             "owner_type" => e.owner_type,
             "owner_id" => e.owner_id,
             "desired_state" => e.desired_state,
-            "observed_state" => e.observed_state,
+            "observed_state" =>
+              fragment(
+                "CASE WHEN ? <> 'ready' THEN ? WHEN ? <> 'revoked' AND ? AND ? = 'ready' AND ? AND ? > ? THEN 'ready' ELSE 'pending' END",
+                e.desired_state,
+                e.observed_state,
+                b.status,
+                registration.connected,
+                registration.status,
+                registration.desired_enabled,
+                registration.authorization_expires_at,
+                ^SystemsClock.utc_now()
+              ),
             "generation" => e.generation,
             "revision" => e.revision,
-            "binding_status" => b.status,
+            "binding_status" =>
+              fragment(
+                "CASE WHEN ? = 'revoked' THEN 'revoked' WHEN ? AND ? = 'ready' AND ? AND ? > ? THEN 'available' ELSE 'unavailable' END",
+                b.status,
+                registration.connected,
+                registration.status,
+                registration.desired_enabled,
+                registration.authorization_expires_at,
+                ^SystemsClock.utc_now()
+              ),
             "allocations" => count(a.id, :distinct),
             "workloads" => count(w.id, :distinct),
             "runtimes" => count(r.id, :distinct),
@@ -439,8 +468,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
       observations: observation_summaries(tenant_id, ids),
       work: work_summaries(tenant_id, ids),
       commands: command_summaries(tenant_id, ids),
-      sessions: session_summaries(tenant_id, ids),
-      installs: installation_summaries(tenant_id, ids)
+      sessions: session_summaries(tenant_id, ids)
     }
   end
 
@@ -450,8 +478,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
       observations: %{},
       work: %{},
       commands: %{},
-      sessions: %{},
-      installs: %{}
+      sessions: %{}
     }
 
   defp observation_summaries(tenant_id, ids) do
@@ -471,17 +498,24 @@ defmodule SalixStore.AgentVMMAdminProjection do
       from(b in Compute.ProviderBinding,
         join: e in Compute.Environment,
         on: e.id == b.environment_id,
+        join: r in AgentVMM.Registration,
+        on: r.id == b.provider_ref,
         where: e.tenant_id == ^tenant_id and b.provider == "agent_vmm" and b.provider_ref in ^ids,
         group_by: b.provider_ref,
         select: {
           b.provider_ref,
           %{
             count: count(b.id),
-            available: filter(count(b.id), b.status == "available"),
+            available:
+              filter(
+                count(b.id),
+                b.status != "revoked" and r.connected and r.status == "ready" and
+                  r.desired_enabled and r.authorization_expires_at > ^SystemsClock.utc_now()
+              ),
             reported:
               filter(
                 count(b.id),
-                fragment("NULLIF(?->>'connection_epoch', '') IS NOT NULL", b.observation)
+                not is_nil(r.current_connection_epoch)
               ),
             last_observed_at: max(b.updated_at),
             inventory_watermark: max(e.inventory_watermark)
@@ -588,51 +622,23 @@ defmodule SalixStore.AgentVMMAdminProjection do
     |> Map.new()
   end
 
-  defp installation_summaries(tenant_id, ids) do
-    Repo.all(
-      from(o in AgentVMMInstallations.Operation,
-        where: o.tenant_id == ^tenant_id and o.registration_id in ^ids,
-        select: {
-          o.registration_id,
-          %{
-            id: o.id,
-            status: o.authorization_status,
-            revision: o.revision,
-            ticket_status: o.ticket_status,
-            error_code: o.error_code,
-            retryable:
-              o.delivery_target_type == "bft_runner" and
-                o.authorization_status == "action_required" and
-                o.error_code == "ticket_retry_exhausted" and
-                is_nil(o.material_handed_off_at),
-            issue:
-              fragment(
-                "CASE WHEN ? = 'action_required' THEN 'install_action_required' ELSE NULL END",
-                o.authorization_status
-              ),
-            updated_at: o.updated_at
-          }
-        }
-      )
-    )
-    |> Map.new()
-  end
-
   defp project_node(registration, summaries) do
     binding = Map.get(summaries.bindings, registration.id, default_binding())
     observation = Map.get(summaries.observations, registration.id)
     work = Map.get(summaries.work, registration.id, default_work())
     commands = Map.get(summaries.commands, registration.id, default_commands())
     session = Map.get(summaries.sessions, registration.id, default_session())
-    install = Map.get(summaries.installs, registration.id)
+    request_status = AgentVMMRegistrations.request_status(registration)
 
     connection_status =
       cond do
-        is_nil(observation) ->
-          "not_reported"
+        not registration.connected ->
+          if is_nil(registration.current_connection_epoch),
+            do: "not_reported",
+            else: "disconnected"
 
-        not is_nil(observation.disconnected_at) ->
-          "disconnected"
+        is_nil(observation) ->
+          "connected"
 
         DateTime.compare(
           observation.received_at,
@@ -645,7 +651,15 @@ defmodule SalixStore.AgentVMMAdminProjection do
       end
 
     issue =
-      top_issue(registration, install, binding, observation, connection_status, work, commands)
+      top_issue(
+        registration,
+        request_status,
+        binding,
+        observation,
+        connection_status,
+        work,
+        commands
+      )
 
     %{
       "id" => registration.id,
@@ -658,22 +672,22 @@ defmodule SalixStore.AgentVMMAdminProjection do
         "status" => registration.status,
         "desired_enabled" => registration.desired_enabled,
         "revision" => registration.revision,
-        "policy_revision" => registration.policy_revision
+        "policy_revision" => registration.policy_revision,
+        "request_status" => request_status,
+        "error_code" => registration.error_code,
+        "retryable" =>
+          registration.delivery_target_type == "bft_runner" and
+            is_nil(registration.host_identity_digest) and registration.status != "revoked"
       },
-      "installation" => map_string_keys(install),
       "connection" => %{
         "status" => connection_status,
         "last_observed_at" => if(observation, do: observation.observed_at),
         "received_at" => if(observation, do: observation.received_at),
-        "gateway_instance_id" => if(observation, do: observation.gateway_instance_id),
+        "gateway_instance_id" => registration.current_gateway_instance_id,
         "binding_count" => binding.count,
         "available_bindings" => binding.available,
         "inventory_watermark" =>
           if(observation, do: observation.inventory_watermark, else: binding.inventory_watermark),
-        "protocol_version" => if(observation, do: observation.protocol_version),
-        "host_api_version" => if(observation, do: observation.host_api_version),
-        "connector_release" => if(observation, do: observation.connector_release),
-        "supported_features" => if(observation, do: observation.supported_features, else: []),
         "capacity" => if(observation, do: observation.capacity),
         "health" =>
           if(observation,
@@ -692,9 +706,17 @@ defmodule SalixStore.AgentVMMAdminProjection do
     }
   end
 
-  defp top_issue(registration, install, binding, observation, connection_status, work, commands) do
+  defp top_issue(
+         registration,
+         request_status,
+         binding,
+         observation,
+         connection_status,
+         work,
+         commands
+       ) do
     cond do
-      install && install.status == "action_required" -> "install_action_required"
+      request_status == "action_required" -> "install_action_required"
       registration.status == "enrolling" -> "registration_enrolling"
       registration.status == "disabled" -> "registration_disabled"
       registration.status == "revoked" -> "registration_revoked"
@@ -768,7 +790,9 @@ defmodule SalixStore.AgentVMMAdminProjection do
     from(b in Compute.ProviderBinding,
       join: e in Compute.Environment,
       on: e.id == b.environment_id,
-      where: b.provider == "agent_vmm" and b.status != "available",
+      join: r in AgentVMM.Registration,
+      on: r.id == b.provider_ref,
+      where: b.provider == "agent_vmm" and (b.status == "revoked" or not r.connected),
       group_by: [e.tenant_id, b.provider_ref],
       select: %{tenant_id: e.tenant_id, registration_id: b.provider_ref}
     )
@@ -819,10 +843,9 @@ defmodule SalixStore.AgentVMMAdminProjection do
   end
 
   defp action_required_install_registrations do
-    from(o in AgentVMMInstallations.Operation,
-      where: o.authorization_status == "action_required" and not is_nil(o.registration_id),
-      group_by: [o.tenant_id, o.registration_id],
-      select: %{tenant_id: o.tenant_id, registration_id: o.registration_id}
+    from(r in AgentVMM.Registration,
+      where: not is_nil(r.error_code),
+      select: %{tenant_id: r.tenant_id, registration_id: r.id}
     )
   end
 
@@ -855,11 +878,9 @@ defmodule SalixStore.AgentVMMAdminProjection do
   end
 
   defp disconnected_observation_registrations do
-    from(o in AgentVMM.RegistrationObservation,
-      join: r in AgentVMM.Registration,
-      on: r.id == o.registration_id,
-      where: not is_nil(o.disconnected_at),
-      select: %{tenant_id: r.tenant_id, registration_id: o.registration_id}
+    from(r in AgentVMM.Registration,
+      where: not r.connected and not is_nil(r.current_connection_epoch),
+      select: %{tenant_id: r.tenant_id, registration_id: r.id}
     )
   end
 
@@ -869,61 +890,21 @@ defmodule SalixStore.AgentVMMAdminProjection do
     from(o in AgentVMM.RegistrationObservation,
       join: r in AgentVMM.Registration,
       on: r.id == o.registration_id,
-      where: is_nil(o.disconnected_at) and o.received_at < ^deadline,
-      select: %{tenant_id: r.tenant_id, registration_id: o.registration_id}
-    )
-  end
-
-  defp connected_observation_registrations do
-    deadline = DateTime.add(SystemsClock.utc_now(), -@observation_freshness_seconds, :second)
-
-    from(o in AgentVMM.RegistrationObservation,
-      join: r in AgentVMM.Registration,
-      on: r.id == o.registration_id,
-      where: is_nil(o.disconnected_at) and o.received_at >= ^deadline,
+      where:
+        r.connected and o.connection_epoch == r.current_connection_epoch and
+          o.received_at < ^deadline,
       select: %{tenant_id: r.tenant_id, registration_id: o.registration_id}
     )
   end
 
   defp current_session_fences do
-    latest =
-      from(s in AgentVMM.Session,
-        join: r in AgentVMM.Registration,
-        on: r.id == s.registration_id,
-        distinct: [r.tenant_id, s.registration_id],
-        order_by: [asc: r.tenant_id, asc: s.registration_id, desc: s.updated_at, desc: s.id],
-        select: %{
-          tenant_id: r.tenant_id,
-          registration_id: s.registration_id,
-          gateway_instance_id: s.gateway_instance_id,
-          connection_epoch: s.connection_epoch
-        }
-      )
-
-    reported =
-      from(o in AgentVMM.RegistrationObservation,
-        join: r in AgentVMM.Registration,
-        on: r.id == o.registration_id,
-        select: %{
-          tenant_id: r.tenant_id,
-          registration_id: o.registration_id,
-          gateway_instance_id: o.gateway_instance_id,
-          connection_epoch: o.connection_epoch
-        }
-      )
-
-    from(latest in subquery(latest),
-      left_join: reported in subquery(reported),
-      on:
-        reported.tenant_id == latest.tenant_id and
-          reported.registration_id == latest.registration_id,
+    from(r in AgentVMM.Registration,
+      where: r.connected,
       select: %{
-        tenant_id: latest.tenant_id,
-        registration_id: latest.registration_id,
-        gateway_instance_id:
-          fragment("COALESCE(?, ?)", reported.gateway_instance_id, latest.gateway_instance_id),
-        connection_epoch:
-          fragment("COALESCE(?, ?)", reported.connection_epoch, latest.connection_epoch)
+        tenant_id: r.tenant_id,
+        registration_id: r.id,
+        gateway_instance_id: r.current_gateway_instance_id,
+        connection_epoch: r.current_connection_epoch
       }
     )
   end
@@ -1060,19 +1041,19 @@ defmodule SalixStore.AgentVMMAdminProjection do
 
   defp apply_connection_filter(query, _tenant_id, nil), do: query
 
-  defp apply_connection_filter(query, tenant_id, "disconnected"),
-    do: include_source(query, tenant_id, disconnected_observation_registrations())
+  defp apply_connection_filter(query, _tenant_id, "disconnected"),
+    do: where(query, [r, ...], not r.connected and not is_nil(r.current_connection_epoch))
 
-  defp apply_connection_filter(query, tenant_id, "not_reported") do
-    exclude_source(query, tenant_id, observed_registration_registrations())
-  end
+  defp apply_connection_filter(query, _tenant_id, "not_reported"),
+    do: where(query, [r, ...], is_nil(r.current_connection_epoch))
 
-  defp apply_connection_filter(query, tenant_id, "stale") do
-    include_source(query, tenant_id, stale_observation_registrations())
-  end
+  defp apply_connection_filter(query, tenant_id, "stale"),
+    do: include_source(query, tenant_id, stale_observation_registrations())
 
   defp apply_connection_filter(query, tenant_id, "connected") do
-    include_source(query, tenant_id, connected_observation_registrations())
+    query
+    |> where([r, ...], r.connected)
+    |> exclude_source(tenant_id, stale_observation_registrations())
   end
 
   defp apply_work_filter(query, _tenant_id, nil), do: query

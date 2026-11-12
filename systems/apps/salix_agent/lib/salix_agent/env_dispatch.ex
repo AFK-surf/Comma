@@ -14,6 +14,7 @@ defmodule SalixAgent.EnvDispatch do
     * `computer_use/3` — relay a `{environment, action, thinking?, args?}`
       payload to the connector's computer-use daemon.
     * `android/3` — relay one bounded Android lifecycle or UI action.
+    * `screen/3` — relay one bounded action on a computer's own iOS Simulator.
     * `process_list/2`, `process_write/5`, and `process_tail/4` — operate on
       long-lived connector processes started through an environment.
     * `read_stream/3` / `write_stream/4` — binary-safe file movement used by
@@ -42,6 +43,18 @@ defmodule SalixAgent.EnvDispatch do
   @callback create_device_install(String.t(), String.t(), map() | nil) ::
               {:ok, map()} | {:error, term()}
   @optional_callbacks create_device_install: 3
+
+  # The computer's own login of a runtime chosen for its Workspace, after its
+  # owner answered the Agent's question card (`requester` as above).
+  @callback use_local_account(String.t(), String.t(), String.t(), map() | nil) ::
+              {:ok, map()} | {:error, term()}
+  @optional_callbacks use_local_account: 4
+
+  # The server-written question card that asks the computer's owner, and the
+  # computer and runtime it binds.
+  @callback local_account_card(String.t(), String.t(), String.t(), String.t(), map() | nil) ::
+              {:ok, map()} | {:error, term()}
+  @optional_callbacks local_account_card: 5
 
   @callback list_envs(agent_id :: String.t()) :: {:ok, [env_entry()]} | {:error, term()}
   @callback get_device(agent_id :: String.t(), device_id :: String.t()) ::
@@ -79,6 +92,13 @@ defmodule SalixAgent.EnvDispatch do
               target :: target(),
               action :: %{optional(String.t()) => term()}
             ) :: {:ok, map()} | {:error, term()}
+
+  @callback screen(
+              agent_id :: String.t(),
+              target :: target(),
+              action :: %{optional(String.t()) => term()}
+            ) :: {:ok, map()} | {:error, term()}
+  @optional_callbacks screen: 3
 
   @callback process_list(agent_id :: String.t(), target :: target()) ::
               {:ok, map()} | {:error, term()}
@@ -142,6 +162,16 @@ defmodule SalixAgent.EnvDispatch do
   def android(agent_id, target, action),
     do: impl().android(agent_id, target, action)
 
+  @spec screen(String.t(), target(), map()) :: {:ok, map()} | {:error, term()}
+  def screen(agent_id, target, action) do
+    module = impl()
+    Code.ensure_loaded(module)
+
+    if function_exported?(module, :screen, 3),
+      do: module.screen(agent_id, target, action),
+      else: {:error, :no_environment}
+  end
+
   @spec process_list(String.t(), target()) :: {:ok, map()} | {:error, term()}
   def process_list(agent_id, target),
     do: impl().process_list(agent_id, target)
@@ -168,6 +198,24 @@ defmodule SalixAgent.EnvDispatch do
   def create_device_install(agent_id, name, requester \\ nil),
     do: impl().create_device_install(agent_id, name, requester)
 
+  def local_account_card(agent_id, device_id, runtime, locale, requester) do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and
+         function_exported?(impl, :local_account_card, 5),
+       do: impl.local_account_card(agent_id, device_id, runtime, locale, requester),
+       else: {:error, :no_environment}
+  end
+
+  def use_local_account(agent_id, device_id, runtime, requester) do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and
+         function_exported?(impl, :use_local_account, 4),
+       do: impl.use_local_account(agent_id, device_id, runtime, requester),
+       else: {:error, :no_environment}
+  end
+
   defp impl, do: SystemsRuntime.get_env(:salix_agent, :env_dispatch, __MODULE__.None)
 
   defmodule None do
@@ -179,6 +227,10 @@ defmodule SalixAgent.EnvDispatch do
 
     @impl true
     def create_device_install(_agent_id, _name, _requester), do: {:error, :no_environment}
+
+    @impl true
+    def use_local_account(_agent_id, _device_id, _runtime, _requester),
+      do: {:error, :no_environment}
 
     @impl true
     def list_devices(_agent_id, _opts), do: {:error, :no_environment}

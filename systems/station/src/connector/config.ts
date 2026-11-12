@@ -1,15 +1,17 @@
 // Connector configuration: defaults, command-line flags and environment (as the Go connector read them, minus the
 // removed modes), the desktop app's config file, normalization and validation.
 import { readFile } from "node:fs/promises";
-import { hostname } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { Duration, Effect } from "effect";
 import { computerUseSocketPathForRuntime, defaultComputerUseHelperAppPath } from "./computer-use-paths.ts";
+import { machineName } from "./system-info.ts";
 
 export const SCOPE_LOCAL_FILE_READ = "local_file_read";
 export const MAX_CONCURRENT_REQUESTS = 16;
 export const CLEANUP_QUEUE_SIZE = 64;
 export const REQUEST_EXECUTION_TIMEOUT = Duration.minutes(2);
+/// A Salix tool call (task.tool_call): Salix answers within the tool's own timeout, at most 19 minutes (a long env.exec).
+export const SALIX_TOOL_CALL_TIMEOUT = Duration.minutes(20);
 
 export type ConnectorConfig = {
   configPath: string;
@@ -26,6 +28,8 @@ export type ConnectorConfig = {
   shutdownRequestPath: string;
   localFileIndexRoot: string;
   deviceMode: boolean;
+  /** A device's connection asks Salix for what its station needs to serve the owner on the mesh (mesh/device-mesh.ts). */
+  deviceMesh: boolean;
   deviceStateRoot: string;
   externalStateRoot: string;
   deviceWorkspaceId: string;
@@ -80,6 +84,7 @@ export function defaultConfig(env: Record<string, string | undefined> = process.
     shutdownRequestPath: "",
     localFileIndexRoot: "",
     deviceMode: false,
+    deviceMesh: false,
     deviceStateRoot: "",
     externalStateRoot: "",
     deviceWorkspaceId: "",
@@ -145,7 +150,7 @@ const parseBool = (value: string) => ["1", "t", "true", "y", "yes", "on"].includ
 /** Flags (`--name value`, `--name=value`, `-name`), then environment, then defaults. Returns the explicitly set flags. */
 export function parseArgs(argv: string[], env: Record<string, string | undefined>): { cfg: ConnectorConfig; explicit: Set<string> } {
   const cfg = defaultConfig(env);
-  cfg.name = env.SALIX_CONNECTOR_NAME ?? hostname();
+  cfg.name = env.SALIX_CONNECTOR_NAME ?? machineName();
   cfg.root = env.SALIX_CONNECTOR_ROOT ?? ".";
   cfg.reconnect = true;
   cfg.workspaceArchiveEnabled = env.SALIX_WORKSPACE_ARCHIVE === undefined ? true : parseBool(env.SALIX_WORKSPACE_ARCHIVE);
@@ -195,6 +200,8 @@ type FileConfig = {
     root?: string;
     reconnect?: boolean;
     scope?: string;
+    /** The app's Debug switch: this device's station serves its owner on the mesh. */
+    mesh?: boolean;
   };
   status?: { path?: string };
   electron?: { local_file_index_root?: string; run_nonce?: string; runtime_namespace?: string; runtime_root?: string; bin_dir?: string; computer_use_helper_app?: string; env?: Record<string, string> };
@@ -215,6 +222,7 @@ export function applyConfigFile(cfg: ConnectorConfig, explicit: Set<string>): Ef
     if (typeof conn.reconnect === "boolean" && !explicit.has("reconnect")) cfg.reconnect = conn.reconnect;
     if (conn.scope && !explicit.has("scope")) cfg.scope = conn.scope;
     if (!explicit.has("device")) cfg.deviceMode = conn.device === true;
+    cfg.deviceMesh = conn.mesh === true;
     cfg.deviceStateRoot = conn.device_state_root ?? "";
     cfg.deviceWorkspaceId = conn.workspace_id ?? "";
     const electron = file.electron ?? {};
@@ -244,7 +252,7 @@ export function normalizeConfig(cfg: ConnectorConfig): void {
   cfg.statusPath = cfg.statusPath.trim();
   if (!cfg.statusPath && cfg.configPath) cfg.statusPath = `${cfg.configPath}.status.json`;
   cfg.scope = cfg.scope.trim();
-  if (cfg.scope !== "" && cfg.scope !== SCOPE_LOCAL_FILE_READ) throw new Error(`unknown connector scope ${JSON.stringify(cfg.scope)}; supported: ${JSON.stringify(SCOPE_LOCAL_FILE_READ)}`);
+  if (cfg.scope !== "" && cfg.scope !== SCOPE_LOCAL_FILE_READ) throw new Error(`unknown station scope ${JSON.stringify(cfg.scope)}; supported: ${JSON.stringify(SCOPE_LOCAL_FILE_READ)}`);
   if (cfg.scope === SCOPE_LOCAL_FILE_READ && !cfg.deviceMode && !cfg.localFileIndexRoot.trim()) throw new Error("scope local_file_read requires a local file index root");
   cfg.runtimeNamespace = cfg.runtimeNamespace.trim();
   cfg.runtimeRoot = cfg.runtimeRoot.trim();

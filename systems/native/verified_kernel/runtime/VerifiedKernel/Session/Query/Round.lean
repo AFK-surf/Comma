@@ -105,8 +105,10 @@ def currentTurnTrustedOrigins (state args : Term) : KernelM Term := do
     return acc) []
   return list (uniq collected)
 
-/-- `Round.current_turn_source/2`: the last wakeable human source of this
-activation, else the last declared id, with the origin that carries it. -/
+/-- `Round.current_turn_source/2`: the input an effect that names none acts on, and
+where a reply goes: the last person among this activation's wakeable human sources,
+else the last of them, else the last declared id, with the origin that carries it.
+An effect that names an input takes that input's origin instead. -/
 def currentTurnSource (state args : Term) : KernelM Term := do
   let .list (first :: rest) := args | return .tuple [nil, nil]
   let sources := first :: rest
@@ -120,7 +122,10 @@ def currentTurnSource (state args : Term) : KernelM Term := do
     if (atomFirst message "no_wake") == a "true" then return false
     if !sources.any (· == atomFirst message "source_message_id") then return false
     StateQuery.humanSourceOrigin (atomFirst message "trusted_origin"))
-  let chosen := match wakeable.getLast? with
+  let people := wakeable.filter (fun message =>
+    let actor := textKey (atomFirst message "trusted_origin") "source_actor_type"
+    actor == b "provider_user" || actor == b "user")
+  let chosen := match people.getLast?.orElse (fun _ => wakeable.getLast?) with
     | some message => atomFirst message "source_message_id"
     | none => nil
   let sourceId := chosen.default (sources.getLast?.getD nil)
@@ -239,27 +244,41 @@ def completionTarget (state args : Term) : KernelM Term := do
 
 /-! ## `SalixAgent.TerminalReply`
 
-The source scope is the request-local projection of the one Telegram (or Slack
+The source scope is the request-local projection of the one Telegram (or channel
 welcome) request this activation answers. It fails closed: unknown carriers and
 a second human request answer `nil`. -/
 
-/-- `SalixAgent.IFC.ChannelOnboarding.origin?/1`. -/
+/-- The sends a channel welcome can make: Slack's channel post, and the chat
+send of Feishu and Lark. -/
+def onboardingSendTools : List Term :=
+  [b "im_api.slack.post_message", b "im_api.slack.post_channel_message",
+   b "im_api.feishu.send_message", b "im_api.lark.send_message"]
+
+/-- `SalixAgent.IFC.ChannelOnboarding.origin?/1`: the bot joined a place. Slack
+names a channel (`member_joined_channel`); Feishu and Lark name a chat
+(`im.chat.member.bot.added_v1`). -/
 def channelOnboardingOrigin (origin : Term) : KernelM Bool := do
-  if textKey origin "provider" != b "slack" then return false
+  let provider := textKey origin "provider"
+  let (eventType, place) :=
+    if provider == b "slack" then ("member_joined_channel", "channel_id")
+    else if provider == b "feishu" || provider == b "lark" then ("im.chat.member.bot.added_v1", "chat_id")
+    else ("", "")
+  if eventType == "" then return false
   let context := textKey origin "provider_context"
   if !context.isMap then return false
-  if textKey context "event_type" != b "member_joined_channel" then return false
+  if textKey context "event_type" != b eventType then return false
   let connect := textKey context "connect_id"
-  let channel := textKey context "channel_id"
+  let channel := textKey context place
   let event := textKey context "event_id"
   if !(connect.isBinary && connect != b "") then return false
   if !(channel.isBinary && channel != b "") then return false
   if !(event.isBinary && event != b "") then return false
+  let .binary provider := provider | return false
   let .binary connect := connect | return false
   let .binary channel := channel | return false
   let .binary event := event | return false
-  let expected := "im_provider:slack:".toUTF8 ++ connect ++ ":channel_joined:".toUTF8 ++ channel ++
-    ":".toUTF8 ++ event
+  let expected := "im_provider:".toUTF8 ++ provider ++ ":".toUTF8 ++ connect ++ ":channel_joined:".toUTF8 ++
+    channel ++ ":".toUTF8 ++ event
   return textKey origin "source_message_id" == .binary expected
 
 /-- `TerminalReply.human_request?/1`. -/
@@ -322,7 +341,8 @@ def replyTargets (origin : Term) : KernelM Term := do
     else if provider == b "imessage" then do
       let chat := textKey destination "chat_id"
       if !chat.isBinary || chat == b "" then pure ([], route)
-      else pure (["im_api.imessage.send_message", "im_api.imessage.send_image"],
+      else pure (["im_api.imessage.send_message", "im_api.imessage.send_image",
+        "im_api.imessage.send_file"],
         route.put (b "chat_id") chat)
     else if provider == b "wechat" then
       pure (["im_api.wechat.reply_text", "im_api.wechat.reply_image", "im_api.wechat.reply_file"], route)
@@ -333,12 +353,69 @@ def replyTargets (origin : Term) : KernelM Term := do
     else pure ([], route)
   return list (tools.map (fun tool => Term.map [(b "tool", b tool), (b "params", route)]))
 
+/-- The report target of a Worker's own Task: the internal `agent_task`
+Conversation that `origin` came from. Empty for any other origin. -/
+def taskReplyTargets (origin : Term) : Term :=
+  let conversation := textKey origin "conversation_id"
+  if textKey origin "provider" != b "internal" || textKey origin "conversation_kind" != b "agent_task" ||
+    !conversation.isBinary || conversation == b "" then list []
+  else list [.map [(b "tool", b "im_api.internal.send_message"),
+    (b "params", .map [(b "connect_id", b "internal"), (b "conversation_id", conversation)])]]
+
+/-- A Worker activation that answers only its own Task: every unacked input
+came from the one `agent_task` Conversation of `origin`, and `source` is one of
+those inputs with exactly that origin. The host supplies the Worker role. -/
+def workerTaskSource (state origin source : Term) : KernelM Bool := do
+  if taskReplyTargets origin == list [] then return false
+  if !(source.isBinary && source != b "") || textKey origin "source_message_id" != source then
+    return false
+  let messages ← currentUserMessages state
+  let conversation := textKey origin "conversation_id"
+  let sameTask := fun (message : Term) =>
+    let other := valueOf message "trusted_origin"
+    textKey other "provider" == b "internal" && textKey other "conversation_kind" == b "agent_task" &&
+      textKey other "conversation_id" == conversation
+  return messages.all sameTask && messages.any (fun message =>
+    valueOf message "source_message_id" == source && valueOf message "trusted_origin" == origin)
+
 /-- `TerminalReply.source_scope/1`. -/
+def replyRequest : List Term → KernelM (Option Term)
+  | [] => pure none
+  | [request] => pure (some request)
+  | requests => do
+    let threads ← requests.mapM (fun message => StateQuery.originThread (valueOf message "trusted_origin"))
+    if threads.any (· == nil) || (uniq threads).length != 1 then return none
+    return (← requests.filterM (fun message => do
+      return (← replyTargets (valueOf message "trusted_origin")) != list [])).getLast?
+
+/-- A Loop's or a schedule's delivery with no authority. It carries no origin, so it
+is not queued behind a person and can arrive while they wait. It asks nothing of them,
+so it is context for their reply. Its source id says what it is. -/
+def backgroundInput (message : Term) : Bool :=
+  let prefixed := fun (start : String) =>
+    match valueOf message "source_message_id" with
+    | .binary raw => start.toUTF8.toList.isPrefixOf raw.toList
+    | _ => false
+  !(valueOf message "trusted_origin").isMap && (prefixed "loop:" || prefixed "schedule:")
+
+/-- Pre-delivery context is sealed by `preInputEvent` to a human activation.
+It contributes no destination authority: that still comes from the human request.
+Read the accepted queue payload, never model-visible content or a source-id suffix. -/
+private def activationContext (message : Term) (requests : List Term) : Bool :=
+  if valueOf message "no_wake" != a "true" then false
+  else match valueOf message "accepted_input" with
+    | .tuple [_, kind, source, payload] =>
+      let owner := textKey payload "activation_source_message_id"
+      kind == b "user_message" && source == valueOf message "source_message_id" &&
+        owner.isBinary && owner != b "" &&
+        requests.any (fun request => valueOf request "source_message_id" == owner)
+    | _ => false
+
 def sourceScope (state : Term) : KernelM Term := do
   let messages ← currentUserMessages state
   let requests ← messages.filterM humanRequest
   let context ← messages.filterM (fun message => return !(← humanRequest message))
-  let [request] := requests | return nil
+  let some request ← replyRequest requests | return nil
   let origin := valueOf request "trusted_origin"
   if !origin.isMap then return nil
   let legacy := origin.get (b "source_actor_type") == b "provider_user" &&
@@ -348,39 +425,51 @@ def sourceScope (state : Term) : KernelM Term := do
   let source := valueOf request "source_message_id"
   if !(source.isBinary && source != b "") then return nil
   if textKey origin "source_message_id" != source then return nil
-  if !(context.all trustedContext) then return nil
+  if !(context.all (fun message => backgroundInput message || trustedContext message ||
+      activationContext message requests)) then
+    return nil
   let sources := list (uniq (messages.map (fun message => valueOf message "source_message_id")))
   if (← ReplyQuery.currentSourceMessageIds state) != sources then return nil
   return .map [(b "source_message_id", source), (b "context_source_message_ids", ← currentSourceIds state),
     (b "trusted_origin", origin)]
 
+/-- The destination half of `bindingMatches` for a human source scope. -/
+private def sourceBindingMatches (state args : Term) : KernelM Bool := do
+  let scope ← sourceScope state
+  if !scope.isMap then return false
+  if scope.get (b "source_message_id") != textKey args "source_message_id" then return false
+  let origin := scope.get (b "trusted_origin")
+  if textKey args "trusted_origin" != origin then return false
+  let targets ← replyTargets origin
+  if targets != list [] then
+    return textKey args "kind" == textKey origin "provider" &&
+      (← asList targets).contains (textKey args "reply_target")
+  let destination := textKey origin "provider_context"
+  if !destination.isMap then return false
+  let kind := if (← channelOnboardingOrigin origin) then b "channel_onboarding" else b "telegram"
+  if textKey args "kind" != kind || textKey args "connect_id" != textKey destination "connect_id" then
+    return false
+  let chat := (textKey destination "chat_id").default (textKey destination "channel_id")
+  return chat != nil && textKey args "chat_id" == (← stringChars chat) &&
+    textKey args "message_thread_id" == (← stringChars ((textKey destination "message_thread_id").default (b "")))
+
+/-- The destination half of `bindingMatches` for a Worker's report to its own
+Task (`Settlement.replyContext`). -/
+private def taskBindingMatches (state args : Term) : KernelM Bool := do
+  let origin := textKey args "trusted_origin"
+  if !(← workerTaskSource state origin (textKey args "source_message_id")) then return false
+  return (← asList (taskReplyTargets origin)).contains (textKey args "reply_target")
+
 /-- `TerminalReply.matches?/2`: the binding still owns this exact activation. -/
 def bindingMatches (state args : Term) : KernelM Term := do
   if !args.isMap then return Term.bool false
-  let scope ← sourceScope state
   if (← field state "agent_id") != textKey args "agent_id" then return Term.bool false
   if (← field state "session_id") != textKey args "session_id" then return Term.bool false
   if (← field state "last_ack_message_id") != textKey args "last_ack_message_id" then
     return Term.bool false
-  if !scope.isMap then return Term.bool false
-  if scope.get (b "source_message_id") != textKey args "source_message_id" then
-    return Term.bool false
-  let origin := scope.get (b "trusted_origin")
-  if textKey args "trusted_origin" != origin then return Term.bool false
-  let targets ← replyTargets origin
-  if targets != list [] then
-    if textKey args "kind" != textKey origin "provider" ||
-      !(← asList targets).contains (textKey args "reply_target") then return Term.bool false
-  else
-    let destination := textKey origin "provider_context"
-    if !destination.isMap then return Term.bool false
-    let kind := if (← channelOnboardingOrigin origin) then b "channel_onboarding" else b "telegram"
-    if textKey args "kind" != kind || textKey args "connect_id" != textKey destination "connect_id" then
-      return Term.bool false
-    let chat := (textKey destination "chat_id").default (textKey destination "channel_id")
-    if chat == nil || textKey args "chat_id" != (← stringChars chat) ||
-      textKey args "message_thread_id" != (← stringChars ((textKey destination "message_thread_id").default (b ""))) then
-      return Term.bool false
+  let destination ← if textKey args "kind" == b "agent_task" then taskBindingMatches state args
+    else sourceBindingMatches state args
+  if !destination then return Term.bool false
   if !(textKey args "context_source_message_ids").isList then return Term.bool false
   let current ← sorted (← asList (← currentSourceIds state))
   if current != (← sorted (← asList (textKey args "context_source_message_ids"))) then
@@ -409,14 +498,14 @@ def onboardingSourceMessageId (state args : Term) : KernelM Term := do
   if !found.isMap then return nil
   return valueOf found "id"
 
-/-- `settle_onboarding/3`'s committed-send test: a terminal Slack post result
+/-- `settle_onboarding/3`'s committed-send test: a terminal welcome send result
 inside this activation. -/
 def onboardingSendCompleted (state args : Term) : KernelM Term := do
   return Term.bool (← StateQuery.enumAny ((← field state "messages").default (list []))
     (fun message => do
       if !(← greater (valueOf message "id") args) then return false
       if valueOf message "role" != b "tool" then return false
-      if ![b "im_api.slack.post_channel_message", b "im_api.slack.post_message"].contains (valueOf message "tool_name") then return false
+      if !onboardingSendTools.contains (valueOf message "tool_name") then return false
       let status := valueOf message "status"
       return status != b "running" && status != b "async_running"))
 

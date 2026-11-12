@@ -8,6 +8,7 @@ import {
 } from "@comma/ui/tokens";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type { ChatMessagePart } from "@comma/chat-contract";
+import { showsDynamicUiVersion } from "@comma/chat-contract/dynamic-ui-level";
 import { supportsDynamicUiWidgets } from "../../../nativePlatformActions";
 import { Button } from "@comma/ui/components/Button";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
@@ -30,6 +31,7 @@ import { ChatLinkHoverCard } from "../thread/inline/ChatLinkHoverCard";
 import { cardBrandIcons, cardCopy, cardIconMarkup, cardTokenProbe } from "./cardHost";
 import { WidgetFailureNotice, type WidgetFailure } from "./WidgetFailureNotice";
 import { useReportWidgetPresence } from "./widgetPresence";
+import { captureCommaWidgetFailure } from "../../../analytics/client";
 
 export const DynamicUiDraftContext = createContext<
   ((text: string, messageId: string) => void) | undefined
@@ -102,7 +104,8 @@ function rememberHeight(scope: string, value: number) {
 }
 
 export function DynamicUiWidget(props: Props) {
-  if (!supportsDynamicUiWidgets() || props.part.version !== 1)
+  // A widget above this client's runtime level shows as its summary (level.ts).
+  if (!supportsDynamicUiWidgets() || !showsDynamicUiVersion(props.part.version))
     return <span>{props.part.summary}</span>;
   return <NativeDynamicUiWidget {...props} />;
 }
@@ -217,6 +220,12 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
   const loadFailure: WidgetFailure | undefined =
     load?.status === "failed" ? { kind: load.kind, reason: load.reason } : undefined;
   const failure = error ?? loadFailure;
+  // A failure is the same one while its kind and reason stay.
+  const failureKind = failure?.kind;
+  const failureReason = failure?.reason;
+  useEffect(() => {
+    if (failureKind) captureCommaWidgetFailure(failureKind, failureReason ?? "");
+  }, [failureKind, failureReason]);
   const ready =
     !released &&
     visible &&
@@ -363,6 +372,8 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
           startup?.();
           startup = undefined;
         }
+        if (message.type === "part-error" && typeof message.reason === "string")
+          captureCommaWidgetFailure("part", message.reason.slice(0, 200));
         if (message.type === "error")
           setError({
             kind: "display",
@@ -507,7 +518,7 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
         ["--color-text-success-primary", "#067647"],
         ["--color-text-error-primary", "#b42318"],
         ["--color-text-warning-primary", "#b54708"],
-        ["--color-text-brand-primary", "#6366f1"],
+        ["--color-bg-brand-solid", "#205bff"],
       ]) {
         const probe = document.createElement("span");
         probe.style.color = `var(${name}, ${fallback})`;
@@ -536,7 +547,9 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
           "motion-feedback": `${motionDuration.feedbackIn}ms`,
           "motion-stagger": `${motionDuration.revealStagger}ms`,
           "motion-ease": motionEasing.smoothOut,
-          accent: token("--color-text-brand-primary"),
+          // The brand fill, as the phone apps pass it: a text color here drew
+          // charts and primary buttons almost black.
+          accent: token("--color-bg-brand-solid"),
           font: computed.fontFamily,
           size: `${compactTypeScale.small.fontSize}px`,
           space: `${spacing.xl}px`,
@@ -603,7 +616,7 @@ function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
           seed: part.contentId,
           locale: localeRef.current,
           timeZone: viewerTimeZone(),
-          copy: cardCopy(messages),
+          copy: { ...cardCopy(messages), partFailed: messages.chat_ui_part_failed() },
           cardState,
         },
         "*",

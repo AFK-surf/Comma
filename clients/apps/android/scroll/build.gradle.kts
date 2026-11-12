@@ -50,7 +50,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
-            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            // The root project's robolectricJars task provides the Android jars.
+            it.dependsOn(":robolectricJars")
+            it.systemProperty("robolectric.offline", "true")
+            it.systemProperty("robolectric.dependency.dir", rootProject.layout.buildDirectory.dir("robolectric").get().asFile.path)
         }
     }
 

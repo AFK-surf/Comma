@@ -210,7 +210,7 @@ test("a deleted Task leaves a tombstone at the next rev, forgotten once pruned t
 test("the index of a database from before it is made on open, with every chat on the page; its epoch stays", async () => {
   const dir = mkdtempSync(join(tmpdir(), "task-index-"));
   dirs.push(dir);
-  const path = join(dir, "stillfail.db");
+  const path = join(dir, "station.db");
   const first = rig(path);
   const live = chat(first.store, "1.1", "s1");
   first.store.insertMessage(newMessage(live, "1.2", "person", "a@x", "live one"));

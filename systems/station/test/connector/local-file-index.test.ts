@@ -15,6 +15,7 @@ import {
   openPinnedLocalFileIndex,
   readLocalFileIndexRecord,
 } from "../../src/connector/local-file-index.ts";
+import { streamBytes } from "../../src/connector/message.ts";
 import { EXACT, acking, bind, claim, connectorWith, dispatch } from "./support/connector.ts";
 import { tempDir } from "./support/temp.ts";
 import { platform } from "../../src/platform/index.ts";
@@ -70,7 +71,7 @@ test("TestReadRefStreamsOnlyManagedSnapshotForExactLiveIdentity", async () => {
   const c = connectorWith({ localFileIndexRoot: root });
   const chunks: Buffer[] = [];
   const session = claim(c, acking((frame) => {
-    if (frame.stream?.channel === "data" && frame.stream.data) chunks.push(Buffer.from(frame.stream.data, "base64"));
+    if (frame.stream?.channel === "data" && frame.stream.data) chunks.push(streamBytes(frame.stream));
   }));
   assert.ok(bind(c, session));
   const outcome = await dispatch(c, session, "request-1", "read_ref", params(ref));

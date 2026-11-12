@@ -5,7 +5,15 @@ import VerifiedKernel.Session.Query.StateCore
 The batch admits at most one human activation at a time. A human input's source
 context stays with that activation; ordinary Worker/system context keeps its
 existing behavior. Runtime completions inherited from the active source (or the
-current wait's own timeout) can bypass a deferred human activation. -/
+current wait's own timeout) can bypass a deferred human activation.
+
+Between activations, a person goes ahead of a waiting bot, app, schedule, or
+Loop activation that was delivered at most `personOvertakeWindowMs` earlier.
+People keep their order among themselves; the inputs they pass keep theirs.
+
+Everything queued for one provider thread is one activation, by exact consume:
+its answer goes to one place, and a separate activation per message would only
+keep other threads waiting. IFC decides each effect for the input it declares. -/
 
 namespace VerifiedKernel.Session.StateQuery
 open Data
@@ -104,6 +112,101 @@ def deferredActivation (item : Term) (sourceIds : List Term) (active : Bool) : K
   let owner ← access payload (b "activation_source_message_id")
   return owner != nil && !sourceIds.contains owner
 
+/-- A human source whose origin names a person: a Slack or other provider user, or
+a Comma user. Bots, apps, schedules, and Loops are human sources, not people. -/
+def personSourceWakeable (item : Term) : KernelM Bool := do
+  if !(← humanSourceWakeable item) then return false
+  let payload ← stringify ((← pickText item "payload").default empty)
+  let origin ← access payload (b "trusted_origin")
+  if !origin.isMap then return false
+  let actorType ← pickText origin "source_actor_type"
+  return actorType == b "provider_user" || actorType == b "user"
+
+/-- A person overtakes a waiting non-person activation only when the person was
+delivered at most this long after it. This bounds which people can go ahead of the
+passed input, not how long it waits: each of them still takes a whole activation. -/
+def personOvertakeWindowMs : Int := 300000
+
+/-- The `delivered_at_ms` that admission stamps on the queued payload. -/
+def deliveredAt (item : Term) : KernelM Term := do
+  let payload ← stringify ((← pickText item "payload").default empty)
+  access payload (b "delivered_at_ms")
+
+/-- The first queued person who goes ahead of the first waiting activation, or `nil`.
+Without both delivery times nobody overtakes. -/
+def overtakingPerson (deferred : List Term) : KernelM Term := do
+  let some head := deferred.head? | return nil
+  if ← personSourceWakeable head then return nil
+  let person ← findFirst personSourceWakeable deferred
+  if person == nil then return nil
+  let waited ← deliveredAt head
+  let arrived ← deliveredAt person
+  if !waited.isInteger || !arrived.isInteger then return nil
+  if integerValue arrived - integerValue waited > personOvertakeWindowMs then return nil
+  return person
+
+/-- Source context that the input command sealed to `input`'s activation. -/
+def sealedTo (input item : Term) : KernelM Bool := do
+  let source ← access (← stringify ((← pickText input "payload").default empty))
+    (b "source_message_id")
+  let payload ← stringify ((← pickText item "payload").default empty)
+  let owner ← access payload (b "activation_source_message_id")
+  return owner != nil && owner == source
+
+/-- The person's input or its source context. -/
+def personActivationItem (person item : Term) : KernelM Bool := do
+  if item == person then return true
+  sealedTo person item
+
+/-- The leading items that go with an overtaking person: they stop before the source
+context sealed to the passed activation, which stays queued with it. -/
+def overtakeLeading (deferred leading : List Term) : KernelM (List Term) := do
+  let outside (item : Term) : KernelM Bool :=
+    match deferred.head? with
+    | none => pure true
+    | some head => return !(← sealedTo head item)
+  let (kept, _) ← splitWhile outside leading
+  pure kept
+
+/-- The provider thread of a wakeable human input, or `nil` outside a thread. -/
+def threadKey (item : Term) : KernelM Term := do
+  if item == nil then return nil
+  if !(← humanSourceWakeable item) then return nil
+  let payload ← stringify ((← pickText item "payload").default empty)
+  originThread (← access payload (b "trusted_origin"))
+
+/-- Whatever is queued for `first`'s thread, with the source context sealed to it. -/
+def threadActivation (first : Term) (deferred : List Term) (room : Nat) :
+    KernelM (List Term) := do
+  let key ← threadKey first
+  if key == nil then return []
+  let members ← deferred.filterM (fun item => return (← threadKey item) == key)
+  let sources ← members.mapM (fun item => do
+    access (← stringify ((← pickText item "payload").default empty)) (b "source_message_id"))
+  takeMatching (fun item => do
+    if ← humanSourceWakeable item then return (← threadKey item) == key
+    let payload ← stringify ((← pickText item "payload").default empty)
+    let owner ← access payload (b "activation_source_message_id")
+    return owner != nil && sources.contains owner) deferred room
+
+/-- The person's input with its source context, and the rest of its thread. -/
+def personActivation (person key : Term) (deferred : List Term) (room : Nat) :
+    KernelM (List Term) :=
+  if key == nil then takeMatching (personActivationItem person) deferred room
+  else threadActivation person deferred room
+
+/-- The overtaking person's activation, taken by exact consume, or `[]`.
+It holds the person or nothing. A person in the first waiting input's thread needs
+no overtaking: that thread's activation is next and holds them. -/
+def personOvertake (deferred : List Term) (room : Nat) : KernelM (List Term) := do
+  let person ← overtakingPerson deferred
+  if person == nil then pure [] else do
+    let key ← threadKey person
+    let first ← threadKey (deferred.headD nil)
+    if key != nil && key == first then pure [] else do
+      let taken ← personActivation person key deferred room
+      pure (if taken.contains person then taken else [])
+
 /-- `materialize_batch/3`: the admitted items, the queue-ack item, and the exact consumes. -/
 def materializeBatch (state : Term) (items : List Term) (limit : Int) :
     KernelM (List Term × Term × List Term) := do
@@ -113,8 +216,19 @@ def materializeBatch (state : Term) (items : List Term) (limit : Int) :
   let (leading, deferred) ← splitWhile (fun item => return !(← deferredActivation item sourceIds active)) items
   let leading := takeUpTo leading limit
   if !active then
-    let selected := takeUpTo (leading ++ takeUpTo deferred 1) limit
-    return (selected, selected.getLast?.getD nil, [])
+    -- The ACK stops before the passed activation; the person goes by exact consume.
+    let room := limit - Int.ofNat leading.length
+    let jumped ← personOvertake deferred (if room ≤ 0 then 0 else room.toNat)
+    if jumped.isEmpty then
+      let thread ← threadActivation (deferred.headD nil) deferred (if room ≤ 0 then 0 else room.toNat)
+      if thread.length ≤ 1 then
+        let selected := takeUpTo (leading ++ takeUpTo deferred 1) limit
+        return (selected, selected.getLast?.getD nil, [])
+      else
+        return (leading ++ thread, leading.getLast?.getD nil, thread)
+    else
+      let kept ← overtakeLeading deferred leading
+      return (kept ++ jumped, kept.getLast?.getD nil, jumped)
   let wait ← field state "wait"
   let remaining := limit - Int.ofNat leading.length
   let consumes ← takeMatching (fun item => currentSourceRuntimeItem item sourceIds wait)

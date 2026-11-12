@@ -7,12 +7,12 @@ Product records authorize Salix tenants. Client projections grant no authority.
 Restricted sessions cannot manage models or subscription credentials.
 Admin entry points authorize regardless of UI visibility.
 Tenant API keys do not check product member roles. Comma and BFT authorize before Salix calls.
-Catalogs exclude secrets. Full configuration requires operator authority. See [Billing and models](billing-models.md).
+Catalogs exclude secrets. Operators alone read full configuration. See [Billing and models](billing-models.md).
 
 ## Admin login sessions
 
 Auth Sessions are not Devices. Active means unexpired and unrevoked, not online.
-The default list shows active sessions by last use. Server filters apply before pagination. Counts describe loaded rows.
+Lists default to active sessions by last use. Server filters precede pagination. Counts cover loaded rows.
 Revocation requires a reason. Revoke all also requires the typed target and ignores filters.
 
 ## Credential custody
@@ -33,33 +33,62 @@ Keep current-origin records and unrelated profile data. Never contact the old or
 Local cleanup leaves server sessions intact. Persistence failure blocks login until retry.
 Desktop keeps valid challenges and cooldowns on same-email reentry or retryable resend errors.
 
+## Saved native sessions
+
+Electron, iOS, and Android share the [Session lifecycle](../clients/packages/core/src/session/electron-lifecycle.ts).
+Readable credentials for the configured origin restore the saved Session and its account cache before startup network validation.
+Offline mode exposes only cached data. Failed requests never create history or count as successful.
+
+Background Session checks preserve the restored Session and cache on network errors, timeouts and temporary server failures.
+Retries use successive delays of 1, 3, 10, and 30 seconds. Focus or an explicit retry can check again.
+Every server request still requires the saved credential and server authorization.
+A current `401` ends the local Session. A late rejection for another Session cannot end the current one.
+
+Sign-out removes the active credential and queues remote revocation durably before it publishes signed-out state.
+A failed server call cannot restore that signed-out Session. Unreadable storage and uncertain writes remain blocked. Protocol errors close product access.
+A restarted core cannot reopen a lease the host already closed without a successful server check.
+Backend changes and account changes preserve the existing origin and account boundaries.
+Web Cookie sessions and the Watch client retain their own startup flows.
+
 ## Review login codes
 
 After release, select the User in Admin, explicitly deny Admin access, then choose **Review login code** in account actions.
-Set six digits, replace them, or remove the code to restore email OTP. Fixed codes never expire; auth-key rotation requires saving them again.
+Set or replace six digits. Remove the code to restore email OTP. Codes never expire. Save them again after auth-key rotation.
 Removal preserves Admin deny and existing sessions. Use session revocation separately.
-Keep the code and login steps in App Review Notes. iOS keeps its email/code form.
-Use dedicated demo accounts: long-lived six-digit codes remain guessable.
+Put the code and steps in App Review Notes. iOS keeps its email/code form.
+Use dedicated demo accounts: permanent six-digit codes remain guessable.
 See [credential ownership and verification](architecture/DOMAIN_CONCEPTS.md#review-login-credential).
 
 ## Native Apple credentials
 
-[CommaCore](../clients/packages/apple-core/Sources/CommaCore/Client/Credentials.swift) keeps iOS and Watch Auth Sessions in origin-bound Keychain records.
+iOS [SessionCustody](../clients/apps/apple/iOS/Core/SessionCustody.swift) keeps the bearer and follows the shared core's Session gate.
+The Watch uses [CommaCore](../clients/packages/apple-core/Sources/CommaCore/Client/Credentials.swift). Both stores bind credentials to the API origin.
 Views receive session facts. Widgets and WatchConnectivity receive no account bearers.
 Auth requests require `x-comma-session-transport: bearer`. Product requests reject redirects and foreign origins.
-Logout clears credentials after successful remote revocation. Failure keeps the login for explicit retry.
+iOS follows [native session recovery](#saved-native-sessions), including offline sign-out. Watch logout clears credentials after remote revocation; failure retains them for explicit retry.
 Apple credential revocation clears local authority. Local removal alone cannot revoke server sessions.
 
-[AppleAuth](../systems/apps/comma_core/lib/comma/apple_auth.ex) verifies RS256 with Apple's fixed HTTPS JWKS, issuer, audience, nonce, expiry and issue time.
-Comma owns the expected client ID and a five-minute, single-use nonce attempt. Invalid proof rejects login.
-Login Identity uses Apple's stable subject, not the submitted email. First login requires Apple's verified email.
-Existing emails require mailbox OTP before linking.
+[AppleAuth](../systems/apps/comma_core/lib/comma/apple_auth.ex) verifies RS256 via Apple's fixed HTTPS JWKS.
+It checks issuer, audience, nonce, expiry and issue time. Comma owns the client ID and five-minute, single-use nonce attempt.
+Apple's stable subject identifies Login Identity. First login needs verified email. Existing email needs mailbox OTP before linking.
+
+iOS Google reuses `GoogleLoginAttempts`, `GoogleAuth`, Login Identity and Auth Session.
+`comma.google_auth.ios_client_id` selects the bundle's Google OAuth client.
+`GoogleSignInSheet` uses AppAuth, PKCE and the server nonce. It keeps tokens until completion.
+`GoogleAdapter.Oidcc` checks signature, Google issuer, configured iOS audience, nonce and lifetime.
+Google email-authority rules select automatic linking or mailbox OTP. Cancellation retires the core attempt and closes its browser session.
+Invalid Apple or Google proof rejects login.
 
 A two-minute, single-use phone grant gives Watch its own Auth Session for direct HTTPS access.
 Restricted sessions cannot delegate. Parent revocation rejects grants and Watch sessions.
 Phone disconnection or natural parent expiry leaves issued Watch sessions valid until their own expiry.
 
-APNs configuration and delivery rules are in [Native Apple clients](clients.md#native-apple-clients). Keep private keys outside Git.
+APNs: [Native Apple clients](clients.md#native-apple-clients). Keep private keys outside Git.
+
+## App registration checks
+
+`comma.auth.abuse.enabled` adds [abuse proof](architecture/DOMAIN_CONCEPTS.md#app-registration-abuse-evidence) on web, Electron and mobile.
+Default off. Native proof failures do not deny login or open CAPTCHA. Sessions and linking are unchanged.
 
 ## Comma OAuth signing keys
 
@@ -102,7 +131,7 @@ Never remove an active signer or hand-edit the key table.
 
 ### Compromise response
 
-Use the emergency path only for suspected private-key compromise:
+For suspected private-key compromise only:
 
 ```sh
 bin/comma rpc 'IO.inspect(Comma.OauthIdp.SigningKeys.rotate_compromised!())'
@@ -128,19 +157,21 @@ Formal coverage: [current roster](../tla/README.md).
 
 ## Task Share links
 
-A Task Share token alone authorizes public reads of one Task. Reads enforce fail-closed rate limits.
+A Task Share token authorizes public reads of one Task under fail-closed rate limits.
 See [Task Share](architecture/DOMAIN_CONCEPTS.md#task-share).
 
 ## Attachment media URLs
 
-A media element, and a browser download, send no session headers, so they cannot present the cookie transport header.
-A Session asks for a media URL for one attachment that it can read now: `POST …/attachments/:index/media`.
-[`Comma.ConversationAttachments.presign/2`](../systems/apps/comma_core/lib/comma/conversation_attachments.ex) answers the blob store's signed URL for that attachment's blob. It is valid for one hour.
-The URL reads that one blob, in any byte ranges, with no other credential. The attachment's bytes do not pass through Comma.
-The blob store checks no Session. Sign-out, revocation, Session expiry and lost membership stop the minting of new URLs, but a URL that was minted before reads its blob until it expires.
-A Telegram Task-panel Session may also ask for one, for an attachment of its Task, while the panel's Telegram link is active.
-A leaked URL reads that one attachment until it expires.
-The blob store serves the URL from its own origin, as a download under the attachment's file name. Its bucket allows cross-origin `GET` with `Range` and exposes `Content-Range`, `Accept-Ranges` and `Content-Length`, so a web page's media element can read frames from it.
+Media and downloads send no session headers, including cookie transport.
+A Session requests a URL for an attachment it can currently read: `POST …/attachments/:index/media`.
+[`Comma.ConversationAttachments.presign/2`](../systems/apps/comma_core/lib/comma/conversation_attachments.ex) returns the blob store's signed URL, valid for one hour.
+It reads only that blob, including byte ranges, without other credentials. Bytes bypass Comma.
+The blob store does not check Sessions. Sign-out, revocation, Session expiry and membership loss stop new URLs.
+Previously issued or leaked URLs remain valid until expiry.
+A Telegram Task-panel Session can request its Task's attachments while its Telegram link is active.
+A full Group Session can request URLs for files uploaded there: `POST …/groups/:group_id/uploads/:name/media`.
+The blob store serves downloads from its own origin under the attachment's file name.
+Bucket CORS allows `GET` with `Range` and exposes `Content-Range`, `Accept-Ranges` and `Content-Length` for media frame reads.
 
 ## BFT sign-in
 
@@ -148,7 +179,7 @@ Feishu or Lark SSO authorizes dashboard login, not bot routing. Feishu selects i
 Each organization has one active SSO provider. Its organization- and app-scoped subject identifies login.
 Email and mobile are optional contact data. Register the exact redirect URI from the SSO card.
 JIT applies the configured first-login role. Linked-only requires an existing identity link.
-Organization and Project membership authorize access. See [Bridge For Teams](bridge-for-teams/design.md) for bot setup.
+Organization and Project membership authorize access. Bot setup: [Bridge For Teams](bridge-for-teams/design.md).
 
 ## SSH account access
 
@@ -171,7 +202,7 @@ Both require full-session management authority. Restricted support sessions cann
 ### SSH server identity
 
 `Comma.SSHHostKey` stores one Ed25519 keypair as unencrypted PEM in `comma_ssh_host_keys`.
-Atomic insertion shares it across concurrent replica startup. The listener requires the stored key. Malformed data fails startup without replacement.
+Atomic insertion shares it across replica startups. The listener requires this key. Malformed data fails startup without replacement.
 Database protection and backups preserve it without separate encryption. Its lifecycle differs from OAuth keys.
 Clients pin `known_hosts`. First use requires an authenticated fingerprint. Explicit rotation can require trust updates.
 
@@ -236,7 +267,7 @@ Use stable `agent.notify` deduplication keys. Acknowledge only after the require
 Pending events recover admitted work without provider backfill or exactly-once guarantees.
 
 Loop programs can call `composio.execute` for provider reads and writes through tool disclosure and IFC.
-The tool stays write-classified. Trigger creation, binding and management require normal Agent rounds.
+The tool remains write-classified. Trigger creation, binding and management require normal Agent rounds.
 Programs control provider arguments. Incoming mail cannot authorize tools or destinations.
 Code: [trigger tools](../systems/apps/salix_agent/lib/salix_agent/tools/composio_triggers.ex), [ingress](../systems/apps/salix_web/lib/salix_web/composio_webhook.ex).
 
@@ -245,12 +276,12 @@ Code: [trigger tools](../systems/apps/salix_agent/lib/salix_agent/tools/composio
 Routine automatic messages default on. Off stops collection. Re-enabling starts a new pool baseline.
 Home starts one collection chain per owner every 15 minutes, until Workspace loss.
 Only the Routine collector reads member sources, with current consent and bindings. Member Routines read the pool.
-Ingress keeps one trigger for the owner Gmail source. Its events schedule a read of that source at most once a minute.
+Ingress keeps one trigger per owner Gmail or Outlook source. Events schedule at most one source read per minute.
 The pool keeps bounded excerpts, without raw payloads, for five days after last observation.
 Revocation, rebinding or source removal deletes the items of that source at once.
 One bounded, toolless judgment uses the owner Router's model. Sources are untrusted.
-The server accepts only pooled item IDs, critical urgency and plain text.
-ConversationActor enforces the switch and limits automatic messages to one per hour and three per 24 hours.
+The server accepts only pooled matter IDs, a screening decision and plain text.
+ConversationActor enforces the switch and the handoff and notification budgets.
 
 Owner requests start watches. Enrollment pins Router Session, owner, Workspace, account and consent revision.
 The host checks them around reads and before Router admission.

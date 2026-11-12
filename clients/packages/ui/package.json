@@ -32,9 +32,9 @@
     "test-storybook": "pnpm generate:css && vitest run --project=storybook"
   },
   "dependencies": {
-    "@central-icons-react/round-filled-radius-2-stroke-2": "^1.1.300",
-    "@central-icons-react/round-outlined-radius-2-stroke-1.5": "^1.1.315",
-    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.1.296",
+    "@central-icons-react/round-filled-radius-2-stroke-2": "^1.2.31",
+    "@central-icons-react/round-outlined-radius-2-stroke-1.5": "^1.2.31",
+    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.2.31",
     "@comma/core": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@radix-ui/react-collapsible": "^1.1.14",

@@ -67,7 +67,7 @@ defmodule SalixAgent.CondensedWorkspaceE2ETest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
 
     previous =
       for key <- [

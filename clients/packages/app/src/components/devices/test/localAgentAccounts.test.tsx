@@ -118,10 +118,10 @@ afterEach(() => {
   localStorage.clear();
 });
 
-async function devices() {
+async function devices(shown: DevicesValue["devices"] = []) {
   const value: DevicesValue = {
     workspace: workspaceId,
-    devices: [],
+    devices: shown,
     cloud: null,
     hasMore: false,
     loading: false,
@@ -174,6 +174,26 @@ const choose = async (name: string, option: string) => {
   fireEvent.click(screen.getByRole("option", { name: option }));
   await flush();
 };
+
+const computer = (access: "off" | "read" | "full", tasks_readiness: string) =>
+  ({
+    device_id: `dev_${access}`,
+    name: `computer-${access}`,
+    status: "connected",
+    access,
+    tasks_readiness,
+    device_runtimes: [],
+  }) as unknown as DevicesValue["devices"][number];
+
+it("asks for Full, not a station, when a computer's access keeps it from Tasks", async () => {
+  await devices([
+    computer("off", "device_needs_station"),
+    computer("read", "device_needs_station"),
+    computer("full", "device_needs_station"),
+  ]);
+  expect(screen.getAllByText("Set Access to Full to run Tasks here")).toHaveLength(2);
+  expect(screen.getAllByText("Install the station to run Tasks here")).toHaveLength(1);
+});
 
 it("shows each source state with its line and options, and chooses nothing for the person", async () => {
   runtimes = {

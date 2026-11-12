@@ -1,10 +1,10 @@
 // The native mesh addon (native/mesh, docs/station-ts-native.md §3): what it offers (iroh, and the image codecs of the
 // thumbnails), and where it is. A release has it beside the station's code (mesh.node); a checkout has it where cargo
-// built it; STILLFAIL_MESH_NATIVE says otherwise.
+// built it; COMMA_STATION_MESH_NATIVE says otherwise.
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/// `salix`: reachable through Salix as well, the relay of last resort (native/mesh/src/salix.rs).
+/// `salix`: reachable through Salix as well (native/mesh/src/salix.rs).
 export type Addr = { id: string; relays?: string[]; ips?: string[]; salix?: boolean };
 /// Where an endpoint may be reached now: its home relay, if it has one, and its direct addresses (`ip:port`, sorted).
 export type Reach = { homeRelay: string | null; addrs: string[] };
@@ -13,6 +13,8 @@ export type Stream = {
   write(bytes: Buffer): Promise<void>;
   finish(): Promise<void>;
   stopped(): Promise<void>;
+  /// Stops reading it: the other end's writes fail with `code` (lib.rs `Stream.stop`).
+  stop?(code: number): Promise<void>;
   reset(code: number): Promise<void>;
 };
 export type Connection = {
@@ -22,6 +24,14 @@ export type Connection = {
   via(): string | null;
   /// How it runs once that is not `last`: at once when it differs already, else at its next change (the client core reads it).
   nextVia?(last: string | null): Promise<{ via: string | null; closed: boolean }>;
+  /// Every way it can go now (lib.rs `PathState`): the chosen one, its round trip, and of an addon that says them its
+  /// congestion window (bytes), congestion events, UDP datagrams sent and packets lost on it.
+  paths?(): { selected: boolean; via: string; rttMs: number; cwnd?: number; congestionEvents?: number; sentDatagrams?: number; lostPackets?: number }[];
+  /// What went over it since it opened, both ways (lib.rs `Stats`).
+  stats?(): { rxBytes: number; rxPackets?: number; txBytes: number; txPackets: number; lostPackets: number };
+  /// Whether the other end is still there: true once anything is heard from it within `withinMs` (lib.rs `answers`,
+  /// gone.ts). Absent: the addon cannot ask.
+  answers?(withinMs: number): Promise<boolean>;
   acceptBi(): Promise<Stream | null>;
   openBi(): Promise<Stream>;
   close(code: number, reason: string): void;
@@ -48,7 +58,7 @@ export type Endpoint = {
   close(): Promise<void>;
 };
 export type Mesh = {
-  bind(options: { secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; salixRelay?: boolean }): Promise<Endpoint>;
+  bind(options: { routePolicy?: string; secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; salixRelay?: boolean }): Promise<Endpoint>;
   /// thumbs.rs `thumbnail` (native/mesh/src/thumbs.rs): the image's thumbnail in `dir`, made if not there yet; null when
   /// the image is shown itself.
   thumbnail(image: string, dir: string): Promise<{ path: string; type: string } | null>;
@@ -97,10 +107,10 @@ let loaded: Mesh | undefined;
 export function loadMesh(): Mesh {
   if (loaded !== undefined) return loaded;
   const candidates = [
-    process.env.STILLFAIL_MESH_NATIVE,
+    process.env.COMMA_STATION_MESH_NATIVE,
     fileURLToPath(new URL("./mesh.node", import.meta.url)),
-    fileURLToPath(new URL("../../native/mesh/target/release/libstillfail_mesh.dylib", import.meta.url)),
-    fileURLToPath(new URL("../../native/mesh/target/release/libstillfail_mesh.so", import.meta.url)),
+    fileURLToPath(new URL("../../native/mesh/target/release/libcomma_station_mesh.dylib", import.meta.url)),
+    fileURLToPath(new URL("../../native/mesh/target/release/libcomma_station_mesh.so", import.meta.url)),
   ];
   const path = candidates.find((p) => p && existsSync(p));
   if (!path) throw new Error(`the mesh addon is not there (looked at ${candidates.filter(Boolean).join(", ")})`);

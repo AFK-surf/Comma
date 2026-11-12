@@ -123,11 +123,12 @@ describe("BFT navigation spec", () => {
       "/plugins",
       "/skills",
       "/connections",
+      "/stillfail",
       "/settings",
     ]);
     // The palette lists the swarm's pages under its name, without a duplicate Overview.
     const swarmPages = flattenNav(nav).filter((entry) => entry.parent === active);
-    expect(swarmPages).toHaveLength(7);
+    expect(swarmPages).toHaveLength(8);
     expect(swarmPages[0]?.link.label).toBe("Tasks");
 
     const outside = buildOrgNav({

@@ -15,6 +15,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
   alias SalixIM.SlackMessageMirror.Row
 
   alias SalixStore.{
+    AgentPGStore,
     CasRecord,
     Ids,
     Keys,
@@ -779,6 +780,50 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     assert {:ok, :idle} = SlackSearchFiles.reconcile_page(enqueue)
   end
 
+  test "editable file publication installs one durable refresh before its next publication",
+       ctx do
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, ShortFile)
+    write!(ctx, "C101", @ts, "editable attachment", [%{"id" => "FDUE", "editable" => true}])
+    assert :ok = SlackMessageSearchIndexer.file(scope(ctx, "C101"), @ts, "FDUE")
+
+    assert [[false, true]] =
+             Repo.query!(
+               "SELECT refresh_pending,refresh_due_at IS NOT NULL FROM slack_semantic.search_files WHERE file_id='FDUE'"
+             ).rows
+
+    Repo.query!(
+      "UPDATE slack_semantic.search_files SET refresh_due_at=timezone('UTC',clock_timestamp())-interval '1 second' WHERE file_id='FDUE'"
+    )
+
+    start_supervised!(
+      {Oban,
+       SalixAnalytics.SlackSemanticQueue.oban_options()
+       |> Keyword.merge(queues: [], plugins: [], testing: :manual)}
+    )
+
+    assert {:ok, :advanced} =
+             SlackSearchFiles.reconcile_page(
+               &SalixAnalytics.SlackSemanticQueue.enqueue(&1, &2, "file", true, &3)
+             )
+
+    assert [[1]] =
+             Repo.query!(
+               "SELECT count(*) FROM slack_semantic.oban_jobs WHERE args->>'file_id'='FDUE'"
+             ).rows
+
+    assert {:ok, :idle} =
+             SlackSearchFiles.reconcile_page(
+               &SalixAnalytics.SlackSemanticQueue.enqueue(&1, &2, "file", true, &3)
+             )
+
+    assert :ok = SlackMessageSearchIndexer.file(scope(ctx, "C101"), @ts, "FDUE")
+
+    assert [[true]] =
+             Repo.query!(
+               "SELECT refresh_due_at IS NOT NULL FROM slack_semantic.search_files WHERE file_id='FDUE'"
+             ).rows
+  end
+
   defp search(ctx, params),
     do: Provider.call_api(ctx.a, "slack", "slack.message_search", %{"params" => params})
 
@@ -802,7 +847,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     id = Ids.new_agent_id(group)
 
     {:ok, _} =
-      CasRecord.create(Keys.ctl_agent(id), %{
+      AgentPGStore.create(id, "search-fixture", SalixAgent.State, %{
         "agent_id" => id,
         "tenant_id" => tenant,
         "group_id" => group,

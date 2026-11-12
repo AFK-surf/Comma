@@ -19,7 +19,7 @@ defmodule SalixEnv.Registry do
 
   @cas_attempts 5
   @swept_device_page 100
-  @owned_device_scan 100
+  @device_page_scan 100
   @device_expiry_ms 30 * 24 * 60 * 60 * 1000
 
   @type device_record :: %{required(String.t()) => term()}
@@ -91,21 +91,21 @@ defmodule SalixEnv.Registry do
     end
   end
 
-  @doc "List one bounded page of stable devices owned by a group."
+  @doc """
+  List one bounded page of stable devices owned by a group. `:keep` (a
+  predicate over records, default all) leaves records out of the page while
+  it is read, so records it drops never take a page's place. One call reads
+  at most #{@device_page_scan} device records, so a page can hold fewer than
+  `limit` devices while `next_cursor` says more may follow. The cursor names
+  the last device record read.
+  """
   @spec page_by_group(String.t(), keyword()) ::
           {:ok, %{records: [device_record()], next_cursor: String.t() | nil}} | {:error, term()}
   def page_by_group(group_id, opts \\ []) do
-    limit = opts |> Keyword.fetch!(:limit) |> min(100) |> max(1)
+    keep = Keyword.get(opts, :keep, fn _record -> true end)
 
-    list_opts =
-      [max_keys: limit]
-      |> maybe_put(:continuation_token, opts[:cursor])
-
-    with {:ok, tenant_id} <- tenant_for_group(group_id),
-         {:ok, %{objects: objects, next: next_cursor}} <-
-           S3.list(Keys.ctl_group_devices_prefix(tenant_id, group_id), list_opts),
-         {:ok, records} <- hydrate_objects(objects) do
-      {:ok, %{records: records, next_cursor: next_cursor}}
+    with {:ok, tenant_id} <- tenant_for_group(group_id) do
+      scan_page(Keys.ctl_group_devices_prefix(tenant_id, group_id), keep, opts)
     end
   end
 
@@ -286,28 +286,28 @@ defmodule SalixEnv.Registry do
 
   @doc """
   List one bounded page of one owner's devices in a group that connected at
-  least once. One call reads at most #{@owned_device_scan} device records, so
-  a page can hold fewer than `limit` devices while `next_cursor` says more may
-  follow. The cursor names the last device record read.
+  least once, read as `page_by_group/2` reads.
   """
   @spec page_owned_by_group(String.t(), String.t(), keyword()) ::
           {:ok, %{records: [device_record()], next_cursor: String.t() | nil}} | {:error, term()}
   def page_owned_by_group(group_id, owner_user_id, opts)
       when is_binary(owner_user_id) and owner_user_id != "" do
+    page_by_group(group_id, Keyword.put(opts, :keep, &owned_computer?(&1, owner_user_id)))
+  end
+
+  defp scan_page(prefix, keep, opts) do
     limit = opts |> Keyword.fetch!(:limit) |> min(100) |> max(1)
 
-    with {:ok, tenant_id} <- tenant_for_group(group_id),
-         prefix = Keys.ctl_group_devices_prefix(tenant_id, group_id),
-         {:ok, start_after} <- owned_cursor(prefix, opts[:cursor]),
+    with {:ok, start_after} <- page_cursor(prefix, opts[:cursor]),
          {:ok, %{objects: objects, next: next}} <-
-           S3.list(prefix, maybe_put([max_keys: @owned_device_scan], :start_after, start_after)) do
-      take_owned(objects, prefix, owner_user_id, limit, not is_nil(next), nil, [])
+           S3.list(prefix, maybe_put([max_keys: @device_page_scan], :start_after, start_after)) do
+      take_kept(objects, prefix, keep, limit, not is_nil(next), nil, [])
     end
   end
 
-  defp owned_cursor(_prefix, nil), do: {:ok, nil}
+  defp page_cursor(_prefix, nil), do: {:ok, nil}
 
-  defp owned_cursor(prefix, cursor) when is_binary(cursor) do
+  defp page_cursor(prefix, cursor) when is_binary(cursor) do
     case Base.url_decode64(cursor, padding: false) do
       {:ok, name} when byte_size(name) in 1..256 ->
         if String.contains?(name, "/"),
@@ -319,36 +319,36 @@ defmodule SalixEnv.Registry do
     end
   end
 
-  defp owned_cursor(_prefix, _cursor), do: {:error, {:bad_request, "invalid cursor"}}
+  defp page_cursor(_prefix, _cursor), do: {:error, {:bad_request, "invalid cursor"}}
 
-  defp take_owned([], prefix, _owner, _limit, more?, last_key, records) do
+  defp take_kept([], prefix, _keep, _limit, more?, last_key, records) do
     {:ok,
      %{
        records: Enum.reverse(records),
-       next_cursor: if(more? and last_key, do: owned_cursor_after(prefix, last_key))
+       next_cursor: if(more? and last_key, do: page_cursor_after(prefix, last_key))
      }}
   end
 
-  defp take_owned([%{key: key} | rest], prefix, owner, limit, more?, _last_key, records) do
+  defp take_kept([%{key: key} | rest], prefix, keep, limit, more?, _last_key, records) do
     case read_json(key) do
       {:ok, record} ->
-        records = if owned_computer?(record, owner), do: [record | records], else: records
+        records = if keep.(record), do: [record | records], else: records
 
         if length(records) >= limit and (rest != [] or more?) do
-          {:ok, %{records: Enum.reverse(records), next_cursor: owned_cursor_after(prefix, key)}}
+          {:ok, %{records: Enum.reverse(records), next_cursor: page_cursor_after(prefix, key)}}
         else
-          take_owned(rest, prefix, owner, limit, more?, key, records)
+          take_kept(rest, prefix, keep, limit, more?, key, records)
         end
 
       {:error, :not_found} ->
-        take_owned(rest, prefix, owner, limit, more?, key, records)
+        take_kept(rest, prefix, keep, limit, more?, key, records)
 
       {:error, reason} ->
         {:error, {:device_read_failed, key, reason}}
     end
   end
 
-  defp owned_cursor_after(prefix, key),
+  defp page_cursor_after(prefix, key),
     do: key |> String.replace_prefix(prefix, "") |> Base.url_encode64(padding: false)
 
   defp owned_computer?(record, owner_user_id) do
@@ -402,6 +402,20 @@ defmodule SalixEnv.Registry do
   end
 
   defp disconnect_before_delete(_record), do: :ok
+
+  @doc """
+  Record that the current connector run answered a heartbeat (`heartbeat_at`):
+  a connection that is admitted but never answers is not live.
+  """
+  @spec heartbeat(String.t(), keyword()) ::
+          {:ok, device_record()} | {:error, :not_found} | {:error, term()}
+  def heartbeat(connector_run_id, opts \\ []) do
+    update_current_device(connector_run_id, opts, @cas_attempts, fn device, now ->
+      device
+      |> Map.put("heartbeat_at", now)
+      |> Map.put("updated_at", now)
+    end)
+  end
 
   @doc "Update current connector metadata through its run id."
   @spec update_meta(String.t(), (map() -> map()), keyword()) ::
@@ -1651,24 +1665,27 @@ defmodule SalixEnv.Registry do
     end
   end
 
-  # The product may watch devices come online, for example to close a setup
-  # offer. It runs apart from the connection, which neither waits for it nor
-  # fails with it.
+  # Others may watch devices come online, for example to close a setup offer or
+  # resume a Loop waiting for the device. Each runs apart from the connection,
+  # which neither waits for it nor fails with it.
   defp observe_connected(device) do
-    case SystemsRuntime.get_env(:salix_env, :device_connect_observer) do
-      nil ->
-        :ok
+    # Registry keeps what the Connector reported under `meta`.
+    snapshot =
+      (device["meta"] || %{})
+      |> Map.take(~w(name alias system_info))
+      |> Map.merge(Map.take(device, ~w(tenant_id group_id device_id display_name)))
 
-      module ->
-        # Registry keeps what the Connector reported under `meta`.
-        snapshot =
-          (device["meta"] || %{})
-          |> Map.take(~w(name alias system_info))
-          |> Map.merge(Map.take(device, ~w(tenant_id group_id device_id display_name)))
+    SystemsRuntime.get_env(:salix_env, :device_connect_observers, [])
+    |> Enum.each(fn module ->
+      SystemsRuntime.Task.start(fn -> module.device_connected(snapshot) end)
+    end)
+  end
 
-        SystemsRuntime.Task.start(fn -> module.device_connected(snapshot) end)
-        :ok
-    end
+  @doc "Add `module` to what `device_connected/1` is called on when a device comes online."
+  @spec observe_device_connects(module()) :: :ok
+  def observe_device_connects(module) do
+    observers = SystemsRuntime.get_env(:salix_env, :device_connect_observers, [])
+    SystemsRuntime.put_env(:salix_env, :device_connect_observers, Enum.uniq([module | observers]))
   end
 
   defp compensate_expired_connection(run) do

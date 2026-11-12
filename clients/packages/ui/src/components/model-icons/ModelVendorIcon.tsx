@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { ModelIcon } from "./ModelIcon";
 
 // Brand artwork for the model picker and provider list. OpenAI and vendors
@@ -27,8 +28,21 @@ const logos: Record<string, string> = {
 /** Whether `vendor` has supplied artwork rather than an app icon fallback. */
 export const hasModelVendorLogo = (vendor: string) => vendor in logos;
 
-export function ModelVendorIcon({ vendor }: { vendor: string }) {
+/** `tint` draws the artwork in the text color, as one glyph among the other icons. */
+export function ModelVendorIcon({ tint, vendor }: { tint?: boolean; vendor: string }) {
   const logo = logos[vendor];
+  if (logo && tint)
+    return (
+      <span
+        aria-hidden
+        className="block size-4 shrink-0 bg-current [mask:var(--comma-model-vendor-logo)_center/contain_no-repeat]"
+        style={
+          {
+            "--comma-model-vendor-logo": `url(${JSON.stringify(logo)})`,
+          } as CSSProperties
+        }
+      />
+    );
   return logo ? (
     <img alt="" className="size-4 shrink-0 object-contain dark:invert" src={logo} />
   ) : (

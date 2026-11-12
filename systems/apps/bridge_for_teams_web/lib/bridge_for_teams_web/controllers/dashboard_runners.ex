@@ -3,8 +3,7 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
   Builds the Runners page payloads and applies runner writes for
   `DashboardAPIController`.
 
-  Every org member sees the fleet. Connector assignments are limited to the
-  Agent Swarms the caller can see. Owners and admins also see each runner's
+  Every org member sees the fleet. Owners and admins also see each runner's
   credential state, the onboarding guide, and may create install commands,
   revoke or rotate runner keys and remove runners.
 
@@ -26,13 +25,9 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
   @external_resource @bft_agent_skill_path
   @bft_agent_skill File.read!(@bft_agent_skill_path)
 
-  @doc "One page of the org's runners with connector summaries."
-  def page(org, user, can_manage?, cursor) do
+  @doc "One page of the org's runners."
+  def page(org, can_manage?, cursor) do
     page = page_runners(org.id, cursor)
-    runner_ids = Enum.map(page.entries, & &1.id)
-
-    connector_counts =
-      Environments.runner_connector_assignment_status_counts(org.id, runner_ids, user.id)
 
     credentials =
       if can_manage?,
@@ -43,48 +38,13 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
       "viewer" => %{"can_manage" => can_manage?},
       "runners" =>
         Enum.map(page.entries, fn runner ->
-          public_runner(
-            runner,
-            Map.get(connector_counts, runner.id, []),
-            can_manage?,
-            credentials
-          )
+          public_runner(runner, can_manage?, credentials)
         end),
       "total_count" => page.total_count,
       "cursor" => page.cursor,
       "next_cursor" => page.next_cursor,
       "poll_interval_ms" => @poll_interval_ms
     }
-  end
-
-  @doc "One page of a runner's connector assignments visible to `user`."
-  def connectors(org, user, runner_id, cursor) do
-    with {:ok, runner_id} <- cast_id(runner_id, &runner_not_found/0) do
-      cursor =
-        case Ecto.UUID.cast(cursor) do
-          {:ok, cursor} -> cursor
-          :error -> nil
-        end
-
-      page =
-        Environments.page_runner_connector_assignments(org.id, runner_id, user.id, after: cursor)
-
-      {:ok,
-       %{
-         "entries" =>
-           Enum.map(page.entries, fn connector ->
-             %{
-               "id" => connector.id,
-               "name" => connector.env_alias || connector.name,
-               "provisioning_status" => connector.provisioning_status,
-               "project_id" => connector.project_id,
-               "project_name" => connector.project_name
-             }
-           end),
-         "cursor" => page.cursor,
-         "next_cursor" => page.next_cursor
-       }}
-    end
   end
 
   @doc "What an owner or admin needs to onboard a runner. Creates nothing."
@@ -216,8 +176,8 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
     end
   end
 
-  defp public_runner(runner, connector_counts, can_manage?, credentials) do
-    target = MacMiniRelease.updates(nil, runner)["salix-connect"]
+  defp public_runner(runner, can_manage?, credentials) do
+    target = MacMiniRelease.updates(nil, runner)["agent-vmm"]
 
     %{
       "id" => runner.id,
@@ -230,18 +190,9 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
       "version" => runner.version,
       "component_versions" => component_versions(runner.capabilities),
       "update_available" =>
-        MacMiniRelease.component_update_available?(runner.capabilities, "salix-connect", target),
-      "capacity" => runner.capacity || 0,
-      "current_connector_count" => runner.current_connector_count || 0,
+        MacMiniRelease.component_update_available?(runner.capabilities, "agent-vmm-host", target),
       "last_seen_at" => runner.last_seen_at,
       "last_seen_age_seconds" => runner.last_seen_age_seconds,
-      "connectors" => %{
-        "total" => connector_counts |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
-        "by_status" =>
-          Enum.map(connector_counts, fn {status, count} ->
-            %{"status" => status, "count" => count}
-          end)
-      },
       "credential" => if(can_manage?, do: public_credential(credentials, runner.stable_id))
     }
   end

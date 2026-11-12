@@ -11,7 +11,8 @@ defmodule SalixAgent.Tools.SchemasTest do
 
   alias SalixAgent.{ToolDisclosure, Tools}
   alias SalixAgent.Tools.Schemas
-  test "manual meeting tools are disclosed only to the Router" do
+
+  test "meeting control is the Router's and meeting.get is also a Worker's read" do
     runtime_kind = :internal
 
     router_ctx =
@@ -30,10 +31,10 @@ defmodule SalixAgent.Tools.SchemasTest do
       ToolDisclosure.materialize("worker", runtime_kind, worker_ctx)["tools"]
       |> Enum.map(& &1["name"])
 
-    for name <- ["meeting.join", "meeting.get"] do
-      assert name in router_names
-      refute name in worker_names
-    end
+    assert "meeting.join" in router_names
+    refute "meeting.join" in worker_names
+    assert "meeting.get" in router_names
+    assert "meeting.get" in worker_names
   end
 
   test "schema-required arguments are enforced by the dispatcher" do
@@ -68,6 +69,26 @@ defmodule SalixAgent.Tools.SchemasTest do
                Tools.execute([%{id: "t-#{tool}", name: tool, args: %{}}], ctx)
 
       assert content =~ expected, "#{tool}: expected #{inspect(expected)} in #{inspect(content)}"
+    end
+  end
+
+  test "web.http_request accepts its tailnet and Tailcat arguments through the dispatcher" do
+    # The handler reads via_tailnet and tailcat; a schema without them made the
+    # dispatcher refuse every such call as unknown params before the handler ran.
+    ctx = tool_ctx("schemas-test")
+
+    for {args, expected} <- [
+          {%{"via_tailnet" => true}, "via_tailnet requires the Agent's Group"},
+          {%{"tailcat" => "tcabc", "via_tailnet" => true},
+           "tailcat and via_tailnet cannot be combined"}
+        ] do
+      args = Map.put(args, "url", "http://100.76.109.37:8123/api/")
+
+      assert [%{error: true, content: content}] =
+               Tools.execute([%{id: "t-http", name: "web.http_request", args: args}], ctx)
+
+      refute content =~ "unknown params"
+      assert content =~ expected
     end
   end
 

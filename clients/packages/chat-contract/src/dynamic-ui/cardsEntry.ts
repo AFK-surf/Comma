@@ -2,3 +2,4 @@
 export { cardEngine, type CardEngine, type CardEnv, type CardOutgoing } from "./cards";
 export { cardCss } from "./cardStyles";
 export * from "./cardTypes";
+export { cardIconDefaults } from "./cardIconDefaults";

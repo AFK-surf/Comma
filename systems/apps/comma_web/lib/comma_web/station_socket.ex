@@ -2,7 +2,7 @@ defmodule CommaWeb.StationSocket do
   @moduledoc """
   The station presence WebSocket, `GET /v1/comma/stations/connect` (contract §3).
 
-  The upgrade is signed in `x-stillfail-*` headers over
+  The upgrade is signed in `x-comma-station-*` headers over
   `comma-station-connect-v1:<origin>:<station>:<ts>`; an unknown or removed
   station gets HTTP 404 `station_removed` before the upgrade. The socket then
   holds the station online (`CommaWeb.StationPresence`), sends a `state` frame
@@ -106,7 +106,9 @@ defmodule CommaWeb.StationSocket do
   end
 
   defp header(conn, name) do
-    case get_req_header(conn, "x-stillfail-" <> name) do
+    # x-stillfail-*: a station from before the rename, or a still.fail station enrolled here.
+    case get_req_header(conn, "x-comma-station-" <> name) ++
+           get_req_header(conn, "x-stillfail-" <> name) do
       [value | _] -> value
       [] -> nil
     end
@@ -173,7 +175,9 @@ defmodule CommaWeb.StationSocket do
 
   def handle_info({:comma_station_tool, ref, pid, %{"id" => id} = request}, state)
       when is_binary(id) do
-    frame = Jason.encode!(%{"type" => "tool", "id" => id, "request" => request})
+    # `type` leads: stations up to still.fail 0.1.8076 read a tool frame only when its text starts with it.
+    frame =
+      Jason.encode!(Jason.OrderedObject.new([{"type", "tool"}, {"id", id}, {"request", request}]))
     send(pid, {:comma_station_tool_sent, ref})
     {:push, {:text, frame}, %{state | tools: Map.put(state.tools, id, {pid, ref})}}
   end

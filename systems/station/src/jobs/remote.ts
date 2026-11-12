@@ -1,5 +1,5 @@
 // Jobs on other stations of the workspace (the Rust station's remote.rs, where they were remote tasks). Workspace peers
-// call named operations over an authenticated station transport (`stillfail/station/1`, the mesh layer's); shell jobs
+// call named operations over an authenticated station transport (`comma-station/station/1`, the mesh layer's); shell jobs
 // (`job.*`) are one service on it, never an admin API proxy. An administrator explicitly trusts source station keys in
 // config.json: remoteJobs.allow = ["<station public key>"] (remoteTasks.allow, its old name, is read too). This grants
 // shell execution as the station's OS user, not a sandbox. A source session's jobs share one working directory on the

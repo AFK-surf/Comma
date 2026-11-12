@@ -3,11 +3,11 @@
 Two rules shape this:
 
 - **One place for every message.** Whatever is said in a conversation, by a
-  person on Slack or on still.fail's page, or by an agent, is one entry in its
+  person on Slack or on Comma's page, or by an agent, is one entry in its
   thread's log. Entries are only appended. An edit is an entry of its own.
-  Nothing said is taken back: still.fail has no delete. Clients read "the
+  Nothing said is taken back: Comma has no delete. Clients read "the
   entries after n", never the whole thing again, and keep what they read.
-- **No polling inside still.fail.** A station tells its clients what changed.
+- **No polling inside Comma.** A station tells its clients what changed.
   still.fail cloud tells devices what changed. The client core refetches
   nothing on a timer. Station timers only sample what cannot notify (host
   load, provider quotas while someone looks) or run deadlines and backoff.
@@ -16,12 +16,12 @@ Two rules shape this:
 
 - **Session**: one agent. One runtime conversation (a Claude Code or Codex
   session) with its profile, model, workspace directory and turns.
-- **Thread**: a place people talk: a Slack thread, or a chat on still.fail's page.
+- **Thread**: a place people talk: a Slack thread, or a chat on Comma's page.
   A thread has any number of sessions and people taking part.
 - **Message**: something said in a thread, by a person, an agent (a session),
-  or still.fail itself (a notice).
+  or Comma itself (a notice).
 
-## Tables (stillfail.db)
+## Tables (station.db)
 
 The schema is in [`src/store/schema.ts`](../src/store/schema.ts). The core tables:
 
@@ -50,16 +50,16 @@ schema version are added in place on open.
   the session and its `thread_sessions` row are made first. Several connects in
   one channel share the thread row and its messages. Whichever sees a message
   first delivers it to every session in the thread.
-- **Joining mid-thread**: when still.fail starts following a Slack thread at a
+- **Joining mid-thread**: when Comma starts following a Slack thread at a
   reply, what Slack has before that reply is recorded first, with no
   deliveries. The log keeps Slack's order.
-- **Person on still.fail's page**: the same, with surface `ember`. The text the
+- **Person on Comma's page**: the same, with surface `ember`. The text the
   agent reads (quotes, file paths) is made at delivery, not stored.
 - **Agent posts** (`chat_post`): the surface posts it and returns its ts. The
   message is recorded with `author_kind = agent`, `author = session key` and
   `declared`. Slack posts are recorded too. A message Slack takes in several
   parts is recorded once, under the first part's ts. Agents' messages are not
-  delivered to other sessions. still.fail's own notices are recorded as
+  delivered to other sessions. Comma's own notices are recorded as
   `author_kind = ember`.
 - **`-stop`** is recorded like any message. It stops each session it is
   delivered to instead of reaching the agent.
@@ -87,12 +87,12 @@ schema version are added in place on open.
 - `PUT /threads/:id/read {n}` sets the viewer's read position. It only moves
   forward, and the answer says where it is.
 - `POST /threads/:id/messages {text, attachments, quotes, client?}` posts a
-  person's message in a still.fail chat (Slack threads are written in Slack).
+  person's message in a Comma chat (Slack threads are written in Slack).
   The answer is `{ n }`. `client` is the app it was sent from
   ("android 0.1.1123"). It is kept for the chat's agent and not shown.
   Attachments must be files uploaded with `POST /uploads` (or `/uploads/parts`)
   or files already in the upload directory of a session in the thread.
-- `PUT /threads/:id/status {status}` marks a still.fail chat's Task `done` or
+- `PUT /threads/:id/status {status}` marks a Comma chat's Task `done` or
   `cancelled`, or (`in_progress`) removes the mark. The answer is
   `{ thread, status }`. Otherwise the status comes from the chat: `archived`
   while the chat is archived; else the mark; else `needs_review` while a card
@@ -100,7 +100,7 @@ schema version are added in place on open.
   `in_progress`. A person's next message in the chat removes the mark.
 - `POST /threads {session, title?}` opens another chat on a session.
   `POST /threads/:id/sessions {session}` brings another session into a
-  still.fail chat. `POST /sessions` (a new chat) makes the session and its
+  Comma chat. `POST /sessions` (a new chat) makes the session and its
   chat and answers `{ key, thread }`. A given `clientKey` (the key the asking
   client shows the chat by until it is made) is kept in memory for a short time
   and shown on the chat's sidebar item, because its `chat` event can reach the
@@ -119,7 +119,7 @@ schema version are added in place on open.
 
 ### The sidebar
 
-A chat is still.fail's own internal chat (a thread on surface `ember`), bound to
+A chat is Comma's own internal chat (a thread on surface `ember`), bound to
 one or more sessions, with people. A Slack thread is not a chat: its messages
 show only in its agent's execution history. The sidebar has one kind of item:
 an agent (a shown session) with its internal chat. A chat with several agents

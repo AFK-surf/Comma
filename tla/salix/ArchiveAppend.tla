@@ -1,33 +1,20 @@
 ----------------------------- MODULE ArchiveAppend -----------------------------
 (***************************************************************************)
-(* The internal-session archive append protocol                            *)
-(* (docs/storage-search.md, 归档).                *)
+(* Conditional monotone publication of the Session archive directory.     *)
+(* SessionHotArchive assumes immutable bytes preserve their logical prefix.*)
+(* Here arcv abstracts published range coverage, not a mutable S3 body.    *)
+(* S3!Applied/PutIfMatch provide the generic versioned-cell abstraction.   *)
 (*                                                                         *)
-(* `SessionHotArchive` models the TWO-OBJECT protocol and its crash        *)
-(* matrix, and it takes archive monotonicity as given.  This spec is where *)
-(* that assumption is discharged: it models the mechanism the              *)
-(* implementation actually uses to establish it —                          *)
+(* CaptureSession fixes the committed watermark and compaction ceiling.   *)
+(* ReadArchive captures directory coverage and version. Conditional publish*)
+(* rejects a stale capture. The later watermark step is separate in this  *)
+(* abstraction; PG.publish_archive performs both in one locked transaction.*)
+(* Thus this model allows extra interleavings without assuming the answer.*)
 (*                                                                         *)
-(*   1. read the archive object, capturing its body length AND its ETag;   *)
-(*   2. decide what to append from the captured view;                      *)
-(*   3. conditionally PUT under that ETag (`if_match`).                    *)
-(*                                                                         *)
-(* Between (1) and (3) another owner may append and advance the durable    *)
-(* watermark.  The captured view is then stale, and the whole question is  *)
-(* whether the write can roll the object back.  Modeling the append as one *)
-(* atomic step that reads the CURRENT object would assume the answer, so   *)
-(* the capture is an explicit variable here and the PUT is conditional.    *)
-(*                                                                         *)
-(* `EtagFence = FALSE` disables the precondition — the unconditional       *)
-(* overwrite that `InternalSessionStore` shipped in #798's first cut.  Its *)
-(* config is an expected counterexample: it MUST reproduce the             *)
-(* stale-owner rollback (archive shortened below the committed watermark), *)
-(* and a pass there means the fence stopped being load-bearing.            *)
-(*                                                                         *)
-(* Records are modeled by their seq alone: what is at risk here is the     *)
-(* RANGE the object holds, not record content (byte-level convergence is   *)
-(* `ArchiveConvergence` in SessionHotArchive).  So the object's value is   *)
-(* the sequence 1..n and `Len` is its coverage.                            *)
+(* EtagFence is the retained configuration name for that publication fence.*)
+(* FALSE permits an old capture to shorten published coverage and must     *)
+(* remain a counterexample. It does not describe an online S3 hot writer.  *)
+(* Record content is checked by SessionHotArchive; this model checks range.*)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 
@@ -43,7 +30,7 @@ Seqs == 0..MaxSeq
 NoBase == [ver |-> -1, len |-> -1, pres |-> FALSE]
 
 VARIABLES
-  arcv,      \* the ONE archive object
+  arcv,      \* logical published directory coverage
   comp,      \* durable compacted_seq: monotone, the ceiling on archiving
   committed, \* durable archived_through (the hot object's watermark)
   high,      \* high-water mark of archive coverage: never allowed to drop
@@ -97,11 +84,11 @@ CaptureSession(n) ==
   /\ UNCHANGED <<arcv, comp, committed, high, ambs>>
 
 (***************************************************************************)
-(* Step 1: GET the archive object, capturing length AND ETag together.     *)
+(* Step 1: capture directory coverage and publication version together.     *)
 (***************************************************************************)
 ReadArchive(n) ==
   /\ base[n] = NoBase
-  (* The GET yields presence, length and ETag together — that triple IS   *)
+  (* The read yields presence, coverage and version together — that triple IS   *)
   (* the owner's whole basis for the write.                                *)
   /\ base' = [base EXCEPT ![n] =
         [ver |-> arcv.ver, len |-> Len(arcv.val), pres |-> arcv.present]]

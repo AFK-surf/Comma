@@ -9,12 +9,17 @@ defmodule SalixIM.TaskPlacement do
     * A Worker bound to a station (`station_binding`) runs each Task there.
     * An explicit place, Worker binding or configured Group default takes
       precedence. Without them, a runtime-model Task chooses an authorized
-      VMM Station, the requesting user's physical Station, then Cloudflare.
-      A Task with an internal model stays inside Salix.
+      VMM Station, the requesting user's physical Station, then a sandbox of
+      its own where the Group's Cloud VM is retired, else Cloudflare. A Task with an
+      internal model stays inside Salix.
     * A place is checked by the product (`SalixIM.Ports.TaskCreate.runs_on/2`):
-      the Cloud VM switch on (the VM itself need not be running: a Task made
+      the Group's Cloud VM (the VM itself need not be running: a Task made
       while it sleeps is kept for it and the VM woken), a station connected
-      and ready.
+      and ready. Where the Group's Cloud VM is retired
+      (`SalixAgent.Sandboxes.cloud_vm_retired?/1`: sandboxes set up, and the
+      Group was created so or the deployment says so): a Task, a binding or a
+      default that names it is refused (`cloud_vm_retired`), and a sandbox
+      stands in its stead.
     * A sandbox Task (`runs_on {"kind": "sandbox"}`) runs on an L4ES sandbox
       made for it. With the GitHub repository `repo` (`{owner, name,
       base_ref?, branch?}`, or `{owner, name, pull_request}` to continue an
@@ -22,7 +27,8 @@ defmodule SalixIM.TaskPlacement do
       that repository checked out; the product checks the repository.
       Without `repo` it is a plain sandbox Task. The product applies the
       Group's sandbox limit either way. A Worker may be bound to it
-      (`SalixAgent.StationBinding`); it is not a Group's default place.
+      (`SalixAgent.StationBinding`), and it may be a Group's default place
+      (`SalixAgent.TaskPlace`): each Task then gets a sandbox of its own.
     * A Mini App build (`mini_app {"app_id": ...}`) is a coding Task on the
       app's own repository: only with `runs_on {"kind": "sandbox"}` and a
       `repo` that is the app's (`SalixIM.MiniApps.repo/2`).
@@ -160,6 +166,7 @@ defmodule SalixIM.TaskPlacement do
          {:ok, placed, source} <- loop_place(placed, source, loop?),
          {:ok, runs_on} <- runs_on(scope, target_agent_id, placed, source),
          {runs_on, repo} = split_repo(runs_on),
+         :ok <- computer_choice(scope, placed, runs_on, source),
          {:ok, session_model} <-
            session_model(scope, target_agent_id, placed, runs_on, bound_model) do
       {:ok,
@@ -173,6 +180,17 @@ defmodule SalixIM.TaskPlacement do
        }}
     end
   end
+
+  # A place the Router chose: a Worker binding, the Group's default and
+  # automatic selection are not the Router aiming at one computer.
+  defp computer_choice(scope, placed, runs_on, source) when source in [:requested, :salix] do
+    case SalixIM.ComputerChoice.check(scope, placed, runs_on) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:runs_on, reason, source}}
+    end
+  end
+
+  defp computer_choice(_scope, _placed, _runs_on, _source), do: :ok
 
   # The product answers a coding Task's place with its checked repository; the
   # Task keeps them apart (`runs_on`, `repo`).
@@ -356,8 +374,8 @@ defmodule SalixIM.TaskPlacement do
     end
   end
 
-  defp group_default_place(%{"default_task_place" => %{"kind" => "cloud_vm"} = place})
-       when map_size(place) == 1,
+  defp group_default_place(%{"default_task_place" => %{"kind" => kind} = place})
+       when kind in ["cloud_vm", "sandbox"] and map_size(place) == 1,
        do: place
 
   defp group_default_place(%{
@@ -376,8 +394,12 @@ defmodule SalixIM.TaskPlacement do
            scope[:task_request_identity]
          ) do
       {:ok, %{"runs_on" => pinned}} ->
+        # The Cloud VM's and a sandbox's device is the place's own, given back
+        # by the product; the request names the kind alone.
         request =
-          if pinned["kind"] == "cloud_vm", do: Map.delete(pinned, "device_id"), else: pinned
+          if pinned["kind"] in ["cloud_vm", "sandbox"],
+            do: Map.delete(pinned, "device_id"),
+            else: pinned
 
         {:ok, Map.put(placed, "runs_on", request), :automatic}
 
@@ -439,7 +461,8 @@ defmodule SalixIM.TaskPlacement do
                TaskCreate.runs_on(
                  Map.put(scope, :agent_id, target_agent_id),
                  request
-               ) do
+               ),
+             :ok <- machine_flow(scope, runs_on) do
           {:ok, runs_on}
         else
           {:error, reason} -> {:error, {:runs_on, reason, source}}
@@ -449,6 +472,35 @@ defmodule SalixIM.TaskPlacement do
         {:error, {:runs_on, :not_an_object, source}}
     end
   end
+
+  # Handing a Task to a machine hands it the Task's content. A sandbox of the
+  # Task's own is read by the Task's person, as the Task is
+  # (`SalixAgent.StationToolCalls`), so it adds no reader. A station or the
+  # Cloud VM is the `station.session` egress, a public destination until a
+  # station's audience can be resolved (`SalixAgent.IFC.Destination`): where
+  # the Group enforces IFC, a Task an agent makes (`ifc_sources`, the sources
+  # its `task.create` declared) goes there only from public sources. A Task a
+  # person makes in a product carries no agent's flow.
+  defp machine_flow(_scope, %{"kind" => "sandbox"}), do: :ok
+
+  defp machine_flow(%{ifc_sources: sources} = scope, _runs_on) do
+    if SalixAgent.IFC.mode_for(scope.tenant_id, scope.group_id) != :enforce or
+         public_sources?(sources),
+       do: :ok,
+       else: {:error, :private_sources_to_machine}
+  end
+
+  defp machine_flow(_scope, _runs_on), do: :ok
+
+  defp public_sources?(encoded) when is_list(encoded) do
+    encoded
+    |> SalixIFC.Codec.decode_label(SalixIFC.Label.new([:agent_private]))
+    |> SalixIFC.Label.public?() == true
+  rescue
+    _ -> false
+  end
+
+  defp public_sources?(_sources), do: false
 
   defp sandbox(scope, target_agent_id, request, source) do
     with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
@@ -476,8 +528,9 @@ defmodule SalixIM.TaskPlacement do
   # Worker's (`SalixAgent.ModelChoice`). The product checks the choice: a
   # catalog choice inside Salix, or a runtime choice on a station. A runtime
   # choice without a model id runs the station's default model of that
-  # runtime (on the Group's Cloud VM, the platform model with Codex), which no
-  # product check is asked about.
+  # runtime (on the Group's Cloud VM, the platform model with Codex); on a
+  # person's computer the product is asked only whether it runs that runtime
+  # at all (`station_runs_runtime/3`).
   defp session_model(scope, target_agent_id, params, runs_on) do
     case params["model"] do
       nil ->
@@ -485,7 +538,9 @@ defmodule SalixIM.TaskPlacement do
 
       %{"kind" => "runtime", "provider" => provider} = choice
       when map_size(choice) == 2 and provider in ~w(codex claude) ->
-        with :ok <- model_fits_runs_on(choice, runs_on), do: {:ok, choice}
+        with :ok <- model_fits_runs_on(choice, runs_on),
+             :ok <- station_runs_runtime(scope, runs_on, choice),
+             do: {:ok, choice}
 
       choice when is_map(choice) ->
         with {:ok, _agent} <- GroupDirectory.get_agent(target_agent_id),
@@ -506,6 +561,31 @@ defmodule SalixIM.TaskPlacement do
     end
   end
 
+  # A computer runs a runtime for this workspace only when it says so
+  # (`task_models`): a person chose an account source there for it. One that
+  # runs none is refused here, before the station is invited and refuses the
+  # Task itself. The Group's own VM on a VMM Host keeps its platform default.
+  defp station_runs_runtime(
+         scope,
+         %{"kind" => "station", "device_id" => device_id} = place,
+         choice
+       ) do
+    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) do
+      :ok
+    else
+      case TaskCreate.session_model(
+             %{tenant_id: scope.tenant_id, group_id: scope.group_id, runs_on: place},
+             choice
+           ) do
+        {:ok, _choice} -> :ok
+        {:error, :model_selection_unsupported} -> :ok
+        {:error, reason} -> {:error, {:model, reason}}
+      end
+    end
+  end
+
+  defp station_runs_runtime(_scope, _runs_on, _choice), do: :ok
+
   defp model_fits_runs_on(%{"kind" => "runtime"}, nil),
     do: {:error, {:model, :runtime_requires_runs_on}}
 
@@ -514,6 +594,20 @@ defmodule SalixIM.TaskPlacement do
   defp model_fits_runs_on(_choice, _runs_on), do: {:error, {:model, :runs_on_requires_runtime}}
 
   defp runs_on_refusal(:not_an_object, _source), do: "runs_on must be an object"
+
+  defp runs_on_refusal({:computer_choice_required, computers}, _source),
+    do:
+      "this person has more than one computer connected (#{computer_list(computers)}) and has " <>
+        "not said which to use. Do not choose for them. Ask with a question card in this " <>
+        "conversation (im_api.internal.send_message), one choice per computer labelled with " <>
+        "its name as written here, then end the turn blocked and create the Task on the " <>
+        "computer they pick. The Task was not made."
+
+  defp runs_on_refusal({:computer_choice_other, named}, _source),
+    do:
+      "this person chose #{computer_list(named)} in this conversation, not the computer this " <>
+        "Task is aimed at. Create the Task on the computer they chose, or ask again with a " <>
+        "question card if they changed their mind. The Task was not made."
 
   defp runs_on_refusal(:station_candidate_page_exhausted, _source),
     do:
@@ -544,10 +638,19 @@ defmodule SalixIM.TaskPlacement do
 
   defp runs_on_refusal(:station_for_loop, _source),
     do:
-      "a Loop Task runs inside Salix, where its Worker creates the Loop; a station or " <>
-        "the Cloud VM cannot. Give runs_on {kind: default} or {kind: salix}, and omit a model of " <>
-        "kind runtime. Its Worker can still run commands on the Cloud VM with env.exec. " <>
-        "The Task was not made."
+      "a Loop Task runs inside Salix, where its Worker creates the Loop; a Task on a " <>
+        "machine cannot. Give runs_on {kind: default} or {kind: salix}, and omit a model of " <>
+        "kind runtime. The Task was not made."
+
+  # The Group's default place is the retired Cloud VM: {kind: default} would
+  # come back here. The Router names a place; the user changes the default.
+  defp runs_on_refusal(:cloud_vm_retired, :default),
+    do:
+      "the Group's default place to run Tasks is its Cloud VM, which is retired here: " <>
+        "sandboxes have taken its place. Give runs_on {kind: sandbox} for a sandbox of the " <>
+        "Task's own (with repo {owner, name} to work in a repository), or {kind: station, " <>
+        "device_id} for a connected computer, not {kind: default}; ask the user to change the " <>
+        "default place in the product's settings. The Task was not made."
 
   # The Group's default place refused the Task: the refusal a place the Router
   # named gets, and that the place is the Group's default, which people change
@@ -593,6 +696,13 @@ defmodule SalixIM.TaskPlacement do
 
   defp runs_on_refusal(:mini_apps_unavailable, _source),
     do: "apps are not set up here; omit mini_app. The Task was not made."
+
+  defp runs_on_refusal(:private_sources_to_machine, _source),
+    do:
+      "this Group enforces information-flow checks, and a station or the Cloud VM is a " <>
+        "public destination: a Task made from sources that are not public cannot run there. " <>
+        "Give runs_on {kind: sandbox} (a sandbox of the Task's own, read only by the person " <>
+        "the Task is for) or {kind: salix}. The Task was not made."
 
   defp runs_on_refusal(:sandbox_unavailable, _source),
     do: "sandboxes are not set up here; give another place. The Task was not made."
@@ -647,13 +757,63 @@ defmodule SalixIM.TaskPlacement do
       "the Workspace already runs #{max} sandboxes, the most it may; end one " <>
         "(set its Task completed) or wait. The Task was not made."
 
+  # The fee control refused the sandbox's start (`SalixWeb.CodingSandboxes.authorize/4`).
+  # The fee control did not answer at all (`{:error, reason}` from the authorizer).
+  defp runs_on_refusal({:billing_error, _reason}, _source),
+    do: "billing is temporarily unavailable; try again later. The Task was not made."
+
+  # `decision` is the fee control's `Decision` struct in production (no
+  # Access), a map in tests: read it with `Map.get`.
+  defp runs_on_refusal({:billing_unavailable, decision}, _source) do
+    reason =
+      (is_map(decision) && (Map.get(decision, :reason) || Map.get(decision, "reason"))) ||
+        "fee_control_error"
+
+    what =
+      case reason do
+        "insufficient_credits" ->
+          "the Workspace has no credits for a sandbox; ask the user to add credits"
+
+        "account_inactive" ->
+          "the Workspace's billing account is unavailable"
+
+        "sandbox_restricted" ->
+          "managed sandboxes are not available to this Workspace; give runs_on " <>
+            "{kind: station, device_id} for one of its own stations"
+
+        _other ->
+          "billing is temporarily unavailable (#{reason}); try again later"
+      end
+
+    what <> ". The Task was not made."
+  end
+
   defp runs_on_refusal(:device_not_found, _source),
     do: "that station is not known in this Group; check device.list"
 
   defp runs_on_refusal(:cloud_vm_disabled, _source),
-    do: "the Workspace's Cloud VM switch is off; give another station"
+    do: "the Workspace has no Cloud VM available now; give another station"
+
+  # Where the Group's Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`).
+  defp runs_on_refusal(:cloud_vm_retired, :binding),
+    do:
+      "the Group's Cloud VM is retired here: sandboxes have taken its place. The Worker is " <>
+        "bound to it; bind the Worker with station_binding.runs_on {kind: sandbox}, or give " <>
+        "the Task runs_on {kind: sandbox}. The Task was not made."
+
+  defp runs_on_refusal(:cloud_vm_retired, _source),
+    do:
+      "the Group's Cloud VM is retired here: sandboxes have taken its place. Give runs_on " <>
+        "{kind: sandbox} for a sandbox of the Task's own (with repo {owner, name} to work in a " <>
+        "repository), or {kind: default}. The Task was not made."
 
   defp runs_on_refusal(reason, _source), do: "runs_on is not usable here: #{inspect(reason)}"
+
+  defp computer_list(computers) do
+    Enum.map_join(computers, ", ", fn computer ->
+      ~s|"#{computer["name"]}" (device_id #{computer["device_id"]}, station device_id station:#{computer["station_id"]})|
+    end)
+  end
 
   # A device that cannot take Tasks: what its user does, for the agent to pass
   # on, with the structured reason (`SalixStore.StationReadiness`).
@@ -677,7 +837,11 @@ defmodule SalixIM.TaskPlacement do
 
   defp model_refusal({:not_on_station, models}),
     do:
-      "that station has no profile with this model enabled; it runs #{Jason.encode!(models)} (or omit model to use its default)"
+      "that station does not run this model for this workspace; it runs #{Jason.encode!(models)}. " <>
+        "A runtime it lists no model for has no account chosen there for this workspace: do not choose one for the person. " <>
+        "To do the work on that computer now, create a Task with runs_on {kind: salix} and no runtime model; " <>
+        "its Worker drives the computer with env.exec (environment \"station\"), station.fs and station.process. " <>
+        "The Task was not made."
 
   defp model_refusal(reason),
     do: "model is not usable here: #{inspect(reason)}; check agent.models"

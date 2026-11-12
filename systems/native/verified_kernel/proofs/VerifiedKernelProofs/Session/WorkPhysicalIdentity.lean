@@ -1,5 +1,4 @@
 import VerifiedKernelProofs.Session.WorkIdentityReload
-
 namespace VerifiedKernel.Session.ArchivePublication
 open Data WorkConservation
 set_option Elab.async false

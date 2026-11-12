@@ -292,7 +292,7 @@ defmodule Salix.Bindings.MCPCredentials do
   end
 
   defp refresh_connection(tenant_id, provider, conn_id, conn, adapter) do
-    with {:ok, app} <- OAuthApps.get(tenant_id, provider),
+    with {:ok, app} <- refresh_app(tenant_id, provider, conn),
          {:ok, _token} <-
            OAuth.valid_token(
              conn_id,
@@ -310,6 +310,12 @@ defmodule Salix.Bindings.MCPCredentials do
         {:error, "refresh OAuth connection: #{format_reason(reason)}"}
     end
   end
+
+  # A grant made with a member's own bot app refreshes with that app.
+  defp refresh_app(tenant_id, provider, %{"app_source" => source}) when is_map(source),
+    do: SalixWeb.OAuthFlow.source_app(tenant_id, provider, source)
+
+  defp refresh_app(tenant_id, provider, _conn), do: OAuthApps.get(tenant_id, provider)
 
   defp refresh_tokens(adapter, app, record) do
     case adapter.refresh(app, record) do

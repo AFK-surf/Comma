@@ -67,6 +67,18 @@ defmodule BridgeForTeams.StationMembersTest do
     assert role(org, project, users.owner) == :none
   end
 
+  test "a person the Project's chat app is available to is a Project user while it is active",
+       %{org: org, project: project} do
+    tenant = org.salix_tenant_id
+    group = project.salix_group_id
+
+    assert SalixStore.StationMembers.app_member_role(tenant, group) == {:ok, "user"}
+    assert SalixStore.StationMembers.app_member_role("tnt_other", group) == :none
+
+    {:ok, _} = Projects.archive_project(project)
+    assert SalixStore.StationMembers.app_member_role(tenant, group) == :none
+  end
+
   test "a provider requester needs the same SSO app audience and current Project authority", %{
     org: org,
     project: project,
@@ -196,6 +208,7 @@ defmodule BridgeForTeams.StationMembersTest do
 
       assert StationMembers.workspace_active?(tenant, group) == true
       assert SalixStore.StationMembers.workspace_active?(tenant, group)
+      assert StationMembers.open_enrollment?(tenant, group)
       assert {:ok, %{id: ^station}} = Stations.active_station(station)
       assert {:ok, _state, _row} = Stations.presence_state(station)
 
@@ -203,12 +216,14 @@ defmodule BridgeForTeams.StationMembersTest do
 
       assert StationMembers.workspace_active?(tenant, group) == false
       refute SalixStore.StationMembers.workspace_active?(tenant, group)
+      refute StationMembers.open_enrollment?(tenant, group)
       assert {:error, :station_removed} = Stations.active_station(station)
       assert {:error, :station_removed} = Stations.presence_state(station)
 
       # A Group of no Project is not this product's to answer for.
       assert StationMembers.workspace_active?(tenant, "grp_not_a_project") == :none
       assert StationMembers.workspace_active?("tnt_other", group) == :none
+      refute StationMembers.open_enrollment?(tenant, "grp_not_a_project")
     end
 
     test "a member removed from the Project or the Organization has their credentials revoked",

@@ -1,6 +1,6 @@
 // config.json as a live, editable document (settings.rs): the file stays the source of truth. Edits are checked,
 // written atomically (mode 600: it holds secrets) and told to whoever listens; fields this station does not know are
-// kept as they are. Edited by something else (the installer, `stillfail channel`, a person): read again when the file
+// kept as they are. Edited by something else (the installer, `comma-station channel`, a person): read again when the file
 // changed (by its size and time) on the next read, and told then. A file that is not there is `{}` (the defaults).
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,7 +20,7 @@ export class ConfigFile {
 
   constructor(data: string) {
     this.data = data;
-    this.path = process.env.STILLFAIL_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
+    this.path = process.env.COMMA_STATION_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
     this.raw();
   }
 

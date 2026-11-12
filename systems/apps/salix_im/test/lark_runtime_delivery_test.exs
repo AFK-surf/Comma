@@ -11,7 +11,7 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
 
   alias SalixIM.{ConversationSeedInput, ConversationServer, Conversations, ProviderConnects}
   alias SalixIM.TestSupport.BanditServer
-  alias SalixStore.{Ids, Keys}
+  alias SalixStore.Ids
 
   import SalixIM.TestSupport.ProviderFixture,
     only: [create_control_agent: 2, create_slack_task!: 4, call: 5]
@@ -361,15 +361,15 @@ defmodule SalixIM.LarkRuntimeDeliveryTest do
         "updated_at" => now
       })
 
-    key =
-      Keys.ctl_group_conversation_participant_delivery_state(
-        group_id,
-        conversation_id,
-        participant_id,
-        delivery_id
-      )
+    scope = SalixIM.ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
 
-    assert {:ok, _} = SalixStore.S3.put(key, Jason.encode!(delivery), if_none_match: "*")
+    assert {:ok, :ok} =
+             SalixStore.Repo.transaction(fn ->
+               SalixIM.ConversationParticipantPGStore.import_receipts!(scope, [
+                 %{record: delivery, revision: 1}
+               ])
+             end)
+
     {participant_id, message_id}
   end
 

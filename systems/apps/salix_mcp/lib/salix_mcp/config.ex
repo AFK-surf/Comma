@@ -102,7 +102,11 @@ defmodule SalixMCP.Config do
 
     with {:ok, variables} <- resolve_schema_map(entry["variables_schema"], values),
          value_scope <- Map.merge(values, variables),
-         {:ok, url} <- interpolate_url(entry["url"], value_scope),
+         {:ok, url} <-
+           interpolate_url(
+             entry["url"],
+             Map.merge(blank_variables(entry["variables_schema"]), value_scope)
+           ),
          {:ok, headers} <-
            entry["headers_schema"]
            |> headers_without_runtime_values(remote_headers)
@@ -117,6 +121,12 @@ defmodule SalixMCP.Config do
        }}
     end
   end
+
+  # An optional URL variable without a value leaves its placeholder empty.
+  defp blank_variables(schema) when is_map(schema),
+    do: Map.new(schema, fn {key, _spec} -> {to_string(key), ""} end)
+
+  defp blank_variables(_schema), do: %{}
 
   defp apply_remote_target_override(entry) do
     overrides = SystemsRuntime.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}

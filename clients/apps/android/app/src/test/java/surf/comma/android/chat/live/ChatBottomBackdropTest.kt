@@ -62,7 +62,13 @@ class ChatBottomBackdropTest {
                     .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, keyboard))
                     .build())
                 if (lift) {
-                    assertEquals("the input clears the whole keyboard in an edge-to-edge host", keyboard.toFloat(), composer.liftPx, 0f)
+                    val gap = activity.resources.getDimensionPixelSize(R.dimen.spacing_xl)
+                    assertEquals("the input lift includes the extra keyboard spacing",
+                        (keyboard + gap - composer.paddingBottom).toFloat(), composer.liftPx, 0f)
+                    assertEquals("the capsule leaves the full gap above the keyboard",
+                        (body.height - keyboard - gap).toFloat(), composer.y + composer.getChildAt(0).bottom, 0f)
+                    assertEquals("the backdrop clips at the keyboard, without the extra spacing",
+                        keyboard.toFloat(), composer.keyboardInsetPx, 0f)
                 } else {
                     assertEquals("the input clears the navigation area", 72f, composer.liftPx, 0f)
                 }

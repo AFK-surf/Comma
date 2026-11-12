@@ -13,6 +13,10 @@ defmodule Comma.Application do
 
     Logger.info("comma: starting subsystems #{inspect(enabled)}")
 
+    # Peers connect while the rest of the node still starts; their placement
+    # rings take it in only once `join_ring/1` says it is ready.
+    SystemsRuntime.put_env(:salix_cluster, :placement_ready, false)
+
     # :permanent, not the default :temporary: these apps (and their dep apps,
     # e.g. :postgrex) are in :load mode in the release, so the type given here
     # is the only thing deciding what happens when one of them terminates.
@@ -33,12 +37,21 @@ defmodule Comma.Application do
       end
     end
 
+    join_ring(enabled)
     emit_startup(started_at)
 
     # The launcher owns no children of its own; the subsystems run under their
     # own application supervision trees. A trivial supervisor satisfies the
     # Application start contract.
     SystemsRuntime.Supervisor.start_link([], strategy: :one_for_one, name: Comma.Supervisor)
+  end
+
+  # Every application of the node is up: peers may now place keys here. The
+  # launcher has no compile-time dependency on the subsystem apps (mix.exs).
+  defp join_ring(enabled) do
+    SystemsRuntime.put_env(:salix_cluster, :placement_ready, true)
+    if :salix in enabled, do: :ok = apply(SalixCluster.Ring, :ready, [])
+    :ok
   end
 
   defp emit_startup(started_at) do

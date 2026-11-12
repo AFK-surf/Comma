@@ -33,6 +33,15 @@ defmodule SalixIM.ProviderIdentity do
     end
   end
 
+  @doc "Whether a connect has reserved this identity."
+  def held?(provider, identity) do
+    case CasRecord.get(Keys.ctl_im_provider_identity(trim(provider), trim(identity))) do
+      {:ok, %{"released_at" => released}} when not is_nil(released) -> false
+      {:ok, %{}} -> true
+      _other -> false
+    end
+  end
+
   def reserve(nil, _tenant_id, _group_id, _connect_id), do: :ok
 
   def reserve({provider, identity}, tenant_id, group_id, connect_id),
@@ -240,6 +249,11 @@ defmodule SalixIM.ProviderIdentity do
 
   def release(%{"provider" => "wechat", "bot_user_id" => bot_id, "connect_id" => connect_id}),
     do: release_provider("wechat", bot_id, connect_id)
+
+  # A Comma-managed connect shares the product bot and holds no reservation;
+  # release is owner-checked, so it changes nothing there.
+  def release(%{"provider" => "telegram", "bot_user_id" => bot_id, "connect_id" => connect_id}),
+    do: release_provider("telegram", bot_id, connect_id)
 
   def release(_rec), do: :ok
 

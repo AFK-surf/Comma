@@ -7,9 +7,9 @@ defmodule Comma.Synchronicity do
   single shared hub provider), so a later dashboard sign-in lands on the
   pre-created account inside the Workspace's org.
 
-  This module is driven by `Comma.Workers.WorkspaceConvergence`: alongside Salix
-  and Billing, a converging Workspace calls `provision_workspace/1`, which the
-  worker uses to fill in the Workspace's `sync_org_id`/`sync_network_id`, and
+  `Comma.Workers.SynchronicityProvision` runs after Workspace readiness, on
+  its own queue. Synchronicity failure affects only Drive operations. The
+  worker calls `provision_workspace/1` to store `sync_org_id`/`sync_network_id`, and
   then `ensure_agent_key/1`, which mints the member org key the Salix agent
   reaches the Workspace's Drive with and stores it as the Workspace group's
   Salix Drive binding (`Salix.Control.DriveBindings`, through
@@ -42,6 +42,27 @@ defmodule Comma.Synchronicity do
   @default_network "default"
   # The binding source Comma writes; an operator's row says `manual`.
   @binding_source "comma"
+
+  @doc "Queue Drive setup for an active standard Workspace, including retries after repair."
+  def enqueue(workspace_id) when is_binary(workspace_id) do
+    case Repo.get(Workspace, workspace_id) do
+      %Workspace{status: "active", kind: "standard"} ->
+        if configured?() do
+          Oban.insert(
+            Comma.Oban,
+            Comma.Workers.SynchronicityProvision.new(%{"workspace_id" => workspace_id})
+          )
+        else
+          {:ok, :skipped}
+        end
+
+      %Workspace{} ->
+        {:ok, :skipped}
+
+      nil ->
+        {:error, :workspace_not_found}
+    end
+  end
 
   @spec provision_workspace(Workspace.t()) ::
           Comma.Synchronicity.Client.ok()
@@ -82,7 +103,7 @@ defmodule Comma.Synchronicity do
   Comma-minted binding may also carry `retired_key_ids`, keys of earlier
   rotations whose revocation the control plane has not confirmed; this call
   retries those and answers `{:error, {:retryable, {:revoke_pending, ...}}}`
-  while any remains, so convergence keeps retrying.
+  while any remains, so the Drive job keeps retrying.
   """
   @spec ensure_agent_key(Workspace.t()) ::
           {:ok, :present | :minted | :manual}
@@ -122,8 +143,8 @@ defmodule Comma.Synchronicity do
   revocation, the new key is still stored (the agent is already on it) and
   the old key's id is kept in the binding's `retired_key_ids`; the answer is
   `{:error, {:retryable, {:revoke_pending, %{key_ids: [...], reason: ...}}}}`
-  and the old key must be treated as still valid. Run this again, or let
-  the next convergence run, to retry the revocation; or revoke the listed
+  and the old key must be treated as still valid. Run this again, or enqueue
+  Drive setup, to retry the revocation; or revoke the listed
   key in the Synchronicity dashboard.
   """
   @spec rotate_agent_key(String.t()) ::

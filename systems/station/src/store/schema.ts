@@ -340,6 +340,19 @@ CREATE TABLE IF NOT EXISTS task_index (
   marked TEXT
 );
 CREATE INDEX IF NOT EXISTS task_index_rev ON task_index (rev);
+-- The Stats index (stats/index.ts): the station's statistics in one structure, from every source of them (its own,
+-- and each outside source an adapter brings in), what Salix keeps a copy of. key: source, kind (usage, task, source: how an outside source stands) and the
+-- row's own id; every change takes the next rev of the whole index (meta stats_index_rev, epoch stats_index_epoch);
+-- a row gone leaves a tombstone until it was told.
+CREATE TABLE IF NOT EXISTS stats_index (
+  key TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  rev INTEGER NOT NULL,
+  json TEXT NOT NULL,
+  removed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS stats_index_rev ON stats_index (rev);
 `;
 
 /// Each message as it reads now: its latest edit's words, files and quotes.

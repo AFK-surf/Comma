@@ -237,6 +237,14 @@ const outsideTest = (what: string): never => {
 
 type PollOptions = { timeout?: number; interval?: number; message?: string };
 
+// The fake timers the test clock replaces while a test runs.
+const replacedTimers = [
+  "setTimeout",
+  "setInterval",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+] as const;
+
 /** Puts each test of this frame on the test clock. */
 export function installTesterClock() {
   // Made before the frame's channels are counted (trackPageMessages).
@@ -332,6 +340,9 @@ export function installTesterClock() {
     );
   }) as typeof expect.poll;
 
+  // The fake timers, kept while the frame clock and the wake-ups below stand
+  // in for some of them during a test.
+  const fakes = new Map<string, unknown>();
   beforeEach(() => {
     vi.useFakeTimers({
       now: testEpoch,
@@ -346,6 +357,8 @@ export function installTesterClock() {
         "cancelAnimationFrame",
       ],
     });
+    const pageTimers = window as unknown as Record<string, unknown>;
+    for (const name of replacedTimers) fakes.set(name, pageTimers[name]);
     runFramesOnTestClock();
     markAttached(true);
     // ast-grep-ignore: ts-test-clock -- the fake clock's Date: page time.
@@ -377,6 +390,13 @@ export function installTesterClock() {
     delete window.commaAnimationFrame;
     releaseAnimations();
     window.commaVirtualTime?.stop();
+    // Vitest gives the page its own timer back only in place of the fake it
+    // installed and deletes anything else: put the fakes back first, or the
+    // page has no setTimeout or requestAnimationFrame for the work a test
+    // leaves behind (an unmount after it).
+    const pageTimers = window as unknown as Record<string, unknown>;
+    for (const [name, fake] of fakes) pageTimers[name] = fake;
+    fakes.clear();
     vi.useRealTimers();
   });
 }

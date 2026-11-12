@@ -20,7 +20,8 @@ defmodule SalixVoice.RouterPersona do
 
   Bounds: instructions and notes at most 6,000 bytes each; history at most 24
   messages of 1,500 bytes within 10 KiB, newest kept, under GPT-Live's
-  8,192-token startup history limit. Nothing is stored.
+  8,192-token startup history limit. Nothing is stored. History reads only the
+  end of the session, since the call waits for this at most `profile_ms`.
   """
 
   require Logger
@@ -60,9 +61,9 @@ defmodule SalixVoice.RouterPersona do
   @doc "The Router identity of `group_id`'s calls heard by `audience`, or `{:error, code}`."
   @spec resolve(String.t(), audience()) :: {:ok, t()} | {:error, String.t()}
   def resolve(group_id, audience) do
-    with {:ok, agent, session} <- RouterDecision.router(group_id) do
+    with {:ok, agent, session_id} <- RouterDecision.router(group_id) do
       agent_id = agent["agent_id"]
-      messages = RouterDecision.recent_texts(session, @max_messages, labels: true)
+      messages = recent_messages(agent, session_id, group_id)
       # The label and the body come from one manifest entry, so a later write
       # of the notes cannot pass under the label of an earlier one.
       notes_entry = notes_entry(agent_id)
@@ -135,6 +136,21 @@ defmodule SalixVoice.RouterPersona do
     if own && shared && String.starts_with?(own, shared),
       do: own |> String.replace_prefix(shared, "") |> present(),
       else: own
+  end
+
+  # A call keeps the Router's identity when its history cannot be read.
+  defp recent_messages(agent, session_id, group_id) do
+    case RouterDecision.recent_labelled_texts(agent, session_id, @max_messages) do
+      {:ok, messages} ->
+        messages
+
+      {:error, reason} ->
+        Logger.warning(
+          "voice router persona history failed group=#{group_id} reason=#{inspect(reason)}"
+        )
+
+        []
+    end
   end
 
   defp section(_title, nil), do: nil

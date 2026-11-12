@@ -86,6 +86,14 @@ defmodule SalixCluster.ConversationPlacement do
     :exit, _reason -> :ok
   end
 
+  # Without a ring nothing is placed here; the next ring change asks again.
+  @impl true
+  def owner?(group_id, conversation_id) do
+    SalixCluster.Ring.owner(owner_key(group_id, conversation_id)) == Node.self()
+  catch
+    :exit, _reason -> false
+  end
+
   @doc "Ring key that places a group collection, conversation, or participant owner."
   @spec placement_key(tuple()) :: String.t()
   def placement_key({:conversation_group, group_id}), do: group_owner_key(group_id)

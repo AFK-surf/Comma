@@ -108,7 +108,7 @@ def transcriptSeed (state event : Term) : KernelM Term := do
   let created ← if created.truthy then pure created else Data.event event "created_at"
   let timestamp ← if any then Data.event event "created_at" else pure nil
   let activity ← if timestamp.truthy then pure timestamp else field state "last_activity_at"
-  let seeded ← write state [("created_at", created), ("last_activity_at", activity), ("messages", messages),
+  let seeded ← write state [("created_at", metadataSeconds created), ("last_activity_at", metadataSeconds activity), ("messages", messages),
     ("next_message_id", ← maximum nextId ((← field state "next_message_id").default (i 1))), ("last_seq", lastSeq), ("input_dedupe", dedupe)]
   write seeded [("live_context_bytes", ← recomputeBytes seeded)]
 

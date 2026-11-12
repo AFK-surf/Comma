@@ -6,11 +6,11 @@ import CommaCore
 
 /// Attachments in and out of the conversation: the camera, the photo panel, the system photo picker and Files
 /// hand their picks to the pane, which shows each in the composer at once and uploads them side by side; a
-/// message's attachment opens in Quick Look.
+/// file attachment opens in Quick Look. ChatMediaGallery presents inline images.
 extension PhoneConversationView {
     var attachmentActions: AttachmentActions {
         AttachmentActions(openFiles: { filePickerOpen = true }, openAllPhotos: { allPhotosOpen = true },
-                          attach: { await attach($0) })
+                          attach: { await attach($0) }, openDrive: { drivePickerOpen = true })
     }
 
     /// Photos from the system picker, each attached as soon as it has loaded.

@@ -1,14 +1,21 @@
 // Conversations kept on the device, per account (its database's `doc` "chat:<group>/<conversation>"): what each one
-// showed last (its conversation, its last 500 messages, the draft) and its unsent messages. A conversation opens from
-// it at once, offline too, then reads the server again; a message being sent when the device stopped is sent again
-// with the same request id (the server keeps one). While the account is signed in, each group with kept conversations
-// has its change feed open (`?changes=1`): a kept conversation no window shows is read again when the server says it
-// changed, so the next time it opens it is already current.
+// showed last (its conversation, its last 500 messages, the draft); beside it (`doc` "chatPending:<group>/<conversation>")
+// its unsent messages, written alone the moment they change, so a send does not wait on writing the whole transcript.
+// A conversation opens from them at once, offline too, then reads the server again; a message being sent when the
+// device stopped is sent again with the same request id (the server keeps one). While the account is signed in, each
+// group with kept conversations has its change feed open (`?changes=1`): a kept conversation no window shows is read
+// again when the server says it changed, so the next time it opens it is already current.
 //
 // Bounds: at most 64 conversations kept (the least recently shown goes), 500 messages each; a change is written once
 // it has rested 1 s. One feed per group with kept conversations, reconnected after 1, 2, 4, 8 then 15 s; one read per
-// changed conversation at a time (the scheduler's key, background priority), with its validator (a 304 costs nothing).
+// changed conversation at a time (the scheduler's key, background priority), with its validator (a 304 costs nothing),
+// asking only for the messages after the newest one kept.
 // A feed's resync reads again only the group's kept conversations, at most 64.
+import {
+  chatMessageSchema,
+  chatPendingSendSchema,
+  lazySchema,
+} from "@comma/chat-contract";
 import { CoreError, Priority } from "@comma/core-kernel";
 import { Effect, Result, type Fiber } from "effect";
 import { z } from "zod";
@@ -42,14 +49,44 @@ const KEPT_META = "chatKept";
 /** A conversation as the device keeps it. */
 type Kept = {
   conversation: CommaConversation | undefined;
+  /** Its messages, as a doc written before they moved to their own items (`messagesName`). */
   serverMessages: ChatMessage[];
   /** The seq ranges of the kept messages that were read whole (`ConversationChannelState.history`). */
   ranges?: [number, number][];
-  draft: string;
-  pending: PendingSend[];
+  /** The draft, as a doc written before it moved to its own (`draftName`). */
+  draft?: string;
+  /** The unsent messages, as a doc written before they moved to their own (`pendingName`). */
+  pending?: PendingSend[];
   /** The validator of the last read, for a background read to cost a 304 when nothing changed. */
   etag?: string;
 };
+
+/**
+ * A conversation as kept: its document, with its messages kept one by one (in the order of their seq; one without a
+ * seq after those, by when it was made), or inside the document as an earlier core kept them.
+ */
+function keptOf(account: Account, target: ChatTarget): Kept | undefined {
+  const kept = account.doc<Kept>(docName(target))?.value;
+  if (!kept) return undefined;
+  const messages = account.items<ChatMessage>(messagesName(target));
+  if (!messages) return kept;
+  return {
+    ...kept,
+    serverMessages: messages.toSorted(
+      (a, b) =>
+        (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER) ||
+        (a.createdAt ?? 0) - (b.createdAt ?? 0) ||
+        (a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0)
+    ),
+  };
+}
+
+/** Keeps a conversation: its messages one by one (those that did not change are not written again), the rest whole. */
+function putKept(account: Account, target: ChatTarget, kept: Kept, now: number): void {
+  const { serverMessages, ...rest } = kept;
+  account.putItems(messagesName(target), serverMessages, (m) => m.messageId);
+  account.putDoc(docName(target), rest, now);
+}
 
 /**
  * The newest messages to keep, and the ranges read among them: a range that reaches before the oldest kept message
@@ -75,30 +112,41 @@ type KeptIndex = ChatTarget[];
 
 const docName = (t: { groupId: string; conversationId: string }) =>
   `chat:${t.groupId}/${t.conversationId}`;
+/** Where a kept conversation's unsent messages are. */
+const pendingName = (t: { groupId: string; conversationId: string }) =>
+  `chatPending:${t.groupId}/${t.conversationId}`;
+/** Where its messages are, one by one: a message that came or changed writes that message alone. */
+const messagesName = (t: { groupId: string; conversationId: string }) =>
+  `chatMessages:${t.groupId}/${t.conversationId}`;
+/** Where its draft is: apart from the conversation, so a keystroke writes the draft alone. */
+const draftName = (t: { groupId: string; conversationId: string }) =>
+  `chatDraft:${t.groupId}/${t.conversationId}`;
 const sameTarget = (a: ChatTarget, b: { groupId: string; conversationId: string }) =>
   a.groupId === b.groupId && a.conversationId === b.conversationId;
 
 /** What the group change feed says (`?changes=1`). */
-const changeEventSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("conversation_changes_resync_required"),
-      group_id: z.string().min(1),
-      version: z.string().min(1).max(128),
-    })
-    .strip(),
-  z
-    .object({
-      type: z.literal("conversation_changed"),
-      group_id: z.string().min(1),
-      conversation_id: z.string().min(1),
-      kind: z.string(),
-      change: z.enum(["upsert", "delete", "message"]),
-      seq: z.number().int().optional(),
-      version: z.string().min(1).max(128),
-    })
-    .strip(),
-]);
+const changeEventSchema = lazySchema(() =>
+  z.discriminatedUnion("type", [
+    z
+      .object({
+        type: z.literal("conversation_changes_resync_required"),
+        group_id: z.string().min(1),
+        version: z.string().min(1).max(128),
+      })
+      .strip(),
+    z
+      .object({
+        type: z.literal("conversation_changed"),
+        group_id: z.string().min(1),
+        conversation_id: z.string().min(1),
+        kind: z.string(),
+        change: z.enum(["upsert", "delete", "message"]),
+        seq: z.number().int().optional(),
+        version: z.string().min(1).max(128),
+      })
+      .strip(),
+  ])
+);
 
 export class ChatStore implements ChatConversationStore {
   readonly #ctx: Ctx;
@@ -114,6 +162,8 @@ export class ChatStore implements ChatConversationStore {
   readonly #feeds = new Map<string, { fiber?: Fiber.Fiber<unknown, unknown> }>();
   /** The unsent sends last written for each kept conversation: a change of them is written at once. */
   readonly #writtenPending = new Map<string, string>();
+  /** The state each kept conversation was last written from: a change of none of what is kept writes nothing. */
+  readonly #written = new Map<string, ConversationChannelState>();
   #account: Account | null = null;
 
   constructor(ctx: Ctx, env: ChatEnv, shown: (target: ChatTarget) => boolean) {
@@ -132,6 +182,7 @@ export class ChatStore implements ChatConversationStore {
       this.#dirty.clear();
       this.#account = account;
       this.#writtenPending.clear();
+      this.#written.clear();
       for (const feed of this.#feeds.values())
         if (feed.fiber) ctx.runner.interrupt(feed.fiber);
       this.#feeds.clear();
@@ -144,41 +195,53 @@ export class ChatStore implements ChatConversationStore {
     target: ChatTarget
   ): { state: ConversationChannelState; resend: string[] } | undefined {
     const account = this.#ctx.session.current();
-    const kept = account?.doc<Kept>(docName(target))?.value;
-    if (!account || !kept) return undefined;
+    if (!account) return undefined;
+    const kept = keptOf(account, target);
+    const keptPending = account.doc<PendingSend[]>(pendingName(target))?.value;
+    const keptDraft = account.doc<string>(draftName(target))?.value;
+    if (!kept && !keptPending && keptDraft === undefined) return undefined;
+    const pending = keptPending ?? kept?.pending ?? [];
+    const serverMessages = kept?.serverMessages ?? [];
+    // What an earlier core kept is checked as it comes back in, once: a conversation the chat contract no longer
+    // takes is not shown, and is read from the server as one never kept.
+    if (
+      !serverMessages.every((m) => chatMessageSchema.safeParse(m).success) ||
+      !pending.every((p) => chatPendingSendSchema.safeParse(p).success)
+    )
+      return undefined;
     this.#remember(account, target);
     return {
       state: {
         ...idleConversationChannelState,
-        conversation: kept.conversation,
-        serverMessages: kept.serverMessages,
-        messages: kept.serverMessages,
-        ...(kept.ranges?.length
+        conversation: kept?.conversation,
+        serverMessages,
+        messages: serverMessages,
+        ...(kept?.ranges?.length
           ? { history: { hasOlder: true, loadingOlder: false, ranges: kept.ranges } }
           : {}),
-        draft: kept.draft,
-        pending: kept.pending,
-        status: kept.conversation || kept.serverMessages.length > 0 ? "ready" : "idle",
+        draft: keptDraft ?? kept?.draft ?? "",
+        pending,
+        status: kept?.conversation || serverMessages.length > 0 ? "ready" : "idle",
         syncWarning: "stale",
       },
-      resend: kept.pending
-        .filter((pending) => pending.status === "sending")
-        .map((pending) => pending.clientRequestId),
+      resend: pending
+        .filter((item) => item.status === "sending")
+        .map((item) => item.clientRequestId),
     };
   }
 
   changed(target: ChatTarget, state: ConversationChannelState): void {
     // A conversation the server refused (gone, forbidden) is not kept.
     if (state.errorKind && state.errorKind !== "network") return;
-    this.#dirty.set(docName(target), { target, state });
-    // An unsent send is written at once: a device that stops right after sends it again (same request id), and a
-    // send that ended is not sent again.
-    if (
-      pendingKey(state.pending) !== (this.#writtenPending.get(docName(target)) ?? "[]")
-    ) {
-      this.flush();
+    // A reply streaming in changes the conversation many times a second and none of what is kept.
+    const written = this.#written.get(docName(target));
+    if (!this.#dirty.has(docName(target)) && written && sameKept(written, state))
       return;
-    }
+    this.#dirty.set(docName(target), { target, state });
+    // An unsent send is written at once, alone: a device that stops right after sends it again (same request id), and
+    // a send that ended is not sent again. The rest waits to rest like any change.
+    const account = this.#account;
+    if (account && !account.closed) this.#keepPending(account, target, state.pending);
     if (this.#timer !== undefined) return;
     this.#timer = after(this.#env, WRITE_MS, () => {
       this.#timer = undefined;
@@ -201,8 +264,9 @@ export class ChatStore implements ChatConversationStore {
     this.#dirty.clear();
     if (!account || account.closed) return;
     for (const { target, state } of dirty) {
+      const wrote = this.#written.get(docName(target));
+      this.#written.set(docName(target), state);
       const pending = state.pending;
-      this.#writtenPending.set(docName(target), pendingKey(pending));
       if (
         !state.conversation &&
         state.serverMessages.length === 0 &&
@@ -210,24 +274,43 @@ export class ChatStore implements ChatConversationStore {
         !pending.length
       ) {
         // Nothing left to keep: what was kept goes, so no send ended here comes back.
-        if (account.doc(docName(target))) this.#forget(account, target);
+        if (
+          account.doc(docName(target)) ||
+          account.doc(pendingName(target)) ||
+          account.doc(draftName(target))
+        )
+          this.#forget(account, target);
         continue;
       }
-      const was = account.doc<Kept>(docName(target))?.value;
+      this.#keepPending(account, target, pending);
+      account.putDoc(draftName(target), state.draft, this.#ctx.now());
+      const was = keptOf(account, target);
+      // A draft written alone leaves the conversation as it was: its messages are not written again for a keystroke.
+      if (was && wrote && sameKept({ ...wrote, draft: state.draft }, state)) continue;
       this.#keep(account, target, {
         conversation: state.conversation
           ? withoutMessages(state.conversation)
           : was?.conversation,
         ...keptHistory(state.serverMessages, state.history?.ranges),
-        draft: state.draft,
-        pending,
         ...(was?.etag ? { etag: was.etag } : {}),
       });
     }
   }
 
   #keep(account: Account, target: ChatTarget, kept: Kept): void {
-    account.putDoc(docName(target), kept, this.#ctx.now());
+    putKept(account, target, kept, this.#ctx.now());
+    this.#remember(account, target);
+  }
+
+  /**
+   * Writes the unsent messages when a send starts, ends or changes status. An empty list is written too, not dropped:
+   * it stands over the messages an older doc still holds itself, so a send that ended is not sent again.
+   */
+  #keepPending(account: Account, target: ChatTarget, pending: PendingSend[]): void {
+    const key = pendingKey(pending);
+    if (key === (this.#writtenPending.get(docName(target)) ?? "[]")) return;
+    this.#writtenPending.set(docName(target), key);
+    account.putDoc(pendingName(target), pending, this.#ctx.now());
     this.#remember(account, target);
   }
 
@@ -243,7 +326,10 @@ export class ChatStore implements ChatConversationStore {
       ...index.filter((item) => !sameTarget(item, target)),
     ];
     const gone = next.splice(MAX_KEPT);
-    for (const item of gone) account.deleteDoc(docName(item));
+    for (const item of gone) {
+      account.deleteDoc(docName(item));
+      account.deleteDoc(pendingName(item));
+    }
     account.setMeta(KEPT_META, next);
     for (const item of gone) this.#unfollowIfNone(account, item.groupId);
     if (!this.#feeds.has(target.groupId)) this.#follow(account, target.groupId);
@@ -251,7 +337,11 @@ export class ChatStore implements ChatConversationStore {
 
   #forget(account: Account, target: { groupId: string; conversationId: string }): void {
     account.deleteDoc(docName(target));
+    account.deleteDoc(pendingName(target));
+    account.deleteDoc(draftName(target));
+    account.deleteItems(messagesName(target));
     this.#writtenPending.delete(docName(target));
+    this.#written.delete(docName(target));
     const index = account.meta<KeptIndex>(KEPT_META) ?? [];
     account.setMeta(
       KEPT_META,
@@ -359,12 +449,15 @@ export class ChatStore implements ChatConversationStore {
     const ctx = this.#ctx;
     const path = route`/v1/comma/groups/${target.groupId}/conversations/${target.conversationId}`;
     const read = Effect.gen({ self: this }, function* () {
-      const was = account.doc<Kept>(docName(target))?.value;
+      const was = keptOf(account, target);
       if (!was) return;
+      // Only the messages after the newest one kept: those kept are not read again.
+      const heldThrough = SeqCoverage.of(was.ranges ?? []).tail?.[1];
+      const resume = heldThrough === undefined ? "" : `&after_seq=${heldThrough}`;
       const answer = yield* Effect.result(
         ctx.api.get(
           account,
-          `${path}?message_limit=${MAX_MESSAGES}`,
+          `${path}?message_limit=${MAX_MESSAGES}${resume}`,
           commaConversationSchema,
           was.etag
         )
@@ -384,8 +477,11 @@ export class ChatStore implements ChatConversationStore {
         conversation.kind,
         target.conversationId
       );
-      account.putDoc(
-        docName(target),
+      // Kept anew from the server: a later change of the conversation writes what it shows over it.
+      this.#written.delete(docName(target));
+      putKept(
+        account,
+        target,
         {
           ...was,
           conversation: withoutMessages(conversation),
@@ -396,7 +492,7 @@ export class ChatStore implements ChatConversationStore {
               .ranges.map(([first, last]): [number, number] => [first, last])
           ),
           ...(answer.success.etag ? { etag: answer.success.etag } : {}),
-        } satisfies Kept,
+        },
         ctx.now()
       );
     });
@@ -412,10 +508,26 @@ export class ChatStore implements ChatConversationStore {
 }
 
 function withoutMessages(conversation: CommaConversation): CommaConversation {
-  return { ...conversation, messages: [] };
+  const { after_seq: _read, ...rest } = conversation;
+  return { ...rest, messages: [] };
 }
 
 /** The unsent sends' identity and state: what changing writes the conversation at once. */
 function pendingKey(pending: readonly PendingSend[]): string {
   return JSON.stringify(pending.map((item) => [item.clientRequestId, item.status]));
+}
+
+/** Whether `a` and `b` keep the same: the conversation, its messages and read ranges, the draft and unsent sends. */
+function sameKept(a: ConversationChannelState, b: ConversationChannelState): boolean {
+  const ra = a.history?.ranges ?? [];
+  const rb = b.history?.ranges ?? [];
+  return (
+    a.conversation === b.conversation &&
+    a.draft === b.draft &&
+    a.pending === b.pending &&
+    a.serverMessages.length === b.serverMessages.length &&
+    a.serverMessages.every((message, i) => message === b.serverMessages[i]) &&
+    ra.length === rb.length &&
+    ra.every(([from, to], i) => from === rb[i]![0] && to === rb[i]![1])
+  );
 }

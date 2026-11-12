@@ -9,6 +9,7 @@ import { formatAppKeybinding } from "@comma/ui/components/settings-shortcut";
 import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
+  detectAppKeybindingPlatform,
   isEditableTarget,
   matchesAppKeyStroke,
   type AppKeyCode,
@@ -23,6 +24,7 @@ import {
 import { isOnboardingOpen } from "../onboarding/onboardingPresence";
 import { useCommaSettingsOverlay } from "../settingsOverlay";
 import { useCommaSidebar } from "../sidebar/SidebarContext";
+import { useNewTaskDialog } from "../tasks/station/NewTaskDialogContext";
 import type { AppShortcutId } from "./appShortcutRegistry";
 import { typeSelectPopoverSelector } from "./typeSelectPopover";
 import { useCommaAppShortcuts } from "./commaAppShortcuts";
@@ -48,7 +50,7 @@ type NavigationShortcutId =
   | "history-back"
   | "history-forward";
 
-type ShellShortcutId = "toggle-left-sidebar" | "toggle-right-sidebar";
+type ShellShortcutId = "new-task" | "toggle-left-sidebar" | "toggle-right-sidebar";
 
 const navigationShortcutIds = [
   "go-settings",
@@ -63,6 +65,7 @@ const navigationShortcutIds = [
 ] as const satisfies readonly NavigationShortcutId[];
 
 const shellShortcutIds = [
+  "new-task",
   "toggle-left-sidebar",
   "toggle-right-sidebar",
 ] as const satisfies readonly ShellShortcutId[];
@@ -72,9 +75,10 @@ const productShortcutIds = [
   ...shellShortcutIds,
 ] as const satisfies readonly AppShortcutId[];
 
-// A guest Session has no Chat Sidebar and no Task search.
+// A guest Session has no Chat Sidebar, no Task search and makes no Tasks.
 const guestUnavailableShortcutIds: ReadonlySet<AppShortcutId> = new Set([
   "go-search",
+  "new-task",
   "toggle-right-sidebar",
 ]);
 const guestProductShortcutIds = productShortcutIds.filter(
@@ -163,6 +167,23 @@ function useScopedAppShortcutListener(
         }
       }
       if (shortcutControl) return;
+      // A chord on the primary modifier (⌘ on macOS, Ctrl elsewhere) edits no
+      // text, so New Task opens from a composer too. macOS text fields do use
+      // Control chords (Ctrl+N moves down a line), so those stay theirs.
+      if (ids.includes("new-task")) {
+        const newTaskBinding = bindings["new-task"];
+        if (
+          newTaskBinding?.kind === "chord" &&
+          newTaskBinding.stroke.modifiers[
+            detectAppKeybindingPlatform() === "macos" ? "meta" : "control"
+          ] &&
+          matchesAppKeyStroke(newTaskBinding.stroke, event)
+        ) {
+          event.preventDefault();
+          run("new-task");
+          return;
+        }
+      }
       if (isEditableTarget(event.target)) return;
 
       const unmodified =
@@ -272,8 +293,13 @@ function useAppNavigationShortcutRunner() {
 function useAppShellShortcutRunner() {
   const { toggleCollapsed } = useCommaSidebar();
   const { toggleActive } = useChatSidebar();
+  const newTask = useNewTaskDialog();
   return useCallback(
     (id: AppShortcutId) => {
+      if (id === "new-task") {
+        newTask.open();
+        return;
+      }
       if (id === "toggle-left-sidebar") {
         toggleCollapsed();
         return;
@@ -282,7 +308,7 @@ function useAppShellShortcutRunner() {
         toggleActive();
       }
     },
-    [toggleActive, toggleCollapsed]
+    [newTask, toggleActive, toggleCollapsed]
   );
 }
 
@@ -307,6 +333,7 @@ export function useAppProductShortcutListener() {
   const sidebar = useCommaSidebar();
   const rightSidebar = useChatSidebar();
   const history = useWindowHistory();
+  const newTask = useNewTaskDialog();
   useApplicationMenu([
     ...productShortcutIds.map((id) => {
       const binding = bindings[id];
@@ -331,6 +358,7 @@ export function useAppProductShortcutListener() {
         id,
         enabled:
           !(guest && guestUnavailableShortcutIds.has(id)) &&
+          (id !== "new-task" || newTask.available) &&
           (id !== "history-back" || history.canGoBack) &&
           (id !== "history-forward" || history.canGoForward),
         run: () => runShortcut(id),

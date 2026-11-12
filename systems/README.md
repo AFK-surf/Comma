@@ -526,6 +526,36 @@ Pass credentials by environment variable reference (for example
 `--app-secret-env BFT_FEISHU_APP_SECRET`), not as literal arguments. The CLI
 redacts secret fields and secret-bearing URL query parameters in its output.
 
+### Telegram bot
+
+A BotFather bot connects to one Agent Swarm. The behavior is in the moduledocs
+of `SalixIM.Provider.Telegram` and `SalixIM.ProviderRuntime`.
+
+Setup:
+
+1. Create a bot with @BotFather. Keep privacy mode on and do not make the bot a
+   group admin: Salix has no mention filter for Telegram, so every message the
+   bot receives starts a Router turn.
+2. Connect it on the Swarm Connections page, or with `bft telegram connect`.
+   Salix checks the token with `getMe` and polls `getUpdates`, so there is no
+   callback address. Salix calls `https://api.telegram.org`.
+3. Add the bot to a group. The group shows up on the page and in
+   `bft telegram status`. Allow it there, or with `bft telegram chats`.
+4. Turn off `/setjoingroups` in BotFather once the bot is in its groups.
+
+Operator notes:
+
+- A connect made through CFT serves only its `allowed_chat_ids`. Other chats
+  never reach the Router and the agent cannot send to them. A group outside the
+  list is noted for an admin; a stranger's private chat leaves nothing.
+- A private chat's id is the person's id: `bft telegram chats --chat <id>`
+  allows one. The page lists only groups and channels the bot was added to.
+- A connect created through the tenant API without `allowed_chat_ids` serves
+  every chat.
+- One bot serves one connect. Two would take each other's updates.
+- OAuth links, native question buttons, the typing indicator, `/status`-style
+  commands, Task cards and topics exist only for Comma-managed Telegram chats.
+
 ### QQ bot
 
 A QQ open platform bot connects to one Agent Swarm. The behavior is in the
@@ -588,7 +618,8 @@ Setup:
 2. Connect it on the Swarm Connections page, or with `bft lark connect`.
 3. In Events & Callbacks, choose "Send events to developer's server" and save
    the request URL `<public base URL>/v1/im/lark/events?app_id=<App ID>`.
-   Subscribe to `im.message.receive_v1` and `im.message.recalled_v1`. Under
+   Subscribe to `im.message.receive_v1`, `im.message.recalled_v1` and
+   `im.chat.member.bot.added_v1` (the bot introduces itself in a new group). Under
    Callbacks, use the same URL and subscribe to `card.action.trigger`. Without
    it, confirmation and question card buttons do nothing.
 4. Import the scopes. Use **Copy JSON** in the Lark section of the Swarm
@@ -596,18 +627,79 @@ Setup:
    (`BridgeForTeams.LarkScopes`). In Permissions & Scopes, use the batch
    import. Without `im:message.group_msg`, the bot gets only messages that
    mention it.
-5. Create a version of the app and publish it. Scopes and events take effect
+5. For a chat with members of another organization, turn on External Sharing
+   in the app's version details and allow the bot in external groups. Lark
+   still refuses the app history reads there with error 230027, so the bot
+   reads what Lark delivered to it from the record.
+6. Create a version of the app and publish it. Scopes and events take effect
    with the published version.
-6. Run the checks: **Run checks** on the connect's row, or
+7. Run the checks: **Run checks** on the connect's row, or
    `bft lark checks --org <org> --project <project>` (`--connect-id` for one of
    several apps). `mix bridge_for_teams.run_checks --surface lark_bot` prints
    the same result. The gates are in `SalixIM.LarkChecks`.
    `bot.first_message` and `bot.manual` are always `needs_manual`.
 
+Made by a scan (no Developer Console):
+
+1. On the Swarm Connections page, choose **Scan to connect**, or in Comma add
+   the Lark plugin. Salix begins Lark's one-click app creation
+   (`SalixIM.Provider.Lark.Registration`, an OAuth device flow): the page
+   shows a QR code of the link.
+2. The person scans it with Lark (or opens the link in Lark) and confirms.
+   Lark makes and publishes a custom app with the bot, its scopes and its
+   events in that person's tenant, and returns the App ID and App Secret.
+3. Salix connects the app with `"events" => "socket"`. Such an app has no
+   request URL: its events come through the long connection Salix opens
+   (`SalixIM.LarkSocket`, one per connect in the cluster under a lease held by
+   `SalixIM.LarkSocketRuntime`). The runtime finds socket connects through
+   their own index (`ctl/im_socket_connects/`), not by reading every connect.
+   A connect made from Comma has an `owner_open_id`: only that person's
+   messages reach the Router.
+4. An event the Router could not take is answered with code 500, as the Lark
+   SDKs do, so Lark sends it again. At most 16 events are handled at a time
+   per connect; up to 256 more wait in order, and one past that is answered
+   with code 500.
+5. Lark keeps no events for a long connection that is down. Each time the
+   socket opens, Salix reads back the history of the connect's chats since
+   it was lost (the last ten minutes for a socket that just started), and
+   receipts keep a message from reaching the Router twice
+   (`SalixIM.LarkSocket.CatchUp`). A message the Router could not take is
+   tried again after 15 s, 1 min and 5 min. The chats read back are those
+   that had a message for the bot and the groups the bot is in; a private
+   chat whose first message comes while the socket is down is not.
+6. An app made by a scan has nobody in the Developer Console. When Lark
+   refuses it for a missing scope (error 99991672, or 230027 `need scope`),
+   the connect records the scope and the dashboard and Comma name it. The
+   history backfill sets such a chat aside until the next listing.
+   **Scan to update** on the connect's row (in Comma, **Reconnect**) begins
+   the same scan with the app's App ID (`clientID`): the person confirms the
+   scopes the app gets, and the connect keeps the same app.
+
+The registration always begins on Feishu's accounts service and the person
+confirms on `open.larksuite.com/page/cli`, as Lark's own CLI does: Lark's
+`/page/launcher` makes the app but never answers the poll. The device code is
+a credential; the dashboard and Comma give it to the browser only encrypted.
+
+The Feishu plugin (飞书, listed under 中国服务 in Comma) and the Feishu section of the
+dashboard's Swarm Connections page use the same scan, confirmed on
+`open.feishu.cn/page/cli` (`SalixIM.ProviderConnects.finish_feishu_registration`):
+
+- The Feishu connect owns the app's App Secret, as a Lark connect does, so a
+  Workspace or swarm can connect several scanned apps beside its tenant Feishu
+  app (`ProviderAppStore`, which an app given by hand uses). The connect has
+  `"events" => "socket"`, and in Comma `owner_only`. An account whose tenant
+  is Lark is refused.
+- The same long connection and catch-up run against `open.feishu.cn`. Its
+  events go to `SalixIM.ProviderHTTP.handle_feishu_socket_event/2`, which
+  takes messages and card presses from the owner only.
+- Removing the plugin retires the connect. The app stays in the member's
+  Feishu tenant.
+
 Security and data notes:
 
 - Salix accepts a callback when its signature or decryption proves the Encrypt
-  Key, or its token equals the Verification Token.
+  Key, or its token equals the Verification Token. A connect made by a scan
+  takes no callback; its long connection is opened with the App Secret.
 - A confirmation for content that crosses an audience boundary goes to the
   requester's private chat with the bot (`SalixIM.IFC.LarkConfirmation`). Only
   that person's press decides it. The press never reaches the Router.
@@ -635,16 +727,53 @@ Security and data notes:
   `account` names one (`app` for the app alone). `lark.list_wiki_spaces`,
   `lark.list_wiki_nodes` and `lark.list_minutes` run as the app unless
   `account` names a person. The bot reads what it finds with the same
-  `account`. A unified note has no transcript document: `lark.get_note` with
+  `account`.
+- Documents, spreadsheets and Base are read as the app first. When the app
+  is denied, the bot reads as the signed-in account of the person who asked,
+  asks that person to sign in when they have no account, and offers an
+  access request as them when their account is denied too. Content writes
+  (`update_doc`, `insert_doc_media`, the comment writes) take `account` the
+  same way, after that person agrees. The error of a denied call names the
+  next step. Other operations refuse `account`. The same applies to the
+  `feishu.*` operations. A unified note has no transcript document: `lark.get_note` with
   `include_transcript` reads its transcript page by page from
   `/vc/v1/notes/:id/unified_note_transcript`, which Lark gives only to a
   person.
+- The bot cannot read an external chat (Lark error 230027). `lark.get_chat_history`,
+  `lark.get_thread_replies` and `lark.get_message` with `account` read a group
+  as a signed-in member (user scope `im:message.group_msg:get_as_user`). The
+  sign-in also asks for `im:message.send_as_user`, so a sandbox command run with
+  it (`comma exec --credential lark/<alias>=...`) sends as that person. With
+  `docs:permission.member:apply` it asks the owner of a document, spreadsheet
+  or Base for access as that person (`lark.request_doc_access`,
+  `feishu.request_doc_access`). The default sign-in does not ask for the
+  scopes that read spreadsheets and Base (`sheets:spreadsheet:readonly`,
+  `bitable:app:readonly`) or edit documents and their comments
+  (`docx:document`, `docx:document:write_only`,
+  `docs:document.comment:create`, `docs:document.comment:write_only`,
+  `docs:document.media:upload`). The batch import offers them as user
+  scopes, and a sign-in asks for them only when a person needs them
+  (`on_demand_scopes/0` of the OAuth adapters), so an app without them still
+  lets people sign in. An `oauth.request_authorization` that names only
+  these scopes asks for them on top of the default sign-in; the platform
+  keeps what a person granted before. Any other list of scopes replaces the
+  defaults. The sign-in does not ask for private chat scopes.
 - A Worker holds the document and Minutes operations of a Lark connect and
   every read operation (chat history, threads, search, chats, members,
   directory). The Router holds all of them.
 - A finished Lark meeting reaches the Router as context. A turn from that
   message calls no Lark operation
   (`SalixIM.Provider.Lark.MeetingActivationAuthorization`).
+- A person invites the bot from a running Lark or Feishu video meeting
+  (`SalixMeet.LarkBot`). The app needs `vc:meeting.bot.join:write`,
+  `vc:meeting.message:write`, the data scope "meeting owner within the app's
+  availability", and the events `vc.bot.meeting_invited_v1` and
+  `vc.bot.meeting_ended_v1`. The bot joins with `bots/join` and reads transcript
+  and chat from `bots/events`. A person can ask the bot something by voice or in
+  the meeting chat. The meeting copilot writes the answer as text with
+  `bots/message`. An app without the scope stays silent in the meeting. Status
+  and the summary go to the inviter's private chat with the bot, and each
+  invitation is its own Meeting, so the bot can be in several meetings at once.
 - The message record uses the outbox `lark_mirror_outbox`, the ClickHouse table
   `lark_messages`, and the switch `lark_mirror.enabled`. A recall removes the
   message from search. The record does not import history from before the
@@ -658,7 +787,7 @@ preparation and history pages of the Dashboard.
 The system plugin `lark` (`Salix.Control.Plugins`) holds the Swarm's Lark
 connect (`lark-im`) and `im_api.lark.*`. It adds the Lark hosted MCP server
 `https://mcp.larksuite.com/mcp` (target `remote:lark`, tools `mcp.lark.*`). It
-is on by default in BridgeForTeams. Comma does not list it.
+is on by default in BridgeForTeams. Comma installs it by a scan (above).
 
 - The MCP connection `lark-native` uses native MCP OAuth
   (`Salix.Control.RemoteMCPOAuth`). A Swarm admin selects **Connect** on the
@@ -759,7 +888,6 @@ BRIDGE_TOB_LIVE_FEISHU_CREATE_DEDICATED_GROUP=true \
 | `mix test`                                                                                                           | the full suite                                                          |
 | `mix test --include multinode`                                                                                       | cross-node tests on two real BEAM nodes (`epmd -daemon` first)          |
 | `mix test --include clickhouse`                                                                                      | analytics sink against a live ClickHouse at `127.0.0.1:8123`            |
-| `mix test --include go_exporter`                                                                                     | Go-side migration exporter round-trip (needs `go`, `sqlite3`)           |
 | `SALIX_E2E_LLM_API_KEY=... mix test apps/salix_agent/test/live_llm*_e2e_test.exs --include live_llm --only live_llm` | real-provider checks. `SALIX_LIVE_LLM_S3_BACKEND=aws` uses local MinIO |
 
 CI is in `.github/workflows/systems-ci.yml`.

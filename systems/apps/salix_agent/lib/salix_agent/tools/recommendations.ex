@@ -13,6 +13,14 @@ defmodule SalixAgent.Tools.Recommendations do
        "Remove one matter from the user's Routine when the user says they do not want to hear about it. Pass the source_id and url of one attention_items entry from recommendation.read. Later briefings and automatic messages leave it out; Routine keeps the user's 200 most recent dismissals. The user's open apps show the change at their next briefing read.",
        dismiss_schema(), &__MODULE__.dismiss/2, @normal_auto_wait_seconds,
        [safety: "write", roles: ["router"], runtimes: [:internal]]},
+      {"recommendation.add",
+       "Add one matter to the user's Routine when they ask for it, such as an item of a to-do checklist (\"加到例程\"). Pass its title as the user's own task, an optional detail (when, from whom) and an optional url of its source; with a url, its Routine row links there and offers \"Don't remind me\". Routine shows added matters as the first card of every briefing until removed and keeps at most 4: on routine_added_items_full, ask which to remove. recommendation.read lists them as added_items.",
+       add_schema(), &__MODULE__.add/2, @normal_auto_wait_seconds,
+       [safety: "write", roles: ["router"], runtimes: [:internal]]},
+      {"recommendation.remove_added",
+       "Remove one matter the user added to Routine, by the id recommendation.read lists in added_items, when they say it is done or no longer wanted.",
+       remove_added_schema(), &__MODULE__.remove_added/2, @normal_auto_wait_seconds,
+       [safety: "write", roles: ["router"], runtimes: [:internal]]},
       {"recommendation.begin",
        "Begin the scheduled Comma Center recommendation run and return its run id, source revision, enabled sources, and catalog contract. If status is skipped, no run exists. End the turn with outcome=blocked and a short reason. Do not retry or call recommendation.fail.",
        empty_schema(), &__MODULE__.begin_run/2, @normal_auto_wait_seconds},
@@ -36,6 +44,20 @@ defmodule SalixAgent.Tools.Recommendations do
     case adapter().dismiss(args, ctx) do
       {:ok, result} -> Jason.encode!(result)
       {:error, reason} -> raise "recommendation dismissal rejected: #{inspect(reason)}"
+    end
+  end
+
+  def add(args, ctx) do
+    case adapter().add(args, ctx) do
+      {:ok, result} -> Jason.encode!(result)
+      {:error, reason} -> raise "recommendation add rejected: #{inspect(reason)}"
+    end
+  end
+
+  def remove_added(args, ctx) do
+    case adapter().remove_added(args, ctx) do
+      {:ok, result} -> Jason.encode!(result)
+      {:error, reason} -> raise "recommendation removal rejected: #{inspect(reason)}"
     end
   end
 
@@ -111,6 +133,28 @@ defmodule SalixAgent.Tools.Recommendations do
         "source_id" => bounded_string(128),
         "source_url" => bounded_string(65_536)
       }
+    }
+  end
+
+  defp add_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["title"],
+      "properties" => %{
+        "title" => bounded_string(120),
+        "detail" => bounded_string(400),
+        "url" => bounded_string(65_536)
+      }
+    }
+  end
+
+  defp remove_added_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["id"],
+      "properties" => %{"id" => bounded_string(64)}
     }
   end
 

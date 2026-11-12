@@ -98,10 +98,9 @@ describe("release CI helpers", () => {
       git("config", "user.email", "release-test@example.invalid");
       git("config", "user.name", "Release Test");
       write(".github/workflows/salix-vm-gateway-image.yml", "image job\n");
-      write("systems/connector/salix-connect/main.go", "package main\n");
+      write("systems/station/src/main.ts", "station\n");
       const published = commit("published image");
       write("docs/release.md", "operator note\n");
-      write("systems/connector/salix-connect/main_test.go", "package main\n");
       write("systems/station/test/connector.test.ts", "test\n");
       const docs = commit("docs and tests");
       expect(sameSandboxRuntimeSources(published, docs, root)).toBe(true);
@@ -132,7 +131,7 @@ describe("release CI helpers", () => {
       write("systems/cloudflare/salix-vm-gateway/package.json", "{}\n");
       const worker = commit("Worker-only change");
       expect(sameSandboxRuntimeSources(previous, worker, root)).toBe(true);
-      write("systems/connector/salix-connect/main.go", "package main\n// runtime change\n");
+      write("systems/station/src/main.ts", "station\n// runtime change\n");
       const runtime = commit("runtime change");
       expect(sameSandboxRuntimeSources(published, runtime, root)).toBe(false);
       write(".github/workflows/salix-vm-gateway-image.yml", "changed image job\n");
@@ -419,6 +418,36 @@ describe("release CI helpers", () => {
     }
   });
 
+  test.each([false, true])("seal timeout preserves the image probe result (startup failure: %s)", async (startupFails) => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const provider = imageProbeRollout();
+    const startupError = new Error("provider startup failed");
+    const calls = [];
+    try {
+      const result = probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+        profileKey: "cf-standard-2", maintenanceId: "release-seal-timeout", sourceRevision: "new-revision" },
+        async (...args) => {
+          const action = new URL(args[3], args[0]).pathname.split("/").pop();
+          calls.push(action === "control" ? `${args[2]}:${args[4]?.action || "observe"}` : action);
+          if (args[4]?.action === "seal") throw new Error("request timeout");
+          if (startupFails && action === "ensure") throw startupError;
+          return provider.request(...args);
+        }).then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await result).toBe(startupFails ? startupError : null);
+      expect(calls.at(-1)).toBe("POST:seal");
+      expect(calls).not.toContain("keepalive");
+      expect(calls).not.toContain("destroy");
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("seal failed: request timeout"));
+    } finally {
+      warning.mockRestore();
+      reported.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   test.each(["cf-standard-1", "cf-standard-2"])("image probe restarts a settled Container after rollout in %s", async (profileKey) => {
     vi.useFakeTimers();
     const reported = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -568,11 +597,6 @@ describe("release CI helpers", () => {
     ).toBe("sandbox_image");
     expect(
       inferWorkerReleaseKind({
-        commits: [{ modified: ["systems/connector/salix-connect/main.go"] }],
-      }),
-    ).toBe("breaking_connector");
-    expect(
-      inferWorkerReleaseKind({
         commits: [
           { modified: ["systems/cloudflare/salix-vm-gateway/src/app.ts"] },
         ],
@@ -591,7 +615,7 @@ describe("release CI helpers", () => {
       }),
     ).toEqual({
       gateway_build_id: "1234567890ab",
-      connector_image_version: "salix-connect-1234567890ab",
+      connector_image_version: "station-1234567890ab",
       tag: "ci-staging-42-3",
       worker_release_kind: "gateway_only",
       publish_mode: "candidate_worker",
@@ -600,7 +624,7 @@ describe("release CI helpers", () => {
     expect(
       resolveReleaseFacts({
         event: {
-          commits: [{ modified: ["systems/connector/salix-connect/main.go"] }],
+          commits: [{ modified: ["systems/cloudflare/salix-vm-gateway/Dockerfile"] }],
         },
         sha: "1234567890abcdef",
         target: "staging",
@@ -664,16 +688,16 @@ describe("release CI helpers", () => {
       connectorImageVersionFromHealthz(
         {
           worker_version_id: "active",
-          connector_image_version: "salix-connect-old",
+          connector_image_version: "station-old",
         },
         "active",
       ),
-    ).toBe("salix-connect-old");
+    ).toBe("station-old");
     expect(() =>
       connectorImageVersionFromHealthz(
         {
           worker_version_id: "different",
-          connector_image_version: "salix-connect-old",
+          connector_image_version: "station-old",
         },
         "active",
       ),

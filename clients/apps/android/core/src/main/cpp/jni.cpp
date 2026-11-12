@@ -37,6 +37,7 @@ class JniHost : public comma::EngineHost {
     callSync_ = env->GetMethodID(cls, "callSync", "(Ljava/lang/String;[B)[B");
     emit_ = env->GetMethodID(cls, "emit", "([B)V");
     fatal_ = env->GetMethodID(cls, "fatal", "([B)V");
+    screenFrame_ = env->GetMethodID(cls, "screenFrame", "(IIDII[B)V");
     env->DeleteLocalRef(cls);
   }
 
@@ -77,6 +78,15 @@ class JniHost : public comma::EngineHost {
     clearException();
   }
 
+  // A screen view's picture: its bytes copied once into a Java array, the rest numbers.
+  void screenFrame(uint32_t sink, int kind, double ts, int width, int height, const uint8_t* data, size_t size) override {
+    if (!screenFrame_) return;
+    jbyteArray bytes = arrayOf(env_, reinterpret_cast<const char*>(data), size);
+    env_->CallVoidMethod(host_, screenFrame_, jint(sink), jint(kind), jdouble(ts), jint(width), jint(height), bytes);
+    env_->DeleteLocalRef(bytes);
+    clearException();
+  }
+
   void fatal(const std::string& reason) override {
     jbyteArray bytes = arrayOf(env_, reason.data(), reason.size());
     env_->CallVoidMethod(host_, fatal_, bytes);
@@ -104,6 +114,7 @@ class JniHost : public comma::EngineHost {
   jmethodID callSync_ = nullptr;
   jmethodID emit_ = nullptr;
   jmethodID fatal_ = nullptr;
+  jmethodID screenFrame_ = nullptr;
 };
 
 struct Handle {

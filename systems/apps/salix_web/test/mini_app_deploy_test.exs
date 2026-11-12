@@ -138,6 +138,8 @@ defmodule SalixWeb.MiniAppDeployTest do
   end
 
   setup do
+    SalixWeb.TestSupport.CodingSandboxes.park_left!()
+
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Apps"})
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Apps"}, tenant["tenant_id"])
 

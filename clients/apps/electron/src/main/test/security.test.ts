@@ -74,13 +74,12 @@ describe("Electron security guards", () => {
     expect(checkHandler({}, "media")).toBe(false);
   });
 
-  it("grants the microphone alone to the app's own top frame, and only with voice labs on", async () => {
+  it("grants the device permissions of Comma apps to the app's own top frame alone", () => {
     const setPermissionCheckHandler = vi.fn();
     const setPermissionRequestHandler = vi.fn();
-    let labs = true;
     installSessionSecurity(
       { setPermissionCheckHandler, setPermissionRequestHandler },
-      { microphoneOrigins: ["assets://."], microphoneAllowed: async () => labs }
+      { appOrigins: ["assets://."] }
     );
     const requestHandler = setPermissionRequestHandler.mock.calls[0]?.[0] as (
       webContents: unknown,
@@ -88,33 +87,85 @@ describe("Electron security guards", () => {
       callback: (permissionGranted: boolean) => void,
       details: Record<string, unknown>
     ) => void;
-    const answer = (permission: string, details: Record<string, unknown>) =>
-      new Promise<boolean>((resolve) =>
-        requestHandler({}, permission, resolve, details)
-      );
+    const answer = (permission: string, details: Record<string, unknown>) => {
+      let granted: boolean | undefined;
+      requestHandler({}, permission, (value) => (granted = value), details);
+      return granted;
+    };
     const app = { isMainFrame: true, requestingUrl: "assets://./index.html" };
 
-    expect(await answer("media", { ...app, mediaTypes: ["audio"] })).toBe(true);
-    // A camera, a frame inside the page, another origin, or another permission: refused.
-    expect(await answer("media", { ...app, mediaTypes: ["audio", "video"] })).toBe(
+    expect(answer("media", { ...app, mediaTypes: ["audio"] })).toBe(true);
+    expect(answer("media", { ...app, mediaTypes: ["audio", "video"] })).toBe(true);
+    expect(answer("midi", app)).toBe(true);
+    expect(answer("fullscreen", app)).toBe(true);
+    // A remote screen in full screen takes Escape for the computer it controls.
+    expect(answer("keyboardLock", app)).toBe(true);
+    expect(answer("keyboardLock", { ...app, isMainFrame: false })).toBe(false);
+    expect(answer("screen-wake-lock", app)).toBe(true);
+    // No media type, a frame inside the page, another origin, or another permission: refused.
+    expect(answer("media", { ...app, mediaTypes: [] })).toBe(false);
+    expect(answer("media", { ...app, isMainFrame: false, mediaTypes: ["audio"] })).toBe(
       false
     );
-    expect(await answer("media", { ...app, mediaTypes: [] })).toBe(false);
+    expect(answer("midi", { ...app, isMainFrame: false })).toBe(false);
     expect(
-      await answer("media", { ...app, isMainFrame: false, mediaTypes: ["audio"] })
-    ).toBe(false);
-    expect(
-      await answer("media", {
+      answer("media", {
         isMainFrame: true,
         mediaTypes: ["audio"],
         requestingUrl: "https://example.com/",
       })
     ).toBe(false);
-    expect(await answer("notifications", app)).toBe(false);
+    // Electron reports all MIDI requests as midiSysex. The SDK requests no system exclusive messages.
+    expect(answer("midiSysex", app)).toBe(true);
+    expect(answer("midiSysex", { ...app, isMainFrame: false })).toBe(false);
+    // The page's media check, so it sees the devices' names: its top frame alone.
+    const checkHandler = setPermissionCheckHandler.mock.calls[0]?.[0] as (
+      webContents: unknown,
+      permission: string,
+      requestingOrigin: string,
+      details: Record<string, unknown>
+    ) => boolean;
+    const check = (permission: string, details: Record<string, unknown>) =>
+      checkHandler({}, permission, "assets://.", details);
+    expect(check("media", { ...app, mediaType: "audio" })).toBe(true);
+    expect(check("media", { ...app, isMainFrame: false, mediaType: "audio" })).toBe(
+      false
+    );
+    expect(
+      check("media", {
+        isMainFrame: true,
+        mediaType: "audio",
+        requestingUrl: "https://example.com/",
+      })
+    ).toBe(false);
+    expect(check("midi", app)).toBe(false);
+    expect(answer("display-capture", app)).toBe(false);
+    expect(answer("geolocation", app)).toBe(true);
+    expect(answer("geolocation", { ...app, isMainFrame: false })).toBe(false);
+  });
 
-    // Voice labs off: the app's own microphone request is refused too, as before the call existed.
-    labs = false;
-    expect(await answer("media", { ...app, mediaTypes: ["audio"] })).toBe(false);
+  it("allows USB checks only for a mini-app frame embedded in a Comma page", () => {
+    const setPermissionCheckHandler = vi.fn();
+    installSessionSecurity(
+      { setPermissionCheckHandler, setPermissionRequestHandler: vi.fn() },
+      { appOrigins: ["assets://."] }
+    );
+    const check = setPermissionCheckHandler.mock.calls[0]![0];
+    const contents = { getURL: () => "assets://./index.html" };
+    const frame = { isMainFrame: false, requestingUrl: "comma-app://runtime/" };
+    expect(check(contents, "usb", "null", frame)).toBe(true);
+    expect(
+      check(contents, "usb", "null", { ...frame, requestingUrl: "comma-ui://runtime/" })
+    ).toBe(false);
+    expect(check({ getURL: () => "https://other.test/" }, "usb", "null", frame)).toBe(
+      false
+    );
+    expect(
+      check(contents, "usb", "assets://.", {
+        isMainFrame: true,
+        requestingUrl: "assets://./index.html",
+      })
+    ).toBe(false);
   });
 
   it("lets a Comma app frame load only the runtime, blob: and data: URLs", () => {

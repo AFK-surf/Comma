@@ -1,10 +1,14 @@
+import { taskStatusFailed } from "@comma/i18n";
 import { useTaskSummaries } from "../../tasks/useTaskArchive";
 import { useTopicSelect, type ProductInboxListResult } from "@comma/core-client";
 import {
   taskStatusBucket,
+  type TaskLoopStop,
   type TaskStatusBucket,
 } from "@comma/ui/components/task-workspace";
+import { useCommaMessages } from "@comma/i18n/react";
 import { useEffect, useMemo, useRef } from "react";
+import { taskLoopStop } from "../../tasks/taskLoopLabels";
 import {
   taskReviewNeedsAttention,
   useTaskReviewSeenMarksOf,
@@ -30,6 +34,8 @@ export type ChatCreatedTask = {
    * slot's wait reads it.
    */
   requestTurnKey?: string | undefined;
+  /** Why the Task does not run while in progress: its Loop stopped. */
+  loopStop: TaskLoopStop | undefined;
   statusBucket: TaskStatusBucket;
   /** The Task waits for its person (`escalated`), e.g. on a question its Worker asked. */
   needsInput: boolean;
@@ -65,7 +71,12 @@ type CreatedTaskRef = {
  * lifecycle changes without polling. Unconfirmed references stay hidden;
  * message snapshots are never authoritative lifecycle facts.
  *
- * Settled tasks acknowledged through "Reveal in Chat" or "Dismiss" are
+ * A Task that ended without anything for its person to see (done or
+ * cancelled) or was archived leaves the panel by itself, and docks again when
+ * it runs again. A running Task, one that waits for review or input, and one
+ * that failed dock.
+ *
+ * Settled Tasks acknowledged through "Reveal in Chat" or "Dismiss" are
  * filtered out until they run again: a running task always shows, and one
  * whose latest run started after the run acknowledged shows again. A rename,
  * a label or a review acceptance starts no run, so it does not bring a row
@@ -121,6 +132,7 @@ export function useChatCreatedTasks({
   // The core asks the summary lane for the Tasks the list has no version of,
   // and says which facts are newer: the list's or the summary's.
   const summaries = useTaskSummaries(groupId, createdIds);
+  const commaMessages = useCommaMessages();
 
   const previousRef = useRef(NO_TASKS);
   const visible = useMemo(() => {
@@ -133,9 +145,22 @@ export function useChatCreatedTasks({
       const known = summaries.get(ref.conversationId);
       if (!known && !projected) continue;
       const status = known?.status ?? projected!.status;
-      if (status === "archived") continue;
       const statusBucket = taskStatusBucket(status);
+      // A done, cancelled or archived Task leaves the panel by itself: nothing
+      // is left to follow or review. A failure stays until it is acknowledged.
+      if (
+        statusBucket === "archived" ||
+        statusBucket === "done" ||
+        (statusBucket === "cancelled" && !taskStatusFailed(status))
+      ) {
+        continue;
+      }
       const needsInput = status === "escalated";
+      const loopStop = taskLoopStop(
+        statusBucket,
+        known?.loop ?? projected?.loop,
+        commaMessages
+      );
       const updatedAt = projected?.updatedAt ?? ref.updatedAt ?? 0;
       const version = Math.max(
         known?.run_started_at ?? 0,
@@ -174,6 +199,8 @@ export function useChatCreatedTasks({
           before.archiveVersion === archiveVersion &&
           before.messageId === ref.messageId &&
           before.needsAttention === needsAttention &&
+          before.loopStop?.text === loopStop?.text &&
+          before.loopStop?.failed === loopStop?.failed &&
           before.requestTurnKey === ref.requestTurnKey &&
           before.statusBucket === statusBucket &&
           before.needsInput === needsInput &&
@@ -186,6 +213,7 @@ export function useChatCreatedTasks({
               conversationId: ref.conversationId,
               messageId: ref.messageId,
               needsAttention,
+              loopStop,
               requestTurnKey: ref.requestTurnKey,
               statusBucket,
               needsInput,
@@ -199,7 +227,14 @@ export function useChatCreatedTasks({
       next.length === previous.length &&
       next.every((task, index) => task === previous[index]);
     return unchanged ? previous : next;
-  }, [createdRefs, dismissed, projectedTasks, seenReviewMarks, summaries]);
+  }, [
+    commaMessages,
+    createdRefs,
+    dismissed,
+    projectedTasks,
+    seenReviewMarks,
+    summaries,
+  ]);
   useEffect(() => {
     previousRef.current = visible;
   }, [visible]);

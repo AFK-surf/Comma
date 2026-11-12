@@ -4,41 +4,38 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
-/** A topic's deltas applied as the core sends them (the core's `delta.ts` and `collections.ts` make them). */
+/** A topic's deltas applied as the core sends them (the core's `collections.ts` makes them). */
 class DeltaTest {
     private fun apply(value: String, ops: String): String = applyDelta(JSONObject(value), JSONArray(ops)).toString()
     private fun same(expected: String, actual: String) = assertEquals(JSONObject(expected).toString(), actual)
 
-    @Test fun setsAppendsAndRemovesAtAPath() {
-        same("""{"a":{"b":2},"list":[1,2,3],"n":null}""", apply("""{"a":{"b":1,"c":1},"list":[1]}""", """[
-            {"path":["a","b"],"set":2},{"path":["a","c"],"remove":true},
-            {"path":["list"],"append":[2,3]},{"path":["n"],"set":null}]"""))
+    /** The cases the core's own test (core-kernel `delta-cases.test.ts`) makes the ops of: each applies to its value after. */
+    @Test fun appliesEveryCaseTheCoreMakes() {
+        val cases = JSONArray(File("../../../packages/core-kernel/test/fixtures/delta-cases.json").readText())
+        assertTrue(cases.length() > 0)
+        for (index in 0 until cases.length()) {
+            val case = cases.getJSONObject(index)
+            val applied = applyDelta(case.get("old"), case.getJSONArray("ops"))
+            assertTrue(case.getString("name"), similar(case.get("next"), applied))
+        }
     }
 
-    @Test fun extendsAStringByTheTextItGained() {
-        same("""{"draft":{"text":"Hello there"}}""", apply("""{"draft":{"text":"Hel"}}""",
-            """[{"path":["draft","text"],"extend":"lo there"}]"""))
-        // Not a string there: skipped.
-        same("""{"n":1}""", apply("""{"n":1}""", """[{"path":["n"],"extend":"x"}]"""))
-    }
-
-    @Test fun replacesTheWholeValue() {
-        assertEquals("""{"x":1}""", applyDelta(JSONObject("""{"a":1}"""), JSONArray("""[{"path":[],"set":{"x":1}}]""")).toString())
+    // Android's org.json, which the compiler resolves first, has no similar().
+    private fun similar(expected: Any?, actual: Any?): Boolean = when (expected) {
+        is JSONObject -> actual is JSONObject && expected.length() == actual.length() &&
+            expected.keys().asSequence().all { actual.has(it) && similar(expected.get(it), actual.get(it)) }
+        is JSONArray -> actual is JSONArray && expected.length() == actual.length() &&
+            (0 until expected.length()).all { similar(expected.get(it), actual.get(it)) }
+        is Number -> actual is Number && expected.toDouble() == actual.toDouble()
+        else -> expected == actual
     }
 
     @Test fun skipsAnOpWhosePathDoesNotFit() {
         same("""{"a":1}""", apply("""{"a":1}""", """[{"path":["b","c"],"set":2},{"path":["a",0],"set":2}]"""))
-    }
-
-    @Test fun putsPatchesMovesAndDropsItemsByTheirKey() {
-        val start = """{"items":[{"id":"a","n":1},{"id":"b","n":1},{"id":"c","n":1}]}"""
-        same("""{"items":[{"id":"z","n":9},{"id":"c","n":1},{"id":"a","n":2}]}""", apply(start, """[
-            {"path":["items"],"key":["id"],"drop":"b"},
-            {"path":["items"],"key":["id"],"patch":"a","ops":[{"path":["n"],"set":2}]},
-            {"path":["items"],"key":["id"],"move":"a","before":null},
-            {"path":["items"],"key":["id"],"put":{"id":"z","n":9},"before":"c"}]"""))
     }
 
     @Test fun putWithoutAPlaceReplacesTheItemWithItsKey() {

@@ -4,8 +4,6 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -14,6 +12,7 @@ import surf.comma.android.auth.AuthGraph
 import surf.comma.android.core.CoreApi
 import surf.comma.android.auth.AuthRepository
 import surf.comma.android.auth.AuthState
+import surf.comma.android.ui.Background
 import java.io.File
 
 /**
@@ -35,6 +34,7 @@ class MediaComponents internal constructor(
     val http: AuthorizedHttp = AuthMediaHttp(auth, baseUrl, storage, scope)
     val files = MediaFileStore(http, core, downloaded, scope)
     val gallery = GallerySaver(app.contentResolver)
+    private val coverDirectory = File(app.cacheDir, "video-covers")
     private val imageDirectory = File(app.cacheDir, "message-images")
     private val opening = Mutex()
     @Volatile private var images: MediaImageLoader? = null
@@ -43,15 +43,21 @@ class MediaComponents internal constructor(
     init {
         storage.follow(auth.state, scope)
         // Before the client core downloaded them, the files were kept in each account's directory here.
-        scope.launch(Dispatchers.IO) { storage.root.listFiles()?.forEach { File(it, "files").deleteRecursively() } }
+        scope.launch(Background.files) { storage.root.listFiles()?.forEach { File(it, "files").deleteRecursively() } }
         // What only exists while a loader is open is cleared by the loader itself; this covers
         // a sign-out in a process that never opened one.
-        scope.launch(Dispatchers.IO) {
-            auth.state.map { it is AuthState.Login || it == AuthState.Unconfigured }.filter { it }.collect {
-                opening.withLock {
-                    images?.clearCaches() ?: imageDirectory.deleteRecursively()
-                    covers?.clear() ?: File(app.cacheDir, VIDEO_SIZES).delete()
+        scope.launch(Background.files) {
+            var account: String? = null
+            auth.state.collect { state ->
+                val signedOut = state is AuthState.Login || state == AuthState.Unconfigured
+                val next = (state as? AuthState.Connected)?.account?.id
+                if (signedOut || (next != null && account != null && next != account)) {
+                    opening.withLock {
+                        images?.clearCaches() ?: imageDirectory.deleteRecursively()
+                        clearCovers()
+                    }
                 }
+                if (signedOut || next != null) account = next
             }
         }
     }
@@ -63,7 +69,14 @@ class MediaComponents internal constructor(
 
     /** Video cover extraction and the remembered video sizes. */
     suspend fun covers(): VideoCovers = covers ?: opening.withLock {
-        covers ?: VideoCovers(AspectRatioCache.open(File(app.cacheDir, VIDEO_SIZES))).also { covers = it }
+        covers ?: VideoCovers(AspectRatioCache.open(File(app.cacheDir, VIDEO_SIZES)), coverDirectory).also { covers = it }
+    }
+
+    private suspend fun clearCovers() {
+        covers?.clear() ?: run {
+            coverDirectory.deleteRecursively()
+            File(app.cacheDir, VIDEO_SIZES).delete()
+        }
     }
 
     private companion object { const val VIDEO_SIZES = "media-video-sizes.json" }

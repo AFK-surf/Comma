@@ -103,17 +103,17 @@ defmodule SalixMCP.Provider do
     end
   end
 
-  # A Comma desktop app's own MCPs (the Mac apps) are connected only by their
+  # A Comma desktop app's own MCPs (Mac apps, Blender) are connected only by their
   # plugin's install from that device (Salix.Control.PluginSetup.connect_device/5).
   defp not_client_binding(attrs) do
     mcp_id = attrs["mcp_id"] || attrs[:mcp_id]
     target_ref = to_string(attrs["target_ref"] || attrs[:target_ref] || "")
 
-    if mcp_id == SalixMCP.Builtins.mac_apps_mcp_id() or client_target?(target_ref),
+    if SalixMCP.Builtins.client_mcp_id?(mcp_id) or client_target?(target_ref),
       do:
         {:error,
          {:bad_request,
-          "The Mac apps connect from Comma > Plugins on the Mac they run on, not through mcp_manager."}},
+          "The Comma desktop app's own MCPs (Mac apps, Blender) connect from Comma > Plugins on the computer they run on, not through mcp_manager."}},
       else: :ok
   end
 
@@ -152,13 +152,64 @@ defmodule SalixMCP.Provider do
            Store.find_binding_by_alias(scope.tenant_id, scope.group_id, binding_alias),
          :ok <- requester_owns(binding, ctx),
          {:ok, tool_name} <- resolve_tool_name(binding, tool_alias) do
-      Gateway.call_tool(scope.tenant_id, scope.group_id, binding["binding_id"], tool_name, args,
-        agent_id: agent_id,
-        session_id: ctx[:session_id] || ctx["session_id"],
-        tool_call_id: ctx[:tool_call_id] || ctx["tool_call_id"]
-      )
+      call = fn ->
+        Gateway.call_tool(scope.tenant_id, scope.group_id, binding["binding_id"], tool_name, args,
+          agent_id: agent_id,
+          session_id: ctx[:session_id] || ctx["session_id"],
+          tool_call_id: ctx[:tool_call_id] || ctx["tool_call_id"]
+        )
+      end
+
+      if render_wait?(binding, tool_name, args),
+        do: wait_for_render(call, wait_deadline(ctx)),
+        else: call.()
     end
   end
+
+  # Blender's `job` wait: the desktop app holds one request at most 20 s
+  # (client_mcp answers within 30 s), so a render's end is waited for here, in
+  # the same tool call, by asking again while the job runs and time is left in
+  # this call's deadline. The model is not woken in between. At the deadline the
+  # job is still running and keeps its id; nothing here stops or restarts it.
+  @render_wait_slice_ms 30_000
+  @render_wait_budget_ms 540_000
+  @render_wait_min_hold_ms 5_000
+
+  defp render_wait?(binding, "job", args) do
+    binding["mcp_id"] == SalixMCP.Builtins.blender_mcp_id() and is_map(args) and
+      (args["op"] || args[:op]) == "wait"
+  end
+
+  defp render_wait?(_binding, _tool_name, _args), do: false
+
+  defp wait_deadline(ctx) do
+    now = SystemsClock.monotonic_time(:millisecond)
+    budget = now + @render_wait_budget_ms
+
+    case ctx[:tool_deadline_ms] || ctx["tool_deadline_ms"] do
+      deadline when is_integer(deadline) -> min(deadline, budget)
+      _ -> budget
+    end
+  end
+
+  defp wait_for_render(call, deadline) do
+    started = SystemsClock.monotonic_time(:millisecond)
+    result = call.()
+    now = SystemsClock.monotonic_time(:millisecond)
+
+    # A running answer that came back at once did not wait (an older app):
+    # asking again would only spin.
+    if running_job?(result) and now - started >= @render_wait_min_hold_ms and
+         deadline - now > @render_wait_slice_ms,
+       do: wait_for_render(call, deadline),
+       else: result
+  end
+
+  defp running_job?({:ok, %{"status" => "completed", "raw" => %{"structuredContent" => job}}})
+       when is_map(job),
+       do: job["state"] == "running"
+
+  defp running_job?(_result), do: false
 
   # A Comma desktop app's own MCP (the Mac apps: a person's calendar, messages
   # and mail) runs only for the requests of the member who owns the device it
@@ -188,7 +239,7 @@ defmodule SalixMCP.Provider do
   end
 
   defp client_binding?(binding) do
-    binding["mcp_id"] == SalixMCP.Builtins.mac_apps_mcp_id() or
+    SalixMCP.Builtins.client_mcp_id?(binding["mcp_id"]) or
       client_target?(to_string(binding["target_ref"] || ""))
   end
 

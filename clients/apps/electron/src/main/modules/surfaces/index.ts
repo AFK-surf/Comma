@@ -256,22 +256,27 @@ function toViewSurface(registration: ViewRegistration): ViewSurface {
 
 export class NativeWindowCommandService {
   readonly #activateApplication: () => void;
+  readonly #focusScreenWindow: (name: string) => boolean;
   readonly #nextWindowId: () => string;
   readonly #openWindow: (request: NativeWindowOpenRequest) => Promise<void> | void;
   readonly #surfaces: NativeSurfaceService;
 
   constructor({
     activateApplication = () => undefined,
+    focusScreenWindow = () => false,
     nextWindowId = createDynamicWindowIdFactory(),
     openWindow,
     surfaces,
   }: {
     activateApplication?: (() => void) | undefined;
+    /** Brings forward a screen window of the app's page by its name (screen-windows.ts). */
+    focusScreenWindow?: ((name: string) => boolean) | undefined;
     nextWindowId?: (() => string) | undefined;
     openWindow: (request: NativeWindowOpenRequest) => Promise<void> | void;
     surfaces: NativeSurfaceService;
   }) {
     this.#activateApplication = activateApplication;
+    this.#focusScreenWindow = focusScreenWindow;
     this.#nextWindowId = nextWindowId;
     this.#openWindow = openWindow;
     this.#surfaces = surfaces;
@@ -296,6 +301,10 @@ export class NativeWindowCommandService {
 
   close(input: WindowTargetInput) {
     return this.#surfaces.closeWindow(input.windowId);
+  }
+
+  focusScreen(input: { name: string }) {
+    return { focused: this.#focusScreenWindow(input.name) };
   }
 }
 

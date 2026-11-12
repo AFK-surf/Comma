@@ -11,8 +11,6 @@ defmodule SalixAgent.TrajectoryEvalRunnerTest do
 
   use SalixAgent.TestSupport.Settle
   alias SalixAgent.{Fleet, Server}
-  alias SalixAgent.InternalSession
-  alias SalixAgent.InternalSession.State
   alias SalixAgent.InternalSessionStore
   alias SalixAgent.LLM.Mock
   alias SalixAgent.TrajectoryEval.{Runner, Store}
@@ -20,8 +18,7 @@ defmodule SalixAgent.TrajectoryEvalRunnerTest do
   @pid_key {__MODULE__, :test_pid}
   @session_id "ses1_0000000000000000701"
 
-  # seed_session sets billing_context salix_tenant_id "tenant-1"; the gate
-  # resolves the tenant from there (seeded agents have no control record).
+  # The fixture Session supplies the tenant used by the evaluation gate.
   defmodule TenantJudgeOn do
     @behaviour SalixAgent.TrajectoryEval.TenantSettings
     @impl true
@@ -148,21 +145,32 @@ defmodule SalixAgent.TrajectoryEvalRunnerTest do
   defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp seed_session(agent_id, session_id, messages) do
-    base = InternalSession.new(agent_id, session_id, %{"created_at" => "2026-07-08T00:00:00Z"})
+    SalixAgent.TestSupport.create_control_agent!(agent_id)
+    created_at = DateTime.to_unix(~U[2026-07-08 00:00:00Z])
 
-    state = %State{
-      InternalSession.export(base)
-      | messages: messages,
-        next_message_id: length(messages) + 1,
-        billing_context: %{
+    {:ok, _} =
+      SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{
+        "created_at" => created_at,
+        "billing_context" => %{
           "surface" => "commaboard",
           "actor_type" => "agent",
           "salix_tenant_id" => "tenant-1",
           "salix_group_id" => "group-1"
         }
-    }
+      })
 
-    :ok = InternalSessionStore.prepare_seed(agent_id, InternalSession.open(state))
+    entries =
+      Enum.map(messages, fn message ->
+        message
+        |> Map.drop([:id])
+        |> Map.put(:source_message_id, "trajectory-fixture:#{message.id}")
+      end)
+
+    {:ok, _} =
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
+        %{"type" => "transcript_seed", "entries" => entries, "created_at" => created_at}
+      ])
+
     :ok
   end
 

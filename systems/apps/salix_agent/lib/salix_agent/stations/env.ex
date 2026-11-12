@@ -2,7 +2,7 @@ defmodule SalixAgent.Stations.Env do
   @moduledoc """
   Station targets for the remote environment tools in `SalixAgent.Tools.Peers`.
 
-  A target whose `device_id` is `"station:<id>"` is a still.fail station, not a
+  A target whose `device_id` is `"station:<id>"` is a Comma station, not a
   connector device. `env.exec`, `env.process_list`, `env.process_write`,
   `env.process_tail` and `env.copy` route here instead of
   `SalixAgent.EnvDispatch` and become `comma/tools/1` ops (contract §8):
@@ -116,6 +116,7 @@ defmodule SalixAgent.Stations.Env do
 
   def computer_use(_ctx, _target, _action), do: raise(unsupported("env.computer_use"))
   def android(_ctx, _target, _action), do: raise(unsupported("env.android"))
+  def screen(_ctx, _target, _action), do: raise(unsupported("env.screen"))
 
   defp write_chunk!(ctx, target, path, chunk, append?) do
     call!(ctx, target, "fs.write", %{

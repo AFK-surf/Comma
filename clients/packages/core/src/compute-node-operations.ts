@@ -1,7 +1,8 @@
-// Compute installation and recovery calls share the server Operation owner.
+// Registration owns cloud access; native owns local request execution.
 // Main-only descriptor calls require its exact session lease. Main owns local installation and recovery.
 // The Linux command call uses the current member session and returns an authorized shell command.
 // Salix creates the initial Shell after readiness commits. Requests have a 10-second Clock bound.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -13,11 +14,10 @@ import {
   computeLocalWorkloadTargetSchema,
   computeLocalWorkloadsSchema,
   computeRecoveredBindingSchema,
-  computeRecoveryChallengeSchema,
 } from "./comma/api-schemas.ts";
 import type {
   ComputeNodeAuthorizationValue,
-  ComputeNodeOperationValue,
+  ComputeNodeRegistrationValue,
 } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
 import { accountForLease, hostLeaseSchema } from "./host-lease.ts";
@@ -32,26 +32,19 @@ export const COMPUTE_NODE_HOST_CALLS = [
   "computeNode.inspect",
   "computeNode.configure",
   "computeNode.revoke",
-  "computeNode.recoveredBinding",
-  "computeNode.unexchangedRequest",
-  "computeNode.abandon",
+  "computeNode.requestRegistration",
+  "computeNode.cancelRequest",
   "computeNode.localMappings",
   "computeNode.localWorkloads",
   "computeNode.recoveryCandidates",
-  "computeNode.recoverBinding",
 ] as const;
 
-const operationSchema = z
-  .object({
-    operation: z
+const registrationSchema = lazySchema(() =>
+  z.object({
+    registration: z
       .object({
-        authorization_status: z.enum([
-          "requested",
-          "exchange_committed",
-          "handed_off",
-          "action_required",
-          "revoked",
-        ]),
+        id: z.string(),
+        host_bound: z.boolean().optional(),
         status: z.enum([
           "processing",
           "ready",
@@ -60,13 +53,7 @@ const operationSchema = z
           "removed",
         ]),
         work_activity: z.enum(["idle", "active", "unknown"]).default("unknown"),
-        error_code: z.string().min(1).max(128).nullable().optional(),
-        // An unknown future reason reads as no reason: Main then takes no automatic action.
-        registration_revocation_reason: z
-          .enum(["authorization_expired", "revoked"])
-          .nullable()
-          .optional()
-          .catch(null),
+        error_code: z.string().max(128).nullable().optional(),
         shell_phase: z
           .enum([
             "not_initialized",
@@ -80,14 +67,16 @@ const operationSchema = z
       })
       .passthrough(),
   })
-  .strip();
+);
 
-const id = z.string().min(1).max(160);
-const operationInput = z.object({
-  workspaceId: id,
-  operationId: id,
-  lease: hostLeaseSchema,
-});
+const id = lazySchema(() => z.string().min(1).max(160));
+const registrationInput = lazySchema(() =>
+  z.object({
+    workspaceId: id,
+    registrationId: id,
+    lease: hostLeaseSchema,
+  })
+);
 
 const parse = <S extends z.ZodType>(schema: S, raw: unknown): z.output<S> => {
   const out = schema.safeParse(raw);
@@ -103,7 +92,7 @@ export class ComputeNodeOperations {
 
   constructor(ctx: Ctx) {
     this.#ctx = ctx;
-    const op = (raw: unknown) => parse(operationInput, raw);
+    const op = (raw: unknown) => parse(registrationInput, raw);
     ctx.kernel.calls({
       "computeNode.installCommand": {
         doing: true,
@@ -138,7 +127,7 @@ export class ComputeNodeOperations {
             );
             return this.#authorization(
               input.lease,
-              route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/install-operations`,
+              route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/registrations`,
               [["idempotency-key", input.requestId]]
             );
           }),
@@ -149,10 +138,10 @@ export class ComputeNodeOperations {
             const input = op(p);
             return this.#authorization(
               input.lease,
-              `${operationPath(input)}/retry`
+              `${registrationPath(input)}/retry`
             ).pipe(
               Effect.filterOrFail(
-                (answer) => answer.operationId === input.operationId,
+                (answer) => answer.registrationId === input.registrationId,
                 () => identityChanged()
               )
             );
@@ -168,7 +157,7 @@ export class ComputeNodeOperations {
       "computeNode.configure": {
         run: (p) =>
           Effect.suspend(() => {
-            const input = parse(operationInput.extend({ enabled: z.boolean() }), p);
+            const input = parse(registrationInput.extend({ enabled: z.boolean() }), p);
             return this.#operation(
               this.#accountFor(input.lease),
               input,
@@ -189,19 +178,7 @@ export class ComputeNodeOperations {
             );
           }),
       },
-      "computeNode.recoveredBinding": {
-        run: (p) =>
-          Effect.suspend(() => {
-            const input = op(p);
-            return this.#json(
-              input.lease,
-              "GET",
-              operationPath(input),
-              z.object({ operation: computeRecoveredBindingSchema }).strip()
-            ).pipe(Effect.map((answer) => answer.operation));
-          }),
-      },
-      "computeNode.unexchangedRequest": {
+      "computeNode.requestRegistration": {
         run: (p) =>
           Effect.suspend(() => {
             const input = parse(
@@ -211,53 +188,37 @@ export class ComputeNodeOperations {
             return this.#json(
               input.lease,
               "GET",
-              route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/install-operations/requests/${input.requestId}`,
-              z.object({
-                // Unknown fields (such as registration_revocation_reason) are ignored.
-                operation: z.object({
-                  id,
-                  registration_id: id,
-                  scope_key: z.literal(input.workspaceId),
-                  authorization_status: z.enum([
-                    "requested",
-                    "action_required",
-                    "revoked",
-                  ]),
-                }),
-              })
+              route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/registrations/requests/${input.requestId}`,
+              z.object({ registration: z.object({ id }) })
             ).pipe(
-              Effect.map(({ operation }) => ({
-                operationId: operation.id,
-                registrationId: operation.registration_id,
-              }))
+              Effect.map(({ registration }) => ({ registrationId: registration.id }))
             );
           }),
       },
-      "computeNode.abandon": {
+      "computeNode.cancelRequest": {
         run: (p) =>
           Effect.suspend(() => {
-            const input = op(p);
+            const input = parse(
+              z.object({ workspaceId: id, requestId: id, lease: hostLeaseSchema }),
+              p
+            );
             return this.#json(
               input.lease,
               "POST",
-              `${operationPath(input)}/recovery/abandon`,
-              z
-                .object({
-                  operation: z
-                    .object({
-                      id: z.string(),
-                      authorization_status: z.literal("revoked"),
-                    })
-                    .passthrough(),
-                })
-                .strip(),
-              { confirmed: true }
+              route`/v1/comma/workspaces/${input.workspaceId}/compute-nodes/agent-vmm/registrations/requests/${input.requestId}/cancel`,
+              z.object({
+                registration: z.object({
+                  id,
+                  status: z.literal("removed"),
+                  host_bound: z.boolean(),
+                }),
+              }),
+              {}
             ).pipe(
-              Effect.flatMap((answer) =>
-                answer.operation.id === input.operationId
-                  ? Effect.succeed(null)
-                  : Effect.fail(identityChanged())
-              )
+              Effect.map(({ registration }) => ({
+                registrationId: registration.id,
+                hostBound: registration.host_bound,
+              }))
             );
           }),
       },
@@ -317,24 +278,9 @@ export class ComputeNodeOperations {
               input.lease,
               "POST",
               agentVmmPath(input.workspaceId, "recovery/candidates"),
-              z.object({ candidates: z.array(computeRecoveryChallengeSchema).max(32) }),
+              z.object({ candidates: z.array(computeRecoveredBindingSchema).max(32) }),
               { registration_ids: input.registrationIds }
             ).pipe(Effect.map((answer) => answer.candidates));
-          }),
-      },
-      "computeNode.recoverBinding": {
-        run: (p) =>
-          Effect.suspend(() => {
-            const input = parse(
-              operationInput.extend({ proof: z.unknown(), consume: z.boolean() }),
-              p
-            );
-            const path = `${operationPath(input)}/recovery/${input.consume ? "consume" : "preview"}`;
-            const schema = z.object({ operation: computeRecoveredBindingSchema });
-            // Main compares the consumed binding with the previewed one before it saves it.
-            return this.#json(input.lease, "POST", path, schema, {
-              proof: input.proof,
-            }).pipe(Effect.map(({ operation }) => operation));
           }),
       },
     });
@@ -383,11 +329,13 @@ export class ComputeNodeOperations {
       headers
     ).pipe(
       Effect.flatMap((answer) =>
-        answer.operation.id === answer.descriptor.operation_id
+        !answer.descriptor ||
+        answer.registration.id === answer.descriptor.registration_id
           ? Effect.succeed({
-              descriptor: JSON.stringify(answer.descriptor),
-              operationId: answer.operation.id,
-              registrationId: answer.operation.registration_id,
+              descriptor: answer.descriptor
+                ? JSON.stringify(answer.descriptor)
+                : undefined,
+              registrationId: answer.registration.id,
             })
           : Effect.fail(identityChanged())
       )
@@ -399,36 +347,33 @@ export class ComputeNodeOperations {
     operation: Target,
     method: "GET" | "POST",
     action?: Action
-  ): Effect.Effect<ComputeNodeOperationValue, CoreError> {
+  ): Effect.Effect<ComputeNodeRegistrationValue, CoreError> {
     const ctx = this.#ctx;
     return Effect.gen(function* () {
       const answer = yield* ctx.api.request(
         yield* account,
         method,
-        `${operationPath(operation)}${action ? `/${action}` : ""}`,
-        operationSchema,
+        `${registrationPath(operation)}${action ? `/${action}` : ""}`,
+        registrationSchema,
         method === "POST" ? {} : undefined,
         COMPUTE_NODE_TIMEOUT_MS
       );
-      const o = answer.operation;
+      const o = answer.registration;
       return {
-        authorizationStatus: o.authorization_status,
         status: o.status,
+        ...(o.host_bound !== undefined ? { hostBound: o.host_bound } : {}),
         workActivity: o.work_activity,
         ...(o.shell_phase ? { shellPhase: o.shell_phase } : {}),
         ...(o.error_code ? { errorCode: o.error_code } : {}),
-        ...(o.registration_revocation_reason
-          ? { registrationRevocationReason: o.registration_revocation_reason }
-          : {}),
       };
     });
   }
 }
 
-type Target = { workspaceId: string; operationId: string };
+type Target = { workspaceId: string; registrationId: string };
 
-const operationPath = (operation: Target) =>
-  route`/v1/comma/workspaces/${operation.workspaceId}/compute-nodes/agent-vmm/install-operations/${operation.operationId}`;
+const registrationPath = (operation: Target) =>
+  route`/v1/comma/workspaces/${operation.workspaceId}/compute-nodes/agent-vmm/registrations/${operation.registrationId}`;
 
 const agentVmmPath = (workspaceId: string, rest: string) =>
   `${route`/v1/comma/workspaces/${workspaceId}/compute-nodes/agent-vmm`}/${rest}`;

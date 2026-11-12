@@ -6,7 +6,16 @@ import type {
 } from "react";
 import type { AiInputMenuRegistration, AiInputRichValue } from "./richText";
 
-export type AiInputAttachmentType = "image" | "file" | "quote" | "snippet";
+/**
+ * `selection`: something the person selected to ask about, such as an element of a page or an area of a screen. Its
+ * tile shows its picture (`thumbnailSrc`) beside what they wrote about it (`name`).
+ */
+export type AiInputAttachmentType =
+  | "image"
+  | "file"
+  | "quote"
+  | "snippet"
+  | "selection";
 
 /**
  * Where an attachment is in its upload. Image tiles show this on the tile

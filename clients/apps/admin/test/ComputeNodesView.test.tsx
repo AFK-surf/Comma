@@ -32,8 +32,14 @@ const node: AgentVmmNode = {
   status: "unknown",
   issue: "observation_stale",
   updated_at: "2026-09-01T10:00:00Z",
-  registration: { status: "ready", desired_enabled: true, revision: 7 },
-  installation: null,
+  registration: {
+    status: "ready",
+    desired_enabled: true,
+    revision: 7,
+    request_status: "ready",
+    error_code: null,
+    retryable: false,
+  },
   connection: {
     status: "stale",
     last_observed_at: "2026-09-01T09:58:00Z",

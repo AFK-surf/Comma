@@ -395,7 +395,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert latest.desired_revision == updated.desired_revision
     assert %{success: 0, failure: 0} = drain_delivery()
     card = last_root_update().body
-    assert Jason.encode!(card) =~ "调查机器人回报"
+    assert Jason.encode!(card) =~ "处理进展（调查机器人"
     assert Jason.encode!(card) =~ "实际用户影响仍未知"
 
     long = %{
@@ -760,7 +760,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert Enum.map(resolved_root["blocks"], & &1["type"]) == ["container", "plan"]
 
     assert get_in(resolved_root, ["blocks", Access.at(0), "title", "text"]) =~
-             "来源已结束告警"
+             "指标已回落"
 
     refute get_in(resolved_root, ["blocks", Access.at(0), "title", "text"]) =~ "已恢复"
 
@@ -779,12 +779,12 @@ defmodule AlertRouter.LifecycleDeliveryTest do
            ]
 
     assert Enum.map(firing_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)"
            ]
 
     assert Enum.map(resolved_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC",
-             "来源已结束告警 · closed · 2026-04-24 03:21 UTC · 服务恢复待确认"
+             "告警中 · 04-24 11:06 (UTC+8)",
+             "指标已回落 · 04-24 11:21 (UTC+8)"
            ]
 
     assert Enum.map(firing_plan["tasks"], & &1["task_id"]) ==
@@ -794,7 +794,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert [%{"type" => "container"}] = resolved_reply["blocks"]
 
     assert get_in(resolved_reply, ["blocks", Access.at(0), "title", "text"]) =~
-             "来源已结束告警"
+             "指标已回落"
 
     refute Jason.encode!(resolved_reply) =~ "已恢复"
   end
@@ -923,12 +923,12 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     update_plan = get_in(update_root.body, ["blocks", Access.at(1)])
 
     assert Enum.map(post_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)"
            ]
 
     assert Enum.map(update_plan["tasks"], & &1["title"]) == [
-             "告警中 · open · 2026-04-24 03:06 UTC",
-             "告警中 · acknowledged · 2026-04-24 03:14 UTC"
+             "告警中 · 04-24 11:06 (UTC+8)",
+             "告警中 · 来源已确认收到 · 04-24 11:14 (UTC+8)"
            ]
 
     assert firing_thread.body["thread_ts"] == update_root.body["ts"]
@@ -1600,13 +1600,13 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert Enum.map(root.body["blocks"], & &1["type"]) == ["container", "plan"]
     assert [%{"type" => "container"}] = timeline.body["blocks"]
 
-    metrics =
+    status =
       root.body["blocks"]
       |> hd()
       |> Map.fetch!("child_blocks")
-      |> Enum.find(&(&1["type"] == "table"))
+      |> Enum.find(&String.ends_with?(&1["block_id"], "-status"))
 
-    assert get_in(metrics, ["rows", Access.at(1), Access.at(0), "text"]) == "13%"
+    assert status["text"]["text"] =~ "当前 13%"
   end
 
   test "GitHub workflow webhook crosses authentication, persistence, and Slack delivery" do

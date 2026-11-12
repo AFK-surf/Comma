@@ -6,8 +6,10 @@ defmodule Comma.Plugins do
   the source of truth for plugin definitions and group enablement.
   """
 
+  require Logger
+
   alias Comma.{ClientCapabilities, PluginInstallations, Workspaces}
-  alias SalixAgent.PluginStore
+  alias SalixAgent.{CapabilityRequests, PluginStore}
 
   @description_max 1_000
 
@@ -43,11 +45,32 @@ defmodule Comma.Plugins do
     end
   end
 
+  @doc """
+  Installs a plugin in the workspace. Every Router call waiting for it
+  (`plugin.request_install`, a card in the Router chat) then returns installed,
+  however the person installed it.
+  """
   def install(user, session, workspace_id, plugin_id) do
     with {:ok, plugin} <- mutate(user, session, workspace_id, plugin_id, :enable_group),
          :ok <- PluginInstallations.mark_installed(workspace_id, plugin_id) do
+      end_install_requests(workspace_id, plugin_id)
       {:ok, Map.put(plugin, "installed", true)}
     end
+  end
+
+  # Never changes the install's result.
+  defp end_install_requests(workspace_id, plugin_id) do
+    with {:ok, workspace} <- Workspaces.get(workspace_id) do
+      CapabilityRequests.complete_plugin_install(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        plugin_id
+      )
+    end
+  rescue
+    error ->
+      Logger.warning("plugin install requests not ended: #{Exception.message(error)}")
+      :ok
   end
 
   def uninstall(user, session, workspace_id, plugin_id) do
@@ -127,10 +150,9 @@ defmodule Comma.Plugins do
 
   # System runtime packages are implementation details unless they declare an
   # integration setup surface. Tenant/group definitions remain product-owned.
-  # Feishu is not open for installation in Comma yet. Keep its Salix definition.
-  defp product_plugin?(%{"plugin_id" => "feishu"}), do: false
-  # Lark is not open for installation in Comma yet either. Keep its Salix definition.
-  defp product_plugin?(%{"plugin_id" => "lark"}), do: false
+  # Lark and Feishu install by a scan that makes the member's own bot app
+  # (`CommaWeb.PluginConnections`).
+  defp product_plugin?(%{"plugin_id" => id}) when id in ["lark", "feishu"], do: true
 
   defp product_plugin?(%{"owner_scope" => "system"} = definition) do
     get_in(definition, ["setup", "type"]) == "integration" or
@@ -161,9 +183,28 @@ defmodule Comma.Plugins do
       "installed" => installed?(definition, enablement_by_id, installed_plugin_ids),
       "locked" => definition["locked"] == true,
       "credentialSetup" => credential_setup(definition),
+      "toolGroups" => tool_groups?(definition),
+      # It connects still.fail stations, each listed and disconnected on its
+      # own (`CommaWeb.PluginConnections.stillfail_stations/4`).
+      "stations" => stillfail?(definition),
       "mcps" => resources(refs["mcp_refs"], "mcp_id", mcp_names),
       "skills" => resources(refs["skill_refs"], "skill_id", %{})
     }
+  end
+
+  defp stillfail?(definition),
+    do:
+      Enum.any?(
+        get_in(definition, ["setup", "connections"]) || [],
+        &(&1["kind"] == "stillfail_connect")
+      )
+
+  # Its MCP has families of tools to switch on and off (PluginSetup.tool_groups/3).
+  defp tool_groups?(definition) do
+    definition
+    |> get_in(["setup", "mcps"])
+    |> List.wrap()
+    |> Enum.any?(&match?(%{"tool_groups" => %{"groups" => [_ | _]}}, &1))
   end
 
   defp credential_setup(definition) do
@@ -180,6 +221,16 @@ defmodule Comma.Plugins do
           "key" => connection["config_key"],
           "label" => connection["credential_label"],
           "helpUrl" => connection["help_url"]
+        }
+
+      # The line a still.fail station connects with, shown at install
+      # (`Salix.Control.PluginSetup`).
+      %{"kind" => "stillfail_connect"} = connection ->
+        %{
+          "key" => "STILLFAIL_CONNECT_LINE",
+          "label" => connection["credential_label"],
+          "helpUrl" => connection["help_url"],
+          "format" => "show"
         }
 
       _ ->

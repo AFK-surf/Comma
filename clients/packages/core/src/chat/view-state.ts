@@ -1,10 +1,13 @@
 // A window's view of one conversation (`chatView`): the coordinator's projection for that window, as the state a
 // conversation view renders.
 import type { ConversationProjection } from "@comma/chat-contract";
+import { madeOnce, mapKept } from "@comma/core-kernel";
 import type { ConversationChannelState } from "./model/conversationChannel.ts";
 
+/** `last`: the projection the view showed before and its state, whose messages are kept where they still stand. */
 export function projectionToChannelState(
-  projection: ConversationProjection
+  projection: ConversationProjection,
+  last?: { projection: ConversationProjection; state: ConversationChannelState }
 ): ConversationChannelState {
   const conversation = projection.conversation;
   return {
@@ -32,20 +35,12 @@ export function projectionToChannelState(
         }
       : undefined,
     draft: projection.draft,
-    draftAttachments: projection.draftAttachments.map((attachment) => ({
-      ...attachment,
-      error: attachment.error,
-      path: attachment.path,
-    })),
+    draftAttachments: projection.draftAttachments.map(draftAttachment),
     questionAttachments: projection.questionAttachments
       ? Object.fromEntries(
           Object.entries(projection.questionAttachments).map(([id, attachments]) => [
             id,
-            attachments.map((attachment) => ({
-              ...attachment,
-              error: attachment.error,
-              path: attachment.path,
-            })),
+            attachments.map(draftAttachment),
           ])
         )
       : undefined,
@@ -53,12 +48,12 @@ export function projectionToChannelState(
     history: projection.history,
     lastBackoffMs: projection.lastBackoffMs,
     locallyAwaitingReply: projection.locallyAwaitingReply === true,
-    messages: projection.messages.map(contractMessageToChannelMessage),
-    pending: projection.pending.map((pending) => ({
-      ...pending,
-      error: pending.error,
-      skills: pending.skills,
-    })),
+    messages: mapKept(
+      projection.messages,
+      last && { from: last.projection.messages, made: last.state.messages },
+      channelMessage
+    ),
+    pending: projection.pending.map(pendingSend),
     participantStatus: projection.participantStatus,
     participantStatuses: projection.participantStatuses,
     boundWorker: projection.boundWorker,
@@ -66,12 +61,34 @@ export function projectionToChannelState(
     taskRunBlocked: projection.taskRunBlocked,
     unsupported: projection.unsupported,
     reply: projection.reply,
-    serverMessages: projection.serverMessages.map(contractMessageToChannelMessage),
+    serverMessages: mapKept(
+      projection.serverMessages,
+      last && { from: last.projection.serverMessages, made: last.state.serverMessages },
+      channelMessage
+    ),
     status: projection.status,
     syncWarning: projection.syncWarning,
     taskActivity: projection.taskActivity,
   };
 }
+
+// Each part as the view shows it, made once per projection object: an unchanged message keeps its object from one
+// value of the view to the next, so the topic's delta passes over it without comparing it field by field.
+const channelMessage = madeOnce(contractMessageToChannelMessage);
+
+const draftAttachment = madeOnce(
+  (attachment: ConversationProjection["draftAttachments"][number]) => ({
+    ...attachment,
+    error: attachment.error,
+    path: attachment.path,
+  })
+);
+
+const pendingSend = madeOnce((pending: ConversationProjection["pending"][number]) => ({
+  ...pending,
+  error: pending.error,
+  skills: pending.skills,
+}));
 
 function contractMessageToChannelMessage(
   message: ConversationProjection["messages"][number]

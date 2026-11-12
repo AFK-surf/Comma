@@ -2,30 +2,26 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
   @moduledoc """
   Builds the Agent Swarm Devices page payloads and applies its writes for
   `DashboardAPIController`: the swarm's Cloud VM (where it runs, its status
-  and the org Runner it uses), the swarm's devices, adding a device on an
-  organization runner, disconnecting and deleting a device, Android setup and
-  the Compute environments with their Shell workload, drain and revoke.
+  and the org Runner it uses), the swarm's devices, disconnecting and
+  deleting a device, Android setup and
+  the Compute environments with their Shell workload, drain and revoke,
+  and setting up a Comma hardware board (its credentials and whether it may
+  run operations).
   A device that cannot take tasks carries a `station_notice`
   (`BridgeForTeamsWeb.StationNotice`) saying how to upgrade it.
 
   The page reads PostgreSQL projections and never the live device registry:
   at most 100 devices (`Environments.list_projected_environments/1`), one
   Compute page of 50 environments and 50 workloads, the Group's Cloud VM
-  record and Runner binding (`Compute.cloud_vm/2`, indexed reads), the
-  Android admission record and whether a device request is still being
-  provisioned. Its cost does not grow with the number of devices.
+  record and Runner binding (`Compute.cloud_vm/2`, indexed reads) and the
+  Android admission record. Its cost does not grow with the number of devices.
 
-  While a device request is active the browser polls `provisioning/1`, one
-  indexed EXISTS query, and reads the page again when it is done.
-
-  Every swarm member reads the page; the runner list and every write are for
-  swarm admins. A refused device write records a denied audit entry, as the
+  Every swarm member reads the page; every write is for swarm admins. A refused device write records a denied audit entry, as the
   LiveView page did.
   """
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Compute, Environments, Observability, Projects}
-  alias BridgeForTeamsWeb.Dashboard.CoreComponents
+  alias BridgeForTeams.{Agents, Compute, Environments, Observability, Projects}
   alias BridgeForTeamsWeb.StationNotice
   alias SalixStore.RuntimeIds
 
@@ -43,17 +39,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
        "project" => public_project(project, role),
        "cloud_vm" => cloud_vm(org, project, role),
        "devices" => Enum.map(environments, &device/1),
-       "provisioning" => Environments.device_provisioning_active?(project.id),
        "android" => android(project, environments),
        "compute" => compute(org, project)
      }}
   end
 
-  @doc "Whether a device request is still being provisioned; the page polls it."
-  def provisioning(project),
-    do: {:ok, %{"active" => Environments.device_provisioning_active?(project.id)}}
-
-  @doc "The organization runners a device can be created on: online ones of the first 100."
+  @doc "The online organization runners the Cloud VM can run on: of the first 100."
   def runners(org, role) do
     with :ok <- admin(role) do
       %{entries: runners} = Environments.page_mac_mini_provisioners(org.id, limit: @runner_page)
@@ -70,78 +61,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
   end
 
   # ---- Writes ----
-
-  @doc "Ask an online runner to create a device for this swarm."
-  def create(org, user, project, role, params) do
-    runner = text(params["runner_id"])
-
-    with :ok <-
-           authorize(role, fn ->
-             device_denied(org, user, project, "device.provision_requested",
-               resource_type: "device_provision_request",
-               metadata: %{"provisioner_id_configured" => not is_nil(runner)}
-             )
-           end),
-         {:ok, runner} <- runner_id(runner) do
-      attrs = %{
-        "name" => text(params["name"]),
-        "alias" => text(params["alias"]),
-        "provisioner_id" => runner
-      }
-
-      case Environments.create_device_provision_request(project.id, attrs, audit_opts(user)) do
-        {:ok, _request} ->
-          {:ok, %{"notice" => gettext("Device connection request created.")}}
-
-        {:error, %Ecto.Changeset{} = changeset} ->
-          {:error, 422, "invalid_device", gettext("Could not create the device connection."),
-           %{
-             "fields" =>
-               Ecto.Changeset.traverse_errors(changeset, &CoreComponents.translate_error/1)
-           }}
-
-        {:error, reason} when reason in [:provisioner_offline, :provisioner_not_found] ->
-          {:error, 409, "runner_offline", gettext("Runner is offline."), %{}}
-
-        {:error, _reason} ->
-          write_failed(gettext("Could not create the device connection."))
-      end
-    end
-  end
-
-  @doc "Turn the managed cloud computer on or off; the request names the wanted state."
-  def set_cloud(_org, user, project, role, params) do
-    with :ok <-
-           authorize(role, fn ->
-             Projects.record_project_write_attempt(
-               project,
-               "project.vm_enabled_changed",
-               "denied",
-               :forbidden,
-               audit_opts(user)
-             )
-           end),
-         true <-
-           project.status != "archived" ||
-             {:error, 409, "project_archived", gettext("This Agent Swarm is archived."), %{}},
-         {:ok, enabled} <- cloud_enabled(params["enabled"]) do
-      case Projects.set_vm_enabled(project, enabled, audit_opts(user)) do
-        {:ok, updated} ->
-          {:ok,
-           %{
-             "enabled" => updated.vm_enabled,
-             "notice" =>
-               if(updated.vm_enabled,
-                 do: gettext("Cloud computer enabled for this Agent Swarm."),
-                 else: gettext("Cloud computer disabled for this Agent Swarm.")
-               )
-           }}
-
-        {:error, _reason} ->
-          write_failed(gettext("Couldn't update the cloud computer setting."))
-      end
-    end
-  end
 
   @doc """
   Choose the org Runner that prepares the swarm's VMM Station.
@@ -217,12 +136,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
 
   defp runner_error(_reason), do: write_failed(gettext("Couldn't update the runner."))
 
-  defp cloud_enabled(enabled) when is_boolean(enabled), do: {:ok, enabled}
-
-  defp cloud_enabled(_enabled),
-    do:
-      {:error, 422, "invalid_cloud", gettext("Couldn't update the cloud computer setting."), %{}}
-
   @doc "Disconnect the device's current connector run."
   def disconnect(org, user, project, role, device_id) do
     device_write(org, user, project, role, device_id, "device.disconnected", fn opts ->
@@ -234,6 +147,14 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
     end)
   end
 
+  @doc "Read the swarm's devices from Salix now, for the page's Refresh."
+  def refresh(_org, _user, project, _role) do
+    case Environments.refresh_project_devices(project.id) do
+      :ok -> {:ok, %{}}
+      {:error, _reason} -> write_failed(gettext("Couldn't refresh the devices."))
+    end
+  end
+
   @doc "Delete the device from this swarm and revoke its connector credential."
   def delete(org, user, project, role, device_id) do
     device_write(org, user, project, role, device_id, "device.deleted", fn opts ->
@@ -241,6 +162,90 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
         {:ok, _record} -> {:ok, %{"notice" => gettext("Device deleted.")}}
         {:error, :not_found} -> device_not_found()
         {:error, _reason} -> write_failed(gettext("Could not delete the device."))
+      end
+    end)
+  end
+
+  @doc """
+  Mint the credentials a Comma hardware board stores when an admin sets it
+  up from this page over Web Bluetooth. Answers them once; they are never
+  read again.
+  """
+  def provision_hardware(org, user, project, role, params) do
+    with :ok <-
+           authorize(role, fn ->
+             device_denied(org, user, project, "device.provisioned",
+               resource_type: "device",
+               metadata: %{}
+             )
+           end) do
+      opts = audit_opts(user) ++ [org_id: org.id, project_id: project.id]
+
+      case Environments.provision_hardware_device(project.id, params["name"], opts) do
+        {:ok, credentials} ->
+          {:ok, %{"credentials" => credentials}}
+
+        {:error, :invalid_name} ->
+          {:error, 422, "invalid_name", gettext("Enter a device name of at most 63 bytes."), %{}}
+
+        {:error, _reason} ->
+          write_failed(gettext("Couldn't create the device credentials."))
+      end
+    end
+  end
+
+  @doc """
+  The command that installs the station on a computer and connects it to this
+  swarm. Shown once: it works once and expires after an hour.
+  """
+  def create_station_install(org, user, project, role, params) do
+    with :ok <-
+           authorize(role, fn ->
+             device_denied(org, user, project, "device.station_install_created",
+               resource_type: "device",
+               metadata: %{}
+             )
+           end) do
+      opts = audit_opts(user) ++ [org_id: org.id, project_id: project.id]
+
+      case Environments.create_station_install(project.id, params["name"], user.id, opts) do
+        {:ok, %{"command" => command, "expires_at" => expires_at}} ->
+          {:ok, %{"command" => command, "expires_at" => iso_timestamp(expires_at)}}
+
+        {:error, :invalid_name} ->
+          {:error, 422, "invalid_name", gettext("Enter a device name of at most 63 bytes."), %{}}
+
+        {:error, _reason} ->
+          write_failed(gettext("Couldn't create the install command."))
+      end
+    end
+  end
+
+  @doc "Let a hardware device run operations on its network, or make it read-only."
+  def set_operations(org, user, project, role, device_id, params) do
+    device_write(org, user, project, role, device_id, "device.operations", fn opts ->
+      case params["allow"] do
+        allow when is_boolean(allow) ->
+          case Environments.set_device_operations(project.id, device_id, allow, opts) do
+            {:ok, true} ->
+              {:ok, %{"notice" => gettext("The device can now run operations.")}}
+
+            {:ok, false} ->
+              {:ok, %{"notice" => gettext("The device is now read-only.")}}
+
+            {:error, :not_found} ->
+              device_not_found()
+
+            {:error, :device_offline} ->
+              {:error, 409, "device_offline",
+               gettext("The device is offline. Turn it on and try again."), %{}}
+
+            {:error, _reason} ->
+              write_failed(gettext("Couldn't change the device's access."))
+          end
+
+        _ ->
+          {:error, 422, "invalid_allow", gettext("Choose whether to allow operations."), %{}}
       end
     end)
   end
@@ -311,7 +316,18 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
 
   # ---- Cloud VM ----
 
+  # Where the Cloud VM is retired the page keeps its section only while the
+  # swarm has a Cloud VM that is not archived (`Agents.sandbox_places/1`):
+  # admins stop it or remove its runner there.
   defp cloud_vm(org, project, role) do
+    places = Agents.sandbox_places(project)
+
+    if places["cloud_vm_shown"] == true,
+      do: cloud_vm_section(org, project, role, places),
+      else: nil
+  end
+
+  defp cloud_vm_section(org, project, role, places) do
     manageable = role == "admin" and project.status != "archived"
 
     {:ok, state} = Compute.cloud_vm(org, project)
@@ -323,7 +339,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       end
 
     %{
-      "enabled" => project.vm_enabled == true,
+      "enabled" => places["cloud_vm_retired"] != true and places["cloud_vm_available"] == true,
       "manageable" => manageable,
       "vm" => vm,
       "runner" => state["runner"] && Map.take(state["runner"], ~w(name status)),
@@ -366,10 +382,27 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       "last_seen_at" => iso_timestamp(env["updated_at"]),
       "info_updated_at" => iso_timestamp(env["system_info_updated_at"]),
       "android" => android_device(env),
-      # Nil when the device's station takes tasks; else why not and how its
-      # user upgrades it.
-      "station_notice" => StationNotice.for_capabilities(env["capabilities"])
+      # A Comma hardware board forwards LAN requests only while it allows
+      # operations; the page offers the switch for those devices.
+      "hardware" => hardware?(env),
+      "allows_operations" => env["allows_operations"] == true,
+      "station_notice" => station_notice(env)
     }
+  end
+
+  # A board set up from this page carries the kind it was minted with, from
+  # before it first connects.
+  defp hardware?(env), do: env["device_kind"] == "hardware"
+
+  # Nil for a hardware board, which never runs tasks, and for a device that
+  # has not reported what it runs yet; else why it cannot take tasks and how
+  # its user upgrades it.
+  defp station_notice(env) do
+    capabilities = env["capabilities"]
+
+    if hardware?(env) or not is_map(capabilities) or capabilities == %{},
+      do: nil,
+      else: StationNotice.for_capabilities(capabilities)
   end
 
   defp external_runtimes(env) do
@@ -459,8 +492,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       {:ok, projection} ->
         %{
           "status" => "ok",
+          # A revoked environment that never came up has nothing left to show or do.
           "environments" =>
-            for row <- projection["environments"] || [] do
+            for row <- projection["environments"] || [],
+                {row.desired_state, row.observed_state} != {"revoked", "pending"} do
               %{
                 "id" => row.id,
                 "desired_state" => row.desired_state,
@@ -520,16 +555,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
           Keyword.fetch!(opts, :metadata)
         )
     })
-  end
-
-  defp runner_id(nil),
-    do: {:error, 422, "runner_required", gettext("Select an online runner."), %{}}
-
-  defp runner_id(id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, uuid} -> {:ok, uuid}
-      :error -> {:error, 409, "runner_offline", gettext("Runner is offline."), %{}}
-    end
   end
 
   defp device_not_found,

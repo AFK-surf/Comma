@@ -1,3 +1,5 @@
+import { modelMentionMenu } from "./modelMentionMenu";
+import { slackMentionMenu as buildSlackMentionMenu } from "./slackMentionMenu";
 import { uiClock } from "@comma/ui/clock";
 import { useApplicationMenu } from "../../application-menu/useApplicationMenu";
 import {
@@ -49,13 +51,19 @@ import {
   type ComposerDraftSource,
 } from "./conversationDraft";
 import { deriveMentionedSkills } from "./mentions";
+import { toolCommand, toolCommands } from "./toolCommands";
+import { RequestPersonAvatar } from "../../tasks/RequestPersonAvatar";
 import {
   linkMentionPlainText,
-  modelMentionPlainText,
+  requestMentionPlainText,
   taskMentionPlainText,
 } from "@comma/core/chat";
-import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
-import { MENTION_MENU_ID, projectMentionTokens } from "./mentionProjection";
+import {
+  MENTION_MENU_ID,
+  projectMentionTokens,
+  type ProjectedSkill,
+} from "./mentionProjection";
+import { renderToStaticMarkup } from "react-dom/server";
 import { attachmentMeta, useFileIntake, useUploadFailureToast } from "./fileIntake";
 import { draftUploadPreviewRef, isGroupImagePreviewPath } from "@comma/core/chat";
 import type {
@@ -69,6 +77,7 @@ import { useAudioCapture } from "../../useAudioCapture";
 import { needsDesktopApp, requestDesktopApp } from "../../DesktopAppPrompt";
 import {
   driveMentionSections,
+  SLACK_PLUGIN_ID,
   type ComposerDriveMentionItem,
   type ComposerMentionSources,
   type ComposerRoutineMentionItem,
@@ -87,6 +96,7 @@ const COMPACT_TEXTAREA_MIN_HEIGHT = AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
 const DRIVE_MENU_LIMIT = 5;
 
 const EMPTY_SNIPPETS: readonly ChatDraftSnippet[] = [];
+const EMPTY_STAGED_ATTACHMENTS: readonly AiInputAttachment[] = [];
 
 /** English affordance synonyms; the localized label itself also matches. */
 const addFilesKeywords = [
@@ -98,6 +108,8 @@ const addFilesKeywords = [
   "attach",
   "attachment",
 ] as const;
+
+const toolCommandSkillIds = new Set(toolCommands.map((command) => command.skillId));
 
 /**
  * A Routine source's brand mark (Linear, Notion, ...): its bundled logo, else
@@ -213,6 +225,7 @@ export const Composer = memo(function Composer({
   showVoiceButton = false,
   size,
   skills = [],
+  stagedAttachments = EMPTY_STAGED_ATTACHMENTS,
   controlCommandsEnabled = false,
   submitDisabled,
   submitPending = false,
@@ -254,6 +267,11 @@ export const Composer = memo(function Composer({
   showVoiceButton?: boolean;
   size?: AiInputSize;
   skills?: CommaSkill[];
+  /**
+   * Attachments the surface around the composer holds itself, such as an element picked on a page or an area marked
+   * on a screen: they show after the draft's files, as the draft's files do. The surface sends them with the message.
+   */
+  stagedAttachments?: readonly AiInputAttachment[] | undefined;
   /** Only the group Router chat currently accepts Salix control commands. */
   controlCommandsEnabled?: boolean;
   submitDisabled: boolean;
@@ -397,6 +415,33 @@ export const Composer = memo(function Composer({
         .join("\n"),
     [draft, skills]
   );
+  // A `/<skill>` that arrived as text (a restored draft, a skill's "Try in
+  // Chat") shows as the pill the "/" menu inserts, with the menu's glyph.
+  const projectableSkills = useMemo<ProjectedSkill[]>(
+    () =>
+      skills.flatMap((skill) => {
+        const command = toolCommand(skill.skill_id);
+        if (!command && skill.activation === "per-message") return [];
+        return [
+          {
+            skillId: skill.skill_id,
+            label: command?.label ?? skill.name,
+            description: command
+              ? command.describe(messages)
+              : skill.description || skill.location,
+            location: skill.location,
+            iconMarkup: renderToStaticMarkup(
+              command ? command.icon : <CubeIcon className="size-4!" />
+            ),
+          },
+        ];
+      }),
+    [messages, skills]
+  );
+  const richValueFromText = useCallback(
+    (text: string) => projectMentionTokens(text, projectableSkills),
+    [projectableSkills]
+  );
   const excludedLocations = useMemo(
     () => new Set(excludedLocationsKey === "" ? [] : excludedLocationsKey.split("\n")),
     [excludedLocationsKey]
@@ -411,9 +456,11 @@ export const Composer = memo(function Composer({
   );
   // A staged quote or snippet is message content in its own right, so it
   // alone can satisfy the "something to send" gate the same way an upload does.
-  const hasStagedText = draftQuotes.length > 0 || draftSnippets.length > 0;
+  // (so can what the surface around the composer staged: a selection with its note)
+  const hasStaged =
+    draftQuotes.length > 0 || draftSnippets.length > 0 || stagedAttachments.length > 0;
   const effectiveSubmitDisabled =
-    submitDisabled || anyFailed || (!draft.trim() && !hasAttachment && !hasStagedText);
+    submitDisabled || anyFailed || (!draft.trim() && !hasAttachment && !hasStaged);
   const localImagePreviewRequests = useMemo(
     () =>
       draftAttachments.flatMap((attachment) => {
@@ -517,8 +564,13 @@ export const Composer = memo(function Composer({
   // also what the sent message puts first. Snippets are text, so they come
   // before the files.
   const aiAttachments = useMemo(
-    () => [...quoteAttachments, ...snippetAttachments, ...fileAttachments],
-    [fileAttachments, quoteAttachments, snippetAttachments]
+    () => [
+      ...quoteAttachments,
+      ...snippetAttachments,
+      ...fileAttachments,
+      ...stagedAttachments,
+    ],
+    [fileAttachments, quoteAttachments, snippetAttachments, stagedAttachments]
   );
   useUploadFailureToast(
     draftAttachments,
@@ -536,10 +588,7 @@ export const Composer = memo(function Composer({
     []
   );
   const submit = (value: string) => {
-    if (
-      (!value.trim() && !hasAttachment && !hasStagedText) ||
-      effectiveSubmitDisabled
-    ) {
+    if ((!value.trim() && !hasAttachment && !hasStaged) || effectiveSubmitDisabled) {
       return;
     }
     onSend(value, {
@@ -655,9 +704,18 @@ export const Composer = memo(function Composer({
   const routinesGroupLabel = messages.chat_menu_routines_group();
   const pluginsGroupLabel = messages.chat_plugin_menu_group();
   const modelsGroupLabel = messages.chat_menu_models_group();
+  const requestsGroupLabel = messages.chat_menu_requests_group();
   const effortLabel = messages.settings_providers_picker_effort();
   const defaultEffortLabel = messages.settings_providers_picker_default_effort();
   const noResultsLabel = messages.ui_ai_menu_no_results();
+  const slackChannelsGroupLabel = messages.chat_menu_slack_channels_group();
+  const slackDmsGroupLabel = messages.chat_menu_slack_dms_group();
+  const slackChannelsLabel = messages.chat_menu_slack_channels();
+  const slackDmsLabel = messages.chat_menu_slack_dms();
+  const slackSearchLabel = messages.chat_menu_slack_search();
+  const slackWholeChannelLabel = messages.chat_menu_slack_whole_channel();
+  const slackChannelMembersLabel = messages.chat_menu_slack_channel_members();
+  const slackEmptyLabel = messages.chat_menu_slack_empty();
   const driveGroupLabel = messages.nav_drive();
   const driveViewMoreLabel = messages.chat_menu_drive_view_more();
   const driveSearchLabel = messages.chat_menu_drive_search();
@@ -675,6 +733,26 @@ export const Composer = memo(function Composer({
       label: skillMenuLabel,
       maxItems: Number.POSITIVE_INFINITY,
       groups: [
+        {
+          id: "tool-commands",
+          label: messages.chat_tool_commands_group(),
+          items: toolCommands.flatMap(({ describe, icon, label, skillId }) => {
+            const skill = skills.find((entry) => entry.skill_id === skillId);
+            if (!skill || excludedLocations.has(skill.location)) return [];
+            return [
+              {
+                id: skill.skill_id,
+                label,
+                description: describe(messages),
+                searchText: skill.skill_id,
+                icon,
+                descriptionPlacement: "inline" as const,
+                plainText: `/${skill.skill_id}`,
+                data: { location: skill.location },
+              },
+            ];
+          }),
+        },
         ...(controlCommandsEnabled
           ? [
               {
@@ -708,6 +786,7 @@ export const Composer = memo(function Composer({
             .filter(
               (skill) =>
                 skill.activation !== "per-message" &&
+                !toolCommandSkillIds.has(skill.skill_id) &&
                 !excludedLocations.has(skill.location)
             )
             .map((skill) => ({
@@ -749,51 +828,86 @@ export const Composer = memo(function Composer({
       mentionSources?.models.status === "loading"
     ) {
       mentionGroups.push({
-        id: "models",
-        label: modelsGroupLabel,
-        status: mentionSources.models.status,
-        items: mentionSources.models.items.map((model) => {
-          const icon = <ModelVendorIcon vendor={model.vendor} />;
-          // A row of its own for the default effort and for each it takes.
-          const choice = (effort: string | null): AiInputMenuItem => {
-            const name = effort ? `${model.name} · ${effort}` : model.name;
-            return {
-              id: `model:${model.id}${effort ? `:${effort}` : ""}`,
-              label: effort ?? defaultEffortLabel,
-              icon,
-              tokenLabel: name,
-              plainText: modelMentionPlainText(name, model.id, effort ?? undefined),
-              data: { kind: "model", modelId: model.id, effort },
-            };
-          };
-          return {
-            ...choice(null),
-            label: model.name,
-            keywords: [model.id],
-            ...(model.efforts.length > 0
-              ? {
-                  browse: {
-                    compact: true,
-                    label: model.name,
-                    title: `${model.name} · ${effortLabel}`,
-                    // The field heads the panel: which model these efforts are for.
-                    searchPlaceholder: model.name,
-                    emptyLabel: noResultsLabel,
-                    noResultsLabel,
-                    groups: [
-                      {
-                        id: `model:${model.id}/efforts`,
-                        label: effortLabel,
-                        items: [null, ...model.efforts].map(choice),
-                      },
-                    ],
-                  },
-                }
-              : {}),
-          };
+        ...modelMentionMenu(mentionSources.models.items, {
+          modelsGroupLabel,
+          effortLabel,
+          defaultEffortLabel,
+          noResultsLabel,
         }),
+        status: mentionSources.models.status,
       });
     }
+    // In the Router chat, a person named gets the rest of the message as a Task request.
+    if (
+      mentionSources?.requests.items.length ||
+      mentionSources?.requests.status === "loading"
+    ) {
+      mentionGroups.push({
+        id: "requests",
+        label: requestsGroupLabel,
+        status: mentionSources.requests.status,
+        items: mentionSources.requests.items.map((person, _i, all) => ({
+          id: `request:${person.grantId}`,
+          label: person.name,
+          // Two people of one name are told apart by their workspace.
+          ...(person.workspace &&
+          all.some((other) => other !== person && other.name === person.name)
+            ? { description: person.workspace }
+            : {}),
+          icon: (
+            <RequestPersonAvatar
+              email={person.email}
+              name={person.name}
+              source={
+                person.avatarRevision
+                  ? {
+                      source: "target-avatar",
+                      grant: person.grantId,
+                      revision: person.avatarRevision,
+                    }
+                  : undefined
+              }
+            />
+          ),
+          keywords: [person.workspace],
+          disabled: person.full,
+          plainText: requestMentionPlainText(person.name, person.grantId),
+          data: { kind: "request", grantId: person.grantId },
+        })),
+      });
+    }
+    const slackMenu =
+      mentionSources?.slack &&
+      (mentionSources.slack.channels.length > 0 ||
+        mentionSources.slack.people.length > 0)
+        ? buildSlackMentionMenu(
+            mentionSources.slack,
+            {
+              channelsGroup: slackChannelsGroupLabel,
+              dmsGroup: slackDmsGroupLabel,
+              channels: slackChannelsLabel,
+              dms: slackDmsLabel,
+              wholeChannel: slackWholeChannelLabel,
+              channelMembers: slackChannelMembersLabel,
+              search: slackSearchLabel,
+              empty: slackEmptyLabel,
+              noResults: noResultsLabel,
+            },
+            <PluginMentionIcon brand="slack" id={SLACK_PLUGIN_ID} name="Slack" />,
+            (person) => (
+              <RequestPersonAvatar
+                name={person.name}
+                source={
+                  person.avatarRef
+                    ? { source: "link-preview-avatar", ref: person.avatarRef }
+                    : undefined
+                }
+              />
+            ),
+            mentionSources.slackChannelMembers,
+            mentionSources.openSlackChannel
+          )
+        : null;
     if (mentionSources) {
       mentionGroups.push(
         {
@@ -803,7 +917,8 @@ export const Composer = memo(function Composer({
           items: mentionSources.tasks.items.map((task) => ({
             id: `task:${task.conversationId}`,
             label: task.title,
-            icon: taskStatusIcon(task.statusBucket),
+            // The menu names each Task's status; only the Task's own views turn.
+            icon: taskStatusIcon(task.statusBucket, { spins: false }),
             tokenLabel: task.title,
             plainText: taskMentionPlainText(task.title, task.conversationId),
             data: { kind: "task", conversationId: task.conversationId },
@@ -833,6 +948,9 @@ export const Composer = memo(function Composer({
           label: pluginsGroupLabel,
           status: mentionSources.plugins.status,
           items: mentionSources.plugins.items.map((plugin) => ({
+            ...(plugin.id === SLACK_PLUGIN_ID && slackMenu
+              ? { browse: slackMenu.rowBrowse }
+              : {}),
             id: `plugin:${plugin.id}`,
             label: plugin.name,
             icon: (
@@ -849,6 +967,7 @@ export const Composer = memo(function Composer({
           })),
         }
       );
+      if (slackMenu) mentionGroups.push(...slackMenu.groups);
     }
     // Drive rows attach, so the section exists only where an attachment can
     // land. The menu shows the newest files; the whole tree, one section per
@@ -946,7 +1065,16 @@ export const Composer = memo(function Composer({
     mentionSources,
     onAttachFiles,
     pluginsGroupLabel,
+    slackChannelMembersLabel,
+    slackChannelsGroupLabel,
+    slackChannelsLabel,
+    slackWholeChannelLabel,
+    slackEmptyLabel,
+    slackDmsGroupLabel,
+    slackDmsLabel,
+    slackSearchLabel,
     modelsGroupLabel,
+    requestsGroupLabel,
     effortLabel,
     defaultEffortLabel,
     noResultsLabel,
@@ -976,7 +1104,7 @@ export const Composer = memo(function Composer({
         onKeyDown={handleComposerKeyDown}
         onSubmit={submit}
         onValueChange={onDraftChange}
-        richValueFromText={projectMentionTokens}
+        richValueFromText={richValueFromText}
         {...(handleAttachPress ? { onAttachPress: handleAttachPress } : {})}
         {...(handleTransferredFiles
           ? {

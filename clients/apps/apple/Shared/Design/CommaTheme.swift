@@ -75,12 +75,46 @@ enum CommaTheme {
     static let avatarGutter: CGFloat = 32
     static let replyLineWidth: CGFloat = 2.5
 
+    /// Figma image attachment (7879:1051): 72pt square, radius-md, attachment fill.
+    static let imageTileSide: CGFloat = 72
+    static let imageRadius: CGFloat = 8
+    static let imageSpacing: CGFloat = 8
+    static let imagePlaceholder = dynamic(light: 0xEFEFF1, dark: 0x343538)
+    static let imageViewerBackground = Color.black
+    static let imageViewerForeground = Color.white
+    static let imageViewerControl: CGFloat = 44
+    /// The design system's filled play glyph, inside the existing media control hit area.
+    static let mediaPlayIcon: CGFloat = 20
+
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         #if os(iOS)
         Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
         #else
         Color(hex: dark)
         #endif
+    }
+}
+
+extension AnyTransition {
+    /// Grows from `scale` (and shrinks back to it) over the whole range, not visible at half its size or less: the
+    /// opacity follows the scale frame by frame rather than a curve of its own (AGENTS.md, Client UI).
+    static func scaleUnseenBelowHalf(_ scale: CGFloat) -> AnyTransition {
+        .modifier(active: UnseenBelowHalf(scale: scale), identity: UnseenBelowHalf(scale: 1))
+    }
+}
+
+private struct UnseenBelowHalf: ViewModifier, @preconcurrency Animatable {
+    var scale: CGFloat
+
+    var animatableData: CGFloat {
+        get { scale }
+        set { scale = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .opacity(min(max((scale - 0.5) / 0.5, 0), 1))
     }
 }
 

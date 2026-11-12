@@ -16,10 +16,8 @@ defmodule SalixStore.Compute do
 
   alias SalixStore.{AgentVMM, Keys, Repo, S3}
   alias SalixStore.ComputeContract
-  alias SalixStore.Compute.WorkloadCredential
 
   @providers ~w(cloudflare agent_vmm l4es)
-  @environment_states ~w(pending ready draining stopped revoked)
   @allocation_states ~w(pending allocating ready draining released failed)
   @command_classes ~w(read_only desired_state side_effecting)
   @command_states ~w(pending admitted executing succeeded failed unknown_outcome cancelled)
@@ -37,20 +35,12 @@ defmodule SalixStore.Compute do
   }
   @agent_vmm_remote_policy %{
     "per_environment_limits" => %{
-      "pids" => 512,
-      "disk_bytes" => 2_147_483_648
+      "pids" => 2048,
+      "disk_bytes" => 17_179_869_184
     },
     "max_egress_mode" => "public_internet",
     "stop_grace_seconds" => 10
   }
-  @runtime_carrier_features [
-    "runtime.input.v1",
-    "runtime.event.v1",
-    "runtime.execution.v1",
-    "runtime.auth.v1",
-    "runtime.agent_stop.v1",
-    "runtime.subscription.v1"
-  ]
 
   defmodule Pool do
     use Ecto.Schema
@@ -490,7 +480,7 @@ defmodule SalixStore.Compute do
   # return value is a projection for current product callers, never stored JSON.
   @group_device_fields ~w(env_id device_id connector_id alias name workspace_dir station_id)
   @group_archive_fields ~w(wake_requested_at archive_started_at archive archive_ref connector_archive archive_operation_id archive_reason archive_progress archive_cancel_requested archive_last_operation archived_at wake_operation_id last_wake_at archive_gc_operations archive_previous connector_archive_previous archive_retry_at archive_refusals)
-  @group_activity_fields ~w(active_operations last_operation_at last_operation_result last_vm_operation_agent_id last_agent_settled_after_vm_at last_station_activity_at)
+  @group_activity_fields ~w(active_operations abandoned_operations last_operation_at last_operation_result last_vm_operation_agent_id last_agent_settled_after_vm_at last_station_activity_at)
   @group_runtime_fields ~w(runtime_targets runtime_connector runtime_activity runtime_idle runtime_idle_token runtime_selection_until runtime_wake_at runtime_wake_claim cloudflare_control last_discarded_generation)
   @group_provider_fields ~w(provider_resource_id provider_resource_name provider_spec current_worker_version_id desired_worker_version_id worker_release_id worker_release_kind rollout_state cloudflare_worker operation_drain_summary)
   @group_lifecycle_fields ~w(provider_migration node_id attempt_at ready_at error last_error billing_decision last_metered_at created_by_agent_id container_loss)
@@ -723,7 +713,6 @@ defmodule SalixStore.Compute do
               )
               |> ensure_provider_binding()
             )
-            |> AgentVMM.adopt_current_connection(environment)
 
           allocation =
             group_result!(
@@ -987,9 +976,15 @@ defmodule SalixStore.Compute do
         record
       else
         case cloudflare_gateway_maintenance() do
-          :open -> :ok
-          {:held, %{"reason" => "sandbox_image_release", "phase" => "prepared"}} -> :ok
-          held -> Repo.rollback({:vm_service_upgrading, held})
+          :open ->
+            :ok
+
+          {:held, %{"reason" => "sandbox_image_release", "phase" => phase}}
+          when phase in ["prepared", "deploying"] ->
+            :ok
+
+          held ->
+            Repo.rollback({:vm_service_upgrading, held})
         end
 
         operation = "discard-" <> SystemsRuntime.Proc.uuid()
@@ -1166,8 +1161,8 @@ defmodule SalixStore.Compute do
         :open ->
           :ok
 
-        {:held, %{"reason" => "sandbox_image_release", "phase" => "prepared"}}
-        when action in [:seal, :resume] ->
+        {:held, %{"reason" => "sandbox_image_release", "phase" => phase}}
+        when phase in ["prepared", "deploying"] and action in [:seal, :resume] ->
           :ok
 
         {:held, held} ->
@@ -1385,7 +1380,8 @@ defmodule SalixStore.Compute do
             :open ->
               :ok
 
-            {:held, %{"reason" => "sandbox_image_release", "phase" => "prepared"} = maintenance} ->
+            {:held, %{"reason" => "sandbox_image_release", "phase" => phase} = maintenance}
+            when phase in ["prepared", "deploying"] ->
               if purpose == :archive and record["provider"] == "cloudflare" and
                    ((record["status"] == "archiving" and is_binary(target_resource) and
                        cloudflare_location_key(record) == target_resource) or
@@ -2546,11 +2542,37 @@ defmodule SalixStore.Compute do
     _ -> {:error, :unavailable}
   end
 
+  @doc """
+  The environment a new install request of its owner uses: one that was revoked
+  comes back ready in a new generation, because an owner has one environment
+  (unique per owner). Revoking drained the generation before, so nothing of it
+  carries over. Anything else is left as it is.
+  """
+  def reopen_revoked_environment(%Environment{desired_state: "revoked", id: id}) do
+    Repo.transaction(fn ->
+      {1, _} =
+        Repo.update_all(
+          from(e in Environment, where: e.id == ^id and e.desired_state == "revoked"),
+          set: [
+            desired_state: "ready",
+            observed_state: "pending",
+            updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+          ],
+          inc: [revision: 1, generation: 1]
+        )
+
+      Repo.get!(Environment, id)
+    end)
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  def reopen_revoked_environment(%Environment{} = environment), do: {:ok, environment}
+
   @doc "Create one provider-private binding under an existing pool."
   def create_provider_binding(attrs) when is_map(attrs) do
     with :ok <- required_strings(attrs, [:id, :pool_id, :provider]),
          true <- attrs.provider in @providers || {:error, :unsupported_provider},
-         :ok <- validate_agent_vmm_scope_rollout(attrs.provider),
          %Pool{tenant_id: tenant_id, status: "active"} = pool <- Repo.get(Pool, attrs.pool_id),
          true <- provider_allowed?(pool, attrs.provider) || {:error, :provider_not_allowed},
          :ok <-
@@ -2583,7 +2605,6 @@ defmodule SalixStore.Compute do
 
     with :ok <- required_strings(attrs, [:id, :pool_id, :provider]),
          true <- attrs.provider in @providers || {:error, :unsupported_provider},
-         :ok <- validate_agent_vmm_scope_rollout(attrs.provider),
          %Pool{tenant_id: tenant_id, status: "active"} = pool <- Repo.get(Pool, attrs.pool_id),
          true <- provider_allowed?(pool, attrs.provider) || {:error, :provider_not_allowed},
          :ok <- validate_binding_environment(pool, attrs.provider, environment_id),
@@ -2703,7 +2724,9 @@ defmodule SalixStore.Compute do
         if binding.provider == "agent_vmm" do
           registration = Repo.get(SalixStore.AgentVMM.Registration, binding.provider_ref)
 
-          if is_nil(registration) or registration.status == "revoked" or
+          if is_nil(registration) or registration.status != "ready" or
+               not registration.desired_enabled or
+               not registration.connected or
                SalixStore.AgentVMM.authorization_expired?(registration),
              do: Repo.rollback(:provider_unavailable)
         end
@@ -2715,7 +2738,8 @@ defmodule SalixStore.Compute do
         pool = Repo.get!(Pool, environment.pool_id)
 
         if not binding_eligible_for_environment?(binding, environment) or
-             binding.status != "available" or not provider_allowed?(pool, binding.provider) do
+             (binding.provider != "agent_vmm" and binding.status != "available") or
+             binding.status == "revoked" or not provider_allowed?(pool, binding.provider) do
           Repo.rollback(:provider_unavailable)
         end
 
@@ -2947,8 +2971,10 @@ defmodule SalixStore.Compute do
 
       registration = Repo.get(AgentVMM.Registration, registration_id)
 
-      unless registration && registration.tenant_id == tenant_id && registration.status == "ready" &&
-               registration.desired_enabled,
+      unless not is_nil(registration) and registration.tenant_id == tenant_id and
+               registration.status == "ready" and registration.desired_enabled and
+               registration.connected and
+               not AgentVMM.authorization_expired?(registration),
              do: Repo.rollback(:compute_node_not_ready)
 
       binding =
@@ -2957,7 +2983,7 @@ defmodule SalixStore.Compute do
             where:
               b.environment_id == ^environment_id and b.pool_id == ^environment.pool_id and
                 b.provider == "agent_vmm" and b.provider_ref == ^registration_id and
-                b.status == "available",
+                b.status != "revoked",
             order_by: b.id,
             limit: 1
           )
@@ -3111,9 +3137,7 @@ defmodule SalixStore.Compute do
                  )
 
                # Revoke runtime admission in the same transaction as the
-               # business stop. ComputeRuntimeCarrier takes the same workload
-               # row lock before accepting a frame, so a terminal transition
-               # cannot race a post-terminal insert.
+               # business stop.
                Repo.update_all(
                  from(r in RuntimeInstance,
                    where: r.workload_id == ^workload_id and r.generation == ^workload.generation
@@ -3171,12 +3195,23 @@ defmodule SalixStore.Compute do
       if is_nil(locked_allocation), do: Repo.rollback(:not_found)
       if locked_allocation.status == "released", do: Repo.rollback(:allocation_released)
 
-      # Host residency does not cancel the owner's terminal release intent.
-      status =
-        if authoritative_inventory? and locked_allocation.status == "draining" and
-             status == "ready",
-           do: "draining",
-           else: status
+      # Host DRAINING also describes admission before namespace projection.
+      # Only the existing release obligation supplies terminal release intent.
+      release_requested? =
+        authoritative_inventory? and allocation_release_requested?(locked_allocation)
+
+      {status, outcome} =
+        cond do
+          authoritative_inventory? and not release_requested? and
+              observation["allocation_state"] == "draining" ->
+            {"allocating", "pending"}
+
+          release_requested? and status == "ready" ->
+            {"draining", outcome}
+
+          true ->
+            {status, outcome}
+        end
 
       effective_observation =
         if merge_provider_observation? do
@@ -3691,155 +3726,6 @@ defmodule SalixStore.Compute do
     _ -> {:error, :unavailable}
   end
 
-  @doc "Open the Workload-scoped Runtime Agent carrier after validating its handshake."
-  def open_runtime_carrier(token, attrs) when is_binary(token) and is_map(attrs) do
-    Repo.transaction(fn ->
-      case do_open_runtime_carrier(token, attrs) do
-        {:ok, opened} -> opened
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-  end
-
-  def open_runtime_carrier(_, _), do: {:error, :invalid_runtime_handshake}
-
-  defp do_open_runtime_carrier(token, attrs) do
-    with 1 <- attrs["protocol_version"],
-         supported_features when is_list(supported_features) <- attrs["supported_features"],
-         input_cursor when is_binary(input_cursor) <- Map.get(attrs, "input_cursor", ""),
-         event_cursor when is_binary(event_cursor) <- Map.get(attrs, "event_cursor", ""),
-         {:ok, claims} <- WorkloadCredential.verify_unscoped(token),
-         id when is_binary(id) <- claims["runtime_instance_id"],
-         workload_id when is_binary(workload_id) <- claims["workload_id"],
-         generation when is_integer(generation) and generation > 0 <- claims["generation"],
-         connection_epoch when is_binary(connection_epoch) <- claims["connection_epoch"],
-         true <- canonical_nonzero_uint64?(connection_epoch),
-         %RuntimeInstance{workload_id: ^workload_id, generation: ^generation} = runtime <-
-           Repo.get(RuntimeInstance, id),
-         %Workload{
-           id: ^workload_id,
-           generation: ^generation,
-           kind: kind,
-           environment_id: environment_id,
-           allocation_id: allocation_id
-         } = workload <- Repo.get(Workload, workload_id),
-         true <- kind == "meeting_runtime",
-         %Environment{id: ^environment_id, tenant_id: tenant_id} <-
-           Repo.get(Environment, environment_id),
-         :ok <- validate_runtime_carrier_features(kind, supported_features),
-         {:ok, auth} <- runtime_carrier_auth(claims),
-         {:ok, runtime} <-
-           maybe_observe_runtime_carrier(auth, runtime, workload, generation, connection_epoch),
-         {:ok, runtime, credential} <-
-           finish_runtime_carrier_open(auth, token, runtime, connection_epoch),
-         {:ok, runtime} <-
-           complete_runtime_catch_up_with_credential(
-             credential["token"],
-             runtime.id,
-             runtime.revision,
-             connection_epoch,
-             runtime_settlement_open?(workload)
-           ),
-         {:ok, input_cursor} <-
-           reconcile_runtime_cursor(
-             runtime.input_cursor,
-             input_cursor,
-             runtime.id,
-             workload_id,
-             generation
-           ),
-         {:ok, event_cursor} <-
-           reconcile_runtime_cursor(
-             runtime.event_cursor,
-             event_cursor,
-             runtime.id,
-             workload_id,
-             generation
-           ) do
-      {:ok,
-       %{
-         runtime: runtime,
-         workload: workload,
-         tenant_id: tenant_id,
-         environment_id: environment_id,
-         allocation_id: allocation_id,
-         credential: credential,
-         features: Enum.filter(@runtime_carrier_features, &(&1 in supported_features)),
-         input_cursor: input_cursor,
-         event_cursor: event_cursor
-       }}
-    else
-      nil -> {:error, :runtime_not_found}
-      false -> {:error, :invalid_runtime_handshake}
-      {:error, _} = error -> error
-      _ -> {:error, :invalid_runtime_handshake}
-    end
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
-  # A newer carrier may offer features this server does not know. They are
-  # not negotiated (the open result lists only known features), not rejected.
-  defp validate_runtime_carrier_features(kind, supported) when is_list(supported) do
-    server_required = required_features_for_kind(kind)
-
-    if Enum.all?(server_required, &(&1 in supported)) do
-      :ok
-    else
-      {:error, :required_runtime_feature_missing}
-    end
-  end
-
-  defp required_features_for_kind("meeting_runtime"),
-    do: ["runtime.input.v1", "runtime.event.v1"]
-
-  defp runtime_carrier_auth(%{"scopes" => scopes, "credential_kind" => "runtime_epoch"}) do
-    if scopes == ["runtime"], do: {:ok, :runtime}, else: {:error, :invalid_runtime_handshake}
-  end
-
-  defp runtime_carrier_auth(%{"scopes" => scopes}) do
-    if scopes == ["bootstrap"],
-      do: {:ok, :bootstrap},
-      else: {:error, :invalid_runtime_handshake}
-  end
-
-  defp runtime_carrier_auth(_claims), do: {:error, :invalid_runtime_handshake}
-
-  # A credential can resume only the execution identity already prepared by
-  # the provider. It cannot choose an epoch or replay accepted work under a new one.
-  defp maybe_observe_runtime_carrier(auth, runtime, workload, generation, connection_epoch) do
-    current =
-      Repo.one!(from(r in RuntimeInstance, where: r.id == ^runtime.id, lock: "FOR UPDATE"))
-
-    workload = Repo.one!(from(w in Workload, where: w.id == ^workload.id, lock: "FOR UPDATE"))
-
-    cond do
-      current.generation != generation or current.connection_epoch != connection_epoch or
-        workload.generation != generation or
-          (workload.desired_state != "ready" and
-             not (auth == :runtime and runtime_settlement_open?(workload))) ->
-        {:error, :stale_epoch}
-
-      not runtime_control_current?(current, true) ->
-        {:error, runtime_control_error(current)}
-
-      true ->
-        if current.status != "connected" do
-          Repo.update_all(from(r in RuntimeInstance, where: r.id == ^current.id),
-            set: [
-              status: "connected",
-              readiness: "catching_up",
-              caught_up_epoch: "0",
-              updated_at: SystemsClock.timestamp(:utc_datetime_usec)
-            ],
-            inc: [revision: 1]
-          )
-        end
-
-        {:ok, Repo.get!(RuntimeInstance, current.id)}
-    end
-  end
-
   @doc false
   def runtime_control_error(runtime) do
     claim =
@@ -3871,16 +3757,7 @@ defmodule SalixStore.Compute do
       %ProviderBinding{provider: "agent_vmm"} ->
         case AgentVMM.current_host_session_for_workload(runtime.workload_id, settlement) do
           {:ok, session} ->
-            facts = allocation.provider_observation || %{}
-
-            session.allocation_id == runtime.allocation_id and
-              facts["container_status"] == "running" and
-              facts["runtime_container_instance_id"] not in [nil, ""] and
-              facts["runtime_verified_host_epoch"] == session.connection_epoch and
-              facts["runtime_execution_epoch"] == runtime.connection_epoch and
-              facts["runtime_container_instance_id"] ==
-                get_in(facts, ["current_container", "instance_id"]) and
-              is_binary(facts["runtime_container_instance_id"])
+            runtime_control_matches?(runtime, allocation, session)
 
           _ ->
             false
@@ -3894,184 +3771,18 @@ defmodule SalixStore.Compute do
     end
   end
 
-  defp finish_runtime_carrier_open(:bootstrap, token, runtime, connection_epoch) do
-    with {:ok, %{runtime: runtime, credential: credential}} <-
-           exchange_runtime_bootstrap(
-             token,
-             runtime.id,
-             connection_epoch
-           ) do
-      {:ok, runtime, credential}
-    end
-  end
+  @doc false
+  def runtime_control_matches?(runtime, allocation, session) do
+    facts = allocation.provider_observation || %{}
 
-  defp finish_runtime_carrier_open(:runtime, token, runtime, _connection_epoch),
-    do: {:ok, runtime, %{"token" => token}}
-
-  defp reconcile_runtime_cursor(nil, "", _runtime_id, _workload_id, _generation), do: {:ok, ""}
-
-  defp reconcile_runtime_cursor(nil, cursor, runtime_id, workload_id, generation)
-       when is_binary(cursor) and cursor != "" do
-    case Repo.get_by(
-           SalixStore.ComputeRuntimeCarrier.Input,
-           id: cursor,
-           runtime_instance_id: runtime_id,
-           workload_id: workload_id
-         ) do
-      %SalixStore.ComputeRuntimeCarrier.Input{generation: ^generation} ->
-        {:error, :stale_runtime_cursor}
-
-      %SalixStore.ComputeRuntimeCarrier.Input{} ->
-        # A cursor from a retired Workload generation cannot order inputs in
-        # the new generation. Start at the beginning of the current fenced
-        # stream; generation transitions reset the durable cursor as well.
-        {:ok, ""}
-
-      nil ->
-        {:error, :invalid_runtime_cursor}
-    end
-  end
-
-  defp reconcile_runtime_cursor(cursor, _requested, _runtime_id, _workload_id, _generation)
-       when is_binary(cursor) and cursor == "",
-       do: {:ok, ""}
-
-  defp reconcile_runtime_cursor(cursor, _requested, runtime_id, workload_id, generation)
-       when is_binary(cursor) do
-    case Repo.get_by(
-           SalixStore.ComputeRuntimeCarrier.Input,
-           id: cursor,
-           runtime_instance_id: runtime_id,
-           workload_id: workload_id
-         ) do
-      %SalixStore.ComputeRuntimeCarrier.Input{generation: ^generation} ->
-        {:ok, cursor}
-
-      %SalixStore.ComputeRuntimeCarrier.Input{} ->
-        # Keep reconnects across a generation fence self-contained even if a
-        # pre-fix RuntimeInstance still contains its retired cursor.
-        {:ok, ""}
-
-      nil ->
-        {:error, :invalid_runtime_cursor}
-    end
-  end
-
-  @doc "Exchange the current epoch-bound bootstrap credential for a runtime credential."
-  def exchange_runtime_bootstrap(token, id, connection_epoch)
-      when is_binary(token) and is_binary(id) and is_binary(connection_epoch) do
-    if not canonical_nonzero_uint64?(connection_epoch) do
-      {:error, :invalid_epoch}
-    else
-      case Repo.transaction(fn ->
-             runtime =
-               Repo.one(
-                 from(r in RuntimeInstance,
-                   where: r.id == ^id,
-                   lock: "FOR UPDATE"
-                 )
-               )
-
-             if is_nil(runtime), do: Repo.rollback(:runtime_not_found)
-
-             workload =
-               Repo.one(
-                 from(w in Workload,
-                   where: w.id == ^runtime.workload_id,
-                   lock: "FOR UPDATE"
-                 )
-               )
-
-             if is_nil(workload), do: Repo.rollback(:runtime_not_found)
-
-             if runtime.workload_id != workload.id or
-                  runtime.generation != workload.generation or
-                  runtime.connection_epoch != connection_epoch or
-                  runtime.status != "connected" or workload.desired_state != "ready" do
-               Repo.rollback(:stale_runtime_bootstrap)
-             end
-
-             case WorkloadCredential.verify_for_runtime(
-                    token,
-                    workload.id,
-                    runtime.id,
-                    workload.generation,
-                    "bootstrap"
-                  ) do
-               {:ok, _claims} -> :ok
-               {:error, reason} -> Repo.rollback(reason)
-             end
-
-             if runtime.bootstrap_consumed_epoch != connection_epoch do
-               {1, _} =
-                 Repo.update_all(
-                   from(r in RuntimeInstance, where: r.id == ^runtime.id),
-                   set: [
-                     bootstrap_consumed_epoch: connection_epoch,
-                     updated_at: SystemsClock.timestamp(:utc_datetime_usec)
-                   ],
-                   inc: [revision: 1]
-                 )
-             end
-
-             {:ok, credential} =
-               WorkloadCredential.issue_for_runtime(
-                 workload.id,
-                 runtime.id,
-                 ["runtime"],
-                 900
-               )
-
-             %{runtime: Repo.get!(RuntimeInstance, runtime.id), credential: credential}
-           end) do
-        {:ok, result} -> {:ok, result}
-        {:error, reason} -> {:error, reason}
-      end
-    end
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
-  def exchange_runtime_bootstrap(_, _, _), do: {:error, :invalid_runtime_bootstrap}
-
-  @doc "Complete catch-up only for the current Runtime Agent credential."
-  def complete_runtime_catch_up_with_credential(
-        token,
-        id,
-        expected_revision,
-        connection_epoch,
-        settlement \\ false
-      )
-      when is_binary(token) and is_binary(id) and is_integer(expected_revision) and
-             is_binary(connection_epoch) do
-    with %RuntimeInstance{workload_id: workload_id, generation: generation} <-
-           Repo.get(RuntimeInstance, id),
-         {:ok, _claims} <-
-           if(settlement,
-             do:
-               SalixStore.Compute.WorkloadCredential.verify_for_settlement(
-                 token,
-                 workload_id,
-                 id,
-                 generation
-               ),
-             else:
-               SalixStore.Compute.WorkloadCredential.verify_for_runtime(
-                 token,
-                 workload_id,
-                 id,
-                 generation,
-                 "runtime"
-               )
-           ) do
-      complete_runtime_catch_up(id, expected_revision, connection_epoch, settlement)
-    else
-      nil -> {:error, :runtime_not_found}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :invalid_workload_credential}
-    end
-  rescue
-    _ -> {:error, :unavailable}
+    session.allocation_id == runtime.allocation_id and
+      facts["container_status"] == "running" and
+      facts["runtime_container_instance_id"] not in [nil, ""] and
+      facts["runtime_verified_host_epoch"] == session.connection_epoch and
+      facts["runtime_execution_epoch"] == runtime.connection_epoch and
+      facts["runtime_container_instance_id"] ==
+        get_in(facts, ["current_container", "instance_id"]) and
+      is_binary(facts["runtime_container_instance_id"])
   end
 
   def update_environment_intent(id, expected_revision, attrs) when is_map(attrs) do
@@ -4215,9 +3926,7 @@ defmodule SalixStore.Compute do
           'command_json',
           jsonb_build_object(
             'commandId', c.id,
-            'deadlineUnixMillis', floor(extract(epoch FROM (
-              CASE WHEN c.status = 'cancelled' THEN $1 + interval '60 seconds' ELSE c.deadline_at END
-            )) * 1000)::bigint,
+            'timeoutMillis', 60000,
             'targetRevision', COALESCE((d.provider_observation->>'allocation_revision')::bigint, 0),
             'releaseAllocation', jsonb_build_object(
               'allocationId', d.id,
@@ -4271,7 +3980,7 @@ defmodule SalixStore.Compute do
           'command_json',
           jsonb_build_object(
             'commandId', 'release:' || d.id || ':' || d.generation,
-            'deadlineUnixMillis', floor(extract(epoch FROM ($1 + interval '60 seconds')) * 1000)::bigint,
+            'timeoutMillis', 60000,
             'targetRevision', COALESCE((d.provider_observation->>'allocation_revision')::bigint, 0),
             'releaseAllocation', jsonb_build_object(
               'allocationId', d.id,
@@ -4434,7 +4143,7 @@ defmodule SalixStore.Compute do
                   outcome: "pending",
                   target_revision: allocation.revision,
                   connection_epoch: "0",
-                  payload: release_command_payload(allocation, command.id, deadline_at),
+                  payload: release_command_payload(allocation, command.id),
                   evidence: %{},
                   deadline_at: deadline_at,
                   next_attempt_at: nil,
@@ -4517,7 +4226,7 @@ defmodule SalixStore.Compute do
     {:error, error}
   end
 
-  defp release_command_payload(allocation, command_id, deadline_at) do
+  defp release_command_payload(allocation, command_id) do
     provider_revision =
       case Map.get(allocation.provider_observation || %{}, "allocation_revision", 0) do
         revision when is_integer(revision) and revision >= 0 -> revision
@@ -4527,7 +4236,7 @@ defmodule SalixStore.Compute do
     %{
       "command_json" => %{
         "commandId" => command_id,
-        "deadlineUnixMillis" => DateTime.to_unix(deadline_at, :millisecond),
+        "timeoutMillis" => 60_000,
         "targetRevision" => provider_revision,
         "releaseAllocation" => %{
           "allocationId" => allocation.id,
@@ -4561,7 +4270,7 @@ defmodule SalixStore.Compute do
           Repo.update_all(from(c in Command, where: c.id == ^command.id),
             set: [
               target_revision: allocation.revision,
-              payload: release_command_payload(allocation, command.id, command.deadline_at),
+              payload: release_command_payload(allocation, command.id),
               updated_at: now
             ]
           )
@@ -4569,6 +4278,20 @@ defmodule SalixStore.Compute do
     end
 
     :ok
+  end
+
+  @doc false
+  def allocation_release_requested?(%Allocation{} = allocation) do
+    incarnation = release_incarnation(allocation.id, allocation.generation)
+
+    Repo.exists?(
+      from(c in Command,
+        where:
+          c.allocation_id == ^allocation.id and c.kind == "allocation.release" and
+            is_nil(c.workload_id) and c.target_generation == ^allocation.generation and
+            c.release_incarnation == ^incarnation
+      )
+    )
   end
 
   @doc false
@@ -4653,7 +4376,7 @@ defmodule SalixStore.Compute do
                 target_revision: allocation.revision,
                 status: if(restored_cancelled?, do: "failed", else: command.status),
                 outcome: if(restored_cancelled?, do: "failed", else: command.outcome),
-                payload: release_command_payload(allocation, command.id, deadline_at),
+                payload: release_command_payload(allocation, command.id),
                 deadline_at: deadline_at,
                 next_attempt_at: retry_at,
                 evidence: if(restored_cancelled?, do: %{}, else: command.evidence),
@@ -4721,7 +4444,7 @@ defmodule SalixStore.Compute do
       connection_epoch: "0",
       status: "pending",
       outcome: "pending",
-      payload: release_command_payload(allocation, command_id, deadline_at),
+      payload: release_command_payload(allocation, command_id),
       evidence: %{},
       deadline_at: deadline_at,
       release_incarnation: incarnation,
@@ -5277,28 +5000,6 @@ defmodule SalixStore.Compute do
 
   defp commands, do: SalixStore.ComputeCommands
 
-  def reconcile_inventory(environment_id, expected_revision, watermark, observed_state)
-      when observed_state in @environment_states and is_integer(watermark) and watermark >= 0 do
-    case Repo.update_all(
-           from(e in Environment,
-             where:
-               e.id == ^environment_id and e.revision == ^expected_revision and
-                 e.inventory_watermark <= ^watermark
-           ),
-           set: [
-             inventory_watermark: watermark,
-             observed_state: observed_state,
-             updated_at: SystemsClock.timestamp(:utc_datetime_usec)
-           ],
-           inc: [revision: 1]
-         ) do
-      {1, _} -> {:ok, Repo.get!(Environment, environment_id)}
-      {0, _} -> {:error, :revision_conflict}
-    end
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
   @doc "A bounded, pre-shaped projection for one exact product owner."
   def project(tenant_id, owner_type, owner_id, limit \\ 50)
       when is_binary(tenant_id) and owner_type in ["project", "swarm", "group"] and
@@ -5314,6 +5015,7 @@ defmodule SalixStore.Compute do
         )
       )
 
+    environments = project_environments(environments)
     environment_ids = Enum.map(environments, & &1.id)
 
     allocations =
@@ -5419,24 +5121,8 @@ defmodule SalixStore.Compute do
       )
 
     {workloads, workload_cursor} = resource_page(workloads, limit)
-    page_environment_ids = Enum.map(environments, & &1.id)
 
-    available_ids =
-      Repo.all(
-        from(e in Environment,
-          join: p in Pool,
-          on: p.id == e.pool_id,
-          join: b in ProviderBinding,
-          on: b.pool_id == p.id,
-          where:
-            e.id in ^page_environment_ids and e.desired_state == "ready" and p.status == "active" and
-              b.status == "available" and (is_nil(b.environment_id) or b.environment_id == e.id),
-          distinct: e.id,
-          select: e.id
-        )
-      )
-
-    environments = Enum.map(environments, &Map.put(&1, :can_create, &1.id in available_ids))
+    environments = project_environments(environments)
 
     allocation_ids = Enum.map(workloads, & &1.allocation_id)
     workload_ids = Enum.map(workloads, & &1.id)
@@ -5487,6 +5173,65 @@ defmodule SalixStore.Compute do
      }}
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  # This bounded read derives Host availability without copying connection state
+  # into every Environment. Other providers keep their own observed state.
+  defp project_environments([]), do: []
+
+  defp project_environments(environments) do
+    ids = Enum.map(environments, & &1.id)
+    now = SystemsClock.utc_now()
+
+    facts =
+      Repo.all(
+        from(e in Environment,
+          join: p in Pool,
+          on: p.id == e.pool_id,
+          left_join: b in ProviderBinding,
+          on: b.pool_id == p.id and (is_nil(b.environment_id) or b.environment_id == e.id),
+          left_join: r in AgentVMM.Registration,
+          on: b.provider == "agent_vmm" and r.id == b.provider_ref,
+          where: e.id in ^ids,
+          group_by: e.id,
+          select:
+            {e.id,
+             %{
+               available:
+                 fragment(
+                   "bool_or(?)",
+                   e.desired_state == "ready" and p.status == "active" and
+                     ((b.provider != "agent_vmm" and b.status == "available") or
+                        (b.provider == "agent_vmm" and b.status != "revoked" and r.connected and
+                           r.status == "ready" and r.desired_enabled and
+                           r.authorization_expires_at > ^now))
+                 ),
+               vmm: filter(count(b.id), b.provider == "agent_vmm" and b.environment_id == e.id),
+               vmm_ready:
+                 filter(
+                   count(b.id),
+                   b.provider == "agent_vmm" and b.environment_id == e.id and
+                     b.status != "revoked" and r.connected and r.status == "ready" and
+                     r.desired_enabled and
+                     r.authorization_expires_at > ^now
+                 )
+             }}
+        )
+      )
+      |> Map.new()
+
+    Enum.map(environments, fn environment ->
+      connection = Map.fetch!(facts, environment.id)
+
+      observed =
+        if environment.desired_state == "ready" and connection.vmm > 0,
+          do: if(connection.vmm_ready > 0, do: "ready", else: "pending"),
+          else: environment.observed_state
+
+      environment
+      |> Map.put(:observed_state, observed)
+      |> Map.put(:can_create, connection.available == true)
+    end)
   end
 
   defp resource_page(rows, limit) do
@@ -5698,14 +5443,6 @@ defmodule SalixStore.Compute do
   defp validate_binding_environment(%Pool{}, _provider, _environment_id),
     do: {:error, :invalid_environment_scope}
 
-  defp validate_agent_vmm_scope_rollout("agent_vmm") do
-    if environment_scope_enforced?(),
-      do: :ok,
-      else: {:error, :environment_scope_rollout_pending}
-  end
-
-  defp validate_agent_vmm_scope_rollout(_provider), do: :ok
-
   defp validate_binding_environment_scope(pool, environment_id) do
     case Repo.get(Environment, environment_id) do
       %Environment{pool_id: pool_id, tenant_id: tenant_id}
@@ -5724,7 +5461,7 @@ defmodule SalixStore.Compute do
     binding.pool_id == environment.pool_id and
       (binding.environment_id == environment.id or
          (is_nil(binding.environment_id) and
-            (binding.provider != "agent_vmm" or not environment_scope_enforced?())))
+            binding.provider != "agent_vmm"))
   end
 
   # No available binding is node_offline when an Agent VMM Host is enrolled
@@ -5756,16 +5493,12 @@ defmodule SalixStore.Compute do
         join: r in SalixStore.AgentVMM.Registration,
         on: r.id == b.provider_ref,
         where:
-          b.pool_id == ^environment.pool_id and b.status != "available" and
+          b.pool_id == ^environment.pool_id and b.status != "revoked" and not r.connected and
             b.provider == "agent_vmm" and "agent_vmm" in ^allowed_providers and
             r.status != "revoked" and r.authorization_expires_at > ^SystemsClock.utc_now()
       )
 
-    if environment_scope_enforced?() do
-      from(b in query, where: b.environment_id == ^environment.id)
-    else
-      from(b in query, where: b.environment_id == ^environment.id or is_nil(b.environment_id))
-    end
+    from(b in query, where: b.environment_id == ^environment.id)
   end
 
   defp exact_placement_binding(query, nil), do: query
@@ -5777,10 +5510,11 @@ defmodule SalixStore.Compute do
         left_join: r in SalixStore.AgentVMM.Registration,
         on: r.id == b.provider_ref,
         where:
-          b.pool_id == ^environment.pool_id and b.status == "available" and
-            b.provider in ^allowed_providers and
-            (b.provider != "agent_vmm" or
-               (r.status != "revoked" and r.authorization_expires_at > ^SystemsClock.utc_now())),
+          b.pool_id == ^environment.pool_id and b.provider in ^allowed_providers and
+            ((b.provider != "agent_vmm" and b.status == "available") or
+               (b.provider == "agent_vmm" and b.status != "revoked" and r.status == "ready" and
+                  r.desired_enabled and r.connected and
+                  r.authorization_expires_at > ^SystemsClock.utc_now())),
         order_by: [
           asc: fragment("array_position(?::text[], ?)", ^allowed_providers, b.provider),
           asc: b.id
@@ -5788,22 +5522,10 @@ defmodule SalixStore.Compute do
         limit: 1
       )
 
-    if environment_scope_enforced?() do
-      from(b in query,
-        where:
-          b.environment_id == ^environment.id or
-            (is_nil(b.environment_id) and b.provider != "agent_vmm")
-      )
-    else
-      from(b in query, where: b.environment_id == ^environment.id or is_nil(b.environment_id))
-    end
-  end
-
-  defp environment_scope_enforced? do
-    SystemsRuntime.get_env(
-      :salix_store,
-      :agent_vmm_environment_scoped_bindings_enabled,
-      false
+    from(b in query,
+      where:
+        b.environment_id == ^environment.id or
+          (is_nil(b.environment_id) and b.provider != "agent_vmm")
     )
   end
 

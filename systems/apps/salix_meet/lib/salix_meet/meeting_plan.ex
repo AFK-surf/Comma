@@ -26,7 +26,7 @@ defmodule SalixMeet.MeetingPlan do
   @occurrence_fields ~w(start_ms end_ms effective calendar_revision)
   # "card" is the deterministic notice track: a system-process
   # Schedules receiver direct-posts the base briefing card (time + event link
-  # + Meet link + saved report) through the idempotent participant outbox. The
+  # + meeting link + saved report) through the idempotent participant outbox. The
   # T-10 Slack fire time has its own settle state and runs to meeting start.
   # Feishu retains its T-7 card and explicit publication path.
   @triggers ~w(decision publication deadline_fence card personal)
@@ -86,6 +86,7 @@ defmodule SalixMeet.MeetingPlan do
             preparation_lead_minutes: plan["preparation_lead_minutes"] || 10,
             research_enabled: plan["research_enabled"] != false,
             personal_preparation: plan["personal_preparation"] != false,
+            personal_recipients: plan["personal_recipients"],
             channel_notice: plan["channel_notice"] != false,
             publication_target: plan["publication_target"]
           )
@@ -119,7 +120,8 @@ defmodule SalixMeet.MeetingPlan do
                  |> bump(now)
                end),
              :ok <- delete_schedules(retired_ids(plan)),
-             {:ok, plan} <- finish_schedule_reconcile(plan, "cancelled", now) do
+             {:ok, plan} <- finish_schedule_reconcile(plan, "cancelled", now),
+             :ok <- finish_conversation(plan, "cancelled") do
           {:ok, plan}
         end
 
@@ -264,8 +266,32 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
-  defp require_report_target(%{"publication_target" => %{"provider" => "slack"}}), do: :ok
-  defp require_report_target(_plan), do: {:error, :meeting_report_target_unsupported}
+  defp require_report_target(plan) do
+    if system_track?(plan), do: :ok, else: {:error, :meeting_report_target_unsupported}
+  end
+
+  @doc """
+  Whether the plan runs the system track: an assigned research Task, a
+  saved report, the scheduled notice and personal notices. A Slack plan
+  does, and so does a Feishu/Lark plan of a team preparation saved in the
+  dashboard (`managed_calendar`). A Feishu/Lark notify plan of the
+  deployment configuration keeps its Router publication.
+  """
+  def system_track?(%{"publication_target" => %{"provider" => "slack"}}), do: true
+
+  def system_track?(%{
+        "publication_target" => %{"provider" => provider},
+        "managed_calendar" => true
+      })
+      when provider in ["feishu", "lark"],
+      do: true
+
+  def system_track?(_plan), do: false
+
+  defp legacy_lark_target?(opts),
+    do:
+      get_in(opts[:publication_target] || %{}, ["provider"]) in ["feishu", "lark"] and
+        opts[:managed_calendar] != true
 
   @doc """
   Resolve the deterministic base-card action for the direct publication
@@ -336,7 +362,7 @@ defmodule SalixMeet.MeetingPlan do
     kind = Keyword.get(opts, :kind, "card")
 
     lead_ms =
-      if target["provider"] in ["feishu", "lark"],
+      if target["provider"] in ["feishu", "lark"] and not system_track?(plan),
         do: :timer.minutes(7),
         else: :timer.minutes(plan["preparation_lead_minutes"] || 10)
 
@@ -359,8 +385,8 @@ defmodule SalixMeet.MeetingPlan do
         {:error, {:calendar_item_unavailable, context["calendar_item"]["unavailable"]}}
 
       true ->
-        # The card's promise is time + event link + Meet link; a card missing
-        # either link must never be sent. A missing Meet link means the
+        # The card's promise is time + event link + meeting link; a card missing
+        # either link must never be sent. A missing meeting link means the
         # occurrence is no longer card-worthy (the next scan will retire or
         # requalify the plan); a missing or safety-filtered event link on a
         # successfully read item is a durable fact of that item, so both
@@ -377,7 +403,11 @@ defmodule SalixMeet.MeetingPlan do
              %{
                "provider" => target["provider"],
                "params" => target["params"],
-               "text" => render_notice(plan, context, kind),
+               "text" =>
+                 if(kind == "card",
+                   do: with_destination_hint(render_notice(plan, context, kind), plan, target),
+                   else: render_notice(plan, context, kind)
+                 ),
                "idempotency_key" =>
                  if(kind == "card",
                    do: "calendar-briefing:" <> plan_id,
@@ -513,6 +543,27 @@ defmodule SalixMeet.MeetingPlan do
     })
   end
 
+  @doc false
+  def finish_conversation(plan, status) do
+    case plan["conversation_id"] do
+      nil ->
+        :ok
+
+      id ->
+        case ConversationServer.finish_meeting_plan(
+               plan["group_id"],
+               id,
+               plan["meeting_plan_id"],
+               status
+             ) do
+          {:ok, _} -> :ok
+          # A deleted Task has nothing left to end.
+          {:error, :not_found} -> :ok
+          {:error, _} = error -> error
+        end
+    end
+  end
+
   defp ensure_conversation(group, plan, item, opts) do
     case plan["conversation_id"] do
       id when is_binary(id) and id != "" ->
@@ -598,6 +649,10 @@ defmodule SalixMeet.MeetingPlan do
              )
            end) do
       :ok
+    else
+      # A deleted Task has no participants left to remove.
+      {:error, :not_found} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -605,7 +660,7 @@ defmodule SalixMeet.MeetingPlan do
     start_ms = occurrence["start_ms"]
     budget = Keyword.get(opts, :publication_budget_ms, @publication_budget_ms)
     policy_revision = Keyword.get(opts, :policy_revision, 1)
-    feishu? = get_in(opts[:publication_target] || %{}, ["provider"]) in ["feishu", "lark"]
+    feishu? = legacy_lark_target?(opts)
     lead_minutes = Keyword.get(opts, :preparation_lead_minutes, 10)
 
     deadline_lead =
@@ -661,6 +716,13 @@ defmodule SalixMeet.MeetingPlan do
       material =
         if opts[:channel_notice] == false,
           do: Map.put(material, "channel_notice", false),
+          else: material
+
+      # A meeting on members' calendars is prepared for named recipients; a
+      # change of recipient prepares it again.
+      material =
+        if is_list(opts[:personal_recipients]),
+          do: Map.put(material, "personal_recipients", opts[:personal_recipients]),
           else: material
 
       {:ok,
@@ -767,6 +829,7 @@ defmodule SalixMeet.MeetingPlan do
           "preparation_lead_minutes" => Keyword.get(opts, :preparation_lead_minutes, 10),
           "research_enabled" => opts[:research_enabled] != false,
           "personal_preparation" => opts[:personal_preparation] != false,
+          "personal_recipients" => opts[:personal_recipients],
           "channel_notice" => opts[:channel_notice] != false,
           "publication_target" => opts[:publication_target],
           "effective_occurrence" => effective_occurrence(occurrence),
@@ -814,12 +877,16 @@ defmodule SalixMeet.MeetingPlan do
     }
   end
 
-  defp trigger_schedule_attrs(
-         %{"publication_target" => %{"provider" => "slack"}} = plan,
-         preparation,
-         _router_id,
-         "deadline_fence"
-       ) do
+  defp trigger_schedule_attrs(plan, preparation, router_id, "deadline_fence") do
+    if system_track?(plan),
+      do: deadline_fence_schedule_attrs(plan, preparation),
+      else: agent_schedule_attrs(plan, preparation, router_id, "deadline_fence")
+  end
+
+  defp trigger_schedule_attrs(plan, preparation, router_id, kind),
+    do: agent_schedule_attrs(plan, preparation, router_id, kind)
+
+  defp deadline_fence_schedule_attrs(plan, preparation) do
     %{
       "receiver" => @card_receiver,
       "run_at" => run_at(preparation, "deadline_fence"),
@@ -832,7 +899,7 @@ defmodule SalixMeet.MeetingPlan do
     }
   end
 
-  defp trigger_schedule_attrs(plan, preparation, router_id, kind) do
+  defp agent_schedule_attrs(plan, preparation, router_id, kind) do
     %{
       "agent_id" => router_id,
       "receiver" => "agent",
@@ -840,7 +907,7 @@ defmodule SalixMeet.MeetingPlan do
       "prompt" => trigger_prompt(plan, kind)
     }
     |> then(fn attrs ->
-      if kind == "decision" and get_in(plan, ["publication_target", "provider"]) == "slack" do
+      if kind == "decision" and system_track?(plan) do
         Map.put(attrs, "meeting_preparation", %{
           "group_id" => plan["group_id"],
           "meeting_plan_id" => plan["meeting_plan_id"],
@@ -857,13 +924,11 @@ defmodule SalixMeet.MeetingPlan do
   defp trigger_applicable?(%{"research_enabled" => false}, kind)
        when kind in ~w(decision publication deadline_fence), do: false
 
-  defp trigger_applicable?(%{"publication_target" => %{"provider" => "slack"}}, "publication"),
-    do: false
+  defp trigger_applicable?(plan, "publication") when is_map(plan),
+    do: not system_track?(plan)
 
   defp trigger_applicable?(plan, "personal"),
-    do:
-      get_in(plan, ["publication_target", "provider"]) == "slack" and
-        plan["personal_preparation"] != false
+    do: system_track?(plan) and plan["personal_preparation"] != false
 
   defp trigger_applicable?(%{"channel_notice" => false}, "card"), do: false
   defp trigger_applicable?(plan, "card"), do: is_map(plan["publication_target"])
@@ -920,35 +985,10 @@ defmodule SalixMeet.MeetingPlan do
   defp dispatch_trigger(plan, kind, status, _opts),
     do: {:ok, settled_result(plan, kind, status)}
 
-  defp open(
-         %{"publication_target" => %{"provider" => "slack"}} = plan,
-         "decision",
-         result_status,
-         opts
-       ) do
-    with {:ok, plan} <- checkpoint(plan, "decision", opts) do
-      {:ok,
-       plan
-       |> trigger_result("decision", result_status)
-       |> Map.put("context", current_context(plan))
-       |> Map.put("research_protocol", research_protocol(plan))
-       |> Map.put("required_follow_up", decision_follow_up(plan))}
-    end
-  end
-
   defp open(plan, "decision", result_status, opts) do
-    with {:ok, plan, message} <- ensure_decision_request(plan, opts) do
-      result =
-        plan
-        |> trigger_result("decision", result_status)
-        |> Map.put("request_message_id", message["message_id"])
-        |> Map.put("request_message_seq", message["seq"])
-        |> Map.put("context", current_context(plan))
-        |> Map.put("research_protocol", research_protocol(plan))
-        |> Map.put("required_follow_up", decision_follow_up(plan))
-
-      {:ok, result}
-    end
+    if system_track?(plan),
+      do: open_system_decision(plan, result_status, opts),
+      else: open_router_decision(plan, result_status, opts)
   end
 
   defp open(plan, "publication", result_status, opts) do
@@ -1003,6 +1043,32 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
+  defp open_system_decision(plan, result_status, opts) do
+    with {:ok, plan} <- checkpoint(plan, "decision", opts) do
+      {:ok,
+       plan
+       |> trigger_result("decision", result_status)
+       |> Map.put("context", current_context(plan))
+       |> Map.put("research_protocol", research_protocol(plan))
+       |> Map.put("required_follow_up", decision_follow_up(plan))}
+    end
+  end
+
+  defp open_router_decision(plan, result_status, opts) do
+    with {:ok, plan, message} <- ensure_decision_request(plan, opts) do
+      result =
+        plan
+        |> trigger_result("decision", result_status)
+        |> Map.put("request_message_id", message["message_id"])
+        |> Map.put("request_message_seq", message["seq"])
+        |> Map.put("context", current_context(plan))
+        |> Map.put("research_protocol", research_protocol(plan))
+        |> Map.put("required_follow_up", decision_follow_up(plan))
+
+      {:ok, result}
+    end
+  end
+
   defp ensure_decision_request(plan, opts) do
     revision = get_in(plan, ["preparation", "dispatch_revision"])
 
@@ -1035,17 +1101,16 @@ defmodule SalixMeet.MeetingPlan do
     end
   end
 
-  defp ensure_decision_checkpoint(
-         %{"publication_target" => %{"provider" => "slack"}} = plan,
-         opts
-       ),
-       do: checkpoint(plan, "decision", opts)
-
   defp ensure_decision_checkpoint(plan, opts) do
-    if is_integer(get_in(plan, ["preparation", "decision_request_seq"])) do
-      {:ok, plan}
-    else
-      with {:ok, plan, _message} <- ensure_decision_request(plan, opts), do: {:ok, plan}
+    cond do
+      system_track?(plan) ->
+        checkpoint(plan, "decision", opts)
+
+      is_integer(get_in(plan, ["preparation", "decision_request_seq"])) ->
+        {:ok, plan}
+
+      true ->
+        with {:ok, plan, _message} <- ensure_decision_request(plan, opts), do: {:ok, plan}
     end
   end
 
@@ -1201,6 +1266,39 @@ defmodule SalixMeet.MeetingPlan do
     params = target["params"]
 
     case {target["provider"], target["tool"], params} do
+      # A Feishu/Lark team preparation without its shared notice: personal
+      # notices only, and the chat (if any) is a research source.
+      {provider, "none", %{} = params} when provider in ["feishu", "lark"] ->
+        if exact_keys?(target, ~w(provider tool params)) and
+             exact_subset?(params, ~w(connect_id chat_id)) and nonblank?(params["connect_id"]) and
+             optional_nonblank?(params["chat_id"]) do
+          {:ok,
+           %{
+             "provider" => provider,
+             "tool" => "none",
+             "params" =>
+               params
+               |> Map.update!("connect_id", &String.trim/1)
+               |> update_optional_text("chat_id")
+           }}
+        else
+          {:error, :invalid_meeting_publication_target}
+        end
+
+      # A Slack team preparation without a team channel: personal notices only.
+      {"slack", "none", %{} = params} ->
+        if exact_keys?(target, ~w(provider tool params)) and exact_keys?(params, ~w(connect_id)) and
+             nonblank?(params["connect_id"]) do
+          {:ok,
+           %{
+             "provider" => "slack",
+             "tool" => "none",
+             "params" => %{"connect_id" => String.trim(params["connect_id"])}
+           }}
+        else
+          {:error, :invalid_meeting_publication_target}
+        end
+
       {"slack", "im_api.slack.post_message", %{} = params} ->
         allowed = ~w(connect_id channel thread_ts)
 
@@ -1470,13 +1568,12 @@ defmodule SalixMeet.MeetingPlan do
     }
   end
 
-  defp research_deadline(%{"publication_target" => %{"provider" => "feishu"}} = plan),
-    do: get_in(plan, ["preparation", "publish_deadline_at"])
-
-  defp research_deadline(%{"publication_target" => %{"provider" => "lark"}} = plan),
-    do: get_in(plan, ["preparation", "publish_deadline_at"])
-
-  defp research_deadline(plan), do: get_in(plan, ["preparation", "publish_start_at"])
+  defp research_deadline(plan) do
+    if get_in(plan, ["publication_target", "provider"]) in ["feishu", "lark"] and
+         not system_track?(plan),
+       do: get_in(plan, ["preparation", "publish_deadline_at"]),
+       else: get_in(plan, ["preparation", "publish_start_at"])
+  end
 
   defp evidence(plan) do
     preparation = plan["preparation"] || %{}
@@ -1504,8 +1601,22 @@ defmodule SalixMeet.MeetingPlan do
     }
   end
 
+  defp publication_action(plan) do
+    case plan do
+      %{"publication_target" => %{"provider" => provider}} when provider in ["feishu", "lark"] ->
+        if system_track?(plan),
+          do: system_publication_action(plan),
+          else: router_publication_action(plan)
+
+      _ ->
+        system_publication_action(plan)
+    end
+  end
+
   # Feishu retains its existing explicit publication and mention contract.
-  defp publication_action(%{"publication_target" => %{"provider" => "feishu"} = target} = plan) do
+  defp router_publication_action(
+         %{"publication_target" => %{"provider" => "feishu"} = target} = plan
+       ) do
     %{
       "tool" => target["tool"],
       "params" => target["params"],
@@ -1521,7 +1632,9 @@ defmodule SalixMeet.MeetingPlan do
   end
 
   # Lark has the explicit publication of Feishu, through `lark.send_message`.
-  defp publication_action(%{"publication_target" => %{"provider" => "lark"} = target} = plan) do
+  defp router_publication_action(
+         %{"publication_target" => %{"provider" => "lark"} = target} = plan
+       ) do
     %{
       "tool" => target["tool"],
       "params" => target["params"],
@@ -1536,7 +1649,7 @@ defmodule SalixMeet.MeetingPlan do
     }
   end
 
-  defp publication_action(plan) do
+  defp system_publication_action(plan) do
     if is_map(plan["publication_target"]) do
       %{
         "tool" => "meeting.preparation.publish_report",
@@ -1571,6 +1684,21 @@ defmodule SalixMeet.MeetingPlan do
 
   defp render_notice(_plan, context, "personal"), do: MeetingBriefing.render_card(context)
 
+  # Once per Group, while nobody chose where notices go and the Group has bots
+  # on two platforms (`CalendarConfiguration.destination_hint/2`). A plan
+  # without a team notice carries it in a personal reminder instead
+  # (`Salix.Bindings.MeetingPersonalPublication`).
+  defp with_destination_hint(text, plan, target) do
+    if plan["managed_calendar"] == true do
+      case SalixMeet.CalendarConfiguration.destination_hint(plan["group_id"], target["provider"]) do
+        "" -> text
+        hint -> text <> "\n\n" <> hint
+      end
+    else
+      text
+    end
+  end
+
   # The product's follow-up section: the previous meeting's commitments with
   # their status and the team's open items, rendered from its own records.
   defp team_section(plan, context) do
@@ -1596,52 +1724,10 @@ defmodule SalixMeet.MeetingPlan do
   @doc false
   def research_command(plan), do: trigger_prompt(plan, "decision")
 
-  defp trigger_prompt(%{"publication_target" => %{"provider" => "slack"}} = plan, "decision") do
-    args =
-      Jason.encode!(%{
-        "meeting_plan_id" => plan["meeting_plan_id"],
-        "dispatch_revision" => get_in(plan, ["preparation", "dispatch_revision"])
-      })
-
-    "Meeting preparation Task kickoff. Select an existing ordinary Worker, or omit " <>
-      "worker_agent_id to use the configured Worker default. Call meeting.preparation.start_research with " <>
-      args <>
-      " and optional worker_agent_id. The server creates or returns the assigned Task and " <>
-      "supplies its research command. Do not research, decide scope, assess sources, or " <>
-      "write the report. The Task Worker owns those steps and submits the final body " <>
-      "directly. Do not create a second Task or publication Schedule. On retry reuse the " <>
-      "same Worker. A stale or expired revision is settled."
-  end
-
   defp trigger_prompt(plan, "decision") do
-    args =
-      Jason.encode!(%{
-        "meeting_plan_id" => plan["meeting_plan_id"],
-        "trigger_kind" => "decision",
-        "dispatch_revision" => get_in(plan, ["preparation", "dispatch_revision"])
-      })
-
-    "Meeting preparation decision trigger. Call meeting.preparation.open_trigger with #{args}. " <>
-      @untrusted_data_boundary <>
-      " " <>
-      "Do not finish the turn after open_trigger when it returns status opened or already_opened. " <>
-      "Review its current context and required_follow_up, then call " <>
-      "meeting.preparation.record_decision in the same turn with decision=required or " <>
-      "decision=not_required and a bounded baseline of known facts and gaps. " <>
-      "When research is required, use the existing ordinary-agent collaboration workflow: select " <>
-      "or create one Worker, add it to the returned meeting conversation with role_label=worker, " <>
-      "messages=mentioned, and statuses=none, and assign it once through " <>
-      "im_api.internal.send_message with matching " <>
-      "mentions.participant_ids and delivery_filter.participant_ids. Include the workflow id, " <>
-      "revision, absolute publication deadline, research_protocol.checkpoint_fields, " <>
-      "research_protocol.coordination_delivery, and research_protocol.terminal_requirement " <>
-      "verbatim. Apply the coordination rule to every research message: keep its delivery filter " <>
-      "agent-only and do not send it to provider participants. The Worker must send one final " <>
-      "internal result and stop; " <>
-      "it must not create a Schedule, wait merely to stay alive, enter passive monitoring, or keep " <>
-      "sending periodic checkpoints. Keep every research message internal. " <>
-      "Use only attendee-shareable preparation; exclude private per-user observations. " <>
-      "Do not invent facts. A stale, cancelled, disabled, not_due, or deadline_passed result is settled."
+    if system_track?(plan),
+      do: system_decision_prompt(plan),
+      else: router_decision_prompt(plan)
   end
 
   defp trigger_prompt(plan, "publication") do
@@ -1676,6 +1762,54 @@ defmodule SalixMeet.MeetingPlan do
       @untrusted_data_boundary <>
       " This diagnostic has no automatic fallback: do not send an external or internal message, " <>
       "do not create another Schedule, and do not wait. Treat every returned status as settled."
+  end
+
+  defp system_decision_prompt(plan) do
+    args =
+      Jason.encode!(%{
+        "meeting_plan_id" => plan["meeting_plan_id"],
+        "dispatch_revision" => get_in(plan, ["preparation", "dispatch_revision"])
+      })
+
+    "Meeting preparation Task kickoff. Select an existing ordinary Worker, or omit " <>
+      "worker_agent_id to use the configured Worker default. Call meeting.preparation.start_research with " <>
+      args <>
+      " and optional worker_agent_id. The server creates or returns the assigned Task and " <>
+      "supplies its research command. Do not research, decide scope, assess sources, or " <>
+      "write the report. The Task Worker owns those steps and submits the final body " <>
+      "directly. Do not create a second Task or publication Schedule. On retry reuse the " <>
+      "same Worker. A stale or expired revision is settled."
+  end
+
+  defp router_decision_prompt(plan) do
+    args =
+      Jason.encode!(%{
+        "meeting_plan_id" => plan["meeting_plan_id"],
+        "trigger_kind" => "decision",
+        "dispatch_revision" => get_in(plan, ["preparation", "dispatch_revision"])
+      })
+
+    "Meeting preparation decision trigger. Call meeting.preparation.open_trigger with #{args}. " <>
+      @untrusted_data_boundary <>
+      " " <>
+      "Do not finish the turn after open_trigger when it returns status opened or already_opened. " <>
+      "Review its current context and required_follow_up, then call " <>
+      "meeting.preparation.record_decision in the same turn with decision=required or " <>
+      "decision=not_required and a bounded baseline of known facts and gaps. " <>
+      "When research is required, use the existing ordinary-agent collaboration workflow: select " <>
+      "or create one Worker, add it to the returned meeting conversation with role_label=worker, " <>
+      "messages=mentioned, and statuses=none, and assign it once through " <>
+      "im_api.internal.send_message with matching " <>
+      "mentions.participant_ids and delivery_filter.participant_ids. Include the workflow id, " <>
+      "revision, absolute publication deadline, research_protocol.checkpoint_fields, " <>
+      "research_protocol.coordination_delivery, and research_protocol.terminal_requirement " <>
+      "verbatim. Apply the coordination rule to every research message: keep its delivery filter " <>
+      "agent-only and do not send it to provider participants. The Worker must send one final " <>
+      "internal result and stop; " <>
+      "it must not create a Schedule, wait merely to stay alive, enter passive monitoring, or keep " <>
+      "sending periodic checkpoints. Keep every research message internal. " <>
+      "Use only attendee-shareable preparation; exclude private per-user observations. " <>
+      "Do not invent facts. A stale, cancelled, disabled, not_due, or deadline_passed result is settled."
   end
 
   defp decision_follow_up(plan) do

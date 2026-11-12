@@ -19,7 +19,7 @@ theorem candidate_encoded_history {framing : CodecFraming} {objects : Objects} {
     PhysicalHistory framing objects owner session stamped sealed ∧ ∃ snapshot bytes rest,
       Lifecycle.persistable stamped [] = .ok (snapshot, rest) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧
       PhysicalHistory framing objects owner session snapshot sealed := by
   obtain ⟨journal, rest, preparedCall⟩ := start_prepares preparation
   have preparedHistory := history.prepare preparedCall

@@ -71,12 +71,12 @@ defmodule SalixWeb.AgentVMMCloudVMTest do
       "host-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
     {:ok, _registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: registration_id,
         tenant_id: tenant,
         group_id: group,
         device_id: "host-device",
-        enrollment_token: String.duplicate("h", 32)
+        credential: String.duplicate("h", 32)
       })
 
     connect_host!(tenant, registration_id)
@@ -400,7 +400,7 @@ defmodule SalixWeb.AgentVMMCloudVMTest do
     rec
   end
 
-  # The Host's current connection made its Project Environment's binding available.
+  # The Host's current connection permits placement in its Project Environment.
   defp connect_host!(tenant, registration_id) do
     {:ok, pool} =
       GroupCompute.create_pool(%{
@@ -421,7 +421,7 @@ defmodule SalixWeb.AgentVMMCloudVMTest do
         pool_id: pool.id
       })
 
-    {:ok, binding} =
+    {:ok, _binding} =
       GroupCompute.create_provider_binding(%{
         id: "host-binding-" <> registration_id,
         pool_id: pool.id,
@@ -434,8 +434,11 @@ defmodule SalixWeb.AgentVMMCloudVMTest do
       set: [status: "ready", desired_enabled: true]
     )
 
-    Repo.update_all(from(b in GroupCompute.ProviderBinding, where: b.id == ^binding.id),
-      set: [status: "available", observation: %{"connection_epoch" => "7"}]
-    )
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration(registration_id, "gateway-test", %{
+               "connectionEpoch" => "7",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
   end
 end

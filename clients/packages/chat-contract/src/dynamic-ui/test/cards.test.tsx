@@ -2,11 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cardEngine, type CardOutgoing } from "../cards";
 import {
   checklistFixture,
+  cohortTableFixture,
   comparisonFixture,
+  eventBarsFixture,
   forecastFixture,
+  funnelBarsFixture,
+  leaderboardTableFixture,
+  progressBarsFixture,
+  ratingBarsFixture,
   groupedChecklistFixture,
   hotelOptionsFixture,
+  boardingPassFixture,
+  devicesFixture,
+  mediaFixture,
   newsFixture,
+  orderFixture,
   placeFixture,
   pullRequestsFixture,
   storageFixture,
@@ -55,6 +65,36 @@ function layoutOf(kind: string, data: unknown, seed: string, variant?: string) {
 
 const layoutsFor = (kind: string, data: unknown, variant?: string) =>
   new Set(seeds.map((seed) => layoutOf(kind, data, seed, variant)));
+
+const texts = (target: Element, selector: string) =>
+  [...target.querySelectorAll(selector)].map((node) => node.textContent);
+
+/** The number each of `nodes` has in the style `read` returns, 0 where it has none. */
+const numbers = (nodes: Iterable<HTMLElement>, read: (node: HTMLElement) => string) =>
+  [...nodes].map((node) => Number.parseFloat(read(node) || "0"));
+
+/** Each bar's tone and how much of its track it fills, in percent. */
+const shares = (target: Element) =>
+  [...target.querySelectorAll<HTMLElement>(".wc-rank-track")].map((track) => [
+    track.dataset.tone,
+    Math.round(Number.parseFloat(track.style.getPropertyValue("--wc-share"))),
+  ]);
+
+/** Which of a table's columns read down their right edge. */
+const ends = (target: Element) =>
+  [...target.querySelectorAll("thead th")].map((head) =>
+    head.classList.contains("wc-table-end")
+  );
+
+const chartEngine = () =>
+  cardEngine({
+    seed: "s",
+    locale: "en",
+    copy: {},
+    icons: {},
+    state: {},
+    send: () => {},
+  });
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -143,12 +183,12 @@ describe("card content", () => {
     expect(pair.target.textContent).toContain("Price");
     pair.engine.dispose();
 
-    const items = Array.from({ length: 6 }, () => ({ label: "Task" }));
+    const items = Array.from({ length: 12 }, () => ({ label: "Task" }));
     const checklist = show("checklist", {
       title: "Tasks",
       groups: [{ items }, { items: [...items, {}] }, { items: [{}] }],
     });
-    expect(checklist.target.textContent).toContain("0 of 12 done");
+    expect(checklist.target.textContent).toContain("0 of 20 done");
     checklist.engine.dispose();
 
     const bars = show("trend", {
@@ -204,7 +244,7 @@ describe("card content", () => {
     expect(mixed[3]).toContain("烘焙店");
   });
 
-  it("ends text it cuts with an ellipsis but matches saved progress by the id as written", () => {
+  it("shows a long label whole and matches saved progress by the id as written", () => {
     const label = "复核".repeat(50);
     const { target } = show(
       "checklist",
@@ -213,10 +253,17 @@ describe("card content", () => {
       "progress",
       { card: [label.slice(0, 80)] }
     );
-    expect(target.querySelector(".wc-check-label")?.textContent).toBe(
-      `${label.slice(0, 79)}…`
-    );
+    expect(target.querySelector(".wc-check-label")?.textContent).toBe(label);
     expect(checked(target)).toEqual([true]);
+  });
+
+  it("shows a checklist item's why, action and acceptance detail whole", () => {
+    const detail = `为什么：${"真实回访形成月流量。".repeat(20)}动作：${"选一条工作切口。".repeat(20)}验收：记录首次成功。`;
+    const { target } = show("checklist", {
+      title: "Launch",
+      groups: [{ items: [{ label: "降低首次成功门槛", detail }] }],
+    });
+    expect(target.querySelector(".wc-check .wc-xs")?.textContent).toBe(detail);
   });
 
   it("lists a nearby place's address under its note", () => {
@@ -229,13 +276,6 @@ describe("card content", () => {
     ];
     expect(row?.textContent).toContain(place.note);
     expect(row?.textContent).toContain(place.address);
-  });
-
-  it("cuts text between characters, never inside one", () => {
-    const name = `${"x".repeat(58)}😀😀`;
-    const { target } = show("place", { title: "Places", places: [{ name }] });
-    expect(target.textContent).toContain(`${"x".repeat(58)}…`);
-    expect(target.textContent).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 
   it("shows each feed item's status and leaves out a time it does not have", () => {
@@ -300,10 +340,10 @@ describe("card content", () => {
     expect(one.querySelectorAll("li")).toHaveLength(2);
   });
 
-  it("keeps the feed layouts within the node counts the Worker manual names", () => {
-    // The runtime's 500-node budget covers the whole widget and also counts the
-    // card's element. The Worker manual (salix_agent tools/dynamic_ui.ex) says
-    // a card uses up to 270 of them and a feed of more than 12 items up to 390.
+  it("keeps the feed layouts within the node count the Worker manual names", () => {
+    // The runtime's 2,000-node budget covers the whole rendered widget and also
+    // counts the card's element. The Worker manual (salix_agent
+    // tools/dynamic_ui.ex) says a card is at most 450 of them.
 
     // The most filters a feed holds, each with a count.
     const filters = [
@@ -388,6 +428,72 @@ describe("card content", () => {
     );
   });
 
+  it("shows an order's arrival moment on the viewer's clock and how far its stages got", () => {
+    vi.setSystemTime(Date.parse("2026-10-29T02:00:00Z"));
+    const target = document.createElement("section");
+    document.body.append(target);
+    const engine = cardEngine({
+      seed: "block-1",
+      locale: "zh-CN",
+      timeZone: "Asia/Shanghai",
+      copy: { arrivesBy: "预计 {time} 前送达", orderHeadline: "{status}，{arrival}" },
+      icons: {},
+      state: {},
+      send: () => {},
+    });
+    const data = { ...orderFixture, arrivesBy: "2026-10-29T07:18:00Z" };
+    target.replaceChildren(
+      engine.mount(target, { kind: "order", data, variant: "compact" }, "card")
+    );
+    expect(target.textContent).toContain("正在出库，预计 15:18 前送达");
+    // Order placed, now leaving the warehouse: the second of four stages.
+    expect(target.querySelector("progress")?.value).toBe(33);
+    engine.dispose();
+  });
+
+  it("shows each end of a ticket at its own place's clock", () => {
+    const { target } = show("ticket", boardingPassFixture, "block-1", "ticket");
+    // 08:40 in Shanghai and 12:55 in Tokyo, whatever the viewer's zone.
+    const times = [...target.querySelectorAll(".wc-display-md")].map(
+      (node) => node.textContent
+    );
+    expect(times).toEqual(["08:40", "12:55"]);
+  });
+
+  it("draws the media controls on a host that passes no icons, as phones do", () => {
+    // show() mounts with icons: {}, as the iOS and Android hosts do.
+    for (const variant of ["player", "queue"]) {
+      const { target } = show("media", mediaFixture, "block-1", variant);
+      const buttons = [...target.querySelectorAll("button")];
+      expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+        "previous",
+        "pause",
+        "next",
+      ]);
+      for (const button of buttons)
+        expect(button.querySelector("svg path")?.getAttribute("d")).toBeTruthy();
+    }
+  });
+
+  it("offers every control a device has in the device grid", () => {
+    const four = [1, 2, 3, 4].map((step) => ({
+      label: `+${step}`,
+      prompt: `raise ${step}`,
+    }));
+    const data = {
+      ...devicesFixture,
+      devices: [
+        { ...devicesFixture.devices[0]!, controls: four },
+        devicesFixture.devices[1]!,
+      ],
+    };
+    const { target } = show("device", data, "block-1", "grid");
+    const first = target.querySelector("li")!;
+    expect(
+      [...first.querySelectorAll("button")].map((button) => button.textContent)
+    ).toEqual(["+1", "+2", "+3", "+4"]);
+  });
+
   it("names the entry it cannot read instead of calling the list missing", () => {
     // The staging forecast that failed: temperatures as text with units.
     const day = {
@@ -448,6 +554,513 @@ const mountChecklist = (
   return { target, engine };
 };
 
+describe("numbers in cards", () => {
+  it("shows which way a change went once, from its direction or its sign", () => {
+    const { target } = show("metric", {
+      title: "Traffic",
+      metrics: [
+        {
+          label: "Visitors",
+          value: "181",
+          delta: { value: "-37.6%", direction: "down" },
+        },
+        { label: "Signups", value: "76", delta: { value: "+58.3%" } },
+        { label: "Sessions", value: "197", delta: { value: "−37.5%" } },
+        {
+          label: "Bounce",
+          value: "41%",
+          delta: { value: "3%", direction: "down", good: true },
+        },
+      ],
+    });
+    expect(texts(target, ".wc-delta")).toEqual(["37.6%", "58.3%", "37.5%", "3%"]);
+    // A fall reads as bad unless the data calls it good.
+    expect(
+      [...target.querySelectorAll(".wc-delta")].map((node) =>
+        node.classList.contains("wc-text-error")
+      )
+    ).toEqual([true, false, true, false]);
+
+    const watch = show(
+      "trend",
+      {
+        title: "Holdings",
+        series: [
+          {
+            label: "TSLA",
+            value: "$412.90",
+            points: [1, 2],
+            delta: { value: "+4.85%" },
+          },
+          {
+            label: "GOOGL",
+            value: "$201.36",
+            points: [2, 1],
+            delta: { value: "-0.52%" },
+          },
+        ],
+      },
+      "block-1",
+      "watchlist"
+    );
+    expect(texts(watch.target, ".wc-pill")).toEqual(["+4.85%", "−0.52%"]);
+  });
+
+  it("shows the metrics given beside a goal, and each tile's caption", () => {
+    const { target } = show("metric", {
+      title: "This week",
+      goal: { current: 312, target: 300, valueLabel: "312 min", targetLabel: "of 300" },
+      metrics: [
+        { label: "Runs", value: "18.4", unit: "km", caption: "3 runs" },
+        { label: "Sleep", value: "6 h 48 min" },
+      ],
+    });
+    expect(target.textContent).toContain("312 min");
+    expect(texts(target, ".wc-tile")).toEqual(["Runs18.4km3 runs", "Sleep6 h 48 min"]);
+  });
+
+  it("labels every bar of a short series, each with its value, and draws no unnamed line", () => {
+    const labels = ["Direct", "google.com", "t.co", "bing.com", "github.com"];
+    const { target } = show("trend", {
+      title: "Top sources",
+      bars: { labels, values: [118, 31, 17, 9, 8] },
+    });
+    expect(texts(target, ".wc-bars-axis>span")).toEqual(labels);
+    expect(target.querySelector(".wc-bars-axis")!.classList).toContain(
+      "wc-bars-axis-all"
+    );
+    expect(texts(target, ".wc-bars-value")).toEqual(["118", "31", "17", "9", "8"]);
+    expect(target.querySelector(".wc-bars-average")).toBeNull();
+    // No empty band stands where the data gives no main value or mean.
+    expect(target.querySelector(".wc-bars-legend")!.classList).toContain("wc-sr");
+    expect(target.querySelector(".wc-card")!.children).toHaveLength(2);
+  });
+
+  it("keeps every nth label of a long series, counted back from its latest bar", () => {
+    const labels = Array.from({ length: 30 }, (_, day) => `10/${day + 1}`);
+    const { target } = show("trend", {
+      title: "Daily visitors",
+      bars: {
+        labels,
+        values: labels.map((_, day) => 100 + day),
+        averageLabel: "Mean 114",
+      },
+    });
+    const ticks = [...target.querySelectorAll(".wc-bars-axis>span")];
+    const kept = (name: string) =>
+      ticks.filter((tick) => tick.classList.contains(`wc-tick-${name}`)).length;
+    expect(ticks.at(-1)!.className).toBe("wc-tick-wide wc-tick-medium wc-tick-narrow");
+    expect(kept("wide")).toBeGreaterThan(kept("medium"));
+    expect(kept("medium")).toBeGreaterThan(kept("narrow"));
+    expect(kept("narrow")).toBeGreaterThan(1);
+    // Only the latest bar carries its value, over the named mean line.
+    expect(texts(target, ".wc-bars-value")).toEqual(["129"]);
+    expect(target.querySelector(".wc-bars-average")).not.toBeNull();
+    expect(target.textContent).toContain("Mean 114");
+  });
+
+  it("shows ISO event times as clock times and heads each date", () => {
+    const { target } = show(
+      "schedule",
+      {
+        title: "Kyoto",
+        zone: "Asia/Tokyo",
+        events: [
+          {
+            start: "2026-11-14T00:00:00Z",
+            end: "2026-11-14T02:30:00Z",
+            title: "Fushimi Inari",
+          },
+          { start: "2026-11-15T08:30", title: "Bamboo grove" },
+          { start: "2026-11-15T10:00:00+09:00", title: "Tenryu-ji" },
+        ],
+      },
+      "block-1",
+      "agenda"
+    );
+    // A moment shows in the schedule's zone; a time with no offset as written.
+    expect(texts(target, ".wc-agenda-time")).toEqual(["09:00", "08:30", "10:00"]);
+    expect(target.textContent).toContain("09:00–11:30");
+    expect(texts(target, ".wc-day")).toEqual(["Sat, Nov 14", "Sun, Nov 15"]);
+
+    // Text that is no ISO time stays as written, and one date needs no heading.
+    const plain = show("schedule", {
+      title: "Today",
+      events: [{ start: "After lunch", title: "Review" }],
+    });
+    expect(plain.target.textContent).toContain("After lunch");
+    expect(plain.target.querySelector(".wc-day")).toBeNull();
+  });
+
+  it("reads a status written as text and a total written as a number", () => {
+    const feed = show("feed", {
+      title: "Hosts",
+      items: [{ source: "API", title: "salix-prod-1", status: "Healthy" }],
+    });
+    expect(feed.target.textContent).toContain("Healthy");
+
+    const split = show(
+      "composition",
+      {
+        title: "Holdings",
+        total: 128460.32,
+        segments: [
+          { label: "NVDA", value: 29797.2, valueLabel: "$29,797.20 · 23.2%" },
+          { label: "AAPL", value: 27105, valueLabel: "$27,105.00 · 21.1%" },
+        ],
+      },
+      "block-1",
+      "stacked"
+    );
+    expect(split.target.textContent).toContain("128,460.32");
+    // Labels that state a percent get no second one.
+    expect(split.target.querySelector(".wc-legend-share")).toBeNull();
+    // A total that long does not fit the middle of a ring.
+    expect(
+      layoutsFor("composition", {
+        title: "Holdings",
+        total: 128460.32,
+        segments: [{ label: "NVDA", value: 1 }],
+      })
+    ).toEqual(new Set(["stacked"]));
+  });
+});
+
+describe("bars card", () => {
+  it("draws each item's bar, the value it is compared with, and its change", () => {
+    const { target } = show("bars", eventBarsFixture, "block-1", "rows");
+    expect(texts(target, ".wc-rank-legend>span:not(.wc-rank-swatch)")).toEqual([
+      "昨日",
+      "前天",
+    ]);
+    expect(texts(target, ".wc-rank-values").slice(0, 2)).toEqual([
+      "764858.3%",
+      "324528.9%",
+    ]);
+    // Both series share one scale: the largest value of either is a full bar.
+    expect(shares(target).slice(-4)).toEqual([
+      ["brand", 72],
+      ["compare", 100],
+      ["brand", 63],
+      ["compare", 71],
+    ]);
+  });
+
+  it("scales bars to the stated full value and colors them by tone", () => {
+    const { target } = show("bars", progressBarsFixture, "block-1", "rows");
+    expect(shares(target)).toEqual([
+      ["brand", 46],
+      ["success", 80],
+      ["warning", 22],
+      ["error", 0],
+    ]);
+    expect(target.textContent).toContain("有风险");
+  });
+
+  it("stands bars upright only for a few short labels with values alone", () => {
+    expect(layoutsFor("bars", ratingBarsFixture)).toEqual(
+      new Set(["rows", "compact", "columns"])
+    );
+    const columns = show("bars", ratingBarsFixture, "block-1", "columns");
+    expect(texts(columns.target, ".wc-bars-axis>span")).toEqual([
+      "5 星",
+      "4 星",
+      "3 星",
+      "2 星",
+      "1 星",
+    ]);
+    expect(texts(columns.target, ".wc-bars-value")).toEqual([
+      "962",
+      "187",
+      "61",
+      "28",
+      "46",
+    ]);
+    expect(columns.target.querySelector(".wc-bar-latest")).toBeNull();
+    // A compared value or a caption needs a row.
+    expect(layoutsFor("bars", eventBarsFixture)).toEqual(new Set(["rows", "compact"]));
+    expect(layoutsFor("bars", funnelBarsFixture)).toEqual(new Set(["rows"]));
+  });
+
+  it("draws a stated full value at one scale in every layout it can take", () => {
+    // Upright bars scale to their tallest. With max 100, a 20 and a 40 drew
+    // as 40% and 80% there and as 20% and 40% in rows, by the layout picked.
+    const progress = {
+      title: "Goals",
+      max: 100,
+      items: [
+        { label: "A", value: 20 },
+        { label: "B", value: 40 },
+      ],
+    };
+    expect(layoutsFor("bars", progress)).toEqual(new Set(["rows", "compact"]));
+    for (const variant of ["rows", "compact", "columns"])
+      expect(
+        shares(show("bars", progress, "block-1", variant).target),
+        variant
+      ).toEqual([
+        ["brand", 20],
+        ["brand", 40],
+      ]);
+    // Without max the same items may stand upright.
+    const { max: _max, ...free } = progress;
+    expect(layoutsFor("bars", free)).toContain("columns");
+  });
+
+  it("lays a value under zero on the other side of zero from one over it", () => {
+    const { target } = show(
+      "bars",
+      {
+        title: "Net change",
+        items: [
+          { label: "Gained", value: 30 },
+          { label: "Lost", value: -10 },
+        ],
+      },
+      "block-1",
+      "rows"
+    );
+    // The track runs from -10 to 30: zero is a quarter along it.
+    const tracks = [...target.querySelectorAll<HTMLElement>(".wc-rank-track")].map(
+      (track) =>
+        ["--wc-from", "--wc-share"].map((name) =>
+          Number.parseFloat(track.style.getPropertyValue(name) || "0")
+        )
+    );
+    expect(tracks).toEqual([
+      [25, 75],
+      [0, 25],
+    ]);
+    expect(texts(target, ".wc-rank-values")).toEqual(["30", "-10"]);
+  });
+
+  it("stays within the node count the Worker manual names", () => {
+    const items = Array.from({ length: 12 }, (_, index) => ({
+      label: `Step ${index}`,
+      value: 100 - index,
+      compare: 90 - index,
+      delta: { value: "3%", direction: "down" },
+      caption: "Conversion 62.1% · median 11 min",
+      status: { label: "Behind", tone: "warning" },
+      brand: "github",
+    }));
+    const { target } = show(
+      "bars",
+      { title: "Funnel", legend: { value: "Now", compare: "Before" }, items },
+      "block-1",
+      "rows"
+    );
+    expect(target.querySelectorAll("li")).toHaveLength(12);
+    expect(nodesOf(target)).toBeLessThanOrEqual(400);
+  });
+});
+
+describe("table card", () => {
+  it("reads numbers down their right edge, colors toned cells and keeps empty ones", () => {
+    const board = show("table", leaderboardTableFixture);
+    // Counts and amounts are numbers; a name and an arrow are not.
+    expect(ends(board.target)).toEqual([false, true, true, false]);
+    expect(board.target.querySelector(".wc-text-success")!.textContent).toBe("↑2");
+    expect(board.target.querySelectorAll("tbody th[scope=row]")).toHaveLength(6);
+
+    const cohort = show("table", cohortTableFixture);
+    // A column may have no heading; a cell may have no value yet.
+    expect(cohort.target.querySelectorAll("thead th")).toHaveLength(8);
+    expect(cohort.target.querySelectorAll("tbody td:empty")).toHaveLength(15);
+    expect(ends(cohort.target)).toEqual([false, ...Array<boolean>(7).fill(true)]);
+    // An empty text is an empty cell, as null is.
+    const holdings = show("table", {
+      title: "Holdings",
+      columns: ["Asset", "Shares", "Value"],
+      rows: [
+        ["NVDA", 40, "$9,932"],
+        ["Cash", "", "$1,200"],
+      ],
+    });
+    expect(holdings.target.querySelectorAll("tbody td:empty")).toHaveLength(1);
+    expect(ends(holdings.target)).toEqual([false, true, true]);
+  });
+
+  it("shows a number with the decimals it has", () => {
+    // Two decimals at most turned 0.001 and 0.004 into the same 0.
+    const { target } = show("table", {
+      title: "Readings",
+      columns: ["Sample", "Value"],
+      rows: [
+        ["A", 0.001],
+        ["B", 0.004],
+        ["C", 1234.5678],
+        ["D", 0.1 + 0.2],
+      ],
+    });
+    expect(texts(target, "tbody td")).toEqual(["0.001", "0.004", "1,234.5678", "0.3"]);
+  });
+
+  it("names the row it cannot read and stays within the node count", () => {
+    expect(() =>
+      show("table", { title: "Orders", columns: ["Order", "Amount"], rows: [["#1"]] })
+    ).toThrow("Card data rows[0] needs one cell per column, the first naming the row");
+
+    // The most rows and columns a table holds.
+    const rows = Array.from({ length: 24 }, (_, row) => [
+      `Row ${row}`,
+      1,
+      2,
+      3,
+      4,
+      5,
+      { text: "Late", tone: "error" },
+      null,
+    ]);
+    const { target } = show("table", {
+      title: "Hosts",
+      columns: ["Host", "CPU", "Memory", "Disk", "Load", "Net", "Status", "Note"],
+      rows,
+    });
+    expect(target.querySelectorAll("tbody tr")).toHaveLength(24);
+    expect(target.querySelectorAll("tbody tr:first-child > *")).toHaveLength(8);
+    expect(nodesOf(target)).toBeLessThanOrEqual(450);
+  });
+});
+
+describe("comma.chart drawing", () => {
+  const draw = (spec: Parameters<ReturnType<typeof chartEngine>["chart"]>[0]) => {
+    const figure = document.createElement("figure");
+    figure.append(chartEngine().chart(spec));
+    document.body.append(figure);
+    return figure;
+  };
+
+  it("stands a few bars upright with every label and value", () => {
+    const figure = draw({
+      type: "bar",
+      labels: ["Mon", "Tue", "Wed"],
+      series: [{ name: "", values: [8412, 11205, 6034] }],
+    });
+    expect(
+      [...figure.querySelectorAll(".wc-bars-axis>span")].map((n) => n.textContent)
+    ).toEqual(["Mon", "Tue", "Wed"]);
+    expect(
+      [...figure.querySelectorAll(".wc-bars-value")].map((n) => n.textContent)
+    ).toEqual(["8,412", "11,205", "6,034"]);
+  });
+
+  it("turns bars sideways when their labels do not fit under them", () => {
+    // The daily report that drew fourteen paired bars and lost half their labels.
+    const labels = [
+      "注册",
+      "工作区",
+      "下载",
+      "网站App",
+      "桌面",
+      "任务",
+      "客户端",
+    ].flatMap((name) => [`${name}·昨`, `${name}·前`]);
+    const values = [76, 48, 32, 45, 26, 29, 40, 44, 75, 80, 206, 285, 179, 201];
+    const figure = draw({ type: "bar", labels, series: [{ name: "", values }] });
+    const rows = [...figure.querySelectorAll("li")];
+    expect(rows.map((row) => row.firstElementChild!.textContent)).toEqual(labels);
+    expect(rows.map((row) => row.lastElementChild!.textContent)).toEqual(
+      values.map(String)
+    );
+  });
+
+  it("draws a value under zero as a bar under the zero line, in each bar drawing", () => {
+    // Upright: a loss and a gain of one size are bars of one height, the loss
+    // from the foot of the plot up to the zero line the gain stands on.
+    const upright = draw({
+      type: "bar",
+      labels: ["A", "B", "C"],
+      series: [{ name: "", values: [-10, 0, 10] }],
+    });
+    const bars = upright.querySelectorAll<HTMLElement>(".wc-bar-col");
+    expect(numbers(bars, (bar) => bar.style.height)).toEqual([40, 0, 40]);
+    expect(numbers(bars, (bar) => bar.style.getPropertyValue("--wc-lift"))).toEqual([
+      0, 0.4, 0.4,
+    ]);
+    expect(upright.querySelector<HTMLElement>(".wc-bars-zero")!.style.bottom).toBe(
+      "40%"
+    );
+    expect(texts(upright, ".wc-bars-value")).toEqual(["-10", "0", "10"]);
+
+    // Side by side: each series keeps its side of zero.
+    const grouped = draw({
+      type: "bar",
+      labels: ["Q1", "Q2"],
+      series: [
+        { name: "Profit", values: [5, -5] },
+        { name: "Cash", values: [10, -10] },
+      ],
+    });
+    const pairs = grouped.querySelectorAll<HTMLElement>(".wc-bar-col");
+    expect(numbers(pairs, (bar) => bar.style.height)).toEqual([25, 50, 25, 50]);
+    expect(numbers(pairs, (bar) => bar.style.getPropertyValue("--wc-lift"))).toEqual([
+      0.5, 0.5, 0.25, 0,
+    ]);
+    expect(grouped.querySelector(".wc-bars-zero")).not.toBeNull();
+
+    // Sideways, for labels that do not fit under bars.
+    const regions = [
+      "North America",
+      "Latin America",
+      "Western Europe",
+      "Eastern Europe",
+      "Middle East",
+      "South Asia",
+      "East Asia",
+      "Oceania",
+      "Africa",
+    ];
+    const sideways = draw({
+      type: "bar",
+      labels: regions,
+      series: [{ name: "", values: [12, -6, 3, -12, 0, 6, 9, -3, 1] }],
+    });
+    const tracks = [...sideways.querySelectorAll<HTMLElement>(".wc-rank-track")];
+    expect(tracks).toHaveLength(9);
+    expect(
+      numbers(tracks.slice(0, 2), (t) => t.style.getPropertyValue("--wc-share"))
+    ).toEqual([50, 25]);
+    expect(
+      numbers(tracks.slice(0, 2), (t) => t.style.getPropertyValue("--wc-from"))
+    ).toEqual([50, 25]);
+
+    // Nothing under zero: the bars stand on the foot of the plot, with no line.
+    expect(
+      draw({
+        type: "bar",
+        labels: ["A", "B"],
+        series: [{ name: "", values: [1, 2] }],
+      }).querySelector(".wc-bars-zero")
+    ).toBeNull();
+  });
+
+  it("names several series beside their colors, for bars and for lines", () => {
+    const series = [
+      { name: "Budget", values: [420, 180] },
+      { name: "Actual", values: [451.3, 139.6] },
+    ];
+    for (const type of ["bar", "line"] as const) {
+      const figure = draw({ type, labels: ["R&D", "Marketing"], series });
+      expect(
+        [...figure.querySelectorAll(".wc-rank-legend>span:not(.wc-rank-swatch)")].map(
+          (n) => n.textContent
+        )
+      ).toEqual(["Budget", "Actual"]);
+    }
+    expect(
+      draw({ type: "bar", labels: ["R&D", "Marketing"], series }).querySelectorAll(
+        ".wc-bar-col"
+      )
+    ).toHaveLength(4);
+    expect(
+      draw({ type: "line", labels: ["R&D", "Marketing"], series }).querySelectorAll(
+        "svg path[stroke]"
+      )
+    ).toHaveLength(2);
+  });
+});
+
 describe("checklist progress", () => {
   it("does not assign a duplicate label the saved id of another row", () => {
     const data = twoReviews(false);
@@ -493,6 +1106,81 @@ describe("checklist progress", () => {
     expect(checked(target)).toEqual([false, true]);
     expect(target.textContent).toContain("1 of 2 done");
     expect(sent).toEqual([]);
+  });
+
+  it("proposes an item's follow-up without checking the item off", () => {
+    const sent: CardOutgoing[] = [];
+    const target = document.createElement("section");
+    document.body.append(target);
+    const engine = cardEngine({
+      seed: "block-1",
+      locale: "en",
+      copy: {},
+      icons: {},
+      state: {},
+      send: (message) => sent.push(message),
+    });
+    const data = {
+      title: "Today",
+      groups: [
+        {
+          items: [
+            {
+              label: "Review the PLM library with Wei",
+              actions: [
+                { label: "Calendar", prompt: "Add the PLM review to my calendar" },
+                { label: "Routine", prompt: "Add the PLM review to my Routine" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    target.replaceChildren(engine.mount(target, { kind: "checklist", data }, "card"));
+    const more = target.querySelector<HTMLButtonElement>(".wc-check-more")!;
+    expect(more.getAttribute("aria-label")).toBe("Calendar / Routine");
+    expect(target.querySelector(".wc-check-actions")).toBeNull();
+    more.click();
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    const button = [...target.querySelectorAll("button")].find(
+      (node) => node.textContent === "Routine"
+    )!;
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    // jsdom marks dispatched events untrusted, as the card does for scripts.
+    expect(sent).toEqual([]);
+    expect(checked(target)).toEqual([false]);
+    expect(button.closest("label")).toBeNull();
+    engine.dispose();
+  });
+
+  it("keeps a full checklist with item actions within the card node count", () => {
+    const actions = ["Calendar", "Reminders", "Routine"].map((label) => ({
+      label,
+      prompt: `Add this to my ${label}`,
+    }));
+    const items = Array.from({ length: 5 }, (_, index) => ({
+      label: `Confirm the 16:00 review ${index}`,
+      detail: "From Wei · private chat",
+      actions,
+    }));
+    const { target } = show(
+      "checklist",
+      { title: "Today", groups: [{ items }, { items }, { items }, { items }] },
+      "block-1",
+      "grouped"
+    );
+    expect(target.textContent).toContain("0 of 20 done");
+    expect(target.querySelectorAll(".wc-check-more")).toHaveLength(20);
+    expect(nodesOf(target)).toBeLessThanOrEqual(390);
+    // One item's actions show at a time.
+    const folds = [...target.querySelectorAll<HTMLButtonElement>(".wc-check-more")];
+    folds[0]!.click();
+    folds[1]!.click();
+    expect(
+      target.querySelectorAll(".wc-check-actions:not([hidden]) button")
+    ).toHaveLength(3);
+    expect(folds[0]!.getAttribute("aria-expanded")).toBe("false");
+    expect(nodesOf(target)).toBeLessThanOrEqual(390);
   });
 
   it("rejects kinds that exist only on Object.prototype with a readable reason", () => {

@@ -10,6 +10,50 @@ inductive Signal where
 
 abbrev KernelM := StateT (List Term) (Except Signal)
 
+abbrev KernelEval := StateT (List Term) (Stackless.ExceptEval Signal)
+
+namespace KernelEval
+
+variable {α β : Type}
+
+def run (action : KernelEval α) : KernelM α := fun observations =>
+  Stackless.runExcept (action observations)
+
+instance : MonadLift KernelM KernelEval := ⟨fun action observations => .done (action observations)⟩
+
+def defer (next : Unit → KernelEval α) : KernelEval α := fun observations =>
+  Stackless.deferExcept fun _ => next () observations
+
+@[simp] theorem run_pure (value : α) : run (pure value : KernelEval α) = pure value := rfl
+
+@[simp] theorem run_bind (first : KernelEval α) (next : α → KernelEval β) :
+    run (first >>= next) = (run first >>= fun value => run (next value)) := by
+  funext observations
+  exact Stackless.runExcept_bind (first observations) (fun (value, rest) => next value rest)
+
+@[simp] theorem run_lift (action : KernelM α) : run (monadLift action : KernelEval α) = action := rfl
+
+@[simp] theorem run_defer (next : Unit → KernelEval α) : run (defer next) = run (next ()) := rfl
+
+@[simp] theorem run_ite (condition : Prop) [Decidable condition] (yes no : KernelEval α) :
+    run (if condition then yes else no) = if condition then run yes else run no := by
+  split <;> rfl
+
+@[simp] theorem run_dite (condition : Prop) [Decidable condition]
+    (yes : condition → KernelEval α) (no : ¬condition → KernelEval α) :
+    run (if h : condition then yes h else no h) = if h : condition then run (yes h) else run (no h) := by
+  split <;> rfl
+
+@[simp] theorem run_mapM (action : α → KernelEval β) (values : List α) :
+    run (values.mapM action) = values.mapM (fun value => run (action value)) :=
+  Stackless.mapM_hom (@run) (@run_pure) (@run_bind) action values
+
+@[simp] theorem run_foldlM (action : β → α → KernelEval β) (values : List α) (acc : β) :
+    run (values.foldlM action acc) = values.foldlM (fun acc value => run (action acc value)) acc :=
+  Stackless.foldlM_hom (@run) (@run_pure) (@run_bind) action values acc
+
+end KernelEval
+
 /-- A host may answer requests ahead of time with `{:ok_for, key, value}`
 entries. `key` names the request exactly, or `{:config, app, name}` for a
 configuration request with any fallback. Such entries are never consumed, so

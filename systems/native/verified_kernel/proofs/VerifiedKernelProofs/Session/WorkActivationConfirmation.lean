@@ -53,7 +53,7 @@ theorem WriteCommitTrace.preserves {cursor : PendingRevision.Cursor} {continuati
       trace.confirmed = .tuple [a "session_command_driver_confirmed",
         (Revision.Cursor.committed trace.stamped etag).pack, continuation] ∧
       (.tuple [a "cas", trace.requestedKey, trace.requestedBytes, trace.requestedBase] : Term) =
-        .tuple [a "cas", trace.key, .binary bytes, cursor.etag] ∧
+        .tuple [a "cas", trace.key, .binary bytes, cursor.revision] ∧
       durable trace.key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
       ∀ sealed item, ValueSemantics.Represented cursor.working sealed item →
         ValueSemantics.Represented snapshot sealed item :=
@@ -79,13 +79,13 @@ theorem ActivationCommitTrace.confirms_preserved_work {context : Context} {hwm p
     (trace : ActivationCommitTrace context hwm prompt active checkpoint durable)
     (ready : QueueReady context.candidate.working)
     (format : context.candidate.working.get (a "storage_format") = i 3) :
-    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.etag = context.candidate.etag ∧
+    trace.staged.baseline = context.candidate.baseline ∧ trace.staged.revision = context.candidate.revision ∧
     ∃ etag snapshot bytes details capturedCheckpoint capturedActive,
       trace.continuation = .tuple [b "activation_written", details, capturedCheckpoint, capturedActive] ∧
       trace.fence.confirmed = .tuple [a "session_command_driver_confirmed",
         (Revision.Cursor.committed trace.fence.stamped etag).pack, trace.continuation] ∧
       (.tuple [a "cas", trace.fence.requestedKey, trace.fence.requestedBytes, trace.fence.requestedBase] : Term) =
-        .tuple [a "cas", trace.fence.key, .binary bytes, context.candidate.etag] ∧
+        .tuple [a "cas", trace.fence.key, .binary bytes, context.candidate.revision] ∧
       durable trace.fence.key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
       ∀ sealed item, ValueSemantics.Represented context.candidate.working sealed item →
         ValueSemantics.Represented snapshot sealed item := by

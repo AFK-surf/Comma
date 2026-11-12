@@ -202,7 +202,17 @@ Omit the whole `comma.synchronicity` object to disable provisioning.
 If the object is present, both fields are required. Unknown fields, malformed origins, or short secrets refuse boot.
 There are no `SYNC_*` environment fallbacks.
 
-Before Comma starts convergence, configure the Synchronicity control plane:
+Workspace readiness does not require Synchronicity. Its separate `comma_drive` queue provisions Drive after core provisioning succeeds.
+Synchronicity errors affect only Drive operations. Each job has twelve attempts. A rejected or exhausted job requires a new enqueue after repair:
+
+```elixir
+Comma.Synchronicity.enqueue("wsp_...")
+```
+
+This retries both the organization/network mapping and the Agent's Drive key. It preserves the active Workspace and its existing identities.
+Release recovery pages requeue failed Workspace provisioning after rollout. The new operation rechecks Billing and Salix before readiness.
+
+Before Drive provisioning, configure the Synchronicity control plane:
 
 1. Set `CP_COMMA_PROVISIONING_ENABLED=true`.
 2. Set the same `CP_COMMA_PROVISIONING_SECRET`.
@@ -239,7 +249,7 @@ Retry failed Workspace ids before you advance the cursor. A failed page does not
 The cursor is an exclusive Workspace-id bound, not a saved job or snapshot.
 Use `all_missing` or `refresh_all`, not both.
 
-Convergence also mints one `member` org key per Workspace with the same secret.
+The Drive job also mints one `member` org key per Workspace with the same secret.
 It stores the key as the Workspace group's Drive binding in Salix, so the agent can read and write the Workspace Drive at `/drive` ([`docs/tools-integrations.md`](../docs/tools-integrations.md)).
 The binding shows on the Salix dashboard group page (Drive tab), marked `comma`.
 To replace one Workspace's key, for example after a suspected leak:
@@ -251,13 +261,13 @@ kubectl --context "$COMMA_KUBE_CONTEXT" -n comma exec pod/comma-0 -c comma -- \
 
 - `{:ok, :minted}`: the new key is stored and the old key is revoked.
 - `{:error, {:retryable, {:revoke_pending, %{key_ids: [...], reason: ...}}}}`: the new key is stored, but the control plane did not confirm the revocation.
-  Treat the listed keys as still valid. Run the command again, or wait for the next convergence, until it returns `{:ok, ...}`.
+  Treat the listed keys as still valid. Run the command again, or enqueue Drive setup, until it returns `{:ok, ...}`.
   The pending ids also show on the Drive tab. To end it by hand, revoke the listed key in the Synchronicity dashboard. The next retry reads `not-found` and clears it.
-- `{:ok, :manual}`: an operator saved or disabled the binding on the Drive tab. Convergence and rotation change nothing, including pending revocations.
+- `{:ok, :manual}`: an operator saved or disabled the binding on the Drive tab. Drive setup and rotation change nothing, including pending revocations.
   Revoke the keys that the Drive tab still lists in the Synchronicity dashboard yourself. Comma no longer retries them.
 
 The control plane must have the `api-keys` internal routes (`AFK-surf/synchronicity#146`).
-An older control plane returns 404, and the Workspace fails convergence as `synchronicity_invalid`.
+An older control plane returns 404. This cancels the Drive job as `synchronicity_invalid`. The Workspace stays active.
 
 ### Drive for other deployments (Salix dashboard)
 
@@ -437,10 +447,6 @@ The Salix subsystem alone does not serve Comma login or the Web client.
 - **Background singletons**: recovery, GC, timers, and schedules are lease-gated. Check `ctl/singletons/*.json` to see holders.
 - **IM provider connects**: configure provider-specific connects per group.
   Inbound provider events enter the group router session through SalixIM.
-- **Migration from Go willow**: export each agent with `willow-salix-export -db <agent.db>` (built from the willow repo).
-  Import with `SalixMigrate.Import.import_agent/3`. Verify the one-way routing flag with `SalixMigrate.Cutover.route/1`.
-  A successful import writes `migrated: true`. Use `mark_migrated/1` only for a separately staged record whose flag is still false.
-  Roll out externally prepared records with `SalixMigrate.Cohort`.
 - **Backups and DR**: back up PostgreSQL, object storage, and persistent encryption keys together.
   Include ClickHouse and Redis as their configured use needs. Bucket backups alone cannot restore the product.
   Verify a restore with the matching release before you admit users.
@@ -449,11 +455,18 @@ The Salix subsystem alone does not serve Comma login or the Web client.
 
 Coding and sandbox Tasks run on L4ES ([compute and devices](../docs/compute-devices.md#coding-sandboxes)). To deploy them:
 
-1. Set `l4es` (`url`, `size`, `maxSandboxes`) in the environment spec. It also needs `computeRuntimeBaseURL` and `oauthIdp: enabled`.
+1. Set `l4es` (`url`, `size`, `labels`, `maxSandboxes`) in the environment spec. It also needs `computeRuntimeBaseURL` and `oauthIdp: enabled`.
+   `labels` names the node labels every sandbox requires. A sandbox whose labels no node with a free slot has waits as pending and fails after 5 minutes.
+   Keep it empty while the CI runners share node-01: they have filled its 15 slots, and `metal` would keep sandboxes off the nested-KVM trial node, whose sandboxes start slowly, at that price.
+   Set `metal` once the runners run elsewhere (a runner pool labelled `contabo`, or a second metal node). Until then L4ES node weights prefer node-01 without refusing the other.
+   A sandbox stopped on a node without a label starts on another node, with a new disk, after L4ES's failover grace.
 2. Make the IdP signing key. Register L4ES as an IdP client and set a default GitHub OAuth app.
 3. Set the L4ES issuer to the API origin, with the client id and secret.
 4. The release names the image `Coding sandbox image` built from its sources. Salix adds it and its dm-verity root to each L4ES workspace.
-   x86_64 images have make, GCC/G++, headers, pkg-config, Rust/Cargo and Go. FFmpeg/ffprobe use Debian snapshots.
+   x86_64 images have make, GCC/G++, headers, Go, the `systems` CI build packages, rustup and elan (Rust and Lean install on first use).
+   FFmpeg/ffprobe use Debian snapshots.
+   They also have Chromium (`CHROMIUM_BIN`), fonts for Latin, CJK and emoji text, and an Xvfb display (`DISPLAY=:99`, 1280×720) for programs that need a window.
+   No person can view that display: the sandbox's Station is not a Device, so it opens no device mesh and does not offer `screen_view`.
    From l4h v2026.10.32, [kemu](https://github.com/losfair/kemu) runs arm64 Linux programs directly, without QEMU or binfmt: integer code near native speed, NEON slower, no io_uring.
 
 ## CI
@@ -486,6 +499,6 @@ Set `cloud_vm_archives.r2` in the environment config with the endpoint, bucket, 
 Old Connector images export to Salix S3 until their image updates. Old Salix S3 generations stay readable until a later archive replaces them.
 Restore uses a complete Salix S3 copy of the same generation if R2 cannot serve it.
 
-After Comma Deployment publishes the mainline Comma release, its Gateway image job runs automatically.
-The [Gateway release procedure](cloudflare/salix-vm-gateway/RELEASE.md) owns the release contract.
+CF Sandbox publishing is retired. Comma Deployment requests background stops without waiting for archives or provider cleanup.
+The [Gateway retirement contract](cloudflare/salix-vm-gateway/RELEASE.md) separates release completion from resource cleanup.
 Cloudflare Group disk loss has product-owner approval. Deployment-wide shutdown still needs the documented human approval.

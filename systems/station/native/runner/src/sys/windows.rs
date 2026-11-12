@@ -51,7 +51,7 @@ const PIPE_BUFFER: u32 = 64 * 1024;
 /// winnt.h's: a job's last process has ended (windows-sys has it under SystemServices, a feature of its own).
 const JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO: u32 = 4;
 
-/// A named pipe, not a file: `\\.\pipe\stillfail-runner-<the directory, hashed>-<id>`, so that two data directories'
+/// A named pipe, not a file: `\\.\pipe\comma-runner-<the directory, hashed>-<id>`, so that two data directories'
 /// runners of the same id are apart. It is not looked at as a file (opening it, even to see it is there, connects).
 pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
     // FNV-1a over the directory as Windows compares paths (case aside).
@@ -61,7 +61,7 @@ pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
             hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
-    PathBuf::from(format!(r"\\.\pipe\stillfail-runner-{hash:016x}-{id}"))
+    PathBuf::from(format!(r"\\.\pipe\comma-runner-{hash:016x}-{id}"))
 }
 
 /// Whether a runner listens on the pipe now: a connection that says nothing, which a runner leaves be (see
@@ -497,14 +497,14 @@ fn start_in_job(job: &OwnedHandle, program: &str, args: &[String], cwd: Option<&
     Ok((child, unsafe { OwnedHandle::from_raw_handle(process as RawHandle) }))
 }
 
-/// `stillfail-runner --job -- <program> <args…>`: what a process group is to the station's jobs and commands on Unix.
+/// `comma-runner --job -- <program> <args…>`: what a process group is to the station's jobs and commands on Unix.
 /// Runs the program, with this process's stdio, in a job that ends whole when this process does (killed: what ending
 /// the group is), and exits with its code once nothing of the job is left (as a group lives while a member does). What
 /// a shell execs is a new process with its parent gone, which no process tree finds but the job holds.
 pub fn run_job(program: &str, args: &[String]) -> ! {
     leave_session();
     let fail = |e: io::Error| -> ! {
-        eprintln!("stillfail-runner: cannot start {program}: {e}");
+        eprintln!("comma-runner: cannot start {program}: {e}");
         std::process::exit(127)
     };
     let job = new_job().unwrap_or_else(|e| fail(e));

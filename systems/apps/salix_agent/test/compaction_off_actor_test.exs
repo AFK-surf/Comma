@@ -16,10 +16,10 @@ defmodule SalixAgent.CompactionOffActorTest do
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
-
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
+    {:ok, _} = SalixAgent.Placement.ensure_started(agent_id, process_on_init: false)
+    assert {:parked, _} = SalixAgent.Server.info(agent_id)
 
     {:ok, _} =
       InternalSessionStore.prepare_commit(
@@ -106,7 +106,7 @@ defmodule SalixAgent.CompactionOffActorTest do
   end
 
   test "the mailbox keeps serving while the summary is produced", %{agent_id: agent_id} do
-    pid = actor_pid(agent_id)
+    pid = passive_actor_pid(agent_id)
     blocking_summarizer(SystemsRuntime.Proc.self())
 
     caller =
@@ -150,8 +150,6 @@ defmodule SalixAgent.CompactionOffActorTest do
   test "a terminal that lands through the actor during the park is not swallowed", %{
     agent_id: agent_id
   } do
-    pid = actor_pid(agent_id)
-
     # The call has to be RUNNING before the park, so the terminal is the only
     # thing that lands inside the window. Seeding a precondition is what
     # `prepare_commit` is for; the write under test below is not seeded.
@@ -167,6 +165,7 @@ defmodule SalixAgent.CompactionOffActorTest do
         }
       ])
 
+    pid = passive_actor_pid(agent_id)
     blocking_summarizer(SystemsRuntime.Proc.self())
 
     caller =
@@ -262,8 +261,8 @@ defmodule SalixAgent.CompactionOffActorTest do
   test "a compact control resumes a durable tool continuation without another wake", %{
     agent_id: agent_id
   } do
-    pid = passive_actor_pid(agent_id)
     seed_tool_continuation!(agent_id)
+    pid = passive_actor_pid(agent_id)
 
     SystemsRuntime.put_env(:salix_agent, :summarizer, fn _previous, _live ->
       "summary before unfinished tool continuation"

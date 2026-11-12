@@ -37,20 +37,81 @@ defmodule Comma.Accounts.Repository do
          :ok <- Comma.GuestMode.reject_guest_email(normalized),
          {:ok, values} <- user_values(normalized, attrs) do
       target_repo = repo(opts)
-      now = SystemsClock.utc_now()
 
-      {inserted, _} =
-        target_repo.insert_all(
-          User,
-          [Map.merge(values, %{created_at: now, updated_at: now})],
-          on_conflict: :nothing,
-          conflict_target: [:email]
-        )
+      case get_user_by_email(normalized, repo: target_repo) do
+        {:ok, user} ->
+          {:ok, user, :existing}
 
-      with {:ok, user} <- get_user_by_email(normalized, repo: target_repo) do
-        {:ok, user, if(inserted == 1, do: :created, else: :existing)}
+        {:error, :not_found} ->
+          # DNS is read before the transaction, so no lock waits on it.
+          routed = Comma.Auth.EmailRestriction.cloudflare_routed?(normalized)
+
+          case target_repo.transaction(fn ->
+                 registration =
+                   Comma.Billing.SignupCredits.registration_attrs(
+                     normalized,
+                     Keyword.merge(opts,
+                       eligible: not routed,
+                       email_verified: value(attrs, :email_verified)
+                     )
+                   )
+
+                 now = SystemsClock.utc_now()
+
+                 values =
+                   values
+                   |> Map.merge(registration)
+                   |> Map.merge(%{created_at: now, updated_at: now})
+
+                 {inserted, _} =
+                   target_repo.insert_all(User, [values],
+                     on_conflict: :nothing,
+                     conflict_target: [:email]
+                   )
+
+                 with {:ok, user} <- get_user_by_email(normalized, repo: target_repo) do
+                   {:ok, user, if(inserted == 1, do: :created, else: :existing)}
+                 end
+               end) do
+            {:ok, result} -> result
+            {:error, reason} -> {:error, reason}
+          end
       end
     end
+  end
+
+  @doc false
+  def insert_user(changeset, opts \\ []) do
+    target_repo = repo(opts)
+
+    # DNS is read before the transaction, so no lock waits on it.
+    eligible =
+      changeset.valid? and Ecto.Changeset.get_field(changeset, :signup_credit_eligible) == true and
+        not Comma.Auth.EmailRestriction.cloudflare_routed?(
+          Ecto.Changeset.get_field(changeset, :email)
+        )
+
+    target_repo.transaction(fn ->
+      changeset =
+        if changeset.valid? do
+          email = Ecto.Changeset.get_field(changeset, :email)
+
+          attrs =
+            Comma.Billing.SignupCredits.registration_attrs(
+              email,
+              Keyword.put(opts, :eligible, eligible)
+            )
+
+          Ecto.Changeset.change(changeset, attrs)
+        else
+          changeset
+        end
+
+      case target_repo.insert(changeset, mode: :savepoint) do
+        {:ok, user} -> user
+        {:error, invalid} -> target_repo.rollback(invalid)
+      end
+    end)
   end
 
   @spec get_identity(String.t(), String.t(), String.t(), keyword()) ::

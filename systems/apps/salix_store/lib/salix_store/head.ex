@@ -1,7 +1,8 @@
 defmodule SalixStore.Head do
   @moduledoc """
-  Root metadata folded into the compressed agent state object. The root
-  object's ETag is the fencing token; every commit revalidates it.
+  Agent root metadata. PostgreSQL stores ownership fields in the Agent row
+  and the remaining values with the root payload. Root revision and owner
+  epoch fence commits. Lease values use milliseconds at this API boundary.
 
   Carries: `epoch`, `owner_node`, `lease_until` (unix ms), `commit_uuid` (of the
   last commit, for ambiguity recovery), the monotonic root `seq` currently kept

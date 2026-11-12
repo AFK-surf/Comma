@@ -266,7 +266,8 @@ defmodule SalixIM.ConversationMessage do
 
     if length(blocks) <= 1 and
          Enum.all?(blocks, fn block ->
-           block["version"] == 1 and is_binary(block["ui_ref"]) and
+           is_integer(block["version"]) and block["version"] >= 1 and
+             is_binary(block["ui_ref"]) and
              byte_size(block["ui_ref"]) in 1..100 and is_binary(block["path"]) and
              String.starts_with?(block["path"], "/") and is_binary(block["summary"]) and
              String.length(block["summary"]) in 1..4000 and block["text"] == block["summary"] and

@@ -130,7 +130,7 @@ defmodule AgentVMInteractionE2E do
     {session, workspace} =
       bootstrap_comma_workspace!(user["id"], %{
         "name" => "Comma Agent VM #{suffix}",
-        "vm" => %{"enabled" => true, "provider" => provider}
+        "vm" => %{"provider" => provider}
       })
 
     issue_comma_billing_grant!(workspace)
@@ -189,11 +189,7 @@ defmodule AgentVMInteractionE2E do
     configure_tenant_vm!(org.salix_tenant_id, provider)
 
     {:ok, agent} =
-      Agents.create_agent(project.id, %{
-        "role" => "worker",
-        "name" => "worker-#{suffix}",
-        "vm" => %{"enabled" => true, "provider" => provider}
-      })
+      Agents.create_agent(project.id, %{"role" => "worker", "name" => "worker-#{suffix}"})
 
     drain_all!()
 

@@ -30,13 +30,12 @@ let state: ComputeNodeState = {
   desiredEnabled: true,
   confirmationId: "visual-session",
   bindingWorkspaceId: workspace,
-  bindingInstallationId: "visual-host",
+  bindingRegistrationId: "visual-host",
   bindingRevision: 1,
   revision: 1,
   eligibility: { eligible: true },
   observationFresh: true,
   observedAt: "2026-10-05T13:00:00Z",
-  setup: { components: "ready", connection: "ready", shell: "ready" },
   observed: {
     connector: "ready",
     host: "ready",
@@ -51,72 +50,49 @@ let state: ComputeNodeState = {
     workActivity: "idle",
   },
 };
-if (["new", "no-node", "retained", "flow"].includes(scene))
+if (scene === "new")
   state = {
     ...state,
     status: "not_set",
     desiredEnabled: false,
     bindingWorkspaceId: undefined,
-    setup: {
-      components: "not_started",
-      connection: "not_started",
-      shell: "not_initialized",
-    },
-    facets: { ...state.facets, connection: "disconnected" },
-  };
-if (scene === "removal-incomplete")
-  state = {
-    ...state,
-    status: "action_required",
-    desiredEnabled: false,
-    issue: "removal_incomplete",
-    recoveryActions: ["finish_remove", "check_status"],
-    observationFresh: false,
+    bindingRegistrationId: undefined,
     facets: { ...state.facets, connection: "disconnected" },
   };
 if (scene === "offline")
   state = {
     ...state,
     status: "action_required",
-    issue: "connection",
+    problem: "connection_failed",
+    primaryAction: "check_status",
     observationFresh: false,
     facets: { ...state.facets, connection: "disconnected" },
   };
-if (scene === "authorization")
+if (scene === "lost-intent")
   state = {
     ...state,
     status: "action_required",
-    issue: "authorization_unavailable",
+    bindingWorkspaceId: undefined,
+    bindingRegistrationId: undefined,
+    problem: "authorization_attention",
+    primaryAction: "recover",
     observationFresh: false,
-  };
-if (scene === "shell-failed")
-  state = {
-    ...state,
-    status: "action_required",
-    issue: "shell_initialization_pending",
-    recoveryActions: ["check_status"],
-    setup: { components: "ready", connection: "ready", shell: "failed" },
   };
 if (scene === "setup")
   state = {
     ...state,
     status: "processing",
     observationFresh: false,
-    setup: { components: "ready", connection: "connecting", shell: "not_initialized" },
+    currentRequest: { requestId: "setup-visual", kind: "configure" },
     operation: {
       requestId: "setup-visual",
-      operationId: "setup-visual",
-      connectionEpoch: "one",
       kind: "configure",
-      leaseGeneration: 1,
       outcome: "pending",
-      targetRef: workspace,
-      targetRevision: 1,
     },
     facets: { ...state.facets, connection: "connecting" },
   };
 let host: HostMaintenanceState = {
-  installation: scene === "retained" ? "not_installed" : "installed",
+  installation: "installed",
   installedReleaseId: "agent-vmm-installed",
   selectedReleaseId: "agent-vmm-selected",
   updateAvailable: true,
@@ -133,6 +109,32 @@ if (scene === "maintenance-failed")
       problem: "Download interrupted. Local files have been kept.",
     },
   };
+if (scene === "maintenance-refused")
+  host = {
+    ...host,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "reinstall",
+      dataPolicy: "preserve",
+      phase: "failed",
+      outcome: "failed",
+      failedPhase: "preparing",
+      failureCode: "target_older_than_data",
+    },
+  };
+if (scene === "maintenance-data-cleared")
+  host = {
+    installation: "not_installed",
+    selectedReleaseId: "agent-vmm-selected",
+    updateAvailable: false,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "uninstall",
+      dataPolicy: "reset",
+      phase: "completed",
+      outcome: "succeeded",
+    },
+  };
 if (scene === "maintenance-active")
   host = {
     ...host,
@@ -144,34 +146,6 @@ if (scene === "maintenance-active")
       outcome: "pending",
     },
   };
-// `flow`: a whole setup, one step each time the page is told (`visual-setup-step`), as Main would publish it.
-const setupFlow = () => {
-  const steps: Partial<ComputeNodeState>[] = [
-    {
-      setup: {
-        components: "ready",
-        connection: "connecting",
-        shell: "not_initialized",
-      },
-    },
-    { setup: { components: "ready", connection: "ready", shell: "preparing" } },
-    {
-      status: "ready",
-      desiredEnabled: true,
-      bindingWorkspaceId: workspace,
-      observationFresh: true,
-      setup: { components: "ready", connection: "ready", shell: "ready" },
-      facets: { ...state.facets, connection: "connected" },
-    },
-  ];
-  const next = () => {
-    const step = steps.shift();
-    if (!step) return window.removeEventListener("visual-setup-step", next);
-    state = { ...state, ...step };
-    publish();
-  };
-  window.addEventListener("visual-setup-step", next);
-};
 const publish = () => {
   state = { ...state, revision: state.revision + 1 };
   listeners.forEach((fn) => fn(state));
@@ -320,34 +294,32 @@ Object.defineProperty(globalThis, "commaNative", {
         document.documentElement.dataset.configureCount = String(
           Number(document.documentElement.dataset.configureCount || 0) + 1
         );
-        if (scene === "flow") setupFlow();
         state = {
           ...state,
           status: "processing",
-          setup: {
-            components: "preparing",
-            connection: "not_started",
-            shell: "not_initialized",
+          currentRequest: { requestId: "enable-visual", kind: "configure" },
+          operation: {
+            requestId: "enable-visual",
+            kind: "configure",
+            outcome: "pending",
           },
         };
         return publish();
-      },
-      repair: async () => {
-        document.documentElement.dataset.repairCount = String(
-          Number(document.documentElement.dataset.repairCount || 0) + 1
-        );
-        return state;
       },
       drain: async () => {
         state = { ...state, status: "stopped", desiredEnabled: false };
         return publish();
       },
-      remove: async () => {
-        if (scene === "removal-incomplete") {
-          throw new Error("operation failure requires operator action");
-        }
-        return state;
-      },
+      recoveryCandidates: async () => ({
+        confirmationId: "visual-session",
+        candidates: ["Studio Mac", "Travel Mac"].map((machine, index) => ({
+          key: `visual-host-${index}`,
+          label: machine,
+          machine,
+          workspaceId: workspace,
+          endpoint: "https://salix.example.test",
+        })),
+      }),
       hostMaintenanceState: async () => host,
       maintainHost: async (input: {
         action: "update" | "reinstall" | "uninstall";
@@ -367,30 +339,51 @@ Object.defineProperty(globalThis, "commaNative", {
       resumeHostMaintenance: async () => host,
       localOverview: async () => ({
         availability: "available",
+        ...(scene === "local-delete-unknown"
+          ? {
+              disposal: {
+                outcome: "unknown",
+                requestId: "00000000-0000-4000-8000-000000000099",
+              },
+            }
+          : {}),
         collectedAt: "2026-10-05T13:00:00Z",
         disk: {
           usedBytes: "9019431321",
           capacityBytes: "68719476736",
           importReservationBytes: "0",
+          ...(scene === "disk-unknown"
+            ? {}
+            : {
+                imageRuntimeBytes: "6442450944",
+                buildCacheBytes: "2575931801",
+                privateBytes: "1048576",
+                otherBytes: "0",
+                breakdownSampledAt:
+                  scene === "disk-stale"
+                    ? "2026-10-05T12:59:00Z"
+                    : "2026-10-05T13:00:00Z",
+              }),
         },
         environments: [
           {
             key: "local-visual",
-            label: "Default workspace",
+            label: "local001",
             origin: "local",
             state: "observed_active",
-            privateDiskBytes: "805306368",
+            privateDiskBytes: "65536",
             sampledAt: "2026-10-05T13:00:00Z",
-            canReadWorkloads: true,
-            canOperate: true,
-            canDisposeLocal: false,
+            canReadWorkloads: false,
+            canOperate: false,
+            canDisposeLocal: true,
           },
           {
             key: "local-other",
-            label: "BFT",
+            label: "remote02",
+            disposalScope: { key: "local-other", label: "other123" },
             origin: "remote",
             state: "unknown",
-            privateDiskBytes: "2791728742",
+            privateDiskBytes: "983040",
             sampledAt: "2026-10-05T13:00:00Z",
             canReadWorkloads: false,
             canOperate: false,
@@ -401,31 +394,6 @@ Object.defineProperty(globalThis, "commaNative", {
       localWorkloads: async () => ({
         workloads: [{ label: "Default Shell", state: "ready" }],
       }),
-      recoveryCandidates: async () => {
-        if (params.get("recovery") === "failed")
-          throw Object.assign(new Error("Recovery proof failed"), {
-            bridgeError: { code: "COMPUTE_RECOVERY_UNVERIFIED" },
-          });
-        return {
-          confirmationId: "visual-session",
-          candidates:
-            params.get("recovery") === "none"
-              ? []
-              : [
-                  {
-                    key: "visual-host",
-                    label: "Mac",
-                    machine: "MacBook Pro",
-                    workspaceId: workspace,
-                    endpoint: "https://salix.example.test",
-                  },
-                ],
-        };
-      },
-      recover: async () => {
-        state = { ...state, status: "ready", issue: undefined };
-        return publish();
-      },
     },
   },
 });
@@ -435,29 +403,46 @@ const policy = {
   egress_mode: "deny_all",
   resources: { pid_max: 512, writable_quota_bytes: 2147483648 },
 };
+let deletionUncertain = true;
+const observationPaused = scene === "observation-paused";
 let rows: CommaComputeWorkload[] = [
   {
     id: "workload-default",
-    name: "Default Shell",
+    name:
+      scene === "long-names"
+        ? "A very long Shell name 工作负载名称需要完整可读 with useful identifying details"
+        : "Default Shell",
     environment_id: "environment-visual",
     kind: "shell",
     observed_state: "ready",
     desired_state: "ready",
     phase:
-      scene === "shell-failed"
-        ? "action_required"
-        : scene === "offline"
-          ? "waiting_connection"
-          : "ready",
+      scene === "preparing" ||
+      scene === "missing-policy" ||
+      scene === "observation-paused"
+        ? "starting"
+        : scene === "shell-failed"
+          ? "action_required"
+          : scene === "offline"
+            ? "waiting_connection"
+            : "ready",
     revision: 1,
     generation: 1,
-    location: { provider: "agent_vmm" },
+    location: {
+      provider: "agent_vmm",
+      ...(scene === "unknown-location" ? {} : { device_id: "device-visual" }),
+    },
     actions: {
       rename: scene !== "readonly",
       delete: scene !== "readonly",
       retry: scene === "shell-failed",
     },
-    runtime_policy: policy,
+    runtime_policy:
+      scene === "missing-policy"
+        ? undefined
+        : scene === "preparing"
+          ? { ...policy, egress_mode: "public_internet" }
+          : policy,
   },
   {
     id: "workload-service",
@@ -468,7 +453,10 @@ let rows: CommaComputeWorkload[] = [
     phase: "ready",
     revision: 1,
     generation: 1,
-    location: { provider: "agent_vmm" },
+    location: {
+      provider: "agent_vmm",
+      ...(scene === "unknown-location" ? {} : { device_id: "device-visual" }),
+    },
     actions: { rename: false, delete: false },
     uses: [{ kind: "service", id: "service-report", label: "Weekly report service" }],
     runtime_policy: policy,
@@ -486,15 +474,7 @@ if (scene === "deletion-offline")
     },
     actions: { rename: true, delete: false, retry: false },
   };
-if (scene === "cloud-retired")
-  rows[0] = {
-    ...rows[0]!,
-    phase: "cloud_retired",
-    desired_state: "stopped",
-    deletion: { phase: "cloud_retired", request_id: "retired-original" },
-    actions: { rename: true, delete: false, retry: false },
-  };
-if (["new", "no-node", "retained", "setup"].includes(scene)) rows = [];
+if (["new", "setup"].includes(scene)) rows = [];
 const projection = () => ({
   workspace_name: "Default workspace",
   can_manage: scene !== "readonly",
@@ -503,20 +483,14 @@ const projection = () => ({
       id: "environment-visual",
       desired_state: state.desiredEnabled ? "ready" : "stopped",
       observed_state: "ready",
-      can_create: ![
-        "new",
-        "no-node",
-        "offline",
-        "authorization",
-        "readonly",
-        "retained",
-      ].includes(scene),
-      create_unavailable_reason: ["new", "no-node", "retained"].includes(scene)
-        ? "node_not_enabled"
-        : "node_unavailable",
+      can_create: !["new", "offline", "readonly"].includes(scene),
+      create_unavailable_reason:
+        scene === "new" ? "node_not_enabled" : "node_unavailable",
     },
   ],
-  workloads: rows,
+  workloads: rows.filter(
+    (row) => row.phase !== "cloud_retired" && row.phase !== "deleted"
+  ),
 });
 // What the core would answer: Compute from `rows`, and its calls change them.
 const workloadCalls: Record<
@@ -541,7 +515,23 @@ const workloadCalls: Record<
     );
     return rows.find((row) => row.id === p.id)!;
   },
-  "compute.workload": (p) => rows.find((row) => row.id === p.id)!,
+  "compute.workload": (p) => {
+    // The detail was opened while listed. Its next owner observation retires it.
+    if (scene === "cloud-retired")
+      rows = rows.map((row) =>
+        row.id === p.id
+          ? {
+              ...row,
+              phase: "cloud_retired",
+              desired_state: "stopped",
+              revision: row.revision! + 1,
+              deletion: { phase: "cloud_retired", request_id: "retired-original" },
+              actions: { rename: true, delete: false, retry: false },
+            }
+          : row
+      );
+    return rows.find((row) => row.id === p.id)!;
+  },
   "compute.create": (p) => {
     const row = {
       ...rows[0],
@@ -566,11 +556,16 @@ const workloadCalls: Record<
     return rows.find((row) => row.id === p.id)!;
   },
   "compute.delete": (p) => {
+    deletionUncertain = false;
     rows = rows.map((row) =>
       row.id === p.id
         ? {
             ...row,
-            deletion: { phase: "waiting_connection", request_id: "delete-visual" },
+            deletion: {
+              phase: "waiting_connection",
+              request_id: String(p.request ?? "delete-visual"),
+            },
+            actions: { rename: true, delete: false, retry: false },
             revision: row.revision! + 1,
           }
         : row
@@ -588,8 +583,25 @@ const sendCompute = () => {
         workspace,
         projection: projection(),
         error: false,
+        observationPaused,
         creation: null,
         accepted: null,
+        deletion:
+          deletionUncertain &&
+          ["delete-unknown", "delete-query-only", "delete-owner-unreadable"].includes(
+            scene
+          )
+            ? {
+                workloadId: rows[0]!.id,
+                requestId: "delete-original",
+                ...(scene === "delete-query-only"
+                  ? {}
+                  : { generation: rows[0]!.generation }),
+                uncertain: true,
+                canContinue: scene === "delete-unknown",
+                workload: rows[0],
+              }
+            : null,
       },
     });
 };
@@ -636,7 +648,6 @@ const core = new CoreClient(
                 {
                   device_id: "device-visual",
                   name: "Studio Mac",
-                  ...(scene === "flow" ? { station_id: "station-visual" } : {}),
                   status: "connected",
                   allows_operations: true,
                   os: "darwin",
@@ -654,18 +665,6 @@ const core = new CoreClient(
                       version: "1.0",
                       auth: { mode: "chatgpt" },
                     },
-                    ...(scene === "flow"
-                      ? [
-                          {
-                            device_runtime_id: "claude-visual",
-                            provider: "claude",
-                            status: "ready",
-                            fresh: true,
-                            version: "2.1",
-                            auth: { status: "authenticated" },
-                          },
-                        ]
-                      : []),
                   ],
                 },
               ],
@@ -673,6 +672,16 @@ const core = new CoreClient(
           });
         } else if (message.unsubscribe) computeSubscribers.delete(message.id);
         else if (message.call) {
+          if (scene === "delete-refused" && message.call === "compute.delete") {
+            deliver?.({
+              id: message.id,
+              error: {
+                code: "shared_allocation",
+                message: "This workload shares an allocation.",
+              },
+            });
+            return;
+          }
           const run = workloadCalls[message.call];
           const ok = run ? run(message.params ?? {}) : null;
           deliver?.({ id: message.id, ok });

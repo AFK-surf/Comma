@@ -156,7 +156,7 @@ describe("files received for a window's chat", () => {
 
     // The files are still on their way: the draft is not sent without them.
     expect(await t.act("send", { text: "Review this" })).toMatchObject({
-      error: "chat_refused",
+      error: "attachment_not_ready",
     });
     expect(t.sent()).toEqual([]);
 

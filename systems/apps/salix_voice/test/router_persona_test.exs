@@ -107,6 +107,10 @@ defmodule SalixVoice.RouterPersonaTest do
       |> InternalSession.new(session_id, %{"created_at" => 0})
       |> InternalSession.apply_events(events)
 
+    {:ok, server} =
+      SalixAgent.Fleet.ensure_started(ctx.router_id, create: false, startup_mode: :passive)
+
+    assert {:parked, _} = SalixAgent.Server.info(server)
     :ok = InternalSessionStore.prepare_seed(ctx.router_id, state)
   end
 
@@ -272,6 +276,23 @@ defmodule SalixVoice.RouterPersonaTest do
     @moduledoc false
     def resolve(_request), do: {:error, :unavailable}
     def mode(_tenant_id, _group_id), do: "enforce"
+  end
+
+  test "a call keeps the Router's identity when its history cannot be read", ctx do
+    seed!(ctx, %{"name" => "Dot", "router_system_prompt" => "Call the user boss."}, [
+      {:user, "Hello."}
+    ])
+
+    {:ok, %{"router_session_id" => session_id}} = SalixAgent.Control.get_record(ctx.router_id)
+
+    SalixStore.Repo.query!("UPDATE salix_sessions SET deleted_at = now() WHERE session_id = $1", [
+      session_id
+    ])
+
+    assert {:ok, persona} = RouterPersona.resolve(ctx.group_id, @audience)
+    assert persona.name == "Dot"
+    assert persona.persona == "Call the user boss."
+    assert persona.input == []
   end
 
   test "a Group without a Router has no persona", ctx do

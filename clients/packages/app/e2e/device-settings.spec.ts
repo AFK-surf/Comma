@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const workspaceId = "wsp_device_settings_e2e";
@@ -234,8 +235,7 @@ test("device cards keep connection and readiness separate and target management 
   // Access is chosen on the card.
   const localAccess = card.getByRole("button", { name: /office-mini Access/ });
   await expect(localAccess).toContainText("Read");
-  await localAccess.click();
-  await page.getByRole("option", { name: /^Full/ }).click();
+  await chooseDropdownOption(localAccess, /^Full/);
   await expect(localAccess).toContainText("Full");
   expect(accessChanges).toEqual(["full"]);
   const otherCard = panel.getByRole("article", { name: "Computer 2", exact: true });

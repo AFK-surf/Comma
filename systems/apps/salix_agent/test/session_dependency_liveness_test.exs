@@ -244,7 +244,7 @@ defmodule SalixAgent.SessionDependencyLivenessTest do
       start_supervised!(S3.Fake)
     end
 
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
     SystemsRuntime.put_env(:salix_agent, :llm_resolver, ControlTemplateResolver)
     SystemsRuntime.delete_env(:salix_agent, :summarizer)
     SystemsRuntime.put_env(:salix_agent, :session_actor_idle_ms, 2_000)
@@ -618,7 +618,7 @@ defmodule SalixAgent.SessionDependencyLivenessTest do
     session_id = "ses1_0000000000000001825"
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent_id, session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
         %{"type" => "session_created", "session_id" => session_id}
       ])
 
@@ -633,6 +633,7 @@ defmodule SalixAgent.SessionDependencyLivenessTest do
       end)
 
     settle_receive({:capability_created_before_handoff, creator, {:ok, admission}, request})
+    SalixAgent.TestSupport.cleanup_capability_request_on_exit(request)
     id = request["tool_call_id"]
     assert admission["tool_call_id"] == id
     assert admission["status"] == "running"
@@ -700,7 +701,7 @@ defmodule SalixAgent.SessionDependencyLivenessTest do
       agent_id |> SalixStore.Ids.group_id_from_agent!() |> SalixStore.Ids.tenant_id_from_group!()
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent_id, session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
         %{"type" => "session_created", "session_id" => session_id}
       ])
 

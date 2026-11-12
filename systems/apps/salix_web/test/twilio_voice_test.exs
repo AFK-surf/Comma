@@ -360,7 +360,7 @@ defmodule SalixWeb.TwilioVoiceTest do
     call = :sys.get_state(model, :infinity).opts.owner
     assert_attached(call)
     # Both ends are ready, so the call asks the model to greet the caller.
-    settle_receive({:fake_model, ^model, {:append, :instructions, nil, _greeting}})
+    settle_receive({:fake_model, ^model, {:append, :commentary, nil, _greeting}})
     {model, client, params["CallSid"]}
   end
 

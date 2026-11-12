@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Camera captures from the composer, in the app's private cache. -->
+<!-- Camera captures from the composer and for a Mini App's confirmed photos, and Drive files handed to another app,
+     in the app's private cache. -->
 <paths>
     <cache-path name="composer_camera" path="composer-camera/" />
+    <cache-path name="mini_app_camera" path="mini-app-camera/" />
+    <cache-path name="drive_preview" path="drive-preview/" />
 </paths>

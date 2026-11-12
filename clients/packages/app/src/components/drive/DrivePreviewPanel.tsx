@@ -315,7 +315,7 @@ export function DrivePreviewPanel({
               isDisabled={!blob}
               onPress={() => {
                 const hash =
-                  file.system && file.system.kind !== "skill"
+                  file.system?.kind === "vfs" || file.system?.kind === "instructions"
                     ? file.system.hash
                     : undefined;
                 void blob
@@ -356,7 +356,13 @@ export function DrivePreviewPanel({
         />
         <DrivePreviewMetaRow
           label={messages.drive_preview_meta_path()}
-          value={file.system?.kind === "vfs" ? file.system.path : file.name}
+          value={
+            file.system?.kind === "vfs"
+              ? file.system.path
+              : file.system?.kind === "task_file" && file.folderPath
+                ? `${file.folderPath}/${file.name}`
+                : file.name
+          }
         />
         <DrivePreviewMetaRow
           label={messages.drive_preview_meta_size()}

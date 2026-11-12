@@ -36,7 +36,18 @@ defmodule SalixIM.Triage.ClickHouseReader do
 
   @callback read_channel(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
 
-  @optional_callbacks history: 2, replies: 3, search: 2, read_channel: 3
+  @callback thread_participation(map(), String.t(), [{String.t(), String.t()}]) ::
+              {:ok, [{String.t(), String.t()}]} | {:error, term()}
+
+  @callback actor_channel_counts(map(), [String.t()], [String.t()], non_neg_integer()) ::
+              {:ok, [{String.t(), String.t(), non_neg_integer()}]} | {:error, term()}
+
+  @optional_callbacks history: 2,
+                      replies: 3,
+                      search: 2,
+                      read_channel: 3,
+                      thread_participation: 3,
+                      actor_channel_counts: 4
 
   def impl do
     SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)

@@ -47,11 +47,35 @@ interface CoreApi {
     suspend fun call(name: String, params: JSONObject = JSONObject()): Any?
 
     /**
+     * A call that says how it goes before it answers: each of its progress values, in order, on the client's thread.
+     * A fake with no progress to give answers as a plain call does.
+     */
+    suspend fun call(name: String, params: JSONObject, progress: (Any?) -> Unit): Any? = call(name, params)
+
+    /**
      * A topic's values, each the whole current value read by [read] on the client's thread. The JSON it is given is
      * never changed afterwards, and a part of it the topic did not change is the same object as in the value before:
      * [read] can keep what it made of that part. The topic is let go when collection ends.
      */
     fun <T> subscribe(topic: JSONObject, read: (Any?) -> T): Flow<TopicValue<T>>
+
+    /**
+     * A place for a screen view's pictures (`devices.openScreenView`'s `sink`): the core's thread hands each one to
+     * [handler], with no JSON. Null where pictures come only as progress (a fake).
+     */
+    fun screenSink(handler: (ScreenFrame) -> Unit): ScreenSink? = null
+}
+
+/**
+ * A screen view's picture as the core hands it to the app's decoder (core screen-views.ts, host `screenFrames`):
+ * [kind] 1 an H.264 config, 2 an H.265 one ([bytes] its avcC or hvcC), 3 a frame, 4 a key frame. [bytes] is the
+ * sink's own.
+ */
+class ScreenFrame(val kind: Int, val ts: Long, val width: Int, val height: Int, val bytes: ByteArray)
+
+/** A decoder's place for its view's pictures, until [close]. */
+class ScreenSink(val id: Int, private val closing: () -> Unit) {
+    fun close() = closing()
 }
 
 /**
@@ -99,7 +123,12 @@ class CommaCore(
     private var engine: Engine? = null
     private var nextId = 1L
     private val calls = HashMap<Long, (Result<Any?>) -> Unit>()
+    /** The progress of the calls that asked for it, by id; gone with their answer. */
+    private val progress = HashMap<Long, (Any?) -> Unit>()
     private val subscriptions = LinkedHashMap<Long, Subscription>()
+    /** The screen views' decoders, by sink: read on the core's thread for each picture. */
+    private val sinks = java.util.concurrent.ConcurrentHashMap<Int, (ScreenFrame) -> Unit>()
+    private val nextSink = java.util.concurrent.atomic.AtomicInteger(1)
     private var failures = 0
     private var startedAt = 0L
     private var closed = false
@@ -136,6 +165,10 @@ class CommaCore(
                 worker.execute { if (engine === mine) receive(text) }
             }
 
+            override fun screenFrame(sink: Int, kind: Int, ts: Double, width: Int, height: Int, bytes: ByteArray) {
+                sinks[sink]?.invoke(ScreenFrame(kind, ts.toLong(), width, height, bytes))
+            }
+
             override fun fatal(reason: ByteArray) {
                 val text = String(reason, Charsets.UTF_8)
                 worker.execute { if (engine === mine) restart(text) }
@@ -151,7 +184,7 @@ class CommaCore(
         engine = mine
         startedAt = System.nanoTime()
         host.attached(mine)
-        for ((id, subscription) in subscriptions) post(JSONObject().put("id", id).put("subscribe", subscription.topic).put("keyed", true))
+        for ((id, subscription) in subscriptions) post(JSONObject().put("id", id).put("subscribe", subscription.topic))
     }
 
     private fun restart(reason: String) {
@@ -177,6 +210,7 @@ class CommaCore(
     private fun rejectCalls(code: String, message: String) {
         val waiting = calls.values.toList()
         calls.clear()
+        progress.clear()
         for (call in waiting) call(Result.failure(CoreError(code, message)))
     }
 
@@ -214,11 +248,16 @@ class CommaCore(
         when {
             message.has("ok") -> {
                 calls.remove(id)
+                progress.remove(id)
                 call(Result.success(message.get("ok").takeUnless { it === JSONObject.NULL }))
             }
             message.has("error") -> {
                 calls.remove(id)
+                progress.remove(id)
                 call(Result.failure(error(message.optJSONObject("error"))))
+            }
+            message.has("value") -> progress[id]?.let { told ->
+                deliver { told(message.get("value").takeUnless { it === JSONObject.NULL }) }
             }
         }
     }
@@ -235,7 +274,12 @@ class CommaCore(
         body?.opt("detail")?.takeUnless { it === JSONObject.NULL },
     )
 
-    override suspend fun call(name: String, params: JSONObject): Any? =
+    override suspend fun call(name: String, params: JSONObject): Any? = request(name, params, null)
+
+    override suspend fun call(name: String, params: JSONObject, progress: (Any?) -> Unit): Any? =
+        request(name, params, progress)
+
+    private suspend fun request(name: String, params: JSONObject, told: ((Any?) -> Unit)?): Any? =
         suspendCancellableCoroutine { continuation ->
             var id = 0L
             worker.execute {
@@ -248,16 +292,24 @@ class CommaCore(
                         calls[id] = { answer ->
                             answer.fold(continuation::resume, continuation::resumeWithException)
                         }
+                        if (told != null) progress[id] = told
                         post(JSONObject().put("id", id).put("call", name).put("params", params))
                     }
                 }
             }
             continuation.invokeOnCancellation {
                 worker.execute {
+                    progress.remove(id)
                     if (calls.remove(id) != null) post(JSONObject().put("id", id).put("cancel", true))
                 }
             }
         }
+
+    override fun screenSink(handler: (ScreenFrame) -> Unit): ScreenSink {
+        val id = nextSink.getAndIncrement()
+        sinks[id] = handler
+        return ScreenSink(id) { sinks.remove(id) }
+    }
 
     override fun <T> subscribe(topic: JSONObject, read: (Any?) -> T): Flow<TopicValue<T>> = callbackFlow {
         var id = 0L
@@ -272,7 +324,7 @@ class CommaCore(
                 onValue = { trySend(TopicValue.Value(read(it))) },
                 onError = { trySend(TopicValue.Failed(it)) },
             )
-            post(JSONObject().put("id", id).put("subscribe", topic).put("keyed", true))
+            post(JSONObject().put("id", id).put("subscribe", topic))
         }
         awaitClose {
             worker.execute {

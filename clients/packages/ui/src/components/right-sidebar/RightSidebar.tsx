@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import { mergeRefs } from "react-aria";
 import { uiClock, type CancelUiTimer } from "../../clock";
 import { PlusSmallIcon, XIcon } from "../icons";
+import { getMenuPointerOffsets, type MenuPointerOffsets } from "../menu";
 import { ScrollArea } from "../scroll-area";
 import {
   claimToastObstructionRight,
@@ -27,6 +28,11 @@ import {
 import { TooltipBubble } from "../tooltip";
 import { cx } from "../utils";
 import { spacing } from "../../tokens/spacing";
+import {
+  RightSidebarTabMenu,
+  type RightSidebarTabMenuAction,
+} from "./RightSidebarTabMenu";
+import { measureTabClose, playTabClose, type TabCloseMotion } from "./tabCloseMotion";
 
 /** The sidebar's own claim on the window's right edge; native views add theirs. */
 const rightSidebarObstructionClaim = "right-sidebar";
@@ -37,10 +43,18 @@ export const RIGHT_SIDEBAR_MAX_WIDTH = 720;
 
 export type RightSidebarTab<TabId extends string = string> = {
   closable?: boolean | undefined;
+  /** What the tab shows can open again in a tab of its own (Duplicate tab). */
+  duplicable?: boolean | undefined;
   icon?: ReactNode | undefined;
   id: TabId;
   label: string;
   panelId?: string | undefined;
+  /**
+   * A pinned tab shows its icon alone and has no close button; closing the
+   * other tabs, or those to its right, keeps it. The host puts pinned tabs
+   * first.
+   */
+  pinned?: boolean | undefined;
 };
 
 export interface RightSidebarProps<TabId extends string = string> extends Omit<
@@ -69,7 +83,10 @@ export interface RightSidebarProps<TabId extends string = string> extends Omit<
   onAddTab?: (() => void) | undefined;
   onExitComplete?: (() => void) | undefined;
   onTabChange: (tabId: TabId) => void;
+  /** Closes a tab; also enables the tabs' context menu. */
   onTabClose?: ((tabId: TabId) => void) | undefined;
+  onTabDuplicate?: ((tabId: TabId) => void) | undefined;
+  onTabPinnedChange?: ((tabId: TabId, pinned: boolean) => void) | undefined;
   onWidthChange: (width: number) => void;
   /** Host geometry preview; when supplied, persist width only on pointer release. */
   onWidthPreview?: ((width: number) => void) | undefined;
@@ -88,6 +105,11 @@ const clampWidth = (width: number, minWidth: number, maxWidth: number) =>
 // The sidebar never renders wider than the window minus its insets.
 const renderedWidthExpression = (width: number) =>
   `min(${width}px, calc(100vw - var(--comma-window-inset, 0px) - var(--comma-window-inset, 0px)))`;
+
+// Pinned tabs, and tabs that cannot close, stay when the others go.
+const closableIds = <TabId extends string>(
+  candidates: readonly RightSidebarTab<TabId>[]
+) => candidates.filter((tab) => tab.closable && !tab.pinned).map((tab) => tab.id);
 
 const resizeTooltipShowDelay = 300;
 const resizeTooltipPointerOffset = 14;
@@ -160,6 +182,8 @@ export const RightSidebar = <TabId extends string = string>({
   onExitComplete,
   onTabChange,
   onTabClose,
+  onTabDuplicate,
+  onTabPinnedChange,
   onTransitionEnd,
   onWidthChange,
   onWidthPreview,
@@ -192,6 +216,13 @@ export const RightSidebar = <TabId extends string = string>({
   const stopResizeRef = useRef<(() => void) | undefined>(undefined);
   const tablistRef = useRef<HTMLDivElement | null>(null);
   const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const addTabRef = useRef<HTMLButtonElement | null>(null);
+  const tabCloseMotionRef = useRef<TabCloseMotion | null>(null);
+  const [tabMenu, setTabMenu] = useState<{
+    pointerOffsets: MenuPointerOffsets | null;
+    tabId: TabId;
+  } | null>(null);
+  const tabMenuTriggerRef = useRef<HTMLElement | null>(null);
   // Browser tab strips hold every tab at its width while the pointer that
   // closed one stays on the strip, so the next tab's close button slides in
   // under it; the strip reflows once the pointer leaves.
@@ -207,12 +238,16 @@ export const RightSidebar = <TabId extends string = string>({
   const resolvedActiveTab = tabs.some((tab) => tab.id === activeTab)
     ? activeTab
     : tabs[0]?.id;
+  const iconOnlyTabs = tabs.filter(
+    (tab) => tab.pinned === true && tab.icon !== undefined
+  ).length;
   const tabVisibilityLayoutKey = JSON.stringify(
     tabs.map((tab) => [
       tab.id,
       tab.label,
       tab.closable === true,
       tab.icon !== undefined,
+      tab.pinned === true,
     ])
   );
 
@@ -324,7 +359,9 @@ export const RightSidebar = <TabId extends string = string>({
     }
   }, [lockedTabWidths, open, tabWidthLock]);
 
-  useEffect(() => {
+  // In the layout phase, ahead of a close's glide (below): the selected tab is
+  // measured where it rests, not where a glide draws it.
+  useLayoutEffect(() => {
     if (!open || resolvedActiveTab === undefined) return;
 
     const activeTabElement = Array.from(
@@ -357,6 +394,16 @@ export const RightSidebar = <TabId extends string = string>({
       .find((tabElement) => tabElement.dataset.tab === resolvedActiveTab)
       ?.focus();
   }, [resolvedActiveTab, tabs, tabVisibilityLayoutKey]);
+
+  // A pointer close measured the strip before the tabs left; once they have,
+  // before the frame paints, the closed tabs fade where they were and the
+  // others glide from where they were drawn.
+  useLayoutEffect(() => {
+    const motion = tabCloseMotionRef.current;
+    if (!motion || tabs.some((tab) => motion.closing.has(tab.id))) return;
+    tabCloseMotionRef.current = null;
+    playTabClose(motion);
+  }, [tabs]);
 
   const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -509,24 +556,86 @@ export const RightSidebar = <TabId extends string = string>({
     onWidthChange(clampWidth(nextWidth, minWidth, maxWidth));
   };
 
-  const closeTab = (tabId: TabId, byPointer: boolean) => {
-    if (byPointer) {
+  // A close from the keyboard (the close button's Enter, the window's Close
+  // Tab shortcut) takes effect at once: it is repeated, and motion would only
+  // delay it. A pointer close animates, and when the pointer stays on the
+  // strip (its close button, a middle click) the widths hold for the next one.
+  const closeTabs = (tabIds: readonly TabId[], pointer: "none" | "menu" | "strip") => {
+    if (tabIds.length === 0) return;
+    const closing = new Set<string>(tabIds);
+    if (pointer === "strip") {
       const widths = new Map<TabId, number>();
       for (const item of tablistRef.current?.querySelectorAll<HTMLElement>(
         "[data-tab-item]"
       ) ?? []) {
         widths.set(item.dataset.tabItem as TabId, item.getBoundingClientRect().width);
       }
-      widths.delete(tabId);
+      for (const tabId of tabIds) widths.delete(tabId);
       setLockedTabWidths(widths);
     }
-    onTabClose?.(tabId);
+    const viewport = tablistRef.current;
+    if (pointer !== "none" && viewport) {
+      const motion = measureTabClose(
+        viewport,
+        addTabRef.current,
+        closing,
+        pointer === "strip"
+      );
+      tabCloseMotionRef.current = motion;
+      // A host that keeps the tab, or closes it later, gets no motion.
+      if (motion)
+        uiClock.frame(() => {
+          if (tabCloseMotionRef.current === motion) tabCloseMotionRef.current = null;
+        });
+    }
+    for (const tabId of tabIds) onTabClose?.(tabId);
+  };
+
+  const openTabMenu = (
+    tabId: TabId,
+    item: HTMLElement | null,
+    pointerOffsets: MenuPointerOffsets | null
+  ) => {
+    if (!onTabClose || !item) return;
+    tabMenuTriggerRef.current = item;
+    setTabMenu({ pointerOffsets, tabId });
+  };
+
+  const menuTabIndex = tabMenu ? tabs.findIndex((tab) => tab.id === tabMenu.tabId) : -1;
+  const menuTab = tabs[menuTabIndex];
+  const menuOtherIds = menuTab
+    ? closableIds(tabs.filter((tab) => tab.id !== menuTab.id))
+    : [];
+  const menuRightIds = menuTab ? closableIds(tabs.slice(menuTabIndex + 1)) : [];
+
+  const handleTabMenuAction = (action: RightSidebarTabMenuAction) => {
+    if (!menuTab) return;
+    if (action === "pin" || action === "unpin") {
+      onTabPinnedChange?.(menuTab.id, action === "pin");
+    } else if (action === "duplicate") {
+      onTabDuplicate?.(menuTab.id);
+    } else if (action === "close") {
+      closeTabs([menuTab.id], "menu");
+    } else {
+      const closing = action === "close-others" ? menuOtherIds : menuRightIds;
+      // As in a browser, the tab the menu is for stays and comes forward when
+      // the selected tab is among those that go.
+      if (resolvedActiveTab !== undefined && closing.includes(resolvedActiveTab))
+        onTabChange(menuTab.id);
+      closeTabs(closing, "menu");
+    }
   };
 
   const handleTabKeyDown = (
     event: ReactKeyboardEvent<HTMLButtonElement>,
     tabIndex: number
   ) => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault();
+      const tab = tabs[tabIndex];
+      if (tab) openTabMenu(tab.id, event.currentTarget.parentElement, null);
+      return;
+    }
     let nextTabIndex: number | undefined;
     if (event.key === "ArrowLeft") {
       nextTabIndex = (tabIndex - 1 + tabs.length) % tabs.length;
@@ -627,12 +736,13 @@ export const RightSidebar = <TabId extends string = string>({
             ref={tabStripRef}
           >
             <ScrollArea
-              className="comma-chat-sidebar-tabs min-w-0 [-webkit-app-region:no-drag]"
-              contentClassName="flex items-center gap-sm"
+              className="comma-chat-sidebar-tabs min-w-0 select-none [-webkit-app-region:no-drag]"
+              // Relative: a closed tab's copy fades where the tab stood.
+              contentClassName="relative flex items-center gap-sm"
               // Past this width every tab sits at its minimum and the strip
               // scrolls; below it the tabs share the strip.
               contentStyle={{
-                minWidth: `calc(${tabs.length} * var(--comma-right-sidebar-tab-min-width) + ${Math.max(tabs.length - 1, 0)} * var(--spacing-sm))`,
+                minWidth: `calc(${tabs.length - iconOnlyTabs} * var(--comma-right-sidebar-tab-min-width) + ${iconOnlyTabs} * var(--comma-right-sidebar-pinned-tab-width) + ${Math.max(tabs.length - 1, 0)} * var(--spacing-sm))`,
               }}
               data-tab-width-locked={tabWidthLock === null ? undefined : "true"}
               edgeEffect="mask"
@@ -649,12 +759,29 @@ export const RightSidebar = <TabId extends string = string>({
               {tabs.map((tab, tabIndex) => {
                 const selected = resolvedActiveTab === tab.id;
                 const lockedWidth = tabWidthLock?.get(tab.id);
+                const iconOnly = tab.pinned === true && tab.icon !== undefined;
+                const showsClose = tab.closable === true && !tab.pinned;
                 return (
                   <div
                     className="comma-right-sidebar-tab-item group/tab relative flex items-center"
-                    data-closable={tab.closable ? "true" : "false"}
+                    data-closable={showsClose ? "true" : "false"}
+                    data-menu-open={tabMenu?.tabId === tab.id ? "true" : undefined}
+                    data-pinned={tab.pinned ? "true" : undefined}
                     data-tab-item={tab.id}
                     key={tab.id}
+                    onContextMenu={(event) => {
+                      if (!onTabClose) return;
+                      event.preventDefault();
+                      openTabMenu(
+                        tab.id,
+                        event.currentTarget,
+                        getMenuPointerOffsets(
+                          event.currentTarget,
+                          event.clientX,
+                          event.clientY
+                        )
+                      );
+                    }}
                     role="presentation"
                     style={
                       lockedWidth === undefined
@@ -664,16 +791,20 @@ export const RightSidebar = <TabId extends string = string>({
                   >
                     <button
                       aria-controls={tab.panelId}
+                      aria-haspopup={onTabClose ? "menu" : undefined}
                       aria-selected={selected}
                       className={cx(
-                        "comma-right-sidebar-tab relative flex w-full max-w-[180px] min-w-0 items-center gap-xs rounded-xs border-0 bg-transparent py-xs pl-xs pr-md text-left text-sm font-medium leading-5 tracking-[-0.14px] text-quaternary outline-none transition-[transform,background-color,color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-focus-gray",
+                        "comma-right-sidebar-tab relative flex w-full max-w-[180px] min-w-0 items-center gap-xs rounded-xs border-0 bg-transparent py-xs text-left text-sm font-medium leading-5 tracking-[-0.14px] text-quaternary outline-none transition-[background-color,color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-focus-gray",
+                        iconOnly
+                          ? "comma-right-sidebar-tab-pinned justify-center px-xs"
+                          : "pl-xs pr-md",
                         selected && "comma-right-sidebar-tab-selected"
                       )}
                       data-tab={tab.id}
                       onAuxClick={(event) => {
                         if (event.button !== 1 || !tab.closable) return;
                         event.preventDefault();
-                        closeTab(tab.id, true);
+                        closeTabs([tab.id], "strip");
                       }}
                       onClick={() => onTabChange(tab.id)}
                       onKeyDown={(event) => handleTabKeyDown(event, tabIndex)}
@@ -691,9 +822,11 @@ export const RightSidebar = <TabId extends string = string>({
                           {tab.icon}
                         </span>
                       ) : null}
-                      <span className="min-w-0 truncate">{tab.label}</span>
+                      <span className={cx("min-w-0 truncate", iconOnly && "sr-only")}>
+                        {tab.label}
+                      </span>
                     </button>
-                    {tab.closable ? (
+                    {showsClose ? (
                       <button
                         aria-label={`Close ${tab.label}`}
                         className="comma-right-sidebar-tab-close pointer-events-none absolute top-1/2 right-xs inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-colors duration-150 focus-visible:shadow-focus-gray"
@@ -707,7 +840,7 @@ export const RightSidebar = <TabId extends string = string>({
                           ) {
                             keyboardClosingTabRef.current = tab.id;
                           }
-                          closeTab(tab.id, event.detail > 0);
+                          closeTabs([tab.id], event.detail > 0 ? "strip" : "none");
                         }}
                         tabIndex={selected ? 0 : -1}
                         title={`Close ${tab.label}`}
@@ -723,11 +856,28 @@ export const RightSidebar = <TabId extends string = string>({
                 );
               })}
             </ScrollArea>
+            {menuTab ? (
+              <RightSidebarTabMenu
+                canClose={menuTab.closable === true}
+                canDuplicate={Boolean(onTabDuplicate) && menuTab.duplicable === true}
+                canPin={Boolean(onTabPinnedChange)}
+                closeOthersDisabled={menuOtherIds.length === 0}
+                closeRightDisabled={menuRightIds.length === 0}
+                onAction={handleTabMenuAction}
+                onOpenChange={(isOpen) => {
+                  if (!isOpen) setTabMenu(null);
+                }}
+                pinned={menuTab.pinned === true}
+                pointerOffsets={tabMenu?.pointerOffsets ?? null}
+                triggerRef={tabMenuTriggerRef}
+              />
+            ) : null}
             {onAddTab ? (
               <button
                 aria-label="New tab"
                 className="comma-right-sidebar-add-tab inline-flex size-7 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent p-xs text-sidebar-icon-primary outline-none transition-[transform,background-color,color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-focus-gray"
                 onClick={onAddTab}
+                ref={addTabRef}
                 type="button"
               >
                 <PlusSmallIcon className="size-5" />

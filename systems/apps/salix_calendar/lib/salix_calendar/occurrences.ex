@@ -13,6 +13,7 @@ defmodule SalixCalendar.Occurrences do
     limit = Keyword.get(opts, :limit, 50)
     object_type = Keyword.get(opts, :object_type)
     source_ids = Keyword.get(opts, :source_ids)
+    item_filter = Keyword.get(opts, :item_filter, fn _item -> true end)
 
     with true <- range_start_ms < range_end_ms,
          true <- is_integer(limit) and limit > 0 and limit <= @max_occurrences,
@@ -24,7 +25,13 @@ defmodule SalixCalendar.Occurrences do
            ),
          {:ok, items} <- select_link_items(group_id, calendar_id, items, source_ids),
          {:ok, occurrences} <-
-           expand(items, range_start_ms, range_end_ms, object_type, limit) do
+           expand(
+             Enum.filter(items, item_filter),
+             range_start_ms,
+             range_end_ms,
+             object_type,
+             limit
+           ) do
       {:ok, Enum.sort_by(occurrences, &{get_in(&1, ["occurrence", "start_ms"]), item_id(&1)})}
     else
       false ->
@@ -39,6 +46,62 @@ defmodule SalixCalendar.Occurrences do
   end
 
   def list(_group_id, _calendar_id, _range_start_ms, _range_end_ms, _opts),
+    do: {:error, :invalid_occurrence_query}
+
+  @doc """
+  One page of a range's occurrences, by calendar item: the occurrences of the
+  items in one page of the calendar's index (at most `:limit` entries, in
+  calendar item id order after `:after_item`), and where the next page starts
+  (nil at the end of the range). An item whose occurrences cannot be expanded
+  is left out; the other items are not affected. Work per call is bounded by
+  the page, not by how many items the range holds.
+  """
+  def list_page(group_id, calendar_id, range_start_ms, range_end_ms, opts \\ [])
+
+  def list_page(group_id, calendar_id, range_start_ms, range_end_ms, opts)
+      when is_integer(range_start_ms) and is_integer(range_end_ms) do
+    limit = Keyword.get(opts, :limit, 50)
+    object_type = Keyword.get(opts, :object_type)
+    source_ids = Keyword.get(opts, :source_ids)
+    item_filter = Keyword.get(opts, :item_filter, fn _item -> true end)
+    after_item = Keyword.get(opts, :after_item)
+
+    with true <- range_start_ms < range_end_ms,
+         true <- is_integer(limit) and limit > 0 and limit <= @max_occurrences,
+         true <- object_type in [nil, "Event", "Task"],
+         true <- valid_source_ids?(source_ids),
+         {:ok, items, next} <-
+           Server.query_items_page(group_id, calendar_id, range_start_ms, range_end_ms,
+             source_ids: source_ids,
+             after_item: after_item,
+             limit: limit
+           ),
+         {:ok, items} <- select_link_items(group_id, calendar_id, items, source_ids) do
+      page =
+        items
+        |> Enum.reject(
+          &(not is_nil(&1["tombstoned_at"]) or
+              &1["normalization_state"] == "unsupported_timing")
+        )
+        |> Enum.filter(&(is_nil(object_type) or get_in(&1, ["object", "@type"]) == object_type))
+        |> Enum.filter(item_filter)
+        |> Enum.sort_by(&(&1["calendar_item_id"] || ""))
+
+      entries =
+        for item <- page,
+            {:ok, views} <- [Recurrence.expand(item, range_start_ms, range_end_ms)],
+            view <- views,
+            do: %{"item" => item, "occurrence" => view}
+
+      {:ok, Enum.sort_by(entries, &{get_in(&1, ["occurrence", "start_ms"]), item_id(&1)}), next}
+    else
+      false -> {:error, :invalid_occurrence_query}
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_occurrence_query}
+    end
+  end
+
+  def list_page(_group_id, _calendar_id, _range_start_ms, _range_end_ms, _opts),
     do: {:error, :invalid_occurrence_query}
 
   def get(group_id, calendar_id, calendar_item_id, occurrence_ref, opts \\ []) do

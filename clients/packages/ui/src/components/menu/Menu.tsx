@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -43,6 +44,10 @@ import {
   useSelectionAlignedPopover,
 } from "../dropdown/select-primitives";
 import { ScrollArea } from "../scroll-area";
+import {
+  clearContextSelectionHighlight,
+  paintContextSelectionHighlight,
+} from "./preserveTextSelection";
 import { cx, definedProps } from "../utils";
 import {
   menuClasses,
@@ -526,6 +531,60 @@ function useCloseSubmenusOnPointerLeave(isEnabled: boolean, group: MenuPopoverGr
 }
 
 /**
+ * A modal menu makes the rest of the page inert while it is open, and Chromium is slow with a text selection, even a
+ * caret, inside inert content: every focus change, as the pointer moves from row to row, takes time in proportion to
+ * the inert content around the selection (measured 9 ms per row with a 1,300-line diff in the Changes tab, 27 ms with
+ * 5,000; nothing without the selection). So the menu holds the page's selection aside while it is open: a range stays
+ * painted as a highlight, and the selection comes back once the menu has closed, unless another was made meanwhile.
+ * It is taken in a layout effect, before the popover's effects make the page inert and move focus into the menu, and
+ * given back in an effect's cleanup, which React runs after the popover's own have lifted `inert`.
+ */
+function useSelectionAsideWhileOpen(
+  isOpen: boolean,
+  isNonModal: boolean | undefined,
+  popoverRef: RefObject<HTMLElement | null>
+) {
+  const aside = useRef<{ ranges: Range[]; highlight: Highlight | null } | null>(null);
+  useLayoutEffect(() => {
+    if (!isOpen || isNonModal) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const popover = popoverRef.current;
+    const ranges: Range[] = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (!popover?.contains(range.commonAncestorContainer)) {
+        ranges.push(range.cloneRange());
+      }
+    }
+    if (ranges.length === 0) return;
+    aside.current = {
+      ranges,
+      highlight: paintContextSelectionHighlight(
+        ranges.filter((range) => !range.collapsed)
+      ),
+    };
+    selection.removeAllRanges();
+  }, [isNonModal, isOpen, popoverRef]);
+  useEffect(() => {
+    if (!isOpen) return;
+    return () => {
+      const held = aside.current;
+      aside.current = null;
+      if (!held) return;
+      clearContextSelectionHighlight(held.highlight);
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount > 0) return;
+      for (const range of held.ranges) {
+        if (range.startContainer.isConnected && range.endContainer.isConnected) {
+          selection.addRange(range);
+        }
+      }
+    };
+  }, [isOpen]);
+}
+
+/**
  * A MenuTrigger opens its menu as the mouse button goes down, and React Aria
  * chooses the row the button is released over, so one press can drag to a
  * choice. A menu that lies over its trigger (a selection-aligned one, or one
@@ -665,6 +724,7 @@ const SelectionAlignedMenuPopover = forwardRef<
     triggerRef: selectionAlign.triggerRef,
   });
   useOpeningClickKeepsMenuOpen(isOpen, popoverElementRef, selectionAlign.triggerRef);
+  useSelectionAsideWhileOpen(isOpen, props.isNonModal, popoverElementRef);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -745,6 +805,16 @@ function RevivedPopoverContents({
   return <Fragment key={revivals}>{children}</Fragment>;
 }
 
+/**
+ * An anchored menu scrolls within the popover's viewport-derived max-height.
+ * The shell clips only while its content overflows: a menu that fits keeps
+ * its own shadow, which a clipping viewport would cut off.
+ */
+const anchorMenuScrollClasses =
+  "max-h-[inherit] not-data-[has-overflow-y=true]:overflow-visible";
+const anchorMenuViewportClasses =
+  "max-h-[inherit] [.comma-scroll-area:not([data-has-overflow-y=true])>&]:overflow-visible";
+
 const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
   function AnchorMenuPopover(
     {
@@ -795,11 +865,13 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
       ref: interactionRef,
     });
     const overlayState = useContext(OverlayTriggerStateContext);
+    const isOpen = props.isOpen ?? overlayState?.isOpen ?? false;
     useOpeningClickKeepsMenuOpen(
-      props.isOpen ?? overlayState?.isOpen ?? false,
+      isOpen,
       interactionRef,
       props.triggerRef ?? popoverContext?.triggerRef
     );
+    useSelectionAsideWhileOpen(isOpen, props.isNonModal, interactionRef);
     useCloseSubmenusOnPointerLeave(closeSubmenusOnPointerLeave, ownedGroup);
 
     const popover = (
@@ -815,9 +887,15 @@ const AnchorMenuPopover = forwardRef<HTMLDivElement, MenuPopoverProps>(
         data-slot="menu-popover"
       >
         {(values) => (
-          <RevivedPopoverContents isExiting={values.isExiting}>
-            {typeof children === "function" ? children(values) : children}
-          </RevivedPopoverContents>
+          <ScrollArea
+            className={anchorMenuScrollClasses}
+            viewportClassName={anchorMenuViewportClasses}
+            viewportProps={{ tabIndex: -1 }}
+          >
+            <RevivedPopoverContents isExiting={values.isExiting}>
+              {typeof children === "function" ? children(values) : children}
+            </RevivedPopoverContents>
+          </ScrollArea>
         )}
       </AriaPopover>
     );

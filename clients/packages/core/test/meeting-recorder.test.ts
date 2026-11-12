@@ -113,6 +113,8 @@ function taskServer(host: FakeHost) {
 function setup(
   options: {
     initial?: MeetingPresenceMeeting[];
+    /** Whether the detector can see meetings at launch. */
+    available?: boolean;
     auto?: boolean;
     host?: FakeHost;
     main?: FakeMeetingMain;
@@ -145,7 +147,7 @@ function setup(
   const present = (meetings: MeetingPresenceMeeting[]) =>
     main.emit({
       kind: "presence",
-      state: { available: true, revision: ++revision, meetings },
+      state: { available: options.available ?? true, revision: ++revision, meetings },
     });
   present(options.initial ?? [meeting]);
   const time = host.time!;
@@ -401,6 +403,25 @@ describe("the meeting recorder", () => {
     expect(t.main.seen("cancel")).toHaveLength(1);
     expect(t.state().phase).not.toBe("recording");
 
+    // A detector that cannot see meetings ends none: the Task waits until it sees again.
+    const seen = setup();
+    await seen.settle();
+    seen.core.close();
+    const blind = setup({
+      host: new FakeHost({ storage: seen.host.storage }),
+      initial: [],
+      available: false,
+    });
+    for (const [id, task] of seen.server.tasks) blind.server.tasks.set(id, task);
+    await blind.settle();
+    expect(blind.server.commands).toEqual([]);
+    blind.main.emit({
+      kind: "presence",
+      state: { available: true, revision: 99, meetings: [] },
+    });
+    await blind.settle();
+    expect(blind.server.commands).toEqual(["task-0 dismiss v1"]);
+
     const failed = setup();
     await failed.settle();
     failed.main.on("start", () => ({
@@ -471,7 +492,7 @@ describe("the meeting Task lane", () => {
     expect(t.state().saved).toMatchObject({
       summary: "error",
       summaryError:
-        "Meeting submission (register): The Connector or file registration is temporarily unavailable.",
+        "Meeting submission (register): The station or file registration is temporarily unavailable.",
     });
     await t.time.pass(5_000, 500);
     expect(registrations).toBe(2);
@@ -545,6 +566,42 @@ describe("the meeting Task lane", () => {
     await again.act("start", "zoom:restart");
     expect(again.state().taskSync?.task?.taskId).toBe("task-0");
     expect(again.server.commands).toEqual(["task-0 recording v1"]);
+  });
+
+  it("dismisses an unrecorded Task whose meeting ended unseen: after a restart, a failed start or another account", async () => {
+    const t = setup();
+    await t.settle();
+    t.core.close();
+    const host = new FakeHost({ storage: t.host.storage });
+    const main = new FakeMeetingMain();
+    const again = setup({ host, main, initial: [] });
+    for (const [id, task] of t.server.tasks) again.server.tasks.set(id, task);
+    await again.settle();
+    expect(main.seen("recover")).toEqual([]);
+    expect(again.server.commands).toEqual(["task-0 dismiss v1"]);
+
+    const failed = setup();
+    await failed.settle();
+    failed.main.on("start", () => ({
+      failure: { kind: "failed", reason: "Recorder window unavailable" },
+    }));
+    await failed.act("start");
+    expect(failed.state().phase).toBe("error");
+    failed.present([]);
+    await failed.settle();
+    expect(failed.server.commands).toEqual(["enter task-0", "task-0 dismiss v1"]);
+
+    const switched = setup();
+    await switched.settle();
+    switched.core.observeSession(signedIn("bob"));
+    switched.present([]);
+    await switched.settle();
+    // Bob's own Task for the meeting ends with it; Alice's waits for Alice.
+    const bob = ["enter task-0", "enter task-1", "task-1 dismiss v1"];
+    expect(switched.server.commands).toEqual(bob);
+    switched.core.observeSession(signedIn("alice"));
+    await switched.settle();
+    expect(switched.server.commands).toEqual([...bob, "task-0 dismiss v1"]);
   });
 
   it("carries Main's journal from before the core over once, its queued commands included", async () => {
@@ -684,6 +741,52 @@ describe("the meeting Task lane", () => {
         .map((r) => r.path.split("/").at(-1))
     ).toEqual(["1", "2", "3"]);
     expect(t.state().saved).toMatchObject({ archive: "done", summary: "queued" });
+  });
+
+  it("reads a Task still working again only after the messages it read", async () => {
+    const t = setup();
+    await t.settle();
+    await t.act("start");
+    const conversation = "/v1/comma/groups/group/conversations/task-0";
+    const events = "/v1/comma/groups/group/conversations/events";
+    t.host.api.onStream(events);
+    const files = ["transcript.txt", "transcript.json", "summary.md"];
+    t.host.api.on("GET", conversation, (request) =>
+      new URLSearchParams(request.path.split("?")[1]).get("after_seq") === "1"
+        ? json(200, {
+            status: "ready_for_review",
+            messages: [
+              {
+                message_id: "result",
+                seq: 2,
+                actor_type: "agent",
+                content: files.map((ext) => ({
+                  type: "file",
+                  file_name: `meeting.${ext}`,
+                })),
+              },
+            ],
+          })
+        : json(200, {
+            status: "running",
+            messages: [{ message_id: "user", seq: 1, actor_type: "user", content: [] }],
+          })
+    );
+    t.host.api.on("GET", `${conversation}/messages/result/attachments/*`, {
+      status: 200,
+      headers: [],
+      body: utf8("output"),
+    });
+    await t.act("stop");
+    await t.settle(1_000);
+    t.host.api.open(events)!.event({ type: "conversation_list_invalidated" });
+    await t.settle(1_000);
+    expect(
+      t.host.api
+        .seen("GET", conversation)
+        .map((r) => new URLSearchParams(r.path.split("?")[1]).get("after_seq"))
+    ).toEqual([null, "1"]);
+    expect(t.main.seen("write")).toHaveLength(3);
   });
 
   it("names the Task by its summary's heading, unless the person renamed it or it is archived", async () => {

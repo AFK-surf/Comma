@@ -1,7 +1,8 @@
 import SwiftUI
+import UIKit
 import CommaCore
 
-/// Task search over the tabs, opened from its button beside the Inbox tab, which leaves the selected tab as it is.
+/// Task search over the tabs, opened from Home’s search button, which leaves the selected tab as it is.
 /// The search field comes up at once with the system's own motion: on iPhone from iOS 26 the field and its close
 /// button sit above the keyboard, as the system places a search there; elsewhere, at the top of the page.
 ///
@@ -48,6 +49,11 @@ private struct TaskSearchField: ViewModifier {
                 .searchFocused(focused)
         } else if sizeClass == .compact {
             drawer(content)
+        } else if UIDevice.current.userInterfaceIdiom == .phone {
+            // The wide phone already provides a search dismissal control. Keep its native placement without extra chrome.
+            searchDrawer(content)
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
         } else {
             // A search in the bar of a wide page has no Cancel beside it, and hides the bar's items while it is up:
             // the page keeps its bar, and the bar's cross is the way back.
@@ -58,11 +64,14 @@ private struct TaskSearchField: ViewModifier {
     }
 
     private func drawer(_ content: Content) -> some View {
+        searchDrawer(content).pageTitle("Search")
+    }
+
+    private func searchDrawer(_ content: Content) -> some View {
         content
             .searchable(text: $text, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: Text("Search tasks"))
             .searchFocused(focused)
-            .pageTitle("Search")
     }
 }
 

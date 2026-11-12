@@ -1,0 +1,29 @@
+id: ex-test-sleep
+valid:
+  - |
+    defmodule ClockSleepTest do
+      use SystemsClock.Case
+
+      test "sleeps on the clock", do: SystemsClock.sleep(2)
+    end
+  - |
+    defmodule ForeverTest do
+      use ExUnit.Case
+
+      test "a process that only waits", do: SystemsRuntime.Proc.sleep(:infinity)
+    end
+invalid:
+  - |
+    defmodule PlainTest do
+      use ExUnit.Case
+
+      test "body", do: Process.sleep(10)
+    end
+  # The runtime's sleep is Process.sleep.
+  - |
+    defmodule MockServer do
+      def stream_chunk(piece, conn) do
+        SystemsRuntime.Proc.sleep(2)
+        conn
+      end
+    end

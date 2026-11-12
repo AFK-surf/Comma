@@ -17,9 +17,9 @@ import { wall } from "../ops/fibers.ts";
 /// A wait on another process (a grace raced against its exit): the machine's time.
 const sleep = wall.sleep;
 
-/// Lines Rust logged at debug: only with STILLFAIL_AGENTS_DEBUG set.
+/// Lines Rust logged at debug: only with COMMA_STATION_AGENTS_DEBUG set.
 export const debug = (at: string, message: string, fields?: Record<string, unknown>) => {
-  if (process.env.STILLFAIL_AGENTS_DEBUG) log.info(at, message, fields);
+  if (process.env.COMMA_STATION_AGENTS_DEBUG) log.info(at, message, fields);
 };
 
 /// A runner id from something of the station's (a session key, a profile id): safe as a file name and short enough for

@@ -38,6 +38,15 @@ function makeRunner() {
       return JSON.stringify({
         operation: {
           id: JSON.parse(input!).operationId,
+          requestId:
+            JSON.parse(input!).operationId === "new-operation"
+              ? newRequest
+              : oldRequest,
+          kind: "local-disposal",
+          resource: {
+            kind: "environment",
+            environmentId: `target-${JSON.parse(input!).operationId === "new-operation" ? newRequest : oldRequest}`,
+          },
           state: "OPERATION_STATE_RUNNING",
         },
       });
@@ -136,7 +145,13 @@ describe("full Host reset supersedes only the captured local disposal", () => {
     await local.supersedeAfterHostReset(oldRequest, resetRequest);
     finish(
       JSON.stringify({
-        operation: { id: "old-late-operation", state: "OPERATION_STATE_RUNNING" },
+        operation: {
+          id: "old-late-operation",
+          requestId: oldRequest,
+          kind: "local-disposal",
+          resource: { kind: "environment", environmentId: `target-${oldRequest}` },
+          state: "OPERATION_STATE_RUNNING",
+        },
       })
     );
     expect(await pending).toEqual({

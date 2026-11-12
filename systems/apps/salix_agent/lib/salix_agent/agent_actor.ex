@@ -49,6 +49,7 @@ defmodule SalixAgent.AgentActor do
 
     with {:ok, agent} <- SalixAgent.Control.get(agent_id, tenant_id),
          :ok <- require_role(agent, "router"),
+         :ok <- SalixAgent.Fleet.await_ownership_installed(agent_id),
          {:ok, pid} <- ensure_started(agent) do
       AgentRoleActor.switch_canonical_session(pid, expected_session_id, timeout)
     end
@@ -298,8 +299,8 @@ defmodule SalixAgent.AgentActor do
   end
 
   defp local_claim_installed?(agent_id) do
-    :ok = SalixAgent.Fleet.await_ownership_installed(agent_id)
-    match?({:ok, _epoch}, SalixAgent.OwnershipCell.fetch(agent_id))
+    SalixAgent.Fleet.await_ownership_installed(agent_id) == :ok and
+      match?({:ok, _epoch}, SalixAgent.OwnershipCell.fetch(agent_id))
   end
 
   defp verify_rpc_delivery_owner_freshly(agent_id) do

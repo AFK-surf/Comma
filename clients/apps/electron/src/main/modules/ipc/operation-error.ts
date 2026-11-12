@@ -9,6 +9,7 @@ export class NativeOperationError extends Error {
       | "COMPUTE_CLOUD_UNAVAILABLE"
       | "COMPUTE_CONNECTION_FAILED"
       | "COMPUTE_RECOVERY_UNVERIFIED"
+      | "COMPUTE_REQUEST_HANDED_OFF"
       | "LOCAL_STATION_UNAVAILABLE"
       | "LOCAL_STATION_CONFLICT" = "OPERATION_FAILED",
     options?: ErrorOptions

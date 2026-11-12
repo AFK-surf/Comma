@@ -104,21 +104,20 @@ defmodule CommaWeb.RecommendationLinkPreview do
         # is not authorization to disclose provider content to this viewer.
         composio =
           if toolkit(target) in ~w(googlecalendar googledrive) do
-            case Comma.MemberSourceConsents.binding(workspace["id"], viewer_id, toolkit(target)) do
-              %{"connection_id" => id} when is_binary(id) and id != "" ->
-                [
-                  %{
-                    "appId" => toolkit(target),
-                    "toolkit" => toolkit(target),
-                    "kind" => "composio",
-                    "connectionId" => id,
-                    "enabled" => true
-                  }
-                ]
-
-              _ ->
-                []
-            end
+            for %{"connection_id" => id} <-
+                  Comma.MemberSourceConsents.toolkit_bindings(
+                    workspace["id"],
+                    viewer_id,
+                    toolkit(target)
+                  ),
+                id != "",
+                do: %{
+                  "appId" => toolkit(target),
+                  "toolkit" => toolkit(target),
+                  "kind" => "composio",
+                  "connectionId" => id,
+                  "enabled" => true
+                }
           else
             []
           end
@@ -127,14 +126,12 @@ defmodule CommaWeb.RecommendationLinkPreview do
              {:ok, result} <- preview(workspace, [selected], href, source_id, viewer_id),
              true <-
                selected["kind"] != "composio" or
-                 (case Comma.MemberSourceConsents.binding(
-                         workspace["id"],
-                         viewer_id,
-                         toolkit(target)
-                       ) do
-                    %{"connection_id" => id} -> id == selected["connectionId"]
-                    _ -> false
-                  end) do
+                 Comma.MemberSourceConsents.binding(
+                   workspace["id"],
+                   viewer_id,
+                   toolkit(target),
+                   selected["connectionId"]
+                 ) != nil do
           {:ok, result}
         else
           _ -> {:error, :not_found}
@@ -676,7 +673,7 @@ defmodule CommaWeb.RecommendationLinkPreview do
       "state" => pull_request_state(data),
       "author" =>
         if is_map(author) and is_binary(author["login"]) do
-          %{"login" => author["login"], "avatarUrl" => string(author["avatar_url"])}
+          Map.merge(%{"login" => author["login"]}, avatar(author["avatar_url"]))
         end,
       "additions" => integer(data["additions"]),
       "deletions" => integer(data["deletions"]),
@@ -713,10 +710,10 @@ defmodule CommaWeb.RecommendationLinkPreview do
       "assignee" =>
         if is_map(assignee) and
              (is_binary(assignee["displayName"]) or is_binary(assignee["name"])) do
-          %{
-            "name" => string(assignee["displayName"]) || assignee["name"],
-            "avatarUrl" => string(assignee["avatarUrl"])
-          }
+          Map.merge(
+            %{"name" => string(assignee["displayName"]) || assignee["name"]},
+            avatar(assignee["avatarUrl"])
+          )
         end,
       "priority" => integer(issue["priority"]),
       "priorityLabel" => string(issue["priorityLabel"]),
@@ -1035,10 +1032,10 @@ defmodule CommaWeb.RecommendationLinkPreview do
             string(user["real_name"]) || string(user["name"])
 
         if name do
-          %{
-            "name" => name,
-            "avatarUrl" => string(profile["image_72"]) || string(profile["image_48"])
-          }
+          Map.merge(
+            %{"name" => name},
+            avatar(string(profile["image_72"]) || string(profile["image_48"]))
+          )
         end
 
       _ ->
@@ -1113,7 +1110,7 @@ defmodule CommaWeb.RecommendationLinkPreview do
     name = string(owner["displayName"])
 
     if name do
-      %{"name" => name, "avatarUrl" => string(owner["photoLink"])}
+      Map.merge(%{"name" => name}, avatar(owner["photoLink"]))
     end
   end
 
@@ -1144,6 +1141,13 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
   defp integer(value) when is_integer(value), do: value
   defp integer(_value), do: nil
+
+  # A person's avatar: the provider's URL, and the reference the client reads
+  # the image by (`GET /v1/comma/link-preview-avatars/:ref`).
+  defp avatar(url) do
+    url = string(url)
+    %{"avatarUrl" => url, "avatarRef" => CommaWeb.LinkPreviewAvatar.ref(url)}
+  end
 
   defp string(value) when is_binary(value) and value != "", do: value
   defp string(_value), do: nil

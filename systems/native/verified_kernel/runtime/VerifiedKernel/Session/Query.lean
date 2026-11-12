@@ -1,3 +1,4 @@
+import VerifiedKernel.Session.StorageCommit
 import VerifiedKernel.Session.Query.State
 import VerifiedKernel.Session.Query.Reply
 import VerifiedKernel.Session.Query.Round
@@ -13,7 +14,6 @@ import VerifiedKernel.Session.ScheduledPresentation
 import VerifiedKernel.Session.Settlement
 import VerifiedKernel.Session.Restart
 import VerifiedKernel.Session.Request
-import VerifiedKernel.Session.StorageCommit
 import VerifiedKernel.Session.ArchiveMatch
 import VerifiedKernel.Session.LoopHost
 import VerifiedKernel.Session.CompactionHost
@@ -28,7 +28,7 @@ open Data
 def queryTable : OpTable :=
   StateQuery.table ++ ReplyQuery.table ++ RoundQuery.table ++ CompactionQuery.table ++
     RepairQuery.table ++ RuntimeQuery.table ++ StorageQuery.table ++
-    ProvenanceQuery.table ++ Fork.queryTable ++ Command.table ++ Presentation.table ++ ScheduledPresentation.table ++ Settlement.table ++ Restart.table ++ Request.table ++ ArchiveMatch.table ++ LoopHost.table ++ CompactionHost.table ++ WriteValidation.table ++ FenceStamp.table ++ RepairHost.table
+    ProvenanceQuery.table ++ Fork.queryTable ++ Command.table ++ Presentation.table ++ ScheduledPresentation.table ++ Settlement.table ++ Restart.table ++ Request.table ++ ArchiveMatch.table ++ LoopHost.table ++ CompactionHost.table ++ WriteValidation.table ++ FenceStamp.table ++ RepairHost.table ++ recordAdmissionTable
 
 /-- Every lifecycle operation the host can run over a resident state. -/
 def lifecycleTable : OpTable := Lifecycle.table ++ Fork.lifecycleTable

@@ -30,7 +30,7 @@ defmodule Comma.Stations do
   alias Comma.Stations.{Config, Signature, Window}
   alias SalixStore.StationMembers
   alias SalixStore.Stations, as: Roster
-  alias SalixStore.Stations.{Events, Station}
+  alias SalixStore.Stations.{Events, Station, Workspaces}
 
   @enroll_purpose "station_enroll"
   @enroll_ttl_seconds 3600
@@ -73,7 +73,7 @@ defmodule Comma.Stations do
     do: StationMembers.manager?(tenant_id, group_id, user_id)
 
   # Who may enroll a station: any member but a read-only one. The station is
-  # theirs (`enrolled_by`), with access off until they set it.
+  # theirs (`enrolled_by`), with access Full until they change it.
   defp enroller(user, session, workspace_id) do
     with {:ok, workspace, role} <- member(user, session, workspace_id) do
       if Comma.Stations.Members.read_only_role?(role),
@@ -105,17 +105,21 @@ defmodule Comma.Stations do
          {:ok, workspace, _role} <- enroller(user, session, workspace_id),
          :ok <- Roster.room_for(workspace.salix_tenant_id, workspace.salix_group_id),
          {:ok, name} <- enrollment_name(attrs["name"]) do
-      issue_enrollment(workspace, user["id"], name, origin)
+      issue_enrollment(
+        workspace.salix_tenant_id,
+        workspace.salix_group_id,
+        user["id"],
+        name,
+        origin
+      )
     end
   end
 
-  defp issue_enrollment(_workspace, _user_id, _name, origin) when not is_binary(origin),
-    do: {:error, :stations_unavailable}
+  defp issue_enrollment(_tenant_id, _group_id, _user_id, _name, origin)
+       when not is_binary(origin),
+       do: {:error, :stations_unavailable}
 
-  defp issue_enrollment(workspace, user_id, name, origin) do
-    tenant_id = workspace.salix_tenant_id
-    group_id = workspace.salix_group_id
-
+  defp issue_enrollment(tenant_id, group_id, user_id, name, origin) do
     with {:ok, grant} <-
            OneTimeCredentials.issue(
              @enroll_purpose,
@@ -151,7 +155,8 @@ defmodule Comma.Stations do
   before the token is consumed, and so are the Group's station limit and the
   enroller's role, so a refusal does not burn the token.
   Re-enrolling into the same Group keeps the station as it is; into another
-  Group moves it.
+  Group moves it. The answer's `connector` is what the station connects to
+  Salix with, as the enroller's device of that Group.
   """
   def enroll(input, origin \\ Config.origin())
 
@@ -176,7 +181,11 @@ defmodule Comma.Stations do
         with {_tenant_id, left} <- moved_from, do: Events.roster_changed(left)
         Events.roster_changed(row.group_id)
         Events.station_changed(row.id)
-        placement(row)
+
+        with {:ok, place} <- placement(row),
+             {:ok, connector} <- device_connector(row, grant["user_id"]) do
+          {:ok, Map.put(place, "connector", connector)}
+        end
       end
 
     emit(:station_enroll, result, started)
@@ -230,6 +239,55 @@ defmodule Comma.Stations do
       })
     else
       {:error, :token_expired_or_used}
+    end
+  end
+
+  # A computer has no Comma session to mint short-lived credentials with, so
+  # its credential lasts until the device is removed. A station enrolled again
+  # stays the device it already is.
+  defp device_connector(%Station{} = station, user_id) do
+    {workspace_id, surface} = device_home(station)
+
+    with {:ok, token} <-
+           SalixEnv.ConnectorTokens.create_group_connector_token(
+             station.group_id,
+             station.tenant_id,
+             %{
+               "name" => station.name,
+               "stable_device_id" =>
+                 SalixStore.StationDeviceLookup.device_of(
+                   station.tenant_id,
+                   station.group_id,
+                   station.id,
+                   user_id
+                 ),
+               "meta" => device_meta(user_id, workspace_id, surface)
+             }
+           ) do
+      {:ok,
+       %{
+         "server" => token["server"],
+         "token" => token["token"],
+         "name" => token["name"],
+         "workspace_id" => workspace_id
+       }}
+    end
+  end
+
+  defp device_meta(user_id, workspace_id, surface) do
+    meta = %{"workspace_id" => workspace_id, "surface" => surface}
+
+    if user_id == StationMembers.group_enroller(),
+      do: meta,
+      else: Map.put(meta, "owner_user_id", user_id)
+  end
+
+  # A Comma Workspace's device names the Workspace; a device of another
+  # product's Group (a BridgeForTeams Project) names what its stations are told.
+  defp device_home(%Station{} = station) do
+    case Comma.Workspaces.get_by_group(station.group_id) do
+      {:ok, workspace} -> {workspace["id"], "comma"}
+      {:error, :not_found} -> {Workspaces.told(station.tenant_id, station.group_id).id, "bft"}
     end
   end
 
@@ -332,27 +390,49 @@ defmodule Comma.Stations do
   end
 
   @doc """
-  An enrollment command issued for a member that the caller has already
-  authorized (the device-install surfaces of `CommaWeb.Stations.DeviceInstall`).
-  The member must not be a read-only one, as for `create_enrollment/4`.
+  An enrollment issued for a member of a Group of any product, whose session
+  the caller has already authorized (the device-install surfaces of
+  `CommaWeb.Stations.DeviceInstall`). The member must not be a read-only one,
+  as for `create_enrollment/5`.
   """
-  def create_member_enrollment(workspace_id, user_id, name, origin \\ Config.origin())
+  def create_group_enrollment(tenant_id, group_id, user_id, name, origin \\ Config.origin())
 
-  def create_member_enrollment(workspace_id, user_id, name, origin)
-      when is_binary(workspace_id) and is_binary(user_id) do
+  def create_group_enrollment(tenant_id, group_id, user_id, name, origin)
+      when is_binary(tenant_id) and is_binary(group_id) and is_binary(user_id) do
     with :ok <- available(),
-         %Workspace{} = workspace <- Repo.get(Workspace, workspace_id) || {:error, :forbidden},
-         :ok <- Window.workspace(workspace),
-         true <-
-           enroller?(workspace.salix_tenant_id, workspace.salix_group_id, user_id) ||
-             {:error, :forbidden},
-         :ok <- Roster.room_for(workspace.salix_tenant_id, workspace.salix_group_id),
+         :ok <- Window.group(tenant_id, group_id),
+         true <- enroller?(tenant_id, group_id, user_id) || {:error, :forbidden},
+         :ok <- Roster.room_for(tenant_id, group_id),
          {:ok, name} <- enrollment_name(name) do
-      issue_enrollment(workspace, user_id, name, origin)
+      issue_enrollment(tenant_id, group_id, user_id, name, origin)
     end
   end
 
-  def create_member_enrollment(_workspace_id, _user_id, _name, _origin), do: {:error, :forbidden}
+  # ── a device's own station ───────────────────────────────────────────
+
+  @doc """
+  What a device's station is told of the Group it runs in:
+  `SalixStore.Stations.device_mesh/2`, the device's owner (the only person it
+  admits, `systems/station/src/mesh/device-mesh.ts`) and the relays to use.
+  Nothing while the owner has no role in the Group, or a read-only one.
+  """
+  def device_mesh(tenant_id, group_id, owner_user_id)
+      when is_binary(tenant_id) and is_binary(group_id) and is_binary(owner_user_id) and
+             owner_user_id != "" do
+    with :ok <- available(),
+         :ok <- Window.group(tenant_id, group_id),
+         true <- enroller?(tenant_id, group_id, owner_user_id) || {:error, :forbidden},
+         {:ok, told} <- Roster.device_mesh(tenant_id, group_id) do
+      {:ok,
+       Map.merge(told, %{
+         "owner" => owner_user_id,
+         "relay_urls" => Config.relay_urls(),
+         "route_policy" => Config.route_policy()
+       })}
+    end
+  end
+
+  def device_mesh(_tenant_id, _group_id, _owner_user_id), do: {:error, :forbidden}
 
   # ── the client relay ─────────────────────────────────────────────────
 
@@ -508,7 +588,8 @@ defmodule Comma.Stations do
        %{
          "user" => %{"id" => user["id"], "email" => user["email"], "name" => user["name"]},
          "workspaces" => workspaces,
-         "relay_urls" => Config.relay_urls()
+         "relay_urls" => Config.relay_urls(),
+         "route_policy" => Config.route_policy()
        }}
     end
   end

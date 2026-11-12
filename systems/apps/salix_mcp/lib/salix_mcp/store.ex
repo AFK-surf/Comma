@@ -4,7 +4,7 @@ defmodule SalixMCP.Store do
   """
 
   alias SalixMCP.Install
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.{AgentPGStore, Ids, Keys, S3}
 
   @oauth_ref_secret_keys ~w(value token access_token refresh_token id_token secret client_secret password api_key authorization)
 
@@ -13,7 +13,8 @@ defmodule SalixMCP.Store do
     agent_id = trim(agent_id)
 
     with true <- Ids.valid_agent_id?(agent_id),
-         {:ok, %{"agent_id" => ^agent_id} = agent} <- get_record(Keys.ctl_agent(agent_id)),
+         {:ok, %{record: %{"agent_id" => ^agent_id} = agent}} <-
+           AgentPGStore.read_config(agent_id),
          tenant_id <- trim(agent["tenant_id"]),
          group_id <- trim(agent["group_id"]),
          true <- Ids.valid_group_id_for_tenant?(group_id, tenant_id),

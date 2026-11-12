@@ -1,4 +1,5 @@
 import { cancel } from "../../env";
+import { ChatError } from "../../api";
 import type { ChatLeasedTarget, ChatTarget } from "@comma/chat-contract";
 import { baseLocale } from "@comma/i18n";
 import { isDraftOnlyChange } from "../../runtime";
@@ -7,7 +8,6 @@ import { withSessionDraft } from "../projection/draftProjection";
 import {
   chatKey,
   createChatEntry,
-  REJECTED_PROJECTION,
   type ChatChannelHost,
   type ChatEntry,
 } from "./chatEntry";
@@ -108,8 +108,9 @@ export class ChatEntries {
     boundary.assertCurrent();
     const entry = this.#entries.get(key);
     if (!entry) {
-      throw new Error(
-        `Chat session ${target.groupId}/${target.conversationId} is not retained.`
+      throw new ChatError(
+        `Chat session ${target.groupId}/${target.conversationId} is not retained.`,
+        { code: "chat_not_retained" }
       );
     }
     if (!isSameLiveBoundary(entry.boundary, boundary)) {
@@ -117,8 +118,9 @@ export class ChatEntries {
       throw new StaleChatSessionError();
     }
     if (entry.subscribers.get(target.subscriberId) !== target.leaseId) {
-      throw new Error(
-        `The stale chat lease for ${target.groupId}/${target.conversationId} is no longer current.`
+      throw new ChatError(
+        `The stale chat lease for ${target.groupId}/${target.conversationId} is no longer current.`,
+        { code: "stale_lease" }
       );
     }
     entry.boundary.assertCurrent();
@@ -174,7 +176,7 @@ export class ChatEntries {
     if (entry.boundary.isCurrent() && isDraftOnlyChange(previous, next)) {
       if (entry.projection)
         entry.projection = { ...entry.projection, draft: next.draft };
-      if (entry.runtimeProjection && entry.runtimeProjection !== REJECTED_PROJECTION) {
+      if (entry.runtimeProjection) {
         entry.runtimeProjection = withSessionDraft(
           entry.runtimeProjection,
           next.draft,

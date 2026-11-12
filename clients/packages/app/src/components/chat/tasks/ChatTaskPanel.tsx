@@ -55,7 +55,8 @@ const DEFAULT_ROW_GEOMETRY: RowGeometry = { block: 28, gap: 2 };
 /**
  * The Tasks the agent created in this conversation, pinned above the composer
  * in creation order. A row is the Task: pressing it opens the Task's chat, the
- * same way the Task's chip in the transcript does. Hover reveals a trailing
+ * same way the Task's chip in the transcript does, and opens the reply thread
+ * of the message that announced it in this chat. Hover reveals a trailing
  * cluster laid over the row rather than reserving it: "Reveal in Chat" jumps
  * to the turn that announced the Task, a settled row also offers "Dismiss",
  * and More opens Archive when that is available. The cluster stays up while
@@ -391,7 +392,7 @@ const ChatTaskRow = memo(function ChatTaskRow({
             }
           >
             <span aria-hidden className="comma-chat-task-item-icon">
-              {taskStatusIcon(task.statusBucket)}
+              {taskStatusIcon(task.statusBucket, { loopStop: task.loopStop })}
             </span>
             <span
               aria-hidden
@@ -408,14 +409,15 @@ const ChatTaskRow = memo(function ChatTaskRow({
             />
             <span
               className={
-                settled
+                settled || task.loopStop
                   ? "comma-chat-task-item-status"
                   : "comma-chat-task-item-status comma-shiny-text"
               }
             >
               {task.needsInput
                 ? taskStatusLabel("escalated", locale)
-                : taskStatusBucketLabel(task.statusBucket, locale)}
+                : (task.loopStop?.text ??
+                  taskStatusBucketLabel(task.statusBucket, locale))}
             </span>
           </AriaButton>
           {/* A Task announced before any user turn has no turn to jump to. */}

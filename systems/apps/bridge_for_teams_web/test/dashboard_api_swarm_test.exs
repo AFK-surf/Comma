@@ -230,8 +230,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       org: org,
       project: project
     } do
-      {:ok, _off} = Projects.set_vm_enabled(project, false)
-      {:ok, project} = Projects.get_project(project.id)
       ready = "device-ready"
 
       connect_station(org, project, ready, %{
@@ -250,15 +248,28 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
       {:ok, _org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt]})
 
+      # The tenant has a VM provider: the swarm can have a Cloud VM.
+      {:ok, _} =
+        Salix.Control.Tenants.update(org.salix_tenant_id, %{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        })
+
       targets = fn ->
         conn |> get(swarm_path(org, project, "/tasks/targets")) |> json_response(200) |> data()
       end
 
-      # Salix and the station that takes Tasks now; the Cloud VM is off.
+      # Salix, the Cloud VM and the station that takes Tasks now.
       assert %{"places" => places, "models" => models} = targets.()
 
       assert [
                %{"id" => "salix", "kind" => "salix", "default" => true},
+               %{"id" => "cloud_vm", "kind" => "cloud_vm", "default" => false},
                %{
                  "id" => ^ready,
                  "kind" => "station",
@@ -273,10 +284,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       assert platform["choice"] == %{"kind" => "platform", "tier" => "worker"}
       assert %{"key" => "catalog:gpt-5.5", "choice" => ^gpt} = offered
 
-      # The swarm's default place is marked; the Cloud VM shows once it is on.
-      {:ok, _on} = Projects.set_vm_enabled(project, true)
-      {:ok, project} = Projects.get_project(project.id)
-
+      # The swarm's default place is marked.
       {:ok, _place} =
         Projects.set_default_task_place(project, %{"kind" => "station", "device_id" => ready})
 
@@ -543,7 +551,116 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     end
   end
 
+  defmodule SandboxesOn do
+    @moduledoc "A Salix with Task sandboxes set up (`SalixAgent.Sandboxes`)."
+    def enabled?, do: true
+  end
+
   describe "settings" do
+    test "where sandboxes are set up, a sandbox is a place to run Tasks; where the Cloud VM is retired, it is one no more",
+         %{conn: conn, org: org, project: project} do
+      SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SandboxesOn)
+
+      on_exit(fn ->
+        SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+        SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
+      end)
+
+      # Sandboxes set up, and no VM provider for the swarm yet: a sandbox is a
+      # place, the Cloud VM is not.
+      assert %{"places" => [%{"id" => "salix"}, %{"id" => "sandbox"}]} =
+               conn
+               |> get(swarm_path(org, project, "/tasks/targets"))
+               |> json_response(200)
+               |> data()
+
+      assert %{
+               "cloud_vm" => %{
+                 "selectable" => false,
+                 "retired" => false,
+                 "issue" => "No Cloud VM is set up for this swarm."
+               }
+             } =
+               conn
+               |> get(swarm_path(org, project, "/agents/targets"))
+               |> json_response(200)
+               |> data()
+
+      # The tenant has a VM provider, the Cloud VM not retired: both are places.
+      {:ok, _} =
+        Salix.Control.Tenants.update(org.salix_tenant_id, %{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        })
+
+      assert %{"places" => places} =
+               conn
+               |> get(swarm_path(org, project, "/tasks/targets"))
+               |> json_response(200)
+               |> data()
+
+      assert [
+               %{"id" => "salix", "kind" => "salix"},
+               %{"id" => "sandbox", "kind" => "sandbox", "label" => "A sandbox"},
+               %{"id" => "cloud_vm", "kind" => "cloud_vm"}
+             ] = places
+
+      assert %{"cloud_vm" => %{"selectable" => true, "retired" => false}} =
+               conn
+               |> get(swarm_path(org, project, "/agents/targets"))
+               |> json_response(200)
+               |> data()
+
+      SystemsRuntime.put_env(:salix_agent, :cloud_vm_retired, true)
+
+      # The New task form: a sandbox, and no Cloud VM whatever the switch says.
+      assert %{"places" => places} =
+               conn
+               |> get(swarm_path(org, project, "/tasks/targets"))
+               |> json_response(200)
+               |> data()
+
+      assert [
+               %{"id" => "salix", "kind" => "salix"},
+               %{"id" => "sandbox", "kind" => "sandbox", "label" => "A sandbox"}
+             ] = places
+
+      # The place picker of Settings.
+      assert %{
+               "cloud_vm" => %{"selectable" => false, "retired" => true, "issue" => issue},
+               "sandbox" => %{"selectable" => true}
+             } =
+               conn
+               |> get(swarm_path(org, project, "/agents/targets"))
+               |> json_response(200)
+               |> data()
+
+      assert issue == "The Cloud VM is retired here: a sandbox takes its place."
+
+      # The default place: a sandbox is stored and named; the Cloud VM is refused.
+      path = swarm_path(org, project, "/settings/task-place")
+
+      assert %{"task_place" => %{"place" => %{"kind" => "sandbox"}, "label" => "A sandbox"}} =
+               conn
+               |> put(path, %{"place" => %{"kind" => "sandbox"}})
+               |> json_response(200)
+               |> data()
+
+      assert {:ok, %{"kind" => "sandbox"}} = Projects.default_task_place(project)
+
+      assert %{"error" => %{"code" => "cloud_vm_retired"}} =
+               conn |> put(path, %{"place" => %{"kind" => "cloud_vm"}}) |> json_response(422)
+
+      # The Devices page has no Cloud VM section: the swarm has no Cloud VM left to stop.
+      assert %{"cloud_vm" => nil} =
+               conn |> get(swarm_path(org, project, "/devices")) |> json_response(200) |> data()
+    end
+
     test "shows identity, runtime ids and the access list", %{
       conn: conn,
       org: org,
@@ -619,13 +736,17 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
              } =
                conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
 
-      # The Cloud VM while the swarm's Cloud VM is on.
+      # The Cloud VM is a place once the tenant has a VM provider.
       {:ok, _} =
-        SalixStore.CasRecord.update(
-          SalixStore.Keys.ctl_group(project.salix_group_id),
-          &Map.put(&1, "cloud_vm_enabled", true),
-          create: false
-        )
+        Salix.Control.Tenants.update(org.salix_tenant_id, %{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        })
 
       assert %{"task_place" => %{"place" => %{"kind" => "cloud_vm"}, "label" => "The Cloud VM"}} =
                conn
@@ -642,13 +763,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                  "place" => %{"kind" => "station", "device_id" => "device-elsewhere"}
                })
                |> json_response(422)
-
-      {:ok, _off} = Projects.set_vm_enabled(project, false)
-
-      assert %{"error" => %{"code" => "cloud_vm_disabled"}} =
-               conn |> put(path, %{"place" => %{"kind" => "cloud_vm"}}) |> json_response(422)
-
-      assert {:ok, %{"kind" => "cloud_vm"}} = Projects.default_task_place(project)
 
       # A Salix node of the release before: nothing is stored, and saving again works.
       with_client(PlaceUnknownClient)
@@ -672,6 +786,25 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
              ]
 
       assert Enum.all?(audits, &(&1.actor_user_id == admin.id and &1.result == "ok"))
+    end
+
+    test "a default place naming the Group's VM as its Agent VMM Host's station shows as the Cloud VM",
+         %{conn: conn, org: org, project: project} do
+      # As the Cloud VM cutover stores it for a Group whose VM is on its Host.
+      vm = %{
+        "kind" => "station",
+        "device_id" => SalixStore.RuntimeIds.cloud_vm_device_id(project.salix_group_id)
+      }
+
+      {:ok, _} =
+        SalixStore.CasRecord.update(
+          SalixStore.Keys.ctl_group(project.salix_group_id),
+          &Map.put(&1, "default_task_place", vm),
+          create: false
+        )
+
+      assert %{"task_place" => %{"place" => ^vm, "label" => "The Cloud VM"}} =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
     end
 
     test "an admin sets the default Task model from the platform model and the org's models", %{

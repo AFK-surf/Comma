@@ -53,7 +53,7 @@ test("TestLANHTTPRequestCapsResponseBytes", async () => {
 
 test("TestLANGatewayCapabilityAdvertisesLimits", () => {
   const capability = lanGatewayCapability();
-  assert.deepEqual(capability.methods, ["lan_http_request", "lan_tcp_dial", "udp_request"]);
+  assert.deepEqual(capability.methods, ["lan_http_request", "lan_tcp_dial", "udp_request", "lan_script"]);
   assert.equal(capability.max_bytes, 65536);
   assert.equal(capability.max_timeout_seconds, 30);
 });

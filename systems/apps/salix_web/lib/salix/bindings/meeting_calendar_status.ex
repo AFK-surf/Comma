@@ -20,7 +20,7 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
          {:ok, agent} <- GroupDirectory.get_agent(agent_id),
          group_id when group_id != "" <- trim(agent["group_id"]),
          {:ok, _connect} <-
-           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "slack"),
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id),
          {:ok, projection} <- CalendarProjection.status(group_id, limit) do
       runtime = runtime_status()
       projection = projection_freshness(projection, runtime["scan_interval_ms"])
@@ -190,7 +190,7 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
   defp effective_runtime_driver do
     case SystemsRuntime.get_env(:salix_meet, :runtime_driver) do
       SalixMeet.RuntimeDriver.HTTP -> "http"
-      SalixMeet.RuntimeDriver.SalixConnect -> "connector"
+      SalixMeet.RuntimeDriver.Connector -> "connector"
       nil -> "none"
       _other -> "unknown"
     end

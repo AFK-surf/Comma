@@ -45,6 +45,7 @@ describe("a Task's app card", () => {
         name: "Habit tracker",
         description: "",
         icon_url: null,
+        screenshot_urls: [],
         repo: { owner: "me", name: "comma-app-x7k2q9" },
         visibility: "private",
         status: "active",

@@ -1,7 +1,7 @@
-import VerifiedKernelProofs.AgentLoop.Round
-import VerifiedKernelProofs.IFC.Identity
 import VerifiedKernelProofs.Session.WorkResidentSafety
 import VerifiedKernelProofs.Session.WorkSemanticRepresentation
+import VerifiedKernelProofs.AgentLoop.Round
+import VerifiedKernelProofs.IFC.Identity
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

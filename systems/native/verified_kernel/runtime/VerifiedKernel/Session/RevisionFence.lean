@@ -38,7 +38,7 @@ def acceptMetadata (cursor : PendingRevision.Cursor) (key : Term) : Output → O
   | (none, response) => (none, response)
 
 def encode (cursor : PendingRevision.Cursor) (key state : Term) : Output :=
-  match StorageCommit.resident (some state) (a "start") (.tuple [key, cursor.etag]) with
+  match StorageCommit.resident (some state) (a "start") (.tuple [key, cursor.revision]) with
   | (some commit, request) => (some (.tuple [a "session_fence_cas", commit]), request)
   | (none, response) => (none, response)
 

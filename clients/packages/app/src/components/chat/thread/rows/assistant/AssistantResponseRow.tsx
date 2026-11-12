@@ -1,5 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import {
+  MarkdownStream,
+  MarkdownStreamImageResolverContext,
+} from "@comma/ui/components/markdown-stream";
 import { cx } from "@comma/ui/components/utils";
 import { memo, useContext, useMemo, type Ref } from "react";
 import {
@@ -19,6 +22,7 @@ import type {
 import { WidgetPresence, useWidgetPresence } from "../../../dynamic-ui/widgetPresence";
 import { messagePartsPlainText } from "../../inline/MessageInlineElements";
 import { normalizeMessageTimestamp } from "../../layout/messageTimestamp";
+import { hidesRouterIdentity } from "../../replies/messageRelationships";
 import type {
   ReplyChainState,
   RowRelationshipProps,
@@ -35,6 +39,7 @@ import { MessageCopyAction } from "../MessageCopyAction";
 import { MessageReplyPreview } from "./MessageReplyPreview";
 import { useCompiledMessageMarkdown } from "./useCompiledMessageMarkdown";
 import { useFrameCoalescedContent } from "./useFrameCoalescedContent";
+import { pathImageStandIn } from "./messageMarkdownImages";
 
 const ChatMarkdownStream = memo(MarkdownStream);
 
@@ -95,7 +100,7 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   );
   const defaultActorRole = useContext(ThreadDefaultActorRoleContext);
   const actorRole = message?.actorRole ?? defaultActorRole;
-  const hideRouterIdentity = defaultActorRole === "router" && actorRole === "router";
+  const hideRouterIdentity = hidesRouterIdentity(actorRole, defaultActorRole);
   const actorSourceLabel =
     actorRole === "router" ? routerName : messagesApi.chat_actor_worker();
   // The row marks what it holds (source label, reply preview, widget) so the stylesheet
@@ -106,6 +111,18 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   const codeOnly = message?.markdown
     ? isCodeBlockOnly(message.markdown as MarkdownTree)
     : false;
+  // A reply with no words, such as an image with its own Copy, leaves a Copy beside the bubble nothing to copy.
+  const copyText = message
+    ? message.platformSource
+      ? message.text
+      : messagePartsPlainText(
+          message.parts ?? [{ kind: "markdown", text: message.text }],
+          {
+            task: messagesApi.chat_ref_task(),
+            unavailableTask: messagesApi.chat_ref_task_unavailable(),
+          }
+        )
+    : "";
   const sourceLabel =
     !hideRouterIdentity && actorRole && groupFirst !== false ? (
       <div className="comma-chat-assistant-source-label">{actorSourceLabel}</div>
@@ -119,24 +136,26 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       />
     ) : null;
   const markdown = (
-    <ChatMarkdownStream
-      animation="reveal"
-      blockPresentation="bubbles"
-      className="text-sm leading-5"
-      clipboard={nativePlatformClipboard}
-      content={compiledMessage?.content ?? renderedContent}
-      final={!activelyStreaming}
-      parsed={compiledMessage ? undefined : draftNodes}
-      showCursor={false}
-      smoothStreaming={false}
-      streamId={streamId}
-      {...(compiledMessage
-        ? {
-            inlineElements: compiledMessage.inlineElements,
-            nodes: compiledMessage.nodes,
-          }
-        : {})}
-    />
+    <MarkdownStreamImageResolverContext.Provider value={pathImageStandIn}>
+      <ChatMarkdownStream
+        animation="reveal"
+        blockPresentation="bubbles"
+        className="text-sm leading-5"
+        clipboard={nativePlatformClipboard}
+        content={compiledMessage?.content ?? renderedContent}
+        final={!activelyStreaming}
+        parsed={compiledMessage ? undefined : draftNodes}
+        showCursor={false}
+        smoothStreaming={false}
+        streamId={streamId}
+        {...(compiledMessage
+          ? {
+              inlineElements: compiledMessage.inlineElements,
+              nodes: compiledMessage.nodes,
+            }
+          : {})}
+      />
+    </MarkdownStreamImageResolverContext.Provider>
   );
   const extras = message ? (
     <>
@@ -199,20 +218,10 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
           {markdown}
           {extras}
         </WidgetPresence>
-        {showActions && message && !codeOnly ? (
+        {showActions && message && !codeOnly && copyText.trim() ? (
           <MessageCopyAction
             ariaLabel={messagesApi.chat_copy_reply()}
-            copyText={
-              message.platformSource
-                ? message.text
-                : messagePartsPlainText(
-                    message.parts ?? [{ kind: "markdown", text: message.text }],
-                    {
-                      task: messagesApi.chat_ref_task(),
-                      unavailableTask: messagesApi.chat_ref_task_unavailable(),
-                    }
-                  )
-            }
+            copyText={copyText}
             messageId={message.messageId}
           />
         ) : null}

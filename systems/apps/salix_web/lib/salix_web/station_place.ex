@@ -39,6 +39,16 @@ defmodule SalixWeb.StationPlace do
 
   @callback publish(admission :: map()) :: :ok
 
+  @doc """
+  What a device's station is told of the Group a Connector run proved it in,
+  for `owner_user_id`, the device's owner; an error when it may admit no one.
+  """
+  @callback device_mesh(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              owner_user_id :: String.t() | nil
+            ) :: {:ok, map()} | {:error, term()}
+
   @doc "Places the Station behind a current managed connector run; never raises."
   def push(%{tenant_id: tenant, group_id: group, connector_run_id: run} = connection) do
     case SystemsRuntime.get_env(:salix_web, :station_control_plane) do
@@ -49,6 +59,42 @@ defmodule SalixWeb.StationPlace do
     _ ->
       Logger.warning("station not placed: local admission failed")
       {:error, :station_place_failed}
+  end
+
+  @doc """
+  What a device's station asks with `relay_register`: the Group's workspace
+  ids, credential keys and revocations and the device's owner, so that it
+  serves the mesh to that owner alone. No roster row: a device's station keeps
+  one key in each Group it runs in. Nil without a control plane, or when the
+  owner may admit no one; never raises.
+  """
+  def device_mesh(%{tenant_id: tenant, group_id: group, owner_user_id: owner}) do
+    with control_plane when not is_nil(control_plane) <-
+           SystemsRuntime.get_env(:salix_web, :station_control_plane),
+         {:ok, mesh} <- control_plane.device_mesh(tenant, group, owner) do
+      mesh
+    else
+      _ -> nil
+    end
+  rescue
+    _ ->
+      Logger.warning("station mesh not told: the control plane failed")
+      nil
+  end
+
+  @doc """
+  Tells the run's station what changed (a revocation, the keys), or that it
+  admits no one. `:error` when it could not be told.
+  """
+  def push_device_mesh(connection, seq),
+    do: tell_device_mesh(connection, seq, device_mesh(connection))
+
+  @doc "Tells the run's station `mesh` as it is, with no read: nil says it admits no one."
+  def tell_device_mesh(%{connector_run_id: run}, seq, mesh) do
+    case Live.request(run, "station_mesh", %{"seq" => seq, "mesh" => mesh}, timeout: @timeout) do
+      {:ok, _} -> :ok
+      _ -> :error
+    end
   end
 
   defp place(control_plane, tenant, group, run, connection) do

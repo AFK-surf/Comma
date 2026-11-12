@@ -65,8 +65,8 @@ class SendFlightFailsafeTest {
             flight.stallSprings = true // A spring that stalls, is cancelled or never starts.
 
             val thumb = ComposerSendSnapshot.Attachment("a", Uri.EMPTY, RectF(40f, 1700f, 200f, 1860f), null)
-            flight.hold(ComposerSendSnapshot("", null, TextPaint(), PointF(), RectF(0f, 1690f, 1080f, 1900f), 20f,
-                listOf(thumb), fromVoice = false), "r:new")
+            flight.hold(ComposerSendSnapshot("", null, TextPaint(), PointF(), RectF(0f, 1690f, 1080f, 1900f),
+                listOf(thumb)), "r:new")
             flight.accept("r:new")
             flight.onCommitted(listOf(row(11, "r:new")))
             assertEquals(setOf(11L), timeline.hiddenRows)

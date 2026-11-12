@@ -48,11 +48,10 @@ extension CommaClient {
 
     /// JPEG, PNG or WebP of at most 2 MB; the server checks the bytes, not the declared type.
     public func uploadAvatar(data: Data, contentType: String) async throws -> UserProfile {
-        guard !data.isEmpty, data.count <= UserProfile.maxAvatarBytes, ["image/jpeg", "image/png", "image/webp"].contains(contentType) else {
+        guard !data.isEmpty, data.count <= UserProfile.maxAvatarBytes, let filename = UserProfile.avatarFilename(contentType) else {
             throw CommaError.invalidInput("Choose a JPEG, PNG or WebP image of at most 2 MB.")
         }
         let boundary = "Comma-" + UUID().uuidString
-        let filename = "avatar." + (contentType == "image/png" ? "png" : contentType == "image/webp" ? "webp" : "jpg")
         var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"\(filename)\"\r\nContent-Type: \(contentType)\r\n\r\n".utf8)
         body.append(data); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         let response = try await request("PUT", ["me", "avatar"], body: body, contentType: "multipart/form-data; boundary=\(boundary)")

@@ -64,4 +64,52 @@ describe("remote browse pagination", () => {
       "true"
     );
   });
+
+  it("shows what arrives behind an open row, and tells it the row opened", () => {
+    const onQueryChange = vi.fn();
+    const behind = (rows: string[]): AiInputMenuBrowse => ({
+      compact: true,
+      label: "Row",
+      title: "Row",
+      searchPlaceholder: "Search",
+      emptyLabel: "Empty",
+      noResultsLabel: "No matches",
+      onQueryChange,
+      groups: [{ id: "behind", items: rows.map((id) => ({ id, label: id })) }],
+    });
+    const panel = (rows: string[]) => {
+      const browse: AiInputMenuBrowse = {
+        label: "More",
+        title: "Outer",
+        searchPlaceholder: "Search",
+        emptyLabel: "Empty",
+        noResultsLabel: "No matches",
+        groups: [
+          { id: "rows", items: [{ id: "row", label: "Row", browse: behind(rows) }] },
+        ],
+      };
+      return (
+        <AiInputMenuBrowsePanel
+          backLabel="Back"
+          browse={browse}
+          focusOnMount
+          group={{ id: "outer", items: [], browse }}
+          initialQuery=""
+          listId="list"
+          onBack={() => undefined}
+          onBlur={() => undefined}
+          onSelectItem={() => undefined}
+          optionId={(id) => id}
+          searchingLabel="Searching"
+        />
+      );
+    };
+    const { rerender } = render(panel(["whole"]));
+    fireEvent.mouseDown(screen.getByText("Row"));
+    expect(screen.getByText("whole")).toBeTruthy();
+    expect(onQueryChange).toHaveBeenLastCalledWith("");
+
+    rerender(panel(["whole", "amy"]));
+    expect(screen.getByText("amy")).toBeTruthy();
+  });
 });

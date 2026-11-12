@@ -114,8 +114,9 @@ defmodule SalixVoice.Model.GptLive do
     |> maybe_put("input", input(opts[:input]))
   end
 
-  # Startup history: one text part per message, `input_text` for the user and
-  # `output_text` for the assistant.
+  # Startup history: one text part per message, `output_text` for the
+  # assistant and `input_text` for the user and the developer (a greeting the
+  # session should open with).
   defp input([_ | _] = messages) do
     Enum.map(messages, fn %{"role" => role, "text" => text} ->
       part = if role == "assistant", do: "output_text", else: "input_text"

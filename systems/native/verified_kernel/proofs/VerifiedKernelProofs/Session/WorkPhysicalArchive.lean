@@ -11,6 +11,7 @@ theorem PhysicalHistory.publish_resident {framing : CodecFraming} {objects nextO
     {owner session : ByteArray} {state event next : Term} {sealed records : List Term}
     {ceiling line : Int} {final : Output}
     (history : PhysicalHistory framing objects owner session state sealed)
+    (physical : ArchiveProjection.UnarchivedWindow state)
     (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0) (publication : Execution (start state (i line)) objects final nextObjects)
     (emitted : final.2 = .tuple [a "advance", event]) (applied : ResidentBatch state [event] next) :
@@ -30,7 +31,7 @@ theorem PhysicalHistory.publish_resident {framing : CodecFraming} {objects nextO
         ValueSemantics.work_fields_preserves (activity_frame_work unchanged) represented
   · obtain ⟨dropped, kept, partition, after, _⟩ :=
       archiveAdvance_executed_prefix history.invariant.history.invariant.sorted read reduced
-    have middleHistory := history.publication window positive publication emitted reduced read partition after
+    have middleHistory := history.publication physical window positive publication emitted reduced read partition after
     refine ⟨dropped, kept, ?_, (frame "messages" (by decide) (by decide)).trans after,
       middleHistory.activity frame, ?_⟩
     · rw [← partition]
@@ -77,11 +78,12 @@ theorem PhysicalHistory.publish_resident_physical {framing : CodecFraming} {obje
     {owner session : ByteArray} {state event next : Term} {sealed records : List Term}
     {ceiling line : Int} {final : Output}
     (history : PhysicalHistory framing objects owner session state sealed)
+    (physical : ArchiveProjection.UnarchivedWindow state)
     (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0) (publication : Execution (start state (i line)) objects final nextObjects)
     (emitted : final.2 = .tuple [a "advance", event]) (applied : ResidentBatch state [event] next) :
     ∀ item, PhysicalIdentityFact objects state (.work item) → PhysicalIdentityFact nextObjects next (.work item) := by
-  obtain ⟨_, _, _, _, nextHistory, kept⟩ := history.publish_resident window positive publication emitted applied
+  obtain ⟨_, _, _, _, nextHistory, kept⟩ := history.publish_resident physical window positive publication emitted applied
   apply physical_work_transport (execution_objects_extend publication)
     (nextHistory.invariant.owned.trans history.invariant.owned.symm)
     (nextHistory.invariant.identified.trans history.invariant.identified.symm)
@@ -99,11 +101,12 @@ theorem archive_write_physical_history {framing : CodecFraming} {objects nextObj
     {owner session : ByteArray} {cursor next : Cursor} {event : Term} {sealed records : List Term}
     {ceiling line : Int} {final : Output}
     (history : PhysicalHistory framing objects owner session cursor.working sealed)
+    (physical : ArchiveProjection.UnarchivedWindow cursor.working)
     (window : StorageQuery.archiveWindow cursor.working [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0) (publication : ArchivePublication.Execution (start cursor.working (i line)) objects final nextObjects)
     (emitted : final.2 = .tuple [a "advance", event])
     (written : Execution (resident (some cursor.pack) (a "write") (.tuple [list [event], nil])) next) :
-    next.baseline = cursor.baseline ∧ next.etag = cursor.etag ∧ ∃ dropped,
+    next.baseline = cursor.baseline ∧ next.revision = cursor.revision ∧ ∃ dropped,
       PhysicalHistory framing nextObjects owner session next.working (sealed ++ dropped) ∧
       (∀ item, ValueSemantics.Represented cursor.working sealed item →
         ValueSemantics.Represented next.working (sealed ++ dropped) item) ∧
@@ -111,7 +114,7 @@ theorem archive_write_physical_history {framing : CodecFraming} {objects nextObj
         PhysicalIdentityFact nextObjects next.working (.work item) := by
   obtain ⟨_, _, baselineEq, etagEq, _, _, applied⟩ := write_executes written
   change ResidentBatch cursor.working [event] next.working at applied
-  obtain ⟨dropped, _, _, _, nextHistory, kept⟩ := history.publish_resident window positive publication emitted applied
+  obtain ⟨dropped, _, _, _, nextHistory, kept⟩ := history.publish_resident physical window positive publication emitted applied
   exact ⟨baselineEq, etagEq, dropped, nextHistory, kept,
     fun item represented => identity_fact_physical nextHistory.invariant.images (kept item represented)⟩
 

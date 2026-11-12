@@ -1,5 +1,5 @@
-import VerifiedKernelProofs.Proof.CatalogFrameTactic
 import VerifiedKernelProofs.Session.WorkArchiveMetadata
+import VerifiedKernelProofs.Proof.CatalogFrameTactic
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

@@ -17,30 +17,31 @@ export function formatComputeBytes(raw: string): string {
   return `${Number((value * 10n) / scale) / 10} ${units[unit]}`;
 }
 
-function colorIndex(key: string): number {
-  let color = 0;
-  for (const char of key) color = (color * 31 + char.charCodeAt(0)) % 6;
-  return color;
-}
-
-type DiskItem = { key: string; label: string; bytes: string; sampledAt: string };
+type Breakdown = {
+  imageRuntimeBytes?: string | undefined;
+  buildCacheBytes?: string | undefined;
+  privateBytes?: string | undefined;
+  otherBytes?: string | undefined;
+  breakdownSampledAt?: string | undefined;
+};
 export function ComputeDiskUsage({
   usedBytes,
   capacityBytes,
-  environments,
+  breakdown,
   collectedAt,
-  onSelect,
   labels,
 }: {
   usedBytes: string;
   capacityBytes: string;
-  environments: readonly DiskItem[];
+  breakdown?: Breakdown | undefined;
   collectedAt: string;
-  onSelect: (key: string) => void;
   labels: {
     used: string;
     remaining: string;
     otherUsed: string;
+    imageRuntime: string;
+    buildCache: string;
+    privateData: string;
     detailUnavailable: string;
     summary: (used: string, capacity: string) => string;
   };
@@ -49,71 +50,62 @@ export function ComputeDiskUsage({
     capacity = byteCount(capacityBytes);
   if (used === undefined || capacity === undefined || capacity <= 0n || used > capacity)
     return <p>{labels.detailUnavailable}</p>;
-  const readTime = Date.parse(collectedAt);
-  const unique = new Map(environments.map((row) => [row.key, row]));
-  const rows = [...unique.values()];
+  const values = [
+    breakdown?.imageRuntimeBytes,
+    breakdown?.buildCacheBytes,
+    breakdown?.privateBytes,
+    breakdown?.otherBytes,
+  ].map((raw) => (raw === undefined ? undefined : byteCount(raw)));
+  const age = Date.parse(collectedAt) - Date.parse(breakdown?.breakdownSampledAt ?? "");
   const valid =
-    unique.size === environments.length &&
-    rows.every((row) => {
-      const age = readTime - Date.parse(row.sampledAt);
-      return (
-        byteCount(row.bytes) !== undefined &&
-        Number.isFinite(age) &&
-        age >= 0 &&
-        age <= 15_000
-      );
-    }) &&
-    rows.reduce((sum, row) => sum + BigInt(row.bytes), 0n) <= used;
-  const known = valid ? rows.slice(0, 6) : [];
-  const other = used - known.reduce((sum, row) => sum + BigInt(row.bytes), 0n);
+    values.every((value) => value !== undefined) &&
+    Number.isFinite(age) &&
+    age >= 0 &&
+    age <= 15_000 &&
+    values.reduce<bigint>((sum, value) => sum + (value ?? 0n), 0n) === used;
+  const rows = valid
+    ? [
+        { key: "images", label: labels.imageRuntime, bytes: values[0]! },
+        { key: "cache", label: labels.buildCache, bytes: values[1]! },
+        { key: "private", label: labels.privateData, bytes: values[2]! },
+        ...(values[3]! > 0n
+          ? [{ key: "other", label: labels.otherUsed, bytes: values[3]! }]
+          : []),
+      ]
+    : [{ key: "other", label: labels.used, bytes: used }];
   const width = (bytes: bigint) =>
     `${Number((bytes * 1_000_000n) / capacity) / 10_000}%`;
+  const summary = labels.summary(
+    formatComputeBytes(usedBytes),
+    formatComputeBytes(capacityBytes)
+  );
   return (
     <div className="comma-compute-disk">
-      <p>
-        {labels.summary(
-          formatComputeBytes(usedBytes),
-          formatComputeBytes(capacityBytes)
-        )}
-      </p>
-      <fieldset
-        className="comma-compute-disk__bar"
-        aria-label={labels.summary(
-          formatComputeBytes(usedBytes),
-          formatComputeBytes(capacityBytes)
-        )}
-      >
-        {known.map((row) => (
-          <button
-            type="button"
+      <p>{summary}</p>
+      <fieldset className="comma-compute-disk__bar" aria-label={summary}>
+        {rows.map((row) => (
+          <span
             key={row.key}
-            aria-label={`${row.label}: ${formatComputeBytes(row.bytes)}`}
-            className={`comma-compute-disk__segment comma-compute-disk__segment--${colorIndex(row.key)}`}
-            style={{ width: width(BigInt(row.bytes)) }}
-            onClick={() => onSelect(row.key)}
+            className={`comma-compute-disk__${row.key}`}
+            style={{ width: width(row.bytes) }}
           />
         ))}
-        <span className="comma-compute-disk__other" style={{ width: width(other) }} />
         <span
           className="comma-compute-disk__remaining"
           style={{ width: width(capacity - used) }}
         />
       </fieldset>
       <div className="comma-compute-disk__legend">
-        {known.map((row) => (
+        {rows.map((row) => (
           <span key={row.key}>
-            {row.label}: {formatComputeBytes(row.bytes)}
+            {row.label}: {formatComputeBytes(row.bytes.toString())}
           </span>
         ))}
-        <span>
-          {known.length ? labels.otherUsed : labels.used}:{" "}
-          {formatComputeBytes(other.toString())}
-        </span>
         <span>
           {labels.remaining}: {formatComputeBytes((capacity - used).toString())}
         </span>
       </div>
-      {!valid && rows.length > 0 ? <p>{labels.detailUnavailable}</p> : null}
+      {!valid ? <p>{labels.detailUnavailable}</p> : null}
     </div>
   );
 }

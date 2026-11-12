@@ -29,8 +29,9 @@ export function useOnboardingPlugins({
 }): {
   list: OnboardingPluginList;
   connect: (pluginId: string) => void;
+  cancel: (pluginId: string) => void;
 } {
-  const { install } = usePluginInstall();
+  const { cancel: cancelInstall, install } = usePluginInstall();
   const { value = { status: "preparing" } } = useTopic({ topic: "onboardingApps" });
   const workspaceId = workspace.status === "ready" ? workspace.workspaceId : undefined;
   const connect = useCallback(
@@ -39,5 +40,11 @@ export function useOnboardingPlugins({
     },
     [install, workspaceId]
   );
-  return { list: value, connect };
+  const cancel = useCallback(
+    (pluginId: string) => {
+      if (workspaceId) cancelInstall({ pluginId, workspaceId });
+    },
+    [cancelInstall, workspaceId]
+  );
+  return { list: value, connect, cancel };
 }

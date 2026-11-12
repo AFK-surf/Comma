@@ -37,6 +37,40 @@ describe("labelProposalAnchorMessageId", () => {
     );
   });
 
+  it("has no anchor for a proposal filed before the oldest loaded message", () => {
+    // The reply that filed it is not loaded; the oldest loaded reply is unrelated.
+    expect(labelProposalAnchorMessageId(messages, 1_699_000_000_000)).toBeUndefined();
+  });
+
+  it("anchors a proposal older than a reply at the head of the loaded history to it", () => {
+    // The page starts at a reply whose person's message is not loaded. The reply
+    // is dated after the proposals it filed while it was written.
+    expect(labelProposalAnchorMessageId(messages.slice(1), 1_700_000_050_000)).toBe(
+      "msg_reply_old"
+    );
+    expect(
+      groupLabelProposalsByAnchor(
+        [{ created_at: 1_700_000_050_000, id: "prp_settled", status: "approved" }],
+        messages.slice(1)
+      )
+    ).toMatchObject([{ messageId: "msg_reply_old" }]);
+  });
+
+  it("keeps a decision older than a reply at the head of the loaded history on the tail", () => {
+    // Anchored at the head, a decision would hold every loaded turn mounted.
+    expect(
+      labelProposalAnchorMessageId(messages.slice(1), 1_700_000_050_000, {
+        awaitsDecision: true,
+      })
+    ).toBeUndefined();
+    expect(
+      groupLabelProposalsByAnchor(
+        [{ created_at: 1_700_000_050_000, id: "prp_pending", status: "pending" }],
+        messages.slice(1)
+      )
+    ).toMatchObject([{ messageId: undefined }]);
+  });
+
   it("has no anchor without a proposal time or a dated reply", () => {
     expect(labelProposalAnchorMessageId(messages, undefined)).toBeUndefined();
     expect(
@@ -48,11 +82,20 @@ describe("labelProposalAnchorMessageId", () => {
   });
 });
 
-type Proposal = { created_at?: number | undefined; id: string };
+type Proposal = {
+  created_at?: number | undefined;
+  id: string;
+  status: "pending" | "approved";
+};
 
-const proposal = (id: string, created_at: number): Proposal => ({
+const proposal = (
+  id: string,
+  created_at: number,
+  status: Proposal["status"] = "pending"
+): Proposal => ({
   created_at,
   id,
+  status,
 });
 
 describe("groupLabelProposalsByAnchor", () => {
@@ -89,7 +132,10 @@ describe("groupLabelProposalsByAnchor", () => {
 
   it("keeps proposals with no dated reply together, last", () => {
     const groups = groupLabelProposalsByAnchor(
-      [{ id: "prp_undated" }, proposal("prp_dated", 1_700_000_060_000)],
+      [
+        { id: "prp_undated", status: "approved" },
+        proposal("prp_dated", 1_700_000_060_000),
+      ],
       messages
     );
     expect(groups.map((group) => group.messageId)).toEqual([
@@ -97,5 +143,24 @@ describe("groupLabelProposalsByAnchor", () => {
       undefined,
     ]);
     expect(groups[1]?.proposals.map((item) => item.id)).toEqual(["prp_undated"]);
+  });
+
+  it("keeps a decision filed before the loaded history on the tail and shows no settled one", () => {
+    const groups = groupLabelProposalsByAnchor(
+      [
+        proposal("prp_old_pending", 1_699_000_000_000),
+        proposal("prp_old_approved", 1_699_000_000_000, "approved"),
+        proposal("prp_loaded_approved", 1_700_000_060_000, "approved"),
+      ],
+      messages
+    );
+    expect(groups.map((group) => group.messageId)).toEqual([
+      "msg_reply_old",
+      undefined,
+    ]);
+    expect(groups[0]?.proposals.map((item) => item.id)).toEqual([
+      "prp_loaded_approved",
+    ]);
+    expect(groups[1]?.proposals.map((item) => item.id)).toEqual(["prp_old_pending"]);
   });
 });

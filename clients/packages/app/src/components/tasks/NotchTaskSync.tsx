@@ -96,6 +96,7 @@ export function NotchTaskSync() {
 
     void bridge.notch
       .update({
+        dismissTaskLabel: messages.notch_task_dismiss(),
         hasActivity: notchTasks.length > 0,
         listSubtitle: messages.notch_tasks_subtitle(),
         listTitle: messages.notch_tasks_title(),
@@ -252,6 +253,7 @@ export function toNotchTaskItems(
       conversationId: task.conversationId,
       groupId: task.groupId,
       id: task.id,
+      ...(task.runStartedAt === undefined ? {} : { runStartedAt: task.runStartedAt }),
       status: "in_progress",
       subtitle: inProgressLabel,
       title: task.title,

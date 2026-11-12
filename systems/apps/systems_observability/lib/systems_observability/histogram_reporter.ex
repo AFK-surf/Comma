@@ -102,6 +102,9 @@ defmodule SystemsObservability.HistogramReporter do
             config
           )
 
+        # Declared series read 0 before their first event (SystemsObservability.Metrics).
+        Enum.each(Keyword.get(metric.reporter_options, :zero_series, []), &series(config, &1))
+
         {Map.put(metric_map, metric_id, metric), [handler_id | handlers]}
       end)
 

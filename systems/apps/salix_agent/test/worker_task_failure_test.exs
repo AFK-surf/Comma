@@ -153,7 +153,7 @@ defmodule SalixAgent.WorkerTaskFailureTest do
 
   defp deliver_task_message(agent) do
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id}
       ])
 

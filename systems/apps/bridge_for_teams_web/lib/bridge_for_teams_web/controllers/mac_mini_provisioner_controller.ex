@@ -3,9 +3,8 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
   Org-scoped runner API.
 
   These endpoints are called by the host-side runner process with an org API
-  key. User-facing dashboard flows create device requests elsewhere; this
-  controller lets a runner register, heartbeat, claim one pending request,
-  and report non-secret lifecycle status back.
+  key: a runner registers and heartbeats, and the heartbeat answers with its
+  Agent VMM installs, controls and updates.
   """
   use BridgeForTeamsWeb.Dashboard, :controller
 
@@ -55,10 +54,10 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
          {:ok, install_failure_acks} <-
            Compute.report_agent_vmm_install_failures(
              provisioner,
-             Map.get(params, "agent_vmm_install_failures", [])
+             Map.get(params, "agent_vmm_registration_failures", [])
            ) do
       response = %{
-        "agent_vmm_install_failure_acks" => install_failure_acks,
+        "agent_vmm_registration_failure_acks" => install_failure_acks,
         "runner" => render_provisioner(provisioner),
         "updates" => MacMiniRelease.updates(conn, provisioner)
       }
@@ -75,9 +74,13 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
       response =
         case Compute.deliver_agent_vmm_install(provisioner) do
           {:ok, descriptor} ->
-            Map.put(response, "agent_vmm_install", render_install_descriptor(conn, descriptor))
+            Map.put(
+              response,
+              "agent_vmm_registration",
+              render_install_descriptor(conn, descriptor)
+            )
 
-          {:error, :no_pending_operation} ->
+          {:error, :no_pending_registration} ->
             response
 
           {:error, _reason} ->
@@ -92,129 +95,6 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
       {:error, :provisioner_not_found} -> send_error(conn, :provisioner_not_found, 404)
       {:error, %Ecto.Changeset{} = changeset} -> send_error(conn, changeset, 422)
       {:error, reason} -> send_error(conn, reason, 400)
-    end
-  end
-
-  @doc "POST /v1/orgs/:org_id/runners/:provisioner_id/claim"
-  @spec claim(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def claim(conn, %{"org_id" => org_id, "provisioner_id" => provisioner_id} = params) do
-    with :ok <- authorize_provisioner_api(conn, org_id, provisioner_id),
-         {:ok, %{action: action, request: request, connect: connect, launch: launch}} <-
-           Environments.claim_device_provision_request(
-             org_id,
-             provisioner_id,
-             put_request_id(params, conn)
-           ) do
-      send_json(
-        conn,
-        render_claim(%{action: action, request: request, connect: connect, launch: launch})
-      )
-    else
-      {:error, :no_pending_request} ->
-        send_resp(conn, 204, "")
-
-      {:error, :forbidden} ->
-        send_error(conn, :forbidden, 403)
-
-      {:error, :provisioner_not_found} ->
-        send_error(conn, :provisioner_not_found, 404)
-
-      {:error, :provisioner_offline} ->
-        send_error(conn, :provisioner_offline, 409)
-
-      {:error, :device_connection_create_failed} ->
-        send_error(conn, :device_connection_failed, 502)
-
-      {:error, :token_mint_failed} ->
-        send_error(conn, :device_connection_failed, 502)
-
-      {:error, reason} ->
-        send_error(conn, reason, 400)
-    end
-  end
-
-  @doc """
-  POST /v1/orgs/:org_id/runners/:provisioner_id/provision-requests/:request_id/status
-  """
-  @spec status(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def status(
-        conn,
-        %{
-          "org_id" => org_id,
-          "provisioner_id" => provisioner_id,
-          "request_id" => request_id
-        } = params
-      ) do
-    attrs = Map.take(params, ["failure_code", "failure_message", "connector_run_id", "progress"])
-
-    with :ok <- authorize_provisioner_api(conn, org_id, provisioner_id),
-         {:ok, status} <- fetch_nonblank(params, "status"),
-         {:ok, request} <-
-           Environments.update_device_provision_request_from_provisioner(
-             org_id,
-             provisioner_id,
-             request_id,
-             status,
-             attrs,
-             request_opts(conn)
-           ) do
-      send_json(conn, %{"provision_request" => render_provision_request(request)})
-    else
-      {:error, :missing_status} ->
-        send_error(conn, :missing_status, 422)
-
-      {:error, :forbidden} ->
-        send_error(conn, :forbidden, 403)
-
-      {:error, :provision_request_not_found} ->
-        send_error(conn, :provision_request_not_found, 404)
-
-      {:error, :not_found} ->
-        send_error(conn, :provision_request_not_found, 404)
-
-      {:error, :unsupported_provisioner_status} ->
-        send_error(conn, :unsupported_provisioner_status, 422)
-
-      {:error, :invalid_provisioner_status_transition} ->
-        send_error(conn, :invalid_provisioner_status_transition, 409)
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        send_error(conn, changeset, 422)
-
-      {:error, reason} ->
-        send_error(conn, reason, 400)
-    end
-  end
-
-  @doc """
-  GET /v1/orgs/:org_id/runners/:provisioner_id/provision-requests/:request_id
-  """
-  @spec show_request(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def show_request(
-        conn,
-        %{
-          "org_id" => org_id,
-          "provisioner_id" => provisioner_id,
-          "request_id" => request_id
-        }
-      ) do
-    with :ok <- authorize_provisioner_api(conn, org_id, provisioner_id),
-         {:ok, request} <-
-           Environments.get_device_provision_request_for_provisioner(
-             org_id,
-             provisioner_id,
-             request_id
-           ) do
-      send_json(conn, %{"provision_request" => render_provision_request(request)})
-    else
-      {:error, :forbidden} ->
-        send_error(conn, :forbidden, 403)
-
-      {:error, :provision_request_not_found} ->
-        send_error(conn, :provision_request_not_found, 404)
-
-      {:error, :not_found} ->
-        send_error(conn, :provision_request_not_found, 404)
     end
   end
 
@@ -243,10 +123,6 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
 
   defp request_opts(conn) do
     %{"request_id" => request_id(conn)}
-  end
-
-  defp put_request_id(params, conn) do
-    Map.put(params, "request_id", request_id(conn))
   end
 
   defp request_id(conn) do
@@ -278,9 +154,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
       "host_identity",
       "os_summary",
       "version",
-      "capabilities",
-      "capacity",
-      "current_connector_count"
+      "capabilities"
     ])
   end
 
@@ -295,8 +169,6 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
       "os_summary" => provisioner.os_summary,
       "version" => provisioner.version,
       "capabilities" => provisioner.capabilities || %{},
-      "capacity" => provisioner.capacity,
-      "current_connector_count" => provisioner.current_connector_count,
       "last_seen_at" => provisioner.last_seen_at,
       "created_at" => provisioner.created_at,
       "updated_at" => provisioner.updated_at
@@ -306,9 +178,10 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
   defp render_install_descriptor(_conn, descriptor) do
     %{
       "version" => 1,
-      "operation_id" => descriptor.operation.id,
-      "exchange_url" => install_operation_exchange_url(),
-      "one_time_secret" => descriptor.one_time_secret,
+      "registration_id" => descriptor.registration.id,
+      "request_id" => descriptor.registration.client_request_id,
+      "claim_url" => install_operation_exchange_url(),
+      "ticket" => descriptor.ticket,
       "expires_at" => DateTime.to_iso8601(descriptor.expires_at)
     }
   end
@@ -318,7 +191,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
 
     %URI{
       uri
-      | path: "/v1/compute/agent-vmm/install-operations/exchange",
+      | path: "/v1/compute/agent-vmm/registrations/claim",
         query: nil,
         fragment: nil
     }
@@ -331,7 +204,6 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
       "items" =>
         Enum.map(page.controls, fn control ->
           %{
-            "operation_id" => control.operation_id,
             "registration_id" => control.registration_id,
             "registration_revision" => control.registration_revision,
             "state" => control.state
@@ -339,60 +211,5 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
         end),
       "next_cursor" => page.next_cursor
     }
-  end
-
-  defp render_provision_request(request) do
-    %{
-      "id" => request.id,
-      "org_id" => request.org_id,
-      "project_id" => request.project_id,
-      "provisioner_id" => request.provisioner_id,
-      "name" => request.name,
-      "alias" => request.env_alias,
-      "status" => request.status,
-      "failure_code" => request.failure_code,
-      "failure_message" => request.failure_message,
-      "connector_run_id" => request.connector_run_id,
-      "spec" => render_request_spec(request.spec),
-      "progress" => request.progress || %{},
-      "created_at" => request.created_at,
-      "updated_at" => request.updated_at
-    }
-  end
-
-  defp render_claim(%{action: action, request: request, connect: connect, launch: launch}) do
-    %{
-      "action" => action,
-      "device_request" => render_provision_request(request),
-      "connect" => render_connect(connect),
-      "launch" => launch
-    }
-  end
-
-  defp render_request_spec(spec) when is_map(spec), do: Map.drop(spec, ["salix_group_id"])
-  defp render_request_spec(_spec), do: %{}
-
-  defp render_connect(connect) do
-    Map.take(connect || %{}, [
-      "token",
-      "server",
-      "connect_url",
-      "env",
-      "name",
-      "alias"
-    ])
-  end
-
-  defp fetch_nonblank(params, key) do
-    case params[key] do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, :missing_status}
-          trimmed -> {:ok, trimmed}
-        end
-
-      _ ->
-        {:error, :missing_status}
-    end
   end
 end

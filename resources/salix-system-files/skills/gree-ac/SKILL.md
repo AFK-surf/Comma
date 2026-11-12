@@ -7,14 +7,16 @@ activation: per-message
 # Gree Air Conditioners
 
 These units speak the Gree protocol: encrypted UDP on port 7000, not HTTP.
-Send every request with `device.gree_request` through a gateway whose
-`capabilities.lan_gateway.methods` include `udp_request`. Follow the
+Send every request with `device.lan_script`, `script:
+"/.runtime/skills/gree-ac/gree.js"`, through a gateway whose
+`capabilities.lan_gateway.methods` include `lan_script`. Follow the
 `/.runtime/skills/home-gateway/SKILL.md` instructions to find the gateway.
-If no gateway advertises `udp_request`, tell the user the gateway needs a
-firmware or connector update and stop. Do not fall back to a script on the
-user's computer.
+When Home Assistant already controls the unit, use the home-assistant skill
+instead. Otherwise, if no gateway advertises `lan_script`, tell the user the
+gateway needs a firmware or station update and stop. Do not write your own
+Gree script.
 
-The platform binds to the unit by itself. Do not ask the user for a key, a
+The script binds to the unit by itself. Do not ask the user for a key, a
 password or the Gree+ app.
 
 ## Identify the Unit
@@ -29,9 +31,10 @@ password or the Gree+ app.
 
 ## Read State
 
-`status` with the columns to read, for example
-`["Pow", "Mod", "SetTem", "TemUn", "TemRec", "WdSpd", "TemSen"]`. `values`
-has one entry for each column:
+`args`: `host` and `status` with the columns to read, for example
+`{"host": "192.168.1.31", "status": ["Pow", "Mod", "SetTem", "TemUn",
+"TemRec", "WdSpd", "TemSen"]}`. The result is `{host, mac, values, name,
+model}`; `values` has one entry for each column:
 
 - `Pow`: `0` off, `1` on;
 - `Mod`: `0` auto, `1` cool, `2` dry, `3` fan, `4` heat;
@@ -55,7 +58,7 @@ has one entry for each column:
 
 ## Change State
 
-`set` with the columns to change and their values:
+`args`: `host` and `set` with the columns to change and their values:
 
 - On or off: `{"Pow": 1}` or `{"Pow": 0}`.
 - Temperature: `{"SetTem": 26}` when `TemUn` is `0`. For Fahrenheit, see
@@ -91,6 +94,8 @@ After every change, call `status` again and report what the unit returns,
 not what you requested.
 
 ## Errors
+
+Each error is the failure code, or for `script_failed` the start of its message:
 
 - `device_not_answering`: nothing answered on UDP 7000. Check the address
   with `device.lan_discover` and that the unit has power.

@@ -18,6 +18,7 @@ import type { DriveEntry } from "../contract.ts";
 import { Core } from "../core.ts";
 import type { CoreLimits } from "../limits.ts";
 import { base64, fromBase64, Recorder } from "../record.ts";
+import { holdToWork, WorkMeter } from "./work.ts";
 import { expect, onTestFailed, onTestFinished } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -42,6 +43,7 @@ import {
   type LocalDriveState,
   type LocalDriveVersion,
   type MeetingPorts,
+  type ScreenFramePorts,
   type VoiceCallPorts,
   type ResetPorts,
   type Pull,
@@ -56,6 +58,7 @@ export { FakeMeetingMain, meetingFixture } from "./meeting.ts";
 export { FakeDesktop, FakeUpdates } from "./fake-desktop.ts";
 export { FakeStation, FakeStations, fakeCredential } from "./stations.ts";
 export { Recorder } from "../record.ts";
+export { WorkMeter, type TopicWork, type TableWrites } from "./work.ts";
 export { DELIVERY_GRACE_MS, msUntilDailyDelivery } from "../recommendations.ts";
 /** What the core sends Settings › Model & API for a catalog and profiles: a UI test scripts the topic with it. */
 export { modelsView } from "../model-view.ts";
@@ -619,6 +622,7 @@ export class FakeHost implements Host {
   meeting?: MeetingPorts;
   /** Main's voice call socket: a fake host has none unless a test gives it. */
   voiceCall?: VoiceCallPorts;
+  screenFrames?: ScreenFramePorts;
   /** How many times the app's reset asked this host for a new core (`ResetPorts.restart`). */
   restarts = 0;
   /**
@@ -873,11 +877,25 @@ export function startTestCore(
     // Not inside a test (a helper made at load): nothing to show it on.
   }
   const { replays: _replays, ...coreOptions } = options;
+  const meter = new WorkMeter();
   const core = new Core(host, {
     ...(host.time ? { clock: host.time.clock } : {}),
     recorder,
+    meter: meter.counting,
     ...coreOptions,
   });
+  works.set(core, meter);
+  let account = core.session.accountKey();
+  core.session.onChange(() => {
+    const now = core.session.accountKey();
+    if (now !== account) meter.accountChanged();
+    account = now;
+  });
+  try {
+    holdToWork(meter);
+  } catch {
+    // Not inside a test.
+  }
   // A fiber that ends in a failure is a bug (a native host starts the core anew for it): the test fails.
   const defects: unknown[] = [];
   const told = core.runner.onDefect;
@@ -896,6 +914,15 @@ export function startTestCore(
     // Not inside a test.
   }
   return core;
+}
+
+const works = new WeakMap<Core, WorkMeter>();
+
+/** What a test's core (`startTestCore`) did, by topic and table. */
+export function workOf(core: Core): WorkMeter {
+  const meter = works.get(core);
+  if (!meter) throw new Error("not a test core");
+  return meter;
 }
 
 /**

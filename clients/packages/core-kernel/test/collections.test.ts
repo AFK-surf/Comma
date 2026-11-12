@@ -40,3 +40,18 @@ test("an item put at the top, one moved and one dropped apply to the same list o
   // Items that did not change keep their identity: a UI's memoized rows do not redraw.
   assert.equal(applied.items[2], old.items[0]);
 });
+
+test("a list made again around the same rows says nothing, and a row made anew in its place is still compared", () => {
+  const old = { items: Array.from({ length: 50 }, (_, i) => row(`r${i}`)) };
+  assert.deepEqual(diffKeyed(old, { items: [...old.items] }, spec), []);
+  const items = [...old.items];
+  items[7] = row("r7", "renamed");
+  assert.deepEqual(diffKeyed(old, { items }, spec), [
+    {
+      path: ["items"],
+      key: ["id"],
+      patch: "r7",
+      ops: [{ path: ["title"], set: "renamed" }],
+    },
+  ]);
+});

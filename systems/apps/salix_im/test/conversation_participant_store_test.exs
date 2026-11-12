@@ -1,181 +1,200 @@
 defmodule SalixIM.ConversationParticipantStoreTest do
-  require SystemsRuntime.Proc
-
   use SystemsClock.Case, async: false
 
-  use SalixAgent.TestSupport.Settle
-  alias SalixIM.ConversationParticipantStore
-  alias SalixStore.{CasRecord, Ids, Keys, S3}
+  alias SalixIM.{ConversationParticipantStore, ConversationPGStore}
+  alias SalixStore.{CasRecord, Ids, Repo}
 
   setup do
-    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-
-    on_exit(fn ->
-      if is_nil(previous_backend),
-        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
-        else: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
-    end)
-
-    tenant_id = Ids.new_tenant_id()
-    group_id = Ids.new_group_id(tenant_id)
-    conversation_id = Ids.new_conversation_id()
-    participant_id = Ids.new_participant_id()
+    group = Ids.new_group_id(Ids.new_tenant_id())
+    conversation = Ids.new_conversation_id()
+    participant = Ids.new_participant_id()
+    scope = ConversationPGStore.new(group, conversation)
+    assert {:ok, :inserted, _, 1} = ConversationPGStore.create(scope, %{"kind" => "user_chat"})
 
     {:ok, store} =
       ConversationParticipantStore.start_link(
         owner: SystemsRuntime.Proc.self(),
-        group_id: group_id,
-        conversation_id: conversation_id,
-        participant_id: participant_id
+        group_id: group,
+        conversation_id: conversation,
+        participant_id: participant
       )
+
+    on_exit(fn ->
+      Repo.query!("DELETE FROM salix_conversation_deliveries WHERE group_id=$1", [group])
+      Repo.query!("DELETE FROM salix_conversation_participants WHERE group_id=$1", [group])
+      Repo.query!("DELETE FROM salix_conversations WHERE group_id=$1", [group])
+      Repo.query!("DELETE FROM conversation_log_recovery WHERE group_id=$1", [group])
+
+      if is_nil(previous),
+        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
+        else: SystemsRuntime.put_env(:salix_store, :s3_backend, previous)
+    end)
 
     {:ok,
      store: store,
-     group_id: group_id,
-     conversation_id: conversation_id,
-     participant_id: participant_id}
+     group_id: group,
+     conversation_id: conversation,
+     participant_id: participant,
+     scope: scope}
   end
 
-  test "delivery operations derive keys and overwrite fixed owner identity", context do
-    delivery_id = "delivery-1"
+  test "delivery claims derive owner identity and a stale revision cannot replace a claim",
+       context do
+    assert {:ok, :inserted, _} =
+             ConversationParticipantStore.put_new(context.store, participant(context))
+
+    assert {:ok, before, _} = ConversationPGStore.read(context.scope)
 
     assert :inserted =
              ConversationParticipantStore.put_delivery(context.store, %{
-               "delivery_id" => delivery_id,
-               "agent_group_id" => "forged-group",
-               "conversation_id" => "forged-conversation",
-               "participant_id" => "forged-participant",
+               "delivery_id" => "delivery-1",
+               "agent_group_id" => "forged",
+               "conversation_id" => "forged",
+               "participant_id" => "forged",
                "status" => "pending",
-               "message_id" => "message-1",
-               "created_at" => 1
+               "message_id" => "message-1"
              })
 
     assert {:ok, stored, revision} =
-             ConversationParticipantStore.read_delivery(context.store, delivery_id)
+             ConversationParticipantStore.read_delivery(context.store, "delivery-1")
 
-    assert is_binary(revision)
     assert stored["agent_group_id"] == context.group_id
     assert stored["conversation_id"] == context.conversation_id
     assert stored["participant_id"] == context.participant_id
-    assert stored["delivery_id"] == delivery_id
+    claimed = Map.put(stored, "status", "delivering")
 
-    assert {:ok, _result} =
+    assert {:ok, %{etag: claim_revision}} =
              ConversationParticipantStore.put_delivery_state(
                context.store,
-               delivery_id,
-               Map.merge(stored, %{
-                 "agent_group_id" => "other-group",
-                 "conversation_id" => "other-conversation",
-                 "participant_id" => "other-participant",
-                 "status" => "retry_waiting"
-               }),
+               "delivery-1",
+               claimed,
                revision
              )
 
-    assert {:ok, updated} =
-             ConversationParticipantStore.delivery_by_id(context.store, delivery_id)
+    assert {:error, :precondition_failed} =
+             ConversationParticipantStore.put_delivery_state(
+               context.store,
+               "delivery-1",
+               Map.put(stored, "status", "delivered"),
+               revision
+             )
 
-    assert updated["agent_group_id"] == context.group_id
-    assert updated["conversation_id"] == context.conversation_id
-    assert updated["participant_id"] == context.participant_id
+    assert {:ok, ^claimed, ^claim_revision} =
+             ConversationParticipantStore.read_delivery(context.store, "delivery-1")
+
+    assert {:ok, after_claim, _} = ConversationPGStore.read(context.scope)
+    assert after_claim["membership_revision"] == before["membership_revision"]
   end
 
-  for {name, fault} <- [
-        {"adopts an ambiguous write only after exact read-back", :ambiguous_after},
-        {"retries only after read-back proves an ambiguous write did not land", :ambiguous_before}
-      ] do
-    @fault fault
-  end
+  test "a guarded lifecycle change preserves generation authority and publishes its membership target",
+       context do
+    binding_key = "test/binding/#{context.participant_id}"
+    binding = %{"version" => 3, "binding_token" => "T1"}
+    assert {:ok, _} = CasRecord.create(binding_key, binding)
 
-  # A write that did not land must restart both guard reads (at least four);
-  # one that landed is adopted after read-back with only the original two.
-  for {name, fault, read_bound} <- [
-        {"fully restarts after an ambiguous write that did not land", :ambiguous_before,
-         {:at_least, 4}},
-        {"adopts an ambiguous write only after exact read-back", :ambiguous_after, {:exactly, 2}}
-      ] do
-    @fault fault
-    @read_bound read_bound
-    test "guarded participant upsert #{name}", context do
-      {binding_key, guard, participant, transition} = guarded_upsert_fixture!(context)
-
-      assert {:ok, :inserted, ^participant} =
-               ConversationParticipantStore.put_new(context.store, participant)
-
-      participant_key =
-        Keys.ctl_group_conversation_participant_state(
-          context.group_id,
-          context.conversation_id,
-          context.participant_id
-        )
-
-      :ok = S3.Fake.set_fault_for(context.store, {@fault, :put, participant_key})
-      :ok = S3.Fake.reset_read_log()
-
-      assert {:ok, :repaired, %{"payload" => %{"task_thread_binding_token" => "T1"}} = updated} =
-               ConversationParticipantStore.guarded_upsert(context.store, guard, transition)
-
-      assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
-
-      case @read_bound do
-        {:at_least, n} -> assert count_guard_reads(context.store, binding_key) >= n
-        {:exactly, n} -> assert count_guard_reads(context.store, binding_key) == n
-      end
-    end
-  end
-
-  defp guarded_upsert_fixture!(context) do
-    binding_key = "test/task-thread-bindings/#{context.participant_id}.json"
-
-    binding = %{
-      "version" => 3,
-      "binding_type" => "task",
-      "binding_status" => "active",
-      "binding_token" => "T1",
-      "participant_id" => context.participant_id
-    }
-
-    assert {:ok, ^binding} = CasRecord.create(binding_key, binding)
+    assert {:ok, :inserted, _} =
+             ConversationParticipantStore.put_new(context.store, participant(context))
 
     guard = %{
       "record_key" => binding_key,
-      "required" => %{
-        "version" => 3,
-        "binding_type" => "task",
-        "binding_status" => "active",
-        "binding_token" => "T1"
-      },
+      "required" => binding,
       "one_of" => %{},
-      "optional_expected" => %{"participant_id" => context.participant_id}
+      "optional_expected" => %{}
     }
 
-    participant = %{
+    transition = fn current ->
+      {:ok, :repaired, put_in(current, ["payload", "task_thread_binding_token"], "T1")}
+    end
+
+    assert {:ok, :repaired, updated} =
+             ConversationParticipantStore.guarded_upsert(context.store, guard, transition)
+
+    assert {:ok, ^updated} = ConversationParticipantStore.load(context.store)
+    assert {:ok, source, _} = ConversationPGStore.read(context.scope)
+
+    assert %{rows: [[membership]]} =
+             Repo.query!(
+               "SELECT membership_revision FROM conversation_log_recovery WHERE group_id=$1 AND conversation_id=$2",
+               [context.group_id, context.conversation_id]
+             )
+
+    assert membership == source["membership_revision"]
+    assert {:ok, _} = CasRecord.update(binding_key, &Map.put(&1, "binding_token", "T2"))
+
+    assert {:error, :guard_record_mismatch} =
+             ConversationParticipantStore.guarded_upsert(context.store, guard, fn _ ->
+               flunk("stale generation transition ran")
+             end)
+  end
+
+  test "an unknown Participant mutation retains its frozen candidate without rerunning its function",
+       context do
+    assert {:ok, :inserted, original} =
+             ConversationParticipantStore.put_new(context.store, participant(context))
+
+    Repo.query!("""
+    CREATE FUNCTION participant_disconnect() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.participant_id = '#{context.participant_id}' THEN
+        PERFORM pg_terminate_backend(pg_backend_pid());
+      END IF;
+      RETURN NEW;
+    END $$
+    """)
+
+    Repo.query!(
+      "CREATE TRIGGER participant_disconnect BEFORE UPDATE ON salix_conversation_participants FOR EACH ROW EXECUTE FUNCTION participant_disconnect()"
+    )
+
+    on_exit(fn ->
+      Repo.query!(
+        "DROP TRIGGER IF EXISTS participant_disconnect ON salix_conversation_participants"
+      )
+
+      Repo.query!("DROP FUNCTION IF EXISTS participant_disconnect()")
+    end)
+
+    test_pid = SystemsRuntime.Proc.self()
+
+    assert {:error, :commit_indeterminate} =
+             ConversationParticipantStore.update(context.store, fn current ->
+               SystemsRuntime.Proc.send(test_pid, :transition_ran)
+               Map.put(current, "state", "inactive")
+             end)
+
+    assert_received :transition_ran
+    refute_received :transition_ran
+    assert {:ok, ^original} = ConversationParticipantStore.load(context.store)
+
+    assert {:error, :commit_indeterminate} =
+             ConversationParticipantStore.update(context.store, fn _ ->
+               flunk("a new command ran while outcome was unknown")
+             end)
+
+    Repo.query!("DROP TRIGGER participant_disconnect ON salix_conversation_participants")
+    Repo.query!("DROP FUNCTION participant_disconnect()")
+
+    assert {:ok, %{record: %{"state" => "inactive"}, result: {:ok, _}}} =
+             ConversationParticipantStore.settle_pending(context.store)
+
+    assert {:ok, %{"state" => "inactive"}} =
+             ConversationParticipantStore.update(context.store, & &1)
+
+    refute_received :transition_ran
+  end
+
+  defp participant(context),
+    do: %{
       "participant_id" => context.participant_id,
       "conversation_id" => context.conversation_id,
       "actor_type" => "provider",
       "provider" => "slack",
-      "target_key" => "task-thread-target",
+      "target_key" => "target",
       "state" => "active",
       "notification_filter" => %{"messages" => "all", "statuses" => "none"},
       "payload" => %{}
     }
-
-    transition = fn
-      :not_found ->
-        {:ok, :inserted, put_in(participant, ["payload", "task_thread_binding_token"], "T1")}
-
-      current when is_map(current) ->
-        {:ok, :repaired, put_in(current, ["payload", "task_thread_binding_token"], "T1")}
-    end
-
-    {binding_key, guard, participant, transition}
-  end
-
-  defp count_guard_reads(store, binding_key) do
-    store
-    |> S3.Fake.read_log()
-    |> Enum.count(&(&1 == {:get, binding_key}))
-  end
 end

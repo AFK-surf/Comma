@@ -3,11 +3,15 @@ defmodule SalixIM.Provider.Feishu.Docs do
   Feishu cloud documents (Docx, including Docx pages in a wiki) through the
   connect's own tenant app.
 
-  The connect's `tenant_access_token` is the only identity. The app can open a
+  The connect's `tenant_access_token` is the default identity. The app can open a
   document only when the document is shared with a chat that includes the bot,
-  shared with the app itself, or shared by link inside the tenant. There is no
-  per-user Feishu authorization here; `mcp.feishu.*` remains the user-identity
-  path.
+  shared with the app itself, or shared by link inside the tenant. A read or
+  a content write (`update_doc`, `insert_doc_media`, the comment writes) that
+  names a signed-in account runs as that person
+  (`SalixIM.Provider.Feishu.Meetings.as_account/3`), and so does an access
+  request (`feishu.request_doc_access`), which Feishu takes only from a person and
+  which also names a spreadsheet or a Base. Creating, sharing and deleting
+  run as the app only.
 
   Content reads and writes use Feishu's agent-oriented `docs_ai/v1` API, the
   same API the official [larksuite/cli](https://github.com/larksuite/cli) uses
@@ -36,6 +40,7 @@ defmodule SalixIM.Provider.Feishu.Docs do
   @fetch_details ~w(simple with-ids full)
   @fetch_scopes ~w(full outline section range keyword)
   @perms ~w(view edit full_access)
+  @request_perms ~w(view edit)
   @link_share_entities ~w(closed tenant_readable tenant_editable)
   @member_types %{
     "chat" => {"openchat", "chat"},
@@ -60,28 +65,11 @@ defmodule SalixIM.Provider.Feishu.Docs do
   # ---------------------------------------------------------------------------
 
   defp do_call(agent_id, connect, "feishu.fetch_doc", params) do
-    with {:ok, ref} <- ref(params),
-         {:ok, format} <- enum(params, "format", @formats, "markdown"),
-         {:ok, detail} <- enum(params, "detail", @fetch_details, "simple"),
-         {:ok, read_option} <- read_option(params),
-         {:ok, data} <-
-           API.post_read(
-             connect,
-             "/docs_ai/v1/documents/#{segment(ref.token)}/fetch",
-             %{
-               "format" => format,
-               "extra_param" =>
-                 Jason.encode!(%{
-                   "enable_user_cite_reference_map" => true,
-                   "include_comments" => true
-                 }),
-               "export_option" => export_option(detail)
-             }
-             |> maybe_put("read_option", read_option)
-             |> maybe_put("revision_id", positive(params["revision_id"]))
-           ),
-         {:ok, result} <- fetch_result(agent_id, ref, format, data) do
-      {:ok, labelled(result, connect, ref)}
+    with {:ok, ref} <- ref(params) do
+      case fetch_doc(agent_id, connect, ref, params) do
+        {:error, _reason} = error -> wiki_object_hint(connect, ref, error)
+        ok -> ok
+      end
     end
   end
 
@@ -311,6 +299,26 @@ defmodule SalixIM.Provider.Feishu.Docs do
     end
   end
 
+  # Feishu takes an access request only from a person (user access token).
+  # The owner's approval adds that person, never the app. A wiki page is
+  # asked for by its node: its object cannot be looked up before access.
+  defp do_call(_agent_id, connect, "feishu.request_doc_access", params) do
+    with :ok <- as_person(connect),
+         {:ok, ref} <- access_ref(params),
+         {:ok, perm} <- enum(params, "perm", @request_perms, "view"),
+         {:ok, _data} <-
+           API.post(
+             connect,
+             "/drive/v1/permissions/#{segment(ref.token)}/members/apply?" <>
+               URI.encode_query(%{"type" => ref.kind}),
+             maybe_put(%{"perm" => perm}, "remark", blank_nil(params["remark"]))
+           ) do
+      {:ok, %{"doc" => ref.token, "doc_type" => ref.kind, "requested" => perm}}
+    else
+      {:error, reason} -> {:error, access_request_error(reason)}
+    end
+  end
+
   defp do_call(_agent_id, connect, "feishu.remove_doc_member", params) do
     with {:ok, ref} <- ref(params),
          {:ok, {member_type, kind, member_id}} <- member(params),
@@ -347,6 +355,47 @@ defmodule SalixIM.Provider.Feishu.Docs do
 
   defp do_call(_agent_id, _connect, _api, _params),
     do: {:error, "unsupported Feishu document api"}
+
+  # A wiki node that holds a Base or spreadsheet is not a document. When its
+  # fetch fails, one node lookup names the operations that read it instead.
+  defp wiki_object_hint(connect, %{kind: "wiki"} = ref, error) do
+    case resolve(connect, ref) do
+      {:error, reason} = hint when is_binary(reason) ->
+        if String.contains?(reason, ["feishu.get_base", "feishu.get_sheet"]),
+          do: hint,
+          else: error
+
+      _other ->
+        error
+    end
+  end
+
+  defp wiki_object_hint(_connect, _ref, error), do: error
+
+  defp fetch_doc(agent_id, connect, ref, params) do
+    with {:ok, format} <- enum(params, "format", @formats, "markdown"),
+         {:ok, detail} <- enum(params, "detail", @fetch_details, "simple"),
+         {:ok, read_option} <- read_option(params),
+         {:ok, data} <-
+           API.post_read(
+             connect,
+             "/docs_ai/v1/documents/#{segment(ref.token)}/fetch",
+             %{
+               "format" => format,
+               "extra_param" =>
+                 Jason.encode!(%{
+                   "enable_user_cite_reference_map" => true,
+                   "include_comments" => true
+                 }),
+               "export_option" => export_option(detail)
+             }
+             |> maybe_put("read_option", read_option)
+             |> maybe_put("revision_id", positive(params["revision_id"]))
+           ),
+         {:ok, result} <- fetch_result(agent_id, ref, format, data) do
+      {:ok, labelled(result, connect, ref)}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Audience
@@ -485,8 +534,13 @@ defmodule SalixIM.Provider.Feishu.Docs do
         {:error,
          "legacy Feishu documents (/doc/) are not supported; open the document and upgrade it to a new-version document"}
 
-      path_token(path, "/sheets/") || path_token(path, "/base/") ->
-        {:error, "Feishu spreadsheets and Base are not supported by the document operations"}
+      path_token(path, "/base/") ->
+        {:error,
+         "this link is a Feishu Base, not a document; read it with feishu.get_base, feishu.list_base_fields and feishu.list_base_records"}
+
+      path_token(path, "/sheets/") ->
+        {:error,
+         "this link is a Feishu spreadsheet, not a document; read it with feishu.get_sheet and feishu.get_sheet_range"}
 
       true ->
         {:error, "unsupported Feishu link #{inspect(raw)}; pass a /docx/ or /wiki/ link"}
@@ -501,16 +555,19 @@ defmodule SalixIM.Provider.Feishu.Docs do
   defp lark_host?(host),
     do: host == "larksuite.com" or String.ends_with?(host, ".larksuite.com")
 
+  # The token right after a marker at the start of the path: a marker found
+  # deeper in the path, as in a share link, names nothing.
   defp path_token(path, marker) do
-    case String.split(path, marker, parts: 2) do
-      [_before, rest] ->
-        case rest |> String.split("/", parts: 2) |> List.first() |> str() do
-          "" -> nil
-          token -> token
-        end
-
-      _ ->
-        nil
+    if String.starts_with?(path, marker) do
+      path
+      |> binary_part(byte_size(marker), byte_size(path) - byte_size(marker))
+      |> String.split("/", parts: 2)
+      |> List.first()
+      |> str()
+      |> case do
+        "" -> nil
+        token -> token
+      end
     end
   end
 
@@ -542,6 +599,14 @@ defmodule SalixIM.Provider.Feishu.Docs do
         {"", _} ->
           {:error, "Feishu wiki node lookup returned no document"}
 
+        {"bitable", _} ->
+          {:error,
+           "this wiki node is a Base, not a document; read it with feishu.get_base, feishu.list_base_fields and feishu.list_base_records"}
+
+        {"sheet", _} ->
+          {:error,
+           "this wiki node is a spreadsheet, not a document; read it with feishu.get_sheet and feishu.get_sheet_range"}
+
         {other, _} ->
           {:error, "this wiki node is a #{other}, not a document; only Docx pages are supported"}
       end
@@ -549,6 +614,30 @@ defmodule SalixIM.Provider.Feishu.Docs do
   end
 
   defp ref(params), do: parse_ref(params["doc"], params["doc_type"])
+
+  # An access request also names a spreadsheet or a Base, by its own link or
+  # by a bare token with doc_type. The platform applies by the object's type:
+  # sheet or bitable. A wiki node that holds one is asked for by its node.
+  defp access_ref(params) do
+    raw = str(params["doc"])
+    type = str(params["doc_type"])
+    uri = URI.parse(raw)
+    path = if feishu_host?(String.downcase(uri.host || "")), do: uri.path || "", else: ""
+
+    cond do
+      type in ~w(sheet bitable) and raw =~ ~r/^[A-Za-z0-9_-]{8,64}$/ ->
+        {:ok, %{kind: type, token: raw, input: raw}}
+
+      token = path_token(path, "/sheets/") ->
+        {:ok, %{kind: "sheet", token: token, input: raw}}
+
+      token = path_token(path, "/base/") ->
+        {:ok, %{kind: "bitable", token: token, input: raw}}
+
+      true ->
+        ref(params)
+    end
+  end
 
   defp document_summary(target) do
     %{"document_id" => target.obj_token}
@@ -1186,6 +1275,32 @@ defmodule SalixIM.Provider.Feishu.Docs do
   defp bool_param(value) when value in [true, "true"], do: true
   defp bool_param(value) when value in [false, "false"], do: false
   defp bool_param(_value), do: nil
+
+  defp as_person(%{"user_access_token" => token}) when is_binary(token) and token != "",
+    do: :ok
+
+  defp as_person(_connect),
+    do:
+      {:error,
+       "Feishu takes an access request only from a person: pass account, the signed-in account of the person who asked (feishu.list_accounts)"}
+
+  # Feishu's refusals of an access request (official CLI, `drive
+  # +apply-permission`). The generic texts of these codes speak of the app.
+  defp access_request_error(reason) do
+    cond do
+      String.contains?(reason, "error 1063006 ") ->
+        "Feishu API error 1063006: this person has asked for this document 5 times today, Feishu's daily limit. Do not ask again today."
+
+      String.contains?(reason, "error 1063007 ") ->
+        "Feishu API error 1063007: this document takes no access request. The person may have the access already, or the document refuses requests; ask the owner directly."
+
+      String.contains?(reason, "error 1063002 ") ->
+        "Feishu API error 1063002: the tenant or the document does not let this person ask for access. Ask the owner directly."
+
+      true ->
+        reason
+    end
+  end
 
   defp blank_nil(value) do
     case str(value) do

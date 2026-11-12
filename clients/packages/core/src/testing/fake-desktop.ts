@@ -42,7 +42,10 @@ function scripted<A>(answer: () => Scripted<A>): Effect.Effect<A, HostError> {
   );
 }
 
-/** The app's update feed as a test scripts it (`script`): by default configured, with nothing newer. */
+/**
+ * The app's update feed as a test scripts it (`script`): by default configured, with nothing newer. `progress` tells
+ * the core how far a download got.
+ */
 export class FakeUpdates implements AppUpdatePorts {
   script: {
     status(): Scripted<AppUpdateStatus>;
@@ -88,6 +91,18 @@ export class FakeUpdates implements AppUpdatePorts {
       this.asked.push(["apply", release]);
       return this.script.apply(release);
     });
+  }
+
+  readonly #progress = new Set<(percent: number) => void>();
+
+  onProgress(listener: (percent: number) => void): () => void {
+    this.#progress.add(listener);
+    return () => void this.#progress.delete(listener);
+  }
+
+  /** Tells the core a download got to `percent`. */
+  progress(percent: number): void {
+    for (const listener of this.#progress) listener(percent);
   }
 }
 

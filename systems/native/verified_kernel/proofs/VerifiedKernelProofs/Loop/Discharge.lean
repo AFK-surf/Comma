@@ -587,18 +587,14 @@ theorem allQ_quiet {Q : Term → Prop} {xs : List Term} (quiet : ∀ raw ∈ xs,
   obtain ⟨event, _, _, read, found⟩ := normal
   exact absurd found (quiet raw member event _ _ read)
 
-theorem guard_quiet {track unsettled reset : Term} {results : List Term}
-    (unsettledQuiet : RawQuiet unsettled) (resetQuiet : RawQuiet reset) :
-    ∀ raw ∈ (if track.truthy = true then
-        [if (results.all fun result => result.get (a "status") == b "guidance") = true then unsettled else reset]
-        else []), RawQuiet raw := by
+theorem guard_quiet {track reset : Term} {results : List Term} (resetQuiet : RawQuiet reset) :
+    ∀ raw ∈ (if (track.truthy && !(results.all fun result => result.get (a "status") == b "guidance")) = true
+        then [reset] else []), RawQuiet raw := by
   intro raw member
   split at member
   · simp only [List.mem_cons, List.not_mem_nil, or_false] at member
     subst raw
-    split
-    · exact unsettledQuiet
-    · exact resetQuiet
+    exact resetQuiet
   · simp at member
 
 theorem idle_quiet {c : Bool} {sid : Term} :
@@ -686,7 +682,7 @@ theorem batch_discharge {s hostEvents stored track unsettled reset router output
   have hostQ : AllQ (fun raw => (∃ xs, hostEvents = .list xs ∧ raw ∈ xs) ∨ SettleJustified s router.truthy raw) host :=
     fun raw member _ => Or.inl ⟨host, hostIs, member⟩
   have base := fun c => allQ_append (allQ_append hostQ (allQ_quiet (guard_quiet (track := track)
-    (results := results) unsettledQuiet resetQuiet))) (allQ_quiet (idle_quiet (c := c) (sid := sid)))
+    (results := results) resetQuiet))) (allQ_quiet (idle_quiet (c := c) (sid := sid)))
   have justify : ∀ pre raw, OnboardingSettled s pre router.truthy raw →
       (∃ xs, hostEvents = .list xs ∧ raw ∈ xs) ∨ SettleJustified s router.truthy raw :=
     fun pre raw facts => Or.inr (Or.inr (Or.inr ⟨pre, facts⟩))

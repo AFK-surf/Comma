@@ -6,11 +6,11 @@ station 全部逻辑是 TypeScript。原生部分的约定见 [station-ts-native
 
 ```
 launchd / 桌面 app
-  └─ stillfail-station        原生启动器（Rust，预编译）：pid 不变，持有锁、端口、信号
+  └─ comma-station        原生启动器（Rust，预编译）：pid 不变，持有锁、端口、信号
        └─ node station.js      全部逻辑（TS 打包成一个文件，带自己的 Node）
             ├─ mesh.node        iroh 插件（Rust，预编译）：endpoint、连接、流
             └─ worker 线程       SQLite 读
-  stillfail-runner × N          每个 agent 进程一个看守（Rust，预编译）：
+  comma-runner × N          每个 agent 进程一个看守（Rust，预编译）：
        └─ claude / codex       持有 agent 的 stdin/stdout，station 重启后重新接上
 ```
 
@@ -65,11 +65,11 @@ launchd / 桌面 app
 
 安装器、桌面 app、客户端和 cloud 依赖下面这些。改动只能向后兼容地追加。
 
-- 命令行：`run --app --port --data --with-parent --handoff`、`enroll`、`status`、`id`、`handoff-version`、`channel`。退出码 3、2。`bin/stillfail` 的用法。
+- 命令行：`run --app --port --data --with-parent --handoff`、`enroll`、`status`、`id`、`handoff-version`、`channel`。退出码 3、2。`bin/comma-station` 的用法。
 - 信号与文件：SIGTERM/USR1/USR2/HUP。`run/station.json`（单行，安装器用 sed 读）、`presence.json`、`ports.json`、`drained`、`handoff-failed`、`channel-ask/answer`、`update.*`。
-- 数据目录：`mesh/secret.key`、`mesh/cloud.json`（字段和权限）、`config.json`（保留未知字段，0600）、`stillfail.db`、`slack-names.json`、`sessions/`、`jobs/`、`thumbs/`、`uploads/`、`archive/`、`remote/`。
-- `stillfail.db` 的 `user_version` 是 12。station 拒绝打开别的版本。
-- mesh：ALPN（`stillfail/admin/1`，含旧名 `ember/admin/1`）、首个流的 credential/续期、请求头行格式、关闭码、mDNS 两个名字、DHT、keeper、peer 协议。
+- 数据目录：`mesh/secret.key`、`mesh/cloud.json`（字段和权限）、`config.json`（保留未知字段，0600）、`station.db`、`slack-names.json`、`sessions/`、`jobs/`、`thumbs/`、`uploads/`、`archive/`、`remote/`。
+- `station.db` 的 `user_version` 是 12。station 拒绝打开别的版本。
+- mesh：ALPN（`comma-station/admin/1`，含旧名 `ember/admin/1`）、首个流的 credential/续期、请求头行格式、关闭码、mDNS 两个名字、DHT、keeper、peer 协议。
 - cloud：still.fail cloud 的 `/v1/stations/enroll|connect|notify`、`/v1/feedback`、`/v1/feedback/fixed`、`/v1/telemetry/traces`，Comma 控制面的 `/v1/comma/stations/enroll|connect|notify`，以及它们的签名和头。
 - admin API：全部路由与字段（含给老客户端留的 `decision`、`declared` 旧词、`footprint`、`follows`）、幂等、语言头。
 - MCP：全部工具名和参数、旧写法。

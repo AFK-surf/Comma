@@ -26,6 +26,20 @@ defmodule Salix.Control.Tenants do
     |> Enum.sort_by(& &1["created_at"], :desc)
   end
 
+  @doc """
+  Read one page of up to `limit` tenants in storage-key order. Child prefixes
+  (`ctl/tenants/<id>/`) and non-tenant objects share the storage listing, so
+  listing continues until the page holds `limit` tenants or storage ends.
+  """
+  def page(cursor \\ nil, limit \\ 25)
+
+  def page(cursor, limit)
+      when (is_nil(cursor) or is_binary(cursor)) and is_integer(limit) and limit in 1..100 do
+    fill_page(cursor, limit, [])
+  end
+
+  def page(_, _), do: {:error, :invalid_page}
+
   def get(id) do
     if Ids.valid_tenant_id?(id) do
       case Store.get_record(Keys.ctl_tenant(id)) do
@@ -515,6 +529,51 @@ defmodule Salix.Control.Tenants do
       {:error, :not_found} -> {:error, :unavailable}
       {:error, _} = error -> error
     end
+  end
+
+  defp fill_page(cursor, limit, tenants) do
+    with {:ok, %{objects: objects, next: next}} <-
+           SalixStore.S3.list(Keys.ctl_tenants_prefix(),
+             delimiter: "/",
+             max_keys: limit - length(tenants),
+             continuation_token: cursor
+           ),
+         {:ok, tenants} <- read_page_tenants(objects, tenants) do
+      if length(tenants) < limit and next != nil,
+        do: fill_page(next, limit, tenants),
+        else: {:ok, %{tenants: Enum.reverse(tenants), next: next}}
+    end
+  end
+
+  defp read_page_tenants(objects, tenants) do
+    objects
+    |> SystemsClock.async_stream(
+      fn %{key: key} -> {key, Store.get_record(key)} end,
+      max_concurrency: 8,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while({:ok, tenants}, fn
+      {:ok, {key, {:ok, %{"tenant_id" => id} = tenant}}}, {:ok, tenants} ->
+        tenants =
+          if key == Keys.ctl_tenant(id) and canonical_record?(tenant),
+            do: [tenant | tenants],
+            else: tenants
+
+        {:cont, {:ok, tenants}}
+
+      {:ok, {_, {:error, :not_found}}}, acc ->
+        {:cont, acc}
+
+      {:ok, {_, {:ok, _}}}, acc ->
+        {:cont, acc}
+
+      {:ok, {_, {:error, reason}}}, _ ->
+        {:halt, {:error, reason}}
+
+      {:exit, reason}, _ ->
+        {:halt, {:error, reason}}
+    end)
   end
 
   defp canonical_record?(%{"tenant_id" => tenant_id}), do: Ids.valid_tenant_id?(tenant_id)

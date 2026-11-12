@@ -18,12 +18,12 @@ defmodule SalixStore.AgentVMMSessionIdentityMigrationTest do
 
   test "session cutover keeps the current allocation session when old lease generations collide" do
     assert {:ok, registration} =
-             AgentVMM.create_registration(%{
+             SalixStore.AgentVMMFixtures.registration(%{
                id: "migration-registration",
                tenant_id: "tenant",
                group_id: "group",
                device_id: "device",
-               enrollment_token: String.duplicate("a", 32)
+               credential: String.duplicate("a", 32)
              })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])

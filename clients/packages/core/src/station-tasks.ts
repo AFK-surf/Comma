@@ -231,6 +231,7 @@ export class StationTasks {
         title: task.title ?? "",
         ...this.shownStatus(task),
         updatedAt: task.lastActivityAt ?? task.createdAt ?? 0,
+        ...(task.createdAt ? { createdAt: task.createdAt } : {}),
         // The version its status is set at, as a Salix Task's: its station takes any.
         archiveVersion: task.lastActivityAt ?? task.createdAt ?? 1,
         unsupported: HOSTED_UNSUPPORTED,

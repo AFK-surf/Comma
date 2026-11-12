@@ -97,9 +97,9 @@ private def joined (left right : String) (parts : List ByteArray) : ByteArray :=
     first := false
   return output ++ right.toUTF8
 
-private def encodeFuel : Nat → Term → KernelM (Option ByteArray)
-  | 0, _ => fail "invalid_term_depth"
-  | fuel + 1, value => do
+private def encodeFuelDeferred : Nat → Term → KernelEval (Option ByteArray)
+  | 0, _ => monadLift (fail "invalid_term_depth")
+  | fuel + 1, value => KernelEval.defer fun _ => do
     match value with
     | .atom "nil" => return some "null".toUTF8
     | .atom "true" => return some "true".toUTF8
@@ -111,7 +111,7 @@ private def encodeFuel : Nat → Term → KernelM (Option ByteArray)
     | .list xs =>
       let mut parts := []
       for item in xs do
-        let some part ← encodeFuel fuel item | return none
+        let some part ← encodeFuelDeferred fuel item | return none
         parts := part :: parts
       return some (joined "[" "]" parts.reverse)
     | .map xs =>
@@ -122,10 +122,13 @@ private def encodeFuel : Nat → Term → KernelM (Option ByteArray)
         let key ← match pair.1 with | .atom name => pure (b name) | _ => stringChars pair.1
         let key := match key with | .binary raw => quote raw | _ => none
         let some key := key | return none
-        let some item ← encodeFuel fuel pair.2 | return none
+        let some item ← encodeFuelDeferred fuel pair.2 | return none
         parts := (key ++ ":".toUTF8 ++ item) :: parts
       return some (joined "{" "}" parts.reverse)
     | _ => return none
+
+private def encodeFuel (fuel : Nat) (value : Term) : KernelM (Option ByteArray) :=
+  KernelEval.run (encodeFuelDeferred fuel value)
 
 def encode (value : Term) : KernelM (Option ByteArray) := encodeFuel (value.depth + 1) value
 

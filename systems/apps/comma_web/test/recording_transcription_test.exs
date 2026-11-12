@@ -20,7 +20,23 @@ defmodule CommaWeb.RecordingTranscriptionTest do
         nil
       )
 
-    on_exit(fn -> SystemsRuntime.Telemetry.detach(id) end)
+    failure_id = {__MODULE__, :failure, SystemsRuntime.Proc.make_ref()}
+
+    :ok =
+      SystemsRuntime.Telemetry.attach(
+        failure_id,
+        [:salix, :asr, :failure],
+        fn _event, _measurements, metadata, _ ->
+          if SystemsRuntime.Proc.self() == owner,
+            do: SystemsRuntime.Proc.send(owner, {:asr_failed, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn ->
+      SystemsRuntime.Telemetry.detach(id)
+      SystemsRuntime.Telemetry.detach(failure_id)
+    end)
   end
 
   test "streams an uploaded M4A into the shared ASR boundary and returns text with source timing" do
@@ -69,5 +85,48 @@ defmodule CommaWeb.RecordingTranscriptionTest do
     # The request observes its outcome before it answers.
     assert_received {:asr_observed, _, %{operation: "dictation_asr", outcome: "ok"}}
     refute_received {:asr_observed, _, _}
+  end
+
+  test "a failed recording logs and counts why, while the client sees one sentence" do
+    request =
+      conn(:post, "/v1/comma/me/recordings/transcribe", "M4A")
+      |> put_req_header("content-type", "audio/mp4")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        response =
+          CommaWeb.RecordingTranscription.call(request,
+            transcribe: fn _, _, _ ->
+              {:error,
+               {:asr_chunk_failed, 2, {:asr_incomplete_transcript, "content_filter: OTHER"}}}
+            end
+          )
+
+        assert response.resp_body =~ "Transcription failed. The audio remains in Drive."
+      end)
+
+    assert log =~
+             "recording transcription failed: source=recording_upload " <>
+               "reason=asr_chunk_failed index=2 cause=asr_incomplete_transcript_content_filter: OTHER"
+
+    assert_received {:asr_failed, %{operation: "recording_upload", reason: "content_filter"}}
+    assert_received {:asr_observed, _, %{operation: "meeting_asr", outcome: "error"}}
+  end
+
+  test "a transcriber that raises is logged by its exception, not swallowed" do
+    request =
+      conn(:post, "/v1/comma/me/recordings/transcribe?purpose=dictation", "M4A")
+      |> put_req_header("content-type", "audio/mp4")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        CommaWeb.RecordingTranscription.call(request,
+          transcribe: fn _, _, _ -> raise ArgumentError, "private detail" end
+        )
+      end)
+
+    assert log =~ "recording transcription failed: source=dictation reason=ArgumentError"
+    refute log =~ "private detail"
+    assert_received {:asr_failed, %{operation: "dictation", reason: "other"}}
   end
 end

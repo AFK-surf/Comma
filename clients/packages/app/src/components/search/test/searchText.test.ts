@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { firstHighlightExcerpt, findTextHighlights, titleMatches } from "../searchText";
+import {
+  firstHighlightExcerpt,
+  findTextHighlights,
+  titleMatches,
+  waitsForTasks,
+} from "../searchText";
 
 describe("command palette text", () => {
   it("returns every non-overlapping title and content highlight", () => {
@@ -50,5 +55,18 @@ describe("titleMatches", () => {
     expect(titleMatches("检查", "检查更新", "Check for Updates")).toBe(true);
     expect(titleMatches("check update", "检查更新", "Check for Updates")).toBe(true);
     expect(titleMatches("check tab", "检查更新", "Check for Updates")).toBe(false);
+  });
+});
+
+describe("waitsForTasks", () => {
+  it("shows the actions found while Task search is still answering", () => {
+    const typed = {
+      history: 0,
+      loadingHistory: false,
+      query: "check",
+      searching: true,
+    };
+    expect(waitsForTasks({ ...typed, actions: 1 })).toBe(false);
+    expect(waitsForTasks({ ...typed, actions: 0 })).toBe(true);
   });
 });

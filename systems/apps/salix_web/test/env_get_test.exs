@@ -77,23 +77,13 @@ defmodule SalixWeb.EnvGetTest do
 
     assert Enum.map(page, & &1["device_id"]) == [id]
 
-    assert {:ok, %{records: first, next_cursor: cursor}} =
+    # The hidden sandbox sorts before the laptop; it must not take the
+    # first page's place and leave it empty.
+    assert {:ok, %{records: [%{"device_id" => ^id}], next_cursor: nil}} =
              Control.page_group_environments(ctx.group_id, ctx.tenant_id, limit: 1)
 
-    assert is_binary(cursor)
-
-    assert {:ok, %{records: last, next_cursor: nil}} =
-             Control.page_group_environments(ctx.group_id, ctx.tenant_id,
-               limit: 1,
-               cursor: cursor
-             )
-
-    assert Enum.map(first ++ last, & &1["device_id"]) == [id]
-
-    assert {:ok, %{devices: devices}} =
-             EnvDispatch.list_devices(ctx.agent["agent_id"], limit: 100)
-
-    refute Enum.any?(devices, &(&1["device_id"] == sandbox_id))
+    assert {:ok, %{devices: [%{"device_id" => ^id}], next_cursor: nil}} =
+             EnvDispatch.list_devices(ctx.agent["agent_id"], limit: 1)
 
     assert {:ok, %{"status" => "disconnected"}} =
              Control.get_environment(sandbox_id, ctx.group_id, ctx.tenant_id)

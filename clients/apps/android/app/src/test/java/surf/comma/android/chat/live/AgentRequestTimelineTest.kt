@@ -66,8 +66,11 @@ class AgentRequestTimelineTest {
         assertEquals(read, AgentRequest.parse(read.json()))
         val value = JSONObject().put("requests", JSONArray()
             .put(read.json())
-            .put(JSONObject().put("id", "cap-x").put("type", "location").put("status", "pending")))
+            .put(JSONObject().put("id", "cap-x").put("type", "camera").put("status", "pending")))
         assertEquals(listOf(read), AgentRequest.list(value))
+        val location = read.copy(id = "cap-2", provider = AgentRequest.LOCATION_PROVIDER, outcome = AgentRequestOutcome.SHARED,
+            authorizationUrl = null, account = null)
+        assertEquals(location, AgentRequest.parse(location.json()))
         // Only an https page opens in the browser.
         val plain = read.json().apply { getJSONObject("oauth").put("authorizationUrl", "http://example.com/authorize") }
         assertEquals(null, AgentRequest.parse(plain)!!.authorizationUrl)

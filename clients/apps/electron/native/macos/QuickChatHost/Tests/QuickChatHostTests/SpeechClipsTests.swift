@@ -195,6 +195,15 @@ struct LiveDictationTests {
         #expect(dictation.probe.requested.isEmpty)
     }
 
+    @Test(.timeLimit(.minutes(1))) func aSegmentWithoutWordsIsNoNewText() async {
+        let dictation = Dictation()
+        await dictation.waitForSocket()
+        // Noise loud enough for a segment: the server settles it without words.
+        dictation.socket.say(.final(segment: 0, text: ""))
+        dictation.socket.say(.partial(segment: 1, text: "Book the room"))
+        #expect(await dictation.shown() == "Book the room")
+    }
+
     @Test(.timeLimit(.minutes(1))) func withoutLiveDictationEveryPauseIsAClipFromTheStart() async {
         let dictation = Dictation(ticket: nil)
         // Before the ticket was refused: kept in the recording.

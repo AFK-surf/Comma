@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reservePort } from "./ports.ts";
 
 const SALIX_ROOT = new URL("../..", import.meta.url).pathname;
 const WORKER_ROOT = new URL(
@@ -346,14 +347,9 @@ export async function run(
 }
 
 async function freePort() {
-  const listener = Bun.listen({
-    hostname: "127.0.0.1",
-    port: 0,
-    socket: { data() {} },
-  });
-  const port = listener.port;
-  listener.stop(true);
-  return port;
+  const lease = reservePort();
+  lease.release();
+  return lease.port;
 }
 
 function skipOrThrow(message: string) {

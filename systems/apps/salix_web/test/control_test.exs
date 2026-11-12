@@ -111,6 +111,31 @@ defmodule SalixWeb.ControlTest do
     assert current["ifc"] == %{"mode" => "enforce", "language" => "en"}
   end
 
+  test "a group's supervisors are provider users, at most fifty" do
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Supervised"}, tenant_id())
+    group_id = group["group_id"]
+    carol = "provider_user|cnx1|ou_carol"
+
+    {:ok, supervised} =
+      Salix.Control.Groups.update(group_id, %{"ifc" => %{"supervisors" => [carol]}}, tenant_id())
+
+    assert supervised["ifc"] == %{"supervisors" => [carol]}
+
+    for invalid <- [carol, ["comma_user|u1"], ["provider_user|cnx1"], List.duplicate(carol, 51)] do
+      assert {:error, {:bad_request, _}} =
+               Salix.Control.Groups.update(
+                 group_id,
+                 %{"ifc" => %{"supervisors" => invalid}},
+                 tenant_id()
+               )
+    end
+
+    {:ok, cleared} =
+      Salix.Control.Groups.update(group_id, %{"ifc" => %{"supervisors" => []}}, tenant_id())
+
+    assert cleared["ifc"] == %{"supervisors" => []}
+  end
+
   test "Worker memory consultation is disabled by default and accepts only booleans" do
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Memory policy"}, tenant_id())
     assert group["memory_ask_worker_enabled"] == false

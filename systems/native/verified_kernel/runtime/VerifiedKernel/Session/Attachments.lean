@@ -48,12 +48,28 @@ def canonical (content : Term) : Option (List Term × Term) := do
     ![nil, a "false"].contains (get result "error") then none else
   return (← direct (get result "content"), name)
 
+-- A file directly in /artifacts named `mcp-…`, with no further segment.
+def mcpImage (block : Term) : Bool :=
+  let ref := get block "file_ref"
+  let path := (String.fromUTF8? (bytes (get ref "path"))).getD ""
+  get block "type" == b "image" && get ref "environment_id" == b "vfs" &&
+    path.startsWith "/artifacts/mcp-" && !((path.drop 15).contains '/')
+
 def toolSource (name : Term) (blocks : List Term) : Term :=
   if member name ["im_api.feishu.fetch_message_resource", "im_api.slack.fetch_file"] then a "provider_attachment"
   else if name == b "env.computer_use" && !blocks.isEmpty && blocks.all deviceImage then a "image_read"
   -- A workspace image the tool itself wrote: a file read, or a LAN body
   -- (camera snapshot) that device.lan_request stored.
   else if member name ["fs.read_file", "device.lan_request"] && blocks.all (fun v => get v "type" == b "image") then
+    a "image_read"
+  -- An MCP tool's image part, which the host stored under a fresh
+  -- `/artifacts/mcp-<uuid>` name (`SalixAgent.Tools.MCP`). The host wraps a
+  -- server's own text, so only a result stored before that can still name a
+  -- block; it reaches no device and no workspace file outside these names.
+  -- `/artifacts` is not reserved: such a result could name an `mcp-` file
+  -- written there under a name it already knew.
+  else if ((String.fromUTF8? (bytes name)).getD "").startsWith "mcp." && !blocks.isEmpty &&
+      blocks.all mcpImage then
     a "image_read"
   else nil
 

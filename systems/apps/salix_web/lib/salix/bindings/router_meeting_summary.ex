@@ -31,7 +31,12 @@ defmodule Salix.Bindings.RouterMeetingSummary do
     meeting_id=#{state["meeting_id"]}
     request_id=#{request["request_id"]}
     Read all pages of every nonempty field with meeting.read_summary_materials.
+    Read each existing reference_paths file with memory.get, and use memory.search
+    for other names or terms. Spell terms as those files spell them.
     Generate the summary yourself from those originals, in the meeting's language.
+    Attendees and action-item owners come only from the materials participants.
+    When an owner is not a participant, name that person in the description and
+    leave the owner empty.
     Use relevant audience-compatible context to resolve names, but do not guess by sound,
     equate every Q with Comma, or turn proposals into decisions or completed work into commitments.
     Uncertain names should remain uncertain. With insufficient evidence, keep arrays empty; never invent facts.

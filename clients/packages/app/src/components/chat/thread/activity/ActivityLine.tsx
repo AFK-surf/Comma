@@ -249,10 +249,19 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
     ? { label: messages.task_run_switch(), run: onSwitchRun }
     : undefined;
   const stoppedNotice = stopped && stopNotice(stopped, locale);
-  // A Task's Worker stopped on its model: another model is a way out too.
+  // A Task's Worker stopped on its model: switching this run's model is the
+  // way out, in place of a same-named one that opens settings.
   const notice =
     stoppedNotice && switchAction && stopped.actorRole === "worker"
-      ? { ...stoppedNotice, actions: [...stoppedNotice.actions, switchAction] }
+      ? {
+          ...stoppedNotice,
+          actions: [
+            ...stoppedNotice.actions.filter(
+              (action) => action.label !== switchAction.label
+            ),
+            switchAction,
+          ],
+        }
       : stoppedNotice;
   const statusSummary = workingProvider
     ? {
@@ -302,11 +311,14 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
     markedFocus?.tasks.some((task) => task.title)
       ? markedFocus
       : undefined;
-  // A Worker on Comma's own model shows the Comma mark, so the Task's avatars
-  // draw that mark once: the Router's while it works, else the Worker's.
+  // A Worker on Comma's own model, or whose model's maker is not known yet,
+  // shows the Comma mark, so the Task's avatars draw that mark once: the
+  // Router's while it works, else the Worker's.
   const commaAvatar = presentations.find(isRouterAvatar) ?? presentations[0];
   const avatars =
-    workerVendor === "comma" && commaAvatar ? [commaAvatar] : presentations;
+    commaWorkerMark(workerVendor) && commaAvatar ? [commaAvatar] : presentations;
+  const routerMark = markedFocus?.mode !== "working";
+  const bubbleWorkers = focusWorkers(markedFocus, routerMark);
   // A Worker at work may drive a computer; each one's screen shows beside the chat.
   const screenTasks = focus?.tasks.filter((task) => task.worker) ?? [];
   const detail = cardFocus
@@ -352,6 +364,12 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
                   "comma-chat-assistant-source-avatar comma-chat-activity-avatar",
                 style: { "--comma-status-index": index } as CSSProperties,
               };
+              // Beside Worker discs the Router's mark is one more still disc.
+              if (isRouter && avatars.length > 1) {
+                return (
+                  <WorkerModelMark key={avatarKey} {...avatarProps} vendor="comma" />
+                );
+              }
               return isRouter ? (
                 <span
                   key={avatarKey}
@@ -402,7 +420,14 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
               </span>
             ) : (
               <>
-                {markedFocus?.mode !== "working" ? (
+                {!routerMark ? null : bubbleWorkers.length > 0 ? (
+                  // Beside Worker discs the Router's mark is one more still disc.
+                  <WorkerModelMark
+                    className="comma-chat-thinking-worker"
+                    data-participant-key={presentations[0]?.key}
+                    vendor="comma"
+                  />
+                ) : (
                   <span
                     className="comma-chat-thinking-logo"
                     data-participant-key={presentations[0]?.key}
@@ -410,17 +435,15 @@ export const ParticipantStatusSlot = memo(function ParticipantStatusSlot({
                   >
                     <CommaLogoAnimation paused={!visible || active.length === 0} />
                   </span>
-                ) : null}
-                {focusWorkers(markedFocus, markedFocus?.mode !== "working").map(
-                  (worker) => (
-                    <WorkerModelMark
-                      key={worker.avatarId}
-                      className="comma-chat-thinking-worker"
-                      data-worker-avatar={worker.avatarId}
-                      vendor={worker.vendor}
-                    />
-                  )
                 )}
+                {bubbleWorkers.map((worker) => (
+                  <WorkerModelMark
+                    key={worker.avatarId}
+                    className="comma-chat-thinking-worker"
+                    data-worker-avatar={worker.avatarId}
+                    vendor={worker.vendor}
+                  />
+                ))}
               </>
             )
           ) : null}
@@ -517,16 +540,20 @@ function isRouterAvatar(item: SlotPresentation) {
   return item.actorRole === "router" || !item.name;
 }
 
+/** A Worker's mark is Comma's: its model is Comma's own, or its maker is not known yet. */
+function commaWorkerMark(vendor: string | undefined) {
+  return !vendor || vendor === "comma";
+}
+
 // At most two Worker avatars sit beside the Router mark, as in the channel capsule.
-// A Worker on Comma's own model shows the Comma mark, so the bubble draws that
-// mark once: beside the Router's mark, or a second Comma Worker, it would only
-// repeat it.
+// A Worker may show the Comma mark (commaWorkerMark), so the bubble draws that mark
+// once: beside the Router's mark, or a second such Worker, it would only repeat it.
 function focusWorkers(focus: ActivityFocus | undefined, routerMark: boolean) {
   const workers = new Map<string, NonNullable<ActivityFocusTask["worker"]>>();
   let commaMark = routerMark;
   for (const task of focus ? titledTasks(focus) : []) {
     if (!task.worker || workers.has(task.worker.avatarId)) continue;
-    if (task.worker.vendor === "comma") {
+    if (commaWorkerMark(task.worker.vendor)) {
       if (commaMark) continue;
       commaMark = true;
     }

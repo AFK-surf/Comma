@@ -19,7 +19,7 @@ theorem activation_current_facts {framing : CodecFraming} {objects : Objects} {o
     fence.key = StorageAddress.key owner session ∧ ∃ etag snapshot bytes,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       (.tuple [a "cas", fence.requestedKey, fence.requestedBytes, fence.requestedBase] : Term) =
-        .tuple [a "cas", fence.key, .binary bytes, context.candidate.etag] ∧
+        .tuple [a "cas", fence.key, .binary bytes, context.candidate.revision] ∧
       after.current fence.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       ∀ item, PhysicalIdentityFact objects context.candidate.working (.work item) →
         PhysicalIdentityFact objects snapshot (.work item) := by

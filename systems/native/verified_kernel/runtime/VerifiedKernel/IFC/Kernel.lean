@@ -37,20 +37,27 @@ def findReceipt (facts p source destination : Term) : Option Term :=
     receiptCovers r p source destination)).map (fun r => f r "id")
 
 inductive Admission where
-  | flow | inPlace | instruction | receipt (id : Term)
+  | flow | authored | inPlace | instruction | receipt (id : Term)
 inductive Denial where
   | sealed | unknown | flow
 def Admission.term : Admission → Term
-  | .flow => a "flow" | .inPlace => a "in_place" | .instruction => a "instruction"
+  | .flow => a "flow" | .authored => a "authored"
+  | .inPlace => a "in_place" | .instruction => a "instruction"
   | .receipt id => .tuple [a "receipt", id]
 
+/-- A person's own command item, cited by a request of the same person. -/
+def authoredBy (source p : Term) : Bool :=
+  f source "integrity" == a "command" && f source "principal" != nil &&
+    authority (f source "principal") == authority p && person p
+
 /-- This is the clause selector used by every source admission. -/
-def selectAdmission (flow readable : Tri) (locked inPlace instruction : Bool)
+def selectAdmission (flow readable : Tri) (locked authored inPlace instruction : Bool)
     (receipt : Option Term) : Except Denial Admission :=
   if flow == .yes then .ok .flow
   else if locked then .error .sealed
   else if readable == .yes then
-    if inPlace then .ok .inPlace
+    if authored then .ok .authored
+    else if inPlace then .ok .inPlace
     else if instruction then .ok .instruction
     else match receipt with
       | some id => .ok (.receipt id)
@@ -66,7 +73,7 @@ def admitSource (source effect activation p facts : Term) : Check Term :=
   let receipt := if readable == .yes && receiptAllowed policy then
       findReceipt facts p sourceLabel destination else none
   match selectAdmission (readersSubset destination sourceLabel facts) readable
-      (sealed sourceLabel policy)
+      (sealed sourceLabel policy) (authoredBy source p)
       (labelEqual destination (f activation "source_scope") && inPlaceAllowed policy)
       (instructionAllowed policy) receipt with
   | .ok clause => .ok (.tuple [f source "ref", clause.term])

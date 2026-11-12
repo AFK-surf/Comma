@@ -1,0 +1,411 @@
+/* The nearby connect card (NearbyConnectCard.tsx): the Comma window is the
+   iPhone and this is the AirPods card. It rises from the window's bottom edge
+   on the drawer curve, the window dims behind it, the other person's face is
+   the picture. Only transform, opacity and filter move. */
+.comma-nearby {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: var(--spacing-md);
+  pointer-events: none;
+}
+
+.comma-nearby__veil {
+  position: absolute;
+  inset: 0;
+  background: var(--color-bg-overlay);
+  opacity: 0;
+  transition: opacity 300ms var(--motion-easing-smooth-out);
+}
+
+.comma-nearby[data-open] .comma-nearby__veil {
+  opacity: 0.3;
+  pointer-events: auto;
+  transition-duration: 450ms;
+}
+
+.comma-nearby__card {
+  position: relative;
+  width: min(100%, 440px);
+  margin: 0;
+  padding: var(--spacing-4xl) var(--spacing-3xl) var(--spacing-3xl);
+  border: 0;
+  border-radius: 40px;
+  background: var(--color-bg-popup-primary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-alpha-black-10),
+    0 var(--spacing-3xl) var(--spacing-6xl) calc(-1 * var(--spacing-lg))
+      var(--color-alpha-black-40);
+  color: inherit;
+  text-align: center;
+  transform: translateY(calc(100% + var(--spacing-xl)));
+  transition: transform 260ms var(--motion-easing-smooth-out);
+}
+
+.comma-nearby[data-open] .comma-nearby__card {
+  transform: none;
+  pointer-events: auto;
+  transition: transform 600ms var(--motion-easing-drawer);
+}
+
+.comma-nearby__close {
+  position: absolute;
+  top: var(--spacing-xl);
+  right: var(--spacing-xl);
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: transform var(--motion-duration-press-recoil)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-nearby__close:active {
+  transform: scale(0.92);
+}
+
+.comma-nearby__close svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The picture: the face settles in a beat after the card, from a little
+   smaller and out of focus, and then floats, as the AirPods turn. */
+.comma-nearby__hero {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  margin: 0 auto;
+}
+
+.comma-nearby__face {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The face comes out of a wave of mesh-gradient light drawn in WebGL
+   (MeshAvatar.tsx), which keeps drawing it once whole; the plain face below
+   serves only without WebGL or with Reduce Motion. When it is whole, the
+   border closes round it, as a photo's on a contact card. */
+.comma-mesh-avatar {
+  --mesh-avatar-ground: var(--color-bg-quaternary);
+  --mesh-avatar-ink: var(--color-text-secondary);
+
+  position: relative;
+  display: block;
+  border-radius: var(--radius-full);
+  box-shadow:
+    0 0 0 0 var(--color-bg-popup-primary),
+    0 0 0 0 var(--color-alpha-black-10),
+    0 var(--spacing-xl) var(--spacing-4xl) calc(-1 * var(--spacing-md)) transparent;
+  transition: box-shadow 420ms var(--motion-easing-smooth-out);
+}
+
+.comma-mesh-avatar[data-rest] {
+  box-shadow:
+    0 0 0 4px var(--color-bg-popup-primary),
+    0 0 0 5px var(--color-alpha-black-10),
+    0 var(--spacing-xl) var(--spacing-4xl) calc(-1 * var(--spacing-md))
+      var(--color-alpha-black-30);
+}
+
+.comma-mesh-avatar__face {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--mesh-avatar-ground);
+  color: var(--mesh-avatar-ink);
+  font-size: 46px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.comma-mesh-avatar:not([data-rest]) .comma-mesh-avatar__face,
+.comma-mesh-avatar[data-mesh] .comma-mesh-avatar__face {
+  visibility: hidden;
+}
+
+.comma-mesh-avatar__mesh {
+  position: absolute;
+  pointer-events: none;
+}
+
+.comma-nearby[data-open] .comma-nearby__face {
+  /* 216 steps in 3.6 s: at most 60 moves a second, too small to see as steps. */
+  animation: comma-nearby-float 3600ms steps(216) 1500ms infinite alternate;
+}
+
+.comma-nearby__check {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-success-solid);
+  box-shadow: 0 0 0 4px var(--color-bg-popup-primary);
+  color: white;
+  opacity: 0;
+  transform: scale(0.5);
+}
+
+.comma-nearby__check svg {
+  width: 20px;
+  height: 20px;
+}
+
+.comma-nearby[data-phase="connected"] .comma-nearby__check {
+  opacity: 1;
+  transform: none;
+  transition:
+    transform 420ms var(--motion-easing-press-recoil),
+    opacity 120ms linear;
+}
+
+.comma-nearby__title {
+  margin-top: var(--spacing-2xl);
+  color: var(--color-text-primary);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.comma-nearby__detail {
+  margin-top: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm, 14px);
+}
+
+.comma-nearby__title,
+.comma-nearby__detail,
+.comma-nearby__action {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.comma-nearby[data-open]
+  :is(.comma-nearby__title, .comma-nearby__detail, .comma-nearby__action) {
+  animation: comma-nearby-rise 360ms var(--motion-easing-smooth-out) forwards;
+}
+
+.comma-nearby[data-open] .comma-nearby__title {
+  animation-delay: 320ms;
+}
+
+.comma-nearby[data-open] .comma-nearby__detail {
+  animation-delay: 370ms;
+}
+
+.comma-nearby[data-open] .comma-nearby__action {
+  animation-delay: 420ms;
+}
+
+.comma-nearby__card .comma-nearby__action {
+  width: 100%;
+  height: 50px;
+  margin-top: var(--spacing-3xl);
+  border-radius: var(--radius-full);
+  font-size: var(--text-md, 16px);
+}
+
+@keyframes comma-nearby-float {
+  to {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes comma-nearby-rise {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-nearby__card,
+  .comma-nearby[data-open] .comma-nearby__card {
+    transform: none;
+    opacity: 0;
+    transition: opacity 200ms linear;
+  }
+  .comma-nearby[data-open] .comma-nearby__card {
+    opacity: 1;
+  }
+  .comma-nearby[data-open] .comma-nearby__face,
+  .comma-nearby[data-open]
+    :is(.comma-nearby__title, .comma-nearby__detail, .comma-nearby__action) {
+    animation: none;
+    filter: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Settings › Task requests › Add someone nearby (NearbyPeopleDialog.tsx). */
+.comma-nearby-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  min-height: 220px;
+}
+
+.comma-nearby-list__scan {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs, 12px);
+}
+
+/* No one nearby: the line and Look again sit in the middle of the list's room. */
+.comma-nearby-list__empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-lg);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm, 14px);
+  text-align: center;
+}
+
+/* Searching: a small ring widening from a dot, again and again, while the
+   dialog is open. */
+.comma-nearby-list__radar {
+  position: relative;
+  /* Room on the left for the widening ring. */
+  margin-left: var(--spacing-xs);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-brand-300);
+}
+
+.comma-nearby-list__radar::after {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 1.5px var(--color-brand-300);
+  content: "";
+  animation: comma-nearby-radar 1800ms steps(108) infinite;
+}
+
+.comma-nearby-list__rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A person found arrives where the list ends, rising a little into place. */
+.comma-nearby-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-md) var(--spacing-md);
+  border-radius: var(--radius-xl);
+  animation: comma-nearby-row 320ms var(--motion-easing-smooth-out) both;
+  animation-delay: calc(var(--nearby-row) * 50ms);
+}
+
+.comma-nearby-list__face {
+  display: grid;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm, 14px);
+  font-weight: 500;
+}
+
+.comma-nearby-list__who {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.comma-nearby-list__name {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm, 14px);
+  font-weight: 500;
+}
+
+.comma-nearby-list__email {
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs, 12px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-nearby-list__row[data-status="connected"] .comma-nearby-list__email {
+  color: var(--color-text-success-primary);
+}
+
+.comma-nearby-list__done {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-success-solid);
+  color: white;
+  animation: comma-nearby-done 360ms var(--motion-easing-press-recoil) both;
+}
+
+.comma-nearby-list__done svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes comma-nearby-radar {
+  from {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(3);
+  }
+}
+
+@keyframes comma-nearby-row {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes comma-nearby-done {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-nearby-list__radar::after,
+  .comma-nearby-list__row,
+  .comma-nearby-list__done {
+    animation: none;
+  }
+}

@@ -37,6 +37,8 @@ defmodule BridgeForTeams.Observability.SalixIMSink do
       "receive_id_type",
       "reply_message_id",
       "request_id",
+      "retry_num",
+      "retry_reason",
       "source",
       "source_message_id",
       "tenant_id",
@@ -110,7 +112,9 @@ defmodule BridgeForTeams.Observability.SalixIMSink do
       :user_id,
       :callback_mode,
       :delivery_state,
-      :operation_api
+      :operation_api,
+      :retry_num,
+      :retry_reason
     ]
   }
 

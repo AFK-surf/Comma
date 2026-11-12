@@ -22,9 +22,9 @@ export type Answer = {
   body: Buffer | AsyncIterable<Buffer>;
 };
 
-/// The language a core asks in: its `stillfail-lang`; Chinese for a core from before languages (lang.rs `of_core`).
+/// The language a core asks in: its `comma-station-lang`; Chinese for a core from before languages (lang.rs `of_core`).
 export function langOfCore(headers: Record<string, string>): Lang {
-  const said = Object.entries(headers).find(([k]) => k.toLowerCase() === "stillfail-lang");
+  const said = Object.entries(headers).find(([k]) => ["comma-station-lang", "stillfail-lang"].includes(k.toLowerCase()));
   return said ? langOf(said[1]) : "zh";
 }
 

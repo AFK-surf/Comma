@@ -61,6 +61,20 @@ export interface QuickChatServiceOptions {
     workspace?: string;
   }): Promise<QuickChatMessage>;
   /**
+   * `quickChat.prepareMessage` of the client core: an open Home shows the words
+   * as a message being sent, which `sendMessage` of the same request then sends.
+   */
+  prepareMessage(params: {
+    client_request_id: string;
+    text: string;
+    workspace: string;
+  }): Promise<unknown>;
+  /** `quickChat.failPreparation` of the client core: that message ends as a failed one. */
+  failPreparation(params: {
+    client_request_id: string;
+    workspace: string;
+  }): Promise<unknown>;
+  /**
    * The server's transcript of a Quick Chat's M4A audio (`recordings.transcribe`
    * as dictation): of a send, which waits for its turn, or of a pause, which does not.
    */
@@ -132,6 +146,12 @@ interface MainTask {
         cancelTimer: () => void;
       }
     | undefined;
+  /**
+   * Home shows this send's words as a message being sent since Return
+   * (`prepareMessage`): the calls made for it so far, which its send or its
+   * failure goes after.
+   */
+  shownInHome?: Promise<void> | undefined;
   /**
    * The workspace in focus at Return, when known. Otherwise, the send selects
    * the current focus or first listed workspace once its words are ready,
@@ -209,6 +229,8 @@ const MAX_FAILED_SENDS = 5;
 
 /**
  * Shows each Return immediately and sends its words to Home in Return order.
+ * Words the helper still prepares also show in the open Home from Return, as a
+ * message being sent; every such message ends with its send or as a failed one.
  * A successful row opens that Home; real Tasks remain owned by the Task list.
  * Failed sends retain their original workspace, id and words for explicit retry.
  * One helper and one list subscription run for the current signed-in session.
@@ -224,6 +246,8 @@ export class QuickChatService {
   readonly #locale: MainLocaleSource;
   readonly #productName: string;
   readonly #sendMessage: QuickChatServiceOptions["sendMessage"];
+  readonly #prepareMessage: QuickChatServiceOptions["prepareMessage"];
+  readonly #failPreparation: QuickChatServiceOptions["failPreparation"];
   readonly #transcribe: QuickChatServiceOptions["transcribe"];
   readonly #dictationTicket: QuickChatServiceOptions["dictationTicket"];
   readonly #subscribeTasks: QuickChatServiceOptions["subscribeTasks"];
@@ -258,6 +282,8 @@ export class QuickChatService {
     locale,
     productName,
     sendMessage,
+    prepareMessage,
+    failPreparation,
     transcribe,
     dictationTicket,
     subscribeTasks,
@@ -278,6 +304,8 @@ export class QuickChatService {
     this.#locale = locale;
     this.#productName = productName;
     this.#sendMessage = sendMessage;
+    this.#prepareMessage = prepareMessage;
+    this.#failPreparation = failPreparation;
     this.#transcribe = transcribe;
     this.#dictationTicket = dictationTicket;
     this.#subscribeTasks = subscribeTasks;
@@ -409,6 +437,7 @@ export class QuickChatService {
       for (const task of this.#tasks.values()) {
         task.preparing?.cancelTimer();
         task.unplaced?.cancelTimer();
+        this.#failInHome(task);
       }
       this.#tasks.clear();
       this.#publish();
@@ -615,6 +644,7 @@ export class QuickChatService {
       task.preparing.text = text;
       task.item = { ...task.item, title: oneLine(text) };
       this.#publish();
+      this.#showInHome(task, text);
       return;
     }
     if (!REQUEST_ID.test(requestId) || !oneLine(text)) {
@@ -641,6 +671,44 @@ export class QuickChatService {
       }
     });
     task.preparing = { host, text, cancelTimer };
+    this.#showInHome(task, text);
+  }
+
+  /**
+   * Shows a preparing send's words in the open Home, or replaces them. A send
+   * whose workspace is not known at Return shows there once it is sent.
+   */
+  #showInHome(task: MainTask, text: string) {
+    const workspace = task.workspace;
+    if (!workspace) return;
+    const client_request_id = task.requestId;
+    const epoch = this.#epoch;
+    task.shownInHome = (task.shownInHome ?? Promise.resolve())
+      .then(() =>
+        // Another session's Home never shows these words.
+        epoch === this.#epoch
+          ? this.#prepareMessage({ client_request_id, text, workspace })
+          : undefined
+      )
+      .then(
+        () => undefined,
+        (error: unknown) =>
+          log.warn(`Quick Chat's words were not shown in Home: ${errorMessage(error)}`)
+      );
+  }
+
+  /** Ends what Home shows for a send that does not go out now, as a failed message. */
+  #failInHome(task: MainTask) {
+    const shown = task.shownInHome;
+    const workspace = task.workspace;
+    if (!shown || !workspace) return;
+    task.shownInHome = undefined;
+    const client_request_id = task.requestId;
+    void shown
+      .then(() => this.#failPreparation({ client_request_id, workspace }))
+      .catch((error: unknown) =>
+        log.warn(`Quick Chat's message in Home was not ended: ${errorMessage(error)}`)
+      );
   }
 
   /** A failed preparation needs an explicit click; a late prepared submit is ignored. */
@@ -846,15 +914,27 @@ export class QuickChatService {
     this.#sending = id;
     row.ready = undefined;
     const { requestId, text, epoch, host } = send;
-    this.#sendMessage({
+    const params = {
       client_request_id: requestId,
       text,
       ...(row.workspace ? { workspace: row.workspace } : {}),
-    }).then(
+    };
+    // The send puts these words in the message Home already shows, so it goes after the calls that showed it.
+    const shown = row.shownInHome;
+    // Keep cleanup ownership until the core has completed the send.
+    (shown
+      ? shown.then(() =>
+          epoch === this.#epoch
+            ? this.#sendMessage(params)
+            : Promise.reject(new Error("The session ended before the send."))
+        )
+      : this.#sendMessage(params)
+    ).then(
       (message) => {
         if (epoch !== this.#epoch) return;
         this.#requests.delete(requestId);
         this.#sending = undefined;
+        row.shownInHome = undefined;
         row.provisional = false;
         row.messageId = message.message_id;
         row.item = {
@@ -888,6 +968,7 @@ export class QuickChatService {
     task.provisional = false;
     task.ready = undefined;
     task.failed = { reason, requestId, text };
+    this.#failInHome(task);
     task.item = {
       ...task.item,
       status: "failed",

@@ -3,7 +3,7 @@
 // there (the station says so, ⚠️ first), and a person saying something there. Worked out here, off the main thread,
 // from a store change the station saw; the station posts them to still.fail cloud (src/cloud/notify.ts).
 import { type Lang, tr as translate } from "../ops/i18n.ts";
-import { type EntryRow, type MessageRow, STILLFAIL_SURFACE, type Store, type TurnSummary } from "./store.ts";
+import { type EntryRow, type MessageRow, COMMA_STATION_SURFACE, type Store, type TurnSummary } from "./store.ts";
 import * as store from "./store.ts";
 import { apiOf, authorNames, chatTitle, people, useNames } from "./views.ts";
 import { wall } from "../ops/fibers.ts";
@@ -62,7 +62,7 @@ export function turnNotices(s: Store, key: string, since: number, ended: number 
   const api = apiOf(s);
   const out: Notice[] = [];
   for (const thread of store.sessionThreads(s, key)) {
-    if (thread.surface !== STILLFAIL_SURFACE || thread.hiddenAt !== null) continue;
+    if (thread.surface !== COMMA_STATION_SURFACE || thread.hiddenAt !== null) continue;
     const told = turnNotice(turn, store.lastMessage(s, thread.id), key, translate(lang, "station.notice.file"));
     if (told === null) continue;
     const by = authorNames(api, thread.id)("agent", key) ?? "";
@@ -81,7 +81,7 @@ export function saidNotices(s: Store, id: number, entries: EntryRow[], since: nu
   const wrong = fresh.filter((e) => e.authorKind === "ember").flatMap((e) => (e.text === null ? [] : (wentWrong(e.text) ?? []))).at(-1);
   if (person === undefined && wrong === undefined) return [];
   const thread = store.getThread(s, id);
-  if (thread === null || thread.surface !== STILLFAIL_SURFACE || thread.hiddenAt !== null) return [];
+  if (thread === null || thread.surface !== COMMA_STATION_SURFACE || thread.hiddenAt !== null) return [];
   const session = store.threadSessions(s, id)[0]?.session;
   if (session === undefined) return [];
   const out: Notice[] = [];

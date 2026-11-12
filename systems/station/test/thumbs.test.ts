@@ -199,7 +199,7 @@ test("turns a photo as its camera says", async () => {
 
 test("the files route and a message give what the Rust station gives", async () => {
   const data = mkdtempSync(join(tmpdir(), "thumbs-r-"));
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const config = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }] }, data);
   const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [new FakeDriver("claude")], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat(), runners: () => [] });
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });

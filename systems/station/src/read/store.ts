@@ -6,6 +6,7 @@
 // card or identity that does not parse is none, an archive file that does not read fails the request.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { storeFile } from "../ops/files.ts";
 import { DatabaseSync } from "node:sqlite";
 import { zstdDecompressSync } from "node:zlib";
 import { wall } from "../ops/fibers.ts";
@@ -13,7 +14,7 @@ import { wall } from "../ops/fibers.ts";
 export type Json = any;
 
 /// The page's own threads live on this surface (stored under the name of before the rename).
-export const STILLFAIL_SURFACE = "ember";
+export const COMMA_STATION_SURFACE = "ember";
 /// Archived by a person.
 export const MANUAL = "manual";
 /// Archived threads whose entries are kept decompressed, the most recently read last.
@@ -286,7 +287,7 @@ export function takeChars(text: string, n: number): string {
 
 export type Store = {
   db: DatabaseSync;
-  /// The station's data directory: stillfail.db, archive/, config.json.
+  /// The station's data directory: station.db, archive/, config.json.
   dataDir: string;
   /// Where archived threads are (`threads/`): `archive/` in the data directory, as Store::open has it by default.
   archiveDir: string;
@@ -305,9 +306,9 @@ export function makeStore(db: DatabaseSync, dataDir: string): Store {
   return { db, dataDir, archiveDir: join(dataDir, "archive"), archived: [], names: new Map(), processes: new Map(), clientKeys: new Map() };
 }
 
-/// A station's store: `<dataDir>/stillfail.db`, opened read-only.
+/// A station's store: `<dataDir>/station.db`, opened read-only.
 export function openStore(dataDir: string): Store {
-  return makeStore(new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true, timeout: 5000 }), dataDir);
+  return makeStore(new DatabaseSync(storeFile(dataDir), { readOnly: true, timeout: 5000 }), dataDir);
 }
 
 const one = (s: Store, sql: string, ...args: Json[]): Json | undefined => s.db.prepare(sql).get(...args);
@@ -394,7 +395,7 @@ export function lastMessage(s: Store, thread: number): MessageRow | null {
 /// Messages after the read position that are not the viewer's own (nor of a Slack user they are).
 function unreadCount(s: Store, viewer: string, thread: number, read: number): number {
   const t = getThread(s, thread);
-  const slack = t ? t.surface !== STILLFAIL_SURFACE : true;
+  const slack = t ? t.surface !== COMMA_STATION_SURFACE : true;
   const selves = [viewer];
   if (slack) selves.push(...slackIdentities(s, viewer));
   if (isArchived(s, thread)) {
@@ -427,7 +428,7 @@ function threadPeople(s: Store, thread: number, surface: string): string[] {
       thread,
     ).map((r) => r.author);
   }
-  if (surface === STILLFAIL_SURFACE) return authors;
+  if (surface === COMMA_STATION_SURFACE) return authors;
   return connect === null ? [] : authors.map((a) => `slack:${connect}:${a}`);
 }
 
@@ -830,7 +831,7 @@ export function participants(s: Store, session: string | null): Map<string, stri
     const refs = firsts.get(r.session) ?? new Map<string, number>();
     firsts.set(r.session, refs);
     for (const [author, at] of authors) {
-      const reference = r.surface === STILLFAIL_SURFACE ? author : `slack:${r.connect}:${author}`;
+      const reference = r.surface === COMMA_STATION_SURFACE ? author : `slack:${r.connect}:${author}`;
       const first = refs.get(reference);
       if (first === undefined || at < first) refs.set(reference, at);
     }

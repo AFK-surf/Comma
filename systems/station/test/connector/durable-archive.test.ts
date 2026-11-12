@@ -69,12 +69,12 @@ function stationState(root: string): ArchiveState {
   const data = join(root, ".station");
   mkdirSync(data, { recursive: true });
   return {
-    live: () => [join(data, "stillfail.db")],
+    live: () => [join(data, "station.db")],
     runtime: () => [join(data, "run")],
     snapshots: async () => {
       const file = join(tempDir(), "snapshot.db");
       writeFileSync(file, "consistent snapshot");
-      return { entries: [{ name: ".station/stillfail.db", file }], done: () => {} };
+      return { entries: [{ name: ".station/station.db", file }], done: () => {} };
     },
     sessions: () => 0,
   };
@@ -116,7 +116,7 @@ test("a parked Workload station exports to signed parts, and a Container's start
     writeFileSync(join(source, "work.txt"), "user work");
     writeFileSync(join(source, "big.bin"), Buffer.alloc(ARCHIVE_PART_BYTES + 1000, 3));
     const state = stationState(source);
-    writeFileSync(join(source, ".station", "stillfail.db"), "live, mid-write");
+    writeFileSync(join(source, ".station", "station.db"), "live, mid-write");
     const c = makeConnector({ root: source, env: { HOME: tempDir() }, workloadCredential: "w", archiveHostSuffix: "127.0.0.1" }, undefined, { archive: state, agentsIdle: () => true });
     const call = (method: string, params: Record<string, unknown>) => run(c.dispatchForTest(method, method, params)) as Promise<Record<string, any>>;
     const transfers = Array.from({ length: 4 }, (_, i) => ({ put_url: store.url(`op1/${i}`), get_url: store.url(`op1/${i}`) }));
@@ -148,7 +148,7 @@ test("a parked Workload station exports to signed parts, and a Container's start
     assert.equal(readFileSync(join(target, "work.txt"), "utf8"), "user work");
     assert.equal(readFileSync(join(target, "big.bin")).length, ARCHIVE_PART_BYTES + 1000);
     // The databases are in their places before anything opens them: nothing is staged for a second start.
-    assert.equal(readFileSync(join(target, ".station", "stillfail.db"), "utf8"), "consistent snapshot");
+    assert.equal(readFileSync(join(target, ".station", "station.db"), "utf8"), "consistent snapshot");
     assert.ok(!existsSync(join(target, ".station", "restore")));
     // The same start again (its reply was lost) answers the same; another archive is not this disk's.
     assert.ok(Exit.isSuccess(await beforeStart(target, restore)));
@@ -268,7 +268,7 @@ test("the station that starts on a restored disk says hello with how far it has 
     const source = tempDir();
     const data = join(source, ".comma", "station");
     mkdirSync(data, { recursive: true });
-    b.store.db.exec(`VACUUM INTO '${join(data, "stillfail.db")}'`);
+    b.store.db.exec(`VACUUM INTO '${join(data, "station.db")}'`);
     const bytes = await exportOf(store, source, "op1", stationArchiveState(source, data, () => b.store.listSessions().length));
     assert.ok(b.store.listSessions().length > 0, "the archived station holds Sessions");
 
@@ -276,7 +276,7 @@ test("the station that starts on a restored disk says hello with how far it has 
     const target = join(tempDir(), "workspace");
     const restored = await beforeStart(target, restoreValue(store, "op1", bytes, partsOf(store.url, "op1", bytes)));
     assert.ok(Exit.isSuccess(restored), String(Exit.isFailure(restored) && restored.cause));
-    const woken = Store.open(join(target, ".comma", "station", "stillfail.db"));
+    const woken = Store.open(join(target, ".comma", "station", "station.db"));
     try {
       const asked: unknown[] = [];
       const wokenTasks = new Tasks({ store: woken } as ConstructorParameters<typeof Tasks>[0], () => null);
@@ -355,7 +355,7 @@ test("a VM woken from an archive made before exports left runtime state out: the
   const dataOf = (root: string) => join(root, ".comma", "station");
   const station = (data: string) => {
     const config = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }, data);
-    const db = Store.open(join(data, "stillfail.db"));
+    const db = Store.open(join(data, "station.db"));
     const door = { url: "" };
     const hub = new Hub({ config: () => config, store: db, chats: () => undefined, drivers: [new ClaudeDriver({ data })], mcpUrl: () => door.url, internal: new InternalChat() });
     return { db, hub, door };

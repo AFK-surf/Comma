@@ -1,5 +1,5 @@
-// Files of any size downloaded to the device (`download`, `downloads.*`): a message's attachment, an agent's blob or an
-// image uploaded to the group, read for the account's session into the host's storage (DownloadPorts) and kept there
+// Files of any size downloaded to the device (`download`, `downloads.*`): a message's attachment, an agent's blob or a
+// file uploaded to the group, read for the account's session into the host's storage (DownloadPorts) and kept there
 // for the next showing. A file is visible only once it is whole and, when its source names one, matches the size and
 // SHA-256 it was asked for; one that does not is removed and said unavailable. Each account has a directory of its
 // own: signed out, or signed in as another account, the others' are removed. An account keeps at most 256 MB, the
@@ -8,7 +8,8 @@
 //
 // Bounds: two downloads at a time, one per file however many surfaces show it; no automatic retry (the person's next
 // action starts it again); progress is said at most as often as the topic emits.
-import { CoreError, type Topic, type Value, utf8 } from "@comma/core-kernel";
+import { lazySchema } from "@comma/chat-contract";
+import { CoreError, madeOnce, type Topic, type Value, utf8 } from "@comma/core-kernel";
 import { Effect, type Fiber, Result, Semaphore } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -28,10 +29,12 @@ const KEPT_BYTES = 256 * 1024 * 1024;
 /** What an account keeps, by file: where it is, its size, and when it was last shown. */
 type Kept = Record<string, { path: string; size: number; usedAt: number }>;
 
-const expectSchema = z.object({
-  size: z.number().int().nonnegative(),
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
-});
+const expectSchema = lazySchema(() =>
+  z.object({
+    size: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+);
 
 type Running = {
   received: number;
@@ -327,7 +330,14 @@ function parse(p: unknown): {
       expect: expectSchema.optional(),
     })
     .safeParse(p);
-  if (!parsed.success || parsed.data.source.source === "avatar")
+  if (
+    !parsed.success ||
+    parsed.data.source.source === "avatar" ||
+    parsed.data.source.source === "sender-avatar" ||
+    parsed.data.source.source === "recipient-avatar" ||
+    parsed.data.source.source === "target-avatar" ||
+    parsed.data.source.source === "link-preview-avatar"
+  )
     throw CoreError.invalid("not a file to download");
   return {
     source: parsed.data.source,
@@ -336,11 +346,22 @@ function parse(p: unknown): {
   };
 }
 
-/** The topic's `source`: the file source as JSON. */
-function topicSource(topic: Topic): FileSource | null {
+/** The topic's `source`: the file source as JSON, read once per topic (the UI's input, checked as it comes in). */
+const topicSource = madeOnce((topic: Topic): FileSource | null =>
+  readTopicSource(topic)
+);
+
+function readTopicSource(topic: Topic): FileSource | null {
   try {
     const parsed = fileSourceSchema.safeParse(JSON.parse(String(topic.source)));
-    return parsed.success && parsed.data.source !== "avatar" ? parsed.data : null;
+    return parsed.success &&
+      parsed.data.source !== "avatar" &&
+      parsed.data.source !== "sender-avatar" &&
+      parsed.data.source !== "recipient-avatar" &&
+      parsed.data.source !== "target-avatar" &&
+      parsed.data.source !== "link-preview-avatar"
+      ? parsed.data
+      : null;
   } catch {
     return null;
   }
@@ -357,6 +378,14 @@ export function fileKey(source: FileSource): string {
       return `f${hash(`${source.group}\n${source.path}`)}`;
     case "avatar":
       return `v${hash(source.revision)}`;
+    case "sender-avatar":
+      return `s${hash(`${source.workspace}\n${source.request}\n${source.revision}`)}`;
+    case "target-avatar":
+      return `t${hash(`${source.grant}\n${source.revision}`)}`;
+    case "recipient-avatar":
+      return `r${hash(`${source.request}\n${source.revision}`)}`;
+    case "link-preview-avatar":
+      return `l${hash(source.ref)}`;
   }
 }
 

@@ -8,8 +8,7 @@ import CommaCore
 struct CommaApp: App {
     @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
-    @State private var pendingURL: URL?
-    @State private var pendingURLAccountID: String?
+    @State private var incomingLink = IncomingAppLink()
     private var store: CommaStore? { appDelegate.store }
     private var activity: TaskActivityCoordinator { appDelegate.activity }
 
@@ -52,17 +51,20 @@ struct CommaApp: App {
                 else { appDelegate.background() }
             }
             .onChange(of: store?.boundaryToken) { _, _ in
-                if store?.session != nil { pendingURL = nil; pendingURLAccountID = nil }
+                if store?.session != nil { incomingLink.clear() }
             }
-            .onChange(of: store?.session?.id) { _, _ in
-                if store?.session == nil || (pendingURLAccountID != nil && pendingURLAccountID != store?.session?.user.id) {
-                    pendingURL = nil; pendingURLAccountID = nil
-                }
+            .onChange(of: store?.session?.user.id) { previous, current in
+                incomingLink.identityChanged(from: previous, to: current)
+                Task { await consumeLink() }
             }
             .onChange(of: store?.workspace?.id) { _, _ in Task { await consumeLink() } }
             .onOpenURL { url in
-                pendingURL = url
-                pendingURLAccountID = store?.session?.user.id
+                incomingLink.receive(url, accountID: store?.session?.user.id)
+                Task { await consumeLink() }
+            }
+            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                guard let url = activity.webpageURL else { return }
+                incomingLink.receive(url, accountID: store?.session?.user.id)
                 Task { await consumeLink() }
             }
         }
@@ -77,13 +79,12 @@ struct CommaApp: App {
 
     private func consumeLink() async {
         guard scenePhase == .active, UIApplication.shared.applicationState == .active,
-              let pendingURL, let store, store.session != nil, !store.workspaces.isEmpty else { return }
-        self.pendingURL = nil
-        pendingURLAccountID = nil
-        await open(pendingURL, store: store)
+              let store, let url = incomingLink.take(accountID: store.session?.user.id, hasWorkspace: !store.workspaces.isEmpty) else { return }
+        await open(url, store: store)
     }
 
     private func open(_ url: URL, store: CommaStore) async {
+        if store.openMiniApp(url) { return }
         guard UIApplication.shared.applicationState == .active,
               let session = store.session, ["comma", "comma-ios-dev"].contains(url.scheme), url.host == "task",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),

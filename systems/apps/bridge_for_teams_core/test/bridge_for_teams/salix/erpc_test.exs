@@ -11,8 +11,21 @@ defmodule BridgeForTeams.Salix.ErpcTest do
     def wait, do: SystemsRuntime.Proc.sleep(:infinity)
     def finish_after(milliseconds), do: SystemsClock.sleep(milliseconds)
 
+    # The watcher monitors the target before the test hears of it, so the test
+    # sees why the target ended however early that is.
     def wait_and_report(owner) do
-      SystemsRuntime.Proc.send(owner, {:local_target_started, SystemsRuntime.Proc.self()})
+      target = SystemsRuntime.Proc.self()
+
+      SystemsRuntime.Proc.spawn(fn ->
+        monitor = SystemsRuntime.Proc.monitor(target)
+        SystemsRuntime.Proc.send(owner, :local_target_started)
+
+        SystemsRuntime.Proc.receive do
+          {:DOWN, ^monitor, :process, ^target, reason} ->
+            SystemsRuntime.Proc.send(owner, {:local_target_down, reason})
+        end
+      end)
+
       SystemsRuntime.Proc.sleep(:infinity)
     end
 
@@ -97,12 +110,9 @@ defmodule BridgeForTeams.Salix.ErpcTest do
         Erpc.call(LocalTarget, :wait_and_report, [test_pid], 60_000)
       end)
 
-    assert_receive {:local_target_started, target}
-    target_monitor = SystemsRuntime.Proc.monitor(target)
-
+    assert_receive :local_target_started
     SystemsRuntime.Proc.exit(caller, :kill)
-
-    assert_receive {:DOWN, ^target_monitor, :process, ^target, :killed}
+    assert_receive {:local_target_down, :killed}
   end
 
   test "schedule CRUD and workspace reads go over erpc" do

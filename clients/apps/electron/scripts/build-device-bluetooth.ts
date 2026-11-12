@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(app, "dist/native/macos");
 mkdirSync(output, { recursive: true });
+const target = `${(process.env.COMMA_TARGET_ARCH ?? process.arch) === "arm64" ? "arm64" : "x86_64"}-apple-macosx13.0`;
 const localHeaders = resolve(dirname(process.execPath), "../include/node");
 const headers =
   process.env.COMMA_NODE_HEADERS ??
@@ -32,7 +33,7 @@ execFileSync(
     "-module-name",
     "CommaDeviceBluetooth",
     "-target",
-    `${process.arch === "arm64" ? "arm64" : "x86_64"}-apple-macosx13.0`,
+    target,
     "-Xlinker",
     "-install_name",
     "-Xlinker",
@@ -47,6 +48,8 @@ execFileSync(
   "xcrun",
   [
     "clang++",
+    "-target",
+    target,
     "-std=c++20",
     "-shared",
     "-undefined",

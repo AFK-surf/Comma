@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useCommaClientSettings } from "../commaClientSettings";
 import { useRouterIdentity } from "../router-identity/RouterIdentityProvider";
+import { PluginScanDialog } from "../plugins/PluginScanDialog";
 import { onboardingConnectedAppIds } from "./items/OnboardingAppsPanel";
 import { OnboardingOverlay, randomOnboardingVoice } from "./OnboardingOverlay";
 import type { OnboardingPresentation } from "./onboardingSetup";
@@ -55,24 +56,46 @@ export function OnboardingExperience({
   const openShortcut = (mac && settings.openCommaShortcut) || undefined;
   // A tone picked for this onboarding, kept to its end.
   const [voice] = useState(randomOnboardingVoice);
+  // An app connected by a scan (Lark, Feishu) shows its code until the member
+  // confirms, as on the Plugins page.
+  const scanning =
+    plugins.list.status === "ready"
+      ? plugins.list.rows.find(
+          // The member's own sign-in follows the scan, once the app is connected.
+          (row) =>
+            row.scan && (row.connection === "connecting" || row.scan.step === "member")
+        )
+      : undefined;
 
   return (
-    <OnboardingOverlay
-      onComplete={onComplete}
-      onConnectPlugin={plugins.connect}
-      onExited={onExited}
-      onItemAnswered={routines.answered}
-      onSkipSetup={routines.skipped}
-      onSaveRouterName={setRouterName}
-      plugins={plugins.list}
-      presentation={presentation}
-      renderPermissions={
-        permissionsAvailable ? (slot) => <LivePermissionsPanel {...slot} /> : undefined
-      }
-      routerName={name}
-      openShortcut={openShortcut}
-      voice={voice}
-      workspace={workspace}
-    />
+    <>
+      <OnboardingOverlay
+        onComplete={onComplete}
+        onConnectPlugin={plugins.connect}
+        onExited={onExited}
+        onItemAnswered={routines.answered}
+        onSkipSetup={routines.skipped}
+        onSaveRouterName={setRouterName}
+        plugins={plugins.list}
+        presentation={presentation}
+        renderPermissions={
+          permissionsAvailable
+            ? (slot) => <LivePermissionsPanel {...slot} />
+            : undefined
+        }
+        routerName={name}
+        openShortcut={openShortcut}
+        voice={voice}
+        workspace={workspace}
+      />
+      {scanning?.scan ? (
+        <PluginScanDialog
+          name={scanning.name}
+          onCancel={() => plugins.cancel(scanning.id)}
+          step={scanning.scan.step}
+          url={scanning.scan.url}
+        />
+      ) : null}
+    </>
   );
 }

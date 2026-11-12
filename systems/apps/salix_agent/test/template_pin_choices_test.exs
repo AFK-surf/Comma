@@ -107,8 +107,7 @@ defmodule SalixAgent.TemplatePinChoicesTest do
   # Records of an earlier release name the template they pin.
   defp pin_template!(agent, template_id) do
     key = Keys.ctl_agent(agent["agent_id"])
-    {:ok, %{body: body}} = S3.get(key)
-    record = body |> Jason.decode!() |> Map.put("template_id", template_id)
+    record = Map.put(agent, "template_id", template_id)
     {:ok, _} = S3.put(key, Jason.encode!(record))
   end
 

@@ -16,12 +16,12 @@ defmodule SalixIFC.Label do
 
   @type t :: %__MODULE__{atoms: MapSet.t(Atom.t())}
 
-  @doc "Build a label from a list or canonical MapSet of audience atoms."
-  def new(atoms) do
-    values = SalixIFC.Native.list(atoms)
-    unless Enum.all?(values, &Atom.valid?/1), do: raise(ArgumentError, "invalid audience atom")
-    SalixIFC.Native.call(:label_new, {values})
-  end
+  @doc """
+  Build a label from a list or canonical MapSet of audience atoms. The kernel
+  refuses the whole call when any atom is invalid, so atoms are not checked
+  one call each here.
+  """
+  def new(atoms), do: SalixIFC.Native.call(:label_new, {SalixIFC.Native.list(atoms)})
 
   def bottom(), do: SalixIFC.Native.call(:label_bottom, {})
   def join(left, right), do: SalixIFC.Native.call(:label_join, {left, right})

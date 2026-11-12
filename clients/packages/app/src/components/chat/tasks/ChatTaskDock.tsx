@@ -23,12 +23,15 @@ import { useChatCreatedTasks, type ChatCreatedTask } from "./useChatCreatedTasks
 export const ChatTaskDock = memo(function ChatTaskDock({
   groupId,
   messages,
+  openReplyThread,
   revealTurnHandle,
   taskLinkAdapter,
   workspaceId,
 }: {
   groupId: string;
   messages: readonly ChatMessage[];
+  /** Opens the reply thread of a message in this conversation. */
+  openReplyThread: (messageId: string) => void;
   revealTurnHandle: RefObject<
     ((turnKey: string, highlightMessageId?: string) => void) | null
   >;
@@ -67,8 +70,12 @@ export const ChatTaskDock = memo(function ChatTaskDock({
         title,
         workspaceId,
       });
+      // The Task's chat opens beside this one, and this one enters the thread
+      // of the message that announced the Task.
+      if (target === "chat" && task.messageId !== undefined)
+        openReplyThread(task.messageId);
     },
-    [copy, groupId, taskLinkAdapter, workspaceId]
+    [copy, groupId, openReplyThread, taskLinkAdapter, workspaceId]
   );
   // Jumping to a settled Task's announcement is also its acknowledgement; a
   // running Task stays docked until it settles.

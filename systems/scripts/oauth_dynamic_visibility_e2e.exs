@@ -82,7 +82,7 @@ defmodule OAuthDynamicVisibilityE2E do
 
   def run do
     Process.put(:oauth_dynamic_visibility_session_id, SalixStore.Ids.new_session_id())
-    bin = required_env!("SALIX_CONNECT_BIN")
+    bin = required_env!("STATION_CONNECTOR_BIN")
     {mock_pid, mock_base} = start_mock_provider!()
     root = tmp_dir!("oauth-dynamic-e2e-") |> realpath!()
 

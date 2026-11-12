@@ -1,4 +1,4 @@
-import { advance } from "@comma/test-utils/fake-clock";
+import { advance, flush } from "@comma/test-utils/fake-clock";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import {
   Outlet,
@@ -31,6 +31,7 @@ import { setInteractionModality } from "react-aria/private/interactions/useFocus
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommaSkill } from "@comma/core/api-schemas";
+import type { TaskLabelProposal } from "@comma/core/contract";
 import type { TaskLoop } from "@comma/core-client";
 import { Composer } from "../../composer/Composer";
 import type { ComposerMentionSources } from "../../composer/useComposerMentionSources";
@@ -42,6 +43,12 @@ import { CONVERSATION_TURN_WINDOW } from "../../thread/navigation/conversationTu
 import { ThreadWorkerVendorContext } from "../../thread/threadContexts";
 import { ConversationView, type ConversationViewActions } from "../ConversationView";
 import { fixedDraftSource } from "../../composer/conversationDraft";
+import {
+  DraftSelectionsProvider,
+  pictureDataUrl,
+  useStageDraftSelection,
+  type ChatDraftSelection,
+} from "../../composer/draftSelections";
 import {
   createChatDraftSnippet,
   DraftSnippetsProvider,
@@ -65,6 +72,7 @@ import {
   visibleReplyIdentityKey,
 } from "@comma/core/chat";
 import { stubProperty } from "@comma/test-utils/stub-property";
+import { labelCatalog, labelsCore } from "../../../../test/labelsCore";
 
 const { markdownRenderSpy } = vi.hoisted(() => ({
   markdownRenderSpy: vi.fn(),
@@ -230,7 +238,9 @@ describe("ConversationView", () => {
         if (outcome === "accepted") resolve();
         else reject(new Error("private provider error"));
       });
-      expect(analytics.finish.mock.calls).toEqual([[outcome, boundary]]);
+      expect(analytics.finish.mock.calls).toEqual([
+        [outcome, boundary, ...(outcome === "failed" ? [expect.any(Error)] : [])],
+      ]);
       expect(actions.send).toHaveBeenCalledWith("private message contents", {
         skills: [],
       });
@@ -307,6 +317,25 @@ describe("ConversationView", () => {
     expect(
       await screen.findByRole("heading", { name: "你起个头，剩下的交给 Comma" })
     ).toBeInTheDocument();
+  });
+
+  it("keeps the transcript its height when a shown conversation is refused", async () => {
+    const actions = createActions();
+    const rendered = renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          status: "error",
+          errorKind: "not-found",
+          messages: [message("msg_existing", "assistant", "Earlier reply")],
+        })}
+      />
+    );
+
+    const notice = await screen.findByText("This conversation cannot be opened");
+    expect(notice).not.toHaveClass("comma-chat-terminal-state");
+    expect(rendered.container.querySelector(".comma-chat-terminal-state")).toBeNull();
+    expect(screen.getByText("Earlier reply")).toBeVisible();
   });
 
   it.each([
@@ -836,6 +865,54 @@ describe("ConversationView", () => {
     }
   });
 
+  it("withdraws a funding stop's toast once the participant runs again", async () => {
+    const actions = createActions();
+    const control: {
+      setStatus?: (
+        status: Pick<ChatParticipantStatus, "state" | "status" | "issue">
+      ) => void;
+    } = {};
+    function Harness() {
+      const [status, update] = useState<
+        Pick<ChatParticipantStatus, "state" | "status" | "issue">
+      >({ state: "error", status: "error: stopped", issue: "insufficient_credits" });
+      control.setStatus = update;
+      return (
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({
+            messages: [message("msg_funding", "user", "Continue")],
+            participantStatus: {
+              conversationId: "cnv_1",
+              participantId: "ptp_1",
+              updatedAt: 1_780_000_000_300,
+              ...status,
+            },
+          })}
+        />
+      );
+    }
+    renderConversation(<Harness />);
+    expect(await screen.findByTestId("out-of-credits")).toHaveTextContent(
+      "Out of Comma credits"
+    );
+
+    act(() => control.setStatus?.({ state: "active", status: "thinking" }));
+    await waitFor(() => expect(screen.queryByTestId("out-of-credits")).toBeNull());
+
+    act(() =>
+      control.setStatus?.({
+        state: "error",
+        status: "error: stopped",
+        issue: "provider_quota_exhausted",
+      })
+    );
+    expect(await screen.findByTestId("provider-quota")).toBeVisible();
+
+    act(() => control.setStatus?.({ state: "active", status: "thinking" }));
+    await waitFor(() => expect(screen.queryByTestId("provider-quota")).toBeNull());
+  });
+
   it("names what ran out and how to fix it, once per stop, in the toast and under the status line", async () => {
     const previousHash = window.location.hash;
     const open = vi.spyOn(window, "open").mockReturnValue(null);
@@ -1103,9 +1180,7 @@ describe("ConversationView", () => {
     expect(screen.getAllByTestId("chat-upload-error")).toHaveLength(1);
     expect(failedToast).toHaveTextContent("3 attachments failed to upload");
     // Identical failure reasons collapse into the shared detail line.
-    expect(failedToast).toHaveTextContent(
-      "Reconnect this workspace's Comma Connector."
-    );
+    expect(failedToast).toHaveTextContent("Reconnect this workspace's Comma station.");
     fireEvent.click(within(failedToast).getByRole("button", { name: "Retry upload" }));
     expect(actions.retryAttachment).toHaveBeenCalledTimes(3);
     expect(actions.retryAttachment).toHaveBeenCalledWith("att_a");
@@ -1114,6 +1189,35 @@ describe("ConversationView", () => {
       within(failedToast).getByRole("button", { name: "Remove attachment" })
     );
     expect(actions.removeAttachment).toHaveBeenCalledTimes(3);
+  });
+
+  it("offers no retry for a file no upload takes, only its removal", async () => {
+    const actions = createActions();
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          draft: "a huge clip",
+          draftAttachments: [
+            {
+              ...failedImageAttachment("att_big", "TF.mp4"),
+              error: "The file exceeds the 512 MB limit",
+              refused: true,
+            },
+          ],
+        })}
+      />
+    );
+
+    const failedToast = await screen.findByTestId("chat-upload-error");
+    expect(failedToast).toHaveTextContent("The file exceeds the 512 MB limit");
+    expect(
+      within(failedToast).queryByRole("button", { name: "Retry upload" })
+    ).toBeNull();
+    fireEvent.click(
+      within(failedToast).getByRole("button", { name: "Remove attachment" })
+    );
+    expect(actions.removeAttachment).toHaveBeenCalledWith("att_big");
   });
 
   it("keeps simultaneous composer recovery toasts independently owned", async () => {
@@ -2198,6 +2302,7 @@ describe("ConversationView", () => {
       value: { writeText },
     });
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const success = vi.spyOn(toast, "success");
 
     renderConversation(
       <ConversationViewWithDraft
@@ -2247,6 +2352,12 @@ describe("ConversationView", () => {
     );
     await user.click(screen.getByRole("menuitem", { name: "Copy Link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expectedUrl));
+    await waitFor(() =>
+      expect(success).toHaveBeenLastCalledWith(
+        "Copied",
+        expect.objectContaining({ id: "copy-feedback" })
+      )
+    );
 
     fireEvent(
       link,
@@ -2260,6 +2371,16 @@ describe("ConversationView", () => {
     await user.click(screen.getByRole("menuitem", { name: "Copy message" }));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("[Open docs](https://example.com/docs)")
+    );
+    // Same wording as the message's own copy button.
+    await waitFor(() =>
+      expect(success).toHaveBeenLastCalledWith(
+        "Copied message",
+        expect.objectContaining({
+          description: "Message copied to clipboard",
+          id: "copy-feedback",
+        })
+      )
     );
 
     fireEvent(
@@ -2279,6 +2400,7 @@ describe("ConversationView", () => {
     );
 
     openSpy.mockRestore();
+    success.mockRestore();
   });
 
   it("opens the same link menu for a link inside a widget frame", async () => {
@@ -2581,6 +2703,207 @@ describe("ConversationView", () => {
     expect(
       document.querySelector('[data-slot="snippet-attachment"]')
     ).toHaveTextContent("TypeError: x is undefined");
+  });
+
+  it("shows what was selected beside the chat as tiles with their notes, and sends each one's note and picture with the message", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    renderConversation(
+      <>
+        <StagesSelections
+          selections={[
+            pickedElement("Explain this control", [1]),
+            pickedElement("And this link", [2, 3]),
+          ]}
+        />
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({ draft: "Fix both", messages: [] })}
+        />
+      </>,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    await user.click(await screen.findByRole("button", { name: "Stage 1" }));
+    await user.click(screen.getByRole("button", { name: "Stage 2" }));
+
+    // Each one is a tile over the field: its picture, and what the person wrote about it.
+    const tiles = [
+      ...document.querySelectorAll<HTMLElement>('[data-slot="selection-attachment"]'),
+    ];
+    expect(tiles.map((tile) => tile.textContent)).toEqual([
+      "Explain this control",
+      "And this link",
+    ]);
+    expect(tiles.map((tile) => tile.querySelector("img")?.getAttribute("src"))).toEqual(
+      ["data:image/png;base64,AQ==", "data:image/png;base64,AgM="]
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await act(async () => {
+      await accepted;
+    });
+    expect(actions.send).toHaveBeenCalledOnce();
+    const [text, options] = vi.mocked(actions.send).mock.calls[0]!;
+    // The chat shows the typed text and the notes; what the elements are goes to the agent alone.
+    expect(decodeUserMessage(text).body).toBe(
+      "Fix both\n\n1. Explain this control\n2. And this link"
+    );
+    expect(text).toContain("Selector: main > button");
+    expect(options?.files).toEqual([
+      { bytes: new Uint8Array([1]), name: "inspected-element-1.png", size: 1 },
+      { bytes: new Uint8Array([2, 3]), name: "inspected-element-2.png", size: 2 },
+    ]);
+    expect(document.querySelector('[data-slot="selection-attachment"]')).toBeNull();
+  });
+
+  it("sends a selection alone, and nothing of one that was removed", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    renderConversation(
+      <>
+        <StagesSelections
+          selections={[
+            pickedElement("Explain this control", [1]),
+            pickedElement("And this link", [2, 3]),
+          ]}
+        />
+        <ConversationViewWithDraft actions={actions} state={state({ messages: [] })} />
+      </>,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    const send = await screen.findByRole("button", { name: "Send message" });
+    // Nothing is typed and nothing staged: there is nothing to send.
+    expect(send).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Stage 1" }));
+    await user.click(screen.getByRole("button", { name: "Stage 2" }));
+    await user.click(
+      screen.getByRole("button", { name: "Remove Explain this control" })
+    );
+    expect(
+      [...document.querySelectorAll('[data-slot="selection-attachment"]')].map(
+        (tile) => tile.textContent
+      )
+    ).toEqual(["And this link"]);
+
+    expect(send).toBeEnabled();
+    fireEvent.click(send);
+    await act(async () => {
+      await accepted;
+    });
+    const [text, options] = vi.mocked(actions.send).mock.calls[0]!;
+    expect(decodeUserMessage(text).body).toBe("And this link");
+    expect(options?.files).toEqual([
+      { bytes: new Uint8Array([2, 3]), name: "inspected-element.png", size: 2 },
+    ]);
+  });
+
+  it("counts a selection with what the composer has attached: one over a message's files is not staged", async () => {
+    const user = userEvent.setup();
+    renderConversation(
+      <>
+        <StagesSelections
+          selections={[
+            pickedElement("First", [1]),
+            pickedElement("Second", [2]),
+            pickedElement("Third", [3]),
+          ]}
+        />
+        <ConversationViewWithDraft
+          actions={createActions()}
+          state={state({ draftAttachments: uploadedFiles(6), messages: [] })}
+        />
+      </>,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    await user.click(await screen.findByRole("button", { name: "Stage 1" }));
+    await user.click(screen.getByRole("button", { name: "Stage 2" }));
+    await user.click(screen.getByRole("button", { name: "Stage 3" }));
+    // Six files and two selections are a message's eight.
+    expect(
+      [...document.querySelectorAll('[data-slot="selection-attachment"]')].map(
+        (tile) => tile.textContent
+      )
+    ).toEqual(["First", "Second"]);
+  });
+
+  it("does not send more files than a message takes: it says so, and keeps the files and the selections", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    const warned = vi.spyOn(toast, "warning");
+    renderConversation(
+      <>
+        <StagesSelections
+          selections={[
+            pickedElement("First", [1]),
+            pickedElement("Second", [2]),
+            pickedElement("Third", [3]),
+          ]}
+        />
+        <ComposesWithFiles actions={actions} />
+      </>,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    // Three selections, then six files in the composer: nine, and a message takes eight.
+    await user.click(await screen.findByRole("button", { name: "Stage 1" }));
+    await user.click(screen.getByRole("button", { name: "Stage 2" }));
+    await user.click(screen.getByRole("button", { name: "Stage 3" }));
+    await user.click(screen.getByRole("button", { name: "Attach six files" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(actions.send).not.toHaveBeenCalled();
+    expect(warned).toHaveBeenCalledOnce();
+    expect(
+      document.querySelectorAll('[data-slot="selection-attachment"]')
+    ).toHaveLength(3);
+
+    // With one taken off, all of it goes.
+    await user.click(screen.getByRole("button", { name: "Remove First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await act(async () => {
+      await accepted;
+    });
+    warned.mockRestore();
+    expect(actions.send).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(actions.send).mock.calls[0]![1]?.files?.map((file) => file.name)
+    ).toEqual(["inspected-element-1.png", "inspected-element-2.png"]);
+  });
+
+  it("restores a rejected admission's selections", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    let rejectAccepted!: (error: Error) => void;
+    const accepted = new Promise<void>((_resolve, reject) => {
+      rejectAccepted = reject;
+    });
+    const completion = accepted.then(() => undefined);
+    void completion.catch(() => undefined);
+    actions.send = vi.fn(() => Object.assign(completion, { accepted }));
+    renderConversation(
+      <>
+        <StagesSelections selections={[pickedElement("Explain this control", [1])]} />
+        <ConversationViewWithDraft actions={actions} state={state({ messages: [] })} />
+      </>,
+      (ui) => <DraftSelectionsProvider>{ui}</DraftSelectionsProvider>
+    );
+    await user.click(await screen.findByRole("button", { name: "Stage 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="selection-attachment"]')).toBeNull()
+    );
+    await act(async () => {
+      rejectAccepted(new Error("attachment_admission_failed"));
+      await Promise.resolve();
+    });
+
+    expect(
+      document.querySelector('[data-slot="selection-attachment"]')
+    ).toHaveTextContent("Explain this control");
   });
 
   it("opens a sent snippet's source only once the runtime accepts the send", async () => {
@@ -3578,6 +3901,175 @@ describe("ConversationView", () => {
       "text-block.txt"
     );
     expect(screen.getAllByText("structured.pdf")).toHaveLength(1);
+  });
+
+  describe("label proposal cards in a long Home transcript", () => {
+    const TURNS = 30;
+    /** Eleven days before the first loaded message, in Unix seconds as the server sends it. */
+    const BEFORE_HISTORY = DATED_TURNS_START / 1000 - 1_000_000;
+
+    /**
+     * A live Home of `turns` rounds whose catalog holds `proposals`. With
+     * `startsWithReply`, the loaded history begins at the first round's reply.
+     */
+    function renderHome(
+      proposals: Pick<TaskLabelProposal, "created_at" | "status">[],
+      turns = TURNS,
+      { startsWithReply = false } = {}
+    ) {
+      const filedBefore = proposals.map((proposal, index) =>
+        labelProposal(`prp_${index}`, proposal)
+      );
+      // What the server answers a catalog read with.
+      let served = filedBefore;
+      const labels = labelsCore({
+        answer: (name) =>
+          name === "taskLabels.refresh"
+            ? labelCatalog({ proposals: served })
+            : undefined,
+        catalog: labelCatalog({ proposals: filedBefore }),
+      });
+      const actions = createActions();
+      let setTurnCount: ((count: number) => void) | undefined;
+      function Home() {
+        const [count, setCount] = useState(turns);
+        setTurnCount = setCount;
+        const homeState = useMemo(
+          () =>
+            state({
+              messages: startsWithReply
+                ? datedTurns(count).slice(1)
+                : datedTurns(count),
+            }),
+          [count]
+        );
+        return (
+          <ConversationViewWithDraft
+            actions={actions}
+            groupId="grp_1"
+            live
+            state={homeState}
+            workspaceId="wsp_1"
+          />
+        );
+      }
+      const rendered = renderConversation(<Home />, labels.wrap);
+      return {
+        hiddenOlderTurns: () =>
+          rendered.container
+            .querySelector(".comma-chat-thread")
+            ?.getAttribute("data-comma-hidden-older-count"),
+        /**
+         * The transcript grows to `count` rounds. The new replies filed `filed`,
+         * which only a fresh read of the catalog brings.
+         */
+        showTurns: (count: number, filed: TaskLabelProposal[] = []) => {
+          if (!setTurnCount) throw new Error("Home did not render.");
+          const grow = setTurnCount;
+          served = [...filedBefore, ...filed];
+          act(() => grow(count));
+        },
+      };
+    }
+    const initialHiddenTurns = String(TURNS - CONVERSATION_TURN_WINDOW.initialTurns);
+    /** A decision the reply after the first `TURNS` rounds files. */
+    const filedByNextReply = labelProposal("prp_next", {
+      created_at: (DATED_TURNS_START + TURNS * 60_000 + 21_000) / 1000,
+      status: "pending",
+    });
+
+    it("keeps the initial turn window when an approved card belongs to the first reply", async () => {
+      const home = renderHome([
+        { created_at: DATED_TURNS_START / 1000 + 21, status: "approved" },
+      ]);
+      await flush();
+
+      expect(home.hiddenOlderTurns()).toBe(initialHiddenTurns);
+      expect(screen.queryByTestId("chat-label-proposals")).toBeNull();
+    });
+
+    it("asks for a decision filed before the loaded history at the newest turn, without mounting history", async () => {
+      const home = renderHome([{ created_at: BEFORE_HISTORY, status: "pending" }]);
+      await flush();
+
+      expect(home.hiddenOlderTurns()).toBe(initialHiddenTurns);
+      expect(screen.getByTestId("chat-latest-turn")).toContainElement(
+        screen.getByTestId("chat-label-proposals-create")
+      );
+    });
+
+    it("asks for a decision filed before a history that starts with a reply at the newest turn", async () => {
+      const home = renderHome(
+        [{ created_at: BEFORE_HISTORY, status: "pending" }],
+        TURNS,
+        {
+          startsWithReply: true,
+        }
+      );
+      await flush();
+
+      // Not beside the reply that heads the page: anchored there, the decision
+      // would hold every loaded turn mounted.
+      expect(home.hiddenOlderTurns()).toBe(initialHiddenTurns);
+      expect(screen.getByTestId("chat-latest-turn")).toContainElement(
+        screen.getByTestId("chat-label-proposals-create")
+      );
+    });
+
+    it.each([TURNS, 2])(
+      "shows no settled card filed before the loaded history in %i turns",
+      async (turns) => {
+        const home = renderHome(
+          [{ created_at: BEFORE_HISTORY, status: "approved" }],
+          turns
+        );
+        await flush();
+
+        // Not beside the oldest loaded reply, which did not file it, nor at the newest turn.
+        expect(home.hiddenOlderTurns()).toBe(
+          String(Math.max(0, turns - CONVERSATION_TURN_WINDOW.initialTurns))
+        );
+        expect(screen.queryByTestId("chat-label-proposals")).toBeNull();
+      }
+    );
+
+    it("shows the decision a new reply files while the latest card waits above the window", async () => {
+      const home = renderHome([
+        { created_at: DATED_TURNS_START / 1000 + 21, status: "approved" },
+      ]);
+      await flush();
+      expect(screen.queryByTestId("chat-label-proposals")).toBeNull();
+
+      home.showTurns(TURNS + 1, [filedByNextReply]);
+      await flush();
+
+      expect(screen.getByTestId("chat-latest-turn")).toContainElement(
+        screen.getByTestId("chat-label-proposal-prp_next")
+      );
+    });
+
+    it("asks for room for a new round's decision, not for an older one waiting on the tail", async () => {
+      const asked: Element[] = [];
+      stubProperty(HTMLElement.prototype, "scrollIntoView", {
+        value(this: HTMLElement) {
+          if (this.matches('[data-testid="chat-label-proposals"]')) asked.push(this);
+        },
+      });
+      const home = renderHome([{ created_at: BEFORE_HISTORY, status: "pending" }]);
+      await flush();
+      await advance(250);
+      const waiting = screen.getByTestId("chat-label-proposal-prp_0");
+
+      home.showTurns(TURNS + 1, [filedByNextReply]);
+      await flush();
+      await advance(250);
+
+      const next = screen.getByTestId("chat-label-proposal-prp_next");
+      expect(next.closest('[data-testid="chat-label-proposals"]')).not.toContainElement(
+        waiting
+      );
+      expect(asked.at(-1)).toContainElement(next);
+    });
   });
 });
 
@@ -5612,7 +6104,7 @@ describe("ConversationThread", () => {
 
     // Coming back shows it as New; the question's own timestamp is not news.
     setAttended(true);
-    expect(reminderTime).toHaveTextContent(/^New Today /);
+    expect(reminderTime).toHaveTextContent(/^New$/);
     expect(screen.getByTestId("chat-conversation-time-msg_ask")).toHaveTextContent(
       /^Today /
     );
@@ -5625,7 +6117,7 @@ describe("ConversationThread", () => {
     expect(screen.getByTestId("chat-conversation-time-msg_reminder")).toBe(
       reminderTime
     );
-    expect(reminderTime).toHaveTextContent(/^New Today /);
+    expect(reminderTime).toHaveTextContent(/^New$/);
 
     const thanks = message("msg_thanks", "user", "Thanks", { createdAt: at(0) });
     view.rerender(
@@ -5792,6 +6284,54 @@ describe("ConversationThread", () => {
     // The newest turn carries only its own node, so nothing rides the tail.
     expect(screen.getByTestId("chat-latest-turn")).toContainElement(second);
     expect(screen.getByTestId("chat-latest-turn")).not.toContainElement(first);
+  });
+
+  it("holds an old reply's turn mounted only for a tail that awaits a decision", () => {
+    const props = {
+      groupId: "grp_1",
+      messages: datedTurns(30),
+      onDiscard: () => {},
+      onRetry: () => {},
+      workspaceId: "wsp_1",
+    };
+    const settled = render(
+      <ConversationThread
+        {...props}
+        anchoredTails={[
+          {
+            key: "settled",
+            messageId: "msg_reply_0",
+            node: <div data-testid="settled-tail">Approved</div>,
+          },
+        ]}
+      />
+    );
+    // A settled node waits for the reader to reach its reply, like the reply.
+    expect(settled.container.querySelector(".comma-chat-thread")).toHaveAttribute(
+      "data-comma-hidden-older-count",
+      String(30 - CONVERSATION_TURN_WINDOW.initialTurns)
+    );
+    expect(screen.queryByTestId("settled-tail")).toBeNull();
+    settled.unmount();
+
+    const awaiting = render(
+      <ConversationThread
+        {...props}
+        anchoredTails={[
+          {
+            awaitsDecision: true,
+            key: "decision",
+            messageId: "msg_reply_0",
+            node: <div data-testid="decision-tail">Approve</div>,
+          },
+        ]}
+      />
+    );
+    expect(
+      screen.getByTestId("decision-tail").closest("[data-chat-turn-anchor]")
+    ).toContainElement(
+      awaiting.container.querySelector('[data-message-id="msg_reply_0"]')
+    );
   });
 
   it("anchors a new user turn even when the reader was scrolled away", () => {
@@ -7141,6 +7681,44 @@ describe("Composer", () => {
     ]);
   });
 
+  it.each([
+    ["Computer use", "/computer", "/computer-use "],
+    ["Browser use", "/browser", "/browser-use "],
+  ])(
+    "lists the built-in %s skill as a tool with its icon",
+    async (label, query, sent) => {
+      const onSend = vi.fn();
+      render(
+        <ComposerHarness onSend={onSend} skills={[...toolSkills, ...composerSkills]} />
+      );
+      const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+
+      typeIntoComposerRichEditor(textbox, "/");
+      expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(
+        [
+          expect.stringContaining("Computer use"),
+          expect.stringContaining("Browser use"),
+          expect.stringContaining("Weekly Summary"),
+          expect.stringContaining("Code Review"),
+        ]
+      );
+
+      typeIntoComposerRichEditor(textbox, query);
+      const option = screen.getByRole("option", { name: new RegExp(label) });
+      expect(option).toHaveAttribute("aria-selected", "true");
+      expect(option.querySelector("svg")).not.toBeNull();
+
+      fireEvent.keyDown(textbox, { key: "Enter" });
+      await waitFor(() =>
+        expect(textbox.querySelector("[data-ai-input-token]")).toHaveTextContent(label)
+      );
+      fireEvent.keyDown(textbox, { key: "Enter" });
+      expect(onSend).toHaveBeenCalledWith(sent, {
+        skills: [{ location: `/.runtime/skills/${sent.slice(1, -1)}/SKILL.md` }],
+      });
+    }
+  );
+
   it("keeps menu keys out of IME confirmation and Escape closes without blur", () => {
     const onSend = vi.fn();
     render(<ComposerHarness onSend={onSend} skills={composerSkills} />);
@@ -7165,6 +7743,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: {
             items: [{ id: "codex", name: "Codex", summary: "Write and review code" }],
@@ -7193,6 +7772,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [{ id: "mac-apps", name: "Mac apps" }], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7227,6 +7807,7 @@ describe("Composer", () => {
             ],
             status: "ready",
           },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7238,7 +7819,7 @@ describe("Composer", () => {
     );
     const textbox = screen.getByRole("textbox", { name: "AI prompt" });
 
-    // Enter takes the model at its default effort.
+    // A search lists the model itself: Enter takes it at its default effort.
     typeIntoComposerRichEditor(textbox, "Draft the notes @gpt");
     expect(screen.getByRole("option", { name: /GPT 5\.5/ })).toBeVisible();
     fireEvent.keyDown(textbox, { key: "Enter" });
@@ -7263,6 +7844,62 @@ describe("Composer", () => {
       "Review it [GPT 5.5 · high](comma:model/gpt-5.5?effort=high) ",
       { skills: [] }
     );
+
+    // With nothing typed the models sit under their vendor, efforts beside them.
+    typeIntoComposerRichEditor(textbox, "Plan it @");
+    expect(screen.queryByRole("option", { name: /GPT 5\.5/ })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("option", { name: "OpenAI" }));
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "OpenAI" }), {
+      key: "ArrowRight",
+    });
+    expect(
+      screen.getByRole("combobox", { name: "GPT 5.5 · Thinking effort" })
+    ).toHaveFocus();
+    fireEvent.mouseDown(screen.getByRole("option", { name: "medium" }));
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Plan it [GPT 5.5 · medium](comma:model/gpt-5.5?effort=medium) ",
+      { skills: [] }
+    );
+  });
+
+  it("names a person through @ in the Router chat to send them a request, never one whose limit is reached", () => {
+    const onSend = vi.fn();
+    render(
+      <ComposerHarness
+        mentionSources={{
+          models: { items: [], status: "ready" },
+          requests: {
+            items: [
+              { grantId: "trg_cat", name: "CatsJuice", workspace: "Cats", full: false },
+              { grantId: "trg_bo", name: "Bo", workspace: "Bo's", full: true },
+            ],
+            status: "ready",
+          },
+          drive: { items: [], status: "ready" },
+          plugins: { items: [], status: "ready" },
+          routines: { items: [], status: "ready" },
+          tasks: { items: [], status: "ready" },
+        }}
+        onSend={onSend}
+        skills={[]}
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+
+    // One who can take no request now is not offered.
+    typeIntoComposerRichEditor(textbox, "@bo");
+    expect(screen.queryByRole("option", { name: /Bo/ })).toBeNull();
+    typeIntoComposerRichEditor(textbox, "Review the deck @cats");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(textbox.querySelector("[data-ai-input-token]")).toHaveTextContent(
+      "CatsJuice"
+    );
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Review the deck [CatsJuice](comma:request/trg_cat) ",
+      { skills: [] }
+    );
   });
 
   it("mentions a Task through @ and serializes it as an agent-readable link", () => {
@@ -7271,6 +7908,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7314,6 +7952,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: {
             items: [
               {
@@ -7389,6 +8028,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7412,15 +8052,20 @@ describe("Composer", () => {
   });
 
   it("scrolls keyboard-selected options into view but never hover-selected ones", () => {
-    const scrollIntoView = vi.fn();
-    stubProperty(HTMLElement.prototype, "scrollIntoView", {
-      value: scrollIntoView,
+    // Every row sits 108px below the end of the 320px list, so each reveal moves the list by that much.
+    stubProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      value(this: HTMLElement) {
+        return this.getAttribute("role") === "option"
+          ? new DOMRect(0, 400, 300, 28)
+          : new DOMRect(0, 0, 300, 320);
+      },
       writable: true,
     });
     render(
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7456,7 +8101,10 @@ describe("Composer", () => {
 
     typeIntoComposerRichEditor(textbox, "@");
     expect(screen.getByRole("listbox", { name: "Mentions" })).toBeVisible();
-    const baseline = scrollIntoView.mock.calls.length;
+    const list = screen
+      .getByRole("option", { name: /Beta task/ })
+      .closest<HTMLElement>('[data-slot="scroll-area-viewport"]')!;
+    const baseline = list.scrollTop;
 
     // Actual pointer movement selects without scrolling; rows moving beneath
     // a stationary pointer do not select. Arrow keys still reveal their target.
@@ -7471,14 +8119,14 @@ describe("Composer", () => {
       "aria-selected",
       "true"
     );
-    expect(scrollIntoView.mock.calls.length).toBe(baseline);
+    expect(list.scrollTop).toBe(baseline);
 
     fireEvent.keyDown(textbox, { key: "ArrowDown" });
     expect(screen.getByRole("option", { name: /Gamma task/ })).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    expect(scrollIntoView.mock.calls.length).toBe(baseline + 1);
+    expect(list.scrollTop).toBe(baseline + 108);
   });
 
   it("keeps the @ panel open and filtering through an IME composition", () => {
@@ -7487,6 +8135,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7560,6 +8209,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7607,6 +8257,7 @@ describe("Composer", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "loading" },
           routines: { items: [], status: "loading" },
@@ -7640,6 +8291,14 @@ const composerSkills: CommaSkill[] = [
     location: "/.runtime/skills/code-review/SKILL.md",
   },
 ];
+
+const toolSkills: CommaSkill[] = ["computer-use", "browser-use"].map((skillId) => ({
+  skill_id: skillId,
+  name: skillId,
+  description: `Built-in ${skillId}`,
+  location: `/.runtime/skills/${skillId}/SKILL.md`,
+  source: "builtin",
+}));
 
 function ComposerHarness({
   mentionSources,
@@ -7908,7 +8567,7 @@ function StreamingLifecycleHarness({
 
 function failedImageAttachment(id: string, name: string) {
   return {
-    error: "Reconnect this workspace's Comma Connector.",
+    error: "Reconnect this workspace's Comma station.",
     id,
     isImage: true,
     name,
@@ -8219,6 +8878,43 @@ function pendingMessage(pending: PendingSend): ChatMessage {
   };
 }
 
+/** When the first of `datedTurns` was sent, in Unix milliseconds. */
+const DATED_TURNS_START = 1_720_000_000_000;
+
+/** `count` rounds of a question and its reply a minute apart, oldest first. */
+function datedTurns(count: number): ChatMessage[] {
+  return Array.from({ length: count }, (_, index) => {
+    const askedAt = DATED_TURNS_START + index * 60_000;
+    return [
+      message(`msg_ask_${index}`, "user", `Where does item ${index} stand?`, {
+        createdAt: askedAt,
+      }),
+      message(`msg_reply_${index}`, "assistant", `Item ${index} is on track.`, {
+        createdAt: askedAt + 20_000,
+      }),
+    ];
+  }).flat();
+}
+
+/** A label the Router proposed from `cnv_1`, as the Group's catalog keeps it. */
+function labelProposal(
+  id: string,
+  proposal: Pick<TaskLabelProposal, "created_at" | "status">
+): TaskLabelProposal {
+  return {
+    id,
+    op: "create",
+    payload: {
+      labels: [{ color: "blue", description: "Rollout work.", name: "Rollout" }],
+    },
+    source_conversation_id: "cnv_1",
+    ...(proposal.status === "approved"
+      ? { application_status: "applied" as const }
+      : {}),
+    ...proposal,
+  };
+}
+
 function historyTurns(count: number): ChatMessage[] {
   return Array.from({ length: count }, (_, index) =>
     message(`msg_hist_${index}`, "user", `round ${index}`)
@@ -8440,6 +9136,7 @@ describe("Composer Drive mentions", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: {
             items: [
               { file, location: "Folder A", read },
@@ -8498,6 +9195,7 @@ describe("Composer Drive mentions", () => {
       <ComposerHarness
         mentionSources={{
           models: { items: [], status: "ready" },
+          requests: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -8524,6 +9222,75 @@ function ConversationViewWithSnippets({
   const [items, setItems] = useState(initial);
   const snippets = useMemo(() => ({ items, setItems }), [items]);
   return <ConversationViewWithDraft {...props} composerPresentation={{ snippets }} />;
+}
+
+/** An element picked on a page with what the person wrote about it, its picture of `bytes`. */
+const pickedElement = (
+  note: string,
+  bytes: number[]
+): Omit<ChatDraftSelection, "id"> => ({
+  note,
+  picture: { bytes: new Uint8Array(bytes), type: "image/png" },
+  thumbnail: pictureDataUrl(new Uint8Array(bytes), "image/png"),
+  about: {
+    kind: "element",
+    inspectionId: "inspection-1",
+    page: { title: "Example", url: "https://example.com/docs" },
+    element: {
+      attributes: {},
+      rect: { height: 32, width: 80, x: 20, y: 40 },
+      selector: "main > button",
+      tagName: "button",
+    },
+  },
+});
+
+/** Files the composer has attached and uploaded, `count` of them. */
+const uploadedFiles = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    error: undefined,
+    id: `att_${index}`,
+    isImage: false,
+    name: `notes-${index}.txt`,
+    path: `uploads/notes-${index}.txt`,
+    size: 4,
+    status: "uploaded" as const,
+  }));
+
+/** A conversation whose composer has no files until "Attach six files" is pressed. */
+function ComposesWithFiles({
+  actions,
+}: {
+  actions: ComponentProps<typeof ConversationView>["actions"];
+}) {
+  const [attached, setAttached] = useState(0);
+  return (
+    <>
+      <button onClick={() => setAttached(6)}>Attach six files</button>
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({ draftAttachments: uploadedFiles(attached), messages: [] })}
+      />
+    </>
+  );
+}
+
+/** The surface beside the chat (a page, a screen): a button for each selection, which stages it for cnv_1. */
+function StagesSelections({
+  selections,
+}: {
+  selections: readonly Omit<ChatDraftSelection, "id">[];
+}) {
+  const stage = useStageDraftSelection();
+  return (
+    <>
+      {selections.map((selection, index) => (
+        <button key={selection.note} onClick={() => stage?.("cnv_1", selection)}>
+          Stage {index + 1}
+        </button>
+      ))}
+    </>
+  );
 }
 
 /** A send result whose runtime admission settles with `accepted`. */

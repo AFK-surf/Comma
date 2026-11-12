@@ -248,6 +248,25 @@ defmodule SalixWeb.EnvDispatch do
     end)
   end
 
+  # A computer's own iOS Simulators (systems/station/src/screens/simulator-agent.ts):
+  # a Worker's lease on one booted device. A station from before has no `screen`
+  # method and does not say `screen_device_tool`: it is refused here. Like
+  # Android's, its input is not replay-safe after an ambiguous WebSocket failure,
+  # so it is dispatched once, without ConnectorRecovery.
+  def screen(agent_id, environment_ref, action) do
+    with_screen_operation(agent_id, environment_ref, fn target ->
+      params =
+        if(is_map(action["args"]), do: action["args"], else: %{})
+        |> Map.merge(Map.drop(action, ["device_id", "environment", "args"]))
+
+      Connector.Live.dispatch(
+        target.connector_run_id,
+        Protocol.request("screen", params),
+        Protocol.timeout("screen", params)
+      )
+    end)
+  end
+
   def process_list(agent_id, environment_ref) do
     with_vm_operation(agent_id, environment_ref, "process_list", fn target ->
       ConnectorRecovery.request(target, "process_list", %{})
@@ -576,6 +595,41 @@ defmodule SalixWeb.EnvDispatch do
     _exception -> {:error, :android_policy_unavailable}
   end
 
+  defp with_screen_operation(agent_id, environment_ref, fun) do
+    with {:ok, _scope} <- ok_or(agent_scope(agent_id), :screen_not_authorized),
+         :ok <- authorize_screen_role(agent_id),
+         {:ok, %{group_id: group_id, target: target, entry: entry}} <-
+           resolve(agent_id, environment_ref, false, false),
+         true <-
+           get_in(entry, ["capabilities", "screen_device_tool"]) == true ||
+             {:error, :screen_capability_missing},
+         {:ok, operation_id} <- begin_vm_operation(group_id, entry, "screen", agent_id) do
+      try do
+        finish_result(group_id, operation_id, fun.(target))
+      rescue
+        exception ->
+          SalixWeb.ComputeProviders.Cloudflare.finish_operation(
+            group_id,
+            operation_id,
+            "failed",
+            exception
+          )
+
+          reraise exception, __STACKTRACE__
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :screen_environment_unavailable}
+    end
+  end
+
+  defp authorize_screen_role(agent_id) do
+    case SalixAgent.Control.get(agent_id) do
+      {:ok, %{"role" => "worker"}} -> :ok
+      _ -> {:error, :screen_not_authorized}
+    end
+  end
+
   defp authorize_android_role(agent_id) do
     case SalixAgent.Control.get(agent_id) do
       {:ok, %{"role" => "worker"}} -> :ok
@@ -703,8 +757,11 @@ defmodule SalixWeb.EnvDispatch do
     end
   end
 
+  # A retired Cloud VM (`SalixAgent.Sandboxes.cloud_vm_retired?/1`) is not
+  # made again: the command is told so, once, and does not wait.
   defp request_cloud_vm_start(agent_id, group_id, environment_id) do
-    with {:ok, %{"group_id" => ^group_id} = agent} <- SalixAgent.Control.get_record(agent_id),
+    with false <- SalixAgent.Sandboxes.cloud_vm_retired?(group_id),
+         {:ok, %{"group_id" => ^group_id} = agent} <- SalixAgent.Control.get_record(agent_id),
          true <- SalixAgent.CloudVM.allowed?(agent),
          {:ok, %{"status" => "creating"}} <-
            SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent) do
@@ -712,6 +769,7 @@ defmodule SalixWeb.EnvDispatch do
     else
       {:ok, _} -> {:error, SalixWeb.ComputeProviders.Cloudflare.unavailable_error(group_id)}
       {:error, %{"error_class" => _}} = error -> error
+      true -> {:error, SalixWeb.CloudVM.RuntimeLifecycle.retired_error(environment_id)}
       _ -> {:error, :no_environment}
     end
   end
@@ -824,7 +882,8 @@ defmodule SalixWeb.EnvDispatch do
       "shares_user_files" => Map.get(env, "shares_user_files", true),
       "requires_permission" => Map.get(env, "requires_permission", false),
       "path_semantics" =>
-        env["path_semantics"] || "real OS filesystem on the connector host (jailed to its --root)"
+        env["path_semantics"] ||
+          "real OS filesystem on the station's machine (jailed to its --root)"
     }
     |> put_persistence_scope()
     |> put_present("description", env["description"] || rec["description"])
@@ -837,8 +896,22 @@ defmodule SalixWeb.EnvDispatch do
 
   # The Workload owns the stable VM identity even while its Connector has no
   # Registry row. Project only this Group's VM; never probe or create a Device.
+  # A retired Cloudflare VM (`SalixAgent.Sandboxes.cloud_vm_retired?/1`) that
+  # is not running is not offered: it is not started again.
   defp cloud_vm_device(group_id, tenant_id, agent_id) do
     case SalixWeb.ComputeProviders.Cloudflare.get_record(group_id) do
+      {:ok, %{"provider" => "cloudflare", "status" => status}} = found when status != "ready" ->
+        if SalixAgent.Sandboxes.cloud_vm_retired?(group_id),
+          do: nil,
+          else: cloud_vm_device(found, group_id, tenant_id, agent_id)
+
+      found ->
+        cloud_vm_device(found, group_id, tenant_id, agent_id)
+    end
+  end
+
+  defp cloud_vm_device(found, group_id, tenant_id, agent_id) do
+    case found do
       {:ok, %{"provider" => provider, "tenant_id" => ^tenant_id, "device_id" => device_id} = rec}
       when provider in ["cloudflare", "agent_vmm"] and is_binary(device_id) ->
         status = if rec["status"] in ~w(archived waking), do: rec["status"], else: "disconnected"
@@ -1008,7 +1081,7 @@ defmodule SalixWeb.EnvDispatch do
       Map.put(
         entry,
         "persistence_scope",
-        "connector root files are archived and restored after idle shutdown; running processes and memory are not preserved"
+        "station root files are archived and restored after idle shutdown; running processes and memory are not preserved"
       )
     else
       entry

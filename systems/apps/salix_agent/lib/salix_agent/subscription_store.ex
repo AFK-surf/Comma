@@ -163,6 +163,21 @@ defmodule SalixAgent.SubscriptionStore do
           |> Map.reject(fn {_, v} -> is_nil(v) end)
         end)
     })
+    |> then(fn q ->
+      case quota["resets"] do
+        [_ | _] = resets ->
+          Map.put(
+            q,
+            "resets",
+            Enum.map(resets, fn r ->
+              Map.update(r, "expiries", [], fn ends -> Enum.map(ends, &iso/1) end)
+            end)
+          )
+
+        _ ->
+          Map.delete(q, "resets")
+      end
+    end)
     |> Map.reject(fn {_, v} -> is_nil(v) end)
   end
 

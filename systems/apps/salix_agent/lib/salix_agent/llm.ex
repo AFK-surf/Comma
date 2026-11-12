@@ -842,14 +842,32 @@ defmodule SalixAgent.LLM do
   # stop reports the model as unavailable rather than as a connection failure
   # that invites another send. Round does not pass its billing context here, so
   # ownership is read from the route itself rather than from the surface.
-  defp exhausted_provider_account({:error, %{}} = result, llm_opts) do
+  defp exhausted_provider_account({:error, %{} = meta} = result, llm_opts) do
     if opt(llm_opts, :credential_scope) == "tenant" or
-         SalixAgent.AccountPool.owns_route?(llm_opts),
-       do: SalixAgent.LLM.Error.provider_quota(result),
-       else: SalixAgent.LLM.Error.platform_provider_quota(result)
+         SalixAgent.AccountPool.owns_route?(llm_opts) do
+      SalixAgent.LLM.Error.provider_quota(result)
+    else
+      count_platform_account_failure(meta, llm_opts)
+      SalixAgent.LLM.Error.platform_provider_quota(result)
+    end
   end
 
   defp exhausted_provider_account(result, _llm_opts), do: result
+
+  # A platform-funded account that is out of balance or whose key the provider
+  # rejects stops every member on that model until an operator acts. The
+  # count feeds the `platform_model_account_failed` alert.
+  defp count_platform_account_failure(meta, llm_opts) do
+    reason =
+      cond do
+        SalixAgent.LLM.Error.provider_quota_exhausted?(meta) -> "quota_exhausted"
+        (meta["status"] || meta[:status]) in [401, 403] -> "credentials_rejected"
+        true -> nil
+      end
+
+    if reason,
+      do: Salix.Telemetry.emit_platform_account_failure(LLMProvider.provider(llm_opts), reason)
+  end
 
   defp fee_control_error_decision(context, reason) do
     %{

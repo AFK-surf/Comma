@@ -15,14 +15,16 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
 
   alias BridgeForTeams.InformationFlow
 
-  @doc "Every setting of one Agent Swarm, by chat workspace."
+  @doc "Every setting of one Agent Swarm, by chat workspace, and its SSH hosts."
   def overview(org, project_id) do
     case InformationFlow.overview(org, project_id) do
       {:ok, overview} ->
         {:ok,
          overview
          |> Map.take(~w(mode language audience_modes))
-         |> Map.put("connects", Enum.map(overview["connects"] || [], &public_connect/1))}
+         |> Map.put("supervisors", Enum.flat_map(overview["supervisors"] || [], &supervisor/1))
+         |> Map.put("connects", Enum.map(overview["connects"] || [], &public_connect/1))
+         |> Map.merge(ssh_hosts(overview["ssh_hosts"]))}
 
       {:error, :project_not_found} ->
         error(:project_not_found)
@@ -32,6 +34,32 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
          gettext("These settings could not be read just now. Nothing has changed."), %{}}
     end
   end
+
+  @doc """
+  The people of one connect for the person picker: by `query` (name, email
+  or id), or the names and emails of `ids` (comma-separated) the overview
+  showed without one.
+  """
+  def people(org, project_id, connect_id, %{"query" => query}) when is_binary(query) do
+    case InformationFlow.people(org, project_id, connect_id, query) do
+      {:ok, people} -> {:ok, %{"people" => Enum.map(people, &public_person/1)}}
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  def people(org, project_id, connect_id, %{"ids" => ids}) when is_binary(ids) do
+    ids = ids |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
+    case InformationFlow.describe_people(org, project_id, connect_id, ids) do
+      {:ok, people} ->
+        {:ok, %{"people" => Map.new(people, fn {id, p} -> {id, public_person(p)} end)}}
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  def people(_org, _project_id, _connect_id, _params), do: error(:invalid_query)
 
   @doc "Apply one change, then read the settings again."
   def change(org, project_id, change, params) do
@@ -49,6 +77,9 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
 
   defp apply_change(org, id, :group, %{"language" => language}),
     do: InformationFlow.set_language(org, id, language)
+
+  defp apply_change(org, id, :group, %{"supervisors" => supervisors}),
+    do: InformationFlow.set_supervisors(org, id, supervisors)
 
   defp apply_change(_org, _id, :group, _params), do: {:error, :invalid_mode}
 
@@ -96,6 +127,27 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
     )
   end
 
+  # Restricts one SSH host key to a tag, or lifts it with a blank tag.
+  defp apply_change(org, id, :ssh_host, params),
+    do: InformationFlow.restrict_ssh_host(org, id, params["fingerprint"], params["tag"])
+
+  # One unavailable read leaves the rest of the page usable, as one
+  # unavailable connect does.
+  defp ssh_hosts({:ok, hosts}) when is_list(hosts),
+    do: %{"ssh_hosts_available" => true, "ssh_hosts" => Enum.map(hosts, &public_ssh_host/1)}
+
+  defp ssh_hosts(_unavailable), do: %{"ssh_hosts_available" => false, "ssh_hosts" => []}
+
+  defp public_ssh_host(host) do
+    %{
+      "name" => host["name"],
+      "key_type" => host["key_type"],
+      "fingerprint" => host["fingerprint"],
+      "first_seen_at" => host["first_seen_at"],
+      "tag" => host["ifc_tag"]
+    }
+  end
+
   defp public_connect(connect) do
     connect
     |> Map.take(~w(connect_id provider name available scopes clearances truncated))
@@ -109,6 +161,15 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
         }
       end
     )
+  end
+
+  defp public_person(person), do: Map.take(person, ~w(id name email))
+
+  defp supervisor(key) do
+    case String.split(key, "|", parts: 3) do
+      ["provider_user", connect_id, user_id] -> [%{"connect_id" => connect_id, "id" => user_id}]
+      _other -> []
+    end
   end
 
   defp tags(tags) when is_list(tags) do
@@ -135,6 +196,13 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
       {:error, 404, "scope_not_found",
        gettext("That conversation is no longer available. Refresh the page."), %{}}
 
+  defp error(:directory_incomplete),
+    do:
+      {:error, 503, "directory_incomplete",
+       gettext(
+         "The directory could not be read in full, so this person may still exist. Search by email, or check the app's contacts permission range."
+       ), %{}}
+
   defp error(reason) when reason in [:unavailable, :timeout, :tenant_not_ready],
     do:
       {:error, 503, "runtime_unavailable",
@@ -150,8 +218,10 @@ defmodule BridgeForTeamsWeb.DashboardDataPolicy do
   defp invalid_message(:invalid_tag),
     do: gettext("A tag cannot be empty or contain the | character.")
 
+  defp invalid_message(:invalid_fingerprint), do: gettext("Choose a host from the list.")
   defp invalid_message(:invalid_audience_mode), do: gettext("Choose a valid audience.")
-  defp invalid_message(:invalid_principal), do: gettext("Enter the provider user id.")
+  defp invalid_message(:invalid_principal), do: gettext("Choose a person from the list.")
+  defp invalid_message(:invalid_query), do: gettext("Type a name, email or user id to search.")
   defp invalid_message(:invalid_mode), do: gettext("Choose a valid mode.")
   defp invalid_message(:invalid_language), do: gettext("Choose a valid language.")
   defp invalid_message(_reason), do: nil

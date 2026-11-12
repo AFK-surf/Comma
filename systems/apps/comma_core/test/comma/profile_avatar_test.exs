@@ -168,6 +168,25 @@ defmodule Comma.ProfileAvatarTest do
     assert Repo.get!(UserAvatar, first["avatar_id"]).status == "cleanup"
   end
 
+  @tag :tmp_dir
+  test "GIF and other files are refused; clients send moving avatars as WebP", %{
+    user: user,
+    tmp_dir: tmp_dir
+  } do
+    gif_path = Path.join(tmp_dir, "avatar.gif")
+    other_path = Path.join(tmp_dir, "avatar.bmp")
+    File.write!(gif_path, <<"GIF89a", 1::little-16, 1::little-16, 0, 0, 0>>)
+    File.write!(other_path, <<"BM", 0, 0, 0, 0, 0, 0, 0, 0>>)
+
+    assert {:error, :unsupported_avatar_type} =
+             ProfileAvatar.upload(user["id"], %{path: gif_path})
+
+    assert {:error, :unsupported_avatar_type} =
+             ProfileAvatar.upload(user["id"], %{path: other_path})
+
+    assert Repo.get!(User, user["id"]).avatar_id == nil
+  end
+
   test "cleanup conditionally claims stale pending rows before deleting", %{user: user} do
     avatar = insert_avatar(user["id"], "pending")
     expire_upload_lease!(avatar)

@@ -290,6 +290,18 @@ defmodule SalixAgent.ToolsTest do
              mv.events
   end
 
+  test "a device read carries the Group's audience, not agent-private", %{ctx: ctx} do
+    # device.list and device.get send nothing anywhere; their result is the
+    # Group's device roster, which every member of the Group can list.
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, FakeEnvDispatch)
+    labelling = ctx |> Map.put(:group_id, "grp_1") |> Map.put(:ifc, %{"items" => []})
+
+    [r] = Tools.execute([call("device.list", %{})], labelling)
+
+    assert r.error == false
+    assert r.ifc == %{"label" => ["group|grp_1"]}
+  end
+
   test "Copy streams VFS source to a remote destination", %{ctx: ctx, agent: agent} do
     SystemsRuntime.put_env(:salix_agent, :env_dispatch, FakeEnvDispatch)
 

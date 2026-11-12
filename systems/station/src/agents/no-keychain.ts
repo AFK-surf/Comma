@@ -13,7 +13,7 @@ import { platform } from "../platform/index.ts";
 
 /// Claude Code asks with its item's name in the arguments, or (`security -i`) in the commands it writes to stdin.
 const STUB = `#!/bin/sh
-# still.fail: profile logins are kept in files, not the keychain (src/no_keychain.rs); the rest goes to the real security.
+# Comma: profile logins are kept in files, not the keychain (src/no_keychain.rs); the rest goes to the real security.
 case "$*" in *"Claude Code"*) exit 44 ;; esac
 if [ "$1" = "-i" ]; then
   input=$(cat)
@@ -26,7 +26,7 @@ exec /usr/bin/security "$@"
 
 /// The directory with the stand-in `security`, made (again) when missing or an older one.
 export function stubDir(): string {
-  const dir = join(tmpdir(), `stillfail-no-keychain-${process.getuid?.() ?? 0}`);
+  const dir = join(tmpdir(), `comma-station-no-keychain-${process.getuid?.() ?? 0}`);
   const path = join(dir, "security");
   let current: string | undefined;
   try {
@@ -57,11 +57,11 @@ export function keychainItem(home: string): string {
   return `Claude Code-credentials-${createHash("sha256").update(home).digest("hex").slice(0, 8)}`;
 }
 
-/// The keychain items a home's login may be in: its own, then (a home under ~/.stillfail) the one of the path it had
+/// The keychain items a home's login may be in: its own, then (a home under ~/.comma-station) the one of the path it had
 /// under ~/.ember, before the data directory moved, with whether it is that older one.
 export function keychainItems(home: string, userHome = process.env.HOME ?? "."): [string, boolean][] {
   const items: [string, boolean][] = [[keychainItem(home), false]];
-  const rest = relative(join(userHome, ".stillfail"), home);
+  const rest = relative(join(userHome, ".comma-station"), home);
   if (rest !== "" && !rest.startsWith("..") && !isAbsolute(rest)) items.push([keychainItem(join(userHome, ".ember", rest)), true]);
   return items;
 }

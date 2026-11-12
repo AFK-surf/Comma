@@ -21,7 +21,10 @@ export function computeOperationMessage(
   if (code === "COMPUTE_CONNECTION_FAILED") return m.compute_connection_failed();
   if (code === "COMPUTE_CLOUD_UNAVAILABLE") return m.compute_cloud_unavailable();
   if (code === "COMPUTE_SETUP_UNKNOWN") return m.compute_setup_unknown();
-  return reason instanceof Error ? reason.message : String(reason);
+  if (code === "COMPUTE_REQUEST_HANDED_OFF") return m.compute_request_handed_off();
+  // Any other failure, such as a generic native command failure, gets one bounded localized sentence.
+  // Main keeps the raw message in its diagnostics log.
+  return m.compute_action_failed();
 }
 
 /** The localized text for each problem code that Main publishes. */
@@ -61,14 +64,16 @@ export function computeProblemMessage(
       return m.compute_local_removed();
     case "intent_unreadable":
       return m.compute_problem_intent_unreadable();
+    case "request_blocked":
+      return m.compute_request_blocked();
     case "operation_unknown":
       return m.compute_operation_unknown();
     case "operation_failed":
       return m.compute_problem_operation_failed();
-    case "automatic_retry_exhausted":
-      return m.compute_problem_automatic_retry_exhausted();
+    case "continuation_paused":
+      return m.compute_continuation_paused();
     case "registration_revoked":
-      return m.compute_problem_registration_revoked();
+      return m.compute_problem_registration_invalid();
     case "registration_invalid":
       return m.compute_problem_registration_invalid();
     case "clock_skew":
@@ -85,8 +90,14 @@ export function computeProblemMessage(
       return m.compute_problem_host_update_interrupts_work();
     case "target_older_than_data":
       return m.compute_problem_target_older_than_data();
+    case "comma_update_required":
+      return m.compute_problem_comma_update_required();
+    case "service_update_required":
+      return m.compute_problem_service_update_required();
     case "local_data_migration":
       return m.compute_problem_local_data_migration();
+    case "host_uninstalled":
+      return m.compute_problem_host_uninstalled();
   }
 }
 
@@ -153,6 +164,9 @@ export function useComputeNode() {
     error,
     pending,
     state,
+    continue: () => run(() => bridge.computeNode.continue()),
+    reauthorize: (expected: ComputeNodeExpectedBinding) =>
+      run(() => bridge.computeNode.reauthorize(expected)),
     refresh: () => run(() => bridge.computeNode.refresh()),
     configure: (input: ComputeNodeConfigureInput) =>
       run(() => bridge.computeNode.configure(input)),
@@ -160,10 +174,5 @@ export function useComputeNode() {
       run(() => bridge.computeNode.drain(expected)),
     remove: (expected: ComputeNodeExpectedBinding) =>
       run(() => bridge.computeNode.remove(expected)),
-    abandon: (expected: ComputeNodeExpectedBinding) =>
-      run(() => bridge.computeNode.abandon(expected)),
-    repair: () => run(() => bridge.computeNode.repair()),
-    rebuild: () => run(() => bridge.computeNode.rebuild()),
-    resetLocalRecord: () => run(() => bridge.computeNode.resetLocalRecord()),
   };
 }

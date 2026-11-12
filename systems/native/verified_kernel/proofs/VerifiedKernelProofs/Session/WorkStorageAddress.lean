@@ -41,7 +41,7 @@ theorem InputCommitTrace.scoped_address {framing : CodecFraming} {objects : Obje
     (trace : InputCommitTrace context entry born checkpoint durable)
     (history : PhysicalHistory framing objects owner session context.candidate.working sealed) :
     trace.key = StorageAddress.key owner session ∧ trace.requestedKey = trace.key ∧
-      trace.requestedBase = trace.staged.etag := by
+      trace.requestedBase = trace.staged.revision := by
   obtain ⟨_, stampedHistory, _⟩ := trace.physical_history history
   have encoded := trace.encoded
   unfold fencingCursor at encoded
@@ -53,7 +53,7 @@ theorem InputCommitTrace.scoped_address {framing : CodecFraming} {objects : Obje
     (StorageCommit.prepared_address prepared)
   obtain ⟨_, bytes, _, _, _, requestEq, _⟩ := storage_commit_candidate prepared
   have fields : trace.requestedKey = trace.key ∧ trace.requestedBytes = .binary bytes ∧
-      trace.requestedBase = trace.staged.etag := by
+      trace.requestedBase = trace.staged.revision := by
     simpa only [Term.tuple.injEq, List.cons.injEq, and_true, true_and] using requestEq
   exact ⟨addressed, fields.1, fields.2.2⟩
 

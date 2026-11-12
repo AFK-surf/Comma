@@ -1062,7 +1062,7 @@ defmodule SystemsClock do
 
   defp drive_once(clock) do
     opts = Keyword.merge(settle_defaults(), clock.settle)
-    filter = {MapSet.new([clock.driver, clock.holder, clock.owner]), opts[:scope]}
+    filter = {MapSet.new([clock.driver, clock.holder]), opts[:scope]}
     arms = :atomics.get(clock.arms, 1)
 
     if owner_blocked?(clock.owner, opts[:scope]) and
@@ -1074,7 +1074,7 @@ defmodule SystemsClock do
           :ok
 
         due ->
-          if still_quiet?(clock, arms, filter), do: jump(clock, due)
+          if still_quiet?(clock, arms, opts[:io], filter), do: jump(clock, due)
       end
     end
   end
@@ -1160,12 +1160,12 @@ defmodule SystemsClock do
     )
   end
 
-  defp quiet_again?({snapshot, ends, marks}, {snapshot, ends, previous_marks}) do
+  defp quiet_again?({snapshot, ends, marks} = state, {snapshot, ends, previous_marks}) do
     quiet =
       not ran_since?(previous_marks, marks) and not bytes_in_flight?(ends) and
         not signals_pending?()
 
-    if quiet, do: Process.put({__MODULE__, :quiet}, snapshot)
+    if quiet, do: Process.put({__MODULE__, :quiet}, state)
     quiet
   end
 
@@ -1396,8 +1396,9 @@ defmodule SystemsClock do
   # Bytes one end of a socket between two processes of this node has sent
   # and the other has not yet taken are work under way that no process state
   # shows, when that other end delivers them as messages (an active socket).
-  # A passive end's bytes wait for its reader, whose state tells; but a
-  # writer whose bytes are still queued in its port is sending.
+  # A passive end's bytes wait for its reader, whose state tells (a reader
+  # blocked on them is busy, see `local_peer/1`); but a writer whose bytes
+  # are still queued in its port is sending.
   defp bytes_in_flight?(ends), do: Enum.any?(ends, &in_flight?(ends, &1))
 
   defp in_flight?(ends, {{local, remote}, %{sent: sent, pending: pending}}) do
@@ -1615,7 +1616,9 @@ defmodule SystemsClock do
       `#{inspect(Keyword.fetch!(@settle_defaults, :io))}`).
     * `:ignore` - pids that never count as busy, besides the caller.
     * `:scope` - module name prefixes (strings such as `"Elixir.SalixAgent"`);
-      only processes whose initial call is in such a module count. Library
+      only processes whose initial call is in such a module count, and those
+      that work for one that counts, for the clock's owner or for the
+      settling process (a task it awaits, a process it spawned). Library
       processes outside the code under test (connection pools, pollers) keep
       their own schedules and never become idle together with it. By default
       every process counts.
@@ -1962,14 +1965,21 @@ defmodule SystemsClock do
 
   defp take_snapshot(io, {ignore, scope}) do
     ignore = Enum.into(readers(), ignore)
+    owner = clock_owner()
+    owner? = is_pid(owner) and not MapSet.member?(ignore, owner)
+    # The driver must prove its owner's wait too, even when the test's
+    # module is outside the code-under-test scope. A settle ignores its
+    # caller, as before.
+    ignore = if owner?, do: MapSet.put(ignore, owner), else: ignore
 
     ignore
-    |> reduce_scoped(scope, {MapSet.new(), []}, fn pid, {acc, database} = state ->
-      case quiet(pid, io, scope) do
-        :gone -> {:cont, state}
-        true -> {:cont, {MapSet.put(acc, pid), database}}
-        :database -> {:cont, {acc, [pid | database]}}
-        false -> {:halt, :busy}
+    |> reduce_scoped(scope, {MapSet.new(), []}, &snapshot_process(&1, &2, io, scope))
+    |> then(fn state ->
+      if owner? and state != :busy do
+        {_tag, state} = snapshot_process(owner, state, io, scope)
+        state
+      else
+        state
       end
     end)
     |> case do
@@ -1987,6 +1997,15 @@ defmodule SystemsClock do
         else
           :busy
         end
+    end
+  end
+
+  defp snapshot_process(pid, {acc, database} = state, io, scope) do
+    case quiet(pid, io, scope) do
+      :gone -> {:cont, state}
+      true -> {:cont, {MapSet.put(acc, pid), database}}
+      :database -> {:cont, {acc, [pid | database]}}
+      false -> {:halt, :busy}
     end
   end
 
@@ -2067,6 +2086,12 @@ defmodule SystemsClock do
           awaiting?(pid) ->
             false
 
+          # A BIF that holds its caller until the runtime finishes it (a
+          # `persistent_term` update waits for every scheduler, as `logger`
+          # makes when it first sees a module) suspends a process that runs.
+          status == :suspended and in_trapping_bif?(pid) ->
+            false
+
           mark != nil and Process.get(key) == mark ->
             true
 
@@ -2101,9 +2126,13 @@ defmodule SystemsClock do
 
       # A database query waits on the database (see `quiet_snapshot/2`).
       [current_stacktrace: [{:prim_inet, _, _, _} | _] = stack, monitors: _] ->
-        case local_peer(pid) do
-          nil -> if database_query?(stack), do: :database, else: false
-          server -> {:peer, server}
+        if database_query?(stack) do
+          :database
+        else
+          case local_peer(pid) do
+            nil -> false
+            server -> {:peer, server}
+          end
         end
 
       # No frames: the process is exiting or has not started its code.
@@ -2184,24 +2213,7 @@ defmodule SystemsClock do
   # node (a stub HTTP server, say) waits on what that process waits on: it is
   # idle when the server is, as when the server sleeps on this clock.
   defp peer_quiet({:peer, server}, io, scope) do
-    case process_info(server, [:status, :current_stacktrace]) do
-      [status: status, current_stacktrace: [{:erts_internal, _, _, _} | _]]
-      when status in [:waiting, :suspended] ->
-        false
-
-      [status: status, current_stacktrace: stack] when status in [:waiting, :suspended] ->
-        case Enum.drop_while(stack, &(not wait_frame?(&1, io))) do
-          [{__MODULE__, _, _, _} | _] -> true
-          [{:gen, :do_call, _, _} | _] -> quiet(server, io, scope) == true
-          # A server of the code under test that waits in a receive of its
-          # own, as a stream's loop does, is idle as any process in scope is.
-          [] -> in_scope?(server, scope)
-          _ -> false
-        end
-
-      _ ->
-        false
-    end
+    not awaiting?(server) and waiting_peer_quiet?(server, io, scope)
   end
 
   defp peer_quiet({:call, targets}, _io, _scope), do: Enum.any?(targets, &suspended?/1)
@@ -2224,19 +2236,46 @@ defmodule SystemsClock do
 
   defp peer_quiet(answer, _io, _scope), do: answer
 
+  defp waiting_peer_quiet?(server, io, scope) do
+    case process_info(server, [:status, :current_stacktrace]) do
+      [status: status, current_stacktrace: [{:erts_internal, _, _, _} | _]]
+      when status in [:waiting, :suspended] ->
+        false
+
+      [status: status, current_stacktrace: stack] when status in [:waiting, :suspended] ->
+        case Enum.drop_while(stack, &(not wait_frame?(&1, io))) do
+          [{__MODULE__, _, _, _} | _] -> true
+          [{:gen, :do_call, _, _} | _] -> quiet(server, io, scope) == true
+          # A server of the code under test that waits in a receive of its
+          # own, as a stream's loop does, is idle as any process in scope is.
+          [] -> in_scope?(server, scope)
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  # The process of this node at the other end of the socket `pid` reads, or
+  # nil. A reader waits on that process only when it has taken every byte the
+  # other end sent: bytes still on their way to its port (a reply in the
+  # kernel's loopback, a passive socket's read pending) wake it with no
+  # process of the node running first, so it is nil then too.
   defp local_peer(pid) do
     with sockets when sockets != [] <- client_sockets(pid),
-         {local, remote} <-
+         {socket, local, remote} <-
            Enum.find_value(sockets, fn socket ->
              with {:ok, local} <- inet_call(:sockname, socket),
                   {:ok, remote} <- inet_call(:peername, socket),
-                  do: {local, remote},
+                  do: {socket, local, remote},
                   else: (_ -> nil)
            end) do
       Enum.find_value(Port.list(), fn port ->
         with {:ok, ^remote} <- inet_call(:sockname, port),
              {:ok, ^local} <- inet_call(:peername, port),
-             {:connected, server} when server != pid <- Port.info(port, :connected) do
+             {:connected, server} when server != pid <- Port.info(port, :connected),
+             true <- taken_all?(socket, port) do
           server
         else
           _ -> nil
@@ -2244,6 +2283,16 @@ defmodule SystemsClock do
       end)
     else
       _ -> nil
+    end
+  end
+
+  defp taken_all?(socket, peer) do
+    with {:ok, [recv_oct: received]} <- inet_call(:getstat, socket, [[:recv_oct]]),
+         {:ok, [send_oct: sent, send_pend: 0]} <-
+           inet_call(:getstat, peer, [[:send_oct, :send_pend]]) do
+      sent == received
+    else
+      _ -> false
     end
   end
 
@@ -2319,6 +2368,13 @@ defmodule SystemsClock do
         is_pid(pid),
         do: pid
   end
+
+  defp in_trapping_bif?(pid),
+    do:
+      match?(
+        {:current_function, {:erlang, :bif_return_trap, _}},
+        process_info(pid, :current_function)
+      )
 
   # Suspended by `:erlang.suspend_process/1`, or by `:sys.suspend/1`, which
   # leaves the server waiting in the `sys` suspend loop.
@@ -2442,7 +2498,7 @@ defmodule SystemsClock do
               :module
 
             spawned_by_scope?(pid, prefixes) or
-                Enum.any?(callers, &(&1 == clock_owner() or in_scope?(&1, prefixes))) ->
+                Enum.any?(callers, &(works_for?(&1) or in_scope?(&1, prefixes))) ->
               :inside
 
             started?(pid) and module not in [:proc_lib, Task.Supervised] ->
@@ -2576,14 +2632,26 @@ defmodule SystemsClock do
     do: module != nil and String.starts_with?(Atom.to_string(module), prefixes)
 
   # A process started with a bare `spawn_link/1` has no initial module of its
-  # own; it does the work of the process it is linked to.
+  # own; it does the work of the process it is linked to. The process a
+  # bounded `:erpc.call` to this node runs in works for its caller, which
+  # waits for it in a plain receive.
   defp spawned_by_scope?(pid, prefixes) do
-    with {:initial_call, {:erlang, :apply, 2}} <- process_info(pid, :initial_call),
-         {:links, links} <- process_info(pid, :links) do
-      Enum.any?(links, &(is_pid(&1) and scoped?(initial_module(&1), prefixes))) or
+    case process_info(pid, :initial_call) do
+      {:initial_call, {:erlang, :apply, 2}} ->
+        case process_info(pid, :links) do
+          {:links, links} ->
+            Enum.any?(links, &(is_pid(&1) and scoped?(initial_module(&1), prefixes))) or
+              spawned_by_parent_in_scope?(pid, prefixes)
+
+          nil ->
+            false
+        end
+
+      {:initial_call, {:erpc, :execute_call, 4}} ->
         spawned_by_parent_in_scope?(pid, prefixes)
-    else
-      _ -> false
+
+      _ ->
+        false
     end
   end
 
@@ -2591,7 +2659,7 @@ defmodule SystemsClock do
   defp spawned_by_parent_in_scope?(pid, prefixes) do
     case process_info(pid, :parent) do
       {:parent, parent} when is_pid(parent) ->
-        parent == clock_owner() or in_scope?(parent, prefixes)
+        works_for?(parent) or in_scope?(parent, prefixes)
 
       _ ->
         false
@@ -2599,6 +2667,11 @@ defmodule SystemsClock do
   rescue
     ArgumentError -> false
   end
+
+  # The clock's owner, and the process that settles: a test that waits for
+  # what a process it started does counts it, whatever the scope's modules.
+  # The scope's answers are kept per settling process (`scope_of/2`).
+  defp works_for?(pid), do: pid == self() or pid == clock_owner()
 
   defp clock_owner do
     case :persistent_term.get(@key, nil) do
@@ -2780,36 +2853,40 @@ defmodule SystemsClock do
     fire_due(clock, 1)
   end
 
-  # The quiet state that a driver jump rests on still holds: no timer was
-  # armed and no process in scope started since its snapshot. Checking that
-  # the state is quiet takes real time, and work started in that time (a reply
-  # from outside the clock's scope that a process acts on) arms timers due
-  # before the one the clock would jump to. (A settle moves the clock after
-  # its condition has run, which may itself arm timers; it does not check.)
-  defp still_quiet?(clock, arms, filter),
-    do: unanswered(fn -> quiet_since?(clock, arms, filter) end, false)
+  # Recheck the same quiet proof before a driver jump. An outside reply can
+  # run a process and leave it waiting in the same place without arming a
+  # timer; the reductions and socket counters must still match too. A settle
+  # moves after its condition has run and may itself have armed timers.
+  defp still_quiet?(clock, arms, io, filter),
+    do: unanswered(fn -> quiet_since?(clock, arms, io, filter) end, false)
 
-  defp quiet_since?(clock, arms, {ignore, scope}) do
-    ignore = Enum.into(readers(), ignore)
+  defp quiet_since?(clock, arms, io, filter) do
+    previous = Process.get({__MODULE__, :quiet})
 
     :atomics.get(clock.arms, 1) == arms and
-      case Process.get({__MODULE__, :quiet}) do
-        %MapSet{} = quiet ->
-          not Enum.any?(scoped_processes(ignore, scope), fn pid ->
-            not MapSet.member?(quiet, pid) and process_info(pid, :status) != nil
-          end)
-
-        _none ->
-          false
-      end
+      quiet_again?(quiet_state(io, filter), previous) and
+      :atomics.get(clock.arms, 1) == arms
   end
 
   # Processes in scope the quiet snapshot that let the clock move did not
   # hold: started since, or not seen as in scope then. A failed run shows
   # what the clock moved past.
   defp note_since_quiet(clock) do
-    with %MapSet{} = quiet <- Process.get({__MODULE__, :quiet}) do
+    with {%MapSet{} = quiet, _ends, marks} <- Process.get({__MODULE__, :quiet}) do
       scope = Keyword.merge(settle_defaults(), clock.settle)[:scope]
+
+      # Processes the quiet snapshot held that ran since: the clock took them
+      # as idle, and they were not.
+      ran =
+        for {pid, mark} <- run_marks(quiet),
+            ran?(marks, pid, mark),
+            info = process_info(pid, [:status, :reductions, :current_stacktrace]),
+            info != nil,
+            do:
+              {pid, initial_module(pid), info[:status], info[:reductions],
+               Enum.take(info[:current_stacktrace], 2)}
+
+      if ran != [], do: note(clock, {:ran_since_quiet, ran})
 
       since =
         for pid <-

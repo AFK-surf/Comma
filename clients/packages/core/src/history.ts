@@ -6,7 +6,7 @@
 // read in flight per history, given up after 30 s; one stream per shown history (it ends 1 s after the last view), each connection at most 65 s, and
 // after one ends or fails the next waits 1, 2, 4, 8 then 10 s (the wait starts again at 1 s once a frame arrives).
 // Nothing is polled. Histories are kept only for this run, not on the device.
-import { CoreError, type Topic, type Value } from "@comma/core-kernel";
+import { CoreError, share, type Topic, type Value } from "@comma/core-kernel";
 import { Deferred, Effect, Result } from "effect";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
@@ -86,7 +86,9 @@ function merge(
   incoming: readonly SessionHistoryRecord[]
 ): SessionHistoryRecord[] {
   const byId = new Map(current.map((record) => [record.id, record]));
-  for (const record of incoming) byId.set(record.id, record);
+  // A record sent again keeps its object when it did not change (core-kernel keep.ts).
+  for (const record of incoming)
+    byId.set(record.id, share(byId.get(record.id), record));
   return [...byId.values()].toSorted((a, b) => compareIds(a.id, b.id));
 }
 
@@ -373,7 +375,7 @@ export class History {
           (record.execution?.observed_at_ms ?? record.timestamp_ms ?? 0) >=
           frame.server_time_ms - RECENT_MS
       ),
-      liveRecords: frame.live_records,
+      liveRecords: share(shown.liveRecords, frame.live_records),
       // One clock anchor per connection: jitter between heartbeats must not move a fixed three-minute axis.
       clockOffsetMs:
         shown.streamStatus === "live"

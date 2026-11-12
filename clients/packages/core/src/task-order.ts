@@ -9,13 +9,17 @@
 //
 // Bounds: one read per showing; per bucket one write in flight and one waiting.
 import { visibleTaskStatusBuckets } from "@comma/i18n";
-import { CoreError, type Topic, type Value } from "@comma/core-kernel";
+import { CoreError, share, type Topic, type Value } from "@comma/core-kernel";
 import { Deferred, Effect, Option, Result } from "effect";
 import type { Watch } from "@comma/core-kernel";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
 import { taskOrderSchema } from "./comma/schemas.ts";
-import type { ProductInboxListResult, TaskOrderValue } from "./contract.ts";
+import type {
+  ProductInboxListResult,
+  TaskOrderSection,
+  TaskOrderValue,
+} from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
 
 type Orders = Record<string, string[]>;
@@ -76,6 +80,8 @@ export class TaskOrder {
   #watch: Watch | null = null;
   /** The Groups whose arrangement is shown. */
   readonly #shown = new Set<string>();
+  /** Each group's sections as last shown. */
+  readonly #sections = new Map<string, TaskOrderSection[]>();
 
   constructor(ctx: Ctx) {
     this.#ctx = ctx;
@@ -233,12 +239,15 @@ export class TaskOrder {
         continue;
       (byBucket[item.statusBucket] ??= []).push(item.conversationId);
     }
-    return {
-      orders,
-      sections: visibleTaskStatusBuckets.map((bucket) => ({
+    // Ids only, made again from the list each time: the sections that did not change stay as they were.
+    const sections = share(
+      this.#sections.get(group),
+      visibleTaskStatusBuckets.map((bucket) => ({
         bucket,
         ids: arranged(byBucket[bucket] ?? [], orders[bucket]),
-      })),
-    };
+      }))
+    );
+    this.#sections.set(group, sections);
+    return { orders, sections };
   }
 }

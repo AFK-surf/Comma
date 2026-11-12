@@ -81,7 +81,7 @@ defmodule SalixAgent.Tools.History do
            true <- (is_integer(limit) and limit in 1..20) || {:error, :invalid_arguments},
            {:ok, state} <- Source.read(ctx.agent_id, ctx.session_id),
            {:ok, {ceiling, before_seq, before_part}} <-
-             cursor(args["cursor"], query, SalixAgent.InternalSession.get(state, :last_seq)),
+             cursor(args["cursor"], query, state.last_seq),
            {:ok, {position, hot, resume}} <-
              Hot.snapshot(
                ctx.agent_id,
@@ -103,8 +103,6 @@ defmodule SalixAgent.Tools.History do
                limit + 1
              )
              |> stage(:cold_index_unavailable) do
-        Worker.hint(ctx.agent_id, ctx.session_id)
-        if position.indexed < ceiling, do: Hot.prioritize(ctx.agent_id, ctx.session_id)
         rows = Enum.sort_by(hot ++ cold, &{&1["seq"], &1["part"]}, :desc)
         page = Enum.take(rows, limit)
         # A search that stopped inside the hot range continues there, not below the last hit.

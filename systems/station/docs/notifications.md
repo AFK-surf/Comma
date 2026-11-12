@@ -15,12 +15,12 @@ A notice is never shown for the chat the person is looking at. One chat has one
 notification at a time (its `tag`: a newer one replaces the older). Both ways
 use the same tag, so a push and a local notice for the same chat do not pile up.
 
-Only chats of still.fail's own page are noticed (a Slack thread has Slack's
+Only chats of Comma's own page are noticed (a Slack thread has Slack's
 notifications), and only for people who take part in them (the sidebar's
 `mine`: they made the chat, spoke in it, or started it).
 
 The `notices` topic and the `push.*`, `notify.*`, `client.focus` and
-`notice.*` calls are in still.fail's client core, not in Comma's.
+`notice.*` calls are in Comma's client core, not in Comma's.
 
 ## What is noticed
 
@@ -42,7 +42,7 @@ The title is the chat's title as the sidebar shows it. Texts are one line
 - `DELETE /v1/push` (bearer) `{ endpoint }` or `{ token }` → 204. Only the caller's account's row goes.
 - A session signed out (`/v1/auth/logout`, revoked) takes its registrations with it.
 - `POST /v1/stations/notify`, signed by the station like its traces: headers
-  `x-stillfail-station`, `x-stillfail-ts`, `x-stillfail-signature` = ed25519
+  `x-comma-station-station`, `x-comma-station-ts`, `x-comma-station-signature` = ed25519
   over `ember-station-notify-v1:<origin>:<station>:<ts>:<sha256 of the body, hex>`.
   The station also sends the same values in `x-ember-*` headers.
   Body:
@@ -60,7 +60,7 @@ The title is the chat's title as the sidebar shows it. Texts are one line
   404/410 (gone) for is dropped, with every account it was registered with.
 
 Comma's control plane takes the same body at `/v1/comma/stations/notify`, signed
-under `comma-station-notify-v1` in the `x-stillfail-*` headers only
+under `comma-station-notify-v1` in the `x-comma-station-*` headers only
 (`src/cloud/provider.ts`).
 
 Push payload (Web Push: the encrypted body, `aes128gcm`. FCM: a data message,

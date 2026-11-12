@@ -8,6 +8,7 @@ struct TaskDockContent: View {
     /// Carries the Home indicator or keyboard inset, animated with the keyboard by the UIKit panel, and the
     /// landscape side insets.
     let state: TaskDockState
+    var actions = TaskDockActions()
     /// The dock's conversation as it shows: from below the header to the bottom of the sheet.
     private static let viewport = "comma.taskDockConversation"
 
@@ -15,7 +16,7 @@ struct TaskDockContent: View {
         VStack(spacing: 0) {
             // The header lives in the chrome layer above; this slot keeps the transcript below it.
             Color.clear.frame(height: TaskDockViewController.barHeight)
-            PhoneConversationView(store: store, pane: pane)
+            PhoneConversationView(store: store, pane: pane, taskActions: state.actionsByComposer ? actions : nil)
                 // A dock taken over by another Task starts its conversation afresh, scroll and all.
                 .id(ObjectIdentifier(pane))
                 .safeAreaPadding(.bottom, state.bottomInset)
@@ -30,6 +31,45 @@ struct TaskDockContent: View {
                 .coordinateSpace(.named(Self.viewport))
                 .environment(\.ambientMotionPaused, state.covered)
         }
+        .padding(.top, state.topInset)
+        .onChange(of: pane.boundWorker?.participantID ?? pane.state.participant?.participantID, initial: true) { _, participant in
+            state.browser?.setParticipant(participant ?? "")
+        }
+        .sheet(isPresented: Binding(get: { state.browser != nil && !state.browserInline }, set: { presented in
+            if !presented && !state.browserInline { state.browser = nil }
+        })) {
+            if let model = state.browser {
+                TaskDockBrowserPage(model: model, close: { state.browser = nil }).commaSheet([.large])
+            }
+        }
+    }
+}
+
+/// The wide dock's browser uses the same viewer as the portrait sheet.
+struct TaskDockBrowser: View {
+    let state: TaskDockState
+
+    var body: some View {
+        if state.browserInline, !state.covered, let model = state.browser {
+            TaskDockBrowserPage(model: model, close: { state.browser = nil })
+                .safeAreaPadding(.top, state.topInset)
+                .safeAreaPadding(.bottom, state.bottomInset)
+                .safeAreaPadding(.trailing, state.browserTrailingInset)
+                .accessibilityIdentifier("taskBrowserPanel")
+        }
+    }
+}
+
+private struct TaskDockBrowserPage: View {
+    let model: PhoneBrowserModel
+    let close: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            PhoneBrowserView(model: model)
+                .id(model.viewer)
+                .sheetCloseButton(id: "closeTaskBrowser", close)
+        }
     }
 }
 
@@ -41,7 +81,7 @@ struct TaskDockChrome: View {
     let actions: TaskDockActions
 
     var body: some View {
-        TaskDetailsCard(store: store, pane: pane, state: state) {
+        TaskDetailsCard(store: store, pane: pane, state: state, openBrowser: actions.openBrowser) {
             TaskDockHeader(store: store, pane: pane, state: state, actions: actions)
         }
         .id(ObjectIdentifier(pane))
@@ -55,8 +95,6 @@ private struct TaskDockHeader: View {
     let pane: ConversationPane
     let state: TaskDockState
     let actions: TaskDockActions
-    @State private var renaming: TaskSummary?
-    @State private var sharing: TaskSummary?
 
     var body: some View {
         let task = store.taskSummary(id: pane.taskID ?? "")
@@ -111,18 +149,8 @@ private struct TaskDockHeader: View {
             .accessibilityValue(task.map { Text($0.bucket.label) } ?? Text(""))
             .accessibilityAction(named: Text("Show or minimize task"), actions.toggle)
             // The same width as the close button, so the title stays centred.
-            if let task {
-                Menu {
-                    TaskActionMenuItems(store: store, task: task, rename: { renaming = task }, share: { sharing = task },
-                                        archive: { actions.archive(task) })
-                } label: {
-                    CentralIcon("icon-more")
-                        .foregroundStyle(CommaTheme.textPrimary)
-                        .frame(width: 44, height: 44)
-                        .headerGlass(onCard: state.detailsOpen)
-                }
-                .accessibilityLabel("Task actions")
-                .accessibilityIdentifier("taskActions")
+            if let task, !state.actionsByComposer {
+                TaskDockMenu(store: store, task: task, actions: actions, onCard: state.detailsOpen)
             } else {
                 Color.clear.frame(width: 44, height: 44)
             }
@@ -130,6 +158,86 @@ private struct TaskDockHeader: View {
         .padding(.horizontal, 16)
         // The bar keeps a fixed 60pt height; past this size the title and status would not fit.
         .dynamicTypeSize(...DynamicTypeSize.xLarge)
+    }
+}
+
+/// The side dock's minimized bar: close, the Task title/status, and actions.
+struct TaskDockRail: View {
+    let store: CommaStore
+    let pane: ConversationPane
+    let state: TaskDockState
+    let actions: TaskDockActions
+
+    var body: some View {
+        let task = store.taskSummary(id: pane.taskID ?? "")
+        GeometryReader { geometry in
+            let titleHeight = max(44, geometry.size.height - 2 * (44 + 8))
+            VStack(spacing: 8) {
+                Button(action: actions.close) {
+                    CentralIcon("icon-close")
+                        .foregroundStyle(CommaTheme.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .headerGlass(onCard: false)
+                }
+                .buttonStyle(HeaderButtonStyle(onCard: false))
+                .accessibilityLabel("Close task")
+                Button(action: actions.toggle) {
+                    VStack(spacing: 2) {
+                        Text(task?.title ?? String(localized: "Task"))
+                            .font(.subheadline.weight(.medium)).lineLimit(1)
+                            .foregroundStyle(CommaTheme.textPrimary)
+                        if let task {
+                            HStack(spacing: 4) {
+                                TaskStatusIcon(bucket: task.bucket, size: 11)
+                                Text(task.bucket.label).font(.footnote)
+                                    .foregroundStyle(CommaTheme.textQuaternary)
+                            }
+                        }
+                    }
+                    .frame(width: titleHeight, height: TaskDockViewController.barHeight)
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: TaskDockViewController.barHeight, height: titleHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(task?.title ?? String(localized: "Task")))
+                .accessibilityIdentifier("expandTask")
+                if let task { TaskDockMenu(store: store, task: task, actions: actions) }
+                else { Color.clear.frame(width: 44, height: 44) }
+            }
+            .frame(width: TaskDockViewController.barHeight, height: geometry.size.height)
+        }
+        .padding(.leading, state.sideInset)
+        .padding(.top, max(state.topInset, CommaTheme.cardRadius))
+        .padding(.bottom, max(state.bottomInset, CommaTheme.cardRadius))
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+    }
+}
+
+/// One menu shared by the header and Duo's composer accessory.
+struct TaskDockMenu: View {
+    let store: CommaStore
+    let task: TaskSummary
+    let actions: TaskDockActions
+    var onCard = false
+    @State private var renaming: TaskSummary?
+    @State private var sharing: TaskSummary?
+
+    var body: some View {
+        Menu {
+            Button(action: actions.openBrowser) { Label("Remote browser", image: "icon-globe") }
+                .accessibilityIdentifier("openTaskBrowser")
+            Divider()
+            TaskActionMenuItems(store: store, task: task, rename: { renaming = task }, share: { sharing = task },
+                                archive: { actions.archive(task) })
+        } label: {
+            CentralIcon("icon-more")
+                .foregroundStyle(CommaTheme.textPrimary)
+                .frame(width: 44, height: 44)
+                .headerGlass(onCard: onCard)
+        }
+        .accessibilityLabel("Task actions")
+        .accessibilityIdentifier("taskActions")
         .taskActionSheets(store: store, renaming: $renaming, sharing: $sharing)
     }
 }

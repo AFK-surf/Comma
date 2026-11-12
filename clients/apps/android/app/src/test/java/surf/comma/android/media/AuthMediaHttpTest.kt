@@ -165,12 +165,12 @@ class AuthMediaHttpTest {
         val draft = ChatImageDraft(http, prepared, { _, _ -> error("not a file") }, scope, ChatView(AuthConversationSessions(auth), timeline))
         draft.add(listOf(ComposerAttachment("a", Uri.parse("content://picker/1"), PickedFile("1.jpg", "image/jpeg", 10))))
         preparing.await()
-        assertEquals(AttachmentUploadState.Pending, draft.states.first()["a"])
+        assertEquals(AttachmentUploadState.Pending, draft.states()["a"])
         auth.logout()
         ended.await()
-        settled { runBlocking { draft.states.first().isEmpty() } }
+        settled { runBlocking { draft.states().isEmpty() } }
         signIn("bob")
-        assertTrue(draft.states.first().isEmpty())
+        assertTrue(draft.states().isEmpty())
         assertTrue(timeline.calls.none { it.first == "chatView.attach" })
         draft.close()
     }
@@ -220,14 +220,14 @@ class AuthMediaHttpTest {
             val requestId = draft.requestId
             draft.add(selection)
             if (failUpload) {
-                settled { runBlocking { draft.states.first()["photo"] == AttachmentUploadState.Failed } }
+                settled { runBlocking { draft.states()["photo"] == AttachmentUploadState.Failed } }
                 assertFalse(draft.send(text, selection))
                 assertTrue(timeline.sends.isEmpty())
                 assertEquals(requestId, draft.requestId)
                 timeline.uploads = true
                 draft.retry("photo")
             }
-            settled { runBlocking { draft.states.first()["photo"] == AttachmentUploadState.Done } }
+            settled { runBlocking { draft.states()["photo"] == AttachmentUploadState.Done } }
             assertTrue(draft.send(text, selection))
             val failed = repository.awaitState { it.timeline.filterIsInstance<TimelineEntry.Pending>()
                 .any { pending -> pending.pending.status == PendingStatus.FAILED } }
@@ -291,7 +291,7 @@ class AuthMediaHttpTest {
             assertEquals(FileKind.VIDEO, picked.kind)
             val selection = listOf(ComposerAttachment("video", Uri.fromFile(input), picked))
             draft.add(selection)
-            settled { runBlocking { draft.states.first()["video"] == AttachmentUploadState.Done } }
+            settled { runBlocking { draft.states()["video"] == AttachmentUploadState.Done } }
             assertTrue(timeline.calls.none { it.first == "chatView.attach" })
             val file = timeline.calls.single { it.first == "chatView.attachLocalFiles" }.second.getJSONArray("files").getJSONObject(0)
             assertEquals("clip.mp4", file.getString("name"))
@@ -340,14 +340,18 @@ class AuthMediaHttpTest {
         settled { download.state.value is MediaDownloadState.Ready }
         // Metadata left by a previous process must be cleared too, even before any cover decode.
         AspectRatioCache.open(File(context.cacheDir, "media-video-sizes.json")).put(download.key, ImageDimensions(16, 9))
+        val coverFile = File(context.cacheDir, "video-covers/${download.key}.jpg").apply {
+            parentFile!!.mkdirs()
+            writeText("cached frame")
+        }
         val covers = components.covers()
         assertEquals(ImageDimensions(16, 9), covers.dimensions(download.key))
         val imageDirectory = File(context.cacheDir, "message-images")
         assertTrue(imageDirectory.walkTopDown().any { it.isFile })
         auth.logout()
         settled { view.drawable == null && images.dimensions(source) == null }
-        // Sign-out clears the picture sizes first and the video sizes after them; the files are the core's.
-        settled { !File(imageDirectory, "ratios.json").exists() && covers.dimensions(download.key) == null }
+        // Sign-out clears image metadata, video metadata and extracted frames. Originals belong to the core.
+        settled { !File(imageDirectory, "ratios.json").exists() && covers.dimensions(download.key) == null && !coverFile.exists() }
         binding.close()
         images.close()
         components.files.close()
@@ -361,4 +365,7 @@ class AuthMediaHttpTest {
  * What the steps before left: the app's background work, the core's answers and the decodes run in place in unit
  * tests, so [condition] holds when they return. No test waits for time to pass.
  */
+/** How each file the composer shows goes, by its id. */
+private suspend fun ChatImageDraft.states() = shown.first().associate { it.attachment.id to it.state }
+
 internal fun settled(condition: () -> Boolean) = org.junit.Assert.assertTrue("not settled", condition())

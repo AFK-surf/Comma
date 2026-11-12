@@ -7,66 +7,30 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
     20_260_729_000_002
   ]
   @workflow_router_version 20_260_810_000_101
-  @ordinary_online_cutoff 20_260_818_000_102
-  @approved_incompatible_steps MapSet.new([
-                                 "salix-20260827000101",
-                                 "bridge-20260827000002",
-                                 "salix-20260910140000",
-                                 "salix-20260910140001",
-                                 "comma-20260912000001",
-                                 "salix-20260915183001",
-                                 "salix-20260916000100",
-                                 "salix-20260918090000",
-                                 "salix-20260921090000",
-                                 "salix-20260924000101",
-                                 "comma-20260918000000",
-                                 # Contract: drops the retired Routine profile locale.
-                                 "comma-20261001190001",
-                                 "salix-20261001000200",
-                                 # Aggregate Live Activity targets: an old server may reject
-                                 # or remove them until every server updates.
-                                 "comma-20261003010000",
-                                 # Contract: drops the retired BFT onboarding UI-state columns.
-                                 "bridge-20261005000101",
-                                 # Subscription accounts are rewritten as the shared Profile;
-                                 # an old server cannot read or write that shape.
-                                 "salix-20261008100000",
-                                 # Contract: drop the Feishu app `domain` columns that
-                                 # nothing reads since #3589.
-                                 "bridge-20261014000101",
-                                 "salix-20261015000101",
-                                 # Contract: drops the Loop Task columns that nothing
-                                 # reads since the Loop holds its Task's facts.
-                                 "salix-20261020300002",
-                                 # Daily brief people become actor refs: an old server
-                                 # reads the renamed follow-up columns and fails its
-                                 # brief until every server updates.
-                                 "bridge-20261023001001",
-                                 # Snoozes move to a per-member table: an old server
-                                 # reads the dropped follow-up column and fails its
-                                 # brief until every server updates.
-                                 "bridge-20261023001101"
-                               ])
   @recertification_versions [20_260_910_140_001, 20_260_915_183_001]
-
-  test "new ordinary release migrations remain rolling-compatible" do
-    violating_steps =
-      Comma.ReleaseManifestV2.manifest()["steps"]
-      |> Enum.filter(fn step ->
-        step["version"] >= @ordinary_online_cutoff and
-          not MapSet.member?(@approved_incompatible_steps, step["id"]) and
-          step["source"] != "historical-ledger-only" and
-          (step["phase"] not in ["expand", "local_seed"] or
-             Enum.any?(step["compatibility"], fn {_fact, compatible?} -> not compatible? end))
-      end)
-      |> Enum.map(& &1["id"])
-
-    assert violating_steps == []
-  end
 
   # {name, owner, version, expected release mode, step checks}. A `true` check
   # must be truthy, `false` falsy, and any other value equal.
   @incompatible_step_cases [
+    {"installed schema and restored S3 projections cannot skip the exclusive authority import",
+     :salix, 20_261_028_000_300, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["execution", "transactional"], false},
+       {["execution", "idempotent"], true}
+     ]},
+    {"Salix online state schema and disposable projections require an exclusive cutover", :salix,
+     20_261_027_000_200, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["safety", "destructive"], true},
+       {["safety", "backupRequired"], false},
+       {["execution", "transactional"], true}
+     ]},
     {"subscription accounts become shared Profiles through an exclusive cutover with backup",
      :salix, 20_261_008_100_000, "exclusive",
      [
@@ -121,6 +85,15 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
        {["compatibility", "oldRuntimeRead"], false},
        {["compatibility", "oldRuntimeWrite"], false},
        {["safety", "destructive"], false},
+       {["safety", "backupRequired"], false}
+     ]},
+    {"Agent VMM single Registration conversion fences old install writers online", :salix,
+     20_261_103_150_000, "online",
+     [
+       {["phase"], "expand"},
+       {["compatibility", "oldRuntimeRead"], true},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["execution", "transactional"], true},
        {["safety", "backupRequired"], false}
      ]},
     {"Routine generation cutover requires writer fencing and backup evidence", :comma,

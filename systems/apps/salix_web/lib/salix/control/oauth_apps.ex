@@ -33,7 +33,7 @@ defmodule Salix.Control.OAuthApps do
   def list(tenant_id) do
     configured = Map.new(OAuthProviderApps.list_by_scope(tenant_id), &{&1["provider"], &1})
     defaults = default_records()
-    supported = SalixStore.OAuth.Adapters.supported()
+    supported = SalixStore.OAuth.Adapters.with_app()
 
     views =
       Enum.map(supported, fn provider ->
@@ -58,7 +58,7 @@ defmodule Salix.Control.OAuthApps do
   """
   def list_defaults do
     configured = default_records()
-    supported = SalixStore.OAuth.Adapters.supported()
+    supported = SalixStore.OAuth.Adapters.with_app()
 
     views =
       Enum.map(supported, fn provider ->
@@ -76,6 +76,16 @@ defmodule Salix.Control.OAuthApps do
     _exception -> {:error, :unavailable}
   end
 
+  def get(_tenant_id, "secret"), do: {:ok, %{}}
+
+  def get(tenant_id, "custom." <> key) do
+    case Store.get_record(Keys.ctl_oauth_custom_provider(tenant_id, key)) do
+      {:ok, record} -> {:ok, record}
+      {:error, :not_found} -> {:error, :not_configured}
+      other -> other
+    end
+  end
+
   def get(tenant_id, provider) do
     case OAuthProviderApps.get(tenant_id, provider) do
       {:ok, rec} ->
@@ -86,6 +96,18 @@ defmodule Salix.Control.OAuthApps do
 
       {:error, :not_found} ->
         get_default_or_local_mock(provider)
+    end
+  rescue
+    _exception -> {:error, :unavailable}
+  end
+
+  @doc "The tenant's own complete app for `provider`: never the deployment's default."
+  def get_own(tenant_id, provider) do
+    with {:ok, rec} <- OAuthProviderApps.get(tenant_id, provider),
+         {:ok, credentials} <- complete_credentials(rec) do
+      {:ok, credentials}
+    else
+      _ -> {:error, :not_configured}
     end
   rescue
     _exception -> {:error, :unavailable}
@@ -123,6 +145,59 @@ defmodule Salix.Control.OAuthApps do
   end
 
   def put(tenant_id, provider, attrs), do: upsert_app(tenant_id, provider, attrs)
+
+  @doc """
+  Defines the Workspace's own provider `custom.<key>`: its client and standard
+  OAuth endpoints. Redefining it keeps a client secret the attributes leave out.
+  """
+  def put_custom(tenant_id, provider, attrs) when is_map(attrs) do
+    key =
+      Keys.ctl_oauth_custom_provider(tenant_id, String.replace_prefix(provider, "custom.", ""))
+
+    current =
+      case Store.get_record(key) do
+        {:ok, record} -> record
+        _ -> %{}
+      end
+
+    record =
+      current
+      |> Map.merge(Map.take(attrs, ~w(client_id client_secret authorize_url token_url
+        device_authorization_url scopes client_auth)))
+      |> Map.put("provider", provider)
+
+    cond do
+      not SalixStore.OAuth.Adapters.custom?(provider) ->
+        {:error, {:bad_request, "provider must be custom.<key>, lower case"}}
+
+      optional_string(record["client_id"]) == "" ->
+        {:error, {:bad_request, "client_id is required"}}
+
+      Enum.any?(~w(token_url), &(not https_url?(record[&1]))) ->
+        {:error, {:bad_request, "token_url must be an https URL"}}
+
+      Enum.any?(
+        ~w(authorize_url device_authorization_url),
+        &(not (is_nil(record[&1]) or https_url?(record[&1])))
+      ) ->
+        {:error, {:bad_request, "endpoints must be https URLs"}}
+
+      is_nil(record["authorize_url"]) and is_nil(record["device_authorization_url"]) ->
+        {:error, {:bad_request, "authorize_url or device_authorization_url is required"}}
+
+      true ->
+        case SalixStore.S3.put(key, Jason.encode!(record)) do
+          {:ok, _} -> {:ok, Map.drop(record, ["client_secret"])}
+          {:error, _} = error -> error
+        end
+    end
+  end
+
+  defp https_url?(url) when is_binary(url) do
+    match?(%URI{scheme: "https", host: host} when is_binary(host) and host != "", URI.parse(url))
+  end
+
+  defp https_url?(_url), do: false
 
   @doc "Create/update the deployment default app for `provider` (same contract as `put/3`)."
   def put_default(provider, attrs), do: upsert_app(default_scope(), provider, attrs)
@@ -288,7 +363,7 @@ defmodule Salix.Control.OAuthApps do
       provider == "" ->
         {:error, {:bad_request, "provider is required"}}
 
-      provider not in SalixStore.OAuth.Adapters.supported() ->
+      provider not in SalixStore.OAuth.Adapters.with_app() ->
         {:error, {:bad_request, "unsupported oauth provider"}}
 
       client_id == "" ->

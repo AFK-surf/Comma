@@ -77,6 +77,67 @@ defmodule SalixAgent.IFC.Context do
 
   def delegate_request(wire, _source_id, _principal), do: wire
 
+  @doc """
+  One thread's queued inputs share an activation, so an effect names the input it
+  acts on. It is decided as that input's own activation would decide it: that
+  sender is the requester, from that input's place. Only an input this activation
+  consumed can be named.
+  """
+  @spec with_request(map(), term()) :: map()
+  def with_request(%{ifc: %{} = wire} = ctx, ref) when is_binary(ref) do
+    with true <- ref != wire["request"] and ref in List.wrap(wire["consumed_refs"]),
+         %{"principal" => principal} = item when is_binary(principal) <-
+           Enum.find(List.wrap(wire["items"]), &(&1["ref"] == ref)) do
+      ctx
+      |> Map.put(
+        :ifc,
+        Map.merge(wire, %{
+          "requester" => principal,
+          "request" => ref,
+          "source_scope" => item["label"]
+        })
+      )
+      |> put_input_origin(wire, ref)
+    else
+      _other -> ctx
+    end
+  end
+
+  def with_request(ctx, _ref), do: ctx
+
+  defp put_input_origin(ctx, wire, ref) do
+    source =
+      Enum.find_value(wire["input_refs"] || %{}, fn {source, input} ->
+        if input == ref, do: source
+      end)
+
+    case Enum.find(List.wrap(ctx[:trusted_origins]), &(&1["source_message_id"] == source)) do
+      nil -> ctx
+      origin -> Map.merge(ctx, %{trusted_origin: origin, source_message_id: source})
+    end
+  end
+
+  @doc """
+  Whether this activation's commands came from more than one sender, so an effect
+  must name one. A Loop or schedule with no authority that arrived beside a sender
+  is not another one: an effect that names nothing acts for the sender.
+  """
+  @spec several_senders?(map() | nil) :: boolean()
+  def several_senders?(%{} = wire) do
+    consumed = List.wrap(wire["consumed_refs"])
+
+    wire
+    |> Map.get("items", [])
+    |> List.wrap()
+    |> Enum.filter(&(&1["ref"] in consumed))
+    |> Enum.map(& &1["principal"])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> length() > 1
+  end
+
+  def several_senders?(_wire), do: false
+
   @doc "Organization grants on consumed commands, independent of the latest input or IFC mode."
   def organization_scopes(session, source_message_ids, kind \\ "meeting_preparation") do
     InternalSession.query(
@@ -133,7 +194,7 @@ defmodule SalixAgent.IFC.Context do
 
   def activation(_wire), do: :error
 
-  @doc "The ref the model's declaration defaults to: this activation's singular source."
+  @doc "The ref the model's declaration defaults to: this activation's latest source."
   @spec default_request(wire()) :: String.t() | nil
   def default_request(%{} = wire), do: wire["request"]
   def default_request(_wire), do: nil

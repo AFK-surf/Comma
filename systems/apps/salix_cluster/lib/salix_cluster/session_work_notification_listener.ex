@@ -6,7 +6,7 @@ defmodule SalixCluster.SessionWorkNotificationListener do
   routes address hints on the current ring owner. A broken
   connection is re-established with bounded backoff and repeats the same
   subscribe-then-catch-up sequence. Correctness remains with the durable
-  candidate projection and lease-driven recovery sweep.
+  committed Session due index and lease-driven recovery sweep.
 
   Notification loss and reconnect ordering are covered by implementation tests.
   The retired notification model is not a current machine-checked guarantee.
@@ -77,10 +77,8 @@ defmodule SalixCluster.SessionWorkNotificationListener do
           &SalixCluster.Recovery.request_session_work_catchup/0
         ),
       wake_fn:
-        Keyword.get(opts, :wake_fn, fn agent_id, target, candidate_token ->
-          SalixAgent.SessionWorkRecovery.request_wake(agent_id, target,
-            candidate_token: candidate_token
-          )
+        Keyword.get(opts, :wake_fn, fn agent_id, target, revision ->
+          SalixAgent.SessionWorkRecovery.request_wake(agent_id, target, revision: revision)
         end)
     }
 
@@ -201,7 +199,7 @@ defmodule SalixCluster.SessionWorkNotificationListener do
         case safe_fun(state.wake_fn, [
                notification.agent_id,
                target,
-               notification.candidate_token
+               notification.revision
              ]) do
           {:ok, :ok} -> emit_dispatch("ok")
           {:ok, {:error, _reason}} -> emit_dispatch("error")

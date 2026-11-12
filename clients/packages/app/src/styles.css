@@ -5,8 +5,10 @@
 @import "./components/commaAppearance.css";
 @import "./components/commaCustomThemeStudio.css";
 @import "./components/onboarding/onboarding.css";
+@import "./components/nearby/nearbyConnect.css";
 @import "./components/onboarding/window/onboardingWindow.css";
 @import "./components/web-intro/webIntro.css";
+@import "./components/commaSurfacePause.css";
 
 @source "./";
 @source "../../../apps/web/src";
@@ -106,9 +108,10 @@ body {
   pointer-events: auto;
 }
 
-/* Keep native no-drag ownership on the stable route rectangle. Registering
-   every message descendant creates dynamic exclusion regions that can mask
-   the sibling ContentHeader drag surface once conversation content renders. */
+/* The route's own rectangle is its native no-drag region. The ⌘K preview and
+   the share page show a route outside the content panel, over the drag
+   shell. Its messages carry no region (ui styles.css, base layer), so content
+   scrolled under the ContentHeader does not mask the header's drag surface. */
 .comma-chat-route {
   -webkit-app-region: no-drag;
 }
@@ -121,9 +124,11 @@ body {
 }
 
 /* The command preview is a passive snapshot. Keep its ScrollArea outside this
-   boundary usable while nested chat controls expose no hover affordance. */
-.comma-chat-thread[data-content-mode="display-only"],
-.comma-chat-thread[data-content-mode="display-only"] * {
+   boundary usable while nested chat controls expose no hover affordance.
+   Only a display-only thread carries the attribute, so the elements of every
+   other thread reject this rule without checking it. */
+.comma-chat-thread[data-display-only],
+.comma-chat-thread[data-display-only] * {
   pointer-events: none;
 }
 
@@ -138,7 +143,9 @@ body {
   padding-bottom: var(--spacing-xl);
 }
 
-[data-slot="task-conversation-preview"] ::highlight(comma-task-preview-search-match) {
+/* On the preview, not on each descendant: descendants inherit a highlight
+   style from their parent's. */
+[data-slot="task-conversation-preview"]::highlight(comma-task-preview-search-match) {
   background-color: color-mix(in srgb, var(--color-bg-brand-solid) 24%, transparent);
 }
 
@@ -199,6 +206,18 @@ body {
   background: var(--color-bg-primary);
 }
 
+/* The native view paints above the content panel's hairline and outside its
+   rounded clip. Where the viewport meets the panel's edge, keep it inside the
+   hairline and give it the panel's corner, concentric: ChatSidebar hands Main
+   this box and these radii. */
+.comma-content > .comma-chat-sidebar .comma-chat-sidebar-browser-viewport {
+  margin-right: var(--border-width-0-5);
+  margin-bottom: var(--border-width-0-5);
+  border-bottom-right-radius: calc(
+    var(--comma-window-inner-corner-radius) - var(--border-width-0-5)
+  );
+}
+
 /* Frame-accurate stand-in for the native browser view while a full-window DOM
    overlay suppresses it; sized to the viewport the view occupied so the swap
    is pixel-continuous. */
@@ -207,6 +226,7 @@ body {
   inset: 0;
   width: 100%;
   height: 100%;
+  border-radius: inherit;
   object-fit: fill;
 }
 
@@ -1706,12 +1726,7 @@ button.comma-recommendation-task-card:focus-visible,
 }
 
 .comma-recommendation-link-card-avatar {
-  width: var(--spacing-2xl);
-  height: var(--spacing-2xl);
   flex: 0 0 auto;
-  border-radius: var(--radius-full);
-  background: var(--color-bg-quaternary);
-  object-fit: cover;
 }
 
 .comma-recommendation-link-card-chips {
@@ -2779,6 +2794,14 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   box-shadow: var(--shadow-sm);
 }
 
+/* The request avatar's hover card in the Inbox rail: as wide as the person's name and email need, up to the Loop card's. */
+.comma-task-request-hover-card {
+  width: max-content;
+  max-width: min(var(--container-xxs), calc(100vw - var(--spacing-3xl)));
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-sm);
+}
+
 .comma-task-loop-detail-icon {
   display: flex;
   height: var(--text-sm--line-height);
@@ -2836,7 +2859,8 @@ button.comma-task-panel-pill {
 }
 
 button.comma-task-panel-pill:hover,
-button.comma-task-panel-pill[aria-expanded="true"] {
+button.comma-task-panel-pill[aria-expanded="true"],
+button.comma-task-panel-pill[data-menu-open="true"] {
   background: var(--color-bg-quaternary-hover);
 }
 
@@ -2906,6 +2930,68 @@ button.comma-task-panel-pill:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--spacing-xs);
+}
+
+/* The Files heading is its own disclosure: the heading and its chevron press
+   as one, and hovering or pressing fills it. The fill hangs its inset outside
+   the column, as a row's does, so the word stays in line with the other
+   headings and the row keeps the heading's height. */
+.comma-task-panel-files-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-block: calc(-1 * var(--spacing-xxs));
+  margin-inline-start: calc(-1 * var(--spacing-xs));
+  padding: var(--spacing-xxs) var(--spacing-xxs) var(--spacing-xxs) var(--spacing-xs);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  outline: none;
+}
+
+.comma-task-panel-files-toggle[data-hovered],
+.comma-task-panel-files-toggle[data-pressed] {
+  background: var(--color-bg-quaternary-hover);
+}
+
+.comma-task-panel-files-toggle[data-focus-visible] {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* The glyph's box is taller than the heading's line; it overhangs the line
+   instead of growing it. */
+.comma-task-panel-files-toggle svg {
+  inline-size: var(--spacing-2xl);
+  block-size: var(--spacing-2xl);
+  flex: none;
+  margin-block: calc((var(--text-xs--line-height) - var(--spacing-2xl)) / 2);
+  transition: rotate var(--motion-duration-disclosure-turn)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-task-panel-files-toggle[aria-expanded="true"] svg {
+  rotate: 180deg;
+}
+
+/* A file's hover card shows its preview when it arrives: one that arrives
+   after the card opened fades in, one ready as the card opens shows at once,
+   and one still loading stays clear over its frame. */
+.comma-task-file-arrival[data-arrival="pending"] {
+  opacity: 0;
+}
+
+.comma-task-file-arrival[data-arrival="late"] {
+  transition: opacity var(--motion-duration-state-swap-enter)
+    var(--motion-easing-surface-smooth-out);
+}
+
+@starting-style {
+  .comma-task-file-arrival[data-arrival="late"] {
+    opacity: 0;
+  }
 }
 
 /* ---- Task Activity ---------------------------------------------------
@@ -3079,6 +3165,11 @@ button.comma-task-activity-row:focus-visible {
 .comma-task-loop-detail[data-tone="warning"] svg {
   padding: var(--spacing-xxs);
   color: var(--color-fg-warning-primary);
+}
+
+/* A Loop that stopped on an error: the error glyph in the error colour. */
+.comma-task-loop-detail[data-tone="error"] svg {
+  color: var(--color-fg-error-primary);
 }
 
 /* ---- Coding Task ------------------------------------------------------
@@ -3686,7 +3777,7 @@ button.comma-task-panel-pill:focus-visible .comma-task-coding-affordance {
   border: var(--border-width-default) solid var(--color-border-secondary);
   border-radius: var(--radius-xl);
   background: var(--color-bg-primary);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
@@ -4769,9 +4860,42 @@ button.comma-task-label-chip:focus-visible {
    stretched to a squeezed row's chip floor. */
 [data-slot="task-list-item"]
   [data-slot="task-list-item-badges"]
-  .comma-task-schedule-chip-icon {
+  .comma-task-schedule-chip-icon,
+[data-slot="task-list-item"]
+  [data-slot="task-list-item-badges"]
+  .comma-task-request-chip-icon {
   min-width: auto;
   padding: var(--spacing-xxs);
+}
+
+/* The avatar alone has no chip border: the avatar itself fills the bordered
+   chip's 22px box. It covers the chip's hover fill, so a hover draws a ring
+   of that fill around it instead. */
+[data-slot="task-list-item"]
+  [data-slot="task-list-item-badges"]
+  .comma-task-request-chip-icon {
+  padding: 0;
+  border: 0;
+}
+
+[data-slot="task-list-item"]
+  [data-slot="task-list-item-badges"]
+  .comma-task-request-chip-icon[data-interactive="true"]:hover:not(:focus-visible) {
+  box-shadow: 0 0 0 var(--spacing-xxs) var(--color-bg-quaternary-hover);
+}
+
+[data-slot="task-list-item"]
+  [data-slot="task-list-item-badges"]
+  .comma-task-request-chip-icon
+  .comma-user-avatar
+  > :is(img, span) {
+  width: calc(
+    var(--spacing-xl) + 2 * (var(--spacing-xxs) + var(--border-width-default))
+  );
+  height: calc(
+    var(--spacing-xl) + 2 * (var(--spacing-xxs) + var(--border-width-default))
+  );
+  font-size: var(--text-micro);
 }
 
 /* A chip arrives on the menu clock with a strong ease-out from a barely
@@ -4987,8 +5111,8 @@ button.comma-task-label-chip:focus-visible {
   color: var(--color-fg-success-primary);
 }
 
-/* The standing say-so sits opposite the decision, where the notice frame
-   keeps the action that resumes; an approved card keeps only the word. */
+/* The standing say-so sits opposite the decision, at the far end of the
+   notice frame's actions row; an approved card keeps only the word. */
 .comma-chat-label-proposals-auto {
   margin-inline-start: auto;
   /* The notice frame top-aligns its actions so wrapped copy can grow; the
@@ -5590,6 +5714,49 @@ button.comma-task-label-chip:focus-visible {
   color: color-mix(in srgb, var(--comma-chat-user-bubble-foreground) 50%, transparent);
 }
 
+/* A model, skill or tool the person mentioned: its icon and its name in bold, in the bubble's text color. */
+.comma-chat-user-mention {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacing-xxs);
+  max-width: 100%;
+  vertical-align: baseline;
+}
+
+.comma-chat-user-mention-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  color: inherit;
+}
+
+.comma-chat-user-mention-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Brand marks take the text color too, as the composer's tokens do (ai-input-menu.css). */
+.comma-chat-user-mention-icon svg[fill]:not([fill="none"]),
+.comma-chat-user-mention-icon
+  svg
+  [fill]:not([fill="none"]):not([fill="white" i]):not([fill="#fff" i]):not(
+    [fill="#ffffff" i]
+  ):not(mask *):not(clipPath *):not(defs *) {
+  fill: currentColor;
+}
+
+.comma-chat-user-mention-icon
+  svg
+  [stroke]:not([stroke="none"]):not(mask *):not(clipPath *):not(defs *) {
+  stroke: currentColor;
+}
+
+.comma-chat-user-mention-label {
+  font-weight: var(--font-weight-semibold);
+}
+
 /* Unlayered on purpose so it beats the icon's own layered colour utility. */
 .comma-chat-user-bubble .comma-inline-task-icon,
 .comma-chat-user-bubble .comma-inline-task-icon svg {
@@ -5698,7 +5865,9 @@ button.comma-task-label-chip:focus-visible {
     var(--comma-chat-user-bubble-collapsed-block-size) - 2 *
       var(--comma-chat-user-bubble-padding-block)
   );
-  overflow: clip;
+  /* The collapse clips the text's height only. A mention's avatar that starts
+     a line draws its ring just past the text's edge, in the bubble's padding. */
+  overflow-y: clip;
   transition: max-block-size var(--motion-duration-spatial-move)
     var(--motion-easing-surface-smooth-out);
 }
@@ -5843,10 +6012,17 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 .comma-chat-message-assistant {
+  /* Agent bubbles read wider than the user's 500px cap: replies carry the
+     longer prose, code, and paths. */
+  --comma-chat-agent-bubble-max-width: 600px;
+
   position: relative;
   display: grid;
   width: fit-content;
-  max-width: min(calc(500px + 28px + var(--spacing-md)), 100%);
+  max-width: min(
+    calc(var(--comma-chat-agent-bubble-max-width) + 28px + var(--spacing-md)),
+    100%
+  );
   grid-template-columns: minmax(0, 1fr) 28px;
   align-items: start;
   column-gap: var(--spacing-md);
@@ -5860,7 +6036,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   position: relative;
   width: fit-content;
   min-width: 0;
-  max-width: min(500px, 100%);
+  max-width: min(var(--comma-chat-agent-bubble-max-width), 100%);
 }
 
 .comma-chat-thread .markdown-stream-bubble {
@@ -6005,13 +6181,18 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 /*
- * Inline code inside an agent bubble, for the same reason: the shared markdown
- * inline-code token is the bubble's own gray in light mode. Figma's
- * inline-code-bg is Gray (light mode) 300 / Gray (dark mode) 600, the pair
- * utility-gray-300 resolves to.
+ * Inline code needs a separate fill from the agent bubble. Light mode uses
+ * utility-gray-300; dark mode uses the darker shared inline-code background.
  */
 .comma-chat-thread .markdown-stream-bubble .markdown-stream-inline-code {
   background-color: var(--color-utility-gray-300);
+}
+
+:is(.dark, [data-theme="Dark mode"])
+  .comma-chat-thread
+  .markdown-stream-bubble
+  .markdown-stream-inline-code {
+  background-color: var(--color-markdown-bg-inline-code);
 }
 
 .comma-chat-thread .markdown-stream-bubble-block + .markdown-stream-bubble-block {
@@ -7014,6 +7195,10 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     position: absolute;
     inset: 0;
     z-index: -1;
+    /* Flush with the row's trailing edge, so it wears the row's corners there
+       instead of squaring them off. */
+    border-start-end-radius: var(--radius-md);
+    border-end-end-radius: var(--radius-md);
     background:
       linear-gradient(
         var(--comma-chat-task-item-tint),
@@ -7114,9 +7299,9 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   );
 }
 
-/* "New" leads the newest timestamp of what the agent sent on its own. It is
-   inline text on the timestamp's line, so it comes and goes without moving
-   the transcript. */
+/* "New" takes the time's place in the newest timestamp of what the agent sent
+   on its own. It is text on the timestamp's line, so it comes and goes
+   without moving the transcript. */
 .comma-chat-conversation-timestamp-new {
   color: var(--color-fg-brand-primary);
   font-weight: var(--font-weight-medium);
@@ -7126,6 +7311,41 @@ button.comma-chat-user-bubble-toggle:focus-visible {
    brightens its brand ink, the colour a brand Badge's label takes there. */
 [data-theme="Dark mode"] .comma-chat-conversation-timestamp-new {
   color: var(--color-utility-brand-700);
+}
+
+/* A New timestamp spans the column between two brand rules. Equal outer
+   tracks keep its text where every other timestamp's is. */
+.comma-chat-conversation-timestamp[data-new="true"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  align-self: stretch;
+  column-gap: var(--spacing-lg);
+}
+
+.comma-chat-conversation-timestamp[data-new="true"]::before,
+.comma-chat-conversation-timestamp[data-new="true"]::after {
+  content: "";
+  height: var(--border-width-default);
+  background: var(--color-border-brand);
+}
+
+/* The rule starts where the messages do, not in the avatar gutter. */
+.comma-chat-conversation-timestamp[data-new="true"]::before {
+  margin-inline-start: var(--comma-chat-avatar-gutter);
+}
+
+/* A reply line runs down through the row (MessageReplyLines), and the rule
+   starts a gap past it instead of crossing it. Beside a Router that shows no
+   identity, the line is 13px into the bubbles, at their text inset. Otherwise
+   it is on the avatars' centre, 12px from the column's edge: before the rule
+   when the gutter is wide, under it when a narrow column has none. */
+.comma-chat-conversation-timestamp[data-reply-line="bubble"]::before {
+  margin-inline-start: calc(var(--comma-chat-avatar-gutter) + 13px + var(--spacing-lg));
+}
+
+.comma-chat-conversation-timestamp[data-reply-line="gutter"]::before {
+  margin-inline-start: max(var(--comma-chat-avatar-gutter), 12px + var(--spacing-lg));
 }
 
 .comma-chat-conversation-timestamp[data-outgoing-entry="true"] {
@@ -7369,11 +7589,11 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   height: 100%;
 }
 
-/* Worker avatars sit beside the Router mark inside the bubble, as the channel
-   capsule does, so the bubble keeps the reply column's edge. A ring in the
-   bubble colour separates each disc from the one before it. A white disc reads
-   smaller than the solid Comma mark beside it, so it is drawn 2px larger to
-   look the same size. */
+/* Worker avatars sit inside the bubble, as the channel capsule does, so the
+   bubble keeps the reply column's edge. Beside them the Router's mark is one
+   more still disc. A ring in the bubble colour separates each disc from the
+   one before it. A white disc reads smaller than the solid Comma mark of a
+   bubble without Workers, so it is drawn 2px larger to look the same size. */
 .comma-chat-thinking-worker {
   width: 18px;
   height: 18px;
@@ -7381,7 +7601,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   outline: 1.5px solid var(--comma-chat-tail-background);
 }
 
-.comma-chat-thinking-logo + .comma-chat-thinking-worker,
 .comma-chat-thinking-worker + .comma-chat-thinking-worker {
   margin-inline-start: calc(-1 * var(--spacing-sm) - 4px);
 }
@@ -7594,8 +7813,22 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   opacity: 0;
 }
 
-/* The kept frame already says that the picture is changing. */
-.comma-remote-screen-still[data-kept] ~ .comma-remote-screen-status {
+/* It says the computer is locked: what the picture holds by then may no longer be that. */
+[data-locked="true"] > .comma-remote-screen-stage video,
+[data-locked="true"] > .comma-remote-screen-stage .comma-remote-screen-still {
+  visibility: hidden;
+}
+
+/* The last picture while a device turns (useScreenDeviceStanding). */
+.comma-remote-screen-still[data-holding] {
+  opacity: 1;
+  transition: none;
+  filter: none;
+}
+
+/* The kept frame already says that the picture is changing (on a device's screen too, inside its frame). */
+.comma-remote-screen-stage:has(.comma-remote-screen-still[data-kept])
+  > .comma-remote-screen-status {
   visibility: hidden;
 }
 
@@ -7603,8 +7836,226 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   cursor: crosshair;
 }
 
-/* The big screen as a side panel page. A brand line round it says that the
-   pointer and keyboard go to the computer. */
+/* In Watch the picture takes nothing, and says so to the pointer over it. */
+.comma-remote-screen-stage[data-watching="true"] video {
+  cursor: not-allowed;
+}
+
+/* A quiet boundary marks Control. Reserve the same width in Watch so the picture does not move. */
+.comma-remote-screen-panel > .comma-remote-screen-stage,
+.comma-remote-screen[data-full="true"] > .comma-remote-screen-stage {
+  border: var(--border-width-0-5) solid transparent;
+  transition: border-color var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out);
+}
+
+/* A simulator rests in Control and says which it is beside the device (ScreenControlChoice), so no boundary marks it:
+   round a stage that is mostly in Control, it makes each bar's hairline beside it twice as thick. */
+.comma-remote-screen-panel
+  > .comma-remote-screen-stage[data-control="true"]:not([data-choice="true"]),
+.comma-remote-screen[data-full="true"]
+  > .comma-remote-screen-stage[data-control="true"]:not([data-choice="true"]) {
+  border-color: var(--color-border-primary);
+}
+
+/* The word on a picture pressed in Watch: over it, in a tooltip's look, and in nothing's way. */
+.comma-remote-screen-watch-hint {
+  position: absolute;
+  right: 0;
+  bottom: var(--spacing-xl);
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding-inline: var(--spacing-lg);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out),
+    visibility var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out);
+}
+
+.comma-remote-screen-watch-hint[data-shown="true"] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.comma-remote-screen-watch-hint span {
+  max-width: 100%;
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: var(--border-width-0-5) solid var(--color-tooltip-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-tooltip-bg);
+  color: var(--color-tooltip-text);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  text-align: center;
+}
+
+.comma-remote-screen-stage[data-device="true"] .comma-remote-screen-watch-hint {
+  bottom: calc(var(--spacing-xl) + var(--comma-remote-screen-keep-y, 0px));
+  padding-right: calc(var(--spacing-lg) + var(--comma-remote-screen-keep-x, 0px));
+}
+
+/* What a press on the picture in Watch points to. */
+.comma-remote-screen-segments button[data-attention],
+.comma-remote-screen-action[data-attention] {
+  box-shadow: 0 0 0 var(--spacing-xxs) var(--color-border-brand);
+}
+
+.comma-remote-screen-actions:has([data-attention]) {
+  opacity: 1;
+}
+
+/* The screen's pointer, where the station says it is (ScreenPointer.tsx): a
+   point, its shape drawn from it by its hot spot (`--pointer`: its size). */
+.comma-remote-screen-pointer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.comma-remote-screen-pointer[hidden] {
+  display: none;
+}
+
+.comma-remote-screen-pointer svg {
+  display: block;
+  width: var(--pointer);
+  height: var(--pointer);
+  overflow: visible;
+}
+
+/* An agent at work on a device (ScreenAgentPresence.tsx): a glowing edge round the device, outside its body, and the
+   agent's cursor over the picture. They take no press. The look is the in-app browser's agent edge and cursor
+   (cursor.js): its colours, blur and timings, in the nearest steps of the scale. */
+.comma-remote-screen-agent {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Behind the body, which hides its middle: what shows is the glow that reaches out past the body's outline. (The
+   device's area is a stacking context of its own, so it stays above the stage's ground.) */
+.comma-remote-screen-agent-edge {
+  position: absolute;
+  z-index: -1;
+  inset: calc(-1 * var(--spacing-sm));
+  border-radius: inherit;
+  corner-shape: inherit;
+  filter: blur(var(--spacing-lg)) saturate(1.8);
+  pointer-events: none;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+/* The body's own rounded box, a little larger than it (a simulator's case says its corners itself). */
+.comma-remote-screen-agent-ring {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  corner-shape: inherit;
+  container-type: size;
+}
+
+/* (wider than the device's diagonal, so its corners stay covered as it turns) */
+.comma-remote-screen-agent-turning {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 150cqmax;
+  height: 150cqmax;
+  background: var(--comma-remote-screen-agent-edge);
+  transform: translate(-50%, -50%);
+}
+
+@keyframes comma-remote-screen-agent-turn {
+  to {
+    transform: translate(-50%, -50%) rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Once round in four seconds, a step each sixtieth of one. */
+  .comma-remote-screen-agent-turning {
+    animation: comma-remote-screen-agent-turn 4s steps(240) infinite;
+  }
+}
+
+/* Its tip is where the agent presses. It glides there (the component says how long), dips as the finger goes down,
+   and goes once the agent has left it a while. */
+.comma-remote-screen-agent-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--comma-icon-button-size);
+  height: var(--comma-icon-button-size);
+  opacity: 0;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out),
+    transform var(--comma-remote-screen-agent-glide, 0ms)
+      var(--motion-easing-spatial-move);
+}
+
+.comma-remote-screen-agent-cursor[data-shown="true"] {
+  opacity: 1;
+}
+
+.comma-remote-screen-agent-cursor svg {
+  display: block;
+  overflow: visible;
+  filter: drop-shadow(
+    0 var(--spacing-xxs) var(--spacing-xs) var(--color-alpha-black-50)
+  );
+  transform-origin: 17% 13%;
+  transition: scale var(--motion-duration-press-recoil)
+    var(--motion-easing-surface-smooth-out);
+}
+
+.comma-remote-screen-agent-cursor[data-down="true"] svg {
+  scale: var(--comma-remote-screen-agent-press);
+  transition-duration: var(--motion-duration-press-travel);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-remote-screen-agent-cursor[data-down="true"] svg {
+    scale: 1;
+  }
+}
+
+/* Hears the keys while the stage has the focus: an IME composes in it and a
+   paste lands in it (ScreenStreamStage). Never seen (still.fail
+   ScreenViewer.css.ts `keys`). Its caret is where the input method opens its
+   own windows: the stage puts it at the last press on the picture, a caret
+   20 points tall (still.fail screen_stage.mbt `screen_ime_h`). */
+.comma-remote-screen-keys {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: var(--spacing-2xl);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: transparent;
+  background: transparent;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+
+/* The big screen as a side panel page. The toolbar and a neutral boundary mark Control. */
 .comma-remote-screen-panel {
   --comma-remote-screen-glass: color-mix(
     in oklch,
@@ -7612,27 +8063,669 @@ button.comma-chat-user-bubble-toggle:focus-visible {
     transparent
   );
 
+  --comma-remote-screen-button: var(--spacing-4xl);
+
   position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1;
+  flex-direction: column;
   background: var(--color-bg-secondary);
+  /* Its header, toolbar and picture are chrome: a drag on the picture or a select-all marks none of them. */
+  user-select: none;
 }
 
-.comma-remote-screen-panel[data-control="true"]::after {
+/* A screen in a window of its own (screenWindows.ts): the side panel's page, the whole window. */
+.comma-remote-screen-window {
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  background: var(--color-main-panel-bg);
+}
+
+.comma-remote-screen-status,
+.comma-remote-screen-header {
+  flex: none;
+  background: var(--color-main-panel-bg);
+}
+
+/* Its toolbar is laid out by the room the panel gives it. */
+.comma-remote-screen-header {
+  container-type: inline-size;
+}
+
+/* The panel's bars (its toolbar, a frame being marked, debugging, the logs) hold one kind of control, whether it
+   shows an icon, a word or both: the sidebar's icon-button height and corner, as the browser toolbar beside it has.
+   What is on the stage keeps its own size (the device's buttons, the room kept for them). */
+.comma-remote-screen-toolbar,
+.comma-remote-screen-debug,
+.comma-remote-screen-logs-bar {
+  --comma-remote-screen-button: var(--comma-icon-button-size);
+}
+
+.comma-remote-screen-toolbar {
+  display: flex;
+  height: var(--spacing-5xl);
+  align-items: center;
+  gap: var(--spacing-md);
+  padding-inline: var(--spacing-lg);
+  border-bottom: var(--border-width-0-5) solid var(--color-border-primary);
+}
+
+/* What shows and how it is held (its name, Watch or Control), then what else is done with it. */
+.comma-remote-screen-toolbar-lead,
+.comma-remote-screen-toolbar-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.comma-remote-screen-toolbar-lead {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Watch and Control stay at the far end, whatever room the name leaves. */
+.comma-remote-screen-toolbar-lead > .comma-remote-screen-segments {
+  margin-inline-start: auto;
+}
+
+.comma-remote-screen-toolbar-tools {
+  flex: none;
+}
+
+/* The name of what shows, as a menu of what else could. It is as wide as its words, so what fills under the pointer
+   holds them and no more; in less room it gives way and they are cut short. */
+.comma-remote-screen-switcher {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  margin-inline-start: calc(-1 * var(--spacing-xs));
+  padding: 0 var(--spacing-xs);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: start;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen-switcher:hover {
+    background: var(--color-sidebar-bg-item);
+  }
+}
+
+/* Its menu is open. */
+.comma-remote-screen-switcher[aria-expanded="true"] {
+  background: var(--color-sidebar-bg-item);
+}
+
+.comma-remote-screen-switcher:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-remote-screen-switcher-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.comma-remote-screen-switcher-name svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  color: var(--color-fg-tertiary);
+}
+
+.comma-remote-screen-title {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.comma-remote-screen-title strong {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-remote-screen-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+/* Alone in the toolbar it reads as the browser's address does. */
+.comma-remote-screen-line:only-child {
+  gap: var(--spacing-sm);
+  color: var(--color-text-secondary);
+}
+
+.comma-remote-screen-line > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-remote-screen-action-group,
+.comma-remote-screen-segments {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.comma-remote-screen-segments {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* A button that says a word: one of a few to choose from, or one alone in a bar (`-bar-button`). Under the pointer
+   it is filled as an icon is: the Button's own fill is too faint beside one. */
+.comma-remote-screen-segments button,
+.comma-remote-screen-bar-button {
+  --comma-button-hover-bg: var(--color-sidebar-bg-item);
+  height: var(--comma-remote-screen-button);
+  padding-inline: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+/* Its menu is open. */
+.comma-remote-screen-bar-button[aria-expanded="true"] {
+  background: var(--color-sidebar-bg-item);
+  color: var(--color-text-primary);
+}
+
+/* The chosen one keeps its look under the pointer: the Button's hover is its own. */
+.comma-remote-screen-segments button[aria-pressed="true"] {
+  --comma-button-hover-fg: var(--color-text-primary);
+  color: var(--color-text-primary);
+}
+
+/* A narrow panel takes two rows, so the name keeps its room and nothing is left out or cut off, down to the
+   sidebar's least width: the name with Watch and Control, then the rest, its icons at the far end. The name stands
+   as high as in one row, and the icons as far from the rule under them. (A container query takes no custom
+   property: this is the `@md` container step, under which a long device name no longer fits in one row.) */
+@container (max-width: 560px) {
+  .comma-remote-screen-toolbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: var(--spacing-xxs);
+    padding-block: var(--spacing-xxs) var(--spacing-sm);
+  }
+
+  .comma-remote-screen-toolbar-lead,
+  .comma-remote-screen-toolbar-tools {
+    flex: 1 0 100%;
+  }
+
+  .comma-remote-screen-toolbar-tools > .comma-remote-screen-action-group {
+    margin-inline-start: auto;
+  }
+
+  /* A word first in its row stands where the name over it does: what fills under the pointer reaches further out
+     (by its own padding and the Button's round its word). */
+  .comma-remote-screen-toolbar-tools > .comma-remote-screen-bar-button:first-child {
+    margin-inline-start: calc(-1 * (var(--spacing-sm) + var(--spacing-xxs)));
+  }
+}
+
+/* The toolbar's icon buttons are the browser toolbar's: no glass here. */
+.comma-remote-screen-panel .comma-remote-screen-action {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--color-sidebar-icon-primary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen-panel .comma-remote-screen-action:not(:disabled):hover {
+    background: var(--color-sidebar-bg-item);
+  }
+}
+
+.comma-remote-screen-panel .comma-remote-screen-action:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* Turned on, or its menu or panel open. */
+.comma-remote-screen-panel .comma-remote-screen-action[aria-pressed="true"],
+.comma-remote-screen-panel .comma-remote-screen-action[aria-expanded="true"] {
+  background: var(--color-sidebar-bg-item);
+  box-shadow: none;
+  color: var(--color-text-primary);
+}
+
+.comma-remote-screen-panel .comma-remote-screen-action:disabled {
+  color: var(--color-fg-disabled);
+}
+
+/* In a bar it is the bar's control: a word's height, and its corner. */
+:is(
+    .comma-remote-screen-toolbar,
+    .comma-remote-screen-debug,
+    .comma-remote-screen-logs-bar
+  )
+  .comma-remote-screen-action {
+  width: var(--comma-remote-screen-button);
+  height: var(--comma-remote-screen-button);
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.comma-remote-screen-panel > .comma-remote-screen-stage {
+  --comma-remote-screen-stage-gutter: var(--spacing-xl);
+
+  height: auto;
+  min-height: 0;
+  flex: 1;
+  padding: var(--comma-remote-screen-stage-gutter);
+}
+
+/* A frame held to ask about (ScreenStreamStage `heldFrame`): in the picture's place, over the stream and what is drawn on
+   it, on the ground the picture has. A device's screen cuts it to its shape, and its case lies over it, so the device
+   stands as it did; what holds the frame has the screen's corners, for what is selected on it. */
+.comma-remote-screen-held {
   position: absolute;
+  border-radius: inherit;
+  background: inherit;
   inset: 0;
-  border: var(--border-width-default) solid var(--color-border-brand);
-  content: "";
+}
+
+/* (a computer's screen: its picture is inside the stage's gutter) */
+.comma-remote-screen-panel > .comma-remote-screen-stage > .comma-remote-screen-held {
+  inset: var(--comma-remote-screen-stage-gutter);
+}
+
+.comma-remote-screen-held canvas,
+.comma-remote-screen-mark-frame canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Inspecting a frame (ScreenFrameMark): over the stage and the bars under it, which stay as they stand and take
+   nothing. It lays what is selected on the frame the stage holds, and a composer by it, as a picked element has on a
+   page. */
+.comma-remote-screen-mark {
+  position: absolute;
+  z-index: 1;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  inset: 0;
+  outline: none;
+}
+
+/* The composer the browser shows for a picked element, here for what is selected on the frame: over the frame, by
+   the selection (ScreenFrameMark lays it). */
+.comma-remote-screen-mark-composer {
+  position: absolute;
+  z-index: 1;
+  /* (the panel is chrome, where nothing is selected: what is written here is text) */
+  user-select: text;
+}
+
+/* With nothing selected yet: how to select. Under the toolbar, in the room over the picture (ScreenFrameMark gives
+   its height), no further down than a device's gutter: what stands beside a device and under the stage is not under
+   it. */
+.comma-remote-screen-mark-hint {
+  position: absolute;
+  top: 0;
+  right: var(--spacing-xl);
+  left: var(--spacing-xl);
+  display: grid;
+  min-height: var(--spacing-xl);
+  max-height: var(--spacing-4xl);
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  place-items: center;
   pointer-events: none;
+  text-align: center;
 }
 
-.comma-remote-screen-panel .comma-remote-screen-actions {
-  opacity: 1;
+.comma-remote-screen-mark-action {
+  display: inline-flex;
+  width: var(--comma-icon-button-size);
+  height: var(--comma-icon-button-size);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-quaternary);
+  color: var(--color-ai-input-panel-icon-primary);
+  outline: none;
+  pointer-events: auto;
 }
 
-.comma-remote-screen-status {
+.comma-remote-screen-mark-action[data-hovered] {
+  background: var(--color-fg-senary);
+}
+
+.comma-remote-screen-mark-action[data-focus-visible] {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* Where the frame shows (ScreenFrameMark places it): what is selected is drawn there. */
+.comma-remote-screen-mark-picture {
+  position: absolute;
+}
+
+/* (the frame itself in the dialog, where no stage shows it) */
+.comma-remote-screen-mark-frame,
+.comma-remote-screen-mark-surface {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+}
+
+/* What is selected on the frame, as the browser shows a picked element on a page: its blue line and tint, and a
+   light edge outside the line that keeps the box clear on any picture. The blue is the inspector's
+   (element-inspector.ts, `.comma-inspector-box`): that draws in a page, which has none of the theme's tokens, so the
+   colour is written there and here. The picture that goes to the chat has none of this on it. */
+.comma-remote-screen-mark-surface {
+  --comma-remote-screen-mark: rgb(90 111 255);
+
+  cursor: crosshair;
+  fill: color-mix(in srgb, var(--comma-remote-screen-mark) 22%, transparent);
+  stroke: color-mix(in srgb, var(--comma-remote-screen-mark) 90%, transparent);
+  touch-action: none;
+}
+
+.comma-remote-screen-mark-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--color-fg-white) 55%, transparent);
+}
+
+/* The whole screen selected: the areas' line round the frame, and no tint over all of it. */
+.comma-remote-screen-mark-whole {
+  fill: none;
+}
+
+/* A screenshot as it is taken (ScreenShot.tsx). The shutter: the picture goes white as Take screenshot is pressed and
+   clears at once, so the press is answered before the picture has come back from the device. */
+.comma-remote-screen-shutter {
+  position: absolute;
+  /* (over the picture taken, where that is back before the flash has cleared) */
+  z-index: 2;
+  background: var(--color-fg-white);
+  opacity: 0;
+  pointer-events: none;
+  animation: comma-remote-screen-shutter var(--motion-duration-picture-in-picture-enter)
+    var(--motion-easing-calm-in-out);
+}
+
+@keyframes comma-remote-screen-shutter {
+  from {
+    opacity: 0.85;
+  }
+}
+
+/* The picture taken, in the stage's lower right corner for a while: it lands there from where the screen shows (its
+   place and size there are set as it mounts), is pressed to ask about it, and dragged as a file. */
+.comma-remote-screen-shot {
+  position: absolute;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  margin: var(--spacing-xl);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg);
+  cursor: grab;
+  transform-origin: 0 0;
+  transition:
+    opacity var(--motion-duration-picture-in-picture-exit)
+      var(--motion-easing-smooth-out),
+    translate var(--motion-duration-picture-in-picture-exit)
+      var(--motion-easing-smooth-out),
+    scale var(--motion-duration-feedback-out) var(--motion-easing-smooth-out);
+}
+
+/* It leaves the screen at once and settles slowly: a long way for a large thing, so longer than a control's move. */
+.comma-remote-screen-shot[data-landing="true"] {
+  animation: comma-remote-screen-shot-land var(--motion-duration-image-filmstrip)
+    var(--motion-easing-drawer) backwards;
+}
+
+@keyframes comma-remote-screen-shot-land {
+  from {
+    transform: translate(
+        var(--comma-remote-screen-shot-x, 0),
+        var(--comma-remote-screen-shot-y, 0)
+      )
+      scale(var(--comma-remote-screen-shot-scale, 1));
+  }
+}
+
+/* It goes toward the edge it lies by, quicker than it came. */
+.comma-remote-screen-shot[data-leaving] {
+  opacity: 0;
+  pointer-events: none;
+  translate: var(--spacing-md) 0;
+}
+
+.comma-remote-screen-shot:active {
+  scale: var(--motion-scale-tactile-pressed);
+  transition-duration:
+    var(--motion-duration-picture-in-picture-exit),
+    var(--motion-duration-picture-in-picture-exit), var(--motion-duration-feedback-in);
+}
+
+.comma-remote-screen-shot > button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: inherit;
+  outline: none;
+}
+
+.comma-remote-screen-shot:has(> button:focus-visible) {
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg),
+    var(--shadow-focus-gray);
+}
+
+.comma-remote-screen-shot img {
+  display: block;
+  width: auto;
+  max-width: var(--spacing-9xl);
+  height: auto;
+  max-height: var(--spacing-10xl);
+}
+
+/* Less motion: no flash and no travel; the picture is in its corner at once, and fades as it goes. */
+:root[data-comma-reduced-motion="true"] .comma-remote-screen-shutter,
+:root[data-comma-reduced-motion="true"] .comma-remote-screen-shot[data-landing="true"] {
+  animation: none;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-remote-screen-shot {
+  scale: 1;
+  translate: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-remote-screen-shutter,
+  .comma-remote-screen-shot[data-landing="true"] {
+    animation: none;
+  }
+
+  .comma-remote-screen-shot {
+    scale: 1;
+    translate: none;
+  }
+}
+
+/* What debugs an app on the device, under its picture: a row of icon buttons, as many rows as a narrow panel needs. */
+.comma-remote-screen-debug {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  min-height: var(--spacing-5xl);
+  padding: var(--spacing-xs) var(--spacing-lg);
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+  background: var(--color-main-panel-bg);
+}
+
+.comma-remote-screen-debug [data-recording="true"] .comma-remote-screen-action {
+  color: var(--color-fg-error-primary);
+}
+
+/* A device's running app's logs under its picture (ScreenAppLogs): a bar that
+   opens and closes them, and their lines, which a person selects and copies. */
+.comma-remote-screen-logs {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+  background: var(--color-main-panel-bg);
+}
+
+.comma-remote-screen-logs-bar {
+  display: flex;
+  min-height: var(--spacing-5xl);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding-inline: var(--spacing-lg);
+}
+
+/* Its arrow stands where the toolbar's name and the lines under it begin; what fills under the pointer reaches a
+   little further out, as the name's does. */
+.comma-remote-screen-logs-toggle {
+  display: inline-flex;
+  min-width: 0;
+  height: var(--comma-remote-screen-button);
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-inline-start: calc(-1 * var(--spacing-xs));
+  padding: 0 var(--spacing-sm) 0 var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-remote-screen-logs-toggle svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen-logs-toggle:hover {
+    background: var(--color-sidebar-bg-item);
+  }
+}
+
+.comma-remote-screen-logs-toggle:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+  outline: none;
+}
+
+.comma-remote-screen-logs-body .collapse-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.comma-remote-screen-logs-scroll {
+  height: calc(var(--spacing-11xl) * 1.5);
+}
+
+.comma-remote-screen-logs-lines,
+.comma-remote-screen-logs-note,
+.comma-remote-screen-logs-held {
+  margin: 0;
+  padding: var(--spacing-xs) var(--spacing-lg);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-remote-screen-logs-lines {
+  list-style: none;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+.comma-remote-screen-logs-lines li {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comma-remote-screen-logs-meta {
+  color: var(--color-text-tertiary);
+}
+
+.comma-remote-screen-logs-lines li[data-crash="true"] .comma-remote-screen-logs-meta {
+  color: inherit;
+}
+
+.comma-remote-screen-logs-lines li[data-level="error"],
+.comma-remote-screen-logs-lines li[data-level="fault"],
+.comma-remote-screen-logs-lines li[data-level="fatal"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-remote-screen-logs-lines li[data-level="warning"] {
+  color: var(--color-text-warning-primary);
+}
+
+.comma-remote-screen-logs-lines li[data-crash="true"] {
+  margin-inline: calc(var(--spacing-lg) * -1);
+  padding-inline: var(--spacing-lg);
+  background: var(--color-bg-error-primary);
+  color: var(--color-text-error-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.comma-remote-screen-logs-note,
+.comma-remote-screen-logs-held {
+  color: var(--color-text-tertiary);
+}
+
+.comma-remote-screen-logs-held {
+  display: block;
+  border-top: var(--border-width-0-5) solid var(--color-border-primary);
+}
+
+/* What the stage says while it has no picture, over where the picture will be. */
+.comma-remote-screen-status,
+.comma-remote-screen-failure {
   position: absolute;
   inset: 0;
   display: grid;
@@ -7640,6 +8733,27 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   line-height: var(--text-xs--line-height);
+}
+
+/* (it only says how things stand: a press goes to what is under it, as the choice beside a device) */
+.comma-remote-screen-status {
+  pointer-events: none;
+}
+
+.comma-remote-screen-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xl);
+  background: var(--comma-remote-screen-glass);
+  text-align: center;
+}
+
+.comma-remote-screen-failure strong {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
 }
 
 .comma-remote-screen-name,
@@ -7673,6 +8787,16 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   font-weight: var(--font-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Beside "Booted" in a device tab's menu: these run now. */
+.comma-remote-screen-booted {
+  display: inline-block;
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  border-radius: var(--radius-full);
+  margin-inline-start: var(--spacing-sm);
+  background: var(--color-brand-400);
 }
 
 .comma-remote-screen-dot {
@@ -7733,9 +8857,15 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .comma-remote-screen-action:hover {
+  .comma-remote-screen-action:not(:disabled):hover {
     background: var(--color-bg-popup-primary);
   }
+}
+
+/* It cannot be pressed now. */
+.comma-remote-screen-action:disabled {
+  color: var(--color-fg-disabled);
+  cursor: default;
 }
 
 .comma-remote-screen-action:focus-visible {
@@ -7747,6 +8877,569 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   background: var(--color-bg-brand-solid);
   box-shadow: var(--shadow-sm);
   color: var(--color-text-white);
+}
+
+/* A device: its picture on a plain rounded body in the middle of the stage, what it can do beside it. It keeps a gutter
+   all round; a device taller than wide has its buttons in a column at its side, one wider than tall in a row under it.
+   What lies over the stage centres on the picture alone. */
+.comma-remote-screen-stage[data-input="touch"] video {
+  touch-action: none;
+}
+
+.comma-remote-screen-device-area {
+  display: grid;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  padding: var(--spacing-xl);
+  container-type: size;
+  place-items: center;
+}
+
+.comma-remote-screen-device-area:has(> .comma-remote-screen-device[data-case="true"]) {
+  padding: var(--spacing-5xl);
+}
+
+/* The room stays whether they show or not: taking control does not move the device. */
+.comma-remote-screen-stage[data-device="true"]:has([data-lays="tall"]) {
+  --comma-remote-screen-keep-x: calc(
+    var(--comma-remote-screen-button) + var(--spacing-md)
+  );
+}
+
+.comma-remote-screen-stage[data-device="true"]:has([data-lays="wide"]) {
+  --comma-remote-screen-keep-y: calc(
+    var(--comma-remote-screen-button) + var(--spacing-md)
+  );
+}
+
+/* A device stands on the panel's own ground, the toolbar's and the bars' under it: one ground for the whole page. (A
+   computer's app keeps the stage's, which its station paints behind the app's windows.) */
+.comma-remote-screen-stage[data-device="true"] {
+  background: var(--color-main-panel-bg);
+}
+
+.comma-remote-screen-stage[data-device="true"] .comma-remote-screen-status,
+.comma-remote-screen-stage[data-device="true"] .comma-remote-screen-failure {
+  padding-right: var(--comma-remote-screen-keep-x, 0px);
+  padding-bottom: var(--comma-remote-screen-keep-y, 0px);
+  background: transparent;
+}
+
+/* Over a device's dark body, as its screen would say it. */
+.comma-remote-screen-stage:is(:has([data-body="true"]), :has([data-case="true"]))
+  :is(
+    .comma-remote-screen-status,
+    .comma-remote-screen-failure,
+    .comma-remote-screen-failure strong
+  ) {
+  color: var(--color-text-white);
+}
+
+/* The screen is as large as the room allows; the body goes round it at one
+   thickness, and each of its corners round the screen's. ScreenDeviceFrame sets
+   the screen's shape and corners from the source's. */
+.comma-remote-screen-device {
+  --comma-remote-screen-device-bezel: var(--spacing-md);
+  --comma-remote-screen-device-side: min(
+    calc(
+      100cqw - var(--comma-remote-screen-keep-x, 0px) - 2 *
+        var(--comma-remote-screen-device-bezel)
+    ),
+    calc(
+      (
+          100cqh - var(--comma-remote-screen-keep-y, 0px) - 2 *
+            var(--comma-remote-screen-device-bezel)
+        ) *
+        var(--comma-remote-screen-device-ratio)
+    )
+  );
+
+  position: relative;
+  width: calc(
+    var(--comma-remote-screen-device-side) + 2 * var(--comma-remote-screen-device-bezel)
+  );
+  height: calc(
+    var(--comma-remote-screen-device-side) / var(--comma-remote-screen-device-ratio) +
+      2 * var(--comma-remote-screen-device-bezel)
+  );
+  margin-right: var(--comma-remote-screen-keep-x, 0px);
+  margin-bottom: var(--comma-remote-screen-keep-y, 0px);
+  border-radius: calc(
+      var(--comma-remote-screen-device-corner-tl) *
+        var(--comma-remote-screen-device-side) + var(--comma-remote-screen-device-bezel)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-tr) *
+        var(--comma-remote-screen-device-side) + var(--comma-remote-screen-device-bezel)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-br) *
+        var(--comma-remote-screen-device-side) + var(--comma-remote-screen-device-bezel)
+    )
+    calc(
+      var(--comma-remote-screen-device-corner-bl) *
+        var(--comma-remote-screen-device-side) + var(--comma-remote-screen-device-bezel)
+    );
+  /* (a simulator's corners, as Apple draws them: the superellipse its mask says, ScreenDeviceFrame) */
+  corner-shape: var(--comma-remote-screen-device-corner-shape, round);
+}
+
+.comma-remote-screen-device[data-body="true"] {
+  background: var(--color-bg-overlay);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg);
+}
+
+/* On a dark ground the overlay's grey is nearly the panel's: the body takes the
+   next step up, so its edge reads as the light one's does. */
+.dark .comma-remote-screen-device[data-body="true"],
+[data-theme="Dark mode"] .comma-remote-screen-device[data-body="true"] {
+  background: var(--color-bg-quaternary);
+}
+
+.dark .comma-remote-screen-device-screen,
+[data-theme="Dark mode"] .comma-remote-screen-device-screen {
+  background: var(--color-bg-quaternary);
+}
+
+/* Until it says its shape: a plain picture on the same ground. */
+.comma-remote-screen-device[data-body="false"] {
+  --comma-remote-screen-device-bezel: 0px;
+  border-radius: var(--radius-md);
+}
+
+.comma-remote-screen-device-screen {
+  position: absolute;
+  overflow: hidden;
+  border-radius: var(--comma-remote-screen-device-screen-radius);
+  corner-shape: var(--comma-remote-screen-device-corner-shape, round);
+  /* The body's: a picture a pixel short of the screen's shape leaves no light line. */
+  background: var(--color-bg-overlay);
+  inset: var(--comma-remote-screen-device-bezel);
+}
+
+/* A view without a case keeps the panel's background while it loads. */
+.comma-remote-screen-device[data-body="false"][data-case="false"]
+  .comma-remote-screen-device-screen {
+  background: var(--color-main-panel-bg);
+}
+
+/* A simulator's case as Xcode draws it (ScreenDeviceFrame, screenCase.ts): the device is the case's own box, the
+   picture where its panel is, the case over it with the panel's shape cut out, its buttons behind it. Where a button
+   is pressed covers it and the case round it, never the picture. */
+.comma-remote-screen-device[data-case="true"] {
+  --comma-remote-screen-device-bezel: 0px;
+  border-radius: 0;
+  isolation: isolate;
+}
+
+.comma-remote-screen-device[data-case="true"] > .comma-remote-screen-device-screen {
+  inset: auto;
+}
+
+.comma-remote-screen-case,
+.comma-remote-screen-case-button {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+}
+
+.comma-remote-screen-case {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.comma-remote-screen-case-button {
+  transition: translate var(--motion-duration-feedback-out)
+    var(--motion-easing-smooth-out);
+}
+
+.comma-remote-screen-case-button[data-front="false"] {
+  z-index: -1;
+}
+
+.comma-remote-screen-case-button[data-revealed="true"] {
+  transition-duration: var(--motion-duration-feedback-in);
+}
+
+.comma-remote-screen-case-button[data-down="true"] {
+  transition-duration: var(--motion-duration-press-travel);
+}
+
+.comma-remote-screen-case-press {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* (a touch leaves no pointer over it: it would stay lit after a tap) */
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen-case-press[data-revealed="true"]
+    .comma-remote-screen-case-press-icon {
+    opacity: 1;
+    translate: 0 0;
+    transition-duration:
+      var(--motion-duration-feedback-in), var(--motion-duration-feedback-in),
+      var(--motion-duration-state-change);
+  }
+
+  .comma-remote-screen-case-press:hover .comma-remote-screen-case-press-icon {
+    opacity: 1;
+    translate: 0 0;
+    color: var(--color-blue-500);
+  }
+}
+
+/* Device Hub puts the hint outside the case. The clear press area still reaches the physical button. */
+.comma-remote-screen-case-press-icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
+  color: var(--color-text-quaternary);
+  opacity: 0;
+  translate: var(--comma-case-inward-x) var(--comma-case-inward-y);
+  transition:
+    opacity var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    translate var(--motion-duration-feedback-out) var(--motion-easing-smooth-out),
+    color var(--motion-duration-state-change) var(--motion-easing-smooth-out);
+}
+
+.comma-remote-screen-case-press[data-side="left"] .comma-remote-screen-case-press-icon {
+  right: 100%;
+  top: 50%;
+  transform: translate(25%, -50%);
+}
+
+.comma-remote-screen-case-press[data-side="right"]
+  .comma-remote-screen-case-press-icon {
+  left: 100%;
+  top: 50%;
+  transform: translate(-25%, -50%);
+}
+
+.comma-remote-screen-case-press[data-side="top"] .comma-remote-screen-case-press-icon {
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, 25%);
+}
+
+.comma-remote-screen-case-press[data-side="bottom"]
+  .comma-remote-screen-case-press-icon {
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, -25%);
+}
+
+.comma-remote-screen-case-press[data-side="front"]
+  .comma-remote-screen-case-press-icon {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.comma-remote-screen-case-press[aria-pressed="true"]
+  .comma-remote-screen-case-press-icon,
+.comma-remote-screen-case-press:focus-visible .comma-remote-screen-case-press-icon {
+  opacity: 1;
+  translate: 0 0;
+  color: var(--color-blue-500);
+  transition-duration:
+    var(--motion-duration-feedback-in), var(--motion-duration-feedback-in),
+    var(--motion-duration-state-change);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-remote-screen-case-button,
+  .comma-remote-screen-case-press-icon {
+    transition: none;
+  }
+}
+
+.comma-remote-screen-case-press:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+}
+
+/* Beside the device, whatever its size: in the gutter, level with its middle. */
+.comma-remote-screen-device-buttons {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + var(--spacing-md));
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  transform: translateY(-50%);
+}
+
+/* Each group has a capsule. Selected poses use the same neutral fill as the toolbar. */
+.comma-remote-screen-device-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+}
+
+.comma-remote-screen-device-group .comma-remote-screen-action[aria-pressed="true"] {
+  background: var(--color-sidebar-bg-item);
+  color: var(--color-text-primary);
+  box-shadow: none;
+}
+
+[data-lays="wide"] > .comma-remote-screen-device-buttons {
+  top: calc(100% + var(--spacing-md));
+  left: 50%;
+  width: max-content;
+  max-width: 100cqw;
+  flex-flow: row wrap;
+  justify-content: center;
+  transform: translateX(-50%);
+}
+
+[data-lays="wide"] .comma-remote-screen-device-group {
+  flex-direction: row;
+}
+
+/* Watch or Control on the stage, beside a simulator (ScreenControlChoice): a capsule as the device's own groups are,
+   under a device taller than wide and at the end of the buttons' row of one wider than tall. Its room is kept whether
+   it shows or not, so the device does not move as it comes. */
+.comma-remote-screen-stage[data-choice="true"]:has([data-lays="tall"]) {
+  --comma-remote-screen-keep-y: var(--spacing-3xl);
+}
+
+.comma-remote-screen-device-below {
+  position: absolute;
+  top: calc(100% + var(--spacing-md));
+  right: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* It comes out from the device over it and goes back the same way, a little faster: it fades, and is a little smaller
+   and nearer the device while it does. Which of the two is chosen changes at once. */
+.comma-remote-screen-choice {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: var(--spacing-xs);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+  pointer-events: auto;
+  transform-origin: top center;
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    scale var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    visibility 0s;
+}
+
+.comma-remote-screen-choice[data-shown="false"] {
+  visibility: hidden;
+  opacity: 0;
+  scale: var(--motion-scale-picture-in-picture);
+  translate: 0 calc(-1 * var(--spacing-xs));
+  transition:
+    opacity var(--motion-duration-hover-card-exit)
+      var(--motion-easing-surface-smooth-out),
+    scale var(--motion-duration-hover-card-exit) var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-hover-card-exit)
+      var(--motion-easing-surface-smooth-out),
+    visibility 0s linear var(--motion-duration-hover-card-exit);
+}
+
+/* Less motion: it only fades. */
+@media (prefers-reduced-motion: reduce) {
+  .comma-remote-screen-choice[data-shown="false"] {
+    scale: 1;
+    translate: none;
+  }
+}
+
+.comma-remote-screen-choice button {
+  --comma-button-hover-bg: var(--color-sidebar-bg-item);
+  height: var(--spacing-3xl);
+  padding-inline: var(--spacing-md);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-remote-screen-choice button[aria-pressed="true"] {
+  --comma-button-hover-fg: var(--color-text-primary);
+  color: var(--color-text-primary);
+}
+
+.comma-remote-screen-choice button[data-attention] {
+  box-shadow: 0 0 0 var(--spacing-xxs) var(--color-border-brand);
+}
+
+/* A computer's simulators and emulators to start, in a screen tab where none runs (ScreenModelChooser). */
+.comma-remote-screen-models {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-lg);
+  overflow-y: auto;
+  padding: var(--spacing-4xl) var(--spacing-xl);
+}
+.comma-remote-screen-models > [role="menu"] {
+  width: 100%;
+  max-width: calc(var(--spacing-4xl) * 10);
+}
+.comma-remote-screen-models-title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: 500;
+}
+.comma-remote-screen-models-note {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+/* A link to a screen in a message: a file's card, the screen live over its words where it can be. */
+.comma-screen-card {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--spacing-lg);
+  margin-block: var(--spacing-xs);
+  padding: var(--spacing-md) var(--spacing-xl) var(--spacing-md) var(--spacing-md);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-primary);
+  box-shadow: 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+  color: var(--color-text-primary);
+  text-align: start;
+  vertical-align: top;
+  transition: background-color var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out);
+}
+
+@media (hover: hover) {
+  .comma-screen-card:not(:disabled):hover {
+    background: var(--color-bg-primary-hover);
+  }
+}
+
+.comma-screen-card:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: 2px;
+}
+
+.comma-screen-card[data-live="true"] {
+  width: 280px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: var(--spacing-xs) var(--spacing-xs) 0;
+}
+
+.comma-screen-card-tile {
+  display: grid;
+  flex: none;
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+  place-items: center;
+}
+
+.comma-screen-card-tile svg,
+.comma-screen-card-mark svg {
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+}
+
+/* The picture 4px in from the card's top and sides, its corners concentric with the card's. Cropped from the top when
+   it is taller than the preview, as a phone is. */
+.comma-screen-card-peek {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: calc(var(--radius-xl) - var(--spacing-xs));
+  background: var(--color-bg-secondary);
+}
+
+.comma-screen-card-peek canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+  opacity: 0;
+}
+
+.comma-screen-card-peek canvas[data-drawn="true"] {
+  opacity: 1;
+}
+
+.comma-screen-card-mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  color: var(--color-text-tertiary);
+  place-items: center;
+}
+
+.comma-screen-card-words {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-2xs);
+}
+
+.comma-screen-card[data-live="true"] .comma-screen-card-words {
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
+}
+
+.comma-screen-card-words strong {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-screen-card-words > span {
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The card behind the status bubble: a row per Task. Rows are divided by a
@@ -8316,16 +10009,30 @@ button.comma-chat-user-bubble-toggle:focus-visible {
    Comma's theme: when the two differ, the ground is opaque. Appearance turns
    the translucent ground off (the page then paints its usual opaque ground
    over the material) and sets how much of the material shows through the
-   window color (--comma-window-transparency, commaAppearance.tsx). */
+   window color (--comma-window-transparency, which commaAppearance.tsx writes
+   on the shell). Both values live on the shell alone and do not inherit, so a
+   Transparency drag restyles the shell, not every element in it. */
+@property --comma-window-transparency {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 50%;
+}
+
+@property --comma-window-material-tint {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 50%;
+}
+
 html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
-  --comma-window-material-tint: calc(100% - var(--comma-window-transparency, 50%));
   background: transparent;
 }
 
 @media (prefers-color-scheme: light) {
   html[data-comma-window-material]:not(
       [data-comma-window-translucency="off"]
-    )[data-theme="Dark mode"] {
+    )[data-theme="Dark mode"]
+    .comma-app-shell {
     --comma-window-material-tint: 100%;
   }
 }
@@ -8333,13 +10040,15 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
 @media (prefers-color-scheme: dark) {
   html[data-comma-window-material]:not(
       [data-comma-window-translucency="off"]
-    )[data-theme="Light mode"] {
+    )[data-theme="Light mode"]
+    .comma-app-shell {
     --comma-window-material-tint: 100%;
   }
 }
 
 [data-comma-window-material]:not([data-comma-window-translucency="off"])
   .comma-app-shell {
+  --comma-window-material-tint: calc(100% - var(--comma-window-transparency));
   background-color: color-mix(
     in srgb,
     var(--color-bg-window) var(--comma-window-material-tint),
@@ -8384,6 +10093,21 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
   );
 }
 
+/* Windows' acrylic lets the desktop behind the window through, blurred but
+   at its own colour and brightness, so the shell's mid-grey icons and rail
+   labels (tuned for the opaque window ground) fade into it, and a disabled
+   history arrow nearly vanishes. Over it the window bar and the sidebar draw
+   them one step stronger, as Windows' own caption buttons are; disabled keeps
+   below enabled. The opaque content panels keep their tokens. */
+[data-comma-window-material="acrylic"]:not([data-comma-window-translucency="off"])
+  .comma-app-shell
+  :is(.comma-window-bar, .comma-sidebar) {
+  --color-sidebar-icon-primary: var(--color-sidebar-text-secondary);
+  --color-sidebar-icon-secondary: var(--color-sidebar-text-secondary);
+  --color-sidebar-icon-disabled: var(--color-fg-quaternary);
+  --color-text-quaternary: var(--color-text-tertiary);
+}
+
 /* The window bar's three columns: the leading controls and the trailing
    controls are equal flexible flanks, so the search hint sits on the window's
    centre line rather than in the middle of whatever is left beside the
@@ -8410,6 +10134,28 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
 }
 
 .comma-window-titlebar-region :is(a, button, input, select, textarea, [role="button"]) {
+  -webkit-app-region: no-drag;
+}
+
+/* A region stays on the box that declares it (ui styles.css, base layer), so
+   a control drawn past its no-drag box (a row's badge or action) would sit on
+   the drag shell. Each control declares its own no-drag, except where an
+   enclosing box's region covers what shows: the content panel clips what it
+   holds, and scrolled content would register its hidden controls over the
+   window bar (scroll-area GUIDE.md). One selector per kind of control, so
+   only those elements try it. */
+button:not(.comma-content *, .comma-scroll-area__content *),
+a[href]:not(.comma-content *, .comma-scroll-area__content *),
+input:not(.comma-content *, .comma-scroll-area__content *),
+select:not(.comma-content *, .comma-scroll-area__content *),
+textarea:not(.comma-content *, .comma-scroll-area__content *),
+[role="button"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="link"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="menuitem"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="option"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="tab"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="switch"]:not(.comma-content *, .comma-scroll-area__content *),
+[role="slider"]:not(.comma-content *, .comma-scroll-area__content *) {
   -webkit-app-region: no-drag;
 }
 
@@ -8466,10 +10212,11 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
   z-index: 1;
 }
 
-/* No app region here: the panel's no-drag already reaches these controls, and
-   an explicit one on a header inside scroll content (a chat card, a page title
-   row) registers at its unclipped rect once scrolled up, cutting a hole into
-   the window bar. The Content Header's own controls opt out above. */
+/* No app region here: the panel's no-drag rectangle already covers these
+   controls, and an explicit one on a header inside scroll content (a chat
+   card, a page title row) registers at its unclipped rect once scrolled up,
+   cutting a hole into the window bar. The Content Header's own controls opt
+   out above. */
 .comma-content header :is(a, button, input, select, textarea, [role="button"]) {
   position: relative;
   z-index: 6;
@@ -8497,6 +10244,11 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
   flex-direction: column;
   align-items: center;
   gap: 20px;
+}
+
+/* Recovery has no login fields. Center its visible content without the login form's reserved height. */
+.app-login-panel.app-session-recovery-panel {
+  min-height: auto;
 }
 
 .app-login-title {
@@ -8747,6 +10499,57 @@ html[data-comma-window-material]:not([data-comma-window-translucency="off"]) {
 .comma-sidebar-edge-toggle {
   pointer-events: auto;
   -webkit-app-region: no-drag;
+}
+
+/* A list rail's divider (railResize.tsx), drawn as the right sidebar's
+   (right-sidebar-tabs.css): a hairline on the rail's border while it is
+   hovered, focused or dragged, stopping short of the window's inner rounded
+   corners and fading out toward both ends. */
+.comma-rail-resize {
+  -webkit-app-region: no-drag;
+}
+
+.comma-rail-resize::after {
+  position: absolute;
+  top: var(--comma-window-inner-corner-radius, 0px);
+  bottom: var(--comma-window-inner-corner-radius, 0px);
+  left: 50%;
+  width: 1px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    to bottom,
+    transparent 10%,
+    var(--color-fg-quinary-hover) 50%,
+    transparent 90%
+  );
+  content: "";
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity 140ms ease;
+}
+
+/* Inside a rail that clips its content, the line is the rail's own border. */
+.comma-rail-resize[data-edge="inside"]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.comma-rail-resize:hover::after,
+.comma-rail-resize:focus-visible::after,
+.comma-rail-resize[data-resizing="true"]::after {
+  opacity: 1;
+}
+
+.comma-rail-resize:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: -2px;
+}
+
+/* A dragged rail follows the pointer without its fold transition. */
+[data-rail-resizing="true"],
+[data-rail-resizing="true"] > * {
+  transition: none !important;
 }
 
 /* The collapse hint rides the pointer down the rail's border, so it is
@@ -9406,6 +11209,7 @@ body[data-comma-window-role="site-permission-menu"] #root {
 /* Match Home's rail fold: the layout closes while its fixed-width content
    fades, slides left and scales gently, without squeezing folder labels. */
 .comma-drive-space-rail-slot {
+  position: relative;
   width: var(--comma-drive-space-rail-width);
   min-width: 0;
   min-height: 0;
@@ -9638,7 +11442,7 @@ body[data-comma-window-role="meeting-recorder"]
   margin-block: var(--spacing-md);
 }
 .comma-chat-assistant-response-body[data-widget] .markdown-stream-bubble {
-  max-width: min(500px, 100%);
+  max-width: min(var(--comma-chat-agent-bubble-max-width), 100%);
 }
 
 /* The fix for a funding stop, under the status line that names it. */
@@ -9744,4 +11548,90 @@ body[data-comma-window-role="meeting-recorder"]
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* A request opened in the Inbox's detail pane: the Task it would become,
+   behind a blur until the owner makes it one. The blur thickens towards the
+   card so the card sits on a quiet ground where the message box would be. */
+.comma-inbox-request-preview {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.comma-inbox-request-preview::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--color-main-panel-bg) 15%, transparent),
+    color-mix(in oklch, var(--color-main-panel-bg) 65%, transparent)
+  );
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  backdrop-filter: blur(var(--blur-md));
+}
+
+.comma-inbox-request-reply {
+  position: relative;
+  display: flex;
+  max-width: 500px;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  border-radius: 20px;
+  background: var(--color-markdown-bg-message);
+  padding: 10px 13px;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-inbox-request-reply p {
+  margin: 0;
+}
+
+.comma-inbox-request-reply-avatar {
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--comma-chat-avatar-gutter));
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--color-bg-quaternary);
+}
+
+/* The Task made from a request comes into focus where its blurred preview
+   was: the swap of the two conversations happens under the blur, which then
+   lifts. Its header, the same title before and after, stays still. Once, on
+   the Task's arrival. */
+.comma-inbox-detail-pane[data-launch="true"]
+  .comma-chat-route
+  > :not(.comma-chat-header) {
+  animation: comma-inbox-task-launch 320ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-inbox-detail-pane[data-launch="true"]
+  .comma-chat-route
+  > :not(.comma-chat-header) {
+  animation-name: comma-inbox-task-fade;
+  animation-duration: 200ms;
+}
+
+@keyframes comma-inbox-task-launch {
+  from {
+    opacity: 0.6;
+    filter: blur(var(--blur-md));
+  }
+}
+
+@keyframes comma-inbox-task-fade {
+  from {
+    opacity: 0;
+  }
 }

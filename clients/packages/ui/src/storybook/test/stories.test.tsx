@@ -1,6 +1,7 @@
 import { composeStories, setProjectAnnotations } from "@storybook/react-vite";
 import { storyNameFromExport } from "storybook/internal/csf";
-import { beforeAll, describe, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, it, vi } from "vitest";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import preview from "../../../.storybook/preview";
 
 // Every story runs here, in jsdom, with the Storybook preview's decorators and
@@ -32,6 +33,18 @@ vi.mock("storybook/test", async (importOriginal) => {
     ...(await importOriginal<typeof import("storybook/test")>()),
     userEvent: settled,
   };
+});
+
+// After a play function, Storybook waits for the story's animations on timers
+// (100 ms, at most 5 s) whenever the document can list animations, as it can
+// here (setup-dom.ts). Nothing moves those timers on the test clock, so the
+// story never ends. In its own test runners Storybook pauses the animations
+// instead of waiting. This file is one of those runners, and it identifies
+// itself the way the Storybook test runner does.
+beforeEach(() => {
+  stubProperty(navigator, "userAgent", {
+    value: `${navigator.userAgent} StorybookTestRunner`,
+  });
 });
 
 type StoryModule = Parameters<typeof composeStories>[0] &

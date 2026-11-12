@@ -137,8 +137,42 @@ function findExtractedApp(root: string) {
   return resolve(root, appBundle);
 }
 
-async function createSignedDmg() {
-  if (forgePlatform !== "darwin" || process.env.COMMA_MACOS_SIGN !== "1") {
+function releaseDmgPath() {
+  run("mkdir", ["-p", releaseOutputDir]);
+  return resolve(releaseOutputDir, getDmgArtifactName({ packVersion }));
+}
+
+function writeDmgPointer(dmgPath: string) {
+  writeFileSync(
+    resolve(releaseOutputDir, `dmg.${releaseConfig.releaseChannel}.txt`),
+    `${basename(dmgPath)}\n`
+  );
+  console.log(`DMG created: ${dmgPath}`);
+}
+
+async function createDmg() {
+  if (forgePlatform !== "darwin") {
+    return;
+  }
+
+  if (hostPlatform !== "darwin") {
+    const tempDir = mkdtempSync(join(tmpdir(), "comma-dmg-"));
+    try {
+      run("unzip", ["-q", findPortableZip(), "-d", tempDir]);
+      const dmgPath = releaseDmgPath();
+      run("/opt/macos-cross/make-dmg.sh", [
+        findExtractedApp(tempDir),
+        dmgPath,
+        releaseConfig.productName,
+      ]);
+      writeDmgPointer(dmgPath);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  if (process.env.COMMA_MACOS_SIGN !== "1") {
     return;
   }
 
@@ -199,19 +233,9 @@ async function createSignedDmg() {
     console.log(`Stapling DMG ${tempDmgPath}`);
     run("xcrun", ["stapler", "staple", tempDmgPath]);
     run("xcrun", ["stapler", "validate", tempDmgPath]);
-
-    run("mkdir", ["-p", releaseOutputDir]);
-
-    const dmgName = getDmgArtifactName({
-      packVersion,
-    });
-    const dmgPath = resolve(releaseOutputDir, dmgName);
+    const dmgPath = releaseDmgPath();
     renameSync(tempDmgPath, dmgPath);
-    writeFileSync(
-      resolve(releaseOutputDir, `dmg.${releaseConfig.releaseChannel}.txt`),
-      `${dmgName}\n`
-    );
-    console.log(`DMG created: ${dmgPath}`);
+    writeDmgPointer(dmgPath);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -247,7 +271,7 @@ async function main() {
     throw new Error(`pnpm pack:velopack exited with status ${packResult.status}`);
   }
 
-  await createSignedDmg();
+  await createDmg();
   normalizeReleaseArtifactNames({
     releaseOutputDir,
     packVersion,

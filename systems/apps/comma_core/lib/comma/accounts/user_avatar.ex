@@ -39,6 +39,7 @@ defmodule Comma.Accounts.UserAvatar do
     ])
     |> validate_required([:id, :user_id, :object_key, :content_type, :byte_size, :status])
     |> validate_inclusion(:status, ["pending", "active", "cleanup"])
+    # GIF avatars stored before clients sent moving pictures as WebP stay readable.
     |> validate_inclusion(:content_type, ["image/jpeg", "image/png", "image/webp"])
     |> validate_number(:byte_size,
       greater_than: 0,

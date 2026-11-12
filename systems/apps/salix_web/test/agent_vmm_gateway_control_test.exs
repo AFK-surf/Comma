@@ -16,7 +16,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   setup do
     previous = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
     previous_signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
-    previous_managed = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
     SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, @secret)
     {_receipt_public, receipt_private} = keypair()
 
@@ -24,27 +23,18 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
       {"registry-key", sign(payload, receipt_private)}
     end)
 
-    {managed_public, managed_private} = keypair()
-
-    SystemsRuntime.put_env(:salix_store, :agent_vmm_managed_trust_signing, %{
-      authority_prefix: "salix-managed",
-      key_id: "managed-key",
-      key_revision: 1,
-      public_key: compress_public_key(managed_public),
-      signer: &sign(&1, managed_private)
-    })
-
     Repo.query!(
       "TRUNCATE agent_vmm_route_capabilities, agent_vmm_membership_credentials, agent_vmm_trust_anchors, agent_vmm_audit_events, agent_vmm_sessions, agent_vmm_registrations, compute_commands, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools CASCADE"
     )
 
     {:ok, _} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: @token
+        credential: @token,
+        desired_enabled: true
       })
 
     {:ok, _} =
@@ -78,40 +68,13 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     on_exit(fn ->
       put_or_delete_env(:salix_web, :agent_vmm_gateway_control_secret, previous)
       put_or_delete_env(:salix_store, :personal_mesh_registry_receipt_signer, previous_signer)
-      put_or_delete_env(:salix_store, :agent_vmm_managed_trust_signing, previous_managed)
     end)
 
     :ok
   end
 
-  test "one-time enrollment, credential auth, and opaque connection fencing" do
-    enroll = %{
-      "protocolVersion" => "remote.v1",
-      "registrationId" => "registration",
-      "enrollmentToken" => Base.encode64(@token),
-      "supportedFeatures" => ["session-v1"],
-      "deviceIdentity" => %{
-        "deviceId" => "device",
-        "rootPublicKey" => Base.encode64(:binary.copy(<<1>>, 33)),
-        "rootKeyRevision" => "1",
-        "signatureSuite" => "SIGNATURE_SUITE_P256_SHA256"
-      }
-    }
-
-    response = request("/v1/compute/enroll", %{"request_b64" => encode_json(enroll)})
-    assert response.status == 200
-    envelope = response.resp_body |> Jason.decode!() |> Map.fetch!("response_b64")
-    enrollment_response = envelope |> Base.decode64!() |> Jason.decode!()
-    credential = Map.fetch!(enrollment_response, "credential")
-
-    assert enrollment_response["trustAnchor"]["authority"]["authorityClass"] ==
-             "AUTHORITY_CLASS_MANAGED_CONTROLLER"
-
-    assert enrollment_response["membershipCredential"]["subjectDeviceId"] == "device"
-
-    rejected = request("/v1/compute/enroll", %{"request_b64" => encode_json(enroll)})
-    assert rejected.status == 403
-    assert Jason.decode!(rejected.resp_body)["reason"] == "invalid_enrollment"
+  test "credential authentication and opaque connection fencing" do
+    credential = Base.encode64(@token)
 
     assert request("/v1/compute/authenticate", %{
              "registration_id" => "registration",
@@ -139,9 +102,9 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     assert request("/v1/compute/connections/observe", %{"hello_b64" => encode_json(hello)}).status ==
              200
 
-    binding = Repo.one!(Compute.ProviderBinding)
-    assert binding.observation["gateway_instance_id"] == "gateway-a"
-    assert binding.observation["connection_epoch"] == "7"
+    registration = Repo.get!(AgentVMM.Registration, "registration")
+    assert registration.current_gateway_instance_id == "gateway-a"
+    assert registration.current_connection_epoch == "7"
 
     replacement = put_in(hello["connectionEpoch"], "2")
 
@@ -149,16 +112,13 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              "hello_b64" => encode_json(replacement)
            }).status == 200
 
-    assert Repo.one!(Compute.ProviderBinding).observation["connection_epoch"] == "2"
+    assert Repo.get!(AgentVMM.Registration, "registration").current_connection_epoch == "2"
 
     now = SystemsClock.utc_now() |> DateTime.to_unix(:millisecond) |> Integer.to_string()
 
     observation = %{
       "sequence" => "2",
       "observedUnixMillis" => now,
-      "protocolVersion" => "1",
-      "hostApiVersion" => "host.v1",
-      "supportedFeatures" => [],
       "capacity" => %{},
       "health" => %{"status" => "healthy", "components" => []},
       "usage" => %{"stale" => false},
@@ -194,7 +154,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     degraded_observation =
       renewal
       |> put_in(["observation", "sequence"], "3")
-      |> put_in(["observation", "supportedFeatures"], Enum.map(1..65, &"feature-#{&1}"))
       |> put_in(["observation", "observedUnixMillis"], Integer.to_string(skewed))
       |> put_in(["observation", "capacity"], %{"maxEgressMode" => "EGRESS_MODE_FUTURE"})
       |> put_in(["observation", "health", "components"], [
@@ -209,7 +168,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
 
     degraded = Repo.get!(AgentVMM.RegistrationObservation, "registration")
     assert degraded.observation_sequence == 3
-    assert length(degraded.supported_features) == 32
     assert degraded.health_components == %{"vmmd" => "healthy"}
     assert degraded.capacity["max_egress_mode"] == nil
     assert degraded.observed_at == degraded.received_at
@@ -276,31 +234,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     )
 
     assert inactive_error.("12") == {403, "registration_inactive"}
-  end
-
-  test "managed enrollment reports a finite signer failure without consuming the token" do
-    SystemsRuntime.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
-
-    enroll = %{
-      "protocolVersion" => "remote.v1",
-      "registrationId" => "registration",
-      "enrollmentToken" => Base.encode64(@token),
-      "supportedFeatures" => ["session-v1"],
-      "deviceIdentity" => %{
-        "deviceId" => "device",
-        "rootPublicKey" => Base.encode64(:binary.copy(<<1>>, 33)),
-        "rootKeyRevision" => "1",
-        "signatureSuite" => "SIGNATURE_SUITE_P256_SHA256"
-      }
-    }
-
-    first = request("/v1/compute/enroll", %{"request_b64" => encode_json(enroll)})
-    second = request("/v1/compute/enroll", %{"request_b64" => encode_json(enroll)})
-
-    assert first.status == 403
-    assert second.status == 403
-    assert Jason.decode!(first.resp_body)["reason"] == "managed_trust_signer_unavailable"
-    assert Jason.decode!(second.resp_body)["reason"] == "managed_trust_signer_unavailable"
   end
 
   test "workload auth requires both secret and an explicit gateway identity" do
@@ -429,8 +362,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
 
     assert Repo.get!(Compute.Allocation, allocation.id).status == "released"
 
-    assert Repo.get!(Compute.ProviderBinding, "binding").observation["admission"] ==
-             "accepting"
+    assert AgentVMM.connected?("registration")
   end
 
   test "a released allocation is terminal for workload, observation, reconciliation, and claim" do
@@ -752,9 +684,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              }).status == 200
 
       assert Repo.get!(Compute.Allocation, allocation.id).revision == allocation.revision
-      binding = Repo.get!(Compute.ProviderBinding, "binding")
-      assert binding.observation["connection_epoch"] == epoch
-      assert binding.observation["inventory_watermark"] == String.to_integer(watermark)
+      assert Repo.get!(AgentVMM.Registration, "registration").current_connection_epoch == epoch
     end
 
     changed = put_in(hd(inventory)["revision"], "8")
@@ -1105,7 +1035,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              "hello_b64" => encode_json(hello)
            }).status == 200
 
-    assert Repo.get!(Compute.ProviderBinding, "binding").observation["connection_epoch"] ==
+    assert Repo.get!(AgentVMM.Registration, "registration").current_connection_epoch ==
              @connection_epoch
 
     {:ok, credential} =
@@ -1155,7 +1085,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
       set: [deadline_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
 
-    assert {:ok, %{outcome: :pending}} =
+    assert {:ok, %{outcome: :succeeded}} =
              SalixEnv.ComputeProviders.AgentVMM.bootstrap(allocation, workload, credential, [])
 
     assert Repo.get!(Compute.Command, open["commandId"]).status == "succeeded"

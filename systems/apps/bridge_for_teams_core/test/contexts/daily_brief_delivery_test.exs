@@ -22,12 +22,55 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
         for {ts, text} <- [{"1792720000.000100", "<@UALICE1> 这个报价怎么算？"}],
             us = trunc(String.to_float(ts) * 1_000_000),
             us > after_us and us < before_us,
-            do: message(ts, "1792600000.000100", "UBOB1", text)
+            do:
+              Map.put(message(ts, "1792600000.000100", "UBOB1", text), :reactions, [
+                %{name: "eyes", users: ["UALICE1"]}
+              ])
 
       {:ok, %{messages: messages, has_more?: false, next_cursor: nil}}
     end
 
     def daily_brief_member_threads(_request), do: {:ok, %{threads: [], complete?: true}}
+
+    def daily_brief_active_channels(_request), do: {:ok, %{}}
+
+    def daily_brief_direct_messages(request) do
+      owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:direct_messages, request})
+
+      SystemsRuntime.get_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_direct,
+        {:ok,
+         %{
+           messages: [
+             %{
+               channel_id: "D9",
+               kind: "im",
+               ts: "1792720100.000100",
+               thread_ts: nil,
+               author: "UBOB1",
+               bot?: false,
+               text: "私下说：报价先别发",
+               permalink: "https://acme.slack.com/archives/D9/p1792720100000100"
+             }
+           ],
+           complete?: true
+         }}
+      )
+    end
+
+    def daily_brief_permalinks(%{messages: messages}) do
+      SystemsRuntime.get_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_links,
+        {:ok,
+         Map.new(messages, fn %{channel_id: channel, ts: ts} ->
+           {{channel, ts},
+            "https://acme.slack.com/archives/#{channel}/p#{String.replace(ts, ".", "")}"}
+         end)}
+      )
+    end
 
     def daily_brief_user_names(%{user_ids: ids}),
       do: {:ok, Map.new(ids, &{&1, "Name " <> &1}) |> Map.delete("UBOB1")}
@@ -38,11 +81,6 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
          %{
            messages: for(t <- ts, do: %{message(t, t, "UALICE1", "上周的报价单") | channel_id: channel})
          }}
-
-    def daily_brief_permalinks(%{messages: messages}),
-      do:
-        {:ok,
-         Map.new(messages, &{{&1.channel_id, &1.ts}, "https://s.test/#{&1.channel_id}/#{&1.ts}"})}
 
     def daily_brief_post(request) do
       owner = SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_owner)
@@ -80,6 +118,16 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
       )
     end
 
+    def compose(%{view: :mine, input: input}) do
+      report({:mine, input})
+
+      SystemsRuntime.get_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_mine,
+        {:ok, %{text: ~s({"items": []}), usage: %{input_tokens: 0, output_tokens: 0}}}
+      )
+    end
+
     def compose(%{input: input}) do
       report({:compose, input})
 
@@ -112,7 +160,8 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
       SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous)
 
       for key <- ~w(daily_brief_test_owner daily_brief_test_post daily_brief_test_compose
-                    daily_brief_test_team_compose)a,
+                    daily_brief_test_team_compose daily_brief_test_links
+                    daily_brief_test_direct daily_brief_test_mine)a,
           do: SystemsRuntime.delete_env(:bridge_for_teams_core, key)
     end)
 
@@ -159,6 +208,85 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
   end
 
   @opts [model: WritingModel, agent_id: "agt"]
+
+  test "what the brief lists as the member's is carried to the next brief until done", ctx do
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :daily_brief_test_mine,
+      {:ok,
+       %{
+         text: """
+         ```json
+         {"items": [
+           {"kind": "promise", "what": "回报价", "owner": "me", "waiting": "@UBOB1 等你",
+            "due": "周五", "status": "open", "evidence": "m2"},
+           {"kind": "watch", "what": "合同", "owner": "@UBOB1", "status": "done 已签", "evidence": "m2"},
+           {"kind": "gossip", "what": "不认识的类型"}
+         ]}
+         ```
+         """,
+         usage: %{input_tokens: 5, output_tokens: 2}
+       }}
+    )
+
+    assert {:ok, run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+    assert_received {:mine, %{"followups" => []}}
+    assert_received {:compose, %{"mine" => [%{"what" => "回报价", "owner" => "me"}, _done]}}
+    assert run.input_tokens == 12
+    assert [%{"what" => "回报价"}, %{"what" => "合同"}] = run.notes["mine"]
+
+    # The next brief starts from the open ones.
+    tomorrow = DateTime.add(@now, 86_400)
+    member = Repo.reload!(ctx.alice) |> Repo.preload(:aliases)
+    assert {:ok, _} = Delivery.deliver(ctx.settings, member, Keyword.put(@opts, :now, tomorrow))
+    assert_received {:mine, %{"followups" => [%{"what" => "回报价", "due" => "周五"}]}}
+  end
+
+  test "a member who turned direct messages on gets them read into their brief", ctx do
+    {:ok, alice} = BridgeForTeams.DailyBrief.DirectMessages.enable(ctx.alice, "conn-1")
+    assert {:ok, run} = Delivery.deliver(ctx.settings, alice, @opts)
+
+    assert_received {:direct_messages, %{connection_id: "conn-1", slack_user_id: "UALICE1"}}
+    assert_received {:compose, %{"items" => items}}
+    assert %{"in" => "私信", "text" => "私下说：报价先别发"} = Enum.find(items, &(&1["in"] == "私信"))
+    assert run.coverage["direct_messages"] == "read"
+    assert_received {:posted, %{blocks: blocks}}
+    refute inspect(blocks) =~ "direct-messages/connect"
+  end
+
+  test "a revoked grant turns direct messages off and the brief is still sent", ctx do
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :daily_brief_test_direct,
+      {:error, :grant_revoked}
+    )
+
+    {:ok, alice} = BridgeForTeams.DailyBrief.DirectMessages.enable(ctx.alice, "conn-1")
+    assert {:ok, run} = Delivery.deliver(ctx.settings, alice, @opts)
+
+    assert run.coverage["direct_messages"] == "failed"
+    assert Repo.reload!(alice).dm_status == "off"
+  end
+
+  test "a member who has not turned direct messages on is offered the switch", ctx do
+    previous = SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :public_base_url, "https://bft.test/")
+
+    on_exit(fn ->
+      if previous,
+        do: SystemsRuntime.put_env(:bridge_for_teams_web, :public_base_url, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_web, :public_base_url)
+    end)
+
+    assert {:ok, run} = Delivery.deliver(ctx.settings, ctx.alice, @opts)
+
+    refute_received {:direct_messages, _}
+    assert run.coverage["direct_messages"] == "off"
+    assert_received {:posted, %{blocks: blocks}}
+    assert %{"type" => "context", "elements" => [%{"text" => offer}]} = List.last(blocks)
+    assert offer =~ "<https://bft.test/orgs/"
+    assert offer =~ "/daily-brief/direct-messages/connect|开启>"
+  end
 
   # 08:58 in Shanghai.
   @tag clock: ~U[2026-10-23 00:58:00.000000Z]
@@ -251,20 +379,59 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     # Bob's question, after the first message of its thread as context.
     assert [
              %{"ref" => "m1", "earlier" => true, "text" => "上周的报价单", "t" => thread},
-             %{"ref" => "m2", "by" => "@UBOB1", "in" => "#sales", "t" => thread}
+             %{
+               "ref" => "m2",
+               "by" => "@UBOB1",
+               "in" => "#sales",
+               "t" => thread,
+               "re" => "eyes @UALICE1"
+             }
            ] = input["items"]
 
     assert_received {:posted, %{slack_user_id: "UALICE1", text: text, blocks: blocks}}
-    assert text == "先回 <@UBOB1> 的报价。原消息"
+    assert text == "先回 <@UBOB1> 的报价。"
 
-    assert [%{"type" => "header"}, %{"type" => "section", "text" => %{"text" => written}}] =
-             blocks
+    # Where and when the message was said, linked, in small print; then the
+    # offer to read direct messages too.
+    {blocks, [%{"type" => "context"}]} = Enum.split(blocks, -1)
 
-    assert written == "先回 <@UBOB1> 的报价。<https://s.test/C1/1792720000.000100|原消息>"
+    assert [
+             %{"type" => "header"},
+             %{"type" => "section", "text" => %{"text" => "先回 <@UBOB1> 的报价。"}},
+             %{
+               "type" => "context",
+               "elements" => [
+                 %{
+                   "text" =>
+                     "<https://acme.slack.com/archives/C1/p1792720000000100|#sales · 10/23 09:46> · <slack://channel?team=T1&id=C1&thread_ts=1792600000.000100&message=1792720000.000100|打开>"
+                 }
+               ]
+             }
+           ] = blocks
 
     # The sent brief keeps what the model wrote, for tomorrow's.
     assert %{status: "completed", slack_ts: "1792720000.000100", input_tokens: 7} = run
-    assert run.notes == %{"brief" => written}
+
+    assert run.notes == %{
+             "brief" =>
+               "先回 <@UBOB1> 的报价。<https://acme.slack.com/archives/C1/p1792720000000100|#sales · 10/23 09:46> · <slack://channel?team=T1&id=C1&thread_ts=1792600000.000100&message=1792720000.000100|打开>",
+             "mine" => []
+           }
+  end
+
+  test "a permalink failure keeps the brief's native source link", ctx do
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :daily_brief_test_links,
+      {:error, :rate_limited}
+    )
+
+    assert {:ok, _run} = Delivery.deliver(ctx.settings, ctx.alice, [now: @now] ++ @opts)
+    assert_received {:posted, %{slack_user_id: "UALICE1", blocks: blocks}}
+    assert %{"elements" => [%{"text" => source}]} = Enum.find(blocks, &(&1["type"] == "context"))
+
+    assert source ==
+             "<slack://channel?team=T1&id=C1&thread_ts=1792600000.000100&message=1792720000.000100|#sales · 10/23 09:46>"
   end
 
   test "a brief Slack did not take is sent again as written, without another model run", ctx do
@@ -402,15 +569,17 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
 
     :ok = Delivery.post_team_briefs(~U[2026-10-23 02:25:00.000000Z], @opts)
     assert_received {:team_compose, _}
-    assert_received {:posted, %{channel_id: "CTEAM1", text: "团队：报价的事 某人 在跟。原消息", blocks: blocks}}
+    assert_received {:posted, %{channel_id: "CTEAM1", text: "团队：报价的事 某人 在跟。", blocks: blocks}}
 
     assert [
              %{"type" => "header", "text" => %{"text" => "团队简报 · 10月23日"}},
              %{"type" => "context", "elements" => [%{"text" => "读了 1 条公开频道消息"}]},
-             %{"type" => "section", "text" => %{"text" => opening}}
+             %{"type" => "section", "text" => %{"text" => "团队：报价的事 某人 在跟。"}},
+             %{"type" => "context", "elements" => [%{"text" => source}]}
            ] = blocks
 
-    assert opening =~ "<https://s.test/C1/1792720000.000100|原消息>"
+    assert source =~
+             "<https://acme.slack.com/archives/C1/p1792720000000100|#sales · "
 
     :ok = Delivery.post_team_briefs(~U[2026-10-23 02:30:00.000000Z], @opts)
     refute_received {:posted, _}
@@ -429,13 +598,13 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     refute_received {:team_compose, _}
   end
 
-  test "the team brief is laid out by its parts" do
+  test "the team brief is laid out by its parts, each with where its message was said" do
     text = """
-    今天主要在发版。<https://s.test/1|原消息>
+    今天主要在发版。<https://s.test/1|#release · 10/23 09:10>
 
     ​*其他进展*​
 
-    ​*小程序*​：iOS 在做。<https://s.test/2|原消息>
+    ​*小程序*​：iOS 在做。<https://s.test/2|#apps · 10/23 11:02> <https://s.test/3|#ios · 10/23 12:30>
 
     需要大家注意：镜像发布失败。
 
@@ -446,12 +615,22 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
 
     assert [
              %{"type" => "header"},
-             %{"type" => "section", "text" => %{"text" => "今天主要在发版。<https://s.test/1|原消息>"}},
-             %{"type" => "divider"},
+             %{"type" => "section", "text" => %{"text" => "今天主要在发版。"}},
              %{
-               "type" => "section",
-               "text" => %{"text" => "*小程序*\niOS 在做。"},
-               "accessory" => %{"type" => "button", "url" => "https://s.test/2"}
+               "type" => "context",
+               "elements" => [%{"text" => "<https://s.test/1|#release · 10/23 09:10>"}]
+             },
+             %{"type" => "divider"},
+             # Sources stay below the plain title.
+             %{"type" => "section", "text" => %{"text" => "*小程序*\niOS 在做。"}},
+             %{
+               "type" => "context",
+               "elements" => [
+                 %{
+                   "text" =>
+                     "<https://s.test/2|#apps · 10/23 11:02>  /  <https://s.test/3|#ios · 10/23 12:30>"
+                 }
+               ]
              },
              %{"type" => "section", "text" => %{"text" => ":warning: *需要大家注意*\n镜像发布失败。"}},
              %{"type" => "context", "elements" => [%{"text" => "顺带一提：Zork 关了。"}]}
@@ -504,19 +683,40 @@ defmodule BridgeForTeams.DailyBriefDeliveryTest do
     assert_received {:posted, %{slack_user_id: "UALICE1", blocks: blocks, text: text}}
     assert text == "先回 <@UBOB1> 的报价问题，他在等你。"
     rendered = blocks |> Enum.map(&get_in(&1, ["text", "text"])) |> Enum.join("\n")
-    # Each entry's message is a button beside it.
-    assert Enum.any?(
-             blocks,
-             &(get_in(&1, ["accessory", "url"]) == "https://s.test/C1/1792720000.000100")
-           )
-
     assert rendered =~ "*需要你处理*"
+    # A title that holds a mention keeps it; its message is linked in small
+    # print instead of behind the title.
     assert rendered =~ "*<@UBOB1> 在等你的报价*"
+
+    assert %{"elements" => [%{"text" => source}]} =
+             Enum.find(blocks, &(&1["type"] == "context"))
+
+    assert source ==
+             "<https://acme.slack.com/archives/C1/p1792720000000100|#sales · 10/23 09:46> · <slack://channel?team=T1&id=C1&thread_ts=1792600000.000100&message=1792720000.000100|打开>"
+
     assert rendered =~ "sk-proj-…"
     refute rendered =~ "abcdefgh"
     refute rendered =~ "github.com"
     refute rendered =~ "evil.test"
     assert rendered =~ "<@UBOB1>说要登录"
+  end
+
+  test "an entry title that already holds a link keeps it and names its source below" do
+    text =
+      "1. \u200B*修复 <https://github.com/o/r/pull/4321|#4321>*\u200B：已合。<slack://channel?team=T1&id=C1&message=1.2|#eng · 10/27 22:14>"
+
+    assert %{blocks: [_header, entry, small]} =
+             BridgeForTeams.DailyBrief.Sinks.Slack.render_personal("每日简报", text)
+
+    assert entry["text"]["text"] ==
+             "1. \u200B*修复 <https://github.com/o/r/pull/4321|#4321>*\u200B：已合。"
+
+    assert small["elements"] == [
+             %{
+               "type" => "mrkdwn",
+               "text" => "<slack://channel?team=T1&id=C1&message=1.2|#eng · 10/27 22:14>"
+             }
+           ]
   end
 
   test "a thread that continued in the window brings its first message as context", ctx do

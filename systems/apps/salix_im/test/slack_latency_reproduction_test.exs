@@ -268,6 +268,12 @@ defmodule SalixIM.SlackLatencyReproductionTest do
   end
 
   setup do
+    history_opts =
+      SalixStore.Repo.config()
+      |> Keyword.drop([:name, :pool, :pool_size])
+      |> Keyword.put(:pool_size, 4)
+
+    start_supervised!({SalixStore.SessionHistoryRepo, history_opts})
     SalixAgent.TestSupport.stop_all_agents()
     # Every scenario starts with a cold author-profile cache, so the profile
     # round trip is on the path exactly once per scenario.
@@ -346,29 +352,30 @@ defmodule SalixIM.SlackLatencyReproductionTest do
 
     waiting =
       InternalSession.new(agent, session)
+      |> InternalSession.apply_events([
+        %{
+          "type" => "delivery",
+          "from_queue" => true,
+          "message_id" => 1,
+          "role" => "user",
+          "content" => "old request",
+          "source_message_id" => old_source,
+          "trusted_origin" => %{
+            "provider" => "slack",
+            "source_actor_type" => "provider_user",
+            "source_message_id" => old_source
+          }
+        }
+      ])
       |> InternalSession.export()
       |> Map.merge(%{
         status: :idle,
         wait: SalixAgent.Waits.build("waiting for user", 1800, "wait_for"),
-        messages: [
-          %{
-            id: 1,
-            role: "user",
-            content: "old request",
-            source_message_id: old_source,
-            trusted_origin: %{
-              "provider" => "slack",
-              "source_actor_type" => "provider_user",
-              "source_message_id" => old_source
-            }
-          }
-        ],
-        next_message_id: 2,
         active_source_message_ids: [old_source]
       })
       |> InternalSession.open()
 
-    assert :ok = InternalSessionStore.prepare_seed(agent, waiting)
+    assert :ok = SalixAgent.TestSupport.SessionFixture.seed(agent, waiting)
 
     connect = %{
       "tenant_id" => tenant,
@@ -608,7 +615,19 @@ defmodule SalixIM.SlackLatencyReproductionTest do
     assert {:ok, session} = InternalSessionStore.read(ctx.agent, ctx.session)
     state = InternalSession.export(session)
     assert state.wait == nil
-    assert Enum.any?(state.events, &(&1["kind"] == "provider_wait_yielded"))
+
+    assert {:ok, %{last_seq: through}} =
+             InternalSessionStore.PG.history_info(ctx.agent, ctx.session)
+
+    assert {:ok, records} =
+             InternalSessionStore.PG.history_page(
+               ctx.agent,
+               ctx.session,
+               max(through - 32, 0),
+               through
+             )
+
+    assert Enum.any?(records, &(&1.data["kind"] == "provider_wait_yielded"))
   end
 
   defp status_persisted?(ctx) do

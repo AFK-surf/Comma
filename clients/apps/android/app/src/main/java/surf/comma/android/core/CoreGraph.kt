@@ -58,7 +58,8 @@ internal object CoreGraph {
         // The core bounds the downloads itself and keeps an index of them: they are not a cache the system may clear.
         val host = CoreHost(client, custody, File(context.noBackupFilesDir, "core"), google,
             HostDownloads(downloads(context)), networkFailure = networkFailure,
-            localFiles = PickedLocalFiles.host(context.contentResolver), appVersion = BuildConfig.VERSION_NAME)
+            localFiles = PickedLocalFiles.host(context.contentResolver), appVersion = BuildConfig.VERSION_NAME,
+            abuse = surf.comma.android.auth.AndroidAbuse(context, custody.audience))
         val script by lazy { context.assets.open(CORE_SCRIPT).use { it.readBytes() } }
         val core = CommaCore(
             engines = { config, engineHost -> HermesEngine(script, config, engineHost) },

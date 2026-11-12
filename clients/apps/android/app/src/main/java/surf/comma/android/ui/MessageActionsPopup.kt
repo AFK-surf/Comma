@@ -4,9 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Outline
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
@@ -20,11 +23,13 @@ import surf.comma.android.chat.render.MessageCopy
 import surf.comma.android.chat.render.PreparedChatMessage
 import surf.comma.android.chat.render.ChatMessageCell
 import surf.comma.android.ui.theme.UiSansTypeface
+import surf.comma.android.ui.widget.GlassMenuLayer
 
 /** Copy actions and text selection on the existing message bubble. */
 object MessageActionsPopup {
     private const val CARD_PADDING_DP = 6
     private const val CARD_ELEVATION_DP = 12
+    private const val EDGE_DP = 12
 
     /**
      * [fullBlocks] keeps Select all copying the whole message when a reference card splits its rows.
@@ -39,24 +44,7 @@ object MessageActionsPopup {
             orientation = LinearLayout.VERTICAL
             setPadding(0, (CARD_PADDING_DP * density).toInt(), 0, (CARD_PADDING_DP * density).toInt())
         }
-        val popup = PopupWindow(
-            card,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            true,
-        ).apply {
-            // The same floating card as the composer's attach menu: on the white page it needs
-            // its hairline and shadow to read as a card. The window draws both, so the shadow
-            // is not clipped to the content.
-            setBackgroundDrawable(GradientDrawable().apply {
-                val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-                    Configuration.UI_MODE_NIGHT_YES
-                setColor(context.getColor(if (night) R.color.token_bg_tertiary else R.color.token_bg_primary))
-                cornerRadius = context.resources.getDimension(R.dimen.radius_5xl)
-                setStroke(1, context.getColor(R.color.token_border_primary)) // DESIGN §4: one physical pixel
-            })
-            elevation = CARD_ELEVATION_DP * density
-        }
+        var dismiss: () -> Unit = {}
         entries.forEach { entry ->
             card.addView(
                 TextView(context).apply {
@@ -73,7 +61,7 @@ object MessageActionsPopup {
                     )
                     isClickable = true
                     setOnClickListener {
-                        popup.dismiss()
+                        dismiss()
                         if (entry.selects) anchor.post {
                             if (anchor.isAttachedToWindow) (anchor as? ChatMessageCell)?.selectText(entry.blocks)
                         } else copy(context, entry.label(context), entry.text)
@@ -81,7 +69,56 @@ object MessageActionsPopup {
                 },
             )
         }
+        val radius = context.resources.getDimension(R.dimen.radius_5xl)
+        val layer = glassLayer(anchor, card, (20 * density).toInt(), radius)
+        if (layer != null) {
+            dismiss = layer.dismiss
+            return
+        }
+        val popup = PopupWindow(
+            card,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true,
+        ).apply {
+            // The same floating card as the composer's attach menu: on the white page it needs
+            // its hairline and shadow to read as a card. The window draws both, so the shadow
+            // is not clipped to the content.
+            setBackgroundDrawable(GradientDrawable().apply {
+                val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                    Configuration.UI_MODE_NIGHT_YES
+                setColor(context.getColor(if (night) R.color.token_bg_tertiary else R.color.token_bg_primary))
+                cornerRadius = radius
+                setStroke(1, context.getColor(R.color.token_border_primary)) // DESIGN §4: one physical pixel
+            })
+            elevation = CARD_ELEVATION_DP * density
+        }
+        dismiss = popup::dismiss
         popup.showAsDropDown(anchor, (20 * density).toInt(), -(anchor.height / 2))
+    }
+
+    private class Shown(val dismiss: () -> Unit)
+
+    /** Shows [card] on the experimental glass where the drop-down would put it; null when it cannot be there. */
+    private fun glassLayer(anchor: View, card: LinearLayout, offsetX: Int, radius: Float): Shown? {
+        val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        card.measure(spec, spec)
+        val location = IntArray(2).also(anchor::getLocationInWindow)
+        val root = anchor.rootView
+        val edge = (EDGE_DP * card.resources.displayMetrics.density).toInt()
+        val x = (location[0] + offsetX).coerceIn(edge, maxOf(edge, root.width - card.measuredWidth - edge))
+        val y = (location[1] + anchor.height / 2).coerceIn(edge, maxOf(edge, root.height - card.measuredHeight - edge))
+        val bounds = RectF(x.toFloat(), y.toFloat(), (x + card.measuredWidth).toFloat(), (y + card.measuredHeight).toFloat())
+        val layer = GlassMenuLayer.over(anchor, bounds) ?: return null
+        card.background = layer.backdrop(bounds, radius)
+        card.elevation = CARD_ELEVATION_DP * card.resources.displayMetrics.density
+        card.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) = outline.setRoundRect(0, 0, view.width, view.height, radius)
+        }
+        card.clipToOutline = true
+        card.isClickable = true
+        layer.show(card, x, y)
+        return Shown(layer::dismiss)
     }
 
     /** [selects] starts selection in the current bubble instead of copying immediately. */
@@ -108,7 +145,7 @@ object MessageActionsPopup {
             else copies + Entry(R.string.action_select_text, select, selects = true, blocks = blocks)
     }
 
-    /** A whole reply, from the button under it. Same clipboard label as the menu's entry. */
+    /** Text from a message, such as a selection. Same clipboard label as the menu's entry. */
     fun copyMessage(context: Context, text: String) {
         if (text.isBlank()) return
         copy(context, context.getString(R.string.action_copy_message), text)

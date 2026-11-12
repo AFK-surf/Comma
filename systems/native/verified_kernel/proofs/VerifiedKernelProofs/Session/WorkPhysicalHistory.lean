@@ -75,6 +75,7 @@ inductive PhysicalHistory (framing : CodecFraming) : Objects → ByteArray → B
   | publication {objects nextObjects : Objects} {owner session : ByteArray} {state event next : Term}
       {sealed records live dropped kept journal rest : List Term} {ceiling line : Int} {final : Output}
       (before : PhysicalHistory framing objects owner session state sealed)
+      (physical : ArchiveProjection.UnarchivedWindow state)
       (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
       (positive : line > 0) (execution : Execution (start state (i line)) objects final nextObjects)
       (emitted : final.2 = .tuple [a "advance", event])
@@ -114,8 +115,8 @@ theorem PhysicalHistory.invariant {framing : CodecFraming} {objects : Objects} {
   | reload before decoded codec trace ih => exact ih.reload decoded codec trace
   | decode before decoded codec ih => exact ih.decode decoded codec
   | activity before frame ih => exact ih.activity frame
-  | publication before window positive execution emitted reduced read partition after ih =>
-    exact ih.publication framing window positive execution emitted reduced read partition after
+  | publication before physical window positive execution emitted reduced read partition after ih =>
+    exact ih.publication framing physical window positive execution emitted reduced read partition after
   | objects before extension ih => exact ih.objects extension
 
 end VerifiedKernel.Session.WorkConservation

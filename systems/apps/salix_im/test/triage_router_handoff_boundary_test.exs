@@ -8,7 +8,7 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
 
   use SystemsClock.Case, async: false
 
-  alias SalixAgent.{AgentActor, InternalSessionStore}
+  alias SalixAgent.AgentActor
   alias SalixAgent.TestSupport.SessionData
   alias SalixIM.{ConversationServer, Conversations, TaskConversationInput}
   alias SalixIM.Triage.{DelegationAuthorization, ReadModel}
@@ -109,7 +109,7 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
     })
 
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(router)
-    {:ok, _} = InternalSessionStore.prepare_create(agent_id, session_id)
+    {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id)
     %{router: router, session_id: session_id}
   end
 

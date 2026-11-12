@@ -15,6 +15,43 @@ function task(id: string, title: string): MentionTask {
 }
 
 describe("useComposerMentionSources", () => {
+  it("reads Slack's directory once the menu opens, and asks for a new read each time the menu is used after", async () => {
+    const subscribed: unknown[] = [];
+    const rereads: unknown[] = [];
+    const core = createScriptedCore({
+      values: (topic) => {
+        if (topic.topic === "plugins")
+          return {
+            status: "ready",
+            plugins: [{ id: "slack", name: "Slack", installed: true }],
+          };
+        if (topic.topic === "slackDirectory") {
+          subscribed.push(topic.workspace);
+          return { channels: [], people: [] };
+        }
+        return undefined;
+      },
+      calls: (name, params) => {
+        if (name === "slackDirectory.reread") rereads.push(params);
+        return null;
+      },
+    });
+    const { result } = renderHook(
+      () => useComposerMentionSources({ groupId: "group", workspaceId: "workspace" }),
+      { wrapper: ({ children }: { children: ReactNode }) => core.wrap(children) }
+    );
+    await waitFor(() => expect(result.current.plugins.items).toHaveLength(1));
+    expect(subscribed).toEqual([]);
+
+    act(() => result.current.drive.onMenuQueryChange?.(""));
+    await waitFor(() => expect(subscribed).toContain("workspace"));
+    expect(rereads).toEqual([]);
+
+    act(() => result.current.drive.onMenuQueryChange?.(null));
+    act(() => result.current.drive.onMenuQueryChange?.(""));
+    await waitFor(() => expect(rereads).toEqual([{ workspace: "workspace" }]));
+  });
+
   it("does not expose the previous group's tasks while the next group loads", async () => {
     // What the core has read of each Group's Tasks; none yet is loading.
     const read = new Map<string, MentionTask[]>();
@@ -57,6 +94,65 @@ describe("useComposerMentionSources", () => {
         "Task from B",
       ])
     );
+  });
+});
+
+/** A request target's owner as the core lists them. */
+const owner = (name: string) => ({ id: name, name, email: null });
+
+describe("request mentions", () => {
+  it("offer, in the Router chat, the people the person may ask, once the @ menu first opens", async () => {
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "taskRequests"
+          ? {
+              workspace: "w1",
+              targets: [
+                {
+                  grant_id: "trg_cat",
+                  workspace: { id: "w_cat", name: "Cats", owner: owner("CatsJuice") },
+                  mode: "review",
+                  daily_limit: 20,
+                  pending_limit: 10,
+                  sent_today: 1,
+                  pending: 0,
+                },
+                {
+                  grant_id: "trg_bo",
+                  workspace: { id: "w_bo", name: "Bo's", owner: owner("Bo") },
+                  mode: "review",
+                  daily_limit: 5,
+                  pending_limit: 10,
+                  sent_today: 5,
+                  pending: 0,
+                },
+              ],
+            }
+          : undefined,
+    });
+    const { result } = renderHook(
+      ({ models }: { models: boolean }) =>
+        useComposerMentionSources({ groupId: "g1", models, workspaceId: "w1" }),
+      {
+        initialProps: { models: true },
+        wrapper: ({ children }: { children: ReactNode }) => core.wrap(children),
+      }
+    );
+    // Nothing is read until the menu opens.
+    expect(result.current.requests).toEqual({ items: [], status: "ready" });
+    act(() => result.current.drive.onMenuQueryChange?.(""));
+    await waitFor(() => expect(result.current.requests.status).toBe("ready"));
+    expect(result.current.requests.items).toEqual([
+      {
+        grantId: "trg_cat",
+        name: "CatsJuice",
+        workspace: "Cats",
+        full: false,
+        email: null,
+      },
+      // Their day's requests are spent: offered, but it cannot be chosen.
+      { grantId: "trg_bo", name: "Bo", workspace: "Bo's", full: true, email: null },
+    ]);
   });
 });
 

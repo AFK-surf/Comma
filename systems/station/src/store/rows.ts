@@ -5,7 +5,7 @@
 export type Json = any;
 
 /// The page's own threads live on this surface, in this channel (stored under the name of before the rename).
-export const STILLFAIL_SURFACE = "ember";
+export const COMMA_STATION_SURFACE = "ember";
 /// Archived by a person.
 export const MANUAL = "manual";
 /// Archived by the station, for idling (or brought back by something said).

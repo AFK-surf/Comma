@@ -15,6 +15,34 @@ defmodule SalixAgent.TestSupport do
       else: ExUnit.Callbacks.on_exit(fun)
   end
 
+  def cleanup_agent_on_exit(agent_id) do
+    key = {SalixAgent.TestSupport.SessionFixture, agent_id}
+    cleanup = fn -> SalixAgent.TestSupport.SessionFixture.cleanup(agent_id) end
+
+    if SystemsSim.simulated?() do
+      on_exit(cleanup)
+    else
+      ExUnit.Callbacks.on_exit(key, cleanup)
+    end
+  end
+
+  def cleanup_capability_request_on_exit(request) do
+    group_id = Map.fetch!(request, "group_id")
+    request_id = Map.fetch!(request, "request_id")
+
+    cleanup = fn ->
+      SalixStore.Repo.query!(
+        "DELETE FROM salix_capability_requests WHERE group_id=$1 AND request_id=$2",
+        [group_id, request_id]
+      )
+    end
+
+    if SystemsSim.simulated?(),
+      do: on_exit(cleanup),
+      else:
+        ExUnit.Callbacks.on_exit({__MODULE__, :capability_request, group_id, request_id}, cleanup)
+  end
+
   def new_tenant_id, do: SalixStore.Ids.new_tenant_id()
 
   @doc """
@@ -198,9 +226,15 @@ defmodule SalixAgent.TestSupport do
     create = if authority == :owned, do: :create_owned_preallocated, else: :create_preallocated
 
     case apply(SalixAgent.Control, create, [create_attrs, tenant_id, agent_id]) do
-      {:ok, agent} -> agent
-      {:error, :exists} -> unwrap!(SalixAgent.Control.get(agent_id))
-      {:error, reason} -> raise "failed to create control agent #{agent_id}: #{inspect(reason)}"
+      {:ok, agent} ->
+        cleanup_agent_on_exit(agent_id)
+        agent
+
+      {:error, :exists} ->
+        unwrap!(SalixAgent.Control.get(agent_id))
+
+      {:error, reason} ->
+        raise "failed to create control agent #{agent_id}: #{inspect(reason)}"
     end
   end
 
@@ -216,33 +250,97 @@ defmodule SalixAgent.TestSupport do
         "expires_at" => SystemsClock.system_time(:second) + 60
       })
 
+    cleanup_capability_request_on_exit(request)
     SalixAgent.CapabilityRequestStore.execution_fields(request)
   end
 
-  def stop_all_agents do
-    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
-      SalixAgent.Registry
-      |> SystemsRuntime.Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
-      |> Enum.uniq()
-      |> Enum.each(&SalixAgent.Fleet.stop/1)
+  @doc """
+  Empties what `SalixAgent.SessionWorkRecovery.sweep/1` reads: the agents and
+  their sessions, the session work candidates and the capability requests. A
+  test that sweeps owns that input. Tests elsewhere in the same `mix test` VM
+  leave agents with due session work and capability requests whose results
+  were never delivered (no live session); a sweep would wake or retry them
+  and count them failed. Call it after `stop_all_agents/0` and before the
+  test makes its own agents.
+  """
+  def reset_session_work! do
+    SalixStore.RepoTestSetup.exclusively(fn ->
+      SalixStore.Repo.query!(
+        "TRUNCATE salix_agents, session_work_candidates, salix_capability_requests CASCADE"
+      )
+    end)
 
-      wait_stopped()
-    end
-
-    release_loops()
-    stop_dependency_jobs()
     :ok
   end
 
+  def stop_all_agents do
+    agents =
+      if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
+        agents =
+          SalixAgent.Registry
+          |> SystemsRuntime.Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
+          |> Enum.uniq()
+
+        Enum.each(agents, &SalixAgent.Fleet.stop/1)
+        wait_stopped()
+        agents
+      else
+        []
+      end
+
+    release_loops(agents)
+    stop_dependency_jobs()
+    # A job stopped just now may have asked for one more adoption.
+    await_adoptions()
+    release_loops(agents)
+    :ok
+  end
+
+  # Tries, 10 ms apart, for adoptions to end when agents stop.
+  @adoption_wait_retries 1_000
+
   # A Loop's object runs in the node's spinfoam child, not in its Agent, so
   # stopping the Agents can leave it running: its timers keep making host calls
-  # into the next test, through that test's shared database connection.
-  defp release_loops do
+  # into the next test, through that test's shared database connection. A
+  # stopped Agent is released even with nothing resident: an adoption of it
+  # still in flight loads its objects later, and the release waits for it.
+  defp release_loops(agents) do
     if SystemsRuntime.Proc.whereis(SalixAgent.Loops.Host) do
       SalixAgent.Loops.Host.loop_objects()
       |> Enum.map(fn {_object_id, ref} -> ref.agent_id end)
+      |> Enum.concat(Enum.filter(agents, &is_binary/1))
       |> Enum.uniq()
       |> Enum.each(&SalixAgent.Loops.Reconciler.release/1)
+    end
+  end
+
+  @doc false
+  # An adoption still under way when the budget ends could load an object into
+  # the next test, so the test that left it fails here instead.
+  def await_adoptions(retries \\ @adoption_wait_retries) do
+    case adoptions_running() do
+      [] ->
+        :ok
+
+      agents when retries == 0 ->
+        raise "Loop adoptions still running after the budget for stopping agents: " <>
+                inspect(agents)
+
+      _agents ->
+        SystemsRuntime.Proc.sleep(10)
+        await_adoptions(retries - 1)
+    end
+  end
+
+  # A `SystemsSim` world has already run until it is idle.
+  defp adoptions_running do
+    with false <- SystemsSim.simulated?(),
+         reconciler when is_pid(reconciler) <-
+           SystemsRuntime.Proc.whereis(SalixAgent.Loops.Reconciler) do
+      state = :sys.get_state(reconciler)
+      Map.values(state.inflight) ++ MapSet.to_list(state.pending)
+    else
+      _ -> []
     end
   end
 

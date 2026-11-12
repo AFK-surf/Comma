@@ -567,8 +567,8 @@ defmodule Comma.StationsTest do
   end
 
   defp workspace!(user, name) do
-    tenant = Ids.new_tenant_id()
-    group = Ids.new_group_id(tenant)
+    {:ok, %{"tenant_id" => tenant}} = Salix.Control.Tenants.create(%{"name" => name})
+    {:ok, %{"group_id" => group}} = Salix.Control.Groups.create(%{"name" => name}, tenant)
 
     workspace =
       Repo.insert!(%Workspace{

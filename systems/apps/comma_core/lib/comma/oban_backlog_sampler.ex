@@ -10,7 +10,7 @@ defmodule Comma.ObanBacklogSampler do
 
   require Logger
 
-  @queues ~w(comma_external comma_recommendations comma_recommendation_control)
+  @queues ~w(comma_external comma_drive comma_recommendations comma_recommendation_control)
   @backlog_states ~w(available scheduled retryable executing)
   @default_interval_ms 10_000
 

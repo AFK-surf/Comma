@@ -587,7 +587,10 @@ defmodule CommaWeb.RecommendationSourceCollector do
 
   defp restore_identities(value, _identities), do: value
 
-  @reconnect_codes ~w(missing_scope invalid_auth not_authed token_revoked token_expired account_inactive)
+  # Slack's, then Feishu's and Lark's: the sign-in lacks a scope, the app
+  # lacks one, or the token is invalid or expired.
+  @reconnect_codes ~w(missing_scope invalid_auth not_authed token_revoked token_expired account_inactive
+                      99991679 99991672 99991663 99991668 99991677)
   # `Salix.Bindings.MCPCredentials` reports an unusable grant as text.
   @reconnect_credential_errors [
     "requires reauthorization",

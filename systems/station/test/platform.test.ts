@@ -87,8 +87,8 @@ test("a drive's path is a local link's on Windows only", () => {
 
 test("each machine names itself and its executables", () => {
   assert.equal(windows.os, "windows");
-  assert.equal(windows.exe("stillfail-runner"), "stillfail-runner.exe");
-  assert.equal(unix.exe("stillfail-runner"), "stillfail-runner");
+  assert.equal(windows.exe("comma-runner"), "comma-runner.exe");
+  assert.equal(unix.exe("comma-runner"), "comma-runner");
   assert.equal(windows.home({ USERPROFILE: "C:\\Users\\a" }), "C:\\Users\\a");
   assert.equal(unix.home({ USERPROFILE: "C:\\Users\\a" }), undefined);
 });
@@ -96,7 +96,7 @@ test("each machine names itself and its executables", () => {
 test("a .cmd names a path with other than ASCII in it through the variable it is under", () => {
   const env = { USERPROFILE: "C:\\Users\\张三", LOCALAPPDATA: "C:\\Users\\张三\\AppData\\Local", ProgramFiles: "C:\\Program Files" };
   assert.equal(cmdPath("C:\\Program Files\\Git\\bin\\sh.exe", env), "C:\\Program Files\\Git\\bin\\sh.exe");
-  assert.equal(cmdPath("C:\\Users\\张三\\.stillfail\\app\\bin\\stillfail.cmd", env), "%USERPROFILE%\\.stillfail\\app\\bin\\stillfail.cmd");
+  assert.equal(cmdPath("C:\\Users\\张三\\.comma-station\\app\\bin\\stillfail.cmd", env), "%USERPROFILE%\\.comma-station\\app\\bin\\stillfail.cmd");
   // The closest variable; its name in any case.
   assert.equal(cmdPath("c:\\users\\张三\\AppData\\Local\\Programs\\Git\\bin\\sh.exe", env), "%LOCALAPPDATA%\\Programs\\Git\\bin\\sh.exe");
   assert.equal(cmdPath("C:\\Users\\张三", env), "%USERPROFILE%");

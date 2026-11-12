@@ -11,9 +11,16 @@ metadata:
 rule:
   all:
     - kind: call
+    # SystemsRuntime.Proc.sleep/1 is Process.sleep/1.
     - has:
         field: target
-        regex: "^(Process\\.sleep|:timer\\.sleep)$"
+        regex: "^(Process\\.sleep|:timer\\.sleep|SystemsRuntime\\.Proc\\.sleep)$"
+    # A sleep without end reads no time.
+    - not:
+        has:
+          kind: arguments
+          has:
+            regex: "^:infinity$"
 files:
   - "systems/apps/*/test/**/*.exs"
   - "systems/apps/*/test/**/*.ex"

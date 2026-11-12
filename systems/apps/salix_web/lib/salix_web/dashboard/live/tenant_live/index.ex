@@ -1,5 +1,5 @@
 defmodule SalixWeb.Dashboard.TenantLive.Index do
-  @moduledoc "List all tenants and create new ones."
+  @moduledoc "Browse tenants in bounded pages and create new ones."
   use SalixWeb.Dashboard, :live_view
 
   alias Salix.Control.Tenants
@@ -10,13 +10,60 @@ defmodule SalixWeb.Dashboard.TenantLive.Index do
     {:ok,
      socket
      |> assign(active_nav: :tenants, page_title: "Tenants", breadcrumbs: [{"Tenants", nil}])
-     |> assign(show_new: false)
+     |> assign(
+       show_new: false,
+       cursor: nil,
+       next: nil,
+       previous: [],
+       tenant_page: [],
+       page_error: nil,
+       page_retry: nil
+     )
      |> load()}
   end
 
-  defp load(socket), do: assign(socket, tenants: Tenants.list())
+  defp load(socket, cursor \\ nil, previous \\ []) do
+    case Tenants.page(cursor) do
+      {:ok, %{tenants: tenants, next: next}} ->
+        assign(socket,
+          tenant_page: tenants,
+          cursor: cursor,
+          next: next,
+          previous: previous,
+          page_error: nil,
+          page_retry: nil
+        )
+
+      {:error, _} ->
+        assign(socket,
+          page_error: "Tenants are unavailable. Try again.",
+          page_retry: {cursor, previous}
+        )
+    end
+  end
 
   @impl true
+  def handle_event("next-page", _, %{assigns: %{next: nil}} = socket), do: {:noreply, socket}
+
+  def handle_event("next-page", _, socket) do
+    {:noreply,
+     load(socket, socket.assigns.next, [socket.assigns.cursor | socket.assigns.previous])}
+  end
+
+  def handle_event("previous-page", _, %{assigns: %{previous: []}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("previous-page", _, socket) do
+    [cursor | previous] = socket.assigns.previous
+    {:noreply, load(socket, cursor, previous)}
+  end
+
+  def handle_event("retry-page", _, %{assigns: %{page_retry: {cursor, previous}}} = socket) do
+    {:noreply, load(socket, cursor, previous)}
+  end
+
+  def handle_event("retry-page", _, socket), do: {:noreply, socket}
+
   def handle_event("new", _params, socket), do: {:noreply, assign(socket, show_new: true)}
   def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, show_new: false)}
 
@@ -52,7 +99,12 @@ defmodule SalixWeb.Dashboard.TenantLive.Index do
         </.button>
       </div>
 
-      <.table :if={@tenants != []} id="tenants" rows={@tenants} row_click={
+      <div :if={@page_error} role="alert" class="flex items-center justify-between">
+        <p>{@page_error}</p>
+        <.button phx-click="retry-page">Retry</.button>
+      </div>
+
+      <.table :if={@tenant_page != []} id="tenants" rows={@tenant_page} row_click={
         fn t -> JS.navigate("/dash/tenants/#{t["tenant_id"]}") end
       }>
         <:col :let={t} label="Name">{t["name"]}</:col>
@@ -65,7 +117,12 @@ defmodule SalixWeb.Dashboard.TenantLive.Index do
           </.button>
         </:action>
       </.table>
-      <.empty_state :if={@tenants == []} icon="building-office" title="No tenants" />
+      <.empty_state :if={@tenant_page == [] and is_nil(@page_error)} icon="building-office" title="No tenants on this page" />
+      <div class="flex items-center justify-between">
+        <div><.button :if={@previous != []} phx-click="previous-page">Previous</.button></div>
+        <span class="text-sm text-neutral-500">Page {length(@previous) + 1}</span>
+        <div><.button :if={@next} phx-click="next-page">Next</.button></div>
+      </div>
 
       <.modal :if={@show_new} id="new-tenant" show on_cancel={JS.push("cancel")}>
         <:title>New tenant</:title>

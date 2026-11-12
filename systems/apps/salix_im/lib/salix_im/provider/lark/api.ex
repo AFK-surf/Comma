@@ -33,6 +33,7 @@ defmodule SalixIM.Provider.Lark.API do
         write_concurrency: true
       ])
 
+    :ok = SalixIM.Provider.Lark.AppAvailability.create_cache()
     {:ok, %{token_cache_table: table}}
   end
 
@@ -63,6 +64,15 @@ defmodule SalixIM.Provider.Lark.API do
          :ok <- ensure_value(app_secret, "Lark app secret is not configured") do
       cached_tenant_access_token(connect, app_id, app_secret)
     end
+  end
+
+  @doc "The App ID of the connect's app."
+  @spec app_id(map()) :: {:ok, String.t()} | {:error, String.t()}
+  def app_id(connect) when is_map(connect) do
+    with {:ok, app} <- tenant_app(connect),
+         app_id <- app_id_for(connect, app),
+         :ok <- ensure_value(app_id, "Lark app id is not configured"),
+         do: {:ok, app_id}
   end
 
   @doc """
@@ -101,7 +111,11 @@ defmodule SalixIM.Provider.Lark.API do
     do: request(connect, :get, path, params: compact(params), read_retries: @read_retries)
 
   @spec post(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
-  def post(connect, path, body), do: request(connect, :post, path, json: body)
+  def post(connect, path, body) do
+    result = request(connect, :post, path, json: body)
+    SalixIM.MentionReplyLatency.provider_post("lark", connect, path, result)
+    result
+  end
 
   @doc """
   A POST that only reads, such as a document fetch. It gets the bounded read
@@ -452,6 +466,34 @@ defmodule SalixIM.Provider.Lark.API do
   defp decode_response({:error, reason}, _method),
     do: {:error, "Lark request failed: #{inspect(reason)}"}
 
+  @external_chat_action " The bot cannot read an external chat, and no app permission changes that. Read it as a member who signed in: pass account (lark.list_accounts). A member who has not signed in can do so through oauth.request_authorization."
+
+  @doc """
+  Whether a Lark error refuses the app an operation because the chat has
+  members of another organization. Scopes do not change that.
+  """
+  @spec external_chat_rejected?(term()) :: boolean()
+  def external_chat_rejected?(reason) when is_binary(reason),
+    do: String.contains?(reason, "error 230027") and String.contains?(reason, "external chat")
+
+  def external_chat_rejected?(_reason), do: false
+
+  @doc """
+  The scope a Lark error says the app lacks, or nil: `230027 ... need
+  scope: X`, or `99991672 ... One of the following scopes is required: [X,
+  ...]`, whose first is the one the app asks for. Asking again cannot succeed
+  until the app has it.
+  """
+  @spec missing_scope(term()) :: String.t() | nil
+  def missing_scope(reason) when is_binary(reason) do
+    case Regex.run(~r/(?:need scope: |scopes is required: \[)([\w:\-]+(?:\.[\w:\-]+)*)/, reason) do
+      [_match, scope] -> scope
+      nil -> nil
+    end
+  end
+
+  def missing_scope(_reason), do: nil
+
   @doc "Maps a Lark response code to a safe, actionable operator error."
   @spec provider_error(term(), term(), integer()) :: String.t()
   def provider_error(code, msg, status) do
@@ -493,7 +535,7 @@ defmodule SalixIM.Provider.Lark.API do
         # 2889902, 2889906 and 2889914 are the codes Lark documents for reading
         # a document's content (`GET /docs/v1/content`).
         code when code in [2_889_902, 1_770_032, 131_006] ->
-          " This app cannot open the document. Share the document with a chat that includes the bot, or add the app to the document (... > More > Add document app). Do not retry unchanged."
+          " This identity may not open the document. Do not retry unchanged."
 
         code when code in [2_889_906, 2_889_914, 1_770_002, 131_005] ->
           " The document does not exist, was deleted, or the token is wrong. Check the link."
@@ -505,8 +547,23 @@ defmodule SalixIM.Provider.Lark.API do
           ""
       end
 
+    action =
+      case missing_scope(msg) do
+        nil ->
+          action
+
+        scope ->
+          " The app lacks the Lark permission #{scope}; add it and publish a new app version. An app made by a scan gets it by a new scan that updates the app."
+      end
+
+    action = if external_chat?(code, msg), do: @external_chat_action, else: action
+
     "Lark API error #{code} (HTTP #{status}): #{msg}.#{action}"
   end
+
+  # The app identity cannot open an external chat, whatever its scopes.
+  defp external_chat?(230_027, msg) when is_binary(msg), do: msg =~ "external chats"
+  defp external_chat?(_code, _msg), do: false
 
   defp extract_key({:ok, body}, key, message) when is_map(body) do
     value = Map.get(body, key) || get_in(body, ["data", key])

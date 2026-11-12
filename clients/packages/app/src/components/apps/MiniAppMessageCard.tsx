@@ -17,6 +17,7 @@ import {
 } from "react";
 import { useReportWidgetPresence } from "../chat/dynamic-ui/widgetPresence";
 import { useOptionalChatSidebar } from "../chat-sidebar/ChatSidebarContext";
+import { useMiniAppImage } from "./miniAppIcon";
 import { MiniAppFrame } from "./MiniAppFrame";
 import { MiniAppSettingsDialog } from "./MiniAppSettingsDialog";
 import { useMiniAppOpenActions } from "./miniAppOpen";
@@ -127,6 +128,11 @@ export const MessageMiniAppCards = memo(function MessageMiniAppCards({
  * in the right panel; its menu has the other open mode, settings and, while the Task is in review, Publish.
  */
 export function MiniAppMessageCard({ part, live, groupId, workspaceId }: Props) {
+  const coverUrl = useMiniAppImage(
+    !live ? `/v1/comma/apps/${part.appId}/cover?v=${part.appVersion}` : null,
+    { workspace: workspaceId },
+    true
+  );
   return (
     <div
       className="mt-md w-full min-w-0 max-w-(--container-xs)"
@@ -136,6 +142,7 @@ export function MiniAppMessageCard({ part, live, groupId, workspaceId }: Props) 
         <LiveMiniAppCard groupId={groupId} part={part} workspaceId={workspaceId} />
       ) : (
         <MiniAppCard
+          coverUrl={coverUrl}
           name={part.name}
           summary={part.summary}
           version={part.appVersion}

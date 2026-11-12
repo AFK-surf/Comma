@@ -1,4 +1,5 @@
 import { Button } from "@comma/ui/components/Button";
+import { ChoiceList } from "@comma/ui/components/choice-list";
 import { ChevronDownSmallIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
 import { Dialog } from "@comma/ui/components/dialog";
 import { Dropdown } from "@comma/ui/components/dropdown";
@@ -12,7 +13,7 @@ import {
 import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { SubscriptionCredentialInput } from "@comma/ui/components/subscription-accounts/SubscriptionCredentialInput";
 import { Toggle } from "@comma/ui/components/toggle";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   BftApiError,
   subscriptionProviders,
@@ -20,6 +21,7 @@ import {
   type BftAccountsPage,
   type BftAccountUsage,
   type BftOAuthAttempt,
+  type BftResetKind,
   type BftResetResult,
   type BftSubscriptionProvider,
 } from "./api";
@@ -56,16 +58,43 @@ const providerName = (provider: string | null) =>
   (provider && t.providers[provider]) ?? provider ?? "";
 const resetPending = (account: BftAccount) =>
   account.reset_attempt?.outcome === "pending";
-const resetCount = (account: BftAccount) =>
-  account.quota?.reset_credits?.available_count ?? null;
+const resetOffers = (account: BftAccount) => account.quota?.resets ?? [];
+const resetCount = (account: BftAccount) => {
+  const offers = resetOffers(account);
+  if (offers.length) return offers.reduce((sum, offer) => sum + offer.left, 0);
+  return account.quota?.reset_credits?.available_count ?? null;
+};
+const resettable = (account: BftAccount) =>
+  account.provider === "codex" || account.provider === "claude";
 const resetAvailable = (account: BftAccount) =>
-  account.provider === "codex" &&
+  resettable(account) &&
   account.status === "active" &&
   (resetPending(account) || (resetCount(account) ?? 0) > 0);
 
+/** What a reset of a kind gives back, and its offer's counts and dates. */
+type BftResetOffer = NonNullable<BftAccount["quota"]>["resets"][number];
+const offerLabel = (offer: BftResetOffer) =>
+  offer.kind === "model"
+    ? t.resetKinds.model(offer.model ?? "Fable")
+    : t.resetKinds[offer.kind];
+function offerDetail(offer: BftResetOffer) {
+  const first = offer.expiries[0];
+  return [
+    t.resetLeft(offer.left),
+    first ? t.resetExpires(formatRelative(first) ?? first) : undefined,
+    offer.usable ? undefined : t.resetAtLimit,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The weeks a model has to itself under the account's (Claude's Fable). */
+const modelWindows = (account: BftAccount) =>
+  (account.quota?.windows ?? []).filter((window) => window.model);
+
 /** The weekly window when there is one, then the monthly one, then the first. */
 function primaryWindow(account: BftAccount) {
-  const windows = account.quota?.windows ?? [];
+  const windows = (account.quota?.windows ?? []).filter((window) => !window.model);
   return (
     windows.find((window) => window.period === "week") ??
     windows.find((window) => window.period === "month") ??
@@ -100,7 +129,12 @@ function accountDetail(account: BftAccount) {
           t.periods[window.period ?? ""] ?? window.period ?? ""
         )
       : t.notChecked,
-    account.provider === "claude" ? t.resetUnsupported : t.resets(resetCount(account)),
+    ...modelWindows(account).map((own) =>
+      own.remaining_percent != null
+        ? t.modelQuota(humanize(own.model ?? ""), percent(own.remaining_percent))
+        : undefined
+    ),
+    resettable(account) ? t.resets(resetCount(account)) : undefined,
   ];
 }
 
@@ -112,6 +146,9 @@ function quotaTimes(account: BftAccount) {
     resetsAt && Date.parse(resetsAt) > Date.now()
       ? t.resetsAt(formatRelative(resetsAt) ?? resetsAt)
       : undefined,
+    ...resetOffers(account).map(
+      (offer) => `${offerLabel(offer)}: ${offerDetail(offer)}`
+    ),
     observedAt ? t.updatedAt(formatRelative(observedAt) ?? observedAt) : undefined,
   ]
     .filter(Boolean)
@@ -198,6 +235,20 @@ export function AccountsSection({
     } else rowAction(write);
   };
 
+  // Credits are paid for: turning their use on asks first.
+  const toggleCredits = (account: BftAccount) => {
+    const change = { version: account.version, use_credits: !account.use_credits };
+    const write = () => fresh(api.updateModelAccount(org, account.id, change, cursor));
+    if (account.use_credits) rowAction(write);
+    else
+      confirm.ask({
+        title: t.useCreditsTitle,
+        description: t.useCreditsBody,
+        confirmLabel: t.useCreditsConfirm,
+        action: () => write().then(apply),
+      });
+  };
+
   const remove = (account: BftAccount) =>
     confirm.ask({
       title: isKey(account) ? t.removeKeyTitle : t.removeTitle,
@@ -272,6 +323,8 @@ export function AccountsSection({
                 switch (action) {
                   case "toggle":
                     return toggle(account);
+                  case "credits":
+                    return toggleCredits(account);
                   case "quota":
                     return rowAction(() =>
                       fresh(api.refreshAccountQuota(org, account.id, cursor))
@@ -399,8 +452,8 @@ export function AccountsSection({
             );
             setDialog(null);
           }}
-          reset={(account, requestId) =>
-            fresh(api.resetAccountQuota(org, account, requestId))
+          reset={(account, requestId, kind) =>
+            fresh(api.resetAccountQuota(org, account, requestId, kind))
           }
         />
       ) : null}
@@ -411,6 +464,7 @@ export function AccountsSection({
 
 type RowAction =
   | "toggle"
+  | "credits"
   | "quota"
   | "reset"
   | "reauthorize"
@@ -441,6 +495,14 @@ function AccountRow({
         ["quota", t.refresh],
         ...(account.provider === "codex"
           ? [
+              ["credits", account.use_credits ? t.stopCredits : t.useCredits] as [
+                RowAction,
+                string,
+              ],
+            ]
+          : []),
+        ...(resettable(account)
+          ? [
               [
                 "reset",
                 resetPending(account) ? t.resetPending : t.reset,
@@ -469,6 +531,9 @@ function AccountRow({
             <span className="bft-tag bft-tag-warn">{t.reauthRequired}</span>
           ) : null}
           {account.disabled ? <span className="bft-tag">{t.disabled}</span> : null}
+          {account.use_credits && !account.disabled ? (
+            <span className="bft-tag">{t.usingCredits}</span>
+          ) : null}
         </span>
         <span
           className="bft-setting-row-sub bft-truncate"
@@ -1007,29 +1072,41 @@ function ResetDialog({
   onClose,
 }: {
   account: BftAccount;
-  reset: (account: BftAccount, requestId: string) => Promise<BftResetResult>;
+  reset: (
+    account: BftAccount,
+    requestId: string,
+    kind: BftResetKind | undefined
+  ) => Promise<BftResetResult>;
   onReset: (result: BftResetResult) => void;
   onPending: (account: BftAccount) => void;
   onClose: () => void;
 }) {
   const write = useWrite();
   const pending = resetPending(account);
+  // Claude's resets come in kinds; the first usable one is picked to start.
+  const offers = resetOffers(account).filter((offer) => offer.kind !== "credit");
+  const [kind, setKind] = useState<BftResetKind | undefined>(
+    () => (offers.find((offer) => offer.usable) ?? offers[0])?.kind
+  );
+  const pickId = useId();
   const confirmReset = () => {
     const requestId = (pending && account.reset_attempt?.request_id) || newRequestId();
     write.run(
       () =>
-        reset(account, requestId).catch((error: unknown) => {
-          if (
-            error instanceof BftApiError &&
-            (error.code === "reset_pending" || error.code === "runtime_unavailable")
-          ) {
-            onPending({
-              ...account,
-              reset_attempt: { request_id: requestId, outcome: "pending" },
-            });
+        reset(account, requestId, pending ? undefined : kind).catch(
+          (error: unknown) => {
+            if (
+              error instanceof BftApiError &&
+              (error.code === "reset_pending" || error.code === "runtime_unavailable")
+            ) {
+              onPending({
+                ...account,
+                reset_attempt: { request_id: requestId, outcome: "pending" },
+              });
+            }
+            throw error;
           }
-          throw error;
-        }),
+        ),
       onReset
     );
   };
@@ -1037,13 +1114,36 @@ function ResetDialog({
     <ConfirmDialog
       busy={write.busy}
       confirmLabel={pending ? t.resetCheck : t.reset}
-      description={t.resetBody(t.resets(resetCount(account)))}
+      description={
+        account.provider === "claude"
+          ? t.resetClaudeBody(t.resets(resetCount(account)))
+          : t.resetBody(t.resets(resetCount(account)))
+      }
       error={write.error}
       onClose={onClose}
       onConfirm={confirmReset}
       title={t.resetTitle}
     >
       {pending ? <p className="bft-dialog-note">{t.resetPendingBody}</p> : null}
+      {!pending && offers.length ? (
+        <>
+          <p className="bft-dialog-note" id={pickId}>
+            {t.resetPick}
+          </p>
+          <ChoiceList
+            disabled={write.busy}
+            labelledBy={pickId}
+            name={pickId}
+            onChange={([next]) => setKind(next as BftResetKind)}
+            options={offers.map((offer) => ({
+              id: offer.kind,
+              label: offerLabel(offer),
+              description: offerDetail(offer),
+            }))}
+            value={kind ? [kind] : []}
+          />
+        </>
+      ) : null}
     </ConfirmDialog>
   );
 }

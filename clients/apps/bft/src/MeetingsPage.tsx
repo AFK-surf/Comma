@@ -5,6 +5,7 @@ import { Dropdown } from "@comma/ui/components/dropdown";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useRef, useState, type ReactNode } from "react";
 import type {
+  BftMeetingCalendarSource,
   BftMeetingConnect,
   BftMeetingRecord,
   BftMeetingSeries,
@@ -24,9 +25,12 @@ import {
   FormSection,
   SaveButton,
   SettingsPage,
+  TextField,
   useWrite,
 } from "./settingsForm";
 import { Skeleton } from "./states";
+
+const noChannel = "__none__";
 
 const t = messages.meetings;
 
@@ -215,7 +219,11 @@ function Upcoming({
         description={t.localTime}
         title={t.next24}
       >
-        {events.length === 0 ? (
+        {settings.calendar_scope === "members" ? (
+          <p className="bft-quiet bft-quiet-inline">
+            {t.membersUpcoming(overview.member_calendars ?? 0)}
+          </p>
+        ) : events.length === 0 ? (
           <div className="bft-quiet bft-quiet-inline">
             <p>{t.emptyTitle}</p>
             <p>{t.emptyBody}</p>
@@ -255,12 +263,14 @@ function Upcoming({
         </p>
         {settings.enabled ? (
           <dl className="bft-kv">
-            <div>
-              <dt>{t.channel}</dt>
-              <dd>
-                #{(settings.channel ?? settings.channel_id ?? "").replace(/^#/, "")}
-              </dd>
-            </div>
+            {settings.channel || settings.channel_id ? (
+              <div>
+                <dt>{t.channel}</dt>
+                <dd>
+                  #{(settings.channel || settings.channel_id || "").replace(/^#/, "")}
+                </dd>
+              </div>
+            ) : null}
             <div>
               <dt>{t.calendars}</dt>
               <dd>
@@ -507,7 +517,10 @@ const seriesKey = (series: BftMeetingSeries) =>
   JSON.stringify([series.account_id, series.calendar_id, series.event_id]);
 const botName = (bot: BftMeetingConnect) =>
   bot.app_name ?? bot.bot_username ?? t.botUnnamed;
+const larkBot = (bot: BftMeetingConnect | undefined) =>
+  bot?.provider === "feishu" || bot?.provider === "lark";
 const botMeta = (bot: BftMeetingConnect) => {
+  if (larkBot(bot)) return t.providerNames[bot.provider] ?? bot.provider;
   const workspace = bot.workspace_name ?? t.workspaceUnknown;
   return bot.app_name && bot.bot_username && bot.app_name !== bot.bot_username
     ? `@${bot.bot_username} · ${workspace}`
@@ -516,6 +529,143 @@ const botMeta = (bot: BftMeetingConnect) => {
 const botStates = ["connected", "unconnected", "unavailable"];
 // The picker keeps at most 500 channels in one interactive page.
 const channelLimit = 500;
+
+type MeetingCalendar = {
+  account_id: string;
+  calendar_id: string;
+  name: string | null;
+  account_name: string | null;
+};
+
+/**
+ * Adds a Feishu/Lark team calendar the bot cannot read yet: found by name
+ * among the organization's public calendars, or named by its ID. The bot's
+ * app subscribes to it.
+ */
+function TeamCalendarFinder({
+  org,
+  project,
+  connect,
+  busy,
+  onAdd,
+}: {
+  org: string;
+  project: string;
+  connect: string;
+  busy: boolean;
+  onAdd: (calendar: MeetingCalendar) => void;
+}) {
+  const api = useApi();
+  const [query, setQuery] = useState("");
+  const [id, setId] = useState("");
+  const [found, setFound] = useState<Resource<MeetingCalendar[]>>();
+  const [pending, setPending] = useState(false);
+  const [notice, setNotice] = useState<{ error: boolean; text: string }>();
+
+  const search = () => {
+    if (!query.trim()) return;
+    setFound({ state: "loading" });
+    api.meetingCalendarSearch(org, project, connect, query.trim()).then(
+      (result) => setFound({ state: "ready", data: result.calendars }),
+      (error: unknown) => setFound({ state: "error", error: writeErrorMessage(error) })
+    );
+  };
+
+  const subscribe = (calendarId: string) => {
+    setPending(true);
+    setNotice(undefined);
+    api.subscribeMeetingCalendar(org, project, connect, calendarId).then(
+      ({ calendar }) => {
+        setPending(false);
+        setId("");
+        onAdd(calendar);
+        setNotice({
+          error: false,
+          text: t.larkAdded(calendar.name ?? calendar.calendar_id),
+        });
+      },
+      (error: unknown) => {
+        setPending(false);
+        // No message: the browser is already leaving for the login page.
+        const text = writeErrorMessage(error);
+        setNotice(text ? { error: true, text } : undefined);
+      }
+    );
+  };
+
+  const disabled = busy || pending || !connect;
+
+  return (
+    <div className="bft-checklist">
+      <p className="bft-field-label">{t.larkFindCalendar}</p>
+      <div className="bft-route-connect bft-route-connect-field">
+        <TextField
+          disabled={disabled}
+          label={t.larkSearchLabel}
+          onChange={setQuery}
+          placeholder={t.larkSearchPlaceholder}
+          value={query}
+        />
+        <Button
+          disabled={disabled || !query.trim() || found?.state === "loading"}
+          hierarchy="secondary-gray"
+          onPress={search}
+          size="sm"
+        >
+          {t.larkSearch}
+        </Button>
+      </div>
+      {found?.state === "error" ? (
+        <p className="bft-dialog-error" role="alert">
+          {String(found.error ?? "")}
+        </p>
+      ) : found?.state === "ready" ? (
+        found.data.length === 0 ? (
+          <p className="bft-form-section-note">{t.larkNoResults}</p>
+        ) : (
+          found.data.map((calendar) => (
+            <div className="bft-route-connect" key={calendar.calendar_id}>
+              <span>{calendar.name ?? calendar.calendar_id}</span>
+              <Button
+                disabled={disabled}
+                hierarchy="secondary-gray"
+                onPress={() => subscribe(calendar.calendar_id)}
+                size="sm"
+              >
+                {t.larkAdd}
+              </Button>
+            </div>
+          ))
+        )
+      ) : null}
+      <div className="bft-route-connect bft-route-connect-field">
+        <TextField
+          disabled={disabled}
+          label={t.larkIdLabel}
+          onChange={setId}
+          placeholder={t.larkIdPlaceholder}
+          value={id}
+        />
+        <Button
+          disabled={disabled || !id.trim()}
+          hierarchy="secondary-gray"
+          onPress={() => subscribe(id.trim())}
+          size="sm"
+        >
+          {t.larkAdd}
+        </Button>
+      </div>
+      {notice ? (
+        <p
+          className={notice.error ? "bft-dialog-error" : "bft-form-section-note"}
+          role={notice.error ? "alert" : "status"}
+        >
+          {notice.text}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 function SettingsForm({
   org,
@@ -529,11 +679,21 @@ function SettingsForm({
   const api = useApi();
   const write = useWrite();
   const saved = overview.settings;
+  const savedBot = overview.connects.find(
+    (item) => item.connect_id === saved.connect_id
+  );
+  // Settings saved before the choice existed read the calendars of their
+  // bot's own platform.
+  const savedSource: BftMeetingCalendarSource =
+    saved.calendar_source ?? (larkBot(savedBot) ? "feishu_lark" : "google");
   const [draft, setDraft] = useState(() => ({
     connect:
       saved.connect_id ??
       overview.connects.find((bot) => bot.state === "connected")?.connect_id ??
       "",
+    source: saved.calendar_scope,
+    calendarSource: savedSource,
+    organizer: saved.delivery === "organizer",
     calendars: saved.calendar_selections.map(calendarKey),
     series: saved.series[0] ? seriesKey(saved.series[0]) : "",
     scope: saved.series.length ? "series" : "all",
@@ -548,11 +708,18 @@ function SettingsForm({
   }));
   const set = (patch: Partial<typeof draft>) =>
     setDraft((value) => ({ ...value, ...patch }));
+  const members = draft.source === "members";
   const [catalog, reload] = useResource(
-    `meeting-catalog:${project}:${draft.connect}`,
+    `meeting-catalog:${project}:${draft.connect}:${draft.source}:${draft.calendarSource}`,
     () =>
       draft.connect
-        ? api.meetingCatalog(org, project, draft.connect)
+        ? api.meetingCatalog(
+            org,
+            project,
+            draft.connect,
+            draft.source,
+            draft.calendarSource
+          )
         : Promise.resolve(null)
   );
   const [more, setMore] = useState<{
@@ -569,13 +736,22 @@ function SettingsForm({
   const [channelsLoading, setChannelsLoading] = useState(false);
   const ready = catalog.state === "ready" ? catalog.data : null;
   const bot = overview.connects.find((item) => item.connect_id === draft.connect);
-  const scopesReady = bot?.missing_scopes?.length === 0;
-  const calendars = ready?.calendars ?? [];
+  // A Feishu/Lark bot writes to people with its own app permissions; Slack's
+  // DM scopes are a Slack question.
+  const lark = larkBot(bot);
+  // The bot's own Feishu/Lark calendars; a Slack bot always reads Google's.
+  const larkCalendars = lark && draft.calendarSource === "feishu_lark";
+  const scopesReady = lark || bot?.missing_scopes?.length === 0;
+  const [added, setAdded] = useState<NonNullable<typeof ready>["calendars"]>([]);
+  const calendars = [...(ready?.calendars ?? []), ...added].filter(
+    (calendar, index, all) =>
+      all.findIndex((c) => calendarKey(c) === calendarKey(calendar)) === index
+  );
   const accounts = [
     ...new Set(calendars.map((calendar) => calendar.account_name ?? "")),
   ];
   const channels = [
-    ...(saved.channel_id
+    ...(saved.channel_id && saved.connect_id === draft.connect
       ? [{ id: saved.channel_id, name: saved.channel ?? saved.channel_id }]
       : []),
     ...(ready?.channels ?? []),
@@ -594,13 +770,61 @@ function SettingsForm({
 
   const changeBot = (connect: string) => {
     // A different bot needs its own permission check for attendee DMs.
-    setDraft((value) => ({ ...value, connect, personal: false }));
+    // The saved channel belongs to the saved bot only.
+    const next = overview.connects.find((item) => item.connect_id === connect);
+    setDraft((value) => {
+      // Feishu/Lark calendars go with a Feishu/Lark bot only. Moving the
+      // notices of Google calendars to another bot keeps the calendars.
+      const calendarSource: BftMeetingCalendarSource = !larkBot(next)
+        ? "google"
+        : connect === saved.connect_id
+          ? savedSource
+          : value.calendarSource === "google" && saved.connect_id
+            ? "google"
+            : "feishu_lark";
+      return {
+        ...value,
+        connect,
+        personal: false,
+        organizer: false,
+        channel: connect === saved.connect_id ? (saved.channel_id ?? "") : "",
+        calendarSource,
+        ...(calendarSource === value.calendarSource
+          ? {}
+          : { calendars: [], series: "", scope: "all", seriesCalendar: "" }),
+      };
+    });
+    setAdded([]);
     channelRequest.current += 1;
     seriesRequest.current += 1;
     setChannelsLoading(false);
     setMore(undefined);
     setSeriesPage(undefined);
   };
+
+  const changeCalendarSource = (calendarSource: BftMeetingCalendarSource) => {
+    if (calendarSource === draft.calendarSource) return;
+    // Calendars of one source mean nothing to the other.
+    set({
+      calendarSource,
+      calendars: [],
+      series: "",
+      scope: "all",
+      seriesCalendar: "",
+    });
+    setAdded([]);
+    seriesRequest.current += 1;
+    setSeriesPage(undefined);
+  };
+
+  const changeScope = (source: typeof draft.source) =>
+    // Members' calendars were always joined: switching to them starts with
+    // joining on, as before.
+    set(
+      source === "members" && saved.calendar_scope !== "members"
+        ? { source, autojoin: true }
+        : { source }
+    );
 
   const changeSeriesCalendar = (seriesCalendar: string) => {
     set({ seriesCalendar });
@@ -621,19 +845,28 @@ function SettingsForm({
       seriesPage?.state === "ready" && cursor ? seriesPage.data.meetings : [];
     const request = ++seriesRequest.current;
     setSeriesPage({ state: "loading" });
-    api.meetingSeries(org, project, calendar, cursor).then(
-      (page) => {
-        if (request !== seriesRequest.current) return;
-        setSeriesPage({
-          state: "ready",
-          data: { ...page, meetings: [...previous, ...page.meetings] },
-        });
-      },
-      (error: unknown) => {
-        if (request !== seriesRequest.current) return;
-        setSeriesPage({ state: "error", error: writeErrorMessage(error) });
-      }
-    );
+    api
+      .meetingSeries(
+        org,
+        project,
+        draft.connect,
+        calendar,
+        cursor,
+        draft.calendarSource
+      )
+      .then(
+        (page) => {
+          if (request !== seriesRequest.current) return;
+          setSeriesPage({
+            state: "ready",
+            data: { ...page, meetings: [...previous, ...page.meetings] },
+          });
+        },
+        (error: unknown) => {
+          if (request !== seriesRequest.current) return;
+          setSeriesPage({ state: "error", error: writeErrorMessage(error) });
+        }
+      );
   };
 
   const loadChannels = () => {
@@ -666,6 +899,47 @@ function SettingsForm({
   };
 
   const submit = () => {
+    const delivery = draft.organizer ? ("organizer" as const) : ("channel" as const);
+    if (lark && !members && draft.channelNotice && !draft.channel)
+      return setInvalid(t.needChat);
+    if (lark && !members && !draft.channelNotice && !draft.personal)
+      return setInvalid(t.needDelivery);
+    // A Slack preparation without a team channel needs the same choices as
+    // the server's CalendarConfiguration.team_channel_optional?/1.
+    if (!lark && !draft.channel) {
+      if (members && draft.autojoin && !draft.organizer)
+        return setInvalid(t.needChannelMembers);
+      if (!members && draft.autojoin && (draft.channelNotice || !draft.organizer))
+        return setInvalid(t.needChannelJoin);
+      if (!members && !draft.autojoin && (draft.channelNotice || !draft.personal))
+        return setInvalid(t.needChannelPrepare);
+    }
+    if (members && !draft.autojoin && !draft.personal)
+      return setInvalid(t.needMembersAction);
+    if (members) {
+      setInvalid(undefined);
+      write.run(
+        () =>
+          api.saveMeetings(org, project, {
+            enabled: true,
+            connect_id: draft.connect,
+            channel_id: draft.channel,
+            calendar_scope: "members",
+            calendar_source: draft.calendarSource,
+            delivery,
+            calendar_selections: [],
+            preparation_lead_minutes: Number(draft.lead),
+            research_enabled: draft.personal && draft.research,
+            calendar_writeback: false,
+            autojoin: draft.autojoin,
+            personal_preparation: draft.personal,
+            channel_notice: false,
+            series: [],
+          }),
+        done
+      );
+      return;
+    }
     const selections = calendars
       .filter((calendar) => draft.calendars.includes(calendarKey(calendar)))
       .map(({ account_id, calendar_id }) => ({ account_id, calendar_id }));
@@ -680,10 +954,13 @@ function SettingsForm({
           enabled: true,
           connect_id: draft.connect,
           channel_id: draft.channel,
+          calendar_scope: "selected",
+          calendar_source: draft.calendarSource,
+          delivery,
           calendar_selections: selections,
           preparation_lead_minutes: Number(draft.lead),
           research_enabled: draft.research,
-          calendar_writeback: draft.writeback && draft.channelNotice,
+          calendar_writeback: !lark && draft.writeback && draft.channelNotice,
           autojoin: draft.autojoin,
           personal_preparation: draft.personal,
           channel_notice: draft.channelNotice,
@@ -699,193 +976,310 @@ function SettingsForm({
   return (
     <div className="bft-settings-grid">
       <div>
-        <FormSection title={t.botTitle}>
-          {overview.connects.length === 0 ? (
-            <p className="bft-quiet bft-quiet-inline">{t.noBots}</p>
+        <FormSection description={t.destinationHint} title={t.destinationTitle}>
+          {overview.connects.length === 0 && !saved.connect_id ? (
+            <p className="bft-quiet bft-quiet-inline">{t.noBotsAny}</p>
           ) : (
             <Dropdown
-              ariaLabel={t.botTitle}
+              ariaLabel={t.destinationTitle}
               className="bft-form-field"
               disabled={busy}
-              items={overview.connects
-                .toSorted(
-                  (a, b) => botStates.indexOf(a.state) - botStates.indexOf(b.state)
-                )
-                .map((item) => ({
-                  id: item.connect_id,
-                  label: botName(item),
-                  subtitle: `${botMeta(item)} · ${t.botPreparation[item.preparation] ?? ""}`,
-                  group: t.botGroups[item.state] ?? item.state,
-                }))}
+              items={[
+                ...overview.connects
+                  .toSorted(
+                    (a, b) => botStates.indexOf(a.state) - botStates.indexOf(b.state)
+                  )
+                  .map((item) => ({
+                    id: item.connect_id,
+                    label: botName(item),
+                    subtitle: `${botMeta(item)} · ${t.botPreparation[item.preparation] ?? ""}`,
+                    group:
+                      (larkBot(item) ? t.larkBotGroups : t.botGroups)[item.state] ??
+                      item.state,
+                  })),
+                // A saved bot that is gone still shows what was chosen.
+                ...(saved.connect_id && !savedBot
+                  ? [
+                      {
+                        id: saved.connect_id,
+                        label: t.botRemoved,
+                        subtitle: saved.connect_id,
+                      },
+                    ]
+                  : []),
+              ]}
               onChange={changeBot}
+              placeholder={t.selectDestination}
               size="sm"
               {...(draft.connect ? { value: draft.connect } : {})}
             />
           )}
         </FormSection>
-        <FormSection
-          action={
-            <button
-              className="bft-btn bft-btn-sm"
+        <FormSection title={t.calendarSource}>
+          {lark ? (
+            <Dropdown
+              ariaLabel={t.calendarKind}
+              className="bft-form-field"
               disabled={busy}
-              onClick={reload}
-              type="button"
-            >
-              {t.reload}
-            </button>
-          }
-          description={t.calendarsHint}
-          title={t.calendarsTitle}
-        >
-          {catalog.state === "loading" ? (
-            <Skeleton height={14} />
-          ) : catalog.state === "error" ? (
-            <p className="bft-dialog-error" role="alert">
-              {writeErrorMessage(catalog.error)}
-            </p>
-          ) : (
-            accounts.map((account) => (
-              <div className="bft-checklist" key={account}>
-                <p className="bft-field-label">{t.googleCalendar(account)}</p>
-                {calendars
-                  .filter((calendar) => (calendar.account_name ?? "") === account)
-                  .map((calendar) => {
-                    const key = calendarKey(calendar);
-                    return (
-                      <Checkbox
-                        checked={draft.calendars.includes(key)}
-                        disabled={busy}
-                        key={key}
-                        label={calendar.name ?? calendar.calendar_id}
-                        onChange={(event) =>
-                          set({
-                            calendars: event.target.checked
-                              ? [...draft.calendars, key]
-                              : draft.calendars.filter((value) => value !== key),
-                          })
-                        }
-                        size="sm"
-                      />
-                    );
-                  })}
-              </div>
-            ))
-          )}
-          <a
-            className="bft-link bft-setting-row-link"
-            href={connections}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            {t.connectCalendar}
-          </a>
-        </FormSection>
-        <FormSection title={t.scopeLabel}>
+              items={[
+                { id: "google", label: t.calendarKinds.google ?? "" },
+                { id: "feishu_lark", label: t.calendarKinds.feishu_lark ?? "" },
+              ]}
+              onChange={(kind) =>
+                changeCalendarSource(kind as BftMeetingCalendarSource)
+              }
+              size="sm"
+              value={draft.calendarSource}
+            />
+          ) : null}
           <Dropdown
-            ariaLabel={t.scopeLabel}
+            ariaLabel={t.calendarSource}
             className="bft-form-field"
             disabled={busy}
             items={[
-              { id: "all", label: t.scopeAll },
-              { id: "series", label: t.scopeSeries },
+              { id: "selected", label: t.sourceSelected },
+              { id: "members", label: t.sourceMembers },
             ]}
-            onChange={(scope) => set({ scope })}
+            onChange={(source) => changeScope(source as typeof draft.source)}
             size="sm"
-            value={draft.scope}
+            value={draft.source}
           />
-          {draft.scope === "series" ? (
+          {members ? (
             <>
-              <div className="bft-route-connect">
-                <Dropdown
-                  className="bft-form-field"
-                  disabled={busy}
-                  items={calendars
-                    .filter((calendar) =>
-                      draft.calendars.includes(calendarKey(calendar))
-                    )
-                    .map((calendar) => ({
-                      id: calendarKey(calendar),
-                      label: calendar.name ?? calendar.calendar_id,
-                    }))}
-                  label={t.seriesCalendar}
-                  onChange={changeSeriesCalendar}
-                  placeholder={t.selectCalendar}
-                  size="sm"
-                  {...(draft.seriesCalendar ? { value: draft.seriesCalendar } : {})}
-                />
-                <Button
-                  disabled={busy || seriesPage?.state === "loading"}
-                  hierarchy="secondary-gray"
-                  onPress={() => loadSeries(null)}
-                  size="sm"
-                >
-                  {t.browse}
-                </Button>
-              </div>
-              {seriesPage?.state === "error" ? (
+              <p className="bft-form-section-note">
+                {larkCalendars ? t.larkMembersHint : t.membersHint}
+              </p>
+              {catalog.state === "error" ? (
                 <p className="bft-dialog-error" role="alert">
-                  {String(seriesPage.error ?? "")}
+                  {writeErrorMessage(catalog.error)}
+                </p>
+              ) : ready ? (
+                <p className="bft-form-section-note">
+                  {(larkCalendars ? t.larkMemberAccounts : t.memberAccounts)(
+                    ready.member_accounts ?? 0
+                  )}
                 </p>
               ) : null}
-              <Dropdown
-                disabled={busy}
-                items={seriesOptions.map((item) => ({
-                  id: seriesKey(item),
-                  label: item.title ?? item.event_id,
-                }))}
-                label={t.seriesLabel}
-                onChange={(series) => set({ series })}
-                placeholder={t.selectSeries}
-                size="sm"
-                {...(draft.series ? { value: draft.series } : {})}
-              />
-              {seriesPage?.state === "ready" && seriesPage.data.next_cursor ? (
-                <button
-                  className="bft-btn bft-btn-sm"
-                  onClick={() => loadSeries(seriesPage.data.next_cursor)}
-                  type="button"
-                >
-                  {t.moreSeries}
-                </button>
-              ) : null}
-              <p className="bft-form-section-note">{t.seriesHint}</p>
+              <a
+                className="bft-link bft-setting-row-link"
+                href={connections}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {larkCalendars ? t.larkConnectAccounts : t.connectCalendar}
+              </a>
             </>
           ) : null}
         </FormSection>
+        {members ? null : (
+          <FormSection
+            action={
+              <button
+                className="bft-btn bft-btn-sm"
+                disabled={busy}
+                onClick={reload}
+                type="button"
+              >
+                {t.reload}
+              </button>
+            }
+            description={larkCalendars ? t.larkCalendarsHint : t.calendarsHint}
+            title={t.calendarsTitle}
+          >
+            {catalog.state === "loading" ? (
+              <Skeleton height={14} />
+            ) : catalog.state === "error" ? (
+              <p className="bft-dialog-error" role="alert">
+                {writeErrorMessage(catalog.error)}
+              </p>
+            ) : (
+              accounts.map((account) => (
+                <div className="bft-checklist" key={account}>
+                  <p className="bft-field-label">
+                    {larkCalendars
+                      ? account === "app"
+                        ? t.larkAppCalendars
+                        : t.larkPersonCalendars(account)
+                      : t.googleCalendar(account)}
+                  </p>
+                  {calendars
+                    .filter((calendar) => (calendar.account_name ?? "") === account)
+                    .map((calendar) => {
+                      const key = calendarKey(calendar);
+                      return (
+                        <Checkbox
+                          checked={draft.calendars.includes(key)}
+                          disabled={busy}
+                          key={key}
+                          label={calendar.name ?? calendar.calendar_id}
+                          onChange={(event) =>
+                            set({
+                              calendars: event.target.checked
+                                ? [...draft.calendars, key]
+                                : draft.calendars.filter((value) => value !== key),
+                            })
+                          }
+                          size="sm"
+                        />
+                      );
+                    })}
+                </div>
+              ))
+            )}
+            {larkCalendars ? (
+              <TeamCalendarFinder
+                busy={busy}
+                connect={draft.connect}
+                onAdd={(calendar) => {
+                  setAdded((value) => [...value, calendar]);
+                  const key = calendarKey(calendar);
+                  setDraft((value) =>
+                    value.calendars.includes(key)
+                      ? value
+                      : { ...value, calendars: [...value.calendars, key] }
+                  );
+                }}
+                org={org}
+                project={project}
+              />
+            ) : (
+              <a
+                className="bft-link bft-setting-row-link"
+                href={connections}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {t.connectCalendar}
+              </a>
+            )}
+          </FormSection>
+        )}
+        {members ? null : (
+          <FormSection title={t.scopeLabel}>
+            <Dropdown
+              ariaLabel={t.scopeLabel}
+              className="bft-form-field"
+              disabled={busy}
+              items={[
+                { id: "all", label: t.scopeAll },
+                { id: "series", label: t.scopeSeries },
+              ]}
+              onChange={(scope) => set({ scope })}
+              size="sm"
+              value={draft.scope}
+            />
+            {draft.scope === "series" ? (
+              <>
+                <div className="bft-route-connect bft-route-connect-field">
+                  <Dropdown
+                    className="bft-form-field"
+                    disabled={busy}
+                    items={calendars
+                      .filter((calendar) =>
+                        draft.calendars.includes(calendarKey(calendar))
+                      )
+                      .map((calendar) => ({
+                        id: calendarKey(calendar),
+                        label: calendar.name ?? calendar.calendar_id,
+                      }))}
+                    label={t.seriesCalendar}
+                    onChange={changeSeriesCalendar}
+                    placeholder={t.selectCalendar}
+                    size="sm"
+                    {...(draft.seriesCalendar ? { value: draft.seriesCalendar } : {})}
+                  />
+                  <Button
+                    disabled={busy || seriesPage?.state === "loading"}
+                    hierarchy="secondary-gray"
+                    onPress={() => loadSeries(null)}
+                    size="sm"
+                  >
+                    {t.browse}
+                  </Button>
+                </div>
+                {seriesPage?.state === "error" ? (
+                  <p className="bft-dialog-error" role="alert">
+                    {String(seriesPage.error ?? "")}
+                  </p>
+                ) : null}
+                <Dropdown
+                  disabled={busy}
+                  items={seriesOptions.map((item) => ({
+                    id: seriesKey(item),
+                    label: item.title ?? item.event_id,
+                  }))}
+                  label={t.seriesLabel}
+                  onChange={(series) => set({ series })}
+                  placeholder={t.selectSeries}
+                  size="sm"
+                  {...(draft.series ? { value: draft.series } : {})}
+                />
+                {seriesPage?.state === "ready" && seriesPage.data.next_cursor ? (
+                  <button
+                    className="bft-btn bft-btn-sm"
+                    onClick={() => loadSeries(seriesPage.data.next_cursor)}
+                    type="button"
+                  >
+                    {t.moreSeries}
+                  </button>
+                ) : null}
+                <p className="bft-form-section-note">
+                  {larkCalendars ? t.larkSeriesHint : t.seriesHint}
+                </p>
+              </>
+            ) : null}
+          </FormSection>
+        )}
       </div>
       <div>
-        <FormSection description={t.contentHint} title={t.contentTitle}>
-          <Checkbox
-            checked={draft.research}
-            disabled={busy}
-            label={t.research}
-            onChange={(event) => set({ research: event.target.checked })}
-            size="sm"
-          />
-        </FormSection>
-        <FormSection description={t.deliveryHint} title={t.deliveryTitle}>
+        {members && !draft.personal ? null : (
+          <FormSection description={t.contentHint} title={t.contentTitle}>
+            <Checkbox
+              checked={draft.research}
+              disabled={busy}
+              label={t.research}
+              onChange={(event) => set({ research: event.target.checked })}
+              size="sm"
+            />
+          </FormSection>
+        )}
+        <FormSection
+          description={lark ? t.larkDeliveryHint : t.deliveryHint}
+          title={t.deliveryTitle}
+        >
+          {members && !draft.personal ? null : (
+            <Dropdown
+              className="bft-form-field"
+              disabled={busy}
+              items={[10, 15, 30, 60].map((minutes) => ({
+                id: String(minutes),
+                label: t.minutesBefore(minutes),
+              }))}
+              label={t.leadLabel}
+              onChange={(lead) => set({ lead })}
+              size="sm"
+              value={draft.lead}
+            />
+          )}
           <Dropdown
             className="bft-form-field"
             disabled={busy}
-            items={[10, 15, 30, 60].map((minutes) => ({
-              id: String(minutes),
-              label: t.minutesBefore(minutes),
-            }))}
-            label={t.leadLabel}
-            onChange={(lead) => set({ lead })}
-            size="sm"
-            value={draft.lead}
-          />
-          <Dropdown
-            className="bft-form-field"
-            disabled={busy}
-            items={channels.map((channel) => ({
-              id: channel.id,
-              label: `#${channel.name.replace(/^#/, "")}`,
-            }))}
-            label={t.channelLabel}
-            onChange={(channel) => set({ channel })}
-            placeholder={t.selectChannel}
+            items={[
+              // A chosen channel can be cleared again: a preparation without
+              // the channel notice may have none.
+              ...(draft.channel
+                ? [{ id: noChannel, label: lark ? t.noChat : t.noChannel }]
+                : []),
+              ...channels.map((channel) => ({
+                id: channel.id,
+                label: lark ? channel.name : `#${channel.name.replace(/^#/, "")}`,
+              })),
+            ]}
+            label={lark ? t.chatLabel : t.channelLabel}
+            onChange={(channel) =>
+              set({ channel: channel === noChannel ? "" : channel })
+            }
+            placeholder={lark ? t.selectChat : t.selectChannel}
             size="sm"
             {...(draft.channel ? { value: draft.channel } : {})}
           />
@@ -896,31 +1290,72 @@ function SettingsForm({
               onClick={loadChannels}
               type="button"
             >
-              {t.moreChannels}
+              {lark ? t.moreChats : t.moreChannels}
             </button>
           ) : null}
           <Checkbox
-            checked={draft.channelNotice}
-            disabled={busy}
-            hint={t.channelNoticeHint}
-            label={t.channelNotice}
-            onChange={(event) => set({ channelNotice: event.target.checked })}
-            size="sm"
-          />
-          <Checkbox
-            checked={draft.personal}
-            disabled={busy || (!scopesReady && !draft.personal)}
+            checked={draft.organizer}
+            disabled={busy || (!scopesReady && !draft.organizer)}
             hint={
-              scopesReady
-                ? t.scopesReady
-                : bot?.missing_scopes
-                  ? t.scopesMissing(bot.missing_scopes.join(", "))
-                  : t.scopesUnknown
+              lark
+                ? t.larkDeliveryOrganizerHint
+                : scopesReady
+                  ? t.deliveryOrganizerHint
+                  : bot?.missing_scopes
+                    ? t.scopesMissing(bot.missing_scopes.join(", "))
+                    : t.scopesUnknown
             }
-            label={t.attendeeDms}
-            onChange={(event) => set({ personal: event.target.checked })}
+            label={t.deliveryOrganizer}
+            onChange={(event) => set({ organizer: event.target.checked })}
             size="sm"
           />
+          {members ? (
+            <Checkbox
+              checked={draft.personal}
+              disabled={busy || (!scopesReady && !draft.personal)}
+              hint={
+                lark
+                  ? t.larkMembersPreparationHint
+                  : scopesReady
+                    ? t.membersPreparationHint
+                    : bot?.missing_scopes
+                      ? t.scopesMissing(bot.missing_scopes.join(", "))
+                      : t.scopesUnknown
+              }
+              label={t.membersPreparation}
+              onChange={(event) => set({ personal: event.target.checked })}
+              size="sm"
+            />
+          ) : (
+            <>
+              <Checkbox
+                checked={draft.channelNotice}
+                disabled={busy}
+                hint={lark ? t.larkChannelNoticeHint : t.channelNoticeHint}
+                label={lark ? t.larkChannelNotice : t.channelNotice}
+                onChange={(event) => set({ channelNotice: event.target.checked })}
+                size="sm"
+              />
+              <Checkbox
+                checked={draft.personal}
+                disabled={busy || (!scopesReady && !draft.personal)}
+                hint={
+                  lark
+                    ? larkCalendars
+                      ? t.larkAttendeeDmsHint
+                      : t.larkGoogleAttendeeDmsHint
+                    : scopesReady
+                      ? t.scopesReady
+                      : bot?.missing_scopes
+                        ? t.scopesMissing(bot.missing_scopes.join(", "))
+                        : t.scopesUnknown
+                }
+                label={lark ? t.larkAttendeeDms : t.attendeeDms}
+                onChange={(event) => set({ personal: event.target.checked })}
+                size="sm"
+              />
+            </>
+          )}
           {scopesReady ? null : (
             <a
               className="bft-link bft-setting-row-link"
@@ -933,17 +1368,20 @@ function SettingsForm({
           )}
         </FormSection>
         <FormSection title={t.moreTitle}>
-          <Checkbox
-            checked={draft.writeback && draft.channelNotice}
-            disabled={busy || !draft.channelNotice}
-            {...(draft.channelNotice ? {} : { hint: t.writebackNeedsNotice })}
-            label={t.writeback}
-            onChange={(event) => set({ writeback: event.target.checked })}
-            size="sm"
-          />
+          {members || lark ? null : (
+            <Checkbox
+              checked={draft.writeback && draft.channelNotice}
+              disabled={busy || !draft.channelNotice}
+              {...(draft.channelNotice ? {} : { hint: t.writebackNeedsNotice })}
+              label={t.writeback}
+              onChange={(event) => set({ writeback: event.target.checked })}
+              size="sm"
+            />
+          )}
           <Checkbox
             checked={draft.autojoin}
             disabled={busy}
+            hint={t.autojoinHint}
             label={t.autojoin}
             onChange={(event) => set({ autojoin: event.target.checked })}
             size="sm"

@@ -328,15 +328,21 @@ class MessageLayoutPrecomputer(
         if (viewportWidthPx <= 0) return@withContext emptyList()
         val liveIds = HashSet<Long>()
         val previousById = previous.associateBy { it.message.id }
+        var prior: PreparedChatMessage? = null
         messages.mapIndexed { index, message ->
             val previousRole = if (index == 0) firstPreviousRole else messages[index - 1].role
-            val key = buildKey(message, previousRole, viewportWidthPx, fontScale, darkTheme, palette)
+            val preceding = prior
+            val precedingTail = if (bubbles && preceding?.tailable == true && (preceding.message.role != message.role || message.cardKind == TimelineBlockKinds.REPLY_ERROR ||
+                    message.cardPayload == TimelineBlockKinds.LIVE_STATUS_SKELETON))
+                (BubbleTail.DEPTH_DP * density).toInt() else 0
+            val key = buildKey(message, previousRole, viewportWidthPx, fontScale, darkTheme, palette) + ":gap$precedingTail"
             // A row whose tail came or went is still unchanged underneath; the tail is put back below.
             val unchanged = previousById[message.id]?.takeIf { it.cacheKey.removeSuffix(TAIL_KEY) == key }
             val cached = unchanged ?: cache.get(key)
             val prepared = cached ?: create(
                 message = message,
                 previousRole = previousRole,
+                precedingTail = precedingTail,
                 cacheKey = key,
                 viewportWidthPx = viewportWidthPx,
                 density = density,
@@ -358,6 +364,7 @@ class MessageLayoutPrecomputer(
                 liveIds.add(message.id)
                 streamingScratch[message.id] = prepared
             }
+            prior = prepared
             prepared
         }.also {
             streamingScratch.keys.retainAll(liveIds)
@@ -365,16 +372,17 @@ class MessageLayoutPrecomputer(
     }
 
     /**
-     * Gives the last bubble of each run of one speaker's bubbles its tail, and takes it from the
-     * others. Only the row's height below the bubble changes; nothing is laid out again. The
-     * typing bubble continues the agent's run: while it shows, the message above it has no tail.
+     * Gives the last bubble of each speaker's run its tail. Cards continue the run, so the
+     * preceding text bubble has no tail. Only the row's height below the bubble changes;
+     * nothing is laid out again. While the typing bubble shows, the message above it has no tail.
      */
     private fun withTails(rows: List<PreparedChatMessage>, density: Float): List<PreparedChatMessage> {
         val depth = (BubbleTail.DEPTH_DP * density).toInt()
         return rows.mapIndexed { index, row ->
             val next = rows.getOrNull(index + 1)
             val continues = next != null && next.message.role == row.message.role &&
-                (next.tailable || TypingBubble.isTypingRow(next))
+                next.message.cardKind != TimelineBlockKinds.REPLY_ERROR &&
+                next.message.cardPayload != TimelineBlockKinds.LIVE_STATUS_SKELETON
             withTail(row, if (row.tailable && !continues) depth else 0)
         }
     }
@@ -396,6 +404,7 @@ class MessageLayoutPrecomputer(
     private fun create(
         message: ChatMessage,
         previousRole: ChatRole?,
+        precedingTail: Int,
         cacheKey: String,
         viewportWidthPx: Int,
         density: Float,
@@ -412,11 +421,13 @@ class MessageLayoutPrecomputer(
         fun sp(value: Float) = value * density * fontScale
 
         val role = message.role
-        val topMargin = when {
+        val topMargin = (when {
             previousRole == null -> dp(4f)
             previousRole == role -> dp(SAME_SPEAKER_GAP_DP)
-            else -> dp(SPEAKER_CHANGE_GAP_DP)
-        }
+            role == ChatRole.USER -> dp(AGENT_TO_USER_GAP_DP)
+            else -> dp(USER_TO_AGENT_GAP_DP)
+        } - precedingTail).coerceAtLeast(0)
+        // Tail space belongs to the visible gap, rather than adding another 7 dp to it.
         val nativeCardRenderer = ChatCardRendererRegistry.forKind(message.cardKind)
         if (nativeCardRenderer != null) {
             return PreparedChatMessage(
@@ -1309,9 +1320,9 @@ class MessageLayoutPrecomputer(
 
     private fun sameGeometry(oldKey: String, newKey: String): Boolean {
         val oldTail = oldKey.substringAfterLast(':', "")
-        // key ends with previousRole:viewport:fontScale:darkTheme — compare from role onward
-        val oldGeo = oldKey.split(':').takeLast(4)
-        val newGeo = newKey.split(':').takeLast(4)
+        // Compare previous role, viewport, type, theme, palette, and preceding tail.
+        val oldGeo = oldKey.split(':').takeLast(6)
+        val newGeo = newKey.split(':').takeLast(6)
         return oldGeo == newGeo && oldTail.isNotEmpty()
     }
 
@@ -1330,8 +1341,10 @@ class MessageLayoutPrecomputer(
     private fun widthOf(block: PreparedContentBlock): Int = when (block) {
         is PreparedContentBlock.Text -> {
             var widest = 0f
+            val measurePaint = TextPaint()
+            val bounds = android.graphics.Rect()
             for (line in 0 until block.layout.lineCount) {
-                widest = max(widest, block.layout.getLineWidth(line))
+                widest = max(widest, visibleLineWidth(block.layout, line, measurePaint, bounds))
             }
             ceil(widest).toInt() + block.padPx * 2 + block.leftInsetPx
         }
@@ -1341,6 +1354,27 @@ class MessageLayoutPrecomputer(
         is PreparedContentBlock.Code -> block.viewportWidthPx
         is PreparedContentBlock.Table -> min(block.contentWidthPx, block.viewportWidthPx) + block.leftInsetPx
         is PreparedContentBlock.Math -> min(block.contentWidthPx, block.viewportWidthPx)
+    }
+
+    /** Trim only the unused advance after a closing CJK glyph. The layout keeps its line breaks. */
+    private fun visibleLineWidth(layout: StaticLayout, line: Int, paint: TextPaint, bounds: android.graphics.Rect): Float {
+        val width = layout.getLineWidth(line)
+        var end = layout.getLineEnd(line)
+        while (end > layout.getLineStart(line) && layout.text[end - 1].isWhitespace()) end--
+        if (end <= layout.getLineStart(line) || layout.text[end - 1] !in "。，、；：！？）］｝」』》】〉〕〗〙〛”’") return width
+        if (layout.getParagraphDirection(line) != 1) return width
+        val start = end - 1
+        paint.set(layout.paint)
+        val text = layout.text
+        if (text is android.text.Spanned) {
+            // Inline code paints its background across the full advance, including punctuation whitespace.
+            if (text.getSpans(start, end, InlineCodeSpan::class.java).isNotEmpty()) return width
+            text.getSpans(start, end, android.text.style.MetricAffectingSpan::class.java)
+                .forEach { it.updateMeasureState(paint) }
+        }
+        paint.getTextBounds(text, start, end, bounds)
+        val advance = (layout.getLineRight(line) - layout.getPrimaryHorizontal(start)).coerceAtLeast(0f)
+        return width - (advance - bounds.right).coerceIn(0f, advance)
     }
 
     private fun splitText(
@@ -1493,7 +1527,8 @@ class MessageLayoutPrecomputer(
         const val CHAT_SIDE_MARGIN_DP = 28f
         /** Consecutive messages from one side, and a change of side. */
         private const val SAME_SPEAKER_GAP_DP = 6f
-        private const val SPEAKER_CHANGE_GAP_DP = 28f
+        private const val USER_TO_AGENT_GAP_DP = 12f
+        private const val AGENT_TO_USER_GAP_DP = 20f
         /** Message body: 16sp, with a looser line for the assistant than inside the user bubble. */
         private const val BODY_TEXT_SP = 16f
         private const val AGENT_LINE_SP = 27f

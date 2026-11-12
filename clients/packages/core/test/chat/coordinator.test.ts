@@ -1165,7 +1165,7 @@ describe("ChatCoordinator", () => {
     );
   });
 
-  it("bounds retained sessions and per-surface message projections", async () => {
+  it("bounds retained sessions, and projects every message a session holds", async () => {
     const api = createApi();
     const messages = Array.from({ length: 550 }, (_, index) => ({
       ...canonicalMessage(
@@ -1203,7 +1203,7 @@ describe("ChatCoordinator", () => {
     retainLease(coordinator, target, "renderer");
 
     await clock.advance(0);
-    expect(coordinator.state().sessions[0]?.state.messages).toHaveLength(500);
+    expect(coordinator.state().sessions[0]?.state.messages).toHaveLength(550);
     coordinator.close();
 
     const bounded = new ChatCoordinator({ createApi });

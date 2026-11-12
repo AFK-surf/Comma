@@ -12,7 +12,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
 
   setup do
     Repo.query!("""
-    TRUNCATE agent_vmm_sessions, agent_vmm_audit_events, agent_vmm_install_operations,
+    TRUNCATE agent_vmm_sessions, agent_vmm_audit_events,
       compute_commands, compute_runtime_instances, compute_workloads, compute_allocations,
       compute_provider_bindings, compute_environments, compute_pools,
       agent_vmm_registrations CASCADE
@@ -57,18 +57,21 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
         pool_id: pool.id
       })
 
-    Repo.insert!(%Compute.ProviderBinding{
-      id: "shell-binding",
-      pool_id: pool.id,
-      environment_id: environment.id,
-      provider: "agent_vmm",
-      provider_ref: registration.id,
-      status: "available",
-      generation: 1,
-      revision: 1,
-      observation: %{},
-      updated_at: SystemsClock.utc_now()
-    })
+    {:ok, _binding} =
+      Compute.create_provider_binding(%{
+        id: "shell-binding",
+        pool_id: pool.id,
+        environment_id: environment.id,
+        provider: "agent_vmm",
+        provider_ref: registration.id
+      })
+
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration(registration.id, "gateway", %{
+               "connectionEpoch" => "1",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
 
     {:ok, view, _} =
       live(authed_conn("tenant-a"), "/dash/compute-nodes/#{registration.id}?tab=workloads")
@@ -121,12 +124,12 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
 
   defp registration!(tenant_id, id, device_id) do
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: id,
         tenant_id: tenant_id,
         group_id: "shared-group",
         device_id: device_id,
-        enrollment_token: String.duplicate("s", 32)
+        credential: String.duplicate("s", 32)
       })
 
     {1, _} =

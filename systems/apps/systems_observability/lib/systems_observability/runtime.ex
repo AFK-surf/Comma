@@ -45,8 +45,12 @@ defmodule SystemsObservability.Runtime do
        port: Application.get_env(:systems_observability, :port, 9568),
        http_options: [log_exceptions_with_status_codes: [], log_protocol_errors: false],
        thousand_island_options: [num_acceptors: 2]},
-      {TelemetryMetricsPrometheus.Core,
-       name: SystemsObservability.Prometheus, metrics: core_metrics, start_async: false},
+      %{
+        id: SystemsObservability.Prometheus,
+        start:
+          {__MODULE__, :start_prometheus,
+           [[name: SystemsObservability.Prometheus, metrics: core_metrics, start_async: false]]}
+      },
       {SystemsObservability.HistogramReporter,
        name: SystemsObservability.Histograms, metrics: histograms},
       SystemsObservability.EctoHandler
@@ -68,6 +72,24 @@ defmodule SystemsObservability.Runtime do
     _kind, _reason ->
       unavailable()
       nil
+  end
+
+  @doc false
+  # The Prometheus reporter makes a counter's series at its first event. A
+  # series the metric declares in `zero_series` is written at 0 into the
+  # reporter's table when it starts, keyed as its counter handler keys it.
+  def start_prometheus(opts) do
+    with {:ok, pid} <- TelemetryMetricsPrometheus.Core.start_link(opts) do
+      %{aggregates_table_id: table} =
+        TelemetryMetricsPrometheus.Core.Registry.config(Keyword.fetch!(opts, :name))
+
+      for metric <- Keyword.fetch!(opts, :metrics),
+          labels <- Keyword.get(metric.reporter_options, :zero_series, []) do
+        SystemsRuntime.ETS.insert_new(table, {{metric.name, labels}, 0})
+      end
+
+      {:ok, pid}
+    end
   end
 
   defp unavailable do

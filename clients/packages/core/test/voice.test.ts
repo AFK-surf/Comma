@@ -232,6 +232,43 @@ describe("Settings › Voice", () => {
   });
 });
 
+describe("a voice sample", () => {
+  it("asks for the chosen voice in the person's language and answers the audio to its caller", async () => {
+    const t = setup();
+    t.api.on("GET", line, status());
+    t.api.on("GET", keys, []);
+    t.api.on("POST", `${line}/preview`, () =>
+      json(200, { content_type: "audio/wav", audio: "UklGRg==" })
+    );
+    const sample = t.client.call("voice.preview", {
+      workspace: "wsp_1",
+      voice: { kind: "preset", name: "harema" },
+      language: "zh-CN",
+    });
+    await t.time.pass(100);
+    expect(await sample).toEqual({ contentType: "audio/wav", audio: "UklGRg==" });
+    expect(t.api.seen("POST", `${line}/preview`)[0]!.body).toEqual({
+      voice: { kind: "preset", name: "harema" },
+      language: "zh-CN",
+    });
+
+    // The platform's voice is null; a voice that is neither is refused before any request.
+    const platform = t.client.call("voice.preview", {
+      workspace: "wsp_1",
+      voice: null,
+    });
+    await t.time.pass(100);
+    await platform;
+    expect(t.api.seen("POST", `${line}/preview`)[1]!.body).toEqual({ voice: null });
+    const bad = expect(
+      t.client.call("voice.preview", { workspace: "wsp_1", voice: { kind: "other" } })
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    await t.time.pass(100);
+    await bad;
+    expect(t.api.seen("POST", `${line}/preview`)).toHaveLength(2);
+  });
+});
+
 describe("a voice key that ends", () => {
   it("is made with the end it is asked for", async () => {
     const t = setup();

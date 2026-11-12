@@ -4,8 +4,10 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
 
   P0 reasons: the message mentions the member, names one of the member's
   aliases, replies in a thread the member wrote in, or is the member's own.
-  P1 reason: it names one of the member's project terms. A bot message counts
-  only when it mentions the member.
+  P1 reasons: it names one of the member's project terms, or a person wrote
+  it in one of the member's main channels. A bot message counts only when it
+  mentions the member, replies in a thread the member wrote in, or is in a
+  main channel the member reads with its bot messages.
   """
 
   @p0 [:mention, :alias, :thread, :own]
@@ -14,18 +16,20 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
           slack_user_id: String.t(),
           alias_pattern: Regex.t() | nil,
           project_pattern: Regex.t() | nil,
-          threads: MapSet.t({String.t(), String.t()})
+          threads: MapSet.t({String.t(), String.t()}),
+          channels: %{humans: MapSet.t(String.t()), bots: MapSet.t(String.t())}
         }
 
   @doc "Builds the per-member matcher once per run."
-  @spec member(String.t(), [%{term: String.t(), kind: String.t()}], [map()]) :: member()
-  def member(slack_user_id, aliases, threads) do
+  @spec member(String.t(), [%{term: String.t(), kind: String.t()}], [map()], map()) :: member()
+  def member(slack_user_id, aliases, threads, channels \\ nil) do
     %{
       slack_user_id: slack_user_id,
       alias_pattern:
-        pattern(for %{kind: kind, term: term} <- aliases, kind != "project", do: term),
+        pattern(for %{kind: kind, term: term} <- aliases, kind in ["name", "handle"], do: term),
       project_pattern: pattern(for %{kind: "project", term: term} <- aliases, do: term),
-      threads: MapSet.new(threads, &{&1.channel_id, &1.thread_ts})
+      threads: MapSet.new(threads, &{&1.channel_id, &1.thread_ts}),
+      channels: channels || %{humans: MapSet.new(), bots: MapSet.new()}
     }
   end
 
@@ -41,14 +45,21 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
         [:own]
 
       bot? ->
-        if mention?, do: [:mention], else: []
+        [
+          {:mention, mention?},
+          {:thread, MapSet.member?(member.threads, {message.channel_id, thread_of(message)})},
+          {:channel, MapSet.member?(member.channels.bots, message.channel_id)}
+        ]
+        |> Enum.filter(&elem(&1, 1))
+        |> Enum.map(&elem(&1, 0))
 
       true ->
         [
           {:mention, mention?},
           {:alias, matches?(member.alias_pattern, text)},
           {:thread, MapSet.member?(member.threads, {message.channel_id, thread_of(message)})},
-          {:project, matches?(member.project_pattern, text)}
+          {:project, matches?(member.project_pattern, text)},
+          {:channel, MapSet.member?(member.channels.humans, message.channel_id)}
         ]
         |> Enum.filter(&elem(&1, 1))
         |> Enum.map(&elem(&1, 0))
@@ -59,7 +70,7 @@ defmodule BridgeForTeams.DailyBrief.Classifier do
   def tier(reasons) do
     cond do
       Enum.any?(reasons, &(&1 in @p0)) -> :p0
-      :project in reasons -> :p1
+      :project in reasons or :channel in reasons -> :p1
       true -> nil
     end
   end

@@ -29,6 +29,21 @@ defmodule CommaWeb.ProactiveSourceProjection do
 
   def project(_content), do: %{}
 
+  @doc """
+  Project a read that grows at its end, such as a chat thread, keeping the end:
+  the head of such a read stops changing, so a later reply would look like no
+  change at all.
+  """
+  @spec newest(String.t()) :: map()
+  def newest(content) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, %{"error" => error}} when error not in [nil, false] -> project(content)
+      _ -> %{"text" => last(content, @budget - 64)}
+    end
+  end
+
+  def newest(_content), do: %{}
+
   # Provider failures stay visible to the watch, which treats them as
   # incomplete evidence.
   defp fit(%{"error" => error} = data) when error not in [nil, false],
@@ -75,6 +90,18 @@ defmodule CommaWeb.ProactiveSourceProjection do
 
   defp cut(text, limit) when byte_size(text) <= limit, do: text
   defp cut(text, limit), do: valid_prefix(binary_part(text, 0, limit)) <> "…"
+
+  defp last(text, limit) when byte_size(text) <= limit, do: text
+
+  defp last(text, limit) do
+    "…" <> valid_suffix(binary_part(text, byte_size(text) - limit, limit))
+  end
+
+  defp valid_suffix(bytes) do
+    if String.valid?(bytes),
+      do: bytes,
+      else: valid_suffix(binary_part(bytes, 1, byte_size(bytes) - 1))
+  end
 
   # A byte cut can land inside a multi-byte character; drop its lead bytes.
   defp valid_prefix(bytes) do

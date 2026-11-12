@@ -37,9 +37,11 @@ defmodule SalixIM.TaskConversationInput do
     content = trim(attrs["content"])
 
     with true <- content != "",
+         {:ok, published} <- creation_snapshot(group_id, conversation_id),
          :ok <- validate_schedule(schedule, content),
          initial when is_map(initial) <- attrs["initial_message_attrs"],
          {:ok, group} <- GroupDirectory.get_group(group_id),
+         :ok <- validate_model_input(published, group, attrs),
          {:ok, delegator} <- task_agent(delegator_agent_id, group_id),
          {:ok, worker} <- worker_agent(worker_agent_id, group_id),
          source_refs <- stringify(attrs["source_refs"] || %{}),
@@ -54,35 +56,162 @@ defmodule SalixIM.TaskConversationInput do
          :ok <- request_loop(group, conversation_id, worker_agent_id, attrs["loop"]),
          initial = loop_command(initial, attrs["loop"]),
          {:ok, owner_user_id} <- owner_user_id(group_id, attrs, source_refs),
-         now <- SystemsClock.system_time(:millisecond),
-         conversation <-
-           task_conversation(
-             group_id,
-             conversation_id,
-             attrs["title"],
-             worker,
-             schedule,
-             now,
-             %{
-               "created_by_agent_id" => delegator_agent_id,
-               "owner_user_id" => owner_user_id,
-               "source_refs" => source_refs,
-               # Where the Task runs, resolved to a device: what a station Task
-               # is still known to run on once its station left it.
-               "runs_on" => attrs["runs_on"],
-               # A coding Task's repository and session branch (`runs_on {kind:
-               # sandbox}`).
-               "repo" => attrs["repo"],
-               # The Mini App a build Task makes (`SalixIM.TaskPlacement`): its
-               # sandbox's station may deploy that app only.
-               "mini_app" => attrs["mini_app"],
-               "metadata" => stringify(attrs["conversation_metadata"] || %{}),
-               "labels" => attrs["labels"],
-               "latest_artifact" => attrs["latest_artifact"],
-               "artifact_manifest" => attrs["artifact_manifest"]
-             }
+         now <-
+           if(published,
+             do: published.conversation["created_at"],
+             else: SystemsClock.system_time(:millisecond)
            ),
-         {:ok, delegator_participant} <-
+         conversation <-
+           if(published,
+             do: published.conversation,
+             else:
+               task_conversation(
+                 group_id,
+                 conversation_id,
+                 attrs["title"],
+                 worker,
+                 schedule,
+                 now,
+                 %{
+                   "created_by_agent_id" => delegator_agent_id,
+                   "owner_user_id" => owner_user_id,
+                   "source_refs" => source_refs,
+                   # Where the Task runs, resolved to a device: what a station Task
+                   # is still known to run on once its station left it.
+                   "runs_on" => attrs["runs_on"],
+                   # A coding Task's repository and session branch (`runs_on {kind:
+                   # sandbox}`).
+                   "repo" => attrs["repo"],
+                   # The Mini App a build Task makes (`SalixIM.TaskPlacement`): its
+                   # sandbox's station may deploy that app only.
+                   "mini_app" => attrs["mini_app"],
+                   "metadata" => stringify(attrs["conversation_metadata"] || %{}),
+                   "labels" => attrs["labels"],
+                   "latest_artifact" => attrs["latest_artifact"],
+                   "artifact_manifest" => attrs["artifact_manifest"]
+                 }
+               )
+           ),
+         {:ok, participants} <-
+           creation_participants(
+             published,
+             group,
+             conversation,
+             delegator,
+             worker,
+             owner_user_id,
+             source_refs,
+             investigation,
+             attrs,
+             now
+           ),
+         attrs <- published_placement(attrs, published, worker_agent_id),
+         {:ok, spec} <-
+           configure_model(
+             %{
+               "conversation" => Map.put(conversation, "participants", participants),
+               "worker_agent_id" => worker_agent_id,
+               "delegator_agent_id" => delegator_agent_id,
+               "initial_message" => initial,
+               "initial_delivery" => Keyword.get(opts, :initial_delivery, :command)
+             },
+             published,
+             group,
+             attrs,
+             delegator_agent_id,
+             worker
+           ),
+         {:ok, station_session} <-
+           invite_station(
+             group,
+             conversation_id,
+             worker,
+             Map.put(attrs, "owner_user_id", owner_user_id)
+           ),
+         {:ok, appended} <- ConversationServer.create_task(group_id, conversation_id, spec),
+         :ok <- station_joined(group, conversation_id, worker, attrs, station_session) do
+      observe_created_task(appended, group_id, conversation_id, now, attrs)
+
+      {:ok,
+       appended
+       |> Map.merge(%{
+         "conversation_id" => conversation["conversation_id"],
+         "conversation_kind" => "agent_task",
+         "worker_agent_id" => worker_agent_id,
+         "schedule" => schedule
+       })}
+    else
+      false -> {:error, {:bad_request, "task command and canonical identity are required"}}
+      nil -> {:error, {:bad_request, "task conversation initial message is missing"}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_model_input(nil, group, attrs),
+    do: SalixIM.TaskModelSelection.validate_explicit(group, attrs)
+
+  defp validate_model_input(_published, _group, _attrs), do: :ok
+
+  defp configure_model(spec, nil, group, attrs, delegator_id, worker),
+    do:
+      SalixIM.TaskModelSelection.configure_spec(
+        spec,
+        group,
+        attrs,
+        delegator_id,
+        attrs["session_model"] || default_task_model(group) || worker_model(worker)
+      )
+
+  defp configure_model(spec, _published, _group, _attrs, _delegator_id, _worker),
+    do: {:ok, spec}
+
+  # The model a Worker runs a Task with when neither the Task nor its Group
+  # names one: its own choice, else the platform model it follows.
+  defp worker_model(%{"model" => %{"kind" => _} = model}), do: model
+  defp worker_model(_worker), do: SalixIM.TaskModelSelection.builtin()
+
+  defp creation_snapshot(group_id, conversation_id) do
+    case Conversations.get_group_conversation_record(group_id, conversation_id) do
+      {:ok, conversation} ->
+        with {:ok, participants} <-
+               SalixIM.ConversationParticipantProjection.list_bounded(group_id, conversation_id),
+             do: {:ok, %{conversation: conversation, participants: participants}}
+
+      {:error, :not_found} ->
+        {:ok, nil}
+
+      error ->
+        error
+    end
+  end
+
+  defp creation_participants(
+         %{participants: participants},
+         _group,
+         _conversation,
+         _delegator,
+         _worker,
+         _owner,
+         _refs,
+         _investigation,
+         _attrs,
+         _now
+       ),
+       do: {:ok, participants}
+
+  defp creation_participants(
+         nil,
+         group,
+         conversation,
+         delegator,
+         worker,
+         owner_user_id,
+         source_refs,
+         investigation,
+         attrs,
+         now
+       ) do
+    with {:ok, delegator_participant} <-
            task_agent_participant(
              group,
              conversation,
@@ -104,48 +233,37 @@ defmodule SalixIM.TaskConversationInput do
              "worker",
              now,
              worker_participant_opts(attrs, group)
-           ),
-         {:ok, station_session} <-
-           invite_station(
-             group,
-             conversation_id,
-             worker,
-             Map.put(attrs, "owner_user_id", owner_user_id)
-           ),
-         participants <-
-           SalixIM.Triage.Investigation.result_participants(investigation, now) ++
-             owner_participants(owner_user_id, now) ++
-             personal_status_participants(group_id, now) ++
-             origin_provider_participants(group_id, conversation_id, source_refs, now) ++
-             [delegator_participant, worker_participant],
-         {:ok, appended} <-
-           ConversationServer.create_task(
-             group_id,
-             conversation_id,
-             %{
-               "conversation" => Map.put(conversation, "participants", participants),
-               "worker_agent_id" => worker_agent_id,
-               "delegator_agent_id" => delegator_agent_id,
-               "initial_message" => initial,
-               "initial_delivery" => Keyword.get(opts, :initial_delivery, :command)
-             }
-           ),
-         :ok <- station_joined(group, conversation_id, worker, attrs, station_session) do
-      observe_created_task(appended, group_id, conversation_id, now)
-
+           ) do
       {:ok,
-       appended
-       |> Map.merge(%{
-         "conversation_id" => conversation["conversation_id"],
-         "conversation_kind" => "agent_task",
-         "worker_agent_id" => worker_agent_id,
-         "schedule" => schedule
-       })}
-    else
-      false -> {:error, {:bad_request, "task command and canonical identity are required"}}
-      nil -> {:error, {:bad_request, "task conversation initial message is missing"}}
-      {:error, _reason} = error -> error
+       SalixIM.Triage.Investigation.result_participants(investigation, now) ++
+         owner_participants(owner_user_id, now) ++
+         personal_status_participants(group["group_id"], conversation, now) ++
+         origin_provider_participants(
+           group["group_id"],
+           conversation["conversation_id"],
+           source_refs,
+           now
+         ) ++
+         [delegator_participant, worker_participant]}
     end
+  end
+
+  defp published_placement(attrs, nil, _worker), do: attrs
+
+  defp published_placement(attrs, published, worker) do
+    original_worker =
+      Enum.find(
+        published.participants,
+        &(&1["actor_type"] == "agent" and &1["agent_id"] == worker)
+      )
+
+    attrs
+    |> Map.drop(~w(runs_on repo mini_app session_model))
+    |> Map.merge(Map.take(published.conversation, ~w(runs_on repo mini_app)))
+    |> Map.put(
+      "session_model",
+      get_in(original_worker || %{}, ["payload", "session_model"]) || attrs["session_model"]
+    )
   end
 
   # A Loop Task's Loop is written, `pending`, before its Task and the command
@@ -403,10 +521,20 @@ defmodule SalixIM.TaskConversationInput do
   defp put_present(map, _key, value) when value in [nil, ""], do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
 
-  defp observe_created_task(%{"inserted" => true}, group_id, conversation_id, created_at) do
+  # The observer is told where the Task runs and on what model; it records
+  # their kinds only.
+  defp observe_created_task(%{"inserted" => true}, group_id, conversation_id, created_at, attrs) do
     case SystemsRuntime.get_env(:salix_im, :product_activity_observer) do
-      nil -> :ok
-      module -> module.task_created(group_id, conversation_id, created_at)
+      nil ->
+        :ok
+
+      module ->
+        module.task_created(
+          group_id,
+          conversation_id,
+          created_at,
+          Map.take(attrs, ~w(runs_on repo mini_app session_model))
+        )
     end
   rescue
     _ -> :ok
@@ -414,14 +542,15 @@ defmodule SalixIM.TaskConversationInput do
     _, _ -> :ok
   end
 
-  defp observe_created_task(_, _, _, _), do: :ok
+  defp observe_created_task(_, _, _, _, _), do: :ok
 
   @doc """
   Create the Task a Slack thread bound to a Worker or to Tasks makes, once:
   `materialization` is its title, command and creation time, fixed when the
   thread was bound. `opts[:session_model]` is the model the Slack connection
   binds its Tasks to; without one the Task runs the default Task model
-  (`default_task_model/1`). The model is not part of the materialization: the
+  (`default_task_model/1`), unless the Group requires an explicit choice.
+  The model is not part of the materialization: the
   Task made first keeps its model.
   """
   def ensure_with_id(group_id, conversation_id, worker_agent_id, materialization, opts \\ [])
@@ -437,6 +566,7 @@ defmodule SalixIM.TaskConversationInput do
              is_integer(created_at) do
     with true <- Ids.valid_conversation_id?(conversation_id) and trim(title) != "",
          {:ok, group} <- GroupDirectory.get_group(group_id),
+         :ok <- validate_ingress_model(group, conversation_id, opts[:session_model]),
          {:ok, worker} <- worker_agent(worker_agent_id, group_id),
          conversation <-
            task_conversation(
@@ -448,6 +578,7 @@ defmodule SalixIM.TaskConversationInput do
              created_at,
              %{"task_materialization" => materialization}
            ),
+         session_model = opts[:session_model] || default_task_model(group),
          {:ok, worker_participant} <-
            task_agent_participant(
              group,
@@ -456,12 +587,10 @@ defmodule SalixIM.TaskConversationInput do
              "worker",
              created_at,
              notification_filter: %{"messages" => "all", "statuses" => "none"},
-             session_model: opts[:session_model] || default_task_model(group)
+             session_model: session_model
            ),
-         {:ok, result} <-
-           ConversationServer.create_task(
-             group_id,
-             conversation_id,
+         {:ok, spec} <-
+           ingress_model(
              %{
                "conversation" =>
                  conversation
@@ -469,8 +598,12 @@ defmodule SalixIM.TaskConversationInput do
                  |> Map.delete("task_materialization"),
                "worker_agent_id" => worker_agent_id,
                "materialization" => materialization
-             }
-           ) do
+             },
+             group,
+             session_model || worker_model(worker),
+             materialization
+           ),
+         {:ok, result} <- ConversationServer.create_task(group_id, conversation_id, spec) do
       {:ok, result}
     else
       false -> task_conflict()
@@ -480,6 +613,43 @@ defmodule SalixIM.TaskConversationInput do
 
   def ensure_with_id(_group_id, _conversation_id, _worker_agent_id, _materialization, _opts),
     do: {:error, {:bad_request, "invalid task materialization"}}
+
+  # A new Task that runs Comma's built-in model takes its model from the
+  # platform route table, chosen once before its first commit. Redelivery to
+  # a Task that exists asks for no decision: it keeps its model.
+  defp ingress_model(spec, group, task_model, materialization) do
+    case Conversations.get_group_conversation_record(
+           group["group_id"],
+           spec["conversation"]["conversation_id"]
+         ) do
+      {:error, :not_found} ->
+        content = trim(materialization["title"]) <> "\n\n" <> materialization["command"]
+
+        with {:ok, spec} <-
+               SalixIM.TaskModelSelection.configure_ingress(spec, group, task_model, content),
+             {:ok, selected} <- SalixIM.TaskModelSelection.select(spec),
+             do: {:ok, Map.delete(selected, "model_selection")}
+
+      _existing_or_unavailable ->
+        {:ok, spec}
+    end
+  end
+
+  # A Slack binding has no delegator and uses its connection's explicit choice.
+  # Policy changes must not reject redelivery to an already committed Task.
+  defp validate_ingress_model(group, conversation_id, model) do
+    case SalixIM.TaskModelSelection.validate_explicit(group, %{"session_model" => model}) do
+      :ok ->
+        :ok
+
+      error ->
+        case Conversations.get_group_conversation_record(group["group_id"], conversation_id) do
+          {:ok, _existing} -> :ok
+          {:error, :not_found} -> error
+          read_error -> read_error
+        end
+    end
+  end
 
   defp task_conversation(group_id, conversation_id, title, worker, schedule, created_at, extras) do
     worker_name =
@@ -590,13 +760,16 @@ defmodule SalixIM.TaskConversationInput do
       []
   end
 
-  # The product adapter names the owner's bound personal chat, if any. Cards
-  # are an accessory to the Task: a lookup failure never blocks its creation.
-  defp personal_status_participants(group_id, now) do
+  # The product adapter names the owner's bound personal chat, if any. Only a
+  # Task asked for on that chat's provider follows there. Cards are an
+  # accessory to the Task: a lookup failure never blocks its creation.
+  defp personal_status_participants(group_id, conversation, now) do
+    origin = get_in(conversation, ["metadata", "origin", "provider"])
+
     with module when is_atom(module) and not is_nil(module) <-
            SystemsRuntime.get_env(:salix_im, :task_status_personal_adapter),
          targets when is_list(targets) <- module.task_status_targets(group_id) do
-      for target <- targets, is_map(target) do
+      for %{"provider" => ^origin} = target <- targets do
         target
         |> ProviderConversationInput.provider_participant(%{
           "role_label" => "task_status_personal",

@@ -46,7 +46,7 @@ theorem ordinary_write_observations {context : Context} {continuation hwm saved 
         obtain ⟨savedEq, eventEq⟩ := same
         rw [eventEq]
         exact ⟨ordinary_timestamp_batch _ batch, savedEq⟩
-      · have same := tail.fixed (by simp [invalid, RevisionFence.invalid, a])
+      · have same := tail.fixed (by simp [invalid, Revision.invalid, a])
         cases congrArg Prod.fst same
   · have same := trace.fixed (by simp [preparedWrite, a])
     simp only [preparedWrite, Prod.mk.injEq, Option.some.injEq, Term.tuple.injEq,
@@ -69,7 +69,7 @@ theorem write_observations_no_effect {context : Context} {continuation hwm saved
       split at tail
       · have same := tail.fixed (by simp [preparedWrite, a])
         simp [preparedWrite, a] at same
-      · have same := tail.fixed (by simp [invalid, RevisionFence.invalid, a])
+      · have same := tail.fixed (by simp [invalid, Revision.invalid, a])
         cases congrArg Prod.fst same
   · have same := trace.fixed (by simp [preparedWrite, a])
     simp [preparedWrite, a] at same

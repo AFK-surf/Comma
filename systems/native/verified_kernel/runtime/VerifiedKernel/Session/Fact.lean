@@ -1,4 +1,5 @@
 import VerifiedKernel.Session.Activity
+import VerifiedKernel.Session.Ops
 import VerifiedKernel.Encoding
 
 namespace VerifiedKernel.Session
@@ -87,6 +88,6 @@ def sessionEvent (state event : Term) : KernelM Term := do
   let activity ← if timestamp.truthy then pure timestamp else field state "last_activity_at"
   write state [("events", history), ("last_seq", seq), ("llm_failure_streak", streak), ("input_queue", queue),
     ("runaway_unsettled_streak", runaway), ("visible_reply_egress_facts", egress),
-    ("terminal_reply_ack_hwm", terminalAck), ("runtime_failure_reply", attempt), ("last_activity_at", activity)]
+    ("terminal_reply_ack_hwm", terminalAck), ("runtime_failure_reply", attempt), ("last_activity_at", metadataSeconds activity)]
 
 end VerifiedKernel.Session

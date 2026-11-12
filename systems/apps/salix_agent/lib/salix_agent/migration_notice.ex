@@ -1,7 +1,7 @@
 defmodule SalixAgent.MigrationNotice do
   @moduledoc false
 
-  @version 65
+  @version 73
   @superseded_versions [
     11,
     18,
@@ -81,6 +81,30 @@ defmodule SalixAgent.MigrationNotice do
     }
   end
 
+  defp summary(73),
+    do:
+      "A Router's done with nothing sent to its person is refused; ending does not continue work"
+
+  defp summary(72),
+    do: "Routers choose what a Task request's sender gets, with task_request.report"
+
+  defp summary(71),
+    do:
+      "After an IFC refusal, tell the waiting person; end_turn no_reply marks deliberate silence"
+
+  defp summary(70), do: "Routers read received images themselves, HEIC included"
+
+  defp summary(69), do: "A sandbox Task names a repo only for work in that repository"
+
+  defp summary(68), do: "Routers open every human request first, Slack and Feishu included"
+
+  defp summary(67),
+    do:
+      "Where the Cloud VM is retired, received files go to a sandbox Task; Workers create sandbox Tasks for machine work"
+
+  defp summary(66),
+    do: "Where the Group's Cloud VM is retired, give runs_on {kind: sandbox}"
+
   defp summary(65), do: "Every Router Task names runs_on.kind; code changes run in a sandbox"
 
   defp summary(64), do: "A Loop Task runs inside Salix, never on a station"
@@ -145,6 +169,38 @@ defmodule SalixAgent.MigrationNotice do
   defp summary(47), do: "Router delivery requires separate completion"
 
   defp summary(_version), do: "migration notice changed"
+
+  defp content(73),
+    do:
+      "Routers: ending a turn does not continue its request later. Nothing wakes you for it again unless the person writes. When a person in this activation has had no reply and no Task carries their request, end_turn with outcome=done and no reply is refused. Before you end, put the answer or a short note on what is done and what is blocked in end_turn's reply, or create a Task for the remaining work. Set no_reply=true only when silence is deliberate. Use outcome=blocked with a reason when nothing can progress. Continue silently; this notice requests no new work."
+
+  defp content(72),
+    do:
+      "Routers: a Task request's Task result no longer goes back by itself. You decide what the requester gets and send it with task_request.report, once. A reply in the chat does not reach them. See Task requests in your instructions."
+
+  defp content(71),
+    do:
+      "After an IFC refusal that leaves a person's request unanswered, send a generic explanation with sources: [] before settling, unless they told you not to reply. It names no source content or restricted details. If that send is refused too, settle. Set no_reply=true on end_turn when you deliberately send no reply to the people in this activation: they asked for silence, or nothing they said needs an answer. Leave it out when work continues elsewhere and a reply will still come."
+
+  defp content(70),
+    do:
+      "Routers: fs.read_file now reads received images, including HEIC. Earlier turns that said this conversation cannot read images no longer apply, and neither do steps that copy an image to another computer to convert it. Read a received image yourself first. Create a Task only if the read fails."
+
+  defp content(69),
+    do:
+      "Routers: repo in im_api.internal.task.create is only for work in that GitHub repository. A sandbox Task does not need one: runs_on {kind: sandbox} without repo is a plain Linux VM with nothing checked out, for work such as uploading a file to a website, a reverse image search or processing a received file. Do not attach a repository to a Task that does not work in it. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(68),
+    do:
+      "Routers: the opening-reply rule now covers every new human request, from a Comma user chat, Slack or Feishu. When analysis, research, attachment reading, execution or delegation remains, first send one short opening to the request's source through call, then continue that work. Send the opening before you read attachments or handle other queued input such as a scheduled run; only a required thread read comes first. An answer you can give at once still goes in end_turn's reply. Continue silently; this notice requests no new work."
+
+  defp content(67),
+    do:
+      "Routers: where this deployment has retired the Group's Cloud VM, cloud_vm.start is not offered, and received files (video, audio, PDFs, archives, Office documents) are processed in a sandbox Task: im_api.internal.task.create with runs_on {kind: sandbox}, model {kind: runtime, provider: codex | claude}, and in content the file's VFS path and the wanted result. There, a Loop Task's Worker and a Worker in a sandbox may create sandbox Tasks for work that needs a machine; each comes to you as a Task you delegated, its parent the conversation the Worker's Task came from, so you deliver its result there as for any Task; a Task a Worker created creates none. Where sandboxes are not set up, nothing changes. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(66),
+    do:
+      "Routers: where this deployment has retired the Group's Cloud VM as a place to run Tasks, im_api.internal.task.create refuses runs_on {kind: cloud_vm} (cloud_vm_retired), as does binding a Worker to it. Work that needs a machine and no particular computer then runs in a sandbox of the Task's own: give runs_on {kind: sandbox}, with repo {owner, name} to work in a repository, or {kind: default}, which places it there automatically after a VMM Station and the user's own computer. When the refusal says the Group's default place is the retired Cloud VM, name a place instead of {kind: default} and ask the user to change the default in the product's settings. A sandbox is temporary: what people should keep goes into the Task, into Drive or onto a pushed branch. Where the Cloud VM is not retired, {kind: cloud_vm} works as before. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
 
   defp content(65),
     do:

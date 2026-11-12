@@ -98,7 +98,8 @@ defmodule SalixAgent.SessionActivity do
       "source" => bounded_text(funding["source"]),
       "profile_id" => bounded_text(funding["profile_id"]),
       "profile_name" => bounded_text(funding["profile_name"]),
-      "reset_at" => if(is_integer(reset_at) and reset_at > 0, do: reset_at)
+      "reset_at" => if(is_integer(reset_at) and reset_at > 0, do: reset_at),
+      "credits" => if(funding["credits"] == true, do: true)
     }
     |> compact_detail()
   end
@@ -215,13 +216,28 @@ defmodule SalixAgent.SessionActivity do
     end
   end
 
-  # Waits.build sets the deadline from the moment the wait began.
+  # Waits.build records when the wait began, and a re-armed wait keeps it, so
+  # an extension never restarts the count. A wait built before that field
+  # existed began one timeout plus its extensions before its deadline.
   defp started_at_ms(wait) do
-    with deadline_ms when is_integer(deadline_ms) <- value(wait, "deadline_ms"),
-         timeout_seconds when is_integer(timeout_seconds) <- value(wait, "timeout_seconds") do
-      deadline_ms - timeout_seconds * 1_000
-    else
-      _other -> nil
+    case value(wait, "started_at_ms") do
+      started when is_integer(started) ->
+        started
+
+      _missing ->
+        with deadline_ms when is_integer(deadline_ms) <- value(wait, "deadline_ms"),
+             timeout_seconds when is_integer(timeout_seconds) <-
+               value(wait, "timeout_seconds") do
+          extended_ms =
+            case value(wait, "extended_ms") do
+              extended when is_integer(extended) and extended > 0 -> extended
+              _other -> 0
+            end
+
+          deadline_ms - extended_ms - timeout_seconds * 1_000
+        else
+          _other -> nil
+        end
     end
   end
 

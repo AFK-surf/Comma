@@ -27,6 +27,8 @@ type GuardState = {
   counts: Map<string, number>;
   /** The tests that did each kind of IO; "" for the file's own hooks. */
   tests: Map<string, Set<string>>;
+  /** Appends to a report file outside the guard: another report a test run writes (the core's work), not its IO. */
+  appendReport?: (file: string, text: string) => void;
 };
 const state = ((globalThis as { [stateKey]?: GuardState })[stateKey] ??= {
   watched: false,
@@ -45,6 +47,14 @@ export function forbidRealIo() {
 const appendFileSync = (
   require("node:fs") as typeof import("node:fs")
 ).appendFileSync.bind(null);
+state.appendReport ??= (file, text) => {
+  state.reporting = true;
+  try {
+    appendFileSync(file, text);
+  } finally {
+    state.reporting = false;
+  }
+};
 
 const note = (kind: string) => {
   if (state.reporting) return;

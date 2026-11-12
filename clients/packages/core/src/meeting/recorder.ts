@@ -180,6 +180,8 @@ export class MeetingRecorder {
   #snapshot: MeetingRecorderValue = { ...unavailableMeetingRecorder };
   #preferences: MeetingPreferences = defaultPreferences;
   #meetings: MeetingPresenceMeeting[] = [];
+  /** Whether the detector can see meetings: an unavailable one says nothing about which meetings ended. */
+  #presenceAvailable = false;
   /** Meetings the person (or Auto) answered: not offered again while present. */
   #answered = new Set<string>();
   #initialized = false;
@@ -393,6 +395,7 @@ export class MeetingRecorder {
     switch (event.kind) {
       case "presence": {
         this.#meetings = event.state.meetings;
+        this.#presenceAvailable = event.state.available;
         if (this.#initialized) {
           const seen = new Set(event.state.meetings.map((m) => m.key));
           this.#answered = new Set([...this.#answered].filter((key) => seen.has(key)));
@@ -400,6 +403,7 @@ export class MeetingRecorder {
         }
         // The first presence snapshot follows the same saved policy as later meetings.
         this.#initialized = true;
+        if (this.#presenceAvailable) this.tasks.settle(this.#meetings);
         this.#offerMeeting();
         return;
       }
@@ -455,8 +459,10 @@ export class MeetingRecorder {
   }
 
   #sessionChanged(): void {
-    if (this.#ctx.session.lease())
+    if (this.#ctx.session.lease()) {
       this.#ctx.runner.fork(Effect.ignore(this.tasks.retryPending()), this.#scope);
+      if (this.#presenceAvailable) this.tasks.settle(this.#meetings);
+    }
     const account = this.#userId();
     if (account === this.#account) {
       this.#offerMeeting();

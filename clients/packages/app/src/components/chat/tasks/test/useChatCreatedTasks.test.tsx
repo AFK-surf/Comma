@@ -34,7 +34,7 @@ const summary: TaskSummary = {
   id: "task",
   group_id: "group",
   kind: "agent_task",
-  status: "completed",
+  status: "ready_for_review",
   title: "Current title",
   updated_at: 2,
   archive_availability: { allowed: true, reason: null },
@@ -51,7 +51,7 @@ const list: ProductInboxListResult = {
       workspaceId: "workspace",
       workspaceName: "Workspace",
       source: "salix.conversation",
-      status: "completed",
+      status: "ready_for_review",
       title: "Current title",
       updatedAt: 2,
       archiveVersion: 2,
@@ -97,6 +97,73 @@ it("docks a Task with the core's facts, keeps its object while they hold, and dr
     })
   );
   await waitFor(() => expect(result.current).toEqual([]));
+  unmount();
+});
+
+it("lets a Task that ended leave by itself, and docks it again when it runs again", async () => {
+  const { core, result, unmount } = render([summary]);
+  await waitFor(() => expect(result.current).toHaveLength(1));
+
+  for (const status of ["completed", "cancelled"]) {
+    act(() =>
+      core.emit("taskSummaries", { summaries: [{ ...summary, status, updated_at: 3 }] })
+    );
+    await waitFor(() => expect(result.current).toEqual([]));
+    act(() =>
+      core.emit("taskSummaries", {
+        summaries: [{ ...summary, status: "active", updated_at: 4, run_started_at: 4 }],
+      })
+    );
+    await waitFor(() =>
+      expect(result.current[0]).toMatchObject({ statusBucket: "in_progress" })
+    );
+  }
+  unmount();
+});
+
+it("keeps a Task that failed docked", async () => {
+  const { core, result, unmount } = render([summary]);
+  await waitFor(() => expect(result.current).toHaveLength(1));
+
+  act(() =>
+    core.emit("taskSummaries", {
+      summaries: [{ ...summary, status: "failed", updated_at: 3 }],
+    })
+  );
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({ statusBucket: "cancelled" })
+  );
+  unmount();
+});
+
+it("says why a Task in progress does not run once its Loop stopped", async () => {
+  const loop = { state: "active" as const, startedAt: 1, wakeCount: 1 };
+  const running = { ...summary, status: "active", loop };
+  const { core, result, unmount } = render([running]);
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({
+      statusBucket: "in_progress",
+      loopStop: undefined,
+    })
+  );
+
+  act(() =>
+    core.emit("taskSummaries", {
+      summaries: [
+        {
+          ...running,
+          updated_at: 3,
+          loop: { ...loop, state: "paused", reason: "undeliverable" },
+        },
+      ],
+    })
+  );
+  await waitFor(() =>
+    expect(result.current[0]).toMatchObject({
+      statusBucket: "in_progress",
+      loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
+    })
+  );
   unmount();
 });
 

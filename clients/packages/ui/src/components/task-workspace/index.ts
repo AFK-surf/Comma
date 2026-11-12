@@ -10,6 +10,7 @@ export {
   taskUpdatedAtLabel,
 } from "./TaskSummaryCard";
 export type {
+  TaskLoopStop,
   TaskStatusBucket,
   TaskSummaryViewModel,
   TaskWorker,
@@ -31,5 +32,6 @@ export {
 export type {
   TaskFilterOption,
   TaskFilterSection,
+  TaskFilterSectionGroup,
   TaskStatusCounts,
 } from "./TaskWorkspaceToolbarActions";

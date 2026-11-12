@@ -103,7 +103,7 @@ describe("a local file's route", () => {
     t.api.on("POST", PATH, ownerMissing);
     expect(await t.register()).toMatchObject({
       error: {
-        message: expect.stringContaining("Reconnect this workspace's Comma Connector"),
+        message: expect.stringContaining("Reconnect this workspace's Comma station"),
         detail: {
           outcome: "rejected",
           retryable: true,

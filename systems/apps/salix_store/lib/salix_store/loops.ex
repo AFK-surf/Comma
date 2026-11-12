@@ -34,6 +34,7 @@ defmodule SalixStore.Loops do
       field(:name, :string)
       field(:webhook_secret, :string, redact: true)
       field(:composio_trigger, :map)
+      field(:product_event, :string)
       field(:task_conversation_id, :string)
       field(:trigger, :map)
       field(:max_runs, :integer)
@@ -172,6 +173,26 @@ defmodule SalixStore.Loops do
     _ -> {:error, :unavailable}
   end
 
+  @doc "Indexed active subscribers of one product event. A Group admits at most 100 active Loops."
+  def product_event_subscribers(group_id, event) when is_binary(group_id) and is_binary(event) do
+    rows =
+      Repo.all(
+        from(r in Row,
+          where:
+            r.group_id == ^group_id and r.status == "active" and not is_nil(r.product_event) and
+              r.product_event == ^event,
+          select: struct(r, ^@summary_fields),
+          limit: 101
+        )
+      )
+
+    if length(rows) > 100,
+      do: {:error, :subscriber_limit},
+      else: {:ok, Enum.map(rows, &to_record/1)}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
   @doc "Every Loop owned by `agent_id`, oldest first. ELF bytes are omitted."
   @spec list_by_agent(String.t()) :: {:ok, [loop_record()]} | {:error, :unavailable}
   def list_by_agent(agent_id) when is_binary(agent_id) do
@@ -179,6 +200,28 @@ defmodule SalixStore.Loops do
       from(r in Row,
         where: r.agent_id == ^agent_id,
         order_by: [asc: r.created_at, asc: r.id],
+        select: struct(r, ^@summary_fields)
+      )
+      |> Repo.all()
+      |> Enum.map(&to_record/1)
+
+    {:ok, rows}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc "One page of the Loops of `group_id` paused by `paused_by`, by id, after `after_id`."
+  @spec list_paused_by(String.t(), String.t(), String.t(), pos_integer()) ::
+          {:ok, [loop_record()]} | {:error, :unavailable}
+  def list_paused_by(group_id, paused_by, after_id, limit)
+      when is_binary(group_id) and is_binary(paused_by) and is_binary(after_id) and limit > 0 do
+    rows =
+      from(r in Row,
+        where:
+          r.group_id == ^group_id and r.status == "paused" and r.paused_by == ^paused_by and
+            r.id > ^after_id,
+        order_by: [asc: r.id],
+        limit: ^limit,
         select: struct(r, ^@summary_fields)
       )
       |> Repo.all()
@@ -236,6 +279,24 @@ defmodule SalixStore.Loops do
     query =
       from(r in Row,
         where: r.task_settle_pending == true,
+        order_by: [asc: r.id],
+        select: struct(r, ^@summary_fields),
+        limit: ^limit
+      )
+
+    query = if after_id, do: from(r in query, where: r.id > ^after_id), else: query
+    {:ok, Repo.all(query) |> Enum.map(&to_record/1)}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc "At most `limit` Task Loops paused as `undeliverable` with an id after `after_id`, by id."
+  def undeliverable_task_loops(after_id, limit) when limit > 0 and limit <= 200 do
+    query =
+      from(r in Row,
+        where:
+          r.status == "paused" and r.paused_by == "undeliverable" and
+            not is_nil(r.task_conversation_id),
         order_by: [asc: r.id],
         select: struct(r, ^@summary_fields),
         limit: ^limit
@@ -391,11 +452,14 @@ defmodule SalixStore.Loops do
     _ -> {:error, :unavailable}
   end
 
-  defp active_counts!(agent_id, group_id) do
+  # `except` is a row the count leaves out: a mutation of a Loop that is
+  # already active (a Task Loop's new program) does not add one.
+  defp active_counts!(agent_id, group_id, except \\ nil) do
     agent =
       Repo.one(
         from(r in Row,
           where: r.agent_id == ^agent_id and r.status == "active",
+          where: ^except_row(except),
           select: count(r.id)
         )
       )
@@ -404,12 +468,16 @@ defmodule SalixStore.Loops do
       Repo.one(
         from(r in Row,
           where: r.group_id == ^group_id and r.status == "active",
+          where: ^except_row(except),
           select: count(r.id)
         )
       )
 
     {agent, group}
   end
+
+  defp except_row(nil), do: dynamic(true)
+  defp except_row(id), do: dynamic([r], r.id != ^id)
 
   @doc "Whether `agent_id` holds at least one active Loop."
   @spec any_active?(String.t()) :: boolean()
@@ -487,7 +555,9 @@ defmodule SalixStore.Loops do
 
   Takes the Group's advisory transaction lock, counts the active Loops of
   `agent_id` and `group_id`, and applies `mutation` only while both counts
-  are below `{max_agent, max_group}`; concurrent admissions for the same
+  are below `{max_agent, max_group}`. The count leaves out the row an
+  `:update` mutates, so a Loop that is already active is not counted twice
+  and is not refused by its own place. Concurrent admissions for the same
   Group serialize on the lock, so the count they read is the count they
   commit against. A refused admission is `{:error, {:quota, :agent | :group,
   limit}}`; an error from the mutation rolls the transaction back.
@@ -505,7 +575,7 @@ defmodule SalixStore.Loops do
       when is_binary(agent_id) and is_binary(group_id) do
     Repo.transaction(fn ->
       Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", ["agent_loops:" <> group_id])
-      {agent_count, group_count} = active_counts!(agent_id, group_id)
+      {agent_count, group_count} = active_counts!(agent_id, group_id, mutated_id(mutation))
 
       cond do
         agent_count >= max_agent ->
@@ -521,6 +591,9 @@ defmodule SalixStore.Loops do
   rescue
     _ -> {:error, :unavailable}
   end
+
+  defp mutated_id({:update, id, _fun}), do: id
+  defp mutated_id(_mutation), do: nil
 
   defp apply_mutation!({:create, %{"id" => id} = record}) do
     one_loop_per_task!(record)
@@ -731,7 +804,7 @@ defmodule SalixStore.Loops do
               Repo.rollback({:not_active, current["status"]})
 
             Enum.any?(
-              ~w(agent_id group_id webhook_secret composio_trigger),
+              ~w(agent_id group_id webhook_secret composio_trigger product_event),
               &(current[&1] != observed[&1])
             ) ->
               Repo.rollback(:binding_changed)
@@ -824,7 +897,7 @@ defmodule SalixStore.Loops do
 
   # ---- codecs --------------------------------------------------------------
 
-  @fields ~w(id tenant_id group_id agent_id session_id name webhook_secret composio_trigger task_conversation_id trigger max_runs ends_at stop_condition run_count last_run_at last_run_source next_run_at started_at ended_at ended_reason task_settle_pending elf_sha256 elf_path config status paused_by failure exit_code checkpoint pending_events incarnation incarnation_node incarnation_session object_id notify_window_start_ms notify_window_count notify_limited_since_ms restart_window_start_ms restart_count ifc created_at updated_at last_notified_at)
+  @fields ~w(id tenant_id group_id agent_id session_id name webhook_secret composio_trigger product_event task_conversation_id trigger max_runs ends_at stop_condition run_count last_run_at last_run_source next_run_at started_at ended_at ended_reason task_settle_pending elf_sha256 elf_path config status paused_by failure exit_code checkpoint pending_events incarnation incarnation_node incarnation_session object_id notify_window_start_ms notify_window_count notify_limited_since_ms restart_window_start_ms restart_count ifc created_at updated_at last_notified_at)
 
   @doc false
   def fields, do: @fields
@@ -847,6 +920,7 @@ defmodule SalixStore.Loops do
       name: record["name"],
       webhook_secret: record["webhook_secret"],
       composio_trigger: record["composio_trigger"],
+      product_event: record["product_event"],
       task_conversation_id: record["task_conversation_id"],
       trigger: record["trigger"],
       max_runs: record["max_runs"],

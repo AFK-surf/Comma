@@ -577,6 +577,52 @@ defmodule SalixAgent.CatalogDispatchTest do
     assert opts["base_url"] == "subscription://worker/v1"
   end
 
+  test "a used-up ChatGPT plan goes on with its credits only once its owner lets it",
+       %{tenant: tenant} do
+    now = SystemsClock.system_time(:millisecond)
+
+    plan =
+      subscription(tenant, "codex", %{
+        "name" => "ChatGPT Pro",
+        "quota" => %{
+          "observed_at" => now,
+          "windows" => [
+            %{"used_percent" => 100, "resets_at" => now + 3_600_000, "minutes" => 10_080}
+          ],
+          "credits" => %{"has_credits" => true, "unlimited" => false, "balance" => "60470"}
+        }
+      })
+
+    # Credits alone are not spent: the stop says the plan has some.
+    assert {:error, %{"reason" => "quota_exhausted", "funding" => funding}} =
+             AccountPool.dispatch(route(tenant, "gpt-5.5", false), fn _ ->
+               flunk("credits must not be spent unasked")
+             end)
+
+    assert funding["profile_id"] == plan["id"]
+    assert funding["credits"] == true
+
+    {:ok, on} =
+      AccountPool.update(tenant, plan["id"], %{
+        "use_credits" => true,
+        "version" => plan["version"]
+      })
+
+    assert on["use_credits"] == true
+
+    # Plans a provider asked to wait do not keep it from serving now.
+    for _ <- 1..3, do: subscription(tenant, "codex", %{"cooldown_until" => now + 60_000})
+    assert {:ok, [first | _]} = Store.candidates(tenant, "codex", "gpt-5.5")
+    assert first["id"] == plan["id"]
+    assert {:ok, opts} = AccountPool.dispatch(route(tenant, "gpt-5.5", false), &{:ok, &1})
+    assert opts["base_url"] == "subscription://worker/v1"
+
+    # A plan with allowance left still serves first.
+    fresh = subscription(tenant, "codex")
+    assert {:ok, [first, second | _]} = Store.candidates(tenant, "codex", "gpt-5.5")
+    assert {first["id"], second["id"]} == {fresh["id"], plan["id"]}
+  end
+
   test "pinning an API key is choosing to pay for it", %{tenant: tenant} do
     {:ok, openai} = key(tenant, "openai", "sk-proj-0123456789abcdef")
     subscription = subscription(tenant, "codex")

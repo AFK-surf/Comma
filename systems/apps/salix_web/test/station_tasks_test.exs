@@ -532,10 +532,25 @@ defmodule SalixWeb.StationTasksTest do
     assert_sent(context.row, 3)
 
     # It lost everything: invited again, its new Session is given the Task from
-    # its start.
+    # its start, and the loss is counted by the kind of station.
+    handler = "lost-thread-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    pid = SystemsRuntime.Proc.self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:salix_web, :station_task, :lost_thread],
+        fn _event, _measurements, metadata, pid ->
+          SystemsRuntime.Proc.send(pid, {:lost_thread, metadata})
+        end,
+        pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
     Station.answer(:lost)
     assert {:ok, %{}} = StationTasks.hello(context.view, %{"tasks" => []})
     settle_receive({:asked, ^run_id, "task.put", %{"through" => 3}})
+    settle_receive({:lost_thread, %{kind: :device}})
     # The invite says through which Message its Session answered already (what
     # it had been given when the Session ended its turn), as each put does: the
     # station hands its new Session nothing through it (station
@@ -831,6 +846,81 @@ defmodule SalixWeb.StationTasksTest do
     assert length(FakeTask.messages()) == 3
   end
 
+  defmodule Members do
+    @moduledoc false
+    def role(_tenant, _group, "usr_ann"), do: {:ok, "member"}
+    def role(_tenant, _group, _user), do: :none
+    def manager_role?(_role), do: false
+    def read_only_role?(_role), do: false
+    def workspace_name(_tenant, _group), do: :none
+    def workspace_active?(_tenant, _group), do: :none
+    def requester(_tenant, _group, _connect, _subject), do: :none
+
+    def member(_tenant, _group, "usr_ann"),
+      do: {:ok, %{"name" => "Ann", "email" => "ann@example.test"}}
+
+    def member(_tenant, _group, _user), do: :none
+  end
+
+  test "a station is told who said each Message, by name and email where the Group's product knows them",
+       context do
+    prior = SystemsRuntime.get_env(:salix_store, :station_members)
+    SystemsRuntime.put_env(:salix_store, :station_members, [Members])
+
+    on_exit(fn ->
+      if prior,
+        do: SystemsRuntime.put_env(:salix_store, :station_members, prior),
+        else: SystemsRuntime.delete_env(:salix_store, :station_members)
+    end)
+
+    run_id = connect!(context.view)
+    assert :ok = StationTasks.joined(context.row)
+
+    settle_receive(
+      {:asked, ^run_id, "task.put", %{"task" => "cnv_task", "messages" => [first, second]}}
+    )
+
+    assert first["author"] == %{"kind" => "agent", "id" => "agt_router"}
+
+    assert second["author"] == %{
+             "kind" => "person",
+             "id" => "usr_ann",
+             "name" => "Ann",
+             "email" => "ann@example.test"
+           }
+  end
+
+  test "the station's Session asks with Comma's question card; one that is no card leaves its words",
+       context do
+    run_id = connect!(context.view)
+    assert :ok = StationTasks.joined(context.row)
+    settle_receive({:asked, ^run_id, "task.put", %{"through" => 2}})
+
+    post = %{
+      "task" => "cnv_task",
+      "session" => "ember:c-1",
+      "text" => "Which branch?",
+      "key" => "q1",
+      "declared" => "need_help",
+      "question" => %{
+        "prompt" => "Which branch?",
+        "choices" => [%{"id" => "o1", "label" => "main"}, %{"id" => "o2", "label" => "dev"}]
+      }
+    }
+
+    assert {:ok, %{"seq" => 3}} = StationTasks.post(context.view, post)
+    content = List.last(FakeTask.messages())["content"]
+
+    assert %{"choices" => [%{"label" => "main"}, %{"label" => "dev"}]} =
+             SalixIM.ConversationQuestion.question_block(content)
+
+    assert %{"type" => "text", "text" => "Which branch?"} = hd(content)
+
+    bad = %{post | "key" => "q2", "question" => %{"prompt" => "?", "choices" => []}}
+    assert {:ok, %{"seq" => 4}} = StationTasks.post(context.view, bad)
+    assert List.last(FakeTask.messages())["content"] == "Which branch?"
+  end
+
   test "a Session whose turn cannot start says so: a task_run_blocked Message, with why",
        context do
     run_id = connect!(context.view)
@@ -1062,6 +1152,56 @@ defmodule SalixWeb.StationTasksTest do
       settle_receive({:asked, ^run_id, "task.put", %{"messages" => [_, _], "through" => 2}})
       assert_sent(context.row, 2)
       refute_received {:billing_asked, _}
+    end
+
+    test "where the Cloud VM is retired, a Message for it wakes its archived VM no more, and no VM is made for a Group without one",
+         context do
+      retire_cloud_vm!()
+
+      log =
+        capture_log(fn ->
+          assert :ok = StationTasks.joined(context.row)
+          settle_refute_receive({:billing_asked, _}, @no_retry_ms)
+        end)
+
+      # Before the cutover the same Message asked for the VM's wake (the test above).
+      assert log =~ "was not woken"
+      assert log =~ "cloud_vm_retired"
+      assert %{"status" => "archived"} = vm = vm(context.group)
+      refute Map.has_key?(vm, "wake_requested_at")
+      assert_sent(context.row, 0)
+
+      # A Group whose VM was never made: none is made.
+      {:ok, group} =
+        Salix.Control.Groups.create(%{"name" => "Station tasks, retired"}, context.view.tenant_id)
+
+      group = group["group_id"]
+
+      {:ok, worker} =
+        SalixAgent.Control.create(
+          %{"group_id" => group, "name" => "W", "role" => "worker"},
+          context.view.tenant_id
+        )
+
+      invitation = %{
+        tenant_id: context.view.tenant_id,
+        group_id: group,
+        conversation_id: "cnv_task",
+        device_id: SalixStore.RuntimeIds.cloud_vm_device_id(group),
+        agent_id: worker["agent_id"],
+        start: %{"requester" => "ann"}
+      }
+
+      assert {:ok, :when_connected} = StationTasks.invite(invitation)
+
+      log =
+        capture_log(fn ->
+          assert :ok = StationTasks.joined(Map.put(invitation, :session, nil))
+          settle_refute_receive({:billing_asked, _}, @no_retry_ms)
+        end)
+
+      assert log =~ "cloud_vm_retired"
+      assert {:error, :not_found} = GroupCompute.group_workload(group)
     end
 
     test "a second Message while the VM wakes is part of the same wake", context do
@@ -1346,6 +1486,22 @@ defmodule SalixWeb.StationTasksTest do
       settle_receive({:billing_asked, _})
       assert_wake_requested(context.group)
     end
+  end
+
+  defmodule SandboxesOn do
+    @moduledoc "A deployment with Task sandboxes set up (`SalixAgent.Sandboxes`)."
+    def enabled?, do: true
+  end
+
+  # The deployment retires every Group's Cloud VM (`SalixAgent.Sandboxes.cloud_vm_retired?/1`).
+  defp retire_cloud_vm! do
+    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SandboxesOn)
+    SystemsRuntime.put_env(:salix_agent, :cloud_vm_retired, true)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_agent, :sandboxes_mod)
+      SystemsRuntime.delete_env(:salix_agent, :cloud_vm_retired)
+    end)
   end
 
   # As `SalixWeb.CloudVM.RuntimeLifecycle.wake/1` leaves an archived VM for the Compute reconciler.

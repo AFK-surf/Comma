@@ -97,6 +97,29 @@ describe("Task search", () => {
     expect(t.api.seen("GET", search)).toHaveLength(2);
     expect(t.api.seen("GET", "/v1/comma/workspaces")).toHaveLength(1);
   });
+
+  it("reads one Task's matching Messages, oldest first", async () => {
+    const t = setup();
+    const task = "/v1/comma/groups/grp-1/conversations/cnv-1/search";
+    t.api.on("GET", task, {
+      data: [
+        { message_id: "msg-1", message_seq: 1 },
+        { message_id: "msg-4", message_seq: 4 },
+      ],
+    });
+    const params = { query: " archive ", group: "grp-1", conversation: "cnv-1" };
+    expect(await t.client.call("search.taskMessages", params)).toEqual({
+      status: "ready",
+      messageIds: ["msg-1", "msg-4"],
+    });
+    expect(t.api.requests.find((r) => r.path.startsWith(task))!.path).toContain(
+      "q=archive"
+    );
+    expect(
+      await t.client.call("search.taskMessages", { ...params, query: "a" })
+    ).toEqual({ status: "invalid", messageIds: [] });
+    expect(t.api.seen("GET", task)).toHaveLength(1);
+  });
 });
 
 describe("Task search results", () => {
@@ -146,11 +169,13 @@ describe("Task search results", () => {
     ).toThrow();
   });
 
-  it("preserves and validates an optional content match for a title hit", () => {
+  it("preserves and validates an optional content match for a title hit, with its Message", () => {
     const title = "调研 Cursor 并制作网页";
     const parsed = taskSearchResultSchema.parse({
       content_match: {
         highlights: [{ start: 7, end: 9 }],
+        message_id: "msg_brief",
+        message_seq: 4,
         snippet: "已完成中文简报网页，并附带 HTML",
       },
       conversation_id: "cnv_task_title_and_content",
@@ -162,6 +187,7 @@ describe("Task search results", () => {
 
     expect(parsed.content_match).toEqual({
       highlights: [{ start: 7, end: 9 }],
+      message_id: "msg_brief",
       snippet: "已完成中文简报网页，并附带 HTML",
     });
 

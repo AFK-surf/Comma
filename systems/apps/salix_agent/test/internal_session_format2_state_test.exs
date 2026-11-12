@@ -165,6 +165,28 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
     }
   end
 
+  test "physical archival retains the uncompacted runtime context" do
+    before =
+      base_state()
+      |> SessionData.apply_events(Enum.map(1..5, &deliver(&1, "input #{&1}")))
+      |> SessionData.apply_events([compact_through(2)])
+
+    context = before |> InternalSession.open() |> InternalSession.query(:provider_context)
+
+    after_cold =
+      before
+      |> SessionData.apply_events([
+        %{"type" => "archive_advance", "archived_through" => 4, "segments" => [[1, 4, 4, 1_000]]}
+      ])
+
+    assert after_cold.archived_through == 4
+    assert after_cold.compacted_seq == 2
+    assert Enum.map(after_cold.messages, & &1.id) == [3, 4, 5]
+
+    assert after_cold |> InternalSession.open() |> InternalSession.query(:provider_context) ===
+             context
+  end
+
   defp sha256(content),
     do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 

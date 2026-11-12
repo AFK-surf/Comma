@@ -78,7 +78,8 @@ defmodule BillingCore.Charges do
         BillingCore.Credits.active_usage_mode(
           state.grants,
           event.billing_account_id,
-          event.metered_at
+          event.metered_at,
+          resource_kind
         )
 
       {grant_credits, grant_debits, grants_after, charged_credits, grace_credits, status,
@@ -93,7 +94,8 @@ defmodule BillingCore.Charges do
                 state.grants,
                 event.billing_account_id,
                 charged_credits,
-                event.metered_at
+                event.metered_at,
+                resource_kind
               )
 
             grace_credits = charged_credits - grant_credits
@@ -102,7 +104,13 @@ defmodule BillingCore.Charges do
              charge_status(grace_credits), next_remainder}
         end
 
-      balance_after = available_credits(grants_after, event.billing_account_id, event.metered_at)
+      balance_after =
+        BillingCore.Credits.available_credits(
+          grants_after,
+          event.billing_account_id,
+          event.metered_at,
+          resource_kind
+        )
 
       charge =
         event
@@ -240,12 +248,13 @@ defmodule BillingCore.Charges do
     {:pending, pending, next_state}
   end
 
-  defp consume_grants(grants, account_id, required, at) do
+  defp consume_grants(grants, account_id, required, at, resource_kind) do
     {eligible, other} =
       Enum.split_with(grants, fn grant ->
         Map.get(grant, :billing_account_id) == account_id and
           Map.get(grant, :status, "active") == "active" and
           Map.get(grant, :remaining_credits, 0) > 0 and
+          BillingCore.Credits.pays_for?(grant, resource_kind) and
           not Time.after?(at, Map.get(grant, :expires_at))
       end)
 
@@ -290,10 +299,6 @@ defmodule BillingCore.Charges do
       )
 
     {consumed, grant_debits, grants}
-  end
-
-  defp available_credits(grants, account_id, at) do
-    BillingCore.Credits.available_credits(grants, account_id, at)
   end
 
   defp grant_sort_key(grant) do

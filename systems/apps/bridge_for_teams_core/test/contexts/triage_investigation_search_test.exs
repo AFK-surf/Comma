@@ -172,13 +172,17 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
     worker = Ids.new_agent_id(group)
 
     assert {:ok, _} =
-             CasRecord.create(Keys.ctl_agent(worker), %{
-               "agent_id" => worker,
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "role" => "worker",
-               "heartbeat_schedule_id" => Ids.new_schedule_id()
-             })
+             SalixStore.Agent.create(worker, to_string(node()), SalixAgent.State,
+               config: %{
+                 "agent_id" => worker,
+                 "tenant_id" => tenant,
+                 "group_id" => group,
+                 "role" => "worker",
+                 "name" => "Investigation Worker",
+                 "runtime_config" => %{"kind" => "internal"},
+                 "heartbeat_schedule_id" => Ids.new_schedule_id()
+               }
+             )
 
     worker
   end

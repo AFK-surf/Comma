@@ -593,6 +593,34 @@ export const iconRegistry = [
     source: "central",
   },
   {
+    exportName: "ShoppingBagIcon",
+    centralName: "IconShoppingBag3",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Widget semantic icons / Central Icons catalog",
+  },
+  {
+    exportName: "SendIcon",
+    centralName: "IconSend",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Widget semantic icons / Central Icons catalog",
+  },
+  {
+    exportName: "AirplaneIcon",
+    centralName: "IconAirplane",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Widget semantic icons / Central Icons catalog",
+  },
+  {
+    exportName: "CarIcon",
+    centralName: "IconCarFrontView",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Widget semantic icons / Central Icons catalog",
+  },
+  {
     exportName: "EditBigIcon",
     centralName: "IconEditBig",
     variant: outlined,
@@ -665,6 +693,22 @@ export const iconRegistry = [
     // read row; no Figma node traced yet.
     source: "central",
     figmaSource: "Comma App / Inbox / item menu / mark as unread (email-2-unread)",
+  },
+  {
+    exportName: "InviteIcon",
+    centralName: "IconInvite",
+    variant: outlined,
+    // Picked from Central for the Settings "Requests" category; no Figma node
+    // traced yet.
+    source: "central",
+    figmaSource: "Comma App / Settings / Requests (invite, envelope, letter)",
+  },
+  {
+    exportName: "MapPinIcon",
+    centralName: "IconMapPin",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Comma App / Chat / Agent request, share your location",
   },
   {
     exportName: "PinIcon",
@@ -949,6 +993,27 @@ export const iconRegistry = [
       "Comma App (P0HbtMUd3lTy0FcGn0ojxT) / Left rail / Home (home-roof, house)",
   },
   {
+    exportName: "LockIcon",
+    centralName: "IconLock",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen / device lock button (lock, padlock)",
+  },
+  {
+    exportName: "VolumeUpIcon",
+    centralName: "IconVolumeUp",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen / device volume up button (volume-up, louder)",
+  },
+  {
+    exportName: "VolumeDownIcon",
+    centralName: "IconVolumeDown",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen / device volume down button (volume-down, quieter)",
+  },
+  {
     exportName: "ClockIcon",
     centralName: "IconClock",
     variant: outlined,
@@ -964,6 +1029,13 @@ export const iconRegistry = [
     source: "central",
     figmaSource:
       "Chat out-of-credits notice (gauge, tachometer, performance, speed, scale)",
+  },
+  {
+    exportName: "SignalBarsIcon",
+    centralName: "IconChart3",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen stats (chart, bars, signal, connection)",
   },
   {
     exportName: "InboxIcon",
@@ -987,6 +1059,20 @@ export const iconRegistry = [
     source: "figma",
     figmaNodeId: "7538:17946",
     figmaSource: "Left Sidebar / home / Schedules nav",
+  },
+  {
+    exportName: "CalendarEditIcon",
+    centralName: "IconCalendarEdit",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Tasks filter / Dates / Created date",
+  },
+  {
+    exportName: "CalendarRepeatIcon",
+    centralName: "IconCalendarRepeat",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Tasks filter / Dates / Updated date",
   },
   {
     exportName: "ListChecksIcon",
@@ -1122,6 +1208,13 @@ export const iconRegistry = [
       "Settings / Voice category (Central Icons catalog; no Figma node yet: call, phone, telephone)",
   },
   {
+    exportName: "CallFilledIcon",
+    centralName: "IconCall",
+    variant: filled,
+    source: "central",
+    figmaSource: "Desktop call card / hang up (user-requested filled variant)",
+  },
+  {
     exportName: "MacbookIcon",
     centralName: "IconMacbook",
     variant: outlined,
@@ -1154,6 +1247,13 @@ export const iconRegistry = [
     variant: realStroke,
     source: "central",
     figmaSource: "Chat message source / computer",
+  },
+  {
+    exportName: "TabletIcon",
+    centralName: "IconTablet",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen / foldable unfolded",
   },
   {
     exportName: "WindowAppIcon",
@@ -1227,7 +1327,7 @@ export const iconRegistry = [
   },
   {
     exportName: "HelpCircleIcon",
-    centralName: "IconCircleQuestionmark",
+    centralName: "IconQuestionmarkCircle2",
     variant: outlined,
     source: "figma",
     figmaNodeId: "85:1269",
@@ -1337,6 +1437,27 @@ export const iconRegistry = [
     source: "figma",
     figmaNodeId: "7542:2082",
     figmaSource: "Chat panel",
+  },
+  {
+    exportName: "ArrowsRepeatIcon",
+    centralName: "IconArrowsRepeat",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen debug bar (implementation only)",
+  },
+  {
+    exportName: "CameraIcon",
+    centralName: "IconCamera1",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Remote screen debug bar (implementation only)",
+  },
+  {
+    exportName: "RecordIcon",
+    centralName: "IconRecord",
+    variant: filled,
+    source: "central",
+    figmaSource: "Remote screen debug bar (implementation only)",
   },
   {
     exportName: "SunIcon",
@@ -1564,6 +1685,10 @@ export const iconRegistry = [
   brandMark("google", "IconGoogle"),
   brandMark("google-play", "IconGooglePlayStore"),
   brandMark("nvidia", "IconNvidia"),
+  brandMark("microsoft", "IconMicrosoft"),
+  brandMark("windows", "IconWindows"),
+  brandMark("android", "IconAndroid"),
+  brandMark("linux", "IconLinux"),
   brandMark("bitcoin", "IconBitcoin"),
   brandMark("ethereum", "IconEthereum"),
   brandMark("github", "IconGithub"),
@@ -1623,6 +1748,8 @@ export const iconRegistry = [
   brandMark("perplexity", "IconPerplexity", filled),
   brandMark("midjourney", "IconMidjourney", filled),
   brandMark("microsoft-copilot", "IconMicrosoftCopilot", filled),
+  brandMark("cursor", "IconCursor", filled),
+  brandMark("windsurf", "IconWindsurf", filled),
 ] as const satisfies readonly IconRegistryEntry[];
 
 export const iconRegistryByExport = Object.fromEntries(

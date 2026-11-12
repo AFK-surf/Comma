@@ -81,6 +81,27 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
     assert status(identity) == :unknown
   end
 
+  test "leaving overrides participation for a fixed 30 days and a later mention rejoins" do
+    identity = identity("left")
+
+    assert :ok = mark_participating(identity)
+    assert :ok = mark_left(identity)
+    left = row(identity)
+
+    assert left.participation_status == "left"
+    assert_in_delta NaiveDateTime.diff(left.expires_at, left.observed_at), 30 * @day_seconds, 1
+    assert status(identity) == :left
+    assert row(identity) == left
+
+    assert {:error, :thread_left} = mark_participating(identity)
+    assert {:ok, :left} = mark_not_participating(identity)
+    assert status(identity) == :left
+    assert row(identity) == left
+
+    assert :ok = apply(SlackRouterThreadParticipations, :mark_mentioned, identity)
+    assert status(identity) == :participating
+  end
+
   test "status migration repairs an invalid index left by a failed concurrent build" do
     assert :ok = mark_participating(identity("invalid-index-a"))
     assert :ok = mark_participating(identity("invalid-index-b"))
@@ -190,6 +211,17 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
            channel_id,
            thread_ts
          )
+
+  defp mark_left([group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts]),
+    do:
+      SlackRouterThreadParticipations.mark_left(
+        group_id,
+        connect_id,
+        workspace_id,
+        bot_user_id,
+        channel_id,
+        thread_ts
+      )
 
   defp mark_not_participating([
          group_id,

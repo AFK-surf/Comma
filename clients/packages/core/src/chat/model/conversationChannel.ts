@@ -1,4 +1,5 @@
-import { baseLocale, messages as commaMessages, type CommaLocale } from "@comma/i18n";
+import { baseLocale, type CommaLocale } from "@comma/i18n";
+import * as commaMessages from "@comma/i18n/messages";
 import {
   chatAttachmentDownloadMaxFileNameBytes,
   type ChatCodingFacts,
@@ -35,7 +36,7 @@ import {
   type CommaMessagePage,
   type SalixMessage,
 } from "../api";
-import type { Runner, Scoped } from "@comma/core-kernel";
+import { share, type Runner, type Scoped } from "@comma/core-kernel";
 import { Duration, Effect, Fiber, Queue } from "effect";
 import { after, cancel, type ChatEnv, type TimerHandle } from "../env";
 import {
@@ -45,6 +46,7 @@ import {
   isImageAttachment,
   isTranscodedImageAttachment,
   MAX_ATTACHMENT_BYTES,
+  MAX_UPLOAD_BYTES,
   MAX_ATTACHMENTS_PER_MESSAGE,
   stripCommaProtocolMarkers,
 } from "./protocol";
@@ -141,6 +143,8 @@ export type DraftAttachment = {
   localFile?: CommaLocalFileRef | undefined;
   /** A message's attachment the server stores by reference (`attachConversationFiles`): no bytes are held for it. */
   byReference?: true | undefined;
+  /** It failed for what the file is (too large, a type not taken): uploading it again changes nothing. */
+  refused?: true | undefined;
 };
 
 export type ChatActivity = {
@@ -204,6 +208,8 @@ export type ChatParticipantIssueDetail = {
   profileName?: string | undefined;
   /** Unix seconds when the member's own subscription limit resets. */
   resetAt?: number | undefined;
+  /** The plan at its limit has credits its owner has not let it spend. */
+  credits?: true | undefined;
   /** What started the round of a failed model request, when not a person's message. */
   trigger?: "background" | "voice_call" | undefined;
 };
@@ -270,6 +276,8 @@ export type PendingSend = {
   createdAt: number;
   error: string | undefined;
   failureAction?: "billing" | undefined;
+  /** How the words came (`quick_chat`), sent with them. */
+  messageType?: "quick_chat" | undefined;
   skills: { location: string }[] | undefined;
   replyToMessageId?: string | undefined;
   localFiles?: CommaLocalFileRef[] | undefined;
@@ -388,8 +396,9 @@ export type ConversationHistory = {
   ranges: [number, number][];
 };
 
-/** Messages a page before the oldest held asks for. */
+/** Messages a page before the oldest held asks for, and how many such pages one call reads at most. */
 const OLDER_PAGE = 100;
+const MAX_OLDER_PAGES = 10;
 /** An Activity history page; its messages are cut to a few fields, so it reads more than a transcript page. */
 const ACTIVITY_PAGE = 200;
 /** Messages a page that closes a gap asks for, and how many such pages one fill reads at most. */
@@ -528,15 +537,22 @@ export class ConversationChannel {
   /** Each message attachment of the draft the server stores by reference (`ChatApi.storeConversationFile`), by id. */
   private readonly conversationFiles = new Map<string, ChatConversationFile>();
   /**
-   * Messages that waited for their files and have not been answered yet: a message sent after one goes out after
-   * it, so the server has them in the order the person sent them.
+   * Messages that waited for their files or words and have not been answered yet: a message sent after one goes out
+   * after it, so the server has them in the order the person sent them.
    */
   private readonly uploadingSends = new Set<string>();
+  /**
+   * Messages shown as being sent whose words are still being prepared (`hold`): none goes to the server until
+   * `retry` sends it, and a message sent after one goes out after it.
+   */
+  private readonly heldSends = new Set<string>();
   private readonly clientRequestFirstObservedSequences = new Map<string, number>();
   private readonly draftFirstObservedSequences = new Map<string, number>();
   private readonly listeners = new Set<Listener>();
   private readonly messageFirstObservedSequences = new Map<string, number>();
   private readonly canonicalMessageIdsByClientRequestId = new Map<string, string>();
+  /** The transcript's messages already recorded in the indexes above (each a message as normalized once). */
+  private readonly observedMessages = new WeakSet<ChatMessage>();
   private readonly committedLocalFileRefs = new Set<string>();
   private readonly committingLocalFileRefs = new Set<string>();
   /** The poll under way's fence: aborted when it is stopped, which its callbacks check before they apply anything. */
@@ -563,6 +579,8 @@ export class ConversationChannel {
   private visibleReplyPresentation: VisibleReplyPresentationState =
     idleVisibleReplyPresentationState;
   private taskDetailRefreshNeeded = true;
+  /** The last poll was refused (403/404) after the conversation had loaded; the next refusal stands. */
+  private refusedOnce = false;
   private taskEtag: string | undefined;
   private taskListVersion: string | undefined;
   private transportMode: "unknown" | "events" | "task-events";
@@ -864,6 +882,9 @@ export class ConversationChannel {
         path: undefined,
         size: file.size,
         status: validationError ? "failed" : "uploading",
+        ...(refusesAttachment(file, this.env.transcodeAttachment !== undefined)
+          ? { refused: true as const }
+          : {}),
       };
       this.attachmentFiles.set(id, file);
       nextAttachments.push(attachment);
@@ -1052,6 +1073,9 @@ export class ConversationChannel {
         ...existing,
         error: validationError,
         status: validationError ? "failed" : "uploading",
+        refused: refusesAttachment(file, this.env.transcodeAttachment !== undefined)
+          ? true
+          : undefined,
       })
     );
     if (!validationError) this.startUpload(id);
@@ -1249,6 +1273,7 @@ export class ConversationChannel {
       clientRequestId?: string;
       /** Files for this message alone, apart from the draft: they upload now and the message waits for them. */
       files?: AttachmentUploadInput[];
+      messageType?: "quick_chat";
       skills?: { location: string }[];
       replyToMessageId?: string;
     } = {}
@@ -1318,6 +1343,7 @@ export class ConversationChannel {
       createdAt: this.env.now(),
       error: undefined,
       localFiles: localFiles.length > 0 ? localFiles : undefined,
+      messageType: options.messageType,
       skills: options.skills?.length ? options.skills : undefined,
       replyToMessageId: options.replyToMessageId,
       status: "sending",
@@ -1375,6 +1401,7 @@ export class ConversationChannel {
       consumeDraft?: boolean;
       clientRequestId?: string;
       files?: AttachmentUploadInput[];
+      messageType?: "quick_chat";
       skills?: { location: string }[];
       replyToMessageId?: string;
     } = {}
@@ -1385,12 +1412,61 @@ export class ConversationChannel {
     });
   }
 
-  /** Sends a failed message again, with its request id. */
-  retry(clientRequestId: string): Effect.Effect<CommaConversation | undefined, Error> {
-    return Effect.suspend(() => this.#retry(clientRequestId));
+  /**
+   * Shows a message in the conversation as being sent while its words are still being prepared: nothing goes to the
+   * server until `retry` sends it with its final words, or `failHeld` ends it as a failed message. Called again
+   * before that, it replaces the words. A message sent after it goes out after it.
+   */
+  hold(text: string, options: { clientRequestId: string; messageType?: "quick_chat" }) {
+    const shown = this.state.pending.find(
+      (item) => item.clientRequestId === options.clientRequestId
+    );
+    if (!shown) {
+      if (this.enqueueSend(text, { ...options, consumeDraft: false }))
+        this.heldSends.add(options.clientRequestId);
+      return;
+    }
+    if (!this.heldSends.has(shown.clientRequestId) || !text.trim()) return;
+    this.state = {
+      ...this.state,
+      pending: replacePending(this.state.pending, { ...shown, text }),
+    };
+    this.rebuildState({ emit: true });
   }
 
-  #retry(clientRequestId: string): Effect.Effect<CommaConversation | undefined, Error> {
+  /** Ends a held message as a failed one, which `retry` sends with the words it has. */
+  failHeld(clientRequestId: string) {
+    if (!this.heldSends.delete(clientRequestId)) return;
+    const held = this.state.pending.find(
+      (item) => item.clientRequestId === clientRequestId
+    );
+    if (!held) return;
+    if (this.locallyAwaitedClientRequestId === clientRequestId) {
+      this.clearLocalReplyWait();
+    }
+    this.state = {
+      ...this.state,
+      pending: replacePending(this.state.pending, {
+        ...held,
+        error: undefined,
+        status: "failed",
+      }),
+    };
+    this.rebuildState({ emit: true });
+  }
+
+  /** Sends a failed message again, or a held one, with its request id; `text` replaces its words. */
+  retry(
+    clientRequestId: string,
+    text?: string
+  ): Effect.Effect<CommaConversation | undefined, Error> {
+    return Effect.suspend(() => this.#retry(clientRequestId, text));
+  }
+
+  #retry(
+    clientRequestId: string,
+    text: string | undefined
+  ): Effect.Effect<CommaConversation | undefined, Error> {
     const pending = this.state.pending.find(
       (item) => item.clientRequestId === clientRequestId
     );
@@ -1400,6 +1476,7 @@ export class ConversationChannel {
 
     const retrying = {
       ...pending,
+      ...(text === undefined ? {} : { text }),
       error: undefined,
       failureAction: undefined,
       status: "sending" as const,
@@ -1417,7 +1494,9 @@ export class ConversationChannel {
     };
     this.rebuildState({ emit: true });
     this.wake("now");
-    if (retrying.uploads) this.uploadingSends.add(retrying.clientRequestId);
+    // A message sent after a held one still waits until this one is answered.
+    if (retrying.uploads || this.heldSends.delete(retrying.clientRequestId))
+      this.uploadingSends.add(retrying.clientRequestId);
     for (const attachment of retrying.uploads ?? []) {
       if (attachment.status === "uploading" && !this.uploads.has(attachment.id)) {
         this.startUpload(attachment.id);
@@ -1438,6 +1517,7 @@ export class ConversationChannel {
       this.stopUpload(attachment.id);
       this.forgetFile(attachment.id);
     }
+    this.heldSends.delete(clientRequestId);
     this.state = {
       ...this.state,
       pending: this.state.pending.filter(
@@ -1485,7 +1565,7 @@ export class ConversationChannel {
 
   /**
    * The message once every file it waits for is uploaded and every message sent before it that waited for its own
-   * files was answered; fails when one of its files failed, or the message went.
+   * files or words was answered; fails when one of its files failed, or the message went.
    */
   private awaitUploads(pending: PendingSend): Effect.Effect<PendingSend, Error> {
     return Effect.gen({ self: this }, function* () {
@@ -1500,7 +1580,11 @@ export class ConversationChannel {
           const index = this.state.pending.indexOf(current);
           const behind = this.state.pending
             .slice(0, index)
-            .some((item) => this.uploadingSends.has(item.clientRequestId));
+            .some(
+              (item) =>
+                this.uploadingSends.has(item.clientRequestId) ||
+                this.heldSends.has(item.clientRequestId)
+            );
           if (!behind) return current;
           yield* this.changed();
           continue;
@@ -1543,6 +1627,7 @@ export class ConversationChannel {
       clientRequestId: string;
       clientDeviceId?: string;
       localFiles?: CommaLocalFileRef[];
+      messageType?: "quick_chat";
       skills?: { location: string }[];
       replyToMessageId?: string;
       questionAnswer?: QuestionAnswer;
@@ -1554,6 +1639,7 @@ export class ConversationChannel {
     if (pending.replyToMessageId) attrs.replyToMessageId = pending.replyToMessageId;
     if (pending.questionAnswer) attrs.questionAnswer = pending.questionAnswer;
     if (pending.clientDeviceId) attrs.clientDeviceId = pending.clientDeviceId;
+    if (pending.messageType) attrs.messageType = pending.messageType;
     if (pending.skills?.length) {
       attrs.skills = pending.skills;
     }
@@ -1692,14 +1778,16 @@ export class ConversationChannel {
             localFileRef: localFile.localFileRef,
             name: localFile.displayName,
             size: localFile.size,
-          })
+          }),
+          MAX_UPLOAD_BYTES
         );
       }
       const conversationFile = this.conversationFiles.get(id);
       if (conversationFile)
         return this.settleUploaded(
           id,
-          this.api.storeConversationFile(this.groupId, conversationFile)
+          this.api.storeConversationFile(this.groupId, conversationFile),
+          MAX_UPLOAD_BYTES
         );
       const file = this.attachmentFiles.get(id);
       if (!file) return Effect.void;
@@ -1731,7 +1819,8 @@ export class ConversationChannel {
             this.api.uploadGroupFile(this.groupId, {
               data: ready.data,
               name: ready.name,
-            })
+            }),
+            MAX_ATTACHMENT_BYTES
           )
         ),
         Effect.catch((failure: UploadFailure) =>
@@ -1747,7 +1836,9 @@ export class ConversationChannel {
   /** Records how upload `request` of attachment `id` went, if the channel still holds what it uploads. */
   private settleUploaded(
     id: string,
-    request: Effect.Effect<CommaGroupFile, Error>
+    request: Effect.Effect<CommaGroupFile, Error>,
+    /** The most the route it went by takes, as a refusal for size tells it. */
+    limit: number
   ): Effect.Effect<void> {
     return request.pipe(
       Effect.match({
@@ -1755,6 +1846,7 @@ export class ConversationChannel {
           if (!this.holdsFile(id)) return;
           this.settleUpload(id, {
             error: undefined,
+            refused: undefined,
             isImage: isImageAttachment(uploaded.name),
             name: uploaded.name,
             path: uploaded.path,
@@ -1765,8 +1857,9 @@ export class ConversationChannel {
         onFailure: (error) => {
           if (!this.holdsFile(id)) return;
           this.settleUpload(id, {
-            error: uploadErrorMessage(error, this.locale),
+            error: uploadErrorMessage(error, this.locale, limit),
             status: "failed",
+            refused: uploadRefused(error) ? true : undefined,
           });
         },
       })
@@ -1948,6 +2041,9 @@ export class ConversationChannel {
         if (this.streamWaitMs !== undefined) {
           streamOpts.waitMs = this.streamWaitMs;
         }
+        // Messages never change once written: what is held is not sent again, only what came after it.
+        const heldThrough = this.coverage.tail?.[1];
+        if (heldThrough !== undefined) streamOpts.afterSeq = heldThrough;
 
         yield* this.api.streamConversationEvents(
           this.groupId,
@@ -1972,6 +2068,11 @@ export class ConversationChannel {
         });
         return this.nextStreamDelay();
       }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            this.refusedOnce = false;
+          })
+        ),
         Effect.catch((error: Error) =>
           Effect.sync(() =>
             !this.active || pollEpoch !== this.epoch || controller.signal.aborted
@@ -2001,10 +2102,15 @@ export class ConversationChannel {
     pollEpoch: number
   ): Effect.Effect<boolean, Error> {
     return Effect.gen({ self: this }, function* () {
+      // What is held is not read again, only the messages after it.
+      const heldThrough = this.coverage.tail?.[1];
       const result = yield* this.api.pollConversation(
         this.groupId,
         this.conversationId,
-        this.taskEtag ? { etag: this.taskEtag } : {}
+        {
+          ...(this.taskEtag ? { etag: this.taskEtag } : {}),
+          ...(heldThrough !== undefined ? { afterSeq: heldThrough } : {}),
+        }
       );
 
       if (!this.active || pollEpoch !== this.epoch || controller.signal.aborted) {
@@ -2014,6 +2120,7 @@ export class ConversationChannel {
       if (result.conversation) {
         this.applyConversation(result.conversation, {
           emit: result.conversation.kind !== "agent_task",
+          resumed: result.conversation.after_seq !== undefined,
         });
         this.transportMode =
           result.conversation.kind === "agent_task" ? "task-events" : "events";
@@ -2182,6 +2289,7 @@ export class ConversationChannel {
 
     this.applyConversation(nextConversation, {
       eventStatus: event.status,
+      resumed: event.after_seq !== undefined,
       streamIncarnation,
       participantDraft: this.snapshotParticipantDraft(event),
       participantStatus: participantStatusValue(
@@ -2519,6 +2627,8 @@ export class ConversationChannel {
     opts: {
       emit?: boolean;
       eventStatus?: string | undefined;
+      /** The messages are only those after what is held: none is no sign of a lost transcript. */
+      resumed?: boolean;
       streamIncarnation?: number | undefined;
       participantDraft?: VisibleReplyDraftFrame | null | undefined;
       participantStatus?: ChatParticipantStatus | undefined;
@@ -2532,7 +2642,9 @@ export class ConversationChannel {
     }
     const nextRawMessages = conversation.messages ?? [];
     const suspiciousEmpty =
-      this.serverMessages.length > 0 && nextRawMessages.length === 0;
+      opts.resumed !== true &&
+      this.serverMessages.length > 0 &&
+      nextRawMessages.length === 0;
     const nextServerMessages = suspiciousEmpty
       ? this.serverMessages
       : normalizeServerMessages(
@@ -2648,11 +2760,12 @@ export class ConversationChannel {
     const ranges = this.coverage.ranges;
     if (ranges.length === 0) return undefined;
     const first = ranges[0]![0];
-    return {
+    // Made again after every snapshot: what did not change stays as it was (core-kernel keep.ts).
+    return share(this.state.history, {
       hasOlder: this.historyHead === undefined ? first > 1 : first > this.historyHead,
       loadingOlder: this.loadingOlder,
       ranges: ranges.map(([from, to]) => [from, to]),
-    };
+    });
   }
 
   /** Holds a page's messages and the seq it proves read. */
@@ -2692,10 +2805,13 @@ export class ConversationChannel {
   }
 
   /**
-   * Reads the page before the oldest message held. One at a time; a failure leaves the transcript as it is, and the
-   * next call asks again.
+   * Reads the pages before the oldest message held until one adds a message the transcript shows: a page the
+   * transcript hides whole (system events) would otherwise leave the reader at the top with nothing new and no scroll
+   * to ask again. One read at a time, at most `MAX_OLDER_PAGES` pages a call; it stops, keeping what it read, when no
+   * history is left, a page reaches no further back, a read fails, the conversation changes or `held` says the view
+   * that asked has left it (its lease outlives it by the release delay), and the next call goes on from there.
    */
-  loadOlder() {
+  loadOlder(held: () => boolean = () => true) {
     const first = this.coverage.ranges[0]?.[0];
     // An API given without pages (a test's) has none to read.
     if (typeof this.api.listMessages !== "function") return;
@@ -2705,30 +2821,38 @@ export class ConversationChannel {
     this.loadingOlder = true;
     this.state = { ...this.state, history: this.historyState() };
     this.rebuildState({ emit: true });
-    this.env.runner.fork(
-      this.api
-        .listMessages(this.groupId, this.conversationId, {
-          before: first,
+    const read = Effect.gen({ self: this }, function* () {
+      let before = first;
+      for (let pages = 0; pages < MAX_OLDER_PAGES; pages++) {
+        const page = yield* this.api.listMessages(this.groupId, this.conversationId, {
+          before,
           limit: OLDER_PAGE,
-        })
-        .pipe(
-          Effect.match({
-            onSuccess: (page) => {
-              this.loadingOlder = false;
-              if (this.epoch !== epoch) return;
-              // An empty page means nothing precedes the oldest message held.
-              if (!page.covered && !page.hasOlder && !page.bounds)
-                this.historyHead = first;
-              this.applyPage(page);
-            },
-            onFailure: () => {
-              this.loadingOlder = false;
-              if (this.epoch !== epoch) return;
-              this.state = { ...this.state, history: this.historyState() };
-              this.rebuildState({ emit: true });
-            },
+        });
+        if (this.epoch !== epoch) return;
+        // An empty page means nothing precedes the oldest message held.
+        if (!page.covered && !page.hasOlder && !page.bounds) this.historyHead = before;
+        const shown = this.state.messages.length;
+        this.applyPage(page);
+        if (this.state.messages.length > shown || !this.historyState()?.hasOlder)
+          return;
+        // A page that reaches no further back would read the same page forever.
+        if (!page.covered || page.covered.first >= before) return;
+        before = page.covered.first;
+        if (!held()) return;
+      }
+    });
+    this.env.runner.fork(
+      read.pipe(
+        Effect.ignore,
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.loadingOlder = false;
+            if (this.epoch !== epoch) return;
+            this.state = { ...this.state, history: this.historyState() };
+            this.rebuildState({ emit: true });
           })
         )
+      )
     );
   }
 
@@ -2890,7 +3014,21 @@ export class ConversationChannel {
   private handlePollError(error: unknown): number | "fatal" {
     const errorKind = classifyError(error);
 
+    // A conversation that was open is refused once, as a server that is still starting answers: ask again before
+    // the page says it cannot be opened (a Task's detail first). A second refusal in a row stands.
+    if (
+      (errorKind === "not-found" || errorKind === "forbidden") &&
+      this.state.conversation &&
+      !this.refusedOnce
+    ) {
+      this.refusedOnce = true;
+      this.taskDetailRefreshNeeded = true;
+      this.setState({ connection: "reconnecting", lastBackoffMs: INITIAL_BACKOFF_MS });
+      return INITIAL_BACKOFF_MS + this.env.jitterMs(INITIAL_BACKOFF_MS);
+    }
+
     if (errorKind !== "network") {
+      this.refusedOnce = false;
       this.active = false;
       this.setState({
         connection: "paused",
@@ -3041,7 +3179,14 @@ export class ConversationChannel {
       return cache.result;
     }
 
-    const result = combineMessages(serverMessages, pending, resolvedIds);
+    // A pending send's message is made again whenever any send moves: the ones that did not change stay as they were.
+    const result = share(
+      cache?.result,
+      combineMessages(serverMessages, pending, resolvedIds),
+      {
+        key: ["messageId"],
+      }
+    );
     this.combinedMessagesCache = { pending, resolvedIds, result, serverMessages };
     return result;
   }
@@ -3120,6 +3265,9 @@ export class ConversationChannel {
 
   private recordConversationObservations(messages: readonly ChatMessage[]) {
     for (const message of messages) {
+      // A message kept from the last snapshot was recorded then: only those new to the transcript cost anything.
+      if (this.observedMessages.has(message)) continue;
+      this.observedMessages.add(message);
       if (message.clientRequestId) {
         setBoundedValue(
           this.canonicalMessageIdsByClientRequestId,
@@ -3343,13 +3491,22 @@ export function normalizeServerMessages(
   conversationKind: CommaConversationKind,
   conversationId = ""
 ) {
-  const previousById = new Map(previous.map((message) => [message.messageId, message]));
+  // Only messages after the newest one held (a stream resumed after it): none of them is held, so what is held is
+  // not looked up again. A message held without a seq may be any of them.
+  const newestHeld = newestSeq(previous);
+  const onlyNewer =
+    newestHeld !== undefined &&
+    rawMessages.every((message) => (messageSeq(message) ?? 0) > newestHeld);
+  const previousById = onlyNewer
+    ? new Map<string, ChatMessage>()
+    : new Map(previous.map((message) => [message.messageId, message]));
   const normalizedTail = rawMessages.flatMap((message) => {
     const platformMessage = message.platform_message;
     if (
       !platformMessage &&
       message.actor_type === "system" &&
       (message.agent_input != null ||
+        message.metadata?.message_type === TASK_STATUS_PENDING ||
         (message.kind === "app_event" &&
           internalEvent(String(message.metadata?.event_type ?? ""))))
     ) {
@@ -3453,17 +3610,17 @@ export function normalizeServerMessages(
       (role !== "user" || !announcesTasks(next) || current.createdTasks)
     )
       return [current];
-    // Read once, when the message arrives or changes.
-    return [{ ...next, ...messageReading(next) }];
+    // Read once, when the message arrives or changes; what did not change in it stays as it was (keep.ts).
+    return [share(current, { ...next, ...messageReading(next) })];
   });
 
   const tailById = new Map(
     normalizedTail.map((message) => [message.messageId, message] as const)
   );
   const knownIds = new Set(previousById.keys());
-  const normalized = previous.map(
-    (message) => tailById.get(message.messageId) ?? message
-  );
+  const normalized = onlyNewer
+    ? previous.slice()
+    : previous.map((message) => tailById.get(message.messageId) ?? message);
 
   for (const message of normalizedTail) {
     if (knownIds.has(message.messageId)) continue;
@@ -3489,6 +3646,12 @@ const DEVICE_SETUP_OFFER_UPDATED = "device_setup_offer.updated";
  * System events that carry no message for the transcript: delivery records, a
  * setup offer's later state, and `mail.*` changes to a Home mail interaction.
  */
+/**
+ * The runtime's note to a Task's Router that it has not settled the Task's status (`SalixIM.TaskWorkerWatch`). The Task
+ * stores it as a system Message for the Router; a person never reads it.
+ */
+const TASK_STATUS_PENDING = "task_status_pending";
+
 function internalEvent(eventType: string) {
   return (
     eventType.startsWith("mail.") ||
@@ -3500,6 +3663,16 @@ function internalEvent(eventType: string) {
       DEVICE_SETUP_OFFER_UPDATED,
     ].includes(eventType)
   );
+}
+
+/** The newest seq of messages that each have one; undefined when one has none (or there are none). */
+function newestSeq(messages: readonly ChatMessage[]): number | undefined {
+  let newest: number | undefined;
+  for (const message of messages) {
+    if (message.seq === undefined) return undefined;
+    if (newest === undefined || message.seq > newest) newest = message.seq;
+  }
+  return newest;
 }
 
 /** A canonical message's place in its conversation, when the server said it. */
@@ -4329,6 +4502,8 @@ function vfsPathValue(block: Record<string, unknown>) {
 }
 
 function reconcilePending(pending: PendingSend[], serverMessages: ChatMessage[]) {
+  // Nothing waits to be sent (the common case): the transcript is not walked.
+  if (pending.length === 0) return pending;
   const seenClientRequestIds = new Set(
     serverMessages.flatMap((message) => {
       const ids = message.clientRequestId ? [message.clientRequestId] : [];
@@ -4338,7 +4513,10 @@ function reconcilePending(pending: PendingSend[], serverMessages: ChatMessage[])
       return ids;
     })
   );
-  return pending.filter((item) => !seenClientRequestIds.has(item.clientRequestId));
+  const left = pending.filter(
+    (item) => !seenClientRequestIds.has(item.clientRequestId)
+  );
+  return left.length === pending.length ? pending : left;
 }
 
 function replacePending(pending: PendingSend[], next: PendingSend) {
@@ -4404,6 +4582,22 @@ function addBoundedSet(values: Set<string>, value: string, limit: number) {
   }
 }
 
+/** Whether `file` is one no upload takes, whatever else the message carries: too large, or of a type not taken. */
+function refusesAttachment(file: AttachmentUploadInput, transcodesImages: boolean) {
+  return (
+    file.size > MAX_ATTACHMENT_BYTES ||
+    (!isAllowedAttachment(file.name) &&
+      !(transcodesImages && isTranscodedImageAttachment(file.name)))
+  );
+}
+
+/** A byte limit as a person reads it: `10 MB`, `512 MB`. */
+function formatLimit(bytes: number) {
+  return bytes % (1024 * 1024) === 0
+    ? `${bytes / (1024 * 1024)} MB`
+    : `${bytes / 1_000_000} MB`;
+}
+
 /** Why `file` cannot go with a message that has `projectedCount` files already, in `locale`; undefined when it can. */
 export function validateAttachment(
   file: AttachmentUploadInput,
@@ -4416,7 +4610,10 @@ export function validateAttachment(
   }
 
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    return commaMessages.chat_attachment_too_large({}, { locale });
+    return commaMessages.chat_attachment_too_large(
+      { limit: formatLimit(MAX_ATTACHMENT_BYTES) },
+      { locale }
+    );
   }
 
   if (
@@ -4692,6 +4889,7 @@ export function taskRun(run: CommaTaskRun | undefined): ChatTaskRun | undefined 
               : {}),
             state: run.place.state,
             ...(run.place.reason ? { reason: run.place.reason } : {}),
+            ...(run.place.task_models ? { taskModels: run.place.task_models } : {}),
           }
         : { kind: run.place.kind };
   const model: ChatTaskRun["model"] = !run.model
@@ -4743,6 +4941,7 @@ export function participantIssueDetail(
       ? { profileName: stringValue(raw.profile_name) }
       : {}),
     ...(resetAt !== undefined && resetAt > 0 ? { resetAt } : {}),
+    ...(raw.credits === true ? { credits: true as const } : {}),
     ...(raw.trigger === "background" || raw.trigger === "voice_call"
       ? { trigger: raw.trigger }
       : {}),
@@ -4909,13 +5108,21 @@ function sendFailureAction(error: unknown): "billing" | undefined {
     : undefined;
 }
 
-function uploadErrorMessage(error: unknown, locale: CommaLocale) {
+/** An upload the server turned away for what the file is: sending it again is turned away again. */
+function uploadRefused(error: unknown) {
+  return error instanceof CommaApiError && [404, 413, 415].includes(error.status);
+}
+
+function uploadErrorMessage(error: unknown, locale: CommaLocale, limit: number) {
   if (error instanceof CommaApiError) {
     if (error.status === 404) {
       return commaMessages.chat_server_unsupported_attachment({}, { locale });
     }
     if (error.status === 413) {
-      return commaMessages.chat_attachment_too_large({}, { locale });
+      return commaMessages.chat_attachment_too_large(
+        { limit: formatLimit(limit) },
+        { locale }
+      );
     }
     if (error.status === 415) {
       return commaMessages.chat_unsupported_attachment({}, { locale });

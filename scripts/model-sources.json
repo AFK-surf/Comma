@@ -1,0 +1,621 @@
+{
+  "openai": {
+    "name": "OpenAI",
+    "kind": "api_key",
+    "endpoints": {
+      "responses": "https://api.openai.com/v1"
+    },
+    "protocols": [
+      "responses"
+    ],
+    "models_dev": "openai",
+    "vendor": "openai"
+  },
+  "anthropic": {
+    "name": "Anthropic",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://api.anthropic.com"
+    },
+    "protocols": [
+      "anthropic"
+    ],
+    "models_dev": "anthropic",
+    "vendor": "anthropic",
+    "auth": "api_key"
+  },
+  "google": {
+    "name": "Google Gemini",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://generativelanguage.googleapis.com/v1beta/openai"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "google",
+    "vendor": "google"
+  },
+  "xai": {
+    "name": "xAI",
+    "kind": "api_key",
+    "endpoints": {
+      "responses": "https://api.x.ai/v1"
+    },
+    "protocols": [
+      "responses"
+    ],
+    "models_dev": "xai",
+    "vendor": "xai"
+  },
+  "mistral": {
+    "name": "Mistral",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.mistral.ai/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "mistral",
+    "vendor": "mistral",
+    "same_as": {
+      "zai-glm-5-3-flash": "glm-5.3-flash"
+    },
+    "overrides": {
+      "deepseek-v4-1-flash-1017": {
+        "images": true
+      }
+    }
+  },
+  "deepseek": {
+    "name": "DeepSeek",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.deepseek.com"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "deepseek",
+    "vendor": "deepseek"
+  },
+  "qwen": {
+    "name": "Qwen",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "alibaba-token-plan",
+    "catalog_ids": {
+      "MiniMax-M2.5": "minimax-m2.5"
+    }
+  },
+  "qwen-cn": {
+    "name": "Qwen (China)",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "alibaba-token-plan-cn",
+    "catalog_ids": {
+      "MiniMax-M2.5": "minimax-m2.5"
+    }
+  },
+  "moonshotai": {
+    "name": "Kimi",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.moonshot.ai/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "moonshotai",
+    "vendor": "kimi"
+  },
+  "moonshotai-cn": {
+    "name": "Kimi (China)",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.moonshot.cn/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "moonshotai-cn",
+    "vendor": "kimi"
+  },
+  "zai": {
+    "name": "Z.ai",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.z.ai/api/coding/paas/v4"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "zai-coding-plan",
+    "vendor": "glm"
+  },
+  "zai-coding-cn": {
+    "name": "Z.ai Coding (China)",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://open.bigmodel.cn/api/coding/paas/v4"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "zhipuai-coding-plan",
+    "vendor": "glm"
+  },
+  "minimax": {
+    "name": "MiniMax",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://api.minimax.io/anthropic"
+    },
+    "protocols": [
+      "anthropic"
+    ],
+    "models_dev": "minimax",
+    "vendor": "minimax",
+    "catalog_ids": {
+      "MiniMax-M2": "minimax-m2",
+      "MiniMax-M2.1": "minimax-m2.1",
+      "MiniMax-M2.5": "minimax-m2.5",
+      "MiniMax-M2.5-highspeed": "minimax-m2.5-highspeed"
+    }
+  },
+  "minimax-cn": {
+    "name": "MiniMax (China)",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://api.minimaxi.com/anthropic"
+    },
+    "protocols": [
+      "anthropic"
+    ],
+    "models_dev": "minimax-cn",
+    "vendor": "minimax",
+    "catalog_ids": {
+      "MiniMax-M2": "minimax-m2",
+      "MiniMax-M2.1": "minimax-m2.1",
+      "MiniMax-M2.5": "minimax-m2.5",
+      "MiniMax-M2.5-highspeed": "minimax-m2.5-highspeed"
+    }
+  },
+  "xiaomi": {
+    "name": "Xiaomi MiMo",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.xiaomimimo.com/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "xiaomi",
+    "vendor": "xiaomi"
+  },
+  "ant-ling": {
+    "name": "Ant Ling",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.ant-ling.com/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "bailing",
+    "vendor": "ant-ling"
+  },
+  "openrouter": {
+    "name": "OpenRouter",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://openrouter.ai/api",
+      "chat_completions": "https://openrouter.ai/api/v1"
+    },
+    "protocols": [
+      "anthropic",
+      "chat_completions"
+    ],
+    "models_dev": "openrouter",
+    "catalog_ids": {
+      "minimax/minimax-m2": "minimax-m2",
+      "minimax/minimax-m2.1": "minimax-m2.1",
+      "minimax/minimax-m2.5": "minimax-m2.5",
+      "mistralai/mistral-medium-3-5": "mistral-medium-3.5"
+    },
+    "route_protocols": {
+      "~anthropic/claude-fable-latest": "chat_completions",
+      "~anthropic/claude-haiku-latest": "chat_completions",
+      "~anthropic/claude-opus-latest": "chat_completions",
+      "~anthropic/claude-sonnet-latest": "chat_completions"
+    }
+  },
+  "vercel-ai-gateway": {
+    "name": "Vercel AI Gateway",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://ai-gateway.vercel.sh"
+    },
+    "protocols": [
+      "anthropic"
+    ],
+    "models_dev": "vercel",
+    "catalog_ids": {
+      "minimax/minimax-m2": "minimax-m2",
+      "minimax/minimax-m2.1": "minimax-m2.1",
+      "minimax/minimax-m2.5": "minimax-m2.5",
+      "minimax/minimax-m2.5-highspeed": "minimax-m2.5-highspeed",
+      "mistral/mistral-medium-3.5": "mistral-medium-3.5"
+    },
+    "same_as": {
+      "meta/muse-wonder-1.0": "muse-wonder",
+      "liquid/lfm2.5-24b-a2b": "lfm-2.5-24b-a2b"
+    }
+  },
+  "opencode": {
+    "name": "OpenCode Zen",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://opencode.ai/zen",
+      "chat_completions": "https://opencode.ai/zen/v1",
+      "responses": "https://opencode.ai/zen/v1"
+    },
+    "protocols": [
+      "anthropic",
+      "chat_completions",
+      "responses"
+    ],
+    "models_dev": "opencode",
+    "auth": "api_key",
+    "session_header": true,
+    "catalog_ids": {
+      "minimax-m2.1": "minimax-m2.1",
+      "minimax-m2.5": "minimax-m2.5"
+    },
+    "same_as": {
+      "gemini-3.1-pro": "gemini-3.1-pro-preview",
+      "muse-wonder-1.0": "muse-wonder"
+    }
+  },
+  "opencode-go": {
+    "name": "OpenCode Go",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://opencode.ai/zen/go",
+      "chat_completions": "https://opencode.ai/zen/go/v1",
+      "responses": "https://opencode.ai/zen/go/v1"
+    },
+    "protocols": [
+      "anthropic",
+      "chat_completions",
+      "responses"
+    ],
+    "models_dev": "opencode-go",
+    "auth": "api_key",
+    "session_header": true,
+    "route_protocols": {
+      "minimax-m2.7": "chat_completions"
+    }
+  },
+  "cloudflare-workers-ai": {
+    "name": "Cloudflare Workers AI",
+    "kind": "api_key",
+    "endpoints": {},
+    "protocols": [
+      "chat_completions"
+    ],
+    "endpoint_required": true,
+    "models_dev": "cloudflare-workers-ai"
+  },
+  "cloudflare-ai-gateway": {
+    "name": "Cloudflare AI Gateway",
+    "kind": "api_key",
+    "endpoints": {},
+    "protocols": [
+      "anthropic",
+      "chat_completions",
+      "responses"
+    ],
+    "endpoint_required": true,
+    "models_dev": "cloudflare-ai-gateway",
+    "auth": "both",
+    "native_prefixes": {
+      "openai": "openai",
+      "anthropic": "anthropic"
+    },
+    "relays": {
+      "cloudflare-workers-ai": "workers-ai/"
+    }
+  },
+  "azure-openai": {
+    "name": "Azure OpenAI",
+    "kind": "api_key",
+    "endpoints": {},
+    "protocols": [
+      "responses",
+      "chat_completions"
+    ],
+    "endpoint_required": true,
+    "models_dev": "azure",
+    "catalog_ids": {
+      "grok-4-1-fast-non-reasoning": "grok-4.1-fast-non-reasoning",
+      "grok-4-1-fast-reasoning": "grok-4.1-fast-reasoning"
+    },
+    "same_as": {
+      "cohere-command-a": "command-a"
+    }
+  },
+  "groq": {
+    "name": "Groq",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.groq.com/openai/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "groq"
+  },
+  "cerebras": {
+    "name": "Cerebras",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.cerebras.ai/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "cerebras"
+  },
+  "together": {
+    "name": "Together AI",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://api.together.ai/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "togetherai",
+    "catalog_ids": {
+      "MiniMaxAI/MiniMax-M2.5": "minimax-m2.5"
+    },
+    "same_as": {
+      "meta-models/Muse-Spark-Open-816B-A42B": "muse-spark-open",
+      "nvidia/NVIDIA-Nemotron-3.5-Super-VL": "nemotron-3.5-super-vl"
+    }
+  },
+  "fireworks": {
+    "name": "Fireworks",
+    "kind": "api_key",
+    "endpoints": {
+      "anthropic": "https://api.fireworks.ai/inference",
+      "chat_completions": "https://api.fireworks.ai/inference/v1"
+    },
+    "protocols": [
+      "anthropic",
+      "chat_completions"
+    ],
+    "models_dev": "fireworks-ai",
+    "route_protocols": {
+      "accounts/fireworks/models/gpt-oss-120b": "anthropic",
+      "accounts/fireworks/models/deepseek-v4p1-flash": "anthropic",
+      "accounts/fireworks/routers/deepseek-flash-latest": "anthropic",
+      "accounts/fireworks/routers/qwen-max-latest": "anthropic",
+      "accounts/fireworks/models/qwen3p8-2p4t-a95b": "anthropic",
+      "accounts/fireworks/models/qwen3p8-max": "anthropic",
+      "accounts/fireworks/routers/kimi-fast-latest": "anthropic",
+      "accounts/fireworks/routers/kimi-latest": "anthropic",
+      "accounts/fireworks/routers/minimax-latest": "anthropic",
+      "accounts/fireworks/models/minimax-m3": "anthropic",
+      "accounts/fireworks/models/nemotron-3-ultra-nvfp4": "anthropic",
+      "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b": "anthropic",
+      "accounts/fireworks/models/ember-1": "anthropic",
+      "accounts/fireworks/models/inkling": "anthropic"
+    }
+  },
+  "huggingface": {
+    "name": "Hugging Face",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://router.huggingface.co/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "huggingface",
+    "catalog_ids": {
+      "MiniMaxAI/MiniMax-M2": "minimax-m2",
+      "MiniMaxAI/MiniMax-M2.1": "minimax-m2.1",
+      "MiniMaxAI/MiniMax-M2.5": "minimax-m2.5"
+    }
+  },
+  "nvidia": {
+    "name": "NVIDIA",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://integrate.api.nvidia.com/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "nvidia",
+    "same_as": {
+      "nvidia/nemotron-3.5-super-vl-120b-a12b": "nemotron-3.5-super-vl"
+    }
+  },
+  "baseten": {
+    "name": "Baseten",
+    "kind": "api_key",
+    "endpoints": {
+      "chat_completions": "https://inference.baseten.co/v1"
+    },
+    "protocols": [
+      "chat_completions"
+    ],
+    "models_dev": "baseten"
+  },
+  "codex": {
+    "name": "ChatGPT",
+    "kind": "subscription",
+    "models_dev": "openai",
+    "vendor": "openai",
+    "models": [
+      "gpt-5.3-codex-spark",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-6-astra",
+      "gpt-6-luna",
+      "gpt-6-sol",
+      "gpt-6.1-sol",
+      "gpt-6.1-terra"
+    ],
+    "protocol": "responses",
+    "overrides": {
+      "gpt-5.3-codex-spark": {
+        "context_tokens": 128000,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "gpt-5.5": {
+        "context_tokens": 272000,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "gpt-5.6-luna": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-5.6-sol": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-5.6-terra": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6-astra": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6-luna": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6-sol": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6.1-sol": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "gpt-6.1-terra": {
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    }
+  },
+  "claude": {
+    "name": "Claude",
+    "kind": "subscription",
+    "models_dev": "anthropic",
+    "vendor": "anthropic",
+    "protocol": "anthropic"
+  },
+  "gemini": {
+    "name": "Google AI",
+    "kind": "subscription"
+  },
+  "grok": {
+    "name": "SuperGrok",
+    "kind": "subscription",
+    "models_dev": "xai",
+    "vendor": "xai",
+    "protocol": "responses"
+  },
+  "kimi-code": {
+    "name": "Kimi Code",
+    "kind": "subscription",
+    "models_dev": "kimi-code-plan-global",
+    "vendor": "kimi",
+    "protocol": "anthropic",
+    "same_as": {
+      "k3": "kimi-k3",
+      "k3.1-pro": "kimi-k3.1-pro",
+      "k3.1-pro-highspeed": "kimi-k3.1-pro-highspeed"
+    }
+  },
+  "github-copilot": {
+    "name": "GitHub Copilot",
+    "kind": "subscription",
+    "models_dev": "github-copilot",
+    "protocols": [
+      "anthropic",
+      "chat_completions",
+      "responses"
+    ]
+  }
+}

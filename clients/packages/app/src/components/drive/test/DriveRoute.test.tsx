@@ -1,10 +1,11 @@
 import type { DriveFile, DriveSpace, DriveValue } from "@comma/core/contract";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { render, screen, waitFor, within } from "@comma/test-utils/render";
+import { fireEvent, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import { Toaster } from "@comma/ui/components/toast";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { resetDriveStoreForTest } from "../driveStore";
 
 // Drive's page over a scripted core: what it shows of the core's `drive` and which calls it makes.
@@ -161,6 +162,32 @@ it("sorts by the header, and deletes the selection through the core", async () =
   expect(await screen.findByText("Folder is empty")).toBeInTheDocument();
   expect(core.sentTo("drive.delete")).toEqual([{ files: ["pdf", "logo", "shot"] }]);
   expect(screen.queryByTestId("drive-selection-bar")).toBeNull();
+});
+
+/** The width the Drive route gives its space rail. */
+const spaceRailWidth = () =>
+  screen
+    .getByTestId("drive-space-rail")
+    .parentElement!.style.getPropertyValue("--comma-drive-space-rail-width");
+
+it("widens the space rail from its divider and resets it with a click", async () => {
+  stubProperty(window, "innerWidth", { value: 1200 });
+  onTestFinished(() => localStorage.removeItem("comma.driveSpaceRailWidth"));
+  renderDrive(deviceDrive());
+  const handle = await screen.findByTestId("drive-space-rail-resize");
+  expect(spaceRailWidth()).toBe("320px");
+
+  fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 1 });
+  fireEvent.pointerMove(handle, { clientX: 900, pointerId: 1 });
+  fireEvent.pointerUp(handle, { clientX: 900, pointerId: 1 });
+  // Half the window at most, and kept for the next visit.
+  expect(spaceRailWidth()).toBe("600px");
+  expect(localStorage.getItem("comma.driveSpaceRailWidth")).toBe("600");
+
+  fireEvent.pointerDown(handle, { button: 0, clientX: 600, pointerId: 1 });
+  fireEvent.pointerUp(handle, { clientX: 600, pointerId: 1 });
+  expect(spaceRailWidth()).toBe("320px");
+  expect(localStorage.getItem("comma.driveSpaceRailWidth")).toBeNull();
 });
 
 it("keeps files offline and deletes one from its row menu", async () => {

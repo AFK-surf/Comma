@@ -21,9 +21,9 @@ defmodule SalixIM.IFC.Facts do
   receipts, the policy, and display names for the one sentence a person
   eventually reads. Content never appears in any of it.
 
-  Bounded by construction: one projection read per atom the effect involves,
-  at most one `conversations.info` and one `conversations.members` per
-  channel per quarter hour, and no fan-out over workspace users.
+  Bounded by construction: one projection read per connect the effect
+  involves, and no provider call for a conversation's structure or members
+  (`SalixIM.IFC.Projection` keeps those in Postgres).
   """
 
   require Logger
@@ -185,7 +185,11 @@ defmodule SalixIM.IFC.Facts do
       |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
 
-    resolved = Enum.map(atoms, &resolve_atom(tenant_id, group_id, &1, requester))
+    scope_facts = scope_facts(tenant_id, group_id, atoms)
+    resolved = Enum.map(atoms, &resolve_atom(tenant_id, group_id, &1, requester, scope_facts))
+    policy = policy(group, resolved)
+    supervisors = supervisors(group)
+    supervised = supervised_atoms(supervisors, resolved, group_id, connects)
 
     %{
       "mode" => mode,
@@ -195,7 +199,9 @@ defmodule SalixIM.IFC.Facts do
       "language" => policy_setting(group, "language", "zh"),
       "destination" => %{"label" => destination_atoms, "writers" => writers},
       "scopes" => scopes(resolved, group_id, connects),
-      "membership" => membership(resolved, request),
+      "membership" =>
+        resolved |> membership(request) |> with_supervisors(supervisors, supervised),
+      "cleared" => Map.new(supervised, &{&1, supervisors}),
       "placements" =>
         placements(
           tenant_id,
@@ -206,18 +212,33 @@ defmodule SalixIM.IFC.Facts do
           request["trusted_origin"]
         ),
       "receipts" => receipts(tenant_id, group_id, requester, now),
-      "policy" => policy(group, resolved),
+      "policy" => policy,
       "display_names" => display_names(resolved),
       "now" => now
     }
   end
 
+  # Every scope atom's stored facts, one read per connect.
+  defp scope_facts(tenant_id, group_id, atoms) do
+    atoms
+    |> Enum.flat_map(fn encoded ->
+      case SalixIFC.Codec.decode_atom(encoded) do
+        {:ok, {:scope, connect_id, scope_id}} -> [{connect_id, scope_id}]
+        _other -> []
+      end
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {connect_id, scope_ids} ->
+      scope = %{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id}
+      {connect_id, Projection.facts_all(scope, scope_ids)}
+    end)
+  end
+
   # One atom, resolved to everything the kernel might ask about it.
-  defp resolve_atom(tenant_id, group_id, encoded, requester) do
+  defp resolve_atom(tenant_id, group_id, encoded, requester, scope_facts) do
     case SalixIFC.Codec.decode_atom(encoded) do
       {:ok, {:scope, connect_id, scope_id}} ->
-        scope = %{tenant_id: tenant_id, group_id: group_id, connect_id: connect_id}
-        {_canonical, row} = Projection.facts(scope, scope_id)
+        {_canonical, row} = scope_facts |> Map.fetch!(connect_id) |> Map.fetch!(scope_id)
 
         %{
           atom: encoded,
@@ -331,6 +352,63 @@ defmodule SalixIM.IFC.Facts do
     else
       _other -> %{}
     end
+  end
+
+  # A Group's supervisors read everything in it: every conversation of its
+  # connects, sealed and shared ones included, its spaces, its tags, its Tasks
+  # and Group memory (`docs/verification.md`, IFC authorization contract).
+  # Internal Comma conversations stay outside.
+  #
+  # The kernel learns this twice. `cleared` makes a supervisor a reader of the
+  # atom even where its roster is unknown. Adding them to a roster that is
+  # known keeps that roster complete, which is what lets a destination's
+  # roster prove flow: content reaches a room only if its supervisors may read
+  # it too.
+  defp supervised_atoms([], _resolved, _group_id, _connects), do: []
+
+  defp supervised_atoms(_supervisors, resolved, group_id, connects) do
+    resolved
+    |> Enum.filter(&supervised?(&1, group_id, connects))
+    |> Enum.map(& &1.atom)
+  end
+
+  defp supervised?(%{kind: :scope, connect_id: connect_id, row: %{kind: kind}}, _group, connects)
+       when kind in ["room", "direct", "shared"],
+       do: connect_id in connects
+
+  defp supervised?(%{kind: :space, connect_id: connect_id}, _group_id, connects),
+    do: connect_id in connects
+
+  defp supervised?(%{kind: kind}, _group_id, _connects) when kind in [:tag, :task], do: true
+
+  defp supervised?(%{kind: :group, atom: atom}, group_id, _connects),
+    do: SalixIFC.Codec.decode_atom(atom) == {:ok, {:group, group_id}}
+
+  defp supervised?(_resolved, _group_id, _connects), do: false
+
+  defp with_supervisors(membership, [], _supervised), do: membership
+
+  defp with_supervisors(membership, supervisors, supervised) do
+    Enum.reduce(supervised, membership, fn atom, acc ->
+      case Map.get(acc, atom) do
+        %{"members" => members} = entry ->
+          Map.put(acc, atom, %{entry | "members" => Enum.uniq(members ++ supervisors)})
+
+        _unknown ->
+          acc
+      end
+    end)
+  end
+
+  # Principal keys an administrator named in the Group's `ifc.supervisors`.
+  # The control API validates them on write; anything unreadable is dropped.
+  defp supervisors(group) do
+    group
+    |> policy_map()
+    |> Map.get("supervisors")
+    |> List.wrap()
+    |> Enum.filter(&match?({:ok, {:provider_user, _, _}}, SalixIFC.Codec.decode_principal(&1)))
+    |> Enum.uniq()
   end
 
   defp entry(members, revision) do

@@ -1,8 +1,8 @@
+import VerifiedKernelProofs.Session.WorkReadRevision
 import VerifiedKernelProofs.Loop.Discharge
 import VerifiedKernelProofs.Session.WorkLifecycle
 import VerifiedKernelProofs.Session.WorkForkProgram
 import VerifiedKernelProofs.Session.WorkIdentityReload
-import VerifiedKernelProofs.Session.WorkReadRevision
 
 /-!
 # M4: every kernel-built Session keeps binary obligation keys
@@ -117,7 +117,7 @@ theorem normalize_obligations {s t : Term} {j r : List Term}
   obtain ⟨normalized, _, written, h⟩ := bind_ok h
   have firstBinary := write_binary_kept written
   have selected : normalized.get (a "provider_reply_obligations") = table := by
-    iterate 16 obtain ⟨_, written⟩ := write_cons written
+    iterate 18 obtain ⟨_, written⟩ := write_cons written
     obtain ⟨_, written⟩ := write_cons written
     exact (write_field_frame written (by simp)).trans (get_put_same _ _ _)
   obtain ⟨_, _, _, h⟩ := bind_ok h

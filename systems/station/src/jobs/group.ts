@@ -3,7 +3,7 @@
 // earlier station recorded is checked to still be that group before it is touched (pids are reused).
 //
 // How a machine has groups is the platform's (platform/: on Windows a job's group is the job object of the
-// `stillfail-runner --job` it runs under, its pgid that runner's pid, ended whole when the runner is).
+// `comma-runner --job` it runs under, its pgid that runner's pid, ended whole when the runner is).
 import { Effect } from "effect";
 import type { ProcessRow } from "../store/store.ts";
 import { platform } from "../platform/index.ts";

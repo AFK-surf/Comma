@@ -47,7 +47,7 @@ struct FilterCheckbox: View {
                 if on {
                     CentralIcon("icon-check", size: 24, relativeTo: .body)
                         .foregroundStyle(CommaTheme.textSecondary)
-                        .transition(reduceMotion ? .opacity : .scale(scale: 0.4).combined(with: .opacity))
+                        .transition(reduceMotion ? .opacity : .scaleUnseenBelowHalf(0.4))
                 }
             }
             .frame(width: size, height: size)

@@ -1,14 +1,14 @@
-# TS station 的原生部分：启动器、runner、mesh 插件
+# TS station 的原生部分：启动器、runner、mesh 插件、Windows 的桌面画面
 
 结构见 [station-ts.md](station-ts.md)。这三件用 Rust 写，预编译发布。TS 只按这里的约定用它们。测试和打包都经 `scripts/native.ts` 拿它们（怎么预编译、缓存在哪见它的文件头），只有它们自己的源码变了才编。
 
-## 1. runner（`native/runner`，可执行文件 `stillfail-runner`）
+## 1. runner（`native/runner`，可执行文件 `comma-runner`）
 
 一个 agent 进程（claude、codex app-server）一个 runner。station 重启或崩溃时 runner 和 agent 都不受影响，新 station 重新接上，从没读过的地方接着读。
 
 启动：
 ```
-stillfail-runner --dir <run/runners> --id <id> [--cwd <dir>] -- <program> <args…>
+comma-runner --dir <run/runners> --id <id> [--cwd <dir>] -- <program> <args…>
 ```
 - 环境变量原样传给 agent。station 启动 runner 时就配好 agent 的环境。
 - runner 先 `setsid()`（离开 station 的进程组和会话，launchd 结束 station 时不会带走它），再 fork 出 agent。agent 自己 `setpgid(0,0)` 成一个进程组，station 按 pgid 结束 agent 及其子进程。
@@ -36,16 +36,23 @@ runner → 客户端：
 - agent 退出后 station 一直没发 `done`：runner 保留文件和 socket 一段时间（`LINGER`）后自行清理退出。
 - runner 自己被杀时，agent 的 stdin 关闭，agent 按自己的规矩退出。文件还在，station 能读到最后的输出。
 
-## 2. 启动器（`native/launcher`，可执行文件 `stillfail-station`）
+### LAN 脚本（`comma-runner --lan-script`）
 
-`bin/stillfail`、桌面 app、安装器都调它：
+connector 的 `lan_script`（`src/connector/lan-script.ts`）每次起一个 runner 跑一个脚本，用的是网关板子固件同一份运行时（`native/runner/lan-script/`，从 AFK-surf/Hardware 的 `firmware/components/lan_script` 原样拷来，Micro QuickJS；脚本 API 见那边的 `docs/lan-script.md`）。stdin/stdout 上每条消息一行 JSON：
+- station → runner：先发 `{"source","args","timeout_ms","heap_bytes","max_result_bytes"}`；之后回每个调用：`{"result":…}` 或 `{"error":"…"}`。
+- runner → station：脚本的每个 LAN 调用 `{"call":"http_request"|"udp_request"|…,"params":…}`，一次一个，等回复；最后 `{"done":{"result"|"error","logs",…}}` 然后退出。
+- 网络请求由 station 自己做（`lan_http_request`、`udp_request` 的限制），runner 只跑脚本和加解密（RustCrypto）。超过 `timeout_ms` 再加 2 秒还没 `done`，station 杀掉 runner。改了运行时要和 Hardware 那份一起改。
+
+## 2. 启动器（`native/launcher`，可执行文件 `comma-station`）
+
+`bin/comma-station`、桌面 app、安装器都调它：
 
 - `run --app DIR [--port N] [--data DIR] [--with-parent]`：启动器自己处理，见下。给了 `--handoff FILE` 时只删掉这个文件，照常启动。
-- `enroll …`、`status`、`id`、`channel …`、`comma-client`、`computer-use`：直接 `exec` `<app>/node/bin/node <app>/station/main.js <原参数>`。`$STILLFAIL_NODE` 可以换掉 Node。
+- `enroll …`、`status`、`id`、`channel …`、`comma-client`、`computer-use`：直接 `exec` `<app>/node/bin/node <app>/station/main.js <原参数>`。`$COMMA_STATION_NODE` 可以换掉 Node。
 - `handoff-version`：打印 `2`。旧的 Rust station 只在回答 `1` 时才 exec 交接，所以它不会把进程交给这个启动器。
 
 `run` 时：
-1. 数据目录：`--data`，否则 `$STILLFAIL_DATA`，否则 `$EMBER_DATA`，否则 `~/.stillfail`。`~/.ember` 在第一次启动时被移到 `~/.stillfail`，原处留一个链接。
+1. 数据目录：`--data`，否则 `$COMMA_STATION_DATA`，否则 `$EMBER_DATA`，否则 `~/.comma-station`。`~/.ember` 在第一次启动时被移到 `~/.comma-station`，原处留一个链接。
 2. `flock` 住 `<data>/run/station.lock`。拿不到就以退出码 3 退出（桌面 app 靠它）。
 3. 启动器自己 bind MCP 端口（`config.json` 的端口）和本机回环口（`--port`），作为继承的 fd 传给 Node。新旧 Node 交接时端口不空档。端口是指定的就必须拿到，否则启动失败并说明被谁占用。没指定时默认端口被占就用任意空闲端口。
 4. 起 Node，经一条控制 socket 与它通信（协议见 `native/launcher/src/run.rs` 文件头）。
@@ -67,3 +74,10 @@ station 和桌面端的 core 都用它。接口在 `native/mesh/src/lib.rs` 和�
 - 图片：`thumbnail`、`thumbhash`，解码和编码不占 Node 主线程。哪些文件、何时做由 TS（`src/sessions/thumbs.ts`）决定。
 - 归档锁（跨进程的 `flock`）、本地 Markdown 链接解析、不跟随符号链接的打开、Profile 逻辑。
 - 所有异步操作不阻塞 Node 主线程。
+
+## 4. Windows 的桌面画面（`native/desktop-screen`，可执行文件 `comma-desktop-screen.exe`，只有 Windows）
+
+从 still.fail 的 `station/native/screen`（`stillfail-screen`）移植，代码不变，只改了名字。Windows 上 station 每开一个本机显示器的画面就起一个它的进程：Windows.Graphics.Capture 采集主显示器，Media Foundation 硬件编码 H.265 或 H.264（没有硬件编码器时用软件编码器），SendInput 发输入。协议、移植关系和与 still.fail 的差异写在 [desktop-screen.md](desktop-screen.md)。
+
+- `scripts/native.ts` 的 part `desktop-screen`（win32-x64），和 runner 一样用 cargo-zigbuild 交叉编译成 MinGW 的 exe；`station-native-windows` action 从 R2 取或构建，`bundle.sh win32-x64` 把它放在 `station/` 里 `main.js` 旁边，桌面端跟着带上。
+- 测试：crate 自己的测试。不依赖 Windows 的部分在 Station workflow 的 macOS 上跑（`cargo test`），采集、编码、HDR 的测试只在 Windows 上跑。

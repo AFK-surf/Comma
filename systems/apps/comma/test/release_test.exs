@@ -5,6 +5,21 @@ defmodule Comma.ReleaseTest do
   import ExUnit.CaptureIO
 
   test "completed Group handoff still finishes late Cloudflare profile conversion" do
+    # The Task search stage opens its index; without a configured generation it has
+    # nothing to open.
+    search_generation =
+      SystemsRuntime.get_env(:salix_store, :conversation_search_writer_generation)
+
+    SystemsRuntime.delete_env(:salix_store, :conversation_search_writer_generation)
+
+    on_exit(fn ->
+      SystemsRuntime.put_env(
+        :salix_store,
+        :conversation_search_writer_generation,
+        search_generation
+      )
+    end)
+
     tenant = SalixStore.Ids.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
     resource = SalixStore.RuntimeIds.cloud_vm_provider_resource_name(group)
@@ -43,17 +58,9 @@ defmodule Comma.ReleaseTest do
       "UPDATE salix_cutover_markers SET evidence = '{\"phase\":\"window\"}' WHERE name = 'station_roster_v1'"
     )
 
-    SalixStore.Repo.query!(
-      "DELETE FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
-    )
-
     on_exit(fn ->
       SalixStore.Repo.query!(
         "UPDATE salix_cutover_markers SET evidence = '{\"phase\":\"complete\"}' WHERE name = 'station_roster_v1'"
-      )
-
-      SalixStore.Repo.query!(
-        "DELETE FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
       )
     end)
 
@@ -76,19 +83,49 @@ defmodule Comma.ReleaseTest do
 
     assert Comma.Stations.SalixCopy.phase() == {:ok, :complete}
 
-    # Then the Group Cloud VM switch converges: Salix's pages, then the Comma
-    # Workspaces', then the BFT Projects', whose last page answers no cursor.
-    assert %{"stage" => "group_cloud_vm"} = decode_transfer_cursor(cursor)
-    assert finish_transfer(cursor, 0) == "group_cloud_vm"
+    # Then Task search and the Task file index open, the Cloud VM cutover runs
+    # where the deployment retires the Cloud VM, then failed Workspace
+    # provisioning is requeued.
+    assert %{"stage" => "conversation_search"} = decode_transfer_cursor(cursor)
+    assert finish_transfer(cursor, 0) == "workspace_provisioning"
 
-    assert %{rows: [[%{"phase" => "complete", "position" => nil}]]} =
-             SalixStore.Repo.query!(
-               "SELECT evidence FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
-             )
+    # A later run of the job finds them done and runs no page: Task search has
+    # no generation to open.
+    search_cursor = cursor
 
-    # A later run of the job finds them done and runs no page.
     output =
-      capture_io(fn -> assert :ok = Comma.Release.transfer_agent_configuration_page(cursor) end)
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(search_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => files_cursor} = Jason.decode!(body)
+    assert %{"stage" => "task_files"} = decode_transfer_cursor(files_cursor)
+
+    # The test database's Task file index is complete: the stage opens nothing.
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(files_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => cutover_cursor} = Jason.decode!(body)
+    assert %{"stage" => "cloud_vm_cutover"} = decode_transfer_cursor(cutover_cursor)
+
+    # The deployment does not retire the Cloud VM: the cutover changes nothing.
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(cutover_cursor)
+      end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert %{"processed" => 0, "next_cursor" => workspace_cursor} = Jason.decode!(body)
+    assert %{"stage" => "workspace_provisioning"} = decode_transfer_cursor(workspace_cursor)
+
+    output =
+      capture_io(fn ->
+        assert :ok = Comma.Release.transfer_agent_configuration_page(workspace_cursor)
+      end)
 
     [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
     assert Jason.decode!(body) == %{"processed" => 0, "next_cursor" => nil}

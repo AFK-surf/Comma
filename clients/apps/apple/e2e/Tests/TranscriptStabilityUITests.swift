@@ -9,6 +9,16 @@ import XCTest
 @MainActor final class TranscriptStabilityUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
+    func testShortChatRestoresWrappingDraftWithoutBlockingRendering() throws {
+        let app = XCUIApplication.fixture(arguments: ["--launch-in-chat", "--startup-short-chat", "--hide-metrics"])
+        let composer = app.routerComposer
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "在测试群里说一下周四周五参加AI Engineer")
+        XCTAssertTrue(composer.isHittable, "Restoring the draft must leave the first screen responsive")
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    }
+
     private func launch() -> XCUIApplication {
         XCUIApplication.fixture(arguments: ["--perf-varied-chat", "--perf-hold-stream", "--transcript-probe"])
     }

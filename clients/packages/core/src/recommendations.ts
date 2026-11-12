@@ -11,7 +11,8 @@
 // A language change is another topic (`locale`), so it reads at once.
 //
 // Bounds: one read in flight per showing; the reads above; a refresh is one request.
-import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
+import { lazySchema } from "@comma/chat-contract";
+import { CoreError, Priority, share, type Topic, type Value } from "@comma/core-kernel";
 import {
   recommendationEnvelopeSchema,
   type RecommendationEnvelope,
@@ -34,10 +35,10 @@ const recommendationsPath = (ws: string) =>
   route`/v1/comma/workspaces/${ws}/recommendations`;
 const proactivePath = (group: string) => route`/v1/comma/groups/${group}/proactive`;
 
-const refreshSchema = z
-  .object({ envelope: recommendationEnvelopeSchema })
-  .passthrough();
-const proactiveSchema = z.object({ enabled: z.boolean() });
+const refreshSchema = lazySchema(() =>
+  z.object({ envelope: recommendationEnvelopeSchema }).passthrough()
+);
+const proactiveSchema = lazySchema(() => z.object({ enabled: z.boolean() }));
 
 /**
  * Milliseconds from `now` until the next daily delivery instant, read on the schedule's own wall clock. `undefined`
@@ -379,7 +380,7 @@ export class Recommendations {
     for (const topic of this.#topics(workspace)) {
       const shown = this.#shown.get(keyOf(topic));
       if (!shown) continue;
-      shown.envelope = envelope;
+      shown.envelope = share(shown.envelope, envelope);
       this.#changed(topic);
     }
   }
@@ -451,7 +452,7 @@ export class Recommendations {
           const generation = next.snapshot?.generation ?? null;
           const generationChanged = generation !== shown.generation;
           shown.generation = generation;
-          shown.envelope = next;
+          shown.envelope = share(shown.envelope, next);
           shown.serverRefreshing = next.state === "refreshing";
           // A refused refresh stays explained until a run starts or a new briefing arrives.
           shown.failure =
@@ -532,7 +533,7 @@ export class Recommendations {
               shown.serverRefreshing = result.envelope.state === "refreshing";
               shown.generation =
                 result.envelope.snapshot?.generation ?? shown.generation;
-              shown.envelope = result.envelope;
+              shown.envelope = share(shown.envelope, result.envelope);
               shown.refreshing = false;
             });
             for (const topic of this.#topics(workspace)) this.#restart(topic, false);

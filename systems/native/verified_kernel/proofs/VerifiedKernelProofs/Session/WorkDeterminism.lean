@@ -19,10 +19,10 @@ theorem foldlM_same_results {α : Type} {items : List Term} {first second : α �
     subst next'
     exact ih one two
 
-theorem mapM_same_results {items : List Term} {first second : Term → KernelM Term}
+theorem mapM_same_results {α : Type} {items : List Term} {first second : Term → KernelM α}
     (same : ∀ item left right j r before after,
       first item j = .ok (left, r) → second item before = .ok (right, after) → left = right)
-    {left right j r before after : List Term}
+    {left right : List α} {j r before after : List Term}
     (one : items.mapM first j = .ok (left, r))
     (two : items.mapM second before = .ok (right, after)) : left = right := by
   induction items generalizing left right j r before after with
@@ -175,7 +175,7 @@ theorem deterministic_enumFold {α : Type} (value : Term) (initial : α) (step :
   exact foldlM_same_results (fun state item _ _ _ _ _ _ a b => same state item _ _ _ _ _ _ a b) firstFold secondFold
 
 theorem deterministic_inputIdentityGroups (event : Term) : Deterministic (Command.inputIdentityGroups event) := by
-  unfold Command.inputIdentityGroups
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups
   dsimp only
   split
   · apply deterministic_bind (deterministic_stringify _); intro payload
@@ -191,10 +191,19 @@ theorem deterministic_inputIdentityGroups (event : Term) : Deterministic (Comman
       · split
         · exact deterministic_pure _
         · split
-          · apply deterministic_enumFold; intro acc item
-            apply deterministic_bind (deterministic_stringify _); intro entry
-            apply deterministic_bind (deterministic_seedKeys _); intro keys
-            exact deterministic_pure _
+          · apply deterministic_bind ?_; intro items
+            · intro left right j r before after one two
+              exact mapM_same_results (same := fun raw => by
+                intro left right j r before after one two
+                obtain ⟨entry, _, entryRead, one⟩ := bind_ok one
+                obtain ⟨entry', _, entryRead', two⟩ := bind_ok two
+                have same := stringify_same_results entryRead entryRead'
+                subst entry'
+                exact deterministic_seedKeys entry _ _ _ _ _ _ one two) one two
+            · intro left right j r before after one two
+              have first := (asList_ok_iff.mp one).1
+              have second := (asList_ok_iff.mp two).1
+              exact Term.list.inj (first.symm.trans second)
           · exact deterministic_pure _
 
 end VerifiedKernel.Session.WorkConservation

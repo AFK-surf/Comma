@@ -5,17 +5,17 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/// The runner binary: STILLFAIL_RUNNER, else beside the station's code in a release, else where cargo built it. On
+/// The runner binary: COMMA_STATION_RUNNER, else beside the station's code in a release, else where cargo built it. On
 /// Windows, once `keepRunnerIn` has named a directory, a copy of it there (see `keepRunnerIn`).
 export function runnerBinary(): string {
-  const name = process.platform === "win32" ? "stillfail-runner.exe" : "stillfail-runner";
+  const name = process.platform === "win32" ? "comma-runner.exe" : "comma-runner";
   const candidates = [
-    process.env.STILLFAIL_RUNNER,
+    process.env.COMMA_STATION_RUNNER,
     fileURLToPath(new URL(`./${name}`, import.meta.url)),
     fileURLToPath(new URL(`../../native/runner/target/release/${name}`, import.meta.url)),
   ];
   const found = candidates.find((p) => p && existsSync(p));
-  if (!found) throw new Error(`stillfail-runner is not there (looked at ${candidates.filter(Boolean).join(", ")})`);
+  if (!found) throw new Error(`comma-runner is not there (looked at ${candidates.filter(Boolean).join(", ")})`);
   return kept ? kept.copyOf(found) : found;
 }
 
@@ -47,7 +47,7 @@ class RunnerCopies {
     if (known && existsSync(known)) return known;
     try {
       const hash = createHash("sha256").update(readFileSync(source)).digest("hex").slice(0, 16);
-      const copy = join(this.dir, `stillfail-runner-${hash}.exe`);
+      const copy = join(this.dir, `comma-runner-${hash}.exe`);
       if (!existsSync(copy)) {
         mkdirSync(this.dir, { recursive: true });
         // Whole or not there: written beside it, then renamed (another station copying the same one meanwhile is
@@ -77,7 +77,7 @@ class RunnerCopies {
       return;
     }
     for (const name of names) {
-      if (!/^stillfail-runner-[0-9a-f]+\.exe(\.\d+\.part)?$/.test(name)) continue;
+      if (!/^comma-runner-[0-9a-f]+\.exe(\.\d+\.part)?$/.test(name)) continue;
       try {
         unlinkSync(join(this.dir, name));
       } catch {}

@@ -1,5 +1,17 @@
 import VerifiedKernelProofs.Session.WorkByteResidentExecution
-
+import VerifiedKernelProofs.Session.WorkArchiveByteStore
+import VerifiedKernelProofs.Session.WorkStoredIdentity
+import VerifiedKernelProofs.Session.WorkActivationWrite
+import VerifiedKernelProofs.Session.WorkDriverFencedBatch
+import VerifiedKernelProofs.Session.WorkDriverBatch
+import VerifiedKernelProofs.Session.WorkDriverRawBatch
+import VerifiedKernelProofs.Session.WorkPhysicalHistory
+import VerifiedKernelProofs.Session.WorkDriverRawAdmission
+import VerifiedKernelProofs.Session.WorkPhysicalPreservation
+import VerifiedKernelProofs.Session.WorkPhysicalTransport
+import VerifiedKernelProofs.Session.WorkPhysicalWrite
+import VerifiedKernelProofs.Session.WorkInputTermPending
+import VerifiedKernelProofs.Session.WorkStagedExecution
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication
 set_option Elab.async false

@@ -135,6 +135,26 @@ defmodule CommaWeb.Proactive do
 
   def watch(args, ctx), do: ProactiveWatch.install(args, ctx)
 
+  @doc """
+  The owner's correction of one open thread (`Comma.OpenThreads`), from their
+  Home Router: `open`, `resolved` or `dismissed`. Like the notebook, only
+  while the owner is the Workspace's only member.
+  """
+  def thread(%{"id" => id, "status" => status}, ctx) when is_binary(id) do
+    with {:ok, workspace, owner} <- scope(ctx),
+         true <- Enum.map(workspace["members"] || [], & &1["user_id"]) in [[], [owner]],
+         {:ok, profile} <- Comma.Recommendations.get_runtime_profile(workspace["id"], owner),
+         {:ok, thread} <- Comma.OpenThreads.set_status(profile.id, id, status) do
+      CommaWeb.ProactiveNotebook.enqueue(ctx.group_id, owner)
+      {:ok, %{"id" => thread.id, "status" => thread.status, "summary" => thread.summary}}
+    else
+      false -> {:error, :open_thread_not_found}
+      error -> error
+    end
+  end
+
+  def thread(_args, _ctx), do: {:error, :invalid_open_thread}
+
   def act(%{"action" => "track"} = args, ctx) do
     with {:ok, _, owner} <- scope(ctx),
          {:ok, _, authorized, home} <- HomeMail.context(%{"id" => owner}, %{}, ctx.group_id),
@@ -224,7 +244,8 @@ defmodule CommaWeb.Proactive do
   end
 
   def act(args, ctx) do
-    with {:ok, _, owner} <- scope(ctx),
+    with :ok <- delegated(args, ctx),
+         {:ok, _, owner} <- scope(ctx),
          {:ok, _, _, home} <- HomeMail.context(%{"id" => owner}, %{}, ctx.group_id),
          {:ok, conversation} <- Conversations.get_group_conversation_record(ctx.group_id, home),
          {:ok, key} <- resolve(conversation, owner, args) do
@@ -238,6 +259,18 @@ defmodule CommaWeb.Proactive do
       HomeMail.action(%{"id" => owner}, %{}, ctx.group_id, args)
     end
   end
+
+  # A draft starts work in a Task, so only the owner's own message admits it,
+  # not a background handoff alone.
+  defp delegated(%{"action" => "draft"}, ctx) do
+    if SalixAgent.ToolCallProvenance.proactive_handoff_only?(
+         SalixAgent.ToolCallProvenance.origins(ctx)
+       ),
+       do: {:error, :proactive_handoff_not_delegation},
+       else: :ok
+  end
+
+  defp delegated(_args, _ctx), do: :ok
 
   defp action_generation(value, request) do
     if value["request_id"] == request,

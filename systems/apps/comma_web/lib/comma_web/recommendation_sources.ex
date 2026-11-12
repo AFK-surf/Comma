@@ -20,7 +20,7 @@ defmodule CommaWeb.RecommendationSources do
       )
       when mode in ~w(generic member) and is_list(existing_sources) do
     with :ok <- member_scope(workspace, user_id, mode),
-         native = discover_oauth(tenant_id, group_id),
+         native = discover_oauth(tenant_id, group_id, mode),
          {:ok, composio} <- discover_composio(workspace, user_id, mode, existing_sources) do
       {:ok,
        (native ++ composio)
@@ -38,12 +38,18 @@ defmodule CommaWeb.RecommendationSources do
 
   defp member_scope(_, _, "member"), do: {:error, :forbidden}
 
-  defp discover_oauth(_tenant_id, group_id) do
+  # Feishu and Lark are read only for the member who signed in: no generic
+  # collection reads them.
+  defp discover_oauth(_tenant_id, group_id, mode) do
     group_id
     |> Salix.Control.OAuthBindings.list()
     |> Enum.filter(fn binding ->
-      CommaWeb.RecommendationPreviewCatalog.managed?(binding["provider"]) and
-        binding["alias"] == binding["provider"] and binding["status"] == "active" and
+      (CommaWeb.RecommendationPreviewCatalog.managed?(binding["provider"]) or
+         (mode == "member" and
+            CommaWeb.RecommendationPreviewCatalog.member_only?(binding["provider"]))) and
+        binding["alias"] ==
+          CommaWeb.RecommendationPreviewCatalog.binding_alias(binding["provider"]) and
+        binding["status"] == "active" and
         binding["enabled"] != false
     end)
     |> Enum.map(fn binding ->
@@ -68,15 +74,21 @@ defmodule CommaWeb.RecommendationSources do
        ) do
     case Salix.Composio.list_all_group_connected_accounts(tenant_id, group_id) do
       {:ok, accounts} when is_list(accounts) ->
+        usable =
+          accounts
+          |> Enum.filter(&(&1["user_id"] == group_id))
+          |> Enum.flat_map(&usable_composio_account/1)
+
         bindings =
           if mode == "member",
-            do: composio_bindings(workspace["id"], user_id),
+            do:
+              workspace
+              |> CommaWeb.MemberSourceAdoption.adopt(user_id, usable)
+              |> Map.drop(@native_only_apps),
             else: %{}
 
         {:ok,
-         accounts
-         |> Enum.filter(&(&1["user_id"] == group_id))
-         |> Enum.flat_map(&usable_composio_account/1)
+         usable
          # Outlook is a personal mailbox/calendar source: no generic collection
          # may bypass owner confirmation of the exact connected account.
          |> Enum.reject(&(mode == "generic" and &1.toolkit == "outlook"))
@@ -117,17 +129,24 @@ defmodule CommaWeb.RecommendationSources do
   defp selected_accounts(accounts, _bindings, "generic"),
     do: newest_account_per_toolkit(accounts)
 
+  # Every account the member consented to is its own source; a toolkit
+  # without consent keeps its newest account.
   defp selected_accounts(accounts, bindings, "member") do
-    candidates = Map.new(newest_account_per_toolkit(accounts), &{&1.toolkit, &1})
+    candidates = Map.new(newest_account_per_toolkit(accounts), &{&1.toolkit, [&1]})
 
     bindings
-    |> Enum.reduce(candidates, fn {toolkit, id}, selected ->
-      case Enum.find(accounts, &(&1.toolkit == toolkit and &1.id == id)) do
-        nil -> Map.put(selected, toolkit, %{toolkit: toolkit, id: id})
-        account -> Map.put(selected, toolkit, account)
-      end
+    |> Enum.reduce(candidates, fn {toolkit, ids}, selected ->
+      Map.put(
+        selected,
+        toolkit,
+        Enum.map(ids, fn id ->
+          Enum.find(accounts, &(&1.toolkit == toolkit and &1.id == id)) ||
+            %{toolkit: toolkit, id: id}
+        end)
+      )
     end)
     |> Map.values()
+    |> List.flatten()
   end
 
   defp usable_composio_account(account) when is_map(account) do

@@ -139,6 +139,27 @@ test("until a Workspace chooses the local sign-in, nothing of the machine's own 
   await a.close();
 });
 
+test("the owner's confirmation from Salix chooses the local sign-in for that connection's Workspace only, and makes its profile", async () => {
+  const m = signedInMachine();
+  const data = temp("from-salix");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], connects: [] }));
+  instance(data, "inst-a", "ws-a");
+  instance(data, "inst-b", "ws-b");
+  const a = accounts(data, { env: m.env, check: () => ({ state: "ok", detail: "fake", models: ["opus"], checkedAt: 0 }) });
+  assert.deepEqual(await a.chooseLocalForHost("salix:inst-a", "claude", "usr_owner"), { workspace: "ws-a", runtime: "claude", source: "local", signed_in: true });
+  assert.deepEqual(a.sources.choice("ws-a", "claude")?.source, "local");
+  assert.equal(a.sources.choice("ws-a", "claude")?.by, "usr_owner");
+  assert.equal(a.sources.choice("ws-b", "claude"), null, "another Workspace's source changed");
+  assert.equal(a.sources.choice("ws-a", "codex"), null, "another runtime's source changed");
+  assert.ok(a.profiles().some((p) => p.id === "machine-claude"), "the signed-in login has a profile to run on");
+  assert.deepEqual(a.sources.eligible(a.profiles(), "claude", "salix:inst-a", "en").map((p) => p.id), ["machine-claude"]);
+  // A connection with no Workspace of a person's, and a runtime it does not know, are refused.
+  await assert.rejects(a.chooseLocalForHost("salix", "claude", "usr_owner"), (e: Refusal) => e.status === 409);
+  await assert.rejects(a.chooseLocalForHost("salix:inst-gone", "claude", "usr_owner"), (e: Refusal) => e.status === 409);
+  await assert.rejects(a.chooseLocalForHost("salix:inst-a", "gemini", "usr_owner"), (e: Refusal) => e.status === 400);
+  await a.close();
+});
+
 test("a managed Workload ignores desktop local choices and runs Sessions and Tasks only on its connection's cloud accounts", async () => {
   const m = signedInMachine();
   const data = temp("managed");
@@ -399,7 +420,7 @@ test("the local admin interface: refused without its token; each Workspace's run
 
 test("on Windows the interface is a pipe of the user's own station, named after its data directory", () => {
   const one = localAdminAddress("C:\\Users\\ann\\AppData\\Roaming\\Comma\\station", "windows");
-  assert.match(one, /^\\\\\.\\pipe\\stillfail-local-admin-[0-9a-f]{24}$/);
+  assert.match(one, /^\\\\\.\\pipe\\comma-station-local-admin-[0-9a-f]{24}$/);
   assert.equal(localAdminAddress("C:\\Users\\ann\\AppData\\Roaming\\Comma\\station", "windows"), one);
   assert.notEqual(localAdminAddress("C:\\Users\\bob\\AppData\\Roaming\\Comma\\station", "windows"), one);
   assert.equal(localAdminAddress("/data", "macos"), join("/data", "run", "local-admin.sock"));

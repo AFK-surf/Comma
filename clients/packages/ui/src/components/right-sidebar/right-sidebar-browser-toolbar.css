@@ -8,28 +8,34 @@
   }
 }
 
+/* The icon's scale; it is not visible at half its size or less (AGENTS.md,
+   Client UI), so its opacity follows the scale rather than a curve of its own. */
+@property --comma-right-sidebar-browser-icon-scale {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
 .comma-right-sidebar-browser-icon {
-  transform: scale(1);
-  opacity: 1;
+  --comma-right-sidebar-browser-icon-scale: 1;
+  transform: scale(var(--comma-right-sidebar-browser-icon-scale));
+  opacity: clamp(0, (var(--comma-right-sidebar-browser-icon-scale) - 0.5) * 2, 1);
   filter: blur(0);
   transition:
-    opacity 180ms cubic-bezier(0.2, 0, 0, 1),
-    transform 180ms cubic-bezier(0.2, 0, 0, 1),
+    --comma-right-sidebar-browser-icon-scale 180ms cubic-bezier(0.2, 0, 0, 1),
     filter 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .comma-right-sidebar-browser-icon-exit,
 .comma-right-sidebar-browser-icon[data-visible="false"] {
-  transform: scale(0.25);
-  opacity: 0;
+  --comma-right-sidebar-browser-icon-scale: 0.25;
   filter: blur(4px);
   pointer-events: none;
 }
 
 .comma-right-sidebar-browser-icon-enter,
 .comma-right-sidebar-browser-icon[data-visible="true"] {
-  transform: scale(1);
-  opacity: 1;
+  --comma-right-sidebar-browser-icon-scale: 1;
   filter: blur(0);
 }
 

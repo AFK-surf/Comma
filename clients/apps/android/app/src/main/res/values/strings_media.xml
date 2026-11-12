@@ -14,6 +14,9 @@
     <string name="media_video_unavailable">视频已不可用</string>
     <string name="media_video_progress">正在下载 %1$d%%</string>
     <string name="media_video_cannot_play">无法播放这个视频</string>
+    <string name="media_tile_unavailable">图片暂时不可用</string>
+    <string name="media_tile_retry">重试</string>
+    <string name="media_tile_open_file">打开文件</string>
     <string name="media_file_meta">%1$s · %2$s</string>
     <string name="media_file_downloading">正在下载 %1$d%%</string>
     <string name="media_file_downloading_unknown">正在下载…</string>
@@ -28,4 +31,9 @@
     <string name="media_file_kind_code">代码</string>
     <string name="media_file_kind_archive">压缩包</string>
     <string name="media_file_kind_other">文件</string>
+    <string name="media_file_open">打开</string>
+    <string name="media_file_save_as">另存为…</string>
+    <string name="media_file_share">分享…</string>
+    <string name="media_file_saved">已保存</string>
+    <string name="media_file_save_failed">保存失败</string>
 </resources>

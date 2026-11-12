@@ -116,24 +116,6 @@ defmodule Agentvmm.Trust.V1.DeviceIdentity do
   )
 end
 
-defmodule Agentvmm.Trust.V1.DeviceRootRotation do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.DeviceRootRotation",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:device_id, 1, type: :string, json_name: "deviceId")
-  field(:old_root_key_revision, 2, type: :uint64, json_name: "oldRootKeyRevision")
-  field(:old_root_public_key, 3, type: :bytes, json_name: "oldRootPublicKey")
-  field(:new_root_key_revision, 4, type: :uint64, json_name: "newRootKeyRevision")
-  field(:new_root_public_key, 5, type: :bytes, json_name: "newRootPublicKey")
-  field(:old_signs_new, 6, type: :bytes, json_name: "oldSignsNew")
-  field(:new_signs_old, 7, type: :bytes, json_name: "newSignsOld")
-  field(:rotated_at, 8, type: Google.Protobuf.Timestamp, json_name: "rotatedAt")
-end
-
 defmodule Agentvmm.Trust.V1.AuthorityDescriptor do
   @moduledoc false
 
@@ -576,53 +558,6 @@ defmodule Agentvmm.Trust.V1.ApplyMeshSnapshotResponse do
   field(:applied_revision, 1, type: :uint64, json_name: "appliedRevision")
 end
 
-defmodule Agentvmm.Trust.V1.AuthorizeRouteRequest do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.AuthorizeRouteRequest",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:capability, 1, type: Agentvmm.Trust.V1.RouteCapability)
-  field(:expected_audience, 2, type: :string, json_name: "expectedAudience")
-  field(:observed_at, 3, type: Google.Protobuf.Timestamp, json_name: "observedAt")
-  field(:expected_source_device_id, 4, type: :string, json_name: "expectedSourceDeviceId")
-
-  field(:expected_source_allocation_id, 5,
-    proto3_optional: true,
-    type: :string,
-    json_name: "expectedSourceAllocationId"
-  )
-
-  field(:expected_destination_device_id, 6,
-    type: :string,
-    json_name: "expectedDestinationDeviceId"
-  )
-
-  field(:expected_destination_export_id, 7,
-    type: :string,
-    json_name: "expectedDestinationExportId"
-  )
-
-  field(:expected_route_generation, 8, type: :uint64, json_name: "expectedRouteGeneration")
-  field(:expected_policy_revision, 9, type: :uint64, json_name: "expectedPolicyRevision")
-  field(:expected_route_class, 10, type: :string, json_name: "expectedRouteClass")
-end
-
-defmodule Agentvmm.Trust.V1.AuthorizeRouteResponse do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.AuthorizeRouteResponse",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:authorized, 1, type: :bool)
-  field(:denial_code, 2, type: :string, json_name: "denialCode")
-  field(:remaining_budget, 3, type: Agentvmm.Trust.V1.RouteBudget, json_name: "remainingBudget")
-end
-
 defmodule Agentvmm.Trust.V1.PendingRegistryOperation do
   @moduledoc false
 
@@ -713,17 +648,6 @@ defmodule Agentvmm.Trust.V1.CommitRevokeRequest do
   field(:operation, 1, type: Agentvmm.Trust.V1.RegistryOperation)
 end
 
-defmodule Agentvmm.Trust.V1.MeshCommitResponse do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.MeshCommitResponse",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:snapshot, 1, type: Agentvmm.Trust.V1.MeshSnapshot)
-end
-
 defmodule Agentvmm.Trust.V1.GetSnapshotRequest do
   @moduledoc false
 
@@ -760,11 +684,55 @@ defmodule Agentvmm.Trust.V1.PublishEndpointResponse do
   field(:receipt, 1, type: Agentvmm.Trust.V1.RegistryReceipt)
 end
 
-defmodule Agentvmm.Trust.V1.ListMeshEndpointsRequest do
+defmodule Agentvmm.Trust.V1.CreateMeshResponse do
   @moduledoc false
 
   use Protobuf,
-    full_name: "agentvmm.trust.v1.ListMeshEndpointsRequest",
+    full_name: "agentvmm.trust.v1.CreateMeshResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:snapshot, 1, type: Agentvmm.Trust.V1.MeshSnapshot)
+end
+
+defmodule Agentvmm.Trust.V1.CommitJoinResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "agentvmm.trust.v1.CommitJoinResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:snapshot, 1, type: Agentvmm.Trust.V1.MeshSnapshot)
+end
+
+defmodule Agentvmm.Trust.V1.CommitRevokeResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "agentvmm.trust.v1.CommitRevokeResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:snapshot, 1, type: Agentvmm.Trust.V1.MeshSnapshot)
+end
+
+defmodule Agentvmm.Trust.V1.GetSnapshotResponse do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "agentvmm.trust.v1.GetSnapshotResponse",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:snapshot, 1, type: Agentvmm.Trust.V1.MeshSnapshot)
+end
+
+defmodule Agentvmm.Trust.V1.ListEndpointsRequest do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "agentvmm.trust.v1.ListEndpointsRequest",
     protoc_gen_elixir_version: "0.17.0",
     syntax: :proto3
 
@@ -772,38 +740,14 @@ defmodule Agentvmm.Trust.V1.ListMeshEndpointsRequest do
   field(:expected_revision, 2, type: :uint64, json_name: "expectedRevision")
 end
 
-defmodule Agentvmm.Trust.V1.ListMeshEndpointsResponse do
+defmodule Agentvmm.Trust.V1.ListEndpointsResponse do
   @moduledoc false
 
   use Protobuf,
-    full_name: "agentvmm.trust.v1.ListMeshEndpointsResponse",
+    full_name: "agentvmm.trust.v1.ListEndpointsResponse",
     protoc_gen_elixir_version: "0.17.0",
     syntax: :proto3
 
   field(:observations, 1, repeated: true, type: Agentvmm.Trust.V1.EndpointObservation)
   field(:mesh_revision, 2, type: :uint64, json_name: "meshRevision")
-end
-
-defmodule Agentvmm.Trust.V1.WatchRevisionRequest do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.WatchRevisionRequest",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:mesh_id, 1, type: :string, json_name: "meshId")
-  field(:after_revision, 2, type: :uint64, json_name: "afterRevision")
-end
-
-defmodule Agentvmm.Trust.V1.RevisionNotice do
-  @moduledoc false
-
-  use Protobuf,
-    full_name: "agentvmm.trust.v1.RevisionNotice",
-    protoc_gen_elixir_version: "0.17.0",
-    syntax: :proto3
-
-  field(:mesh_id, 1, type: :string, json_name: "meshId")
-  field(:revision, 2, type: :uint64)
 end

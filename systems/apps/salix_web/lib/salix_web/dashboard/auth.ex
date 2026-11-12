@@ -32,13 +32,29 @@ defmodule SalixWeb.Dashboard.Auth do
 
   @doc """
   Resolve the active tenant for an authenticated admin: the explicitly-selected
-  tenant from the session, else the first existing tenant, else `nil` when no
-  tenant exists yet (fresh install — onboarding required). No tenant is ever
-  privileged or synthesized.
+  tenant from the session, else a tenant from the first storage page.
+  Return `nil` when that page has no tenant. The dashboard then opens the
+  paginated tenant picker. No tenant is privileged or synthesized.
   """
   @spec current_tenant(map()) :: String.t() | nil
   def current_tenant(session) when is_map(session) do
-    session[@tenant_session_key] || first_tenant_id(Tenants.list())
+    session[@tenant_session_key] || first_tenant_id(first_page())
+  end
+
+  defp first_page do
+    case Tenants.page(nil, 1) do
+      {:ok, %{tenants: tenants}} -> tenants
+      {:error, _} -> []
+    end
+  end
+
+  defp selected_tenants(nil), do: first_page()
+
+  defp selected_tenants(id) do
+    case Tenants.get(id) do
+      {:ok, tenant} -> [tenant]
+      {:error, _} -> []
+    end
   end
 
   defp first_tenant_id([%{"tenant_id" => id} | _]), do: id
@@ -102,11 +118,11 @@ defmodule SalixWeb.Dashboard.Auth do
   @doc """
   on_mount `:ensure_admin` — redirect to /dash/login unless authenticated.
   Also assigns the selected tenant scope (`:current_tenant`) and the tenant list
-  (`:tenants`) used by the sidebar switcher.
+  (`:tenants`, at most the selected record) used by the sidebar switcher.
 
-  When no tenant exists yet (fresh install), `:current_tenant` is `nil` and every
-  view except the tenants page redirects to onboarding so an admin creates the
-  first tenant before doing anything tenant-scoped.
+  When no tenant is selected or found on the first page, every view except
+  the tenants page redirects to the picker. The admin can select an existing
+  tenant or create the first tenant before using a tenant-scoped view.
   """
   def on_mount(:ensure_admin, _params, session, socket) do
     cond do
@@ -117,13 +133,13 @@ defmodule SalixWeb.Dashboard.Auth do
          |> LiveView.redirect(to: "/dash/login")}
 
       true ->
-        tenants = Tenants.list()
+        tenants = selected_tenants(session[@tenant_session_key])
         current_tenant = session[@tenant_session_key] || first_tenant_id(tenants)
 
         if current_tenant == nil and socket.view != SalixWeb.Dashboard.TenantLive.Index do
           {:halt,
            socket
-           |> LiveView.put_flash(:info, "Create a tenant to get started.")
+           |> LiveView.put_flash(:info, "Select or create a tenant to get started.")
            |> LiveView.redirect(to: @onboarding_path)}
         else
           {:cont,

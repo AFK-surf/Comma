@@ -109,7 +109,7 @@ export class MainSessionHost {
   readonly #tokens = new Map<string, string>();
   readonly #grants = new Map<string, (success: boolean) => void>();
   readonly #rejectedListeners = new Set<(lease: SessionProductLease) => void>();
-  readonly #settledWaiters = new Set<() => void>();
+  readonly #settledWaiters = new Set<(snapshot: SessionLifecycleSnapshot) => void>();
   #closed = false;
 
   constructor(options: MainSessionHostOptions) {
@@ -121,10 +121,7 @@ export class MainSessionHost {
     this.#gate = new MainCredentialGate({
       authorityInstanceId: options.authorityInstanceId ?? randomUUID(),
       onSnapshotChanged: (snapshot) => {
-        if (snapshot.phase !== "initializing") {
-          for (const settle of this.#settledWaiters) settle();
-          this.#settledWaiters.clear();
-        }
+        for (const settle of this.#settledWaiters) settle(snapshot);
         void options.onSnapshotChanged?.(snapshot);
       },
       trustedAudience: this.#trustedAudience,
@@ -174,17 +171,28 @@ export class MainSessionHost {
 
   /**
    * Resolves once the core has published what the session is (anything but `initializing`), or after `withinMs`:
-   * startup decides its first windows on it, as it did when Main checked the session itself.
+   * startup decides its first windows on it, as it did when Main checked the session itself. A launcher's startup
+   * seed carries a placeholder user (`placeholderUserId`) until the server names the real one, and the core restores
+   * the seed before its check: startup waits past that placeholder as well.
    */
-  settled(withinMs: number): Promise<void> {
-    if (this.state().phase !== "initializing") return Promise.resolve();
+  settled(withinMs: number, placeholderUserId?: string): Promise<void> {
+    const known = (snapshot: SessionLifecycleSnapshot) =>
+      snapshot.phase !== "initializing" &&
+      (placeholderUserId === undefined ||
+        snapshot.principal?.userId !== placeholderUserId);
+    if (known(this.state())) return Promise.resolve();
     return new Promise((resolve) => {
       const cancelTimer = this.#clock.setTimer(withinMs, done);
+      const waiter = (snapshot: SessionLifecycleSnapshot) => {
+        if (known(snapshot)) done();
+      };
+      const settledWaiters = this.#settledWaiters;
       function done() {
         cancelTimer();
+        settledWaiters.delete(waiter);
         resolve();
       }
-      this.#settledWaiters.add(done);
+      settledWaiters.add(waiter);
     });
   }
 
@@ -328,6 +336,22 @@ export class MainSessionHost {
       case "signOut":
         await this.#store.beginSignOut();
         return this.#view(this.#store.getVaultSnapshot());
+      case "keep":
+        return (await this.#store.keepActive())
+          ? this.#view(this.#store.getVaultSnapshot())
+          : null;
+      case "activate": {
+        const token = this.#tokenFor(change.kept);
+        return token && (await this.#store.activateKept(token))
+          ? this.#view(this.#store.getVaultSnapshot())
+          : null;
+      }
+      case "forget": {
+        const token = this.#tokenFor(change.kept);
+        return token && (await this.#store.forgetKept(token))
+          ? this.#view(this.#store.getVaultSnapshot())
+          : null;
+      }
       case "quarantine":
         return this.#quarantine(change.issued);
       case "release":
@@ -354,6 +378,7 @@ export class MainSessionHost {
           ...(vault.active?.audience === this.#trustedAudience
             ? { active: activeCredential(vault.active) }
             : {}),
+          kept: vault.kept.filter((kept) => kept.audience === this.#trustedAudience),
           pendingRevocations: vault.pendingRevocations.filter(
             (pending) => pending.audience === this.#trustedAudience
           ),
@@ -435,6 +460,7 @@ export class MainSessionHost {
     if (
       stored.status === "readable" &&
       (stored.active?.token === token ||
+        stored.kept.some((kept) => kept.token === token) ||
         stored.pendingRevocations.some((pending) => pending.token === token))
     )
       return new TextEncoder().encode(
@@ -571,6 +597,18 @@ export class MainSessionHost {
           }
         : null,
       cleanup: vault.cleanup,
+      ...(vault.kept.length > 0
+        ? {
+            kept: vault.kept.map((kept) => ({
+              audience: kept.audience,
+              email: kept.email,
+              expiresAtEpochSeconds: kept.expiresAtEpochSeconds,
+              ref: this.#refFor(kept.token),
+              sessionId: kept.sessionId,
+              userId: kept.userId,
+            })),
+          }
+        : {}),
       pending: vault.pendingRevocations.map((pending) => ({
         audience: pending.audience,
         ref: this.#refFor(pending.token),

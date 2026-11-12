@@ -34,6 +34,10 @@ const testTransform = {
         import.meta.dirname,
         "packages/chat-contract/src/dynamic-ui/runtime.ts"
       ),
+      "@comma/chat-contract/dynamic-ui-level": resolve(
+        import.meta.dirname,
+        "packages/chat-contract/src/dynamic-ui/level.ts"
+      ),
       "@comma/chat-contract/dynamic-ui-cards": resolve(
         import.meta.dirname,
         "packages/chat-contract/src/dynamic-ui/cardsEntry.ts"
@@ -86,6 +90,10 @@ const testTransform = {
       "@comma/core-client": resolve(
         import.meta.dirname,
         "packages/core-client/src/index.tsx"
+      ),
+      "@comma/i18n/messages": resolve(
+        import.meta.dirname,
+        "packages/i18n/src/paraglide/messages.js"
       ),
       "@comma/i18n/react": resolve(import.meta.dirname, "packages/i18n/src/react.tsx"),
       "@comma/i18n/vite": resolve(import.meta.dirname, "packages/i18n/src/vite.ts"),
@@ -199,6 +207,7 @@ const unitDependencies = {
           "effect",
           "react-aria",
           "react-aria-components",
+          "react-aria/private/interactions/useFocusable",
           "react-aria/private/interactions/useFocusVisible",
         ],
         exclude: ["react", "react-dom"],

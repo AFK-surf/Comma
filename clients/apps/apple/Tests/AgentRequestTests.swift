@@ -20,6 +20,19 @@ final class AgentRequestTests: XCTestCase {
                      provider: "github", reason: "An app keeps its code in GitHub.")
     }
 
+    func testARequestReadsWhatItsCardAsksFor() throws {
+        let secret: NSDictionary = [
+            "id": "cap-1", "type": "oauth_authorization", "status": "pending",
+            "oauth": ["provider": "secret", "alias": "openai", "label": "OpenAI API Key", "reason": "It is needed.",
+                      "input": ["kind": "secret", "helpUrl": "http://not-https.example"]],
+        ]
+        let read = try XCTUnwrap(AgentRequest(secret))
+        XCTAssertEqual(read.input?.kind, .secret)
+        XCTAssertEqual(read.secretName, "OpenAI API Key")
+        // Only an https page opens.
+        XCTAssertNil(read.input?.helpURL)
+    }
+
     func testACardSitsUnderTheReplyToItsMessageAndAWaitingOneOnTheNewestTurn() {
         let shown = messages([("m1", true), ("m2", false), ("m3", false), ("m4", true)])
         let answered = request("cap-1", source: "m1", status: .completed, outcome: .connected)
@@ -39,17 +52,20 @@ final class AgentRequestTests: XCTestCase {
         XCTAssertEqual(placed.waiting, [waiting])
     }
 
-    func testTheCoreValueReadsItsConnectRequestsOnly() {
+    func testTheCoreValueReadsTheRequestsItDraws() {
         let value: NSDictionary = ["requests": [
             ["id": "cap-1", "type": "oauth_authorization", "status": "pending", "expiresAt": 2_000_000, "sourceMessageId": "m1",
              "oauth": ["provider": "github", "reason": "An app keeps its code in GitHub.",
                        "authorizationUrl": "https://github.com/login/oauth/authorize?state=s"]],
             ["id": "cap-2", "type": "oauth_authorization", "status": "pending",
              "oauth": ["provider": "github", "reason": "", "authorizationUrl": "http://example.com/authorize"]],
-            ["id": "cap-x", "type": "location", "status": "pending"],
+            ["id": "cap-x", "type": "camera", "status": "pending"],
+            ["id": "cap-3", "type": "location", "status": "pending", "location": ["reason": "Find cafes near you."]],
         ]]
         let read = AgentRequest.list(value)
-        XCTAssertEqual(read.map(\.id), ["cap-1", "cap-2"])
+        XCTAssertEqual(read.map(\.id), ["cap-1", "cap-2", "cap-3"])
+        XCTAssertTrue(read[2].isLocation)
+        XCTAssertEqual(read[2].reason, "Find cafes near you.")
         XCTAssertEqual(read[0].authorizationURL?.absoluteString, "https://github.com/login/oauth/authorize?state=s")
         // Only an https page opens in the browser.
         XCTAssertNil(read[1].authorizationURL)

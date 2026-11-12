@@ -51,14 +51,14 @@ test("native.ts ensure takes a part at hand without asking R2", async () => {
     const inbox = join(dir, "inbox");
     mkdirSync(part);
     mkdirSync(inbox);
-    writeFileSync(join(part, "stillfail-runner"), "");
+    writeFileSync(join(part, "comma-runner"), "");
     execFileSync("tar", ["-czf", join(inbox, `runner-linux-x64-${k}.tar.gz`), "-C", part, "."]);
-    const { STILLFAIL_NATIVE: _policy, ...env } = process.env;
+    const { COMMA_STATION_NATIVE: _policy, ...env } = process.env;
     execFileSync(process.execPath, [script, "ensure", "runner:linux-x64"], {
-      env: { ...env, STILLFAIL_NATIVE_CACHE: join(dir, "cache"), STILLFAIL_NATIVE_INBOX: inbox, STILLFAIL_NATIVE_URL: `http://127.0.0.1:${await closedPort()}` },
+      env: { ...env, COMMA_STATION_NATIVE_CACHE: join(dir, "cache"), COMMA_STATION_NATIVE_INBOX: inbox, COMMA_STATION_NATIVE_URL: `http://127.0.0.1:${await closedPort()}` },
       stdio: "pipe",
     });
-    assert.ok(existsSync(join(dir, "cache/runner", `linux-x64-${k}`, "stillfail-runner")));
+    assert.ok(existsSync(join(dir, "cache/runner", `linux-x64-${k}`, "comma-runner")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

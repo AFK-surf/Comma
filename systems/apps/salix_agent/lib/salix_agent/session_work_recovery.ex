@@ -1,47 +1,74 @@
 defmodule SalixAgent.SessionWorkRecovery do
   @moduledoc """
-  Bounded, single-flight recovery for durable non-stable session work.
+  Bounded dispatch of committed Session work and capability deadlines.
 
-  The supervised worker owns the two Postgres eager/deferred cursors and moves
-  the deterministic `sweep/1` operation off the shared cluster Recovery tick.
-  It has no timer or lease of its own: the lease holder requests work, repeated
-  requests coalesce, and at most one sweep runs on a node at a time.
-
-  Each pass starts at the successor of the last lane it actually attempted.
-  A wake budget exhausted inside one lane therefore cannot starve the other
-  lane forever. Within a lane the cursor advances only through the contiguous
-  prefix whose records were actually attempted; a query error or a budget
-  exhausted before the next record leaves that cursor unchanged.
-
-  Candidate rows are derived hints. Recovery rereads the authoritative Session
-  and token/revision fences every exact cleanup or wake. Wakes are idempotent
-  hints; every SessionActor rereads durable state before running.
-
-  Retirement, lane fairness, and notification catch-up are implementation-test
-  contracts. Their feature-level TLA+ models are retired; the retained system
-  models do not prove this recovery loop's progress.
+  The existing supervised worker coalesces wakes and periodic sweep requests.
+  Session reservations only suppress duplicate hints. Placement and the Session
+  owner retain execution authority. Capability settlement uses its existing owner.
   """
 
   use SystemsRuntime.Server
   require Logger
 
-  alias SalixAgent.{InternalSession, InternalSessionStore, SessionWorkIndex}
+  alias SalixAgent.CapabilityRequests
+  alias SalixStore.Repo
+
+  # These are the existing Session scheduling rules, independent of storage.
+  @deferred_or_external_reasons ~w(external_callback_tool_call capability_deadline wait_deadline llm_retry provider_cutover_parked)
+
+  def immediate_recovery_reasons?(reasons) when is_list(reasons),
+    do: Enum.any?(reasons, &(to_string(&1) not in @deferred_or_external_reasons))
+
+  def immediate_recovery_reasons?(_reasons), do: false
+
+  def recover_after_ms(reasons, wait) when is_list(reasons) do
+    reasons = Enum.map(reasons, &to_string/1)
+    eager = reasons -- @deferred_or_external_reasons
+    deadline = if is_map(wait), do: wait["deadline_ms"] || wait[:deadline_ms]
+    deferred? = Enum.any?(~w(wait_deadline llm_retry capability_deadline), &(&1 in reasons))
+
+    case {eager, deferred?, deadline} do
+      {[], true, deadline} when is_integer(deadline) -> deadline
+      {[_ | _], true, _} -> if "capability_deadline" in reasons, do: 0
+      _ -> nil
+    end
+  end
+
+  def recover_after_ms(_reasons, _wait), do: nil
+
+  @doc "Read one page of an Agent's committed Session work on owner startup."
+  def local_work_page(agent_id, cursor, limit) do
+    with {:ok, %{rows: rows}} <-
+           SalixStore.Repo.query(
+             """
+             SELECT s.session_id, s.work_reasons, a.role, a.router_session_id
+             FROM salix_sessions s JOIN salix_agents a USING (agent_id)
+             WHERE s.agent_id = $1 AND s.birth_kind = 'internal'
+               AND s.deleted_at IS NULL AND s.control_payload IS NOT NULL
+               AND cardinality(s.work_reasons) > 0 AND a.config_revision > 0
+               AND ($2::text IS NULL OR s.session_id > $2)
+             ORDER BY s.session_id LIMIT $3
+             """,
+             [agent_id, cursor, limit]
+           ) do
+      targets =
+        for [session_id, reasons, role, canonical] <- rows,
+            not (role == "router" and SalixStore.Ids.valid_session_id?(canonical) and
+                   canonical != session_id),
+            immediate_recovery_reasons?(reasons),
+            do: %{runtime: :internal, session_id: session_id}
+
+      next = if length(rows) == limit, do: rows |> List.last() |> hd()
+      {:ok, targets, next}
+    end
+  end
 
   @default_page_size 100
   @default_wake_timeout_ms 500
   @default_page_wake_budget_ms 2_000
 
-  @type lane :: :eager | :deferred
-  @type summary :: %{
-          rewoken: [String.t()],
-          scanned: non_neg_integer(),
-          cleaned: non_neg_integer(),
-          failed: non_neg_integer(),
-          unproven_retained: non_neg_integer(),
-          next: String.t() | nil,
-          deferred_next: String.t() | nil,
-          last_attempted_lane: lane() | nil
-        }
+  @lanes [:sessions, :capability_expiry, :capability_delivery]
+  @type summary :: map()
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -50,7 +77,7 @@ defmodule SalixAgent.SessionWorkRecovery do
     end
   end
 
-  @doc "Request one lease-authorized sweep without blocking the caller."
+  @doc "Request one bounded sweep without blocking the caller."
   @spec request_sweep(GenServer.server()) :: :ok | {:error, :not_running}
   def request_sweep(server \\ __MODULE__) do
     case SystemsRuntime.Server.whereis(server) do
@@ -79,10 +106,10 @@ defmodule SalixAgent.SessionWorkRecovery do
              runtime == :internal and
              is_binary(session_id) and session_id != "" and byte_size(session_id) <= 256 do
     server = Keyword.get(opts, :server, __MODULE__)
-    candidate_token = Keyword.get(opts, :candidate_token)
+    revision = Keyword.get(opts, :revision)
 
-    if valid_candidate_token?(candidate_token) do
-      key = {candidate_token || "", agent_id, runtime, session_id}
+    if valid_revision?(revision) do
+      key = {agent_id, runtime, session_id}
       target = %{runtime: runtime, session_id: session_id}
 
       case SystemsRuntime.Server.whereis(server) do
@@ -101,94 +128,66 @@ defmodule SalixAgent.SessionWorkRecovery do
 
   def request_wake(_agent_id, _target, _opts), do: {:error, :invalid_target}
 
-  @doc "Run one bounded session-work recovery pass synchronously."
-  @spec sweep(keyword()) :: summary()
+  @doc "Run one bounded pass over committed due work."
   def sweep(opts \\ []) do
     started_at = SystemsClock.monotonic_time()
-    now_ms = opts[:now] || SystemsClock.system_time(:millisecond)
-    max_keys = Keyword.get(opts, :session_work_max_keys, @default_page_size)
-    start_lane = normalize_lane(opts[:session_work_start_lane])
+    limit = min(positive_integer_option(opts[:session_work_max_keys], @default_page_size), 128)
+    timeout = positive_integer_option(opts[:session_work_wake_timeout], @default_wake_timeout_ms)
 
-    wake_timeout_ms =
-      positive_integer_option(opts[:session_work_wake_timeout], @default_wake_timeout_ms)
+    budget =
+      positive_integer_option(opts[:session_work_page_wake_budget], @default_page_wake_budget_ms)
 
-    page_wake_budget_ms =
-      positive_integer_option(
-        opts[:session_work_page_wake_budget],
-        @default_page_wake_budget_ms
-      )
-
-    state = %{
-      stats: %{rewoken: [], cleaned: 0, failed: 0, unproven_retained: 0},
-      scanned: 0,
-      next: opts[:session_work_cursor],
-      deferred_next: opts[:deferred_session_work_cursor],
-      last_attempted_lane: nil
-    }
-
-    deadline_ms = SystemsClock.monotonic_time(:millisecond) + page_wake_budget_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + budget
+    cursors = Keyword.get(opts, :cursors, %{})
+    start_lane = Keyword.get(opts, :start_lane, :sessions)
+    index = Enum.find_index(@lanes, &(&1 == start_lane)) || 0
+    lanes = Enum.drop(@lanes, index) ++ Enum.take(@lanes, index)
 
     result =
-      lane_order(start_lane)
-      |> Enum.reduce_while(state, fn lane, acc ->
-        if SystemsClock.monotonic_time(:millisecond) >= deadline_ms do
+      Enum.reduce_while(lanes, %{empty_summary() | cursors: cursors}, fn lane, acc ->
+        if SystemsClock.monotonic_time(:millisecond) >= deadline do
           {:halt, acc}
         else
-          attempt_lane(
-            lane,
-            acc,
-            max_keys,
-            now_ms,
-            deadline_ms,
-            wake_timeout_ms
-          )
+          acc = %{acc | last_attempted_lane: lane}
+
+          case due_page(lane, Map.get(acc.cursors, lane), limit) do
+            {:ok, records, eof?} ->
+              {acc, cursor, stopped?} =
+                process_page(records, lane, acc, Map.get(acc.cursors, lane), deadline, timeout)
+
+              cursor = if eof? and not stopped?, do: nil, else: cursor
+              {:cont, %{acc | cursors: Map.put(acc.cursors, lane, cursor)}}
+
+            {:error, reason} ->
+              Logger.warning("due work scan failed: #{inspect({lane, reason})}")
+              {:cont, %{acc | failed: acc.failed + 1}}
+          end
         end
       end)
 
-    summary = %{
-      rewoken: result.stats.rewoken |> Enum.reverse() |> Enum.uniq(),
-      scanned: result.scanned,
-      cleaned: result.stats.cleaned,
-      failed: result.stats.failed,
-      unproven_retained: result.stats.unproven_retained,
-      next: result.next,
-      deferred_next: result.deferred_next,
-      last_attempted_lane: result.last_attempted_lane
-    }
+    result = %{result | rewoken: Enum.uniq(Enum.reverse(result.rewoken))}
 
     Salix.Telemetry.emit_operation(
       "salix_cluster",
       "session_work_recovery",
       "system",
-      telemetry_outcome(summary),
+      if(result.failed > 0, do: "error", else: "ok"),
       SystemsClock.monotonic_time() - started_at
     )
 
-    summary
+    result
   end
 
-  @doc false
-  @spec empty_summary() :: summary()
   def empty_summary do
-    %{
-      rewoken: [],
-      scanned: 0,
-      cleaned: 0,
-      failed: 0,
-      unproven_retained: 0,
-      next: nil,
-      deferred_next: nil,
-      last_attempted_lane: nil
-    }
+    %{rewoken: [], scanned: 0, failed: 0, cursors: %{}, last_attempted_lane: nil}
   end
 
   @impl true
   def init(opts) do
     {:ok,
      %{
-       cursor: nil,
-       deferred_cursor: nil,
-       start_lane: :eager,
+       cursors: %{},
+       start_lane: :sessions,
        task: nil,
        task_kind: nil,
        pending: false,
@@ -228,7 +227,7 @@ defmodule SalixAgent.SessionWorkRecovery do
         {:noreply, maybe_start_next(state)}
 
       true ->
-        # The durable candidate already exists. Drop only this lossy hint;
+        # The committed Session due row already exists. Drop only this lossy hint;
         # periodic lease-driven recovery keeps notification pressure from
         # becoming either an unbounded queue or an unbounded sweep loop.
         emit_notification_admission("over_budget")
@@ -238,30 +237,13 @@ defmodule SalixAgent.SessionWorkRecovery do
 
   @impl true
   def handle_info(
-        {ref,
-         %{
-           rewoken: _rewoken,
-           scanned: _scanned,
-           cleaned: _cleaned,
-           failed: _failed,
-           next: next,
-           deferred_next: deferred_next,
-           last_attempted_lane: last_attempted_lane
-         } = result},
+        {ref, %{cursors: cursors, last_attempted_lane: lane} = result},
         %{task: %Task{ref: ref}, task_kind: :sweep} = state
       ) do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
-    log_summary(result)
-
-    state = %{
-      state
-      | cursor: next,
-        deferred_cursor: deferred_next,
-        start_lane: successor_lane(last_attempted_lane, state.start_lane),
-        task: nil,
-        task_kind: nil
-    }
-
+    if result.failed > 0, do: Logger.warning("due work recovery: #{result.failed} failures")
+    next = Enum.at(@lanes, rem((Enum.find_index(@lanes, &(&1 == lane)) || 0) + 1, length(@lanes)))
+    state = %{state | cursors: cursors, start_lane: next, task: nil, task_kind: nil}
     {:noreply, maybe_start_next(state)}
   end
 
@@ -336,9 +318,8 @@ defmodule SalixAgent.SessionWorkRecovery do
   defp start_sweep(state) do
     opts = [
       session_work_max_keys: state.max_keys,
-      session_work_cursor: state.cursor,
-      deferred_session_work_cursor: state.deferred_cursor,
-      session_work_start_lane: state.start_lane
+      cursors: state.cursors,
+      start_lane: state.start_lane
     ]
 
     task =
@@ -374,229 +355,128 @@ defmodule SalixAgent.SessionWorkRecovery do
   end
 
   defp reset_after_failure(state) do
-    %{state | cursor: nil, deferred_cursor: nil, start_lane: :eager, task: nil, task_kind: nil}
+    %{state | task: nil, task_kind: nil}
   end
 
-  defp attempt_lane(lane, state, max_keys, now_ms, deadline_ms, wake_timeout_ms) do
-    cursor = lane_cursor(state, lane)
-    state = %{state | last_attempted_lane: lane}
+  defp due_page(:sessions, cursor, limit) do
+    {at, agent, session} = cursor || {nil, "", ""}
 
-    case list_lane(lane, cursor, max_keys, now_ms) do
-      {:ok, records, eof?} ->
-        {stats, next, stopped?} =
-          process_lane(
-            records,
-            lane,
-            cursor,
-            eof?,
-            now_ms,
-            deadline_ms,
-            wake_timeout_ms,
-            state.stats
-          )
+    case Repo.query(
+           """
+           WITH pending AS (
+             SELECT s.agent_id, s.session_id
+             FROM salix_sessions s JOIN salix_agents a USING (agent_id)
+             WHERE s.next_run_at <= clock_timestamp() AND s.deleted_at IS NULL
+               AND a.config_revision > 0 AND a.archived_at IS NULL
+               AND (s.dispatch_after IS NULL OR s.dispatch_after <= clock_timestamp())
+               AND ($1::timestamptz IS NULL OR (s.next_run_at,s.agent_id,s.session_id) > ($1,$2,$3))
+             ORDER BY s.next_run_at,s.agent_id,s.session_id
+             LIMIT $4 FOR UPDATE OF s SKIP LOCKED
+           ), claimed AS (
+             UPDATE salix_sessions s SET dispatch_after = clock_timestamp() + interval '10 seconds'
+             FROM pending p WHERE s.agent_id=p.agent_id AND s.session_id=p.session_id
+             RETURNING s.agent_id,s.session_id,s.next_run_at
+           )
+           SELECT c.agent_id,c.session_id,c.next_run_at,a.role,a.router_session_id
+           FROM claimed c JOIN salix_agents a USING (agent_id)
+           ORDER BY c.next_run_at,c.agent_id,c.session_id
+           """,
+           [at, agent, session, limit]
+         ) do
+      {:ok, %{rows: rows}} ->
+        records =
+          Enum.map(rows, fn [agent, session, at, role, canonical] ->
+            %{
+              agent_id: agent,
+              session_id: session,
+              cursor: {at, agent, session},
+              retired:
+                role == "router" and SalixStore.Ids.valid_session_id?(canonical) and
+                  canonical != session
+            }
+          end)
 
-        state =
-          state
-          |> Map.put(:stats, stats)
-          |> Map.update!(:scanned, &(&1 + length(records)))
-          |> put_lane_cursor(lane, next)
+        {:ok, records, length(rows) < limit}
 
-        if stopped?, do: {:halt, state}, else: {:cont, state}
-
-      {:error, reason} ->
-        Logger.warning("#{lane} session-work recovery scan failed: #{inspect(reason)}")
-        {:cont, put_in(state, [:stats, :failed], state.stats.failed + 1)}
+      error ->
+        error
     end
   end
 
-  defp list_lane(:eager, cursor, max_keys, _now_ms) do
-    [max_keys: max_keys]
-    |> maybe_put_cursor(cursor)
-    |> SessionWorkIndex.list_discovery()
-    |> normalize_page()
-  end
+  defp due_page(lane, cursor, limit) do
+    result =
+      case lane do
+        :capability_expiry ->
+          CapabilityRequests.due_location_requests(cursor: cursor, limit: limit)
 
-  defp list_lane(:deferred, cursor, max_keys, now_ms) do
-    opts = [max_keys: max_keys] |> maybe_put_cursor(cursor)
+        :capability_delivery ->
+          CapabilityRequests.due_result_deliveries(cursor: cursor, limit: limit)
+      end
 
-    now_ms
-    |> SessionWorkIndex.list_due_discovery(opts)
-    |> normalize_page()
-  end
+    case result do
+      {:ok, %{items: items, next: next}} ->
+        records =
+          Enum.map(items, fn item ->
+            request = item.record
 
-  defp normalize_page({:ok, %{records: records, eof: eof?}}), do: {:ok, records, eof?}
-  defp normalize_page({:error, _} = error), do: error
+            at =
+              if lane == :capability_expiry,
+                do: DateTime.from_unix!(request["expires_at"], :second),
+                else: item.due_at
 
-  defp log_summary(%{
-         rewoken: rewoken,
-         scanned: scanned,
-         cleaned: cleaned,
-         failed: failed,
-         unproven_retained: unproven_retained
-       }) do
-    if rewoken != [] or cleaned > 0 or failed > 0 or unproven_retained > 0 do
-      Logger.info(
-        "session-work recovery: rewoke=#{inspect(rewoken)} scanned=#{scanned} " <>
-          "cleaned=#{cleaned} failed=#{failed} unproven_retained=#{unproven_retained}"
-      )
+            %{request: request, cursor: {at, request["group_id"], request["request_id"]}}
+          end)
+
+        {:ok, records, is_nil(next)}
+
+      error ->
+        error
     end
   end
 
-  defp process_lane(
-         records,
-         lane,
-         input_cursor,
-         eof?,
-         now_ms,
-         deadline_ms,
-         wake_timeout_ms,
-         stats
-       ) do
-    do_process_lane(
-      records,
-      lane,
-      input_cursor,
-      eof?,
-      now_ms,
-      deadline_ms,
-      wake_timeout_ms,
-      stats
-    )
-  end
+  defp process_page([], _lane, stats, cursor, _deadline, _timeout), do: {stats, cursor, false}
 
-  defp do_process_lane([], _lane, cursor, eof?, _now_ms, _deadline_ms, _wake_timeout_ms, stats),
-    do: {stats, if(eof?, do: nil, else: cursor), false}
+  defp process_page([record | rest], lane, stats, cursor, deadline, timeout) do
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
-  defp do_process_lane(
-         [record | rest],
-         lane,
-         cursor,
-         eof?,
-         now_ms,
-         deadline_ms,
-         wake_timeout_ms,
-         stats
-       ) do
-    process_resolved_record(
-      resolve_record(record, now_ms),
-      cursor,
-      rest,
-      record,
-      lane,
-      eof?,
-      now_ms,
-      deadline_ms,
-      wake_timeout_ms,
-      stats
-    )
-  end
+    if remaining <= 0 do
+      {stats, cursor, true}
+    else
+      result = dispatch(lane, record, min(timeout, remaining))
+      stats = %{stats | scanned: stats.scanned + 1}
 
-  defp process_resolved_record(
-         resolution,
-         cursor,
-         rest,
-         record,
-         lane,
-         eof?,
-         now_ms,
-         deadline_ms,
-         wake_timeout_ms,
-         stats
-       ) do
-    case resolution do
-      {:wake, agent_id, target} ->
-        remaining_ms = deadline_ms - SystemsClock.monotonic_time(:millisecond)
-
-        if remaining_ms <= 0 do
-          {stats, cursor, true}
-        else
-          timeout_ms = min(wake_timeout_ms, remaining_ms)
-
-          stats =
-            case wake_exact_target(agent_id, target, timeout_ms) do
-              :ok -> %{stats | rewoken: [agent_id | stats.rewoken]}
-              {:error, _reason} -> %{stats | failed: stats.failed + 1}
-            end
-
-          advance_lane(
-            rest,
-            record,
-            lane,
-            eof?,
-            now_ms,
-            deadline_ms,
-            wake_timeout_ms,
-            stats
-          )
+      stats =
+        case {lane, result} do
+          {:sessions, :ok} -> %{stats | rewoken: [record.agent_id | stats.rewoken]}
+          {_, :ok} -> stats
+          {_, :retired} -> stats
+          _ -> %{stats | failed: stats.failed + 1}
         end
 
-      :keep ->
-        advance_lane(
-          rest,
-          record,
-          lane,
-          eof?,
-          now_ms,
-          deadline_ms,
-          wake_timeout_ms,
-          stats
-        )
-
-      :unproven ->
-        advance_lane(
-          rest,
-          record,
-          lane,
-          eof?,
-          now_ms,
-          deadline_ms,
-          wake_timeout_ms,
-          %{stats | unproven_retained: stats.unproven_retained + 1}
-        )
-
-      :stale ->
-        stats =
-          case SessionWorkIndex.delete_stale_record(record) do
-            {:ok, _status} -> %{stats | cleaned: stats.cleaned + 1}
-            {:error, _reason} -> %{stats | failed: stats.failed + 1}
-          end
-
-        advance_lane(
-          rest,
-          record,
-          lane,
-          eof?,
-          now_ms,
-          deadline_ms,
-          wake_timeout_ms,
-          stats
-        )
-
-      {:error, _reason} ->
-        advance_lane(
-          rest,
-          record,
-          lane,
-          eof?,
-          now_ms,
-          deadline_ms,
-          wake_timeout_ms,
-          %{stats | failed: stats.failed + 1}
-        )
+      process_page(rest, lane, stats, record.cursor, deadline, timeout)
     end
   end
 
-  defp advance_lane(rest, record, lane, eof?, now_ms, deadline_ms, wake_timeout_ms, stats) do
-    do_process_lane(
-      rest,
-      lane,
-      SessionWorkIndex.cursor(record, lane),
-      eof?,
-      now_ms,
-      deadline_ms,
-      wake_timeout_ms,
-      stats
-    )
+  defp dispatch(:sessions, %{retired: true}, _timeout), do: :retired
+
+  defp dispatch(:sessions, record, timeout),
+    do:
+      wake_exact_target(
+        record.agent_id,
+        %{runtime: :internal, session_id: record.session_id},
+        timeout
+      )
+
+  defp dispatch(lane, %{request: request}, timeout) do
+    args = [request["group_id"], request["request_id"], request["tenant_id"], [timeout: timeout]]
+
+    case lane do
+      :capability_expiry -> apply(CapabilityRequests, :expire_location, args)
+      :capability_delivery -> apply(CapabilityRequests, :retry_result_delivery, args)
+    end
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :error, {:erpc, :timeout} -> {:error, :timeout}
   end
 
   defp wake_exact_target(agent_id, target, timeout_ms) do
@@ -608,103 +488,6 @@ defmodule SalixAgent.SessionWorkRecovery do
       other -> {:error, other}
     end
   end
-
-  defp resolve_record(
-         %{
-           "agent_id" => _agent_id,
-           "runtime_kind" => "internal",
-           "session_id" => _session_id,
-           "token" => _token
-         } = record,
-         now_ms
-       ) do
-    if SessionWorkIndex.retired_router_session?(record) do
-      :stale
-    else
-      resolve_internal_record(record, now_ms)
-    end
-  end
-
-  defp resolve_record(_record, _now_ms), do: :unproven
-
-  defp resolve_internal_record(
-         %{"agent_id" => agent_id, "session_id" => session_id, "token" => token} = record,
-         now_ms
-       ) do
-    case InternalSessionStore.read_with_etag(agent_id, session_id) do
-      {:ok, session, _current_etag} ->
-        current_reasons = InternalSession.work_reasons(session)
-
-        if InternalSession.work_index_token(session) == token do
-          classify_current_work(
-            current_reasons,
-            InternalSession.recovery_wait(session),
-            now_ms,
-            agent_id,
-            %{runtime: :internal, session_id: session_id}
-          )
-        else
-          classify_mismatched_generation(record, InternalSession.storage_revision(session))
-        end
-
-      {:error, :not_found} ->
-        :unproven
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp classify_mismatched_generation(%{"base_revision" => nil}, _current_revision),
-    do: :unproven
-
-  defp classify_mismatched_generation(%{"base_revision" => base_revision}, current_revision)
-       when is_binary(base_revision) and is_binary(current_revision) do
-    if base_revision == current_revision, do: :unproven, else: :stale
-  end
-
-  defp classify_mismatched_generation(_record, _current_revision), do: :unproven
-
-  defp classify_current_work(reasons, wait, now_ms, agent_id, target) do
-    cond do
-      SessionWorkIndex.immediate_recovery_reasons?(reasons) ->
-        {:wake, agent_id, target}
-
-      Enum.any?(~w(wait_deadline llm_retry capability_deadline), &(&1 in reasons)) and
-          wait_due?(wait, now_ms) ->
-        {:wake, agent_id, target}
-
-      Enum.any?(~w(wait_deadline llm_retry capability_deadline), &(&1 in reasons)) ->
-        :keep
-
-      true ->
-        :stale
-    end
-  end
-
-  defp wait_due?(wait, now_ms) when is_map(wait) do
-    case wait["deadline_ms"] || wait[:deadline_ms] do
-      deadline_ms when is_integer(deadline_ms) -> deadline_ms <= now_ms
-      _ -> false
-    end
-  end
-
-  defp wait_due?(_wait, _now_ms), do: false
-
-  defp lane_order(:eager), do: [:eager, :deferred]
-  defp lane_order(:deferred), do: [:deferred, :eager]
-  defp normalize_lane(:deferred), do: :deferred
-  defp normalize_lane(_lane), do: :eager
-  defp successor_lane(:eager, _fallback), do: :deferred
-  defp successor_lane(:deferred, _fallback), do: :eager
-  defp successor_lane(nil, fallback), do: fallback
-
-  defp telemetry_outcome(%{failed: failed}) when failed > 0, do: "error"
-
-  defp telemetry_outcome(%{unproven_retained: retained}) when retained > 0,
-    do: "retained"
-
-  defp telemetry_outcome(_summary), do: "ok"
 
   defp emit_notification_admission(outcome) do
     Salix.Telemetry.emit_operation(
@@ -726,21 +509,11 @@ defmodule SalixAgent.SessionWorkRecovery do
     )
   end
 
-  defp lane_cursor(state, :eager), do: state.next
-  defp lane_cursor(state, :deferred), do: state.deferred_next
-  defp put_lane_cursor(state, :eager, cursor), do: %{state | next: cursor}
-  defp put_lane_cursor(state, :deferred, cursor), do: %{state | deferred_next: cursor}
-
   defp positive_integer_option(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer_option(_value, default), do: default
 
-  defp valid_candidate_token?(nil), do: true
+  defp valid_revision?(nil), do: true
 
-  defp valid_candidate_token?(token),
-    do: is_binary(token) and token != "" and byte_size(token) <= 512
-
-  defp maybe_put_cursor(opts, token) when is_binary(token) and token != "",
-    do: Keyword.put(opts, :continuation_token, token)
-
-  defp maybe_put_cursor(opts, _token), do: opts
+  defp valid_revision?(revision),
+    do: is_integer(revision) and revision >= 0
 end

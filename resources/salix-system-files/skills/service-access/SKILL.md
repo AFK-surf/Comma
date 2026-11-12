@@ -38,15 +38,14 @@ Direct APIs return structured data and do not depend on page layout.
    URL. After consent, call `mcp_manager.reconnect` and `mcp.list`.
 5. API-key servers: put the key (for example `api_key`) in `config_values` of
    `mcp_manager.connect`, or of `mcp_manager.update` for an existing binding.
-   The user can give you the key, or a Group owner can enter it in the
-   binding config.
+   Do not ask the user to paste a key in the chat: a Group owner enters it in the
+   binding config, or `oauth.request_authorization` with provider `secret`,
+   `label` and `help_url` puts a card in the conversation where they fill it in.
 6. If the user asks you to get the key, use the cloud browser (section 2) or
    the in-app browser (section 3):
    1. Open the key page that the miniskill names.
-   2. Log in with the credentials that the user gives you. For a QR scan, SMS
-      code, captcha, or face check that only the user can do, call
-      `browser.request_control` or ask the user to do it in the in-app
-      browser.
+   2. Do not ask for a password. Call `browser.request_control` so the user
+      signs in themselves, or ask the user to do it in the in-app browser.
    3. Find the existing key on the page, or create one. Before a step that
       pays or upgrades a plan, get the user's confirmation.
    4. Read the key from the page and put it in `config_values`. After
@@ -56,6 +55,16 @@ Direct APIs return structured data and do not depend on page layout.
    `registry_type` and `identifier`; declare its key in
    `environment_variables_schema` the same way.
 
+### A CLI that needs its own login
+
+From a Task's sandbox, prefer a token: `oauth.request_authorization` with provider
+`secret`, then `comma exec`. It survives a lost disk with nothing to restore. Only a
+CLI that takes no token uses the `login` tool, with its device-code or code-to-paste
+way (`gh auth login --web -h github.com --insecure-storage`, `az login
+--use-device-code`, `aws sso login --use-device-code`, `wrangler login --device`,
+`gcloud auth login --no-launch-browser`). The person confirms on a card. Never send
+them to a terminal.
+
 ### Composio
 
 When `composio.*` tools are present, call `composio.list_toolkits` for the
@@ -64,10 +73,11 @@ the user must connect an account. Call `composio.execute` for each operation.
 
 ### `web.http_request`
 
-Use `web.http_request` only for keyless public endpoints, or for providers that
-Salix OAuth serves through `credential_env` (Google, GitHub, Linear, Notion,
-Slack). It sends one request from the Salix network, outside China. Some
-Chinese endpoints refuse this origin.
+Use `web.http_request` only for keyless public endpoints, or with a managed
+credential through `credential_env`: a provider that Salix OAuth serves (Google,
+GitHub, Linear, Notion, Slack) or a `secret` (an API key or token). It sends
+one request from the Salix network, outside China. Some Chinese endpoints
+refuse this origin.
 
 ### CLI on a device
 
@@ -75,6 +85,23 @@ For a vendor CLI or a downloader such as `yt-dlp`, run it with `env.exec` on a
 connected device. For user-owned state, use the initiating Message's client
 device. Retain `device_id` and `environment_id` from `device.list` and
 `device.get`.
+
+A sandbox's disk can be lost whenever it stops, so a CLI login kept there does
+not last. Use a managed credential for an account the CLI needs, through
+`credential_env` on `env.exec` (from the sandbox, `comma exec --credential`).
+Keep other files that must last in VFS or Drive. Never write a credential into
+VFS or Drive.
+
+- An API key or a token: `oauth.request_authorization` with provider `secret`
+  sends the person to a form, so the value does not go through the chat.
+  A system that needs several values (an app ID and secret, a user and
+  password, a tenant ID) is one `secret` with `fields`; each field is used by
+  its name as `value` in `credential_env`.
+- A service with standard OAuth that Comma has no provider for: ask for the
+  client secret as a `secret` first, unless it is a public client. Then call
+  `oauth.define_provider`, have the person register the `redirect_uri` it
+  returns, and call `oauth.request_authorization` with `custom.<key>`. With a
+  `device_authorization_url`, `flow: "device"` needs no redirect.
 
 A video the user will watch must play on any device. Download H.264 video with
 AAC audio in MP4: `yt-dlp -S "vcodec:h264,res,acodec:m4a" --merge-output-format mp4`.

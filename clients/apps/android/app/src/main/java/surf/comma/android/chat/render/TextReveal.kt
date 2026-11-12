@@ -5,7 +5,6 @@ import android.text.Layout
 import android.view.Choreographer
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
-import surf.comma.android.chat.live.LiveRowKinds
 import surf.comma.android.chat.model.TimelineBlockKinds
 import kotlin.math.abs
 
@@ -438,8 +437,7 @@ internal class TextRevealBook(
         if (item.message.role != ChatRole.AGENT) return false
         return when (item.message.cardKind) {
             null -> item.blocks.isNotEmpty()
-            TimelineBlockKinds.LIVE_STATUS, TimelineBlockKinds.REPLY_ERROR, TimelineBlockKinds.TOOL_PLACEHOLDER,
-            LiveRowKinds.REPLY_ACTIONS_RESERVED -> false
+            TimelineBlockKinds.LIVE_STATUS, TimelineBlockKinds.REPLY_ERROR, TimelineBlockKinds.TOOL_PLACEHOLDER -> false
             else -> true
         }
     }

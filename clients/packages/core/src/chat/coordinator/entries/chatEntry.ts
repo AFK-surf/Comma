@@ -20,12 +20,6 @@ import type {
 } from "../intake/intakeOutcomes";
 import type { ChatSessionBoundary } from "./sessionBoundary";
 
-/**
- * Cached in place of a runtime projection the wire contract rejected, so the
- * verdict is reached once per rebuild rather than once per publish.
- */
-export const REJECTED_PROJECTION: unique symbol = Symbol("rejected-projection");
-
 /** One retained conversation: its channel and everything Main owns about it. */
 export type ChatEntry = {
   attachmentIntakes: Map<string, ChatEntryAttachmentIntake>;
@@ -43,7 +37,7 @@ export type ChatEntry = {
   /** The channel state last projected, to tell a draft-only emit apart. */
   observedState: ConversationChannelState;
   projection: ConversationProjection | undefined;
-  runtimeProjection: ChatRuntimeSession | typeof REJECTED_PROJECTION | undefined;
+  runtimeProjection: ChatRuntimeSession | undefined;
   releaseTimer: TimerHandle | undefined;
   /** Timers and time for what this entry waits on. */
   env: ChatEnv;

@@ -233,7 +233,12 @@ test("Router Task work names the Task, shows its Worker's steps and opens the Ta
     await expect(slot).not.toContainText("private reason");
 
     // A Worker's report wakes the Router in a Task. The Task's own Participant
-    // feed names the Worker; the authorized summary read names the Task.
+    // feed names the Worker and its model; the authorized summary read names
+    // the Task.
+    stub.setTaskRun({
+      place: { kind: "cloud_vm" },
+      model: { kind: "catalog", name: "Claude Sonnet", vendor: "anthropic" },
+    });
     stub.setTaskParticipants([
       {
         actor_id: "actor-smoke-worker",
@@ -257,7 +262,11 @@ test("Router Task work names the Task, shows its Worker's steps and opens the Ta
     const line = `Reviewing an update on “${chatSmokeTaskConversation.title}”`;
     await expectCurrentActivitySummary(slot, line);
     const bubble = slot.getByRole("link", { name: line });
-    await expect(bubble.locator(".comma-chat-thinking-logo")).toHaveCount(1);
+    // Beside the Worker's disc the Router's mark is a still Comma disc.
+    await expect(bubble.locator('[data-slot="comma-logo-animation"]')).toHaveCount(0);
+    await expect(
+      bubble.locator(".comma-chat-thinking-worker:not([data-worker-avatar])")
+    ).toHaveAttribute("data-model-vendor", "comma");
     await expect(bubble.locator("[data-worker-avatar]")).toHaveCount(1);
 
     await bubble.hover();

@@ -69,6 +69,12 @@ defmodule SalixMeet.JoinDispatch do
     end
   end
 
+  # A Feishu/Lark meeting has no runtime: the bot is in it when `bots/join`
+  # answered, and a refused or unanswered join left it out.
+  defp session_liveness(_meeting_id, %{"state" => %{"runtime_source" => "lark_bot"} = state}) do
+    if get_in(state, ["lark_bot", "meeting_id"]) in [nil, ""], do: :none, else: :live
+  end
+
   defp session_liveness(meeting_id, doc) do
     if SystemsRuntime.get_env(:salix_meet, :runtime_driver) == SalixMeet.RuntimeDriver.HTTP,
       do: :unavailable,
@@ -111,8 +117,22 @@ defmodule SalixMeet.JoinDispatch do
       {:ok, _response} ->
         checkpoint_success(meeting_id, generation, doc, opts)
 
+      {:deferred, reason} ->
+        checkpoint_other(meeting_id, generation, {:deferred, reason}, opts)
+
+      {:abandoned, reason} ->
+        checkpoint_other(meeting_id, generation, {:abandoned, reason}, opts)
+
       {:error, reason} ->
         checkpoint_failure(meeting_id, generation, reason, opts)
+    end
+  end
+
+  defp checkpoint_other(meeting_id, generation, {kind, reason} = outcome, opts) do
+    case Store.checkpoint_join_dispatch(meeting_id, generation, outcome, opts) do
+      {:ok, _doc, _etag} when kind == :deferred -> {:error, {:join_deferred, reason}}
+      {:ok, _doc, _etag} -> {:error, {:join_abandoned, reason}}
+      {:error, error} -> {:error, {:join_dispatch_checkpoint_failed, error}}
     end
   end
 
@@ -128,6 +148,15 @@ defmodule SalixMeet.JoinDispatch do
       {:ok, _failed, _etag} -> {:error, {:join_failed, inspect(reason)}}
       {:error, error} -> {:error, {:join_dispatch_checkpoint_failed, error}}
     end
+  end
+
+  # The platform holds a Feishu/Lark meeting's bot: no runtime is dispatched.
+  defp safe_runtime_join(%{"state" => %{"runtime_source" => "lark_bot"}} = doc) do
+    SalixMeet.LarkBot.join_scheduled(doc)
+  rescue
+    error -> {:error, {:exception, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   defp safe_runtime_join(doc) do

@@ -258,6 +258,125 @@ describe("the Tasks a surface refers to", () => {
   });
 });
 
+describe("a Task's own conversation", () => {
+  it("gives the Task's facts to its surfaces when a chat reads it, and the server then confirms them", async () => {
+    const t = setup();
+    // The summary lane still says the Task runs; its conversation, read when a chat opens it, says it is done.
+    let answer: Record<string, unknown> = {
+      status: "active",
+      updated_at: 1,
+      origin: "slack",
+    };
+    t.api.on("GET", summaries, (request) =>
+      json(200, { data: idsOf(request).map((id) => task(id, answer)) })
+    );
+    const shown1 = t.watch(shown(["c1"]));
+    await t.time.pass(100);
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "active",
+      updated_at: 1,
+      archive_availability: { allowed: true, reason: null },
+    });
+
+    const conversation = "/v1/comma/groups/g/conversations/c1";
+    t.api.onStream(`${conversation}/events`);
+    t.api.on("GET", conversation, {
+      group_id: "g",
+      id: "c1",
+      kind: "agent_task",
+      title: "Task c1, done",
+      status: "completed",
+      updated_at: 5,
+      messages: [],
+    });
+    answer = { status: "completed", updated_at: 5, origin: "slack" };
+    const release = t.api.hold("GET", summaries);
+    const window = new CoreClient(inProcessOpener(t.core, t.host, "win_main"), {
+      schedule: () => undefined,
+    });
+    await window.call("chat.retain", {
+      workspaceId: "wsp",
+      groupId: "g",
+      conversationId: "c1",
+      subscriberId: "win_main:g/c1",
+      leaseId: "00000000-0000-4000-8000-0000000000c1",
+    });
+    await t.time.pass(100);
+    // The conversation's word at once, with what was known of the Task, without a permission it did not give.
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "completed",
+      title: "Task c1, done",
+      updated_at: 5,
+      origin: "slack",
+    });
+    expect(shown1()!.summaries[0]).not.toHaveProperty("archive_availability");
+
+    // Asked again, the server confirms it, the archive permission included.
+    release();
+    await t.time.pass(100);
+    expect(t.api.seen("GET", summaries)).toHaveLength(2);
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "completed",
+      updated_at: 5,
+      archive_availability: { allowed: true, reason: null },
+    });
+  });
+
+  it("outranks the list's older version of the Task, and the server is still asked to confirm it", async () => {
+    // The list in focus has the Task, at the version from before it ended.
+    const t = setup([task("c1", { status: "active", updated_at: 1 })]);
+    t.api.on("GET", summaries, answering({ status: "completed", updated_at: 5 }));
+    t.watch({ topic: "tasks", workspace: "wsp" });
+    await t.time.pass(100);
+    const shown1 = t.watch(shown(["c1"]));
+    await t.time.pass(100);
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "active",
+      updated_at: 1,
+      archive_availability: { allowed: true, reason: null },
+    });
+    expect(t.api.seen("GET", summaries)).toHaveLength(0);
+
+    const conversation = "/v1/comma/groups/g/conversations/c1";
+    t.api.onStream(`${conversation}/events`);
+    t.api.on("GET", conversation, {
+      group_id: "g",
+      id: "c1",
+      kind: "agent_task",
+      title: "Task c1",
+      status: "completed",
+      updated_at: 5,
+      messages: [],
+    });
+    const release = t.api.hold("GET", summaries);
+    const window = new CoreClient(inProcessOpener(t.core, t.host, "win_main"), {
+      schedule: () => undefined,
+    });
+    await window.call("chat.retain", {
+      workspaceId: "wsp",
+      groupId: "g",
+      conversationId: "c1",
+      subscriberId: "win_main:g/c1",
+      leaseId: "00000000-0000-4000-8000-0000000000c2",
+    });
+    await t.time.pass(100);
+    // The conversation's newer word over the list's, without an archive permission; the server is asked for it.
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "completed",
+      updated_at: 5,
+    });
+    expect(shown1()!.summaries[0]).not.toHaveProperty("archive_availability");
+    expect(t.api.seen("GET", summaries)).toHaveLength(1);
+    release();
+    await t.time.pass(100);
+    expect(shown1()!.summaries[0]).toMatchObject({
+      status: "completed",
+      updated_at: 5,
+      archive_availability: { allowed: true, reason: null },
+    });
+  });
+});
+
 describe("the Tasks a surface refers to, recorded", () => {
   it("plays again to the same outputs, at the same times", async () => {
     const t = setup();

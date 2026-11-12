@@ -1,6 +1,7 @@
 // The WebSocket client as a service, so the connection to Salix can be replaced by an in-memory one in tests.
 import { Context, Effect, Layer } from "effect";
 import WebSocket from "ws";
+import { readBinaryStreamFrame } from "./message.ts";
 import { AuthError, WebSocketHandshakeError } from "./status.ts";
 
 const HANDSHAKE_BODY_LIMIT = 4096;
@@ -8,7 +9,7 @@ const HANDSHAKE_BODY_LIMIT = 4096;
 /** A connected JSON WebSocket. `receive` fails once the peer closed. */
 export type JsonSocket = {
   send(frame: unknown): Effect.Effect<void, Error>;
-  /** A binary frame (packets through Salix, the relay of last resort). */
+  /** A binary frame (packets through Salix). */
   sendBinary?(data: Buffer): Effect.Effect<void, Error>;
   /** Where binary frames that come go (none: dropped). */
   onBinary?(handler: (data: Buffer) => void): void;
@@ -34,7 +35,17 @@ export function jsonSocketOf(ws: WebSocket): JsonSocket {
   let binary: ((data: Buffer) => void) | null = null;
   ws.on("message", (data, isBinary) => {
     if (isBinary) {
-      binary?.(Buffer.isBuffer(data) ? data : Buffer.concat(data as Buffer[]));
+      const frame = Buffer.isBuffer(data) ? data : Buffer.concat(data as Buffer[]);
+      // A stream frame with its bytes comes in order with the JSON frames; any other binary frame is a packet.
+      let message;
+      try {
+        message = readBinaryStreamFrame(frame);
+      } catch (e) {
+        deliver({ ok: false, error: toError(e) });
+        return;
+      }
+      if (message) deliver({ ok: true, value: message });
+      else binary?.(frame);
       return;
     }
     try {
@@ -104,5 +115,7 @@ export const liveSockets = Layer.succeed(Sockets)({
         () => resume(Effect.succeed(socket)),
         (error) => resume(Effect.fail(toError(error))),
       );
+      // A dial given up before it completed (the connector's dial timeout) closes its connection, half-open or not.
+      return Effect.sync(() => ws.terminate());
     }),
 });

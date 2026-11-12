@@ -125,6 +125,26 @@ function sayNotice(notice: PluginNotice, messages: Messages) {
         description: reasonDescription(notice.reason, messages),
       });
       return;
+    case "scan_failed":
+      toast.error(
+        notice.scanStep === "member"
+          ? notice.scan === "denied"
+            ? messages.plugins_scan_member_denied()
+            : notice.scan === "expired"
+              ? messages.plugins_scan_member_expired()
+              : messages.plugins_scan_member_failed()
+          : notice.scan === "denied"
+            ? messages.plugins_scan_denied()
+            : notice.scan === "expired"
+              ? messages.plugins_scan_expired()
+              : messages.plugins_scan_failed(),
+        notice.message
+          ? { description: notice.message }
+          : notice.reason
+            ? { description: reasonDescription(notice.reason, messages) }
+            : {}
+      );
+      return;
     case "uninstall_failed":
       toast.error(
         messages.plugins_uninstall_failed(),

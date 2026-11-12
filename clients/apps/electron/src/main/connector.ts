@@ -520,7 +520,7 @@ export class ConnectorService {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>STILLFAIL_DATA</key>
+    <key>COMMA_STATION_DATA</key>
     <string>${escapeXml(this.options.station.data)}</string>
     <key>PATH</key>
     <string>${escapeXml(stationPath("/usr/sbin:/sbin"))}</string>
@@ -582,7 +582,7 @@ export function stationLauncherPath(dir: string) {
     "mesh",
     "target",
     "release",
-    process.platform === "win32" ? "stillfail-station.exe" : "stillfail-station"
+    process.platform === "win32" ? "comma-station.exe" : "comma-station"
   );
 }
 

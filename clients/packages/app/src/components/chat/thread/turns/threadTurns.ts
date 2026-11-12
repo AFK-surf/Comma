@@ -5,6 +5,7 @@ import type { ConversationTurn } from "../layout/conversationLayout";
 import type { OutgoingPresentations } from "../outgoing/useOutgoingPresentations";
 import type {
   ReplyChainState,
+  ReplyLinePlace,
   RowRelationshipProps,
 } from "../replies/messageRelationships";
 import type { ResponseFeedback } from "./ConversationTurnEntries";
@@ -31,6 +32,8 @@ export type ThreadTurnsProps = {
   lastTurnKey: string | undefined;
   /** The message or draft whose timestamp reads "New". */
   newTimestampId: string | undefined;
+  /** Where a reply line runs down through the "New" timestamp's row, if one does. */
+  newTimestampReplyLine: ReplyLinePlace | undefined;
   outgoing: Pick<
     OutgoingPresentations,
     "outgoingPresentationByTurnKey" | "outgoingTurnKeys"

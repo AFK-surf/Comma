@@ -37,8 +37,10 @@ import type {
 } from "../composer/conversationDraft";
 import { useTaskSummary } from "../../tasks/useTaskArchive";
 import { TaskShareButton } from "../../tasks/TaskShareButton";
+import { taskLoopStop } from "../../tasks/taskLoopLabels";
 import { taskStatusLabel as taskStatusLabelOf } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import type { AiInputAttachment } from "@comma/ui/components/ai-input";
 import { Badge } from "@comma/ui/components/Badge";
 import { Button } from "@comma/ui/components/Button";
 import { uiClock } from "@comma/ui/clock";
@@ -63,7 +65,7 @@ import {
   type SelectionActionBarAction,
 } from "@comma/ui/components/selection-action-bar";
 import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import {
   memo,
   useCallback,
@@ -76,8 +78,8 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import type { CommaSkill } from "@comma/core/api-schemas";
-import type { ChatSuggestion } from "@comma/core/contract";
+import type { CommaSkill, CommaTaskLabelProposal } from "@comma/core/api-schemas";
+import type { ChatSuggestion, TaskFile } from "@comma/core/contract";
 import { createConversationAnalytics } from "../../../analytics/experience";
 import { beginCommaMessageSend } from "../../../analytics/client";
 import { FocusComputerUseScreen } from "../../remote-screen/WorkerComputerUseScreen";
@@ -89,8 +91,16 @@ import { useActivityFocus } from "../thread/activity/useActivityFocus";
 import { ThreadWorkerVendorContext } from "../thread/threadContexts";
 import { ChatBanner } from "./ChatBanner";
 import { CreditWarningToast } from "../../billing/CreditWarningToast";
-import { showOutOfCreditsToast } from "../../billing/outOfCredits";
-import { fundingStopKind, showFundingStopToast } from "../../billing/fundingStops";
+import {
+  OUT_OF_CREDITS_TOAST_ID,
+  showOutOfCreditsToast,
+} from "../../billing/outOfCredits";
+import {
+  FUNDING_STOP_TOAST_ID,
+  fundingStopKind,
+  showFundingStopToast,
+  type FundingStopKind,
+} from "../../billing/fundingStops";
 import { ChatLinkHoverCard } from "../thread/inline/ChatLinkHoverCard";
 import {
   ChatLabelProposals,
@@ -112,6 +122,14 @@ import { useTaskActivity } from "../tasks/useTaskActivity";
 import { Composer } from "../composer/Composer";
 import { attachTransferredFiles } from "../composer/fileIntake";
 import { createChatDraftQuote, type ChatDraftQuote } from "../composer/draftQuotes";
+import {
+  composeMessageWithSelections,
+  draftUploadCount,
+  selectionFiles,
+  selectionsFit,
+  useSayFilesBesideSelections,
+  useConversationDraftSelections,
+} from "../composer/draftSelections";
 import {
   composeMessageWithSnippets,
   createChatDraftSnippet,
@@ -200,6 +218,8 @@ export type ConversationViewActions = {
     previewRef: ChatImagePreviewRef,
     signal?: AbortSignal
   ) => Promise<LocalFilePreview | undefined>;
+  /** Reads the messages before the oldest one the transcript holds. */
+  older?: () => unknown;
   /** Reads a Task's history before the transcript held, for its Activity alone. */
   readTaskActivity?: () => unknown;
   refresh: () => unknown;
@@ -212,6 +232,8 @@ export type ConversationViewActions = {
     text: string,
     options?: {
       consumeDraft?: boolean;
+      /** Files that go with this message alone, apart from the draft. */
+      files?: { bytes: Uint8Array; name: string; size: number }[];
       replyToMessageId?: string;
       skills?: { location: string }[];
     }
@@ -225,6 +247,8 @@ export type ConversationViewActions = {
 
 export type ConversationComposerPresentation = {
   disabled?: boolean | undefined;
+  /** Each new value writes its text after the draft, with the caret after it. */
+  draftRequest?: { text: string } | undefined;
   feedback?: ReactNode;
   /** Each new value focuses the composer's prompt. */
   focusRequest?: number | undefined;
@@ -256,6 +280,7 @@ export const ConversationView = memo(function ConversationView({
   onOpenTasksFilter,
   outgoingMotion,
   outgoingPlaybackRate = 1,
+  revealMessageId,
 }: {
   actions: ConversationViewActions;
   composerPresentation?: ConversationComposerPresentation | undefined;
@@ -282,6 +307,8 @@ export const ConversationView = memo(function ConversationView({
   outgoingPlaybackRate?:
     | import("../motion/outgoingBubbleMotion").OutgoingBubblePlaybackRate
     | undefined;
+  /** A Message to show once the transcript is there, and again whenever it changes (a search's matches); an older one is read first. */
+  revealMessageId?: string | undefined;
   state: ConversationViewState;
   /** False while a retained surface is mounted but not visible to the reader. */
   surfaceActive?: boolean | undefined;
@@ -328,32 +355,50 @@ export const ConversationView = memo(function ConversationView({
   // toast once per stop in this view: Comma credits, the provider account
   // behind the member's own key, or an external runtime's own subscription.
   // The toast names the provider and Profile when the runtime published them.
-  const announcedFundingStops = useRef(new Set<string>());
+  // When the last stop of a kind clears (the participant runs again), its toast
+  // is withdrawn: it keeps an action, so it would otherwise stay up.
+  const announcedFundingStops = useRef(new Map<string, FundingStopKind>());
   useEffect(() => {
     if (!surfaceActive) return;
     const statuses =
       state.participantStatuses ??
       (state.participantStatus ? [state.participantStatus] : []);
     const stops = new Map<string, ChatParticipantStatus>();
+    const kinds = new Map<string, FundingStopKind>();
     for (const status of statuses) {
-      if (status.state === "error" && fundingStopKind(status.issue)) {
+      const kind =
+        status.state === "error"
+          ? fundingStopKind(status.issue, status.issueDetail)
+          : undefined;
+      if (kind) {
         const detail = status.issueDetail;
-        stops.set(
-          [
-            status.participantId,
-            status.issue,
-            detail?.source,
-            detail?.profileId,
-            detail?.resetAt,
-          ].join(":"),
-          status
-        );
+        const key = [
+          status.participantId,
+          status.issue,
+          detail?.source,
+          detail?.profileId,
+          detail?.resetAt,
+        ].join(":");
+        stops.set(key, status);
+        kinds.set(key, kind);
       }
     }
     for (const [key, status] of stops) {
       if (!announcedFundingStops.current.has(key)) showFundingStopToast(status, locale);
     }
-    announcedFundingStops.current = new Set(stops.keys());
+    const before = new Set(announcedFundingStops.current.values());
+    const now = new Set(kinds.values());
+    if (
+      before.has("credits") &&
+      !now.has("credits") &&
+      announcedCreditFailures.current.size === 0
+    ) {
+      toast.dismiss(OUT_OF_CREDITS_TOAST_ID);
+    }
+    const quota = (set: Set<FundingStopKind>) =>
+      set.has("provider") || set.has("subscription");
+    if (quota(before) && !quota(now)) toast.dismiss(FUNDING_STOP_TOAST_ID);
+    announcedFundingStops.current = kinds;
   }, [locale, state.participantStatus, state.participantStatuses, surfaceActive]);
   const [browserOpen, setBrowserOpen] = useState(false);
   const browserPanelId = useId();
@@ -486,8 +531,14 @@ export const ConversationView = memo(function ConversationView({
   const shownTaskStatus = optimisticTaskStatus?.status ?? taskStatus;
   const headerTaskStatus =
     isTask && shownTaskStatus ? taskStatusBucket(shownTaskStatus) : undefined;
+  // A Task in progress whose Loop stopped does not run: the header says why.
+  const taskStop = headerTaskStatus
+    ? taskLoopStop(headerTaskStatus, taskLoop, messages)
+    : undefined;
   const taskStatusLabel =
-    isTask && shownTaskStatus ? taskStatusLabelOf(shownTaskStatus, locale) : undefined;
+    isTask && shownTaskStatus
+      ? (taskStop?.text ?? taskStatusLabelOf(shownTaskStatus, locale))
+      : undefined;
   const canAcceptTask =
     isTask &&
     !isArchived &&
@@ -632,6 +683,8 @@ export const ConversationView = memo(function ConversationView({
       text: string,
       options: {
         consumeDraft?: boolean;
+        /** The message's own files, apart from the draft's (staged selections' pictures). */
+        files?: { bytes: Uint8Array; name: string; size: number }[];
         onAdmissionRejected?: () => void;
         skills: { location: string }[];
         sourceFrame?: ChatOutgoingLaunch["sourceFrame"];
@@ -679,9 +732,10 @@ export const ConversationView = memo(function ConversationView({
           skills: options.skills,
           ...(replyToMessageId ? { replyToMessageId } : {}),
           ...(options.consumeDraft === false ? { consumeDraft: false } : {}),
+          ...(options.files?.length ? { files: options.files } : {}),
         });
       } catch (error) {
-        finishAnalytics?.("failed", "dispatch");
+        finishAnalytics?.("failed", "dispatch", error);
         setOutgoingLaunches((current) =>
           current.filter((candidate) => candidate.id !== launchId)
         );
@@ -705,7 +759,7 @@ export const ConversationView = memo(function ConversationView({
         const boundary = accepted ? "runtime" : "server";
         void completion.then(
           () => finishAnalytics("accepted", boundary),
-          () => finishAnalytics("failed", boundary)
+          (error: unknown) => finishAnalytics("failed", boundary, error)
         );
       }
       if (accepted) {
@@ -880,6 +934,34 @@ export const ConversationView = memo(function ConversationView({
     draftSnippetsRef.current = draftSnippets;
     setDraftSnippetsRef.current = setDraftSnippets;
   }, [draftSnippets, setDraftSnippets]);
+  // Selections stay with their conversation as snippets do. The browser sidebar and a screen stage them from beside
+  // the conversation: what the person picked there, with what they wrote about it.
+  const { items: draftSelections, setItems: setDraftSelections } =
+    useConversationDraftSelections(conversationId);
+  const draftSelectionsRef = useRef(draftSelections);
+  const setDraftSelectionsRef = useRef(setDraftSelections);
+  // A selection staged from beside the conversation counts with what this composer has attached.
+  useSayFilesBesideSelections(conversationId, () =>
+    draftUploadCount(stateRef.current.draftAttachments)
+  );
+  useEffect(() => {
+    draftSelectionsRef.current = draftSelections;
+    setDraftSelectionsRef.current = setDraftSelections;
+  }, [draftSelections, setDraftSelections]);
+  const selectionAttachments = useMemo<AiInputAttachment[]>(
+    () =>
+      draftSelections.map((selection) => ({
+        id: selection.id,
+        name: selection.note,
+        onRemove: () =>
+          setDraftSelections((current) =>
+            current.filter((one) => one.id !== selection.id)
+          ),
+        type: "selection" as const,
+        ...(selection.thumbnail ? { thumbnailSrc: selection.thumbnail } : {}),
+      })),
+    [draftSelections, setDraftSelections]
+  );
   const removeDraftSnippet = useCallback(
     (id: string) =>
       setDraftSnippets((current) => current.filter((snippet) => snippet.id !== id)),
@@ -896,6 +978,21 @@ export const ConversationView = memo(function ConversationView({
   // "Show in text field" writes the snippet after the draft. Its source still
   // opens on send while the draft keeps the source's URL.
   const [composerFill, setComposerFill] = useState<ComposerDraftFill>();
+  // A page beside the conversation, such as a skill's "Try in Chat", writes
+  // into the composer; the person finishes the message and sends it.
+  const composerDraftRequest = composerPresentation?.draftRequest;
+  const playedDraftRequestRef = useRef<{ text: string } | undefined>(undefined);
+  useEffect(() => {
+    if (!composerDraftRequest || composerDraftRequest === playedDraftRequestRef.current)
+      return;
+    playedDraftRequestRef.current = composerDraftRequest;
+    const draft = draftSource.getSnapshot();
+    const next = draft
+      ? `${draft}\n\n${composerDraftRequest.text}`
+      : composerDraftRequest.text;
+    setDraft(next);
+    setComposerFill({ draft: next });
+  }, [composerDraftRequest, draftSource, setDraft]);
   const expandedSourceUrlsRef = useRef(new Map<string, Set<string>>());
   const expandDraftSnippet = useCallback(
     (snippet: ChatDraftSnippet) => {
@@ -1020,6 +1117,20 @@ export const ConversationView = memo(function ConversationView({
 
   const handleSend = useCallback(
     (text: string, options: { skills: { location: string }[] }) => {
+      // A message takes its composer's files and its selections' together. With more than that nothing goes, and
+      // all of it stays for the person to take some off: the core would leave the files over the limit out unsaid.
+      if (
+        draftSelectionsRef.current.length > 0 &&
+        !selectionsFit(
+          draftSelectionsRef.current,
+          draftUploadCount(stateRef.current.draftAttachments)
+        )
+      ) {
+        toast.warning(messages.chat_attachments_over(), {
+          id: "comma-chat-attachments-over",
+        });
+        return undefined;
+      }
       const submittedConversationId = conversationIdRef.current;
       const submittedQuotes = draftQuotesRef.current;
       const submittedQuoteIds = new Set(submittedQuotes.map((quote) => quote.id));
@@ -1055,22 +1166,47 @@ export const ConversationView = memo(function ConversationView({
       const expandedKey = submittedConversationId ?? "";
       const expandedSourceUrls = expandedSourceUrlsRef.current.get(expandedKey);
       expandedSourceUrlsRef.current.delete(expandedKey);
+      const submittedSelections = draftSelectionsRef.current;
+      const setSelections = setDraftSelectionsRef.current;
+      const submittedSelectionIds = new Set(
+        submittedSelections.map((selection) => selection.id)
+      );
+      const restoreSubmittedSelections = () => {
+        if (submittedSelections.length === 0) return;
+        setSelections((current) => {
+          const currentIds = new Set(current.map((selection) => selection.id));
+          const missing = submittedSelections.filter(
+            (selection) => !currentIds.has(selection.id)
+          );
+          return missing.length === 0 ? current : [...missing, ...current];
+        });
+      };
       const restoreSubmitted = () => {
         restoreSubmittedQuotes();
         restoreSubmittedSnippets();
+        restoreSubmittedSelections();
         if (expandedSourceUrls) {
           expandedSourceUrlsRef.current.set(expandedKey, expandedSourceUrls);
         }
       };
       // Folded in before the handoff so a send that is nothing but a quoted
       // passage or a snippet still carries text.
-      const quoted = composeMessageWithQuotes(
-        composeMessageWithAttachedTexts(
-          composeMessageWithSnippets(text, submittedSnippets),
-          snippetAttachedTexts(submittedSnippets)
+      // (the selections go last: what the agent reads of a picked element ends the message's text)
+      const quoted = composeMessageWithSelections(
+        composeMessageWithQuotes(
+          composeMessageWithAttachedTexts(
+            composeMessageWithSnippets(text, submittedSnippets),
+            snippetAttachedTexts(submittedSnippets)
+          ),
+          submittedQuotes.map((quote) => quote.text)
         ),
-        submittedQuotes.map((quote) => quote.text)
+        submittedSelections
       );
+      if (submittedSelections.length > 0) {
+        setSelections((current) =>
+          current.filter((selection) => !submittedSelectionIds.has(selection.id))
+        );
+      }
       if (submittedQuotes.length > 0) {
         setDraftQuotes((current) =>
           current.filter((quote) => !submittedQuoteIds.has(quote.id))
@@ -1085,6 +1221,7 @@ export const ConversationView = memo(function ConversationView({
       let result: unknown;
       try {
         result = launchOutgoing(quoted, {
+          files: selectionFiles(submittedSelections),
           onAdmissionRejected: restoreSubmitted,
           skills: options.skills,
         });
@@ -1109,7 +1246,7 @@ export const ConversationView = memo(function ConversationView({
       }
       return result;
     },
-    [launchOutgoing, onOpenInCommaBrowser]
+    [launchOutgoing, messages, onOpenInCommaBrowser]
   );
 
   const handleSelectSuggestion = useCallback(
@@ -1258,6 +1395,19 @@ export const ConversationView = memo(function ConversationView({
     },
     [focusComposer]
   );
+  // A Task row opened from the dock brings its announcement's thread up too,
+  // so the reader sees what the Task came from beside the Task itself.
+  const openMessageReplyThread = useCallback(
+    (messageId: string) => {
+      if (!canReply) return;
+      const message = stateRef.current.messages.find(
+        (item) => item.messageId === messageId
+      );
+      if (canReplyTo(message))
+        openReplyThread({ rootId: threadRootOf(message), targetId: messageId });
+    },
+    [canReply, openReplyThread]
+  );
   const closeReplyThread = useCallback(() => setReplyThread(undefined), []);
   const replyThreadOpen = replyThread !== undefined;
   useEffect(() => {
@@ -1391,7 +1541,11 @@ export const ConversationView = memo(function ConversationView({
       const url = linkMenuUrlRef.current;
       if (action === "copy-message") {
         const messageText = linkMenuMessageTextRef.current;
-        if (messageText) void copyTextToClipboard(messageText);
+        if (messageText)
+          void copyWithFeedback(() => copyTextToClipboard(messageText), messages, {
+            copied: messages.copy_message_title(),
+            copiedDetail: messages.copy_message_detail(),
+          });
         return;
       }
       if (!url) return;
@@ -1404,9 +1558,9 @@ export const ConversationView = memo(function ConversationView({
         onOpenInCommaBrowser?.(url);
         return;
       }
-      void copyTextToClipboard(url);
+      void copyWithFeedback(() => copyTextToClipboard(url), messages);
     },
-    [onOpenInCommaBrowser]
+    [onOpenInCommaBrowser, messages]
   );
 
   const handleCopyMenuAction = useCallback(
@@ -1417,9 +1571,9 @@ export const ConversationView = memo(function ConversationView({
         return;
       }
       const text = copyMenuTextRef.current;
-      if (text) void copyTextToClipboard(text);
+      if (text) void copyWithFeedback(() => copyTextToClipboard(text), messages);
     },
-    [openReplyThread]
+    [openReplyThread, messages]
   );
 
   const handleLinkMenuOpenChange = useCallback(
@@ -1586,8 +1740,11 @@ export const ConversationView = memo(function ConversationView({
     hasCanonicalConversation &&
     actions.setTaskRun !== undefined &&
     !!threadWorkspaceId &&
-    // A coding Task runs on its own sandbox: it is not switched.
-    state.taskRun?.place.kind !== "sandbox" &&
+    // A coding Task's Session holds the checkout on its sandbox: it is not switched. A sandbox Task without a
+    // repository switches its model on its sandbox.
+    !(
+      state.taskRun?.place.kind === "sandbox" && state.taskRun.place.repo !== undefined
+    ) &&
     // Nor one the core says cannot switch (a Task a station hosts switches its model alone: `move`).
     !state.unsupported?.includes("run");
   const openRunSwitch = useMemo(
@@ -1677,6 +1834,52 @@ export const ConversationView = memo(function ConversationView({
       workspaceId,
     ]
   );
+  // A file the Task's Agents attached opens in the sidebar's file preview, as its attachment in the chat does.
+  const openTaskFile = useMemo(
+    () =>
+      sidebar &&
+      hasCanonicalConversation &&
+      workspaceId &&
+      threadGroupId &&
+      taskConversationId
+        ? (file: TaskFile) =>
+            sidebar.openFilePreview(
+              sidebar.getActiveHost() ?? {
+                workspaceId,
+                groupId: threadGroupId,
+                conversationId: taskConversationId,
+              },
+              {
+                groupId: threadGroupId,
+                conversationId: file.conversation_id,
+                messageId: file.message_id,
+                attachmentIndex: file.index,
+                fileName: file.file_name,
+                ...(file.mime_type ? { mimeType: file.mime_type } : {}),
+                size: file.size,
+              }
+            )
+        : undefined,
+    [hasCanonicalConversation, sidebar, taskConversationId, threadGroupId, workspaceId]
+  );
+  // A Task file added from its row's menu joins this chat's message by reference, as an attachment's does.
+  const attachConversationFiles = actions.attachConversationFiles;
+  const attachTaskFile = useMemo(
+    () =>
+      attachConversationFiles
+        ? (file: TaskFile) =>
+            attachConversationFiles([
+              {
+                conversationId: file.conversation_id,
+                messageId: file.message_id,
+                index: file.index,
+                name: file.file_name,
+                size: file.size,
+              },
+            ])
+        : undefined,
+    [attachConversationFiles]
+  );
   // The sandbox's terminal opens as a browser tab of the sidebar where the app embeds one; the browser outside else.
   const embedsBrowser = getNativeBridge().platform === "electron";
   const openCodingTerminal = useMemo(
@@ -1756,6 +1959,8 @@ export const ConversationView = memo(function ConversationView({
           onRevealActivityStep: revealActivityStep,
           onOpenCodingChanges: openCodingChanges,
           onOpenCodingTerminal: openCodingTerminal,
+          onOpenFile: openTaskFile,
+          onAttachFile: attachTaskFile,
           onSetLabels: hasCanonicalConversation ? actions.setTaskLabels : undefined,
           onSetStatus: canSetTaskStatus ? handleSetTaskStatus : undefined,
           statusState: taskStatusState,
@@ -1840,37 +2045,29 @@ export const ConversationView = memo(function ConversationView({
   // The Group's shared label catalog. The card reads it too, and every
   // proposal mutation hands the fresh catalog back through `replace`.
   const { catalog: labelCatalog } = useTaskLabelsCatalog(threadGroupId, !isTask);
+  // Which proposals the cards have already shown: a card remounts whenever its
+  // reply moves, and only a proposal it never showed asks for the room.
+  const [shownLabelProposalIds] = useState(() => new Set<string>());
   // A proposal records when it was filed, not the reply that filed it. Each card
   // belongs to the reply nearest that time: it holds that reply's place in the
   // transcript, so a later round neither drags an older card along nor hides the
-  // new decision at the bottom.
+  // new decision at the bottom. Only a card that still asks for a decision keeps
+  // its reply's turn mounted; a settled one shows when the reader reaches it.
   const labelProposalsTails = useMemo(() => {
     if (isTask || !live || !threadGroupId || !conversationId) return undefined;
     const groups = groupLabelProposalsByAnchor(
       conversationLabelProposals(labelCatalog, conversationId),
       state.messages
     );
-    if (groups.length === 0) {
-      // The card is what notices proposals a new reply files. It renders
-      // nothing until there is one, so the newest turn is where it waits.
-      return [
-        {
-          key: "proposals",
-          messageId: undefined,
-          node: (
-            <ChatLabelProposals
-              conversationId={conversationId}
-              groupId={threadGroupId}
-              replyKey={latestReplyKey}
-              workspaceId={threadWorkspaceId}
-            />
-          ),
-        },
-      ];
-    }
-    return groups.map((group, index) => {
-      const newest = index === groups.length - 1;
-      return {
+    // The newest round is the latest reply's. A decision filed before the
+    // loaded history waits on the tail, but it is older than any loaded round.
+    const newest =
+      groups.findLast((group) => group.messageId !== undefined) ?? groups.at(-1);
+    return [
+      ...groups.map((group) => ({
+        awaitsDecision: group.proposals.some(
+          (proposal) => proposal.status === "pending"
+        ),
         key: group.messageId ?? "tail",
         messageId: group.messageId,
         node: (
@@ -1878,19 +2075,38 @@ export const ConversationView = memo(function ConversationView({
             conversationId={conversationId}
             groupId={threadGroupId}
             proposals={group.proposals}
-            replyKey={newest ? latestReplyKey : undefined}
-            revealOnAppear={newest}
+            replyKey={undefined}
+            revealOnAppear={group === newest}
+            shownProposalIds={shownLabelProposalIds}
             workspaceId={threadWorkspaceId}
           />
         ),
-      };
-    });
+      })),
+      {
+        // The card is what notices proposals a new reply files. This one shows
+        // none of its own and waits on the newest turn, which stays mounted; a
+        // reply's own card can sit above the window, unmounted.
+        key: "proposals",
+        messageId: undefined,
+        node: (
+          <ChatLabelProposals
+            conversationId={conversationId}
+            groupId={threadGroupId}
+            proposals={noLabelProposals}
+            replyKey={latestReplyKey}
+            shownProposalIds={shownLabelProposalIds}
+            workspaceId={threadWorkspaceId}
+          />
+        ),
+      },
+    ];
   }, [
     conversationId,
     isTask,
     labelCatalog,
     latestReplyKey,
     live,
+    shownLabelProposalIds,
     state.messages,
     threadGroupId,
     threadWorkspaceId,
@@ -1983,6 +2199,14 @@ export const ConversationView = memo(function ConversationView({
     return () => timer();
   }, [outgoingLaunches]);
 
+  // The thread sets the handle in its own effect, which runs before this one in the commit that shows it.
+  useEffect(() => {
+    if (!revealMessageId || !hasCanonicalConversation) return;
+    const reveal = revealMessageHandleRef.current;
+    if (!reveal) return;
+    reveal(revealMessageId);
+  }, [hasCanonicalConversation, revealMessageId]);
+
   const historyParticipants =
     state.participantStatuses ??
     (state.participantStatus ? [state.participantStatus] : []);
@@ -2007,7 +2231,10 @@ export const ConversationView = memo(function ConversationView({
         data-drop-active={conversationDrop.dropActive ? "true" : undefined}
         {...conversationDrop.shellDropProps}
       >
-        <ChatBanner errorKind={state.errorKind} />
+        <ChatBanner
+          errorKind={state.errorKind}
+          inline={hasCanonicalConversation || state.messages.length > 0}
+        />
         {sidebar && workspaceId && threadGroupId && historyParticipants.length > 0 ? (
           <ConversationParticipants
             groupId={threadGroupId}
@@ -2068,6 +2295,11 @@ export const ConversationView = memo(function ConversationView({
                                       isTask ? undefined : responseFeedback
                                     }
                                     messages={state.messages}
+                                    hasEarlier={state.history?.hasOlder === true}
+                                    loadingEarlier={
+                                      state.history?.loadingOlder === true
+                                    }
+                                    onLoadEarlier={actions.older}
                                     onOpenConversationRef={onOpenConversationRef}
                                     onOutgoingAnimationComplete={finishOutgoingLaunch}
                                     onPreviewLocalFile={actions.previewLocalFile}
@@ -2104,6 +2336,7 @@ export const ConversationView = memo(function ConversationView({
               <ChatTaskDock
                 groupId={threadGroupId}
                 messages={state.messages}
+                openReplyThread={openMessageReplyThread}
                 revealTurnHandle={revealTurnHandleRef}
                 taskLinkAdapter={resolvedInlineTaskLinkAdapter}
                 workspaceId={threadWorkspaceId}
@@ -2132,6 +2365,7 @@ export const ConversationView = memo(function ConversationView({
               draftAttachments={state.draftAttachments}
               draftQuotes={draftQuotes}
               draftSnippets={draftSnippets}
+              stagedAttachments={selectionAttachments}
               fill={composerFill}
               {...(handleAttachFiles ? { onAttachFiles: handleAttachFiles } : {})}
               {...(actions.pickAttachments
@@ -2285,7 +2519,7 @@ export const ConversationView = memo(function ConversationView({
                         aria-hidden
                         className="comma-icon-slot size-4 shrink-0 [&_svg]:size-4"
                       >
-                        {taskStatusIcon(headerTaskStatus)}
+                        {taskStatusIcon(headerTaskStatus, { loopStop: taskStop })}
                       </span>
                       {taskStatusLabel}
                     </Badge>
@@ -2383,6 +2617,9 @@ const SourcedComposer = memo(function SourcedComposer({
   const mentionSources = useComposerMentionSources(mentionScope);
   return <Composer {...props} mentionSources={mentionSources} />;
 });
+
+/** The waiting card's share: the proposals of a reply it watches for, none yet. */
+const noLabelProposals: readonly CommaTaskLabelProposal[] = [];
 
 let chatOutgoingLaunchSequence = 0;
 

@@ -1,9 +1,10 @@
 defmodule SalixIM.PhotonIMessage do
   @moduledoc """
   Narrow Req adapter for the Photon v2 REST API, the second
-  transport of Comma iMessage. It targets shared-pool (Free and Pro) lines:
-  each person gets a line assignment, and a line sends only in a direct Space
-  to a peer that has messaged it since its assignment.
+  transport of Comma iMessage. It serves two project modes. On shared-pool
+  (Free and Pro) lines, each person gets a line assignment, and a line sends
+  only in a direct Space to a peer that has messaged it since its assignment.
+  A dedicated (Business) project owns its lines, and many people use one line.
 
   Photon publishes OpenAPI clients for TypeScript, Python, Go and Rust, but no
   Elixir client. This module covers only the calls Comma uses.
@@ -15,10 +16,29 @@ defmodule SalixIM.PhotonIMessage do
 
   @base_url "https://api.photon.codes"
   @max_image_bytes 20 * 1024 * 1024
+  # Photon documents a 100 MiB default limit per uploaded file (Advanced
+  # iMessage attachments). The v2 OpenAPI names only 413 PAYLOAD_TOO_LARGE.
+  # The same cap bounds an inbound download.
+  @max_file_bytes 100 * 1024 * 1024
   @request_timeout_ms 15_000
+  # A streamed upload of up to @max_file_bytes. The Agent tool deadline for
+  # `imessage.send_file` is longer than this upload plus one send.
+  @upload_timeout_ms 120_000
+  # Types that `MIME` does not know. Other names use `MIME.from_path/1`.
+  @extra_types %{
+    ".aif" => "audio/aiff",
+    ".aiff" => "audio/aiff",
+    ".caf" => "audio/x-caf",
+    ".flac" => "audio/flac",
+    ".m4a" => "audio/mp4",
+    ".m4v" => "video/x-m4v",
+    ".mkv" => "video/x-matroska"
+  }
   @webhook_tolerance_seconds 300
   @assignment_pages 5
   @list_page_size 100
+  # Photon limits a project to 50 dedicated lines of each type.
+  @line_page_size 100
 
   def config, do: SystemsRuntime.get_env(:salix_im, :imessage_photon, [])
 
@@ -28,6 +48,25 @@ defmodule SalixIM.PhotonIMessage do
         is_binary(config()[key]) and String.trim(config()[key]) != ""
       end)
   end
+
+  @doc "The largest file, in bytes, that Comma uploads to or downloads from Photon."
+  def max_file_bytes, do: @max_file_bytes
+
+  @doc "The content type Photon gets for an uploaded file name."
+  def content_type(filename) do
+    ext = filename |> to_string() |> Path.extname() |> String.downcase()
+    @extra_types[ext] || MIME.from_path(to_string(filename))
+  end
+
+  @doc "A file name extension, without the dot, for a content type. `nil` when unknown."
+  def extension(type) when is_binary(type) do
+    Enum.find_value(@extra_types, fn {ext, known} ->
+      known == type and String.trim_leading(ext, ".")
+    end) ||
+      List.first(MIME.extensions(type))
+  end
+
+  def extension(_type), do: nil
 
   def project_id, do: config()[:project_id]
   # Receiver progress and connect records are keyed by the Photon project.
@@ -88,7 +127,82 @@ defmodule SalixIM.PhotonIMessage do
 
   def verify_webhook(_raw_body, _id, _timestamp, _signatures), do: {:error, :unauthorized}
 
+  @doc "The received Message a verified webhook body carries, or nil."
+  def webhook_message(raw_body) when is_binary(raw_body) do
+    case Jason.decode(raw_body) do
+      {:ok,
+       %{
+         "type" => "message.received",
+         "data" => %{"object" => %{"platform" => "imessage", "id" => id} = message}
+       }}
+      when is_binary(id) ->
+        message
+
+      _other ->
+        nil
+    end
+  end
+
   # ---- binding setup ----
+
+  @doc """
+  Gives the handle a line for its connection code. A dedicated project uses one
+  of its own lines and has no assignment. A shared project registers the handle
+  and assigns it a pooled line.
+  """
+  def line_for(handle) do
+    case request(:get, "/platforms/imessage") do
+      {:ok, %{"mode" => "dedicated"}} ->
+        dedicated_line(handle)
+
+      {:ok, _settings} ->
+        with {:ok, _user_id} <- register_user(handle), do: assign_line(handle)
+
+      error ->
+        error
+    end
+  end
+
+  @doc """
+  The line for an attempt that names no handle, chosen by `key`.
+  Only a dedicated project has one: a shared project assigns lines per handle.
+  """
+  def dedicated_line_for(key) do
+    case request(:get, "/platforms/imessage") do
+      {:ok, %{"mode" => "dedicated"}} -> dedicated_line(key)
+      {:ok, _settings} -> {:error, :imessage_handle_required}
+      error -> error
+    end
+  end
+
+  # A handle keeps its line while the project's set of lines stays the same.
+  # A binding keeps its Space when lines change, so this affects new attempts only.
+  defp dedicated_line(handle) do
+    params = [ability: "imessage", state: "active", pageSize: @line_page_size]
+
+    case request(:get, "/platforms/resources", params: params) do
+      {:ok, %{"resources" => resources}} when is_list(resources) ->
+        lines =
+          for %{"detail" => %{"phoneNumber" => line}} <- resources,
+              is_binary(line) and line != "",
+              do: line
+
+        case Enum.sort(lines) do
+          [] ->
+            {:error, :imessage_capacity_reached}
+
+          lines ->
+            line = Enum.at(lines, :erlang.phash2(handle, length(lines)))
+            {:ok, %{"assignment_id" => nil, "line_handle" => line}}
+        end
+
+      {:ok, _body} ->
+        {:error, :imessage_unavailable}
+
+      error ->
+        error
+    end
+  end
 
   @doc "Registers the handle as a project User. Shared lines message only project Users."
   def register_user(handle) do
@@ -245,10 +359,15 @@ defmodule SalixIM.PhotonIMessage do
 
   def to_event(_message), do: :ignore
 
-  defp content_parts(%{"type" => "text", "text" => text}) when is_binary(text), do: {text, []}
+  # Pasted text can hold NUL characters, which PostgreSQL text and jsonb refuse.
+  # Keeping one would fail every later receiver pass.
+  defp content_parts(%{"type" => "text", "text" => text}) when is_binary(text),
+    do: {String.replace(text, <<0>>, ""), []}
 
-  defp content_parts(%{"type" => "attachment", "attachmentId" => id})
-       when is_binary(id) and id != "",
+  # iMessage reports a voice memo as an `audio/*` attachment. The v2 schema
+  # also reserves a `voice` content type with the same attachment ID.
+  defp content_parts(%{"type" => type, "attachmentId" => id})
+       when type in ["attachment", "voice"] and is_binary(id) and id != "",
        do: {nil, [%{"attachment_id" => id}]}
 
   defp content_parts(%{"type" => "group", "parts" => parts}) when is_list(parts) do
@@ -282,7 +401,13 @@ defmodule SalixIM.PhotonIMessage do
 
   def get_attachment(_attachment_id), do: {:error, :imessage_image_unavailable}
 
-  def download_image(agent_id, attachment_id)
+  @doc """
+  Streams an attachment into a blob. A download larger than `max_bytes`
+  stops and returns `{:size_limit, size, max_bytes}`.
+  """
+  def download_attachment(agent_id, attachment_id, max_bytes \\ @max_file_bytes)
+
+  def download_attachment(agent_id, attachment_id, max_bytes)
       when is_binary(attachment_id) and attachment_id != "" do
     alias SalixStore.Blob
     state_key = {__MODULE__, SystemsRuntime.Proc.make_ref()}
@@ -301,18 +426,25 @@ defmodule SalixIM.PhotonIMessage do
             into: fn {:data, chunk}, {req, resp} ->
               size = (resp.private[:photon_bytes] || 0) + byte_size(chunk)
 
-              if resp.status == 200 and size <= @max_image_bytes do
-                case Blob.put_stream_step(Process.get(state_key), chunk) do
-                  {:ok, state} ->
-                    Process.put(state_key, state)
-                    {:cont, {req, Req.Response.put_private(resp, :photon_bytes, size)}}
+              cond do
+                resp.status != 200 ->
+                  {:halt, {req, Req.Response.put_private(resp, :photon_error, true)}}
 
-                  {:error, _, state} ->
-                    Process.put(state_key, state)
-                    {:halt, {req, Req.Response.put_private(resp, :photon_error, true)}}
-                end
-              else
-                {:halt, {req, Req.Response.put_private(resp, :photon_error, true)}}
+                size > max_bytes ->
+                  {:halt,
+                   {req,
+                    Req.Response.put_private(resp, :photon_error, {:size_limit, size, max_bytes})}}
+
+                true ->
+                  case Blob.put_stream_step(Process.get(state_key), chunk) do
+                    {:ok, state} ->
+                      Process.put(state_key, state)
+                      {:cont, {req, Req.Response.put_private(resp, :photon_bytes, size)}}
+
+                    {:error, _, state} ->
+                      Process.put(state_key, state)
+                      {:halt, {req, Req.Response.put_private(resp, :photon_error, true)}}
+                  end
               end
             end
           )
@@ -324,6 +456,9 @@ defmodule SalixIM.PhotonIMessage do
               {:ok, %{ref: ref, size: private[:photon_bytes] || 0}}
             end
 
+          {:ok, %{private: %{photon_error: {:size_limit, _, _} = limit}}} ->
+            {:error, limit}
+
           _ ->
             {:error, :imessage_image_unavailable}
         end
@@ -334,7 +469,8 @@ defmodule SalixIM.PhotonIMessage do
     end
   end
 
-  def download_image(_agent_id, _attachment_id), do: {:error, :imessage_image_unavailable}
+  def download_attachment(_agent_id, _attachment_id, _max_bytes),
+    do: {:error, :imessage_image_unavailable}
 
   # ---- send ----
 
@@ -348,16 +484,22 @@ defmodule SalixIM.PhotonIMessage do
     )
   end
 
-  @doc "Adds or removes a tapback (`❤️ 👍 👎 😂 ‼️ ❓`) or emoji reaction on `parent_id`."
-  def send_reaction(sender_id, space_id, parent_id, emoji, action)
-      when action in ["add", "remove"] do
+  @doc """
+  Adds a tapback (`❤️ 👍 👎 😂 ‼️ ❓`) or emoji reaction on `parent_id`.
+  Photon removes a reaction only by the reaction's own Message ID. Comma does
+  not keep that ID, so a removal is refused before any request.
+  """
+  def send_reaction(sender_id, space_id, parent_id, emoji, "add") do
     send_content(
       sender_id,
       space_id,
-      %{"type" => "reaction", "reaction" => emoji, "action" => action},
+      %{"type" => "reaction", "reaction" => emoji},
       parent_id
     )
   end
+
+  def send_reaction(_sender_id, _space_id, _parent_id, _emoji, "remove"),
+    do: reaction_unsupported(%{})
 
   @doc "Reads one Message, for a reply or quote target."
   def get_message(message_id) when is_binary(message_id) and message_id != "" do
@@ -396,60 +538,134 @@ defmodule SalixIM.PhotonIMessage do
     if byte_size(upload.data) > @max_image_bytes do
       {:error, :imessage_image_too_large}
     else
-      with {:ok, attachment_id} <- upload_attachment(upload),
-           {:ok, sent} <-
-             send_content(
-               sender_id,
-               space_id,
-               %{"type" => "attachment", "attachmentId" => attachment_id},
-               parent_id
-             ) do
-        if is_binary(caption) and String.trim(caption) != "" do
-          case send_text(sender_id, space_id, caption) do
-            {:ok, caption_sent} ->
-              {:ok, Map.merge(caption_sent, Map.take(sent, ["reply_fallback"]))}
+      filename = upload.filename || "image"
 
-            _ ->
-              # The image was accepted. Do not describe the whole operation as not sent.
-              SalixIM.IMessageRelay.delivery_unknown()
-          end
-        else
-          {:ok, sent}
-        end
+      case upload_attachment(filename, byte_size(upload.data), [upload.data], @request_timeout_ms) do
+        {:ok, attachment_id} ->
+          send_attachment(sender_id, space_id, attachment_id, caption, parent_id)
+
+        {:error, :too_large} ->
+          {:error, :imessage_image_too_large}
+
+        {:error, _} ->
+          {:error, :imessage_image_unavailable}
       end
     end
   end
 
-  defp upload_attachment(upload) do
-    content_type = MIME.from_path(upload.filename || "image")
+  @doc """
+  Uploads a file of any type from a stream of `size` bytes, then sends it.
+  The upload streams the bytes and does not hold the whole file in memory.
+  A file over `max_file_bytes/0` or an empty file is refused before any request.
+  An upload failure sends nothing. Captions behave as for `send_image/5`.
+  """
+  def send_file(sender_id, space_id, file, caption \\ "", parent_id \\ nil)
+
+  def send_file(_sender_id, _space_id, %{size: size}, _caption, _parent_id)
+      when not is_integer(size) or size <= 0,
+      do: not_sent("imessage_file_empty", "The file is empty. Nothing was sent.")
+
+  def send_file(_sender_id, _space_id, %{size: size}, _caption, _parent_id)
+      when size > @max_file_bytes,
+      do: file_too_large(size)
+
+  def send_file(sender_id, space_id, %{stream: stream, size: size} = file, caption, parent_id) do
+    filename = Path.basename(to_string(file[:filename] || "file"))
+
+    case upload_attachment(filename, size, stream, @upload_timeout_ms) do
+      {:ok, attachment_id} ->
+        send_attachment(sender_id, space_id, attachment_id, caption, parent_id)
+
+      {:error, :too_large} ->
+        file_too_large(size)
+
+      {:error, _} ->
+        # The upload did not finish, so no Message names the file.
+        {:error,
+         %{
+           "code" => "imessage_upload_failed",
+           "delivery_status" => "not_sent",
+           "retryable" => true,
+           "message" => "Photon did not accept the file upload. Nothing was sent."
+         }}
+    end
+  end
+
+  defp file_too_large(size) do
+    not_sent(
+      "imessage_file_too_large",
+      "The file is #{size} bytes. iMessage files are limited to #{@max_file_bytes} bytes (100 MiB). " <>
+        "Nothing was sent. Send a smaller or compressed file, or a link."
+    )
+  end
+
+  defp not_sent(code, message),
+    do:
+      {:error,
+       %{
+         "code" => code,
+         "delivery_status" => "not_sent",
+         "retryable" => false,
+         "message" => message
+       }}
+
+  defp send_attachment(sender_id, space_id, attachment_id, caption, parent_id) do
+    with {:ok, sent} <-
+           send_content(
+             sender_id,
+             space_id,
+             %{"type" => "attachment", "attachmentId" => attachment_id},
+             parent_id
+           ) do
+      if is_binary(caption) and String.trim(caption) != "" do
+        case send_text(sender_id, space_id, caption) do
+          {:ok, caption_sent} ->
+            {:ok, Map.merge(caption_sent, Map.take(sent, ["reply_fallback"]))}
+
+          _ ->
+            # The attachment was accepted. Do not describe the whole operation as not sent.
+            SalixIM.IMessageRelay.delivery_unknown()
+        end
+      else
+        {:ok, sent}
+      end
+    end
+  end
+
+  # One multipart/related request: JSON metadata, then the file bytes.
+  # `body` is iodata parts or a stream; its byte count must equal `size`.
+  defp upload_attachment(filename, size, body, timeout_ms) do
+    content_type = content_type(filename)
     boundary = Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
 
     meta =
       Jason.encode!(%{
         "contentType" => content_type,
-        "sizeBytes" => byte_size(upload.data),
-        "filename" => Path.basename(upload.filename || "image")
+        "sizeBytes" => size,
+        "filename" => Path.basename(filename)
       })
 
-    body =
+    head =
       IO.iodata_to_binary([
         "--#{boundary}\r\ncontent-type: application/json\r\n\r\n",
         meta,
-        "\r\n--#{boundary}\r\ncontent-type: #{content_type}\r\n\r\n",
-        upload.data,
-        "\r\n--#{boundary}--\r\n"
+        "\r\n--#{boundary}\r\ncontent-type: #{content_type}\r\n\r\n"
       ])
 
+    tail = "\r\n--#{boundary}--\r\n"
+
     case request(:post, "/attachments",
-           body: body,
+           body: Stream.concat([[head], body, [tail]]),
+           timeout_ms: timeout_ms,
            headers: [
              {"content-type", "multipart/related; boundary=#{boundary}"},
+             {"content-length", Integer.to_string(byte_size(head) + size + byte_size(tail))},
              {"idempotency-key", idempotency_key("upload")}
            ]
          ) do
       {:ok, %{"id" => id}} when is_binary(id) and id != "" -> {:ok, id}
-      {:error, {:photon, 413, _}} -> {:error, :imessage_image_too_large}
-      _ -> {:error, :imessage_image_unavailable}
+      {:error, {:photon, 413, _}} -> {:error, :too_large}
+      _ -> {:error, :unavailable}
     end
   end
 
@@ -478,17 +694,24 @@ defmodule SalixIM.PhotonIMessage do
             end
 
           "reaction" ->
-            rejected(
-              "imessage_reaction_unsupported",
-              "Photon does not support reactions in this chat. Nothing was sent. " <>
-                "Do not retry the reaction or reconnect. You can send an ordinary text answer.",
-              problem
-            )
+            reaction_unsupported(problem)
         end
+
+      {:error, {:photon, 422, %{"code" => "UNSUPPORTED_CONTENT"} = problem}} ->
+        if content["type"] == "reaction", do: reaction_unsupported(problem), else: sent(result)
 
       _ ->
         sent(result)
     end
+  end
+
+  defp reaction_unsupported(problem) do
+    rejected(
+      "imessage_reaction_unsupported",
+      "Photon does not support this reaction in this chat. Nothing was sent. " <>
+        "Do not retry the reaction or reconnect. You can send an ordinary text answer.",
+      problem
+    )
   end
 
   # A clear 4xx means Photon refused the request before acceptance.
@@ -531,6 +754,7 @@ defmodule SalixIM.PhotonIMessage do
   defp do_request(method, path, opts) do
     with :ok <- require_configured() do
       {extra_headers, opts} = Keyword.pop(opts, :headers, [])
+      {timeout_ms, opts} = Keyword.pop(opts, :timeout_ms, @request_timeout_ms)
 
       options =
         Keyword.merge(
@@ -541,14 +765,14 @@ defmodule SalixIM.PhotonIMessage do
             retry: false,
             redirect: false,
             decode_body: false,
-            receive_timeout: SystemsClock.timeout(@request_timeout_ms),
+            receive_timeout: SystemsClock.timeout(timeout_ms),
             connect_options: [timeout: 5_000]
           ],
           Keyword.merge(req_options(), opts)
         )
 
       response =
-        case SystemsClock.run_bounded(fn -> Req.request(options) end, @request_timeout_ms) do
+        case SystemsClock.run_bounded(fn -> Req.request(options) end, timeout_ms) do
           {:ok, response} -> response
           _exit_or_timeout -> {:error, :timeout}
         end

@@ -24,6 +24,8 @@ defmodule Salix.App do
     SystemsRuntime.put_env(:salix_agent, :group_context_mod, Salix.Bindings.AgentGroupContext)
     SystemsRuntime.put_env(:salix_agent, :agent_management_ports, Salix.Bindings.AgentManagement)
     SystemsRuntime.put_env(:salix_agent, :cloud_vm_mod, Salix.Bindings.AgentCloudVM)
+    SystemsRuntime.put_env(:salix_agent, :sandboxes_mod, SalixWeb.L4ES)
+    SystemsRuntime.put_env(:salix_im, :sandboxes_mod, SalixAgent.Sandboxes)
 
     SystemsRuntime.put_env(
       :salix_agent,
@@ -95,6 +97,7 @@ defmodule Salix.App do
     SystemsRuntime.put_env(:salix_agent, :env_dispatch, Salix.Bindings.AgentEnvDispatch)
 
     SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, Salix.Bindings.IMAgentDelivery)
+    SystemsRuntime.put_env(:salix_im, :lark_meeting_bot_mod, SalixMeet.LarkBot)
     SystemsRuntime.put_env(:salix_agent, :conversation_source_mod, SalixIM.ConversationSource)
     SystemsRuntime.put_env(:salix_im, :agent_control_mod, Salix.Bindings.IMAgentControl)
     SystemsRuntime.put_env(:salix_im, :session_activity_mod, Salix.Bindings.IMSessionActivity)
@@ -131,6 +134,12 @@ defmodule Salix.App do
     )
 
     SystemsRuntime.put_env(
+      :salix_agent,
+      :meeting_settings_mod,
+      :"Elixir.BridgeForTeams.MeetingDestination"
+    )
+
+    SystemsRuntime.put_env(
       :salix_im,
       :triage_follow_up_thread_reader_mod,
       Salix.Bindings.TriageFollowUpThreadReader
@@ -153,6 +162,7 @@ defmodule Salix.App do
     SystemsRuntime.put_env(:salix_meet, :copilot_mod, Salix.Bindings.MeetingCopilot)
     SystemsRuntime.put_env(:salix_meet, :memory_mod, Salix.Bindings.MeetingMemory)
     SystemsRuntime.put_env(:salix_meet, :activation_mod, Salix.Bindings.MeetingActivation)
+    SystemsRuntime.put_env(:salix_meet, :events_mod, Salix.Bindings.ProductEvents)
 
     SystemsRuntime.put_env(
       :salix_meet,
@@ -174,6 +184,8 @@ defmodule Salix.App do
 
     SystemsRuntime.put_env(:salix_calendar, :source_adapters, %{
       "google_calendar" => Salix.Bindings.GoogleCalendarSource,
+      "feishu_calendar" => Salix.Bindings.LarkCalendarSource,
+      "lark_calendar" => Salix.Bindings.LarkCalendarSource,
       "salix_task_schedule" => SalixCalendar.SourceAdapter.SalixTaskSchedule
     })
 
@@ -196,6 +208,7 @@ defmodule Salix.App do
     )
 
     SystemsRuntime.put_env(:salix_meet, :meeting_channel_mod, Salix.Bindings.MeetingChannel)
+    SystemsRuntime.put_env(:salix_calendar, :source_change_observer, SalixMeet.CalendarChanges)
 
     SystemsRuntime.put_env(
       :salix_meet,

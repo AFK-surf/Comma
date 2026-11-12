@@ -162,10 +162,11 @@ async function expectWindowDragRegions(page: Page) {
     .toEqual({ appRegion: "no-drag", inWindowBar: true, isTopmost: true });
 }
 
-// The rail's last item raises Settings as a modal over whatever route is open;
-// it is not a location, and the account menu that used to open it is gone.
+// The rail's last item opens the account's menu; its Settings item raises
+// Settings as a modal over whatever route is open (it is not a location).
 async function openAppSettingsFromRail(page: Page) {
-  await page.getByRole("button", { exact: true, name: "Settings" }).click();
+  await page.getByRole("button", { exact: true, name: "Account" }).click();
+  await page.getByRole("menuitem", { exact: true, name: "Settings" }).click();
   await expect(page.getByRole("dialog", { name: "Settings sections" })).toBeVisible();
 }
 
@@ -919,7 +920,7 @@ test(
         appWindow.getByRole("complementary", { name: "App sidebar" })
       ).toBeVisible();
       await expect(
-        appWindow.getByRole("button", { exact: true, name: "Settings" })
+        appWindow.getByRole("button", { exact: true, name: "Account" })
       ).toHaveAttribute("aria-current", "page");
       await expect(
         appWindow

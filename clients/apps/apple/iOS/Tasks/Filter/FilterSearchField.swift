@@ -6,13 +6,15 @@ import SwiftUI
 struct FilterSearchField: View {
     let prompt: LocalizedStringKey
     @Binding var text: String
+    var icon = "icon-filter"
+    var accessibilityID = "filterSearch"
     var focusChanged: (Bool) -> Void = { _ in }
     @FocusState private var focused: Bool
     @ScaledMetric(relativeTo: .body) private var height: CGFloat = 42
 
     var body: some View {
         HStack(spacing: 8) {
-            CentralIcon("icon-filter", relativeTo: .body).foregroundStyle(CommaTheme.textSecondary)
+            CentralIcon(icon, relativeTo: .body).foregroundStyle(CommaTheme.textSecondary)
             TextField(text: $text, prompt: Text(prompt).foregroundStyle(CommaTheme.textPlaceholder)) {
                 Text(prompt)
             }
@@ -23,7 +25,7 @@ struct FilterSearchField: View {
             .submitLabel(.search)
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
-            .accessibilityIdentifier("filterSearch")
+            .accessibilityIdentifier(accessibilityID)
             if !text.isEmpty {
                 Button { text = "" } label: {
                     CentralIcon("icon-close", relativeTo: .body).scaleEffect(0.8).foregroundStyle(CommaTheme.textQuaternary)

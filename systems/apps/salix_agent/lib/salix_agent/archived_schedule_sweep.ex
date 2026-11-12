@@ -17,11 +17,9 @@ defmodule SalixAgent.ArchivedScheduleSweep do
   row the user paused keeps its own status (no `paused_by` marker), so
   running it again, or running it after the hooks, changes nothing.
 
-  Cost: one LIST of `ctl/agents/`, one GET per control record with bounded
-  concurrency, and at most one UPDATE (plus one re-validating GET) per
-  agent. Only transport failures abort the listing; a record that vanished
-  between LIST and GET, or no longer parses, is skipped like any other
-  invalid record, so an outage is never mistaken for "nothing to do".
+  Cost: bounded PostgreSQL keyset pages and at most one schedule update
+  plus one configuration revalidation per Agent. A failed page aborts the
+  listing, so an outage cannot appear to be an empty scope.
 
   The sweep acts on what it READ, possibly long after; the epoch fence and
   the post-pause re-validation in `ArchivedSchedules` are what make that
@@ -34,9 +32,7 @@ defmodule SalixAgent.ArchivedScheduleSweep do
   """
 
   alias SalixAgent.ArchivedSchedules
-  alias SalixStore.{Keys, S3, Schedules}
-
-  @read_concurrency 8
+  alias SalixStore.{AgentPGStore, Schedules}
 
   @type summary :: %{
           agents_scanned: non_neg_integer(),
@@ -58,15 +54,14 @@ defmodule SalixAgent.ArchivedScheduleSweep do
     dry_run? = Keyword.get(opts, :dry_run, false)
     now_ms = Keyword.get(opts, :now_ms) || SystemsClock.system_time(:millisecond)
 
-    with {:ok, objects} <- S3.list_all(Keys.ctl_agents_prefix()),
-         {:ok, records} <- read_records(objects) do
+    with {:ok, records} <- read_records(nil, []) do
       results =
         Enum.map(records, fn {agent_id, archived?, epoch} ->
           {agent_id, archived?, act(agent_id, archived?, epoch, dry_run?, now_ms)}
         end)
 
       summary = %{
-        agents_scanned: length(objects),
+        agents_scanned: length(records),
         archived_agents: Enum.count(results, fn {_id, archived?, _} -> archived? end),
         schedules_paused: results |> Enum.map(&count(&1, :paused)) |> Enum.sum(),
         schedules_resumed: results |> Enum.map(&count(&1, :resumed)) |> Enum.sum(),
@@ -120,50 +115,20 @@ defmodule SalixAgent.ArchivedScheduleSweep do
     end
   end
 
-  # {agent_id, archived?, epoch} per readable control record.
-  defp read_records(objects) do
-    objects
-    |> SystemsClock.async_stream(fn %{key: key} -> read_record(key) end,
-      max_concurrency: @read_concurrency,
-      ordered: false,
-      timeout: :infinity
-    )
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, {:ok, nil}}, acc -> {:cont, acc}
-      {:ok, {:ok, entry}}, {:ok, acc} -> {:cont, {:ok, [entry | acc]}}
-      {:ok, {:error, reason}}, _acc -> {:halt, {:error, reason}}
-    end)
-    |> case do
-      {:ok, entries} -> {:ok, Enum.sort(entries)}
-      {:error, _} = error -> error
+  defp read_records(cursor, pages) do
+    with {:ok, %{items: records, next: next}} <-
+           AgentPGStore.page_configs(%{}, cursor: cursor, limit: 500) do
+      entries =
+        Enum.map(records, fn rec ->
+          {rec["agent_id"], ArchivedSchedules.archived?(rec),
+           ArchivedSchedules.archive_epoch(rec)}
+        end)
+
+      pages = [entries | pages]
+
+      if is_nil(next),
+        do: {:ok, pages |> Enum.reverse() |> List.flatten()},
+        else: read_records(next, pages)
     end
-  end
-
-  # nil = not an agent record (vanished, or unparseable).
-  defp read_record(key) do
-    case S3.get(key) do
-      {:ok, %{body: body}} ->
-        case Jason.decode(body) do
-          {:ok, rec} when is_map(rec) ->
-            {:ok,
-             {rec["agent_id"] || agent_id_from_key(key), ArchivedSchedules.archived?(rec),
-              ArchivedSchedules.archive_epoch(rec)}}
-
-          _ ->
-            {:ok, nil}
-        end
-
-      {:error, :not_found} ->
-        {:ok, nil}
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp agent_id_from_key(key) do
-    key
-    |> String.replace_prefix(Keys.ctl_agents_prefix(), "")
-    |> String.replace_suffix(".json", "")
   end
 end

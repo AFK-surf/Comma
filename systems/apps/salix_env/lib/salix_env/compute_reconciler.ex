@@ -36,8 +36,8 @@ defmodule SalixEnv.ComputeReconciler do
   @cursor_id "compute-reconciler-agent-vmm"
   @provider "agent_vmm"
   @shell_observation_due_sql """
-  ? = 'available' AND (?->>'connection_epoch') IS NOT NULL
-  AND ((?->>'runtime_verified_host_epoch') IS DISTINCT FROM (?->>'connection_epoch')
+  ? = TRUE AND ? IS NOT NULL
+  AND ((?->>'runtime_verified_host_epoch') IS DISTINCT FROM ?
     OR NOT EXISTS (
       SELECT 1 FROM agent_vmm_sessions s
       JOIN compute_runtime_instances r ON r.id = s.runtime_instance_id
@@ -45,40 +45,9 @@ defmodule SalixEnv.ComputeReconciler do
         AND r.allocation_id = ? AND s.allocation_id = r.allocation_id
         AND s.allocation_generation = ? AND s.registration_id = ?
         AND s.status = 'ready' AND s.expires_at > ?
-        AND s.gateway_instance_id = (?->>'gateway_instance_id')
-        AND s.connection_epoch = (?->>'connection_epoch')
+        AND s.gateway_instance_id = ?
+        AND s.connection_epoch = ?
     ))
-  """
-  @runtime_ready_sql """
-  NOT EXISTS (
-    SELECT 1
-    FROM compute_runtime_instances r
-    WHERE r.workload_id = ?
-      AND r.generation = ?
-      AND r.status = 'connected'
-      AND r.readiness = 'ready'
-      AND r.connection_epoch = r.caught_up_epoch
-      AND EXISTS (
-        SELECT 1
-        FROM agent_vmm_sessions s
-        WHERE s.registration_id = ?
-          AND s.runtime_instance_id = r.id
-          AND s.allocation_id = ?
-          AND s.status = 'ready'
-          AND s.expires_at > ?
-          AND s.allocation_generation = ?
-          AND s.gateway_instance_id = (?->>'gateway_instance_id')
-          AND s.connection_epoch = (?->>'connection_epoch')
-          AND EXISTS (
-            SELECT 1 FROM (SELECT ?::jsonb AS facts) proof
-            WHERE proof.facts->>'runtime_verified_host_epoch' = s.connection_epoch
-              AND proof.facts->>'runtime_execution_epoch' = r.connection_epoch
-              AND proof.facts->>'runtime_container_instance_id' <> ''
-              AND proof.facts->>'runtime_container_instance_id' = proof.facts->'current_container'->>'instance_id'
-              AND proof.facts->>'container_status' = 'running'
-          )
-      )
-  )
   """
 
   def start_link(opts \\ []),
@@ -139,8 +108,7 @@ defmodule SalixEnv.ComputeReconciler do
     end
   end
 
-  defp provider_budget("agent_vmm", workload, allocation, opts),
-    do: runtime_recovery_budget(workload, allocation, opts)
+  defp provider_budget("agent_vmm", _workload, _allocation, _opts), do: :ok
 
   defp provider_budget(provider, workload, _allocation, _opts)
        when provider == "cloudflare" do
@@ -368,136 +336,6 @@ defmodule SalixEnv.ComputeReconciler do
       last_operation["result"] == "archived"
   end
 
-  # One durable recovery deadline per unfinished episode. Foreground callers
-  # use the same claim as the sweeper; reconnects and claim renewal cannot reset it.
-  defp runtime_recovery_budget(%{deletion: deletion}, _allocation, _opts) when is_map(deletion),
-    do: :ok
-
-  defp runtime_recovery_budget(%{runtime_update: %{"phase" => phase}}, _allocation, _opts)
-       when phase not in ["complete", "cancelled"], do: :ok
-
-  defp runtime_recovery_budget(workload, allocation, opts) do
-    runtime = Repo.get(Compute.RuntimeInstance, "runtime:" <> workload.id)
-
-    ready =
-      runtime && runtime.status == "connected" && runtime.readiness == "ready" &&
-        runtime.caught_up_epoch == runtime.connection_epoch &&
-        Compute.runtime_control_current?(runtime)
-
-    prior_claim = Repo.get(Compute.ReconcilerClaim, claim_id(workload.id, workload.generation))
-
-    continuing? =
-      not is_nil(prior_claim && (prior_claim.last_error || %{})["runtime_recovery_deadline"])
-
-    recovering =
-      SalixEnv.ComputeProviders.AgentVMM.runtime_recovery_needed?(
-        allocation,
-        workload,
-        opts,
-        continuing?
-      )
-
-    if recovering do
-      Repo.transaction(fn ->
-        now = SystemsClock.utc_now()
-        id = claim_id(workload.id, workload.generation)
-
-        Repo.insert_all(
-          Compute.ReconcilerClaim,
-          [
-            %{
-              id: id,
-              provider: @provider,
-              workload_id: workload.id,
-              generation: workload.generation,
-              claim_token: claim_token(),
-              attempt_count: 0,
-              created_at: now,
-              updated_at: now
-            }
-          ],
-          on_conflict: :nothing
-        )
-
-        claim =
-          Repo.one!(from(c in Compute.ReconcilerClaim, where: c.id == ^id, lock: "FOR UPDATE"))
-
-        token = Keyword.get(opts, :claim_token)
-
-        if is_binary(token) and
-             (claim.claim_token != token or is_nil(claim.lease_expires_at) or
-                DateTime.compare(claim.lease_expires_at, now) != :gt),
-           do: Repo.rollback(:claim_lost)
-
-        error = claim.last_error || %{}
-
-        cond do
-          error["kind"] == "action_required" and error["code"] != "runtime_recovery_expired" ->
-            {:error, {:gateway_error, error}}
-
-          ready ->
-            Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^id),
-              set: [last_error: clear_runtime_recovery(error), updated_at: now]
-            )
-
-            :ok
-
-          true ->
-            deadline =
-              error["runtime_recovery_deadline"] ||
-                DateTime.to_iso8601(DateTime.add(now, 900, :second))
-
-            {:ok, expires_at, _} = DateTime.from_iso8601(deadline)
-            error = Map.put(error, "runtime_recovery_deadline", deadline)
-            expired = DateTime.compare(now, expires_at) != :lt
-
-            error =
-              if expired,
-                do:
-                  Map.merge(error, %{
-                    "kind" => "retryable",
-                    "code" => "runtime_recovery_expired"
-                  }),
-                else: error
-
-            Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^id),
-              set: [last_error: error, updated_at: now]
-            )
-
-            # Foreground requests stop waiting. A claimed background pass still
-            # observes the provider and can repair the current container proof.
-            if expired and is_nil(Keyword.get(opts, :claim_token)),
-              do: {:error, {:gateway_error, error}},
-              else: :ok
-        end
-      end)
-      |> case do
-        {:ok, result} -> result
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      Repo.update_all(
-        from(c in Compute.ReconcilerClaim,
-          where: c.workload_id == ^workload.id and c.generation == ^workload.generation,
-          update: [
-            set: [
-              last_error:
-                fragment(
-                  "CASE WHEN ?->>'code' = 'runtime_recovery_expired' THEN ? - ARRAY['kind','code','runtime_recovery_deadline'] ELSE ? - 'runtime_recovery_deadline' END",
-                  c.last_error,
-                  c.last_error,
-                  c.last_error
-                )
-            ]
-          ]
-        ),
-        []
-      )
-
-      :ok
-    end
-  end
-
   @doc "Wake the exact Workload after its Host Session commits. The sweep covers lost notifications."
   def host_session_ready(allocation_id, server \\ __MODULE__) when is_binary(allocation_id) do
     SystemsRuntime.Server.cast(server, {:host_session_ready, allocation_id})
@@ -512,10 +350,11 @@ defmodule SalixEnv.ComputeReconciler do
       enabled: Keyword.get(opts, :start_sweeper?, true),
       tasks: %{},
       timer: nil,
+      next_periodic_at: SystemsClock.monotonic_time(:millisecond),
       fleet_metrics_at: nil
     }
 
-    {:ok, if(state.enabled, do: schedule_sweep(state, 0), else: state)}
+    {:ok, if(state.enabled, do: schedule_sweep(state, false), else: state)}
   end
 
   @impl true
@@ -524,33 +363,43 @@ defmodule SalixEnv.ComputeReconciler do
     # and leave selection to the next available slot. No per-Workload queue.
     case claim_host_workload(allocation_id, map_size(state.tasks) < @concurrency) do
       {:ok, [claim]} -> {:noreply, start_claim(state, claim)}
-      _ -> {:noreply, schedule_sweep(state, 0)}
+      _ -> {:noreply, state}
     end
   end
 
   def handle_cast({:host_session_ready, _}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info(:sweep, state) do
+  def handle_info({:sweep, tag, mode}, %{timer: {_timer, tag}} = state) do
     state = %{state | timer: nil} |> maybe_emit_fleet_metrics()
+
+    state =
+      if mode == :periodic,
+        do: %{
+          state
+          | next_periodic_at: SystemsClock.monotonic_time(:millisecond) + state.interval_ms
+        },
+        else: state
+
     slots = @concurrency - map_size(state.tasks)
 
     {state, more?} =
       if slots > 0 do
-        case claim_page(slots) do
+        case claim_page(slots, if(mode == :periodic, do: :start, else: :continue)) do
           {:ok, {claims, more?}} ->
             {Enum.reduce(claims, state, &start_claim(&2, &1)), more?}
 
-          {:error, _} ->
+          _ ->
             {state, false}
         end
       else
         {state, false}
       end
 
-    delay = if more? and map_size(state.tasks) < @concurrency, do: 0, else: state.interval_ms
-    {:noreply, schedule_sweep(state, delay)}
+    {:noreply, schedule_sweep(state, more? and map_size(state.tasks) < @concurrency)}
   end
+
+  def handle_info({:sweep, _tag, _mode}, state), do: {:noreply, state}
 
   def handle_info({ref, _result}, state) when is_reference(ref) do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
@@ -621,7 +470,7 @@ defmodule SalixEnv.ComputeReconciler do
           settle_claim(task.workload, error, task.claim_token)
         end
 
-        schedule_sweep(%{state | tasks: tasks}, 0)
+        schedule_sweep(%{state | tasks: tasks}, true)
     end
   end
 
@@ -643,9 +492,15 @@ defmodule SalixEnv.ComputeReconciler do
     apply(SalixWeb.CloudVM.FleetMetrics, :emit, [opts])
   end
 
-  defp schedule_sweep(state, delay) do
-    if state.timer, do: SystemsClock.cancel_timer(state.timer)
-    %{state | timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, delay)}
+  defp schedule_sweep(state, continue?) do
+    if state.timer, do: SystemsClock.cancel_timer(elem(state.timer, 0))
+    now = SystemsClock.monotonic_time(:millisecond)
+    periodic_delay = max(0, state.next_periodic_at - now)
+    mode = if continue? and periodic_delay > 0, do: :continue, else: :periodic
+    delay = if mode == :continue, do: 0, else: periodic_delay
+    tag = make_ref()
+    timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:sweep, tag, mode}, delay)
+    %{state | timer: {timer, tag}}
   end
 
   defp run_claim(%{workload: workload, claim_token: token}) do
@@ -673,13 +528,13 @@ defmodule SalixEnv.ComputeReconciler do
   # selection or settlement in the other slots.
   @doc "Run at most the requested number of reconciliation attempts."
   def sweep(limit \\ @batch_size) when limit in 1..@batch_size do
-    Enum.reduce_while(1..limit, :complete, fn _, _ ->
-      case claim_page(1) do
+    Enum.reduce_while(1..limit, :complete, fn step, _ ->
+      case claim_page(1, if(step == 1, do: :start, else: :continue)) do
         {:ok, {claims, more?}} ->
           Enum.each(claims, &run_claim/1)
           if more?, do: {:cont, :more}, else: {:halt, :complete}
 
-        {:error, _} ->
+        _ ->
           {:halt, :complete}
       end
     end)
@@ -744,147 +599,86 @@ defmodule SalixEnv.ComputeReconciler do
       {:error, :unavailable}
   end
 
-  defp claim_page(limit) do
+  defp claim_page(limit, mode) do
     Repo.transaction(fn ->
-      cursor = lock_or_create_cursor!()
-      high_watermark = high_watermark(cursor)
-
-      case high_watermark do
+      case lock_or_create_cursor!("FOR UPDATE SKIP LOCKED") do
         nil ->
-          clear_cursor!(cursor)
-          {[], false}
+          :busy
 
-        watermark ->
-          candidate_limit = @candidate_limit
+        cursor ->
+          watermark = high_watermark(cursor) || if(mode == :start, do: high_watermark())
 
-          candidates =
-            candidate_query(cursor_key(cursor), watermark)
-            |> limit(^candidate_limit)
-            |> Repo.all()
+          if watermark do
+            candidates =
+              candidate_query(cursor_key(cursor), watermark)
+              |> limit(^@candidate_limit)
+              |> Repo.all()
 
-          {selected, cursor_candidate} = fair_workloads(candidates, limit)
-          # A fair page can contain rows skipped by the tenant cap even when
-          # it is smaller than the provider batch limit. Keep the fast sweep
-          # path active until those rows have also been claimed.
-          has_more? = length(candidates) >= limit or length(selected) < length(candidates)
+            {selected, cursor_candidate} = fair_workloads(candidates, limit)
+            has_more? = length(candidates) >= limit or length(selected) < length(candidates)
 
-          if candidates != [] do
-            # Do not advance past rows skipped by the tenant cap. Keeping the
-            # cursor immediately before the first skipped row lets the next
-            # page make progress through a tenant whose fair share is full.
-            advance_cursor!(cursor, cursor_candidate || List.last(candidates), watermark)
+            if candidates != [] do
+              advance_cursor!(cursor, cursor_candidate || List.last(candidates), watermark)
+            else
+              clear_cursor!(cursor)
+            end
+
+            {claim_workloads!(selected), has_more?}
           else
-            clear_cursor!(cursor)
+            {[], false}
           end
-
-          claimed = claim_workloads!(selected)
-
-          {claimed, has_more?}
       end
     end)
   end
 
-  defp lock_or_create_cursor! do
-    now = SystemsClock.utc_now()
+  defp lock_or_create_cursor!(lock \\ "FOR UPDATE") do
+    query = from(c in Compute.ReconcilerCursor, where: c.id == ^@cursor_id)
 
-    {_count, _} =
-      Repo.insert_all(
-        Compute.ReconcilerCursor,
-        [
-          %{
-            id: @cursor_id,
-            provider: @provider,
-            created_at: now,
-            updated_at: now
-          }
-        ],
-        on_conflict: :nothing,
-        conflict_target: [:provider]
-      )
+    case lock_cursor(query, lock) do
+      nil ->
+        # SKIP LOCKED returns nil for a busy row. Do not insert against that
+        # row: ON CONFLICT would wait for its uncommitted update first.
+        unless Repo.exists?(query) do
+          now = SystemsClock.utc_now()
 
-    Repo.one!(from(c in Compute.ReconcilerCursor, where: c.id == ^@cursor_id, lock: "FOR UPDATE"))
+          Repo.insert_all(
+            Compute.ReconcilerCursor,
+            [%{id: @cursor_id, provider: @provider, created_at: now, updated_at: now}],
+            on_conflict: :nothing,
+            conflict_target: [:provider]
+          )
+
+          lock_cursor(query, lock)
+        end
+
+      cursor ->
+        cursor
+    end
   end
+
+  defp lock_cursor(query, "FOR UPDATE"), do: Repo.one(from(c in query, lock: "FOR UPDATE"))
+
+  defp lock_cursor(query, "FOR UPDATE SKIP LOCKED"),
+    do: Repo.one(from(c in query, lock: "FOR UPDATE SKIP LOCKED"))
 
   defp high_watermark(%Compute.ReconcilerCursor{
          high_watermark_tenant_id: tenant_id,
-         high_watermark_updated_at: updated_at,
          high_watermark_workload_id: workload_id
        })
-       when is_binary(tenant_id) and is_binary(workload_id) and not is_nil(updated_at),
-       do: %{tenant_id: tenant_id, updated_at: updated_at, workload_id: workload_id}
+       when is_binary(tenant_id) and is_binary(workload_id),
+       do: %{tenant_id: tenant_id, workload_id: workload_id}
 
-  defp high_watermark(_cursor) do
-    now = SystemsClock.utc_now()
+  defp high_watermark(_cursor), do: nil
 
+  # The finite scan universe needs only stable ownership keys. Eligibility is
+  # checked once, in the bounded candidate page, rather than again here.
+  defp high_watermark do
     Repo.one(
       from(w in Compute.Workload,
-        join: a in Compute.Allocation,
-        on: a.id == w.allocation_id,
-        join: b in Compute.ProviderBinding,
-        on: b.id == a.provider_binding_id,
         join: e in Compute.Environment,
         on: e.id == w.environment_id,
-        where:
-          w.desired_state in ["ready", "draining", "stopped"] and
-            ((a.generation == e.generation and a.status != "released") or
-               (a.generation <= e.generation and
-                  fragment(
-                    "?->>'phase' IS NOT NULL AND ?->>'phase' NOT IN ('complete', 'cloud_retired')",
-                    w.deletion,
-                    w.deletion
-                  ))) and
-            ((b.provider == "cloudflare" and
-                fragment("?->>'group_default' = 'true'", w.spec) and
-                (w.desired_state == "stopped" or
-                   fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
-                   w.observed_state in [
-                     "creating",
-                     "ready",
-                     "waking",
-                     "archiving",
-                     "eligible_for_resume",
-                     "billing_suspended"
-                   ])) or
-               (b.provider == "agent_vmm" and
-                  fragment("?->>'group_default' = 'true'", w.spec) and
-                  (w.desired_state != "ready" or
-                     fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
-                     w.observed_state in ["creating", "ready", "waking", "archiving", "pending"])) or
-               (b.provider == "agent_vmm" and
-                  fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
-                  (w.observed_state != w.desired_state or
-                     (w.desired_state == "ready" and w.kind == "meeting_runtime" and
-                        fragment(
-                          @runtime_ready_sql,
-                          w.id,
-                          w.generation,
-                          b.provider_ref,
-                          a.id,
-                          ^now,
-                          a.generation,
-                          b.observation,
-                          b.observation,
-                          a.provider_observation
-                        )) or
-                     (w.desired_state == "ready" and w.kind == "shell" and
-                        fragment(
-                          @shell_observation_due_sql,
-                          b.status,
-                          b.observation,
-                          a.provider_observation,
-                          b.observation,
-                          w.id,
-                          w.generation,
-                          a.id,
-                          a.generation,
-                          b.provider_ref,
-                          ^now,
-                          b.observation,
-                          b.observation
-                        ))) and
-                  b.provider == "agent_vmm")),
-        order_by: [desc: e.tenant_id, desc: w.updated_at, desc: w.id],
-        select: %{tenant_id: e.tenant_id, updated_at: w.updated_at, workload_id: w.id},
+        order_by: [desc: e.tenant_id, desc: w.id],
+        select: %{tenant_id: e.tenant_id, workload_id: w.id},
         limit: 1
       )
     )
@@ -898,13 +692,11 @@ defmodule SalixEnv.ComputeReconciler do
         nil ->
           dynamic([_w, _a, _b, _e], true)
 
-        %{tenant_id: tenant_id, updated_at: updated_at, workload_id: workload_id} ->
+        %{tenant_id: tenant_id, workload_id: workload_id} ->
           dynamic(
             [w, _a, _b, e],
             e.tenant_id > ^tenant_id or
-              (e.tenant_id == ^tenant_id and w.updated_at > ^updated_at) or
-              (e.tenant_id == ^tenant_id and w.updated_at == ^updated_at and
-                 w.id > ^workload_id)
+              (e.tenant_id == ^tenant_id and w.id > ^workload_id)
           )
       end
 
@@ -912,9 +704,7 @@ defmodule SalixEnv.ComputeReconciler do
       dynamic(
         [w, _a, _b, e],
         e.tenant_id < ^watermark.tenant_id or
-          (e.tenant_id == ^watermark.tenant_id and w.updated_at < ^watermark.updated_at) or
-          (e.tenant_id == ^watermark.tenant_id and w.updated_at == ^watermark.updated_at and
-             w.id <= ^watermark.workload_id)
+          (e.tenant_id == ^watermark.tenant_id and w.id <= ^watermark.workload_id)
       )
 
     from(w in Compute.Workload,
@@ -924,6 +714,8 @@ defmodule SalixEnv.ComputeReconciler do
       on: b.id == a.provider_binding_id,
       join: e in Compute.Environment,
       on: e.id == w.environment_id,
+      left_join: reg in SalixStore.AgentVMM.Registration,
+      on: reg.id == b.provider_ref,
       left_join: claim in Compute.ReconcilerClaim,
       on:
         claim.provider == b.provider and claim.workload_id == w.id and
@@ -973,44 +765,30 @@ defmodule SalixEnv.ComputeReconciler do
              (b.provider == "agent_vmm" and
                 fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
                 (w.observed_state != w.desired_state or
-                   (w.desired_state == "ready" and w.kind == "meeting_runtime" and
-                      fragment(
-                        @runtime_ready_sql,
-                        w.id,
-                        w.generation,
-                        b.provider_ref,
-                        a.id,
-                        ^now,
-                        a.generation,
-                        b.observation,
-                        b.observation,
-                        a.provider_observation
-                      )) or
                    (w.desired_state == "ready" and w.kind == "shell" and
                       fragment(
                         @shell_observation_due_sql,
-                        b.status,
-                        b.observation,
+                        reg.connected,
+                        reg.current_connection_epoch,
                         a.provider_observation,
-                        b.observation,
+                        reg.current_connection_epoch,
                         w.id,
                         w.generation,
                         a.id,
                         a.generation,
                         b.provider_ref,
                         ^now,
-                        b.observation,
-                        b.observation
+                        reg.current_gateway_instance_id,
+                        reg.current_connection_epoch
                       ))) and
                 b.provider == "agent_vmm")) and is_nil(claim.id),
       where: ^after_cursor,
       where: ^before_watermark,
-      order_by: [asc: e.tenant_id, asc: w.updated_at, asc: w.id],
+      order_by: [asc: e.tenant_id, asc: w.id],
       select: %{
         workload: w,
         provider: b.provider,
-        tenant_id: e.tenant_id,
-        updated_at: w.updated_at
+        tenant_id: e.tenant_id
       }
     )
   end
@@ -1123,6 +901,8 @@ defmodule SalixEnv.ComputeReconciler do
   defp settle_claim(workload, {:error, {:gateway_error, %{"code" => code} = error}}, claim_token)
        when code in [
               "workload_stop_unresolved",
+              "provider_command_outcome_unknown",
+              "provider_command_failed",
               "capacity_wait_expired",
               "workload_update_action_required",
               "group_transition_recovery_required",
@@ -1278,11 +1058,6 @@ defmodule SalixEnv.ComputeReconciler do
 
   defp retry_delay(_), do: @claim_retry_ms
 
-  defp clear_runtime_recovery(%{"code" => "runtime_recovery_expired"} = error),
-    do: Map.drop(error, ["kind", "code", "runtime_recovery_deadline"])
-
-  defp clear_runtime_recovery(error), do: Map.delete(error, "runtime_recovery_deadline")
-
   defp release_claim(workload, claim_token) do
     Repo.delete_all(
       from(c in Compute.ReconcilerClaim,
@@ -1306,7 +1081,6 @@ defmodule SalixEnv.ComputeReconciler do
 
   defp storage_headroom_error?(%{
          "code" => "resource_capacity_exhausted",
-         "stage" => "import_admission",
          "resource" => "storage_headroom"
        }),
        do: true
@@ -1321,11 +1095,10 @@ defmodule SalixEnv.ComputeReconciler do
 
   defp cursor_key(%Compute.ReconcilerCursor{
          cursor_tenant_id: tenant_id,
-         cursor_updated_at: updated_at,
          cursor_workload_id: workload_id
        })
-       when is_binary(tenant_id) and is_binary(workload_id) and not is_nil(updated_at),
-       do: %{tenant_id: tenant_id, updated_at: updated_at, workload_id: workload_id}
+       when is_binary(tenant_id) and is_binary(workload_id),
+       do: %{tenant_id: tenant_id, workload_id: workload_id}
 
   defp cursor_key(_), do: nil
 
@@ -1358,10 +1131,8 @@ defmodule SalixEnv.ComputeReconciler do
         from(c in Compute.ReconcilerCursor, where: c.id == ^cursor.id),
         set: [
           cursor_tenant_id: candidate.tenant_id,
-          cursor_updated_at: candidate.updated_at,
           cursor_workload_id: candidate.workload.id,
           high_watermark_tenant_id: watermark.tenant_id,
-          high_watermark_updated_at: watermark.updated_at,
           high_watermark_workload_id: watermark.workload_id,
           updated_at: SystemsClock.timestamp(:utc_datetime_usec)
         ]
@@ -1369,19 +1140,21 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp clear_cursor!(cursor) do
-    {1, _} =
-      Repo.update_all(
-        from(c in Compute.ReconcilerCursor, where: c.id == ^cursor.id),
-        set: [
-          cursor_tenant_id: nil,
-          cursor_updated_at: nil,
-          cursor_workload_id: nil,
-          high_watermark_tenant_id: nil,
-          high_watermark_updated_at: nil,
-          high_watermark_workload_id: nil,
-          updated_at: SystemsClock.timestamp(:utc_datetime_usec)
-        ]
-      )
+    if high_watermark(cursor) || cursor_key(cursor) do
+      {1, _} =
+        Repo.update_all(
+          from(c in Compute.ReconcilerCursor, where: c.id == ^cursor.id),
+          set: [
+            cursor_tenant_id: nil,
+            cursor_updated_at: nil,
+            cursor_workload_id: nil,
+            high_watermark_tenant_id: nil,
+            high_watermark_updated_at: nil,
+            high_watermark_workload_id: nil,
+            updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+          ]
+        )
+    end
   end
 
   defp settle_result(

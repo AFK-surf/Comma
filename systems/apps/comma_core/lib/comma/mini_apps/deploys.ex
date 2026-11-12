@@ -7,8 +7,8 @@ defmodule Comma.MiniApps.Deploys do
     2. `commit_check` proves the commit is on the pushed session branch;
     3. paid-work admission of the owner Workspace;
     4. the manifest and files pass `Comma.MiniApps.Manifest` / `Bundle`;
-    5. the bundle, source archive, backend module, icon and cover become objects, and
-       the Version row is `uploading`;
+    5. the bundle, source archive, backend module, icon, cover and screenshots
+       become objects, and the Version row is `uploading`;
     6. a backend becomes script `app-<slug>-v<n>` (with the app's storage
        script uploaded once before);
     7. the Version is `ready`.
@@ -113,9 +113,18 @@ defmodule Comma.MiniApps.Deploys do
          :ok <- Bundle.inspect_source(path(files[:source])),
          {:ok, worker} <- worker(manifest, files[:worker]),
          {:ok, icon} <- icon(manifest, bundle, path(files[:bundle])),
-         {:ok, cover} <- cover(manifest, bundle, path(files[:bundle])) do
+         {:ok, cover} <- cover(manifest, bundle, path(files[:bundle])),
+         {:ok, screenshots} <- screenshots(manifest, bundle, path(files[:bundle])) do
       {:ok,
-       %{manifest: manifest, bundle: bundle, worker: worker, icon: icon, cover: cover, ctx: ctx}}
+       %{
+         manifest: manifest,
+         bundle: bundle,
+         worker: worker,
+         icon: icon,
+         cover: cover,
+         screenshots: screenshots,
+         ctx: ctx
+       }}
     else
       {:error, [_ | _] = errors} -> {:error, {:invalid, errors}}
       {:error, _} = error -> error
@@ -178,6 +187,43 @@ defmodule Comma.MiniApps.Deploys do
   end
 
   defp cover(_manifest, _bundle, _path), do: {:ok, nil}
+
+  defp screenshots(manifest, bundle, archive) do
+    Enum.reduce_while(manifest["screenshots"] || [], {:ok, []}, fn path, {:ok, images} ->
+      with true <- Map.has_key?(bundle.files, path),
+           {:ok, image} <- Bundle.read_file(archive, path, 2 * 1024 * 1024),
+           true <- screenshot_format?(image, Manifest.cover_type(path)) do
+        {:cont, {:ok, images ++ [image]}}
+      else
+        _ ->
+          {:halt,
+           {:error, ["screenshot #{path} must be a matching image in the bundle, at most 2 MiB"]}}
+      end
+    end)
+  end
+
+  defp screenshot_format?(<<137, 80, 78, 71, 13, 10, 26, 10, _::binary>>, "image/png"), do: true
+  defp screenshot_format?(<<255, 216, 255, _::binary>>, "image/jpeg"), do: true
+
+  defp screenshot_format?(<<"RIFF", _::binary-size(4), "WEBP", _::binary>>, "image/webp"),
+    do: true
+
+  defp screenshot_format?(_, _), do: false
+
+  defp store_screenshots(app, number, images) do
+    images
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {image, index}, :ok ->
+      case Blobs.put(
+             Blobs.screenshot_key(app.id, number, index),
+             image,
+             "application/octet-stream"
+           ) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
 
   defp new_version(app, ctx, checked) do
     Repo.transaction(fn ->
@@ -243,6 +289,7 @@ defmodule Comma.MiniApps.Deploys do
              ),
            :ok <-
              maybe_put(Blobs.icon_key(app.id, number), checked.icon, "application/octet-stream"),
+           :ok <- store_screenshots(app, number, checked.screenshots),
            :ok <-
              maybe_put(
                Blobs.cover_key(app.id, number),

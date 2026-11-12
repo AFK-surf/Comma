@@ -737,7 +737,8 @@ defmodule SalixAgent.AgentWorkspace do
     |> Enum.uniq()
   end
 
-  defp managed_write_ref(path, ref) do
+  @doc false
+  def managed_write_ref(path, ref) do
     with {:ok, event} <- prepare_write_ref(path, ref) do
       {:ok, Map.put(event, "prepared_blob_cleanup", true)}
     end

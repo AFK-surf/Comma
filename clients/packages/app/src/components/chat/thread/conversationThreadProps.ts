@@ -40,6 +40,12 @@ export type ConversationThreadProps = {
   freezeContentInlineSizeOnWindowResize?: boolean;
   groupId: string;
   messages: ChatMessage[];
+  /** The conversation has messages before the first of `messages`, which `onLoadEarlier` reads. */
+  hasEarlier?: boolean | undefined;
+  /** `onLoadEarlier` is reading them. */
+  loadingEarlier?: boolean | undefined;
+  /** Reads the messages before the first of `messages`; called when the reader reaches the top of the transcript. */
+  onLoadEarlier?: (() => unknown) | undefined;
   onDiscard: (clientRequestId: string) => void;
   /**
    * Opens a file card where no chat sidebar hosts the file preview, such as

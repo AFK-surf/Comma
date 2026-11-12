@@ -23,7 +23,7 @@ theorem queue_input_identity_groups {event normalized : Term} {keys before middl
     (normalizedRead : stringify ((event.get (b "payload")).default empty) before = .ok (normalized, middle))
     (keysRead : queueKeys event normalized (event.get (b "kind")) middle = .ok (keys, after)) :
     Command.inputIdentityGroups event before = .ok ([keys], after) := by
-  unfold Command.inputIdentityGroups
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups
   simp +decide only [kind]
   apply bind_ok_iff.mpr
   refine ⟨normalized, middle, normalizedRead, ?_⟩

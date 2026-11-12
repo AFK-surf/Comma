@@ -6,12 +6,16 @@ import Observation
 @MainActor @Observable
 final class AppNavigation {
     var tab: AppTab
+    /// The Task panel’s creation sheet, shared by its compact and Duo toolbar actions.
+    var newTaskOpen = false
+    /// Settings keeps one stack while its master list moves between the trailing column and the full shell.
+    var settingsPath: [SettingsRoute] = []
     /// Advances when the selected tab is tapped again; that tab pops to its root and scrolls to the top.
     private(set) var reselect: [AppTab: Int] = [:]
     var routerOpen: Bool
     /// An open Task's sheet is up, or on its way up, over the router chat and the tabs; minimized to its bar, it is not.
     var taskRaised = false
-    /// Task search is up over the tabs (`TaskSearchLayer`), opened from its button beside the Inbox tab.
+    /// Task search is up over the tabs (`TaskSearchLayer`), opened from Home’s search button.
     private(set) var searchOpen = false
     /// Advances when the router composer should take focus.
     private(set) var routerFocusRequest = 0

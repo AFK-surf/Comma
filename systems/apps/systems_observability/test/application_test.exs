@@ -25,6 +25,43 @@ defmodule SystemsObservability.ApplicationTest do
     refute SystemsRuntime.Proc.whereis(SystemsObservability.Histograms)
   end
 
+  test "a fresh node exposes sandbox and station Task counters at zero, and counts the first event" do
+    assert :ok = Application.stop(:systems_observability)
+    assert {:ok, _} = Application.ensure_all_started(:systems_observability)
+    await_reporter(20)
+
+    scrape = SystemsObservability.scrape()
+
+    for series <- [
+          ~s(salix_sandbox_start_duration_seconds_count{kind="create",outcome="failed"} 0),
+          ~s(salix_sandbox_start_duration_seconds_count{kind="wake",outcome="failed"} 0),
+          ~s(salix_sandbox_start_duration_seconds_bucket{kind="wake",outcome="ok",le="120"} 0),
+          ~s(salix_sandbox_ends_total{state="lost"} 0),
+          ~s(salix_station_tasks_stalled_total{kind="sandbox",phase="vm_not_ready"} 0),
+          ~s(salix_station_tasks_first_reply_seconds_count{kind="sandbox"} 0),
+          ~s(salix_station_tasks_lost_thread_total{kind="sandbox"} 0)
+        ] do
+      assert scrape =~ series
+    end
+
+    SystemsRuntime.Telemetry.execute([:salix_web, :sandbox, :end], %{}, %{state: "lost"})
+
+    SystemsRuntime.Telemetry.execute([:salix_web, :sandbox, :start], %{duration: 300_000}, %{
+      kind: :wake,
+      outcome: :failed
+    })
+
+    scrape = SystemsObservability.scrape()
+    assert scrape =~ ~s(salix_sandbox_ends_total{state="lost"} 1)
+    refute scrape =~ ~s(salix_sandbox_ends_total{state="lost"} 0)
+
+    assert scrape =~
+             ~s(salix_sandbox_start_duration_seconds_count{kind="wake",outcome="failed"} 1)
+
+    refute scrape =~
+             ~s(salix_sandbox_start_duration_seconds_count{kind="wake",outcome="failed"} 0)
+  end
+
   test "release telemetry applications can terminate without terminating the VM" do
     systems_root = Path.expand("../../..", __DIR__)
 

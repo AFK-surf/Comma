@@ -29,6 +29,8 @@ export interface PluginResource {
   id: string;
   name: string;
   icon?: ReactNode;
+  /** A second line under the name, such as the resource's state. */
+  detail?: ReactNode;
   /** A control for this resource, such as reconnecting the account behind it. */
   trailingContent?: ReactNode;
 }
@@ -898,6 +900,8 @@ export interface PluginCatalogProps {
   onPluginOpen?: PluginListItemProps["onOpen"];
   onSearchQueryChange?: (query: string) => void;
   pendingPluginIds?: ReadonlySet<string>;
+  /** Shown on the Plugins tab after what is installed; a search finds it by its keywords. */
+  section?: { content: ReactNode; keywords: readonly string[] };
   /** Workspace skills. Supplying them adds the Skills tab beside the title. */
   skills?: readonly PluginSkillDefinition[];
   /** Loading/error content replaces the Skills results, never the Plugins tab. */
@@ -965,6 +969,7 @@ export const PluginCatalog = ({
   onPluginOpen,
   onSearchQueryChange,
   pendingPluginIds = new Set(),
+  section,
   skills,
   skillsStatus,
   skillCategories = [],
@@ -1042,6 +1047,13 @@ export const PluginCatalog = ({
       ),
     [activeSkillCategoryId, skills, normalizedQuery]
   );
+  const showsSection =
+    !showsSkills &&
+    section !== undefined &&
+    (normalizedQuery.length === 0 ||
+      section.keywords.some((keyword) =>
+        keyword.toLocaleLowerCase().includes(normalizedQuery)
+      ));
   const hasResults = showsSkills
     ? filteredSkills.length > 0
     : filteredInstalledPlugins.length > 0 || filteredCategories.length > 0;
@@ -1263,6 +1275,7 @@ export const PluginCatalog = ({
                 </div>
               </section>
             ) : null}
+            {showsSection ? section.content : null}
             {(showsSkills ? [] : filteredCategories).map((category) => (
               <PluginCategorySection
                 category={category}
@@ -1308,9 +1321,16 @@ const matchesPlugin = (plugin: PluginDefinition, query: string) => {
 export const PluginResourceRow = ({ resource }: { resource: PluginResource }) => (
   <li className="flex items-center gap-md rounded-xl px-md py-sm">
     <PluginArtwork icon={resource.icon} size="sm" />
-    <span className="min-w-0 flex-1 truncate text-sm text-secondary">
-      {resource.name}
-    </span>
+    {resource.detail ? (
+      <span className="flex min-w-0 flex-1 flex-col gap-xxs text-sm">
+        <span className="truncate text-secondary">{resource.name}</span>
+        <span className="text-quaternary">{resource.detail}</span>
+      </span>
+    ) : (
+      <span className="min-w-0 flex-1 truncate text-sm text-secondary">
+        {resource.name}
+      </span>
+    )}
     {resource.trailingContent}
   </li>
 );

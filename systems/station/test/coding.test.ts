@@ -1,6 +1,6 @@
 // Coding Sessions (src/tasks/coding.ts): a Session invited to a Salix Task with a repository works in a worktree of
-// it on its session branch, starts no turn before the checkout is made, pushes after its turns, and answers Salix's
-// task.diff, task.save and task.pull_request. "GitHub" is a local bare repository; gh is a script on PATH.
+// it on its session branch, starts no turn before the checkout is made, and answers Salix's task.diff and
+// task.pull_request. "GitHub" is a local bare repository; gh is a script on PATH.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -54,10 +54,11 @@ test("the repository of a Task's start is checked", () => {
   assert.equal(repoOf({}), null);
 });
 
-test("a coding Session works in a checkout on its branch, made before its first turn, and pushes after its turns", async () => {
+test("a coding Session prepares its checkout before its first turn and leaves local work for the agent to publish", async (t) => {
   const { root, bare } = origin();
   const b = new Rig();
-  coding(b, root);
+  const c = coding(b, root);
+  const pushes = t.mock.method(c, "push");
   const tasks = new Tasks(b.hub, () => null);
   b.hub.setTasks(tasks);
   tasks.attachHost("salix", async (r: Json) => (r.method === "task.hello" ? {} : { seq: 2 }));
@@ -75,30 +76,29 @@ test("a coding Session works in a checkout on its branch, made before its first 
   assert.equal(git(workspace, "config", "--get", "remote.origin.partialclonefilter"), "blob:none");
   assert.equal(git(workspace, "merge-base", "HEAD", "origin/main"), git(bare, "rev-parse", "main"));
   assert.equal(b.claude.last().options.cwd, workspace);
-  // The temporary sandbox defaults to committing and pushing, with explicit user overrides.
-  const told = b.claude.last().options.instructions;
-  assert.match(told, /github\.com\/acme\/api on the branch comma\/t1/);
-  assert.match(told, /By default, commit your changes and push comma\/t1 before you end a turn in which you changed files/);
-  assert.match(told, /Follow explicit user instructions when they differ, including requests to leave changes uncommitted, use another branch, or force-push/);
-
   // Where it stands, as task.status says it.
   writeFileSync(join(workspace, "README.md"), "hello world\n");
   const status = await tasks.handle("salix", { method: "task.status", task: "cnv_1" });
   assert.equal(status.dirty, true);
 
-  // The agent commits; its turn ends; the branch is pushed.
+  // The agent commits one change and leaves another uncommitted. Ending the turn preserves both decisions.
   git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-am", "fix the greeting");
+  const head = git(workspace, "rev-parse", "HEAD");
+  const remote = git(bare, "show-ref", "--heads");
+  writeFileSync(join(workspace, "draft.txt"), "unfinished\n");
   b.claude.last().complete();
   await settle();
-  assert.equal(await b.hub.coding!.pushed(workspace), true);
-  assert.equal(git(bare, "rev-parse", "comma/t1"), git(workspace, "rev-parse", "HEAD"));
+  await Promise.all(pushes.mock.calls.map((call) => call.result));
+  assert.equal(git(bare, "show-ref", "--heads"), remote);
+  assert.equal(git(workspace, "rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(workspace, "draft.txt"), "utf8"), "unfinished\n");
   const after = await tasks.handle("salix", { method: "task.status", task: "cnv_1" });
-  assert.equal(after.dirty, false);
-  assert.equal(after.unpushed, false);
+  assert.equal(after.dirty, true);
+  assert.equal(after.unpushed, true);
   await b.close();
 });
 
-test("a Task that continues a pull request works on its head branch, is told so, and pushes to it", async () => {
+test("a Task that continues a pull request checks out its head branch and lets the agent push to it", async () => {
   const { root, bare } = origin();
   // The pull request's head branch, one commit past main.
   const seed = join(root, "seed");
@@ -121,18 +121,16 @@ test("a Task that continues a pull request works on its head branch, is told so,
   await b.hub.coding!.checkout(session, workspace, repoOf(prStart)!);
   await settle();
   assert.equal(readFileSync(join(workspace, "README.md"), "utf8"), "hello pr\n", "goes on from the pull request's branch");
-  assert.match(b.claude.last().options.instructions, /feature\/x is the head branch of pull request #7: what you push to it updates that pull request/);
-
   writeFileSync(join(workspace, "README.md"), "hello review\n");
   git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-am", "address review");
+  git(workspace, "push", "origin", "HEAD:feature/x");
   b.claude.last().complete();
   await settle();
-  assert.equal(await b.hub.coding!.pushed(workspace), true);
   assert.equal(git(bare, "rev-parse", "feature/x"), git(workspace, "rev-parse", "HEAD"));
   await b.close();
 });
 
-test("task.diff, task.save and task.pull_request answer about the Session's worktree", async () => {
+test("task.diff reads local changes and task.pull_request publishes the agent's commits", async () => {
   const { root, bare } = origin();
   const b = new Rig();
   const c = coding(b, root);
@@ -155,10 +153,9 @@ test("task.diff, task.save and task.pull_request answer about the Session's work
   assert.equal(files["new.txt"].status, "added");
   assert.equal(files["new.txt"].additions, 2);
 
-  // Saved: committed as work in progress and pushed.
-  const saved = await tasks.handle("salix", { method: "task.save", task: "cnv_2" });
-  assert.deepEqual(saved, { dirty: false, unpushed: false });
-  assert.match(git(bare, "log", "-1", "--format=%s", "comma/t2"), /Work in progress/);
+  // The agent commits the changes before it asks for a pull request.
+  git(workspace, "add", "--all");
+  git(workspace, "commit", "-m", "Fix the greeting");
 
   // A pull request, through gh.
   const bin = mkdtempSync(join(tmpdir(), "gh-"));
@@ -169,6 +166,7 @@ test("task.diff, task.save and task.pull_request answer about the Session's work
   try {
     const pr = await tasks.handle("salix", { method: "task.pull_request", task: "cnv_2", title: "Fix it", draft: true });
     assert.deepEqual(pr, { url: "https://github.com/acme/api/pull/7", number: 7, title: "Fix it" });
+    assert.equal(git(bare, "rev-parse", "comma/t2"), git(workspace, "rev-parse", "HEAD"));
     const args = readFileSync(join(bin, "args"), "utf8");
     assert.match(args, /pr create --repo acme\/api --head comma\/t2 --base main --title Fix it/);
     assert.match(args, /--draft/);
@@ -264,6 +262,39 @@ test("task.diff lists the branch's commits and reads one commit, or what is not 
   await b.close();
 });
 
+test("a file given with a coding Task's first Message is put in its workspace after the checkout is made", async (t) => {
+  const { root } = origin();
+  const b = new Rig();
+  const c = coding(b, root);
+  // The checkout waits for the test's word, so the file comes while it is being made.
+  let go!: () => void;
+  const gate = new Promise<void>((resolve) => (go = resolve));
+  const checkout = c.checkout.bind(c);
+  t.mock.method(c, "checkout", (...args: Parameters<Coding["checkout"]>) => gate.then(() => checkout(...args)));
+  const tasks = new Tasks(b.hub, () => null);
+  b.hub.setTasks(tasks);
+  const bytes = Buffer.from("png bytes");
+  tasks.attachHost("salix", async (r: Json) =>
+    r.method === "task.file" ? { size: bytes.length, offset: r.offset, data: bytes.subarray(r.offset).toString("base64") } : r.method === "task.hello" ? {} : { seq: 2 },
+  );
+  const { session } = await tasks.handle("salix", { method: "task.invite", task: "cnv_f", start: start("comma/tf") });
+  await tasks.handle("salix", {
+    method: "task.put", task: "cnv_f", through: 1,
+    messages: [{ seq: 1, author: { kind: "person", id: "ann@example.com" }, text: "find this image", files: [{ index: 0, name: "image.png", size: bytes.length }], declared: null, at: 0 }],
+  });
+  await settle();
+  const workspace = b.store.getSession(session)!.workspace;
+  assert.equal(existsSync(join(workspace, "uploads")), false, "nothing in the workspace before the checkout");
+  go();
+  await b.hub.prepared(session);
+  await settle();
+  assert.equal(readFileSync(join(workspace, "README.md"), "utf8"), "hello\n", "the checkout is made");
+  const [said] = b.said(b.store.sessionThreads(session)[0]!.thread.id);
+  assert.deepEqual(readFileSync(said!.attachments[0]!.path), bytes);
+  assert.equal(b.claude.last().options.cwd, workspace);
+  await b.close();
+});
+
 test("a new sandbox of the Task goes on from the branch the last one pushed", async () => {
   const { root, bare } = origin();
   const first = new Rig();
@@ -272,7 +303,9 @@ test("a new sandbox of the Task goes on from the branch the last one pushed", as
   mkdirSync(w1, { recursive: true });
   await c1.checkout("s1", w1, repoOf(start("comma/t3"))!);
   writeFileSync(join(w1, "x.txt"), "x\n");
-  await c1.save(w1);
+  git(w1, "add", "--all");
+  git(w1, "commit", "-m", "Add x");
+  git(w1, "push", "origin", "HEAD:comma/t3");
 
   const second = new Rig();
   const c2 = coding(second, root);

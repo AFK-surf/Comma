@@ -34,7 +34,7 @@ test("a turn is told by how it ended", () => {
 
 test("a chat's people hear of its turns and of each other, once, gathered", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "notify-"));
-  const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
+  const store = Store.open(join(dir, "station.db"), join(dir, "archive"));
   const reader = openStore(dir);
   // What the notifier asks of the readers, followed: the notices it gathers are all made once none is left.
   let asking = 0;

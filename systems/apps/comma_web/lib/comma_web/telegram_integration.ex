@@ -5,6 +5,8 @@ defmodule CommaWeb.TelegramIntegration do
   commit binding, activate; no atomic cross-store rollback is claimed.
   """
 
+  require Logger
+
   alias Comma.{TelegramLinks, Workspaces}
   alias CommaWeb.{TelegramBot, TelegramCommands, TelegramOIDC, TelegramTaskCards}
   alias SalixIM.{ProviderConnects, ProviderHTTP}
@@ -61,9 +63,24 @@ defmodule CommaWeb.TelegramIntegration do
   end
 
   def complete_connect(code, state) do
-    with :ok <- require_bot(),
+    # A kept-alive connection serves later requests from this process.
+    metadata = Logger.metadata()
+
+    try do
+      run_connect(code, state)
+    after
+      Logger.reset_metadata(metadata)
+    end
+  end
+
+  defp run_connect(code, state) do
+    with _ = Logger.metadata(connect_step: "bot"),
+         :ok <- require_bot(),
+         _ = Logger.metadata(connect_step: "oidc"),
          {:ok, result} <- TelegramOIDC.complete(code, state),
+         _ = Logger.metadata(connect_step: "verify"),
          {:ok, _} <- TelegramBot.verify_private_chat_access(result.identity["id"]),
+         _ = Logger.metadata(connect_step: "link"),
          {:ok, link} <-
            link_identity(result.user, result.workspace, result.identity, result.attempt) do
       _ =
@@ -72,9 +89,34 @@ defmodule CommaWeb.TelegramIntegration do
           "Telegram is now connected to Comma workspace “#{result.workspace["name"]}”."
         )
 
+      # A Router that started this attempt from the chat is waiting for it.
+      CommaWeb.ChannelLinkTools.linked(result.workspace, "telegram", %{
+        "telegram_username" => result.identity["username"]
+      })
+
       {:ok, Map.put(TelegramLinks.public_link(link), "workspace_id", result.workspace["id"])}
+    else
+      {:error, reason} = error ->
+        Logger.warning("Telegram connect failed",
+          event: "telegram_connect_failed",
+          reason_class: connect_failure_class(reason)
+        )
+
+        error
     end
   end
+
+  # Bounded classes only: a provider's reason can carry response bytes.
+  defp connect_failure_class(reason) when is_atom(reason), do: reason
+
+  defp connect_failure_class({:telegram_http_error, status}) when is_integer(status),
+    do: "telegram_http_error_#{status}"
+
+  defp connect_failure_class(reason) when is_tuple(reason) and is_atom(elem(reason, 0)),
+    do: elem(reason, 0)
+
+  defp connect_failure_class(reason) when is_struct(reason), do: reason.__struct__
+  defp connect_failure_class(_reason), do: :other
 
   def handle_webhook(update) when is_map(update) do
     with :ok <- require_bot(),

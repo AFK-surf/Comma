@@ -55,15 +55,27 @@ defmodule SalixMeet.Runtime do
     now = timestamp(opts)
 
     with {:ok, meeting_agent} <- ensure_for_group(tenant_id, group_id, opts) do
-      update_meeting_agent(meeting_agent, fn rec ->
-        rec
-        |> Map.put("status", "running")
-        |> Map.put("started_at", now)
-        |> Map.put("heartbeat_at", now)
-        |> Map.put("updated_at", now)
-      end)
+      if recently_started?(meeting_agent, now) do
+        {:ok, meeting_agent}
+      else
+        update_meeting_agent(meeting_agent, fn rec ->
+          rec
+          |> Map.put("status", "running")
+          |> Map.put("started_at", now)
+          |> Map.put("heartbeat_at", now)
+          |> Map.put("updated_at", now)
+        end)
+      end
     end
   end
+
+  # Meetings that start together each start the Group's meeting agent; one
+  # write within a minute is enough, so a burst does not race on the record.
+  defp recently_started?(%{"status" => "running", "heartbeat_at" => at}, now)
+       when is_integer(at),
+       do: now - at < 60
+
+  defp recently_started?(_meeting_agent, _now), do: false
 
   @doc "Record a meeting actor heartbeat."
   @spec heartbeat(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -175,6 +187,9 @@ defmodule SalixMeet.Runtime do
         err
     end
   end
+
+  defp dispatch_chat(meeting_id, text, %{"runtime_source" => "lark_bot"} = state, message_id),
+    do: SalixMeet.LarkBot.send_chat(meeting_id, state, text, message_id)
 
   defp dispatch_chat(meeting_id, text, state, message_id) do
     MeetingDispatch.send_chat(%{

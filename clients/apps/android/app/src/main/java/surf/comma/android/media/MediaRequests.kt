@@ -26,13 +26,17 @@ sealed interface MediaSource {
     ) : MediaSource {
         init { require(conversationId.isNotBlank() && messageId.isNotBlank() && index >= 0) }
     }
+    /** A file uploaded to the group, of any type: an image shows from the server's checked copy, any other plays or downloads. */
     data class UploadedFile(val path: String) : MediaSource {
-        init { require(validUploadedImagePath(path)) { "Not an uploaded image path" } }
+        init { require(validUploadedPath(path)) { "Not an uploaded file path" } }
     }
 }
 
-fun validUploadedImagePath(path: String): Boolean = path.length <= 4096 &&
-    Regex("/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\\.(png|jpe?g|gif|webp)", RegexOption.IGNORE_CASE).matches(path)
+fun validUploadedPath(path: String): Boolean = path.length <= 4096 &&
+    Regex("/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+").matches(path)
+
+fun validUploadedImagePath(path: String): Boolean = validUploadedPath(path) &&
+    Regex(".+\\.(png|jpe?g|gif|webp)", RegexOption.IGNORE_CASE).matches(path)
 
 data class MediaImage(val source: MediaSource, val fileName: String?, val mimeType: String?, val dimensions: ImageDimensions? = null) {
     init { require(InlineMediaPolicy.classify(fileName, mimeType) == InlineMediaKind.IMAGE) }

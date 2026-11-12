@@ -1584,6 +1584,32 @@ p.bft-health-reasons {
   gap: 14px;
 }
 
+/* An API key's named values: a hairline list of rows, then "Add a field". */
+.bft-secret-fields {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.bft-secret-fields > ul {
+  align-self: stretch;
+}
+
+.bft-secret-field {
+  gap: 12px;
+  padding: 6px 0;
+}
+
+/* Numbered steps in a dialog (hardware setup). */
+.bft-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style: decimal;
+}
+
 .bft-form-field {
   width: 100%;
 }
@@ -2082,6 +2108,11 @@ p.bft-health-reasons {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* A labelled field's button sits on the field's line, not on its label. */
+.bft-route-connect-field {
+  align-items: flex-end;
 }
 
 @media (max-width: 1099px) {
@@ -3316,6 +3347,82 @@ p.bft-health-reasons {
   font-size: 12px;
 }
 
+.bft-connect-chats {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  margin: 8px 0 0;
+}
+
+.bft-connect-chats-count {
+  margin-left: 8px;
+  color: var(--bft-text-4);
+  font-weight: 400;
+}
+
+.bft-connect-chats > legend {
+  margin-bottom: 8px;
+}
+
+.bft-connect-chats-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bft-connect-chats-tools .bft-filter {
+  height: 32px;
+  width: auto;
+  flex: 1;
+  margin-left: 0;
+}
+
+.bft-connect-chats-list {
+  border: 1px solid var(--bft-line);
+  border-radius: 6px;
+}
+
+.bft-connect-chats-list > .bft-setting-row-sub {
+  display: block;
+  padding: 10px 12px;
+}
+
+.bft-connect-chats-all {
+  display: flex;
+  height: 40px;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--bft-line);
+}
+
+.bft-connect-chats-scroll {
+  max-height: 400px;
+}
+
+.bft-connect-chat {
+  display: flex;
+  min-width: 0;
+  height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+}
+
+.bft-connect-chat + .bft-connect-chat {
+  border-top: 1px solid var(--bft-line);
+}
+
+.bft-connect-chat-id {
+  flex: none;
+  color: var(--bft-text-4);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .bft-connect-url {
   display: flex;
   min-width: 0;
@@ -3842,4 +3949,22 @@ p.bft-health-reasons {
 
 .bft-daily-brief-number {
   font-variant-numeric: tabular-nums;
+}
+
+/* A section's two header actions, side by side. */
+.bft-actions {
+  display: inline-flex;
+  gap: var(--spacing-md);
+}
+
+/* The QR code of a Lark app made by a scan, with its link under it. */
+.bft-lark-scan {
+  align-items: center;
+  text-align: center;
+}
+
+.bft-lark-scan-code {
+  margin: 0;
+  background: #fff;
+  border-radius: var(--radius-md);
 }

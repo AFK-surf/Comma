@@ -1,6 +1,6 @@
 /**
  * The synchronicity release Comma ships. One node daemon per install, bundled
- * the way salix-connect is: a single static binary under
+ * as a single static binary under
  * `dist/native/<platform>/<arch>/`, fetched from the GitHub release rather
  * than built, because the source tree is not expected to be present.
  *

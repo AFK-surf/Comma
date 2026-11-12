@@ -56,7 +56,7 @@ theorem transcriptRuntime_checked_ledger_absent {s e t key : Term} {groups : Lis
     (different : ∀ inserted ∈ groups.flatten, (inserted == key) = false)
     (absent : IdentityAbsent (s.get (a "input_dedupe")) key)
     (h : transcriptRuntime s e j = .ok (t, r)) : IdentityAbsent (t.get (a "input_dedupe")) key := by
-  unfold Command.inputIdentityGroups at checked
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups at checked
   simp +decide only [kind] at checked
   cases queued : e.get (b "from_queue") == a "true" <;>
     cases provider : e.get (b "from_context_provider") == a "true"

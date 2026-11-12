@@ -19,12 +19,14 @@ import { Text } from "@comma/ui/components/Text";
 import { toast } from "@comma/ui/components/toast";
 import {
   useSessionHostController,
+  useSessionKeptAccounts,
   useSessionLifecycleSnapshot,
 } from "../session/react";
 import { useCall, useTopic } from "@comma/core-client";
 import { supportedLocales } from "@comma/i18n";
 import { CommaAuthContext, type CommaAuthContextValue } from "./auth-context";
 import { LoginScreen } from "./LoginScreen";
+import { CaptchaChallenge } from "./CaptchaChallenge";
 import { miniAppLinkTokenFromLocation } from "../miniAppLink";
 import type { SessionHostController } from "../session/controller";
 import {
@@ -133,6 +135,29 @@ export function CommaAuthGate({
     });
   }, [controller]);
 
+  // The other accounts kept signed in on this device (Electron): switching to one is asked for here, so the switch is
+  // announced as this window's own, not as one from another window.
+  const keptAccounts = useSessionKeptAccounts(controller);
+  const accountsController = controller.accounts;
+  const switchingToRef = useRef<string | undefined>(undefined);
+  const otherAccounts = useMemo(() => {
+    if (!accountsController) return undefined;
+    return {
+      list: keptAccounts,
+      add: () => accountsController.add(),
+      switchTo: async (userId: string) => {
+        switchingToRef.current = userId;
+        try {
+          await accountsController.switchTo(userId);
+        } catch (error) {
+          switchingToRef.current = undefined;
+          throw error;
+        }
+      },
+      signOut: (userId: string) => accountsController.signOut(userId),
+    };
+  }, [accountsController, keptAccounts]);
+
   const sessionTransport = controller.getProductTransport();
   // The account's profile as the core keeps it (every surface that saves it shows the new one).
   const call = useCall();
@@ -187,8 +212,14 @@ export function CommaAuthGate({
     }
     const previous = previousUserIdRef.current;
     previousUserIdRef.current = signedInUserId;
+    const asked = switchingToRef.current === signedInUserId;
+    switchingToRef.current = undefined;
     if (previous !== undefined && previous !== signedInUserId && signedInEmail) {
-      toast.info(messages.auth_account_switched({ email: signedInEmail }));
+      toast.info(
+        asked
+          ? messages.auth_account_switched_to({ email: signedInEmail })
+          : messages.auth_account_switched({ email: signedInEmail })
+      );
     }
   }, [messages, signedInEmail, signedInUserId, snapshot.phase]);
 
@@ -214,6 +245,7 @@ export function CommaAuthGate({
       sessionSignal: sessionTransport.signal,
       sessionTransport,
       signOut,
+      ...(otherAccounts ? { otherAccounts } : {}),
       userId: snapshot.principal.userId,
       ...(userDisplayName ? { userDisplayName } : {}),
       userEmail: snapshot.principal.email,
@@ -223,6 +255,7 @@ export function CommaAuthGate({
     guest,
     isGuest,
     messages,
+    otherAccounts,
     profile,
     sessionTransport,
     signOut,
@@ -287,7 +320,12 @@ export function CommaAuthGate({
   }
 
   if (signedOutFallback !== undefined) {
-    return signedOutFallback;
+    return (
+      <>
+        {signedOutFallback}
+        <CaptchaChallenge authenticator={controller.authenticator} />
+      </>
+    );
   }
 
   return (
@@ -299,12 +337,21 @@ export function CommaAuthGate({
           ? { guestHandoffNotice: messages.auth_guest_handoff_notice() }
           : {})}
         appLinkPending={miniAppLinkTokenFromLocation(window.location) !== undefined}
+        {...(otherAccounts && otherAccounts.list.length > 0
+          ? {
+              keptAccounts: otherAccounts.list.map((account) => ({
+                email: account.email,
+                continue: () => otherAccounts.switchTo(account.userId),
+              })),
+            }
+          : {})}
         revocationPending={snapshot.cleanup.revocation === "pending"}
         {...(oauthResumePending
           ? { oauthResumeNotice: messages.auth_oauth_continue_notice() }
           : {})}
       />
       {localManagementEntry}
+      <CaptchaChallenge authenticator={controller.authenticator} />
     </>
   );
 }
@@ -331,7 +378,7 @@ function ConnectionRecovery({ controller }: { controller: SessionHostController 
       <main aria-busy="true" className="app-login-shell">
         <div className="app-login-container">
           <section
-            className="app-login-panel"
+            className="app-login-panel app-session-recovery-panel"
             aria-label={messages.auth_session_status()}
           >
             <output className="app-login-title" aria-live="polite">
@@ -347,7 +394,7 @@ function ConnectionRecovery({ controller }: { controller: SessionHostController 
     <main className="app-login-shell">
       <div className="app-login-container">
         <section
-          className="app-login-panel"
+          className="app-login-panel app-session-recovery-panel"
           aria-label={messages.auth_session_status()}
         >
           <Text as="h1" weight="semibold" className="app-login-title">
@@ -381,7 +428,7 @@ function SessionRecoveryScreen({
     <main className="app-login-shell">
       <div className="app-login-container">
         <section
-          className="app-login-panel"
+          className="app-login-panel app-session-recovery-panel"
           aria-label={messages.auth_session_status()}
         >
           <Text as="h1" weight="semibold" className="app-login-title">

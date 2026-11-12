@@ -275,11 +275,11 @@ it("freezes the deletion target across a late detail read and keeps the adjacent
   await t.user.click(await actions());
   await t.user.click(await screen.findByRole("menuitem", { name: "Delete Shell" }));
   releaseDetail();
-  const dialog = await screen.findByRole("dialog", { name: "Delete Shell" });
+  const dialog = await screen.findByRole("dialog", { name: "Delete Named Shell A" });
   await waitFor(() => expect(dialog).toHaveTextContent("Named Shell A"));
-  await t.user.click(within(dialog).getByRole("button", { name: "Delete workload" }));
+  await t.user.click(within(dialog).getByRole("button", { name: "Delete" }));
   expect(t.called("compute.delete")).toEqual([
-    { workspace, id: "shell_A", generation: 1 },
+    { workspace, id: "shell_A", generation: 1, confirmLegacy: true },
   ]);
   expect(state.workloads[1]!.deletion).toBeNull();
   await waitFor(() => expect(status(/Deleting/)).toBeDefined());
@@ -299,36 +299,43 @@ it("names the deletion of a retired External Worker Workload without calling it 
   await t.user.click(await actions());
   expect(screen.queryByRole("menuitem", { name: "Delete Shell" })).toBeNull();
   await t.user.click(await screen.findByRole("menuitem", { name: "Delete workload" }));
-  const dialog = await screen.findByRole("dialog", { name: "Delete workload" });
+  const dialog = await screen.findByRole("dialog", { name: "Delete Worker A" });
   expect(dialog).not.toHaveTextContent("Shell");
-  await t.user.click(within(dialog).getByRole("button", { name: "Delete workload" }));
+  await t.user.click(within(dialog).getByRole("button", { name: "Delete" }));
   expect(t.called("compute.delete")).toEqual([
-    { workspace, id: "worker_A", generation: 1 },
+    { workspace, id: "worker_A", generation: 1, confirmLegacy: true },
   ]);
 });
 
-it("says the node name is unavailable only for a Shell whose location is unknown", async () => {
+it("identifies a known device in deletion confirmation and omits unavailable location", async () => {
   const [onMac, elsewhere] = namedShells();
   const state: State = {
-    workloads: [onMac, { ...elsewhere, location: null } as unknown as ComputeWorkload],
+    workloads: [
+      { ...onMac, location: { provider: "agent_vmm", device_id: "dev_studio" } },
+      { ...elsewhere, location: null } as unknown as ComputeWorkload,
+    ],
     creation: null,
     accepted: null,
   };
-  const t = await openCompute(state);
+  const t = await openCompute(state, {}, [
+    { device_id: "dev_studio", name: "Studio Mac" } as DevicesValue["devices"][number],
+  ]);
   const remove = async (index: number) => {
     await t.user.click(
       (await content().findAllByRole("button", { name: /Node actions$/ }))[index]!
     );
     await t.user.click(await screen.findByRole("menuitem", { name: "Delete Shell" }));
-    return screen.findByRole("dialog", { name: "Delete Shell" });
+    return screen.findByRole("dialog", {
+      name: `Delete Shell ${index === 0 ? "A" : "B"}`,
+    });
   };
   const known = await remove(0);
-  expect(known).toHaveTextContent("Location: Own device.");
+  expect(known).toHaveTextContent("Location: Studio Mac.");
   expect(known).not.toHaveTextContent("The execution node name is unavailable.");
   await t.user.click(within(known).getByRole("button", { name: "Cancel" }));
   const unknown = await remove(1);
-  expect(unknown).toHaveTextContent("Location unknown");
-  expect(unknown).toHaveTextContent("The execution node name is unavailable.");
+  expect(unknown).not.toHaveTextContent("Location:");
+  expect(unknown).not.toHaveTextContent("The execution node name is unavailable.");
 });
 
 it("says the Mac is not connected when the workspace has no connected node for a new Shell", async () => {
@@ -375,7 +382,7 @@ it("names the device of a ready service from the devices list", async () => {
   expect(content().queryByText(/not identified/)).toBeNull();
 });
 
-it("says why each workload is not ready, and offers Retry only when it does not retry by itself", async () => {
+it("names actionable workload problems and offers Retry only where the server allows it", async () => {
   const reasons = {
     capacity_unavailable: "The device does not have enough space or resources",
     image_unavailable: "Cannot prepare the runtime image",
@@ -386,13 +393,15 @@ it("says why each workload is not ready, and offers Retry only when it does not 
   const workloads = Object.keys(reasons).map((code, index) =>
     shell(`w_${code}`, {
       name: `W ${code}`,
-      phase: "starting",
+      phase: "action_required",
       generation: 3,
       location: { provider: "agent_vmm" },
       problem: {
         code: code as keyof typeof reasons,
-        retryable: index !== 0,
+        // "other" also needs action, but its business owner recovers it.
+        retryable: index !== 0 && code !== "other",
       },
+      actions: { rename: true, delete: false, retry: index === 0 },
     })
   );
   const t = await openCompute(
@@ -403,7 +412,7 @@ it("says why each workload is not ready, and offers Retry only when it does not 
     (await content().findByRole("button", { name: `W ${code}` })).parentElement!;
   for (const [code, reason] of Object.entries(reasons))
     expect(await row(code)).toHaveTextContent(reason);
-  // Only the problem that does not retry by itself has the button.
+  // Only the Workload the server lets a member retry has the button.
   expect(content().getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   await t.user.click(
     within(await row("capacity_unavailable")).getByRole("button", { name: "Retry" })

@@ -16,7 +16,7 @@ defmodule Comma.WorkspaceBootstrapTest do
     assert first["status"] == "provisioning"
     assert first["workspace"]["status"] == "provisioning"
     assert second["workspace"]["id"] == workspace_id
-    assert Repo.get!(Workspace, workspace_id).vm == %{"enabled" => true}
+    assert is_nil(Repo.get!(Workspace, workspace_id).vm)
 
     assert Repo.aggregate(
              from(workspace in Workspace, where: workspace.owner_user_id == ^user["id"]),

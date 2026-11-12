@@ -248,6 +248,8 @@ test("settings save the chosen calendars, then pause", async ({ page }) => {
       enabled: true,
       connect_id: "slack-main",
       channel_id: "C-TEAM",
+      calendar_scope: "selected",
+      calendar_source: "google",
       calendar_selections: [{ account_id: "ca-1", calendar_id: "eng@acme.test" }],
       preparation_lead_minutes: 15,
       research_enabled: true,
@@ -258,9 +260,13 @@ test("settings save the chosen calendars, then pause", async ({ page }) => {
       series: [],
     },
   });
-  expect(requests.some((request) => request.search === "?connect_id=slack-main")).toBe(
-    true
-  );
+  expect(
+    requests.some(
+      (request) =>
+        request.search ===
+        "?connect_id=slack-main&calendar_scope=selected&calendar_source=google"
+    )
+  ).toBe(true);
 
   await page.goto("/orgs/acme/meetings/settings");
   await page.getByRole("button", { name: "Pause preparation" }).click();
@@ -270,13 +276,135 @@ test("settings save the chosen calendars, then pause", async ({ page }) => {
   });
 });
 
+test("every member's own calendars save with preparation sent to organizers", async ({
+  page,
+}) => {
+  const requests = await openMeetings(
+    page,
+    "/orgs/acme/meetings/settings",
+    (request) => {
+      if (request.path === "/orgs/acme/meetings/p-1") return ok(overview());
+      if (request.path === "/orgs/acme/meetings/p-1/catalog")
+        return ok(
+          request.search.includes("calendar_scope=members")
+            ? { ...catalog, calendars: [], member_accounts: 214 }
+            : catalog
+        );
+      if (request.method === "PUT") return ok({ settings: request.body });
+      return undefined;
+    }
+  );
+
+  await page.getByRole("button", { name: /Calendar source/ }).click();
+  await page.getByRole("option", { name: "Every member's own calendars" }).click();
+  await expect(page.getByText("214 member Google accounts connected")).toBeVisible();
+  await expect(page.getByText("Product calendar", { exact: true })).toBeHidden();
+  await expect(
+    page.getByText("Post the preparation notice in the team channel")
+  ).toBeHidden();
+
+  await page
+    .getByText("Send join notices and minutes to the organizer in a DM")
+    .click();
+  // Joining is a switch of its own for members' calendars too, but one of
+  // joining and the organizer's preparation stays on.
+  const autojoin = page.getByRole("checkbox", {
+    name: "Automatically join and record the meeting",
+  });
+  const autojoinLabel = page.getByText("Automatically join and record the meeting");
+  await expect(autojoin).toBeChecked();
+  await autojoinLabel.click();
+  await expect(autojoin).not.toBeChecked();
+  await page.getByRole("button", { name: "Save and enable" }).click();
+  await expect(
+    page.getByText(
+      "Turn on automatic joining or the preparation message to the organizer."
+    )
+  ).toBeVisible();
+  expect(requests.some((request) => request.method === "PUT")).toBe(false);
+  await autojoinLabel.click();
+
+  await page
+    .getByText("Send each meeting's preparation to its organizer in a DM")
+    .click();
+  await page.getByRole("button", { name: "Save and enable" }).click();
+  await expect(page).toHaveURL(/\/orgs\/acme\/meetings\?project=p-1$/);
+
+  expect(
+    requests.filter((request) => request.method === "PUT").at(-1)?.body
+  ).toMatchObject({
+    enabled: true,
+    connect_id: "slack-main",
+    channel_id: "C-TEAM",
+    calendar_scope: "members",
+    delivery: "organizer",
+    calendar_selections: [],
+    autojoin: true,
+    channel_notice: false,
+    personal_preparation: true,
+    preparation_lead_minutes: 15,
+    research_enabled: true,
+  });
+});
+
+test("a Slack preparation saves without a team channel only when every meeting still reaches someone", async ({
+  page,
+}) => {
+  const requests = await openMeetings(
+    page,
+    "/orgs/acme/meetings/settings",
+    (request) => {
+      if (request.path === "/orgs/acme/meetings/p-1")
+        return ok(overview({ channel_notice: false }));
+      if (request.path === "/orgs/acme/meetings/p-1/catalog") return ok(catalog);
+      if (request.method === "PUT") return ok({ settings: request.body });
+      return undefined;
+    }
+  );
+
+  // A saved channel is cleared again from the same field.
+  await page.getByRole("button", { name: /Team channel/ }).click();
+  await page.getByRole("option", { name: "No team channel" }).click();
+  const save = page.getByRole("button", { name: "Save and enable" });
+  await save.click();
+  await expect(
+    page.getByText(
+      "Select a team channel, or turn off the channel notice and send private reminders to all attendees."
+    )
+  ).toBeVisible();
+
+  await page.getByText("Automatically join and record the meeting").click();
+  await save.click();
+  await expect(
+    page.getByText(
+      "Select a team channel, or turn off the channel notice and send join notices and minutes to the organizer in a DM."
+    )
+  ).toBeVisible();
+
+  await page
+    .getByText("Send join notices and minutes to the organizer in a DM", {
+      exact: true,
+    })
+    .click();
+  await save.click();
+  await expect(page).toHaveURL(/\/orgs\/acme\/meetings\?project=p-1$/);
+  expect(
+    requests.filter((request) => request.method === "PUT").at(-1)?.body
+  ).toMatchObject({
+    channel_id: "",
+    delivery: "organizer",
+    autojoin: true,
+    channel_notice: false,
+  });
+});
+
 test("a channel page for the previous bot is dropped, and load-more runs once", async ({
   page,
 }) => {
   await openMeetings(page, "/orgs/acme/meetings/settings", (request) => {
     if (request.path === "/orgs/acme/meetings/p-1") return ok(overview());
     if (request.path === "/orgs/acme/meetings/p-1/catalog")
-      return request.search === "?connect_id=slack-ops"
+      return request.search.startsWith("?connect_id=slack-ops&")
         ? ok({ ...catalog, channels: [{ id: "C-OPS", name: "ops" }] })
         : ok({ ...catalog, next_cursor: "more" });
     return undefined;
@@ -300,7 +428,9 @@ test("a channel page for the previous bot is dropped, and load-more runs once", 
   const more = page.getByRole("button", { name: "Load more channels" });
   await more.click();
   await expect(more).toBeDisabled();
-  await page.getByRole("button", { name: "Slack bot" }).click();
+  await page
+    .getByRole("button", { name: /Where reminders, notices and minutes go/ })
+    .click();
   await page.getByRole("option", { name: /Ops Bot/ }).click();
   await expect(more).toHaveCount(0);
 
@@ -327,9 +457,15 @@ test("attendee DMs stay off for a bot without the Slack permissions", async ({
     name: "Send private reminders to all attendees",
   });
   await expect(dms).toBeDisabled();
+  // Attendee reminders and organizer DMs need the same permissions.
   await expect(
     page.getByText("Reconnect this bot with the missing Slack permissions: im:write.")
-  ).toBeVisible();
+  ).toHaveCount(2);
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Send join notices and minutes to the organizer in a DM",
+    })
+  ).toBeDisabled();
   await expect(
     page.getByRole("link", { name: "Manage Slack connections" })
   ).toHaveAttribute("href", "/orgs/acme/projects/p-1/connections");
@@ -405,4 +541,79 @@ test("settings opened again save the newer server values, not the cached ones", 
   expect(
     requests.filter((request) => request.method === "PUT").at(-1)?.body
   ).toMatchObject({ preparation_lead_minutes: 30 });
+});
+
+test("a Feishu/Lark bot can carry the notices of Google calendars and join their meetings", async ({
+  page,
+}) => {
+  const requests = await openMeetings(
+    page,
+    "/orgs/acme/meetings/settings",
+    (request) => {
+      if (request.path === "/orgs/acme/meetings/p-1")
+        return ok({
+          ...overview({
+            connect_id: "lark-main",
+            calendar_source: "google",
+            channel: "Product chat",
+            channel_id: "oc_product",
+            mode: "join",
+          }),
+          connects: [
+            bot("slack-main", "Meeting Assistant"),
+            bot("lark-main", "Lark Assistant", {
+              provider: "lark",
+              preparation: "enabled",
+              missing_scopes: null,
+            }),
+          ],
+        });
+      if (request.path === "/orgs/acme/meetings/p-1/catalog")
+        return ok({
+          ...catalog,
+          channels: [{ id: "oc_product", name: "Product chat" }],
+        });
+      if (request.method === "PUT") return ok({ settings: request.body });
+      return undefined;
+    }
+  );
+
+  await expect(
+    page.getByRole("button", { name: /Where reminders, notices and minutes go/ })
+  ).toContainText("Lark Assistant");
+  await expect(page.getByRole("button", { name: /Calendars/ })).toContainText(
+    "Google Calendar"
+  );
+  await expect(page.getByText("Google Calendar · maya@acme.test")).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "Automatically join and record the meeting" })
+  ).toBeChecked();
+  expect(
+    requests.some(
+      (request) =>
+        request.path === "/orgs/acme/meetings/p-1/catalog" &&
+        request.search ===
+          "?connect_id=lark-main&calendar_scope=selected&calendar_source=google"
+    )
+  ).toBe(true);
+
+  await page.getByRole("button", { name: "Save and enable" }).click();
+  await expect(page).toHaveURL(/\/orgs\/acme\/meetings\?project=p-1$/);
+  expect(
+    requests.filter((request) => request.method === "PUT").at(-1)?.body
+  ).toMatchObject({
+    connect_id: "lark-main",
+    channel_id: "oc_product",
+    calendar_source: "google",
+    calendar_selections: [{ account_id: "ca-1", calendar_id: "product@acme.test" }],
+    autojoin: true,
+  });
+
+  // Back on a Slack bot, the calendars are Google's and the choice is gone.
+  await page.goto("/orgs/acme/meetings/settings");
+  await page
+    .getByRole("button", { name: /Where reminders, notices and minutes go/ })
+    .click();
+  await page.getByRole("option", { name: /Meeting Assistant/ }).click();
+  await expect(page.getByRole("button", { name: /Calendars/ })).toHaveCount(0);
 });

@@ -32,6 +32,17 @@ class CallLogStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    /** Records a finished call once in its conversation. */
+    internal fun logFinished(
+        conversationId: String,
+        state: CallControllerState,
+        nowElapsed: Long,
+        nowMillis: Long,
+    ): Boolean {
+        val record = CallLog.recordFor(state, nowElapsed, nowMillis) ?: return false
+        return add(conversationId, record)
+    }
+
     /** Adds [record] once; a call already recorded (the same id) is left as it is. */
     fun add(conversationId: String, record: CallRecord): Boolean {
         val existing = records(conversationId)

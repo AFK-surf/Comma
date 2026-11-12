@@ -84,13 +84,13 @@ test("explicit files are reused, and missing or colliding files are refused", ()
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("files an app cannot upload stay in still.fail, and the post links there", () => {
+test("files an app cannot upload stay in Comma, and the post links there", () => {
   const file = (name: string) => ({ name, path: `/w/uploads/${name}`, size: 1 });
   const [posted, kept] = slackWithFiles("这周的天气", [file("weather.html"), file("shot.png")], "https://e/o/w/s/k");
-  assert.equal(posted, "这周的天气\n\n<https://e/o/w/s/k?file=weather.html|在 still.fail 里查看图表和附件>", "the link opens the figure");
-  assert.equal(kept, "这周的天气\n\n[weather.html](weather.html)", "the HTML placed so still.fail draws it");
-  assert.deepEqual(slackWithFiles("看图：[天气](weather.html)", [file("weather.html")], "L"), ["看图：[天气](weather.html)\n\n<L?file=weather.html|在 still.fail 里查看图表>", "看图：[天气](weather.html)"]);
-  assert.deepEqual(slackWithFiles("", [file("a b.pdf")], "L"), ["<L?file=a%20b.pdf|在 still.fail 里查看附件>", ""]);
+  assert.equal(posted, "这周的天气\n\n<https://e/o/w/s/k?file=weather.html|在 Comma 里查看图表和附件>", "the link opens the figure");
+  assert.equal(kept, "这周的天气\n\n[weather.html](weather.html)", "the HTML placed so Comma draws it");
+  assert.deepEqual(slackWithFiles("看图：[天气](weather.html)", [file("weather.html")], "L"), ["看图：[天气](weather.html)\n\n<L?file=weather.html|在 Comma 里查看图表>", "看图：[天气](weather.html)"]);
+  assert.deepEqual(slackWithFiles("", [file("a b.pdf")], "L"), ["<L?file=a%20b.pdf|在 Comma 里查看附件>", ""]);
 });
 
 test("posts show in the history where the agent made them, whole", () => {
@@ -101,7 +101,7 @@ test("posts show in the history where the agent made them, whole", () => {
   const result = (id: string, text: string) => `${JSON.stringify({ type: "user", timestamp: "2026-10-05T00:00:01Z", message: { content: [{ type: "tool_result", tool_use_id: id, content: text }] } })}\n`;
   writeFileSync(
     path,
-    record([{ type: "thinking", thinking: "plan" }, { type: "tool_use", id: "p", name: "mcp__stillfail__chat_post", input: { to: "C1/1.1", text: long, kind: "all_done" } }]) +
+    record([{ type: "thinking", thinking: "plan" }, { type: "tool_use", id: "p", name: "mcp__comma__chat_post", input: { to: "C1/1.1", text: long, kind: "all_done" } }]) +
       result("p", "Posted to C1/1.1.") +
       record([{ type: "text", text: "after" }]),
   );
@@ -117,7 +117,7 @@ test("references name sessions in every link form", () => {
   assert.deepEqual(linkedSession("[修 bug](https://ember.3720.org/w/ws1/s/st1/chats/cl%3AC1%3A1.2?x=1)"), ["cl:C1:1.2", null]);
   assert.deepEqual(linkedSession("<https://ember.3720.org/o/ws1/st1/c-abc|在 ember 里查看>"), ["c-abc", null]);
   assert.deepEqual(linkedSession("https://ember.3720.org/w/ws/s/st/chats/c-1?history=c-2&entry=41"), ["c-2", 41]);
-  assert.deepEqual(linkedSession("<https://app.still.fail/o/ws1/st1/c-abc|在 still.fail 里查看>"), ["c-abc", null]);
+  assert.deepEqual(linkedSession("<https://app.still.fail/o/ws1/st1/c-abc|在 Comma 里查看>"), ["c-abc", null]);
   assert.deepEqual(linkedSession("https://app.still.fail/w/ws1/s/st1/chats/c-2"), ["c-2", null]);
   assert.equal(linkedSession("C1/1.000001"), null);
   assert.equal(linkedSession("c-abc"), null);
@@ -316,22 +316,22 @@ test("the station's own skills are written and kept as the station has them; the
   writeBuiltinSkills(home, false);
   assert.ok(!existsSync(join(home, "skills", "ember-jobs")));
   assert.ok(existsSync(join(home, "skills", "ember-viz", "notes.md")));
-  const path = join(home, "skills", "stillfail-jobs", "SKILL.md");
-  assert.ok(readFileSync(path, "utf8").startsWith("---\nname: stillfail-jobs\n"));
-  assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../src/skills/stillfail-jobs.md", import.meta.url), "utf8"), "the station's text");
+  const path = join(home, "skills", "comma-jobs", "SKILL.md");
+  assert.ok(readFileSync(path, "utf8").startsWith("---\nname: comma-jobs\n"));
+  assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../src/skills/comma-jobs.md", import.meta.url), "utf8"), "the station's text");
   writeFileSync(path, "edited by hand");
   writeBuiltinSkills(home, false);
   assert.ok(readFileSync(path, "utf8").includes("job_start"), "the station's own, as it has it");
   assert.equal(readFileSync(join(home, "skills", "team-skill", "SKILL.md"), "utf8"), "ours", "the team's stay");
-  const feedback = join(home, "skills", "stillfail-feedback", "SKILL.md");
+  const feedback = join(home, "skills", "comma-feedback", "SKILL.md");
   writeBuiltinSkills(home, true);
   assert.ok(readFileSync(feedback, "utf8").includes("feedback_send"));
   writeBuiltinSkills(home, false);
-  assert.ok(!existsSync(join(home, "skills", "stillfail-feedback")));
+  assert.ok(!existsSync(join(home, "skills", "comma-feedback")));
   writeBuiltinSkills(home, true);
-  writeFileSync(join(home, "skills", "stillfail-feedback", "notes.md"), "mine");
+  writeFileSync(join(home, "skills", "comma-feedback", "notes.md"), "mine");
   writeBuiltinSkills(home, false);
-  assert.ok(existsSync(join(home, "skills", "stillfail-feedback", "notes.md")));
+  assert.ok(existsSync(join(home, "skills", "comma-feedback", "notes.md")));
   rmSync(root, { recursive: true, force: true });
 });
 

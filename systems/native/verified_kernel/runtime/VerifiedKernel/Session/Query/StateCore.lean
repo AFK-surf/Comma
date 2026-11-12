@@ -251,6 +251,20 @@ def humanSourceOrigin (origin : Term) : KernelM Bool := do
   if ← presentExternalProvider provider then return true
   return provider == b "internal" && actorType == b "user"
 
+/-- The provider thread a sealed origin came from, or `nil` outside a thread. -/
+def originThread (origin : Term) : KernelM Term := do
+  if !origin.isMap then return nil
+  let context ← pickText origin "provider_context"
+  if !context.isMap then return nil
+  let first (keys : List String) : KernelM Term := do
+    let values ← keys.mapM (pickText context ·)
+    return (values.find? (fun value => value.isBinary && value != b "")).getD nil
+  let connect ← first ["connect_id"]
+  let place ← first ["channel_id", "chat_id"]
+  let thread ← first ["thread_ts", "message_thread_id", "root_message_id"]
+  if connect == nil || place == nil || thread == nil then return nil
+  return list [← pickText origin "provider", connect, place, thread]
+
 /-- `human_source_queue_item?/1`. -/
 def humanSourceQueueItem (item : Term) : KernelM Bool := do
   let payload ← stringify ((← pickText item "payload").default empty)

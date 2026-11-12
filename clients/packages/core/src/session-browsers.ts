@@ -4,6 +4,7 @@
 //
 // Bounds: per shown conversation (one per window that shows it with a participant): one read in flight, one every 10 s.
 // Each stops as soon as no window shows it.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, type Topic, type Value, topicKey } from "@comma/core-kernel";
 import { Duration, Effect, Option, Queue, Result } from "effect";
 import { z } from "zod";
@@ -14,19 +15,23 @@ import { type Ctx, Live } from "./ctx.ts";
 export const SESSION_BROWSER_POLL_MS = 10_000;
 const TIMEOUT_MS = 10_000;
 
-export const bindingSchema = z
-  .object({
-    agent_id: z.string(),
-    session_id: z.string(),
-    status: z.string(),
-    control: z.enum(["agent", "handoff_pending", "human", "disconnected"]),
-    busy: z.boolean(),
-    shared_storage: z.boolean().optional(),
-    storage_error: z.string().nullable().optional(),
-    updated_at: z.string(),
-  })
-  .strip();
-const browsersSchema = z.object({ browsers: z.array(bindingSchema).max(50) }).strip();
+export const bindingSchema = lazySchema(() =>
+  z
+    .object({
+      agent_id: z.string(),
+      session_id: z.string(),
+      status: z.string(),
+      control: z.enum(["agent", "handoff_pending", "human", "disconnected"]),
+      busy: z.boolean(),
+      shared_storage: z.boolean().optional(),
+      storage_error: z.string().nullable().optional(),
+      updated_at: z.string(),
+    })
+    .strip()
+);
+const browsersSchema = lazySchema(() =>
+  z.object({ browsers: z.array(bindingSchema).max(50) }).strip()
+);
 
 const string = (raw: unknown, name: string): string => {
   const v = (raw as Record<string, unknown> | null)?.[name];

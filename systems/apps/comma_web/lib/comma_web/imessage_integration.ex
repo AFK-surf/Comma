@@ -2,8 +2,8 @@ defmodule CommaWeb.IMessageIntegration do
   @moduledoc """
   Comma product iMessage private-chat binding and ingress.
   Consume intent, retire routes, prepare disabled, commit, then activate.
-  Two transports carry the same binding: the Willow relay and Photon shared
-  lines. Events carry `"transport" => "photon"` for Photon.
+  Two transports carry the same binding: the Willow relay and Photon lines.
+  Events carry `"transport" => "photon"` for Photon.
   See docs/messaging-voice.md for authorization and transport boundaries.
   """
 
@@ -35,9 +35,12 @@ defmodule CommaWeb.IMessageIntegration do
 
   @doc """
   Starts a connection attempt. With a `handle` (phone number or Apple Account
-  email), the attempt uses Photon: Comma registers the handle and assigns it a
-  shared line. The person then sends the code to that line from that handle.
-  Without a handle, the attempt is a relay claim command.
+  email), the attempt uses Photon: Comma gets the handle a line. The person then
+  sends the code to that line from that handle.
+  With `"transport" => "photon"` and no handle, a dedicated project opens an
+  attempt that the first sender of the code answers. A shared project refuses it
+  with `:imessage_handle_required`.
+  Otherwise, the attempt is a relay claim command.
   """
   def start_connect(user, session, workspace_id, attrs \\ %{})
 
@@ -45,18 +48,21 @@ defmodule CommaWeb.IMessageIntegration do
     with :ok <- require_configured("photon"),
          {:ok, _workspace, _link} <- IMessageLinks.get(user, session, workspace_id),
          handle when is_binary(handle) <- PhotonIMessage.normalize_handle(raw_handle),
-         {:ok, _user_id} <- PhotonIMessage.register_user(handle),
-         {:ok, line} <- PhotonIMessage.assign_line(handle),
-         {:ok, _workspace, claim} <-
-           IMessageLinks.create_claim(user, session, workspace_id, %{
-             transport: "photon",
-             sender_handle: handle,
-             line_handle: line["line_handle"],
-             assignment_id: line["assignment_id"]
-           }) do
-      {:ok, IMessageLinks.public_claim(claim)}
+         {:ok, line} <- PhotonIMessage.line_for(handle) do
+      create_photon_claim(user, session, workspace_id, handle, line)
     else
       nil -> {:error, :invalid_imessage_handle}
+      {:error, {:photon, _status, _code}} -> {:error, :imessage_unavailable}
+      other -> other
+    end
+  end
+
+  def start_connect(user, session, workspace_id, %{"transport" => "photon"}) do
+    with :ok <- require_configured("photon"),
+         {:ok, _workspace, _link} <- IMessageLinks.get(user, session, workspace_id),
+         {:ok, line} <- PhotonIMessage.dedicated_line_for(workspace_id) do
+      create_photon_claim(user, session, workspace_id, nil, line)
+    else
       {:error, {:photon, _status, _code}} -> {:error, :imessage_unavailable}
       other -> other
     end
@@ -65,6 +71,18 @@ defmodule CommaWeb.IMessageIntegration do
   def start_connect(user, session, workspace_id, _attrs) do
     with :ok <- require_configured("relay"),
          {:ok, _workspace, claim} <- IMessageLinks.create_claim(user, session, workspace_id) do
+      {:ok, IMessageLinks.public_claim(claim)}
+    end
+  end
+
+  defp create_photon_claim(user, session, workspace_id, handle, line) do
+    with {:ok, _workspace, claim} <-
+           IMessageLinks.create_claim(user, session, workspace_id, %{
+             transport: "photon",
+             sender_handle: handle,
+             line_handle: line["line_handle"],
+             assignment_id: line["assignment_id"]
+           }) do
       {:ok, IMessageLinks.public_claim(claim)}
     end
   end
@@ -107,7 +125,7 @@ defmodule CommaWeb.IMessageIntegration do
   def photon_webhook(raw_body, id, timestamp, signature) do
     with :ok <- require_configured("photon"),
          :ok <- PhotonIMessage.verify_webhook(raw_body, id, timestamp, signature) do
-      CommaWeb.IMessagePhotonRuntime.poke()
+      CommaWeb.IMessagePhotonRuntime.poke(PhotonIMessage.webhook_message(raw_body))
     end
   end
 
@@ -124,9 +142,15 @@ defmodule CommaWeb.IMessageIntegration do
           status_message(message)
 
         :help ->
-          reply(
+          guide(
             message,
             "Connect iMessage in Comma Settings → Channels, then send the connection command here. Command: bridgebot status. Manage or disconnect in Comma Settings → Channels."
+          )
+
+        :wrong_account ->
+          reply(
+            message,
+            "This code is for a different iMessage account. Send it from the account you entered in Comma, or use another account in Comma Settings → Channels."
           )
 
         :message ->
@@ -160,11 +184,16 @@ defmodule CommaWeb.IMessageIntegration do
 
   defp command(_message), do: :message
 
-  # A Photon attempt also accepts the bare code, but only from its handle.
+  # A Photon attempt also accepts the bare code, but only from its handle, if it
+  # names one.
+  # The right code from another account is not an unbound sender: only someone
+  # who started this attempt has the code, so this reply has no daily limit.
   defp photon_code(%{"transport" => "photon", "text" => text, "sender_handle" => sender}) do
-    if IMessageLinks.photon_claim_code?(sender, text),
-      do: {:connect, String.trim(text)},
-      else: :message
+    cond do
+      IMessageLinks.photon_claim_code?(sender, text) -> {:connect, String.trim(text)}
+      IMessageLinks.open_photon_code?(text) -> :wrong_account
+      true -> :message
+    end
   end
 
   defp photon_code(_message), do: :message
@@ -172,8 +201,14 @@ defmodule CommaWeb.IMessageIntegration do
   defp connect_message(message, code) do
     result =
       with {:ok, %{user: user, workspace: workspace, claim: claim}} <-
-             IMessageLinks.take_claim(code, message["transport"], message["sender_handle"]) do
-        link_identity(user, workspace, message, claim)
+             IMessageLinks.take_claim(code, message["transport"], message["sender_handle"]),
+           {:ok, link} <- link_identity(user, workspace, message, claim) do
+        # A Router that started this attempt from the chat is waiting for it.
+        CommaWeb.ChannelLinkTools.linked(workspace, "imessage", %{
+          "sender_handle" => message["sender_handle"]
+        })
+
+        {:ok, link}
       end
 
     case result do
@@ -181,7 +216,7 @@ defmodule CommaWeb.IMessageIntegration do
         reply(message, "iMessage is connected to Comma. Send a message here to get started.")
 
       _ ->
-        reply(
+        guide(
           message,
           "Could not connect iMessage. Generate a new connection command in Comma Settings → Channels and try again."
         )
@@ -266,7 +301,7 @@ defmodule CommaWeb.IMessageIntegration do
         end
 
       {:error, :imessage_not_linked} ->
-        reply(message, "Connect iMessage in Comma Settings → Channels to chat with Comma here.")
+        guide(message, "Connect iMessage in Comma Settings → Channels to chat with Comma here.")
     end
   end
 
@@ -278,7 +313,7 @@ defmodule CommaWeb.IMessageIntegration do
           else: reply(message, "Reconnect iMessage in Comma Settings → Channels.")
 
       _ ->
-        reply(message, "This private chat is not connected to Comma.")
+        guide(message, "This private chat is not connected to Comma.")
     end
   end
 
@@ -304,6 +339,15 @@ defmodule CommaWeb.IMessageIntegration do
       other -> other
     end
   end
+
+  # A reply to a Photon sender with no binding. Anyone can reach a dedicated line.
+  defp guide(%{"transport" => "photon", "sender_handle" => sender} = message, text) do
+    if IMessageLinks.get_link_by_sender(sender) || IMessageLinks.take_guidance_reply(sender),
+      do: reply(message, text),
+      else: :ok
+  end
+
+  defp guide(message, text), do: reply(message, text)
 
   # Command acknowledgments are best effort, as in Telegram; replay must not
   # execute a successfully consumed binding command a second time.

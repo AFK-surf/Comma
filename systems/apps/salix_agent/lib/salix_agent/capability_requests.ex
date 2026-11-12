@@ -12,14 +12,15 @@ defmodule SalixAgent.CapabilityRequests do
   require Logger
 
   alias SalixAgent.{Control, GroupContext}
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.Ids
+  alias SalixAgent.CapabilityRequestStore.PG
 
   @callback notify_capability_request(request :: map()) :: :ok
 
-  @list_read_concurrency 8
   @default_request_ttl_seconds 120
   @receipt_result_budget_ms 30_000
-  @request_types ~w(host_access computer_use_start location oauth_authorization ifc_declassify)
+  @pending_page 100
+  @request_types ~w(host_access computer_use_start location oauth_authorization ifc_declassify account_link channel_link plugin_install)
 
   # How long one confirmed information-flow transfer stays confirmed. Long
   # enough for the Router to retry the effect it was refused for, short
@@ -74,11 +75,8 @@ defmodule SalixAgent.CapabilityRequests do
           "completed_at" => attrs["completed_at"]
         }
 
-      # The index comes first: a request its Conversation cannot find would wait unseen.
-      with :ok <- index_surface(record),
-           {:ok, request} <-
-             upsert_record(
-               Keys.ctl_capability_request(scope.group_id, request_id),
+      with {:ok, request} <-
+             PG.upsert(
                record,
                fn current ->
                  if terminal?(current) do
@@ -89,8 +87,7 @@ defmodule SalixAgent.CapabilityRequests do
                    |> Map.put("created_at", current["created_at"] || record["created_at"])
                  end
                end
-             ),
-           :ok <- register_location_timeout(request) do
+             ) do
         notify(request)
         {:ok, request}
       end
@@ -190,93 +187,44 @@ defmodule SalixAgent.CapabilityRequests do
 
   def topic(group_id), do: "capability_requests:" <> to_string(group_id)
 
+  @doc "A person's own location requests, across every Group (`surface_ref.requester`)."
+  def location_requester_topic(requester), do: "location_requests:" <> to_string(requester)
+
   def list_group(group_id, tenant_id, opts \\ []) do
     with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
          {:ok, limit} <- request_limit(Keyword.get(opts, :limit)) do
-      status = trim(Keyword.get(opts, :status) || "pending")
-
-      requests =
-        group_id
-        |> Keys.ctl_capability_requests_prefix()
-        |> list_records()
-        |> Enum.filter(&(&1["tenant_id"] == tenant_id))
-        |> Enum.filter(&visible_for_status?(&1, status))
-        |> Enum.filter(&(blank?(status) or &1["status"] == status))
-        |> Enum.sort_by(&{&1["updated_at"] || 0, &1["created_at"] || 0, &1["request_id"]}, :desc)
-        |> Enum.take(limit)
-
-      {:ok, requests}
+      PG.list_group(
+        group_id,
+        tenant_id,
+        trim(Keyword.get(opts, :status) || "pending"),
+        now(),
+        limit
+      )
     end
   end
 
   def get(group_id, request_id, tenant_id), do: find(group_id, request_id, tenant_id)
 
-  @doc """
-  The requests an Agent raised in one Conversation (`surface_kind` `conversation`), newest first: every pending one,
-  then the newest finished ones up to `limit` in all (default 100). Reads only that Conversation's index, and fails
-  when the store does rather than answering with fewer requests.
-  """
-  @spec list_conversation(String.t(), String.t(), String.t(), keyword()) ::
-          {:ok, [map()]} | {:error, term()}
+  @doc "Read every active pending Conversation request, then finished requests up to the limit."
   def list_conversation(group_id, tenant_id, conversation_id, opts \\ [])
       when is_binary(conversation_id) and conversation_id != "" do
     with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
-         {:ok, limit} <- request_limit(Keyword.get(opts, :limit)),
-         {:ok, entries} <-
-           S3.list_all(Keys.ctl_capability_request_surface_prefix(group_id, conversation_id)),
-         {:ok, records} <- read_indexed(group_id, entries) do
-      {pending, finished} =
-        records
-        |> Enum.filter(
-          &(&1["tenant_id"] == tenant_id and &1["group_id"] == group_id and
-              get_in(&1, ["surface_ref", "conversation_id"]) == conversation_id)
-        )
-        |> Enum.sort_by(&{&1["updated_at"] || 0, &1["created_at"] || 0, &1["request_id"]}, :desc)
-        |> Enum.split_with(&visible_for_status?(&1, "pending"))
-
-      {:ok, pending ++ Enum.take(finished, max(limit - length(pending), 0))}
+         {:ok, limit} <- request_limit(Keyword.get(opts, :limit)) do
+      PG.list_conversation(group_id, tenant_id, conversation_id, now(), limit)
     end
   end
 
-  defp index_surface(%{
-         "surface_kind" => "conversation",
-         "surface_ref" => %{"conversation_id" => conversation_id},
-         "group_id" => group_id,
-         "request_id" => request_id
-       })
-       when is_binary(conversation_id) and conversation_id != "" do
-    case S3.put(
-           Keys.ctl_capability_request_surface(group_id, conversation_id, request_id),
-           "{}"
-         ) do
-      {:ok, _} -> :ok
-      {:error, _} = err -> err
-    end
+  @doc "The pending location requests a person's own message led to, at most `limit`."
+  def pending_location_requests(requester, limit \\ 20) when is_binary(requester) do
+    PG.pending_location(requester, now(), limit)
   end
 
-  defp index_surface(_record), do: :ok
+  def due_location_requests(opts \\ []), do: PG.page_expired(opts)
+  def due_result_deliveries(opts \\ []), do: PG.page_result_delivery(opts)
 
-  # An index entry whose record was never written (its create failed after it) is skipped; any other read error fails.
-  defp read_indexed(group_id, entries) do
-    context = SystemsObservability.Context.capture()
-
-    entries
-    |> SystemsClock.async_stream(
-      fn %{key: key} ->
-        SystemsObservability.Context.run(context, fn ->
-          request_id = key |> Path.basename() |> Path.rootname()
-          get_record(Keys.ctl_capability_request(group_id, request_id))
-        end)
-      end,
-      max_concurrency: @list_read_concurrency,
-      ordered: true,
-      timeout: :infinity
-    )
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, {:ok, record}}, {:ok, acc} -> {:cont, {:ok, [record | acc]}}
-      {:ok, {:error, :not_found}}, acc -> {:cont, acc}
-      {:ok, {:error, _} = err}, _acc -> {:halt, err}
-    end)
+  def retry_result_delivery(group_id, request_id, tenant_id, opts \\ []) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         do: deliver_stored_result(request, opts)
   end
 
   def share_location(group_id, request_id, attrs, tenant_id) do
@@ -284,8 +232,9 @@ defmodule SalixAgent.CapabilityRequests do
          :ok <- require_type(request, "location"),
          {:ok, response} <- location_response(attrs),
          {:ok, settled} <- settle_location(request, "completed", response),
-         :ok <- require_location_completion(settled),
-         :ok <- deliver_stored_result(settled) do
+         :ok <- require_location_completion(settled) do
+      # The stored ending is the answer; telling the Agent replays it if it cannot be told now.
+      deliver_logged(settled)
       {:ok, settled}
     end
   end
@@ -295,18 +244,16 @@ defmodule SalixAgent.CapabilityRequests do
   defp require_location_completion(_request),
     do: {:error, {:conflict, :already_settled}}
 
-  @doc "Settle a location deadline and retry delivery of its durable outcome."
-  def expire_location(group_id, request_id, tenant_id) do
+  @doc """
+  Settle a due deadline (a location request's, a channel link attempt's, or a
+  plugin install request's) and retry delivery of its durable outcome.
+  """
+  def expire_location(group_id, request_id, tenant_id, opts \\ []) do
     with {:ok, request} <- find(group_id, request_id, tenant_id),
-         :ok <- require_type(request, "location"),
-         {:ok, settled} <-
-           settle_location(request, "expired", %{
-             "status" => "error",
-             "error" => "Location request timed out."
-           }) do
+         {:ok, settled} <- expire_due(request) do
       case settled["status"] do
         status when status in ["completed", "failed", "expired"] ->
-          deliver_stored_result(settled)
+          deliver_stored_result(settled, opts)
 
         "cancelled" ->
           :ok
@@ -314,12 +261,55 @@ defmodule SalixAgent.CapabilityRequests do
     end
   end
 
-  # The request CAS selects the outcome before the session receives it. The
-  # timer remains armed until that delivery succeeds, including after restart.
-  defp settle_location(request, status, response) do
-    result =
+  defp expire_due(%{"request_type" => "location"} = request) do
+    response = %{"status" => "error", "error" => "Location request timed out."}
+    settle_due(request, "expired", response, location_result(response))
+  end
+
+  defp expire_due(%{"request_type" => "channel_link"} = request) do
+    provider = channel_link_provider(request)
+    response = %{"status" => "expired", "provider" => provider}
+
+    settle_due(
+      request,
+      "expired",
+      response,
+      failed_result(
+        "channel_link_expired",
+        "the #{provider} link attempt expired before the user completed it; start channel.link again if they still want it",
+        response,
+        "The channel link attempt expired."
+      )
+    )
+  end
+
+  defp expire_due(%{"request_type" => "plugin_install"} = request) do
+    response = %{"status" => "expired", "plugin_id" => plugin_install_id(request)}
+
+    settle_due(
+      request,
+      "expired",
+      response,
+      failed_result(
+        "plugin_install_expired",
+        "the user did not install the plugin before the request expired; ask again only if they still want it",
+        response,
+        "The plugin install request expired."
+      )
+    )
+  end
+
+  defp expire_due(_request), do: {:error, {:bad_request, "wrong capability request type"}}
+
+  defp settle_location(request, status, response),
+    do: settle_due(request, status, response, location_result(response))
+
+  # The row revision selects the outcome before the Session receives it.
+  # The same write records that its stored result still needs delivery.
+  defp settle_due(request, status, response, result) do
+    settled =
       update_record_checked(
-        Keys.ctl_capability_request(request["group_id"], request["request_id"]),
+        request,
         fn current ->
           cond do
             terminal?(current) ->
@@ -332,7 +322,7 @@ defmodule SalixAgent.CapabilityRequests do
               {:error, :not_due}
 
             current["status"] == "pending" ->
-              {:ok, terminal_record(current, status, response, location_result(response))}
+              {:ok, terminal_record(current, status, response, result)}
 
             true ->
               {:error, {:conflict, :already_settled}}
@@ -340,7 +330,7 @@ defmodule SalixAgent.CapabilityRequests do
         end
       )
 
-    case result do
+    case settled do
       {:ok, settled} ->
         notify(settled)
         {:ok, settled}
@@ -349,25 +339,6 @@ defmodule SalixAgent.CapabilityRequests do
         error
     end
   end
-
-  defp register_location_timeout(
-         %{"request_type" => "location", "expires_at" => expires} = request
-       )
-       when is_integer(expires) do
-    id = "location-timeout:" <> request["request_id"]
-
-    SalixStore.Timers.register(%{
-      "timer_id" => id,
-      "kind" => "location_timeout",
-      "agent_id" => request["source_agent_id"],
-      "session_id" => request["source_session_id"],
-      "deadline_ms" => expires * 1_000,
-      "source_message_id" => id,
-      "payload" => Map.take(request, ["group_id", "tenant_id", "request_id"])
-    })
-  end
-
-  defp register_location_timeout(_request), do: :ok
 
   def confirm_oauth_authorization(group_id, request_id, tenant_id) do
     response = %{"status" => "confirmed"}
@@ -417,6 +388,47 @@ defmodule SalixAgent.CapabilityRequests do
     end
   end
 
+  @doc """
+  The app a request's card asked for is in place: the request now waits on the
+  provider's page, and the card shows it. `input` is done with.
+  """
+  @spec open_oauth_authorization(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def open_oauth_authorization(group_id, request_id, tenant_id, authorization_url) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "oauth_authorization"),
+         {:ok, opened} <-
+           update_record(request, fn current ->
+             update_in(current, ["request_payload", "oauth_authorization"], fn oauth ->
+               oauth
+               |> Map.delete("input")
+               |> Map.put("authorization_url", authorization_url)
+             end)
+           end) do
+      notify(opened)
+      {:ok, opened}
+    end
+  end
+
+  @doc "A CLI login's command ended without logging in: its card says so."
+  def fail_login(group_id, request_id, tenant_id) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id) do
+      transition(request, fn current ->
+        terminal_record(
+          current,
+          "failed",
+          %{"status" => "failed"},
+          failed_result(
+            "login_failed",
+            "the login did not finish",
+            %{},
+            "The login did not finish."
+          )
+        )
+      end)
+    end
+  end
+
   defp deliver_logged(request) do
     case deliver_stored_result(request) do
       :ok ->
@@ -455,6 +467,208 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp answers_oauth_flow?(_request, _flow), do: false
 
+  @doc """
+  A chat user linked their product account (`task_request.*` raised the
+  request with the link it posted them): the waiting call returns that they
+  did, and the Agent goes on with what they asked.
+  """
+  @spec complete_account_link(String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def complete_account_link(group_id, request_id, tenant_id) do
+    response = %{"status" => "linked"}
+
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "account_link"),
+         {:ok, completed} <-
+           complete(
+             request,
+             response,
+             completed_result(
+               Map.put(
+                 response,
+                 "message",
+                 "the requester linked their account; go on with what they asked without asking again"
+               )
+             )
+           ) do
+      deliver_logged(completed)
+      {:ok, completed}
+    end
+  end
+
+  @doc """
+  The Group's Workspace connected a chat channel (`channel.link` raised the
+  request and posted the user what to scan, open or send): every call waiting
+  for that provider returns `linked` with `details`, and the Agent tells the
+  user. A completion with nothing waiting is nothing.
+  """
+  @spec complete_channel_link(String.t(), String.t(), String.t(), map()) :: :ok
+  def complete_channel_link(group_id, tenant_id, provider, details \\ %{})
+      when is_binary(provider) do
+    response = Map.merge(%{"status" => "linked", "provider" => provider}, details)
+
+    result =
+      completed_result(
+        Map.put(
+          response,
+          "message",
+          "the user connected #{provider}; tell them it is connected and go on with what they asked"
+        )
+      )
+
+    settle_channel_links(group_id, tenant_id, provider, fn request ->
+      complete(request, response, result)
+    end)
+  end
+
+  @doc """
+  One channel link attempt needs the Agent before it can connect (WeChat asks
+  the user for a verification code): the call that waits for it returns
+  `response` (a `status` other than linked) with `message` for the Agent, and
+  the attempt stays open for a later call.
+  """
+  @spec complete_channel_link_request(String.t(), String.t(), String.t(), map(), String.t()) ::
+          :ok
+  def complete_channel_link_request(group_id, tenant_id, request_id, response, message)
+      when is_map(response) and is_binary(message) do
+    settle_channel_link(group_id, tenant_id, request_id, fn request ->
+      complete(request, response, completed_result(Map.put(response, "message", message)))
+    end)
+  end
+
+  @doc """
+  One channel link attempt ended without connecting (its QR login expired, the
+  user cancelled it in Settings, another attempt replaced it): the call that
+  waits for it returns `failed` with `reason`. Other calls, waiting for other
+  attempts of the same provider, go on.
+  """
+  @spec fail_channel_link_request(String.t(), String.t(), String.t(), String.t()) :: :ok
+  def fail_channel_link_request(group_id, tenant_id, request_id, reason) when is_binary(reason) do
+    settle_channel_link(group_id, tenant_id, request_id, fn request ->
+      provider = channel_link_provider(request)
+      response = %{"status" => "failed", "provider" => provider, "reason" => reason}
+
+      transition(request, fn current ->
+        terminal_record(
+          current,
+          "failed",
+          response,
+          failed_result(
+            "channel_link_failed",
+            "the #{provider} link attempt ended without connecting: #{reason}; start channel.link again if the user still wants it",
+            response,
+            "The channel did not connect."
+          )
+        )
+      end)
+    end)
+  end
+
+  defp settle_channel_link(group_id, tenant_id, request_id, settle) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "channel_link"),
+         {:ok, settled} <- settle.(request) do
+      deliver_logged(settled)
+    else
+      {:error, reason} ->
+        Logger.warning("channel link request not settled: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
+  defp settle_channel_links(group_id, tenant_id, provider, settle) do
+    case each_pending(group_id, tenant_id, "channel_link", fn request ->
+           if channel_link_provider(request) == provider do
+             case settle.(request) do
+               {:ok, settled} -> deliver_logged(settled)
+               {:error, _reason} -> :ok
+             end
+           end
+         end) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("channel link requests not read: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
+  # Every active pending request of `type` in the Group, read in bounded pages.
+  defp each_pending(group_id, tenant_id, type, fun, cursor \\ nil) do
+    case PG.pending_of_type(group_id, tenant_id, type, now(), cursor, @pending_page) do
+      {:ok, %{items: items, next: next}} ->
+        Enum.each(items, fun)
+        if next, do: each_pending(group_id, tenant_id, type, fun, next), else: :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp channel_link_provider(request),
+    do: get_in(request, ["request_payload", "channel_link", "provider"])
+
+  @doc """
+  The Group's Workspace installed `plugin_id`, through any path (the card,
+  the Plugins page): every `plugin.request_install` call waiting for it
+  returns installed, and the Agent goes on with what the person asked. An
+  install with nothing waiting is nothing.
+  """
+  @spec complete_plugin_install(String.t(), String.t(), String.t()) :: :ok
+  def complete_plugin_install(group_id, tenant_id, plugin_id) when is_binary(plugin_id) do
+    response = %{"status" => "installed", "plugin_id" => plugin_id}
+
+    result =
+      completed_result(
+        Map.put(
+          response,
+          "message",
+          "the user installed the plugin; go on with what they asked without asking again"
+        )
+      )
+
+    case each_pending(group_id, tenant_id, "plugin_install", fn request ->
+           if plugin_install_id(request) == plugin_id do
+             case complete(request, response, result) do
+               {:ok, completed} -> deliver_logged(completed)
+               {:error, _reason} -> :ok
+             end
+           end
+         end) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("plugin install requests not read: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
+  @doc "A person declines a plugin install request: the Agent's waiting call returns that they declined."
+  @spec decline_plugin_install(String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def decline_plugin_install(group_id, request_id, tenant_id) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "plugin_install"),
+         {:ok, completed} <-
+           complete(
+             request,
+             %{"status" => "declined"},
+             failed_result(
+               "permission_denied",
+               "the user declined to install the plugin",
+               %{"status" => "declined", "plugin_id" => plugin_install_id(request)},
+               "The user declined to install the plugin."
+             )
+           ) do
+      deliver_logged(completed)
+      {:ok, completed}
+    end
+  end
+
+  defp plugin_install_id(%{"request_type" => "plugin_install"} = request),
+    do: get_in(request, ["request_payload", "plugin_install", "plugin_id"])
+
+  defp plugin_install_id(_request), do: nil
+
   @doc "A person declines an OAuth authorization request: the Agent's waiting call returns that they declined."
   @spec decline_oauth_authorization(String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, term()}
@@ -480,6 +694,26 @@ defmodule SalixAgent.CapabilityRequests do
 
   def decide_host_access(group_id, request_id, attrs, tenant_id) do
     decide_permission(group_id, request_id, attrs, tenant_id, "host_access")
+  end
+
+  @doc """
+  A person's answer on a Comma request card to a phone's consent (`env.android`).
+  The stored ending is the answer: the Agent that asked is told now, or when it
+  can be, as for a declined account.
+  """
+  def answer_computer_use_start(group_id, request_id, approved, tenant_id)
+      when is_boolean(approved) do
+    with {:ok, request} <- find(group_id, request_id, tenant_id),
+         :ok <- require_type(request, "computer_use_start"),
+         {:ok, completed} <-
+           complete(
+             request,
+             %{"approved" => approved},
+             permission_result(request, approved, %{})
+           ) do
+      deliver_logged(completed)
+      {:ok, completed}
+    end
   end
 
   def decide_computer_use_start(group_id, request_id, attrs, tenant_id) do
@@ -544,7 +778,7 @@ defmodule SalixAgent.CapabilityRequests do
 
     result =
       update_record_checked(
-        Keys.ctl_capability_request(request["group_id"], request["request_id"]),
+        request,
         fn
           %{"status" => "pending"} = current ->
             current = ensure_request_deadline(current)
@@ -566,7 +800,8 @@ defmodule SalixAgent.CapabilityRequests do
 
           _settled ->
             {:error, {:conflict, :already_settled}}
-        end
+        end,
+        settle_unknown: false
       )
 
     case result do
@@ -601,7 +836,7 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp find(group_id, request_id, tenant_id) do
     with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
-         {:ok, request} <- get_record(Keys.ctl_capability_request(group_id, request_id)),
+         {:ok, request} <- PG.get(group_id, request_id),
          true <- request["tenant_id"] == tenant_id and request["group_id"] == group_id do
       {:ok, request}
     else
@@ -696,7 +931,7 @@ defmodule SalixAgent.CapabilityRequests do
        %{
          "status" => "success",
          "location" =>
-           %{"latitude" => lat, "longitude" => lng}
+           %{"latitude" => lat, "longitude" => lng, "read_at" => read_at()}
            |> put_optional("accuracy_m", location["accuracy_m"])
        }}
     end
@@ -708,13 +943,17 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp location_response(_attrs), do: {:error, {:bad_request, "invalid location completion"}}
 
+  defp read_at do
+    SystemsClock.system_time(:second) |> DateTime.from_unix!() |> DateTime.to_iso8601()
+  end
+
   defp number_value(value, _name) when is_number(value), do: {:ok, value}
   defp number_value(_value, name), do: {:error, {:bad_request, "#{name} must be a number"}}
 
   defp location_result(%{"status" => "success", "location" => location}) do
     completed_result(%{
       "status" => "completed",
-      "location" => Map.take(location, ["latitude", "longitude"])
+      "location" => Map.take(location, ["latitude", "longitude", "accuracy_m", "read_at"])
     })
   end
 
@@ -758,16 +997,29 @@ defmodule SalixAgent.CapabilityRequests do
     )
   end
 
-  defp deliver_stored_result(%{"result" => result} = request) when is_map(result),
-    do: deliver_async_tool_completion(request, result)
+  defp deliver_stored_result(request, opts \\ [])
 
-  defp deliver_stored_result(_request), do: {:error, :capability_result_unavailable}
+  defp deliver_stored_result(%{"status" => "cancelled"}, _opts), do: :ok
+
+  # A station's call waited for this itself (`SalixAgent.Tools.OAuth`): no Session to tell.
+  defp deliver_stored_result(
+         %{"request_payload" => %{"oauth_authorization" => %{"station_call" => true}}} = request,
+         _opts
+       ),
+       do: PG.acknowledge_delivery(request)
+
+  defp deliver_stored_result(%{"result" => result} = request, opts) when is_map(result) do
+    with :ok <- deliver_async_tool_completion(request, result, opts),
+         do: PG.acknowledge_delivery(request)
+  end
+
+  defp deliver_stored_result(_request, _opts), do: {:error, :capability_result_unavailable}
 
   defp permission_capability(%{"request_type" => type, "request_payload" => payload}) do
     get_in(payload || %{}, [type, "capability"]) || type
   end
 
-  defp deliver_async_tool_completion(request, result) do
+  defp deliver_async_tool_completion(request, result, opts) do
     case SalixAgent.complete_async_tool_call(
            request["source_agent_id"],
            request["source_session_id"],
@@ -775,7 +1027,8 @@ defmodule SalixAgent.CapabilityRequests do
            result,
            %{
              "tool_name" => tool_name_for_request(request)
-           }
+           },
+           opts
          ) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, reason}
@@ -812,15 +1065,36 @@ defmodule SalixAgent.CapabilityRequests do
     }
   end
 
-  defp tool_name_for_request(%{"request_type" => "location"}), do: "location.request"
+  @doc false
+  def tool_name_for_request(%{"request_type" => "location"}), do: "location.request"
 
-  defp tool_name_for_request(%{"request_type" => "oauth_authorization"}),
+  def tool_name_for_request(%{"request_type" => "oauth_authorization"}),
     do: "oauth.request_authorization"
 
-  defp tool_name_for_request(%{"request_type" => "ifc_declassify"}),
+  def tool_name_for_request(%{"request_type" => "ifc_declassify"}),
     do: "ifc.request_declassification"
 
-  defp tool_name_for_request(_request), do: "permission.request"
+  def tool_name_for_request(%{
+        "request_type" => "account_link",
+        "request_payload" => %{"account_link" => %{"tool_name" => name}}
+      })
+      when is_binary(name),
+      do: name
+
+  def tool_name_for_request(%{"request_type" => "channel_link"}), do: "channel.link"
+
+  def tool_name_for_request(%{"request_type" => "plugin_install"}),
+    do: "plugin.request_install"
+
+  # A phone's consent (env.android) or a simulator's (env.screen): the call that asked waits for it.
+  def tool_name_for_request(%{
+        "request_type" => "computer_use_start",
+        "request_payload" => %{"computer_use_start" => %{"tool_name" => name}}
+      })
+      when name in ["env.android", "env.screen"],
+      do: name
+
+  def tool_name_for_request(_request), do: "permission.request"
 
   defp complete(request, response_payload, result) do
     transition(request, fn current ->
@@ -851,7 +1125,7 @@ defmodule SalixAgent.CapabilityRequests do
   defp transition(request, pending_fun) do
     result =
       update_record(
-        Keys.ctl_capability_request(request["group_id"], request["request_id"]),
+        request,
         fn current ->
           current = ensure_request_deadline(current)
 
@@ -873,10 +1147,11 @@ defmodule SalixAgent.CapabilityRequests do
     end
   end
 
-  defp ensure_request_deadline(%{"expires_at" => deadline} = request) when is_integer(deadline),
+  @doc "Apply the request owner's deadline policy to stored legacy facts."
+  def ensure_request_deadline(%{"expires_at" => deadline} = request) when is_integer(deadline),
     do: request
 
-  defp ensure_request_deadline(request) do
+  def ensure_request_deadline(request) do
     created_at = if is_integer(request["created_at"]), do: request["created_at"], else: 0
     Map.put(request, "expires_at", created_at + @default_request_ttl_seconds)
   end
@@ -894,7 +1169,7 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp settle_receipt_result(request, proposed_result) do
     update_record(
-      Keys.ctl_capability_request(request["group_id"], request["request_id"]),
+      request,
       fn current ->
         cond do
           is_map(current["result"]) -> current
@@ -971,30 +1246,11 @@ defmodule SalixAgent.CapabilityRequests do
   end
 
   defp find_request_for_tool_call(group_id, tenant_id, agent_id, session_id, tool_call_id) do
-    Enum.reduce_while(@request_types, {:ok, nil}, fn request_type, _not_found ->
-      request_id = request_id(%{}, agent_id, session_id, tool_call_id, request_type)
-
-      case get_record(Keys.ctl_capability_request(group_id, request_id)) do
-        {:ok,
-         %{
-           "tenant_id" => ^tenant_id,
-           "source_agent_id" => ^agent_id,
-           "source_session_id" => ^session_id,
-           "tool_call_id" => ^tool_call_id,
-           "request_type" => ^request_type
-         } = request} ->
-          {:halt, {:ok, request}}
-
-        {:ok, _mismatched} ->
-          {:cont, {:ok, nil}}
-
-        {:error, :not_found} ->
-          {:cont, {:ok, nil}}
-
-        {:error, _} = error ->
-          {:halt, error}
-      end
-    end)
+    case PG.find_tool(group_id, tenant_id, agent_id, session_id, tool_call_id, @request_types) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, row} -> {:ok, row.record}
+      error -> error
+    end
   end
 
   defp notify(request) do
@@ -1022,118 +1278,12 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp request_limit(_value), do: {:error, {:bad_request, "invalid limit"}}
 
-  defp get_record(key) do
-    case S3.get(key) do
-      {:ok, %{body: body}} -> Jason.decode(body)
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, _} = err -> err
-    end
+  defp update_record_checked(request, fun, opts \\ []) do
+    PG.update(request["group_id"], request["request_id"], fun, opts)
   end
 
-  defp list_records(prefix) do
-    case S3.list_all(prefix) do
-      {:ok, objects} ->
-        read_records(objects)
-
-      {:error, _} ->
-        []
-    end
-  end
-
-  defp read_records(objects) do
-    context = SystemsObservability.Context.capture()
-
-    objects
-    |> SystemsClock.async_stream(
-      fn %{key: key} ->
-        SystemsObservability.Context.run(context, fn ->
-          case get_record(key) do
-            {:ok, rec} -> [rec]
-            _ -> []
-          end
-        end)
-      end,
-      max_concurrency: @list_read_concurrency,
-      ordered: true,
-      timeout: :infinity
-    )
-    |> Enum.flat_map(fn {:ok, records} -> records end)
-  end
-
-  defp upsert_record(key, new_rec, update_fun), do: upsert_record(key, new_rec, update_fun, 5)
-  defp upsert_record(_key, _new_rec, _update_fun, 0), do: {:error, :precondition_failed}
-
-  defp upsert_record(key, new_rec, update_fun, attempts) do
-    case S3.get(key) do
-      {:ok, %{body: body, etag: etag}} ->
-        current = Jason.decode!(body)
-        updated = update_fun.(current)
-
-        case S3.put(key, Jason.encode!(updated), if_match: etag) do
-          {:ok, _} -> {:ok, updated}
-          {:error, :precondition_failed} -> upsert_record(key, new_rec, update_fun, attempts - 1)
-          {:error, _} = err -> err
-        end
-
-      {:error, :not_found} ->
-        case S3.put(key, Jason.encode!(new_rec), if_none_match: "*") do
-          {:ok, _} -> {:ok, new_rec}
-          {:error, :precondition_failed} -> upsert_record(key, new_rec, update_fun, attempts - 1)
-          {:error, _} = err -> err
-        end
-
-      {:error, _} = err ->
-        err
-    end
-  end
-
-  # `update_record/2` for a caller that may decide, having seen the current
-  # record, that there is nothing to write: the function returns `{:ok,
-  # updated}` or `{:error, reason}`, and an error aborts without a write and
-  # without consuming a retry.
-  defp update_record_checked(key, fun), do: update_record_checked(key, fun, 5)
-  defp update_record_checked(_key, _fun, 0), do: {:error, :precondition_failed}
-
-  defp update_record_checked(key, fun, attempts) do
-    case S3.get(key) do
-      {:ok, %{body: body, etag: etag}} ->
-        current = Jason.decode!(body)
-
-        with {:ok, updated} <- fun.(current) do
-          case S3.put(key, Jason.encode!(updated), if_match: etag) do
-            {:ok, _} -> {:ok, updated}
-            {:error, :precondition_failed} -> update_record_checked(key, fun, attempts - 1)
-            {:error, _} = err -> err
-          end
-        end
-
-      {:error, _} = err ->
-        err
-    end
-  end
-
-  defp update_record(key, fun), do: update_record(key, fun, 5)
-  defp update_record(_key, _fun, 0), do: {:error, :precondition_failed}
-
-  defp update_record(key, fun, attempts) do
-    case S3.get(key) do
-      {:ok, %{body: body, etag: etag}} ->
-        current = Jason.decode!(body)
-        updated = fun.(current)
-
-        if updated == current do
-          {:ok, current}
-        else
-          case S3.put(key, Jason.encode!(updated), if_match: etag) do
-            {:ok, _} -> {:ok, updated}
-            {:error, :precondition_failed} -> update_record(key, fun, attempts - 1)
-            {:error, _} = err -> err
-          end
-        end
-
-      {:error, _} = err ->
-        err
-    end
+  defp update_record(request, fun) do
+    update_record_checked(request, fn current -> {:ok, fun.(current)} end)
   end
 
   defp optional_bool(attrs, key, default) do

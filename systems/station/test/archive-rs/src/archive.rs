@@ -136,7 +136,7 @@ fn lock_worktrees(dir: &Path, marker: &str, locks: &mut Vec<PathBuf>) -> Result<
 }
 
 fn marker(room: &Path) -> String {
-    format!("still.fail archived workspace: {}\n", room.display())
+    format!("Comma archived workspace: {}\n", room.display())
 }
 
 pub fn unlock_worktrees(room: &Path) -> Result<()> {

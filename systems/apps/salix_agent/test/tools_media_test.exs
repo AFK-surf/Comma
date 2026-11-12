@@ -28,7 +28,20 @@ defmodule SalixAgent.ToolsMediaTest do
       transcribe_result(path)
     end
 
+    @impl true
+    def transcribe(agent_id, path, opts) do
+      owner = SystemsRuntime.fetch_env!(:salix_agent, :tools_media_test_pid)
+      SystemsRuntime.Proc.send(owner, {:audio_transcribe_opts, opts})
+      transcribe(agent_id, path)
+    end
+
     defp transcribe_result("/uploads/silence.mp4"), do: {:error, :asr_empty_transcript}
+
+    defp transcribe_result("/uploads/looping.m4a"),
+      do:
+        {:error,
+         {:asr_chunk_failed, 3,
+          {:asr_part_failed, 1, {:asr_http, 503, "provider text the log leaves out"}}}}
 
     defp transcribe_result(_path) do
       {:ok,
@@ -234,6 +247,29 @@ defmodule SalixAgent.ToolsMediaTest do
                AgentWorkspace.read(agent, transcript_path)
     end
 
+    test "asks with the calling agent's Group so the team's glossary spells the names", %{
+      agent: agent,
+      ctx: ctx
+    } do
+      ctx = Map.merge(ctx, %{group_id: "group-1", tenant_id: "tenant-1"})
+
+      assert {_content, [_event]} =
+               Media.transcribe_audio(%{"path" => "/uploads/interview.m4a"}, ctx)
+
+      assert_received {:audio_transcribe_opts, [glossary_of: {"group-1", "tenant-1"}]}
+      assert_received {:audio_transcribe, ^agent, "/uploads/interview.m4a"}
+    end
+
+    test "passes the requester's locale on, for the script of spoken Chinese", %{ctx: ctx} do
+      assert {_content, [_event]} =
+               Media.transcribe_audio(
+                 %{"path" => "/uploads/interview.m4a", "locale" => "zh-TW"},
+                 ctx
+               )
+
+      assert_received {:audio_transcribe_opts, [locale: "zh-TW"]}
+    end
+
     test "reports a file without speech as such instead of a failure", %{
       agent: agent,
       ctx: ctx
@@ -244,6 +280,36 @@ defmodule SalixAgent.ToolsMediaTest do
 
       assert %{"source_path" => "/uploads/silence.mp4", "speech_detected" => false} ==
                Jason.decode!(content)
+    end
+
+    test "logs which chunk failed and why, while the agent sees one sentence", %{ctx: ctx} do
+      owner = SystemsRuntime.Proc.self()
+      id = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+
+      :ok =
+        SystemsRuntime.Telemetry.attach(
+          id,
+          [:salix, :asr, :failure],
+          fn _event, _measurements, metadata, _ ->
+            if SystemsRuntime.Proc.self() == owner,
+              do: SystemsRuntime.Proc.send(owner, {:asr_failed, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> SystemsRuntime.Telemetry.detach(id) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert_raise RuntimeError, "audio transcription failed", fn ->
+            Media.transcribe_audio(%{"path" => "/uploads/looping.m4a"}, ctx)
+          end
+        end)
+
+      assert log =~ "asr_chunk_failed index=3 cause=part_1_asr_http_503"
+      refute log =~ "provider text"
+      refute log =~ "looping.m4a"
+      assert_received {:asr_failed, %{operation: "audio_transcribe", reason: "provider_5xx"}}
     end
   end
 end

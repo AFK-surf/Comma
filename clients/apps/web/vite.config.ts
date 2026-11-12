@@ -191,6 +191,7 @@ export default defineConfig({
       ),
       "@comma/core/web": resolve("../../packages/core/src/hosts/web.ts"),
       "@comma/core-client": resolve("../../packages/core-client/src/index.tsx"),
+      "@comma/i18n/messages": resolve("../../packages/i18n/src/paraglide/messages.js"),
       "@comma/i18n/react": resolve("../../packages/i18n/src/react.tsx"),
       "@comma/i18n": resolve("../../packages/i18n/src/index.ts"),
       "@comma/layout-inspector": resolve(

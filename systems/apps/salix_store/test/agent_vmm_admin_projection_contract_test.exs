@@ -1,15 +1,13 @@
 defmodule SalixStore.AgentVMMAdminProjectionContractTest do
-  require SystemsRuntime.Proc
-
   use SystemsClock.Case, async: false
 
   import Ecto.Query
 
-  alias SalixStore.{AgentVMM, AgentVMMAdminProjection, AgentVMMInstallations, Compute, Repo}
+  alias SalixStore.{AgentVMM, AgentVMMAdminProjection, Compute, Repo}
 
   setup do
     Repo.query!("""
-    TRUNCATE agent_vmm_sessions, agent_vmm_audit_events, agent_vmm_install_operations,
+    TRUNCATE agent_vmm_sessions, agent_vmm_audit_events,
       compute_commands, compute_runtime_instances, compute_workloads, compute_allocations,
       compute_provider_bindings, compute_environments, compute_pools,
       agent_vmm_registrations CASCADE
@@ -60,6 +58,8 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
 
     assert node["id"] == tenant_a.registration.id
     assert node["device_id"] == "shared-device"
+    assert node["registration"]["request_status"] == "ready"
+    assert node["registration"]["retryable"] == false
     assert node["connection"]["status"] == "connected"
     assert node["work"]["workloads"] == 1
     assert node["work"]["draining"] == 1
@@ -99,7 +99,6 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
 
     refute encoded =~ "payload-secret"
     refute encoded =~ "evidence-secret"
-    refute encoded =~ "enrollment_token"
     refute encoded =~ "credential"
     refute encoded =~ "payload"
     refute encoded =~ "evidence"
@@ -133,12 +132,12 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
 
   test "overview binding existence is fenced through the environment tenant" do
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration-tenant-a-only",
         tenant_id: "tenant-a",
         group_id: "group-a",
         device_id: "device-a-only",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     {1, _} =
@@ -181,7 +180,7 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
     assert node["issue"] == "observation_missing"
   end
 
-  defp source_graph_fixture(suffix \\ "a", tenant_id \\ "tenant-a", device_id \\ nil) do
+  defp source_graph_fixture(suffix, tenant_id, device_id \\ nil) do
     device_id = device_id || "device-#{suffix}"
 
     {:ok, pool} =
@@ -204,12 +203,12 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
       })
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration-#{suffix}",
         tenant_id: tenant_id,
         group_id: "shared-group",
         device_id: device_id,
-        enrollment_token: String.duplicate("e", 32)
+        credential: String.duplicate("e", 32)
       })
 
     {1, _} =
@@ -291,26 +290,17 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
 
     now = SystemsClock.utc_now()
 
-    Repo.insert!(%AgentVMMInstallations.Operation{
-      id: "install-#{suffix}",
-      tenant_id: tenant_id,
-      group_id: "shared-group",
-      surface: "comma",
-      scope_key: "project-#{suffix}",
-      client_request_id: "request-#{suffix}",
-      provider: "agent_vmm",
-      environment_id: environment.id,
-      delivery_target_type: "project",
-      delivery_target_id: "project-#{suffix}",
-      registration_id: registration.id,
-      authorization_status: "handed_off",
-      ticket_generation: 1,
-      ticket_secret_hash: :crypto.hash(:sha256, "ticket-#{suffix}-#{tenant_id}"),
-      ticket_status: "consumed",
-      ticket_expires_at: DateTime.add(now, 60, :second),
-      created_at: now,
-      updated_at: now
-    })
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^registration.id),
+      set: [
+        surface: "comma",
+        environment_id: environment.id,
+        client_request_id: "request-#{suffix}",
+        delivery_target_type: "comma_main_device",
+        delivery_target_id: "project-#{suffix}",
+        host_identity_digest: :crypto.hash(:sha256, "host"),
+        ticket_expires_at: DateTime.add(now, 60, :second)
+      ]
+    )
 
     Repo.insert!(%AgentVMM.Session{
       id: "session-#{suffix}",
@@ -344,10 +334,6 @@ defmodule SalixStore.AgentVMMAdminProjectionContractTest do
       %{
         "sequence" => Integer.to_string(sequence),
         "observedUnixMillis" => Integer.to_string(now),
-        "protocolVersion" => "1",
-        "hostApiVersion" => "host.v1",
-        "connectorRelease" => "test",
-        "supportedFeatures" => ["connection-epoch-v1"],
         "capacity" => %{
           "perEnvironmentLimits" => %{},
           "maxEgressMode" => "EGRESS_MODE_DENY_ALL"

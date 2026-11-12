@@ -118,6 +118,29 @@ describe("useUsageBillingCategory", () => {
     expect(screen.getByText("No credit packs available.")).toBeVisible();
   });
 
+  it("shows credits that pay only for sandboxes and storage apart from the balance", async () => {
+    const page = renderUsageBilling(
+      ready(
+        billingSummary({
+          current_credits: 12,
+          non_llm_credits: 4_500_000,
+          non_llm_credits_expires_at: "2026-12-01T00:00:00Z",
+        })
+      )
+    );
+    expect(await screen.findByText("12")).toBeVisible();
+    expect(screen.getByText("4,500,000")).toBeVisible();
+    expect(
+      screen.getByText(/For cloud sandboxes and storage only, not hosted models/)
+    ).toBeVisible();
+    act(() =>
+      page.core.emit("billing", ready(billingSummary({ current_credits: 12 })))
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("4,500,000")).not.toBeInTheDocument()
+    );
+  });
+
   it("says billing is unavailable when the core could read nothing, and reads again on entering", async () => {
     const page = renderUsageBilling({ status: "unavailable" });
     expect(
@@ -480,6 +503,8 @@ describe("useUsageBillingCategory", () => {
 function billingSummary(
   overrides: Partial<{
     current_credits: number;
+    non_llm_credits: number;
+    non_llm_credits_expires_at: string;
     active_subscription: {
       package_code: string;
       package_version: string;

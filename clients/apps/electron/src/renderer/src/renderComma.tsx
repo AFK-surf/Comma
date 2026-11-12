@@ -15,6 +15,7 @@ import {
   readLegacyCommaClientSettings,
   setToastsEnabled,
   startCommaAnalytics,
+  captureCommaRecordingTranscriptionFailed,
   reportCommaClientError,
   CommaAnalyticsLifecycle,
 } from "@comma/app";
@@ -147,7 +148,13 @@ async function renderComma() {
         .then((info) => info.desktopLaunch)
         .catch(() => undefined),
     });
-    import.meta.hot?.dispose(stopAnalytics);
+    const stopTranscriptionReports = bridge.audioCapture.onTranscriptionFailed(
+      captureCommaRecordingTranscriptionFailed
+    );
+    import.meta.hot?.dispose(() => {
+      stopAnalytics();
+      stopTranscriptionReports();
+    });
   }
   createRoot(root!, {
     onUncaughtError: (error) => {

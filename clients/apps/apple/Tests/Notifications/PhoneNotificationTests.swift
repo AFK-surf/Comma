@@ -50,6 +50,25 @@ import UserNotifications
         }
         XCTAssertEqual(acquisitions, 2)
     }
+
+    /// A server without APNs answers the core's registration 503 `push_unavailable`; Settings says so.
+    func testRegistrationTheServerRefusesShowsTheServersReason() async {
+        let core = FakeCore()
+        core.on("notifications.registerDevice") { _ in
+            throw CoreError(code: "push_unavailable", message: "push_unavailable", status: 503)
+        }
+        let channel = CoreDeviceNotificationChannel(core: core, sessionID: "session", accountID: "account") { true }
+        let controller = TaskNotificationController(origin: "https://notifications.example.invalid",
+            bundleID: "surf.comma.ios.dev", environment: .sandbox, locale: "en-US",
+            preferences: TaskAlertsScreenshotPreferences(), system: TaskAlertsScreenshotSystem())
+        controller.setContext(sessionID: "session", accountID: "account", workspace: Workspace(id: "w", groupID: "g", name: ""))
+        controller.attach(channel)
+        await controller.settle()
+        controller.intent = true
+        await controller.settle()
+        XCTAssertEqual(controller.status, .enableFailed)
+        XCTAssertEqual(controller.failureMessage, "Notifications are unavailable on this server. Try again later.")
+    }
 }
 
 extension PhoneNotificationTests {

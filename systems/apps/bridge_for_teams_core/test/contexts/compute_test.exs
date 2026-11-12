@@ -8,7 +8,7 @@ defmodule BridgeForTeams.ComputeTest do
 
   setup do
     Repo.query!(
-      "TRUNCATE agent_vmm_install_operations, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
+      "TRUNCATE compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
     )
 
     :ok
@@ -195,7 +195,7 @@ defmodule BridgeForTeams.ComputeTest do
              })
 
     assert operation.delivery_target_id == runner.stable_id
-    assert operation.scope_key == project.id
+    assert operation.owner_id == project.id
 
     assert {:ok, repeated} =
              Compute.request_agent_vmm_install(org, project, %{
@@ -206,17 +206,17 @@ defmodule BridgeForTeams.ComputeTest do
     assert repeated.id == operation.id
     assert repeated.environment_id == operation.environment_id
     assert Repo.aggregate(SalixStore.Compute.Environment, :count) == 1
-    assert Repo.aggregate(SalixStore.AgentVMMInstallations.Operation, :count) == 1
+    assert Repo.aggregate(SalixStore.AgentVMM.Registration, :count) == 1
 
     assert {:ok, fetched} = Compute.get_agent_vmm_install(org, project, operation.id)
-    assert fetched.registration_id == operation.registration_id
+    assert fetched.id == operation.id
 
     assert {:ok, descriptor} = Compute.deliver_agent_vmm_install(runner)
-    assert descriptor.operation.id == operation.id
-    refute Map.has_key?(descriptor.operation, :ticket_secret_hash)
+    assert descriptor.registration.id == operation.id
+    refute Map.has_key?(descriptor.registration, :ticket_secret_hash)
 
     assert {:ok, revoked} = Compute.revoke_agent_vmm_install(org, project, operation.id)
-    assert revoked.authorization_status == "revoked"
+    assert revoked.status == "removed"
   end
 
   test "Salix reads the Runner a Project's Host is on, online only while its heartbeat is recent" do
@@ -238,10 +238,10 @@ defmodule BridgeForTeams.ComputeTest do
 
     tenant = org.salix_tenant_id
 
-    assert SalixStore.AgentVMMInstallations.bft_runner(tenant, operation.registration_id) ==
+    assert SalixStore.AgentVMMRegistrations.bft_runner(tenant, operation.id) ==
              runner.stable_id
 
-    assert SalixStore.AgentVMMInstallations.bft_runner("other-tenant", operation.registration_id) ==
+    assert SalixStore.AgentVMMRegistrations.bft_runner("other-tenant", operation.id) ==
              nil
 
     assert {:ok, %{"name" => "Office Mac", "status" => "online"}} =

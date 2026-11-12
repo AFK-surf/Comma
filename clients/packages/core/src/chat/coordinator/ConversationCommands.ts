@@ -157,7 +157,9 @@ export class ConversationCommands {
   /** Reads the page of history before the oldest message the transcript holds. */
   older(input: ChatLeasedTarget): ChatCommandReceipt {
     const entry = this.#entries.required(input);
-    entry.channel.loadOlder();
+    entry.channel.loadOlder(
+      () => entry.subscribers.get(input.subscriberId) === input.leaseId
+    );
     entry.boundary.assertCurrent();
     return this.#publisher.receipt();
   }

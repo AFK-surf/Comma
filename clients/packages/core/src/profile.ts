@@ -60,7 +60,7 @@ export class Profiles {
     });
     kernel.calls({
       "profile.refresh": {
-        run: () => this.#read(Priority.asked).pipe(Effect.as(null)),
+        run: () => this.refresh(),
       },
       "profile.update": {
         run: (p) => {
@@ -171,6 +171,11 @@ export class Profiles {
     if (this.#locale?.change === change) this.#locale = undefined;
     if (this.#avatar?.change === change) this.#avatar = undefined;
     this.#invalidate();
+  }
+
+  /** Reads the profile again now (`profile.refresh`). */
+  refresh(): Effect.Effect<null, CoreError> {
+    return this.#read(Priority.asked).pipe(Effect.as(null));
   }
 
   #invalidate(): void {

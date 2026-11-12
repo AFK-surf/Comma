@@ -1,6 +1,12 @@
 // What a UI may use of chat (`@comma/core/chat`): the message shapes the core sends and the pure helpers that word
 // and lay them out. Effect-free, and no requests: the conversation itself is the core's (its `chat` topics and calls).
 export * from "./model/protocol";
+export {
+  isPictureOf,
+  sharedScreenFileName,
+  sharedScreenLine,
+  type ScreenPictureType,
+} from "./model/screenShare";
 export * from "./model/userMessageText";
 export * from "./model/attachmentQuota";
 export { projectionToChannelState } from "./view-state";

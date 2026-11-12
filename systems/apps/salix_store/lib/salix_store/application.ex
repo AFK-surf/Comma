@@ -23,15 +23,8 @@ defmodule SalixStore.Application do
           # the roster (SalixStore.Stations.Events).
           {Phoenix.PubSub, name: SalixStore.Stations.Events.pubsub()},
           SalixStore.Ids,
-          SalixStore.Inflight.Poller,
-          # The shared CommaLog JSONL logger is started by the :comma_log application
-          # (a dependency), so it is already up before this app boots.
-          {Finch,
-           name: SalixStore.Finch,
-           pools: %{
-             default: [size: 50, count: 1]
-           }}
-        ] ++ fake_children()
+          SalixStore.Inflight.Poller
+        ] ++ transport_children() ++ fake_children()
 
     opts = [strategy: :one_for_one, name: SalixStore.Supervisor]
     SystemsRuntime.Supervisor.start_link(children, opts)
@@ -65,6 +58,16 @@ defmodule SalixStore.Application do
       ]
     else
       []
+    end
+  end
+
+  # Historical migrations can start this application after the release command
+  # has started its transport. Keep that transport under its existing owner.
+  defp transport_children do
+    if SystemsRuntime.Proc.whereis(SalixStore.Finch) do
+      []
+    else
+      [{Finch, name: SalixStore.Finch, pools: %{default: [size: 50, count: 1]}}]
     end
   end
 

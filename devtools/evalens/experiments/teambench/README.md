@@ -51,7 +51,7 @@ must create `submission/attestation.json`. Only the post-run evaluator sees
 grader sources and expected outputs.
 
 Salix VFS is authoritative but not executable. Evalens creates one local
-`salix-connect` container per group under alias `teambench-runtime`. Workers copy
+station container per group under alias `teambench-runtime`. Workers copy
 changed VFS files into its `/workspace` before commands. Evalens does not do
 those copies.
 

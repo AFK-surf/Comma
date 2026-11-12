@@ -32,6 +32,15 @@ defmodule Comma.Salix.Client do
   @callback enter_meeting_task(map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   @callback update_meeting_task(map(), String.t(), String.t(), map()) ::
               {:ok, map()} | {:error, term()}
+  @doc """
+  Create the Task an accepted Task Request asks for (`Comma.TaskRequests`).
+  `attrs` carries `title`, `content`, `client_request_id`, `owner_user_id`,
+  `task_request` (`id`, `sender_user_id`, `sender_name`) and optionally
+  `runs_on` and `model`. With `stations: false` a Task whose place would be a
+  station is refused with `:station_place` and nothing is created.
+  """
+  @callback create_requested_task(workspace :: map(), attrs :: map(), opts :: keyword()) ::
+              {:ok, map()} | {:error, term()}
 
   @callback ensure_group_router_conversation(workspace :: map()) ::
               {:ok, map()} | {:error, term()}
@@ -47,11 +56,19 @@ defmodule Comma.Salix.Client do
               query :: String.t(),
               opts :: keyword()
             ) :: {:ok, [map()]} | {:error, term()}
+  @callback task_message_matches(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              query :: String.t()
+            ) :: {:ok, [map()]} | {:error, term()}
+  @callback list_task_files(workspace :: map(), opts :: keyword()) ::
+              {:ok, map()} | {:error, term()}
   @callback get_group_conversation(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, map()} | {:error, term()}
   @callback get_group_conversation_participant_history(map(), String.t(), String.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
   @optional_callbacks enter_meeting_task: 3,
+                      create_requested_task: 3,
                       update_meeting_task: 4,
                       get_group_conversation_participant_history: 4
   @callback list_group_conversation_pins(workspace :: map()) ::
@@ -339,6 +356,30 @@ defmodule Comma.Salix.Client do
             ) :: {:ok, map()} | {:error, term()}
 
   @doc """
+  Begins a Router VFS file of `size` bytes that arrives in parts, each in a
+  request of its own: `put_agent_file_upload_part/4` for parts `1..n` of
+  `part_size` bytes (the last one shorter), then `finish_agent_file_upload/4`.
+  """
+  @callback begin_agent_file_upload(workspace :: map(), size :: pos_integer()) ::
+              {:ok, %{upload_id: String.t(), part_size: pos_integer()}} | {:error, term()}
+
+  @doc "Stores part `number` of an upload; returns its etag."
+  @callback put_agent_file_upload_part(
+              workspace :: map(),
+              upload_id :: String.t(),
+              number :: pos_integer(),
+              body :: binary()
+            ) :: {:ok, String.t()} | {:error, term()}
+
+  @doc "Writes an upload whose parts all arrived to `path`, from their etags in order."
+  @callback finish_agent_file_upload(
+              workspace :: map(),
+              upload_id :: String.t(),
+              path :: String.t(),
+              etags :: [String.t()]
+            ) :: {:ok, map()} | {:error, term()}
+
+  @doc """
   Maps Router VFS `path` to an Agent's immutable blob `ref`, under the same
   Group + Agent authorization as `stream_agent_blob/4`, without copying it.
   """
@@ -349,10 +390,21 @@ defmodule Comma.Salix.Client do
               path :: String.t()
             ) :: {:ok, map()} | {:error, term()}
 
+  @doc """
+  The blob a Router VFS file is stored as, and the Agent whose blob
+  authorization (`stream_agent_blob/4`, `presign_agent_blob/4`) reads it.
+  """
+  @callback agent_file_ref(workspace :: map(), path :: String.t()) ::
+              {:ok, %{agent_id: String.t(), ref: map()}} | {:error, term()}
+
   @optional_callbacks list_agent_files: 3,
+                      agent_file_ref: 2,
                       read_agent_file_as: 4,
                       write_agent_file_as: 4,
                       write_agent_file_stream: 3,
+                      begin_agent_file_upload: 2,
+                      put_agent_file_upload_part: 4,
+                      finish_agent_file_upload: 4,
                       link_agent_blob: 4,
                       presign_agent_blob: 4,
                       delete_agent_file: 3,
@@ -382,7 +434,14 @@ defmodule Comma.Salix.Client do
               resolution :: map()
             ) :: {:ok, map()} | {:error, term()}
 
-  @optional_callbacks conversation_uses_private_model?: 2,
+  @doc """
+  Stops a deleted Workspace's effects outside Comma: removes its Group's IM
+  connections and turns off its Cloud VM. Repeating it is harmless.
+  """
+  @callback retire_workspace_scope(workspace :: map()) :: :ok | {:error, term()}
+
+  @optional_callbacks retire_workspace_scope: 1,
+                      conversation_uses_private_model?: 2,
                       verify_workspace_scope: 1,
                       get_group_condensed_workspace: 1,
                       set_group_condensed_workspace_enabled: 2,
@@ -402,6 +461,8 @@ defmodule Comma.Salix.Client do
                       list_group_conversations: 2,
                       list_group_activity_tasks: 1,
                       search_group_tasks: 3,
+                      task_message_matches: 3,
+                      list_task_files: 2,
                       get_group_conversation: 2,
                       list_group_conversation_pins: 1,
                       pin_group_conversation: 2,
@@ -504,17 +565,32 @@ defmodule Comma.Salix.Client do
   def write_agent_file_stream(workspace, path, stream),
     do: call_optional(:write_agent_file_stream, [workspace, path, stream])
 
+  def begin_agent_file_upload(workspace, size),
+    do: call_optional(:begin_agent_file_upload, [workspace, size])
+
+  def put_agent_file_upload_part(workspace, upload_id, number, body),
+    do: call_optional(:put_agent_file_upload_part, [workspace, upload_id, number, body])
+
+  def finish_agent_file_upload(workspace, upload_id, path, etags),
+    do: call_optional(:finish_agent_file_upload, [workspace, upload_id, path, etags])
+
   def get_group_conversation_message(workspace, conversation_id, message_id),
     do: call_optional(:get_group_conversation_message, [workspace, conversation_id, message_id])
 
   def presign_agent_blob(workspace, agent_id, ref, opts),
     do: call_optional(:presign_agent_blob, [workspace, agent_id, ref, opts])
 
+  def agent_file_ref(workspace, path),
+    do: call_optional(:agent_file_ref, [workspace, path])
+
   def link_agent_blob(workspace, agent_id, ref, path),
     do: call_optional(:link_agent_blob, [workspace, agent_id, ref, path])
 
   def delete_agent_file(workspace, path, opts),
     do: call_optional(:delete_agent_file, [workspace, path, opts])
+
+  def retire_workspace_scope(workspace),
+    do: call_optional(:retire_workspace_scope, [workspace])
 
   def get_router_instructions(workspace),
     do: call_optional(:get_router_instructions, [workspace])

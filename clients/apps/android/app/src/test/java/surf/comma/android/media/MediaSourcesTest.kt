@@ -37,6 +37,19 @@ class MediaSourcesTest {
         assertEquals(25_000_000L, testRef().copy(size = 25_000_000).size)
     }
 
+    @Test fun aFileThePersonUploadedOfAnyTypeIsAskedOfTheCoreByItsPath() {
+        val video = surf.comma.android.conversation.WorkspaceFile("185.mp4", "/uploads/abcdefghijklmnopqrstuv-185.mp4")
+        val pdf = surf.comma.android.conversation.MessageAttachment(
+            blockType = "file", blockIndex = 1, fileName = "r3-test.pdf", title = null, mimeType = "application/pdf", size = 3,
+            workspacePath = "/uploads/abcdefghijklmnopqrstuv-r3-test.pdf", widthPx = null, heightPx = null, blobRef = null,
+            agentId = null, downloadable = false,
+        )
+        assertEquals(MediaSource.UploadedFile("/uploads/abcdefghijklmnopqrstuv-185.mp4"), video.toChatAttachment().file.source)
+        assertEquals(AttachmentDisplay.VIDEO, MediaRouting.display(video.toChatAttachment().file))
+        assertEquals(MediaSource.UploadedFile("/uploads/abcdefghijklmnopqrstuv-r3-test.pdf"),
+            pdf.toChatAttachment("c", "m", "file").file.source)
+    }
+
     @Test fun keysIncludeSessionAccountGroupAndOriginAndUseBlobHash() {
         val session = testSession()
         val source = MediaSource.AgentResource("agent", testRef())

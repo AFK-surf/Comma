@@ -132,7 +132,8 @@ private class CoreHomeDeviceBackend(
         val id = json.string("device_id") ?: return null
         return HomeDevice(id, json.string("name") ?: id, json.optString("status") == "connected",
             json.optJSONObject("system_info")?.string("client_source"),
-            json.optLong("disconnected_at").takeIf { it > 0 }, json.optBoolean("allows_operations"))
+            json.optLong("disconnected_at").takeIf { it > 0 }, json.optBoolean("allows_operations"),
+            json.optBoolean("screen_view"), json.string("device_kind"))
     }
 
     private suspend fun ignoreMissing(block: suspend () -> Unit) {

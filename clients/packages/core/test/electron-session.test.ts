@@ -1,6 +1,7 @@
 // The Electron session lifecycle in the core (session/electron-lifecycle.ts): what Main's session service did, on a
 // TestClock, against Main as the core sees it (testing/fake-main.ts: the credential store by reference, the bearers
 // kept out of the core, the gate, the Google window) and a server that sees the bearer Main attaches.
+import { createHash } from "node:crypto";
 import {
   sessionExpectation,
   type SessionLifecycleSnapshot,
@@ -89,7 +90,6 @@ function setup(
     pending?: StoredCredential[];
     origin?: string;
     resumed?: SessionAuthorityResume;
-    showsKeptAccount?: boolean;
     android?: boolean;
     ios?: boolean;
     api?: FakeCommaApi;
@@ -106,7 +106,6 @@ function setup(
   const main = new FakeMain(host, {
     ...(options.origin ? { origin: options.origin } : {}),
     ...(options.resumed ? { resumed: options.resumed } : {}),
-    ...(options.showsKeptAccount ? { showsKeptAccount: true } : {}),
     ...(options.android ? { clientKind: "android", clientPlatform: "android" } : {}),
     ...(options.ios ? { clientKind: "ios", clientPlatform: "ios" } : {}),
   });
@@ -220,221 +219,175 @@ async function requested(t: Setup, email = "peng@example.com") {
   return result.value;
 }
 
+function watchAccountValues(client: CoreClient) {
+  const values: Record<string, unknown> = {};
+  for (const topic of ["workspace", "onboardingWorkspace", "profile"]) {
+    client.subscribe(
+      { topic },
+      (value) => {
+        values[topic] = value;
+      },
+      () => undefined
+    );
+  }
+  return values;
+}
+
 describe("the Electron session lifecycle", () => {
-  it("keeps a stored credential's lease shut until the startup probe confirms it, and sends its bearer only from Main", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      before: ({ api }) => serveSessions(api, { main_secret: currentSession() }),
-    });
-    expect(t.state().phase).toBe("initializing");
-    expect(t.main.gateLease()).toBeNull();
-    expect(t.core.session.lease()).toBeNull();
+  it.each(["electron", "ios", "android"] as const)(
+    "restores the %s account before the startup probe answers, and keeps its lease after confirmation",
+    async (kind) => {
+      let release!: () => void;
+      const t = setup({
+        stored: storedCredential(),
+        ios: kind === "ios",
+        android: kind === "android",
+        before: ({ api }) => {
+          serveSessions(api, { main_secret: currentSession() });
+          release = api.hold("GET", "/v1/comma/auth/session");
+        },
+      });
+      await t.time.pass(20);
+      expect(t.state()).toMatchObject({
+        phase: "signed_in",
+        principal: { userId: "user-1" },
+      });
+      const account = t.core.session.current();
+      const lease = t.core.session.lease();
+      expect(account).not.toBeNull();
+      expect(lease).not.toBeNull();
+      expect(t.main.gateLease()).not.toBeNull();
+      release();
+      await t.time.pass(20);
+      expect(t.core.session.current()).toBe(account);
+      expect(t.core.session.lease()).toBe(lease);
+      expect(t.main.leaks(t.core.recorder!.dump())).toEqual([]);
+    }
+  );
 
-    await t.time.pass(20);
+  it.each(["503", "offline", "timeout"] as const)(
+    "keeps the restored account through a startup %s and reconnects in the background",
+    async (failure) => {
+      const t = setup({
+        stored: storedCredential(),
+        before: ({ api }) => {
+          api.on(
+            "GET",
+            "/v1/comma/auth/session",
+            failure === "offline"
+              ? offline("network down")
+              : json(503, { error: "unavailable" })
+          );
+          if (failure === "timeout") api.holdBody("GET", "/v1/comma/auth/session");
+        },
+      });
+      await t.time.pass(failure === "timeout" ? 5_020 : 20);
+      expect(t.state().phase).toBe("signed_in");
+      const account = t.core.session.current();
+      const lease = t.core.session.lease();
+      expect(account).not.toBeNull();
+      expect(t.core.session.withheld()).toBe(false);
+      expect(lease).not.toBeNull();
+      expect(t.main.active?.token).toBe("main_secret");
+      // Stop holding response bodies before the background retry.
+      serveSessions(t.api, { main_secret: currentSession() });
+      await t.time.pass(1_100, 100);
+      expect(t.api.seen("GET", "/v1/comma/auth/session").length).toBeGreaterThan(1);
+      expect(t.state().phase).toBe("signed_in");
+      expect(t.core.session.current()).toBe(account);
+      expect(t.core.session.lease()).toBe(lease);
+      expect(t.host.deleted).toEqual([]);
+    }
+  );
 
-    expect(t.state()).toMatchObject({ generation: 1, phase: "signed_in" });
-    expect(t.main.gateLease()).toMatchObject({
-      audience: audienceA,
-      generation: 1,
-      sessionId: "session-1",
-    });
-    expect(t.api.seen("GET", "/v1/comma/auth/session").map(bearer)).toEqual([
-      "main_secret",
-    ]);
-    expect(t.main.leaks(t.core.recorder!.dump())).toEqual([]);
-  });
-
-  it("gives up a 200 probe whose body never completes after 5 s and settles initialization", async () => {
+  it("opens the saved workspace and profile after a cold restart with no network", async () => {
+    const workspace = {
+      id: "wsp_1",
+      group_id: "grp_1",
+      name: "Saved",
+      status: "ready",
+    };
     const t = setup({
       stored: storedCredential(),
       before: ({ api }) => {
         serveSessions(api, { main_secret: currentSession() });
-        api.holdBody("GET", "/v1/comma/auth/session");
+        api.on("GET", "/v1/comma/workspaces", { data: [workspace] });
+        api.on("POST", "/v1/comma/me/bootstrap", { status: "ready", workspace });
+        api.on("GET", "/v1/comma/me/profile", {
+          id: "user-1",
+          email: "peng@example.com",
+          name: "Saved name",
+        });
       },
     });
-    await t.time.pass(4_990);
-    expect(t.state().phase).toBe("initializing");
-    await t.time.pass(20);
-    expect(t.state()).toMatchObject({
-      phase: "indeterminate",
-      problem: { code: "session_probe_unavailable" },
-    });
-    expect(t.main.gateLease()).toBeNull();
-  });
-
-  it("probes the stored credential again on a retry after a failed startup probe, and no more once settled", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      before: ({ api }) => {
-        serveSessions(api, { main_secret: currentSession() });
-        api.on("GET", "/v1/comma/auth/session", () =>
-          api.seen("GET", "/v1/comma/auth/session").length === 1
-            ? json(503, { error: "unavailable" })
-            : json(200, currentSession())
-        );
-      },
-    });
-    await t.time.pass(20);
-    expect(t.state().phase).toBe("indeterminate");
-    expect(t.main.gateLease()).toBeNull();
-
-    expect(
-      await t.run(t.lifecycle.reconcile({ reason: "manual_retry" }))
-    ).toMatchObject({
-      ok: true,
-      value: { phase: "signed_in" },
-    });
-    // An unqualified retry is not admitted once the state settled.
-    expect(
-      await t.run(t.lifecycle.reconcile({ reason: "manual_retry" }))
-    ).toMatchObject({
-      ok: false,
-      error: { code: "conflict" },
-    });
-    expect(t.api.seen("GET", "/v1/comma/auth/session")).toHaveLength(2);
-  });
-
-  it("recovers the connection while a window shows it: at 0, 1, 3, 10 and 30 seconds, then again when asked", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      before: ({ api }) =>
-        api.on("GET", "/v1/comma/auth/session", json(503, { error: "unavailable" })),
-    });
-    const probes = () => t.api.seen("GET", "/v1/comma/auth/session").length;
-    await t.time.pass(20);
-    expect(t.state().phase).toBe("indeterminate");
-    // No window shows it: the core waits.
-    await t.time.pass(60_000, 1_000);
-    expect(probes()).toBe(1);
-
-    const shown = t.showRecovery();
-    await t.time.pass(20);
-    expect(shown.state()).toBe("trying");
-    expect(probes()).toBe(2);
-    await t.time.pass(44_000, 500);
-    expect(probes()).toBe(6);
-    expect(shown.state()).toBe("exhausted");
-    await t.time.pass(120_000, 5_000);
-    expect(probes()).toBe(6);
-
-    // The person tries again: a new burst, until the server answers.
-    t.api.on("GET", "/v1/comma/auth/session", json(200, currentSession()));
-    serveSessions(t.api, { main_secret: currentSession() });
-    await t.ask("session.recover");
+    const first = watchAccountValues(t.client);
     await t.time.pass(100);
-    expect(t.state().phase).toBe("signed_in");
-    expect(shown.state()).toBeNull();
-    shown.stop();
-  });
-
-  it("stops recovering as soon as no window shows it", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      before: ({ api }) =>
-        api.on("GET", "/v1/comma/auth/session", json(503, { error: "unavailable" })),
+    expect(first.onboardingWorkspace).toMatchObject({
+      status: "ready",
+      workspaceId: "wsp_1",
     });
-    const probes = () => t.api.seen("GET", "/v1/comma/auth/session").length;
-    await t.time.pass(20);
-    const shown = t.showRecovery();
-    await t.time.pass(1_100, 100);
-    expect(probes()).toBe(3);
-    shown.stop();
-    await t.time.pass(120_000, 5_000);
-    expect(probes()).toBe(3);
-  });
-
-  it("shows a stored credential's kept account while its check cannot reach the server, for a host that asks, and confirms it on a retry", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      showsKeptAccount: true,
-      before: ({ api }) =>
-        api.on("GET", "/v1/comma/auth/session", () =>
-          api.seen("GET", "/v1/comma/auth/session").length === 1
-            ? json(503, { error: "unavailable" })
-            : json(200, currentSession())
-        ),
+    expect(first.profile).toMatchObject({ profile: { name: "Saved name" } });
+    t.client.close();
+    t.core.close();
+    for (const [method, path] of [
+      ["GET", "/v1/comma/auth/session"],
+      ["GET", "/v1/comma/workspaces"],
+      ["POST", "/v1/comma/me/bootstrap"],
+      ["GET", "/v1/comma/me/profile"],
+    ] as const)
+      t.api.on(method, path, offline("network down"));
+    // Force the database to finish opening after subscriptions, as on a cold native launch.
+    t.host.openDbMs = 50;
+    const again = harness(startTestCore(t.host, { coalesceMs: 0 }), t.host, t.main);
+    const saved = watchAccountValues(again.client);
+    await t.time.pass(200);
+    expect(again.state().phase).toBe("signed_in");
+    expect(saved.profile).toMatchObject({ profile: { name: "Saved name" } });
+    expect(saved.workspace).toMatchObject({
+      workspace: { id: "wsp_1", name: "Saved" },
     });
-    await t.time.pass(20);
-    expect(t.state().phase).toBe("indeterminate");
-    // What the device keeps for the account is open and shown; no request can go out for it.
-    expect(t.core.session.value()).toMatchObject({
-      phase: "signed_in",
-      userId: "user-1",
+    expect(saved.onboardingWorkspace).toMatchObject({
+      status: "ready",
+      workspaceId: "wsp_1",
     });
-    const kept = t.core.session.current();
-    expect(kept).not.toBeNull();
-    expect(t.core.session.withheld()).toBe(false);
-    expect(t.core.session.lease()).toBeNull();
-    expect(t.main.gateLease()).toBeNull();
-
-    expect(
-      await t.run(t.lifecycle.reconcile({ reason: "manual_retry" }))
-    ).toMatchObject({ ok: true, value: { phase: "signed_in" } });
-    expect(t.core.session.current()).toBe(kept);
-    expect(t.core.session.lease()).not.toBeNull();
     expect(t.host.deleted).toEqual([]);
   });
 
-  it("closes and deletes a kept account whose stored credential the server refuses", async () => {
+  it("signs out while the startup check cannot reach the server and queues revocation", async () => {
     const t = setup({
       stored: storedCredential(),
-      showsKeptAccount: true,
-      before: ({ api }) => serveSessions(api, {}),
-    });
-    await t.time.pass(20);
-    expect(t.state()).toMatchObject({ phase: "signed_out", reason: "unauthorized" });
-    expect(t.core.session.value().phase).toBe("signed_out");
-    expect(t.core.session.current()).toBeNull();
-    expect(t.host.deleted).toHaveLength(1);
-  });
-
-  it("signs out of a kept account while the server cannot be reached, and queues its credential for revocation", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      showsKeptAccount: true,
       before: ({ api }) =>
         api.on("GET", "/v1/comma/auth/session", json(503, { error: "unavailable" })),
     });
     await t.time.pass(20);
-    const undecided = t.state();
-    expect(undecided.phase).toBe("indeterminate");
-    expect(
-      await t.run(
-        t.lifecycle.signOut({
-          expected: {
-            authorityInstanceId: undecided.authority.authorityInstanceId,
-            expectedSessionId: null,
-            generation: undecided.generation,
-          },
-        })
-      )
-    ).toMatchObject({ ok: true, value: { phase: "signed_out" } });
+    expect(t.state().phase).toBe("signed_in");
+    expect(await t.run(t.lifecycle.signOut({ expected: t.expected() }))).toMatchObject({
+      ok: true,
+      value: { phase: "signed_out" },
+    });
     expect(t.main.active).toBeNull();
     expect(t.main.pending.map((pending) => pending.token)).toEqual(["main_secret"]);
     expect(t.core.session.current()).toBeNull();
   });
 
-  it("shows nothing of a stored credential's account before the server confirms it, unless the host asks", async () => {
+  it("closes the restored account when the startup probe explicitly refuses its credential", async () => {
+    let release!: () => void;
     const t = setup({
       stored: storedCredential(),
-      before: ({ api }) =>
-        api.on("GET", "/v1/comma/auth/session", json(503, { error: "unavailable" })),
+      before: ({ api }) => {
+        serveSessions(api, {});
+        release = api.hold("GET", "/v1/comma/auth/session");
+      },
     });
     await t.time.pass(20);
-    expect(t.state().phase).toBe("indeterminate");
-    expect(t.core.session.value().phase).toBe("unknown");
-    expect(t.core.session.current()).toBeNull();
-  });
-
-  it("removes a credential the startup probe finds refused, and never opens the lease", async () => {
-    const t = setup({
-      stored: storedCredential(),
-      before: ({ api }) => serveSessions(api, {}),
-    });
+    expect(t.state().phase).toBe("signed_in");
+    release();
     await t.time.pass(20);
     expect(t.state()).toMatchObject({ phase: "signed_out", reason: "unauthorized" });
     expect(t.main.active).toBeNull();
-    expect(t.main.told.some((told) => told.lease !== null)).toBe(false);
+    expect(t.main.gateLease()).toBeNull();
+    expect(t.core.session.current()).toBeNull();
+    expect(t.host.deleted).toHaveLength(1);
   });
 
   it.each(["sign_out", "current_401"] as const)(
@@ -701,6 +654,7 @@ describe("the Electron session lifecycle", () => {
             client_kind: "android",
             client_platform: "android",
             credential: "google-id-token",
+            native_proof: true,
             nonce: "backend-nonce",
           });
           return json(200, issuedSession());
@@ -737,6 +691,7 @@ describe("the Electron session lifecycle", () => {
             client_kind: "ios",
             client_platform: "ios",
             identity_token: "apple-identity-token",
+            native_proof: true,
           });
           return json(200, issuedSession());
         });
@@ -749,10 +704,6 @@ describe("the Electron session lifecycle", () => {
       return apple(input);
     };
     await startedSignedOut(t);
-    // The iPhone has no Google sign-in.
-    expect(
-      await t.ask("session.google.desktop", { expected: t.expected() })
-    ).toMatchObject({ ok: false, error: { code: "unsupported" } });
     expect(await t.ask("session.apple", { expected: t.expected() })).toMatchObject({
       ok: true,
       value: { status: "signed_in", snapshot: { phase: "signed_in" } },
@@ -880,6 +831,61 @@ describe("the Electron session lifecycle", () => {
       "/v1/comma/auth/google",
     ]);
     expect(t.main.googleDone).toEqual([["grant-1", true]]);
+  });
+
+  it("uses the iOS Google attempt and native ID token through the same session chain", async () => {
+    const t = setup({
+      ios: true,
+      before: ({ api, main }) => {
+        api.on("POST", "/v1/comma/auth/google/attempt", (request) => {
+          expect(request.body).toEqual({ platform: "ios" });
+          return json(200, { ...googleAttempt, platform: "ios" });
+        });
+        main.google = (input) => {
+          expect(input).toEqual({ clientId: "desktop-client", nonce: "backend-nonce" });
+          return Effect.succeed({ idToken: "ios-id-token", grant: "" });
+        };
+        api.on("POST", "/v1/comma/auth/google", (request) => {
+          expect(request.body).toEqual({
+            attempt_id: googleAttempt.attempt_id,
+            nonce: "backend-nonce",
+            credential: "ios-id-token",
+            native_proof: true,
+            client_kind: "ios",
+            client_platform: "ios",
+          });
+          return json(200, issuedSession());
+        });
+      },
+    });
+    await startedSignedOut(t);
+    const result = await t.ask("session.google.desktop", { expected: t.expected() });
+    expect(result).toMatchObject({ ok: true, value: { status: "signed_in" } });
+    expect(JSON.stringify(result)).not.toContain("issued_secret");
+    expect(t.main.active?.token).toBe("issued_secret");
+  });
+
+  it("treats a closed Google sheet as cancellation without exchanging a token", async () => {
+    const t = setup({
+      ios: true,
+      before: ({ api, main }) => {
+        api.on("POST", "/v1/comma/auth/google/attempt", {
+          ...googleAttempt,
+          platform: "ios",
+        });
+        main.google = () => Effect.fail(new HostError("cancelled"));
+      },
+    });
+    await startedSignedOut(t);
+    expect(
+      await t.ask("session.google.desktop", { expected: t.expected() })
+    ).toMatchObject({
+      ok: false,
+      error: { code: "cancelled" },
+    });
+    expect(t.state().phase).toBe("signed_out");
+    expect(t.main.active).toBeNull();
+    expect(t.api.seen("POST", "/v1/comma/auth/google")).toHaveLength(0);
   });
 
   it("replaces an emailed code under way with a Google sign-in, which signs in without the code", async () => {
@@ -1972,7 +1978,6 @@ describe("the Electron session lifecycle", () => {
       time,
       resumed: before.main.resume()!,
     });
-    expect(after.main.told).toEqual([]);
     await time.pass(20);
     expect(after.state()).toMatchObject({
       authority: { authorityInstanceId: lease.authorityInstanceId },
@@ -1996,7 +2001,11 @@ describe("the Electron session lifecycle", () => {
     // Main saw a 401 while no core ran: its gate closed fail-closed (the session it hands over is none).
     const resumed = { ...before.main.resume()!, sessionId: null };
 
+    const release = api.hold("GET", "/v1/comma/auth/session");
     const after = setup({ stored: before.main.active!, api, time, resumed });
+    await time.pass(20);
+    expect(after.core.session.lease()).toBeNull();
+    release();
     await time.pass(20);
     expect(after.state()).toMatchObject({
       generation: lease.generation + 1,
@@ -2095,5 +2104,587 @@ describe("the Electron session lifecycle", () => {
       phase: "signed_in",
       session: { sessionId: "session-1" },
     });
+  });
+});
+
+describe("accounts kept signed in on a bearer device", () => {
+  const first = "account-api.comma.test-user-1";
+  const second = "account-api.comma.test-user-2";
+
+  /** Signed in as user-1 (stored), with the server knowing user-2's sign-in by emailed code too. */
+  async function signedInAsFirst() {
+    const t = setup({
+      stored: storedCredential(),
+      before: ({ api }) => {
+        serveEmail(api, () =>
+          issuedSession({
+            sessionId: "session-2",
+            token: "second_secret",
+            userId: "user-2",
+          })
+        );
+        serveSessions(api, {
+          main_secret: currentSession(),
+          second_secret: {
+            ...currentSession(),
+            session_id: "session-2",
+            user: { ...currentSession().user, id: "user-2" },
+          },
+        });
+      },
+    });
+    await t.time.pass(20);
+    expect(t.state()).toMatchObject({
+      phase: "signed_in",
+      principal: { userId: "user-1" },
+    });
+    return t;
+  }
+
+  /** Adds user-2: the account in use set aside, then signed in by emailed code. */
+  async function addSecond(t: Setup) {
+    const added = await t.ask<{ ok: boolean }>("session.addAccount", {
+      expected: t.expected(),
+    });
+    expect(added).toMatchObject({ ok: true, value: { phase: "signed_out" } });
+    const challenge = await requested(t);
+    const verified = await t.ask<{ ok: boolean }>("session.email.verify", {
+      attempt: challenge.attempt,
+      challengeId: challenge.challengeId,
+      code: "123456",
+    });
+    expect(verified).toMatchObject({
+      ok: true,
+      value: { phase: "signed_in", principal: { userId: "user-2" } },
+    });
+  }
+
+  it("adds an account and switches between the two without signing in again, keeping each one's data", async () => {
+    const t = await signedInAsFirst();
+    await addSecond(t);
+    expect(t.core.session.value().accounts).toEqual([
+      { userId: "user-1", email: "peng@example.com" },
+    ]);
+    expect(t.main.active?.token).toBe("second_secret");
+    expect(t.main.kept.map((k) => k.token)).toEqual(["main_secret"]);
+    expect([...t.host.dbs.keys()]).toEqual(expect.arrayContaining([first, second]));
+
+    const switched = await t.ask("session.switchAccount", { userId: "user-1" });
+    expect(switched).toMatchObject({
+      ok: true,
+      value: { phase: "signed_in", session: { sessionId: "session-1" } },
+    });
+    expect(t.core.session.value()).toMatchObject({
+      phase: "signed_in",
+      userId: "user-1",
+      accounts: [{ userId: "user-2", email: "peng@example.com" }],
+    });
+    expect(t.main.active?.token).toBe("main_secret");
+    expect(t.main.kept.map((k) => k.token)).toEqual(["second_secret"]);
+    expect(t.main.gateLease()).toMatchObject({ sessionId: "session-1" });
+    // The switched-to session is confirmed by the server with its own credential; nothing is revoked.
+    expect(t.api.seen("GET", "/v1/comma/auth/session").map(bearer).at(-1)).toBe(
+      "main_secret"
+    );
+    expect(t.logouts()).toEqual([]);
+    expect(t.host.deleted).toEqual([]);
+    expect(t.main.leaks(t.core.recorder!.dump())).toEqual([]);
+  });
+
+  it("deletes only the data of the account that signs out, and of a kept one signed out of the device", async () => {
+    const t = await signedInAsFirst();
+    await addSecond(t);
+    // Signing out the account in use: user-1 stays kept.
+    await t.ask("session.signOut", { expected: t.expected() });
+    expect(t.state()).toMatchObject({ phase: "signed_out" });
+    expect(t.core.session.value().accounts).toEqual([
+      { userId: "user-1", email: "peng@example.com" },
+    ]);
+    await t.time.pass(20);
+    expect(t.host.deleted).toEqual([second]);
+    expect(t.logouts()).toEqual(["second_secret"]);
+
+    // The kept one signed out of the device too.
+    const forgotten = await t.ask("session.signOutAccount", { userId: "user-1" });
+    expect(forgotten).toEqual({ ok: true, value: null });
+    await t.time.pass(20);
+    expect(t.core.session.value().accounts).toEqual([]);
+    expect(t.main.kept).toEqual([]);
+    expect(t.logouts()).toEqual(["second_secret", "main_secret"]);
+    expect(t.host.deleted).toEqual([second, first]);
+  });
+
+  it("switches from the sign-in page back to the account set aside, giving up the sign-in under way", async () => {
+    const t = await signedInAsFirst();
+    await t.ask("session.addAccount", { expected: t.expected() });
+    await requested(t);
+    expect(t.state().phase).toBe("authenticating");
+    const switched = await t.ask("session.switchAccount", { userId: "user-1" });
+    expect(switched).toMatchObject({ ok: true, value: { phase: "signed_in" } });
+    expect(t.core.session.value().accounts).toEqual([]);
+    expect(t.core.session.value().attempt).toBeNull();
+    expect(t.main.active?.token).toBe("main_secret");
+    expect(t.host.deleted).toEqual([]);
+  });
+
+  it("signs out a kept account whose session the server ended when it is switched to, keeping the others", async () => {
+    const t = await signedInAsFirst();
+    await addSecond(t);
+    serveSessions(t.api, {
+      second_secret: {
+        ...currentSession(),
+        session_id: "session-2",
+        user: { ...currentSession().user, id: "user-2" },
+      },
+    });
+    await t.ask("session.switchAccount", { userId: "user-1" });
+    await t.time.pass(20);
+    expect(t.state()).toMatchObject({ phase: "signed_out", reason: "unauthorized" });
+    expect(t.main.active).toBeNull();
+    expect(t.core.session.value().accounts).toEqual([
+      { userId: "user-2", email: "peng@example.com" },
+    ]);
+    expect(t.host.deleted).toEqual([first]);
+  });
+
+  it("replaces a kept account's credential when that account signs in again", async () => {
+    const t = await signedInAsFirst();
+    await addSecond(t);
+    await t.ask("session.addAccount", { expected: t.expected() });
+    expect(t.main.kept.map((k) => k.userId)).toEqual(["user-1", "user-2"]);
+    serveEmail(t.api, () =>
+      issuedSession({ sessionId: "session-3", token: "third_secret", userId: "user-1" })
+    );
+    const challenge = await requested(t);
+    await t.ask("session.email.verify", {
+      attempt: challenge.attempt,
+      challengeId: challenge.challengeId,
+      code: "123456",
+    });
+    await t.time.pass(20);
+    expect(t.main.active?.token).toBe("third_secret");
+    expect(t.main.kept.map((k) => k.userId)).toEqual(["user-2"]);
+    expect(t.logouts()).toEqual(["main_secret"]);
+    expect(t.host.deleted).toEqual([]);
+  });
+
+  it("refuses to add an account beyond the store's limit, and to switch to one it does not keep", async () => {
+    const t = await signedInAsFirst();
+    t.main.kept = Array.from({ length: 7 }, (_, i) =>
+      storedCredential({
+        token: `kept_${i}`,
+        userId: `kept-${i}`,
+        sessionId: `kept-${i}`,
+      })
+    );
+    await t.ask("session.reconcile", { reason: "focus" });
+    expect(t.core.session.value().accounts).toHaveLength(7);
+    expect(await t.ask("session.addAccount", { expected: t.expected() })).toMatchObject(
+      { ok: false, error: { code: "conflict" } }
+    );
+    expect(await t.ask("session.switchAccount", { userId: "nobody" })).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+    expect(t.state()).toMatchObject({
+      phase: "signed_in",
+      principal: { userId: "user-1" },
+    });
+  });
+});
+
+describe("protected app authentication", () => {
+  const challenge = (method: "native" | "captcha", id = "abuse_action_1") => ({
+    id,
+    secret: "private_action_secret",
+    expires_at: 2_000_000_000,
+    method,
+    enforce: true,
+    action: "email_login",
+    email: "peng@example.com",
+    pow_difficulty: 4,
+    captcha_url: `${audienceA}/v1/comma/auth/captcha?challenge_id=${id}&action=email_login`,
+  });
+
+  it("sends native proof and bounded PoW before email delivery, then verifies OTP without another proof", async () => {
+    let proofs = 0;
+    const t = setup({
+      android: true,
+      before: ({ api, main }) => {
+        serveEmail(api);
+        const ports = main.host.bearerSession!;
+        ports.sha256 = (inputs) =>
+          Effect.succeed(
+            inputs.map(
+              (input) => new Uint8Array(createHash("sha256").update(input).digest())
+            )
+          );
+        ports.abuseProof = () => {
+          proofs += 1;
+          return Effect.succeed({
+            provider: "play",
+            play_token: "scripted_play_evidence",
+          });
+        };
+      },
+    });
+    await startedSignedOut(t);
+    let delivered = 0;
+    t.api.on("POST", "/v1/comma/auth/email/login", (request: SeenRequest) => {
+      const body = request.body as {
+        abuse?: {
+          provider: string;
+          pow_nonce: string;
+          challenge_id: string;
+          challenge_secret: string;
+        };
+      };
+      if (!body.abuse)
+        return json(428, {
+          error: "native_proof_required",
+          challenge: challenge("native"),
+        });
+      const proof = body.abuse;
+      const digest = createHash("sha256")
+        .update(
+          `comma-abuse:${proof.challenge_id}:${proof.challenge_secret}:${proof.pow_nonce}`
+        )
+        .digest();
+      expect(proof.provider).toBe("play");
+      expect(digest[0]! & 0xf0).toBe(0);
+      delivered += 1;
+      return json(200, { challenge_id: "protected_email_code" });
+    });
+    const challengeResult = await t.run(
+      t.lifecycle.requestEmailLogin({
+        email: "peng@example.com",
+        expected: t.expected() as never,
+      })
+    );
+    expect(challengeResult.ok).toBe(true);
+    if (!challengeResult.ok) return;
+    expect(t.core.session.value().attempt?.captcha).toBeUndefined();
+    const verified = await t.run(
+      t.lifecycle.verifyEmailLogin({
+        attempt: challengeResult.value.attempt,
+        challengeId: challengeResult.value.challengeId,
+        code: "123456",
+      })
+    );
+    expect(verified.ok).toBe(true);
+    expect([proofs, delivered]).toEqual([1, 1]);
+    expect(t.main.active?.token).toBe("issued_secret");
+    expect(JSON.stringify(t.core.session.value())).not.toContain("issued_secret");
+    await t.core.close();
+  });
+
+  it.each(["valid", "invalid", "unavailable", "missing_configuration"] as const)(
+    "observes native %s evidence without CAPTCHA and preserves the email sign-in flow",
+    async (outcome) => {
+      let proofCalls = 0;
+      let hashes = 0;
+      let captchas = 0;
+      const t = setup({
+        android: true,
+        before: ({ api, main }) => {
+          serveEmail(api);
+          const ports = main.host.bearerSession!;
+          ports.sha256 = (inputs) => {
+            hashes += 1;
+            return Effect.succeed(
+              inputs.map(
+                (input) => new Uint8Array(createHash("sha256").update(input).digest())
+              )
+            );
+          };
+          ports.abuseProof = (proofChallenge) => {
+            proofCalls += 1;
+            if (outcome === "missing_configuration")
+              expect(proofChallenge.google_cloud_project_number).toBeUndefined();
+            return outcome === "unavailable" || outcome === "missing_configuration"
+              ? Effect.fail(new HostError("native provider unavailable or cancelled"))
+              : Effect.succeed({
+                  provider: "play",
+                  play_token:
+                    outcome === "valid" ? "valid-observation" : "invalid-observation",
+                });
+          };
+          ports.captcha = () => {
+            captchas += 1;
+            return Effect.succeed("unexpected");
+          };
+        },
+      });
+      await startedSignedOut(t);
+      let observed = 0;
+      t.api.on("POST", "/v1/comma/auth/email/login", (request: SeenRequest) => {
+        const body = request.body as {
+          native_proof: boolean;
+          abuse?: { provider: string; pow_nonce?: string; play_token?: string };
+        };
+        expect(body.native_proof).toBe(true);
+        if (!body.abuse)
+          return json(428, {
+            error: "native_proof_required",
+            challenge: {
+              ...challenge("native"),
+              enforce: false,
+              ...(outcome === "missing_configuration"
+                ? {}
+                : { google_cloud_project_number: "123" }),
+            },
+          });
+        observed += 1;
+        expect(body.abuse.provider).toBe(
+          outcome === "valid" || outcome === "invalid" ? "play" : "unavailable"
+        );
+        expect(body.abuse.pow_nonce).toMatch(/^[0-9]{1,20}$/);
+        return json(200, { challenge_id: "observed_email_code" });
+      });
+      const observedRequest = await t.run(
+        t.lifecycle.requestEmailLogin({
+          email: "peng@example.com",
+          expected: t.expected() as never,
+        })
+      );
+      expect(observedRequest.ok).toBe(true);
+      if (!observedRequest.ok) return;
+      expect(
+        await t.run(
+          t.lifecycle.verifyEmailLogin({
+            attempt: observedRequest.value.attempt,
+            challengeId: observedRequest.value.challengeId,
+            code: "123456",
+          })
+        )
+      ).toMatchObject({ ok: true });
+      expect([proofCalls, observed, captchas]).toEqual([1, 1, 0]);
+      expect(hashes).toBeGreaterThan(0);
+      expect(t.core.session.value().attempt?.captcha).toBeUndefined();
+      expect(t.main.active?.token).toBe("issued_secret");
+      await t.core.close();
+    }
+  );
+
+  it("continues observed OAuth registration with its credential and native intent without CAPTCHA", async () => {
+    const t = setup({ android: true });
+    await startedSignedOut(t);
+    t.api.on("POST", "/v1/comma/auth/google/attempt", {
+      ...googleAttempt,
+      platform: "android",
+    });
+    t.main.google = () =>
+      Effect.succeed({ idToken: "provider_token", grant: "native_google" });
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/google",
+      json(428, {
+        error: "native_proof_required",
+        challenge: { ...challenge("native"), action: "registration", enforce: false },
+        registration_continuation: "observation_continuation",
+      })
+    );
+    t.api.on("POST", "/v1/comma/auth/registration/complete", (request: SeenRequest) => {
+      expect(request.body).toMatchObject({
+        registration_continuation: "observation_continuation",
+        native_proof: true,
+        abuse: { provider: "unavailable" },
+      });
+      return json(200, issuedSession());
+    });
+    expect(
+      await t.run(t.lifecycle.signInWithGoogle({ expected: t.expected() as never }))
+    ).toMatchObject({ ok: true, value: { status: "signed_in" } });
+    expect(t.core.session.value().attempt?.captcha).toBeUndefined();
+    expect(t.api.seen("POST", "/v1/comma/auth/google")).toHaveLength(1);
+    await t.core.close();
+  });
+
+  it("submits unavailable observation when the native SDK reaches its existing budget", async () => {
+    let proofStarted = false;
+    const t = setup({
+      android: true,
+      before: ({ api, main }) => {
+        serveEmail(api);
+        main.host.bearerSession!.sha256 = (inputs) =>
+          Effect.succeed(
+            inputs.map(
+              (input) => new Uint8Array(createHash("sha256").update(input).digest())
+            )
+          );
+        main.host.bearerSession!.abuseProof = () => {
+          proofStarted = true;
+          return Effect.never;
+        };
+      },
+    });
+    await startedSignedOut(t);
+    t.api.on("POST", "/v1/comma/auth/email/login", (request: SeenRequest) => {
+      const body = request.body as { abuse?: { provider: string } };
+      if (!body.abuse)
+        return json(428, {
+          error: "native_proof_required",
+          challenge: { ...challenge("native"), enforce: false },
+        });
+      expect(body.abuse.provider).toBe("unavailable");
+      return json(200, { challenge_id: "timed_out_observation_code" });
+    });
+    const done = t.start(
+      t.lifecycle.requestEmailLogin({
+        email: "peng@example.com",
+        expected: t.expected() as never,
+      })
+    );
+    await t.time.pass(20);
+    expect(proofStarted).toBe(true);
+    await t.time.pass(29_979);
+    expect(t.api.seen("POST", "/v1/comma/auth/email/login")).toHaveLength(1);
+    await t.time.pass(1);
+    const outcome = await done;
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(
+      await t.run(
+        t.lifecycle.verifyEmailLogin({
+          attempt: outcome.value.attempt,
+          challengeId: outcome.value.challengeId,
+          code: "123456",
+        })
+      )
+    ).toMatchObject({ ok: true });
+    expect(t.core.session.value().attempt?.captcha).toBeUndefined();
+    await t.core.close();
+  });
+
+  it("cancels the whole auth attempt while observation waits without submitting unavailable evidence", async () => {
+    const t = setup({
+      android: true,
+      before: ({ main }) => {
+        main.host.bearerSession!.sha256 = (inputs) =>
+          Effect.succeed(
+            inputs.map(
+              (input) => new Uint8Array(createHash("sha256").update(input).digest())
+            )
+          );
+        main.host.bearerSession!.abuseProof = () => Effect.never;
+      },
+    });
+    await startedSignedOut(t);
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/email/login",
+      json(428, {
+        error: "native_proof_required",
+        challenge: { ...challenge("native"), enforce: false },
+      })
+    );
+    const done = t.start(
+      t.lifecycle.requestEmailLogin({
+        email: "peng@example.com",
+        expected: t.expected() as never,
+      })
+    );
+    await t.time.pass(20);
+    const attempt = t.core.session.value().attempt!;
+    expect(
+      await t.run(t.lifecycle.cancelAuthAttempt({ attempt: attempt.ref }))
+    ).toMatchObject({ ok: true });
+    expect(await done).toMatchObject({ ok: false, error: { code: "cancelled" } });
+    expect(t.api.seen("POST", "/v1/comma/auth/email/login")).toHaveLength(1);
+    expect(t.core.session.value().attempt?.captcha).toBeUndefined();
+    await t.core.close();
+  });
+
+  it("keeps an OAuth continuation through native failure and CAPTCHA without another OAuth interaction", async () => {
+    const t = setup({ android: true });
+    await startedSignedOut(t);
+    t.api.on("POST", "/v1/comma/auth/google/attempt", {
+      ...googleAttempt,
+      platform: "android",
+    });
+    t.main.google = () =>
+      Effect.succeed({ idToken: "provider_token", grant: "native_google" });
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/google",
+      json(428, {
+        error: "native_proof_required",
+        challenge: { ...challenge("native"), action: "registration" },
+        registration_continuation: "registration_private_attempt",
+      })
+    );
+    t.api.on("POST", "/v1/comma/auth/registration/complete", (request: SeenRequest) => {
+      const body = request.body as {
+        registration_continuation: string;
+        abuse: { provider: string; captcha_token?: string };
+      };
+      expect(body.registration_continuation).toBe("registration_private_attempt");
+      expect(body).not.toHaveProperty("credential");
+      if (body.abuse.provider === "unavailable")
+        return json(428, {
+          error: "captcha_required",
+          challenge: {
+            ...challenge("captcha", "abuse_captcha_2"),
+            action: "registration",
+            captcha_url: `${audienceA}/v1/comma/auth/captcha?challenge_id=abuse_captcha_2&action=registration`,
+          },
+          registration_continuation: "registration_private_attempt",
+        });
+      expect(body.abuse.captcha_token).toBe("scripted_captcha_token");
+      return json(200, issuedSession());
+    });
+    const done = t.start(
+      t.lifecycle.signInWithGoogle({ expected: t.expected() as never })
+    );
+    await t.time.pass(30);
+    const attempt = t.core.session.value().attempt!;
+    expect(attempt.captcha?.challengeId).toBe("abuse_captcha_2");
+    expect(JSON.stringify(attempt)).not.toContain("private_action_secret");
+    expect(JSON.stringify(attempt)).not.toContain("registration_private_attempt");
+    expect(
+      await t.ask("session.captcha.answer", {
+        attempt: attempt.ref,
+        challengeId: "stale",
+        token: "scripted_captcha_token",
+      })
+    ).toBe(false);
+    expect(
+      await t.ask("session.captcha.answer", {
+        attempt: attempt.ref,
+        challengeId: "abuse_captcha_2",
+        token: "scripted_captcha_token",
+      })
+    ).toBe(true);
+    expect((await done).ok).toBe(true);
+    expect(t.api.seen("POST", "/v1/comma/auth/google")).toHaveLength(1);
+    expect(t.main.active?.token).toBe("issued_secret");
+    await t.core.close();
+  });
+
+  it("cancels a public CAPTCHA without making the protected send", async () => {
+    const t = setup();
+    await startedSignedOut(t);
+    t.api.on(
+      "POST",
+      "/v1/comma/auth/email/login",
+      json(428, { error: "captcha_required", challenge: challenge("captcha") })
+    );
+    const done = t.start(
+      t.lifecycle.requestEmailLogin({
+        email: "peng@example.com",
+        expected: t.expected() as never,
+      })
+    );
+    await t.time.pass(20);
+    const attempt = t.core.session.value().attempt!;
+    await t.ask("session.captcha.answer", {
+      attempt: attempt.ref,
+      challengeId: "abuse_action_1",
+      token: null,
+    });
+    expect(await done).toMatchObject({ ok: false, error: { code: "cancelled" } });
+    expect(t.api.seen("POST", "/v1/comma/auth/email/login")).toHaveLength(1);
+    expect(t.main.active).toBeNull();
+    await t.core.close();
   });
 });

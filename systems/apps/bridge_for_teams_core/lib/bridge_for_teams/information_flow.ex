@@ -43,12 +43,15 @@ defmodule BridgeForTeams.InformationFlow do
   Every information-flow setting for one project, by connect.
 
   The project is resolved inside the org first, so the group id that reaches
-  Salix is one this org owns.
+  Salix is one this org owns. `"ssh_hosts"` carries the Group's trusted SSH
+  hosts, each with the tag that restricts it, as `{:ok, hosts}` or the error
+  that read returned, so one unavailable read does not hide the rest.
   """
   @spec overview(Organization.t() | String.t(), String.t()) :: result()
   def overview(org, project_id) do
-    with {:ok, tenant_id, group_id} <- scope(org, project_id) do
-      client().ifc_overview(tenant_id, group_id)
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, overview} <- client().ifc_overview(tenant_id, group_id) do
+      {:ok, Map.put(overview, "ssh_hosts", client().ssh_known_hosts(tenant_id, group_id))}
     end
   end
 
@@ -89,6 +92,42 @@ defmodule BridgeForTeams.InformationFlow do
     else
       false -> {:error, :invalid_language}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Names the Group's supervisors: provider users who read everything in it,
+  across every conversation, sealed and shared ones included.
+
+  The list replaces the stored one. Each entry names one of this Group's
+  connects and a provider user id in it.
+  """
+  @spec set_supervisors(Organization.t() | String.t(), String.t(), [map()]) :: result()
+  def set_supervisors(org, project_id, supervisors) when is_list(supervisors) do
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, overview} <- client().ifc_overview(tenant_id, group_id),
+         connects = MapSet.new(overview["connects"] || [], & &1["connect_id"]),
+         {:ok, keys} <- supervisor_keys(supervisors, connects) do
+      client().update_group(group_id, tenant_id, %{"ifc" => %{"supervisors" => keys}})
+    end
+  end
+
+  def set_supervisors(_org, _project_id, _supervisors), do: {:error, :invalid_principal}
+
+  @doc "People of one connect whose name, email or id matches `query`."
+  def people(org, project_id, connect_id, query) do
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, connect_id} <- present(connect_id, :connect_not_found),
+         {:ok, query} <- present(query, :invalid_query) do
+      client().ifc_people(tenant_id, group_id, connect_id, query)
+    end
+  end
+
+  @doc "Names and emails of up to 50 ids of one connect."
+  def describe_people(org, project_id, connect_id, ids) when is_list(ids) do
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, connect_id} <- present(connect_id, :connect_not_found) do
+      client().ifc_describe_people(tenant_id, group_id, connect_id, Enum.take(ids, 50))
     end
   end
 
@@ -169,9 +208,44 @@ defmodule BridgeForTeams.InformationFlow do
     end
   end
 
+  @doc """
+  Restricts one SSH host key to the readers of `tag`: the Agent then uses the
+  host only for people cleared for the tag, and what it returns reaches only
+  them. A blank tag lifts the restriction.
+  """
+  @spec restrict_ssh_host(Organization.t() | String.t(), String.t(), String.t(), String.t()) ::
+          result()
+  def restrict_ssh_host(org, project_id, fingerprint, tag) do
+    with {:ok, tenant_id, group_id} <- scope(org, project_id),
+         {:ok, fingerprint} <- present(fingerprint, :invalid_fingerprint) do
+      tag = if is_binary(tag), do: String.trim(tag), else: ""
+      client().ssh_restrict_host(tenant_id, group_id, fingerprint, tag)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # internal
   # ---------------------------------------------------------------------------
+
+  # Each supervisor must be a user of one of this Group's own connects.
+  defp supervisor_keys(supervisors, connects) do
+    supervisors
+    |> Enum.reduce_while({:ok, []}, fn supervisor, {:ok, keys} ->
+      with %{} <- supervisor,
+           {:ok, connect_id} <- present(supervisor["connect_id"], :invalid_principal),
+           true <- MapSet.member?(connects, connect_id),
+           {:ok, user_id} <- present(supervisor["id"], :invalid_principal),
+           false <- String.contains?(connect_id <> user_id, "|") do
+        {:cont, {:ok, ["provider_user|#{connect_id}|#{user_id}" | keys]}}
+      else
+        _invalid -> {:halt, {:error, :invalid_principal}}
+      end
+    end)
+    |> case do
+      {:ok, keys} -> {:ok, keys |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
 
   # The join that makes every call above org-scoped: a project id the caller
   # supplied becomes a group id only if this org owns that project.

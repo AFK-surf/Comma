@@ -1,5 +1,5 @@
 diff --git a/internal/auth/kimi/kimi.go b/internal/auth/kimi/kimi.go
-index 973c1b52..14fb4df4 100644
+index 973c1b5..14fb4df 100644
 --- a/internal/auth/kimi/kimi.go
 +++ b/internal/auth/kimi/kimi.go
 @@ -666,3 +666,15 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
@@ -19,10 +19,10 @@ index 973c1b52..14fb4df4 100644
 +	return token, err
 +}
 diff --git a/internal/auth/xai/xai.go b/internal/auth/xai/xai.go
-index 39009d57..5d25f835 100644
+index 7fe735f..331f641 100644
 --- a/internal/auth/xai/xai.go
 +++ b/internal/auth/xai/xai.go
-@@ -493,3 +493,14 @@ func firstNonEmpty(values ...string) string {
+@@ -492,3 +492,14 @@ func firstNonEmpty(values ...string) string {
  	}
  	return ""
  }
@@ -37,38 +37,11 @@ index 39009d57..5d25f835 100644
 +	}
 +	return nil, next > 0, nil
 +}
-diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
-index 0c5f6c95..d0864639 100644
---- a/internal/runtime/executor/helps/proxy_helpers.go
-+++ b/internal/runtime/executor/helps/proxy_helpers.go
-@@ -30,6 +30,7 @@ import (
- //   - *http.Client: An HTTP client with configured proxy or transport
- func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
- 	httpClient := &http.Client{}
-+	defer observeSubscriptionTransport(ctx, httpClient)
- 	if timeout > 0 {
- 		httpClient.Timeout = timeout
- 	}
-@@ -155,3 +156,14 @@ func buildProxyTransport(proxyURL string) *http.Transport {
- 	}
- 	return transport
- }
-+
-+// The embedded host decorates the selected transport without changing TLS or proxy policy.
-+func observeSubscriptionTransport(ctx context.Context, client *http.Client) {
-+	if wrap, ok := ctx.Value("salix.observe_transport").(func(http.RoundTripper) http.RoundTripper); ok {
-+		rt := client.Transport
-+		if rt == nil {
-+			rt = http.DefaultTransport
-+		}
-+		client.Transport = wrap(rt)
-+	}
-+}
 diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
-index 4857bac7..d5066e85 100644
+index 42cf15b..ea09cea 100644
 --- a/internal/runtime/executor/helps/utls_client.go
 +++ b/internal/runtime/executor/helps/utls_client.go
-@@ -7,6 +7,7 @@ import (
+@@ -8,6 +8,7 @@ import (
  	"io"
  	"net"
  	"net/http"
@@ -76,27 +49,25 @@ index 4857bac7..d5066e85 100644
  	"strings"
  	"sync"
  	"time"
-@@ -385,6 +386,15 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
- 		chromeRT = ctxRoundTripper
+@@ -528,6 +529,16 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
  		anthropicRT = ctxRoundTripper
  		standardTransport = ctxRoundTripper
-+	} else if proxyFor := proxyutil.EnvironmentProxy(); proxyFor != nil {
-+		// Go's default transport honors HTTPS_PROXY and NO_PROXY; these
-+		// fingerprint dialers do not. Without an explicit proxy or an injected
-+		// transport, apply the environment's rules to each request so hosts
-+		// behind an outbound proxy still reach providers.
-+		chromeRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: func(proxyURL string) http.RoundTripper {
-+			return newUtlsRoundTripper(proxyURL)
-+		}}
-+		anthropicRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: cachedClaudeCodeRoundTripper}
+ 	} else {
++		if proxyFor := proxyutil.EnvironmentProxy(); proxyFor != nil {
++			// Go's default transport honors HTTPS_PROXY and NO_PROXY; these
++			// fingerprint dialers do not. Without an explicit proxy or an injected
++			// transport, apply the environment's rules to each request so hosts
++			// behind an outbound proxy still reach providers.
++			chromeRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: func(proxyURL string) http.RoundTripper {
++				return newUtlsRoundTripper(proxyURL)
++			}}
++			anthropicRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: cachedClaudeCodeRoundTripper}
++		}
+ 		// A credential opt-in applies here too; an injected RoundTripper keeps priority.
+ 		fallbackFn = func() http.RoundTripper {
+ 			if transport := pooledProxyTransport("", cfg, auth); transport != nil {
+@@ -557,3 +568,24 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
  	}
- 
- 	client := &http.Client{
-@@ -397,5 +407,27 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
- 	if timeout > 0 {
- 		client.Timeout = timeout
- 	}
-+	observeSubscriptionTransport(ctx, client)
  	return client
  }
 +
@@ -121,7 +92,7 @@ index 4857bac7..d5066e85 100644
 +	return t.via(proxyURL.String()).RoundTrip(req)
 +}
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
-index cc2febbb..7489b159 100644
+index cc2febb..7489b15 100644
 --- a/sdk/auth/codex_device.go
 +++ b/sdk/auth/codex_device.go
 @@ -170,60 +170,60 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
@@ -283,7 +254,7 @@ index cc2febbb..7489b159 100644
 +}
 diff --git a/sdk/auth/subscription_device.go b/sdk/auth/subscription_device.go
 new file mode 100644
-index 00000000..c4afa858
+index 0000000..c4afa85
 --- /dev/null
 +++ b/sdk/auth/subscription_device.go
 @@ -0,0 +1,131 @@
@@ -420,7 +391,7 @@ index 00000000..c4afa858
 +}
 diff --git a/sdk/cliproxy/auth/subscription_model.go b/sdk/cliproxy/auth/subscription_model.go
 new file mode 100644
-index 00000000..3dd2f4da
+index 0000000..3dd2f4d
 --- /dev/null
 +++ b/sdk/cliproxy/auth/subscription_model.go
 @@ -0,0 +1,13 @@
@@ -439,15 +410,17 @@ index 00000000..3dd2f4da
 +}
 diff --git a/sdk/cliproxy/subscription_executor.go b/sdk/cliproxy/subscription_executor.go
 new file mode 100644
-index 00000000..748775b2
+index 0000000..573d055
 --- /dev/null
 +++ b/sdk/cliproxy/subscription_executor.go
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,44 @@
 +package cliproxy
 +
 +import (
++	"context"
 +	"fmt"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 +	_ "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
@@ -476,9 +449,18 @@ index 00000000..748775b2
 +		return nil, fmt.Errorf("unsupported provider")
 +	}
 +}
++
++// XAIClientVersion is the Grok CLI version the xAI executor presents to
++// chat-proxy, which refuses older clients with HTTP 426. Other requests a host
++// sends to chat-proxy must present the same version.
++func XAIClientVersion() string { return helps.GetXAIClientVersion() }
++
++// StartXAIVersionUpdater keeps XAIClientVersion at the current Grok CLI
++// release until ctx ends. A Manager-less host has no Service to start it.
++func StartXAIVersionUpdater(ctx context.Context) { executor.StartXAIVersionUpdater(ctx, "") }
 diff --git a/sdk/oauth/subscription.go b/sdk/oauth/subscription.go
 new file mode 100644
-index 00000000..fa9c3514
+index 0000000..fa9c351
 --- /dev/null
 +++ b/sdk/oauth/subscription.go
 @@ -0,0 +1,95 @@
@@ -579,7 +561,7 @@ index 00000000..fa9c3514
 +}
 diff --git a/sdk/oauth/subscription_test.go b/sdk/oauth/subscription_test.go
 new file mode 100644
-index 00000000..aa3ef639
+index 0000000..aa3ef63
 --- /dev/null
 +++ b/sdk/oauth/subscription_test.go
 @@ -0,0 +1,37 @@
@@ -621,7 +603,7 @@ index 00000000..aa3ef639
 +	}
 +}
 diff --git a/sdk/proxyutil/proxy.go b/sdk/proxyutil/proxy.go
-index 4119baa9..fd86f627 100644
+index e83c214..015933c 100644
 --- a/sdk/proxyutil/proxy.go
 +++ b/sdk/proxyutil/proxy.go
 @@ -10,10 +10,12 @@ import (
@@ -637,7 +619,7 @@ index 4119baa9..fd86f627 100644
  	"golang.org/x/net/proxy"
  )
  
-@@ -381,3 +383,18 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
+@@ -389,3 +391,18 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
  	}
  	return c.Conn.Read(p)
  }

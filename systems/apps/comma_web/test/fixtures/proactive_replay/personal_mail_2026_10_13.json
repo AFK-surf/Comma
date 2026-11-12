@@ -163,8 +163,8 @@
     "routed_any": [
      "lastpass_final"
     ],
-    "urgency_any": [
-     "critical"
+    "decision_any": [
+      "interrupt"
     ]
    }
   },
@@ -180,8 +180,8 @@
     "routed_any": [
      "photos_removal"
     ],
-    "urgency_any": [
-     "critical"
+    "decision_any": [
+      "interrupt"
     ]
    }
   },
@@ -229,8 +229,8 @@
     "routed_any": [
      "lastpass_final"
     ],
-    "urgency_any": [
-     "critical"
+    "decision_any": [
+      "interrupt"
     ],
     "continues_any": [
      "Your LastPass account will be deleted in 30 days"

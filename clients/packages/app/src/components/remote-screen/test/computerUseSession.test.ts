@@ -111,4 +111,53 @@ describe("openComputerUseSession", () => {
     ).toBeUndefined();
     expect(session(computerUse(1, "permissions-status"))).toBeUndefined();
   });
+
+  it("shows one screen, the app's, when a Worker lists apps or windows before it starts one", () => {
+    for (const list of ["list_apps", "list-applications", "list_windows"]) {
+      expect(session(computerUse(1, list))).toBeUndefined();
+      expect(
+        session(computerUse(1, list), computerUse(2, "start", { apps: ["Calculator"] }))
+      ).toEqual({ device: "dev_mac", apps: ["Calculator"] });
+    }
+  });
+
+  it("shows the computer's Android device a Worker leased, until it ends the lease", () => {
+    const android = (index: number, action: string, more?: Record<string, unknown>) =>
+      step(index, "env.android", {
+        device_id: "dev_mac",
+        environment: "env",
+        action,
+        ...more,
+      });
+    expect(
+      session(
+        android(1, "status"),
+        android(2, "start", { target: "android:3B162S00P0N00000" }),
+        android(3, "tap")
+      )
+    ).toEqual({ device: "dev_mac", apps: [], screen: "android:3B162S00P0N00000" });
+    expect(
+      session(
+        android(1, "start", { target: "android:emulator-5554" }),
+        android(2, "end")
+      )
+    ).toBeUndefined();
+  });
+
+  it("shows the computer's simulator a Worker leased, until it ends the lease", () => {
+    const sim = (index: number, action: string, more?: Record<string, unknown>) =>
+      step(index, "env.screen", {
+        device_id: "dev_mac",
+        environment: "env",
+        action,
+        ...more,
+      });
+    const target = "simulator:0702F8CC-2E2A-4D0A-8401-C37FA01E1646";
+    expect(session(sim(1, "start", { target }), sim(2, "tap"))).toEqual({
+      device: "dev_mac",
+      apps: [],
+      screen: target,
+    });
+    expect(session(sim(1, "start", { target }), sim(2, "end"))).toBeUndefined();
+  });
 });

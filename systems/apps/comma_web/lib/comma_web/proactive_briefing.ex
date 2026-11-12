@@ -7,8 +7,11 @@ defmodule CommaWeb.ProactiveBriefing do
   Home keeps one value for it. The Router decides whether the owner hears
   about it, in Home and in their bound personal chats; the server sends
   nothing. Automatic messages off, a closed handoff budget or a briefing for a
-  member other than the Workspace owner hand over nothing. A failed handoff
-  never fails the briefing.
+  member other than the Workspace owner hand over nothing. It spends no
+  automatic handoff: the Routine schedule bounds it to one a day, and the
+  handoffs other matters spent must not hide it. The Router's notification
+  about it spends the ordinary notification pool. A failed handoff never
+  fails the briefing.
   """
   require Logger
   alias CommaWeb.{HomeMail, ProactiveRoutine}
@@ -36,7 +39,7 @@ defmodule CommaWeb.ProactiveBriefing do
              conversation,
              profile.user_id,
              SystemsClock.system_time(:millisecond),
-             "critical"
+             true
            ) do
       current = MailInteraction.entries(conversation)[key()]
       observation = "generation:" <> Integer.to_string(run.generation)
@@ -45,6 +48,7 @@ defmodule CommaWeb.ProactiveBriefing do
         "action" => "present",
         "automatic" => true,
         "urgency" => "normal",
+        "pool" => "scheduled",
         "key" => key(),
         "request_id" =>
           "routine:" <>

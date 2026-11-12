@@ -57,7 +57,8 @@ defmodule SalixAgent.SessionActivityTest do
                "source" => "codex",
                "profile_id" => "prof_2",
                "profile_name" => "ChatGPT Plus",
-               "reset_at" => 1_790_000_000
+               "reset_at" => 1_790_000_000,
+               "credits" => true
              }
            } =
              internal("idle", "failed")
@@ -67,7 +68,8 @@ defmodule SalixAgent.SessionActivityTest do
                  "source" => "codex",
                  "profile_id" => "prof_2",
                  "profile_name" => "ChatGPT Plus",
-                 "reset_at" => 1_790_000_000
+                 "reset_at" => 1_790_000_000,
+                 "credits" => true
                }
              })
              |> SessionActivity.project()
@@ -101,6 +103,24 @@ defmodule SalixAgent.SessionActivityTest do
 
     refute Map.has_key?(wait, "tool_name")
     assert wait["started_at_ms"] == task_wait["deadline_ms"] - 300_000
+  end
+
+  test "a re-armed wait from before the recorded start counts its extensions" do
+    legacy = %{
+      "wait_id" => "wait-abc-x2",
+      "extended_from" => "wait-abc",
+      "reason" => "waiting for the report",
+      "timeout_seconds" => 60,
+      "deadline_ms" => 1_789_372_700_000,
+      "extended_ms" => 120_000,
+      "extensions" => 2,
+      "source" => "wait_for"
+    }
+
+    assert %{"wait" => wait} =
+             SessionActivity.project(Map.put(internal("active", "waiting"), "wait", legacy))
+
+    assert wait["started_at_ms"] == 1_789_372_700_000 - 120_000 - 60_000
   end
 
   defp internal(status, activity_status) do

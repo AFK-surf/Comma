@@ -121,6 +121,14 @@ defmodule BridgeForTeams.ModelsRouterChoiceTest do
                Models.router_choice(p.id, Map.put(choice, "reasoning_effort", effort))
     end
 
+    pinned = Map.put(haiku, "profile_id", "org-key")
+    govern(org, allowed_models: [pinned])
+    assert {:ok, filter} = Models.router_model_filter(p.id)
+    assert [%{"choices" => [^pinned]}] = filter.(models)
+    assert {:ok, _} = Models.router_choice(p.id, pinned)
+    assert {:ok, other_profile} = Models.router_model_filter(p.id, profile_id: "other-key")
+    assert other_profile.(models) == []
+
     assert {:error, :target_not_found} = Models.router_model_filter(SystemsRuntime.Proc.uuid())
   end
 end

@@ -1,4 +1,5 @@
 defmodule SalixVoice do
+  require Logger
   require SystemsRuntime.Proc
 
   @moduledoc """
@@ -106,6 +107,40 @@ defmodule SalixVoice do
           {:error, _} ->
             {:error, SalixAgent.BillingAvailability.error(%{"reason" => "fee_control_error"})}
         end
+    end
+  end
+
+  @doc false
+  # Charges one ended model session (a call or a voice sample) to the Group's
+  # billing owner, off the caller's process. `attrs` is
+  # `BillingCore.VoiceMetering.charge/1`'s, without the owner snapshot.
+  def charge(group_id, attrs, label) do
+    case SystemsRuntime.get_env(:salix_voice, :metering_mod) do
+      nil ->
+        :ok
+
+      mod ->
+        if Enum.any?(attrs.components, &(&1.quantity > 0)) do
+          directory =
+            SystemsRuntime.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
+
+          SystemsRuntime.TaskSupervisor.start_child(SalixVoice.TaskSupervisor, fn ->
+            try do
+              owner =
+                case directory.get_group(group_id) do
+                  {:ok, group} when is_map(group) -> group["billing_owner"]
+                  _ -> nil
+                end
+
+              mod.charge(Map.put(attrs, :owner_snapshot, owner))
+            catch
+              kind, reason ->
+                Logger.error("voice metering failed #{label} #{inspect({kind, reason})}")
+            end
+          end)
+        end
+
+        :ok
     end
   end
 

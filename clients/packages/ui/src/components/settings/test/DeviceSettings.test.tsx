@@ -260,7 +260,8 @@ describe("Device settings", () => {
     await userEvent.click(screen.getByRole("option", { name: "Workspace account" }));
     expect(chose).toHaveBeenCalledExactlyOnceWith("workspace");
 
-    // A failed read: a note in the agents section with its retry, no alert at the card's top; the link on a row.
+    // A failed read: a row of the agents section, before the agents, with its retry button; no alert at the card's top;
+    // the link on a row.
     rerender(
       <DeviceSettings
         {...labels}
@@ -291,8 +292,13 @@ describe("Device settings", () => {
     );
     const agents = within(local.getByRole("region", { name: "Agents" }));
     const note = agents.getByRole("alert");
-    expect(note).toHaveClass("comma-device__note");
+    expect(note).toHaveClass("comma-device__agent", "comma-device__problem");
     expect(note).toHaveTextContent("Cannot read the agent settings of this device.");
+    // (laid out as the agents' rows are, above them)
+    expect(note.nextElementSibling).toHaveClass("comma-device__agent");
+    expect(within(note).getByRole("button", { name: "Try again" })).toHaveTextContent(
+      "Try again"
+    );
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     await userEvent.click(within(note).getByRole("button", { name: "Try again" }));
     expect(retry).toHaveBeenCalledOnce();

@@ -272,15 +272,22 @@ private struct RoutePicker: UIViewRepresentable {
 // MARK: Chat bar
 
 /// The router chat's Call button: starts a call, or opens the one in progress. Filled while a call is live.
+/// Its glyph is Central's, at the 24 pt the bar draws the Remote browser glyph beside it, so both strokes match.
 struct CallToolbarButton: View {
     let call: CallController
+    @Environment(\.usesVerticalToolbar) private var verticalToolbar
 
     var body: some View {
+        let glyph = call.busy ? "central-call-fill" : "central-call"
         Button { Task { await call.start() } } label: {
-            CallSymbol(call.busy ? "phone.fill" : "phone", size: 17)
-                .foregroundStyle(call.busy ? .white : CommaTheme.textPrimary)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(call.busy ? CommaTheme.brandSolid : .clear))
+            if verticalToolbar {
+                Label("Call", image: glyph)
+            } else {
+                CentralIcon(glyph, size: 24)
+                    .foregroundStyle(call.busy ? .white : CommaTheme.textPrimary)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(call.busy ? CommaTheme.brandSolid : .clear))
+            }
         }
         .accessibilityLabel("Call")
         .accessibilityValue(call.busy ? Text("Call in progress") : Text(verbatim: ""))

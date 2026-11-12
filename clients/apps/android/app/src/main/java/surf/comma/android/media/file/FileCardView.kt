@@ -24,6 +24,7 @@ import surf.comma.android.media.MediaAttachment
 import surf.comma.android.media.MediaDownload
 import surf.comma.android.media.MediaDownloadState
 import surf.comma.android.media.MediaLimits
+import surf.comma.android.ui.ActionMenu
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignTypography
 import java.io.File
@@ -31,7 +32,8 @@ import java.io.File
 /**
  * Any attachment that is not shown inline, including SVG, HTML and PDF: they may run scripts or
  * load remote resources, so they are never rendered here. Tapping downloads the whole file into
- * the media cache and hands it to another app to open.
+ * the media cache and hands it to another app to open; a long press offers Open, Save as and Share,
+ * each downloading the file first when it is not here yet.
  */
 class FileCardView(context: Context) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
@@ -54,7 +56,8 @@ class FileCardView(context: Context) : LinearLayout(context) {
     private var attachment: MediaAttachment? = null
     private var download: MediaDownload? = null
     private var job: Job? = null
-    private var openWhenReady = false
+    /** What to do with the file once its download, started by a tap or the menu, is ready. */
+    private var whenReady: ((File) -> Unit)? = null
 
     init {
         orientation = HORIZONTAL
@@ -82,6 +85,7 @@ class FileCardView(context: Context) : LinearLayout(context) {
         }
         addView(texts, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = (12 * density).toInt() })
         setOnClickListener { onTap() }
+        setOnLongClickListener { showMenu(); true }
     }
 
     /** [download] is null when the file cannot be fetched (too large, path-only, or signed out). */
@@ -99,11 +103,11 @@ class FileCardView(context: Context) : LinearLayout(context) {
         job = scope.launch(Dispatchers.Main.immediate) {
             flow.drop(1).collect { state ->
                 render(state)
-                if (state is MediaDownloadState.Ready && openWhenReady) {
-                    openWhenReady = false
-                    open(context, state.file, attachment)
+                if (state is MediaDownloadState.Ready) whenReady?.let { act ->
+                    whenReady = null
+                    act(state.file)
                 }
-                if (state !is MediaDownloadState.Downloading) openWhenReady = false
+                if (state !is MediaDownloadState.Downloading) whenReady = null
             }
         }
     }
@@ -114,7 +118,7 @@ class FileCardView(context: Context) : LinearLayout(context) {
         job = null
         attachment = null
         download = null
-        openWhenReady = false
+        whenReady = null
     }
 
     private fun render(state: MediaDownloadState) {
@@ -140,10 +144,28 @@ class FileCardView(context: Context) : LinearLayout(context) {
             Toast.makeText(context, R.string.media_file_unavailable, Toast.LENGTH_SHORT).show()
             return
         }
+        if (download.state.value is MediaDownloadState.Downloading) {
+            whenReady = null
+            download.cancel()
+        } else withFile { open(context, it, attachment) }
+    }
+
+    private fun showMenu() {
+        val attachment = attachment ?: return
+        if (download == null) return
+        ActionMenu(context)
+            .item(context.getString(R.string.media_file_open)) { withFile { open(context, it, attachment) } }
+            .item(context.getString(R.string.media_file_save_as)) { withFile { AttachmentFileActions.saveAs(context, it, attachment) } }
+            .item(context.getString(R.string.media_file_share)) { withFile { AttachmentFileActions.share(context, it, attachment) } }
+            .show(this, haptic = true)
+    }
+
+    /** Runs [act] with the downloaded file: now when it is here, else once the download it starts is ready. */
+    private fun withFile(act: (File) -> Unit) {
+        val download = download ?: return
         when (val state = download.state.value) {
-            is MediaDownloadState.Ready -> open(context, state.file, attachment)
-            is MediaDownloadState.Downloading -> { openWhenReady = false; download.cancel() }
-            else -> { openWhenReady = true; download.start() }
+            is MediaDownloadState.Ready -> act(state.file)
+            else -> { whenReady = act; download.start() }
         }
     }
 

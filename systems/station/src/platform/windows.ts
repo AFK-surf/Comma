@@ -1,4 +1,4 @@
-// Windows: no process groups or signals (a job's group is the job object of the `stillfail-runner --job` it runs
+// Windows: no process groups or signals (a job's group is the job object of the `comma-runner --job` it runs
 // under), Git for Windows' sh for what agents write, `\` and drives in paths, links that take a privilege, PATHEXT and
 // .cmd shims, a scheduled task where Unix starts things in the background.
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
@@ -23,7 +23,7 @@ function pathOf(env: Env): string {
 /// Where a .cmd file names `path`: cmd reads the file in the console's code page, not UTF-8, so a path with other than
 /// ASCII in it (C:\Users\张三\…) is named through the variable of `env` it is under (%USERPROFILE%\…), which cmd
 /// expands as it runs; none such: refused, rather than a .cmd that names some other path. (The installer's
-/// stillfail.cmd: the same rule, install-windows.ts CmdPath.)
+/// comma-station.cmd: the same rule, install-windows.ts CmdPath.)
 export function cmdPath(path: string, env: Env = process.env): string {
   const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
   if (ascii(path)) return path;
@@ -225,12 +225,12 @@ const host: Host = {
 /// A PowerShell string of `s`.
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
 
-/// run/update.ps1 (startInstaller): the STILLFAIL_ (and EMBER_DATA) variables of `env`, then the cloud's install.ps1
+/// run/update.ps1 (startInstaller): the COMMA_STATION_ (and EMBER_DATA) variables of `env`, then the cloud's install.ps1
 /// fetched into run/ and run, what it says (both streams, UTF-8) in run/update.log and its exit in run/update.exit, then
 /// `task` removed. With a BOM, as PowerShell 5.1 reads a file of non-ASCII words.
 export function windowsUpdateScript(origin: string, runDir: string, env: Record<string, string>, task: string, lang: Lang): string {
   return String.fromCharCode(0xfeff) + `${[
-    ...Object.entries(env).filter(([k]) => k.startsWith("STILLFAIL_") || k === "EMBER_DATA").map(([k, v]) => `$env:${k} = ${q(v)}`),
+    ...Object.entries(env).filter(([k]) => k.startsWith("COMMA_STATION_") || k === "EMBER_DATA").map(([k, v]) => `$env:${k} = ${q(v)}`),
     "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
     `$run = ${q(runDir)}`,
     "$log = Join-Path $run 'update.log'",
@@ -252,14 +252,14 @@ export function windowsUpdateScript(origin: string, runDir: string, env: Record<
 }
 
 /// By a scheduled task of its own ("<the station's task> update"): nobody's child here, with no window
-/// (`stillfail-station-w --run`, copied into run/ so the installer stopping what runs from <app> leaves it be). (Not
+/// (`comma-station-w --run`, copied into run/ so the installer stopping what runs from <app> leaves it be). (Not
 /// WMI's Win32_Process.Create: PowerShell started so is what malware does, and security software refuses it.) The task
 /// starts with the user's own environment, so what this side gives it is in run/update.ps1 (windowsUpdateScript).
 function startInstaller(origin: string, runDir: string, env: Record<string, string>, app: string, lang: Lang): Promise<boolean> {
   const ps1 = join(runDir, "update.ps1");
-  const hidden = join(runDir, "stillfail-update-w.exe");
+  const hidden = join(runDir, "comma-station-update-w.exe");
   // The station's task as install.ps1 named it (windows.json: a station apart's), and " update".
-  let task = "still.fail station";
+  let task = "Comma station";
   try {
     const kept = JSON.parse(readFileSync(join(dirname(runDir), "windows.json"), "utf8").trim());
     if (typeof kept?.task === "string" && kept.task) task = kept.task;
@@ -268,7 +268,7 @@ function startInstaller(origin: string, runDir: string, env: Record<string, stri
   try {
     rmSync(join(runDir, "update.err"), { force: true });
     // Refused while an update before still runs from it.
-    copyFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), hidden);
+    copyFileSync(join(app, "mesh", "target", "release", "comma-station-w.exe"), hidden);
     writeFileSync(ps1, windowsUpdateScript(origin, runDir, env, task, lang));
   } catch {
     return Promise.resolve(false);
@@ -328,7 +328,7 @@ export const windows: Platform = {
     const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8\n${command}`;
     return { program, args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] };
   },
-  /// Under `stillfail-runner --job`, whose job holds the command and all it starts (what a shell execs, its parent
+  /// Under `comma-runner --job`, whose job holds the command and all it starts (what a shell execs, its parent
   /// gone, too), ended whole when the runner is.
   grouped: (program, args) => [runnerBinary(), ["--job", "--", program, ...args]],
   lowered: (program, args) => [program, args],
@@ -409,7 +409,7 @@ export const windows: Platform = {
       const name = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`], {
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
       }).trim();
-      return /^(stillfail|ember)-station(-w)?$/i.test(name);
+      return /^(comma|stillfail|ember)-station(-w)?$/i.test(name);
     } catch {
       return false;
     }
@@ -418,7 +418,7 @@ export const windows: Platform = {
   /// `control_pipe`), which only this user may open.
   askLauncher(pid, op) {
     return new Promise<void>((resolve, reject) => {
-      const pipe = createConnection(`\\\\.\\pipe\\stillfail-launcher-${pid}`);
+      const pipe = createConnection(`\\\\.\\pipe\\comma-station-launcher-${pid}`);
       pipe.once("error", reject);
       pipe.once("connect", () => pipe.end(`${JSON.stringify({ op })}\n`));
       pipe.once("close", (failed) => (failed ? undefined : resolve()));
@@ -450,5 +450,7 @@ export const windows: Platform = {
   hasFolderPermissions: false,
   hasComputerUse: false,
   hasWindowsComputerUse: true,
+  hasWindowsScreen: true,
+  hasLinuxDesktop: false,
   hasHomebrew: false,
 };

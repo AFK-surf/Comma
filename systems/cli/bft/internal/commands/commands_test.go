@@ -1546,6 +1546,69 @@ func TestQQCommandsUseCLIAPIContracts(t *testing.T) {
 	}
 }
 
+func TestTelegramConnectStatusAndChats(t *testing.T) {
+	var connectBody, chatsBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/telegram/connect":
+			if err := json.NewDecoder(r.Body).Decode(&connectBody); err != nil {
+				t.Fatalf("decode connect body: %v", err)
+			}
+			writeOK(w, map[string]any{"mode": "telegram_connect", "project": map[string]any{"name": "Support"}, "connect": map[string]any{"bot_username": "acme_bot"}, "manual_checklist": []string{"Add the bot to a group."}})
+		case "/v1/cli/telegram/status":
+			writeOK(w, map[string]any{"mode": "telegram_status", "project": map[string]any{"name": "Support"}, "connects": []map[string]any{{"connect_id": "imc1_tg", "bot_username": "acme_bot", "can_read_all_group_messages": true, "allowed_chat_ids": []string{"-100"}, "observed_chats": []map[string]any{{"id": "-100", "title": "Allowed group"}, {"id": "-200", "title": "Waiting group"}}}}})
+		case "/v1/cli/telegram/chats":
+			if err := json.NewDecoder(r.Body).Decode(&chatsBody); err != nil {
+				t.Fatalf("decode chats body: %v", err)
+			}
+			writeOK(w, map[string]any{"mode": "telegram_chats", "connect": map[string]any{"bot_username": "acme_bot", "allowed_chat_ids": []string{"-100", "-200"}}})
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	env := map[string]string{"BFT_TELEGRAM_TOKEN": "123:raw-telegram-token"}
+	connect := []string{"telegram", "connect", "--org", "acme", "--project", "support", "--bot-token-env", "BFT_TELEGRAM_TOKEN", "--config", configPath}
+
+	if exitCode, _, _ := runCLI(t, connect, env); exitCode == output.ExitOK || connectBody != nil {
+		t.Fatalf("unconfirmed connect: exit = %d body = %#v", exitCode, connectBody)
+	}
+	exitCode, stdout, stderr := runCLI(t, append(connect, "--confirm-mutating"), env)
+	if exitCode != output.ExitOK {
+		t.Fatalf("connect exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if connectBody["bot_token"] != "123:raw-telegram-token" {
+		t.Fatalf("connect body = %#v", connectBody)
+	}
+	if strings.Contains(stdout+stderr, "raw-telegram-token") {
+		t.Fatalf("token leaked in output: %s%s", stdout, stderr)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, []string{"telegram", "status", "--org", "acme", "--project", "support", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("status exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Allowed: -100") || !strings.Contains(stdout, "Not allowed: -200 Waiting group") || !strings.Contains(stdout, "Privacy mode was off") {
+		t.Fatalf("status output = %s", stdout)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, []string{"telegram", "chats", "--org", "acme", "--project", "support", "--chat", "-100", "--chat", "-200", "--confirm-mutating", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("chats exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if ids, _ := chatsBody["allowed_chat_ids"].([]any); len(ids) != 2 || ids[0] != "-100" || ids[1] != "-200" {
+		t.Fatalf("chats body = %#v", chatsBody)
+	}
+	if !strings.Contains(stdout, "Allowed: -200") {
+		t.Fatalf("chats output = %s", stdout)
+	}
+}
+
 func TestFeishuSetupRendersScopePresetInTextAndJSON(t *testing.T) {
 	setupData := map[string]any{
 		"mode":    "feishu_setup",
@@ -2303,6 +2366,45 @@ func TestSlackConnectCommandsUseProjectAPIContracts(t *testing.T) {
 	}
 	if seenMethods[connectsPath+"/conn_slack_1"] != http.MethodDelete {
 		t.Fatalf("delete method not observed: %#v", seenMethods)
+	}
+}
+
+func TestSlackConnectsUpdateTurnsAutoJoinOffAlone(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v1/orgs/acme/projects/support/im/slack/connects/conn_slack_1" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeOK(w, map[string]any{"mode": "project_im_connect_update", "connect": map[string]any{
+			"connect_id":                "conn_slack_1",
+			"provider":                  "slack",
+			"auto_join_public_channels": false,
+		}})
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+
+	exitCode, stdout, stderr := runCLI(t, []string{"slack", "connects", "update", "--org", "acme", "--project", "support", "--connect", "conn_slack_1", "--auto-join-public-channels", "off", "--confirm-mutating", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if body["auto_join_public_channels"] != false || len(body) != 1 {
+		t.Fatalf("update body should only carry auto_join_public_channels=false: %#v", body)
+	}
+	if !strings.Contains(stdout, "Auto-join new public channels: off") {
+		t.Fatalf("update output did not show the switch:\n%s", stdout)
+	}
+
+	exitCode, _, stderr = runCLI(t, []string{"slack", "connects", "update", "--org", "acme", "--project", "support", "--connect", "conn_slack_1", "--confirm-mutating", "--config", configPath, "--json"}, nil)
+	if exitCode == output.ExitOK || !strings.Contains(stderr, "missing_slack_connect_update") {
+		t.Fatalf("update without a change should be refused locally, exit=%d stderr=%s", exitCode, stderr)
 	}
 }
 

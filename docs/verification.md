@@ -71,13 +71,22 @@ Host decoding, schema admission, C ownership, compilation, and transport are tru
 A tool request needs a consumed command from the same authority.
 Data, forwarded text, and untrusted pages do not authorize a request.
 Unknown authority is not permission.
+One host fact is resolved before the kernel decides: when a destination's writers are unknown and it equals the activation's source scope, the requester is its writer, because the provider delivered their message from it (owner decision, 2026-11-04). Other writers stay unknown, and every other rule still applies.
 
-Source admission distinguishes ordinary flow, in-place use, receipts, and instructions.
+Source admission distinguishes ordinary flow, authored sources, in-place use, receipts, and instructions.
 Ordinary flow requires `readersSubset(destination, source) = yes`.
 Non-flow admission needs the policy's readable, unsealed source facts.
+A person's own message is an authored source for a request of the same person, in a direct or a group conversation, under every declassification policy (owner decision, 2026-11-05).
+The message must be a command item that the requester's authority wrote. Messages of other people, tool results, and agent output stay under the other rules.
 An explicit empty source list is empty. A context source selects the declared context.
 The model does not track accumulated model knowledge as an implicit label set.
 Resolve tenant, destination, membership, source, and request facts at their host boundary.
+A decision reads conversation structure and membership only from the stored projection and calls no provider for them (owner decision, 2026-11-04).
+Ingress records structure, and provider join and leave events change membership.
+A background listing re-reads a conversation's members at most once per 15 minutes per node, when ingress or a decision names it.
+A stored member set stays valid until an event or a listing changes it. A missed leave event stays in effect until the next listing.
+A conversation without stored structure or a complete member set has unknown writers and members.
+The runtime decides each tool call once per round and reuses that verdict when the planned batch runs.
 
 Internal Task reports resolve placement for the Task's human readers, not only the assigned agent.
 Stored placement facts and authenticated ingress placement take precedence over provider fallback.
@@ -86,6 +95,7 @@ Cache positive and unknown results for one minute in 4,096 node-local slots, sco
 Expired entries do not authorize a transfer. Provider failures, disabled installations, and readers past the limit stay unknown.
 This does not give general command authority to an agent-authored Task message.
 [Task ownership](architecture/DOMAIN_CONCEPTS.md#loop-tasks) grants only the listed Task effects. IFC still checks sources and destinations.
+An ordinary Task's Worker acts for the Task's person in the turns of its assignment, as its sandbox does ([Loop Tasks](architecture/DOMAIN_CONCEPTS.md#loop-tasks)). An agent's Task goes to a station or the Cloud VM, a public destination, only from public sources; a sandbox of the Task's own takes any Task.
 
 Receipt expiration is checked at authorization time.
 Lean claims sequential receipts atomically at each claim boundary. If a later claim fails, earlier receipts can stay spent without dispatch.
@@ -93,8 +103,19 @@ This is not exactly-once delivery or unconditional liveness.
 
 Low-observable payload noninterference applies only when the declared data dependencies are honest.
 A proof does not establish that an LLM declared every dependency it used.
+`lark.create_chat`, `lark.add_chat_members`, `feishu.create_chat` and `feishu.add_chat_members` check every named recipient as `lark.share_doc` does.
+All recipient checks must pass before dispatch, including delivery of the new group name.
+These checks cover declared sources. Member grants do not infer group history that the caller did not declare.
+A Group's supervisors (`ifc.supervisors`, set on the CFT Data policy page) read everything in the Group: every conversation of its connects, sealed and shared ones included, its spaces, tags, Tasks and Group memory.
+Internal Comma conversations are outside this. Sealing still forbids declassification for everyone, supervisors included.
+The resolver states this as `cleared` readers, so a supervisor reads a room whose roster is unknown. It also adds supervisors to every known roster of those atoms, so content reaches such a destination only if its supervisors may read it.
 Public Slack channels have a company-wide audience, including relevant guest access.
 BFT dashboard project members and Task Share readers are outside the current IFC model.
+Feishu and Lark directory reads (people, departments, the contact data range) carry the space's audience. A chat's details and members carry that chat's audience, and a chat list labels each chat by its own.
+A directory read does not return the mobile number of a person whose `mobile_visible` is `false`. The list of a Group's signed-in Feishu or Lark accounts carries the Group's audience.
+`device.list` and `device.get` are reads and carry the Group's audience. `loop.get` and `loop.list` carry the label the Loop recorded at creation, which its wakes and lifecycle notices also carry; a Loop without one reads as `agent_private`.
+MCP, Composio and `ssh.*` results carry the Group's audience, not the round's label; an SSH host key that an operator restricted to a tag adds the tag and serves only people cleared for it and supervisors ([Outbound SSH Session](architecture/DOMAIN_CONCEPTS.md#outbound-ssh-session)).
+The result of `oauth.request_authorization` is labelled public: the runtime minted its link and the model's `reason` is not in it. The tool has no effect of its own, so without this label its result would carry the whole context's label and the link could go nowhere.
 Do not infer deployed `off`, `audit`, or `enforce` mode from these documents.
 
 ## IFC proof scope

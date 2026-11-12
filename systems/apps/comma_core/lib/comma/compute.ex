@@ -3,7 +3,7 @@ defmodule Comma.Compute do
 
   import Ecto.Query
   alias Comma.Workspaces
-  alias SalixStore.{AgentVMMInstallations, Compute}
+  alias SalixStore.{AgentVMMRegistrations, Compute}
 
   @permissions ~w(runtime workspace service_route hosting)
 
@@ -104,7 +104,7 @@ defmodule Comma.Compute do
       projection = %{
         allocations: Enum.map(items, &elem(&1, 1)),
         bindings: bindings,
-        registration_devices: registration_devices(bindings),
+        registrations: registration_projection(bindings),
         runtimes:
           SalixStore.Repo.all(
             from(r in Compute.RuntimeInstance,
@@ -175,19 +175,37 @@ defmodule Comma.Compute do
   def request_agent_vmm_headless_install(user, session, workspace_id, attrs),
     do: request_agent_vmm_delivery(user, session, workspace_id, attrs, "headless")
 
-  defp request_agent_vmm_delivery(user, session, workspace_id, attrs, delivery) do
+  def cancel_agent_vmm_request(user, session, workspace_id, request_id),
+    do:
+      request_agent_vmm_delivery(
+        user,
+        session,
+        workspace_id,
+        %{"request_id" => request_id},
+        "comma_main_device",
+        &AgentVMMRegistrations.cancel_request/2
+      )
+
+  defp request_agent_vmm_delivery(
+         user,
+         session,
+         workspace_id,
+         attrs,
+         delivery,
+         owner_action \\ &AgentVMMRegistrations.request/2
+       ) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
          {:ok, request_id} <- id(attrs["request_id"]),
          {:ok, target_id} <- session_delivery_target(session),
          {:ok, pool} <-
            Compute.ensure_managed_default_pool(workspace["salix_tenant_id"], "agent_vmm"),
          {:ok, descriptor} <-
-           AgentVMMInstallations.request(
+           owner_action.(
              %{
                tenant_id: workspace["salix_tenant_id"],
                group_id: workspace["default_group_id"],
                surface: "comma",
-               scope_key: workspace_id,
+               owner_id: workspace_id,
                client_request_id: request_id,
                provider: "agent-vmm",
                delivery_target_type: delivery,
@@ -211,33 +229,37 @@ defmodule Comma.Compute do
     end
   end
 
-  def agent_vmm_recovery_challenge(user, session, workspace_id, operation_id) do
+  def agent_vmm_recovery_challenge(user, session, workspace_id, registration_id, candidate_hash) do
     with {:ok, authority, options} <- recovery_authority(user, session, workspace_id) do
-      AgentVMMInstallations.recovery_challenge(operation_id, authority, options)
+      AgentVMMRegistrations.recovery_challenge(
+        registration_id,
+        authority,
+        Keyword.put(options, :candidate_credential_hash, candidate_hash)
+      )
     end
   end
 
   def agent_vmm_recovery_candidates(user, session, workspace_id, registration_ids) do
     with {:ok, authority, options} <- recovery_authority(user, session, workspace_id) do
-      AgentVMMInstallations.recovery_candidates(registration_ids, authority, options)
+      AgentVMMRegistrations.recovery_candidates(registration_ids, authority, options)
     end
   end
 
-  def recover_agent_vmm_install(user, session, workspace_id, operation_id, proof, consume) do
+  def replace_agent_vmm_credential(user, session, workspace_id, registration_id, proof, candidate) do
     with {:ok, authority, options} <- recovery_authority(user, session, workspace_id) do
-      AgentVMMInstallations.recover(operation_id, authority, proof, consume, options)
+      AgentVMMRegistrations.replace_credential(
+        registration_id,
+        authority,
+        proof,
+        candidate,
+        options
+      )
     end
   end
 
-  def get_unexchanged_agent_vmm_request(user, session, workspace_id, request_id) do
+  def get_agent_vmm_request(user, session, workspace_id, request_id) do
     with {:ok, authority, options} <- recovery_authority(user, session, workspace_id) do
-      AgentVMMInstallations.get_by_request("comma", workspace_id, request_id, authority, options)
-    end
-  end
-
-  def abandon_agent_vmm_install(user, session, workspace_id, operation_id) do
-    with {:ok, authority, options} <- recovery_authority(user, session, workspace_id) do
-      AgentVMMInstallations.abandon_unexchanged(operation_id, authority, options)
+      AgentVMMRegistrations.get_by_request("comma", workspace_id, request_id, authority, options)
     end
   end
 
@@ -251,7 +273,7 @@ defmodule Comma.Compute do
         session_id: session_id,
         tenant_id: workspace["salix_tenant_id"],
         group_id: workspace["default_group_id"],
-        scope_key: workspace_id
+        owner_id: workspace_id
       }
 
       # Workspace and install owners use separate repositories. Recheck the current
@@ -302,7 +324,8 @@ defmodule Comma.Compute do
     end
   end
 
-  defp original_install_subject("comma_main_device", session_id) do
+  defp original_install_subject(delivery, session_id)
+       when delivery in ["comma_main_device", "headless"] do
     live =
       case Ecto.UUID.cast(session_id) do
         {:ok, id} -> Comma.Repo.get(Comma.Accounts.AuthSession, id)
@@ -317,14 +340,39 @@ defmodule Comma.Compute do
 
   defp original_install_subject(_, _), do: {:error, :original_subject_unknown}
 
-  def get_agent_vmm_install(user, session, workspace_id, operation_id) do
+  def registration_claim_authority(registration) do
+    environment = SalixStore.Repo.get(Compute.Environment, registration.environment_id)
+
+    case environment &&
+           Workspaces.authorize_group_owner(
+             environment.owner_id,
+             registration.group_id,
+             registration.authorizing_subject_id
+           ) do
+      {:ok, workspace} ->
+        if workspace["salix_tenant_id"] == registration.tenant_id,
+          do: :ok,
+          else: {:error, :not_found}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  def get_agent_vmm_install(user, session, workspace_id, registration_id) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
-         {:ok, operation} <- AgentVMMInstallations.get(operation_id),
+         {:ok, operation} <- AgentVMMRegistrations.get(registration_id),
          true <-
            (operation.tenant_id == workspace["salix_tenant_id"] and
-              operation.group_id == workspace["default_group_id"] and
-              operation.scope_key == workspace_id and operation.surface == "comma" and
-              operation.delivery_target_id == session["id"]) ||
+              operation.owner_id == workspace_id and operation.surface == "comma" and
+              (operation.authorizing_subject_id == user["id"] or
+                 (is_nil(operation.authorizing_subject_id) and
+                    original_install_subject(
+                      operation.delivery_target_type,
+                      operation.delivery_target_id
+                    ) == {:ok, user["id"]})) and
+              (is_nil(operation.authorizing_audience) or
+                 operation.authorizing_audience == recovery_audience())) ||
              {:error, :not_found} do
       {:ok, operation}
     else
@@ -332,10 +380,10 @@ defmodule Comma.Compute do
     end
   end
 
-  def observe_agent_vmm_install(user, session, workspace_id, operation_id) do
-    with {:ok, operation} <- get_agent_vmm_install(user, session, workspace_id, operation_id) do
+  def observe_agent_vmm_install(user, session, workspace_id, registration_id) do
+    with {:ok, operation} <- get_agent_vmm_install(user, session, workspace_id, registration_id) do
       activity =
-        case Compute.work_activity(operation.tenant_id, operation.registration_id) do
+        case Compute.work_activity(operation.tenant_id, operation.id) do
           {:ok, %{"activity" => activity}} -> activity
           {:error, _} -> "unknown"
         end
@@ -355,11 +403,11 @@ defmodule Comma.Compute do
     end
   end
 
-  def retry_agent_vmm_install(user, session, workspace_id, operation_id) do
+  def retry_agent_vmm_install(user, session, workspace_id, registration_id) do
     with {:ok, operation} <-
-           get_agent_vmm_install(user, session, workspace_id, operation_id),
+           get_agent_vmm_install(user, session, workspace_id, registration_id),
          {:ok, descriptor} <-
-           AgentVMMInstallations.retry(operation_id,
+           AgentVMMRegistrations.retry(registration_id,
              expected_authorization: operation,
              authorize: current_install_authority(user, session, workspace_id)
            ) do
@@ -367,11 +415,11 @@ defmodule Comma.Compute do
     end
   end
 
-  def revoke_agent_vmm_install(user, session, workspace_id, operation_id) do
+  def revoke_agent_vmm_install(user, session, workspace_id, registration_id) do
     with {:ok, expected} <-
-           get_agent_vmm_install(user, session, workspace_id, operation_id),
+           get_agent_vmm_install(user, session, workspace_id, registration_id),
          {:ok, operation} <-
-           AgentVMMInstallations.revoke(operation_id,
+           AgentVMMRegistrations.revoke(registration_id,
              expected_authorization: expected,
              authorize: current_install_authority(user, session, workspace_id)
            ) do
@@ -383,14 +431,14 @@ defmodule Comma.Compute do
         user,
         session,
         workspace_id,
-        operation_id,
+        registration_id,
         enabled
       )
       when is_boolean(enabled) do
     with {:ok, expected} <-
-           get_agent_vmm_install(user, session, workspace_id, operation_id),
+           get_agent_vmm_install(user, session, workspace_id, registration_id),
          {:ok, operation} <-
-           AgentVMMInstallations.configure_registration(operation_id, enabled,
+           AgentVMMRegistrations.configure_registration(registration_id, enabled,
              expected_authorization: expected,
              authorize: current_install_authority(user, session, workspace_id)
            ) do
@@ -398,10 +446,10 @@ defmodule Comma.Compute do
     end
   end
 
-  def initialize_agent_vmm_workload(user, session, workspace_id, operation_id) do
-    with {:ok, operation} <- get_agent_vmm_install(user, session, workspace_id, operation_id),
+  def initialize_agent_vmm_workload(user, session, workspace_id, registration_id) do
+    with {:ok, operation} <- get_agent_vmm_install(user, session, workspace_id, registration_id),
          {:ok, initialized} <-
-           AgentVMMInstallations.initialize_workload(operation_id,
+           AgentVMMRegistrations.initialize_workload(registration_id,
              expected_authorization: operation,
              authorize: current_install_authority(user, session, workspace_id)
            ) do
@@ -465,7 +513,7 @@ defmodule Comma.Compute do
       page = %{
         allocations: [allocation],
         bindings: [binding],
-        registration_devices: registration_devices([binding]),
+        registrations: registration_projection([binding]),
         runtimes:
           SalixStore.Repo.all(
             from(r in Compute.RuntimeInstance,
@@ -663,7 +711,7 @@ defmodule Comma.Compute do
     template_available =
       match?({:ok, _}, SalixStore.RuntimeBundleCatalog.resolve("shell.default"))
 
-    value = Map.put(value, :registration_devices, registration_devices(value.bindings))
+    value = Map.put(value, :registrations, registration_projection(value.bindings))
 
     %{
       "environments" => Enum.map(value.environments, &public_environment(&1, template_available)),
@@ -692,10 +740,8 @@ defmodule Comma.Compute do
         end
       )
 
-  # One bounded query per page: the Comma Device of each Agent VMM
-  # registration that the page's bindings name.
-  @doc false
-  def registration_devices(bindings) do
+  # One bounded query per page for the current Host and its Device.
+  defp registration_projection(bindings) do
     case for(%{provider: "agent_vmm", provider_ref: ref} <- bindings, is_binary(ref), do: ref)
          |> Enum.uniq() do
       [] ->
@@ -705,7 +751,16 @@ defmodule Comma.Compute do
         SalixStore.Repo.all(
           from(r in SalixStore.AgentVMM.Registration,
             where: r.id in ^refs,
-            select: {r.id, r.device_id}
+            select:
+              {r.id,
+               map(r, [
+                 :device_id,
+                 :connected,
+                 :current_connection_epoch,
+                 :status,
+                 :desired_enabled,
+                 :authorization_expires_at
+               ])}
           )
         )
         |> Map.new()
@@ -732,7 +787,13 @@ defmodule Comma.Compute do
         &(&1.workload_id == workload.id and &1.generation == workload.generation)
       )
 
-    epoch = binding && (binding.observation || %{})["connection_epoch"]
+    registration = binding && Map.get(Map.get(page, :registrations, %{}), binding.provider_ref)
+    epoch = registration && registration.current_connection_epoch
+
+    connected =
+      (not is_nil(registration) and registration.connected) && registration.status == "ready" &&
+        registration.desired_enabled &&
+        not SalixStore.AgentVMM.authorization_expired?(registration)
 
     # Only a meeting_runtime has a runtime carrier. Another Workload on an
     # Agent VMM Host is ready from its verified container facts, as a Shell.
@@ -758,7 +819,7 @@ defmodule Comma.Compute do
           "action_required"
 
         not is_nil(binding) and binding.provider == "agent_vmm" and
-            (is_nil(epoch) or binding.status != "available") ->
+            (not connected or is_nil(epoch) or binding.status == "revoked") ->
           "waiting_connection"
 
         container_ready_rule? and workload.observed_state == "ready" and not is_nil(epoch) and
@@ -819,7 +880,8 @@ defmodule Comma.Compute do
           %{
             "provider" => binding.provider,
             "registration_id" => binding.provider_ref,
-            "device_id" => Map.get(page, :registration_devices, %{})[binding.provider_ref],
+            "device_id" =>
+              get_in(Map.get(page, :registrations, %{}), [binding.provider_ref, :device_id]),
             "allocation_id" => allocation.id
           }
 
@@ -833,7 +895,8 @@ defmodule Comma.Compute do
     |> Map.put("actions", %{
       "rename" => true,
       "retry" =>
-        workload.kind == "shell" and is_nil(workload.deletion) and
+        SalixStore.ComputeWorkloadManagement.member_retryable?(workload) and
+          is_nil(workload.deletion) and
           workload.desired_state == "ready" and phase == "action_required",
       "delete" =>
         (workload.kind in ["shell", "external_worker"] and is_nil(workload.deletion) and binding) &&

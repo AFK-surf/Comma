@@ -1,6 +1,6 @@
-# still.fail 设计
+# Comma 设计
 
-still.fail 是团队聊天里的 coding agent 服务。人在 Slack 或 still.fail 的网页对话里找它。每个对话落到一个持久的 agent 会话，agent 由 Claude Code 或 Codex 驱动。会话在 hot / warm / cold / 归档之间流转，归档后有新消息就自动恢复。
+Comma 是团队聊天里的 coding agent 服务。人在 Slack 或 Comma 的网页对话里找它。每个对话落到一个持久的 agent 会话，agent 由 Claude Code 或 Codex 驱动。会话在 hot / warm / cold / 归档之间流转，归档后有新消息就自动恢复。
 
 本文只记录已确定的设计和约束。实现细节以源码为准。
 
@@ -8,12 +8,12 @@ still.fail 是团队聊天里的 coding agent 服务。人在 Slack 或 still.fa
 
 - **station（宿主）负责**：聊天接入、会话身份与状态、入站消息持久化、结束状态约定、后台任务、账号池、进程数量、会话 workspace 与归档、可观测性。
 - **运行时驱动负责**：启动 / 恢复 / 结束 agent 进程，送入输入，读出事件流。
-- agent loop、上下文压缩、内置工具属于 Claude Code / Codex 本身，still.fail 不改写。
+- agent loop、上下文压缩、内置工具属于 Claude Code / Codex 本身，Comma 不改写。
 - **still.fail cloud 只管人**：账号、workspace、成员和成员凭证。客户端（网页、桌面、Android）通过 iroh 直接连 station，不经过业务服务器。见 [cloud.md](cloud.md)。
 
 ## 2. 进程结构
 
-station 是 TypeScript（`src/`，跑在发布包自带的 Node 上）。原生部分只有三件，都预编译：启动器 `stillfail-station`（`native/launcher`）、每个 agent 一个 runner（`native/runner`）、iroh 和图片编解码的 Node 插件（`native/mesh`）。见 [station-ts.md](station-ts.md) 和 [station-ts-native.md](station-ts-native.md)。
+station 是 TypeScript（`src/`，跑在发布包自带的 Node 上）。原生部分只有三件，都预编译：启动器 `comma-station`（`native/launcher`）、每个 agent 一个 runner（`native/runner`）、iroh 和图片编解码的 Node 插件（`native/mesh`）。见 [station-ts.md](station-ts.md) 和 [station-ts-native.md](station-ts-native.md)。
 
 station 由 launchd（macOS）或 systemd 用户服务（Linux）托管。桌面端自带一份，作为子进程用 `--with-parent` 启动。
 
@@ -47,7 +47,7 @@ Jobs   账号池   空闲进程回收   自动归档
 
 ## 5. 运行时驱动
 
-still.fail 定义自己的接口（`src/agents/runtime.ts`），其余部分只依赖这层。运行时发生的事按顺序作为事件送回会话自己的任务，不用回调。
+Comma 定义自己的接口（`src/agents/runtime.ts`），其余部分只依赖这层。运行时发生的事按顺序作为事件送回会话自己的任务，不用回调。
 
 - 两个驱动都自己实现，共用一套进程管理（进程组、stdin）。账号相关全部自己实现。
 - 驱动层把 turn 失败归一分类：认证失败、限流、模型错误、进程退出、其他。
@@ -61,12 +61,12 @@ still.fail 定义自己的接口（`src/agents/runtime.ts`），其余部分只�
 
 ## 6. 给 agent 的工具（MCP）
 
-still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名字、参数和说明在 `src/tools/`。
+Comma 直接提供 HTTP MCP，不为每个会话另起进程。工具的名字、参数和说明在 `src/tools/`。
 
 - 每个会话有自己的 token，MCP 服务按 token 识别会话。agent 不能冒充其他会话。
 - `slack_api` 以连接的 Slack bot 身份调 Web API。别的会话所在的 thread 不能写。
-- Claude：启动时用 `--mcp-config` 传入 MCP 服务，header 为 `Authorization: Bearer ${STILLFAIL_MCP_TOKEN}`。token 作为该会话进程的环境变量注入。
-- Codex：MCP 服务不写进账号配置。`thread/start` / `thread/resume` 的 `config` 按 thread 传 `mcp_servers.stillfail.url` 和 `mcp_servers.stillfail.http_headers`，因为一个 app-server 进程承载多个会话。仍加载着的 thread 被 `thread/resume` 原样接回，`config` 不再生效；它的 MCP 连接若已失败（当时 station 的 MCP 端点未开），站点先 `thread/unsubscribe` 再 `thread/resume`，让它重新连接。MCP 端点打开前，station 不开始任何轮次。
+- Claude：启动时用 `--mcp-config` 传入 MCP 服务，header 为 `Authorization: Bearer ${COMMA_STATION_MCP_TOKEN}`。token 作为该会话进程的环境变量注入。
+- Codex：MCP 服务不写进账号配置。`thread/start` / `thread/resume` 的 `config` 按 thread 传 `mcp_servers.comma-station.url` 和 `mcp_servers.comma-station.http_headers`，因为一个 app-server 进程承载多个会话。仍加载着的 thread 被 `thread/resume` 原样接回，`config` 不再生效；它的 MCP 连接若已失败（当时 station 的 MCP 端点未开），站点先 `thread/unsubscribe` 再 `thread/resume`，让它重新连接。MCP 端点打开前，station 不开始任何轮次。
 
 ## 7. 结束状态约定
 
@@ -82,7 +82,7 @@ still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名
 ## 8. 后台任务
 
 - agent 用 `job_start` 让 station 执行 shell 命令，agent 不自己跑 sleep 循环。每个任务在独立进程组里跑，输出写日志文件。
-- 任务结束时通知 agent。任务里可以用 `stillfail-job notify <文字>` 随时给 agent 发消息。通知作为输入注入会话，唤醒 agent。
+- 任务结束时通知 agent。任务里可以用 `comma-job notify <文字>` 随时给 agent 发消息。通知作为输入注入会话，唤醒 agent。
 - 带 `port` 的是 web 服务：一直保持运行（退出后按递增间隔重启），workspace 成员经 still.fail cloud 的链接打开。
 - station 重启后，原来在跑的任务继续，没活下来的重新启动，并告诉 agent。
 
@@ -107,7 +107,7 @@ still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名
 ## 11. 磁盘
 
 **少写**
-- 不重复存储运行时的原始事件，运行时自己已经存了完整会话记录。still.fail 只存 thread 里的消息和精简的 turn 记录（起止时间、结果、声明的状态）。
+- 不重复存储运行时的原始事件，运行时自己已经存了完整会话记录。Comma 只存 thread 里的消息和精简的 turn 记录（起止时间、结果、声明的状态）。
 - 仓库共享：规范 clone 放在 `<数据目录>/repos`，会话在自己的 workspace 里从它建 git worktree。
 
 **归档**
@@ -125,19 +125,19 @@ still.fail 直接提供 HTTP MCP，不为每个会话另起进程。工具的名
 
 ## 12. 存储
 
-- SQLite，一个库 `stillfail.db`。表结构和变更通知见 [station-storage.md](station-storage.md)。
+- SQLite，一个库 `station.db`。表结构和变更通知见 [station-storage.md](station-storage.md)。
 - 运行时会话记录按 runtime 放在 `<数据目录>/transcripts/<runtime>`，每个 profile 目录里的 `projects/`（Claude）/ `sessions/`（Codex）链接到那里。
 
 ## 13. 可观测性
 
-- 管理页：网页版 / 桌面端 / Android 经 iroh 连到 station。不在 workspace 里的 station 不干活，`stillfail status` 说明它在哪、为什么停着。管理页能看会话、执行历史（运行时会话记录 + 进行中 turn 的实时步骤）、进程和后台任务，并做管理操作。
-- 多会话连接在 Slack 里新开的会话，先在 thread 里贴一个"在 still.fail 里查看这个会话"的链接（station 加入 workspace 之后）。
+- 管理页：网页版 / 桌面端 / Android 经 iroh 连到 station。不在 workspace 里的 station 不干活，`comma-station status` 说明它在哪、为什么停着。管理页能看会话、执行历史（运行时会话记录 + 进行中 turn 的实时步骤）、进程和后台任务，并做管理操作。
+- 多会话连接在 Slack 里新开的会话，先在 thread 里贴一个"在 Comma 里查看这个会话"的链接（station 加入 workspace 之后）。
 - 错误上报和链路追踪都可选，默认关闭，见 [telemetry.md](telemetry.md)。
 
 ## 14. 计划中、尚未实现
 
 - **内存预算**：软上限超出时回收空闲进程，新 turn 照常启动。硬上限（swap 或内存压力超过阈值）才让新 turn 排队，并在 thread 里说明原因。现在只按 `maxWarmClaude` / `warmMinutes` 回收空闲的 Claude 进程，不看内存。
-- **孤儿进程对账**：定期结束带 still.fail 实例标记但在会话表里找不到主人的进程。现在只在启动时清理上一轮遗留。
+- **孤儿进程对账**：定期结束带 Comma 实例标记但在会话表里找不到主人的进程。现在只在启动时清理上一轮遗留。
 - **Slack 漏消息补查**：定期对活跃 thread 补查漏掉的消息。现在靠先写库再 ack、Slack 重投。
 - **后台任务心跳超时**：任务超时没有心跳就判定失败。现在只看进程是否结束。
 - **按磁盘预算回收**：数据目录有总预算和最低空闲空间，超出时依次回收：调试日志 → 最久未用的会话归档 → 删除最老的归档 → 共享仓库 `git gc`、删除长期不用的仓库。现在只有按空闲天数的自动归档。

@@ -74,12 +74,27 @@ class BeamTestShardTest(unittest.TestCase):
         # 8-CPU runner.
         [job] = json.loads(result.stdout)["include"]
         self.assertEqual(job["partitions"], 8)
-        self.assertEqual(job["runner"], "pvg-linux-arm64-8c")
+        self.assertEqual(job["runner"], "blacksmith-8vcpu-ubuntu-2404")
         self.assertEqual(
             [shard.split(" ")[:2] for shard in job["shards"].split(";")],
             [["1", "5"], ["2", "5"], ["3", "5"], ["4", "5"], ["5", "5"], ["1", "3"], ["2", "3"], ["3", "3"]],
         )
         self.assertIn("apps/billing_core/test", job["shards"].split(";")[0])
+
+    def test_auth_chain_client_inputs_select_only_the_existing_web_owner(self):
+        web = self.systems / "apps/comma_web/test"
+        web.mkdir(parents=True)
+        (web / "auth_abuse_client_chain_test.exs").write_text("defmodule AuthChainTest do\n use ExUnit.Case\nend")
+        self.write_test("other", "defmodule OtherTest do\n use ExUnit.Case\nend")
+        changed = self.root / "changed-files"
+        for path in ["clients/packages/core/src/session/lifecycle.ts", "clients/packages/core/src/index.ts",
+                     "clients/packages/core-kernel/src/protocol.ts", "scripts/test-network-guard.mjs", "pnpm-lock.yaml"]:
+            with self.subTest(path=path):
+                changed.write_text(path + "\n")
+                result = self.run_planner("--plan", str(changed))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                [job] = json.loads(result.stdout)["include"]
+                self.assertEqual(job["shards"], "1 1 apps/comma_web/test")
 
     def test_unrelated_change_runs_no_job(self):
         self.write_test("native", "defmodule NativeTest do\n use ExUnit.Case\nend")

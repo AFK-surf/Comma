@@ -43,7 +43,7 @@ const setting = (id: string) =>
 
 type Shape = {
   configured?: boolean;
-  attempt?: { expiresInSeconds: number } | null;
+  attempt?: { expiresInSeconds: number; sender?: string | null } | null;
   link?: boolean;
 };
 
@@ -62,7 +62,7 @@ function value({
             code: "Abc123_xyZ",
             expires_at: Math.floor(start / 1000) + attempt.expiresInSeconds,
             transport: "photon",
-            sender_handle: phone,
+            sender_handle: attempt.sender === undefined ? phone : attempt.sender,
             line_handle: line,
           }
         : null,
@@ -80,8 +80,15 @@ function value({
   };
 }
 
-/** Settings › Channels over a core whose iMessage is `imessage`; `refuse` fails `imessage.start` with that code. */
-async function channels(imessage: IMessageValue, refuse?: string) {
+/** A shared line: a start with no account is refused. */
+const needsHandle = (params: { handle?: string }) =>
+  params.handle ? undefined : "imessage_handle_required";
+
+/** Settings › Channels over a core whose iMessage is `imessage`; `refuse` names the code that fails an `imessage.start`. */
+async function channels(
+  imessage: IMessageValue,
+  refuse?: (params: { handle?: string }) => string | undefined
+) {
   const calls: [string, unknown][] = [];
   const core = createScriptedCore({
     owns: (name) => /^(telegram|wechat|signal|imessage)/.test(name),
@@ -102,8 +109,9 @@ async function channels(imessage: IMessageValue, refuse?: string) {
             : undefined,
     calls: (name, params) => {
       calls.push([name, params]);
-      if (name === "imessage.start" && refuse)
-        throw Object.assign(new Error(refuse), { code: refuse });
+      const refusal =
+        name === "imessage.start" ? refuse?.(params as { handle?: string }) : undefined;
+      if (refusal) throw Object.assign(new Error(refusal), { code: refusal });
       return null;
     },
   });
@@ -120,8 +128,52 @@ it("stays hidden unless the server has Photon iMessage set up", async () => {
   expect(setting("imessage.connection")).toBeNull();
 });
 
-it("asks for the phone number, checks its format, and starts with the normalized number", async () => {
+it("starts a dedicated line's attempt without asking for an account", async () => {
   const t = await channels(value({}));
+  await waitFor(() =>
+    expect(setting("imessage.connection")).toHaveTextContent("Not connected")
+  );
+  await t.user.click(
+    within(setting("imessage.connection")!).getByRole("button", { name: "Connect" })
+  );
+  await waitFor(() =>
+    expect(t.named("imessage.start")).toEqual([{ workspace: workspaceId }])
+  );
+  expect(screen.queryByLabelText(/Your iMessage phone number or email/)).toBeNull();
+});
+
+it("shows a dedicated line's code with a QR code, for any account", async () => {
+  const t = await channels(value({ attempt: { expiresInSeconds: 600, sender: null } }));
+  const panel = await screen.findByTestId("imessage-code");
+  expect(within(panel).getByTestId("imessage-line")).toHaveTextContent(line);
+  expect(panel).toHaveTextContent("The account that sends it connects");
+  expect(panel).not.toHaveTextContent(" from ");
+  expect(
+    within(panel).getByRole("figure", { name: "iMessage connection QR code" })
+  ).toBeVisible();
+
+  act(() => clock.advance(601_000));
+  await screen.findByTestId("imessage-expired");
+  expect(screen.queryByRole("button", { name: "Use another account" })).toBeNull();
+  await t.user.click(screen.getByRole("button", { name: "Get a new code" }));
+  await waitFor(() =>
+    expect(t.named("imessage.start")).toEqual([{ workspace: workspaceId }])
+  );
+});
+
+it("says why a start without an account was refused", async () => {
+  const t = await channels(value({}), () => "imessage_capacity_reached");
+  await waitFor(() => expect(setting("imessage.connection")).not.toBeNull());
+  await t.user.click(
+    within(setting("imessage.connection")!).getByRole("button", { name: "Connect" })
+  );
+  await waitFor(() =>
+    expect(setting("imessage.connection")).toHaveTextContent("No iMessage lines")
+  );
+});
+
+it("asks a shared line for the phone number, checks its format, and starts with the normalized number", async () => {
+  const t = await channels(value({}), needsHandle);
   await waitFor(() =>
     expect(setting("imessage.connection")).toHaveTextContent("Not connected")
   );
@@ -136,20 +188,23 @@ it("asks for the phone number, checks its format, and starts with the normalized
   expect(
     await screen.findByText(/Enter an iMessage email address or a full phone number/)
   ).toBeVisible();
-  expect(t.named("imessage.start")).toEqual([]);
+  expect(t.named("imessage.start")).toEqual([{ workspace: workspaceId }]);
 
   await t.user.clear(field);
   await t.user.type(field, "+1 (415) 555-0123");
   await t.user.click(screen.getByRole("button", { name: "Get code" }));
   await waitFor(() =>
     expect(t.named("imessage.start")).toEqual([
+      { workspace: workspaceId },
       { workspace: workspaceId, handle: phone },
     ])
   );
 });
 
 it("says why a start was refused", async () => {
-  const t = await channels(value({}), "invalid_imessage_handle");
+  const t = await channels(value({}), (params) =>
+    params.handle ? "invalid_imessage_handle" : "imessage_handle_required"
+  );
   await waitFor(() => expect(setting("imessage.connection")).not.toBeNull());
   await t.user.click(
     within(setting("imessage.connection")!).getByRole("button", { name: "Connect" })
@@ -184,7 +239,7 @@ it("shows the line, the code and the time left, opens Messages with the code, ex
 
   await t.user.click(within(panel).getByRole("button", { name: "Open in Messages" }));
   expect(opened).toEqual([messagesLink(line, "Abc123_xyZ")]);
-  expect(opened[0]).toBe("sms:%2B15559990000&body=Abc123_xyZ");
+  expect(opened[0]).toBe("sms:+15559990000&body=Abc123_xyZ");
 
   // Ten minutes on, the code is no use: a new one for the same number, or another number.
   act(() => clock.advance(540_000));

@@ -1,14 +1,41 @@
 defmodule SalixLlm.Transcribe do
   @moduledoc false
 
+  require Logger
   require SystemsRuntime.Proc
 
+  alias SalixAgent.AudioTranscriber
   alias SalixLlm.AudioChunker
 
   @receive_timeout 180_000
-  @chunk_task_timeout 190_000
   @batch_timeout 600_000
   @max_chunk_concurrency 2
+  # A chunk the model fails on is asked again as parts this long. On prod
+  # (2026-11), a recording's failing 5-minute chunk failed again on every retry,
+  # while the same audio cut into one-minute parts transcribed.
+  @split_seconds 60
+  # With `voice: true` (recordings), a chunk with less speech than this is not
+  # asked: on silence or room noise the model writes whole made-up
+  # conversations and ends with `stop`. `min_voiced_seconds:` names a lower
+  # floor for dictation, where a whole clip can be one short word.
+  @min_voiced_seconds 1.0
+  # Words more than anyone says in a chunk's voiced time are made up. The
+  # weight (`spoken_weight/1`) measured 15 to 19 for each voiced second of
+  # dictation, and 40 leaves room for fast speakers.
+  @max_weight_per_voiced_second 40
+  # A transcript whose last timestamp is this far before the chunk's last
+  # speech has left the end out (seen with `stop`: 1.5 minutes missing).
+  @max_unwritten_tail_seconds 90
+  # The model declines audio (`content_filter: OTHER`) at random: on prod
+  # (2026-11, Cue #5089), the same minute was declined 3 times in 10 and the
+  # 5-minute chunk around it once in 10, while `gemini-3.6-flash` declined
+  # none of 30 (Cue #5094). A declined chunk or part goes to the tier's
+  # `fallback_model`, else to the tier's model again, up to this many times
+  # before it is cut or noted.
+  @declined_attempts 3
+  # Audio still declined after that is noted in the transcript with this line
+  # instead of failing the recording.
+  @declined_note "(Not transcribed: the transcription model declined this audio until "
 
   @type cfg :: %{optional(String.t()) => String.t()}
   @type chunk_manifest_entry :: %{
@@ -117,7 +144,8 @@ defmodule SalixLlm.Transcribe do
         :deadline_ms,
         :ffmpeg,
         :ffprobe,
-        :silk_decoder
+        :silk_decoder,
+        :voice
       ])
     )
   end
@@ -133,6 +161,7 @@ defmodule SalixLlm.Transcribe do
 
   defp transcribe_chunks_with_manifest(cfg, chunks, prompt, opts) do
     with {:ok, chunks} <- complete_ordered_chunks(chunks),
+         chunks = with_end_seconds(chunks),
          {:ok, results} <- run_chunk_transcriptions_bounded(cfg, chunks, prompt, opts),
          {:ok, texts} <- collect_complete_results(chunks, results) do
       transcript =
@@ -141,21 +170,32 @@ defmodule SalixLlm.Transcribe do
         |> Enum.join("\n")
         |> String.trim()
 
-      if transcript == "" do
-        {:error, :asr_empty_transcript}
-      else
-        chunk_manifest =
-          Enum.zip_with(chunks, texts, fn chunk, text ->
-            %{
-              index: chunk.index,
-              offset_seconds: chunk.offset_seconds,
-              transcript: text
-            }
-          end)
+      cond do
+        transcript == "" ->
+          {:error, :asr_empty_transcript}
 
-        {:ok, transcript, chunk_manifest}
+        only_declined_notes?(transcript) ->
+          {:error, :asr_declined}
+
+        true ->
+          chunk_manifest =
+            Enum.zip_with(chunks, texts, fn chunk, text ->
+              %{
+                index: chunk.index,
+                offset_seconds: chunk.offset_seconds,
+                transcript: text
+              }
+            end)
+
+          {:ok, transcript, chunk_manifest}
       end
     end
+  end
+
+  defp only_declined_notes?(transcript) do
+    transcript
+    |> String.split("\n", trim: true)
+    |> Enum.all?(&String.contains?(&1, @declined_note))
   end
 
   @doc false
@@ -312,6 +352,24 @@ defmodule SalixLlm.Transcribe do
     end
   end
 
+  # Each chunk (or part) ends where the next one starts; the last one where
+  # its source does.
+  defp with_end_seconds(chunks) do
+    ends =
+      chunks
+      |> Enum.drop(1)
+      |> Enum.map(& &1.offset_seconds)
+      |> Enum.concat([last_end_seconds(List.last(chunks))])
+
+    Enum.zip_with(chunks, ends, &Map.put(&1, :end_seconds, &2))
+  end
+
+  defp last_end_seconds(%{source_duration_seconds: seconds, offset_seconds: offset})
+       when is_integer(seconds) and seconds > offset,
+       do: seconds
+
+  defp last_end_seconds(chunk), do: chunk.offset_seconds + @split_seconds
+
   defp source_duration_seconds([%{source_duration_seconds: seconds} | _])
        when is_integer(seconds) and seconds > 0,
        do: {:ok, seconds}
@@ -327,11 +385,13 @@ defmodule SalixLlm.Transcribe do
   defp run_chunk_transcriptions(cfg, chunks, prompt, opts) do
     transcribe_fun = opts[:transcribe_fun] || (&transcribe/4)
     max_concurrency = opts |> Keyword.get(:max_concurrency, @max_chunk_concurrency) |> clamp(1, 2)
-    task_timeout = opts[:task_timeout_ms] || @chunk_task_timeout
+    # Each request is bounded by its receive timeout; a chunk asked again as
+    # parts takes longer, so only the batch deadline bounds a chunk.
+    task_timeout = opts[:task_timeout_ms] || opts[:batch_remaining_ms]
 
     chunks
     |> SystemsClock.async_stream(
-      fn chunk -> transcribe_chunk(cfg, chunk, prompt, transcribe_fun) end,
+      fn chunk -> transcribe_chunk(cfg, chunk, prompt, transcribe_fun, opts) end,
       max_concurrency: max_concurrency,
       ordered: true,
       timeout: task_timeout,
@@ -343,7 +403,14 @@ defmodule SalixLlm.Transcribe do
   defp run_chunk_transcriptions_bounded(cfg, chunks, prompt, opts) do
     with {:ok, timeout} <- remaining_batch_timeout(opts) do
       task =
-        SystemsRuntime.Task.async(fn -> run_chunk_transcriptions(cfg, chunks, prompt, opts) end)
+        SystemsRuntime.Task.async(fn ->
+          run_chunk_transcriptions(
+            cfg,
+            chunks,
+            prompt,
+            Keyword.put(opts, :batch_remaining_ms, timeout)
+          )
+        end)
 
       case SystemsClock.yield(task, timeout) do
         {:ok, results} ->
@@ -375,20 +442,58 @@ defmodule SalixLlm.Transcribe do
     end
   end
 
-  defp transcribe_chunk(cfg, chunk, prompt, transcribe_fun) do
+  defp transcribe_chunk(cfg, chunk, prompt, transcribe_fun, opts) do
+    floor = opts[:min_voiced_seconds] || @min_voiced_seconds
+
+    if is_number(chunk[:voiced_seconds]) and chunk.voiced_seconds < floor do
+      Logger.info("ASR chunk skipped without speech: index=#{chunk.index}")
+      {:ok, ""}
+    else
+      transcribe_voiced_chunk(cfg, chunk, prompt, transcribe_fun, opts)
+    end
+  end
+
+  defp transcribe_voiced_chunk(cfg, chunk, prompt, transcribe_fun, opts) do
     with {:ok, bytes} <- File.read(chunk.path) do
-      case transcribe_fun.(cfg, Base.encode64(bytes), chunk.format, prompt) do
-        {:ok, text} when is_binary(text) ->
-          {:ok, rebase_timestamps(String.trim(text), chunk.offset_seconds)}
+      case asked_until_not_declined(cfg, fn cfg ->
+             checked_transcript(cfg, bytes, chunk, prompt, transcribe_fun)
+           end) do
+        {:ok, text} ->
+          {:ok, rebase_timestamps(text, chunk.offset_seconds)}
 
         {:error, :asr_empty_transcript} ->
           {:ok, ""}
 
-        {:error, _} = error ->
-          error
+        answer ->
+          reason = failure_reason(answer)
 
-        other ->
-          {:error, {:invalid_asr_chunk_response, other}}
+          Logger.warning(
+            "ASR chunk failed: index=#{chunk.index} offset_seconds=#{chunk.offset_seconds} reason=#{AudioTranscriber.failure_reason(reason)}"
+          )
+
+          case transcribe_in_parts(cfg, bytes, prompt, transcribe_fun, opts) do
+            {:ok, text} ->
+              Logger.info("ASR chunk transcribed in parts: index=#{chunk.index}")
+              {:ok, rebase_timestamps(text, chunk.offset_seconds)}
+
+            {:error, :asr_empty_transcript} ->
+              {:ok, ""}
+
+            {:error, part_reason} = part_failure ->
+              Logger.warning(
+                "ASR chunk failed in parts: index=#{chunk.index} reason=#{AudioTranscriber.failure_reason(part_reason)}"
+              )
+
+              # A suspect answer is still an answer when its parts fail.
+              if match?({:suspect, _, _}, answer),
+                do: unsplit_result(answer, chunk),
+                else: part_failure
+
+            :unsplit ->
+              if declined?(answer),
+                do: {:ok, declined_line(chunk)},
+                else: unsplit_result(answer, chunk)
+          end
       end
     end
   rescue
@@ -396,6 +501,216 @@ defmodule SalixLlm.Transcribe do
   catch
     kind, reason -> {:error, {:asr_chunk_exit, kind, reason}}
   end
+
+  defp transcribe_bytes(cfg, bytes, format, prompt, transcribe_fun) do
+    case transcribe_fun.(cfg, Base.encode64(bytes), format, prompt) do
+      {:ok, text} when is_binary(text) -> clean_transcript(text)
+      {:error, _} = error -> error
+      other -> {:error, {:invalid_asr_chunk_response, other}}
+    end
+  end
+
+  # A transcript that the audio's speech cannot hold is `{:suspect, reason,
+  # text}`: more words than its voiced time (`:asr_words_exceed_audio`), or
+  # ending long before its speech does (`:asr_transcript_ends_early`). Chunks
+  # without voice facts are taken as they come.
+  defp checked_transcript(cfg, bytes, chunk, prompt, transcribe_fun) do
+    with {:ok, text} <- transcribe_bytes(cfg, bytes, chunk.format, prompt, transcribe_fun) do
+      cond do
+        not is_number(chunk[:voiced_seconds]) ->
+          {:ok, text}
+
+        spoken_weight(text) > 10 + @max_weight_per_voiced_second * chunk.voiced_seconds ->
+          {:suspect, :asr_words_exceed_audio, text}
+
+        ends_early?(text, chunk[:speech_end_seconds]) ->
+          {:suspect, :asr_transcript_ends_early, text}
+
+        true ->
+          {:ok, text}
+      end
+    end
+  end
+
+  defp failure_reason({:suspect, reason, _text}), do: reason
+  defp failure_reason({:error, reason}), do: reason
+
+  # A chunk that cannot be cut (or whose parts fail) keeps what its one answer
+  # gives: made-up words are dropped, a transcript that ends early is still
+  # the best there is.
+  defp unsplit_result({:suspect, :asr_words_exceed_audio, _text}, chunk) do
+    Logger.warning("ASR chunk dropped as made up: index=#{chunk.index}")
+    {:ok, ""}
+  end
+
+  defp unsplit_result({:suspect, _reason, text}, chunk),
+    do: {:ok, rebase_timestamps(text, chunk.offset_seconds)}
+
+  defp unsplit_result(failure, _chunk), do: failure
+
+  defp ends_early?(text, speech_end) when is_number(speech_end) do
+    case Regex.scan(~r/\[(?:(\d+):)?(\d+):([0-5]\d)\]/, text) do
+      [] ->
+        false
+
+      stamps ->
+        [_match, hours, minutes, seconds] = List.last(stamps)
+        hours = if hours == "", do: 0, else: String.to_integer(hours)
+        last = hours * 3600 + String.to_integer(minutes) * 60 + String.to_integer(seconds)
+        speech_end - last > @max_unwritten_tail_seconds
+    end
+  end
+
+  defp ends_early?(_text, _speech_end), do: false
+
+  # About 3 for each Han, kana or Hangul character, which says a syllable or
+  # more, and 1 for any other letter, digit or mark, as dictation counts.
+  # Timestamps and speaker names at the start of a line are not speech.
+  defp spoken_weight(text) do
+    text
+    |> String.replace(~r/^[ \t]*\[[\d:]+\][ \t]*(?:[^:：\n]{1,40}[:：])?/mu, "")
+    |> String.to_charlist()
+    |> Enum.reduce(0, fn
+      c, sum when c in [?\s, ?\n, ?\t] -> sum
+      c, sum when c in 0x3040..0x30FF or c in 0x3400..0x9FFF or c in 0xAC00..0xD7AF -> sum + 3
+      _c, sum -> sum + 1
+    end)
+  end
+
+  # Zero-width characters and an empty code fence are what the model answers
+  # for music alone; they are no transcript.
+  defp clean_transcript(text) do
+    text = String.replace(text, ~r/[\x{200B}-\x{200D}\x{2060}\x{FEFF}]/u, "")
+
+    text =
+      case Regex.run(~r/\A\s*```[\w-]*[ \t]*\n?(.*?)\n?```\s*\z/s, text) do
+        [_fence, inner] -> inner
+        nil -> text
+      end
+
+    complete_transcript(text)
+  end
+
+  # The failed chunk cut into `@split_seconds` parts, asked in turn. `:unsplit`
+  # when it cannot be cut or is a single part: the chunk's own failure stands.
+  defp transcribe_in_parts(cfg, bytes, prompt, transcribe_fun, opts) do
+    chunker = opts[:part_chunker] || AudioChunker
+
+    chunker_opts =
+      opts
+      |> Keyword.take([:timeout_ms, :deadline_ms, :ffmpeg, :ffprobe, :voice])
+      |> Keyword.put(:segment_seconds, opts[:split_seconds] || @split_seconds)
+
+    chunker.with_mp3_chunks(
+      bytes,
+      "chunk.mp3",
+      fn
+        [_single] ->
+          :unsplit
+
+        parts ->
+          parts
+          |> Enum.sort_by(& &1.index)
+          |> with_end_seconds()
+          |> Enum.reduce_while({:ok, []}, fn part, {:ok, texts} ->
+            case transcribe_part(cfg, part, prompt, transcribe_fun) do
+              {:ok, ""} ->
+                {:cont, {:ok, texts}}
+
+              :declined ->
+                Logger.warning("ASR part declined: index=#{part.index}")
+                {:cont, {:ok, [declined_line(part) | texts]}}
+
+              {:ok, text} ->
+                {:cont, {:ok, [rebase_timestamps(text, part.offset_seconds) | texts]}}
+
+              {:error, reason} ->
+                {:halt, {:error, {:asr_part_failed, part.index, reason}}}
+            end
+          end)
+          |> case do
+            {:ok, []} -> {:error, :asr_empty_transcript}
+            {:ok, texts} -> {:ok, texts |> Enum.reverse() |> Enum.join("\n")}
+            error -> error
+          end
+      end,
+      chunker_opts
+    )
+    |> case do
+      {:ok, _} = ok -> ok
+      :unsplit -> :unsplit
+      {:error, :asr_empty_transcript} = empty -> empty
+      {:error, {:asr_part_failed, _, _}} = error -> error
+      # The chunker could not cut it (or ran out of time): the chunk's own failure stands.
+      {:error, _} -> :unsplit
+    end
+  end
+
+  defp transcribe_part(_cfg, %{voiced_seconds: voiced}, _prompt, _fun)
+       when voiced < @min_voiced_seconds,
+       do: {:ok, ""}
+
+  defp transcribe_part(cfg, part, prompt, transcribe_fun) do
+    with {:ok, bytes} <- File.read(part.path) do
+      case asked_until_not_declined(cfg, fn cfg ->
+             checked_transcript(cfg, bytes, part, prompt, transcribe_fun)
+           end) do
+        {:ok, text} ->
+          {:ok, text}
+
+        {:error, :asr_empty_transcript} ->
+          {:ok, ""}
+
+        {:suspect, :asr_words_exceed_audio, _text} ->
+          Logger.warning("ASR part dropped as made up: index=#{part.index}")
+          {:ok, ""}
+
+        {:suspect, _reason, text} ->
+          {:ok, text}
+
+        {:error, _reason} = error ->
+          if declined?(error), do: :declined, else: error
+      end
+    end
+  end
+
+  # Declined audio goes at once to the tier's `fallback_model`, asked up to
+  # `@declined_attempts` times; without one, the tier's model is asked again
+  # that many times in all.
+  defp asked_until_not_declined(cfg, ask) do
+    case cfg["fallback_model"] do
+      model when is_binary(model) and model != "" ->
+        answer = ask.(cfg)
+
+        if declined?(answer) do
+          Logger.warning("ASR declined audio asked of the fallback model")
+          asked(cfg |> Map.put("model", model) |> Map.delete("fallback_model"), ask, 1)
+        else
+          answer
+        end
+
+      _none ->
+        asked(cfg, ask, 1)
+    end
+  end
+
+  defp asked(cfg, ask, attempt) do
+    answer = ask.(cfg)
+
+    if declined?(answer) and attempt < @declined_attempts,
+      do: asked(cfg, ask, attempt + 1),
+      else: answer
+  end
+
+  defp declined?({:error, {:asr_incomplete_transcript, reason}}) when is_binary(reason),
+    do: String.starts_with?(reason, "content_filter")
+
+  defp declined?(_answer), do: false
+
+  # Where a declined chunk or part starts and ends, in the time of the audio it
+  # was cut from: a part's line is rebased with its chunk's words.
+  defp declined_line(%{offset_seconds: start, end_seconds: stop}),
+    do: "#{format_clock(start)} #{@declined_note}#{format_clock(stop)}.)"
 
   defp collect_complete_results(chunks, results) when length(chunks) == length(results) do
     chunks

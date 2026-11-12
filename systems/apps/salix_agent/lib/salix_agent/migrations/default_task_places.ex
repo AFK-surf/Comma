@@ -16,6 +16,11 @@ defmodule SalixAgent.Migrations.DefaultTaskPlaces do
 
   It reads at most four pages of 50 Agent records of the Group; a Group with
   more is left without a default.
+
+  Retired by the Cloud VM cutover (`SalixWeb.Migrations.CloudVMCutover`): a
+  Group whose Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`)
+  gets no default from it, so a run of the BridgeForTeams migration on a
+  database that has not recorded it writes no Cloud VM default again.
   """
 
   alias SalixAgent.{Control, StationBinding, TaskPlace}
@@ -32,6 +37,7 @@ defmodule SalixAgent.Migrations.DefaultTaskPlaces do
   @spec derive(String.t(), String.t()) :: {:ok, :cloud_vm | :none} | {:error, term()}
   def derive(tenant_id, group_id) do
     with {:ok, group} <- group(group_id),
+         false <- SalixAgent.Sandboxes.cloud_vm_retired?(group),
          {:ok, workers} <- live_workers(tenant_id, group_id, group["task_agent_id"]) do
       if workers != [] and Enum.all?(workers, &StationBinding.cloud_vm?/1) do
         with {:ok, _place} <- TaskPlace.put_new(tenant_id, group_id, TaskPlace.cloud_vm()),
@@ -40,6 +46,7 @@ defmodule SalixAgent.Migrations.DefaultTaskPlaces do
         {:ok, :none}
       end
     else
+      true -> {:ok, :none}
       {:error, :not_found} -> {:ok, :none}
       {:error, :too_many_workers} -> {:ok, :none}
       error -> error

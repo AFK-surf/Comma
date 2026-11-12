@@ -33,8 +33,12 @@ export interface NativeBindOptions {
   lookup?: boolean;
   /** `ip:port` to listen on; any free port when absent. */
   bindAddr?: string;
-  /** Packets through Salix too, as the relay of last resort (`SalixRelay` carries them). */
+  /** Packets through Salix too (`SalixRelay` carries them). */
   salixRelay?: boolean;
+  /** No IP path: only relays and Salix. */
+  relayOnly?: boolean;
+  /** Which way goes first (`RoutePolicy`); none: `salix-first`. An addon from before takes no notice. */
+  routePolicy?: string;
 }
 
 export interface NativeMesh {
@@ -64,6 +68,10 @@ export interface NativeEndpointOptions {
   bindAddr?: string | undefined;
   /** Reaches stations through Salix as well, on the sockets `relay` carries. */
   salixRelay?: boolean | undefined;
+  /** Reaches stations through Salix alone, to test that path: no direct address and no iroh relay is used. */
+  salixOnly?: boolean | undefined;
+  /** Which way goes first, as the control plane says (`RoutePolicy`). */
+  routePolicy?: string | undefined;
 }
 
 const buffer = (bytes: Uint8Array) =>
@@ -95,7 +103,7 @@ export async function bindNativeEndpoint(
   mesh: NativeMesh,
   options: NativeEndpointOptions
 ): Promise<NativeMeshEndpoint<Buffer, SalixRelay>> {
-  const relayUrls = [...(options.relays ?? [])];
+  const relayUrls = options.salixOnly ? [] : [...(options.relays ?? [])];
   const native = await mesh.bind({
     secretKey: buffer(options.secretKey),
     alpns: (options.alpns ?? []).map((alpn) => Buffer.from(alpn)),
@@ -104,6 +112,8 @@ export async function bindNativeEndpoint(
     lookup: relayUrls.length > 0,
     ...(options.bindAddr ? { bindAddr: options.bindAddr } : {}),
     ...(options.salixRelay ? { salixRelay: true } : {}),
+    ...(options.salixOnly ? { relayOnly: true } : {}),
+    ...(options.routePolicy ? { routePolicy: options.routePolicy } : {}),
   });
   const relay =
     options.salixRelay && native.relayIncoming && native.relayOutgoing

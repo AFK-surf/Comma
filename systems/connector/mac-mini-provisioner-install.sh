@@ -176,57 +176,6 @@ install_binary() {
   mv "$temp_binary" "$target_bin"
 }
 
-read_installed_component_digest() {
-  config_path="$1"
-  component="$2"
-
-  [ -f "$config_path" ] || return 0
-
-  python3 - "$config_path" "$component" <<'PY'
-import json
-import sys
-
-path, component = sys.argv[1:3]
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        digest = json.load(handle)["capabilities"]["component_digests"][component]
-except Exception:
-    raise SystemExit(0)
-if isinstance(digest, str):
-    print(digest)
-PY
-}
-
-# salix-connect runs Computer Use through the helper app beside its binary.
-# The installed runner owns the replacement (lock, signature check, atomic swap),
-# the same code that applies the helper updates later.
-install_computer_use_helper() {
-  url="$1"
-  expected_sha="$2"
-  expected_size="$3"
-  app="$4"
-  installed_sha="$5"
-  temp_dir="$6"
-  runner="$7"
-
-  [ -n "$expected_sha" ] || fail "preflight.computer_use_helper_sha_missing" "Computer Use helper sha256 is required"
-  case "$expected_size" in
-    '' | 0 | *[!0-9]*) fail "preflight.computer_use_helper_size_missing" "Computer Use helper exact artifact size is required" ;;
-  esac
-  if [ "$installed_sha" = "$expected_sha" ] && \
-    "$runner" computer-use-helper check --app "$app" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  archive="$temp_dir/comma-computer-use.tar.gz"
-  download "computer_use_helper" "$url" "$archive" "$expected_size"
-  actual_sha="$(sha256_file "$archive")"
-  [ "$actual_sha" = "$expected_sha" ] || fail "preflight.computer_use_helper_checksum_mismatch" \
-    "Computer Use helper checksum mismatch: expected=$expected_sha got=$actual_sha"
-  "$runner" computer-use-helper install --app "$app" --archive "$archive" || \
-    fail "install.computer_use_helper_install_failed" "Computer Use helper was not installed; the current helper was not changed"
-}
-
 agent_vmm_host_ready() {
   helper="$1"
   observed="$2"
@@ -462,12 +411,10 @@ config = {
         "name": os.environ["BFT_RUNNER_NAME"],
     },
     "paths": {
-        "salix_connect": os.environ["BFT_SALIX_CONNECT_PATH"],
         "host_runtime_lifecycle": os.environ["BFT_HOST_RUNTIME_LIFECYCLE_PATH"],
         "host_runtime_cli": os.environ["BFT_HOST_RUNTIME_CLI_PATH"],
         "runner": runner_path,
         "runner_install_status": status_path,
-        "workdir": os.environ["BFT_WORKDIR"],
         "state_dir": state_dir,
     },
     "launchd": {
@@ -478,21 +425,16 @@ config = {
         "install_plist": default_launchd_install_path,
     },
     "capabilities": {
-        "salix_connect": True,
         "component_digests": {
-            "salix-connect": os.environ["BFT_SALIX_CONNECTOR_SHA256"],
             "agent-vmm-host": os.environ["BFT_AGENT_VMM_HOST_SHA256"],
         },
     },
 }
-computer_use_helper_sha = os.environ.get("BFT_COMPUTER_USE_HELPER_INSTALLED_SHA256", "")
-if computer_use_helper_sha:
-    config["capabilities"]["component_digests"]["computer-use-helper"] = computer_use_helper_sha
 if token:
     config["runner_token"] = token
 
 if os.environ["BFT_LAUNCHD_DOMAIN"] == "system":
-    next_action = "Run bft-runner doctor, bft-runner dry-run, or bft-runner. Ask an administrator to run /Library/PrivilegedHelperTools/agent-vmm-service-executor install --job runner after the foreground smoke works."
+    next_action = "Run bft-runner doctor, bft-runner dry-run, or bft-runner. Ask an administrator to run /Library/PrivilegedHelperTools/bft-runner-service-executor install after the foreground smoke works."
 else:
     next_action = "Run bft-runner doctor, bft-runner dry-run, or bft-runner. Use bft-runner service start after the foreground smoke works."
 
@@ -504,8 +446,6 @@ status = {
     "capabilities": config["capabilities"],
     "install": {
         "runner_source": os.environ["BFT_RUNNER_SOURCE"],
-        "salix_connect_source": os.environ["BFT_SALIX_CONNECT_SOURCE"],
-        "fallback_tooling_source": os.environ["BFT_FALLBACK_TOOLING_SOURCE"],
     },
     "launchd": {
         "label": os.environ["BFT_LAUNCHD_LABEL"],
@@ -684,80 +624,6 @@ PY
   printf 'launchd install removed: %s\n' "$plist_path"
 }
 
-preflight_fallback_tooling() {
-  platform_value="$1"
-
-  if [ "${BFT_INSTALL_FALLBACK_TOOLS:-0}" != "1" ]; then
-    BFT_FALLBACK_TOOLING_SOURCE="skipped"
-    export BFT_FALLBACK_TOOLING_SOURCE
-    return 0
-  fi
-
-  case "$platform_value" in
-    darwin-*) ;;
-    *)
-      BFT_FALLBACK_TOOLING_SOURCE="unsupported-platform"
-      export BFT_FALLBACK_TOOLING_SOURCE
-      return 0
-      ;;
-  esac
-
-  brew_path="$(command -v brew 2>/dev/null || true)"
-  [ -n "$brew_path" ] || fail "preflight.homebrew_missing" \
-    "BFT_INSTALL_FALLBACK_TOOLS=1 requires Homebrew before running the single-use installer"
-  BFT_FALLBACK_BREW_PATH="$brew_path"
-  export BFT_FALLBACK_BREW_PATH
-}
-
-require_fallback_command() {
-  display_name="$1"
-  shift
-  for candidate in "$@"; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      return 0
-    fi
-  done
-  fail "preflight.fallback_tool_missing" \
-    "$display_name was not discoverable after Homebrew fallback-tool installation"
-}
-
-install_fallback_tooling() {
-  platform_value="$1"
-
-  if [ "${BFT_INSTALL_FALLBACK_TOOLS:-0}" != "1" ]; then
-    BFT_FALLBACK_TOOLING_SOURCE="skipped"
-    export BFT_FALLBACK_TOOLING_SOURCE
-    return 0
-  fi
-
-  case "$platform_value" in
-    darwin-*) ;;
-    *) return 0 ;;
-  esac
-
-  brew_path="${BFT_FALLBACK_BREW_PATH:-$(command -v brew 2>/dev/null || true)}"
-  [ -n "$brew_path" ] || fail "preflight.homebrew_missing" \
-    "BFT_INSTALL_FALLBACK_TOOLS=1 requires Homebrew before running the single-use installer"
-
-  say "Installing attachment fallback tools"
-  "$brew_path" install jq poppler pandoc ffmpeg p7zip imagemagick
-  "$brew_path" install --cask libreoffice
-
-  PATH="$(dirname "$brew_path"):/Applications/LibreOffice.app/Contents/MacOS:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
-  export PATH
-  require_fallback_command "jq" jq
-  require_fallback_command "pdftotext" pdftotext
-  require_fallback_command "pandoc" pandoc
-  require_fallback_command "ffmpeg" ffmpeg
-  require_fallback_command "ImageMagick" magick
-  require_fallback_command "7-Zip" 7z 7zz
-  require_fallback_command "LibreOffice" libreoffice soffice
-
-  BFT_FALLBACK_TOOLING_SOURCE="homebrew"
-  export BFT_FALLBACK_TOOLING_SOURCE
-  ok "Attachment fallback tools installed and verified"
-}
-
 main() {
   need_cmd uname
   need_cmd tr
@@ -771,7 +637,7 @@ main() {
   platform="${BFT_PLATFORM:-$(detect_platform)}"
   installer_uid="$(/usr/bin/id -u)"
   [ "$installer_uid" != 0 ] || fail "preflight.root_business_installer_forbidden" \
-    "run the BFT installer as the non-root service user; use only the fixed Agent VMM executor for administrator service actions"
+    "run the BFT installer as the non-root service user; use only the fixed BFT runner executor for administrator service actions"
   install_user="${BFT_INSTALL_USER:-$(/usr/bin/id -un)}"
   install_uid="$(/usr/bin/id -u "$install_user" 2>/dev/null || true)"
   install_gid="$(/usr/bin/id -g "$install_user" 2>/dev/null || true)"
@@ -806,7 +672,6 @@ main() {
   state_dir="${BFT_STATE_DIR:-$install_prefix/state}"
   config_path="${BFT_CONFIG_PATH:-$install_prefix/runner.json}"
   status_path="${BFT_STATUS_PATH:-$install_prefix/runner-install-status.json}"
-  workdir="${BFT_WORKDIR:-$install_prefix/work}"
   launchd_label="${BFT_LAUNCHD_LABEL:-com.bridgeforteams.runner}"
   launchd_plist_path="${BFT_LAUNCHD_PLIST_PATH:-$install_prefix/$launchd_label.plist}"
   install_launchd="${BFT_INSTALL_LAUNCHD:-0}"
@@ -824,7 +689,7 @@ main() {
     esac
     if [ "$install_launchd" = 1 ] || [ "$load_launchd" = 1 ] || [ "$unload_launchd" = 1 ] || [ "$remove_launchd" = 1 ]; then
       fail "preflight.system_launchd_executor_required" \
-        "ask an administrator to use /Library/PrivilegedHelperTools/agent-vmm-service-executor with --job runner"
+        "ask an administrator to use /Library/PrivilegedHelperTools/bft-runner-service-executor for the runner"
     fi
     default_launchd_install_path=/Library/LaunchDaemons/com.bridgeforteams.runner.plist
   else
@@ -852,10 +717,6 @@ main() {
       "set only one of BFT_LOAD_LAUNCHD=1 or BFT_REMOVE_LAUNCHD=1"
   fi
 
-  # The base clean-host install has no Homebrew dependency. When optional fallback
-  # tooling is requested, fail before downloading or installing any release artifact.
-  preflight_fallback_tooling "$platform"
-
   say "BridgeForTeams runner"
   say "Org: ${BFT_ORG_ID:-unknown}"
   if [ "$remove_launchd" = "1" ]; then
@@ -873,28 +734,18 @@ main() {
   fi
   say ""
 
-  mkdir -p "$bin_dir" "$state_dir" "$workdir/agents"
+  mkdir -p "$bin_dir" "$state_dir"
 
   temp_dir="$(mktemp -d)"
   temp_dir="$(cd "$temp_dir" && pwd -P)"
   trap 'rm -rf "$temp_dir"' EXIT INT TERM
 
-  connector_url="${BFT_SALIX_CONNECTOR_URL:-}"
-  [ -n "$connector_url" ] || fail "preflight.salix_connect_url_missing" \
-    "salix connector artifact URL is required"
-
-  connector_sha="${BFT_SALIX_CONNECTOR_SHA256:-}"
-  connector_size="${BFT_SALIX_CONNECTOR_SIZE:-}"
   say "Downloading artifacts"
-  salix_connect_path="${BFT_SALIX_CONNECT_INSTALL_PATH:-$bin_dir/salix-connect}"
-  install_binary "salix_connect" "$connector_url" "$connector_sha" "$connector_size" \
-    "$salix_connect_path" "$temp_dir"
-  ok "salix-connect installed and verified"
 
   agent_vmm_host_app="$home_dir/Library/Application Support/Agent VMM Host/current/Agent VMM Host.app"
   # Local operator intent survives removal of the application and its data.
   # Check before copying any bundle, including an older release without this gate.
-  if ! python3 - "$home_dir/Library/Application Support/Agent VMM Maintenance/state.json" <<'PY'
+  if ! python3 - "$home_dir/Library/Application Support/AgentVMM/state.json" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
@@ -928,23 +779,12 @@ PY
     "$runner_target" "$temp_dir"
   runner_source="download"
   ok "bft-runner installed and verified"
-
-  computer_use_helper_app="$(dirname "$salix_connect_path")/native/macos/Comma Computer Use.app"
-  computer_use_helper_url="$(expand_platform_url "${BFT_COMPUTER_USE_HELPER_URL:-}" "$platform")"
-  computer_use_helper_sha="$(read_installed_component_digest "$config_path" computer-use-helper || true)"
-  if [ -n "$computer_use_helper_url" ]; then
-    install_computer_use_helper "$computer_use_helper_url" "${BFT_COMPUTER_USE_HELPER_SHA256:-}" \
-      "${BFT_COMPUTER_USE_HELPER_SIZE:-}" "$computer_use_helper_app" "$computer_use_helper_sha" "$temp_dir" \
-      "$runner_target"
-    computer_use_helper_sha="$BFT_COMPUTER_USE_HELPER_SHA256"
-    ok "Computer Use helper installed and verified"
-  else
-    # Server releases before the standalone helper do not carry it.
-    [ -d "$computer_use_helper_app" ] || computer_use_helper_sha=""
-    say "Computer Use helper is not part of this server release; skipped"
+  if [ -n "${BFT_RUNNER_SERVICE_EXECUTOR_URL:-}" ]; then
+    runner_executor_url="$(expand_platform_url "$BFT_RUNNER_SERVICE_EXECUTOR_URL" "$platform")"
+    install_binary "runner_service_executor" "$runner_executor_url" "${BFT_RUNNER_SERVICE_EXECUTOR_SHA256:-}" "${BFT_RUNNER_SERVICE_EXECUTOR_SIZE:-}" \
+      "$bin_dir/bft-runner-service-executor" "$temp_dir"
   fi
 
-  install_fallback_tooling "$platform"
 
   host_name="$(hostname 2>/dev/null || uname -n 2>/dev/null || printf 'runner')"
   existing_runner_name="$(read_existing_runner_field "$config_path" name || true)"
@@ -956,20 +796,15 @@ PY
 
   runner_name="${BFT_RUNNER_NAME:-${existing_runner_name:-$host_name}}"
 
-  export BFT_WORKDIR="$workdir"
   export BFT_HOME_DIR="$home_dir"
   export BFT_STATE_DIR="$state_dir"
   export BFT_RUNNER_STABLE_ID="$stable_id"
   export BFT_RUNNER_NAME="$runner_name"
-  export BFT_SALIX_CONNECT_PATH="$salix_connect_path"
-  export BFT_SALIX_CONNECT_SOURCE="download"
-  export BFT_COMPUTER_USE_HELPER_INSTALLED_SHA256="$computer_use_helper_sha"
   export BFT_RUNNER_PATH_RESOLVED="$runner_target"
   export BFT_RUNNER_SOURCE="$runner_source"
   export BFT_HOST_RUNTIME_LIFECYCLE_PATH="$agent_vmm_lifecycle"
   export BFT_HOST_RUNTIME_CLI_PATH="$agent_vmm_cli"
   export BFT_BIN_DIR_RESOLVED="$bin_dir"
-  export BFT_FALLBACK_TOOLING_SOURCE="${BFT_FALLBACK_TOOLING_SOURCE:-skipped}"
   export BFT_LAUNCHD_LABEL="$launchd_label"
   export BFT_LAUNCHD_DOMAIN="$launchd_domain"
   export BFT_INSTALL_LAUNCHD="$install_launchd"
@@ -1007,9 +842,7 @@ PY
       printf 'launchd not loaded: rerun with BFT_LOAD_LAUNCHD=1 when ready\n'
     fi
   fi
-  printf 'salix-connect: %s\n' "$salix_connect_path"
   printf 'bft-runner: %s\n' "$runner_target"
-  printf 'Workdir: %s\n' "$workdir"
   printf 'Logs: %s\n' "$state_dir/logs"
   printf '\n'
   printf 'Next:\n'
@@ -1017,7 +850,7 @@ PY
   printf '  Dry run:  %s dry-run\n' "$runner_target"
   printf '  Start:    %s\n' "$runner_target"
   if [ "$launchd_domain" = system ]; then
-    printf '  Service:  ask an administrator to run /Library/PrivilegedHelperTools/agent-vmm-service-executor install --job runner\n'
+    printf '  Service:  ask an administrator to run /Library/PrivilegedHelperTools/bft-runner-service-executor install\n'
   else
     printf '  Service:  %s service start\n' "$runner_target"
   fi

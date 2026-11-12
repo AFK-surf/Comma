@@ -1,7 +1,8 @@
+import VerifiedKernelProofs.Session.WorkNativeProductTrace
 import VerifiedKernelProofs.Loop.HostEvents
 import VerifiedKernelProofs.Loop.MachineSafety
 import VerifiedKernelProofs.Session.WorkGuardProducers
-import VerifiedKernelProofs.Session.WorkNativeProductTrace
+import VerifiedKernelProofs.Session.WorkStagedExecution
 import VerifiedKernelProofs.Session.WorkSettlementProducers
 
 /-! # Accepted work in the agent loop (property D)
@@ -14,11 +15,9 @@ Every commit and every provider-wait yield write of `Loop.step` is a
   carries a timeout event from the host-held machine.
 * `step_machine_safe` and `LoopChain.safe` discharge that premise for every
   machine that the kernel returned and the host passed back unchanged.
-* `loop_commit_staging`, `activation_write_staged`, `loop_commit_resident_step`
-  and `loop_commit_run` place a loop commit or yield write into `Staging`,
-  `ResidentStep` and `NativeProductRun`, so `NativeProductRun.refinement`
-  covers histories whose writes are loop commits. `hostWrite` states the host
-  contract for its UTF-8 scrubbing and lifecycle timestamps. -/
+* `loop_commit_staging` and `activation_write_staged` place the loop's actual
+  events into native `Staging`. PostgreSQL durability is outside this theorem.
+  `hostWrite` states the host contract for UTF-8 repair and lifecycle timestamps. -/
 
 namespace VerifiedKernel.Session.LoopProof
 open Data

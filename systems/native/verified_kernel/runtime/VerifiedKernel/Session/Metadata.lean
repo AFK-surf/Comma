@@ -1,4 +1,4 @@
-import VerifiedKernel.Data
+import VerifiedKernel.Session.Ops
 import VerifiedKernel.Inspect
 
 namespace VerifiedKernel.Session
@@ -42,8 +42,8 @@ def metadataCreated (state event : Term) : KernelM Term := do
   let source := (event.get (b "source_session_id")).default (← field state "source_session_id")
   let schedule := (event.get (b "source_schedule_id")).default (← field state "source_schedule_id")
   let model := (sessionModel (event.get (b "model"))).default (state.get (a "model"))
-  write state [("name", name), ("hidden", hidden), ("created_at", created),
-    ("last_activity_at", activity), ("activity_status_updated_at", activityAt),
+  write state [("name", name), ("hidden", hidden), ("created_at", metadataSeconds created),
+    ("last_activity_at", metadataSeconds activity), ("activity_status_updated_at", activityAt),
     ("platform", platform), ("billing_context", billing), ("task_origin", origin),
     ("source_session_id", source), ("source_schedule_id", schedule), ("model", model)]
 
@@ -96,13 +96,13 @@ def metadataUpdate (state event : Term) : KernelM Term := do
   -- A present `model` replaces the choice; nil clears it to the Agent default.
   let model ← if event.has (b "model") then pure (sessionModel (event.get (b "model")))
     else pure (state.get (a "model"))
-  write state [("name", name), ("hidden", hidden), ("last_activity_at", activity), ("model", model)]
+  write state [("name", name), ("hidden", hidden), ("last_activity_at", metadataSeconds activity), ("model", model)]
 
 def compactionFailure (state event : Term) : KernelM Term := do
   let failure := select event ["category", "retryable", "reason", "attempts", "live_context_watermark",
     "config_fingerprint", "failed_at", "next_retry_at", "recovery_summary_written"] true
   let activity := (event.get (b "failed_at")).default (← field state "last_activity_at")
-  write state [("compaction_failure", failure), ("last_activity_at", activity)]
+  write state [("compaction_failure", failure), ("last_activity_at", metadataSeconds activity)]
 
 def compactionRecovery (state event : Term) : KernelM Term := do
   let event := if event.has (b "kind") then event else event.put (b "kind") (b "compaction_recovery")
@@ -112,7 +112,7 @@ def compactionRecovery (state event : Term) : KernelM Term := do
   let events ← append ((← field state "events").default (list [])) (list [fact])
   let activity := (event.get (b "created_at")).default (← field state "last_activity_at")
   write state [("events", events), ("last_seq", seq), ("llm_failure_streak", nil),
-    ("last_compaction_recovery", fact), ("last_activity_at", activity)]
+    ("last_compaction_recovery", fact), ("last_activity_at", metadataSeconds activity)]
 
 /-- `work_index_reasons` normalized as `State.put_work_index/3` does: strings, trimmed, non-empty, unique. -/
 def stampWorkReasons (state event : Term) : KernelM Term := do

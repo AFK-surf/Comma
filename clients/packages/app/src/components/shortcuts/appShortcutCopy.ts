@@ -38,6 +38,10 @@ const copyMessages: Record<AppShortcutId, { title: Message; description: Message
     title: messages.settings_go_plugins,
     description: messages.settings_go_plugins_description,
   },
+  "new-task": {
+    title: messages.settings_new_task,
+    description: messages.settings_new_task_description,
+  },
   "toggle-left-sidebar": {
     title: messages.settings_toggle_left_sidebar,
     description: messages.settings_toggle_left_sidebar_description,

@@ -54,28 +54,24 @@ defmodule SalixStore.ConfigJson do
                  "Chinese, Mandarin (Simplified)"), calendar_autojoin.*
                  (explicitly enabled, bounded worker settings and a non-empty
                  list of tenant/group ownership pairs),
-                 runtime_source (connected_runtime | compute_workload |
-                 native_runtime for the explicit HTTP driver only.
-                 SalixConnect selects new Meeting runtimes automatically),
+                 runtime_source (connected_runtime | native_runtime for the
+                 explicit HTTP driver only. The Connector driver selects new
+                 Meeting runtimes automatically),
                  master_token_factory.{base_url,secret,profile} (native
                  Meet Google account join), guest_factory.{url,secret}
                  (native Meet guest handoff Worker), live_asr.{provider,config}
                  (native Meet live ASR provider module and its settings)
       salix_dashboard secret_key_base
-      station_task_watch canary_group_ids (the Groups whose station Tasks are
-                 the Cloud VM canary), and the stage thresholds in ms
-                 (vm_not_ready_ms, station_offline_ms, not_given_ms,
-                 given_no_reply_ms, running_ms, idle_no_reply_ms,
-                 cannot_start_ms, recheck_ms, stale_ms)
+      station_task_watch the stage thresholds in ms (vm_not_ready_ms,
+                 station_offline_ms, not_given_ms, given_no_reply_ms,
+                 running_ms, idle_no_reply_ms, cannot_start_ms, recheck_ms,
+                 stale_ms)
       e2e_reports session_secret, r2.*
       bridge_for_teams database.*, bft_cli.*, dashboard.* (including
                        impersonator_org_slug; legacy web.public_base_url is
                        accepted), mac_mini.*,
                        sourced_context.background_executor.enabled
-      agent_vmm multi_scope_registration_enabled (release gate; default false),
-                environment_scoped_bindings_enabled (release gate; default false),
-                managed_trust_signing.private_key,
-                install_material.remote_enrollment.{gateway_endpoint,trust_bundle}
+      agent_vmm connection_config.remote_connection.{gateway_endpoint,trust_bundle}
       vm          default_provider, providers.cloudflare.gateway_base_url,
                  providers.cloudflare.gateway_secret, providers.cloudflare.enabled
 
@@ -99,8 +95,6 @@ defmodule SalixStore.ConfigJson do
     {:task_timeout_ms, "task_timeout_ms", 1_000, 120_000}
   ]
   @calendar_autojoin_work_budget_ms 180_000
-  @calendar_autojoin_max_calendars 10
-  @calendar_autojoin_max_mentions 50
   @calendar_autojoin_defaults [
     scan_interval_ms: 120_000,
     join_interval_ms: 60_000,
@@ -165,24 +159,8 @@ defmodule SalixStore.ConfigJson do
 
         # logging (salix_store) — JSONL diagnostic log path; absent = disabled
         {:salix_store, :log_file, str(json, ~w(log file))},
-
-        # Agent VMM registration index contract gate. It remains absent/false
-        # through compatible-writer, scoped-index expand, and legacy-index
-        # contract rollouts. Product multi-scope attach is enabled only after
-        # every old writer and the legacy uniqueness fence are gone.
-        {:salix_store, :agent_vmm_multi_scope_registration_enabled,
-         boolean(json, ~w(agent_vmm multi_scope_registration_enabled))},
-        # Mixed-version rollout gate for Environment-scoped Agent VMM
-        # bindings. Keep false while an old writer can still create an
-        # unscoped binding; enable only after all writers are current and the
-        # unscoped-row preflight is empty.
-        {:salix_store, :agent_vmm_environment_scoped_bindings_enabled,
-         boolean(json, ~w(agent_vmm environment_scoped_bindings_enabled))},
-        {:salix_store, :agent_vmm_managed_trust_signing,
-         SalixStore.AgentVMMManagedTrustSigning.from_json(
-           json_get(json, ~w(agent_vmm managed_trust_signing))
-         )},
-        {:salix_store, :agent_vmm_install_material, object(json, ~w(agent_vmm install_material))},
+        {:salix_store, :agent_vmm_connection_config,
+         object(json, ~w(agent_vmm connection_config))},
 
         # web (salix_web)
         {:salix_web, :port, int(json, ~w(web port))},
@@ -572,10 +550,8 @@ defmodule SalixStore.ConfigJson do
     base ++ judge_providers_env(json)
   end
 
-  # `SalixIM.StationTaskWatch`: the Groups whose station Tasks are the Cloud
-  # VM canary (docs/observability.md#cloud-vm-canary) and the stage
-  # thresholds. Only keys present in config.json are set; the watch merges
-  # them over its compiled defaults.
+  # `SalixIM.StationTaskWatch`: the stage thresholds. Only keys present in
+  # config.json are set; the watch merges them over its compiled defaults.
   defp station_task_watch_env(json) do
     kw =
       [
@@ -587,24 +563,11 @@ defmodule SalixStore.ConfigJson do
         idle_no_reply_ms: int(json, ~w(station_task_watch idle_no_reply_ms)),
         cannot_start_ms: int(json, ~w(station_task_watch cannot_start_ms)),
         recheck_ms: int(json, ~w(station_task_watch recheck_ms)),
-        stale_ms: int(json, ~w(station_task_watch stale_ms)),
-        canary_group_ids: string_list(json, ~w(station_task_watch canary_group_ids))
+        stale_ms: int(json, ~w(station_task_watch stale_ms))
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
     if kw == [], do: [], else: [{:salix_im, :station_task_watch, kw}]
-  end
-
-  # A list of non-empty strings; anything else in it is dropped, and a value
-  # that is not a list is absent.
-  defp string_list(json, path) do
-    case json_get(json, path) do
-      values when is_list(values) ->
-        Enum.filter(values, &(is_binary(&1) and &1 != ""))
-
-      _ ->
-        nil
-    end
   end
 
   # The judge-model allowlist (`SalixAgent.TrajectoryEval.JudgeProviders`). ops
@@ -701,19 +664,23 @@ defmodule SalixStore.ConfigJson do
     if r2 == [], do: [], else: [{:salix_web, :e2e_reports_r2, r2}]
   end
 
-  # The worker and its ownership scope are one configuration unit. Returning
-  # neither entry on any validation failure prevents a partially configured
-  # worker from starting with unsafe defaults or an unintended identity scope.
+  # The calendar worker runs wherever a meeting runtime is configured. Which
+  # Groups it serves comes only from each Group's saved meeting settings
+  # (`SalixStore.MeetingCalendarSettings`, edited on the dashboard), never from
+  # this file. The optional `meetings.calendar_autojoin` section holds only the
+  # worker's bounds; an invalid bound keeps the worker off.
   defp calendar_autojoin_env(json) do
-    with %{"enabled" => true} = section <- json_get(json, ~w(meetings calendar_autojoin)),
+    section =
+      case json_get(json, ~w(meetings calendar_autojoin)) do
+        nil -> %{}
+        section -> section
+      end
+
+    with true <- is_map(section),
          true <- calendar_runtime_configured?(json),
-         {:ok, opts} <- calendar_autojoin_opts(section),
-         {:ok, channels} <- calendar_autojoin_channels(section),
-         true <- length(channels) <= Keyword.fetch!(opts, :max_groups_per_pass),
-         true <- calendar_autojoin_work_fits_lease?(channels, opts) do
+         {:ok, opts} <- calendar_autojoin_opts(section) do
       [
         {:salix_meet, :calendar_autojoin, opts},
-        {:salix_meet, :calendar_autojoin_channels, channels},
         {:salix_env, :protocol_timeouts,
          %{"meeting_join" => meeting_join_rpc_timeout_ms(Keyword.fetch!(opts, :task_timeout_ms))}}
       ]
@@ -788,125 +755,6 @@ defmodule SalixStore.ConfigJson do
       other -> other
     end
   end
-
-  defp calendar_autojoin_channels(section) do
-    case Map.get(section, "channels") do
-      channels when is_map(channels) ->
-        normalized = Enum.map(channels, &normalize_calendar_autojoin_channel/1)
-
-        if Enum.all?(normalized, &(length(&1) == 1)),
-          do: {:ok, Enum.flat_map(normalized, & &1)},
-          else: :error
-
-      _ ->
-        :error
-    end
-  end
-
-  defp normalize_calendar_autojoin_channel({connect_id, spec})
-       when is_binary(connect_id) and is_map(spec) do
-    with connect_id when connect_id != "" <- String.trim(connect_id),
-         calendars when calendars != [] <- normalize_calendar_names(Map.get(spec, "calendars")) do
-      normalize_calendar_autojoin_target(connect_id, spec, calendars)
-    else
-      _ -> []
-    end
-  end
-
-  defp normalize_calendar_autojoin_channel(_entry), do: []
-
-  # The legacy Slack shape remains byte-for-byte stable so existing deployments
-  # and cached enrollments need no migration. Provider is inferred later from the
-  # connect record; only the Feishu-only fields select notification mode here.
-  defp normalize_calendar_autojoin_target(connect_id, %{"channel" => channel} = spec, calendars)
-       when is_binary(channel) do
-    case String.trim(channel) do
-      "" ->
-        []
-
-      channel ->
-        entry = %{"connect_id" => connect_id, "channel" => channel, "calendars" => calendars}
-
-        with writeback when is_boolean(writeback) <- Map.get(spec, "calendar_writeback", false) do
-          [if(writeback, do: Map.put(entry, "calendar_writeback", true), else: entry)]
-        else
-          _ -> []
-        end
-    end
-  end
-
-  defp normalize_calendar_autojoin_target(connect_id, spec, calendars) do
-    with "notify" <- Map.get(spec, "mode"),
-         chat_id when is_binary(chat_id) <- Map.get(spec, "chat_id"),
-         chat_id when chat_id != "" <- String.trim(chat_id),
-         create_calendar when is_binary(create_calendar) <- Map.get(spec, "create_calendar"),
-         create_calendar when create_calendar != "" <- String.trim(create_calendar),
-         true <- Enum.member?(calendars, create_calendar),
-         {:ok, mentions} <- normalize_calendar_mentions(Map.get(spec, "mentions", %{})) do
-      [
-        %{
-          "connect_id" => connect_id,
-          "mode" => "notify",
-          "chat_id" => chat_id,
-          "calendars" => calendars,
-          "create_calendar" => create_calendar,
-          "mentions" => mentions
-        }
-      ]
-    else
-      _ -> []
-    end
-  end
-
-  defp normalize_calendar_mentions(nil), do: {:ok, %{"mode" => "none", "users" => []}}
-
-  defp normalize_calendar_mentions(%{} = mentions) when map_size(mentions) == 0,
-    do: {:ok, %{"mode" => "none", "users" => []}}
-
-  defp normalize_calendar_mentions(%{"mode" => "none"}),
-    do: {:ok, %{"mode" => "none", "users" => []}}
-
-  defp normalize_calendar_mentions(%{"mode" => "all"}),
-    do: {:ok, %{"mode" => "all", "users" => []}}
-
-  defp normalize_calendar_mentions(%{"mode" => "users", "users" => users})
-       when is_list(users) do
-    normalized =
-      users
-      |> Enum.flat_map(fn
-        %{"user_id" => user_id, "name" => name}
-        when is_binary(user_id) and is_binary(name) ->
-          case {String.trim(user_id), String.trim(name)} do
-            {"", _} -> []
-            {_, ""} -> []
-            {user_id, name} -> [%{"user_id" => user_id, "name" => name}]
-          end
-
-        _ ->
-          []
-      end)
-      |> Enum.uniq_by(& &1["user_id"])
-
-    if normalized != [] and length(normalized) <= @calendar_autojoin_max_mentions and
-         length(normalized) == length(users),
-       do: {:ok, %{"mode" => "users", "users" => normalized}},
-       else: :error
-  end
-
-  defp normalize_calendar_mentions(_mentions), do: :error
-
-  defp normalize_calendar_names(names) when is_list(names) do
-    normalized =
-      names
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.uniq()
-
-    if length(normalized) in 1..@calendar_autojoin_max_calendars, do: normalized, else: []
-  end
-
-  defp normalize_calendar_names(_names), do: []
 
   @doc false
   def calendar_autojoin_work_fits_lease?(groups, opts) do

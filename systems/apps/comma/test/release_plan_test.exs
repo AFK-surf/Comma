@@ -45,6 +45,30 @@ defmodule Comma.ReleasePlanTest do
     assert online.providerPendingIDs == ["comma-signup-credits"]
   end
 
+  test "retired VMM observation columns require an online forward cutover" do
+    version = 20_261_027_000_101
+    current = facts()
+    salix = Enum.reject(current.salix, fn {_, recorded, _} -> recorded == version end)
+
+    assert {:ok, plan} =
+             Comma.ReleasePlan.plan(
+               facts: fn ->
+                 facts(%{
+                   salix: [{:down, version, "remove_agent_vmm_observation_metadata"} | salix]
+                 })
+               end
+             )
+
+    assert plan.requiredMode == "online"
+    assert plan.pendingIDs == ["salix-20261027000101"]
+
+    assert [%{"safety" => %{"destructive" => true, "backupRequired" => false}}] =
+             plan.pendingSteps
+
+    assert {:error, :automatic_down_forbidden} =
+             Comma.ReleaseManifestV2.rollback_contract("salix-20261027000101")
+  end
+
   test "unknown Ecto versions fail closed" do
     current = facts()
 

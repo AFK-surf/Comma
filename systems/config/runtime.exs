@@ -1,16 +1,19 @@
 import Config
 
-if config_env() == :dev do
-  config :salix_env,
-    device_install_local_artifact_root:
-      System.get_env("COMMA_DEVICE_CONNECTOR_DIR") ||
-        Path.expand("../../.local/device-install-artifacts", __DIR__)
-end
-
 config :salix_agent,
-  snapshot_recovery_enabled: System.get_env("COMMA_SNAPSHOT_RECOVERY_ENABLED") == "true",
   # The user agent LMHub admits this deployment by (SalixAgent.ProviderAdapters).
   lmhub_user_agent: System.get_env("SALIX_LMHUB_USER_AGENT")
+
+# Salix as a relay, on one node (SalixWeb.StationRelay): what it may carry, and whether it carries at all.
+if System.get_env("COMMA_STATION_RELAY_NODE_BYTES_PER_SECOND") ||
+     System.get_env("COMMA_STATION_RELAY_NODE_PACKETS_PER_SECOND") do
+  config :salix_web,
+    station_relay_node_budget:
+      {String.to_integer(System.get_env("COMMA_STATION_RELAY_NODE_BYTES_PER_SECOND", "2097152")),
+       String.to_integer(System.get_env("COMMA_STATION_RELAY_NODE_PACKETS_PER_SECOND", "2000"))}
+end
+
+config :salix_web, station_relay_stopped: System.get_env("COMMA_STATION_RELAY_STOPPED") == "true"
 
 agent_vmm_gateway = %{
   url_template: System.get_env("SALIX_AGENT_VMM_GATEWAY_URL_TEMPLATE"),
@@ -53,16 +56,34 @@ case System.get_env("SALIX_L4ES_URL") do
         _ -> raise "SALIX_L4ES_MAX_SANDBOXES must be a positive integer"
       end
 
+    # The node labels every sandbox requires, separated by commas (none: any node).
+    labels =
+      (System.get_env("SALIX_L4ES_LABELS") || "")
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    unless Enum.all?(labels, &(&1 =~ ~r/^[a-z0-9][a-z0-9._-]{0,62}$/)) do
+      raise "SALIX_L4ES_LABELS must be L4ES node labels separated by commas"
+    end
+
     config :salix_web, :l4es,
       url: url,
       image: System.get_env("SALIX_L4ES_IMAGE"),
       image_manifest: System.get_env("SALIX_L4ES_IMAGE_MANIFEST"),
       size: System.get_env("SALIX_L4ES_SIZE"),
+      labels: labels,
       max_sandboxes: max_sandboxes
 
   _ ->
     :ok
 end
+
+# The Cloudflare Cloud VM is retired as a place to run Tasks where sandboxes
+# take its place (SalixAgent.Sandboxes). Missing L4ES config does not undo retirement.
+config :salix_agent,
+       :cloud_vm_retired,
+       System.get_env("SALIX_CLOUD_VM_RETIRED") in ["1", "true"]
 
 if Enum.any?(agent_vmm_gateway, fn {_key, value} -> is_binary(value) and value != "" end) do
   Enum.each(agent_vmm_gateway, fn {key, value} ->
@@ -321,6 +342,16 @@ for {app, key, value} <- SalixStore.ConfigJson.synchronicity_env(salix_config) d
   config app, [{key, value}]
 end
 
+if release_job? do
+  locations =
+    case SalixStore.ConfigJson.get(salix_config, ~w(release pg_authority_s_cold_result_locations)) do
+      nil -> []
+      value -> value
+    end
+
+  config :salix_agent, pg_import_cold_result_locations: locations
+end
+
 # ====================== Alert Router subsystem ======================
 #
 # This is an independently selectable pod from the same Comma release image. It
@@ -370,6 +401,9 @@ if :alert_router in enabled and config_env() != :test do
     start_oban: not release_job?,
     start_http: not release_job?,
     mode: alert_router_mode,
+    # Each environment runs its own Router; a live Router posts only its own
+    # environment's alerts, so a staging outage never silences production.
+    environment: if(comma_environment == "prod", do: "production", else: comma_environment),
     port: alert_router_port
 
   if nonempty.(alert_router_database_url) do
@@ -743,6 +777,35 @@ if comma_telegram_enabled? do
   config :salix_im, telegram_api_base_url: telegram_api_base_url
 end
 
+# Comma product LINE ingress is opt-in: Comma's one LINE Official Account.
+# The webhook URL `<public base>/v1/comma/integrations/line/webhook`, "Use
+# webhook" and the account's auto-reply setting are kept in the LINE consoles.
+comma_line_enabled? =
+  System.get_env("COMMA_LINE_ENABLED") == "true" or
+    SalixStore.ConfigJson.get(salix_config, ~w(comma line enabled)) == true
+
+if comma_line_enabled? do
+  line_value = fn env_name, key ->
+    case System.get_env(env_name) ||
+           SalixStore.ConfigJson.string(salix_config, ["comma", "line", key]) do
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> raise "#{env_name} is required when Comma LINE is enabled"
+    end
+  end
+
+  line_basic_id = line_value.("COMMA_LINE_BASIC_ID", "basic_id")
+
+  unless Regex.match?(~r/^@[a-z0-9._-]{3,32}$/, line_basic_id) do
+    raise "COMMA_LINE_BASIC_ID must be the account's basic ID, such as @123abcde"
+  end
+
+  config :comma_web, :line,
+    enabled: true,
+    channel_secret: line_value.("COMMA_LINE_CHANNEL_SECRET", "channel_secret"),
+    channel_access_token: line_value.("COMMA_LINE_CHANNEL_ACCESS_TOKEN", "channel_access_token"),
+    basic_id: line_basic_id
+end
+
 # Comma as a Linear agent is opt-in. One Linear OAuth application per
 # deployment represents Comma; its webhook signing secret authenticates the
 # `AgentSessionEvent` pushes. See docs/tools-integrations.md.
@@ -814,7 +877,7 @@ if comma_imessage_enabled? do
         SalixStore.ConfigJson.string(salix_config, ~w(comma imessage shared_identity)) || "Comma"
 end
 
-# Photon (Spectrum Cloud) shared lines: the second Comma iMessage transport.
+# Photon v2 lines: the second Comma iMessage transport.
 # Disabled until an operator configures a Photon project for this deployment.
 comma_photon_enabled? =
   System.get_env("COMMA_PHOTON_ENABLED") == "true" or
@@ -988,21 +1051,18 @@ if is_binary(comma_apple_client_id) and comma_apple_client_id != "" do
   config :comma_core, :apple_auth, client_id: comma_apple_client_id
 end
 
-# A Cloudflare TURN key lets screen stream peers on different networks connect.
-comma_screen_stream_turn =
-  for key <- ~w(key_id api_token)a do
-    {key, SalixStore.ConfigJson.string(salix_config, ["comma", "screen_stream_turn", "#{key}"])}
-  end
-
-if Enum.all?(comma_screen_stream_turn, fn {_key, value} -> is_binary(value) and value != "" end) do
-  config :comma_core, :screen_stream_turn, comma_screen_stream_turn
-end
-
 comma_google_web_client_id =
   SalixStore.ConfigJson.string(salix_config, ~w(comma google_auth web_client_id))
 
 if is_binary(comma_google_web_client_id) and comma_google_web_client_id != "" do
   config :comma_core, :google_auth, web_client_id: comma_google_web_client_id
+end
+
+comma_google_ios_client_id =
+  SalixStore.ConfigJson.string(salix_config, ~w(comma google_auth ios_client_id))
+
+if is_binary(comma_google_ios_client_id) and comma_google_ios_client_id != "" do
+  config :comma_core, :google_auth, ios_client_id: comma_google_ios_client_id
 end
 
 comma_google_electron_client_id =
@@ -1210,13 +1270,11 @@ config :comma_core,
        [
          origin: station_origin,
          relay_urls: station_list.("COMMA_STATION_RELAY_URLS"),
+         route_policy: System.get_env("COMMA_STATION_ROUTE_POLICY"),
          gateway_keys: station_gateway_keys,
          release_manifest: station_release_manifest,
          release_manifest_url: System.get_env("COMMA_STATION_RELEASE_MANIFEST_URL"),
-         release_base_url: station_release_base,
-         # User devices of members who use stations run station sessions and
-         # get the station installer (on unless set to "false").
-         device_cutover: System.get_env("COMMA_STATIONS_DEVICE_CUTOVER") != "false"
+         release_base_url: station_release_base
        ]
        |> Enum.reject(fn {_key, value} -> value in [nil, "", []] end)
 
@@ -1282,8 +1340,7 @@ if :comma_product in enabled do
     end
 
   comma_redis_url =
-    SalixStore.ConfigJson.string(salix_config, ~w(comma auth redis_url)) ||
-      System.get_env("COMMA_REDIS_URL")
+    SalixStore.ConfigJson.string(salix_config, ~w(comma auth redis_url))
 
   comma_login_from = SalixStore.ConfigJson.string(salix_config, ~w(comma email from))
 
@@ -1386,6 +1443,32 @@ if :comma_product in enabled do
 
   config :comma_core, :auth, comma_auth_runtime
 
+  config :comma_core, :auth_abuse,
+    enabled: SalixStore.ConfigJson.boolean(salix_config, ~w(comma auth abuse enabled)) == true,
+    turnstile: [
+      site_key:
+        SalixStore.ConfigJson.string(salix_config, ~w(comma auth abuse turnstile site_key)),
+      secret: SalixStore.ConfigJson.string(salix_config, ~w(comma auth abuse turnstile secret))
+    ],
+    apple: [
+      app_id: SalixStore.ConfigJson.string(salix_config, ~w(comma auth abuse apple app_id)),
+      environment:
+        SalixStore.ConfigJson.string(salix_config, ~w(comma auth abuse apple environment))
+    ],
+    play: [
+      decoder_service_account:
+        SalixStore.ConfigJson.string(
+          salix_config,
+          ~w(comma auth abuse play decoder_service_account)
+        ),
+      project_number:
+        SalixStore.ConfigJson.string(salix_config, ~w(comma auth abuse play project_number)),
+      package_name: "surf.comma.android",
+      certificate_digests:
+        SalixStore.ConfigJson.get(salix_config, ~w(comma auth abuse play certificate_digests)) ||
+          []
+    ]
+
   if is_binary(comma_login_from) do
     config :comma_core, :mail, from: comma_login_from
   end
@@ -1461,7 +1544,7 @@ if :salix in enabled do
   if is_binary(salix_database_url) do
     salix_pool_size =
       if System.get_env("COMMA_RELEASE_JOB") == "1" do
-        2
+        3
       else
         SalixStore.ConfigJson.integer(salix_config, ~w(salix database pool_size)) || 8
       end
@@ -1473,6 +1556,10 @@ if :salix in enabled do
     config :salix_store, SalixStore.Repo,
       url: salix_database_url,
       pool_size: salix_pool_size
+
+    if System.get_env("COMMA_RELEASE_JOB") == "1" do
+      config :salix_store, SalixStore.Repo, timeout: 120_000
+    end
   end
 
   # Browser OAuth starts in the Bridge for Teams dashboard but completes on
@@ -1615,7 +1702,6 @@ if :salix in enabled do
     config :salix_im, slack_semantic_reader: SalixAnalytics.SlackSemanticIndex
     config :salix_im, slack_message_search_reader: SalixAnalytics.SlackMessageSearch
     config :salix_analytics, slack_semantic_file_source: SalixIM.SlackSemanticFiles
-    config :salix_analytics, slack_semantic_scope_source: SalixIM.SlackSemanticScopes
 
     config :salix_analytics,
       slack_semantic_search: [
@@ -1863,7 +1949,7 @@ if :salix in enabled do
             ]
 
         is_binary(meeting_driver_mode) and String.trim(meeting_driver_mode) == "connector" ->
-          salix_meet_config ++ [runtime_driver: SalixMeet.RuntimeDriver.SalixConnect]
+          salix_meet_config ++ [runtime_driver: SalixMeet.RuntimeDriver.Connector]
 
         true ->
           salix_meet_config

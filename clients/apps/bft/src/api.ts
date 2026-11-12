@@ -247,16 +247,8 @@ export const runnerSchema = z.object({
   version: nullableText,
   component_versions: z.record(z.string(), z.string()).catch({}),
   update_available: z.boolean().catch(false),
-  capacity: z.number().int().catch(0),
-  current_connector_count: z.number().int().catch(0),
   last_seen_at: nullableText,
   last_seen_age_seconds: z.number().nullable().catch(null),
-  connectors: z
-    .object({
-      total: z.number().int(),
-      by_status: z.array(z.object({ status: z.string(), count: z.number().int() })),
-    })
-    .catch({ total: 0, by_status: [] }),
   // Only owners and admins receive credential state; `null` for everyone else.
   credential: z
     .object({
@@ -275,20 +267,6 @@ export const runnersPageSchema = z.object({
   cursor: nullableText,
   next_cursor: nullableText,
   poll_interval_ms: z.number().int().positive().catch(5_000),
-});
-
-export const runnerConnectorsSchema = z.object({
-  entries: z.array(
-    z.object({
-      id: z.string(),
-      name: nullableText,
-      provisioning_status: z.string().catch("unknown"),
-      project_id: nullableText,
-      project_name: nullableText,
-    })
-  ),
-  cursor: nullableText,
-  next_cursor: nullableText,
 });
 
 export const runnerOnboardingSchema = z.object({
@@ -420,6 +398,7 @@ const accountSchema = z.object({
   email: nullableText,
   status: z.string().catch("unknown"),
   disabled: z.boolean().catch(false),
+  use_credits: z.boolean().catch(false),
   quota: z
     .object({
       plan_type: nullableText,
@@ -430,6 +409,8 @@ const accountSchema = z.object({
             period: nullableText,
             remaining_percent: z.number().nullable().catch(null),
             reset_at: nullableText,
+            // A week one model has to itself (Claude's Fable).
+            model: nullableText.optional().catch(null),
           })
         )
         .catch([]),
@@ -437,6 +418,18 @@ const accountSchema = z.object({
         .object({ available_count: z.number().int().nullable().catch(null) })
         .nullable()
         .catch(null),
+      // The resets the plan holds, a kind each.
+      resets: z
+        .array(
+          z.object({
+            kind: z.enum(["session", "weekly", "model", "full", "credit"]),
+            model: nullableText.optional().catch(null),
+            left: z.number().int().nonnegative(),
+            expiries: z.array(z.string()).catch([]),
+            usable: z.boolean().catch(false),
+          })
+        )
+        .catch([]),
     })
     .nullable()
     .catch(null),
@@ -838,13 +831,18 @@ export const agentTargetsSchema = z.object({
       models: stationModelsSchema,
     })
   ),
+  // Where sandboxes are set up the Cloud VM is retired (`retired`), and a sandbox of the Task's own is a place.
   cloud_vm: z
     .object({
       selectable: z.boolean().catch(false),
+      retired: z.boolean().catch(false),
       issue: nullableText,
       models: stationModelsSchema,
     })
-    .catch({ selectable: false, issue: null, models: {} }),
+    .catch({ selectable: false, retired: false, issue: null, models: {} }),
+  sandbox: z
+    .object({ selectable: z.boolean().catch(false) })
+    .catch({ selectable: false }),
 });
 
 export const switchedSessionSchema = z.object({
@@ -887,26 +885,43 @@ export const androidSetups = ["connected", "needs_attention", "not_connected"] a
  * and its status. `runner` prepares the separate VMM Station.
  * `next_location` is Cloudflare for a new Cloud VM.
  */
+/** What a Comma hardware board's BLE `credentials` characteristic takes. */
+export const hardwareCredentialsSchema = z.object({
+  credentials: z.object({
+    device_id: z.string(),
+    server: z.string(),
+    connect_url: z.string(),
+    workspace_id: z.string(),
+    group_id: z.string(),
+    connector_token: z.string(),
+    voice_key: z.string(),
+    device_name: z.string(),
+  }),
+});
+
 export const swarmDevicesSchema = z.object({
   project: swarmPageProjectSchema,
-  cloud_vm: z.object({
-    enabled: z.boolean().catch(false),
-    manageable: z.boolean().catch(false),
-    vm: z
-      .object({
-        status: z.string().catch("unknown"),
-        location: cloudVmLocationSchema.nullable().catch(null),
-      })
-      .nullable()
-      .catch(null),
-    runner: z
-      .object({ name: nullableText, status: z.string().catch("processing") })
-      .nullable()
-      .catch(null),
-    next_location: cloudVmLocationSchema.nullable().catch(null),
-    runner_choosable: z.boolean().catch(false),
-    runner_removable: z.boolean().catch(false),
-  }),
+  cloud_vm: z
+    .object({
+      enabled: z.boolean().catch(false),
+      manageable: z.boolean().catch(false),
+      vm: z
+        .object({
+          status: z.string().catch("unknown"),
+          location: cloudVmLocationSchema.nullable().catch(null),
+        })
+        .nullable()
+        .catch(null),
+      runner: z
+        .object({ name: nullableText, status: z.string().catch("processing") })
+        .nullable()
+        .catch(null),
+      next_location: cloudVmLocationSchema.nullable().catch(null),
+      runner_choosable: z.boolean().catch(false),
+      runner_removable: z.boolean().catch(false),
+    })
+    // Where sandboxes are set up the Cloud VM is retired: the page has no section.
+    .nullable(),
   devices: z.array(
     z.object({
       id: z.string(),
@@ -926,6 +941,10 @@ export const swarmDevicesSchema = z.object({
       last_seen_at: nullableText,
       info_updated_at: nullableText,
       android: androidDeviceSchema.nullable().catch(null),
+      /** A Comma hardware board set up for this swarm: it relays requests to its local network. */
+      hardware: z.boolean().catch(false),
+      /** Whether the device may run operations; a hardware board starts read-only. */
+      allows_operations: z.boolean().catch(false),
       /**
        * Why the device cannot take tasks (`device_needs_station`: the old
        * connector; `station_outdated`: a station older than `required_tasks`),
@@ -942,7 +961,6 @@ export const swarmDevicesSchema = z.object({
         .catch(null),
     })
   ),
-  provisioning: z.boolean().catch(false),
   android: z.object({
     status: swarmStatusSchema,
     entitled: z.boolean().catch(false),
@@ -966,20 +984,31 @@ export const swarmDevicesSchema = z.object({
   }),
 });
 
-export const deviceProvisioningSchema = z.object({ active: z.boolean().catch(false) });
-
-/** Online runners a device can be created on. */
+/** Online runners the Cloud VM can run on. */
 export const deviceRunnersSchema = z.object({
   runners: z.array(z.object({ id: z.string(), label: z.string() })),
   runners_href: z.string(),
 });
 
 export const noticeSchema = z.object({ notice: z.string() });
+export const stillfailLineSchema = z.object({ line: z.string() });
 
-export const cloudComputerSchema = z.object({
-  enabled: z.boolean(),
-  notice: z.string(),
+export const larkRegistrationSchema = z.object({
+  url: z.string(),
+  interval_s: z.number().int().positive().catch(5),
+  expires_in_s: z.number().int().positive().catch(600),
+  registration: z.string(),
 });
+export type BftLarkRegistration = z.infer<typeof larkRegistrationSchema>;
+
+export const larkRegistrationPollSchema = z.object({
+  state: z.enum(["pending", "connected", "denied", "expired", "failed"]),
+  registration: z.string().optional(),
+  slow_down: z.boolean().optional(),
+  notice: z.string().optional(),
+  error: z.string().optional(),
+});
+export type BftLarkRegistrationPoll = z.infer<typeof larkRegistrationPollSchema>;
 
 /** One page of 100 tasks, most recently updated first; `next_cursor` continues it. */
 export const swarmTasksSchema = z.object({
@@ -1013,7 +1042,7 @@ export const taskTargetsSchema = z.object({
   places: z.array(
     z.object({
       id: z.string(),
-      kind: z.enum(["salix", "cloud_vm", "station"]),
+      kind: z.enum(["salix", "sandbox", "cloud_vm", "station"]),
       device_id: nullableText.optional(),
       label: z.string(),
       default: z.boolean().catch(false),
@@ -1195,6 +1224,7 @@ export const swarmTaskModelSchema = z.object({
 /** Where a Task of the swarm runs when the Router names no place. */
 export const swarmTaskPlaceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("salix") }),
+  z.object({ kind: z.literal("sandbox") }),
   z.object({ kind: z.literal("cloud_vm") }),
   z.object({ kind: z.literal("station"), device_id: z.string() }),
 ]);
@@ -1489,6 +1519,10 @@ export const swarmConnectionsSchema = z.object({
             app_secret_configured: z.boolean().catch(false),
             verification_token_configured: z.boolean().catch(false),
             encrypt_key_configured: z.boolean().catch(false),
+            /** How Feishu sends the app's events: to the request URL, or through the long connection of an app made by a scan. */
+            events: z.enum(["webhook", "socket"]).catch("webhook"),
+            /** The scopes Feishu refused the app for; a scan updates an app made by a scan. */
+            missing_scopes: z.array(z.string()).catch([]),
             updated_at: nullableText,
           })
         ),
@@ -1531,6 +1565,8 @@ export const swarmConnectionsSchema = z.object({
             install_url: nullableText,
             client_secret_configured: z.boolean().catch(false),
             signing_secret_configured: z.boolean().catch(false),
+            /** Whether the app joins each new public channel by itself. */
+            auto_join_public_channels: z.boolean().catch(true),
             updated_at: nullableText,
           })
         ),
@@ -1551,9 +1587,16 @@ export const swarmConnectionsSchema = z.object({
             app_name: nullableText,
             /** The request URL to save in the Lark Developer Console. */
             webhook_url: nullableText,
+            /**
+             * How Lark sends the app's events: to the request URL, or through
+             * the long connection of an app made by a scan.
+             */
+            events: z.enum(["webhook", "socket"]).catch("webhook"),
             app_secret_configured: z.boolean().catch(false),
             verification_token_configured: z.boolean().catch(false),
             encrypt_key_configured: z.boolean().catch(false),
+            /** The scopes Lark refused the app for; a scan updates an app made by a scan. */
+            missing_scopes: z.array(z.string()).catch([]),
             updated_at: nullableText,
           })
         ),
@@ -1564,6 +1607,38 @@ export const swarmConnectionsSchema = z.object({
         }),
         /** The scopes a Lark app needs, as the JSON of the console's batch import. */
         scope_json: nullableText,
+      })
+      .nullable()
+      .catch(null),
+    /** The swarm's Telegram bots; each serves only the chats marked allowed. */
+    telegram: z
+      .object({
+        connects: z.array(
+          z.object({
+            connect_id: z.string(),
+            status: z.string().catch("configured"),
+            disabled: z.boolean().catch(false),
+            bot_name: nullableText,
+            /** Privacy mode was off at connect: the bot reads every group message. */
+            reads_all_group_messages: z.boolean().catch(false),
+            chats: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  title: nullableText,
+                  type: nullableText,
+                  allowed: z.boolean().catch(false),
+                })
+              )
+              .catch([]),
+            updated_at: nullableText,
+          })
+        ),
+        route: z.object({
+          status: z.enum(feishuRouteStatuses).catch("unknown"),
+          connect_id: nullableText,
+          router: nullableText,
+        }),
       })
       .nullable()
       .catch(null),
@@ -1621,6 +1696,8 @@ export const swarmConnectionsSchema = z.object({
         scopes: z.array(z.string()).catch([]),
         status: z.string().catch("active"),
         enabled: z.boolean().catch(true),
+        /** A secret's field names; the values stay in Salix. */
+        fields: z.array(z.string()).catch([]),
       })
     ),
     providers: z.array(
@@ -1682,6 +1759,31 @@ export const swarmSkillDetailSchema = z.object({
  * The skills of an Agent Swarm's Router (or first agent): its custom skills
  * and the read-only system skills projected into it, and the upload limits.
  */
+/** The swarm's still.fail stations, and the usage they sent by person (`page` of DashboardSwarmStillfail). */
+export const swarmStillfailSchema = z.object({
+  project: z.object({ id: z.string(), name: z.string(), role: z.string() }),
+  days: z.number(),
+  stations: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string().nullable(),
+      connected: z.boolean(),
+      connected_at: z.number().nullable(),
+    })
+  ),
+  usage: z.array(
+    z.object({
+      key: z.string().nullable(),
+      calls: z.number(),
+      input: z.number(),
+      cache_read: z.number(),
+      cache_write: z.number(),
+      output: z.number(),
+      cost: z.number().nullable(),
+    })
+  ),
+});
+
 export const swarmSkillsSchema = z.object({
   project: swarmPageProjectSchema,
   status: swarmStatusSchema,
@@ -1711,14 +1813,31 @@ export const meetingStatuses = [
   "scheduled",
 ] as const;
 
-/** One Agent Swarm's preparation settings, Slack bots and next 24 hours (at most 20). */
+export const meetingProviders = ["slack", "feishu", "lark"] as const;
+
+/**
+ * One Agent Swarm's preparation settings, its Slack, Feishu and Lark bots and
+ * the next 24 hours (at most 20).
+ */
 export const meetingsOverviewSchema = z.object({
   settings: z.object({
     enabled: z.boolean().catch(false),
+    provider: nullableText,
     mode: nullableText,
     connect_id: nullableText,
     channel: nullableText,
     channel_id: nullableText,
+    /** `members`: every member's own calendars; `selected`: the calendars below. */
+    calendar_scope: z.enum(["selected", "members"]).catch("selected"),
+    /**
+     * Whose calendars are read: Google Calendar, or the Feishu/Lark bot's own
+     * calendars. Absent on settings saved before the choice existed.
+     */
+    calendar_source: z.enum(["google", "feishu_lark"]).nullable().catch(null),
+    /** When an admin last chose where reminders, notices and minutes go. */
+    destination_confirmed_at: nullableNumber,
+    /** `organizer`: join notices and minutes go to the organizer in a DM. */
+    delivery: z.enum(["channel", "organizer"]).catch("channel"),
     calendar_selections: z
       .array(z.object({ ...calendarRef, name: nullableText }))
       .catch([]),
@@ -1734,6 +1853,7 @@ export const meetingsOverviewSchema = z.object({
   connects: z.array(
     z.object({
       connect_id: z.string(),
+      provider: z.enum(meetingProviders).catch("slack"),
       app_name: nullableText,
       bot_username: nullableText,
       workspace_name: nullableText,
@@ -1754,6 +1874,8 @@ export const meetingsOverviewSchema = z.object({
     })
   ),
   calendar_health: nullableText,
+  /** Members' calendars enrolled when the scope is `members`. */
+  member_calendars: nullableNumber,
   truncated: z.boolean().catch(false),
   runtime_enabled: z.boolean().catch(false),
 });
@@ -1785,6 +1907,8 @@ export const meetingCatalogSchema = z.object({
   calendars: z.array(
     z.object({ ...calendarRef, name: nullableText, account_name: nullableText })
   ),
+  /** Google accounts members connected; read only for the `members` scope. */
+  member_accounts: nullableNumber,
   ...channelPage,
 });
 
@@ -1798,6 +1922,20 @@ export const meetingSeriesSchema = z.object({
 });
 
 export const meetingDetailSchema = z.object({ report: nullableText });
+
+const meetingCalendar = z.object({
+  ...calendarRef,
+  name: nullableText,
+  account_name: nullableText,
+});
+
+/** Feishu/Lark team calendars found by name, as the bot's app finds them. */
+export const meetingCalendarSearchSchema = z.object({
+  calendars: z.array(meetingCalendar).catch([]),
+});
+
+/** The team calendar the Feishu/Lark app subscribed to. */
+export const meetingCalendarSubscribeSchema = z.object({ calendar: meetingCalendar });
 
 // One unreadable day does not cost the rest of the calendar.
 const calendarSchema = z
@@ -1892,10 +2030,27 @@ const dataPolicyScopeSchema = z.object({
 });
 
 /** Information-flow settings of one Agent Swarm, by chat workspace. */
+/** A person of one connect: provider user id, name and email when known. */
+export const dataPolicyPersonSchema = z.object({
+  id: z.string(),
+  name: nullableText,
+  email: nullableText,
+});
+
+export const dataPolicyPeopleSchema = z.object({
+  people: z.array(dataPolicyPersonSchema).catch([]),
+});
+
+export const dataPolicyDescribedSchema = z.object({
+  people: z.record(z.string(), dataPolicyPersonSchema).catch({}),
+});
+
 export const dataPolicySchema = z.object({
   mode: z.enum(["off", "audit", "enforce"]).catch("off"),
   language: z.enum(["zh", "en"]).catch("zh"),
   audience_modes: z.array(z.string()).catch(["space", "members"]),
+  // People who read everything in the Agent Swarm that is not sealed.
+  supervisors: z.array(z.object({ connect_id: z.string(), id: z.string() })).catch([]),
   connects: z.array(
     z.object({
       connect_id: z.string(),
@@ -1915,6 +2070,20 @@ export const dataPolicySchema = z.object({
         .catch([]),
     })
   ),
+  // The SSH hosts the Agent trusts; a host with a tag is used only for people
+  // cleared for that tag, and what it returns reaches only them.
+  ssh_hosts_available: z.boolean().catch(false),
+  ssh_hosts: z
+    .array(
+      z.object({
+        name: z.string(),
+        key_type: nullableText,
+        fingerprint: z.string(),
+        first_seen_at: nullableText,
+        tag: nullableText,
+      })
+    )
+    .catch([]),
 });
 
 /** A Slack source (connect) of a router Agent, as Slack triage shows it. */
@@ -2291,8 +2460,6 @@ export type BftMember = z.infer<typeof memberSchema>;
 export type BftRunnerStatus = (typeof runnerStatuses)[number];
 export type BftRunner = z.infer<typeof runnerSchema>;
 export type BftRunnersPage = z.infer<typeof runnersPageSchema>;
-export type BftRunnerConnectors = z.infer<typeof runnerConnectorsSchema>;
-export type BftRunnerConnector = BftRunnerConnectors["entries"][number];
 export type BftRunnerOnboarding = z.infer<typeof runnerOnboardingSchema>;
 export type BftInstallCommand = z.infer<typeof installCommandSchema>;
 export type BftCli = z.infer<typeof cliSchema>;
@@ -2304,6 +2471,7 @@ export type BftModelOption = z.infer<typeof modelOptionSchema>;
 export type BftAccount = z.infer<typeof accountSchema>;
 export type BftAccountsPage = z.infer<typeof accountsPageSchema>;
 export type BftResetResult = z.infer<typeof resetResultSchema>;
+export type BftResetKind = "session" | "weekly" | "model" | "full" | "credit";
 export type BftAccountUsage = z.infer<typeof accountUsageSchema>;
 export type BftOAuthAttempt = z.infer<typeof oauthAttemptSchema>;
 export type BftOAuthResult = z.infer<typeof oauthResultSchema>;
@@ -2335,9 +2503,12 @@ export type BftAgentTargets = z.infer<typeof agentTargetsSchema>;
 export type BftAgentStation = BftAgentTargets["stations"][number];
 export type BftSwarmDevices = z.infer<typeof swarmDevicesSchema>;
 export type BftSwarmDevice = BftSwarmDevices["devices"][number];
+export type BftHardwareCredentials = z.infer<
+  typeof hardwareCredentialsSchema
+>["credentials"];
 export type BftAndroidDevice = NonNullable<BftSwarmDevice["android"]>;
 export type BftComputeEnvironment = BftSwarmDevices["compute"]["environments"][number];
-export type BftCloudVm = BftSwarmDevices["cloud_vm"];
+export type BftCloudVm = NonNullable<BftSwarmDevices["cloud_vm"]>;
 export type BftDeviceRunners = z.infer<typeof deviceRunnersSchema>;
 export type BftSwarmTasks = z.infer<typeof swarmTasksSchema>;
 export type BftTaskTargets = z.infer<typeof taskTargetsSchema>;
@@ -2376,6 +2547,11 @@ export type BftSwarmPlugin = BftSwarmPlugins["plugins"][number];
 export type BftSwarmPluginDetail = z.infer<typeof swarmPluginDetailSchema>;
 export type BftPluginConnection = z.infer<typeof pluginConnectionSchema>;
 export type BftConnectionStart = z.infer<typeof connectionStartSchema>;
+/** One named value of an API key or secret: agents use it by `name`; a `secret` one is never shown. */
+export interface BftSecretField {
+  name: string;
+  secret: boolean;
+}
 export type BftSwarmConnections = z.infer<typeof swarmConnectionsSchema>;
 export type BftQqMenuItem = z.infer<typeof qqMenuItemSchema>;
 export type BftSlackManifest = z.infer<typeof slackManifestSchema>["manifest"];
@@ -2402,6 +2578,7 @@ export type BftSlackInbound =
   | { inbound_tasks: { model: BftModelChoice | null } };
 export type BftSlackConnectDraft = BftSlackCredentials & BftSlackInbound;
 export type BftSwarmSkills = z.infer<typeof swarmSkillsSchema>;
+export type BftSwarmStillfail = z.infer<typeof swarmStillfailSchema>;
 export type BftSwarmSkill = BftSwarmSkills["custom"][number];
 export type BftSwarmSkillDetail = z.infer<typeof swarmSkillDetailSchema>;
 export type BftMeetingsOverview = z.infer<typeof meetingsOverviewSchema>;
@@ -2420,6 +2597,7 @@ export type BftDailyBriefRun = BftDailyBrief["runs"][number];
 export type BftDataPolicy = z.infer<typeof dataPolicySchema>;
 export type BftDataPolicyConnect = BftDataPolicy["connects"][number];
 export type BftDataPolicyScope = z.infer<typeof dataPolicyScopeSchema>;
+export type BftDataPolicyPerson = z.infer<typeof dataPolicyPersonSchema>;
 export type BftTriageOverview = z.infer<typeof triageOverviewSchema>;
 export type BftTriageAgent = BftTriageOverview["agents"][number];
 export type BftTriageSource = z.infer<typeof triageSourceSchema>;
@@ -2443,6 +2621,9 @@ export interface BftTriageNav {
   before: number | null;
   cursor: string | null;
 }
+export type BftMeetingCalendarScope = "selected" | "members";
+/** Whose calendars a team preparation reads. */
+export type BftMeetingCalendarSource = "google" | "feishu_lark";
 /** What the settings form saves; `{enabled: false}` pauses preparation. */
 export type BftMeetingSettingsDraft =
   | { enabled: false }
@@ -2450,6 +2631,9 @@ export type BftMeetingSettingsDraft =
       enabled: true;
       connect_id: string;
       channel_id: string;
+      calendar_scope: BftMeetingCalendarScope;
+      calendar_source: BftMeetingCalendarSource;
+      delivery: "channel" | "organizer";
       calendar_selections: { account_id: string; calendar_id: string }[];
       preparation_lead_minutes: number;
       research_enabled: boolean;
@@ -2462,6 +2646,7 @@ export type BftMeetingSettingsDraft =
 /** One Data policy change; every change answers with the settings read again. */
 export type BftDataPolicyChange =
   | { kind: "group"; mode?: string; language?: string }
+  | { kind: "supervisors"; supervisors: { connect_id: string; id: string }[] }
   | {
       kind: "classify";
       connect: string;
@@ -2473,7 +2658,8 @@ export type BftDataPolicyChange =
   | { kind: "reset"; connect: string; scope: string }
   | { kind: "grant"; connect: string; tag: string; user: string }
   | { kind: "withdraw"; connect: string; tag: string; principal: string }
-  | { kind: "place"; connect: string; user: string; placement: string };
+  | { kind: "place"; connect: string; user: string; placement: string }
+  | { kind: "ssh_host"; fingerprint: string; tag: string };
 /** A new skill from the Skills page. */
 export interface BftSkillDraft {
   name: string;
@@ -2661,27 +2847,11 @@ export interface BftApi {
     project: string,
     signal?: AbortSignal
   ): Promise<BftSwarmDevices>;
-  /** Whether a device request is still being provisioned; cheap to poll. */
-  deviceProvisioning(
-    org: string,
-    project: string,
-    signal?: AbortSignal
-  ): Promise<{ active: boolean }>;
   deviceRunners(
     org: string,
     project: string,
     signal?: AbortSignal
   ): Promise<BftDeviceRunners>;
-  createDevice(
-    org: string,
-    project: string,
-    device: { name: string; alias: string; runner_id: string }
-  ): Promise<{ notice: string }>;
-  setCloudComputer(
-    org: string,
-    project: string,
-    enabled: boolean
-  ): Promise<{ enabled: boolean; notice: string }>;
   /**
    * Choose the org Runner the swarm's Cloud VM uses, before the VM exists.
    * `requestId` makes a retried choice idempotent.
@@ -2702,6 +2872,27 @@ export interface BftApi {
     project: string,
     deviceId: string
   ): Promise<{ notice: string }>;
+  /** Let a hardware board run operations on its network, or make it read-only. */
+  setDeviceOperations(
+    org: string,
+    project: string,
+    deviceId: string,
+    allow: boolean
+  ): Promise<{ notice: string }>;
+  /** Read the swarm's devices from the server's registry now, before the page reads them. */
+  refreshDevices(org: string, project: string): Promise<void>;
+  /** The credentials a Comma hardware board stores, minted once for its setup. */
+  provisionHardwareDevice(
+    org: string,
+    project: string,
+    name: string
+  ): Promise<BftHardwareCredentials>;
+  /** The command that installs the station on a computer; shown once. */
+  createStationInstallCommand(
+    org: string,
+    project: string,
+    name: string
+  ): Promise<BftComputeInstallCommand>;
   createComputeInstallCommand(
     org: string,
     project: string,
@@ -2923,6 +3114,46 @@ export interface BftApi {
       encrypt_key: string;
     }
   ): Promise<{ notice: string }>;
+  /**
+   * Begins making a Lark app by a scan: the link to show as a QR code, how
+   * often to ask, and the sealed registration to ask with.
+   */
+  beginLarkRegistration(
+    org: string,
+    project: string,
+    connectId?: string
+  ): Promise<BftLarkRegistration>;
+  /** Asks once whether the scan made the app; it is connected when it did. */
+  pollLarkRegistration(
+    org: string,
+    project: string,
+    registration: string
+  ): Promise<BftLarkRegistrationPoll>;
+  /** Begins making a Feishu app by a scan, as `beginLarkRegistration`. */
+  beginFeishuRegistration(
+    org: string,
+    project: string,
+    connectId?: string
+  ): Promise<BftLarkRegistration>;
+  /** Asks once whether the Feishu scan made the app, as `pollLarkRegistration`. */
+  pollFeishuRegistration(
+    org: string,
+    project: string,
+    registration: string
+  ): Promise<BftLarkRegistrationPoll>;
+  /** Connects a Telegram bot by its BotFather token. */
+  createTelegramConnect(
+    org: string,
+    project: string,
+    connect: { bot_token: string }
+  ): Promise<{ notice: string }>;
+  /** Replaces the chats a Telegram bot serves. */
+  updateTelegramChats(
+    org: string,
+    project: string,
+    connectId: string,
+    allowedChatIds: string[]
+  ): Promise<{ notice: string }>;
   /** Connects a QQ bot by its AppID and AppSecret. */
   createQqConnect(
     org: string,
@@ -2940,6 +3171,16 @@ export interface BftApi {
     org: string,
     project: string,
     connect: BftSlackConnectDraft
+  ): Promise<{ notice: string }>;
+  /**
+   * Turns on or off whether a Slack app joins each new public channel by
+   * itself. Its Slack scopes and event subscriptions stay as they are.
+   */
+  setSlackAutoJoin(
+    org: string,
+    project: string,
+    connectId: string,
+    enabled: boolean
   ): Promise<{ notice: string }>;
   setImConnectEnabled(
     org: string,
@@ -2969,7 +3210,7 @@ export interface BftApi {
   connectAccount(
     org: string,
     project: string,
-    account: { provider: string; alias: string }
+    account: { provider: string; alias: string; fields?: readonly BftSecretField[] }
   ): Promise<BftConnectionStart>;
   setAccountEnabled(
     org: string,
@@ -3006,6 +3247,15 @@ export interface BftApi {
     project: string,
     signal?: AbortSignal
   ): Promise<BftSwarmSkills>;
+  swarmStillfail(
+    org: string,
+    project: string,
+    signal?: AbortSignal
+  ): Promise<BftSwarmStillfail>;
+  /** A new still.fail station's line, `comma <server> <token>`, pasted into the station's Comma connect. */
+  stillfailLine(org: string, project: string): Promise<{ line: string }>;
+  /** Removes the swarm's still.fail stations and what they sent. */
+  removeStillfail(org: string, project: string): Promise<{ notice: string }>;
   swarmSkill(
     org: string,
     project: string,
@@ -3049,7 +3299,9 @@ export interface BftApi {
   meetingCatalog(
     org: string,
     project: string,
-    connect: string
+    connect: string,
+    scope: BftMeetingCalendarScope,
+    source: BftMeetingCalendarSource
   ): Promise<BftMeetingCatalog>;
   meetingChannels(
     org: string,
@@ -3057,13 +3309,29 @@ export interface BftApi {
     connect: string,
     cursor: string
   ): Promise<z.infer<typeof meetingChannelsSchema>>;
-  /** Meetings with a Google Meet link in the next 14 days of one calendar. */
+  /** Meetings with a video meeting link in the next 14 days of one calendar. */
   meetingSeries(
     org: string,
     project: string,
+    connect: string,
     calendar: { account_id: string; calendar_id: string },
-    cursor: string | null
+    cursor: string | null,
+    source: BftMeetingCalendarSource
   ): Promise<z.infer<typeof meetingSeriesSchema>>;
+  /** Team calendars of a Feishu/Lark organization whose name matches. */
+  meetingCalendarSearch(
+    org: string,
+    project: string,
+    connect: string,
+    query: string
+  ): Promise<z.infer<typeof meetingCalendarSearchSchema>>;
+  /** The Feishu/Lark app subscribes to a team calendar by its ID. */
+  subscribeMeetingCalendar(
+    org: string,
+    project: string,
+    connect: string,
+    calendarId: string
+  ): Promise<z.infer<typeof meetingCalendarSubscribeSchema>>;
   meetingReport(org: string, project: string, planId: string): Promise<string | null>;
   saveMeetings(
     org: string,
@@ -3172,6 +3440,20 @@ export interface BftApi {
     project: string,
     change: BftDataPolicyChange
   ): Promise<BftDataPolicy>;
+  /** People of one connect whose name, email or user id matches `query`. */
+  dataPolicyPeople(
+    org: string,
+    project: string,
+    connect: string,
+    query: string
+  ): Promise<BftDataPolicyPerson[]>;
+  /** Names and emails of ids the overview showed without one. */
+  dataPolicyDescribe(
+    org: string,
+    project: string,
+    connect: string,
+    ids: string[]
+  ): Promise<Record<string, BftDataPolicyPerson>>;
   health(org: string, signal?: AbortSignal): Promise<BftHealth>;
   /** One page of the audit log, newest first; `cursor` continues a page. */
   audit(
@@ -3192,12 +3474,6 @@ export interface BftApi {
     cursor?: string | null,
     signal?: AbortSignal
   ): Promise<BftRunnersPage>;
-  runnerConnectors(
-    org: string,
-    runnerId: string,
-    cursor?: string | null,
-    signal?: AbortSignal
-  ): Promise<BftRunnerConnectors>;
   runnerOnboarding(org: string, signal?: AbortSignal): Promise<BftRunnerOnboarding>;
   createInstallCommand(org: string): Promise<BftInstallCommand>;
   /** Revokes the key and returns an install command bound to the same runner. */
@@ -3254,10 +3530,12 @@ export interface BftApi {
     id: string,
     cursor: string | null
   ): Promise<BftAccountsPage>;
+  /** `kind`: which of the plan's resets to use (none: any). */
   resetAccountQuota(
     org: string,
     account: { id: string; version: string },
-    requestId: string
+    requestId: string,
+    kind?: BftResetKind
   ): Promise<BftResetResult>;
   accountUsage(
     org: string,
@@ -3533,20 +3811,8 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ),
     swarmDevices: (org, project, signal) =>
       getJson(swarmPath(org, project, "/devices"), swarmDevicesSchema, signal),
-    deviceProvisioning: (org, project, signal) =>
-      getJson(
-        swarmPath(org, project, "/devices/provisioning"),
-        deviceProvisioningSchema,
-        signal
-      ),
     deviceRunners: (org, project, signal) =>
       getJson(swarmPath(org, project, "/devices/runners"), deviceRunnersSchema, signal),
-    createDevice: (org, project, device) =>
-      send("POST", swarmPath(org, project, "/devices"), noticeSchema, device),
-    setCloudComputer: (org, project, enabled) =>
-      send("PUT", swarmPath(org, project, "/devices/cloud"), cloudComputerSchema, {
-        enabled,
-      }),
     chooseCloudVmRunner: (org, project, choice) =>
       send(
         "PUT",
@@ -3567,6 +3833,31 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         "DELETE",
         swarmPath(org, project, `/devices/${encodeURIComponent(deviceId)}`),
         noticeSchema
+      ),
+    setDeviceOperations: (org, project, deviceId, allow) =>
+      send(
+        "PUT",
+        swarmPath(org, project, `/devices/${encodeURIComponent(deviceId)}/operations`),
+        noticeSchema,
+        { allow }
+      ),
+    refreshDevices: (org, project) =>
+      send("POST", swarmPath(org, project, "/devices/refresh"), z.object({})).then(
+        () => undefined
+      ),
+    provisionHardwareDevice: (org, project, name) =>
+      send(
+        "POST",
+        swarmPath(org, project, "/devices/hardware"),
+        hardwareCredentialsSchema,
+        { name }
+      ).then(({ credentials }) => credentials),
+    createStationInstallCommand: (org, project, name) =>
+      send(
+        "POST",
+        swarmPath(org, project, "/devices/station"),
+        computeInstallCommandSchema,
+        { name }
       ),
     createComputeInstallCommand: (org, project, requestId) =>
       request(
@@ -3762,6 +4053,51 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       send("POST", connectionsPath(org, project, "/feishu"), noticeSchema, connect),
     createLarkConnect: (org, project, connect) =>
       send("POST", connectionsPath(org, project, "/lark"), noticeSchema, connect),
+    beginLarkRegistration: (org, project, connectId) =>
+      send(
+        "POST",
+        connectionsPath(org, project, "/lark/registration"),
+        larkRegistrationSchema,
+        connectId ? { connect_id: connectId } : {},
+        false
+      ),
+    pollLarkRegistration: (org, project, registration) =>
+      send(
+        "POST",
+        connectionsPath(org, project, "/lark/registration/poll"),
+        larkRegistrationPollSchema,
+        { registration },
+        (data) => data.state === "connected"
+      ),
+    beginFeishuRegistration: (org, project, connectId) =>
+      send(
+        "POST",
+        connectionsPath(org, project, "/feishu/registration"),
+        larkRegistrationSchema,
+        connectId ? { connect_id: connectId } : {},
+        false
+      ),
+    pollFeishuRegistration: (org, project, registration) =>
+      send(
+        "POST",
+        connectionsPath(org, project, "/feishu/registration/poll"),
+        larkRegistrationPollSchema,
+        { registration },
+        (data) => data.state === "connected"
+      ),
+    createTelegramConnect: (org, project, connect) =>
+      send("POST", connectionsPath(org, project, "/telegram"), noticeSchema, connect),
+    updateTelegramChats: (org, project, connectId, allowedChatIds) =>
+      send(
+        "PUT",
+        connectionsPath(
+          org,
+          project,
+          `/telegram/${encodeURIComponent(connectId)}/chats`
+        ),
+        noticeSchema,
+        { allowed_chat_ids: allowedChatIds }
+      ),
     createQqConnect: (org, project, connect) =>
       send("POST", connectionsPath(org, project, "/qq"), noticeSchema, connect),
     updateQqMenu: (org, project, connectId, items) =>
@@ -3773,6 +4109,17 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       ),
     createSlackConnect: (org, project, connect) =>
       send("POST", connectionsPath(org, project, "/slack"), noticeSchema, connect),
+    setSlackAutoJoin: (org, project, connectId, enabled) =>
+      send(
+        "PUT",
+        connectionsPath(
+          org,
+          project,
+          `/slack/${encodeURIComponent(connectId)}/auto-join`
+        ),
+        noticeSchema,
+        { enabled }
+      ),
     setImConnectEnabled: (org, project, connectId, enabled) =>
       send(
         "PUT",
@@ -3874,6 +4221,12 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       send("DELETE", connectionsPath(org, project, "/tailnet"), tailnetWriteSchema),
     swarmSkills: (org, project, signal) =>
       getJson(swarmPath(org, project, "/skills"), swarmSkillsSchema, signal),
+    swarmStillfail: (org, project, signal) =>
+      getJson(swarmPath(org, project, "/stillfail"), swarmStillfailSchema, signal),
+    stillfailLine: (org, project) =>
+      send("POST", swarmPath(org, project, "/stillfail/line"), stillfailLineSchema),
+    removeStillfail: (org, project) =>
+      send("DELETE", swarmPath(org, project, "/stillfail/stations"), noticeSchema),
     swarmSkill: (org, project, skillId, signal) =>
       getJson(
         swarmPath(org, project, `/skills/${encodeURIComponent(skillId)}`),
@@ -3908,9 +4261,17 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         meetingHistorySchema,
         signal
       ),
-    meetingCatalog: (org, project, connect) =>
+    meetingCatalog: (org, project, connect, scope, source) =>
       getJson(
-        meetingsPath(org, project, `/catalog?${searchOf({ connect_id: connect })}`),
+        meetingsPath(
+          org,
+          project,
+          `/catalog?${searchOf({
+            connect_id: connect,
+            calendar_scope: scope,
+            calendar_source: source,
+          })}`
+        ),
         meetingCatalogSchema
       ),
     meetingChannels: (org, project, connect, cursor) =>
@@ -3922,10 +4283,35 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
         ),
         meetingChannelsSchema
       ),
-    meetingSeries: (org, project, calendar, cursor) =>
+    meetingSeries: (org, project, connect, calendar, cursor, source) =>
       getJson(
-        meetingsPath(org, project, `/series?${searchOf({ ...calendar, cursor })}`),
+        meetingsPath(
+          org,
+          project,
+          `/series?${searchOf({
+            ...calendar,
+            connect_id: connect,
+            cursor,
+            calendar_source: source,
+          })}`
+        ),
         meetingSeriesSchema
+      ),
+    meetingCalendarSearch: (org, project, connect, query) =>
+      getJson(
+        meetingsPath(
+          org,
+          project,
+          `/search_calendars?${searchOf({ connect_id: connect, query })}`
+        ),
+        meetingCalendarSearchSchema
+      ),
+    subscribeMeetingCalendar: (org, project, connect, calendarId) =>
+      send(
+        "POST",
+        meetingsPath(org, project, "/calendars/subscribe"),
+        meetingCalendarSubscribeSchema,
+        { connect_id: connect, calendar_id: calendarId }
       ),
     meetingReport: (org, project, planId) =>
       getJson(
@@ -4029,6 +4415,24 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       getJson(triagePath(org, "/knowledge", { agent }), triageKnowledgeSchema, signal),
     dataPolicy: (org, project, signal) =>
       getJson(dataPolicyPath(org, project), dataPolicySchema, signal),
+    dataPolicyPeople: (org, project, connect, query) =>
+      getJson(
+        dataPolicyPath(
+          org,
+          project,
+          `/connects/${encodeURIComponent(connect)}/people?${searchOf({ query })}`
+        ),
+        dataPolicyPeopleSchema
+      ).then((result) => result.people),
+    dataPolicyDescribe: (org, project, connect, ids) =>
+      getJson(
+        dataPolicyPath(
+          org,
+          project,
+          `/connects/${encodeURIComponent(connect)}/people?${searchOf({ ids: ids.join(",") })}`
+        ),
+        dataPolicyDescribedSchema
+      ).then((result) => result.people),
     changeDataPolicy: (org, project, change) => {
       const connect = (rest: string) =>
         "connect" in change
@@ -4044,6 +4448,10 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
           return send("PATCH", dataPolicyPath(org, project), dataPolicySchema, {
             mode: change.mode,
             language: change.language,
+          });
+        case "supervisors":
+          return send("PATCH", dataPolicyPath(org, project), dataPolicySchema, {
+            supervisors: change.supervisors,
           });
         case "classify":
           return send(
@@ -4082,6 +4490,16 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
               placement: change.placement,
             }
           );
+        case "ssh_host":
+          return send(
+            "PUT",
+            dataPolicyPath(org, project, "/ssh-hosts"),
+            dataPolicySchema,
+            {
+              fingerprint: change.fingerprint,
+              tag: change.tag,
+            }
+          );
       }
     },
     health: (org, signal) => getJson(`${orgPath(org)}/health`, healthSchema, signal),
@@ -4096,15 +4514,6 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       send("DELETE", membersPath(org, userId), membersSchema),
     runners: (org, cursor, signal) =>
       getJson(withCursor(runnersPath(org), cursor), runnersPageSchema, signal),
-    runnerConnectors: (org, runnerId, cursor, signal) =>
-      getJson(
-        withCursor(
-          runnersPath(org, `/${encodeURIComponent(runnerId)}/connectors`),
-          cursor
-        ),
-        runnerConnectorsSchema,
-        signal
-      ),
     runnerOnboarding: (org, signal) =>
       getJson(runnersPath(org, "/onboarding"), runnerOnboardingSchema, signal),
     createInstallCommand: (org) =>
@@ -4185,10 +4594,11 @@ export function createBftApi(options: BftApiOptions = {}): BftApi {
       }),
     refreshAccountQuota: (org, id, cursor) =>
       send("POST", accountPath(org, id, "/quota"), accountsPageSchema, { cursor }),
-    resetAccountQuota: (org, account, requestId) =>
+    resetAccountQuota: (org, account, requestId, kind) =>
       send("POST", accountPath(org, account.id, "/reset"), resetResultSchema, {
         version: account.version,
         request_id: requestId,
+        ...(kind ? { kind } : {}),
       }),
     accountUsage: (org, id, cursor, signal) =>
       getJson(

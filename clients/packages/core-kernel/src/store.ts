@@ -4,14 +4,14 @@
 // its last one leaves; its value stays until then. `set` stores a value and schedules its emission; emissions are
 // coalesced over `coalesceMs`, one window for all topics, so topics changed together go out together, in the order
 // they changed; a topic's first value goes out on the next turn instead. A subscriber's first message is the whole
-// value, the next ones only what changed (keyed ops where the topic's spec says, delta.ts elsewhere), and an unchanged
+// value, the next ones only what changed (keyed ops where the topic's spec says, plain ops elsewhere), and an unchanged
 // value sends nothing. Code inside the core can `watch` a topic. A topic whose source computes it (from what the core
 // keeps) is `invalidate`d and computed when its emission goes out, so many changes cost one computation.
 import { Effect } from "effect";
 import { type AnyOp, diffKeyed, heavier, type Spec } from "./collections.ts";
-import { diff, largerThan, type Op } from "./delta.ts";
 import type { CoreError } from "./error.ts";
 import { equal } from "./json.ts";
+import { noWork, type Meter } from "./meter.ts";
 import {
   topicKey,
   type ClientId,
@@ -73,8 +73,8 @@ type Entry = {
   value?: Value;
   /// The value last sent to the subscribers; the next emission is the difference to it.
   sent?: Value;
-  /// Who subscribes, and whether it takes keyed ops.
-  subscribers: [ClientId, RequestId, boolean][];
+  /// Who subscribes.
+  subscribers: [ClientId, RequestId][];
   watchers: [number, () => void][];
   stale: boolean;
   emitScheduled: boolean;
@@ -101,6 +101,8 @@ export type StoreOptions = {
   specOf?(topic: Topic): Spec | null;
   /// Who produces a topic.
   sourceOf(topic: Topic): Source | undefined;
+  /// Counts the work of each emission (a test's core).
+  meter?: Meter;
   coalesceMs?: number;
   evictAfterMs?: number;
 };
@@ -149,11 +151,11 @@ export class Store {
   }
 
   /// Adds a subscriber; sends the value last sent at once if there is one, and starts the topic if it was not live.
-  subscribe(client: ClientId, id: RequestId, topic: Topic, keyed = false): void {
+  subscribe(client: ClientId, id: RequestId, topic: Topic): void {
     this.unsubscribe(client, id);
     this.#subscriptions.set(`${client}/${id}`, topic);
     const [entry, started] = this.#entry(topic);
-    entry.subscribers.push([client, id, keyed]);
+    entry.subscribers.push([client, id]);
     if (entry.sent !== undefined) this.#options.emit(client, to(whole(entry.sent), id));
     else if (!started && entry.value !== undefined && !entry.emitScheduled) {
       // Kept for a watcher but never sent: it goes out now.
@@ -222,6 +224,7 @@ export class Store {
   set(topic: Topic, value: Value): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry) return;
+    this.#remade(entry, value);
     entry.value = value;
     entry.stale = false;
     this.#changed(entry);
@@ -231,7 +234,9 @@ export class Store {
   update(topic: Topic, change: (value: unknown) => unknown): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry || !entry.value || !("ok" in entry.value)) return;
-    entry.value = { ok: change(entry.value.ok) };
+    const next = { ok: change(entry.value.ok) };
+    this.#remade(entry, next);
+    entry.value = next;
     this.#changed(entry);
   }
 
@@ -291,10 +296,34 @@ export class Store {
 
   #compute(entry: Entry): boolean {
     entry.stale = false;
-    const computed = this.#options.sourceOf(entry.topic)?.compute?.(entry.topic);
-    if (computed === undefined || sameValue(entry.value, computed)) return false;
+    const meter = this.#options.meter;
+    meter?.computing(entry.topic);
+    let computed: Value | undefined;
+    try {
+      computed = this.#options.sourceOf(entry.topic)?.compute?.(entry.topic);
+    } finally {
+      meter?.computing(null);
+    }
+    if (computed === undefined) return false;
+    this.#remade(entry, computed);
+    if (sameValue(entry.value, computed)) return false;
     entry.value = computed;
     return true;
+  }
+
+  /// With a meter: what the topic's new value made again of its last one (each item of a list equal to the one it
+  /// replaces), whatever went out meanwhile.
+  #remade(entry: Entry, next: Value): void {
+    const meter = this.#options.meter;
+    if (!meter || !entry.value || !("ok" in entry.value) || !("ok" in next)) return;
+    const work = noWork();
+    diffKeyed(
+      entry.value.ok,
+      next.ok,
+      this.#options.specOf?.(entry.topic) ?? null,
+      work
+    );
+    meter.remade(entry.topic, work);
   }
 
   #scheduleEmit(topic: Topic): void {
@@ -336,39 +365,29 @@ export class Store {
       for (const [, w] of entry.watchers.slice()) w();
     const value = entry.value;
     if (value === undefined || entry.subscribers.length === 0) return;
-    // What goes out: to a subscriber taking keyed ops, its lists changed item by item; to the others, the plain ops.
-    let out: Out | null;
-    let keyedOut: Out | null;
+    // What goes out: the lists its spec keys changed item by item, the rest by the plain ops; the whole value when
+    // that is lighter.
     const sent = entry.sent;
-    const subscribers = [...entry.subscribers];
+    const meter = this.#options.meter;
+    const work = meter ? noWork() : undefined;
+    let out: Out | null;
     if (sent !== undefined && "ok" in sent && "ok" in value) {
       const next = value.ok;
-      const delta = (ops: Op[]): Out | null =>
+      const ops = diffKeyed(sent.ok, next, this.#options.specOf?.(topic) ?? null, work);
+      out =
         ops.length === 0
           ? null
-          : largerThan(ops, next)
+          : heavier(ops, next, work)
             ? { value: next }
             : { delta: ops };
-      const spec = this.#options.specOf?.(topic) ?? null;
-      out = subscribers.some(([, , k]) => !k || !spec)
-        ? delta(diff(sent.ok, next))
-        : null;
-      if (spec && subscribers.some(([, , k]) => k)) {
-        const ops = diffKeyed(sent.ok, next, spec);
-        keyedOut =
-          ops.length === 0
-            ? null
-            : heavier(ops, next)
-              ? { value: next }
-              : { delta: ops };
-      } else keyedOut = out;
-    } else if (sent !== undefined && sameValue(sent, value)) out = keyedOut = null;
-    else out = keyedOut = whole(value);
+    } else if (sent !== undefined && sameValue(sent, value)) out = null;
+    else out = whole(value);
     entry.sent = value;
-    for (const [client, id, keyed] of subscribers) {
-      const o = keyed ? keyedOut : out;
-      if (o) this.#options.emit(client, to(o, id));
-    }
+    if (meter && work)
+      meter.emitted(topic, work, out ? JSON.stringify(to(out, 0)).length : 0);
+    if (!out) return;
+    for (const [client, id] of entry.subscribers)
+      this.#options.emit(client, to(out, id));
   }
 
   #evict(topic: Topic, idle: number): void {

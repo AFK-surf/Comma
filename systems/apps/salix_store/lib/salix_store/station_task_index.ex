@@ -15,6 +15,11 @@ defmodule SalixStore.StationTaskIndex do
   Salix holds, or is of another epoch, is not applied: Salix answers what it
   holds and the station sends again from there, or all of it with `reset`.
 
+  A still.fail station connected through its Comma connect sends its
+  workspace's chats the same way; what Salix holds of them is on its
+  `SalixStore.StillfailStations` record. Its rows also say what a chat asks
+  of whom (`attention`, `waits_for`, `note`, `url`; `apply_page/3`).
+
   A station holds at most 10,000 rows here. Removing a station, or moving
   it to another Group, deletes its rows (`delete_station/1`, called inside the
   roster's own transaction by `SalixStore.Stations`).
@@ -24,6 +29,7 @@ defmodule SalixStore.StationTaskIndex do
 
   alias SalixStore.Repo
   alias SalixStore.Stations.Station
+  alias SalixStore.StillfailStations
 
   @max_rows 10_000
   @max_page_rows 200
@@ -31,6 +37,11 @@ defmodule SalixStore.StationTaskIndex do
   @max_title 120
   @max_text 200
   @max_labels 20
+  @attentions ~w(need done failed)
+  @max_waits_for 8
+  @max_email 200
+  @max_note 300
+  @max_url 500
   @statuses ~w(in_progress needs_review done cancelled archived)
 
   defmodule Row do
@@ -58,6 +69,10 @@ defmodule SalixStore.StationTaskIndex do
       field(:runtime, :string)
       field(:model, :string)
       field(:labels, {:array, :string})
+      field(:attention, :string)
+      field(:waits_for, {:array, :string}, default: [])
+      field(:note, :string)
+      field(:url, :string)
       field(:rev, :integer)
 
       timestamps()
@@ -78,7 +93,7 @@ defmodule SalixStore.StationTaskIndex do
   "through" => rev}`. The station compares it with its own to choose what to
   send.
   """
-  def held(%Station{} = station),
+  def held(%{index_epoch: _, index_through: _} = station),
     do: %{"epoch" => station.index_epoch, "through" => station.index_through || 0}
 
   @max_list 500
@@ -89,9 +104,7 @@ defmodule SalixStore.StationTaskIndex do
   active stations, each a map of the row's fields.
   """
   def list_group(group_id, limit \\ @max_list) when is_binary(group_id) and is_integer(limit) do
-    from(r in Row,
-      join: s in Station,
-      on: s.id == r.station_id and is_nil(s.removed_at),
+    from(r in active(),
       where: r.group_id == ^group_id,
       order_by: [desc: r.last_activity_at, asc: r.station_id, asc: r.thread],
       limit: ^min(max(limit, 1), @max_list),
@@ -109,19 +122,97 @@ defmodule SalixStore.StationTaskIndex do
           :runtime,
           :model,
           :labels,
+          :attention,
+          :waits_for,
+          :note,
+          :url,
           :rev
         ])
     )
     |> Repo.all()
   end
 
+  @doc """
+  A page of the Group's station-hosted Tasks, the latest activity first, of
+  still.fail stations only when `opts[:source]` is `"stillfail"`: those active
+  since `opts[:since]` (unix ms), created by `opts[:created_by]`, with status
+  `opts[:status]`, with attention `opts[:attention]`, waiting for the email
+  `opts[:waits_for]` (any case), at most `opts[:limit]` (at most #{@max_list}), after
+  `opts[:after]`, the `{last_activity_at, station_id, thread}` of the previous
+  page's last row. `{rows, more?}`.
+  """
+  def page_group(group_id, opts) when is_binary(group_id) and is_list(opts) do
+    limit = min(max(Keyword.get(opts, :limit, 100), 1), @max_list)
+
+    rows =
+      from([r, s, f] in active(),
+        where: r.group_id == ^group_id,
+        order_by: [desc: r.last_activity_at, asc: r.station_id, asc: r.thread],
+        limit: ^(limit + 1),
+        select:
+          map(r, [
+            :station_id,
+            :device_id,
+            :thread,
+            :title,
+            :status,
+            :created_by,
+            :created_at,
+            :last_activity_at,
+            :runtime,
+            :model,
+            :labels,
+            :attention,
+            :waits_for,
+            :note,
+            :url
+          ])
+      )
+      |> page_filter(opts)
+      |> Repo.all()
+
+    {Enum.take(rows, limit), length(rows) > limit}
+  end
+
+  defp page_filter(query, opts) do
+    Enum.reduce(opts, query, fn
+      {:source, "stillfail"}, q ->
+        where(q, [r, s, f], not is_nil(f.id))
+
+      {:since, since}, q when is_integer(since) ->
+        where(q, [r], r.last_activity_at >= ^since)
+
+      {:created_by, who}, q when is_binary(who) ->
+        where(q, [r], r.created_by == ^who)
+
+      {:status, status}, q when is_binary(status) ->
+        where(q, [r], r.status == ^status)
+
+      {:attention, attention}, q when is_binary(attention) ->
+        where(q, [r], r.attention == ^attention)
+
+      {:waits_for, who}, q when is_binary(who) ->
+        where(q, [r], ^String.downcase(who) in r.waits_for)
+
+      {:after, {at, station, thread}}, q ->
+        where(
+          q,
+          [r],
+          r.last_activity_at < ^at or
+            (r.last_activity_at == ^at and
+               (r.station_id > ^station or (r.station_id == ^station and r.thread > ^thread)))
+        )
+
+      _other, q ->
+        q
+    end)
+  end
+
   @doc "One row of the Group's index, of an active station, else nil."
   def get(group_id, station_id, thread)
       when is_binary(group_id) and is_binary(station_id) and is_binary(thread) do
     Repo.one(
-      from(r in Row,
-        join: s in Station,
-        on: s.id == r.station_id and is_nil(s.removed_at),
+      from(r in active(),
         where: r.group_id == ^group_id and r.station_id == ^station_id and r.thread == ^thread
       )
     )
@@ -140,16 +231,24 @@ defmodule SalixStore.StationTaskIndex do
   (at most #{@max_title} characters are kept), `"status"`, `"created_by"`,
   `"created_at"`, `"last_activity_at"` (unix milliseconds), `"runtime"`,
   `"model"` and `"labels"` (the Group's label ids a person gave the Task, at
-  most #{@max_labels}; a station from before sends none).
+  most #{@max_labels}; a station from before sends none). A still.fail
+  station also sends what the chat asks of whom: `"attention"` (`need`: the
+  agent waits for a person; `done`: it finished and the person has not read
+  the result; `failed`: its last turn failed; absent when it asks nothing),
+  `"waits_for"` (the emails of the people it concerns now, at most
+  #{@max_waits_for}, kept lowercase), `"note"` (the agent's own line, at most
+  #{@max_note} characters are kept) and `"url"` (`https://`, the chat in
+  still.fail). Stations from before send none of them.
 
   Answers `{:ok, held}` with what Salix holds afterwards (`held/1`), also
   when the page was not applied. Errors: `:invalid_page`, `:page_too_large`,
   `:too_many_tasks`, `:station_removed`.
   """
-  def apply_page(%Station{id: station_id}, device_id, page) when is_map(page) do
+  def apply_page(%kind{id: station_id}, device_id, page)
+      when kind in [Station, StillfailStations.Station] and is_map(page) do
     with {:ok, page} <- parse_page(page) do
       Repo.transaction(fn ->
-        station = lock_active(station_id) || Repo.rollback(:station_removed)
+        station = lock_active(kind, station_id) || Repo.rollback(:station_removed)
 
         if applies?(station, page) do
           if page.reset,
@@ -198,7 +297,7 @@ defmodule SalixStore.StationTaskIndex do
   # continue from no later than what Salix holds.
   defp applies?(_station, %{reset: true}), do: true
 
-  defp applies?(%Station{index_epoch: epoch} = station, %{epoch: epoch, since: since})
+  defp applies?(%{index_epoch: epoch} = station, %{epoch: epoch, since: since})
        when is_binary(epoch),
        do: since <= (station.index_through || 0)
 
@@ -209,7 +308,7 @@ defmodule SalixStore.StationTaskIndex do
   # later revisions are written. A reset brings all of them.
   defp new_rows(_station, %{reset: true, rows: rows}), do: rows
 
-  defp new_rows(%Station{index_through: held}, %{rows: rows}),
+  defp new_rows(%{index_through: held}, %{rows: rows}),
     do: Enum.filter(rows, &(&1.rev > (held || 0)))
 
   defp write_rows(station, device_id, rows) do
@@ -259,6 +358,10 @@ defmodule SalixStore.StationTaskIndex do
                 runtime: fragment("EXCLUDED.runtime"),
                 model: fragment("EXCLUDED.model"),
                 labels: fragment("EXCLUDED.labels"),
+                attention: fragment("EXCLUDED.attention"),
+                waits_for: fragment("EXCLUDED.waits_for"),
+                note: fragment("EXCLUDED.note"),
+                url: fragment("EXCLUDED.url"),
                 rev: fragment("EXCLUDED.rev"),
                 updated_at: fragment("EXCLUDED.updated_at")
               ]
@@ -273,7 +376,20 @@ defmodule SalixStore.StationTaskIndex do
   defp count(station_id),
     do: Repo.aggregate(from(r in Row, where: r.station_id == ^station_id), :count)
 
-  defp lock_active(station_id) do
+  # Rows of an active Comma station, or of a still.fail station still connected to the Group.
+  defp active do
+    from(r in Row,
+      left_join: s in Station,
+      on: s.id == r.station_id and is_nil(s.removed_at),
+      left_join: f in StillfailStations.Station,
+      on: f.id == r.station_id,
+      where: not is_nil(s.id) or not is_nil(f.id)
+    )
+  end
+
+  defp lock_active(StillfailStations.Station, station_id), do: StillfailStations.lock(station_id)
+
+  defp lock_active(Station, station_id) do
     Repo.one(
       from(s in Station,
         where: s.id == ^station_id and is_nil(s.removed_at),
@@ -360,7 +476,11 @@ defmodule SalixStore.StationTaskIndex do
          active when is_integer(active) <- non_negative(row["last_activity_at"]),
          {:ok, runtime} <- optional_text(row["runtime"], 40),
          {:ok, model} <- optional_text(row["model"], 120),
-         {:ok, labels} <- labels(row["labels"]) do
+         {:ok, labels} <- labels(row["labels"]),
+         {:ok, attention} <- attention(row["attention"]),
+         {:ok, waits_for} <- waits_for(row["waits_for"]),
+         {:ok, note} <- note(row["note"]),
+         {:ok, url} <- url(row["url"]) do
       {:ok,
        %{
          thread: thread,
@@ -374,7 +494,11 @@ defmodule SalixStore.StationTaskIndex do
          last_activity_at: active,
          runtime: runtime,
          model: model,
-         labels: labels
+         labels: labels,
+         attention: attention,
+         waits_for: waits_for,
+         note: note,
+         url: url
        }}
     else
       _ -> :error
@@ -392,6 +516,37 @@ defmodule SalixStore.StationTaskIndex do
   end
 
   defp labels(_labels), do: :error
+
+  defp attention(nil), do: {:ok, nil}
+  defp attention(attention) when attention in @attentions, do: {:ok, attention}
+  defp attention(_attention), do: :error
+
+  defp waits_for(nil), do: {:ok, []}
+
+  defp waits_for(people) when is_list(people) and length(people) <= @max_waits_for do
+    if Enum.all?(people, &(is_binary(&1) and &1 != "" and byte_size(&1) <= @max_email)),
+      do: {:ok, people |> Enum.map(&String.downcase/1) |> Enum.uniq()},
+      else: :error
+  end
+
+  defp waits_for(_people), do: :error
+
+  # The agent's own line: kept, cut to its bound as a title is.
+  defp note(nil), do: {:ok, nil}
+
+  defp note(note) when is_binary(note) do
+    case note |> String.trim() |> String.slice(0, @max_note) do
+      "" -> {:ok, nil}
+      note -> {:ok, note}
+    end
+  end
+
+  defp note(_note), do: :error
+
+  defp url(nil), do: {:ok, nil}
+
+  defp url("https://" <> _ = url) when byte_size(url) <= @max_url, do: {:ok, url}
+  defp url(_url), do: :error
 
   # A participant thread (`TASK/…`) is another station's Task and is never
   # indexed by the station that only takes part in it.

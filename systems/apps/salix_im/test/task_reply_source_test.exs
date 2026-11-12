@@ -42,4 +42,11 @@ defmodule SalixIM.TaskReplySourceTest do
     assert {:error, _} = SourceRefProtection.validate_update(refs_a, %{})
     assert :ok = SourceRefProtection.validate_update(refs_a, refs_a)
   end
+
+  # A schedule run that wakes a Router after it answered this person creates
+  # a Task that is not theirs, so it must not return results to their thread.
+  test "an answered person superseded by a later source gives no reply source" do
+    context = Map.put(context("CA", "1.000001", "source-a"), "person_source_superseded", true)
+    assert TaskReplySource.source_refs(%{group_id: "group"}, context) == %{}
+  end
 end

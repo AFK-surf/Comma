@@ -14,12 +14,10 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import surf.comma.android.R
 import surf.comma.android.chat.live.LiveTimeline
-import surf.comma.android.chat.live.ReplyAction
 import surf.comma.android.chat.live.TriggerMenu
 import surf.comma.android.chat.live.followComposer
 import surf.comma.android.chat.live.entryBlocks
 import surf.comma.android.chat.live.mapConversation
-import surf.comma.android.chat.live.replyText
 import surf.comma.android.ui.MessageActionsPopup
 import surf.comma.android.chat.render.ChatPalette
 import surf.comma.android.chat.render.ChatTimelineView
@@ -110,26 +108,17 @@ class ChatBubblesDemoActivity : ComponentActivity() {
         val active = ParticipantStatus("p", "active", null, null, null, null)
         fun state(entries: List<TimelineEntry>, working: Boolean) = ConversationState(conversationId = "demo",
             timeline = entries, participant = active.takeIf { working }, connection = surf.comma.android.conversation.Connection.LIVE)
-        // The live chat's menu and copy actions, wired the same way.
+        // The live chat's menu, wired the same way.
         timeline.onLongPressMessage = { anchor, item ->
             val key = mapped?.rowEntries?.get(item.message.id)
             val blocks = key?.let { k -> shown?.let { entryBlocks(it, k) } }
             MessageActionsPopup.show(anchor, item, blocks ?: item.contents)
         }
-        timeline.onReplyAction = { action, item ->
-            when (action) {
-                ReplyAction.COPY -> {
-                    val text = item.message.cardPayload?.let { turn -> shown?.let { replyText(it, turn) } }.orEmpty()
-                    if (text.isNotBlank()) MessageActionsPopup.copyMessage(this, text)
-                    text.isNotBlank()
-                }
-            }
-        }
         timeline.onCopyCode = { MessageActionsPopup.copyCode(this, it) }
         val precomputer = MessageLayoutPrecomputer(bubbles = true)
         var prepared = emptyList<surf.comma.android.chat.render.PreparedChatMessage>()
         suspend fun show(state: ConversationState) {
-            val next = mapConversation(state, replyActions = true)
+            val next = mapConversation(state)
             mapped = next
             shown = state
             prepared = precomputer.prepareChanged(prepared, next.rows, timeline.width,

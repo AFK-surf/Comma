@@ -8,7 +8,11 @@ import type { Tool } from "./mcp.ts";
 type Json = any;
 
 export const APP_DEPLOY_DESCRIPTION =
-  "Deploy the Mini App this Task builds as a new preview Version. Build it first, as the repository's AGENTS.md says (dist/ with index.html; dist-worker/index.js when comma-app.json names a backend). This commits what is not committed, pushes the session branch, packs dist/, the backend, comma-app.json and the source, and sends them to Comma, which checks them and shows the preview in the Task. Returns the Version, or what to fix. Report app_id and version to the Router, which can publish with internal.apps.publish after this Task is ready for review.";
+  "Deploy the Mini App this Task builds as a new preview Version. Build it first, as the repository's AGENTS.md says (dist/ with index.html; dist-worker/index.js when comma-app.json names a backend). This commits what is not committed, pushes the session branch, packs dist/, the backend, comma-app.json and the source, and sends them to Comma, which checks them and shows the preview in the Task. Returns the Version, or what to fix; a Version without a gallery cover comes with a note on how to add one. Report app_id and version to the Router, which can publish with internal.apps.publish after this Task is ready for review.";
+/// What a deploy without a cover tells the agent. A repository made before the template had the cover step has no
+/// such step in its AGENTS.md, so the steps are here.
+export const APP_COVER_NOTE =
+  'This Version has no cover, so the Apps gallery shows a placeholder for it. Add a cover, then deploy again: run the app on its dev server and open its first screen in a headless browser (viewport 390 × 844, device scale 2, light theme; add sample data first if the screen is empty). If CHROMIUM_BIN is set, use the browser at that path and do not download one. Capture the top 390 × 293 CSS pixels as JPEG at quality 80. Save it as public/cover.jpg, set "cover": "cover.jpg" in comma-app.json, and build again so that the file is in dist/. A cover is at most 160 KiB and 1200 × 1200 pixels.';
 export const APP_LOGS_DESCRIPTION =
   "Read the recent backend log lines of the Mini App this Task builds (the last 200 lines of the last 15 minutes): errors its backend threw or logged. Of the latest Version, or of `version`.";
 
@@ -25,7 +29,10 @@ export function appTools(tasks: Tasks): Tool[] {
         additionalProperties: false,
       },
       offered,
-      run: async (session, args) => deployed(await tasks.appDeploy(session, typeof args.notes === "string" ? args.notes.trim() : "")),
+      run: async (session, args) => {
+        const { answer, cover } = await tasks.appDeploy(session, typeof args.notes === "string" ? args.notes.trim() : "");
+        return deployed(answer, cover);
+      },
     },
     {
       name: "app_logs",
@@ -46,13 +53,15 @@ export function appTools(tasks: Tasks): Tool[] {
   ];
 }
 
-/// What the agent is told of Salix's answer to a deploy: the Version, or (as a tool error) why there is none.
-function deployed(answer: Json): string {
+/// What the agent is told of Salix's answer to a deploy: the Version (with how to add a cover, when its manifest
+/// names none), or (as a tool error) why there is none.
+function deployed(answer: Json, cover: boolean): string {
   if (answer?.error === "invalid") {
     const errors: string[] = Array.isArray(answer.errors) ? answer.errors.filter((e: unknown) => typeof e === "string") : [];
     throw new Error(`The deploy was refused; fix these and deploy again:\n${errors.map((e) => `- ${e}`).join("\n")}`);
   }
   if (typeof answer?.error === "string") throw new Error(`The deploy failed (${answer.error})${typeof answer.message === "string" ? `: ${answer.message}` : ""}`);
   if (typeof answer?.version !== "number") throw new Error("Comma answered the deploy without a Version");
-  return JSON.stringify({ app_id: answer.app_id, version: answer.version, state: answer.state, name: answer.name, summary: answer.summary }, null, 2);
+  const version = { app_id: answer.app_id, version: answer.version, state: answer.state, name: answer.name, summary: answer.summary };
+  return JSON.stringify(cover ? version : { ...version, note: APP_COVER_NOTE }, null, 2);
 }

@@ -12,6 +12,8 @@ defmodule Salix.Bindings.MeetingCopilot do
   @min_new 1
   @prior_actions_kept 8
   @history_chars 40_000
+  # A sentence that changed this recently may still be growing.
+  @caption_settle_seconds 3
 
   @system_prompt """
   You are a quiet assistant silently monitoring a live meeting's transcript and chat.
@@ -57,45 +59,82 @@ defmodule Salix.Bindings.MeetingCopilot do
   end
 
   defp consider(meeting_id, state) do
-    caption_cursor = cursor(state, "caption_cursor")
     chat_cursor = cursor(state, "chat_cursor")
-    new_caps = Enum.drop(List.wrap(state["captions"]), caption_cursor)
+    through = SystemsClock.system_time(:second) - @caption_settle_seconds
+
+    {new_caps, caption_len} =
+      new_captions(
+        List.wrap(state["captions"]),
+        cursor(state, "caption_cursor"),
+        cursor(state, "revised_through"),
+        through
+      )
+
     new_chats = Enum.drop(List.wrap(state["chats"]), chat_cursor)
-    caption_len = caption_cursor + length(new_caps)
     chat_len = chat_cursor + length(new_chats)
 
     cond do
       trim(state["status"]) != "active" ->
         :ok
 
-      length(new_caps) + length(new_chats) < @min_new ->
+      length(new_caps) + length(incoming(new_chats)) < @min_new ->
         :ok
 
       true ->
-        run_turn(meeting_id, state, new_caps, new_chats, caption_len, chat_len)
+        consumed = %{
+          "caption_cursor" => caption_len,
+          "chat_cursor" => chat_len,
+          "revised_through" => through
+        }
+
+        run_turn(meeting_id, state, new_caps, new_chats, consumed)
     end
   end
+
+  # What this turn reads, and where the cursor goes. A sentence still growing
+  # waits, with the sentences after it. A sentence the cursor passed comes again
+  # when a revision of it settled after the last turn's `since`, so the words
+  # added to it reach the turn.
+  @doc false
+  def new_captions(captions, cursor, since, through) do
+    {read, unread} = Enum.split(captions, cursor)
+
+    fresh =
+      Enum.take_while(unread, fn caption ->
+        not is_integer(caption["revised_at"]) or caption["revised_at"] <= through
+      end)
+
+    revised =
+      Enum.filter(read, fn caption ->
+        is_integer(caption["revised_at"]) and caption["revised_at"] > since and
+          caption["revised_at"] <= through
+      end)
+
+    {revised ++ fresh, cursor + length(fresh)}
+  end
+
+  defp incoming(chats), do: Enum.reject(chats, &(trim(&1["direction"]) == "outgoing"))
 
   # One copilot turn: append the new delta to the running conversation and ask the LLM.
   # Only a successful call persists the turn + advances the cursors; a failed call consumes
   # nothing, so the same (plus newer) content is retried on the next tick.
-  defp run_turn(meeting_id, state, new_caps, new_chats, caption_len, chat_len) do
+  defp run_turn(meeting_id, state, new_caps, new_chats, consumed) do
     agent_id = trim(state["meeting_agent_id"])
     turn = %{"role" => "user", "content" => build_digest(state, new_caps, new_chats)}
     messages = prior_messages(state) ++ [turn]
 
     case chat(agent_id, messages) do
       {:ok, content} ->
-        commit_turn(meeting_id, messages, parse_say(content), caption_len, chat_len)
+        commit_turn(meeting_id, messages, parse_say(content), consumed)
 
       _ ->
         :ok
     end
   end
 
-  defp commit_turn(meeting_id, messages, say, caption_len, chat_len) do
+  defp commit_turn(meeting_id, messages, say, consumed) do
     {messages, spoken} = apply_outcome(messages, say, send_say(meeting_id, say))
-    advance(meeting_id, messages, caption_len, chat_len, spoken)
+    advance(meeting_id, messages, consumed, spoken)
   end
 
   defp send_say(_meeting_id, ""), do: :silent
@@ -162,13 +201,12 @@ defmodule Salix.Bindings.MeetingCopilot do
     Enum.reduce(messages, 0, fn m, acc -> acc + String.length(to_string(m["content"])) end)
   end
 
-  defp advance(meeting_id, messages, caption_len, chat_len, spoken) do
+  defp advance(meeting_id, messages, consumed, spoken) do
     Store.update_state_retrying(meeting_id, fn state ->
       copilot =
         state
         |> Map.get("copilot", %{})
-        |> Map.put("caption_cursor", caption_len)
-        |> Map.put("chat_cursor", chat_len)
+        |> Map.merge(consumed)
         |> Map.put("messages", messages)
         |> record_spoken(spoken)
 
@@ -266,7 +304,7 @@ defmodule Salix.Bindings.MeetingCopilot do
 
   defp chat_lines(chats) do
     chats
-    |> Enum.reject(&(trim(&1["direction"]) == "outgoing"))
+    |> incoming()
     |> Enum.map(fn c -> "#{blank_default(trim(c["sender"]), "Unknown")}: #{trim(c["text"])}" end)
     |> Enum.reject(&String.ends_with?(&1, ": "))
     |> Enum.join("\n")

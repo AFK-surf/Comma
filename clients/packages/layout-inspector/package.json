@@ -18,7 +18,7 @@
   ],
   "dependencies": {
     "@babel/parser": "^7.29.7",
-    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.1.296",
+    "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.2.31",
     "magic-string": "^0.30.21",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

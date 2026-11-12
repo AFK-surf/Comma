@@ -1,6 +1,6 @@
 defmodule SalixAgent.Tools.Stations do
   @moduledoc """
-  Station tools: discover the still.fail stations of the agent's workspace,
+  Station tools: discover the Comma stations of the agent's workspace,
   inspect their files, start and stop their processes, and delegate a task to
   a station chat on behalf of the requesting member.
 
@@ -23,25 +23,35 @@ defmodule SalixAgent.Tools.Stations do
   def defs do
     [
       {"station.list",
-       "List the still.fail stations (user machines) enrolled in this workspace. Use a station's device_id with environment \"station\" in env.exec, env.process_list, env.process_write, env.process_tail and env.copy; use station.fs, station.process and station.session for station files, processes and chats.",
+       "List this workspace's Stations, including managed VMM Stations. Router and Worker use the same member-authorized tools. Use a station's device_id with environment \"station\" in env.exec, env.process_list, env.process_write, env.process_tail and env.copy; use station.fs, station.process and station.session for station files, processes and chats. Commands and relative files default to this Agent conversation's own working directory. Stations share resources with other Tasks: keep your files there, use a new session for delegated work, and stop only processes you started. Do not change shared logins or kill other Tasks. It also lists, as stillfail_stations, the still.fail stations connected through Comma's still.fail plugin, with how to see what their workspace is doing and give one a Task.",
        &__MODULE__.list/2, @normal_auto_wait_seconds},
       {"station.fs",
-       "Inspect files on a station: action=list (directory entries), stat (one path) or read (text up to 256 KiB, optionally from offset). Copy larger or binary files with env.copy and write files with env.copy from vfs.",
+       "Inspect files on a station. Relative paths use this Agent conversation's working directory, as env.exec does without working_dir. Absolute paths address shared files. action=list (directory entries), stat (one path) or read (text up to 256 KiB, optionally from offset). Copy larger or binary files with env.copy and write files with env.copy from vfs.",
        &__MODULE__.fs/2, @normal_auto_wait_seconds},
       {"station.process",
-       "Start or stop a long-lived process on a station. action=start returns a process_id; pass it as process_name to env.process_tail and env.process_write with the station's device_id and environment \"station\". action=stop ends it.",
+       "Start or stop a long-lived process on a station. action=start defaults to this Agent conversation's working directory and returns a process_id; pass it as process_name to env.process_tail and env.process_write with the station's device_id and environment \"station\". action=stop ends it.",
        &__MODULE__.process/2, @normal_auto_wait_seconds, @write_opts},
       {"station.session",
-       "Delegate work to a station's own agent chat on behalf of the member who asked. action=start creates a chat from a prompt and returns its thread; action=say adds a message to that thread; action=status reports running, waiting, need_human, all_done or idle with a summary. The chat runs on the station and continues after this call.",
+       "Delegate work to a station's own agent chat on behalf of the member who asked. action=start creates a chat from a prompt and returns its thread; action=say adds a message to that thread; action=status reports running, waiting, need_human, all_done or idle with a summary. Start a new chat for independent work. Its workspace is separate from other Task and chat workspaces. Do not send into another Task's thread. The chat runs on the station and continues after this call.",
        &__MODULE__.session/2, @normal_auto_wait_seconds, @write_opts}
     ]
   end
+
+  @stillfail_note "These are still.fail stations connected through Comma's still.fail plugin, " <>
+                    "not Stations: do not address them with env.*, station.fs, station.process or " <>
+                    "station.session. Read their still.fail workspace's chats (who each waits for, " <>
+                    "and why) with im_api.internal.station_task.list and source stillfail, and its " <>
+                    "usage with im_api.internal.usage.query and source stillfail. Read or write in " <>
+                    "one chat with im_api.internal.read_conversation or im_api.internal.send_message " <>
+                    "and its task_id as conversation_id. Give one a Task with " <>
+                    "im_api.internal.task.create and runs_on {\"kind\":\"station\",\"device_id\":<its device_id>} " <>
+                    "while it is connected."
 
   @doc false
   def list(_args, ctx) do
     case Stations.list(ctx) do
       {:ok, stations} ->
-        Jason.encode!(%{
+        %{
           "stations" =>
             Enum.map(stations, fn station ->
               station
@@ -50,10 +60,37 @@ defmodule SalixAgent.Tools.Stations do
               |> Map.put("device_id", Stations.target_prefix() <> station["id"])
               |> Map.put("environment", "station")
             end)
-        })
+        }
+        |> put_stillfail(ctx)
+        |> Jason.encode!()
 
       {:error, reason} ->
         raise Stations.describe_error(reason)
+    end
+  end
+
+  # The Group's still.fail stations, which are Devices, not Stations of the
+  # roster. A workspace without one gets neither key; a failed read of them
+  # leaves the roster's answer as it is.
+  defp put_stillfail(result, ctx) do
+    case Stations.stillfail_stations(ctx) do
+      {:ok, [_ | _] = stillfail} ->
+        result
+        |> Map.put(
+          "stillfail_stations",
+          Enum.map(stillfail, fn station ->
+            %{
+              "device_id" => station["id"],
+              "name" => station["name"],
+              "connected" => station["connected"],
+              "connected_at" => station["connected_at"]
+            }
+          end)
+        )
+        |> Map.put("stillfail_note", @stillfail_note)
+
+      _none ->
+        result
     end
   end
 

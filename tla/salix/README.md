@@ -10,11 +10,11 @@ Membership resolution, receipt spending, and consent settlement stay at their ow
 | Model                   | Checked boundary                                                                                                                                      | Implementation mapping                                                                             |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `S3`                    | Shared assumption: linearizable per-object conditional writes; applied/unapplied ambiguous outcomes                                                   | `SalixStore.S3` and its fault-injecting fake; helper, no standalone configuration                  |
-| `HeadCommit`            | Unique owned epoch, honest handles, contiguous log and monotone committed epochs                                                                      | `SalixStore.Agent` claim/commit/release on the root object                                         |
+| `HeadCommit`            | Unique owned epoch, honest handles, contiguous log and monotone committed epochs                                                                      | `SalixStore.AgentPGStore` root revision and epoch conditional updates                                         |
 | `Lease`                 | At most one currently valid ETag token; live-object epochs do not regress                                                                             | `SalixStore.Lease`, `SalixCluster.S3Lease`, `SalixAgent.Tailnet.NodeRecord`                         |
-| `SessionEpochFence`     | No lower-epoch commit after a higher epoch lands; fenced runners stop dispatching                                                                     | Internal session store/state runtime-epoch CAS and runner fencing                                  |
+| `SessionEpochFence`     | No lower-epoch commit after a higher epoch lands; fenced runners stop dispatching                                                                     | InternalSessionStore.PG captured epoch and revision; runner fencing                                  |
 | `RpcDeliver`            | Per-id durable deduplication, ACK implies durable queue append, session admission authority                                                           | `SalixAgent.deliver/3`, `AgentActor.verify_rpc_delivery_owner/1`, internal session store           |
-| `SessionHotArchive`     | Archive chunk exists before hot-head advancement; ambiguous flush settlement; archived bytes agree with durable log                                   | Lean `Session.ArchivePublication` and `InternalSessionStore` hot CAS                               |
+| `SessionHotArchive`     | Archive chunk exists before hot-head advancement; ambiguous flush settlement; archived bytes agree with durable log                                   | Lean `Session.ArchivePublication` and `InternalSessionStore.PG` publication/settlement                               |
 | `ArchiveAppend`         | A stale writer cannot roll back the archive below its committed watermark                                                                             | Conditional-publication abstraction; format-3 uses immutable create-only segment keys             |
 | `ComputeCapacityAction` | Guest storage-headroom failures do not enter a timer retry loop; a busy import slot retries the claim                                               | `SalixEnv.ComputeReconciler` claim settlement and candidate selection                              |
 
@@ -33,9 +33,13 @@ external side effects. The RPC ghost second writer is an explicit
 over-approximation, not a supported delivery mode.
 
 Lease belief exclusion and globally monotone lease epochs across deletion are
-**not** promised. Their two expected counterexamples remain. The RPC fence can
-race an owner move, so the residual stale-but-durable append counterexample
-also remains. Do not turn these into passing assertions by weakening the model.
+**not** promised. Their two expected counterexamples remain.
+The former split-check RPC fence can race an owner move. Its stale-but-durable
+append counterexample remains under `Spec`. `RpcDeliver_Safety` uses `PgSpec`: the
+Agent authority check and Session write share one atomic transition, matching
+the Agent row lock held through the PG Session transaction. It also checks
+`NoStaleCommit`. This does not prove the importer, runtime routing, or external
+effect execution. Do not turn expected counterexamples into passing assertions.
 
 Safety configurations do not claim progress. Archive liveness configurations
 use their declared fair actions and finite failure budgets. They do not promise
@@ -89,7 +93,8 @@ commit authority. A successful cast does not prove that processing started.
 The `RpcDeliver` owner fence observation is one head read per delivery. It is
 shared with placement and starts in the provider callback. This widens the
 modeled `FenceRead ; MoveOwner ; CommitCAS` window by the callback's duration
-(`RpcDeliver_FenceResidual.cfg` is the same accepted exposure). Placement
+(`RpcDeliver_FenceResidual.cfg` retains that former exposure). PG Session
+commit closes this ownership window with its Agent row lock. Placement
 routes locally on a live ownership cell without that read. The fence still
 uses it.
 
@@ -103,8 +108,13 @@ Manual and automatic Workload updates pause pending input claims and preserve
 accepted inputs. After confirmed stop, `Compute.prepare_runtime_bootstrap`
 retires the execution epoch and rebinds only pending inputs. Import storage
 failures park the existing ReconcilerClaim, which preserves
-`ComputeCapacityAction.NoAutomaticRetry`. The models do not prove native-file
-continuity or the whole update protocol.
+`ComputeCapacityAction.NoAutomaticRetry`. Namespace projection with the same
+storage-headroom failure uses this boundary too, including an admitted command
+whose outcome remains unknown. `CapacityChanges` cannot schedule another
+attempt. Public explicit Retry maps to `OperatorRetries` and preserves the
+Allocation, generation and resource limits. The model does not prove native
+namespace idempotence, command-outcome preservation, native-file continuity or
+the whole update protocol; implementation tests and runtime checks cover them.
 
 ## Commands and coverage
 
@@ -143,15 +153,23 @@ Lean model's `Gates.commandScope` records the Task/source/Worker authority
 obligation. These models do not prove exactly-once Slack effects or end-to-end
 progress.
 
-## Compacted hot-history tails
+## Session body archival
 
-The Session sealer closes partial segments at the captured compaction ceiling.
-`SessionHotArchive` maps publication before hot-head advancement and ambiguous
-settlement. The sealer captures one durable revision for publication and CAS. A
-conflict reloads and repeats publication within the retry budget.
-`ArchiveAppend` maps the monotone compaction ceiling and archive watermark.
-Neither abstraction requires a byte-fill minimum. No liveness guarantee applies
-to permanent storage failure or uncompacted history.
+The Session sealer captures bounded cuts through committed `last_seq`, independently of logical compaction.
+`SessionHotArchive` maps immutable content before directory/watermark publication and frozen business settlement.
+Independent archive publication advances the SQL revision while preserving the business storage identity.
+Settlement confirms the original business revision. A later write must reload after a maintenance conflict.
+`ResidentRevisionSound` rejects an old resident marked with the maintenance revision.
+The model's hot window represents the PG body range after its archive watermark.
+Runtime context can also contain cold records above the logical compaction watermark.
+`ArchiveAdvance` publishes the directory and removes that PG body range atomically.
+Reader tests check context restoration, fork, protected results, and paging. SQL failure and lost-reply tests check publication with deletion.
+The Lean archive-publication projection assumes every input message is above the captured archive watermark.
+`PG.archive_window` supplies this physical-plan premise with its `seq > archived_through` query; the proof does not identify an older resident payload with an archived object.
+`ArchiveAppend` retains the conditional monotone-publication abstraction for the directory and watermark.
+Its separate publication steps admit more interleavings than the atomic PG publication transaction.
+Neither abstraction requires a byte-fill minimum. The checked liveness assumes bounded faults and fair progress;
+it does not cover permanent storage failure or the engineering microbatch and idle-delay policy.
 
 ## Tool admission batching
 
@@ -164,27 +182,27 @@ dispatch.
 
 The Session command adapter separates owner-local `write` from `durable_fence`.
 Local application does not correspond to durable append in these models. The
-fence corresponds to the snapshot CAS and its recovery prerequisites. Input
-acceptance and effect continuations follow fence success. No unfenced command
+fence corresponds to the PostgreSQL delta transaction and its captured owner
+epoch and revision. Input acceptance and effect continuations follow confirmed commit. No unfenced command
 revision crosses an Actor mailbox boundary.
 
 Native Revision planning is volatile and unacknowledged. The Actor carries the
-pending revision to the same snapshot CAS without resubmitting retirement
-events.
+pending revision to the same frozen PostgreSQL submission without resubmitting
+retirement events.
 
 Speculative provider computation is outside the durable-state models. Public
 deltas, response application, and tool dispatch still require the fence. A
-yielded Router wait is a pending revision fenced by the activation CAS of the
+yielded Router wait is a pending revision committed with activation in the
 same processing entry, or fenced before that entry ends. The owner awaits the
-snapshot task within its callback, so another mailbox entry cannot write through
-that in-flight CAS. The delegated writer carries the owner's frozen epoch.
+commit task within its callback, so another mailbox entry cannot replace the
+in-flight submission. The delegated writer carries the owner's frozen epoch.
 
 Round preparation adopts refreshed catalogs and configuration only at a later
 round boundary. Provider dispatch requires billing authorization and the owner
 epoch. No speculative output is released before its frozen revision commits.
-Pending revisions persist their applied state without replaying events. The CAS
-base, result validation, normalization, recovery-marker ordering and conflict
-handling are unchanged.
+Pending revisions persist their delta without replaying events. The Session
+transaction commits input identity, source progress, and due state together.
+The former separate recovery-marker ordering is no longer a commit boundary.
 
 ## Slack recipient continuation
 

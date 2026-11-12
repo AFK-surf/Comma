@@ -30,7 +30,6 @@ Application.put_env(:salix_env, :transfer_port, 0)
 Application.put_env(:systems_observability, :port, 0)
 Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 Application.delete_env(:salix_meet, :calendar_autojoin)
-Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
 Application.put_env(:bridge_for_teams_web, :dev_login, true)
 endpoint = BridgeForTeamsWeb.DashboardEndpoint
 config = Application.fetch_env!(:bridge_for_teams_web, endpoint)

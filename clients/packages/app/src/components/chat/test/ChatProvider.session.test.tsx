@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { advance, flush } from "@comma/test-utils/fake-clock";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
-import { render as renderUi, screen } from "@comma/test-utils/render";
+import { fireEvent, render as renderUi, screen } from "@comma/test-utils/render";
 import {
   StrictMode,
   useLayoutEffect,
@@ -27,6 +27,10 @@ import {
   useChatRegistry,
 } from "../ChatProvider";
 import { CoreConversationChannel } from "../channel/CoreConversationChannel";
+import {
+  useConversationDraftSelections,
+  useStageDraftSelection,
+} from "../composer/draftSelections";
 import { useConversation } from "../conversation/useConversation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -178,6 +182,22 @@ describe("ChatProvider session ownership", () => {
     leaseB.release();
     await flush();
     expect(stopB).toHaveBeenCalledOnce();
+  });
+
+  it("shows in a conversation's composer what another part of the window staged for it, and starts another login with none", () => {
+    const rendered = render(stagingTree(testProductLease));
+    expect(screen.getByLabelText("staged")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    expect(screen.getByLabelText("staged")).toHaveTextContent("Explain this control");
+
+    rendered.rerender(
+      stagingTree({
+        ...testProductLease,
+        sessionId: "22222222-2222-4222-8222-222222222222",
+      })
+    );
+    expect(screen.getByLabelText("staged")).toHaveTextContent("none");
   });
 
   it("keeps Home target retirement identity-safe and scoped to its session", () => {
@@ -704,6 +724,48 @@ function authenticatedSessionTree(
         )}
       </CommaCenterStatusProvider>
     </ChatSessionProvider>
+  );
+}
+
+/**
+ * A session whose window stages a selection in one consumer boundary and shows the conversation in another: the
+ * browser sidebar and a screen are their own boundaries, apart from the conversation's.
+ */
+const stagingTree = (productLease: typeof testProductLease) => (
+  <ChatSessionProvider productLease={productLease}>
+    <ChatConsumerBoundary>
+      <StagesSelection />
+    </ChatConsumerBoundary>
+    <ChatConsumerBoundary>
+      <StagedForConversation />
+    </ChatConsumerBoundary>
+  </ChatSessionProvider>
+);
+
+/** A surface beside a conversation: it stages a selection for the conversation's next message. */
+function StagesSelection() {
+  const stage = useStageDraftSelection();
+  return (
+    <button
+      onClick={() =>
+        stage?.("cnv_staged", {
+          note: "Explain this control",
+          about: { kind: "screen", device: "mac", screen: "display", at: 0 },
+        })
+      }
+    >
+      Stage
+    </button>
+  );
+}
+
+/** The conversation's composer, as far as the session goes: what is staged for its next message. */
+function StagedForConversation() {
+  const { items } = useConversationDraftSelections("cnv_staged");
+  return (
+    <output aria-label="staged">
+      {items.map((selection) => selection.note).join(" | ") || "none"}
+    </output>
   );
 }
 

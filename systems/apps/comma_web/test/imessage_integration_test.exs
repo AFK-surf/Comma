@@ -179,6 +179,57 @@ defmodule CommaWeb.IMessageIntegrationTest do
     %{user: user, workspace: workspace, session: session}
   end
 
+  test "the owner connects iMessage from the chat: the command goes to the user and their message ends the waiting call",
+       c do
+    ctx = %{
+      agent_id: c.workspace["router_agent_id"],
+      session_id: SalixStore.Ids.new_session_id(),
+      tool_call_id: "call-imessage-1",
+      group_id: c.workspace["default_group_id"],
+      trusted_origin: %{
+        "provider" => "internal",
+        "principal_ref" => %{"namespace" => "comma_user", "subject_id" => c.user["id"]}
+      }
+    }
+
+    assert {content, [%{"type" => "async_tool_call_started", "status" => "running"} | _]} =
+             SalixAgent.Tools.ChannelLink.link(%{"provider" => "imessage"}, ctx)
+
+    pending = Jason.decode!(content)
+    assert pending["status"] == "pending"
+    assert "bridgebot connect " <> code = pending["command"]
+    assert pending["send_to"] == "comma@example.test"
+    assert pending["instructions"] =~ pending["command"]
+
+    group = c.workspace["default_group_id"]
+    tenant = c.workspace["salix_tenant_id"]
+    {:ok, [request]} = SalixAgent.CapabilityRequests.list_group(group, tenant, status: "pending")
+    assert request["request_payload"]["channel_link"]["attempt_id"] == code
+
+    # The user sends the command from Messages: the binding completes as from
+    # Settings, and the Router's call returns linked.
+    # The confirmation went to the relay before handle_event returned.
+    assert :ok = IMessageIntegration.handle_event(event("1", pending["command"]))
+    assert_received {:relay, "POST", "/v1/messages/text", confirmation}
+    assert Jason.decode!(confirmation)["text"] =~ "connected"
+
+    {:ok, ended} = SalixAgent.CapabilityRequests.get(group, request["request_id"], tenant)
+    assert ended["status"] == "completed"
+
+    assert ended["response_payload"] == %{
+             "status" => "linked",
+             "provider" => "imessage",
+             "sender_handle" => "alice@example.test"
+           }
+
+    assert %{"status" => "connected", "sender_handle" => "alice@example.test"} =
+             SalixAgent.Tools.ChannelLink.link(%{"provider" => "imessage"}, %{
+               ctx
+               | tool_call_id: "call-imessage-2"
+             })
+             |> Jason.decode!()
+  end
+
   test "account settings -> one-time private claim -> Router -> exact chat reply -> disconnect",
        context do
     %{workspace: workspace, session: session} = context
@@ -402,13 +453,13 @@ defmodule CommaWeb.IMessageIntegrationTest do
       event("3", "later")
     ])
 
-    block_router_log(workspace)
+    unblock_router_log = block_router_log(workspace)
     assert {:error, _} = CommaWeb.IMessageRuntime.run_once()
     assert_receive {:stream_query, "after_event_id=1"}
     refute_receive {:router_input, _, _, _}
     assert cursor() == "1"
 
-    SalixStore.S3.Fake.clear_blackhole()
+    :ok = unblock_router_log.()
     assert :ok = CommaWeb.IMessageRuntime.run_once()
     assert_receive {:stream_query, "after_event_id=1"}
     assert cursor() == "3"
@@ -463,6 +514,25 @@ defmodule CommaWeb.IMessageIntegrationTest do
     assert body =~ "result image bytes"
     assert body =~ "result.png"
 
+    # The relay has no file endpoint: a file send is refused before any request.
+    flush = fn flush ->
+      receive do
+        {:relay, _, _, _} -> flush.(flush)
+      after
+        0 -> :ok
+      end
+    end
+
+    flush.(flush)
+
+    assert {:error, "This iMessage connection can send only text and images." <> _} =
+             SalixIM.Provider.call_api(agent, "imessage", "imessage.send_file", %{
+               "connect_id" => link.connect_id,
+               "params" => %{"chat_id" => "chat-alice", "path" => "/clip.mp4"}
+             })
+
+    refute_received {:relay, "POST", _, _}
+
     assert {:error, :imessage_image_unavailable} = IMessageRelay.download_image(agent, "redirect")
 
     assert {:error, :imessage_image_too_large} =
@@ -477,9 +547,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
   defp block_router_log(workspace) do
     group = workspace["default_group_id"]
     {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group)
-    key = SalixStore.Keys.ctl_group_conversation(group, conversation["conversation_id"])
-    :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, key})
-    on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
+    CommaWeb.TestConversationFaults.block_append!(group, conversation["conversation_id"])
   end
 
   defp cursor do

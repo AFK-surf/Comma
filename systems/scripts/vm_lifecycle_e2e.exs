@@ -36,13 +36,6 @@ defmodule VMLifecycleE2E do
     assert_vm_operations!(isolated, provider, "#{surface}-isolated")
     assert_vm_isolation!(primary, isolated, provider, surface)
 
-    primary = pause_surface_vm!(surface, primary)
-    assert_paused!(primary)
-    assert_vm_operations!(isolated, provider, "#{surface}-isolated-after-pause")
-
-    primary = resume_surface_vm!(surface, primary, provider)
-    assert_vm_operations!(primary, provider, "#{surface}-resume")
-
     delete_vm!(primary)
     assert_vm_operations!(isolated, provider, "#{surface}-isolated-after-delete")
     delete_vm!(isolated)
@@ -159,11 +152,7 @@ defmodule VMLifecycleE2E do
     configure_tenant_vm!(org.salix_tenant_id, provider)
 
     {:ok, agent} =
-      Agents.create_agent(project.id, %{
-        "role" => "worker",
-        "name" => "worker-#{suffix}",
-        "vm" => %{"enabled" => true, "provider" => provider}
-      })
+      Agents.create_agent(project.id, %{"role" => "worker", "name" => "worker-#{suffix}"})
 
     drain_all!()
 
@@ -190,10 +179,10 @@ defmodule VMLifecycleE2E do
     {_session, workspace} =
       bootstrap_comma_workspace!(user["id"], %{
         "name" => "Comma VM #{suffix}",
-        "vm" => %{"enabled" => true, "provider" => provider}
+        "vm" => %{"provider" => provider}
       })
 
-    expect!(workspace["vm"] == %{"enabled" => true, "provider" => provider}, "comma vm create")
+    expect!(get_in(workspace, ["vm", "provider"]) == provider, "comma vm create")
 
     %{
       surface: "comma",
@@ -203,42 +192,6 @@ defmodule VMLifecycleE2E do
       agent_id: workspace["router_agent_id"],
       group_id: workspace["default_group_id"]
     }
-  end
-
-  defp pause_surface_vm!("bft", ref) do
-    {:ok, paused} = Agents.update_agent(ref.agent, %{"vm" => %{"enabled" => false}})
-    drain_all!()
-    %{ref | agent: paused}
-  end
-
-  defp pause_surface_vm!("comma", ref) do
-    session = comma_session!(ref.user["id"])
-
-    workspace =
-      patch_comma_workspace!(session["token"], ref.workspace["id"], %{
-        "vm" => %{"enabled" => false}
-      })
-
-    %{ref | workspace: workspace}
-  end
-
-  defp resume_surface_vm!("bft", ref, provider) do
-    {:ok, resumed} =
-      Agents.update_agent(ref.agent, %{"vm" => %{"enabled" => true, "provider" => provider}})
-
-    drain_all!()
-    %{ref | agent: resumed}
-  end
-
-  defp resume_surface_vm!("comma", ref, provider) do
-    session = comma_session!(ref.user["id"])
-
-    workspace =
-      patch_comma_workspace!(session["token"], ref.workspace["id"], %{
-        "vm" => %{"enabled" => true, "provider" => provider}
-      })
-
-    %{ref | workspace: workspace}
   end
 
   defp assert_vm_operations!(ref, provider, label) do
@@ -497,19 +450,6 @@ defmodule VMLifecycleE2E do
         {:error, :no_environment},
       "right cannot reach left env id"
     )
-  end
-
-  defp assert_paused!(ref) do
-    eventually!("vm paused #{ref.group_id}", fn ->
-      match?({:error, :not_found}, SalixWeb.ComputeProviders.Cloudflare.get_record(ref.group_id))
-    end)
-
-    eventually!("env detached #{ref.group_id}", fn ->
-      case EnvDispatch.list_envs(ref.agent_id) do
-        {:ok, envs} -> Enum.all?(envs, &(&1["alias"] != @env_alias))
-        _ -> false
-      end
-    end)
   end
 
   defp delete_vm!(ref) do

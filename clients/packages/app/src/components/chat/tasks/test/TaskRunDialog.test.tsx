@@ -1,3 +1,4 @@
+import type { ChatTaskRun } from "@comma/chat-contract";
 import type { DevicesValue, ModelsValue, ShownDevice } from "@comma/core/contract";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { flush } from "@comma/test-utils/fake-clock";
@@ -20,7 +21,15 @@ const studio: ShownDevice = {
   device_runtimes: [],
 };
 
-async function open(onSwitch: (run: unknown) => Promise<unknown>) {
+const onStudio: ChatTaskRun = {
+  place: { kind: "station", deviceId: "dev_studio", name: "Studio Mac" },
+  model: { kind: "runtime", provider: "codex" },
+};
+
+async function open(
+  onSwitch: (run: unknown) => Promise<unknown>,
+  run: ChatTaskRun = onStudio
+) {
   const scripted = createScriptedCore({
     values: (topic): ModelsValue | DevicesValue | undefined =>
       topic.topic === "devices"
@@ -63,10 +72,7 @@ async function open(onSwitch: (run: unknown) => Promise<unknown>) {
         <TaskRunDialog
           onClose={onClose}
           onSwitch={onSwitch}
-          run={{
-            place: { kind: "station", deviceId: "dev_studio", name: "Studio Mac" },
-            model: { kind: "runtime", provider: "codex" },
-          }}
+          run={run}
           workspaceId={WORKSPACE}
         />
       </CommaI18nProvider>
@@ -126,6 +132,51 @@ it("says why a computer did not take the Task, and stays open", async () => {
   });
   expect(dialog.getByRole("alert")).toHaveTextContent(
     "That computer isn't connected now."
+  );
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("keeps a sandbox Task on its sandbox: it picks from the models its station runs, and says when the sandbox is not running", async () => {
+  const onSwitch = vi.fn(async () => {
+    throw Object.assign(new Error("refused"), {
+      detail: {
+        code: "task_run_refused",
+        reason: "sandbox_not_running",
+        message: "the Task's sandbox is not running now",
+      },
+    });
+  });
+  const { dialog, onClose, user } = await open(onSwitch, {
+    place: {
+      kind: "sandbox",
+      state: "ready",
+      taskModels: { claude: ["claude-opus-5-5"], codex: ["gpt-5.5-codex"] },
+    },
+    model: { kind: "runtime", provider: "codex" },
+  });
+  expect(dialog.getByTestId("task-run-current")).toHaveTextContent(
+    "NowSandbox · Codex default model"
+  );
+  await user.click(dialog.getByRole("button", { name: /Switch to/ }));
+  // Nothing of Comma's or the computers': the Task does not move.
+  expect(options().queryByRole("option", { name: "Default model" })).toBeNull();
+  expect(options().queryByRole("option", { name: "GPT-5.5" })).toBeNull();
+  for (const name of [
+    "Claude Code default model",
+    "claude-opus-5-5",
+    "Codex default model",
+    "gpt-5.5-codex",
+  ])
+    expect(options().getByRole("option", { name })).toBeInTheDocument();
+  await user.click(options().getByRole("option", { name: "claude-opus-5-5" }));
+  await user.click(dialog.getByRole("button", { name: "Switch" }));
+  await flush();
+  expect(onSwitch).toHaveBeenCalledWith({
+    runsOn: { kind: "sandbox" },
+    model: { kind: "runtime", provider: "claude", model: "claude-opus-5-5" },
+  });
+  expect(dialog.getByRole("alert")).toHaveTextContent(
+    "The sandbox isn't running now. Send the Task a message to start it, then try again."
   );
   expect(onClose).not.toHaveBeenCalled();
 });

@@ -59,25 +59,216 @@ defmodule Salix.Drive.FilesTest do
     end
   end
 
-  test "list follows the cursor and carries the bearer, space and path" do
-    Req.Test.stub(Salix.Drive.Files, fn conn ->
-      assert conn.method == "GET"
-      assert conn.request_path == @base <> "/ls"
-      assert get_req_header(conn, "authorization") == ["Bearer synch_token"]
-      params = query(conn)
-      assert params["space"] == "comma-drive"
-      assert params["path"] == "docs"
+  defp browse_status(conn, devices) do
+    Req.Test.json(conn, %{
+      "enabled" => true,
+      "devices" => devices,
+      "writes" => %{"enabled" => true, "attached" => true, "device" => "cloud-1"}
+    })
+  end
 
-      case params["cursor"] do
-        nil ->
-          Req.Test.json(conn, %{
-            "entries" => [entry("a.txt", "file", 3), entry("sub", "dir", 0)],
-            "cursor" => "page2"
-          })
+  defp device(name, spaces) do
+    %{"device" => name, "origin" => name <> "@default.comma-x.sync.test", "spaces" => spaces}
+  end
 
-        "page2" ->
-          Req.Test.json(conn, %{"entries" => [entry("b.txt", "file", 4)], "cursor" => ""})
+  describe "which view a read gets" do
+    @cloud_origin "cloud-1@default.comma-x.sync.test"
+    @older 1_000
+    @newer 2_000
+
+    defp two_holders(conn) do
+      browse_status(conn, [
+        device("win-1", ["comma-drive"]),
+        device("cloud-1", ["comma-drive"])
+      ])
+    end
+
+    defp versions_at(conn, nil), do: Req.Test.json(conn, %{"versions" => []})
+
+    defp versions_at(conn, mtime_ns) do
+      Req.Test.json(conn, %{
+        "versions" => [%{"root" => "r", "kind" => "file", "mtime_ns" => mtime_ns}]
+      })
+    end
+
+    # A device at `local` and `cloud-1` at `hosted`, each serving its own bytes.
+    # nil is a view without the file.
+    defp two_views(local, hosted) do
+      Req.Test.stub(Salix.Drive.Files, fn conn ->
+        hosted? = query(conn)["origin"] == @cloud_origin
+        mtime_ns = if hosted?, do: hosted, else: local
+
+        case conn.request_path do
+          @base ->
+            two_holders(conn)
+
+          @base <> "/stat" ->
+            versions_at(conn, mtime_ns)
+
+          @base <> "/file" when is_nil(mtime_ns) ->
+            send_resp(conn, 404, "not_found: no such path")
+
+          @base <> "/file" ->
+            send_resp(conn, 200, if(hosted?, do: "from cloud", else: "from device"))
+
+          @base <> "/ls" ->
+            entries =
+              if mtime_ns,
+                do: [Map.put(entry("a.md", "file", 1), "mtime_ns", mtime_ns) |> tag(hosted?)],
+                else: []
+
+            Req.Test.json(conn, %{"entries" => entries, "cursor" => ""})
+        end
+      end)
+    end
+
+    defp tag(entry, true), do: Map.put(entry, "origin", @cloud_origin)
+    defp tag(entry, false), do: entry
+
+    test "a write the device has not synced is read from the hosted replica" do
+      two_views(nil, @newer)
+
+      assert {:ok, "from cloud", false} = Files.read(@drive, "a.md", 1024)
+      assert {:ok, stream, _size} = Files.stream(@drive, "a.md")
+      assert IO.iodata_to_binary(Enum.to_list(stream)) == "from cloud"
+      assert {:ok, [%{origin: @cloud_origin}]} = Files.list(@drive, "")
+    end
+
+    test "an overwrite the device has not synced is read from the hosted replica" do
+      two_views(@older, @newer)
+
+      assert {:ok, "from cloud", false} = Files.read(@drive, "a.md", 1024)
+      assert {:ok, [%{mtime_ns: @newer, origin: @cloud_origin}]} = Files.list(@drive, "")
+    end
+
+    test "a file on the device is read there when the hosted replica has none" do
+      two_views(@newer, nil)
+
+      assert {:ok, "from device", false} = Files.read(@drive, "a.md", 1024)
+      assert {:ok, [%{mtime_ns: @newer}]} = Files.list(@drive, "")
+    end
+
+    test "a version on the device at least as new as the hosted one is read there" do
+      for hosted <- [@older, @newer] do
+        two_views(@newer, hosted)
+
+        assert {:ok, "from device", false} = Files.read(@drive, "a.md", 1024)
       end
+    end
+
+    test "a file neither has is not found" do
+      two_views(nil, nil)
+
+      assert {:error, :not_found} = Files.read(@drive, "a.md", 1024)
+      assert {:ok, []} = Files.list(@drive, "")
+    end
+
+    test "with one holder the control plane's pick is the only request" do
+      Req.Test.stub(Salix.Drive.Files, fn conn ->
+        assert query(conn)["origin"] == nil
+
+        case conn.request_path do
+          @base -> browse_status(conn, [device("cloud-1", ["comma-drive"]), device("win-1", [])])
+          @base <> "/file" -> send_resp(conn, 200, "only")
+        end
+      end)
+
+      assert {:ok, "only", false} = Files.read(@drive, "a.md", 1024)
+    end
+
+    test "a hosted replica that fails leaves the device's answer" do
+      for status <- [500, 502, 503] do
+        Req.Test.stub(Salix.Drive.Files, fn conn ->
+          case {conn.request_path, query(conn)["origin"]} do
+            {@base, _} ->
+              two_holders(conn)
+
+            {_path, @cloud_origin} ->
+              send_resp(conn, status, "internal: boom")
+
+            {@base <> "/stat", nil} ->
+              versions_at(conn, @older)
+
+            {@base <> "/file", nil} ->
+              send_resp(conn, 200, "from device")
+
+            {@base <> "/ls", nil} ->
+              Req.Test.json(conn, %{"entries" => [entry("a.md", "file", 1)], "cursor" => ""})
+          end
+        end)
+
+        assert {:ok, "from device", false} = Files.read(@drive, "a.md", 1024)
+        assert {:ok, [%{name: "a.md"}]} = Files.list(@drive, "")
+      end
+    end
+
+    test "a device that fails leaves the hosted replica's answer" do
+      for status <- [500, 502, 503] do
+        Req.Test.stub(Salix.Drive.Files, fn conn ->
+          case {conn.request_path, query(conn)["origin"]} do
+            {@base, _} ->
+              two_holders(conn)
+
+            {_path, nil} ->
+              send_resp(conn, status, "internal: boom")
+
+            {@base <> "/stat", @cloud_origin} ->
+              versions_at(conn, @older)
+
+            {@base <> "/file", @cloud_origin} ->
+              send_resp(conn, 200, "from cloud")
+
+            {@base <> "/ls", @cloud_origin} ->
+              Req.Test.json(conn, %{"entries" => [entry("a.md", "file", 1)], "cursor" => ""})
+          end
+        end)
+
+        assert {:ok, "from cloud", false} = Files.read(@drive, "a.md", 1024)
+        assert {:ok, [%{name: "a.md"}]} = Files.list(@drive, "")
+      end
+    end
+
+    test "a refusal of the whole network is not answered from the other view" do
+      Req.Test.stub(Salix.Drive.Files, fn conn ->
+        case {conn.request_path, query(conn)["origin"]} do
+          {@base, _} ->
+            two_holders(conn)
+
+          {@base <> "/ls", @cloud_origin} ->
+            Req.Test.json(conn, %{"entries" => [], "cursor" => ""})
+
+          {@base <> "/ls", nil} ->
+            send_resp(conn, 401, "unauthorized")
+        end
+      end)
+
+      assert {:error, :auth} = Files.list(@drive, "")
+    end
+  end
+
+  test "list follows the cursor and carries the bearer, space and path" do
+    Req.Test.stub(Salix.Drive.Files, fn
+      %{request_path: @base} = conn ->
+        browse_status(conn, [])
+
+      conn ->
+        assert conn.method == "GET"
+        assert conn.request_path == @base <> "/ls"
+        assert get_req_header(conn, "authorization") == ["Bearer synch_token"]
+        params = query(conn)
+        assert params["space"] == "comma-drive"
+        assert params["path"] == "docs"
+
+        case params["cursor"] do
+          nil ->
+            Req.Test.json(conn, %{
+              "entries" => [entry("a.txt", "file", 3), entry("sub", "dir", 0)],
+              "cursor" => "page2"
+            })
+
+          "page2" ->
+            Req.Test.json(conn, %{"entries" => [entry("b.txt", "file", 4)], "cursor" => ""})
+        end
     end)
 
     assert {:ok, entries} = Files.list(@drive, "docs")
@@ -98,13 +289,17 @@ defmodule Salix.Drive.FilesTest do
   end
 
   test "read returns the bytes and says whether they were cut short" do
-    Req.Test.stub(Salix.Drive.Files, fn conn ->
-      assert conn.request_path == @base <> "/file"
-      assert query(conn)["path"] == "notes/hello.txt"
+    Req.Test.stub(Salix.Drive.Files, fn
+      %{request_path: @base} = conn ->
+        browse_status(conn, [])
 
-      conn
-      |> put_resp_header("content-length", "11")
-      |> send_resp(200, "hello world")
+      conn ->
+        assert conn.request_path == @base <> "/file"
+        assert query(conn)["path"] == "notes/hello.txt"
+
+        conn
+        |> put_resp_header("content-length", "11")
+        |> send_resp(200, "hello world")
     end)
 
     assert {:ok, "hello world", false} = Files.read(@drive, "notes/hello.txt", 1024)

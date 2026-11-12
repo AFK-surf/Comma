@@ -11,7 +11,7 @@
     <string name="settings_avatar_choose">选择图片</string>
     <string name="settings_avatar_remove">移除头像</string>
     <string name="settings_avatar_too_large">这张图片太大了，请换一张。</string>
-    <string name="settings_avatar_type">支持 JPEG、PNG 或 WebP 图片。</string>
+    <string name="settings_avatar_type">支持 JPEG、PNG、WebP 或 GIF 图片。</string>
     <string name="settings_name">姓名</string>
     <string name="settings_name_description">这是你的姓名在 Comma 中的显示方式。</string>
     <string name="settings_name_too_long">姓名不能超过 64 个字符。</string>
@@ -23,7 +23,7 @@
     <string name="settings_general">通用</string>
     <string name="settings_language">语言</string>
     <string name="settings_language_system">自动检测</string>
-    <string name="settings_language_chinese">简体中文</string>
+    <string name="settings_language_chinese" translatable="false">简体中文</string>
     <string name="settings_language_english" translatable="false">English</string>
     <string name="settings_label_changes">标签修改</string>
     <string name="settings_label_changes_description">允许 Comma 无需确认即可创建、编辑或删除工作区标签。</string>
@@ -44,6 +44,9 @@
     <string name="settings_font_size">字体大小</string>
     <string name="settings_font_size_default">默认</string>
     <string name="settings_font_size_large">大</string>
+    <string name="settings_glass">玻璃材质（实验性）</string>
+    <string name="settings_glass_on">开</string>
+    <string name="settings_glass_off">关</string>
     <string name="settings_error_local">无法保存这项设置，请重试。</string>
 
     <string name="settings_account">账号</string>
@@ -74,4 +77,44 @@
     <string name="settings_licenses">开源许可</string>
     <string name="settings_licenses_intro">Comma 使用了以下第三方组件。轻点查看许可证全文。</string>
     <string name="settings_licenses_commercial">商业授权</string>
+    <string name="settings_delete_account">删除账号</string>
+    <string name="settings_delete_account_message">确认后所有设备会立即退出登录，账号在 7 天后永久删除：你的任务、对话、文件和剩余 credits 将无法再访问，已连接的渠道会断开，删除后无法恢复。7 天内用这个邮箱重新登录即可撤销删除。我们会向 %1$s 发送验证码来确认。</string>
+    <string name="settings_delete_account_send_code">发送验证码</string>
+    <string name="settings_delete_account_code_message">输入我们发送到 %1$s 的 6 位验证码。确认后会立即退出登录，账号在 7 天后删除。</string>
+    <string name="settings_delete_account_code">验证码</string>
+    <string name="settings_delete_account_confirm">确认删除</string>
+    <string name="settings_delete_account_invalid_code">验证码不正确或已过期。</string>
+    <string name="settings_delete_account_subscription_title">请先取消订阅</string>
+    <string name="settings_delete_account_subscription_message">你的订阅还会自动续费。请先在网页版或 Mac 上 Comma 的「用量与账单」里关闭续费，再删除账号。</string>
+    <string name="settings_delete_account_failed">账号删除失败，请重试。</string>
+    <string name="settings_delete_account_rate_limited">验证码请求太频繁，请稍等一分钟再试。</string>
+    <string name="settings_ok">好</string>
+    <string name="settings_section_accounts">其他账号</string>
+    <string name="settings_switch_account">切换到此账号</string>
+    <string name="settings_sign_out_account">退出此账号</string>
+    <string name="settings_add_account">添加账号</string>
+    <string name="settings_add_account_failed">无法添加账号，请重试。</string>
+    <string name="settings_switch_account_failed">无法切换账号，请重试。</string>
+    <string name="settings_sign_out_account_failed">无法退出该账号，请重试。</string>
+    <string name="settings_change_email">更换邮箱</string>
+    <string name="settings_change_email_message">你的账号、工作区、任务和文件都保持不变，只更换登录用的邮箱。我们会先向 %1$s 发送验证码。如果你已无法查看该邮箱，请联系 support@comma.surf。</string>
+    <string name="settings_change_email_send_code">发送验证码</string>
+    <string name="settings_change_email_current_code_message">输入我们发送到 %1$s 的 6 位验证码。</string>
+    <string name="settings_change_email_code">验证码</string>
+    <string name="settings_change_email_continue">继续</string>
+    <string name="settings_change_email_new_email">新邮箱</string>
+    <string name="settings_change_email_new_email_message">输入新邮箱，我们会向它发送验证码。</string>
+    <string name="settings_change_email_new_code_message">输入我们发送到 %1$s 的 6 位验证码。确认后立即更换邮箱。</string>
+    <string name="settings_change_email_invalid_code">验证码不正确或已过期。</string>
+    <string name="settings_change_email_invalid_email">请输入有效的邮箱地址。</string>
+    <string name="settings_change_email_same_email">这已经是你的邮箱。</string>
+    <string name="settings_change_email_taken">另一个 Comma 账号正在使用这个邮箱。请换一个邮箱，或先登录该账号并删除它（删除在 7 天后完成）。</string>
+    <string name="settings_change_email_pending_deletion">使用这个邮箱的账号正在等待删除，%1$s 之后才能换绑。用这个邮箱登录可以撤销删除。</string>
+    <string name="settings_change_email_changed">你的邮箱在此期间已更换，请重新开始。</string>
+    <string name="settings_change_email_rate_limited">验证码请求太频繁，请稍等一分钟再试。</string>
+    <string name="settings_change_email_failed">邮箱更换失败，请重试。</string>
+    <string name="settings_danger_zone">危险操作</string>
+    <string name="settings_delete_account_continue">继续</string>
+    <string name="settings_delete_account_type_email">账号邮箱</string>
+    <string name="settings_delete_account_type_email_message">请输入你的账号邮箱以确认：%1$s</string>
 </resources>

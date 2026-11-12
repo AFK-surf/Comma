@@ -104,6 +104,55 @@ describe("CommaApp", () => {
     vi.unstubAllGlobals();
   });
 
+  it("launches the saved default view once and still lets the user navigate Home", async () => {
+    seedCommaSession();
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({ ...defaultCommaClientSettings, defaultHomeView: "tasks" })
+    );
+    renderCommaApp();
+    await settle();
+    expect(window.location.hash).toBe("#/tasks");
+    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    await user.click(screen.getByRole("link", { name: "Home" }));
+    await settle();
+    expect(window.location.hash).toBe("#/");
+    expect(screen.getByTestId("home-responsive-layout")).toBeVisible();
+  });
+
+  it("keeps a guest Session on Home when another default home view is saved", async () => {
+    seedCommaSession(guestUser);
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({ ...defaultCommaClientSettings, defaultHomeView: "tasks" })
+    );
+    renderCommaApp();
+    await settle();
+    // A guest has no Tasks: the saved view returns to its Router chat.
+    expect(window.location.hash).toBe("#/");
+    expect(screen.getByTestId("comma-guest-banner")).toBeVisible();
+    expect(screen.getByTestId("home-responsive-layout")).toBeVisible();
+  });
+
+  it("preserves an explicit destination when another default home view is saved", async () => {
+    seedCommaSession();
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({ ...defaultCommaClientSettings, defaultHomeView: "tasks" })
+    );
+    window.location.hash = "#/inbox";
+    renderCommaApp();
+    await settle();
+    expect(window.location.hash).toBe("#/inbox");
+    expect(screen.getByRole("link", { name: "Inbox" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+  });
+
   it("renders passwordless login before the app shell", async () => {
     renderCommaApp();
     await settle();
@@ -371,7 +420,8 @@ describe("CommaApp", () => {
     renderCommaApp();
     await settle();
 
-    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     await settle();
     await user.click(screen.getByRole("button", { name: "Profile" }));
     await settle();
@@ -406,7 +456,8 @@ describe("CommaApp", () => {
     renderCommaApp();
     await settle();
 
-    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     await settle();
     await user.click(screen.getByRole("button", { name: "Profile" }));
     await settle();
@@ -546,6 +597,10 @@ describe("CommaApp", () => {
 
   it("opens and sends to the workspace named by a Quick Chat Home link", async () => {
     seedCommaSession();
+    localStorage.setItem(
+      commaClientSettingsStorageKey,
+      JSON.stringify({ ...defaultCommaClientSettings, defaultHomeView: "tasks" })
+    );
     scriptChat(app);
     const requested: unknown[] = [];
     app.topic("workspaceChat", (topic) => {
@@ -1174,6 +1229,118 @@ describe("CommaApp", () => {
     expect(window.location.hash).toBe("#/tasks/wsp-search/grp-search/cnv-search");
   });
 
+  it("opens a content hit's Task at the matched Message and steps through the Task's matches", async () => {
+    seedCommaSession();
+    scriptChat(app);
+    const contexts: string[] = [];
+    app.answer("chat.messageContext", ({ messageId }: { messageId: string }) => {
+      contexts.push(messageId);
+      return [];
+    });
+    app.answer("search.taskMessages", () => ({
+      status: "ready",
+      messageIds: ["msg-older", "msg-archive"],
+    }));
+    scriptTaskSearch({
+      archive: {
+        status: "ready",
+        scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+        results: [
+          {
+            content_match: {
+              highlights: [{ start: 12, end: 19 }],
+              message_id: "msg-archive",
+              snippet: "Prepare the archive rollout",
+            },
+            conversation_id: "cnv-search",
+            highlights: [{ start: 0, end: 7 }],
+            matched_field: "title",
+            snippet: "Archive checklist",
+            title: "Archive checklist",
+          },
+        ],
+      },
+    });
+    renderCommaApp();
+    await settle();
+
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
+    await user.type(screen.getByRole("combobox", { name: "Search Comma" }), "archive");
+    await settle();
+    await user.keyboard("{Enter}");
+    await settle();
+
+    // The transcript holds no such Message, so it reads the Messages around it.
+    expect(contexts).toEqual(["msg-archive"]);
+    expect(window.location.hash).toBe(
+      "#/tasks/wsp-search/grp-search/cnv-search?message=msg-archive&q=archive"
+    );
+    expect(app.sentTo("search.taskMessages")).toEqual([
+      { query: "archive", group: "grp-search", conversation: "cnv-search" },
+    ]);
+    expect(screen.getByTestId("task-find-position")).toHaveTextContent("2 / 2");
+
+    await user.click(screen.getByRole("button", { name: "Previous match" }));
+    await settle();
+    expect(contexts).toEqual(["msg-archive", "msg-older"]);
+    expect(screen.getByTestId("task-find-position")).toHaveTextContent("1 / 2");
+    expect(screen.getByRole("button", { name: "Previous match" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Close search" }));
+    await settle();
+    expect(screen.queryByTestId("task-find")).not.toBeInTheDocument();
+    expect(window.location.hash).toBe("#/tasks/wsp-search/grp-search/cnv-search");
+  });
+
+  it("finds Task files by name and opens one beside its Task", async () => {
+    seedCommaSession();
+    scriptTaskSearch({ report: { status: "ready", scope: null, results: [] } });
+    app.answer("search.taskFiles", ({ query }: { query: string }) => ({
+      status: "ready",
+      scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+      files:
+        query === "report"
+          ? [
+              {
+                conversation_id: "cnv-files",
+                task_title: "Quarterly numbers",
+                message_id: "msg-files",
+                seq: 4,
+                index: 1,
+                type: "file",
+                file_name: "Q3 report.pdf",
+                mime_type: "application/pdf",
+                size: 2_048,
+                created_at: 2,
+              },
+            ]
+          : [],
+    }));
+    renderCommaApp();
+    await settle();
+
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
+    await user.type(screen.getByRole("combobox", { name: "Search Comma" }), "report");
+    await settle();
+
+    const found = screen.getByRole("option", { name: /Q3 report\.pdf/ });
+    expect(found).toHaveTextContent("Quarterly numbers");
+    expect(found.querySelector("mark")).toHaveTextContent("report");
+    expect(screen.getByRole("group", { name: "Files" })).toContainElement(found);
+    await user.click(found);
+    await settle();
+
+    expect(window.location.hash).toBe("#/tasks/wsp-search/grp-search/cnv-files");
+    // The file opens beside its Task, in the Chat Sidebar's file preview.
+    const chatSidebar = screen.getByTestId("chat-sidebar");
+    expect(chatSidebar).toHaveAttribute("data-open", "true");
+    expect(
+      within(chatSidebar).getByRole("tab", { name: /Q3 report\.pdf/ })
+    ).toBeVisible();
+  });
+
   it("shows the first content match as a subtitle when the title also matches", async () => {
     seedCommaSession();
     const title = "调研 Cursor 并制作网页";
@@ -1337,12 +1504,14 @@ describe("CommaApp", () => {
     const windowBar = screen.getByTestId("comma-window-bar");
     const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     const content = screen.getByRole("region", { name: "Content" });
-    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    const settingsButton = screen.getByRole("button", { name: "Account" });
     expect(sidebar).toContainElement(settingsButton);
     expect(settingsButton).not.toHaveAttribute("aria-current");
     expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
 
+    // The account's item opens its menu; Settings is its first item.
     await user.click(settingsButton);
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     await settle();
 
     expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
@@ -1826,11 +1995,11 @@ describe("CommaApp", () => {
     ).toBeNull();
     expect(screen.queryByRole("link", { name: "Search" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Comma assistant" })).toBeNull();
-    // The profile avatar opens Settings from the foot of the rail, outside
-    // primary navigation.
-    const settingsButton = within(sidebar).getByRole("button", { name: "Settings" });
+    // The profile avatar opens the account's menu (Settings among it) from the
+    // foot of the rail, outside primary navigation.
+    const settingsButton = within(sidebar).getByRole("button", { name: "Account" });
     expect(nav).not.toContainElement(settingsButton);
-    // Settings opens a modal, so its item is a button with no location of its own.
+    // It opens a menu, so its item is a button with no location of its own.
     expect(settingsButton).not.toHaveAttribute("href");
     expect(settingsButton).toHaveAttribute("data-slot", "left-rail-item");
     expect(settingsButton).toHaveClass("comma-sidebar-link");
@@ -2165,6 +2334,12 @@ function createAppCore() {
     refused("sign_in_with_google", "provider_unavailable", "retry_operation")
   );
   script.answer("session.guest.availability", () => false);
+  // The command palette finds no Task files until a test says otherwise.
+  script.answer("search.taskFiles", () => ({
+    status: "ready",
+    scope: null,
+    files: [],
+  }));
   // Home's workspace chat is still being found.
   script.answer("chat.resolveWorkspaceChat", () => new Promise(() => undefined));
   script.answer("session.reconcile", () => ({ ok: true, value: lifecycle }));

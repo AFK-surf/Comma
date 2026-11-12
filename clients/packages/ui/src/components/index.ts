@@ -290,6 +290,7 @@ export {
 export type {
   TaskFilterOption,
   TaskFilterSection,
+  TaskFilterSectionGroup,
   TaskStatusBucket,
   TaskStatusCounts,
   TaskSummaryViewModel,
@@ -425,7 +426,9 @@ export {
   MediaVolumeControl,
   resolveMediaFullWindowShortcut,
   ChatPanelFile,
+  ChatPanelFileApplicationItems,
   ChatPanelFileOpenInMenu,
+  useChatPanelFileOpenIn,
   ChatPanelImage,
   ChatPanelImageGroup,
   ChatPanelMessageItem,
@@ -460,6 +463,8 @@ export type {
   MediaVolumeControlLabels,
   MediaVolumeControlProps,
 } from "./chat-panel";
+export { FileTypeIcon, resolveFileType } from "./file-type-icon";
+export type { FileTypeIconProps } from "./file-type-icon";
 export {
   createMarkdownStreamDocumentNodes,
   MarkdownStream,
@@ -652,6 +657,7 @@ export {
   ArchiveIcon,
   InboxDeleteIcon,
   InboxMarkUnreadIcon,
+  InviteIcon,
   ArrowTopBottomIcon,
   BranchIcon,
   CloudSimpleUploadIcon,

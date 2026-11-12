@@ -4,8 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  sessionExpectation,
   sessionProductLease,
   type SessionLifecycleSnapshot,
+  type TerminalSessionSnapshot,
 } from "@comma/session-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -319,6 +321,129 @@ describe("MainSessionHost", () => {
       });
       expect(core.log()).not.toContain("issued_secret");
       expect(JSON.stringify(verified)).not.toContain("issued_secret");
+    } finally {
+      core.close();
+      await host.close();
+    }
+  });
+
+  it("keeps another account signed in on disk and switches to it, the bearers never reaching the core", async () => {
+    const store = await openStore();
+    await store.setSession(storedCredential());
+    const second = {
+      ...currentSession(),
+      session_id: "session-2",
+      user: { ...currentSession().user, id: "user-2" },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      const bearer = new Headers(init?.headers).get("authorization");
+      if (path === "/v1/comma/auth/session")
+        return bearer === "Bearer main_secret"
+          ? jsonResponse(currentSession())
+          : bearer === "Bearer second_secret"
+            ? jsonResponse(second)
+            : jsonResponse({ error: "unauthorized" }, 401);
+      if (path === "/v1/comma/auth/email/login")
+        return jsonResponse({ challenge_id: "challenge-1" });
+      if (path === "/v1/comma/auth/email/verify")
+        return jsonResponse({ ...second, token: "second_secret" });
+      return jsonResponse({ error: "not_found" }, 404);
+    });
+    // The core restores user-1 and the server confirms it.
+    const confirmed = Promise.withResolvers<void>();
+    const host = createHost(store, fetchMock, (snapshot) => {
+      if (snapshot.phase === "signed_in" && fetchMock.mock.calls.length > 0)
+        confirmed.resolve();
+    });
+    const core = startInProcessCore(host);
+    try {
+      await confirmed.promise;
+      expect(host.state()).toMatchObject({ phase: "signed_in" });
+      const added = (await core.client.call("session.addAccount", {
+        expected: sessionExpectation(host.state() as TerminalSessionSnapshot),
+      })) as { ok: true; value: SessionLifecycleSnapshot };
+      expect(added).toMatchObject({ ok: true, value: { phase: "signed_out" } });
+      const requested = (await core.client.call("session.email.request", {
+        email: "peng@example.com",
+        expected: sessionExpectation(added.value as TerminalSessionSnapshot),
+      })) as { ok: true; value: { attempt: unknown; challengeId: string } };
+      await core.client.call("session.email.verify", {
+        attempt: requested.value.attempt,
+        challengeId: requested.value.challengeId,
+        code: "123456",
+      });
+      expect(host.state()).toMatchObject({ principal: { userId: "user-2" } });
+
+      // Both accounts are kept on disk: a store opened again from the file finds them.
+      const reopened = await openStore();
+      expect(reopened.getVaultSnapshot()).toMatchObject({
+        active: { token: "second_secret" },
+        kept: [{ token: "main_secret", userId: "user-1" }],
+      });
+
+      const switched = await core.client.call("session.switchAccount", {
+        userId: "user-1",
+      });
+      expect(switched).toMatchObject({ ok: true, value: { phase: "signed_in" } });
+      const lease = sessionProductLease(host.state())!;
+      expect(lease.sessionId).toBe("session-1");
+      expect(
+        host.acquireProductCredential({
+          authorityInstanceId: lease.authorityInstanceId,
+          expectedAudience: lease.audience,
+          expectedSessionId: lease.sessionId,
+          generation: lease.generation,
+        })
+      ).toMatchObject({ token: "main_secret" });
+      expect(store.getVaultSnapshot()).toMatchObject({
+        active: { token: "main_secret" },
+        kept: [{ token: "second_secret", userId: "user-2" }],
+        pendingRevocations: [],
+      });
+      expect(core.log()).not.toContain("main_secret");
+      expect(core.log()).not.toContain("second_secret");
+    } finally {
+      core.close();
+      await host.close();
+    }
+  });
+
+  it("settles startup past a startup seed's placeholder user, on the server's answer", async () => {
+    const store = await openStore();
+    await store.setSession({
+      ...storedCredential(),
+      sessionId: "startup-session:peng@example.com",
+      userId: "startup-user:peng@example.com",
+    });
+    const answer = Promise.withResolvers<Response>();
+    const checked = Promise.withResolvers<void>();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(new URL(String(input)).pathname).toBe("/v1/comma/auth/session");
+      checked.resolve();
+      return answer.promise;
+    });
+    const host = createHost(store, fetchMock);
+    const core = startInProcessCore(host);
+    try {
+      let settled = false;
+      const startup = host.settled(15_000, "startup-user:peng@example.com").then(() => {
+        settled = true;
+      });
+      // The core restores the seed, as the placeholder, before it asks the server.
+      await checked.promise;
+      expect(host.state()).toMatchObject({
+        phase: "signed_in",
+        principal: { userId: "startup-user:peng@example.com" },
+      });
+      expect(settled).toBe(false);
+
+      answer.resolve(jsonResponse(currentSession()));
+      await startup;
+      expect(host.state()).toMatchObject({
+        phase: "signed_in",
+        principal: { userId: "user-1" },
+      });
     } finally {
       core.close();
       await host.close();

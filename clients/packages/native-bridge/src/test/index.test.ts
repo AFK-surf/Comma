@@ -407,6 +407,39 @@ describe("browser sidebar capability leaves", () => {
     expect(browserSidebarUpdateInputSchema.safeParse({}).success).toBe(false);
   });
 
+  it("takes corner radii in whole pixels, only with the bounds they shape", () => {
+    const bounds = { height: 720, width: 420, x: 860, y: 0 };
+    const cornerRadii = { bottomLeft: 0, bottomRight: 11, topLeft: 0, topRight: 0 };
+    const sessionId = "workspace-1:conversation-1";
+
+    expect(
+      browserSidebarUpdateInputSchema.parse({ bounds, cornerRadii, sessionId })
+    ).toEqual({ bounds, cornerRadii, sessionId });
+    expect(
+      browserSidebarUpdateInputSchema.safeParse({
+        cornerRadii,
+        sessionId,
+        visible: true,
+      }).success
+    ).toBe(false);
+    expect(
+      browserSidebarOpenInputSchema.safeParse({
+        bounds,
+        cornerRadii: { ...cornerRadii, bottomRight: 11.5 },
+        sessionId,
+        url: "https://example.com",
+      }).success
+    ).toBe(false);
+    expect(
+      browserSidebarOpenInputSchema.safeParse({
+        bounds,
+        cornerRadii: { ...cornerRadii, topLeft: -1 },
+        sessionId,
+        url: "https://example.com",
+      }).success
+    ).toBe(false);
+  });
+
   it("bounds exact close-before-open victims and rejects ambiguous fences", () => {
     const input = {
       bounds: { height: 720, width: 420, x: 860, y: 0 },
@@ -638,6 +671,7 @@ describe("native bridge contracts", () => {
       "appPreferences.state.changed",
       "connectorRuntime.state.changed",
       "macApps.state.changed",
+      "blender.state.changed",
       "browserSidebar.changed",
       "browserSidebar.openTabRequested",
       "surfaces.changed",
@@ -650,10 +684,12 @@ describe("native bridge contracts", () => {
       "messageNotifications.event",
       "computeNode.state.changed",
       "audioCapture.state.changed",
+      "audioCapture.transcriptionFailed",
       "voiceCall.audio",
       "meetingPresence.state.changed",
       "surfaces.windowResizeSettled",
       "airDrop.state.changed",
+      "nearby.state.changed",
     ]);
     expect(generatedNativeEventManifest).toEqual([
       {
@@ -684,6 +720,12 @@ describe("native bridge contracts", () => {
         channel: "comma:mac-apps:state-changed",
         id: "macApps.state.changed",
         permission: "mac-apps.read",
+        target: { type: "all" },
+      },
+      {
+        channel: "comma:blender:state-changed",
+        id: "blender.state.changed",
+        permission: "blender.read",
         target: { type: "all" },
       },
       {
@@ -759,6 +801,12 @@ describe("native bridge contracts", () => {
         target: { type: "all" },
       },
       {
+        channel: "comma:audio-capture:transcription-failed",
+        id: "audioCapture.transcriptionFailed",
+        permission: "audio-capture.read",
+        target: { type: "window", windowId: "win_main" },
+      },
+      {
         channel: "comma:voice-call:audio",
         id: "voiceCall.audio",
         permission: "voice-call.audio",
@@ -779,6 +827,12 @@ describe("native bridge contracts", () => {
       {
         channel: "comma:airdrop:state-changed",
         id: "airDrop.state.changed",
+        permission: "airdrop.read",
+        target: { type: "all" },
+      },
+      {
+        channel: "comma:nearby:state-changed",
+        id: "nearby.state.changed",
         permission: "airdrop.read",
         target: { type: "all" },
       },
@@ -819,6 +873,7 @@ describe("native bridge contracts", () => {
       "appPreferences.state",
       "connectorRuntime.state",
       "macApps.state",
+      "blender.state",
       "surfaces.state",
       "surfaces.windowFullScreen",
       "surfaces.windowMaximized",
@@ -828,6 +883,7 @@ describe("native bridge contracts", () => {
       "audioCapture.state",
       "meetingPresence.state",
       "airDrop.state",
+      "nearby.state",
     ]);
     expect(generatedNativeStateManifest).toEqual([
       {
@@ -899,6 +955,24 @@ describe("native bridge contracts", () => {
           channel: "comma:mac-apps:state-changed",
           id: "macApps.state.changed",
           permission: "mac-apps.read",
+          target: { type: "all" },
+        },
+      },
+      {
+        bridge: { method: "state", namespace: "blender" },
+        get: {
+          channel: "comma:blender:state",
+          id: "blender.state",
+          permission: "blender.read",
+          sessionAdmission: "local_only",
+          sessionAdmissionRationale:
+            "Reads where Blender is installed on this computer and which Blender windows are connected; no credentials or authenticated transport.",
+        },
+        id: "blender.state",
+        subscribe: {
+          channel: "comma:blender:state-changed",
+          id: "blender.state.changed",
+          permission: "blender.read",
           target: { type: "all" },
         },
       },
@@ -1059,6 +1133,24 @@ describe("native bridge contracts", () => {
         subscribe: {
           channel: "comma:airdrop:state-changed",
           id: "airDrop.state.changed",
+          permission: "airdrop.read",
+          target: { type: "all" },
+        },
+      },
+      {
+        bridge: { method: "state", namespace: "nearby" },
+        get: {
+          channel: "comma:nearby:state",
+          id: "nearby.state",
+          permission: "airdrop.read",
+          sessionAdmission: "local_only",
+          sessionAdmissionRationale:
+            "Reads only Main's local AirDrop scan and held offers; the core reads whose invite an offer carries.",
+        },
+        id: "nearby.state",
+        subscribe: {
+          channel: "comma:nearby:state-changed",
+          id: "nearby.state.changed",
           permission: "airdrop.read",
           target: { type: "all" },
         },

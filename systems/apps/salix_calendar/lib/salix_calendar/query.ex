@@ -153,6 +153,61 @@ defmodule SalixCalendar.Query do
 
   defp merge_field(value, _key, _additions), do: value
 
+  @doc """
+  One page of the items indexed for a range, in item id order after
+  `after_item`: at most `limit` index entries are read from each index prefix,
+  and the page ends at the `limit`-th smallest id. Returns the page's items
+  that belong to this source and the page's last id when entries remain (nil
+  at the end), so the range is read in bounded pages however many items it
+  holds.
+  """
+  def query_items_page(source, range_start_ms, range_end_ms, after_item, limit)
+      when is_integer(limit) and limit in 1..@max_page_size do
+    group_id = source["group_id"]
+    calendar_id = source["calendar_id"]
+
+    with {:ok, months} <- interval_months(range_start_ms, range_end_ms, @max_query_months),
+         prefixes =
+           [
+             Keys.ctl_calendar_query_recurring_prefix(group_id, calendar_id),
+             Keys.ctl_calendar_query_spanning_prefix(group_id, calendar_id)
+           ] ++ Enum.map(months, &Keys.ctl_calendar_query_month_prefix(group_id, calendar_id, &1)),
+         {:ok, pages} <- index_pages(prefixes, after_item, limit) do
+      ids = pages |> Enum.flat_map(&elem(&1, 0)) |> Enum.uniq() |> Enum.sort()
+      more? = Enum.any?(pages, &elem(&1, 1))
+      {page, rest} = Enum.split(ids, limit)
+
+      with {:ok, items} <- hydrate_items(source, page) do
+        next = if rest == [] and not more?, do: nil, else: List.last(page)
+        {:ok, {Enum.filter(items, &is_map/1), next}}
+      end
+    end
+  end
+
+  def query_items_page(_source, _start, _end, _after, _limit), do: {:error, :invalid_page}
+
+  defp index_pages(prefixes, after_item, limit) do
+    Enum.reduce_while(prefixes, {:ok, []}, fn prefix, {:ok, acc} ->
+      opts =
+        [max_keys: limit + 1] ++
+          if(is_binary(after_item), do: [start_after: prefix <> after_item <> ".json"], else: [])
+
+      case S3.list(prefix, opts) do
+        {:ok, %{objects: objects} = page} ->
+          with {:ok, ids} <- object_item_ids(objects) do
+            ids = Enum.sort(ids)
+            {kept, extra} = Enum.split(ids, limit)
+            {:cont, {:ok, [{kept, extra != [] or not is_nil(page[:next])} | acc]}}
+          else
+            {:error, _} = error -> {:halt, error}
+          end
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
   defp indexed_item_ids(prefixes) do
     Enum.reduce_while(prefixes, {:ok, MapSet.new()}, fn prefix, {:ok, ids} ->
       case S3.list(prefix, max_keys: @max_query_candidates + 1) do

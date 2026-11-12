@@ -13,6 +13,15 @@ export function sanitizedTokenIconElement(markup: string): Element | null {
   if (tag === "img") {
     const src = root.getAttribute("src") ?? "";
     if (!/^(?:https?:|data:image\/|blob:)/u.test(src)) return null;
+    // A bundled logo (a model vendor's) becomes a mask over the token's text
+    // color, so it reads as one glyph like the SVG ones. A cross-origin image
+    // cannot be a mask without CORS and keeps its own colors.
+    if (!/^https?:/u.test(src) || new URL(src).origin === location.origin) {
+      const glyph = document.createElement("span");
+      glyph.dataset.tokenIconMask = "";
+      glyph.style.setProperty("--comma-token-icon-mask", `url(${JSON.stringify(src)})`);
+      return glyph;
+    }
     const image = document.createElement("img");
     image.src = src;
     image.alt = "";

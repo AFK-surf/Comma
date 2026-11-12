@@ -14,11 +14,12 @@
 # Build the official proxy v2.25.4 from its pinned release commit with a patched
 # Go toolchain. This release contains the reviewed upstream dependency updates
 # for gRPC 1.83.2 and golang.org/x/crypto 0.55.0. A build module raises
-# golang.org/x/net to 0.60.0 for CVE-2026-78669; v2.26.0 still pins 0.59.0.
+# golang.org/x/net to 0.62.0 for CVE-2026-78669 and CVE-2026-78661; v2.26.0
+# still pins 0.59.0.
 FROM golang:1.26.10-trixie AS cloud-sql-proxy-builder
 
 ARG CLOUD_SQL_PROXY_VERSION=7905bdd628cd80cfb15714a7197f5bbd4a49d844
-ARG CLOUD_SQL_PROXY_X_NET_VERSION=v0.60.0
+ARG CLOUD_SQL_PROXY_X_NET_VERSION=v0.62.0
 WORKDIR /src/cloud-sql-proxy
 RUN go mod init cloud-sql-proxy-build \
     && go get \
@@ -180,7 +181,6 @@ COPY systems/apps/salix_llm/mix.exs apps/salix_llm/
 COPY systems/apps/salix_im/mix.exs apps/salix_im/
 COPY systems/apps/salix_env/mix.exs apps/salix_env/
 COPY systems/apps/salix_analytics/mix.exs apps/salix_analytics/
-COPY systems/apps/salix_migrate/mix.exs apps/salix_migrate/
 COPY systems/apps/salix_media/mix.exs apps/salix_media/
 COPY systems/apps/salix_meet/mix.exs apps/salix_meet/
 COPY systems/apps/salix_meet_native/mix.exs apps/salix_meet_native/
@@ -208,7 +208,10 @@ COPY systems/apps/salix_signal/c_src apps/salix_signal/c_src
 COPY systems/connector/mac-mini-provisioner-install.sh connector/mac-mini-provisioner-install.sh
 COPY systems/runtime-images/runtime-dependencies.lock.json runtime-images/runtime-dependencies.lock.json
 COPY systems/private private
-RUN mix deps.get --only prod && mix deps.compile
+# rustler_precompiled downloads prebuilt NIFs (mdex_native and others) from
+# GitHub releases; the builder's cache keeps them between builds.
+RUN --mount=type=cache,target=/root/.cache/rustler_precompiled,sharing=locked \
+    mix deps.get --only prod && mix deps.compile
 
 # Source + release.
 COPY systems/config config
@@ -229,7 +232,15 @@ COPY --from=bft-dashboard-builder /src/systems/apps/bridge_for_teams_web/priv/st
 # Build the bridge_for_teams dashboard assets (standalone tailwind+esbuild Hex
 # installers download their binaries here) into priv/static before the release,
 # which bundles each app's priv/. Harmless when the subsystem isn't run.
-RUN mix assets.setup && mix assets.deploy
+# The builder's cache keeps the binaries, named by version, so a rebuild does
+# not depend on GitHub release downloads.
+RUN --mount=type=cache,target=/root/.cache/comma-mix-assets,sharing=locked \
+    mkdir -p _build \
+    && find /root/.cache/comma-mix-assets -maxdepth 1 -type f -exec cp -p {} _build/ \; \
+    && mix assets.setup \
+    && cp -p _build/tailwind-* _build/esbuild-* /root/.cache/comma-mix-assets/ \
+    && mix assets.deploy
+COPY systems/rel rel
 RUN mix compile && mix release comma
 
 # ---- Stage 2: runtime ------------------------------------------------------
@@ -246,10 +257,13 @@ FROM debian:trixie-slim AS runtime
 # (salix_meet_native).
 # spinfoam (Agent background Loops) embeds its own C compiler, so the
 # runtime image carries no toolchain for it (DEPLOYMENT.md, "Background Loops").
+# The upgrade brings the base image's own packages (apt, libc6, ...) up to the
+# latest trixie-security fixes, which the base image tag can lag behind.
 ARG RUNTIME_APT_REFRESH=local
 RUN echo "${RUNTIME_APT_REFRESH}" >/dev/null \
-    && apt-get update -y && apt-get install -y --no-install-recommends \
-      libstdc++6 libssl3t64 libsodium23 libopus0 libsrtp2-1 openssl libpcre2-8-0 ca-certificates curl ffmpeg \
+    && apt-get update -y && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+      libstdc++6 libssl3t64 libsodium23 libopus0 libsrtp2-1 openssl libpcre2-8-0 ca-certificates curl ffmpeg libheif-examples libheif-plugin-libde265 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=cloud-sql-proxy-builder /out/cloud-sql-proxy /usr/local/bin/cloud-sql-proxy

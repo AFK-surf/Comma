@@ -1,6 +1,9 @@
 defmodule BridgeForTeams.Schema.DailyBriefMember do
   @moduledoc """
   A BFT user who receives the personal brief, with the Slack identity it reads for.
+
+  `dm_status` records the member's own choice about direct messages. Only `on`
+  carries the OAuth connection that reads them.
   """
 
   use Ecto.Schema
@@ -22,6 +25,8 @@ defmodule BridgeForTeams.Schema.DailyBriefMember do
     field :timezone, :string, default: "Etc/UTC"
     field :deliver_at, :time, default: ~T[09:00:00]
     field :enabled, :boolean, default: true
+    field :dm_status, :string, default: "off"
+    field :oauth_connection_id, :string
     field :brief_claimed_at, :utc_datetime_usec
     field :brief_requested_at, :utc_datetime_usec
     has_many :aliases, BridgeForTeams.Schema.DailyBriefAlias, foreign_key: :member_id
@@ -45,6 +50,13 @@ defmodule BridgeForTeams.Schema.DailyBriefMember do
     |> unique_constraint([:org_id, :slack_workspace_id, :slack_user_id],
       name: :daily_brief_members_slack_identity
     )
+  end
+
+  def dm_changeset(member, attrs) do
+    member
+    |> cast(attrs, [:dm_status, :oauth_connection_id])
+    |> validate_inclusion(:dm_status, ~w(off on))
+    |> check_constraint(:dm_status, name: :daily_brief_members_dm_status)
   end
 
   @type t :: %__MODULE__{}

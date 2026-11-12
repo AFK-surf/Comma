@@ -234,6 +234,19 @@ struct Engine::State {
       host.emit(a[0].asString(rt).utf8(rt));
       return jsi::Value::undefined();
     });
+    // A screen view's frames, straight to the app's decoder (EngineHost::screenFrame): numbers and the bytes' place in
+    // an ArrayBuffer, so a frame crosses with no JSON and no copy of its own.
+    fn("screenFrame", 8, [this](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* a, size_t n) -> jsi::Value {
+      if (n < 8 || !a[5].isObject() || !a[5].asObject(rt).isArrayBuffer(rt)) return jsi::Value::undefined();
+      jsi::ArrayBuffer b = a[5].asObject(rt).getArrayBuffer(rt);
+      size_t size = b.size(rt);
+      size_t offset = size_t(a[6].asNumber());
+      size_t length = size_t(a[7].asNumber());
+      if (offset > size || length > size - offset) return jsi::Value::undefined();
+      host.screenFrame(uint32_t(a[0].asNumber()), int(a[1].asNumber()), a[2].asNumber(), int(a[3].asNumber()),
+                       int(a[4].asNumber()), b.data(rt) + offset, length);
+      return jsi::Value::undefined();
+    });
     fn("fatal", 1, [this](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
       fatal(a[0].isString() ? a[0].asString(rt).utf8(rt) : "the core failed");
       return jsi::Value::undefined();

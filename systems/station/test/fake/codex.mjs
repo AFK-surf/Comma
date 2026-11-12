@@ -52,7 +52,7 @@ function thread(id) {
 /// Loads thread `id` with `config`'s MCP url, unless it is loaded.
 function load(id, config) {
   const t = thread(id);
-  t.mcp ??= String(config?.["mcp_servers.stillfail.url"] ?? "").includes(":1/") ? "failed" : "connected";
+  t.mcp ??= String(config?.["mcp_servers.comma-station.url"] ?? "").includes(":1/") ? "failed" : "connected";
 }
 
 /// A reply of `texts`, `gap` ms apart; `before(i)`, if given, waited for before the i-th (and before its end, at i =
@@ -153,7 +153,8 @@ function handle(msg) {
   if (method === "initialized") return;
   if (!initialized) return fail("Not initialized");
   if (method === "thread/start") {
-    const threadId = `th-${++n}`;
+    // Unique across processes, as the real one's are: a restarted app-server's first thread is not an earlier one's.
+    const threadId = `th-${process.pid}-${++n}`;
     load(threadId, params.config);
     return reply({ thread: { id: threadId } });
   }
@@ -186,7 +187,7 @@ function handle(msg) {
     thread(params.threadId).mcp = null;
     return reply({ status: "unsubscribed" });
   }
-  if (method === "mcpServerStatus/list") return reply({ data: [{ name: "stillfail", runtimeStatus: thread(params.threadId).mcp, tools: {} }], nextCursor: null });
+  if (method === "mcpServerStatus/list") return reply({ data: [{ name: "comma", runtimeStatus: thread(params.threadId).mcp, tools: {} }], nextCursor: null });
   if (method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 5 } } });
   if (method === "model/list") {
     if (!params.cursor)

@@ -53,10 +53,11 @@ defmodule BeamTestShard do
   # of systems/, the build and CI inputs of the BEAM jobs, and Storage's MinIO.
   @beam_inputs ~r{^(systems/|\.github/actions/|\.github/scripts/|\.github/workflows/systems-ci\.yml$|scripts/(checkout-pvg|synch-lock)\.sh$|selfhost/Storage\.Dockerfile$|Makefile$)}
 
+  @auth_chain_inputs ~r{^(?:clients/packages/core/src/(?:session/|testing/|(?:host|session|core|contract|record|index)\.ts$|hosts/(?:mobile|node|utility-protocol)\.ts$)|clients/packages/(?:core-kernel|session-contract)/|clients/packages/test-utils/src/setup-network\.ts$|scripts/test-network-guard\.mjs$|clients/apps/electron/src/main/modules/session/|clients/apps/electron/src/main/(?:secure-store|clock)\.ts$|clients/apps/electron/src/test-support/in-process-core\.ts$|clients/apps/electron/e2e/auth-abuse-chain|clients/scripts/local-auth-abuse-chain\.mjs$|(?:clients/|clients/apps/electron/|clients/packages/core/|clients/packages/i18n/)?package\.json$|pnpm-(?:lock\.yaml|workspace\.yaml)$|\.npmrc$|patches/)}
+
   @groups [
     {"salix-runtime-a", ~w(salix_ifc salix_store salix_agent salix_cluster)},
-    {"salix-runtime-b",
-     ~w(salix_calendar salix_env salix_media salix_im salix_analytics salix_migrate salix_llm
+    {"salix-runtime-b", ~w(salix_calendar salix_env salix_media salix_im salix_analytics salix_llm
         salix_meet salix_meet_native salix_voice salix_signal_proto salix_signal salix_mcp)},
     {"salix-web", ~w(salix_web)},
     {"product-comma",
@@ -228,13 +229,13 @@ defmodule BeamTestShard do
     chunks
   end
 
-  # The office ARM64 runners: a 2-CPU pod for up to two `mix test`
-  # processes, a 4-CPU pod for up to five, an 8-CPU pod for more. The
+  # Blacksmith runners: 2 vCPUs for up to two `mix test` processes, 4 for up
+  # to five, 8 for more. The
   # processes keep every CPU busy: on 2026-10-14 the whole suite took 4.7
   # minutes as 5 processes on 4 CPUs and 2.6 minutes as 12 on 8.
-  defp runner(partitions) when partitions <= 2, do: "pvg-linux-arm64"
-  defp runner(partitions) when partitions <= 5, do: "pvg-linux-arm64-4c"
-  defp runner(_partitions), do: "pvg-linux-arm64-8c"
+  defp runner(partitions) when partitions <= 2, do: "blacksmith-2vcpu-ubuntu-2404"
+  defp runner(partitions) when partitions <= 5, do: "blacksmith-4vcpu-ubuntu-2404"
+  defp runner(_partitions), do: "blacksmith-8vcpu-ubuntu-2404"
 
   defp tested_apps do
     @apps_dir
@@ -256,6 +257,9 @@ defmodule BeamTestShard do
             [_, app, "test/"] -> {:cont, MapSet.put(acc, app)}
             [_, app | _] -> {:cont, MapSet.union(acc, with_dependents(app))}
           end
+
+        Regex.match?(@auth_chain_inputs, path) ->
+          {:cont, MapSet.put(acc, "comma_web")}
 
         not Regex.match?(@beam_inputs, path) ->
           {:cont, acc}

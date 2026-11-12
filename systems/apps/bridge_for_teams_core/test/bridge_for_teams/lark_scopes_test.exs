@@ -8,8 +8,16 @@ defmodule BridgeForTeams.LarkScopesTest do
              Jason.decode!(LarkScopes.import_json())
 
     # A signed-in person grants the meeting, notes, Minutes and document
-    # reads, and offline_access for the refresh token.
-    assert user == LarkScopes.user_scope_ids()
+    # reads, and offline_access for the refresh token. The import declares
+    # the user scopes of the Feishu import besides.
+    assert LarkScopes.user_scope_ids() -- user == []
+    assert user == Enum.uniq(user)
+
+    feishu_user =
+      BridgeForTeams.FeishuScopes.import_payload(:combined)["scopes"]["user"] --
+        BridgeForTeams.FeishuScopes.import_payload(:sso)["scopes"]["user"]
+
+    assert feishu_user -- user == []
 
     for scope <- ~w(vc:meeting.search:read vc:note:read minutes:minutes:readonly
                     docx:document:readonly offline_access) do
@@ -18,6 +26,17 @@ defmodule BridgeForTeams.LarkScopesTest do
 
     assert tenant == Enum.uniq(tenant)
     assert tenant == LarkScopes.required_scope_ids()
+
+    # The bot joins the Lark video meetings it is invited to.
+    assert "vc:meeting.bot.join:write" in tenant
+
+    # The bot asks whether the app is available to a person who asks for a
+    # station tool; a sign-in does not.
+    assert "application:application:self_manage" in tenant
+    refute "application:application:self_manage" in user
+
+    # The bot has the scopes of a Feishu bot.
+    assert BridgeForTeams.FeishuScopes.import_payload(:bot)["scopes"]["tenant"] -- tenant == []
 
     # Messages, files, chats and the directory.
     for scope <- ~w(
@@ -43,7 +62,8 @@ defmodule BridgeForTeams.LarkScopesTest do
       docs:permission.member:delete docs:permission.setting:read
       drive:drive drive:drive:readonly drive:drive:version drive:drive:version:readonly
       drive:drive.metadata:readonly drive:drive.search:readonly
-      space:document:delete space:document:retrieve minutes:minutes.basic:read minutes:minutes.artifacts:read
+      space:document:delete space:document:retrieve bitable:app:readonly sheets:spreadsheet:readonly
+      minutes:minutes.basic:read minutes:minutes.artifacts:read
       minutes:minutes.media:export minutes:minutes.search:read minutes:minutes:readonly
       minutes:permission:apply search:docs:read
       vc:meeting.search:read vc:meeting.meetingevent:read vc:note:read vc:record:readonly
@@ -70,5 +90,46 @@ defmodule BridgeForTeams.LarkScopesTest do
 
     assert json == LarkScopes.import_json()
     assert scopes == LarkScopes.required_scope_ids()
+  end
+
+  test "the bot and a signed-in person get the daily work, without private chats or administration" do
+    tenant = LarkScopes.required_scope_ids()
+    user = LarkScopes.user_scope_ids()
+
+    # Group messages, the directory, calendars and rooms, search, Minutes and
+    # video meetings, for both identities.
+    for scope <- ~w(im:chat.members:read directory:employee:search calendar:calendar.event:create
+                    calendar:room:readonly search:message minutes:minutes vc:room:readonly) do
+      assert scope in tenant
+      assert scope in user
+    end
+
+    assert "im:message.group_msg:get_as_user" in user
+    assert "im:message.send_as_user" in user
+    assert "docs:permission.member:apply" in user
+
+    # Table reads and document edits as a person ask for their scopes only
+    # when needed: the import offers them, a default sign-in does not ask.
+    imported = Jason.decode!(LarkScopes.import_json())["scopes"]["user"]
+    on_demand = LarkScopes.on_demand_user_scopes()
+
+    for scope <- ~w(sheets:spreadsheet:readonly bitable:app:readonly docx:document
+                    docs:document.comment:create docs:document.media:upload) do
+      assert scope in on_demand
+      refute scope in user
+    end
+
+    assert (user ++ on_demand) -- imported == []
+
+    assert user == Enum.uniq(user)
+
+    # A sign-in reads no private chat; neither identity administers.
+    refute Enum.any?(user, &String.contains?(&1, "p2p"))
+
+    for scope <- ~w(directory:employee.base.is_admin:read contact:role:readonly
+                    im:chat.managers:write_only im:chat:moderation:write_only) do
+      refute scope in tenant
+      refute scope in user
+    end
   end
 end

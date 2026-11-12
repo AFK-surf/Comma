@@ -1,5 +1,5 @@
-//! stillfail-station: the native launcher of the TypeScript station (docs/station-ts-native.md §2), with the Rust
-//! station's command line (bin/stillfail, the desktop app and the installer call it).
+//! comma-station: the native launcher of the TypeScript station (docs/station-ts-native.md §2), with the Rust
+//! station's command line (bin/comma-station, the desktop app and the installer call it).
 //!
 //! `run` is the launcher's own: it holds the data directory's lock, the two listening ports and the pid that
 //! run/station.json names, and runs the station's Node process under it (run.rs), starting a new one beside it on
@@ -29,7 +29,7 @@ const NODE_IN_APP: &str = "node/bin/node";
 const NODE_IN_APP: &str = "node/node.exe";
 const MAIN_IN_APP: &str = "station/main.js";
 /// Node to run instead of the release's (tests, development).
-const NODE_VAR: &str = "STILLFAIL_NODE";
+const NODE_VAR: &str = "COMMA_STATION_NODE";
 /// The handoff this binary reads: none of the Rust station's (which is 1).
 const HANDOFF_VERSION: u32 = 2;
 /// `run`'s exit when another station runs the data directory (the desktop app reads it: apps/desktop/src/station.ts).
@@ -44,7 +44,7 @@ pub fn main_js(app: &Path) -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("usage:\n  stillfail-station run --app DIR [--port N] [--data DIR] [--with-parent]\n  stillfail-station enroll <cloud-origin> <token> [--data DIR]\n  stillfail-station status [--data DIR]\n  stillfail-station id [--data DIR]\n  stillfail-station channel [stable|beta] [--app DIR] [--data DIR]\n  stillfail-station handoff-version\n\n--data: default ~/.stillfail ($STILLFAIL_DATA, else $EMBER_DATA); ~/.ember is moved there on the first start.\nrun: --app is the release; --port the loopback port's (default 4760, a free one when it is taken); --with-parent: end when the parent does.\n${NODE_VAR}: the Node to run instead of <app>/{NODE_IN_APP}.");
+    eprintln!("usage:\n  comma-station run --app DIR [--port N] [--data DIR] [--with-parent]\n  comma-station enroll <cloud-origin> <token> [--data DIR]\n  comma-station status [--data DIR]\n  comma-station id [--data DIR]\n  comma-station channel [stable|beta] [--app DIR] [--data DIR]\n  comma-station handoff-version\n\n--data: default ~/.comma-station ($COMMA_STATION_DATA, else $EMBER_DATA); ~/.ember is moved there on the first start.\nrun: --app is the release; --port the loopback port's (default 4760, a free one when it is taken); --with-parent: end when the parent does.\n${NODE_VAR}: the Node to run instead of <app>/{NODE_IN_APP}.");
     std::process::exit(2);
 }
 
@@ -112,7 +112,7 @@ fn main() {
     }
 }
 
-/// The release this binary is in, when not given (`stillfail status` gives none): the nearest directory above it that
+/// The release this binary is in, when not given (`comma-station status` gives none): the nearest directory above it that
 /// has the station's script.
 fn app_of_this_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -131,7 +131,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("station")).unwrap();
         std::fs::create_dir_all(dir.join("mesh/target/release")).unwrap();
         std::fs::write(dir.join("station/main.js"), "").unwrap();
-        assert_eq!(super::app_above(&dir.join("mesh/target/release/stillfail-station")), Some(dir.clone()));
+        assert_eq!(super::app_above(&dir.join("mesh/target/release/comma-station")), Some(dir.clone()));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(super::app_above(std::path::Path::new("/nowhere/at/all/x")), None);
     }

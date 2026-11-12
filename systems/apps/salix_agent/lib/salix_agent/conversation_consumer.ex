@@ -4,9 +4,7 @@ defmodule SalixAgent.ConversationConsumer do
   alias SalixAgent.{
     AgentActor,
     InternalSession,
-    InternalSessionStore,
-    RetiredSessions,
-    SessionBirth
+    InternalSessionStore
   }
 
   alias SalixAgent.AgentActor.SessionDelivery
@@ -96,14 +94,16 @@ defmodule SalixAgent.ConversationConsumer do
   # admits nor rejects the message: the source is retried with the same head
   # forever and every later message of the Conversation waits behind it. A
   # slow failure (a local-file import uses its whole 60 s read lease) therefore
-  # retries only while the first quarter of that timeout lasts, so one message
-  # always settles, admitted or rejected, inside one task.
+  # retries only while the first quarter of that timeout lasts, leaving time
+  # to reject the failed input. Version conflicts remain pending for recovery.
   defp retry_deadline,
     do:
       SystemsClock.monotonic_time(:millisecond) +
         div(SalixAgent.AgentReplyTask.timeout_ms(), 4)
 
   defp admit(adapter, agent, source, binding, message, owner, runtime, {attempts, retry_until}) do
+    started = SystemsClock.monotonic_time(:millisecond)
+
     result =
       safe_admission(fn ->
         with {:ok, current} <- adapter.binding(agent, source),
@@ -115,6 +115,26 @@ defmodule SalixAgent.ConversationConsumer do
           {:ok, entry}
         end
       end)
+
+    fields =
+      SalixAgent.DeliveryTelemetry.identity(
+        agent,
+        binding.session_id,
+        message["source_message_id"]
+      )
+      |> Map.merge(%{
+        attempt: 4 - attempts,
+        conversation_seq: message["seq"],
+        queue_age_ms: message_age(message),
+        error_class: failure_class(result)
+      })
+
+    SalixAgent.DeliveryTelemetry.emit(
+      :admission_attempt,
+      admission_outcome(result),
+      SystemsClock.monotonic_time(:millisecond) - started,
+      fields
+    )
 
     case result do
       {:ok, _} ->
@@ -137,7 +157,7 @@ defmodule SalixAgent.ConversationConsumer do
         result
 
       {:error, _, false} ->
-        reject(adapter, agent, binding, message, result, owner, runtime)
+        reject(adapter, agent, binding, message, result, owner, runtime, fields)
 
       _ ->
         if attempts > 1 and SystemsClock.monotonic_time(:millisecond) < retry_until do
@@ -145,10 +165,32 @@ defmodule SalixAgent.ConversationConsumer do
           retry = {attempts - 1, retry_until}
           admit(adapter, agent, source, binding, message, owner, runtime, retry)
         else
-          reject(adapter, agent, binding, message, result, owner, runtime)
+          case result do
+            # A version conflict is not a failed input. Leave its frontier
+            # unchanged so the next drain can retry with a fresh revision.
+            {:error, {:stale_revision, _}} ->
+              SalixAgent.DeliveryTelemetry.emit(:retry_exhausted, :stale_revision, 0, fields)
+              result
+
+            _ ->
+              reject(adapter, agent, binding, message, result, owner, runtime, fields)
+          end
         end
     end
   end
+
+  defp message_age(%{"created_at" => at}) when is_integer(at),
+    do: max(SystemsClock.system_time(:millisecond) - at, 0)
+
+  defp message_age(_), do: nil
+
+  defp admission_outcome({:ok, _}), do: :ok
+  defp admission_outcome({:error, {:stale_revision, _}}), do: :stale_revision
+  defp admission_outcome({:error, :source_busy}), do: :source_busy
+  defp admission_outcome({:error, :saturated}), do: :saturated
+  defp admission_outcome({:error, :conversation_source_retired}), do: :retired
+  defp admission_outcome({:error, {:agent_owner_remote, _}}), do: :remote
+  defp admission_outcome(_), do: :error
 
   defp retire_source(adapter, binding) do
     with :ok <- adapter.retire(binding), do: {:error, :conversation_source_retired}
@@ -162,10 +204,32 @@ defmodule SalixAgent.ConversationConsumer do
     :exit, reason -> {:error, {:input_exit, reason}}
   end
 
-  defp reject(adapter, agent, binding, message, reason, owner, runtime) do
-    with {:ok, entry} <- adapter.reject(binding, message, reason),
-         :ok <- wake(agent, stage(agent, entry, owner, binding, runtime)),
-         do: {:ok, entry}
+  defp failure_class({:ok, _}), do: nil
+  defp failure_class(false), do: "binding_changed"
+  defp failure_class(result), do: SalixAgent.DeliveryTelemetry.error_class(result)
+
+  # A failed input is recorded as rejected so later messages proceed. When
+  # that record cannot be staged either, the source retries this message
+  # forever; the diagnostic names the class of both failures.
+  defp reject(adapter, agent, binding, message, reason, owner, runtime, fields) do
+    result =
+      with {:ok, entry} <- adapter.reject(binding, message, reason),
+           :ok <- wake(agent, stage(agent, entry, owner, binding, runtime)),
+           do: {:ok, entry}
+
+    with {:ok, _} <- result do
+      result
+    else
+      _ ->
+        SalixAgent.DeliveryTelemetry.emit(
+          :retry_exhausted,
+          :error,
+          0,
+          Map.put(fields, :error_class, "reject:" <> (failure_class(result) || "unknown"))
+        )
+
+        result
+    end
   end
 
   defp current_progress(agent, binding, cached, owner, source) do
@@ -236,14 +300,20 @@ defmodule SalixAgent.ConversationConsumer do
     entry = Map.put(entry, :activate_on_admission, true)
 
     result =
-      if binding.agent["role"] == "router" and runtime == :internal do
-        SessionDelivery.stage(agent_id, entry, router_owner: owner)
-      else
-        case AgentActor.stage_delivery(agent_id, entry) do
-          {:ok, :committed, _targets} -> {:ok, :committed, []}
-          result -> result
+      SystemsObservability.Trace.with_span(
+        :salix_conversation_admission,
+        %{component: "salix_agent", surface: "salix"},
+        fn ->
+          if binding.agent["role"] == "router" and runtime == :internal do
+            SessionDelivery.stage(agent_id, entry, router_owner: owner)
+          else
+            case AgentActor.stage_delivery(agent_id, entry) do
+              {:ok, :committed, _targets} -> {:ok, :committed, []}
+              result -> result
+            end
+          end
         end
-      end
+      )
 
     Salix.Telemetry.emit_operation(
       "salix_agent",
@@ -260,12 +330,17 @@ defmodule SalixAgent.ConversationConsumer do
   end
 
   def progress(agent_id, session_id) do
-    case InternalSessionStore.read(agent_id, session_id) do
-      {:ok, session} ->
-        {:ok, InternalSession.conversation_sources(session), :internal}
+    case InternalSessionStore.with_session(agent_id, session_id, fn session ->
+           {:ok, InternalSession.conversation_sources(session), :internal}
+         end) do
+      {:ok, _sources, :internal} = progress ->
+        progress
 
       {:error, :not_found} ->
         missing_session_progress(agent_id, session_id)
+
+      {:error, :session_read_only} ->
+        {:error, :conversation_source_retired}
 
       error ->
         error
@@ -275,34 +350,26 @@ defmodule SalixAgent.ConversationConsumer do
   # Missing internal state does not make a retired Session writable.
   # Recovery uses this result too, so it must not wait for an impossible frontier.
   defp missing_session_progress(agent_id, session_id) do
-    case RetiredSessions.probe(agent_id, session_id) do
-      :present ->
-        {:error, :conversation_source_retired}
-
-      :absent ->
-        case SessionBirth.side(agent_id, session_id) do
-          {:ok, :retired} -> {:error, :conversation_source_retired}
-          {:ok, :internal} -> {:ok, %{}, :new}
-          {:error, :not_found} -> {:ok, %{}, :new}
-          error -> error
-        end
-
-      {:error, _} = error ->
-        error
+    case InternalSessionStore.birth(agent_id, session_id) do
+      {:ok, kind} when kind in [:retired, :deleted] -> {:error, :conversation_source_retired}
+      {:ok, kind} when kind in [:new, :internal] -> {:ok, %{}, :new}
+      error -> error
     end
   end
 
   def reset_source(agent_id, old_session_id, new_session_id) do
     # Rotation copies internal frontiers. Retired history has no such frontier
     # and must not prevent an explicit switch to a fresh Session identity.
-    case InternalSessionStore.read(agent_id, old_session_id) do
-      {:ok, session} ->
-        {:ok,
-         Map.new(InternalSession.conversation_sources(session), fn {key, source} ->
-           {key, Map.put(source, "generation", new_session_id)}
-         end)}
+    case InternalSessionStore.with_session(agent_id, old_session_id, fn session ->
+           {:ok,
+            Map.new(InternalSession.conversation_sources(session), fn {key, source} ->
+              {key, Map.put(source, "generation", new_session_id)}
+            end)}
+         end) do
+      {:ok, _sources} = sources ->
+        sources
 
-      {:error, :not_found} ->
+      {:error, reason} when reason in [:not_found, :session_read_only] ->
         {:ok, %{}}
 
       error ->

@@ -20,19 +20,21 @@ Use [Conversations](salix/conversation-owner-actor.md) and [Tasks](salix/tasks-b
 
 ## Files and navigation
 
-Opening a file, previewing content, and sharing an attachment are different operations.
-File cards keep preview and Open in actions. Download is in the preview sidebar, not a separate card button.
-Download eligibility does not guarantee remote file availability.
-An Agent's attachment downloads at any size. The endpoint streams the stored blob, whole or one byte range, and holds no file in memory.
-An audio or video attachment plays, and an attachment downloads, from its [media URL](identity-security.md#attachment-media-urls), so its bytes do not pass through Comma.
-The desktop app reads that URL through Main in the ranges a player asks for. It saves a chat file into Downloads as the file arrives, and Copy copies that saved file.
-The web reads the media URL directly.
-A preview reads only what it shows: an image streams, a PDF loads in ranges, and a text file reads its first 256 KB.
-Add to Context on an attachment stores the same blob as a composer file in the Router VFS, so no bytes go through the client.
-The phone apps download an attachment to the device before they open it, and upload a picked file from disk as they read it.
-A source path is not permission to disclose its content or a provider-accessible URL.
-Use the owner-backed file/capability path and handle unavailable content explicitly.
-Drive mentions and catalogs keep current source scope and bounded lookup. No full resource scan runs on each interaction.
+File cards separate Preview and Open in. Download lives in the preview sidebar.
+Eligibility does not guarantee availability. Attachments stream at any size without whole-file buffering.
+Audio/video playback and attachment downloads use [media URLs](identity-security.md#attachment-media-urls), bypassing Comma's byte path.
+Desktop Main reads playback ranges, streams downloads to disk, and copies saved files. Web reads media URLs directly.
+Previews stream images, range-read PDFs, and read the first 256 KB of text.
+Focused PDFs accept ←/→ and Page Up/Down, except with modifiers or in editors. Single-page PDFs leave keys alone. HTML has no deck protocol.
+Text/Markdown previews take highlighted annotations in an editable list.
+Notes use window sessionStorage per Workspace/Group/Conversation/attachment: 100 notes, 4,000 chars per quote/comment.
+Send gives Router/Worker preview quotes with context as a message, or a text file above 16,000 chars.
+It keeps composer drafts. Local edits leave sent messages unchanged. No PDF/HTML/region annotations yet.
+
+Add to Context reuses the attachment blob as a Router VFS composer file without client byte transfer.
+Phone apps download before opening and stream uploads from disk.
+Paths grant no disclosure or provider access. Use owner-backed file/capability paths and report unavailable content.
+Drive mentions/catalogs retain source scope and bounded lookup, without full scans.
 
 Drive's System Files show the owner the Router's `/memory`, `/imports`, `/Comma`, skills, and instructions.
 Only `memory.write` paths, any episode date included, and the instructions are editable.
@@ -61,11 +63,11 @@ Triage selects one Worker, which decides whether and how to participate.
 Personal meeting preparation separates shared public research from each recipient's private context.
 The BFT daily brief sets no token budget: one model call writes the team brief each day, and one writes each member's; each run records its tokens.
 The team brief is written from the human messages since the last one in the bot's public channels, and the brief before it: the bottom line, then at most three things the team must know today, each with state and owner. An admin picks the public channel it is posted to (none: not posted) and the time, 10:20 by default, on workdays where most members are; it names people only where it matters, and only if the organization shows names (pings 3 people at most).
-Each member's brief is written from their messages since their last brief, the team brief, and their last brief, so the two tell team news the same way and it says what moved. Its parts follow the day's content: the bottom line first, then what needs them, what moved since last time, their own activity, team news that touches them, and what they can skip.
+Each member's brief is written from their messages since their last brief and their main channels' talk, the team brief, and their last brief: the main line in one sentence, a section per topic, then what needs them, what moved, related work, and what to skip.
 A thread that continued comes with its first message as context.
 A link in it is a cited message or a URL from the messages; other links are removed, and keys and tokens of known formats keep only their prefix.
-Briefs read only the bot's public channels, never direct messages.
-In Slack, a member can ask the Swarm's bot to move their own brief, and an owner or admin the team brief (`daily_brief.set_time`, the requester from the signed message).
+Briefs read the bot's public channels; a member may let their own brief read their direct messages with a read-only Slack grant (never stored).
+In Slack, a member can ask the Swarm's bot to move or refocus their own brief, and an owner or admin the team brief (`daily_brief.*`, the requester from the signed message).
 Briefs go out on workdays: Monday to Friday, without the days off and with the make-up workdays an admin sets; the first brief after days off covers them, up to 12 days back. A brief the model cannot write is not sent; a passing failure is tried again in about an hour.
 See [Bridge For Teams](bridge-for-teams/design.md) and [Meetings](meetings-calendar.md).
 
@@ -82,14 +84,14 @@ Publish uses the card's Version. It opens a missing Task pull request, accepts r
 A different pull request head refuses before review: "Deploy the latest changes first" if the head has no Version, else it names the newer Version. A GitHub merge refusal preserves live. Retrying Publish after accepted review merges and sets the Version live.
 Rollback changes the live Version and leaves the repository unchanged. The Router can [publish and manage apps](tools-integrations.md#mini-app-build-tools-and-backends).
 
-Visibility is `private` (the creator; all members for an app the Router made), `workspace` or `link`.
+Visibility is `private` (the creator), `workspace` (the Router's apps) or `link`.
 Links (`https://app.comma.surf/a/<token>`) open in Comma web or Mac. Registered viewers can Install the app in their Workspace or remix it into their own GitHub repository.
 Web viewers can sign in or continue as guests. Guests reach only their link app's routes. They cannot list, create, install or remix apps.
 
 Apps use only declared capabilities.
-The viewer grants `identity.basic`, `ai.chat`, `web.search`, `drive.app_folder`, `calendar.read` and `notifications` once per Workspace.
-The viewer confirms `tasks.create`, `files.pick` and `links.open` each time.
-`chat.draft` and `clipboard.write` need no grant. The grant sheet names the backend `egress` hosts. Settings > Apps revokes grants and removes Installs.
+Grants are per Workspace, per call (`tasks.create`, `files.pick`, `links.open`, `camera`, `clipboard.read`) or none (`chat.draft`, `clipboard.write`, `screen.wake`, `fullscreen`, `share`, `haptics`).
+The host runs [devices](../resources/mini-app-template/README.md#device-capabilities).
+The grant sheet names the backend `egress` hosts. Settings > Apps revokes grants and removes Installs.
 Acting as the user (send, create a Task) needs a click in Comma's UI. Apps can only propose it.
 Guests get `signup_required` for `ai.chat`, `ai.decide` and `web.search`, and `unsupported` for `tasks.create` and `drive.app_folder`. `calendar.read` is Mac only. Drive access needs Workspace access, so a link-only viewer has none.
 
@@ -180,52 +182,38 @@ Do not record source content, access tokens, or model keys in test reports.
 
 ## Create a Shell workload
 
-Shell creation uses the managed `shell.default` template.
-It has a 512 PID limit and a 2 GiB writable disk limit. Its network policy denies egress.
-The server owns the image, command, and resource policy. These forms do not accept arbitrary images or commands.
+Shells use `shell.default`: public Internet, 2048 PIDs, and 16 GiB of writable disk.
+Host rules block private and metadata addresses. CPU and memory are shared.
+Tools include Python/pip/venv, Node/npm, Git/SSH, curl/wget, ffmpeg, pandoc, jq, C/C++/make, and archives.
+Install user packages under `/workspace` or in a venv. The user is non-root. Root is read-only.
+Existing Workloads keep their spec, image, files, and accepted execution. Reconnect does not upgrade them.
 
-Creation calls the Compute placement owner. The Environment selects its eligible provider binding.
-Success means Salix accepted the workload. It does not prove that its runtime is ready.
-New Comma clients persist one creation key and recover or retry that key after response loss. Other views use manual refresh. No view retries creation automatically.
-The administrator command receipt and workload creation commit together. Replaying the same command does not create another workload.
+Salix owns image, command, and resource policy. Forms accept no arbitrary images or commands.
+Compute placement uses the Environment's eligible binding. Acceptance does not prove runtime readiness.
+Clients keep a creation key for response loss. Other views refresh manually. Reads never retry creation.
+The admin receipt and creation commit together. Replaying creates no second Workload.
 
-The backend needs the published runtime bundle manifest in its configured runtime bundle directory.
-A missing template or unavailable capacity rejects creation. An enrolled Host that is not connected rejects it with `node_offline`. Installing a VMM Host alone does not provide that backend manifest.
-The reconciler owns runtime startup and reports later failures.
+The backend needs its runtime bundle manifest. Missing templates or capacity reject creation.
+An enrolled but disconnected Host returns `node_offline`. Host installation alone supplies no backend manifest.
+The reconciler starts it and reports failures.
 
 ## Compute Node settings and initialization
 
-**Devices** groups local compute settings and Workspace Workloads. Old compute links open Devices.
-On this Mac, each agent (Codex, Claude Code) runs with the account source the person chose: the Mac's own login, a local model server (Ollama, LM Studio: an address this Mac reaches, kept on its station and never sent to Comma's servers), the Workspace's shared accounts, or none. A Task that chooses a local model's model runs on this Mac. Comma does not read the Mac's logins before the person chooses its own login.
-The device card shows the agents and access first, then the sandbox.
-Workspace owners manage cloud resources.
-Installation ACK, enrollment, connection and Shell readiness are independent. Comma resumes failed setup by itself, also after restart, within a bounded budget and deadline.
-A handoff without ACK or enrollment expires after 15 minutes. Comma then starts one new installation automatically, as it does after authorization expiry.
-Shells reconnect. Initialization keeps one initial Shell, even after deletion.
-Reads never create. Salix creates the initial Shell when the installation first becomes ready. New Shell uses a new request.
+**Devices** groups local Compute and Workspace Workloads. Old Compute links open it. Its card lists agents, access and sandbox without waiting for Shell.
+Codex and Claude Code each select Mac login, local model server, Workspace account, or none. Read Mac logins only after selection. Local server addresses stay on the station and must be reachable from this Mac. Their Tasks run here.
+One short-lived ticket authorizes a Registration. The Host saves credentials before claim. Lost replies repeat the claim. No enrollment token, material handoff or installation ACK exists. Salix creates one Shell with a stable key on first connection. Reads and deletion never recreate it.
 
-Details show files, limits and location. Rename keeps the last name. Retry and deletion check the Workload generation.
-Owners may read, rename or request Shell deletion offline. Business Workloads require their owner.
-Deletion closes input admission and settles accepted work before disposing the exclusive Allocation. Updates must finish or cancel first.
-Offline deletion shows **Waiting for original Mac**. A new connection cannot clean the old target.
-Seven days without authenticated Host contact expires registration authority. Login expiry alone does not.
-Expired or revoked registrations cannot reconnect, renew, enable or recover. Cloud retirement runs in bounded pages.
-After expiry, Comma replaces the registration with a new installation by itself. Other revocations need the user.
-Default Workload pages exclude completed deletions and cloud-retired records before pagination.
-Recoverable failures and cleanup in progress remain visible. Exact detail reads retain the terminal outcome and unconfirmed local data.
-Owners, deletion receipts, and unknown execution results survive list removal.
-Only exact Host disposal receipts or proven absence of dispatch establish **Deleted**. Missing rows and 404s do not prove deletion.
-Local operators can clean the old environment or reset and register anew. Other registrations stay intact.
-The [authorization contract](architecture/DOMAIN_CONCEPTS.md#7-devices-and-compute) defines exact scope and settlement guarantees.
+The card has one status/action. Continue retains its target across restart. Pending enable permits cancel/removal. Failed removal never enables. Software/storage share a page. Diagnostics stay collapsed. Disk splits images/runtime, build cache and private data. Missing categories stay unknown.
+Visible Workloads refresh after binding changes/mutations, including unknown replies. Shared-clock reads serialize one page plus at most one pending/selected off-page target.
+Show one row status. Scope errors to their read or action, once; matching owner results clear them. Unknown deletion retains ID/generation. Legacy ID-only deletion needs fresh consent and exact generation/permission checks. Reuse its ID. Only owner receipts supply its original generation. Post-write 403/404 proves neither refusal nor deletion.
 
-Reauthorization reads bounded candidates. Zero candidates or failed proof shows a reason and retry.
-One candidate opens confirmation. Multiple candidates need selection.
-Confirmation names account, Workspace, machine and service. Main fences the current login and installation.
-Host identity proof survives enrollment failure. Recovery changes delivery authority, not enrollment or revocation.
-Update, repair and uninstall preserve data.
-A failed or stuck maintenance recovers by itself. Comma first updates to the pinned Host if it can open the local data. A temporary failure retries the same request. If the update fails three times, fails for good, or the pinned Host cannot open the data, Comma erases local compute data and reinstalls (owner-approved). The card then says so.
-A retryable failed request frozen on another Host release continues on the pinned release. Replacing a user-started reset or uninstall requires confirmation again.
-After the current client request returns, uninstall can replace stuck native maintenance. It keeps local data.
-**Clear all compute data** requires trusted Main/native confirmation of exact scope.
-Workspace removal retires that registration and retains files. Local detachment does not prove cloud revocation.
-Stopping compute does not promise restoration. Agent execution still requires its Compute grant and context.
+Local data groups use neutral headings/menu actions. Another connection never authorizes disposal. Main uses exact IDs. Unknowns stay neutral. Only native plans give complete deletion scope/count. Local deletion/Host clearing use one trusted Main/native confirmation. Repeats retain receipts. Local revocation prompts explicit cloud disconnection. Local management needs no cloud login. Cloud deletion confirms separately.
+
+Details keep known names/facts during setup. Omit absent usage. Internet policy grants no LAN access. Rename retains the last name. Retry/deletion fence generation. Owners can read, rename or request Shell deletion offline. Business Workloads require their owner.
+Deletion closes input and settles accepted work before exclusive Allocation disposal. Updates must finish/cancel first. Offline deletion waits for the original Mac. New connections cannot clean its target.
+Default pages omit completed deletions/cloud-retired rows before pagination. Recoverable failure/cleanup stays. Exact details retain terminal outcomes and unconfirmed local data. Cloud retirement is not file deletion. Owners, receipts and unknowns survive list removal. Only exact Host disposal receipts or proven dispatch absence prove **Deleted**. Missing rows/404s do not. See [authorization](architecture/DOMAIN_CONCEPTS.md#7-devices-and-compute).
+
+Native owns locks/receipts. An idle failed claim cannot lock the Host. Main retains one intent with bounded backoff and a 45-minute automatic window. Expiry pauses automatic work, explicit Continue keeps the request. Stop retains Registration. Removal revokes it and keeps files. Unknown work retains its exact target, never replays as new work.
+After seven days without authenticated Host contact, reject the credential. Login expiry alone does not. Current product permission plus original-root proof recovers the same Registration, Workloads and files. Revoked/disposed/retired targets cannot recover. BFT keeps one live Host per stable Project across Group changes. Comma permits separate authorized Macs.
+
+Update/repair/uninstall preserve data. Only explicit confirmed clearing may erase it, never failure counts, version mismatch or unreadable state. Unsupported operations fail at their owner. Remote too_old offers Host update. Too_new waits for service compatibility. Newer unsupported helpers require Comma update. Reads never download bundles. New repair artifacts supersede exact requests. Original artifacts stay fixed. Workspace removal retires its Registration. Local detachment does not prove cloud revocation.

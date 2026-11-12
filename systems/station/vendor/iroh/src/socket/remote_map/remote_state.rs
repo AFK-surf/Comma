@@ -808,22 +808,18 @@ impl State {
         // though we might not have a relay transport or ip-capable transport set up.
         // So these errors must not be fatal for this actor (or even this operation).
 
-        if let Some(addr) = self.selected_path.as_ref() {
-            trace!(?addr, "sending datagram to selected path");
-
-            // TODO(Frando): We might want to include a local IP here in the future, if we confidently
-            // know that it is the correct one.
-            // See https://github.com/n0-computer/iroh/issues/4280.
-            let four_tuple = transports::FourTuple::from_remote(addr.remote());
-            if let Err(err) = send_datagram(&mut sender, four_tuple, transmit).await {
-                debug!(?addr, "failed to send datagram on selected_path: {err:#}");
-            }
-        } else {
-            trace!(
-                paths = ?self.paths.addrs().collect::<Vec<_>>(),
-                "sending datagram to all known paths",
-            );
-            // ember: kept for addresses found later (see `unanswered`).
+        // ember: Initial packets belong to a new connection, while selected_path belongs to the peer: they race on
+        // every known path even while a path is selected. An older connection's path may be dead (the peer's process
+        // restarted on another port) though it is still selected until that connection times out, 20 s and more, and
+        // the relay would reach the peer at once. Established packets use their concrete path in TransportsSender and
+        // do not come here. As still.fail's iroh (github.com/zzj3720/iroh bc9fada3, "Race Initial packets across
+        // relays even with an older selected path"), without its condition of an endpoint home on several relays.
+        trace!(
+            paths = ?self.paths.addrs().collect::<Vec<_>>(),
+            "sending datagram to all known paths",
+        );
+        // ember: kept for addresses found later (see `unanswered`), while no path is selected.
+        if self.selected_path.is_none() {
             match &mut self.unanswered {
                 Some((kept_sender, kept)) => {
                     *kept_sender = sender.clone();
@@ -834,39 +830,39 @@ impl State {
                 }
                 None => self.unanswered = Some((sender.clone(), vec![transmit.clone()])),
             }
-            if self.paths.is_empty() {
-                warn!("Cannot send datagrams: No paths to remote endpoint known");
-            }
-
-            for addr in self.paths.addrs() {
-                // We never want to send to our local addresses.
-                // The local address set is updated in the main loop so we can use `peek` here.
-                if let transports::Addr::Ip(sockaddr) = addr
-                    && self
-                        .local_direct_addrs
-                        .peek()
-                        .iter()
-                        .any(|a| a.addr == *sockaddr)
-                {
-                    trace!(%sockaddr, "not sending datagram to our own address");
-
-                // TODO(Frando): We might want to include a local IP here in the future, if we confidently
-                // know that it is the correct one.
-                // See https://github.com/n0-computer/iroh/issues/4280.
-                } else if let Err(err) = send_datagram(
-                    &mut sender,
-                    transports::FourTuple::from_remote(addr.clone()),
-                    transmit.clone(),
-                )
-                .await
-                {
-                    debug!(?addr, "failed to send datagram: {err:#}");
-                }
-            }
-            // This message is received *before* a connection is added.  So we do
-            // not yet have a connection to holepunch.  Instead we trigger
-            // holepunching when AddConnection is received.
         }
+        if self.paths.is_empty() {
+            warn!("Cannot send datagrams: No paths to remote endpoint known");
+        }
+
+        for addr in self.paths.addrs() {
+            // We never want to send to our local addresses.
+            // The local address set is updated in the main loop so we can use `peek` here.
+            if let transports::Addr::Ip(sockaddr) = addr
+                && self
+                    .local_direct_addrs
+                    .peek()
+                    .iter()
+                    .any(|a| a.addr == *sockaddr)
+            {
+                trace!(%sockaddr, "not sending datagram to our own address");
+
+            // TODO(Frando): We might want to include a local IP here in the future, if we confidently
+            // know that it is the correct one.
+            // See https://github.com/n0-computer/iroh/issues/4280.
+            } else if let Err(err) = send_datagram(
+                &mut sender,
+                transports::FourTuple::from_remote(addr.clone()),
+                transmit.clone(),
+            )
+            .await
+            {
+                debug!(?addr, "failed to send datagram: {err:#}");
+            }
+        }
+        // This message is received *before* a connection is added.  So we do
+        // not yet have a connection to holepunch.  Instead we trigger
+        // holepunching when AddConnection is received.
     }
 
     /// Handles [`RemoteStateMessage::ResolveRemote`].

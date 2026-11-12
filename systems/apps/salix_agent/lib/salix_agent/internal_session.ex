@@ -49,6 +49,16 @@ defmodule SalixAgent.InternalSession do
   @spec open_envelope(map()) :: t()
   def open_envelope(map) when is_map(map), do: open(Map.take(map, @envelope_keys))
 
+  @doc """
+  Drops the state behind the handle now instead of at the next collection of
+  the holding process. Only for a handle this process created and did not
+  share; every later call with it raises `ArgumentError`.
+  """
+  @spec release(t() | Kernel.revision()) :: :ok
+  def release({:verified_kernel, 1, kind, _resident} = handle)
+      when kind in [:session_state, :session_revision],
+      do: Kernel.release(handle)
+
   @doc "The state as data, for tests and one-off tools."
   @spec export(t()) :: map()
   def export(session) when is_session(session), do: Kernel.export(session)
@@ -72,6 +82,12 @@ defmodule SalixAgent.InternalSession do
   @spec normalize(t()) :: t()
   def normalize(session) when is_session(session) do
     {:ok, next} = Kernel.lifecycle(session, :normalize)
+    next
+  end
+
+  @doc false
+  def restore_pg(session) when is_session(session) do
+    {:ok, next} = Kernel.lifecycle(session, :restore_pg)
     next
   end
 
@@ -150,10 +166,7 @@ defmodule SalixAgent.InternalSession do
   defdelegate command_revision(input), to: Kernel
 
   @doc false
-  defdelegate start_revision(session, etag), to: Kernel
-
-  @doc false
-  defdelegate read_revision(agent_id, session_id, read), to: Kernel
+  defdelegate start_revision(session, revision), to: Kernel
 
   @doc false
   defdelegate revision_view(cursor), to: Kernel
@@ -168,6 +181,19 @@ defmodule SalixAgent.InternalSession do
   defdelegate revision_metadata(cursor), to: Kernel
 
   @doc false
+  defdelegate revision_delta(cursor), to: Kernel
+
+  @doc false
+  defdelegate commit_revision_delta(cursor, revision), to: Kernel
+
+  @doc false
+  defdelegate add_input_hits(cursor, hits), to: Kernel
+
+  @doc false
+  def input_identity_keys(session, events),
+    do: query(session, :input_identity_keys, events)
+
+  @doc false
   def write_revision(cursor, events, hwm),
     do: Kernel.write_revision(cursor, events, hwm, &emit_kernel_operation/2)
 
@@ -176,7 +202,7 @@ defmodule SalixAgent.InternalSession do
     do: Kernel.plan_revision(cursor, mode, &emit_kernel_operation/2)
 
   @doc false
-  defdelegate start_pending_revision(session, etag), to: Kernel
+  defdelegate start_pending_revision(session, revision), to: Kernel
 
   @doc false
   def write_pending_revision(pending, events, hwm),
@@ -191,25 +217,6 @@ defmodule SalixAgent.InternalSession do
   @doc false
   defdelegate pending_metadata(pending), to: Kernel
 
-  @doc false
-  defdelegate start_revision_fence(pending, key), to: Kernel
-
-  @doc false
-  defdelegate fence_prepared_state(fence), to: Kernel
-
-  @doc false
-  def stamp_revision_fence(fence, metadata),
-    do: Kernel.stamp_revision_fence(fence, metadata, &emit_kernel_operation/2)
-
-  @doc false
-  defdelegate encode_revision_fence(fence), to: Kernel
-
-  @doc false
-  defdelegate resume_revision_fence(fence, result), to: Kernel
-
-  @doc false
-  defdelegate resume_revision_fence_cursor(fence, result), to: Kernel
-
   @doc "One field of the state. Transcript fields are large; prefer the derived queries."
   @spec get(t(), atom()) :: term()
   def get(session, field) when is_session(session) and is_atom(field),
@@ -219,6 +226,13 @@ defmodule SalixAgent.InternalSession do
   @spec query(t(), atom(), term()) :: term()
   def query(session, name, args \\ nil) when is_session(session) and is_atom(name),
     do: Kernel.query(session, name, args)
+
+  @doc false
+  def stored_result_requests(session, events), do: query(session, :stored_result_requests, events)
+
+  @doc false
+  def validate_stored_results(session, events, facts \\ []),
+    do: query(session, :validate_stored_results, {events, facts})
 
   @doc "A derived value that reads external data through `read`."
   @spec query(t(), atom(), term(), (term() -> term())) :: term()
@@ -242,11 +256,8 @@ defmodule SalixAgent.InternalSession do
     do: Kernel.archive_publication(session, line, io)
 
   @doc false
-  def start_storage_commit(session, key, base) when is_session(session),
-    do: Kernel.start_storage_commit(session, key, base)
-
-  @doc false
-  defdelegate resume_storage_commit(cursor, result), to: Kernel
+  def archive_cut(session, line, bytes) when is_session(session),
+    do: Kernel.archive_cut(session, line, bytes)
 
   def agent_id(session), do: get(session, :agent_id)
   def session_id(session), do: get(session, :session_id)

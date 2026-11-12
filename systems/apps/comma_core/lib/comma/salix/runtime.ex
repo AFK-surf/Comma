@@ -25,6 +25,10 @@ defmodule Comma.Salix.Runtime do
   def update_workspace_vm(_workspace, _vm), do: {:error, :salix_client_not_configured}
 
   @impl true
+  def create_requested_task(_workspace, _attrs, _opts),
+    do: {:error, :salix_client_not_configured}
+
+  @impl true
   def ensure_guest_tenant(_tenant_id, _limit), do: {:error, :salix_client_not_configured}
 
   @impl true
@@ -50,6 +54,10 @@ defmodule Comma.Salix.Runtime do
 
   @impl true
   def search_group_tasks(_workspace, _query, _opts),
+    do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def task_message_matches(_workspace, _conversation_id, _query),
     do: {:error, :salix_client_not_configured}
 
   @impl true

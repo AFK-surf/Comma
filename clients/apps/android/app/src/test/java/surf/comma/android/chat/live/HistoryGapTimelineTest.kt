@@ -58,7 +58,7 @@ class HistoryGapTimelineTest {
     })
 
     private fun submit(state: ConversationState) {
-        val next = mapConversation(state, replyActions = true)
+        val next = mapConversation(state)
         val prepared = runBlocking {
             MessageLayoutPrecomputer(bubbles = true).prepare(next.rows, viewportWidthPx = timeline.width, density = density,
                 fontScale = 1f, darkTheme = false)
@@ -94,7 +94,7 @@ class HistoryGapTimelineTest {
         assertStill(anchor)
         assertEquals("history rows kept their ids", ids, (1L..100L).map(::rowOf))
         val gap = mapped!!.rows.single { it.role == ChatRole.SYSTEM }
-        assertEquals(mapped!!.rows.indexOfFirst { it.id == rowOf(100) } + 2, mapped!!.rows.indexOf(gap)) // After 100's actions row.
+        assertEquals(mapped!!.rows.indexOfFirst { it.id == rowOf(100) } + 1, mapped!!.rows.indexOf(gap)) // Right after 100.
         submit(state(1L..180L))
         assertStill(anchor)
         assertEquals(ids, (1L..100L).map(::rowOf))

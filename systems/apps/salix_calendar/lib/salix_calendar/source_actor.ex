@@ -5,6 +5,7 @@ defmodule SalixCalendar.SourceActor do
 
   use SystemsRuntime.Server
 
+  require Logger
   require SystemsClock
 
   alias SalixCalendar.{Item, Query, Recurrence, SourceSyncOutcome}
@@ -112,6 +113,12 @@ defmodule SalixCalendar.SourceActor do
 
   def handle_call({:query_items, start_ms, end_ms}, _from, state),
     do: {:reply, with_source(state, &Query.query_items(&1, start_ms, end_ms)), state}
+
+  def handle_call({:query_items_page, start_ms, end_ms, after_item, limit}, _from, state),
+    do:
+      {:reply,
+       with_source(state, &Query.query_items_page(&1, start_ms, end_ms, after_item, limit)),
+       state}
 
   def handle_call({:list_link_items, link_id}, _from, state),
     do: {:reply, with_source(state, &Query.list_link_items(&1, link_id)), state}
@@ -270,6 +277,8 @@ defmodule SalixCalendar.SourceActor do
       }
 
       if complete? do
+        notify_source_changed(state, next_flow)
+
         finish_operation(
           state,
           busy,
@@ -304,6 +313,29 @@ defmodule SalixCalendar.SourceActor do
 
   defp commit_provider_result(state, busy, _invalid),
     do: finish_operation(state, busy, {:error, :invalid_adapter_page})
+
+  # A refresh that applied changes tells the configured observer which
+  # Calendar changed. The observer is advisory: its failure never changes the
+  # refresh result.
+  defp notify_source_changed(state, %{applied: [_ | _], source: source}) do
+    case SystemsRuntime.get_env(:salix_calendar, :source_change_observer) do
+      observer when is_atom(observer) and not is_nil(observer) ->
+        try do
+          observer.source_changed(state.group_id, state.calendar_id, source["adapter"])
+        rescue
+          _error -> :ok
+        catch
+          _kind, _reason -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp notify_source_changed(_state, _flow), do: :ok
 
   defp finish_operation(state, busy, result) do
     result = settle_refresh_outcome(state, busy, result)
@@ -352,6 +384,10 @@ defmodule SalixCalendar.SourceActor do
     attempted_at = now_ms()
     outcome = SourceSyncOutcome.failure(reason, attempted_at)
 
+    Logger.warning(
+      "calendar source sync failed: source=#{state.source_id} reason=#{failure_name(reason)}"
+    )
+
     update_record(state, source_key(state), fn
       %{"sync" => sync} = current ->
         if same_refresh_flow?(current, sync, flow) do
@@ -398,6 +434,19 @@ defmodule SalixCalendar.SourceActor do
   end
 
   defp persist_refresh_outcome(_state, _busy, _result), do: :ok
+
+  # The stored outcome keeps only a closed class. The log names the reason
+  # itself, without the data a reason may carry.
+  defp failure_name(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp failure_name(reason) when is_tuple(reason) and tuple_size(reason) > 0 do
+    case elem(reason, 0) do
+      tag when is_atom(tag) -> Atom.to_string(tag)
+      _ -> "other"
+    end
+  end
+
+  defp failure_name(_reason), do: "other"
 
   defp same_refresh_flow?(current, sync, flow) do
     sync["generation"] == flow.sync["generation"] and

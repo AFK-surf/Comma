@@ -85,6 +85,121 @@ defmodule Salix.Bindings.AgentConversations do
   end
 
   @impl SalixIM.Ports.TaskCreate
+  def select_model(context, policy, content) do
+    ctx =
+      Map.new(
+        [:tenant_id, :group_id, :agent_id, :session_id, :billing_context],
+        &{&1, context[Atom.to_string(&1)]}
+      )
+
+    with {:ok, answer} <- routing_decision(policy, content, ctx),
+         {:ok, configured, routing} <- SalixIM.TaskModelSelection.candidate(policy, answer),
+         {:ok, candidate, learning} <-
+           Salix.TaskRoutingLearning.choose(
+             context,
+             policy,
+             routing,
+             configured,
+             context["conversation_id"] || content
+           ),
+         {:ok, model} <-
+           selected_model(
+             context["routing_scope"],
+             Map.put(ctx, :runs_on, nil),
+             candidate
+             |> Map.take(~w(kind model tier reasoning_effort allow_paid profile_id))
+             |> Map.put_new("kind", "catalog")
+             |> then(fn choice ->
+               if policy["profile_id"],
+                 do: Map.put(choice, "profile_id", policy["profile_id"]),
+                 else: choice
+             end)
+           ) do
+      {:ok, model,
+       Map.merge(
+         %{
+           "routing_scope" => context["routing_scope"] || "group",
+           "policy_mode" => policy["mode"],
+           "decision_source" =>
+             if(policy["mode"] == "routes" and length(policy["entries"]) == 1,
+               do: "direct",
+               else: "jev"
+             ),
+           "selected_model" => model
+         },
+         Map.merge(Map.merge(routing, Map.take(answer, ["usage"])), learning)
+       )}
+    else
+      {:error, reason} -> selection_error(reason)
+      _ -> selection_error(:invalid_response)
+    end
+  end
+
+  @impl SalixIM.Ports.TaskCreate
+  def platform_routing, do: SalixAgent.PlatformModels.routing()
+
+  @impl SalixIM.Ports.TaskCreate
+  def task_status_changed(conversation),
+    do: Salix.TaskRoutingLearning.task_status_changed(conversation)
+
+  # The platform route table's models are the operator's, not a member's
+  # choice: `SalixAgent.PlatformModels.put_routing/2` checked them. Every other
+  # choice is checked as a member's.
+  defp selected_model("platform", scope, choice) do
+    if SalixAgent.PlatformModels.routed_model?(choice),
+      do: {:ok, choice},
+      else: session_model(scope, choice)
+  end
+
+  defp selected_model(_scope_name, scope, choice), do: session_model(scope, choice)
+
+  # A single route has no classification ambiguity and needs no model call.
+  defp routing_decision(%{"mode" => "routes", "entries" => [_]}, _content, _ctx),
+    do: {:ok, %{"answers" => %{"route" => %{"choice" => "r0"}}}}
+
+  defp routing_decision(policy, content, ctx),
+    do:
+      SalixAgent.Decide.task_model_selection_call(
+        SalixIM.TaskModelSelection.request(policy, content),
+        ctx
+      )
+
+  @selection_recovery %{
+    "input_too_large" =>
+      "Task content and routing questions exceed 64 KiB. Shorten the content or descriptions, supply an authorized model, or disable routing.",
+    "routing_learning_unavailable" =>
+      "Restore the routing evidence store or disable routing before retrying.",
+    "timeout" => "Retry the Task when the decision service responds.",
+    "rate_limited" => "Retry the Task after the decision rate limit clears.",
+    "not_configured" => "Configure the decision provider or disable routing.",
+    "invalid_request" => "Check the routing question configuration.",
+    "billing_unavailable" => "Check the decision billing account before retrying."
+  }
+
+  defp selection_error(reason) do
+    code = if is_atom(reason), do: Atom.to_string(reason), else: reason
+
+    retryable =
+      ~w(invalid_response unavailable provider_error context_unavailable result_too_large)
+
+    code =
+      if Map.has_key?(@selection_recovery, code) or code in retryable,
+        do: code,
+        else: "model_unavailable"
+
+    recovery =
+      Map.get(
+        @selection_recovery,
+        code,
+        "Retry the Task. Check the decision provider and the Group's model, reasoning effort and Profile access if it still fails."
+      )
+
+    {:error,
+     {:task_model_selection_failed,
+      "#{code}: #{recovery} The Task was not created. No default model was substituted."}}
+  end
+
+  @impl SalixIM.Ports.TaskCreate
   def task_worker(scope),
     do:
       SalixAgent.AgentManagement.Ports.task_worker(%{
@@ -101,6 +216,17 @@ defmodule Salix.Bindings.AgentConversations do
       })
 
   @impl SalixIM.Ports.TaskCreate
+  # A runtime without a model id, on a station: the station's default model of
+  # that runtime, which it must run (a sandbox Task's switch and
+  # `SalixIM.TaskPlacement`, for a person's computer, ask this).
+  def session_model(
+        %{runs_on: %{"device_id" => _}} = scope,
+        %{"kind" => "runtime", "provider" => _} = choice
+      )
+      when not is_map_key(choice, "model") do
+    with :ok <- station_runs(scope, choice), do: {:ok, choice}
+  end
+
   def session_model(scope, choice) do
     with :ok <- station_runs(scope, choice) do
       SalixAgent.AgentManagement.Ports.session_model(
@@ -115,65 +241,64 @@ defmodule Salix.Bindings.AgentConversations do
   end
 
   # A Task that runs on a station takes a model the station's profiles have
-  # enabled, as the station last said (`task_models`). One that has said
-  # nothing runs no model a Task can name.
-  defp station_runs(%{runs_on: %{"device_id" => device_id}} = scope, %{
-         "kind" => "runtime",
-         "provider" => provider,
-         "model" => model
-       }) do
-    models =
-      case SalixEnv.Registry.get_device(scope.tenant_id, scope.group_id, device_id) do
-        {:ok, device} -> get_in(device, ["meta", "capabilities", "task_models"])
-        _ -> nil
-      end
+  # enabled, as the station last said (`task_models`), or a runtime it has
+  # enabled any model for. One that has said nothing runs no model a Task can
+  # name.
+  defp station_runs(
+         %{runs_on: %{"device_id" => device_id}} = scope,
+         %{"kind" => "runtime", "provider" => provider} = choice
+       ) do
+    models = station_models(scope, device_id)
 
     cond do
-      not is_map(models) -> {:error, {:not_on_station, %{}}}
-      model in List.wrap(models[provider]) -> :ok
-      true -> {:error, {:not_on_station, Map.take(models, ~w(claude codex))}}
+      not is_map(models) ->
+        {:error, {:not_on_station, %{}}}
+
+      is_map_key(choice, "model") and choice["model"] in List.wrap(models[provider]) ->
+        :ok
+
+      not is_map_key(choice, "model") and List.wrap(models[provider]) != [] ->
+        :ok
+
+      true ->
+        {:error, {:not_on_station, Map.take(models, ~w(claude codex))}}
     end
   end
 
   defp station_runs(_scope, _choice), do: :ok
 
+  defp station_models(scope, device_id) do
+    case SalixEnv.Registry.get_device(scope.tenant_id, scope.group_id, device_id) do
+      {:ok, device} -> get_in(device, ["meta", "capabilities", "task_models"])
+      _ -> nil
+    end
+  end
+
   # A desktop station must be connected now, and take Tasks as stations ask
   # each other (`tasks` 2, systems/station/docs/tasks.md): nothing wakes a
   # person's computer. The Group's Cloud VM need not be running: a Task runs
-  # there when the Group's Cloud VM switch is on, and one made while the VM
+  # there when the Group has one (`SalixAgent.CloudVM.allowed?/1`), and one made while the VM
   # sleeps, wakes, or was never made is kept for it and given to it once
-  # Salix has it up (`SalixWeb.StationTasks`). Giving a station the Task is
-  # the `station.session` egress; with no transcript to label, a Group in IFC
-  # enforce mode refuses it. A Loop Task never asks: it runs inside Salix
-  # (`SalixIM.TaskPlacement`).
+  # Salix has it up (`SalixWeb.StationTasks`). Whether the Task's content may
+  # go to the place it resolves to is the placement's IFC check
+  # (`SalixIM.TaskPlacement`). A Loop Task never asks: it runs inside Salix.
   @impl SalixIM.Ports.TaskCreate
-  def runs_on(scope, request) do
-    ctx = %{tenant_id: scope.tenant_id, group_id: scope.group_id, agent_id: scope[:agent_id]}
+  def runs_on(scope, request), do: resolve_runs_on(scope, request)
 
-    {class, _descriptor} =
-      SalixAgent.IFC.Destination.describe("station.session", %{"action" => "start"}, ctx)
+  @impl SalixIM.Ports.TaskCreate
+  def personal_computers(scope), do: SalixWeb.TaskStations.personal_computers(scope)
 
-    if class == :egress and SalixAgent.IFC.mode_for(ctx.tenant_id, ctx.group_id) == :enforce,
-      do: {:error, :ifc_enforced},
-      else: resolve_runs_on(scope, request)
-  end
+  @doc "A sandbox of the Task's own, as automatic placement chooses it (`SalixWeb.TaskStations`)."
+  def sandbox_place(scope), do: resolve_runs_on(scope, %{"kind" => "sandbox"})
 
+  # Where the Group's Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`),
+  # a sandbox of the Task's own takes it. Elsewhere the Group's Cloud VM
+  # decides; a binding only makes the Cloud VM the Worker's default Task
+  # location.
   defp resolve_runs_on(scope, %{"kind" => "cloud_vm"} = request) when map_size(request) == 1 do
-    # The Group's Cloud VM switch decides; a binding only makes the Cloud VM
-    # the Worker's default Task location.
-    case SalixAgent.Control.get_record(scope.agent_id) do
-      {:ok, %{"tenant_id" => tenant, "group_id" => group} = agent}
-      when tenant == scope.tenant_id and group == scope.group_id ->
-        if SalixAgent.CloudVM.allowed?(agent),
-          do: {:ok, %{"kind" => "cloud_vm", "device_id" => cloud_vm_device_id(scope)}},
-          else: {:error, :cloud_vm_disabled}
-
-      {:ok, _other_group} ->
-        {:error, :not_found}
-
-      {:error, _reason} = error ->
-        error
-    end
+    if SalixAgent.Sandboxes.cloud_vm_retired?(scope.group_id),
+      do: {:error, :cloud_vm_retired},
+      else: cloud_vm_place(scope)
   end
 
   defp resolve_runs_on(scope, %{"kind" => "automatic", "model" => model}),
@@ -182,7 +307,7 @@ defmodule Salix.Bindings.AgentConversations do
   defp resolve_runs_on(scope, %{"kind" => "station", "device_id" => device_id} = request)
        when map_size(request) == 2 and is_binary(device_id) and device_id != "" do
     if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) do
-      {:error, :use_cloud_vm_kind}
+      group_vm_station(scope, device_id)
     else
       with :ok <-
              SalixStore.ComputeStation.admit_device(
@@ -206,6 +331,7 @@ defmodule Salix.Bindings.AgentConversations do
   defp resolve_runs_on(scope, %{"kind" => "sandbox"} = request) when map_size(request) == 1 do
     with true <- SalixWeb.L4ES.enabled?() || {:error, :sandbox_unavailable},
          :ok <- sandbox_room(scope),
+         :ok <- sandbox_billing(scope),
          do: {:ok, %{"kind" => "sandbox"}}
   end
 
@@ -222,6 +348,7 @@ defmodule Salix.Bindings.AgentConversations do
     with true <- SalixWeb.L4ES.enabled?() || {:error, :sandbox_unavailable},
          {:ok, repo} <- repo(repo),
          :ok <- sandbox_room(scope),
+         :ok <- sandbox_billing(scope),
          {:ok, %{token: token}} <-
            SalixWeb.CodingSandboxes.github().token(scope.tenant_id, scope.group_id),
          {:ok, found} <- github_repo(token, repo),
@@ -300,12 +427,70 @@ defmodule Salix.Bindings.AgentConversations do
 
   defp carried_pull_request(_token, repo), do: {:ok, repo}
 
+  # The Group's own VM named as a station. On its Agent VMM Host it is that
+  # Host's Station, taken as the Cloud VM is: admitted, and kept for it while
+  # it is not connected, the VM woken (`SalixWeb.StationTasks.invite/1`). On
+  # Cloudflare it is the Cloud VM, named as `{kind: cloud_vm}` and refused
+  # where retired.
+  defp group_vm_station(scope, device_id) do
+    case SalixStore.ComputeGroupStation.group_vm_on_vmm_host(scope.group_id) do
+      {:ok, true} ->
+        with :ok <-
+               SalixStore.ComputeStation.admit_device(
+                 scope.tenant_id,
+                 scope.group_id,
+                 device_id
+               ),
+             do: {:ok, %{"kind" => "station", "device_id" => device_id}}
+
+      {:ok, false} ->
+        if SalixAgent.Sandboxes.cloud_vm_retired?(scope.group_id),
+          do: {:error, :cloud_vm_retired},
+          else: {:error, :use_cloud_vm_kind}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp cloud_vm_place(scope) do
+    case SalixAgent.Control.get_record(scope.agent_id) do
+      {:ok, %{"tenant_id" => tenant, "group_id" => group} = agent}
+      when tenant == scope.tenant_id and group == scope.group_id ->
+        if SalixAgent.CloudVM.allowed?(agent),
+          do: {:ok, %{"kind" => "cloud_vm", "device_id" => cloud_vm_device_id(scope)}},
+          else: {:error, :cloud_vm_disabled}
+
+      {:ok, _other_group} ->
+        {:error, :not_found}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp sandbox_room(scope) do
     max = SalixWeb.L4ES.max_sandboxes(scope.tenant_id)
 
     if SalixStore.CodingSandboxes.live_count(scope.tenant_id, scope.group_id) < max,
       do: :ok,
       else: {:error, {:sandbox_limit, max}}
+  end
+
+  # The Workspace pays for the sandbox's time: a start the fee control
+  # refuses (no credits) makes no Task, and so does one it could not decide
+  # (`SalixWeb.CodingSandboxes.authorize/5`), told apart for the Router.
+  defp sandbox_billing(scope) do
+    case SalixWeb.CodingSandboxes.authorize(
+           scope.tenant_id,
+           scope.group_id,
+           "sandbox_place",
+           "user"
+         ) do
+      :ok -> :ok
+      {:error, {:billing_unavailable, _decision}} = refused -> refused
+      {:error, reason} -> {:error, {:billing_error, reason}}
+    end
   end
 
   defp github_repo(token, %{"owner" => owner, "name" => name}) do

@@ -4,6 +4,7 @@ import type {
   MiniAppErrorCode,
   MiniAppFetchInit,
   MiniAppInit,
+  MiniAppStreamHandle,
   MiniAppStorageScope,
   MiniAppStore,
   MiniAppTheme,
@@ -23,6 +24,10 @@ export interface FrameCommaOptions {
 export interface FrameComma {
   comma: Comma;
   setTheme(change: MiniAppThemeChange): void;
+  /** Data of an open stream (`microphone.start`, `microphone.watch`, `midi.start`). */
+  streamData(stream: number, data: unknown): void;
+  /** The host ended a stream, or the app stopped. */
+  streamEnd(stream: number, reason: string): void;
 }
 
 /**
@@ -154,6 +159,45 @@ export function createFrameComma(options: FrameCommaOptions): FrameComma {
     );
   };
 
+  // Open streams by the ID their start call returned.
+  const streams = new Map<
+    number,
+    { data(value: unknown): void; end?: ((reason: string) => void) | undefined }
+  >();
+  const listen = async <T extends { stream: number }>(
+    start: string,
+    stopOp: string,
+    onData: (value: never) => void,
+    onEnd: ((reason: string) => void) | undefined,
+    args: Record<string, unknown> = {}
+  ): Promise<Omit<T, "stream"> & MiniAppStreamHandle> => {
+    if (typeof onData !== "function")
+      throw new CommaError("invalid", "The listener must be a function.");
+    const opened = (await invoke(start, args)) as T;
+    const stream = opened.stream;
+    // Port messages are ordered: no data of this stream arrives before the start's result.
+    streams.set(stream, { data: onData as (value: unknown) => void, end: onEnd });
+    const { stream: _id, ...rest } = opened;
+    return {
+      ...rest,
+      stop: async () => {
+        if (!streams.delete(stream)) return;
+        await invoke(stopOp, { stream });
+      },
+    };
+  };
+  // eslint-disable-next-line unicorn/consistent-function-scoping -- This function is sent as its source: it must stay inside.
+  const report = (listener: (value: never) => void, value: unknown) => {
+    try {
+      listener(value as never);
+    } catch (error) {
+      // A failing listener must not stop the stream.
+      queueMicrotask(() => {
+        throw error;
+      });
+    }
+  };
+
   const iso = (value: Date | string) =>
     value instanceof Date ? value.toISOString() : requireText("date", value);
 
@@ -225,9 +269,98 @@ export function createFrameComma(options: FrameCommaOptions): FrameComma {
       write: async (text) => {
         await invoke("clipboard.write", { text: requireText("text", text) });
       },
+      read: async () => ((await invoke("clipboard.read", {})) as { text: string }).text,
     },
     open: async (url) =>
       (await invoke("links.open", { url: requireText("url", url) })) as never,
+    microphone: {
+      startChannels: async (captureOptions, onSamples, onEnd) => {
+        const count = captureOptions?.channelCount;
+        if (!Number.isInteger(count) || count < 1 || count > 32)
+          throw new CommaError(
+            "invalid",
+            "channelCount must be an integer from 1 to 32."
+          );
+        const channels = captureOptions.channels;
+        if (
+          channels !== undefined &&
+          (!Array.isArray(channels) ||
+            channels.length === 0 ||
+            channels.length > count ||
+            channels.some(
+              (channel) => !Number.isInteger(channel) || channel < 0 || channel >= count
+            ) ||
+            new Set(channels).size !== channels.length)
+        )
+          throw new CommaError(
+            "invalid",
+            "channels must contain unique input indices below channelCount."
+          );
+        return (await listen(
+          "microphone.startChannels",
+          "microphone.stop",
+          onSamples,
+          onEnd,
+          {
+            channelCount: count,
+            ...(channels === undefined ? {} : { channels: [...channels] }),
+            ...(captureOptions.deviceId === undefined
+              ? {}
+              : { deviceId: requireText("deviceId", captureOptions.deviceId) }),
+          }
+        )) as never;
+      },
+      devices: async () =>
+        ((await invoke("microphone.devices", {})) as { devices: never }).devices,
+      watch: (onChange, onEnd) =>
+        listen("microphone.watch", "microphone.stop", onChange, onEnd) as never,
+      start: async (onSamples, onEnd, startOptions) => {
+        const args: { deviceId?: string } = {};
+        if (startOptions?.deviceId !== undefined)
+          args.deviceId = requireText("deviceId", startOptions.deviceId);
+        return (await listen(
+          "microphone.start",
+          "microphone.stop",
+          onSamples,
+          onEnd,
+          args
+        )) as never;
+      },
+    },
+    camera: {
+      capture: async (captureOptions) => {
+        const args: { facing?: string } = {};
+        if (captureOptions?.facing !== undefined) args.facing = captureOptions.facing;
+        return (await invoke("camera.capture", args)) as never;
+      },
+    },
+    location: {
+      current: async () => (await invoke("location.current", {})) as never,
+    },
+    screen: {
+      keepAwake: async (on) => {
+        await invoke("screen.keepAwake", { on: on === true });
+      },
+      fullscreen: async (on) => {
+        await invoke("screen.fullscreen", { on: on === true });
+      },
+    },
+    share: async (content) => {
+      const args: { title?: string; text?: string; url?: string } = {};
+      if (content?.title !== undefined)
+        args.title = requireText("title", content.title);
+      if (content?.text !== undefined) args.text = requireText("text", content.text);
+      if (content?.url !== undefined) args.url = requireText("url", content.url);
+      return (await invoke("share", args)) as never;
+    },
+    haptics: async (pattern) =>
+      (await invoke("haptics", {
+        pattern: typeof pattern === "number" ? [pattern] : pattern,
+      })) as never,
+    midi: {
+      start: (onMessage, onEnd) =>
+        listen("midi.start", "midi.stop", onMessage, onEnd) as never,
+    },
     backend: {
       fetch: async (path, fetchInit = {}) => {
         const headers: Record<string, string> = {};
@@ -287,6 +420,11 @@ export function createFrameComma(options: FrameCommaOptions): FrameComma {
   Object.freeze(comma.drive);
   Object.freeze(comma.calendar);
   Object.freeze(comma.clipboard);
+  Object.freeze(comma.microphone);
+  Object.freeze(comma.camera);
+  Object.freeze(comma.location);
+  Object.freeze(comma.screen);
+  Object.freeze(comma.midi);
   Object.freeze(comma.backend);
   for (const scope of Object.values(comma.storage)) Object.freeze(scope);
   Object.freeze(comma.storage);
@@ -306,6 +444,16 @@ export function createFrameComma(options: FrameCommaOptions): FrameComma {
           });
         }
       }
+    },
+    streamData(stream, data) {
+      const entry = streams.get(stream);
+      if (entry) report(entry.data, data);
+    },
+    streamEnd(stream, reason) {
+      const entry = streams.get(stream);
+      if (!entry) return;
+      streams.delete(stream);
+      if (entry.end) report(entry.end, reason);
     },
   };
 }

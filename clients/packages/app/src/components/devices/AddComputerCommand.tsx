@@ -2,7 +2,7 @@ import { useCall } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { CopyIcon } from "@comma/ui/components/icons";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback } from "@comma/ui/components/toast";
 import { useEffect, useState } from "react";
 import { copyTextToClipboard } from "../chat/thread/inline/linkActions";
 
@@ -55,10 +55,7 @@ export function DeviceInstallCommand({
 }) {
   const m = useCommaMessages();
   const copy = () =>
-    void copyTextToClipboard(enrollment.command).then(
-      () => toast.success(m.common_copied(), { id: "copy-feedback" }),
-      () => toast.error(m.settings_devices_install_failed())
-    );
+    void copyWithFeedback(() => copyTextToClipboard(enrollment.command), m);
   const expires = new Date(enrollment.expiresAt * 1000).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",

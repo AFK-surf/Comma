@@ -215,9 +215,9 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert worker == SalixAgent.TaskAgent.id(group)
     assert [%{"agent_id" => ^worker}] = workers(c.workspace)
 
-    # The Workspace Group's Cloud VM switch decides for the Task agent too.
+    # The Workspace's tenant has no VM provider: the Task agent has no Cloud VM either.
     {:ok, record} = SalixAgent.Control.get(worker, c.workspace["salix_tenant_id"])
-    assert SalixAgent.CloudVM.allowed?(record) == (c.workspace["vm"]["enabled"] == true)
+    refute SalixAgent.CloudVM.allowed?(record)
 
     # A retried entry returns the same Task.
     retried =
@@ -349,7 +349,7 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert [told] =
              Enum.filter(home_messages(group, home_id), &(&1["actor_type"] == "system"))
 
-    assert told["agent_input"]["no_wake"] == true
+    assert told["agent_input"][:no_wake] == true
     assert told["delivery_filter"]["participant_ids"] != []
 
     # Sent again, it is the same message: no second Task.
@@ -481,7 +481,7 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert [told] =
              Enum.filter(home_messages(group, home_id), &(&1["actor_type"] == "system"))
 
-    assert told["agent_input"]["no_wake"] == true
+    assert told["agent_input"][:no_wake] == true
     assert [%{"text" => note}] = told["content"]
     assert note =~ task_id
 
@@ -557,19 +557,7 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
 
     files = [{"screen.png", image}, {"notes.txt", :binary.copy("notes\n", 50_000)}]
 
-    uploads =
-      for {name, bytes} <- files do
-        query = URI.encode_query(%{"name" => name, "size" => byte_size(bytes)})
-
-        req(
-          [{"authorization", "Bearer " <> c.token}, {"content-type", "application/octet-stream"}],
-          :put,
-          "/v1/comma/groups/#{group}/files?#{query}",
-          body: bytes
-        )
-        |> expect_status(201)
-        |> Map.fetch!(:body)
-      end
+    uploads = upload!(c, files)
 
     words =
       "Review these.\n\nAttached files in your workspace:\n" <>
@@ -587,38 +575,16 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     assert {:ok, _} = SalixAgent.Workspace.delete(router, List.last(uploads)["path"])
     assert send_words(c.token, group, task, request)["accepted_message_id"] == accepted
 
-    SystemsRuntime.put_env(:salix_web, :station_tasks, connector: UploadStation)
-    SystemsRuntime.put_env(:comma_web, :upload_station_test, SystemsRuntime.Proc.self())
-
-    on_exit(fn ->
-      SystemsRuntime.delete_env(:salix_web, :station_tasks)
-      SystemsRuntime.delete_env(:comma_web, :upload_station_test)
-    end)
-
-    device = "upload-station-#{SystemsRuntime.Proc.unique_integer([:positive])}"
-    view = %{tenant_id: c.workspace["salix_tenant_id"], group_id: group, device_id: device}
-
-    assert {:ok, _, _} =
-             SalixEnv.Registry.connect("test-node", %{
-               "tenant_id" => view.tenant_id,
-               "group_id" => group,
-               "device_id" => device,
-               "connector_id" => device,
-               "name" => "Coding station"
-             })
-
-    assert :ok =
-             SalixWeb.StationTasks.joined(
-               Map.merge(view, %{
-                 conversation_id: task,
-                 session: "ember:uploads",
-                 agent_id: SalixAgent.TaskAgent.id(group)
-               })
-             )
-
+    view = join_upload_station(c, task)
     settle_receive({:uploaded_task, %{"messages" => messages}})
     given = Enum.find(messages, &(&1["id"] == accepted))
-    assert given["author"] == %{"kind" => "person", "id" => c.user["id"]}
+    # Named by the email the member signs in with (no name of theirs set here).
+    assert given["author"] == %{
+             "kind" => "person",
+             "id" => c.user["id"],
+             "email" => c.user["email"]
+           }
+
     assert given["files"], "Task delivery omitted the user's uploaded files"
 
     assert Enum.map(given["files"], &{&1["name"], &1["size"]}) ==
@@ -669,6 +635,47 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
                "index" => 0,
                "offset" => 0
              })
+  end
+
+  test "the uploads a person's first Message of a Task names reach its station, as a coding session's do",
+       c do
+    group = c.workspace["default_group_id"]
+    router = c.workspace["router_agent_id"]
+    [upload] = upload!(c, [{"screen.png", "png"}])
+
+    words =
+      "Match this.\n\nAttached files in your workspace:\n" <>
+        "- screen.png (workspace file: #{upload["path"]})"
+
+    # The person writes its first Message, as `CommaWeb.Coding.Endpoints.start/2` makes it. Its place is
+    # left out (`runs_on`, `repo`): the binding of uploads does not depend on it, and a sandbox needs L4ES.
+    assert {:ok, %{"conversation_id" => task}} =
+             SalixIM.TaskPlacement.create_task_conversation(group, router, %{
+               "content" => words,
+               "title" => "Match this.",
+               "client_request_id" => "first-upload-0000000001",
+               "owner_user_id" => c.user["id"],
+               "initial_author" => "owner"
+             })
+
+    view = join_upload_station(c, task)
+    settle_receive({:uploaded_task, %{"messages" => messages}})
+    id = c.user["id"]
+    first = Enum.find(messages, &match?(%{"kind" => "person", "id" => ^id}, &1["author"]))
+    assert [%{"name" => "screen.png", "size" => 3} = file] = first["files"]
+    assert first["text"] =~ "(attached file: screen.png)"
+    refute first["text"] =~ "/uploads/"
+
+    assert {:ok, %{"data" => data}} =
+             SalixWeb.StationTasks.file(view, %{
+               "task" => task,
+               "session" => "ember:uploads",
+               "id" => first["id"],
+               "index" => file["index"],
+               "offset" => 0
+             })
+
+    assert Base.decode64!(data) == "png"
   end
 
   test "Task uploads stay within the sending Group and a bounded Message", c do
@@ -933,7 +940,8 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
     # The Worker stores the choice itself.
     {:ok, record} = SalixAgent.Control.get(worker, tenant)
     assert record["model"] == model
-    assert SalixAgent.CloudVM.allowed?(record) == (workspace["vm"]["enabled"] == true)
+    # The Workspace's tenant has no VM provider: the Worker has no Cloud VM.
+    refute SalixAgent.CloudVM.allowed?(record)
 
     # A replay with another model is a different invocation.
     assert {:error, %{"code" => "invocation_conflict"}} =
@@ -981,6 +989,57 @@ defmodule CommaWeb.RouterCreatedWorkersTest do
          }
        }
      ]}
+  end
+
+  # Composer uploads to the Workspace's Router chat, as `chat.uploadTaskFile` makes them.
+  defp upload!(c, files) do
+    for {name, bytes} <- files do
+      query = URI.encode_query(%{"name" => name, "size" => byte_size(bytes)})
+
+      req(
+        [{"authorization", "Bearer " <> c.token}, {"content-type", "application/octet-stream"}],
+        :put,
+        "/v1/comma/groups/#{c.workspace["default_group_id"]}/files?#{query}",
+        body: bytes
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+    end
+  end
+
+  # A station that takes part in `task` (`UploadStation`, which sends what it is given here); its view.
+  defp join_upload_station(c, task) do
+    group = c.workspace["default_group_id"]
+    SystemsRuntime.put_env(:salix_web, :station_tasks, connector: UploadStation)
+    SystemsRuntime.put_env(:comma_web, :upload_station_test, SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_web, :station_tasks)
+      SystemsRuntime.delete_env(:comma_web, :upload_station_test)
+    end)
+
+    device = "upload-station-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    view = %{tenant_id: c.workspace["salix_tenant_id"], group_id: group, device_id: device}
+
+    assert {:ok, _, _} =
+             SalixEnv.Registry.connect("test-node", %{
+               "tenant_id" => view.tenant_id,
+               "group_id" => group,
+               "device_id" => device,
+               "connector_id" => device,
+               "name" => "Coding station"
+             })
+
+    assert :ok =
+             SalixWeb.StationTasks.joined(
+               Map.merge(view, %{
+                 conversation_id: task,
+                 session: "ember:uploads",
+                 agent_id: SalixAgent.TaskAgent.id(group)
+               })
+             )
+
+    view
   end
 
   defp create_args(model) do

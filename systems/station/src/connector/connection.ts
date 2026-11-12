@@ -2,7 +2,7 @@
 // the runtime carrier and the frame loop. A replaced generation stops reading; its stream workers must drain within
 // the drain timeout, or the connector reports its workers stuck.
 import { Cause, Effect, Exit, Fiber, type Scope } from "effect";
-import { type Message, encodeMessage } from "./message.ts";
+import { type Message, binaryStreamFrame, encodeMessage } from "./message.ts";
 import type { RuntimeCarrier } from "./runtime-transport.ts";
 import type { Session } from "./session.ts";
 import { type JsonWriter, type WebSocketWriter, makeWebSocketWriter } from "./websocket-writer.ts";
@@ -24,6 +24,8 @@ export class ConnectionReplaced extends Error {
 /** A JSON frame transport (a WebSocket, or an in-memory one in tests). `receive` fails once the peer closed. */
 export type FrameSocket = {
   send(frame: unknown): Effect.Effect<void, Error>;
+  /** A binary frame; with it, a stream frame's bytes go as one once Salix takes them (`binary_streams`). */
+  sendBinary?(data: Buffer): Effect.Effect<void, Error>;
   readonly receive: Effect.Effect<any, Error>;
   readonly close: Effect.Effect<void>;
 };
@@ -46,13 +48,19 @@ export type ConnectionHost = {
   fork<A, E>(effect: Effect.Effect<A, E>): Fiber.Fiber<A, E>;
 };
 
-const overloadRequest = (msg: Message): Message => ({ id: msg.id, type: "error", error: `${msg.method}: connector request capacity exhausted` });
-const overloadStream = (msg: Message): Message => ({ id: msg.id, type: "stream", error: "connector stream capacity exhausted", stream: { channel: "done", eof: true } });
+const overloadRequest = (msg: Message): Message => ({ id: msg.id, type: "error", error: `${msg.method}: station request capacity exhausted` });
+const overloadStream = (msg: Message): Message => ({ id: msg.id, type: "stream", error: "station stream capacity exhausted", stream: { channel: "done", eof: true } });
 
-/** The writer for a frame socket: each write bounded by the WebSocket write timeout. */
-export function socketWriter(socket: FrameSocket, writeTimeout: (effect: Effect.Effect<void, Error>) => Effect.Effect<void, Error>): JsonWriter {
+/**
+ * The writer for a frame socket: each write bounded by the WebSocket write timeout. A stream frame whose data is bytes
+ * goes as a binary frame while `binaryStreams()` (Salix said it takes them), else as JSON with the bytes in base64.
+ */
+export function socketWriter(socket: FrameSocket, writeTimeout: (effect: Effect.Effect<void, Error>) => Effect.Effect<void, Error>, binaryStreams: () => boolean = () => false): JsonWriter {
   return {
-    writeJson: (message) => writeTimeout(socket.send(encodeMessage(message))),
+    writeJson: (message) => {
+      const binary = socket.sendBinary && binaryStreams() ? binaryStreamFrame(message) : null;
+      return writeTimeout(binary ? socket.sendBinary!(binary) : socket.send(encodeMessage(message)));
+    },
     close: () => socket.close,
   };
 }

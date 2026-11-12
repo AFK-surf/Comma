@@ -1,5 +1,5 @@
 import VerifiedKernelProofs.Session.WorkStorageCursor
-
+import VerifiedKernelProofs.Session.WorkArchivePersistence
 namespace VerifiedKernel.Session.WorkConservation
 open Data CommandExecution DurableConfirmation ArchivePublication
 set_option Elab.async false

@@ -1,7 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button as AriaButton } from "react-aria-components";
 import { HoverCard } from "../../hover-card";
-import { ChevronRightSmallIcon, FileIcon, FileTextIcon } from "../../icons";
+import { ChevronRightSmallIcon, FileIcon, FileTextIcon, ImageIcon } from "../../icons";
 import { cx } from "../../utils";
 import {
   aiInputAttachment,
@@ -16,6 +16,9 @@ import {
   aiInputQuotePreview,
   aiInputQuotePreviewText,
   aiInputQuotePreviewTitle,
+  aiInputSelectionAttachment,
+  aiInputSelectionNote,
+  aiInputSelectionPicture,
   aiInputSnippetAttachment,
   aiInputSnippetExpand,
   aiInputSnippetIconSurface,
@@ -120,6 +123,27 @@ const SnippetAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
   );
 };
 
+/**
+ * Something the person selected to ask about, staged for the next message: its picture, and what they wrote about
+ * it. One without a picture (an element that was not on screen) shows the image glyph in its place.
+ */
+const SelectionAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
+  <div
+    className={cx(aiInputAttachment, aiInputSelectionAttachment)}
+    data-slot="selection-attachment"
+  >
+    <div className={aiInputSelectionPicture} data-slot="selection-picture">
+      {attachment.thumbnailSrc ? (
+        <img alt={attachment.alt ?? ""} src={attachment.thumbnailSrc} />
+      ) : (
+        <ImageIcon />
+      )}
+    </div>
+    <span className={aiInputSelectionNote}>{attachment.name}</span>
+    <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
+  </div>
+);
+
 export const AttachmentChip = ({
   attachment,
   onPreview,
@@ -127,6 +151,8 @@ export const AttachmentChip = ({
 }: ImageAttachmentProps) =>
   attachment.type === "quote" ? (
     <QuoteAttachment attachment={attachment} onRemove={onRemove} />
+  ) : attachment.type === "selection" ? (
+    <SelectionAttachment attachment={attachment} onRemove={onRemove} />
   ) : attachment.type === "snippet" ? (
     <SnippetAttachment attachment={attachment} onRemove={onRemove} />
   ) : attachment.type === "image" ? (

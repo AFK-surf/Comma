@@ -1,3 +1,4 @@
+import { installFullscreenWindowRegions } from "@comma/ui/components/window-regions/fullscreenWindowRegions";
 import { installMiniAppRunLinkClicks, openMiniAppRunLink } from "./miniAppRunLink";
 import {
   RouterProvider,
@@ -6,7 +7,8 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { Suspense, lazy, useEffect, useMemo } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { useCommaClientSettings } from "./components/commaClientSettings";
 import { captureCommaPageView } from "./analytics/client";
 import {
   CommaAuthenticatedLayout,
@@ -21,7 +23,8 @@ import {
 import { CommaAppShortcutsProvider } from "./components/shortcuts/commaAppShortcuts";
 import { ConversationRoute } from "./components/chat/conversation/ConversationRoute";
 import { DriveRoute } from "./components/drive/DriveRoute";
-import { InboxWorkspace } from "./components/inbox/InboxRoute";
+import { InboxNoSelection, InboxWorkspace } from "./components/inbox/InboxRoute";
+import { InboxRequestPane } from "./components/inbox/TaskRequestInbox";
 import { PluginsRoute } from "./components/plugins/PluginsRoute";
 import {
   commaDefaultPrimaryContentMinWidth,
@@ -38,7 +41,11 @@ import { adoptMiniAppLinkLocation } from "./miniAppLink";
 
 export { CommaAnalyticsLifecycle } from "./analytics/CommaAnalyticsLifecycle";
 export { miniAppLinkTokenFromLocation } from "./miniAppLink";
-export { startCommaAnalytics, reportCommaClientError } from "./analytics/client";
+export {
+  startCommaAnalytics,
+  reportCommaClientError,
+  captureCommaRecordingTranscriptionFailed,
+} from "./analytics/client";
 
 declare module "@tanstack/router-core" {
   interface StaticDataRouteOption {
@@ -140,8 +147,11 @@ const indexRoute = createRoute({
   validateSearch: (
     search: Record<string, unknown>
   ): {
+    draft?: string | undefined;
     workspace?: string | undefined;
   } => ({
+    // Text another page hands to Home's composer, such as "Try in Chat".
+    draft: typeof search.draft === "string" ? search.draft : undefined,
     workspace: typeof search.workspace === "string" ? search.workspace : undefined,
   }),
   staticData: {
@@ -158,6 +168,12 @@ const inboxRoute = createRoute({
   },
 });
 
+const inboxIndexRoute = createRoute({
+  getParentRoute: () => inboxRoute,
+  path: "/",
+  component: InboxNoSelection,
+});
+
 const conversationRoute = createRoute({
   getParentRoute: () => inboxRoute,
   path: "$workspaceId/$groupId/$conversationId",
@@ -168,7 +184,21 @@ const conversationRoute = createRoute({
   },
 });
 
-const inboxRouteTree = inboxRoute.addChildren({ conversationRoute });
+const inboxRequestRoute = createRoute({
+  getParentRoute: () => inboxRoute,
+  path: "request/$requestId",
+  component: InboxRequestPane,
+  staticData: {
+    commaPrimaryContentMinWidth:
+      commaInboxConversationRailWidth + commaDefaultPrimaryContentMinWidth,
+  },
+});
+
+const inboxRouteTree = inboxRoute.addChildren({
+  inboxIndexRoute,
+  inboxRequestRoute,
+  conversationRoute,
+});
 
 const driveRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -202,10 +232,20 @@ const tasksRoute = createRoute({
   validateSearch: validateTasksSearch,
 });
 
+// A Task opened from a search: `q` what was searched, `message` the matching Message shown.
 const taskDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "tasks/$workspaceId/$groupId/$conversationId",
   component: ConversationRoute,
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { message?: string; q?: string } =>
+    typeof search["message"] === "string" &&
+    search["message"] &&
+    typeof search["q"] === "string" &&
+    search["q"]
+      ? { message: search["message"], q: search["q"] }
+      : {},
 });
 
 const pluginsRoute = createRoute({
@@ -357,27 +397,42 @@ declare module "@tanstack/react-router" {
 }
 
 export function CommaApp() {
+  const { settings } = useCommaClientSettings();
   // The current document owns its hash route, including when served from a preview path.
   const initialUrl = useMemo(
     () => new URL(`/${window.location.hash}`, window.location.href).href,
     []
   );
-  const router = useMemo(() => {
+  const [router] = useState(() => {
     // A page opened at an app link continues at its hash route.
     adoptMiniAppLinkLocation(window.location, window.history);
+    // Apply the saved view once, only for an ordinary launch. Explicit routes
+    // and Home links with workspace search parameters keep their destination.
+    if (
+      ["", "#", "#/"].includes(window.location.hash) &&
+      settings.defaultHomeView !== "home"
+    ) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${window.location.search}#/${settings.defaultHomeView}`
+      );
+    }
     return createCommaRouter();
-  }, []);
+  });
   useEffect(() => installMiniAppRunLinkClicks(document), []);
+  useEffect(() => installFullscreenWindowRegions(document), []);
   useEffect(() => {
     openMiniAppRunLink(initialUrl);
   }, [initialUrl]);
   useEffect(() => router.subscribe("onResolved", captureCommaPageView), [router]);
+  // Only the launch reads the saved view: a later settings change renders
+  // the two providers that read it, not the router again.
+  const routerView = useMemo(() => <RouterProvider router={router} />, [router]);
 
   return (
     <CommaAppearanceProvider>
-      <CommaAppShortcutsProvider>
-        <RouterProvider router={router} />
-      </CommaAppShortcutsProvider>
+      <CommaAppShortcutsProvider>{routerView}</CommaAppShortcutsProvider>
     </CommaAppearanceProvider>
   );
 }

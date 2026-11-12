@@ -13,11 +13,9 @@ defmodule SalixAgent.RouterRequestMonitorTest do
       if pid = SystemsRuntime.Proc.whereis(Monitor), do: GenServer.stop(pid)
     end
 
-    clock = :atomics.new(1, [])
-    :atomics.put(clock, 1, 1_000_000)
-    start_supervised!({Monitor, clock: fn -> :atomics.get(clock, 1) end, interval: 60_000})
+    start_supervised!({Monitor, interval: 60_000})
     Monitor.register("router", SystemsRuntime.Proc.self())
-    %{clock: clock}
+    :ok
   end
 
   defp enqueue(id, router \\ "router", role \\ "user", wake \\ true) do
@@ -31,7 +29,7 @@ defmodule SalixAgent.RouterRequestMonitorTest do
     ])
   end
 
-  test "independent observation reaches the shared scrape without private labels", %{clock: clock} do
+  test "independent observation reaches the shared scrape without private labels" do
     reporter = Module.concat(__MODULE__, Reporter)
 
     start_supervised!(
@@ -41,10 +39,11 @@ defmodule SalixAgent.RouterRequestMonitorTest do
 
     enqueue("private-request")
     Monitor.sample()
-    :atomics.put(clock, 1, 1_300_001)
+    SystemsClock.advance(300_001)
     Monitor.sample()
     scrape = TelemetryMetricsPrometheus.Core.scrape(reporter)
     assert scrape =~ "salix_router_requests_stalled 1"
+    assert scrape =~ "salix_router_requests_oldest_age_seconds 300.001"
     refute scrape =~ "private-request"
     refute scrape =~ "agent_id"
     Monitor.started("router", "session", ["private-request"])

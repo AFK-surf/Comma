@@ -3,18 +3,16 @@ defmodule SalixIM.IFC.Projection do
   What a provider conversation is, and who is in it
   (`docs/verification.md` §3.2, §8).
 
-  Postgres holds the answer; the provider is the source. A lookup reads the
-  stored projection first and asks the provider only when the answer is
-  missing or older than its bound — at most one `conversations.info` and one
-  `conversations.members` per channel per quarter hour, and only for the
-  channels a decision actually touches.
+  Postgres holds the answer and a decision reads only Postgres: it never
+  waits on a provider. The answer is kept current outside decisions. Ingress
+  records what a conversation is from the inbound that names it, provider
+  join and leave events add and remove members, and a background listing
+  (`SalixIM.IFC.MemberRefresh`) enumerates the members of a conversation
+  ingress or a decision has seen, at most once per conversation per quarter
+  hour on each node.
 
-  Staleness is not a rounding error here. A member set that still lists
-  someone who left would make that person a reader, and a channel converted
-  from public to private would keep being labelled workspace-wide, so both
-  facts share the same short bound: past it they read as *unknown* and the
-  kernel denies rather than guesses. It is also why a membership page that
-  hits the API limit is never marked complete.
+  A fact the store does not hold is *unknown*, and the kernel denies rather
+  than guesses. A member set is never claimed complete from a partial page.
 
   Nothing in this module compares labels or decides anything. It produces
   facts.
@@ -25,31 +23,127 @@ defmodule SalixIM.IFC.Projection do
   alias SalixIM.Provider.Feishu.API, as: FeishuAPI
   alias SalixIM.Provider.Lark.API, as: LarkAPI
   alias SalixIM.Provider.Slack.API, as: SlackAPI
+  alias SalixIM.IFC.MemberRefresh
   alias SalixIM.ProviderConnects
   alias SalixIM.ProviderObservations
   alias SalixStore.IFC, as: Store
 
   @ttl_ms 15 * 60 * 1000
   @member_page_limit 1000
+  # Feishu and Lark refuse a larger page of a chat's members (code 232001).
+  @chat_member_page_size 100
+  @chat_member_page_limit div(@member_page_limit, @chat_member_page_size)
 
   @type scope :: %{tenant_id: String.t(), group_id: String.t(), connect_id: String.t()}
 
   @doc """
-  Structure and operator classification of one conversation, without touching
-  membership. This is the ingress path: it must be cheap and it must not
-  depend on who is asking.
+  Structure and operator classification of one conversation. This is the
+  ingress path: it must be cheap and it must not depend on who is asking, so
+  membership is only asked for in the background.
 
   Returns `{canonical_scope_id, facts}`; see `direct_scope_id/1` for why the
   id can differ from the one asked for.
   """
   @spec structure(scope(), String.t()) :: {String.t(), map()}
-  def structure(scope, scope_id), do: lookup(scope, scope_id, false)
+  def structure(scope, scope_id) do
+    {canonical, row} = lookup(scope, scope_id)
+    MemberRefresh.schedule(scope, canonical, row)
+    {canonical, row}
+  end
 
   @doc """
-  Everything the kernel may need about one conversation, membership included.
+  Everything the kernel may need about one conversation, membership included,
+  from Postgres alone. A conversation the store cannot answer for reads as
+  unknown, and a background listing is asked for so a later decision can.
   """
   @spec facts(scope(), String.t()) :: {String.t(), map()}
-  def facts(scope, scope_id), do: lookup(scope, scope_id, true)
+  def facts(scope, scope_id) do
+    scope |> facts_all([scope_id]) |> Map.fetch!(to_string(scope_id))
+  end
+
+  @doc "`facts/2` for several conversations of one connect, in one read."
+  @spec facts_all(scope(), [String.t()]) :: %{String.t() => {String.t(), map()}}
+  def facts_all(scope, scope_ids) do
+    ids = scope_ids |> Enum.map(&to_string/1) |> Enum.uniq()
+    rows = stored_rows(scope, ids)
+
+    canonicals =
+      rows
+      |> Map.values()
+      |> Enum.map(& &1.canonical_scope_id)
+      |> Enum.filter(&(is_binary(&1) and &1 != "" and not Map.has_key?(rows, &1)))
+
+    rows = Map.merge(rows, stored_rows(scope, canonicals))
+
+    Map.new(ids, fn id ->
+      {canonical, row} = stored_facts(scope, id, rows)
+      MemberRefresh.schedule(scope, canonical, row)
+      {id, {canonical, row}}
+    end)
+  end
+
+  defp stored_facts(scope, scope_id, rows) do
+    row = Map.get(rows, scope_id, empty_row())
+
+    cond do
+      direct_scope_id?(scope_id) ->
+        {scope_id, direct_fields(scope, scope_id, row)}
+
+      is_binary(row.canonical_scope_id) and row.canonical_scope_id not in ["", scope_id] ->
+        canonical = row.canonical_scope_id
+
+        if direct_scope_id?(canonical),
+          do: {canonical, direct_fields(scope, canonical, Map.get(rows, canonical, empty_row()))},
+          else: {canonical, Map.get(rows, canonical, empty_row())}
+
+      true ->
+        {scope_id, row}
+    end
+  end
+
+  @doc """
+  Lists one conversation's members from the provider and stores them, with
+  its structure when the store has none or it is past its bound. Runs off
+  the decision path (`SalixIM.IFC.MemberRefresh`); a listing that fails or is
+  partial leaves the stored set as it was.
+  """
+  @spec refresh(scope(), String.t()) :: :ok
+  def refresh(scope, scope_id) do
+    {canonical, row} = lookup(scope, scope_id)
+
+    if needs_members?(row) do
+      case provider_members(scope, canonical, row.kind) do
+        {:ok, members} ->
+          Store.replace_scope_members(
+            scope.tenant_id,
+            scope.group_id,
+            scope.connect_id,
+            canonical,
+            members
+          )
+
+        :error ->
+          :ok
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.debug("ifc: member refresh failed: #{Exception.message(exception)}")
+      :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  @doc false
+  # Only a room or shared conversation, or a public room an operator gave its
+  # own audience, has a member set the kernel reads.
+  @spec needs_members?(map()) :: boolean()
+  def needs_members?(%{kind: kind}) when kind in ["room", "shared"], do: true
+  def needs_members?(%{kind: "public"} = row), do: not space_audience?(row)
+  def needs_members?(%{kind: nil}), do: true
+  def needs_members?(_row), do: false
 
   @doc """
   The canonical scope id of a one-to-one conversation with a provider user.
@@ -277,21 +371,36 @@ defmodule SalixIM.IFC.Projection do
   # internal
   # ---------------------------------------------------------------------------
 
-  # A DM named by its counterpart needs no provider round trip at all: its
-  # audience is that one person, and that is already the answer.
-  defp lookup(scope, scope_id, _want_members?) when is_binary(scope_id) do
+  # The ingress lookup: structure from the store, and from one bounded
+  # provider read when the store has none or it is past its bound. Membership
+  # is never listed here. A DM named by its counterpart needs no provider
+  # round trip at all: its audience is that one person.
+  defp lookup(scope, scope_id) when is_binary(scope_id) do
     if direct_scope_id?(scope_id) do
       {scope_id, direct_row(scope, scope_id)}
     else
-      resolve_stored(scope, scope_id, _want_members? = true)
+      row =
+        scope
+        |> stored_row(scope_id)
+        |> refresh_structure(scope, scope_id, now_ms())
+
+      case row.canonical_scope_id do
+        canonical when is_binary(canonical) and canonical != "" and canonical != scope_id ->
+          lookup(scope, canonical)
+
+        _own ->
+          {scope_id, row}
+      end
     end
   end
 
-  defp lookup(_scope, scope_id, _want_members?), do: {to_string(scope_id), empty_row()}
+  defp lookup(_scope, scope_id), do: {to_string(scope_id), empty_row()}
 
-  defp direct_row(scope, scope_id) do
+  defp direct_row(scope, scope_id),
+    do: direct_fields(scope, scope_id, stored_row(scope, scope_id))
+
+  defp direct_fields(scope, scope_id, classification) do
     counterpart = String.trim_leading(scope_id, "@")
-    classification = stored_row(scope, scope_id)
 
     %{
       classification
@@ -303,31 +412,15 @@ defmodule SalixIM.IFC.Projection do
     }
   end
 
-  defp resolve_stored(scope, scope_id, want_members?) do
-    row =
-      scope
-      |> stored_row(scope_id)
-      |> expire(now_ms())
-      |> refresh_structure(scope, scope_id)
+  defp stored_rows(_scope, []), do: %{}
 
-    case row.canonical_scope_id do
-      canonical when is_binary(canonical) and canonical != "" and canonical != scope_id ->
-        lookup(scope, canonical, want_members?)
-
-      _own ->
-        {scope_id, refresh_members(row, scope, scope_id, want_members?)}
+  defp stored_rows(scope, scope_ids) do
+    case Store.scopes(scope.tenant_id, scope.group_id, scope.connect_id, scope_ids) do
+      {:ok, scopes} -> scopes
+      {:error, _reason} -> %{}
     end
-  end
-
-  # Past the bound the projection has nothing to say, so it says nothing.
-  defp expire(row, now) do
-    case row do
-      %{observed_at_ms: observed} when is_integer(observed) and now - observed < @ttl_ms ->
-        row
-
-      _stale ->
-        %{row | kind: nil, members: :unknown}
-    end
+  rescue
+    _ -> %{}
   end
 
   defp stored_row(scope, scope_id) do
@@ -356,11 +449,21 @@ defmodule SalixIM.IFC.Projection do
 
   defp now_ms, do: SystemsClock.system_time(:millisecond)
 
-  defp refresh_structure(%{kind: kind} = row, _scope, _scope_id) when is_binary(kind), do: row
+  defp refresh_structure(%{kind: kind, observed_at_ms: observed} = row, _scope, _scope_id, now)
+       when is_binary(kind) and is_integer(observed) and now - observed < @ttl_ms,
+       do: row
 
-  defp refresh_structure(row, scope, scope_id) do
+  defp refresh_structure(row, scope, scope_id, _now) do
     case provider_structure(scope, scope_id) do
       {:ok, attrs} ->
+        # A Feishu or Lark `p2p` chat does not name its person, so the
+        # provider answers with no canonical id. The pairing ingress learned
+        # (`observe_direct/3`) is still true and must survive the refresh.
+        attrs =
+          if attrs.kind == "direct" and is_nil(attrs.canonical_scope_id),
+            do: %{attrs | canonical_scope_id: row.canonical_scope_id},
+            else: attrs
+
         Store.observe_scope(scope.tenant_id, scope.group_id, scope.connect_id, scope_id, attrs)
 
         %{
@@ -371,35 +474,14 @@ defmodule SalixIM.IFC.Projection do
             canonical_scope_id: attrs.canonical_scope_id
         }
 
+      # The provider could not say. What the store last knew stands until a
+      # later read succeeds.
       :error ->
         row
     end
   end
 
-  defp refresh_members(row, _scope, _scope_id, false), do: row
-
-  defp refresh_members(%{members: members} = row, _scope, _scope_id, true) when is_list(members),
-    do: row
-
-  defp refresh_members(row, scope, scope_id, true) do
-    case provider_members(scope, scope_id, row.kind) do
-      {:ok, members} ->
-        Store.replace_scope_members(
-          scope.tenant_id,
-          scope.group_id,
-          scope.connect_id,
-          scope_id,
-          members
-        )
-
-        %{row | members: Enum.sort(members)}
-
-      :error ->
-        row
-    end
-  end
-
-  @doc "The freshness bound both projected facts share."
+  @doc "How often one node re-reads a conversation from its provider."
   @spec ttl_ms() :: pos_integer()
   def ttl_ms, do: @ttl_ms
 
@@ -495,30 +577,7 @@ defmodule SalixIM.IFC.Projection do
     _kind, _reason -> nil
   end
 
-  defp feishu_members(connect, chat_id) do
-    params = %{member_id_type: "open_id", page_size: @member_page_limit}
-
-    case FeishuAPI.get(connect, "/im/v1/chats/#{URI.encode(to_string(chat_id))}/members", params) do
-      {:ok, %{"items" => items} = page} when is_list(items) ->
-        # `has_more` says outright that this is not the whole set, and an
-        # incomplete member set is not a member set.
-        if page["has_more"] == true,
-          do: nil,
-          else: Enum.flat_map(items, &feishu_member_id/1)
-
-      _other ->
-        nil
-    end
-  rescue
-    exception ->
-      Logger.debug("ifc: feishu chat members failed: #{Exception.message(exception)}")
-      nil
-  catch
-    _kind, _reason -> nil
-  end
-
-  defp feishu_member_id(%{"member_id" => id}) when is_binary(id) and id != "", do: [id]
-  defp feishu_member_id(_item), do: []
+  defp feishu_members(connect, chat_id), do: members("feishu", FeishuAPI, connect, chat_id)
 
   # A Lark chat says what it is, in the same fields as a Feishu chat:
   # `external` for a chat with people of another tenant, `chat_mode` for a
@@ -577,30 +636,129 @@ defmodule SalixIM.IFC.Projection do
     _kind, _reason -> nil
   end
 
-  defp lark_members(connect, chat_id) do
-    params = %{member_id_type: "open_id", page_size: @member_page_limit}
+  defp lark_members(connect, chat_id), do: members("lark", LarkAPI, connect, chat_id)
 
-    case LarkAPI.get(connect, "/im/v1/chats/#{URI.encode(to_string(chat_id))}/members", params) do
-      {:ok, %{"items" => items} = page} when is_list(items) ->
-        # With `has_more` this is not the whole set, and a part of the
-        # members is not the members.
-        if page["has_more"] == true,
-          do: nil,
-          else: Enum.flat_map(items, &lark_member_id/1)
+  defp members(provider, api, connect, chat_id) do
+    case chat_members(api, connect, chat_id) do
+      {:ok, members} ->
+        observe_members(provider, "ok", :complete)
+        members
 
-      _other ->
+      :incomplete ->
+        observe_members(provider, "partial", :incomplete)
+        nil
+
+      :unexpected ->
+        observe_members(provider, "other", :unexpected_response)
+        nil
+
+      {:error, reason} ->
+        observe_members_error(provider, reason)
         nil
     end
   rescue
     exception ->
-      Logger.debug("ifc: lark chat members failed: #{Exception.message(exception)}")
+      observe_members(provider, "error", :exception, error_class: inspect(exception.__struct__))
       nil
   catch
-    _kind, _reason -> nil
+    kind, _reason ->
+      observe_members(provider, "error", :exception, error_class: Atom.to_string(kind))
+      nil
   end
 
-  defp lark_member_id(%{"member_id" => id}) when is_binary(id) and id != "", do: [id]
-  defp lark_member_id(_item), do: []
+  # Writers stay unknown on every path but a complete list. This names why,
+  # from what the client's errors carry that is safe to keep: the provider's
+  # numeric code and the HTTP status, never the text around them.
+  defp observe_members_error(provider, reason) when is_binary(reason) do
+    case Regex.run(~r/\A(?:Lark|Feishu) API error (-?\d+) \(HTTP (\d+)\)/, reason) do
+      [_all, code, status] ->
+        status = String.to_integer(status)
+        outcome = if status >= 500, do: "failed", else: "rejected"
+
+        observe_members(provider, outcome, :provider_error, [
+          {code_field(provider), code},
+          {:http_status, status}
+        ])
+
+      nil ->
+        observe_members_transport(provider, reason)
+    end
+  end
+
+  defp observe_members_error(provider, _reason),
+    do: observe_members(provider, "error", :transport)
+
+  defp observe_members_transport(provider, reason) do
+    case Regex.run(~r/\A(?:Lark|Feishu) HTTP (\d+)/, reason) do
+      [_all, status] ->
+        observe_members(provider, "failed", :http_error, http_status: String.to_integer(status))
+
+      nil ->
+        outcome = if String.contains?(reason, "timeout"), do: "timeout", else: "error"
+        observe_members(provider, outcome, :transport)
+    end
+  end
+
+  defp code_field("feishu"), do: :feishu_code
+  defp code_field(_provider), do: :lark_code
+
+  defp members_field("feishu"), do: :ifc_feishu_members
+  defp members_field(_provider), do: :ifc_lark_members
+
+  defp observe_members(provider, outcome, reason, fields \\ []) do
+    Salix.Telemetry.emit_operation(
+      "salix_im",
+      "ifc_#{provider}_members",
+      SystemsObservability.Context.current_surface(),
+      outcome,
+      0
+    )
+
+    if outcome != "ok" do
+      Logger.warning("ifc_#{provider}_members_unavailable", [
+        {members_field(provider), Map.new([{:outcome, outcome}, {:reason, reason} | fields])}
+      ])
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # Every page of a Feishu or Lark chat's members, up to the limit. Past it, or
+  # with `has_more` and no way on, this is not the whole set, and a part of the
+  # members is not the members.
+  defp chat_members(api, connect, chat_id, page \\ 1, page_token \\ nil, seen \\ []) do
+    params = %{
+      member_id_type: "open_id",
+      page_size: @chat_member_page_size,
+      page_token: page_token
+    }
+
+    case api.get(connect, "/im/v1/chats/#{URI.encode(to_string(chat_id))}/members", params) do
+      {:ok, %{"items" => items} = answer} when is_list(items) ->
+        members = seen ++ Enum.flat_map(items, &chat_member_id/1)
+        next = answer["page_token"]
+
+        cond do
+          answer["has_more"] != true -> {:ok, members}
+          page >= @chat_member_page_limit -> :incomplete
+          next in [nil, ""] -> :incomplete
+          true -> chat_members(api, connect, chat_id, page + 1, next, members)
+        end
+
+      {:ok, _unexpected} ->
+        :unexpected
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp chat_member_id(%{"member_id" => id}) when is_binary(id) and id != "", do: [id]
+  defp chat_member_id(_item), do: []
 
   # Telegram's structure comes from the observation the connect already writes
   # on every inbound, so this costs no API call. A private chat is named by the

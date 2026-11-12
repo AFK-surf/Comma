@@ -12,6 +12,7 @@ defmodule SalixIM.TaskReplySource do
     source = value(context, :source_message_id)
 
     with "slack" <- origin["provider"],
+         true <- value(context, :person_source_superseded) != true,
          true <- origin["agent_group_id"] == scope.group_id,
          true <- is_binary(source) and source != "" and source == origin["source_message_id"],
          true <- source in List.wrap(value(context, :source_message_ids)),

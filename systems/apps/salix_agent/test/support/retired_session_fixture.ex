@@ -1,16 +1,17 @@
 defmodule SalixAgent.TestSupport.RetiredSessionFixture do
   @moduledoc """
-  Stores a Session of the retired External Runtime as an earlier release wrote
-  it: one `state.json` object and one JSONL segment of records under
-  `agents/<agent_id>/external_runtime/sessions/`. Read through
-  `SalixAgent.RetiredSessions`.
+  Seeds an imported retired Session: its PG birth identity and the historical
+  `state.json` and JSONL records under
+  `agents/<agent_id>/external_runtime/sessions/`. Read the historical content
+  through `SalixAgent.RetiredSessions`.
   """
 
-  alias SalixStore.{Keys, S3, ULID}
+  alias SalixStore.{Keys, Repo, S3, ULID}
 
   @doc """
-  Writes the Session state and its `records` (maps without ids; each gets a
-  ULID id and the Session identity). Returns the stored state.
+  Imports the retired birth identity and writes the historical state and records
+  (maps without ids; each gets a ULID id and the Session identity). The Agent
+  must exist and the Session identity must be unused. Returns the stored state.
   """
   def put!(agent, session_id, state \\ %{}, records \\ []) do
     agent_id = agent["agent_id"]
@@ -51,6 +52,11 @@ defmodule SalixAgent.TestSupport.RetiredSessionFixture do
             body
           )
     end
+
+    Repo.query!(
+      "INSERT INTO salix_sessions (agent_id, session_id, birth_kind, revision) VALUES ($1, $2, 'retired', 0)",
+      [agent_id, session_id]
+    )
 
     state
   end

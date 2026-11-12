@@ -8,12 +8,16 @@ import {
 import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { TaskSequenceSourceProvider } from "../tasks/taskSequence";
 import { useInboxFilters } from "./filters/InboxFiltersState";
-import { InboxView } from "./InboxView";
+import { InboxState, InboxView } from "./InboxView";
+import { InboxLaunchProvider, useInboxLaunch } from "./TaskRequestInbox";
 
 /** Product inbox route backed by the host-owned cross-platform projection. */
 export function InboxRoute() {
   const locale = useCommaLocale();
-  const params = useParams({ strict: false }) as { conversationId?: string };
+  const params = useParams({ strict: false }) as {
+    conversationId?: string;
+    requestId?: string;
+  };
   const [loadMoreState, setLoadMoreState] = useState<{
     error?: string;
     pending: boolean;
@@ -86,7 +90,11 @@ export function InboxRoute() {
   if (!result) {
     return (
       <div data-testid="inbox-loading">
-        <InboxView result={null} selectedConversationId={params.conversationId} />
+        <InboxView
+          result={null}
+          selectedConversationId={params.conversationId}
+          selectedRequestId={params.requestId}
+        />
       </div>
     );
   }
@@ -98,6 +106,7 @@ export function InboxRoute() {
       onLoadMore={handleLoadMore}
       result={result}
       selectedConversationId={params.conversationId}
+      selectedRequestId={params.requestId}
       workspaceSelector={
         result.activeWorkspaceId && result.workspaces && result.workspaces.length > 1
           ? {
@@ -122,11 +131,50 @@ export function InboxWorkspace({ children }: { children?: ReactNode }) {
       data-testid="inbox-workspace"
     >
       <TaskSequenceSourceProvider>
-        <InboxRoute />
-        <div className="flex min-h-0 min-w-0 flex-1" data-testid="inbox-detail-pane">
-          {children ?? <Outlet />}
-        </div>
+        <InboxLaunchProvider>
+          <InboxRoute />
+          <InboxDetailPane>{children ?? <Outlet />}</InboxDetailPane>
+        </InboxLaunchProvider>
       </TaskSequenceSourceProvider>
     </section>
+  );
+}
+
+/** What the rail opens: a notification's conversation, a request, or nothing yet. */
+export function InboxDetailPane({ children }: { children: ReactNode }) {
+  const params = useParams({ strict: false }) as { conversationId?: string };
+  const { launched, settle } = useInboxLaunch();
+  const pane = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = pane.current;
+    const end = (event: AnimationEvent) => {
+      if (event.animationName.startsWith("comma-inbox-task-")) settle();
+    };
+    element?.addEventListener("animationend", end);
+    return () => element?.removeEventListener("animationend", end);
+  }, [settle]);
+  return (
+    <div
+      className="comma-inbox-detail-pane flex min-h-0 min-w-0 flex-1"
+      // A Task just made from a request comes into focus out of the request's blurred preview, once.
+      data-launch={
+        launched !== undefined && launched === params.conversationId
+          ? "true"
+          : undefined
+      }
+      data-testid="inbox-detail-pane"
+      ref={pane}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** The detail pane while no notification is open. */
+export function InboxNoSelection() {
+  const messages = useCommaMessages();
+
+  return (
+    <InboxState testId="inbox-no-selection" title={messages.inbox_no_selection()} />
   );
 }

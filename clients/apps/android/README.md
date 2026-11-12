@@ -62,7 +62,7 @@ python3 scripts/verify-release-isolation.py --dexdump "$ANDROID_HOME/build-tools
 - `test` runs the unit tests of `:app` and `:scroll`.
 - Every lint task first runs `:app:checkScrollUsage`. It rejects the system scrolling widgets in app sources and layouts.
 - `verify-scroll-usage.py` makes sure that the check rejects forbidden sources.
-- `verify-release-isolation.py` reads the built APKs and R8 mappings. It makes sure that release builds contain no fixtures, demo pages, measurement tools or credentials. See [docs/R8.md](docs/R8.md).
+- `verify-release-isolation.py` reads the built APKs and R8 mappings. It makes sure that release builds contain no fixtures, demo pages or measurement tools. See [docs/R8.md](docs/R8.md).
 
 Use `--max-workers=2` when you compile several variants. With more workers, the Kotlin compiler can run out of memory.
 
@@ -88,8 +88,6 @@ Build types:
 - `release` uses R8 full mode with obfuscation and resource shrinking. It contains no fixtures and accepts neither extra.
 - `benchmark` exists only for dev. It inherits the release optimization, uses local fixtures and is signed with the debug key.
 - `internal` exists only for staging. See [Internal builds](#internal-builds).
-
-Voice input uses Doubao ASR credentials from `local.properties` (`DOUBAO_ASR_API_KEY`, `DOUBAO_ASR_RESOURCE_ID`). Only debug builds read them by default. Release and benchmark builds always have empty credentials. Without credentials, voice input shows as unavailable.
 
 ## Versions
 
@@ -201,9 +199,101 @@ The internal `versionName` is the `versionName` from `version.properties`, then 
 
 Each successful build records HEAD with the local tag `android-internal/<versionCode>`. The script does not push tags and does not move a tag. It stops if the `versionCode` already tags a different commit, or if an earlier internal tag has a higher `versionCode`.
 
-The script does not include ASR credentials by default. To include the credentials from `local.properties`, add `-Pcomma.internal.asr=true`. The APK then contains the credentials.
-
 Send the APK and its SHA-256 file to colleagues. If a device has a staging build with a different signature, uninstall it before the first install. This deletes the local data of that package. The script does not install, upload or push anything.
+
+## Chat
+
+A settled chat turn offers at most four suggested replies as chips after its last row. The first prompt also appears as the empty composer's placeholder.
+A chip sends only its prompt (`consumeDraft: false`) and keeps the draft's text and files. A hardware Tab puts the first prompt into an empty composer without sending it.
+Suggestions are read only while their chat is on screen and the app is started. A send, a reply in progress or an archived conversation hides them.
+The core reads once per turn and language and keeps at most 32 turns (`chatSuggestions`).
+
+Chat shows message images and video covers inline, one fixed-size card per attachment.
+A tap on a loaded image or on a video's Play button opens the viewer, which grows out of the card.
+A tap on a card that is still loading does nothing, so its read continues.
+The viewer pages through the images and videos of the loaded rows, at most 100 on either side of the opened one.
+Paging reveals the current page's card in the chat. A downward drag or Close returns the page to that card; when the card is not on screen, the viewer fades.
+With animations off, the viewer opens and closes without the zoom.
+The current video page reads its whole file through the core's download and plays it with the single player. Paging away, closing or leaving the app releases the player.
+A failed image keeps its card size and shows the file name. A tap retries, or opens a message's own attachment in another app.
+A long press offers Retry while the card has no picture and Open file for a message's own attachment.
+
+## Mini Apps
+
+The Apps tab lists the current Workspace's own, shared and installed apps. Search reads this list. It makes no request per app.
+The list follows its core topic (`miniApps`) only while Apps is shown. Another account or Workspace starts the tab again from its list.
+A second press on Apps returns to the list and clears its search.
+Chat Mini App cards show the icon, name, summary and deployed Version. A press opens that Version in the restricted container. Cards start no WebView.
+
+Public `/a/<token>` links open the Shared app page in the matching staging or production build. A link that arrives before sign-in waits for it.
+Viewing and running a shared app create no Install. The member chooses a Workspace, then live updates or the resolved Version, and installs.
+The page follows only the chosen Workspace's Install through one `miniApp` topic. Uninstall removes only that Install and its grants.
+A link of the other environment shows an error.
+The token stays in the app process and the core. The frame does not receive it.
+
+The manifest claims `/a/` on `app.comma.surf` (prod) and `app-staging.comma.surf` (staging) with `autoVerify`.
+Verification needs `/.well-known/assetlinks.json` on those hosts with the release signing certificate's SHA-256 fingerprint.
+Until the Worker serves it, Android opens these links in the app only when the member enables them in the app's link settings.
+
+An app's details show its cover, Versions, build commits, notes and screenshots.
+Owners change visibility, create a share link, enable or disable the app, and make a ready Version live.
+Preview and publish opens a ready Version. While its build review still matches, the run screen's menu offers Publish.
+Publication accepts the review and merges the previewed commit through the existing server path. A conflict stays visible. Nothing retries automatically.
+Details follow one `miniApp` topic and at most one selected build through `chatView`.
+
+The run screen (`MiniAppActivity`) uses `platform: "android"`. The core gives it the same capability set as iOS:
+AI chat and decisions, web search, cloud storage, the app backend, confirmed photos, draft text, clipboard writes,
+HTTPS links, Task proposals, app-folder Drive access and notifications. Device storage and Mac Calendar stay unavailable.
+Identity, app-folder Drive access and notifications need a separate approval in the host dialog unless a grant covers them.
+Each link and Task proposal needs its own confirmation. Draft text goes to the router chat's composer and never sends a message.
+Approved identity access gives the frame only the viewer's id, name and avatar.
+The member approves cloud access before the host reads or runs the bundle.
+
+The host page and the shared runtime run in a WebView at a private origin. The app runs in a sandboxed frame with an opaque origin.
+Android's WebView has no isolated script world. So the app gives the host page one `MessagePort` with `postWebMessage`, aimed at the host origin only.
+The frame cannot receive or replace that port. The app does not use `addJavascriptInterface`, which every frame could reach.
+The WebView refuses every network request except the host script, which the app serves from its assets (`mini-app-host.js`, built by `:core:bundleCore`).
+It refuses navigation, new windows, file choosers, permission requests and JavaScript dialogs. It keeps no DOM storage.
+
+Startup waits at most 10 seconds for the host page. The bridge admits at most eight concurrent calls and sends bundle files in 48 KiB chunks.
+`files.pick` opens a confirmation sheet with the system photo picker and the camera. The host re-encodes each photo as JPEG or PNG
+at most 2048 pixels on the long side, without metadata. Bounds: six photos, 4 MiB each, 8 MiB total.
+Back suspends a run that can continue; Run then shows Continue. Close, account or Workspace changes, uninstall and disable end it.
+Memory pressure releases suspended runs. Leaving the app suspends the run and cancels a pending photo or host confirmation. Nothing replays after a close.
+A call the server completed while the run was suspended still reports its result. Only the device side effect of a host operation waits for the foreground.
+
+## Dynamic UI
+
+A chat widget shows as a card with its summary. A press opens one isolated runtime in a full-height sheet. Closing the sheet destroys it.
+The sheet reads the widget through the `dynamicUi` topic and its saved state through `dynamicUiState`. It uses the shared card and Worker runtime.
+The host page (`dynamic-ui-host.js`, built by `:core:bundleCore` from the iOS host's shared code) runs at a private origin.
+The widget runs in a sandboxed frame with an opaque origin and the runtime's CSP. It receives only a `MessagePort` bound to that frame.
+The app gives the host page its own `MessagePort` with `postWebMessage`, aimed at the host origin, as for Mini Apps. The frame is created after that port arrives.
+The page forwards only runtime messages of the iOS types, each at most 40,000 UTF-8 bytes. The app checks them again (`DynamicUiFrame`).
+A proposal needs an explicit Add to draft and a later send. A link must be HTTPS without credentials and needs a confirmation.
+State saves keep the 32 KiB limit; only the latest value of each kind waits. No widget can select a core method or native capability.
+The main frame loads only the fixed page. The WebView refuses navigation, other requests to the private origin and non-HTTPS requests.
+A widget may load HTTPS images, styles, fonts and scripts, as on iOS.
+
+## Settings
+
+Settings uses the desktop groups: Comma, Preferences, Work, System, Archived, Shared and Advanced.
+Comma holds Drive and System Files and Plugins. Profile, Workspace and account actions keep their own sections.
+The Workspace pages use the same client core calls and topics as the desktop and iOS clients.
+Each page belongs to the account and Workspace it opened in. After a change, Settings returns to its list.
+
+In a window at least 840 dp wide and 480 dp high, the list stays in a leading column and pages open beside it.
+A page opened from the list replaces the page beside it. The first page beside the list leaves with back,
+but it does not follow the back gesture. Narrow windows stack the pages.
+
+Drive indexes each catalog update once. Folder navigation makes no requests. A directory shows at most 100 rows per page.
+Files that are not text open in another app through a private, read-only link. Memory and instruction saves name the version that was read.
+Voice samples play as media and never select a voice. Closing the picker, leaving the app or a call stops a sample.
+A new API key's value shows only until its page closes.
+
+My devices > View screen, and Simulators and devices, show a computer's screen and its devices over the mesh: the
+core opens the view, MediaCodec decodes its frames onto a surface, and each frame shown is acknowledged.
+Leaving the page or the app ends the view.
 
 ## Performance
 

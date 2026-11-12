@@ -7,10 +7,12 @@ import {
   CallIcon,
   ChainLink3Icon,
   ChainLinkIcon,
+  CircleInfoIcon,
   CmdIcon,
   CreditCard2Icon,
   DevicesIcon,
   GlobeIcon,
+  InviteIcon,
   PaintBrushIcon,
   PeopleCircleIcon,
   SettingsIcon,
@@ -42,6 +44,7 @@ const iconComponents = {
   notifications: BellIcon,
   "archived-tasks": ArchiveIcon,
   "shared-tasks": GlobeIcon,
+  "task-requests": InviteIcon,
   apps: SquareGridCircleIcon,
   labels: TagLabelIcon,
   recommendations: ShapesPlusXSquareCircleIcon,
@@ -59,6 +62,7 @@ const iconComponents = {
   "computer-use": WindowCursorIcon,
   "models-api-keys": ApiConnectionIcon,
   debug: BugIcon,
+  about: CircleInfoIcon,
 } satisfies Record<SettingsCategoryIcon, (props: IconProps) => ReactElement>;
 
 export const SettingsCategoryIconView = ({

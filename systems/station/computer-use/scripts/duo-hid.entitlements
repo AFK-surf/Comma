@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- comma-duo-hid runs inside the iOS Simulator through `simctl spawn`, whose dyld needs DYLD_ROOT_PATH.
+       A hardened runtime removes DYLD_* variables, and the guest then aborts at launch. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

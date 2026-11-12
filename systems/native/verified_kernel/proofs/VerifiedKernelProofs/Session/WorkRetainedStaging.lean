@@ -29,7 +29,7 @@ theorem Staging.retained_landed {framing : CodecFraming} {objects nextObjects : 
   obtain ⟨addressed, committed, nextSnapshot, nextBytes, nextEncoding, issued, current, snapshotHistory, kept⟩ :=
     write.current_identities nextHistory cas
   have sameKey : write.key = key := addressed.trans address.symm
-  change next.candidate.etag = etag at stagedToken
+  change next.candidate.revision = etag at stagedToken
   rw [sameKey, stagedToken] at issued
   have applied : HotCAS before (.tuple [a "cas", key, .binary nextBytes, etag]) result after := by
     rwa [issued] at cas

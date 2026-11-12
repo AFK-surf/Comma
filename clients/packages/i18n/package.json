@@ -8,6 +8,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./messages": {
+      "types": "./src/paraglide/messages.d.ts",
+      "default": "./src/paraglide/messages.js"
+    },
     "./react": {
       "types": "./src/react.tsx",
       "default": "./src/react.tsx"

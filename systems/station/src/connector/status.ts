@@ -30,7 +30,7 @@ export class AuthError extends Error {
   override readonly name = "AuthError";
   readonly status: number;
   constructor(status: number, body: string) {
-    super(`connector authentication failed (${status}): ${body}`);
+    super(`station authentication failed (${status}): ${body}`);
     this.status = status;
   }
 }

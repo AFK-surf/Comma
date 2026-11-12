@@ -83,7 +83,7 @@ function estimateValueBytes(value: unknown, remaining: number, depth: number): n
 export function boundedReplayReply(id: string, method: string, reply: Message): { reply: Message; bytes: number } {
   const bytes = estimateReplyBytes(reply);
   if (bytes <= REQUEST_REPLAY_MAX_BYTES) return { reply, bytes: Math.max(bytes, 1) };
-  const refused: Message = { id, type: "error", error: `${method}: response exceeds connector replay limit` };
+  const refused: Message = { id, type: "error", error: `${method}: response exceeds station replay limit` };
   return { reply: refused, bytes: estimateReplyBytes(refused) };
 }
 

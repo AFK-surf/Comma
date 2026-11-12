@@ -17,14 +17,6 @@ val localProperties = providers.fileContents(rootProject.layout.projectDirectory
 val devBaseUrl = providers.gradleProperty("comma.devBaseUrl")
     .orElse(providers.environmentVariable("COMMA_DEV_BASE_URL"))
     .orElse(localProperties.map { it.getProperty("comma.devBaseUrl", "http://10.0.2.2:8787") })
-// ASR credentials come only from untracked local.properties. Internal builds require
-// an explicit opt-in; release and benchmark always keep voice input unavailable.
-val debugAsrApiKey = localProperties.map { it.getProperty("DOUBAO_ASR_API_KEY", "").trim() }
-val debugAsrResourceId = localProperties.map { it.getProperty("DOUBAO_ASR_RESOURCE_ID", "").trim() }
-val internalAsr = providers.gradleProperty("comma.internal.asr").map {
-    require(it == "true" || it == "false") { "comma.internal.asr must be true or false" }
-    it == "true"
-}.orElse(false)
 
 fun internalSetting(name: String) = providers.environmentVariable(name)
     .orElse(localProperties.map { it.getProperty(name, "") })
@@ -129,8 +121,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The client core is built for arm64 alone; another ABI's libraries could not run without it.
         ndk { abiFilters += "arm64-v8a" }
-        buildConfigField("String", "DOUBAO_ASR_API_KEY", "\"\"")
-        buildConfigField("String", "DOUBAO_ASR_RESOURCE_ID", "\"\"")
         // Sync traffic counters in logcat (no ids, text or credentials); on in debug and internal only.
         buildConfigField("boolean", "SYNC_DIAGNOSTICS", "false")
     }
@@ -140,17 +130,21 @@ android {
             dimension = "environment"
             applicationIdSuffix = ".dev"
             resValue("string", "app_name", "Comma Dev")
+            // A development backend has no web origin: its builds claim no shared app links.
+            manifestPlaceholders["miniAppLinkHost"] = "app-dev.comma.invalid"
             buildConfigField("String", "BACKEND_BASE_URL", devBaseUrl.get().asBuildConfigString())
         }
         create("staging") {
             dimension = "environment"
             applicationIdSuffix = ".staging"
             resValue("string", "app_name", "Comma Staging")
+            manifestPlaceholders["miniAppLinkHost"] = "app-staging.comma.surf"
             buildConfigField("String", "BACKEND_BASE_URL", "\"https://salix-staging.cue.surf\"")
         }
         create("prod") {
             dimension = "environment"
             resValue("string", "app_name", "Comma")
+            manifestPlaceholders["miniAppLinkHost"] = "app.comma.surf"
             buildConfigField("String", "BACKEND_BASE_URL", "\"https://salix.comma.surf\"")
         }
     }
@@ -164,8 +158,6 @@ android {
     }
     buildTypes {
         debug {
-            buildConfigField("String", "DOUBAO_ASR_API_KEY", debugAsrApiKey.get().asBuildConfigString())
-            buildConfigField("String", "DOUBAO_ASR_RESOURCE_ID", debugAsrResourceId.get().asBuildConfigString())
             buildConfigField("boolean", "SYNC_DIAGNOSTICS", "true")
         }
         // AGP 9.3 enables code shrinking, obfuscation and resource shrinking together.
@@ -176,10 +168,6 @@ android {
             signingConfig = signingConfigs.getByName("internal")
             matchingFallbacks += "release"
             buildConfigField("boolean", "SYNC_DIAGNOSTICS", "true")
-            if (internalAsr.get()) {
-                buildConfigField("String", "DOUBAO_ASR_API_KEY", debugAsrApiKey.get().asBuildConfigString())
-                buildConfigField("String", "DOUBAO_ASR_RESOURCE_ID", debugAsrResourceId.get().asBuildConfigString())
-            }
         }
         create("benchmark") {
             initWith(getByName("release"))
@@ -212,7 +200,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
-            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            // The root project's robolectricJars task provides the Android jars.
+            it.dependsOn(":robolectricJars")
+            it.systemProperty("robolectric.offline", "true")
+            it.systemProperty("robolectric.dependency.dir", rootProject.layout.buildDirectory.dir("robolectric").get().asFile.path)
             // Background work runs where it is started (surf.comma.android.ui.Background).
             it.systemProperty("comma.background", "inline")
         }
@@ -239,6 +230,8 @@ androidComponents.onVariants(androidComponents.selector().withBuildType("interna
 }
 
 dependencies {
+    implementation("com.google.android.play:integrity:1.6.0")
+    implementation("androidx.webkit:webkit:1.15.0")
     implementation("io.coil-kt.coil3:coil-core:3.3.0")
     implementation("io.coil-kt.coil3:coil-gif:3.3.0")
     implementation(libs.androidx.media3.exoplayer)

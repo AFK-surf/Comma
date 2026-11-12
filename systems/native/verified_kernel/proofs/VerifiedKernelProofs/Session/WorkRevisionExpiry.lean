@@ -1,6 +1,5 @@
 import VerifiedKernelProofs.Session.WorkQueueDeterminism
 import VerifiedKernelProofs.Session.WorkRevisionRawPlan
-
 namespace VerifiedKernel.Session.WorkConservation
 open Data
 set_option Elab.async false
@@ -140,7 +139,7 @@ theorem expiry_plan_preserves {cursor : Cursor} {observations : List Term}
     (trace : PlanTrace
       (resident (some cursor.pack) (a "plan") (.tuple [a "expire", list observations]))
       (planned final outcome)) :
-    final.baseline = cursor.candidate.baseline ∧ final.etag = cursor.candidate.etag ∧
+    final.baseline = cursor.candidate.baseline ∧ final.revision = cursor.candidate.revision ∧
       QueueReady final.working ∧
       final.working.get (a "storage_format") = cursor.candidate.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
@@ -195,7 +194,7 @@ theorem plan_preserves {cursor : Cursor} {mode outcome : Term} {observations : L
     (trace : PlanTrace
       (resident (some cursor.pack) (a "plan") (.tuple [mode, list observations]))
       (planned final outcome)) :
-    final.baseline = cursor.candidate.baseline ∧ final.etag = cursor.candidate.etag ∧
+    final.baseline = cursor.candidate.baseline ∧ final.revision = cursor.candidate.revision ∧
       QueueReady final.working ∧
       final.working.get (a "storage_format") = cursor.candidate.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
@@ -232,7 +231,7 @@ theorem any_planned_snapshot_preserves {cursor : Revision.Cursor} {staged : Pend
       (a "encode") nil = (some saved, request))
     (primitive : ArchivePublication.SnapshotCASMeaning request result durable)
     (resumed : resident (some saved) (a "cas_result") result = (some restored, .tuple [a "ok", etag])) :
-    staged.baseline = cursor.candidate.baseline ∧ staged.etag = cursor.candidate.etag ∧ restored = stamped ∧
+    staged.baseline = cursor.candidate.baseline ∧ staged.revision = cursor.candidate.revision ∧ restored = stamped ∧
       ∃ snapshot, durable key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
         ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
           ValueSemantics.Represented snapshot sealed item := by

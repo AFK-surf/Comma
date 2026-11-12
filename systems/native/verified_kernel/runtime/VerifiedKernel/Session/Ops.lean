@@ -19,6 +19,11 @@ resident on the way out and `Session.attach` restores on the way in.
 namespace VerifiedKernel.Session
 open Data
 
+/-- Session metadata follows the existing display convention for epoch milliseconds. -/
+def metadataSeconds (value : Term) : Term :=
+  if value.isInteger && integerValue value ≥ 1000000000000 then i (integerValue value / 1000)
+  else value
+
 /-- `state → args → result`. -/
 abbrev Op := Term → Term → KernelM Term
 

@@ -27,7 +27,8 @@ defmodule SalixMeet.RouterSummaryTest do
          "transcript" => String.duplicate("会", 16_010),
          "captions_transcript" => "Comma planning",
          "asr_transcript" => "Q planning",
-         "duration_seconds" => 660
+         "duration_seconds" => 660,
+         "participants" => ["Alice Chen", "Bob Li"]
        }}
     end
 
@@ -135,6 +136,36 @@ defmodule SalixMeet.RouterSummaryTest do
     assert {:ok, _} = RouterSummary.submit("summary-group", params)
     changed = put_in(params, ["summary", "title"], "replacement")
     assert {:error, :summary_already_submitted} = RouterSummary.submit("summary-group", changed)
+  end
+
+  test "only meeting participants can be attendees or owners", c do
+    {:error, :router_summary_pending} =
+      Delivery.prepare_summary_for_delivery(c.id, c.state, c.claim)
+
+    settle_receive({:request, _, request})
+    params = params(c.id, request)
+    assert {:ok, page, _} = RouterSummary.read("summary-group", params)
+    assert page["participants"] == ["Alice Chen", "Bob Li"]
+
+    heard =
+      params
+      |> put_in(["summary", "attendees"], ["Alice Chen", "Peifei（转写名）"])
+      |> put_in(["summary", "action_items"], [
+        %{"description" => "Fix traffic", "owner" => "左卓", "deadline" => ""}
+      ])
+
+    assert {:error, {:names_not_in_participants, ["Peifei（转写名）", "左卓"]}} =
+             RouterSummary.submit("summary-group", heard)
+
+    grounded =
+      params
+      |> put_in(["summary", "attendees"], ["Alice Chen", "Bob Li（会中文字发言）"])
+      |> put_in(["summary", "action_items"], [
+        %{"description" => "Fix traffic", "owner" => "bob li", "deadline" => ""},
+        %{"description" => "Ask Darksky for the account", "owner" => "", "deadline" => ""}
+      ])
+
+    assert {:ok, %{"status" => "accepted"}} = RouterSummary.submit("summary-group", grounded)
   end
 
   test "stale delivery claim cannot enqueue a request", c do

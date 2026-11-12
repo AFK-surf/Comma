@@ -68,7 +68,7 @@ def Released (w : World) (policy : Policy) (activation : Activation)
     (effect : Effect) (receipts : ReceiptId → Option Receipt) (now : Nat)
     (evidence : List Admission) (ref : Ref) : Prop :=
   ∃ entry ∈ evidence, entry.item.ref = ref ∧ entry.clause ≠ .flow ∧
-    SourceAuthorized w policy activation effect entry.item.label receipts now entry.clause
+    SourceAuthorized w policy activation effect entry.item receipts now entry.clause
 
 theorem authorized_release_safe {action : Action Value Output}
     (authorized : Authorized w policy ctx activation effect receipts now gates evidence)
@@ -85,6 +85,7 @@ theorem authorized_release_safe {action : Action Value Output}
     rw [hc] at admitted
     cases admitted with
     | flow h => exact Or.inl (by simpa [destination, hlabel] using h)
+  | authored => exact Or.inr ⟨entry, present, href, by simp [hc], admitted⟩
   | inPlace => exact Or.inr ⟨entry, present, href, by simp [hc], admitted⟩
   | instruction => exact Or.inr ⟨entry, present, href, by simp [hc], admitted⟩
   | receipt id => exact Or.inr ⟨entry, present, href, by simp [hc], admitted⟩

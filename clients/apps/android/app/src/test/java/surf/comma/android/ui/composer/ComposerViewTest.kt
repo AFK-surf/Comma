@@ -28,22 +28,52 @@ import org.robolectric.annotation.Config
 import surf.comma.android.R
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+@Config(sdk = [35], qualifiers = "w400dp-h800dp")
 class ComposerViewTest {
-    @Test fun `a running reply keeps send available for the next message`() = withComposer { activity, _, composer ->
+    @Test fun `a physical keyboard's Tab goes to its hook while the field has focus`() = withComposer { _, _, composer ->
+        var taken = 0
+        composer.onTabKey = { taken++; true }
+        fun press(meta: Int = 0) = composer.dispatchKeyEvent(android.view.KeyEvent(0, 0, android.view.KeyEvent.ACTION_DOWN,
+            android.view.KeyEvent.KEYCODE_TAB, 0, meta))
+        composer.field.requestFocus()
+        assertTrue(press())
+        assertEquals(1, taken)
+        press(android.view.KeyEvent.META_SHIFT_ON)
+        assertEquals("Shift-Tab is not for the hook", 1, taken)
+        composer.field.clearFocus()
+        press()
+        assertEquals("without focus in the field the hook hears nothing", 1, taken)
+    }
+
+    @Test fun `failed and active uploads give different send guidance`() = withComposer { activity, _, composer ->
+        val attachment = ComposerAttachment("failed", Uri.EMPTY,
+            surf.comma.android.media.PickedFile("photo.png", "image/png", 10))
+        val send = byDescription(composer, activity.getString(R.string.composer_send))
+        composer.showAttachments(listOf(ShownAttachment(attachment, AttachmentUploadState.Uploading())))
+        send.performClick()
+        assertEquals(activity.getString(R.string.composer_uploads_pending), ShadowToast.getTextOfLatestToast())
+        composer.setAttachmentState(attachment.id, AttachmentUploadState.Failed)
+        send.performClick()
+        assertEquals(activity.getString(R.string.composer_uploads_failed), ShadowToast.getTextOfLatestToast())
+        assertEquals(1, composer.attachments.size)
+    }
+
+    @Test fun `an empty draft keeps send in place but inert until there is something to send`() = withComposer { activity, _, composer ->
         val sent = mutableListOf<String>()
         composer.onSend = { text, _ -> sent += text }
-        composer.setGenerating(true)
         val send = byDescription(composer, activity.getString(R.string.composer_send))
         assertEquals(View.VISIBLE, send.visibility)
-        send.performClick()
-        assertTrue("an empty draft sends nothing", sent.isEmpty())
+        assertFalse("an empty draft has nothing to send", send.isEnabled)
+        composer.field.setText("   ")
+        assertFalse("whitespace alone is not a message", send.isEnabled)
         composer.field.setText("one more thing")
+        assertTrue(send.isEnabled)
         send.performClick()
         assertEquals(listOf("one more thing"), sent)
         assertEquals("", composer.text)
         assertEquals(View.VISIBLE, send.visibility)
-        assertEquals(activity.getString(R.string.composer_send), send.contentDescription)
+        assertFalse(send.isEnabled)
     }
 
     @Test fun `pending admission keeps input editable and focused while duplicate sends are blocked`() {
@@ -130,6 +160,10 @@ class ComposerViewTest {
 
         assertEquals(listOf(picked), added)
         assertEquals(picked, composer.attachments.map { it.uri })
+        composer.field.clearFocus()
+        layOut()
+        assertTrue("attachments keep the card open", descendants(composer).filterIsInstance<ComposerRow>().single().stacked)
+        assertEquals((12 * activity.resources.displayMetrics.density).toInt(), composer.field.paddingTop)
     }
 
     @Test fun `the picker limit shrinks with the free slots and a full draft disables the menu`() = withComposer { activity, root, composer ->
@@ -211,6 +245,20 @@ class ComposerViewTest {
         }
     }
 
+    @Test fun `files picked with the same name are numbered in the draft`() = withComposer { activity, root, composer ->
+        val folders = List(3) { java.nio.file.Files.createTempDirectory("picked").toFile() }
+        try {
+            val uris = folders.map { Uri.fromFile(java.io.File(it, "clip.mp4").apply { writeBytes(byteArrayOf(1)) }) }
+            byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+            byDescription(menu(root), activity.getString(R.string.composer_attach_files)).performClick()
+            val request = shadowOf(activity).nextStartedActivityForResult
+            shadowOf(activity).receiveResult(request.intent, Activity.RESULT_OK, clip(uris))
+            assertEquals(listOf("clip.mp4", "clip-2.mp4", "clip-3.mp4"), composer.attachments.map { it.file.name })
+        } finally {
+            folders.forEach { it.deleteRecursively() }
+        }
+    }
+
     @Test fun `without a camera app nothing is added and a message explains`() = withComposer { activity, root, composer ->
         shadowOf(RuntimeEnvironment.getApplication()).checkActivities(true)
         val added = mutableListOf<Uri>()
@@ -232,79 +280,98 @@ class ComposerViewTest {
         assertFalse(menu(root).shown)
     }
 
-    @Test fun `a draft longer than one line takes the full width above the buttons`() = withComposer { activity, _, composer ->
-        val input = descendants(composer).filterIsInstance<EditText>().single()
-        val plus = byDescription(composer, activity.getString(R.string.composer_attach))
-        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
+    @Test fun `every picker and the camera report the pick until they answer, with or without a file`() = withComposer { activity, root, composer ->
+        val picking = mutableListOf<Boolean>()
+        composer.onPicking = { picking += it }
+        fun entry(description: Int, photoLimit: Int = 100): () -> Unit = {
+            composer.systemPhotoLimit = { photoLimit }
+            byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+            byDescription(menu(root), activity.getString(description)).performClick()
+        }
+        val opens = listOf(
+            entry(R.string.composer_attach_files), entry(R.string.composer_attach_photos),
+            entry(R.string.composer_attach_photos, photoLimit = 1), entry(R.string.composer_attach_camera),
+            { composer.pickQuestionImages("question", 4) }, { composer.pickQuestionImages("question", 1) },
+        )
+        for (open in opens) {
+            open()
+            assertEquals(listOf(true), picking)
+            val request = shadowOf(activity).nextStartedActivityForResult
+            shadowOf(activity).receiveResult(request.intent, Activity.RESULT_CANCELED, null)
+            assertEquals("${request.intent.action} answered nothing", listOf(true, false), picking)
+            picking.clear()
+        }
+        entry(R.string.composer_attach_files)()
+        val request = shadowOf(activity).nextStartedActivityForResult
+        shadowOf(activity).receiveResult(request.intent, Activity.RESULT_OK, clip(listOf(Uri.parse("content://docs/1"))))
+        assertEquals(listOf(true, false), picking)
+        assertEquals(1, composer.attachments.size)
+    }
 
+    @Test fun `the pick ends when the app comes back without an answer, or when the composer leaves its window`() {
+        Robolectric.buildActivity(ComponentActivity::class.java).use { controller ->
+            val activity = controller.get()
+            activity.setTheme(R.style.Theme_Chat)
+            controller.setup()
+            val root = FrameLayout(activity)
+            val composer = ComposerView(activity)
+            composer.attachTo(root)
+            activity.setContentView(root)
+            val picking = mutableListOf<Boolean>()
+            composer.onPicking = { picking += it }
+            fun pickFiles() {
+                byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+                byDescription(menu(root), activity.getString(R.string.composer_attach_files)).performClick()
+            }
+
+            pickFiles()
+            controller.pause().stop()
+            assertEquals("the picker is over the app", listOf(true), picking)
+            // Back from a camera in a task of its own, say, with the camera not done.
+            controller.restart().resume()
+            assertEquals(listOf(true, false), picking)
+
+            pickFiles()
+            controller.pause().stop().destroy()
+            assertEquals("its answer goes to the next activity's composer", listOf(true, false, true, false), picking)
+        }
+    }
+
+    @Test fun `focus stacks even a short draft and clearing keeps the focused card open`() = withComposer { activity, _, composer ->
+        val input = composer.field
+        val plus = byDescription(composer, activity.getString(R.string.composer_attach))
+        val send = byDescription(composer, activity.getString(R.string.composer_send))
+        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
+        input.clearFocus()
+        layOut()
+        assertFalse(row.stacked)
+        input.requestFocus()
         input.setText("short")
         layOut()
-        val send = byDescription(composer, activity.getString(R.string.composer_send))
-        assertFalse(row.stacked)
-        assertSingleRow(row, plus, input, send)
-
-        input.setText("word ".repeat(200))
-        layOut()
         assertTrue(row.stacked)
         assertStacked(row, plus, input, send)
-
-        input.setText("short again")
-        layOut()
-        assertFalse(row.stacked)
-        assertSingleRow(row, plus, input, send)
-
-        input.setText("one\ntwo")
-        layOut()
-        assertTrue("a line break stacks even when each line is short", row.stacked)
-        assertStacked(row, plus, input, send)
-    }
-
-    @Test fun `clearing a stacked draft restores the single row`() = withComposer { activity, _, composer ->
-        val input = descendants(composer).filterIsInstance<EditText>().single()
-        val plus = byDescription(composer, activity.getString(R.string.composer_attach))
-        // Described by whether this build has voice credentials; either way it is the same button.
-        val micLabels = setOf(R.string.composer_mic, R.string.composer_voice_unavailable).map(activity::getString)
-        val mic = descendants(composer).single { it.contentDescription in micLabels }
-        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
-        layOut()
-        val restingHeight = row.height
-
-        input.setText("one\ntwo\nthree")
-        layOut()
-        assertTrue(row.stacked)
-        assertTrue(row.height > restingHeight)
-
         input.setText("")
         layOut()
+        assertTrue(row.stacked)
+        input.clearFocus()
+        layOut()
         assertFalse(row.stacked)
-        assertEquals(restingHeight, row.height)
-        assertSingleRow(row, plus, input, mic)
+        assertSingleRow(row, plus, input, send)
     }
 
-    @Test fun `sending a stacked draft restores the single row`() = withComposer { activity, _, composer ->
-        val input = descendants(composer).filterIsInstance<EditText>().single()
+    @Test fun `sending a stacked draft keeps the focused card ready for another message`() = withComposer { activity, _, composer ->
+        val input = composer.field
         val row = descendants(composer).filterIsInstance<ComposerRow>().single()
         composer.onSend = { _, _ -> }
+        input.requestFocus()
         input.setText("one\ntwo")
         layOut()
         assertTrue(row.stacked)
         byDescription(composer, activity.getString(R.string.composer_send)).performClick()
         layOut()
         assertEquals("", input.text.toString())
-        assertFalse(row.stacked)
-    }
-
-    @Test fun `the row decides from the width between the buttons`() {
-        val perChar: (CharSequence) -> Float = { it.length * 10f }
-        assertFalse(ComposerRow.needsOwnRow("", 100, perChar))
-        assertFalse(ComposerRow.needsOwnRow("0123456789", 100, perChar))
-        assertTrue(ComposerRow.needsOwnRow("01234567890", 100, perChar))
-        assertTrue(ComposerRow.needsOwnRow("a\nb", 100, perChar))
-        assertFalse("not measured yet", ComposerRow.needsOwnRow("01234567890", 0, perChar))
-        // A long draft is settled by its head alone.
-        val measured = mutableListOf<Int>()
-        assertTrue(ComposerRow.needsOwnRow("x".repeat(5000), 100) { measured += it.length; it.length * 10f })
-        assertEquals(listOf(128), measured)
+        assertTrue(input.hasFocus())
+        assertTrue(row.stacked)
     }
 
     /** Buttons and field share one row: the field sits between them. */
@@ -349,7 +416,7 @@ class ComposerViewTest {
         clipData = ClipData.newRawUri(null, uris.first()).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
     }
 
-    @Test fun `the composer sits 20 dp above the bottom inset, 24 dp from the edges`() = withComposer { activity, root, composer ->
+    @Test fun `the composer sits 16 dp above the keyboard and 8 dp above navigation`() = withComposer { activity, root, composer ->
         val density = activity.resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
         val navigation = dp(24)
@@ -366,19 +433,83 @@ class ComposerViewTest {
                 root.layout(0, 0, dp(400), dp(800))
                 val pill = composer.getChildAt(0)
                 val visibleBottom = composer.y + pill.bottom
-                assertEquals("20 dp above navigation or the keyboard, counted once",
-                    (root.height - maxOf(navigation, keyboard) - dp(20)).toFloat(), visibleBottom, 0f)
-                assertEquals("24 dp gutter", dp(24), pill.left)
-                assertEquals(dp(24), composer.width - pill.right)
+                val gap = if (keyboard > navigation) dp(16) else dp(8)
+                assertEquals("bottom spacing is counted once, including host padding",
+                    (root.height - maxOf(navigation, keyboard) - gap).toFloat(), visibleBottom, 0f)
+                assertEquals("12 dp gutter", dp(12), pill.left)
+                assertEquals(dp(12), composer.width - pill.right)
             }
         }
     }
 
-    @Test fun `the composer is a raised card in the composer colour`() = withComposer { activity, _, composer ->
+    @Test fun `a physical keyboard's Return sends and keeps focus, Shift- or Alt-Return breaks the line`() = withComposer { _, _, composer ->
+        val sent = mutableListOf<String>()
+        composer.onSend = { text, _ -> sent += text }
+        val field = composer.field
+        field.requestFocus()
+        fun press(meta: Int = 0, soft: Boolean = false) {
+            val deviceId = if (soft) android.view.KeyCharacterMap.VIRTUAL_KEYBOARD else 1
+            val flags = if (soft) android.view.KeyEvent.FLAG_SOFT_KEYBOARD else 0
+            for (action in listOf(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.ACTION_UP)) {
+                field.dispatchKeyEvent(android.view.KeyEvent(0, 0, action, android.view.KeyEvent.KEYCODE_ENTER, 0, meta,
+                    deviceId, 0, flags))
+            }
+        }
+        field.setText("hello world")
+        field.setSelection(5)
+        press(android.view.KeyEvent.META_SHIFT_ON or android.view.KeyEvent.META_SHIFT_LEFT_ON)
+        assertEquals("hello\n world", field.text.toString())
+        assertEquals(6, field.selectionStart)
+        field.setSelection(6, field.text.length)
+        press(android.view.KeyEvent.META_ALT_ON or android.view.KeyEvent.META_ALT_LEFT_ON)
+        assertEquals("A selection is replaced", "hello\n\n", field.text.toString())
+        assertEquals(7, field.selectionStart)
+        assertTrue(sent.isEmpty())
+
+        field.setText("ship it")
+        press()
+        assertEquals(listOf("ship it"), sent)
+        assertEquals("", field.text.toString())
+        assertTrue("the field keeps focus to type the next message", field.hasFocus())
+
+        field.setText("soft")
+        press(soft = true)
+        assertEquals("a software keyboard's Return does not send", listOf("ship it"), sent)
+    }
+
+    @Test fun `restoring focus to the field does not request the keyboard`()= withComposer { activity, _, composer ->
+        composer.dismiss()
+        composer.field.requestFocus()
+        layOut()
+        val keyboard = shadowOf(activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java))
+        assertFalse(keyboard.isSoftInputVisible)
+    }
+
+    @Test fun `an explicit edit request opens the keyboard even if the field already has focus`() = withComposer { activity, _, composer ->
+        composer.dismiss()
+        composer.field.requestFocus()
+        composer.focusInput()
+        layOut()
+        val keyboard = shadowOf(activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java))
+        assertTrue(keyboard.isSoftInputVisible)
+    }
+
+    @Test fun `dismiss cancels a pending keyboard request and keeps the draft`() = withComposer { activity, _, composer ->
+        composer.field.setText("unfinished draft")
+        composer.focusInput()
+        composer.dismiss()
+        layOut()
+        val keyboard = shadowOf(activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java))
+        assertFalse(keyboard.isSoftInputVisible)
+        assertFalse(composer.field.hasFocus())
+        assertEquals("unfinished draft", composer.text)
+    }
+
+    @Test fun `the composer keeps its surface colour without platform elevation`() = withComposer { activity, _, composer ->
         val pill = composer.getChildAt(0) as ComposerPill
-        assertEquals(activity.getColor(R.color.token_composer_bg), (pill.background as android.graphics.drawable.GradientDrawable).color?.defaultColor)
+        assertEquals(activity.getColor(R.color.token_composer_bg), ((pill.background as android.graphics.drawable.InsetDrawable).drawable as android.graphics.drawable.GradientDrawable).color?.defaultColor)
         assertEquals(0xFFFFFFFF.toInt(), activity.getColor(R.color.token_composer_bg))
-        assertTrue("lifted off the page", pill.elevation > 0f)
+        assertEquals("custom shadow replaces platform elevation", 0f, pill.elevation, 0f)
         assertFalse("the shadow is not cut at the pill", composer.clipToPadding)
     }
 
@@ -388,8 +519,283 @@ class ComposerViewTest {
             val pill = composer.getChildAt(0) as ComposerPill
             assertEquals(0xFF303030.toInt(), activity.getColor(R.color.token_composer_bg))
             assertEquals(0xFF4F4F4F.toInt(), activity.getColor(R.color.token_composer_border))
-            assertEquals(0xFF303030.toInt(), (pill.background as android.graphics.drawable.GradientDrawable).color?.defaultColor)
+            assertEquals(0xFF303030.toInt(), ((pill.background as android.graphics.drawable.InsetDrawable).drawable as android.graphics.drawable.GradientDrawable).color?.defaultColor)
         }
+    }
+
+    @Test fun `collapsed composer matches the separate 44 dp plus and 22 dp field radius`() = withComposer { activity, root, composer ->
+        val density = activity.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+        composer.field.clearFocus()
+        root.measure(View.MeasureSpec.makeMeasureSpec(dp(400), View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(dp(800), View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, dp(400), dp(800))
+        val pill = composer.getChildAt(0)
+        val plus = byDescription(composer, activity.getString(R.string.composer_attach)) as android.widget.ImageView
+        val send = byDescription(composer, activity.getString(R.string.composer_send)) as android.widget.ImageView
+        assertEquals("resting height", dp(44), pill.height)
+        val outline = android.graphics.Outline()
+        pill.outlineProvider.getOutline(pill, outline)
+        val surface = Rect()
+        assertTrue(outline.getRect(surface))
+        assertEquals(Rect(dp(52), 0, pill.width, dp(44)), surface)
+        assertEquals(dp(22).toFloat(), outline.radius, 0f)
+        val plusBox = boxIn(pill, plus)
+        assertEquals(Rect(0, 0, dp(44), dp(44)), plusBox)
+        assertEquals(dp(22), plus.width - plus.paddingLeft - plus.paddingRight)
+        assertEquals("8 dp gap between surfaces", dp(8), surface.left - plusBox.right)
+        assertEquals("placeholder starts 16 dp inside field", dp(68), boxIn(pill, composer.field).left + composer.field.paddingLeft)
+        assertEquals(0xFFB6B8BB.toInt(), composer.field.currentHintTextColor)
+        assertEquals("send touch target", dp(44), send.width)
+        send.background.setBounds(0, 0, send.width, send.height)
+        val scaledCircle = ((send.background as android.graphics.drawable.RippleDrawable).getDrawable(0) as android.graphics.drawable.InsetDrawable).drawable as android.graphics.drawable.DrawableWrapper
+        val circle = scaledCircle.drawable!!
+        assertEquals("disabled circle scale", 9200, scaledCircle.level)
+        assertEquals(0xFFB6B8BB.toInt(), (circle as android.graphics.drawable.GradientDrawable).color!!.defaultColor)
+        composer.field.setText("ready")
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks()
+        assertEquals(10000, scaledCircle.level)
+        assertEquals(0xFF205BFF.toInt(), circle.color!!.defaultColor)
+        assertEquals("send circle diameter", dp(32), circle.bounds.width())
+        assertEquals("send circle right inset", dp(6), send.width - circle.bounds.right)
+        assertEquals("arrow size", dp(18), send.width - send.paddingLeft - send.paddingRight)
+    }
+
+    @Test fun `focused composer has 24 dp corners and 14 dp text gutters above a 44 dp button row`() = withComposer { activity, root, composer ->
+        val density = activity.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+        composer.field.requestFocus()
+        composer.field.setText("one\ntwo")
+        root.measure(View.MeasureSpec.makeMeasureSpec(dp(400), View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(dp(800), View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, dp(400), dp(800))
+        val pill = composer.getChildAt(0)
+        val outline = android.graphics.Outline()
+        pill.outlineProvider.getOutline(pill, outline)
+        assertEquals(dp(24).toFloat(), outline.radius, 0f)
+        val surface = Rect()
+        outline.getRect(surface)
+        assertEquals(0, surface.left)
+        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
+        val text = boxIn(row, composer.field)
+        assertEquals(dp(14), text.left)
+        assertEquals(dp(14), row.width - text.right)
+        assertEquals(dp(16), composer.field.paddingTop)
+        assertEquals(dp(10), composer.field.paddingBottom)
+        assertEquals(dp(44), row.height - text.bottom)
+        assertEquals(6, composer.field.maxLines)
+    }
+
+    @Test fun `night placeholder keeps the shared iOS colour`() {
+        RuntimeEnvironment.setQualifiers("+night")
+        withComposer { _, _, composer -> assertEquals(0xFF7E8187.toInt(), composer.field.currentHintTextColor) }
+    }
+
+    @Test @Config(qualifiers = "w800dp-h400dp-land") fun `compact height keeps two text lines between the corner buttons`() = withComposer { activity, root, composer ->
+        composer.field.requestFocus()
+        composer.field.setText("one\ntwo\nthree")
+        root.measure(View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, 800, 400)
+        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
+        assertFalse(row.stacked)
+        assertEquals(2, composer.field.maxLines)
+        assertSingleRow(row, byDescription(composer, activity.getString(R.string.composer_attach)),
+            composer.field, byDescription(composer, activity.getString(R.string.composer_send)))
+    }
+
+    @Test @Config(qualifiers = "w800dp-h400dp-land") fun `landscape attachments allow six lines while the inline field keeps two`() = withComposer { activity, root, composer ->
+        val input = composer.field
+        input.requestFocus()
+        input.setText("one\ntwo\nthree\nfour")
+        fun measure() {
+            root.measure(View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY))
+            root.layout(0, 0, 800, 400)
+        }
+        measure()
+        val row = descendants(composer).filterIsInstance<ComposerRow>().single()
+        assertFalse(row.stacked)
+        assertEquals("inline landscape field", 2, input.maxLines)
+
+        byDescription(composer, activity.getString(R.string.composer_attach)).performClick()
+        byDescription(menu(root), activity.getString(R.string.composer_attach_photos)).performClick()
+        val request = shadowOf(activity).nextStartedActivityForResult
+        val picked = Uri.parse("content://media/picker/1")
+        shadowOf(activity).receiveResult(request.intent, Activity.RESULT_OK, clip(listOf(picked)))
+        measure()
+
+        assertEquals(listOf(picked), composer.attachments.map { it.uri })
+        assertTrue(row.stacked)
+        assertEquals("stacked landscape field", 6, input.maxLines)
+        val textHeight = input.height - input.compoundPaddingTop - input.compoundPaddingBottom
+        assertTrue("more than two text lines are visible", textHeight > 2 * input.lineHeight)
+    }
+
+    @Test @Config(qualifiers = "w1200dp-h800dp-land") fun `tall landscape windows keep a stacked six line composer`() = withComposer { _, root, composer ->
+        composer.field.requestFocus()
+        root.measure(View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, 1200, 800)
+        assertTrue(descendants(composer).filterIsInstance<ComposerRow>().single().stacked)
+        assertEquals(6, composer.field.maxLines)
+    }
+
+    @Test fun `surface shadow stays six percent with a downward soft falloff before and after focus`() {
+        for (focused in listOf(false, true)) withComposer { activity, root, composer ->
+            if (focused) composer.field.requestFocus() else composer.field.clearFocus()
+            root.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
+            root.layout(0, 0, 400, 800)
+            val bitmap = android.graphics.Bitmap.createBitmap(composer.width, composer.height, android.graphics.Bitmap.Config.ARGB_8888)
+            composer.draw(android.graphics.Canvas(bitmap))
+            val pill = composer.getChildAt(0)
+            val x = pill.right - 80
+            fun alpha(y: Int) = android.graphics.Color.alpha(bitmap.getPixel(x, y))
+            val below = (1..7).map { alpha(pill.bottom + it) }
+            val above = (1..7).map { alpha(pill.top - it) }
+            assertTrue("a visible but faint shadow in either focus state: $below", below.all { it in 1..15 })
+            assertTrue("3 dp offset puts more shadow below: $above / $below", below.sum() > above.sum())
+            assertTrue("10 dp blur fades away from the edge: $below", below.first() > below.last())
+            assertEquals("no hardware elevation shadow on top", 0f, pill.elevation, 0f)
+            val plus = byDescription(composer, activity.getString(R.string.composer_attach))
+            assertEquals("no second hardware shadow on plus", 0f, plus.elevation, 0f)
+            val plusBox = boxIn(composer, plus)
+            if (focused) {
+                assertEquals("expanded plus has no independent shadow inside the card", 0xFFFFFFFF.toInt(),
+                    bitmap.getPixel(plusBox.centerX(), plusBox.top - 2))
+            } else {
+                val a = android.graphics.Color.alpha(bitmap.getPixel(plusBox.centerX(), plusBox.bottom + 3))
+                assertTrue("collapsed plus has the same faint shadow", a in 1..15)
+            }
+            bitmap.recycle()
+        }
+    }
+
+    @Test fun `attachment feedback retains a ripple before and after focus`() = withComposer { activity, _, composer ->
+        val plus = byDescription(composer, activity.getString(R.string.composer_attach))
+        for (focused in listOf(false, true)) {
+            if (focused) composer.field.requestFocus() else composer.field.clearFocus()
+            assertTrue(plus.background is android.graphics.drawable.RippleDrawable)
+        }
+    }
+
+    @Test fun `send arrow still draws after its image level resets`() = withComposer { activity, _, composer ->
+        val send = byDescription(composer, activity.getString(R.string.composer_send)) as android.widget.ImageView
+        val bitmap = android.graphics.Bitmap.createBitmap(24, 24, android.graphics.Bitmap.Config.ARGB_8888)
+        send.drawable.setBounds(0, 0, 24, 24)
+        send.setImageLevel(0)
+        send.drawable.draw(android.graphics.Canvas(bitmap))
+        assertTrue((0 until 24).any { x -> (0 until 24).any { y -> android.graphics.Color.alpha(bitmap.getPixel(x, y)) > 0 } })
+        bitmap.recycle()
+    }
+
+    @Test fun `first RTL layout places the collapsed surface beside the plus`() = withComposer { activity, root, composer ->
+        root.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        composer.field.clearFocus()
+        root.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, 400, 800)
+        val pill = composer.getChildAt(0)
+        val outline = android.graphics.Outline()
+        pill.outlineProvider.getOutline(pill, outline)
+        val bounds = Rect()
+        outline.getRect(bounds)
+        val plus = boxIn(pill, byDescription(composer, activity.getString(R.string.composer_attach)))
+        assertEquals(0, bounds.left)
+        assertEquals(pill.width - 52, bounds.right)
+        assertEquals(pill.width, plus.right)
+        assertEquals(8, plus.left - bounds.right)
+    }
+
+    @Test fun `hiding the keyboard collapses a nonempty draft without clearing its text`() = withComposer { _, root, composer ->
+        composer.field.requestFocus()
+        composer.field.setText("unfinished draft")
+        for (height in listOf(300, 0)) {
+            ViewCompat.dispatchApplyWindowInsets(composer, WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, height)).build())
+        }
+        root.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, 400, 800)
+        assertEquals("unfinished draft", composer.text)
+        assertFalse(composer.field.hasFocus())
+        assertFalse(descendants(composer).filterIsInstance<ComposerRow>().single().stacked)
+    }
+
+    private class HeldCapture : DictationCapture {
+        override val level = 0f
+        var discarded = false
+        override suspend fun stop() = byteArrayOf(1)
+        override fun discard() { discarded = true }
+    }
+
+    private fun dictating(activity: ComponentActivity, composer: ComposerView, words: suspend (ByteArray) -> String): HeldCapture {
+        shadowOf(activity).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        val capture = HeldCapture()
+        composer.dictationAudio = object : DictationMicrophone {
+            override suspend fun start(ended: () -> Unit) = capture
+        }
+        composer.transcribeDictation = words
+        return capture
+    }
+
+    private fun press(view: View) {
+        val time = android.os.SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(android.view.MotionEvent.obtain(time, time, android.view.MotionEvent.ACTION_DOWN, 1f, 1f, 0))
+        view.dispatchTouchEvent(android.view.MotionEvent.obtain(time, time + 10, android.view.MotionEvent.ACTION_UP, 1f, 1f, 0))
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test fun `there is no microphone until the host can transcribe`() = withComposer { activity, _, composer ->
+        val description = activity.getString(R.string.composer_dictate)
+        assertEquals(View.GONE, byDescription(composer, description).visibility)
+        dictating(activity, composer) { "" }
+        assertEquals(View.VISIBLE, byDescription(composer, description).visibility)
+    }
+
+    @Test fun `dictated words go in at the caret`() = withComposer { activity, _, composer ->
+        dictating(activity, composer) { "brave new" }
+        composer.field.setText("hello world")
+        composer.field.setSelection(5)
+        press(byDescription(composer, activity.getString(R.string.composer_dictate)))
+        val capsule = descendants(composer).filterIsInstance<DictationCapsule>().single()
+        assertEquals(View.VISIBLE, capsule.visibility)
+        press(capsule)
+        assertEquals("hello brave new world", composer.field.text.toString())
+        assertEquals("hello brave new".length, composer.field.selectionStart)
+    }
+
+    @Test fun `plus cancels a dictation, holds send meanwhile, and leaves the draft`() = withComposer { activity, _, composer ->
+        val capture = dictating(activity, composer) { "words" }
+        var sent = 0
+        composer.onSend = { _, _ -> sent++ }
+        composer.field.setText("draft")
+        press(byDescription(composer, activity.getString(R.string.composer_dictate)))
+        val cancel = byDescription(composer, activity.getString(R.string.composer_dictate_cancel))
+        byDescription(composer, activity.getString(R.string.composer_send)).performClick()
+        assertEquals(0, sent)
+        cancel.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(capture.discarded)
+        assertEquals("draft", composer.field.text.toString())
+        assertEquals(activity.getString(R.string.composer_attach), cancel.contentDescription)
+    }
+
+    @Test fun `a composer that leaves its window drops the dictation`() = withComposer { activity, root, composer ->
+        val capture = dictating(activity, composer) { "words" }
+        press(byDescription(composer, activity.getString(R.string.composer_dictate)))
+        root.removeView(composer)
+        assertTrue(capture.discarded)
+    }
+
+    @Test fun `a failed dictation says why and leaves the draft`() = withComposer { activity, _, composer ->
+        dictating(activity, composer) { throw IllegalStateException() }
+        composer.field.setText("draft")
+        press(byDescription(composer, activity.getString(R.string.composer_dictate)))
+        press(descendants(composer).filterIsInstance<DictationCapsule>().single())
+        assertEquals(activity.getString(R.string.composer_dictation_failed), ShadowToast.getTextOfLatestToast())
+        assertEquals("draft", composer.field.text.toString())
     }
 
     private fun withComposer(block: (ComponentActivity, FrameLayout, ComposerView) -> Unit) {

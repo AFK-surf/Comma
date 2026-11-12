@@ -1,5 +1,6 @@
 // The desktop voice call's speaker and microphone (the core's voice-call.ts runs the call; Main holds its socket). The
-// Router's 24 kHz PCM16 frames are scheduled back to back; a mark is answered once every frame before it has played,
+// Router's 24 kHz PCM16 frames are scheduled back to back, each run of speech starting JITTER_SECONDS ahead of the clock so
+// that frames arriving that much late (the network, the model, the IPC from Main) still play without a gap; a mark is answered once every frame before it has played,
 // and a clear (the caller spoke over it) drops what is still queued and answers every waiting mark, as the phones do.
 // The microphone goes to Main in 20 ms frames of the same format, with the browser's echo cancellation; muted, the
 // frames keep coming as silence, as the phones send them, since the server ends a call whose audio stops.
@@ -7,10 +8,14 @@
 const SAMPLE_RATE = 24_000;
 /** 20 ms of audio. */
 const FRAME_SAMPLES = 480;
+/** How far ahead a run of the Router's speech starts: what a frame may be late by before it is heard as a gap. */
+const JITTER_SECONDS = 0.15;
 
 export interface CallAudioOut {
   microphone(pcm: Uint8Array): void;
   played(name: string): void;
+  /** The queued speech ran out before the next frame came, by `gapMs`: what is heard as a stutter. */
+  underrun?(gapMs: number): void;
 }
 
 export class CallAudio {
@@ -80,7 +85,14 @@ export class CallAudio {
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
-    const at = Math.max(context.currentTime, this.#playEnd);
+    const now = context.currentTime;
+    let at = this.#playEnd;
+    if (at <= now) {
+      // Nothing left to play: a new run, or a frame of this one came too late. Either way the next frames get room.
+      if (this.#playEnd > 0 && now > this.#playEnd)
+        this.#out.underrun?.(Math.round((now - this.#playEnd) * 1000));
+      at = now + JITTER_SECONDS;
+    }
     source.start(at);
     this.#playEnd = at + buffer.duration;
     this.#sources.add(source);

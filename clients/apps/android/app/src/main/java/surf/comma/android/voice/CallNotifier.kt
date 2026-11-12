@@ -12,17 +12,20 @@ import androidx.core.graphics.drawable.IconCompat
 import androidx.core.net.toUri
 import surf.comma.android.MainActivity
 import surf.comma.android.R
+import surf.comma.android.voice.ui.CallPresentation
+import surf.comma.android.voice.ui.CallStatus
 
 internal class CallNotifier(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
 
     fun createChannel() {
-        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Voice calls",
+        manager.createNotificationChannel(NotificationChannel(CHANNEL, context.getString(R.string.call_channel),
             NotificationManager.IMPORTANCE_DEFAULT).apply { setShowBadge(false) })
     }
 
     fun build(state: CallControllerState): Notification {
-        val text = callNotificationText(state.call, state.notice)
+        val text = callNotificationText(state)
+        val content = text.notice?.let(::notice) ?: context.getString(text.res)
         val open = PendingIntent.getActivity(context, ID,
             Intent(context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -31,7 +34,7 @@ internal class CallNotifier(private val context: Context) {
         val builder = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_cue_mark)
             .setContentTitle("Comma")
-            .setContentText(text.text)
+            .setContentText(content)
             .setContentIntent(open)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -51,10 +54,16 @@ internal class CallNotifier(private val context: Context) {
                 .setIcon(IconCompat.createWithResource(context, R.drawable.ic_cue_mark)).setImportant(true).build()
             builder.setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUp))
         } else {
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText(text.text))
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(content))
                 .setTimeoutAfter(if (state.call.phase == CallPhase.Failed) CallStopTimer.FAILED_MILLIS else CallStopTimer.ENDED_MILLIS)
         }
         return builder.build()
+    }
+
+    /** A service notice in the app's words where it has them, as the call UI shows it. */
+    fun notice(text: String): String = when (val status = CallPresentation.notice(text)) {
+        is CallStatus.Text -> context.getString(status.res)
+        else -> text
     }
 
     fun post(state: CallControllerState) {

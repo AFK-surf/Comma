@@ -12,8 +12,6 @@ defmodule Comma.WorkspaceTestSupport do
     user_id = user_id(user_or_id)
     attrs = if is_binary(attrs), do: %{"name" => attrs}, else: stringify(attrs)
 
-    attrs = Map.put_new(attrs, "vm", %{"enabled" => false})
-
     assert is_binary(user_id)
     assert {:ok, pending} = WorkspaceBootstrap.ensure_default(user_id)
     workspace_id = pending["workspace"]["id"]
@@ -51,8 +49,6 @@ defmodule Comma.WorkspaceTestSupport do
   def create_additional_ready_workspace!(user_or_id, attrs \\ %{}) do
     user_id = user_id(user_or_id)
     attrs = if is_binary(attrs), do: %{"name" => attrs}, else: stringify(attrs)
-    attrs = Map.put_new(attrs, "vm", %{"enabled" => false})
-
     assert is_binary(user_id)
     assert {:ok, created} = Comma.Workspaces.create_for_user(user_id, attrs)
     workspace_id = created["id"]

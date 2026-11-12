@@ -7,16 +7,21 @@ defmodule SalixAgent.TaskPlace do
 
     * `%{"kind" => "salix"}`: inside Salix. A Group that has set none runs its
       Tasks there too.
-    * `%{"kind" => "cloud_vm"}`: the Group's Cloud VM.
+    * `%{"kind" => "cloud_vm"}`: the Group's Cloud VM, where it is not retired.
+    * `%{"kind" => "sandbox"}`: a sandbox of each Task's own.
     * `%{"kind" => "station", "device_id" => id}`: a station of the Group.
 
   Only the shape is checked when it is set, and the Cloud VM only while the
-  Group's Cloud VM switch is on; the product checks that a station is one of
-  its own. Each Task checks the place again when it is created
-  (`SalixIM.Ports.TaskCreate.runs_on/2`): the Cloud VM switch on and the VM
-  running, a station connected and ready. A place that fails refuses the
-  Task, which is not moved elsewhere. A Loop Task does not take the default:
-  it runs inside Salix (`SalixIM.TaskPlacement`).
+  Group can have one (`SalixAgent.CloudVM.available?/2`, `:cloud_vm_disabled`
+  otherwise) and it is not retired here
+  (`SalixAgent.Sandboxes.cloud_vm_retired?/1`, `:cloud_vm_retired` otherwise),
+  a sandbox needs sandboxes set up (`:sandbox_unavailable`); the product checks
+  that a station is one of its own. Each Task checks the place again when it
+  is created (`SalixIM.Ports.TaskCreate.runs_on/2`): the Group's Cloud VM
+  and the VM running, a station connected and ready, a sandbox within the
+  Group's limit and credits. A place that fails refuses the Task, which is
+  not moved elsewhere. A Loop Task does not take the default: it runs inside
+  Salix (`SalixIM.TaskPlacement`).
   """
 
   alias SalixStore.{CasRecord, Ids, Keys}
@@ -24,12 +29,16 @@ defmodule SalixAgent.TaskPlace do
   @field "default_task_place"
   @salix %{"kind" => "salix"}
   @cloud_vm %{"kind" => "cloud_vm"}
+  @sandbox %{"kind" => "sandbox"}
 
   @doc "Running inside Salix, as a default place."
   def salix, do: @salix
 
   @doc "The Group's Cloud VM, as a default place."
   def cloud_vm, do: @cloud_vm
+
+  @doc "A sandbox of each Task's own, as a default place."
+  def sandbox, do: @sandbox
 
   @doc "The Group's default place, or nil when it has set none (inside Salix)."
   @spec get(String.t()) :: {:ok, map() | nil} | {:error, term()}
@@ -50,21 +59,35 @@ defmodule SalixAgent.TaskPlace do
     if valid?(value), do: value
   end
 
+  @doc """
+  Group record `group` with a default place `{kind: cloud_vm}` replaced by
+  `place`: the Cloud VM cutover (`SalixWeb.Migrations.CloudVMCutover`). Any
+  other default stays.
+  """
+  @spec retire_cloud_vm(map(), map()) :: map()
+  def retire_cloud_vm(group, place) when is_map(group) and is_map(place) do
+    if of_group(group) == @cloud_vm, do: Map.put(group, @field, place), else: group
+  end
+
   @doc "Whether `value` is a stored default place."
   def valid?(@salix), do: true
   def valid?(@cloud_vm), do: true
+  def valid?(@sandbox), do: true
 
   def valid?(%{"kind" => "station", "device_id" => device_id} = value)
       when map_size(value) == 2 and is_binary(device_id),
-      do: device_id == String.trim(device_id) and device_id_ok?(device_id)
+      do: device_id == String.trim(device_id) and device_id != "" and byte_size(device_id) <= 256
 
   def valid?(_value), do: false
 
   @doc """
   Check `place` and store it as the default place of the Group of
   `tenant_id`. `nil` clears it: the Group has set none again. The Cloud VM
-  needs the Group's Cloud VM switch on (`:cloud_vm_disabled`); the Group's
-  own Cloud VM station is named as `{kind: cloud_vm}` (`:use_cloud_vm_kind`).
+  needs one the Group can have (`:cloud_vm_disabled`,
+  `SalixAgent.CloudVM.available?/2`); the Group's own Cloud VM station is
+  named as `{kind: cloud_vm}` (`:use_cloud_vm_kind`;
+  `:cloud_vm_retired` where it is retired), and its VM on an Agent VMM Host as
+  that Host's station (`SalixStore.ComputeGroupStation.vmm_group_vm?/2`).
   """
   @spec put(String.t(), String.t(), term()) :: {:ok, map() | nil} | {:error, term()}
   def put(tenant_id, group_id, nil),
@@ -73,9 +96,19 @@ defmodule SalixAgent.TaskPlace do
   def put(tenant_id, group_id, place) do
     with {:ok, value} <- normalize(place, group_id) do
       write(tenant_id, group_id, fn group, _current ->
-        if value == @cloud_vm and group["cloud_vm_enabled"] != true,
-          do: {:error, :cloud_vm_disabled},
-          else: value
+        cond do
+          value == @cloud_vm and SalixAgent.Sandboxes.cloud_vm_retired?(group) ->
+            {:error, :cloud_vm_retired}
+
+          value == @cloud_vm and not SalixAgent.CloudVM.available?(tenant_id, group_id) ->
+            {:error, :cloud_vm_disabled}
+
+          value == @sandbox and not SalixAgent.Sandboxes.enabled?() ->
+            {:error, :sandbox_unavailable}
+
+          true ->
+            value
+        end
       end)
     end
   end
@@ -99,8 +132,13 @@ defmodule SalixAgent.TaskPlace do
         device_id = String.trim(device_id)
 
         cond do
+          SalixStore.ComputeGroupStation.vmm_group_vm?(group_id, device_id) ->
+            {:ok, %{"kind" => "station", "device_id" => device_id}}
+
           device_id == SalixStore.RuntimeIds.cloud_vm_device_id(group_id) ->
-            {:error, :use_cloud_vm_kind}
+            if SalixAgent.Sandboxes.cloud_vm_retired?(group_id),
+              do: {:error, :cloud_vm_retired},
+              else: {:error, :use_cloud_vm_kind}
 
           device_id_ok?(device_id) ->
             {:ok, %{"kind" => "station", "device_id" => device_id}}
@@ -110,7 +148,9 @@ defmodule SalixAgent.TaskPlace do
         end
 
       request ->
-        if request in [@salix, @cloud_vm], do: {:ok, request}, else: {:error, :invalid_task_place}
+        if request in [@salix, @cloud_vm, @sandbox],
+          do: {:ok, request},
+          else: {:error, :invalid_task_place}
     end
   end
 

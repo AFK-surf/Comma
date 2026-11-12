@@ -33,12 +33,12 @@ test("the station's databases travel as snapshots, whole, made while the live on
   const root = tempDir();
   const data = join(root, ".station");
   mkdirSync(data, { recursive: true });
-  const live = new DatabaseSync(join(data, "stillfail.db"));
+  const live = new DatabaseSync(join(data, "station.db"));
   live.exec("PRAGMA journal_mode=WAL; CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept')");
   const state = stationArchiveState(root, data, () => 1);
-  assert.ok(state.live().includes(join(data, "stillfail.db-wal")));
+  assert.ok(state.live().includes(join(data, "station.db-wal")));
   const snapshots = await state.snapshots();
-  assert.deepEqual(snapshots.entries.map((e) => e.name), [".station/stillfail.db"]);
+  assert.deepEqual(snapshots.entries.map((e) => e.name), [".station/station.db"]);
   // The snapshot is a whole database, written while the live one stays open.
   const copy = new DatabaseSync(snapshots.entries[0].file, { readOnly: true });
   assert.deepEqual(copy.prepare("SELECT v FROM t").all().map((r: any) => r.v), ["kept"]);

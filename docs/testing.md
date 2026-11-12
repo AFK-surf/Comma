@@ -59,6 +59,28 @@ Only the clock's own production reads of real time are exempt, each with an `ast
 Go live tests (`*_live_test.go`) reach real services and are outside the rules. CI never runs them.
 `scripts/determinism.sh report` counts findings. `check` runs in the `Determinism` workflow on pull requests and fails when a change adds a finding to a file.
 
+## App registration abuse checks
+
+After dependency setup, run the local chain from the repository root:
+
+```sh
+pnpm --dir clients --filter @comma/i18n compile
+MIX_ENV=test MIX_TEST_PARTITION=57 pnpm --dir clients smoke:auth:abuse:local
+```
+
+The command starts the production Router on loopback and runs the client core through `MainSessionHost` and its credential store. It checks the enforced and observation flows: Electron, native Apple and Play proof, and native provider failure. CAPTCHA appears only in the enforced flow. PostgreSQL and Redis hold the real challenge and account state. Provider transports and native proof ports are scripted locally; tests make no external requests. The Node process uses a test `safeStorage` implementation. This command does not verify Electron process isolation or OS encryption. The focused Electron iframe test checks the window boundary separately.
+
+Use local PostgreSQL with user/password `postgres`/`postgres` and Redis. Defaults are `127.0.0.1:5432` and `redis://127.0.0.1:6379/0`. `SYSTEMS_TEST_DB_HOST` and `COMMA_TEST_REDIS_URL` change these hosts. Set all five database port variables when the local PostgreSQL port differs. For the development Compose default:
+
+```sh
+export ALERT_ROUTER_TEST_DB_PORT=15432 SALIX_TEST_DB_PORT=15432 COMMA_TEST_DB_PORT=15432
+export BILLING_TEST_DB_PORT=15432 BRIDGE_TEST_DB_PORT=15432
+```
+
+The normal Systems BEAM selection runs this same ExUnit chain in the owning `comma_web` shard. That runner installs the filtered client graph and compiles its messages once. Tests need no Turnstile secret, Apple device, Google decoder credentials, or provider-console access. A missing client driver fails the fixture; cases do not skip.
+
+Real-device App Attest and Play Integrity, provider-console configuration, and live Turnstile remain separate acceptance checks. Run them after merge with the selected app, backend, and proof environment. TestFlight uses the Apple production environment.
+
 ## CI
 
 Every pull request gets the `Required Client CI` and `Required Client Build` aggregate checks.

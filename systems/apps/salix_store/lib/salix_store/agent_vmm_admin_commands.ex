@@ -2,9 +2,7 @@ defmodule SalixStore.AgentVMMAdminCommands do
   @moduledoc """
   Exact, tenant-scoped Comma Admin commands for Agent VMM owners.
 
-  The immutable receipt proves that one audited command committed. Business
-  state remains owned by the existing installation, registration, and
-  environment writers.
+  The immutable receipt proves that one audited command committed. The Registration and Environment owners keep business state.
 
   Modeled in `tla/salix/AgentVMMAdminCommandReceipt.tla` and the cross-Repo
   `tla/salix/AgentVMMAdminCommandOrchestration.tla`.
@@ -12,7 +10,7 @@ defmodule SalixStore.AgentVMMAdminCommands do
 
   import Ecto.Query
 
-  alias SalixStore.{AgentVMM, AgentVMMInstallations, Compute, Repo}
+  alias SalixStore.{AgentVMM, AgentVMMRegistrations, Compute, Repo}
 
   @actions ~w(
     retry_agent_vmm_install
@@ -150,23 +148,18 @@ defmodule SalixStore.AgentVMMAdminCommands do
        }) do
     operation =
       Repo.one(
-        from(o in AgentVMMInstallations.Operation,
-          where: o.id == ^operation_id and o.tenant_id == ^tenant_id,
-          select: %{
-            id: o.id,
-            delivery_target_type: o.delivery_target_type,
-            authorization_status: o.authorization_status,
-            error_code: o.error_code,
-            material_handed_off_at: o.material_handed_off_at
-          }
+        from(r in AgentVMM.Registration,
+          where: r.id == ^operation_id and r.tenant_id == ^tenant_id
         )
       ) || Repo.rollback(:not_found)
 
-    unless admin_retryable_install?(operation),
-      do: Repo.rollback(:install_retry_not_available)
+    unless operation.delivery_target_type == "bft_runner" and
+             is_nil(operation.host_identity_digest) and
+             operation.status != "revoked",
+           do: Repo.rollback(:install_retry_not_available)
 
-    case AgentVMMInstallations.retry_at_revision(operation.id, revision) do
-      {:ok, %{operation: %{revision: result_revision}}} -> result_revision
+    case AgentVMMRegistrations.retry_at_revision(operation.id, revision) do
+      {:ok, %{registration: %{revision: result_revision}}} -> result_revision
       {:error, reason} -> Repo.rollback(reason)
     end
   end
@@ -232,13 +225,6 @@ defmodule SalixStore.AgentVMMAdminCommands do
 
   defp validate_command(_command), do: {:error, :invalid_command}
 
-  defp admin_retryable_install?(operation) do
-    operation.delivery_target_type == "bft_runner" and
-      operation.authorization_status == "action_required" and
-      operation.error_code == "ticket_retry_exhausted" and
-      is_nil(operation.material_handed_off_at)
-  end
-
   defp fingerprint(command) do
     :crypto.hash(
       :sha256,
@@ -252,7 +238,6 @@ defmodule SalixStore.AgentVMMAdminCommands do
   end
 
   defp target_key(action, target_id), do: action_target_type(action) <> ":" <> target_id
-  defp action_target_type("retry_agent_vmm_install"), do: "installation"
 
   defp action_target_type(action)
        when action in ~w(drain_compute_environment revoke_compute_environment create_shell_workload),

@@ -4,14 +4,14 @@
 import { log } from "../ops/log.ts";
 
 /// The tools that reach out of the station, refused while it is in no workspace (`gated`): what posts or sends to
-/// people (chat_post, into still.fail chats and Slack, with its files), slack_api (as the workspace's Slack bot) and
-/// job_start, and the peer stations' tools. The rest only read the station's own records, record the turn's state
-/// (chat_state) or stop something (job_stop), and stay open.
-export const OUTWARD = ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file"];
+/// people (chat_post, into Comma chats and Slack, with its files), slack_api (as the workspace's Slack bot) and
+/// job_start, the peer stations' tools, and Salix's tools (salix_tools, salix_call). The rest only read the station's
+/// own records, record the turn's state (chat_state) or stop something (job_stop), and stay open.
+export const OUTWARD = ["chat_post", "slack_api", "job_start", "station_list", "station_job", "station_file", "salix_tools", "salix_call"];
 
 /// What a refused outward call says.
 export const UNBOUND_REFUSAL =
-  "Refused: this station is not in a still.fail workspace right now (it was removed from it, or has not joined one), so it does not post to chats or Slack, call Slack, or start jobs. Nothing was sent. Stop here and do not retry: when the station is back in its workspace, the interrupted work resumes and you can post then.";
+  "Refused: this station is not in a Comma workspace right now (it was removed from it, or has not joined one), so it does not post to chats or Slack, call Slack, or start jobs. Nothing was sent. Stop here and do not retry: when the station is back in its workspace, the interrupted work resumes and you can post then.";
 
 export type Tool = {
   name: string;
@@ -60,7 +60,7 @@ export class McpEndpoint {
           result: {
             protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : "2025-06-18",
             capabilities: { tools: {} },
-            serverInfo: { name: "still.fail", version: "0.0.0" },
+            serverInfo: { name: "Comma", version: "0.0.0" },
           },
         });
       case "ping":

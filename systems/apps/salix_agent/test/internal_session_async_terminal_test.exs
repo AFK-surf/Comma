@@ -320,10 +320,11 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
       start_supervised!(SalixStore.S3.Fake)
     end
 
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
-
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
+
+    {:ok, _} = SalixAgent.Placement.ensure_started(agent_id, process_on_init: false)
+    assert {:parked, _} = SalixAgent.Server.info(agent_id)
 
     {:ok, _} =
       InternalSessionStore.prepare_commit(agent_id, @session, [
@@ -344,6 +345,24 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
     on_exit(fn -> SalixAgent.TestSupport.stop_all_agents() end)
 
     {:ok, agent_id: agent_id}
+  end
+
+  defp reject_session_writes(agent_id) do
+    quoted = String.replace(agent_id, "'", "''")
+
+    SalixStore.Repo.query!(
+      "ALTER TABLE salix_sessions ADD CONSTRAINT async_terminal_write_reject CHECK (agent_id <> '#{quoted}') NOT VALID"
+    )
+
+    on_exit(fn -> allow_session_writes() end)
+  end
+
+  defp allow_session_writes do
+    SalixStore.Repo.query!(
+      "ALTER TABLE salix_sessions DROP CONSTRAINT IF EXISTS async_terminal_write_reject"
+    )
+
+    :ok
   end
 
   defp actor_pid(agent_id) do
@@ -461,13 +480,11 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
     end
   end
 
-  test "async settlement joins workspace durability with the work marker before session CAS", %{
+  test "async settlement waits for workspace durability before publishing its Session result", %{
     agent_id: agent_id
   } do
     pid = actor_pid(agent_id)
     workspace_key = Keys.agent_workspace_state(agent_id)
-    work_marker_key = Keys.agent_session_work_index(agent_id, :internal, @session)
-    session_key = Keys.agent_internal_runtime_session(agent_id, @session)
 
     # Hold the next activation out of this settlement-only assertion. The
     # dependency completion still runs in the owning Session actor.
@@ -493,21 +510,16 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
 
     assert eventually(&SalixStore.S3.Fake.paused?/0)
 
-    # Once the workspace read has fixed the idempotent result identity, the
-    # workspace PUT and marker PUT are independent prerequisites. The marker
-    # must be able to land while the workspace PUT response is still parked.
-    assert eventually(fn ->
-             work_marker_key in SalixStore.S3.Fake.put_log()
-           end)
-
-    # Publication still joins both prerequisites: no Session CAS may cross
-    # the durability fence until the workspace branch completes.
-    refute session_key in SalixStore.S3.Fake.put_log()
+    assert {:ok, %{"status" => "running"}} =
+             InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-terminal")
 
     assert :ok = SalixStore.S3.Fake.release_pause()
 
     assert eventually(fn ->
-             session_key in SalixStore.S3.Fake.put_log()
+             match?(
+               {:ok, %{"status" => "completed"}},
+               InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-terminal")
+             )
            end)
   end
 
@@ -515,16 +527,20 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
     agent_id: agent_id
   } do
     pid = actor_pid(agent_id)
-    key = Keys.agent_internal_runtime_session(agent_id, @session)
 
-    # One retryable storage failure on the session object: the terminal must
-    # be retained and retried, never dropped — it is the only durable copy.
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, key})
+    reject_session_writes(agent_id)
 
     SystemsRuntime.Proc.send(
       pid,
       {:retry_async_tool_commit, SystemsRuntime.Proc.make_ref(), pending(agent_id), result(), 0}
     )
+
+    assert eventually(fn ->
+             map_size(SystemsRuntime.Server.get_state(pid, :infinity).pending_async_tool_commits) ==
+               1
+           end)
+
+    allow_session_writes()
 
     assert eventually(fn ->
              case InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-terminal") do
@@ -591,7 +607,6 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
          agent_id: agent_id
        } do
     pid = actor_pid(agent_id)
-    key = Keys.agent_internal_runtime_session(agent_id, @session)
 
     # Match the production Composio route while retaining the suite's real
     # actor-owned dependency scheduling/terminal commit seam.
@@ -647,10 +662,10 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
       :infinity
     )
 
-    # Workspace staging succeeds, then the whole session batch fails once.
+    # Workspace staging succeeds while the Session batch remains rejected.
     # There must be no state where only the canonical source or only its
     # capsule is durable in the session journal.
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, key})
+    reject_session_writes(agent_id)
     SystemsRuntime.Proc.send(pid, {:dependency_job_result, job.token, large_result})
 
     assert eventually(fn ->
@@ -727,6 +742,8 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
              |> Jason.decode!()
 
     assert recovery_notification["created_at"] == div(staged_at_ms, 1_000)
+
+    allow_session_writes()
 
     assert eventually(fn ->
              with {:ok, session} <- SalixAgent.InternalSessionStore.read(agent_id, @session),
@@ -1282,10 +1299,9 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
     pid = actor_pid(agent_id)
     {job, _dependency_pid} = install_dependency_pending(pid, agent_id)
     token = job.token
-    session_key = Keys.agent_internal_runtime_session(agent_id, @session)
     accepted_result = result()
 
-    :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, session_key})
+    reject_session_writes(agent_id)
     SystemsRuntime.Proc.send(pid, {:dependency_job_result, token, accepted_result})
 
     state = SystemsRuntime.Server.get_state(pid, :infinity)
@@ -1312,7 +1328,7 @@ defmodule SalixAgent.InternalSessionAsyncTerminalTest do
     assert SystemsRuntime.Proc.alive?(speculative_pid)
     assert SystemsRuntime.Server.get_state(pid, :infinity).pending_llm.pid == speculative_pid
 
-    :ok = SalixStore.S3.Fake.clear_blackhole()
+    allow_session_writes()
     SystemsRuntime.Proc.send(pid, {:retry_async_tool_commit, token, retained, accepted_result, 2})
 
     settle_receive({:activation_llm_request, llm_pid, messages, _tools})

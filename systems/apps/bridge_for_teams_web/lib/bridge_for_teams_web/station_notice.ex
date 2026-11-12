@@ -26,12 +26,12 @@ defmodule BridgeForTeamsWeb.StationNotice do
   def message(reason) when reason in ["device_needs_station", :device_needs_station],
     do:
       gettext(
-        "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma."
+        "This device has no station, so it cannot take tasks. Install the station on it with the command from Add computer."
       )
 
   def message(reason) when reason in ["station_outdated", :station_outdated],
     do:
       gettext(
-        "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page."
+        "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `comma-station update` or use its Updates page."
       )
 end

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Exit, Layer, Queue } from "effect";
 import { type Message, makeConnector } from "../../src/connector/connector.ts";
+import { streamBytes } from "../../src/connector/message.ts";
 import { LAN_TUNNEL_ACK_CHANNEL, LAN_TUNNEL_CHANNEL, LAN_TUNNEL_WINDOW } from "../../src/connector/lan-tunnel.ts";
 import { memoryNet, settle } from "./support/memory-net.ts";
 
@@ -45,7 +46,7 @@ test("TestLANTCPDialRelaysBytesInBothDirections", () =>
       h.server.write(Buffer.from("SSH-2.0-test\r\n"));
       const data = yield* h.next;
       assert.equal(data.stream!.channel, LAN_TUNNEL_CHANNEL);
-      assert.equal(data.stream!.data, b64("SSH-2.0-test\r\n"));
+      assert.deepEqual(data.stream!.data, Buffer.from("SSH-2.0-test\r\n"));
       h.send({ channel: LAN_TUNNEL_CHANNEL, data: b64("abc") });
       h.send({ channel: LAN_TUNNEL_CHANNEL, data: b64("de") });
       const got = Buffer.concat([yield* Queue.take(h.server.received), yield* Queue.take(h.server.received)]);
@@ -69,12 +70,12 @@ test("TestLANTCPDialStopsReadingAtAFullWindow", () =>
       const payload = Buffer.alloc(2 * LAN_TUNNEL_WINDOW, "x");
       h.server.write(payload);
       let received = 0;
-      while (received < LAN_TUNNEL_WINDOW) received += Buffer.from((yield* h.next).stream!.data!, "base64").length;
+      while (received < LAN_TUNNEL_WINDOW) received += streamBytes((yield* h.next).stream!).length;
       assert.equal(received, LAN_TUNNEL_WINDOW, "sent more than one window before an ack");
       yield* settle;
       assert.equal(yield* Queue.size(h.frames), 0, "a frame went beyond the window before an ack");
       h.send({ channel: LAN_TUNNEL_ACK_CHANNEL, seq: received });
-      while (received < payload.length) received += Buffer.from((yield* h.next).stream!.data!, "base64").length;
+      while (received < payload.length) received += streamBytes((yield* h.next).stream!).length;
     }),
   ));
 

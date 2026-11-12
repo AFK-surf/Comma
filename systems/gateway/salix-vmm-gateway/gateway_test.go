@@ -14,8 +14,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +41,6 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type fakeControl struct{}
@@ -60,18 +62,6 @@ func (control *staleSessionControl) SessionReady(context.Context, *remotev1.Sess
 		return &controlStatusError{status: http.StatusConflict, reason: "stale_session"}
 	}
 	return nil
-}
-
-type failingEnrollControl struct{ fakeControl }
-
-func (failingEnrollControl) Enroll(context.Context, *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error) {
-	return nil, errors.New("control status 403")
-}
-
-type diagnosedEnrollControl struct{ fakeControl }
-
-func (diagnosedEnrollControl) Enroll(context.Context, *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error) {
-	return nil, &controlStatusError{status: http.StatusForbidden, reason: "managed_trust_signer_unavailable"}
 }
 
 type rejectingAuthControl struct{ fakeControl }
@@ -118,11 +108,13 @@ func (control *scriptedGatewayControl) Commit(_ context.Context, _ string, trans
 
 type scriptedConnectStream struct {
 	grpc.ServerStream
-	ctx      context.Context
-	mu       sync.Mutex
-	received []*remotev1.HostControlMessage
-	sent     []*remotev1.ControllerControlMessage
-	sentCh   chan struct{}
+	ctx          context.Context
+	mu           sync.Mutex
+	received     []*remotev1.ConnectRequest
+	sent         []*remotev1.ConnectResponse
+	sentCh       chan struct{}
+	commandSent  chan struct{}
+	sentSequence uint64
 }
 
 type authenticationSessionStream struct {
@@ -131,28 +123,51 @@ type authenticationSessionStream struct {
 }
 
 func (stream *authenticationSessionStream) Context() context.Context { return stream.ctx }
-func (*authenticationSessionStream) Recv() (*remotev1.HostSessionFrame, error) {
+func (*authenticationSessionStream) Recv() (*remotev1.ServeSessionRequest, error) {
 	return nil, io.EOF
 }
-func (*authenticationSessionStream) Send(*remotev1.ControllerSessionFrame) error { return nil }
+func (*authenticationSessionStream) Send(*remotev1.ServeSessionResponse) error { return nil }
 
 func (stream *scriptedConnectStream) Context() context.Context { return stream.ctx }
 
-func (stream *scriptedConnectStream) Recv() (*remotev1.HostControlMessage, error) {
-	stream.mu.Lock()
-	if len(stream.received) > 0 {
-		message := stream.received[0]
-		stream.received = stream.received[1:]
+func (stream *scriptedConnectStream) Recv() (*remotev1.ConnectRequest, error) {
+	for {
+		stream.mu.Lock()
+		if stream.commandSent == nil {
+			stream.commandSent = make(chan struct{})
+		}
+		if len(stream.received) > 0 {
+			message := stream.received[0]
+			sequence := max(message.GetAck().GetSequence(), message.GetEvidence().GetSequence(), message.GetResult().GetSequence())
+			if sequence <= stream.sentSequence {
+				stream.received = stream.received[1:]
+				stream.mu.Unlock()
+				return message, nil
+			}
+		} else if stream.sentSequence != 0 {
+			stream.mu.Unlock()
+			return nil, io.EOF
+		}
+		changed := stream.commandSent
 		stream.mu.Unlock()
-		return message, nil
+		select {
+		case <-changed:
+		case <-stream.ctx.Done():
+			return nil, stream.ctx.Err()
+		}
 	}
-	stream.mu.Unlock()
-	return nil, io.EOF
 }
 
-func (stream *scriptedConnectStream) Send(message *remotev1.ControllerControlMessage) error {
+func (stream *scriptedConnectStream) Send(message *remotev1.ConnectResponse) error {
 	stream.mu.Lock()
-	stream.sent = append(stream.sent, proto.Clone(message).(*remotev1.ControllerControlMessage))
+	stream.sent = append(stream.sent, proto.Clone(message).(*remotev1.ConnectResponse))
+	if command := message.GetCommand(); command != nil {
+		stream.sentSequence = command.GetSequence()
+		if stream.commandSent != nil {
+			close(stream.commandSent)
+		}
+		stream.commandSent = make(chan struct{})
+	}
 	stream.mu.Unlock()
 	if stream.sentCh != nil {
 		select {
@@ -171,12 +186,217 @@ func gatewayControlContext(ctx context.Context) context.Context {
 }
 
 func gatewayHostHello() *remotev1.HostHello {
-	features := append([]string(nil), controllerremote.RequiredFeatures...)
+	features := []string{controllerremote.RemoteObservationFeature}
 	return &remotev1.HostHello{
-		ProtocolVersion: controllerremote.ProtocolVersion, HostApiVersion: "host.v1", RegistrationId: "registration-1",
+		ProtocolVersion: strconv.Itoa(controllerremote.ProtocolVersion), RegistrationId: "registration-1",
 		ConnectionEpoch: 19, InventoryWatermark: 7,
-		SupportedFeatures: features, RequiredFeatures: append([]string(nil), features...),
+		SupportedFeatures: features,
 	}
+}
+
+func TestPinnedHostProtocolHandshake(t *testing.T) {
+	producerHello := gatewayHostHello()
+	if directory := os.Getenv("AGENT_VMM_CONTRACT_OUTPUT_DIR"); directory != "" {
+		raw, err := os.ReadFile(filepath.Join(directory, "hello.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := protojson.Unmarshal(raw, producerHello); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct{ name, version, side string }{
+		{name: "current", version: producerHello.GetProtocolVersion()},
+		{name: "below implemented range", version: "3", side: "too_old"},
+		{name: "above implemented range", version: "5", side: "too_new"},
+		{name: "invalid version", version: "not-an-integer", side: "too_old"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			client := handshakeClient(t, g)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", controllerremote.EncodeBearer([]byte("0123456789abcdef")), "x-agent-vmm-registration", producerHello.GetRegistrationId()))
+			stream, err := client.Connect(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hello := proto.Clone(producerHello).(*remotev1.HostHello)
+			hello.ProtocolVersion = test.version
+			if err := stream.Send(&remotev1.ConnectRequest{Payload: &remotev1.ConnectRequest_Hello{Hello: hello}}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := stream.Recv()
+			if test.side == "" {
+				if err != nil || response.GetControllerReady().GetConnectionEpoch() != hello.GetConnectionEpoch() {
+					t.Fatalf("current producer handshake: response=%v err=%v", response, err)
+				}
+				return
+			}
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("refusal = %v", err)
+			}
+			var info *errdetails.ErrorInfo
+			for _, detail := range status.Convert(err).Details() {
+				if value, ok := detail.(*errdetails.ErrorInfo); ok {
+					info = value
+				}
+			}
+			want := &errdetails.ErrorInfo{Reason: "REMOTE_PROTOCOL_UNSUPPORTED", Domain: hostv1.ErrorDomain, Metadata: map[string]string{
+				"host_protocol": test.version, "min_protocol": strconv.Itoa(controllerremote.MinProtocolVersion), "max_protocol": strconv.Itoa(controllerremote.ProtocolVersion), "host_side": test.side,
+			}}
+			if !proto.Equal(info, want) {
+				t.Fatalf("protocol refusal = %v, want %v", info, want)
+			}
+		})
+	}
+}
+
+type orderedHandshakeControl struct {
+	fakeControl
+	observed     chan *remotev1.HostHello
+	releaseFirst chan struct{}
+	disconnected chan uint64
+}
+
+func (control *orderedHandshakeControl) Observe(ctx context.Context, _ string, hello *remotev1.HostHello) error {
+	control.observed <- proto.Clone(hello).(*remotev1.HostHello)
+	if hello.GetConnectionEpoch() == 19 {
+		select {
+		case <-control.releaseFirst:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (control *orderedHandshakeControl) Disconnected(_ context.Context, _ string, epoch uint64) error {
+	control.disconnected <- epoch
+	return nil
+}
+
+func handshakeClient(t *testing.T, g *gateway) remotev1.RemoteControllerServiceClient {
+	t.Helper()
+	listener := bufconn.Listen(1 << 20)
+	server := grpc.NewServer()
+	remotev1.RegisterRemoteControllerServiceServer(server, g)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	connection, err := grpc.NewClient("passthrough:///controller", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+		return listener.Dial()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	return remotev1.NewRemoteControllerServiceClient(connection)
+}
+
+func connectHost(t *testing.T, client remotev1.RemoteControllerServiceClient, registration string, epoch uint64) (remotev1.RemoteControllerService_ConnectClient, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", controllerremote.EncodeBearer([]byte("0123456789abcdef")), "x-agent-vmm-registration", registration))
+	stream, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := gatewayHostHello()
+	hello.RegistrationId = registration
+	hello.ConnectionEpoch = epoch
+	if err := stream.Send(&remotev1.ConnectRequest{Payload: &remotev1.ConnectRequest_Hello{Hello: hello}}); err != nil {
+		t.Fatal(err)
+	}
+	return stream, cancel
+}
+
+func receiveControllerReady(t *testing.T, stream remotev1.RemoteControllerService_ConnectClient, epoch uint64) {
+	t.Helper()
+	ready := make(chan *remotev1.ControllerReady, 1)
+	go func() {
+		response, _ := stream.Recv()
+		ready <- response.GetControllerReady()
+	}()
+	synctest.Wait()
+	select {
+	case response := <-ready:
+		if response.GetConnectionEpoch() != epoch {
+			t.Fatalf("ControllerReady = %v, want epoch %d", response, epoch)
+		}
+	default:
+		t.Fatal("independent Host did not become ready while another Observe was blocked")
+	}
+}
+
+func TestConnectDoesNotSerializeIndependentHosts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		control := &orderedHandshakeControl{observed: make(chan *remotev1.HostHello, 2), releaseFirst: make(chan struct{}), disconnected: make(chan uint64, 2)}
+		g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		client := handshakeClient(t, g)
+		first, _ := connectHost(t, client, "registration-a", 19)
+		select {
+		case <-control.observed:
+		case <-time.After(time.Second):
+			t.Fatal("first Host did not reach Observe")
+		}
+		second, _ := connectHost(t, client, "registration-b", 20)
+		receiveControllerReady(t, second, 20)
+		close(control.releaseFirst)
+		receiveControllerReady(t, first, 19)
+	})
+}
+
+func TestConnectOrdersOneHostAndKeepsReplacementAfterOldDisconnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		control := &orderedHandshakeControl{observed: make(chan *remotev1.HostHello, 2), releaseFirst: make(chan struct{}), disconnected: make(chan uint64, 2)}
+		g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		client := handshakeClient(t, g)
+		first, cancelFirst := connectHost(t, client, "registration", 19)
+		select {
+		case <-control.observed:
+		case <-time.After(time.Second):
+			t.Fatal("first Host did not reach Observe")
+		}
+		second, cancelSecond := connectHost(t, client, "registration", 20)
+		synctest.Wait()
+		select {
+		case hello := <-control.observed:
+			t.Fatalf("same Host overtook its first handshake: %v", hello)
+		default:
+		}
+		close(control.releaseFirst)
+		receiveControllerReady(t, first, 19)
+		receiveControllerReady(t, second, 20)
+		cancelFirst()
+		select {
+		case epoch := <-control.disconnected:
+			if epoch != 19 {
+				t.Fatalf("disconnected epoch = %d, want 19", epoch)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("old Host did not disconnect")
+		}
+		g.mu.RLock()
+		current := g.live["registration"]
+		g.mu.RUnlock()
+		if current.epoch != 20 || g.connections.Load() != 1 {
+			t.Fatalf("old disconnect removed replacement: epoch=%d connections=%d", current.epoch, g.connections.Load())
+		}
+		cancelSecond()
+		select {
+		case <-control.disconnected:
+		case <-time.After(time.Second):
+			t.Fatal("replacement did not disconnect")
+		}
+		synctest.Wait()
+		g.mu.RLock()
+		retained := len(g.live)
+		g.mu.RUnlock()
+		if retained != 0 || g.connections.Load() != 0 {
+			t.Fatalf("disconnected Host retained registry state: entries=%d connections=%d", retained, g.connections.Load())
+		}
+	})
 }
 
 func TestConnectAcknowledgesObservedInventoryBeforeClaim(t *testing.T) {
@@ -185,7 +405,7 @@ func TestConnectAcknowledgesObservedInventoryBeforeClaim(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		stream := &scriptedConnectStream{
 			ctx:      gatewayControlContext(ctx),
-			received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}},
+			received: []*remotev1.ConnectRequest{{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}}},
 			sentCh:   make(chan struct{}, 1),
 		}
 		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -200,7 +420,7 @@ func TestConnectAcknowledgesObservedInventoryBeforeClaim(t *testing.T) {
 		stream.mu.Lock()
 		ready := stream.sent[0].GetControllerReady()
 		stream.mu.Unlock()
-		if ready.GetRegistrationId() != "registration-1" || ready.GetConnectionEpoch() != 19 || ready.GetAcknowledgedInventoryWatermark() != 7 {
+		if ready.GetRegistrationId() != "registration-1" || ready.GetConnectionEpoch() != 19 || ready.GetAcknowledgedInventoryWatermark() != 7 || !slices.Contains(ready.GetEnabledFeatures(), controllerremote.RemoteObservationFeature) {
 			t.Fatalf("controller ready = %+v", ready)
 		}
 		var claims int
@@ -264,7 +484,7 @@ func TestConnectNamesRefusedRegistrationAndKeepsOtherObservationFailuresRetryabl
 		gateway := newGateway("gateway", refusingObserveControl{err: test.err}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		stream := &scriptedConnectStream{
 			ctx:      gatewayControlContext(context.Background()),
-			received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}},
+			received: []*remotev1.ConnectRequest{{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}}},
 			sentCh:   make(chan struct{}, 1),
 		}
 		err := gateway.Connect(stream)
@@ -312,25 +532,25 @@ func TestObserveSessionReadyRetriesOnlyTheBoundedStaleSessionRace(t *testing.T) 
 func TestConnectInventoryChangingEnsureOutcomesForceFreshHandshake(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []*remotev1.HostControlMessage
+		messages []*remotev1.ConnectRequest
 		outcome  remotev1.CommandOutcome
 	}{
 		{
 			name: "succeeded",
-			messages: []*remotev1.HostControlMessage{
-				{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-				{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 8}}},
+			messages: []*remotev1.ConnectRequest{
+				{Payload: &remotev1.ConnectRequest_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+				{Payload: &remotev1.ConnectRequest_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 8}}},
 			},
 			outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED,
 		},
 		{
 			name: "unknown after admission",
-			messages: []*remotev1.HostControlMessage{
-				{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+			messages: []*remotev1.ConnectRequest{
+				{Payload: &remotev1.ConnectRequest_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
 			},
 			outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_UNKNOWN,
 		},
-		{name: "missing result"},
+		{name: "stream lost without ack", outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_UNKNOWN},
 	}
 
 	for _, test := range tests {
@@ -338,11 +558,11 @@ func TestConnectInventoryChangingEnsureOutcomesForceFreshHandshake(t *testing.T)
 			synctest.Test(t, func(t *testing.T) {
 				command := &remotev1.ControllerCommand{
 					CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
-					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-					Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
+					TimeoutMillis: 1000,
+					Command:       &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
 				}
 				control := &scriptedGatewayControl{command: command}
-				messages := []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}
+				messages := []*remotev1.ConnectRequest{{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}}}
 				messages = append(messages, test.messages...)
 				stream := &scriptedConnectStream{ctx: gatewayControlContext(context.Background()), received: messages}
 				gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -379,22 +599,22 @@ func TestConnectPreMutationRejectedEnsureContinuesOnSameConnection(t *testing.T)
 			synctest.Test(t, func(t *testing.T) {
 				ensure := &remotev1.ControllerCommand{
 					CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
-					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-					Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
+					TimeoutMillis: 1000,
+					Command:       &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
 				}
 				next := &remotev1.ControllerCommand{
 					CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, TargetRevision: 1,
-					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-					Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
+					TimeoutMillis: 1000,
+					Command:       &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
 				}
 				control := &scriptedGatewayControl{commands: []*remotev1.ControllerCommand{ensure, next}}
 				ctx, cancel := context.WithCancel(context.Background())
-				stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
-					{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
-					{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-					{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: reason, InventoryWatermark: 7}}},
-					{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-					{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
+				stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.ConnectRequest{
+					{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}},
+					{Payload: &remotev1.ConnectRequest_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+					{Payload: &remotev1.ConnectRequest_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: reason, InventoryWatermark: 7}}},
+					{Payload: &remotev1.ConnectRequest_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+					{Payload: &remotev1.ConnectRequest_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
 				}}
 				gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				done := make(chan error, 1)
@@ -432,16 +652,16 @@ func TestConnectStaleAllocationRevisionRequiresFreshHandshake(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		command := &remotev1.ControllerCommand{
 			CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, TargetRevision: 7,
-			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-			Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-1", AllocationGeneration: 1, ExecutionOwnerId: "runtime:1"}},
+			TimeoutMillis: 1000,
+			Command:       &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-1", AllocationGeneration: 1, ExecutionOwnerId: "runtime:1"}},
 		}
 		control := &scriptedGatewayControl{command: command}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
-			{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
-			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_STALE_REVISION, InventoryWatermark: 8}}},
+		stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.ConnectRequest{
+			{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}},
+			{Payload: &remotev1.ConnectRequest_Ack{Ack: &remotev1.CommandAck{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+			{Payload: &remotev1.ConnectRequest_Result{Result: &remotev1.CommandResult{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_STALE_REVISION, InventoryWatermark: 8}}},
 		}}
 		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		done := make(chan error, 1)
@@ -511,7 +731,7 @@ func TestRequiresFreshAuthoritativeInventory(t *testing.T) {
 
 func TestTranscriptJSONPreservesCapacityDimension(t *testing.T) {
 	for dimension, want := range map[remotev1.CapacityDimension]string{
-		remotev1.CapacityDimension_CAPACITY_DIMENSION_CPU_MAX:          "CAPACITY_DIMENSION_CPU_MAX",
+		remotev1.CapacityDimension_CAPACITY_DIMENSION_PIDS:             "CAPACITY_DIMENSION_PIDS",
 		remotev1.CapacityDimension_CAPACITY_DIMENSION_STORAGE_HEADROOM: "CAPACITY_DIMENSION_STORAGE_HEADROOM",
 		remotev1.CapacityDimension_CAPACITY_DIMENSION_IMPORT_SLOT:      "CAPACITY_DIMENSION_IMPORT_SLOT",
 	} {
@@ -527,59 +747,6 @@ func TestTranscriptJSONPreservesCapacityDimension(t *testing.T) {
 		if got := result["capacityDimension"]; got != want {
 			t.Fatalf("capacityDimension = %v, want %v", got, want)
 		}
-	}
-}
-
-func (fakeControl) Enroll(context.Context, *remotev1.EnrollRequest) (*remotev1.EnrollResponse, error) {
-	return nil, nil
-}
-
-func TestEnrollReportsControlFailureWithoutChangingPublicError(t *testing.T) {
-	var output bytes.Buffer
-	gateway := newGateway("gateway", failingEnrollControl{}, slog.New(slog.NewJSONHandler(&output, nil)))
-
-	_, err := gateway.Enroll(context.Background(), &remotev1.EnrollRequest{
-		RegistrationId:  "registration",
-		EnrollmentToken: []byte("0123456789abcdef"),
-	})
-	if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != "enrollment rejected" {
-		t.Fatalf("public error = %v", err)
-	}
-	if gateway.controlErrors.Load() != 1 {
-		t.Fatalf("control errors = %d, want 1", gateway.controlErrors.Load())
-	}
-	if log := output.String(); !strings.Contains(log, "managed enrollment control request failed") || !strings.Contains(log, "control status 403") {
-		t.Fatalf("diagnostic log = %q", log)
-	}
-}
-
-func TestEnrollReturnsFiniteCapabilityHolderDiagnostic(t *testing.T) {
-	gateway := newGateway("gateway", diagnosedEnrollControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	_, err := gateway.Enroll(context.Background(), &remotev1.EnrollRequest{
-		RegistrationId:  "registration",
-		EnrollmentToken: []byte("0123456789abcdef"),
-	})
-	if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != "enrollment rejected: managed_trust_signer_unavailable" {
-		t.Fatalf("public error = %v", err)
-	}
-}
-
-func TestHTTPControlEnrollPreservesFiniteFailureReason(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		response.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(response).Encode(map[string]string{
-			"error":  "enrollment_rejected",
-			"reason": "managed_trust_unavailable",
-		})
-	}))
-	defer server.Close()
-
-	client := &httpControlClient{baseURL: server.URL, secret: "secret", gatewayID: "gateway", client: server.Client()}
-	_, err := client.Enroll(context.Background(), &remotev1.EnrollRequest{})
-	var controlErr *controlStatusError
-	if !errors.As(err, &controlErr) || controlErr.status != http.StatusForbidden || controlErr.reason != "managed_trust_unavailable" {
-		t.Fatalf("control error = %#v", err)
 	}
 }
 
@@ -672,25 +839,25 @@ func (control *registryAuthControl) Authenticate(context.Context, string, []byte
 	return control.authErr
 }
 
-func (control *registryAuthControl) GetSnapshot(context.Context, *trustv1.GetSnapshotRequest) (*trustv1.MeshSnapshot, error) {
+func (control *registryAuthControl) GetSnapshot(context.Context, *trustv1.GetSnapshotRequest) (*trustv1.GetSnapshotResponse, error) {
 	control.mu.Lock()
 	control.snapshotCalls++
 	control.mu.Unlock()
-	return &trustv1.MeshSnapshot{MeshId: "mesh-a", Revision: 7}, nil
+	return &trustv1.GetSnapshotResponse{Snapshot: &trustv1.MeshSnapshot{MeshId: "mesh-a", Revision: 7}}, nil
 }
-func (*registryAuthControl) CreateMesh(context.Context, *trustv1.CreateMeshRequest) (*trustv1.MeshCommitResponse, error) {
+func (*registryAuthControl) CreateMesh(context.Context, *trustv1.CreateMeshRequest) (*trustv1.CreateMeshResponse, error) {
 	return nil, nil
 }
-func (*registryAuthControl) CommitJoin(context.Context, *trustv1.CommitJoinRequest) (*trustv1.MeshCommitResponse, error) {
+func (*registryAuthControl) CommitJoin(context.Context, *trustv1.CommitJoinRequest) (*trustv1.CommitJoinResponse, error) {
 	return nil, nil
 }
-func (*registryAuthControl) CommitRevoke(context.Context, *trustv1.CommitRevokeRequest) (*trustv1.MeshCommitResponse, error) {
+func (*registryAuthControl) CommitRevoke(context.Context, *trustv1.CommitRevokeRequest) (*trustv1.CommitRevokeResponse, error) {
 	return nil, nil
 }
 func (*registryAuthControl) PublishEndpoint(context.Context, *trustv1.PublishEndpointRequest) (*trustv1.PublishEndpointResponse, error) {
 	return nil, nil
 }
-func (*registryAuthControl) ListEndpoints(context.Context, *trustv1.ListMeshEndpointsRequest) (*trustv1.ListMeshEndpointsResponse, error) {
+func (*registryAuthControl) ListEndpoints(context.Context, *trustv1.ListEndpointsRequest) (*trustv1.ListEndpointsResponse, error) {
 	return nil, nil
 }
 
@@ -743,7 +910,7 @@ func (*rejectedImageImportStream) Send(*hostv1.ImportImageRequest) error {
 	return io.EOF
 }
 
-func (stream *rejectedImageImportStream) CloseAndRecv() (*hostv1.Image, error) {
+func (stream *rejectedImageImportStream) CloseAndRecv() (*hostv1.ImportImageResponse, error) {
 	return nil, stream.err
 }
 
@@ -755,7 +922,7 @@ func TestImageImportSendReportsTerminalGRPCStatus(t *testing.T) {
 	}
 }
 
-func (runtime *imageImportRuntime) ImportImage(stream grpc.ClientStreamingServer[hostv1.ImportImageRequest, hostv1.Image]) error {
+func (runtime *imageImportRuntime) ImportImage(stream grpc.ClientStreamingServer[hostv1.ImportImageRequest, hostv1.ImportImageResponse]) error {
 	first, err := stream.Recv()
 	if err != nil || first.GetHeader() == nil {
 		return status.Error(codes.InvalidArgument, "header required")
@@ -773,7 +940,7 @@ func (runtime *imageImportRuntime) ImportImage(stream grpc.ClientStreamingServer
 			if runtime.err != nil {
 				return runtime.err
 			}
-			return stream.SendAndClose(runtime.response)
+			return stream.SendAndClose(&hostv1.ImportImageResponse{Image: runtime.response})
 		}
 		if receiveErr != nil {
 			return receiveErr
@@ -793,7 +960,7 @@ type flakyEnvironmentRuntime struct {
 	calls    int
 }
 
-func (runtime *flakyEnvironmentRuntime) GetEnvironment(context.Context, *hostv1.GetOwnEnvironmentRequest) (*hostv1.GetEnvironmentResponse, error) {
+func (runtime *flakyEnvironmentRuntime) GetEnvironment(context.Context, *hostv1.GetEnvironmentRequest) (*hostv1.GetEnvironmentResponse, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.calls++
@@ -806,18 +973,18 @@ func (runtime *flakyEnvironmentRuntime) GetEnvironment(context.Context, *hostv1.
 	}}, nil
 }
 
-func (fakeAgentRuntime) GetEnvironment(context.Context, *hostv1.GetOwnEnvironmentRequest) (*hostv1.GetEnvironmentResponse, error) {
+func (fakeAgentRuntime) GetEnvironment(context.Context, *hostv1.GetEnvironmentRequest) (*hostv1.GetEnvironmentResponse, error) {
 	return &hostv1.GetEnvironmentResponse{Environment: &hostv1.AgentEnvironment{
 		Containers: []*hostv1.Container{{Id: "container-current", InstanceId: "instance-current", State: hostv1.ContainerState_CONTAINER_STATE_RUNNING}},
 	}}, nil
 }
 
-func (runtime fakeAgentRuntime) AcquireExecution(_ context.Context, request *hostv1.ExecutionRequest) (*hostv1.ExecutionResponse, error) {
-	return &hostv1.ExecutionResponse{ExecutionId: request.GetExecutionId(), ContainerInstanceId: request.GetExpectedInstanceId(), Acquired: true}, nil
+func (runtime fakeAgentRuntime) AcquireExecution(_ context.Context, request *hostv1.AcquireExecutionRequest) (*hostv1.AcquireExecutionResponse, error) {
+	return &hostv1.AcquireExecutionResponse{ExecutionId: request.GetExecutionId(), ContainerInstanceId: request.GetExpectedInstanceId(), Acquired: true}, nil
 }
 
-func (fakeAgentRuntime) ReleaseExecution(_ context.Context, _ *hostv1.ExecutionRequest) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, nil
+func (fakeAgentRuntime) ReleaseExecution(_ context.Context, _ *hostv1.ReleaseExecutionRequest) (*hostv1.ReleaseExecutionResponse, error) {
+	return &hostv1.ReleaseExecutionResponse{}, nil
 }
 
 func (runtime fakeAgentRuntime) Exec(stream grpc.BidiStreamingServer[hostv1.ExecRequest, hostv1.ExecResponse]) error {
@@ -855,8 +1022,8 @@ func (runtime fakeAgentRuntime) Exec(stream grpc.BidiStreamingServer[hostv1.Exec
 	}
 }
 
-func (fakeAgentRuntime) StatWorkspace(_ context.Context, request *hostv1.WorkspacePathRequest) (*hostv1.WorkspaceEntry, error) {
-	return &hostv1.WorkspaceEntry{Path: request.GetPath(), Kind: hostv1.WorkspaceEntryKind_WORKSPACE_ENTRY_KIND_FILE, Size: 12}, nil
+func (fakeAgentRuntime) StatWorkspace(_ context.Context, request *hostv1.StatWorkspaceRequest) (*hostv1.StatWorkspaceResponse, error) {
+	return &hostv1.StatWorkspaceResponse{Entry: &hostv1.WorkspaceEntry{Path: request.GetPath(), Kind: hostv1.WorkspaceEntryKind_WORKSPACE_ENTRY_KIND_FILE, Size: 12}}, nil
 }
 
 func (runtime fakeAgentRuntime) WriteWorkspace(stream grpc.ClientStreamingServer[hostv1.WriteWorkspaceRequest, hostv1.WriteWorkspaceResponse]) error {
@@ -882,25 +1049,25 @@ func (fakeAgentRuntime) ListContainers(context.Context, *hostv1.ListContainersRe
 	return &hostv1.ListContainersResponse{}, nil
 }
 
-func (fakeAgentRuntime) CreateServiceExport(_ context.Context, request *hostv1.CreateServiceExportRequest) (*servicev1.ServiceExport, error) {
+func (fakeAgentRuntime) CreateServiceExport(_ context.Context, request *hostv1.CreateServiceExportRequest) (*hostv1.CreateServiceExportResponse, error) {
 	if request.GetContainerId() == "" || request.GetContainerInstanceId() == "" || request.GetPort() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "exact container namespace is required")
 	}
-	return &servicev1.ServiceExport{ExportId: "export-" + request.GetContainerId(), ContainerId: request.GetContainerId(), ContainerInstanceId: request.GetContainerInstanceId(), Port: request.GetPort(), Revision: 1}, nil
+	return &hostv1.CreateServiceExportResponse{Export: &servicev1.ServiceExport{ExportId: "export-" + request.GetContainerId(), ContainerId: request.GetContainerId(), ContainerInstanceId: request.GetContainerInstanceId(), Port: request.GetPort(), Revision: 1}}, nil
 }
 
-func (fakeAgentRuntime) CreatePersonalServiceImport(_ context.Context, request *hostv1.CreatePersonalServiceImportRequest) (*servicev1.ServiceImport, error) {
+func (fakeAgentRuntime) CreatePersonalServiceImport(_ context.Context, request *hostv1.CreatePersonalServiceImportRequest) (*hostv1.CreatePersonalServiceImportResponse, error) {
 	if request.GetMeshId() == "" || request.GetSourceContainerId() == "" || request.GetSourceContainerInstanceId() == "" || request.GetDestinationDeviceId() == "" || request.GetDestinationExportId() == "" || request.GetVirtualServiceName() == "" || request.GetBudget().GetConnectionLimit() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "exact personal mesh forwarding fence is required")
 	}
-	return &servicev1.ServiceImport{ImportId: "import-iroh", SourceContainerId: request.GetSourceContainerId(), SourceContainerInstanceId: request.GetSourceContainerInstanceId(), DestinationDeviceId: request.GetDestinationDeviceId(), DestinationExportId: request.GetDestinationExportId(), VirtualServiceName: request.GetVirtualServiceName(), Revision: 1}, nil
+	return &hostv1.CreatePersonalServiceImportResponse{Import: &servicev1.ServiceImport{ImportId: "import-iroh", SourceContainerId: request.GetSourceContainerId(), SourceContainerInstanceId: request.GetSourceContainerInstanceId(), DestinationDeviceId: request.GetDestinationDeviceId(), DestinationExportId: request.GetDestinationExportId(), VirtualServiceName: request.GetVirtualServiceName(), Revision: 1}}, nil
 }
 
-func (fakeAgentRuntime) RevokeServiceImport(_ context.Context, request *hostv1.RevokeServiceImportRequest) (*emptypb.Empty, error) {
+func (fakeAgentRuntime) RevokeServiceImport(_ context.Context, request *hostv1.RevokeServiceImportRequest) (*hostv1.RevokeServiceImportResponse, error) {
 	if request.GetImportId() == "" || request.GetExpectedRevision() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "exact import revision is required")
 	}
-	return &emptypb.Empty{}, nil
+	return &hostv1.RevokeServiceImportResponse{}, nil
 }
 
 type singleConnListener struct {
@@ -1074,8 +1241,8 @@ func TestHostSessionSurvivesGRPCIdlePeriod(t *testing.T) {
 			t.Helper()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			entry, err := client.StatWorkspace(ctx, &hostv1.WorkspacePathRequest{Path: "src/main.go"})
-			if err != nil || entry.GetSize() != 12 {
+			entry, err := client.StatWorkspace(ctx, &hostv1.StatWorkspaceRequest{Path: "src/main.go"})
+			if err != nil || entry.GetEntry().GetSize() != 12 {
 				t.Fatalf("stat after idle: entry=%v err=%v", entry, err)
 			}
 		}
@@ -1671,21 +1838,21 @@ type environmentRuntimeClient struct {
 
 type lifecycleRuntimeClient struct {
 	hostv1.AgentRuntimeServiceClient
-	acquire *hostv1.ExecutionRequest
-	release *hostv1.ExecutionRequest
+	acquire *hostv1.AcquireExecutionRequest
+	release *hostv1.ReleaseExecutionRequest
 	list    *hostv1.ListExecutionsRequest
 	quiesce *hostv1.QuiesceContainerRequest
 	stop    *hostv1.StopContainerRequest
 }
 
-func (client *lifecycleRuntimeClient) AcquireExecution(_ context.Context, request *hostv1.ExecutionRequest, _ ...grpc.CallOption) (*hostv1.ExecutionResponse, error) {
+func (client *lifecycleRuntimeClient) AcquireExecution(_ context.Context, request *hostv1.AcquireExecutionRequest, _ ...grpc.CallOption) (*hostv1.AcquireExecutionResponse, error) {
 	client.acquire = request
-	return &hostv1.ExecutionResponse{ExecutionId: request.ExecutionId, ContainerInstanceId: request.ExpectedInstanceId, Acquired: true}, nil
+	return &hostv1.AcquireExecutionResponse{ExecutionId: request.ExecutionId, ContainerInstanceId: request.ExpectedInstanceId, Acquired: true}, nil
 }
 
-func (client *lifecycleRuntimeClient) ReleaseExecution(_ context.Context, request *hostv1.ExecutionRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+func (client *lifecycleRuntimeClient) ReleaseExecution(_ context.Context, request *hostv1.ReleaseExecutionRequest, _ ...grpc.CallOption) (*hostv1.ReleaseExecutionResponse, error) {
 	client.release = request
-	return &emptypb.Empty{}, nil
+	return &hostv1.ReleaseExecutionResponse{}, nil
 }
 
 func (client *lifecycleRuntimeClient) ListExecutions(_ context.Context, request *hostv1.ListExecutionsRequest, _ ...grpc.CallOption) (*hostv1.ListExecutionsResponse, error) {
@@ -1693,14 +1860,14 @@ func (client *lifecycleRuntimeClient) ListExecutions(_ context.Context, request 
 	return &hostv1.ListExecutionsResponse{Status: hostv1.ExecutionListStatus_EXECUTION_LIST_STATUS_EMPTY, ContainerInstanceId: request.ExpectedInstanceId}, nil
 }
 
-func (client *lifecycleRuntimeClient) QuiesceContainer(_ context.Context, request *hostv1.QuiesceContainerRequest, _ ...grpc.CallOption) (*hostv1.ContainerResponse, error) {
+func (client *lifecycleRuntimeClient) QuiesceContainer(_ context.Context, request *hostv1.QuiesceContainerRequest, _ ...grpc.CallOption) (*hostv1.QuiesceContainerResponse, error) {
 	client.quiesce = request
-	return &hostv1.ContainerResponse{Container: &hostv1.Container{Id: request.ContainerId, InstanceId: request.ExpectedInstanceId}}, nil
+	return &hostv1.QuiesceContainerResponse{Container: &hostv1.Container{Id: request.ContainerId, InstanceId: request.ExpectedInstanceId}}, nil
 }
 
-func (client *lifecycleRuntimeClient) StopContainer(_ context.Context, request *hostv1.StopContainerRequest, _ ...grpc.CallOption) (*hostv1.ContainerResponse, error) {
+func (client *lifecycleRuntimeClient) StopContainer(_ context.Context, request *hostv1.StopContainerRequest, _ ...grpc.CallOption) (*hostv1.StopContainerResponse, error) {
 	client.stop = request
-	return &hostv1.ContainerResponse{Container: &hostv1.Container{Id: request.ContainerId, InstanceId: request.ExpectedInstanceId}}, nil
+	return &hostv1.StopContainerResponse{Container: &hostv1.Container{Id: request.ContainerId, InstanceId: request.ExpectedInstanceId}}, nil
 }
 
 func TestTypedHostLifecycleOperationsPreserveExecutionAndQuiesceFences(t *testing.T) {
@@ -1764,7 +1931,7 @@ func TestExecutionListIsReachableThroughTypedRuntimeRoute(t *testing.T) {
 	}
 }
 
-func (client *environmentRuntimeClient) GetEnvironment(context.Context, *hostv1.GetOwnEnvironmentRequest, ...grpc.CallOption) (*hostv1.GetEnvironmentResponse, error) {
+func (client *environmentRuntimeClient) GetEnvironment(context.Context, *hostv1.GetEnvironmentRequest, ...grpc.CallOption) (*hostv1.GetEnvironmentResponse, error) {
 	return &hostv1.GetEnvironmentResponse{Environment: &hostv1.AgentEnvironment{Containers: client.containers}}, nil
 }
 
@@ -1791,7 +1958,7 @@ func TestRuntimeContainerIDRejectsMultipleRunningContainers(t *testing.T) {
 	}
 }
 
-func (client *blockedRuntimeClient) GetEnvironment(context.Context, *hostv1.GetOwnEnvironmentRequest, ...grpc.CallOption) (*hostv1.GetEnvironmentResponse, error) {
+func (client *blockedRuntimeClient) GetEnvironment(context.Context, *hostv1.GetEnvironmentRequest, ...grpc.CallOption) (*hostv1.GetEnvironmentResponse, error) {
 	return &hostv1.GetEnvironmentResponse{Environment: &hostv1.AgentEnvironment{
 		Containers: []*hostv1.Container{{Id: "container-current", InstanceId: "instance-current", State: hostv1.ContainerState_CONTAINER_STATE_RUNNING}},
 	}}, nil
@@ -1801,12 +1968,12 @@ func (client *blockedRuntimeClient) Exec(context.Context, ...grpc.CallOption) (g
 	return client.stream, nil
 }
 
-func (client *blockedRuntimeClient) AcquireExecution(_ context.Context, request *hostv1.ExecutionRequest, _ ...grpc.CallOption) (*hostv1.ExecutionResponse, error) {
-	return &hostv1.ExecutionResponse{ExecutionId: request.GetExecutionId(), ContainerInstanceId: request.GetExpectedInstanceId(), Acquired: true}, nil
+func (client *blockedRuntimeClient) AcquireExecution(_ context.Context, request *hostv1.AcquireExecutionRequest, _ ...grpc.CallOption) (*hostv1.AcquireExecutionResponse, error) {
+	return &hostv1.AcquireExecutionResponse{ExecutionId: request.GetExecutionId(), ContainerInstanceId: request.GetExpectedInstanceId(), Acquired: true}, nil
 }
 
-func (client *blockedRuntimeClient) ReleaseExecution(context.Context, *hostv1.ExecutionRequest, ...grpc.CallOption) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, nil
+func (client *blockedRuntimeClient) ReleaseExecution(context.Context, *hostv1.ReleaseExecutionRequest, ...grpc.CallOption) (*hostv1.ReleaseExecutionResponse, error) {
+	return &hostv1.ReleaseExecutionResponse{}, nil
 }
 
 func TestTypedRuntimeProcessCloseWaitsForInFlightStart(t *testing.T) {
@@ -2020,7 +2187,7 @@ func typedOperationForTest(operation string) string {
 
 func TestControlClaimUsesTypedAgentVMMCommandAndNoWorkSignal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		command := &remotev1.ControllerCommand{CommandId: "command", DeadlineUnixMillis: time.Now().Add(time.Minute).UnixMilli(), TargetRevision: 3, TargetGeneration: 2}
+		command := &remotev1.ControllerCommand{CommandId: "command", TimeoutMillis: 60000, TargetRevision: 3}
 		raw, _ := protojson.Marshal(command)
 		epoch := uint64(1) << 63
 		noWork := false
@@ -2057,7 +2224,7 @@ func TestControlClaimUsesTypedAgentVMMCommandAndNoWorkSignal(t *testing.T) {
 func TestControlClaimParsesRuntimeExecutionIdentity(t *testing.T) {
 	// Salix writes this command JSON. Keep the fixture independent of the
 	// protobuf used to build the Gateway so an older wire package fails here.
-	commandJSON := json.RawMessage(`{"commandId":"runtime-session","connectionEpoch":"7","sequence":"1","deadlineUnixMillis":"1790255157470","targetRevision":"49","openSession":{"allocationId":"allocation-a","allocationGeneration":"1","executionOwnerId":"runtime:workload-a:1"}}`)
+	commandJSON := json.RawMessage(`{"commandId":"runtime-session","connectionEpoch":"7","sequence":"1","timeoutMillis":"60000","targetRevision":"49","openSession":{"allocationId":"allocation-a","allocationGeneration":"1","executionOwnerId":"runtime:workload-a:1"}}`)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(response).Encode(map[string]json.RawMessage{"command_json": commandJSON})
 	}))
@@ -2148,7 +2315,7 @@ func TestPublicRegistryRejectsUnauthenticatedGRPCBeforeControl(t *testing.T) {
 	credential := []byte("0123456789abcdef0123456789abcdef")
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", controllerremote.EncodeBearer(credential), "x-agent-vmm-registration", "registration-a"))
 	response, err := client.GetSnapshot(ctx, &trustv1.GetSnapshotRequest{MeshId: "mesh-a"})
-	if err != nil || response.GetRevision() != 7 {
+	if err != nil || response.GetSnapshot().GetRevision() != 7 {
 		t.Fatalf("authenticated response=%+v err=%v", response, err)
 	}
 	control.mu.Lock()
@@ -2165,7 +2332,7 @@ func TestPublicRegistryRejectsUnauthenticatedGRPCBeforeControl(t *testing.T) {
 	}
 }
 
-func TestMultiGatewayShardAndRolloutDrainFenceAdmission(t *testing.T) {
+func TestMultiGatewayShardFenceAdmission(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	first := newGateway("gateway-a", fakeControl{}, logger)
 	second := newGateway("gateway-b", fakeControl{}, logger)
@@ -2185,17 +2352,12 @@ func TestMultiGatewayShardAndRolloutDrainFenceAdmission(t *testing.T) {
 		t.Fatalf("wrong shard status=%d", response.StatusCode)
 	}
 
-	first.draining.Store(true)
-	_, err = first.Enroll(context.Background(), &remotev1.EnrollRequest{RegistrationId: "registration", EnrollmentToken: []byte("0123456789abcdef")})
-	if status.Code(err) != codes.Unavailable {
-		t.Fatalf("draining enrollment err=%v", err)
-	}
 }
 
 func TestRegistryControlSendsTypedProtoWithoutGatewayOwnedCanonicalInput(t *testing.T) {
 	operation := &trustv1.RegistryOperation{OperationId: "operation", Kind: trustv1.RegistryOperationKind_REGISTRY_OPERATION_KIND_GENESIS, MeshId: "mesh", IssuerDeviceId: "device", Signature: []byte("signature")}
 	descriptor := &trustv1.PersonalMeshDescriptor{MeshId: "mesh", GenesisDeviceId: "device", GenesisSignature: []byte("descriptor-signature")}
-	want := &trustv1.MeshCommitResponse{Snapshot: &trustv1.MeshSnapshot{MeshId: "mesh", Revision: 1, PolicyEpoch: 1}}
+	want := &trustv1.CreateMeshResponse{Snapshot: &trustv1.MeshSnapshot{MeshId: "mesh", Revision: 1, PolicyEpoch: 1}}
 	wantRaw, _ := proto.Marshal(want)
 
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -2242,7 +2404,7 @@ func mustURL(t *testing.T, value string) *url.URL {
 // Keep the Host receive loop alive while the Server claim endpoint fails.
 type liveClaimStream struct{ scriptedConnectStream }
 
-func (stream *liveClaimStream) Recv() (*remotev1.HostControlMessage, error) {
+func (stream *liveClaimStream) Recv() (*remotev1.ConnectRequest, error) {
 	stream.mu.Lock()
 	if len(stream.received) > 0 {
 		message := stream.received[0]
@@ -2290,7 +2452,7 @@ func TestConnectPreservesHostAcrossTransientClaimFailure(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
-					received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
+					received: []*remotev1.ConnectRequest{{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}}}}}
 				g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				done := make(chan error, 1)
 				go func() { done <- g.Connect(stream) }()
@@ -2331,7 +2493,7 @@ func TestConnectDoesNotRetryRejectedOrUnknownClaim(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
-					received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
+					received: []*remotev1.ConnectRequest{{Payload: &remotev1.ConnectRequest_Hello{Hello: gatewayHostHello()}}}}}
 				g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				if err := g.Connect(stream); err == nil {
 					t.Fatal("claim rejection was ignored")

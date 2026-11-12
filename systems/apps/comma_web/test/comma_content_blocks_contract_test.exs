@@ -1,5 +1,6 @@
 defmodule CommaWeb.CommaMessageResourceTest do
   use Comma.DataCase, async: false
+  require SystemsRuntime.Proc
 
   @admin_token "test-token"
 
@@ -36,12 +37,18 @@ defmodule CommaWeb.CommaMessageResourceTest do
     group_id = workspace["default_group_id"]
     worker_id = workspace["default_worker_agent_id"]
 
-    assert {:ok, payload} =
+    # A bars card needs runtime level 2, so the block and the payload carry version 2.
+    assert {:ok, %{"version" => 2} = payload} =
              SalixAgent.Tools.DynamicUI.validate(%{
-               "html" => "<p id='weather'>Singapore</p>",
-               "script" => "",
-               "data" => %{"temperature" => 27},
-               "summary" => "Singapore: 27 °C"
+               "html" => "<section id='sources'></section>",
+               "script" => "comma.card('sources', 'bars', comma.data.sources);",
+               "data" => %{
+                 "sources" => %{
+                   "title" => "Sources",
+                   "items" => [%{"label" => "Direct", "value" => 128}]
+                 }
+               },
+               "summary" => "Direct: 128 visitors"
              })
 
     bytes = Jason.encode!(payload)
@@ -85,7 +92,7 @@ defmodule CommaWeb.CommaMessageResourceTest do
     detail = user_req(session["token"], :get, url) |> expect_status(200)
     message = Enum.find(detail.body["messages"], &(&1["message_id"] == message_id))
 
-    assert [%{"type" => "dynamic_ui", "ui_ref" => ^ui_ref, "blob_ref" => ref}] =
+    assert [%{"type" => "dynamic_ui", "ui_ref" => ^ui_ref, "blob_ref" => ref, "version" => 2}] =
              message["content"]
 
     assert ref["uuid"] == hd(content)["blob_ref"]["uuid"]
@@ -202,6 +209,234 @@ defmodule CommaWeb.CommaMessageResourceTest do
                ]
              }
            ] = Enum.filter(updated.body["messages"], &(&1["reply_to_message_id"] == question_id))
+  end
+
+  test "a computer's own login is chosen from a conversation only on its owner's yes to the Router's card" do
+    %{workspace: workspace, session: session, user: user} =
+      create_workspace_session("local-account@example.com", "Local Account")
+
+    grant_credits!(workspace)
+    conversation = create_conversation(session, workspace)
+    group_id = workspace["default_group_id"]
+    tenant_id = workspace["salix_tenant_id"]
+    conversation_id = conversation["id"]
+    agent_id = workspace["router_agent_id"]
+    url = "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}"
+    test_pid = SystemsRuntime.Proc.self()
+
+    # A computer whose desktop connection answers `account_source` and tells the test what it was asked.
+    device = fn name, owner, capabilities ->
+      {:ok, token} =
+        SalixEnv.ConnectorTokens.create_group_connector_token(group_id, tenant_id, %{
+          "meta" => %{"owner_user_id" => owner, "surface" => "comma"}
+        })
+
+      transport = "local-account-#{name}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+      {:ok, ^transport, _record} =
+        SalixEnv.Registry.connect(
+          to_string(node()),
+          %{
+            "tenant_id" => tenant_id,
+            "group_id" => group_id,
+            "device_id" => token["device_id"],
+            "connector_id" => token["connector_id"],
+            "name" => name,
+            "capabilities" => capabilities
+          },
+          connection_generation: 0,
+          credential_generation: token["credential_generation"],
+          transport_id: transport
+        )
+
+      connector =
+        SystemsRuntime.Proc.spawn_link(fn ->
+          SalixEnv.Bridge.register_owner(transport)
+          SystemsRuntime.Proc.send(test_pid, {:connector_ready, name})
+
+          loop = fn loop ->
+            SystemsRuntime.Proc.receive do
+              {:env_rpc, ref, from, %{"method" => "account_source", "params" => params}} ->
+                SystemsRuntime.Proc.send(test_pid, {:account_source, name, params})
+
+                reply = %{
+                  "workspace" => "ws",
+                  "runtime" => params["runtime"],
+                  "source" => "local",
+                  "signed_in" => true
+                }
+
+                SystemsRuntime.Proc.send(from, {:env_rpc_reply, ref, {:ok, reply}})
+                loop.(loop)
+
+              :stop ->
+                :ok
+            end
+          end
+
+          loop.(loop)
+        end)
+
+      on_exit(fn ->
+        if SystemsRuntime.Proc.alive?(connector), do: SystemsRuntime.Proc.send(connector, :stop)
+      end)
+
+      SystemsRuntime.Proc.receive do
+        {:connector_ready, ^name} -> :ok
+      end
+
+      token["device_id"]
+    end
+
+    capable = %{"tasks" => 2, "task_models" => %{"claude" => []}, "account_source" => 1}
+    mac = device.("mac", user["id"], capable)
+    mac_b = device.("mac-b", user["id"], capable)
+    others = device.("others", "usr_other_member", capable)
+    old = device.("old", user["id"], %{"tasks" => 2, "task_models" => %{"claude" => []}})
+    {:ok, session_id} = SalixIM.ProviderConnects.agent_group_router_session_id(agent_id, group_id)
+    owner_id = user["id"]
+
+    ctx = fn message_id, call_id ->
+      %{
+        agent_id: agent_id,
+        session_id: session_id,
+        tenant_id: tenant_id,
+        group_id: group_id,
+        role: "router",
+        runtime_kind: :internal,
+        tool_call_id: call_id,
+        trusted_origin: %{
+          "provider" => "internal",
+          "conversation_id" => conversation_id,
+          "message_id" => message_id,
+          "principal_ref" => %{"subject_id" => owner_id}
+        }
+      }
+    end
+
+    detail = fn ->
+      (user_req(session["token"], :get, url) |> expect_status(200)).body["messages"]
+    end
+
+    outcome = fn
+      {:tool_failure, _json, code, _class, _message, _} -> {:refused, code}
+      json when is_binary(json) -> {:ok, Jason.decode!(json)}
+    end
+
+    # The server writes the card for one computer and runtime; the Router names only them.
+    ask_card = fn device_id, call_id ->
+      outcome.(
+        SalixAgent.Tools.DeviceConnection.ask_local_account(
+          %{"device_id" => device_id, "runtime" => "claude", "locale" => "zh-CN"},
+          ctx.("msg-request", call_id)
+        )
+      )
+    end
+
+    answer = fn question_id, choice ->
+      user_req(session["token"], :post, url <> "/messages",
+        json: %{
+          "message" => %{
+            "content" => [
+              %{"type" => "text", "text" => "选了。"},
+              %{
+                "type" => "question_answer",
+                "question_message_id" => question_id,
+                "choice_ids" => [choice]
+              }
+            ]
+          },
+          "client_request_id" => "answer:" <> question_id,
+          "reply_to_message_id" => question_id
+        }
+      )
+      |> expect_status(202)
+
+      Enum.find(detail.(), &(&1["reply_to_message_id"] == question_id))["message_id"]
+    end
+
+    choose = fn device_id, runtime, message_id ->
+      outcome.(
+        SalixAgent.Tools.DeviceConnection.use_local_account(
+          %{"device_id" => device_id, "runtime" => runtime},
+          ctx.(message_id, "choose-" <> message_id)
+        )
+      )
+    end
+
+    # Only for the owner's own connected computer whose station takes the request.
+    assert ask_card.(others, "ask-others") == {:refused, "not_owner"}
+    assert ask_card.(old, "ask-old") == {:refused, "station_outdated"}
+
+    assert {:ok, %{"message_id" => card_id}} = ask_card.(mac, "ask-mac")
+    card = Enum.find(detail.(), &(&1["message_id"] == card_id))
+
+    assert %{
+             "type" => "question",
+             "prompt" => prompt,
+             "choices" => [
+               %{"id" => "use_local_account", "label" => "用这台电脑的登录"},
+               %{"id" => "drive_remotely", "label" => "不用，远程操作这台电脑"}
+             ],
+             "allow_other" => false
+           } = Enum.find(card["content"], &(&1["type"] == "question"))
+
+    assert prompt =~ "mac" and prompt =~ "Claude Code"
+
+    # No answer on this turn (the card itself): nothing asked of the computer.
+    assert choose.(mac, "claude", card_id) == {:refused, "confirmation_required"}
+
+    # A card the Router wrote itself, with the same choice id, binds nothing.
+    assert {:ok, %{"message_id" => own_id}} =
+             Salix.Bindings.AgentIMProvider.call_api(
+               agent_id,
+               "internal",
+               "internal.send_message",
+               %{
+                 "connect_id" => "internal",
+                 "tool_call_id" => "own-card",
+                 "params" => %{
+                   "conversation_id" => conversation_id,
+                   "request_id" => "own-card",
+                   "content" => [
+                     %{
+                       "type" => "question",
+                       "prompt" => "用 mac 上已登录的 Claude Code 运行这个任务吗？",
+                       "choices" => [
+                         %{"id" => "use_local_account", "label" => "用这台电脑的登录"},
+                         %{"id" => "drive_remotely", "label" => "不用"}
+                       ]
+                     }
+                   ]
+                 },
+                 "tool_context" => %{"runtime_kind" => "internal", "session_id" => session_id}
+               }
+             )
+
+    assert choose.(mac, "claude", answer.(own_id, "use_local_account")) ==
+             {:refused, "confirmation_required"}
+
+    # The owner's no.
+    {:ok, %{"message_id" => no_card}} = ask_card.(mac, "ask-mac-no")
+
+    assert choose.(mac, "claude", answer.(no_card, "drive_remotely")) ==
+             {:refused, "confirmation_required"}
+
+    # The owner's yes for mac / Claude Code allows neither another computer of theirs nor another runtime.
+    yes = answer.(card_id, "use_local_account")
+    assert choose.(mac_b, "claude", yes) == {:refused, "confirmation_required"}
+    assert choose.(mac_b, "codex", yes) == {:refused, "confirmation_required"}
+    assert choose.(mac, "codex", yes) == {:refused, "confirmation_required"}
+    refute_received {:account_source, _, _}
+
+    # Exactly what was asked: only the local sign-in, for that computer and runtime, by its owner.
+    assert {:ok, %{"source" => "local", "runtime" => "claude", "signed_in" => true}} =
+             choose.(mac, "claude", yes)
+
+    assert_received {:account_source, "mac",
+                     %{"runtime" => "claude", "source" => "local", "by" => ^owner_id}}
+
+    refute_received {:account_source, _, _}
   end
 
   defp grant_credits!(workspace) do

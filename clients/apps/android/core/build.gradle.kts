@@ -10,7 +10,10 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
-/** Runs the core's bundle script: its bytecode is an asset of every variant. */
+/**
+ * Runs the core's bundle script: its bytecode is an asset of every variant. The Mini App and Dynamic UI WebView host
+ * pages' scripts (`mini-app-host.js`, `dynamic-ui-host.js`) are built from the same sources beside it.
+ */
 @CacheableTask
 abstract class BundleCore @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
     @get:InputFiles
@@ -35,6 +38,14 @@ abstract class BundleCore @Inject constructor(private val exec: ExecOperations) 
                 scratch.get().file("core.js").asFile.path,
                 assets.get().file("core.hbc").asFile.path,
             )
+        }
+        exec.exec {
+            workingDir = packageDir.get().asFile
+            commandLine("node", "scripts/mini-app-android-bundle.mjs", assets.get().file("mini-app-host.js").asFile.path)
+        }
+        exec.exec {
+            workingDir = packageDir.get().asFile
+            commandLine("node", "scripts/dynamic-ui-android-bundle.mjs", assets.get().file("dynamic-ui-host.js").asFile.path)
         }
     }
 }
@@ -105,6 +116,7 @@ val bundleCore = tasks.register<BundleCore>("bundleCore") {
         include("core/src/**", "core/scripts/**", "core/package.json")
         include("core-kernel/src/**", "chat-contract/src/**", "session-contract/src/**")
         include("recommendation-contract/src/**", "mesh/src/**", "i18n/src/**", "i18n/messages/**")
+        include("miniapp-sdk/src/**")
         exclude("**/*.test.ts", "**/test/**", "**/testing/**")
     })
     sources.from(repositoryRoot.file("pnpm-lock.yaml"))

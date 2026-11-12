@@ -81,7 +81,7 @@ defmodule Salix.Control.Plugins do
     mpim:read
   )
 
-  @system_plugins [
+  @listed_system_plugins [
     %{
       "plugin_id" => "x-twitter",
       "name" => "X",
@@ -160,7 +160,7 @@ defmodule Salix.Control.Plugins do
       "default_enabled" => true,
       "refs" => %{
         "tool_refs" =>
-          ~w(im.connects_list im.provider_apis_list im_api.internal.search_conversations im_api.internal.read_conversation im_api.internal.list_conversation_participants im_api.internal.get_conversation_participant_status im_api.internal.add_agent_participant im_api.internal.update_conversation im_api.internal.send_message im_api.internal.task.create im_api.internal.task.update im_api.internal.task.list)
+          ~w(im.connects_list im.provider_apis_list im_api.internal.search_conversations im_api.internal.read_conversation im_api.internal.list_conversation_participants im_api.internal.get_conversation_participant_status im_api.internal.add_agent_participant im_api.internal.update_conversation im_api.internal.send_message im_api.internal.task.create im_api.internal.task.update im_api.internal.task.list im_api.internal.list_task_files im_api.internal.usage.query im_api.internal.station_task.list)
       }
     },
     %{
@@ -188,17 +188,17 @@ defmodule Salix.Control.Plugins do
       "plugin_id" => "environment-control",
       "name" => "Environment Control",
       "description" =>
-        "Connector-backed environment discovery, command execution, file copy, process control and local-network gateway requests.",
+        "Station environment discovery, command execution, file copy, process control and local-network gateway requests.",
       "default_enabled" => true,
       "refs" => %{
         "tool_refs" =>
-          ~w(device.list device.get env.exec env.copy env.computer_use env.process_list env.process_write env.process_tail device.lan_request device.lan_discover device.miio_request device.gree_request device.secret_save device.secret_list device.secret_delete)
+          ~w(device.list device.get env.exec env.copy env.computer_use env.process_list env.process_write env.process_tail device.lan_request device.lan_tcp_send device.lan_discover device.miio_request device.gree_request device.secret_save device.secret_list device.secret_delete)
       }
     },
     %{
       "plugin_id" => "android-control",
       "name" => "Android Control",
-      "description" => "Lease and operate an authorized Connector-owned Android emulator.",
+      "description" => "Lease and operate an authorized station-hosted Android emulator.",
       "ui" => %{"classification" => "capability", "setup_destination" => "project_devices"},
       "default_enabled" => false,
       "refs" => %{"tool_refs" => ["env.android"]}
@@ -276,14 +276,15 @@ defmodule Salix.Control.Plugins do
       "default_enabled" => true,
       "refs" => %{
         "tool_refs" =>
-          ~w(oauth.list_credentials oauth.request_authorization oauth.complete_authorization oauth.delete_credential)
+          ~w(oauth.list_credentials oauth.request_authorization oauth.complete_authorization oauth.delete_credential oauth.define_provider)
       }
     },
     %{
       "plugin_id" => "feishu",
-      "name" => "Feishu",
+      "name" => "飞书",
       "description" => "Workspace messaging and bot routing through Feishu.",
-      "ui" => %{"brand" => "feishu"},
+      # Listed with the services of mainland China (`SalixMCP.ChinaServices`).
+      "ui" => %{"brand" => "feishu", "category" => "中国服务"},
       "default_enabled" => true,
       "setup" => %{
         "type" => "integration",
@@ -391,6 +392,41 @@ defmodule Salix.Control.Plugins do
       "refs" => %{
         "tool_refs" => ["mcp.mac.*"],
         "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000011"}]
+      }
+    },
+    %{
+      # Blender on one member's computer. The Comma desktop app serves it and
+      # reaches only Blender windows with Comma's add-on connected; installing
+      # it connects that computer, as for the Mac apps.
+      "plugin_id" => "blender",
+      "name" => "Blender",
+      "description" => "Look at, change, render and export your Blender scenes on this computer.",
+      "ui" => %{
+        "brand" => "blender",
+        "category" => "Design",
+        "platforms" => ["macos", "windows"],
+        "requires" => ["device-plugins", "blender-plugin"]
+      },
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "this-computer",
+        "connections" => [
+          %{"id" => "this-computer", "kind" => "device_client", "label" => "This computer"}
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000025",
+            "alias" => "blender",
+            "target_ref" => "client:blender",
+            "placement" => "device",
+            "auth_refs" => ["this-computer"]
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["mcp.blender.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000025"}]
       }
     },
     %{
@@ -513,6 +549,33 @@ defmodule Salix.Control.Plugins do
             "toolkit" => "outlook"
           }
         ]
+      },
+      "refs" => %{"tool_refs" => []}
+    },
+    %{
+      # A still.fail station as a computer of the Group whose agents take
+      # Tasks: installing it shows the line (`comma <server> <token>`, a
+      # connector credential of a device of the Group) a member pastes into
+      # the station's connects; uninstalling removes that device.
+      "plugin_id" => "stillfail",
+      "name" => "still.fail",
+      "description" =>
+        "Run Tasks on your still.fail agents: a still.fail station connects with the line this shows.",
+      "ui" => %{"brand" => "stillfail"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "stillfail-connect",
+        "connections" => [
+          %{
+            "id" => "stillfail-connect",
+            "kind" => "stillfail_connect",
+            "label" => "still.fail station",
+            "credential_label" => "Line for still.fail",
+            "help_url" => "https://still.fail"
+          }
+        ],
+        "mcps" => []
       },
       "refs" => %{"tool_refs" => []}
     },
@@ -650,6 +713,140 @@ defmodule Salix.Control.Plugins do
       }
     },
     %{
+      "plugin_id" => "posthog",
+      "name" => "PostHog",
+      "description" =>
+        "Product analytics, feature flags, experiments, and errors through PostHog's official MCP.",
+      "ui" => %{"brand" => "posthog"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "posthog-native",
+        "required_connections" => ["posthog-native"],
+        "connections" => [
+          %{
+            "id" => "posthog-native",
+            "kind" => "native_mcp_oauth",
+            "label" => "PostHog MCP OAuth",
+            "scopes" => []
+          }
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000012",
+            "alias" => "posthog",
+            "target_ref" => "remote:posthog",
+            "placement" => "server",
+            "auth_refs" => ["posthog-native"],
+            # A switch per family of PostHog's tools; the binding's
+            # POSTHOG_FEATURES keeps those on (PluginSetup.set_tool_group/5).
+            "tool_groups" => %{
+              "config_key" => "POSTHOG_FEATURES",
+              "always" => ["workspace"],
+              "groups" => SalixMCP.Builtins.posthog_tool_groups()
+            }
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["mcp.posthog.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000012"}]
+      }
+    },
+    %{
+      "plugin_id" => "stripe",
+      "name" => "Stripe",
+      "description" => "Payments, customers, and billing through Stripe's official MCP.",
+      "ui" => %{"brand" => "stripe"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "stripe-native",
+        "required_connections" => ["stripe-native"],
+        "connections" => [
+          %{
+            "id" => "stripe-native",
+            "kind" => "native_mcp_oauth",
+            "label" => "Stripe MCP OAuth",
+            "scopes" => []
+          }
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000013",
+            "alias" => "stripe",
+            "target_ref" => "remote:stripe",
+            "placement" => "server",
+            "auth_refs" => ["stripe-native"]
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["mcp.stripe.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000013"}]
+      }
+    },
+    %{
+      "plugin_id" => "dropbox",
+      "name" => "Dropbox",
+      "description" => "Find, read, and manage Dropbox files through Composio.",
+      "ui" => %{"brand" => "dropbox"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "dropbox-composio",
+        "connections" => [
+          %{
+            "id" => "dropbox-composio",
+            "kind" => "composio",
+            "label" => "Dropbox via Composio",
+            "toolkit" => "dropbox"
+          }
+        ]
+      },
+      "refs" => %{"tool_refs" => []}
+    },
+    %{
+      "plugin_id" => "canva",
+      "name" => "Canva",
+      "description" => "Create, review, and edit Canva designs through Composio.",
+      "ui" => %{"brand" => "canva"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "canva-composio",
+        "connections" => [
+          %{
+            "id" => "canva-composio",
+            "kind" => "composio",
+            "label" => "Canva via Composio",
+            "toolkit" => "canva"
+          }
+        ]
+      },
+      "refs" => %{"tool_refs" => []}
+    },
+    %{
+      "plugin_id" => "hubspot",
+      "name" => "HubSpot",
+      "description" => "Contacts, deals, and CRM records in HubSpot through Composio.",
+      "ui" => %{"brand" => "hubspot"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "hubspot-composio",
+        "connections" => [
+          %{
+            "id" => "hubspot-composio",
+            "kind" => "composio",
+            "label" => "HubSpot via Composio",
+            "toolkit" => "hubspot"
+          }
+        ]
+      },
+      "refs" => %{"tool_refs" => []}
+    },
+    %{
       "plugin_id" => "memory",
       "name" => "Memory",
       "description" => "Long-term memory read and write tools.",
@@ -706,6 +903,8 @@ defmodule Salix.Control.Plugins do
       }
     }
   ]
+
+  @system_plugins @listed_system_plugins ++ SalixMCP.ChinaServices.plugin_definitions()
 
   @doc false
   def system_plugins, do: @system_plugins

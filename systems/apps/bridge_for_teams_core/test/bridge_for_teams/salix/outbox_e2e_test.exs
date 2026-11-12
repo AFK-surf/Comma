@@ -585,11 +585,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
 
     assert SalixAgent.CloudVM.allowed?(router)
 
-    assert {:ok,
-            %{
-              "billing_owner" => %{"vm_profile_key" => "cf-standard-2"},
-              "cloud_vm_enabled" => true
-            }} =
+    assert {:ok, %{"billing_owner" => %{"vm_profile_key" => "cf-standard-2"}}} =
              Salix.Control.Groups.get(project.salix_group_id)
 
     assert {:error, :not_found} =

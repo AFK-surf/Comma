@@ -578,7 +578,7 @@ defmodule BridgeForTeams.Agents do
   The stations of a project its Tasks can run on: its devices whose Comma
   station takes Tasks (`capabilities.tasks` 2), each with the models its
   profiles enable per runtime (`task_models`), and whether the project's
-  Cloud VM is enabled. Each station's `station` is "ready", or why it cannot
+  Cloud VM is a place. Each station's `station` is "ready", or why it cannot
   take Tasks: "device_needs_station" (no `tasks`: the old connector) or
   "station_outdated" (an older `tasks`); those are not selectable.
   """
@@ -601,15 +601,45 @@ defmodule BridgeForTeams.Agents do
       end
 
     cloud_vm = Enum.find(environments, &(&1["device_id"] == cloud_vm_device))
+    places = sandbox_places(project)
+    retired = places["cloud_vm_retired"] == true
 
     {:ok,
      %{
        "stations" => stations,
+       # Where the Cloud VM is retired, or the swarm cannot have one, it is
+       # not a place.
        "cloud_vm" => %{
-         "enabled" => project.vm_enabled == true,
+         "enabled" => not retired and places["cloud_vm_available"] == true,
+         "retired" => retired,
          "task_models" => if(cloud_vm, do: task_models(cloud_vm), else: %{})
-       }
+       },
+       "sandbox" => %{"enabled" => places["sandboxes"] == true}
      }}
+  end
+
+  @no_sandbox_places %{
+    "sandboxes" => false,
+    "cloud_vm_retired" => false,
+    "cloud_vm_shown" => true,
+    "cloud_vm_available" => true
+  }
+
+  @doc """
+  The Salix deployment's sandbox places for the swarm (`SalixAgent.Sandboxes.status/1`):
+  `sandboxes` (a sandbox of the Task's own is a place to run Tasks),
+  `cloud_vm_retired` (the Cloud VM is one no more), `cloud_vm_shown` (its
+  Devices section stays while the swarm has a Cloud VM that is not archived)
+  and `cloud_vm_available` (the swarm can have one: its Tenant's VM provider,
+  or its VM on an Agent VMM Host). A Salix that cannot be asked, or one of
+  the release before, has no sandboxes and keeps the Cloud VM. One RPC.
+  """
+  @spec sandbox_places(Project.t()) :: %{String.t() => boolean()}
+  def sandbox_places(%Project{} = project) do
+    case Client.call_optional(:sandbox_places, [project.salix_group_id]) do
+      {:ok, %{} = places} -> Map.merge(@no_sandbox_places, places)
+      _unknown -> @no_sandbox_places
+    end
   end
 
   # "ready", or why the device cannot take Tasks (`SalixStore.StationReadiness`):
@@ -636,15 +666,15 @@ defmodule BridgeForTeams.Agents do
 
   @doc """
   Check a place the swarm's Tasks may run by default (`SalixAgent.TaskPlace`):
-  `%{"kind" => "salix"}`, `%{"kind" => "cloud_vm"}` while the project's Cloud
-  VM is enabled, or `%{"kind" => "station", "device_id" => id}` for a device
+  `%{"kind" => "salix"}`, `%{"kind" => "cloud_vm"}` (Salix refuses it where
+  the Cloud VM is retired), or `%{"kind" => "station", "device_id" => id}` for a device
   of the project whose station takes Tasks. Answers the place to store.
   """
   @spec task_place(Project.t(), term()) :: {:ok, map()} | {:error, term()}
   def task_place(%Project{} = project, %{} = place) do
     case stringify_nested(place) do
-      %{"kind" => "salix"} = salix when map_size(salix) == 1 ->
-        {:ok, salix}
+      %{"kind" => kind} = place when kind in ["salix", "sandbox"] and map_size(place) == 1 ->
+        {:ok, place}
 
       %{"kind" => kind} = target when kind in ["cloud_vm", "station"] ->
         station_runs_on(project, target)
@@ -656,11 +686,7 @@ defmodule BridgeForTeams.Agents do
 
   def task_place(%Project{}, _place), do: {:error, :invalid_task_place}
 
-  defp station_runs_on(project, %{"kind" => "cloud_vm"}) do
-    if project.vm_enabled == true,
-      do: {:ok, %{"kind" => "cloud_vm"}},
-      else: {:error, :cloud_vm_disabled}
-  end
+  defp station_runs_on(_project, %{"kind" => "cloud_vm"}), do: {:ok, %{"kind" => "cloud_vm"}}
 
   defp station_runs_on(project, %{"kind" => "station"} = target) do
     device_id = trim(target["device_id"])

@@ -1,5 +1,5 @@
 {
- "source": "github.com/router-for-me/CLIProxyAPI/v8@v8.0.4 internal/registry/models/models.json (antigravity)",
+ "source": "github.com/router-for-me/CLIProxyAPI/v8@v8.0.65 internal/registry/models/models.json (antigravity)",
  "models": [
   {
    "id": "claude-opus-4-6-thinking",
@@ -24,11 +24,33 @@
    ]
   },
   {
-   "id": "gemini-3.6-flash-high",
-   "display_name": "Gemini 3.6 Flash",
-   "description": "Gemini 3.6 Flash (High)",
+   "id": "claude-opus-5-5-high",
+   "display_name": "Claude Opus 5.5 (High)",
+   "description": "Claude Opus 5.5 (High)",
+   "context_length": 1000000,
+   "max_completion_tokens": 128000,
+   "supportedInputModalities": [
+    "text",
+    "image"
+   ]
+  },
+  {
+   "id": "claude-sonnet-5-5-high",
+   "display_name": "Claude Sonnet 5.5 (High)",
+   "description": "Claude Sonnet 5.5 (High)",
+   "context_length": 1000000,
+   "max_completion_tokens": 128000,
+   "supportedInputModalities": [
+    "text",
+    "image"
+   ]
+  },
+  {
+   "id": "gemini-4-argon-high",
+   "display_name": "Gemini 4 Argon",
+   "description": "Gemini 4 Argon (High)",
    "context_length": 1048576,
-   "max_completion_tokens": 65536,
+   "max_completion_tokens": 1048576,
    "supportedInputModalities": [
     "text",
     "image",
@@ -37,11 +59,11 @@
    ]
   },
   {
-   "id": "gemini-3.7-flash-high",
-   "display_name": "Gemini 3.7 Flash",
-   "description": "Gemini 3.7 Flash (High)",
+   "id": "gemini-4-carbon-high",
+   "display_name": "Gemini 4 Carbon",
+   "description": "Gemini 4 Carbon (High)",
    "context_length": 1048576,
-   "max_completion_tokens": 65536,
+   "max_completion_tokens": 1048576,
    "supportedInputModalities": [
     "text",
     "image",
@@ -82,32 +104,6 @@
    "supportedInputModalities": [
     "text",
     "image"
-   ]
-  },
-  {
-   "id": "gemini-pro-agent",
-   "display_name": "Gemini 3.1 Pro (High)",
-   "description": "Gemini 3.1 Pro (High)",
-   "context_length": 1048576,
-   "max_completion_tokens": 65535,
-   "supportedInputModalities": [
-    "text",
-    "image",
-    "audio",
-    "video"
-   ]
-  },
-  {
-   "id": "gemini-3.1-pro-low",
-   "display_name": "Gemini 3.1 Pro (Low)",
-   "description": "Gemini 3.1 Pro (Low)",
-   "context_length": 1048576,
-   "max_completion_tokens": 65535,
-   "supportedInputModalities": [
-    "text",
-    "image",
-    "audio",
-    "video"
    ]
   },
   {

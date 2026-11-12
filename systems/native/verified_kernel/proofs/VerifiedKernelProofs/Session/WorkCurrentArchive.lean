@@ -11,6 +11,7 @@ theorem archive_current_facts {framing : CodecFraming} {objects nextObjects : Ob
     {before after : HotStore} {ceiling line : Int} {final : ArchivePublication.Output}
     {event key preparedState stamped token reasons activity revision flush epoch node saved request result : Term}
     (history : PhysicalHistory framing objects owner session cursor.working sealed)
+    (physical : ArchiveProjection.UnarchivedWindow cursor.working)
     (window : StorageQuery.archiveWindow cursor.working [] = .ok (.tuple [a "ok", list records, i ceiling], []))
     (positive : line > 0)
     (publication : ArchivePublication.Execution (start cursor.working (i line)) objects final nextObjects)
@@ -27,17 +28,17 @@ theorem archive_current_facts {framing : CodecFraming} {objects nextObjects : Ob
     (cas : HotCAS before request result after) :
     key = StorageAddress.key owner session ∧ ∃ dropped etag snapshot bytes,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ after.current key etag snapshot ∧
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ after.current key etag snapshot ∧
       PhysicalHistory framing nextObjects owner session snapshot (sealed ++ dropped) ∧
       ∀ item, PhysicalIdentityFact objects cursor.working (.work item) →
         PhysicalIdentityFact nextObjects snapshot (.work item) := by
   obtain ⟨_, etagEq, dropped, stagedHistory, archiveKept, _⟩ :=
-    PendingRevision.archive_write_physical_history history window positive publication emitted written
+    PendingRevision.archive_write_physical_history history physical window positive publication emitted written
   obtain ⟨addressed, etag, snapshot, bytes, encoding, requestEq, stored, snapshotHistory, _, kept⟩ :=
     candidate_current_facts stagedHistory preparation metadata encoded cas
   obtain ⟨_, _, _, _, _, _, applied⟩ := PendingRevision.write_executes written
   change ResidentBatch cursor.working [event] staged.working at applied
-  have archived := history.publish_resident_physical window positive publication emitted applied
+  have archived := history.publish_resident_physical physical window positive publication emitted applied
   refine ⟨addressed, dropped, etag, snapshot, bytes, encoding, ?_, stored, snapshotHistory, ?_⟩
   · simpa only [etagEq] using requestEq
   · intro item represented

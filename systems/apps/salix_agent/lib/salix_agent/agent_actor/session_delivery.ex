@@ -5,9 +5,7 @@ defmodule SalixAgent.AgentActor.SessionDelivery do
 
   alias SalixAgent.{
     InternalSessionFleet,
-    InternalSessionStore,
-    RetiredSessions,
-    SessionBirth
+    InternalSessionStore
   }
 
   @type wake_target :: %{runtime: :internal, session_id: String.t()}
@@ -108,60 +106,19 @@ defmodule SalixAgent.AgentActor.SessionDelivery do
     end
   end
 
-  # New-session placement: the create-once birth marker
-  # (`SalixAgent.SessionBirth`) is claimed before the store create. A marker
-  # left by a retired session refuses the delivery as read-only.
-  defp place_new_session(agent_id, session_id, entry, opts, kind) do
-    case {SessionBirth.claim(agent_id, session_id), kind} do
-      {{:ok, :internal}, :wait_timeout} ->
-        commit_internal_wait_timeout(agent_id, session_id, entry, opts)
+  # Birth and first state/input are committed together by the Session Store.
+  defp place_new_session(agent_id, session_id, entry, opts, :wait_timeout),
+    do: commit_internal_wait_timeout(agent_id, session_id, entry, opts)
 
-      {{:ok, :internal}, :delivery} ->
-        stage_internal_delivery(agent_id, session_id, entry, opts)
+  defp place_new_session(agent_id, session_id, entry, opts, :delivery),
+    do: stage_internal_delivery(agent_id, session_id, entry, opts)
 
-      {{:ok, :retired}, :wait_timeout} ->
-        {:ok, :ignored}
-
-      {{:ok, :retired}, :delivery} ->
-        {:error, :session_read_only}
-
-      {{:error, _} = error, _kind} ->
-        error
-    end
-  end
-
-  # Which store holds this session? Existence in a store IS the durable
-  # birth record. FAIL-CLOSED: `:new` is a positive claim — both probes
-  # answered a confirmed not-found. A probe error refuses the delivery with
-  # the retryable unavailable error; the same-id retry resolves it.
   @doc false
-  @spec session_birth_runtime(String.t(), String.t()) ::
-          {:ok, :internal | :retired | :new} | {:error, term()}
   def session_birth_runtime(agent_id, session_id) do
-    # A resident actor with a durable revision is proof of the internal
-    # store; a registered actor still creating its session is not, and that
-    # case keeps the probe.
-    if SalixAgent.InternalSessionActor.resident_durable?(agent_id, session_id) do
-      {:ok, :internal}
-    else
-      probe_session_birth_runtime(agent_id, session_id)
-    end
-  end
-
-  defp probe_session_birth_runtime(agent_id, session_id) do
-    case InternalSessionStore.probe(agent_id, session_id) do
-      :present ->
-        {:ok, :internal}
-
-      :absent ->
-        case RetiredSessions.probe(agent_id, session_id) do
-          :present -> {:ok, :retired}
-          :absent -> {:ok, :new}
-          {:error, reason} -> {:error, {:unavailable, {:session_probe, reason}}}
-        end
-
-      {:error, reason} ->
-        {:error, {:unavailable, {:session_probe, reason}}}
+    case InternalSessionStore.birth(agent_id, session_id) do
+      {:ok, :deleted} -> {:error, :session_read_only}
+      {:ok, _} = result -> result
+      {:error, reason} -> {:error, {:unavailable, {:session_probe, reason}}}
     end
   end
 
@@ -206,14 +163,10 @@ defmodule SalixAgent.AgentActor.SessionDelivery do
   # ops CREATE missing sessions (the fleet's ensure_started path), so a
   # creating op claims the birth marker like any other new-session placement.
   defp require_internal_runtime(agent_id, session_id, control_kind) do
-    result =
-      case session_birth_runtime(agent_id, session_id) do
-        {:ok, :new} -> SessionBirth.claim(agent_id, session_id)
-        other -> other
-      end
+    result = session_birth_runtime(agent_id, session_id)
 
     case result do
-      {:ok, :internal} ->
+      {:ok, kind} when kind in [:internal, :new] ->
         :ok
 
       {:ok, :retired} ->

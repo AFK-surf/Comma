@@ -2,6 +2,7 @@ import { clockTimeoutSignal, realMainClock, type MainClock } from "./clock";
 import { advanceTestClocks, ManualMainClock } from "./test-clock";
 import { isAuthorizationReturnUrl } from "./authorization-return";
 import { installApplicationMenu } from "./application-menu";
+import { installMiniAppDeviceChoosers } from "./mini-app-devices";
 import { applicationMenuProvider } from "./application-menu-provider";
 import { applicationMenuCommandEvent } from "@comma/native-bridge";
 import { OpenCommaShortcut } from "./open-comma-shortcut";
@@ -21,6 +22,7 @@ import {
   powerMonitor,
   Tray,
   WebContentsView,
+  webContents,
   clipboard as electronClipboard,
   ClipboardItem,
   dialog,
@@ -53,6 +55,7 @@ import {
 import { LocalStation } from "./station";
 import { resolveSynchBinaryPath } from "./synchronicity-paths";
 import { resolveAirDropBinaryPath } from "./airdrop-paths";
+import { createLanNearbyPlatform } from "./modules/airdrop/lan-platform";
 import { renderAirDropPreview } from "./airdrop-preview";
 import { defaultLocalRoots } from "./modules/synchronicity/default-root";
 import { FakeSynchronicityProvider } from "./modules/synchronicity/fake";
@@ -101,6 +104,7 @@ import {
   browserFacingUserAgent,
   registerBrowserSidebarPagePreload,
 } from "./modules/browser-sidebar";
+import { clipBrowserSidebarView } from "./browser-sidebar-view";
 import { NotchService } from "./notch";
 import { NativeStatusMenuService } from "./native-status-menu";
 import { loadFileApplicationsAddon } from "../../native/macos/FileApplications";
@@ -138,6 +142,11 @@ import {
   installDynamicUiNetworkSecurity,
   installWindowSecurity,
 } from "./security";
+import {
+  ScreenWindowPlaces,
+  ScreenWindows,
+  screenWindowNamePrefix,
+} from "./screen-windows";
 import { bootstrapCommaElectronRuntime } from "./runtime-bootstrap";
 import {
   createCommaStatusTray,
@@ -167,6 +176,7 @@ import {
 import { readMacOutputVolume } from "./output-volume";
 import { getCurrentNativeSessionAdmission } from "./modules/session/native-session-admission";
 import { installWindowViewportSync } from "./window-viewport-sync";
+import { keepFullScreenInStep } from "./full-screen-in-step";
 import { OpaqueWindowBackgroundController } from "./window-background";
 import { applyCommaDockVisibility } from "./dock-visibility";
 import { openOrCreateMainWindow } from "./open-main-window";
@@ -277,8 +287,28 @@ let quitAuthorizedAfterClose = false;
 if (process.env.NODE_ENV === "test") {
   reportMainShutdownOnExit(() => quitAuthorizedAfterClose);
   exitOnUncaughtMainException();
+} else {
+  // The terminal that started Main may be gone. A line written to it then
+  // fails, and with no listener each failure is an uncaught exception, which
+  // the handler below would log to that same terminal, without end.
+  process.stdout.on("error", () => undefined);
+  process.stderr.on("error", () => undefined);
+  // Electron answers an uncaught exception with a modal alert that holds Main's
+  // thread until it is dismissed, and Main runs on after it either way. The
+  // exception goes to the log in its place, and Main keeps answering.
+  log.errorHandler.startCatching({ showDialog: false });
 }
 let primaryWindow: BrowserWindow | undefined;
+// Screens in windows of their own, of every main window's page.
+const screenWindows = new ScreenWindows({
+  displays: {
+    all: () => screen.getAllDisplays(),
+    matching: (rect) => screen.getDisplayMatching(rect),
+  },
+  places: new ScreenWindowPlaces(() =>
+    join(app.getPath("userData"), "screen-windows.json")
+  ),
+});
 /**
  * The main window's tie to Main's services and its bounds when it opened, while it is the one a launch opens (at the
  * root route): a reset keeps it (`keptMainWindow`).
@@ -449,6 +479,8 @@ function installStatusTray() {
     createHost: createStatusTrayHost,
     locale: electronMainLocale,
     onOpenMainApp: requestOpenMainApp,
+    onCheckForUpdates: () =>
+      requestOpenMainAppRoute("/settings?category=about&check=updates"),
     onOpenSettings: openStatusTraySettings,
     onOpenTask: (task) => requestOpenMainAppRoute(statusTrayTaskRoute(task)),
     onOpenTasks: () => requestOpenMainAppRoute("/tasks"),
@@ -457,6 +489,7 @@ function installStatusTray() {
     onQuickChat: () => appContext?.startQuickChat(),
     onRefreshUsage: () => appContext?.refreshStatusTrayUsage(),
     productName: releaseConfig.productName,
+    version: displayVersion,
   });
   statusTray = installedTray;
   activateElectronE2eStatusTraySettings(e2eHooks, openStatusTraySettings);
@@ -808,6 +841,8 @@ async function createWindow({
   // renderer at the creation size. Re-check after sizing settles, without
   // changing the native size while the user is still dragging an edge.
   installWindowViewportSync(mainWindow, { clock: mainClock, log });
+  // The side panel's remote screen fills the screen from the page (HTML full screen).
+  keepFullScreenInStep(mainWindow);
   // macOS and Windows report the end of a user resize; the renderer only ever
   // sees a `resize` stream that stops, which cannot tell a released window edge
   // from a pause with the button still down. The shell settles layouts the drag
@@ -865,13 +900,20 @@ async function createWindow({
     browserWindow: mainWindow,
     failureLabel: "main window",
     id,
-    installWindowSecurity: () =>
+    installWindowSecurity: () => {
       installWindowSecurity({
         handleAppLink: handleMiniAppRunUrl,
         allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
+        childWindowOptions: (details) =>
+          screenWindows.options(details, mainWindow.getBounds()),
         logger: log,
         webContents: mainWindow.webContents,
-      }),
+      });
+      mainWindow.webContents.on("did-create-window", (child, { frameName }) => {
+        if (frameName.startsWith(screenWindowNamePrefix))
+          screenWindows.adopt(mainWindow.webContents, child, frameName);
+      });
+    },
     loadUrl: route === "/" ? rendererURL : withHashRoute(rendererURL, route),
     logger: log,
     route,
@@ -922,6 +964,7 @@ async function createRuntimeWorkbenchWindow({
     })
   );
   runtimeWorkbenchWindow = workbenchWindow;
+  keepFullScreenInStep(workbenchWindow);
   workbenchWindow.on("closed", () => {
     if (runtimeWorkbenchWindow === workbenchWindow) {
       runtimeWorkbenchWindow = undefined;
@@ -1221,6 +1264,10 @@ async function createElectronMainContext() {
       setKeepAwakeWhenLidClosed: (enabled, options) =>
         lidSleepGuard.set(enabled, options),
       openLoginItemsSettings: () => lidSleepGuard.openLoginItemsSettings(),
+      relaunch: () => {
+        app.relaunch();
+        app.quit();
+      },
     },
     userActivity: {
       systemIdleSeconds: () => powerMonitor.getSystemIdleTime(),
@@ -1322,6 +1369,14 @@ async function createElectronMainContext() {
     computerUseHelperApp: resolveComputerUseHelperApp(),
     airDropBinaryPath: resolveAirDropBinaryPath(),
     airDropSenderBinaryPath: resolveAirDropBinaryPath(),
+    // mDNS brings up the macOS Local Network prompt, which takes focus from
+    // the test's windows: E2E runs have AirDrop only, as with Bluetooth.
+    lanNearbyPlatform:
+      process.env.NODE_ENV === "test"
+        ? undefined
+        : createLanNearbyPlatform({
+            log: { warn: (message) => log.warn(message) },
+          }),
     getAirDropSurfaceId: () => {
       const window = BrowserWindow.getFocusedWindow() ?? primaryWindow;
       return window && !window.isDestroyed()
@@ -1494,9 +1549,11 @@ async function createElectronMainContext() {
       })
     ),
     createBrowserSidebarView: () =>
-      new WebContentsView({
-        webPreferences: BROWSER_SIDEBAR_WEB_PREFERENCES,
-      }),
+      clipBrowserSidebarView(
+        new WebContentsView({
+          webPreferences: BROWSER_SIDEBAR_WEB_PREFERENCES,
+        })
+      ),
     createBrowserInspectionComposerView: () =>
       new WebContentsView({
         webPreferences: BROWSER_INSPECTION_COMPOSER_WEB_PREFERENCES,
@@ -1511,6 +1568,7 @@ async function createElectronMainContext() {
         // windows.focus is an explicit user action from accessory surfaces such
         // as the Notch, which must reactivate the regular app.
         activateApplication: () => app.focus({ steal: true }),
+        focusScreenWindow: (name) => screenWindows.focus(name),
         // Resolves once the window shows, and fails if it closes first: a renderer that hands its content to the
         // window lets go of it only then, never while the window is still loading or once it is gone.
         openWindow: async ({ bounds, route, windowId }) => {
@@ -1631,6 +1689,31 @@ async function createElectronMainContext() {
             openRoute: requestOpenMainAppRoute,
           },
         }),
+    encodeBlenderJpeg: async (path, maxSize) => {
+      const source = nativeImage.createFromPath(path);
+      if (source.isEmpty()) throw new Error("Blender wrote no picture.");
+      const { width, height } = source.getSize();
+      const scale = Math.min(1, maxSize / Math.max(width, height));
+      const image =
+        scale < 1
+          ? source.resize({
+              width: Math.round(width * scale),
+              height: Math.round(height * scale),
+              quality: "good",
+            })
+          : source;
+      return { data: image.toJPEG(82), ...image.getSize() };
+    },
+    pickBlenderApp: async () => {
+      const picked = await dialog.showOpenDialog({
+        title: "Choose Blender",
+        properties: ["openFile"],
+        ...(process.platform === "win32"
+          ? { filters: [{ name: "Blender", extensions: ["exe"] }] }
+          : {}),
+      });
+      return picked.canceled ? undefined : picked.filePaths[0];
+    },
     macAppsHostPath: app.isPackaged
       ? join(process.resourcesPath, "native", "macos", "MacAppsHost")
       : join(app.getAppPath(), "dist", "native", "macos", "MacAppsHost"),
@@ -1709,15 +1792,43 @@ function startElectronApp() {
       registerAppProtocol(devServerUrl, {
         clock: mainClock,
         getCredentialAuthority: () => appContext?.session,
+        getAuthOrigin: () => appContext?.session.apiOrigin,
         getDriveStreams: () => appContext?.synchronicity,
         getFileStreams: () => appContext?.coreHost,
       });
       installSessionSecurity(session.defaultSession, {
-        microphoneOrigins: allowedRendererOrigins(devServerUrl),
-        // Only the desktop's voice call records in the page, and only with voice labs on.
-        microphoneAllowed: async () =>
-          (await appContext?.appPreferences.state())?.clientSettings
-            ?.voiceLabsEnabled === true,
+        appOrigins: allowedRendererOrigins(devServerUrl),
+        appChildWindow: (contents) => screenWindows.has(contents),
+      });
+      void screenWindows.load();
+      installMiniAppDeviceChoosers({
+        app,
+        session: session.defaultSession,
+        appOrigins: allowedRendererOrigins(devServerUrl),
+        ownerOfFrame: (frame) => webContents.fromFrame(frame),
+        clock: mainClock,
+        choose: async (kind, devices, contents) => {
+          const window = BrowserWindow.fromWebContents(contents);
+          if (!window || window.isDestroyed()) return undefined;
+          const { response } = await dialog.showMessageBox(window, {
+            type: "question",
+            message:
+              kind === "usb"
+                ? messages.mini_app_choose_usb()
+                : messages.mini_app_choose_bluetooth(),
+            detail: devices.length
+              ? messages.mini_app_device_grant_scope()
+              : messages.mini_app_no_devices(),
+            buttons: [
+              messages.mini_app_cancel(),
+              ...devices.map((device) => device.name),
+            ],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+          return devices[response - 1]?.id;
+        },
       });
       installDynamicUiNetworkSecurity(session.defaultSession, { clock: mainClock });
       installApplicationMenu({

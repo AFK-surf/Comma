@@ -31,27 +31,42 @@ Salix stores only credential digests and fences command results and session obse
 Registry signing keys stay behind the Salix signer seam. Neither the gateway nor Postgres receives a device or mesh private key.
 
 Local builds use the sibling `agent-vmm` checkout through `go.mod replace`.
-Release builds use a two-root context with the selected Comma and Agent VMM revisions.
+Release builds use a two-root context with the Comma revision and the Agent VMM revision of the Host pin (`release_id` in `.github/agent-vmm-host.json`).
+CI does not build the gateway from Agent VMM `main`. A Host pin change rebuilds and tests the gateway.
 The published OCI image digest is the deployment identity. Source revisions are diagnostics only.
 
-## Wire changes and release order
+## Remote protocol cutover
 
-The Gateway parses Salix command JSON with the Agent VMM protobuf version in its image. The Host parses the forwarded protobuf command with its installed version.
+The Gateway parses stored `payload.command_json` with the protobuf schema in its image.
+The remote protocol cutover replaces `resourcesV2` with `limits` and `deadlineUnixMillis` with `timeoutMillis`.
+The Host measures `timeoutMillis` from receipt. Salix uses `deadline_at` to stop admission and settle its wait for a result.
+A Salix deadline can expire before the Host timeout. Expiry does not prove that execution stopped or a side effect failed.
+Retain unknown outcomes and reconcile the exact allocation before replacement.
 
-1. Promote a mainline Gateway image and a formal Host bundle that know the new command fields before Salix sends those fields.
-2. Test a command on staging.
-3. Promote the same Gateway image and chart to production before the Comma release.
-4. Update each Host through its state-preserving lifecycle path.
+Use the existing approved mainline release procedure for this incompatible change.
+Drain old pending commands before replacing the Gateway. Preserve accepted command receipts and unknown outcomes.
+Do not rewrite an accepted command, erase its delivery fact, or recreate it under a new request ID.
 
-If Salix already sends a field that the production Gateway cannot parse:
+1. Stop new command admission through the owning release procedure while the old command dispatcher remains available.
+2. Let the old dispatcher settle commands that still carry the old fields.
+3. Inspect the remaining commands with the query below.
+4. If old commands remain, resolve their existing operation outcomes before cutover.
+5. Deploy the coordinated control-plane and Gateway release. Apply the Host cutover and recovery policy in [Compute and devices](../../../docs/compute-devices.md#host-reconnect-and-runtime-recovery).
+6. Verify `ensureAllocation` admission and a runtime call through the Gateway.
+7. Verify that `STALE_EXECUTION` maps to `stale_execution`, and that mutation, capacity, and workspace reasons remain distinct.
+8. Resume admission after these protocol calls succeed.
 
-1. Promote a staging-proven mainline Gateway release.
-2. Update the affected Hosts with a formal bundle.
-3. Check the Host connection and automatic Runtime recovery.
-4. Verify a Host command result, Runtime readiness, and a Worker response before you report recovery.
+```sql
+SELECT id, allocation_id, status, deadline_at, delivery_started_at
+FROM compute_commands
+WHERE status IN ('pending', 'admitted', 'executing', 'unknown_outcome')
+  AND (payload->'command_json' ? 'deadlineUnixMillis'
+       OR payload->'command_json'->'ensureAllocation' ? 'resourcesV2')
+ORDER BY created_at, id;
+```
 
-Do not edit accepted commands or install a branch image to hide the mismatch.
-An older Connector with an exited loop needs controlled client recovery.
+This query is an operator inventory for the one-time cutover. It is not a startup or request gate.
+Do not install a branch image or add an old-schema reader to bypass the release procedure.
 
 ## Outbound iroh service tunnels
 
@@ -80,22 +95,3 @@ Its destination is a test gRPC server, not a macOS VMM. It does not prove Host a
 
 This is the internal gateway-to-iroh transport only. There is no public HTTP listener, wildcard hostname-to-service map, public route issuer, or browser authorization.
 DNS alone does not publish a container service.
-
-## Isolated pressure integration test
-
-Use Python 3.11 or newer, Docker, Go, Rust, and the macOS signing tools.
-Build a current Linux arm64 Guest bundle from the sibling VMM checkout. From this gateway directory, run:
-
-```sh
-python3 testdata/pressure-relay/build.py --vmm /path/to/agent-vmm \
-  --guest-bundle /path/to/guest-bundle --output /tmp/comma-pressure-fixture
-. /tmp/comma-pressure-fixture/env.sh
-cd ../..
-# Set the repository's test database ports and Redis URL to isolated Docker services.
-mix test apps/salix_web/test/compute_pressure_e2e_test.exs
-```
-
-The output directory must be new. The builder creates a test image and a scratch Guest bundle.
-It does not change an installed Host or deploy an artifact.
-A fixture relay carries callbacks through authenticated ForwardTCP. It adds no production egress exception.
-The fixture directory that ExUnit prints keeps bounded Guest and Host logs.

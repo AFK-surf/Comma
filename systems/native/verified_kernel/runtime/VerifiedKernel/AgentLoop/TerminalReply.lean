@@ -11,7 +11,12 @@ id and reply intent, and the scope from `terminal_reply_context`. -/
 namespace VerifiedKernel.AgentLoop.TerminalReply
 open Data
 
-private def onboardingTools : List Term := [b "im_api.slack.post_message", b "im_api.slack.post_channel_message"]
+/-- `RoundQuery.onboardingSendTools`: Slack's channel post, and the chat send of
+Feishu and Lark. -/
+private def onboardingTools : List Term :=
+  [b "im_api.slack.post_message", b "im_api.slack.post_channel_message",
+   b "im_api.feishu.send_message", b "im_api.lark.send_message"]
+private def chatSendTools : List Term := [b "im_api.feishu.send_message", b "im_api.lark.send_message"]
 private def interactiveTools : List Term :=
   [b "question.request", b "permission.request", b "location.request", b "oauth.request_authorization"]
 
@@ -45,9 +50,13 @@ private def matchingTarget (name args scope : Term) : KernelM Term := do
 private def sourceSend (name args scope : Term) : KernelM Bool := do
   if !scope.isMap then return false
   if key scope "kind" == b "channel_onboarding" then
-    return onboardingTools.contains name &&
-      (← text (key args "connect_id")) == key scope "connect_id" &&
-      (← text (key args "channel")) == key scope "chat_id" &&
+    if !(onboardingTools.contains name && (← text (key args "connect_id")) == key scope "connect_id") then
+      return false
+    -- A Feishu or Lark welcome is a new message to the joined chat itself.
+    if chatSendTools.contains name then
+      return (← text (key args "chat_id")) == key scope "chat_id" &&
+        (← text (key args "user_id")) == b "" && (← text (key args "reply_to")) == b ""
+    return (← text (key args "channel")) == key scope "chat_id" &&
       (← text (key args "thread_ts")) == b ""
   if scope.has (b "targets") then return (← matchingTarget name args scope) != nil
   return name == b "im_api.telegram.send_message" &&

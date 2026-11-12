@@ -66,9 +66,14 @@ test("Drive window preserves keyboard traversal, menus and recording reveals", a
   }
   await page.getByTestId("drive-file-file-30").click({ button: "right" });
   await expect(page.getByRole("menu")).toBeVisible();
-  await page.locator('[data-slot="scroll-area-viewport"]').evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
+  // The Drive list's own viewport, not the open menu's.
+  await page
+    .locator('[data-slot="scroll-area-viewport"]', {
+      has: page.getByTestId("drive-file-file-30"),
+    })
+    .evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
   await expect(page.getByRole("menu")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("drive-file-file-30")).toBeFocused();

@@ -23,8 +23,7 @@
     "id": 1,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -149,8 +148,7 @@
     "id": 2,
     "subscribe": {
      "topic": "pluginNotices"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -160,8 +158,7 @@
     "id": 3,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -171,8 +168,7 @@
     "id": 4,
     "subscribe": {
      "topic": "workspace"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -183,8 +179,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": ""
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -195,8 +190,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxDeleted"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -207,8 +201,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxUnread"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -219,8 +212,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "taskReviewSeen"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -231,8 +223,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "chatTaskDismissed"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -242,8 +233,7 @@
     "id": 10,
     "subscribe": {
      "topic": "workspaceChat"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -253,8 +243,7 @@
     "id": 11,
     "subscribe": {
      "topic": "meetingRecorder"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -264,8 +253,7 @@
     "id": 12,
     "subscribe": {
      "topic": "profile"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -448,15 +436,24 @@
    "dir": "in",
    "data": {
     "id": 4,
-    "value": {
-     "status": "ready",
-     "workspace": {
-      "id": "ws-smoke",
-      "groupId": "grp-smoke",
-      "name": "Smoke Workspace"
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      },
-     "selected": false
-    }
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": {
+       "id": "ws-smoke",
+       "groupId": "grp-smoke",
+       "name": "Smoke Workspace"
+      }
+     }
+    ]
    }
   },
   {
@@ -467,8 +464,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -499,11 +495,9 @@
    "data": {
     "id": 16,
     "subscribe": {
-     "topic": "tasks",
-     "workspace": "ws-smoke",
-     "hosted": "1"
-    },
-    "keyed": true
+     "topic": "taskRequests",
+     "prefer": "ws-smoke"
+    }
    }
   },
   {
@@ -511,6 +505,18 @@
    "dir": "out",
    "data": {
     "id": 17,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke",
+     "hosted": "1"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -521,13 +527,12 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 19,
     "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
      "read": "0"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -556,22 +561,32 @@
    "dir": "in",
    "data": {
     "id": 12,
-    "value": {
-     "status": "ready",
-     "profile": {
-      "avatar_id": null,
-      "email": "smoke@comma.local",
-      "id": "e2e-user:smoke@comma.local",
-      "name": null
+    "delta": [
+     {
+      "path": [
+       "profile"
+      ],
+      "set": {
+       "avatar_id": null,
+       "email": "smoke@comma.local",
+       "id": "e2e-user:smoke@comma.local",
+       "name": null
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      }
-    }
+    ]
    }
   },
   {
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 20,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -583,31 +598,26 @@
    "dir": "in",
    "data": {
     "id": 10,
-    "value": {
-     "status": "ready",
-     "chat": {
-      "workspaceId": "ws-smoke",
-      "groupId": "grp-smoke",
-      "conversationId": "cnv_public_chat_smoke",
-      "createdAt": 1720000000,
-      "updatedAt": 1720000000
+    "delta": [
+     {
+      "path": [
+       "chat"
+      ],
+      "set": {
+       "workspaceId": "ws-smoke",
+       "groupId": "grp-smoke",
+       "conversationId": "cnv_public_chat_smoke",
+       "createdAt": 1720000000,
+       "updatedAt": 1720000000
+      }
      },
-     "kept": false
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 20,
-    "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "timezone": "UTC",
-     "locale": "en"
-    },
-    "keyed": true
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
    }
   },
   {
@@ -616,10 +626,11 @@
    "data": {
     "id": 21,
     "subscribe": {
-     "topic": "creditWarning",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "timezone": "UTC",
+     "locale": "en"
+    }
    }
   },
   {
@@ -628,10 +639,9 @@
    "data": {
     "id": 22,
     "subscribe": {
-     "topic": "mentionTasks",
-     "group": "grp-smoke"
-    },
-    "keyed": true
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -640,11 +650,9 @@
    "data": {
     "id": 23,
     "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "reads": "once"
-    },
-    "keyed": true
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    }
    }
   },
   {
@@ -653,10 +661,10 @@
    "data": {
     "id": 24,
     "subscribe": {
-     "topic": "plugins",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    }
    }
   },
   {
@@ -665,12 +673,9 @@
    "data": {
     "id": 25,
     "subscribe": {
-     "topic": "taskLabels",
-     "group": "grp-smoke",
-     "key": "",
-     "mode": ""
-    },
-    "keyed": true
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -679,13 +684,11 @@
    "data": {
     "id": 26,
     "subscribe": {
-     "topic": "chatView",
-     "workspace": "ws-smoke",
+     "topic": "taskLabels",
      "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke",
-     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf"
-    },
-    "keyed": true
+     "key": "",
+     "mode": ""
+    }
    }
   },
   {
@@ -694,10 +697,12 @@
    "data": {
     "id": 27,
     "subscribe": {
-     "topic": "skills",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf"
+    }
    }
   },
   {
@@ -705,6 +710,17 @@
    "dir": "out",
    "data": {
     "id": 28,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 29,
     "call": "workspace.select",
     "params": {
      "workspace": "ws-smoke"
@@ -715,7 +731,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 30,
     "call": "chatView.setDraft",
     "params": {
      "draft": "请完成冒烟任务",
@@ -758,7 +774,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 18,
     "ok": null
    }
   },
@@ -770,7 +786,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 29,
     "ok": null
    }
   },
@@ -778,7 +794,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 30,
     "ok": {
      "revision": 3,
      "draftEpoch": 1
@@ -812,6 +828,23 @@
    "data": {
     "id": 16,
     "value": {
+     "workspace": null,
+     "incoming": null,
+     "grants": null,
+     "targets": null,
+     "sent": null,
+     "links": null,
+     "own": null,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
       {
@@ -831,19 +864,18 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 31,
     "subscribe": {
      "topic": "taskOrder",
      "group": "grp-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 18,
+    "id": 19,
     "value": null
    }
   },
@@ -867,7 +899,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 21,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -875,14 +907,6 @@
      "discovering": false,
      "refreshing": false
     }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 21,
-    "value": null
    }
   },
   {
@@ -898,6 +922,14 @@
    "dir": "in",
    "data": {
     "id": 23,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -911,7 +943,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 24,
+    "id": 25,
     "value": {
      "status": "loading"
     }
@@ -921,7 +953,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 26,
     "value": {
      "catalog": null,
      "error": false,
@@ -933,7 +965,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -973,7 +1005,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 28,
     "value": {
      "status": "loading",
      "skills": []
@@ -1003,7 +1035,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 20,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1021,7 +1053,28 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 21,
     "delta": [
      {
       "path": [
@@ -1051,7 +1104,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 22,
+    "id": 23,
     "value": []
    }
   },
@@ -1059,7 +1112,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 23,
+    "id": 24,
     "delta": [
      {
       "path": [
@@ -1081,6 +1134,40 @@
        "snapshot": null,
        "state": "empty"
       }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
      }
     ]
    }
@@ -1090,6 +1177,27 @@
    "dir": "in",
    "data": {
     "id": 26,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1127,20 +1235,19 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 32,
     "subscribe": {
      "topic": "agentRequests",
      "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 31,
     "value": {
      "orders": {},
      "sections": [
@@ -1172,95 +1279,61 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 5,
+    "id": 28,
     "delta": [
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      },
+      "before": null
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      "before": "weekly-reminder"
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 24,
-    "delta": [
-     {
-      "path": [
-       "error"
+      "key": [
+       "skill_id"
       ],
-      "set": {
-       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "status": 404,
-       "detail": {
-        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
-       }
-      }
+      "put": {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      "before": "code-review"
      },
      {
       "path": [
        "status"
       ],
-      "set": "error"
-     },
-     {
-      "path": [
-       "workspace"
-      ],
-      "set": "ws-smoke"
+      "set": "ready"
      }
     ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 25,
-    "value": {
-     "catalog": null,
-     "error": true,
-     "loading": false
-    }
    }
   },
   {
@@ -1268,37 +1341,6 @@
    "dir": "in",
    "data": {
     "id": 27,
-    "value": {
-     "status": "ready",
-     "skills": [
-      {
-       "skill_id": "weekly-summary",
-       "name": "周会总结",
-       "description": "整理会议要点和后续事项",
-       "location": "salix://skills/weekly-summary"
-      },
-      {
-       "skill_id": "code-review",
-       "name": "代码审查",
-       "description": "检查实现风险和测试缺口",
-       "location": "salix://skills/code-review"
-      },
-      {
-       "skill_id": "weekly-reminder",
-       "name": "周会提醒",
-       "description": "提醒周会议程",
-       "location": "salix://skills/weekly-reminder",
-       "activation": "per-message"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 26,
     "delta": [
      {
       "path": [
@@ -1374,21 +1416,20 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 32,
+    "id": 33,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
      "conversation": "cnv_public_chat_smoke",
      "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "value": {
      "requests": [],
      "loading": true,
@@ -1404,7 +1445,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "delta": [
      {
       "path": [
@@ -1425,7 +1466,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": null
    }
   },
@@ -1437,7 +1478,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 34,
     "call": "chatView.send",
     "params": {
      "text": "请完成冒烟任务",
@@ -1461,7 +1502,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "value": {
      "accepted": true
     }
@@ -1475,7 +1516,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": {
      "browser": null
     }
@@ -1485,7 +1526,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1594,7 +1635,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "ok": {
      "revision": 11,
      "draftEpoch": 2
@@ -1609,7 +1650,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -2428,7 +2469,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 35,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -2439,107 +2480,36 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 36,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 36,
+    "id": 37,
     "subscribe": {
      "topic": "taskLabels",
      "group": "grp-smoke",
      "key": "",
      "mode": "known"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 38,
     "subscribe": {
      "topic": "taskWorkers",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 128,
-   "dir": "rest"
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 25,
-    "delta": [
-     {
-      "path": [
-       "loading"
-      ],
-      "set": true
-     }
-    ]
-   }
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 35,
-    "value": {
-     "summaries": []
-    }
-   }
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 36,
-    "value": {
-     "catalog": null,
-     "error": true,
-     "loading": true
-    }
-   }
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 37,
-    "value": {}
-   }
-  },
-  {
-   "at": 128,
-   "dir": "rest"
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
-    "id": 34,
-    "error": {
-     "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
-     "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
-     "status": 404,
-     "detail": {
-      "error": "unhandled GET /v1/comma/groups/grp-smoke/task-labels"
-     }
     }
    }
   },
@@ -2548,11 +2518,7 @@
    "dir": "rest"
   },
   {
-   "at": 150,
-   "dir": "due"
-  },
-  {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
     "id": 5,
@@ -2575,6 +2541,7 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
        "status": "in_progress",
        "title": "冒烟任务",
@@ -2596,7 +2563,7 @@
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
     "id": 13,
@@ -2619,6 +2586,7 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
        "status": "in_progress",
        "title": "冒烟任务",
@@ -2640,10 +2608,10 @@
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
-    "id": 16,
+    "id": 17,
     "delta": [
      {
       "path": [
@@ -2663,6 +2631,7 @@
        "id": "grp-smoke:cnv_public_task_smoke",
        "kind": "agent_task",
        "labels": [],
+       "createdAt": 1720000002000,
        "source": "salix.conversation",
        "status": "in_progress",
        "title": "冒烟任务",
@@ -2684,29 +2653,98 @@
    }
   },
   {
-   "at": 150,
-   "dir": "rest"
-  },
-  {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 26,
     "delta": [
      {
       "path": [
        "loading"
       ],
-      "set": false
+      "set": true
      }
     ]
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
     "id": 36,
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "labels": [],
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 37,
+    "value": {
+     "catalog": null,
+     "error": true,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 38,
+    "value": {}
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "error": {
+     "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
+     "status": 404,
+     "detail": {
+      "error": "unhandled GET /v1/comma/groups/grp-smoke/task-labels"
+     }
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "rest"
+  },
+  {
+   "at": 150,
+   "dir": "due"
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -2722,40 +2760,12 @@
    "dir": "in",
    "data": {
     "id": 37,
-    "value": {
-     "cnv_public_task_smoke": null
-    }
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 35,
     "delta": [
      {
       "path": [
-       "summaries"
+       "loading"
       ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_public_task_smoke",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updated_at": 1720000003,
-       "archive_availability": {
-        "allowed": false,
-        "reason": null
-       },
-       "labels": [],
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
+      "set": false
      }
     ]
    }
@@ -2764,17 +2774,13 @@
    "at": 150,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 38,
     "delta": [
      {
       "path": [
-       "sections",
-       0,
-       "ids"
-      ],
-      "append": [
        "cnv_public_task_smoke"
-      ]
+      ],
+      "set": null
      }
     ]
    }
@@ -2787,14 +2793,13 @@
    "at": 176,
    "dir": "out",
    "data": {
-    "id": 38,
+    "id": 39,
     "subscribe": {
      "topic": "taskPreview",
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke",
      "read": "1"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2805,22 +2810,7 @@
    "at": 176,
    "dir": "in",
    "data": {
-    "id": 22,
-    "value": [
-     {
-      "id": "cnv_public_task_smoke",
-      "status": "in_progress",
-      "title": "冒烟任务",
-      "updatedAt": 1720000003
-     }
-    ]
-   }
-  },
-  {
-   "at": 176,
-   "dir": "in",
-   "data": {
-    "id": 38,
+    "id": 39,
     "value": {
      "status": "loading"
     }
@@ -2838,23 +2828,33 @@
    "at": 178,
    "dir": "in",
    "data": {
-    "id": 38,
-    "value": {
-     "status": "ready",
-     "preview": {
-      "activity_status": "idle",
-      "freshness": {
-       "state": "fresh",
-       "refreshed_at": 1720000003
-      },
-      "id": "cnv_public_task_smoke",
-      "group_id": "grp-smoke",
-      "kind": "agent_task",
-      "status": "in_progress",
-      "title": "冒烟任务",
-      "updated_at": 1720000003
+    "id": 39,
+    "delta": [
+     {
+      "path": [
+       "preview"
+      ],
+      "set": {
+       "activity_status": "idle",
+       "freshness": {
+        "state": "fresh",
+        "refreshed_at": 1720000003
+       },
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      }
-    }
+    ]
    }
   },
   {
@@ -2862,36 +2862,30 @@
    "dir": "rest"
   },
   {
-   "at": 200,
-   "dir": "due"
-  },
-  {
    "at": 208,
    "dir": "out",
    "data": {
-    "id": 39,
+    "id": 40,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke",
      "peek": "1"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 208,
    "dir": "out",
    "data": {
-    "id": 40,
+    "id": 41,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke",
      "surface": "web:fdcace21-8a56-426d-8fed-3388eddffbcf"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2902,7 +2896,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 39,
+    "id": 40,
     "value": {
      "summaries": [
       {
@@ -2928,7 +2922,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -2943,7 +2937,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -2987,7 +2981,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3002,7 +2996,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3047,7 +3041,19 @@
    "at": 208,
    "dir": "out",
    "data": {
-    "id": 41,
+    "id": 42,
+    "call": "taskFiles.list",
+    "params": {
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke"
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "out",
+   "data": {
+    "id": 43,
     "call": "marks.mark",
     "params": {
      "kind": "taskReviewSeen",
@@ -3064,13 +3070,12 @@
    "at": 208,
    "dir": "out",
    "data": {
-    "id": 42,
+    "id": 44,
     "subscribe": {
      "topic": "agentRequests",
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -3081,7 +3086,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 41,
+    "id": 43,
     "ok": null
    }
   },
@@ -3093,7 +3098,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3108,7 +3113,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3124,18 +3129,22 @@
    "dir": "in",
    "data": {
     "id": 8,
-    "value": {
-     "marks": {
-      "cnv_public_task_smoke": 1720000003000
+    "delta": [
+     {
+      "path": [
+       "marks",
+       "cnv_public_task_smoke"
+      ],
+      "set": 1720000003000
      }
-    }
+    ]
    }
   },
   {
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "value": {
      "requests": [],
      "loading": true,
@@ -3151,37 +3160,49 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 26,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 16
-     }
-    ]
-   }
-  },
-  {
-   "at": 208,
-   "dir": "in",
-   "data": {
-    "id": 40,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 16
-     }
-    ]
-   }
-  },
-  {
-   "at": 208,
-   "dir": "in",
-   "data": {
     "id": 42,
+    "ok": {
+     "status": "ready",
+     "files": [],
+     "nextCursor": null
+    }
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 16
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 16
+     }
+    ]
+   }
+  },
+  {
+   "at": 208,
+   "dir": "in",
+   "data": {
+    "id": 44,
     "delta": [
      {
       "path": [
@@ -3206,7 +3227,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3221,7 +3242,7 @@
    "at": 208,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3255,7 +3276,7 @@
    "at": 240,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3293,7 +3314,7 @@
    "at": 240,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3320,7 +3341,7 @@
    "at": 380,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3354,7 +3375,7 @@
    "at": 380,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3377,7 +3398,7 @@
    "at": 520,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3411,7 +3432,7 @@
    "at": 520,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3434,7 +3455,7 @@
    "at": 660,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3468,7 +3489,7 @@
    "at": 660,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3491,7 +3512,7 @@
    "at": 800,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3525,7 +3546,7 @@
    "at": 800,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3548,7 +3569,7 @@
    "at": 940,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3582,7 +3603,7 @@
    "at": 940,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3605,7 +3626,7 @@
    "at": 1080,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3639,7 +3660,7 @@
    "at": 1080,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3674,7 +3695,7 @@
    "at": 1220,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3708,7 +3729,7 @@
    "at": 1220,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3735,7 +3756,7 @@
    "at": 1360,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3769,7 +3790,7 @@
    "at": 1360,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3792,7 +3813,7 @@
    "at": 1500,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3826,7 +3847,7 @@
    "at": 1500,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3849,7 +3870,7 @@
    "at": 1640,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3883,7 +3904,7 @@
    "at": 1640,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3906,7 +3927,7 @@
    "at": 1780,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3940,7 +3961,7 @@
    "at": 1780,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -3963,7 +3984,7 @@
    "at": 1920,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -3997,7 +4018,7 @@
    "at": 1920,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4020,7 +4041,7 @@
    "at": 2060,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4054,7 +4075,7 @@
    "at": 2060,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4077,7 +4098,7 @@
    "at": 2200,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4111,7 +4132,7 @@
    "at": 2200,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4127,10 +4148,6 @@
    "dir": "rest"
   },
   {
-   "at": 2220,
-   "dir": "due"
-  },
-  {
    "at": 2340,
    "dir": "due"
   },
@@ -4138,7 +4155,7 @@
    "at": 2340,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4172,7 +4189,7 @@
    "at": 2340,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4195,7 +4212,7 @@
    "at": 2480,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4229,7 +4246,7 @@
    "at": 2480,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4252,7 +4269,7 @@
    "at": 2620,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4286,7 +4303,7 @@
    "at": 2620,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4309,7 +4326,7 @@
    "at": 2760,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4343,7 +4360,7 @@
    "at": 2760,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4366,7 +4383,7 @@
    "at": 2900,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4400,7 +4417,7 @@
    "at": 2900,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4423,7 +4440,7 @@
    "at": 3040,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4457,7 +4474,7 @@
    "at": 3040,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4488,7 +4505,7 @@
    "at": 3180,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4522,7 +4539,7 @@
    "at": 3180,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4545,7 +4562,7 @@
    "at": 3320,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4579,7 +4596,7 @@
    "at": 3320,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4595,10 +4612,6 @@
    "dir": "rest"
   },
   {
-   "at": 3340,
-   "dir": "due"
-  },
-  {
    "at": 3460,
    "dir": "due"
   },
@@ -4606,7 +4619,7 @@
    "at": 3460,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4640,7 +4653,7 @@
    "at": 3460,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4663,7 +4676,7 @@
    "at": 3600,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4697,7 +4710,7 @@
    "at": 3600,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4720,7 +4733,7 @@
    "at": 3740,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4754,7 +4767,7 @@
    "at": 3740,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4777,7 +4790,7 @@
    "at": 3880,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4811,7 +4824,7 @@
    "at": 3880,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4834,7 +4847,7 @@
    "at": 4020,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4868,7 +4881,7 @@
    "at": 4020,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4891,7 +4904,7 @@
    "at": 4160,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4925,7 +4938,7 @@
    "at": 4160,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -4948,7 +4961,7 @@
    "at": 4300,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -4982,7 +4995,7 @@
    "at": 4300,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -5005,7 +5018,7 @@
    "at": 4440,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -5039,7 +5052,7 @@
    "at": 4440,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
@@ -5055,11 +5068,1908 @@
    "dir": "rest"
   },
   {
-   "at": 4460,
+   "at": 4580,
    "dir": "due"
   },
   {
-   "at": 4492,
+   "at": 4580,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 49
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4580,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 49
+     }
+    ]
+   }
+  },
+  {
+   "at": 4580,
+   "dir": "rest"
+  },
+  {
+   "at": 4720,
+   "dir": "due"
+  },
+  {
+   "at": 4720,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4720,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     }
+    ]
+   }
+  },
+  {
+   "at": 4720,
+   "dir": "rest"
+  },
+  {
+   "at": 4860,
+   "dir": "due"
+  },
+  {
+   "at": 4860,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 51
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 4860,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 51
+     }
+    ]
+   }
+  },
+  {
+   "at": 4860,
+   "dir": "rest"
+  },
+  {
+   "at": 5000,
+   "dir": "due"
+  },
+  {
+   "at": 5000,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 52
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5000,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 52
+     }
+    ]
+   }
+  },
+  {
+   "at": 5000,
+   "dir": "rest"
+  },
+  {
+   "at": 5140,
+   "dir": "due"
+  },
+  {
+   "at": 5140,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 53
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5140,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 53
+     }
+    ]
+   }
+  },
+  {
+   "at": 5140,
+   "dir": "rest"
+  },
+  {
+   "at": 5280,
+   "dir": "due"
+  },
+  {
+   "at": 5280,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 54
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5280,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 54
+     }
+    ]
+   }
+  },
+  {
+   "at": 5280,
+   "dir": "rest"
+  },
+  {
+   "at": 5420,
+   "dir": "due"
+  },
+  {
+   "at": 5420,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 55
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5420,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 55
+     }
+    ]
+   }
+  },
+  {
+   "at": 5420,
+   "dir": "rest"
+  },
+  {
+   "at": 5560,
+   "dir": "due"
+  },
+  {
+   "at": 5560,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 56
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5560,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 56
+     }
+    ]
+   }
+  },
+  {
+   "at": 5560,
+   "dir": "rest"
+  },
+  {
+   "at": 5700,
+   "dir": "due"
+  },
+  {
+   "at": 5700,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 57
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5700,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 57
+     }
+    ]
+   }
+  },
+  {
+   "at": 5700,
+   "dir": "rest"
+  },
+  {
+   "at": 5840,
+   "dir": "due"
+  },
+  {
+   "at": 5840,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 58
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5840,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 58
+     }
+    ]
+   }
+  },
+  {
+   "at": 5840,
+   "dir": "rest"
+  },
+  {
+   "at": 5980,
+   "dir": "due"
+  },
+  {
+   "at": 5980,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 59
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 5980,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 59
+     }
+    ]
+   }
+  },
+  {
+   "at": 5980,
+   "dir": "rest"
+  },
+  {
+   "at": 6100,
+   "dir": "due"
+  },
+  {
+   "at": 6120,
+   "dir": "due"
+  },
+  {
+   "at": 6120,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 60
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6120,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 60
+     }
+    ]
+   }
+  },
+  {
+   "at": 6120,
+   "dir": "rest"
+  },
+  {
+   "at": 6150,
+   "dir": "due"
+  },
+  {
+   "at": 6208,
+   "dir": "due"
+  },
+  {
+   "at": 6258,
+   "dir": "due"
+  },
+  {
+   "at": 6260,
+   "dir": "due"
+  },
+  {
+   "at": 6260,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 61
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6260,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 61
+     }
+    ]
+   }
+  },
+  {
+   "at": 6260,
+   "dir": "rest"
+  },
+  {
+   "at": 6400,
+   "dir": "due"
+  },
+  {
+   "at": 6400,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 62
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6400,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 62
+     }
+    ]
+   }
+  },
+  {
+   "at": 6400,
+   "dir": "rest"
+  },
+  {
+   "at": 6540,
+   "dir": "due"
+  },
+  {
+   "at": 6540,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 63
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6540,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 63
+     }
+    ]
+   }
+  },
+  {
+   "at": 6540,
+   "dir": "rest"
+  },
+  {
+   "at": 6680,
+   "dir": "due"
+  },
+  {
+   "at": 6680,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 64
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6680,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 64
+     }
+    ]
+   }
+  },
+  {
+   "at": 6680,
+   "dir": "rest"
+  },
+  {
+   "at": 6820,
+   "dir": "due"
+  },
+  {
+   "at": 6820,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 65
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6820,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 65
+     }
+    ]
+   }
+  },
+  {
+   "at": 6820,
+   "dir": "rest"
+  },
+  {
+   "at": 6960,
+   "dir": "due"
+  },
+  {
+   "at": 6960,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 66
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 6960,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 66
+     }
+    ]
+   }
+  },
+  {
+   "at": 6960,
+   "dir": "rest"
+  },
+  {
+   "at": 7100,
+   "dir": "due"
+  },
+  {
+   "at": 7100,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 67
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7100,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 67
+     }
+    ]
+   }
+  },
+  {
+   "at": 7100,
+   "dir": "rest"
+  },
+  {
+   "at": 7150,
+   "dir": "due"
+  },
+  {
+   "at": 7240,
+   "dir": "due"
+  },
+  {
+   "at": 7240,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 68
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7240,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 68
+     }
+    ]
+   }
+  },
+  {
+   "at": 7240,
+   "dir": "rest"
+  },
+  {
+   "at": 7380,
+   "dir": "due"
+  },
+  {
+   "at": 7380,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 69
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7380,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 69
+     }
+    ]
+   }
+  },
+  {
+   "at": 7380,
+   "dir": "rest"
+  },
+  {
+   "at": 7520,
+   "dir": "due"
+  },
+  {
+   "at": 7520,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 70
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7520,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 70
+     }
+    ]
+   }
+  },
+  {
+   "at": 7520,
+   "dir": "rest"
+  },
+  {
+   "at": 7660,
+   "dir": "due"
+  },
+  {
+   "at": 7660,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 71
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7660,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 71
+     }
+    ]
+   }
+  },
+  {
+   "at": 7660,
+   "dir": "rest"
+  },
+  {
+   "at": 7800,
+   "dir": "due"
+  },
+  {
+   "at": 7800,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 72
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7800,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 72
+     }
+    ]
+   }
+  },
+  {
+   "at": 7800,
+   "dir": "rest"
+  },
+  {
+   "at": 7940,
+   "dir": "due"
+  },
+  {
+   "at": 7940,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 73
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 7940,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 73
+     }
+    ]
+   }
+  },
+  {
+   "at": 7940,
+   "dir": "rest"
+  },
+  {
+   "at": 8080,
+   "dir": "due"
+  },
+  {
+   "at": 8080,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 74
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8080,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 74
+     }
+    ]
+   }
+  },
+  {
+   "at": 8080,
+   "dir": "rest"
+  },
+  {
+   "at": 8220,
+   "dir": "due"
+  },
+  {
+   "at": 8220,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 75
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8220,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 75
+     }
+    ]
+   }
+  },
+  {
+   "at": 8220,
+   "dir": "rest"
+  },
+  {
+   "at": 8360,
+   "dir": "due"
+  },
+  {
+   "at": 8360,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 76
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8360,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 76
+     }
+    ]
+   }
+  },
+  {
+   "at": 8360,
+   "dir": "rest"
+  },
+  {
+   "at": 8500,
+   "dir": "due"
+  },
+  {
+   "at": 8500,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 77
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8500,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 77
+     }
+    ]
+   }
+  },
+  {
+   "at": 8500,
+   "dir": "rest"
+  },
+  {
+   "at": 8640,
+   "dir": "due"
+  },
+  {
+   "at": 8640,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 78
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8640,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 78
+     }
+    ]
+   }
+  },
+  {
+   "at": 8640,
+   "dir": "rest"
+  },
+  {
+   "at": 8780,
+   "dir": "due"
+  },
+  {
+   "at": 8780,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 79
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8780,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 79
+     }
+    ]
+   }
+  },
+  {
+   "at": 8780,
+   "dir": "rest"
+  },
+  {
+   "at": 8920,
+   "dir": "due"
+  },
+  {
+   "at": 8920,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 80
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 8920,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 80
+     }
+    ]
+   }
+  },
+  {
+   "at": 8920,
+   "dir": "rest"
+  },
+  {
+   "at": 9060,
+   "dir": "due"
+  },
+  {
+   "at": 9060,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 81
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 9060,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 81
+     }
+    ]
+   }
+  },
+  {
+   "at": 9060,
+   "dir": "rest"
+  },
+  {
+   "at": 9152,
    "dir": "step",
    "data": {
     "name": "stub.commitThinkingReply",
@@ -5067,50 +6977,50 @@
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 50
+      "set": 83
      }
     ]
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 50
+      "set": 83
      }
     ]
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "rest"
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 53
+      "set": 86
      },
      {
       "path": [
@@ -5220,10 +7130,10 @@
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "out",
    "data": {
-    "id": 43,
+    "id": 45,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -5231,29 +7141,29 @@
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 53
+      "set": 86
      }
     ]
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "rest"
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "in",
    "data": {
-    "id": 43,
+    "id": 45,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -5265,28 +7175,28 @@
    }
   },
   {
-   "at": 4492,
+   "at": 9152,
    "dir": "rest"
   },
   {
-   "at": 4542,
+   "at": 9202,
    "dir": "due"
   },
   {
-   "at": 4632,
+   "at": 9292,
    "dir": "due"
   },
   {
-   "at": 4632,
+   "at": 9292,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 54
+      "set": 87
      },
      {
       "path": [
@@ -5315,39 +7225,39 @@
    }
   },
   {
-   "at": 4632,
+   "at": 9292,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 54
+      "set": 87
      }
     ]
    }
   },
   {
-   "at": 4632,
+   "at": 9292,
    "dir": "rest"
   },
   {
-   "at": 4772,
+   "at": 9432,
    "dir": "due"
   },
   {
-   "at": 4772,
+   "at": 9432,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 55
+      "set": 88
      },
      {
       "path": [
@@ -5372,39 +7282,39 @@
    }
   },
   {
-   "at": 4772,
+   "at": 9432,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 55
+      "set": 88
      }
     ]
    }
   },
   {
-   "at": 4772,
+   "at": 9432,
    "dir": "rest"
   },
   {
-   "at": 4912,
+   "at": 9572,
    "dir": "due"
   },
   {
-   "at": 4912,
+   "at": 9572,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 56
+      "set": 89
      },
      {
       "path": [
@@ -5429,39 +7339,39 @@
    }
   },
   {
-   "at": 4912,
+   "at": 9572,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 56
+      "set": 89
      }
     ]
    }
   },
   {
-   "at": 4912,
+   "at": 9572,
    "dir": "rest"
   },
   {
-   "at": 5052,
+   "at": 9712,
    "dir": "due"
   },
   {
-   "at": 5052,
+   "at": 9712,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 57
+      "set": 90
      },
      {
       "path": [
@@ -5486,39 +7396,39 @@
    }
   },
   {
-   "at": 5052,
+   "at": 9712,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 57
+      "set": 90
      }
     ]
    }
   },
   {
-   "at": 5052,
+   "at": 9712,
    "dir": "rest"
   },
   {
-   "at": 5192,
+   "at": 9852,
    "dir": "due"
   },
   {
-   "at": 5192,
+   "at": 9852,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 58
+      "set": 91
      },
      {
       "path": [
@@ -5543,39 +7453,39 @@
    }
   },
   {
-   "at": 5192,
+   "at": 9852,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 58
+      "set": 91
      }
     ]
    }
   },
   {
-   "at": 5192,
+   "at": 9852,
    "dir": "rest"
   },
   {
-   "at": 5332,
+   "at": 9992,
    "dir": "due"
   },
   {
-   "at": 5332,
+   "at": 9992,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 59
+      "set": 92
      },
      {
       "path": [
@@ -5600,39 +7510,43 @@
    }
   },
   {
-   "at": 5332,
+   "at": 9992,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 59
+      "set": 92
      }
     ]
    }
   },
   {
-   "at": 5332,
+   "at": 9992,
    "dir": "rest"
   },
   {
-   "at": 5472,
+   "at": 10100,
    "dir": "due"
   },
   {
-   "at": 5472,
+   "at": 10132,
+   "dir": "due"
+  },
+  {
+   "at": 10132,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 60
+      "set": 93
      },
      {
       "path": [
@@ -5657,43 +7571,47 @@
    }
   },
   {
-   "at": 5472,
+   "at": 10132,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 60
+      "set": 93
      }
     ]
    }
   },
   {
-   "at": 5472,
+   "at": 10132,
    "dir": "rest"
   },
   {
-   "at": 5492,
+   "at": 10150,
    "dir": "due"
   },
   {
-   "at": 5612,
+   "at": 10152,
    "dir": "due"
   },
   {
-   "at": 5612,
+   "at": 10272,
+   "dir": "due"
+  },
+  {
+   "at": 10272,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 61
+      "set": 94
      },
      {
       "path": [
@@ -5718,39 +7636,39 @@
    }
   },
   {
-   "at": 5612,
+   "at": 10272,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 61
+      "set": 94
      }
     ]
    }
   },
   {
-   "at": 5612,
+   "at": 10272,
    "dir": "rest"
   },
   {
-   "at": 5752,
+   "at": 10412,
    "dir": "due"
   },
   {
-   "at": 5752,
+   "at": 10412,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 62
+      "set": 95
      },
      {
       "path": [
@@ -5775,39 +7693,39 @@
    }
   },
   {
-   "at": 5752,
+   "at": 10412,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 62
+      "set": 95
      }
     ]
    }
   },
   {
-   "at": 5752,
+   "at": 10412,
    "dir": "rest"
   },
   {
-   "at": 5892,
+   "at": 10552,
    "dir": "due"
   },
   {
-   "at": 5892,
+   "at": 10552,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 63
+      "set": 96
      },
      {
       "path": [
@@ -5832,39 +7750,39 @@
    }
   },
   {
-   "at": 5892,
+   "at": 10552,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 63
+      "set": 96
      }
     ]
    }
   },
   {
-   "at": 5892,
+   "at": 10552,
    "dir": "rest"
   },
   {
-   "at": 6032,
+   "at": 10692,
    "dir": "due"
   },
   {
-   "at": 6032,
+   "at": 10692,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 64
+      "set": 97
      },
      {
       "path": [
@@ -5889,47 +7807,39 @@
    }
   },
   {
-   "at": 6032,
+   "at": 10692,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 64
+      "set": 97
      }
     ]
    }
   },
   {
-   "at": 6032,
+   "at": 10692,
    "dir": "rest"
   },
   {
-   "at": 6100,
+   "at": 10832,
    "dir": "due"
   },
   {
-   "at": 6150,
-   "dir": "due"
-  },
-  {
-   "at": 6172,
-   "dir": "due"
-  },
-  {
-   "at": 6172,
+   "at": 10832,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 65
+      "set": 98
      },
      {
       "path": [
@@ -5954,47 +7864,39 @@
    }
   },
   {
-   "at": 6172,
+   "at": 10832,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 65
+      "set": 98
      }
     ]
    }
   },
   {
-   "at": 6172,
+   "at": 10832,
    "dir": "rest"
   },
   {
-   "at": 6208,
+   "at": 10972,
    "dir": "due"
   },
   {
-   "at": 6258,
-   "dir": "due"
-  },
-  {
-   "at": 6312,
-   "dir": "due"
-  },
-  {
-   "at": 6312,
+   "at": 10972,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 66
+      "set": 99
      },
      {
       "path": [
@@ -6019,39 +7921,39 @@
    }
   },
   {
-   "at": 6312,
+   "at": 10972,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 66
+      "set": 99
      }
     ]
    }
   },
   {
-   "at": 6312,
+   "at": 10972,
    "dir": "rest"
   },
   {
-   "at": 6452,
+   "at": 11112,
    "dir": "due"
   },
   {
-   "at": 6452,
+   "at": 11112,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 67
+      "set": 100
      },
      {
       "path": [
@@ -6076,39 +7978,39 @@
    }
   },
   {
-   "at": 6452,
+   "at": 11112,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 67
+      "set": 100
      }
     ]
    }
   },
   {
-   "at": 6452,
+   "at": 11112,
    "dir": "rest"
   },
   {
-   "at": 6592,
+   "at": 11252,
    "dir": "due"
   },
   {
-   "at": 6592,
+   "at": 11252,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 68
+      "set": 101
      },
      {
       "path": [
@@ -6133,43 +8035,39 @@
    }
   },
   {
-   "at": 6592,
+   "at": 11252,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 68
+      "set": 101
      }
     ]
    }
   },
   {
-   "at": 6592,
+   "at": 11252,
    "dir": "rest"
   },
   {
-   "at": 6612,
+   "at": 11392,
    "dir": "due"
   },
   {
-   "at": 6732,
-   "dir": "due"
-  },
-  {
-   "at": 6732,
+   "at": 11392,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 69
+      "set": 102
      },
      {
       "path": [
@@ -6194,39 +8092,39 @@
    }
   },
   {
-   "at": 6732,
+   "at": 11392,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 69
+      "set": 102
      }
     ]
    }
   },
   {
-   "at": 6732,
+   "at": 11392,
    "dir": "rest"
   },
   {
-   "at": 6872,
+   "at": 11532,
    "dir": "due"
   },
   {
-   "at": 6872,
+   "at": 11532,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 70
+      "set": 103
      },
      {
       "path": [
@@ -6251,39 +8149,39 @@
    }
   },
   {
-   "at": 6872,
+   "at": 11532,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 70
+      "set": 103
      }
     ]
    }
   },
   {
-   "at": 6872,
+   "at": 11532,
    "dir": "rest"
   },
   {
-   "at": 7012,
+   "at": 11672,
    "dir": "due"
   },
   {
-   "at": 7012,
+   "at": 11672,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 71
+      "set": 104
      },
      {
       "path": [
@@ -6308,47 +8206,39 @@
    }
   },
   {
-   "at": 7012,
+   "at": 11672,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 71
+      "set": 104
      }
     ]
    }
   },
   {
-   "at": 7012,
+   "at": 11672,
    "dir": "rest"
   },
   {
-   "at": 7100,
+   "at": 11812,
    "dir": "due"
   },
   {
-   "at": 7150,
-   "dir": "due"
-  },
-  {
-   "at": 7152,
-   "dir": "due"
-  },
-  {
-   "at": 7152,
+   "at": 11812,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 72
+      "set": 105
      },
      {
       "path": [
@@ -6373,39 +8263,39 @@
    }
   },
   {
-   "at": 7152,
+   "at": 11812,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 72
+      "set": 105
      }
     ]
    }
   },
   {
-   "at": 7152,
+   "at": 11812,
    "dir": "rest"
   },
   {
-   "at": 7292,
+   "at": 11952,
    "dir": "due"
   },
   {
-   "at": 7292,
+   "at": 11952,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 73
+      "set": 106
      },
      {
       "path": [
@@ -6430,39 +8320,39 @@
    }
   },
   {
-   "at": 7292,
+   "at": 11952,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 73
+      "set": 106
      }
     ]
    }
   },
   {
-   "at": 7292,
+   "at": 11952,
    "dir": "rest"
   },
   {
-   "at": 7432,
+   "at": 12092,
    "dir": "due"
   },
   {
-   "at": 7432,
+   "at": 12092,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 74
+      "set": 107
      },
      {
       "path": [
@@ -6487,39 +8377,39 @@
    }
   },
   {
-   "at": 7432,
+   "at": 12092,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 74
+      "set": 107
      }
     ]
    }
   },
   {
-   "at": 7432,
+   "at": 12092,
    "dir": "rest"
   },
   {
-   "at": 7572,
+   "at": 12232,
    "dir": "due"
   },
   {
-   "at": 7572,
+   "at": 12232,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 75
+      "set": 108
      },
      {
       "path": [
@@ -6544,39 +8434,39 @@
    }
   },
   {
-   "at": 7572,
+   "at": 12232,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 75
+      "set": 108
      }
     ]
    }
   },
   {
-   "at": 7572,
+   "at": 12232,
    "dir": "rest"
   },
   {
-   "at": 7712,
+   "at": 12372,
    "dir": "due"
   },
   {
-   "at": 7712,
+   "at": 12372,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 76
+      "set": 109
      },
      {
       "path": [
@@ -6601,43 +8491,39 @@
    }
   },
   {
-   "at": 7712,
+   "at": 12372,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 76
+      "set": 109
      }
     ]
    }
   },
   {
-   "at": 7712,
+   "at": 12372,
    "dir": "rest"
   },
   {
-   "at": 7732,
+   "at": 12512,
    "dir": "due"
   },
   {
-   "at": 7852,
-   "dir": "due"
-  },
-  {
-   "at": 7852,
+   "at": 12512,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 77
+      "set": 110
      },
      {
       "path": [
@@ -6662,39 +8548,39 @@
    }
   },
   {
-   "at": 7852,
+   "at": 12512,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 77
+      "set": 110
      }
     ]
    }
   },
   {
-   "at": 7852,
+   "at": 12512,
    "dir": "rest"
   },
   {
-   "at": 7992,
+   "at": 12652,
    "dir": "due"
   },
   {
-   "at": 7992,
+   "at": 12652,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 78
+      "set": 111
      },
      {
       "path": [
@@ -6719,39 +8605,39 @@
    }
   },
   {
-   "at": 7992,
+   "at": 12652,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 78
+      "set": 111
      }
     ]
    }
   },
   {
-   "at": 7992,
+   "at": 12652,
    "dir": "rest"
   },
   {
-   "at": 8132,
+   "at": 12792,
    "dir": "due"
   },
   {
-   "at": 8132,
+   "at": 12792,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 79
+      "set": 112
      },
      {
       "path": [
@@ -6776,39 +8662,39 @@
    }
   },
   {
-   "at": 8132,
+   "at": 12792,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 79
+      "set": 112
      }
     ]
    }
   },
   {
-   "at": 8132,
+   "at": 12792,
    "dir": "rest"
   },
   {
-   "at": 8272,
+   "at": 12932,
    "dir": "due"
   },
   {
-   "at": 8272,
+   "at": 12932,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 80
+      "set": 113
      },
      {
       "path": [
@@ -6833,47 +8719,2391 @@
    }
   },
   {
-   "at": 8272,
+   "at": 12932,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 80
+      "set": 113
      }
     ]
    }
   },
   {
-   "at": 8272,
+   "at": 12932,
    "dir": "rest"
   },
   {
-   "at": 8304,
+   "at": 13072,
+   "dir": "due"
+  },
+  {
+   "at": 13072,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 114
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13072,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 114
+     }
+    ]
+   }
+  },
+  {
+   "at": 13072,
+   "dir": "rest"
+  },
+  {
+   "at": 13212,
+   "dir": "due"
+  },
+  {
+   "at": 13212,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 115
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13212,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 115
+     }
+    ]
+   }
+  },
+  {
+   "at": 13212,
+   "dir": "rest"
+  },
+  {
+   "at": 13352,
+   "dir": "due"
+  },
+  {
+   "at": 13352,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 116
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13352,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 116
+     }
+    ]
+   }
+  },
+  {
+   "at": 13352,
+   "dir": "rest"
+  },
+  {
+   "at": 13492,
+   "dir": "due"
+  },
+  {
+   "at": 13492,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 117
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13492,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 117
+     }
+    ]
+   }
+  },
+  {
+   "at": 13492,
+   "dir": "rest"
+  },
+  {
+   "at": 13632,
+   "dir": "due"
+  },
+  {
+   "at": 13632,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 118
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13632,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 118
+     }
+    ]
+   }
+  },
+  {
+   "at": 13632,
+   "dir": "rest"
+  },
+  {
+   "at": 13772,
+   "dir": "due"
+  },
+  {
+   "at": 13772,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 119
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13772,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 119
+     }
+    ]
+   }
+  },
+  {
+   "at": 13772,
+   "dir": "rest"
+  },
+  {
+   "at": 13912,
+   "dir": "due"
+  },
+  {
+   "at": 13912,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 120
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 13912,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 120
+     }
+    ]
+   }
+  },
+  {
+   "at": 13912,
+   "dir": "rest"
+  },
+  {
+   "at": 14052,
+   "dir": "due"
+  },
+  {
+   "at": 14052,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 121
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14052,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 121
+     }
+    ]
+   }
+  },
+  {
+   "at": 14052,
+   "dir": "rest"
+  },
+  {
+   "at": 14192,
+   "dir": "due"
+  },
+  {
+   "at": 14192,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 122
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14192,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 122
+     }
+    ]
+   }
+  },
+  {
+   "at": 14192,
+   "dir": "rest"
+  },
+  {
+   "at": 14332,
+   "dir": "due"
+  },
+  {
+   "at": 14332,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 123
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14332,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 123
+     }
+    ]
+   }
+  },
+  {
+   "at": 14332,
+   "dir": "rest"
+  },
+  {
+   "at": 14472,
+   "dir": "due"
+  },
+  {
+   "at": 14472,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 124
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14472,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 124
+     }
+    ]
+   }
+  },
+  {
+   "at": 14472,
+   "dir": "rest"
+  },
+  {
+   "at": 14612,
+   "dir": "due"
+  },
+  {
+   "at": 14612,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 125
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14612,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 125
+     }
+    ]
+   }
+  },
+  {
+   "at": 14612,
+   "dir": "rest"
+  },
+  {
+   "at": 14752,
+   "dir": "due"
+  },
+  {
+   "at": 14752,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 126
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14752,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 126
+     }
+    ]
+   }
+  },
+  {
+   "at": 14752,
+   "dir": "rest"
+  },
+  {
+   "at": 14892,
+   "dir": "due"
+  },
+  {
+   "at": 14892,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 127
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 14892,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 127
+     }
+    ]
+   }
+  },
+  {
+   "at": 14892,
+   "dir": "rest"
+  },
+  {
+   "at": 15032,
+   "dir": "due"
+  },
+  {
+   "at": 15032,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 128
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15032,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 128
+     }
+    ]
+   }
+  },
+  {
+   "at": 15032,
+   "dir": "rest"
+  },
+  {
+   "at": 15100,
+   "dir": "due"
+  },
+  {
+   "at": 15150,
+   "dir": "due"
+  },
+  {
+   "at": 15172,
+   "dir": "due"
+  },
+  {
+   "at": 15172,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 129
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15172,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 129
+     }
+    ]
+   }
+  },
+  {
+   "at": 15172,
+   "dir": "rest"
+  },
+  {
+   "at": 15312,
+   "dir": "due"
+  },
+  {
+   "at": 15312,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 130
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15312,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 130
+     }
+    ]
+   }
+  },
+  {
+   "at": 15312,
+   "dir": "rest"
+  },
+  {
+   "at": 15452,
+   "dir": "due"
+  },
+  {
+   "at": 15452,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 131
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15452,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 131
+     }
+    ]
+   }
+  },
+  {
+   "at": 15452,
+   "dir": "rest"
+  },
+  {
+   "at": 15592,
+   "dir": "due"
+  },
+  {
+   "at": 15592,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 132
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15592,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 132
+     }
+    ]
+   }
+  },
+  {
+   "at": 15592,
+   "dir": "rest"
+  },
+  {
+   "at": 15732,
+   "dir": "due"
+  },
+  {
+   "at": 15732,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 133
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15732,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 133
+     }
+    ]
+   }
+  },
+  {
+   "at": 15732,
+   "dir": "rest"
+  },
+  {
+   "at": 15872,
+   "dir": "due"
+  },
+  {
+   "at": 15872,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 134
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15872,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 134
+     }
+    ]
+   }
+  },
+  {
+   "at": 15872,
+   "dir": "rest"
+  },
+  {
+   "at": 16012,
+   "dir": "due"
+  },
+  {
+   "at": 16012,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 135
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16012,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 135
+     }
+    ]
+   }
+  },
+  {
+   "at": 16012,
+   "dir": "rest"
+  },
+  {
+   "at": 16152,
+   "dir": "due"
+  },
+  {
+   "at": 16152,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 136
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16152,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 136
+     }
+    ]
+   }
+  },
+  {
+   "at": 16152,
+   "dir": "rest"
+  },
+  {
+   "at": 16292,
+   "dir": "due"
+  },
+  {
+   "at": 16292,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 137
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16292,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 137
+     }
+    ]
+   }
+  },
+  {
+   "at": 16292,
+   "dir": "rest"
+  },
+  {
+   "at": 16432,
+   "dir": "due"
+  },
+  {
+   "at": 16432,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 138
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16432,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 138
+     }
+    ]
+   }
+  },
+  {
+   "at": 16432,
+   "dir": "rest"
+  },
+  {
+   "at": 16572,
+   "dir": "due"
+  },
+  {
+   "at": 16572,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 139
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16572,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 139
+     }
+    ]
+   }
+  },
+  {
+   "at": 16572,
+   "dir": "rest"
+  },
+  {
+   "at": 16712,
+   "dir": "due"
+  },
+  {
+   "at": 16712,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 140
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16712,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 140
+     }
+    ]
+   }
+  },
+  {
+   "at": 16712,
+   "dir": "rest"
+  },
+  {
+   "at": 16852,
+   "dir": "due"
+  },
+  {
+   "at": 16852,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 141
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16852,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 141
+     }
+    ]
+   }
+  },
+  {
+   "at": 16852,
+   "dir": "rest"
+  },
+  {
+   "at": 16992,
+   "dir": "due"
+  },
+  {
+   "at": 16992,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 142
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 16992,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 142
+     }
+    ]
+   }
+  },
+  {
+   "at": 16992,
+   "dir": "rest"
+  },
+  {
+   "at": 17132,
+   "dir": "due"
+  },
+  {
+   "at": 17132,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 143
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17132,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 143
+     }
+    ]
+   }
+  },
+  {
+   "at": 17132,
+   "dir": "rest"
+  },
+  {
+   "at": 17272,
+   "dir": "due"
+  },
+  {
+   "at": 17272,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 144
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17272,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 144
+     }
+    ]
+   }
+  },
+  {
+   "at": 17272,
+   "dir": "rest"
+  },
+  {
+   "at": 17412,
+   "dir": "due"
+  },
+  {
+   "at": 17412,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 145
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17412,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 145
+     }
+    ]
+   }
+  },
+  {
+   "at": 17412,
+   "dir": "rest"
+  },
+  {
+   "at": 17552,
+   "dir": "due"
+  },
+  {
+   "at": 17552,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 146
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17552,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 146
+     }
+    ]
+   }
+  },
+  {
+   "at": 17552,
+   "dir": "rest"
+  },
+  {
+   "at": 17692,
+   "dir": "due"
+  },
+  {
+   "at": 17692,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 147
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17692,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 147
+     }
+    ]
+   }
+  },
+  {
+   "at": 17692,
+   "dir": "rest"
+  },
+  {
+   "at": 17832,
+   "dir": "due"
+  },
+  {
+   "at": 17832,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 148
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17832,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 148
+     }
+    ]
+   }
+  },
+  {
+   "at": 17832,
+   "dir": "rest"
+  },
+  {
+   "at": 17972,
+   "dir": "due"
+  },
+  {
+   "at": 17972,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 149
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 17972,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 149
+     }
+    ]
+   }
+  },
+  {
+   "at": 17972,
+   "dir": "rest"
+  },
+  {
+   "at": 18112,
+   "dir": "due"
+  },
+  {
+   "at": 18112,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 150
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 18112,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 150
+     }
+    ]
+   }
+  },
+  {
+   "at": 18112,
+   "dir": "rest"
+  },
+  {
+   "at": 18252,
+   "dir": "due"
+  },
+  {
+   "at": 18252,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 151
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 18252,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 151
+     }
+    ]
+   }
+  },
+  {
+   "at": 18252,
+   "dir": "rest"
+  },
+  {
+   "at": 18392,
+   "dir": "due"
+  },
+  {
+   "at": 18392,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 152
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 18392,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 152
+     }
+    ]
+   }
+  },
+  {
+   "at": 18392,
+   "dir": "rest"
+  },
+  {
+   "at": 18532,
+   "dir": "due"
+  },
+  {
+   "at": 18532,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 153
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 18532,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 153
+     }
+    ]
+   }
+  },
+  {
+   "at": 18532,
+   "dir": "rest"
+  },
+  {
+   "at": 18672,
+   "dir": "due"
+  },
+  {
+   "at": 18672,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 154
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "markdown",
+       0,
+       1,
+       0
+      ],
+      "extend": "正在整理这一步的结果。"
+     },
+     {
+      "path": [
+       "state",
+       "assistantDraft",
+       "text"
+      ],
+      "extend": "正在整理这一步的结果。"
+     }
+    ]
+   }
+  },
+  {
+   "at": 18672,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 154
+     }
+    ]
+   }
+  },
+  {
+   "at": 18672,
+   "dir": "rest"
+  },
+  {
+   "at": 18736,
    "dir": "out",
    "data": {
-    "id": 44,
+    "id": 46,
     "subscribe": {
      "topic": "taskPreview",
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke",
      "read": "2"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 8304,
+   "at": 18736,
    "dir": "rest"
   },
   {
-   "at": 8304,
+   "at": 18736,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "value": {
      "status": "ready",
      "preview": {
@@ -6893,11 +11123,11 @@
    }
   },
   {
-   "at": 8304,
+   "at": 18736,
    "dir": "rest"
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "step",
    "data": {
     "name": "stub.commitThinkingReply",
@@ -6905,50 +11135,50 @@
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 82
+      "set": 156
      }
     ]
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 82
+      "set": 156
      }
     ]
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "rest"
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 85
+      "set": 159
      },
      {
       "path": [
@@ -7058,10 +11288,10 @@
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "out",
    "data": {
-    "id": 45,
+    "id": 47,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -7069,29 +11299,29 @@
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 85
+      "set": 159
      }
     ]
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "rest"
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -7103,28 +11333,28 @@
    }
   },
   {
-   "at": 8320,
+   "at": 18752,
    "dir": "rest"
   },
   {
-   "at": 8370,
+   "at": 18802,
    "dir": "due"
   },
   {
-   "at": 8460,
+   "at": 18892,
    "dir": "due"
   },
   {
-   "at": 8460,
+   "at": 18892,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 86
+      "set": 160
      },
      {
       "path": [
@@ -7153,39 +11383,39 @@
    }
   },
   {
-   "at": 8460,
+   "at": 18892,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 86
+      "set": 160
      }
     ]
    }
   },
   {
-   "at": 8460,
+   "at": 18892,
    "dir": "rest"
   },
   {
-   "at": 8600,
+   "at": 19032,
    "dir": "due"
   },
   {
-   "at": 8600,
+   "at": 19032,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 87
+      "set": 161
      },
      {
       "path": [
@@ -7210,39 +11440,39 @@
    }
   },
   {
-   "at": 8600,
+   "at": 19032,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 87
+      "set": 161
      }
     ]
    }
   },
   {
-   "at": 8600,
+   "at": 19032,
    "dir": "rest"
   },
   {
-   "at": 8740,
+   "at": 19172,
    "dir": "due"
   },
   {
-   "at": 8740,
+   "at": 19172,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 88
+      "set": 162
      },
      {
       "path": [
@@ -7267,43 +11497,39 @@
    }
   },
   {
-   "at": 8740,
+   "at": 19172,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 88
+      "set": 162
      }
     ]
    }
   },
   {
-   "at": 8740,
+   "at": 19172,
    "dir": "rest"
   },
   {
-   "at": 8852,
+   "at": 19312,
    "dir": "due"
   },
   {
-   "at": 8880,
-   "dir": "due"
-  },
-  {
-   "at": 8880,
+   "at": 19312,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 89
+      "set": 163
      },
      {
       "path": [
@@ -7328,39 +11554,39 @@
    }
   },
   {
-   "at": 8880,
+   "at": 19312,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 89
+      "set": 163
      }
     ]
    }
   },
   {
-   "at": 8880,
+   "at": 19312,
    "dir": "rest"
   },
   {
-   "at": 9020,
+   "at": 19452,
    "dir": "due"
   },
   {
-   "at": 9020,
+   "at": 19452,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 90
+      "set": 164
      },
      {
       "path": [
@@ -7385,39 +11611,39 @@
    }
   },
   {
-   "at": 9020,
+   "at": 19452,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 90
+      "set": 164
      }
     ]
    }
   },
   {
-   "at": 9020,
+   "at": 19452,
    "dir": "rest"
   },
   {
-   "at": 9160,
+   "at": 19592,
    "dir": "due"
   },
   {
-   "at": 9160,
+   "at": 19592,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 91
+      "set": 165
      },
      {
       "path": [
@@ -7442,39 +11668,39 @@
    }
   },
   {
-   "at": 9160,
+   "at": 19592,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 91
+      "set": 165
      }
     ]
    }
   },
   {
-   "at": 9160,
+   "at": 19592,
    "dir": "rest"
   },
   {
-   "at": 9300,
+   "at": 19732,
    "dir": "due"
   },
   {
-   "at": 9300,
+   "at": 19732,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 92
+      "set": 166
      },
      {
       "path": [
@@ -7499,39 +11725,43 @@
    }
   },
   {
-   "at": 9300,
+   "at": 19732,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 92
+      "set": 166
      }
     ]
    }
   },
   {
-   "at": 9300,
+   "at": 19732,
    "dir": "rest"
   },
   {
-   "at": 9440,
+   "at": 19752,
    "dir": "due"
   },
   {
-   "at": 9440,
+   "at": 19872,
+   "dir": "due"
+  },
+  {
+   "at": 19872,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 93
+      "set": 167
      },
      {
       "path": [
@@ -7556,39 +11786,39 @@
    }
   },
   {
-   "at": 9440,
+   "at": 19872,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 93
+      "set": 167
      }
     ]
    }
   },
   {
-   "at": 9440,
+   "at": 19872,
    "dir": "rest"
   },
   {
-   "at": 9580,
+   "at": 20012,
    "dir": "due"
   },
   {
-   "at": 9580,
+   "at": 20012,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 94
+      "set": 168
      },
      {
       "path": [
@@ -7613,39 +11843,47 @@
    }
   },
   {
-   "at": 9580,
+   "at": 20012,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 94
+      "set": 168
      }
     ]
    }
   },
   {
-   "at": 9580,
+   "at": 20012,
    "dir": "rest"
   },
   {
-   "at": 9720,
+   "at": 20100,
    "dir": "due"
   },
   {
-   "at": 9720,
+   "at": 20150,
+   "dir": "due"
+  },
+  {
+   "at": 20152,
+   "dir": "due"
+  },
+  {
+   "at": 20152,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 95
+      "set": 169
      },
      {
       "path": [
@@ -7670,22 +11908,22 @@
    }
   },
   {
-   "at": 9720,
+   "at": 20152,
    "dir": "in",
    "data": {
-    "id": 40,
+    "id": 41,
     "delta": [
      {
       "path": [
        "revision"
       ],
-      "set": 95
+      "set": 169
      }
     ]
    }
   },
   {
-   "at": 9720,
+   "at": 20152,
    "dir": "rest"
   }
  ]

@@ -68,15 +68,7 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
          :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
          {:ok, project} <- require_project(conn, org, params["project"]),
          :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, inbound} <- require_inbound(params),
-         {:ok, connect} <-
-           ProjectIMConnects.update_project_slack_inbound(
-             org.id,
-             project.id,
-             connect_id,
-             inbound,
-             request_audit_opts(conn)
-           ) do
+         {:ok, connect} <- update_slack_connect(conn, org, project, connect_id, params) do
       send_ok(conn, %{
         "mode" => "project_im_connect_update",
         "provider" => "slack",
@@ -90,7 +82,7 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
           conn,
           400,
           "missing_inbound_agent",
-          "Pass inbound_agent_id (the Router) or inbound_tasks ({\"model\": <model choice or null>}).",
+          "Pass inbound_agent_id (the Router), inbound_tasks ({\"model\": <model choice or null>}) or auto_join_public_channels (true or false).",
           %{}
         )
 
@@ -184,6 +176,47 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
     )
     |> Map.put_new("app_name", project.name)
   end
+
+  # An update changes the inbound binding, whether the app joins new public
+  # channels by itself (`auto_join_public_channels`), or both.
+  defp update_slack_connect(conn, org, project, connect_id, params) do
+    auto_join = params["auto_join_public_channels"]
+    inbound = require_inbound(params)
+
+    cond do
+      not is_boolean(auto_join) ->
+        with {:ok, inbound} <- inbound,
+             do: update_slack_inbound(conn, org, project, connect_id, inbound)
+
+      match?({:ok, _inbound}, inbound) ->
+        with {:ok, _connect} <-
+               update_slack_inbound(conn, org, project, connect_id, elem(inbound, 1)),
+             do: update_slack_auto_join(conn, org, project, connect_id, auto_join)
+
+      true ->
+        update_slack_auto_join(conn, org, project, connect_id, auto_join)
+    end
+  end
+
+  defp update_slack_inbound(conn, org, project, connect_id, inbound),
+    do:
+      ProjectIMConnects.update_project_slack_inbound(
+        org.id,
+        project.id,
+        connect_id,
+        inbound,
+        request_audit_opts(conn)
+      )
+
+  defp update_slack_auto_join(conn, org, project, connect_id, enabled),
+    do:
+      ProjectIMConnects.update_project_slack_auto_join(
+        org.id,
+        project.id,
+        connect_id,
+        enabled,
+        request_audit_opts(conn)
+      )
 
   # The Router (`inbound_agent_id`) or Tasks (`inbound_tasks`).
   defp require_inbound(%{"inbound_tasks" => %{} = tasks}),

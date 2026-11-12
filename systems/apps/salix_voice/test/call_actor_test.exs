@@ -148,7 +148,7 @@ defmodule SalixVoice.CallActorTest do
 
     if Keyword.get(opts, :start_model, true) do
       emit(model, call, {:started, "sess_1"})
-      settle_receive({:fake_model, ^model, {:append, :instructions, nil, _greeting}})
+      settle_receive({:fake_model, ^model, {:append, :commentary, nil, _greeting}})
       settle_receive({:ingress, _, _, %{"event_type" => "voice.call_started"}, _, _})
     end
 
@@ -219,7 +219,7 @@ defmodule SalixVoice.CallActorTest do
           emit(model, call, {:started, "greeting-session"})
       end
 
-      settle_receive({:fake_model, ^model, {:append, :instructions, nil, greeting}})
+      settle_receive({:fake_model, ^model, {:append, :commentary, nil, greeting}})
       assert is_binary(greeting) and byte_size(greeting) > 0
       refute_received {:fake_model, ^model, {:audio, _}}
       emit(model, call, {:audio, <<1, 2, 3>>})
@@ -278,7 +278,7 @@ defmodule SalixVoice.CallActorTest do
 
     assert {:ok, ^call, _} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
     emit(model, call, {:started, "profile-session"})
-    settle_receive({:fake_model, ^model, {:append, :instructions, nil, greeting}})
+    settle_receive({:fake_model, ^model, {:append, :commentary, nil, greeting}})
     assert greeting =~ "Spanish"
   end
 
@@ -300,7 +300,7 @@ defmodule SalixVoice.CallActorTest do
 
     assert {:ok, ^call, _} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
     emit(model, call, {:started, "late-profile-session"})
-    settle_receive({:fake_model, ^model, {:append, :instructions, nil, greeting}})
+    settle_receive({:fake_model, ^model, {:append, :commentary, nil, greeting}})
     assert greeting =~ "English"
   end
 
@@ -465,8 +465,14 @@ defmodule SalixVoice.CallActorTest do
 
       assert model_opts.voice == %{"id" => "voice_dot"}
 
-      assert [%{"role" => "user"}, %{"role" => "assistant", "text" => "Booked for 3 pm."}] =
-               model_opts.input
+      # The history, then the greeting the session opens with.
+      assert [
+               %{"role" => "user"},
+               %{"role" => "assistant", "text" => "Booked for 3 pm."},
+               %{"role" => "developer", "text" => opening}
+             ] = model_opts.input
+
+      assert opening =~ "as Dot"
 
       assert model_opts.instructions =~ "You are Dot"
       assert model_opts.instructions =~ "call the user boss"
@@ -476,7 +482,7 @@ defmodule SalixVoice.CallActorTest do
 
       assert {:ok, ^call, _info} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
       emit(model, call, {:started, "router-session"})
-      settle_receive({:fake_model, ^model, {:append, :instructions, nil, greeting}})
+      settle_receive({:fake_model, ^model, {:append, :commentary, nil, greeting}})
       assert greeting =~ "as Dot"
       settle_receive({:ingress, _, _, %{"event_type" => "voice.call_started"}, _, _})
 
@@ -496,7 +502,7 @@ defmodule SalixVoice.CallActorTest do
       settle_receive({:persona_resolve, _group_id, _audience})
       settle_receive({:fake_model, _model, {:started, model_opts}})
       assert model_opts.instructions == SalixVoice.CallActor.instructions()
-      assert model_opts.input == []
+      assert [%{"role" => "developer", "text" => "Greet the caller now" <> _}] = model_opts.input
       assert model_opts.voice == %{"id" => "voice_dot"}
     end
 
@@ -517,7 +523,7 @@ defmodule SalixVoice.CallActorTest do
       settle_refute_receive({:persona_resolve, _, _}, 20)
       assert model_opts.voice == %{"id" => "voice_dot"}
       assert model_opts.instructions == SalixVoice.CallActor.instructions()
-      assert model_opts.input == []
+      assert [%{"role" => "developer", "text" => "Greet the caller now" <> _}] = model_opts.input
 
       assert {:ok, ^call, _info} = SalixVoice.attach(id, SystemsRuntime.Proc.self())
       emit(model, call, {:started, "group-session"})

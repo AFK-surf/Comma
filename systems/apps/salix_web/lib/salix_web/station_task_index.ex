@@ -6,13 +6,15 @@ defmodule SalixWeb.StationTaskIndex do
 
   Only a run that proved its station's key (`relay_register`,
   `SalixWeb.StationRelay`: the iroh endpoint id is the station id) may send,
-  and only while that station is an active station of the run's Group; any
+  and only while that station is an active station of the run's Group, or
+  the run of a still.fail station connected through its Comma connect (a
+  Device of `device_kind` `stillfail`, `SalixEnv.StillfailDevices`); any
   other run is answered `not_this_group`. Salix stamps the run's Device on
   every row. One connection sends at most 4 pages a second; more are
   answered `rate_limited`.
   """
 
-  alias SalixEnv.StationConnection
+  alias SalixEnv.{StationConnection, StillfailDevices}
   alias SalixStore.{StationTaskIndex, Stations}
 
   @pages_per_second 4
@@ -70,6 +72,22 @@ defmodule SalixWeb.StationTaskIndex do
 
       result ->
         result
+    end
+  end
+
+  defp apply_page(nil, view, params) do
+    with {:ok, station} <- StillfailDevices.station(view) do
+      case StationTaskIndex.apply_page(station, view.device_id, params) do
+        {:error, :station_removed} ->
+          {:error, :not_this_group}
+
+        {:ok, held} ->
+          changed_group = if held != StationTaskIndex.held(station), do: station.group_id
+          {:ok, held, changed_group}
+
+        result ->
+          result
+      end
     end
   end
 

@@ -91,7 +91,15 @@ defmodule Salix.Bindings.TriageReceiptConsumerTest do
     }
 
     assert {:ok, _group} = CasRecord.create(Keys.ctl_group(group_id), group)
-    assert {:ok, _agent} = CasRecord.create(Keys.ctl_agent(agent_id), router_agent)
+
+    assert {:ok, _agent} =
+             SalixStore.AgentPGStore.create(
+               agent_id,
+               to_string(node()),
+               SalixAgent.State,
+               router_agent
+             )
+
     assert {:ok, _connect} = CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), connect)
     provision_channel!(connect)
 

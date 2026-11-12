@@ -560,6 +560,9 @@ defmodule MCPRuntimeE2E do
   end
 
   defp ensure_session!(tenant_key, agent_id, session_id, run_id) do
+    {:ok, server} = SalixAgent.Placement.ensure_started(agent_id, startup_mode: :passive)
+    {:parked, _} = SalixAgent.Server.info(server)
+
     attrs = %{
       "name" => "MCP runtime E2E #{run_id}",
       "hidden" => true,
@@ -613,8 +616,11 @@ defmodule MCPRuntimeE2E do
         {:error, _} -> %{"result" => conn.resp_body || ""}
       end
 
+    # A tool's content blocks (an MCP text that starts like a JSON list is
+    # handed over in a text block) come back as the decoded list.
     content =
       cond do
+        is_list(body) -> Enum.map_join(body, "\n", &block_text/1)
         is_binary(body["result"]) -> body["result"]
         Map.has_key?(body, "result") -> Jason.encode!(body["result"])
         is_binary(body["error"]) -> body["error"]
@@ -624,6 +630,9 @@ defmodule MCPRuntimeE2E do
 
     %{status: conn.status, error: conn.status >= 400, body: body, content: content}
   end
+
+  defp block_text(%{"type" => "text", "text" => text}) when is_binary(text), do: text
+  defp block_text(block), do: Jason.encode!(block)
 
   defp mcp_operation_tools!(tenant_key, agent_id, alias_name) do
     result = session_tool_result!(tenant_key, agent_id, "mcp.list", %{"kind" => "tools"})
@@ -2240,7 +2249,7 @@ defmodule MCPRuntimeE2E do
   end
 
   defp start_connector!(tenant_key, group_id, alias_name, root) do
-    bin = System.fetch_env!("SALIX_CONNECT_BIN")
+    bin = System.fetch_env!("STATION_CONNECTOR_BIN")
 
     token =
       treq!(tenant_key, :post, "/v1/runtime/agent-groups/#{group_id}/connector-tokens", %{
@@ -2254,13 +2263,13 @@ defmodule MCPRuntimeE2E do
   end
 
   defp start_connector_with_token!(token, alias_name, root) do
-    bin = System.fetch_env!("SALIX_CONNECT_BIN")
+    bin = System.fetch_env!("STATION_CONNECTOR_BIN")
     port = start_connector_process!(bin, token, alias_name, root)
     %{port: port, token: token}
   end
 
   defp start_connector_process!(bin, token, alias_name, root) do
-    log_path = Path.join(System.tmp_dir!(), "salix-connect-#{alias_name}.log")
+    log_path = Path.join(System.tmp_dir!(), "station-connector-#{alias_name}.log")
     File.rm(log_path)
     parent = self()
     path = fixture_path()
@@ -2405,10 +2414,10 @@ defmodule MCPRuntimeE2E do
         connector_port_loop(port, os_pid, log_path)
 
       {^port, {:exit_status, status}} ->
-        File.write!(log_path, "\n[salix-connect exited status=#{status}]\n", [:append])
+        File.write!(log_path, "\n[station exited status=#{status}]\n", [:append])
 
       {:EXIT, ^port, reason} ->
-        File.write!(log_path, "\n[salix-connect port exit #{inspect(reason)}]\n", [:append])
+        File.write!(log_path, "\n[station port exit #{inspect(reason)}]\n", [:append])
     end
   end
 

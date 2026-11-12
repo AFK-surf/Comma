@@ -5,15 +5,18 @@
 
 import type { TaskIndexRow } from "../store/rows.ts";
 
-/** What the connector reads of the station's Task index (Store::taskIndex*). */
-export type StationTaskIndex = {
+/** An index the connector keeps Salix's copy of, a page at a time: the Task index, the Stats index. */
+export type PagedIndex<R extends { rev: number }> = {
   epoch(): string;
   rev(): number;
-  since(since: number, limit: number): TaskIndexRow[];
+  since(since: number, limit: number): R[];
   prune(through: number): void;
   /// Called after the station's writes, which may have changed the index.
   listen(changed: () => void): () => void;
 };
+
+/** What the connector reads of the station's Task index (Store::taskIndex*). */
+export type StationTaskIndex = PagedIndex<TaskIndexRow>;
 
 /** What Salix holds of the index. */
 export type HeldIndex = { epoch: string | null; through: number };
@@ -33,13 +36,13 @@ const MAX_LABELS = 20;
 const MAX_LABEL = 128;
 
 /** The page that asks only what Salix holds: applying it changes nothing. */
-export function probePage(index: StationTaskIndex): IndexPage {
+export function probePage(index: PagedIndex<any>): IndexPage {
   const rev = index.rev();
   return { epoch: index.epoch(), reset: false, since: rev, through: rev, rows: [] };
 }
 
 /** The next page to send after Salix answered `held`; null once Salix holds all of it. */
-export function nextPage(index: StationTaskIndex, held: HeldIndex): IndexPage | null {
+export function nextPage<R extends { rev: number }>(index: PagedIndex<R>, held: HeldIndex, wire: (row: R) => Record<string, unknown> | null = wireRow as any): IndexPage | null {
   const epoch = index.epoch();
   const rev = index.rev();
   const reset = held.epoch !== epoch;
@@ -51,10 +54,10 @@ export function nextPage(index: StationTaskIndex, held: HeldIndex): IndexPage | 
   let taken = 0;
   let last = since;
   for (const row of changed.slice(0, PAGE_ROWS)) {
-    const wire = wireRow(row);
-    const size = wire === null ? 0 : Buffer.byteLength(JSON.stringify(wire)) + 1;
+    const sent = wire(row);
+    const size = sent === null ? 0 : Buffer.byteLength(JSON.stringify(sent)) + 1;
     if (rows.length > 0 && bytes + size > PAGE_BYTES) break;
-    if (wire !== null) rows.push(wire);
+    if (sent !== null) rows.push(sent);
     bytes += size;
     taken += 1;
     last = row.rev;
@@ -106,4 +109,15 @@ export function heldFrom(result: unknown): HeldIndex | null {
   const { epoch, through } = result as Record<string, unknown>;
   if (epoch !== null && typeof epoch !== "string") return null;
   return { epoch: epoch ?? null, through: typeof through === "number" && through >= 0 ? through : 0 };
+}
+
+/** A Stats index row as `stats.index` carries it (stats/index.ts): its source, kind and key, and the row itself; a
+ * tombstone for a row gone. */
+export function statsWireRow(row: { key: string; source: string; kind: string; rev: number; removed: boolean; json: string }): Record<string, unknown> | null {
+  if (row.removed) return { key: row.key, source: row.source, kind: row.kind, rev: row.rev, removed: true };
+  try {
+    return { key: row.key, source: row.source, kind: row.kind, rev: row.rev, row: JSON.parse(row.json) };
+  } catch {
+    return null;
+  }
 }

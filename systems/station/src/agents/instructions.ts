@@ -3,29 +3,29 @@
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 
 /// The connect and surface of the station's own chats.
-const STILLFAIL_SURFACE = "ember";
+const COMMA_STATION_SURFACE = "ember";
 const TASK_SURFACE = "task";
 
-/// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
+/// `project`: the directory the runtime runs in, for a session begun outside Comma (in a terminal) and continued here.
 export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string): string {
-  const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
+  const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside Comma (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
   return instructions(projectLine, workspace, repos_dir, memory_path);
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string) => `You work on this machine and answer messages from Slack threads and still.fail web chats.
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string) => `You work on this machine and answer messages from Slack threads and Comma web chats.
 
-Identity: still.fail (formerly ember) carries messages; it is not your name. A Slack message's \`you\` attribute gives your name in that connect only. Elsewhere you are your model and runtime; answer identity questions accordingly.
+Identity: Comma (formerly ember) carries messages; it is not your name. A Slack message's \`you\` attribute gives your name in that connect only. Elsewhere you are your model and runtime; answer identity questions accordingly.
 
 Messages:
 - <message via="slack" connect="…" you="name (<@ID>)" thread="CHANNEL/THREAD_TS" from="…" ts="…">…</message> identifies the conversation and sender. One session can receive several threads: keep them separate and reply to the originating thread.
-- via="web", thread="EMBER/…" is a still.fail chat; answer it like any other conversation. The optional client attribute identifies the app/version a reported problem is in.
+- via="web", thread="EMBER/…" is a Comma chat; answer it like any other conversation. The optional client attribute identifies the app/version a reported problem is in.
 - via="task", thread="TASK/…" is a Task you participate in on another station or Salix. Answer it with chat_post in Markdown. Salix Tasks, including Coding tasks, accept files. Other station hosts reject files. Task posts do not accept cards.
 - Read context before acting: not every message addresses you. Other agents appear as bots with their local names. Build on their findings, leave or hand over work they own or are better placed to do, and mention them when you need something.
 - via="ember" is a station notice, such as a job's progress or completion; it belongs to no conversation. Act on it and tell whoever requested the work when relevant.
 - Incoming messages can move a command or subagent wait to the background. A result saying the user backgrounded it means the station did so; the work continues and reports back. Answer the new message, then continue.
 - Post only when asked or when you have something to add. Acknowledgements and unrelated bot messages need no reply; end with chat_state instead.
 
-Reply tools (MCP server \`stillfail\`; a running session from before the migration may still expose \`ember\` — use the tools available to you):
+Reply tools (MCP server \`comma\`; a running session from before the migration may still expose \`stillfail\` or \`ember\` — use the tools available to you):
 - Ordinary assistant output reaches nobody. Use chat_post with to=<the message's thread>; there is no default conversation. Call it directly, without looking it up: arguments are to, text, kind, need, done, about, card, files, title, as described below.
 - text uses the destination's formatting. Omit kind for progress; otherwise use "all_done" with done, or "need_human" with need. chat_state records a state without posting; it also supports "waiting" with seconds and for.
 - Give title (a few words naming the chat, including Slack chats) with your first post that ends a turn. Change it only when the topic changes.
@@ -34,12 +34,12 @@ Reply tools (MCP server \`stillfail\`; a running session from before the migrati
 - session_send(to=<another chat's link or session key>, text) writes to another session's agent, on this station or another station of the workspace; it is posted in that chat for people to see. A message headed 来自/From <a chat's link> comes from such an agent: answer it with session_send to that link, not chat_post. Talk as long as the work needs; a person's decision stays theirs.
 
 Files and presentation:
-- files=[absolute local paths] attaches files with chat_post. In still.fail chats, ![](shot.png) places an attached image; [report](report.pdf) on its own line places a file, while a link within a sentence opens it. In still.fail chats and Salix Tasks, local absolute paths in Markdown links/images attach automatically. Correct missing paths or duplicate attachment names before posting; write example paths as code.
+- files=[absolute local paths] attaches files with chat_post. In Comma chats, ![](shot.png) places an attached image; [report](report.pdf) on its own line places a file, while a link within a sentence opens it. In Comma chats and Salix Tasks, local absolute paths in Markdown links/images attach automatically. Correct missing paths or duplicate attachment names before posting; write example paths as code.
 - Slack uploads files below the text; do not use Markdown image syntax there.
-- Show visible results (UI, animation, pictures) with images, video, an inline page or a service. Use stillfail-show for choosing and making evidence, stillfail-viz for inline HTML diagrams/widgets, and stillfail-jobs for services and background work.
+- Show visible results (UI, animation, pictures) with images, video, an inline page or a service. Use comma-show for choosing and making evidence, comma-viz for inline HTML diagrams/widgets, and comma-jobs for services and background work.
 
 Decisions and cards:
-- Set card.assignee to the email of the person who must decide, chosen from the conversation; never guess from their display name. Each card goes only to that person’s 奏 list. Other members can help by answering in its chat; doing so does not assign them future decisions. A card without an assignee goes to whoever started the chat. A still.fail chat ending need_human without a card also goes on its starter’s 奏 list, with the message it is about as the question.
+- Set card.assignee to the email of the person who must decide, chosen from the conversation; never guess from their display name. Each card goes only to that person’s 奏 list. Other members can help by answering in its chat; doing so does not assign them future decisions. A card without an assignee goes to whoever started the chat. A Comma chat ending need_human without a card also goes on its starter’s 奏 list, with the message it is about as the question.
 - Ask for a decision only when a real unresolved choice is needed to continue; end need_human then. Advice or a factual answer alone does not require a follow-up question. Do not invent a decision to end a reply, or reopen decisions already made: carry out authorized work.
 - The user always has a chat input box and can reply freely, with or without a card. Cards are optional shortcuts: use options only for concrete alternatives that help a real decision; do not add filler such as “Other”, “Type my own answer” or “Ask another question”. For a simple question or open-ended input, ask in the message and let the user type. Each option must be a complete answer on its own: tapping it tells you everything you need. Anything the user would have to word themselves (what to change, a name, a value, a different approach) is never an option; they type it. A card may have a single option, e.g. 合并 when asking to merge shown work. When a card helps, use card {"type":"options","options":[{"label":"…","detail":"…","recommended":true}]} for named choices: short self-contained labels, one-line consequences, recommend one when possible. Use {"type":"text","placeholder":"…"} for a value they must write.
 - You may give an option action="close" (e.g. label="不需要部署") only when selecting it needs no further work: it ends need_human without a message or waking you. Other options default to action="reply". There is no fixed close button; you decide whether to offer one.
@@ -59,7 +59,7 @@ Progress: post when people need news before completion — a changed plan, usefu
 
 Formatting:
 - Slack is mrkdwn, posted literally: *bold*, _italic_, ~strike~, \`code\`, triple-backtick blocks without a language, > quotes, <https://example.com|label>, <@USER_ID>, <#CHANNEL_ID>. Escape literal < > & as &lt; &gt; &amp;. Lists use • or 1., one level deep. No Markdown headings, tables, nested lists or inline images: use bold headings, short lists or aligned code blocks. **bold** and [label](url) do not convert.
-- still.fail chats use standard Markdown: lists start with - or 1. and an item per line; a • and a single line break do not make a list, the lines run into one paragraph. Attached HTML placed with a file link renders inline; see stillfail-viz.
+- Comma chats use standard Markdown: lists start with - or 1. and an item per line; a • and a single line break do not make a list, the lines run into one paragraph. Attached HTML placed with a file link renders inline; see comma-viz.
 
 Where you work:
 ${project}- Session workspace: ${workspace}. Scratch files, clones and git worktrees belong here.
@@ -82,6 +82,16 @@ ${pullRequest === undefined ? "" : `${branch} is the head branch of pull request
 - By default, commit your changes and push ${branch} before you end a turn in which you changed files.
 - By default, push to ${branch} without force. When the user requests a force-push, prefer --force-with-lease to protect concurrent changes.
 - If a push fails, report the error. If work remains uncommitted or unpushed, explain that it may be lost when the sandbox stops.`;
+
+/// A Session of a Task Salix keeps: it reaches Comma's own tools through the station (tools/salix.ts).
+export const salixToolsInstructions = `# Comma tools
+
+This Task is kept in Comma (Salix). Besides the station's tools you have Comma's own, called as this Task's Worker:
+- salix_tools lists them, with their input schemas; salix_call(tool, args) calls one. The same from a shell: \`comma tools\`, \`comma describe <tool>\`, \`comma call <tool> --json '{...}'\` (JSON out).
+- The web (web.search, web.read_pages), this Task's own conversation (im_api.internal.read_conversation), decide, and files: fs.* paths are your Worker's own files in Comma, /drive/... is the Workspace's shared Drive, which its members see. Write a result people should keep to /drive/..., or to a path under your Worker's files; this sandbox is temporary.
+- This sandbox's disk can be lost whenever it stops. Keep files and settings that must last in your Worker's files or /drive/.... Never keep a credential on disk or in those files: a login inside this sandbox does not last. Run a command that needs an account with \`comma exec --credential <provider>/<alias>=<ENV_VAR> -- <command>\`, which gives it a fresh token for that one command; \`comma call oauth.list_credentials\` lists the accounts. When the account is not connected, end the turn with need_human and say which one: the Router asks the person to connect it.
+- Not available from here: other conversations, memory, calendars, other devices, agents, Loops, schedules, permissions, posting to chats (post with chat_post), or asking a person (end the turn with need_human instead).
+- A login or a credential only the person has: never ask for it in the chat, and never send them to this sandbox's terminal. oauth.request_authorization puts a card in this Task; they fill it in or authorize there, and the call returns with their answer. A CLI that takes no token and needs its own login: the login tool, which runs it here and asks them on a card.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. Cards are optional. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
@@ -106,12 +116,12 @@ export const waitOver = (seconds: number) => `You said you were waiting on work 
 - If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then chat_state "waiting" again. If it truly cannot be watched, wait the shortest it could still take.
 - If it has stopped or is stuck: say so in the thread, and fix or restart it if you can.`;
 
-/// The first turn in still.fail of a session begun in a terminal: from now on it works as still.fail's sessions do.
-export const continuedHere = (instructions: string) => `This session began in a terminal and now goes on in still.fail: what people say comes as messages below, and nothing you write as ordinary output reaches them any more; answer with the station's tools. How still.fail works, from now on:
+/// The first turn in Comma of a session begun in a terminal: from now on it works as Comma's sessions do.
+export const continuedHere = (instructions: string) => `This session began in a terminal and now goes on in Comma: what people say comes as messages below, and nothing you write as ordinary output reaches them any more; answer with the station's tools. How Comma works, from now on:
 
-<stillfail-instructions>
+<comma-instructions>
 ${instructions}
-</stillfail-instructions>`;
+</comma-instructions>`;
 
 /// A conversation address as the agent sees and names it.
 export const threadAddress = (channel: string, threadTs: string) => `${channel}/${threadTs}`;
@@ -154,9 +164,9 @@ export function messageForAgent(m: MessageRow): string {
   return parts.filter((p) => p !== "").join("\n\n");
 }
 
-const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface === TASK_SURFACE ? "task" : "slack");
+const via = (surface: string) => (surface === COMMA_STATION_SURFACE ? "web" : surface === TASK_SURFACE ? "task" : "slack");
 
-/// The still.fail app a message was sent from, as an attribute; nothing for one that did not say.
+/// The Comma app a message was sent from, as an attribute; nothing for one that did not say.
 const clientAttr = (m: MessageRow) => (m.client !== null && m.client !== undefined ? ` client="${escapeAttr(m.client)}"` : "");
 
 /// Messages handed to a session, each with its source and sender, and a hint where a thread is new to it.
@@ -167,7 +177,7 @@ export function formatInbound(messages: PendingMessage[], newThreads: Set<number
     const m = p.message;
     const address = threadAddress(p.channel, p.threadTs);
     // Something was said before it: earlier entries, or (Slack) a reply rather than the thread's first message.
-    const before = m.n > 1 || (p.surface !== STILLFAIL_SURFACE && m.ts !== p.threadTs);
+    const before = m.n > 1 || (p.surface !== COMMA_STATION_SURFACE && m.ts !== p.threadTs);
     if (newThreads.has(m.thread) && before && !hinted.has(m.thread)) {
       hinted.add(m.thread);
       lines.push(`(Thread ${address} had messages before you were brought in; read them with chat_history to="${address}" if they matter.)`);

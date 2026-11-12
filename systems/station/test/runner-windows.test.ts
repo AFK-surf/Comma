@@ -46,7 +46,7 @@ test("lines in order; a station that lets go and comes back reads on where it ac
   const [program, args] = node(script);
   const info = await startRunner(data, "t1", program, [...args], process.env, data);
   assert.equal(info.id, "t1");
-  assert.match(info.socket, /^\\\\\.\\pipe\\stillfail-runner-/);
+  assert.match(info.socket, /^\\\\\.\\pipe\\comma-runner-/);
 
   const first: string[] = [];
   const a = new RunnerConnection(info, (stream, text) => void (stream === "out" && first.push(text)));
@@ -100,10 +100,10 @@ test("runners run from a copy beside the data, which the desktop updater's sweep
   // A release's directory of its own, as the desktop app's is to its updater.
   const release = join(data, "release");
   mkdirSync(release);
-  const shipped = join(release, "stillfail-runner.exe");
+  const shipped = join(release, "comma-runner.exe");
   copyFileSync(runnerBinary(), shipped);
-  const before = process.env.STILLFAIL_RUNNER;
-  process.env.STILLFAIL_RUNNER = shipped;
+  const before = process.env.COMMA_STATION_RUNNER;
+  process.env.COMMA_STATION_RUNNER = shipped;
   const bin = join(data, "bin");
   try {
     keepRunnerIn(bin);
@@ -117,7 +117,7 @@ test("runners run from a copy beside the data, which the desktop updater's sweep
     assert.equal((await findRunner(data, "c1"))?.runner, info.runner, "a station after the update finds it");
 
     // Another release's copy no runner runs from goes; the one running stays.
-    const stale = join(bin, "stillfail-runner-0123456789abcdef.exe");
+    const stale = join(bin, "comma-runner-0123456789abcdef.exe");
     copyFileSync(shipped, stale);
     keepRunnerIn(bin);
     assert.ok(!existsSync(stale));
@@ -129,7 +129,7 @@ test("runners run from a copy beside the data, which the desktop updater's sweep
     c.done();
     await until(async () => (await existingRunners(data)).length === 0);
   } finally {
-    if (before === undefined) delete process.env.STILLFAIL_RUNNER;
-    else process.env.STILLFAIL_RUNNER = before;
+    if (before === undefined) delete process.env.COMMA_STATION_RUNNER;
+    else process.env.COMMA_STATION_RUNNER = before;
   }
 });

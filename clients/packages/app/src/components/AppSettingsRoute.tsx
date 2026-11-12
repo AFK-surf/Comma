@@ -6,6 +6,7 @@ import { useWeChatIntegration } from "./useWeChatIntegration";
 import { useModelsCategory } from "./models/useModelsCategory";
 import { useArchivedTasksCategory } from "./tasks/useArchivedTasksCategory";
 import { useSharedTasksCategory } from "./tasks/useSharedTasksCategory";
+import { useTaskRequestsCategory } from "./tasks/useTaskRequestsCategory";
 import { useMiniAppsSettingsCategory } from "./apps/useMiniAppsSettingsCategory";
 import { useDeviceSettingsCategory } from "./devices/useDeviceSettingsCategory";
 import { useTaskLabelsCategory } from "./tasks/useTaskLabelsCategory";
@@ -14,14 +15,18 @@ import { useRouterApiKeysCategory } from "./inbound-api/useRouterApiKeysCategory
 import { useVoiceSettingsCategory } from "./voice/useVoiceSettingsCategory";
 import { useSignalIntegration } from "./signal/useSignalIntegration";
 import { useIMessageIntegration } from "./imessage/useIMessageIntegration";
+import { useLineIntegration } from "./line/useLineIntegration";
 import { useTailscaleCategory } from "./tailscale/useTailscaleCategory";
 import { useLinearIntegration } from "./linear/useLinearIntegration";
 import { supportedLocales, type CommaLocale } from "@comma/i18n";
 import {
+  commaDefaultHomeViewSchema,
+  defaultCommaClientSettings,
   getNativeBridge,
   notchSideWidthRange,
   quickChatShortcutText,
   resolveQuickChatShortcut,
+  type CommaClientSettings,
   type GlobalShortcut,
   type QuickChatShortcut,
 } from "@comma/native-bridge";
@@ -76,18 +81,24 @@ import {
   useCommaClientSettings,
   useCommaClientSettingsPending,
 } from "./commaClientSettings";
-import { playNotificationSound } from "./notifications/notificationSound";
+import {
+  playNotificationSound,
+  playRequestSound,
+} from "./notifications/notificationSound";
 import { ShellIconButtonControl } from "./ShellIconButton";
 import { useCommaAuth } from "./auth-context";
 import { useAppShortcutCopy } from "./shortcuts/appShortcutCopy";
 import { UserAvatar } from "./UserAvatar";
 import { LinkProviderIcon } from "./links/linkPreviewCards";
 import { useProfileAvatarUrl } from "./useProfileAvatarUrl";
+import { AccountDeletionDialog } from "./AccountDeletionDialog";
+import { EmailChangeDialog } from "./EmailChangeDialog";
 import { AvatarCropDialog } from "./profile/AvatarCropDialog";
 import { avatarTypes, isAcceptedAvatarFile } from "./profile/avatarImage";
 import { useOptionalCommandPalette } from "./search/CommandPaletteContext";
 import { useCommaSettingsOverlay } from "./settingsOverlay";
 import { useOnboardingReplaySection } from "./onboarding/useOnboardingReplaySection";
+import { useAboutSettingsCategory } from "./useAboutSettingsCategory";
 import { needsDesktopApp, requestDesktopApp } from "./DesktopAppPrompt";
 import {
   appShortcutDefinitions,
@@ -136,8 +147,10 @@ const guestSettingsCategoryIds = new Set([
   "appearance",
   "notifications",
   "keyboard-shortcuts",
+  "about",
 ]);
 const guestHiddenSettingsSectionIds = new Set([
+  "profile.danger",
   "general.permissions",
   "general.tone",
   "general.system-prompt",
@@ -150,6 +163,7 @@ const guestHiddenShortcutIds = new Set<AppShortcutId>([
   "go-drive",
   "go-tasks",
   "go-plugins",
+  "new-task",
   "toggle-right-sidebar",
 ]);
 
@@ -180,7 +194,9 @@ function guestSettingsGroups(
 
 // Read from the hash rather than the router: this route also renders in unit
 // tests, which have no RouterProvider above it.
-function readLinkedSettingsParam(name: "category" | "profile"): string | undefined {
+function readLinkedSettingsParam(
+  name: "category" | "profile" | "invite" | "link"
+): string | undefined {
   if (typeof window === "undefined") return undefined;
   const hash = window.location.hash;
   const queryStart = hash.indexOf("?");
@@ -189,7 +205,9 @@ function readLinkedSettingsParam(name: "category" | "profile"): string | undefin
   return value ? value : undefined;
 }
 
-function useLinkedSettingsParam(name: "category" | "profile"): string | undefined {
+function useLinkedSettingsParam(
+  name: "category" | "profile" | "invite" | "link"
+): string | undefined {
   const [value, setValue] = useState(() => readLinkedSettingsParam(name));
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -226,7 +244,18 @@ export function AppSettingsRoute({
   const m = useCommaMessages();
   const clientSettings = useCommaClientSettings();
   const clientSettingsPending = useCommaClientSettingsPending();
+  // Keyed by every view, so a new rail page cannot ship without its option.
+  const defaultHomeViewLabels: Record<CommaClientSettings["defaultHomeView"], string> =
+    {
+      home: m.settings_default_home_view_home(),
+      inbox: m.nav_inbox(),
+      tasks: m.nav_tasks(),
+      drive: m.nav_drive(),
+      apps: m.nav_apps(),
+      plugins: m.nav_plugins(),
+    };
   const onboardingReplay = useOnboardingReplaySection();
+  const aboutCategory = useAboutSettingsCategory();
   const auth = useCommaAuth();
   const guest = auth.isGuest === true;
   // Every category reader below keys off this id, so a guest never loads the
@@ -274,6 +303,15 @@ export function AppSettingsRoute({
   const sharedTasksCategory = useSharedTasksCategory(
     activeCategoryId === "shared-tasks"
   );
+  // `&invite=<token>` with the task-requests category: an invite link someone gave the person.
+  const linkedInvite = useLinkedSettingsParam("invite");
+  // `&link=<token>`: a chat account link a Router posted the person.
+  const linkedAccount = useLinkedSettingsParam("link");
+  const taskRequestsCategory = useTaskRequestsCategory(
+    activeCategoryId === "task-requests",
+    linkedInvite,
+    linkedAccount
+  );
   const miniAppsCategory = useMiniAppsSettingsCategory(activeCategoryId === "apps");
   const { category: taskLabelsCategory, approvalPolicy: labelProposalPolicy } =
     useTaskLabelsCategory(
@@ -304,6 +342,8 @@ export function AppSettingsRoute({
   const profile = profileShown?.profile ?? undefined;
   const [name, setName] = useState(auth.userDisplayName ?? "");
   const [nameDialogOpen, setNameDialogOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [changeEmailOpen, setChangeEmailOpen] = useState(false);
   const [notificationPermissionDialogOpen, setNotificationPermissionDialogOpen] =
     useState(false);
   const [keepAwakeApprovalDialogOpen, setKeepAwakeApprovalDialogOpen] = useState(false);
@@ -368,6 +408,11 @@ export function AppSettingsRoute({
   );
   // Shown only where the server has Photon iMessage set up.
   const imessageItem = useIMessageIntegration(
+    telegramWorkspaceId,
+    activeCategoryId === "channels"
+  );
+  // Shown only where the server has Comma's LINE account set up.
+  const lineItem = useLineIntegration(
     telegramWorkspaceId,
     activeCategoryId === "channels"
   );
@@ -544,7 +589,13 @@ export function AppSettingsRoute({
     update: updateAppPreferences,
     openLoginItemsSettings,
     openNotificationSettings,
-  } = useCommaAppPreferences();
+    relaunch,
+  } = useCommaAppPreferences({ showsLaunchAtLogin: true });
+  // The mesh setting is read when the app starts: a choice other than the one running waits for a restart.
+  const computerMeshRestartRequired =
+    !!appPreferences &&
+    clientSettings.settings.computerMesh !==
+      (appPreferences.computerMeshAtLaunch ?? defaultCommaClientSettings.computerMesh);
   const airDropName = useAirDropNameSetting({
     pending: appPreferencesPending,
     preferences: appPreferences,
@@ -983,6 +1034,9 @@ export function AppSettingsRoute({
       },
     ],
   };
+  // Agents learn this tree from the comma-settings product skill
+  // (resources/salix-system-files/skills/comma-settings): keep it in step
+  // when a category or setting is added, moved or removed.
   const accountRegistry = createSettingsRegistry({
     groups: [
       {
@@ -1087,6 +1141,26 @@ export function AppSettingsRoute({
                 id: "general.application",
                 title: m.settings_general(),
                 items: [
+                  {
+                    id: "app.default-home-view",
+                    title: m.settings_default_home_view(),
+                    description: m.settings_default_home_view_description(),
+                    control: {
+                      type: "dropdown",
+                      value: clientSettings.settings.defaultHomeView,
+                      placeholder: m.settings_default_home_view(),
+                      disabled: clientSettingsPending,
+                      items: commaDefaultHomeViewSchema.options.map((id) => ({
+                        id,
+                        label: defaultHomeViewLabels[id],
+                      })),
+                      onChange: (value) => {
+                        const parsed = commaDefaultHomeViewSchema.safeParse(value);
+                        if (parsed.success)
+                          void clientSettings.update({ defaultHomeView: parsed.data });
+                      },
+                    },
+                  },
                   {
                     id: "app.language",
                     title: m.settings_language(),
@@ -1395,6 +1469,25 @@ export function AppSettingsRoute({
                     },
                   },
                   {
+                    id: "account.email",
+                    title: m.settings_email(),
+                    description: m.settings_email_description({
+                      email: profile?.email ?? auth.userEmail,
+                    }),
+                    control: {
+                      type: "custom",
+                      content: (
+                        <Button
+                          hierarchy="secondary-gray"
+                          onPress={() => setChangeEmailOpen(true)}
+                          size="sm"
+                        >
+                          {m.settings_change_email()}
+                        </Button>
+                      ),
+                    },
+                  },
+                  {
                     id: "account.sign-out",
                     title: m.nav_sign_out(),
                     description: m.settings_sign_out_description(),
@@ -1407,6 +1500,104 @@ export function AppSettingsRoute({
                           size="sm"
                         >
                           {m.nav_sign_out()}
+                        </Button>
+                      ),
+                    },
+                  },
+                ],
+              },
+              // The other accounts signed in on this device (Electron): switch to one, sign it out, or add one.
+              ...(auth.otherAccounts
+                ? [
+                    {
+                      id: "profile.other-accounts",
+                      title: m.settings_other_accounts(),
+                      items: [
+                        ...(auth.otherAccounts?.list ?? []).map((account) => ({
+                          id: `account.other.${account.userId}`,
+                          title: account.email,
+                          description: m.settings_other_account_description(),
+                          control: {
+                            type: "custom" as const,
+                            content: (
+                              <div className="flex items-center gap-xs">
+                                <Button
+                                  hierarchy="secondary-gray"
+                                  onPress={() =>
+                                    void auth.otherAccounts
+                                      ?.switchTo(account.userId)
+                                      .catch(() =>
+                                        toast.error(m.settings_switch_account_failed())
+                                      )
+                                  }
+                                  size="sm"
+                                >
+                                  {m.settings_switch_account()}
+                                </Button>
+                                <Button
+                                  hierarchy="link-gray"
+                                  onPress={() =>
+                                    void auth.otherAccounts
+                                      ?.signOut(account.userId)
+                                      .catch(() =>
+                                        toast.error(
+                                          m.settings_sign_out_account_failed()
+                                        )
+                                      )
+                                  }
+                                  size="sm"
+                                >
+                                  {m.nav_sign_out()}
+                                </Button>
+                              </div>
+                            ),
+                          },
+                        })),
+                        {
+                          id: "account.add",
+                          title: m.settings_add_account(),
+                          description: m.settings_add_account_description(),
+                          control: {
+                            type: "custom" as const,
+                            content: (
+                              <Button
+                                hierarchy="secondary-gray"
+                                onPress={() =>
+                                  void auth.otherAccounts
+                                    ?.add()
+                                    .catch(() =>
+                                      toast.error(m.settings_add_account_failed())
+                                    )
+                                }
+                                size="sm"
+                              >
+                                {m.settings_add_account()}
+                              </Button>
+                            ),
+                          },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
+              // Kept apart, last: what cannot be undone.
+              {
+                id: "profile.danger",
+                title: m.settings_danger_zone(),
+                items: [
+                  {
+                    id: "account.delete",
+                    title: m.settings_delete_account(),
+                    description: m.settings_delete_account_description(),
+                    control: {
+                      type: "custom",
+                      content: (
+                        <Button
+                          hierarchy="destructive"
+                          onPress={() => setDeleteAccountOpen(true)}
+                          size="sm"
+                        >
+                          {m.settings_delete_account()}
                         </Button>
                       ),
                     },
@@ -1627,6 +1818,44 @@ export function AppSettingsRoute({
                       onChange: (event) => {
                         void updateAppPreferences({
                           notificationSound: event.target.checked,
+                        });
+                      },
+                    },
+                  },
+                  {
+                    id: "notifications.request-sound",
+                    title: m.settings_request_sound(),
+                    description: m.settings_request_sound_description(),
+                    keywords: [
+                      "notification",
+                      "sound",
+                      "request",
+                      "通知",
+                      "铃声",
+                      "请求",
+                    ],
+                    // The request's toast plays it in the window, so it does
+                    // not wait on system notifications.
+                    controlLeading: (
+                      <Tooltip
+                        content={m.settings_notification_sound_preview()}
+                        placement="bottom"
+                      >
+                        <ShellIconButtonControl
+                          aria-label={m.settings_request_sound_preview()}
+                          className="size-6 p-xxs"
+                          icon={<VolumeFullIcon className="size-4" />}
+                          onPress={playRequestSound}
+                        />
+                      </Tooltip>
+                    ),
+                    control: {
+                      type: "toggle",
+                      checked: clientSettings.settings.requestSound,
+                      disabled: clientSettingsPending,
+                      onChange: (event) => {
+                        void clientSettings.update({
+                          requestSound: event.target.checked,
                         });
                       },
                     },
@@ -2080,6 +2309,7 @@ export function AppSettingsRoute({
               "ClawBot",
               "signal",
               "imessage",
+              "line",
               "linear",
               "消息",
             ],
@@ -2117,6 +2347,9 @@ export function AppSettingsRoute({
               ...(imessageItem
                 ? [{ id: "imessage.account", title: "", items: [imessageItem] }]
                 : []),
+              ...(lineItem
+                ? [{ id: "line.account", title: "", items: [lineItem] }]
+                : []),
               { id: "linear.account", title: "", items: [linearChannel.item] },
             ],
           },
@@ -2137,6 +2370,7 @@ export function AppSettingsRoute({
           // elsewhere (Windows) has nothing to grant; the web offers the app.
           ...(desktopOnly || computerUse.available ? [computerUseCategory] : []),
           ...additionalSystemCategories.filter((category) => category.id !== "debug"),
+          ...(aboutCategory ? [aboutCategory] : []),
         ],
       },
       {
@@ -2147,7 +2381,7 @@ export function AppSettingsRoute({
       {
         id: "shared",
         label: m.settings_shared(),
-        categories: [sharedTasksCategory, miniAppsCategory],
+        categories: [sharedTasksCategory, taskRequestsCategory, miniAppsCategory],
       },
       {
         id: "advanced",
@@ -2242,6 +2476,57 @@ export function AppSettingsRoute({
                   },
                 ],
               },
+              // The desktop app carries the station and the addon this reads.
+              ...(electronRuntime
+                ? [
+                    {
+                      id: "debug.computer-mesh",
+                      title: m.settings_debug_computer_mesh_title(),
+                      items: [
+                        {
+                          id: "debug.computer-mesh.mode",
+                          title: m.settings_debug_computer_mesh(),
+                          description: m.settings_debug_computer_mesh_description(),
+                          ...(computerMeshRestartRequired
+                            ? {
+                                description:
+                                  m.settings_debug_computer_mesh_description_restart(),
+                                action: {
+                                  label: m.settings_debug_computer_mesh_restart(),
+                                  onPress: () => void relaunch(),
+                                },
+                              }
+                            : {}),
+                          control: {
+                            type: "dropdown" as const,
+                            value: clientSettings.settings.computerMesh,
+                            placeholder: m.settings_debug_computer_mesh(),
+                            disabled: clientSettingsPending,
+                            items: [
+                              {
+                                id: "off",
+                                label: m.settings_debug_computer_mesh_off(),
+                              },
+                              { id: "on", label: m.settings_debug_computer_mesh_on() },
+                              {
+                                id: "salix",
+                                label: m.settings_debug_computer_mesh_salix(),
+                              },
+                            ],
+                            onChange: (value: string) => {
+                              if (
+                                value === "off" ||
+                                value === "on" ||
+                                value === "salix"
+                              )
+                                void clientSettings.update({ computerMesh: value });
+                            },
+                          },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
               ...additionalSystemCategories
                 .filter((category) => category.id === "debug")
                 .flatMap((category) => category.sections),
@@ -2410,6 +2695,18 @@ export function AppSettingsRoute({
               },
             },
           ]}
+        />
+      ) : null}
+      {changeEmailOpen && !guest ? (
+        <EmailChangeDialog
+          email={profile?.email ?? auth.userEmail}
+          onClose={() => setChangeEmailOpen(false)}
+        />
+      ) : null}
+      {deleteAccountOpen && !guest ? (
+        <AccountDeletionDialog
+          email={profile?.email ?? auth.userEmail}
+          onClose={() => setDeleteAccountOpen(false)}
         />
       ) : null}
       {avatarCropFile ? (

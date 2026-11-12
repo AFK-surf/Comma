@@ -55,6 +55,11 @@ public struct UserProfile: Codable, Equatable, Sendable {
     }
     public static let maxNameLength = 64
     public static let maxAvatarBytes = 2_097_152
+
+    /// The file name an avatar of `contentType` goes up as; nil for a type the server does not keep.
+    public static func avatarFilename(_ contentType: String) -> String? {
+        ["image/jpeg": "avatar.jpg", "image/png": "avatar.png", "image/webp": "avatar.webp"][contentType]
+    }
 }
 
 /// One Auth Session of the member, as listed for device management.

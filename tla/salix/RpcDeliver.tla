@@ -1,100 +1,35 @@
 ---------------------------- MODULE RpcDeliver ----------------------------
 (***************************************************************************)
-(* The A2 rpc-direct delivery handshake (docs/salix/conversation-owner-actor.md *)
-(* and `SalixAgent.deliver/3` in `:rpc` mode): a caller resolves placement,*)
-(* the resolved node reads the durable agent head as its owner fence       *)
-(* (`AgentActor.verify_rpc_delivery_owner/1`), dedupes on the session's    *)
-(* `input_dedupe` ledger, and commits the queue append with a session-     *)
-(* object CAS (`InternalSessionStore.commit/4`, reload-and-retry on        *)
-(* conflict).  The caller acks only on a reply; a lost reply or timeout    *)
-(* means a SAME-ID retry against a freshly resolved placement.  A          *)
-(* `:not_owner` refusal re-resolves placement INSIDE the facade call,      *)
-(* bounded at 2 attempts (`rpc_stage_attempts/4`) — modeled as `hops`,     *)
-(* distinct from the caller's own retry budget (`tries`).  The Staged      *)
-(* writer is historical: the staged path, its switch, and the absorb       *)
-(* engine are all deleted (§3.2 step 4 + §3.4, residue drained to zero).   *)
-(* The action is kept as an intentional over-approximation — a ghost       *)
-(* ledger-converging second writer — so the invariants keep holding under  *)
-(* strictly more interference than the shipped system can produce.  The    *)
-(* action models a writer that consults the ledger, i.e. every pod runs    *)
-(* ledger-aware code and only the mode differs; the code-version rolling   *)
-(* window in which pre-#870 pods append to the external store without a   *)
-(* ledger is OUT of this model and documented as a status-quo residual in  *)
-(* the plan (§1.1.1 residual 1).                                           *)
-(*                                                                         *)
-(* Since #870 external-runtime agents run this same protocol as a second   *)
-(* instance: their ledger is the `input_dedupe` field of the session's     *)
-(* `state.json`, committed by the same single-object CAS as the queue      *)
-(* append (`ExternalSessionStore.stage_delivery`).  One mapping note: the  *)
-(* external store answers a CAS conflict to its caller as                  *)
-(* `:stale_external_session_state` instead of reloading in place — the     *)
-(* reload-and-recheck edge the model takes after a conflict corresponds    *)
-(* there to the caller's mandated same-id retry re-entering the stage at   *)
-(* a fresh read, which re-checks the ledger before any write.  Session-    *)
-(* less payloads are resolved at deliver time by the role actor (#871):    *)
-(* a router rewrites onto its persisted canonical session before the       *)
-(* modeled stage; a role that cannot resolve one is rejected before        *)
-(* placement — neither takes a staged path in :rpc mode.  The schedule-    *)
-(* side terminal outcome for the rejected class is modeled in              *)
-(* ScheduleDispatch.tla (the "undeliverable" disposition).                 *)
-(*                                                                         *)
-(* The fence is genuinely TWO steps here: FenceRead records the            *)
-(* observation (`fenceObs`), and CommitCAS trusts only that recorded       *)
-(* observation — an ownership move between the two is a real interleaving, *)
-(* not a hand-written shortcut action.                                     *)
-(*                                                                         *)
-(* What this spec checks (safety only; single message id — the retry and   *)
-(* duplication structure is per-id):                                       *)
-(*                                                                         *)
-(*   - ExactlyOnceDurable: the id lands in the durable queue at most once, *)
-(*     under response loss, same-id retries, ownership moves, stale        *)
-(*     placement, bounded not_owner re-resolution, concurrent staged+rpc   *)
-(*     writers, and 412-reload-retry.  This holds WITHOUT the fence: it    *)
-(*     rests on the ledger dedupe being re-checked after every CAS reload. *)
-(*   - AckImpliesDurable: an acked delivery is durably appended (plan      *)
-(*     §1.6: ok only after the durable commit or a ledger hit).            *)
-(*                                                                         *)
-(* What the fence buys, honestly:                                          *)
-(*   - NoStaleCommit is NOT an invariant of the fenced protocol: the trace *)
-(*     FenceRead(passed) ; MoveOwner ; CommitCAS lands one stale commit    *)
-(*     (RpcDeliver_FenceResidual.cfg — the SHIPPED exposure).  The         *)
-(*     exposure is bounded: the stale commit is a correct, deduped,        *)
-(*     durable append; the hazard is only that the new owner's loaded      *)
-(*     image misses it until its next conflict-reload or cold load, and    *)
-(*     the queue entry is mark-first durable state the session work        *)
-(*     projection can enumerate for a wake.  Without the fence the same    *)
-(*     counterexample needs no race window at all — one stale placement    *)
-(*     resolution suffices (RpcDeliver_NoFence.cfg), which is what the     *)
-(*     #843 review reproduced through the public API.                      *)
-(*                                                                         *)
-(* Removing the ledger dedupe (RpcDeliver_NoDedupe.cfg, Staged=FALSE so    *)
-(* the counterexample must be the rpc protocol itself: applied commit,     *)
-(* lost response, same-id caller retry, second applied commit) breaks      *)
-(* ExactlyOnceDurable — the concrete reason the external store had to     *)
-(* gain its own ledger (#870) before external runtimes could enter `:rpc`. *)
-(*                                                                         *)
-(* The runtime-flip race (#843 owner repro) is a modeled dimension:        *)
-(* FlipRuntime rebinds the agent internal -> external mid-call.  The       *)
-(* runtime fence is TWO steps, exactly like the owner fence:               *)
-(* StageRouteRead records the routing observation (refusing an internal-   *)
-(* classified entry that reads "ext" — :runtime_changed), and StageCommit  *)
-(* trusts only the recorded observation.  Shipped behavior re-classifies   *)
-(* ONCE inside the same deadline (Reclassify = TRUE) and AckImpliesDurable *)
-(* holds; Reclassify = FALSE (RpcDeliver_NoReclassify.cfg) models the      *)
-(* retired staged-inbox detour that acked with no session commit.  A flip  *)
-(* BETWEEN route read and commit is a real interleaving the fence cannot   *)
-(* close (two objects, no cross-object atomicity — the north star forbids  *)
-(* building it): the commit lands durably in the runtime the agent just    *)
-(* left and the ack stands — AckMatchesRuntime's expected violation        *)
-(* (RpcDeliver_LateFlipResidual.cfg), the SHIPPED cross-store exposure,    *)
-(* contained as documented in plan §1.1.1.                                 *)
+(* Per-identity input durability under response loss, retries and movement.*)
+(* PgSpec maps InternalSessionStore.PG: lock_agent holds the Agent row     *)
+(* FOR SHARE through the Session write. Takeover needs a conflicting lock.*)
+(* PgStageCommit checks current authority in the same atomic transition   *)
+(* as inputs, dedupe and source progress. FenceRead is only an early      *)
+(* routing observation. RpcDeliver_Safety also checks NoStaleCommit.      *)
+(*                                                                       *)
+(* Spec keeps the former split-check protocol. Its FenceRead; MoveOwner;  *)
+(* StageCommit counterexample must still violate NoStaleCommit. Negative  *)
+(* configurations document removed dedupe, birth and admission protections.*)
+(* They are not statements that those modes remain available online.      *)
+(*                                                                       *)
+(* Session revision CAS uses the S3 cell helper only as a conditional     *)
+(* atomic-value abstraction. No PG transaction calls S3. A lost response  *)
+(* can follow a committed input; same-ID retries consult durable dedupe.  *)
+(* The ghost second writer adds interference beyond the supported writer. *)
+(* ExactlyOnceDurable is per input identity, never external effects.      *)
+(* SourceFrontierImpliesDurable models target input only; non-target scans*)
+(* and ordered discovery are implementation-test boundaries.             *)
+(*                                                                       *)
+(* Runtime/birth actions retain the separate authority abstraction. They *)
+(* do not prove the PG importer, retired-history reader or their coupling *)
+(* to admission. Epoch monotonicity is covered by HeadCommit and          *)
+(* SessionEpochFence; this model uses distinct live holder identities.   *)
+(*                                                                       *)
+(* Nodes, retries, facade hops and owner moves are configuration-bounded. *)
+(* Safety needs no fairness. FairSpec's sole progress claim is the ghost *)
+(* post-ACK execution witness under weak fairness of WakeExecute. PgSpec *)
+(* claims safety only, not service availability or eventual delivery.     *)
 (***************************************************************************)
-(* Router log admission maps one committed target source position to this *)
-(* per-id abstraction. Command.conversationInput publishes source progress *)
-(* together with input. Direct-log staging can prepare activation before  *)
-(* this same CAS; working-state computation is a stuttering step here.    *)
-(* in the same Session CAS as the input queue. Notifications, ordered scans, *)
-(* and binding floors are runtime-test boundaries, with no liveness claim. *)
 EXTENDS Naturals, S3
 
 CONSTANTS
@@ -105,33 +40,33 @@ CONSTANTS
                 \* since §3.4 (engine deleted, residue zero); kept as an
                 \* over-approximating ghost writer
   Reclassify,   \* BOOLEAN: :runtime_changed re-classifies once in-deadline
-                \* (shipped, #870 round 2); FALSE models the retired
+                \* (legacy, #870 round 2); FALSE models the retired
                 \* staged-inbox detour that acked at inbox durability only
   SessionAuthority, \* BOOLEAN: the stage resolves an existing session to its
-                \* BIRTH store before any agent-record read (shipped, #873
+                \* BIRTH store before any agent-record read (legacy, #873
                 \* round 5); FALSE is the retired agent-record routing that
                 \* split one session id across both stores after a flip
   BirthAuthority, \* BOOLEAN: NEW-session placement claims the per-session
                 \* create-once birth marker before any store create
-                \* (shipped, #873 round 6); FALSE is the retired behavior
+                \* (legacy, #873 round 6); FALSE is the retired behavior
                 \* where each first-delivery writer created on its own
                 \* admission read — concurrent first deliveries astride a
                 \* flip fabricated the id in both stores
   ProbeAuthority, \* BOOLEAN: the birth claim runs only after BOTH stores
-                \* CONFIRMED not-found (shipped, #873 round 7 fail-closed
+                \* CONFIRMED not-found (legacy, #873 round 7 fail-closed
                 \* ruling); FALSE is the retired behavior that read a
                 \* transient probe ERROR as absence — one 503 on the old
                 \* side re-birthed a legacy markerless session across
   StoreGuard,   \* BOOLEAN: the birth claim is enforced INSIDE the store's
                 \* create primitives, so every creator — routed deliveries,
                 \* the direct external-runtime facade, fork/seed — passes
-                \* it (shipped, #873 round 8); FALSE retires the store
+                \* it (legacy, #873 round 8); FALSE retires the store
                 \* guard: an unrouted creator writes on its own side,
                 \* ignoring the marker (the round-8 bypass repros)
   StrictWritable, \* BOOLEAN: NEW-input admission to an externally-born
                 \* session requires the CURRENT binding — a minted
                 \* capability is not a licence for new work after the
-                \* binding leaves (shipped, #873 round 9); FALSE retires
+                \* binding leaves (legacy, #873 round 9); FALSE retires
                 \* the strict check: the capability escape admits new
                 \* input to a rebound session (the round-9 P1-2 repro)
   RetryLimit,   \* caller same-id retry budget (timeout/error driven)
@@ -320,7 +255,7 @@ StageDuplicate ==
 
 (* Step two: the commit CAS trusts only the RECORDED fence observation —   *)
 (* an ownership move since FenceRead is invisible here, which is exactly   *)
-(* the shipped residual window.  On an etag match the append applies and   *)
+(* the former split-check window.  On an etag match the append applies and   *)
 (* the caller may be acked (or the reply lost).  On a mismatch the node    *)
 (* reloads and the stage re-runs; the ledger is re-checked against the     *)
 (* RELOADED image, which is what carries ExactlyOnceDurable.               *)
@@ -397,7 +332,7 @@ FlipRuntime ==
 (* the owner fence, it is genuinely TWO steps: this read records its       *)
 (* observation (routeObs) and the commit trusts only the record.  An       *)
 (* internal-classified (require_runtime: :internal) entry that reads       *)
-(* "ext" here REFUSES (:runtime_changed).  Shipped behavior (Reclassify):  *)
+(* "ext" here REFUSES (:runtime_changed).  Legacy safe behavior (Reclassify):  *)
 (* the facade re-classifies ONCE with the fresh record inside the same     *)
 (* deadline and re-enters untagged — fresh hop budget, fence and route     *)
 (* observations, same caller try; a second refusal surfaces to the         *)
@@ -469,7 +404,7 @@ DeliverLater ==
 (* under the over-approximation is stronger than under the real            *)
 (* protocol's reachable reads).                                            *)
 (*                                                                         *)
-(* Shipped behavior (BirthAuthority): a writer first CLAIMS the per-       *)
+(* Legacy safe behavior (BirthAuthority): a writer first CLAIMS the per-       *)
 (* session create-once marker (single-object CAS — BirthClaim), and every  *)
 (* store create follows the RECORDED side (BirthCreate) — the winner's     *)
 (* claim decides, losers place on the recorded side, and the crash window  *)
@@ -545,7 +480,7 @@ LateExternalInput ==
                  commitRuntime, executedOn, moves, staleCommits, laterStore,
                  birthMarker, birthStores, extBindingCurrent>>
 
-Next ==
+NextWithCommit(CommitAction) ==
   \/ MoveOwner
   \/ SyncPlacement
   \/ FlipRuntime
@@ -554,7 +489,7 @@ Next ==
   \/ FenceRead
   \/ StageRouteRead
   \/ StageDuplicate
-  \/ StageCommit
+  \/ CommitAction
   \/ StagedWriter
   \/ WakeExecute
   \/ DeliverLater
@@ -564,7 +499,16 @@ Next ==
        BirthClaim(side) \/ BirthCreate(side) \/ BypassCreate(side)
   \/ \E nd \in Nodes: NodeLoad(nd)
 
+Next == NextWithCommit(StageCommit)
+
+PgStageCommit ==
+  /\ headOwner = caller.target
+  /\ StageCommit
+
+PgNext == NextWithCommit(PgStageCommit)
+
 Spec == Init /\ [][Next]_vars
+PgSpec == Init /\ [][PgNext]_vars
 
 (* The id lands durably at most once — under retries, loss, moves, hops,   *)
 (* mixed writers.  The load-bearing mechanism is dedupe-after-reload, not  *)

@@ -15,6 +15,7 @@ vi.mock("@tanstack/react-router", () => ({
     groupId: "grp_1",
     workspaceId: "wsp_1",
   }),
+  useSearch: () => ({}),
 }));
 
 vi.mock("../../../chat-sidebar/ChatSidebarContext", () => ({

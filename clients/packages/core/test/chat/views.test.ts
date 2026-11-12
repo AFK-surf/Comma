@@ -260,31 +260,50 @@ describe("a window's view of a conversation", () => {
     client.close();
   });
 
-  it("uploads a file the host holds from where it is, past the in-memory limit, and sends it with the draft", async () => {
+  it("uploads a file the host holds in parts, each read from where it is, and sends it with the draft", async () => {
     const { host, client, time, watch } = setup({ uploadsLocalFiles: true });
     echoSends(host);
     const localFileRef = `lfi1_${"v".repeat(43)}`;
-    const size = 40_000_000;
+    host.localFiles.set(localFileRef, new TextEncoder().encode("0123456789"));
     const path = `/uploads/${"p".repeat(22)}-clip.mp4`;
-    host.api.on("PUT", files, { name: "clip.mp4", path, size });
-    const uploaded = host.api.hold("PUT", files);
+    const upload = "/v1/comma/groups/grp_1/uploads/up_1";
+    host.api.on("POST", "/v1/comma/groups/grp_1/uploads", {
+      upload_id: "up_1",
+      part_size: 4,
+    });
+    for (const n of [1, 2, 3])
+      host.api.on("PUT", `${upload}/parts/${n}`, { etag: `e${n}` });
+    host.api.on("POST", `${upload}/complete`, { name: "clip.mp4", path, size: 10 });
+    const completed = host.api.hold("POST", `${upload}/complete`);
     const shown = watch<ChatViewValue>(view);
     await time.pass(100);
 
     await client.call("chatView.attachLocalFiles", {
       ...named,
-      files: [{ localFileRef, mediaType: "video/mp4", name: "clip.mp4", size }],
+      files: [{ localFileRef, mediaType: "video/mp4", name: "clip.mp4", size: 10 }],
     });
     await time.pass(10);
     expect(shown.value()?.state?.draftAttachments).toMatchObject([
       { id: localFileRef, name: "clip.mp4", status: "uploading" },
     ]);
-    // The host sends the file itself: the core never holds its bytes.
-    const [put] = host.api.seen("PUT", files);
-    expect(put).toMatchObject({ localFileRef, body: undefined });
-    expect(new URLSearchParams(put!.path.split("?")[1]).get("size")).toBe(String(size));
+    expect(host.api.seen("POST", "/v1/comma/groups/grp_1/uploads")[0]!.body).toEqual({
+      size: 10,
+    });
+    // No request carries more than a part, each read from the host's file.
+    const parts = [1, 2, 3].map(
+      (n) => host.api.seen("PUT", `${upload}/parts/${n}`)[0]!.body as Uint8Array
+    );
+    expect(parts.map((part) => new TextDecoder().decode(part))).toEqual([
+      "0123",
+      "4567",
+      "89",
+    ]);
+    expect(host.api.seen("POST", `${upload}/complete`)[0]!.body).toEqual({
+      name: "clip.mp4",
+      etags: ["e1", "e2", "e3"],
+    });
 
-    uploaded();
+    completed();
     await time.pass(100);
     expect(shown.value()?.state?.draftAttachments).toMatchObject([
       { id: localFileRef, path, status: "uploaded" },
@@ -293,6 +312,35 @@ describe("a window's view of a conversation", () => {
     await time.pass(100);
     expect(bodies(host)).toHaveLength(1);
     expect(bodies(host)[0]).toContain(path);
+    client.close();
+  });
+
+  it("tells a file too large for the server by the server's limit, and offers no retry for it", async () => {
+    const { host, client, time, watch } = setup({ uploadsLocalFiles: true });
+    const localFileRef = `lfi1_${"w".repeat(43)}`;
+    host.api.on(
+      "POST",
+      "/v1/comma/groups/grp_1/uploads",
+      json(413, { error: "file_too_large" })
+    );
+    const shown = watch<ChatViewValue>(view);
+    await time.pass(100);
+
+    await client.call("chatView.attachLocalFiles", {
+      ...named,
+      files: [
+        { localFileRef, mediaType: "video/mp4", name: "TF.mp4", size: 211_500_000 },
+      ],
+    });
+    await time.pass(100);
+    expect(shown.value()?.state?.draftAttachments).toMatchObject([
+      {
+        id: localFileRef,
+        status: "failed",
+        error: "The file exceeds the 512 MB limit",
+        refused: true,
+      },
+    ]);
     client.close();
   });
 
@@ -389,7 +437,7 @@ describe("a window's view of a conversation", () => {
       .catch((error: unknown) => error);
     await time.pass(1_000);
 
-    expect(await refused).toMatchObject({ code: "chat_refused" });
+    expect(await refused).toMatchObject({ code: "attachment_not_ready" });
     expect(host.api.seen("POST", `${base}/messages`)).toEqual([]);
     expect(shown.value()?.state).toMatchObject({
       draft: "See attached",

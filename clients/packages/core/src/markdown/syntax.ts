@@ -47,6 +47,13 @@ const cjkStrong: TokenizerExtension = {
   },
 };
 
+// Brackets or single dollars hold math when what is in them reads as TeX: a command, or a letter's sub- or superscript.
+const TEX = /\\[A-Za-z]+|(?:^|[^\w\\])[A-Za-z][_^](?:\{[^}]+\}|[A-Za-z0-9\\])/;
+
+// Inline delimiters are also written around plain prose: two words in a row with no TeX or `=` read as text, anything else as math.
+const isInlineTex = (text: string) =>
+  TEX.test(text) || text.includes("=") || !/[A-Za-z]{2,}\s+[A-Za-z]{2,}/.test(text);
+
 /** Inline math: `$$x$$`, `\\(x\\)`, or `$x$` opening before no space and closing after no space and before no digit. */
 const inlineMath: TokenizerExtension = {
   name: "commaMath",
@@ -54,7 +61,7 @@ const inlineMath: TokenizerExtension = {
   start: (source) => /\$|\\\(/.exec(source)?.index,
   tokenizer(source) {
     const tex = /^\\\(([\s\S]+?)\\\)/.exec(source);
-    if (tex)
+    if (tex && isInlineTex(tex[1]!))
       return { type: "commaMath", raw: tex[0], text: tex[1]!.trim(), markup: "\\(\\)" };
     const display = /^\$\$(?!\$)((?:\\.|[^\\$])+?)\$\$/.exec(source);
     if (display)
@@ -65,14 +72,11 @@ const inlineMath: TokenizerExtension = {
         markup: "$$",
       };
     const single = /^\$(?![\s$])((?:\\.|[^\\\n$])*?[^\\\s$])\$(?!\d)/.exec(source);
-    if (single)
+    if (single && isInlineTex(single[1]!))
       return { type: "commaMath", raw: single[0], text: single[1]!, markup: "$" };
     return undefined;
   },
 };
-
-// Bare brackets hold math when what is in them reads as TeX: a command, or a letter's sub- or superscript.
-const TEX = /\\[A-Za-z]+|(?:^|[^\w\\])[A-Za-z][_^](?:\{[^}]+\}|[A-Za-z0-9\\])/;
 
 /** A math block at the start of `source`: `$$`, `\[ \]` or bare brackets around TeX, on lines of their own. */
 function mathBlockAt(source: string) {

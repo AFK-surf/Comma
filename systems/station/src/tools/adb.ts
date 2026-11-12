@@ -8,7 +8,7 @@ type Json = any;
 export const ADB_DEVICES = {
   name: "adb_devices",
   description:
-    "The Android phones people shared with this station's agents (from the still.fail app), each with the adb serial it is reached at on this machine (127.0.0.1:<port>), its model, owner and whether adb is connected; and the link that opens this station's 共享调试 page in a person's app, to ask them for theirs.",
+    "The Android phones people shared with this station's agents (from the Comma app), each with the adb serial it is reached at on this machine (127.0.0.1:<port>), its model, owner and whether adb is connected; and the link that opens this station's 共享调试 page in a person's app, to ask them for theirs.",
   inputSchema: {
     "type": "object",
     "properties": {},
@@ -20,8 +20,8 @@ export const ADB_DEVICES = {
 export function listed(phones: Json[], page: string | null): string {
   const ask =
     page !== null
-      ? `To ask a person for their phone (or to pair it), send them this link in the conversation: ${page} — it opens this station's 共享调试 page in their still.fail Android app, where they tap 开始共享.`
-      : "A person shares their phone from the still.fail Android app: this station's page, 共享调试.";
+      ? `To ask a person for their phone (or to pair it), send them this link in the conversation: ${page} — it opens this station's 共享调试 page in their Comma Android app, where they tap 开始共享.`
+      : "A person shares their phone from the Comma Android app: this station's page, 共享调试.";
   if (phones.length === 0) return `No phone is shared with this station now. ${ask}`;
   let text = `${JSON.stringify(phones, null, 2)}\n\n`;
   text +=

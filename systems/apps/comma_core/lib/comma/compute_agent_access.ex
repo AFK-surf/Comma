@@ -14,11 +14,24 @@ defmodule Comma.ComputeAgentAccess do
          {:ok, scope} <- scope(ctx) do
       rows =
         Repo.all(
-          from([w, e] in shared_query(scope),
+          from([w, e, _a, b, r] in shared_query(scope),
             where: w.id > ^cursor,
             order_by: w.id,
             limit: ^(@page_size + 1),
-            select: {w, e}
+            select:
+              {w, e,
+               fragment(
+                 "CASE WHEN ? <> 'agent_vmm' OR ? <> 'ready' THEN ? WHEN ? <> 'revoked' AND ? AND ? = 'ready' AND ? AND ? > ? THEN 'ready' ELSE 'pending' END",
+                 b.provider,
+                 e.desired_state,
+                 e.observed_state,
+                 b.status,
+                 r.connected,
+                 r.status,
+                 r.desired_enabled,
+                 r.authorization_expires_at,
+                 ^SystemsClock.utc_now()
+               )}
           )
         )
 
@@ -71,6 +84,10 @@ defmodule Comma.ComputeAgentAccess do
       on: e.id == w.environment_id,
       join: a in Compute.Allocation,
       on: a.id == w.allocation_id,
+      join: b in Compute.ProviderBinding,
+      on: b.id == a.provider_binding_id,
+      left_join: r in SalixStore.AgentVMM.Registration,
+      on: b.provider == "agent_vmm" and r.id == b.provider_ref,
       where: a.environment_id == e.id and a.generation == e.generation,
       where:
         e.tenant_id == ^scope.tenant and e.owner_type == "project" and
@@ -79,7 +96,7 @@ defmodule Comma.ComputeAgentAccess do
     )
   end
 
-  defp public({w, e}) do
+  defp public({w, _environment, environment_status}) do
     spec = w.spec || %{}
 
     %{
@@ -88,7 +105,7 @@ defmodule Comma.ComputeAgentAccess do
       "kind" => w.kind,
       "template" => w.template_key,
       "status" => w.observed_state,
-      "environment_status" => e.observed_state,
+      "environment_status" => environment_status,
       "capabilities" => w.capability_requirements || [],
       "egress_mode" => spec["egress_mode"],
       "resources" => Map.take(spec["resources"] || %{}, ["pid_max", "writable_quota_bytes"])

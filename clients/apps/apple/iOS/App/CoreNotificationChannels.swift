@@ -10,6 +10,16 @@ private func registration(_ answer: NSDictionary) throws -> NotificationRegistra
     return try JSONDecoder().decode(NotificationRegistration.self, from: data)
 }
 
+/// A server's refusal as the notification controllers read it (`CommaError.http`): they show its reason
+/// (`push_unavailable`, an expired session) and accept a 401 as proof an old session's slot is gone.
+private func refusal<T>(_ request: () async throws -> T) async throws -> T {
+    do { return try await request() }
+    catch let error as CoreError {
+        guard let status = error.status else { throw error }
+        throw CommaError.http(status: status, code: error.code, retryAfter: nil)
+    }
+}
+
 /**
  * The device's APNs slot for one session, through the client core (`notifications.registerDevice`,
  * `notifications.unregisterDevice`). A registration names the session it is for: the core refuses one for a session
@@ -25,15 +35,15 @@ struct CoreDeviceNotificationChannel: DeviceNotificationTransport {
 
     func register(token: String, environment: PushEnvironment, workspace: Workspace, bundleID: String,
                   locale: String) async throws -> NotificationRegistration {
-        try registration(try await core.object("notifications.registerDevice", [
+        try registration(try await refusal { try await core.object("notifications.registerDevice", [
             "session": sessionID, "workspace": workspace.id, "group": workspace.groupID, "token": token,
             "environment": environment.rawValue, "bundleId": bundleID, "locale": locale,
-        ]))
+        ]) })
     }
 
     func retire() async throws {
         guard await current() else { return }
-        _ = try await core.call("notifications.unregisterDevice")
+        _ = try await refusal { try await core.call("notifications.unregisterDevice") }
     }
 }
 
@@ -55,7 +65,7 @@ struct CoreActivityNotificationChannel: ActivityNotificationTransport {
             "environment": environment.rawValue, "bundleId": bundleID, "locale": locale, "registration": registrationID,
         ]
         if let activityID { params["activity"] = activityID }
-        let answer = try registration(try await core.object("notifications.registerActivity", params))
+        let answer = try registration(try await refusal { try await core.object("notifications.registerActivity", params) })
         guard answer.id.caseInsensitiveCompare(registrationID) == .orderedSame else {
             throw CoreError(code: "bad_response", message: "The registration is another one.")
         }
@@ -64,7 +74,7 @@ struct CoreActivityNotificationChannel: ActivityNotificationTransport {
 
     func retire(id: String, reason: ActivityRetirementReason) async throws {
         guard await current() else { return }
-        _ = try await core.call("notifications.unregister", ["id": id, "reason": reason.rawValue])
+        _ = try await refusal { try await core.call("notifications.unregister", ["id": id, "reason": reason.rawValue]) }
     }
 }
 

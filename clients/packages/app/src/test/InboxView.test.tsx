@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProductInboxItem, ProductInboxListResult } from "@comma/core-client";
 import { Toaster, toast } from "@comma/ui/components/toast";
+import { InboxNoSelection } from "../components/inbox/InboxRoute";
 import { InboxView } from "../components/inbox/InboxView";
 import { InboxFiltersProvider } from "../components/inbox/filters/InboxFiltersState";
 import { TaskSequenceNavigator } from "../components/tasks/TaskSequenceNavigator";
@@ -869,6 +870,35 @@ describe("InboxView", () => {
     expect(screen.getByText("1 notification deleted")).toBeInTheDocument();
   });
 
+  it("closes the open notification when the reader deletes it", async () => {
+    const { router } = renderInboxWithDetail(
+      {
+        source: "live-sync",
+        items: [
+          item({ title: "Kickoff sync" }),
+          item({ id: "w1:c2", conversationId: "c2", title: "Ship it" }),
+        ],
+      },
+      "c1"
+    );
+    await flush();
+
+    // Deleting another notification leaves the open one open.
+    await openInboxItemMenu(screen.getAllByTestId("inbox-item")[1]!);
+    await click(screen.getByRole("menuitem", { name: "Delete notification" }));
+    expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c1");
+
+    await openInboxItemMenu(screen.getByTestId("inbox-item"));
+    await click(screen.getByRole("menuitem", { name: "Delete notification" }));
+    expect(router.state.location.pathname).toBe("/inbox");
+    expect(
+      within(screen.getByTestId("inbox-no-selection")).getByText(
+        "No notification selected"
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("task-sequence-position")).toBeNull();
+  });
+
   it("toggles a row between unread and read from the context menu", async () => {
     renderInbox({ source: "live-sync", items: [item()] });
     await flush();
@@ -904,6 +934,50 @@ describe("InboxView", () => {
     expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
       "data-state",
       "hidden"
+    );
+  });
+
+  it("marks every listed notification read from the actions menu", async () => {
+    renderInbox({
+      source: "live-sync",
+      items: [
+        item({ title: "Kickoff sync" }),
+        item({
+          id: "w1:c2",
+          conversationId: "c2",
+          kind: "agent_task",
+          status: "needs_review",
+          title: "Review me",
+        }),
+        item({ id: "w1:c3", conversationId: "c3", title: "Already read" }),
+      ],
+    });
+    await flush();
+    const [kickoff, review, read] = screen.getAllByTestId("inbox-item");
+    await openInboxItemMenu(kickoff!);
+    await click(screen.getByRole("menuitem", { name: "Mark as unread" }));
+    const dots = () =>
+      [kickoff, review, read].map((row) =>
+        row!
+          .querySelector('[data-slot="task-list-item-dot"]')
+          ?.getAttribute("data-state")
+      );
+    expect(dots()).toEqual(["visible", "visible", "hidden"]);
+
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Mark all as read" }));
+
+    // Only the unread rows are marked; the read one is left alone.
+    expect(core.sentTo("marks.unmark")).toEqual([
+      { kind: "inboxUnread", ids: ["w1:c1", "w1:c2"] },
+    ]);
+    expect(dots()).toEqual(["hidden", "hidden", "hidden"]);
+
+    // Nothing unread is left, so the row is disabled rather than a no-op.
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    expect(screen.getByRole("menuitem", { name: "Mark all as read" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
     );
   });
 
@@ -1069,14 +1143,28 @@ function renderInboxWithDetail(result: ProductInboxListResult, conversationId: s
       </TaskSequenceSourceProvider>
     );
   }
-  const rootRoute = createRootRoute({ component: Shell });
-  const detailRoute = createRoute({
+  // The same shape as the app's route tree: the Inbox route holds the rail,
+  // its index route the empty detail pane, its child the open conversation.
+  const rootRoute = createRootRoute();
+  const inboxRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/inbox/$workspaceId/$groupId/$conversationId",
+    path: "inbox",
+    component: Shell,
+  });
+  const emptyRoute = createRoute({
+    getParentRoute: () => inboxRoute,
+    path: "/",
+    component: InboxNoSelection,
+  });
+  const detailRoute = createRoute({
+    getParentRoute: () => inboxRoute,
+    path: "$workspaceId/$groupId/$conversationId",
     component: Detail,
   });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([detailRoute]),
+    routeTree: rootRoute.addChildren([
+      inboxRoute.addChildren([emptyRoute, detailRoute]),
+    ]),
     history: createMemoryHistory({
       initialEntries: [`/inbox/w1/grp_test/${conversationId}`],
     }),

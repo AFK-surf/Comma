@@ -318,10 +318,11 @@ defmodule SalixWeb.Dashboard.AgentSessionLiveTest do
   # hidden is not settable through Control.create/update; the meeting runtime
   # writes its internal agent records directly, so the test does the same.
   defp mark_agent_hidden!(agent_id) do
-    key = Keys.ctl_agent(agent_id)
-    assert {:ok, %{body: body, etag: etag}} = SalixStore.S3.get(key)
-    updated = body |> Jason.decode!() |> Map.put("hidden", true)
-    assert {:ok, _} = SalixStore.S3.put(key, Jason.encode!(updated), if_match: etag)
+    assert {:ok, %{record: record, revision: revision}} =
+             SalixStore.AgentPGStore.read_config(agent_id)
+
+    updated = Map.put(record, "hidden", true)
+    assert {:ok, _} = SalixStore.AgentPGStore.put_config(agent_id, updated, revision)
     updated
   end
 

@@ -54,6 +54,7 @@ defmodule AlertRouter.CanonicalEvent do
     trigger_error
     execution
     dispatch
+    scope
   )
   @operational_reference_keys ~w(cluster tenant agent_group agent session execution dispatch)
   @link_keys ~w(incident dashboard runbook)

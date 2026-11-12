@@ -1,5 +1,5 @@
 [package]
-name = "stillfail-mesh"
+name = "comma-station-mesh"
 edition = "2024"
 version = "0.1.0"
 publish = false

@@ -3,7 +3,7 @@
 // the member credential the core last gave for it; its promises become Effects here, and an interrupted request is
 // given up on both sides. With a Salix relay (the station's addon's), the core's tickets open its sockets.
 import { HostError } from "@comma/core-kernel";
-import { MeshClient, type MeshEndpoint, type PeerAddr } from "@comma/mesh";
+import { MeshClient, peerKey, type MeshEndpoint, type PeerAddr } from "@comma/mesh";
 import { Effect } from "effect";
 import type {
   Pull,
@@ -49,18 +49,21 @@ export function meshStationLinks(
   const client = new MeshClient({
     endpoint,
     credential: async (peer) => {
-      const credential = credentials.get(peer.id);
+      const credential = credentials.get(peerKey(peer));
       if (credential === undefined)
         throw new HostError("no member credential for this station");
       return credential;
     },
   });
-  const addr = (station: string): PeerAddr => {
+  // Each link a station in one workspace (`stationLink`): its own connection, its own credential.
+  const addr = (link: string): PeerAddr => {
+    const [station, scope] = link.split("@") as [string, string | undefined];
     const addresses = peers[station];
-    if (addresses) return { id: station, addresses };
-    const reach = reaches.get(station);
+    if (addresses) return { id: station, scope, addresses };
+    const reach = reaches.get(link);
     return {
       id: station,
+      scope,
       ...(reach?.relayUrl ? { relayUrl: reach.relayUrl } : {}),
       ...(reach && reach.addrs.length > 0 ? { addresses: reach.addrs } : {}),
     };
@@ -79,6 +82,26 @@ export function meshStationLinks(
       }).pipe(
         Effect.map(({ closed }) => Effect.promise(() => closed.then(() => undefined)))
       ),
+    refresh: (station, wanted) =>
+      Effect.tryPromise({
+        try: () => client.refresh(addr(station), wanted),
+        catch: failure,
+      }),
+    ping: (station) =>
+      Effect.tryPromise({
+        try: () => client.ping(addr(station)),
+        catch: failure,
+      }).pipe(
+        Effect.map(({ answered }) =>
+          Effect.promise(() =>
+            answered.then(
+              () => true,
+              () => false
+            )
+          )
+        )
+      ),
+    drop: (station) => Effect.sync(() => client.disconnect(peerKey(addr(station)))),
     request: (station, request) =>
       Effect.acquireRelease(
         Effect.tryPromise({

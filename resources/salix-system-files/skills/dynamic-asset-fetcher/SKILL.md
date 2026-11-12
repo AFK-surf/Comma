@@ -40,7 +40,7 @@ Do **not** use this skill when:
 
 ## Prerequisites
 
-- A connector-backed environment with shell execution and network access.
+- A station environment with shell execution and network access.
 - Node.js (>= 18) with `npx` available for Playwright.
 - Python 3 (>= 3.10) with `pip` for validation scripts, or Node.js with `adm-zip`.
 - Disk space for a temporary browser profile and downloaded assets.

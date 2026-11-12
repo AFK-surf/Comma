@@ -32,10 +32,30 @@ defmodule AlertRouter.AdaptersTest do
 
     assert first.policy_identity == ["gcp_monitoring", "comma_alerting", "im_ingress_5xx"]
     assert first.recovery_status == "not_applicable"
-    assert first.latest =~ "持续高于"
+    assert first.latest =~ "超过阈值"
     assert first.priority == "P2"
     assert first.service == "im_ingress"
     assert first.evidence_values["duration"] == "15 分钟"
+  end
+
+  test "GCP series labels say where the alert fires, and only reviewed plain labels count" do
+    payload =
+      gcp_payload()
+      |> put_in(["incident", "metric"], %{
+        "type" => "prometheus.googleapis.com/salix_operations_total/counter",
+        "labels" => %{
+          "route" => "/v1/comma/groups/*",
+          "outcome" => "error",
+          "pod" => "comma-0",
+          "state" => "<!channel>"
+        }
+      })
+
+    assert {:ok, event} = GCPMonitoring.normalize(payload)
+    assert event.evidence_values["scope"] == "route=/v1/comma/groups/* outcome=error"
+
+    assert {:ok, without} = GCPMonitoring.normalize(gcp_payload())
+    refute Map.has_key?(without.evidence_values, "scope")
   end
 
   test "the retired External Session P0 policy fails closed" do

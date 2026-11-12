@@ -215,7 +215,11 @@ function PersonalSourceRow({
             : source.state === "needs_confirmation"
               ? messages.plugins_personal_source_needs_confirmation()
               : needsReauthorization
-                ? messages.plugins_personal_source_needs_reauthorization()
+                ? source.missingScopes?.length
+                  ? messages.plugins_personal_source_missing_scopes({
+                      scopes: source.missingScopes.join(", "),
+                    })
+                  : messages.plugins_personal_source_needs_reauthorization()
                 : messages.plugins_personal_source_needs_authorization()}
         </span>
       </span>
@@ -345,6 +349,7 @@ function sourceName(source: PluginConnectionSource, pluginName: string) {
     case "native_mcp_oauth":
       return `${pluginName} MCP`;
     case "managed_oauth":
+    case "im_connect":
       return pluginName;
   }
 }

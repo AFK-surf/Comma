@@ -283,7 +283,7 @@ export type SideChatCardsCapabilityState =
     };
 
 const STATUS_COLUMN_DEFINITIONS = [
-  { bucket: "in_progress", icon: taskStatusIcon("in_progress") },
+  { bucket: "in_progress", icon: taskStatusIcon("in_progress", { spins: false }) },
   { bucket: "needs_review", icon: taskStatusIcon("needs_review") },
   { bucket: "done", icon: taskStatusIcon("done") },
   { bucket: "cancelled", icon: taskStatusIcon("cancelled") },

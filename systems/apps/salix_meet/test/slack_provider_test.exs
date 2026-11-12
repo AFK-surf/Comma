@@ -630,6 +630,28 @@ defmodule SalixMeet.SlackProviderTest do
     end
   end
 
+  defmodule RecordingEvents do
+    @behaviour SalixMeet.Ports.Events
+
+    @impl true
+    def publish(group_id, topic, event) do
+      [result | rest] = SystemsRuntime.get_env(:salix_meet, :events_test_results, [:ok])
+
+      SystemsRuntime.put_env(
+        :salix_meet,
+        :events_test_results,
+        if(rest == [], do: [:ok], else: rest)
+      )
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:salix_meet, :activation_test_pid),
+        {:product_event, group_id, topic, event, result}
+      )
+
+      result
+    end
+  end
+
   defmodule PreparationSearchReader do
     def search(scope, opts) do
       SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:preparation_search, scope, opts})
@@ -808,8 +830,14 @@ defmodule SalixMeet.SlackProviderTest do
       "mock"
     )
 
-    put_router_agent!(tenant_id, group_id, router_agent_id)
-    create_router_state!(router_agent_id)
+    router = put_router_agent!(tenant_id, group_id, router_agent_id)
+
+    {:ok, _} =
+      SalixAgent.TestSupport.SessionFixture.create(
+        router_agent_id,
+        router["router_session_id"],
+        %{"name" => "Router"}
+      )
 
     {:ok, tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id}
   end
@@ -2949,6 +2977,16 @@ defmodule SalixMeet.SlackProviderTest do
 
     seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "meeting audio")
 
+    # A Lark meeting's Minutes, read before the delivery (`SalixMeet.LarkBot`).
+    {:ok, _doc, _etag} =
+      Store.update_state_retrying(meeting_id, fn state ->
+        Map.put(state, "lark_bot", %{
+          "provider" => "lark",
+          "links" => [%{"kind" => "minute", "url" => "https://sample.larksuite.com/minutes/m1"}],
+          "links_read_at" => 1
+        })
+      end)
+
     MockSlack.respond("canvases.create", %{"ok" => false, "error" => "channel_not_found"})
 
     assert :terminal_failed =
@@ -2975,6 +3013,8 @@ defmodule SalixMeet.SlackProviderTest do
     assert fallback_text =~ "*Blockers:*"
     assert fallback_text =~ "Canvas API rejected the create"
     assert fallback_text =~ "*Recording:* <https://w.slack.com/files/FTRANSCRIPT|Open recording>"
+    # Without a Canvas the message still links the Lark Minutes.
+    assert fallback_text =~ "Lark Minutes: https://sample.larksuite.com/minutes/m1"
     assert fallback_text =~ "choose which should become Linear issues"
     assert fallback_text =~ "Creation requires your explicit request or selection"
 
@@ -3227,6 +3267,45 @@ defmodule SalixMeet.SlackProviderTest do
              SalixMeet.Delivery.deliver_one(meeting_id, node: "node-c", now: 3_000)
 
     settle_refute_receive({:activation_handoff, _state, _summary, _result, _published_at}, 10)
+  end
+
+  test "a finished meeting publishes meeting.completed without the Router and retries a failed publish",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    for key <- [:events_mod, :events_test_results] do
+      previous = SystemsRuntime.get_env(:salix_meet, key)
+      on_exit(fn -> restore_env(:salix_meet, key, previous) end)
+    end
+
+    SystemsRuntime.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
+    SystemsRuntime.put_env(:salix_meet, :activation_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_meet, :activation_test_results, [:skip])
+    SystemsRuntime.put_env(:salix_meet, :events_mod, __MODULE__.RecordingEvents)
+    SystemsRuntime.put_env(:salix_meet, :events_test_results, [{:error, :temporary}, :ok])
+
+    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-product-event")
+    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
+    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
+
+    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
+
+    settle_receive({:product_event, ^group_id, "meeting.completed", first, {:error, :temporary}})
+
+    # The failed publish failed the activation claim before the Router handoff.
+    settle_refute_receive({:activation_handoff, _state, _summary, _result, _published_at}, 10)
+    assert {:ok, doc, _etag} = Store.get(meeting_id)
+    assert get_in(doc, ["state", "delivery", "activation", "status"]) == "failed"
+
+    assert [{^meeting_id, :activation_skipped}] =
+             SalixMeet.Delivery.sweep_once(node: "node-b", now: 2_000)
+
+    settle_receive({:product_event, ^group_id, "meeting.completed", second, :ok})
+    settle_receive({:activation_handoff, _state, _summary, :skip, _published_at})
+    assert second == first
+    assert first["event_id"] == "meeting.completed:" <> meeting_id
+    assert first["payload"] == %{"meeting_id" => meeting_id, "provider" => "slack"}
+
+    assert :not_claimable = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-c", now: 3_000)
+    settle_refute_receive({:product_event, _group, _topic, _event, _result}, 10)
   end
 
   test "a runtime summary cannot forge attribution completion or a valid-looking owner id",
@@ -3954,33 +4033,8 @@ defmodule SalixMeet.SlackProviderTest do
       "tool_router_enabled" => false
     }
 
-    {:ok, _} = S3.put(Keys.ctl_agent(agent_id), Jason.encode!(rec), if_none_match: "*")
+    {:ok, _} = SalixStore.AgentPGStore.create(agent_id, to_string(node()), SalixAgent.State, rec)
     rec
-  end
-
-  defp create_router_state!(agent_id) do
-    create_agent_state!(agent_id, [
-      %{
-        "type" => "session_created",
-        "session_id" => "main",
-        "name" => "Router",
-        "hidden" => false,
-        "created_at" => SystemsClock.system_time(:second)
-      }
-    ])
-  end
-
-  defp create_agent_state!(agent_id, events) do
-    {:ok, owned} = SalixStore.Agent.create(agent_id, Atom.to_string(node()), SalixAgent.State)
-
-    case SalixStore.Agent.commit(owned, events) do
-      {:ok, owned} ->
-        SalixStore.Agent.release(owned)
-
-      {:error, _} = err ->
-        _ = SalixStore.Agent.release(owned)
-        flunk("failed to seed agent state: #{inspect(err)}")
-    end
   end
 
   defp shared_preparation_file(size) do

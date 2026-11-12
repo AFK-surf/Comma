@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -38,12 +36,16 @@
 	<string>$(COMMA_PUSH_ENVIRONMENT)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Take photos to send in your chat or to use as your profile photo.</string>
+	<string>Take photos for your chats, profile, or a mini app you choose. You confirm each photo before sharing it with a mini app.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Comma connects straight to your computers on this network when it can.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Lets an Agent read your location while you use Comma, when it needs to know where you are.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Talk with Comma in a voice call.</string>
+	<string>Talk with Comma in a voice call, or dictate a message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Show your recent photos so you can send them in your chat.</string>
 	<key>NSSupportsLiveActivities</key>

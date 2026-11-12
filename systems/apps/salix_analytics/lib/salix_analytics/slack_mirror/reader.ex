@@ -262,6 +262,135 @@ defmodule SalixAnalytics.SlackMirror.Reader do
     """
   end
 
+  @doc """
+  Of `threads` (channel id and thread ts pairs, at most 500), the ones
+  `actor_id` wrote in, as the root or a reply. Reads thread coordinates only.
+  """
+  @spec thread_participation(map(), String.t(), [{String.t(), String.t()}]) ::
+          {:ok, [{String.t(), String.t()}]} | {:error, term()}
+  def thread_participation(scope, actor_id, threads)
+      when is_map(scope) and is_binary(actor_id) and is_list(threads) and
+             length(threads) <= 500 do
+    with :ok <- validate_workspace_scope(scope),
+         true <- canonical_nonblank?(actor_id),
+         true <- threads != [],
+         true <-
+           Enum.all?(threads, fn
+             {channel, ts} when is_binary(channel) and is_binary(ts) ->
+               Regex.match?(~r/^[A-Z0-9_]+$/, channel) and Regex.match?(~r/^\d{1,12}\.\d{6}$/, ts)
+
+             _ ->
+               false
+           end),
+         wanted = MapSet.new(threads),
+         {:ok, rows} <-
+           ClickHouseRead.run(
+             &thread_participation_sql/1,
+             [
+               tenant_id: scope["tenant_id"],
+               workspace_id: scope["workspace_id"],
+               actor_id: actor_id,
+               channels: array(threads |> Enum.map(&elem(&1, 0)) |> Enum.uniq()),
+               roots: array(threads |> Enum.map(&elem(&1, 1)) |> Enum.uniq())
+             ],
+             query: "slack_mirror_thread_participation"
+           ),
+         true <-
+           Enum.all?(rows, &(is_binary(&1["channel_id"]) and is_binary(&1["thread_ts"]))) do
+      {:ok,
+       rows
+       |> Enum.map(&{&1["channel_id"], &1["thread_ts"]})
+       |> Enum.filter(&MapSet.member?(wanted, &1))
+       |> Enum.uniq()}
+    else
+      false -> {:error, :invalid_slack_mirror_read}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def thread_participation(_scope, _actor_id, _threads),
+    do: {:error, :invalid_slack_mirror_read}
+
+  # The channel narrows the read to the sort key's prefix; the thread and
+  # actor bloom indexes skip the rest.
+  defp thread_participation_sql(database) do
+    """
+    SELECT DISTINCT channel_id, if(thread_ts = '', message_ts, thread_ts) AS thread_ts
+    FROM #{database}.slack_messages FINAL
+    WHERE tenant_id = {tenant_id:String}
+      AND workspace_id = {workspace_id:String}
+      AND channel_id IN {channels:Array(String)}
+      AND actor_id = {actor_id:String}
+      AND deleted = false
+      AND (thread_ts IN {roots:Array(String)} OR message_ts IN {roots:Array(String)})
+    FORMAT JSONEachRow
+    """
+  end
+
+  @doc """
+  How many messages each of `actor_ids` (at most 500) wrote in each of
+  `channel_ids` (at most 2000) since `after_us`, as `{channel_id, actor_id,
+  count}`. Reads counts only.
+  """
+  @spec actor_channel_counts(map(), [String.t()], [String.t()], non_neg_integer()) ::
+          {:ok, [{String.t(), String.t(), non_neg_integer()}]} | {:error, term()}
+  def actor_channel_counts(scope, actor_ids, channel_ids, after_us)
+      when is_map(scope) and is_list(actor_ids) and is_list(channel_ids) and
+             is_integer(after_us) and after_us >= 0 and length(actor_ids) <= 500 and
+             length(channel_ids) <= 2000 do
+    with :ok <- validate_workspace_scope(scope),
+         true <- actor_ids != [] and channel_ids != [],
+         true <- Enum.all?(actor_ids, &slack_id?/1) and Enum.all?(channel_ids, &slack_id?/1),
+         {:ok, rows} <-
+           ClickHouseRead.run(
+             &actor_channel_counts_sql/1,
+             [
+               tenant_id: scope["tenant_id"],
+               workspace_id: scope["workspace_id"],
+               actors: array(Enum.uniq(actor_ids)),
+               channels: array(Enum.uniq(channel_ids)),
+               after_us: after_us
+             ],
+             query: "slack_mirror_actor_channel_counts"
+           ) do
+      {:ok,
+       for(
+         %{"channel_id" => c, "actor_id" => a, "n" => n} <- rows,
+         is_binary(c) and is_binary(a),
+         do: {c, a, to_count(n)}
+       )}
+    else
+      false -> {:error, :invalid_slack_mirror_read}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def actor_channel_counts(_scope, _actor_ids, _channel_ids, _after_us),
+    do: {:error, :invalid_slack_mirror_read}
+
+  defp actor_channel_counts_sql(database) do
+    """
+    SELECT channel_id, actor_id, count() AS n
+    FROM #{database}.slack_messages FINAL
+    WHERE tenant_id = {tenant_id:String}
+      AND workspace_id = {workspace_id:String}
+      AND channel_id IN {channels:Array(String)}
+      AND actor_id IN {actors:Array(String)}
+      AND message_ts_us >= {after_us:UInt64}
+      AND deleted = false
+    GROUP BY channel_id, actor_id
+    FORMAT JSONEachRow
+    """
+  end
+
+  defp slack_id?(value), do: is_binary(value) and Regex.match?(~r/^[A-Z0-9_]+$/, value)
+
+  defp to_count(n) when is_integer(n), do: n
+  defp to_count(n) when is_binary(n), do: String.to_integer(n)
+
+  # Values already checked as Slack ids and timestamps.
+  defp array(values), do: "[" <> Enum.map_join(values, ",", &"'#{&1}'") <> "]"
+
   @doc "Channel-visible current messages, newest first. Substitutes conversations.history."
   @spec history(map(), keyword()) ::
           {:ok, %{messages: [map()], next_cursor: String.t() | nil, has_more?: boolean()}}

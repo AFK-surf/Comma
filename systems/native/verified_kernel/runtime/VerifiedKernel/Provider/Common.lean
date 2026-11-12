@@ -67,6 +67,32 @@ def scrubFuel : Nat → Term → Term
     else .map (xs.map (fun pair => (scrubFuel fuel pair.1, scrubFuel fuel pair.2)))
   | _, value => value
 
+private def scrubDeferred : Nat → Term → Stackless Term
+  | 0, value => .done value
+  | fuel + 1, value => .delay fun _ => do
+    match value with
+    | .binary raw => return .binary (scrubBytes raw)
+    | .list xs => return list (← Stackless.mapM (scrubDeferred fuel) xs)
+    | .map xs =>
+      if xs.any (·.1 == a "__struct__") then return .map xs
+      return .map (← Stackless.mapM (fun pair => do
+        return (← scrubDeferred fuel pair.1, ← scrubDeferred fuel pair.2)) xs)
+    | _ => return value
+
+private theorem scrubDeferred_eq (fuel : Nat) (value : Term) :
+    (scrubDeferred fuel value).run = scrubFuel fuel value := by
+  induction fuel generalizing value with
+  | zero => rfl
+  | succ fuel ih =>
+    cases value <;> simp [scrubDeferred, scrubFuel, ih]
+    split <;> simp [ih]
+
+def scrubFuelImpl (fuel : Nat) (value : Term) : Term := (scrubDeferred fuel value).run
+
+@[csimp] theorem scrubFuel_eq_scrubFuelImpl : @scrubFuel = @scrubFuelImpl := by
+  funext fuel value
+  exact (scrubDeferred_eq fuel value).symm
+
 def scrub (value : Term) : Term := scrubFuel (value.depth + 1) value
 
 def toolName (name : Term) : Bool :=

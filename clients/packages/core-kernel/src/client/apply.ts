@@ -3,11 +3,11 @@
 type Path = (string | number)[];
 
 /**
- * One change in a delta (`Op` in client/core-ts/src/delta.ts, keyed ones in client/core-ts/src/collections.ts): the
+ * One change in a delta (`Op` in core-kernel/src/delta.ts, keyed ones in core-kernel/src/collections.ts): the
  * place, and what happens there. Keyed ops change one item of a list found by its key (`key`: the fields it is made
  * of; a key is the one field's value, or the fields' values in order): `put` (a new item before the one keyed
  * `before`, null at the end; without `before`, in place of the one with its key), `patch` (that item's own ops),
- * `drop`, `move` (before `before`). They come only to a subscription made with `keyed: true`.
+ * `drop`, `move` (before `before`), on the lists the topic's spec keys.
  */
 export type DeltaOp = { path: Path } & (
   | { set: unknown }

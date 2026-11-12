@@ -57,13 +57,33 @@ check its last section before each deploy. In short:
 3. Test: `npm test` runs the unit tests with the mock (`src/comma/mock.ts`).
    Also check the app in a headless browser: run `npm run dev` and open
    the printed URL. Outside Comma, `src/main.tsx` installs the mock, so every
-   `comma.*` call works with in-memory data.
-4. Deploy: call the station tool `app_deploy` with short `notes` on what
+   `comma.*` call works with in-memory data. If `CHROMIUM_BIN` is set, the
+   machine has a browser at that path: use it and do not download one. With
+   Playwright: install `playwright-core` and launch with
+   `{ executablePath: process.env.CHROMIUM_BIN }`.
+4. Cover: the Apps gallery shows a screenshot of the app's first screen.
+   Make it in the headless browser, with the app on `npm run dev`:
+   - Set the viewport to 390 × 844 with device scale 2, in the light theme.
+   - Show the first screen as a user sees it after some use. If it is empty,
+     add sample data through the app first.
+   - Capture the top 390 × 293 CSS pixels as JPEG at quality 80. The result
+     is 780 × 586 pixels. With Playwright: a page from
+     `{ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 }`, then
+     `page.screenshot({ type: "jpeg", quality: 80, clip: { x: 0, y: 0, width: 390, height: 293 } })`.
+     WebP is smaller; use it only when the browser or an encoder at hand
+     writes it (Playwright does not).
+   - Save it as `public/cover.jpg` (or `.webp`) and set `"cover": "cover.jpg"`
+     in `comma-app.json`. Then run `npm run build` again, which copies it to
+     `dist/`.
+   The cover must be at most 160 KiB and 1200 × 1200 pixels. Every gallery
+   viewer downloads it, so do not use PNG. Make a new cover when the first
+   screen changes.
+5. Deploy: call the station tool `app_deploy` with short `notes` on what
    changed. It commits and pushes your work, then sends the build to Comma.
    Fix every error it returns and call it again. The user sees the new
    version in the chat. Report its app ID and Version to the Router.
    The Router can publish with `internal.apps.publish` after this Task is ready for review.
-5. Backend errors: call the station tool `app_logs`.
+6. Backend errors: call the station tool `app_logs`.
 
 Run `npm run build` before each `app_deploy`. Never edit `dist/` or
 `dist-worker/` by hand.
@@ -93,7 +113,19 @@ Run `npm run build` before each `app_deploy`. Never edit `dist/` or
   `web.search` (`comma.web.search(query)`), `chat.draft`
   (`comma.chat.draft`), `tasks.create` (`comma.tasks.propose`), `files.pick`,
   `drive.app_folder` (`comma.drive.*`), `calendar.read` (Mac only),
-  `notifications` (`comma.notify`), `clipboard.write`, `links.open` (`comma.open`).
+  `notifications` (`comma.notify`), `clipboard.write`, `links.open` (`comma.open`),
+  and the device capabilities `microphone`, `camera`, `location`, `screen.wake`,
+  `fullscreen`, `clipboard.read`, `share`, `haptics`, `midi`, `usb`, `bluetooth` (README.md,
+  "Device capabilities"). The frame cannot use `getUserMedia`, geolocation,
+  Web MIDI itself: use the SDK. For declared `usb` and `bluetooth` capabilities,
+  use `navigator.usb` and `navigator.bluetooth` directly. Start device selection
+  from a user click. Browser device grants belong to Comma, not to an individual
+  app. Other apps with the same capability can access those authorized devices.
+  Test API availability before you show a device control.
+  `comma.microphone.devices()` lists inputs and optional channel-count/sample-rate ranges.
+  Use `comma.microphone.startChannels` for separate PCM channels and indexed selection.
+  Channel indices are zero-based audio-stream positions, not physical port names.
+  See README.md for the options and sample callback. The existing `start` stays mono.
   Ask only for what the app needs. The viewer grants them; a call can fail.
 - `comma.ai.decide({ state, questions })` uses the shared `ai.chat` grant and the viewer Workspace's credits.
   Send only the state the model needs, with 1 to 8 typed questions and at most 12 KiB of JSON.

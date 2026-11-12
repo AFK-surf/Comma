@@ -1,5 +1,4 @@
 import {
-  ChatBubbleIcon,
   DiscordBrandIcon,
   GlobeIcon,
   MacbookAirIcon,
@@ -9,6 +8,7 @@ import {
 import type { ChatMessage } from "@comma/core/chat";
 import { getNativeBridge } from "@comma/native-bridge";
 import {
+  IMessageProviderMark,
   resolveProviderBrandLogo,
   type ProviderBrandLogoProps,
 } from "@comma/ui/components/provider-brand-logos";
@@ -50,7 +50,12 @@ const platforms: Record<
   slack: { name: "Slack", color: "#611f69" },
   feishu: { name: "Feishu", color: "#2c61e8" },
   lark: { name: "Lark", color: "#2c61e8" },
-  imessage: { name: "iMessage", color: "#36aafc" },
+  // Messages green differs by theme, so the value lives in the stylesheet.
+  imessage: {
+    name: "iMessage",
+    color: "var(--comma-chat-imessage-bubble)",
+    Logo: IMessageProviderMark,
+  },
   discord: { name: "Discord", color: "#5865f2" },
 };
 
@@ -111,11 +116,7 @@ export function MessagePlatformBadge({ platform }: { platform: string | undefine
     presentation?.Logo ??
     client?.Logo ??
     resolveProviderBrandLogo(platform) ??
-    (platform === "discord"
-      ? DiscordBrandIcon
-      : platform === "imessage"
-        ? ChatBubbleIcon
-        : GlobeIcon);
+    (platform === "discord" ? DiscordBrandIcon : GlobeIcon);
   return (
     <span
       className="comma-chat-platform-badge"

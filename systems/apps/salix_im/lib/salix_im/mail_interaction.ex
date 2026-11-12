@@ -4,17 +4,36 @@ defmodule SalixIM.MailInteraction do
   @limit 128
   @max_bytes 256_000
 
-  # Two budgets per owner. Automatic handoffs wake the Router with evidence;
-  # their daily cap bounds its cost. Notifications are the Router's decisions to
-  # interrupt the owner about an automatic matter; they bound a Router that is
-  # wrong about what must be known now. A critical matter skips the spacing but
-  # not the daily cap. A decision to stay quiet spends no notification. Replies
-  # and reminders the owner asked for are not automatic and are not limited.
+  # Two budgets per owner, each split into an ordinary pool and a reserve.
+  # Automatic handoffs wake the Router with evidence; their daily cap bounds
+  # its cost. Notifications are the Router's decisions to interrupt the owner
+  # about an automatic matter; they bound a Router that is wrong about what
+  # must be known now. A decision to stay quiet spends no notification.
+  # Replies and reminders the owner asked for are not automatic and are not
+  # limited.
+  #
+  # Only a reserve-eligible matter (`reserve_eligible?/2`) may spend the
+  # reserve, and only after the ordinary pool is closed; it also skips the
+  # notification spacing. Eligibility is checked again at each spend from the
+  # stored assessment, never taken from the caller's `pool` alone, and an
+  # urgency label never grants it. The scheduled Routine briefing (`"pool" =>
+  # "scheduled"`, only on its own key) spends its own small cap instead of a
+  # handoff.
   @window_ms 24 * 60 * 60 * 1000
   @budgets %{
     "sent_at" => %{spacing_ms: 0, limit: 12},
-    "notified_at" => %{spacing_ms: 30 * 60 * 1000, limit: 5}
+    "reserve_sent_at" => %{spacing_ms: 0, limit: 4},
+    "scheduled_sent_at" => %{spacing_ms: 0, limit: 2},
+    "notified_at" => %{spacing_ms: 30 * 60 * 1000, limit: 5},
+    "reserve_notified_at" => %{spacing_ms: 0, limit: 2}
   }
+  @reserve %{"sent_at" => "reserve_sent_at", "notified_at" => "reserve_notified_at"}
+  @briefing_key Jason.encode!(["routine", "briefing"])
+  # The action window of the reserve: a cost due from a day ago to a day
+  # ahead, or three days ahead when it cannot be undone. A cost that cannot be
+  # undone and names no time cannot be shown to wait.
+  @reserve_window_ms 24 * 60 * 60 * 1000
+  @reserve_irreversible_ms 72 * 60 * 60 * 1000
 
   def entries(conversation), do: get_in(conversation, ["metadata", @key]) || %{}
   def key(account, thread), do: Jason.encode!([account, thread])
@@ -66,17 +85,99 @@ defmodule SalixIM.MailInteraction do
 
   @doc """
   The owner's automatic handoff budget: `{:open, remaining}`, or
-  `{:closed, next_at}` with the Unix millisecond time it opens again.
+  `{:closed, next_at}` with the Unix millisecond time it opens again. With
+  `reserve` true, a closed ordinary pool falls back to the reserve.
   """
-  def automatic_budget(conversation, owner, now), do: budget(conversation, owner, "sent_at", now)
+  def automatic_budget(conversation, owner, now, reserve \\ false),
+    do: pooled(conversation, owner, "sent_at", now, reserve)
 
-  @doc "The owner's notification budget, in the shape of `automatic_budget/3`."
-  def notification_budget(conversation, owner, now, urgency \\ nil),
-    do: budget(conversation, owner, "notified_at", now, urgency)
+  @doc """
+  The owner's notification budget, in the shape of `automatic_budget/4`. A
+  reserve-eligible matter skips the spacing and falls back to the reserve.
+  """
+  def notification_budget(conversation, owner, now, reserve \\ false),
+    do: pooled(conversation, owner, "notified_at", now, reserve)
 
-  defp budget(conversation, owner, field, now, urgency \\ nil) do
+  @doc "The reserve pool alone of `:handoff` or `:notification`, for status views."
+  def reserve_budget(conversation, owner, kind, now) do
+    field = @reserve[if(kind == :handoff, do: "sent_at", else: "notified_at")]
+    budget(conversation, owner, field, now, false)
+  end
+
+  @doc """
+  Whether an assessment makes its matter reserve-eligible at `now` (Unix
+  milliseconds): the owner must act (`role` `act`), there is a cost, and it
+  lands inside the action window or cannot be undone and names no time.
+  """
+  def reserve_eligible?(assessment, now) when is_map(assessment) do
+    with "act" <- assessment["role"],
+         cost when is_binary(cost) and cost != "" <- assessment["cost"] do
+      case DateTime.from_iso8601(assessment["due"] || "") do
+        {:ok, due, _offset} ->
+          left = DateTime.to_unix(due, :millisecond) - now
+
+          window =
+            if assessment["reversible"] == false,
+              do: @reserve_irreversible_ms,
+              else: @reserve_window_ms
+
+          left >= -@reserve_window_ms and left <= window
+
+        _ ->
+          is_nil(assessment["due"]) and assessment["reversible"] == false
+      end
+    else
+      _ -> false
+    end
+  end
+
+  def reserve_eligible?(_assessment, _now), do: false
+
+  @doc "When an eligible-later assessment enters the reserve window, or nil."
+  def reserve_window_at(assessment, now) when is_map(assessment) do
+    with {:ok, due, _offset} <- DateTime.from_iso8601(assessment["due"] || "") do
+      window =
+        if assessment["reversible"] == false,
+          do: @reserve_irreversible_ms,
+          else: @reserve_window_ms
+
+      at = DateTime.to_unix(due, :millisecond) - window
+      if at > now, do: at
+    else
+      _ -> nil
+    end
+  end
+
+  def reserve_window_at(_assessment, _now), do: nil
+
+  defp pooled(conversation, owner, field, now, reserve) do
+    case {budget(conversation, owner, field, now, reserve), reserve} do
+      {{:open, _} = open, _} ->
+        open
+
+      {{:closed, _} = closed, false} ->
+        closed
+
+      {{:closed, ordinary_at}, true} ->
+        case budget(conversation, owner, @reserve[field], now, true) do
+          {:open, _} = open -> open
+          {:closed, reserve_at} -> {:closed, min(ordinary_at, reserve_at)}
+        end
+    end
+  end
+
+  # The pool a spend of `field` comes from: the ordinary pool while it is
+  # open, else the reserve for a reserve-eligible matter.
+  defp spend_field(conversation, owner, field, now, reserve) do
+    case budget(conversation, owner, field, now, reserve) do
+      {:open, _} -> field
+      {:closed, _} -> if(reserve, do: @reserve[field], else: field)
+    end
+  end
+
+  defp budget(conversation, owner, field, now, skip_spacing) do
     %{spacing_ms: spacing, limit: limit} = @budgets[field]
-    spacing = if urgency == "critical", do: 0, else: spacing
+    spacing = if skip_spacing, do: 0, else: spacing
 
     case spends(conversation, owner, field, now) do
       sent when length(sent) >= limit ->
@@ -125,11 +226,16 @@ defmodule SalixIM.MailInteraction do
             next == current ->
               updated
 
+            automatic_present?(command) and command["pool"] == "scheduled" ->
+              record_spend(updated, owner, "scheduled_sent_at", now)
+
             automatic_present?(command) ->
-              record_spend(updated, owner, "sent_at", now)
+              field = spend_field(conversation, owner, "sent_at", now, reserve?(command, now))
+              record_spend(updated, owner, field, now)
 
             automatic_notify?(command, current) ->
-              record_spend(updated, owner, "notified_at", now)
+              field = spend_field(conversation, owner, "notified_at", now, reserve?(current, now))
+              record_spend(updated, owner, field, now)
 
             true ->
               updated
@@ -140,6 +246,11 @@ defmodule SalixIM.MailInteraction do
         error
     end
   end
+
+  # The caller's pool asks for the reserve; the stored assessment must still
+  # earn it now.
+  defp reserve?(value, now),
+    do: value["pool"] == "reserve" and reserve_eligible?(value["assessment"], now)
 
   defp automatic_present?(command),
     do: command["automatic"] == true and command["action"] == "present"
@@ -173,14 +284,25 @@ defmodule SalixIM.MailInteraction do
       automatic_present?(command) and not enabled?(conversation, owner) ->
         {:error, :proactive_disabled}
 
-      automatic_present?(command) and
-          match?({:closed, _}, automatic_budget(conversation, owner, now)) ->
+      automatic_present?(command) and command["pool"] == "scheduled" and
+          command["key"] != @briefing_key ->
+        {:error, :invalid_mail_source}
+
+      automatic_present?(command) and command["pool"] == "scheduled" and
+          match?({:closed, _}, budget(conversation, owner, "scheduled_sent_at", now, false)) ->
+        {:error, :proactive_budget_exhausted}
+
+      automatic_present?(command) and command["pool"] != "scheduled" and
+          match?(
+            {:closed, _},
+            automatic_budget(conversation, owner, now, reserve?(command, now))
+          ) ->
         {:error, :proactive_budget_exhausted}
 
       automatic_notify?(command, current) and
           match?(
             {:closed, _},
-            notification_budget(conversation, owner, now, current["urgency"])
+            notification_budget(conversation, owner, now, reserve?(current, now))
           ) ->
         {:error, :proactive_notification_budget_exhausted}
 
@@ -298,6 +420,9 @@ defmodule SalixIM.MailInteraction do
           "automatic" =>
             if(action == "present", do: command["automatic"] == true, else: base["automatic"]),
           "urgency" => if(action == "present", do: command["urgency"], else: base["urgency"]),
+          # The pool the latest automatic handoff may spend: the Router's
+          # notification on a reserve-eligible matter may use the reserve.
+          "pool" => if(action == "present", do: command["pool"], else: base["pool"]),
           # What happens if the owner does nothing, and the earlier matter this
           # one continues, as the latest automatic handoff judged them.
           "assessment" =>
@@ -319,6 +444,12 @@ defmodule SalixIM.MailInteraction do
             cond do
               action in ~w(notify quiet) ->
                 %{"decision" => action, "reason" => command["reason"], "decided_at" => now}
+                |> then(
+                  &if(action == "quiet" and command["reason_kind"] == "new_evidence",
+                    do: Map.put(&1, "reason_kind", "new_evidence"),
+                    else: &1
+                  )
+                )
 
               # A new handoff awaits a new decision.
               action == "present" ->

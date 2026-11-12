@@ -3,8 +3,10 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -57,6 +59,13 @@ export function CommaI18nProvider({
   const localePreference =
     requestedLocale ?? controlledLocalePreference ?? localLocalePreference;
   const [activeLocale, setActiveLocale] = useState(() => initialize(localePreference));
+  // An owner may pass a new callback on every render. Read the latest through a
+  // ref, so the context value, and every message consumer, changes only with the
+  // locale or the preference.
+  const onLocalePreferenceChangeRef = useRef(onLocalePreferenceChange);
+  useInsertionEffect(() => {
+    onLocalePreferenceChangeRef.current = onLocalePreferenceChange;
+  });
 
   useLayoutEffect(() => {
     const nextLocale = initialize(localePreference);
@@ -71,13 +80,13 @@ export function CommaI18nProvider({
         return;
       }
       if (controlledLocalePreference !== undefined) {
-        void onLocalePreferenceChange?.(preference);
+        void onLocalePreferenceChangeRef.current?.(preference);
         return;
       }
       setLocalLocalePreference(preference);
       setActiveLocale(initialize(preference));
     },
-    [controlledLocalePreference, initialize, onLocalePreferenceChange, requestedLocale]
+    [controlledLocalePreference, initialize, requestedLocale]
   );
 
   useEffect(() => {

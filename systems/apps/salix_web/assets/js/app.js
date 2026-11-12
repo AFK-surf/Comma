@@ -23,8 +23,9 @@ import { TemplateDraft } from "./template_draft.mjs";
 
 import { PersistentDetails } from "./persistent_details.mjs";
 import { FloatingDropdown } from "./floating_dropdown.mjs";
+import { RoutingTransfer } from "./routing_transfer.mjs";
 
-const Hooks = { ResponsiveNavigation, CommandDraft, TemplateDraft, FloatingDropdown, PersistentDetails };
+const Hooks = { ResponsiveNavigation, CommandDraft, TemplateDraft, FloatingDropdown, PersistentDetails, RoutingTransfer };
 
 Hooks.CatalogPage = {
   mounted() { this.cursor = this.el.dataset.cursor; },

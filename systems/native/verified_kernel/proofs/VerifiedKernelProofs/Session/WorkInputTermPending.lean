@@ -76,7 +76,7 @@ theorem input_term_write_preserves {cursor final : Cursor} {inputEntry born resu
     (input : Command.input cursor.working (.tuple [inputEntry, born]) j = .ok (result, r))
     (started : InputStart result batch)
     (execution : Execution (resident (some cursor.pack) (a "write") (.tuple [list batch, hwm])) final) :
-    final.baseline = cursor.baseline ∧ final.etag = cursor.etag ∧ final.events = cursor.events ++ batch ∧
+    final.baseline = cursor.baseline ∧ final.revision = cursor.revision ∧ final.events = cursor.events ++ batch ∧
       QueueReady final.working ∧ final.working.get (a "storage_format") = cursor.working.get (a "storage_format") ∧
       (∀ sealed old, ValueSemantics.Represented cursor.working sealed old → ValueSemantics.Represented final.working sealed old) ∧
       ∃ event now first last item,

@@ -6,13 +6,15 @@ defmodule SalixAgent.Waits do
   @spec build(String.t(), pos_integer(), String.t(), map()) :: map()
   def build(reason, timeout_seconds, source, extra \\ %{}) do
     timeout_seconds = clamp_timeout(timeout_seconds)
-    deadline_ms = SystemsClock.system_time(:millisecond) + timeout_seconds * 1_000
+    started_at_ms = SystemsClock.system_time(:millisecond)
+    deadline_ms = started_at_ms + timeout_seconds * 1_000
 
     %{
       "wait_id" => "wait-" <> random_id(),
       "reason" => String.trim(to_string(reason)),
       "timeout_seconds" => timeout_seconds,
       "deadline_ms" => deadline_ms,
+      "started_at_ms" => started_at_ms,
       "source" => source
     }
     |> Map.merge(extra)
@@ -20,7 +22,7 @@ defmodule SalixAgent.Waits do
     |> Map.new()
   end
 
-  @doc "Validate the optional durable deadline shared by timer and recovery consumers."
+  @doc "Validate the optional durable deadline used by Session recovery."
   @spec validate(term()) :: :ok | {:error, :invalid_wait}
   def validate(wait) when is_map(wait) do
     wait = stringify(wait)
@@ -36,29 +38,6 @@ defmodule SalixAgent.Waits do
   @spec event(String.t(), map()) :: map()
   def event(session_id, wait) do
     %{"type" => "wait_set", "session_id" => session_id, "wait" => stringify(wait)}
-  end
-
-  @spec register_timers_from_events(String.t(), [map()]) :: :ok | {:error, term()}
-  def register_timers_from_events(agent_id, events)
-      when is_binary(agent_id) and is_list(events) do
-    Enum.reduce_while(events, :ok, fn event, :ok ->
-      case timer_record(agent_id, event) do
-        nil ->
-          {:cont, :ok}
-
-        record ->
-          case SalixStore.Timers.register(record) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-      end
-    end)
-  end
-
-  @spec register_timer_for_wait(String.t(), String.t(), map()) :: :ok | {:error, term()}
-  def register_timer_for_wait(agent_id, session_id, wait)
-      when is_binary(agent_id) and is_binary(session_id) and is_map(wait) do
-    register_timers_from_events(agent_id, [event(session_id, wait)])
   end
 
   @spec timeout_delivery(String.t(), map()) :: {:ok, map()} | {:error, :invalid_wait}
@@ -295,31 +274,6 @@ defmodule SalixAgent.Waits do
     timeout_seconds
     |> max(1)
     |> min(AsyncPolicy.wait_for_max_seconds())
-  end
-
-  defp event_type(event), do: event["type"] || event[:type]
-
-  defp timer_record(agent_id, event) do
-    with "wait_set" <- event_type(event),
-         session_id when is_binary(session_id) <- event["session_id"] || event[:session_id],
-         %{} = wait <- event["wait"] || event[:wait],
-         wait <- stringify(wait),
-         :ok <- validate(wait),
-         {:ok, wait_id} <- identity(wait),
-         deadline_ms when is_integer(deadline_ms) and deadline_ms > 0 <- wait["deadline_ms"],
-         {:ok, delivery} <- timeout_delivery(session_id, wait) do
-      %{
-        "timer_id" => wait_id,
-        "kind" => "wait_timeout",
-        "agent_id" => agent_id,
-        "session_id" => session_id,
-        "deadline_ms" => deadline_ms,
-        "source_message_id" => delivery["source_message_id"],
-        "payload" => delivery["payload"]
-      }
-    else
-      _ -> nil
-    end
   end
 
   defp stringify(map) when is_map(map),

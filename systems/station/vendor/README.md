@@ -1,6 +1,17 @@
 # vendor
 
-Crates taken from crates.io and changed for still.fail; `[patch.crates-io]` in mesh/ and client/ points at them. Each
+`scrcpy/LICENSE` is the Apache-2.0 license of scrcpy's server, which the release carries (`docs/android-screen.md`). The
+file itself is a native part (`scripts/native.ts`), not here.
+
+`serve-sim` is the iOS Simulator's capture and input, from EvanBacon/serve-sim at 0193e65 (`packages/serve-sim/Sources`,
+Apache-2.0) through still.fail's `vendor/serve-sim`. It holds only `SimDuoHID/main.m`,
+`SimNative/{FrameCapture,HIDInjector,DeviceHubKeyboardBridge,DuoHIDBridge,PixelBufferUtils,SimFrameworks,Xcode}.swift` and
+the `SimNativeSupport` they use. `Package.swift` is ours. `DTUHIDKeys.swift` and `Shared.swift` come from still.fail. The
+Computer Use helper uses it (`docs/simulator-screen.md`). HIDInjector's `sendHardwareButton` (a button by its HID usage,
+held as long as a person holds it) is still.fail's. `src/screens/sim-chrome.ts` lays out the device's case as serve-sim's
+TypeScript does (`packages/serve-sim/src/devicekit-chrome.ts`, `device-displays.ts`), through still.fail's port.
+
+Crates taken from crates.io and changed for Comma; `[patch.crates-io]` in mesh/ and client/ points at them. Each
 change is marked `ember:` in the source. Drop a crate here once upstream has the same.
 
 - **swarm-discovery 0.6.3**
@@ -23,6 +34,14 @@ change is marked `ember:` in the source. Drop a crate here once upstream has the
   is selected are kept, and sent at once to addresses that Address Lookup finds afterwards. Without it a station
   found by mDNS a moment after the dial (the relay down or unreachable) was only tried at QUIC's next Initial
   retransmit, 1 s or 3 s after the first: LAN connections took 1–6 s.
+- **iroh 1.0.3** (src/socket/remote_map/remote_state.rs): a new connection's Initial packets go to every known path
+  while a path is selected too. A connection still open keeps the selected path, so a new connection to a peer whose
+  process restarted on another port was sent to the dead path alone and opened only after the old one timed out (28 s
+  measured), though the relay reached the peer at once (with the change, in well under a second). still.fail's iroh
+  (github.com/zzj3720/iroh bc9fada3) does the same for an endpoint home on several relays; here, for every endpoint.
+- **iroh 1.0.3** (src/socket/biased_rtt_path_selector.rs, src/endpoint.rs): `Builder::custom_transports_last`, a third tier
+  of path below the relay. By default a custom transport (Salix) ranks with direct paths, ahead of the relay, and
+  iroh's selector can be told otherwise only from its tests.
 - **noq-udp 1.3.0** (src/linux.rs): no UDP segmentation offload (GSO) on Android, each datagram sent on its own. An
   Android emulator's network accepts a segmented burst and drops all of it; QUIC on a direct path then got nothing
   through once it sent more than a packet or two at once, until iroh dropped the path 15 s later. The phones' iroh

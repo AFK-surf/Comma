@@ -35,6 +35,7 @@
     "test:e2e": "pnpm build:web && COMMA_SKIP_NATIVE_BUILD=1 pnpm build:electron && playwright test --pass-with-no-tests",
     "smoke:web": "pnpm build:web && COMMA_PLAYWRIGHT_REPORT_DIR=playwright-report/web COMMA_PLAYWRIGHT_JSON_REPORT_FILE=playwright-report/web/results.json COMMA_PLAYWRIGHT_OUTPUT_DIR=test-results/playwright-web playwright test --config playwright.config.ts --project=web",
     "smoke:admin": "COMMA_API_BASE_URL=http://127.0.0.1:65535 pnpm build:admin && playwright test --config apps/admin/playwright.config.ts",
+    "smoke:auth:abuse:local": "node scripts/local-auth-abuse-chain.mjs",
     "smoke:auth:local": "node scripts/local-auth-smoke.mjs",
     "smoke:telegram:local": "pnpm build:web && playwright test packages/app/e2e/telegram-settings.spec.ts --project=app-shell",
     "smoke:auth:electron:local": "COMMA_SKIP_NATIVE_BUILD=1 pnpm build:electron && COMMA_ELECTRON_LOCAL_AUTH_SMOKE=1 COMMA_PLAYWRIGHT_SKIP_WEB_SERVER=1 playwright test --config playwright.config.ts --project=electron-shell apps/electron/e2e/chat-runtime-ownership.spec.ts --grep \"local passwordless login\"",

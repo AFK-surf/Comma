@@ -1,0 +1,48 @@
+id: ex-test-receive-after
+valid:
+  - |
+    defmodule ForeverTest do
+      use ExUnit.Case
+
+      test "waits for the message" do
+        SystemsRuntime.Proc.receive do
+          :go -> :ok
+        end
+      end
+    end
+  - |
+    defmodule TakeNowTest do
+      use ExUnit.Case
+
+      test "takes what came" do
+        receive do
+          :go -> :ok
+        after
+          0 -> nil
+        end
+      end
+    end
+invalid:
+  - |
+    defmodule PlainTest do
+      use ExUnit.Case
+
+      test "body" do
+        receive do
+          :go -> :ok
+        after
+          100 -> :late
+        end
+      end
+    end
+  # The runtime's receive is receive.
+  - |
+    defmodule MockServer do
+      def hold(conn, tag) do
+        SystemsRuntime.Proc.receive do
+          {:release, ^tag} -> conn
+        after
+          5_000 -> conn
+        end
+      end
+    end

@@ -1,10 +1,13 @@
 import { CoreClient, topicKey, type Topic } from "@comma/core-kernel/client";
 import { describe, expect, it } from "vitest";
 import type {
+  McpServersValue,
   PluginNotice,
   PluginsValue,
   OnboardingPluginList,
   PluginSourcesValue,
+  PluginStationsValue,
+  PluginToolGroupsValue,
 } from "../src/contract.ts";
 import {
   FakeHost,
@@ -50,6 +53,85 @@ function setup(host = new FakeHost()) {
   };
   return { host, core, client, time: host.time!, api: host.api, watch };
 }
+
+const mcpServerRow = (status: string, tools = 0) => ({
+  id: "b1",
+  name: "Shengcai",
+  url: "https://shengcai.example/mcp",
+  status,
+  tools,
+});
+
+describe("MCP servers", () => {
+  const path = `/v1/comma/workspaces/${WS}/mcp-servers`;
+
+  it("follows a sign-in in the browser until the server is connected, then stops reading", async () => {
+    const { client, core, time, api, watch } = setup();
+    api.on("GET", path, { servers: [] });
+    api.on("POST", path, {
+      servers: [mcpServerRow("needs_authorization")],
+      authorizationUrl: "https://auth.example/go",
+    });
+    core.observeSession(signedIn());
+    const value = watch<McpServersValue>({ topic: "mcpServers", workspace: WS });
+    await time.pass(100);
+    expect(value()).toEqual({ servers: [], error: null });
+
+    const answer = await client.call("mcpServer.add", {
+      workspace: WS,
+      url: "https://shengcai.example/mcp",
+    });
+    expect(answer).toEqual({ authorizationUrl: "https://auth.example/go" });
+    expect(api.seen("POST", path).at(-1)?.body).toEqual({
+      url: "https://shengcai.example/mcp",
+    });
+    await time.pass(100);
+    expect(value().servers?.[0]?.status).toBe("needs_authorization");
+
+    api.on("GET", path, { servers: [mcpServerRow("needs_authorization")] });
+    await time.pass(2_000, 100);
+    expect(value().servers?.[0]?.status).toBe("needs_authorization");
+
+    api.on("GET", path, { servers: [mcpServerRow("connected", 3)] });
+    await time.pass(2_000, 100);
+    expect(value().servers?.[0]).toMatchObject({ status: "connected", tools: 3 });
+
+    const reads = api.seen("GET", path).length;
+    await time.pass(60_000, 1_000);
+    expect(api.seen("GET", path)).toHaveLength(reads);
+  });
+
+  it("gives the server's reason to whoever asked, and reads what is there", async () => {
+    const { client, core, time, api, watch } = setup();
+    api.on("GET", path, { servers: [mcpServerRow("connected", 1)] });
+    api.on("POST", path, json(400, { error: "mcp_server_exists" }));
+    core.observeSession(signedIn());
+    const value = watch<McpServersValue>({ topic: "mcpServers", workspace: WS });
+    await time.pass(100);
+
+    await expect(
+      client.call("mcpServer.add", {
+        workspace: WS,
+        url: "https://shengcai.example/mcp",
+      })
+    ).rejects.toMatchObject({ code: "mcp_server_exists" });
+    await time.pass(100);
+    expect(value().servers).toHaveLength(1);
+  });
+
+  it("removes a server and shows the list the server answers", async () => {
+    const { client, core, time, api, watch } = setup();
+    api.on("GET", path, { servers: [mcpServerRow("connected", 1)] });
+    api.on("DELETE", `${path}/b1`, { servers: [] });
+    core.observeSession(signedIn());
+    const value = watch<McpServersValue>({ topic: "mcpServers", workspace: WS });
+    await time.pass(100);
+
+    await client.call("mcpServer.remove", { workspace: WS, server: "b1" });
+    await time.pass(100);
+    expect(value().servers).toEqual([]);
+  });
+});
 
 describe("the plugin catalog", () => {
   it("shows what the device kept at once, offline, and what the server says once it answers", async () => {
@@ -98,7 +180,7 @@ describe("the plugin catalog", () => {
     expect(request?.headers).toEqual(
       expect.arrayContaining([
         ["x-comma-client", "electron/macos/1.0.8"],
-        ["x-comma-client-capabilities", "device-plugins"],
+        ["x-comma-client-capabilities", "device-plugins,blender-plugin"],
       ])
     );
   });
@@ -161,39 +243,18 @@ describe("the plugin catalog", () => {
     expect(t.host.dbs.size).toBe(0);
   });
 
-  it("keeps Feishu off the Plugins page's lists", async () => {
+  it("lists Lark and Feishu, which install by a scan", async () => {
     const t = setup();
     t.api.on("GET", catalogPath, {
-      data: [
-        plugin("feishu", { installed: true }),
-        plugin("github"),
-        plugin("notion", { installed: true }),
-      ],
+      data: [plugin("feishu", { installed: true }), plugin("lark"), plugin("github")],
     });
     t.core.observeSession(signedIn());
     const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
     await t.time.pass(100);
     expect(shown()).toMatchObject({
       status: "ready",
-      plugins: [{ id: "feishu" }, { id: "github" }, { id: "notion" }],
-      installed: ["notion"],
-      categories: [{ id: "integrations", name: null, plugins: ["github"] }],
-    });
-  });
-
-  it("keeps Lark off the Plugins page's lists", async () => {
-    const t = setup();
-    t.api.on("GET", catalogPath, {
-      data: [plugin("lark", { installed: true }), plugin("github")],
-    });
-    t.core.observeSession(signedIn());
-    const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
-    await t.time.pass(100);
-    expect(shown()).toMatchObject({
-      status: "ready",
-      plugins: [{ id: "lark" }, { id: "github" }],
-      installed: [],
-      categories: [{ id: "integrations", name: null, plugins: ["github"] }],
+      installed: ["feishu"],
+      categories: [{ id: "integrations", name: null, plugins: ["lark", "github"] }],
     });
   });
 });
@@ -316,6 +377,332 @@ describe("installing a plugin", () => {
     });
   });
 
+  it("shows a scan's code, asks at its interval with the registration sealed again, and shows it installed once the member confirmed", async () => {
+    const t = setup();
+    t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+    const asked: unknown[] = [];
+    let made = false;
+    t.api.on("POST", `${catalogPath}/lark/install`, (request) => {
+      const body = request.body as { registration?: string };
+      asked.push(body);
+      if (made)
+        return json(200, {
+          plugin: plugin("lark", { installed: true }),
+          authorization: null,
+        });
+      return json(200, {
+        plugin: plugin("lark"),
+        authorization: null,
+        registration: body.registration
+          ? { state: "waiting", token: `${body.registration}+` }
+          : {
+              state: "waiting",
+              url: "https://open.larksuite.com/page/cli?user_code=ABCD",
+              intervalS: 5,
+              expiresInS: 600,
+              token: "sealed",
+            },
+      });
+    });
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+    await t.time.pass(100);
+
+    const answer = t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+    await t.time.pass(100);
+    await expect(answer).resolves.toEqual({});
+    expect(shown()).toMatchObject({
+      plugins: [
+        {
+          id: "lark",
+          activity: "scanning",
+          scan: { url: "https://open.larksuite.com/page/cli?user_code=ABCD" },
+        },
+      ],
+    });
+
+    // A window getting the focus back (from Lark, after confirming) asks nothing sooner: Lark throttles it.
+    await t.client.call("plugin.authorization.check", {});
+    await t.time.pass(100);
+    expect(asked).toHaveLength(1);
+
+    // Asked every 5 s, each time with what the server sealed last.
+    await t.time.pass(9_900, 250);
+    expect(asked.slice(1)).toEqual([
+      { contract: "unified_v1", registration: "sealed" },
+      { contract: "unified_v1", registration: "sealed+" },
+    ]);
+    expect(shown()).toMatchObject({ plugins: [{ id: "lark", activity: "scanning" }] });
+
+    made = true;
+    await t.time.pass(5_000, 250);
+    expect(shown()).toMatchObject({
+      plugins: [{ id: "lark", installed: true, activity: "idle" }],
+      installed: ["lark"],
+    });
+    expect(shown()).not.toMatchObject({ plugins: [{ scan: expect.anything() }] });
+  });
+
+  it("after the scan made the app, shows the member's own sign-in in the same dialog until they confirm it", async () => {
+    const t = setup();
+    t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+    const asked: unknown[] = [];
+    let step: "scan" | "member" | "signed_in" = "scan";
+    t.api.on("POST", `${catalogPath}/lark/install`, (request) => {
+      const body = request.body as { registration?: string };
+      asked.push(body);
+      if (!body.registration)
+        return json(200, {
+          plugin: plugin("lark"),
+          authorization: null,
+          registration: {
+            state: "waiting",
+            url: "https://open.larksuite.com/page/cli?user_code=ABCD",
+            intervalS: 5,
+            expiresInS: 600,
+            token: "sealed-scan",
+          },
+        });
+      if (step === "scan") {
+        step = "member";
+        return json(200, {
+          plugin: plugin("lark", { installed: true }),
+          authorization: null,
+          registration: {
+            state: "waiting",
+            step: "member",
+            url: "https://accounts.larksuite.com/verify?code=WXYZ",
+            intervalS: 5,
+            expiresInS: 240,
+            token: "sealed-member",
+          },
+        });
+      }
+      if (step === "member")
+        return json(200, {
+          plugin: plugin("lark", { installed: true }),
+          authorization: null,
+          registration: { state: "waiting", step: "member", token: "sealed-member" },
+        });
+      return json(200, {
+        plugin: plugin("lark", { installed: true }),
+        authorization: null,
+      });
+    });
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+    await t.time.pass(100);
+
+    void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+    await t.time.pass(5_200, 250);
+    expect(shown()).toMatchObject({
+      plugins: [
+        {
+          id: "lark",
+          installed: true,
+          activity: "scanning",
+          scan: {
+            url: "https://accounts.larksuite.com/verify?code=WXYZ",
+            step: "member",
+          },
+        },
+      ],
+    });
+
+    await t.time.pass(5_000, 250);
+    expect(asked.at(-1)).toEqual({
+      contract: "unified_v1",
+      registration: "sealed-member",
+    });
+    expect(shown()).toMatchObject({ plugins: [{ id: "lark", activity: "scanning" }] });
+
+    step = "signed_in";
+    await t.time.pass(5_000, 250);
+    expect(shown()).toMatchObject({
+      plugins: [{ id: "lark", installed: true, activity: "idle" }],
+    });
+    expect(shown()).not.toMatchObject({ plugins: [{ scan: expect.anything() }] });
+  });
+
+  it("says a declined sign-in after the scan ended only the sign-in", async () => {
+    const t = setup();
+    t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+    t.api.on("POST", `${catalogPath}/lark/install`, (request) =>
+      json(200, {
+        plugin: plugin("lark", { installed: true }),
+        authorization: null,
+        registration: (request.body as { registration?: string }).registration
+          ? { state: "denied", step: "member" }
+          : {
+              state: "waiting",
+              step: "member",
+              url: "https://accounts.larksuite.com/verify?code=WXYZ",
+              intervalS: 5,
+              token: "sealed-member",
+            },
+      })
+    );
+    t.core.observeSession(signedIn());
+    const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+    await t.time.pass(100);
+
+    void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+    await t.time.pass(5_200, 250);
+    expect(notices().notices).toMatchObject([
+      { kind: "scan_failed", plugin: "lark", scan: "denied", scanStep: "member" },
+    ]);
+  });
+
+  it("ends a scan the member declined with one notice, and asks no more", async () => {
+    const t = setup();
+    t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+    t.api.on("POST", `${catalogPath}/lark/install`, (request) =>
+      json(200, {
+        plugin: plugin("lark"),
+        authorization: null,
+        registration: (request.body as { registration?: string }).registration
+          ? { state: "denied" }
+          : {
+              state: "waiting",
+              url: "https://lark.test/c",
+              intervalS: 5,
+              token: "sealed",
+            },
+      })
+    );
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+    const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+    await t.time.pass(100);
+
+    void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+    await t.time.pass(5_200, 250);
+    expect(notices().notices).toMatchObject([
+      { kind: "scan_failed", plugin: "lark", scan: "denied" },
+    ]);
+    expect(shown()).toMatchObject({ plugins: [{ id: "lark", activity: "idle" }] });
+
+    await t.time.pass(20_000, 1_000);
+    expect(t.api.seen("POST", `${catalogPath}/lark/install`).length).toBe(2);
+  });
+
+  it("gives what the server said when a scan failed", async () => {
+    const t = setup();
+    t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+    t.api.on("POST", `${catalogPath}/lark/install`, (request) =>
+      json(200, {
+        plugin: plugin("lark"),
+        authorization: null,
+        registration: (request.body as { registration?: string }).registration
+          ? { state: "failed", error: "This is a Feishu account." }
+          : {
+              state: "waiting",
+              url: "https://lark.test/c",
+              intervalS: 5,
+              token: "sealed",
+            },
+      })
+    );
+    t.core.observeSession(signedIn());
+    const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+    await t.time.pass(100);
+
+    void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+    await t.time.pass(5_200, 250);
+    expect(notices().notices).toMatchObject([
+      { kind: "scan_failed", scan: "failed", message: "This is a Feishu account." },
+    ]);
+  });
+
+  describe("a scan whose checks fail", () => {
+    const waiting = {
+      plugin: plugin("lark"),
+      authorization: null,
+      registration: {
+        state: "waiting",
+        url: "https://lark.test/c",
+        intervalS: 5,
+        token: "sealed",
+      },
+    };
+    const installPath = `${catalogPath}/lark/install`;
+    function scan(check: () => unknown) {
+      const t = setup();
+      t.api.on("GET", catalogPath, { data: [plugin("lark")] });
+      t.api.on("POST", installPath, (request) =>
+        (request.body as { registration?: string }).registration
+          ? check()
+          : json(200, waiting)
+      );
+      t.core.observeSession(signedIn());
+      const shown = t.watch<PluginsValue>({ topic: "plugins", workspace: WS });
+      const notices = t.watch<{ notices: PluginNotice[] }>({ topic: "pluginNotices" });
+      return { t, shown, notices };
+    }
+
+    it("ends after three server failures in a row and says why", async () => {
+      const { t, shown, notices } = scan(() =>
+        json(503, { error: "plugins_unavailable" })
+      );
+      await t.time.pass(100);
+      void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+      await t.time.pass(10_200, 250);
+      expect(notices().notices).toEqual([]);
+      expect(shown()).toMatchObject({
+        plugins: [{ id: "lark", activity: "scanning" }],
+      });
+
+      await t.time.pass(5_000, 250);
+      expect(notices().notices).toMatchObject([
+        { kind: "scan_failed", plugin: "lark", scan: "failed", reason: "unavailable" },
+      ]);
+      expect(shown()).toMatchObject({ plugins: [{ id: "lark", activity: "idle" }] });
+
+      await t.time.pass(20_000, 1_000);
+      expect(t.api.seen("POST", installPath).length).toBe(4);
+    });
+
+    it("ends after three checks the server leaves unanswered", async () => {
+      const { t, notices } = scan(() => new Promise(() => {}));
+      await t.time.pass(100);
+      void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+      await t.time.pass(110_000, 1_000);
+      expect(notices().notices).toMatchObject([
+        { kind: "scan_failed", plugin: "lark", scan: "failed" },
+      ]);
+    });
+
+    it("counts only failures in a row", async () => {
+      let checks = 0;
+      const { t, shown, notices } = scan(() =>
+        (checks += 1) % 3 === 0
+          ? json(200, waiting)
+          : json(503, { error: "plugins_unavailable" })
+      );
+      await t.time.pass(100);
+      void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+      await t.time.pass(40_000, 250);
+      expect(checks).toBeGreaterThanOrEqual(6);
+      expect(notices().notices).toEqual([]);
+      expect(shown()).toMatchObject({
+        plugins: [{ id: "lark", activity: "scanning" }],
+      });
+    });
+
+    it("asks through a lost connection and says the code expired at its deadline", async () => {
+      const { t, notices } = scan(() => offline());
+      await t.time.pass(100);
+      void t.client.call("plugin.install", { workspace: WS, plugin: "lark" });
+      await t.time.pass(590_000, 5_000);
+      expect(notices().notices).toEqual([]);
+
+      await t.time.pass(11_000, 1_000);
+      expect(notices().notices).toMatchObject([
+        { kind: "scan_failed", plugin: "lark", scan: "expired" },
+      ]);
+    });
+  });
+
   it("starts a new install when Add is pressed again while one waits on the browser, and stops checking the old one", async () => {
     const t = setup();
     t.api.on("GET", catalogPath, { data: [plugin("linear")] });
@@ -363,7 +750,12 @@ describe("installing a plugin", () => {
     const checks = t.api.seen("POST", `${catalogPath}/github/install`).length - 1;
     expect(checks).toBeLessThanOrEqual(60);
     expect(notices().notices).toMatchObject([
-      { kind: "authorization_timed_out", origin: "onboarding", plugin: "github" },
+      {
+        kind: "authorization_timed_out",
+        origin: "onboarding",
+        workspace: WS,
+        plugin: "github",
+      },
     ]);
     const id = notices().notices[0]!.id;
     const claims = await Promise.all([
@@ -862,6 +1254,52 @@ describe("the onboarding's apps", () => {
       rows: [{ id: "google" }, { id: "github" }, { id: "zendesk" }],
     });
   });
+
+  it("gives an app connected by a scan its code while the member confirms", async () => {
+    const t = setup();
+    t.api.on("POST", "/v1/comma/me/bootstrap", () =>
+      json(200, { status: "ready", workspace })
+    );
+    t.api.on("GET", catalogPath, { data: [plugin("lark"), plugin("github")] });
+    t.api.on("POST", `${catalogPath}/lark/install`, () =>
+      json(200, {
+        plugin: plugin("lark"),
+        authorization: null,
+        registration: {
+          state: "waiting",
+          url: "https://open.larksuite.com/page/cli?user_code=ABCD",
+          intervalS: 5,
+          expiresInS: 600,
+          token: "sealed",
+        },
+      })
+    );
+    t.core.observeSession(signedIn());
+    const apps = t.watch<OnboardingPluginList>({ topic: "onboardingApps" });
+    await t.time.pass(100);
+    expect(apps()).toMatchObject({
+      status: "ready",
+      rows: [{ id: "github" }, { id: "lark" }],
+    });
+
+    const answer = t.client.call("plugin.install", {
+      workspace: WS,
+      plugin: "lark",
+      origin: "onboarding",
+    });
+    await t.time.pass(100);
+    await expect(answer).resolves.toEqual({});
+    expect(apps()).toMatchObject({
+      rows: [
+        { id: "github", connection: "idle" },
+        {
+          id: "lark",
+          connection: "connecting",
+          scan: { url: "https://open.larksuite.com/page/cli?user_code=ABCD" },
+        },
+      ],
+    });
+  });
 });
 
 const source = (state: string) => ({
@@ -923,6 +1361,194 @@ describe("a plugin's personal sources", () => {
       pending: null,
       error: null,
     });
+  });
+});
+
+describe("a plugin's tool groups", () => {
+  it("reads them, turns one off, and keeps them when a change fails", async () => {
+    const t = setup();
+    const groupsPath = `${catalogPath}/posthog/tool-groups`;
+    let flags = true;
+    const answer = () =>
+      json(200, {
+        pluginId: "posthog",
+        groups: [
+          { id: "insights", name: "Insights", enabled: true },
+          { id: "flags", name: "Feature flags", enabled: flags },
+        ],
+      });
+    t.api.on("GET", groupsPath, answer);
+    t.api.on("PUT", `${groupsPath}/flags`, (request) => {
+      flags = (request.body as { enabled: boolean }).enabled;
+      return answer();
+    });
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginToolGroupsValue>({
+      topic: "pluginToolGroups",
+      workspace: WS,
+      plugin: "posthog",
+    });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({
+      groups: [
+        { id: "insights", enabled: true },
+        { id: "flags", enabled: true },
+      ],
+      error: null,
+      pending: null,
+    });
+
+    await t.client.call("plugin.toolGroup.set", {
+      workspace: WS,
+      plugin: "posthog",
+      group: "flags",
+      enabled: false,
+    });
+    await t.time.pass(100);
+    expect(t.api.seen("PUT", `${groupsPath}/flags`).at(-1)?.body).toEqual({
+      enabled: false,
+    });
+    expect(shown()).toMatchObject({
+      groups: [
+        { id: "insights", enabled: true },
+        { id: "flags", enabled: false },
+      ],
+      pending: null,
+    });
+
+    const reads = t.api.seen("GET", groupsPath).length;
+    t.api.on(
+      "PUT",
+      `${groupsPath}/insights`,
+      json(503, { error: "plugins_unavailable" })
+    );
+    await expect(
+      t.client.call("plugin.toolGroup.set", {
+        workspace: WS,
+        plugin: "posthog",
+        group: "insights",
+        enabled: false,
+      })
+    ).rejects.toMatchObject({ status: 503 });
+    // The change may have been made all the same, so the groups are read again.
+    await t.time.pass(100);
+    expect(t.api.seen("GET", groupsPath)).toHaveLength(reads + 1);
+    expect(shown()).toMatchObject({
+      groups: [
+        { id: "insights", enabled: true },
+        { id: "flags", enabled: false },
+      ],
+      pending: null,
+    });
+  });
+
+  it("drops the answer to a read that a change overtook", async () => {
+    const t = setup();
+    const groupsPath = `${catalogPath}/posthog/tool-groups`;
+    let flags = true;
+    const answer = () =>
+      json(200, {
+        pluginId: "posthog",
+        groups: [{ id: "flags", name: "Feature flags", enabled: flags }],
+      });
+    t.api.on("GET", groupsPath, answer);
+    t.api.on("PUT", `${groupsPath}/flags`, (request) => {
+      flags = (request.body as { enabled: boolean }).enabled;
+      return answer();
+    });
+    // The server answers the read while flags are on; its answer arrives after the change.
+    const releaseRead = t.api.holdBody("GET", groupsPath);
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginToolGroupsValue>({
+      topic: "pluginToolGroups",
+      workspace: WS,
+      plugin: "posthog",
+    });
+    await t.time.pass(100);
+    expect(t.api.seen("GET", groupsPath)).toHaveLength(1);
+
+    await t.client.call("plugin.toolGroup.set", {
+      workspace: WS,
+      plugin: "posthog",
+      group: "flags",
+      enabled: false,
+    });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({ groups: [{ id: "flags", enabled: false }] });
+
+    releaseRead();
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({
+      groups: [{ id: "flags", enabled: false }],
+      pending: null,
+    });
+  });
+});
+
+describe("a plugin's still.fail stations", () => {
+  it("lists them, disconnects one and keeps the list when a disconnect fails", async () => {
+    const t = setup();
+    const stationsPath = `${catalogPath}/stillfail/stillfail-stations`;
+    let stations = [
+      {
+        id: "dev_a",
+        name: "Acme · desk",
+        connected: true,
+        connected_at: "2026-11-08T10:00:00Z",
+      },
+      { id: "dev_b", name: null, connected: false, connected_at: null },
+    ];
+    t.api.on("GET", stationsPath, () => json(200, { stations }));
+    t.api.on("DELETE", `${stationsPath}/dev_b`, () => {
+      stations = stations.filter((s) => s.id !== "dev_b");
+      return json(200, { stations });
+    });
+    t.core.observeSession(signedIn());
+    const shown = t.watch<PluginStationsValue>({
+      topic: "pluginStations",
+      workspace: WS,
+      plugin: "stillfail",
+    });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({
+      stations: [
+        {
+          id: "dev_a",
+          name: "Acme · desk",
+          connected: true,
+          connectedAt: "2026-11-08T10:00:00Z",
+        },
+        { id: "dev_b", name: null, connected: false, connectedAt: null },
+      ],
+      error: null,
+      pending: null,
+    });
+
+    await t.client.call("plugin.station.disconnect", {
+      workspace: WS,
+      plugin: "stillfail",
+      station: "dev_b",
+    });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({ stations: [{ id: "dev_a" }], pending: null });
+
+    const reads = t.api.seen("GET", stationsPath).length;
+    t.api.on(
+      "DELETE",
+      `${stationsPath}/dev_a`,
+      json(503, { error: "plugins_unavailable" })
+    );
+    await expect(
+      t.client.call("plugin.station.disconnect", {
+        workspace: WS,
+        plugin: "stillfail",
+        station: "dev_a",
+      })
+    ).rejects.toMatchObject({ status: 503 });
+    // It may have gone all the same, so the stations are read again.
+    await t.time.pass(100);
+    expect(t.api.seen("GET", stationsPath)).toHaveLength(reads + 1);
+    expect(shown()).toMatchObject({ stations: [{ id: "dev_a" }], pending: null });
   });
 });
 

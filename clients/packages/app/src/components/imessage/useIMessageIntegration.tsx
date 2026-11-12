@@ -32,9 +32,10 @@ function useSecondTick(on: boolean): number {
 }
 
 /**
- * Settings › Channels › iMessage over Photon shared lines: the person enters the
- * phone number or email iMessage uses, gets a line and a ten-minute code, and sends the
- * code to that line from that account (docs/messaging-voice.md). The core reads
+ * Settings › Channels › iMessage over Photon lines: the person gets a line and a
+ * ten-minute code, and sends the code to that line. A dedicated line takes it from
+ * any account. A shared line first asks for the phone number or email iMessage uses,
+ * and takes it only from that account (docs/messaging-voice.md). The core reads
  * the state and checks the attempt; this shows it and asks for changes.
  *
  * Shown only when the server says Photon is set up; the relay transport stays hidden.
@@ -63,9 +64,7 @@ export function useIMessageIntegration(
 
   const claim = state?.pending_claim;
   const attempt =
-    claim?.transport === "photon" && claim.line_handle && claim.sender_handle
-      ? claim
-      : undefined;
+    claim?.transport === "photon" && claim.line_handle ? claim : undefined;
   const link = state?.link;
   const now = useSecondTick(Boolean(attempt));
   const remainingMs = attempt ? attempt.expires_at * 1000 - now : 0;
@@ -82,13 +81,21 @@ export function useIMessageIntegration(
     setActionFailed(false);
     void call(name, { workspace: workspaceId }).catch(() => setActionFailed(true));
   };
-  const start = (handle: string) => {
+  const start = (handle?: string) => {
     if (busy || !workspaceId) return;
     setStartError(undefined);
     setActionFailed(false);
-    void call("imessage.start", { workspace: workspaceId, handle }).then(
+    void call("imessage.start", {
+      workspace: workspaceId,
+      ...(handle ? { handle } : {}),
+    }).then(
       () => setEntering(false),
-      (error: unknown) => setStartError(startErrorMessage(error, m))
+      (error: unknown) => {
+        // A shared line needs the account first.
+        if ((error as { code?: unknown } | null)?.code === "imessage_handle_required")
+          setEntering(true);
+        else setStartError(startErrorMessage(error, m));
+      }
     );
   };
   const changeNumber = () => {
@@ -102,6 +109,7 @@ export function useIMessageIntegration(
   // The subtitle reports only trouble or progress.
   let description: string | undefined;
   if (loadError || actionFailed) description = m.settings_imessage_failed();
+  else if (startError && !showForm) description = startError;
   else if (expired) description = m.settings_imessage_code_expired();
   else if (attempt) description = m.settings_imessage_waiting_reply();
   else if (link && !state.connection_active)
@@ -121,6 +129,7 @@ export function useIMessageIntegration(
       type: "button",
       label: m.settings_telegram_cancel_connect(),
       disabled: busy,
+      tone: "quiet",
       onPress: () => ask("imessage.cancel"),
     };
   else if (link)
@@ -147,10 +156,7 @@ export function useIMessageIntegration(
       type: "button",
       label: m.settings_telegram_connect(),
       disabled: busy || !workspaceId || showForm,
-      onPress: () => {
-        setStartError(undefined);
-        setEntering(true);
-      },
+      onPress: () => start(),
     };
 
   let status: NonNullable<SettingsPanelItem["integration"]>["status"];
@@ -167,9 +173,9 @@ export function useIMessageIntegration(
         busy={busy}
         code={attempt.code}
         line={attempt.line_handle!}
-        onChangeNumber={changeNumber}
-        onNewCode={() => start(attempt.sender_handle!)}
-        phone={attempt.sender_handle!}
+        onChangeNumber={attempt.sender_handle ? changeNumber : undefined}
+        onNewCode={() => start(attempt.sender_handle ?? undefined)}
+        phone={attempt.sender_handle ?? undefined}
         remainingMs={remainingMs}
       />
     );
@@ -201,7 +207,8 @@ export function useIMessageIntegration(
       details: link
         ? [{ label: m.settings_imessage_account(), value: link.sender_handle }]
         : [],
-      note: m.settings_imessage_photon_scope(),
+      // The code panel already says what to do; the scope is for deciding to connect.
+      ...(attempt && !expired ? {} : { note: m.settings_imessage_photon_scope() }),
     },
   };
 }

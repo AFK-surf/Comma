@@ -16,6 +16,8 @@ import {
   appPreferencesInitializeClientSettingsCapability,
   appPreferencesOpenLoginItemsSettingsCapability,
   appPreferencesOpenNotificationSettingsCapability,
+  appPreferencesRefreshLaunchAtLoginCapability,
+  appPreferencesRelaunchCapability,
   appPreferencesRequestNotificationAuthorizationCapability,
   appPreferencesStateLeaf,
   appPreferencesUpdateCapability,
@@ -32,6 +34,13 @@ import {
   audioCaptureStateChangedEvent,
   audioCaptureStateLeaf,
   audioCaptureStopCapability,
+  audioCaptureTranscriptionFailedEvent,
+  blenderChooseAppCapability,
+  blenderOpenCapability,
+  blenderSetEnabledCapability,
+  blenderStateCapability,
+  blenderStateChangedEvent,
+  blenderStateLeaf,
   browserSidebarCaptureCapability,
   browserSidebarChangedEvent,
   browserSidebarCloseCapability,
@@ -49,14 +58,12 @@ import {
   clipboardReadTextCapability,
   clipboardWriteImageCapability,
   clipboardWriteTextCapability,
-  computeNodeAbandonCapability,
   computeNodeConfigureCapability,
+  computeNodeContinueCapability,
   computeNodeDrainCapability,
-  computeNodeRebuildCapability,
+  computeNodeReauthorizeCapability,
   computeNodeRefreshCapability,
   computeNodeRemoveCapability,
-  computeNodeRepairCapability,
-  computeNodeResetLocalRecordCapability,
   computeNodeStateCapability,
   computeNodeStateChangedEvent,
   computeNodeStateLeaf,
@@ -105,6 +112,12 @@ import {
   meetingRecorderSetInteractiveCapability,
   messageNotificationsEvent,
   nativeInfoCapability,
+  nearbyAnswerCapability,
+  nearbyAskCapability,
+  nearbyFindCapability,
+  nearbyStateCapability,
+  nearbyStateChangedEvent,
+  nearbyStateLeaf,
   notchCloseCapability,
   notchHideCapability,
   notchHostEvent,
@@ -174,6 +187,7 @@ import {
   windowsCloseCapability,
   windowsCreateCapability,
   windowsFocusCapability,
+  windowsFocusScreenCapability,
 } from "../capability-leaves";
 import type { z } from "zod";
 import type {
@@ -193,8 +207,11 @@ export const generatedNativeCapabilityContracts = {
     appPreferencesInitializeClientSettingsCapability.contract,
   appPreferencesOpenLoginItemsSettings:
     appPreferencesOpenLoginItemsSettingsCapability.contract,
+  appPreferencesRelaunch: appPreferencesRelaunchCapability.contract,
   appPreferencesOpenNotificationSettings:
     appPreferencesOpenNotificationSettingsCapability.contract,
+  appPreferencesRefreshLaunchAtLogin:
+    appPreferencesRefreshLaunchAtLoginCapability.contract,
   appPreferencesRequestNotificationAuthorization:
     appPreferencesRequestNotificationAuthorizationCapability.contract,
   appPreferencesUpdate: appPreferencesUpdateCapability.contract,
@@ -213,6 +230,10 @@ export const generatedNativeCapabilityContracts = {
   macAppsOpenItem: macAppsOpenItemCapability.contract,
   macAppsIcons: macAppsIconsCapability.contract,
   macAppsCalendarEvents: macAppsCalendarEventsCapability.contract,
+  blenderState: blenderStateCapability.contract,
+  blenderSetEnabled: blenderSetEnabledCapability.contract,
+  blenderOpen: blenderOpenCapability.contract,
+  blenderChooseApp: blenderChooseAppCapability.contract,
   appearanceSetResolvedTheme: appearanceSetResolvedThemeCapability.contract,
   appearanceFontFamilies: appearanceFontFamiliesCapability.contract,
   notchStatus: notchStatusCapability.contract,
@@ -231,6 +252,7 @@ export const generatedNativeCapabilityContracts = {
   surfacesWindowControl: surfacesWindowControlCapability.contract,
   windowsCreate: windowsCreateCapability.contract,
   windowsFocus: windowsFocusCapability.contract,
+  windowsFocusScreen: windowsFocusScreenCapability.contract,
   windowsClose: windowsCloseCapability.contract,
   onboardingPresentWindow: onboardingPresentWindowCapability.contract,
   onboardingCloseWindow: onboardingCloseWindowCapability.contract,
@@ -268,8 +290,8 @@ export const generatedNativeCapabilityContracts = {
   computeNodeState: computeNodeStateCapability.contract,
   computeNodeConfigure: computeNodeConfigureCapability.contract,
   computeNodeRefresh: computeNodeRefreshCapability.contract,
-  computeNodeRepair: computeNodeRepairCapability.contract,
-  computeNodeRebuild: computeNodeRebuildCapability.contract,
+  computeNodeContinue: computeNodeContinueCapability.contract,
+  computeNodeReauthorize: computeNodeReauthorizeCapability.contract,
   localComputeOverview: localComputeOverviewCapability.contract,
   localComputeDispose: localComputeDisposeCapability.contract,
   localComputeResume: localComputeResumeCapability.contract,
@@ -281,8 +303,6 @@ export const generatedNativeCapabilityContracts = {
   localComputeWorkloads: localComputeWorkloadsCapability.contract,
   computeNodeDrain: computeNodeDrainCapability.contract,
   computeNodeRemove: computeNodeRemoveCapability.contract,
-  computeNodeAbandon: computeNodeAbandonCapability.contract,
-  computeNodeResetLocalRecord: computeNodeResetLocalRecordCapability.contract,
   chatPickAttachments: chatPickAttachmentsCapability.contract,
   audioCaptureState: audioCaptureStateCapability.contract,
   voiceCallMicrophone: voiceCallMicrophoneCapability.contract,
@@ -306,6 +326,10 @@ export const generatedNativeCapabilityContracts = {
   airDropState: airDropStateCapability.contract,
   airDropAct: airDropActCapability.contract,
   airDropPreview: airDropPreviewCapability.contract,
+  nearbyState: nearbyStateCapability.contract,
+  nearbyFind: nearbyFindCapability.contract,
+  nearbyAsk: nearbyAskCapability.contract,
+  nearbyAnswer: nearbyAnswerCapability.contract,
   synchronicityState: synchronicityStateCapability.contract,
   synchronicityList: synchronicityListCapability.contract,
   synchronicityRead: synchronicityReadCapability.contract,
@@ -340,8 +364,11 @@ export const generatedNativeWebFallbacks = {
     appPreferencesInitializeClientSettingsCapability.webFallback,
   appPreferencesOpenLoginItemsSettings:
     appPreferencesOpenLoginItemsSettingsCapability.webFallback,
+  appPreferencesRelaunch: appPreferencesRelaunchCapability.webFallback,
   appPreferencesOpenNotificationSettings:
     appPreferencesOpenNotificationSettingsCapability.webFallback,
+  appPreferencesRefreshLaunchAtLogin:
+    appPreferencesRefreshLaunchAtLoginCapability.webFallback,
   appPreferencesRequestNotificationAuthorization:
     appPreferencesRequestNotificationAuthorizationCapability.webFallback,
   appPreferencesUpdate: appPreferencesUpdateCapability.webFallback,
@@ -360,6 +387,10 @@ export const generatedNativeWebFallbacks = {
   macAppsOpenItem: macAppsOpenItemCapability.webFallback,
   macAppsIcons: macAppsIconsCapability.webFallback,
   macAppsCalendarEvents: macAppsCalendarEventsCapability.webFallback,
+  blenderState: blenderStateCapability.webFallback,
+  blenderSetEnabled: blenderSetEnabledCapability.webFallback,
+  blenderOpen: blenderOpenCapability.webFallback,
+  blenderChooseApp: blenderChooseAppCapability.webFallback,
   appearanceSetResolvedTheme: appearanceSetResolvedThemeCapability.webFallback,
   appearanceFontFamilies: appearanceFontFamiliesCapability.webFallback,
   notchStatus: notchStatusCapability.webFallback,
@@ -378,6 +409,7 @@ export const generatedNativeWebFallbacks = {
   surfacesWindowControl: surfacesWindowControlCapability.webFallback,
   windowsCreate: windowsCreateCapability.webFallback,
   windowsFocus: windowsFocusCapability.webFallback,
+  windowsFocusScreen: windowsFocusScreenCapability.webFallback,
   windowsClose: windowsCloseCapability.webFallback,
   onboardingPresentWindow: onboardingPresentWindowCapability.webFallback,
   onboardingCloseWindow: onboardingCloseWindowCapability.webFallback,
@@ -416,8 +448,8 @@ export const generatedNativeWebFallbacks = {
   computeNodeState: computeNodeStateCapability.webFallback,
   computeNodeConfigure: computeNodeConfigureCapability.webFallback,
   computeNodeRefresh: computeNodeRefreshCapability.webFallback,
-  computeNodeRepair: computeNodeRepairCapability.webFallback,
-  computeNodeRebuild: computeNodeRebuildCapability.webFallback,
+  computeNodeContinue: computeNodeContinueCapability.webFallback,
+  computeNodeReauthorize: computeNodeReauthorizeCapability.webFallback,
   localComputeOverview: localComputeOverviewCapability.webFallback,
   localComputeDispose: localComputeDisposeCapability.webFallback,
   localComputeResume: localComputeResumeCapability.webFallback,
@@ -429,8 +461,6 @@ export const generatedNativeWebFallbacks = {
   localComputeWorkloads: localComputeWorkloadsCapability.webFallback,
   computeNodeDrain: computeNodeDrainCapability.webFallback,
   computeNodeRemove: computeNodeRemoveCapability.webFallback,
-  computeNodeAbandon: computeNodeAbandonCapability.webFallback,
-  computeNodeResetLocalRecord: computeNodeResetLocalRecordCapability.webFallback,
   chatPickAttachments: chatPickAttachmentsCapability.webFallback,
   audioCaptureState: audioCaptureStateCapability.webFallback,
   voiceCallMicrophone: voiceCallMicrophoneCapability.webFallback,
@@ -454,6 +484,10 @@ export const generatedNativeWebFallbacks = {
   airDropState: airDropStateCapability.webFallback,
   airDropAct: airDropActCapability.webFallback,
   airDropPreview: airDropPreviewCapability.webFallback,
+  nearbyState: nearbyStateCapability.webFallback,
+  nearbyFind: nearbyFindCapability.webFallback,
+  nearbyAsk: nearbyAskCapability.webFallback,
+  nearbyAnswer: nearbyAnswerCapability.webFallback,
   synchronicityState: synchronicityStateCapability.webFallback,
   synchronicityList: synchronicityListCapability.webFallback,
   synchronicityRead: synchronicityReadCapability.webFallback,
@@ -493,7 +527,9 @@ export const generatedNativePreloadBindings = {
     state: appPreferencesCapability.contract,
     initializeClientSettings: appPreferencesInitializeClientSettingsCapability.contract,
     openLoginItemsSettings: appPreferencesOpenLoginItemsSettingsCapability.contract,
+    relaunch: appPreferencesRelaunchCapability.contract,
     openNotificationSettings: appPreferencesOpenNotificationSettingsCapability.contract,
+    refreshLaunchAtLogin: appPreferencesRefreshLaunchAtLoginCapability.contract,
     requestNotificationAuthorization:
       appPreferencesRequestNotificationAuthorizationCapability.contract,
     update: appPreferencesUpdateCapability.contract,
@@ -517,6 +553,12 @@ export const generatedNativePreloadBindings = {
     openItem: macAppsOpenItemCapability.contract,
     icons: macAppsIconsCapability.contract,
     calendarEvents: macAppsCalendarEventsCapability.contract,
+  },
+  blender: {
+    state: blenderStateCapability.contract,
+    setEnabled: blenderSetEnabledCapability.contract,
+    open: blenderOpenCapability.contract,
+    chooseApp: blenderChooseAppCapability.contract,
   },
   appearance: {
     setResolvedTheme: appearanceSetResolvedThemeCapability.contract,
@@ -543,6 +585,7 @@ export const generatedNativePreloadBindings = {
   windows: {
     create: windowsCreateCapability.contract,
     focus: windowsFocusCapability.contract,
+    focusScreen: windowsFocusScreenCapability.contract,
     close: windowsCloseCapability.contract,
   },
   onboarding: {
@@ -606,8 +649,8 @@ export const generatedNativePreloadBindings = {
     state: computeNodeStateCapability.contract,
     configure: computeNodeConfigureCapability.contract,
     refresh: computeNodeRefreshCapability.contract,
-    repair: computeNodeRepairCapability.contract,
-    rebuild: computeNodeRebuildCapability.contract,
+    continue: computeNodeContinueCapability.contract,
+    reauthorize: computeNodeReauthorizeCapability.contract,
     localOverview: localComputeOverviewCapability.contract,
     disposeLocal: localComputeDisposeCapability.contract,
     resumeLocalDisposal: localComputeResumeCapability.contract,
@@ -619,8 +662,6 @@ export const generatedNativePreloadBindings = {
     localWorkloads: localComputeWorkloadsCapability.contract,
     drain: computeNodeDrainCapability.contract,
     remove: computeNodeRemoveCapability.contract,
-    abandon: computeNodeAbandonCapability.contract,
-    resetLocalRecord: computeNodeResetLocalRecordCapability.contract,
   },
   chat: {
     pickAttachments: chatPickAttachmentsCapability.contract,
@@ -655,6 +696,12 @@ export const generatedNativePreloadBindings = {
     state: airDropStateCapability.contract,
     act: airDropActCapability.contract,
     preview: airDropPreviewCapability.contract,
+  },
+  nearby: {
+    state: nearbyStateCapability.contract,
+    find: nearbyFindCapability.contract,
+    ask: nearbyAskCapability.contract,
+    answer: nearbyAnswerCapability.contract,
   },
   synchronicity: {
     state: synchronicityStateCapability.contract,
@@ -698,6 +745,9 @@ export const generatedNativePreloadEventBindings = {
   macApps: {
     state: macAppsStateChangedEvent,
   },
+  blender: {
+    state: blenderStateChangedEvent,
+  },
   browserSidebar: {
     changed: browserSidebarChangedEvent,
     openTabRequested: browserSidebarOpenTabRequestedEvent,
@@ -726,6 +776,7 @@ export const generatedNativePreloadEventBindings = {
   },
   audioCapture: {
     state: audioCaptureStateChangedEvent,
+    transcriptionFailed: audioCaptureTranscriptionFailedEvent,
   },
   voiceCall: {
     audio: voiceCallAudioEvent,
@@ -735,6 +786,9 @@ export const generatedNativePreloadEventBindings = {
   },
   airDrop: {
     state: airDropStateChangedEvent,
+  },
+  nearby: {
+    state: nearbyStateChangedEvent,
   },
 } as const;
 
@@ -761,6 +815,12 @@ export const generatedNativeStateBindings = {
     state: {
       get: macAppsStateCapability.contract,
       subscribe: macAppsStateChangedEvent,
+    },
+  },
+  blender: {
+    state: {
+      get: blenderStateCapability.contract,
+      subscribe: blenderStateChangedEvent,
     },
   },
   surfaces: {
@@ -811,6 +871,12 @@ export const generatedNativeStateBindings = {
     state: {
       get: airDropStateCapability.contract,
       subscribe: airDropStateChangedEvent,
+    },
+  },
+  nearby: {
+    state: {
+      get: nearbyStateCapability.contract,
+      subscribe: nearbyStateChangedEvent,
     },
   },
 } as const;
@@ -877,6 +943,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmissionRationale:
       appPreferencesOpenLoginItemsSettingsCapability.sessionAdmissionRationale,
   },
+  "appPreferences.relaunch": {
+    contract: appPreferencesRelaunchCapability.contract,
+    id: appPreferencesRelaunchCapability.id,
+    method: "relaunch",
+    provider: "appPreferences",
+    sessionAdmission: appPreferencesRelaunchCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRelaunchCapability.sessionAdmissionRationale,
+  },
   "appPreferences.openNotificationSettings": {
     contract: appPreferencesOpenNotificationSettingsCapability.contract,
     id: appPreferencesOpenNotificationSettingsCapability.id,
@@ -885,6 +960,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: appPreferencesOpenNotificationSettingsCapability.sessionAdmission,
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
+  },
+  "appPreferences.refreshLaunchAtLogin": {
+    contract: appPreferencesRefreshLaunchAtLoginCapability.contract,
+    id: appPreferencesRefreshLaunchAtLoginCapability.id,
+    method: "refreshLaunchAtLogin",
+    provider: "appPreferences",
+    sessionAdmission: appPreferencesRefreshLaunchAtLoginCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRefreshLaunchAtLoginCapability.sessionAdmissionRationale,
   },
   "appPreferences.requestNotificationAuthorization": {
     contract: appPreferencesRequestNotificationAuthorizationCapability.contract,
@@ -1023,6 +1107,38 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: macAppsCalendarEventsCapability.sessionAdmission,
     sessionAdmissionRationale:
       macAppsCalendarEventsCapability.sessionAdmissionRationale,
+  },
+  "blender.state": {
+    contract: blenderStateCapability.contract,
+    id: blenderStateCapability.id,
+    method: "state",
+    provider: "blender",
+    sessionAdmission: blenderStateCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderStateCapability.sessionAdmissionRationale,
+  },
+  "blender.setEnabled": {
+    contract: blenderSetEnabledCapability.contract,
+    id: blenderSetEnabledCapability.id,
+    method: "setEnabled",
+    provider: "blender",
+    sessionAdmission: blenderSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderSetEnabledCapability.sessionAdmissionRationale,
+  },
+  "blender.open": {
+    contract: blenderOpenCapability.contract,
+    id: blenderOpenCapability.id,
+    method: "open",
+    provider: "blender",
+    sessionAdmission: blenderOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderOpenCapability.sessionAdmissionRationale,
+  },
+  "blender.chooseApp": {
+    contract: blenderChooseAppCapability.contract,
+    id: blenderChooseAppCapability.id,
+    method: "chooseApp",
+    provider: "blender",
+    sessionAdmission: blenderChooseAppCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderChooseAppCapability.sessionAdmissionRationale,
   },
   "appearance.setResolvedTheme": {
     contract: appearanceSetResolvedThemeCapability.contract,
@@ -1172,6 +1288,14 @@ export const generatedNativeMainBindingsById = {
     provider: "windows",
     sessionAdmission: windowsFocusCapability.sessionAdmission,
     sessionAdmissionRationale: windowsFocusCapability.sessionAdmissionRationale,
+  },
+  "windows.focusScreen": {
+    contract: windowsFocusScreenCapability.contract,
+    id: windowsFocusScreenCapability.id,
+    method: "focusScreen",
+    provider: "windows",
+    sessionAdmission: windowsFocusScreenCapability.sessionAdmission,
+    sessionAdmissionRationale: windowsFocusScreenCapability.sessionAdmissionRationale,
   },
   "windows.close": {
     contract: windowsCloseCapability.contract,
@@ -1478,21 +1602,22 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: computeNodeRefreshCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRefreshCapability.sessionAdmissionRationale,
   },
-  "computeNode.repair": {
-    contract: computeNodeRepairCapability.contract,
-    id: computeNodeRepairCapability.id,
-    method: "repair",
+  "computeNode.continue": {
+    contract: computeNodeContinueCapability.contract,
+    id: computeNodeContinueCapability.id,
+    method: "continue",
     provider: "computeNode",
-    sessionAdmission: computeNodeRepairCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRepairCapability.sessionAdmissionRationale,
+    sessionAdmission: computeNodeContinueCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeContinueCapability.sessionAdmissionRationale,
   },
-  "computeNode.rebuild": {
-    contract: computeNodeRebuildCapability.contract,
-    id: computeNodeRebuildCapability.id,
-    method: "rebuild",
+  "computeNode.reauthorize": {
+    contract: computeNodeReauthorizeCapability.contract,
+    id: computeNodeReauthorizeCapability.id,
+    method: "reauthorize",
     provider: "computeNode",
-    sessionAdmission: computeNodeRebuildCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRebuildCapability.sessionAdmissionRationale,
+    sessionAdmission: computeNodeReauthorizeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeReauthorizeCapability.sessionAdmissionRationale,
   },
   "computeNode.localOverview": {
     contract: localComputeOverviewCapability.contract,
@@ -1584,23 +1709,6 @@ export const generatedNativeMainBindingsById = {
     provider: "computeNode",
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
-  },
-  "computeNode.abandon": {
-    contract: computeNodeAbandonCapability.contract,
-    id: computeNodeAbandonCapability.id,
-    method: "abandon",
-    provider: "computeNode",
-    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
-  },
-  "computeNode.resetLocalRecord": {
-    contract: computeNodeResetLocalRecordCapability.contract,
-    id: computeNodeResetLocalRecordCapability.id,
-    method: "resetLocalRecord",
-    provider: "computeNode",
-    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
   },
   "chat.pickAttachments": {
     contract: chatPickAttachmentsCapability.contract,
@@ -1777,6 +1885,38 @@ export const generatedNativeMainBindingsById = {
     provider: "airDrop",
     sessionAdmission: airDropPreviewCapability.sessionAdmission,
     sessionAdmissionRationale: airDropPreviewCapability.sessionAdmissionRationale,
+  },
+  "nearby.state": {
+    contract: nearbyStateCapability.contract,
+    id: nearbyStateCapability.id,
+    method: "state",
+    provider: "nearby",
+    sessionAdmission: nearbyStateCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyStateCapability.sessionAdmissionRationale,
+  },
+  "nearby.find": {
+    contract: nearbyFindCapability.contract,
+    id: nearbyFindCapability.id,
+    method: "find",
+    provider: "nearby",
+    sessionAdmission: nearbyFindCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyFindCapability.sessionAdmissionRationale,
+  },
+  "nearby.ask": {
+    contract: nearbyAskCapability.contract,
+    id: nearbyAskCapability.id,
+    method: "ask",
+    provider: "nearby",
+    sessionAdmission: nearbyAskCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAskCapability.sessionAdmissionRationale,
+  },
+  "nearby.answer": {
+    contract: nearbyAnswerCapability.contract,
+    id: nearbyAnswerCapability.id,
+    method: "answer",
+    provider: "nearby",
+    sessionAdmission: nearbyAnswerCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAnswerCapability.sessionAdmissionRationale,
   },
   "synchronicity.state": {
     contract: synchronicityStateCapability.contract,
@@ -2050,6 +2190,17 @@ export const generatedNativeCapabilityManifest = [
     transport: appPreferencesOpenLoginItemsSettingsCapability.transport,
   },
   {
+    bridge: appPreferencesRelaunchCapability.bridge,
+    channel: appPreferencesRelaunchCapability.channel,
+    id: appPreferencesRelaunchCapability.id,
+    payloadClass: appPreferencesRelaunchCapability.payloadClass,
+    permission: appPreferencesRelaunchCapability.permission,
+    sessionAdmission: appPreferencesRelaunchCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRelaunchCapability.sessionAdmissionRationale,
+    transport: appPreferencesRelaunchCapability.transport,
+  },
+  {
     bridge: appPreferencesOpenNotificationSettingsCapability.bridge,
     channel: appPreferencesOpenNotificationSettingsCapability.channel,
     id: appPreferencesOpenNotificationSettingsCapability.id,
@@ -2059,6 +2210,17 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesOpenNotificationSettingsCapability.transport,
+  },
+  {
+    bridge: appPreferencesRefreshLaunchAtLoginCapability.bridge,
+    channel: appPreferencesRefreshLaunchAtLoginCapability.channel,
+    id: appPreferencesRefreshLaunchAtLoginCapability.id,
+    payloadClass: appPreferencesRefreshLaunchAtLoginCapability.payloadClass,
+    permission: appPreferencesRefreshLaunchAtLoginCapability.permission,
+    sessionAdmission: appPreferencesRefreshLaunchAtLoginCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRefreshLaunchAtLoginCapability.sessionAdmissionRationale,
+    transport: appPreferencesRefreshLaunchAtLoginCapability.transport,
   },
   {
     bridge: appPreferencesRequestNotificationAuthorizationCapability.bridge,
@@ -2229,6 +2391,46 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       macAppsCalendarEventsCapability.sessionAdmissionRationale,
     transport: macAppsCalendarEventsCapability.transport,
+  },
+  {
+    bridge: blenderStateCapability.bridge,
+    channel: blenderStateCapability.channel,
+    id: blenderStateCapability.id,
+    payloadClass: blenderStateCapability.payloadClass,
+    permission: blenderStateCapability.permission,
+    sessionAdmission: blenderStateCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderStateCapability.sessionAdmissionRationale,
+    transport: blenderStateCapability.transport,
+  },
+  {
+    bridge: blenderSetEnabledCapability.bridge,
+    channel: blenderSetEnabledCapability.channel,
+    id: blenderSetEnabledCapability.id,
+    payloadClass: blenderSetEnabledCapability.payloadClass,
+    permission: blenderSetEnabledCapability.permission,
+    sessionAdmission: blenderSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderSetEnabledCapability.sessionAdmissionRationale,
+    transport: blenderSetEnabledCapability.transport,
+  },
+  {
+    bridge: blenderOpenCapability.bridge,
+    channel: blenderOpenCapability.channel,
+    id: blenderOpenCapability.id,
+    payloadClass: blenderOpenCapability.payloadClass,
+    permission: blenderOpenCapability.permission,
+    sessionAdmission: blenderOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderOpenCapability.sessionAdmissionRationale,
+    transport: blenderOpenCapability.transport,
+  },
+  {
+    bridge: blenderChooseAppCapability.bridge,
+    channel: blenderChooseAppCapability.channel,
+    id: blenderChooseAppCapability.id,
+    payloadClass: blenderChooseAppCapability.payloadClass,
+    permission: blenderChooseAppCapability.permission,
+    sessionAdmission: blenderChooseAppCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderChooseAppCapability.sessionAdmissionRationale,
+    transport: blenderChooseAppCapability.transport,
   },
   {
     bridge: appearanceSetResolvedThemeCapability.bridge,
@@ -2414,6 +2616,16 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: windowsFocusCapability.sessionAdmission,
     sessionAdmissionRationale: windowsFocusCapability.sessionAdmissionRationale,
     transport: windowsFocusCapability.transport,
+  },
+  {
+    bridge: windowsFocusScreenCapability.bridge,
+    channel: windowsFocusScreenCapability.channel,
+    id: windowsFocusScreenCapability.id,
+    payloadClass: windowsFocusScreenCapability.payloadClass,
+    permission: windowsFocusScreenCapability.permission,
+    sessionAdmission: windowsFocusScreenCapability.sessionAdmission,
+    sessionAdmissionRationale: windowsFocusScreenCapability.sessionAdmissionRationale,
+    transport: windowsFocusScreenCapability.transport,
   },
   {
     bridge: windowsCloseCapability.bridge,
@@ -2795,24 +3007,25 @@ export const generatedNativeCapabilityManifest = [
     transport: computeNodeRefreshCapability.transport,
   },
   {
-    bridge: computeNodeRepairCapability.bridge,
-    channel: computeNodeRepairCapability.channel,
-    id: computeNodeRepairCapability.id,
-    payloadClass: computeNodeRepairCapability.payloadClass,
-    permission: computeNodeRepairCapability.permission,
-    sessionAdmission: computeNodeRepairCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRepairCapability.sessionAdmissionRationale,
-    transport: computeNodeRepairCapability.transport,
+    bridge: computeNodeContinueCapability.bridge,
+    channel: computeNodeContinueCapability.channel,
+    id: computeNodeContinueCapability.id,
+    payloadClass: computeNodeContinueCapability.payloadClass,
+    permission: computeNodeContinueCapability.permission,
+    sessionAdmission: computeNodeContinueCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeContinueCapability.sessionAdmissionRationale,
+    transport: computeNodeContinueCapability.transport,
   },
   {
-    bridge: computeNodeRebuildCapability.bridge,
-    channel: computeNodeRebuildCapability.channel,
-    id: computeNodeRebuildCapability.id,
-    payloadClass: computeNodeRebuildCapability.payloadClass,
-    permission: computeNodeRebuildCapability.permission,
-    sessionAdmission: computeNodeRebuildCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRebuildCapability.sessionAdmissionRationale,
-    transport: computeNodeRebuildCapability.transport,
+    bridge: computeNodeReauthorizeCapability.bridge,
+    channel: computeNodeReauthorizeCapability.channel,
+    id: computeNodeReauthorizeCapability.id,
+    payloadClass: computeNodeReauthorizeCapability.payloadClass,
+    permission: computeNodeReauthorizeCapability.permission,
+    sessionAdmission: computeNodeReauthorizeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeReauthorizeCapability.sessionAdmissionRationale,
+    transport: computeNodeReauthorizeCapability.transport,
   },
   {
     bridge: localComputeOverviewCapability.bridge,
@@ -2926,27 +3139,6 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
     transport: computeNodeRemoveCapability.transport,
-  },
-  {
-    bridge: computeNodeAbandonCapability.bridge,
-    channel: computeNodeAbandonCapability.channel,
-    id: computeNodeAbandonCapability.id,
-    payloadClass: computeNodeAbandonCapability.payloadClass,
-    permission: computeNodeAbandonCapability.permission,
-    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
-    transport: computeNodeAbandonCapability.transport,
-  },
-  {
-    bridge: computeNodeResetLocalRecordCapability.bridge,
-    channel: computeNodeResetLocalRecordCapability.channel,
-    id: computeNodeResetLocalRecordCapability.id,
-    payloadClass: computeNodeResetLocalRecordCapability.payloadClass,
-    permission: computeNodeResetLocalRecordCapability.permission,
-    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
-    transport: computeNodeResetLocalRecordCapability.transport,
   },
   {
     bridge: chatPickAttachmentsCapability.bridge,
@@ -3167,6 +3359,46 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: airDropPreviewCapability.sessionAdmission,
     sessionAdmissionRationale: airDropPreviewCapability.sessionAdmissionRationale,
     transport: airDropPreviewCapability.transport,
+  },
+  {
+    bridge: nearbyStateCapability.bridge,
+    channel: nearbyStateCapability.channel,
+    id: nearbyStateCapability.id,
+    payloadClass: nearbyStateCapability.payloadClass,
+    permission: nearbyStateCapability.permission,
+    sessionAdmission: nearbyStateCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyStateCapability.sessionAdmissionRationale,
+    transport: nearbyStateCapability.transport,
+  },
+  {
+    bridge: nearbyFindCapability.bridge,
+    channel: nearbyFindCapability.channel,
+    id: nearbyFindCapability.id,
+    payloadClass: nearbyFindCapability.payloadClass,
+    permission: nearbyFindCapability.permission,
+    sessionAdmission: nearbyFindCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyFindCapability.sessionAdmissionRationale,
+    transport: nearbyFindCapability.transport,
+  },
+  {
+    bridge: nearbyAskCapability.bridge,
+    channel: nearbyAskCapability.channel,
+    id: nearbyAskCapability.id,
+    payloadClass: nearbyAskCapability.payloadClass,
+    permission: nearbyAskCapability.permission,
+    sessionAdmission: nearbyAskCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAskCapability.sessionAdmissionRationale,
+    transport: nearbyAskCapability.transport,
+  },
+  {
+    bridge: nearbyAnswerCapability.bridge,
+    channel: nearbyAnswerCapability.channel,
+    id: nearbyAnswerCapability.id,
+    payloadClass: nearbyAnswerCapability.payloadClass,
+    permission: nearbyAnswerCapability.permission,
+    sessionAdmission: nearbyAnswerCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAnswerCapability.sessionAdmissionRationale,
+    transport: nearbyAnswerCapability.transport,
   },
   {
     bridge: synchronicityStateCapability.bridge,
@@ -3435,6 +3667,12 @@ export const generatedNativeEventManifest = [
     target: macAppsStateChangedEvent.target,
   },
   {
+    channel: blenderStateChangedEvent.channel,
+    id: blenderStateChangedEvent.id,
+    permission: blenderStateChangedEvent.permission,
+    target: blenderStateChangedEvent.target,
+  },
+  {
     channel: browserSidebarChangedEvent.channel,
     id: browserSidebarChangedEvent.id,
     permission: browserSidebarChangedEvent.permission,
@@ -3507,6 +3745,12 @@ export const generatedNativeEventManifest = [
     target: audioCaptureStateChangedEvent.target,
   },
   {
+    channel: audioCaptureTranscriptionFailedEvent.channel,
+    id: audioCaptureTranscriptionFailedEvent.id,
+    permission: audioCaptureTranscriptionFailedEvent.permission,
+    target: audioCaptureTranscriptionFailedEvent.target,
+  },
+  {
     channel: voiceCallAudioEvent.channel,
     id: voiceCallAudioEvent.id,
     permission: voiceCallAudioEvent.permission,
@@ -3529,6 +3773,12 @@ export const generatedNativeEventManifest = [
     id: airDropStateChangedEvent.id,
     permission: airDropStateChangedEvent.permission,
     target: airDropStateChangedEvent.target,
+  },
+  {
+    channel: nearbyStateChangedEvent.channel,
+    id: nearbyStateChangedEvent.id,
+    permission: nearbyStateChangedEvent.permission,
+    target: nearbyStateChangedEvent.target,
   },
 ] as const;
 
@@ -3601,6 +3851,23 @@ export const generatedNativeStateManifest = [
       id: macAppsStateLeaf.subscribe.id,
       permission: macAppsStateLeaf.subscribe.permission,
       target: macAppsStateLeaf.subscribe.target,
+    },
+  },
+  {
+    bridge: blenderStateLeaf.bridge,
+    get: {
+      channel: blenderStateLeaf.get.channel,
+      id: blenderStateLeaf.get.id,
+      permission: blenderStateLeaf.get.permission,
+      sessionAdmission: blenderStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: blenderStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: blenderStateLeaf.id,
+    subscribe: {
+      channel: blenderStateLeaf.subscribe.channel,
+      id: blenderStateLeaf.subscribe.id,
+      permission: blenderStateLeaf.subscribe.permission,
+      target: blenderStateLeaf.subscribe.target,
     },
   },
   {
@@ -3759,6 +4026,23 @@ export const generatedNativeStateManifest = [
       target: airDropStateLeaf.subscribe.target,
     },
   },
+  {
+    bridge: nearbyStateLeaf.bridge,
+    get: {
+      channel: nearbyStateLeaf.get.channel,
+      id: nearbyStateLeaf.get.id,
+      permission: nearbyStateLeaf.get.permission,
+      sessionAdmission: nearbyStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: nearbyStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: nearbyStateLeaf.id,
+    subscribe: {
+      channel: nearbyStateLeaf.subscribe.channel,
+      id: nearbyStateLeaf.subscribe.id,
+      permission: nearbyStateLeaf.subscribe.permission,
+      target: nearbyStateLeaf.subscribe.target,
+    },
+  },
 ] as const;
 
 export const generatedNativeCapabilityIndex = {
@@ -3913,6 +4197,27 @@ export const generatedNativeCapabilityIndex = {
       appPreferencesOpenLoginItemsSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesOpenLoginItemsSettingsCapability.transport,
   },
+  "appPreferences.relaunch": {
+    artifacts: {
+      contract: "appPreferencesRelaunchContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["appPreferences.relaunch"]',
+      leaf: "appPreferencesRelaunchCapability",
+      mainBinding: 'generatedNativeMainBindingsById["appPreferences.relaunch"]',
+      mock: "appPreferencesRelaunchCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.appPreferences.relaunch",
+      webFallback: "generatedNativeWebFallbacks.appPreferencesRelaunch",
+    },
+    bridge: appPreferencesRelaunchCapability.bridge,
+    channel: appPreferencesRelaunchCapability.channel,
+    handler: appPreferencesRelaunchCapability.handler,
+    id: appPreferencesRelaunchCapability.id,
+    payloadClass: appPreferencesRelaunchCapability.payloadClass,
+    permission: appPreferencesRelaunchCapability.permission,
+    sessionAdmission: appPreferencesRelaunchCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRelaunchCapability.sessionAdmissionRationale,
+    transport: appPreferencesRelaunchCapability.transport,
+  },
   "appPreferences.openNotificationSettings": {
     artifacts: {
       contract: "appPreferencesOpenNotificationSettingsContract",
@@ -3936,6 +4241,30 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       appPreferencesOpenNotificationSettingsCapability.sessionAdmissionRationale,
     transport: appPreferencesOpenNotificationSettingsCapability.transport,
+  },
+  "appPreferences.refreshLaunchAtLogin": {
+    artifacts: {
+      contract: "appPreferencesRefreshLaunchAtLoginContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["appPreferences.refreshLaunchAtLogin"]',
+      leaf: "appPreferencesRefreshLaunchAtLoginCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["appPreferences.refreshLaunchAtLogin"]',
+      mock: "appPreferencesRefreshLaunchAtLoginCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.appPreferences.refreshLaunchAtLogin",
+      webFallback: "generatedNativeWebFallbacks.appPreferencesRefreshLaunchAtLogin",
+    },
+    bridge: appPreferencesRefreshLaunchAtLoginCapability.bridge,
+    channel: appPreferencesRefreshLaunchAtLoginCapability.channel,
+    handler: appPreferencesRefreshLaunchAtLoginCapability.handler,
+    id: appPreferencesRefreshLaunchAtLoginCapability.id,
+    payloadClass: appPreferencesRefreshLaunchAtLoginCapability.payloadClass,
+    permission: appPreferencesRefreshLaunchAtLoginCapability.permission,
+    sessionAdmission: appPreferencesRefreshLaunchAtLoginCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      appPreferencesRefreshLaunchAtLoginCapability.sessionAdmissionRationale,
+    transport: appPreferencesRefreshLaunchAtLoginCapability.transport,
   },
   "appPreferences.requestNotificationAuthorization": {
     artifacts: {
@@ -4273,6 +4602,86 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       macAppsCalendarEventsCapability.sessionAdmissionRationale,
     transport: macAppsCalendarEventsCapability.transport,
+  },
+  "blender.state": {
+    artifacts: {
+      contract: "blenderStateContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["blender.state"]',
+      leaf: "blenderStateCapability",
+      mainBinding: 'generatedNativeMainBindingsById["blender.state"]',
+      mock: "blenderStateCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.blender.state",
+      webFallback: "generatedNativeWebFallbacks.blenderState",
+    },
+    bridge: blenderStateCapability.bridge,
+    channel: blenderStateCapability.channel,
+    handler: blenderStateCapability.handler,
+    id: blenderStateCapability.id,
+    payloadClass: blenderStateCapability.payloadClass,
+    permission: blenderStateCapability.permission,
+    sessionAdmission: blenderStateCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderStateCapability.sessionAdmissionRationale,
+    transport: blenderStateCapability.transport,
+  },
+  "blender.setEnabled": {
+    artifacts: {
+      contract: "blenderSetEnabledContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["blender.setEnabled"]',
+      leaf: "blenderSetEnabledCapability",
+      mainBinding: 'generatedNativeMainBindingsById["blender.setEnabled"]',
+      mock: "blenderSetEnabledCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.blender.setEnabled",
+      webFallback: "generatedNativeWebFallbacks.blenderSetEnabled",
+    },
+    bridge: blenderSetEnabledCapability.bridge,
+    channel: blenderSetEnabledCapability.channel,
+    handler: blenderSetEnabledCapability.handler,
+    id: blenderSetEnabledCapability.id,
+    payloadClass: blenderSetEnabledCapability.payloadClass,
+    permission: blenderSetEnabledCapability.permission,
+    sessionAdmission: blenderSetEnabledCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderSetEnabledCapability.sessionAdmissionRationale,
+    transport: blenderSetEnabledCapability.transport,
+  },
+  "blender.open": {
+    artifacts: {
+      contract: "blenderOpenContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["blender.open"]',
+      leaf: "blenderOpenCapability",
+      mainBinding: 'generatedNativeMainBindingsById["blender.open"]',
+      mock: "blenderOpenCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.blender.open",
+      webFallback: "generatedNativeWebFallbacks.blenderOpen",
+    },
+    bridge: blenderOpenCapability.bridge,
+    channel: blenderOpenCapability.channel,
+    handler: blenderOpenCapability.handler,
+    id: blenderOpenCapability.id,
+    payloadClass: blenderOpenCapability.payloadClass,
+    permission: blenderOpenCapability.permission,
+    sessionAdmission: blenderOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderOpenCapability.sessionAdmissionRationale,
+    transport: blenderOpenCapability.transport,
+  },
+  "blender.chooseApp": {
+    artifacts: {
+      contract: "blenderChooseAppContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["blender.chooseApp"]',
+      leaf: "blenderChooseAppCapability",
+      mainBinding: 'generatedNativeMainBindingsById["blender.chooseApp"]',
+      mock: "blenderChooseAppCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.blender.chooseApp",
+      webFallback: "generatedNativeWebFallbacks.blenderChooseApp",
+    },
+    bridge: blenderChooseAppCapability.bridge,
+    channel: blenderChooseAppCapability.channel,
+    handler: blenderChooseAppCapability.handler,
+    id: blenderChooseAppCapability.id,
+    payloadClass: blenderChooseAppCapability.payloadClass,
+    permission: blenderChooseAppCapability.permission,
+    sessionAdmission: blenderChooseAppCapability.sessionAdmission,
+    sessionAdmissionRationale: blenderChooseAppCapability.sessionAdmissionRationale,
+    transport: blenderChooseAppCapability.transport,
   },
   "appearance.setResolvedTheme": {
     artifacts: {
@@ -4638,6 +5047,26 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: windowsFocusCapability.sessionAdmission,
     sessionAdmissionRationale: windowsFocusCapability.sessionAdmissionRationale,
     transport: windowsFocusCapability.transport,
+  },
+  "windows.focusScreen": {
+    artifacts: {
+      contract: "windowsFocusScreenContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["windows.focusScreen"]',
+      leaf: "windowsFocusScreenCapability",
+      mainBinding: 'generatedNativeMainBindingsById["windows.focusScreen"]',
+      mock: "windowsFocusScreenCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.windows.focusScreen",
+      webFallback: "generatedNativeWebFallbacks.windowsFocusScreen",
+    },
+    bridge: windowsFocusScreenCapability.bridge,
+    channel: windowsFocusScreenCapability.channel,
+    handler: windowsFocusScreenCapability.handler,
+    id: windowsFocusScreenCapability.id,
+    payloadClass: windowsFocusScreenCapability.payloadClass,
+    permission: windowsFocusScreenCapability.permission,
+    sessionAdmission: windowsFocusScreenCapability.sessionAdmission,
+    sessionAdmissionRationale: windowsFocusScreenCapability.sessionAdmissionRationale,
+    transport: windowsFocusScreenCapability.transport,
   },
   "windows.close": {
     artifacts: {
@@ -5391,45 +5820,46 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: computeNodeRefreshCapability.sessionAdmissionRationale,
     transport: computeNodeRefreshCapability.transport,
   },
-  "computeNode.repair": {
+  "computeNode.continue": {
     artifacts: {
-      contract: "computeNodeRepairContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.repair"]',
-      leaf: "computeNodeRepairCapability",
-      mainBinding: 'generatedNativeMainBindingsById["computeNode.repair"]',
-      mock: "computeNodeRepairCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.computeNode.repair",
-      webFallback: "generatedNativeWebFallbacks.computeNodeRepair",
+      contract: "computeNodeContinueContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.continue"]',
+      leaf: "computeNodeContinueCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.continue"]',
+      mock: "computeNodeContinueCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.continue",
+      webFallback: "generatedNativeWebFallbacks.computeNodeContinue",
     },
-    bridge: computeNodeRepairCapability.bridge,
-    channel: computeNodeRepairCapability.channel,
-    handler: computeNodeRepairCapability.handler,
-    id: computeNodeRepairCapability.id,
-    payloadClass: computeNodeRepairCapability.payloadClass,
-    permission: computeNodeRepairCapability.permission,
-    sessionAdmission: computeNodeRepairCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRepairCapability.sessionAdmissionRationale,
-    transport: computeNodeRepairCapability.transport,
+    bridge: computeNodeContinueCapability.bridge,
+    channel: computeNodeContinueCapability.channel,
+    handler: computeNodeContinueCapability.handler,
+    id: computeNodeContinueCapability.id,
+    payloadClass: computeNodeContinueCapability.payloadClass,
+    permission: computeNodeContinueCapability.permission,
+    sessionAdmission: computeNodeContinueCapability.sessionAdmission,
+    sessionAdmissionRationale: computeNodeContinueCapability.sessionAdmissionRationale,
+    transport: computeNodeContinueCapability.transport,
   },
-  "computeNode.rebuild": {
+  "computeNode.reauthorize": {
     artifacts: {
-      contract: "computeNodeRebuildContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.rebuild"]',
-      leaf: "computeNodeRebuildCapability",
-      mainBinding: 'generatedNativeMainBindingsById["computeNode.rebuild"]',
-      mock: "computeNodeRebuildCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.computeNode.rebuild",
-      webFallback: "generatedNativeWebFallbacks.computeNodeRebuild",
+      contract: "computeNodeReauthorizeContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.reauthorize"]',
+      leaf: "computeNodeReauthorizeCapability",
+      mainBinding: 'generatedNativeMainBindingsById["computeNode.reauthorize"]',
+      mock: "computeNodeReauthorizeCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.computeNode.reauthorize",
+      webFallback: "generatedNativeWebFallbacks.computeNodeReauthorize",
     },
-    bridge: computeNodeRebuildCapability.bridge,
-    channel: computeNodeRebuildCapability.channel,
-    handler: computeNodeRebuildCapability.handler,
-    id: computeNodeRebuildCapability.id,
-    payloadClass: computeNodeRebuildCapability.payloadClass,
-    permission: computeNodeRebuildCapability.permission,
-    sessionAdmission: computeNodeRebuildCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeRebuildCapability.sessionAdmissionRationale,
-    transport: computeNodeRebuildCapability.transport,
+    bridge: computeNodeReauthorizeCapability.bridge,
+    channel: computeNodeReauthorizeCapability.channel,
+    handler: computeNodeReauthorizeCapability.handler,
+    id: computeNodeReauthorizeCapability.id,
+    payloadClass: computeNodeReauthorizeCapability.payloadClass,
+    permission: computeNodeReauthorizeCapability.permission,
+    sessionAdmission: computeNodeReauthorizeCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      computeNodeReauthorizeCapability.sessionAdmissionRationale,
+    transport: computeNodeReauthorizeCapability.transport,
   },
   "computeNode.localOverview": {
     artifacts: {
@@ -5657,47 +6087,6 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: computeNodeRemoveCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeRemoveCapability.sessionAdmissionRationale,
     transport: computeNodeRemoveCapability.transport,
-  },
-  "computeNode.abandon": {
-    artifacts: {
-      contract: "computeNodeAbandonContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.abandon"]',
-      leaf: "computeNodeAbandonCapability",
-      mainBinding: 'generatedNativeMainBindingsById["computeNode.abandon"]',
-      mock: "computeNodeAbandonCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.computeNode.abandon",
-      webFallback: "generatedNativeWebFallbacks.computeNodeAbandon",
-    },
-    bridge: computeNodeAbandonCapability.bridge,
-    channel: computeNodeAbandonCapability.channel,
-    handler: computeNodeAbandonCapability.handler,
-    id: computeNodeAbandonCapability.id,
-    payloadClass: computeNodeAbandonCapability.payloadClass,
-    permission: computeNodeAbandonCapability.permission,
-    sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
-    sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
-    transport: computeNodeAbandonCapability.transport,
-  },
-  "computeNode.resetLocalRecord": {
-    artifacts: {
-      contract: "computeNodeResetLocalRecordContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["computeNode.resetLocalRecord"]',
-      leaf: "computeNodeResetLocalRecordCapability",
-      mainBinding: 'generatedNativeMainBindingsById["computeNode.resetLocalRecord"]',
-      mock: "computeNodeResetLocalRecordCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.computeNode.resetLocalRecord",
-      webFallback: "generatedNativeWebFallbacks.computeNodeResetLocalRecord",
-    },
-    bridge: computeNodeResetLocalRecordCapability.bridge,
-    channel: computeNodeResetLocalRecordCapability.channel,
-    handler: computeNodeResetLocalRecordCapability.handler,
-    id: computeNodeResetLocalRecordCapability.id,
-    payloadClass: computeNodeResetLocalRecordCapability.payloadClass,
-    permission: computeNodeResetLocalRecordCapability.permission,
-    sessionAdmission: computeNodeResetLocalRecordCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      computeNodeResetLocalRecordCapability.sessionAdmissionRationale,
-    transport: computeNodeResetLocalRecordCapability.transport,
   },
   "chat.pickAttachments": {
     artifacts: {
@@ -6141,6 +6530,86 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: airDropPreviewCapability.sessionAdmission,
     sessionAdmissionRationale: airDropPreviewCapability.sessionAdmissionRationale,
     transport: airDropPreviewCapability.transport,
+  },
+  "nearby.state": {
+    artifacts: {
+      contract: "nearbyStateContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["nearby.state"]',
+      leaf: "nearbyStateCapability",
+      mainBinding: 'generatedNativeMainBindingsById["nearby.state"]',
+      mock: "nearbyStateCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.nearby.state",
+      webFallback: "generatedNativeWebFallbacks.nearbyState",
+    },
+    bridge: nearbyStateCapability.bridge,
+    channel: nearbyStateCapability.channel,
+    handler: nearbyStateCapability.handler,
+    id: nearbyStateCapability.id,
+    payloadClass: nearbyStateCapability.payloadClass,
+    permission: nearbyStateCapability.permission,
+    sessionAdmission: nearbyStateCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyStateCapability.sessionAdmissionRationale,
+    transport: nearbyStateCapability.transport,
+  },
+  "nearby.find": {
+    artifacts: {
+      contract: "nearbyFindContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["nearby.find"]',
+      leaf: "nearbyFindCapability",
+      mainBinding: 'generatedNativeMainBindingsById["nearby.find"]',
+      mock: "nearbyFindCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.nearby.find",
+      webFallback: "generatedNativeWebFallbacks.nearbyFind",
+    },
+    bridge: nearbyFindCapability.bridge,
+    channel: nearbyFindCapability.channel,
+    handler: nearbyFindCapability.handler,
+    id: nearbyFindCapability.id,
+    payloadClass: nearbyFindCapability.payloadClass,
+    permission: nearbyFindCapability.permission,
+    sessionAdmission: nearbyFindCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyFindCapability.sessionAdmissionRationale,
+    transport: nearbyFindCapability.transport,
+  },
+  "nearby.ask": {
+    artifacts: {
+      contract: "nearbyAskContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["nearby.ask"]',
+      leaf: "nearbyAskCapability",
+      mainBinding: 'generatedNativeMainBindingsById["nearby.ask"]',
+      mock: "nearbyAskCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.nearby.ask",
+      webFallback: "generatedNativeWebFallbacks.nearbyAsk",
+    },
+    bridge: nearbyAskCapability.bridge,
+    channel: nearbyAskCapability.channel,
+    handler: nearbyAskCapability.handler,
+    id: nearbyAskCapability.id,
+    payloadClass: nearbyAskCapability.payloadClass,
+    permission: nearbyAskCapability.permission,
+    sessionAdmission: nearbyAskCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAskCapability.sessionAdmissionRationale,
+    transport: nearbyAskCapability.transport,
+  },
+  "nearby.answer": {
+    artifacts: {
+      contract: "nearbyAnswerContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["nearby.answer"]',
+      leaf: "nearbyAnswerCapability",
+      mainBinding: 'generatedNativeMainBindingsById["nearby.answer"]',
+      mock: "nearbyAnswerCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.nearby.answer",
+      webFallback: "generatedNativeWebFallbacks.nearbyAnswer",
+    },
+    bridge: nearbyAnswerCapability.bridge,
+    channel: nearbyAnswerCapability.channel,
+    handler: nearbyAnswerCapability.handler,
+    id: nearbyAnswerCapability.id,
+    payloadClass: nearbyAnswerCapability.payloadClass,
+    permission: nearbyAnswerCapability.permission,
+    sessionAdmission: nearbyAnswerCapability.sessionAdmission,
+    sessionAdmissionRationale: nearbyAnswerCapability.sessionAdmissionRationale,
+    transport: nearbyAnswerCapability.transport,
   },
   "synchronicity.state": {
     artifacts: {
@@ -6648,6 +7117,16 @@ export const generatedNativeEventIndex = {
     permission: macAppsStateChangedEvent.permission,
     target: macAppsStateChangedEvent.target,
   },
+  "blender.state.changed": {
+    artifacts: {
+      leaf: "blenderStateChangedEvent",
+      mock: "blenderStateChangedEvent.mock",
+    },
+    channel: blenderStateChangedEvent.channel,
+    id: blenderStateChangedEvent.id,
+    permission: blenderStateChangedEvent.permission,
+    target: blenderStateChangedEvent.target,
+  },
   "browserSidebar.changed": {
     artifacts: {
       leaf: "browserSidebarChangedEvent",
@@ -6768,6 +7247,16 @@ export const generatedNativeEventIndex = {
     permission: audioCaptureStateChangedEvent.permission,
     target: audioCaptureStateChangedEvent.target,
   },
+  "audioCapture.transcriptionFailed": {
+    artifacts: {
+      leaf: "audioCaptureTranscriptionFailedEvent",
+      mock: "audioCaptureTranscriptionFailedEvent.mock",
+    },
+    channel: audioCaptureTranscriptionFailedEvent.channel,
+    id: audioCaptureTranscriptionFailedEvent.id,
+    permission: audioCaptureTranscriptionFailedEvent.permission,
+    target: audioCaptureTranscriptionFailedEvent.target,
+  },
   "voiceCall.audio": {
     artifacts: {
       leaf: "voiceCallAudioEvent",
@@ -6807,6 +7296,16 @@ export const generatedNativeEventIndex = {
     id: airDropStateChangedEvent.id,
     permission: airDropStateChangedEvent.permission,
     target: airDropStateChangedEvent.target,
+  },
+  "nearby.state.changed": {
+    artifacts: {
+      leaf: "nearbyStateChangedEvent",
+      mock: "nearbyStateChangedEvent.mock",
+    },
+    channel: nearbyStateChangedEvent.channel,
+    id: nearbyStateChangedEvent.id,
+    permission: nearbyStateChangedEvent.permission,
+    target: nearbyStateChangedEvent.target,
   },
 } as const;
 
@@ -6907,6 +7406,30 @@ export const generatedNativeStateIndex = {
       id: macAppsStateLeaf.subscribe.id,
       permission: macAppsStateLeaf.subscribe.permission,
       target: macAppsStateLeaf.subscribe.target,
+    },
+  },
+  "blender.state": {
+    artifacts: {
+      get: "generatedNativeStateBindings.blender.state.get",
+      leaf: "blenderStateLeaf",
+      mock: "blenderStateLeaf.mock",
+      subscribe: "generatedNativeStateBindings.blender.state.subscribe",
+      webFallback: "blenderStateLeaf.webFallback",
+    },
+    bridge: blenderStateLeaf.bridge,
+    get: {
+      channel: blenderStateLeaf.get.channel,
+      id: blenderStateLeaf.get.id,
+      permission: blenderStateLeaf.get.permission,
+      sessionAdmission: blenderStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: blenderStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: blenderStateLeaf.id,
+    subscribe: {
+      channel: blenderStateLeaf.subscribe.channel,
+      id: blenderStateLeaf.subscribe.id,
+      permission: blenderStateLeaf.subscribe.permission,
+      target: blenderStateLeaf.subscribe.target,
     },
   },
   "surfaces.state": {
@@ -7128,6 +7651,30 @@ export const generatedNativeStateIndex = {
       target: airDropStateLeaf.subscribe.target,
     },
   },
+  "nearby.state": {
+    artifacts: {
+      get: "generatedNativeStateBindings.nearby.state.get",
+      leaf: "nearbyStateLeaf",
+      mock: "nearbyStateLeaf.mock",
+      subscribe: "generatedNativeStateBindings.nearby.state.subscribe",
+      webFallback: "nearbyStateLeaf.webFallback",
+    },
+    bridge: nearbyStateLeaf.bridge,
+    get: {
+      channel: nearbyStateLeaf.get.channel,
+      id: nearbyStateLeaf.get.id,
+      permission: nearbyStateLeaf.get.permission,
+      sessionAdmission: nearbyStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale: nearbyStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: nearbyStateLeaf.id,
+    subscribe: {
+      channel: nearbyStateLeaf.subscribe.channel,
+      id: nearbyStateLeaf.subscribe.id,
+      permission: nearbyStateLeaf.subscribe.permission,
+      target: nearbyStateLeaf.subscribe.target,
+    },
+  },
 } as const;
 
 export const computerUsePermissionsContract =
@@ -7142,8 +7689,12 @@ export const appPreferencesInitializeClientSettingsContract =
   generatedNativeCapabilityContracts.appPreferencesInitializeClientSettings;
 export const appPreferencesOpenLoginItemsSettingsContract =
   generatedNativeCapabilityContracts.appPreferencesOpenLoginItemsSettings;
+export const appPreferencesRelaunchContract =
+  generatedNativeCapabilityContracts.appPreferencesRelaunch;
 export const appPreferencesOpenNotificationSettingsContract =
   generatedNativeCapabilityContracts.appPreferencesOpenNotificationSettings;
+export const appPreferencesRefreshLaunchAtLoginContract =
+  generatedNativeCapabilityContracts.appPreferencesRefreshLaunchAtLogin;
 export const appPreferencesRequestNotificationAuthorizationContract =
   generatedNativeCapabilityContracts.appPreferencesRequestNotificationAuthorization;
 export const appPreferencesUpdateContract =
@@ -7174,6 +7725,12 @@ export const macAppsOpenItemContract =
 export const macAppsIconsContract = generatedNativeCapabilityContracts.macAppsIcons;
 export const macAppsCalendarEventsContract =
   generatedNativeCapabilityContracts.macAppsCalendarEvents;
+export const blenderStateContract = generatedNativeCapabilityContracts.blenderState;
+export const blenderSetEnabledContract =
+  generatedNativeCapabilityContracts.blenderSetEnabled;
+export const blenderOpenContract = generatedNativeCapabilityContracts.blenderOpen;
+export const blenderChooseAppContract =
+  generatedNativeCapabilityContracts.blenderChooseApp;
 export const appearanceSetResolvedThemeContract =
   generatedNativeCapabilityContracts.appearanceSetResolvedTheme;
 export const appearanceFontFamiliesContract =
@@ -7197,6 +7754,8 @@ export const surfacesWindowControlContract =
   generatedNativeCapabilityContracts.surfacesWindowControl;
 export const windowsCreateContract = generatedNativeCapabilityContracts.windowsCreate;
 export const windowsFocusContract = generatedNativeCapabilityContracts.windowsFocus;
+export const windowsFocusScreenContract =
+  generatedNativeCapabilityContracts.windowsFocusScreen;
 export const windowsCloseContract = generatedNativeCapabilityContracts.windowsClose;
 export const onboardingPresentWindowContract =
   generatedNativeCapabilityContracts.onboardingPresentWindow;
@@ -7266,10 +7825,10 @@ export const computeNodeConfigureContract =
   generatedNativeCapabilityContracts.computeNodeConfigure;
 export const computeNodeRefreshContract =
   generatedNativeCapabilityContracts.computeNodeRefresh;
-export const computeNodeRepairContract =
-  generatedNativeCapabilityContracts.computeNodeRepair;
-export const computeNodeRebuildContract =
-  generatedNativeCapabilityContracts.computeNodeRebuild;
+export const computeNodeContinueContract =
+  generatedNativeCapabilityContracts.computeNodeContinue;
+export const computeNodeReauthorizeContract =
+  generatedNativeCapabilityContracts.computeNodeReauthorize;
 export const localComputeOverviewContract =
   generatedNativeCapabilityContracts.localComputeOverview;
 export const localComputeDisposeContract =
@@ -7290,10 +7849,6 @@ export const computeNodeDrainContract =
   generatedNativeCapabilityContracts.computeNodeDrain;
 export const computeNodeRemoveContract =
   generatedNativeCapabilityContracts.computeNodeRemove;
-export const computeNodeAbandonContract =
-  generatedNativeCapabilityContracts.computeNodeAbandon;
-export const computeNodeResetLocalRecordContract =
-  generatedNativeCapabilityContracts.computeNodeResetLocalRecord;
 export const chatPickAttachmentsContract =
   generatedNativeCapabilityContracts.chatPickAttachments;
 export const audioCaptureStateContract =
@@ -7335,6 +7890,10 @@ export const meetingRecorderDragWindowContract =
 export const airDropStateContract = generatedNativeCapabilityContracts.airDropState;
 export const airDropActContract = generatedNativeCapabilityContracts.airDropAct;
 export const airDropPreviewContract = generatedNativeCapabilityContracts.airDropPreview;
+export const nearbyStateContract = generatedNativeCapabilityContracts.nearbyState;
+export const nearbyFindContract = generatedNativeCapabilityContracts.nearbyFind;
+export const nearbyAskContract = generatedNativeCapabilityContracts.nearbyAsk;
+export const nearbyAnswerContract = generatedNativeCapabilityContracts.nearbyAnswer;
 export const synchronicityStateContract =
   generatedNativeCapabilityContracts.synchronicityState;
 export const synchronicityListContract =
@@ -7388,7 +7947,9 @@ export type NativeCapabilityTypeMap = {
   "appPreferences.state": typeof appPreferencesCapability;
   "appPreferences.initializeClientSettings": typeof appPreferencesInitializeClientSettingsCapability;
   "appPreferences.openLoginItemsSettings": typeof appPreferencesOpenLoginItemsSettingsCapability;
+  "appPreferences.relaunch": typeof appPreferencesRelaunchCapability;
   "appPreferences.openNotificationSettings": typeof appPreferencesOpenNotificationSettingsCapability;
+  "appPreferences.refreshLaunchAtLogin": typeof appPreferencesRefreshLaunchAtLoginCapability;
   "appPreferences.requestNotificationAuthorization": typeof appPreferencesRequestNotificationAuthorizationCapability;
   "appPreferences.update": typeof appPreferencesUpdateCapability;
   "connectorRuntime.state": typeof connectorRuntimeStateCapability;
@@ -7405,6 +7966,10 @@ export type NativeCapabilityTypeMap = {
   "macApps.openItem": typeof macAppsOpenItemCapability;
   "macApps.icons": typeof macAppsIconsCapability;
   "macApps.calendarEvents": typeof macAppsCalendarEventsCapability;
+  "blender.state": typeof blenderStateCapability;
+  "blender.setEnabled": typeof blenderSetEnabledCapability;
+  "blender.open": typeof blenderOpenCapability;
+  "blender.chooseApp": typeof blenderChooseAppCapability;
   "appearance.setResolvedTheme": typeof appearanceSetResolvedThemeCapability;
   "appearance.fontFamilies": typeof appearanceFontFamiliesCapability;
   "notch.status": typeof notchStatusCapability;
@@ -7423,6 +7988,7 @@ export type NativeCapabilityTypeMap = {
   "surfaces.windowControl": typeof surfacesWindowControlCapability;
   "windows.create": typeof windowsCreateCapability;
   "windows.focus": typeof windowsFocusCapability;
+  "windows.focusScreen": typeof windowsFocusScreenCapability;
   "windows.close": typeof windowsCloseCapability;
   "onboarding.presentWindow": typeof onboardingPresentWindowCapability;
   "onboarding.closeWindow": typeof onboardingCloseWindowCapability;
@@ -7460,8 +8026,8 @@ export type NativeCapabilityTypeMap = {
   "computeNode.state": typeof computeNodeStateCapability;
   "computeNode.configure": typeof computeNodeConfigureCapability;
   "computeNode.refresh": typeof computeNodeRefreshCapability;
-  "computeNode.repair": typeof computeNodeRepairCapability;
-  "computeNode.rebuild": typeof computeNodeRebuildCapability;
+  "computeNode.continue": typeof computeNodeContinueCapability;
+  "computeNode.reauthorize": typeof computeNodeReauthorizeCapability;
   "computeNode.localOverview": typeof localComputeOverviewCapability;
   "computeNode.disposeLocal": typeof localComputeDisposeCapability;
   "computeNode.resumeLocalDisposal": typeof localComputeResumeCapability;
@@ -7473,8 +8039,6 @@ export type NativeCapabilityTypeMap = {
   "computeNode.localWorkloads": typeof localComputeWorkloadsCapability;
   "computeNode.drain": typeof computeNodeDrainCapability;
   "computeNode.remove": typeof computeNodeRemoveCapability;
-  "computeNode.abandon": typeof computeNodeAbandonCapability;
-  "computeNode.resetLocalRecord": typeof computeNodeResetLocalRecordCapability;
   "chat.pickAttachments": typeof chatPickAttachmentsCapability;
   "audioCapture.state": typeof audioCaptureStateCapability;
   "voiceCall.microphone": typeof voiceCallMicrophoneCapability;
@@ -7497,6 +8061,10 @@ export type NativeCapabilityTypeMap = {
   "airDrop.state": typeof airDropStateCapability;
   "airDrop.act": typeof airDropActCapability;
   "airDrop.preview": typeof airDropPreviewCapability;
+  "nearby.state": typeof nearbyStateCapability;
+  "nearby.find": typeof nearbyFindCapability;
+  "nearby.ask": typeof nearbyAskCapability;
+  "nearby.answer": typeof nearbyAnswerCapability;
   "synchronicity.state": typeof synchronicityStateCapability;
   "synchronicity.list": typeof synchronicityListCapability;
   "synchronicity.read": typeof synchronicityReadCapability;
@@ -7527,6 +8095,7 @@ export type NativeEventTypeMap = {
   "appPreferences.state.changed": typeof appPreferencesChangedEvent;
   "connectorRuntime.state.changed": typeof connectorRuntimeStateChangedEvent;
   "macApps.state.changed": typeof macAppsStateChangedEvent;
+  "blender.state.changed": typeof blenderStateChangedEvent;
   "browserSidebar.changed": typeof browserSidebarChangedEvent;
   "browserSidebar.openTabRequested": typeof browserSidebarOpenTabRequestedEvent;
   "surfaces.changed": typeof surfacesChangedEvent;
@@ -7539,10 +8108,12 @@ export type NativeEventTypeMap = {
   "messageNotifications.event": typeof messageNotificationsEvent;
   "computeNode.state.changed": typeof computeNodeStateChangedEvent;
   "audioCapture.state.changed": typeof audioCaptureStateChangedEvent;
+  "audioCapture.transcriptionFailed": typeof audioCaptureTranscriptionFailedEvent;
   "voiceCall.audio": typeof voiceCallAudioEvent;
   "meetingPresence.state.changed": typeof meetingPresenceStateChangedEvent;
   "surfaces.windowResizeSettled": typeof surfacesWindowResizeSettledEvent;
   "airDrop.state.changed": typeof airDropStateChangedEvent;
+  "nearby.state.changed": typeof nearbyStateChangedEvent;
 };
 
 export type NativeStateTypeMap = {
@@ -7550,6 +8121,7 @@ export type NativeStateTypeMap = {
   "appPreferences.state": typeof appPreferencesStateLeaf;
   "connectorRuntime.state": typeof connectorRuntimeStateLeaf;
   "macApps.state": typeof macAppsStateLeaf;
+  "blender.state": typeof blenderStateLeaf;
   "surfaces.state": typeof surfacesStateLeaf;
   "surfaces.windowFullScreen": typeof surfacesWindowFullScreenStateLeaf;
   "surfaces.windowMaximized": typeof surfacesWindowMaximizedStateLeaf;
@@ -7559,6 +8131,7 @@ export type NativeStateTypeMap = {
   "audioCapture.state": typeof audioCaptureStateLeaf;
   "meetingPresence.state": typeof meetingPresenceStateLeaf;
   "airDrop.state": typeof airDropStateLeaf;
+  "nearby.state": typeof nearbyStateLeaf;
 };
 
 // Infer command parameters independently through the contract. Darwin tsgo
@@ -7634,8 +8207,14 @@ export type GeneratedNativeBridge = {
     openLoginItemsSettings: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesOpenLoginItemsSettingsCapability
     >;
+    relaunch: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesRelaunchCapability
+    >;
     openNotificationSettings: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesOpenNotificationSettingsCapability
+    >;
+    refreshLaunchAtLogin: GeneratedNativeCommandBridgeMethod<
+      typeof appPreferencesRefreshLaunchAtLoginCapability
     >;
     requestNotificationAuthorization: GeneratedNativeCommandBridgeMethod<
       typeof appPreferencesRequestNotificationAuthorizationCapability
@@ -7674,6 +8253,12 @@ export type GeneratedNativeBridge = {
       typeof macAppsCalendarEventsCapability
     >;
     state: GeneratedNativeStateBridgeMethod<typeof macAppsStateLeaf>;
+  };
+  blender: {
+    setEnabled: GeneratedNativeCommandBridgeMethod<typeof blenderSetEnabledCapability>;
+    open: GeneratedNativeCommandBridgeMethod<typeof blenderOpenCapability>;
+    chooseApp: GeneratedNativeCommandBridgeMethod<typeof blenderChooseAppCapability>;
+    state: GeneratedNativeStateBridgeMethod<typeof blenderStateLeaf>;
   };
   appearance: {
     setResolvedTheme: GeneratedNativeCommandBridgeMethod<
@@ -7715,6 +8300,9 @@ export type GeneratedNativeBridge = {
   windows: {
     create: GeneratedNativeCommandBridgeMethod<typeof windowsCreateCapability>;
     focus: GeneratedNativeCommandBridgeMethod<typeof windowsFocusCapability>;
+    focusScreen: GeneratedNativeCommandBridgeMethod<
+      typeof windowsFocusScreenCapability
+    >;
     close: GeneratedNativeCommandBridgeMethod<typeof windowsCloseCapability>;
   };
   onboarding: {
@@ -7812,8 +8400,10 @@ export type GeneratedNativeBridge = {
       typeof computeNodeConfigureCapability
     >;
     refresh: GeneratedNativeCommandBridgeMethod<typeof computeNodeRefreshCapability>;
-    repair: GeneratedNativeCommandBridgeMethod<typeof computeNodeRepairCapability>;
-    rebuild: GeneratedNativeCommandBridgeMethod<typeof computeNodeRebuildCapability>;
+    continue: GeneratedNativeCommandBridgeMethod<typeof computeNodeContinueCapability>;
+    reauthorize: GeneratedNativeCommandBridgeMethod<
+      typeof computeNodeReauthorizeCapability
+    >;
     localOverview: GeneratedNativeCommandBridgeMethod<
       typeof localComputeOverviewCapability
     >;
@@ -7839,10 +8429,6 @@ export type GeneratedNativeBridge = {
     >;
     drain: GeneratedNativeCommandBridgeMethod<typeof computeNodeDrainCapability>;
     remove: GeneratedNativeCommandBridgeMethod<typeof computeNodeRemoveCapability>;
-    abandon: GeneratedNativeCommandBridgeMethod<typeof computeNodeAbandonCapability>;
-    resetLocalRecord: GeneratedNativeCommandBridgeMethod<
-      typeof computeNodeResetLocalRecordCapability
-    >;
     state: GeneratedNativeStateBridgeMethod<typeof computeNodeStateLeaf>;
   };
   chat: {
@@ -7877,6 +8463,9 @@ export type GeneratedNativeBridge = {
       typeof audioCaptureOpenPermissionSettingsCapability
     >;
     state: GeneratedNativeStateBridgeMethod<typeof audioCaptureStateLeaf>;
+    onTranscriptionFailed: GeneratedNativeEventBridgeMethod<
+      typeof audioCaptureTranscriptionFailedEvent
+    >;
   };
   meetingPresence: {
     icon: GeneratedNativeCommandBridgeMethod<typeof meetingPresenceIconCapability>;
@@ -7897,6 +8486,12 @@ export type GeneratedNativeBridge = {
     act: GeneratedNativeCommandBridgeMethod<typeof airDropActCapability>;
     preview: GeneratedNativeCommandBridgeMethod<typeof airDropPreviewCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof airDropStateLeaf>;
+  };
+  nearby: {
+    find: GeneratedNativeCommandBridgeMethod<typeof nearbyFindCapability>;
+    ask: GeneratedNativeCommandBridgeMethod<typeof nearbyAskCapability>;
+    answer: GeneratedNativeCommandBridgeMethod<typeof nearbyAnswerCapability>;
+    state: GeneratedNativeStateBridgeMethod<typeof nearbyStateLeaf>;
   };
   synchronicity: {
     state: GeneratedNativeCommandBridgeMethod<typeof synchronicityStateCapability>;
@@ -8031,9 +8626,16 @@ export function createGeneratedNativePreloadBridge(
           appPreferencesOpenLoginItemsSettingsCapability.contract,
           undefined
         ),
+      relaunch: () =>
+        helpers.invoke(appPreferencesRelaunchCapability.contract, undefined),
       openNotificationSettings: () =>
         helpers.invoke(
           appPreferencesOpenNotificationSettingsCapability.contract,
+          undefined
+        ),
+      refreshLaunchAtLogin: () =>
+        helpers.invoke(
+          appPreferencesRefreshLaunchAtLoginCapability.contract,
           undefined
         ),
       requestNotificationAuthorization: () =>
@@ -8100,6 +8702,18 @@ export function createGeneratedNativePreloadBridge(
         subscribe: macAppsStateChangedEvent,
       }),
     },
+    blender: {
+      setEnabled: (
+        input: GeneratedNativeCommandInput<typeof blenderSetEnabledCapability>
+      ) => helpers.invoke(blenderSetEnabledCapability.contract, input),
+      open: (input: GeneratedNativeCommandInput<typeof blenderOpenCapability>) =>
+        helpers.invoke(blenderOpenCapability.contract, input),
+      chooseApp: () => helpers.invoke(blenderChooseAppCapability.contract, undefined),
+      state: helpers.state({
+        get: blenderStateCapability.contract,
+        subscribe: blenderStateChangedEvent,
+      }),
+    },
     appearance: {
       setResolvedTheme: (
         input: GeneratedNativeCommandInput<typeof appearanceSetResolvedThemeCapability>
@@ -8148,6 +8762,9 @@ export function createGeneratedNativePreloadBridge(
         helpers.invoke(windowsCreateCapability.contract, input),
       focus: (input: GeneratedNativeCommandInput<typeof windowsFocusCapability>) =>
         helpers.invoke(windowsFocusCapability.contract, input),
+      focusScreen: (
+        input: GeneratedNativeCommandInput<typeof windowsFocusScreenCapability>
+      ) => helpers.invoke(windowsFocusScreenCapability.contract, input),
       close: (input: GeneratedNativeCommandInput<typeof windowsCloseCapability>) =>
         helpers.invoke(windowsCloseCapability.contract, input),
     },
@@ -8273,8 +8890,10 @@ export function createGeneratedNativePreloadBridge(
         input: GeneratedNativeCommandInput<typeof computeNodeConfigureCapability>
       ) => helpers.invoke(computeNodeConfigureCapability.contract, input),
       refresh: () => helpers.invoke(computeNodeRefreshCapability.contract, undefined),
-      repair: () => helpers.invoke(computeNodeRepairCapability.contract, undefined),
-      rebuild: () => helpers.invoke(computeNodeRebuildCapability.contract, undefined),
+      continue: () => helpers.invoke(computeNodeContinueCapability.contract, undefined),
+      reauthorize: (
+        input: GeneratedNativeCommandInput<typeof computeNodeReauthorizeCapability>
+      ) => helpers.invoke(computeNodeReauthorizeCapability.contract, input),
       localOverview: (
         input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
       ) => helpers.invoke(localComputeOverviewCapability.contract, input),
@@ -8305,11 +8924,6 @@ export function createGeneratedNativePreloadBridge(
       remove: (
         input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
       ) => helpers.invoke(computeNodeRemoveCapability.contract, input),
-      abandon: (
-        input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
-      ) => helpers.invoke(computeNodeAbandonCapability.contract, input),
-      resetLocalRecord: () =>
-        helpers.invoke(computeNodeResetLocalRecordCapability.contract, undefined),
       state: helpers.state({
         get: computeNodeStateCapability.contract,
         subscribe: computeNodeStateChangedEvent,
@@ -8357,6 +8971,8 @@ export function createGeneratedNativePreloadBridge(
         get: audioCaptureStateCapability.contract,
         subscribe: audioCaptureStateChangedEvent,
       }),
+      onTranscriptionFailed: (listener) =>
+        helpers.subscribe(audioCaptureTranscriptionFailedEvent, listener),
     },
     meetingPresence: {
       icon: (
@@ -8388,6 +9004,17 @@ export function createGeneratedNativePreloadBridge(
       state: helpers.state({
         get: airDropStateCapability.contract,
         subscribe: airDropStateChangedEvent,
+      }),
+    },
+    nearby: {
+      find: () => helpers.invoke(nearbyFindCapability.contract, undefined),
+      ask: (input: GeneratedNativeCommandInput<typeof nearbyAskCapability>) =>
+        helpers.invoke(nearbyAskCapability.contract, input),
+      answer: (input: GeneratedNativeCommandInput<typeof nearbyAnswerCapability>) =>
+        helpers.invoke(nearbyAnswerCapability.contract, input),
+      state: helpers.state({
+        get: nearbyStateCapability.contract,
+        subscribe: nearbyStateChangedEvent,
       }),
     },
     synchronicity: {
@@ -8484,8 +9111,11 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       ) => appPreferencesInitializeClientSettingsCapability.webFallback,
       openLoginItemsSettings: async () =>
         appPreferencesOpenLoginItemsSettingsCapability.webFallback,
+      relaunch: async () => appPreferencesRelaunchCapability.webFallback,
       openNotificationSettings: async () =>
         appPreferencesOpenNotificationSettingsCapability.webFallback,
+      refreshLaunchAtLogin: async () =>
+        appPreferencesRefreshLaunchAtLoginCapability.webFallback,
       requestNotificationAuthorization: async () =>
         appPreferencesRequestNotificationAuthorizationCapability.webFallback,
       update: async (
@@ -8546,6 +9176,18 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateGetInput<typeof macAppsStateLeaf>
       >((_input) => macAppsStateLeaf.webFallback),
     },
+    blender: {
+      setEnabled: async (
+        _input: GeneratedNativeCommandInput<typeof blenderSetEnabledCapability>
+      ) => blenderSetEnabledCapability.webFallback,
+      open: async (_input: GeneratedNativeCommandInput<typeof blenderOpenCapability>) =>
+        blenderOpenCapability.webFallback,
+      chooseApp: async () => blenderChooseAppCapability.webFallback,
+      state: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof blenderStateLeaf>,
+        GeneratedNativeStateGetInput<typeof blenderStateLeaf>
+      >((_input) => blenderStateLeaf.webFallback),
+    },
     appearance: {
       setResolvedTheme: async (
         _input: GeneratedNativeCommandInput<typeof appearanceSetResolvedThemeCapability>
@@ -8596,6 +9238,9 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       focus: async (
         _input: GeneratedNativeCommandInput<typeof windowsFocusCapability>
       ) => windowsFocusCapability.webFallback,
+      focusScreen: async (
+        _input: GeneratedNativeCommandInput<typeof windowsFocusScreenCapability>
+      ) => windowsFocusScreenCapability.webFallback,
       close: async (
         _input: GeneratedNativeCommandInput<typeof windowsCloseCapability>
       ) => windowsCloseCapability.webFallback,
@@ -8724,8 +9369,10 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         _input: GeneratedNativeCommandInput<typeof computeNodeConfigureCapability>
       ) => computeNodeConfigureCapability.webFallback,
       refresh: async () => computeNodeRefreshCapability.webFallback,
-      repair: async () => computeNodeRepairCapability.webFallback,
-      rebuild: async () => computeNodeRebuildCapability.webFallback,
+      continue: async () => computeNodeContinueCapability.webFallback,
+      reauthorize: async (
+        _input: GeneratedNativeCommandInput<typeof computeNodeReauthorizeCapability>
+      ) => computeNodeReauthorizeCapability.webFallback,
       localOverview: async (
         _input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
       ) => localComputeOverviewCapability.webFallback,
@@ -8757,10 +9404,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       remove: async (
         _input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
       ) => computeNodeRemoveCapability.webFallback,
-      abandon: async (
-        _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
-      ) => computeNodeAbandonCapability.webFallback,
-      resetLocalRecord: async () => computeNodeResetLocalRecordCapability.webFallback,
       state: createGeneratedWebStateBridge<
         GeneratedNativeStateSnapshot<typeof computeNodeStateLeaf>,
         GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>
@@ -8806,6 +9449,7 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateSnapshot<typeof audioCaptureStateLeaf>,
         GeneratedNativeStateGetInput<typeof audioCaptureStateLeaf>
       >((_input) => audioCaptureStateLeaf.webFallback),
+      onTranscriptionFailed: () => () => {},
     },
     meetingPresence: {
       icon: async (
@@ -8841,6 +9485,18 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateSnapshot<typeof airDropStateLeaf>,
         GeneratedNativeStateGetInput<typeof airDropStateLeaf>
       >((_input) => airDropStateLeaf.webFallback),
+    },
+    nearby: {
+      find: async () => nearbyFindCapability.webFallback,
+      ask: async (_input: GeneratedNativeCommandInput<typeof nearbyAskCapability>) =>
+        nearbyAskCapability.webFallback,
+      answer: async (
+        _input: GeneratedNativeCommandInput<typeof nearbyAnswerCapability>
+      ) => nearbyAnswerCapability.webFallback,
+      state: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof nearbyStateLeaf>,
+        GeneratedNativeStateGetInput<typeof nearbyStateLeaf>
+      >((_input) => nearbyStateLeaf.webFallback),
     },
     synchronicity: {
       state: async () => synchronicityStateCapability.webFallback,
@@ -8948,8 +9604,12 @@ export function createGeneratedNativeBridgeMock(
       openLoginItemsSettings: helpers.command(
         async () => appPreferencesOpenLoginItemsSettingsCapability.mock
       ),
+      relaunch: helpers.command(async () => appPreferencesRelaunchCapability.mock),
       openNotificationSettings: helpers.command(
         async () => appPreferencesOpenNotificationSettingsCapability.mock
+      ),
+      refreshLaunchAtLogin: helpers.command(
+        async () => appPreferencesRefreshLaunchAtLoginCapability.mock
       ),
       requestNotificationAuthorization: helpers.command(
         async () => appPreferencesRequestNotificationAuthorizationCapability.mock
@@ -9035,6 +9695,22 @@ export function createGeneratedNativeBridgeMock(
           macAppsStateLeaf.mock
       ),
     },
+    blender: {
+      setEnabled: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof blenderSetEnabledCapability>
+        ) => blenderSetEnabledCapability.mock
+      ),
+      open: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof blenderOpenCapability>) =>
+          blenderOpenCapability.mock
+      ),
+      chooseApp: helpers.command(async () => blenderChooseAppCapability.mock),
+      state: helpers.state(
+        (_input: GeneratedNativeStateGetInput<typeof blenderStateLeaf>) =>
+          blenderStateLeaf.mock
+      ),
+    },
     appearance: {
       setResolvedTheme: helpers.command(
         async (
@@ -9098,6 +9774,11 @@ export function createGeneratedNativeBridgeMock(
       focus: helpers.command(
         async (_input: GeneratedNativeCommandInput<typeof windowsFocusCapability>) =>
           windowsFocusCapability.mock
+      ),
+      focusScreen: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof windowsFocusScreenCapability>
+        ) => windowsFocusScreenCapability.mock
       ),
       close: helpers.command(
         async (_input: GeneratedNativeCommandInput<typeof windowsCloseCapability>) =>
@@ -9279,8 +9960,12 @@ export function createGeneratedNativeBridgeMock(
         ) => computeNodeConfigureCapability.mock
       ),
       refresh: helpers.command(async () => computeNodeRefreshCapability.mock),
-      repair: helpers.command(async () => computeNodeRepairCapability.mock),
-      rebuild: helpers.command(async () => computeNodeRebuildCapability.mock),
+      continue: helpers.command(async () => computeNodeContinueCapability.mock),
+      reauthorize: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof computeNodeReauthorizeCapability>
+        ) => computeNodeReauthorizeCapability.mock
+      ),
       localOverview: helpers.command(
         async (
           _input: GeneratedNativeCommandInput<typeof localComputeOverviewCapability>
@@ -9333,14 +10018,6 @@ export function createGeneratedNativeBridgeMock(
         async (
           _input?: GeneratedNativeCommandInput<typeof computeNodeRemoveCapability>
         ) => computeNodeRemoveCapability.mock
-      ),
-      abandon: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof computeNodeAbandonCapability>
-        ) => computeNodeAbandonCapability.mock
-      ),
-      resetLocalRecord: helpers.command(
-        async () => computeNodeResetLocalRecordCapability.mock
       ),
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>) =>
@@ -9401,6 +10078,7 @@ export function createGeneratedNativeBridgeMock(
         (_input: GeneratedNativeStateGetInput<typeof audioCaptureStateLeaf>) =>
           audioCaptureStateLeaf.mock
       ),
+      onTranscriptionFailed: helpers.event((_listener) => () => {}),
     },
     meetingPresence: {
       icon: helpers.command(
@@ -9448,6 +10126,21 @@ export function createGeneratedNativeBridgeMock(
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof airDropStateLeaf>) =>
           airDropStateLeaf.mock
+      ),
+    },
+    nearby: {
+      find: helpers.command(async () => nearbyFindCapability.mock),
+      ask: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof nearbyAskCapability>) =>
+          nearbyAskCapability.mock
+      ),
+      answer: helpers.command(
+        async (_input: GeneratedNativeCommandInput<typeof nearbyAnswerCapability>) =>
+          nearbyAnswerCapability.mock
+      ),
+      state: helpers.state(
+        (_input: GeneratedNativeStateGetInput<typeof nearbyStateLeaf>) =>
+          nearbyStateLeaf.mock
       ),
     },
     synchronicity: {
@@ -9595,6 +10288,10 @@ export function mergeGeneratedNativeBridgeOverrides(
       ...bridge.macApps,
       ...overrides.macApps,
     },
+    blender: {
+      ...bridge.blender,
+      ...overrides.blender,
+    },
     appearance: {
       ...bridge.appearance,
       ...overrides.appearance,
@@ -9682,6 +10379,10 @@ export function mergeGeneratedNativeBridgeOverrides(
     airDrop: {
       ...bridge.airDrop,
       ...overrides.airDrop,
+    },
+    nearby: {
+      ...bridge.nearby,
+      ...overrides.nearby,
     },
     synchronicity: {
       ...bridge.synchronicity,

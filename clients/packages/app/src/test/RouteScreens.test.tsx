@@ -186,18 +186,28 @@ vi.mock("../components/chat/useWorkspaceSkills", () => ({
   useWorkspaceSkills: () => [],
 }));
 
-function HomeRouteUnderTest({ workspaceId }: { workspaceId?: string | undefined }) {
+function HomeRouteUnderTest({
+  workspaceId,
+  ...draftHandOver
+}: {
+  onRequestedDraftTaken?: () => void;
+  requestedDraft?: string | undefined;
+  workspaceId?: string | undefined;
+}) {
   return (
     <ChatSidebarProvider>
-      <HomeRoute workspaceId={workspaceId} />
+      <HomeRoute workspaceId={workspaceId} {...draftHandOver} />
     </ChatSidebarProvider>
   );
 }
 
-const homeUi = (workspaceId?: string) => (
+const homeUi = (
+  workspaceId?: string,
+  draftHandOver: { onRequestedDraftTaken?: () => void; requestedDraft?: string } = {}
+) => (
   <WorkspaceChatStateContext.Provider value={harness.chatState}>
     <Toaster />
-    <HomeRouteUnderTest workspaceId={workspaceId} />
+    <HomeRouteUnderTest workspaceId={workspaceId} {...draftHandOver} />
   </WorkspaceChatStateContext.Provider>
 );
 
@@ -325,7 +335,11 @@ describe("HomeRoute startup draft", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByTestId("home-pending-error")).toBeVisible();
     await waitFor(() =>
-      expect(analytics.finish).toHaveBeenCalledExactlyOnceWith("failed", "server")
+      expect(analytics.finish).toHaveBeenCalledExactlyOnceWith(
+        "failed",
+        "server",
+        expect.any(Error)
+      )
     );
     expect(analytics.begin).toHaveBeenCalledExactlyOnceWith("home");
     expect(screen.getByRole("textbox", { name: "AI prompt" })).toHaveTextContent(
@@ -354,7 +368,11 @@ describe("HomeRoute startup draft", () => {
       if (outcome === "accepted") admission.resolve();
       else admission.reject(new Error("private admission failure"));
       await waitFor(() =>
-        expect(analytics.finish).toHaveBeenCalledExactlyOnceWith(outcome, "runtime")
+        expect(analytics.finish).toHaveBeenCalledExactlyOnceWith(
+          outcome,
+          "runtime",
+          ...(outcome === "failed" ? [expect.any(Error)] : [])
+        )
       );
       expect(analytics.begin).toHaveBeenCalledExactlyOnceWith("home");
       completion.reject(new Error("later delivery failure"));
@@ -430,7 +448,11 @@ describe("HomeRoute startup draft", () => {
       "Chat is temporarily unavailable"
     );
     expect(screen.queryByText("send failed")).toBeNull();
-    expect(analytics.finish).toHaveBeenCalledExactlyOnceWith("failed", "server");
+    expect(analytics.finish).toHaveBeenCalledExactlyOnceWith(
+      "failed",
+      "server",
+      expect.any(Error)
+    );
   });
 
   it("keeps Workspace recovery available when startup send and resolution both fail", async () => {
@@ -614,6 +636,22 @@ describe("HomeRoute startup draft", () => {
     act(() => announceOnboardingHandoff());
 
     await waitFor(() => expect(editor).toHaveFocus());
+  });
+
+  it("writes a skill's Try in Chat text after the draft, ready to finish", async () => {
+    const taken = vi.fn();
+    const { rerender } = render(homeUi());
+    const editor = screen.getByRole("textbox", { name: "AI prompt" });
+    await userEvent.type(editor, "first");
+    editor.blur();
+
+    rerender(
+      homeUi(undefined, { onRequestedDraftTaken: taken, requestedDraft: "/lark " })
+    );
+
+    await waitFor(() => expect(editor).toHaveTextContent(/^first\s+\/lark$/));
+    expect(editor).toHaveFocus();
+    expect(taken).toHaveBeenCalledTimes(1);
   });
 
   it("hides the unavailable access control in the compact startup composer", () => {

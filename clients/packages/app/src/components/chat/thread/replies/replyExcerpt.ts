@@ -1,5 +1,6 @@
 import type { useCommaMessages } from "@comma/i18n/react";
 import type { ChatMessage } from "@comma/core/chat";
+import { withoutScreenLinks } from "../../../remote-screen/screenLinks";
 import { messagePartsPlainText } from "../inline/MessageInlineElements";
 
 /** One line that stands for a message wherever a reply points at it. */
@@ -22,7 +23,7 @@ export function replyExcerpt(
     ].join(" ");
   }
   return (
-    text.replace(/\s+/g, " ").trim().slice(0, 180) ||
+    withoutScreenLinks(text).replace(/\s+/g, " ").trim().slice(0, 180) ||
     target.attachments[0]?.fileName ||
     target.attachments[0]?.title ||
     messagesApi.chat_reply_attachment()

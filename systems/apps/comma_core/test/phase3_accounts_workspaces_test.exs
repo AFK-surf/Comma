@@ -27,13 +27,13 @@ defmodule Comma.Phase3AccountsWorkspacesTest do
     refute :token in AuthSession.__schema__(:fields)
     refute inspect(stored_session) =~ session["token"]
 
-    workspace = insert_workspace!(user["id"], vm: %{"enabled" => true, "provider" => "sprites"})
+    workspace = insert_workspace!(user["id"], vm: %{"provider" => "sprites"})
     insert_membership!(workspace.id, user["id"], "owner")
 
     assert {:ok, [listed]} = Comma.Workspaces.list_for_user(user["id"])
     assert listed["id"] == workspace.id
     assert listed["members"] == [%{"role" => "owner", "user_id" => user["id"]}]
-    assert listed["vm"] == %{"enabled" => true, "provider" => "sprites"}
+    assert listed["vm"] == %{"provider" => "sprites"}
     assert {:ok, authorized} = Comma.Workspaces.authorize(user, session, workspace.id)
     assert authorized["id"] == workspace.id
   end

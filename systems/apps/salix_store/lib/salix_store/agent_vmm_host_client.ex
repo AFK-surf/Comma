@@ -7,7 +7,7 @@ defmodule SalixStore.AgentVMMHostClient do
   The URL carries the current allocation generation and Host connection epoch.
   """
 
-  alias SalixStore.{AgentVMM, Compute, Repo}
+  alias SalixStore.{AgentVMM, Compute}
 
   defstruct [
     :session_id,
@@ -189,35 +189,9 @@ defmodule SalixStore.AgentVMMHostClient do
     end
   end
 
-  defp resolve_current(workload_id), do: resolve_ready(workload_id, :command)
+  defp resolve_current(workload_id), do: resolve_target(workload_id, :command)
 
-  defp resolve_ready(workload_id, authority) do
-    workload = SalixStore.Repo.get(SalixStore.Compute.Workload, workload_id)
-    update = workload && workload.runtime_update
-
-    if update && update["phase"] in ["stopping", "replacing", "verifying"] do
-      {:error, :workload_updating}
-    else
-      with {:ok, session} <- current_session(workload, authority) do
-        resolve_session(session, workload_id)
-      end
-    end
-  end
-
-  # Shell runs the Host command service, not a Runtime Agent protocol peer.
-  defp current_session(%Compute.Workload{id: id, kind: "shell"}, :command),
-    do: AgentVMM.current_host_session_for_workload(id)
-
-  defp current_session(%Compute.Workload{id: id}, _authority),
-    do: AgentVMM.current_session_for_workload(id)
-
-  defp current_session(nil, _authority), do: {:error, :not_found}
-
-  defp resolve_provider(workload_id) do
-    with {:ok, session} <- AgentVMM.current_host_session_for_workload(workload_id) do
-      resolve_session(session, workload_id)
-    end
-  end
+  defp resolve_provider(workload_id), do: resolve_target(workload_id, :provider)
 
   defp resolve_provider(workload_id, nil), do: resolve_provider(workload_id)
 
@@ -240,20 +214,52 @@ defmodule SalixStore.AgentVMMHostClient do
   # succeed. The authenticated socket still checks each auth operation context.
   # Ordinary commands and new main executions retain the update pause.
   defp resolve_execution(workload_id, action, kind) do
-    case Repo.get(Compute.Workload, workload_id) do
-      %{runtime_update: %{"phase" => "verifying"}}
-      when action in ["list", "release"] or kind == "auth_operation" ->
-        resolve_provider(workload_id)
+    resolve_target(workload_id, {:execution, action, kind})
+  end
 
-      _ ->
-        resolve_ready(workload_id, :runtime)
+  defp resolve_target(workload_id, authority) do
+    with {:ok, projection} <- AgentVMM.current_session_projection_for_workload(workload_id),
+         :ok <- target_admission(projection, authority) do
+      resolve_session(projection)
     end
   end
 
-  defp resolve_session(session, workload_id) do
-    with {:ok, base_url} <- gateway_url(session.gateway_instance_id),
-         %Compute.Allocation{} = allocation <- Repo.get(Compute.Allocation, session.allocation_id),
-         %Compute.Workload{} <- Repo.get(Compute.Workload, workload_id) do
+  defp target_admission(projection, authority) do
+    %{session: session, workload: workload, runtime: runtime, allocation: allocation} = projection
+    phase = (workload.runtime_update || %{})["phase"]
+
+    verifying =
+      case authority do
+        {:execution, action, kind} ->
+          phase == "verifying" and (action in ["list", "release"] or kind == "auth_operation")
+
+        _ ->
+          false
+      end
+
+    cond do
+      authority != :provider and not verifying and
+          phase in ["stopping", "replacing", "verifying"] ->
+        {:error, :workload_updating}
+
+      is_nil(session) ->
+        {:error, :not_found}
+
+      authority == :provider or verifying or (authority == :command and workload.kind == "shell") ->
+        :ok
+
+      runtime.status == "connected" and runtime.readiness == "ready" and
+        runtime.caught_up_epoch == runtime.connection_epoch and
+          Compute.runtime_control_matches?(runtime, allocation, session) ->
+        :ok
+
+      true ->
+        {:error, :not_found}
+    end
+  end
+
+  defp resolve_session(%{session: session, workload: workload, allocation: allocation}) do
+    with {:ok, base_url} <- gateway_url(session.gateway_instance_id) do
       container = allocation.provider_observation["current_container"] || %{}
       container_id = container["id"]
       container_instance_id = container["instance_id"]
@@ -279,12 +285,11 @@ defmodule SalixStore.AgentVMMHostClient do
          allocation_id: session.allocation_id,
          connection_epoch: session.connection_epoch,
          allocation_generation: session.allocation_generation,
-         workload_generation: session.workload_generation,
+         workload_generation: workload.generation,
          container_id: container_id,
          container_instance_id: container_instance_id
        }}
     else
-      nil -> {:error, :runtime_execution_target_unavailable}
       _ -> {:error, :runtime_execution_target_unavailable}
     end
   end

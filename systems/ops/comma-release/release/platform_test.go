@@ -7,10 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -191,53 +190,28 @@ func TestCutoverJobRequestsAutopilotEvictionProtection(t *testing.T) {
 	})
 }
 
-func TestCutoverJobCanRunConversationProjectionTasks(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		elixir, err := exec.LookPath("elixir")
-		if err != nil {
-			t.Skip("Elixir is not installed")
-		}
-
-		manifest := (KubectlPlatform{Spec: EnvironmentSpec{Namespace: "comma"}}).jobManifest(
-			JobSpec{Name: "cutover", Stage: "cutover", Image: "candidate@sha256:digest"},
-			map[string]string{},
-		)
-		template := manifest["spec"].(map[string]any)["template"].(map[string]any)
-		container := template["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
-		var boot string
-		for _, item := range container["env"].([]any) {
-			entry := item.(map[string]any)
-			if entry["name"] == "COMMA_RELEASE_BOOT_EXPRESSION" {
-				boot = entry["value"].(string)
-				break
+func TestOfflineCutoverJobResourcesStayScopedToCutover(t *testing.T) {
+	p := KubectlPlatform{Spec: EnvironmentSpec{Namespace: "comma"}}
+	for _, stage := range []string{"cutover", "legacy-cutover", "plan", "online", "provider", "legacy-plan", "legacy-online", "legacy-provider", "session-lifecycle-epoch-assert"} {
+		t.Run(stage, func(t *testing.T) {
+			manifest := p.jobManifest(JobSpec{Name: stage, Stage: stage, Image: "image"}, map[string]string{})
+			template := manifest["spec"].(map[string]any)["template"].(map[string]any)
+			container := template["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			resources, present := container["resources"].(map[string]any)
+			if stage != "cutover" && stage != "legacy-cutover" {
+				if present {
+					t.Fatal("non-cutover Job requested offline import resources")
+				}
+				return
 			}
-		}
-		if boot == "" {
-			t.Fatal("cutover Job has no boot expression")
-		}
-
-		script := `
-:ok = :application.load({:application, :salix_store, [vsn: ~c"0.0.1", modules: [], applications: [:kernel, :stdlib]]})
-Code.eval_string(System.fetch_env!("COMMA_RELEASE_BOOT_EXPRESSION"))
-`
-		// The Job waits for the task's message, not for an amount of time.
-		expression := `
-parent = self()
-{:ok, _} = Task.Supervisor.start_child(SalixIM.ConversationProjectionTasks, fn -> send(parent, :projection_ran) end)
-receive do
-  :projection_ran -> IO.puts("projection_ran")
-end
-`
-		command := exec.Command(elixir, "-e", script)
-		command.Env = append(os.Environ(), "COMMA_RELEASE_BOOT_EXPRESSION="+boot, "COMMA_RELEASE_EXPRESSION="+expression)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("cutover Job cannot run Conversation projection tasks: %v\n%s", err, output)
-		}
-		if !bytes.Contains(output, []byte("projection_ran")) {
-			t.Fatalf("cutover Job did not run projection task: %s", output)
-		}
-	})
+			for _, kind := range []string{"requests", "limits"} {
+				quantities, ok := resources[kind].(map[string]string)
+				if !ok || quantities["cpu"] != "2" || quantities["memory"] != "4Gi" {
+					t.Fatalf("cutover %s = %#v, want 2 CPU / 4Gi", kind, resources[kind])
+				}
+			}
+		})
+	}
 }
 
 type lifecycleV1VerifyFixture struct {
@@ -697,6 +671,28 @@ func TestBuildHelmValuesPreservesRuntimeWorkloadIdentity(t *testing.T) {
 	})
 }
 
+func TestBuildHelmValuesPinsTheStationRelease(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manifest := "https://cue-release.afk.surf/station-release/inputs/abc.json"
+		platform := KubectlPlatform{Spec: EnvironmentSpec{Environment: "staging", Project: "example-staging-project", RuntimeServiceAccount: "comma-runtime@example-staging-project.iam.gserviceaccount.com"}}
+		replacements := testCandidateReplacements()
+		replacements["COMMA_STATION_RELEASE_MANIFEST_URL"] = manifest
+		body, err := platform.buildHelmValues(replacements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var values struct {
+			Stations map[string]any `json:"stations"`
+		}
+		if err = json.Unmarshal(body, &values); err != nil {
+			t.Fatal(err)
+		}
+		if values.Stations["releaseManifestUrl"] != manifest {
+			t.Fatalf("stations = %v", values.Stations)
+		}
+	})
+}
+
 func TestBuildHelmValuesTurnsOnCodingSandboxesOnlyWithAnL4ESURL(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		manifest := "https://cue-release.afk.surf/coding-sandbox/inputs/abc.json"
@@ -717,14 +713,29 @@ func TestBuildHelmValuesTurnsOnCodingSandboxesOnlyWithAnL4ESURL(t *testing.T) {
 			return values.Runtime
 		}
 		off := runtimeOf(L4ESEnvironmentSpec{})
-		for _, key := range []string{"l4esURL", "l4esImage", "l4esImageManifest", "l4esSize", "l4esMaxSandboxes"} {
+		for _, key := range []string{"l4esURL", "l4esImage", "l4esImageManifest", "l4esSize", "l4esLabels", "l4esMaxSandboxes", "cloudVmRetired"} {
 			if _, ok := off[key]; ok {
 				t.Fatalf("an environment without L4ES set %s", key)
 			}
 		}
-		on := runtimeOf(L4ESEnvironmentSpec{URL: "https://l4es.example", Image: "comma-coding-7", Size: "large", MaxSandboxes: 5})
+		on := runtimeOf(L4ESEnvironmentSpec{URL: "https://l4es.example", Image: "comma-coding-7", Size: "large", Labels: []string{"metal", "us-west"}, MaxSandboxes: 5})
 		if on["l4esURL"] != "https://l4es.example" || on["l4esImage"] != "comma-coding-7" || on["l4esImageManifest"] != manifest || on["l4esSize"] != "large" || on["l4esMaxSandboxes"] != float64(5) {
 			t.Fatalf("L4ES runtime values = %#v", on)
+		}
+		if fmt.Sprint(on["l4esLabels"]) != "[metal us-west]" {
+			t.Fatalf("l4esLabels = %#v", on["l4esLabels"])
+		}
+		// Without labels the chart's default (none) stands.
+		if _, ok := runtimeOf(L4ESEnvironmentSpec{URL: "https://l4es.example"})["l4esLabels"]; ok {
+			t.Fatalf("an environment without labels set l4esLabels")
+		}
+		// The Cloud VM stays a place until the environment retires it.
+		if _, ok := on["cloudVmRetired"]; ok {
+			t.Fatalf("an environment with L4ES alone retired the Cloud VM: %#v", on)
+		}
+		retired := runtimeOf(L4ESEnvironmentSpec{URL: "https://l4es.example", CloudVMRetired: true})
+		if retired["cloudVmRetired"] != true {
+			t.Fatalf("cloudVmRetired = %#v", retired["cloudVmRetired"])
 		}
 	})
 }
@@ -1175,6 +1186,7 @@ func TestOrdinalPublicHealthChecksUseReadinessForEverySurface(t *testing.T) {
 }
 
 type verifyRunner struct {
+	mu                    sync.Mutex
 	calls                 []string
 	alertRouterEnabled    bool
 	routerPaths           []string
@@ -1186,7 +1198,9 @@ type verifyRunner struct {
 
 func (r *verifyRunner) Run(_ context.Context, _ []byte, args ...string) ([]byte, error) {
 	joined := strings.Join(args, " ")
+	r.mu.Lock()
 	r.calls = append(r.calls, joined)
+	r.mu.Unlock()
 	switch {
 	case len(args) > 0 && args[0] == "status":
 		return []byte(`{"version":7,"info":{"status":"deployed"}}`), nil
@@ -1194,6 +1208,8 @@ func (r *verifyRunner) Run(_ context.Context, _ []byte, args ...string) ([]byte,
 		return []byte("ok"), nil
 	case len(args) > 1 && args[0] == "get" && args[1] == "values":
 		return []byte(`{"network":{"salixHost":"salix.example.test"}}`), nil
+	case strings.Contains(joined, "get pod/comma-2"):
+		return []byte("10.0.0.3"), nil
 	case strings.Contains(joined, "get pod/comma-1"):
 		return []byte("10.0.0.2"), nil
 	case strings.Contains(joined, "get pod/comma-0"):
@@ -1204,7 +1220,7 @@ func (r *verifyRunner) Run(_ context.Context, _ []byte, args ...string) ([]byte,
 		}
 		return []byte(`{"items":[{"endpoints":[{"addresses":["10.0.1.1"],"conditions":{"ready":true}}]}]}`), nil
 	case strings.Contains(joined, "get endpointslice"):
-		return []byte(`{"items":[{"endpoints":[{"addresses":["10.0.0.1"],"conditions":{"ready":true},"targetRef":{"name":"comma-0"}},{"addresses":["10.0.0.2"],"conditions":{"ready":true},"targetRef":{"name":"comma-1"}}]}]}`), nil
+		return []byte(`{"items":[{"endpoints":[{"addresses":["10.0.0.1"],"conditions":{"ready":true},"targetRef":{"name":"comma-0"}},{"addresses":["10.0.0.2"],"conditions":{"ready":true},"targetRef":{"name":"comma-1"}},{"addresses":["10.0.0.3"],"conditions":{"ready":true},"targetRef":{"name":"comma-2"}}]}]}`), nil
 	case strings.Contains(joined, "get deployment/comma-alert-router -o json"):
 		return []byte(`{"spec":{"template":{"spec":{"containers":[{"name":"comma"},{"name":"cloud-sql-proxy","args":["--private-ip","project:region:instance"]}]}}}}`), nil
 	case strings.Contains(joined, "get configmap/bundle"):
@@ -1243,6 +1259,40 @@ func (r *verifyRunner) Run(_ context.Context, _ []byte, args ...string) ([]byte,
 		return []byte(fmt.Sprintf(`{"metadata":{"name":"comma-salix","generation":7},"spec":{%s"rules":[{"matches":[%s],"backendRefs":[{"name":"comma-alert-router","port":80}]}%s]}%s}`, parentAndStatus, strings.Join(matches, ","), extraRule, status)), nil
 	default:
 		return nil, nil
+	}
+}
+
+func TestOrdinalHealthWaitsForEveryIndependentCheck(t *testing.T) {
+	for _, unhealthy := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			fixture := &verifyRunner{}
+			p := KubectlPlatform{Spec: EnvironmentSpec{Namespace: "comma", PublicHosts: []string{"salix.test", "teams.test"}}}
+			p.Kubectl = runnerFunc(func(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+				if strings.Contains(strings.Join(args, " "), "get endpointslice") {
+					time.Sleep(10 * time.Second)
+				}
+				return fixture.Run(ctx, input, args...)
+			})
+			p.Curl = runnerFunc(func(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+				time.Sleep(10 * time.Second)
+				return fixture.Run(ctx, input, args...)
+			})
+			p.Gcloud = runnerFunc(func(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+				time.Sleep(10 * time.Second)
+				if unhealthy && strings.Contains(strings.Join(args, " "), "get-health lb-comma-comma-product-80-c") {
+					return []byte(`[{"ipAddress":"10.0.0.1","healthState":"UNHEALTHY"}]`), nil
+				}
+				return (verifyGcloudRunner{}).Run(ctx, input, args...)
+			})
+			started := time.Now()
+			err := p.verifyOrdinalOnce(context.Background(), "comma-0", []string{"comma-salix", "comma-teams", "comma-product"})
+			if (err != nil) != unhealthy {
+				t.Fatalf("unhealthy=%t, verification error=%v", unhealthy, err)
+			}
+			if elapsed := time.Since(started); elapsed > 30*time.Second {
+				t.Fatalf("independent health reads serialized: %s", elapsed)
+			}
+		})
 	}
 }
 
@@ -1287,7 +1337,7 @@ func (verifyGcloudRunner) Run(_ context.Context, _ []byte, args ...string) ([]by
 	if strings.Contains(joined, "backend-services list") {
 		return []byte("lb-comma-comma-salix-80-a\nlb-comma-comma-teams-80-b\nlb-comma-comma-product-80-c\n"), nil
 	}
-	return []byte(`[{"ipAddress":"10.0.0.1","healthState":"HEALTHY"},{"ipAddress":"10.0.0.2","healthState":"HEALTHY"}]`), nil
+	return []byte(`[{"ipAddress":"10.0.0.1","healthState":"HEALTHY"},{"ipAddress":"10.0.0.2","healthState":"HEALTHY"},{"ipAddress":"10.0.0.3","healthState":"HEALTHY"}]`), nil
 }
 
 func TestVerifyPreservesCollectorOrdinalOneOrdinalZeroOrder(t *testing.T) {
@@ -1323,9 +1373,10 @@ func TestVerifyPreservesCollectorOrdinalOneOrdinalZeroOrder(t *testing.T) {
 		}
 		collector := index("rollout status deployment/comma-otel-collector")
 		ordinalOne := index("get pod/comma-1")
+		ordinalTwo := index("get pod/comma-2")
 		partitionZero := index("upgrade comma")
 		ordinalZero := index("get pod/comma-0")
-		if collector < 0 || !(collector < ordinalOne && ordinalOne < partitionZero && partitionZero < ordinalZero) {
+		if collector < 0 || !(collector < ordinalOne && ordinalOne < ordinalTwo && ordinalTwo < partitionZero && partitionZero < ordinalZero) {
 			t.Fatalf("unexpected verify order: %#v", runner.calls)
 		}
 		if strings.Contains(strings.Join(runner.calls, "\n"), "patch statefulset/comma") {
@@ -1454,7 +1505,7 @@ func TestRestoreFailsClosedWhenRestoredAlertRouterServingPathDrifts(t *testing.T
 	}
 }
 
-func TestExclusiveVerifyUsesCandidateOnlyOrderedReadyZeroThenOne(t *testing.T) {
+func TestExclusiveVerifyUsesCandidateOnlyOrderedReadyInOrdinalOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runner := &verifyRunner{}
 		p := KubectlPlatform{
@@ -1478,8 +1529,9 @@ func TestExclusiveVerifyUsesCandidateOnlyOrderedReadyZeroThenOne(t *testing.T) {
 		joined := strings.Join(runner.calls, "\n")
 		zero := strings.Index(joined, "get pod/comma-0")
 		one := strings.Index(joined, "get pod/comma-1")
-		if zero < 0 || one < 0 || zero >= one || strings.Contains(joined, "patch statefulset/comma") {
-			t.Fatalf("exclusive verify did not follow candidate-only 0->1 order: %s", joined)
+		two := strings.Index(joined, "get pod/comma-2")
+		if zero < 0 || one < 0 || two < 0 || zero >= one || one >= two || strings.Contains(joined, "patch statefulset/comma") {
+			t.Fatalf("exclusive verify did not follow candidate-only 0->1->2 order: %s", joined)
 		}
 	})
 }

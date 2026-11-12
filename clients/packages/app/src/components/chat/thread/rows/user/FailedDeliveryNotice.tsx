@@ -31,8 +31,8 @@ export function FailedDeliveryNotice({
             : messagesApi.chat_failed()}
         </span>
         <div className="comma-chat-notice-card-actions">
-          {/* Discard leaves the send behind; Retry is the one that
-              resumes it, so it sits at the far end. */}
+          {/* Retry and Add credits resume the send; Discard leaves it behind,
+              so it sits apart at the far end. */}
           <div className="comma-chat-notice-card-actions-group">
             {outOfCredits ? (
               <button
@@ -44,19 +44,19 @@ export function FailedDeliveryNotice({
               </button>
             ) : null}
             <button
-              className="comma-chat-notice-card-action comma-chat-notice-card-action-quiet"
-              onClick={() => onDiscard(message.clientRequestId!)}
+              className="comma-chat-notice-card-action"
+              onClick={() => onRetry(message.clientRequestId!)}
               type="button"
             >
-              {messagesApi.common_discard()}
+              {messagesApi.common_retry()}
             </button>
           </div>
           <button
-            className="comma-chat-notice-card-action"
-            onClick={() => onRetry(message.clientRequestId!)}
+            className="comma-chat-notice-card-action comma-chat-notice-card-action-quiet"
+            onClick={() => onDiscard(message.clientRequestId!)}
             type="button"
           >
-            {messagesApi.common_retry()}
+            {messagesApi.common_discard()}
           </button>
         </div>
       </div>

@@ -2,6 +2,7 @@
 // and again after it went. The credential comes from the caller each time one is needed (a hello, a renewal); the mesh
 // keeps none.
 import type {
+  BiStream,
   CloseInfo,
   MeshConnection,
   MeshEndpoint,
@@ -14,6 +15,7 @@ import {
   FrameReader,
   MESH_ALPN,
   MeshError,
+  PING_PATH,
   StreamCode,
   controlFrame,
   encodeFrame,
@@ -52,7 +54,63 @@ type Link = {
   connection: MeshConnection;
   /** Sends a control frame and waits for the server's answer (one at a time, in order). */
   control(frame: ControlFrame): Promise<ControlFrame>;
+  /** Anything the peer sent on the connection, on any stream. */
+  heard: Heard;
 };
+
+/** What a connection heard from its peer: each read that brought bytes, and who waits for the next. */
+class Heard {
+  #next: (() => void)[] = [];
+
+  hear(): void {
+    const next = this.#next;
+    this.#next = [];
+    for (const go of next) go();
+  }
+
+  /** Resolves once the peer sends anything more. */
+  next(): Promise<void> {
+    return new Promise((go) => this.#next.push(go));
+  }
+
+  /** `connection`, what its streams read heard. */
+  of(connection: MeshConnection): MeshConnection {
+    const { nextVia } = connection;
+    return {
+      remoteId: connection.remoteId,
+      ...(nextVia
+        ? { nextVia: (last: MeshVia | null) => nextVia.call(connection, last) }
+        : {}),
+      openBi: async () => this.counted(await connection.openBi()),
+      acceptBi: async () => {
+        const stream = await connection.acceptBi();
+        return stream && this.counted(stream);
+      },
+      closed: () => connection.closed(),
+      close: (code, reason) => connection.close(code, reason),
+    };
+  }
+
+  /** `stream`, its reads heard. */
+  counted(stream: BiStream): BiStream {
+    const { send, recv } = stream;
+    return {
+      send,
+      recv: {
+        read: async (max) => {
+          const got = await recv.read(max);
+          if (got !== null && got.length > 0) this.hear();
+          return got;
+        },
+        stop: (code) => recv.stop(code),
+      },
+    };
+  }
+}
+
+/** What a connection is kept under: the peer, in what it is for. */
+export const peerKey = (peer: PeerAddr) =>
+  peer.scope ? `${peer.id}@${peer.scope}` : peer.id;
 
 export class MeshClient {
   readonly #options: MeshClientOptions;
@@ -107,6 +165,79 @@ export class MeshClient {
     return link.connection.nextVia ? link.connection.nextVia(last) : null;
   }
 
+  /**
+   * Opens a new connection to `peer` beside the open one, which carries nothing though it is still open, and puts it in
+   * that one's place once its hello is answered: the old one is closed, and what was on it fails, to be asked again on
+   * the new. For a peer whose process went and came back (QUIC finds that out only at its idle timeout). `wanted` is
+   * asked once the new one opened: false (the old one spoke again meanwhile: the network only paused) closes the new one
+   * and keeps the old. True when it was replaced; false when none was open, none opened, or it was not wanted.
+   */
+  async refresh(peer: PeerAddr, wanted: () => boolean = () => true): Promise<boolean> {
+    const key = peerKey(peer);
+    const old = this.#opened.get(key);
+    if (!old || this.#closed) return false;
+    let fresh: Link;
+    try {
+      fresh = await this.#open(peer);
+    } catch {
+      return false;
+    }
+    if (this.#opened.get(key) !== old || this.#closed || !wanted()) {
+      fresh.connection.close(CloseCode.done, "not needed");
+      return false;
+    }
+    this.#links.set(key, Promise.resolve(fresh));
+    this.#opened.set(key, fresh);
+    void fresh.connection.closed().then(() => this.#forget(key, fresh));
+    old.connection.close(CloseCode.done, "replaced");
+    return true;
+  }
+
+  /**
+   * Asks the peer on the open connection whether it is still there: resolves once the question is written (a stream to
+   * write it on may be a while coming), or once the peer sent anything meanwhile, with `answered`, which resolves once
+   * the peer sent anything after it was asked and fails once the connection closes. A peer gone with the connection
+   * still open sends nothing, and the caller gives it up after its own while. Fails when none is open.
+   */
+  async ping(peer: PeerAddr): Promise<{ answered: Promise<void> }> {
+    const link = this.#opened.get(peerKey(peer));
+    if (!link || this.#closed)
+      throw new MeshError("disconnected", "No connection is open.");
+    // Anything heard from now on answers it: the question's own answer, or what a busy connection carries before it
+    // (a slow link full of a screen's frames is still there). A peer older than PING_PATH answers it as any unknown path.
+    const heard = link.heard.next();
+    const closed = link.connection.closed().then(() => {
+      throw new MeshError("disconnected", "The connection closed.");
+    });
+    closed.catch(() => undefined);
+    const written = (async () => {
+      const { send, recv } = await link.connection.openBi();
+      try {
+        await send.write(
+          encodeFrame({ type: "request", method: "GET", path: PING_PATH, headers: [] })
+        );
+        await send.finish();
+      } catch (error) {
+        recv.stop(StreamCode.cancelled);
+        throw disconnected(error);
+      }
+      // Read to its end, as the stream lasts until it is (a binding that cannot stop a reading half): one left unread
+      // counts against the streams the peer lets be open, and a ping each 2 s would use them up.
+      void (async () => {
+        while ((await recv.read(64 * 1024)) !== null);
+      })().catch(() => undefined);
+      void Promise.race([heard, closed])
+        .finally(() => recv.stop(StreamCode.cancelled))
+        .catch(() => undefined);
+    })();
+    written.catch(() => undefined);
+    // Heard before the question could even be written (no stream to be had: the peer's are all open): that answers it.
+    await Promise.race([written, heard]);
+    const answered = Promise.race([heard, closed]);
+    answered.catch(() => undefined);
+    return { answered };
+  }
+
   /** Closes the connection to `peer`; the next request opens another. */
   disconnect(peerId: string): void {
     const link = this.#links.get(peerId);
@@ -137,12 +268,12 @@ export class MeshClient {
       stream = await link.connection.openBi();
     } catch {
       // The connection went before this request began (nothing of it was sent): once more on a new one.
-      this.#drop(peer.id, link);
+      this.#drop(peerKey(peer), link);
       link = await this.#link(peer);
       try {
         stream = await link.connection.openBi();
       } catch (error) {
-        this.#drop(peer.id, link);
+        this.#drop(peerKey(peer), link);
         throw disconnected(error);
       }
     }
@@ -162,9 +293,23 @@ export class MeshClient {
           headers: request.headers ?? [],
         })
       );
-      // The body goes while the answer is read: a server may answer before it has all of it.
-      const sent = sendBody(send, request.body).catch((error: unknown) => {
-        recv.stop(StreamCode.cancelled);
+      // The body goes while the answer is read: a server may answer before it has all of it, and may stop reading it
+      // (it refused the request): the answer is read on. Only a body that failed itself gives the answer up.
+      let bodyFailed = false;
+      const given = request.body;
+      const sending =
+        given && !(given instanceof Uint8Array)
+          ? (async function* () {
+              try {
+                yield* given;
+              } catch (error) {
+                bodyFailed = true;
+                throw error;
+              }
+            })()
+          : given;
+      const sent = sendBody(send, sending).catch((error: unknown) => {
+        if (bodyFailed) recv.stop(StreamCode.cancelled);
         throw error;
       });
       sent.catch(() => undefined);
@@ -214,7 +359,7 @@ export class MeshClient {
     const credential = await this.#options.credential(peer);
     const answer = await link.control({ type: "credential", credential });
     if (answer.type !== "renewed") {
-      this.#drop(peer.id, link);
+      this.#drop(peerKey(peer), link);
       throw refusedError(answer);
     }
   }
@@ -222,17 +367,18 @@ export class MeshClient {
   #link(peer: PeerAddr): Promise<Link> {
     if (this.#closed)
       return Promise.reject(new MeshError("closed", "The mesh client is closed."));
-    const existing = this.#links.get(peer.id);
+    const key = peerKey(peer);
+    const existing = this.#links.get(key);
     if (existing) return existing;
     const opening = this.#open(peer);
-    this.#links.set(peer.id, opening);
+    this.#links.set(key, opening);
     opening.then(
       (link) => {
-        if (this.#links.get(peer.id) === opening) this.#opened.set(peer.id, link);
-        void link.connection.closed().then(() => this.#forget(peer.id, link));
+        if (this.#links.get(key) === opening) this.#opened.set(key, link);
+        void link.connection.closed().then(() => this.#forget(key, link));
       },
       () => {
-        if (this.#links.get(peer.id) === opening) this.#links.delete(peer.id);
+        if (this.#links.get(key) === opening) this.#links.delete(key);
       }
     );
     return opening;
@@ -255,6 +401,8 @@ export class MeshClient {
       connection.close(CloseCode.protocol, "wrong peer");
       throw new MeshError("unreachable", "Another peer answered.");
     }
+    const heard = new Heard();
+    connection = heard.of(connection);
     try {
       const { send, recv } = await connection.openBi();
       const reader = new FrameReader((max) => recv.read(max));
@@ -276,7 +424,7 @@ export class MeshClient {
         connection.close(CloseCode.done, "refused");
         throw refusedError(answer);
       }
-      return { connection, control };
+      return { connection, control, heard };
     } catch (error) {
       connection.close(CloseCode.done, "hello failed");
       if (error instanceof MeshError) throw error;

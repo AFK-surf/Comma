@@ -9,7 +9,17 @@ import VerifiedKernelProofs.Session.WorkDriverLog
 import VerifiedKernelProofs.Session.WorkDriverRecovery
 import VerifiedKernelProofs.Session.WorkRawOrdinary
 import VerifiedKernelProofs.Session.WorkCurrentConfirmation
-
+import VerifiedKernelProofs.Session.WorkPhysicalHistory
+import VerifiedKernelProofs.Session.WorkDriverBatch
+import VerifiedKernelProofs.Session.WorkDriverRawBatch
+import VerifiedKernelProofs.Session.WorkDriverRawAdmission
+import VerifiedKernelProofs.Session.WorkPhysicalTransport
+import VerifiedKernelProofs.Session.WorkPhysicalPreservation
+import VerifiedKernelProofs.Session.WorkPhysicalWrite
+import VerifiedKernelProofs.Session.WorkInputTermPending
+import VerifiedKernelProofs.Session.WorkActivationWrite
+import VerifiedKernelProofs.Session.WorkDriverFencedBatch
+import VerifiedKernelProofs.Session.WorkStoredIdentity
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication CommandDriver
 set_option Elab.async false
@@ -49,6 +59,7 @@ inductive Staging : Objects → Revision.Cursor → Objects → Revision.Cursor 
         (writeFenced next continuation)) : Staging objects cursor objects (.pending next)
   | archive {objects nextObjects : Objects} {cursor : Revision.Cursor} {next : PendingRevision.Cursor}
       {records : List Term} {ceiling line : Int} {final : ArchivePublication.Output} {event : Term}
+      (physical : ArchiveProjection.UnarchivedWindow cursor.candidate.working)
       (window : StorageQuery.archiveWindow cursor.candidate.working [] =
         .ok (.tuple [a "ok", list records, i ceiling], [])) (positive : line > 0)
       (publication : ArchivePublication.Execution (start cursor.candidate.working (i line)) objects final nextObjects)
@@ -75,6 +86,7 @@ theorem Staging.recovery {objects : Objects} {cursor : Revision.Cursor} {next : 
 theorem Staging.archive_published_earlier {objects published current : Objects}
     {cursor : Revision.Cursor} {next : PendingRevision.Cursor} {records : List Term}
     {ceiling line : Int} {final : ArchivePublication.Output} {event : Term}
+    (physical : ArchiveProjection.UnarchivedWindow cursor.candidate.working)
     (window : StorageQuery.archiveWindow cursor.candidate.working [] =
       .ok (.tuple [a "ok", list records, i ceiling], [])) (positive : line > 0)
     (publication : ArchivePublication.Execution (start cursor.candidate.working (i line)) objects final published)
@@ -82,13 +94,13 @@ theorem Staging.archive_published_earlier {objects published current : Objects}
     (written : PendingRevision.Execution
       (PendingRevision.resident (some cursor.candidate.pack) (a "write") (.tuple [list [event], nil])) next) :
     Staging current cursor current (.pending next) :=
-  .archive window positive (publication.in_extension extension) emitted written
+  .archive physical window positive (publication.in_extension extension) emitted written
 
 theorem Staging.physical {framing : CodecFraming} {objects nextObjects : Objects}
     {owner session : ByteArray} {cursor next : Revision.Cursor} {sealed : List Term}
     (execution : Staging objects cursor nextObjects next)
     (history : PhysicalHistory framing objects owner session cursor.candidate.working sealed) :
-    next.candidate.etag = cursor.candidate.etag ∧ ObjectsExtend objects nextObjects ∧
+    next.candidate.revision = cursor.candidate.revision ∧ ObjectsExtend objects nextObjects ∧
       ∃ nextSealed, PhysicalHistory framing nextObjects owner session next.candidate.working nextSealed ∧
       ∀ item, PhysicalIdentityFact objects cursor.candidate.working (.work item) →
         PhysicalIdentityFact nextObjects next.candidate.working (.work item) := by
@@ -124,12 +136,12 @@ theorem Staging.physical {framing : CodecFraming} {objects nextObjects : Objects
     obtain ⟨nextHistory, kept⟩ := activation_raw_write_physical history admission write
     exact ⟨(activation_raw_write_preserves history.invariant.history.invariant.ready admission write).2.2.1,
       fun _ _ h => h, sealed, nextHistory, kept⟩
-  | archive window positive publication emitted written =>
+  | archive physical window positive publication emitted written =>
     obtain ⟨_, etagEq, dropped, nextHistory, _⟩ :=
-      PendingRevision.archive_write_physical_history history window positive publication emitted written
+      PendingRevision.archive_write_physical_history history physical window positive publication emitted written
     obtain ⟨_, _, _, _, _, _, applied⟩ := PendingRevision.write_executes written
     exact ⟨etagEq, execution_objects_extend publication, _, nextHistory,
-      history.publish_resident_physical window positive publication emitted applied⟩
+      history.publish_resident_physical physical window positive publication emitted applied⟩
   | trans prior suffix first second =>
     obtain ⟨firstToken, firstObjects, middleSealed, middleHistory, firstKept⟩ := first history
     obtain ⟨secondToken, secondObjects, nextSealed, nextHistory, secondKept⟩ := second middleHistory
@@ -186,9 +198,9 @@ theorem Staging.records {framing : CodecFraming} {objects nextObjects : Objects}
     obtain ⟨keys, metadata⟩ := PendingRevision.hwm_metadata capturedHwm
     exact fun reference present => middleHistory.metadata_records metadataBatch keys metadata reference
       (history.nonretiring_records activationBatch canonical safe owner reference present)
-  | archive window positive publication emitted written =>
+  | archive physical window positive publication emitted written =>
     obtain ⟨_, _, _, _, _, _, applied⟩ := PendingRevision.write_executes written
-    exact history.publish_records window positive publication emitted applied
+    exact history.publish_records physical window positive publication emitted applied
   | trans prior suffix first second =>
     obtain ⟨_, _, middleSealed, middleHistory, _⟩ := prior.physical history
     exact fun reference present => second middleHistory reference (first history reference present)
@@ -197,7 +209,7 @@ theorem Staging.identities {framing : CodecFraming} {objects nextObjects : Objec
     {owner session : ByteArray} {cursor next : Revision.Cursor} {sealed : List Term}
     (execution : Staging objects cursor nextObjects next)
     (history : PhysicalHistory framing objects owner session cursor.candidate.working sealed) :
-    next.candidate.etag = cursor.candidate.etag ∧ ObjectsExtend objects nextObjects ∧
+    next.candidate.revision = cursor.candidate.revision ∧ ObjectsExtend objects nextObjects ∧
       ∃ nextSealed, PhysicalHistory framing nextObjects owner session next.candidate.working nextSealed ∧
       ∀ fact, PhysicalIdentityFact objects cursor.candidate.working fact →
         PhysicalIdentityFact nextObjects next.candidate.working fact := by

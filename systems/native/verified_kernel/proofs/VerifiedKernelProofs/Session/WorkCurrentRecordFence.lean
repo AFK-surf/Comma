@@ -15,7 +15,7 @@ theorem WriteSubmission.current_identities {framing : CodecFraming} {objects : O
     trace.key = StorageAddress.key owner session ∧ ∃ etag snapshot bytes,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       (.tuple [a "cas", trace.requestedKey, trace.requestedBytes, trace.requestedBase] : Term) =
-        .tuple [a "cas", trace.key, .binary bytes, cursor.etag] ∧
+        .tuple [a "cas", trace.key, .binary bytes, cursor.revision] ∧
       after.current trace.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       ∀ fact, PhysicalIdentityFact objects cursor.working fact → PhysicalIdentityFact objects snapshot fact := by
   have encoded := trace.encoded
@@ -30,7 +30,7 @@ theorem WriteSubmission.current_identities {framing : CodecFraming} {objects : O
   obtain ⟨_, preparedCall⟩ := StorageCommit.start_capture started
   have addressed := StorageAddress.agreed_key stampedHistory.invariant.owned stampedHistory.invariant.identified
     (StorageCommit.prepared_address preparedCall)
-  have applied : HotCAS before (.tuple [a "cas", trace.key, .binary bytes, cursor.etag]) result after := by
+  have applied : HotCAS before (.tuple [a "cas", trace.key, .binary bytes, cursor.revision]) result after := by
     rwa [issued] at cas
   obtain ⟨etag, stored⟩ := applied.current_candidate encoding
   obtain ⟨journal, remaining, prepared⟩ := RevisionFence.start_prepares preparation

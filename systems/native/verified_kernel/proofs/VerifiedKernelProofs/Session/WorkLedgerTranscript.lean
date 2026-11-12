@@ -45,7 +45,7 @@ theorem transcriptLog_checked_ledger_absent {s e t : Term} {key : ByteArray} {gr
     (different : ∀ inserted ∈ groups.flatten, (inserted == .binary key) = false)
     (absent : IdentityAbsent (s.get (a "input_dedupe")) (.binary key))
     (h : transcriptLog s e j = .ok (t, r)) : IdentityAbsent (t.get (a "input_dedupe")) (.binary key) := by
-  unfold Command.inputIdentityGroups at checked
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups at checked
   simp +decide only [kind] at checked
   have groupsEq := pure_ok checked
   subst groups
@@ -119,7 +119,7 @@ theorem transcriptDelivery_checked_ledger_absent {s e t : Term} {key : ByteArray
     (different : ∀ inserted ∈ groups.flatten, (inserted == .binary key) = false)
     (absent : IdentityAbsent (s.get (a "input_dedupe")) (.binary key))
     (h : transcriptDelivery s e j = .ok (t, r)) : IdentityAbsent (t.get (a "input_dedupe")) (.binary key) := by
-  unfold Command.inputIdentityGroups at checked
+  unfold Command.inputIdentityGroups StorageDelta.identityGroups at checked
   simp +decide only [kind] at checked
   cases queued : e.get (b "from_queue") == a "true"
   · have same : t = s := by

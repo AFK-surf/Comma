@@ -28,8 +28,37 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
   def create_provisioned_project(org_id, attrs, opts \\ []) do
     with {:ok, project} <- BridgeForTeams.Projects.create_project(org_id, attrs, opts) do
       drain()
+      ensure_provisioned!(project)
       {:ok, project}
     end
+  end
+
+  # The drain counts a failed row as progress, so a project whose group or
+  # router was never created would otherwise come back as provisioned.
+  defp ensure_provisioned!(project) do
+    import Ecto.Query
+
+    agent_ids =
+      from(a in BridgeForTeams.Schema.Agent,
+        where: a.project_id == ^project.id,
+        select: type(a.id, :string)
+      )
+      |> BridgeForTeams.Repo.all()
+
+    unsettled =
+      from(r in BridgeForTeams.Schema.ReconcileOutbox,
+        where:
+          r.status != "done" and
+            ((r.aggregate == "organization" and r.aggregate_id == ^project.org_id) or
+               (r.aggregate == "project" and r.aggregate_id == ^project.id) or
+               (r.aggregate == "agent" and r.aggregate_id in ^agent_ids)),
+        order_by: [asc: r.created_at],
+        select: {r.op, r.status, r.attempts, r.last_error}
+      )
+      |> BridgeForTeams.Repo.all()
+
+    if unsettled != [],
+      do: raise("Project fixture is not provisioned: #{inspect(unsettled)}")
   end
 
   def create_provisioned_agent(project_id, attrs) do

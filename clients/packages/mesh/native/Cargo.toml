@@ -3,7 +3,7 @@ name = "comma-mesh-native"
 edition = "2024"
 version = "0.1.0"
 publish = false
-description = "The client core's iroh on the phones (the core's engine, clients/packages/core/native): a client's endpoint as the station's addon binds it, its connections and streams, and Salix as the relay of last resort, behind a C ABI. Built once per change of it, shipped prebuilt (systems/station/scripts/native.ts, part client-mesh)."
+description = "The client core's iroh on the phones (the core's engine, clients/packages/core/native): a client's endpoint as the station's addon binds it, its connections and streams, and Salix as a relay, behind a C ABI. Built once per change of it, shipped prebuilt (systems/station/scripts/native.ts, part client-mesh)."
 
 [lib]
 crate-type = ["staticlib"]

@@ -1,67 +1,36 @@
-# Salix device connectors
+# Mac mini runner and Agent VMM scripts
 
-`salix-connect` is the Go Connector for devices, Cloudflare, and managed native runtimes.
-It owns the Codex and Claude runtime implementations.
+This directory holds the BridgeForTeams Mac mini runner (`mac-mini-provisioner`, installed as `bft-runner`), its
+installer, and the Agent VMM CI scripts. Devices, Cloud VMs and Workloads connect to Salix through the station
+(`systems/station`, its connector in `src/connector`). The wire protocol below is the one the station speaks.
 
-Connectors expose filesystem and process operations through the shared protocol.
-A device connection starts read-only. Managed cloud connections keep their existing access policy.
-
-## How it fits
-
-```
-   connector ──WebSocket──▶ Salix node A  (owns this connector run, SalixWeb.ConnectorSocket)
-                                        │  connector_run_id stamped node A
-                                        ▼
-   agent on node B ──env.exec tool──▶ SalixWeb.EnvDispatch ──▶ SalixEnv.Connector.Live
-                                        │  record says node A
-                                        ▼  :erpc to node A → SalixEnv.Bridge.rpc → WebSocket
-```
-
-The connector connects to _one_ node. Agents on _any_ node reach it.
-
-[`docs/compute-devices.md`](../../docs/compute-devices.md) defines device and runtime identity.
-The wire protocol names the live connection `connector_run_id`. External agent
-binding stays on the stable device runtime.
-
-## Run it
-
-Comma device settings use `salix-connect --device`. This mode starts with read-only
-access and discovers local agents without starting them. The user enables
-operations in Settings > Devices before native agent execution. See
-[Comma device settings](../../docs/compute-devices.md) for access ownership,
-manual startup, and attachment-only connectors.
-
-```sh
-# Production remote connector: authenticate with a group-scoped connector credential.
-go run ./salix-connect \
-    --server http://127.0.0.1:4000 \
-    --connector-token "$SALIX_CONNECTOR_TOKEN" \
-    --name my-laptop \
-    --alias my-laptop \
-    --root /tmp/salix-workdir
-```
-
-On connect, the connector prints the current connector run id. The device shows in Salix
-device inventory. Command and file operations go to the current online
-connector run for that device.
+The October 2026 Agent VMM storage cutover permits a clean installation for older versions.
+Resolve the exact Host installation before deletion. Preserve unrelated installations and Salix-owned data.
+Agent VMM owns forward Host SQLite migrations from schema 39. Native maintenance checks compatibility before replacing the Host.
+Migration preserves Host facts and accepted receipts in one transaction. Guest disks, credentials, and lifecycle journals retain their separate owners.
+Migration failure may use the existing reset recovery policy. Report lost local work and required sign-in or enrollment.
+A reset must fence old execution. It must not replay accepted input whose outcome remains unknown.
+The Salix observation cutover `salix-20261027000101` uses rolling deployment. Old instances may fail queries until replacement.
+It deletes only `protocol_version`, `host_api_version`, `connector_release`, and `supported_features` from registration observations.
+These retired health projections need no backup. Registrations, fencing epochs, workloads, volumes, and accepted receipts remain intact.
+After cutover, use forward repair. Host reconnect rebuilds health observations within the [release convergence budget](../../docs/release-operations.md).
+See [Compute and devices](../../docs/compute-devices.md#host-reconnect-and-runtime-recovery) for ownership and recovery.
 
 ## Runner provisioning installer
 
-One installer prepares the local runner bundle: `salix-connect` for the
-connector transport and `bft-runner` for the host-side claim and lifecycle loop.
-The installer installs and verifies the artifacts, prepares the runner workdir,
-writes a protected runner config, generates a launchd plist for the loop worker,
-and writes a non-secret local status document. It does not load a launchd service.
+One installer prepares the local runner bundle: the Agent VMM Host and
+`bft-runner`, which registers the Mac, heartbeats, and applies the Agent VMM
+installs, controls and updates the heartbeat hands it. The runner starts no
+agents: Agents on a Mac run in the station of the Comma desktop app.
+The installer installs and verifies the artifacts, writes a protected runner
+config, generates a launchd plist for the loop worker, and writes a non-secret
+local status document. It does not load a launchd service.
 
 BridgeForTeams org settings generate the short-lived wrapper command. The
 [ops runbook](../../docs/bridge-for-teams/design.md) owns the operator procedure.
 Operators do not copy raw `BFT_*` exports.
 
-Server and Runner releases advance together.
-Runner configuration uses `paths.workdir`. Launch input uses `root`, relative to that workdir or absolute.
-For an old configuration, set `paths.workdir` to the existing workspace directory before you start the updated Runner.
-Keep existing Connector root locations. A missing `workdir` fails before launch. The Runner does not select another data directory.
-An old Runner is stale until you update it. This does not revoke independently running Connectors or delete their data.
+Server and Runner releases advance together. An old Runner is stale until you update it.
 
 ### Install trust
 
@@ -69,51 +38,19 @@ The wrapper endpoint validates the install code and mints the durable runner
 token when first needed. It reads the immutable descriptor bundled in the running
 Server image, exports its exact per-platform URL, size, and SHA facts, and runs the
 installer bundled in that same image. It does not download and execute a second shell.
-The installer requires the Server-bound `salix-connect`, Agent VMM Host, and
-runner targets. Missing targets fail closed. There is no catalog, `latest`,
+The installer requires the Server-bound Agent VMM Host and runner targets. Missing targets fail closed. There is no catalog, `latest`,
 sidecar, local-binary, or environment-derived artifact fallback.
 An install code authorizes one runner identity. The Server records only the
 issuing Server build as diagnostics. The script accepts `darwin-arm64`. Other
 platforms fail closed until the Server image has a complete supported target set.
 
-The script installs `salix-connect` and `bft-runner`, prepares `$BFT_WORKDIR`
-(default `$BFT_INSTALL_PREFIX/work`), and writes:
+The script installs the Agent VMM Host and `bft-runner`, and writes:
 
 - `$BFT_INSTALL_PREFIX/runner.json` with mode `0600`. It can contain the
   runner token from onboarding.
 - `$BFT_INSTALL_PREFIX/runner-install-status.json` without reusable secrets.
 - `$BFT_INSTALL_PREFIX/com.bridgeforteams.runner.plist` without
   reusable secrets.
-
-The base install has no Homebrew prerequisite and skips optional local
-attachment converters. To install the fallback set (`jq`, ImageMagick,
-pandoc/Poppler, LibreOffice, ffmpeg, and 7-Zip), install Homebrew first and set
-`BFT_INSTALL_FALLBACK_TOOLS=1`. The installer checks this option before it
-downloads any release artifact.
-
-The Server-bound Computer Use helper target installs `Comma Computer Use.app`
-at `<salix-connect dir>/native/macos/`, where `salix-connect` looks for it.
-One implementation replaces it: the runner's update and the installer (through
-`bft-runner computer-use-helper install`). It takes a lock beside the app,
-extracts the archive there, checks the SHA-256 and
-`codesign --verify --deep --strict`, and exchanges the new app with the
-installed one in one atomic swap (`renamex_np` with `RENAME_SWAP`; a first
-install is one rename). It deletes the old app only after the swap. After a
-failed swap both apps stay. A later run removes leftovers only when the
-installed app passes the same checks. A running old helper is stopped;
-`salix-connect` opens the new one on its next action. If the old helper does
-not exit within 5 seconds, the runner reports `applied_restart_pending`.
-The runner reinstalls when the heartbeat digest differs or the installed app
-is missing or fails the signature check. A failed helper update does not stop
-runner work. A Server release without this target leaves the installed helper
-unchanged.
-
-The helper is signed with the Developer ID. On a Mac that ran a helper with
-another signature, macOS does not carry its Screen Recording and Accessibility
-grants over. Grant them once by hand in that user's GUI session:
-`CommaComputerUseDaemon --permissions-status` reports the current grants, and
-`--permissions-ui` opens the authorization window. Nothing grants them
-automatically.
 
 ### Operator commands
 
@@ -129,30 +66,13 @@ flags or config paths.
 "$HOME/.bridge-for-teams/bin/bft-runner" logs
 ```
 
-- `dry-run` validates registration, heartbeat, claim, and connector launch
-  inputs. It claims at most one request and does not start a connector.
-- No subcommand: heartbeat, claim requests, and start `salix-connect`.
+- `dry-run` registers and heartbeats once and applies nothing.
+- No subcommand: heartbeat and apply Agent VMM installs, controls and updates.
 - `doctor` and `status` call the packaged `agent-vmm inspect` contract through
   the path that the installer recorded. They report local VMM state separately
   from the runner heartbeat and Salix admission.
 
-`bft-runner run ...` and `bft-runner claim ...` are lower-level debug entrypoints,
-not the product operation path.
-
-The runner passes the connector credential in the child process environment, not in argv.
-
-### Supervision
-
-`bft-runner` restores every locally configured Connector after an unexpected
-process or host interruption. There is no lifetime restart cap. A failed local
-start retries on the next worker interval. An explicit BridgeForTeams stop
-removes that desired state, and the runner does not recover it.
-Status callbacks cannot block local supervision or heartbeat. Only a status from
-a currently owned live process can report `connected`. A failed spawn stays
-`connector_restart_pending`.
-The runner does not claim beyond its configured local capacity. It reads the
-non-secret Bridge status of the provision request, so a `connected` request
-updates local status without exposing connector credentials again.
+`bft-runner run ...` is a lower-level debug entrypoint, not the product operation path.
 
 ### Service and updates
 
@@ -167,14 +87,32 @@ read-only and returns the exact protected-executor action for a mutation.
    rejects root execution and system launchd inputs before it downloads artifacts.
 2. Do not run the service-user-owned runner as root.
 3. An administrator installs the selected Agent VMM Host release separately.
-4. After the foreground smoke test, the administrator runs
-   `agent-vmm-service-executor install --job runner`. This writes and starts the
-   fixed BFT runner job.
-5. For later service actions, use the matching `start`, `stop`, or `remove` command.
+4. For a system runner, install the separately released executor at its protected path.
+
+   ```sh
+   sudo /usr/bin/install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
+   sudo /usr/bin/install -o root -g wheel -m 0755 \
+     "$HOME/.bridge-for-teams/bin/bft-runner-service-executor" \
+     /Library/PrivilegedHelperTools/bft-runner-service-executor
+   sudo /Library/PrivilegedHelperTools/bft-runner-service-executor \
+     configure --service-user <service-user>
+   ```
+
+5. After the foreground smoke test, run the fixed executor action as administrator.
+
+   ```sh
+   sudo /Library/PrivilegedHelperTools/bft-runner-service-executor install
+   ```
+
+6. For later service actions, use `start`, `stop`, or `remove` at the same protected path.
+
+The release descriptor can include `runner-service-executor` for each Darwin platform.
+The service-user installer downloads it through the existing artifact verification path.
+This component is optional because a user launch agent does not need a root executor.
+Older descriptors remain usable. System runner setup requires the separately delivered executor.
 
 The executor does not accept the plist, program, environment, or identity values
-from the config. Service removal does not remove the runner config, worker binary,
-workdir, or workspace roots.
+from the config. Service removal does not remove the runner config or worker binary.
 
 When the Server selects a new Agent VMM Host release, a login-agent runner
 calls the packaged managed updater with the exact release ID, HTTPS URL,
@@ -183,12 +121,30 @@ when preparation fails. Its typed result tells the runner to continue, pause for
 an exclusive transition, retry the same request at a given time, request an
 administrator action, or require a terminal operator decision. Retry,
 administrator, and terminal results are update advisories. They do not stop
-heartbeats, observation, or claims.
+heartbeats.
 A system-daemon runner reports `agent_vmm_administrator_update_required` and
 continues its normal work. It does not call `sudo`. The administrator installer
 uses the fixed executor for the daemon job. A post-cutover failure keeps the
 previous bundle for forward repair with the same request. It does not restore
 the old binary.
+
+## Agent VMM release acceptance
+
+The Agent VMM workflow tests the signed Keychain provider in its macOS signing job.
+The job requires the release signing identity and `AGENT_VMM_PROVISIONING_PROFILE_AFK` secret.
+The profile must authorize `D9AAN3VJK8.com.afk-surf.agent-vmm-host`.
+The job runs `build/host/test-keychain.sh` with the Host profile.
+The test uses random item namespaces and removes only its own items.
+An unsigned local test does not prove release Keychain access.
+
+Use a release test Mac with two real login accounts for cross-UID MCP acceptance.
+Install and activate the selected Host bundle as its service owner.
+Issue a separate MCP token for each account, then transfer each token privately.
+In each account, use Codex with the saved loopback endpoint and its own token.
+Create an environment resource in each account and verify that the other token cannot access it.
+Rotate the token key and verify that both old tokens fail.
+Issue replacement tokens and verify that both environments remain available to their respective users.
+The existing same-UID MCP E2E does not prove this cross-UID result.
 
 ## Wire protocol
 
@@ -263,10 +219,10 @@ fixed verification call for its active Anthropic or OpenRouter settings profile.
 It reads only the Salix settings carrier and works with any installed Claude.
 A configured API key stays unverified until that call succeeds.
 
-| Runtime | Advertised administrator methods                         |
-| ------- | -------------------------------------------------------- |
-| Codex   | ChatGPT device login.                                    |
-| Claude  | Explicit verification for the active fixed profile.      |
+| Runtime | Advertised administrator methods                    |
+| ------- | --------------------------------------------------- |
+| Codex   | ChatGPT device login.                               |
+| Claude  | Explicit verification for the active fixed profile. |
 
 Platform, storage-policy, native-profile, and current-target checks can narrow
 this list. The Connector advertises only methods that pass those checks. Callers
@@ -290,7 +246,7 @@ snapshot and stays visibly stale after disconnect.
 
 Main methods: `exec`, `read`, `write`, `delete`, `stat`, `list`, `glob`, `grep`,
 `computer_use`, `runtime_probe`, and the `runtime_auth_*` methods above.
-`dispatchSession` in `salix-connect/main.go` has the full list.
+`methods` in `systems/station/src/connector/connector.ts` has the full list.
 `exec` returns `{exit_code, stdout, stderr, truncated, status}` with 64 KiB
 per-channel caps. File reads and writes are inline (UTF-8) up to 10 MiB.
 
@@ -314,6 +270,8 @@ Salix sends a heartbeat every 15 seconds. It closes a connection when the
 connector sends no heartbeat for 45 seconds. The connector closes a connection
 that gets no frame for 45 seconds, then reconnects. This includes a connection
 that ended without a close frame, for example after a sleep or a network change.
+A dial that does not complete its handshake within 30 seconds is abandoned, and
+the connector dials again. This includes a handshake interrupted by a sleep.
 
 ## Path Semantics
 

@@ -1,0 +1,11 @@
+{
+  "context_tokens": [
+    {
+      "cap": 200000,
+      "vendor": "openai",
+      "families": ["GPT Astra", "GPT Luna", "GPT Sol", "GPT Terra"],
+      "models": ["gpt-5.6"],
+      "reason": "OpenAI's platform API routes GPT-5.6 and later prompts by load and reuses little of the prompt cache above about 200K tokens. A catalog model has one window for every route, so the platform route sets it. Lift this when the window is per route."
+    }
+  ]
+}

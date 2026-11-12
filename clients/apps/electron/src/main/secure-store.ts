@@ -22,6 +22,8 @@ import {
 const SECURE_SESSION_FILE = "secure-session.bin";
 const SECURE_SESSION_VERSION = 3;
 const MAX_PENDING_REVOCATIONS = 32;
+/** The accounts kept signed in besides the one in use (the core's `MAX_KEPT_CREDENTIALS`). */
+const MAX_KEPT_CREDENTIALS = 7;
 const UNREADABLE_SESSION_ERROR =
   "Stored session is unreadable; existing session state cannot be replaced.";
 const UNINITIALIZED_SESSION_ERROR = "SecureSessionStore is not initialized.";
@@ -77,11 +79,14 @@ interface StoredSessionEnvelopeV3 {
   version: typeof SECURE_SESSION_VERSION;
   vaultRevision: number;
   active?: SecureSessionActiveCredential | undefined;
+  /** The other accounts signed in on this device, set aside. Left out when there are none. */
+  kept?: SecureSessionActiveCredential[] | undefined;
   pendingRevocations: SecurePendingSessionRevocationRecord[];
 }
 
 interface ReadableStoredSessionEnvelope {
   active?: SecureSessionVaultActive | undefined;
+  kept: SecureSessionActiveCredential[];
   pendingRevocations: SecurePendingSessionRevocationRecord[];
   sourceIdentity: string;
   storageVersion: 3 | null;
@@ -97,6 +102,7 @@ export type SecureSessionVaultSnapshot =
   | {
       active?: SecureSessionVaultActive | undefined;
       cleanup: SessionCleanup;
+      kept: SecureSessionActiveCredential[];
       pendingRevocations: SecurePendingSessionRevocationRecord[];
       sourceIdentity: string;
       status: "readable";
@@ -111,6 +117,8 @@ export type SecureSessionVaultSnapshot =
 
 export interface SecureSessionVaultContents {
   active?: SecureSessionActiveCredential | undefined;
+  /** The accounts kept signed in besides the one in use; left out: those kept now stay. */
+  kept?: SecureSessionActiveCredential[] | undefined;
   pendingRevocations: SecurePendingSessionRevocationRecord[];
 }
 
@@ -140,6 +148,10 @@ export interface SecureSessionStoreOptions {
 
 const storedSessionEnvelopeV3Schema = z.strictObject({
   active: secureSessionActiveCredentialSchema.optional(),
+  kept: z
+    .array(secureSessionActiveCredentialSchema)
+    .max(MAX_KEPT_CREDENTIALS)
+    .optional(),
   pendingRevocations: z
     .array(securePendingSessionRevocationSchema)
     .max(MAX_PENDING_REVOCATIONS),
@@ -230,6 +242,7 @@ export class SecureSessionStore {
     return {
       ...(this.cached.active ? { active: cloneActive(this.cached.active) } : {}),
       cleanup: cleanupFor(this.cached.pendingRevocations),
+      kept: this.cached.kept.map((kept) => ({ ...kept })),
       pendingRevocations: this.cached.pendingRevocations.map(clonePending),
       sourceIdentity: this.cached.sourceIdentity,
       status: "readable",
@@ -302,15 +315,113 @@ export class SecureSessionStore {
           );
         }
 
+        // The same account kept signed in before: its older credential is revoked.
+        const kept = envelope.kept.filter((candidate) => {
+          if (!sameAccount(candidate, credential)) return true;
+          pendingRevocations = appendPendingRevocation(
+            pendingRevocations,
+            securePendingSessionRevocationSchema.parse({
+              audience: candidate.audience,
+              sessionId: candidate.sessionId,
+              token: candidate.token,
+            })
+          );
+          return false;
+        });
+
         return {
           contents: {
             active: credential,
+            kept,
             pendingRevocations,
           },
           value: undefined,
         };
       });
     });
+  }
+
+  /**
+   * Another account is being added: the active credential is set aside, still signed in, and none is active. False
+   * when there is no active credential or the kept accounts are at their limit.
+   */
+  keepActive() {
+    return this.enqueueMutation(
+      async () =>
+        (await this.runCasMutation((envelope) => {
+          const active = storedActiveCredential(envelope.active);
+          if (!active || envelope.kept.length >= MAX_KEPT_CREDENTIALS)
+            return { value: false };
+          return {
+            contents: {
+              kept: [
+                ...envelope.kept.filter((kept) => !sameAccount(kept, active)),
+                active,
+              ],
+              pendingRevocations: envelope.pendingRevocations,
+            },
+            value: true,
+          };
+        })) === true
+    );
+  }
+
+  /** The kept credential `token` becomes the active one; the one active before it is kept. False when not kept. */
+  activateKept(token: string) {
+    return this.enqueueMutation(
+      async () =>
+        (await this.runCasMutation((envelope) => {
+          const next = envelope.kept.find((kept) => kept.token === token);
+          if (!next) return { value: false };
+          const active = storedActiveCredential(envelope.active);
+          return {
+            contents: {
+              active: next,
+              kept: [
+                ...envelope.kept.filter((kept) => kept.token !== token),
+                ...(active ? [active] : []),
+              ],
+              pendingRevocations: envelope.pendingRevocations,
+            },
+            value: true,
+          };
+        })) === true
+    );
+  }
+
+  /** The kept credential `token` signs out of this device: queued for revocation. False when not kept. */
+  forgetKept(token: string) {
+    return this.enqueueMutation(
+      async () =>
+        (await this.runCasMutation((envelope) => {
+          const gone = envelope.kept.find((kept) => kept.token === token);
+          if (!gone) return { value: false };
+          let pendingRevocations = envelope.pendingRevocations;
+          if (pendingRevocations.length < MAX_PENDING_REVOCATIONS)
+            pendingRevocations = appendPendingRevocation(
+              pendingRevocations,
+              securePendingSessionRevocationSchema.parse({
+                audience: gone.audience,
+                sessionId: gone.sessionId,
+                token: gone.token,
+              })
+            );
+          else
+            log.warn(
+              "[secure-store] revocation queue full; kept session removed locally"
+            );
+          return {
+            contents: {
+              ...(envelope.active
+                ? { active: storedActiveCredential(envelope.active) }
+                : {}),
+              kept: envelope.kept.filter((kept) => kept.token !== token),
+              pendingRevocations,
+            },
+            value: true,
+          };
+        })) === true
+    );
   }
 
   /**
@@ -358,6 +469,7 @@ export class SecureSessionStore {
         | { audience: string; sessionId?: string | undefined; token: string }
         | undefined;
       let fallbackPending: SecurePendingSessionRevocationRecord[] | undefined;
+      let fallbackKept: SecureSessionActiveCredential[] = [];
 
       try {
         await this.runCasMutation((envelope) => {
@@ -394,6 +506,7 @@ export class SecureSessionStore {
             );
           }
           fallbackPending = pendingRevocations;
+          fallbackKept = envelope.kept;
           return {
             contents: { pendingRevocations },
             value: undefined,
@@ -407,6 +520,7 @@ export class SecureSessionStore {
           throw new Error("Comma could not securely persist sign-out.");
         }
         this.commitEnvelope({
+          kept: fallbackKept,
           pendingRevocations: fallbackPending,
           sourceIdentity: MISSING_SOURCE_IDENTITY,
           storageVersion: null,
@@ -458,6 +572,7 @@ export class SecureSessionStore {
             ...(removesMatchingActive
               ? {}
               : { active: storedActiveCredential(active) }),
+            kept: envelope.kept,
             pendingRevocations,
           };
           return {
@@ -474,6 +589,7 @@ export class SecureSessionStore {
         try {
           await this.removeEnvelopeDurably();
           this.commitEnvelope({
+            kept: fallbackContents.kept ?? [],
             pendingRevocations: fallbackContents.pendingRevocations,
             sourceIdentity: MISSING_SOURCE_IDENTITY,
             storageVersion: null,
@@ -711,9 +827,11 @@ export class SecureSessionStore {
     }
 
     const contents = parseVaultContents(contentsValue);
+    const kept = contents.kept ?? observed.kept;
     const vaultRevision = incrementVaultRevision(observed.vaultRevision);
     const persisted = storedSessionEnvelopeV3Schema.parse({
       ...(contents.active ? { active: contents.active } : {}),
+      ...(kept.length > 0 ? { kept } : {}),
       pendingRevocations: contents.pendingRevocations,
       vaultRevision,
       version: SECURE_SESSION_VERSION,
@@ -881,6 +999,7 @@ export class SecureSessionStore {
 
 function emptyEnvelope(): ReadableStoredSessionEnvelope {
   return {
+    kept: [],
     pendingRevocations: [],
     sourceIdentity: MISSING_SOURCE_IDENTITY,
     storageVersion: null,
@@ -901,6 +1020,7 @@ function v3InternalEnvelope(
           },
         }
       : {}),
+    kept: (envelope.kept ?? []).map((kept) => ({ ...kept })),
     pendingRevocations: envelope.pendingRevocations.map(clonePending),
     sourceIdentity,
     storageVersion: 3,
@@ -936,6 +1056,10 @@ function parseVaultContents(
 ): SecureSessionVaultContents {
   const schema = z.strictObject({
     active: secureSessionActiveCredentialSchema.optional(),
+    kept: z
+      .array(secureSessionActiveCredentialSchema)
+      .max(MAX_KEPT_CREDENTIALS)
+      .optional(),
     pendingRevocations: z
       .array(securePendingSessionRevocationSchema)
       .max(MAX_PENDING_REVOCATIONS),
@@ -1016,6 +1140,14 @@ function sameActiveCredentialIdentity(
   );
 }
 
+/** Whether two credentials are the same account's (another session of it, or the same one). */
+function sameAccount(
+  left: SecureSessionActiveCredential,
+  right: SecureSessionActiveCredential
+) {
+  return left.audience === right.audience && left.userId === right.userId;
+}
+
 function clonePending(
   pending: SecurePendingSessionRevocationRecord
 ): SecurePendingSessionRevocationRecord {
@@ -1077,6 +1209,7 @@ function storedEnvelopesEqual(
     return false;
   }
   return (
+    JSON.stringify(left.kept) === JSON.stringify(right.kept) &&
     left.pendingRevocations.length === right.pendingRevocations.length &&
     left.pendingRevocations.every((pending, index) =>
       samePendingIdentity(pending, right.pendingRevocations[index]!)

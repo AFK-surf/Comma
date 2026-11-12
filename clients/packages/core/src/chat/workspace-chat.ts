@@ -75,6 +75,14 @@ export class WorkspaceChats {
     }
   }
 
+  /** The chat of `workspaceId` a resolution in this session found, without asking the server; not a kept one. */
+  known(workspaceId: string): WorkspaceChat | undefined {
+    for (const value of this.#values.values())
+      if (value.status === "ready" && value.chat?.workspaceId === workspaceId)
+        return value.chat;
+    return undefined;
+  }
+
   #shown(): Topic[] {
     return this.#ctx.kernel.store
       .liveTopics()

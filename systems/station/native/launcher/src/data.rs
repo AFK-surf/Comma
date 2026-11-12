@@ -14,12 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 /// The data directory under the home, and what it was before the rename.
-const DATA_DIR: &str = ".stillfail";
+const DATA_DIR: &str = ".comma-station";
 const FORMER_DATA_DIR: &str = ".ember";
 
-/// `name` (without its prefix, as "DATA") from the environment: STILLFAIL_<name>, else EMBER_<name>. Empty is unset.
+/// `name` (without its prefix, as "DATA") from the environment: COMMA_STATION_<name>, else the names from before each rename. Empty is unset.
 pub fn var(name: &str) -> Option<String> {
-    ["STILLFAIL_", "EMBER_"].iter().find_map(|p| std::env::var(format!("{p}{name}")).ok().filter(|v| !v.is_empty()))
+    ["COMMA_STATION_", "EMBER_"].iter().find_map(|p| std::env::var(format!("{p}{name}")).ok().filter(|v| !v.is_empty()))
 }
 
 pub fn home() -> PathBuf {
@@ -30,7 +30,7 @@ pub fn home() -> PathBuf {
     home.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// The data directory: `given` (--data, or the variable), else ~/.stillfail. ~/.ember, given or found there, is taken
+/// The data directory: `given` (--data, or the variable), else ~/.comma-station. ~/.ember, given or found there, is taken
 /// for the default and moved there once (with a link left at the old place); a directory given elsewhere is used as it is.
 pub fn data_dir(home: &Path, given: Option<PathBuf>) -> PathBuf {
     let (new, old) = (home.join(DATA_DIR), home.join(FORMER_DATA_DIR));
@@ -132,7 +132,7 @@ pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// What the launcher reads of config.json ($STILLFAIL_CONFIG, else <data>/config.json).
+/// What the launcher reads of config.json ($COMMA_STATION_CONFIG, else <data>/config.json).
 #[derive(Debug, PartialEq)]
 pub struct Config {
     /// The MCP endpoint's host and port; `named` when the config sets the port (then taken is an error).
@@ -182,17 +182,17 @@ mod tests {
     }
 
     #[test]
-    fn the_data_directory_is_the_one_given_else_stillfail_and_ember_is_moved_there_once() {
+    fn the_data_directory_is_the_one_given_else_comma_station_and_ember_is_moved_there_once() {
         let home = temp("home");
         assert_eq!(data_dir(&home, Some("/elsewhere".into())), PathBuf::from("/elsewhere"));
-        assert_eq!(data_dir(&home, None), home.join(".stillfail"));
+        assert_eq!(data_dir(&home, None), home.join(".comma-station"));
         std::fs::create_dir_all(home.join(".ember/run")).unwrap();
         std::fs::write(home.join(".ember/config.json"), "{}").unwrap();
         // Given as ~/.ember, it is the default too: moved, a link left.
-        assert_eq!(data_dir(&home, Some(home.join(".ember"))), home.join(".stillfail"));
-        assert!(home.join(".stillfail/config.json").exists());
-        assert_eq!(std::fs::read_link(home.join(".ember")).unwrap(), home.join(".stillfail"));
-        assert_eq!(data_dir(&home, None), home.join(".stillfail"));
+        assert_eq!(data_dir(&home, Some(home.join(".ember"))), home.join(".comma-station"));
+        assert!(home.join(".comma-station/config.json").exists());
+        assert_eq!(std::fs::read_link(home.join(".ember")).unwrap(), home.join(".comma-station"));
+        assert_eq!(data_dir(&home, None), home.join(".comma-station"));
         std::fs::remove_dir_all(&home).unwrap();
     }
 

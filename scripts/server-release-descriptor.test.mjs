@@ -28,8 +28,6 @@ const fixture = () => {
     serverBuildId: BUILD_ID,
     agentVMMReleaseId: "agent-vmm-release-1",
     agentVMMLinuxReleaseId: "agent-vmm-linux-release-2",
-    darwinSalixConnectReleaseId: "salix-connect-darwin-1",
-    computerUseHelperReleaseId: "computer-use-helper-1",
     baseUrl: "https://comma-release.example/server-install-artifacts",
   });
   writeFileSync(join(root, DESCRIPTOR_FILENAME), `${JSON.stringify(descriptor)}\n`);
@@ -48,11 +46,11 @@ test("canonical descriptor verifies exact bundled bytes and selects one target",
     const macOnly = { ...descriptor, artifacts: descriptor.artifacts.filter((entry) => entry.component !== linux.component || entry.platform !== linux.platform) };
     assert.equal(selectArtifact(macOnly, "agent-vmm-host", "darwin-arm64").release_id, "agent-vmm-release-1");
     assert.throws(() => selectArtifact(macOnly, "agent-vmm-host", "linux-arm64"), /no exact artifact/);
-    assert.equal(selectArtifact(descriptor, "salix-connect", "darwin-arm64").release_id, "salix-connect-darwin-1");
-    assert.equal(selectArtifact(descriptor, "salix-connect", "linux-arm64").release_id, BUILD_ID);
-    const helper = selectArtifact(descriptor, "computer-use-helper", "darwin-arm64");
-    assert.equal(helper.artifact, "comma-computer-use.tar.gz");
-    assert.equal(helper.release_id, "computer-use-helper-1");
+    assert.equal(selectArtifact(descriptor, "runner", "darwin-arm64").release_id, BUILD_ID);
+    assert.equal(selectArtifact(descriptor, "runner-service-executor", "darwin-arm64").artifact, "bft-runner-service-executor");
+    const userOnly = { ...descriptor, artifacts: descriptor.artifacts.filter((entry) => entry.component !== "runner-service-executor") };
+    assert.doesNotThrow(() => validateDescriptor(userOnly));
+    assert.deepEqual(verifyBundledArtifacts(root, userOnly), userOnly);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

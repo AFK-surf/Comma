@@ -104,9 +104,15 @@ defmodule SalixIM.ConversationSource do
     if SalixStore.Ids.valid_agent_id?(agent_id) do
       group_id = SalixStore.Ids.group_id_from_agent!(agent_id)
 
-      for key <- [Keys.ctl_agent(agent_id), Keys.ctl_group(group_id)] do
-        SalixStore.ReadScope.prefetch({:record, key}, fn -> CasRecord.get(key) end)
-      end
+      SalixStore.ReadScope.prefetch({:agent_config, agent_id}, fn ->
+        case SalixStore.AgentPGStore.read_config(agent_id) do
+          {:ok, %{record: record}} -> {:ok, record}
+          error -> error
+        end
+      end)
+
+      key = Keys.ctl_group(group_id)
+      SalixStore.ReadScope.prefetch({:record, key}, fn -> CasRecord.get(key) end)
     end
 
     :ok
@@ -285,11 +291,9 @@ defmodule SalixIM.ConversationSource do
   end
 
   # Retirement ends Session input, but an outstanding Triage command still
-  # needs its Task outcome. Read only the tail, which the owner fences below.
+  # needs its Task outcome. The owner fences the captured tail and binding.
   def retire(binding) do
-    if SalixIM.Triage.Investigation.task?(binding.conversation) and
-         binding.conversation["status"] == "active" and
-         binding.conversation["task_worker_agent_id"] == binding.agent["agent_id"] do
+    if retirement_needs_tail?(binding) do
       with {:ok, messages} <-
              Conversations.list_group_conversation_messages(
                binding.group["group_id"],
@@ -297,17 +301,30 @@ defmodule SalixIM.ConversationSource do
                after_seq: max((binding.conversation["message_tail_seq"] || 0) - 1, 0),
                limit: 1
              ) do
-        case messages do
-          [message] ->
-            with {:ok, _} <- settle_failed_command(binding, message), do: :ok
-
-          [] ->
-            {:error, :conversation_source_gap}
-        end
+        retire(binding, List.first(messages))
       end
     else
       :ok
     end
+  end
+
+  def retire(binding, captured_tail) do
+    cond do
+      not retirement_needs_tail?(binding) ->
+        :ok
+
+      is_map(captured_tail) ->
+        with {:ok, _} <- settle_failed_command(binding, captured_tail), do: :ok
+
+      true ->
+        {:error, :conversation_source_gap}
+    end
+  end
+
+  defp retirement_needs_tail?(binding) do
+    SalixIM.Triage.Investigation.task?(binding.conversation) and
+      binding.conversation["status"] == "active" and
+      binding.conversation["task_worker_agent_id"] == binding.agent["agent_id"]
   end
 
   defp settle_failed_command(binding, message) do
@@ -405,78 +422,124 @@ defmodule SalixIM.ConversationSource do
     end
   end
 
-  defp recover_consumers(candidate, conversation) do
-    with {:ok, sources, observed_memberships} <-
-           SalixIM.ConversationServer.delivery_sources(
-             candidate.group_id,
-             candidate.conversation_id
-           ) do
-      # The aggregate caps Participant slots at 200. Only indexed pending
-      # Conversations enter this worker, never the idle Conversation catalog.
-      results =
-        Enum.map(sources, fn {agent, source} ->
-          case recovered?(agent, source, conversation, candidate.target_seq) do
-            true ->
-              true
+  defp recover_consumers(candidate, _conversation) do
+    with {:ok, %{rows: rows}} <- SalixStore.ConversationLogRecovery.consumers(candidate),
+         {:ok, observed, conversation, tail, consumers} <- decode_consumers(candidate, rows),
+         :ok <- retire_consumers(observed, conversation, tail, consumers) do
+      unfinished = Enum.filter(consumers, & &1.unfinished)
 
-            _ ->
-              notify(agent, source)
-              false
-          end
-        end)
+      for consumer <- unfinished do
+        notify(consumer.agent_id, %{
+          group_id: observed.group_id,
+          conversation_id: observed.conversation_id,
+          participant_id: consumer.participant_id
+        })
+      end
 
-      SalixIM.ConversationServer.repair_display_projection(
-        candidate.group_id,
-        candidate.conversation_id
-      )
-
-      if Enum.all?(results),
-        do:
-          SalixIM.ConversationServer.complete_log_recovery(
-            candidate.group_id,
-            candidate.conversation_id,
-            {candidate.target_seq, candidate.status_version},
-            observed_memberships
-          ),
+      # A Session can retire after this snapshot. It must return in the next
+      # page for the original Triage retirement action before cleanup can pass.
+      if unfinished == [],
+        do: SalixStore.ConversationLogRecovery.complete(observed),
         else: {:ok, :pending}
     end
   end
 
-  defp recovered?(nil, source, conversation, target) do
-    with {:ok, participant} <-
-           Conversations.get_group_conversation_participant(
-             source.group_id,
-             source.conversation_id,
-             source.participant_id
-           ) do
-      (participant["delivery_log_cursor_seq"] || conversation["log_start_seq"] || 0) >= target
+  defp decode_consumers(_candidate, []), do: {:error, :not_found}
+
+  defp decode_consumers(candidate, rows) do
+    [metadata, kind, updated, tail, head, floor, status, membership, deleted | _] =
+      hd(rows)
+
+    conversation =
+      SalixIM.ConversationPGStore.decode_projection(
+        candidate.group_id,
+        candidate.conversation_id,
+        metadata,
+        %{
+          kind: kind,
+          updated_at: updated,
+          message_tail_seq: tail,
+          message_head_seq: head,
+          log_start_seq: floor,
+          provider_status_version: status,
+          membership_revision: membership,
+          deleted_at: deleted
+        }
+      )
+
+    observed =
+      Map.merge(candidate, %{
+        target_seq: tail,
+        status_version: status,
+        membership_revision: membership
+      })
+
+    consumers =
+      Enum.flat_map(rows, fn row ->
+        case Enum.drop(row, 20) do
+          [nil | _] ->
+            []
+
+          [id, participant, agent, session, retired, unfinished] ->
+            participant = :erlang.binary_to_term(participant, [:safe])
+
+            [
+              %{
+                participant_id: id,
+                participant: participant,
+                agent: if(agent, do: SalixStore.Codec.decode_snapshot(agent)),
+                agent_id: if(participant["actor_type"] == "agent", do: participant["agent_id"]),
+                session_id: session,
+                retired: retired == true,
+                unfinished: unfinished == true
+              }
+            ]
+        end
+      end)
+
+    tail_snapshot =
+      ~w(payload seq message_id request_identity request_fingerprint revision tombstone archive_first_seq archive_last_seq object_key encoding)a
+      |> Enum.zip(Enum.slice(hd(rows), 9, 11))
+      |> Map.new()
+      |> Map.merge(%{group_id: candidate.group_id, conversation_id: candidate.conversation_id})
+
+    {:ok, observed, conversation, tail_snapshot, consumers}
+  end
+
+  defp retire_consumers(candidate, conversation, tail_snapshot, consumers) do
+    case Enum.filter(consumers, & &1.retired) do
+      [] ->
+        :ok
+
+      retired ->
+        with {:ok, group} <- GroupDirectory.get_group(candidate.group_id) do
+          bindings =
+            Enum.map(retired, fn consumer ->
+              %{
+                agent: consumer.agent,
+                group: group,
+                conversation: conversation,
+                participant: consumer.participant,
+                session_id: consumer.session_id
+              }
+            end)
+
+          with {:ok, tail} <- retirement_tail(bindings, tail_snapshot) do
+            Enum.reduce_while(bindings, :ok, fn binding, :ok ->
+              case retire(binding, tail) do
+                :ok -> {:cont, :ok}
+                error -> {:halt, error}
+              end
+            end)
+          end
+        end
     end
   end
 
-  defp recovered?(agent, source, _conversation, target) do
-    with {:ok, binding} <- binding(agent, source) do
-      case SalixIM.Ports.AgentDelivery.conversation_progress(
-             agent,
-             binding.session_id,
-             source.participant_id
-           ) do
-        {:error, :conversation_source_retired} ->
-          with :ok <- retire(binding), do: true
-
-        {:ok, progress} ->
-          case frontier(binding, progress) do
-            {:ok, seq} -> seq >= target
-            {:error, :conversation_source_retired} -> true
-            error -> error
-          end
-
-        error ->
-          error
-      end
-    else
-      {:error, :conversation_source_retired} -> true
-      error -> error
-    end
+  defp retirement_tail(bindings, snapshot) do
+    if Enum.any?(bindings, &retirement_needs_tail?/1),
+      do: SalixIM.ConversationPGStore.message_from_snapshot(snapshot),
+      else: {:ok, nil}
   end
 
   defp expected_sequences(_, 0), do: []

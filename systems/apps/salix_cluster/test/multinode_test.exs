@@ -1,10 +1,10 @@
 defmodule SalixCluster.MultinodeTest do
   @moduledoc """
-  Real two-node distribution test: the central safety property is that
-  **S3 head-CAS fencing holds across nodes** — when a second node claims an agent,
-  the first node's stale handle can no longer commit. Both nodes share the same
-  MinIO bucket, so this exercises genuine cross-node CAS, not a single-VM
-  simulation.
+  Real two-node distribution test for PostgreSQL Agent ownership. Both nodes
+  share one PostgreSQL database. A peer claim advances the owner epoch and
+  fences the first node's stale commit handle.
+
+  MinIO stores the Group and Task facts used by the other tests.
 
   Also checks ring-routed `ensure_started`: a delivery accepted on one node
   starts the owning Server on the ring-owner node.
@@ -50,7 +50,7 @@ defmodule SalixCluster.MultinodeTest do
     if context[:skip] do
       {:ok, skip: true}
     else
-      # Both nodes use the real MinIO backend (shared state); fakes are per-VM.
+      # Both nodes share MinIO for Group and Task facts. Fakes are per-VM.
       SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
       SystemsRuntime.put_env(:salix_store, :s3_endpoint, multinode_s3_endpoint())
       SystemsRuntime.put_env(:salix_store, :s3_bucket, "salix-test")
@@ -114,6 +114,25 @@ defmodule SalixCluster.MultinodeTest do
     end
   end
 
+  # Rolling-release regression: a draining peer stayed in this node's ring, so
+  # keys kept hashing to a pod about to stop.
+  test "a draining peer leaves this node's ring and places its keys here", ctx do
+    unless ctx[:skip] do
+      assert wait_until(fn -> ctx.node in SalixCluster.Ring.nodes() end)
+      on_exit(fn -> :erpc.call(ctx.node, SalixCluster.NodeLifecycle, :reset, []) end)
+
+      :ok = :erpc.call(ctx.node, SalixCluster.NodeLifecycle, :mark_draining, [])
+      assert wait_until(fn -> SalixCluster.Ring.nodes() == [node()] end)
+      assert :erpc.call(ctx.node, SalixCluster.Ring, :nodes, []) == [node()]
+
+      :ok = :erpc.call(ctx.node, SalixCluster.NodeLifecycle, :clear_draining, [])
+      assert wait_until(fn -> ctx.node in SalixCluster.Ring.nodes() end)
+
+      assert Enum.sort(:erpc.call(ctx.node, SalixCluster.Ring, :nodes, [])) ==
+               Enum.sort([node(), ctx.node])
+    end
+  end
+
   test "cross-node fencing: a peer claim fences the original node's handle", %{} = ctx do
     if ctx[:skip], do: skip(), else: run_fencing(ctx)
   end
@@ -141,15 +160,27 @@ defmodule SalixCluster.MultinodeTest do
   end
 
   defp run_fencing(%{node: node, agent: a}) do
-    # Node A (this VM) creates and commits once.
-    {:ok, o1} = Agent.create(a, "nodeA", State)
+    tenant = Ids.new_tenant_id()
+    group = Ids.new_group_id(tenant)
+
+    config = %{
+      "agent_id" => a,
+      "tenant_id" => tenant,
+      "group_id" => group,
+      "role" => "worker",
+      "name" => "Multinode fencing",
+      "runtime_config" => %{"kind" => "internal"}
+    }
+
+    # Node A creates the complete Agent and commits once.
+    assert {:ok, o1} = Agent.create(a, "nodeA", State, config: config)
 
     {:ok, o1} =
       Agent.commit(o1, [
         %{"type" => "session_created", "session_id" => "ses1_1200000000000000001"}
       ])
 
-    # Node B (peer) claims by stealing — a genuine cross-node head CAS.
+    # Node B claims the shared PostgreSQL row and advances its owner epoch.
     assert {:ok, peer_owned} =
              :erpc.call(node, Agent, :claim, [a, "nodeB", State, [steal: true]])
 
@@ -335,11 +366,8 @@ defmodule SalixCluster.MultinodeTest do
     :ok = :erpc.call(node, Application, :put_env, [:salix_store, :s3_backend, SalixStore.S3.AWS])
     :ok = :erpc.call(node, Application, :put_env, [:salix_store, :snowflake_worker_id, 1])
 
-    # Schedules live in the control Postgres: mirror this node's repo config so
-    # the peer's sweep reads the same schedules table (the shared-store analog
-    # of pointing both nodes at one MinIO bucket). The peer boots from a bare
-    # app env — without this the repo never starts there and every schedule
-    # call degrades to {:error, :unavailable}.
+    # Agent authority and schedules share PostgreSQL on both nodes. Copy the
+    # repository config and start the peer's repository before its first claim.
     repo_config = SystemsRuntime.get_env(:salix_store, SalixStore.Repo)
     :ok = :erpc.call(node, Application, :put_env, [:salix_store, SalixStore.Repo, repo_config])
     :ok = :erpc.call(node, Application, :put_env, [:salix_store, :start_repo, true])
@@ -352,6 +380,9 @@ defmodule SalixCluster.MultinodeTest do
     :ok = :erpc.call(node, Application, :put_env, [:salix_cluster, :enabled, false])
 
     {:ok, _} = :erpc.call(node, Application, :ensure_all_started, [:salix_cluster])
+    # The ring reads the peer's readiness on its own; telling it here orders the
+    # peer before any placement this test makes.
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.whereis(SalixCluster.Ring), {:ring_ready, node})
     {:ok, _} = :erpc.call(node, Application, :ensure_all_started, [:phoenix_pubsub])
 
     case :erpc.call(node, Supervisor, :start_child, [
@@ -392,6 +423,20 @@ defmodule SalixCluster.MultinodeTest do
       group_id = Ids.new_group_id(tenant_id)
       if SalixCluster.Ring.owner("conversation-group:" <> group_id) == owner, do: group_id
     end) || flunk("no conversation group id mapped to #{inspect(owner)}")
+  end
+
+  defp wait_until(fun, attempts \\ 250) do
+    cond do
+      fun.() ->
+        true
+
+      attempts == 0 ->
+        false
+
+      true ->
+        SystemsClock.sleep(20)
+        wait_until(fun, attempts - 1)
+    end
   end
 
   defp skip, do: ExUnit.configure(exclude: [])

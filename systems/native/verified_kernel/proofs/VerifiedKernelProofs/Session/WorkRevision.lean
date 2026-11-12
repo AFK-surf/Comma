@@ -1,7 +1,7 @@
 import VerifiedKernel.Session.Revision
 import VerifiedKernelProofs.Session.WorkPendingRevision
 import VerifiedKernelProofs.Session.WorkRevisionFence
-
+import VerifiedKernelProofs.Session.WorkPendingInput
 namespace VerifiedKernel.Session.Revision
 open Data WorkConservation
 set_option Elab.async false
@@ -16,7 +16,7 @@ theorem init_captures (state etag : Term) :
 theorem working_captured (cursor : Cursor) :
     resident (some cursor.pack) (a "working") nil =
       (some cursor.candidate.working,
-        .tuple [a "revision", cursor.candidate.etag, Term.bool cursor.isPending]) := by
+        .tuple [a "revision", cursor.candidate.revision, Term.bool cursor.isPending]) := by
   cases cursor <;> rfl
 
 theorem baseline_captured (cursor : Cursor) :
@@ -29,9 +29,9 @@ theorem fresh_captures (state : Term) :
       (some (Cursor.fresh state).pack, .tuple [a "done"]) := rfl
 
 theorem fresh_requires_commit (state : Term) :
-    (Cursor.fresh state).isPending = true ∧ (Cursor.fresh state).candidate.etag = nil := ⟨rfl, rfl⟩
+    (Cursor.fresh state).isPending = true ∧ (Cursor.fresh state).candidate.revision = nil := ⟨rfl, rfl⟩
 
-theorem absent_baseline_stays_fresh (cursor : PendingRevision.Cursor) (absent : cursor.etag = nil) :
+theorem absent_baseline_stays_fresh (cursor : PendingRevision.Cursor) (absent : cursor.revision = nil) :
     (Cursor.pending cursor).baseline = .fresh cursor.baseline := by
   simp [Cursor.baseline, absent]
   rfl
@@ -41,41 +41,19 @@ theorem write_captured (cursor : Cursor) (events : List Term) (hwm : Term) :
       PendingRevision.resident (some cursor.candidate.pack) (a "write") (.tuple [list events, hwm]) := by
   cases cursor <;> rfl
 
-inductive Execution : Output → PendingRevision.Cursor → Prop where
-  | done (cursor : PendingRevision.Cursor) : Execution (some cursor.pack, .tuple [a "done"]) cursor
-  | run {cursor : PendingRevision.Cursor} {state event : Term} {events observations : List Term}
-      {final : PendingRevision.Cursor}
-      (tail : Execution (resident
-        (some (.tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: events)]))
-        (a "run") (list observations)) final) :
-      Execution (some (.tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: events)]),
-        .tuple [a "next"]) final
-  | resume {cursor : PendingRevision.Cursor} {token request observation : Term} {events : List Term}
-      {final : PendingRevision.Cursor}
-      (tail : Execution (resident
-        (some (.tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token events]))
-        (a "resume") observation) final) :
-      Execution (some (.tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token events]),
-        .tuple [a "observe", request]) final
+abbrev Execution := PendingRevision.Execution
 
 theorem execution_pending {output : Output} {final : PendingRevision.Cursor}
-    (execution : Execution output final) : PendingRevision.Execution output final := by
-  induction execution with
-  | done cursor => exact .done cursor
-  | run _ ih => exact .run ih
-  | resume _ ih => exact .resume ih
+    (execution : Execution output final) : PendingRevision.Execution output final := execution
 
-/-- A completed native write uses the captured working state and retains the original baseline and ETag. -/
 theorem write_executes {cursor : Cursor} {final : PendingRevision.Cursor} {events : List Term} {hwm : Term}
-    (execution : Execution
-      (resident (some cursor.pack) (a "write") (.tuple [list events, hwm])) final) :
+    (execution : Execution (resident (some cursor.pack) (a "write") (.tuple [list events, hwm])) final) :
     ∃ merged, PendingRevision.mergeHwm cursor.candidate.hwm hwm [] = .ok (merged, []) ∧
-      final.baseline = cursor.candidate.baseline ∧ final.etag = cursor.candidate.etag ∧
+      final.baseline = cursor.candidate.baseline ∧ final.revision = cursor.candidate.revision ∧
       final.events = cursor.candidate.events ++ events ∧ final.hwm = merged ∧
       ResidentBatch cursor.candidate.working (events ++ PendingRevision.hwmEvents hwm) final.working := by
-  have pending := execution_pending execution
-  rw [write_captured] at pending
-  exact PendingRevision.write_executes pending
+  rw [write_captured] at execution
+  exact PendingRevision.write_executes execution
 
 theorem write_is_pending (final : PendingRevision.Cursor) :
     unpack final.pack = some (.pending final) ∧ (Cursor.pending final).isPending = true := ⟨rfl, rfl⟩
@@ -141,7 +119,7 @@ theorem confirmed_revision {cursor : PendingRevision.Cursor}
     ∃ etag snapshot bytes, committed = (Cursor.committed state etag).pack ∧
       Lifecycle.persistable state [] = .ok (snapshot, []) ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ durable key etag snapshot := by
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ durable key etag snapshot := by
   obtain ⟨etag, packed, raw⟩ := confirmed_raw encoded resumed
   obtain ⟨_, snapshot, bytes, persisted, encodedBytes, requested, stored⟩ :=
     RevisionFence.confirmed_capture encoded primitive raw

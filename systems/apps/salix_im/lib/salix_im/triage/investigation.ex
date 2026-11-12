@@ -546,7 +546,7 @@ defmodule SalixIM.Triage.Investigation do
          operation when is_binary(operation) <- rec["operation_ref"],
          claim <- %{
            obligation_id: operation_id(operation),
-           claim_token: rec["delivery_claim_revision"],
+           claim_token: to_string(rec["delivery_claim_revision"]),
            payload: payload
          },
          {:ok, effect} <- apply_completion(claim) do

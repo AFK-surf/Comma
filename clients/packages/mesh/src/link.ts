@@ -3,8 +3,17 @@
 // the wire format.
 
 /** Where a peer is: its endpoint id (an Ed25519 public key, as iroh writes it), and how to reach it if known. */
+/**
+ * Which way goes first. `salix-first`: direct and Salix race by round trip, an iroh relay is the backup (the default, while
+ * no relay of our own is deployed: the rest would go through n0's public ones). `relay-first`: direct, then an iroh
+ * relay, and Salix only where neither works.
+ */
+export type RoutePolicy = "salix-first" | "relay-first";
+
 export interface PeerAddr {
   id: string;
+  /** What this connection to the peer is for, when there may be several (a Workspace): each has its own credential. */
+  scope?: string | undefined;
   /** The relay the peer is homed on. */
   relayUrl?: string | undefined;
   /** Addresses (`ip:port`) the peer may be reached at directly. */
@@ -32,7 +41,7 @@ export interface BiStream {
   recv: RecvHalf;
 }
 
-/** How a connection runs: straight to the peer, through an iroh relay, or through Salix (the relay of last resort). */
+/** How a connection runs: straight to the peer, through an iroh relay, or through Salix. */
 export type MeshVia = "direct" | "relay" | "salix";
 
 /** How a connection runs after a change: `via` null while no way is chosen; `closed` once it is gone. */

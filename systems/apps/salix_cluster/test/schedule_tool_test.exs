@@ -184,10 +184,41 @@ defmodule SalixCluster.ScheduleToolTest do
       assert updated["ifc_label"] == label
     end
 
-    test "a schedule created with no decision behind it carries no authority", %{ctx: ctx} do
-      # A Group that is `off` never reaches the check, so no effect carries
-      # evidence. The schedule then delivers unsealed and can be cited as the
-      # request for nothing, which is the fail-closed reading.
+    test "a schedule made without an allow verdict acts for the person who asked", %{ctx: ctx} do
+      # Under `audit` a denied schedule.create still runs and keeps the
+      # activation's requester; with the check `off` only the sealed origin
+      # names the person. Either way the fire must act for them once the Group
+      # enforces, or every fire is refused for having no requester. No label is
+      # recorded, so the fire's prompt reads as `agent_private`.
+      audit_denied = Map.put(ctx, :ifc_requester, "provider_user|cnx1|U_A")
+
+      off =
+        Map.put(ctx, :trusted_origin, %{
+          "principal_ref" => %{"connect_id" => "cnx1", "subject_id" => "U_B"}
+        })
+
+      for {call_ctx, creator} <- [
+            {audit_denied, "provider_user|cnx1|U_A"},
+            {off, "provider_user|cnx1|U_B"}
+          ] do
+        out = Tool.create_schedule(%{"interval_minutes" => 5, "prompt" => "plain"}, call_ctx)
+
+        assert {:ok, stored} = Schedules.get(Jason.decode!(out)["id"])
+        assert stored["ifc_creator"] == creator
+        refute Map.has_key?(stored, "ifc_label")
+
+        assert %{"ifc" => %{"principal" => "schedule|sch|" <> ^creator} = block} =
+                 SalixAgent.IFC.schedule_origin("sch", stored["ifc_creator"], stored["ifc_label"])
+
+        refute Map.has_key?(block, "label")
+      end
+    end
+
+    test "a schedule nobody asked for carries no authority", %{ctx: ctx} do
+      # No verdict, no kept requester and no person behind the activation (a
+      # fire of a schedule that itself has no creator, or a proactive turn):
+      # the schedule delivers unsealed and can be cited as the request for
+      # nothing, which is the fail-closed reading.
       out = Tool.create_schedule(%{"interval_minutes" => 5, "prompt" => "plain"}, ctx)
 
       assert {:ok, stored} = Schedules.get(Jason.decode!(out)["id"])
@@ -361,8 +392,13 @@ defmodule SalixCluster.ScheduleToolTest do
 
       # rpc delivery lands on the schedule's target session, exactly once,
       # and the absorbed user message keeps the tool command intact.
-      {:ok, state} = SessionData.read(ctx.agent_id, ctx.session_id)
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{t1}")
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 ctx.agent_id,
+                 ctx.session_id,
+                 "schedule:#{id}:#{t1}"
+               )
+
       assert eventually(fn -> user_message_count(ctx, prompt) == 1 end)
       assert [message] = absorbed_user_messages(ctx, prompt)
       assert message.content =~ "im_api.feishu.send_text"

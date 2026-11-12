@@ -15,7 +15,7 @@ defmodule BridgeForTeams.DailyBrief.Model do
   @type compose_request :: %{
           required(:agent_id) => String.t(),
           required(:input) => map(),
-          optional(:view) => :personal | :team
+          optional(:view) => :personal | :team | :mine
         }
 
   @callback compose(compose_request()) ::

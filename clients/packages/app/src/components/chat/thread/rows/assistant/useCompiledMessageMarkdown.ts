@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { ChatMessage } from "@comma/core/chat";
+import { useScreenDevicesEnabled } from "../../../../remote-screen/useScreenListing";
 import {
   messageMarkdownElements,
   sameMessageParts,
@@ -19,8 +20,10 @@ export function useCompiledMessageMarkdown(
   groupId: string,
   workspaceId: string
 ) {
+  const screenCards = useScreenDevicesEnabled();
   const cacheRef = useRef<{
     compiled: CompiledMessageMarkdown | undefined;
+    screenCards: boolean;
     live: boolean;
     groupId: string;
     markdown: string;
@@ -32,6 +35,7 @@ export function useCompiledMessageMarkdown(
   const cache = cacheRef.current;
   if (
     cache &&
+    cache.screenCards === screenCards &&
     cache.live === live &&
     cache.groupId === groupId &&
     cache.workspaceId === workspaceId &&
@@ -40,11 +44,17 @@ export function useCompiledMessageMarkdown(
   ) {
     return cache.compiled;
   }
-  const compiled = messageMarkdownElements(message, { live, groupId, workspaceId });
+  const compiled = messageMarkdownElements(message, {
+    live,
+    groupId,
+    workspaceId,
+    screenCards,
+  });
   cacheRef.current = {
     compiled,
     groupId,
     live,
+    screenCards,
     markdown,
     parts: message.parts,
     workspaceId,

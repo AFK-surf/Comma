@@ -22,9 +22,21 @@ defmodule AlertRouter.RoutesTest do
              Routes.resolve(gcp_event("open", project: "example-staging-project"), :live)
   end
 
-  test "live delivery rejects production events in the staging-only route" do
+  test "a staging Router does not post production alerts" do
     assert {:error, {:unapproved_route_environment, "live", "production"}} =
              Routes.resolve(gcp_event(), :live)
+  end
+
+  test "a production Router posts production alerts and not staging ones" do
+    previous = SystemsRuntime.get_env(:alert_router, :environment)
+    SystemsRuntime.put_env(:alert_router, :environment, "production")
+    on_exit(fn -> SystemsRuntime.put_env(:alert_router, :environment, previous) end)
+
+    assert {:ok, %{route_id: "live", channel_id: "C0BJ1699HSN", shadow: false}} =
+             Routes.resolve(gcp_event(), :live)
+
+    assert {:error, {:unapproved_route_environment, "live", "staging"}} =
+             Routes.resolve(gcp_event("open", project: "example-staging-project"), :live)
   end
 
   test "live delivery rejects a missing, private, or malformed destination" do

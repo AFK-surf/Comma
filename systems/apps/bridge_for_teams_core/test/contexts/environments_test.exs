@@ -13,21 +13,12 @@ defmodule BridgeForTeams.EnvironmentsTest do
   }
 
   alias BridgeForTeams.EnvironmentProvisioning.Reconciler, as: ProvisioningReconciler
-  alias BridgeForTeams.Schema.{EnvironmentProvisionRequest, MacMiniProvisioner}
   alias SalixStore.RuntimeIds
 
   @device_runtime_id RuntimeIds.device_runtime_id("device-codex", "codex", "runtime-codex")
 
   defmodule ProvisioningProbeClient do
     @moduledoc false
-
-    def list_group_envs(group_id, tenant_id) do
-      %{test_pid: test_pid, list_result: result} =
-        SystemsRuntime.fetch_env!(:bridge_for_teams_core, :provisioning_probe)
-
-      SystemsRuntime.Proc.send(test_pid, {:list_group_envs, group_id, tenant_id})
-      result
-    end
 
     def page_group_envs(group_id, tenant_id, opts) do
       %{test_pid: test_pid, page_result: result} =
@@ -199,544 +190,10 @@ defmodule BridgeForTeams.EnvironmentsTest do
     assert listed.effective_status == "degraded"
   end
 
-  test "create_device_provision_request binds project group and provisioner", %{
+  test "the worker refreshes the device projection from Salix", %{
     org: org,
     project: project
   } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Lab Mac mini",
-               "capabilities" => %{"fin" => true}
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(
-               project.id,
-               %{
-                 "provisioner_id" => provisioner.id,
-                 "name" => "production",
-                 "alias" => "prod-mac"
-               },
-               actor_label: "project-admin@example.com",
-               request_id: "req_env_provision"
-             )
-
-    assert request.org_id == org.id
-    assert request.project_id == project.id
-    assert request.provisioner_id == provisioner.id
-    assert request.salix_group_id == project.salix_group_id
-    assert request.name == "production"
-    assert request.env_alias == "prod-mac"
-    assert request.status == "pending"
-    assert request.connector_token_hash == nil
-
-    assert [listed] = Environments.list_device_provision_requests(project.id)
-    assert listed.id == request.id
-    assert listed.provisioner.id == provisioner.id
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "device.provision_requested")
-
-    assert audit.result == "ok"
-    assert audit.request_id == "req_env_provision"
-    assert audit.resource_type == "device_provision_request"
-    assert audit.resource_id == request.id
-    assert audit.metadata["project_id"] == project.id
-    assert audit.metadata["provisioner_id"] == provisioner.id
-  end
-
-  test "runner connector assignment queries are bounded, paginated, and ACL-scoped", %{
-    org: org,
-    project: project
-  } do
-    assert {:ok, first_runner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "connector-runner-1",
-               "name" => "Connector Runner 1"
-             })
-
-    assert {:ok, second_runner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "connector-runner-2",
-               "name" => "Connector Runner 2"
-             })
-
-    assert {:ok, second_project} =
-             Projects.create_project(org.id, %{name: "Second Project", slug: "second-project"})
-
-    assert {:ok, pending} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => first_runner.id,
-               "name" => "Pending connector",
-               "alias" => "pending-connector"
-             })
-
-    assert {:ok, connected_request} =
-             Environments.create_device_provision_request(second_project.id, %{
-               "provisioner_id" => second_runner.id,
-               "name" => "Connected connector",
-               "alias" => "connected-connector"
-             })
-
-    assert {:ok, connected} =
-             Environments.update_device_provision_request_status(
-               connected_request,
-               "connected",
-               %{"connector_run_id" => "connector-run-2"}
-             )
-
-    assert {:ok, stopped_request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => first_runner.id,
-               "name" => "Stopped connector"
-             })
-
-    assert {:ok, stopped} =
-             Environments.update_device_provision_request_status(stopped_request, "stopped")
-
-    assert {:ok, failed_request} =
-             Environments.create_device_provision_request(second_project.id, %{
-               "provisioner_id" => second_runner.id,
-               "name" => "Failed connector",
-               "alias" => "failed-connector"
-             })
-
-    assert {:ok, failed} =
-             Environments.update_device_provision_request_status(failed_request, "failed")
-
-    unique = SystemsRuntime.Proc.unique_integer([:positive])
-    assert {:ok, owner} = Accounts.create_user(%{email: "connector-owner-#{unique}@example.com"})
-    assert {:ok, _} = Memberships.put_org_member(org.id, owner.id, "owner")
-
-    assert {:ok, member} =
-             Accounts.create_user(%{email: "connector-member-#{unique}@example.com"})
-
-    assert {:ok, _} = Memberships.put_org_member(org.id, member.id, "member")
-    assert {:ok, _} = Memberships.put_project_member(second_project.id, member.id, "user")
-
-    assert %{first_runner.id => [{"pending", 1}, {"stopped", 1}]} ==
-             Environments.runner_connector_assignment_status_counts(
-               org.id,
-               [first_runner.id],
-               owner.id
-             )
-
-    assert %{second_runner.id => [{"connected", 1}, {"failed", 1}]} ==
-             Environments.runner_connector_assignment_status_counts(
-               org.id,
-               [first_runner.id, second_runner.id],
-               member.id
-             )
-
-    assert %{entries: [], next_cursor: nil} =
-             Environments.page_runner_connector_assignments(
-               org.id,
-               first_runner.id,
-               member.id
-             )
-
-    assert %{entries: [first_entry], next_cursor: cursor} =
-             Environments.page_runner_connector_assignments(
-               org.id,
-               second_runner.id,
-               member.id,
-               limit: 1
-             )
-
-    assert is_binary(cursor)
-
-    assert %{entries: [second_entry], next_cursor: nil} =
-             Environments.page_runner_connector_assignments(
-               org.id,
-               second_runner.id,
-               member.id,
-               limit: 1,
-               after: cursor
-             )
-
-    assert MapSet.new([first_entry.id, second_entry.id]) == MapSet.new([connected.id, failed.id])
-    assert Enum.all?([first_entry, second_entry], &(&1.project_name == second_project.name))
-    refute pending.id in [first_entry.id, second_entry.id]
-    refute stopped.id in [first_entry.id, second_entry.id]
-  end
-
-  test "device provision lifecycle records Operations run and events without raw progress",
-       %{
-         org: org,
-         project: project
-       } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-observable",
-               "name" => "Observable Mac mini"
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(
-               project.id,
-               %{
-                 "provisioner_id" => provisioner.id,
-                 "name" => "production",
-                 "alias" => "prod"
-               },
-               request_id: "req-env-created"
-             )
-
-    assert [created_run] =
-             Observability.list_operation_runs(org.id,
-               run_type: "device_provision",
-               external_run_id: request.id
-             )
-
-    assert created_run.status == "pending"
-    assert created_run.runner_type == "mac_mini_provisioner"
-    assert created_run.runner_id == provisioner.id
-    assert created_run.evidence["provision_request_id"] == request.id
-    assert created_run.evidence["request_id"] == "req-env-created"
-
-    assert {:ok, %{request: claimed}} =
-             Environments.claim_device_provision_request(org.id, provisioner.id, %{
-               "request_id" => "req-env-claimed"
-             })
-
-    assert claimed.id == request.id
-    assert claimed.status == "preflight"
-
-    assert {:ok, starting} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               request.id,
-               "starting_connector",
-               %{"progress" => %{"stage" => "starting_connector"}},
-               request_id: "req-env-starting"
-             )
-
-    assert starting.status == "starting_connector"
-
-    assert {:ok, waiting} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               request.id,
-               "waiting_for_attach",
-               %{
-                 "progress" => %{
-                   "stage" => "waiting_for_attach",
-                   "restart_count" => 1,
-                   "root" => "/private/tmp/customer-root",
-                   "stdout" => "raw stdout must stay local",
-                   "raw_token" => "salix_conn_secret",
-                   "launch" => %{
-                     "argv" => ["salix-connect", "--connector-token", "salix_conn_secret"],
-                     "argv_shape" => ["salix-connect", "--connector-token", "<token>"]
-                   }
-                 }
-               },
-               request_id: "req-env-waiting"
-             )
-
-    assert waiting.status == "waiting_for_attach"
-
-    assert {:ok, failed} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               request.id,
-               "failed",
-               %{
-                 "failure_code" => "connector.start_failed",
-                 "failure_message" => "salix-connect could not be started",
-                 "progress" => %{
-                   "stage" => "connector_start_failed",
-                   "exit_code" => 1,
-                   "stdout" => "final stdout must stay local"
-                 }
-               },
-               request_id: "req-env-failed"
-             )
-
-    assert failed.status == "failed"
-
-    assert [run] =
-             Observability.list_operation_runs(org.id,
-               run_type: "device_provision",
-               external_run_id: request.id
-             )
-
-    assert run.id == created_run.id
-    assert run.status == "failed"
-    assert run.reason_class == "connector.start_failed"
-    assert run.finished_at
-    assert run.evidence["request_id"] == "req-env-failed"
-    assert run.evidence["progress"]["stage"] == "connector_start_failed"
-    refute inspect(run.evidence) =~ "salix_conn_secret"
-    refute inspect(run.evidence) =~ "/private/tmp/customer-root"
-    refute inspect(run.evidence) =~ "stdout must stay local"
-
-    events =
-      Observability.list_events(org.id,
-        resource_type: "device_provision_request",
-        resource_id: request.id
-      )
-
-    event_types = Enum.map(events, & &1.event_type) |> Enum.sort()
-
-    assert event_types == [
-             "device.provision.claimed",
-             "device.provision.connector_starting",
-             "device.provision.created",
-             "device.provision.failed",
-             "device.provision.preflight",
-             "device.provision.waiting_for_attach"
-           ]
-
-    failed_event = Enum.find(events, &(&1.event_type == "device.provision.failed"))
-    assert failed_event.run_record_id == run.id
-    assert failed_event.severity == "error"
-    assert failed_event.status == "failed"
-    assert failed_event.reason_class == "connector.start_failed"
-    assert failed_event.evidence["request_id"] == "req-env-failed"
-
-    created_event = Enum.find(events, &(&1.event_type == "device.provision.created"))
-    assert created_event.evidence["request_id"] == "req-env-created"
-
-    claimed_event = Enum.find(events, &(&1.event_type == "device.provision.claimed"))
-    assert claimed_event.evidence["request_id"] == "req-env-claimed"
-
-    preflight_event = Enum.find(events, &(&1.event_type == "device.provision.preflight"))
-    assert preflight_event.evidence["request_id"] == "req-env-claimed"
-
-    starting_event =
-      Enum.find(events, &(&1.event_type == "device.provision.connector_starting"))
-
-    assert starting_event.evidence["request_id"] == "req-env-starting"
-
-    waiting_event =
-      Enum.find(events, &(&1.event_type == "device.provision.waiting_for_attach"))
-
-    assert waiting_event.evidence["request_id"] == "req-env-waiting"
-  end
-
-  test "create_device_provision_request rejects another org provisioner", %{
-    project: project
-  } do
-    {:ok, other_org} = Orgs.create_org(%{name: "Other", slug: "other"})
-
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(other_org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Other Mac mini"
-             })
-
-    assert {:error, :provisioner_not_found} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "production"
-             })
-  end
-
-  test "update_device_provision_request_status advances the state machine", %{
-    org: org,
-    project: project
-  } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Lab Mac mini"
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "production"
-             })
-
-    assert {:ok, waiting} =
-             Environments.update_device_provision_request_status(
-               request,
-               "waiting_for_attach",
-               %{"connector_token_hash" => "hash-only"}
-             )
-
-    assert waiting.status == "waiting_for_attach"
-    assert waiting.connector_token_hash == "hash-only"
-
-    assert {:ok, failed} =
-             Environments.update_device_provision_request_status(
-               waiting.id,
-               "failed",
-               %{"failure_code" => "preflight.salix_connect_not_executable"}
-             )
-
-    assert failed.status == "failed"
-    assert failed.failure_code == "preflight.salix_connect_not_executable"
-  end
-
-  test "stop request is claimed before new create work even at capacity", %{
-    org: org,
-    project: project
-  } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Lab Mac mini"
-             })
-
-    assert {:ok, stop_request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "production",
-               "alias" => "prod"
-             })
-
-    assert {:ok, connected} =
-             Environments.update_device_provision_request_status(
-               stop_request,
-               "connected",
-               %{"connector_run_id" => "env_prod"}
-             )
-
-    assert {:ok, stop_requested} =
-             Environments.request_device_provision_stop(
-               project.id,
-               connected.id,
-               actor_label: "project-admin@example.com",
-               request_id: "req_env_stop"
-             )
-
-    assert stop_requested.status == "stop_requested"
-
-    assert [audit] = Observability.list_audit_logs(org.id, action: "device.stop_requested")
-    assert audit.result == "ok"
-    assert audit.request_id == "req_env_stop"
-    assert audit.resource_type == "device_provision_request"
-    assert audit.resource_id == connected.id
-
-    assert {:ok, _pending_create} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "next-env"
-             })
-
-    assert {:ok, %{action: "stop", request: stopping, connect: %{}, launch: launch}} =
-             Environments.claim_device_provision_request(org.id, provisioner.id, %{
-               "available_capacity" => 0
-             })
-
-    assert stopping.id == stop_request.id
-    assert stopping.status == "stopping"
-    assert launch["provision_request_id"] == stop_request.id
-    assert launch["connector_run_id"] == "env_prod"
-
-    assert {:ok, stopped} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               stop_request.id,
-               "stopped",
-               %{}
-             )
-
-    assert stopped.status == "stopped"
-
-    assert [run] =
-             Observability.list_operation_runs(org.id,
-               run_type: "device_provision",
-               external_run_id: stop_request.id
-             )
-
-    assert run.status == "ok"
-    assert run.finished_at
-
-    events =
-      Observability.list_events(org.id,
-        resource_type: "device_provision_request",
-        resource_id: stop_request.id
-      )
-      |> Enum.reject(&(&1.domain == "audit"))
-
-    assert Enum.map(events, & &1.event_type) |> Enum.sort() == [
-             "device.provision.connected",
-             "device.provision.created",
-             "device.provision.stop_requested",
-             "device.provision.stopped",
-             "device.provision.stopping"
-           ]
-
-    stopped_event = Enum.find(events, &(&1.event_type == "device.provision.stopped"))
-    assert stopped_event.source == "bft.provisioner_api"
-    assert stopped_event.run_record_id == run.id
-  end
-
-  test "provisioner status callbacks cannot spoof connected attach", %{
-    org: org,
-    project: project
-  } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Lab Mac mini"
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "prod-env"
-             })
-
-    assert {:ok, %{request: claimed}} =
-             Environments.claim_device_provision_request(org.id, provisioner.id)
-
-    assert claimed.status == "preflight"
-
-    assert {:error, :unsupported_provisioner_status} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               request.id,
-               "connected",
-               %{"connector_run_id" => "env_spoofed"}
-             )
-
-    assert {:ok, waiting} =
-             Environments.update_device_provision_request_from_provisioner(
-               org.id,
-               provisioner.id,
-               request.id,
-               "waiting_for_attach",
-               %{"connector_run_id" => "env_spoofed"}
-             )
-
-    assert waiting.status == "waiting_for_attach"
-    assert waiting.connector_run_id == nil
-  end
-
-  test "device request list is bounded PG-only and the worker reconciles Salix attach", %{
-    org: org,
-    project: project
-  } do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-1",
-               "name" => "Lab Mac mini"
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "production",
-               "alias" => "prod-mac"
-             })
-
-    assert {:ok, waiting} =
-             Environments.update_device_provision_request_status(
-               request,
-               "waiting_for_attach",
-               %{}
-             )
-
     previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
     previous_probe = SystemsRuntime.get_env(:bridge_for_teams_core, :provisioning_probe)
 
@@ -747,15 +204,6 @@ defmodule BridgeForTeams.EnvironmentsTest do
       :provisioning_probe,
       %{
         test_pid: SystemsRuntime.Proc.self(),
-        list_result:
-          {:ok,
-           [
-             %{
-               "status" => "connected",
-               "connector_run_id" => "connector-run-projected",
-               "provision_request_id" => waiting.id
-             }
-           ]},
         page_result:
           {:ok,
            %{
@@ -773,49 +221,23 @@ defmodule BridgeForTeams.EnvironmentsTest do
     )
 
     on_exit(fn ->
-      if previous_client,
-        do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client),
-        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
-
-      if previous_probe,
-        do: SystemsRuntime.put_env(:bridge_for_teams_core, :provisioning_probe, previous_probe),
-        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :provisioning_probe)
+      restore_env(:salix_client, previous_client)
+      restore_env(:provisioning_probe, previous_probe)
     end)
 
-    assert [projected] =
-             Environments.list_device_provision_requests(project.id, limit: 1)
-
-    assert projected.id == waiting.id
-    assert projected.status == "waiting_for_attach"
-    refute_receive {:list_group_envs, _, _}
+    assert {:ok, []} = Environments.list_projected_environments(project.id, limit: 1)
     refute_receive {:page_group_envs, _, _, _}
 
-    assert {:ok, %{scanned: 1, checked_groups: 1, connected: 1, timed_out: 0, projected: 1}} =
-             ProvisioningReconciler.drain_once(limit: 1)
+    assert {:ok, %{projected: 1}} = ProvisioningReconciler.drain_once()
 
-    assert_receive {:list_group_envs, group_id, tenant_id}
+    assert_receive {:page_group_envs, group_id, tenant_id, opts}
     assert group_id == project.salix_group_id
     assert tenant_id == org.salix_tenant_id
-    assert_receive {:page_group_envs, ^group_id, ^tenant_id, opts}
     assert opts[:limit] == 50
     assert opts[:cursor] == nil
 
-    assert [connected] =
-             Environments.list_device_provision_requests(project.id, limit: 1)
-
-    assert connected.id == waiting.id
-    assert connected.status == "connected"
-    assert connected.connector_run_id == "connector-run-projected"
-    assert connected.provisioner.id == provisioner.id
-    refute_receive {:list_group_envs, _, _}
-    refute_receive {:page_group_envs, _, _, _}
-
-    assert {:ok, [%{"device_id" => "device-projected"}]} =
+    assert {:ok, [%{"device_id" => "device-projected", "status" => "connected"}]} =
              Environments.list_projected_environments(project.id, limit: 1)
-
-    assert {:ok, persisted} = Environments.get_device_provision_request(waiting.id)
-    assert persisted.status == "connected"
-    assert persisted.connector_run_id == "connector-run-projected"
   end
 
   test "list_environments reads the worker-owned PostgreSQL projection", %{
@@ -1185,69 +607,29 @@ defmodule BridgeForTeams.EnvironmentsTest do
     assert observed_event.evidence["previous_status"] == nil
   end
 
-  test "delete_environment removes the stable device, revokes its credential, and stops its runner request",
-       %{org: org, project: project} do
-    assert {:ok, provisioner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "mac-mini-delete",
-               "name" => "Delete Mac mini"
-             })
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner.id,
-               "name" => "delete-me"
-             })
-
-    assert {:ok, %{connect: %{"token" => token}, request: claimed}} =
-             Environments.claim_device_provision_request(org.id, provisioner.id)
-
-    assert {:ok, tenant_id, credential} =
-             SalixEnv.ConnectorTokens.validate_connector_token(token)
-
-    assert tenant_id == org.salix_tenant_id
-
-    assert {:ok, _transport_id, device} =
-             SalixEnv.Registry.connect("nonode@nohost", %{
-               "tenant_id" => credential["tenant_id"],
-               "group_id" => credential["group_id"],
-               "device_id" => credential["device_id"],
-               "connector_id" => credential["connector_id"],
-               "name" => "delete-me",
-               "provision_request_id" => request.id,
-               "provisioner_id" => provisioner.id
-             })
-
-    assert {:ok, %{connected: 1}} =
-             ProvisioningReconciler.drain_once()
-
-    assert [%{id: request_id, status: "connected"}] =
-             Environments.list_device_provision_requests(project.id)
-
-    assert request_id == claimed.id
+  test "delete_environment removes the stable device and records it", %{
+    org: org,
+    project: project
+  } do
+    device = register_env(project, "delete-me", "connected")
 
     assert {:ok, deleted} =
              Environments.delete_environment(
                project.id,
-               device["device_id"],
+               device.device_id,
                actor_label: "project-admin@example.com",
                request_id: "req_env_delete"
              )
 
-    assert deleted["device_id"] == device["device_id"]
-    assert {:error, :not_found} = Environments.get_environment(project.id, device["device_id"])
-    assert {:error, :unauthorized} = SalixEnv.ConnectorTokens.validate_connector_token(token)
-
-    assert {:ok, %{status: "stop_requested"}} =
-             Environments.get_device_provision_request(request.id)
+    assert deleted["device_id"] == device.device_id
+    assert {:error, :not_found} = Environments.get_environment(project.id, device.device_id)
 
     assert [audit] = Observability.list_audit_logs(org.id, action: "device.deleted")
     assert audit.result == "ok"
     assert audit.request_id == "req_env_delete"
     assert audit.resource_type == "device"
-    assert audit.resource_id == device["device_id"]
+    assert audit.resource_id == device.device_id
     assert audit.metadata["project_id"] == project.id
-    assert audit.metadata["provision_request_id"] == request.id
   end
 
   defp refresh_device_projection! do

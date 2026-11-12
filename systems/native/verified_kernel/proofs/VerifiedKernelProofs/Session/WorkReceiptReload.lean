@@ -62,7 +62,7 @@ theorem normalize_receipt_origin {state next : Term} {source : Term} {journal re
     obtain ⟨_, _, _, call⟩ := bind_ok call
   obtain ⟨normalized, _, written, call⟩ := bind_ok call
   have ledgerWritten : normalized.get (a "input_dedupe") = normalizedLedger := by
-    iterate 8 obtain ⟨_, written⟩ := write_cons written
+    iterate 10 obtain ⟨_, written⟩ := write_cons written
     exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   obtain ⟨_, _, _, call⟩ := bind_ok call
   obtain ⟨active, _, activityWrite, call⟩ := bind_ok call

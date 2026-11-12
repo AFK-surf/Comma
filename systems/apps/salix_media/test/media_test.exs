@@ -150,5 +150,33 @@ defmodule SalixMediaTest do
         refute Map.has_key?(req, unquote(omitted))
       end
     end
+
+    # A reasoning model's token cap also pays for its reasoning: with 1024
+    # tokens it can think through the whole cap and answer with empty content.
+    test "Vision describe gives reasoning models low effort and room to answer" do
+      SalixMedia.MockMedia.set("/chat/completions", %{
+        "choices" => [%{"message" => %{"content" => "An X post."}}]
+      })
+
+      config = %{"endpoint" => SystemsRuntime.get_env(:salix_media, :base_url)}
+
+      assert {:ok, %{description: "An X post."}} =
+               Vision.describe("https://cdn/x.png",
+                 config: Map.put(config, "model", "gpt-5.6-luna")
+               )
+
+      req = SalixMedia.MockMedia.last_request()
+      assert req["max_completion_tokens"] == 4096
+      assert req["reasoning_effort"] == "low"
+
+      assert {:ok, _} =
+               Vision.describe("https://cdn/x.png",
+                 config: Map.put(config, "model", "gpt-4o-mini")
+               )
+
+      req = SalixMedia.MockMedia.last_request()
+      assert req["max_tokens"] == 1024
+      refute Map.has_key?(req, "reasoning_effort")
+    end
   end
 end

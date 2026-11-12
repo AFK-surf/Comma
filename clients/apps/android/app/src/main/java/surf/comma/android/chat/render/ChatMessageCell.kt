@@ -1,6 +1,10 @@
 package surf.comma.android.chat.render
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.text.Spanned
+import surf.comma.android.tasks.ui.TaskRefDirectory
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Matrix
@@ -184,11 +188,22 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
                 onLongPress?.invoke(item)
             }
 
-            /** A closed brief opens from anywhere on it; an open one closes from its title or footer. */
+            /** Links and brief toggles share the existing tap detector. */
             override fun onSingleTapUp(event: MotionEvent): Boolean {
-                val brief = prepared?.brief?.takeIf { it.expandable } ?: return false
-                // A gesture whose moves were coalesced away still ends far from where it began.
                 if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) return false
+                val link = linkAt(event.x, event.y)
+                if (link != null && link == linkAt(downX, downY)) {
+                    when (link) {
+                        is TaskLinkSpan -> TaskRefDirectory.find(this@ChatMessageCell)?.open(link.taskId)
+                        is WebLinkSpan -> runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(link.url)).addCategory(Intent.CATEGORY_BROWSABLE),
+                            )
+                        }
+                    }
+                    return true
+                }
+                val brief = prepared?.brief?.takeIf { it.expandable } ?: return false
                 val onChrome = event.y < brief.titleTopPx + brief.title.height + BRIEF_TITLE_HIT_DP * density ||
                     event.y in (height - brief.footerBlockPx).toFloat()..(height - brief.bottomGapPx).toFloat()
                 if (brief.expanded && !onChrome) return false
@@ -330,6 +345,26 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         }
         longPressDetector.onTouchEvent(event)
         return super.dispatchTouchEvent(event)
+    }
+
+    private fun linkAt(x: Float, y: Float): LinkSpan? {
+        val item = prepared ?: return null
+        if (item.brief != null && y >= height - item.brief.footerBlockPx) return null
+        for (block in item.blocks.filterIsInstance<PreparedContentBlock.Text>()) {
+            val localX = x - columnLeftOf(item) - item.horizontalPaddingPx - block.padPx - block.leftInsetPx
+            val localY = y - block.yOffsetPx - block.padPx
+            val layout = block.layout
+            if (localY < 0 || localY >= layout.height) continue
+            val line = layout.getLineForVertical(localY.toInt())
+            if (localX < layout.getLineLeft(line) || localX >= layout.getLineRight(line)) continue
+            val offset = layout.getOffsetForHorizontal(line, localX)
+            val text = layout.text as? Spanned ?: continue
+            val link = text.getSpans(offset, offset, LinkSpan::class.java).firstOrNull {
+                offset >= text.getSpanStart(it) && offset < text.getSpanEnd(it)
+            }
+            if (link != null) return link
+        }
+        return null
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -754,8 +789,8 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         val scale = typingScale
         typing.draw(canvas, columnLeft, item.topMarginPx.toFloat(), density, TypingBubble.bubbleColor(this),
             TypingBubble.dotColor(this), AnimationUtils.currentAnimationTimeMillis(), scale,
-            // The pop starts from nothing, so its first part also fades in.
-            alpha = (scale / TYPING_POP_OPAQUE_AT).coerceIn(0f, 1f), animate = animate)
+            // The pop starts from nothing: unseen up to half its size, then fading in as it grows.
+            alpha = DesignMotion.seenAt(scale), animate = animate)
         typingLooping = animate && TypingBubble.keepsAnimating(isAttachedToWindow, windowVisibility == VISIBLE,
             visibleTop, visibleHeight, height)
         if (typingLooping) postInvalidateOnAnimation()
@@ -1207,8 +1242,6 @@ class ChatMessageCell(context: Context) : FrameLayout(context), TimelineMediaCel
         const val CODE_CORNER_DP = 8f
         const val QUOTE_BAR_DP = 4f
 
-        /** The pop-in scale at which the bubble has become fully opaque. */
-        const val TYPING_POP_OPAQUE_AT = 0.5f
         const val TYPING_SCALE_STEP = 0.002f
 
         /** Below a brief's title, taps still count as the title's. */

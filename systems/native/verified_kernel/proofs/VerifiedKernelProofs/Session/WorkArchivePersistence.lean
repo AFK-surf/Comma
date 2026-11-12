@@ -1,7 +1,7 @@
 import VerifiedKernelProofs.Session.WorkArchiveCommit
 import VerifiedKernelProofs.Session.WorkStorageCommit
 import VerifiedKernelProofs.Session.WorkArchiveMetadata
-
+import VerifiedKernelProofs.Session.WorkConfirmedCandidate
 namespace VerifiedKernel.Session.ArchivePublication
 open Data WorkConservation
 set_option Elab.async false
@@ -164,7 +164,7 @@ theorem published_archive_durable_input
     {records live : List Term} {archiveBase ceiling line : Int}
     {before after : Objects} {durable : HotSnapshots} {final : Output} {metadata : List Term}
     {j r prepareJournal prepareRest observations rest confirmation remaining : List Term}
-    (framing : CodecFraming) (sorted : SeqSorted state)
+    (framing : CodecFraming) (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (format : state.get (a "storage_format") = i 3)
     (numeric : (state.get (a "archived_through")).default (i 0) = i archiveBase) (nonnegative : archiveBase ≥ 0)
     (initial : StateCatalogBacked before state)
@@ -191,7 +191,7 @@ theorem published_archive_durable_input
             ((stored.head?.getD nil).get (a "seq"))) stored ∧ actual ∈ stored ∧
           ValueSemantics.Equivalent (queueWorkProjection item)
             ((actual.get (a "data")).get (b "accepted_input")) := by
-  rcases published_archive_catalog_input framing sorted numeric nonnegative initial catalog window positive
+  rcases published_archive_catalog_input framing sorted physical numeric nonnegative initial catalog window positive
       execution emitted read reduced with unchanged | ⟨dropped, kept, partition, nextMessages, storedInputs⟩
   · exact Or.inl unchanged
   · rcases archiveAdvance_storage_fields reduced with unchanged | ⟨entries, watermark, permuted, nextCatalog, nextBase, _⟩

@@ -1,4 +1,4 @@
-//! The sockets that carry an endpoint's packets through Salix, the relay of last resort (Comma's client relay,
+//! The sockets that carry an endpoint's packets through Salix (Comma's client relay,
 //! `GET /v1/comma/station-relay`, CommaWeb.ClientRelaySocket), as @comma/mesh's salix-relay.ts carries the desktop
 //! app's: one socket for each workspace, opened with a single-use ticket and registered by proving the endpoint's key
 //! over Salix's challenge. Salix passes a packet only to a peer in the Group of the socket it came on, so a peer's

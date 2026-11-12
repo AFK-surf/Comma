@@ -16,19 +16,25 @@ func TestGenerateTracksOnlyRealClassInputs(t *testing.T) {
 
 	writeFixture(t, root, "scripts/build-runtime-images.sh", "shared recipe changed")
 	afterRecipe := mustGenerate(t, root)
-	assertDigests(t, before, afterRecipe, map[string]bool{"meeting": true, "shell": true, "station": true})
+	assertDigests(t, before, afterRecipe, map[string]bool{"shell": true, "station": true})
+
+	writeFixture(t, root, "systems/runtime-images/station/Dockerfile", "shared tools changed")
+	beforeShared := afterRecipe
+	afterRecipe = mustGenerate(t, root)
+	assertDigests(t, beforeShared, afterRecipe, map[string]bool{"shell": true, "station": true})
+
+	writeFixture(t, root, "systems/runtime-images/station/apt-package-recovery.mjs", "package recovery changed")
+	beforeRecovery := afterRecipe
+	afterRecipe = mustGenerate(t, root)
+	assertDigests(t, beforeRecovery, afterRecipe, map[string]bool{"shell": true, "station": true})
 
 	writeFixture(t, root, "systems/runtime-images/cmd/comma-shell-runtime/main.go", "shell changed")
 	afterShell := mustGenerate(t, root)
 	assertDigests(t, afterRecipe, afterShell, map[string]bool{"shell": true})
 
-	writeFixture(t, root, "systems/connector/salix-connect/main.go", "connector changed")
-	afterConnector := mustGenerate(t, root)
-	assertDigests(t, afterShell, afterConnector, map[string]bool{"meeting": true})
-
 	writeFixture(t, root, "systems/station/src/main.ts", "station changed")
 	afterStation := mustGenerate(t, root)
-	assertDigests(t, afterConnector, afterStation, map[string]bool{"station": true})
+	assertDigests(t, afterShell, afterStation, map[string]bool{"station": true})
 
 	writeFixture(t, root, "clients/packages/mesh/src/index.ts", "mesh changed")
 	afterMesh := mustGenerate(t, root)
@@ -64,11 +70,15 @@ func TestGenerateTracksSelectedLockedDependencies(t *testing.T) {
 	}
 	lock["meetnative"].(map[string]any)["revision"] = "new-revision"
 	afterMeetnative := writeLock()
-	assertDigests(t, before, afterMeetnative, map[string]bool{"meeting": true})
+	assertDigests(t, before, afterMeetnative, map[string]bool{"station": true})
+
+	lock["npm"].(map[string]any)["integrity"] = "patched-npm"
+	afterNPM := writeLock()
+	assertDigests(t, afterMeetnative, afterNPM, map[string]bool{"shell": true, "station": true})
 
 	// A newer package snapshot rebuilds every image with its system packages.
 	lock["packageSnapshot"] = "20260102T000000Z"
-	assertDigests(t, afterMeetnative, writeLock(), map[string]bool{"meeting": true, "shell": true, "station": true})
+	assertDigests(t, afterNPM, writeLock(), map[string]bool{"shell": true, "station": true})
 }
 
 func TestGenerateIsStable(t *testing.T) {
@@ -80,21 +90,17 @@ func inputFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"scripts/build-runtime-images.sh":                            "shared build recipe",
-		"systems/runtime-images/meeting/Dockerfile":                  "meeting",
-		"systems/runtime-images/shell/Dockerfile":                    "shell",
-		"systems/runtime-images/go.mod":                              "module fixture",
-		"systems/runtime-images/cmd/comma-shell-runtime/main.go":     "shell source",
-		"systems/runtime-images/cmd/comma-meeting-runtime/main.go":   "meeting source",
-		"systems/connector/salix-connect/go.mod":                     "connector module",
-		"systems/connector/salix-connect/main.go":                    "connector source",
-		"systems/connector/salix-connect/native/ignored-native-file": "ignored",
-		"systems/runtime-images/station/Dockerfile":                  "station",
-		"systems/station/package.json":                               "station package",
-		"systems/station/src/main.ts":                                "station source",
-		"clients/packages/mesh/package.json":                         "mesh package",
-		"clients/packages/mesh/src/index.ts":                         "mesh source",
-		"pnpm-lock.yaml":                                             "pnpm lock",
+		"scripts/build-runtime-images.sh":                         "shared build recipe",
+		"systems/runtime-images/go.mod":                           "module fixture",
+		"systems/runtime-images/cmd/comma-shell-runtime/main.go":  "shell source",
+		"systems/station/computer-use/native/ignored-native-file": "ignored",
+		"systems/runtime-images/station/Dockerfile":               "station",
+		"systems/runtime-images/station/apt-package-recovery.mjs": "package recovery",
+		"systems/station/package.json":                            "station package",
+		"systems/station/src/main.ts":                             "station source",
+		"clients/packages/mesh/package.json":                      "mesh package",
+		"clients/packages/mesh/src/index.ts":                      "mesh source",
+		"pnpm-lock.yaml":                                          "pnpm lock",
 	}
 	for path, body := range files {
 		writeFixture(t, root, path, body)
@@ -103,7 +109,6 @@ func inputFixture(t *testing.T) string {
 		"schemaVersion": float64(1),
 		"baseImages": map[string]any{
 			"go":      "go@sha256:1",
-			"meeting": "debian@sha256:3", "shell": "alpine@sha256:4",
 			"station": "node@sha256:5",
 		},
 		"packageSnapshot":    "20260101T000000Z",

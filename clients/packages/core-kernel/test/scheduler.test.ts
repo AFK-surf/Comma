@@ -41,3 +41,21 @@ test("a task is asked for when the asking effect runs, not when it is made", asy
   await time.pass(600);
   assert.equal(runs, 1);
 });
+
+test("a task asked for while it runs runs again after, unless its run under way is enough", async () => {
+  const time = new TestTime();
+  const runner = new Runner(time.clock);
+  const scheduler = new Scheduler(runner, runner.root);
+  let runs = 0;
+  const task = Effect.sync(() => void runs++).pipe(Effect.andThen(Effect.sleep(100)));
+  scheduler.enqueue("api", "a", Priority.shown, task);
+  await time.pass(10);
+  scheduler.enqueue("api", "a", Priority.shown, task, false);
+  await time.pass(200);
+  assert.equal(runs, 1);
+  scheduler.enqueue("api", "a", Priority.shown, task);
+  await time.pass(10);
+  scheduler.enqueue("api", "a", Priority.shown, task);
+  await time.pass(300);
+  assert.equal(runs, 3);
+});

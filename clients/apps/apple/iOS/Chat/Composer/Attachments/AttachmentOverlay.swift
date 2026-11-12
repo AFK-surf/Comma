@@ -17,6 +17,7 @@ struct AttachmentActions {
     let openFiles: () -> Void
     let openAllPhotos: () -> Void
     let attach: ([AttachmentImage]) async -> Void
+    var openDrive: (() -> Void)? = nil
 }
 
 /// The + menu and the camera and photo windows, as one card. The card opens on the + button as the menu;
@@ -118,7 +119,7 @@ struct AttachmentOverlay: View {
                                                 removal: .opacity.animation(AttachmentMotion.leave))
         return AttachmentCard(surface: surface, raised: open) {
             ZStack {
-                AttachmentMenu(choose: choose)
+                AttachmentMenu(showsDrive: actions.openDrive != nil, choose: choose)
                     .frame(width: Self.menuWidth)
                     .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { menuHeight = $0 }
@@ -162,6 +163,7 @@ struct AttachmentOverlay: View {
         case .camera: surface = .camera
         case .photos: surface = .photos
         case .files: close(); actions.openFiles()
+        case .drive: close(); actions.openDrive?()
         }
     }
 

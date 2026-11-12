@@ -112,7 +112,15 @@ const config: ForgeConfig = {
     },
   },
   packagerConfig: {
-    ...(electronCacheRoot ? { download: { cacheRoot: electronCacheRoot } } : {}),
+    download: {
+      ...(electronCacheRoot ? { cacheRoot: electronCacheRoot } : {}),
+      // Without checksums, @electron/get fetches SHASUMS256.txt from GitHub on
+      // every package, cache hit or not; GitHub's 504s then fail the build.
+      // The electron package ships the same sums its own install checks.
+      checksums: JSON.parse(
+        readFileSync(join(packageDirectory("electron"), "checksums.json"), "utf8")
+      ),
+    },
     name: releaseConfig.productName,
     executableName: releaseConfig.executableName,
     ...(process.env.COMMA_ELECTRON_ZIP_DIR
@@ -126,13 +134,22 @@ const config: ForgeConfig = {
         "Websites you allow can use your camera for video meetings.",
       NSMicrophoneUsageDescription:
         "Comma uses your microphone for recording and for websites you allow, including meeting calls.",
+      NSLocationUsageDescription:
+        "Comma shares your location with an Agent when you allow its request.",
+      NSLocationWhenInUseUsageDescription:
+        "Comma shares your location with an Agent when you allow its request.",
       NSAudioCaptureUsageDescription:
         "Comma records meeting audio playing on this Mac so it can transcribe and summarize it.",
       NSScreenCaptureUsageDescription:
         "Comma lists the apps playing audio so a recording can be scoped to one of them.",
-      // Signing in with a passkey from a phone checks that the phone is near.
+      // Settings › Task requests › Add someone nearby finds Comma on the same Wi-Fi
+      // (`_comma-nearby._tcp`) and sends invites over it; macOS asks first.
+      NSLocalNetworkUsageDescription:
+        "Comma finds people with Comma open on the same Wi-Fi when you add someone nearby, and receives their invites.",
+      NSBonjourServices: ["_comma-nearby._tcp"],
+      // Mini-app devices, Comma device setup, and nearby phone passkeys use Bluetooth.
       NSBluetoothAlwaysUsageDescription:
-        "Comma uses Bluetooth to set up Comma devices and sign in with a passkey from your phone.",
+        "Comma uses Bluetooth to connect devices you choose in mini-apps, set up Comma devices, and sign in with a passkey from your phone.",
       // The Mac apps plugins. MacAppsHost runs as Comma's child, so macOS
       // attributes these permissions to Comma; it embeds the same strings.
       NSCalendarsFullAccessUsageDescription:
@@ -143,6 +160,13 @@ const config: ForgeConfig = {
         "When you turn on Contacts in Plugins, Comma's Agent can look up people's phone numbers and email addresses for you.",
       NSAppleEventsUsageDescription:
         "When you turn on Messages, Mail, Notes, Music or System Control in Plugins, Comma's Agent can use that app for you.",
+      // The station runs as Comma's child, so macOS asks for Comma when the Agent first opens one of these folders.
+      NSDocumentsFolderUsageDescription:
+        "Comma's Agent reads and edits files in your Documents folder when you ask it to work on them.",
+      NSDesktopFolderUsageDescription:
+        "Comma's Agent reads and edits files on your Desktop when you ask it to work on them.",
+      NSDownloadsFolderUsageDescription:
+        "Comma's Agent reads and edits files in your Downloads folder when you ask it to work on them.",
     },
     // Production includes a layered .icon; Dev and Staging use their detailed ICNS.
     icon: channelIconBasePath,

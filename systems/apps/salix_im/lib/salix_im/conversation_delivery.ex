@@ -171,16 +171,18 @@ defmodule SalixIM.ConversationDelivery do
     if meeting_activation_bound?(rec["message_metadata"], rec["conversation_source_refs"]) do
       {:ok, :suppressed_meeting_activation}
     else
-      case rec["participant_provider"] do
-        "slack" -> deliver_slack(rec)
-        "feishu" -> deliver_feishu(rec)
-        "lark" -> deliver_lark(rec)
-        "qq" -> deliver_qq(rec)
-        "telegram" -> deliver_telegram(rec)
-        "linear" -> deliver_linear(rec)
-        "wechat" -> deliver_personal(rec, "wechat")
-        provider -> {:error, {:unsupported_provider, provider}, false}
-      end
+      SalixIM.MentionReplyLatency.with_message(rec["message_id"], fn ->
+        case rec["participant_provider"] do
+          "slack" -> deliver_slack(rec)
+          "feishu" -> deliver_feishu(rec)
+          "lark" -> deliver_lark(rec)
+          "qq" -> deliver_qq(rec)
+          "telegram" -> deliver_telegram(rec)
+          "linear" -> deliver_linear(rec)
+          "wechat" -> deliver_personal(rec, "wechat")
+          provider -> {:error, {:unsupported_provider, provider}, false}
+        end
+      end)
     end
   end
 
@@ -347,7 +349,7 @@ defmodule SalixIM.ConversationDelivery do
     with {:ok, payload} <- feishu_delivery_payload(rec),
          {:ok, group_id} <- required_string(rec, "agent_group_id"),
          {:ok, connect_id} <- required_string(payload, "connect_id"),
-         {:ok, chat_id} <- required_string(payload, "chat_id"),
+         {:ok, chat_id} <- feishu_receive_target(payload),
          {:ok, delivery} <- provider_message_delivery(rec),
          {:ok, connect} <-
            ProviderConnects.get_active_connect_by_id(group_id, connect_id, "feishu") do
@@ -438,7 +440,7 @@ defmodule SalixIM.ConversationDelivery do
     with {:ok, payload} <- lark_delivery_payload(rec),
          {:ok, group_id} <- required_string(rec, "agent_group_id"),
          {:ok, connect_id} <- required_string(payload, "connect_id"),
-         {:ok, chat_id} <- required_string(payload, "chat_id"),
+         {:ok, chat_id} <- lark_receive_target(payload),
          {:ok, delivery} <- provider_message_delivery(rec),
          {:ok, connect} <-
            ProviderConnects.get_active_connect_by_id(group_id, connect_id, "lark") do
@@ -618,6 +620,20 @@ defmodule SalixIM.ConversationDelivery do
     end
   end
 
+  # A system notice to one person names their open_id instead of a chat.
+  defp feishu_receive_target(%{"receive_open_id" => "ou_" <> _ = open_id} = payload) do
+    if Map.get(payload, "chat_id") in [nil, ""],
+      do: {:ok, {:open_id, open_id}},
+      else: {:error, :ambiguous_feishu_delivery_target}
+  end
+
+  defp feishu_receive_target(payload), do: required_string(payload, "chat_id")
+
+  defp feishu_message_target({:open_id, open_id}, _payload, params),
+    do:
+      {"feishu.send_text",
+       Map.merge(params, %{"receive_id" => open_id, "receive_id_type" => "open_id"})}
+
   defp feishu_message_target(chat_id, payload, params) do
     case provider_reply_message_id(payload) do
       "" ->
@@ -640,6 +656,11 @@ defmodule SalixIM.ConversationDelivery do
         {"feishu.reply_text", Map.merge(params, reply_params)}
     end
   end
+
+  defp feishu_file_target({:open_id, open_id}, _payload, params),
+    do:
+      {"feishu.send_file",
+       Map.merge(params, %{"receive_id" => open_id, "receive_id_type" => "open_id"})}
 
   defp feishu_file_target(chat_id, payload, params) do
     case provider_reply_message_id(payload) do
@@ -707,6 +728,17 @@ defmodule SalixIM.ConversationDelivery do
 
   defp lark_file_permission_failure?(_delivery, _reason), do: false
 
+  # A system notice to one person (a meeting's personal reminder) names the
+  # person's open_id instead of a chat; Lark sends it to their private chat
+  # with the bot.
+  defp lark_receive_target(%{"receive_open_id" => "ou_" <> _ = open_id} = payload) do
+    if Map.get(payload, "chat_id") in [nil, ""],
+      do: {:ok, {:open_id, open_id}},
+      else: {:error, :ambiguous_lark_delivery_target}
+  end
+
+  defp lark_receive_target(payload), do: required_string(payload, "chat_id")
+
   defp deliver_lark_text(_connect, _rec, _chat_id, _payload, ""), do: {:ok, nil}
 
   defp deliver_lark_text(connect, rec, chat_id, payload, text) do
@@ -746,6 +778,9 @@ defmodule SalixIM.ConversationDelivery do
   # A message of the Participant's thread answers its root message, and in a
   # group it goes into the thread. Without a message to answer it is a new
   # message of the chat.
+  defp lark_message_target({:open_id, open_id}, _payload, params),
+    do: Map.merge(params, %{"user_id" => open_id, "user_id_type" => "open_id"})
+
   defp lark_message_target(chat_id, payload, params) do
     params = Map.put(params, "chat_id", chat_id)
 

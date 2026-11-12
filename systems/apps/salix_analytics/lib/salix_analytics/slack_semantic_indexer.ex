@@ -1,11 +1,8 @@
 defmodule SalixAnalytics.SlackSemanticIndexer do
   @moduledoc """
-  Bounded canonical reconciliation into Oban plus complete-document indexing.
-  One timer pages one exact scope per turn; no message path calls this process.
+  Finite canonical initialization over exact installation channels.
+  Source dispatch runs independently in the existing queue process.
   Text and file jobs execute independently and history yields to live work.
-  Model: tla/salix/SlackSemanticIndex.tla.
-  Scheduling: tla/salix/SemanticIndexScheduling.tla.
-  Full-history paging: tla/salix/SemanticHistoryPaging.tla.
   """
   alias SalixAnalytics.SlackSemanticIndex, as: Index
   alias SalixAnalytics.SlackSemanticQueue, as: Queue
@@ -24,29 +21,34 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
       Keyword.get(opts, :start_delay_ms, 1000)
     )
 
-    {:ok, %{discovery: nil}}
+    {:ok, nil}
   end
 
   @impl true
   def handle_info(:tick, state) do
-    source = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_scope_source)
-    latest = SystemsClock.system_time(:microsecond)
     started = SystemsClock.monotonic_time()
 
     result =
       try do
-        with {:ok, scope, discovery} <- source.next(state.discovery) do
-          if scope do
-            with {:ok, cursor} <- Queue.history_cursor(scope),
-                 {:ok, rows} <-
-                   Index.message_page(scope, if(cursor == 0, do: latest, else: cursor)),
-                 {:ok, _} <- Queue.enqueue_history_page(scope, cursor, rows) do
-              {:ok, discovery}
-            else
-              _ -> {:skip, discovery}
-            end
-          else
-            {:ok, discovery}
+        with {:ok, _} <- SalixStore.SlackSearchCatalog.initialize_connect_page(),
+             {:ok, initialization} <- SalixStore.SlackSearchCatalog.next_initialization() do
+          case initialization do
+            nil ->
+              :ok
+
+            {scope, cursor} ->
+              with {:ok, rows} <-
+                     Index.message_page(
+                       scope,
+                       if(cursor == 0, do: SystemsClock.system_time(:microsecond), else: cursor)
+                     ),
+                   {:ok, _} <- Queue.enqueue_history_page(scope, cursor, rows) do
+                :ok
+              else
+                error ->
+                  Queue.defer_initialization(scope, cursor)
+                  error
+              end
           end
         end
       rescue
@@ -58,22 +60,16 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
     Index.observe(
       "slack_semantic_reconcile",
       started,
-      if(match?({:ok, _}, result), do: "ok", else: "error")
+      if(result == :ok, do: "ok", else: "error")
     )
-
-    discovery =
-      case result do
-        {status, next} when status in [:ok, :skip] -> next
-        _ -> state.discovery
-      end
 
     SystemsClock.send_after(
       SystemsRuntime.Proc.self(),
       :tick,
-      if(match?({:ok, _}, result), do: 1000, else: 5000)
+      if(result == :ok, do: 1000, else: 5000)
     )
 
-    {:noreply, %{state | discovery: discovery}}
+    {:noreply, state}
   end
 
   @doc false

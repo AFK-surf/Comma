@@ -133,6 +133,7 @@ def item (wire : Term) : System.Item where
 
 def clause (wire : Term) : System.Clause :=
   match wire with
+  | .atom "authored" => .authored
   | .atom "in_place" => .inPlace
   | .atom "instruction" => .instruction
   | .tuple [.atom "receipt", id] => .receipt (key id)
@@ -170,9 +171,14 @@ theorem source_authorized
     (requester : principal p = (activation rawActivation).requester)
     (h : DecisionContract.SourceAuthorized source rawEffect rawActivation p facts rawClause) :
     System.SourceAuthorized w (policy (f facts "policy")) (activation rawActivation)
-      (effect rawEffect) (label (f source "label")) receipts clock.toNat (clause rawClause) := by
+      (effect rawEffect) (item source) receipts clock.toNat (clause rawClause) := by
   cases h with
   | flow h => exact .flow (flow_sound sound h)
+  | authored hu hr command present same _ =>
+    refine .authored (unsealed hv hp hu) (requester ▸ reader_sound sound hr) ?_ ?_
+    · simp [item, command]
+    · have nonnil : (f source "principal" == nil) = false := by simpa [bne] using present
+      simp [item, nonnil, ← requester, principal, key_eq same]
   | inPlace hu hr hi he =>
     exact .inPlace (unsealed hv hp hu) (requester ▸ reader_sound sound hr)
       (inplace_allowed hi) (equal_labels he)

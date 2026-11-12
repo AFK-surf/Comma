@@ -1,6 +1,6 @@
 // Workspace file methods: read, write, delete, stat, list, glob, grep, read_stream and write_stream. Paths resolve
 // against the connector root (absolute paths are taken as given, as the Go connector did).
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Effect } from "effect";
@@ -23,6 +23,43 @@ export function resolvePath(root: string, path: string): string {
 export function pathInsideRoot(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** A path with its existing part resolved through links; the missing rest is appended as written. */
+export function resolveExistingPrefix(path: string): string {
+  let current = resolve(path);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return join(realpathSync(current), ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Where a process granted `grants` may start: `cwd` resolved through links, inside the connector root and, when
+ * there are grants, inside one of them (relative grants are under the root). Throws the error the gateway reads as a
+ * missing root.
+ */
+export function grantedWorkingDir(root: string, cwd: string, grants: readonly string[]): string {
+  const outside = () => new Error(grants.length > 0 ? "process working_dir is outside root_grants" : "path escapes station root");
+  const realRoot = resolveExistingPrefix(root);
+  const resolved = resolveExistingPrefix(cwd);
+  if (!pathInsideRoot(realRoot, resolved)) throw outside();
+  if (grants.length === 0) return resolved;
+  for (const grant of grants) {
+    const trimmed = grant.trim();
+    if (trimmed === "") continue;
+    const grantRoot = resolveExistingPrefix(isAbsolute(trimmed) ? trimmed : join(root, trimmed));
+    if (pathInsideRoot(realRoot, grantRoot) && pathInsideRoot(grantRoot, resolved)) return resolved;
+  }
+  throw outside();
 }
 
 /** Go's filepath.Match for one pattern against one name (`*`, `?`, `[...]`, `\` escapes; `*` never crosses `/`). */
@@ -217,7 +254,7 @@ export function makeFsMethods(root: () => string) {
             if (bytesRead > 0) {
               seq++;
               sent += bytesRead;
-              const frame: Message = { id, type: "stream", stream: { channel: "data", data: buffer.subarray(0, bytesRead).toString("base64"), eof: sent >= size, seq } };
+              const frame: Message = { id, type: "stream", stream: { channel: "data", data: buffer.subarray(0, bytesRead), eof: sent >= size, seq } };
               yield* session.sendReadStreamFrame(id, seq, frame);
             }
             if (bytesRead === 0) {

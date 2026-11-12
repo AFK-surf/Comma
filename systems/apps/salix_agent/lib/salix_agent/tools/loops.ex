@@ -18,12 +18,14 @@ defmodule SalixAgent.Tools.Loops do
   and the current Session, never an argument.
 
   A Worker round that works a Task creates that Task's one Loop and manages
-  only it; every other round manages only the Agent's Loops that belong to
-  no Task (`SalixAgent.Loops.scope/1`). Another scope's Loop reads as
-  missing.
+  only it; `loop.create` again in the Task replaces that Loop's program.
+  Every other round manages only the Agent's Loops that belong to no Task
+  (`SalixAgent.Loops.scope/1`). Another scope's Loop reads as missing.
   """
 
+  alias SalixAgent.IFC.{Context, FileLabels}
   alias SalixAgent.Loops
+  alias SalixIFC.{Codec, Label}
 
   @default_artifact_path "/loops/main.elf"
 
@@ -39,19 +41,21 @@ defmodule SalixAgent.Tools.Loops do
 
   @build_description "Compile a background loop for loop.create. Use this only when a condition must be watched for a long time without spending model turns; do not use it to run a one-off task.\n\nCompile a C background loop with spinfoam's embedded compiler (integer C only: no floating point, no signed division or modulo) and write the ELF into your workspace at `path` (default /loops/main.elf); pass that path to loop.create. Read loop.sdk first for the header and constraints. The program includes \"spinfoam.h\" and defines `SF_MAIN sf_i64 main(void)`; it loops with sf_sleep_ms / sf_event_next, reads its JSON config with sf_config / sf_json_get, calls host capabilities with sf_host_call(name, args_json_handle, timeout_ms), and returns to stop. Host capabilities every loop may call, with no grant step: agent.notify {content, dedup_key} to wake this session (rate limited, use a stable dedup_key per condition), loop.state.put {state} / loop.state.get to checkpoint across restarts (the last checkpoint is passed back as config.state), loop.ack {event_id}, loop.log {message}, loop.next_run {after_ms} for the next time of the loop's trigger, plus read-only Salix tools, the external environment tools (env.exec, env.copy, env.process_*, device.*, ssh.*) and decide (classify runtime data), and composio.execute (read or write through a connected provider), and web.http_request (poll or post to an HTTP JSON API) by their canonical name, under your own tool authorization."
 
-  @create_description "Create a background loop from an ELF file loop.build wrote into your workspace (`path`) and start it.\n\nThe loop records the file's path and hash; keep the file as long as the loop exists. Give it a name and a JSON config the program reads. The program may call every loop capability by name with no grant step: agent.notify (the only way it wakes this session), the loop.* checkpoint and ack calls, read tools, the external environment tools (env.exec and the other env.*/device.* tools) to act on a connected device, ssh.* tools for remote SSH hosts, decide for typed runtime judgments, composio.execute for connected provider reads and writes, and web.http_request to poll or post to an HTTP JSON API, each under your own tool authorization; never Salix messaging, memory, workspace or schedule writes. It persists across restarts and node moves, resuming from its last loop.state.put checkpoint. Limits: 20 active loops per agent, 100 per group.\n\nOptional trigger: `every_minutes` (5 to 1440), or `cron` (5 fields: minute hour day-of-month month day-of-week) with `timezone` (an IANA name such as Asia/Shanghai; default: the timezone of the request you are serving). The program asks loop.next_run for the time of its next run and waits until then; the host does the clock and timezone math.\n\nInside a Task the loop belongs to that Task: a Task has one loop, and from the Task you manage only that loop. When the Task requested its loop (a Loop Task), the loop already has the requested trigger and limits: pass no trigger, and the server stops the loop at its run limit or end time."
+  @create_description "Create a background loop from an ELF file loop.build wrote into your workspace (`path`) and start it.\n\nThe loop records the file's path and hash; keep the file as long as the loop exists. Give it a name and a JSON config the program reads. The program may call every loop capability by name with no grant step: agent.notify (the only way it wakes this session), the loop.* checkpoint and ack calls, read tools, the external environment tools (env.exec and the other env.*/device.* tools) to act on a connected device, ssh.* tools for remote SSH hosts, decide for typed runtime judgments, composio.execute for connected provider reads and writes, and web.http_request to poll or post to an HTTP JSON API, each under your own tool authorization; never Salix messaging, memory, workspace or schedule writes. It persists across restarts and node moves, resuming from its last loop.state.put checkpoint. Limits: 20 active loops per agent, 100 per group.\n\nOptional trigger: `every_minutes` (5 to 1440), or `cron` (5 fields: minute hour day-of-month month day-of-week) with `timezone` (an IANA name such as Asia/Shanghai; default: the timezone of the request you are serving). The program asks loop.next_run for the time of its next run and waits until then; the host does the clock and timezone math.\n\nInside a Task the loop belongs to that Task: a Task has one loop, and from the Task you manage only that loop. When the Task requested its loop (a Loop Task), the loop already has the requested trigger and limits: pass no trigger, and the server stops the loop at its run limit or end time. Inside a Task, loop.create again replaces the program of the Task's loop and restarts it, keeping its trigger, limits, run count and checkpoint (name and config too when you leave them out): when the loop exits or fails, read loop.get for the reason, fix the program, loop.build and loop.create again in the same Task."
 
   @list_description "List the background loops owned by this agent with their status (active, paused with a reason, failed), node and secret webhook URL when enabled. Treat webhook URLs as credentials."
 
-  @get_description "Show one background loop: its config, capabilities, checkpoint, runtime state and last failure."
+  @get_description "Show one background loop: its config, capabilities, checkpoint, runtime state and last failure. While the program runs, runtime.last_host_error names its last failed host call (capability and message: the reason behind SF_HOST_ERROR); after a non-zero exit, failure and the exit notice name it."
 
-  @pause_description "Pause one background loop: it is stopped and stays paused until loop.resume."
+  @pause_description "Pause one background loop: it is stopped and stays paused until loop.resume.\n\nWhen it cannot run because a device is disconnected, pass that device as until_device_id: the loop resumes by itself the moment the device connects, and at once if it is already connected. Tell people it will continue on its own; do not ask them to report that the device is back."
 
   @resume_description "Resume a paused or failed background loop; it restarts from its last checkpoint."
 
   @delete_description "Stop and delete one background loop."
 
   @send_description "Deliver an event to one of this agent's background loops (the program receives it through sf_event_next). Use event_id for idempotent retries."
+
+  @subscribe_description "Subscribe one of your background loops to a product event, such as meeting.completed when a meeting of this workspace ends with its notes. The program receives each event through sf_event_next with that topic. Omit event to remove the subscription. A loop has one product event, besides any webhook URL or Composio trigger. A product event carries only ids, times and counts, never meeting text: read the meeting with meeting.get."
 
   @doc "Tool defs in stable registration order."
   def defs do
@@ -66,7 +70,7 @@ defmodule SalixAgent.Tools.Loops do
        @normal_auto_wait_seconds, @read},
       {"loop.get", @get_description, loop_id_schema(), &__MODULE__.get/2,
        @normal_auto_wait_seconds, @read},
-      {"loop.pause", @pause_description, loop_id_schema(), &__MODULE__.pause/2,
+      {"loop.pause", @pause_description, pause_schema(), &__MODULE__.pause/2,
        @normal_auto_wait_seconds, @write},
       {"loop.resume", @resume_description, loop_id_schema(), &__MODULE__.resume/2,
        @normal_auto_wait_seconds, @write},
@@ -76,6 +80,8 @@ defmodule SalixAgent.Tools.Loops do
        "Enable, rotate or revoke this loop's secret inbound URL. Anyone with the URL can POST a JSON object on topic webhook without an Authorization header. Enable preserves an existing URL. loop.list and loop.get return the saved URL.",
        webhook_schema(), &__MODULE__.webhook/2, @normal_auto_wait_seconds, @write},
       {"loop.send", @send_description, send_schema(), &__MODULE__.send_event/2,
+       @normal_auto_wait_seconds, @write},
+      {"loop.subscribe", @subscribe_description, subscribe_schema(), &__MODULE__.subscribe/2,
        @normal_auto_wait_seconds, @write}
     ]
   end
@@ -154,6 +160,17 @@ defmodule SalixAgent.Tools.Loops do
       "required" => []
     }
 
+  defp pause_schema do
+    update_in(loop_id_schema()["properties"], fn properties ->
+      Map.put(properties, "until_device_id", %{
+        "type" => "string",
+        "description" =>
+          "device_id from device.list. The loop resumes by itself when this device connects."
+      })
+    end)
+  end
+
+  @doc false
   def loop_id_schema do
     %{
       "type" => "object",
@@ -193,6 +210,15 @@ defmodule SalixAgent.Tools.Loops do
       },
       "required" => ["loop_id", "topic"]
     }
+  end
+
+  def subscribe_schema do
+    loop_id_schema()
+    |> put_in(["properties", "event"], %{
+      "type" => "string",
+      "enum" => Loops.product_events(),
+      "description" => "The product event. Omit to remove the subscription."
+    })
   end
 
   # ---- actions --------------------------------------------------------------
@@ -269,11 +295,17 @@ defmodule SalixAgent.Tools.Loops do
         raise "this group already has #{limit} active loops"
 
       {:error, {:task_loop_exists, loop_id}} ->
-        raise "this Task already has background loop #{loop_id}, and a Task runs one loop. " <>
-                "Use that loop: loop.get shows its state."
+        raise "this Task's background loop #{loop_id} was created at the same time; " <>
+                "call loop.create again to replace its program"
+
+      {:error, {:not_active, "ended"}} ->
+        raise "this Task's loop has ended and does not run again"
+
+      {:error, :agent_archived} ->
+        raise "this Task's loop is paused by archive; unarchive the agent instead"
 
       {:error, {:invalid, "trigger"}} ->
-        raise "give either every_minutes or cron with timezone, and none for a Loop Task: its loop already has the requested trigger"
+        raise "give either every_minutes or cron with timezone, and none inside a Task that has a loop: the loop keeps its trigger"
 
       {:error, {:invalid, "cron"}} ->
         raise "invalid cron or timezone: use 5 cron fields (minute hour day-of-month month day-of-week) and an IANA timezone such as Asia/Shanghai"
@@ -300,28 +332,61 @@ defmodule SalixAgent.Tools.Loops do
     end
   end
 
+  # A Loop's facts carry the label the Loop recorded at creation, which its
+  # wakes and lifecycle notices carry too. A Loop with no recorded label reads
+  # as agent-private, as any unlabelled read does.
   @doc false
   def list(_args, ctx) do
-    case Loops.list(scope!(ctx)) do
-      {:ok, loops} -> Jason.encode!(loops)
-      {:error, reason} -> raise "loop.list failed: #{inspect(reason)}"
+    case Loops.list_labelled(scope!(ctx)) do
+      {:ok, loops} ->
+        label =
+          case loops do
+            [] ->
+              public_label()
+
+            _some ->
+              Enum.reduce(loops, [], fn {_loop, loop_label}, acc -> join(acc, loop_label) end)
+          end
+
+        loops |> Enum.map(&elem(&1, 0)) |> Jason.encode!() |> labelled(label, ctx)
+
+      {:error, reason} ->
+        raise "loop.list failed: #{inspect(reason)}"
     end
   end
 
   @doc false
   def get(args, ctx) do
-    case Loops.get(scope!(ctx), loop_id!(args)) do
-      {:ok, loop} -> Jason.encode!(loop)
+    case Loops.get_labelled(scope!(ctx), loop_id!(args)) do
+      {:ok, loop, label} -> loop |> Jason.encode!() |> labelled(join([], label), ctx)
       {:error, :not_found} -> raise "loop not found"
       {:error, reason} -> raise "loop.get failed: #{inspect(reason)}"
     end
   end
 
+  defp public_label, do: Codec.encode_label(Label.new([:public]))
+
+  defp join(acc, label) when is_list(label), do: FileLabels.join_encoded(acc, label)
+  defp join(acc, nil), do: FileLabels.join_encoded(acc, Context.private_wire())
+
+  # Silent for a session that is not labelling, as `SalixAgent.IFC.ConnectorLabels` is.
+  defp labelled(content, label, ctx) do
+    if is_map(Map.get(ctx, :ifc)),
+      do: {:tool_ifc, content, [], %{"label" => label}},
+      else: content
+  end
+
   @doc false
   def pause(args, ctx) do
-    case Loops.pause(scope!(ctx), loop_id!(args)) do
+    result =
+      case arg(args, "until_device_id") do
+        "" -> Loops.pause(scope!(ctx), loop_id!(args))
+        device_id -> Loops.pause_until_device(scope!(ctx), loop_id!(args), device_id)
+      end
+
+    case result do
       {:ok, loop} -> Jason.encode!(loop)
-      {:error, :not_found} -> raise "loop not found"
+      {:error, :not_found} -> raise "loop not found, or the device is not in this workspace"
       {:error, reason} -> raise "loop.pause failed: #{inspect(reason)}"
     end
   end
@@ -405,6 +470,22 @@ defmodule SalixAgent.Tools.Loops do
 
       {:error, reason} ->
         raise "loop.send failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  def subscribe(args, ctx) do
+    event =
+      case arg(args, "event") do
+        "" -> nil
+        event -> event
+      end
+
+    case Loops.subscribe_product_event(scope!(ctx), loop_id!(args), event) do
+      {:ok, loop} -> Jason.encode!(loop)
+      {:error, :not_found} -> raise "loop not found"
+      {:error, {:invalid, "event"}} -> raise "unknown product event #{inspect(event)}"
+      {:error, reason} -> raise "loop.subscribe failed: #{inspect(reason)}"
     end
   end
 

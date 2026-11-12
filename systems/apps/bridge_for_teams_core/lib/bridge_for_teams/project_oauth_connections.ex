@@ -37,6 +37,8 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
 
   # Supported third-party OAuth platforms (mirror SalixStore.OAuth.Adapters).
   @providers ~w(feishu github google lark linear notion slack x)
+  # An API key or token a person types in; it is kept for the whole group.
+  @secret "secret"
   @transient [:unavailable, :timeout]
 
   @type result :: {:ok, term()} | {:error, term()}
@@ -100,6 +102,11 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
   the connection; defaults to the provider) and a `"redirect_after"` URL the
   provider callback returns the browser to once the binding is persisted.
 
+  Provider `"secret"` keeps an API key or token for the whole group, under a
+  required alias: the URL opens Salix's form, where the person types the value.
+  Its optional `"fields"` (`[%{"name", "label", "secret"}]`) asks for several
+  named values instead (`SalixStore.OAuth.Adapters.Secret.fields/1`).
+
   Returns `{:ok, %{"authorization_url" => url, "state" => state}}` — the caller
   redirects the user's browser to `authorization_url`. Rejects providers for
   which Salix cannot resolve complete OAuth app credentials with `{:error,
@@ -120,15 +127,17 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
       with :ok <- validate_provider(provider),
            {:ok, org, project} <- fetch_org_project(org_id, project_id),
            :ok <- ensure_group_ready(project),
-           :ok <- ensure_provider_configured(org_id, provider) do
-        alias_name = connection_alias(attrs, provider)
-
+           :ok <- ensure_provider_configured(org_id, provider),
+           {:ok, alias_name} <- connection_alias(attrs, provider),
+           {:ok, fields} <- secret_fields(provider, attrs["fields"]),
+           :ok <- ensure_alias_free(project, provider, alias_name) do
         params =
           %{
             "alias" => alias_name,
             "redirect_after" => blank_to_nil(attrs["redirect_after"])
           }
           |> put_scopes(attrs["scopes"])
+          |> then(&if(fields == [], do: &1, else: Map.put(&1, "fields", fields)))
 
         org.salix_tenant_id
         |> client().start_oauth_authorization(project.salix_group_id, provider, params)
@@ -459,6 +468,9 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
 
   # ---- internal --------------------------------------------------------------
 
+  # A secret (an API key or token typed into Salix's form) needs no OAuth app.
+  defp ensure_provider_configured(_org_id, @secret), do: :ok
+
   defp ensure_provider_configured(org_id, provider) do
     with {:ok, apps} <- OrgOAuthApps.list_org_oauth_apps(org_id) do
       app = Enum.find(apps, &(&1["provider"] == provider))
@@ -489,7 +501,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
     end
   end
 
-  defp validate_provider(provider) when provider in @providers, do: :ok
+  defp validate_provider(provider) when provider in [@secret | @providers], do: :ok
   defp validate_provider(_), do: {:error, :unsupported_provider}
 
   defp transient_reason_class(reason) when reason in @transient, do: Atom.to_string(reason)
@@ -524,15 +536,47 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
   # sign-in without a label adds an account under an alias of its own, so
   # two sign-ins never replace each other whatever order their callbacks
   # land in; a label names the binding to (re)authorize.
+  # A secret's alias is the name Agents use it by (credential_env), so it has
+  # to be given.
   defp connection_alias(attrs, provider) do
-    case blank_to_nil(attrs["alias"]) do
-      nil ->
-        provider <> "-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(6), padding: false)
+    case {blank_to_nil(attrs["alias"]), provider} do
+      {nil, @secret} ->
+        {:error, :alias_required}
 
-      alias_name ->
-        alias_name
+      {nil, _provider} ->
+        {:ok,
+         provider <> "-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(6), padding: false)}
+
+      {alias_name, _provider} ->
+        {:ok, alias_name}
     end
   end
+
+  # Saving a secret under an alias replaces its binding; a person's own secret
+  # under that alias is theirs and stays (`SalixAgent.Tools.OAuth` refuses the
+  # same for an Agent's request).
+  defp ensure_alias_free(project, @secret, alias_name) do
+    with {:ok, bindings} <- list_from_salix(project) do
+      taken? =
+        Enum.any?(bindings, fn binding ->
+          binding["provider"] == @secret and binding["alias"] == alias_name and
+            not blank?(binding["owner"])
+        end)
+
+      if taken?, do: {:error, :alias_taken}, else: :ok
+    end
+  end
+
+  defp ensure_alias_free(_project, _provider, _alias_name), do: :ok
+
+  defp secret_fields(@secret, fields) do
+    case SalixStore.OAuth.Adapters.Secret.fields(fields) do
+      {:ok, fields} -> {:ok, fields}
+      {:error, _message} -> {:error, :invalid_fields}
+    end
+  end
+
+  defp secret_fields(_provider, _fields), do: {:ok, []}
 
   defp normalize_delete(:ok), do: {:ok, :ok}
   defp normalize_delete({:ok, _} = ok), do: ok

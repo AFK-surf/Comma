@@ -8,7 +8,7 @@ set -eu
 # voice-like test signal, encoded with the same SDK's encoder (-tencent).
 image="${1:?usage: silk2wav.sh IMAGE}"
 here="$(cd "$(dirname "$0")" && pwd)"
-docker run --rm --network none --entrypoint sh \
+docker run --rm --network none --read-only --tmpfs /workspace:exec,mode=1777 --tmpfs /tmp:exec,mode=1777 --entrypoint sh \
   --mount "type=bind,src=${here}/voice.silk,dst=/fixture/voice.silk,readonly" \
   "$image" -eu -c '
 cd "$(mktemp -d)"

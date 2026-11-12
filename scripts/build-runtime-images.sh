@@ -16,7 +16,7 @@ command -v docker >/dev/null
 command -v jq >/dev/null
 
 mkdir -p "${output_dir}"
-rm -f "${output_dir}/meeting.oci.tar" "${output_dir}/shell.oci.tar" "${output_dir}/station.oci.tar" "${output_dir}/manifest.json" "${output_dir}/inputs.json"
+rm -f "${output_dir}/shell.oci.tar" "${output_dir}/station.oci.tar" "${output_dir}/manifest.json" "${output_dir}/inputs.json"
 build_context="$(mktemp -d)"
 meetnative_context="$(mktemp -d)"
 station_context="$(mktemp -d)"
@@ -25,13 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p \
-  "${build_context}/systems/connector" \
-  "${build_context}/systems/runtime-images"
-cp -R \
-  "${repository_root}/systems/connector/salix-connect" \
-  "${build_context}/systems/connector/salix-connect"
-rm -rf "${build_context}/systems/connector/salix-connect/native"
+mkdir -p "${build_context}/systems/runtime-images"
 cp \
   "${repository_root}/systems/runtime-images/go.mod" \
   "${build_context}/systems/runtime-images/go.mod"
@@ -40,7 +34,9 @@ cp -R \
   "${build_context}/systems/runtime-images/cmd"
 mkdir -p "${build_context}/systems/runtime-images/station"
 cp \
+  "${repository_root}/systems/runtime-images/station/apt-package-recovery.mjs" \
   "${repository_root}/systems/runtime-images/station/entrypoint.sh" \
+  "${repository_root}/systems/runtime-images/station/initialize-access.mjs" \
   "${repository_root}/systems/runtime-images/station/silk2wav" \
   "${repository_root}/systems/runtime-images/station/file-tools-packages" \
   "${repository_root}/systems/runtime-images/station/file-tools-requirements.txt" \
@@ -51,8 +47,6 @@ lock_value() {
 }
 
 go_image="$(lock_value '.baseImages.go')"
-shell_image="$(lock_value '.baseImages.shell')"
-meeting_image="$(lock_value '.baseImages.meeting')"
 station_image="$(lock_value '.baseImages.station')"
 package_snapshot="$(lock_value '.packageSnapshot')"
 npm_version="$(lock_value '.npm.version')"
@@ -114,7 +108,8 @@ build_archive() {
     if length == 1 then .[0] else error("missing or duplicate runtime input") end
   ' "${output_dir}/inputs.json")"
   docker buildx build \
-    --file "${repository_root}/systems/runtime-images/${image_class}/Dockerfile" \
+    --file "${repository_root}/systems/runtime-images/station/Dockerfile" \
+    --target "${image_class/station/vmm-station}" \
     --platform linux/arm64 \
     --provenance=false \
     --tag "comma.local/runtime/${image_class}:sha256-${input_digest#sha256:}" \
@@ -125,11 +120,26 @@ build_archive() {
     "${build_context}"
 }
 
-build_archive shell --build-arg "SHELL_IMAGE=${shell_image}"
-build_archive meeting \
-  --build-context "meetnative=${meetnative_context}" \
-  --build-arg "MEETING_IMAGE=${meeting_image}"
+shared_args=(
+  --build-arg "STATION_IMAGE=${station_image}"
+  --build-arg "NPM_VERSION=${npm_version}"
+  --build-arg "NPM_TARBALL=${npm_tarball}"
+  --build-arg "NPM_INTEGRITY=${npm_integrity}"
+  --build-arg "NPM_BRACE_EXPANSION_VERSION=${npm_brace_expansion_version}"
+  --build-arg "NPM_BRACE_EXPANSION_TARBALL=${npm_brace_expansion_tarball}"
+  --build-arg "NPM_BRACE_EXPANSION_INTEGRITY=${npm_brace_expansion_integrity}"
+  --build-arg "NPM_UNDICI_VERSION=${npm_undici_version}"
+  --build-arg "NPM_UNDICI_TARBALL=${npm_undici_tarball}"
+  --build-arg "NPM_UNDICI_INTEGRITY=${npm_undici_integrity}"
+  --build-arg "NPM_IP_ADDRESS_VERSION=${npm_ip_address_version}"
+  --build-arg "NPM_IP_ADDRESS_TARBALL=${npm_ip_address_tarball}"
+  --build-arg "NPM_IP_ADDRESS_INTEGRITY=${npm_ip_address_integrity}"
+  --build-arg "NPM_TAR_VERSION=${npm_tar_version}"
+  --build-arg "NPM_TAR_TARBALL=${npm_tar_tarball}"
+  --build-arg "NPM_TAR_INTEGRITY=${npm_tar_integrity}"
+)
 
+build_archive shell "${shared_args[@]}"
 # The station release (systems/station/scripts/bundle.sh) is built only when the
 # station archive is not reused: it needs the station's pnpm dependencies and
 # its published linux-arm64 native parts.
@@ -137,24 +147,9 @@ if [[ ! -f "${output_dir}/station.oci.tar" ]]; then
   rm -rf "${station_context}"
   sh "${repository_root}/systems/station/scripts/bundle.sh" "${station_context}" linux-arm64
 fi
-build_archive station \
+build_archive station "${shared_args[@]}" \
   --build-context "station=${station_context}" \
-  --build-arg "STATION_IMAGE=${station_image}" \
-  --build-arg "NPM_VERSION=${npm_version}" \
-  --build-arg "NPM_TARBALL=${npm_tarball}" \
-  --build-arg "NPM_INTEGRITY=${npm_integrity}" \
-  --build-arg "NPM_BRACE_EXPANSION_VERSION=${npm_brace_expansion_version}" \
-  --build-arg "NPM_BRACE_EXPANSION_TARBALL=${npm_brace_expansion_tarball}" \
-  --build-arg "NPM_BRACE_EXPANSION_INTEGRITY=${npm_brace_expansion_integrity}" \
-  --build-arg "NPM_UNDICI_VERSION=${npm_undici_version}" \
-  --build-arg "NPM_UNDICI_TARBALL=${npm_undici_tarball}" \
-  --build-arg "NPM_UNDICI_INTEGRITY=${npm_undici_integrity}" \
-  --build-arg "NPM_IP_ADDRESS_VERSION=${npm_ip_address_version}" \
-  --build-arg "NPM_IP_ADDRESS_TARBALL=${npm_ip_address_tarball}" \
-  --build-arg "NPM_IP_ADDRESS_INTEGRITY=${npm_ip_address_integrity}" \
-  --build-arg "NPM_TAR_VERSION=${npm_tar_version}" \
-  --build-arg "NPM_TAR_TARBALL=${npm_tar_tarball}" \
-  --build-arg "NPM_TAR_INTEGRITY=${npm_tar_integrity}" \
+  --build-context "meetnative=${meetnative_context}" \
   --build-arg "CODEX_TARBALL=${codex_tarball}" \
   --build-arg "CODEX_INTEGRITY=${codex_integrity}" \
   --build-arg "CLAUDE_VERSION=${claude_version}" \
@@ -170,5 +165,4 @@ go -C "${repository_root}/systems/runtime-images" run ./cmd/bundle-manifest \
   --inputs "${output_dir}/inputs.json" \
   --output "${output_dir}/manifest.json" \
   --image "shell=${output_dir}/shell.oci.tar" \
-  --image "meeting=${output_dir}/meeting.oci.tar" \
   --image "station=${output_dir}/station.oci.tar"

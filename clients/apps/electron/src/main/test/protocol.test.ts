@@ -88,6 +88,36 @@ describe("Electron app protocol", () => {
     }
   });
 
+  it.each([false, true])(
+    "adds only the configured CAPTCHA origin to the %s dev renderer document",
+    async (dev) => {
+      const original = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'self'; frame-src 'self' comma-ui: comma-app:; script-src 'self'; connect-src 'self' http: https:"><main>Login</main>`;
+      electronMocks.fetch.mockImplementation(
+        async () =>
+          new Response(original, {
+            headers: {
+              "content-type": "text/html",
+              "content-length": String(original.length),
+            },
+          })
+      );
+      registerAppProtocol(dev ? "https://vite.comma.test" : undefined, {
+        getAuthOrigin: () => "https://api.comma.test/path?ignored=other.example",
+      });
+      const handler = electronMocks.handle.mock.calls.find(
+        ([scheme]) => scheme === "assets"
+      )?.[1] as (request: Request) => Promise<Response>;
+      const response = await handler(new Request("assets://./"));
+      const document = await response.text();
+      expect(document).toContain(
+        "frame-src 'self' comma-ui: comma-app: https://api.comma.test;"
+      );
+      expect(document).toContain("script-src 'self'; connect-src 'self' http: https:");
+      expect(document).not.toContain("ignored=");
+      expect(response.headers.get("content-length")).toBeNull();
+    }
+  );
+
   it("returns dev renderer headers while bounding loaders until their bodies settle", async () => {
     const finishes: Array<() => void> = [];
     let active = 0;

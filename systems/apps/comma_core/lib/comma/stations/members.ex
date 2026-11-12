@@ -75,6 +75,16 @@ defmodule Comma.Stations.Members do
   end
 
   @impl true
+  def member(tenant_id, group_id, user_id) do
+    with {:ok, _role} <- role(tenant_id, group_id, user_id),
+         {:ok, user} <- Comma.Accounts.get_user(user_id) do
+      {:ok, %{"name" => user["name"], "email" => user["email"]}}
+    else
+      _ -> :none
+    end
+  end
+
+  @impl true
   def manager_role?(role), do: role in @managers
 
   @impl true

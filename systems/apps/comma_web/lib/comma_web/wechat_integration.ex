@@ -55,6 +55,16 @@ defmodule CommaWeb.WeChatIntegration do
             {:ok, WeChatConnects.public(polled)}
         end
       end)
+      |> tap(fn
+        # A Router that started this attempt from the chat is waiting for it.
+        {:ok, %{"connection_active" => true} = public} ->
+          CommaWeb.ChannelLinkTools.linked(workspace, "wechat", %{
+            "wechat_id" => public["wechat_id"]
+          })
+
+        _other ->
+          :ok
+      end)
     else
       false -> {:error, :invalid_wechat_connection_attempt}
       other -> other

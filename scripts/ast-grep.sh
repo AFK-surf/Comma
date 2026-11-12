@@ -23,7 +23,8 @@ dir="${XDG_CACHE_HOME:-$HOME/.cache}/cue-ast-grep/$version-$target"
 if [ ! -x "$dir/ast-grep" ]; then
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL -o "$tmp/ast-grep.zip" \
+  # Retried: GitHub release downloads answer 504 for minutes at a time.
+  curl -fsSL --retry 5 --retry-delay 10 --retry-max-time 300 --connect-timeout 10 --max-time 120 -o "$tmp/ast-grep.zip" \
     "https://github.com/ast-grep/ast-grep/releases/download/$version/app-$target.zip"
   if command -v sha256sum >/dev/null 2>&1; then
     actual=$(sha256sum "$tmp/ast-grep.zip" | cut -d' ' -f1)

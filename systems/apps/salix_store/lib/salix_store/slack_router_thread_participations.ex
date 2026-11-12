@@ -1,21 +1,16 @@
 defmodule SalixStore.SlackRouterThreadParticipations do
   @moduledoc """
-  Durable tri-state cache of a Router bot's Slack thread participation status.
+  Durable state of a Router bot's Slack thread participation.
 
   One exact `(group, connect, workspace, bot, channel, thread)` row stores
-  either `participating` or `not_participating`; an absent or expired row means
+  `participating`, `not_participating`, or `left`; an absent or expired row means
   `unknown`. Participating rows use a renewable 30-day idle TTL. Confirmed
-  not-participating rows use a fixed 24-hour TTL that reads never renew.
+  not-participating rows use a fixed 24-hour TTL that reads never renew. A
+  Router that left a thread on request (`mark_left/6`) is stored as
+  `left` with a fixed 30-day TTL. While the leave is active, only a new human mention can restore participation. History observations and outbound replies cannot undo a leave.
 
-  During the mixed-version rollout, the original `expires_at` column remains
-  the old runtime's visibility fence. A not-participating write sets it to the
-  observation time, so old readers treat that row as expired, while new readers
-  use `status_expires_at`. An old participating write makes `expires_at` live;
-  new readers then normalize the row back to `participating`. This preserves
-  one physical table without letting either runtime misclassify the status.
-
-  The cross-Pod status handoff is modeled in
-  `tla/salix/SlackRouterParticipation.tla`.
+  The original `expires_at` column also supports historical participation rows.
+  An active leave takes precedence over that column.
   """
 
   require Logger
@@ -24,6 +19,7 @@ defmodule SalixStore.SlackRouterThreadParticipations do
 
   @participating_ttl_days 30
   @not_participating_ttl_hours 24
+  @left_ttl_days 30
   @default_query_timeout_ms 250
   @default_cleanup_limit 1_000
   @max_cleanup_limit 10_000
@@ -69,6 +65,9 @@ defmodule SalixStore.SlackRouterThreadParticipations do
       ),
       EXCLUDED.status_expires_at
     )
+  WHERE slack_router_thread_participations.participation_status <> 'left'
+     OR slack_router_thread_participations.status_expires_at <= EXCLUDED.last_active_at
+     OR $7
   """
 
   @mark_not_participating_sql """
@@ -111,6 +110,39 @@ defmodule SalixStore.SlackRouterThreadParticipations do
   RETURNING participation_status
   """
 
+  # Unconditional: leaving overrides a participating row. `expires_at` is the
+  # observation time, as for not-participating rows, so neither runtime renews it.
+  @mark_left_sql """
+  WITH cache_clock AS (
+    SELECT timezone('UTC', clock_timestamp()) AS now
+  )
+  INSERT INTO slack_router_thread_participations (
+    group_id,
+    connect_id,
+    workspace_id,
+    bot_user_id,
+    channel_id,
+    thread_ts,
+    participation_status,
+    last_active_at,
+    expires_at,
+    status_expires_at
+  )
+  SELECT
+    $1, $2, $3, $4, $5, $6,
+    'left',
+    cache_clock.now,
+    cache_clock.now,
+    cache_clock.now + interval '#{@left_ttl_days} days'
+  FROM cache_clock
+  ON CONFLICT (group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts)
+  DO UPDATE SET
+    participation_status = 'left',
+    last_active_at = EXCLUDED.last_active_at,
+    expires_at = EXCLUDED.expires_at,
+    status_expires_at = EXCLUDED.status_expires_at
+  """
+
   @status_sql """
   WITH cache_clock AS (
     SELECT timezone('UTC', clock_timestamp()) AS now
@@ -135,6 +167,7 @@ defmodule SalixStore.SlackRouterThreadParticipations do
       AND participation.bot_user_id = $4
       AND participation.channel_id = $5
       AND participation.thread_ts = $6
+      AND participation.participation_status <> 'left'
       AND (
         participation.expires_at > cache_clock.now
         OR (
@@ -153,7 +186,7 @@ defmodule SalixStore.SlackRouterThreadParticipations do
       AND participation.bot_user_id = $4
       AND participation.channel_id = $5
       AND participation.thread_ts = $6
-      AND participation.participation_status = 'not_participating'
+      AND participation.participation_status IN ('not_participating', 'left')
       AND participation.expires_at <= cache_clock.now
       AND COALESCE(participation.status_expires_at, participation.expires_at) > cache_clock.now
   )
@@ -227,15 +260,54 @@ defmodule SalixStore.SlackRouterThreadParticipations do
   @spec mark_participating(String.t(), String.t(), String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, :invalid_identity | term()}
   def mark_participating(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts) do
-    write_status(
-      @mark_participating_sql,
-      [group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts]
+    write_participating(
+      [group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts],
+      false
     )
+  end
+
+  @doc "Restore participation after a new human mention."
+  @spec mark_mentioned(String.t(), String.t(), String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_identity | term()}
+  def mark_mentioned(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts) do
+    write_participating(
+      [group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts],
+      true
+    )
+  end
+
+  defp write_participating(identity, rejoin?) do
+    if valid_identity?(identity) do
+      safe_query(fn ->
+        case Repo.query(@mark_participating_sql, identity ++ [rejoin?],
+               timeout: @default_query_timeout_ms
+             ) do
+          {:ok, %{num_rows: 0}} -> {:error, :thread_left}
+          {:ok, _result} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+    else
+      {:error, :invalid_identity}
+    end
   end
 
   @doc "Compatibility name for `mark_participating/6`."
   def record(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts),
     do: mark_participating(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts)
+
+  @doc """
+  Mark one exact Router-thread identity as left: not participating for a fixed
+  30 days, whatever it was. Only a new human mention restores participation.
+  """
+  @spec mark_left(String.t(), String.t(), String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_identity | term()}
+  def mark_left(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts) do
+    write_status(
+      @mark_left_sql,
+      [group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts]
+    )
+  end
 
   @doc "Mark one exact Router-thread identity as confirmed not participating."
   @spec mark_not_participating(
@@ -246,7 +318,7 @@ defmodule SalixStore.SlackRouterThreadParticipations do
           String.t(),
           String.t()
         ) ::
-          {:ok, :not_participating | :participating}
+          {:ok, :not_participating | :participating | :left | :unknown}
           | {:error, :invalid_identity | term()}
   def mark_not_participating(
         group_id,
@@ -264,11 +336,9 @@ defmodule SalixStore.SlackRouterThreadParticipations do
           {:ok, %{rows: [["not_participating"]]}} ->
             {:ok, :not_participating}
 
-          # The conflict guard rejects a stale negative write only when an
-          # unexpired participating row won first. Surface that final status
-          # so the ingress callback does not return its stale history result.
+          # A concurrent mention or leave can reject the negative observation.
           {:ok, %{num_rows: 0, rows: []}} ->
-            {:ok, :participating}
+            {:ok, status(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts)}
 
           {:ok, result} ->
             {:error, {:unexpected_not_participating_write_result, result}}
@@ -283,14 +353,14 @@ defmodule SalixStore.SlackRouterThreadParticipations do
   end
 
   @doc """
-  Return `:participating`, `:not_participating`, or `:unknown` for one exact key.
+  Return `:participating`, `:not_participating`, `:left`, or `:unknown` for one exact key.
 
   A participating hit renews its 30-day idle TTL. A not-participating hit never
   renews its fixed 24-hour TTL. Database failure and invalid identity return
   `:unknown`.
   """
   @spec status(String.t(), String.t(), String.t(), String.t(), String.t(), String.t(), keyword()) ::
-          :participating | :not_participating | :unknown
+          :participating | :not_participating | :left | :unknown
   def status(group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts, opts \\ []) do
     identity = [group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts]
 
@@ -300,6 +370,9 @@ defmodule SalixStore.SlackRouterThreadParticipations do
            end) do
         {:ok, %{rows: [["participating"]]}} ->
           :participating
+
+        {:ok, %{rows: [["left"]]}} ->
+          :left
 
         {:ok, %{rows: [["not_participating"]]}} ->
           :not_participating

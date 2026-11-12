@@ -2,9 +2,14 @@ import { Button } from "@comma/ui/components/Button";
 import { Checkbox } from "@comma/ui/components/checkbox";
 import { Dropdown } from "@comma/ui/components/dropdown";
 import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { SearchIcon } from "@comma/ui/components/icons";
+import { Toggle } from "@comma/ui/components/toggle";
+import { Dialog } from "@comma/ui/components/dialog";
+import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { qqMenuScopes, type BftQqMenuItem } from "./api";
 import type {
+  BftApi,
   BftRunChecks,
   BftSignalClaim,
   BftSlackCredentials,
@@ -14,7 +19,7 @@ import type {
   BftTailnetSection,
 } from "./api";
 import { useConnectionConfirm } from "./connectionConfirm";
-import { CodeBlock, CopyButton, writeErrorMessage } from "./dialogs";
+import { CodeBlock, CopyButton, DialogError, writeErrorMessage } from "./dialogs";
 import { showFlash } from "./flash";
 import { formatRelative, humanize } from "./format";
 import { messages } from "./messages";
@@ -42,10 +47,17 @@ type Feishu = NonNullable<Data["messaging"]["feishu"]>;
 type Slack = NonNullable<Data["messaging"]["slack"]>;
 type Lark = NonNullable<Data["messaging"]["lark"]>;
 type Qq = NonNullable<Data["messaging"]["qq"]>;
+type Telegram = NonNullable<Data["messaging"]["telegram"]>;
 type Tone = "ok" | "warn" | "error" | "neutral";
 
 /** The messaging sections a `?provider=` address scrolls to. */
-export const messagingProviders = ["feishu", "lark", "slack", "qq"] as const;
+export const messagingProviders = [
+  "feishu",
+  "lark",
+  "slack",
+  "qq",
+  "telegram",
+] as const;
 
 /** The section a `?provider=` deep link names, if it is one of this page's. */
 export function providerSection(search: string) {
@@ -133,11 +145,11 @@ interface Writes {
 }
 
 /**
- * An Agent Swarm's connections: where people reach it (Feishu, Lark, Slack, QQ
+ * An Agent Swarm's connections: where people reach it (Feishu, Lark, Slack, QQ, Telegram
  * and Signal), the third-party accounts its agents act with (managed OAuth
  * and Composio), and the organization's Tailscale network its agents reach.
  * Swarm admins connect and change them; everyone else reads.
- * `?provider=feishu|lark|slack|qq` opens the page at that messaging section.
+ * `?provider=feishu|lark|slack|qq|telegram` opens the page at that messaging section.
  */
 export function SwarmConnectionsPage({
   org,
@@ -225,6 +237,12 @@ export function SwarmConnectionsPage({
                     {page.messaging.qq ? (
                       <QqSection qq={page.messaging.qq} writes={writes} />
                     ) : null}
+                    {page.messaging.telegram ? (
+                      <TelegramSection
+                        telegram={page.messaging.telegram}
+                        writes={writes}
+                      />
+                    ) : null}
                   </>
                 ) : (
                   <SectionState onRetry={onRetry} status={page.messaging.status} />
@@ -303,7 +321,7 @@ const relative = (iso: string | null) => (iso && formatRelative(iso)) || null;
 
 // ---- Feishu ----
 
-/** A Feishu, Lark, Slack or QQ connect's writes: turn it on or off, or delete it after confirming. */
+/** A Feishu, Lark, Slack, QQ or Telegram connect's writes: turn it on or off, or delete it after confirming. */
 function ConnectMenu({
   connect,
   writes,
@@ -363,13 +381,24 @@ function FeishuSection({
   // A result belongs to the page read it ran on; any later read clears it.
   const [ran, setRan] = useState<{ from: Feishu; checks: BftRunChecks }>();
   const result = ran?.from === feishu ? ran.checks : undefined;
+  const [scanning, setScanning] = useState(false);
+  const [updating, setUpdating] = useState<string>();
   const { org, project, manage } = writes;
   const route = feishu.route;
 
   return (
     <FormSection
       action={
-        <Status tone={routeTones[route.status]}>{t.routeStatuses[route.status]}</Status>
+        <span className="bft-actions">
+          <Status tone={routeTones[route.status]}>
+            {t.routeStatuses[route.status]}
+          </Status>
+          {manage ? (
+            <Button hierarchy="primary" onPress={() => setScanning(true)} size="xs">
+              {t.scanFeishu}
+            </Button>
+          ) : null}
+        </span>
       }
       description={t.feishuNote}
       id="feishu"
@@ -416,12 +445,19 @@ function FeishuSection({
                 </div>
               ) : null}
               <span className="bft-setting-row-sub">
-                {flags([
-                  [t.secret, connect.app_secret_configured],
-                  [t.verification, connect.verification_token_configured],
-                  [t.encryption, connect.encrypt_key_configured],
-                ])}
+                {connect.events === "socket"
+                  ? t.feishuSocket
+                  : flags([
+                      [t.secret, connect.app_secret_configured],
+                      [t.verification, connect.verification_token_configured],
+                      [t.encryption, connect.encrypt_key_configured],
+                    ])}
               </span>
+              <MissingScopes
+                connect={connect}
+                manage={manage}
+                onUpdate={() => setUpdating(connect.connect_id)}
+              />
             </li>
           ))}
         </ul>
@@ -469,6 +505,29 @@ function FeishuSection({
       ) : null}
       {result ? <Checks result={result} title={t.checksTitle} /> : null}
       {manage ? <FeishuConnectForm feishu={feishu} writes={writes} /> : null}
+      {scanning ? (
+        <ScanDialog
+          onClose={() => setScanning(false)}
+          onConnected={(notice) => {
+            setScanning(false);
+            writes.notify(notice);
+          }}
+          platform="feishu"
+          writes={writes}
+        />
+      ) : null}
+      {updating ? (
+        <ScanDialog
+          connectId={updating}
+          onClose={() => setUpdating(undefined)}
+          onConnected={(notice) => {
+            setUpdating(undefined);
+            writes.notify(notice);
+          }}
+          platform="feishu"
+          writes={writes}
+        />
+      ) : null}
       {confirm.dialog}
     </FormSection>
   );
@@ -567,6 +626,8 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
   const api = useApi();
   const confirm = useConfirm();
   const [adding, setAdding] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [updating, setUpdating] = useState<string>();
   const [checking, setChecking] = useState<string>();
   // A result belongs to the page read it ran on; any later read clears it.
   const [ran, setRan] = useState<{ from: Lark; app: string; checks: BftRunChecks }>();
@@ -593,9 +654,18 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
     <FormSection
       action={
         manage ? (
-          <Button hierarchy="primary" onPress={() => setAdding(true)} size="xs">
-            {t.addLark}
-          </Button>
+          <span className="bft-actions">
+            <Button
+              hierarchy="secondary-gray"
+              onPress={() => setAdding(true)}
+              size="xs"
+            >
+              {t.addLarkByHand}
+            </Button>
+            <Button hierarchy="primary" onPress={() => setScanning(true)} size="xs">
+              {t.scanLark}
+            </Button>
+          </span>
         ) : (
           <Status tone={routeTones[lark.route.status]}>
             {t.routeStatuses[lark.route.status]}
@@ -669,12 +739,22 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
                   </div>
                 ) : null}
                 <span className="bft-setting-row-sub">
-                  {flags([
-                    [t.larkAppSecret, connect.app_secret_configured],
-                    [t.larkVerificationToken, connect.verification_token_configured],
-                    [t.larkEncryptKey, connect.encrypt_key_configured],
-                  ])}
+                  {connect.events === "socket"
+                    ? t.larkSocket
+                    : flags([
+                        [t.larkAppSecret, connect.app_secret_configured],
+                        [
+                          t.larkVerificationToken,
+                          connect.verification_token_configured,
+                        ],
+                        [t.larkEncryptKey, connect.encrypt_key_configured],
+                      ])}
                 </span>
+                <MissingScopes
+                  connect={connect}
+                  manage={manage}
+                  onUpdate={() => setUpdating(connect.connect_id)}
+                />
               </li>
             );
           })}
@@ -688,7 +768,7 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
       {result ? (
         <Checks result={result.checks} title={t.larkChecksFor(result.app)} />
       ) : null}
-      {lark.connects.length > 0 ? (
+      {lark.connects.some((connect) => connect.events === "webhook") ? (
         <>
           <p className="bft-form-section-note">{t.larkRequestUrlHint}</p>
           <p className="bft-form-section-note">{t.larkPublishHint}</p>
@@ -713,6 +793,29 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
           </ul>
         </div>
       ) : null}
+      {scanning ? (
+        <ScanDialog
+          onClose={() => setScanning(false)}
+          onConnected={(notice) => {
+            setScanning(false);
+            writes.notify(notice);
+          }}
+          platform="lark"
+          writes={writes}
+        />
+      ) : null}
+      {updating ? (
+        <ScanDialog
+          connectId={updating}
+          onClose={() => setUpdating(undefined)}
+          onConnected={(notice) => {
+            setUpdating(undefined);
+            writes.notify(notice);
+          }}
+          platform="lark"
+          writes={writes}
+        />
+      ) : null}
       {adding ? (
         <LarkDialog
           onClose={() => setAdding(false)}
@@ -725,6 +828,202 @@ function LarkSection({ lark, writes }: { lark: Lark; writes: Writes }) {
       ) : null}
       {confirm.dialog}
     </FormSection>
+  );
+}
+
+/**
+ * The permissions Lark or Feishu refused a connect's app for. An app made by a
+ * scan has nobody in the Developer Console: a new scan updates it.
+ */
+function MissingScopes({
+  connect,
+  manage,
+  onUpdate,
+}: {
+  connect: { missing_scopes: string[]; events: "webhook" | "socket" };
+  manage: boolean;
+  onUpdate: () => void;
+}) {
+  if (connect.missing_scopes.length === 0) return null;
+  const scopes = connect.missing_scopes.join(", ");
+  const scanned = connect.events === "socket";
+  return (
+    <div className="bft-connect-url" role="alert">
+      <span className="bft-setting-row-sub">
+        {scanned ? t.missingScopesScanned(scopes) : t.missingScopesByHand(scopes)}
+      </span>
+      {manage && scanned ? (
+        <Button hierarchy="secondary-gray" onPress={onUpdate} size="xs">
+          {t.scanToUpdate}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+type Scan =
+  | { state: "starting" }
+  | { state: "waiting"; url: string; registration: string; intervalMs: number }
+  | { state: "ended"; message: string };
+
+/** The words and calls of a scan on each platform. */
+const scanPlatforms = {
+  lark: {
+    title: t.larkScanTitle,
+    note: t.larkScanNote,
+    updateTitle: t.larkUpdateTitle,
+    updateNote: t.larkUpdateNote,
+    open: t.larkScanOpen,
+    waiting: t.larkScanWaiting,
+    denied: t.larkScanDenied,
+    failed: t.larkScanFailed,
+    begin: (api: BftApi, org: string, project: string, connectId?: string) =>
+      api.beginLarkRegistration(org, project, connectId),
+    poll: (api: BftApi, org: string, project: string, registration: string) =>
+      api.pollLarkRegistration(org, project, registration),
+  },
+  feishu: {
+    title: t.feishuScanTitle,
+    note: t.feishuScanNote,
+    updateTitle: t.feishuUpdateTitle,
+    updateNote: t.feishuUpdateNote,
+    open: t.feishuScanOpen,
+    waiting: t.feishuScanWaiting,
+    denied: t.feishuScanDenied,
+    failed: t.feishuScanFailed,
+    begin: (api: BftApi, org: string, project: string, connectId?: string) =>
+      api.beginFeishuRegistration(org, project, connectId),
+    poll: (api: BftApi, org: string, project: string, registration: string) =>
+      api.pollFeishuRegistration(org, project, registration),
+  },
+};
+
+/**
+ * Makes a Lark or Feishu app by a scan: shows the link as a QR code and asks
+ * the server every interval whether the person confirmed in the app. The app
+ * is connected on the server when they did. With `connectId` the scan updates
+ * that connect's app to the permissions a connect needs now.
+ */
+function ScanDialog({
+  platform,
+  connectId,
+  writes,
+  onClose,
+  onConnected,
+}: {
+  platform: keyof typeof scanPlatforms;
+  connectId?: string;
+  writes: Writes;
+  onClose: () => void;
+  onConnected: (notice: string) => void;
+}) {
+  const api = useApi();
+  const words = scanPlatforms[platform];
+  const [scan, setScan] = useState<Scan>({ state: "starting" });
+  const [attempt, setAttempt] = useState(0);
+  const latest = useRef({ onConnected });
+  latest.current = { onConnected };
+
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const end = (message: string) => {
+      if (live) setScan({ state: "ended", message });
+    };
+    const ask = (registration: string, url: string, intervalMs: number) => {
+      timer = setTimeout(() => {
+        words.poll(api, writes.org, writes.project, registration).then(
+          (answer) => {
+            if (!live) return;
+            if (answer.state === "connected") {
+              latest.current.onConnected(answer.notice ?? "");
+            } else if (answer.state === "pending" && answer.registration) {
+              const next = answer.slow_down ? intervalMs + 5_000 : intervalMs;
+              setScan({
+                state: "waiting",
+                url,
+                registration: answer.registration,
+                intervalMs: next,
+              });
+              ask(answer.registration, url, next);
+            } else if (answer.state === "denied") end(words.denied);
+            else if (answer.state === "failed") end(words.failed(answer.error ?? ""));
+            else end(t.larkScanExpired);
+          },
+          (error: unknown) => end(writeErrorMessage(error) ?? t.larkScanExpired)
+        );
+      }, intervalMs);
+    };
+    words.begin(api, writes.org, writes.project, connectId).then(
+      (begun) => {
+        if (!live) return;
+        const intervalMs = begun.interval_s * 1_000;
+        setScan({
+          state: "waiting",
+          url: begun.url,
+          registration: begun.registration,
+          intervalMs,
+        });
+        ask(begun.registration, begun.url, intervalMs);
+      },
+      (error: unknown) => end(writeErrorMessage(error) ?? t.larkScanExpired)
+    );
+    return () => {
+      live = false;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [api, attempt, connectId, words, writes.org, writes.project]);
+
+  return (
+    <Dialog
+      actions={[
+        ...(scan.state === "ended"
+          ? [
+              {
+                label: t.larkScanAgain,
+                hierarchy: "secondary-gray" as const,
+                onPress: () => {
+                  setScan({ state: "starting" });
+                  setAttempt((value) => value + 1);
+                },
+              },
+            ]
+          : []),
+        {
+          label: messages.common.cancel,
+          hierarchy: "secondary-gray" as const,
+          onPress: onClose,
+        },
+      ]}
+      description={connectId ? words.updateNote : words.note}
+      isDismissable
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title={connectId ? words.updateTitle : words.title}
+    >
+      <div className="bft-form bft-lark-scan">
+        {scan.state === "waiting" ? (
+          <>
+            <figure
+              aria-label={connectId ? words.updateTitle : words.title}
+              className="bft-lark-scan-code"
+            >
+              <QRCodeSVG aria-hidden marginSize={2} size={208} value={scan.url} />
+            </figure>
+            <a className="bft-link" href={scan.url} rel="noreferrer" target="_blank">
+              {words.open}
+            </a>
+            <output className="bft-quiet">{words.waiting}</output>
+          </>
+        ) : scan.state === "ended" ? (
+          <DialogError message={scan.message} />
+        ) : (
+          <output className="bft-quiet">{messages.states.loading}</output>
+        )}
+      </div>
+    </Dialog>
   );
 }
 
@@ -932,6 +1231,7 @@ function SlackSection({ slack, writes }: { slack: Slack; writes: Writes }) {
                   [t.signingSecret, connect.signing_secret_configured],
                 ])}
               </span>
+              <SlackAutoJoin connect={connect} writes={writes} />
             </li>
           ))}
         </ul>
@@ -957,6 +1257,38 @@ function SlackSection({ slack, writes }: { slack: Slack; writes: Writes }) {
       ) : null}
       {confirm.dialog}
     </FormSection>
+  );
+}
+
+/**
+ * Whether a Slack app joins each new public channel by itself. Turned off,
+ * the app joins a channel only when someone invites it.
+ */
+function SlackAutoJoin({
+  connect,
+  writes,
+}: {
+  connect: Slack["connects"][number];
+  writes: Writes;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  const { org, project } = writes;
+  return (
+    <Toggle
+      checked={connect.auto_join_public_channels}
+      disabled={!writes.manage || busy}
+      hint={t.slackAutoJoinHint}
+      label={t.slackAutoJoin}
+      onChange={(event) => {
+        setBusy(true);
+        void api
+          .setSlackAutoJoin(org, project, connect.connect_id, event.target.checked)
+          .then(({ notice }) => writes.notify(notice), writes.fail)
+          .finally(() => setBusy(false));
+      }}
+      size="sm"
+    />
   );
 }
 
@@ -1284,6 +1616,284 @@ function QqDialog({
         label={t.qqAppSecret}
         onChange={(app_secret) => setDraft((value) => ({ ...value, app_secret }))}
         value={draft.app_secret}
+      />
+    </FormDialog>
+  );
+}
+
+// ---- Telegram ----
+
+/**
+ * The swarm's Telegram bots. A bot is connected with its BotFather token and
+ * serves no chat until it is allowed here: anyone can write to a bot or add it
+ * to a group, and those chats wait in this list without reaching the agent.
+ */
+function TelegramSection({ telegram, writes }: { telegram: Telegram; writes: Writes }) {
+  const [adding, setAdding] = useState(false);
+  const confirm = useConfirm();
+  const { manage } = writes;
+
+  return (
+    <FormSection
+      action={
+        manage ? (
+          <Button hierarchy="primary" onPress={() => setAdding(true)} size="xs">
+            {t.addTelegram}
+          </Button>
+        ) : (
+          <Status tone={routeTones[telegram.route.status]}>
+            {t.routeStatuses[telegram.route.status]}
+          </Status>
+        )
+      }
+      description={t.telegramNote}
+      id="telegram"
+      level={3}
+      title={t.telegramTitle}
+    >
+      {telegram.connects.length === 0 ? (
+        <p className="bft-quiet bft-quiet-inline">{t.telegramEmpty}</p>
+      ) : (
+        <ul aria-label={t.telegramConnects} className="bft-list bft-connects">
+          {telegram.connects.map((connect) => (
+            <li className="bft-connect" key={connect.connect_id}>
+              <div className="bft-connect-head">
+                <span className="bft-connect-main">
+                  <span className="bft-connect-title">
+                    <span className="bft-truncate">
+                      {connect.bot_name ?? connect.connect_id}
+                    </span>
+                    <Status tone={connect.disabled ? "error" : "ok"}>
+                      {connect.disabled
+                        ? t.disabledState
+                        : (t.connectStatuses[connect.status] ??
+                          humanize(connect.status))}
+                    </Status>
+                  </span>
+                  <span className="bft-setting-row-sub bft-truncate">
+                    {relative(connect.updated_at)
+                      ? t.updated(relative(connect.updated_at) ?? "")
+                      : null}
+                  </span>
+                </span>
+                {manage ? (
+                  <ConnectMenu connect={connect} onAsk={confirm.ask} writes={writes} />
+                ) : null}
+              </div>
+              <TelegramChats connect={connect} manage={manage} writes={writes} />
+              {connect.reads_all_group_messages ? (
+                <span className="bft-setting-row-sub">
+                  {t.telegramReadsAllMessages}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {telegram.connects.length > 0 ? (
+        <p className="bft-form-section-note">{t.telegramSetupHint}</p>
+      ) : null}
+      {adding ? (
+        <TelegramDialog
+          onClose={() => setAdding(false)}
+          onCreated={(notice) => {
+            setAdding(false);
+            writes.notify(notice);
+          }}
+          writes={writes}
+        />
+      ) : null}
+      {confirm.dialog}
+    </FormSection>
+  );
+}
+
+type TelegramChatFilter = "blocked" | "allowed" | "all";
+
+/**
+ * The chats a bot has been added to, each allowed or not; a change saves at
+ * once. A bot can sit in hundreds of groups, so the list is filtered (groups
+ * not yet allowed first), searched by words of a title or id, and scrolls in a
+ * box of its own. A group changed under a filter stays listed until the filter
+ * or search changes, so a click never makes its row jump away.
+ */
+function TelegramChats({
+  connect,
+  manage,
+  writes,
+}: {
+  connect: Telegram["connects"][number];
+  manage: boolean;
+  writes: Writes;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [filter, setFilter] = useState<TelegramChatFilter>(() =>
+    connect.chats.some((chat) => !chat.allowed) ? "blocked" : "all"
+  );
+  const [query, setQuery] = useState("");
+  const [changed, setChanged] = useState<ReadonlySet<string>>(new Set());
+
+  const save = (allowedIds: string[]) =>
+    write.run(
+      () =>
+        api.updateTelegramChats(
+          writes.org,
+          writes.project,
+          connect.connect_id,
+          allowedIds
+        ),
+      ({ notice }) => writes.notify(notice)
+    );
+
+  if (connect.chats.length === 0)
+    return <span className="bft-setting-row-sub">{t.telegramNoChats}</span>;
+
+  const allowedCount = connect.chats.filter((chat) => chat.allowed).length;
+  // Each word of the search must appear in the group's title or id, in any order.
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = connect.chats.filter(
+    (chat) =>
+      (filter === "all" ||
+        chat.allowed === (filter === "allowed") ||
+        changed.has(chat.id)) &&
+      words.every((word) =>
+        `${chat.title ?? ""} ${chat.id}`.toLowerCase().includes(word)
+      )
+  );
+  const shownAllowed = shown.filter((chat) => chat.allowed).length;
+
+  const setAllowed = (ids: Set<string>, allowed: boolean) => {
+    setChanged(new Set([...changed, ...ids]));
+    save(
+      connect.chats
+        .filter((chat) => (ids.has(chat.id) ? allowed : chat.allowed))
+        .map((chat) => chat.id)
+    );
+  };
+
+  return (
+    <fieldset className="bft-connect-chats">
+      <legend className="bft-field-label">
+        {t.telegramChats}
+        <span className="bft-connect-chats-count">
+          {t.telegramChatsCount(allowedCount, connect.chats.length)}
+        </span>
+      </legend>
+      <div className="bft-connect-chats-tools">
+        <label className="bft-filter">
+          <SearchIcon className="bft-filter-icon" />
+          <input
+            aria-label={t.telegramChatsSearch}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setChanged(new Set());
+            }}
+            placeholder={t.telegramChatsSearch}
+            type="search"
+            value={query}
+          />
+        </label>
+        <Dropdown
+          items={(["blocked", "allowed", "all"] as const).map((id) => ({
+            id,
+            label: t.telegramChatsFilters[id],
+          }))}
+          ariaLabel={t.telegramChatsFilter}
+          onChange={(id) => {
+            setFilter(id as TelegramChatFilter);
+            setChanged(new Set());
+          }}
+          size="xs"
+          value={filter}
+          width="content"
+        />
+      </div>
+      <div className="bft-connect-chats-list">
+        {shown.length === 0 ? (
+          <span className="bft-setting-row-sub">{t.telegramChatsNone}</span>
+        ) : (
+          <>
+            <div className="bft-connect-chats-all">
+              <Checkbox
+                checked={shownAllowed === shown.length}
+                disabled={!manage || write.busy}
+                indeterminate={shownAllowed > 0 && shownAllowed < shown.length}
+                label={t.telegramChatsSelectShown(shown.length)}
+                onChange={(event) =>
+                  setAllowed(
+                    new Set(shown.map((chat) => chat.id)),
+                    event.target.checked
+                  )
+                }
+                size="sm"
+              />
+            </div>
+            <ScrollArea
+              className="bft-connect-chats-scroll"
+              edgeEffect="none"
+              orientation="vertical"
+              scrollbarVisibility="hover"
+            >
+              {shown.map((chat) => (
+                <div className="bft-connect-chat" key={chat.id}>
+                  <Checkbox
+                    checked={chat.allowed}
+                    disabled={!manage || write.busy}
+                    label={chat.title ?? chat.id}
+                    onChange={(event) =>
+                      setAllowed(new Set([chat.id]), event.target.checked)
+                    }
+                    size="sm"
+                  />
+                  <span className="bft-connect-chat-id">{chat.id}</span>
+                </div>
+              ))}
+            </ScrollArea>
+          </>
+        )}
+      </div>
+      <DialogError message={write.error} />
+    </fieldset>
+  );
+}
+
+function TelegramDialog({
+  writes,
+  onClose,
+  onCreated,
+}: {
+  writes: Writes;
+  onClose: () => void;
+  onCreated: (notice: string) => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [token, setToken] = useState("");
+
+  return (
+    <FormDialog
+      description={t.telegramDialogNote}
+      onClose={onClose}
+      onSubmit={() =>
+        write.run(
+          () =>
+            api.createTelegramConnect(writes.org, writes.project, {
+              bot_token: token.trim(),
+            }),
+          ({ notice }) => onCreated(notice)
+        )
+      }
+      submitLabel={t.connect}
+      title={t.addTelegram}
+      write={write}
+    >
+      <SecretField
+        configured={false}
+        error={write.fields.bot_token}
+        label={t.telegramToken}
+        onChange={setToken}
+        value={token}
       />
     </FormDialog>
   );
@@ -1976,7 +2586,11 @@ function AccountsSection({
                   <span className="bft-setting-row-main">
                     <span className="bft-truncate">{name}</span>
                     <span className="bft-setting-row-sub bft-truncate">
-                      {[account.account, account.scopes.join(", ")]
+                      {[
+                        account.account,
+                        account.scopes.join(", "),
+                        account.fields.join(", "),
+                      ]
                         .filter(Boolean)
                         .join(" · ")}
                     </span>
@@ -2043,56 +2657,101 @@ function AccountsSection({
       >
         {accounts.providers.length === 0 ? (
           <p className="bft-quiet bft-quiet-inline">{t.noPlatforms}</p>
-        ) : (
-          <ul aria-label={t.platformsTitle} className="bft-list bft-setting-rows">
-            {accounts.providers.map((platform) => {
-              const label = providerLabel(platform.provider);
-              return (
-                <li className="bft-setting-row" key={platform.provider}>
-                  <span className="bft-setting-row-main">
-                    <span className="bft-truncate">{label}</span>
-                  </span>
-                  <Status tone={platform.ready ? "ok" : "warn"}>
-                    {platform.ready ? t.ready : t.setupRequired}
-                  </Status>
-                  {!manage ? null : platform.ready ? (
-                    <Button
-                      aria-label={t.connectFor(label)}
-                      hierarchy="tertiary-gray"
-                      onPress={() =>
-                        connection.ask({
-                          label,
-                          kind: "managed_oauth",
-                          action: "connect",
-                          dependentMcps: [],
-                          credentialConnected: false,
-                          input: { label: t.labelOptional, placeholder: label },
-                          run: (alias) =>
-                            api.connectAccount(org, project, {
-                              provider: platform.provider,
-                              alias,
-                            }),
-                        })
-                      }
-                      size="xs"
-                    >
-                      {t.connect}
-                    </Button>
-                  ) : writes.orgAdmin ? (
-                    <a
-                      aria-label={t.configureFor(label)}
-                      className="bft-link bft-setting-row-link"
-                      href={orgHref(org, "/settings/integrations#oauth")}
-                      onClick={spaLinkClick}
-                    >
-                      {t.configureInOrg}
-                    </a>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        ) : null}
+        <ul aria-label={t.platformsTitle} className="bft-list bft-setting-rows">
+          {accounts.providers.map((platform) => {
+            const label = providerLabel(platform.provider);
+            return (
+              <li className="bft-setting-row" key={platform.provider}>
+                <span className="bft-setting-row-main">
+                  <span className="bft-truncate">{label}</span>
+                </span>
+                <Status tone={platform.ready ? "ok" : "warn"}>
+                  {platform.ready ? t.ready : t.setupRequired}
+                </Status>
+                {!manage ? null : platform.ready ? (
+                  <Button
+                    aria-label={t.connectFor(label)}
+                    hierarchy="tertiary-gray"
+                    onPress={() =>
+                      connection.ask({
+                        label,
+                        kind: "managed_oauth",
+                        action: "connect",
+                        dependentMcps: [],
+                        credentialConnected: false,
+                        input: { label: t.labelOptional, placeholder: label },
+                        run: (alias) =>
+                          api.connectAccount(org, project, {
+                            provider: platform.provider,
+                            alias,
+                          }),
+                      })
+                    }
+                    size="xs"
+                  >
+                    {t.connect}
+                  </Button>
+                ) : writes.orgAdmin ? (
+                  <a
+                    aria-label={t.configureFor(label)}
+                    className="bft-link bft-setting-row-link"
+                    href={orgHref(org, "/settings/integrations#oauth")}
+                    onClick={spaLinkClick}
+                  >
+                    {t.configureInOrg}
+                  </a>
+                ) : null}
+              </li>
+            );
+          })}
+          {/* A key the person types on Salix's form; the whole swarm uses it by its name. */}
+          <li className="bft-setting-row">
+            <span className="bft-setting-row-main">
+              <span className="bft-truncate">{t.secretTitle}</span>
+              <span className="bft-setting-row-sub bft-truncate">{t.secretNote}</span>
+            </span>
+            {manage ? (
+              <Button
+                aria-label={t.addSecretLabel}
+                hierarchy="tertiary-gray"
+                onPress={() =>
+                  connection.ask({
+                    label: t.addSecretLabel,
+                    kind: "secret",
+                    action: "connect",
+                    dependentMcps: [],
+                    credentialConnected: false,
+                    input: {
+                      label: t.secretName,
+                      placeholder: t.secretNamePlaceholder,
+                      hint: t.secretNameHint,
+                      required: true,
+                      // Saving under a listed name replaces that key.
+                      note: (name) =>
+                        accounts.connections.some(
+                          (account) =>
+                            account.provider === "secret" && account.alias === name
+                        )
+                          ? t.secretNameExists(name)
+                          : undefined,
+                    },
+                    fields: true,
+                    run: (alias, fields) =>
+                      api.connectAccount(org, project, {
+                        provider: "secret",
+                        alias,
+                        ...(fields.length > 0 ? { fields } : {}),
+                      }),
+                  })
+                }
+                size="xs"
+              >
+                {t.addSecret}
+              </Button>
+            ) : null}
+          </li>
+        </ul>
         {!manage ? (
           <p className="bft-form-section-note">{t.adminsOnly}</p>
         ) : !writes.orgAdmin &&

@@ -22,10 +22,14 @@ defmodule SalixAgent.IFC.Check do
   No label logic lives here. Every comparison is inside the pure kernel.
   """
 
+  require Logger
+
   alias SalixAgent.EventArchive
   alias SalixAgent.IFC
   alias SalixAgent.IFC.{Context, Declaration, Destination, Guidance, Provenance}
   alias SalixIFC.{Codec, Effect, Label, Principal, Reason}
+
+  @slow_resolve_ms 1_000
 
   @decided [:egress, :persist]
 
@@ -40,14 +44,54 @@ defmodule SalixAgent.IFC.Check do
     if IFC.facts_mod() == nil or IFC.mode(Map.get(ctx, :ifc_mode)) == :off do
       decisions
     else
+      decided = Map.get(ctx, :ifc_decided, %{})
+
       Enum.map(decisions, fn
-        {:execute, call} -> decide(call, ctx)
-        other -> other
+        {:execute, call} ->
+          case Map.get(decided, call_id(call)) do
+            {^call, outcome} -> outcome
+            _undecided -> decide(call, ctx)
+          end
+
+        other ->
+          other
       end)
     end
   end
 
   def authorize(decisions, _ctx), do: decisions
+
+  @doc """
+  Decides each executable call once and keeps the outcome by call id, for
+  `authorize/2` to reuse when the same call reaches it again with this
+  context (`ctx[:ifc_decided]`): a round plans its tool batch and then runs
+  it, and both pass the dispatch boundary. A call whose arguments changed in
+  between is decided again.
+  """
+  @spec decide_once([{:execute, map()} | {:blocked, map()}], map()) :: map()
+  def decide_once(decisions, ctx) when is_list(decisions) and is_map(ctx) do
+    if IFC.facts_mod() == nil or IFC.mode(Map.get(ctx, :ifc_mode)) == :off do
+      ctx
+    else
+      decided =
+        decisions
+        |> Enum.flat_map(fn
+          {:execute, call} ->
+            case call_id(call) do
+              "" -> []
+              id -> [{id, {call, decide(call, ctx)}}]
+            end
+
+          _blocked ->
+            []
+        end)
+        |> Map.new()
+
+      Map.update(ctx, :ifc_decided, decided, &Map.merge(&1, decided))
+    end
+  end
+
+  defp call_id(call), do: to_string(call[:id] || call["id"] || "")
 
   @doc """
   The label a tool result carries into the transcript.
@@ -122,7 +166,13 @@ defmodule SalixAgent.IFC.Check do
   defp decide(call, ctx) do
     name = to_string(call[:name] || call["name"] || "")
     args = call[:args] || call["args"] || %{}
-    ctx = delegated_request_context(name, args, ctx)
+
+    ctx =
+      delegated_request_context(
+        name,
+        args,
+        Context.with_request(ctx, Declaration.from_call(call).request)
+      )
 
     destinations = [
       Destination.describe(name, args, ctx) | Destination.additional_destinations(name, args, ctx)
@@ -179,7 +229,7 @@ defmodule SalixAgent.IFC.Check do
     request =
       declaration.request || Context.default_request(wire || %{}) || ""
 
-    case IFC.resolve(request_payload(descriptor, declaration, items, wire, ctx)) do
+    case timed_resolve(request_payload(descriptor, declaration, items, wire, ctx)) do
       {:ok, reply} ->
         reply = own_audience_destination(reply, descriptor, declaration, items)
 
@@ -249,8 +299,15 @@ defmodule SalixAgent.IFC.Check do
 
     decision =
       case Context.activation(wire || %{}) do
-        {:ok, activation} -> kernel_decide(effect, activation, items, facts)
-        :error -> {:deny, %Reason{clause: :invalid_input, detail: :activation}}
+        {:ok, activation} ->
+          if is_nil(declaration.request) and Context.several_senders?(wire) do
+            {:deny, %Reason{clause: :invalid_input, detail: :request_required}}
+          else
+            kernel_decide(in_place(effect, activation), activation, items, facts)
+          end
+
+        :error ->
+          {:deny, %Reason{clause: :invalid_input, detail: :activation}}
       end
 
     archive(ctx, call, name, mode, decision)
@@ -281,7 +338,7 @@ defmodule SalixAgent.IFC.Check do
         {:execute, admit(call, name, args, evidence, items, reply)}
 
       {:audit, {:deny, _reason}} ->
-        {:execute, call}
+        {:execute, keep_requester(call, wire)}
 
       {:enforce, {:deny, reason}} ->
         {:blocked, refuse(call, reason, items, facts, wire, reply)}
@@ -308,6 +365,19 @@ defmodule SalixAgent.IFC.Check do
     cursor
     |> SalixIFC.transfer_resume(IFC.consume_receipt(request))
     |> spend_receipts_step(ctx)
+  end
+
+  # Audit changes no outcome, so a Task created by a denied effect still needs
+  # its person: a sandbox acts for nobody else and is refused without one. The
+  # requester alone rides along; the Task inherits no audience from a denial.
+  defp keep_requester(call, wire) do
+    case Context.activation(wire || %{}) do
+      {:ok, activation} ->
+        Map.put(call, :ifc_requester, Codec.encode_principal!(activation.requester))
+
+      :error ->
+        call
+    end
   end
 
   # An allowed effect carries its evidence forward: the provenance footer of
@@ -438,6 +508,18 @@ defmodule SalixAgent.IFC.Check do
     end
   end
 
+  # A place whose members cannot be listed has writers nobody can name, but the
+  # person who just spoke there is one of them: the provider delivered their
+  # message from it. Only that person, only that place, and every other rule
+  # (the sources' flow, a guest's limits) still applies.
+  defp in_place(%Effect{writers: :unknown, destination: scope} = effect, %{
+         requester: requester,
+         source_scope: scope
+       }),
+       do: %{effect | writers: MapSet.new([Principal.key(requester)])}
+
+  defp in_place(effect, _activation), do: effect
+
   defp writers(reply) do
     reply
     |> Map.get("destination", %{})
@@ -507,6 +589,55 @@ defmodule SalixAgent.IFC.Check do
         emit_kernel_operation("error", started)
         :erlang.raise(kind, reason, __STACKTRACE__)
     end
+  end
+
+  # The resolver reads facts one atom at a time, before the kernel decides, so
+  # its cost grows with what the context holds. `ifc_decide` does not cover it.
+  defp timed_resolve(request) do
+    started = SystemsClock.monotonic_time()
+    result = IFC.resolve(request)
+    duration = SystemsClock.monotonic_time() - started
+    outcome = if match?({:ok, _}, result), do: "ok", else: "error"
+    observe_resolve(outcome, request["atoms"], duration)
+    result
+  end
+
+  defp observe_resolve(outcome, atoms, duration) do
+    Salix.Telemetry.emit_operation(
+      "salix_agent",
+      "ifc_resolve",
+      SystemsObservability.Context.current_surface(),
+      outcome,
+      duration
+    )
+
+    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+    if duration_ms >= @slow_resolve_ms do
+      Logger.warning("ifc_resolve_slow",
+        ifc_resolve: %{outcome: outcome, duration_ms: duration_ms, atoms: atom_kinds(atoms)}
+      )
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # How many atoms of each kind: the kind is the encoded atom's fixed first
+  # field, and no id goes further than this function.
+  defp atom_kinds(atoms) do
+    atoms
+    |> List.wrap()
+    |> Enum.frequencies_by(fn atom ->
+      case Codec.decode_atom(atom) do
+        {:ok, decoded} when is_tuple(decoded) -> elem(decoded, 0)
+        {:ok, decoded} when is_atom(decoded) -> decoded
+        _other -> :unknown
+      end
+    end)
   end
 
   defp emit_kernel_operation(outcome, started) do

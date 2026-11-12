@@ -69,6 +69,39 @@ defmodule SalixLlm.TranscribeTest do
     end
   end
 
+  # Cuts a failed chunk "a|b|c" into one-minute parts "a", "b" and "c".
+  defmodule PartChunker do
+    def with_mp3_chunks(audio, "chunk.mp3", callback, segment_seconds: 60) do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "salix-part-chunks-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+
+      parts =
+        audio
+        |> String.split("|")
+        |> Enum.with_index()
+        |> Enum.map(fn {contents, index} ->
+          path = Path.join(dir, "part-#{index}.mp3")
+          File.write!(path, contents)
+          %{index: index, offset_seconds: index * 60, path: path, format: "mp3"}
+        end)
+
+      try do
+        callback.(parts)
+      after
+        File.rm_rf(dir)
+      end
+    end
+  end
+
+  defmodule UncutChunker do
+    def with_mp3_chunks(_audio, _source_filename, _callback, _opts), do: {:error, :ffmpeg_failed}
+  end
+
   defmodule OutOfOrderChunker do
     def with_mp3_chunks(_audio, _source_filename, callback, _opts) do
       dir =
@@ -336,8 +369,262 @@ defmodule SalixLlm.TranscribeTest do
       assert {:error, {:asr_chunk_failed, 1, {:asr_http, 503, "unavailable"}}} =
                Transcribe.transcribe_chunks(%{}, chunks, "prompt",
                  transcribe_fun: transcribe,
-                 max_concurrency: 2
+                 max_concurrency: 2,
+                 part_chunker: UncutChunker
                )
+    end
+
+    test "a failed chunk is asked again as one-minute parts, and its parts' words take its place" do
+      chunks = test_chunks(["first", "loop|b|c"], [0, 300])
+      test_pid = SystemsRuntime.Proc.self()
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        SystemsRuntime.Proc.send(test_pid, {:asked, Base.decode64!(audio_b64)})
+
+        case Base.decode64!(audio_b64) do
+          "loop|b|c" -> {:error, {:asr_incomplete_transcript, "length"}}
+          "b" -> {:error, :asr_empty_transcript}
+          value -> {:ok, "[00:01] Speaker: #{value}"}
+        end
+      end
+
+      assert {:ok, transcript} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+
+      assert transcript ==
+               "[00:00:01] Speaker: first\n[00:05:01] Speaker: loop\n[00:07:01] Speaker: c"
+
+      for audio <- ["first", "loop|b|c", "loop", "b", "c"], do: assert_received({:asked, ^audio})
+      refute_received {:asked, _}
+    end
+
+    test "a part that fails too fails the complete batch" do
+      chunks = test_chunks(["first", "a|bad"], [0, 300])
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "first" -> {:ok, "[00:01] Speaker: first"}
+          "a" -> {:ok, "[00:01] Speaker: a"}
+          _failing -> {:error, {:asr_http, 503, "unavailable"}}
+        end
+      end
+
+      assert {:error,
+              {:asr_chunk_failed, 1, {:asr_part_failed, 1, {:asr_http, 503, "unavailable"}}}} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+    end
+
+    test "a declined chunk is asked again before it is cut" do
+      [chunk] = test_chunks(["a|b"], [300])
+      declines = :counters.new(1, [])
+      test_pid = SystemsRuntime.Proc.self()
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        audio = Base.decode64!(audio_b64)
+        SystemsRuntime.Proc.send(test_pid, {:asked, audio})
+
+        if audio == "a|b" and :counters.get(declines, 1) < 2 do
+          :counters.add(declines, 1, 1)
+          {:error, {:asr_incomplete_transcript, "content_filter: OTHER"}}
+        else
+          {:ok, "[00:01] Alice: #{audio}"}
+        end
+      end
+
+      assert {:ok, "[00:05:01] Alice: a|b"} =
+               Transcribe.transcribe_chunks(%{}, [chunk], "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+
+      for _ <- 1..3, do: assert_received({:asked, "a|b"})
+      refute_received {:asked, _}
+    end
+
+    test "declined audio is asked of the fallback model at once, before it is cut" do
+      [chunk] = test_chunks(["a|b"], [300])
+      test_pid = SystemsRuntime.Proc.self()
+
+      transcribe = fn cfg, audio_b64, "mp3", _prompt ->
+        SystemsRuntime.Proc.send(test_pid, {:asked, cfg["model"], Base.decode64!(audio_b64)})
+
+        case cfg["model"] do
+          "primary" -> {:error, {:asr_incomplete_transcript, "content_filter: OTHER"}}
+          "fallback" -> {:ok, "[00:01] Alice: from fallback"}
+        end
+      end
+
+      cfg = %{"model" => "primary", "fallback_model" => "fallback"}
+
+      assert {:ok, "[00:05:01] Alice: from fallback"} =
+               Transcribe.transcribe_chunks(cfg, [chunk], "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+
+      assert_received {:asked, "primary", "a|b"}
+      assert_received {:asked, "fallback", "a|b"}
+      refute_received {:asked, _, _}
+    end
+
+    test "a part the model declines is noted in the transcript, and the other parts stand" do
+      chunks = test_chunks(["first", "a|bad|c"], [0, 300])
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "a|bad|c" -> {:error, {:asr_incomplete_transcript, "content_filter: OTHER"}}
+          "bad" -> {:error, {:asr_incomplete_transcript, "content_filter: OTHER"}}
+          value -> {:ok, "[00:01] Speaker: #{value}"}
+        end
+      end
+
+      assert {:ok, transcript} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+
+      assert transcript ==
+               """
+               [00:00:01] Speaker: first
+               [00:05:01] Speaker: a
+               [00:06:00] (Not transcribed: the transcription model declined this audio until [00:07:00].)
+               [00:07:01] Speaker: c\
+               """
+    end
+
+    test "a declined chunk that cannot be cut is noted, and declined audio alone fails" do
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "declined" -> {:error, {:asr_incomplete_transcript, "content_filter"}}
+          value -> {:ok, "[00:01] Speaker: #{value}"}
+        end
+      end
+
+      opts = [transcribe_fun: transcribe, part_chunker: UncutChunker]
+
+      assert {:ok,
+              "[00:00:01] Speaker: first\n" <>
+                "[00:05:00] (Not transcribed: the transcription model declined this audio until [00:06:00].)"} =
+               Transcribe.transcribe_chunks(
+                 %{},
+                 test_chunks(["first", "declined"], [0, 300]),
+                 "prompt",
+                 opts
+               )
+
+      assert {:error, :asr_declined} =
+               Transcribe.transcribe_chunks(%{}, test_chunks(["declined"], [0]), "prompt", opts)
+    end
+
+    test "with voice facts, a chunk without speech is not asked and made-up words are dropped" do
+      chunks =
+        ["quiet", "story", "speech"]
+        |> test_chunks([0, 300, 600])
+        |> Enum.zip([0.4, 2.0, 30.0])
+        |> Enum.map(fn {chunk, voiced} -> Map.put(chunk, :voiced_seconds, voiced) end)
+
+      test_pid = SystemsRuntime.Proc.self()
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        audio = Base.decode64!(audio_b64)
+        SystemsRuntime.Proc.send(test_pid, {:asked, audio})
+
+        case audio do
+          "story" -> {:ok, "[00:00] Unknown: " <> String.duplicate("Once upon a time. ", 10)}
+          "speech" -> {:ok, "[00:03] Alice: hello"}
+        end
+      end
+
+      assert {:ok, "[00:10:03] Alice: hello"} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: UncutChunker
+               )
+
+      for audio <- ["story", "speech"], do: assert_received({:asked, ^audio})
+      refute_received {:asked, _}
+    end
+
+    test "dictation's lower floor asks a clip of one short word, and none without a voiced sound" do
+      chunks =
+        ["silence", "word"]
+        |> test_chunks([0, 60])
+        |> Enum.zip([0.0, 0.4])
+        |> Enum.map(fn {chunk, voiced} -> Map.put(chunk, :voiced_seconds, voiced) end)
+
+      test_pid = SystemsRuntime.Proc.self()
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        SystemsRuntime.Proc.send(test_pid, {:asked, Base.decode64!(audio_b64)})
+        {:ok, "好的"}
+      end
+
+      assert {:ok, "好的"} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                 transcribe_fun: transcribe,
+                 min_voiced_seconds: 0.04
+               )
+
+      assert_received {:asked, "word"}
+      refute_received {:asked, _}
+    end
+
+    test "a transcript that ends long before its chunk's speech is asked again as parts" do
+      [chunk] = test_chunks(["a|b"], [300])
+      chunk = Map.merge(chunk, %{voiced_seconds: 250.0, speech_end_seconds: 290.0})
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "a|b" -> {:ok, "[00:10] Alice: a"}
+          part -> {:ok, "[00:01] Alice: #{part}"}
+        end
+      end
+
+      assert {:ok, "[00:05:01] Alice: a\n[00:06:01] Alice: b"} =
+               Transcribe.transcribe_chunks(%{}, [chunk], "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+    end
+
+    test "a transcript that ends early stands when its parts fail" do
+      [chunk] = test_chunks(["a|b"], [300])
+      chunk = Map.merge(chunk, %{voiced_seconds: 250.0, speech_end_seconds: 290.0})
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "a|b" -> {:ok, "[00:10] Alice: a"}
+          _part -> {:error, {:asr_http, 503, "unavailable"}}
+        end
+      end
+
+      assert {:ok, "[00:05:10] Alice: a"} =
+               Transcribe.transcribe_chunks(%{}, [chunk], "prompt",
+                 transcribe_fun: transcribe,
+                 part_chunker: PartChunker
+               )
+    end
+
+    test "zero-width characters or an empty code fence are no transcript" do
+      chunks = test_chunks(["music", "fence", "speech"], [0, 300, 600])
+
+      transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
+        case Base.decode64!(audio_b64) do
+          "music" -> {:ok, "\u200B\u200B\uFEFF"}
+          "fence" -> {:ok, "```\n```"}
+          "speech" -> {:ok, "```text\n[00:03] Alice: hello\n```"}
+        end
+      end
+
+      assert {:ok, "[00:10:03] Alice: hello"} =
+               Transcribe.transcribe_chunks(%{}, chunks, "prompt", transcribe_fun: transcribe)
     end
 
     test "a token-limited provider response fails its ASR chunk and the complete batch" do
@@ -370,8 +657,40 @@ defmodule SalixLlm.TranscribeTest do
       assert {:error, {:asr_chunk_failed, 1, {:asr_incomplete_transcript, "length"}}} =
                Transcribe.transcribe_chunks(%{}, chunks, "prompt",
                  transcribe_fun: transcribe,
-                 max_concurrency: 2
+                 max_concurrency: 2,
+                 part_chunker: UncutChunker
                )
+    end
+
+    test "a chunk the provider's safety filter stops is logged with its index and cause" do
+      chunks = test_chunks(["filtered"], [0])
+
+      transcribe = fn _cfg, _audio_b64, "mp3", _prompt ->
+        Transcribe.complete_content(%{
+          "choices" => [
+            %{"message" => %{"content" => ""}, "finish_reason" => "content_filter: OTHER"}
+          ]
+        })
+      end
+
+      log =
+        ExUnit.CaptureLog.capture_log(
+          [format: {CommaLog.Formatter, :format}, metadata: :all],
+          fn ->
+            assert {:error, :asr_declined} =
+                     Transcribe.transcribe_chunks(%{}, chunks, "prompt",
+                       transcribe_fun: transcribe,
+                       part_chunker: UncutChunker
+                     )
+          end
+        )
+
+      assert [%{"level" => "warning", "msg" => msg}] =
+               log |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+
+      assert msg ==
+               "ASR chunk failed: index=0 offset_seconds=0 " <>
+                 "reason=asr_incomplete_transcript_content_filter: OTHER"
     end
 
     test "an empty speech chunk is complete, while an entirely empty batch is not" do

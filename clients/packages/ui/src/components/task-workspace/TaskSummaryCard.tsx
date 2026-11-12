@@ -15,7 +15,9 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleXIcon,
+  ExclamationTriangleIcon,
   LoaderIcon,
+  PauseIcon,
 } from "../icons";
 import {
   TaskCard,
@@ -39,6 +41,9 @@ export type TaskWorkspaceMessage = {
   roleLabel: string;
 };
 
+/** Why a Task in progress does not run: its Loop stopped, in words, and whether on an error. */
+export type TaskLoopStop = { text: string; failed: boolean };
+
 export type TaskSummaryViewModel = {
   archiveVersion?: number | undefined;
   archiveAction?: import("./TaskArchiveMenu").TaskArchiveAction | undefined;
@@ -47,6 +52,12 @@ export type TaskSummaryViewModel = {
   lastMessage?: TaskWorkspaceMessage | undefined;
   /** Where the Task was asked for: a chat provider key, or `comma` for the client. */
   origin?: string | undefined;
+  /**
+   * Why the Task's Loop stopped, while the Task is in progress. A stopped
+   * Loop does not change the Task's status, so without this the Task would
+   * read as running while nothing runs.
+   */
+  loopStop?: TaskLoopStop | undefined;
   statusBucket: TaskStatusBucket;
   title: string;
   updatedAt: number;
@@ -59,6 +70,19 @@ const TASK_STATUS_ICONS: Record<VisibleTaskStatusBucket, ReactNode> = {
   done: <CircleCheckIcon className="text-fg-success-primary" />,
   cancelled: <CircleXIcon className="text-fg-error-primary" />,
 };
+
+const RUNNING_TASK_STATUS_ICON = (
+  <LoaderIcon className="comma-task-status-spin text-sidebar-icon-secondary" />
+);
+
+/** The filled pause glyph is drawn a size smaller, so it weighs the same as the outlined status glyphs. */
+const PAUSED_TASK_STATUS_ICON = (
+  <PauseIcon className="comma-task-status-paused text-fg-warning-primary" />
+);
+
+const LOOP_FAILED_TASK_STATUS_ICON = (
+  <ExclamationTriangleIcon className="comma-task-status-loop-failed text-fg-error-primary" />
+);
 
 /** The board's columns, in the order of the statuses every client shows (the core's `taskOrder` sections). */
 export const TASK_STATUS_COLUMNS: ReadonlyArray<{
@@ -88,7 +112,7 @@ export function TaskSummaryCard({
   return (
     <TaskCard
       footer={taskUpdatedAtLabel(task.updatedAt, locale)}
-      icon={taskStatusIcon(task.statusBucket)}
+      icon={taskStatusIcon(task.statusBucket, { loopStop: task.loopStop })}
       meta={taskMeta(task, locale, progress ?? followed)}
       title={task.title}
       titleIdentity={task.id}
@@ -102,8 +126,22 @@ export function taskNeutralIcon() {
   return <CircleDashedIcon className="text-sidebar-icon-secondary" />;
 }
 
-export function taskStatusIcon(bucket: TaskStatusBucket) {
+/**
+ * A Task's status glyph. In progress, it turns where it reports a running Task, as on iOS and Android; a control
+ * that only names the status (a board column, a filter) passes `spins: false` and stays still. A Task in progress
+ * whose Loop stopped (`loopStop`) shows the pause glyph, or the error glyph when it stopped on an error: nothing runs.
+ */
+export function taskStatusIcon(
+  bucket: TaskStatusBucket,
+  {
+    spins = true,
+    loopStop,
+  }: { spins?: boolean; loopStop?: Pick<TaskLoopStop, "failed"> | undefined } = {}
+) {
   if (bucket === "archived") return <ArchiveIcon />;
+  if (bucket === "in_progress" && loopStop)
+    return loopStop.failed ? LOOP_FAILED_TASK_STATUS_ICON : PAUSED_TASK_STATUS_ICON;
+  if (bucket === "in_progress" && spins) return RUNNING_TASK_STATUS_ICON;
   return (
     TASK_STATUS_COLUMNS.find((column) => column.bucket === bucket)?.icon ??
     TASK_STATUS_COLUMNS[0]!.icon
@@ -137,6 +175,12 @@ function taskMeta(
   locale: CommaLocale,
   override: string | undefined
 ) {
+  if (task.statusBucket === "in_progress" && task.loopStop)
+    return (
+      <TaskCardMeta>
+        <TaskProgressText>{task.loopStop.text}</TaskProgressText>
+      </TaskCardMeta>
+    );
   const label = taskProgressLabel(task, locale);
   if (!label) return undefined;
   // A Worker's step comes live from its own Session.

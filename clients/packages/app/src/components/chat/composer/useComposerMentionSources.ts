@@ -18,7 +18,7 @@ import type {
   RecommendationSource,
 } from "@comma/recommendation-contract";
 import { useCall, useTopic, useTopicSelect } from "@comma/core-client";
-import type { MentionTask } from "@comma/core/contract";
+import type { MentionTask, SlackDirectory } from "@comma/core/contract";
 import { useOnboardingAhead } from "../../onboarding/useOnboardingAhead";
 
 /**
@@ -46,6 +46,19 @@ export interface ComposerModelMentionItem {
   vendor: string;
   /** The thinking efforts it takes; none: it has only its default. */
   efforts: readonly string[];
+}
+
+/** A person the requester may ask for a Task (a request grant), named in the Router chat to send them the message. */
+export interface ComposerRequestMentionItem {
+  grantId: string;
+  name: string;
+  /** Their workspace, by its name: tells two people of one name apart. */
+  workspace: string;
+  /** Their daily or waiting limit is reached: nothing can be sent to them now. */
+  full: boolean;
+  email?: string | null | undefined;
+  /** Their avatar's revision, read through the grant (`target-avatar`); none without one. */
+  avatarRevision?: string | null | undefined;
 }
 
 export interface ComposerPluginMentionItem {
@@ -91,11 +104,21 @@ export interface ComposerMentionSources {
   /** Models a Task can run with: in the Router chat only (`models`), read once the menu first opens. */
   models: MentionSourceState<ComposerModelMentionItem>;
   plugins: MentionSourceState<ComposerPluginMentionItem>;
+  /** People to send a Task request to: in the Router chat only (`taskRequests`), read once the menu first opens. */
+  requests: MentionSourceState<ComposerRequestMentionItem>;
   routines: MentionSourceState<ComposerRoutineMentionItem>;
+  /** The channels and people of the installed Slack plugin, read once the menu first opens. */
+  slack?: SlackDirectory;
+  /** Who is in the Slack channel whose list is open (`openSlackChannel`), by Slack user id. */
+  slackChannelMembers?: { channelId: string; memberIds: readonly string[] } | undefined;
+  /** A channel's list opened, or none is open now. */
+  openSlackChannel?: ((channelId: string | null) => void) | undefined;
   tasks: MentionSourceState<ComposerTaskMentionItem>;
 }
 
 const EMPTY_ITEMS: never[] = [];
+const EMPTY_SLACK: SlackDirectory = { channels: [], people: [] };
+export const SLACK_PLUGIN_ID = "slack";
 
 function taskItems(
   tasks: readonly MentionTask[],
@@ -267,7 +290,7 @@ export function useComposerMentionSources({
   enabled?: boolean;
   excludeConversationId?: string | undefined;
   groupId: string | undefined;
-  /** The Router chat: a model named there starts a Task with it. */
+  /** The Router chat: a model named there starts a Task with it, a person sends them a Task request. */
   models?: boolean;
   workspaceId: string | undefined;
 }): ComposerMentionSources {
@@ -315,17 +338,26 @@ export function useComposerMentionSources({
     enabled && workspaceId ? { topic: "plugins", workspace: workspaceId } : null
   );
   const driveSource = useDriveMentionSource(enabled);
+  const call = useCall();
   // The workspace's models are read once the "@" menu first opens here (the
   // Settings page's read: three requests).
   const [modelsAsked, setModelsAsked] = useState(false);
   const askModels = modelsShown && !modelsAsked;
+  // Slack's channels and people too: the menu lists them only once it is open.
+  const [slackAsked, setSlackAsked] = useState(false);
   const driveQuery = driveSource.onMenuQueryChange;
   const onMenuQueryChange = useCallback(
     (query: string | null) => {
       driveQuery?.(query);
       if (query !== null && askModels) setModelsAsked(true);
+      if (query === null) return;
+      setSlackAsked(true);
+      if (slackAsked && workspaceId)
+        void call("slackDirectory.reread", { workspace: workspaceId }).catch(
+          () => undefined
+        );
     },
-    [askModels, driveQuery]
+    [askModels, call, driveQuery, slackAsked, workspaceId]
   );
   const drive = useMemo(
     () => ({ ...driveSource, onMenuQueryChange }),
@@ -354,6 +386,40 @@ export function useComposerMentionSources({
             }
           : { items: EMPTY_ITEMS, status: shownModels?.error ? "ready" : "loading" },
     [modelsAsked, modelsShown, shownModels]
+  );
+
+  const { value: shownRequests } = useTopic(
+    enabled && modelsShown && modelsAsked && workspaceId
+      ? { topic: "taskRequests", prefer: workspaceId }
+      : null
+  );
+  const requests = useMemo<MentionSourceState<ComposerRequestMentionItem>>(
+    () =>
+      !modelsShown || !modelsAsked
+        ? { items: EMPTY_ITEMS, status: "ready" }
+        : shownRequests?.targets
+          ? {
+              items: shownRequests.targets.map((target) => ({
+                grantId: target.grant_id,
+                name:
+                  target.workspace.owner?.name ||
+                  target.workspace.owner?.email ||
+                  target.workspace.name ||
+                  target.grant_id,
+                workspace: target.workspace.name ?? "",
+                email: target.workspace.owner?.email,
+                avatarRevision: target.workspace.owner?.avatar_id,
+                full:
+                  target.sent_today >= target.daily_limit ||
+                  target.pending >= target.pending_limit,
+              })),
+              status: "ready",
+            }
+          : {
+              items: EMPTY_ITEMS,
+              status: shownRequests?.error ? "ready" : "loading",
+            },
+    [modelsAsked, modelsShown, shownRequests]
   );
 
   const tasks = useMemo<MentionSourceState<ComposerTaskMentionItem>>(() => {
@@ -386,6 +452,33 @@ export function useComposerMentionSources({
     [catalog]
   );
 
+  const slackInstalled = plugins.items.some((plugin) => plugin.id === SLACK_PLUGIN_ID);
+  const { value: slackRead } = useTopic(
+    enabled && slackAsked && slackInstalled && workspaceId
+      ? { topic: "slackDirectory", workspace: workspaceId }
+      : null,
+    { lingerMs: 0 }
+  );
+  const slack = slackRead ?? EMPTY_SLACK;
+  const [openSlackChannel, setOpenSlackChannel] = useState<string | null>(null);
+  const { value: slackMembersRead } = useTopic(
+    enabled && openSlackChannel && workspaceId
+      ? {
+          topic: "slackChannelMembers",
+          workspace: workspaceId,
+          channel: openSlackChannel,
+        }
+      : null,
+    { lingerMs: 0 }
+  );
+  const slackChannelMembers = useMemo(
+    () =>
+      openSlackChannel
+        ? { channelId: openSlackChannel, memberIds: slackMembersRead ?? EMPTY_ITEMS }
+        : undefined,
+    [openSlackChannel, slackMembersRead]
+  );
+
   // A routine's Task shows only while the core knows it is not archived.
   const routineTasks = useTaskSummaries(
     groupId ?? "",
@@ -413,7 +506,26 @@ export function useComposerMentionSources({
     };
   }, [routines, hiddenRoutines]);
   return useMemo(
-    () => ({ drive, models, plugins, routines: visibleRoutines, tasks }),
-    [drive, models, plugins, visibleRoutines, tasks]
+    () => ({
+      drive,
+      models,
+      plugins,
+      requests,
+      routines: visibleRoutines,
+      slack,
+      slackChannelMembers,
+      openSlackChannel: setOpenSlackChannel,
+      tasks,
+    }),
+    [
+      drive,
+      models,
+      plugins,
+      requests,
+      slack,
+      slackChannelMembers,
+      visibleRoutines,
+      tasks,
+    ]
   );
 }

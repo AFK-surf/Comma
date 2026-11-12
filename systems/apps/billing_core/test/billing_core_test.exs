@@ -721,7 +721,7 @@ defmodule BillingCoreTest do
 
     assert account_lock =~ "FROM billing_accounts"
 
-    assert {grant_lock, ["ba_repo", @now]} =
+    assert {grant_lock, ["ba_repo", @now, "llm"]} =
              find_query(queries, "FROM credit_grants", "FOR UPDATE")
 
     assert grant_lock =~ "FROM credit_grants"
@@ -1015,7 +1015,7 @@ defmodule BillingCoreTest do
 
     queries = flush_sql_queries()
 
-    assert {balance_query, ["ba_probe", _checked_at]} =
+    assert {balance_query, ["ba_probe", _checked_at, ""]} =
              find_query(queries, "jsonb_agg(policy_snapshot)")
 
     assert balance_query =~ "FROM credit_grants"

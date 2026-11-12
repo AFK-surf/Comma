@@ -58,6 +58,9 @@ defmodule SalixIM.ConversationParticipantActor do
             session_ref: nil,
             deleted?: false
 
+  def initial_record(participant),
+    do: Map.put_new(participant, "source_start_seq", participant["delivery_cursor_seq"] || 0)
+
   def child_spec(opts) do
     group_id = Keyword.fetch!(opts, :group_id)
     conversation_id = Keyword.fetch!(opts, :conversation_id)
@@ -255,7 +258,7 @@ defmodule SalixIM.ConversationParticipantActor do
       participant
       |> Map.put("participant_id", state.participant_id)
       |> Map.put("conversation_id", state.conversation_id)
-      |> Map.put_new("source_start_seq", participant["delivery_cursor_seq"] || 0)
+      |> initial_record()
 
     reply =
       if state.participant_load_error in [nil, :not_found] do
@@ -270,7 +273,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
   def handle_call({:ensure_reserved, participant}, _from, state) do
     participant =
-      Map.put_new(participant, "source_start_seq", participant["delivery_cursor_seq"] || 0)
+      initial_record(participant)
 
     participant =
       participant
@@ -283,7 +286,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
   def handle_call({:ensure_reserved_incarnation, participant, contract}, _from, state) do
     participant =
-      Map.put_new(participant, "source_start_seq", participant["delivery_cursor_seq"] || 0)
+      initial_record(participant)
 
     participant =
       participant
@@ -568,6 +571,34 @@ defmodule SalixIM.ConversationParticipantActor do
   # A releasing copy starts no new delivery; the current owner drains the rest.
   def handle_cast(:drain, %{releasing?: true} = state), do: {:noreply, state}
 
+  def handle_cast(
+        :drain,
+        %{drain_pid: nil, active_delivery: %{mode: mode} = continuation} = state
+      )
+      when mode in [:settle_claim, :settle_mutation] do
+    case ConversationParticipantStore.settle_pending(state.store_pid) do
+      {:error, :commit_indeterminate} ->
+        {:noreply, retry_drain_later(state)}
+
+      {:ok, %{delivery_id: id, record: record, result: {:ok, %{etag: revision}}}}
+      when mode == :settle_claim and id == continuation.delivery_id ->
+        active = %{
+          store_pid: state.store_pid,
+          delivery_id: id,
+          record: record,
+          revision: revision,
+          mode: :deliver
+        }
+
+        {:noreply, start_active_delivery(%{state | active_delivery: nil}, active)}
+
+      _known ->
+        {:noreply, recovered} = handle_continue(:recover, %{state | active_delivery: nil})
+        if not recovered.deleted?, do: SystemsRuntime.Server.cast(Proc.self(), :drain)
+        {:noreply, recovered}
+    end
+  end
+
   def handle_cast(:drain, %{drain_pid: nil} = initial_state) do
     state = initial_state
 
@@ -632,6 +663,20 @@ defmodule SalixIM.ConversationParticipantActor do
   def handle_info(:release_non_owner, state),
     do: {:noreply, %{state | releasing?: true}}
 
+  def handle_info({:participant_commit_indeterminate, store}, %{store_pid: store} = state) do
+    case state.active_delivery do
+      nil ->
+        SystemsClock.send_after(Proc.self(), :retry_drain, 1_000)
+        {:noreply, %{state | active_delivery: %{mode: :settle_mutation}}}
+
+      %{mode: mode} when mode in [:settle_claim, :settle_mutation] ->
+        {:noreply, state}
+
+      active ->
+        {:noreply, %{state | active_delivery: Map.put(active, :settle_after?, true)}}
+    end
+  end
+
   def handle_info(:retry_drain, %{releasing?: true} = state), do: {:noreply, state}
 
   def handle_info({:session_activity_updated, agent_id, session_id}, state) do
@@ -683,7 +728,8 @@ defmodule SalixIM.ConversationParticipantActor do
     {result, state} = prepare_delivery_completion(state, active_delivery, result)
     settle_delivery_result(active_delivery, result)
 
-    state = %{state | drain_pid: nil, active_delivery: nil}
+    continuation = if active_delivery[:settle_after?], do: %{mode: :settle_mutation}
+    state = %{state | drain_pid: nil, active_delivery: continuation}
     after_delivery(state)
   end
 
@@ -699,7 +745,8 @@ defmodule SalixIM.ConversationParticipantActor do
       result
     )
 
-    state = %{state | drain_pid: nil, active_delivery: nil}
+    continuation = if active_delivery[:settle_after?], do: %{mode: :settle_mutation}
+    state = %{state | drain_pid: nil, active_delivery: continuation}
     after_delivery(state)
   end
 
@@ -723,32 +770,13 @@ defmodule SalixIM.ConversationParticipantActor do
           finish_idle_drain(state)
 
         {:ok, active_delivery, state} ->
-          case prepare_active_delivery(state, active_delivery) do
-            {:ok, state, active_delivery} ->
-              owner = Proc.self()
+          start_active_delivery(state, active_delivery)
 
-              pid =
-                Proc.spawn_link(fn ->
-                  result =
-                    measured_delivery_io(active_delivery)
-                    |> append_provider_notice(active_delivery.record)
-
-                  Proc.send(owner, {:participant_delivery_complete, Proc.self(), result})
-                end)
-
-              %{
-                state
-                | drain_pid: pid,
-                  active_delivery: active_delivery,
-                  drain_requested?: false
-              }
-
-            {:skip, state} ->
-              start_next_delivery(state)
-
-            {:error, state} ->
-              retry_drain_later(state)
-          end
+        {:pending_claim, delivery_id, state} ->
+          retry_drain_later(%{
+            state
+            | active_delivery: %{mode: :settle_claim, delivery_id: delivery_id}
+          })
 
         {:blocked, delay_ms, state} ->
           retry_drain_later(state, delay_ms)
@@ -761,8 +789,43 @@ defmodule SalixIM.ConversationParticipantActor do
     end
   end
 
+  defp start_active_delivery(state, active_delivery) do
+    case prepare_active_delivery(state, active_delivery) do
+      {:ok, state, active_delivery} ->
+        owner = Proc.self()
+
+        pid =
+          Proc.spawn_link(fn ->
+            result =
+              measured_delivery_io(active_delivery)
+              |> append_provider_notice(active_delivery.record)
+
+            Proc.send(owner, {:participant_delivery_complete, Proc.self(), result})
+          end)
+
+        %{
+          state
+          | drain_pid: pid,
+            active_delivery: active_delivery,
+            drain_requested?: false
+        }
+
+      {:skip, state} ->
+        start_next_delivery(state)
+
+      {:error, state} ->
+        retry_drain_later(state)
+    end
+  end
+
   defp after_delivery(%{releasing?: true} = state), do: {:stop, :normal, state}
   defp after_delivery(state), do: {:noreply, continue_or_finish_drain(state)}
+
+  defp continue_or_finish_drain(%{active_delivery: %{mode: mode}} = state)
+       when mode in [:settle_claim, :settle_mutation] do
+    SystemsRuntime.Server.cast(Proc.self(), :drain)
+    state
+  end
 
   defp continue_or_finish_drain(state) do
     if state.drain_requested? do
@@ -779,7 +842,17 @@ defmodule SalixIM.ConversationParticipantActor do
 
   defp retry_drain_later(state, delay_ms) do
     SystemsClock.send_after(Proc.self(), :retry_drain, max(delay_ms, 10))
-    %{state | drain_pid: nil, active_delivery: nil}
+
+    active =
+      case state.active_delivery do
+        %{mode: mode} = continuation when mode in [:settle_claim, :settle_mutation] ->
+          continuation
+
+        _ ->
+          nil
+      end
+
+    %{state | drain_pid: nil, active_delivery: active}
   end
 
   defp next_delivery(state) do
@@ -830,6 +903,7 @@ defmodule SalixIM.ConversationParticipantActor do
               {:ok, delivery} -> {:ok, delivery, state}
               {:blocked, delay} -> {:blocked, delay, state}
               {:error, reason} -> {:error, reason, state}
+              {:pending_claim, id} -> {:pending_claim, id, state}
             end
           end
 
@@ -1029,6 +1103,9 @@ defmodule SalixIM.ConversationParticipantActor do
           {:skip, _reason} ->
             select_delivery(rest, now_ms, store_pid, participant)
 
+          {:pending_claim, id} ->
+            {:pending_claim, id}
+
           {:error, reason} ->
             {:error, reason}
         end
@@ -1170,17 +1247,8 @@ defmodule SalixIM.ConversationParticipantActor do
       {:error, :precondition_failed} ->
         {:skip, :claimed_by_other}
 
-      {:error, {:ambiguous, _reason}} ->
-        case ConversationParticipantStore.read_delivery(store_pid, delivery_id) do
-          {:ok, %{"status" => "delivering"} = current, current_revision} ->
-            {:ok, current, current_revision}
-
-          {:ok, _current, _current_revision} ->
-            {:skip, :claim_not_landed}
-
-          {:error, reason} ->
-            {:error, {:claim_ambiguous_unverified, reason}}
-        end
+      {:error, :commit_indeterminate} ->
+        {:pending_claim, delivery_id}
 
       {:error, reason} ->
         {:error, reason}

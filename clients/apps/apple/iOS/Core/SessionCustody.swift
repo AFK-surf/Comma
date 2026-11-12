@@ -113,7 +113,7 @@ struct StoredIdentity: Equatable, Sendable {
  * The app's part of the session, as Android's `SessionCustody.kt` and Electron's Main have it. The client core runs
  * the session lifecycle and is its authority; the app keeps what the core must never see:
  *
- * - the bearer, in one Keychain record. The core names credentials by opaque references and asks for the store to be
+ * - the bearer, and those of the other accounts kept signed in, in one Keychain record. The core names credentials by opaque references and asks for the store to be
  *   changed by reference (`vault`, `change`);
  * - a bearer in an auth answer (`keepBearer`): taken out and kept here, the core answered a reference instead;
  * - the gate (`gate`): it follows each snapshot the core publishes and gives the bearer for exactly the current lease
@@ -137,6 +137,8 @@ final class SessionCustody: @unchecked Sendable {
     private var loaded = false
     private var unreadable = false
     private var active: StoredBearer?
+    /// The other accounts signed in on this device, set aside (at most `maxKept`).
+    private var kept: [StoredBearer] = []
     private var pending: [PendingRevocation] = []
 
     private var issued: [String: Issued] = [:]
@@ -153,6 +155,8 @@ final class SessionCustody: @unchecked Sendable {
     private var epoch: Int64 = 0
 
     private static let maxRecordBytes = 1_048_576
+    /// The accounts kept signed in besides the one in use (the core's `MAX_KEPT_CREDENTIALS`).
+    private static let maxKept = 7
 
     init(record: any CredentialRecord, apiOrigin: String, authorityInstanceId: String = UUID().uuidString) throws {
         self.record = record
@@ -167,12 +171,17 @@ final class SessionCustody: @unchecked Sendable {
         loaded = true
         unreadable = false
         active = nil
+        kept = []
         pending = []
         do {
             guard let data = try record.read() else { return }
             guard data.count <= Self.maxRecordBytes,
                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw HostFailure(message: "unreadable") }
             active = (json["active"] as? [String: Any]).flatMap(Self.credential)
+            kept = try (json["kept"] as? [[String: Any]] ?? []).map { item in
+                guard let credential = Self.credential(item) else { throw HostFailure(message: "unreadable") }
+                return credential
+            }
             pending = try (json["pending"] as? [[String: Any]] ?? []).map { item in
                 guard let token = item["token"] as? String, let audience = item["audience"] as? String else {
                     throw HostFailure(message: "unreadable")
@@ -182,6 +191,7 @@ final class SessionCustody: @unchecked Sendable {
         } catch {
             unreadable = true
             active = nil
+            kept = []
             pending = []
         }
     }
@@ -194,13 +204,17 @@ final class SessionCustody: @unchecked Sendable {
         return StoredBearer(token: token, audience: audience, sessionId: sessionId, userId: userId, email: email, expiresAtEpochSeconds: expires)
     }
 
+    private static func record(_ it: StoredBearer) -> [String: Any] {
+        ["token": it.token, "audience": it.audience, "sessionId": it.sessionId, "userId": it.userId,
+         "email": it.email, "expiresAtEpochSeconds": it.expiresAtEpochSeconds]
+    }
+
     /// Writes the store; a failure leaves memory as the record is (read again), and throws.
-    private func save(_ nextActive: StoredBearer?, _ nextPending: [PendingRevocation]) throws {
+    private func save(_ nextActive: StoredBearer?, _ nextPending: [PendingRevocation], kept nextKept: [StoredBearer]? = nil) throws {
+        let nextKept = nextKept ?? kept
         var json: [String: Any] = [:]
-        if let it = nextActive {
-            json["active"] = ["token": it.token, "audience": it.audience, "sessionId": it.sessionId, "userId": it.userId,
-                              "email": it.email, "expiresAtEpochSeconds": it.expiresAtEpochSeconds]
-        }
+        if let it = nextActive { json["active"] = Self.record(it) }
+        if !nextKept.isEmpty { json["kept"] = nextKept.map(Self.record) }
         json["pending"] = nextPending.map { item -> [String: Any] in
             var out: [String: Any] = ["token": item.token, "audience": item.audience]
             if let session = item.sessionId { out["sessionId"] = session }
@@ -213,6 +227,7 @@ final class SessionCustody: @unchecked Sendable {
             throw error
         }
         active = nextActive
+        kept = nextKept
         pending = nextPending
         unreadable = false
     }
@@ -230,10 +245,12 @@ final class SessionCustody: @unchecked Sendable {
                                                           "recovery": "after_host_change", "retryable": false]]
         }
         var out: [String: Any] = ["status": "readable"]
-        out["active"] = active.map { it -> Any in
-            ["ref": refFor(it.token), "audience": it.audience, "sessionId": it.sessionId, "userId": it.userId,
+        let credential = { (it: StoredBearer) -> [String: Any] in
+            ["ref": self.refFor(it.token), "audience": it.audience, "sessionId": it.sessionId, "userId": it.userId,
              "email": it.email, "expiresAtEpochSeconds": it.expiresAtEpochSeconds]
-        } ?? NSNull()
+        }
+        out["active"] = active.map { credential($0) as Any } ?? NSNull()
+        if !kept.isEmpty { out["kept"] = kept.map(credential) }
         out["pending"] = pending.map { item -> [String: Any] in
             var entry: [String: Any] = ["ref": refFor(item.token), "audience": item.audience]
             if let session = item.sessionId { entry["sessionId"] = session }
@@ -295,7 +312,13 @@ final class SessionCustody: @unchecked Sendable {
                     guard let token = issued[other]?.token, token != credential.token else { continue }
                     retired.append(PendingRevocation(token: token, audience: audience, sessionId: issued[other]?.sessionId))
                 }
-                try save(credential, distinct(pending.filter { $0.token != credential.token } + retired))
+                // The same account kept signed in before: its older credential is revoked.
+                let same = { (it: StoredBearer) in it.audience == credential.audience && it.userId == credential.userId }
+                for old in kept where same(old) {
+                    retired.append(PendingRevocation(token: old.token, audience: old.audience, sessionId: old.sessionId))
+                }
+                try save(credential, distinct(pending.filter { $0.token != credential.token } + retired),
+                         kept: kept.filter { !same($0) })
                 issued[ref] = nil
                 committed.insert(ref)
                 for other in supersede { issued[other] = nil }
@@ -318,6 +341,21 @@ final class SessionCustody: @unchecked Sendable {
                     try save(nil, distinct(pending + [PendingRevocation(token: current.token, audience: current.audience, sessionId: current.sessionId)]))
                 }
                 return view()
+            case "keep":
+                guard let current = active, kept.count < Self.maxKept else { return nil }
+                try save(nil, pending, kept: kept.filter { $0.userId != current.userId || $0.audience != current.audience } + [current])
+                return view()
+            case "activate":
+                guard let ref = change["kept"] as? String, let token = tokenFor(ref),
+                      let next = kept.first(where: { $0.token == token }) else { return nil }
+                try save(next, pending, kept: kept.filter { $0.token != token } + (active.map { [$0] } ?? []))
+                return view()
+            case "forget":
+                guard let ref = change["kept"] as? String, let token = tokenFor(ref),
+                      let gone = kept.first(where: { $0.token == token }) else { return nil }
+                try save(active, distinct(pending + [PendingRevocation(token: gone.token, audience: gone.audience, sessionId: gone.sessionId)]),
+                         kept: kept.filter { $0.token != token })
+                return view()
             case "quarantine":
                 guard let ref = change["issued"] as? String else { return false }
                 return quarantine(ref)
@@ -330,7 +368,8 @@ final class SessionCustody: @unchecked Sendable {
                 return view()
             case "retainAudience":
                 open = nil
-                try save(active.flatMap { $0.audience == audience ? $0 : nil }, pending.filter { $0.audience == audience })
+                try save(active.flatMap { $0.audience == audience ? $0 : nil }, pending.filter { $0.audience == audience },
+                         kept: kept.filter { $0.audience == audience })
                 return view()
             default:
                 return nil
@@ -405,7 +444,7 @@ final class SessionCustody: @unchecked Sendable {
             guard let token, !token.isEmpty else { return (try? JSONSerialization.data(withJSONObject: value)) ?? body }
             load()
             // A bearer the store already keeps (a probe that reflected it) is named, not taken into custody again.
-            if active?.token == token || queued(token) {
+            if active?.token == token || kept.contains(where: { $0.token == token }) || queued(token) {
                 value["credential"] = refFor(token)
                 return (try? JSONSerialization.data(withJSONObject: value)) ?? body
             }

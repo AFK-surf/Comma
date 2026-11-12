@@ -17,9 +17,11 @@ defmodule SalixMeet.CalendarProjection do
     :tenant_id,
     :group_id,
     :calendar_id,
+    :key,
     :lease_epoch,
     :updated_at,
     :cursor,
+    :page_after,
     :etag,
     :new?,
     fresh: [],
@@ -37,8 +39,9 @@ defmodule SalixMeet.CalendarProjection do
     now = Keyword.get(opts, :now, now_ms())
     max_events = positive(Keyword.get(opts, :max_events), @default_max_events)
 
-    with true <- tenant_id != "" and group_id != "" do
-      case S3.get(key(group_id)) do
+    with true <- tenant_id != "" and group_id != "",
+         {:ok, key} <- projection_key(group) do
+      case S3.get(key) do
         {:ok, %{body: body, etag: etag}} ->
           decode(
             body,
@@ -63,8 +66,13 @@ defmodule SalixMeet.CalendarProjection do
         {:error, reason} ->
           {:error, {:calendar_projection_read, reason}}
       end
+      |> case do
+        {:ok, %__MODULE__{} = snapshot} -> {:ok, %{snapshot | key: key}}
+        other -> other
+      end
     else
       false -> {:error, :invalid_calendar_projection_scope}
+      {:error, _} = error -> error
     end
   end
 
@@ -82,11 +90,16 @@ defmodule SalixMeet.CalendarProjection do
       |> Enum.uniq_by(& &1["meeting_id"])
       |> Enum.take(max_events)
 
-    fresh_ids = MapSet.new(fresh, & &1["meeting_id"])
+    # Meetings the caller saw but did not keep (a full page) are not gone.
+    present_ids =
+      MapSet.union(
+        MapSet.new(fresh, & &1["meeting_id"]),
+        Keyword.get(opts, :present_ids, MapSet.new())
+      )
 
     {recovery, partial_errors} =
       (snapshot.fresh ++ snapshot.recovery)
-      |> Enum.reject(&MapSet.member?(fresh_ids, snapshot_meeting_id(snapshot, &1["event"])))
+      |> Enum.reject(&MapSet.member?(present_ids, snapshot_meeting_id(snapshot, &1["event"])))
       |> Enum.reduce({[], []}, fn prior, {retained, errors} ->
         mid = prior["meeting_id"]
 
@@ -165,7 +178,7 @@ defmodule SalixMeet.CalendarProjection do
         do: [if_none_match: "*"],
         else: [if_match: snapshot.etag]
 
-    case S3.put(key(snapshot.group_id), body, opts) do
+    case S3.put(snapshot_key(snapshot), body, opts) do
       {:ok, %{etag: etag}} ->
         {:ok, %{snapshot | etag: etag, new?: false}}
 
@@ -190,6 +203,7 @@ defmodule SalixMeet.CalendarProjection do
       "lease_epoch" => snapshot.lease_epoch,
       "updated_at" => snapshot.updated_at,
       "cursor" => snapshot.cursor,
+      "page_after" => snapshot.page_after,
       "fresh" => snapshot.fresh,
       "recovery" => snapshot.recovery
     }
@@ -211,6 +225,29 @@ defmodule SalixMeet.CalendarProjection do
   end
 
   @spec meeting_id(map(), map()) :: String.t()
+  # Members' own calendars hold separate copies of one meeting, so their
+  # meetings are identified by the Meet room and its start: one bot per room
+  # and start, whichever member's calendar shows it.
+  def meeting_id(group, %{
+        "meeting_identity" => "meet",
+        "meet_url" => meet_url,
+        "start_ms" => start_ms
+      })
+      when is_binary(meet_url) and meet_url != "" and is_integer(start_ms) do
+    payload = [
+      "comma-calendar-meet-v1",
+      trim(group["tenant_id"]),
+      trim(group["group_id"]),
+      meet_url |> trim() |> String.downcase() |> String.trim_trailing("/"),
+      start_ms
+    ]
+
+    digest =
+      payload |> :erlang.term_to_binary([:deterministic]) |> then(&:crypto.hash(:sha256, &1))
+
+    "mtg-cal-" <> Base.encode16(digest, case: :lower)
+  end
+
   def meeting_id(group, event) do
     payload = [
       "comma-calendar-occurrence-v1",
@@ -230,6 +267,25 @@ defmodule SalixMeet.CalendarProjection do
 
   @spec key(String.t()) :: String.t()
   def key(group_id), do: Keys.ctl_meet_calendar_projection(group_id)
+
+  @doc """
+  The projection key of a scan unit: the Group's own, or one member calendar's
+  when the Group enrolls every member's own calendars.
+  """
+  @spec projection_key(map()) :: {:ok, String.t()} | {:error, term()}
+  def projection_key(%{"calendar_scope" => "members"} = group) do
+    group_id = trim(group["group_id"])
+    calendar_id = trim(group["calendar_id"])
+
+    if Ids.valid_group_id?(group_id) and Ids.valid_calendar_id?(calendar_id),
+      do: {:ok, Keys.ctl_meet_calendar_member_projection(group_id, calendar_id)},
+      else: {:error, :invalid_calendar_projection_scope}
+  end
+
+  def projection_key(group), do: {:ok, key(trim(group["group_id"]))}
+
+  defp snapshot_key(%__MODULE__{key: key}) when is_binary(key), do: key
+  defp snapshot_key(%__MODULE__{group_id: group_id}), do: key(group_id)
 
   defp new_projection(
          tenant_id,
@@ -300,6 +356,7 @@ defmodule SalixMeet.CalendarProjection do
          lease_epoch: lease_epoch,
          updated_at: decoded["updated_at"],
          cursor: cursor,
+         page_after: page_after(decoded["page_after"]),
          etag: etag,
          new?: false,
          fresh: fresh |> Enum.filter(&valid_entry?/1) |> Enum.take(max_events),
@@ -336,6 +393,10 @@ defmodule SalixMeet.CalendarProjection do
 
   defp decode_version(_decoded, _tenant, _group, _calendar, _lease, _etag, _max),
     do: {:error, :invalid_calendar_projection}
+
+  defp page_after(item_id) when is_binary(item_id) and item_id != "", do: item_id
+
+  defp page_after(_key), do: nil
 
   defp decode_status(body, group_id, limit) do
     with {:ok, %{"group_id" => ^group_id, "version" => @version} = decoded} <-
@@ -455,7 +516,7 @@ defmodule SalixMeet.CalendarProjection do
   end
 
   defp verify_checkpoint(snapshot) do
-    case S3.get(key(snapshot.group_id)) do
+    case S3.get(snapshot_key(snapshot)) do
       {:ok, %{body: body, etag: etag}} ->
         if Jason.decode!(body) == to_map(snapshot),
           do: {:ok, %{snapshot | etag: etag, new?: false}},

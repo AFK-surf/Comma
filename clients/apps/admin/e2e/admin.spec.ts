@@ -557,34 +557,6 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   await expect(userPage.getByRole("heading", { name: "Agent models" })).toBeVisible();
   await expect(userPage).toContainText("gpt-5.6-luna");
   await expect(userPage).toContainText("gpt-5.6-sol");
-  const vmSection = userPage.getByRole("region", { name: "Cloud VM", exact: true });
-  const vmSwitch = vmSection.getByRole("switch", { name: "Cloud VM" });
-  await expect(vmSwitch).toBeChecked();
-  // Cancelling the review leaves the saved setting.
-  await vmSwitch.press("Space");
-  await page
-    .getByRole("dialog", { name: "Disable Cloud VM?" })
-    .getByRole("button", { name: "Cancel" })
-    .click();
-  await expect(vmSwitch).toBeChecked();
-  for (const setting of ["disabled", "enabled"]) {
-    await vmSwitch.press("Space");
-    await confirmCommand(
-      page,
-      setting === "enabled" ? "Enable Cloud VM?" : "Disable Cloud VM?",
-      `Set shared VM ${setting}`
-    );
-    await expect(vmSection).toContainText("Cloud VM setting saved.");
-    await expect(vmSection).toContainText("Pending");
-    if (setting === "enabled") await expect(vmSwitch).toBeChecked();
-    else await expect(vmSwitch).not.toBeChecked();
-  }
-  expect(
-    writes
-      .filter((write) => write.path.endsWith("/workspaces/wsp_person_e2e/vm"))
-      .map((write) => write.body.enabled)
-  ).toEqual([false, true]);
-
   await userPage.getByRole("button", { name: "Change Worker model" }).click();
   drawer = page.getByRole("dialog", { name: "Change Worker model" });
   const workerPicker = drawer.getByRole("combobox", { name: "Worker model" });
@@ -1565,7 +1537,6 @@ async function installSignedInAdmin(
   const readyWorkspaces = new Set<string>(options.workerlessReadyWorkspaces);
   const workerless = new Set<string>(options.workerlessReadyWorkspaces);
   const workspaceBillingReads = new Map<string, number>();
-  let workspaceVmEnabled = true;
   const workspacePlatformModel = {
     name: "GPT-5.6 Luna",
     model: "gpt-5.6-luna",
@@ -2181,11 +2152,6 @@ async function installSignedInAdmin(
             tenant_id: "tnt_person_e2e",
             group_id: "grp_person_e2e",
             billing_account_id: "billing_person_e2e",
-            cloud_vm: {
-              workspace_id: "wsp_person_e2e",
-              enabled: workspaceVmEnabled,
-              convergence_status: "succeeded",
-            },
             created_at: 1_784_881_000,
             updated_at: 1_784_881_500,
           },
@@ -2284,21 +2250,6 @@ async function installSignedInAdmin(
           },
         },
         200,
-        headers
-      );
-      return;
-    }
-
-    if (method === "PUT" && url.pathname.endsWith("/workspaces/wsp_person_e2e/vm")) {
-      workspaceVmEnabled = (request.postDataJSON() as { enabled: boolean }).enabled;
-      await fulfillJson(
-        route,
-        {
-          workspace_id: "wsp_person_e2e",
-          enabled: workspaceVmEnabled,
-          convergence_status: "pending",
-        },
-        202,
         headers
       );
       return;
@@ -2597,8 +2548,10 @@ function agentVmmNode(withEnvironments: boolean) {
       desired_enabled: true,
       revision: 7,
       policy_revision: 2,
+      request_status: "ready",
+      error_code: null,
+      retryable: false,
     },
-    installation: null,
     connection: {
       status: "stale",
       last_observed_at: "2026-09-01T09:58:00Z",

@@ -3,9 +3,9 @@
 // them, and `restore-archive` (a Workload's archive onto its disk, before its station starts). Each prints what it got
 // and returns the exit code.
 import { resolve } from "node:path";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer } from "effect";
 import { runtimeDir } from "../ops/files.ts";
-import { COMMA_CLIENT_CONTROL_URL_ENV, liveClientControl, runCommaClientCli } from "./comma-client-cli.ts";
+import { COMMA_CLIENT_CONTROL_URL_ENV, liveClientControl, liveStationMcp, runCommaClientCli } from "./comma-client-cli.ts";
 import { applyConfigFile, normalizeConfig, parseArgs } from "./config.ts";
 import { makeComputerUse } from "./computer-use.ts";
 import { archiveName, archiveStateDir, restoreBeforeStart, signedStorageUrl } from "./durable-archive.ts";
@@ -14,10 +14,19 @@ const env = () => process.env as Record<string, string | undefined>;
 
 export async function commaClientCommand(args: string[]): Promise<number> {
   const endpoint = (env()[COMMA_CLIENT_CONTROL_URL_ENV] ?? "").trim().replace(/\/+$/, "");
+  let exitCode = 0;
   const ran = await Effect.runPromiseExit(
-    runCommaClientCli(args, { env: env(), stdout: (text) => process.stdout.write(text) }).pipe(Effect.provide(liveClientControl(endpoint))),
+    runCommaClientCli(args, {
+      env: env(),
+      cwd: process.cwd(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+      exit: (code) => {
+        exitCode = code;
+      },
+    }).pipe(Effect.provide(Layer.merge(liveClientControl(endpoint), liveStationMcp()))),
   );
-  if (Exit.isSuccess(ran)) return 0;
+  if (Exit.isSuccess(ran)) return exitCode;
   process.stderr.write(`comma: ${errorText(ran)}\n`);
   return 1;
 }

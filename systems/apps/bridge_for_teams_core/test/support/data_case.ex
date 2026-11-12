@@ -61,6 +61,13 @@ defmodule BridgeForTeams.DataCase do
     end)
   end
 
+  @doc "Create a Session fixture under its current PostgreSQL Agent epoch."
+  def create_session_fixture!(agent_id, session_id) do
+    {:ok, head} = SalixStore.AgentPGStore.peek(agent_id)
+    {:ok, _} = SalixAgent.InternalSessionStore.PG.create(agent_id, session_id, head.epoch)
+    :ok
+  end
+
   @doc "Persist an archived agent fixture without exercising current archive policy."
   def archive_agent_fixture!(%{configuration_authority: "salix"} = agent) do
     project = BridgeForTeams.Repo.get!(BridgeForTeams.Schema.Project, agent.project_id)

@@ -21,7 +21,7 @@ theorem candidate_current_facts {framing : CodecFraming} {objects : Objects} {ow
     (cas : HotCAS before request result after) :
     key = StorageAddress.key owner session ∧ ∃ etag snapshot bytes,
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
-      request = .tuple [a "cas", key, .binary bytes, cursor.etag] ∧ after.current key etag snapshot ∧
+      request = .tuple [a "cas", key, .binary bytes, cursor.revision] ∧ after.current key etag snapshot ∧
       PhysicalHistory framing objects owner session snapshot sealed ∧
       (∀ item, ValueSemantics.Represented cursor.working sealed item →
         ValueSemantics.Represented snapshot sealed item) ∧
@@ -33,7 +33,7 @@ theorem candidate_current_facts {framing : CodecFraming} {objects : Objects} {ow
   obtain ⟨_, preparedCall⟩ := StorageCommit.start_capture started
   have addressed := StorageAddress.agreed_key stampedHistory.invariant.owned stampedHistory.invariant.identified
     (StorageCommit.prepared_address preparedCall)
-  have applied : HotCAS before (.tuple [a "cas", key, .binary bytes, cursor.etag]) result after := by
+  have applied : HotCAS before (.tuple [a "cas", key, .binary bytes, cursor.revision]) result after := by
     rwa [requestEq] at cas
   obtain ⟨etag, stored⟩ := applied.current_candidate encoding
   refine ⟨addressed, etag, snapshot, bytes, encoding, requestEq, stored, snapshotHistory, kept, ?_⟩

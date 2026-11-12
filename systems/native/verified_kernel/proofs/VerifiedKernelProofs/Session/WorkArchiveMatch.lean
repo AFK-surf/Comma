@@ -1,7 +1,7 @@
+import VerifiedKernelProofs.Session.WorkValueSemantics
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkValueSemantics
 import VerifiedKernel.Session.ArchiveMatch
 import VerifiedKernel.Dispatch
 import VerifiedKernelProofs.Loop.QueryAnswers

@@ -3,7 +3,7 @@ name = "comma-mesh-wasm"
 edition = "2024"
 version = "0.1.0"
 publish = false
-description = "The client core's iroh in the browser (clients/packages/core/src/hosts/web-mesh.ts): a client's endpoint on the relays alone (a browser has no UDP), its connections and streams, and Salix as the relay of last resort, exported with wasm-bindgen as the station's addon exports them to Node. Built once per change of it, shipped prebuilt (systems/station/scripts/native.ts, part client-mesh, target wasm32)."
+description = "The client core's iroh in the browser (clients/packages/core/src/hosts/web-mesh.ts): a client's endpoint on the relays alone (a browser has no UDP), its connections and streams, and Salix as a relay, exported with wasm-bindgen as the station's addon exports them to Node. Built once per change of it, shipped prebuilt (systems/station/scripts/native.ts, part client-mesh, target wasm32)."
 
 [lib]
 crate-type = ["cdylib"]

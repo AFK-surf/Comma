@@ -31,7 +31,7 @@ def defaults : List (String × Term) :=
    ("source_session_id", nil), ("source_schedule_id", nil), ("system_prompt", nil),
    ("context_provider_states", empty), ("miniskills", empty), ("live_context_bytes", nil), ("storage_format", i 1),
    ("last_seq", i 0), ("compacted_seq", i 0), ("archived_through", i 0), ("archive_chunks", list []),
-   ("segment_catalog", list []), ("flush_id", nil), ("async_results", list []),
+   ("segment_catalog", list []), ("archive_refs", nil), ("flush_id", nil), ("async_results", list []),
    ("async_result_refs", empty), ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
    ("runaway_unsettled_streak", nil), ("repeated_tool_result_streak", nil), ("input_round_streak", nil),
    ("active_source_message_ids", list []), ("last_compaction_recovery", nil),
@@ -285,6 +285,12 @@ def migrationStates (state : Term) : KernelM Term := do
     return .map [(b "migration_notice", .map [(b "version", i 0)])]
   return empty
 
+/-- The latest retained assistant boundary owns the provider state. Without a
+live boundary, use the existing migration seed. -/
+def retainedProviderStates (state migration : Term) : KernelM Term := do
+  let boundaries ← boundaryProviderStates state
+  return match boundaries with | .map (_ :: _) => boundaries | _ => migration
+
 /-! ### `normalize` -/
 
 /-- Missing `defstruct` fields take their defaults, as `struct/2` fills them:
@@ -301,7 +307,9 @@ def normalize (state : Term) : KernelM Term := do
   let scope ← activationKey state
   let streak ← runawayStreak state
   let normalized ← write state
-    [("status", ← parseStatus (← field state "status")),
+    [("created_at", metadataSeconds (← field state "created_at")),
+     ("last_activity_at", metadataSeconds (← field state "last_activity_at")),
+     ("status", ← parseStatus (← field state "status")),
      ("activity_status", storedActivity (← field state "activity_status")),
      ("last_ack_message_id", (← field state "last_ack_message_id").default (i 0)),
      ("queue_ack_id", ack),
@@ -343,8 +351,7 @@ def normalize (state : Term) : KernelM Term := do
      ("compact_results", (← field state "compact_results").default empty),
      ("fork_request_id", ← field state "fork_request_id")]
   let normalized ← write normalized [("activity_status", ← activity normalized)]
-  let boundaries ← boundaryProviderStates normalized
-  let providers := match boundaries with | .map (_ :: _) => boundaries | _ => migration
+  let providers ← retainedProviderStates normalized migration
   let normalized ← write normalized [("context_provider_states", providers)]
   write normalized [("input_dedupe", ← preserveDedupe normalized)]
 
@@ -380,9 +387,15 @@ def prepareWrite (state : Term) : KernelM Term := do
     return .tuple [a "ok", ← write state [("storage_format", i 3)]]
   else return .tuple [a "error", a "unsupported_storage_format"]
 
+/-- PG restores the logical hot window selected by its committed archive
+directory. Apply the same reference/context projection as archiveAdvance. -/
+def restorePg (state : Term) : KernelM Term := do
+  recomputeContext (← pruneResultRefs (← normalize state))
+
 /-- Lifecycle operations by name. `args` is unused unless stated. -/
 def table : OpTable :=
   [("normalize", fun state _ => normalize state),
+   ("restore_pg", fun state _ => restorePg state),
    ("new", create),
    ("prepare_write", fun state _ => prepareWrite state)]
 

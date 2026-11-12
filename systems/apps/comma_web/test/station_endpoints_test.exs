@@ -23,10 +23,10 @@ defmodule CommaWeb.StationEndpointsTest do
         __MODULE__,
         %{test: SystemsRuntime.Proc.self(), as: Keyword.get(opts, :as)},
         extra_headers: [
-          {"x-stillfail-station", station.id},
-          {"x-stillfail-ts", "#{ts}"},
-          {"x-stillfail-signature", CommaWeb.StationEndpointsTest.sign(station, message)},
-          {"x-stillfail-version", "0.1.9"}
+          {"x-comma-station-station", station.id},
+          {"x-comma-station-ts", "#{ts}"},
+          {"x-comma-station-signature", CommaWeb.StationEndpointsTest.sign(station, message)},
+          {"x-comma-station-version", "0.1.9"}
         ]
       )
     end
@@ -38,6 +38,9 @@ defmodule CommaWeb.StationEndpointsTest do
     end
 
     def handle_frame({:text, text}, %{as: nil} = state) do
+      if String.contains?(text, ~s("type":"tool")),
+        do: SystemsRuntime.Proc.send(state.test, {:tool_text, text})
+
       SystemsRuntime.Proc.send(state.test, {:frame, Jason.decode!(text)})
       {:ok, state}
     end
@@ -61,7 +64,8 @@ defmodule CommaWeb.StationEndpointsTest do
   defmodule RelayClient do
     use WebSockex
 
-    def start(url), do: WebSockex.start(url, __MODULE__, %{})
+    def start(url, headers \\ []),
+      do: WebSockex.start(url, __MODULE__, %{}, extra_headers: headers)
 
     @impl true
     def handle_cast(:close, state), do: {:close, state}
@@ -132,6 +136,15 @@ defmodule CommaWeb.StationEndpointsTest do
 
     assert {:error, %WebSockex.RequestError{code: 401}} =
              RelayClient.start(local <> URI.encode_www_form(first))
+
+    # A page of the web app opens it too: a browser's WebSocket says its origin and carries no session header.
+    %{status: 200, body: %{"ticket" => from_page}} = ticket.(ctx.session)
+    origin = SystemsRuntime.get_env(:comma_web, :web_cookie_origin)
+
+    {:ok, opened} =
+      RelayClient.start(local <> URI.encode_www_form(from_page), [{"origin", origin}])
+
+    WebSockex.cast(opened, :close)
 
     # The socket, as its process: the device proves its endpoint key, as a station's Connector does.
     %{status: 200, body: %{"ticket" => second}} = ticket.(ctx.session)
@@ -210,11 +223,11 @@ defmodule CommaWeb.StationEndpointsTest do
     assert script =~ ~s(origin="#{@origin}")
     assert script =~ ~s(token="${1:-}")
     assert script =~ ~s(station enroll "$origin" "$token" --provider comma)
-    assert script =~ ~s(releases="https://app.still.fail/releases")
+    assert script =~ ~s(releases="https://cue-release.afk.surf/station-release")
     assert script =~ ~s(release_commit="#{String.duplicate("ab", 20)}")
 
     assert script =~
-             ~s(artifact="https://app.still.fail/releases/stillfail-station-darwin-arm64.tar.gz")
+             ~s(artifact="https://cue-release.afk.surf/station-release/comma-station-darwin-arm64.tar.gz")
 
     assert %{status: 200, body: %{"version" => "0.1.42", "build" => 42}} =
              Req.get!(ctx.base <> "/stations/releases/station.json", retry: false)
@@ -222,7 +235,7 @@ defmodule CommaWeb.StationEndpointsTest do
     assert %{status: 404} =
              Req.get!(ctx.base <> "/stations/releases/station-beta.json", retry: false)
 
-    # Without an inline manifest it follows the manifest URL (still.fail's stable
+    # Without an inline manifest it follows the manifest URL (the latest Comma
     # one by default); an unreachable source answers 503.
     SystemsRuntime.put_env(
       :comma_core,
@@ -251,6 +264,10 @@ defmodule CommaWeb.StationEndpointsTest do
 
     assert_receive {:frame, %{"type" => "tool", "id" => "r1", "request" => %{"op" => "exec"}}},
                    5_000
+
+    # Stations up to still.fail 0.1.8076 take a tool frame only when its text starts with its type (sent before the
+    # decoded frame, so already here).
+    assert_received {:tool_text, ~s({"type":"tool",) <> _}
 
     WebSockex.cast(
       socket,
@@ -301,7 +318,7 @@ defmodule CommaWeb.StationEndpointsTest do
              CommaWeb.StationTools.call(keypair().id, request.("r4"))
   end
 
-  # Runs only in a temporary HOME/STILLFAIL_DATA with a fake curl first on PATH: never on the host's station.
+  # Runs only in a temporary HOME/COMMA_STATION_DATA with a fake curl first on PATH: never on the host's station.
   test "install script leaves a station enrolled elsewhere untouched unless asked to move it",
        ctx do
     %{status: 200, body: script} = Req.get!(ctx.base <> "/stations/install.sh", retry: false)
@@ -313,7 +330,7 @@ defmodule CommaWeb.StationEndpointsTest do
       )
 
     on_exit(fn -> File.rm_rf!(root) end)
-    data = Path.join(root, ".stillfail")
+    data = Path.join(root, ".comma-station")
     bin = Path.join(root, "bin")
     File.mkdir_p!(Path.join(data, "mesh"))
     File.mkdir_p!(bin)
@@ -329,7 +346,7 @@ defmodule CommaWeb.StationEndpointsTest do
         System.cmd("sh", [Path.join(root, "install.sh") | args],
           env: [
             {"HOME", root},
-            {"STILLFAIL_DATA", data},
+            {"COMMA_STATION_DATA", data},
             {"PATH", bin <> ":/usr/bin:/bin"}
           ],
           stderr_to_stdout: true
@@ -357,7 +374,152 @@ defmodule CommaWeb.StationEndpointsTest do
     assert status != 0
   end
 
-  # Temporary HOME/STILLFAIL_DATA and a fake curl that serves a prepared bundle: never the host's station.
+  # Temporary HOME and fake curl, launchctl and systemctl: never the host's station or service manager.
+  test "an update moves a Comma station out of ~/.stillfail, and leaves a still.fail station there",
+       ctx do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "station-move-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf!(root) end)
+    bin = Path.join(root, "bin")
+    File.mkdir_p!(bin)
+    File.mkdir_p!(Path.join(root, "bundle/comma-station/bin"))
+    commit = String.duplicate("cd", 20)
+    File.write!(Path.join(root, "bundle/comma-station/VERSION"), commit <> "\n")
+    stub = Path.join(root, "bundle/comma-station/bin/comma-station")
+    File.write!(stub, "#!/bin/sh\nexit 0\n")
+    File.chmod!(stub, 0o755)
+    bundle = Path.join(root, "bundle.tar.gz")
+    {_, 0} = System.cmd("tar", ["-czf", bundle, "-C", Path.join(root, "bundle"), "comma-station"])
+    calls = Path.join(root, "calls")
+
+    File.write!(Path.join(bin, "curl"), """
+    #!/bin/sh
+    out=""
+    while [ $# -gt 0 ]; do
+      case "$1" in -o) out="$2"; shift ;; esac
+      shift
+    done
+    cp #{bundle} "$out"
+    """)
+
+    for tool <- ~w(launchctl systemctl loginctl) do
+      File.write!(Path.join(bin, tool), "#!/bin/sh\necho #{tool} \"$@\" >> #{calls}\n")
+    end
+
+    for tool <- ~w(curl launchctl systemctl loginctl),
+        do: File.chmod!(Path.join(bin, tool), 0o755)
+
+    sha = :crypto.hash(:sha256, File.read!(bundle)) |> Base.encode16(case: :lower)
+
+    artifacts =
+      for platform <- ~w(darwin-arm64 linux-x64 linux-arm64), into: %{} do
+        {platform, %{"url" => "https://mirror.comma.test/#{platform}.tar.gz", "sha256" => sha}}
+      end
+
+    SystemsRuntime.put_env(
+      :comma_core,
+      :stations,
+      Keyword.put(SystemsRuntime.get_env(:comma_core, :stations), :release_manifest, %{
+        "version" => "0.1.5",
+        "commit" => commit,
+        "artifacts" => artifacts
+      })
+    )
+
+    %{status: 200, body: script} = Req.get!(ctx.base <> "/stations/install.sh", retry: false)
+    [_, origin] = Regex.run(~r/^origin="([^"]*)"/m, script)
+    File.write!(Path.join(root, "install.sh"), script)
+
+    run = fn home ->
+      System.cmd("sh", [Path.join(root, "install.sh")],
+        env: [
+          {"HOME", home},
+          {"COMMA_STATION_DATA", nil},
+          {"STILLFAIL_DATA", nil},
+          {"PATH", bin <> ":/usr/bin:/bin"}
+        ],
+        stderr_to_stdout: true
+      )
+    end
+
+    home = Path.join(root, "comma")
+    File.mkdir_p!(Path.join(home, ".stillfail/mesh"))
+    File.mkdir_p!(Path.join(home, "Library/LaunchAgents"))
+    File.write!(Path.join(home, "Library/LaunchAgents/fail.still.station.plist"), "old")
+
+    File.write!(
+      Path.join(home, ".stillfail/mesh/cloud.json"),
+      ~s({"provider":"comma","origin":"#{origin}","station":"ab","workspace":"w"})
+    )
+
+    File.write!(Path.join(home, ".stillfail/stillfail.db"), "kept")
+    {output, status} = run.(home)
+    assert status == 0, output
+    assert File.read!(Path.join(home, ".comma-station/stillfail.db")) == "kept"
+    assert File.exists?(Path.join(home, ".comma-station/app/bin/comma-station"))
+    assert File.read_link!(Path.join(home, ".stillfail")) == Path.join(home, ".comma-station")
+
+    if :os.type() == {:unix, :darwin} do
+      assert File.read!(calls) =~
+               "bootout gui/#{System.cmd("id", ["-u"]) |> elem(0) |> String.trim()}/fail.still.station"
+
+      refute File.exists?(Path.join(home, "Library/LaunchAgents/fail.still.station.plist"))
+      plist = File.read!(Path.join(home, "Library/LaunchAgents/surf.comma.station.plist"))
+      assert plist =~ Path.join(home, ".comma-station/app/bin/comma-station")
+    end
+
+    # Updated again, it stays where it is now.
+    assert {output, 0} = run.(home)
+    refute output =~ "still.fail"
+    assert File.read_link!(Path.join(home, ".stillfail")) == Path.join(home, ".comma-station")
+
+    # A still.fail station is another product's: no token, nothing of it moves.
+    other = Path.join(root, "stillfail")
+    File.mkdir_p!(Path.join(other, ".stillfail/mesh"))
+
+    File.write!(
+      Path.join(other, ".stillfail/mesh/cloud.json"),
+      ~s({"origin":"https://app.still.fail"})
+    )
+
+    assert {_, 2} = run.(other)
+    assert File.dir?(Path.join(other, ".stillfail"))
+    refute File.exists?(Path.join(other, ".comma-station"))
+
+    # With a token, even run by one of its agents (STILLFAIL_DATA set), the Comma station installs beside it on the
+    # same account: nothing of still.fail's changes.
+    File.mkdir_p!(Path.join(other, "Library/LaunchAgents"))
+    File.write!(Path.join(other, "Library/LaunchAgents/fail.still.station.plist"), "still.fail's")
+    File.write!(Path.join(other, ".stillfail/stillfail.db"), "still.fail's")
+    File.rm(calls)
+
+    {output, status} =
+      System.cmd("sh", [Path.join(root, "install.sh"), "ws.usr.tok.secret"],
+        env: [
+          {"HOME", other},
+          {"COMMA_STATION_DATA", nil},
+          {"STILLFAIL_DATA", Path.join(other, ".stillfail")},
+          {"PATH", bin <> ":/usr/bin:/bin"}
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    assert File.exists?(Path.join(other, ".comma-station/app/bin/comma-station"))
+    assert File.read!(Path.join(other, ".stillfail/stillfail.db")) == "still.fail's"
+    refute File.exists?(Path.join(other, ".stillfail/app"))
+
+    assert File.read!(Path.join(other, "Library/LaunchAgents/fail.still.station.plist")) ==
+             "still.fail's"
+
+    refute File.read!(calls) =~ "fail.still.station"
+  end
+
+  # Temporary HOME/COMMA_STATION_DATA and a fake curl that serves a prepared bundle: never the host's station.
   test "install script installs only the release the manifest pins", ctx do
     root =
       Path.join(
@@ -367,11 +529,16 @@ defmodule CommaWeb.StationEndpointsTest do
 
     on_exit(fn -> File.rm_rf!(root) end)
     bin = Path.join(root, "bin")
-    File.mkdir_p!(Path.join(root, "bundle/stillfail"))
+    File.mkdir_p!(Path.join(root, "bundle/comma-station"))
     File.mkdir_p!(bin)
-    File.write!(Path.join(root, "bundle/stillfail/VERSION"), String.duplicate("cd", 20) <> "\n")
+
+    File.write!(
+      Path.join(root, "bundle/comma-station/VERSION"),
+      String.duplicate("cd", 20) <> "\n"
+    )
+
     bundle = Path.join(root, "bundle.tar.gz")
-    {_, 0} = System.cmd("tar", ["-czf", bundle, "-C", Path.join(root, "bundle"), "stillfail"])
+    {_, 0} = System.cmd("tar", ["-czf", bundle, "-C", Path.join(root, "bundle"), "comma-station"])
     urls = Path.join(root, "urls")
 
     File.write!(Path.join(bin, "curl"), """
@@ -401,7 +568,7 @@ defmodule CommaWeb.StationEndpointsTest do
 
       {output, status} =
         System.cmd("sh", [Path.join(root, "install.sh"), "ws.usr.tok.secret"],
-          env: [{"HOME", root}, {"STILLFAIL_DATA", data}, {"PATH", bin <> ":/usr/bin:/bin"}],
+          env: [{"HOME", root}, {"COMMA_STATION_DATA", data}, {"PATH", bin <> ":/usr/bin:/bin"}],
           stderr_to_stdout: true
         )
 
@@ -427,7 +594,7 @@ defmodule CommaWeb.StationEndpointsTest do
       run.(%{"version" => "0.1.6", "commit" => String.duplicate("ef", 20)})
 
     assert status == 1 and not installed?
-    assert fetched =~ "https://app.still.fail/releases/stillfail-station-"
+    assert fetched =~ "https://cue-release.afk.surf/station-release/comma-station-"
     assert output =~ "not the release Comma pins"
 
     # An unsafe manifest value is refused rather than written into the script.
@@ -449,6 +616,34 @@ defmodule CommaWeb.StationEndpointsTest do
     events = sse(ctx)
     :ok = Accounts.revoke_session(ctx.user["id"], ctx.session["id"])
     assert_sse_closed(events)
+  end
+
+  test "an enrolled station gets its enroller's device credential and stays that device", ctx do
+    station = keypair()
+
+    assert %{status: 200, body: %{"connector" => first}} =
+             enroll(ctx, station, enrollment_token(ctx))
+
+    assert %{"token" => "salix_conn_" <> _, "workspace_id" => workspace} = first
+    assert workspace == ctx.workspace.id
+    {:ok, _tenant, rec} = SalixEnv.ConnectorTokens.validate_connector_token(first["token"])
+    assert rec["meta"]["owner_user_id"] == ctx.user["id"]
+    assert rec["expires_at"] == nil
+
+    :ok =
+      SalixStore.StationDeviceLookup.record(
+        rec["tenant_id"],
+        rec["group_id"],
+        rec["device_id"],
+        station.id,
+        ctx.user["id"]
+      )
+
+    assert %{status: 200, body: %{"connector" => second}} =
+             enroll(ctx, station, enrollment_token(ctx))
+
+    {:ok, _tenant, again} = SalixEnv.ConnectorTokens.validate_connector_token(second["token"])
+    assert again["device_id"] == rec["device_id"]
   end
 
   test "enrollment over HTTP is single use and checks the station's proof", ctx do
@@ -760,8 +955,8 @@ defmodule CommaWeb.StationEndpointsTest do
   end
 
   defp workspace!(user) do
-    tenant = Ids.new_tenant_id()
-    group = Ids.new_group_id(tenant)
+    {:ok, %{"tenant_id" => tenant}} = Salix.Control.Tenants.create(%{"name" => "Stations"})
+    {:ok, %{"group_id" => group}} = Salix.Control.Groups.create(%{"name" => "Stations"}, tenant)
 
     workspace =
       Repo.insert!(%Workspace{

@@ -326,7 +326,7 @@ defmodule SalixVoice.Model.GptLiveTest do
     settle_receive({:EXIT, ^pid, _reason})
   end
 
-  test "a Group's voice replaces the platform voice and history opens the session" do
+  test "a Group's voice replaces the platform voice; history and the greeting open the session" do
     session =
       GptLive.session_config(%{
         audio_format: :pcm16_24k,
@@ -335,7 +335,8 @@ defmodule SalixVoice.Model.GptLiveTest do
         voice: %{"id" => "voice_dot"},
         input: [
           %{"role" => "user", "text" => "Book the dentist."},
-          %{"role" => "assistant", "text" => "Booked."}
+          %{"role" => "assistant", "text" => "Booked."},
+          %{"role" => "developer", "text" => "Greet the caller now."}
         ]
       })
 
@@ -351,6 +352,11 @@ defmodule SalixVoice.Model.GptLiveTest do
                "type" => "message",
                "role" => "assistant",
                "content" => [%{"type" => "output_text", "text" => "Booked."}]
+             },
+             %{
+               "type" => "message",
+               "role" => "developer",
+               "content" => [%{"type" => "input_text", "text" => "Greet the caller now."}]
              }
            ]
 

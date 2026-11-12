@@ -75,7 +75,7 @@ theorem WriteSubmission.retained_origin {framing : CodecFraming} {objects : Obje
   obtain ⟨stampedHistory, snapshot, bytes, rest, persisted, encoding, issued, _⟩ :=
     RevisionFence.candidate_encoded_history history (raw_fence_prepared trace.preparation)
       (raw_fence_stamped trace.metadata) inner
-  have applied : HotCAS before (.tuple [a "cas", trace.key, .binary bytes, cursor.etag])
+  have applied : HotCAS before (.tuple [a "cas", trace.key, .binary bytes, cursor.revision])
       (.tuple [a "ok", etag, outcome]) after := by
     rwa [issued] at cas
   exact ⟨stampedHistory, snapshot, bytes, _, rest, persisted, encoding, applied.landed_read⟩

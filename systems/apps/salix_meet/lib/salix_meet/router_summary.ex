@@ -8,6 +8,7 @@ defmodule SalixMeet.RouterSummary do
   @page_chars 16_000
   @fields ~w(transcript captions_transcript asr_transcript)
   @list_fields ~w(attendees key_points decisions open_questions blockers)
+  @reference_paths ~w(/memory/semantic/people.md /memory/semantic/glossary.md)
 
   def enabled?(state) do
     not is_nil(SystemsRuntime.get_env(:salix_meet, :router_summary_mod)) and
@@ -111,7 +112,9 @@ defmodule SalixMeet.RouterSummary do
          "text" => page,
          "total_chars" => total,
          "next_offset" => if(next < total, do: next),
-         "calibration" => context["calibration"]
+         "calibration" => context["calibration"],
+         "participants" => participants(context),
+         "reference_paths" => @reference_paths
        }, state}
     else
       {:error, _} = error -> error
@@ -124,9 +127,9 @@ defmodule SalixMeet.RouterSummary do
   defp submit(group_id, params, retries) do
     with {:ok, summary} <- validate_summary(params["summary"]),
          {:ok, %{"state" => state}, etag} <- Store.get(params["meeting_id"]),
-         :ok <- validate_request(state, group_id, params, true) do
-      request = get_in(state, ["delivery", "router_summary"])
-
+         :ok <- validate_request(state, group_id, params, true),
+         request = get_in(state, ["delivery", "router_summary"]),
+         :ok <- validate_names(summary, participants(request["context"])) do
       summary =
         Map.put(
           summary,
@@ -183,6 +186,33 @@ defmodule SalixMeet.RouterSummary do
 
       true ->
         :ok
+    end
+  end
+
+  defp participants(context) when is_map(context),
+    do: Enum.filter(List.wrap(context["participants"]), &is_binary/1)
+
+  defp participants(_context), do: []
+
+  @doc """
+  Attendees name meeting participants, and an action item's owner is empty or
+  names one. A name heard in speech or a transcript label is not a
+  participant. Without participants the meeting attests no names to check.
+  """
+  def validate_names(_summary, []), do: :ok
+
+  def validate_names(summary, participants) do
+    known = Enum.map(participants, &String.downcase/1)
+    names? = fn text -> Enum.any?(known, &String.contains?(String.downcase(text), &1)) end
+
+    owners =
+      for %{"owner" => owner} <- summary["action_items"],
+          String.trim(owner) != "",
+          do: owner
+
+    case Enum.reject(summary["attendees"] ++ owners, names?) |> Enum.uniq() do
+      [] -> :ok
+      unknown -> {:error, {:names_not_in_participants, unknown}}
     end
   end
 

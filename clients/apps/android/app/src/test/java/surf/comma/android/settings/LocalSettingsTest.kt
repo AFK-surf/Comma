@@ -34,6 +34,7 @@ class LocalSettingsTest {
         override fun applyTheme(value: Appearance) = apply(value)
         override fun applyTextSize(value: TextSize) = apply(value)
         override fun applyLanguage(value: Language) = apply(value)
+        override fun applyGlass(value: Boolean) = apply(value)
         private fun apply(value: Any) {
             if (fail) throw IllegalStateException("not saved")
             applied += value
@@ -51,6 +52,14 @@ class LocalSettingsTest {
         // Choosing the current value again does nothing.
         settings.setTheme(Appearance.DARK)
         assertEquals(3, backend.applied.size)
+    }
+
+    @Test fun glassIsOffUntilChosenAndSurvivesARestart() {
+        val android = AndroidLocalSettings(app)
+        assertEquals(false, android.read().glass)
+        GlassStore.set(app, true)
+        assertEquals(true, android.read().glass)
+        GlassStore.set(app, false)
     }
 
     @Test fun aChangeThatCannotBeAppliedRevertsAndSaysSo() = runBlocking {

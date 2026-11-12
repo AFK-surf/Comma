@@ -5,6 +5,8 @@
 import type { ChatMessagePart } from "@comma/chat-contract";
 import {
   modelMentionsAsWords,
+  requestMentionsAsWords,
+  slackMentionsAsWords,
   splitUserTaskMentionParts,
 } from "./mentionSerialization.ts";
 import {
@@ -29,6 +31,10 @@ export type UserMessageDisplay = {
 export const BROWSER_ELEMENT_INSPECTION_CONTEXT_PATTERN =
   /\s*<user-reminder>\s*<browser-element-inspection\s+id="([^"]+)"\s*\/>\s*<browser_element_context>([\s\S]*?)<\/browser_element_context>\s*<\/user-reminder>\s*$/u;
 
+/** A PDF area a person asked about (Request edits): context for the model, the chat shows its screenshot. */
+export const PDF_REGION_CONTEXT_PATTERN =
+  /\s*<user-reminder>\s*<pdf_region_context>[\s\S]*?<\/pdf_region_context>\s*<\/user-reminder>\s*$/u;
+
 const COMMAND_PATTERN = /^\s*<salix-command>([^<]{0,256})<\/salix-command>\s*$/u;
 
 /**
@@ -38,11 +44,11 @@ const COMMAND_PATTERN = /^\s*<salix-command>([^<]{0,256})<\/salix-command>\s*$/u
  */
 export function decodeUserMessage(text: string): UserMessageDisplay {
   const attached = parseAttachmentsBlock(text);
-  // The inspected element is context for the agent; the chat shows its screenshot instead.
+  // An inspected element or PDF area is context for the agent; the chat shows its screenshot instead.
   const quoted = parseQuotedTextBlock(
     BROWSER_ELEMENT_INSPECTION_CONTEXT_PATTERN.test(attached.body)
       ? stripBrowserElementInspectionContext(attached.body)
-      : attached.body
+      : attached.body.replace(PDF_REGION_CONTEXT_PATTERN, "").trimEnd()
   );
   const texts = parseAttachedTextBlocks(quoted.body);
   const command = COMMAND_PATTERN.exec(texts.body)?.[1]?.trim();
@@ -59,7 +65,7 @@ export function decodeUserMessage(text: string): UserMessageDisplay {
 export function userParts(display: UserMessageDisplay): ChatMessagePart[] {
   const shown = display.command
     ? `/${display.command}`
-    : modelMentionsAsWords(display.body);
+    : slackMentionsAsWords(requestMentionsAsWords(modelMentionsAsWords(display.body)));
   return splitUserTaskMentionParts(shown) ?? [{ kind: "markdown", text: shown }];
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	logrus "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -52,7 +53,7 @@ func observeCall(ctx context.Context, cmd command) (context.Context, func(event)
 	}
 	logObservation("subscription_sdk_call_start", fields)
 	ctx = context.WithValue(ctx, observationFieldsKey{}, fields)
-	ctx = context.WithValue(ctx, "salix.observe_transport", func(rt http.RoundTripper) http.RoundTripper {
+	ctx = httptransport.WithDecorator(ctx, func(rt http.RoundTripper) http.RoundTripper {
 		return &observedTransport{base: rt, fields: fields, started: started}
 	})
 	var written, first sync.Once

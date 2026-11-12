@@ -6,7 +6,13 @@ defmodule CommaWeb.ProactiveOutlookMailSource do
   Graph is asked for text bodies, and each message keeps only its `uniqueBody`
   (the part not quoted from earlier messages), so the size limits apply to the
   readable text rather than to Outlook's HTML or repeated reply history.
+
+  The read message's own file attachments are listed and read as
+  `CommaWeb.ProactiveMailAttachments` says. `attachments_read` is false when
+  the list could not be read.
   """
+
+  alias CommaWeb.ProactiveMailAttachments
 
   @graph "https://graph.microsoft.com/v1.0/me"
   @fields "id,conversationId,subject,from,toRecipients,ccRecipients,body,uniqueBody,receivedDateTime,sentDateTime,webLink,hasAttachments"
@@ -42,7 +48,7 @@ defmodule CommaWeb.ProactiveOutlookMailSource do
                {:ok, thread} <-
                  get(settings, session, conversation_url(message["conversationId"])),
                {:ok, result} <- normalize(message, thread, mailbox) do
-            {:ok, result}
+            {:ok, Map.merge(result, attachments(settings, session, message))}
           else
             {:error, _} = error -> error
             _ -> {:error, :invalid_mail_response}
@@ -53,6 +59,44 @@ defmodule CommaWeb.ProactiveOutlookMailSource do
       end
     else
       {:error, :invalid_message_id}
+    end
+  end
+
+  # A failed list leaves the mail readable, marked as not read.
+  defp attachments(settings, session, %{"hasAttachments" => true, "id" => id}) do
+    url = @graph <> "/messages/" <> URI.encode(id, &URI.char_unreserved?/1) <> "/attachments"
+
+    case get(settings, session, url <> "?$select=id,name,contentType,size,isInline") do
+      {:ok, %{"value" => rows}} when is_list(rows) ->
+        files =
+          for row <- rows,
+              is_map(row) and row["isInline"] != true and valid_id?(row["id"]),
+              do: {row["name"], row["contentType"], size(row), row["id"]}
+
+        %{
+          "attachments" =>
+            ProactiveMailAttachments.read(files, &attachment_bytes(settings, session, url, &1)),
+          "attachments_read" => true
+        }
+
+      _ ->
+        %{"attachments_read" => false}
+    end
+  end
+
+  defp attachments(_settings, _session, _message), do: %{}
+
+  # Only a file attachment carries its bytes; an item or a link has no size here.
+  defp size(%{"@odata.type" => "#microsoft.graph.fileAttachment", "size" => size}), do: size
+  defp size(_row), do: nil
+
+  defp attachment_bytes(settings, session, url, id) do
+    with {:ok, %{"contentBytes" => bytes}} when is_binary(bytes) <-
+           get(settings, session, url <> "/" <> URI.encode(id, &URI.char_unreserved?/1)),
+         {:ok, raw} <- Base.decode64(bytes) do
+      raw
+    else
+      _ -> nil
     end
   end
 

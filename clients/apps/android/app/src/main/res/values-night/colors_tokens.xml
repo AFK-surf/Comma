@@ -27,7 +27,9 @@
     <!-- The chat composer: a raised card on the page. Eight-digit values use AARRGGBB. -->
     <color name="token_composer_bg">#303030</color>
     <color name="token_composer_border">#4F4F4F</color>
-    <!-- No shadow on the dark page; the lighter fill and the edge set it apart. -->
+    <!-- Six percent black for the drawn composer shadow. -->
+    <color name="token_composer_shadow">#0F000000</color>
+    <!-- Other raised surfaces have no elevation shadow on the dark page. -->
     <color name="token_composer_shadow_ambient">#00000000</color>
     <color name="token_composer_shadow_spot">#00000000</color>
 
@@ -64,6 +66,18 @@
     <color name="token_card_primary">#18191B</color>
     <color name="token_glass_over_page">#EB343538</color>
     <color name="token_glass_frosted">#A6343538</color>
+    <color name="token_glass_tint">#1FFFFFFF</color>
+    <color name="token_glass_tint_brand">@color/token_bg_brand_solid</color>
+    <color name="token_glass_tint_off">#262626</color>
+    <color name="token_glass_icon_off">#5B5B5B</color>
+    <color name="token_glass_tint_frosted">#B8343538</color>
+    <color name="token_glass_tint_menu">#B8343538</color>
+    <color name="token_glass_rim">#33FFFFFF</color>
+    <color name="token_glass_line">#59000000</color>
+    <color name="token_glass_fall">#661A1C20</color>
+    <color name="token_glass_tint_lens">#00FFFFFF</color>
+    <color name="token_glass_lens_bar">#D93A3B3F</color>
+    <color name="token_glass_lens_band">#66000000</color>
     <color name="token_glass_selection">#1FFFFFFF</color>
     <color name="token_glass_border">#1FFFFFFF</color>
     <color name="token_sidebar_item">#222326</color>

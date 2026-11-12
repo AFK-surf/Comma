@@ -52,7 +52,7 @@ export function makeControlPlane({ state, changes, key, up, provider }: PlanePar
       Effect.tryPromise({
         try: async () => {
           const plane = spec();
-          // Signed over "<tag>:<origin>:<station>:<ts>:<sha256 of the body, hex>"; still.fail's under both names.
+          // Signed over "<tag>:<origin>:<station>:<ts>:<sha256 of the body, hex>"; Comma's under both names.
           await signedPost(state, key, plane.notifyPath, plane.notifyTag, { notices }, plane.notifyFormer, plane.name);
         },
         catch: (e) => e as Error,

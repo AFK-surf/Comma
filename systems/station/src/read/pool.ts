@@ -28,8 +28,8 @@ export class Readers {
   processes: () => Map<string, string> = () => new Map();
   clientKeys: () => Map<string, string> = () => new Map();
 
-  /// At most two by default (STILLFAIL_READERS says otherwise).
-  constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1))) {
+  /// At most two by default (COMMA_STATION_READERS says otherwise).
+  constructor(data: string, size = Number(process.env.COMMA_STATION_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1))) {
     this.data = data;
     this.size = size;
   }

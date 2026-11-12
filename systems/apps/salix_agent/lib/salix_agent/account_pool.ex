@@ -3,6 +3,22 @@ defmodule SalixAgent.AccountPool do
   alias SalixAgent.SubscriptionStore, as: Store
   alias SalixAgent.SubscriptionLog, as: Log
 
+  # The Claude Code version Salix's runtimes run. Claude's usage endpoint lists
+  # an account's limit resets only to Claude Code of a version that has them,
+  # so the worker asks as that version.
+  @runtime_lock Path.expand(
+                  "../../../../runtime-images/runtime-dependencies.lock.json",
+                  __DIR__
+                )
+  @external_resource @runtime_lock
+  @claude_code_version @runtime_lock
+                       |> File.read!()
+                       |> Jason.decode!()
+                       |> get_in(["claude", "version"])
+
+  # The kinds of reset a person may ask for (systems/profiles quota.rs ResetKind).
+  @reset_kinds ~w(session weekly model full credit)
+
   # One entry per subscription product. `flows` lists sign-in modes, default
   # first. The route names the client wire protocol and a reserved
   # `subscription://` base URL whose host identifies the provider; the worker
@@ -363,6 +379,19 @@ defmodule SalixAgent.AccountPool do
         Store.update(tenant, Map.put(current, "disabled_models", models), current["version"])
       end)
     end
+  end
+
+  # Whether a ChatGPT plan may go on with its credits once a window is used up:
+  # its owner's choice, since credits are paid for.
+  defp update_record(
+         tenant,
+         %{"credential" => "subscription", "source" => "codex"} = record,
+         %{"use_credits" => use_credits, "version" => expected} = attrs
+       )
+       when is_boolean(use_credits) and map_size(attrs) == 2 do
+    Store.update_edition(tenant, record["id"], expected, fn current ->
+      Store.update(tenant, Map.put(current, "use_credits", use_credits), current["version"])
+    end)
   end
 
   defp update_record(
@@ -878,7 +907,8 @@ defmodule SalixAgent.AccountPool do
              "/quota",
              %{
                "provider" => record["source"],
-               "credentials" => credentials
+               "credentials" => credentials,
+               "client_version" => @claude_code_version
              },
              opts
            ),
@@ -898,18 +928,22 @@ defmodule SalixAgent.AccountPool do
 
   # Persist the logical attempt before the external side effect. An uncertain
   # response leaves its key available for retry, including after a UI reconnect.
-  def reset_quota(tenant, id, %{"version" => version, "request_id" => key})
+  # `kind`: which of the resets the quota lists to use (none: any).
+  def reset_quota(tenant, id, %{"version" => version, "request_id" => key} = attrs)
       when is_binary(version) and is_binary(key) do
+    kind = attrs["kind"]
+
     Log.context([tenant_id: tenant, account_id: id], fn ->
       Log.span("subscription_account_reset", [], fn ->
         with :ok <- connection(tenant),
              true <- Regex.match?(~r/^[A-Za-z0-9_-]{16,128}$/, key),
+             true <- is_nil(kind) or kind in @reset_kinds,
              {:ok, record} <- Store.get(tenant, id),
-             true <- record["source"] == "codex",
+             true <- record["source"] in ["codex", "claude"],
              true <- record["status"] == "ok",
              :ok <- reset_admission(record, version, key),
              {:ok, record, credentials} <- prepare(tenant, record),
-             {:ok, claimed} <- claim_reset(tenant, record, key),
+             {:ok, claimed} <- claim_reset(tenant, record, key, kind),
              {:ok, result} <- execute_reset(tenant, claimed, credentials),
              {:ok, saved, outcome} <- settle_reset(tenant, claimed, result) do
           # Do not turn a completed reset into a failed mutation if this read fails.
@@ -943,15 +977,20 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  defp claim_reset(tenant, record, key) do
+  # The attempt keeps its kind, so a retry with the same key uses the same kind.
+  defp claim_reset(tenant, record, key, kind) do
     case record["reset_attempt"] do
       %{"request_id" => ^key} ->
         {:ok, record}
 
       _ ->
+        attempt =
+          %{"request_id" => key, "outcome" => "pending"}
+          |> then(&if(kind, do: Map.put(&1, "kind", kind), else: &1))
+
         Store.update_background(
           tenant,
-          Map.put(record, "reset_attempt", %{"request_id" => key, "outcome" => "pending"}),
+          Map.put(record, "reset_attempt", attempt),
           record["version"]
         )
     end
@@ -962,12 +1001,14 @@ defmodule SalixAgent.AccountPool do
 
     if attempt["outcome"] == "pending" do
       case adapter(tenant, "/quota/reset", %{
-             "provider" => "codex",
+             "provider" => record["source"],
              "credentials" => credentials,
-             "redeem_request_id" => attempt["request_id"]
+             "client_version" => @claude_code_version,
+             "redeem_request_id" => attempt["request_id"],
+             "kind" => attempt["kind"] || ""
            }) do
         {:ok, %{"code" => code} = result}
-        when code in ~w(reset already_redeemed nothing_to_reset no_credit) ->
+        when code in ~w(reset already_redeemed nothing_to_reset no_credit unavailable) ->
           {:ok, result}
 
         _ ->
@@ -1012,9 +1053,14 @@ defmodule SalixAgent.AccountPool do
 
   def models(tenant, provider) when provider in ["codex", "claude"] do
     with :ok <- connection(tenant),
-         {:ok, record} <- Store.discovery_account(tenant, provider),
-         {:ok, _record, credentials} <- prepare(tenant, record) do
-      adapter(tenant, "/models", %{"provider" => provider, "credentials" => credentials})
+         {:ok, record} <- Store.discovery_account(tenant, provider) do
+      profile_model_discovery(tenant, record)
+    end
+  end
+
+  defp profile_model_discovery(tenant, record) do
+    with {:ok, _record, credentials} <- prepare(tenant, record) do
+      adapter(tenant, "/models", %{"provider" => record["source"], "credentials" => credentials})
     end
   end
 
@@ -1368,6 +1414,23 @@ defmodule SalixAgent.AccountPool do
   @doc "The reserved tenant that owns platform-funded Profiles."
   def platform_tenant, do: @platform
 
+  @doc """
+  The first enabled platform API key, by id, that serves a model: the Profile
+  record, the model id it is asked for and the protocol. The platform route
+  table's models run on it (`SalixAgent.PlatformModels.routed_record/1`).
+  Reads at most the bounded page of usable keys.
+  """
+  def platform_key(model) do
+    with {:ok, keys} <- Store.usable_api_keys(@platform) do
+      Enum.find_value(keys, {:error, :platform_model_unavailable}, fn key ->
+        case key_route(key, model) do
+          {:ok, request, protocol} -> {:ok, key, request, protocol}
+          :error -> nil
+        end
+      end)
+    end
+  end
+
   @doc "Whether a tenant's Profile can serve a catalog model at all."
   def profile_serves?(tenant, id, model) when is_binary(id) do
     case Store.get(tenant, id) do
@@ -1429,6 +1492,7 @@ defmodule SalixAgent.AccountPool do
   Profiles and returns at most `limit` models, those a subscription serves
   first. Custom endpoints add the model ids they listed. `filter` (a function
   of the model list) narrows the models before `limit` applies.
+  An optional `profile_id` scopes the local catalog to that tenant-owned, enabled Profile. No provider discovery is required.
   """
   def servable_models(tenant, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
@@ -1437,7 +1501,7 @@ defmodule SalixAgent.AccountPool do
 
     with :ok <- connection(tenant),
          {:ok, %{profiles: profiles, truncated: profiles_truncated}} <-
-           Store.serving_profiles(tenant) do
+           routing_profiles(tenant, Keyword.get(opts, :profile_id)) do
       {plans, keys} =
         Enum.split_with(profiles, &(&1["credential"] == "subscription"))
 
@@ -1473,6 +1537,29 @@ defmodule SalixAgent.AccountPool do
       # Without Profile storage no Profile exists.
       {:error, :not_configured} -> {:ok, %{"models" => [], "truncated" => false}}
       error -> error
+    end
+  end
+
+  # A pinned choice reads only its tenant-owned Profile, even beyond the list page.
+  defp routing_profiles(tenant, nil), do: Store.serving_profiles(tenant)
+
+  defp routing_profiles(tenant, id) when is_binary(id) do
+    case Store.get(tenant, id) do
+      {:ok, %{"disabled" => false} = profile} ->
+        usable =
+          profile["credential"] == "api_key" or
+            (profile["credential"] == "subscription" and profile["status"] == "ok")
+
+        {:ok, %{profiles: if(usable, do: [profile], else: []), truncated: false}}
+
+      {:ok, _} ->
+        {:ok, %{profiles: [], truncated: false}}
+
+      {:error, :not_found} ->
+        {:ok, %{profiles: [], truncated: false}}
+
+      error ->
+        error
     end
   end
 
@@ -1618,8 +1705,10 @@ defmodule SalixAgent.AccountPool do
   # Nothing may take the request. When the member's own subscriptions serve
   # the model but their used-up windows hold them back, the input stops as
   # `quota_exhausted`, naming the one that refills first and when, so the
-  # member waits for it or chooses another model. Otherwise no Profile serves
-  # the model at all. `pin`: the Profile the Agent kept to, if any.
+  # member waits for it or chooses another model. A plan with credits its
+  # owner has not let it spend is named first, with `credits`, since letting
+  # it is the fix at hand. Otherwise no Profile serves the model at all.
+  # `pin`: the Profile the Agent kept to, if any.
   defp not_served(tenant, model, pin) do
     held =
       for source <- @pool_sources,
@@ -1629,8 +1718,13 @@ defmodule SalixAgent.AccountPool do
           do: {source, record, SalixAgent.Profiles.refills_at(record, route["model"])}
 
     case held do
-      [] -> not_served(model)
-      held -> held |> Enum.min_by(fn {_, _, at} -> at || :never end) |> usage_limit(model)
+      [] ->
+        not_served(model)
+
+      held ->
+        held
+        |> Enum.min_by(&{not unspent_credits?(elem(&1, 1)), elem(&1, 2) || :never})
+        |> usage_limit(model)
     end
   end
 
@@ -1646,6 +1740,7 @@ defmodule SalixAgent.AccountPool do
       source
       |> funding(record)
       |> Map.put("reset_at", if(is_integer(refills_at), do: div(refills_at, 1000)))
+      |> Map.put("credits", if(unspent_credits?(record), do: true))
       |> compact_funding()
 
     {:error,
@@ -1655,6 +1750,14 @@ defmodule SalixAgent.AccountPool do
        "retryable" => false,
        "funding" => funding
      })}
+  end
+
+  # A ChatGPT plan that has credits its owner has not let it spend.
+  defp unspent_credits?(record) do
+    credits = get_in(record, ["quota", "credits"]) || %{}
+
+    record["use_credits"] != true and
+      (credits["has_credits"] == true or credits["unlimited"] == true)
   end
 
   # Only plans with a usable account: an empty pool is not an attempt, so its

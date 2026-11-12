@@ -52,6 +52,7 @@ defmodule SalixAgent.TimeContext do
       sampled_at: #{DateTime.to_iso8601(now)}
       clock_timezone: UTC (server clock, not the user's timezone)
       latest_message_timezone: #{timezone || "unknown"}; use each message's explicit timezone or a timezone stated in that request. Never infer user timezone from language or server location.
+      Tool results give times in UTC or as Unix timestamps. Before telling people a clock time, convert it to their timezone; when that is unknown, say how long ago it was instead.
       Interpret relative dates such as yesterday against that message's source_sent_at, or its received_at when the source time is unknown. A scheduled_for anchor refers to the scheduled occurrence. Do not move the anchor to when a queued request finishes. New messages carry their own Message time context; keep multiple messages' anchors separate. If an unknown timezone or timestamp could change the answer or an external action, clarify it.
       Legacy message anchors (JSON): #{Jason.encode!(anchors)}. These are arrival/record timestamps, not proof of source send time.
       """

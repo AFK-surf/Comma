@@ -30,6 +30,8 @@ defmodule SalixAgent.AgentManagement.Ports do
   The models a Router may choose, as a function that narrows the
   `agent.models` list (`SalixAgent.AccountPool.servable_models/2`). A product
   that governs models keeps only those its `session_model/2` accepts.
+  An optional `model_profile_id` in the scope restricts discovery to a pinned
+  Profile. The caller must use that same Profile when it reads servable models.
   """
   @callback model_filter(map()) :: {:ok, ([map()] -> [map()])} | {:error, term()}
 

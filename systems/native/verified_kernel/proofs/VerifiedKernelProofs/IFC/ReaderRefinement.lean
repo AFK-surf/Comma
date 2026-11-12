@@ -43,6 +43,8 @@ structure FactsSound (m : Mapping) (w : System.World) (facts : Term) : Prop wher
     AtomReads m w (.tuple [a "space", connect]) (m.principal (key (authority p)))
   within_edge : ∀ child, (within facts child == nil) = false →
     AtomFlows m w (within facts child) child
+  cleared_sound : ∀ atom p, cleared facts (authority p) atom = true →
+    AtomReads m w atom (m.principal (key (authority p)))
 
 omit [System.Domain] in
 theorem contains_witness (h : contains xs x = true) :
@@ -107,14 +109,16 @@ theorem readerAtom_yes (sound : FactsSound m w facts) (h : readerAtom p atom fac
     AtomReads m w atom (m.principal (key (authority p))) := by
   unfold readerAtom at h
   split at h
-  · simp [AtomReads, m.publicAtom, System.AtomReads]
-  · contradiction
-  · rename_i connect
-    split at h
-    · apply sound.internal_placement; assumption
+  · exact sound.cleared_sound atom p (by assumption)
+  · split at h
+    · simp [AtomReads, m.publicAtom, System.AtomReads]
     · contradiction
+    · rename_i connect
+      split at h
+      · apply sound.internal_placement; assumption
+      · contradiction
+      · exact member_yes sound h
     · exact member_yes sound h
-  · exact member_yes sound h
 
 theorem withinWalk_sound (sound : FactsSound m w facts)
     (h : withinWalk fuel child ancestor facts = true) : AtomFlows m w ancestor child := by

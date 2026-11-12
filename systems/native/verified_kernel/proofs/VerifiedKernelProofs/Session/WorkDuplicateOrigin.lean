@@ -159,7 +159,7 @@ theorem input_raw_duplicate_alias {context : Context} {entry born checkpoint sav
     cases valid : effectResultValid (.tuple [a "workspace", operation, metadata, workspace, billing]) response with
     | false =>
       rw [effect_rejected _ _ _ _ valid] at tail
-      have impossible := tail.fixed (by simp [invalid, RevisionFence.invalid, a])
+      have impossible := tail.fixed (by simp [invalid, Revision.invalid, a])
       cases congrArg Prod.fst impossible
     | true =>
       obtain ⟨response, rfl⟩ := workspace_result_wire valid

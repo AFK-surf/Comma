@@ -13,10 +13,10 @@ case "$1" in
     plist=$3
     program=$(sed -n 's#.*<key>ProgramArguments</key><array><string>\([^<]*\)</string><string>\([^<]*\)</string></array>.*#\1 \2#p' "$plist")
     path=$(sed -n 's#.*<key>PATH</key><string>\([^<]*\)</string>.*#\1#p' "$plist")
-    data=$(sed -n 's#.*<key>STILLFAIL_DATA</key><string>\([^<]*\)</string>.*#\1#p' "$plist")
+    data=$(sed -n 's#.*<key>COMMA_STATION_DATA</key><string>\([^<]*\)</string>.*#\1#p' "$plist")
     running && exit 1
     # shellcheck disable=SC2086
-    nohup env -i HOME="$HOME" PATH="$path" STILLFAIL_DATA="$data" $program >> "$data/stillfail.log" 2>&1 &
+    nohup env -i HOME="$HOME" PATH="$path" COMMA_STATION_DATA="$data" $program >> "$data/station.log" 2>&1 &
     echo $! > "$state/pid"
     ;;
   bootout)

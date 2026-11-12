@@ -91,13 +91,23 @@ theorem wire_append (protocol : String) (xs ys : List Term) :
     wire protocol (xs ++ ys) = wire protocol xs ++ wire protocol ys := by
   unfold wire; split <;> simp
 
+/-- The messages `encodedBody` gives `Request.body`: settled turns shown with their call, then
+`wire`. -/
+def wireMessages (protocol : String) (xs : List Term) : List Term :=
+  wire protocol (Provider.Messages.settledTurns (protocol == "responses") xs)
+
+theorem wireMessages_append (protocol : String) (xs ys : List Term) :
+    wireMessages protocol (xs ++ ys) = wireMessages protocol xs ++ wireMessages protocol ys := by
+  unfold wireMessages Provider.Messages.settledTurns
+  rw [List.flatMap_append, wire_append]
+
 theorem encodedBody_run {protocol mode : String} {cfg body : Term} {msgs tools : List Term} {j k : List Term}
     (h : Provider.Request.encodedBody protocol cfg msgs tools mode j = .ok (body, k)) :
-    ∃ b, (∃ j k, Provider.Request.body protocol cfg (wire protocol msgs) (wire protocol tools) mode j =
+    ∃ b, (∃ j k, Provider.Request.body protocol cfg (wireMessages protocol msgs) (wire protocol tools) mode j =
       .ok (b, k)) ∧ ∃ j k, Provider.encode (Provider.scrub b) j = .ok (body, k) := by
   unfold Provider.Request.encodedBody at h
   obtain ⟨b, j₁, hb, h⟩ := Session.bind_ok_iff.mp h
-  exact ⟨b, ⟨_, _, by unfold wire; exact hb⟩, _, _, h⟩
+  exact ⟨b, ⟨_, _, by unfold wireMessages wire; exact hb⟩, _, _, h⟩
 
 /-- **Consecutive requests share a prefix.** Two dispatches of one Session send bodies `b₁` and
 `b₂` (then scrubbed and JSON-encoded). If the durable history `D` is closed, both bodies have the
@@ -119,17 +129,17 @@ theorem consecutive_requests_share_prefix {s s' delta delta' cfg tools mode body
     let pr := String.fromUTF8! name
     let md := String.fromUTF8! (Provider.bytes mode)
     ∃ D Y tools' b₁ b₂, tools = list tools' ∧
-      (∃ X j k, Provider.Request.body pr cfg (wire pr (D ++ X)) (wire pr tools') md j = .ok (b₁, k)) ∧
+      (∃ X j k, Provider.Request.body pr cfg (wireMessages pr (D ++ X)) (wire pr tools') md j = .ok (b₁, k)) ∧
       (∃ j k, Provider.encode (Provider.scrub b₁) j = .ok (body, k)) ∧
-      (∃ X j k, Provider.Request.body pr cfg (wire pr (D ++ (Y ++ X))) (wire pr tools') md j = .ok (b₂, k)) ∧
+      (∃ X j k, Provider.Request.body pr cfg (wireMessages pr (D ++ (Y ++ X))) (wire pr tools') md j = .ok (b₂, k)) ∧
       (∃ j k, Provider.encode (Provider.scrub b₂) j = .ok (body', k)) ∧
       (∃ C C', (∃ j k, Session.Request.context s j = .ok (list C, k)) ∧
         (∃ j k, Session.Request.context s' j = .ok (list (C ++ C'), k)) ∧
         D = (promptHead (Session.ReplyQuery.presentTerm (s.get (a "system_prompt"))) ++ C).map
           (inlineOne host (watermark s)) ∧
         Y = C'.map (inlineOne host (watermark s'))) ∧
-      ∀ b₀ j k, Provider.Request.body pr cfg (wire pr D) (wire pr tools') md j = .ok (b₀, k) →
-        ProviderLoop.ClosedHistory (wire pr D) →
+      ∀ b₀ j k, Provider.Request.body pr cfg (wireMessages pr D) (wire pr tools') md j = .ok (b₀, k) →
+        ProviderLoop.ClosedHistory (wireMessages pr D) →
         ProviderLoop.headOf pr b₁ = ProviderLoop.headOf pr b₀ ∧ ProviderLoop.headOf pr b₂ = ProviderLoop.headOf pr b₀ ∧
           ProviderLoop.messagesOf pr b₀ <+: ProviderLoop.messagesOf pr b₁ ∧
           ProviderLoop.messagesOf pr b₀ <+: ProviderLoop.messagesOf pr b₂ := by
@@ -141,8 +151,8 @@ theorem consecutive_requests_share_prefix {s s' delta delta' cfg tools mode body
   obtain ⟨b₂, ⟨_, _, hb₂⟩, e₂⟩ := encodedBody_run hb'
   refine ⟨D, Y, tl, b₁, b₂, rfl, ⟨X, _, _, hb₁⟩, e₁, ⟨X', _, _, hb₂⟩, e₂, durable, ?_⟩
   intro b₀ j k h₀ closed
-  rw [wire_append] at hb₁ hb₂
-  rw [wire_append] at hb₂
+  rw [wireMessages_append] at hb₁ hb₂
+  rw [wireMessages_append] at hb₂
   exact ProviderLoop.request_prefix_stable protocol closed h₀ hb₁ hb₂
 
 end VerifiedKernel.RequestPrefix

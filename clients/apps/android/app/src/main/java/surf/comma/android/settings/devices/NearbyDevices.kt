@@ -99,7 +99,7 @@ internal class NearbyDevices private constructor(private val app: Application) :
     /** The device was set up, but its setup offer in the chat could not be told so. */
     fun offerNotUpdated(owner: DeviceOwner) {
         work.launch {
-            if (isCurrent(owner)) Toast.makeText(app, "Setup can continue. The chat card could not be updated.", Toast.LENGTH_LONG).show()
+            if (isCurrent(owner)) Toast.makeText(app, surf.comma.android.R.string.devices_offer_continue, Toast.LENGTH_LONG).show()
         }
     }
 

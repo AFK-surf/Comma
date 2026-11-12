@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 //! The launcher run as launchd runs it, with a stand-in for the station's Node side (fixtures/main.js) on a real Node
-//! ($STILLFAIL_NODE, else the build machine's). Each test has its own data directory; the launcher binds its ports
+//! ($COMMA_STATION_NODE, else the build machine's). Each test has its own data directory; the launcher binds its ports
 //! where it finds them free (port 0), so no other program can take them first.
 //!
 //! What these tests decide is the code's, not the machine's speed's: they wait for what the processes do, with no
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-const BUILT: &str = env!("CARGO_BIN_EXE_stillfail-station");
+const BUILT: &str = env!("CARGO_BIN_EXE_comma-station");
 
 /// The launcher, run once before any test starts it. macOS looks at each new executable the first time it runs, and
 /// the tests that start it at once all wait for that look.
@@ -29,10 +29,10 @@ fn launcher() -> &'static str {
     BUILT
 }
 
-/// The Node the station runs on (.node-version), where scripts/node-here.sh puts it, unless STILLFAIL_NODE says another.
+/// The Node the station runs on (.node-version), where scripts/node-here.sh puts it, unless COMMA_STATION_NODE says another.
 fn node() -> String {
     let version = include_str!("../../../.node-version").trim();
-    std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| format!("{}/.local/node-v{version}-darwin-arm64/bin/node", std::env::var("HOME").unwrap()))
+    std::env::var("COMMA_STATION_NODE").unwrap_or_else(|_| format!("{}/.local/node-v{version}-darwin-arm64/bin/node", std::env::var("HOME").unwrap()))
 }
 
 /// Held while a socket is made or a process started. On macOS a socket is made close-on-exec only after it is made: a
@@ -79,11 +79,11 @@ impl Station {
     fn command(&self, times: &str) -> Command {
         let mut command = Command::new(launcher());
         command
-            .env("STILLFAIL_NODE", node())
-            .env("STILLFAIL_LAUNCHER_TIMES", times)
-            .env_remove("STILLFAIL_DATA")
+            .env("COMMA_STATION_NODE", node())
+            .env("COMMA_STATION_LAUNCHER_TIMES", times)
+            .env_remove("COMMA_STATION_DATA")
             .env_remove("EMBER_DATA")
-            .env_remove("STILLFAIL_CONFIG")
+            .env_remove("COMMA_STATION_CONFIG")
             .env_remove("EMBER_CONFIG")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -338,7 +338,7 @@ fn a_held_lock_exits_3() {
     assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
     station.start("");
     assert_eq!(station.wait().code(), Some(3));
-    assert!(std::fs::read_to_string(station.dir.join("launcher.log")).unwrap().contains("另一个 still.fail station 正在运行这个数据目录"));
+    assert!(std::fs::read_to_string(station.dir.join("launcher.log")).unwrap().contains("另一个 Comma station 正在运行这个数据目录"));
     assert!(station.log().is_empty(), "no Node started");
 }
 
@@ -637,11 +637,11 @@ fn with_parent_it_stops_once_the_parent_is_gone() {
     let mut shell = spawn(
         Command::new("/bin/sh")
             .args(["-c", &script, launcher()])
-            .env("STILLFAIL_NODE", node())
-            .env("STILLFAIL_LAUNCHER_TIMES", "parent=200")
-            .env_remove("STILLFAIL_DATA")
+            .env("COMMA_STATION_NODE", node())
+            .env("COMMA_STATION_LAUNCHER_TIMES", "parent=200")
+            .env_remove("COMMA_STATION_DATA")
             .env_remove("EMBER_DATA")
-            .env_remove("STILLFAIL_CONFIG")
+            .env_remove("COMMA_STATION_CONFIG")
             .env_remove("EMBER_CONFIG")
             .stdout(Stdio::piped()),
     );

@@ -112,6 +112,8 @@ export interface AppProtocolOptions {
   clock?: MainClock | undefined;
   fetch?: CommaNetFetch | undefined;
   getCredentialAuthority?: (() => CommaApiCredentialAuthority | undefined) | undefined;
+  /** Main's configured API audience. Only this origin may host the login CAPTCHA frame. */
+  getAuthOrigin?: (() => string | undefined) | undefined;
   /** Serves `comma-drive:` media streams Drive opened through the native bridge. */
   getDriveStreams?:
     | (() => { serveStream(request: Request): Promise<Response> } | undefined)
@@ -212,15 +214,55 @@ export function registerAppProtocol(
         : sessionLeaseUnavailableResponse();
     }
 
-    if (proxyDevRendererAsset) {
-      return proxyDevRendererAsset(request, url);
-    }
+    const response = proxyDevRendererAsset
+      ? await proxyDevRendererAsset(request, url)
+      : await fetchImpl(
+          pathToFileURL(resolveRendererPath(rendererRoot, url)).toString(),
+          {
+            bypassCustomProtocolHandlers: true,
+            credentials: "omit",
+            redirect: "manual",
+          }
+        );
+    return withCaptchaFrameOrigin(response, options.getAuthOrigin?.());
+  });
+}
 
-    return fetchImpl(pathToFileURL(resolveRendererPath(rendererRoot, url)).toString(), {
-      bypassCustomProtocolHandlers: true,
-      credentials: "omit",
-      redirect: "manual",
-    });
+/** Compose the owned renderer document's CSP with Main's trusted audience, never a page-supplied URL. */
+async function withCaptchaFrameOrigin(
+  response: Response,
+  audience?: string
+): Promise<Response> {
+  if (!audience || !response.headers.get("content-type")?.includes("text/html"))
+    return response;
+  let origin: string;
+  try {
+    const url = new URL(audience);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return response;
+    origin = url.origin;
+  } catch {
+    return response;
+  }
+  const document = await response.text();
+  const composed = document.replace(
+    /(<meta\b[^>]*http-equiv="Content-Security-Policy"[^>]*content=")([^"]*)(")/i,
+    (_meta, before: string, policy: string, after: string) => {
+      const directives = policy.split(";").map((directive) => {
+        const sources = directive.trim().split(/\s+/);
+        if (sources[0] !== "frame-src") return directive;
+        return ` ${Array.from(new Set([...sources, origin])).join(" ")}`;
+      });
+      return before + directives.join(";") + after;
+    }
+  );
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.delete("etag");
+  return new Response(composed, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 

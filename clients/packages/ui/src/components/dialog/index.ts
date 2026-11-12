@@ -3,7 +3,7 @@ export { DialogPanel } from "./DialogPanel";
 export { DialogActions, DialogCloseButton } from "./DialogActions";
 export { DialogEnterIcon } from "./DialogShortcutIcons";
 export { DialogShortcutIcon } from "./DialogShortcutIcon";
-export { dialogActionButton } from "./styles";
+export { dialogActionButton, dialogComposeShell } from "./styles";
 export type {
   DialogAction,
   DialogInputProps,

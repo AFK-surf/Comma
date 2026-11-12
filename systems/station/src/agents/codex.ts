@@ -16,6 +16,11 @@ import { accessKind, codexOverrides, expandRoute, isMachine, profileEnv, profile
 import { cleanEnv, type AgentDriver, type AgentSession, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
 import type { RunnerInfo } from "./runner.ts";
 import { wall } from "../ops/fibers.ts";
+import { Duration } from "effect";
+import { SALIX_TOOL_CALL_TIMEOUT } from "../connector/config.ts";
+
+/// How long Codex waits for a tool of the station's MCP server: a little past the station's wait for a Salix tool call.
+export const COMMA_STATION_MCP_TOOL_TIMEOUT_SECONDS = Duration.toSeconds(SALIX_TOOL_CALL_TIMEOUT) + 30;
 
 type Json = any;
 
@@ -146,6 +151,9 @@ class Host {
   proc!: AgentProcess;
   readonly pending = new Map<number, Pending>();
   readonly threads = new Map<string, Sink>();
+  /// The threads a turn runs on now: a process a profile edit made stale is replaced once they end.
+  readonly busy = new Set<string>();
+  private idlers: (() => void)[] = [];
   private ready: boolean;
   private readying: Promise<void> | null = null;
   /// Notices for threads not taken up yet, while sessions are being taken up (null otherwise).
@@ -258,14 +266,43 @@ class Host {
     this.pending.clear();
     const threads = [...this.threads.values()];
     this.threads.clear();
+    this.busy.clear();
+    this.wake();
     for (const thread of threads) thread({ kind: "hostExited", reason });
+  }
+
+  turnStarted(threadId: string) {
+    this.busy.add(threadId);
+  }
+
+  turnEnded(threadId: string) {
+    this.busy.delete(threadId);
+    if (this.busy.size === 0) this.wake();
+  }
+
+  private wake() {
+    const idlers = this.idlers;
+    this.idlers = [];
+    for (const idler of idlers) idler();
+  }
+
+  /// Once no turn runs on it (or it exited).
+  idle(): Promise<void> {
+    if (this.busy.size === 0 || !this.alive()) return Promise.resolve();
+    return new Promise((resolve) => this.idlers.push(resolve));
+  }
+
+  /// Whether it was started for another version of `profile` (an edit, or a key lent to the station renewed): its
+  /// turns would use the old one, and a process started with the profile as it is now takes its place.
+  outdated(profile: Profile): boolean {
+    return this.signature !== hostSignature(profile);
   }
 
   async ensureReady() {
     while (this.readying) await this.readying;
     if (this.ready) return;
     this.readying = (async () => {
-      await this.request("initialize", { clientInfo: { name: "stillfail", version: "0" }, capabilities: { experimentalApi: true } });
+      await this.request("initialize", { clientInfo: { name: "comma-station", version: "0" }, capabilities: { experimentalApi: true } });
       this.proc.write(JSON.stringify({ method: "initialized", params: {} }));
       this.ready = true;
     })();
@@ -381,6 +418,12 @@ export class CodexDriver implements AgentDriver {
     return this.hosts.get(profileId)?.alive() === true;
   }
 
+  /// Whether `session`'s app-server is outdated for `profile` (see `Host.outdated`) and no turn runs on the session:
+  /// opened again (`resume`), it goes on in a process started with the profile as it is now.
+  stale(session: AgentSession, profile: Profile): boolean {
+    return session instanceof CodexSession && session.staleFor(profile);
+  }
+
   /// One at a time, as Rust's hosts mutex: starting, replacing and taking up hosts.
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const next = this.hostQueue.then(work, work);
@@ -388,38 +431,55 @@ export class CodexDriver implements AgentDriver {
     return next;
   }
 
+  /// The profile's app-server, started if need be. One outdated for the profile (`Host.outdated`) is replaced first:
+  /// the turns running on it go on to their end, and no thread is opened on it meanwhile (the open waits), so no turn
+  /// starts with what the profile no longer says. Its loaded threads are closed with it, and taken up again
+  /// (`resume`) by their next turn. A turn opens no session itself (the station's tools post, they do not wait on
+  /// another session's turn), so what is waited on never waits on this.
   private async host(profile: Profile): Promise<Host> {
-    const host = await this.serial(async () => {
-      const current = this.hosts.get(profile.id);
-      // A borrowed login about to run out: a new process with a new one, once none of its sessions is in a turn.
-      if (current && current.alive() && current.lentUntil !== null && current.lentUntil - wall.now() < LENT_RENEW_MS && current.threads.size === 0) {
-        log.info("agents::codex", "its borrowed login runs out; restarting its codex app-server", { profile: profile.id });
-        this.hosts.delete(profile.id);
-        await current.proc.kill(5000);
-      }
-      if (current && current.alive() && current.signature !== hostSignature(profile)) {
-        // The profile changed. Replace the process once no session uses it; until then keep serving.
-        if (current.threads.size === 0) {
-          log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id });
+    for (;;) {
+      const got = await this.serial(async (): Promise<Host | { drains: Host }> => {
+        const current = this.hosts.get(profile.id);
+        // A borrowed login about to run out: a new process with a new one, once no thread is loaded on it. Not under a
+        // loaded thread: the lender may have no newer login to give (its own Codex running, it renews none), and a
+        // process started then would be as close to its end; replacing one with loaded threads for that would go on
+        // and on. Asking first is for another change.
+        if (current && current.alive() && current.lentUntil !== null && current.lentUntil - wall.now() < LENT_RENEW_MS && current.threads.size === 0) {
+          log.info("agents::codex", "its borrowed login runs out; restarting its codex app-server", { profile: profile.id });
           this.hosts.delete(profile.id);
           await current.proc.kill(5000);
-        } else {
-          log.info("agents::codex", "profile changed; its codex app-server restarts once idle", { profile: profile.id });
         }
+        if (current && current.alive() && current.outdated(profile)) {
+          if (current.busy.size > 0) {
+            log.info("agents::codex", "profile changed; its codex app-server is replaced once the turns on it end", { profile: profile.id, turns: current.busy.size });
+            return { drains: current };
+          }
+          log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id, threads: current.threads.size });
+          this.hosts.delete(profile.id);
+          await current.proc.kill(5000);
+        }
+        return this.hostNow(profile);
+      });
+      if (got instanceof Host) {
+        await got.ensureReady();
+        return got;
       }
-      const alive = this.hosts.get(profile.id);
-      if (alive && alive.alive()) return alive;
-      // Its app-server exited: its runner, on its way out, is not one to take up.
-      if (alive) await alive.proc.released();
-      // One an earlier station left running (its threads may be taken up yet) is taken up rather than replaced.
-      const left = await findRunner(this.data, runnerId("codex", profile.id));
-      const host = left ? await this.takeUp(profile, left) : await Host.start(profile, this.command, this.data, this.env, this.caBundle, this.options.lent);
-      // Taken up on a borrowed login: when that one runs out, as its auth.json says.
-      if (left && this.options.lent?.borrowed(profile)) host.lentUntil = lentExpiry(profile.home);
-      this.hosts.set(profile.id, host);
-      return host;
-    });
-    await host.ensureReady();
+      await got.drains.idle();
+    }
+  }
+
+  /// The profile's app-server as it is, or one started (or taken up) for it. Under `serial`.
+  private async hostNow(profile: Profile): Promise<Host> {
+    const alive = this.hosts.get(profile.id);
+    if (alive && alive.alive()) return alive;
+    // Its app-server exited: its runner, on its way out, is not one to take up.
+    if (alive) await alive.proc.released();
+    // One an earlier station left running (its threads may be taken up yet) is taken up rather than replaced.
+    const left = await findRunner(this.data, runnerId("codex", profile.id));
+    const host = left ? await this.takeUp(profile, left) : await Host.start(profile, this.command, this.data, this.env, this.caBundle, this.options.lent);
+    // Taken up on a borrowed login: when that one runs out, as its auth.json says.
+    if (left && this.options.lent?.borrowed(profile)) host.lentUntil = lentExpiry(profile.home);
+    this.hosts.set(profile.id, host);
     return host;
   }
 
@@ -487,8 +547,13 @@ export class CodexDriver implements AgentDriver {
     const model = options.model ?? profileModel(options.profile);
     const skillsOff = hostSkillsOff(this.hostSkills);
     const config: Json = {
-      "mcp_servers.stillfail.url": options.mcpUrl,
-      "mcp_servers.stillfail.http_headers": { Authorization: `Bearer ${options.mcpToken}` },
+      "mcp_servers.comma-station.url": options.mcpUrl,
+      "mcp_servers.comma-station.http_headers": { Authorization: `Bearer ${options.mcpToken}` },
+      // Codex gives an MCP call 60 seconds by default; salix_call waits as long as its Salix tool (a long env.exec).
+      "mcp_servers.comma-station.tool_timeout_sec": COMMA_STATION_MCP_TOOL_TIMEOUT_SECONDS,
+      // The `comma` command's way to the station from the thread's shell commands (connector/comma-client-cli.ts, its
+      // Salix backend): the app-server is one process for the profile, so the session's token goes in its thread.
+      "shell_environment_policy.set": { COMMA_STATION_MCP_URL: options.mcpUrl, COMMA_STATION_MCP_TOKEN: options.mcpToken },
     };
     if (options.effort !== undefined) config.model_reasoning_effort = options.effort;
     if (skillsOff.length > 0) config["skills.config"] = skillsOff;
@@ -565,8 +630,8 @@ export class CodexDriver implements AgentDriver {
 /// ended). An app-server that cannot say: not known to have failed.
 async function stationToolsFailed(host: Host, threadId: string): Promise<boolean> {
   try {
-    const answer = await host.request("mcpServerStatus/list", { threadId, serverName: "stillfail", detail: "toolsAndAuthOnly" });
-    return Array.isArray(answer?.data) && answer.data.some((s: Json) => s?.name === "stillfail" && s?.runtimeStatus === "failed");
+    const answer = await host.request("mcpServerStatus/list", { threadId, serverName: "comma", detail: "toolsAndAuthOnly" });
+    return Array.isArray(answer?.data) && answer.data.some((s: Json) => s?.name === "comma" && s?.runtimeStatus === "failed");
   } catch {
     return false;
   }
@@ -598,7 +663,13 @@ export class CodexSession implements AgentSession {
   private endTurn(outcome: TurnOutcome) {
     this.state.busy = false;
     this.state.turnId = null;
+    this.host.turnEnded(this.threadId);
     this.events({ type: "turnEnded", outcome });
+  }
+
+  /// Whether this thread's app-server is outdated for `profile` (`Host.outdated`), and no turn runs on the thread.
+  staleFor(profile: Profile): boolean {
+    return !this.state.closed && this.host.alive() && this.host.outdated(profile) && !this.state.busy;
   }
 
   /// A thread's share of its app-server's notifications: its turns and live steps, as events.
@@ -617,6 +688,7 @@ export class CodexSession implements AgentSession {
         if (typeof id === "string") this.state.turnId = id;
         const was = this.state.busy;
         this.state.busy = true;
+        this.host.turnStarted(this.threadId);
         if (!was) this.events({ type: "turnStarted" });
       } else if (method === "turn/completed") {
         const turn = params?.turn ?? null;
@@ -651,6 +723,7 @@ export class CodexSession implements AgentSession {
     if (this.state.closed) throw new Error("codex session is closed");
     if (this.state.busy) throw new Error("a turn is already running");
     this.state.busy = true;
+    this.host.turnStarted(this.threadId);
     const params: Json = { threadId: this.threadId, input: input(text) };
     const p = this.driver.options.currentProfile ? this.driver.options.currentProfile(this.host.profile) : this.profile;
     if (p && accessKind(p) === "subscription") {
@@ -663,6 +736,7 @@ export class CodexSession implements AgentSession {
       if (typeof id === "string") this.state.turnId = id;
     } catch (error) {
       this.state.busy = false;
+      this.host.turnEnded(this.threadId);
       throw error;
     }
   }
@@ -694,6 +768,7 @@ export class CodexSession implements AgentSession {
     if (this.state.closed) return;
     this.state.closed = true;
     this.host.threads.delete(this.threadId);
+    this.host.turnEnded(this.threadId);
     // Handed over, the thread is the next station's.
     if (this.host.proc.handed()) return;
     // Best effort: the thread just stays loaded.
@@ -719,6 +794,7 @@ export class CodexSession implements AgentSession {
     this.state.closed = true;
     this.host.freeze();
     this.host.threads.delete(this.threadId);
+    this.host.turnEnded(this.threadId);
     if (this.host.threads.size === 0) this.host.detach();
   }
 }

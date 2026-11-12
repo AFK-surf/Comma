@@ -56,8 +56,7 @@
     "id": 1,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -196,8 +195,7 @@
     "id": 2,
     "subscribe": {
      "topic": "pluginNotices"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -207,8 +205,7 @@
     "id": 3,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -218,8 +215,7 @@
     "id": 4,
     "subscribe": {
      "topic": "workspace"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -229,8 +225,7 @@
     "id": 5,
     "subscribe": {
      "topic": "workspaceChat"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -241,8 +236,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": ""
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -253,8 +247,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxDeleted"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -265,8 +258,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxUnread"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -277,8 +269,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "taskReviewSeen"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -291,8 +282,7 @@
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke",
      "peek": "1"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -303,8 +293,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "chatTaskDismissed"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -317,8 +306,7 @@
      "group": "grp-smoke",
      "key": "",
      "mode": ""
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -332,8 +320,7 @@
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke",
      "surface": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -344,8 +331,7 @@
     "subscribe": {
      "topic": "skills",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -355,8 +341,7 @@
     "id": 15,
     "subscribe": {
      "topic": "meetingRecorder"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -366,8 +351,7 @@
     "id": 16,
     "subscribe": {
      "topic": "profile"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -378,8 +362,7 @@
     "subscribe": {
      "topic": "creditWarning",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -390,8 +373,7 @@
     "subscribe": {
      "topic": "mentionTasks",
      "group": "grp-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -403,8 +385,7 @@
      "topic": "recommendations",
      "workspace": "ws-smoke",
      "reads": "once"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -415,8 +396,7 @@
     "subscribe": {
      "topic": "plugins",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -716,15 +696,24 @@
    "dir": "in",
    "data": {
     "id": 4,
-    "value": {
-     "status": "ready",
-     "workspace": {
-      "id": "ws-smoke",
-      "groupId": "grp-smoke",
-      "name": "Smoke Workspace"
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      },
-     "selected": false
-    }
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": {
+       "id": "ws-smoke",
+       "groupId": "grp-smoke",
+       "name": "Smoke Workspace"
+      }
+     }
+    ]
    }
   },
   {
@@ -735,8 +724,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -767,11 +755,21 @@
    "data": {
     "id": 24,
     "subscribe": {
+     "topic": "taskRequests",
+     "prefer": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 25,
+    "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
      "read": "0"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -779,11 +777,48 @@
    "dir": "in",
    "data": {
     "id": 12,
-    "value": {
-     "catalog": null,
-     "error": true,
-     "loading": false
-    }
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "delta": [
+     {
+      "path": [
+       "summaries"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "active",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      "before": null
+     }
+    ]
    }
   },
   {
@@ -835,25 +870,11 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 25,
+    "id": 26,
     "subscribe": {
      "topic": "mentionTasks",
      "group": "grp-smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 50,
-   "dir": "out",
-   "data": {
-    "id": 26,
-    "subscribe": {
-     "topic": "taskSummaries",
-     "group": "grp-smoke",
-     "ids": "cnv_public_task_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -861,58 +882,10 @@
    "dir": "out",
    "data": {
     "id": 27,
-    "subscribe": {
-     "topic": "agentRequests",
+    "call": "taskFiles.list",
+    "params": {
      "group": "grp-smoke",
      "conversation": "cnv_public_task_smoke"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 14,
-    "value": {
-     "status": "ready",
-     "skills": [
-      {
-       "skill_id": "weekly-summary",
-       "name": "周会总结",
-       "description": "整理会议要点和后续事项",
-       "location": "salix://skills/weekly-summary"
-      },
-      {
-       "skill_id": "code-review",
-       "name": "代码审查",
-       "description": "检查实现风险和测试缺口",
-       "location": "salix://skills/code-review"
-      },
-      {
-       "skill_id": "weekly-reminder",
-       "name": "周会提醒",
-       "description": "提醒周会议程",
-       "location": "salix://skills/weekly-reminder",
-       "activation": "per-message"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "value": {
-     "status": "ready",
-     "profile": {
-      "avatar_id": null,
-      "email": "smoke@comma.local",
-      "id": "e2e-user:smoke@comma.local",
-      "name": null
-     }
     }
    }
   },
@@ -921,6 +894,117 @@
    "dir": "out",
    "data": {
     "id": 28,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 29,
+    "subscribe": {
+     "topic": "agentRequests",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 14,
+    "delta": [
+     {
+      "path": [
+       "skills"
+      ],
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "skills"
+      ],
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      "before": "weekly-reminder"
+     },
+     {
+      "path": [
+       "skills"
+      ],
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      "before": "code-review"
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "profile"
+      ],
+      "set": {
+       "avatar_id": null,
+       "email": "smoke@comma.local",
+       "id": "e2e-user:smoke@comma.local",
+       "name": null
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 30,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -1020,32 +1104,61 @@
    "dir": "in",
    "data": {
     "id": 5,
-    "value": {
-     "status": "ready",
-     "chat": {
-      "workspaceId": "ws-smoke",
-      "groupId": "grp-smoke",
-      "conversationId": "cnv_public_chat_smoke",
-      "createdAt": 1720000000,
-      "updatedAt": 1720000000
+    "delta": [
+     {
+      "path": [
+       "chat"
+      ],
+      "set": {
+       "workspaceId": "ws-smoke",
+       "groupId": "grp-smoke",
+       "conversationId": "cnv_public_chat_smoke",
+       "createdAt": 1720000000,
+       "updatedAt": 1720000000
+      }
      },
-     "kept": false
-    }
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
    }
   },
   {
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 31,
     "subscribe": {
      "topic": "chatView",
      "workspace": "ws-smoke",
      "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke",
      "surface": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9"
-    },
-    "keyed": true
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 6,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
    }
   },
   {
@@ -1068,32 +1181,19 @@
    "dir": "in",
    "data": {
     "id": 21,
-    "value": null
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 24,
-    "value": null
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 25,
-    "value": []
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 26,
     "value": {
-     "summaries": []
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
     }
    }
   },
@@ -1101,7 +1201,61 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 24,
+    "value": {
+     "workspace": null,
+     "incoming": null,
+     "grants": null,
+     "targets": null,
+     "sent": null,
+     "links": null,
+     "own": null,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "value": []
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "active",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 29,
     "value": {
      "requests": [],
      "loading": true,
@@ -1133,7 +1287,19 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 27,
+    "ok": {
+     "status": "ready",
+     "files": [],
+     "nextCursor": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 30,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1166,7 +1332,28 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 24,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 29,
     "delta": [
      {
       "path": [
@@ -1187,7 +1374,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -1236,21 +1423,18 @@
       "key": [
        "id"
       ],
-      "put": {
-       "archive_availability": {
-        "allowed": false,
-        "reason": "not_finished"
-       },
-       "group_id": "grp-smoke",
-       "id": "cnv_public_task_smoke",
-       "kind": "agent_task",
-       "status": "active",
-       "title": "冒烟任务",
-       "updated_at": 1720000003,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
+      "patch": "cnv_public_task_smoke",
+      "ops": [
+       {
+        "path": [
+         "archive_availability"
+        ],
+        "set": {
+         "allowed": false,
+         "reason": "not_finished"
+        }
+       }
+      ]
      }
     ]
    }
@@ -1259,7 +1443,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 28,
     "delta": [
      {
       "path": [
@@ -1268,21 +1452,18 @@
       "key": [
        "id"
       ],
-      "put": {
-       "archive_availability": {
-        "allowed": false,
-        "reason": "not_finished"
-       },
-       "group_id": "grp-smoke",
-       "id": "cnv_public_task_smoke",
-       "kind": "agent_task",
-       "status": "active",
-       "title": "冒烟任务",
-       "updated_at": 1720000003,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
+      "patch": "cnv_public_task_smoke",
+      "ops": [
+       {
+        "path": [
+         "archive_availability"
+        ],
+        "set": {
+         "allowed": false,
+         "reason": "not_finished"
+        }
+       }
+      ]
      }
     ]
    }
@@ -1290,48 +1471,6 @@
   {
    "at": 50,
    "dir": "rest"
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 6,
-    "value": {
-     "activeWorkspaceId": "ws-smoke",
-     "workspaces": [
-      {
-       "group_id": "grp-smoke",
-       "id": "ws-smoke",
-       "name": "Smoke Workspace"
-      }
-     ],
-     "hasMore": false,
-     "items": [],
-     "lastSyncedAt": 1768478400050,
-     "source": "live-sync"
-    }
-   }
-  },
-  {
-   "at": 50,
-   "dir": "in",
-   "data": {
-    "id": 21,
-    "value": {
-     "activeWorkspaceId": "ws-smoke",
-     "workspaces": [
-      {
-       "group_id": "grp-smoke",
-       "id": "ws-smoke",
-       "name": "Smoke Workspace"
-      }
-     ],
-     "hasMore": false,
-     "items": [],
-     "lastSyncedAt": 1768478400050,
-     "source": "live-sync"
-    }
-   }
   },
   {
    "at": 50,
@@ -1370,21 +1509,20 @@
    "at": 50,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 32,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
      "conversation": "cnv_public_task_smoke",
      "participant": "ptc_browser_worker"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1441,7 +1579,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1476,7 +1614,7 @@
    "at": 50,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 32,
     "value": null
    }
   },
@@ -1516,7 +1654,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 32,
     "value": {
      "browser": null
     }
@@ -1557,7 +1695,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1591,7 +1729,7 @@
    "at": 3050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1633,7 +1771,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1667,7 +1805,7 @@
    "at": 6050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1713,7 +1851,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1747,7 +1885,7 @@
    "at": 9050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -1774,18 +1912,23 @@
    "at": 10100,
    "dir": "in",
    "data": {
-    "id": 30,
-    "value": {
-     "browser": {
-      "agent_id": "agent-browser-e2e",
-      "session_id": "browser-e2e",
-      "status": "ready",
-      "control": "agent",
-      "busy": false,
-      "storage_error": null,
-      "updated_at": "2026-05-28T20:26:40.000Z"
+    "id": 32,
+    "delta": [
+     {
+      "path": [
+       "browser"
+      ],
+      "set": {
+       "agent_id": "agent-browser-e2e",
+       "session_id": "browser-e2e",
+       "status": "ready",
+       "control": "agent",
+       "busy": false,
+       "storage_error": null,
+       "updated_at": "2026-05-28T20:26:40.000Z"
+      }
      }
-    }
+    ]
    }
   },
   {
@@ -1793,101 +1936,28 @@
    "dir": "rest"
   },
   {
-   "at": 12050,
-   "dir": "due"
-  },
-  {
-   "at": 12050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 27
-     }
-    ]
-   }
-  },
-  {
-   "at": 12050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 27
-     }
-    ]
-   }
-  },
-  {
-   "at": 12050,
-   "dir": "rest"
-  },
-  {
-   "at": 12050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 30
-     }
-    ]
-   }
-  },
-  {
-   "at": 12050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 30
-     }
-    ]
-   }
-  },
-  {
-   "at": 12050,
-   "dir": "rest"
-  },
-  {
-   "at": 12080,
+   "at": 10160,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 33,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
      "agent": "agent-browser-e2e",
      "session": "browser-e2e",
      "viewer": "2f602cd2-be96-495c-b40c-4645050daf91"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "rest"
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "value": {
      "tabs": [],
      "tab": "",
@@ -1900,14 +1970,14 @@
    }
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "rest"
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -1925,26 +1995,28 @@
       "path": [
        "tabs"
       ],
-      "append": [
-       {
-        "tab_id": "tab",
-        "title": "Remote test page",
-        "url": "https://example.com"
-       }
-      ]
+      "key": [
+       "tab_id"
+      ],
+      "put": {
+       "tab_id": "tab",
+       "title": "Remote test page",
+       "url": "https://example.com"
+      },
+      "before": null
      }
     ]
    }
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "rest"
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -1973,11 +2045,11 @@
    }
   },
   {
-   "at": 12080,
+   "at": 10160,
    "dir": "rest"
   },
   {
-   "at": 12176,
+   "at": 10256,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -1991,10 +2063,10 @@
    }
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "out",
    "data": {
-    "id": 32,
+    "id": 34,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -2006,14 +2078,14 @@
    }
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "rest"
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2025,24 +2097,24 @@
    }
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "rest"
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 34,
     "ok": {
      "closed": false
     }
    }
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2060,14 +2132,14 @@
    }
   },
   {
-   "at": 12240,
+   "at": 10320,
    "dir": "rest"
   },
   {
-   "at": 12288,
+   "at": 10368,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 35,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2076,8 +2148,8 @@
      "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
      "input": {
       "type": "mouseMoved",
-      "x": 33.16062176165803,
-      "y": 22.107081174438687,
+      "x": 67.50164798945286,
+      "y": 45.0021973729186,
       "button": "none",
       "buttons": 0,
       "clickCount": 1,
@@ -2087,26 +2159,26 @@
    }
   },
   {
-   "at": 12288,
+   "at": 10368,
    "dir": "rest"
   },
   {
-   "at": 12288,
+   "at": 10368,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 35,
     "ok": null
    }
   },
   {
-   "at": 12288,
+   "at": 10368,
    "dir": "rest"
   },
   {
-   "at": 12304,
+   "at": 10384,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 36,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2115,8 +2187,8 @@
      "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
      "input": {
       "type": "mousePressed",
-      "x": 33.16062176165803,
-      "y": 22.107081174438687,
+      "x": 67.50164798945286,
+      "y": 45.0021973729186,
       "button": "left",
       "buttons": 1,
       "clickCount": 1,
@@ -2126,26 +2198,26 @@
    }
   },
   {
-   "at": 12304,
+   "at": 10384,
    "dir": "rest"
   },
   {
-   "at": 12304,
+   "at": 10384,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 36,
     "ok": null
    }
   },
   {
-   "at": 12304,
+   "at": 10384,
    "dir": "rest"
   },
   {
-   "at": 12320,
+   "at": 10400,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 37,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2154,8 +2226,8 @@
      "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
      "input": {
       "type": "mouseReleased",
-      "x": 33.16062176165803,
-      "y": 22.107081174438687,
+      "x": 67.50164798945286,
+      "y": 45.0021973729186,
       "button": "left",
       "buttons": 0,
       "clickCount": 1,
@@ -2165,30 +2237,30 @@
    }
   },
   {
-   "at": 12320,
+   "at": 10400,
    "dir": "rest"
   },
   {
-   "at": 12320,
+   "at": 10400,
    "dir": "in",
    "data": {
-    "id": 35,
+    "id": 37,
     "ok": null
    }
   },
   {
-   "at": 12320,
+   "at": 10400,
    "dir": "rest"
   },
   {
-   "at": 12330,
+   "at": 10410,
    "dir": "due"
   },
   {
-   "at": 12330,
+   "at": 10410,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2207,14 +2279,14 @@
    }
   },
   {
-   "at": 12330,
+   "at": 10410,
    "dir": "rest"
   },
   {
-   "at": 12336,
+   "at": 10416,
    "dir": "out",
    "data": {
-    "id": 36,
+    "id": 38,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2232,10 +2304,10 @@
    }
   },
   {
-   "at": 12336,
+   "at": 10416,
    "dir": "out",
    "data": {
-    "id": 37,
+    "id": 39,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2253,34 +2325,34 @@
    }
   },
   {
-   "at": 12336,
+   "at": 10416,
    "dir": "rest"
   },
   {
-   "at": 12336,
+   "at": 10416,
    "dir": "in",
-   "data": {
-    "id": 36,
-    "ok": null
-   }
-  },
-  {
-   "at": 12336,
-   "dir": "in",
-   "data": {
-    "id": 37,
-    "ok": null
-   }
-  },
-  {
-   "at": 12336,
-   "dir": "rest"
-  },
-  {
-   "at": 12384,
-   "dir": "out",
    "data": {
     "id": 38,
+    "ok": null
+   }
+  },
+  {
+   "at": 10416,
+   "dir": "in",
+   "data": {
+    "id": 39,
+    "ok": null
+   }
+  },
+  {
+   "at": 10416,
+   "dir": "rest"
+  },
+  {
+   "at": 10464,
+   "dir": "out",
+   "data": {
+    "id": 40,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2298,10 +2370,10 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
    "dir": "out",
    "data": {
-    "id": 39,
+    "id": 41,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2319,10 +2391,10 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
    "dir": "out",
    "data": {
-    "id": 40,
+    "id": 42,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2340,10 +2412,10 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
    "dir": "out",
    "data": {
-    "id": 41,
+    "id": 43,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2361,27 +2433,11 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
    "dir": "rest"
   },
   {
-   "at": 12384,
-   "dir": "in",
-   "data": {
-    "id": 38,
-    "ok": null
-   }
-  },
-  {
-   "at": 12384,
-   "dir": "in",
-   "data": {
-    "id": 39,
-    "ok": null
-   }
-  },
-  {
-   "at": 12384,
+   "at": 10464,
    "dir": "in",
    "data": {
     "id": 40,
@@ -2389,7 +2445,7 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
    "dir": "in",
    "data": {
     "id": 41,
@@ -2397,14 +2453,30 @@
    }
   },
   {
-   "at": 12384,
+   "at": 10464,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "ok": null
+   }
+  },
+  {
+   "at": 10464,
+   "dir": "in",
+   "data": {
+    "id": 43,
+    "ok": null
+   }
+  },
+  {
+   "at": 10464,
    "dir": "rest"
   },
   {
-   "at": 12448,
+   "at": 10528,
    "dir": "out",
    "data": {
-    "id": 42,
+    "id": 44,
     "call": "browserView.input",
     "params": {
      "workspace": "ws-smoke",
@@ -2419,23 +2491,23 @@
    }
   },
   {
-   "at": 12448,
+   "at": 10528,
    "dir": "rest"
   },
   {
-   "at": 12448,
+   "at": 10528,
    "dir": "in",
    "data": {
-    "id": 42,
+    "id": 44,
     "ok": null
    }
   },
   {
-   "at": 12448,
+   "at": 10528,
    "dir": "rest"
   },
   {
-   "at": 12464,
+   "at": 10544,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -2445,8 +2517,8 @@
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -2454,8 +2526,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -2463,8 +2535,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -2523,7 +2595,7 @@
    }
   },
   {
-   "at": 12464,
+   "at": 10544,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -2533,8 +2605,8 @@
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -2542,8 +2614,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -2551,8 +2623,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -2611,7 +2683,7 @@
    }
   },
   {
-   "at": 12464,
+   "at": 10544,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -2621,8 +2693,8 @@
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -2630,8 +2702,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -2639,8 +2711,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -2699,10 +2771,10 @@
    }
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "out",
    "data": {
-    "id": 43,
+    "id": 45,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -2714,14 +2786,14 @@
    }
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "rest"
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2733,24 +2805,24 @@
    }
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "rest"
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "in",
    "data": {
-    "id": 43,
+    "id": 45,
     "ok": {
      "closed": false
     }
    }
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2774,18 +2846,18 @@
    }
   },
   {
-   "at": 12528,
+   "at": 10608,
    "dir": "rest"
   },
   {
-   "at": 12580,
+   "at": 10660,
    "dir": "due"
   },
   {
-   "at": 12580,
+   "at": 10660,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 33,
     "delta": [
      {
       "path": [
@@ -2804,23 +2876,23 @@
    }
   },
   {
-   "at": 12580,
+   "at": 10660,
    "dir": "rest"
   },
   {
-   "at": 12608,
+   "at": 10688,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 33,
     "unsubscribe": true
    }
   },
   {
-   "at": 12608,
+   "at": 10688,
    "dir": "rest"
   },
   {
-   "at": 12624,
+   "at": 10704,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -2830,8 +2902,8 @@
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -2839,8 +2911,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -2848,8 +2920,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -2908,11 +2980,7 @@
    }
   },
   {
-   "at": 13050,
-   "dir": "due"
-  },
-  {
-   "at": 13124,
+   "at": 11204,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
@@ -2922,8 +2990,8 @@
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -2931,8 +2999,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -2940,8 +3008,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -3000,101 +3068,28 @@
    }
   },
   {
-   "at": 15050,
-   "dir": "due"
-  },
-  {
-   "at": 15050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 31
-     }
-    ]
-   }
-  },
-  {
-   "at": 15050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 31
-     }
-    ]
-   }
-  },
-  {
-   "at": 15050,
-   "dir": "rest"
-  },
-  {
-   "at": 15050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 34
-     }
-    ]
-   }
-  },
-  {
-   "at": 15050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 34
-     }
-    ]
-   }
-  },
-  {
-   "at": 15050,
-   "dir": "rest"
-  },
-  {
-   "at": 15072,
+   "at": 11264,
    "dir": "out",
    "data": {
-    "id": 44,
+    "id": 46,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
      "agent": "agent-browser-e2e",
      "session": "browser-e2e",
      "viewer": "36b97e54-3012-4e40-b59f-34f45f9c21aa"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "rest"
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "value": {
      "tabs": [],
      "tab": "",
@@ -3107,14 +3102,14 @@
    }
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "rest"
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "delta": [
      {
       "path": [
@@ -3132,26 +3127,28 @@
       "path": [
        "tabs"
       ],
-      "append": [
-       {
-        "tab_id": "tab",
-        "title": "Remote test page",
-        "url": "https://example.com"
-       }
-      ]
+      "key": [
+       "tab_id"
+      ],
+      "put": {
+       "tab_id": "tab",
+       "title": "Remote test page",
+       "url": "https://example.com"
+      },
+      "before": null
      }
     ]
    }
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "rest"
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "delta": [
      {
       "path": [
@@ -3180,14 +3177,38 @@
    }
   },
   {
-   "at": 15072,
+   "at": 11264,
    "dir": "rest"
   },
   {
-   "at": 15152,
+   "at": 11514,
+   "dir": "due"
+  },
+  {
+   "at": 11514,
+   "dir": "in",
+   "data": {
+    "id": 46,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 2
+     }
+    ]
+   }
+  },
+  {
+   "at": 11514,
+   "dir": "rest"
+  },
+  {
+   "at": 11536,
    "dir": "out",
    "data": {
-    "id": 45,
+    "id": 47,
     "call": "browserView.command",
     "params": {
      "workspace": "ws-smoke",
@@ -3199,14 +3220,14 @@
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "rest"
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "delta": [
      {
       "path": [
@@ -3218,24 +3239,24 @@
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "rest"
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "in",
    "data": {
-    "id": 45,
+    "id": 47,
     "ok": {
      "closed": true
     }
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "out",
    "data": {
-    "id": 46,
+    "id": 48,
     "call": "sessionBrowser.refresh",
     "params": {
      "workspace": "ws-smoke",
@@ -3245,10 +3266,10 @@
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "in",
    "data": {
-    "id": 44,
+    "id": 46,
     "delta": [
      {
       "path": [
@@ -3260,49 +3281,54 @@
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "rest"
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "in",
    "data": {
-    "id": 46,
+    "id": 48,
     "ok": null
    }
   },
   {
-   "at": 15152,
+   "at": 11536,
    "dir": "rest"
   },
   {
-   "at": 15202,
+   "at": 11586,
    "dir": "due"
   },
   {
-   "at": 15202,
+   "at": 11586,
    "dir": "in",
    "data": {
-    "id": 30,
-    "value": {
-     "browser": null
-    }
+    "id": 32,
+    "delta": [
+     {
+      "path": [
+       "browser"
+      ],
+      "set": null
+     }
+    ]
    }
   },
   {
-   "at": 15202,
+   "at": 11586,
    "dir": "out",
    "data": {
-    "id": 44,
+    "id": 46,
     "unsubscribe": true
    }
   },
   {
-   "at": 15202,
+   "at": 11586,
    "dir": "rest"
   },
   {
-   "at": 15202,
+   "at": 11586,
    "dir": "step",
    "data": {
     "name": "stub.setBrowserActive",
@@ -3310,6 +3336,154 @@
      true
     ]
    }
+  },
+  {
+   "at": 12050,
+   "dir": "due"
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "rest"
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "rest"
+  },
+  {
+   "at": 13050,
+   "dir": "due"
+  },
+  {
+   "at": 15050,
+   "dir": "due"
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "rest"
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "rest"
   },
   {
    "at": 16050,
@@ -3338,7 +3512,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -3372,7 +3546,7 @@
    "at": 18050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -3422,7 +3596,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -3456,7 +3630,7 @@
    "at": 21050,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 31,
     "delta": [
      {
       "path": [
@@ -3472,211 +3646,63 @@
    "dir": "rest"
   },
   {
-   "at": 22050,
+   "at": 21536,
    "dir": "due"
   },
   {
-   "at": 24050,
+   "at": 21586,
    "dir": "due"
   },
   {
-   "at": 24050,
+   "at": 21586,
    "dir": "in",
    "data": {
-    "id": 13,
+    "id": 32,
     "delta": [
      {
       "path": [
-       "revision"
+       "browser"
       ],
-      "set": 43
+      "set": {
+       "agent_id": "agent-browser-e2e",
+       "session_id": "browser-e2e",
+       "status": "ready",
+       "control": "agent",
+       "busy": false,
+       "storage_error": "browser_storage_partially_saved",
+       "updated_at": "2026-05-28T20:26:40.002Z"
+      }
      }
     ]
    }
   },
   {
-   "at": 24050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 43
-     }
-    ]
-   }
-  },
-  {
-   "at": 24050,
+   "at": 21586,
    "dir": "rest"
   },
   {
-   "at": 24050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 46
-     }
-    ]
-   }
-  },
-  {
-   "at": 24050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 46
-     }
-    ]
-   }
-  },
-  {
-   "at": 24050,
-   "dir": "rest"
-  },
-  {
-   "at": 25050,
-   "dir": "due"
-  },
-  {
-   "at": 25152,
-   "dir": "due"
-  },
-  {
-   "at": 25202,
-   "dir": "due"
-  },
-  {
-   "at": 25202,
-   "dir": "in",
-   "data": {
-    "id": 30,
-    "value": {
-     "browser": {
-      "agent_id": "agent-browser-e2e",
-      "session_id": "browser-e2e",
-      "status": "ready",
-      "control": "agent",
-      "busy": false,
-      "storage_error": "browser_storage_partially_saved",
-      "updated_at": "2026-05-28T20:26:40.002Z"
-     }
-    }
-   }
-  },
-  {
-   "at": 25202,
-   "dir": "rest"
-  },
-  {
-   "at": 27050,
-   "dir": "due"
-  },
-  {
-   "at": 27050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 47
-     }
-    ]
-   }
-  },
-  {
-   "at": 27050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 47
-     }
-    ]
-   }
-  },
-  {
-   "at": 27050,
-   "dir": "rest"
-  },
-  {
-   "at": 27050,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 50
-     }
-    ]
-   }
-  },
-  {
-   "at": 27050,
-   "dir": "in",
-   "data": {
-    "id": 29,
-    "delta": [
-     {
-      "path": [
-       "revision"
-      ],
-      "set": 50
-     }
-    ]
-   }
-  },
-  {
-   "at": 27050,
-   "dir": "rest"
-  },
-  {
-   "at": 27072,
+   "at": 21648,
    "dir": "out",
    "data": {
-    "id": 47,
+    "id": 49,
     "subscribe": {
      "topic": "browserView",
      "workspace": "ws-smoke",
      "agent": "agent-browser-e2e",
      "session": "browser-e2e",
      "viewer": "534335b4-fb87-489e-83e1-272d534a08b6"
-    },
-    "keyed": true
+    }
    }
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "rest"
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "in",
    "data": {
-    "id": 47,
+    "id": 49,
     "value": {
      "tabs": [],
      "tab": "",
@@ -3689,14 +3715,14 @@
    }
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "rest"
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "in",
    "data": {
-    "id": 47,
+    "id": 49,
     "delta": [
      {
       "path": [
@@ -3714,26 +3740,28 @@
       "path": [
        "tabs"
       ],
-      "append": [
-       {
-        "tab_id": "tab",
-        "title": "Remote test page",
-        "url": "https://example.com"
-       }
-      ]
+      "key": [
+       "tab_id"
+      ],
+      "put": {
+       "tab_id": "tab",
+       "title": "Remote test page",
+       "url": "https://example.com"
+      },
+      "before": null
      }
     ]
    }
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "rest"
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "in",
    "data": {
-    "id": 47,
+    "id": 49,
     "delta": [
      {
       "path": [
@@ -3762,194 +3790,18 @@
    }
   },
   {
-   "at": 27072,
+   "at": 21648,
    "dir": "rest"
   },
   {
-   "at": 27168,
-   "dir": "step",
-   "data": {
-    "name": "stub.browserState",
-    "args": [],
-    "result": {
-     "scopedReads": 4,
-     "inputs": [
-      {
-       "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "none",
-       "clickCount": 1,
-       "buttons": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "left",
-       "clickCount": 1,
-       "buttons": 1,
-       "modifiers": 0
-      },
-      {
-       "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "left",
-       "clickCount": 1,
-       "buttons": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyDown",
-       "key": "Tab",
-       "code": "Tab",
-       "keyCode": 9,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Tab",
-       "code": "Tab",
-       "keyCode": 9,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Shift",
-       "code": "Shift",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Control",
-       "code": "Control",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Alt",
-       "code": "Alt",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Meta",
-       "code": "Meta",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "text",
-       "text": "中文輸入"
-      }
-     ],
-     "streams": 5,
-     "cleared": false
-    }
-   }
-  },
-  {
-   "at": 27248,
-   "dir": "step",
-   "data": {
-    "name": "stub.browserState",
-    "args": [],
-    "result": {
-     "scopedReads": 4,
-     "inputs": [
-      {
-       "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "none",
-       "clickCount": 1,
-       "buttons": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "left",
-       "clickCount": 1,
-       "buttons": 1,
-       "modifiers": 0
-      },
-      {
-       "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
-       "button": "left",
-       "clickCount": 1,
-       "buttons": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyDown",
-       "key": "Tab",
-       "code": "Tab",
-       "keyCode": 9,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Tab",
-       "code": "Tab",
-       "keyCode": 9,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Shift",
-       "code": "Shift",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Control",
-       "code": "Control",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Alt",
-       "code": "Alt",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "keyUp",
-       "key": "Meta",
-       "code": "Meta",
-       "keyCode": 0,
-       "modifiers": 0
-      },
-      {
-       "type": "text",
-       "text": "中文輸入"
-      }
-     ],
-     "streams": 5,
-     "cleared": false
-    }
-   }
-  },
-  {
-   "at": 27322,
+   "at": 21898,
    "dir": "due"
   },
   {
-   "at": 27322,
+   "at": 21898,
    "dir": "in",
    "data": {
-    "id": 47,
+    "id": 49,
     "delta": [
      {
       "path": [
@@ -3962,114 +3814,22 @@
    }
   },
   {
-   "at": 27322,
+   "at": 21898,
    "dir": "rest"
   },
   {
-   "at": 27392,
-   "dir": "out",
-   "data": {
-    "id": 48,
-    "call": "browserView.command",
-    "params": {
-     "workspace": "ws-smoke",
-     "agent": "agent-browser-e2e",
-     "session": "browser-e2e",
-     "viewer": "534335b4-fb87-489e-83e1-272d534a08b6",
-     "operation": "clear_storage"
-    }
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "rest"
-  },
-  {
-   "at": 27392,
-   "dir": "in",
-   "data": {
-    "id": 47,
-    "delta": [
-     {
-      "path": [
-       "pending"
-      ],
-      "set": true
-     }
-    ]
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "rest"
-  },
-  {
-   "at": 27392,
-   "dir": "in",
-   "data": {
-    "id": 48,
-    "ok": {
-     "closed": true
-    }
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "out",
-   "data": {
-    "id": 49,
-    "call": "sessionBrowser.refresh",
-    "params": {
-     "workspace": "ws-smoke",
-     "conversation": "cnv_public_task_smoke",
-     "participant": "ptc_browser_worker"
-    }
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "in",
-   "data": {
-    "id": 47,
-    "delta": [
-     {
-      "path": [
-       "pending"
-      ],
-      "set": false
-     }
-    ]
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "rest"
-  },
-  {
-   "at": 27392,
-   "dir": "in",
-   "data": {
-    "id": 49,
-    "ok": null
-   }
-  },
-  {
-   "at": 27392,
-   "dir": "rest"
-  },
-  {
-   "at": 27408,
+   "at": 21936,
    "dir": "step",
    "data": {
     "name": "stub.browserState",
     "args": [],
     "result": {
-     "scopedReads": 5,
+     "scopedReads": 4,
      "inputs": [
       {
        "type": "mouseMoved",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "none",
        "clickCount": 1,
        "buttons": 0,
@@ -4077,8 +3837,8 @@
       },
       {
        "type": "mousePressed",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 1,
@@ -4086,8 +3846,8 @@
       },
       {
        "type": "mouseReleased",
-       "x": 33.16062176165803,
-       "y": 22.107081174438687,
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
        "button": "left",
        "clickCount": 1,
        "buttons": 0,
@@ -4140,35 +3900,408 @@
        "text": "中文輸入"
       }
      ],
-     "streams": 6,
+     "streams": 7,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 22050,
+   "dir": "due"
+  },
+  {
+   "at": 22148,
+   "dir": "due"
+  },
+  {
+   "at": 22148,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 3
+     }
+    ]
+   }
+  },
+  {
+   "at": 22148,
+   "dir": "rest"
+  },
+  {
+   "at": 22384,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 4,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 8,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 22398,
+   "dir": "due"
+  },
+  {
+   "at": 22398,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 4
+     }
+    ]
+   }
+  },
+  {
+   "at": 22398,
+   "dir": "rest"
+  },
+  {
+   "at": 22648,
+   "dir": "due"
+  },
+  {
+   "at": 22648,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 5
+     }
+    ]
+   }
+  },
+  {
+   "at": 22648,
+   "dir": "rest"
+  },
+  {
+   "at": 22898,
+   "dir": "due"
+  },
+  {
+   "at": 22898,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 6
+     }
+    ]
+   }
+  },
+  {
+   "at": 22898,
+   "dir": "rest"
+  },
+  {
+   "at": 22960,
+   "dir": "out",
+   "data": {
+    "id": 50,
+    "call": "browserView.command",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "534335b4-fb87-489e-83e1-272d534a08b6",
+     "operation": "clear_storage"
+    }
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "rest"
+  },
+  {
+   "at": 22960,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "rest"
+  },
+  {
+   "at": 22960,
+   "dir": "in",
+   "data": {
+    "id": 50,
+    "ok": {
+     "closed": true
+    }
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "out",
+   "data": {
+    "id": 51,
+    "call": "sessionBrowser.refresh",
+    "params": {
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "participant": "ptc_browser_worker"
+    }
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "in",
+   "data": {
+    "id": 49,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "rest"
+  },
+  {
+   "at": 22960,
+   "dir": "in",
+   "data": {
+    "id": 51,
+    "ok": null
+   }
+  },
+  {
+   "at": 22960,
+   "dir": "rest"
+  },
+  {
+   "at": 22976,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 5,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 67.50164798945286,
+       "y": 45.0021973729186,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 11,
      "cleared": true
     }
    }
   },
   {
-   "at": 27442,
+   "at": 23010,
    "dir": "due"
   },
   {
-   "at": 27442,
+   "at": 23010,
    "dir": "in",
    "data": {
-    "id": 30,
-    "value": {
-     "browser": null
-    }
+    "id": 32,
+    "delta": [
+     {
+      "path": [
+       "browser"
+      ],
+      "set": null
+     }
+    ]
    }
   },
   {
-   "at": 27442,
+   "at": 23010,
    "dir": "out",
    "data": {
-    "id": 47,
+    "id": 49,
     "unsubscribe": true
    }
   },
   {
-   "at": 27442,
+   "at": 23010,
    "dir": "rest"
   }
  ]

@@ -1,10 +1,13 @@
 import Foundation
+import UIKit
 import CommaCore
 import notify
 
 /// What the fixture answers a request with: a status and JSON, or an event stream that stays open.
 enum FixtureResponse: Sendable {
     case json(Int, Data)
+    case bytes(Data, String)
+    case partial(Data, String, offset: Int, total: Int)
     case stream(AsyncThrowingStream<Data, any Error>)
     /// The connection fails, as an unreachable server's does.
     case unreachable
@@ -54,12 +57,15 @@ actor FixtureServer {
         self.metrics = metrics
         self.perf = perf
         router = perf.variedChat ? PerfChat.varied() : perf.longChat ? PerfChat.messages() : FixtureData.routerMessages
+        if ProcessInfo.processInfo.arguments.contains("--startup-short-chat") { router = Array(router.prefix(2)) }
+        if ChatImageFixture.enabled { router += ChatImageFixture.messages }
         replyGate = perf.stream ? PerfReplyGate.listening() : nil
     }
 
     /// Listens for `PerfSignal.recover`, after which the failing reads answer, `PerfSignal.releaseSave` and
     /// `PerfSignal.releaseEarlier`.
     func listenForSignals() {
+        FixtureRecorder.listen()
         var token: Int32 = 0
         notify_register_dispatch(PerfSignal.recover.name, &token, .global()) { [weak self] _ in
             Task { await self?.recover() }
@@ -113,12 +119,31 @@ actor FixtureServer {
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func value(_ name: String) -> String? { query.first(where: { $0.name == name })?.value }
         let path = url.path.replacingOccurrences(of: "/v1/comma/", with: "")
+        if ChatImageFixture.enabled, let response = await MainActor.run(body: {
+            ChatImageFixture.response(path, body: body, range: request.value(forHTTPHeaderField: "range"))
+        }) { return response }
+        if ProcessInfo.processInfo.arguments.contains("--mini-app"), let response = MiniAppFixture.response(path) {
+            return response
+        }
         let parts = path.split(separator: "/").map(String.init)
         let json: String
         switch (request.httpMethod ?? "GET", path) {
         // A send, to the router chat or a Task: first, as the router's message history shares its path.
         case ("POST", _) where parts.count == 5 && parts[2] == "conversations" && parts[4] == "messages":
             json = try await accept(body, in: parts[3])
+        // The composer's dictation: after three seconds, the server's one `transcription` event; `--dictation-fails` makes
+        // it the ASR's failure.
+        case ("POST", "me/recordings/transcribe"):
+            let failed = ProcessInfo.processInfo.arguments.contains("--dictation-fails")
+            let result = failed ? #"{"status":"error","reason":"Transcription failed. The audio remains in Drive."}"#
+                : #"{"status":"ready","result":{"transcript":"Book the room for Friday","duration_seconds":2,"chunks":[]}}"#
+            return .stream(AsyncThrowingStream { continuation in
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    continuation.yield(Data("event: transcription\ndata: \(result)\n\n".utf8))
+                    continuation.finish()
+                }
+            })
         case (_, "auth/session"):
             json = #"{"session_id":"s","expires_at":9999999999,"user":{"id":"u","email":"test@test.test"}}"#
         case ("POST", "me/bootstrap"):
@@ -302,6 +327,18 @@ final class FixtureURLProtocol: URLProtocol, @unchecked Sendable {
                 client.urlProtocol(this, didReceive: Self.response(request, status, "application/json"), cacheStoragePolicy: .notAllowed)
                 client.urlProtocol(this, didLoad: data)
                 client.urlProtocolDidFinishLoading(this)
+            case .bytes(let data, let mime):
+                client.urlProtocol(this, didReceive: Self.response(request, 200, mime), cacheStoragePolicy: .notAllowed)
+                client.urlProtocol(this, didLoad: data)
+                client.urlProtocolDidFinishLoading(this)
+            case .partial(let data, let mime, let offset, let total):
+                let response = HTTPURLResponse(url: request.url!, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
+                    "Content-Type": mime, "Content-Length": String(data.count), "Accept-Ranges": "bytes",
+                    "Content-Range": "bytes \(offset)-\(offset + data.count - 1)/\(total)",
+                ])!
+                client.urlProtocol(this, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client.urlProtocol(this, didLoad: data)
+                client.urlProtocolDidFinishLoading(this)
             case .stream(let chunks):
                 client.urlProtocol(this, didReceive: Self.response(request, 200, "text/event-stream"), cacheStoragePolicy: .notAllowed)
                 do {
@@ -337,3 +374,70 @@ final class FixtureURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+
+/// A local bundle for native fullscreen, keyboard and dismissal checks.
+private enum MiniAppFixture {
+    static let baseApp = #"{"id":"reading","slug":"reading","workspace_id":"w","name":"Reading tracker","description":"Your cloud reading list","icon_url":null,"repo":{"owner":"test","name":"app"},"visibility":"private","status":"active","live_version":1,"latest_version":1,"author":{"name":"Alex"},"capabilities":["files.pick"],"egress":[],"storage":["user"],"has_backend":false,"secrets":[],"grants":[],"installed":false,"install":null,"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}"#
+    static var app: String {
+        guard ProcessInfo.processInfo.arguments.contains("--app-detail"),
+              var value = (try? JSONSerialization.jsonObject(with: Data(baseApp.utf8))) as? [String: Any] else { return baseApp }
+        value["description"] = String(repeating: "Keep your reading list, record memorable passages, and review your notes in one place. ", count: 6)
+        value["icon_url"] = "/v1/comma/apps/reading/icon?v=1"
+        value["cover_url"] = "/v1/comma/apps/reading/cover?v=1"
+        value["screenshot_urls"] = ["/v1/comma/apps/reading/screenshots/0?v=1", "/v1/comma/apps/reading/screenshots/1?v=1"]
+        value["versions"] = [
+            ["number": 1, "state": "ready", "live": true, "notes": "Save your reading list and keep notes for each book."],
+            ["number": 2, "state": "ready", "live": false, "notes": "Add reading goals", "commit": "abcdef1234"],
+        ]
+        return String(data: (try? JSONSerialization.data(withJSONObject: value)) ?? Data(baseApp.utf8), encoding: .utf8) ?? baseApp
+    }
+
+    static func response(_ path: String) -> FixtureResponse? {
+        if ProcessInfo.processInfo.arguments.contains("--app-detail"),
+           ["apps/reading/icon", "apps/reading/cover", "apps/reading/screenshots/0", "apps/reading/screenshots/1"].contains(path) {
+            // A colored cover makes unintended gaps under the Duo's system rail visible.
+            if path.hasSuffix("cover"), let data = UIImage(named: "MiniAppCoverPlaceholder")?.pngData() {
+                return .bytes(data, "image/png")
+            }
+            let file = path.hasSuffix("icon") ? "mini-app-icon" : "mini-app-cover"
+            if let url = Bundle.main.url(forResource: file, withExtension: "png"), let data = try? Data(contentsOf: url) {
+                return .bytes(data, "image/png")
+            }
+        }
+        switch path {
+        case "workspaces/w/apps":
+            if ProcessInfo.processInfo.arguments.contains("--mini-app-empty") { return .ok(#"{"data":[]}"#) }
+            return .ok("{\"data\":[\(app)]}")
+        case "workspaces/w/apps/reading": return .ok(app)
+        case "apps/reading/open": return .ok("{\"app\":\(app),\"version\":1,\"digest\":\"fixture\",\"guest\":false,\"viewer\":{\"id\":\"u\",\"name\":\"Alex\",\"avatar_url\":null}}")
+        case "workspaces/w/apps/reading/versions/1/bundle": return .json(200, bundle)
+        default: return nil
+        }
+    }
+    static var bundle: Data {
+        let html = """
+        <!doctype html><style>html,body{height:100%}body{box-sizing:border-box;background:#efe5d0;color:#28241f;font:17px -apple-system;padding:24px}input{font:inherit;padding:12px;max-width:90%;border-radius:12px;border:1px solid #8c8069}p{line-height:1.6}</style>
+        <h1>Reading tracker</h1><p>Your cloud reading list</p><p>The Little Prince<br>A Brief History of Time</p><input aria-label="Reading notes" placeholder="Reading notes"><p>Reading app ready</p>
+        <button id="photos">Choose app photos</button><p id="photo-result">No photos shared</p>
+        <script>
+        document.getElementById('photos').onclick = async () => {
+          document.getElementById('photo-result').textContent = 'Photo request pending';
+          try {
+            const files = await comma.files.pick({accept:['image/png']});
+            document.getElementById('photo-result').textContent = files.length
+              ? 'Shared photo: ' + files[0].mime + ', buffer=' + (files[0].data instanceof ArrayBuffer)
+              : 'Photo request cancelled';
+          } catch (e) { document.getElementById('photo-result').textContent = 'Photo request: ' + e.code; }
+        };
+        </script>
+        """
+        let body = Data(html.utf8)
+        var header = Data(repeating: 0, count: 512)
+        header.replaceSubrange(0 ..< 10, with: "index.html".utf8)
+        let size = String(body.count, radix: 8)
+        header.replaceSubrange(124 ..< 135, with: (String(repeating: "0", count: 11 - size.count) + size).utf8)
+        header[156] = 0x30
+        header.replaceSubrange(257 ..< 262, with: "ustar".utf8)
+        return header + body + Data(repeating: 0, count: (512 - body.count % 512) % 512 + 1024)
+    }
+}

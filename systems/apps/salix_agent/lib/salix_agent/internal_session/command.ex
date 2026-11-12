@@ -8,6 +8,20 @@ defmodule SalixAgent.InternalSession.Command do
 
   def run(agent_id, session_id, revision, command, args, checkpoint \\ nil)
 
+  def run(agent_id, session_id, %Revision{} = revision, command, {entry, _born}, checkpoint)
+      when command in [:input, :stage_conversation] do
+    case InternalSessionStore.input_command(
+           agent_id,
+           session_id,
+           revision,
+           command,
+           entry
+         ) do
+      {result, %Revision{} = next} -> {result, next, checkpoint}
+      {:error, reason} -> {{:error, reason}, revision, checkpoint}
+    end
+  end
+
   def run(agent_id, session_id, %Revision{} = revision, command, args, checkpoint)
       when command in [:input, :stage_conversation, :activate, :log, :recover] do
     io = %{agent_id: agent_id, session_id: session_id, revision: revision}
@@ -130,6 +144,22 @@ defmodule SalixAgent.InternalSession.Command do
   def external_error(reason), do: reason
 
   defp diagnostic(reason), do: inspect(reason, limit: 20, printable_limit: 2048)
+
+  @doc false
+  def execute_workspace(agent_id, {:workspace, operation_id, metadata, events, billing_context}) do
+    case SalixAgent.AgentActor.commit_workspace_operation(
+           agent_id,
+           operation_id,
+           metadata,
+           events,
+           billing_context: billing_context,
+           entrypoint: "storage_write",
+           actor_type: "delivery"
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, external_error(reason)}
+    end
+  end
 
   defp execute({:workspace, operation_id, metadata, events, billing_context}, io) do
     result =

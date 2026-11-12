@@ -169,12 +169,30 @@ def start (state args : Term) : Output :=
     | _ => failed (a "invalid_term")
   | _ => failed (a "invalid_term")
 
+/-- Plan one fetched page with the same cut and accumulated byte count used
+by publication. This operation performs no read, create, or adoption. -/
+def plan (state args : Term) : Output :=
+  match args with
+  | .tuple [.integer line, .integer bytes] =>
+    if line ≤ 0 || bytes < 0 then failed (a "invalid_term") else
+    match StorageQuery.archiveWindow state [] with
+    | .ok (.tuple [.atom "ok", .list records, .integer ceiling], []) =>
+      match cut ceiling line.toNat records bytes.toNat with
+      | .ok (selected, total) =>
+        (none, .tuple [a "ok", i selected.length, i total])
+      | .error reason => failed (.tuple [a "segment_encode_failed", b reason])
+    | .ok (.tuple [.atom "error", reason], []) => failed reason
+    | .error (.raised reason) => failed reason
+    | _ => failed (a "invalid_term")
+  | _ => failed (a "invalid_term")
+
 def packOutput (output : Output) : Option Term × Term :=
   (output.1.map Cursor.pack, output.2)
 
 def resident (current : Option Term) (operation args : Term) : Option Term × Term :=
   match operation, current with
   | .atom "start", some state => packOutput (start state args)
+  | .atom "plan", some state => packOutput (plan state args)
   | .atom "resume", some value =>
     match Cursor.unpack value with
     | some cursor => packOutput (resume cursor args)

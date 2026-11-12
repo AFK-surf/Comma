@@ -367,3 +367,4 @@ Loading follows the same idea:
 - Text by role only: no `text-sm`, no `text-[15px]`.
 - No hex, no `rgb()`, no arbitrary values (`p-[13px]`), no `dark:` color
   classes, no fonts.
+- `public/cover.jpg` shows the current first screen (AGENTS.md, Cover).

@@ -17,7 +17,6 @@
     <string name="chat_send_failed_icon">Not sent, show options</string>
     <string name="chat_session_retry">Offline · Tap to retry</string>
     <string name="chat_scroll_to_latest">Jump to latest</string>
-    <string name="chat_reply_copy">Copy</string>
     <!-- An Agent's question card under its message, and the receipt it closes into. -->
     <string name="chat_question_recommended">Recommended</string>
     <string name="chat_question_multi">Choose any</string>
@@ -44,10 +43,39 @@
     <string name="chat_request_reopen">Open again</string>
     <string name="chat_request_decline">Decline</string>
     <string name="chat_request_waiting_browser">Finish authorizing in your browser…</string>
+    <string name="chat_request_open_form">Open form</string>
+    <string name="chat_request_waiting_form">Finish filling in the form…</string>
     <string name="chat_request_connected">Connected %1$s</string>
     <string name="chat_request_declined">You did not connect %1$s</string>
     <string name="chat_request_expired">The request expired</string>
     <string name="chat_request_cancelled">The Agent withdrew this request</string>
     <string name="chat_request_failed">This request did not finish</string>
     <string name="chat_request_decline_failed">Could not decline. Try again.</string>
+    <string name="chat_request_fill">Fill in</string>
+    <string name="chat_request_fill_title">Fill in %1$s</string>
+    <string name="chat_request_save">Save</string>
+    <string name="chat_request_saved">Saved</string>
+    <string name="chat_request_next">Next</string>
+    <string name="chat_request_app_id">App ID</string>
+    <string name="chat_request_app_secret">App Secret</string>
+    <string name="chat_request_app_help">Find them in %1$s\'s developer console</string>
+    <string name="chat_request_value_help">Where to get it</string>
+    <string name="chat_request_redirect_url">Redirect URL</string>
+    <string name="chat_request_fill_hint">Saved to Comma directly. It stays out of the chat and is not sent to the model.</string>
+    <string name="chat_request_fill_failed">Could not save. Try again.</string>
+    <string name="chat_request_location_title">Share your location</string>
+    <string name="chat_request_location_share">Share location</string>
+    <string name="chat_request_location_locating">Getting your location…</string>
+    <string name="chat_request_location_denied">Location is off for Comma. Turn it on in your settings, then try again.</string>
+    <string name="chat_request_location_unavailable">Your location is not known now. Try again.</string>
+    <string name="chat_request_location_failed">Could not share. Try again.</string>
+    <string name="chat_request_location_shared">Location shared</string>
+    <string name="chat_request_location_declined">You did not share your location</string>
+    <string name="chat_request_login_title">Log in to %1$s CLI</string>
+    <string name="chat_request_logged_in">Logged in</string>
+    <string name="chat_request_login_copy_open">Copy code and open</string>
+    <string name="chat_request_login_code">Code from the page</string>
+    <string name="chat_request_login_open">Open the sign-in page</string>
+    <string name="chat_request_login_submit">Submit</string>
+    <string name="chat_suggestions">Suggested replies</string>
 </resources>

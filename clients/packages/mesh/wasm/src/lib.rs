@@ -1,5 +1,5 @@
 //! The client core's iroh in the browser (clients/packages/core/src/hosts/web-mesh.ts): an endpoint on the relays
-//! alone (a browser has no UDP), its connections to stations and their streams, and Salix as the relay of last resort
+//! alone (a browser has no UDP), its connections to stations and their streams, and Salix as a relay
 //! (the station's salix.rs; the page's WebSocket carries the packets, as @comma/mesh's salix-relay.ts does for the
 //! desktop). It answers as the station's addon does to Node (systems/station/native/mesh, @comma/mesh's
 //! station-native.ts `NativeEndpoint`), so the same mesh runs over either.
@@ -25,11 +25,28 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
+/// How often a path that carries nothing is asked whether it is still there, and how long one may say nothing before
+/// it is given up (packets go on on another path meanwhile: the relay, or a direct one): iroh's own 5 s and 15 s held a
+/// connection on a direct path whose peer had gone (a station restarted on another port) that long, every stream on
+/// it waiting. As still.fail's mesh (station/native/mesh/src/lib.rs `PATH_KEEP_ALIVE`, `PATH_IDLE`).
+const PATH_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(1);
+const PATH_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a connection may hear nothing before it is given up: iroh's 30 s gave up every connection of a phone app
+/// frozen in the background that long, each dialled anew on its return (still.fail's `CONNECTION_IDLE_MS`). A peer
+/// gone with a connection open is told by the core's ping (`PING_EVERY_MS`), not by this. The peers take the lower of
+/// theirs.
+const CONNECTION_IDLE_MS: u32 = 10 * 60_000;
+
 fn failed(error: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&error.to_string()).into()
 }
 
+/// A relay's URL, its host without the root's dot iroh's own relays are written with (`use1-1.relay.n0.iroh.link.`):
+/// WebKit takes a certificate for no such host, and its WebSocket to the relay fails before it opens (Chrome's goes).
 fn relay_url(url: &str) -> Result<RelayUrl, JsValue> {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    let end = url[start..].find(['/', ':', '?', '#']).map_or(url.len(), |i| start + i);
+    let url = if end > start && url[..end].ends_with('.') { format!("{}{}", &url[..end - 1], &url[end..]) } else { url.to_owned() };
     url.parse().map_err(failed)
 }
 
@@ -46,6 +63,9 @@ struct Options {
     relay_urls: Vec<String>,
     #[serde(default)]
     salix_relay: bool,
+    /// `relay-first`: an iroh relay before Salix. Else Salix ahead of it.
+    #[serde(default)]
+    route_policy: Option<String>,
 }
 
 /// As the station's addon paces: BBR with a first window of 256 KiB, so a screen's first page crosses in one round
@@ -53,7 +73,12 @@ struct Options {
 fn transport() -> QuicTransportConfig {
     let mut bbr = noq_proto::congestion::Bbr3Config::default();
     bbr.initial_window(256 * 1024);
-    QuicTransportConfig::builder().congestion_controller_factory(Arc::new(bbr)).build()
+    QuicTransportConfig::builder()
+        .congestion_controller_factory(Arc::new(bbr))
+        .default_path_keep_alive_interval(PATH_KEEP_ALIVE)
+        .default_path_max_idle_timeout(PATH_IDLE)
+        .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(CONNECTION_IDLE_MS).into()))
+        .build()
 }
 
 /// An endpoint with the device's key on the control plane's relays, and through Salix when `salixRelay`.
@@ -70,6 +95,9 @@ pub fn bind(options: JsValue) -> Promise {
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(iroh::RelayMap::from_iter(relays)) })
             .transport_config(transport());
         let mut relay = None;
+        if options.route_policy.as_deref() == Some("relay-first") {
+            builder = builder.custom_transports_last();
+        }
         if options.salix_relay {
             let (transport, queues) = salix::transport(key.public());
             builder = builder.add_custom_transport(transport);
@@ -311,6 +339,20 @@ impl Stream {
         let halves = self.halves.clone();
         future_to_promise(async move {
             halves.send.lock().await.finish().map_err(failed)?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Stops reading it: the other end's writes fail with `code`, and the stream goes once it has finished sending (a
+    /// half left unread would hold it open, counted against the streams the other end may open).
+    pub fn stop(&self, code: u32) -> Promise {
+        let halves = self.halves.clone();
+        future_to_promise(async move {
+            *halves.reset.borrow_mut() = true;
+            for wake in halves.waiting.borrow_mut().drain(..) {
+                let _ = wake.send(());
+            }
+            let _ = halves.recv.lock().await.stop(code.into());
             Ok(JsValue::UNDEFINED)
         })
     }

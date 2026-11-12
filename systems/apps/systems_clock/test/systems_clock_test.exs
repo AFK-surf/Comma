@@ -8,6 +8,12 @@ defmodule SystemsClockTest do
     def run(fun), do: fun.()
   end
 
+  # Work outside that scope, which the clock does not see.
+  defmodule Outside do
+    def start(fun), do: :proc_lib.spawn(__MODULE__, :run, [fun])
+    def run(fun), do: fun.()
+  end
+
   # A process that never stops running, outside that scope.
   defmodule Spinner do
     def start, do: :proc_lib.spawn(__MODULE__, :spin, [])
@@ -41,6 +47,27 @@ defmodule SystemsClockTest do
       else
         :erlang.yield()
         release_after(settler, reductions, at, reader)
+      end
+    end
+
+    # Hold the response until the driver has checked a blocked socket
+    # owner. This controls the ordering without waiting for real time.
+    def after_driver_checks(owner, polls, reply) do
+      case Process.info(owner, [:status, :current_function]) do
+        [status: :waiting, current_function: {:prim_inet, _, _}] ->
+          await_driver_checks(polls, :atomics.get(polls, 1) + 3)
+          reply.()
+
+        _ ->
+          :erlang.yield()
+          after_driver_checks(owner, polls, reply)
+      end
+    end
+
+    defp await_driver_checks(polls, at) do
+      if :atomics.get(polls, 1) < at do
+        :erlang.yield()
+        await_driver_checks(polls, at)
       end
     end
   end
@@ -207,6 +234,38 @@ defmodule SystemsClockTest do
     assert_received {:echo, :ping}
   end
 
+  # Spawned by the test, its initial call is `:erlang.apply/2`, in no module
+  # of the scope: it counts because it works for the test that settles.
+  test "a process the settling test started counts while it works" do
+    SystemsClock.manual(scope: ["Elixir.SystemsClockTest.InScope"])
+    test = self()
+
+    worker =
+      spawn_link(fn ->
+        send(test, :started)
+
+        receive do
+          :work ->
+            Enum.reduce(1..20_000_000, 0, &(&1 + &2))
+            send(test, :done)
+        end
+      end)
+
+    receive do: (:started -> :ok)
+    SystemsClock.send_after(self(), :due, 1_000)
+    start = SystemsClock.monotonic_time(:millisecond)
+    send(worker, :work)
+
+    SystemsClock.settle(
+      until: fn ->
+        {:messages, messages} = Process.info(self(), :messages)
+        :done in messages
+      end
+    )
+
+    assert SystemsClock.monotonic_time(:millisecond) == start
+  end
+
   test "a condition that never holds fails on clock time, not real time" do
     SystemsClock.manual(scope: ["Elixir.SystemsClockTest.InScope"])
 
@@ -226,6 +285,69 @@ defmodule SystemsClockTest do
     assert_raise ArgumentError, ~r/never held/, fn ->
       SystemsClock.settle(until: fn -> false end, within: 60_000)
     end
+  end
+
+  # `persistent_term.put/2` of a new or boxed value holds its caller until
+  # every scheduler has seen the update: the caller shows as suspended in the
+  # runtime's BIF trap, as a process that first logs from a module does.
+  test "a process a BIF holds in its trap is busy" do
+    SystemsClock.manual(scope: ["Elixir.SystemsClockTest.InScope"])
+    key = {__MODULE__, :held_in_bif}
+
+    putter =
+      InScope.start(fn ->
+        Stream.iterate(0, &(&1 + 1))
+        |> Enum.each(fn n -> :persistent_term.put(key, {n}) end)
+      end)
+
+    on_exit(fn ->
+      Process.exit(putter, :kill)
+      :persistent_term.erase(key)
+    end)
+
+    hold_in_bif_trap(putter)
+    assert SystemsClock.report() =~ ~r/#{Regex.escape(inspect(putter))} .*bif_return_trap.* BUSY/
+    :erlang.resume_process(putter)
+  end
+
+  defp hold_in_bif_trap(pid) do
+    true = :erlang.suspend_process(pid)
+
+    case Process.info(pid, [:status, :current_function]) do
+      [status: :suspended, current_function: {:erlang, :bif_return_trap, _}] ->
+        :ok
+
+      _elsewhere ->
+        true = :erlang.resume_process(pid)
+        hold_in_bif_trap(pid)
+    end
+  end
+
+  # The condition wakes a process after the settle found the system quiet:
+  # the jump that follows records it as having run since.
+  test "a jump records processes that ran after the quiet snapshot" do
+    SystemsClock.manual(scope: ["Elixir.SystemsClockTest.InScope"])
+
+    waiter =
+      InScope.start(fn ->
+        Stream.repeatedly(fn -> receive(do: ({:wake, from} -> send(from, :woke))) end)
+        |> Stream.run()
+      end)
+
+    on_exit(fn -> Process.exit(waiter, :kill) end)
+
+    SystemsClock.send_after(self(), :due, 1_000)
+    start = SystemsClock.monotonic_time(:millisecond)
+
+    SystemsClock.settle(
+      until: fn ->
+        SystemsClock.monotonic_time(:millisecond) > start or
+          (send(waiter, {:wake, self()}) && receive(do: (:woke -> false)))
+      end
+    )
+
+    assert SystemsClock.report() =~
+             ~r/\{:ran_since_quiet, \[\{#{Regex.escape(inspect(waiter))}/
   end
 
   # A read of a process's info not answered in time goes on in the reader
@@ -380,6 +502,31 @@ defmodule SystemsClockTest do
     assert SystemsClock.monotonic_time(:millisecond) - started == 5_000
   end
 
+  # A bounded `:erpc.call/4` to this node runs the call in a process that
+  # `erpc` spawns: its caller waits in a plain receive while that process works.
+  test "the process a local erpc call runs in works for its caller" do
+    SystemsClock.manual(scope: ["Elixir.SystemsClockTest.InScope"])
+    test = self()
+
+    caller =
+      InScope.start(fn ->
+        :erpc.call(
+          node(),
+          fn ->
+            send(test, {:executor, self()})
+            run_until_stopped()
+          end,
+          60_000
+        )
+      end)
+
+    executor = receive(do: ({:executor, executor} -> executor))
+    on_exit(fn -> Enum.each([caller, executor], &Process.exit(&1, :kill)) end)
+
+    assert SystemsClock.report() =~ ~r/#{Regex.escape(inspect(executor))} .* BUSY/
+    send(executor, :stop)
+  end
+
   test "a scoped timer completes while unrelated socket traffic continues" do
     {client, server} = socket_pair()
     owner = self()
@@ -418,6 +565,39 @@ defmodule SystemsClockTest do
 
     assert SystemsClock.monotonic_time(:millisecond) - started == 5_000
     assert Process.alive?(sender) and Process.alive?(receiver)
+  end
+
+  test "the driver keeps an out-of-scope owner's socket work at the same clock time" do
+    {client, server} = socket_pair()
+    owner = self()
+    SystemsClock.manual(drive: true, scope: [Atom.to_string(InScope)])
+    %{driver_polls: polls} = :persistent_term.get({SystemsClock, :clock})
+    started = SystemsClock.monotonic_time(:millisecond)
+    deadline = SystemsClock.send_after(self(), :deadline, 10_000)
+
+    responder =
+      SocketTraffic.start(fn ->
+        {:ok, "request"} = :gen_tcp.recv(server, 7)
+
+        SocketTraffic.after_driver_checks(owner, polls, fn ->
+          :ok = :gen_tcp.send(server, "response")
+        end)
+
+        receive do: (:stop -> :ok)
+      end)
+
+    :ok = :gen_tcp.controlling_process(server, responder)
+
+    on_exit(fn ->
+      Process.exit(responder, :kill)
+      :gen_tcp.close(client)
+    end)
+
+    send(responder, :go)
+    :ok = :gen_tcp.send(client, "request")
+    assert {:ok, "response"} = :gen_tcp.recv(client, 8)
+    SystemsClock.cancel_timer(deadline)
+    assert SystemsClock.monotonic_time(:millisecond) == started
   end
 
   for ownership <- [:caller, :outside_pool] do
@@ -614,10 +794,14 @@ defmodule SystemsClockTest do
     assert SystemsClock.monotonic_time(:millisecond) - started == 10_000
   end
 
+  # Fixed kernel buffers, far below the 16 MiB the in-flight tests send: with
+  # the system's own (Linux autotuning can take 16 MiB on loopback) the kernel
+  # holds every byte and none stays queued in the sender's port.
   defp socket_pair do
-    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    buffers = [sndbuf: 65_536, recbuf: 65_536]
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}] ++ buffers)
     {:ok, {_address, port}} = :inet.sockname(listener)
-    {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false])
+    {:ok, client} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false] ++ buffers)
     {:ok, server} = :gen_tcp.accept(listener)
     :gen_tcp.close(listener)
     {client, server}
@@ -713,6 +897,14 @@ defmodule SystemsClockTest do
     assert SystemsClock.monotonic_time(:millisecond) == started
   end
 
+  defp run_until_stopped do
+    receive do
+      :stop -> :ok
+    after
+      0 -> run_until_stopped()
+    end
+  end
+
   defp wait_for_native_dns(pid) do
     case Process.info(pid, :current_function) do
       {:current_function, {:inet_gethost_native, :wait_reply, _}} ->
@@ -754,7 +946,7 @@ defmodule SystemsClockTest do
 
     # Outside work the clock does not see, as a supervisor starting a child.
     server =
-      spawn(fn ->
+      Outside.start(fn ->
         receive do
           {:"$gen_call", from, :start_child} ->
             Process.sleep(20)

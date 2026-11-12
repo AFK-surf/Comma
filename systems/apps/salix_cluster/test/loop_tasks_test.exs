@@ -45,6 +45,7 @@ defmodule SalixCluster.LoopTasksTest do
     @behaviour SalixAgent.Loops.TaskOwner
     alias Salix.Bindings.TaskLoopOwner
     defdelegate loop_wake(loop, payload, source), to: TaskLoopOwner
+    defdelegate loop_worker(loop), to: TaskLoopOwner
 
     def loop_ended(loop, fact) do
       if SystemsRuntime.get_env(:salix_agent, :test_unavailable_loop_report) == :ended,
@@ -234,6 +235,51 @@ defmodule SalixCluster.LoopTasksTest do
     }
   end
 
+  # The Task's Worker takes the Task up in a new Session, as a switch of its
+  # model inside Salix does (`SalixIM.TaskRun`); answers that Session.
+  defp switch_worker_session!(ctx, id) do
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(ctx.group_id, id)
+
+    worker = Enum.find(participants, &(&1["agent_id"] == ctx.worker))
+    session = Ids.new_session_id()
+
+    desired =
+      worker
+      |> Map.take(["agent_id", "role_label", "agent_name"])
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.merge(%{
+        "state" => "active",
+        "notification_filter" => %{"messages" => "all", "statuses" => "none"},
+        "payload" => %{"session_id" => session}
+      })
+
+    assert {:ok, _} =
+             ConversationServer.switch_task_run(ctx.group_id, id, %{
+               "runs_on" => nil,
+               "worker" => desired,
+               "notice" => %{
+                 "idempotency_key" => "task-run:" <> Ids.new_message_id(),
+                 "role_label" => "runtime",
+                 "content" => "A person switched this Task.",
+                 "metadata" => %{"message_type" => "task_run_switched"}
+               }
+             })
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(ctx.group_id, id)
+
+    assert %{"payload" => %{"session_id" => ^session}} =
+             Enum.find(participants, &(&1["agent_id"] == ctx.worker and &1["state"] == "active"))
+
+    session
+  end
+
+  defp task_messages(ctx, id) do
+    {:ok, messages} = Conversations.list_group_conversation_messages(ctx.group_id, id, limit: 50)
+    messages
+  end
+
   defp loop_of(ctx, id) do
     {:ok, [loop]} = Store.list_by_tasks(ctx.group_id, [id])
     loop
@@ -365,7 +411,9 @@ defmodule SalixCluster.LoopTasksTest do
     assert {:ok, loop} = Loops.create(round, %{"path" => @elf_path})
     assert loop["loop_id"] == pending["id"]
     assert loop["trigger"] == %{"every_minutes" => 60}
-    assert {:error, {:task_loop_exists, _}} = Loops.create(round, %{"path" => @elf_path})
+    # Creating again gives the Task's Loop a new program; the Loop stays.
+    assert {:ok, %{"loop_id" => same}} = Loops.create(round, %{"path" => @elf_path})
+    assert same == pending["id"]
     assert %{"status" => "active", "runs" => 0} = listed_loop(ctx, id)
 
     # The Task's status does not drive the Loop while the Task runs.
@@ -377,9 +425,14 @@ defmodule SalixCluster.LoopTasksTest do
     assert {:error, refused} = update.(%{"status" => "ready_for_review"})
     assert inspect(refused) =~ "one report is one run"
 
-    # Ending the Task ends its Loop for good; the row stays to show it.
+    # Ending the Task, as a person asked, ends its Loop for good; the row
+    # stays to show it.
     assert {:ok, %{"status" => "completed"}} =
-             update.(%{"status" => "completed", router_agent_id: ctx.router})
+             update.(%{
+               "status" => "completed",
+               router_agent_id: ctx.router,
+               router_human_turn_at: SystemsClock.system_time(:millisecond)
+             })
 
     settle()
 
@@ -670,6 +723,72 @@ defmodule SalixCluster.LoopTasksTest do
              loop_of(ctx, id)
 
     assert task(ctx, id)["status"] == "active"
+  end
+
+  test "a wake follows the Worker into the new Session a switch of its model gave it", ctx do
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{"loop" => %{"cadence" => %{"every_minutes" => 60}}})
+
+    ref = bind!(ctx, id)
+    old_session = loop_of(ctx, id)["session_id"]
+    new_session = switch_worker_session!(ctx, id)
+    refute new_session == old_session
+
+    assert {:ok, %{"status" => "queued"}} = notify(ref, "after-switch")
+
+    assert %{"status" => "active", "session_id" => ^new_session, "run_count" => 1} =
+             loop_of(ctx, id)
+
+    # The wake reached the Worker in the Task, as before the switch.
+    source = "loop:#{ref.loop_id}:after-switch"
+    assert Enum.any?(task_messages(ctx, id), &(&1["source_message_id"] == source))
+  end
+
+  test "the sweep runs again a Loop paused as undeliverable once its Task has its Worker", ctx do
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{"loop" => %{"cadence" => %{"every_minutes" => 60}}})
+
+    ref = bind!(ctx, id)
+    loop_id = ref.loop_id
+    # Paused before Loops followed their Worker: the Worker's Session moved.
+    new_session = switch_worker_session!(ctx, id)
+
+    {:ok, _} =
+      Store.update(loop_id, fn current ->
+        {:ok, Map.merge(current, %{"status" => "paused", "paused_by" => "undeliverable"})}
+      end)
+
+    assert Loops.recover_undeliverable_tasks(nil) == nil
+    settle()
+
+    assert %{"status" => "active", "paused_by" => nil, "session_id" => ^new_session} =
+             loop_of(ctx, id)
+
+    assert {:ok, %{"status" => "queued"}} =
+             notify(Loops.Reconciler.loop_ref(loop_of(ctx, id)), "back")
+  end
+
+  test "the sweep keeps a Loop paused while its Task has no Worker", ctx do
+    assert {:ok, %{"conversation_id" => id}} =
+             task_create(ctx, %{"loop" => %{"cadence" => %{"every_minutes" => 60}}})
+
+    ref = bind!(ctx, id)
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(ctx.group_id, id)
+
+    worker = Enum.find(participants, &(&1["agent_id"] == ctx.worker))
+
+    assert {:ok, _} =
+             ConversationServer.deactivate_group_conversation_participant(
+               ctx.group_id,
+               id,
+               worker["participant_id"]
+             )
+
+    assert {:error, _} = notify(ref, "late")
+    assert Loops.recover_undeliverable_tasks(nil) == nil
+    assert %{"status" => "paused", "paused_by" => "undeliverable"} = loop_of(ctx, id)
   end
 
   # A station's Session has no Salix tools to create the Loop, so its Loop

@@ -35,7 +35,7 @@ final class HomeTaskPager {
     @ObservationIgnored var visibleHeight: CGFloat = 0
     /// The room between the section title and the switcher while the list rests at its top, where an empty or failed
     /// list centres what it says. A row is never shorter than the list's 44pt minimum.
-    var emptyHeight: CGFloat { max(0, visibleHeight - rowsAbove.reduce(0) { $0 + max($1, 44) }) }
+    var emptyHeight: CGFloat { max(0, visibleHeight - rowsAbove.reduce(0) { $0 + ($1 > 0 ? max($1, 44) : 0) }) }
     @ObservationIgnored private var tracking = false
     /// The finger's part of the strip lately, for its speed as the finger lets go.
     @ObservationIgnored private var trail: [(time: CFTimeInterval, place: CGFloat)] = []

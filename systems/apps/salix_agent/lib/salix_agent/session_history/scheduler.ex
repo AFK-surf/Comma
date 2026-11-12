@@ -6,16 +6,35 @@ defmodule SalixAgent.SessionHistory.Scheduler do
   @tenant_limit 2
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
-  def claim, do: SystemsRuntime.Server.call(__MODULE__, :claim)
-  def maintenance(key), do: SystemsRuntime.Server.call(__MODULE__, {:maintenance, key})
-  def complete, do: SystemsRuntime.Server.call(__MODULE__, :complete)
+  def drain, do: SystemsRuntime.Server.cast(__MODULE__, :drain)
 
   def init(_) do
     Worker.init_queue()
     {:ok, %{active: %{}, served: %{}, turn: 0}}
   end
 
-  def handle_call(:claim, {pid, _}, state) do
+  def handle_cast(:drain, state), do: {:noreply, start_ready(state)}
+
+  defp start_ready(state) do
+    {key, state} = next(state)
+
+    case key && Worker.take_key(key) do
+      nil ->
+        state
+
+      {agent, session} = key ->
+        # This scheduler admits the address before another task can start.
+        # No unclaimed task exists outside the same four total / two tenant slots.
+        {:ok, pid} =
+          SystemsRuntime.Task.start(fn ->
+            Worker.safely("session_history_index", fn -> Worker.index(agent, session) end)
+          end)
+
+        start_ready(admit(state, pid, key))
+    end
+  end
+
+  defp next(state) do
     pending = Worker.pending_hints()
     tenants = Enum.map(pending, fn {{agent, _}, _} -> tenant(agent) end)
     active_tenants = Enum.map(state.active, fn {_, task} -> task.tenant end)
@@ -24,7 +43,7 @@ defmodule SalixAgent.SessionHistory.Scheduler do
     candidate =
       pending
       |> Enum.filter(fn {key, _} ->
-        not Map.has_key?(state.active, pid) and available?(state, key)
+        available?(state, key)
       end)
       |> Enum.min_by(
         fn {{agent, _}, queued_at} -> {Map.get(state.served, tenant(agent), -1), queued_at} end,
@@ -32,37 +51,16 @@ defmodule SalixAgent.SessionHistory.Scheduler do
       )
 
     case candidate do
-      {key, _} ->
-        case Worker.take_key(key) do
-          ^key -> {:reply, key, admit(state, pid, key)}
-          nil -> {:reply, nil, state}
-        end
-
-      nil ->
-        {:reply, nil, state}
+      {key, _} -> {key, state}
+      nil -> {nil, state}
     end
   end
 
-  def handle_call({:maintenance, key}, {pid, _}, state) do
-    # Maintenance must not take a free slot ahead of admissible recent work.
-    recent_waiting = Enum.any?(Worker.pending_hints(), fn {k, _} -> available?(state, k) end)
-
-    if not Map.has_key?(state.active, pid) and available?(state, key) and not recent_waiting do
-      {:reply, :ok, admit(state, pid, key)}
-    else
-      {:reply, :busy, state}
-    end
-  end
-
-  def handle_call(:complete, {pid, _}, state) do
-    {:reply, :ok, release(state, pid)}
-  end
-
-  def handle_info({:DOWN, ref, :process, pid, _}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     case state.active[pid] do
       %{ref: ^ref, key: {agent, session}} ->
-        Worker.hint(agent, session)
-        {:noreply, release(state, pid)}
+        if reason != :normal, do: Worker.hint(agent, session)
+        {:noreply, start_ready(release(state, pid))}
 
       _ ->
         {:noreply, state}

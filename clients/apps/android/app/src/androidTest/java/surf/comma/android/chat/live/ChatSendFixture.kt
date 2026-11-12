@@ -112,8 +112,7 @@ internal class ChatSendFixture(private val activity: ComposerDemoActivity, priva
                 attachments.forEach { attachment -> rows += image(key, suppliedImages[attachment.uri]) }
                 publishNow()
                 true
-            },
-            sendVoice = { _, _ -> true })
+            })
         flow.bind()
         fun boundary() = flow.updateBoundary(composer.capsuleTop - timeline.y)
         composer.onImeOffset = { boundary() }

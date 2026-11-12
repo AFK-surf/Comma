@@ -33,6 +33,8 @@ import kotlin.math.roundToInt
  */
 class StatusSwitcher(context: Context) : ViewGroup(context) {
     var onSelect: ((TaskStatusBucket) -> Unit)? = null
+    /** Sees every touch on the switcher, for the glass under it. */
+    var onGlassTouch: ((MotionEvent) -> Unit)? = null
 
     private val order = TaskListFilter.STATUS_BUCKETS
     private val theme = TaskTheme(context)
@@ -47,7 +49,7 @@ class StatusSwitcher(context: Context) : ViewGroup(context) {
     private var downX = 0f
 
     init {
-        glass(fill = R.color.token_glass_frosted)
+        glass(fill = R.color.token_glass_frosted, lens = true)
         clipChildren = true
         addView(pill)
         segments.forEach(::addView)
@@ -124,6 +126,11 @@ class StatusSwitcher(context: Context) : ViewGroup(context) {
             pill.alpha = 0f
             pill.layout(0, 0, 0, 0)
         }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        onGlassTouch?.invoke(event)
+        return super.dispatchTouchEvent(event)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

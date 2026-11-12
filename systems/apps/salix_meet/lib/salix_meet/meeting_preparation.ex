@@ -152,7 +152,7 @@ defmodule SalixMeet.MeetingPreparation do
 
   defp authorize_author(group_id, plan_id, caller_id, session_id) do
     with {:ok, plan} <- MeetingPlan.get(group_id, plan_id) do
-      if get_in(plan, ["publication_target", "provider"]) == "slack" do
+      if MeetingPlan.system_track?(plan) do
         PreparationTask.authorize(plan, caller_id, session_id)
       else
         authorize_router(group_id, caller_id)

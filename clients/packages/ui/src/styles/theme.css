@@ -789,6 +789,7 @@
   --motion-duration-login-stage-exit: 380ms;
   --motion-duration-caret-blink: 1100ms;
   --motion-duration-loading-shine: 1600ms;
+  --motion-duration-task-status-spin: 2400ms;
   --motion-duration-toast-enter: 250ms;
   --motion-duration-toast-exit: 200ms;
   --motion-duration-progress-fill: 900ms;
@@ -799,6 +800,9 @@
   --motion-duration-disclosure-turn: 100ms;
   --motion-duration-picture-in-picture-enter: 250ms;
   --motion-duration-picture-in-picture-exit: 150ms;
+  --motion-duration-routine-dismiss-fade: 120ms;
+  --motion-duration-routine-dismiss-close: 220ms;
+  --motion-duration-tab-close-fade: 120ms;
   --motion-duration-onboarding-dim: 3000ms;
   --motion-duration-onboarding-logo-enter: 900ms;
   --motion-duration-onboarding-intro-part-enter: 700ms;
@@ -853,6 +857,8 @@
   --motion-scale-picture-in-picture: 0.96;
   --motion-scale-onboarding-card: 0.98;
   --motion-scale-onboarding-logo: 0.96;
+  --motion-scale-routine-dismiss: 0.96;
+  --motion-scale-tab-close: 0.96;
   --motion-distance-menu-enter: 2px;
   --motion-distance-login-stage-shift: 8px;
   --motion-distance-reveal-item: 8px;

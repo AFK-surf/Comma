@@ -213,7 +213,7 @@ def resolve():
         if context["group_id"] != group_id:
             raise ReleaseError("The frozen internal tester group is no longer configured")
     else:
-        backend = env("IOS_BACKEND", "staging")
+        backend = env("IOS_BACKEND", "production")
         if backend not in BACKENDS:
             raise ReleaseError("Backend must be staging or production")
         fallback, initial_build = project_version(source)

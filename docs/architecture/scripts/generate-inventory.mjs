@@ -35,6 +35,7 @@ function collectClientPackages() {
   ];
   return roots
     .flatMap(immediateDirectories)
+    .filter((directory) => existsSync(join(directory, "package.json")))
     .map((directory) => {
       const packagePath = join(directory, "package.json");
       const manifest = readJson(packagePath);

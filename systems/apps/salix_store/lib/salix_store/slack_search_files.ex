@@ -6,7 +6,7 @@ defmodule SalixStore.SlackSearchFiles do
   reordered changes may require fresh extraction but never validate an older
   snapshot. Only authenticated webhook observation writes this state. A
   background page schedules at most twenty message references, committing its
-  cursor with the jobs. Modeled in tla/salix/MessageSearchFile.tla.
+  cursor with the jobs.
   """
   alias SalixStore.Repo
 
@@ -24,7 +24,7 @@ defmodule SalixStore.SlackSearchFiles do
           VALUES ($1,$2,$3,1,$4,true)
           ON CONFLICT (tenant_id, workspace_id, file_id) DO UPDATE SET
             change_epoch=search_files.change_epoch+1, deleted=EXCLUDED.deleted,
-            refresh_pending=true, refresh_cursor='{}'::jsonb,
+            refresh_pending=true, refresh_cursor='{}'::jsonb, refresh_due_at=NULL,
             changed_at=timezone('UTC', clock_timestamp())
           """,
           key ++ [type == "file_deleted"]
@@ -78,10 +78,42 @@ defmodule SalixStore.SlackSearchFiles do
     :ok
   end
 
+  def schedule_refresh!(component) do
+    if component["editable_file"] == true do
+      Repo.query!(
+        """
+        UPDATE slack_semantic.search_files SET refresh_due_at=CASE
+          WHEN refresh_due_at IS NULL THEN timezone('UTC', clock_timestamp())+interval '1 hour'
+          ELSE LEAST(refresh_due_at,timezone('UTC', clock_timestamp())+interval '1 hour') END
+        WHERE tenant_id=$1 AND workspace_id=$2 AND file_id=$3 AND change_epoch=$4 AND NOT deleted
+        """,
+        [
+          component["tenant_id"],
+          component["workspace_id"],
+          component["file_id"],
+          component["file_epoch"]
+        ]
+      )
+    end
+
+    :ok
+  end
+
   @doc "One indexed pending file and at most twenty references per existing worker tick."
   def reconcile_page(enqueue) do
     safe(fn ->
       Repo.transaction(fn ->
+        Repo.query!("""
+        WITH due AS MATERIALIZED (
+          SELECT tenant_id,workspace_id,file_id FROM slack_semantic.search_files
+          WHERE refresh_due_at <= timezone('UTC', clock_timestamp()) AND NOT refresh_pending
+          ORDER BY refresh_due_at,tenant_id,workspace_id,file_id LIMIT 1 FOR UPDATE SKIP LOCKED
+        )
+        UPDATE slack_semantic.search_files f SET refresh_pending=true,refresh_cursor='{}'::jsonb,
+          refresh_due_at=NULL,changed_at=timezone('UTC', clock_timestamp())
+        FROM due d WHERE f.tenant_id=d.tenant_id AND f.workspace_id=d.workspace_id AND f.file_id=d.file_id
+        """)
+
         case Repo.query!("""
              SELECT tenant_id, workspace_id, file_id, refresh_cursor
              FROM slack_semantic.search_files WHERE refresh_pending
@@ -140,7 +172,7 @@ defmodule SalixStore.SlackSearchFiles do
 
             Repo.query!(
               """
-              UPDATE slack_semantic.search_files SET refresh_cursor=$4, refresh_pending=$5
+              UPDATE slack_semantic.search_files SET refresh_cursor=$4, refresh_pending=$5, changed_at=timezone('UTC', clock_timestamp())
               WHERE tenant_id=$1 AND workspace_id=$2 AND file_id=$3
               """,
               [tenant, workspace, file, next, length(rows) == 20]

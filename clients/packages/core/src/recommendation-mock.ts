@@ -1,6 +1,7 @@
 // The local server's recommendation mock (a debug setting of the dev app on a local server): whether it can be used and
 // is on, read when shown and not kept after. Turning it on or off sends the account's first workspace
 // (as read now) with it; a refresh asks that workspace's recommendations again.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, Priority, topicKey, type Value } from "@comma/core-kernel";
 import { Effect, Option, Result } from "effect";
 import { z } from "zod";
@@ -11,11 +12,13 @@ import type { Workspaces } from "./workspaces.ts";
 
 const PATH = "/v1/debug/recommendation-mock";
 
-const statusSchema = z.object({
-  available: z.boolean(),
-  enabled: z.boolean(),
-  syncError: z.boolean().optional(),
-});
+const statusSchema = lazySchema(() =>
+  z.object({
+    available: z.boolean(),
+    enabled: z.boolean(),
+    syncError: z.boolean().optional(),
+  })
+);
 
 export class RecommendationMock {
   readonly #ctx: Ctx;

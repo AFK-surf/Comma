@@ -70,21 +70,21 @@ inductive InputBatchTrace (context : Context) (events : List Term) : Output → 
       {final : PendingRevision.Cursor}
       (tail : InputBatchTrace context events
         (resident (some (.tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
           (a "run") (list observations)) final) :
       InputBatchTrace context events
         (some (.tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
           .tuple [a "next"]) final
-  | resume {cursor : PendingRevision.Cursor} {token request observation : Term} {remaining : List Term}
+  | resume {cursor : PendingRevision.Cursor} {before event token request observation : Term} {remaining : List Term}
       {final : PendingRevision.Cursor}
       (tail : InputBatchTrace context events
         (resident (some (.tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]))
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]))
           (a "resume") observation) final) :
       InputBatchTrace context events
         (some (.tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]),
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]),
           .tuple [a "observe", request]) final
 
 theorem input_batch_reflect {context : Context} {events : List Term} {inner : Output}
@@ -98,12 +98,12 @@ theorem input_batch_reflect {context : Context} {events : List Term} {inner : Ou
     exact .done cursor
   | @run cursor state event remaining observations final tail ih =>
     rw [accept_input_batch origin]
-    apply Revision.Execution.run (observations := observations)
+    apply PendingRevision.Execution.run (observations := observations)
     apply ih
     cases context <;> rfl
-  | @resume cursor token request observation remaining final tail ih =>
+  | @resume cursor before event token request observation remaining final tail ih =>
     rw [accept_input_batch origin]
-    apply Revision.Execution.resume (observation := observation)
+    apply PendingRevision.Execution.resume (observation := observation)
     apply ih
     cases context <;> rfl
 

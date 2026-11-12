@@ -31,12 +31,12 @@ test("refused, a directory is linked as a junction to it and a file is copied, a
   const d = tempdir();
   mkdirSync(join(d, "skill"));
   writeFileSync(join(d, "skill", "SKILL.md"), "hi");
-  writeFileSync(join(d, "stillfail-job"), "#!/bin/sh\n");
+  writeFileSync(join(d, "comma-job"), "#!/bin/sh\n");
   assert.equal(linkSync("skill", join(d, "linked"), { junction: true }, refusingSync), "junction");
   assert.ok(lstatSync(join(d, "linked")).isSymbolicLink(), "a junction reads as a link");
   assert.equal(readlinkSync(join(d, "linked")), join(d, "skill"));
   assert.equal(readFileSync(join(d, "linked", "SKILL.md"), "utf8"), "hi");
-  assert.equal(await link("stillfail-job", join(d, "ember-job"), { copy: true }, refusing), "copy");
+  assert.equal(await link("comma-job", join(d, "ember-job"), { copy: true }, refusing), "copy");
   assert.equal(readFileSync(join(d, "ember-job"), "utf8"), "#!/bin/sh\n");
   // Nothing there yet to stand in for.
   assert.equal(await link("later", join(d, "dangling"), { junction: true, copy: true }, refusing), "missing");

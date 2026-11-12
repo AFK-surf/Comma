@@ -64,11 +64,13 @@ import type { BrowserSidebarProvider } from "../browser-sidebar";
 import type { FilesProvider } from "../files/downloads";
 import type { SynchronicityProvider } from "../synchronicity";
 import type { MacAppsProvider } from "../mac-apps";
+import type { BlenderProvider } from "../blender";
 import type { LocalFilePickerProvider } from "../local-files/picker";
 import type { RecommendationMediaProvider } from "../recommendation-media";
 import type { AudioCaptureProvider } from "../audio-capture";
 import type { MeetingPresenceProvider } from "../meeting-presence";
 import type { MeetingRecorderWindowProvider } from "../meeting-recorder";
+import type { NearbyProvider } from "../airdrop/nearby";
 import type { AirDropReceptionProvider } from "../airdrop/reception";
 import { LocalStationAdmin, type LocalStationProvider } from "../local-station";
 import { getCurrentNativeCallerContext, NativeCallerBindingError } from "../ipc";
@@ -93,11 +95,18 @@ export interface AppPreferencesProvider {
   openNotificationSettings(input: void): Promise<{ opened: boolean }>;
   /** macOS: opens Login Items, where the user allows the sleep guard daemon. */
   openLoginItemsSettings(input: void): Promise<{ opened: boolean }>;
+  /** Quits through the ordinary shutdown and starts the app again; false where it cannot. */
+  relaunch(input: void): Promise<{ relaunching: boolean }>;
   /**
    * Asks the OS to let Comma notify (macOS prompts while it has not asked the
    * user yet) and resolves with the status the answer leaves behind.
    */
   requestNotificationAuthorization(input: void): Promise<SystemNotificationsStatus>;
+  /**
+   * Reads the login item from the OS now; ordinary state reads reuse a
+   * readback up to 30 s old. Settings asks for this when it opens.
+   */
+  refreshLaunchAtLogin(input: void): Promise<AppPreferences>;
   state(input: void): Promise<AppPreferences> | AppPreferences;
   update(input: AppPreferencesPatch): Promise<AppPreferences> | AppPreferences;
 }
@@ -151,6 +160,8 @@ export interface WindowsProvider {
   close(input: WindowTargetInput): Promise<SurfaceList> | SurfaceList;
   create(input: WindowCreateInput): Promise<SurfaceList> | SurfaceList;
   focus(input: WindowTargetInput): Promise<SurfaceList> | SurfaceList;
+  /** Brings forward a screen window of the app's page (screen-windows.ts), by its `window.open` name. */
+  focusScreen(input: { name: string }): { focused: boolean };
 }
 
 /** Opens a channel from the calling window to the client core (its port arrives on `nativeCorePortChannel`). */
@@ -182,7 +193,6 @@ export interface ComputeNodeProvider {
   resumeHostMaintenance(input: {
     requestId: string;
   }): Promise<import("@comma/native-bridge").HostMaintenanceState>;
-  resetLocalRecord(input: void): Promise<ComputeNodeState>;
   recoveryCandidates(input: {
     workspaceId: string;
     cursor?: string;
@@ -201,14 +211,13 @@ export interface ComputeNodeProvider {
     requestId: string;
   }): Promise<LocalComputeDisposalResult>;
 
+  continue(input: void): Promise<ComputeNodeState>;
+  reauthorize(input: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
   refresh(input: void): Promise<ComputeNodeState>;
   state(input: void): Promise<ComputeNodeState> | ComputeNodeState;
   configure(input: ComputeNodeConfigureInput): Promise<ComputeNodeState>;
-  repair(input: void): Promise<ComputeNodeState>;
   drain(input?: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
   remove(input?: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
-  rebuild(input: void): Promise<ComputeNodeState>;
-  abandon(expected: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
 }
 
 type SessionBound<Input> = Input & { session: SessionProductLease };
@@ -424,6 +433,7 @@ export function createSessionBoundChatProvider(
         return {
           cancelled: picked.cancelled,
           errors: picked.errors,
+          ...(picked.folderPaths ? { folderPaths: picked.folderPaths } : {}),
           intakeId: intake.intakeId,
           revision: receipt.revision,
           ...(receipt.draftEpoch === undefined
@@ -448,6 +458,7 @@ const noVoiceCall: VoiceCallProvider = { microphone() {}, played() {} };
 
 export function registerNativeBridgeHandlers({
   airDrop,
+  nearby,
   core,
   appPreferences,
   computerUse,
@@ -475,12 +486,14 @@ export function registerNativeBridgeHandlers({
   computeNode,
   connectorRuntime,
   macApps,
+  blender,
   synchronicity,
   voiceCall = noVoiceCall,
   windowAppearance,
   windows,
 }: {
   airDrop: AirDropReceptionProvider;
+  nearby: NearbyProvider;
   core: CoreProvider;
   appPreferences: AppPreferencesProvider;
   computerUse: Pick<
@@ -512,6 +525,7 @@ export function registerNativeBridgeHandlers({
   computeNode: ComputeNodeProvider;
   connectorRuntime: ConnectorRuntimeProvider;
   macApps: MacAppsProvider;
+  blender: BlenderProvider;
   synchronicity: SynchronicityProvider;
   /** Absent: no call socket (no core), and the window's audio goes nowhere. */
   voiceCall?: VoiceCallProvider;
@@ -522,6 +536,7 @@ export function registerNativeBridgeHandlers({
     gateway,
     providers: {
       airDrop,
+      nearby,
       core,
       applicationMenu: applicationMenuProvider,
       appPreferences,
@@ -548,6 +563,7 @@ export function registerNativeBridgeHandlers({
       computeNode,
       connectorRuntime,
       macApps,
+      blender,
       synchronicity,
       voiceCall,
       windowAppearance,

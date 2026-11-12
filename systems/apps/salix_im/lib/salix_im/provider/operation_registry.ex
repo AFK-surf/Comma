@@ -87,6 +87,20 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "slack.leave_thread",
+      "method" => "im.slack.leave_thread",
+      "safety" => "write",
+      "description" =>
+        "Stop following one Slack thread when people there ask you to (stop watching, 别跟了). Reply in the thread first, saying a mention brings you back, then call this as your last action there. Your reply then gets a small grey line saying you left. Unmentioned replies in the thread then stop reaching you; a mention, or a later reply of yours in the thread, makes you follow it again.",
+      "required_params" => ["channel", "thread_ts"],
+      "parameters" => %{
+        "channel" => "Slack channel ID from the source context.",
+        "thread_ts" => "Slack root thread timestamp from the source context.",
+        "locale" =>
+          "Language of the line saying you left: en or zh-CN, as people in the thread write."
+      }
+    },
+    %{
       "name" => "slack.post_map_card",
       "method" => "chat.postMessage",
       "safety" => "write",
@@ -270,11 +284,13 @@ defmodule SalixIM.Provider.OperationRegistry do
       "method" => "conversations.open+chat.postMessage",
       "safety" => "write",
       "description" =>
-        "Open or resume a DM with a Slack user and send a message. When the target is named by handle or display name instead of user ID, resolve it with slack.list_users, paginate with next_cursor when needed, and use the returned id; ask for clarification if the match remains ambiguous or absent.",
-      "required_params" => ["user_id", "text"],
+        "Open or resume a DM with a Slack user and send a message. When the target is named by handle or display name instead of user ID, resolve it with slack.list_users, paginate with next_cursor when needed, and use the returned id; ask for clarification if the match remains ambiguous or absent. A DM channel ID is not a user ID. The message is refused, unsent, when user_id is not the recipient.",
+      "required_params" => ["user_id", "recipient", "text"],
       "parameters" => %{
         "user_id" =>
           "Required Slack user ID, for example U123. Use source context, an explicit <@U...> mention, or slack.list_users with query to resolve a named Slack user.",
+        "recipient" =>
+          "Required name, handle or email of the person you mean, for example Peng Xiao or pengxiao@example.com. It must match that user's Slack name, display name, real name or email, as a slack.list_users query would.",
         "text" =>
           "Required standard Markdown message text. Use <@USER_ID> to address a Slack user and <#CHANNEL_ID> to refer to a Slack channel."
       }
@@ -742,7 +758,7 @@ defmodule SalixIM.Provider.OperationRegistry do
     "type" => "string",
     "enum" => ["markdown", "text"],
     "description" =>
-      "Optional format. Defaults to markdown, rendered as a Feishu post. Use text for literal plain text."
+      "Optional format. Defaults to markdown, rendered as a Feishu post. text sends plain text: Markdown marks such as ** and ` show as typed."
   }
 
   @feishu_operations [
@@ -763,6 +779,53 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "feishu.send_message",
+      "task_payload_params" => ["text"],
+      "method" => "POST /im/v1/messages | POST /im/v1/messages/:message_id/reply",
+      "safety" => "write",
+      "description" =>
+        "Send Markdown text, and optionally one file from your workspace, to a Feishu chat, or to one person as a private message (user_id). Returns the sent message, and the file's message when a file went with it.",
+      "required_params" => [],
+      "parameters" => %{
+        "chat_id" =>
+          "Optional Feishu chat ID (oc_...). Defaults to the chat of the current Feishu message.",
+        "user_id" =>
+          "Optional. The person to send a private message to, instead of chat_id. Pass one of the two, never both. The person must be in the app's availability range.",
+        "user_id_type" =>
+          "Optional, with user_id. open_id (default), user_id, union_id or email.",
+        "text" =>
+          "Standard Markdown. May be empty when path is given. An external image becomes a labelled link.",
+        "format" => @feishu_message_format,
+        "reply_to" =>
+          "Optional message_id of a message of this chat to answer under. Not allowed with user_id.",
+        "reply_in_thread" =>
+          "Optional boolean, with reply_to. A reply goes into the thread of the message (and opens one when it has none) unless the chat is private; false makes it a plain quoting reply in the chat.",
+        "mentions" =>
+          "Optional list of {user_id, name} to mention, by open_id. Each shows at the start, unless the text places it with <at user_id=\"ID\">name</at>.",
+        "mention_all" =>
+          "Optional boolean. Mentions everyone; the chat must allow the bot to do so.",
+        "path" =>
+          "Optional workspace path of one file to send after the text. An image of at most 10 MB shows inline; any other file of at most 30 MB shows as a file.",
+        "question" => SalixIM.QuestionCard.parameter()
+      }
+    },
+    %{
+      "name" => "feishu.forward_message",
+      "method" => "POST /im/v1/messages/:message_id/forward",
+      "safety" => "write",
+      "description" =>
+        "Forward one message, as it is, to a Feishu chat or to one person. Feishu copies the message on its side, so a file of any size goes without a download. Returns the new message.",
+      "required_params" => ["message_id"],
+      "parameters" => %{
+        "message_id" =>
+          "The message to forward: a message_id from a history, thread, message, file-list or search result.",
+        "chat_id" =>
+          "The Feishu chat ID (oc_...) to forward to. Pass chat_id or user_id, never both.",
+        "user_id" => "The person to forward to in private, instead of chat_id.",
+        "user_id_type" => "Optional, with user_id. open_id (default), user_id, union_id or email."
+      }
+    },
+    %{
       "name" => "feishu.send_text",
       "task_payload_params" => ["text"],
       "method" => "POST /im/v1/messages",
@@ -774,7 +837,7 @@ defmodule SalixIM.Provider.OperationRegistry do
         "receive_id" => "Required chat/user/open ID.",
         "receive_id_type" => "Optional; defaults to chat_id.",
         "text" =>
-          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people. Body at-tags are literal.",
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. Other at-tags are literal.",
         "format" => @feishu_message_format,
         "mentions" =>
           "Optional list of {user_id, name} entries. Resolve named people with list_chat_members or directory tools before sending.",
@@ -793,14 +856,15 @@ defmodule SalixIM.Provider.OperationRegistry do
       "parameters" => %{
         "message_id" => "Required source Feishu message ID.",
         "text" =>
-          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people. Body at-tags are literal.",
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people; <at user_id=\"ID\">name</at> places one of them in the text. Other at-tags are literal.",
         "format" => @feishu_message_format,
         "reply_in_thread" =>
           "Optional boolean; defaults to true when chat_type=group and thread_id is absent.",
         "chat_id" => "Source chat ID, required to remember participation in a created thread.",
         "chat_type" => "Source chat type (group or p2p), used for the safe thread default.",
         "thread_id" => "Existing source thread ID when replying inside a thread.",
-        "mentions" => "Optional list of {user_id, name} entries to mention in the reply.",
+        "mentions" =>
+          "Optional list of {user_id, name} entries to mention in the reply. Each shows at the start, unless the text places it with <at user_id=\"ID\">name</at>.",
         "mention_all" => "Optional boolean to mention all members when the chat permits it.",
         "question" => SalixIM.QuestionCard.parameter()
       }
@@ -885,7 +949,8 @@ defmodule SalixIM.Provider.OperationRegistry do
       "name" => "feishu.get_message",
       "method" => "GET /im/v1/messages/:message_id",
       "safety" => "read",
-      "description" => "Get and normalize one Feishu message, including attachment metadata.",
+      "description" =>
+        "Get and normalize one Feishu message, including attachment metadata. A merged forward (message_type merge_forward) comes with the messages it carries in forwarded_messages, each naming the forward that holds it in upper_message_id.",
       "required_params" => ["message_id"],
       "parameters" => %{"message_id" => "Required Feishu message ID."}
     },
@@ -1020,6 +1085,59 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "feishu.search_chats",
+      "method" => "POST /im/v2/chats/search",
+      "safety" => "read",
+      "description" =>
+        "Search the groups this app can see by keyword, including public groups it has not joined (search_types with public_not_joined). Private groups the bot is not in are never returned. Returns chat_id, name, description and owner of each. Check has_more and notice before treating a result as complete; Feishu can stop a deep result with an error asking for a more specific keyword.",
+      "required_params" => [],
+      "parameters" => %{
+        "query" => "Optional keyword, at most 50 characters. Matches group and member names.",
+        "search_types" =>
+          "Optional list among private, external, public_joined, public_not_joined.",
+        "page_size" => "Optional page size, max 50.",
+        "page_token" => "Optional page token."
+      }
+    },
+    %{
+      "name" => "feishu.join_chat",
+      "method" => "PATCH /im/v1/chats/:chat_id/members/me_join",
+      "safety" => "admin",
+      "description" =>
+        "Make this bot join one public group of the organization, which puts it in the group for its messages from then on. Only for a group the person asked for: the members see the bot join. Public groups only: a private group needs a member to add the bot, and a public group with join verification refuses (232075). Needs the published im:chat.members:write_only permission. Find the chat_id with feishu.search_chats.",
+      "required_params" => ["chat_id"],
+      "parameters" => %{
+        "chat_id" =>
+          "The public group ID (oc_...). Required. Never inferred from the current chat."
+      }
+    },
+    %{
+      "name" => "feishu.create_chat",
+      "method" => "POST /im/v1/chats",
+      "safety" => "admin",
+      "description" =>
+        "Create a private group with the requested name and people. The bot joins as the owner. Resolve people with feishu.list_chat_members or feishu.get_user first. Needs the published im:chat:create permission, and the people must be in the app's availability range. Returns chat_id. Check members with feishu.list_chat_members before reporting that everyone joined. Do not repeat after an unknown result: a new call can create another group.",
+      "required_params" => ["name", "user_ids"],
+      "parameters" => %{
+        "name" => "The group name the person requested.",
+        "user_ids" =>
+          "List of 1 to 50 person open_ids (ou_...). Include the requester when they want to join."
+      }
+    },
+    %{
+      "name" => "feishu.add_chat_members",
+      "method" => "POST /im/v1/chats/:chat_id/members",
+      "safety" => "admin",
+      "description" =>
+        "Add the requested people to an existing group. They may gain access to its history and shared content. Needs the published im:chat.members:write_only permission and permission to add members in this group. The people must be in the app's availability range. Feishu rejects the request if any person is unavailable.",
+      "required_params" => ["chat_id", "user_ids"],
+      "parameters" => %{
+        "chat_id" =>
+          "The target group ID (oc_...). Required. Never inferred from the current chat.",
+        "user_ids" => "List of 1 to 50 person open_ids (ou_...) from Feishu, not names."
+      }
+    },
+    %{
       "name" => "feishu.list_chat_members",
       "method" => "GET /im/v1/chats/:chat_id/members",
       "safety" => "read",
@@ -1097,14 +1215,27 @@ defmodule SalixIM.Provider.OperationRegistry do
     },
     %{
       "name" => "feishu.lookup_users",
-      "method" => "local observed-user projection",
+      "method" =>
+        "observed users, the stored Contacts copy, then GET /contact/v3/scopes, departments and find_by_department",
       "safety" => "read",
       "description" =>
-        "Search users previously observed in inbound Feishu events. This is not a tenant-wide directory keyword search; use feishu.list_chat_members for a chat or feishu.get_user for a known ID.",
+        "Find people by name, English name, nickname or email: first the people whose messages reached the bot, then the app's Contacts data range: its stored copy when anyone there matches (directory.stored is true, directory.synced_at says when it was read), else every department of the live range. Each user has source observed or directory; directory.complete says whether the whole data range was read, and directory.error gives a Feishu refusal. When several people match, ask the requester which one they mean before you act.",
       "required_params" => [],
       "parameters" => %{
-        "query" => "Optional local filter.",
-        "limit" => "Optional max result count."
+        "query" => "Text to find. Without it only the people the bot has seen are listed.",
+        "limit" => "Optional, default 50, at most 100."
+      }
+    },
+    %{
+      "name" => "feishu.list_directory_users",
+      "method" => "GET /contact/v3/scopes, departments and find_by_department, resumable",
+      "safety" => "read",
+      "description" =>
+        "List everyone in the app's Contacts data range, for a request about the whole directory or all members: each person once with name, en_name, email, enterprise_email, employee_no, job_title, open_id and the paths of their departments, no phone numbers. One call reads whole departments with at most 120 Feishu requests; while complete is false, call it again with the returned continue_from until complete is true, and merge the calls' users by open_id. data_range says how many of the range's roots the walk reached. To find one person by name, use feishu.lookup_users.",
+      "required_params" => [],
+      "parameters" => %{
+        "continue_from" =>
+          "Optional. The continue_from of the previous call, exactly as returned. Omit it to start at the beginning."
       }
     },
     %{
@@ -1349,6 +1480,25 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "feishu.request_doc_access",
+      "method" => "POST /drive/v1/permissions/:token/members/apply",
+      "safety" => "write",
+      "description" =>
+        "Ask the owner of a Feishu document, spreadsheet or Base, as the person who asked you, to give that person access. Feishu sends the owner a card to approve; once approved, read it (or edit it, with perm edit) with the same account. Feishu takes the request only from a signed-in person, never from the app. Call it only after that person agrees, and only once per document.",
+      "required_params" => ["doc", "account"],
+      "parameters" => %{
+        "doc" =>
+          "Required Feishu document, spreadsheet or Base URL (/docx/, /wiki/, /sheets/ or /base/) or token. A bare token other than a Docx needs doc_type.",
+        "doc_type" =>
+          "Optional docx (default), wiki, sheet or bitable; only needed when doc is a bare token.",
+        "account" =>
+          "Required signed-in Feishu account (alias or open_id from feishu.list_accounts) of the person who asked. Never another person's account.",
+        "perm" => "Optional view (default) or edit.",
+        "remark" =>
+          "Optional note on the owner's card: why the person needs the document. The owner reads it."
+      }
+    },
+    %{
       "name" => "feishu.remove_doc_member",
       "method" => "DELETE /drive/v1/permissions/:token/members/:member_id",
       "safety" => "admin",
@@ -1447,37 +1597,153 @@ defmodule SalixIM.Provider.OperationRegistry do
     }
   ]
 
+  @feishu_base_param "Required Feishu Base URL (/base/<app_token>?table=...&view=...), a wiki URL of a Base, or a bare app_token. The URL's table and view become the defaults."
+  @feishu_sheet_param "Required Feishu spreadsheet URL (/sheets/<token>?sheet=...), a wiki URL of a spreadsheet, or a bare spreadsheet token. The URL's sheet becomes the default."
+
+  # Base (多维表格) and spreadsheets, read as the connect's app or, with
+  # `account`, as a signed-in person (`SalixIM.Provider.Feishu.Tables`).
+  # Workers hold every one of these.
+  @feishu_table_operations [
+    %{
+      "name" => "feishu.get_base",
+      "method" => "GET /bitable/v1/apps/:app_token + GET /bitable/v1/apps/:app_token/tables",
+      "safety" => "read",
+      "description" =>
+        "Read a Feishu Base (多维表格) that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant: its name and one page of its tables (table_id and name). Then read a table's fields with feishu.list_base_fields and its rows with feishu.list_base_records.",
+      "required_params" => ["base"],
+      "parameters" => %{
+        "base" => @feishu_base_param,
+        "page_size" => "Optional, at most 100.",
+        "page_token" => "Optional token from the previous page."
+      },
+      "example_params" => %{
+        "base" =>
+          "https://example.feishu.cn/base/AbCdEfGhIjKlMnOpQrStUvWx?table=tblXXXX&view=vewXXXX"
+      }
+    },
+    %{
+      "name" => "feishu.list_base_fields",
+      "method" =>
+        "GET /bitable/v1/apps/:app_token/tables/:table_id/fields (+ GET .../views on the first page)",
+      "safety" => "read",
+      "description" =>
+        "List the fields (name, field_id, type, options) of one table of a Feishu Base, and the table's views. Read this before feishu.list_base_records to know the column names and which view holds the rows the person means. Views come with the first page (views_has_more and views_next_page_token page them with views_page_token). A Base with advanced permissions (is_advanced in feishu.get_base) restricts rows and fields per collaborator, so its reads stay private to you.",
+      "required_params" => ["base"],
+      "parameters" => %{
+        "base" => @feishu_base_param,
+        "table_id" => "Table ID (tbl...). Optional when base is a URL with ?table=.",
+        "view_id" => "Optional view ID (vew...); fields are listed in that view's order.",
+        "page_size" => "Optional, at most 100.",
+        "page_token" => "Optional token from the previous page.",
+        "views_page_token" =>
+          "Optional views_next_page_token of the result before: pages the views alone, with no fields."
+      }
+    },
+    %{
+      "name" => "feishu.list_base_records",
+      "method" => "POST /bitable/v1/apps/:app_token/tables/:table_id/records/search",
+      "safety" => "read",
+      "description" =>
+        "Read one page of the records of one table of a Feishu Base, each as record_id and fields keyed by field name. Pass the view_id the person's link names so hidden rows and the view's filter apply. A page holds at most 500 records (100 by default); continue with next_page_token until has_more is false, and never guess that a table ends at one page. With filter or sort the search runs over the whole table and the view does not apply, so pass the bare app_token and table_id then. A page larger than one tool result is put in your workspace as JSON.",
+      "required_params" => ["base"],
+      "parameters" => %{
+        "base" => @feishu_base_param,
+        "table_id" => "Table ID (tbl...). Optional when base is a URL with ?table=.",
+        "view_id" => "Optional view ID (vew...). Defaults to the URL's ?view=.",
+        "field_names" => "Optional JSON array of field names to return; omit for every field.",
+        "filter" =>
+          "Optional Base search filter object: {\"conjunction\":\"and\",\"conditions\":[{\"field_name\":\"状态\",\"operator\":\"is\",\"value\":[\"已审核\"]}]}.",
+        "sort" => "Optional JSON array of {field_name, desc}.",
+        "automatic_fields" => "Optional true to include created/modified time and people.",
+        "page_size" => "Optional, at most 500; default 100.",
+        "page_token" => "Optional token from the previous page."
+      }
+    },
+    %{
+      "name" => "feishu.get_sheet",
+      "method" =>
+        "GET /sheets/v3/spreadsheets/:token + GET /sheets/v3/spreadsheets/:token/sheets/query",
+      "safety" => "read",
+      "description" =>
+        "Read a Feishu spreadsheet that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant: its title and its sheets (sheet_id, title, row and column counts). Then read cells with feishu.get_sheet_range.",
+      "required_params" => ["sheet"],
+      "parameters" => %{"sheet" => @feishu_sheet_param},
+      "example_params" => %{
+        "sheet" => "https://example.feishu.cn/sheets/AbCdEfGhIjKlMnOpQrStUvWx?sheet=0a1b2c"
+      }
+    },
+    %{
+      "name" => "feishu.get_sheet_range",
+      "method" =>
+        "GET /sheets/v3/spreadsheets/:token/sheets/query + GET /sheets/v2/spreadsheets/:token/values/:sheet_id!:range",
+      "safety" => "read",
+      "description" =>
+        "Read the cell values of one A1 range of one sheet of a Feishu spreadsheet, as rows of strings. A call reads at most 500 rows and 100 columns; without range it reads the sheet's first block (every column up to 100, 500 rows). has_more says whether the sheet holds more: follow next_range, one cursor that visits each cell once (rows below, then the next columns), until has_more is false, and never total a sheet from one range. A range larger than one tool result is put in your workspace as JSON.",
+      "required_params" => ["sheet"],
+      "parameters" => %{
+        "sheet" => @feishu_sheet_param,
+        "sheet_id" =>
+          "Sheet ID from feishu.get_sheet. Optional when sheet is a URL with ?sheet=.",
+        "range" => "Optional A1 range inside the sheet, such as A1:H300. Default A1:Z500."
+      }
+    }
+  ]
+
   @feishu_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts) to read as that person instead of as the bot."
   @feishu_meeting_account_param "Optional: app for the app's own identity, or a signed-in Feishu account (alias or open_id from feishu.list_accounts). Omit to use the app and then every signed-in account."
 
   @feishu_accounts_from_param "Optional: the accounts_from of the result before. A call reads as at most 10 identities; more_accounts names where the next call starts."
 
+  @feishu_write_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts) of the person who asked, to write as that person when the app may not edit the document. Only after that person agrees: the edit history shows them as the author. Never another person's account."
+
   # Reads that can run as a signed-in person when the request names an
   # `account` (`SalixIM.Provider.Feishu.Meetings.as_account/3`).
-  @feishu_account_apis ~w(feishu.fetch_doc feishu.list_doc_comments feishu.fetch_doc_media
-                          feishu.get_minute feishu.list_minutes feishu.fetch_minute_media
-                          feishu.list_wiki_spaces feishu.list_wiki_nodes)
+  # The bot cannot read an external chat; a member who signed in can.
+  @feishu_account_reads ~w(feishu.fetch_doc feishu.list_doc_comments feishu.fetch_doc_media
+                           feishu.get_base feishu.list_base_fields feishu.list_base_records
+                           feishu.get_sheet feishu.get_sheet_range
+                           feishu.get_minute feishu.list_minutes feishu.fetch_minute_media
+                           feishu.list_wiki_spaces feishu.list_wiki_nodes
+                           feishu.get_chat_history feishu.get_thread_replies feishu.get_message)
+
+  # Content writes that can run as the person who asked, when the app may
+  # not edit the document. Sharing, link and delete operations stay the app's.
+  @feishu_account_writes ~w(feishu.update_doc feishu.insert_doc_media feishu.add_doc_comment
+                            feishu.reply_doc_comment feishu.resolve_doc_comment)
+
+  @feishu_account_apis @feishu_account_reads ++ @feishu_account_writes
+
+  @feishu_account_params Map.merge(
+                           Map.new(@feishu_account_reads, &{&1, @feishu_account_param}),
+                           Map.new(@feishu_account_writes, &{&1, @feishu_write_account_param})
+                         )
+
+  @feishu_operations Enum.map(@feishu_operations, fn operation ->
+                       case @feishu_account_params[operation["name"]] do
+                         nil -> operation
+                         param -> put_in(operation, ["parameters", "account"], param)
+                       end
+                     end)
 
   @feishu_document_operations Enum.map(@feishu_document_operations, fn operation ->
-                                if operation["name"] in @feishu_account_apis,
-                                  do:
-                                    put_in(
-                                      operation,
-                                      ["parameters", "account"],
-                                      @feishu_account_param
-                                    ),
-                                  else: operation
+                                case @feishu_account_params[operation["name"]] do
+                                  nil -> operation
+                                  param -> put_in(operation, ["parameters", "account"], param)
+                                end
                               end)
 
+  @feishu_table_operations Enum.map(@feishu_table_operations, fn operation ->
+                             case @feishu_account_params[operation["name"]] do
+                               nil -> operation
+                               param -> put_in(operation, ["parameters", "account"], param)
+                             end
+                           end)
+
   @feishu_minutes_operations Enum.map(@feishu_minutes_operations, fn operation ->
-                               if operation["name"] in @feishu_account_apis,
-                                 do:
-                                   put_in(
-                                     operation,
-                                     ["parameters", "account"],
-                                     @feishu_account_param
-                                   ),
-                                 else: operation
+                               case @feishu_account_params[operation["name"]] do
+                                 nil -> operation
+                                 param -> put_in(operation, ["parameters", "account"], param)
+                               end
                              end)
 
   # Discovery and meetings, as the app or a person who signed in for the
@@ -1555,6 +1821,19 @@ defmodule SalixIM.Provider.OperationRegistry do
       }
     },
     %{
+      "name" => "feishu.read_message_link",
+      "method" => "POST /im/v1/message_links/query",
+      "safety" => "read",
+      "description" =>
+        "Read a Feishu message link (https://applink.../client/message/link/open?token=..., what \"copy message link\" makes; a shared one shows as a link such as \"message link from <chat>\"): the messages it holds, each in the shape of feishu.get_message, as copied when the link was made, as the app or a signed-in account (each in turn until one may read it). chat names the chat they came from when that identity may see it. The token is not a message ID.",
+      "required_params" => ["url"],
+      "parameters" => %{
+        "url" => "The whole message link, unchanged.",
+        "account" => @feishu_meeting_account_param,
+        "accounts_from" => @feishu_accounts_from_param
+      }
+    },
+    %{
       "name" => "feishu.get_note",
       "method" => "GET /vc/v1/notes/:note_id + GET /vc/v1/notes/:note_id/unified_note_transcript",
       "safety" => "read",
@@ -1574,6 +1853,7 @@ defmodule SalixIM.Provider.OperationRegistry do
 
   @feishu_operations @feishu_operations ++
                        @feishu_document_operations ++
+                       @feishu_table_operations ++
                        @feishu_minutes_operations ++ @feishu_meeting_operations
 
   @slack_by_name Map.new(@slack_operations, &{&1["name"], &1})
@@ -1587,7 +1867,8 @@ defmodule SalixIM.Provider.OperationRegistry do
   def worker_api_names("feishu"),
     do:
       Enum.map(
-        @feishu_document_operations ++ @feishu_minutes_operations ++ @feishu_meeting_operations,
+        @feishu_document_operations ++
+          @feishu_table_operations ++ @feishu_minutes_operations ++ @feishu_meeting_operations,
         & &1["name"]
       )
 
@@ -1595,7 +1876,14 @@ defmodule SalixIM.Provider.OperationRegistry do
   # Worker holds besides the reads.
   def worker_api_names("lark"), do: SalixIM.Provider.Lark.Manual.worker_api_names()
 
+  # A Worker creates one sandbox Task for work that needs a machine, where
+  # sandboxes are set up (`SalixIM.Provider.Internal`).
+  def worker_api_names("internal"), do: ["internal.task.create"]
+
   def worker_api_names(_provider), do: nil
+
+  @doc "The Feishu Base and spreadsheet operation names."
+  def feishu_table_api_names, do: Enum.map(@feishu_table_operations, & &1["name"])
 
   @doc "The Feishu Minutes operation names."
   def feishu_minutes_api_names, do: Enum.map(@feishu_minutes_operations, & &1["name"])
@@ -1603,7 +1891,7 @@ defmodule SalixIM.Provider.OperationRegistry do
   @doc "The Feishu meeting operation names, read as a signed-in person."
   def feishu_meeting_api_names, do: Enum.map(@feishu_meeting_operations, & &1["name"])
 
-  @doc "The Feishu reads that take an optional `account` to run as a signed-in person."
+  @doc "The Feishu reads and content writes that take an optional `account` to run as a signed-in person."
   def feishu_account_api_names, do: @feishu_account_apis
 
   def manual_api_entries("slack"), do: Enum.map(@slack_operations, &manual_entry/1)
@@ -1637,7 +1925,8 @@ defmodule SalixIM.Provider.OperationRegistry do
   def metadata("lark", api), do: SalixIM.Provider.Lark.Manual.metadata(api)
 
   # The other providers describe their operations only in their manual.
-  def metadata(provider, api) when provider in ~w(wechat telegram imessage voice signal qq) do
+  def metadata(provider, api)
+      when provider in ~w(wechat telegram imessage voice signal qq line) do
     with {:ok, %{"apis" => apis}} <- SalixIM.Provider.Manuals.manual(provider),
          %{} = operation <- Enum.find(apis, &(&1["name"] == api)) do
       {:ok, %{"method" => operation["method"], "safety" => operation["safety"]}}

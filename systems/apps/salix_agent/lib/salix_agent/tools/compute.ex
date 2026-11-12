@@ -77,14 +77,9 @@ defmodule SalixAgent.Tools.Compute do
     {target, args} = Map.pop(args, "workload_id")
 
     with {:ok, workload} <- authorize_workload(ctx, permission(operation), target),
-         {:ok, result} <-
-           dispatch(
-             adapter,
-             operation,
-             prepare_args(operation, stringify(args), ctx),
-             workload.id
-           ) do
-      Jason.encode!(result)
+         {prepared, secrets} = prepare_args(operation, stringify(args), ctx),
+         {:ok, result} <- dispatch(adapter, operation, prepared, workload.id) do
+      result |> SalixAgent.OAuthCredentials.redact(secrets) |> Jason.encode!()
     else
       false -> raise "compute is unavailable for this Workload"
       {:error, reason} -> failure(reason)
@@ -298,11 +293,16 @@ defmodule SalixAgent.Tools.Compute do
   defp property_type(key) when key in ~w(port expected_revision), do: "integer"
   defp property_type(_), do: "string"
 
+  # The arguments to dispatch, and the credential values the result must not show.
   defp prepare_args(operation, args, ctx) when operation in [:compute_exec, :process_start] do
     {entries, args} = Map.pop(args, "credential_env", [])
 
-    case SalixAgent.OAuthCredentials.resolve(required_context(ctx, :agent_id), entries) do
-      {:ok, resolved} ->
+    case SalixAgent.OAuthCredentials.resolve_for_command(
+           ctx,
+           required_context(ctx, :agent_id),
+           entries
+         ) do
+      {:ok, resolved, secrets} ->
         args =
           if map_size(resolved) == 0 do
             args
@@ -314,14 +314,14 @@ defmodule SalixAgent.Tools.Compute do
             )
           end
 
-        normalize_args(operation, args, ctx)
+        {normalize_args(operation, args, ctx), secrets}
 
       {:error, message} ->
         raise message
     end
   end
 
-  defp prepare_args(operation, args, ctx), do: normalize_args(operation, args, ctx)
+  defp prepare_args(operation, args, ctx), do: {normalize_args(operation, args, ctx), []}
 
   defp normalize_args(:process_start, %{"request_id" => request_id} = args, _ctx)
        when is_binary(request_id) do

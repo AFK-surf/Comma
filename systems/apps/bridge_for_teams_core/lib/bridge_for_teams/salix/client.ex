@@ -31,6 +31,40 @@ defmodule BridgeForTeams.Salix.Client do
               attrs()
             ) ::
               {:ok, %{required(String.t()) => term()}} | {:error, term()}
+  @callback revoke_group_connector_token(
+              group_id :: String.t(),
+              tenant_id :: String.t(),
+              token :: String.t()
+            ) :: :ok | {:error, term()}
+  # The one-line station install for a computer of the Group, issued as `user_id`
+  # (`SalixEnv.DeviceInstall`).
+  @callback create_station_install(
+              group_id :: String.t(),
+              tenant_id :: String.t(),
+              name :: String.t(),
+              user_id :: String.t()
+            ) :: result()
+  # Voice keys (`Salix.Control.GroupApiKeys`, kind "voice") of hardware devices.
+  @callback create_group_voice_key(group_id :: String.t(), tenant_id :: String.t(), attrs()) ::
+              result()
+  @callback list_group_voice_keys(group_id :: String.t(), tenant_id :: String.t()) :: result()
+  @callback delete_group_voice_key(
+              group_id :: String.t(),
+              tenant_id :: String.t(),
+              key_id :: String.t()
+            ) :: result()
+  @callback group_voice_urls(group_id :: String.t()) :: map() | {:error, term()}
+  @callback connector_request(
+              connector_run_id :: String.t(),
+              method :: String.t(),
+              params :: map()
+            ) :: result()
+  @optional_callbacks revoke_group_connector_token: 3,
+                      create_group_voice_key: 3,
+                      list_group_voice_keys: 2,
+                      delete_group_voice_key: 3,
+                      group_voice_urls: 1,
+                      connector_request: 3
   @callback create_group(attrs()) :: result()
   @callback update_group(group_id :: String.t(), tenant_id :: String.t(), attrs()) :: result()
   @callback get_group(group_id :: String.t()) :: result()
@@ -203,11 +237,33 @@ defmodule BridgeForTeams.Salix.Client do
               group_id :: String.t(),
               attrs()
             ) :: result()
+  @callback begin_lark_registration(name :: String.t(), opts :: keyword()) :: result()
+  @callback begin_feishu_registration(name :: String.t(), opts :: keyword()) :: result()
+  @callback poll_feishu_registration(domain :: String.t(), device_code :: String.t()) ::
+              {:ok, map()} | {:pending, String.t()} | {:slow_down, String.t()} | {:error, term()}
+  @callback poll_lark_registration(domain :: String.t(), device_code :: String.t()) ::
+              {:ok, map()} | {:pending, String.t()} | {:slow_down, String.t()} | {:error, term()}
   @callback update_lark_im_connect(
               tenant_id :: String.t(),
               group_id :: String.t(),
               connect_id :: String.t(),
               attrs()
+            ) :: result()
+  @callback create_telegram_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback update_telegram_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback list_telegram_observed_chats(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t()
             ) :: result()
   @callback create_qq_im_connect(
               tenant_id :: String.t(),
@@ -536,6 +592,15 @@ defmodule BridgeForTeams.Salix.Client do
               place :: map()
             ) :: {:ok, map() | nil} | {:error, term()}
   @optional_callbacks get_group_task_place: 1, put_group_task_place: 3
+  # The Salix deployment's sandbox places for the Group (`SalixAgent.Sandboxes.status/1`):
+  # `sandboxes` (a sandbox is a place to run Tasks), `cloud_vm_retired` (the
+  # Cloud VM is one no more), `cloud_vm_shown` (its section stays while the
+  # Group has a Cloud VM that is not archived) and `cloud_vm_available` (the
+  # Group can have one). A Salix node of the release before answers
+  # `{:error, :unavailable}`.
+  @callback sandbox_places(group_id :: String.t()) ::
+              {:ok, %{String.t() => boolean()}} | {:error, term()}
+  @optional_callbacks sandbox_places: 1
 
   # Provision a Salix control-plane agent record (under attrs.tenant_id + group).
   @callback create_agent(attrs()) :: result()
@@ -580,6 +645,28 @@ defmodule BridgeForTeams.Salix.Client do
               result()
   @callback get_session_messages(agent_id :: String.t(), session_id :: String.t()) :: result()
   @callback list_project_knowledge_uses(agent_id :: String.t(), opts :: keyword()) :: result()
+  # The Group's statistics as its stations send them, their own and those of
+  # outside sources they bring in (`SalixStore.StationStats`): what was spent
+  # from day to day added up by person, model, day, source or station, and the
+  # chats with something in them since a time.
+  @callback station_usage(
+              group_id :: String.t(),
+              from :: String.t(),
+              to :: String.t(),
+              by :: atom(),
+              source :: String.t() | nil
+            ) :: result()
+  @callback station_tasks(group_id :: String.t(), since :: integer()) :: result()
+  # The Group's still.fail stations (`SalixEnv.StillfailDevices`): those it
+  # has, a new one's line to connect with, and removing them.
+  @callback stillfail_stations(group_id :: String.t()) :: result()
+  @callback stillfail_connect_line(tenant_id :: String.t(), group_id :: String.t()) :: result()
+  @callback remove_stillfail_stations(group_id :: String.t()) :: result()
+  @optional_callbacks station_usage: 5,
+                      station_tasks: 2,
+                      stillfail_stations: 1,
+                      stillfail_connect_line: 2,
+                      remove_stillfail_stations: 1
   @callback session_trace(agent_id :: String.t(), session_id :: String.t(), opts :: keyword()) ::
               result()
   # The agent's current in-memory activity surface (`SalixAgent.ActivitySurface`
@@ -861,6 +948,37 @@ defmodule BridgeForTeams.Salix.Client do
               placement :: String.t() | nil
             ) :: result()
 
+  # People of one connect whose name, email or id matches a query, and the
+  # names and emails of given ids, for the Data policy page's person picker.
+  @callback ifc_people(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              query :: String.t()
+            ) :: result()
+
+  @callback ifc_describe_people(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              ids :: [String.t()]
+            ) :: result()
+
+  @optional_callbacks ifc_people: 4, ifc_describe_people: 4
+
+  # The Group's trusted SSH host keys, each with the tag that restricts it,
+  # if any. Fingerprints and names only; no key material beyond the public key.
+  @callback ssh_known_hosts(tenant_id :: String.t(), group_id :: String.t()) :: result()
+
+  # Restricts one SSH host key to the readers of a tag; a blank tag lifts the
+  # restriction.
+  @callback ssh_restrict_host(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              fingerprint :: String.t(),
+              tag :: String.t()
+            ) :: result()
+
   # Credential-free authority snapshot for one explicitly selected public
   # channel. Slack credentials remain inside Salix.
   @callback slack_history_source_authority(request :: map()) :: result()
@@ -877,6 +995,8 @@ defmodule BridgeForTeams.Salix.Client do
   @callback daily_brief_messages(request :: map()) :: result()
   # Threads in readable channels where one member wrote.
   @callback daily_brief_member_threads(request :: map()) :: result()
+  # How many messages each member wrote in each readable channel lately.
+  @callback daily_brief_active_channels(request :: map()) :: result()
   # BFT emails resolved to Slack members of the connect's workspace.
   @callback daily_brief_lookup_members(request :: map()) :: result()
   # The names Slack shows for users of the connect's workspace, by user id.
@@ -884,6 +1004,14 @@ defmodule BridgeForTeams.Salix.Client do
 
   # Message permalinks from the bot.
   @callback daily_brief_permalinks(request :: map()) :: result()
+
+  # ---- Daily brief member authorization (Salix.Bindings.DailyBriefMemberAuth) ----
+  # A member's own read-only Slack grant: start, result, and delete.
+  @callback daily_brief_dm_start(request :: map()) :: result()
+  @callback daily_brief_dm_result(request :: map()) :: result()
+  @callback daily_brief_dm_delete(request :: map()) :: :ok | {:error, term()}
+  # The member's direct messages in a window, read with their own grant.
+  @callback daily_brief_direct_messages(request :: map()) :: result()
 
   # Posts one brief into a member's direct conversation with the Swarm's bot.
   @callback daily_brief_post(request :: map()) :: result()

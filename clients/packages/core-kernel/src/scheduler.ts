@@ -76,15 +76,17 @@ export class Scheduler {
 
   /// Asks for a task: in `lane`, by `key` (one task per key), at `priority`, when the returned effect runs (not when
   /// it is made: an effect built for later asks nothing until then). It ends with what the task's run ends with (a
-  /// task asked for while it runs is run again after, for what changed meanwhile).
+  /// task asked for while it runs is run again after, for what changed meanwhile; with `again` false, its run under
+  /// way is enough).
   ask(
     lane: string,
     key: string,
     priority: number,
-    work: Effect.Effect<void, CoreError>
+    work: Effect.Effect<void, CoreError>,
+    again = true
   ): Effect.Effect<void, CoreError> {
     return Effect.suspend(() =>
-      Deferred.await(this.enqueue(lane, key, priority, work))
+      Deferred.await(this.enqueue(lane, key, priority, work, again))
     );
   }
 
@@ -93,7 +95,8 @@ export class Scheduler {
     lane: string,
     key: string,
     priority: number,
-    work: Effect.Effect<void, CoreError>
+    work: Effect.Effect<void, CoreError>,
+    again = true
   ): Deferred.Deferred<void, CoreError> {
     const l = this.#lane(lane);
     const p = this.#boosted(key, priority);
@@ -102,6 +105,8 @@ export class Scheduler {
       waiting.priority = Math.max(waiting.priority, p);
       return waiting.done;
     }
+    const running = l.running.get(key);
+    if (running && !again) return running.done;
     const task: Waiting = {
       key,
       priority: p,

@@ -12,21 +12,29 @@ struct ShellCard: View {
     /// the chat, and then stays, keeping its transcript position. Built ahead of time, its first opening is only the
     /// zoom.
     @State private var routerMounted = false
+    @State private var folded = false
 
     var body: some View {
-        ZStack {
-            ShellTabs(store: store, activity: activity, query: query)
-                .accessibilityHidden(navigation.routerOpen || navigation.searchOpen)
-            if navigation.searchOpen {
-                // It goes at once, its field with it (`TaskSearchLayer`).
-                TaskSearchLayer(store: store) { navigation.closeSearch() }
-                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
-            }
-            if routerMounted || navigation.routerOpen {
-                RouterChatLayer(store: store, open: navigation.routerOpen)
-                    .ignoresSafeArea()
+        GeometryReader { geometry in
+            let columns = ShellColumnLayout(width: geometry.size.width, folded: folded, division: geometry.shellFoldDivision)
+            ZStack(alignment: .leading) {
+                ShellTabs(store: store, activity: activity, query: query, showsRoutines: false)
+                    .accessibilityHidden(navigation.routerOpen || navigation.searchOpen)
+                if navigation.searchOpen {
+                    // It goes at once, its field with it (`TaskSearchLayer`).
+                    TaskSearchLayer(store: store) { navigation.closeSearch() }
+                        .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                }
+                if routerMounted || navigation.routerOpen {
+                    RouterChatLayer(store: store, open: navigation.routerOpen, sharesRoutineColumn: columns.isWide)
+                        .ignoresSafeArea()
+                }
+                if columns.isWide {
+                    ShellRoutineColumn(store: store, width: columns.leadingWidth, stride: columns.contentLeadingInset)
+                }
             }
         }
+        .modifier(HomeHingeObserver(folded: $folded))
         .animation(CommaMotion.stateChange, value: navigation.searchOpen)
         .environment(navigation)
         .providingInbox(store: store)

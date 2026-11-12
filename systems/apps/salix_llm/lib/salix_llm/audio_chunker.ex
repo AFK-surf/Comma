@@ -17,13 +17,26 @@ defmodule SalixLlm.AudioChunker do
   @silk_sample_rate_hz 24_000
   @silk_max_packet_bytes 1_024
   @silk_packets_per_second 50
+  # With `voice: true`, speech is told from silence as live meeting ASR does
+  # (`SalixMeetNative.ASR.Segmenter`): a 40 ms frame is voiced when its mean
+  # absolute amplitude reaches 180. A chunk then ends at the quietest whole
+  # second of its last fifth (at most a minute), so a cut falls in a pause,
+  # not in a word.
+  @voice_frame_samples 640
+  @voice_mean_amplitude 180
+  @voice_frames_per_second div(@chunk_sample_rate_hz, @voice_frame_samples)
+  @cut_window_seconds 60
+  # How far either side of a candidate cut its quiet is counted.
+  @cut_quiet_reach_frames 50
 
   @type chunk :: %{
-          index: non_neg_integer(),
-          offset_seconds: non_neg_integer(),
-          path: String.t(),
-          format: String.t(),
-          source_duration_seconds: pos_integer()
+          required(:index) => non_neg_integer(),
+          required(:offset_seconds) => non_neg_integer(),
+          required(:path) => String.t(),
+          required(:format) => String.t(),
+          required(:source_duration_seconds) => pos_integer(),
+          optional(:voiced_seconds) => float(),
+          optional(:speech_end_seconds) => float()
         }
 
   @spec with_mp3_chunks(binary(), String.t(), ([chunk()] -> term()), keyword()) :: term()
@@ -75,6 +88,7 @@ defmodule SalixLlm.AudioChunker do
     max_chunks = positive_integer(opts[:max_chunks], @max_chunks)
     timeout_ms = positive_integer(opts[:timeout_ms], @timeout_ms)
     deadline_ms = opts[:deadline_ms]
+    voice? = opts[:voice] == true
     ffmpeg = opts[:ffmpeg] || System.find_executable("ffmpeg")
     ffprobe = opts[:ffprobe] || System.find_executable("ffprobe")
     silk_decoder = opts[:silk_decoder] || System.find_executable("silk-v3-decoder")
@@ -94,7 +108,8 @@ defmodule SalixLlm.AudioChunker do
              segment_seconds,
              max_chunks,
              timeout_ms,
-             deadline_ms
+             deadline_ms,
+             voice?
            ) do
       result
     else
@@ -113,7 +128,8 @@ defmodule SalixLlm.AudioChunker do
          segment_seconds,
          max_chunks,
          timeout_ms,
-         deadline_ms
+         deadline_ms,
+         voice?
        ) do
     try do
       input = Path.join(dir, "source" <> safe_extension(source_filename))
@@ -128,14 +144,24 @@ defmodule SalixLlm.AudioChunker do
            {:ok, source_audio} <-
              probe_decoded_source_audio(ffprobe, input, probe_timeout_ms),
            duration_seconds = source_audio.duration_seconds,
-           chunk_plan =
-             chunk_sample_plan(segment_seconds, source_audio.target_sample_count),
            :ok <- enforce_duration_limit(duration_seconds, max_duration_seconds),
+           {:ok, chunk_input, chunk_plan} <-
+             plan_chunks(
+               voice?,
+               ffmpeg,
+               input,
+               dir,
+               segment_seconds,
+               max_chunks,
+               source_audio.target_sample_count,
+               timeout_ms,
+               deadline_ms
+             ),
            :ok <- validate_planned_chunk_count(chunk_plan, max_chunks),
            :ok <-
              transcode_chunks(
                ffmpeg,
-               input,
+               chunk_input,
                dir,
                chunk_plan,
                timeout_ms,
@@ -145,7 +171,6 @@ defmodule SalixLlm.AudioChunker do
              collect_chunks(
                ffprobe,
                dir,
-               segment_seconds,
                max_chunks,
                duration_seconds,
                chunk_plan,
@@ -361,16 +386,218 @@ defmodule SalixLlm.AudioChunker do
                "-loglevel",
                "error",
                "-nostdin",
-               "-y",
-               "-i",
-               input,
-               "-filter_complex",
-               chunk_filter_graph(chunk_plan)
-             ] ++ chunk_output_args(dir, chunk_plan),
+               "-y"
+             ] ++
+               input_args(input) ++
+               [
+                 "-filter_complex",
+                 chunk_filter_graph(chunk_plan)
+               ] ++ chunk_output_args(dir, chunk_plan),
              ffmpeg_timeout_ms
            ) do
       :ok
     end
+  end
+
+  defp input_args({:pcm, path}),
+    do: ["-f", "s16le", "-ar", "#{@chunk_sample_rate_hz}", "-ac", "1", "-i", path]
+
+  defp input_args(path), do: ["-i", path]
+
+  defp plan_chunks(false, _ffmpeg, input, _dir, segment_seconds, _max, samples, _t, _d),
+    do: {:ok, input, chunk_sample_plan(segment_seconds, samples)}
+
+  # The source decoded once to 16 kHz mono PCM; its frames say where speech
+  # is, and the chunks are cut from the same samples. When cutting at pauses
+  # would take more chunks than allowed, the chunks are cut every
+  # `segment_seconds` instead.
+  defp plan_chunks(
+         true,
+         ffmpeg,
+         input,
+         dir,
+         segment_seconds,
+         max_chunks,
+         _samples,
+         timeout,
+         deadline
+       ) do
+    pcm = Path.join(dir, "source.pcm")
+
+    with {:ok, ffmpeg_timeout_ms} <- phase_timeout(timeout, deadline),
+         {:ok, _output} <-
+           run_ffmpeg(
+             ffmpeg,
+             [
+               "-hide_banner",
+               "-loglevel",
+               "error",
+               "-nostdin",
+               "-y",
+               "-i",
+               input,
+               "-map",
+               "0:a:0",
+               "-af",
+               "aformat=channel_layouts=mono,aresample=#{@chunk_sample_rate_hz}",
+               "-f",
+               "s16le",
+               "-c:a",
+               "pcm_s16le",
+               pcm
+             ],
+             ffmpeg_timeout_ms
+           ),
+         {:ok, %{size: size}} when size >= 2 <- File.stat(pcm) do
+      samples = div(size, 2)
+      voiced = voiced_frames(pcm)
+      paused = voice_sample_plan(segment_seconds, samples, voiced)
+
+      plan =
+        if length(paused) <= max_chunks,
+          do: paused,
+          else: segment_seconds |> chunk_sample_plan(samples) |> Enum.map(&with_voice(&1, voiced))
+
+      {:ok, {:pcm, pcm}, plan}
+    else
+      {:ok, %{}} -> {:error, :ffmpeg_no_audio_chunks}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # One boolean per whole 40 ms frame, in order, as a tuple.
+  defp voiced_frames(pcm) do
+    pcm
+    |> File.stream!(@voice_frame_samples * 2 * 256)
+    |> Enum.reduce({[], ""}, fn block, {acc, rest} ->
+      voiced_block(rest <> block, acc)
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> List.to_tuple()
+  end
+
+  defp voiced_block(<<frame::binary-size(@voice_frame_samples * 2), rest::binary>>, acc),
+    do: voiced_block(rest, [voiced_frame?(frame) | acc])
+
+  defp voiced_block(rest, acc), do: {acc, rest}
+
+  defp voiced_frame?(frame) do
+    sum = for <<sample::little-signed-16 <- frame>>, reduce: 0, do: (sum -> sum + abs(sample))
+    div(sum, @voice_frame_samples) >= @voice_mean_amplitude
+  end
+
+  defp voice_sample_plan(segment_seconds, total_samples, voiced) do
+    total_seconds = div(total_samples, @chunk_sample_rate_hz)
+
+    0
+    |> Stream.unfold(fn
+      nil ->
+        nil
+
+      start when total_seconds - start <= segment_seconds ->
+        {{start, nil}, nil}
+
+      start ->
+        cut = quiet_cut(start, segment_seconds, voiced)
+        {{start, cut}, cut}
+    end)
+    |> Enum.with_index()
+    |> Enum.map(fn {{start, cut}, index} ->
+      start_sample = start * @chunk_sample_rate_hz
+      last? = cut == nil
+
+      plan = %{
+        index: index,
+        start_sample: start_sample,
+        end_sample:
+          if(last?,
+            do: total_samples + @sample_count_tolerance_per_chunk,
+            else: cut * @chunk_sample_rate_hz
+          ),
+        expected_sample_count:
+          if(last?,
+            do: total_samples - start_sample,
+            else: (cut - start) * @chunk_sample_rate_hz
+          )
+      }
+
+      with_voice(plan, voiced)
+    end)
+    |> merge_subframe_tail(total_samples)
+  end
+
+  # The whole second in the chunk's last fifth (at most `@cut_window_seconds`)
+  # with the most unvoiced frames on both sides of it, the latest of equals;
+  # the chunk's full length when no second there is quiet.
+  defp quiet_cut(start, segment_seconds, voiced) do
+    last = start + segment_seconds
+    first = max(start + 1, last - min(@cut_window_seconds, div(segment_seconds, 5)))
+
+    {cut, quiet} =
+      last..first//-1
+      |> Enum.map(&{&1, quiet_frames(voiced, &1 * @voice_frames_per_second)})
+      |> Enum.max_by(&elem(&1, 1), fn -> {last, 0} end)
+
+    if quiet > 0, do: cut, else: last
+  end
+
+  defp quiet_frames(voiced, frame) do
+    before = count_quiet(voiced, frame - 1, -1, 0)
+    after_ = count_quiet(voiced, frame, 1, 0)
+    if before == 0 or after_ == 0, do: 0, else: before + after_
+  end
+
+  defp count_quiet(_voiced, _frame, _step, @cut_quiet_reach_frames), do: @cut_quiet_reach_frames
+
+  defp count_quiet(voiced, frame, step, n) do
+    if frame >= 0 and frame < tuple_size(voiced) and not elem(voiced, frame),
+      do: count_quiet(voiced, frame + step, step, n + 1),
+      else: n
+  end
+
+  # A tail too short for one MP3 frame joins the chunk before it, as in
+  # `chunk_sample_plan/2`.
+  defp merge_subframe_tail(plan, total_samples) do
+    case Enum.split(plan, -2) do
+      {head, [previous, %{expected_sample_count: tail}]}
+      when tail in 1..(@minimum_mp3_playable_sample_count - 1)//1 ->
+        head ++
+          [
+            %{
+              previous
+              | end_sample: total_samples + @sample_count_tolerance_per_chunk,
+                expected_sample_count: total_samples - previous.start_sample
+            }
+          ]
+
+      _ ->
+        plan
+    end
+  end
+
+  # How long speech sounds in the chunk, and when its last voiced frame ends,
+  # both from the chunk's start.
+  defp with_voice(plan, voiced) do
+    first = div(plan.start_sample, @voice_frame_samples)
+
+    last =
+      min(
+        div(plan.start_sample + plan.expected_sample_count, @voice_frame_samples),
+        tuple_size(voiced)
+      )
+
+    voiced_in_chunk = for frame <- first..(last - 1)//1, elem(voiced, frame), do: frame
+    frame_seconds = @voice_frame_samples / @chunk_sample_rate_hz
+
+    Map.merge(plan, %{
+      voiced_seconds: length(voiced_in_chunk) * frame_seconds,
+      speech_end_seconds:
+        case List.last(voiced_in_chunk) do
+          nil -> 0.0
+          frame -> (frame + 1 - first) * frame_seconds
+        end
+    })
   end
 
   defp chunk_sample_plan(segment_seconds, source_target_sample_count) do
@@ -447,7 +674,6 @@ defmodule SalixLlm.AudioChunker do
   defp collect_chunks(
          ffprobe,
          dir,
-         segment_seconds,
          max_chunks,
          duration_seconds,
          chunk_plan,
@@ -459,21 +685,28 @@ defmodule SalixLlm.AudioChunker do
     with {:ok, indexed} <- require_indexed_chunks(paths),
          {:ok, probed} <-
            probe_chunks(ffprobe, indexed, timeout_ms, deadline_ms),
-         probed = drop_encoder_padding_tail(probed, segment_seconds, duration_seconds),
+         probed = drop_encoder_padding_tail(probed, chunk_plan, duration_seconds),
          :ok <- validate_decodable_chunks(probed),
          :ok <- validate_chunk_sample_coverage(probed, chunk_plan),
          indexed = Enum.map(probed, fn {index, path, _probe} -> {index, path} end),
          :ok <- validate_chunk_count(indexed, max_chunks),
          :ok <- validate_chunk_integrity(indexed) do
+      plans = Map.new(chunk_plan, &{&1.index, &1})
+
       {:ok,
        Enum.map(indexed, fn {index, path} ->
-         %{
-           index: index,
-           offset_seconds: index * segment_seconds,
-           path: path,
-           format: "mp3",
-           source_duration_seconds: rounded_duration_seconds(duration_seconds)
-         }
+         plan = Map.fetch!(plans, index)
+
+         Map.merge(
+           %{
+             index: index,
+             offset_seconds: div(plan.start_sample, @chunk_sample_rate_hz),
+             path: path,
+             format: "mp3",
+             source_duration_seconds: rounded_duration_seconds(duration_seconds)
+           },
+           Map.take(plan, [:voiced_seconds, :speech_end_seconds])
+         )
        end)}
     end
   end
@@ -511,14 +744,19 @@ defmodule SalixLlm.AudioChunker do
   # audio ends on a segment boundary. Drop only trailing invalid segments whose
   # offset is within encoder-padding tolerance of the probed source end. An
   # invalid middle or materially early final segment remains a hard failure.
-  defp drop_encoder_padding_tail(probed, segment_seconds, duration_seconds) do
+  defp drop_encoder_padding_tail(probed, chunk_plan, duration_seconds) do
+    starts = Map.new(chunk_plan, &{&1.index, &1.start_sample / @chunk_sample_rate_hz})
+
     case List.last(probed) do
-      {index, _path, {:error, _reason}}
-      when index * segment_seconds >=
-             duration_seconds - @duration_boundary_tolerance_seconds ->
-        probed
-        |> Enum.drop(-1)
-        |> drop_encoder_padding_tail(segment_seconds, duration_seconds)
+      {index, _path, {:error, _reason}} ->
+        if Map.get(starts, index, :infinity) >=
+             duration_seconds - @duration_boundary_tolerance_seconds do
+          probed
+          |> Enum.drop(-1)
+          |> drop_encoder_padding_tail(chunk_plan, duration_seconds)
+        else
+          probed
+        end
 
       _ ->
         probed

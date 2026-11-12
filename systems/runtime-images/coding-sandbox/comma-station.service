@@ -1,12 +1,14 @@
 [Unit]
 Description=Comma station of a coding sandbox
-After=sbx-firstboot.service network-online.target
-Wants=network-online.target
+After=sbx-firstboot.service network-online.target comma-display.service
+# The station starts without the display: a browser run headless needs none.
+Wants=network-online.target comma-display.service
 ConditionPathExists=/run/sbx/secrets/SALIX_WORKLOAD_CREDENTIAL
 
 [Service]
 User=comma
 Group=comma
+Environment=DISPLAY=:99 CHROMIUM_BIN=/usr/bin/chromium
 EnvironmentFile=-/etc/sbx/env
 ExecStart=/usr/local/bin/comma-station-start
 Restart=always

@@ -12,7 +12,6 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
 
   alias BridgeForTeams.Environments
   alias BridgeForTeams.RuntimeAuth
-  alias BridgeForTeams.Schema.{MacMiniProvisioner, Organization}
   alias BridgeForTeamsWeb.{LimitParams, ProjectScope}
   alias SalixStore.RuntimeIds
 
@@ -63,19 +62,9 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
            Environments.list_projected_environments(project.id, limit: limit) do
       filter = trim(params["filter"])
 
-      requests =
-        project.id
-        |> Environments.list_device_provision_requests(limit: limit)
-        |> Enum.map(&public_device_request/1)
-
       devices =
         devices
         |> Enum.map(&public_device/1)
-        |> filter_text(filter)
-        |> Enum.take(limit)
-
-      requests =
-        requests
         |> filter_text(filter)
         |> Enum.take(limit)
 
@@ -84,11 +73,10 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
         "org" => public_org(org),
         "project" => public_project(project),
         "devices" => devices,
-        "device_requests" => requests,
         "limit" => limit,
         "filter" => empty_nil(filter),
-        "summary" => device_summary(devices, requests),
-        "next_action" => devices_next_action(org, project, devices, requests)
+        "summary" => device_summary(devices),
+        "next_action" => devices_next_action(org, project, devices)
       })
     else
       {:error, :invalid_limit} ->
@@ -96,97 +84,6 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
 
       error ->
         send_project_error(conn, error, "Could not list project devices.")
-    end
-  end
-
-  def create(conn, params) do
-    with {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, attrs} <- device_attrs(org, params),
-         {:ok, request} <-
-           Environments.create_device_provision_request(
-             project.id,
-             attrs,
-             request_audit_opts(conn)
-           ) do
-      send_ok(conn, %{
-        "mode" => "project_device_create",
-        "org" => public_org(org),
-        "project" => public_project(project),
-        "device_request" => public_device_request(request),
-        "next_action" =>
-          "Wait for the selected runner to claim this request, then list project devices again."
-      })
-    else
-      {:error, %Ecto.Changeset{} = changeset} ->
-        send_error(conn, 400, "invalid_device_request", "Could not create the project device.", %{
-          "errors" => changeset_errors(changeset)
-        })
-
-      {:error, :runner_required} ->
-        send_error(
-          conn,
-          400,
-          "runner_required",
-          "Pass runner.",
-          %{}
-        )
-
-      {:error, :runner_not_found} ->
-        send_error(conn, 404, "runner_not_found", "Runner not found.", %{})
-
-      {:error, :runner_ambiguous} ->
-        send_error(
-          conn,
-          409,
-          "runner_ambiguous",
-          "Runner name is ambiguous. Pass the runner id or stable id.",
-          %{}
-        )
-
-      {:error, :provisioner_offline} ->
-        send_error(conn, 409, "runner_offline", "Runner is offline.", %{})
-
-      error ->
-        send_project_error(conn, error, "Could not create project device.")
-    end
-  end
-
-  def stop_request(conn, %{"request_id" => request_id} = params) do
-    with {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, request} <-
-           Environments.request_device_provision_stop(
-             project.id,
-             request_id,
-             request_audit_opts(conn)
-           ) do
-      send_ok(conn, %{
-        "mode" => "project_device_request_stop",
-        "org" => public_org(org),
-        "project" => public_project(project),
-        "device_request" => public_device_request(request),
-        "next_action" => "Wait for the runner to stop this device request."
-      })
-    else
-      {:error, :not_found} ->
-        send_error(conn, 404, "device_request_not_found", "Device request not found.", %{})
-
-      {:error, :not_stoppable} ->
-        send_error(
-          conn,
-          409,
-          "device_request_not_stoppable",
-          "Device request cannot be stopped in its current state.",
-          %{}
-        )
-
-      error ->
-        send_project_error(conn, error, "Could not stop project device request.")
     end
   end
 
@@ -206,7 +103,7 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
         "org" => public_org(org),
         "project" => public_project(project),
         "device" => public_device(record),
-        "next_action" => "The device's current connector run has been disconnected."
+        "next_action" => "The device's station has been disconnected."
       })
     else
       {:error, :not_found} ->
@@ -348,10 +245,10 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
     do: send_error(conn, 502, "runtime_auth_failed", fallback, %{})
 
   defp runtime_auth_error_message(:connector_disconnected),
-    do: "The Connector is disconnected."
+    do: "The station is disconnected."
 
   defp runtime_auth_error_message(:runtime_auth_unsupported),
-    do: "This Connector does not support runtime authentication."
+    do: "This station does not support runtime authentication."
 
   defp runtime_auth_error_message(:runtime_auth_conflict),
     do: "Another runtime login attempt is already active."
@@ -379,89 +276,6 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
   end
 
   defp read_limit(params), do: LimitParams.read(params, "limit", 100)
-
-  defp device_attrs(%Organization{} = org, params) do
-    runner_ref = params["runner"] || params["runner_id"]
-
-    with {:ok, %MacMiniProvisioner{} = runner} <-
-           resolve_runner(org, runner_ref) do
-      %{}
-      |> put_present("name", params["name"])
-      |> put_present("alias", params["alias"])
-      |> Map.put("provisioner_id", runner.id)
-      |> then(&{:ok, &1})
-    end
-  end
-
-  defp resolve_runner(%Organization{} = org, ref) do
-    runners = Environments.list_mac_mini_provisioners(org.id)
-    ref = trim(ref)
-
-    if ref == "" do
-      {:error, :runner_required}
-    else
-      runners
-      |> select_runner(ref)
-      |> case do
-        {:ok, runner} -> ensure_runner_online(runner)
-        error -> error
-      end
-    end
-  end
-
-  defp select_runner(runners, ref) do
-    case Enum.find(runners, &(ref in [&1.id, &1.stable_id])) do
-      %MacMiniProvisioner{} = runner ->
-        {:ok, runner}
-
-      nil ->
-        case Enum.filter(runners, &(&1.name == ref)) do
-          [runner] -> {:ok, runner}
-          [] -> {:error, :runner_not_found}
-          _many -> {:error, :runner_ambiguous}
-        end
-    end
-  end
-
-  defp ensure_runner_online(%MacMiniProvisioner{} = runner) do
-    if runner_online?(runner), do: {:ok, runner}, else: {:error, :provisioner_offline}
-  end
-
-  defp runner_online?(%MacMiniProvisioner{} = runner) do
-    (runner.effective_status || runner.status) == "online"
-  end
-
-  defp public_device_request(request) do
-    %{
-      "id" => request.id,
-      "name" => request.name,
-      "alias" => request.env_alias,
-      "status" => request.status,
-      "connector_run_id" => request.connector_run_id,
-      "failure_code" => request.failure_code,
-      "failure_message" => request.failure_message,
-      "progress" => request.progress || %{},
-      "runner" => public_request_runner(request),
-      "stoppable" =>
-        request.status in ~w(preflight_complete starting_connector waiting_for_attach connected failed stopped),
-      "created_at" => iso8601_or_nil(request.created_at),
-      "updated_at" => iso8601_or_nil(request.updated_at)
-    }
-  end
-
-  defp public_request_runner(%{provisioner: %MacMiniProvisioner{} = runner}) do
-    %{
-      "id" => runner.id,
-      "stable_id" => runner.stable_id,
-      "name" => runner.name,
-      "status" => runner.status,
-      "effective_status" => runner.effective_status || runner.status
-    }
-  end
-
-  defp public_request_runner(%{provisioner_id: provisioner_id}) do
-    %{"id" => provisioner_id}
-  end
 
   defp public_device(record) when is_map(record) do
     runtimes =
@@ -526,16 +340,10 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
     |> Map.new()
   end
 
-  defp device_summary(devices, requests) do
+  defp device_summary(devices) do
     %{
       "device_count" => length(devices),
-      "connected_count" => Enum.count(devices, &(&1["status"] == "connected")),
-      "device_request_count" => length(requests),
-      "active_request_count" =>
-        Enum.count(
-          requests,
-          &(Map.get(&1, "status") in ~w(pending preflight preflight_complete starting_connector waiting_for_attach stop_requested stopping))
-        )
+      "connected_count" => Enum.count(devices, &(&1["status"] == "connected"))
     }
   end
 
@@ -564,21 +372,13 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
   defp flatten_values(nil), do: []
   defp flatten_values(value), do: [value]
 
-  defp devices_next_action(org, project, devices, requests) do
-    cond do
-      devices != [] ->
-        "Use `bft agents list --org #{org.slug} --project #{project.slug}` to inspect the agents bound to these stations."
+  defp devices_next_action(org, project, []),
+    do:
+      "Connect a station to the Agent Swarm, then run `bft devices list --org #{org.slug} --project #{project.slug}` again."
 
-      Enum.any?(
-        requests,
-        &(Map.get(&1, "status") in ~w(pending preflight preflight_complete starting_connector waiting_for_attach))
-      ) ->
-        "Wait for the selected runner to attach the connector, then list project devices again."
-
-      true ->
-        "List runners, then create a project device from the selected runner."
-    end
-  end
+  defp devices_next_action(org, project, _devices),
+    do:
+      "Use `bft agents list --org #{org.slug} --project #{project.slug}` to inspect the agents bound to these stations."
 
   defp request_audit_opts(conn) do
     user = ProjectScope.current_user(conn)
@@ -597,27 +397,6 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
       true -> user.id
     end
   end
-
-  defp changeset_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
-      Regex.replace(~r"%{(\w+)}", message, fn _, key ->
-        opts |> Keyword.get(safe_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
-
-  defp safe_existing_atom(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
-  end
-
-  defp put_present(map, _key, nil), do: map
-  defp put_present(map, _key, ""), do: map
-  defp put_present(map, key, value), do: Map.put(map, key, value)
-
-  defp iso8601_or_nil(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
-  defp iso8601_or_nil(_), do: nil
 
   defp empty_nil(""), do: nil
   defp empty_nil(value), do: value

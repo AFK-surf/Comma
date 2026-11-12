@@ -6,8 +6,10 @@ defmodule SalixAgent.LLM.Mock do
   Set a script with `script/1` (process-agnostic — stored in an Agent keyed by
   nothing, so tests run `async: false`). `{:final, content}` entries are legacy
   fixture shorthand: when dequeued, the mock returns an assistant response with
-  one `end_turn(outcome: "done")` call. An exhausted script uses that same
-  explicit-done response. Use `{:assistant, content, []}` when a test needs to
+  one `end_turn(outcome: "done", no_reply: true)` call. An exhausted script
+  uses that same explicit-done response. It sends nothing, so it declares the
+  silence: a Router's done that leaves its person with nothing is otherwise
+  refused (`SalixAgent.UnansweredPersonGuard`). Use `{:assistant, content, []}` when a test needs to
   exercise a genuine missing completion decision, or `{:raw, response}` when a
   seam test needs the response tuple unchanged.
 
@@ -124,7 +126,7 @@ defmodule SalixAgent.LLM.Mock do
     %{
       id: "mock_end_turn_#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}",
       name: "end_turn",
-      args: %{"outcome" => "done"}
+      args: %{"outcome" => "done", "no_reply" => true}
     }
   end
 

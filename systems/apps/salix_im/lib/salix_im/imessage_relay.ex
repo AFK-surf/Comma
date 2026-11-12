@@ -290,7 +290,7 @@ defmodule SalixIM.IMessageRelay do
        "retryable" => false,
        "message" =>
          "iMessage did not acknowledge this send. The message may already have been sent. " <>
-           "Do not retry this text/image, send a failure notice, or claim delivery. " <>
+           "Do not retry this send, send a failure notice, or claim delivery. " <>
            "This integration has no delivery-verification API. Device or connection discovery cannot confirm this send. " <>
            "End this turn now with end_turn and outcome=blocked. " <>
            "Use a private reason: iMessage delivery is unknown. The user/operator must verify in Messages before a new send. " <>

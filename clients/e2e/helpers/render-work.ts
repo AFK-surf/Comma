@@ -140,6 +140,16 @@ export async function reactRenderWork(
   return page.evaluate(() => window.commaRenderWork!.stop());
 }
 
+export type SelectorWork = {
+  /**
+   * The elements the selector was matched against in full: its attempts that
+   * the ancestor filter did not reject.
+   */
+  checked: number;
+  /** The elements it matched. */
+  matched: number;
+};
+
 export type BrowserRenderWork = {
   /** The elements of each style recalculation. */
   restyled: number[];
@@ -148,11 +158,27 @@ export type BrowserRenderWork = {
    * ones, and existing ones whose layout subtree was rebuilt.
    */
   attached: number[];
+  /**
+   * Each selector's work over all style recalculations. Empty unless traced
+   * with `{ selectors: true }`, which turns on Chromium's selector statistics.
+   */
+  selectors: Map<string, SelectorWork>;
+};
+
+type SelectorTiming = {
+  selector: string;
+  fast_reject_count?: number;
+  match_attempts?: number;
+  match_count?: number;
 };
 
 type TraceEvent = {
   name: string;
-  args?: { elementCount?: number; data?: { nodeId?: number; reason?: string } };
+  args?: {
+    data?: { nodeId?: number; reason?: string };
+    elementCount?: number;
+    selector_stats?: { selector_timings?: SelectorTiming[] };
+  };
 };
 
 /**
@@ -162,10 +188,11 @@ type TraceEvent = {
  */
 export async function browserRenderWork(
   page: Page,
-  action: () => Promise<unknown>
+  action: () => Promise<unknown>,
+  { selectors = false }: { selectors?: boolean } = {}
 ): Promise<BrowserRenderWork> {
   const cdp = await page.context().newCDPSession(page);
-  const work: BrowserRenderWork = { restyled: [], attached: [] };
+  const work: BrowserRenderWork = { restyled: [], attached: [], selectors: new Map() };
   cdp.on("Tracing.dataCollected", ({ value }) => {
     for (const { name, args } of value as unknown as TraceEvent[]) {
       if (name === "UpdateLayoutTree" && typeof args?.elementCount === "number")
@@ -175,12 +202,26 @@ export async function browserRenderWork(
         args?.data?.reason === "Added to layout"
       )
         work.attached.push(args.data.nodeId!);
+      if (name !== "SelectorStats") continue;
+      for (const timing of args?.selector_stats?.selector_timings ?? []) {
+        const selector = work.selectors.get(timing.selector) ?? {
+          checked: 0,
+          matched: 0,
+        };
+        selector.checked +=
+          (timing.match_attempts ?? 0) - (timing.fast_reject_count ?? 0);
+        selector.matched += timing.match_count ?? 0;
+        work.selectors.set(timing.selector, selector);
+      }
     }
   });
   try {
     await cdp.send("Tracing.start", {
-      categories:
-        "devtools.timeline,disabled-by-default-devtools.timeline.invalidationTracking",
+      categories: [
+        "devtools.timeline",
+        "disabled-by-default-devtools.timeline.invalidationTracking",
+        ...(selectors ? ["disabled-by-default-blink.debug"] : []),
+      ].join(","),
       transferMode: "ReportEvents",
     });
     let failed = false;

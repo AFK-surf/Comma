@@ -4,6 +4,7 @@ defmodule SalixAgent.Browser do
   alias SalixAgent.Browser.Driver
 
   @operations ~w(tabs new_tab close_tab navigate snapshot screenshot click fill press scroll select wait actions dialog request_control take_control return_control input release_keys close clear_storage checkpoint)
+  @capture_size {1200, 630}
   # Failures before any input reached the page release admission at once.
   @local_failures ~w(driver_busy invalid_input invalid_url stale_element tab_not_found unsupported_operation target_not_found ambiguous_target wait_timeout dialog_open)
   def owner(ctx) do
@@ -15,6 +16,32 @@ defmodule SalixAgent.Browser do
       group_id: Ids.group_id_from_agent!(agent),
       tenant_id: Ids.tenant_id_from_agent!(agent)
     }
+  end
+
+  @doc "Pixel size of a page capture: the Open Graph image size that every link preview accepts."
+  def capture_size, do: @capture_size
+
+  @doc "Whether the tenant's Browser Run settings can capture a page."
+  def capture_available?(tenant_id), do: match?({:ok, _}, capture_settings(tenant_id))
+
+  @doc "A JPEG of a public page's first screen, outside any Runtime Session's browser."
+  def capture_page(tenant_id, url) do
+    with {:ok, settings} <- capture_settings(tenant_id),
+         {:ok, token} <- BrowserSettings.unseal(settings.token_ciphertext, settings.scope) do
+      provider().screenshot(settings, token, url, @capture_size)
+    end
+  end
+
+  # A capture is a Quick Action, which Browser Run's guardrails do not cover:
+  # settings that limit the destination domains never capture.
+  defp capture_settings(tenant_id) do
+    case BrowserSettings.resolve(tenant_id) do
+      {:ok, %{allowed_domains: domains}} when is_list(domains) ->
+        {:error, :browser_capture_restricted}
+
+      other ->
+        other
+    end
   end
 
   def execute(owner, operation, args, principal \\ :agent) do

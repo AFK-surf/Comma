@@ -495,9 +495,7 @@ defmodule Comma.AuthChallengeStore.Redis do
   end
 
   defp redis_url do
-    System.get_env("REDIS_URL") ||
-      System.get_env("COMMA_REDIS_URL") ||
-      get_in(SystemsRuntime.get_env(:comma_core, :auth, []), [:redis_url]) ||
+    get_in(SystemsRuntime.get_env(:comma_core, :auth, []), [:redis_url]) ||
       "redis://127.0.0.1:6379/0"
   end
 

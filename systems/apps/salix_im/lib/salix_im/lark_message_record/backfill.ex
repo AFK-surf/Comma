@@ -31,6 +31,7 @@ defmodule SalixIM.LarkMessageRecord.Backfill do
 
   alias SalixIM.LarkMessageRecord
   alias SalixIM.LarkMessageRecord.Row
+  alias SalixIM.Provider.Lark.API
   alias SalixStore.LarkMirrorBackfillLedger
 
   @default_page_budget 20
@@ -160,9 +161,28 @@ defmodule SalixIM.LarkMessageRecord.Backfill do
         end
 
       {:error, reason} ->
-        Logger.warning("lark record backfill page failed: #{inspect(reason)}")
-        _ = ledger.fail_container(scope, container, reason)
-        walk(connect, scope, rest, ledger, opts, {true, true})
+        # Lark goes on refusing an external chat, and an app without a
+        # scope until a person gives it the scope, so such a chat waits for
+        # the listing of the next pass instead of a retry every minute.
+        cond do
+          API.external_chat_rejected?(reason) ->
+            _ = ledger.close_refused_container(scope, container, :external_chat)
+            walk(connect, scope, rest, ledger, opts, {failed?, unfinished?})
+
+          missing = API.missing_scope(reason) ->
+            Logger.warning("lark record backfill: the app lacks the scope #{missing}",
+              connect_id: connect["connect_id"]
+            )
+
+            _ = ledger.close_refused_container(scope, container, {:missing_scope, missing})
+            _ = SalixIM.ProviderConnects.note_missing_scope(connect, missing)
+            walk(connect, scope, rest, ledger, opts, {failed?, unfinished?})
+
+          true ->
+            Logger.warning("lark record backfill page failed: #{inspect(reason)}")
+            _ = ledger.fail_container(scope, container, reason)
+            walk(connect, scope, rest, ledger, opts, {true, true})
+        end
     end
   end
 

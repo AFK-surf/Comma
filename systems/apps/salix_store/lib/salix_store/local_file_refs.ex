@@ -73,44 +73,79 @@ defmodule SalixStore.LocalFileRefs do
           :ok | {:error, term()}
   def bind(ref, group_id, conversation_id, message_id, owner_user_id, now, bound_expires_at)
       when is_binary(ref) and is_integer(now) and is_integer(bound_expires_at) do
-    transaction_result(fn ->
-      case locked(ref) do
-        nil ->
-          Repo.rollback(:not_found)
+    if Repo.in_transaction?() do
+      bind_in_transaction(
+        ref,
+        group_id,
+        conversation_id,
+        message_id,
+        owner_user_id,
+        now,
+        bound_expires_at
+      )
+    else
+      transaction_result(fn ->
+        case bind_in_transaction(
+               ref,
+               group_id,
+               conversation_id,
+               message_id,
+               owner_user_id,
+               now,
+               bound_expires_at
+             ) do
+          :ok -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
 
-        %Row{} = row ->
-          cond do
-            row.state == "revoked" ->
-              Repo.rollback(:local_file_unavailable)
+  defp bind_in_transaction(
+         ref,
+         group_id,
+         conversation_id,
+         message_id,
+         owner_user_id,
+         now,
+         bound_expires_at
+       ) do
+    case locked(ref) do
+      nil ->
+        {:error, :not_found}
 
-            row.group_id != group_id or row.owner_user_id != owner_user_id ->
-              Repo.rollback(:local_file_unavailable)
+      %Row{} = row ->
+        cond do
+          row.state == "revoked" ->
+            {:error, :local_file_unavailable}
 
-            active_expired?(row, now) ->
-              Repo.rollback(:local_file_unavailable)
+          row.group_id != group_id or row.owner_user_id != owner_user_id ->
+            {:error, :local_file_unavailable}
 
-            row.state == "registered" ->
-              row
-              |> Changeset.change(%{
-                state: "bound",
-                conversation_id: conversation_id,
-                message_id: message_id,
-                bound_at: datetime(now),
-                expires_at: datetime(bound_expires_at)
-              })
-              |> Repo.update!()
+          active_expired?(row, now) ->
+            {:error, :local_file_unavailable}
 
-              :ok
+          row.state == "registered" ->
+            row
+            |> Changeset.change(%{
+              state: "bound",
+              conversation_id: conversation_id,
+              message_id: message_id,
+              bound_at: datetime(now),
+              expires_at: datetime(bound_expires_at)
+            })
+            |> Repo.update!()
 
-            row.state == "bound" and row.conversation_id == conversation_id and
-                row.message_id == message_id ->
-              :ok
+            :ok
 
-            true ->
-              Repo.rollback(:local_file_ref_conflict)
-          end
-      end
-    end)
+          row.state == "bound" and row.conversation_id == conversation_id and
+              row.message_id == message_id ->
+            :ok
+
+          true ->
+            {:error, :local_file_ref_conflict}
+        end
+    end
   end
 
   @doc "Atomically revoke a route without changing its binding identity."

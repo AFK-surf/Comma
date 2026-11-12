@@ -137,6 +137,29 @@ describe("a file a media element plays in ranges", () => {
     expect(t.desktop.closedStreams).toEqual(["comma-file://stream/1"]);
   });
 
+  it("plays a file uploaded to the group from its media URL too", async () => {
+    const t = setup({ desktop: false });
+    const name = "AAAAAAAAAAAAAAAAAAAAAA-clip.mp4";
+    t.api.on(
+      "POST",
+      `/v1/comma/groups/g/uploads/${name}/media`,
+      json(200, {
+        url: "https://blobs.example.test/b/upload?X-Amz-Signature=u1",
+        expires_at: Math.floor(t.time.now() / 1000) + 3600,
+      })
+    );
+    const shown = t.watch({
+      source: "group-file",
+      group: "g",
+      path: `/uploads/${name}`,
+    });
+    await t.time.pass(100);
+    expect(shown.value()).toEqual({
+      status: "ready",
+      url: "https://blobs.example.test/b/upload?X-Amz-Signature=u1",
+    });
+  });
+
   it("reads any other file whole where the host cannot stream", async () => {
     const t = setup({ desktop: false });
     const shown = t.watch(avatar);

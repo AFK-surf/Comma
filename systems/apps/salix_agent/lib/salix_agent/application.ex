@@ -17,10 +17,10 @@ defmodule SalixAgent.Application do
     # a crash of the cell GenServer never forgets a recorded fence.
     _ = SalixAgent.OwnershipCell.create_table()
     _ = SalixAgent.SessionResidency.create_table()
+    _ = SalixAgent.DeliveryTelemetry.create_table()
     # Skill projections must outlive the tasks that build round configurations.
     _ = SalixAgent.SkillProjection.create_table()
     # miIO and other LAN codec sessions outlive the tool calls that open them.
-    _ = SalixAgent.LanCodec.create_table()
 
     fleet_max_restarts =
       SystemsRuntime.get_env(:salix_agent, :fleet_supervisor_max_restarts, 3)
@@ -40,7 +40,6 @@ defmodule SalixAgent.Application do
       # Core ownership/recovery work never shares admission with user-selected
       # providers, runtimes, or tools.
       {SystemsRuntime.TaskSupervisor, name: SalixAgent.TaskSup},
-      {SystemsRuntime.TaskSupervisor, name: SalixAgent.WaitTimerTasks, max_children: 256},
       {SystemsRuntime.TaskSupervisor,
        name: SalixAgent.AgentReplyTaskSup,
        max_children: SystemsRuntime.get_env(:salix_agent, :agent_reply_task_limit, 64)},
@@ -57,12 +56,14 @@ defmodule SalixAgent.Application do
       # In-memory last-activity cache; must exist before any agent runs.
       SalixAgent.ActivitySurface,
       SalixAgent.RouterRequestMonitor,
+      background(SalixAgent.DeliveryTelemetry, :delivery_telemetry_worker),
       SalixAgent.DraftSurface,
       SalixAgent.ExecutionSurface,
       {SystemsRuntime.DynamicSupervisor,
        name: SalixAgent.Browser.Supervisor, strategy: :one_for_one},
       SalixAgent.SubscriptionWorker,
       background(SalixAgent.SubscriptionQuotaWorker, :subscription_quota_worker),
+      background(SalixAgent.PlatformBalance, :platform_balance_worker),
       background(SalixAgent.PreparedBlobCleanup, :prepared_blob_cleanup),
       # Background Loops: the node's spinfoam child, the build artifact
       # handoff, and the reconciler that follows Agent placement.
@@ -72,6 +73,8 @@ defmodule SalixAgent.Application do
       # actors; this registry only names them. SSH over Tailcat goes through
       # one gateway process per node, started on first use.
       {SystemsRuntime.Registry, keys: :unique, name: SalixAgent.SSH.Registry},
+      # A station's registry tool calls in flight (`SalixAgent.StationToolCalls`).
+      {SystemsRuntime.Registry, keys: :duplicate, name: SalixAgent.StationToolCalls.Registry},
       SalixAgent.SSH.TailcatGateway,
       # A Group's tailnet node runs in this node's gateway while this node
       # holds the Group's tailnet lease; its owner process holds the lease.

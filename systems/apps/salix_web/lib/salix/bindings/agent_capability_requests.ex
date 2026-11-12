@@ -11,6 +11,8 @@ defmodule Salix.Bindings.AgentCapabilityRequests do
         SalixAgent.CapabilityRequests.topic(group_id),
         {:capability_request_event, group_id, request_id}
       )
+
+      notify_requester(request)
     end
 
     surface(request)
@@ -19,6 +21,22 @@ defmodule Salix.Bindings.AgentCapabilityRequests do
   end
 
   def notify_capability_request(_request), do: :ok
+
+  defp notify_requester(%{
+         "request_type" => "location",
+         "surface_ref" => %{"requester" => requester},
+         "group_id" => group_id,
+         "tenant_id" => tenant_id,
+         "request_id" => request_id
+       }) do
+    Phoenix.PubSub.broadcast(
+      SalixWeb.PubSub,
+      SalixAgent.CapabilityRequests.location_requester_topic(requester),
+      {:location_request_event, group_id, tenant_id, request_id}
+    )
+  end
+
+  defp notify_requester(_request), do: :ok
 
   # An information-flow transfer is a question for one person, in the place
   # they are already talking to the bot, so it gets a card there as well as a

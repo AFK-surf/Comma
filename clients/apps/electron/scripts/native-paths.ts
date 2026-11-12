@@ -1,4 +1,7 @@
-import { arch as currentArch, platform as currentPlatform } from "node:process";
+import {
+  targetArch as currentArch,
+  targetPlatform as currentPlatform,
+} from "./build-target";
 import { resolve } from "node:path";
 import { getCommaReleaseConfig } from "../src/release-config";
 
@@ -62,7 +65,7 @@ export function stationLauncherDistPath(
   return resolve(
     stationDistDir(appDir),
     "mesh/target/release",
-    platform === "win32" ? "stillfail-station.exe" : "stillfail-station"
+    platform === "win32" ? "comma-station.exe" : "comma-station"
   );
 }
 

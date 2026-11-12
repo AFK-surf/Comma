@@ -360,6 +360,27 @@ defmodule SystemsSimTest do
     assert Enum.map(runs, & &1.result) == List.duplicate({:ok, 20}, 10)
   end
 
+  test "a process started while the scheduler collects a large heap waits for its turn" do
+    # The scheduler takes in each message of the world, in its trace: one of
+    # 200,000 words makes it collect its garbage on a dirty scheduler, while
+    # the process that sent it goes on, starts a task and waits for it.
+    world = fn ->
+      big = Enum.to_list(1..100_000)
+      sink = spawn(fn -> receive do: (:never -> :ok) end)
+
+      for n <- 1..20 do
+        send(sink, {:big, big})
+        await(Task.async(fn -> n end))
+      end
+      |> Enum.sum()
+    end
+
+    runs =
+      SystemsSim.one_scheduler(fn -> for seed <- 1..5, do: SystemsSim.run(world, seed: seed) end)
+
+    assert Enum.map(runs, & &1.result) == List.duplicate({:ok, 210}, 5)
+  end
+
   test "the clock starts at the same time on every run" do
     world = fn ->
       {SystemsClock.system_time(:millisecond), SystemsClock.monotonic_time(:millisecond)}

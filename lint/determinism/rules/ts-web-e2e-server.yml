@@ -1,0 +1,23 @@
+id: ts-web-e2e-server
+language: typescript
+severity: error
+message: "A web spec starts an HTTP server of its own."
+note: |
+  The page keeps its connections to a spec's server open after its last
+  request, so a hand-written `server.close()` waits for them until the test's
+  limit. Start the server with `startE2eTestServer`
+  (clients/packages/app/e2e/test-server.ts): it listens on a system-picked
+  port and its close ends those connections first.
+metadata:
+  category: port
+rule:
+  any:
+    - pattern: createServer($$$)
+    - pattern: http.createServer($$$)
+files:
+  - "clients/packages/app/e2e/**/*.ts"
+ignores:
+  - "clients/packages/app/e2e/test-server.ts"
+  # PostHog's capture stand-in listens on the port its configuration names
+  # and ends its connections before closing.
+  - "clients/packages/app/e2e/analytics/**"

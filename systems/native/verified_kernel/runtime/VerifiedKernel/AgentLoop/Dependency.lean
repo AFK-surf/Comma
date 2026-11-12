@@ -1,4 +1,5 @@
 import Std
+import VerifiedKernel.StacklessStd
 
 namespace VerifiedKernel.AgentLoop.Dependency
 

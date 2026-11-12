@@ -1,6 +1,5 @@
 defmodule SalixAnalytics.SessionHistoryIndex do
   @moduledoc "Cold Session history. Inserts and confirmation use the same bounded HTTP read route."
-  @table "{{database}}.agent_session_history"
 
   def transfer(agent, session, documents) do
     rows =
@@ -11,10 +10,10 @@ defmodule SalixAnalytics.SessionHistoryIndex do
       end)
 
     body = Enum.map_join(rows, "\n", &Jason.encode!/1)
-    sql = "INSERT INTO #{@table} SETTINGS async_insert=0 FORMAT JSONEachRow\n" <> body <> "\n"
+    sql = "INSERT INTO #{table()} SETTINGS async_insert=0 FORMAT JSONEachRow\n" <> body <> "\n"
 
-    with {:ok, _} <- request(sql, []) do
-      {:ok, first} = fetch(agent, session, hd(documents)["seq"], List.last(documents)["seq"])
+    with {:ok, _} <- request(sql, []),
+         {:ok, first} <- fetch(agent, session, hd(documents)["seq"], List.last(documents)["seq"]) do
       if first == documents, do: :ok, else: {:error, :cold_not_visible}
     end
   end
@@ -23,7 +22,7 @@ defmodule SalixAnalytics.SessionHistoryIndex do
     predicate = if is_nil(query), do: "part=0", else: "position(text,{query:String})>0"
 
     sql = """
-    SELECT seq,part,text,kind,tool_name,label FROM #{@table} FINAL
+    SELECT seq,part,text,kind,tool_name,label FROM #{table()} FINAL
     PREWHERE agent_id={agent:String} AND session_id={session:String}
     WHERE seq<={ceiling:UInt64} AND (seq,part)<({before:UInt64},{part:UInt32})
       AND #{predicate}
@@ -46,7 +45,7 @@ defmodule SalixAnalytics.SessionHistoryIndex do
   defp fetch(agent, session, first, last) do
     read(
       """
-      SELECT seq,part,text,kind,tool_name,label FROM #{@table} FINAL
+      SELECT seq,part,text,kind,tool_name,label FROM #{table()} FINAL
       PREWHERE agent_id={agent:String} AND session_id={session:String}
       WHERE seq>={first:UInt64} AND seq<={last:UInt64}
       ORDER BY seq,part LIMIT 129 FORMAT JSONEachRow
@@ -64,6 +63,14 @@ defmodule SalixAnalytics.SessionHistoryIndex do
 
   defp params(agent, session), do: bind(agent: agent, session: session)
 
+  defp database(cfg),
+    do: cfg[:database] || (cfg[:table] || "salix_analytics.events") |> String.split(".") |> hd()
+
+  defp table do
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
+    database(cfg) <> ".agent_session_history"
+  end
+
   defp bind(values),
     do: Enum.map(values, fn {key, value} -> {"param_#{key}", escape_parameter(value)} end)
 
@@ -80,8 +87,7 @@ defmodule SalixAnalytics.SessionHistoryIndex do
   defp request(sql, params) do
     cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
-    database =
-      cfg[:database] || (cfg[:table] || "salix_analytics.events") |> String.split(".") |> hd()
+    database = database(cfg)
 
     if is_binary(cfg[:base_url]) and Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, database) do
       headers = [
@@ -98,7 +104,7 @@ defmodule SalixAnalytics.SessionHistoryIndex do
       ]
 
       case Req.post(cfg[:base_url],
-             body: String.replace(sql, "{{database}}", database),
+             body: sql,
              headers: headers,
              params: settings ++ params,
              retry: false,

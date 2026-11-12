@@ -13,16 +13,20 @@ import {
 } from "@comma/test-utils/native-bridge";
 import {
   macAppIds,
+  type BlenderSnapshot,
   type MacAppState,
   type MacAppsSnapshot,
 } from "@comma/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import type {
+  McpServersValue,
   Plugin as CommaPlugin,
   PluginActivity,
   PluginCategory,
   PluginInstallAnswer,
   PluginNotice,
+  PluginStationsValue,
+  PluginToolGroupsValue,
   PluginsValue,
   SessionValue,
   Skill,
@@ -86,6 +90,9 @@ function catalogValue(
     plugins: plugins.map((plugin) => ({
       ...plugin,
       activity: activity[plugin.id] ?? "idle",
+      ...(activity[plugin.id] === "scanning"
+        ? { scan: { url: "https://open.larksuite.com/page/cli?user_code=TEST" } }
+        : {}),
     })),
     installed: listed.filter((plugin) => plugin.installed).map((plugin) => plugin.id),
     categories: [...categories.values()],
@@ -100,6 +107,11 @@ type Script = {
   notices: PluginNotice[];
   skills: SkillsValue;
   session: SessionValue;
+  /** Every plugin page's tool groups. */
+  toolGroups: PluginToolGroupsValue;
+  /** Every plugin page's still.fail stations (none said: none read yet). */
+  stations?: PluginStationsValue;
+  mcpServers: McpServersValue;
 };
 
 let script: Script;
@@ -120,13 +132,21 @@ const signedIn = (userId: string): SessionValue => ({
 /** Changes what the core says, and sends it to each subscriber (they get it on the next `flush`). */
 function say(change: Partial<Script>) {
   Object.assign(script, change);
-  for (const topic of ["plugins", "pluginNotices", "skills", "session"])
+  for (const topic of [
+    "plugins",
+    "pluginNotices",
+    "skills",
+    "session",
+    "pluginToolGroups",
+    "pluginStations",
+    "mcpServers",
+  ])
     core.changed(topic);
 }
 
 /** The core says something went wrong (or what to open next), for one window to say. */
-function notify(notice: Omit<PluginNotice, "id">) {
-  say({ notices: [...script.notices, { ...notice, id: ++nextNotice }] });
+function notify(notice: Omit<PluginNotice, "id" | "workspace">) {
+  say({ notices: [...script.notices, { ...notice, workspace: WS, id: ++nextNotice }] });
 }
 
 function installed(plugin: CommaPlugin): CommaPlugin {
@@ -153,6 +173,12 @@ function scriptedCore() {
           return topic.workspace === WS ? script.skills : undefined;
         case "session":
           return script.session;
+        case "pluginToolGroups":
+          return script.toolGroups;
+        case "pluginStations":
+          return script.stations ?? { stations: null, error: null, pending: null };
+        case "mcpServers":
+          return script.mcpServers;
         default:
           return undefined;
       }
@@ -327,6 +353,8 @@ describe("PluginsRoute", () => {
       notices: [],
       skills: { status: "ready", skills },
       session: signedIn("user-1"),
+      toolGroups: { groups: [], error: null, pending: null },
+      mcpServers: { servers: [], error: null },
     };
     answers = {
       // A notice goes to the one window that claims it.
@@ -352,6 +380,36 @@ describe("PluginsRoute", () => {
     harness.navigate.mockReset();
     harness.openNativePlatformExternalUrl.mockReset();
     harness.openNativePlatformExternalUrl.mockResolvedValue(undefined);
+  });
+
+  it("shows a scan's code while the member confirms in Lark, and cancels it on Cancel", async () => {
+    // The core asks the server until the member confirmed (core test: "shows a
+    // scan's code, asks at its interval ...").
+    const larkPlugin = { ...linearPlugin, id: "lark", name: "Lark", brand: "lark" };
+    script.catalog = [notionPlugin, larkPlugin];
+    script.activity = { lark: "scanning" };
+    render(<PluginsRoute />);
+    await flush();
+
+    const dialog = screen.getByRole("dialog", { name: "Connect Lark" });
+    expect(
+      within(dialog).getByRole("figure", { name: "Code to scan with Lark" })
+    ).toBeVisible();
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Waiting for you to confirm in Lark"
+    );
+
+    await press(within(dialog).getByRole("button", { name: "Open in Lark" }));
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+      "https://open.larksuite.com/page/cli?user_code=TEST"
+    );
+
+    await press(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(core.sentTo("plugin.cancel")).toEqual([{ plugin: "lark", workspace: WS }]);
+
+    say({ activity: {} });
+    await flush();
+    expect(screen.queryByRole("dialog", { name: "Connect Lark" })).toBeNull();
   });
 
   it("reports loading until the plugin catalog is ready", async () => {
@@ -555,6 +613,34 @@ describe("PluginsRoute", () => {
     expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
     expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("says why a scan the server kept failing ended", async () => {
+    const user = setupUser();
+    answers["plugin.install"] = () => {
+      notify({
+        kind: "scan_failed",
+        origin: "plugins",
+        plugin: "linear",
+        scan: "failed",
+        reason: "unavailable",
+      });
+      return {};
+    };
+    render(
+      <>
+        <PluginsRoute />
+        <Toaster />
+      </>
+    );
+    await flush();
+
+    await user.click(screen.getByRole("button", { name: "Add Linear" }));
+    await flush();
+    expect(screen.getByText("The bot could not be made.")).toBeVisible();
+    expect(
+      screen.getByText("The service isn’t available right now. Try again in a moment.")
+    ).toBeVisible();
   });
 
   it("says why an install failed in the reader's words, never the server's code", async () => {
@@ -1018,6 +1104,13 @@ describe("PluginsRoute", () => {
     await user.click(screen.getByRole("button", { name: "Rendered" }));
     expect(screen.getByRole("heading", { name: "Report format" })).toBeVisible();
 
+    // "Try in Chat" hands the skill's mention to Home's composer.
+    await user.click(screen.getByRole("button", { name: "Try in Chat weekly-report" }));
+    expect(harness.navigate).toHaveBeenCalledWith({
+      search: { draft: "/weekly-report " },
+      to: "/",
+    });
+
     await user.click(screen.getByRole("button", { name: "Back to skills" }));
     expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute(
       "aria-selected",
@@ -1119,6 +1212,208 @@ describe("PluginsRoute", () => {
 
     await user.click(screen.getByRole("button", { name: "Back to plugins" }));
     expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
+  });
+
+  it("turns a tool group of an installed plugin off with its switch", async () => {
+    say({
+      catalog: [{ ...notionPlugin, toolGroups: true }, linearPlugin],
+      toolGroups: {
+        groups: [
+          { id: "insights", name: "Insights", category: "Analytics", enabled: true },
+          { id: "sql", name: "SQL", category: "Analytics", enabled: true },
+          {
+            id: "flags",
+            name: "Feature flags",
+            category: "Flags and experiments",
+            enabled: true,
+          },
+        ],
+        error: null,
+        pending: null,
+      },
+    });
+    render(<PluginsRoute />);
+    await flush();
+
+    await press(screen.getByRole("button", { name: "View Notion plugin details" }));
+    expect(subscribed).toContainEqual({
+      topic: "pluginToolGroups",
+      workspace: WS,
+      plugin: "notion",
+    });
+    // Each category is listed under its own heading, its groups together.
+    const analytics = screen.getByRole("region", { name: "Analytics" });
+    expect(within(analytics).getAllByRole("switch")).toHaveLength(2);
+    const release = screen.getByRole("region", { name: "Flags and experiments" });
+    const flags = within(release).getByRole("switch", {
+      name: "Turn Feature flags on or off",
+    });
+    expect(flags).toBeChecked();
+
+    await press(flags);
+    expect(core.sentTo("plugin.toolGroup.set")).toEqual([
+      { workspace: WS, plugin: "notion", group: "flags", enabled: false },
+    ]);
+  });
+
+  it("lists the still.fail stations it connected and disconnects one, asked first", async () => {
+    say({
+      catalog: [{ ...notionPlugin, stations: true }, linearPlugin],
+      stations: {
+        stations: [
+          {
+            id: "dev_a",
+            name: "Acme · desk",
+            connected: true,
+            connectedAt: "2026-11-08T10:00:00Z",
+          },
+          { id: "dev_b", name: null, connected: false, connectedAt: null },
+        ],
+        error: null,
+        pending: null,
+      },
+    });
+    render(<PluginsRoute />);
+    await flush();
+
+    await press(screen.getByRole("button", { name: "View Notion plugin details" }));
+    expect(subscribed).toContainEqual({
+      topic: "pluginStations",
+      workspace: WS,
+      plugin: "notion",
+    });
+    expect(screen.getByText("Acme · desk")).toBeVisible();
+    expect(screen.getByText("Connected")).toBeVisible();
+    expect(screen.getByText("Station not connected yet")).toBeVisible();
+
+    await press(screen.getAllByRole("button", { name: "Disconnect" })[0]!);
+    expect(core.sentTo("plugin.station.disconnect")).toEqual([]);
+    const dialog = screen.getByRole("dialog", { name: "Disconnect Acme · desk?" });
+    await press(within(dialog).getByRole("button", { name: "Disconnect" }));
+    expect(core.sentTo("plugin.station.disconnect")).toEqual([
+      { workspace: WS, plugin: "notion", station: "dev_a" },
+    ]);
+  });
+
+  it("reads no tool groups for a plugin whose MCP has none", async () => {
+    say({ toolGroups: { groups: null, error: "load_failed", pending: null } });
+    render(<PluginsRoute />);
+    await flush();
+
+    await press(screen.getByRole("button", { name: "View Notion plugin details" }));
+    expect(subscribed).not.toContainEqual(
+      expect.objectContaining({ topic: "pluginToolGroups" })
+    );
+    expect(screen.queryByText("Couldn’t read which tools are on.")).toBeNull();
+  });
+
+  describe("MCP servers", () => {
+    const server = {
+      id: "b1",
+      name: "Shengcai",
+      url: "https://shengcai.example/mcp",
+      status: "needs_authorization" as const,
+      tools: 0,
+    };
+
+    it("adds a server by its address and opens its sign-in", async () => {
+      answers["mcpServer.add"] = () => ({
+        authorizationUrl: "https://auth.example/go",
+      });
+      render(<PluginsRoute />);
+      await flush();
+
+      await press(screen.getByRole("button", { name: "Add MCP server" }));
+      await flush();
+      fireEvent.change(screen.getByRole("textbox", { name: "Server URL" }), {
+        target: { value: " https://shengcai.example/mcp " },
+      });
+      await press(screen.getByRole("button", { name: "Connect" }));
+      await flush();
+
+      expect(core.sentTo("mcpServer.add")).toEqual([
+        { workspace: WS, url: "https://shengcai.example/mcp" },
+      ]);
+      expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+        "https://auth.example/go"
+      );
+      expect(screen.queryByRole("textbox", { name: "Server URL" })).toBeNull();
+    });
+
+    it("keeps the form and says why when a server cannot be added", async () => {
+      answers["mcpServer.add"] = () => {
+        throw Object.assign(new Error("mcp_server_unreachable"), {
+          code: "mcp_server_unreachable",
+        });
+      };
+      render(<PluginsRoute />);
+      await flush();
+
+      await press(screen.getByRole("button", { name: "Add MCP server" }));
+      await flush();
+      fireEvent.change(screen.getByRole("textbox", { name: "Server URL" }), {
+        target: { value: "https://nothing.example" },
+      });
+      await press(screen.getByRole("button", { name: "Connect" }));
+      await flush();
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Couldn't connect to this server"
+      );
+      expect(screen.getByRole("textbox", { name: "Server URL" })).toHaveValue(
+        "https://nothing.example"
+      );
+    });
+
+    it("lists each server with its state and what can be done with it", async () => {
+      say({
+        mcpServers: {
+          servers: [
+            server,
+            { ...server, id: "b2", name: "Docs", status: "connected", tools: 12 },
+            { ...server, id: "b3", name: "Old", status: "failed" },
+          ],
+          error: null,
+        },
+      });
+      render(<PluginsRoute />);
+      await flush();
+
+      expect(screen.getByText("Needs sign-in")).toBeInTheDocument();
+      expect(screen.getByText("Connected · 12 tools")).toBeInTheDocument();
+      expect(screen.getByText("Can't connect")).toBeInTheDocument();
+
+      await press(screen.getByRole("button", { name: "Sign in" }));
+      await flush();
+      expect(core.sentTo("mcpServer.connect")).toEqual([
+        { workspace: WS, server: "b1" },
+      ]);
+
+      await press(screen.getByRole("button", { name: "Remove Old" }));
+      await flush();
+      expect(core.sentTo("mcpServer.remove")).toEqual([
+        { workspace: WS, server: "b3" },
+      ]);
+    });
+
+    it("is found by a search for MCP", async () => {
+      render(<PluginsRoute />);
+      await flush();
+
+      fireEvent.change(screen.getByRole("textbox", { name: "Search plugins" }), {
+        target: { value: "mcp" },
+      });
+      await flush();
+      expect(
+        screen.getByRole("button", { name: "Add MCP server" })
+      ).toBeInTheDocument();
+
+      fireEvent.change(screen.getByRole("textbox", { name: "Search plugins" }), {
+        target: { value: "notion" },
+      });
+      await flush();
+      expect(screen.queryByRole("button", { name: "Add MCP server" })).toBeNull();
+    });
   });
 
   it("shows a retryable error when the catalog request fails", async () => {
@@ -1257,7 +1552,11 @@ describe("PluginsRoute", () => {
     expect(screen.getByRole("heading", { name: "MCP" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "技能" })).toBeVisible();
     expect(screen.getByRole("button", { name: "卸载 Notion" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "在聊天中试用 Notion" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "在聊天中试用 Notion" }));
+    expect(harness.navigate).toHaveBeenCalledWith({
+      search: { draft: "用 Notion " },
+      to: "/",
+    });
 
     await user.click(screen.getByRole("button", { name: "卸载 Notion" }));
     await flush();
@@ -1337,6 +1636,8 @@ describe("PluginsRoute Mac apps", () => {
       notices: [],
       skills: { status: "ready", skills },
       session: signedIn("user-1"),
+      toolGroups: { groups: [], error: null, pending: null },
+      mcpServers: { servers: [], error: null },
     };
     answers = { "plugin.install": () => ({}) };
     core = scriptedCore();
@@ -1468,5 +1769,185 @@ describe("PluginsRoute Mac apps", () => {
     await flush();
     expect(screen.queryByRole("heading", { name: "Mac" })).toBeNull();
     expect(screen.queryByText("Mac apps")).toBeNull();
+  });
+});
+
+/** The workspace's Blender plugin as Salix lists it to Comma on a computer. */
+const blenderPlugin: CommaPlugin = {
+  brand: "blender",
+  category: "Design",
+  description: "Your Blender scenes on this computer.",
+  id: "blender",
+  installed: false,
+  locked: false,
+  mcps: [{ id: "blender", name: "Blender" }],
+  name: "Blender",
+  skills: [],
+  summary: "Your Blender scenes on this computer.",
+};
+
+const blenderSnapshot = (revision: number, enabled: boolean): BlenderSnapshot => ({
+  revision,
+  enabled,
+  installs: [
+    { path: "/Applications/Blender.app/Contents/MacOS/Blender", version: "4.2" },
+  ],
+  versions: enabled ? ["4.2"] : [],
+  instances: [],
+  waiting: 0,
+});
+
+describe("PluginsRoute Blender", () => {
+  /** This computer: Blender as Main keeps it, connected to the workspace as `dev_pc`. */
+  function onComputer(blender: Record<string, unknown>) {
+    installNativeBridgeMock({
+      os: "macos",
+      platform: "electron",
+      blender: {
+        state: createNativeStateBridgeMock(() => blenderSnapshot(1, true)),
+        ...blender,
+      },
+      connectorRuntime: {
+        state: createNativeStateBridgeMock(() => ({
+          revision: 1,
+          scopes: [
+            {
+              workspaceId: WS,
+              available: true,
+              scope: "" as const,
+              deviceId: "dev_pc",
+            },
+          ],
+        })),
+      },
+    } as Parameters<typeof installNativeBridgeMock>[0]);
+  }
+
+  beforeEach(() => {
+    script = {
+      catalog: [notionPlugin, blenderPlugin],
+      activity: {},
+      notices: [],
+      skills: { status: "ready", skills },
+      session: signedIn("user-1"),
+      toolGroups: { groups: [], error: null, pending: null },
+      mcpServers: { servers: [], error: null },
+    };
+    answers = { "plugin.install": () => ({}) };
+    subscribed = [];
+    core = scriptedCore();
+  });
+
+  it("installs it in the workspace with this computer and leaves the bridge to Main", async () => {
+    const setEnabled = vi.fn();
+    onComputer({ setEnabled });
+    render(<PluginsRoute />);
+    await flush();
+
+    await press(screen.getByRole("button", { name: "View Blender plugin details" }));
+    await press(screen.getByRole("button", { name: "Add to Comma Blender" }));
+    expect(core.sentTo("plugin.install")).toEqual([
+      { workspace: WS, plugin: "blender", deviceId: "dev_pc" },
+    ]);
+    expect(setEnabled).not.toHaveBeenCalled();
+  });
+
+  it("says why Blender did not open, and when the call itself failed", async () => {
+    say({ catalog: [notionPlugin, installed(blenderPlugin)] });
+    const open = vi.fn(async () => ({
+      opened: false as const,
+      reason: "start_failed" as const,
+      path: "/Volumes/Gone/Blender",
+      detail: "spawn ENOENT",
+    }));
+    // The native gateway rejects with its own generic message.
+    const chooseApp = vi.fn(async () => {
+      throw new Error("Native command failed.");
+    });
+    onComputer({ open, chooseApp });
+    render(
+      <>
+        <Toaster />
+        <PluginsRoute />
+      </>
+    );
+    await flush();
+    await press(screen.getByRole("button", { name: "View Blender plugin details" }));
+
+    await press(screen.getByRole("button", { name: "Open Blender" }));
+    expect(open).toHaveBeenCalledWith({});
+    expect(
+      screen.getByText(
+        "Blender couldn’t start from /Volumes/Gone/Blender. Choose Blender again."
+      )
+    ).toBeVisible();
+    // The page is usable again.
+    expect(screen.getByRole("button", { name: "Open Blender" })).toBeEnabled();
+
+    await press(screen.getByRole("button", { name: "Choose Blender…" }));
+    expect(
+      screen.getByText("Comma couldn’t do that with Blender. Try again.")
+    ).toBeVisible();
+    expect(screen.queryByText("Native command failed.")).toBeNull();
+  });
+
+  it("puts this computer's state, switch and windows on one row group", async () => {
+    say({ catalog: [notionPlugin, installed(blenderPlugin)] });
+    onComputer({
+      state: createNativeStateBridgeMock(() => ({
+        ...blenderSnapshot(1, true),
+        instances: [
+          {
+            id: "b1",
+            version: "4.2.23 LTS",
+            file: "/Users/me/scene.blend",
+            dirty: true,
+          },
+        ],
+      })),
+    });
+    render(<PluginsRoute />);
+    await flush();
+    await press(screen.getByRole("button", { name: "View Blender plugin details" }));
+
+    expect(screen.getByText("Connected to 1 window")).toBeVisible();
+    expect(screen.getByText("scene.blend")).toBeVisible();
+    expect(screen.getByText("4.2.23 LTS · Unsaved changes")).toBeVisible();
+    // The switch is the plugin's one MCP; no catalog row repeats it.
+    expect(screen.queryByRole("heading", { name: "MCPs" })).toBeNull();
+  });
+
+  it("offers no Blender actions while this computer's switch is off", async () => {
+    say({ catalog: [notionPlugin, installed(blenderPlugin)] });
+    onComputer({ state: createNativeStateBridgeMock(() => blenderSnapshot(1, false)) });
+    render(<PluginsRoute />);
+    await flush();
+    await press(screen.getByRole("button", { name: "View Blender plugin details" }));
+
+    expect(
+      screen.getByText("Off. Agents can’t use Blender on this computer.")
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open Blender" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose Blender…" })).toBeNull();
+  });
+
+  it("turns this computer's bridge off without uninstalling it from the workspace", async () => {
+    say({ catalog: [notionPlugin, installed(blenderPlugin)] });
+    const setEnabled = vi.fn(async ({ enabled }: { enabled: boolean }) =>
+      blenderSnapshot(2, enabled)
+    );
+    onComputer({ setEnabled });
+    render(<PluginsRoute />);
+    await flush();
+    await press(screen.getByRole("button", { name: "View Blender plugin details" }));
+
+    await press(
+      screen.getByRole("switch", { name: "Connect Blender on this computer" })
+    );
+    expect(setEnabled).toHaveBeenCalledWith({ enabled: false });
+    expect(
+      screen.getByRole("switch", { name: "Connect Blender on this computer" })
+    ).not.toBeChecked();
+    expect(core.sentTo("plugin.uninstall")).toEqual([]);
   });
 });

@@ -177,3 +177,29 @@ it("disconnects after confirming", async () => {
     expect(t.named("tailnet.disconnect")).toEqual([{ workspace: workspaceId }])
   );
 });
+
+it("names both tailnets and the fix when the link was approved in another tailnet", async () => {
+  await tailscale(
+    value(
+      status({
+        enabled: true,
+        state: "error",
+        tailnet: "jimm@gmail.com",
+        error: { code: "tailnet_mismatch", message: "approved in another tailnet" },
+        settings: {
+          tags: ["tag:comma-agent"],
+          accept_routes: false,
+          expected_tailnet: "acme.com",
+        },
+      })
+    )
+  );
+  expect(setting("tailscale.connection")).toHaveTextContent(
+    "The login link was approved in tailnet jimm@gmail.com, not acme.com"
+  );
+  expect(setting("tailscale.connection")).toHaveTextContent(
+    "set the tailnet name to jimm@gmail.com or clear it"
+  );
+  // The node left the tailnet: no key line for it.
+  expect(setting("tailscale.connection")).not.toHaveTextContent("Key never expires");
+});

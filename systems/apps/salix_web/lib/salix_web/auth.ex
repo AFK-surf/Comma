@@ -52,11 +52,8 @@ defmodule SalixWeb.Auth do
       connect_path?(path) ->
         authenticate_connector(conn, token)
 
-      runtime_carrier_path?(path) ->
-        authenticate_runtime_carrier(conn, token)
-
-      install_operation_path?(path) ->
-        authenticate_install_operation(conn)
+      registration_claim_path?(path) ->
+        authenticate_registration_claim(conn)
 
       compute_gateway_path?(path) ->
         authenticate_compute_gateway(conn, token)
@@ -157,7 +154,7 @@ defmodule SalixWeb.Auth do
       String.starts_with?(path, "/v1/device-connection/") or
       path == "/v1/remote-shell/client.py" or
       path == "/v1/compute/agent-vmm/install.sh" or
-      path == "/v1/compute/agent-vmm/install-operations/install.sh" or
+      path == "/v1/compute/agent-vmm/registrations/install.sh" or
       remote_shell_callback_path?(path) or
       path in [
         "/v1/im/slack/oauth/callback",
@@ -182,36 +179,19 @@ defmodule SalixWeb.Auth do
 
   defp compute_gateway_path?(path), do: String.starts_with?(path, "/v1/compute/")
 
-  defp install_operation_path?(path) do
-    path in [
-      "/v1/compute/agent-vmm/install-operations/exchange",
-      "/v1/compute/agent-vmm/install-operations/ack"
-    ]
-  end
+  defp registration_claim_path?(path), do: path == "/v1/compute/agent-vmm/registrations/claim"
 
-  # The operation row is the credential owner. This plug only isolates the
-  # InstallOperation scheme from gateway/tenant credentials; the route performs
-  # the constant-time hash validation while holding the operation lock.
-  defp authenticate_install_operation(conn) do
+  # Registration owns both the ticket and accepted credential. Claim validates
+  # them while holding the owner and Registration locks.
+  defp authenticate_registration_claim(conn) do
     case get_req_header(conn, "authorization") do
-      ["InstallOperation " <> secret] when secret != "" and byte_size(secret) <= 128 ->
-        conn
-        |> assign(:auth_role, :install_operation)
-        |> assign(:install_operation_secret, secret)
+      ["RegistrationTicket " <> ticket] when ticket != "" and byte_size(ticket) <= 128 ->
+        conn |> assign(:auth_role, :registration_claim) |> assign(:registration_ticket, ticket)
 
       _ ->
         deny(conn)
     end
   end
-
-  defp runtime_carrier_path?("/v1/compute/runtime/" <> _), do: true
-  defp runtime_carrier_path?(_path), do: false
-
-  defp authenticate_runtime_carrier(conn, token) when is_binary(token) and token != "" do
-    assign(conn, :auth_role, :compute_runtime)
-  end
-
-  defp authenticate_runtime_carrier(conn, _token), do: deny(conn)
 
   defp authenticate_compute_gateway(conn, token) do
     configured = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)

@@ -14,7 +14,10 @@ defmodule CommaWeb.MemberSourceTriggers do
 
   # Sources whose new items have a Composio trigger. Other sources are read by
   # the collection chain only.
-  @slugs %{"gmail" => "GMAIL_NEW_GMAIL_MESSAGE"}
+  @slugs %{
+    "gmail" => "GMAIL_NEW_GMAIL_MESSAGE",
+    "outlook" => "OUTLOOK_MESSAGE_TRIGGER"
+  }
 
   # A signal reads its source at most once a minute after the previous read:
   # at most 60 signal reads an hour per source. Events in between join the

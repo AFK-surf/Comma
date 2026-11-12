@@ -169,7 +169,7 @@ export namespace Salix {
       };
 
   /**
-   * The image entrypoint must launch Salix Connector with its default command,
+   * The image entrypoint must launch the station's connector with its default command,
    * read `/run/secrets/salix-connector.json`, and support an arbitrary numeric
    * UID/GID. The host root is mounted read/write at `/workspace`.
    */

@@ -75,6 +75,11 @@ test.describe("authenticated", () => {
     await form.locator('button[type="submit"]').click();
     await expect(page.getByRole("heading", { name })).toBeVisible();
 
+    // The switcher lists the selected tenant, and creating one does not select
+    // it: select the new tenant as the tenants page does.
+    const tenantId = new URL(page.url()).pathname.split("/").pop()!;
+    await gotoDashboard(page, `/dash/tenant/select?tenant_id=${tenantId}`);
+
     const sidebar = page.locator("aside");
     const menu = page.locator("#tenant-switcher-menu");
     const trigger = page.locator("#tenant-switcher > div.cursor-pointer");
@@ -163,7 +168,6 @@ test.describe("authenticated", () => {
         "This connector credential is shown only once. Copy it now.",
       ),
     ).toBeVisible();
-    await expect(page.getByText("salix-connect --server")).toBeVisible();
     await expect(page.getByText("SALIX_CONNECTOR_TOKEN=")).toBeVisible();
   });
 

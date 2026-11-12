@@ -1,5 +1,5 @@
 // Agent processes kept by runners (native/runner, docs/station-ts-native.md §1): each claude or codex process is the
-// child of a `stillfail-runner` that outlives this station, restarting or crashing. Starting one gives a handle; a
+// child of a `comma-runner` that outlives this station, restarting or crashing. Starting one gives a handle; a
 // station starting finds those of before (<data>/run/runners/*.json) and takes them up again where it stopped reading:
 // what it has handled is acknowledged line by line, so nothing is read twice and nothing is lost.
 //
@@ -28,7 +28,7 @@ export type RunnerInfo = {
 
 export type Exit = { code: number | null; signal: string | null };
 
-/// The runner binary: STILLFAIL_RUNNER, else beside the station's code in a release, else where cargo built it.
+/// The runner binary: COMMA_STATION_RUNNER, else beside the station's code in a release, else where cargo built it.
 export { runnerBinary };
 
 export const runnersDir = (data: string) => join(runtimeDir(data), "runners");

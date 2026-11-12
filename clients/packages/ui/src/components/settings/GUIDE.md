@@ -91,6 +91,10 @@ const registry = createSettingsRegistry({
   list must be flat. Give an item `fontFamily` to show its label in that face.
   Set `loading` while options still arrive, and start that read from
   `onOpenChange`.
+- Use a row's `action` for a labelled button on the setting itself, such as
+  Restart for a choice that applies when the app next starts. It sits before
+  the control at the same height, radius, border and text size as the row's
+  dropdown. Say what waits in the row's `description`.
 - Use a row's `content` for full-width content that belongs to that setting,
   such as a live preview under its switch. Pass `null` while it is hidden, so
   the slot folds open and shut instead of jumping the page.
@@ -137,8 +141,10 @@ belongs to the VMM.
 - Show a sign-in as `signIn`, before the dropdown. Show the busy state while
   the page waits in the browser.
 - Show a failed read or save of the agents' settings as `agentsProblem`: a
-  note in the agents section with a retry link, the same as a failed runtime
-  check. Do not show it as an alert at the top of the card.
+  row at the top of the agents section, the same as a failed runtime check.
+  The row has the agent rows' padding and columns: an error mark, the message,
+  and a "Try again" button where a row has its control. Do not show it as an
+  alert at the top of the card.
 
 ## Rendering
 

@@ -20,6 +20,12 @@ defmodule SalixAgent.SSH.KnownHosts do
   stored key type (`pinned_algorithms/1`), so a server offering several key
   types cannot cause a false mismatch. `remove/3` deletes an entry so the next
   connection trusts the host again.
+
+  An operator may restrict a host key to an information-flow tag
+  (`restrict/3`, from the Comma for Teams Data policy page). Restrictions are
+  keyed by the key's fingerprint, not by host name, so every name and route
+  that reaches the same server is restricted, and removing or re-trusting a
+  name does not lift one. `SalixAgent.SSH.Audience` enforces them.
   """
 
   alias SalixStore.{CasRecord, Keys}
@@ -44,11 +50,61 @@ defmodule SalixAgent.SSH.KnownHosts do
     end
   end
 
-  @doc "All entries, sorted by name."
+  @doc "All entries, sorted by name, each with the tag that restricts its key, if any."
   @spec list(String.t()) :: {:ok, [entry()]} | {:error, term()}
   def list(group_id) do
     with {:ok, record} <- read(group_id) do
-      {:ok, record |> hosts() |> Map.values() |> Enum.sort_by(& &1["name"])}
+      restricted = restricted(record)
+
+      {:ok,
+       record
+       |> hosts()
+       |> Map.values()
+       |> Enum.map(&put_tag(&1, Map.get(restricted, &1["fingerprint"])))
+       |> Enum.sort_by(& &1["name"])}
+    end
+  end
+
+  @doc "The tag that restricts a host key, or `nil` when the key is unrestricted."
+  @spec restriction(String.t(), String.t()) :: {:ok, String.t() | nil} | {:error, term()}
+  def restriction(group_id, fingerprint) do
+    with {:ok, record} <- read(group_id), do: {:ok, Map.get(restricted(record), fingerprint)}
+  end
+
+  @doc """
+  Restricts a host key to the readers of `tag`, or lifts the restriction when
+  `tag` is blank. Only operators call this; no `ssh.*` tool changes it.
+  """
+  @spec restrict(String.t(), String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def restrict(group_id, fingerprint, tag) do
+    fingerprint = String.trim(to_string(fingerprint))
+    tag = String.trim(to_string(tag || ""))
+
+    cond do
+      not String.starts_with?(fingerprint, "SHA256:") ->
+        {:error, :invalid_fingerprint}
+
+      String.contains?(tag, "|") ->
+        {:error, :invalid_tag}
+
+      true ->
+        result =
+          CasRecord.update(Keys.ctl_group_ssh_known_hosts(group_id), fn current ->
+            record = current || empty()
+            restricted = restricted(record)
+
+            restricted =
+              if tag == "",
+                do: Map.delete(restricted, fingerprint),
+                else: Map.put(restricted, fingerprint, tag)
+
+            Map.put(record, "restricted", restricted)
+          end)
+
+        case result do
+          {:ok, _record} -> :ok
+          {:error, reason} -> {:error, {:known_hosts_unavailable, reason}}
+        end
     end
   end
 
@@ -198,4 +254,10 @@ defmodule SalixAgent.SSH.KnownHosts do
 
   defp hosts(%{"hosts" => hosts}) when is_map(hosts), do: hosts
   defp hosts(_record), do: %{}
+
+  defp restricted(%{"restricted" => restricted}) when is_map(restricted), do: restricted
+  defp restricted(_record), do: %{}
+
+  defp put_tag(entry, nil), do: entry
+  defp put_tag(entry, tag), do: Map.put(entry, "ifc_tag", tag)
 end

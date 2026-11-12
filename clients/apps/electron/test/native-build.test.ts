@@ -116,7 +116,7 @@ esac
     writeFileSync(marker, "existing app");
     const script = resolve(
       import.meta.dirname,
-      "../../../../systems/connector/salix-connect/scripts/package-computer-use-helper.sh"
+      "../../../../systems/station/computer-use/scripts/package-computer-use-helper.sh"
     );
     const run = (mode: string) =>
       execFileSync(

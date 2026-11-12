@@ -1,4 +1,4 @@
-// The loopback port (the Rust station's local.rs). The station has no page of its own any more (its pages are still.fail
+// The loopback port (the Rust station's local.rs). The station has no page of its own any more (its pages are Comma
 // cloud's): the port is kept so that links to the page it had, sent to Slack and kept in browsers, still lead
 // somewhere: `/admin/...` is sent to the same page in the cloud's web app, or, while the station is in no workspace,
 // told how to join one. `/healthz` says whether the station answers. Nothing on it reaches the admin API.
@@ -11,13 +11,13 @@ export type Reply = { status: number; headers: Record<string, string>; body: str
 
 const plain = (status: number, body: string): Reply => ({ status, headers: { "content-type": "text/plain; charset=utf-8" }, body });
 
-/// The language a browser asks in: `stillfail-lang`, else its Accept-Language (the first named; `*` names none).
+/// The language a browser asks in: `comma-station-lang`, else its Accept-Language (the first named; `*` names none).
 export function langOfBrowser(headers: Record<string, string | string[] | undefined>): Lang {
   const get = (name: string) => {
     const v = headers[name];
     return Array.isArray(v) ? v[0] : v;
   };
-  const said = get("stillfail-lang");
+  const said = get("comma-station-lang") ?? get("stillfail-lang");
   if (said !== undefined) return langOf(said);
   const first = (get("accept-language") ?? "").split(/[,;]/)[0].trim();
   return langOf(first === "*" ? "" : first);

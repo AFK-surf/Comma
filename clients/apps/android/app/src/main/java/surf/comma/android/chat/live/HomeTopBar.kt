@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.view.Gravity
+import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
@@ -13,6 +14,7 @@ import androidx.core.graphics.ColorUtils
 import surf.comma.android.R
 import surf.comma.android.ui.theme.DesignFonts
 import surf.comma.android.ui.theme.DesignTypography
+import surf.comma.android.ui.widget.LiquidGlass
 import kotlin.math.roundToInt
 
 /**
@@ -36,8 +38,10 @@ internal class HomeTopBar(
     private val compact: Boolean = false,
 ) : FrameLayout(context) {
     private val density = resources.displayMetrics.density
-    private val fill = ColorUtils.setAlphaComponent(context.getColor(R.color.token_bg_primary), CHROME_FILL_ALPHA)
-    private val stroke = context.getColor(R.color.token_border_primary)
+    // Over the experimental glass, the shader does the tinting.
+    private val fill = if (LiquidGlass.enabled) android.graphics.Color.TRANSPARENT
+        else ColorUtils.setAlphaComponent(context.getColor(R.color.token_bg_primary), CHROME_FILL_ALPHA)
+    private val stroke = if (LiquidGlass.enabled) android.graphics.Color.TRANSPARENT else context.getColor(R.color.token_border_primary)
 
     val menuButton = FrameLayout(context).apply {
         id = R.id.chat_sidebar_button
@@ -68,6 +72,25 @@ internal class HomeTopBar(
         visibility = GONE
         background = InsetDrawable(callCircle, dp((TOUCH_TARGET_DP - BUTTON_DP) / 2))
         addView(callIcon, LayoutParams(dp(ICON_DP), dp(ICON_DP), Gravity.CENTER))
+    }
+
+    /**
+     * The router chat's remote browser, beside Call: shown while an Agent works in the conversation, as the iOS app's
+     * toolbar offers it. Each conversation's control reads only that conversation's browser.
+     */
+    val browserButton = FrameLayout(context).apply {
+        id = R.id.chat_browser_button
+        contentDescription = context.getString(R.string.remote_browser_title)
+        isClickable = true
+        isFocusable = true
+        visibility = GONE
+        background = circle(inset = (TOUCH_TARGET_DP - BUTTON_DP) / 2)
+        addView(ImageView(context).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_settings_globe)?.mutate()?.apply {
+                setTint(context.getColor(R.color.token_fg_primary))
+            })
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LayoutParams(dp(ICON_DP), dp(ICON_DP), Gravity.CENTER))
     }
 
     /**
@@ -127,6 +150,10 @@ internal class HomeTopBar(
             marginEnd = dp(SIDE_DP)
             topMargin = sideTop
         })
+        addView(browserButton, LayoutParams(dp(TOUCH_TARGET_DP), dp(TOUCH_TARGET_DP), Gravity.TOP or Gravity.END).apply {
+            marginEnd = dp(SIDE_DP)
+            topMargin = sideTop
+        })
         addView(avatar, LayoutParams(avatarSize, avatarSize, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             topMargin = avatarTop
         })
@@ -141,6 +168,7 @@ internal class HomeTopBar(
      */
     fun setCall(available: Boolean, live: Boolean) {
         callButton.visibility = if (available || live) VISIBLE else GONE
+        placeBrowser()
         if (live) {
             callCircle.setColor(context.getColor(R.color.token_bg_brand_solid))
             callCircle.setStroke(0, 0)
@@ -152,11 +180,45 @@ internal class HomeTopBar(
         }
     }
 
+    /** The browser button shows only in the router chat's compact bar, while the conversation has a participant. */
+    fun setBrowser(available: Boolean) {
+        browserButton.visibility = if (available && compact) VISIBLE else GONE
+        placeBrowser()
+    }
+
+    /** Beside Call when it shows, else in its place. */
+    private fun placeBrowser() {
+        val params = browserButton.layoutParams as? LayoutParams ?: return
+        val end = dp(SIDE_DP) + if (callButton.visibility == VISIBLE) dp(TOUCH_TARGET_DP) else 0
+        if (params.marginEnd != end) { params.marginEnd = end; browserButton.layoutParams = params }
+    }
+
     /** The bar's top edge sits under the status bar, which the bar pads for. */
     fun setStatusBarInset(px: Int) {
         if (px == insetTop) return
         insetTop = px
         setPadding(0, px, 0, 0)
+    }
+
+    /** Sees every touch that lands on a piece of the chrome, with that piece's key, for the glass under it. */
+    var onGlassTouch: ((String, MotionEvent) -> Unit)? = null
+    private var touchedPatch: String? = null
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            touchedPatch = frostPatches().firstOrNull { it.bounds.contains(event.x.toInt(), event.y.toInt()) }?.key
+        }
+        touchedPatch?.let { onGlassTouch?.invoke(it, event) }
+        return super.dispatchTouchEvent(event)
+    }
+
+    /** The view that swells under a press on the piece of chrome named [key]. */
+    fun pressTarget(key: String): android.view.View? = when (key) {
+        "capsule" -> capsule
+        "menu" -> menuButton
+        "call" -> callButton
+        "browser" -> browserButton
+        else -> null
     }
 
     /** A piece of the chrome that wants the content behind it frosted, in the bar's coordinates. */
@@ -174,6 +236,7 @@ internal class HomeTopBar(
             FrostPatch("capsule", Rect(capsule.left, capsule.top, capsule.right, capsule.bottom), dp(CAPSULE_DP) / 2f),
             FrostPatch("menu", circle(menuButton), dp(BUTTON_DP) / 2f),
             FrostPatch("call", circle(callButton), dp(BUTTON_DP) / 2f),
+            FrostPatch("browser", circle(browserButton), dp(BUTTON_DP) / 2f),
         )
     }
 

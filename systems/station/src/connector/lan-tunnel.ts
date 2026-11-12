@@ -6,7 +6,7 @@
 // A sender keeps at most one window unacknowledged, so neither side buffers more than a window per tunnel. A tunnel
 // ends with its socket, with a scope downgrade, or when either side sends eof.
 import { Deferred, Effect, Exit } from "effect";
-import type { Message } from "./message.ts";
+import { type Message, streamBytes } from "./message.ts";
 import type { NetSocket } from "./net.ts";
 
 export const LAN_TUNNEL_CHANNEL = "tcp";
@@ -85,9 +85,9 @@ export class LanTunnel {
           const piece = chunk.subarray(offset, offset + Math.min(space, LAN_TUNNEL_MAX_FRAME, chunk.length - offset));
           offset += piece.length;
           self.sent += piece.length;
-          const sent = yield* Effect.exit(self.host.send({ id: self.id, type: "stream", stream: { channel: LAN_TUNNEL_CHANNEL, data: piece.toString("base64") } }));
+          const sent = yield* Effect.exit(self.host.send({ id: self.id, type: "stream", stream: { channel: LAN_TUNNEL_CHANNEL, data: piece } }));
           if (Exit.isFailure(sent)) {
-            yield* self.finish("connector socket closed", false);
+            yield* self.finish("station socket closed", false);
             return;
           }
         }
@@ -123,7 +123,7 @@ export class LanTunnel {
         written += data.length;
         const acked = yield* Effect.exit(self.host.send({ id: self.id, type: "stream", stream: { channel: LAN_TUNNEL_ACK_CHANNEL, seq: written } }));
         if (Exit.isFailure(acked)) {
-          yield* self.finish("connector socket closed", false);
+          yield* self.finish("station socket closed", false);
           return;
         }
       }
@@ -166,8 +166,9 @@ export class LanTunnel {
       return;
     }
     if (stream.data) {
-      const data = Buffer.from(stream.data, "base64");
-      if (data.length > LAN_TUNNEL_MAX_FRAME || data.toString("base64").replace(/=+$/, "") !== stream.data.replace(/=+$/, "")) {
+      const text = stream.data;
+      const data = streamBytes(stream);
+      if (data.length > LAN_TUNNEL_MAX_FRAME || (typeof text === "string" && data.toString("base64").replace(/=+$/, "") !== text.replace(/=+$/, ""))) {
         this.host.fork(this.finish("invalid tunnel frame", true));
         return;
       }

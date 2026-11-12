@@ -9,26 +9,43 @@
 // keeps a socket to Comma's client relay for each shown workspace with stations, opened with a single-use ticket and
 // again after it went (Salix closes it after an hour).
 //
+// A desktop's own station is in no roster and admits only its owner (systems/station/src/mesh/device-mesh.ts). On a host
+// that says `ownComputers` (every app with the mesh), the stations the person's own Devices name are linked as listed ones are,
+// and shown apart from them (`ownComputers`): nothing else of the Stations area hears of them.
+//
 // Bounds: one control-plane read of the account per showing; per shown workspace one list read, one event stream and
 // one connection per listed station (the control plane bounds how many a workspace has); one credential request per
 // workspace a day (less when the session ends sooner), and one more when a station refuses the credential kept (a
 // station that refuses a new one too gets no other until it admits one); per shown workspace with stations one relay
-// socket, and a ticket for each socket opened (two a minute while none lasts). The endpoint is bound only while some
+// socket, and a ticket for each socket opened (two a minute while none lasts). With `ownComputers`, one Devices read each
+// time the list is read, of at most one page, and a connection for each station it names. The endpoint is bound only while some
 // workspace's stations are kept (shown, or always.ts), and closed when the account changes.
 //
 // The account's database keeps each workspace's stations (`station`) and its credential (`station_cred`, until it
 // expires by the core's clock or a station refuses it): after a restart, stations are reached with them before the
 // control plane answers, or while it does not.
+import { lazySchema } from "@comma/chat-contract";
 import {
   CoreError,
+  madeOnce,
   type HostError,
   type Scoped,
   type Topic,
   type Value,
 } from "@comma/core-kernel";
-import { Deferred, Effect, Exit, Result, Scope, Semaphore } from "effect";
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Result,
+  Scope,
+  Semaphore,
+} from "effect";
 import { z } from "zod";
 import type { Account } from "../account.ts";
+import { route } from "../api.ts";
 import type {
   StationEnrollment,
   StationLinkState,
@@ -39,7 +56,13 @@ import type {
   StationToolsAccess,
 } from "../contract.ts";
 import type { Ctx } from "../ctx.ts";
-import { header, stationRefused, type Pull, type StationLinks } from "../host.ts";
+import {
+  header,
+  stationLink,
+  stationRefused,
+  type Pull,
+  type StationLinks,
+} from "../host.ts";
 import { readEvents } from "../sse.ts";
 import {
   credentialPath,
@@ -66,6 +89,29 @@ import type { StationNamed, Viewer } from "./views.ts";
 const RETRY_MS = [1_000, 5_000, 30_000];
 /** A request to a station, or a connection being opened, gives up after this long. */
 const STATION_TIMEOUT_MS = 30_000;
+/**
+ * An open connection is asked whether its station is still there this often, and given up as silent when no answer
+ * came this long after the question: a station whose process was killed says nothing more, and QUIC tells only at its
+ * idle timeout. A new connection is then opened beside it (`StationLinks.refresh`), and takes its place unless the old
+ * one answered meanwhile (the network only paused). A question that waited much longer than PING_EVERY_MS to be asked
+ * (this device slept, or its app was in the background) is not counted: the next one is. One small exchange each 2 s a
+ * station connection, of the few stations a person holds open.
+ */
+const PING_EVERY_MS = 2_000;
+const PING_TIMEOUT_MS = 1_500;
+/**
+ * The most new connections opened at once beside one gone silent. Each unanswered ping opens one more beside those
+ * still trying, rather than waiting on them: one dialled before the station is back resends its first packet only
+ * after 1 s, then 2 s, so a new one sent meanwhile reaches the station sooner (a restart is back up in about 3 s).
+ */
+const REFRESHING_AT_MOST = 3;
+/**
+ * A connection whose station has answered nothing this long, and no new one replaced, is closed: the station is gone
+ * (its computer off), and is shown so, as when QUIC gave such a connection up at its own 30 s. Connections may be idle
+ * longer (CONNECTION_IDLE_MS in the mesh's native code) for a phone app frozen in the background, which asks nothing
+ * meanwhile (a question asked late does not count).
+ */
+const STATION_GONE_MS = 30_000;
 /** A credential is asked for again this long before it expires. */
 const CREDENTIAL_MARGIN_MS = 60_000;
 /** The most of a station's answer read. */
@@ -79,7 +125,9 @@ const KEY = "stations.endpointKey";
 
 const ME_DOC = "stations.me";
 
-const accessSchema = z.object({ access: z.enum(["off", "read", "full"]) });
+const accessSchema = lazySchema(() =>
+  z.object({ access: z.enum(["off", "read", "full"]) })
+);
 
 type Link = { state: StationLinkState; message?: string; via?: StationVia };
 
@@ -93,12 +141,34 @@ type Shown = {
   linked: Map<string, Scoped>;
   /** The relay socket's fiber, while some station is listed. */
   relayed: Scoped | null;
+  /** The stations of the person's own computers, linked with the listed ones (`ownComputers`). */
+  ownComputers: readonly string[];
 };
 
 type Mesh = {
   scoped: Scoped;
   links: Deferred.Deferred<StationLinks, CoreError>;
 };
+
+/** How often the person's own computers are read while shown: one read a workspace. */
+const OWN_COMPUTERS_EVERY_MS = 30_000;
+const devicesPath = (workspace: string) =>
+  route`/v1/comma/workspaces/${workspace}/devices`;
+/** What `ownComputers` reads of the person's own computers (the server lists no one else's). */
+const ownComputersSchema = lazySchema(() =>
+  z.object({
+    devices: z
+      .array(
+        z.object({
+          station_id: z
+            .string()
+            .regex(/^[0-9a-f]{64}$/)
+            .nullish(),
+        })
+      )
+      .max(50),
+  })
+);
 
 const params = {
   string(raw: unknown, name: string, max = 256): string {
@@ -115,6 +185,30 @@ const params = {
   },
 };
 
+/** A refusal is the station's answer, for what it says; only what did not reach it is another way's to try. */
+const linkFailure = (error: HostError) =>
+  stationRefused(error)
+    ? new CoreError("unauthorized", error.message)
+    : new CoreError("unreachable", error.message);
+
+/** A station's link before the device heard from it. */
+const CONNECTING: Link = { state: "connecting" };
+
+/** A listed station's row, made once for the same listing and link. */
+const stationRow = madeOnce(
+  (s: ListedStation, link: Link): StationRow => ({
+    id: s.id,
+    name: s.name,
+    version: s.version,
+    present: s.online,
+    enrolledAt: s.enrolled_at ?? null,
+    enrolledBy: s.enrolled_by ?? null,
+    link,
+  })
+);
+
+const ownComputer = madeOnce((link: Link, id: string) => ({ id, link }));
+
 export class Stations {
   readonly #ctx: Ctx;
   #accountKey: string | null = null;
@@ -124,8 +218,6 @@ export class Stations {
   };
   readonly #shown = new Map<string, Shown>();
   readonly #links = new Map<string, Link>();
-  /** Which workspace each listed station is in: its credential is that workspace's. */
-  readonly #workspaceOf = new Map<string, string>();
   readonly #credentialLock = Semaphore.makeUnsafe(1);
   /** Stations that refused a newly issued credential and have admitted none since (`#admitted`). */
   readonly #refusing = new Set<string>();
@@ -152,7 +244,6 @@ export class Stations {
       // own database).
       this.#closeMesh();
       this.#refusing.clear();
-      this.#workspaceOf.clear();
       this.#links.clear();
       this.#home = { loading: false, error: undefined };
       const shown = [...this.#shown].map(
@@ -334,13 +425,22 @@ export class Stations {
       error: undefined,
       linked: new Map(),
       relayed: null,
+      ownComputers: [],
     };
     this.#shown.set(workspace, shown);
     if (kept) this.#follow(workspace, kept);
     this.#ctx.runner.fork(
       this.#control((account) =>
         this.#readList(account, workspace).pipe(
-          Effect.andThen(this.#presence(account, workspace))
+          Effect.andThen(
+            Effect.all(
+              [
+                this.#presence(account, workspace),
+                this.#keepOwnComputers(account, workspace),
+              ],
+              { concurrency: "unbounded", discard: true }
+            )
+          )
         )
       ).pipe(
         Effect.catch((e: CoreError) =>
@@ -363,7 +463,8 @@ export class Stations {
     if (shown.holders.size > 0) return;
     this.#shown.delete(workspace);
     this.#ctx.runner.close(shown.scoped);
-    for (const id of shown.linked.keys()) this.#links.delete(id);
+    for (const id of shown.linked.keys())
+      this.#links.delete(stationLink(workspace, id));
     // The endpoint stays only while some workspace's stations are shown.
     if (this.#shown.size === 0) this.#closeMesh();
   }
@@ -393,13 +494,16 @@ export class Stations {
     return kept.map((s) => ({
       id: s.id,
       name: s.name || s.id,
-      online: s.online || this.#links.get(s.id)?.state === "online",
+      online:
+        s.online || this.#links.get(stationLink(workspace, s.id))?.state === "online",
     }));
   }
 
   /** This device's connection to `station`, as it stands. */
   linkOf(station: string): Link {
-    return this.#links.get(station) ?? { state: "connecting" };
+    for (const [link, state] of this.#links)
+      if (link.startsWith(`${station}@`)) return state;
+    return { state: "connecting" };
   }
 
   /** The viewer as stations know them (their email), once the control plane said. */
@@ -415,17 +519,16 @@ export class Stations {
     const kept = account?.stationList<ListedStation>(workspace) ?? [];
     return {
       workspace,
-      stations: kept.map(
-        (s): StationRow => ({
-          id: s.id,
-          name: s.name,
-          version: s.version,
-          present: s.online,
-          enrolledAt: s.enrolled_at ?? null,
-          enrolledBy: s.enrolled_by ?? null,
-          link: this.#links.get(s.id) ?? { state: "connecting" },
-        })
+      stations: kept.map((s) =>
+        stationRow(s, this.#links.get(stationLink(workspace, s.id)) ?? CONNECTING)
       ),
+      ...(shown && shown.ownComputers.length > 0
+        ? {
+            ownComputers: shown.ownComputers.map((id) =>
+              ownComputer(this.#links.get(stationLink(workspace, id)) ?? CONNECTING, id)
+            ),
+          }
+        : {}),
       loading: shown?.loading ?? false,
       ...(shown?.error !== undefined ? { error: shown.error } : {}),
     };
@@ -447,8 +550,53 @@ export class Stations {
           this.#changed(workspace);
         })
       ),
+      Effect.tap(() => this.#readOwnComputers(account, workspace)),
       Effect.asVoid
     );
+  }
+
+  /** A computer's station is told the Devices list once it first connected: read again while shown. */
+  #keepOwnComputers(account: Account, workspace: string): Effect.Effect<void> {
+    if (!this.#ctx.host.stationMesh?.ownComputers) return Effect.void;
+    return Effect.forever(
+      Effect.sleep(OWN_COMPUTERS_EVERY_MS).pipe(
+        Effect.andThen(this.#readOwnComputers(account, workspace))
+      )
+    );
+  }
+
+  /** A view of `station`'s screen is asked for: linked now, with its relay socket, whether or not the list has come. */
+  linkOwnComputer(workspace: string, station: string): void {
+    const shown = this.#shown.get(workspace);
+    const account = this.#ctx.session.current();
+    if (!shown || !account || shown.ownComputers.includes(station)) return;
+    shown.ownComputers = [...shown.ownComputers, station];
+    this.#follow(workspace, account.stationList<ListedStation>(workspace) ?? []);
+    this.#changed(workspace);
+  }
+
+  /** Links the stations of the person's own computers, where the host says to. A failed read changes nothing. */
+  #readOwnComputers(account: Account, workspace: string): Effect.Effect<void> {
+    if (!this.#ctx.host.stationMesh?.ownComputers) return Effect.void;
+    return this.#ctx.api
+      .request(account, "GET", `${devicesPath(workspace)}?limit=50`, ownComputersSchema)
+      .pipe(
+        Effect.tap(({ devices }) =>
+          Effect.sync(() => {
+            const shown = this.#shown.get(workspace);
+            if (!shown || account.closed) return;
+            shown.ownComputers = [
+              ...new Set(devices.flatMap((d) => (d.station_id ? [d.station_id] : []))),
+            ];
+            this.#follow(
+              workspace,
+              account.stationList<ListedStation>(workspace) ?? []
+            );
+            this.#changed(workspace);
+          })
+        ),
+        Effect.ignore
+      );
   }
 
   /** One station's row changed (renamed, or its presence moved). */
@@ -510,16 +658,14 @@ export class Stations {
   #follow(workspace: string, stations: readonly ListedStation[]): void {
     const shown = this.#shown.get(workspace);
     if (!shown) return;
-    const listed = new Set(stations.map((s) => s.id));
+    const listed = new Set([...stations.map((s) => s.id), ...shown.ownComputers]);
     for (const [id, scoped] of shown.linked) {
       if (listed.has(id)) continue;
       shown.linked.delete(id);
-      this.#links.delete(id);
-      this.#workspaceOf.delete(id);
+      this.#links.delete(stationLink(workspace, id));
       this.#ctx.runner.close(scoped);
     }
     for (const id of listed) {
-      this.#workspaceOf.set(id, workspace);
       if (shown.linked.has(id)) continue;
       const scoped = this.#ctx.runner.child(shown.scoped);
       shown.linked.set(id, scoped);
@@ -577,7 +723,9 @@ export class Stations {
       let via: StationVia | null = null;
       for (;;) {
         const next: { via: StationVia | null; closed: boolean } | null = links
-          ? yield* links.nextVia(station, via).pipe(Effect.orElseSucceed(() => null))
+          ? yield* links
+              .nextVia(stationLink(workspace, station), via)
+              .pipe(Effect.orElseSucceed(() => null))
           : null;
         // The endpoint does not say, or the connection went: its end is the race's other side.
         if (!next || next.closed) return yield* Effect.never;
@@ -591,15 +739,89 @@ export class Stations {
     });
   }
 
+  /**
+   * Asks the station on the open connection whether it is still there, each PING_EVERY_MS (`PING_EVERY_MS`); one that
+   * does not answer within PING_TIMEOUT_MS gets a new connection beside it, which takes its place unless an answer came
+   * meanwhile; one more is opened beside those still trying at each ping unanswered (REFRESHING_AT_MOST). Runs while
+   * the connection is open: never ends by itself.
+   */
+  #keepAsking(workspace: string, station: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      let asked = this.#ctx.now();
+      let heardAt = asked;
+      let refreshing = 0;
+      for (;;) {
+        yield* Effect.sleep(Duration.millis(PING_EVERY_MS));
+        const now = this.#ctx.now();
+        // (asked much later than meant: this device slept, and its links are no evidence of the station's)
+        const late = now - asked > 2 * PING_EVERY_MS;
+        asked = now;
+        if (late) heardAt = now;
+        // The question goes on after its while: an answer that comes late keeps the old connection (`wanted`). Its
+        // while counts from when it is written: what comes first (a credential renewed through the control plane, a
+        // stream to write it on) is no sign of the station's.
+        let answered = false;
+        let links: StationLinks | undefined;
+        let link = "";
+        // Written within a round, or this round is let go: no stream to write it on (the station's are all open) is no
+        // sign the station went; what the connection hears meanwhile answers, and nothing at all for STATION_GONE_MS
+        // gives it up below.
+        const written = yield* Effect.result(
+          this.#admitted(workspace, station, (l, k) => {
+            links = l;
+            link = k;
+            return l.ping ? l.ping(k) : Effect.succeed(Effect.succeed(true));
+          }).pipe(Effect.timeout(Duration.millis(PING_EVERY_MS)))
+        );
+        if (Result.isFailure(written)) {
+          if (!late && this.#ctx.now() - heardAt >= STATION_GONE_MS) {
+            if (links?.drop) yield* links.drop(link);
+            return;
+          }
+          continue;
+        }
+        const question = yield* written.success.pipe(
+          Effect.tap((said) => Effect.sync(() => void (answered = said))),
+          Effect.forkChild
+        );
+        const said = yield* Fiber.join(question).pipe(
+          Effect.timeout(Duration.millis(PING_TIMEOUT_MS)),
+          Effect.result
+        );
+        if (Result.isSuccess(said) || late) {
+          if (Result.isSuccess(said)) heardAt = this.#ctx.now();
+          yield* Fiber.interrupt(question);
+          continue;
+        }
+        if (this.#ctx.now() - heardAt >= STATION_GONE_MS) {
+          yield* Fiber.interrupt(question);
+          if (links?.drop) yield* links.drop(link);
+          return;
+        }
+        if (refreshing >= REFRESHING_AT_MOST) {
+          yield* Fiber.interrupt(question);
+          continue;
+        }
+        refreshing += 1;
+        yield* Effect.ignore(this.refresh(workspace, station, () => !answered)).pipe(
+          Effect.andThen(Fiber.interrupt(question)),
+          Effect.ensuring(Effect.sync(() => void (refreshing -= 1))),
+          Effect.forkChild
+        );
+      }
+    });
+  }
+
   #setLink(workspace: string, station: string, link: Link): void {
-    const before = this.#links.get(station);
+    const key = stationLink(workspace, station);
+    const before = this.#links.get(key);
     if (
       before?.state === link.state &&
       before.message === link.message &&
       before.via === link.via
     )
       return;
-    this.#links.set(station, link);
+    this.#links.set(key, link);
     this.#changed(workspace);
   }
 
@@ -612,7 +834,7 @@ export class Stations {
       for (;;) {
         this.#setLink(workspace, station, next);
         const opened = yield* Effect.result(
-          this.#admitted(station, (links) => links.connect(station)).pipe(
+          this.#admitted(workspace, station, (links, link) => links.connect(link)).pipe(
             Effect.timeoutOrElse({
               duration: STATION_TIMEOUT_MS,
               orElse: () =>
@@ -623,8 +845,14 @@ export class Stations {
         if (Result.isSuccess(opened)) {
           backoff = 0;
           this.#setLink(workspace, station, { state: "online" });
-          // Open until it closes, saying meanwhile how it runs.
-          yield* Effect.raceFirst(opened.success, this.#followVia(workspace, station));
+          // Open until it closes, saying meanwhile how it runs, and asked whether its station is still there.
+          yield* Effect.raceFirst(
+            opened.success,
+            Effect.raceFirst(
+              this.#followVia(workspace, station),
+              this.#keepAsking(workspace, station)
+            )
+          );
           next = { state: "reconnecting" };
           this.#setLink(workspace, station, next);
         } else {
@@ -659,7 +887,11 @@ export class Stations {
         const me = yield* this.#control((account) => this.#me(account));
         const secretKey = yield* this.#endpointKey();
         return yield* ports
-          .open({ secretKey, relays: me.relay_urls })
+          .open({
+            secretKey,
+            relays: me.relay_urls,
+            ...(me.route_policy ? { routePolicy: me.route_policy } : {}),
+          })
           .pipe(Effect.mapError((e) => new CoreError("unavailable", e.message)));
       });
       this.#ctx.runner.fork(
@@ -705,9 +937,13 @@ export class Stations {
    * account's database until shortly before it expires. `issued`: whether that credential was asked of the control
    * plane just now.
    */
-  #linkTo(station: string): Effect.Effect<
+  #linkTo(
+    workspace: string,
+    station: string
+  ): Effect.Effect<
     {
       links: StationLinks;
+      link: string;
       account: Account;
       workspace: string;
       credential: string;
@@ -717,12 +953,6 @@ export class Stations {
   > {
     return Effect.gen({ self: this }, function* () {
       const account = yield* this.#ctx.session.account();
-      const workspace =
-        this.#workspaceOf.get(station) ?? account.stationWorkspace(station);
-      if (!workspace)
-        return yield* Effect.fail(
-          new CoreError("not_found", "No such station is listed.")
-        );
       const links = yield* this.#linksNow();
       const fresh = () => {
         const kept = account.stationCredential<IssuedCredential>(workspace);
@@ -752,15 +982,20 @@ export class Stations {
             );
         })
       );
-      links.credential(station, given.credential);
+      const link = stationLink(workspace, station);
+      links.credential(link, given.credential);
       const listed = account
         .stationList<ListedStation>(workspace)
         ?.find((s) => s.id === station);
-      links.reach(station, {
-        relayUrl: listed?.home_relay ?? null,
+      // A computer's station announces nothing and is in no list: it keeps to each of the control plane's relays.
+      const own = !listed && this.#shown.get(workspace)?.ownComputers.includes(station);
+      links.reach(link, {
+        relayUrl:
+          listed?.home_relay ??
+          (own ? (account.doc<Me>(ME_DOC)?.value.relay_urls[0] ?? null) : null),
         addrs: listed?.addrs ?? [],
       });
-      return { links, account, workspace, ...given };
+      return { links, link, account, workspace, ...given };
     });
   }
 
@@ -771,21 +1006,23 @@ export class Stations {
    * one: each try after that uses what is kept, so a refusing station costs one credential request, not one a try.
    */
   #admitted<A, R>(
+    workspace: string,
     station: string,
-    use: (links: StationLinks) => Effect.Effect<A, HostError, R>
+    use: (links: StationLinks, link: string) => Effect.Effect<A, HostError, R>
   ): Effect.Effect<A, CoreError, R> {
     return Effect.gen({ self: this }, function* () {
-      const first = yield* this.#linkTo(station);
-      const tried = yield* Effect.result(use(first.links));
+      const key = stationLink(workspace, station);
+      const first = yield* this.#linkTo(workspace, station);
+      const tried = yield* Effect.result(use(first.links, first.link));
       if (Result.isSuccess(tried)) {
-        this.#refusing.delete(station);
+        this.#refusing.delete(key);
         return tried.success;
       }
-      const refused = () => new CoreError("unreachable", tried.failure.message);
-      if (!stationRefused(tried.failure)) return yield* Effect.fail(refused());
-      if (first.issued || this.#refusing.has(station)) {
-        this.#refusing.add(station);
-        return yield* Effect.fail(refused());
+      if (!stationRefused(tried.failure))
+        return yield* Effect.fail(linkFailure(tried.failure));
+      if (first.issued || this.#refusing.has(key)) {
+        this.#refusing.add(key);
+        return yield* Effect.fail(linkFailure(tried.failure));
       }
       // The kept one goes, unless another station's refusal already replaced it.
       if (
@@ -793,15 +1030,30 @@ export class Stations {
           .credential === first.credential
       )
         first.account.deleteStationCredential(first.workspace);
-      const second = yield* this.#linkTo(station);
-      return yield* use(second.links).pipe(
-        Effect.tap(() => Effect.sync(() => this.#refusing.delete(station))),
+      const second = yield* this.#linkTo(workspace, station);
+      return yield* use(second.links, second.link).pipe(
+        Effect.tap(() => Effect.sync(() => this.#refusing.delete(key))),
         Effect.mapError((e) => {
-          if (stationRefused(e)) this.#refusing.add(station);
-          return new CoreError("unreachable", e.message);
+          if (stationRefused(e)) this.#refusing.add(key);
+          return linkFailure(e);
         })
       );
     });
+  }
+
+  /**
+   * Opens a new connection to `station` beside the open one, which carries nothing though it is still open (the
+   * station's process went, and a new one has its key), and puts it in that one's place: what was on the old one fails,
+   * to be asked again. `wanted` is asked once the new one opened; false keeps the old one. True when it was replaced.
+   */
+  refresh(
+    workspace: string,
+    station: string,
+    wanted: () => boolean
+  ): Effect.Effect<boolean, CoreError> {
+    return this.#admitted(workspace, station, (links, link) =>
+      links.refresh ? links.refresh(link, wanted) : Effect.succeed(false)
+    );
   }
 
   /**
@@ -822,14 +1074,13 @@ export class Stations {
     } = {}
   ): Effect.Effect<unknown, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      if (!this.#workspaceOf.has(station)) this.#workspaceOf.set(station, workspace);
       const headers: [string, string][] = [["accept", "application/json"]];
       if (options.raw) headers.push(["content-type", options.raw.type]);
       else if (body !== undefined) headers.push(["content-type", "application/json"]);
       if (method !== "GET")
         headers.push(["idempotency-key", options.onceKey ?? this.onceKey()]);
-      const answered = this.#admitted(station, (links) =>
-        links.request(station, {
+      const answered = this.#admitted(workspace, station, (links, link) =>
+        links.request(link, {
           method,
           path,
           headers,
@@ -888,7 +1139,7 @@ export class Stations {
 
   /**
    * A file the station serves (`GET path`): its bytes, their type, and for a part of a file the whole file's size (its
-   * `stillfail-total`). Fails `not_found` when the station has none there, and `too_large` past `max` bytes (what came
+   * `comma-station-total`). Fails `not_found` when the station has none there, and `too_large` past `max` bytes (what came
    * stops there).
    */
   file(
@@ -901,9 +1152,8 @@ export class Stations {
     CoreError
   > {
     return Effect.gen({ self: this }, function* () {
-      if (!this.#workspaceOf.has(station)) this.#workspaceOf.set(station, workspace);
-      const answered = this.#admitted(station, (links) =>
-        links.request(station, { method: "GET", path, headers: [], body: null })
+      const answered = this.#admitted(workspace, station, (links, link) =>
+        links.request(link, { method: "GET", path, headers: [], body: null })
       );
       return yield* Effect.scoped(
         Effect.gen(function* () {
@@ -921,7 +1171,11 @@ export class Stations {
             max,
             () => new CoreError("too_large", "The file is larger than the app reads.")
           );
-          const total = Number(header(response, "stillfail-total") ?? Number.NaN);
+          const total = Number(
+            header(response, "comma-station-total") ??
+              header(response, "stillfail-total") ??
+              Number.NaN
+          );
           return {
             bytes,
             type: header(response, "content-type") ?? "",
@@ -938,16 +1192,19 @@ export class Stations {
     );
   }
 
-  /** A station's event stream (`GET path`): its body as it arrives, open while the scope is. */
+  /** A station's event stream (`GET path`): its body as it arrives, open while the scope is, and its headers. */
   stream(
     workspace: string,
     station: string,
     path: string
-  ): Effect.Effect<Pull<Uint8Array>, CoreError, Scope.Scope> {
+  ): Effect.Effect<
+    { body: Pull<Uint8Array>; headers: [string, string][] },
+    CoreError,
+    Scope.Scope
+  > {
     return Effect.gen({ self: this }, function* () {
-      if (!this.#workspaceOf.has(station)) this.#workspaceOf.set(station, workspace);
-      const response = yield* this.#admitted(station, (links) =>
-        links.request(station, {
+      const response = yield* this.#admitted(workspace, station, (links, link) =>
+        links.request(link, {
           method: "GET",
           path,
           headers: [["accept", "text/event-stream"]],
@@ -961,7 +1218,49 @@ export class Stations {
             `The station answered ${response.status}.`
           )
         );
-      return response.body;
+      return { body: response.body, headers: response.headers };
+    });
+  }
+
+  /**
+   * A two-way stream with a station (`POST path`): `outgoing` goes as it comes while the body comes back, open while
+   * the scope is. A refusal fails with the station's words, its code `http_<status>` (403: `forbidden`).
+   */
+  duplex(
+    workspace: string,
+    station: string,
+    path: string,
+    headers: [string, string][],
+    outgoing: AsyncIterable<Uint8Array>
+  ): Effect.Effect<
+    { body: Pull<Uint8Array>; headers: [string, string][] },
+    CoreError,
+    Scope.Scope
+  > {
+    return Effect.gen({ self: this }, function* () {
+      const response = yield* this.#admitted(workspace, station, (links, link) =>
+        links.request(link, { method: "POST", path, headers, body: outgoing })
+      );
+      if (response.status === 200)
+        return { body: response.body, headers: response.headers };
+      const bytes = yield* collect(
+        response.body,
+        MAX_ANSWER_BYTES,
+        () => new CoreError("bad_response", "The station's answer is too large.")
+      );
+      const said = yield* Effect.try((): unknown =>
+        JSON.parse(new TextDecoder().decode(bytes))
+      ).pipe(Effect.orElseSucceed(() => undefined));
+      const error = (said as { error?: unknown } | undefined)?.error;
+      return yield* Effect.fail(
+        new CoreError(
+          response.status === 403 ? "forbidden" : `http_${response.status}`,
+          typeof error === "string"
+            ? error
+            : `The station answered ${response.status}.`,
+          response.status
+        )
+      );
     });
   }
 

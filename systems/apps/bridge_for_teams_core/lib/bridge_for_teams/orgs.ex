@@ -165,6 +165,15 @@ defmodule BridgeForTeams.Orgs do
     end
   end
 
+  @doc "The name of the organization of a Salix tenant, for `SalixIM.Ports.Organizations`."
+  @spec organization_name(String.t()) :: String.t() | nil
+  def organization_name(tenant_id) do
+    case get_org_by_salix_tenant_id(tenant_id) do
+      {:ok, org} -> org.name
+      {:error, :not_found} -> nil
+    end
+  end
+
   @doc "Update an organization."
   @spec update_org(Organization.t(), map(), keyword()) ::
           {:ok, Organization.t()} | {:error, Ecto.Changeset.t()}

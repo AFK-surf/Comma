@@ -17,10 +17,19 @@ import {
 import type { ProductInboxItem } from "@comma/core-client";
 import type { TaskReviewSeenMarks } from "../tasks/taskReviewAttention";
 import { InboxRow, type InboxGroupModel } from "./InboxGroup";
+import type { InboxRequestEntry } from "./TaskRequestInbox";
+
+/** A row of the list: a Task's notification, or someone's request waiting for the owner. */
+export type InboxListEntry = ProductInboxItem | InboxRequestEntry;
+
+const isRequest = (entry: InboxListEntry): entry is InboxRequestEntry =>
+  "kind" in entry &&
+  (entry.kind === "task_request" || entry.kind === "task_request_sent");
 import { isInboxItemUnread, type InboxUnreadMarks } from "./inboxDeletion";
 
 export function InboxList({
   groups,
+  renderRequest,
   onDeleteItem,
   onMarkReadItem,
   onMarkUnreadItem,
@@ -31,7 +40,9 @@ export function InboxList({
   label,
   children,
 }: {
-  groups: InboxGroupModel[];
+  groups: InboxGroupModel<InboxListEntry>[];
+  /** A request's row, among the Tasks' by when it came. */
+  renderRequest: (row: InboxRequestEntry) => ReactNode;
   onDeleteItem: (item: ProductInboxItem) => void;
   onMarkReadItem: (item: ProductInboxItem) => void;
   onMarkUnreadItem: (item: ProductInboxItem) => void;
@@ -177,22 +188,28 @@ export function InboxList({
                   {heading}
                 </h2>
               ) : null}
-              <InboxRow
-                conversationId={item.conversationId}
-                groupId={item.groupId}
-                workspaceId={item.workspaceId}
-                title={item.title}
-                status={item.status}
-                updatedAt={item.updatedAt}
-                loop={item.loop}
-                selected={item.conversationId === selectedConversationId}
-                unread={isInboxItemUnread(seenMarks, unreadMarks, item)}
-                minute={minute}
-                onDelete={() => onDeleteItem(item)}
-                onMarkRead={() => onMarkReadItem(item)}
-                onMarkUnread={() => onMarkUnreadItem(item)}
-                onOpen={() => onOpenItem(item)}
-              />
+              {isRequest(item) ? (
+                renderRequest(item)
+              ) : (
+                <InboxRow
+                  conversationId={item.conversationId}
+                  groupId={item.groupId}
+                  workspaceId={item.workspaceId}
+                  title={item.title}
+                  status={item.status}
+                  updatedAt={item.updatedAt}
+                  loop={item.loop}
+                  origin={item.origin}
+                  requestedBy={item.requestedBy}
+                  selected={item.conversationId === selectedConversationId}
+                  unread={isInboxItemUnread(seenMarks, unreadMarks, item)}
+                  minute={minute}
+                  onDelete={() => onDeleteItem(item)}
+                  onMarkRead={() => onMarkReadItem(item)}
+                  onMarkUnread={() => onMarkUnreadItem(item)}
+                  onOpen={() => onOpenItem(item)}
+                />
+              )}
             </li>
           );
         })}

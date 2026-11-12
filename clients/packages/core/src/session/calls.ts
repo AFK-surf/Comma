@@ -1,8 +1,9 @@
 // The session lifecycle's calls (contract.ts, `session.*`), the web's and Electron's: each checks its params and
 // answers the session contract's result. The calls both have are the same calls; the web adds its Google button's two
-// steps, guest sessions and Telegram launches, the bearer hosts their Google window and the iPhone's Apple sheet. None is listed in `doing` (its params carry
+// steps, guest sessions and Telegram launches, the bearer hosts their Google window, the iPhone's Apple sheet and the accounts kept signed in. None is listed in `doing` (its params carry
 // codes, credentials and launch data, and the snapshot's phase says what is under way); none stops when its page goes
 // (a change of the credential runs to its end).
+import { lazySchema } from "@comma/chat-contract";
 import {
   sessionAbsenceExpectationSchema,
   sessionAuthAttemptRefSchema,
@@ -20,29 +21,44 @@ import type { Session } from "../session.ts";
 import { ElectronSessionLifecycle } from "./electron-lifecycle.ts";
 import type { WebSessionLifecycle } from "./web-lifecycle.ts";
 
-const absence = z.strictObject({ expected: sessionAbsenceExpectationSchema });
-const googleComplete = z.strictObject({
-  attempt: sessionAuthAttemptRefSchema,
-  credential: z.string().min(1).max(16_384),
-  nonce: z.string().min(1).max(2_048),
-  providerAttemptId: z.string().min(1).max(256),
-});
-const telegram = z.strictObject({
-  initData: z.string().min(1).max(16_384),
-  groupId: z.string().max(256),
-});
-const handOver = z.strictObject({
-  expiresAtEpochSeconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-});
-const rejected = z.strictObject({
-  sessionId: z.string().min(1).max(256),
-  generation: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-  status: z.union([z.literal(401), z.literal(409)]),
-});
-const reconcile = z.strictObject({
-  reason: z.enum(["focus", "peer_mutation"]),
-  expected: sessionLifecycleExpectationSchema.optional(),
-});
+const absence = lazySchema(() =>
+  z.strictObject({ expected: sessionAbsenceExpectationSchema })
+);
+const googleComplete = lazySchema(() =>
+  z.strictObject({
+    attempt: sessionAuthAttemptRefSchema,
+    credential: z.string().min(1).max(16_384),
+    nonce: z.string().min(1).max(2_048),
+    providerAttemptId: z.string().min(1).max(256),
+  })
+);
+const telegram = lazySchema(() =>
+  z.strictObject({
+    initData: z.string().min(1).max(16_384),
+    groupId: z.string().max(256),
+  })
+);
+const handOver = lazySchema(() =>
+  z.strictObject({
+    expiresAtEpochSeconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+);
+const rejected = lazySchema(() =>
+  z.strictObject({
+    sessionId: z.string().min(1).max(256),
+    generation: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    status: z.union([z.literal(401), z.literal(409)]),
+  })
+);
+const account = lazySchema(() =>
+  z.strictObject({ userId: z.string().min(1).max(256) })
+);
+const reconcile = lazySchema(() =>
+  z.strictObject({
+    reason: z.enum(["focus", "peer_mutation"]),
+    expected: sessionLifecycleExpectationSchema.optional(),
+  })
+);
 
 /** `run(params)` once `schema` accepts them; else `invalid_params`. */
 function checked<S extends z.ZodType>(
@@ -88,6 +104,14 @@ export function registerSessionCalls(
   });
   lifecycle.onRecovery(() => kernel.store.invalidate({ topic: "sessionRecovery" }));
   kernel.calls({
+    "session.captcha.answer": checked(
+      z.strictObject({
+        attempt: sessionAuthAttemptRefSchema,
+        challengeId: z.string().min(1).max(200),
+        token: z.string().min(1).max(2048).nullable(),
+      }),
+      (p) => lifecycle.answerCaptcha(p)
+    ),
     "session.email.request": checked(sessionRequestEmailLoginInputSchema, (p) =>
       lifecycle.guard(
         lifecycle.requestEmailLogin(p),
@@ -148,6 +172,24 @@ export function registerSessionCalls(
   });
   if (lifecycle instanceof ElectronSessionLifecycle) {
     kernel.calls({
+      // Accounts kept signed in on the device (the bearer store's): add one, use another, sign one out.
+      "session.addAccount": checked(sessionSignOutInputSchema, (p) =>
+        lifecycle.guard(lifecycle.addAccount(p), "reconcile", failing("add_account"))
+      ),
+      "session.switchAccount": checked(account, (p) =>
+        lifecycle.guard(
+          lifecycle.switchAccount(p),
+          "reconcile",
+          failing("switch_account")
+        )
+      ),
+      "session.signOutAccount": checked(account, (p) =>
+        lifecycle.guard(
+          lifecycle.signOutAccount(p),
+          "reconcile",
+          failing("sign_out_account")
+        )
+      ),
       // Sign in with Apple through the iPhone's sheet: one call, as Google through Main's window.
       "session.apple": checked(absence, (p) =>
         lifecycle.guard(

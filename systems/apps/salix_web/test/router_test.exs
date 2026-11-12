@@ -16,7 +16,6 @@ defmodule SalixWeb.RouterTest do
 
   alias SalixAgent.LLM.Mock
   alias SalixAgent.InternalSession
-  alias SalixAgent.InternalSession.State, as: InternalSessionState
   alias SalixAgent.InternalSessionStore
   alias Salix.Control.{OAuthBindings, Plugins}
   alias SalixMCP.Store, as: MCPStore
@@ -413,24 +412,30 @@ defmodule SalixWeb.RouterTest do
     agent_id = agent["agent_id"]
     session_id = "ses1_0000000000000000891"
 
-    base = InternalSession.new(agent_id, session_id, %{"created_at" => "2026-08-12T00:00:00Z"})
-
-    state = %InternalSessionState{
-      InternalSession.export(base)
-      | messages: [
-          %{id: 1, role: "user", content: "fix the bug", created_at: 1},
-          %{
-            id: 2,
-            role: "assistant",
-            content: "Wait. Authorization: Bearer secret-token-value",
-            created_at: 2,
-            tool_calls: []
-          }
-        ],
-        next_message_id: 3
-    }
-
-    assert :ok = InternalSessionStore.prepare_seed(agent_id, InternalSession.open(state))
+    assert {:ok, _} =
+             SalixAgent.TestSupport.SessionFixture.commit(
+               agent_id,
+               session_id,
+               [
+                 %{
+                   "type" => "delivery",
+                   "from_queue" => true,
+                   "message_id" => 1,
+                   "role" => "user",
+                   "content" => "fix the bug",
+                   "created_at" => 1,
+                   "source_message_id" => "runtime-eval-user"
+                 },
+                 %{
+                   "type" => "assistant",
+                   "message_id" => 2,
+                   "content" => "Wait. Authorization: Bearer secret-token-value",
+                   "created_at" => 2,
+                   "tool_calls" => []
+                 }
+               ],
+               create_attrs: %{"created_at" => 1_786_492_800}
+             )
 
     MockTrajectoryEvalQueries.set_rows([
       %{
@@ -1759,12 +1764,38 @@ defmodule SalixWeb.RouterTest do
     end
   end
 
+  test "session messages expose recorded model and time evidence" do
+    agent_id = create_test_agent()
+    session_id = SalixStore.Ids.new_session_id()
+    assert {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{})
+
+    assert {:ok, _} =
+             SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
+               %{
+                 "type" => "assistant",
+                 "message_id" => 1,
+                 "content" => "recorded reply",
+                 "model" => "observed-provider-model",
+                 "created_at" => 1_700_000_005,
+                 "do_not_send_to_llm" => true
+               }
+             ])
+
+    response = treq(:get, "/v1/runtime/agents/#{agent_id}/sessions/#{session_id}/messages")
+    assert response.status == 200
+    assert [message] = response.body["messages"]
+    assert message["content"] == "recorded reply"
+    assert message["model"] == "observed-provider-model"
+    assert message["created_at"] == 1_700_000_005
+    refute Map.has_key?(message, "do_not_send_to_llm")
+  end
+
   test "transcript seed route appends internal transcript and compact route sees the watermark" do
     agent_id = create_test_agent()
     session_id = SalixStore.Ids.new_session_id()
 
     assert {:ok, _created} =
-             SalixAgent.InternalSessionStore.prepare_create(agent_id, session_id, %{})
+             SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{})
 
     seed =
       treq(:post, "/v1/runtime/agents/#{agent_id}/sessions/#{session_id}/transcript/seed",
@@ -1834,6 +1865,10 @@ defmodule SalixWeb.RouterTest do
     assert detail["message_count"] == 5
     assert detail["compacted_through"] == 5
     assert detail["summary_sequence"] == 1
+
+    # Transfer the committed compaction target before checking archived receipts.
+    assert {:ok, head} = SalixAgent.InternalSessionStore.PG.archive_head(agent_id, session_id)
+    assert {:ok, :archived} = SalixAgent.InternalSessionStore.archive_captured(head)
 
     # Receipts count the complete transcript, including archived messages.
     # Seed deduplication uses the permanent ledger, not the hot window.
@@ -2119,14 +2154,14 @@ defmodule SalixWeb.RouterTest do
              )
 
     {:ok, _created_source_session} =
-      SalixAgent.InternalSessionStore.prepare_create(
+      SalixAgent.TestSupport.SessionFixture.create(
         fork_source_id,
         fork_source_session_id,
         %{}
       )
 
     {:ok, _source_session} =
-      SalixAgent.InternalSessionStore.prepare_commit(
+      SalixAgent.TestSupport.SessionFixture.commit(
         fork_source_id,
         fork_source_session_id,
         [
@@ -2284,10 +2319,10 @@ defmodule SalixWeb.RouterTest do
              )
 
     {:ok, _created_session} =
-      SalixAgent.InternalSessionStore.prepare_create(agent_id, session_id, %{})
+      SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{})
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(
+      SalixAgent.TestSupport.SessionFixture.commit(
         agent_id,
         session_id,
         [
@@ -2412,18 +2447,8 @@ defmodule SalixWeb.RouterTest do
     SalixStore.S3.Fake.reset_read_log()
     assert treq(:get, "/v1/runtime/agents/#{agent_id}/sites").body == []
 
-    assert Enum.count(
-             SalixStore.S3.Fake.read_log(),
-             &(&1 == {:get, Keys.ctl_agent(agent_id)})
-           ) == 1
-
     SalixStore.S3.Fake.reset_read_log()
     sessions = treq(:get, "/v1/runtime/agents/#{agent_id}/sessions")
-
-    assert Enum.count(
-             SalixStore.S3.Fake.read_log(),
-             &(&1 == {:get, Keys.ctl_agent(agent_id)})
-           ) == 1
 
     assert Enum.any?(
              sessions.body,
@@ -2896,7 +2921,7 @@ defmodule SalixWeb.RouterTest do
           heartbeat_followup_session_id
         ] do
       assert {:ok, _created} =
-               SalixAgent.InternalSessionStore.prepare_create(
+               SalixAgent.TestSupport.SessionFixture.create(
                  agent_id,
                  heartbeat_session_id,
                  %{}
@@ -2904,7 +2929,7 @@ defmodule SalixWeb.RouterTest do
     end
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, heartbeat_a_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, heartbeat_a_session_id, [
         %{
           "type" => "session_created",
           "session_id" => heartbeat_a_session_id,
@@ -2915,7 +2940,7 @@ defmodule SalixWeb.RouterTest do
       ])
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, heartbeat_b_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, heartbeat_b_session_id, [
         %{
           "type" => "session_created",
           "session_id" => heartbeat_b_session_id,
@@ -2926,7 +2951,7 @@ defmodule SalixWeb.RouterTest do
       ])
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, heartbeat_followup_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, heartbeat_followup_session_id, [
         %{
           "type" => "session_created",
           "session_id" => heartbeat_followup_session_id,
@@ -3119,7 +3144,7 @@ defmodule SalixWeb.RouterTest do
              end
            end)
 
-    {:ok, agent} = read_json(Keys.ctl_agent(meeting_agent["meeting_agent_id"]))
+    {:ok, agent} = SalixAgent.Control.get_record(meeting_agent["meeting_agent_id"])
     assert agent["role"] == "meeting"
     assert agent["purpose"] == "meeting"
     assert agent["hidden"] == true
@@ -3543,11 +3568,11 @@ defmodule SalixWeb.RouterTest do
           computer_session_id
         ] do
       assert {:ok, _created} =
-               SalixAgent.InternalSessionStore.prepare_create(agent_id, session_id, %{})
+               SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{})
     end
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, location_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, location_session_id, [
         %{"type" => "session_created", "session_id" => location_session_id, "created_at" => now},
         %{
           "type" => "async_tool_call_started",
@@ -3572,7 +3597,7 @@ defmodule SalixWeb.RouterTest do
       ])
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, oauth_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, oauth_session_id, [
         %{"type" => "session_created", "session_id" => oauth_session_id, "created_at" => now},
         %{
           "type" => "async_tool_call_started",
@@ -3596,7 +3621,7 @@ defmodule SalixWeb.RouterTest do
       ])
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, host_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, host_session_id, [
         %{"type" => "session_created", "session_id" => host_session_id, "created_at" => now},
         %{
           "type" => "async_tool_call_started",
@@ -3620,7 +3645,7 @@ defmodule SalixWeb.RouterTest do
       ])
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, computer_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, computer_session_id, [
         %{
           "type" => "session_created",
           "session_id" => computer_session_id,

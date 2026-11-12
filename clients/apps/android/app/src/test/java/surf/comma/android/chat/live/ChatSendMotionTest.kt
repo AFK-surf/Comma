@@ -2,7 +2,6 @@ package surf.comma.android.chat.live
 
 import android.animation.ValueAnimator
 import android.net.Uri
-import android.os.SystemClock
 import android.view.MotionEvent
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -67,7 +66,9 @@ class ChatSendMotionTest {
     /** Commit the sent rows inside the send (as the repository does) or only after it returns. */
     private var commitBeforeReturn = true
     private var refuse = false
+    private var fail = false
     private var conversation = "c"
+    private var mainClock = 0L
 
     @Before fun setUp() {
         resetSpringFrames()
@@ -87,8 +88,7 @@ class ChatSendMotionTest {
         root.addView(flight, FrameLayout.LayoutParams(-1, -1))
         flow = ChatSendFlow(activity.lifecycleScope, composer, timeline, flight,
             draftRequestId = { currentRequestId },
-            sendDraft = { text, attachments -> admit(text, attachments) },
-            sendVoice = { _, _ -> true })
+            sendDraft = { text, attachments -> admit(text, attachments) })
         flow.bind()
         composer.onAttachmentsAdded = { added -> added.forEach { composer.setAttachmentState(it.id, AttachmentUploadState.Done) } }
         composer.onImeOffset = { boundary() }
@@ -122,6 +122,7 @@ class ChatSendMotionTest {
     private fun boundary() = flow.updateBoundary(composer.capsuleTop - timeline.y)
 
     private suspend fun admit(text: String, attachments: List<ComposerAttachment>): Boolean {
+        if (fail) error("send failed")
         if (refuse) return false
         val turn = requestKey(currentRequestId)
         if (text.isNotEmpty()) rows += ChatMessage(nextId++, conversation, turn, ChatRole.USER, text, 0L,
@@ -148,6 +149,7 @@ class ChatSendMotionTest {
     private fun publish() { activity.lifecycleScope.launchWhenCreated { publishNow() } }
 
     private fun frames(count: Int, each: (Int) -> Unit = {}) = repeat(count) {
+        mainClock += FRAME_MS
         ShadowLooper.idleMainLooper(FRAME_MS, TimeUnit.MILLISECONDS)
         each(it)
     }
@@ -467,6 +469,84 @@ class ChatSendMotionTest {
         assertRestingGap(id)
     }
 
+    private fun readHistory(distance: Int) {
+        rows.clear()
+        repeat(60) { rows += ChatMessage(nextId++, conversation, "t$it", ChatRole.AGENT, "history $it", 0L) }
+        publishAndAwait()
+        awaitMotion()
+        val now = mainClock
+        val x = timeline.width / 2f
+        val y = timeline.height / 2f
+        val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop
+        timeline.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0))
+        timeline.dispatchTouchEvent(MotionEvent.obtain(now, now + 8, MotionEvent.ACTION_MOVE, x, y + slop + 1, 0))
+        timeline.scrollBy(0, -distance)
+        timeline.dispatchTouchEvent(MotionEvent.obtain(now, now + 16, MotionEvent.ACTION_CANCEL, x, y + slop + 1, 0))
+        timeline.stopScroll()
+        assertFalse("the finger left the list reading history", timeline.isPinnedToEnd())
+        assertTrue("away from latest", timeline.canScrollVertically(1))
+    }
+
+    private fun awaitMotion() {
+        do { frames(1) } while (flight.isFlying || timeline.glideOffsetPx != 0f || timeline.isLayoutRequested)
+    }
+
+    private fun sendFromHistory(far: Boolean, lateCommit: Boolean = false) {
+        readHistory(if (far) timeline.height * 2 else timeline.height / 4)
+        input.setText("send from history")
+        commitBeforeReturn = !lateCommit
+        send()
+        val id = lastUser().id
+        val boxes = ArrayList<Pair<FlightBox, FlightBox>>()
+        do {
+            frames(1)
+            val piece = flight.presentedBox(id)
+            val target = targetBox(id)
+            if (piece != null && target != null) boxes += piece to target
+        } while (flight.isFlying || timeline.glideOffsetPx != 0f || timeline.isLayoutRequested)
+        assertTrue("the sent piece flew to its own row", boxes.isNotEmpty())
+        assertEquals("the flight lands on the sent row", boxes.last().second.top, boxes.last().first.top, 1f)
+        assertTrue("sending resumes following latest", timeline.isPinnedToEnd())
+        assertRestingGap(id)
+        assertAllShown()
+        rows += ChatMessage(nextId++, conversation, lastUser().turnId, ChatRole.AGENT, "the subsequent reply", 0L)
+        publishAndAwait()
+        awaitMotion()
+        assertTrue(timeline.isPinnedToEnd())
+        assertRestingGap(rows.last().id)
+        assertTrue("reply visible", timeline.viewForRow(rows.last().id)!!.top < timeline.chatBottomPx)
+    }
+
+    @Test fun `sending less than a screen from latest shows the send and follows its reply`() = sendFromHistory(false)
+
+    @Test fun `sending more than a screen from latest shows the send and follows its reply`() = sendFromHistory(true)
+
+    @Test fun `sending from history before rows commit still follows and lands`() = sendFromHistory(true, lateCommit = true)
+
+    private fun rejectedFromHistory(failed: Boolean) {
+        readHistory(timeline.height / 4)
+        input.setText("refused from history")
+        val anchor = timeline.visibleAnchor()
+        refuse = !failed
+        fail = failed
+        send()
+        awaitMotion()
+        assertEquals(anchor, timeline.visibleAnchor())
+        assertFalse(timeline.isPinnedToEnd())
+        assertFalse(flight.isFlying)
+        assertEquals("refused from history", input.text.toString())
+    }
+
+    @Test fun `a refused send preserves the history reader position`() = rejectedFromHistory(false)
+
+    @Test fun `a failed send preserves the history reader position`() = rejectedFromHistory(true)
+
+    private fun publishAndAwait() {
+        var committed = false
+        activity.lifecycleScope.launchWhenCreated { publishNow(); committed = true }
+        while (!committed) frames(1)
+    }
+
     @Test fun `a refused send leaves nothing behind`() {
         refuse = true
         draft("refused sample")
@@ -525,10 +605,10 @@ class ChatSendMotionTest {
         val expected = (row as surf.comma.android.chat.render.ChatMessageCell).let { cell ->
             timeline.getChildAdapterPosition(cell)
         }
-        val now = SystemClock.uptimeMillis()
+        val now = mainClock
         timeline.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0))
         frames((android.view.ViewConfiguration.getLongPressTimeout() / FRAME_MS + 4).toInt())
-        timeline.dispatchTouchEvent(MotionEvent.obtain(now, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0))
+        timeline.dispatchTouchEvent(MotionEvent.obtain(now, mainClock, MotionEvent.ACTION_UP, x, y, 0))
         assertEquals("the long press went to the row under the finger", 1, pressed.size)
         assertEquals(timeline.positionOf(pressed.single()), expected)
         frames(60)
@@ -556,7 +636,7 @@ class ChatSendMotionTest {
         val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop
         val x = timeline.width / 2f
         val y = before + row.height / 2f
-        val now = SystemClock.uptimeMillis()
+        val now = mainClock
         timeline.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0))
         // The list takes the gesture once it passes the slop; the glide becomes a scroll in place.
         timeline.dispatchTouchEvent(MotionEvent.obtain(now, now + 8, MotionEvent.ACTION_MOVE, x, y + slop + 1f, 0))
@@ -586,7 +666,7 @@ class ChatSendMotionTest {
         val x = timeline.width / 2f
         val y = before + 10f
         val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop
-        val now = SystemClock.uptimeMillis()
+        val now = mainClock
         timeline.dispatchTouchEvent(MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0))
         timeline.dispatchTouchEvent(MotionEvent.obtain(now, now + 8, MotionEvent.ACTION_MOVE, x, y + slop + 40f, 0))
         assertEquals("nothing jumped when the drag began", before, requireNotNull(drawnTop(earlier)), 2f)

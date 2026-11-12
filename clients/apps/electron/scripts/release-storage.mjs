@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { mergeReleaseFeed } from "./release-feed.mjs";
 
 const channelMetadata = {
   staging: {
@@ -17,6 +24,8 @@ const channelMetadata = {
       "releases.staging.json",
     ],
     feed: "releases.staging.json",
+    // The feed clients read now, whose deltas the new feed keeps (release-feed.mjs).
+    remoteFeed: "releases.staging.json",
     manifest: "assets.staging.json",
     dmgPointer: "dmg.staging.txt",
     setupPointer: "setup.staging.txt",
@@ -37,6 +46,9 @@ const channelMetadata = {
       "releases.prod.json",
     ],
     feed: "releases.prod.pending.json",
+    // The active feed, not the pending one: this release's delta is made from the active feed's full package, and a
+    // pending feed that was never promoted lists deltas no client has.
+    remoteFeed: "releases.prod.json",
     manifest: "assets.prod.pending.json",
     dmgPointer: "dmg.prod.pending.txt",
     setupPointer: "setup.prod.pending.txt",
@@ -478,12 +490,66 @@ function describeReleaseDirectory(releaseDir) {
     .join("\n");
 }
 
+/**
+ * Adds the deltas of the remote feed to the packed feed, so that a client more than one version behind gets each
+ * delta between its version and this one (release-feed.mjs). A remote feed that is missing or not a release feed
+ * adds nothing: the release then lists only its own delta, as `vpk pack` wrote it.
+ */
+async function mergeRemoteFeed(storage, feedPath, remoteFeedName) {
+  parseReleaseFeed(feedPath);
+  const remoteDir = await mkdtemp(join(tmpdir(), "comma-remote-feed-"));
+  try {
+    const remotePath = await downloadRemoteMetadata(
+      storage,
+      remoteDir,
+      remoteFeedName,
+      {
+        required: false,
+      }
+    );
+    if (!remotePath) {
+      console.log(
+        `No remote ${remoteFeedName}: the feed lists only this release's packages.`
+      );
+      return;
+    }
+    try {
+      parseReleaseFeed(remotePath);
+    } catch (error) {
+      console.warn(
+        `The remote ${remoteFeedName} is not a release feed, so its deltas are not kept: ${error.message}`
+      );
+      return;
+    }
+
+    const { feed, added, skipped } = mergeReleaseFeed(
+      readJson(feedPath),
+      readJson(remotePath)
+    );
+    for (const { fileName, reason } of skipped) {
+      console.log(
+        `Not listed from the remote ${remoteFeedName}: ${fileName} (${reason})`
+      );
+    }
+    console.log(
+      `Kept ${added} delta(s) from the remote ${remoteFeedName}; the feed lists ${feed.Assets.length} packages.`
+    );
+    if (added > 0) {
+      writeFileSync(feedPath, JSON.stringify(feed));
+    }
+  } finally {
+    await rm(remoteDir, { recursive: true, force: true });
+  }
+}
+
 async function publishRelease(storage, releaseDir, metadata, { requireDmg }) {
   const feedPath = resolve(releaseDir, metadata.feed);
   if (!existsSync(feedPath)) {
     throw new Error(`Release feed not found: ${feedPath}`);
   }
 
+  await mergeRemoteFeed(storage, feedPath, metadata.remoteFeed);
+  // The merged feed: the verification below also covers the deltas the remote feed listed.
   const assets = parseReleaseFeed(feedPath);
   const excludedMetadata = [...metadata.active, ...(metadata.excluded ?? [])];
   const syncArguments = [

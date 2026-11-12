@@ -247,26 +247,34 @@
                 "pattern": "\\S"
               },
               "status": {
-                "type": "object",
-                "properties": {
-                  "label": {
+                "anyOf": [
+                  {
                     "type": "string",
                     "pattern": "\\S"
                   },
-                  "tone": {
-                    "type": "string",
-                    "enum": [
-                      "neutral",
-                      "brand",
-                      "success",
-                      "warning",
-                      "error"
-                    ],
-                    "title": "tone"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "tone": {
+                        "type": "string",
+                        "enum": [
+                          "neutral",
+                          "brand",
+                          "success",
+                          "warning",
+                          "error"
+                        ],
+                        "title": "tone"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ]
                   }
-                },
-                "required": [
-                  "label"
                 ],
                 "title": "status"
               },
@@ -406,7 +414,8 @@
                 "properties": {
                   "value": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "the change as shown, with its unit and no sign: \"37.6%\""
                   },
                   "direction": {
                     "type": "string",
@@ -417,7 +426,7 @@
                     ]
                   },
                   "good": {
-                    "description": "true when the change is good",
+                    "description": "whether the change is good; without it a rise is good and a fall is not",
                     "type": "boolean"
                   }
                 },
@@ -443,7 +452,7 @@
               "value"
             ]
           },
-          "limit": 4
+          "limit": 6
         },
         "goal": {
           "type": "object",
@@ -478,12 +487,12 @@
       "required": [
         "title"
       ],
-      "description": "one to four key numbers, or progress toward a goal",
+      "description": "one to six key numbers, or progress toward a goal",
       "needs": [
         "metrics",
         "goal"
       ],
-      "layouts": "single (1 metric), grid (2 to 4), goal"
+      "layouts": "single (1 metric), grid (2 to 6), goal (with any metrics under it)"
     },
     "trend": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -551,7 +560,8 @@
           "properties": {
             "value": {
               "type": "string",
-              "pattern": "\\S"
+              "pattern": "\\S",
+              "description": "the change as shown, with its unit and no sign: \"37.6%\""
             },
             "direction": {
               "type": "string",
@@ -562,7 +572,7 @@
               ]
             },
             "good": {
-              "description": "true when the change is good",
+              "description": "whether the change is good; without it a rise is good and a fall is not",
               "type": "boolean"
             }
           },
@@ -611,6 +621,7 @@
           "limit": 4
         },
         "bars": {
+          "description": "one bar per period, oldest first; the last bar is the current one",
           "type": "object",
           "properties": {
             "labels": {
@@ -637,6 +648,7 @@
               "limit": 31
             },
             "averageLabel": {
+              "description": "names the dashed line at the mean of the bars, such as \"日均 217\"",
               "type": "string",
               "pattern": "\\S"
             }
@@ -675,7 +687,8 @@
                 "properties": {
                   "value": {
                     "type": "string",
-                    "pattern": "\\S"
+                    "pattern": "\\S",
+                    "description": "the change as shown, with its unit and no sign: \"37.6%\""
                   },
                   "direction": {
                     "type": "string",
@@ -686,7 +699,7 @@
                     ]
                   },
                   "good": {
-                    "description": "true when the change is good",
+                    "description": "whether the change is good; without it a rise is good and a fall is not",
                     "type": "boolean"
                   }
                 },
@@ -708,7 +721,7 @@
       "required": [
         "title"
       ],
-      "description": "how numbers change over time, or a watchlist of prices",
+      "description": "how numbers change over time, or a watchlist of prices; a number per category is bars",
       "needs": [
         "ranges",
         "bars",
@@ -926,6 +939,12 @@
           },
           "limit": 2
         },
+        "zone": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+-]+)*$",
+          "title": "zone",
+          "description": "an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone"
+        },
         "now": {
           "type": "string",
           "pattern": "\\S"
@@ -937,7 +956,8 @@
             "properties": {
               "start": {
                 "type": "string",
-                "pattern": "\\S"
+                "pattern": "\\S",
+                "description": "a clock time such as \"09:30\", or an ISO time"
               },
               "title": {
                 "type": "string",
@@ -1018,7 +1038,7 @@
       "required": [
         "title"
       ],
-      "description": "a day's events, an itinerary, or the stages of a process",
+      "description": "a day's events, an itinerary of one or several days, or the stages of a process; ISO event times show in zone, where the events happen, or on the viewer's clock without it",
       "needs": [
         "events",
         "stages"
@@ -1109,6 +1129,28 @@
                     },
                     "done": {
                       "type": "boolean"
+                    },
+                    "actions": {
+                      "description": "this item's follow-ups, such as adding it to the calendar, reminders or Routine; a click proposes the prompt like comma.request",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "pattern": "\\S"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "pattern": "\\S"
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "prompt"
+                        ]
+                      },
+                      "limit": 3
                     }
                   },
                   "required": [
@@ -1122,7 +1164,7 @@
             ]
           },
           "limit": 4,
-          "description": "at most 12 items in total"
+          "description": "at most 20 items in total"
         }
       },
       "required": [
@@ -1187,8 +1229,15 @@
           "limit": 2
         },
         "total": {
-          "type": "string",
-          "pattern": "\\S"
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "number"
+            }
+          ]
         },
         "totalLabel": {
           "type": "string",
@@ -1229,7 +1278,7 @@
         "total",
         "segments"
       ],
-      "description": "how a total splits into parts",
+      "description": "how a total splits into parts that add up to it",
       "layouts": "stacked, donut"
     },
     "place": {
@@ -1314,26 +1363,34 @@
                 "pattern": "\\S"
               },
               "status": {
-                "type": "object",
-                "properties": {
-                  "label": {
+                "anyOf": [
+                  {
                     "type": "string",
                     "pattern": "\\S"
                   },
-                  "tone": {
-                    "type": "string",
-                    "enum": [
-                      "neutral",
-                      "brand",
-                      "success",
-                      "warning",
-                      "error"
-                    ],
-                    "title": "tone"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "tone": {
+                        "type": "string",
+                        "enum": [
+                          "neutral",
+                          "brand",
+                          "success",
+                          "warning",
+                          "error"
+                        ],
+                        "title": "tone"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ]
                   }
-                },
-                "required": [
-                  "label"
                 ],
                 "title": "status"
               },
@@ -1456,26 +1513,34 @@
                 "format": "date-time"
               },
               "status": {
-                "type": "object",
-                "properties": {
-                  "label": {
+                "anyOf": [
+                  {
                     "type": "string",
                     "pattern": "\\S"
                   },
-                  "tone": {
-                    "type": "string",
-                    "enum": [
-                      "neutral",
-                      "brand",
-                      "success",
-                      "warning",
-                      "error"
-                    ],
-                    "title": "tone"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "tone": {
+                        "type": "string",
+                        "enum": [
+                          "neutral",
+                          "brand",
+                          "success",
+                          "warning",
+                          "error"
+                        ],
+                        "title": "tone"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ]
                   }
-                },
-                "required": [
-                  "label"
                 ],
                 "title": "status"
               },
@@ -1706,6 +1771,1471 @@
         "daysLeft"
       ],
       "layouts": "countdown, event (daysLeft)"
+    },
+    "order": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "orderId": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "status": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "where the order is, such as \"正在出库\""
+        },
+        "arrival": {
+          "description": "the expected arrival without a clock time, such as \"预计 10月29日 周四 送达\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "arrivesBy": {
+          "description": "the latest arrival moment, shown on the viewer's clock",
+          "type": "string",
+          "format": "date-time"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "detail": {
+                "description": "a variant such as size or color",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "price": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "limit": 6
+        },
+        "total": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "totalLabel": {
+          "description": "such as \"实付\"",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "address": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "stages": {
+          "minItems": 2,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "current",
+                  "upcoming"
+                ],
+                "title": "state"
+              }
+            },
+            "required": [
+              "label",
+              "state"
+            ]
+          },
+          "limit": 5
+        }
+      },
+      "required": [
+        "title",
+        "status"
+      ],
+      "description": "one order and where it is: a purchase, a takeout or a parcel; title names the merchant or carrier",
+      "layouts": "tracking (stages), receipt (an item with a price, or a total), compact"
+    },
+    "ticket": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "train",
+            "flight"
+          ]
+        },
+        "number": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "train or flight number"
+        },
+        "depart": {
+          "type": "object",
+          "properties": {
+            "place": {
+              "type": "string",
+              "pattern": "\\S",
+              "description": "station, airport or stop"
+            },
+            "code": {
+              "description": "such as PVG",
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "zone": {
+              "type": "string",
+              "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+-]+)*$",
+              "title": "zone",
+              "description": "an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone"
+            },
+            "terminal": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "place",
+            "at"
+          ]
+        },
+        "arrive": {
+          "type": "object",
+          "properties": {
+            "place": {
+              "type": "string",
+              "pattern": "\\S",
+              "description": "station, airport or stop"
+            },
+            "code": {
+              "description": "such as PVG",
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "zone": {
+              "type": "string",
+              "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+-]+)*$",
+              "title": "zone",
+              "description": "an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone"
+            },
+            "terminal": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "place",
+            "at"
+          ]
+        },
+        "duration": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "details": {
+          "description": "such as seat, gate, cabin or boarding time",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ],
+            "title": "fact"
+          },
+          "limit": 4
+        },
+        "passenger": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "tone": {
+                  "type": "string",
+                  "enum": [
+                    "neutral",
+                    "brand",
+                    "success",
+                    "warning",
+                    "error"
+                  ],
+                  "title": "tone"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          ],
+          "title": "status"
+        },
+        "reference": {
+          "description": "booking reference or e-ticket number",
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title",
+        "number",
+        "depart",
+        "arrive"
+      ],
+      "description": "one train or flight ticket, or a boarding pass; title names the carrier",
+      "layouts": "ticket, pass"
+    },
+    "ride": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "such as \"司机正在赶来\""
+        },
+        "eta": {
+          "description": "such as \"3 分钟\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "plate": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "car": {
+          "description": "color and model",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "driver": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "rating": {
+              "type": "number"
+            },
+            "trips": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        },
+        "pickup": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "dropoff": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "fare": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title",
+        "status"
+      ],
+      "description": "a ride on its way or under way; title names the service",
+      "layouts": "pickup (plate), trip (pickup and dropoff)"
+    },
+    "product": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "products": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "image": {
+                "type": "string",
+                "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+                "title": "url",
+                "description": "an HTTPS URL"
+              },
+              "price": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "originalPrice": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "badge": {
+                "description": "such as \"券后\" or \"包邮\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "shop": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "rating": {
+                "type": "number"
+              },
+              "sales": {
+                "description": "such as \"月销 2万+\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "href": {
+                "type": "string",
+                "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+                "title": "url",
+                "description": "an HTTPS URL"
+              }
+            },
+            "required": [
+              "name",
+              "price"
+            ]
+          },
+          "limit": 6
+        }
+      },
+      "required": [
+        "title",
+        "products"
+      ],
+      "description": "products to buy, with images and prices",
+      "layouts": "hero (1 product), grid (2 to 6), list"
+    },
+    "booking": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "tone": {
+                  "type": "string",
+                  "enum": [
+                    "neutral",
+                    "brand",
+                    "success",
+                    "warning",
+                    "error"
+                  ],
+                  "title": "tone"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          ],
+          "title": "status"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "when the booking starts"
+        },
+        "zone": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+-]+)*$",
+          "title": "zone",
+          "description": "an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone"
+        },
+        "details": {
+          "description": "such as party size, room or department",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ],
+            "title": "fact"
+          },
+          "limit": 6
+        },
+        "confirmation": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "address": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "title",
+        "at"
+      ],
+      "description": "a reservation or appointment: a table, a room, a doctor; title names the venue",
+      "layouts": "confirmation, compact"
+    },
+    "device": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "devices": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "on": {
+                "type": "boolean"
+              },
+              "online": {
+                "description": "false shows it offline",
+                "type": "boolean"
+              },
+              "value": {
+                "description": "the main reading, such as \"26\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "unit": {
+                "description": "such as \"°C\" or \"%\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "mode": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "detail": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "controls": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "prompt"
+                  ],
+                  "title": "control",
+                  "description": "a click proposes the prompt like an action"
+                },
+                "limit": 4
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          "limit": 6
+        }
+      },
+      "required": [
+        "title",
+        "devices"
+      ],
+      "description": "smart home devices, their state and controls",
+      "layouts": "single (1 device), grid (2 to 6)"
+    },
+    "payment": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "tone": {
+                  "type": "string",
+                  "enum": [
+                    "neutral",
+                    "brand",
+                    "success",
+                    "warning",
+                    "error"
+                  ],
+                  "title": "tone"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          ],
+          "title": "status"
+        },
+        "counterparty": {
+          "description": "who was paid, or who paid",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "details": {
+          "description": "such as payment method, fee or reference",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ],
+            "title": "fact"
+          },
+          "limit": 5
+        }
+      },
+      "required": [
+        "title",
+        "amount",
+        "status"
+      ],
+      "description": "a payment, transfer or refund and its result; title names the provider",
+      "layouts": "receipt, compact"
+    },
+    "media": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "brand": {
+          "type": "string"
+        },
+        "track": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "song, episode or video"
+        },
+        "artist": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "album": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "cover": {
+          "type": "string",
+          "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+          "title": "url",
+          "description": "an HTTPS URL"
+        },
+        "playing": {
+          "type": "boolean"
+        },
+        "position": {
+          "description": "seconds",
+          "type": "number",
+          "minimum": 0
+        },
+        "duration": {
+          "description": "seconds",
+          "type": "number",
+          "minimum": 0
+        },
+        "controls": {
+          "description": "a prompt per button, proposed like an action",
+          "type": "object",
+          "properties": {
+            "previous": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "toggle": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "next": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          }
+        },
+        "queue": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "track": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "artist": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "track"
+            ]
+          },
+          "limit": 5
+        }
+      },
+      "required": [
+        "title",
+        "track"
+      ],
+      "description": "what is playing, or a song or video to play; title names the service",
+      "layouts": "player, queue (needs queue)"
+    },
+    "bars": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "items": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "value": {
+                "type": "number"
+              },
+              "valueLabel": {
+                "description": "how the value reads, such as \"¥4,500\" or \"72%\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "compare": {
+                "description": "the same measure in the other series: the previous period, a budget, a target",
+                "type": "number"
+              },
+              "compareLabel": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "delta": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "description": "the change as shown, with its unit and no sign: \"37.6%\""
+                  },
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "up",
+                      "down",
+                      "flat"
+                    ]
+                  },
+                  "good": {
+                    "description": "whether the change is good; without it a rise is good and a fall is not",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "title": "delta"
+              },
+              "caption": {
+                "description": "a short second line, such as \"转化 25% · 中位 38 秒\"",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "tone": {
+                        "type": "string",
+                        "enum": [
+                          "neutral",
+                          "brand",
+                          "success",
+                          "warning",
+                          "error"
+                        ],
+                        "title": "tone"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ]
+                  }
+                ],
+                "title": "status"
+              },
+              "tone": {
+                "description": "colors the bar; warning or error marks a value to act on",
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "brand",
+                  "success",
+                  "warning",
+                  "error"
+                ],
+                "title": "tone"
+              },
+              "brand": {
+                "type": "string"
+              },
+              "href": {
+                "type": "string",
+                "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
+                "title": "url",
+                "description": "an HTTPS URL"
+              }
+            },
+            "required": [
+              "label",
+              "value"
+            ]
+          },
+          "limit": 12
+        },
+        "max": {
+          "description": "what a full bar stands for, such as 100 for percentages or a goal; without it, the largest value",
+          "type": "number"
+        },
+        "legend": {
+          "description": "names the two bars of each item, such as {value: \"昨日\", compare: \"前天\"}",
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "compare": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "value",
+            "compare"
+          ]
+        }
+      },
+      "required": [
+        "title",
+        "items"
+      ],
+      "description": "a number per category, each a labelled bar: rankings such as top sources, pages or products, survey answers, rating distributions, funnel steps, budget against actual, progress per goal",
+      "layouts": "rows, compact (short labels, no captions or statuses), columns (2 to 7 items with short labels, values only and no max)"
+    },
+    "table": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "meta": {
+          "description": "short header context",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "sourceBrand": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
+        },
+        "actions": {
+          "description": "a click proposes the prompt like comma.request",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "prompt": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "label",
+              "prompt"
+            ]
+          },
+          "limit": 2
+        },
+        "columns": {
+          "minItems": 2,
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "limit": 8,
+          "description": "a heading per column; \"\" leaves one without"
+        },
+        "rows": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "tone": {
+                      "type": "string",
+                      "enum": [
+                        "neutral",
+                        "brand",
+                        "success",
+                        "warning",
+                        "error"
+                      ],
+                      "title": "tone"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              ],
+              "title": "cell",
+              "description": "text, a number, {text, tone?} to color the text, or null or \"\" for an empty cell"
+            },
+            "limit": 8
+          },
+          "limit": 24,
+          "description": "the first cell names the row"
+        }
+      },
+      "required": [
+        "title",
+        "columns",
+        "rows"
+      ],
+      "description": "rows and columns of facts that no other kind shows: a leaderboard with several numbers, orders, hosts and their readings, more than three subjects compared, a cohort grid",
+      "sameLength": [
+        [
+          "rows[]",
+          "columns"
+        ]
+      ],
+      "layouts": "grid"
     }
   },
   "manual": [
@@ -1715,19 +3245,63 @@
     "tone: neutral | brand | success | warning | error",
     "condition: clear | clear-night | partly-cloudy | cloudy | rain | snow",
     "state: done | current | upcoming",
-    "status: {label, tone?}",
-    "delta: {value, direction?: up | down | flat, good?: boolean (true when the change is good)}",
+    "status: text or {label, tone?}",
+    "delta: {value (the change as shown, with its unit and no sign: \"37.6%\"), direction?: up | down | flat, good?: boolean (whether the change is good; without it a rise is good and a fall is not)}",
     "url: an HTTPS URL",
+    "zone: an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone",
+    "fact: {label, value}",
+    "control: {label, prompt}",
+    "cell: text, a number, {text, tone?} to color the text, or null or \"\" for an empty cell",
     "forecast (weather for one place: now, today or the coming days): {location?, current?: {temperature: number, condition?, label?, feelsLike?: number, humidity?: number (percent), wind?}, days?: [{label, condition, conditionLabel, high: number, low: number, precipitation?: number (percent)}] (<= 7), highlight?}; needs days or current; layouts: today (needs current), week, compact (current and <= 2 days)",
     "options (choices to pick one from, such as trains, flights, hotels or plans): {items: [{primary, id?, secondary? (arrival time), span?, meta?, price?, priceNote?, status?, tags?: [text] (<= 3), reason?, recommended?: boolean, filterKeys?: [text] (<= 8)}] (1 to 8), filters?: [{key, label}] (<= 4)}; layouts: timetable and list (every item has secondary), pick (no item has secondary)",
-    "metric (one to four key numbers, or progress toward a goal): {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 4), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 4), goal",
-    "trend (how numbers change over time, or a watchlist of prices): {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel?}, series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
+    "metric (one to six key numbers, or progress toward a goal): {metrics?: [{label, value (display text), unit?, delta?, caption?, series?: [number] (<= 64)}] (<= 6), goal?: {current: number, target: number, valueLabel, targetLabel, note?}}; needs metrics or goal; layouts: single (1 metric), grid (2 to 6), goal (with any metrics under it)",
+    "trend (how numbers change over time, or a watchlist of prices; a number per category is bars): {brand?, value?, delta?, ranges?: [{key, label, points: [number] (2 to 64), axis: [text] (<= 6)}] (<= 4), bars?: {labels: [text] (1 to 31), values: [number] (1 to 31), valueLabels?: [text] (<= 31), averageLabel? (names the dashed line at the mean of the bars, such as \"日均 217\")} (one bar per period, oldest first; the last bar is the current one), series?: [{label, value, points: [number] (2 to 64), brand?, delta?}] (<= 6)}; needs ranges, bars or series; bars.labels has as many entries as bars.values; layouts: area (ranges), bars, watchlist (series)",
     "comparison (two or three subjects compared attribute by attribute): {subjects: [{name, caption?, recommended?: boolean, brand?}] (2 to 3), rows: [{label, values: [text or null] (<= 3; one per subject; null shows a dash), best?: integer >= 0 (subject index), scores?: [number from 0 to 10] (2 entries)}] (1 to 8), verdict?}; rows[].values has as many entries as subjects; layouts: columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
-    "schedule (a day's events, an itinerary, or the stages of a process): {now?, events?: [{start, title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
-    "checklist (things to do, pack or check off): {groups: [{label?, items: [{label, id?, detail?, done?: boolean}] (>= 1)}] (1 to 4; at most 12 items in total)}; layouts: progress, grouped (2 or more groups)",
-    "composition (how a total splits into parts): {total, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
+    "schedule (a day's events, an itinerary of one or several days, or the stages of a process; ISO event times show in zone, where the events happen, or on the viewer's clock without it): {zone?, now?, events?: [{start (a clock time such as \"09:30\", or an ISO time), title, end?, detail?, state?, tone?}] (<= 8), stages?: [{label, state, detail?}] (2 to 6), summary?}; needs events or stages; layouts: agenda and timeline (events), stages",
+    "checklist (things to do, pack or check off): {groups: [{label?, items: [{label, id?, detail?, done?: boolean, actions?: [{label, prompt}] (<= 3; this item's follow-ups, such as adding it to the calendar, reminders or Routine; a click proposes the prompt like comma.request)}] (>= 1)}] (1 to 4; at most 20 items in total)}; layouts: progress, grouped (2 or more groups)",
+    "composition (how a total splits into parts that add up to it): {total: text or number, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
     "place (places to go: nearby results or recommendations): {places: [{name, category?, note? (what it is or why it fits, in one line), rating?: number, reviews? (a review count such as \"2,310 条评价\"), status?, address?, distance?, eta?, href?: url}] (1 to 8)}; layouts: single (1 place), nearby (2 or more)",
     "feed (news, updates and status lists such as a day's pull requests, issues or CI runs; over 12 items show title, status, source and time, and each filter shows its count): {items?: [{source, title, brand?, excerpt?, time? (a label such as \"2 小时前\"), at?: ISO time (when it happened), status?, tags?: [text] (<= 3), href?: url, filterKeys?: [text] (<= 8)}] (<= 60), filters?: [{key, label}] (<= 4), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (<= 12 items), list (items without excerpts or tags, or over 12), digest (groups)",
-    "timer (a countdown to a moment, a focus timer, or days until an event): {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)"
-  ]
+    "timer (a countdown to a moment, a focus timer, or days until an event): {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)",
+    "order (one order and where it is: a purchase, a takeout or a parcel; title names the merchant or carrier): {brand?, orderId?, status (where the order is, such as \"正在出库\"), arrival? (the expected arrival without a clock time, such as \"预计 10月29日 周四 送达\"), arrivesBy?: ISO time (the latest arrival moment, shown on the viewer's clock), items?: [{name, quantity?: integer >= 1, detail? (a variant such as size or color), price?}] (<= 6), total?, totalLabel? (such as \"实付\"), address?, stages?: [{label, state}] (2 to 5)}; layouts: tracking (stages), receipt (an item with a price, or a total), compact",
+    "ticket (one train or flight ticket, or a boarding pass; title names the carrier): {brand?, mode?: train | flight, number (train or flight number), depart: {place (station, airport or stop), code? (such as PVG), at: ISO time, zone?, terminal?}, arrive: {place (station, airport or stop), code? (such as PVG), at: ISO time, zone?, terminal?}, duration?, details?: [fact] (<= 4; such as seat, gate, cabin or boarding time), passenger?, status?, reference? (booking reference or e-ticket number)}; layouts: ticket, pass",
+    "ride (a ride on its way or under way; title names the service): {brand?, status (such as \"司机正在赶来\"), eta? (such as \"3 分钟\"), plate?, car? (color and model), driver?: {name, rating?: number, trips?}, pickup?, dropoff?, fare?}; layouts: pickup (plate), trip (pickup and dropoff)",
+    "product (products to buy, with images and prices): {products: [{name, image?: url, price, originalPrice?, badge? (such as \"券后\" or \"包邮\"), shop?, rating?: number, sales? (such as \"月销 2万+\"), href?: url}] (1 to 6)}; layouts: hero (1 product), grid (2 to 6), list",
+    "booking (a reservation or appointment: a table, a room, a doctor; title names the venue): {brand?, status?, at: ISO time (when the booking starts), zone?, details?: [fact] (<= 6; such as party size, room or department), confirmation?, address?}; layouts: confirmation, compact",
+    "device (smart home devices, their state and controls): {devices: [{name, on?: boolean, online?: boolean (false shows it offline), value? (the main reading, such as \"26\"), unit? (such as \"°C\" or \"%\"), mode?, detail?, controls?: [control] (<= 4)}] (1 to 6)}; layouts: single (1 device), grid (2 to 6)",
+    "payment (a payment, transfer or refund and its result; title names the provider): {brand?, amount, status, counterparty? (who was paid, or who paid), at?: ISO time, details?: [fact] (<= 5; such as payment method, fee or reference)}; layouts: receipt, compact",
+    "media (what is playing, or a song or video to play; title names the service): {brand?, track (song, episode or video), artist?, album?, cover?: url, playing?: boolean, position?: number >= 0 (seconds), duration?: number >= 0 (seconds), controls?: {previous?, toggle?, next?} (a prompt per button, proposed like an action), queue?: [{track, artist?}] (<= 5)}; layouts: player, queue (needs queue)",
+    "bars (a number per category, each a labelled bar: rankings such as top sources, pages or products, survey answers, rating distributions, funnel steps, budget against actual, progress per goal): {items: [{label, value: number, valueLabel? (how the value reads, such as \"¥4,500\" or \"72%\"), compare?: number (the same measure in the other series: the previous period, a budget, a target), compareLabel?, delta?, caption? (a short second line, such as \"转化 25% · 中位 38 秒\"), status?, tone?, brand?, href?: url}] (1 to 12), max?: number (what a full bar stands for, such as 100 for percentages or a goal; without it, the largest value), legend?: {value, compare} (names the two bars of each item, such as {value: \"昨日\", compare: \"前天\"})}; layouts: rows, compact (short labels, no captions or statuses), columns (2 to 7 items with short labels, values only and no max)",
+    "table (rows and columns of facts that no other kind shows: a leaderboard with several numbers, orders, hosts and their readings, more than three subjects compared, a cohort grid): {columns: [text] (2 to 8; a heading per column; \"\" leaves one without), rows: [[cell]] (1 to 24; the first cell names the row)}; rows[] has as many entries as columns; layouts: grid"
+  ],
+  "levels": {
+    "level": 2,
+    "base": 1,
+    "kinds": {
+      "forecast": 1,
+      "options": 2,
+      "metric": 2,
+      "trend": 2,
+      "comparison": 1,
+      "schedule": 2,
+      "checklist": 1,
+      "composition": 2,
+      "place": 2,
+      "feed": 2,
+      "timer": 1,
+      "order": 1,
+      "ticket": 2,
+      "ride": 1,
+      "product": 1,
+      "booking": 2,
+      "device": 1,
+      "payment": 2,
+      "media": 1,
+      "bars": 2,
+      "table": 2
+    },
+    "features": {
+      "chartSeries": 2
+    }
+  }
 }

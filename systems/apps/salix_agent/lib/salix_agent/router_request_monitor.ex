@@ -20,7 +20,10 @@ defmodule SalixAgent.RouterRequestMonitor do
   def clear_session(agent_id, session_id), do: emit({:clear, {agent_id, session_id}})
 
   def started(agent_id, session_id, source_ids),
-    do: emit({:started, {agent_id, session_id}, source_ids})
+    do:
+      emit(
+        {:started, {agent_id, session_id}, source_ids, SystemsClock.monotonic_time(:millisecond)}
+      )
 
   def enqueued(agent_id, session_id, events) do
     # Strip all content before crossing the observational process boundary.
@@ -34,7 +37,10 @@ defmodule SalixAgent.RouterRequestMonitor do
           is_binary(id) and id != "",
           do: id
 
-    if ids != [], do: emit({:enqueued, {agent_id, session_id}, ids})
+    if ids != [],
+      do:
+        emit({:enqueued, {agent_id, session_id}, ids, SystemsClock.monotonic_time(:millisecond)})
+
     :ok
   rescue
     _ -> :ok
@@ -82,7 +88,7 @@ defmodule SalixAgent.RouterRequestMonitor do
     end
   end
 
-  def handle_cast({:enqueued, {agent, _session} = key, ids}, state) do
+  def handle_cast({:enqueued, {agent, _session} = key, ids, admitted_at}, state) do
     if Map.has_key?(state.owners, agent) and
          (Map.has_key?(state.queues, key) or map_size(state.queues) < @max_routers) do
       now = state.clock.()
@@ -92,7 +98,7 @@ defmodule SalixAgent.RouterRequestMonitor do
         Enum.reduce(ids, {queue.pending, 0}, fn id, {pending, dropped} ->
           cond do
             Map.has_key?(pending, id) -> {pending, dropped}
-            map_size(pending) < @max_requests -> {Map.put(pending, id, now), dropped}
+            map_size(pending) < @max_requests -> {Map.put(pending, id, admitted_at), dropped}
             true -> {pending, dropped + 1}
           end
         end)
@@ -108,12 +114,23 @@ defmodule SalixAgent.RouterRequestMonitor do
     end
   end
 
-  def handle_cast({:started, key, ids}, state) do
+  def handle_cast({:started, key, ids, dispatched_at}, state) do
     case state.queues[key] do
       nil ->
         {:noreply, state}
 
       queue ->
+        for id <- ids, started = queue.pending[id], is_integer(started) do
+          {agent, session} = key
+
+          SalixAgent.DeliveryTelemetry.emit(
+            :queue_wait,
+            :ok,
+            max(dispatched_at - started, 0),
+            SalixAgent.DeliveryTelemetry.identity(agent, session, id)
+          )
+        end
+
         pending = Map.drop(queue.pending, ids)
 
         cond do
@@ -175,7 +192,13 @@ defmodule SalixAgent.RouterRequestMonitor do
           now - queue.last_start >= @threshold_ms
       end)
 
+    oldest_age =
+      Enum.reduce(state.queues, 0, fn {_key, queue}, oldest ->
+        Enum.reduce(queue.pending, oldest, fn {_id, admitted}, age -> max(age, now - admitted) end)
+      end)
+
     sample = %{
+      oldest_age: oldest_age,
       stalled: stalled,
       pending: map_size(state.queues),
       dropped: state.dropped,

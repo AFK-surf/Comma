@@ -11,7 +11,9 @@ defmodule Comma.IMessageLinks do
   alias Comma.{Accounts, Repo, Workspaces}
 
   @claim_ttl_seconds 10 * 60
+  @binding_seconds 60
   @claim_bytes 9
+  @guidance_interval_seconds 24 * 60 * 60
 
   # One shared product bot. Admission is non-blocking: a concurrent lifecycle
   # returns busy instead of holding a pool connection in an unbounded queue.
@@ -41,7 +43,39 @@ defmodule Comma.IMessageLinks do
       "DELETE FROM comma_imessage_dm_claim_codes WHERE code IN (SELECT code FROM comma_imessage_dm_claim_codes WHERE expires_at < timezone('utc', now()) ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)"
     )
 
+    Repo.query!(
+      "DELETE FROM comma_imessage_guidance_replies WHERE sender_handle IN (SELECT sender_handle FROM comma_imessage_guidance_replies WHERE replied_at < $1 ORDER BY replied_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+      [guidance_cutoff()]
+    )
+
     :ok
+  end
+
+  @doc """
+  Takes today's guidance reply for a sender with no binding, at most one a day.
+  Anyone can message a dedicated line, so repeated messages must not spend its
+  daily send limit.
+  """
+  def take_guidance_reply(sender_handle) do
+    now = SystemsClock.utc_now() |> DateTime.to_naive()
+
+    Repo.query!(
+      "INSERT INTO comma_imessage_guidance_replies AS row (sender_handle, replied_at) VALUES ($1, $2) ON CONFLICT (sender_handle) DO UPDATE SET replied_at = EXCLUDED.replied_at WHERE row.replied_at < $3",
+      [normalize_user_id(sender_handle), now, guidance_cutoff()]
+    ).num_rows == 1
+  end
+
+  # A person who connects or disconnects can need guidance again at once.
+  defp clear_guidance_reply(sender_handle) do
+    Repo.query!("DELETE FROM comma_imessage_guidance_replies WHERE sender_handle = $1", [
+      sender_handle
+    ])
+  end
+
+  defp guidance_cutoff do
+    SystemsClock.utc_now()
+    |> DateTime.add(-@guidance_interval_seconds, :second)
+    |> DateTime.to_naive()
   end
 
   def get(user, session, workspace_id) do
@@ -52,7 +86,7 @@ defmodule Comma.IMessageLinks do
 
   @doc """
   Creates the Workspace's one connection attempt. A Photon attempt also names
-  the handle that must answer it, its assigned line and the assignment ID.
+  its line and assignment ID, and the handle that must answer it, if any.
   """
   def create_claim(user, session, workspace_id, attrs \\ %{}) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
@@ -63,7 +97,7 @@ defmodule Comma.IMessageLinks do
 
   @doc """
   Consumes an attempt. The attempt must belong to the event's transport.
-  A Photon attempt also requires the handle that the person entered.
+  A Photon attempt that names a handle also requires that handle.
   A mismatch leaves the attempt unconsumed.
   """
   def take_claim(code, transport \\ "relay", sender_handle \\ nil)
@@ -83,7 +117,8 @@ defmodule Comma.IMessageLinks do
         ) || Repo.rollback(:invalid_imessage_claim)
 
       unless claim.transport == transport and
-               (transport != "photon" or claim.sender_handle == normalize_user_id(sender_handle)) do
+               (transport != "photon" or is_nil(claim.sender_handle) or
+                  claim.sender_handle == normalize_user_id(sender_handle)) do
         Repo.rollback(:invalid_imessage_claim)
       end
 
@@ -101,7 +136,7 @@ defmodule Comma.IMessageLinks do
 
   def take_claim(_code, _transport, _sender_handle), do: {:error, :invalid_imessage_claim}
 
-  @doc "Whether `text` is the code of an open Photon attempt for this handle."
+  @doc "Whether `text` is the code of an open Photon attempt that this handle can answer."
   def photon_claim_code?(sender_handle, text) when is_binary(text) do
     now = SystemsClock.utc_now()
     code = normalize_code(text)
@@ -111,13 +146,31 @@ defmodule Comma.IMessageLinks do
       Repo.exists?(
         from(row in IMessageDMClaimCode,
           where:
-            row.code == ^code and row.transport == "photon" and row.sender_handle == ^sender and
+            row.code == ^code and row.transport == "photon" and
+              (is_nil(row.sender_handle) or row.sender_handle == ^sender) and
               row.expires_at > ^now and is_nil(row.consumed_at)
         )
       )
   end
 
   def photon_claim_code?(_sender_handle, _text), do: false
+
+  @doc "Whether `text` is the code of any open Photon attempt, for any handle."
+  def open_photon_code?(text) when is_binary(text) do
+    now = SystemsClock.utc_now()
+    code = normalize_code(text)
+
+    code != "" and
+      Repo.exists?(
+        from(row in IMessageDMClaimCode,
+          where:
+            row.code == ^code and row.transport == "photon" and row.expires_at > ^now and
+              is_nil(row.consumed_at)
+        )
+      )
+  end
+
+  def open_photon_code?(_text), do: false
 
   @doc "Handles that a Photon binding or an open Photon attempt uses."
   def photon_handles_in_use do
@@ -134,7 +187,9 @@ defmodule Comma.IMessageLinks do
     claims =
       Repo.all(
         from(row in IMessageDMClaimCode,
-          where: row.transport == "photon" and row.expires_at > ^now,
+          where:
+            row.transport == "photon" and row.expires_at > ^now and
+              not is_nil(row.sender_handle),
           select: row.sender_handle
         )
       )
@@ -189,13 +244,15 @@ defmodule Comma.IMessageLinks do
       Repo.transaction(fn ->
         lock_workspace!(workspace_id)
 
-        {count, _} =
+        {count, senders} =
           Repo.delete_all(
             from(link in IMessageDMLink,
-              where: link.workspace_id == ^workspace_id and link.owner_user_id == ^user["id"]
+              where: link.workspace_id == ^workspace_id and link.owner_user_id == ^user["id"],
+              select: link.sender_handle
             )
           )
 
+        Enum.each(senders, &clear_guidance_reply/1)
         clear_attempts(workspace_id)
         count > 0
       end)
@@ -271,14 +328,18 @@ defmodule Comma.IMessageLinks do
   def get_link_by_sender(sender_handle),
     do: Repo.get_by(IMessageDMLink, sender_handle: normalize_user_id(sender_handle))
 
+  # An attempt stays active while its binding is made: `consumed_at` is set before
+  # the link exists, and a reader that sees neither stops waiting for the link.
+  # A binding that fails leaves the row, so the wait is bounded.
   def get_active_claim(workspace_id) do
     now = SystemsClock.utc_now()
+    binding_since = DateTime.add(now, -@binding_seconds, :second)
 
     Repo.one(
       from(claim in IMessageDMClaimCode,
         where:
           claim.workspace_id == ^workspace_id and claim.expires_at > ^now and
-            is_nil(claim.consumed_at)
+            (is_nil(claim.consumed_at) or claim.consumed_at > ^binding_since)
       )
     )
   end
@@ -363,6 +424,8 @@ defmodule Comma.IMessageLinks do
         where: link.workspace_id == ^workspace_id or link.sender_handle == ^sender_handle
       )
     )
+
+    clear_guidance_reply(sender_handle)
 
     link =
       %IMessageDMLink{}

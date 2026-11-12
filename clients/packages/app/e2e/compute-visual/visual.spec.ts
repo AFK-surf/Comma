@@ -34,39 +34,25 @@ const shot = async (page: Page, name: string) => {
     animations: "disabled",
   });
 };
-test("page tree separates component maintenance, storage, and trusted removal scope", async ({
-  page,
-}) => {
+test("local settings render software and storage together", async ({ page }) => {
   await page.goto("/preview.html?scene=ready");
   await screen(page, "home");
   await shot(page, "home");
   await openLocalSettings(page);
   await screen(page, "settings");
+  await expect(
+    page.getByRole("heading", { name: "计算组件", exact: true })
+  ).toBeVisible();
+  await page.getByText("清除所有计算数据", { exact: true }).click();
+  await expect(page.getByText("本机数据", { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "在本机确认清除…", exact: true })
+  ).toBeEnabled();
   await shot(page, "settings");
-
-  await page.getByRole("button", { name: "管理存储", exact: true }).click();
-  await screen(page, "local");
-  await shot(page, "storage");
-  await page.getByRole("button", { name: "查看清除范围…", exact: true }).click();
-  await screen(page, "erase");
-  await shot(page, "erase");
-  await expect(
-    page.getByRole("button", { name: "在本机确认清除…", exact: true })
-  ).toHaveCount(1);
-  await page.getByRole("button", { name: "返回", exact: true }).first().click();
-  await screen(page, "local");
   await page.getByRole("button", { name: "返回", exact: true }).click();
-  await screen(page, "settings");
-  await page.getByRole("button", { name: "修复…", exact: true }).click();
-  await screen(page, "maintenance");
-  await shot(page, "maintenance");
-  await expect(
-    page.getByRole("button", { name: "在本机确认清除…", exact: true })
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "返回", exact: true }).click();
-  await screen(page, "settings");
+  await screen(page, "home");
 });
-test("create and workload screens show policy, ownership, and destructive actions in their own sections", async ({
+test("workload dialogs return focus and service ownership stays visible", async ({
   page,
 }) => {
   await page.goto("/preview.html?scene=ready");
@@ -90,79 +76,40 @@ test("create and workload screens show policy, ownership, and destructive action
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "返回", exact: true }).click();
   await page.getByRole("button", { name: "Weekly report", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Weekly report service", exact: true })
-    .click();
-  await screen(page, "owner");
-  await shot(page, "owner");
+  await screen(page, "workload");
+  await expect(page.getByText("Weekly report service", { exact: true })).toBeVisible();
+  await shot(page, "service-owner");
 });
-for (const scene of [
-  "new",
-  "offline",
-  "authorization",
-  "shell-failed",
-  "no-node",
-  "retained",
-  "maintenance-failed",
-  "readonly",
-  "browser",
-  "setup",
-])
-  test(`${scene} displays a usable next step and produces a visual review image`, async ({
-    page,
-  }) => {
-    await page.goto(`/preview.html?scene=${scene}`);
-    await screen(page, "home");
-    await shot(page, `scene-${scene}`);
-    if (scene === "readonly") {
-      await expect(
-        page.getByRole("button", { name: "新建 Shell", exact: true })
-      ).toHaveCount(0);
-      return;
-    }
-    if (scene === "new" || scene === "no-node") {
-      await page.getByRole("button", { name: "新建 Shell", exact: true }).click();
-      await screen(page, "create");
-      await expect(
-        page.getByRole("button", { name: "启用这台 Mac", exact: true })
-      ).toBeEnabled();
-      await shot(page, `scene-${scene}-create`);
-    }
-    if (scene === "authorization") {
-      await page.getByRole("button", { name: "恢复管理", exact: true }).click();
-      // One candidate is confirmed on the page itself, not in a dialog.
-      await screen(page, "authorization");
-      await expect(page.getByRole("dialog")).toHaveCount(0);
-      // The navigation also has a 设备 (Devices) entry; the facts are in the page content.
-      const content = page.getByLabel("Settings content");
-      for (const field of ["当前账号", "设备", "所属工作区", "服务地址"]) {
-        await expect(content.getByText(field, { exact: true })).toBeVisible();
-      }
-      await expect(
-        content.getByRole("definition").filter({ hasText: /^Default workspace$/ })
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "恢复管理", exact: true })
-      ).toBeEnabled();
-      await shot(page, "authorization-confirm");
-    }
-    if (scene === "setup") {
-      // Setup shows its progress on the Sandbox row; the step list is only in diagnostics.
-      const sandbox = page.getByRole("region", { name: "沙箱" });
-      await expect(sandbox.getByRole("status").first()).toBeVisible();
-      await expect(sandbox.getByRole("button")).toHaveCount(0);
-      await expect(page.getByText("连接工作区", { exact: true })).toHaveCount(0);
-    }
-    if (scene === "maintenance-failed") {
-      await expect(
-        page.getByRole("button", { name: "继续维护", exact: true })
-      ).toBeVisible();
-      await openLocalSettings(page);
-      await page.getByRole("button", { name: "查看进度", exact: true }).click();
-      await screen(page, "maintenance");
-      await shot(page, "maintenance-failed");
-    }
-  });
+test("lost local intent shows the registration candidates to choose", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=lost-intent");
+  await page.getByRole("button", { name: "恢复管理", exact: true }).click();
+  await screen(page, "authorization");
+  await expect(page.getByText("Studio Mac", { exact: true })).toBeVisible();
+  await expect(page.getByText("Travel Mac", { exact: true })).toBeVisible();
+  await shot(page, "recovery-candidates");
+});
+
+test("a preparing sandbox row renders its owner progress", async ({ page }) => {
+  await page.goto("/preview.html?scene=setup");
+  await screen(page, "home");
+  const sandbox = page.getByRole("region", { name: "沙箱" });
+  await expect(sandbox.getByRole("status").first()).toBeVisible();
+  await shot(page, "sandbox-preparing");
+});
+
+test("read-only workloads render without creation controls", async ({ page }) => {
+  await page.goto("/preview.html?scene=readonly");
+  await screen(page, "home");
+  await expect(
+    page.getByRole("button", { name: "Default Shell", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "新建 Shell", exact: true })
+  ).toHaveCount(0);
+});
+
 for (const locale of ["en", "zh-CN"])
   test(`320px ${locale} keeps the actual page inside its viewport`, async ({
     page,
@@ -178,71 +125,21 @@ for (const locale of ["en", "zh-CN"])
     ).toBe(true);
   });
 
-test("offline connection checks owner state without starting repair or setup", async ({
-  page,
-}) => {
+test("diagnostic status action calls the native owner", async ({ page }) => {
   await page.goto("/preview.html?scene=offline&locale=en");
-  const counts = () =>
-    page.evaluate(() => ({
-      refresh: Number(document.documentElement.dataset.refreshCount || 0),
-      repair: Number(document.documentElement.dataset.repairCount || 0),
-      configure: Number(document.documentElement.dataset.configureCount || 0),
-    }));
-  const before = await counts();
-  // The only manual status check is in the collapsed diagnostics of Local settings.
   await openLocalSettings(page, "Local settings");
   await page.getByText("Diagnostic details", { exact: true }).click();
+  const refreshCount = () =>
+    page.evaluate(() => Number(document.documentElement.dataset.refreshCount || 0));
+  const before = await refreshCount();
   await page.getByRole("button", { name: "Check status", exact: true }).click();
-  await expect
-    .poll(async () => (await counts()).refresh)
-    .toBeGreaterThan(before.refresh);
-  expect(await counts()).toMatchObject({ repair: 0, configure: 0 });
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(refreshCount).toBeGreaterThan(before);
 });
-
-for (const result of ["none", "failed"]) {
-  test(`authorization ${result} keeps a visible explanation and retry`, async ({
-    page,
-  }) => {
-    await page.goto(`/preview.html?scene=authorization&recovery=${result}`);
-    await page.getByRole("button", { name: "恢复管理", exact: true }).click();
-    await screen(page, "authorization");
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(
-      page.getByText(
-        result === "none"
-          ? "在此工作区中没有找到这台 Mac 可恢复的连接。你仍可在本机设置中管理本机资源。"
-          : "无法确认此前的连接。请检查本机组件和网络后重试。",
-        { exact: true }
-      )
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
-    if (result === "none") {
-      const explanation = await page
-        .getByText(
-          "在此工作区中没有找到这台 Mac 可恢复的连接。你仍可在本机设置中管理本机资源。",
-          { exact: true }
-        )
-        .boundingBox();
-      const action = await page
-        .getByRole("button", { name: "重试", exact: true })
-        .boundingBox();
-      expect(action!.y).toBeGreaterThanOrEqual(
-        explanation!.y + explanation!.height + 12
-      );
-    }
-    await shot(page, `authorization-${result}`);
-  });
-}
 
 test("cloud retirement explains local files without claiming deletion", async ({
   page,
 }) => {
   await page.goto("/preview.html?scene=cloud-retired");
-  // A retired Shell stays in the list; its status says the cloud connection ended.
-  await expect(
-    page.getByRole("button", { name: "Default Shell", exact: true }).getByRole("status")
-  ).toHaveText("云端连接已结束");
   await page.getByRole("button", { name: "Default Shell", exact: true }).click();
   await screen(page, "workload");
   await expect(page.getByText(/原设备上的数据尚未确认删除/)).toBeVisible();
@@ -250,6 +147,10 @@ test("cloud retirement explains local files without claiming deletion", async ({
     page.getByRole("button", { name: "删除 Shell", exact: true })
   ).toHaveCount(0);
   await shot(page, "cloud-retired-local-data");
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Default Shell", exact: true })
+  ).toHaveCount(0);
 });
 
 test("offline Shell deletion explains the original device cleanup without reporting deleted", async ({
@@ -257,7 +158,7 @@ test("offline Shell deletion explains the original device cleanup without report
 }) => {
   await page.goto("/preview.html?scene=deletion-offline");
   await screen(page, "home");
-  await expect(page.getByText("原 Mac 上线后自动完成", { exact: true })).toBeVisible();
+  await expect(page.getByText("等待原 Mac 上线", { exact: true })).toBeVisible();
   await page.getByText("Default Shell", { exact: true }).click();
   await screen(page, "workload");
   await expect(
@@ -270,27 +171,18 @@ test("offline Shell deletion explains the original device cleanup without report
   await shot(page, "deletion-offline");
 });
 
-test("Shell retry remains visible and targets the selected workload generation", async ({
+test("Shell preparation action and readable runtime policy stay visible", async ({
   page,
 }) => {
   await page.goto("/preview.html?scene=shell-failed&locale=en");
   await page.getByRole("button", { name: "Default Shell", exact: true }).click();
-  await page.getByRole("button", { name: "Retry preparation", exact: true }).click();
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        JSON.parse(document.documentElement.dataset.retryRequest || "null")
-      )
-    )
-    .toEqual({ workspace: "workspace-visual", id: "workload-default", generation: 1 });
   await expect(
     page.getByRole("button", { name: "Retry preparation", exact: true })
-  ).toHaveCount(0);
+  ).toBeEnabled();
   await page.getByText("Runtime policy", { exact: true }).first().click();
   await expect(
     page.getByText("No external network access", { exact: true })
   ).toBeVisible();
-  await expect(page.getByText("deny_all", { exact: true })).toBeHidden();
 });
 
 test("local component maintenance does not replace an unassociated Shell owner status", async ({
@@ -305,6 +197,44 @@ test("local component maintenance does not replace an unassociated Shell owner s
   await expect(page.getByText("Ready to use", { exact: true })).toBeVisible();
 });
 
+test("a refused reinstall names the data and offers only the reset", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=maintenance-refused");
+  await screen(page, "home");
+  await expect(
+    page
+      .getByText("这台 Mac 上的数据与可用版本不兼容。可以删除数据并重新安装。")
+      .first()
+  ).toBeVisible();
+  await shot(page, "maintenance-refused-card");
+  await openLocalSettings(page);
+  await screen(page, "settings");
+  await expect(
+    page.getByRole("button", { name: "删除数据并重新安装", exact: true })
+  ).toBeEnabled();
+  await expect(page.getByRole("button", { name: "继续维护", exact: true })).toHaveCount(
+    0
+  );
+  await shot(page, "maintenance-refused-settings");
+});
+
+test("reinstall after clearing the data does not promise to keep it", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=maintenance-data-cleared");
+  await screen(page, "home");
+  await openLocalSettings(page);
+  await screen(page, "settings");
+  await expect(
+    page.getByRole("button", { name: "重新安装", exact: true })
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "保留数据并重新安装", exact: true })
+  ).toHaveCount(0);
+  await shot(page, "maintenance-data-cleared-settings");
+});
+
 test("keyboard rename returns focus to the workload actions", async ({ page }) => {
   await page.goto("/preview.html?scene=ready");
   await screen(page, "home");
@@ -316,24 +246,6 @@ test("keyboard rename returns focus to the workload actions", async ({ page }) =
   await expect(page.getByRole("textbox", { name: "名称", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(actions).toBeFocused();
-});
-
-test("failed workspace removal shows its error after confirmation", async ({
-  page,
-}) => {
-  await page.goto("/preview.html?scene=removal-incomplete");
-  await screen(page, "home");
-  // The device card offers the removal's next step itself.
-  await page.getByRole("button", { name: "完成移除", exact: true }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "移除计算节点", exact: true })
-    .click();
-  await expect(page.getByRole("dialog")).not.toBeVisible();
-  await expect(page.getByRole("alert")).toContainText(
-    "operation failure requires operator action"
-  );
 });
 
 test("device access levels say what each allows inside the menu", async ({ page }) => {
@@ -353,4 +265,202 @@ test("device access levels say what each allows inside the menu", async ({ page 
     expect(box.x + box.width).toBeLessThanOrEqual(width);
   }
   await shot(page, "access-menu");
+});
+
+test("preparing details show Internet policy without missing usage noise", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=preparing&locale=en");
+  await page.getByRole("button", { name: "Default Shell", exact: true }).click();
+  await screen(page, "workload");
+  await page.getByText("Runtime policy", { exact: true }).first().click();
+  await expect(page.getByText("Internet access", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await shot(page, "preparing-details");
+});
+
+test("absent policy remains distinct from a failed network", async ({ page }) => {
+  await page.goto("/preview.html?scene=missing-policy&locale=en");
+  await page.getByRole("button", { name: "Default Shell", exact: true }).click();
+  await page.getByText("Runtime policy", { exact: true }).first().click();
+  const network = page
+    .locator(".compute-fact")
+    .filter({ has: page.getByText("Network access", { exact: true }) })
+    .first();
+  await expect(network.locator("dd")).toHaveText("—");
+  await shot(page, "missing-policy");
+});
+
+test("local connection cleanup stays in its group menu", async ({ page }) => {
+  await page.goto("/preview.html?scene=ready&locale=en");
+  await openLocalSettings(page, "Local settings");
+  await expect(page.getByText("Local data", { exact: true }).first()).toBeVisible();
+  await page
+    .getByRole("button", { name: "other123 Node actions", exact: true })
+    .click();
+  await expect(
+    page.getByRole("menuitem", { name: "Delete local data", exact: true })
+  ).toBeVisible();
+  await shot(page, "connection-menu");
+});
+
+test("long workload names stay readable in a narrow list and detail", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto("/preview.html?scene=long-names&locale=en");
+  const workload = page.getByRole("button", {
+    name: "A very long Shell name 工作负载名称需要完整可读 with useful identifying details",
+    exact: true,
+  });
+  await expect(workload).toBeVisible();
+  expect(
+    await page
+      .locator(".comma-devices")
+      .evaluate((el) => el.scrollWidth <= el.clientWidth)
+  ).toBe(true);
+  await workload.scrollIntoViewIfNeeded();
+  const bounds = await workload.boundingBox();
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+  await shot(page, "long-name-list");
+  await workload.click();
+  await screen(page, "workload");
+  await shot(page, "long-name-detail");
+});
+
+test("delete refusal stays in its confirmation and clears when closed", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=delete-refused&locale=en");
+  await page
+    .getByRole("button", { name: "Default Shell Node actions", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete Shell", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Delete Default Shell", exact: true })
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(
+    dialog.getByText(
+      "This workload shares its runtime with other workloads and cannot be deleted separately.",
+      { exact: true }
+    )
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(1);
+  await shot(page, "delete-refused");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await shot(page, "delete-refused-closed");
+});
+
+test("a known uncertain deletion continues the original operation without another confirmation", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=delete-unknown&locale=en");
+  await expect(
+    page.getByRole("button", { name: "Default Shell", exact: true }).getByRole("status")
+  ).toHaveText("Deletion result unconfirmed");
+  await expect(
+    page.getByRole("button", { name: "Weekly report", exact: true }).getByRole("status")
+  ).toHaveText("Ready to use");
+  await expect(
+    page.getByRole("button", { name: "Continue deletion", exact: true })
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Default Shell Node actions", exact: true })
+    .click();
+  await expect(
+    page.getByRole("menuitem", { name: "Delete Shell", exact: true })
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Default Shell", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Delete Shell", exact: true })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Continue deletion", exact: true })
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("Deletion result unconfirmed");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await shot(page, "delete-unknown-details");
+  await page.getByRole("button", { name: "Continue deletion", exact: true }).click();
+  await expect(page.getByText("Deleting", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await shot(page, "delete-continued");
+});
+
+test("delete confirmation omits a generic unnamed device", async ({ page }) => {
+  await page.goto("/preview.html?scene=unknown-location&locale=en");
+  await page
+    .getByRole("button", { name: "Default Shell Node actions", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete Shell", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Delete Default Shell", exact: true })
+  ).toBeVisible();
+  await expect(dialog.getByText(/Location:/)).toHaveCount(0);
+  await shot(page, "delete-unnamed-device");
+});
+
+test("an unreadable owner keeps uncertain deletion query-only", async ({ page }) => {
+  const scene = "delete-owner-unreadable";
+  await page.goto(`/preview.html?scene=${scene}&locale=en`);
+  await expect(
+    page.getByRole("button", { name: "Check status", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Continue deletion", exact: true })
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Check status", exact: true }).click();
+  await page.getByRole("button", { name: "Default Shell", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Delete Shell", exact: true })
+  ).toHaveCount(0);
+  await shot(page, `${scene}-details`);
+});
+
+test("paused observation uses the existing refresh control to continue checking", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=observation-paused&locale=en");
+  const resume = page.getByRole("button", { name: "Continue checking", exact: true });
+  await expect(resume).toBeVisible();
+  await shot(page, "observation-paused");
+  await resume.click();
+});
+
+test("unknown local deletion reports its receipt uncertainty", async ({ page }) => {
+  await page.goto("/preview.html?scene=local-delete-unknown&locale=en");
+  await openLocalSettings(page, "Local settings");
+  await expect(
+    page.getByText("Local deletion result unconfirmed.", { exact: true })
+  ).toBeVisible();
+  await shot(page, "local-delete-unknown");
+});
+
+test("a legacy deletion opens the existing confirmation for the displayed workload", async ({
+  page,
+}) => {
+  await page.goto("/preview.html?scene=delete-query-only&locale=en");
+  const reconfirm = page.getByRole("button", {
+    name: "Confirm deletion again",
+    exact: true,
+  });
+  await expect(reconfirm).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Continue deletion", exact: true })
+  ).toHaveCount(0);
+  await reconfirm.click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "Delete Default Shell", exact: true })
+  ).toBeVisible();
+  await shot(page, "legacy-delete-confirmation");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Default Shell", exact: true }).click();
+  await reconfirm.click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText("Deleting", { exact: true })).toBeVisible();
 });

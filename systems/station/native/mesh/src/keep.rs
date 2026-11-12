@@ -1,4 +1,4 @@
-//! From mesh/station/src/keep.rs. The station on every one of still.fail's relays, not only its home one.
+//! From mesh/station/src/keep.rs. The station on every one of Comma's relays, not only its home one.
 //!
 //! A relay passes packets on only to whoever is linked to it, and iroh keeps a link only to its home relay (the
 //! nearest): one it sends nothing on is let go after a minute. So a station abroad, at home on Cloudflare's relay, was
@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, endpoint::presets::Minimal};
 
 /// What the station and its keepers speak: nothing, only the connection is wanted.
-const ALPN: &[u8] = b"stillfail/keep/1";
+const ALPN: &[u8] = b"comma-station/keep/1";
 /// How long a keeper may take to be on its relay, and the station to reach it there.
 const SETUP: Duration = Duration::from_secs(20);
 /// The longest wait before trying a relay again; a hold that lasted this long starts the waits over.

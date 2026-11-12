@@ -4,11 +4,13 @@ defmodule SalixWeb.StationHostedTasks do
   and writes in it, through the station's Connector (`task.read`,
   `task.say`). The Task is found in the Group's Task index
   (`SalixStore.StationTaskIndex`), which says which Device runs the station;
-  only that Device's connected run is asked.
+  only that Device's connected run is asked. A write names its Group
+  (`requester_name`), for a station several Groups write in.
 
-  What a station says of its own Task carries no information-flow label:
-  in a Group whose IFC mode is `enforce` (`SalixAgent.IFC.mode_for/2`), the
-  Router neither reads nor writes in such a Task (`:ifc_enforced`).
+  What a station says of its own Task carries no information-flow label, so
+  the IFC check reads it as an unlabelled read (agent-private), and a write
+  into it is decided like any write into a Conversation whose audience Salix
+  does not know (`SalixAgent.IFC.Check`).
   """
   @behaviour SalixIM.Ports.StationHostedTasks
 
@@ -30,15 +32,28 @@ defmodule SalixWeb.StationHostedTasks do
   @impl true
   def say(scope, station_id, thread, text, key, requester) do
     ask(scope, station_id, thread, "task.say", fn task ->
-      %{"task" => task, "text" => text, "key" => key, "requester" => requester}
+      %{
+        "task" => task,
+        "text" => text,
+        "key" => key,
+        "requester" => requester,
+        "requester_name" => requester_name(scope, requester)
+      }
     end)
   end
 
+  # Who writes, as people see it where several Groups write in one place (a
+  # still.fail workspace connected to several Comma workspaces and Agent
+  # Swarms): the Group, by its name; the Router's own name when it has none.
+  defp requester_name(scope, requester) do
+    case Salix.Control.Groups.get(scope.group_id) do
+      {:ok, %{"name" => name}} when is_binary(name) and name != "" -> name
+      _ -> requester
+    end
+  end
+
   defp ask(scope, station_id, thread, method, params) do
-    with true <-
-           SalixAgent.IFC.mode_for(scope.tenant_id, scope.group_id) != :enforce ||
-             {:error, :ifc_enforced},
-         %StationTaskIndex.Row{} = row <-
+    with %StationTaskIndex.Row{} = row <-
            StationTaskIndex.get(scope.group_id, station_id, thread) || {:error, :not_found},
          run_id when is_binary(run_id) <-
            online_run(scope.tenant_id, scope.group_id, row.device_id) || {:error, :device_offline} do

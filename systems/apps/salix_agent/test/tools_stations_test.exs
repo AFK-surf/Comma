@@ -28,6 +28,10 @@ defmodule SalixAgent.ToolsStationsTest do
     end
 
     @impl true
+    def stillfail_stations(_ctx),
+      do: {:ok, SystemsRuntime.get_env(:salix_agent, :fake_stillfail_stations, [])}
+
+    @impl true
     def call(ctx, station_id, op, args) do
       SystemsRuntime.Proc.send(
         SystemsRuntime.Proc.self(),
@@ -49,12 +53,54 @@ defmodule SalixAgent.ToolsStationsTest do
 
       SystemsRuntime.delete_env(:salix_agent, :fake_station_reply)
       SystemsRuntime.delete_env(:salix_agent, :fake_station_configured)
+      SystemsRuntime.delete_env(:salix_agent, :fake_stillfail_stations)
     end)
 
     :ok
   end
 
   defp reply(fun), do: SystemsRuntime.put_env(:salix_agent, :fake_station_reply, fun)
+
+  test "station.list lists the roster's Stations and, apart, the still.fail stations with where to look" do
+    station = %{
+      "station_id" => @station,
+      "device_id" => "station:" <> @station,
+      "environment" => "station",
+      "name" => "Studio Mac",
+      "online" => true
+    }
+
+    # A workspace without still.fail: the roster only.
+    assert Jason.decode!(Stations.list(%{}, @ctx)) == %{"stations" => [station]}
+    assert_received {:station_list, %{agent_id: "agt_station_test"}}
+
+    SystemsRuntime.put_env(:salix_agent, :fake_stillfail_stations, [
+      %{
+        "id" => "dev_sf1",
+        "name" => "Acme · mac-mini",
+        "connected" => true,
+        "connected_at" => "2026-11-12T03:00:00Z"
+      }
+    ])
+
+    assert %{
+             "stations" => [^station],
+             "stillfail_stations" => [
+               %{
+                 "device_id" => "dev_sf1",
+                 "name" => "Acme · mac-mini",
+                 "connected" => true,
+                 "connected_at" => "2026-11-12T03:00:00Z"
+               }
+             ],
+             "stillfail_note" => note
+           } = Jason.decode!(Stations.list(%{}, @ctx))
+
+    # The note leads to the tools that reach them, not to the station ops.
+    for tool <-
+          ~w(im_api.internal.station_task.list im_api.internal.usage.query im_api.internal.task.create),
+        do: assert(note =~ tool)
+  end
 
   test "env.exec on a station target runs exec through the port with the tool ctx" do
     reply(fn "exec", _args ->

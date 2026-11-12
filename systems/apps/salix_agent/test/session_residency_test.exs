@@ -93,7 +93,10 @@ defmodule SalixAgent.SessionResidencyTest do
     {:noreply, state} =
       Residency.handle_info(:tick, %{state | sample: fn -> {:ok, %{used: 70, limit: 100}} end})
 
+    # Between the marks eviction continues, but new sessions are admitted: a
+    # node that cannot get below the low mark must not refuse them forever.
     assert state.pressure
+    assert Residency.admission(table) == :ok
 
     {:noreply, state} =
       Residency.handle_info(:tick, %{state | sample: fn -> {:ok, %{used: 60, limit: 100}} end})

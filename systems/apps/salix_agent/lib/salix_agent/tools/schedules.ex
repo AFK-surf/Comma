@@ -56,7 +56,7 @@ defmodule SalixAgent.Tools.Schedules do
   def defs do
     [
       {"schedule.create",
-       "Create a one-shot or recurring prompt for the calling agent and current session.\n\nUse run_at for one meeting/reminder time, cron for calendar recurrence, or interval_minutes for duration recurrence. Keep proactive Feishu delivery Router-owned: the prompt must contain the exact im_api.feishu.send_text connect_id, receive_id=chat_id, text, and structured mentions/mention_all to execute when it fires.",
+       "Create a one-shot or recurring prompt for the calling agent and current session.\n\nUse it for a reminder: a message whose text is known now, sent at a time or on a cadence. Use run_at for one meeting/reminder time, cron for calendar recurrence, or interval_minutes for duration recurrence. For a Feishu reminder the prompt must contain the exact im_api.feishu.send_message connect_id, chat_id, text, and structured mentions/mention_all to execute when it fires. Work that repeats or keeps watching something (a recurring check, digest or monitor that looks something up or decides at each run) is a Loop Task, im_api.internal.task.create with loop, not a schedule; when its Worker or Loop fails, continue in that Task.",
        &__MODULE__.create_schedule/2, @normal_auto_wait_seconds, @visible_write_opts},
       {"schedule.list", "List schedules owned by the current agent.",
        &__MODULE__.list_schedules/2, @normal_auto_wait_seconds},
@@ -161,9 +161,10 @@ defmodule SalixAgent.Tools.Schedules do
   # is made — at fire time there is no one to ask.
   #
   # `SalixAgent.IFC.Check` established both while deciding this very call: the
-  # requester it admitted, and the join of everything the prompt drew on. Both
-  # are absent when the Group is `off`, and a schedule made then simply carries
-  # no authority of its own, exactly as it did before.
+  # requester it admitted, and the join of everything the prompt drew on.
+  # Without an allow verdict (the Group `off`, or a denial under `audit`) the
+  # person who asked is still the creator, with no label
+  # (`SalixAgent.IFC.unchecked_creator/1`); nobody asking leaves no authority.
   defp put_ifc_authority(params, ctx) do
     case Map.get(ctx, :ifc_evidence) do
       %{} = evidence ->
@@ -172,7 +173,7 @@ defmodule SalixAgent.Tools.Schedules do
         |> put_present(:ifc_label, evidence["sources_label"])
 
       _absent ->
-        params
+        put_present(params, :ifc_creator, SalixAgent.IFC.unchecked_creator(ctx))
     end
   end
 

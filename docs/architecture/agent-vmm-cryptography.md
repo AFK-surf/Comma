@@ -29,22 +29,26 @@ Team ID check only if owner review explicitly expands the boundary to Apple
 publisher identity. Staging ad-hoc signatures are permitted only for
 debug/conformance testing and must be reported as structural integrity.
 
+## Host trust boundaries
+
+Agent VMM protects against other non-administrator local users. Processes under the Host UID and administrators remain trusted.
+Cue Main, Runner, and Host do not provide hostile-process isolation when they share that UID.
+Signed macOS agent sessions with a provisioning profile can use Keychain and Secure Enclave.
+Without a profile, fresh installations use private credential files, as do daemon and Linux installations.
+Existing file installations keep their backend. Existing Keychain installations fail when Keychain is unavailable and do not switch to files.
+The selected secret backend owns key custody. A transport connection or endpoint observation grants no workload authority.
+
+Each workload has a gVisor sandbox, but workloads share the Guest kernel and CPU/memory capacity.
+PID and disk limits do not reserve an independent VM or dedicated CPU/memory capacity.
+Public egress checks remain separate from explicit Host/LAN grants and service capabilities.
+Agent VMM permits `198.18.0.0/15` for transparent proxies. The Host network and proxy configuration therefore remain trusted.
+
 ## Library decision
 
-The phase implementation pins `pakery` 0.2.1 behind the Agent VMM pairing
-adapter and uses its RFC 9382 P-256 suite. This is acceptable for local
-implementation and interoperability testing, but an independent cryptographic
-review or replacement with a mature audited implementation remains a GA gate.
-
-RustCrypto/PAKEs is not a replacement at this time. Its `spake2` crate exposes
-only its older Ed25519-group protocol, does not implement the RFC 9382 P-256
-transcript, does not provide mutual explicit key confirmation, does not erase
-password/state material, and describes itself as unaudited and probably not
-constant-time. Adopting it would require a fork plus handwritten transcript,
-confirmation and secret-lifecycle code. Reconsider it only after a released
-RFC 9382 P-256 suite, closure of upstream transcript issue 186, built-in mutual
-confirmation, `ZeroizeOnDrop`, deterministic KAT hooks and an independent
-audit.
+Agent VMM uses the `pakery-core`, `pakery-crypto`, and `pakery-spake2` crates for the RFC 9382 P-256 suite.
+The current implementation uses version 0.6.1. Agent VMM owns the dependency selection and pairing adapter.
+The dependency has no claimed independent security audit. Independent cryptographic review or an audited replacement remains a GA requirement.
+Shared wire vectors establish encoding and signature interoperability. They do not establish the security of the PAKE implementation.
 
 ## Removed and deferred complexity
 
@@ -101,15 +105,15 @@ together, with a possible brief control interruption. Existing rolling policy
 allows that interruption. No overlap or shutdown is required merely to keep
 an intermediate version serving. Production follows staging proof and promotion.
 
-## Production gates
+## Production checks
 
 | GA item                                                          | Independent authority                                               | Consumer and decision                                                                              |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | PAKE dependency review or replacement                            | Independent cryptographic review or a mature audited implementation | Security owner decides whether the pairing implementation is acceptable for GA                     |
 | Managed and registry signer separation                           | Purpose-separated HSM/KMS key policy                                | Signing services consume only their assigned keys; a boundary violation blocks GA                  |
 | Bearer, certificate, root, and endpoint rotation/recovery drills | The independently owned current and replacement credentials/keys    | Release operator confirms replacement and recovery without retaining an obsolete credential path   |
-| Dependency advisory and license checks                           | External advisory data and package license metadata                 | CI blocks an affected build according to the owned policy                                          |
-| Guest SBOM                                                       | The packages observed in the built Guest filesystem                 | Dependency/license tooling may consume it as CI inventory; it is not runtime or security authority |
+| Guest vulnerability scan | External vulnerability advisories | CI reports fixable HIGH or CRITICAL vulnerabilities in the selected Guest root filesystem, native Go binaries, and embedded OCI images. Findings and scan execution errors do not block publication. |
+| SBOM | Packages observed in the selected artifacts | Inventory only. License metadata has no separate custom release gate. |
 | Iroh endpoint-key and relay metadata policy                      | Product privacy and security owners                                 | Connector and operations logging/storage follow the approved retention and disclosure decision     |
 | Real-device pairing/fault matrix                                 | The macOS platform and independently provisioned test devices       | Release owner confirms the platform integration before GA                                          |
 
@@ -124,10 +128,11 @@ The installation owner verifies that identity and its P-256 SHA-256 low-S signat
 A cloud workspace owner alone cannot adopt another subject's installation. A root mismatch, revoked registration, or stale challenge fails closed.
 Local disposal also disables this proof for that exact registration. It does not revoke PersonalMesh membership or replace the root.
 
-The purpose is `agent-vmm/comma-recovery/1`. This endpoint cannot sign arbitrary payloads.
+The purpose is `agent-vmm/registration-recovery/1`. This endpoint cannot sign arbitrary payloads.
 The server stores one 32-byte random nonce, authorization revision, new Session, original subject, and exact installation scope for 120 seconds.
 The canonical wire has newline-delimited purpose, then unpadded base64url UTF-8 values in this order:
-`audience`, `subject`, `session_id`, `tenant_id`, `group_id`, `scope_key`, `environment_id`, `operation_id`, `registration_id`, `nonce`.
+`audience`, `subject`, `session_id`, `controller_binding`, `environment_id`, `operation_id`, `registration_id`, `nonce`.
+The Host treats `controller_binding` as opaque. The controller binds it to its own installation scope.
 Canonical decimal revision and Unix expiry follow, with a final newline.
 Signature bytes are fixed 64-byte `r || s`, as in the device suite above.
 Preview grants no authority. Consumption rechecks the active original subject and Workspace owner, scope, revision, and nonce under the installation row lock.

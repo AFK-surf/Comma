@@ -362,11 +362,11 @@ func TestBuildBundleBindsAgentVMMTrustToSelectedCluster(t *testing.T) {
 		"email":{"postmark_server_token":"postmark-token"},
 		"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
 		"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"}},
-		"agent_vmm":{"install_material":{"remote_enrollment":{"gateway_endpoint":"gateway.example:7443","trust_bundle":"stale-config-value"}}}
+		"agent_vmm":{"connection_config":{"remote_connection":{"gateway_endpoint":"gateway.example:7443","trust_bundle":"stale-config-value"}}}
 	}`)
 		fixture := makeVMMFixture(t)
 		ca := fixture.roots["server"]
-		// Issuance output reaches the next release's actual enrollment consumer.
+		// The next release uses this CA for Host control connections.
 		kubectl := &bundleKubectlRunner{encodedCA: []byte(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])}
 
 		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
@@ -382,7 +382,7 @@ func TestBuildBundleBindsAgentVMMTrustToSelectedCluster(t *testing.T) {
 			t.Fatalf("kubectl calls = %d, want 1", kubectl.calls)
 		}
 		config := bundleConfig(t, body)
-		got := nestedString(config, "agent_vmm", "install_material", "remote_enrollment", "trust_bundle")
+		got := nestedString(config, "agent_vmm", "connection_config", "remote_connection", "trust_bundle")
 		want := base64.StdEncoding.EncodeToString(ca)
 		if got != want {
 			t.Fatal("release config did not use the selected cluster gateway CA")
@@ -398,7 +398,7 @@ func TestBuildBundleRejectsInvalidClusterAgentVMMCA(t *testing.T) {
 		"email":{"postmark_server_token":"postmark-token"},
 		"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
 		"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"}},
-		"agent_vmm":{"install_material":{"remote_enrollment":{"gateway_endpoint":"gateway.example:7443"}}}
+		"agent_vmm":{"connection_config":{"remote_connection":{"gateway_endpoint":"gateway.example:7443"}}}
 	}`)
 		kubectl := &bundleKubectlRunner{encodedCA: []byte(base64.StdEncoding.EncodeToString([]byte("not a certificate")))}
 
@@ -786,7 +786,7 @@ func TestAlertRouterDesiredStateRejectsUnsafeLiveSelection(t *testing.T) {
 		for _, spec := range []release.EnvironmentSpec{
 			{
 				Environment: "production",
-				AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
+				AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "GPRIVATE"},
 			},
 			{
 				Environment: "staging",
@@ -802,6 +802,16 @@ func TestAlertRouterDesiredStateRejectsUnsafeLiveSelection(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestAlertRouterDesiredStateAcceptsLiveProduction(t *testing.T) {
+	enabled, mode, channel, err := alertRouterDesiredState(release.EnvironmentSpec{
+		Environment: "production",
+		AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
+	})
+	if err != nil || !enabled || mode != "live" || channel != "C0BJ1699HSN" {
+		t.Fatalf("production live Router was rejected: %v %v %q %q", err, enabled, mode, channel)
+	}
 }
 
 func TestCommaCookieOriginsMatchEffectiveRuntimeConfiguration(t *testing.T) {
@@ -1194,35 +1204,4 @@ func TestCommaBundleSharesClientPostHogProject(t *testing.T) {
 			t.Fatalf("PostHog project configuration = %#v, want %#v", analytics, want)
 		}
 	})
-}
-
-func TestBuildBundleAddsScreenStreamTurnKeyFromItsSecrets(t *testing.T) {
-	for name, token := range map[string]string{"both set": "turn-token", "token missing": ""} {
-		t.Run(name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				setBundleEnvironment(t)
-				t.Setenv("COMMA_SCREEN_STREAM_TURN_KEY_ID", "turn-key")
-				t.Setenv("COMMA_SCREEN_STREAM_TURN_API_TOKEN", token)
-				fixture := makeVMMFixture(t)
-				kubectl := &bundleKubectlRunner{encodedCA: []byte(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])}
-
-				body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-					Environment: "staging",
-					Project:     "project",
-					Cluster:     "cluster",
-					Namespace:   "comma",
-				}, bundleSecretRunner{}, kubectl)
-				if err != nil {
-					t.Fatal(err)
-				}
-				config := bundleConfig(t, body)
-				if got := nestedString(config, "comma", "screen_stream_turn", "key_id"); (got == "turn-key") != (token != "") {
-					t.Fatalf("screen_stream_turn.key_id = %q with token %q", got, token)
-				}
-				if got := nestedString(config, "comma", "screen_stream_turn", "api_token"); got != token {
-					t.Fatalf("screen_stream_turn.api_token = %q, want %q", got, token)
-				}
-			})
-		})
-	}
 }

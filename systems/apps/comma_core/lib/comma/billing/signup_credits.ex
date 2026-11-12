@@ -6,10 +6,6 @@ defmodule Comma.Billing.SignupCredits do
   alias Comma.Repo
 
   @credits 20_000_000
-  @excluded_domains_path Path.expand("../../../priv/signup-credit-excluded-domains.json", __DIR__)
-  @external_resource @excluded_domains_path
-  @excluded_domains @excluded_domains_path |> File.read!() |> Jason.decode!()
-
   def public_policy do
     %{
       "amount_minor" => 2_000,
@@ -28,18 +24,123 @@ defmodule Comma.Billing.SignupCredits do
   defp daily_cap,
     do: SystemsRuntime.get_env(:comma_core, :signup_credit_daily_cap_usd, 2_000) * 1_000_000
 
-  defp eligible_email?(email) do
-    [local, domain] = email |> String.downcase() |> String.split("@", parts: 2)
+  # Plus addresses and listed domains (`Comma.Auth.EmailRestriction.listed?/1`).
+  # Cloudflare Email Routing is read from DNS at registration instead.
+  @doc false
+  def eligible_email?(email) do
+    [local, _domain] = email |> String.downcase() |> String.split("@", parts: 2)
+    not String.contains?(local, "+") and not Comma.Auth.EmailRestriction.listed?(email)
+  end
 
-    excluded =
-      SystemsRuntime.get_env(:comma_core, :signup_credit_excluded_domains, @excluded_domains)
+  @doc false
+  def registration_attrs(email, opts) do
+    case gmail_local(email) do
+      nil ->
+        if Keyword.get(opts, :eligible, false), do: %{}, else: %{signup_credit_eligible: false}
 
-    not String.contains?(local, "+") and
-      not (domain == "gmail.com" and String.contains?(local, ".")) and
-      not Enum.any?(excluded, fn
-        "." <> base -> domain == base or String.ends_with?(domain, "." <> base)
-        exact -> domain == exact
-      end)
+      local ->
+        target_repo = Keyword.get(opts, :repo, Repo)
+
+        prior =
+          target_repo.exists?(
+            from(u in User,
+              where:
+                u.kind == "registered" and
+                  fragment("split_part(?, '@', 2) = 'gmail.com'", u.email) and
+                  fragment("replace(split_part(split_part(?, '@', 1), '+', 1), '.', '')", u.email) ==
+                    ^local
+            )
+          )
+
+        case reserve_gmail(email, target_repo) do
+          {:ok, first} ->
+            %{
+              signup_credit_gmail_claimed: first,
+              signup_credit_eligible:
+                Keyword.get(opts, :eligible, false) and
+                  Keyword.get(opts, :email_verified, false) == true and first and not prior and
+                  not Comma.AccountDeletion.deleted_email?(local <> "@gmail.com") and
+                  not Comma.EmailChange.released_email?(local <> "@gmail.com")
+            }
+
+          {:error, _} ->
+            %{signup_credit_eligible: false}
+        end
+    end
+  end
+
+  @doc false
+  def reserve_gmail_history(emails) do
+    emails
+    |> List.wrap()
+    |> Enum.flat_map(fn email ->
+      case gmail_registration_hash(email) do
+        :not_gmail -> []
+        {:ok, hash} -> [hash]
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.each(&reserve_gmail_hash(&1, Repo))
+
+    :ok
+  end
+
+  defp reserve_gmail(email, target_repo) do
+    case gmail_registration_hash(email) do
+      :not_gmail -> {:ok, false}
+      {:ok, hash} -> {:ok, reserve_gmail_hash(hash, target_repo)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp reserve_gmail_hash(hash, target_repo) do
+    {inserted, _} =
+      target_repo.insert_all(
+        "comma_released_emails",
+        [%{email_hash: hash, released_at: SystemsClock.timestamp(:utc_datetime_usec)}],
+        on_conflict: :nothing
+      )
+
+    inserted == 1
+  end
+
+  defp gmail_local(email) do
+    case String.split(email, "@", parts: 2) do
+      [local, "gmail.com"] ->
+        local |> String.split("+", parts: 2) |> hd() |> String.replace(".", "")
+
+      _ ->
+        nil
+    end
+  end
+
+  # The existing auth key protects guessed mailbox tests by a database reader.
+  # The separate purpose keeps canonical occupancy apart from exact email history.
+  @doc false
+  def gmail_registration_hash(email) do
+    case gmail_local(email) do
+      nil ->
+        :not_gmail
+
+      local ->
+        case SystemsRuntime.get_env(:comma_core, :auth, []) |> get_in([:secret]) do
+          secret when is_binary(secret) and secret != "" ->
+            {:ok,
+             :crypto.mac(:hmac, :sha256, secret, "comma-signup-gmail:" <> local <> "@gmail.com")}
+
+          _ ->
+            {:error, :auth_not_configured}
+        end
+    end
+  end
+
+  defp claimed_email?(%User{email: email, signup_credit_gmail_claimed: claimed}) do
+    case String.split(email, "@", parts: 2) do
+      [local, "gmail.com"] -> not String.contains?(local, ".") or claimed
+      _ -> true
+    end
   end
 
   @doc "Complete registration gifts after old Workspace workers leave the rollout."
@@ -165,7 +266,10 @@ defmodule Comma.Billing.SignupCredits do
       [[now]] = sql.query!(repo, "SELECT clock_timestamp()", []).rows
       day = DateTime.to_date(now)
 
-      if DateTime.to_date(user.created_at) == day and eligible_email?(user.email) do
+      if DateTime.to_date(user.created_at) == day and eligible_email?(user.email) and
+           claimed_email?(user) and
+           not Comma.AccountDeletion.deleted_email?(user.email) and
+           not Comma.EmailChange.released_email?(user.email) do
         {:ok, start} = DateTime.new(day, ~T[00:00:00], "Etc/UTC")
         ending = DateTime.add(start, 86_400)
 

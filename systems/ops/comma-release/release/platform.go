@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type EnvironmentSpec struct {
@@ -60,14 +62,19 @@ type EnvironmentSpec struct {
 }
 
 // L4ESEnvironmentSpec names the L4ES service, an operator image for coding
-// sandboxes, their size (empty: L4ES's default) and how many a Group may have.
+// sandboxes, their size (empty: L4ES's default), the node labels every
+// sandbox requires (none: any node) and how many a Group may have.
 // A release's own sandbox image (COMMA_SANDBOX_IMAGE_MANIFEST, the image built
 // from the release revision's sources) takes the operator image's place.
+// CloudVMRetired retires the Cloudflare Cloud VM as a place to run Tasks,
+// sandboxes taking its place (SALIX_CLOUD_VM_RETIRED): the cutover release.
 type L4ESEnvironmentSpec struct {
-	URL          string `json:"url"`
-	Image        string `json:"image,omitempty"`
-	Size         string `json:"size,omitempty"`
-	MaxSandboxes int    `json:"maxSandboxes,omitempty"`
+	URL            string   `json:"url"`
+	Image          string   `json:"image,omitempty"`
+	Size           string   `json:"size,omitempty"`
+	Labels         []string `json:"labels,omitempty"`
+	MaxSandboxes   int      `json:"maxSandboxes,omitempty"`
+	CloudVMRetired bool     `json:"cloudVmRetired,omitempty"`
 }
 
 type AlertRouterEnvironmentSpec struct {
@@ -739,15 +746,11 @@ func (p KubectlPlatform) jobManifest(spec JobSpec, replacements map[string]strin
 	} else if spec.Stage == "plan" {
 		command = "IO.puts(Comma.Release.plan_json())"
 	}
-	bootExpression := `case Application.ensure_all_started(:salix_store) do
-  {:ok, _} -> :ok
-  {:error, reason} -> raise "failed to start release storage runtime: #{inspect(reason)}"
-end
+	bootExpression := `SalixStore.PGAuthorityImport.with_dependencies(fn ->
 `
-	if spec.Stage == "cutover" {
-		// ConversationStore can schedule a durable list-index repair while the
-		// cutover job converts a Conversation. The release job starts only the
-		// owner fleet, not the full SalixIM application and its live writers.
+	if spec.Stage == "cutover" || spec.Stage == "legacy-cutover" {
+		// Legacy Conversation conversion schedules repairs through this owner.
+		// Keep its task supervisor without starting online provider workers.
 		bootExpression += `case Process.whereis(SalixIM.ConversationProjectionTasks) do
   nil ->
     case Task.Supervisor.start_link(name: SalixIM.ConversationProjectionTasks, max_children: 64) do
@@ -759,7 +762,8 @@ end
 end
 `
 	}
-	bootExpression += `Code.eval_string(System.fetch_env!("COMMA_RELEASE_EXPRESSION"))`
+	bootExpression += `Code.eval_string(System.fetch_env!("COMMA_RELEASE_EXPRESSION"))
+end)`
 	annotations := map[string]string{"comma.surf/release-stage": spec.Stage, "comma.surf/release-attempt": strconv.Itoa(spec.Attempt), "comma.surf/manifest-digest": spec.ManifestDigest, "comma.surf/fence": spec.Fence, "comma.surf/allowed-step-ids": string(ids), "comma.surf/bundle-name": spec.BundleName}
 	podAnnotations := make(map[string]string, len(annotations)+1)
 	for key, value := range annotations {
@@ -818,6 +822,12 @@ while [ "${attempt}" -le 12 ]; do
 done
 trap 'kill "${proxy_pid}" >/dev/null 2>&1 || true' EXIT
 bin/comma eval "$COMMA_RELEASE_BOOT_EXPRESSION"`}, "envFrom": []any{map[string]any{"secretRef": map[string]string{"name": replacements["COMMA_SECRETS_NAME"]}}}, "env": env, "volumeMounts": []any{map[string]any{"name": "salix-config", "mountPath": "/etc/salix", "readOnly": true}}}
+	if spec.Stage == "cutover" || spec.Stage == "legacy-cutover" {
+		container["resources"] = map[string]any{
+			"requests": map[string]string{"cpu": "2", "memory": "4Gi"},
+			"limits":   map[string]string{"cpu": "2", "memory": "4Gi"},
+		}
+	}
 	releaseConfigSecret := replacements["COMMA_RELEASE_CONFIG_SECRET_NAME"]
 	if releaseConfigSecret == "" {
 		releaseConfigSecret = replacements["SALIX_CONFIG_SECRET_NAME"]
@@ -946,6 +956,9 @@ func (p KubectlPlatform) Quiesce(ctx context.Context, state State) (int, error) 
 	if err != nil {
 		return 0, err
 	}
+	if err = p.stopMaintenancePods(ctx, state); err != nil {
+		return 0, err
+	}
 	if err = p.waitForWriterAbsence(ctx); err != nil {
 		return 0, err
 	}
@@ -991,6 +1004,9 @@ func (p KubectlPlatform) Apply(ctx context.Context, state State) (ApplyEvidence,
 	return ApplyEvidence{ManifestDigest: "sha256:" + hex.EncodeToString(sum[:]), HelmRevision: revision.Revision}, nil
 }
 
+// commaReplicas is the serving StatefulSet size in every environment.
+const commaReplicas = 3
+
 func (p KubectlPlatform) Verify(ctx context.Context, state State) (ApplyEvidence, error) {
 	ordinalServices := []string{"comma-salix", "comma-teams", "comma-product"}
 	for _, resource := range []string{"deployment/comma-otel-collector", "statefulset/comma"} {
@@ -1015,14 +1031,17 @@ func (p KubectlPlatform) Verify(ctx context.Context, state State) (ApplyEvidence
 		// Exclusive cutover starts from zero replicas. OrderedReady therefore
 		// creates candidate ordinal 0 before ordinal 1; partition 1 would
 		// restart the old ordinal 0 after an irreversible cutover.
-		for _, ordinal := range []string{"0", "1"} {
-			if err := p.verifyOrdinal(ctx, ordinal, ordinalServices); err != nil {
+		for ordinal := 0; ordinal < commaReplicas; ordinal++ {
+			if err := p.verifyOrdinal(ctx, strconv.Itoa(ordinal), ordinalServices); err != nil {
 				return ApplyEvidence{}, err
 			}
 		}
 	} else {
-		if err := p.verifyOrdinal(ctx, "1", ordinalServices); err != nil {
-			return ApplyEvidence{}, err
+		// Partition 1 rolls every ordinal but 0 onto the candidate first.
+		for ordinal := 1; ordinal < commaReplicas; ordinal++ {
+			if err := p.verifyOrdinal(ctx, strconv.Itoa(ordinal), ordinalServices); err != nil {
+				return ApplyEvidence{}, err
+			}
 		}
 		if _, err := p.helmUpgrade(ctx, state, false, 0); err != nil {
 			return ApplyEvidence{}, err
@@ -1897,21 +1916,43 @@ func (p KubectlPlatform) verifyOrdinalOnce(ctx context.Context, pod string, serv
 	if err != nil || len(ip) == 0 {
 		return fmt.Errorf("cannot resolve %s pod IP: %w", pod, err)
 	}
+	checks := make([]func(context.Context) error, 0, len(services)+len(p.Spec.PublicHosts)+1)
 	for _, service := range services {
-		body, err := p.Kubectl.Run(ctx, nil, "-n", p.Spec.Namespace, "get", "endpointslice", "-l", "kubernetes.io/service-name="+service, "-o", "json")
-		if err != nil {
-			return err
-		}
-		if !endpointReady(body, pod, string(ip)) {
-			return fmt.Errorf("%s missing from ready EndpointSlice %s", pod, service)
-		}
+		checks = append(checks, func(ctx context.Context) error {
+			body, err := p.Kubectl.Run(ctx, nil, "-n", p.Spec.Namespace, "get", "endpointslice", "-l", "kubernetes.io/service-name="+service, "-o", "json")
+			if err != nil {
+				return err
+			}
+			if !endpointReady(body, pod, string(ip)) {
+				return fmt.Errorf("%s missing from ready EndpointSlice %s", pod, service)
+			}
+			return nil
+		})
 	}
 	for _, host := range p.Spec.PublicHosts {
-		if _, err := p.Curl.Run(ctx, nil, "-fsS", "--max-time", "10", "https://"+host+"/ready"); err != nil {
-			return err
-		}
+		checks = append(checks, func(ctx context.Context) error {
+			if _, err := p.Curl.Run(ctx, nil, "-fsS", "--max-time", "10", "https://"+host+"/ready"); err != nil {
+				return err
+			}
+			return nil
+		})
 	}
-	return p.verifyBackends(ctx, pod, string(ip), services)
+	checks = append(checks, func(ctx context.Context) error { return p.verifyBackends(ctx, pod, string(ip), services) })
+	return runHealthChecks(ctx, checks)
+}
+
+func runHealthChecks(ctx context.Context, checks []func(context.Context) error) error {
+	group, ctx := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	for _, check := range checks {
+		group.Go(func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return check(ctx)
+		})
+	}
+	return group.Wait()
 }
 
 func (p KubectlPlatform) verifyBackends(ctx context.Context, pod, ip string, services []string) error {
@@ -1919,6 +1960,7 @@ func (p KubectlPlatform) verifyBackends(ctx context.Context, pod, ip string, ser
 	if err != nil {
 		return err
 	}
+	checks := make([]func(context.Context) error, 0, len(services))
 	for _, service := range services {
 		var match string
 		for _, name := range strings.Fields(string(list)) {
@@ -1932,15 +1974,18 @@ func (p KubectlPlatform) verifyBackends(ctx context.Context, pod, ip string, ser
 		if match == "" {
 			return fmt.Errorf("backend service missing for %s", service)
 		}
-		health, err := p.Gcloud.Run(ctx, nil, "compute", "backend-services", "get-health", match, "--project", p.Spec.Project, "--region", p.Spec.Location, "--format=json")
-		if err != nil {
-			return err
-		}
-		if !backendHealthy(health, ip) {
-			return fmt.Errorf("%s is not healthy in %s", pod, service)
-		}
+		checks = append(checks, func(ctx context.Context) error {
+			health, err := p.Gcloud.Run(ctx, nil, "compute", "backend-services", "get-health", match, "--project", p.Spec.Project, "--region", p.Spec.Location, "--format=json")
+			if err != nil {
+				return err
+			}
+			if !backendHealthy(health, ip) {
+				return fmt.Errorf("%s is not healthy in %s", pod, service)
+			}
+			return nil
+		})
 	}
-	return nil
+	return runHealthChecks(ctx, checks)
 }
 
 func endpointReady(body []byte, pod, ip string) bool {
@@ -2091,7 +2136,7 @@ func (p KubectlPlatform) helmUpgrade(ctx context.Context, state State, maintenan
 	adapter := p.Helm
 	adapter.ValuesPath = ""
 	adapter.ValuesJSON = body
-	return adapter.Upgrade(ctx, HelmUpgradeOptions{DeferWait: state.RepairFrom != "" && !maintenance})
+	return adapter.Upgrade(ctx, HelmUpgradeOptions{DeferWait: maintenance || state.RepairFrom != ""})
 }
 
 func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte, error) {
@@ -2139,13 +2184,16 @@ func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte
 		"image":          map[string]any{"reference": replacements["COMMA_IMAGE"], "revision": replacements["COMMA_REVISION"], "revisionLabel": replacements["COMMA_REVISION_LABEL"]},
 		"rollout":        map[string]any{"partition": 1, "historyMax": 10, "timeoutSeconds": 1200},
 		"maintenance":    map[string]any{"enabled": false},
-		"workloads":      map[string]any{"commaReplicas": 2, "collectorReplicas": 2},
+		"workloads":      map[string]any{"commaReplicas": commaReplicas, "collectorReplicas": 2},
 		"alertRouter":    map[string]any{"enabled": alertRouterEnabled, "replicas": 2},
 		"runtime":        map[string]any{"traceSampleRatio": replacements["COMMA_TRACE_SAMPLE_RATIO"], "claimWriterFenceEpoch": replacements["COMMA_LEGACY_MESSAGE_EVENT_CLAIM_WRITER_FENCE_EPOCH"], "cloudSqlInstanceConnectionName": replacements["INSTANCE_CONNECTION_NAME"], "agentVmmGatewayEnabled": p.Spec.AgentVmmGatewayEnabled, "computeRuntimeBaseURL": p.Spec.ComputeRuntimeBaseURL, "lmhubUserAgent": p.Spec.LmhubUserAgent},
 		"config":         map[string]any{"salixChecksum": replacements["SALIX_CONFIG_SHA256"], "alertRouterChecksum": alertRouterChecksum},
 		"references":     map[string]any{"commaSecrets": replacements["COMMA_SECRETS_NAME"], "salixConfigSecret": replacements["SALIX_CONFIG_SECRET_NAME"], "alertRouterConfigSecret": alertRouterConfigSecret, "agentVmmGatewayRuntimeSecret": "salix-vmm-gateway-runtime", "agentVmmGatewayClientTlsSecret": "salix-vmm-gateway-client-tls", "computeWorkloadCredentialSecret": "salix-compute-runtime", "salixTlsSecret": replacements["SALIX_TLS_SECRET_NAME"], "salixSitesTlsSecret": replacements["SALIX_SITES_TLS_SECRET_NAME"], "teamsTlsSecret": replacements["TEAMS_TLS_SECRET_NAME"]},
 		"ssh":            map[string]any{"enabled": p.Spec.SSHEnabled},
 		"network":        map[string]any{"staticIpName": replacements["COMMA_STATIC_IP"], "salixHost": replacements["SALIX_HOST"], "salixSitesDomain": replacements["SALIX_SITES_DOMAIN"], "bridgeHost": replacements["BRIDGE_HOST"]},
+	}
+	if manifest := replacements["COMMA_STATION_RELEASE_MANIFEST_URL"]; manifest != "" {
+		values["stations"] = map[string]any{"releaseManifestUrl": manifest}
 	}
 	if l4es := p.Spec.L4ES; l4es.URL != "" {
 		runtime := values["runtime"].(map[string]any)
@@ -2159,8 +2207,14 @@ func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte
 		if l4es.Size != "" {
 			runtime["l4esSize"] = l4es.Size
 		}
+		if len(l4es.Labels) > 0 {
+			runtime["l4esLabels"] = l4es.Labels
+		}
 		if l4es.MaxSandboxes > 0 {
 			runtime["l4esMaxSandboxes"] = l4es.MaxSandboxes
+		}
+		if l4es.CloudVMRetired {
+			runtime["cloudVmRetired"] = true
 		}
 	}
 	return json.Marshal(values)

@@ -16,7 +16,8 @@ defmodule CommaWeb.ProactiveReplay do
   `outlook` messages, as Microsoft Graph lists the inbox, are read through the
   Outlook member source, and its `outlook_junk` messages as the junk folder;
   a scenario's `only` keeps the labeled ones. A case's
-  or scenario's `matters` are the owner's earlier Home matters.
+  or scenario's `matters` are the owner's earlier Home matters, and its
+  `notebook` the owner's notebook as the screening reads it.
   """
 
   alias Comma.Data.MemberSourceItem
@@ -26,8 +27,6 @@ defmodule CommaWeb.ProactiveReplay do
 
   @source %{"appId" => "slack", "appName" => "Slack", "connectionId" => "replay-slack"}
   @outlook %{"appId" => "outlook", "appName" => "Outlook", "connectionId" => "replay-outlook"}
-  @routed ~w(critical high ask)
-  @rejudgments 2
 
   @doc "Loads a case file."
   def load!(path) do
@@ -45,7 +44,11 @@ defmodule CommaWeb.ProactiveReplay do
   end
 
   defp run_scenario(kase, scenario, judge) do
-    kase = Map.put(kase, "matters", scenario["matters"] || kase["matters"])
+    kase =
+      kase
+      |> Map.put("matters", scenario["matters"] || kase["matters"])
+      |> Map.put("notebook", scenario["notebook"] || kase["notebook"])
+
     {:ok, now, _} = DateTime.from_iso8601(scenario["now"] || kase["now"])
     {:ok, since, _} = DateTime.from_iso8601(kase["pending_since"])
     labels = Map.new(kase["labels"] || %{}, fn {label, url} -> {url, label} end)
@@ -72,7 +75,7 @@ defmodule CommaWeb.ProactiveReplay do
           |> Enum.map(&view/1)
           |> CommaWeb.ProactiveMatters.group()
 
-        judgment = judge_items(kase, views, portrait, now, judge, @rejudgments)
+        judgment = judge_items(kase, views, portrait, now, judge)
 
         report =
           %{
@@ -354,18 +357,50 @@ defmodule CommaWeb.ProactiveReplay do
   defp portrait(kase, _scenario, _request, _now, _judge),
     do: MemberPortrait.statements(kase["user_md"] || "")
 
-  # As ProactiveCheck: one judgment of the pending items; an unclear answer
-  # judges the rest again, a bounded number of times.
-  defp judge_items(_kase, [], _portrait, _now, _judge, _rejudgments), do: %{"outcome" => "idle"}
+  # As ProactiveCheck: each matter is screened alone, with its recorded links
+  # read before the screening. The report shows the matter handed over first
+  # (earliest due), or the first screened matter when none is, and every
+  # matter's decision.
+  defp judge_items(_kase, [], _portrait, _now, _judge), do: %{"outcome" => "idle"}
 
-  defp judge_items(kase, views, portrait, now, judge, rejudgments) do
-    {result, bytes} = judge_once(kase, views, portrait, now, judge, rejudgments)
-    Map.update(result, "prompt_bytes", bytes, &(&1 + bytes))
+  defp judge_items(kase, views, portrait, now, judge) do
+    matters = matters(kase)
+    screened = Enum.map(views, &screen(kase, &1, portrait, now, judge, matters))
+    bytes = Enum.reduce(screened, 0, &(&2 + &1.bytes))
+
+    reports =
+      screened
+      |> Enum.map(& &1.report)
+      |> Enum.sort_by(fn report ->
+        {if(report["outcome"] == "routed", do: 0, else: 1), report["due_ms"] || :infinity}
+      end)
+
+    case reports do
+      [first | _] ->
+        first
+        |> Map.delete("due_ms")
+        |> Map.put(
+          "screened",
+          Enum.map(reports, &Map.take(&1, ~w(url decision outcome)))
+        )
+        |> Map.put("prompt_bytes", bytes)
+
+      [] ->
+        %{"outcome" => "idle", "prompt_bytes" => bytes}
+    end
   end
 
-  defp judge_once(kase, views, portrait, now, judge, rejudgments) do
-    matters = matters(kase)
-    input = ProactiveCheck.attention_input(views, home(kase), portrait, now, matters)
+  defp screen(kase, view, portrait, now, judge, matters) do
+    linked =
+      CommaWeb.ProactiveEvidence.read(
+        CommaWeb.ProactiveEvidence.targets(view),
+        &http(kase, &1, &2)
+      )
+
+    view = if linked == [], do: view, else: Map.put(view, "linked", linked)
+
+    input =
+      ProactiveCheck.attention_input([view], home(kase), portrait, now, matters, kase["notebook"])
 
     messages =
       RecommendationRenderer.attention_messages(
@@ -377,57 +412,60 @@ defmodule CommaWeb.ProactiveReplay do
 
     bytes = Enum.reduce(messages, 0, &(&2 + byte_size(&1.content)))
 
-    result =
+    report =
       with {:ok, text} <- judge.(messages),
-           {:ok, decision} <- decode(text),
-           {:ok, choice} <- ProactiveCheck.choice(decision, views, now, matters) do
-        case choice do
-          nil ->
-            %{"outcome" => "quiet"}
+           {:ok, answer} <- decode(text),
+           {:ok, decided} <- ProactiveCheck.decide(answer, view, now, matters) do
+        case decided do
+          :unclear ->
+            %{"outcome" => "deferred", "url" => view["url"], "decision" => "unclear"}
 
-          {:below, urgency, assessment} ->
+          {:settle, decision, assessment} ->
             %{
               "outcome" => "quiet",
-              "urgency" => urgency,
-              "assessment" => Map.delete(assessment, "continues"),
-              "continues" => get_in(assessment, ["continues", "subject"])
+              "url" => view["url"],
+              "decision" => decision,
+              "role" => assessment["role"],
+              "assessment" => Map.drop(assessment, ~w(continues reason)),
+              "continues" => get_in(assessment, ["continues", "subject"]),
+              "linked" => view["linked"]
             }
 
-          {:unclear, item} ->
-            rest = List.delete(views, item)
-
-            if rest != [] and rejudgments > 0,
-              do:
-                Map.put(
-                  judge_items(kase, rest, portrait, now, judge, rejudgments - 1),
-                  "unclear",
-                  [
-                    item["url"]
-                  ]
-                ),
-              else: %{"outcome" => "deferred", "unclear" => [item["url"]]}
-
-          {item, urgency, message} when urgency in @routed ->
+          # As the check: only the owner's move reaches the Router, and the
+          # reserve goes by the assessment.
+          {:handoff, item, message} ->
             %{
               "outcome" => "routed",
               "url" => item["url"],
-              "urgency" => urgency,
+              "decision" => item["decision"],
+              "urgency" => item["urgency"],
+              "role" => item["role"],
+              "reserve" => ProactiveCheck.reserve_eligible?(item, now),
               "assessment" => Map.delete(item["assessment"], "continues"),
               "continues" => get_in(item, ["assessment", "continues", "subject"]),
               "message" => message,
-              "linked" =>
-                CommaWeb.ProactiveEvidence.read(
-                  CommaWeb.ProactiveEvidence.targets(item),
-                  &http(kase, &1, &2)
-                )
+              "linked" => view["linked"],
+              "due_ms" => due_ms(item)
             }
         end
       else
         {:error, reason} ->
-          %{"outcome" => "error", "error" => inspect(reason), "messages" => messages}
+          %{
+            "outcome" => "error",
+            "url" => view["url"],
+            "error" => inspect(reason),
+            "messages" => messages
+          }
       end
 
-    {result, bytes}
+    %{report: Map.reject(report, fn {_key, value} -> is_nil(value) end), bytes: bytes}
+  end
+
+  defp due_ms(item) do
+    with due when is_binary(due) <- get_in(item, ["assessment", "due"]),
+         {:ok, at, _offset} <- DateTime.from_iso8601(due),
+         do: DateTime.to_unix(at, :millisecond),
+         else: (_ -> nil)
   end
 
   # A case's Home matters, in the shape the judgment reads them
@@ -477,7 +515,9 @@ defmodule CommaWeb.ProactiveReplay do
   defp label_judgment(judgment, labels) do
     judgment
     |> Map.update("url", nil, &(labels[&1] || &1))
-    |> Map.update("unclear", nil, fn urls -> Enum.map(urls, &(labels[&1] || &1)) end)
+    |> Map.update("screened", nil, fn screened ->
+      Enum.map(screened, fn row -> Map.update(row, "url", nil, &(labels[&1] || &1)) end)
+    end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.delete("messages")
   end
@@ -494,8 +534,13 @@ defmodule CommaWeb.ProactiveReplay do
        fn labels -> judgment["outcome"] != "routed" or judgment["url"] not in labels end},
       {"routed", expect["routed_any"],
        fn labels -> judgment["outcome"] == "routed" and judgment["url"] in labels end},
-      {"urgency", expect["urgency_any"], fn levels -> judgment["urgency"] in levels end},
-      {"continues", expect["continues_any"], fn subjects -> judgment["continues"] in subjects end}
+      {"decision", expect["decision_any"], fn decisions -> judgment["decision"] in decisions end},
+      {"continues", expect["continues_any"],
+       fn subjects -> judgment["continues"] in subjects end},
+      {"role", expect["role_any"], fn roles -> judgment["role"] in roles end},
+      {"reserve", expect["reserve"], fn reserve -> judgment["reserve"] == true == reserve end},
+      {"repeats", expect["repeats"],
+       fn repeats -> get_in(judgment, ["assessment", "repeats"]) == repeats end}
     ]
     |> Enum.reject(fn {_name, labels, _check} -> is_nil(labels) end)
     |> Enum.map(fn {name, labels, check} ->

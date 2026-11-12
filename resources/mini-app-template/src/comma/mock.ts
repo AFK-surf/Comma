@@ -21,7 +21,13 @@ import {
   type MiniAppDecisionResult,
   type MiniAppSearchResult,
   type MiniAppIdentity,
+  type MiniAppLocation,
+  type MiniAppAudioInput,
+  type MiniAppMidiInput,
+  type MiniAppMidiMessage,
+  type MiniAppPhoto,
   type MiniAppPickedFile,
+  type MiniAppShareArgs,
   type MiniAppStorageScope,
   type MiniAppStoredItem,
   type MiniAppTheme,
@@ -68,6 +74,22 @@ export interface MockCommaOptions {
    * `env`. Default: none (`comma.backend.fetch` fails with `unsupported`).
    */
   backend?: (request: Request) => Response | Promise<Response>;
+  /** Answers `comma.camera.capture`. Default: the viewer closes the sheet (null). */
+  capturePhoto?: (options: {
+    facing?: "user" | "environment";
+  }) => MiniAppPhoto | null | Promise<MiniAppPhoto | null>;
+  /** Answers `comma.location.current`. Default: fails with `unavailable`. */
+  location?: () => MiniAppLocation | Promise<MiniAppLocation>;
+  /** The text `comma.clipboard.read` returns. Default: the last text the app wrote, or "". */
+  clipboardText?: string;
+  /** Answers `comma.share`: whether the viewer shared. Default: true. */
+  confirmShare?: (content: MiniAppShareArgs) => boolean | Promise<boolean>;
+  /** The sample rate of `comma.microphone.start`. Default: 48000. */
+  sampleRate?: number;
+  /** The audio inputs of `comma.microphone.devices`; the first is the default. Default: one "Microphone". */
+  audioInputs?: MiniAppAudioInput[];
+  /** The inputs of `comma.midi.start`. Default: none. */
+  midiInputs?: MiniAppMidiInput[];
   /** URLs for `comma.asset(path)`. Default: the path itself. */
   assets?: Record<string, string>;
 }
@@ -86,6 +108,21 @@ export interface MockComma extends Comma {
     clipboard: string[];
     tasks: string[];
     links: string[];
+    shares: MiniAppShareArgs[];
+    haptics: number[][];
+    /** Whether the app keeps the screen on, and shows full screen. */
+    screen: { awake: boolean; fullscreen: boolean };
+    /** Sends samples to the open microphone streams. */
+    microphone(samples: Float32Array): void;
+    /** Sends the full input channel set to multichannel streams, applying their channel selection. */
+    microphoneChannels(samples: Float32Array[]): void;
+    /**
+     * Connects or removes audio inputs: `comma.microphone.watch` listeners get the new list, and a microphone
+     * stream of a removed input ends with `ended`.
+     */
+    audioInputs(inputs: MiniAppAudioInput[]): void;
+    /** Sends a message to the open MIDI streams. */
+    midi(message: MiniAppMidiMessage): void;
     /** Stored values by scope, then key. */
     stores: Record<
       MiniAppStorageScope,
@@ -136,6 +173,41 @@ export function createMockComma(options: MockCommaOptions = {}): MockComma {
     clipboard: [],
     tasks: [],
     links: [],
+    shares: [],
+    haptics: [],
+    screen: { awake: false, fullscreen: false },
+    microphone: (samples) => {
+      for (const [stream, input] of microphones)
+        if (!input.channels) frame.streamData(stream, samples.slice());
+    },
+    microphoneChannels: (samples) => {
+      for (const [stream, input] of microphones) {
+        if (!input.channels) continue;
+        if (samples.length !== input.channelCount)
+          throw new Error("Provide the full input channel set to the microphone mock.");
+        frame.streamData(
+          stream,
+          input.channels.map((channel) => samples[channel]!.slice())
+        );
+      }
+    },
+    audioInputs: (inputs) => {
+      audioInputs = inputs.map((input) => ({ ...input }));
+      for (const [stream, input] of microphones)
+        if (!audioInputs.some((device) => device.id === input.id)) {
+          microphones.delete(stream);
+          frame.streamEnd(stream, "ended");
+        }
+      for (const stream of deviceWatches)
+        frame.streamData(
+          stream,
+          audioInputs.map((input) => ({ ...input }))
+        );
+    },
+    midi: (message) => {
+      for (const stream of midis)
+        frame.streamData(stream, { ...message, data: message.data.slice() });
+    },
     stores: { device: new Map(), user: new Map(), app: new Map() },
     drive: new Map(),
     setTheme: (theme, tokens = {}) => frame.setTheme({ theme, tokens }),
@@ -195,6 +267,18 @@ export function createMockComma(options: MockCommaOptions = {}): MockComma {
       }
     }
   };
+
+  let streamSerial = 0;
+  /** Open microphone streams, with the ID of the input each records. */
+  const microphones = new Map<
+    number,
+    { id: string; channelCount: number | undefined; channels: number[] | undefined }
+  >();
+  const deviceWatches = new Set<number>();
+  let audioInputs: MiniAppAudioInput[] = (
+    options.audioInputs ?? [{ id: "default", name: "Microphone" }]
+  ).map((input) => ({ ...input }));
+  const midis = new Set<number>();
 
   const drivePath = (path: unknown) => {
     if (typeof path !== "string" || path.split("/").includes(".."))
@@ -295,6 +379,78 @@ export function createMockComma(options: MockCommaOptions = {}): MockComma {
       case "clipboard.write":
         state.clipboard.push(String(args.text));
         return null;
+      case "clipboard.read":
+        return { text: options.clipboardText ?? state.clipboard.at(-1) ?? "" };
+      case "microphone.devices":
+        return { devices: audioInputs.map((input) => ({ ...input })) };
+      case "microphone.watch":
+        deviceWatches.add(++streamSerial);
+        return {
+          stream: streamSerial,
+          devices: audioInputs.map((input) => ({ ...input })),
+        };
+      case "microphone.start":
+      case "microphone.startChannels": {
+        const device =
+          args.deviceId === undefined
+            ? audioInputs[0]
+            : audioInputs.find((input) => input.id === args.deviceId);
+        if (!device) return fail("unavailable", "There is no microphone.");
+        const channelCount =
+          op === "microphone.startChannels" ? Number(args.channelCount) : undefined;
+        if (
+          channelCount !== undefined &&
+          device.channelCount &&
+          (channelCount < device.channelCount.min ||
+            channelCount > device.channelCount.max)
+        )
+          return fail(
+            "unavailable",
+            "The requested input channel count is not supported."
+          );
+        const channels =
+          channelCount === undefined
+            ? undefined
+            : ((args.channels as number[] | undefined) ??
+              Array.from({ length: channelCount }, (_, index) => index));
+        microphones.set(++streamSerial, { id: device.id, channelCount, channels });
+        return {
+          stream: streamSerial,
+          ...(channels ? { channelCount, channels } : {}),
+          sampleRate: options.sampleRate ?? 48_000,
+          device: { ...device },
+        };
+      }
+      case "microphone.stop":
+        microphones.delete(Number(args.stream));
+        deviceWatches.delete(Number(args.stream));
+        return null;
+      case "midi.start":
+        midis.add(++streamSerial);
+        return { stream: streamSerial, inputs: options.midiInputs ?? [] };
+      case "midi.stop":
+        midis.delete(Number(args.stream));
+        return null;
+      case "camera.capture":
+        return (await options.capturePhoto?.(args)) ?? null;
+      case "location.current":
+        if (!options.location)
+          return fail("unavailable", "Configure location in the local mock.");
+        return options.location();
+      case "screen.keepAwake":
+        state.screen.awake = args.on === true;
+        return null;
+      case "screen.fullscreen":
+        state.screen.fullscreen = args.on === true;
+        return null;
+      case "share": {
+        const shared = (await options.confirmShare?.(args)) ?? true;
+        if (shared) state.shares.push(args as MiniAppShareArgs);
+        return { shared };
+      }
+      case "haptics":
+        state.haptics.push(args.pattern as number[]);
+        return { played: true };
       case "links.open": {
         const url = String(args.url);
         if (!url.startsWith("https://")) fail("invalid", "Only https URLs open.");

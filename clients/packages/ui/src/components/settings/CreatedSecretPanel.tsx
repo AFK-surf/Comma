@@ -1,3 +1,5 @@
+import { useCommaMessages } from "@comma/i18n/react";
+import { copyWithFeedback } from "../toast";
 import { useState } from "react";
 import { Badge } from "../Badge";
 import { Button } from "../Button";
@@ -49,9 +51,12 @@ export function CreatedSecretPanel({
   onDismiss,
   testIds,
 }: CreatedSecretPanelProps) {
+  const messages = useCommaMessages();
   const [copied, setCopied] = useState<"secret" | "example">();
   const copy = (value: string, what: "secret" | "example") => {
-    void onCopy(value).then(() => setCopied(what));
+    void copyWithFeedback(() => onCopy(value), messages).then((success) => {
+      if (success) setCopied(what);
+    });
   };
 
   return (

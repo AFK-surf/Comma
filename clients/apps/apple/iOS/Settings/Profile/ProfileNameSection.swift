@@ -1,7 +1,7 @@
 import SwiftUI
 import CommaCore
 
-/// The member's name and email. The name saves the way iOS saves one: when the member presses Done, leaves the
+/// The member's name and email; the email row opens the page that changes it. The name saves the way iOS saves one: when the member presses Done, leaves the
 /// field or leaves the page. There is no Save button; the row shows the save as it happens, a spinner and then
 /// a tick, and an emptied name goes back to the saved one. One save runs at a time, and the field stays editable:
 /// a name asked to be saved while another saves goes as soon as that one ends, so no edit is lost.
@@ -12,6 +12,7 @@ struct ProfileNameSection: View {
     /// A save asked for while another was under way, to run once it ends: true when the page was being left.
     @State private var queued: Bool?
     @FocusState private var focused: Bool
+    @Environment(AppNavigation.self) private var navigation
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -32,9 +33,12 @@ struct ProfileNameSection: View {
     private var details: some View {
         SettingsSection {
             nameRow
-            SettingsRow(Text("Email"), value: Text(store.memberEmail))
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+            Button { navigation.settingsPath.append(.changeEmail) } label: {
+                SettingsRow(Text("Email"), value: Text(store.memberEmail)) { SettingsChevron() }
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(SurfaceRowButtonStyle())
+            .accessibilityIdentifier("openEmailChange")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Your name and photo are shown to people you work with in Comma.")

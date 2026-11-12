@@ -14,11 +14,15 @@ import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.Shader
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.withTranslation
+import androidx.dynamicanimation.animation.FloatPropertyCompat
 import surf.comma.android.R
+import surf.comma.android.ui.theme.DesignMotion
+import surf.comma.android.ui.theme.DesignSpring
 import kotlin.math.roundToInt
 
 /**
@@ -48,6 +52,9 @@ import kotlin.math.roundToInt
  * [setBottomOverflow]): a blurred flat background looks exactly like the flat background. The
  * last reply rests in the bottom band's ramp, so that band rises from under the chrome with the
  * content going under it instead of switching on at the first pixel.
+ *
+ * [Mode.GLASS] draws the same bands, and turns each patch into [GlassLens] glass: a patch is then always shown, as
+ * its rim shows over a flat page too, and the bands' tint goes under it instead of over it.
  */
 class BackdropBlurLayout @JvmOverloads constructor(
     context: Context,
@@ -55,9 +62,9 @@ class BackdropBlurLayout @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
-    enum class Mode { BLUR, FADE, OFF }
+    enum class Mode { BLUR, GLASS, FADE, OFF }
 
-    var mode: Mode = Mode.BLUR
+    var mode: Mode = if (LiquidGlass.enabled) Mode.GLASS else Mode.BLUR
         set(value) {
             if (field == value) return
             field = value
@@ -82,6 +89,7 @@ class BackdropBlurLayout @JvmOverloads constructor(
     private val floating = LinkedHashMap<String, Patch>()
     private var drawsPatches = false
     private var drawsFloating = false
+    private val screenOrigin = IntArray(2)
 
     init {
         setWillNotDraw(false)
@@ -105,25 +113,75 @@ class BackdropBlurLayout @JvmOverloads constructor(
             if (patches.remove(key) != null) invalidate()
             return
         }
-        val patch = patches.getOrPut(key) { Patch(key) }
-        if (patch.bounds == bounds && patch.radius == radiusPx) return
-        patch.place(bounds, radiusPx)
-        invalidate()
+        place(patches.getOrPut(key) { Patch(key) }, listOf(GlassShape(Rect(bounds), radiusPx)), 0f)
     }
 
     /**
      * Frosts [bounds] with corners of [radiusPx] under a piece of floating chrome named [key], such as a tab bar or
      * a status switcher, whatever is scrolled. Null bounds remove it.
      */
-    fun setFloatingPatch(key: String, bounds: Rect?, radiusPx: Float) {
+    fun setFloatingPatch(key: String, bounds: Rect?, radiusPx: Float, frosted: Boolean = false) {
         if (bounds == null || bounds.isEmpty) {
             if (floating.remove(key) != null) invalidate()
             return
         }
-        val patch = floating.getOrPut(key) { Patch("floating-$key") }
-        if (patch.bounds == bounds && patch.radius == radiusPx) return
-        patch.place(bounds, radiusPx)
+        place(floating.getOrPut(key) { Patch("floating-$key", frosted) }, listOf(GlassShape(Rect(bounds), radiusPx)), 0f)
+    }
+
+    /** Fades the floating patch [key], for chrome that fades in and out. */
+    fun setFloatingAlpha(key: String, alpha: Float) {
+        floating[key]?.setAlpha(alpha)
         invalidate()
+    }
+
+    /**
+     * One or two pieces of floating chrome that sit side by side. As glass they are one patch whose shapes reach for
+     * each other across [blendPx], as neighbouring glass does on iOS; otherwise each is a patch of its own. An empty
+     * list removes them.
+     */
+    fun setFloatingGroup(key: String, shapes: List<GlassShape>, blendPx: Float) {
+        val glass = mode == Mode.GLASS && shapes.isNotEmpty()
+        if (glass) place(floating.getOrPut(key) { Patch("floating-$key") }, shapes, blendPx)
+        else if (floating.remove(key) != null) invalidate()
+        repeat(GROUP_SIZE) { index ->
+            val shape = shapes.getOrNull(index).takeUnless { glass }
+            setFloatingPatch("$key-$index", shape?.bounds, shape?.radius ?: 0f)
+        }
+    }
+
+    private fun place(patch: Patch, shapes: List<GlassShape>, blendPx: Float) {
+        if (patch.shapes == shapes && patch.blendPx == blendPx) return
+        patch.place(shapes, blendPx)
+        invalidate()
+    }
+
+    /**
+     * How the group [key] answers a press: its first shape grows by [growXPx] and [growYPx] each side, the two reach for
+     * each other across [blendPx], and the glass whitens by [veil].
+     */
+    fun setGroupPress(key: String, growXPx: Int, growYPx: Int, blendPx: Float, veil: Float) {
+        floating[key]?.setPressShape(growXPx, growYPx, blendPx, veil)
+    }
+
+    /** The group [key] lights near the finger when pressed, and the rest of it stays as it is. */
+    fun lightGroupNearFinger(key: String) {
+        floating[key]?.lightNearFinger()
+    }
+
+    /** What the glass samples: the children as last drawn. Only for a view that lies over them and draws through it. */
+    fun drawContent(canvas: Canvas) {
+        if (content.hasDisplayList()) canvas.drawRenderNode(content)
+    }
+
+    /**
+     * A touch on the chrome over the patch or group [key]: as glass it swells and lights under the finger, as interactive
+     * glass does on iOS. The chrome passes on every event of the gesture, in whatever coordinates it has them. With a
+     * [control], the patch's shape follows that view as it swells, stretches and rebounds.
+     */
+    fun trackPress(key: String, event: MotionEvent, control: android.view.View? = null) {
+        if (mode != Mode.GLASS) return
+        val patch = floating[key] ?: patches[key] ?: return
+        if (control != null) patch.trackControl(control, event) else patch.track(event)
     }
 
     /** Whether content is scrolled under the top band; the band is not drawn while it is not. */
@@ -148,7 +206,9 @@ class BackdropBlurLayout @JvmOverloads constructor(
         }
 
     /** Whether the last frame drew a blur pass; for tests and benchmarks. */
-    val isBlurring: Boolean get() = mode == Mode.BLUR && (top.drawsBlur || bottom.drawsBlur || drawsPatches || drawsFloating)
+    val isBlurring: Boolean get() = blurs && (top.drawsBlur || bottom.drawsBlur || drawsPatches || drawsFloating)
+
+    private val blurs: Boolean get() = mode == Mode.BLUR || mode == Mode.GLASS
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -156,10 +216,11 @@ class BackdropBlurLayout @JvmOverloads constructor(
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        val blur = mode == Mode.BLUR && canvas.isHardwareAccelerated && width > 0 && height > 0
+        val blur = blurs && canvas.isHardwareAccelerated && width > 0 && height > 0
+        val glass = blur && mode == Mode.GLASS
         top.drawsBlur = blur && top.active
         bottom.drawsBlur = blur && bottom.active
-        drawsPatches = blur && top.overflow && patches.isNotEmpty()
+        drawsPatches = blur && (glass || top.overflow) && patches.isNotEmpty()
         drawsFloating = blur && floating.isNotEmpty()
         if (!top.drawsBlur && !bottom.drawsBlur && !drawsPatches && !drawsFloating) {
             super.dispatchDraw(canvas)
@@ -174,13 +235,16 @@ class BackdropBlurLayout @JvmOverloads constructor(
             canvas.drawRenderNode(content)
             top.drawBlur(canvas)
             bottom.drawBlur(canvas)
+            if (glass) drawTints(canvas)
             if (drawsPatches) patches.values.forEach { it.draw(canvas) }
             if (drawsFloating) floating.values.forEach { it.draw(canvas) }
         }
-        if (mode != Mode.OFF) {
-            top.drawTint(canvas)
-            bottom.drawTint(canvas)
-        }
+        if (mode != Mode.OFF && !glass) drawTints(canvas)
+    }
+
+    private fun drawTints(canvas: Canvas) {
+        top.drawTint(canvas)
+        bottom.drawTint(canvas)
     }
 
     /** Only a hardware canvas draws render nodes; a software draw has no transition running over it. */
@@ -211,7 +275,7 @@ class BackdropBlurLayout @JvmOverloads constructor(
     }
 
     private fun blur(radius: Float): RenderEffect? =
-        if (mode == Mode.BLUR && radius > 0f) {
+        if (blurs && radius > 0f) {
             // Clamp, not decal: a clipped edge must not blur into transparency.
             val blurred = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
             // Most of the colour is taken out, so a coloured bubble passing under the chrome
@@ -219,33 +283,140 @@ class BackdropBlurLayout @JvmOverloads constructor(
             RenderEffect.createColorFilterEffect(desaturate, blurred)
         } else null
 
-    private inner class Patch(key: String) {
+    private inner class Patch(key: String, private val frosted: Boolean = false) {
         private val node = RenderNode("backdrop-patch-$key")
-        val bounds = Rect()
-        var radius = 0f
+        var shapes: List<GlassShape> = emptyList()
             private set
+        var blendPx = 0f
+            private set
+        /** What the node shows, in this layout's coordinates. */
+        private val source = Rect()
         private var recorded = false
+        private var lens: GlassLens? = null
+        private var pressed = 0f
+        private var pressX = 0f
+        private var pressY = 0f
+        private var control: GlassPress? = null
+        private var controlView: android.view.View? = null
+        private var pressGrowX = 0
+        private var pressGrowY = 0
+        private var pressBlendPx = 0f
+        private val press by lazy { DesignSpring(this, PRESS, DesignMotion.springScale, 0.001f) }
 
-        fun place(rect: Rect, radiusPx: Float) {
-            recorded = false
-            bounds.set(rect)
-            radius = radiusPx
-            node.setPosition(0, 0, rect.width(), rect.height())
-            node.setOutline(Outline().apply { setRoundRect(0, 0, rect.width(), rect.height(), radiusPx) })
-            node.clipToOutline = true
+        fun place(next: List<GlassShape>, blend: Float) {
+            shapes = next
+            blendPx = blend
             rebuild()
         }
 
         fun rebuild() {
-            node.setRenderEffect(blur(blurRadiusPx))
+            recorded = false
+            if (shapes.isEmpty()) return
+            if (mode == Mode.GLASS) {
+                source.set(glassSource(shapes, (LiquidGlass.SOURCE_PAD_DP * resources.displayMetrics.density).toInt()))
+                node.setPosition(0, 0, source.width(), source.height())
+                node.clipToOutline = false
+                val glass = lens ?: (if (frosted) GlassLens(context, R.color.token_glass_tint_frosted, LiquidGlass.FROSTED_BLUR_DP, falls = false)
+                    else GlassLens(context)).also { lens = it }
+                glass.setShapes(shapes[0], shapes.getOrNull(1), source.left, source.top, blendPx)
+                applyPress(glass)
+            } else {
+                val shape = shapes.first()
+                source.set(shape.bounds)
+                node.setPosition(0, 0, source.width(), source.height())
+                node.setOutline(Outline().apply { setRoundRect(0, 0, source.width(), source.height(), shape.radius) })
+                node.clipToOutline = true
+                node.setRenderEffect(blur(blurRadiusPx))
+            }
+        }
+
+        fun setPressShape(growX: Int, growY: Int, blend: Float, veil: Float) {
+            pressGrowX = growX
+            pressGrowY = growY
+            pressBlendPx = blend
+            lens?.setPressVeil(veil)
         }
 
         fun draw(canvas: Canvas) {
             if (!recorded || !node.hasDisplayList()) {
-                recordShifted(node, bounds.left, bounds.top, bounds.width(), bounds.height())
+                recordShifted(node, source.left, source.top, source.width(), source.height())
                 recorded = true
             }
-            canvas.withTranslation(bounds.left.toFloat(), bounds.top.toFloat()) { drawRenderNode(node) }
+            canvas.withTranslation(source.left.toFloat(), source.top.toFloat()) { drawRenderNode(node) }
+        }
+
+        fun track(event: MotionEvent) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    getLocationOnScreen(screenOrigin)
+                    pressX = event.rawX - screenOrigin[0] - source.left
+                    pressY = event.rawY - screenOrigin[1] - source.top
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) press.animateTo(1f) else setPressed(pressed)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> press.animateTo(0f)
+            }
+        }
+
+        fun setAlpha(alpha: Float) {
+            node.alpha = alpha
+        }
+
+        fun lightNearFinger() {
+            lens?.followFinger(context, whole = false)
+        }
+
+        fun trackControl(view: android.view.View, event: MotionEvent) {
+            val press = control?.takeIf { controlView === view } ?: GlassPress(view) { amount, rawX, rawY ->
+                followControl(view, amount, rawX, rawY)
+            }.also {
+                control = it
+                controlView = view
+                lens?.followFinger(context)
+            }
+            press.track(event)
+        }
+
+        private fun controlShape(view: android.view.View): Rect? {
+            val rest = shapes.firstOrNull()?.bounds ?: return null
+            val halfWidth = rest.width() * view.scaleX / 2f
+            val halfHeight = rest.height() * view.scaleY / 2f
+            val x = rest.exactCenterX() + view.translationX
+            val y = rest.exactCenterY() + view.translationY
+            return Rect((x - halfWidth).roundToInt(), (y - halfHeight).roundToInt(), (x + halfWidth).roundToInt(), (y + halfHeight).roundToInt())
+        }
+
+        private fun followControl(view: android.view.View, amount: Float, rawX: Float, rawY: Float) {
+            val glass = lens ?: return
+            val shape = shapes.firstOrNull() ?: return
+            val moved = controlShape(view) ?: return
+            glass.setShapes(GlassShape(moved, shape.radius * minOf(view.scaleX, view.scaleY)), null, source.left, source.top, 0f)
+            getLocationOnScreen(screenOrigin)
+            glass.setPress(amount, (rawX - screenOrigin[0]).coerceIn(moved.left.toFloat(), moved.right.toFloat()) - source.left,
+                (rawY - screenOrigin[1]).coerceIn(moved.top.toFloat(), moved.bottom.toFloat()) - source.top)
+            node.setRenderEffect(glass.effect())
+            this@BackdropBlurLayout.invalidate()
+        }
+
+        fun setPressed(value: Float) {
+            pressed = value
+            lens?.let(::applyPress)
+            this@BackdropBlurLayout.invalidate()
+        }
+
+        fun pressedAmount() = pressed
+
+        private fun applyPress(glass: GlassLens) {
+            val amount = pressed.coerceIn(0f, 1f)
+            if (pressGrowX > 0 && shapes.size > 1) {
+                val first = shapes[0]
+                val grown = Rect(first.bounds).apply {
+                    inset(-(pressGrowX * amount).roundToInt(), -(pressGrowY * amount).roundToInt())
+                }
+                glass.setShapes(GlassShape(grown, first.radius + pressGrowY * amount), shapes[1], source.left, source.top,
+                    blendPx + (pressBlendPx - blendPx) * amount)
+            }
+            glass.setPress(amount, pressX, pressY)
+            node.setRenderEffect(glass.effect())
         }
     }
 
@@ -376,6 +547,12 @@ class BackdropBlurLayout @JvmOverloads constructor(
         /** Passes in a band's progressive blur. */
         const val BAND_LAYERS = 3
         private const val RAMP_STOPS = 16
+        /** The most shapes a glass patch melts together. */
+        private const val GROUP_SIZE = 2
+        private val PRESS = object : FloatPropertyCompat<Patch>("glassPress") {
+            override fun getValue(patch: Patch) = patch.pressedAmount()
+            override fun setValue(patch: Patch, value: Float) = patch.setPressed(value)
+        }
     }
 }
 

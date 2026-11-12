@@ -65,7 +65,7 @@ theorem issue_not_query (context : Context) (result saved operation args request
     split <;> simp [a]
   · intro _ _; simp [a]
   · intro _ _ _ _; simp [a]
-  · simp [invalid, RevisionFence.invalid]
+  · simp [invalid, Revision.invalid]
 
 /-- `issue` on the command forms that the input proofs build. Each equation holds by `rfl`. A
 `simp` that unfolds `issue` generates the splitter of its `match` again in every module. -/
@@ -93,7 +93,7 @@ theorem query_observation_captured {context other : Context} {operation args mod
   split at h
   · split at h
     · exact (issue_not_query _ _ _ _ _ _ _ h).elim
-    · simp [invalid, RevisionFence.invalid] at h
+    · simp [invalid, Revision.invalid] at h
   · have same := Option.some.inj (congrArg Prod.fst h)
     simp only [queryCursor, Term.tuple.injEq, List.cons.injEq, and_true, true_and, list,
       Term.list.injEq] at same

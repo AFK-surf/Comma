@@ -5,7 +5,7 @@
 //! - Node binds its ports itself (Node cannot listen on a socket handed down on Windows), so a new Node is not started
 //!   beside the old one: there is no handover (nothing here asks the lifecycle for one), and a restart leaves the ports
 //!   for a moment.
-//! - The control channel is a named pipe only this user may open, `\\.\pipe\stillfail-launcher-<pid>-<n>`, given as
+//! - The control channel is a named pipe only this user may open, `\\.\pipe\comma-station-launcher-<pid>-<n>`, given as
 //!   `--launcher-pipe`; on it the same lines go both ways as on Unix's socket.
 //! - There are no signals: a ^C (or the console closing) stops the station, as SIGTERM does on Unix. Node runs in a
 //!   process group of its own, so the ^C reaches the launcher only.
@@ -60,7 +60,7 @@ const ENTRANCE_WAIT: Duration = Duration::from_secs(60);
 /// The launcher's own pipe, by its pid (run/station.json's): what the installer and the CLI ask it on, one
 /// `{"op":…}` a line. Only this user may open it.
 pub fn control_pipe(pid: u32) -> String {
-    format!(r"\\.\pipe\stillfail-launcher-{pid}")
+    format!(r"\\.\pipe\comma-station-launcher-{pid}")
 }
 
 static EVENTS: OnceLock<Mutex<Sender<Event>>> = OnceLock::new();
@@ -115,7 +115,7 @@ impl Os for System {
 
     fn spawn(&mut self) -> io::Result<Node> {
         self.next += 1;
-        let name = format!(r"\\.\pipe\stillfail-launcher-{}-{}", std::process::id(), self.next);
+        let name = format!(r"\\.\pipe\comma-station-launcher-{}-{}", std::process::id(), self.next);
         let pipe = Pipe::create(&name, &self.security).map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))?;
         let app = &self.options.app;
         let mut command = Command::new(crate::node(app));
@@ -197,9 +197,9 @@ pub fn run(options: Options) -> i32 {
         Ok(None) => {
             let dir = options.data.display();
             if config.english {
-                eprintln!("Another still.fail station is running on this data directory ({dir}); only one station can run on a data directory on one machine");
+                eprintln!("Another Comma station is running on this data directory ({dir}); only one station can run on a data directory on one machine");
             } else {
-                eprintln!("另一个 still.fail station 正在运行这个数据目录（{dir}）；同一台机器上的一个数据目录只能运行一个 station");
+                eprintln!("另一个 Comma station 正在运行这个数据目录（{dir}）；同一台机器上的一个数据目录只能运行一个 station");
             }
             return crate::HELD;
         }

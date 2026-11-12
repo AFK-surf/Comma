@@ -853,6 +853,17 @@ defmodule SalixAgent.Round do
                 source_message_ids
               )
 
+              for source_id <- source_message_ids do
+                fields =
+                  SalixAgent.DeliveryTelemetry.identity(agent_id, session_id, source_id)
+                  |> Map.put(
+                    :request_key,
+                    SalixAgent.DeliveryTelemetry.source_key(meter_ctx[:request_id])
+                  )
+
+                SalixAgent.DeliveryTelemetry.emit(:model_started, :ok, 0, fields)
+              end
+
               SalixAgent.PhaseTelemetry.emit_pre_dispatch(meter_ctx, phase_opts, activation_key)
               started = SystemsClock.monotonic_time(:millisecond)
 
@@ -1374,6 +1385,7 @@ defmodule SalixAgent.Round do
            {events, opts, mode}
          ) do
       {:ok, revision, driver} ->
+        observe_no_reply(host, events)
         {:ok, %{host | context: Map.put(host.context, :revision, revision)}, driver}
 
       {:rerouted, revision, driver, effect} ->
@@ -1382,6 +1394,25 @@ defmodule SalixAgent.Round do
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # A durable `end_turn` with no_reply closes this activation's mentions, which
+  # would otherwise wait out `SalixIM.MentionReplyLatency`'s retained hour.
+  defp observe_no_reply(host, events) do
+    no_reply? =
+      Enum.any?(events, fn
+        %{"provider_meta" => %{"settled_call" => %{"call" => %{"args" => args}}}} ->
+          args["no_reply"] == true
+
+        _event ->
+          false
+      end)
+
+    if no_reply? do
+      SystemsRuntime.Telemetry.execute([:salix, :turn, :no_reply], %{count: 1}, %{
+        source_ids: host.source_message_ids
+      })
     end
   end
 
@@ -1476,12 +1507,6 @@ defmodule SalixAgent.Round do
           context[:phase_activation_key],
           started
         )
-
-      {:timers, {events, true}} ->
-        register_read_timers(agent_id, events)
-
-      {:timers, {events, false}} ->
-        register_committed_timers(agent_id, events)
 
       {:observations, results} ->
         Tools.emit_deferred_tool_observations(results)
@@ -1602,6 +1627,15 @@ defmodule SalixAgent.Round do
             "source_ids" => ctx.source_message_ids
           })
 
+        # A refused `end_turn` (`UnansweredPersonGuard`) is recorded as the
+        # model made it; only dispatch runs its guidance.
+        spec =
+          case spec["record_calls"] ||
+                 SalixAgent.UnansweredPersonGuard.model_calls(calls) do
+            nil -> spec
+            recorded -> Map.put(spec, "record_calls", recorded)
+          end
+
         %{"record" => record, "scope" => scope} =
           InternalSession.query(session, :loop_record, {spec, facts})
 
@@ -1611,6 +1645,14 @@ defmodule SalixAgent.Round do
           ctx
           |> Map.put(:terminal_reply_context, scope)
           |> Map.put(:assistant_message_id, aid)
+
+        # Planning the batch and running it both pass the dispatch boundary;
+        # the information-flow verdict is reached once and carried in `ctx`.
+        ctx =
+          SessionToolDispatch.decide_ifc_once(
+            calls |> Enum.with_index() |> Enum.map(fn {call, i} -> put_call_index(call, i) end),
+            ctx
+          )
 
         {admission, ctx} =
           case plan_tool_admission(session, record["intent"], calls, ctx, aid) do
@@ -1668,6 +1710,12 @@ defmodule SalixAgent.Round do
       reply_source_scope: SalixAgent.TerminalReply.source_scope(session),
       trusted_origin: trusted_origin,
       trusted_origins: current_turn_trusted_origins(session, source_message_ids),
+      # Whether the current person still waits for a reply decides whether a
+      # Task created now is theirs (`SalixAgent.Tools.TaskCard`).
+      pending_reply_targets: SalixAgent.ProviderReplyObligation.pending(session),
+      # People queued behind an activation whose own people all had their
+      # reply: only answering, delegating or ending runs (`QueueYieldGuard`).
+      queued_people_after_answer: SalixAgent.QueueYieldGuard.check(session, config[:role]),
       triage_scopes:
         SalixAgent.IFC.Context.organization_scopes(
           session,
@@ -1919,7 +1967,6 @@ defmodule SalixAgent.Round do
                  )
                end
              ) do
-        register_committed_timers(agent_id, events)
         SalixAgent.SessionToolExecution.emit_async(agent_id, completion, observed)
         {:cont, {:ok, Map.put(context, :revision, revision)}}
       else
@@ -2203,34 +2250,6 @@ defmodule SalixAgent.Round do
       |> Map.put("session_id", session_id)
       |> Map.put("stored_at_ms", stored_at_ms)
     end)
-  end
-
-  # The committed Session and eager work candidate already preserve the running
-  # reads and their deadline. Timer projection I/O must not hold their results
-  # in the owner's mailbox. Bound outstanding projection tasks per node; at
-  # capacity use the existing synchronous path.
-  defp register_read_timers(agent_id, events) do
-    context = SystemsObservability.Context.capture()
-
-    case SystemsRuntime.TaskSupervisor.start_child(SalixAgent.WaitTimerTasks, fn ->
-           SystemsObservability.Context.run(context, fn ->
-             register_committed_timers(agent_id, events)
-           end)
-         end) do
-      {:ok, _pid} -> :ok
-      {:error, _reason} -> register_committed_timers(agent_id, events)
-    end
-  end
-
-  defp register_committed_timers(agent_id, events) do
-    case SalixAgent.Waits.register_timers_from_events(agent_id, events) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("round wait timer registration failed after commit: #{inspect(reason)}")
-        :ok
-    end
   end
 
   defp require_session_context(%{session_id: session_id}, session_id)

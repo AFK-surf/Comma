@@ -1,5 +1,5 @@
-import VerifiedKernel.Session.Command
 import VerifiedKernelProofs.Session.AppendOnly.Core
+import VerifiedKernel.Session.Command
 
 /-! Input confirmation follows the executable command continuation.
 The host returns success only for a successful write or durable fence.

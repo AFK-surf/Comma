@@ -10,6 +10,11 @@ defmodule BridgeForTeams.StationMembers do
   whose Organization is not active, are refused as removed ones are
   (`workspace_active?/2`).
 
+  A person the Project's Feishu or Lark app is available to (the app's
+  availability range) is a Project `user` for the Group's stations without
+  signing in to BridgeForTeams (`app_member_role/2`); `CommaWeb.Stations`
+  asks the app whether it is available to the person who asked.
+
   A member removed from a Project or from the Organization loses the member
   credentials issued until then (`revoke_removed/2`): the stations of those
   Groups check credentials offline, so Salix keeps a revocation per Group
@@ -53,6 +58,15 @@ defmodule BridgeForTeams.StationMembers do
 
   def requester(_, _, _, _), do: :none
 
+  # Whoever reaches a Project's Router may have it issue a computer's install command.
+  @impl true
+  def open_enrollment?(tenant_id, group_id), do: workspace_active?(tenant_id, group_id) == true
+
+  @impl true
+  def app_member_role(tenant_id, group_id) do
+    if workspace_active?(tenant_id, group_id) == true, do: {:ok, "user"}, else: :none
+  end
+
   @impl true
   def role(tenant_id, group_id, user_id) do
     with {:ok, user_id} <- Ecto.UUID.cast(user_id),
@@ -61,6 +75,16 @@ defmodule BridgeForTeams.StationMembers do
         role when role in @org_managers -> {:ok, role}
         _ -> project_role(project.id, user_id)
       end
+    else
+      _ -> :none
+    end
+  end
+
+  @impl true
+  def member(tenant_id, group_id, user_id) do
+    with {:ok, _role} <- role(tenant_id, group_id, user_id),
+         {:ok, user} <- BridgeForTeams.Accounts.get_user(user_id) do
+      {:ok, %{"name" => user.name, "email" => user.email}}
     else
       _ -> :none
     end

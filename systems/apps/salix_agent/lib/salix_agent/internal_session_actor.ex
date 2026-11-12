@@ -451,21 +451,24 @@ defmodule SalixAgent.InternalSessionActor do
   # never launder a stale in-flight actor's writes as the new epoch's
   # (rollout-concurrent-runner-fencing D2/D3.1). Running the binding as the
   # actor's own first act makes EVERY creation path a participant in the
-  # lifecycle contract — the Fleet start funnel, the Router owner's
-  # canonical start, and crucially a supervisor-driven restart of a crashed
-  # actor, which re-runs the retained child_spec directly and never passes
-  # a call-site boundary. A registered Server's in-flight claim is waited
-  # out (bounded) so the freeze binds to the installed claim instead of
-  # legacy-pinning the actor; if the wait gives up, the store's
-  # first-resolution pin stays the safety net.
+  # lifecycle contract, including a supervisor restart that bypasses Fleet.
+  # A registered Server must finish startup before the actor binds its epoch.
+  # If startup exceeds the existing wait budget, this actor stops without
+  # accepting commands. Without a Server, it keeps the existing lazy binding.
   @impl true
   def handle_continue(:bind_runtime_generation, data) do
     # The session read needs no epoch and the delivery commit needs the
     # session anyway; reading it before the claim wait lets the round
     # configuration build overlap the Server's claim.
     data = maybe_prewarm_on_bind(data)
-    :ok = SalixAgent.Fleet.await_ownership_installed(data.agent_id)
 
+    case SalixAgent.Fleet.await_ownership_installed(data.agent_id) do
+      :ok -> bind_runtime_generation(data)
+      {:error, reason} -> {:stop, {:shutdown, reason}, data}
+    end
+  end
+
+  defp bind_runtime_generation(data) do
     case SalixAgent.OwnershipCell.fetch(data.agent_id) do
       {:ok, epoch} ->
         _ =
@@ -529,7 +532,7 @@ defmodule SalixAgent.InternalSessionActor do
            attrs
          ) do
       {:ok, result, pending_async, events, observed_result} ->
-        case commit_session_events_with_timers(data.agent_id, data.session_id, events) do
+        case commit_session_events(data.agent_id, data.session_id, events) do
           {:ok, _session} ->
             SessionToolExecution.emit_result(observed_result)
             data = forget(data)
@@ -571,7 +574,7 @@ defmodule SalixAgent.InternalSessionActor do
              meta
            ),
          {:ok, committed} <-
-           commit_revision_events_with_timers(data.agent_id, data.session_id, revision, events) do
+           commit_revision_events(data.agent_id, data.session_id, revision, events) do
       data = retain(data, committed)
 
       data =
@@ -616,7 +619,7 @@ defmodule SalixAgent.InternalSessionActor do
   def handle_call(:activity_snapshot, _from, data) do
     result =
       case data.revision do
-        %Revision{etag: etag} = revision when not is_nil(etag) ->
+        %Revision{revision: revision_number} = revision when not is_nil(revision_number) ->
           # Pending transitions are private working state. Status exposes only
           # the committed baseline retained by this owner.
           baseline = InternalSessionStore.revision_baseline(revision)
@@ -635,6 +638,7 @@ defmodule SalixAgent.InternalSessionActor do
     result =
       cond do
         source_admission_blocked?(data) ->
+          observe_admission_blocked(data)
           {:error, :source_busy}
 
         match?(%Revision{pending: nil}, data.revision) ->
@@ -659,7 +663,7 @@ defmodule SalixAgent.InternalSessionActor do
 
     with {:ok, revision, data} <- owned_revision(data),
          {:ok, committed} <-
-           commit_revision_events_with_timers(data.agent_id, data.session_id, revision, [event]) do
+           commit_revision_events(data.agent_id, data.session_id, revision, [event]) do
       reply(
         {:ok, %{"status" => "updated", "tool_call_id" => tool_call_id}},
         retain(data, committed)
@@ -1367,7 +1371,7 @@ defmodule SalixAgent.InternalSessionActor do
   defp effect(ctx, _state, driver, {:commit, events, _opts, %{"timers" => true}}) do
     %{agent_id: agent_id, session_id: session_id} = ctx.data
 
-    case commit_revision_events_with_timers(agent_id, session_id, ctx.rev, events) do
+    case commit_revision_events(agent_id, session_id, ctx.rev, events) do
       {:ok, committed} -> answer(%{ctx | rev: committed}, driver, :ok)
       {:error, _} = error -> answer(ctx, driver, error)
     end
@@ -1469,21 +1473,6 @@ defmodule SalixAgent.InternalSessionActor do
 
       {:error, reason} ->
         answer(%{ctx | data: forget(ctx.data)}, driver, {:error, unstarted(reason)})
-    end
-  end
-
-  defp effect(ctx, _state, driver, {:set_timer, :wait, _wait}) do
-    register_current_wait_timer(ctx.data, ctx.rev.state)
-    answer(ctx, driver, :ok)
-  end
-
-  # A failed registration keeps the durable wait; the timeout answers it.
-  defp effect(ctx, _state, driver, {:set_timer, :wait_for, wait}) do
-    %{agent_id: agent_id, session_id: session_id} = ctx.data
-
-    case SalixAgent.Waits.register_timer_for_wait(agent_id, session_id, wait) do
-      :ok -> answer(ctx, driver, :ok)
-      error -> answer(%{ctx | result: error}, driver, :ok)
     end
   end
 
@@ -1704,7 +1693,6 @@ defmodule SalixAgent.InternalSessionActor do
     with {:ok, confirmed} <- InternalSessionStore.await_durable_fence(ctx.fence),
          {:ok, committed, checkpoint} <-
            InternalSession.Command.resume_fence(data.agent_id, data.session_id, confirmed) do
-      register_committed_timers(data.agent_id, ctx.events)
       data = %{data | session_checkpoint: checkpoint} |> retain(committed) |> fence_landed(ctx)
       ctx = %{ctx | data: open_gate(data), rev: committed, fence: nil}
       answer(%{ctx | prepared: prepared_activation(ctx, committed)}, driver, :ok)
@@ -1986,10 +1974,24 @@ defmodule SalixAgent.InternalSessionActor do
 
       data
       |> driven(revision, :response, %{llm: llm})
-      |> run(pending.driver, {:model, response})
+      |> run(pending.driver, {:model, guard_response(revision, pending, response)})
       |> conclude()
     end)
   end
+
+  # The kernel settles a standalone `end_turn` as soon as it reads the
+  # response, so a done that leaves the activation's person with nothing is
+  # refused here, before the kernel reads it (`SalixAgent.UnansweredPersonGuard`).
+  defp guard_response(%Revision{state: state}, pending, response),
+    do:
+      SalixAgent.UnansweredPersonGuard.guard(
+        response,
+        state,
+        pending[:role],
+        pending[:visible_reply_phase] || :clean
+      )
+
+  defp guard_response(_revision, _pending, response), do: response
 
   # A failed provider call ends the current activation. The driver records the
   # failure at the round's transcript position and processes again only when
@@ -3006,6 +3008,7 @@ defmodule SalixAgent.InternalSessionActor do
   # retains the native revision that the commit returns, including first creation.
   defp admit_conversation(data, entry) do
     if source_admission_blocked?(data) do
+      observe_admission_blocked(data)
       {{:error, :source_busy}, data}
     else
       case owned_revision(data) do
@@ -3030,7 +3033,7 @@ defmodule SalixAgent.InternalSessionActor do
            data.session_id,
            revision,
            :stage_conversation,
-           {entry, is_nil(revision.etag)}
+           {entry, is_nil(revision.revision)}
          ) do
       {{:ok, :staged, events}, staged, _} ->
         data = retain(data, staged)
@@ -3053,6 +3056,17 @@ defmodule SalixAgent.InternalSessionActor do
           end
         end
 
+      {{:error, {:stale_revision, current}} = error, _revision, _} ->
+        fields =
+          SalixAgent.DeliveryTelemetry.identity(data.agent_id, data.session_id)
+          |> Map.merge(%{cached_revision: revision.revision, current_revision: current})
+
+        data = forget(data)
+        SalixAgent.DeliveryTelemetry.emit(:revision_conflict, :stale_revision, 0, fields)
+        # Archive publication can advance the SQL revision without changing
+        # business state. The next admission must load that newer revision.
+        {error, data}
+
       {result, _revision, _} ->
         {result, data}
     end
@@ -3064,6 +3078,7 @@ defmodule SalixAgent.InternalSessionActor do
     with {:ok, revision, data} <- owned_revision(data),
          {:ok, committed} <-
            InternalSessionStore.durable_fence(data.agent_id, data.session_id, revision) do
+      observe_committed_inputs(data, events)
       SalixAgent.RouterRequestMonitor.enqueued(data.agent_id, data.session_id, events)
 
       if is_map(data.pending_llm) do
@@ -3078,6 +3093,50 @@ defmodule SalixAgent.InternalSessionActor do
     else
       error -> {error, forget(data)}
     end
+  end
+
+  defp observe_admission_blocked(data) do
+    reason =
+      cond do
+        is_map(data.pending_compaction) -> :compaction
+        not is_nil(data.session_retry_timer) -> :session_retry
+        true -> :pending_commit
+      end
+
+    SalixAgent.DeliveryTelemetry.emit(
+      :admission_deferred,
+      :source_busy,
+      0,
+      SalixAgent.DeliveryTelemetry.identity(data.agent_id, data.session_id),
+      reason
+    )
+  end
+
+  defp observe_committed_inputs(data, events) do
+    reason =
+      cond do
+        is_map(data.pending_llm) -> :llm
+        is_map(data.pending_compaction) -> :compaction
+        not is_nil(data.session_retry_timer) -> :session_retry
+        not is_nil(data.admission_retry_timer) -> :model_capacity
+        true -> :ready
+      end
+
+    for %{"type" => "queue_append", "payload" => payload} <- events do
+      SalixAgent.DeliveryTelemetry.emit(
+        :admission_committed,
+        :ok,
+        0,
+        SalixAgent.DeliveryTelemetry.identity(
+          data.agent_id,
+          data.session_id,
+          payload["source_message_id"]
+        ),
+        reason
+      )
+    end
+
+    :ok
   end
 
   defp commit_inbound_delivery(%__MODULE__{} = data, entry) do
@@ -3124,7 +3183,7 @@ defmodule SalixAgent.InternalSessionActor do
         session_id,
         revision,
         :input,
-        {entry, is_nil(revision.etag)}
+        {entry, is_nil(revision.revision)}
       )
 
     case {result, committed} do
@@ -3383,7 +3442,7 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   defp commit_without_prefetch(data, pending, revision, events, prerequisite) do
-    case commit_session_revision_with_timers(
+    case commit_session_revision(
            data.agent_id,
            pending.session_id,
            revision,
@@ -3646,7 +3705,7 @@ defmodule SalixAgent.InternalSessionActor do
   # that once followed dispatch let concurrent completions reach the mailbox
   # before the first one could activate. The flag is durable, so a stale
   # actor wake cannot bypass it.
-  defp commit_session_revision_with_timers(
+  defp commit_session_revision(
          agent_id,
          session_id,
          revision,
@@ -3662,27 +3721,24 @@ defmodule SalixAgent.InternalSessionActor do
              [hwm: async_completion_hwm(events), on_conflict: :error],
              prerequisite
            ) do
-      register_committed_timers(agent_id, events)
       {:ok, committed_revision}
     end
   end
 
-  defp commit_revision_events_with_timers(agent_id, session_id, revision, events) do
+  defp commit_revision_events(agent_id, session_id, revision, events) do
     with {:ok, committed} <-
            InternalSessionStore.commit_revision(agent_id, session_id, revision, events,
              hwm: async_completion_hwm(events)
            ) do
-      register_committed_timers(agent_id, events)
       {:ok, committed}
     end
   end
 
-  defp commit_session_events_with_timers(agent_id, session_id, events) do
+  defp commit_session_events(agent_id, session_id, events) do
     with {:ok, session} <-
            InternalSessionStore.commit(agent_id, session_id, events,
              hwm: async_completion_hwm(events)
            ) do
-      register_committed_timers(agent_id, events)
       {:ok, session}
     end
   end
@@ -3697,48 +3753,6 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   defp live_process_tool_call_ids(_pending_async_tools, _pending_commits), do: []
-
-  defp register_current_wait_timer(data, session) when InternalSession.is_session(session) do
-    agent_id = data.agent_id
-    session_id = InternalSession.session_id(session)
-
-    case InternalSession.wait(session) do
-      %{"source" => "auto_wait"} when map_size(data.pending_async_tools) > 0 ->
-        # Round already registered this wait after committing the running tools.
-        # Recovery, which has no live process-local jobs, still repairs timers.
-        :ok
-
-      %{} = wait ->
-        case SalixAgent.Waits.register_timer_for_wait(agent_id, session_id, wait) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning(
-              "internal session #{agent_id}/#{session_id} wait timer registration failed: #{inspect(reason)}"
-            )
-
-            :ok
-        end
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp register_committed_timers(agent_id, events) do
-    case SalixAgent.Waits.register_timers_from_events(agent_id, events) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "internal session timer registration failed after commit: #{inspect(reason)}"
-        )
-
-        :ok
-    end
-  end
 
   defp async_completion_hwm(events) do
     events

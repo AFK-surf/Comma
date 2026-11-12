@@ -25,7 +25,7 @@ const SOCKET_PATH_MAX: usize = 103;
 const SOCKET_PATH_MAX: usize = 107;
 
 /// `<dir>/<id>.sock`, or, when that is too long for a socket (a data directory under `~/Library/Application Support`),
-/// `/tmp/stillfail-runner-<uid>/<hash of dir>-<id>.sock`: the hash keeps two directories' runners of one id apart.
+/// `/tmp/comma-runner-<uid>/<hash of dir>-<id>.sock`: the hash keeps two directories' runners of one id apart.
 pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
     let path = dir.join(format!("{id}.sock"));
     if path.as_os_str().len() <= SOCKET_PATH_MAX {
@@ -38,7 +38,7 @@ pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
     }
     // SAFETY: geteuid has no failure.
     let uid = unsafe { libc::geteuid() };
-    PathBuf::from(format!("/tmp/stillfail-runner-{uid}/{hash:016x}-{id}.sock"))
+    PathBuf::from(format!("/tmp/comma-runner-{uid}/{hash:016x}-{id}.sock"))
 }
 
 /// Makes the directory `sock` goes in. One outside the runner's `--dir` is in /tmp, where anyone could have made it
@@ -82,7 +82,7 @@ pub fn leave_session() {
         }
         let mut fds = [0; 2];
         if libc::pipe(fds.as_mut_ptr()) != 0 {
-            eprintln!("stillfail-runner: pipe: {}", io::Error::last_os_error());
+            eprintln!("comma-runner: pipe: {}", io::Error::last_os_error());
             std::process::exit(1);
         }
         // The agent must not hold either end, or the parent would wait on it.
@@ -90,7 +90,7 @@ pub fn leave_session() {
         libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
         match libc::fork() {
             -1 => {
-                eprintln!("stillfail-runner: fork: {}", io::Error::last_os_error());
+                eprintln!("comma-runner: fork: {}", io::Error::last_os_error());
                 std::process::exit(1);
             }
             0 => {
@@ -323,7 +323,7 @@ mod tests {
         let id = "claude-ember_c-27019641bb-9cdfc301a9";
         let sock = socket_path(&long, id);
         assert!(sock.as_os_str().len() <= SOCKET_PATH_MAX, "{}", sock.display());
-        assert!(sock.starts_with(format!("/tmp/stillfail-runner-{}", unsafe { libc::geteuid() })));
+        assert!(sock.starts_with(format!("/tmp/comma-runner-{}", unsafe { libc::geteuid() })));
         assert!(sock.to_string_lossy().ends_with(&format!("-{id}.sock")));
         assert_eq!(socket_path(&long, id), sock);
         assert_ne!(socket_path(&long.join("y"), id), sock);

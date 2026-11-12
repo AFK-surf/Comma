@@ -64,7 +64,7 @@ theorem RecordImageBacked.binary_field {objects : Objects} {agent session : Term
 
 theorem published_archive_ledger_supported {state event next : Term} {records live sealed : List Term}
     {base ceiling line : Int} {before after : Objects} {final : Output} {journal rest : List Term}
-    (framing : CodecFraming) (sorted : SeqSorted state)
+    (framing : CodecFraming) (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (numeric : (state.get (a "archived_through")).default (i 0) = i base) (nonnegative : base ≥ 0)
     (initial : StateCatalogBacked before state)
     (catalog : ∀ value ∈ wrap ((state.get (a "segment_catalog")).default (list [])), validSegment value = true)
@@ -83,7 +83,7 @@ theorem published_archive_ledger_supported {state event next : Term} {records li
   rcases archiveAdvance_keeps_published_catalog exactFilter reduced with unchanged | included
   · exact Or.inl unchanged
   · obtain ⟨dropped, kept, partition, nextRead, projections⟩ :=
-      published_archive_removed_projections sorted numeric nonnegative initial window positive execution emitted read reduced
+      published_archive_removed_projections sorted physical numeric nonnegative initial window positive execution emitted read reduced
     refine Or.inr ⟨dropped, kept, partition, nextRead,
       archive_ledger_supported read partition nextRead supported reduced, ?_⟩
     intro record member

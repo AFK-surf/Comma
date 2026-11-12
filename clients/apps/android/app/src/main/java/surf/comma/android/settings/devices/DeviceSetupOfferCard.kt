@@ -36,8 +36,8 @@ internal class DeviceSetupOfferCardRenderer(override val viewType: Int) : ChatCa
 internal class DeviceSetupOfferCard(context: Context) : FrameLayout(context) {
     private val title = context.text(DesignTypography.Level.REGULAR, R.color.token_text_primary, DesignFonts.semibold)
     private val status = context.text(DesignTypography.Level.SMALL, R.color.token_text_tertiary)
-    val connect = context.filledButton("Connect", R.color.token_bg_brand_solid, null)
-    val dismiss = context.filledButton("Not now", R.color.token_bg_quaternary, R.color.token_text_primary)
+    val connect = context.filledButton(context.getString(R.string.devices_offer_connect), R.color.token_bg_brand_solid, null)
+    val dismiss = context.filledButton(context.getString(R.string.devices_nearby_permission_not_now), R.color.token_bg_quaternary, R.color.token_text_primary)
     private val buttons = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         addView(connect, LinearLayout.LayoutParams(0, context.dp(48), 1f))
@@ -61,8 +61,8 @@ internal class DeviceSetupOfferCard(context: Context) : FrameLayout(context) {
 
     init {
         addView(card)
-        connect.contentDescription = "Connect"
-        dismiss.contentDescription = "Not now"
+        connect.contentDescription = context.getString(R.string.devices_offer_connect)
+        dismiss.contentDescription = context.getString(R.string.devices_nearby_permission_not_now)
         connect.setOnClickListener { offer?.let { onAction(it, "started") } }
         dismiss.setOnClickListener { offer?.let { onAction(it, "dismiss") } }
     }
@@ -90,7 +90,7 @@ internal class DeviceSetupOfferCard(context: Context) : FrameLayout(context) {
         val now = System.currentTimeMillis()
         val display = offer.presentation(localReporter(), now)
         title.text = offer.name
-        status.text = display.label
+        status.setText(display.label)
         connect.isVisible = display.connect
         dismiss.isVisible = display.dismiss
         connect.isEnabled = !busy
@@ -126,7 +126,7 @@ internal class DeviceSetupOfferCard(context: Context) : FrameLayout(context) {
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                Toast.makeText(context, "Could not update the device setup. Try again.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, R.string.devices_offer_update_failed, Toast.LENGTH_LONG).show()
             } finally {
                 if (offer?.offerId == selected.offerId) { busy = false; render() }
             }

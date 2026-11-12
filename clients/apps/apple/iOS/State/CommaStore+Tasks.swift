@@ -143,7 +143,9 @@ extension CommaStore {
     @discardableResult
     func acceptTaskReview(_ task: TaskSummary) async -> Bool {
         guard let version = task.reviewVersion, task.canAcceptReview else { return false }
-        return await change(task.id, "tasks.accept", ["reviewVersion": version])
+        let accepted = await change(task.id, "tasks.accept", ["reviewVersion": version])
+        if accepted { onWorkAccepted?() }
+        return accepted
     }
 
     func setTaskPinned(id: String, pinned: Bool) async {

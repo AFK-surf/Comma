@@ -102,7 +102,7 @@ theorem workspace_admission_result {context : Context}
   | true => exact workspace_result_wire valid
   | false =>
     rw [effect_rejected _ _ _ _ valid] at trace
-    have impossible := trace.fixed (by simp [invalid, RevisionFence.invalid, a])
+    have impossible := trace.fixed (by simp [invalid, Revision.invalid, a])
     cases congrArg Prod.fst impossible
 
 /-- The actual initial command admits at most one workspace effect before its write. -/

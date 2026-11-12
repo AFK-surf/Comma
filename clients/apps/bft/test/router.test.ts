@@ -110,6 +110,10 @@ describe("BFT router", () => {
       name: "project-skills",
       ...at,
     });
+    expect(matchRoute("/orgs/acme/projects/p1/stillfail")).toEqual({
+      name: "project-stillfail",
+      ...at,
+    });
     // Integrations is the messaging section of Connections.
     expect(matchRoute("/orgs/acme/projects/p1/connections/")).toEqual({
       name: "project-connections",

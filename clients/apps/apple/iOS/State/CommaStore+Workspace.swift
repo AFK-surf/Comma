@@ -99,10 +99,16 @@ extension CommaStore {
             taskActivity = nil
             activityRequest += 1
         }
+        // Initial Workspace restoration must not discard a public link already opened after sign-in.
+        let preservesIncomingShare: Bool
+        if case .shared = miniAppPresentation { preservesIncomingShare = workspace == nil }
+        else { preservesIncomingShare = false }
         let changed = workspace?.id != value.id
         workspace = value
         rememberWorkspace(value)
         if changed {
+            closeMiniApps()
+            if !preservesIncomingShare { miniAppPresentation = nil }
             tasks = []; tasksLoaded = false; taskListFailed = false; hasMoreTasks = false
             pinnedTaskIDs = []; taskBoardOrder = []
             lastTaskList = nil
@@ -166,7 +172,7 @@ extension CommaStore {
     /// The core shows the new photo everywhere at once while it uploads (`files.read` answers its bytes), and the
     /// saved one again if the upload fails.
     func uploadAvatar(_ data: Data, contentType: String) async throws {
-        let name = "avatar." + (contentType == "image/png" ? "png" : contentType == "image/webp" ? "webp" : "jpg")
+        let name = UserProfile.avatarFilename(contentType) ?? "avatar.jpg"
         _ = try await core.call("profile.uploadAvatar", ["bytes": CoreBytes.json(data), "type": contentType, "name": name])
     }
 

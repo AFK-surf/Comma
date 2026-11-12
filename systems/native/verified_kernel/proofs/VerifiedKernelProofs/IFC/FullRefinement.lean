@@ -134,6 +134,11 @@ theorem source_sound (h : admitSource source effect activation p facts = .ok ent
     have hs := SystemRefinement.selectAdmission_sound selected
     cases admitted with
     | flow => exact .flow hs
+    | authored =>
+      obtain ⟨unlocked, readable, authored⟩ := hs
+      simp only [authoredBy, Bool.and_eq_true] at authored
+      obtain ⟨⟨⟨command, present⟩, same⟩, isPerson⟩ := authored
+      exact .authored (unsealed_sound unlocked) readable command present same isPerson
     | inPlace =>
       obtain ⟨unlocked, readable, inPlace⟩ := hs
       have both : labelEqual (f effect "destination") (f activation "source_scope") = true ∧

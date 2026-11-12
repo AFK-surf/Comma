@@ -55,7 +55,7 @@ private struct CountBadgeContent: View {
                     .padding(.horizontal, 5)
                     .frame(minWidth: height, minHeight: height)
                     .background(CommaTheme.brandSolid, in: Capsule())
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.4).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .scaleUnseenBelowHalf(0.4))
             }
         }
         // The badge's centre sits on the rim: 9pt in from the circle's top-trailing corner each way.

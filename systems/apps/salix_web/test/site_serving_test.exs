@@ -25,6 +25,14 @@ defmodule SalixWeb.SiteServingTest do
 
   @domain "salix.localhost"
 
+  defmodule CapturingBrowser do
+    def screenshot(_settings, "browser-token", url, size) do
+      {test, result} = SystemsRuntime.PersistentTerm.get({__MODULE__, :capture})
+      SystemsRuntime.Proc.send(test, {:captured, url, size})
+      result
+    end
+  end
+
   defmodule DenyingStorageAuthorizer do
     @behaviour SalixAgent.StorageAuthorization
 
@@ -587,6 +595,270 @@ defmodule SalixWeb.SiteServingTest do
     resp = request("GET", site_host("plain", e), "/")
     assert resp.body =~ "https://own.example/og.png"
     refute resp.body =~ "cdn.example.test/default-og.png"
+  end
+
+  describe "default share image" do
+    setup %{agent: a} do
+      previous = SystemsRuntime.get_env(:salix_agent, :browser_provider)
+      SystemsRuntime.put_env(:salix_agent, :browser_provider, CapturingBrowser)
+      capture_returns({:ok, "jpeg-bytes"})
+
+      on_exit(fn ->
+        # A page view's capture must end before the outer setup restores its env.
+        for pid <- SystemsRuntime.TaskSupervisor.children(SalixWeb.SiteOgImage.Supervisor) do
+          ref = SystemsRuntime.Proc.monitor(pid)
+
+          receive do
+            {:DOWN, ^ref, _, _, _} -> :ok
+          end
+        end
+
+        restore_env(:salix_agent, :browser_provider, previous)
+        SystemsRuntime.PersistentTerm.erase({CapturingBrowser, :capture})
+      end)
+
+      {:ok, tenant_id: SalixStore.Ids.tenant_id_from_agent!(a)}
+    end
+
+    # A page view's capture reports the screenshot before it stores it, so a test
+    # reads the image only after the capture task ends.
+    defp await_captures do
+      for pid <- SystemsRuntime.TaskSupervisor.children(SalixWeb.SiteOgImage.Supervisor) do
+        ref = SystemsRuntime.Proc.monitor(pid)
+        settle_receive({:DOWN, ^ref, _, _, _})
+      end
+
+      :ok
+    end
+
+    defp capture_returns(result) do
+      SystemsRuntime.PersistentTerm.put(
+        {CapturingBrowser, :capture},
+        {SystemsRuntime.Proc.self(), result}
+      )
+    end
+
+    defp enable_browser!(tenant_id) do
+      :ok =
+        unwrap_ok(
+          SalixStore.BrowserSettings.put(tenant_id, %{
+            "mode" => "override",
+            "account_id" => String.duplicate("a", 32),
+            "api_token" => "browser-token"
+          })
+        )
+    end
+
+    defp unwrap_ok({:ok, :ok}), do: :ok
+
+    defp og_image_path(body) do
+      [_, url] = Regex.run(~r/<meta property="og:image" content="http:\/\/[^\/]+([^"]+)">/, body)
+      url
+    end
+
+    test "a page with no image gets the tags every link preview reads", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+
+      write_files!(a, [
+        {"/.salix/websites/docs/index.html",
+         ~s(<html><head><title>Docs &amp; "guides"</title>) <>
+           ~s(<meta content='About the docs' name="description"></head><body>x</body></html>)}
+      ])
+
+      docs = site_host("docs", e)
+      resp = request("GET", docs, "/")
+      path = og_image_path(resp.body)
+      assert String.starts_with?(path, "/_og-image.jpg?v=")
+
+      assert resp.body =~ ~s(<meta property="og:image:type" content="image/jpeg">)
+      assert resp.body =~ ~s(<meta property="og:image:width" content="1200">)
+      assert resp.body =~ ~s(<meta property="og:image:height" content="630">)
+      assert resp.body =~ ~s(<meta property="og:title" content="Docs &amp; &quot;guides&quot;">)
+      assert resp.body =~ ~s(<meta property="og:description" content="About the docs">)
+      assert resp.body =~ ~s(<meta property="og:url" content="http://#{docs}/">)
+      assert resp.body =~ ~s(<meta property="og:type" content="website">)
+      assert resp.body =~ ~s(<meta name="twitter:image" content="http://#{docs}#{path}">)
+      assert resp.body =~ ~s(<meta name="twitter:card" content="summary_large_image">)
+    end
+
+    test "a page view captures the home page once and the image reads the capture", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+
+      docs = site_host("docs", e)
+      path = og_image_path(request("GET", docs, "/").body)
+      home = "http://#{docs}/"
+      await_captures()
+      assert_received {:captured, ^home, {1200, 630}}
+
+      image = request("GET", docs, path)
+      assert image.status == 200
+      assert image.body == "jpeg-bytes"
+      assert image.headers["content-type"] == "image/jpeg"
+      assert image.headers["cache-control"] == "no-cache"
+
+      unchanged = request("GET", docs, path, [{"If-None-Match", image.headers["etag"]}])
+      assert unchanged.status == 304
+
+      assert request("GET", docs, path).body == "jpeg-bytes"
+      refute_received {:captured, _, _}
+    end
+
+    test "a publish replaces the image", %{agent: a, encoded: e, tenant_id: tenant_id} do
+      enable_browser!(tenant_id)
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+
+      docs = site_host("docs", e)
+      old_path = og_image_path(request("GET", docs, "/").body)
+      await_captures()
+      assert_received {:captured, _, _}
+      assert request("GET", docs, old_path).body == "jpeg-bytes"
+
+      capture_returns({:ok, "newer-jpeg"})
+      SystemsClock.advance(60_001)
+      write_files!(a, [{"/.salix/websites/docs/app.css", "body { color: red }"}])
+
+      new_path = og_image_path(request("GET", docs, "/").body)
+      assert new_path != old_path
+      await_captures()
+      assert_received {:captured, _, _}
+      assert request("GET", docs, new_path).body == "newer-jpeg"
+      refute_received {:captured, _, _}
+    end
+
+    test "a failed capture answers 503 and the site waits for its next window", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+      capture_returns({:error, :browser_provider_unavailable})
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+
+      docs = site_host("docs", e)
+      failed = request("GET", docs, "/_og-image.jpg")
+      assert failed.status == 503
+      assert failed.headers["retry-after"] == "60"
+      assert_received {:captured, _, _}
+
+      capture_returns({:ok, "jpeg-bytes"})
+      SystemsClock.advance(60_001)
+      assert request("GET", docs, "/_og-image.jpg").body == "jpeg-bytes"
+    end
+
+    test "a version that keeps failing stops capturing until the next publish", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+      capture_returns({:error, :browser_provider_unavailable})
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+      docs = site_host("docs", e)
+
+      for _attempt <- 1..3 do
+        assert request("GET", docs, "/_og-image.jpg").status == 503
+        assert_received {:captured, _, _}
+        SystemsClock.advance(60_001)
+      end
+
+      assert request("GET", docs, "/_og-image.jpg").status == 503
+      refute_received {:captured, _, _}
+
+      capture_returns({:ok, "jpeg-bytes"})
+      SystemsClock.advance(60_001)
+      write_files!(a, [{"/.salix/websites/docs/app.css", "body { color: red }"}])
+      assert request("GET", docs, "/_og-image.jpg").body == "jpeg-bytes"
+    end
+
+    test "a site without a home page names no screenshot", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+      write_files!(a, [{"/.salix/websites/docs/guide/index.html", "<html><head></head></html>"}])
+
+      refute request("GET", site_host("docs", e), "/guide/").body =~ "_og-image.jpg"
+      refute_received {:captured, _, _}
+    end
+
+    test "an image the site or tenant chose is used, and nothing is captured", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+
+      write_files!(a, [
+        {"/.salix/websites/own/index.html",
+         ~s(<html><head><meta property="og:image" content="https://own.example/og.png"></head></html>)},
+        {"/.salix/websites/shot/index.html", "<html><head></head></html>"},
+        {"/.salix/websites/shot/guide/index.html", "<html><head></head></html>"},
+        {"/.salix/websites/shot/og-image.png", "png-bytes"}
+      ])
+
+      own = request("GET", site_host("own", e), "/")
+      refute own.body =~ "_og-image.jpg"
+      refute own.body =~ "og:url"
+
+      shot = site_host("shot", e)
+      subpage = request("GET", shot, "/guide/")
+      assert subpage.body =~ ~s(<meta property="og:image" content="http://#{shot}/og-image.png">)
+      refute subpage.body =~ "og:image:width"
+
+      {:ok, _} =
+        Salix.Control.Tenants.update(tenant_id, %{
+          "config" =>
+            Jason.encode!(%{"default_og_image_url" => "https://cdn.example.test/default.png"})
+        })
+
+      write_files!(a, [{"/.salix/websites/plain/index.html", "<html><head></head></html>"}])
+      plain = request("GET", site_host("plain", e), "/")
+
+      assert plain.body =~
+               ~s(<meta property="og:image" content="https://cdn.example.test/default.png">)
+
+      refute_received {:captured, _, _}
+    end
+
+    test "Browser Run limited to allowed domains names no screenshot", %{
+      agent: a,
+      encoded: e,
+      tenant_id: tenant_id
+    } do
+      enable_browser!(tenant_id)
+
+      {:ok, :ok} =
+        SalixStore.BrowserSettings.put(tenant_id, %{
+          "mode" => "override",
+          "allowed_domains" => ["example.com"]
+        })
+
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+
+      docs = site_host("docs", e)
+      refute request("GET", docs, "/").body =~ "og:image"
+      assert request("GET", docs, "/_og-image.jpg").status == 404
+      refute_received {:captured, _, _}
+    end
+
+    test "without Browser Run a page names no screenshot", %{agent: a, encoded: e} do
+      write_files!(a, [{"/.salix/websites/docs/index.html", "<html><head></head></html>"}])
+
+      docs = site_host("docs", e)
+      refute request("GET", docs, "/").body =~ "og:image"
+      assert request("GET", docs, "/_og-image.jpg").status == 404
+      refute_received {:captured, _, _}
+    end
   end
 
   test "decorated HTML ignores source validators when tenant branding changes", %{

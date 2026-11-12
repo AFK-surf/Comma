@@ -62,9 +62,9 @@ class MappingTests(unittest.TestCase):
 
     def test_build_config_fields_are_resolved_after_renaming(self):
         mapping = self.mapping('surf.comma.android.BuildConfig -> c:\n'
-                               '    java.lang.String DOUBAO_ASR_API_KEY -> a\n')
+                               '    java.lang.String BACKEND_BASE_URL -> a\n')
         dump = "Class descriptor : 'Lc;'\nname : 'a'\ntype : 'Ljava/lang/String;'\naccess : PUBLIC STATIC FINAL\nvalue : \"\"\n"
-        self.assertEqual(isolation.build_config_values(dump, mapping), {'DOUBAO_ASR_API_KEY': ''})
+        self.assertEqual(isolation.build_config_values(dump, mapping), {'BACKEND_BASE_URL': ''})
 
 
 if __name__ == '__main__':

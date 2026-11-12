@@ -500,12 +500,15 @@ export function adbPath(): string | null {
 }
 
 /// What adb says to `args` (out, then err), within `timeout`. Said whatever its exit; fails only if it could not be
-/// started or did not answer in time.
+/// started or did not answer in time. An adb server this starts connects to no phone by itself: only a phone an offer
+/// names is on it (`ADB_MDNS_AUTO_CONNECT=0`, as the screens' own server has: screens/android.ts `adbEnv`), whatever else
+/// wireless debugging shows on the network. It stays the machine's default server, where the agents' adb finds the phone.
 export function run(adb: string, args: string[], timeout: number | null): Promise<string> {
   return new Promise((resolve, reject) => {
+    const env = { ...process.env, ADB_MDNS_AUTO_CONNECT: "0" };
     // A .cmd (a shim) runs through its script or cmd: Node starts none by itself.
-    const r = platform.runnable(adb, args, process.env);
-    const child = spawn(r.file, r.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
+    const r = platform.runnable(adb, args, env);
+    const child = spawn(r.file, r.args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout.on("data", (b) => out.push(b));

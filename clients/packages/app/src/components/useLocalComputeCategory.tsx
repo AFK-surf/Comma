@@ -9,12 +9,7 @@ import { useTopicListener } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
 // One visible clock. A tick reads one native page, one disk total, at most one receipt and one cloud mapping batch.
 // Workload detail pages are user-triggered; each read path permits one request in flight.
-export type ComputePanelDetail =
-  | "local"
-  | "maintenance"
-  | "settings"
-  | "erase"
-  | "authorization";
+export type ComputePanelDetail = "settings" | "authorization";
 export function useLocalComputeCategory(
   visible: boolean,
   workspaceId?: string,
@@ -37,8 +32,8 @@ export function useLocalComputeCategory(
   const [ownDetail, setOwnDetail] = useState<ComputePanelDetail>();
   const detail = options?.navigation ? options.navigation.detail : ownDetail;
   const setDetail = options?.navigation?.setDetail ?? setOwnDetail;
-  const managing = detail === "local";
-  const setManaging = (value: boolean) => setDetail(value ? "local" : undefined);
+  const managing = detail === "settings";
+  const setManaging = (value: boolean) => setDetail(value ? "settings" : undefined);
   const [error, setError] = useState("");
   const [mutating, setMutating] = useState(false);
   const [tick, setTick] = useState(0);
@@ -155,10 +150,10 @@ export function useLocalComputeCategory(
     setError("");
     try {
       await operation();
-      await refresh();
     } catch {
       setError(m.compute_local_failed());
     } finally {
+      await refresh();
       setMutating(false);
     }
   };

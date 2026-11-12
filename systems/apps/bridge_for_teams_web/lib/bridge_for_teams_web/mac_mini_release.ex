@@ -10,10 +10,8 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
   alias SalixStore.ServerReleaseDescriptor
 
   @install_platform "darwin-arm64"
-  @install_components ~w(runner salix-connect agent-vmm-host)
-  @salix_connect "salix-connect"
+  @install_components ~w(runner agent-vmm-host)
   @agent_vmm "agent-vmm"
-  @computer_use_helper "computer-use-helper"
 
   @doc "Return the current Server-bound release for the install wrapper."
   def install_release(conn \\ nil) do
@@ -111,14 +109,8 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
 
   @doc false
   def update_targets(platform, target \\ &ServerReleaseDescriptor.target/2) do
-    with {:ok, salix_connect} <- target.("salix-connect", platform),
-         {:ok, agent_vmm_host} <- target.("agent-vmm-host", platform) do
-      %{
-        @salix_connect => update_target(@salix_connect, salix_connect),
-        @agent_vmm => update_target("agent-vmm-host", agent_vmm_host)
-      }
-      |> put_computer_use_helper(target.(@computer_use_helper, platform))
-    else
+    case target.("agent-vmm-host", platform) do
+      {:ok, agent_vmm_host} -> %{@agent_vmm => update_target("agent-vmm-host", agent_vmm_host)}
       {:error, _reason} -> disabled_updates("server_release_unavailable")
     end
   end
@@ -134,18 +126,8 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
   end
 
   defp disabled_updates(reason) do
-    %{
-      @salix_connect => %{"component" => @salix_connect, "error" => reason},
-      @agent_vmm => %{"component" => "agent-vmm-host", "error" => reason}
-    }
+    %{@agent_vmm => %{"component" => "agent-vmm-host", "error" => reason}}
   end
-
-  # The helper is optional: without its target, connector and VMM updates and
-  # installs proceed and the installed helper stays as it is.
-  defp put_computer_use_helper(targets, {:ok, helper}),
-    do: Map.put(targets, @computer_use_helper, update_target(@computer_use_helper, helper))
-
-  defp put_computer_use_helper(targets, {:error, _reason}), do: targets
 
   defp targets(platform) do
     Enum.reduce_while(@install_components, {:ok, %{}}, fn component, {:ok, values} ->
@@ -156,8 +138,8 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
     end)
     |> case do
       {:ok, values} ->
-        case ServerReleaseDescriptor.target(@computer_use_helper, platform) do
-          {:ok, helper} -> {:ok, Map.put(values, @computer_use_helper, helper)}
+        case ServerReleaseDescriptor.target("runner-service-executor", platform) do
+          {:ok, target} -> {:ok, Map.put(values, "runner-service-executor", target)}
           {:error, _reason} -> {:ok, values}
         end
 

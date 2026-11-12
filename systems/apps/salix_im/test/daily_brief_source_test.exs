@@ -45,6 +45,18 @@ defmodule SalixIM.DailyBriefSourceTest do
       SystemsRuntime.Proc.send(owner, {:mirror_search, scope, opts})
       SystemsRuntime.fetch_env!(:salix_im, :daily_brief_test_search).(opts)
     end
+
+    def thread_participation(scope, actor_id, threads) do
+      owner = SystemsRuntime.fetch_env!(:salix_im, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:mirror_participation, scope, actor_id, threads})
+      {:ok, Enum.filter(threads, &(elem(&1, 1) in ["1.0", "5.0"]))}
+    end
+
+    def actor_channel_counts(scope, actors, channels, after_us) do
+      owner = SystemsRuntime.fetch_env!(:salix_im, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:mirror_counts, scope, actors, channels, after_us})
+      {:ok, [{"C_PUBLIC", "U_ALICE", 3}, {"C_OTHER", "U_ALICE", 12}, {"C_PUBLIC", "U_BOB", 7}]}
+    end
   end
 
   defmodule SlackLoopback do
@@ -186,7 +198,8 @@ defmodule SalixIM.DailyBriefSourceTest do
              actor_kind: "user",
              actor_id: "U_BOB",
              subtype: nil,
-             text: "<@U_ALICE> can you send the quote?"
+             text: "<@U_ALICE> can you send the quote?",
+             reactions: []
            }
 
     assert bot.actor_kind == "bot"
@@ -247,66 +260,67 @@ defmodule SalixIM.DailyBriefSourceTest do
     refute_received {:mirror_search, _scope, _opts}
   end
 
-  test "keeps only the member's threads in readable channels", ctx do
-    SystemsRuntime.put_env(:salix_im, :daily_brief_test_search, fn _opts ->
-      {:ok,
-       page([
-         %{"channel" => "C_PUBLIC", "ts" => "2.0", "thread_ts" => "1.0"},
-         %{"channel" => "C_PUBLIC", "ts" => "3.0"},
-         %{"channel" => "D_DIRECT", "ts" => "4.0"}
-       ])}
-    end)
+  test "names the given threads the member wrote in, in one read", ctx do
+    threads = [
+      %{channel_id: "C_PUBLIC", thread_ts: "1.0"},
+      %{channel_id: "C_PUBLIC", thread_ts: "3.0"},
+      %{channel_id: "C_OTHER", thread_ts: "5.0"},
+      %{channel_id: "C_PUBLIC", thread_ts: "1.0"}
+    ]
 
-    assert {:ok, %{threads: threads, complete?: true}} =
+    assert {:ok, %{threads: found, complete?: true}} =
              DailyBriefSource.member_threads(
-               Map.merge(ctx.source, %{
-                 slack_user_id: "U_ALICE",
-                 channel_ids: ["C_PUBLIC"],
-                 after_us: @after_us
-               })
+               Map.merge(ctx.source, %{slack_user_id: "U_ALICE", threads: threads})
              )
 
-    assert threads == [
+    assert found == [
              %{channel_id: "C_PUBLIC", thread_ts: "1.0"},
-             %{channel_id: "C_PUBLIC", thread_ts: "3.0"}
+             %{channel_id: "C_OTHER", thread_ts: "5.0"}
            ]
+
+    assert_received {:mirror_participation, _scope, "U_ALICE",
+                     [{"C_PUBLIC", "1.0"}, {"C_PUBLIC", "3.0"}, {"C_OTHER", "5.0"}]}
+
+    refute_received {:mirror_search, _scope, _opts}
   end
 
-  test "reads an active member's own messages page by page for their threads", ctx do
-    # Three pages, newest first: the second and third follow the cursor.
-    SystemsRuntime.put_env(:salix_im, :daily_brief_test_search, fn opts ->
-      case opts[:cursor_ts_us] do
-        nil ->
-          {:ok,
-           %{
-             messages: [%{"channel" => "C_PUBLIC", "ts" => "9.0"}],
-             next_cursor: {9, "m9"},
-             has_more?: true
-           }}
-
-        9 ->
-          {:ok,
-           %{
-             messages: [%{"channel" => "C_PUBLIC", "ts" => "8.0", "thread_ts" => "5.0"}],
-             next_cursor: {8, "m8"},
-             has_more?: true
-           }}
-
-        8 ->
-          {:ok, page([%{"channel" => "C_PUBLIC", "ts" => "2.0", "thread_ts" => "1.0"}])}
-      end
-    end)
-
-    assert {:ok, %{threads: threads, complete?: true}} =
+  test "reads nothing when the window has no threads", ctx do
+    assert {:ok, %{threads: [], complete?: true}} =
              DailyBriefSource.member_threads(
+               Map.merge(ctx.source, %{slack_user_id: "U_ALICE", threads: []})
+             )
+
+    refute_received {:mirror_participation, _scope, _actor, _threads}
+  end
+
+  test "refuses more threads than one read takes", ctx do
+    threads = for n <- 1..501, do: %{channel_id: "C_PUBLIC", thread_ts: "#{n}.0"}
+
+    assert DailyBriefSource.member_threads(
+             Map.merge(ctx.source, %{slack_user_id: "U_ALICE", threads: threads})
+           ) == {:error, :invalid_request}
+  end
+
+  test "counts each member's recent messages per channel, most first", ctx do
+    assert {:ok, active} =
+             DailyBriefSource.active_channels(
                Map.merge(ctx.source, %{
-                 slack_user_id: "U_ALICE",
-                 channel_ids: ["C_PUBLIC"],
+                 slack_user_ids: ["U_ALICE", "U_BOB"],
+                 channel_ids: ["C_PUBLIC", "C_OTHER"],
                  after_us: @after_us
                })
              )
 
-    assert Enum.map(threads, & &1.thread_ts) == ["9.0", "5.0", "1.0"]
+    assert active == %{
+             "U_ALICE" => [
+               %{channel_id: "C_OTHER", count: 12},
+               %{channel_id: "C_PUBLIC", count: 3}
+             ],
+             "U_BOB" => [%{channel_id: "C_PUBLIC", count: 7}]
+           }
+
+    assert_received {:mirror_counts, _scope, ["U_ALICE", "U_BOB"], ["C_PUBLIC", "C_OTHER"],
+                     @after_us}
   end
 
   test "rejects a connect from another tenant", ctx do

@@ -16,6 +16,15 @@ defmodule CommaWeb.SessionLifecycleProtocol do
 
   def call(conn, _opts) do
     cond do
+      CommaWeb.AuthCaptcha.public_page?(conn) ->
+        conn
+
+      # Paths that hold no Comma session (`CommaWeb.Auth` admits them as well):
+      # among them the client relay socket, which its ticket authorizes and a
+      # page opens with the web app's Origin and no header of this protocol.
+      CommaWeb.StationEndpoints.public_path?(conn.request_path) ->
+        conn
+
       CommaWeb.ClientSurface.cookie?(conn) and conn.method != "OPTIONS" ->
         with :ok <- validate_transport(conn, "cookie"),
              :ok <- validate_version(conn),

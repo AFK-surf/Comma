@@ -1,5 +1,5 @@
 import { useCall } from "@comma/core-client";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
   useChatSidebarActions,
@@ -11,6 +11,7 @@ import { ConversationView, type ConversationViewActions } from "./ConversationVi
 import { useWorkspaceSkills } from "../useWorkspaceSkills";
 import { useOpenTasksFilter } from "../../tasks/taskChips";
 import { TaskSequenceNavigator } from "../../tasks/TaskSequenceNavigator";
+import { TaskMessageFind } from "../../search/TaskMessageFind";
 
 export function ConversationRoute() {
   const params = useParams({ strict: false }) as {
@@ -21,6 +22,28 @@ export function ConversationRoute() {
   const workspaceId = params.workspaceId ?? "";
   const groupId = params.groupId ?? "";
   const conversationId = params.conversationId ?? "";
+  // Opened from a search: the address keeps what was searched and the matching Message shown.
+  const { message: foundMessageId, q: foundQuery } = useSearch({ strict: false }) as {
+    message?: string;
+    q?: string;
+  };
+  const navigate = useNavigate();
+  const showFoundMessage = useCallback(
+    (messageId: string) => {
+      void navigate({
+        to: ".",
+        search: (previous: Record<string, unknown>) => ({
+          ...previous,
+          message: messageId,
+        }),
+        replace: true,
+      });
+    },
+    [navigate]
+  );
+  const closeFind = useCallback(() => {
+    void navigate({ to: ".", search: {}, replace: true });
+  }, [navigate]);
   const call = useCall();
   const conversation = useConversation(workspaceId, groupId, conversationId);
   const skills = useWorkspaceSkills(workspaceId);
@@ -62,6 +85,7 @@ export function ConversationRoute() {
     discard,
     pickAttachments,
     previewLocalFile,
+    older,
     readTaskActivity,
     refresh,
     removeAttachment,
@@ -94,6 +118,7 @@ export function ConversationRoute() {
       discard,
       ...(pickAttachments ? { pickAttachments } : {}),
       ...(previewLocalFile ? { previewLocalFile } : {}),
+      older,
       readTaskActivity,
       refresh,
       removeAttachment,
@@ -116,6 +141,7 @@ export function ConversationRoute() {
       groupId,
       pickAttachments,
       previewLocalFile,
+      older,
       readTaskActivity,
       refresh,
       removeAttachment,
@@ -127,9 +153,23 @@ export function ConversationRoute() {
   );
 
   // A stable element keeps the memoized view from rendering for it.
-  const sequenceNavigator = useMemo(
-    () => <TaskSequenceNavigator conversationId={conversationId} />,
-    [conversationId]
+  const headerTrailing = useMemo(
+    () => (
+      <>
+        {foundMessageId && foundQuery ? (
+          <TaskMessageFind
+            conversationId={conversationId}
+            current={foundMessageId}
+            groupId={groupId}
+            onClose={closeFind}
+            onStep={showFoundMessage}
+            query={foundQuery}
+          />
+        ) : null}
+        <TaskSequenceNavigator conversationId={conversationId} />
+      </>
+    ),
+    [closeFind, conversationId, foundMessageId, foundQuery, groupId, showFoundMessage]
   );
 
   return (
@@ -142,7 +182,8 @@ export function ConversationRoute() {
       onOpenInCommaBrowser={handleOpenInCommaBrowser}
       onOpenTasksFilter={openTasksFilter}
       groupId={groupId}
-      headerTrailing={sequenceNavigator}
+      revealMessageId={foundMessageId}
+      headerTrailing={headerTrailing}
       skills={skills}
       state={conversation.state}
       workspaceId={workspaceId}

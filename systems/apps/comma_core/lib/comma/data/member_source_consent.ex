@@ -7,7 +7,8 @@ defmodule Comma.Data.MemberSourceConsent do
     field(:workspace_id, :string, primary_key: true)
     field(:user_id, :string, primary_key: true)
     field(:toolkit, :string, primary_key: true)
-    field(:connection_id, :string)
+    field(:connection_id, :string, primary_key: true)
+    field(:provider_subject, :map)
 
     timestamps(
       type: :utc_datetime_usec,

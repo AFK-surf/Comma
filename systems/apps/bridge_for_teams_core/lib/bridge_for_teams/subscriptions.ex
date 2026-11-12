@@ -61,9 +61,16 @@ defmodule BridgeForTeams.Subscriptions do
 
   def update(scope, id, attrs) do
     allowed =
-      if Map.has_key?(attrs, "connection") or Map.has_key?(attrs, "name"),
-        do: ~w(version name connection credentials),
-        else: ~w(version disabled credentials)
+      cond do
+        Map.has_key?(attrs, "connection") or Map.has_key?(attrs, "name") ->
+          ~w(version name connection credentials)
+
+        Map.has_key?(attrs, "use_credits") ->
+          ~w(version use_credits)
+
+        true ->
+          ~w(version disabled credentials)
+      end
 
     account(scope, :update, [id, Map.take(attrs, allowed)])
   end
@@ -72,7 +79,7 @@ defmodule BridgeForTeams.Subscriptions do
   def quota(scope, id), do: account(scope, :quota, [id])
 
   def reset_quota(scope, id, attrs),
-    do: account(scope, :reset_quota, [id, Map.take(attrs, ~w(version request_id))])
+    do: account(scope, :reset_quota, [id, Map.take(attrs, ~w(version request_id kind))])
 
   def begin_oauth(scope, attrs),
     do: account(scope, :begin_oauth, [Map.take(attrs, ~w(provider account_id version mode))])

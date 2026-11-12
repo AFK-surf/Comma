@@ -30,7 +30,9 @@ defmodule SalixIM.TaskWorkerWatch do
   later, a still-active Task gets one `task_status_pending` notification to
   the Router per Worker result. A Loop Task whose Loop runs gets none: each
   of its results is one run, not the end of the work (`SalixIM.TaskLoop`).
-  Once its Loop stopped or ended, its results are reviewed again.
+  Once its Loop stopped or ended, its results are reviewed again. A
+  station's Worker Session reports nothing here, so `SalixIM.StationTaskWatch`
+  sends the same notification for a Task that runs on a station.
 
   ## Protocol assumptions (no formal model; see systems/AGENTS.md)
 
@@ -62,6 +64,11 @@ defmodule SalixIM.TaskWorkerWatch do
       logged; a later stop starts afresh.
     * A blocking session issue (the runtime itself cannot run the Worker)
       skips the reminder and notifies the Router at once.
+    * While a Loop Task's Loop runs, the Router's Messages other than the
+      Task's command are not delegations: the command, the Loop's wakes and
+      people's Messages give the Worker its work, and a Router note (such as
+      a forwarded run result) asks for no reply. A failed Loop read counts as
+      running.
     * Only `status == "active"` Tasks are watched; a Task the Router has
       already moved on from is left alone.
     * A Worker result is the latest Worker-authored Message above the
@@ -115,6 +122,8 @@ defmodule SalixIM.TaskWorkerWatch do
             worker_agent_id: nil,
             worker_participant_id: nil,
             delegator_agent_id: nil,
+            # The Router while the Task's Loop runs: its notes are no delegations.
+            loop_router_agent_id: nil,
             stop: nil,
             attempts: 0,
             card_activity: nil,
@@ -386,14 +395,18 @@ defmodule SalixIM.TaskWorkerWatch do
              state.conversation_id,
              tail: @messages_window
            ) do
-      case decide(messages, state, kind, issue, version) do
+      loop_runs? = SalixIM.TaskLoop.loop_runs?(conversation)
+
+      ids =
+        if loop_runs?, do: %{state | loop_router_agent_id: state.delegator_agent_id}, else: state
+
+      case decide(messages, ids, kind, issue, version) do
         {:review, epoch, result_seq, result_at} ->
           state = %{state | stop: {:acted, version, kind, issue, nil, nil}, attempts: 0}
 
-          if router_decides_status?(conversation) and
-               not SalixIM.TaskLoop.loop_runs?(conversation),
-             do: begin_review(state, epoch, result_seq, result_at),
-             else: state
+          if router_decides_status?(conversation) and not loop_runs?,
+            do: begin_review(state, epoch, result_seq, result_at),
+            else: state
 
         decision ->
           case act(state, decision, version, issue, activity) do
@@ -461,7 +474,22 @@ defmodule SalixIM.TaskWorkerWatch do
       worker_pid == nil or ConversationMessage.addressed_to?(worker_pid, m)
     end
 
-    delegations = Enum.filter(messages, &(given?.(&1) and not (by_worker?.(&1) or watch?.(&1))))
+    # While a Loop runs, the Task's command, the Loop's wakes and people's
+    # Messages are the Worker's work; the Router's other Messages there
+    # (forwarding a run's result, a note) ask for nothing it must answer.
+    loop_router = Map.get(ids, :loop_router_agent_id)
+
+    loop_router_note? = fn m ->
+      loop_router != nil and m["agent_id"] == loop_router and
+        watch_type.(m) != "task_command"
+    end
+
+    delegations =
+      Enum.filter(
+        messages,
+        &(given?.(&1) and not (by_worker?.(&1) or watch?.(&1) or loop_router_note?.(&1)))
+      )
+
     epoch = delegations |> Enum.map(seq) |> Enum.max(fn -> 0 end)
 
     since = fn pred -> Enum.any?(messages, fn m -> seq.(m) > epoch and pred.(m) end) end
@@ -803,7 +831,9 @@ defmodule SalixIM.TaskWorkerWatch do
     end
   end
 
-  defp status_pending_content do
+  @doc false
+  # Also `SalixIM.StationTaskWatch`'s, for a Task whose Worker is a station's.
+  def status_pending_content do
     "The Worker published its result in this Task and stopped, and your last turn ended " <>
       "with the Task still active, so nobody is working on it. Decide its status now with " <>
       "im_api.internal.update_conversation: ready_for_review when the result reached the " <>

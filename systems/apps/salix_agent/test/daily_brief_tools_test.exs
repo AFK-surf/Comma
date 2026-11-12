@@ -14,6 +14,18 @@ defmodule SalixAgent.DailyBriefToolsTest do
       SystemsRuntime.Proc.send(owner, {:set_time, group_id, origin, brief, time})
       {:ok, %{"brief" => brief, "time" => time}}
     end
+
+    def set_channel(group_id, origin, channel, mode) do
+      owner = SystemsRuntime.get_env(:salix_agent, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:set_channel, group_id, origin, channel, mode})
+      {:ok, %{"main_channels" => ["#ops"], "with_bot_messages" => ["#ops"]}}
+    end
+
+    def set_project(group_id, origin, term, mode) do
+      owner = SystemsRuntime.get_env(:salix_agent, :daily_brief_test_owner)
+      SystemsRuntime.Proc.send(owner, {:set_project, group_id, origin, term, mode})
+      {:ok, %{"projects" => [term]}}
+    end
   end
 
   setup do
@@ -59,5 +71,20 @@ defmodule SalixAgent.DailyBriefToolsTest do
     end
 
     refute_received {:set_time, _, _, _, _}
+  end
+
+  test "a requester changes the channels and projects of their own brief" do
+    origin = %{"provider" => "slack", "provider_context" => %{"user_id" => "U1"}}
+    ctx = %{agent_id: "router", trusted_origin: origin}
+
+    assert DailyBriefTools.set_channel(%{"channel" => "#ops", "mode" => "follow_with_bots"}, ctx) =~
+             ~s("main_channels":["#ops"])
+
+    assert_received {:set_channel, "group", ^origin, "#ops", "follow_with_bots"}
+
+    assert DailyBriefTools.set_project(%{"term" => "Photon", "mode" => "add"}, ctx) ==
+             ~s({"projects":["Photon"]})
+
+    assert_received {:set_project, "group", ^origin, "Photon", "add"}
   end
 end

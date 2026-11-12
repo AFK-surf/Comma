@@ -105,6 +105,8 @@ class MediaImageLoader private constructor(
             // Let Coil validate the cached decode against the requested size. A fully decoded
             // preview (or a larger existing decode) can satisfy the row without decoding twice.
             is ViewerImage.Local -> builder.data(image.uri).memoryCacheKey("local:${image.uri}")
+            // A video page plays its file; it has no picture to decode here.
+            is ViewerImage.Video -> throw IllegalArgumentException("A video has no picture")
         }
         return when (val result = imageLoader.execute(builder.build())) {
             is SuccessResult -> {
@@ -144,7 +146,7 @@ class MediaImageLoader private constructor(
         visible: Boolean = false,
         fallbackRatio: Double = 1.0,
         onError: (Throwable) -> Unit = {},
-    ): MediaImageBinding = bind(view, ViewerImage.Remote(image), widthPx, visible, fallbackRatio, onError)
+    ): MediaImageBinding = bind(view, ViewerImage.Remote(image), widthPx, visible, fallbackRatio, onError = onError)
 
     /** Local draft/fixture pictures and remote attachments share Coil, sizing and visibility. */
     @MainThread
@@ -154,6 +156,7 @@ class MediaImageLoader private constructor(
         widthPx: Int,
         visible: Boolean = false,
         fallbackRatio: Double = 1.0,
+        onLoaded: () -> Unit = {},
         onError: (Throwable) -> Unit = {},
     ): MediaImageBinding {
         val session = authorizedHttp.session.value
@@ -200,6 +203,7 @@ class MediaImageLoader private constructor(
                                 loaded = load(image, size.width, size.height)
                                 session?.let(authorizedHttp::requireCurrent)
                                 view.setImageDrawable(loaded)
+                                onLoaded()
                             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                 throw cancelled
                             } catch (error: Exception) {

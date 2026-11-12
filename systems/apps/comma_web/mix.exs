@@ -42,7 +42,8 @@ defmodule CommaWeb.MixProject do
       {:jason, "~> 1.4"},
       {:req, "~> 0.6"},
       {:floki, "~> 0.38"},
-      {:oidcc, "~> 3.9"}
+      {:oidcc, "~> 3.9"},
+      {:eqrcode, "~> 0.2.1"}
     ]
   end
 end

@@ -31,6 +31,29 @@ defmodule Comma.AuthChallengeStore.RedisTest do
     %{connection: connection, prefix: prefix}
   end
 
+  test "the auth Redis owner uses its configured URL despite conflicting Redis environment", %{
+    connection: connection,
+    prefix: prefix
+  } do
+    previous = for name <- ["REDIS_URL", "COMMA_REDIS_URL"], do: {name, System.get_env(name)}
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end)
+
+    System.put_env("REDIS_URL", "redis://127.0.0.1:1/0")
+    System.put_env("COMMA_REDIS_URL", "redis://127.0.0.1:2/0")
+    stop_supervised!(Redix)
+    start_supervised!({Redis, []})
+    assert {:ok, "PONG"} = Redix.command(Redis.connection_name(), ["PING"])
+    assert :ok = Redis.reserve(challenge("json-owner", "json-email"), 60, request_opts())
+    assert {:ok, saved} = Redix.command(connection, ["GET", "#{prefix}:challenge:json-owner"])
+    assert Jason.decode!(saved)["id"] == "json-owner"
+  end
+
   test "request reservation atomically enforces email cooldown and fixed windows" do
     cooldown_opts = request_opts(resend_cooldown_seconds: 30)
 

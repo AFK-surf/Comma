@@ -37,7 +37,7 @@ async function turnRuns(staleRecord: boolean) {
   // A login in its file: nothing is looked for in the keychain.
   writeFileSync(join(home, ".credentials.json"), "{}");
   const config = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }, data);
-  const store = Store.open(join(data, "stillfail.db"));
+  const store = Store.open(join(data, "station.db"));
   const driver = new ClaudeDriver({ data });
   let url = "";
   const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [driver], mcpUrl: () => url, internal: new InternalChat() });

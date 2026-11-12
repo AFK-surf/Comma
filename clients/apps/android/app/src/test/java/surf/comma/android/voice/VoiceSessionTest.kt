@@ -410,8 +410,8 @@ class VoiceSessionTest {
             peer.close(4410, "slow_reader")
             // No time passes: the call ends without waiting out the hang-up's two seconds.
             settle()
-            assertEquals(CallPhase.Failed, call.state.value.phase)
-            assertEquals(CallResult.Interrupted, call.state.value.result)
+            assertEquals(if (hangup) CallPhase.Ended else CallPhase.Failed, call.state.value.phase)
+            assertEquals(if (hangup) CallResult.Ended else CallResult.Interrupted, call.state.value.result)
             assertEquals(VoiceDiagnostic.Kind.ServerError, call.diagnostics.replayCache.last().kind)
             assertEquals(4410, call.diagnostics.replayCache.last().code)
         }
@@ -426,8 +426,8 @@ class VoiceSessionTest {
         assertEquals("session.end", peer.nextText().getString("type"))
         peer.close(4401, "revoked")
         settle()
-        assertEquals(CallPhase.Failed, call.state.value.phase)
-        assertEquals(CallResult.CredentialsExpired, call.state.value.result)
+        assertEquals(CallPhase.Ended, call.state.value.phase)
+        assertEquals(CallResult.Ended, call.state.value.result)
         assertEquals(1, credentials.invalidations)
         assertEquals(1, credentials.fetches)
     }

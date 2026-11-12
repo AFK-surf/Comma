@@ -1,11 +1,19 @@
 import { countTaskLoopRules, taskLoopRuleKey } from "@comma/core/task-loop-filter";
 import { openTaskTarget } from "./openTaskTarget";
-import { NewStationTaskDialog } from "./station/NewStationTaskDialog";
+import { useNewTaskDialog } from "./station/NewTaskDialogContext";
 import { useTaskLoopRuleFilter } from "./useTaskLoopRuleFilter";
+import {
+  taskMatchesDates,
+  useTaskDateFilter,
+  type TaskDateField,
+  type TaskDateSelection,
+  type TaskDateWindow,
+} from "./useTaskDateFilter";
 import { useCall } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   InfinityIcon,
+  InviteIcon,
   MacbookIcon,
   SquareGridCircleIcon,
   TagLabelIcon,
@@ -15,10 +23,12 @@ import {
   TaskWorkspace,
   type TaskFilterOption,
   type TaskFilterSection,
+  type TaskFilterSectionGroup,
   type TaskWorkspaceProps,
   type TaskWorkspaceTask,
 } from "@comma/ui/components/task-workspace";
 import { toast } from "@comma/ui/components/toast";
+import { uiClock } from "@comma/ui/clock";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConversationPreparation } from "../chat/prepareConversations";
@@ -28,6 +38,7 @@ import { isStaleChatSessionError, useChatRegistry } from "../chat/ChatProvider";
 import { resolveWorkspaceChat } from "../chat/useWorkspaceChat";
 import { useCommaUiThemeName } from "../commaUiTheme";
 import { LabelDot } from "./labelColor";
+import { RequestPeople, requestPersonKey, requestPersonOptions } from "./requestPeople";
 import { TaskStepCards } from "./taskSteps";
 import {
   TASK_ORIGIN_KEYS,
@@ -46,7 +57,10 @@ import { taskMentionsDraft } from "./taskMentions";
 import { taskSequenceEntry } from "./taskSequence";
 import { useTaskBadges } from "./useTaskBadges";
 import { useTaskOrder } from "./useTaskOrder";
-import { useWorkspaceTasks } from "./useWorkspaceTasks";
+import {
+  useWorkspaceTasks,
+  type TaskViewModel as WorkspaceTask,
+} from "./useWorkspaceTasks";
 
 export type TaskViewModel = TaskWorkspaceTask;
 export type TaskWorkspacePanelProps = TaskWorkspaceProps;
@@ -67,9 +81,25 @@ interface FilterEdits {
   clientPlatform?: ReadonlySet<string> | undefined;
   schedule?: ReadonlySet<string> | undefined;
   loopRule?: string | undefined;
+  /** Who sent the request a Task came from, or none (`requestKey`). */
+  request?: ReadonlySet<string> | undefined;
+  /** How recent each date must be; the menu alone sets it. */
+  dates?: TaskDateSelection | undefined;
 }
 
-const NO_LINK = JSON.stringify(["", "", "", "", ""]);
+const NO_DATES: TaskDateSelection = {};
+
+/**
+ * The Request filter's choices: each person whose request a Task was accepted from (`requestPersonKey`), and every
+ * Task not from a request.
+ */
+const NOT_REQUEST = "not_request";
+const requestKey = (task: Pick<WorkspaceTask, "origin" | "requestedBy">) =>
+  task.origin === "task_request"
+    ? requestPersonKey("from", task.requestedBy ?? {})
+    : NOT_REQUEST;
+
+const NO_LINK = JSON.stringify(["", "", "", "", "", ""]);
 
 function allOptionIds(options: readonly TaskFilterOption[]): ReadonlySet<string> {
   return new Set(options.map((option) => option.id));
@@ -100,6 +130,7 @@ export function TasksRoute() {
   } = useWorkspaceTasks({ stationTasks: true });
   const { orders, setBucketOrder } = useTaskOrder(activeGroupId, tasks);
   const messages = useCommaMessages();
+  const locale = useCommaLocale();
 
   // A deep link seeds the filter (the toolbar's Filter icon shows it). An edit
   // in the filter menu replaces it.
@@ -116,14 +147,18 @@ export function TasksRoute() {
     clientPlatform: clientPlatformParam,
     schedule: scheduleParam,
     loopRule: loopRuleParam,
+    request: requestParam,
   } = useSearch({ strict: false });
-  const platformLink = taskOriginKey(platformParam);
+  // A request's Task has a Request filter of its own: an older `?platform=task_request` link selects it there.
+  const requestLink = platformParam === "task_request";
+  const platformLink = requestLink ? undefined : taskOriginKey(platformParam);
   const link = JSON.stringify([
     labelParam ?? "",
     platformParam ?? "",
     clientPlatformParam ?? "",
     scheduleParam ?? "",
     loopRuleParam ?? "",
+    requestParam ?? "",
   ]);
   const [edits, setEdits] = useState<FilterEdits>({ link });
   const current = edits.link === link ? edits : undefined;
@@ -135,6 +170,22 @@ export function TasksRoute() {
     () =>
       current?.platform ?? (platformLink ? new Set<string>([platformLink]) : undefined),
     [current, platformLink]
+  );
+
+  // `?request=<person>`: a request chip on a card. An older `?platform=task_request` link selects every sender.
+  const requestSelection = useMemo(
+    () =>
+      current?.request ??
+      (requestParam
+        ? new Set([requestParam])
+        : requestLink
+          ? new Set(
+              tasks.flatMap((task) =>
+                task.origin === "task_request" ? [requestKey(task)] : []
+              )
+            )
+          : undefined),
+    [current, requestLink, requestParam, tasks]
   );
 
   const clientPlatformSelection = useMemo(
@@ -154,6 +205,10 @@ export function TasksRoute() {
     [current, scheduleParam]
   );
   const loopRuleSelection = current?.loopRule ?? loopRuleParam;
+  const dateSelection = current?.dates ?? NO_DATES;
+  // The Dates windows end when the list was last read, so a shown list holds still between reads.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const now = useMemo(() => uiClock.now(), [tasks]);
   const loopRules = useMemo(() => countTaskLoopRules(tasks), [tasks]);
   const openTasksFilter = useOpenTasksFilter();
   const { catalog, catalogById, metaById, renderTaskBadges } = useTaskBadges(
@@ -204,7 +259,8 @@ export function TasksRoute() {
       if (task.origin) counts.set(task.origin, (counts.get(task.origin) ?? 0) + 1);
     }
     return TASK_ORIGIN_KEYS.filter(
-      (key) => counts.has(key) || platformSelection?.has(key)
+      (key) =>
+        key !== "task_request" && (counts.has(key) || platformSelection?.has(key))
     ).map((key) => ({
       count: counts.get(key) ?? 0,
       icon: <TaskOriginIcon className="size-4" origin={key} />,
@@ -212,6 +268,34 @@ export function TasksRoute() {
       label: taskOriginLabel(messages, key),
     }));
   }, [messages, platformSelection, tasks]);
+
+  const requestOptions = useMemo<TaskFilterOption[]>(() => {
+    const senders = new RequestPeople();
+    let fromRequest = 0;
+    for (const task of tasks) {
+      if (task.origin !== "task_request") continue;
+      fromRequest += 1;
+      const sender = task.requestedBy;
+      senders.add(requestKey(task), {
+        name: sender?.name || messages.task_requests_unknown_person(),
+        ...(sender?.avatar
+          ? { avatar: { source: "sender-avatar", ...sender.avatar } as const }
+          : {}),
+      });
+    }
+    if (fromRequest === 0 && requestSelection === undefined) return [];
+    return [
+      ...requestPersonOptions(
+        senders.list(locale),
+        messages.tasks_filter_from_request()
+      ),
+      {
+        count: tasks.length - fromRequest,
+        id: NOT_REQUEST,
+        label: messages.tasks_filter_not_request(),
+      },
+    ];
+  }, [locale, messages, requestSelection, tasks]);
 
   const clientPlatformOptions = useMemo<TaskFilterOption[]>(() => {
     const counts = new Map<string, number>();
@@ -254,7 +338,13 @@ export function TasksRoute() {
       patch: Partial<
         Pick<
           FilterEdits,
-          "label" | "platform" | "clientPlatform" | "schedule" | "loopRule"
+          | "label"
+          | "platform"
+          | "clientPlatform"
+          | "schedule"
+          | "loopRule"
+          | "request"
+          | "dates"
         >
       >
     ) => {
@@ -265,6 +355,8 @@ export function TasksRoute() {
         platform: platformSelection,
         schedule: scheduleSelection,
         loopRule: loopRuleSelection,
+        request: requestSelection,
+        dates: dateSelection,
         ...patch,
       });
       if (
@@ -272,7 +364,8 @@ export function TasksRoute() {
         platformParam !== undefined ||
         clientPlatformParam !== undefined ||
         scheduleParam !== undefined ||
-        loopRuleParam !== undefined
+        loopRuleParam !== undefined ||
+        requestParam !== undefined
       ) {
         void navigate({
           replace: true,
@@ -282,6 +375,7 @@ export function TasksRoute() {
       }
     },
     [
+      dateSelection,
       labelParam,
       labelSelection,
       navigate,
@@ -293,6 +387,8 @@ export function TasksRoute() {
       scheduleSelection,
       loopRuleParam,
       loopRuleSelection,
+      requestParam,
+      requestSelection,
       statusParam,
     ]
   );
@@ -308,8 +404,18 @@ export function TasksRoute() {
     editLoopRule
   );
 
-  const filterSections = useMemo<TaskFilterSection[]>(() => {
-    const sections: TaskFilterSection[] = [];
+  const editDate = useCallback(
+    (field: TaskDateField, window: TaskDateWindow | undefined) => {
+      const { [field]: _, ...dates } = dateSelection;
+      const next = window ? { ...dates, [field]: window } : dates;
+      edit({ dates: Object.keys(next).length > 0 ? next : undefined });
+    },
+    [dateSelection, edit]
+  );
+  const dateGroup = useTaskDateFilter(tasks, dateSelection, now, editDate);
+
+  const filterSections = useMemo<(TaskFilterSection | TaskFilterSectionGroup)[]>(() => {
+    const sections: (TaskFilterSection | TaskFilterSectionGroup)[] = [];
     // Show trigger filters once a Task has a Loop or a link narrows by trigger.
     if (loopCount > 0 || scheduleSelection !== undefined) {
       sections.push({
@@ -335,6 +441,18 @@ export function TasksRoute() {
         selected: labelSelection ?? allOptionIds(labelOptions),
       });
     }
+    if (requestOptions.length > 0) {
+      sections.push({
+        icon: <InviteIcon />,
+        id: "request",
+        label: messages.tasks_filter_request(),
+        narrowed: requestSelection !== undefined,
+        onChange: (selected) =>
+          edit({ request: narrowingOnly(selected, requestOptions) }),
+        options: requestOptions,
+        selected: requestSelection ?? allOptionIds(requestOptions),
+      });
+    }
     if (platformOptions.length > 0) {
       sections.push({
         icon: <SquareGridCircleIcon />,
@@ -358,10 +476,12 @@ export function TasksRoute() {
         onChange: (selected) =>
           edit({ clientPlatform: narrowingOnly(selected, clientPlatformOptions) }),
       });
+    sections.push(dateGroup);
     return sections;
   }, [
     clientPlatformOptions,
     clientPlatformSelection,
+    dateGroup,
     edit,
     hasLabels,
     labelOptions,
@@ -370,6 +490,8 @@ export function TasksRoute() {
     messages,
     platformOptions,
     platformSelection,
+    requestOptions,
+    requestSelection,
     scheduleOptions,
     scheduleSelection,
     ruleSection,
@@ -378,9 +500,11 @@ export function TasksRoute() {
   const narrowing =
     labelSelection !== undefined ||
     platformSelection !== undefined ||
+    requestSelection !== undefined ||
     clientPlatformSelection !== undefined ||
     scheduleSelection !== undefined ||
-    loopRuleSelection !== undefined;
+    loopRuleSelection !== undefined ||
+    dateSelection !== NO_DATES;
   const visibleTasks = useMemo(() => {
     if (!narrowing) return tasks;
     return tasks.filter((task) => {
@@ -401,6 +525,8 @@ export function TasksRoute() {
       if (platformSelection && !(task.origin && platformSelection.has(task.origin))) {
         return false;
       }
+      if (requestSelection && !requestSelection.has(requestKey(task))) return false;
+      if (!taskMatchesDates(task, dateSelection, now)) return false;
       if (labelSelection) {
         // Older cache entries join after the owner refresh supplies membership.
         if (!metaById.has(task.conversationId)) return false;
@@ -414,11 +540,14 @@ export function TasksRoute() {
       return true;
     });
   }, [
+    dateSelection,
     knownLabels,
     labelSelection,
     metaById,
     narrowing,
+    now,
     platformSelection,
+    requestSelection,
     clientPlatformSelection,
     scheduleSelection,
     loopRuleSelection,
@@ -427,8 +556,8 @@ export function TasksRoute() {
 
   // A Task runs in Comma's cloud or a cloud sandbox from any app; only the desktop app also reaches the machines,
   // which the dialog offers when they are online.
-  const canCreateTask = !!result?.activeWorkspaceId;
-  const [creating, setCreating] = useState(false);
+  const newTask = useNewTaskDialog();
+  const shownWorkspace = result?.activeWorkspaceId;
   const openTask = useCallback(
     (task: TaskViewModel, shown: readonly TaskViewModel[]) => {
       void navigate({
@@ -474,7 +603,6 @@ export function TasksRoute() {
     );
   }, []);
 
-  const locale = useCommaLocale();
   const askComma = useCallback(
     async (selected: readonly TaskViewModel[]) => {
       if (selected.length === 0) return;
@@ -541,7 +669,9 @@ export function TasksRoute() {
         onChatWithComma={openCommaHome}
         onLoadMore={loadMore}
         onOpenTask={openTask}
-        {...(canCreateTask ? { onCreateTask: () => setCreating(true) } : {})}
+        {...(shownWorkspace
+          ? { onCreateTask: () => newTask.open(shownWorkspace) }
+          : {})}
         onVisibleTasksChange={prepareVisibleTasks}
         onRetry={result?.source === "error" ? retryTasks : undefined}
         onTaskOrderChange={setBucketOrder}
@@ -550,12 +680,6 @@ export function TasksRoute() {
         tasks={visibleTasks}
         userEmail={auth.userEmail}
       />
-      {creating && result?.activeWorkspaceId ? (
-        <NewStationTaskDialog
-          onClose={() => setCreating(false)}
-          workspace={result.activeWorkspaceId}
-        />
-      ) : null}
     </TaskStepCards>
   );
 }

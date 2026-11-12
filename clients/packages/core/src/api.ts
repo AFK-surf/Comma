@@ -3,7 +3,7 @@
 // no answer fails `network`; one the server refused fails with the server's code (`{error}` of its body) and status;
 // one refused for the session (401, or 409 naming the session) also tells the session. One whose lease closes while it
 // is under way (the web's lifecycle signed out, or is checking a refused session) is stopped and fails `signed_out`.
-import { CoreError, HostError, utf8, fromUtf8 } from "@comma/core-kernel";
+import { CoreError, HostError, share, utf8, fromUtf8 } from "@comma/core-kernel";
 import { Effect, type Scope } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -32,8 +32,9 @@ const sessionRefusals = new Set([
  * What this core can do that the server offers only to clients that can (`x-comma-client-capabilities`). A client that
  * sends none was built before the header, and is offered nothing that needs one.
  * - `device-plugins`: lists and installs, itself, the plugins that run on the user's own device (the Mac apps).
+ * - `blender-plugin`: the desktop app serves the Blender plugin on its own device.
  */
-export const CLIENT_CAPABILITIES = ["device-plugins"] as const;
+export const CLIENT_CAPABILITIES = ["device-plugins", "blender-plugin"] as const;
 
 /** The headers every request carries: what the app is (`kind/platform/version`) and what this core can do. */
 export function clientHeaders(client: ClientIdentity | undefined): [string, string][] {
@@ -71,10 +72,15 @@ export type Conditional<T> =
   | { notModified: true }
   | { notModified: false; value: T; etag?: string };
 
+/** How many answers an account keeps to share the next ones with. */
+const KEPT_ANSWERS = 64;
+
 export class Api {
   readonly #host: Host;
   readonly #session: Session;
   readonly #client: [string, string][];
+  /** Each account's last answers, by method and path. */
+  readonly #answers = new WeakMap<Account, Map<string, unknown>>();
 
   constructor(host: Host, session: Session) {
     this.#host = host;
@@ -318,12 +324,30 @@ export class Api {
           const tag = header(response, "etag");
           return Effect.succeed({
             notModified: false,
-            value: out.data as z.output<S>,
+            value: this.#shared(account, `${method} ${path}`, out.data),
             ...(tag ? { etag: tag } : {}),
           });
         })
       )
     );
+  }
+
+  /**
+   * An answer, keeping the objects of the last answer to the same request (method and path) where they are equal
+   * (core-kernel keep.ts): a list read again keeps its unchanged rows, and so does all the core makes of them.
+   */
+  #shared<T>(account: Account, path: string, value: T): T {
+    let answers = this.#answers.get(account);
+    if (!answers) {
+      answers = new Map();
+      this.#answers.set(account, answers);
+    }
+    const shared = account.held(share(answers.get(path), value));
+    // The most recent paths, a bounded number (a paged list's cursors make many).
+    answers.delete(path);
+    answers.set(path, shared);
+    if (answers.size > KEPT_ANSWERS) answers.delete(answers.keys().next().value!);
+    return shared;
   }
 
   /** Fails once the request's lease closes: the request racing it is stopped (its host fetch aborted). */

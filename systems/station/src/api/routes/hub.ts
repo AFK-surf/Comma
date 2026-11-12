@@ -13,7 +13,7 @@ import { log } from "../../ops/log.ts";
 import { find as findMachineSession, roots as machineRoots } from "../../read/machine.ts";
 import { RUNTIMES } from "../../accounts/sources.ts";
 import type { Runtime } from "../../sessions/config.ts";
-import { STILLFAIL_SURFACE } from "../../store/rows.ts";
+import { COMMA_STATION_SURFACE } from "../../store/rows.ts";
 import type { Attachment, Quote } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
 import type { AgentsParts } from "../../sessions/agents.ts";
@@ -271,8 +271,8 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
 
   /// admin/mod.rs Input::text: JavaScript's String(x ?? "").
   const said = (v: unknown) => (v === undefined || v === null ? "" : typeof v === "string" ? v : JSON.stringify(v));
-  /// A development station's (STILLFAIL_DEV=1, else EMBER_DEV=1): only there is /dev/inject a route.
-  const dev = (process.env.STILLFAIL_DEV || process.env.EMBER_DEV) === "1";
+  /// A development station's (COMMA_STATION_DEV=1, else EMBER_DEV=1): only there is /dev/inject a route.
+  const dev = (process.env.COMMA_STATION_DEV || process.env.EMBER_DEV) === "1";
   return [
     // Hands the station a chat message as if the connect had received it (development stations, for those who manage
     // them; anyone else finds no such route).
@@ -480,7 +480,7 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
       handle: (r, [rawId]) =>
         write(async (s, a) => {
           const t = thread(s, segment(rawId!));
-          if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyStillfail"));
+          if (t.surface !== COMMA_STATION_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyComma"));
           const i = input(r);
           const said = text(i.text).trim();
           const files = await attachments(r, s, a, t.id, i.attachments);
@@ -528,7 +528,7 @@ export const routes = ({ read, store, agents }: Tools): Route[] => {
       handle: (r, [rawId]) =>
         write(async (s, a) => {
           const t = thread(s, segment(rawId!));
-          if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyStillfail"));
+          if (t.surface !== COMMA_STATION_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyComma"));
           const i = input(r);
           const given = (k: string) => (typeof i[k] === "string" && i[k] !== "" ? (i[k] as string) : null);
           const station = given("station");

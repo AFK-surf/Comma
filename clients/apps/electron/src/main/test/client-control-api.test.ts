@@ -226,11 +226,34 @@ describe("Comma Main client-control API", () => {
         ],
       });
 
-      const clientSettings = await request(
+      const globalSettings = (await request(
+        server.endpoint,
+        "control-token-1",
+        "/v1/modules/global-settings"
+      )) as { apis: { id: string; inputSchema: { properties: object } }[] };
+      expect(
+        Object.keys(
+          globalSettings.apis.find((api) => api.id === "update")!.inputSchema.properties
+        ).toSorted()
+      ).toEqual([
+        "airDropName",
+        "keepAwakeWhenLidClosed",
+        "launchAtLogin",
+        "notchSideWidth",
+        "notificationSound",
+        "notifyRouterMessages",
+        "quickChatEnabled",
+        "showInAirDrop",
+        "showInDock",
+        "showInMenuBar",
+        "showInNotch",
+      ]);
+
+      const clientSettings = (await request(
         server.endpoint,
         "control-token-1",
         "/v1/modules/client-settings"
-      );
+      )) as { apis: { id: string; inputSchema: { properties: object } }[]; id: string };
       expect(clientSettings).toMatchObject({
         apis: [
           expect.objectContaining({ id: "get" }),
@@ -248,6 +271,17 @@ describe("Comma Main client-control API", () => {
         ],
         id: "client-settings",
       });
+      // What the user has already seen is not the agent's to rewrite.
+      expect(
+        Object.keys(
+          clientSettings.apis.find((api) => api.id === "update")!.inputSchema.properties
+        )
+      ).toEqual(
+        expect.not.arrayContaining([
+          "onboardingCompletedUserIds",
+          "routerProfileNoticeSeen",
+        ])
+      );
 
       const browser = await request(
         server.endpoint,
@@ -319,6 +353,37 @@ describe("Comma Main client-control API", () => {
       keepAwakeWhenLidClosed: true,
     });
 
+    // The Notch, the Router's notifications, AirDrop visibility and Quick Chat
+    // are the user's to ask for in words.
+    await expect(
+      harness.registry.invoke({
+        api: "update",
+        input: {
+          notchSideWidth: 200,
+          notificationSound: false,
+          notifyRouterMessages: false,
+          quickChatEnabled: false,
+          showInAirDrop: false,
+          showInNotch: false,
+        },
+        module: "global-settings",
+      })
+    ).resolves.toMatchObject({
+      notchSideWidth: 200,
+      notificationSound: false,
+      notifyRouterMessages: false,
+      quickChatEnabled: false,
+      showInAirDrop: false,
+      showInNotch: false,
+    });
+    await expect(
+      harness.registry.invoke({
+        api: "update",
+        input: { notchSideWidth: 500 },
+        module: "global-settings",
+      })
+    ).rejects.toThrow(/invalid/i);
+
     await expect(
       harness.registry.invoke({
         api: "update",
@@ -326,6 +391,41 @@ describe("Comma Main client-control API", () => {
         module: "global-settings",
       })
     ).rejects.toThrow(/invalid/i);
+    // The AirDrop name nearby devices see, and null for the default again.
+    await expect(
+      harness.registry.invoke({
+        api: "update",
+        input: { airDropName: "Office Mac" },
+        module: "global-settings",
+      })
+    ).resolves.toMatchObject({ airDropName: "Office Mac" });
+    await expect(
+      harness.registry.invoke({
+        api: "update",
+        input: { airDropName: null },
+        module: "global-settings",
+      })
+    ).resolves.toMatchObject({ airDropName: null });
+    // The macOS notification grant stays the user's; an AirDrop name keeps its bounds.
+    for (const input of [
+      { systemNotifications: false },
+      { airDropName: "" },
+      { airDropName: "x".repeat(65) },
+    ]) {
+      await expect(
+        harness.registry.invoke({ api: "update", input, module: "global-settings" })
+      ).rejects.toThrow(/invalid/i);
+    }
+    // What the user has already seen is not the agent's to rewrite.
+    for (const input of [
+      { onboardingCompletedUserIds: [] },
+      { routerProfileNoticeSeen: true },
+      {},
+    ]) {
+      await expect(
+        harness.registry.invoke({ api: "update", input, module: "client-settings" })
+      ).rejects.toThrow(/invalid/i);
+    }
 
     await expect(
       harness.registry.invoke({
@@ -365,6 +465,19 @@ describe("Comma Main client-control API", () => {
     });
     expect(harness.browser.openClientTab).toHaveBeenCalledWith({
       url: "https://example.com/new",
+    });
+    harness.browser.openClientTab.mockRejectedValueOnce(
+      new Error("Timed out waiting for in-app browser tab t to become ready.")
+    );
+    await expect(
+      harness.registry.invoke({
+        api: "open-tab",
+        input: { url: "https://example.com/slow" },
+        module: "in-app-browser",
+      })
+    ).resolves.toEqual({
+      error: "browser_operation_failed",
+      message: "Timed out waiting for in-app browser tab t to become ready.",
     });
 
     await expect(

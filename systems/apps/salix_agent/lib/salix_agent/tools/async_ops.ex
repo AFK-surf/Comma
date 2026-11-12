@@ -75,8 +75,11 @@ defmodule SalixAgent.Tools.AsyncOps do
        @visible_request_opts},
       {"location.request",
        "Ask for location when precise coordinates are needed; for city-level weather, ask for the city instead. " <>
+         "A person moves: for directions, nearby places or anything else that depends on where they are now, call this again " <>
+         "rather than reuse a position or address from earlier in the conversation. " <>
          "Location requests are unavailable in Comma Telegram. Ask for a city in a text reply instead. " <>
-         "In the internal host app, creates a location request with an auto-wait for the user's response.",
+         "In the internal host app, creates a location request with an auto-wait for the user's response; " <>
+         "a phone with the app open and location allowed answers it without asking, and the result says when the position was read.",
        &__MODULE__.request_location/2, @user_interaction_auto_wait_seconds,
        @visible_request_opts},
       {"tool_call.get_status", "Return the current status for a tool call by tool_call_id.",
@@ -227,14 +230,16 @@ defmodule SalixAgent.Tools.AsyncOps do
     tool_call_id = tool_call_id(ctx)
 
     request =
-      create_capability_request!(%{
+      %{
         "source_agent_id" => ctx.agent_id,
         "source_session_id" => sid,
         "tool_call_id" => tool_call_id,
         "request_type" => "location",
         "request_payload" => %{"location" => %{"reason" => reason}},
         "expires_at" => SystemsClock.system_time(:second) + timeout
-      })
+      }
+      |> Map.merge(location_surface(ctx))
+      |> create_capability_request!()
 
     content =
       Jason.encode!(%{
@@ -255,6 +260,20 @@ defmodule SalixAgent.Tools.AsyncOps do
        @user_interaction_auto_wait_seconds,
        request
      )}
+  end
+
+  # The person whose message this turn serves: their open phone answers without a card.
+  defp location_surface(ctx) do
+    case {SalixAgent.Tools.OAuth.conversation_surface(ctx), ctx[:ifc]} do
+      {nil, _ifc} ->
+        %{}
+
+      {surface, %{"requester" => "comma_user|" <> _ = requester}} ->
+        Map.update!(surface, "surface_ref", &Map.put(&1, "requester", requester))
+
+      {surface, _ifc} ->
+        surface
+    end
   end
 
   @doc false

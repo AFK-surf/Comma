@@ -5,6 +5,7 @@ defmodule SystemsRuntime.Test.NoDNS do
   if it did not exist, without a lookup (docs/testing.md#no-real-network).
 
       config :salix_mcp, resolver: SystemsRuntime.Test.NoDNS
+      config :comma_core, mx_resolver: SystemsRuntime.Test.NoDNS
   """
 
   @doc "As `:inet.getaddrs/2`."
@@ -13,4 +14,7 @@ defmodule SystemsRuntime.Test.NoDNS do
       do: :inet.getaddrs(host, family),
       else: {:error, :nxdomain}
   end
+
+  @doc "As `:inet_res.lookup/4`: no records for any name."
+  def lookup(_name, _class, _type, _opts), do: []
 end

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { twoPagePdf } from "./fixtures/file-preview/pdf";
+import { pdfWithPages, twoPagePdf } from "./fixtures/file-preview/pdf";
 import { expectCompactPreviewToolbar } from "./fixtures/file-preview/toolbar";
 import type { Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
@@ -140,48 +140,81 @@ async function startPreview(page: Page, files: PreviewFixture[]) {
   return stub;
 }
 
-test("HTML attachment preview is opaque and blocks scripts, navigation and document resource requests", async ({
-  page,
-}) => {
-  const html =
-    '<h1>Safe document</h1><script>parent.previewExecuted=true</script><meta http-equiv="refresh" content="0;url=https://preview-invalid.example/redirect"><img src="https://preview-invalid.example/image"><img src="/v1/private-file"><iframe src="https://preview-invalid.example/frame"></iframe>';
-  const requests: string[] = [];
-  await page.route("**/preview-invalid.example/**", (route) => {
-    requests.push(route.request().url());
-    return route.abort();
+for (const format of ["document", "fragment"] as const) {
+  test(`HTML attachment ${format} preserves styles and blocks scripts, navigation and resource requests`, async ({
+    page,
+  }) => {
+    const document =
+      '<!doctype html><html><head><style>body { background: #e8edf5; color: #16324f; } .chapter { background: #fff; border: 4px solid #167d9a; padding: 24px; } .chapter header { display: flex; justify-content: space-between; } .chapter span { background-image: url("data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\'/>"); } </style><link rel="stylesheet" href="./chapter.css"></head><body class="report"><article class="chapter"><header><h1>Styled chapter</h1><span>01</span></header><p>Inline document styles survive preview.</p></article><img src="./chapter.png"><style>@import url("https://preview-invalid.example/style.css");</style><script>window.previewExecuted=true</script>' +
+      '<h1>Safe document</h1><script>parent.previewExecuted=true</script><meta http-equiv="refresh" content="0;url=https://preview-invalid.example/redirect"><img src="https://preview-invalid.example/image"><img src="/v1/private-file"><iframe src="https://preview-invalid.example/frame"></iframe></body></html>';
+    const html =
+      format === "document"
+        ? document
+        : document.replace(/<!doctype html>|<\/?(?:html|head|body)\b[^>]*>/gi, "");
+    const requests: string[] = [];
+    await page.route("**/chapter.{css,png}", (route) => {
+      requests.push(route.request().url());
+      return route.abort();
+    });
+    await page.route("**/preview-invalid.example/**", (route) => {
+      requests.push(route.request().url());
+      return route.abort();
+    });
+    await page.route("**/v1/private-file", (route) => {
+      requests.push(route.request().url());
+      return route.abort();
+    });
+    const stub = await startPreview(page, [
+      { name: "document.html", mime: "text/html", body: html },
+    ]);
+    try {
+      await page
+        .getByRole("button", { name: "Preview document.html", exact: true })
+        .click();
+      const frame = page.frameLocator('[data-testid="file-preview-html"]');
+      await expect(frame.getByRole("heading", { name: "Safe document" })).toBeVisible();
+      await page.screenshot({ path: test.info().outputPath("html-preview.png") });
+      await test.info().attach("HTML preview", {
+        path: test.info().outputPath("html-preview.png"),
+        contentType: "image/png",
+      });
+      await expect(frame.locator("body")).toHaveCSS(
+        "background-color",
+        "rgb(232, 237, 245)"
+      );
+      await expect(frame.locator(".chapter")).toHaveCSS("border-top-width", "4px");
+      await expect(frame.getByRole("heading", { name: "Styled chapter" })).toHaveCSS(
+        "color",
+        "rgb(22, 50, 79)"
+      );
+      expect(
+        await frame
+          .locator("body")
+          .evaluate(() => Reflect.get(window, "previewExecuted"))
+      ).toBeUndefined();
+      await expect(page.getByTestId("file-preview-html")).toHaveAttribute(
+        "sandbox",
+        ""
+      );
+      expect(
+        await frame.locator("body").evaluate(() => {
+          try {
+            void parent.document.body;
+            return false;
+          } catch {
+            return true;
+          }
+        })
+      ).toBe(true);
+      expect(
+        await page.evaluate(() => Reflect.get(window, "previewExecuted"))
+      ).toBeUndefined();
+      expect(requests).toEqual([]);
+    } finally {
+      await stub.close();
+    }
   });
-  await page.route("**/v1/private-file", (route) => {
-    requests.push(route.request().url());
-    return route.abort();
-  });
-  const stub = await startPreview(page, [
-    { name: "document.html", mime: "text/html", body: html },
-  ]);
-  try {
-    await page
-      .getByRole("button", { name: "Preview document.html", exact: true })
-      .click();
-    const frame = page.frameLocator('[data-testid="file-preview-html"]');
-    await expect(frame.getByRole("heading", { name: "Safe document" })).toBeVisible();
-    await expect(page.getByTestId("file-preview-html")).toHaveAttribute("sandbox", "");
-    expect(
-      await frame.locator("body").evaluate(() => {
-        try {
-          void parent.document.body;
-          return false;
-        } catch {
-          return true;
-        }
-      })
-    ).toBe(true);
-    expect(
-      await page.evaluate(() => Reflect.get(window, "previewExecuted"))
-    ).toBeUndefined();
-    expect(requests).toEqual([]);
-  } finally {
-    await stub.close();
-  }
-});
+}
 
 test("the file sidebar renders a bounded PDF page and changes pages", async ({
   page,
@@ -217,9 +250,10 @@ test("the file sidebar renders a bounded PDF page and changes pages", async ({
     expect(titleParts.headClipped).toBe(true);
     expect(titleParts.tail).toMatch(/2026\.pdf$/);
     expect(titleParts.tailRight).toBeLessThanOrEqual(titleParts.downloadLeft);
-    await expect(panel.getByText("Page 1 of 2", { exact: true })).toBeVisible();
+    const firstPage = panel.getByRole("img", { name: "PDF page 1" });
+    await expect(firstPage).toBeVisible();
     const pixels = () =>
-      panel.getByTestId("file-preview-pdf").evaluate((element: HTMLCanvasElement) => {
+      firstPage.evaluate((element: HTMLCanvasElement) => {
         const data = element
           .getContext("2d")!
           .getImageData(0, 0, element.width, element.height).data;
@@ -230,12 +264,165 @@ test("the file sidebar renders a bounded PDF page and changes pages", async ({
         };
       });
     await expect.poll(async () => (await pixels()).drawn).toBe(true);
-    expect((await pixels()).width).toBeLessThanOrEqual(1200);
-    expect((await pixels()).height).toBeLessThanOrEqual(1200);
+    // A page bitmap stays inside the decoded-image budget at any zoom.
+    const drawn = await pixels();
+    expect(drawn.width * drawn.height).toBeLessThanOrEqual(16_777_216);
     await page.screenshot({ path: "../output/playwright/file-preview-pdf.png" });
-    await panel.getByRole("button", { name: "Next page", exact: true }).click();
-    await expect(panel.getByText("Page 2 of 2", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("img", { name: "PDF page 2" })).toBeVisible();
+
+    // The thumbnail rail names each page; choosing one reads it.
+    const showPages = panel.getByRole("button", { name: "Show page thumbnails" });
+    if (await showPages.isVisible()) await showPages.click();
+    const rail = panel.getByRole("navigation", { name: "Page thumbnails" });
+    await expect(rail).toContainText("2 pages");
+    await rail.getByRole("button", { name: "Page 2", exact: true }).click();
+    await expect(
+      rail.getByRole("button", { name: "Page 2", exact: true })
+    ).toHaveAttribute("aria-current", "page");
+    await expect(panel.getByRole("img", { name: "PDF page 2" })).toBeInViewport();
+
+    // Zoom keeps the page being read in view.
+    await panel.getByRole("button", { name: /^Zoom, \d+%$/ }).click();
+    await page.getByRole("menuitemradio", { name: "200%" }).click();
+    await expect(panel.getByRole("button", { name: "Zoom, 200%" })).toBeVisible();
+    await expect(panel.getByRole("img", { name: "PDF page 2" })).toBeInViewport();
+    await expect(
+      rail.getByRole("button", { name: "Page 2", exact: true })
+    ).toHaveAttribute("aria-current", "page");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a PDF thumbnail glides the pages to the page it names and keeps it chosen on the way", async ({
+  page,
+}) => {
+  const stub = await startPreview(page, [
+    {
+      name: "long.pdf",
+      mime: "application/pdf",
+      body: pdfWithPages(Array.from({ length: 12 }, (_, index) => `Page ${index + 1}`)),
+    },
+  ]);
+  try {
+    await page.getByRole("button", { name: "Preview long.pdf", exact: true }).click();
+    const panel = page.getByTestId("file-preview-panel");
+    await expect(
+      panel.getByRole("img", { name: "PDF page 1", exact: true })
+    ).toBeVisible();
+    const showPages = panel.getByRole("button", { name: "Show page thumbnails" });
+    if (await showPages.isVisible()) await showPages.click();
+    const rail = panel.getByRole("navigation", { name: "Page thumbnails" });
+    const target = rail.getByRole("button", { name: "Page 9", exact: true });
+    await expect(target).toBeVisible();
+
+    // Each scroll from the click on, until page 9 is at the view's top: where the pages are and which thumbnail is chosen.
+    const sampling = panel.evaluate(
+      (element) =>
+        new Promise<Array<{ top: number; chosen: string | null }>>((resolve) => {
+          // Only pages near the view are mounted: a page not there yet is not at the top.
+          const pageNumbered = (number: number) =>
+            element.querySelector(`[aria-label="PDF page ${number}"]`);
+          const viewport = pageNumbered(1)!.closest<HTMLElement>(
+            '[data-slot="scroll-area-viewport"]'
+          )!;
+          const offset = (number: number) => {
+            const found = pageNumbered(number);
+            return found
+              ? found.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+              : Number.POSITIVE_INFINITY;
+          };
+          // The view starts at the top: page 1 sits at the gutter the chosen page arrives at.
+          const gutter = offset(1);
+          const samples: Array<{ top: number; chosen: string | null }> = [];
+          const sample = () => {
+            samples.push({
+              top: viewport.scrollTop,
+              chosen:
+                element
+                  .querySelector('nav [aria-current="page"]')
+                  ?.getAttribute("aria-label") ?? null,
+            });
+            if (Math.abs(offset(9) - gutter) < 1) {
+              viewport.removeEventListener("scroll", sample);
+              resolve(samples);
+            }
+          };
+          viewport.addEventListener("scroll", sample);
+        })
+    );
+    await target.click();
+    const samples = await sampling;
+    const moving = samples.slice(
+      samples.findIndex((frame) => frame.chosen === "Page 9")
+    );
+    expect(moving.every((frame) => frame.chosen === "Page 9")).toBe(true);
+    // The view only moves toward the page; how many frames the glide takes is the browser's.
+    const tops = moving.map((frame) => frame.top);
+    expect(tops).toEqual(tops.toSorted((a, b) => a - b));
+    await expect(panel.getByRole("img", { name: "PDF page 9" })).toBeInViewport();
+    await expect(target).toHaveAttribute("aria-current", "page");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("Request edits sends a dragged PDF area to the Task with its screenshot and its text", async ({
+  page,
+}) => {
+  const stub = await startPreview(page, [
+    { name: "brief.pdf", mime: "application/pdf", body: twoPagePdf() },
+  ]);
+  try {
+    await page.getByRole("button", { name: "Preview brief.pdf", exact: true }).click();
+    const panel = page.getByTestId("file-preview-panel");
+    const firstPage = panel.getByRole("img", { name: "PDF page 1" });
+    await expect(firstPage).toBeVisible();
+    const requestEdits = panel.getByRole("button", { name: "Request edits" });
+    await requestEdits.click();
+    await expect(requestEdits).toHaveAttribute("aria-pressed", "true");
+    await expect(panel.getByText("Drag over a page to select an area")).toBeVisible();
+
+    // "Page One" starts at x 20 on baseline 100 of a 240 x 180 pt page: 60-80 pt from the top as it shows.
+    const box = (await firstPage.boundingBox())!;
+    const at = (x: number, y: number) =>
+      [box.x + (x / 240) * box.width, box.y + (y / 180) * box.height] as const;
+    await page.mouse.move(...at(10, 50));
+    await page.mouse.down();
+    await page.mouse.move(...at(150, 95), { steps: 4 });
+    await page.mouse.up();
+    const prompt = panel.getByRole("textbox", { name: "AI prompt" });
+    await expect(prompt).toBeFocused();
+    await page.screenshot({
+      path: "../output/playwright/file-preview-pdf-request-edits.png",
+    });
+    await page.keyboard.type("Make this heading blue");
+    const sent = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        /\/conversations\/[^/]+\/messages$/.test(new URL(request.url()).pathname)
+    );
+    await page.keyboard.press("Enter");
+
+    const text = ((await sent).postDataJSON() as { message: { text: string } }).message
+      .text;
+    expect(text).toMatch(/^Make this heading blue\n/);
+    expect(text).toContain("File: brief.pdf");
+    expect(text).toContain("Page: 1 of 2");
+    expect(text).toContain("Text in the area:\nPage One");
+    await stub.waitForUploads(1);
+    expect(stub.uploads.map((upload) => upload.filename)).toContain(
+      "pdf-page-1-area.png"
+    );
+    // The chat shows the person's words and the area; the context is for the agent.
+    const sentMessage = page
+      .locator('[data-slot="chat-user-output"]')
+      .filter({ hasText: "Make this heading blue" });
+    await expect(
+      sentMessage.getByRole("img", { name: "pdf-page-1-area.png" })
+    ).toBeVisible();
+    await expect(sentMessage).not.toContainText("pdf_region_context");
+    await expect(requestEdits).toHaveAttribute("aria-pressed", "false");
+    await expect(prompt).toHaveCount(0);
   } finally {
     await stub.close();
   }

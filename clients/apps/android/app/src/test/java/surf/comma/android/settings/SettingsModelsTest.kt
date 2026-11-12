@@ -20,4 +20,12 @@ class SettingsModelsTest {
             assertFalse(it ?: "null", device(it).isCommaDevice)
         }
     }
+
+    @Test fun `View screen for an online computer whose station serves it over the mesh`() {
+        val computer = device("comma").copy(screenView = true)
+        assertTrue(computer.showsScreen)
+        assertFalse(computer.copy(online = false).showsScreen)
+        // A station from before the mesh's screens, or one that says nothing.
+        assertFalse(device("comma").showsScreen)
+    }
 }

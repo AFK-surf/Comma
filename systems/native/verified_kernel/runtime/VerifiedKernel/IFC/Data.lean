@@ -15,8 +15,37 @@ def keys : Term → List Term
   | .map xs => xs.map Prod.fst
   | _ => []
 def setValues (value : Term) : List Term := keys (f value "map")
+
+/-- Netstring framing: each part is prefixed with its length, so distinct part
+lists give distinct bytes. -/
+private def frame (parts : List ByteArray) : ByteArray :=
+  parts.foldl (fun acc part => acc ++ s!"{part.size}:".toUTF8 ++ part) .empty
+
+/-- Bytes that are equal exactly when two atom-shaped terms are equal: a bare
+atom, or a tuple of an atom and binaries. Other terms have no key. -/
+private def atomKey : Term → Option ByteArray
+  | .atom name => some (frame ["a".toUTF8, name.toUTF8])
+  | .tuple (.atom kind :: parts) =>
+    (parts.mapM fun (part : Term) => match part with | .binary raw => some raw | _ => none).map
+      (fun raws => frame ("t".toUTF8 :: kind.toUTF8 :: raws))
+  | _ => none
+
+/-- `uniq` by hash for audience atoms: the same first occurrences in the same
+order, without pairwise comparison. Any other term falls back to `uniq`. -/
+def uniqAtoms (xs : List Term) : List Term :=
+  match xs.mapM (fun x => (atomKey x).map (x, ·)) with
+  | none => uniq xs
+  | some keyed => Id.run do
+    let mut seen : Std.HashSet ByteArray := {}
+    let mut result := []
+    for (x, key) in keyed do
+      if !seen.contains key then
+        seen := seen.insert key
+        result := x :: result
+    return result.reverse
+
 def set (xs : List Term) : Term :=
-  .map [(a "__struct__", a "Elixir.MapSet"), (a "map", .map ((uniq xs).map (fun x => (x, list []))))]
+  .map [(a "__struct__", a "Elixir.MapSet"), (a "map", .map ((uniqAtoms xs).map (fun x => (x, list []))))]
 def isSet (value : Term) : Bool :=
   value.isMap && f value "__struct__" == a "Elixir.MapSet" &&
   (match value with | .map xs => xs.length == 2 | _ => false) &&
@@ -57,16 +86,22 @@ def authorityFuel : Nat → Term → Term
 def authority (p : Term) : Term := authorityFuel (p.depth + 1) p
 def principalConnect (p : Term) : Term :=
   match authority p with | .tuple [.atom "provider_user", c, _] => c | _ => nil
+/-- A person, after a schedule or API key is unwrapped to its creator. -/
+def person (p : Term) : Bool :=
+  match authority p with
+  | .tuple [.atom "provider_user", _, _] | .tuple [.atom "comma_user", _] => true
+  | _ => false
 
 def atoms (label : Term) : List Term := setValues (f label "atoms")
 def label (xs : List Term) : Term := record "Label" [("atoms", set xs)]
 def normalize (xs : List Term) : List Term :=
-  let xs := uniq xs
+  let xs := uniqAtoms xs
   if xs.isEmpty then [a "public"]
   else if xs.length == 1 then xs else xs.filter (· != a "public")
 def bottom : Term := label [a "public"]
 def labelJoin (x y : Term) : Term := label (normalize (atoms x ++ atoms y))
-def joinAll (xs : List Term) : Term := xs.foldl labelJoin bottom
+/-- The same label as folding `labelJoin` from `bottom`, normalized once. -/
+def joinAll (xs : List Term) : Term := label (normalize (a "public" :: xs.flatMap atoms))
 def publicLabel (x : Term) : Bool := setEqual (atoms x) [a "public"]
 def noHuman (x : Term) : Bool := contains (atoms x) (a "agent_private")
 def runtimeOnly (x : Term) : Bool := setEqual (atoms x) [a "agent_private"]
@@ -95,6 +130,33 @@ def within (facts atom : Term) : Term := f ((f facts "scopes").get atom) "within
 def membership (facts atom : Term) : Term :=
   let table := f facts "membership"
   if table.has atom then table.get atom else a "unknown"
+
+private def membershipEntry (atom : Term) : List (Term × Term) → Term
+  | [] => a "unknown"
+  | entry :: rest => if Term.keyEq atom entry.1 then entry.2 else membershipEntry atom rest
+
+/-- `membership` for compiled code: one scan of the table instead of two. -/
+def membershipImpl (facts atom : Term) : Term :=
+  match f facts "membership" with
+  | .map entries => membershipEntry atom entries
+  | _ => a "unknown"
+
+@[csimp] theorem membership_eq_membershipImpl : @membership = @membershipImpl := by
+  funext facts atom
+  unfold membership membershipImpl
+  cases f facts "membership" with
+  | map entries =>
+    simp only [Term.has, Term.get]
+    induction entries with
+    | nil => rfl
+    | cons entry rest ih =>
+      simp only [membershipEntry, Term.keyEq_eq, List.any_cons, List.find?_cons]
+      by_cases same : (entry.1 == atom) = true
+      · simp [same]
+      · simp only [Bool.not_eq_true] at same
+        simp only [same, Bool.false_or, Bool.false_eq_true, ↓reduceIte]
+        exact ih
+  | _ => rfl
 def members (facts atom : Term) : Term :=
   match membership facts atom with | .tuple [.atom "members", xs, _] => xs | _ => a "unknown"
 def revision (facts atom : Term) : Term :=
@@ -126,7 +188,14 @@ def member (facts key atom : Term) : Tri :=
   match membership facts atom with
   | .tuple [.atom "members", xs, _] => .ofBool (contains (setValues xs) key)
   | _ => .unknown
+/-- Principals an administrator cleared to read an atom without being on its
+roster (a Group's supervisors). Sound, not complete: absence says nothing. -/
+def cleared (facts key atom : Term) : Bool :=
+  let table := f facts "cleared"
+  table.isMap && table.has atom && isSet (table.get atom) &&
+    contains (setValues (table.get atom)) key
 def readerAtom (p atom facts : Term) : Tri :=
+  if cleared facts (authority p) atom then .yes else
   match atom with
   | .atom "public" => .yes
   | .atom "agent_private" => .no
@@ -214,6 +283,32 @@ def dataFuel : Nat → Term → Bool
     | .list xs | .tuple xs => xs.all (dataFuel n)
     | .improper _ _ => false
     | _ => true
+private def dataDeferred : Nat → Term → Stackless Bool
+  | 0, _ => .done false
+  | n + 1, v => .delay fun _ =>
+    match v with
+    | .map xs =>
+      let allowed := if !v.has (a "__struct__") then true
+        else if f v "__struct__" == a "Elixir.MapSet" then isSet v
+        else ["Label", "Activation", "Effect", "Item", "Facts", "Policy", "Receipt"].any (tagged v)
+      Stackless.both (.done allowed) fun _ => Stackless.allM (fun (k, value) =>
+        Stackless.both (dataDeferred n k) fun _ => dataDeferred n value) xs
+    | .list xs | .tuple xs => Stackless.allM (dataDeferred n) xs
+    | .improper _ _ => .done false
+    | _ => .done true
+
+private theorem dataDeferred_eq (fuel : Nat) (value : Term) :
+    (dataDeferred fuel value).run = dataFuel fuel value := by
+  induction fuel generalizing value with
+  | zero => rfl
+  | succ fuel ih => cases value <;> simp [dataDeferred, dataFuel, Stackless.run, ih]
+
+def dataFuelImpl (fuel : Nat) (value : Term) : Bool := (dataDeferred fuel value).run
+
+@[csimp] theorem dataFuel_eq_dataFuelImpl : @dataFuel = @dataFuelImpl := by
+  funext fuel value
+  exact (dataDeferred_eq fuel value).symm
+
 def dataValid (v : Term) : Bool := dataFuel (v.depth + 1) v
 
 /-- Canonical first-occurrence order for declared source references. -/
@@ -227,7 +322,7 @@ def sortedTerms (xs : List Term) : List Term :=
 
 def consultedRevisions (effect facts : Term) (sources : List Term) : Term :=
   let labels := f effect "destination" :: sources.map (fun s => f s "label")
-  list (sortedTerms ((uniq (labels.flatMap atoms)).filterMap (fun atom =>
+  list (sortedTerms ((uniqAtoms (labels.flatMap atoms)).filterMap (fun atom =>
     let rev := revision facts atom
     if rev == nil then none else some (.tuple [atom, rev]))))
 

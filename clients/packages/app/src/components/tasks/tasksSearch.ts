@@ -10,6 +10,8 @@ export interface TasksSearch {
   /** `loop`, from links made before the Loop types, selects every Loop type. */
   schedule?: TaskLoopFilterKey | "loop";
   loopRule?: string;
+  /** A person whose request Tasks came from (`requestPersonKey`). */
+  request?: string;
 }
 
 const STATUSES = ["in_progress", "needs_review", "done", "cancelled"];
@@ -25,12 +27,21 @@ const CLIENT_PLATFORMS = [
 
 /**
  * Task properties and chips link to a label, origin, status, client platform,
- * Loop trigger type (`schedule`) or Loop trigger rule (`loopRule`). Drop
- * unsupported query fields and unknown values. A rule link takes the key form
- * of the loaded Tasks, so another spelling of the same cron matches.
+ * Loop trigger type (`schedule`), Loop trigger rule (`loopRule`) or the person
+ * a request came from (`request`). Drop unsupported query fields and unknown
+ * values. A rule link takes the key form of the loaded Tasks, so another
+ * spelling of the same cron matches.
  */
 export function validateTasksSearch(search: Record<string, unknown>): TasksSearch {
-  const { label, platform, status, clientPlatform, schedule, loopRule: rule } = search;
+  const {
+    label,
+    platform,
+    status,
+    clientPlatform,
+    schedule,
+    loopRule: rule,
+    request,
+  } = search;
   const loopRule = readTaskLoopRuleKey(rule);
   return {
     ...(typeof label === "string" && label ? { label } : {}),
@@ -41,5 +52,6 @@ export function validateTasksSearch(search: Record<string, unknown>): TasksSearc
       : {}),
     ...(isTaskLoopFilterKey(schedule) || schedule === "loop" ? { schedule } : {}),
     ...(loopRule ? { loopRule } : {}),
+    ...(typeof request === "string" && request.startsWith("from:") ? { request } : {}),
   };
 }

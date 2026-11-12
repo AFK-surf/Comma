@@ -37,6 +37,16 @@ defmodule SalixAgent.ContextProviders do
     current = current_state(session_config)
     known = provider_states(session)
 
+    # `with_interaction_reminder/4` owns this state. Each activation stores a
+    # whole snapshot in its assistant message's
+    # `do_not_send_to_llm.context_provider_states`, and the newest one wins, so
+    # keep the recorded set until that function changes it.
+    current =
+      case known["interaction_tools"] do
+        nil -> current
+        state -> Map.put(current, "interaction_tools", state)
+      end
+
     {time_messages, time_state} =
       SalixAgent.TimeContext.prepare(time_context_view(session), known)
 
@@ -61,6 +71,15 @@ defmodule SalixAgent.ContextProviders do
         do: current,
         else: Map.put(current, "round_budget", budget_state)
 
+    {retirement_messages, retirement_state} =
+      SalixAgent.RunawayRetirementNotice.prepare(session, known)
+
+    # Absent until the first runaway retirement.
+    current =
+      if empty_map?(retirement_state),
+        do: current,
+        else: Map.put(current, "runaway_retirement", retirement_state)
+
     {workspace_messages, workspace_state} =
       SalixAgent.CondensedWorkspace.prepare(session, session_config, known)
 
@@ -84,6 +103,7 @@ defmodule SalixAgent.ContextProviders do
       messages ++
         time_messages ++
         queue_messages ++
+        retirement_messages ++
         budget_messages ++
         workspace_messages ++ SalixAgent.UnsettledReplyNotice.prepare(session)
 

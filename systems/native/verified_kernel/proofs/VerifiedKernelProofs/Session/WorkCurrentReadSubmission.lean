@@ -52,7 +52,7 @@ theorem read_input_submission_current_work {framing : CodecFraming} {objects : O
     encoded, issued, stored, afterHistory, generated, fact, canonical, present, kept⟩ :=
     trace.current_facts contextHistory sourceValue cas
   have sameKey : trace.key = objectKey := writeAddress.trans addressed.symm
-  have baseEq : context.candidate.etag = .binary etag := by rw [contextEq]; rfl
+  have baseEq : context.candidate.revision = .binary etag := by rw [contextEq]; rfl
   rw [sameKey, baseEq] at issued
   have actualBase : HotRead beforeCAS objectKey bytes (.binary etag) :=
     HotCAS.read_base_bytes readVersioned currentVersioned read (by intro impossible; cases impossible)

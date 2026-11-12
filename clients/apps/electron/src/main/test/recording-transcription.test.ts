@@ -40,12 +40,14 @@ async function fixture() {
     expect(new TextDecoder().decode(audio)).toBe("fixture audio");
     return result;
   });
+  const reportFailure = vi.fn();
   const service = new RecordingTranscriptionService(
     { writeTranscript },
     () => ({ assertCurrent }),
-    transcribe
+    transcribe,
+    reportFailure
   );
-  return { path, service, writeTranscript, transcribe, assertCurrent };
+  return { path, service, writeTranscript, transcribe, assertCurrent, reportFailure };
 }
 
 it("hands the saved audio to the core and writes complete text and JSON beside it", async () => {
@@ -67,7 +69,7 @@ it("hands the saved audio to the core and writes complete text and JSON beside i
 });
 
 it("records why the core gave no transcript without changing the audio", async () => {
-  const { service, path, transcribe, writeTranscript } = await fixture();
+  const { service, path, transcribe, writeTranscript, reportFailure } = await fixture();
   transcribe.mockRejectedValueOnce(new Error("ASR is not configured"));
   await service.process(recording, target, path);
   expect(writeTranscript).toHaveBeenCalledOnce();
@@ -77,10 +79,27 @@ it("records why the core gave no transcript without changing the audio", async (
     source: recording.driveFile,
     reason: "ASR is not configured",
   });
+  expect(reportFailure).toHaveBeenCalledExactlyOnceWith("local");
+});
+
+it("reports the core's kind of failure, never its text", async () => {
+  const { service, path, transcribe, reportFailure } = await fixture();
+  transcribe.mockRejectedValueOnce(
+    Object.assign(
+      new Error("Transcription took too long. The audio remains in Drive."),
+      {
+        code: "transcription_failed",
+        detail: { kind: "timeout" },
+      }
+    )
+  );
+  await service.process(recording, target, path);
+  expect(reportFailure).toHaveBeenCalledExactlyOnceWith("timeout");
 });
 
 it("does not write a late transcript after the account session changes", async () => {
-  const { service, path, assertCurrent, writeTranscript } = await fixture();
+  const { service, path, assertCurrent, writeTranscript, reportFailure } =
+    await fixture();
   assertCurrent.mockImplementation(() => {
     throw new Error("Session ended");
   });
@@ -88,4 +107,5 @@ it("does not write a late transcript after the account session changes", async (
     "Session ended"
   );
   expect(writeTranscript).not.toHaveBeenCalled();
+  expect(reportFailure).not.toHaveBeenCalled();
 });

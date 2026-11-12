@@ -9,7 +9,7 @@ import type { BftSession, BftWizardStep } from "./api";
  * the Meetings pages, `/orgs/:org/daily-brief`, the Slack triage pages, `/orgs/:org/information-flow` (Data policy),
  * `/orgs/:org/projects`, every page of an Agent Swarm: Overview, Agents,
  * Devices, Plugins, Skills, Tasks, Connections and Settings
- * (`/orgs/:org/projects/:id[/agents|/devices|/plugins|/skills|/tasks|/connections|/settings]`,
+ * (`/orgs/:org/projects/:id[/agents|/devices|/plugins|/skills|/stillfail|/tasks|/connections|/settings]`,
  * plus the retired Websites, Schedules, Integrations and Access addresses),
  * one agent at `/orgs/:org/projects/:id/agents/:agent`, one plugin at
  * `/orgs/:org/projects/:id/plugins/:plugin`, one task at
@@ -80,7 +80,11 @@ export type BftRoute =
        */
       retired?: true;
     }
-  | { name: "project-devices" | "project-skills"; org: string; project: string }
+  | {
+      name: "project-devices" | "project-skills" | "project-stillfail";
+      org: string;
+      project: string;
+    }
   | {
       name: "project-plugins";
       org: string;
@@ -236,10 +240,16 @@ export function matchRoute(pathname: string): BftRoute {
         ...(agents[3] ? { agent: decodeURIComponent(agents[3]) } : {}),
       };
     }
-    const devices = /^\/orgs\/([^/]+)\/projects\/([^/]+)\/(devices|skills)$/.exec(path);
+    const devices =
+      /^\/orgs\/([^/]+)\/projects\/([^/]+)\/(devices|skills|stillfail)$/.exec(path);
     if (devices?.[1] && devices[2]) {
       return {
-        name: devices[3] === "skills" ? "project-skills" : "project-devices",
+        name:
+          devices[3] === "skills"
+            ? "project-skills"
+            : devices[3] === "stillfail"
+              ? "project-stillfail"
+              : "project-devices",
         org: decodeURIComponent(devices[1]),
         project: decodeURIComponent(devices[2]),
       };

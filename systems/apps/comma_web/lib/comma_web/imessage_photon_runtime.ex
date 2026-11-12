@@ -1,12 +1,13 @@
 defmodule CommaWeb.IMessagePhotonRuntime do
   @moduledoc """
-  Receiver for Comma iMessage over Photon shared lines.
+  Receiver for Comma iMessage over Photon lines.
 
-  Photon lists received Messages through its REST API. A pass reads the
-  Messages created since the saved cursor, oldest first, and hands each one to
-  `CommaWeb.IMessageIntegration.handle_event/1`. A verified webhook wakes the
-  receiver at once. A timer runs a pass every minute, which recovers webhooks
-  that did not arrive.
+  A verified webhook carries its Message and starts a pass at once, so a Message
+  does not wait to be listed. A pass also reads the Messages created since the
+  saved cursor, oldest first, and hands each one to
+  `CommaWeb.IMessageIntegration.handle_event/1`. A timer runs a pass every minute,
+  which recovers webhooks that did not arrive or a Pod that stopped with a pushed
+  Message.
 
   Photon lists are eventually consistent, so each pass re-reads a two-minute
   overlap. The cursor keeps the IDs handled in that overlap and skips them.
@@ -29,6 +30,7 @@ defmodule CommaWeb.IMessagePhotonRuntime do
   @overlap_seconds 120
   @max_pages 5
   @max_seen 1_000
+  @max_pushed 100
   @quiet_ms 2_000
   @max_wait_ms 10_000
   # An assignment younger than this can belong to an attempt that is still
@@ -40,11 +42,11 @@ defmodule CommaWeb.IMessagePhotonRuntime do
   def start_link(opts \\ []),
     do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
-  @doc "Wakes the local receiver. Returns `:ok` also when this Pod runs none."
-  def poke do
+  @doc "Wakes the local receiver with a webhook's Message, if any. Returns `:ok` also when this Pod runs none."
+  def poke(message \\ nil) do
     case SystemsRuntime.Proc.whereis(__MODULE__) do
       nil -> :ok
-      pid -> SystemsRuntime.Proc.send(pid, :poke)
+      pid -> SystemsRuntime.Proc.send(pid, {:webhook, message})
     end
 
     :ok
@@ -53,12 +55,26 @@ defmodule CommaWeb.IMessagePhotonRuntime do
   @impl true
   def init(_opts) do
     SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :poll)
-    {:ok, %{task: nil, kind: nil, failures: 0, again: false, busy: 0, timer: nil}}
+
+    {:ok,
+     %{
+       task: nil,
+       kind: nil,
+       failures: 0,
+       again: false,
+       busy: 0,
+       timer: nil,
+       pushed: %{},
+       passing: []
+     }}
   end
 
   @impl true
   # A webhook runs a pass also after failures: it is new evidence that Photon
   # is reachable. The timer stops after three failed passes in a row.
+  def handle_info({:webhook, message}, state),
+    do: handle_info(:poke, push(state, message))
+
   def handle_info(:poke, %{task: nil} = state), do: {:noreply, start(state, :poke)}
   def handle_info(:poke, state), do: {:noreply, %{state | again: true}}
 
@@ -79,7 +95,9 @@ defmodule CommaWeb.IMessagePhotonRuntime do
         {:error, _} -> {state.failures + 1, 0}
       end
 
-    state = %{state | task: nil, failures: failures, busy: busy}
+    # A waiting burst or a failed pass keeps its pushed Messages: they may not be listed yet.
+    pushed = if result == :ok, do: Map.drop(state.pushed, state.passing), else: state.pushed
+    state = %{state | task: nil, failures: failures, busy: busy, pushed: pushed, passing: []}
 
     cond do
       state.again ->
@@ -112,9 +130,24 @@ defmodule CommaWeb.IMessagePhotonRuntime do
   def handle_info(_message, state), do: {:noreply, state}
 
   defp start(state, kind) do
-    task = SystemsRuntime.Task.async(fn -> run_once(reconcile_assignments: kind == :poll) end)
-    %{state | task: task, kind: kind}
+    pushed = Map.values(state.pushed)
+
+    task =
+      SystemsRuntime.Task.async(fn ->
+        run_once(reconcile_assignments: kind == :poll, pushed: pushed)
+      end)
+
+    %{state | task: task, kind: kind, passing: Map.keys(state.pushed)}
   end
+
+  # The timer recovers a Message past the bound.
+  defp push(state, %{"id" => id} = message) when is_binary(id) do
+    if map_size(state.pushed) < @max_pushed,
+      do: %{state | pushed: Map.put(state.pushed, id, message)},
+      else: state
+  end
+
+  defp push(state, _message), do: state
 
   defp schedule(state) do
     SystemsClock.cancel_timer(state.timer)
@@ -143,9 +176,16 @@ defmodule CommaWeb.IMessagePhotonRuntime do
       timeout: 120_000
     )
   rescue
-    _ -> {:error, :imessage_receive_unavailable}
+    error ->
+      Logger.error("Photon iMessage receive pass failed: #{inspect(error.__struct__)}")
+      {:error, :imessage_receive_unavailable}
   catch
-    :exit, _ -> {:error, :imessage_receive_unavailable}
+    :exit, reason ->
+      Logger.error(
+        "Photon iMessage receive pass exited: #{inspect(reason) |> String.slice(0, 200)}"
+      )
+
+      {:error, :imessage_receive_unavailable}
   end
 
   defp receive_pass(opts) do
@@ -153,20 +193,28 @@ defmodule CommaWeb.IMessagePhotonRuntime do
     if Keyword.get(opts, :reconcile_assignments, false), do: release_unused_assignments()
 
     with {:ok, cursor} <- cursor() do
-      drain(cursor, nil, @max_pages)
+      drain(cursor, nil, @max_pages, [], Keyword.get(opts, :pushed, []))
     end
   end
 
   # Reads every page first, so a burst that spans two pages stays one burst.
-  defp drain(cursor, page_token, pages, acc \\ []) do
+  # A failed read does not hold back pushed Messages; a later pass reads the list.
+  defp drain(cursor, page_token, pages, acc, pushed) do
     since = DateTime.add(cursor.since, -@overlap_seconds, :second)
 
-    with {:ok, items, next} <- PhotonIMessage.list_received(since, page_token) do
-      acc = acc ++ items
+    case PhotonIMessage.list_received(since, page_token) do
+      {:ok, items, next} ->
+        acc = acc ++ items
 
-      if is_binary(next) and next != "" and pages > 1,
-        do: drain(cursor, next, pages - 1, acc),
-        else: handle_items(acc, cursor)
+        if is_binary(next) and next != "" and pages > 1,
+          do: drain(cursor, next, pages - 1, acc, pushed),
+          else: handle_items(Enum.uniq_by(acc ++ pushed, & &1["id"]), cursor)
+
+      _failed when pushed != [] ->
+        handle_items(Enum.uniq_by(acc ++ pushed, & &1["id"]), cursor)
+
+      failed ->
+        failed
     end
   end
 

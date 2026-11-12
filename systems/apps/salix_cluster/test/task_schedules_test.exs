@@ -381,12 +381,14 @@ defmodule SalixCluster.TaskSchedulesTest do
          router: router,
          worker: worker
        } do
-    created =
-      create_task(router["agent_id"], %{
-        "agent_id" => worker["agent_id"],
-        "content" => "Check the repository and report every finding.",
-        "schedule" => %{"interval_minutes" => 5}
-      })
+    attrs = %{
+      "agent_id" => worker["agent_id"],
+      "content" => "Check the repository and report every finding.",
+      "schedule" => %{"interval_minutes" => 5}
+    }
+
+    context = %{tool_call_id: "scheduled-task-create"}
+    created = create_task(router["agent_id"], attrs, context)
 
     conversation_id = created["conversation_id"]
     assert %{"schedule_id" => schedule_id, "command" => command} = created["schedule"]
@@ -394,6 +396,30 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert {:ok, conversation} = Conversations.get_group_conversation(group_id, conversation_id)
     assert conversation["schedule"] == created["schedule"]
     assert conversation["message_count"] == 1
+
+    assert {:ok, %{"participants" => original_participants}} =
+             Conversations.list_group_conversation_participants(group_id, conversation_id)
+
+    assert {:ok, [first_message]} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
+    SystemsClock.advance(1_000)
+    retried = create_task(router["agent_id"], attrs, context)
+    assert retried["conversation_id"] == conversation_id
+    assert retried["schedule"] == created["schedule"]
+
+    assert {:ok, [^first_message]} =
+             Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)
+
+    assert {:ok, %{"participants" => retried_participants}} =
+             Conversations.list_group_conversation_participants(group_id, conversation_id)
+
+    identities = fn participants ->
+      Enum.map(participants, &Map.take(&1, ~w(participant_id created_at payload)))
+    end
+
+    assert identities.(retried_participants) == identities.(original_participants)
 
     assert command == "Check the repository and report every finding."
 
@@ -1291,7 +1317,7 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert {:ok, %{fired: [], already_fired: []}} = Schedules.run_once(now: due)
   end
 
-  test "release cutover restores a claimed stale Task window", %{
+  test "a claimed stale Task window resumes after its canonical Participant is restored", %{
     group_id: group_id,
     router: router,
     worker: worker
@@ -1318,23 +1344,14 @@ defmodule SalixCluster.TaskSchedulesTest do
 
     assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
 
-    flat_key =
-      Keys.ctl_group_conversation_participant_state(
-        group_id,
-        conversation_id,
-        participant_id
-      )
+    scope = SalixIM.ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
+    assert {:ok, record, revision} = SalixIM.ConversationParticipantPGStore.read(scope)
+    deleted = Map.put(record, "deleted_at", SystemsClock.system_time(:second))
 
-    nested_key =
-      Keys.ctl_group_conversation_participant_dir(
-        group_id,
-        conversation_id,
-        participant_id
-      ) <> "state.json"
-
-    assert {:ok, %{body: participant_state}} = S3.get(flat_key)
-    assert {:ok, _} = S3.put(nested_key, participant_state)
-    assert :ok = S3.delete(flat_key)
+    assert {:ok, _, _} =
+             SalixIM.ConversationParticipantPGStore.execute(
+               SalixIM.ConversationParticipantPGStore.prepare(scope, revision, deleted, :deleted)
+             )
 
     due = Schedules.next_fire_ms(schedule)
     parent = SystemsRuntime.Proc.self()
@@ -1353,20 +1370,26 @@ defmodule SalixCluster.TaskSchedulesTest do
     assert diagnostic.stage == "receiver"
     refute inspect(diagnostic) =~ "Run this command after the release cutover."
 
+    assert {:error, :not_found} =
+             ConversationServer.get_group_conversation_agent_participant_identity(
+               group_id,
+               conversation_id,
+               worker["agent_id"]
+             )
+
+    assert {:ok, _, _} =
+             SalixIM.ConversationParticipantPGStore.execute(
+               SalixIM.ConversationParticipantPGStore.prepare(
+                 scope,
+                 revision + 1,
+                 record,
+                 :restored
+               )
+             )
+
+    # Restart after the offline repair commits, so concurrent readers cannot
+    # retain the missing membership loaded before the repair.
     assert :ok = SalixIM.ConversationFleet.stop(group_id, conversation_id)
-
-    # The published migration assumes no serving owners during its cutover.
-    SalixAgent.TestSupport.stop_all_agents()
-    SalixIM.TestSupport.Fleet.stop_all!()
-
-    stats =
-      SalixIM.Release.migrate_conversation_participant_states(
-        confirm_no_writers: true,
-        ensure_started: fn :salix_store -> {:ok, []} end
-      )
-
-    assert stats.migrated == 1
-    refute Map.has_key?(stats, :failed) and stats.failed != []
 
     assert {:ok,
             %{
@@ -1380,6 +1403,13 @@ defmodule SalixCluster.TaskSchedulesTest do
              )
 
     assert schedule_id == schedule["id"]
+
+    assert {:ok, %{"participant_id" => ^participant_id}} =
+             ConversationServer.get_group_conversation_agent_participant_identity(
+               group_id,
+               conversation_id,
+               worker["agent_id"]
+             )
 
     assert {:ok, messages} =
              Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 10)

@@ -11,6 +11,8 @@ export type MiniAppChromeAction = { id: string; label: string; onAction: () => v
 export type MiniAppChromeProps = {
   name: string;
   author: string;
+  /** The author's avatar as an image the page can show; their initials without one. */
+  authorAvatarUrl?: string | null | undefined;
   /** The app's own icon. Without one the bar shows no icon: a generic glyph would tell every app apart from nothing. */
   iconUrl?: string | null | undefined;
   /** Which Version this is when it is not the live one, as a Task card's "· 3". */
@@ -49,6 +51,7 @@ export type MiniAppChromeProps = {
 export function MiniAppChrome({
   name,
   author,
+  authorAvatarUrl,
   iconUrl,
   detail,
   actions = [],
@@ -101,7 +104,7 @@ export function MiniAppChrome({
           <div className="flex flex-col gap-sm border-t-[0.5px] border-primary py-md pr-lg pl-[calc(var(--spacing-sm)+var(--spacing-md))]">
             <p className="text-xs text-quaternary">{messages.mini_app_made_by()}</p>
             <span className="flex min-w-0 items-center gap-sm">
-              <Avatar name={author} size="xs" />
+              <Avatar name={author} size="xs" src={authorAvatarUrl ?? undefined} />
               <span className="truncate text-sm text-primary">{author}</span>
             </span>
           </div>

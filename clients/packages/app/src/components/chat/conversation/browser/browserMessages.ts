@@ -22,16 +22,21 @@ const errorCopy = {
   control: "chat_browser_error_control",
   queueFull: "chat_browser_error_queue_full",
   input: "chat_browser_error_input",
+  busy: "chat_browser_error_busy",
 } as const satisfies Record<string, keyof CommaMessages>;
 
 export type BrowserStatus = keyof typeof statusCopy;
 export type BrowserError = keyof typeof errorCopy;
 
+/** Who has the browser, as the copy it shows: `human` is this reader only while they control it. */
 export function browserStatusText(
   messages: CommaMessages,
-  status: BrowserStatus
+  status: BrowserStatus,
+  controlling: boolean
 ): string {
-  return messages[statusCopy[status]]();
+  return status === "human" && !controlling
+    ? messages.chat_browser_status_other_human()
+    : messages[statusCopy[status]]();
 }
 
 /** Why the browser's latest storage save fell short, from the server's code. */

@@ -6,19 +6,18 @@ import android.view.ViewGroup
 import androidx.dynamicanimation.animation.DynamicAnimation
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
-import kotlin.math.ceil
 import kotlin.math.max
 
 /**
- * The input row: [leading] button, [center] field, [trailing] button.
+ * The input row: [leading] button, [center] field, [microphone] and [trailing] buttons, with [capsule] over the
+ * collapsed surface. [capsule] is measured whether or not it shows, so showing it costs no layout.
  *
- * A draft that fits on one line sits between the buttons. A longer one is *stacked*: the field
+ * The resting field sits beside the attachment button. Focused in regular height, the field
  * takes the full width on top and the buttons keep the row underneath. The buttons hold the
  * bottom corners in both arrangements, so only the field moves, and it moves on the same spring
  * as the surface's height ([ComposerPill]).
  *
- * [wantsStack] decides from the width the field has between the buttons, never from the width it
- * has now, so a draft on the boundary cannot flip back and forth.
+ * [wantsStack] follows focus, attachments and available height.
  */
 internal class ComposerRow(
     context: Context,
@@ -26,18 +25,20 @@ internal class ComposerRow(
     private val leading: View,
     private val center: View,
     private val trailing: View,
-    private val wantsStack: (inlineWidthPx: Int) -> Boolean,
+    private val microphone: View,
+    private val capsule: View,
+    private val wantsStack: () -> Boolean,
+    private val wantsExpanded: () -> Boolean,
+    private val onArrangement: (Boolean, Boolean) -> Unit,
 ) : ViewGroup(context) {
 
     private val slot = style.dp(SLOT_DP)
-    private val edge = style.dp(EDGE_DP)
+    private val collapsedInset = style.dp(52)
     private val stackedInset = style.dp(STACKED_INSET_DP)
 
+    private var expanded = false
     var stacked = false
         private set
-
-    /** Width of [center] between the buttons, in px; -1 before the first measure. */
-    private var inlineWidth = -1
 
     /** Where the field was drawn when the arrangement last changed: start edge and gap to the bottom. */
     private var moveFrom: FloatArray? = null
@@ -49,13 +50,17 @@ internal class ComposerRow(
         addView(center)
         addView(leading)
         addView(trailing)
+        addView(microphone)
+        addView(capsule)
     }
 
     /** Re-evaluates [wantsStack]. With [animate] the field travels to its new place. */
     fun refresh(animate: Boolean) {
-        if (inlineWidth < 0) return
-        val next = wantsStack(inlineWidth)
-        if (next == stacked) return
+        val next = wantsStack()
+        val nextExpanded = wantsExpanded()
+        onArrangement(next, nextExpanded)
+        expanded = nextExpanded
+        if (next == stacked) { requestLayout(); return }
         stacked = next
         if (animate && isLaidOut && ComposerStyle.motionEnabled) {
             moveFrom = floatArrayOf(center.left + center.translationX, height - center.bottom - center.translationY)
@@ -75,20 +80,13 @@ internal class ComposerRow(
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = getDefaultSize(suggestedMinimumWidth, widthMeasureSpec)
-        val inline = max(0, width - 2 * (slot + edge))
-        if (inline != inlineWidth) {
-            // A new width (first layout, rotation) re-decides in place, without travel.
-            inlineWidth = inline
-            val next = wantsStack(inline)
-            if (next != stacked) {
-                stacked = next
-                moveFrom = null
-                rest()
-            }
-        }
+        val beforeTrailing = if (microphone.visibility == GONE) 0 else slot
+        val inline = max(0, width - (if (expanded) slot else collapsedInset) - slot - beforeTrailing)
         val slotSpec = MeasureSpec.makeMeasureSpec(slot, MeasureSpec.EXACTLY)
         leading.measure(slotSpec, slotSpec)
         trailing.measure(slotSpec, slotSpec)
+        microphone.measure(slotSpec, slotSpec)
+        capsule.measure(MeasureSpec.makeMeasureSpec(max(0, width - collapsedInset), MeasureSpec.EXACTLY), slotSpec)
         val centerWidth = if (stacked) max(0, width - 2 * stackedInset) else inline
         center.measure(
             MeasureSpec.makeMeasureSpec(centerWidth, MeasureSpec.EXACTLY),
@@ -102,11 +100,13 @@ internal class ComposerRow(
         val width = r - l
         val height = b - t
         val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
-        place(leading, if (rtl) width - edge - slot else edge, height)
-        place(trailing, if (rtl) edge else width - edge - slot, height)
-        val inset = if (stacked) stackedInset else edge + slot
+        place(leading, if (rtl) width - slot else 0, height)
+        place(trailing, if (rtl) 0 else width - slot, height)
+        place(microphone, if (rtl) slot else width - 2 * slot, height)
+        place(capsule, if (rtl) 0 else collapsedInset, height)
+        val inset = if (stacked) stackedInset else if (expanded) slot else collapsedInset
         val bottom = if (stacked) height - slot else height
-        place(center, inset, bottom)
+        place(center, if (rtl) width - inset - center.measuredWidth else inset, bottom)
 
         val from = moveFrom ?: return
         moveFrom = null
@@ -123,23 +123,8 @@ internal class ComposerRow(
     }
 
     companion object {
-        const val SLOT_DP = 48
-        private const val EDGE_DP = 2
+        const val SLOT_DP = 44
         /** Lines the stacked field's text up with the "+" glyph under it. */
-        private const val STACKED_INSET_DP = 13
-        private const val PROBE_CHARS = 128
-
-        /**
-         * Whether [text] needs a row of its own: it has a line break, or is wider than
-         * [inlineWidthPx]. [desiredWidth] measures a run of text on one line.
-         */
-        fun needsOwnRow(text: CharSequence, inlineWidthPx: Int, desiredWidth: (CharSequence) -> Float): Boolean {
-            if (text.isEmpty()) return false
-            if (text.indexOf('\n') >= 0) return true
-            if (inlineWidthPx <= 0) return false
-            // A long draft is decided by its head, so typing into it never measures all of it.
-            if (text.length > PROBE_CHARS && ceil(desiredWidth(text.subSequence(0, PROBE_CHARS))) > inlineWidthPx) return true
-            return ceil(desiredWidth(text)) > inlineWidthPx
-        }
+        private const val STACKED_INSET_DP = 14
     }
 }

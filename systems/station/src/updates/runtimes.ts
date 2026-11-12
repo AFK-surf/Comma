@@ -17,7 +17,7 @@ export const KINDS: Kind[] = ["station", "claude", "codex"];
 export const RUNTIMES: Exclude<Kind, "station">[] = ["claude", "codex"];
 
 export const kindName = (k: Kind) => (k === "station" ? "Station" : k === "claude" ? "Claude Code" : "Codex");
-export const kindCommand = (k: Kind) => (k === "station" ? "stillfail-station" : k);
+export const kindCommand = (k: Kind) => (k === "station" ? "comma-station" : k);
 /// Where the latest is said: the npm registry's latest of the runtime's package.
 export const kindPackage = (k: Kind) => (k === "claude" ? "@anthropic-ai/claude-code" : k === "codex" ? "@openai/codex" : "");
 
@@ -129,7 +129,7 @@ function standaloneCodexUpdate(found: Found): How | Unable {
   const script = `set -eu
 installer=$(curl -fsSL https://chatgpt.com/codex/install.sh)
 CODEX_HOME="$1" CODEX_INSTALL_DIR="$2" CODEX_NON_INTERACTIVE=1 sh -c "$installer" -- --release latest`;
-  return { program: "/bin/sh", args: ["-c", script, "stillfail-codex-update", home, bin] };
+  return { program: "/bin/sh", args: ["-c", script, "comma-station-codex-update", home, bin] };
 }
 
 /// How a runtime the machine has not is installed, or why it cannot be from here: Claude Code by its own installer
@@ -163,7 +163,7 @@ function runBoth(program: string, args: string[], env: Env, timeoutMs: number, o
   return new Promise((resolve, reject) => {
     const clean: Record<string, string> = {};
     for (const [k, v] of Object.entries(env)) if (v !== undefined) clean[k] = v;
-    // On Windows under `stillfail-runner --job`: what npm starts ends with it, and a .cmd (npm's) is run through cmd,
+    // On Windows under `comma-runner --job`: what npm starts ends with it, and a .cmd (npm's) is run through cmd,
     // escaped, by the runner.
     const child = startCommand(program, args, { env: clean, cwd: tmpdir(), stdio: ["ignore", "pipe", "pipe"] });
     let said = "";

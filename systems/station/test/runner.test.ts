@@ -1,4 +1,4 @@
-// Agents under runners (src/agents/runner.ts) with the real runner binary (STILLFAIL_RUNNER or native/runner's build):
+// Agents under runners (src/agents/runner.ts) with the real runner binary (COMMA_STATION_RUNNER or native/runner's build):
 // lines in order, taken up again after a detach exactly where acknowledged, stdin, the exit after all output; a runner
 // is there when its socket answers, whatever a record on disk names; one that does not start says why.
 import assert from "node:assert/strict";
@@ -121,7 +121,7 @@ test("a second runner is refused only while the first is there, and the station 
   const info = await startRunner(data, "t3", answersOnce[0], [...answersOnce[1]], process.env, data);
   const lines: string[] = [];
   const station = new RunnerConnection(info, (stream, text) => void lines.push(`${stream}:${text}`));
-  await assert.rejects(startRunner(data, "t3", process.execPath, ["-e", ""], process.env, data), /the runner did not start: stillfail-runner: t3 is already kept by a runner/);
+  await assert.rejects(startRunner(data, "t3", process.execPath, ["-e", ""], process.env, data), /the runner did not start: comma-runner: t3 is already kept by a runner/);
   // Looked for, and asked by the one refused, it is still its station's: the agent hears it and is heard.
   assert.equal((await findRunner(data, "t3"))?.runner, info.runner);
   assert.equal(JSON.parse(readFileSync(join(runnersDir(data), "t3.json"), "utf8")).runner, info.runner);
@@ -141,14 +141,14 @@ test("a runner that does not start says why, though its stdout ends before it ha
   const data = shortDir();
   // A runner whose stdout is at its end a while before its reason is on stderr: the order a station can read the two in.
   const runner = join(data, "runner");
-  writeFileSync(runner, "#!/bin/sh\nexec 1>&-\nsleep 0.3\necho 'stillfail-runner: x is already kept by a runner' >&2\nexit 1\n");
+  writeFileSync(runner, "#!/bin/sh\nexec 1>&-\nsleep 0.3\necho 'comma-runner: x is already kept by a runner' >&2\nexit 1\n");
   chmodSync(runner, 0o755);
-  const before = process.env.STILLFAIL_RUNNER;
-  process.env.STILLFAIL_RUNNER = runner;
+  const before = process.env.COMMA_STATION_RUNNER;
+  process.env.COMMA_STATION_RUNNER = runner;
   try {
-    await assert.rejects(startRunner(data, "x", "/bin/true", [], process.env, data), { message: "the runner did not start: stillfail-runner: x is already kept by a runner" });
+    await assert.rejects(startRunner(data, "x", "/bin/true", [], process.env, data), { message: "the runner did not start: comma-runner: x is already kept by a runner" });
   } finally {
-    if (before === undefined) delete process.env.STILLFAIL_RUNNER;
-    else process.env.STILLFAIL_RUNNER = before;
+    if (before === undefined) delete process.env.COMMA_STATION_RUNNER;
+    else process.env.COMMA_STATION_RUNNER = before;
   }
 });

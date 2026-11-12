@@ -52,8 +52,8 @@ defmodule SalixAgent.SSHDeviceRelayTest do
   defp receive_bytes(_relay, bytes, acc, id) when acc >= bytes, do: {acc, id}
 
   defp receive_bytes(relay, bytes, acc, _id) do
-    settle_receive({:env_tunnel_send, ^relay, id, %{"channel" => "tcp", "data" => data}})
-    receive_bytes(relay, bytes, acc + byte_size(Base.decode64!(data)), id)
+    settle_receive({:env_tunnel_send, ^relay, id, %{"channel" => "tcp", "bytes" => data}})
+    receive_bytes(relay, bytes, acc + byte_size(data), id)
   end
 
   test "bytes from the gateway reach the socket and are acknowledged" do
@@ -70,5 +70,29 @@ defmodule SalixAgent.SSHDeviceRelayTest do
     settle_receive({:env_tunnel_send, ^relay, ^id, %{"channel" => "tcp_ack", "seq" => 5}})
     SystemsRuntime.Proc.send(relay, {:env_tunnel_frame, id, %{"channel" => "tcp", "eof" => true}})
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5_000)
+  end
+
+  # The relay ends on the connector's eof before the caller looks at it: the
+  # dial's monitor still gives its own exit. A monitor made after `dial` can
+  # reach the relay once it ended and give only `:noproc`, which a caller
+  # waiting for its bytes to be confirmed takes for a lost connection.
+  test "the dial's monitor gives the relay's exit even when it ended first" do
+    target = %{device_id: "dev-gw", environment_id: "env-gw"}
+
+    assert {:ok, socket, %{relay: relay, monitor: monitor}} =
+             DeviceRelay.dial("agent", target, "10.0.0.2", 22, 5_000, monitor: true)
+
+    settle_receive({:relay, ^relay})
+    :ok = :gen_tcp.send(socket, ~c"x")
+    {1, id} = receive_bytes(relay, 1)
+
+    SystemsRuntime.Proc.send(
+      relay,
+      {:env_tunnel_frame, id, %{"channel" => "tcp_ack", "seq" => 1}}
+    )
+
+    SystemsRuntime.Proc.send(relay, {:env_tunnel_frame, id, %{"channel" => "tcp", "eof" => true}})
+    assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5_000)
+    settle_receive({:DOWN, ^monitor, :process, ^relay, :normal})
   end
 end

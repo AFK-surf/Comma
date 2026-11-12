@@ -56,6 +56,10 @@ defmodule Comma.Accounts.Sessions do
 
       case target_repo.insert(AuthSession.changeset(%AuthSession{}, attrs)) do
         {:ok, session} ->
+          # Signing in again within the seven days takes a deletion back.
+          if source == "user_login",
+            do: Comma.AccountDeletion.cancel(user.id, repo: target_repo)
+
           Comma.Analytics.identify(user.id)
           {:ok, Map.put(public_session(session), "token", token)}
 

@@ -75,7 +75,7 @@ defmodule SalixAgent.RouterDecisionTest do
       })
       |> InternalSession.apply_events(events)
 
-    :ok = InternalSessionStore.prepare_seed(ctx.router_id, state)
+    :ok = SalixAgent.TestSupport.SessionFixture.seed(ctx.router_id, state)
   end
 
   defp decide(ctx),

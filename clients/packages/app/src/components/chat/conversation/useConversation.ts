@@ -135,6 +135,7 @@ export function useConversation(
       clearPresentation: () => channel?.clearPresentation?.(),
       discard: (clientRequestId: string) => channel?.discard(clientRequestId),
       refresh: () => channel?.refresh(),
+      older: () => channel?.older?.(),
       readTaskActivity: () => channel?.readTaskActivity?.(),
       removeAttachment: (id: string, questionMessageId?: string) =>
         channel?.removeAttachment(id, questionMessageId),

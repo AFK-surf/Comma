@@ -4,6 +4,7 @@ defmodule Salix.Bindings.MeetingSummary do
   @behaviour SalixMeet.Ports.Summary
 
   require Logger
+  alias Salix.Bindings.{MeetingGlossary, MeetingSpeakerAlignment}
   alias SalixAgent.AudioTranscriber
   alias SalixWeb.LLMProxy
 
@@ -189,7 +190,8 @@ defmodule Salix.Bindings.MeetingSummary do
        "asr_transcript" => asr_transcript,
        "asr_fingerprint" => transcript_fingerprint(asr_transcript),
        "calibration" => Map.delete(calibration, "transcript"),
-       "duration_seconds" => duration_seconds
+       "duration_seconds" => duration_seconds,
+       "participants" => participants(captions, state["chats"], state["participants"])
      }}
   rescue
     e ->
@@ -242,7 +244,7 @@ defmodule Salix.Bindings.MeetingSummary do
         if caption_transcript != "" do
           calibration = calibration_fun.(state, captions, caption_transcript, asr_metadata)
 
-          {transcript, source} = select_canonical_asr(asr, calibration)
+          {transcript, source} = select_canonical_asr(asr, calibration, captions)
           {transcript, source, asr, duration_seconds, calibration}
         else
           {asr, "asr", asr, duration_seconds, calibration_not_applicable()}
@@ -285,6 +287,22 @@ defmodule Salix.Bindings.MeetingSummary do
   def select_canonical_asr(asr, _calibration) when is_binary(asr) and asr != "",
     do: {asr, "asr"}
 
+  # Without a complete calibration, ASR lines take their speakers from the
+  # matching live captions. ASR speaker labels are never identities.
+  @doc false
+  def select_canonical_asr(asr, calibration, captions) do
+    case select_canonical_asr(asr, calibration) do
+      {_asr, "asr"} = raw ->
+        case MeetingSpeakerAlignment.align(asr, captions) do
+          {:ok, aligned} -> {aligned, "asr_aligned"}
+          :unaligned -> raw
+        end
+
+      calibrated ->
+        calibrated
+    end
+  end
+
   # A runtime transcript artifact is the last canonical fallback when neither
   # complete ASR nor live captions are available.
   defp runtime_transcript(state) do
@@ -298,6 +316,30 @@ defmodule Salix.Bindings.MeetingSummary do
     else
       _ -> :skip
     end
+  end
+
+  # The names the meeting itself attests: live-caption speakers, which come
+  # from each participant's own audio track, incoming chat senders, and the
+  # runtime's roster of everyone who joined, also those who never spoke. Most
+  # active first.
+  @doc false
+  def participants(captions, chats, roster \\ []) do
+    speakers =
+      for caption <- List.wrap(captions),
+          trim(get(caption, "text")) != "",
+          do: get(caption, "speaker")
+
+    senders =
+      for chat <- List.wrap(chats), trim(chat["direction"]) != "outgoing", do: chat["sender"]
+
+    (speakers ++ senders)
+    |> Enum.map(&trim/1)
+    |> Enum.reject(&(&1 == "" or &1 == "Unknown"))
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {name, count} -> {-count, name} end)
+    |> Enum.map(&elem(&1, 0))
+    |> then(&Enum.uniq(&1 ++ (roster |> List.wrap() |> Enum.map(fn n -> trim(n) end))))
+    |> Enum.reject(&(&1 == ""))
   end
 
   @doc false
@@ -420,26 +462,26 @@ defmodule Salix.Bindings.MeetingSummary do
   end
 
   defp calibrate_transcript_direct(caption_transcript, asr_transcript, calibrate_fun) do
-    case calibrate_fun.(caption_transcript, asr_transcript) do
-      {:ok, calibrated} when is_binary(calibrated) ->
-        calibrated = String.trim(calibrated)
-        complete = complete_calibration?(calibrated, caption_transcript, asr_transcript)
+    case calibrated_result(
+           calibrate_fun.(caption_transcript, asr_transcript),
+           caption_transcript,
+           asr_transcript
+         ) do
+      {:ok, calibrated} ->
+        calibration_result("direct", true, calibrated, 1, 1)
 
-        calibration_result(
-          "direct",
-          complete,
-          if(complete, do: calibrated, else: ""),
-          1,
-          if(complete, do: 1, else: 0)
-        )
-
-      _ ->
+      {:fallback, reason} ->
+        log_calibration_fallback("direct", reason)
         calibration_result("direct", false, "", 1, 0)
     end
   rescue
-    _exception -> calibration_result("direct", false, "", 1, 0)
+    _exception ->
+      log_calibration_fallback("direct", :crashed)
+      calibration_result("direct", false, "", 1, 0)
   catch
-    _kind, _reason -> calibration_result("direct", false, "", 1, 0)
+    _kind, _reason ->
+      log_calibration_fallback("direct", :crashed)
+      calibration_result("direct", false, "", 1, 0)
   end
 
   defp calibrate_transcript_chunks(captions, asr_metadata, calibrate_fun, opts) do
@@ -461,8 +503,12 @@ defmodule Salix.Bindings.MeetingSummary do
               |> Enum.zip(caption_windows)
               |> Enum.reduce({[], 0}, fn {chunk, caption_window}, {parts, calibrated_count} ->
                 case calibrate_chunk(caption_window, chunk.transcript, calibrate_fun) do
-                  {:ok, calibrated} -> {[calibrated | parts], calibrated_count + 1}
-                  :fallback -> {parts, calibrated_count}
+                  {:ok, calibrated} ->
+                    {[calibrated | parts], calibrated_count + 1}
+
+                  {:fallback, reason} ->
+                    log_calibration_fallback("chunk #{chunk.index}", reason)
+                    {parts, calibrated_count}
                 end
               end)
 
@@ -486,11 +532,13 @@ defmodule Salix.Bindings.MeetingSummary do
               calibrated_chunks
             )
 
-          {:error, _reason} ->
+          {:error, reason} ->
+            log_calibration_fallback("all chunks", reason)
             calibration_result("chunked", false, "", planned_chunks, 0)
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        log_calibration_fallback("all chunks", reason)
         calibration_result("chunked_unavailable", false, "", 0, 0)
     end
   end
@@ -500,29 +548,39 @@ defmodule Salix.Bindings.MeetingSummary do
     asr_window = String.trim(asr_window)
 
     cond do
-      caption_window == "" or asr_window == "" ->
-        :fallback
+      caption_window == "" ->
+        {:fallback, :no_captions}
+
+      asr_window == "" ->
+        {:fallback, :no_asr}
 
       byte_size(caption_window) > @calibration_chunk_caption_max_bytes ->
-        :fallback
+        {:fallback, :captions_too_large}
 
       true ->
-        case calibrate_fun.(caption_window, asr_window) do
-          {:ok, calibrated} when is_binary(calibrated) ->
-            calibrated = String.trim(calibrated)
-
-            if complete_calibration?(calibrated, caption_window, asr_window),
-              do: {:ok, calibrated},
-              else: :fallback
-
-          _ ->
-            :fallback
-        end
+        calibrated_result(calibrate_fun.(caption_window, asr_window), caption_window, asr_window)
     end
   rescue
-    _exception -> :fallback
+    _exception -> {:fallback, :crashed}
   catch
-    _kind, _reason -> :fallback
+    _kind, _reason -> {:fallback, :crashed}
+  end
+
+  # Why a calibration was not used, as a closed set of reasons.
+  defp calibrated_result({:ok, calibrated}, captions, asr) when is_binary(calibrated) do
+    calibrated = String.trim(calibrated)
+
+    cond do
+      calibrated == "" -> {:fallback, :empty_output}
+      complete_calibration?(calibrated, captions, asr) -> {:ok, calibrated}
+      true -> {:fallback, :incomplete_output}
+    end
+  end
+
+  defp calibrated_result(_result, _captions, _asr), do: {:fallback, :model_error}
+
+  defp log_calibration_fallback(scope, reason) do
+    Logger.warning("[meeting_summary] calibration fallback #{scope}: #{inspect(reason)}")
   end
 
   defp ordered_calibration_chunks(chunks) when is_list(chunks) and chunks != [] do
@@ -614,7 +672,12 @@ defmodule Salix.Bindings.MeetingSummary do
   defp asr_transcript(state) do
     agent_id = trim(state["meeting_agent_id"])
     path = trim(get_in(state, ["artifacts", "audio", "path"]))
-    transcribe_asr_observed(agent_id, path)
+
+    terms =
+      participants(state["captions"], state["chats"], state["participants"]) ++
+        glossary_terms(state)
+
+    transcribe_asr_observed(agent_id, path, AudioTranscriber, terms: terms)
   rescue
     exception ->
       Logger.warning(
@@ -632,12 +695,28 @@ defmodule Salix.Bindings.MeetingSummary do
       :skip
   end
 
+  # The team's own spellings, from its Router's glossary: a team's product
+  # names are unknown to the model, which writes what it hears instead.
+  defp glossary_terms(state) do
+    with group_id when is_binary(group_id) and group_id != "" <- state["group_id"],
+         tenant_id when is_binary(tenant_id) and tenant_id != "" <- state["tenant_id"],
+         {:ok, agent_id} <- MeetingGlossary.router_agent(group_id, tenant_id) do
+      MeetingGlossary.load_terms(agent_id)
+    else
+      _ -> []
+    end
+  end
+
   @doc false
-  def transcribe_asr_observed(agent_id, path, transcriber \\ AudioTranscriber) do
+  def transcribe_asr_observed(agent_id, path, transcriber \\ AudioTranscriber, opts \\ []) do
     started_at = SystemsClock.monotonic_time()
 
     try do
-      result = transcriber.transcribe(agent_id, path)
+      result =
+        if opts != [] and function_exported?(transcriber, :transcribe, 3),
+          do: transcriber.transcribe(agent_id, path, opts),
+          else: transcriber.transcribe(agent_id, path)
+
       emit_asr_telemetry(result, SystemsClock.monotonic_time() - started_at)
 
       case result do

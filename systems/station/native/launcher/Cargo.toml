@@ -1,5 +1,5 @@
 [package]
-name = "stillfail-launcher"
+name = "comma-station-launcher"
 version = "0.1.0"
 edition = "2024"
 # File::try_lock (data.rs) is stable from 1.89.
@@ -9,12 +9,12 @@ publish = false
 [workspace]
 
 [[bin]]
-name = "stillfail-station"
+name = "comma-station"
 path = "src/main.rs"
 
 # Windows' launcher at logon, with no window (src/hidden.rs).
 [[bin]]
-name = "stillfail-station-w"
+name = "comma-station-w"
 path = "src/hidden.rs"
 
 [dependencies]

@@ -72,6 +72,17 @@ defmodule BillingCore.Entitlements.Policy do
   def usage_mode(:unlimited_metered), do: :unlimited_metered
   def usage_mode(_value), do: :metered
 
+  @doc "Whether a grant with this policy can pay for the resource kind. No list means every kind."
+  @spec pays_for?(map() | nil, atom() | String.t() | nil) :: boolean()
+  def pays_for?(policy, resource_kind) do
+    usage_credits = (policy || %{})["usage_credits"] || (policy || %{})[:usage_credits] || %{}
+
+    case usage_credits["resource_kinds"] || usage_credits[:resource_kinds] do
+      nil -> true
+      kinds -> to_string(resource_kind) in kinds
+    end
+  end
+
   defp merge_llm_models([]), do: @default["llm_models"]
 
   defp merge_llm_models(policies) do
@@ -132,13 +143,28 @@ defmodule BillingCore.Entitlements.Policy do
     mode = to_string(attrs["mode"] || attrs[:mode] || "metered")
 
     case mode do
-      "metered" -> {:ok, %{"mode" => "metered"}}
+      "metered" -> with_resource_kinds(%{"mode" => "metered"}, attrs)
       "unlimited_metered" -> {:ok, %{"mode" => "unlimited_metered"}}
       _ -> {:error, {:invalid_usage_credits, attrs}}
     end
   end
 
   defp normalize_usage_credits(other), do: {:error, {:invalid_usage_credits, other}}
+
+  defp with_resource_kinds(usage_credits, attrs) do
+    case attrs["resource_kinds"] || attrs[:resource_kinds] do
+      nil ->
+        {:ok, usage_credits}
+
+      [_ | _] = kinds ->
+        if Enum.all?(kinds, &valid_string?/1),
+          do: {:ok, Map.put(usage_credits, "resource_kinds", Enum.uniq(kinds))},
+          else: {:error, {:invalid_usage_credits, attrs}}
+
+      _ ->
+        {:error, {:invalid_usage_credits, attrs}}
+    end
+  end
 
   defp normalize_allowlist(nil), do: {:ok, @default["llm_models"]}
 

@@ -266,7 +266,7 @@ function createRuntimeHarness(
   const instancesDir = join(tempDir, "station", "connector", "instances");
   const station: StationHost & { starts: number } = {
     carried: options.carried ?? true,
-    commandPath: join(tempDir, "station", "stillfail-station"),
+    commandPath: join(tempDir, "station", "comma-station"),
     instancesDir,
     starts: 0,
     start() {
@@ -405,9 +405,7 @@ describe("WorkspaceConnectorRuntimeService", () => {
     // The agents' `comma` is the station's own command; `synch` the app's.
     await expect(
       readFile(join(config.electron.bin_dir, "comma"), "utf8")
-    ).resolves.toContain(
-      `'${join(tempDir, "station", "stillfail-station")}' comma-client`
-    );
+    ).resolves.toContain(`'${join(tempDir, "station", "comma-station")}' comma-client`);
     await expect(
       readFile(join(config.electron.bin_dir, "synch"), "utf8")
     ).resolves.toContain(join(tempDir, "synch"));

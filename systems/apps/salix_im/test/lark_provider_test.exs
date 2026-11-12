@@ -16,6 +16,7 @@ defmodule SalixIM.LarkProviderTest do
     queues: [:lark_mirror_outbox, :lark_mirror_backfill, :feishu_mirror_outbox]
 
   alias SalixIM.{Provider, ProviderConnects, ProviderHTTP}
+  alias SalixIM.Provider.Lark.DirectorySnapshot
   alias SalixIM.TestSupport.BanditServer
   alias SalixStore.{CasRecord, Ids, Keys, S3}
 
@@ -33,7 +34,36 @@ defmodule SalixIM.LarkProviderTest do
 
     def init(opts), do: opts
 
-    def call(conn, _opts) do
+    # Contacts reads answer from the test's directory when it set one
+    # (`SalixIM.TestSupport.ContactDirectory`).
+    def call(%{method: "GET", path_info: ["open-apis", "contact" | path]} = conn, opts) do
+      conn = fetch_query_params(conn)
+
+      with %{} = directory <- SystemsRuntime.get_env(:salix_im, :lark_test_directory),
+           {status, answer} <-
+             SalixIM.TestSupport.ContactDirectory.answer(
+               directory,
+               ["contact" | path],
+               conn.query_params
+             ) do
+        if pid = SystemsRuntime.get_env(:salix_im, :lark_test_pid),
+          do:
+            SystemsRuntime.Proc.send(
+              pid,
+              {:lark_api, "GET", ["contact" | path], %{}, conn.query_params}
+            )
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(status, Jason.encode!(answer))
+      else
+        _none -> route(conn, opts)
+      end
+    end
+
+    def call(conn, opts), do: route(conn, opts)
+
+    defp route(conn, _opts) do
       {:ok, raw, conn} = read_body(conn)
 
       body =
@@ -59,8 +89,17 @@ defmodule SalixIM.LarkProviderTest do
         _json ->
           {status, answer} =
             case {conn.method, path} do
-              {"GET", ["im", "v1", "messages"]} -> history(conn.params["container_id"])
-              _other -> answer(conn.method, path, body)
+              {"GET", ["im", "v1", "messages"]} ->
+                history(conn.params["container_id"])
+
+              {"GET", ["contact", "v3", "departments", _id, "children"]} ->
+                departments(conn.params)
+
+              {"GET", ["contact", "v3", "users", "find_by_department"]} ->
+                members(conn.params)
+
+              _other ->
+                answer(conn.method, path, body)
             end
 
           conn
@@ -76,12 +115,72 @@ defmodule SalixIM.LarkProviderTest do
         |> SystemsRuntime.get_env(:lark_test_history, %{})
         |> Map.get(container_id, [])
 
-      {200, %{"code" => 0, "data" => %{"items" => items, "has_more" => false}}}
+      if SystemsRuntime.get_env(:salix_im, :lark_test_external_chat, false) do
+        {400,
+         %{
+           "code" => 230_027,
+           "msg" => "Lack of necessary permissions, ext=no permission to operate external chats."
+         }}
+      else
+        {200, %{"code" => 0, "data" => %{"items" => items, "has_more" => false}}}
+      end
     end
 
     defp answer("GET", ["im", "v1", "chats"], _body) do
+      if SystemsRuntime.get_env(:salix_im, :lark_test_missing_scope, false) do
+        {400,
+         %{
+           "code" => 99_991_672,
+           "msg" =>
+             "Access denied. One of the following scopes is required: [im:chat:readonly, im:chat]."
+         }}
+      else
+        {200,
+         %{
+           "code" => 0,
+           "data" => %{"items" => [%{"chat_id" => "oc_group"}], "has_more" => false}
+         }}
+      end
+    end
+
+    defp answer("POST", ["im", "v1", "chats"], body) do
+      {200, %{"code" => 0, "data" => %{"chat_id" => "oc_created", "name" => body["name"]}}}
+    end
+
+    defp answer("POST", ["im", "v2", "chats", "search"], _body) do
       {200,
-       %{"code" => 0, "data" => %{"items" => [%{"chat_id" => "oc_group"}], "has_more" => false}}}
+       %{
+         "code" => 0,
+         "data" => %{
+           "items" => [
+             %{
+               "id" => "oc_public",
+               "display_info" => "<h>Launch</h>",
+               "meta_data" => %{"chat_id" => "oc_public", "name" => "Launch"}
+             }
+           ],
+           "total" => 1,
+           "has_more" => false
+         }
+       }}
+    end
+
+    defp answer("PATCH", ["im", "v1", "chats", "oc_verified", "members", "me_join"], _body) do
+      {400,
+       %{
+         "code" => 232_075,
+         "msg" => "The public group needs to apply to join"
+       }}
+    end
+
+    defp answer("PATCH", ["im", "v1", "chats", _chat_id, "members", "me_join"], _body) do
+      {200, %{"code" => 0, "data" => %{}}}
+    end
+
+    defp answer("POST", ["im", "v1", "chats", _chat_id, "members"], body) do
+      if "ou_denied" in body["id_list"],
+        do: {400, %{"code" => 230_006, "msg" => "member is outside the app availability range"}},
+        else: {200, %{"code" => 0, "data" => %{"invalid_id_list" => []}}}
     end
 
     defp answer("POST", ["auth", "v3", "tenant_access_token", "internal"], body) do
@@ -110,6 +209,14 @@ defmodule SalixIM.LarkProviderTest do
       case body["receive_id"] do
         "oc_" <> _rest = chat_id -> sent(body, chat_id)
         _person -> sent(body, "oc_direct")
+      end
+    end
+
+    # A forward is a copy of the message in the chat or private chat it names.
+    defp answer("POST", ["im", "v1", "messages", _message_id, "forward"], body) do
+      case body["receive_id"] do
+        "oc_" <> _rest = chat_id -> sent(%{"msg_type" => "file"}, chat_id)
+        _person -> sent(%{"msg_type" => "file"}, "oc_direct")
       end
     end
 
@@ -176,6 +283,14 @@ defmodule SalixIM.LarkProviderTest do
     defp answer("POST", ["im", "v1", "files"], _body),
       do: {200, %{"code" => 0, "data" => %{"file_key" => "file_v2_report"}}}
 
+    defp answer("GET", ["tenant", "v2", "tenant", "query"], _body) do
+      if SystemsRuntime.get_env(:salix_im, :lark_test_missing_scope, false) do
+        {400, %{"code" => 99_991_672, "msg" => "Access denied."}}
+      else
+        {200, %{"code" => 0, "data" => %{"tenant" => %{"name" => "Acme"}}}}
+      end
+    end
+
     defp answer("GET", ["contact", "v3", "scopes"], _body) do
       {200,
        %{
@@ -188,7 +303,23 @@ defmodule SalixIM.LarkProviderTest do
        }}
     end
 
-    defp answer("GET", ["contact", "v3", "departments", _department_id, "children"], _body) do
+    # With fetch_child the walk sees every department below.
+    defp departments(%{"fetch_child" => "true"}) do
+      {200,
+       %{
+         "code" => 0,
+         "data" => %{
+           "items" => [
+             %{"open_department_id" => "od_eng", "name" => "Engineering"},
+             %{"open_department_id" => "od_design", "name" => "Design"},
+             %{"open_department_id" => "od_ops", "name" => "Operations"}
+           ],
+           "has_more" => false
+         }
+       }}
+    end
+
+    defp departments(_params) do
       {200,
        %{
          "code" => 0,
@@ -200,14 +331,60 @@ defmodule SalixIM.LarkProviderTest do
        }}
     end
 
-    defp answer("GET", ["contact", "v3", "users", "find_by_department"], _body) do
+    defp answer("GET", ["contact", "v3", "departments", department_id], _body) do
       {200,
        %{
          "code" => 0,
          "data" => %{
-           "items" => [%{"open_id" => "ou_alice", "name" => "Alice"}],
+           "department" => %{"open_department_id" => department_id, "name" => "Engineering"}
+         }
+       }}
+    end
+
+    defp members(%{"department_id" => department_id}) do
+      {open_id, name} =
+        case department_id do
+          "od_design" -> {"ou_alicia", "Alicia"}
+          "od_ops" -> {"ou_alina", "Alina"}
+          _engineering -> {"ou_alice", "Alice"}
+        end
+
+      {200,
+       %{
+         "code" => 0,
+         "data" => %{
+           "items" => [
+             %{"open_id" => open_id, "name" => name, "department_ids" => [department_id]}
+           ],
            "has_more" => false
          }
+       }}
+    end
+
+    # Ingress marks a message for the bot with a reaction.
+    defp answer("GET", ["contact", "v3", "users", "ou_nobody"], _body),
+      do: {400, %{"code" => 41_050, "msg" => "no user authority error"}}
+
+    defp answer("GET", ["contact", "v3", "users", user_id], _body) do
+      {200,
+       %{
+         "code" => 0,
+         "data" => %{
+           "user" => %{
+             "open_id" => user_id,
+             "name" => "Alice",
+             "email" => "",
+             "enterprise_email" => "alice@acme.test"
+           }
+         }
+       }}
+    end
+
+    defp answer("POST", ["im", "v1", "messages", _message_id, "reactions"], body) do
+      {200,
+       %{
+         "code" => 0,
+         "data" => %{"reaction_id" => "r_1", "reaction_type" => body["reaction_type"]}
        }}
     end
 
@@ -279,6 +456,7 @@ defmodule SalixIM.LarkProviderTest do
               not &1["deleted"])
         )
         |> Enum.filter(&(is_nil(opts[:chat_id]) or &1["chat_id"] == opts[:chat_id]))
+        |> Enum.filter(&(is_nil(opts[:thread_id]) or &1["thread_id"] == opts[:thread_id]))
         |> Enum.filter(&(opts[:has_file] != true or &1["file_count"] > 0))
         |> Enum.filter(fn row ->
           Enum.all?(List.wrap(opts[:patterns]), fn pattern ->
@@ -289,6 +467,23 @@ defmodule SalixIM.LarkProviderTest do
         |> Enum.take(opts[:limit])
 
       {:ok, %{messages: messages, next_cursor: nil, has_more?: false}}
+    end
+  end
+
+  defmodule Registration do
+    @moduledoc "Lark's accounts service answering a poll with the app a scan updated."
+    import Plug.Conn
+
+    def init(app_id), do: app_id
+
+    def call(conn, app_id) do
+      body = %{
+        "client_id" => app_id,
+        "client_secret" => "rotated-secret",
+        "user_info" => %{"open_id" => "ou_alice", "tenant_brand" => "lark"}
+      }
+
+      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
     end
   end
 
@@ -347,6 +542,7 @@ defmodule SalixIM.LarkProviderTest do
       SystemsRuntime.delete_env(:salix_im, :lark_test_threads)
       SystemsRuntime.delete_env(:salix_im, :lark_test_history)
       SystemsRuntime.delete_env(:salix_im, :lark_test_chats)
+      SystemsRuntime.delete_env(:salix_im, :lark_test_missing_scope)
     end)
 
     tenant = SalixAgent.TestSupport.new_tenant_id()
@@ -391,6 +587,31 @@ defmodule SalixIM.LarkProviderTest do
       )
 
     {group_id, router["agent_id"]}
+  end
+
+  # One message of a chat's history as Lark lists it.
+  defp history_item(message_id, sender, text),
+    do: %{
+      "message_id" => message_id,
+      "msg_type" => "text",
+      "create_time" => "1793680000000",
+      "sender" => %{"id" => sender, "id_type" => "open_id", "sender_type" => "user"},
+      "body" => %{"content" => Jason.encode!(%{"text" => text})},
+      "mentions" => []
+    }
+
+  # The reactions the bot added so far, as message ID and emoji.
+  defp reactions do
+    {:messages, messages} = SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :messages)
+
+    for {:lark_api, "POST", ["im", "v1", "messages", id, "reactions"], body, _params} <- messages,
+        do: {id, body["reaction_type"]["emoji_type"]}
+  end
+
+  # The Contacts reads the API stub answered since the last `drain/0`.
+  defp contact_reads do
+    {:messages, messages} = SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :messages)
+    for {:lark_api, "GET", ["contact" | _] = path, _body, query} <- messages, do: {path, query}
   end
 
   # Drops the API calls a setup step made, so a test asserts only its own.
@@ -518,7 +739,7 @@ defmodule SalixIM.LarkProviderTest do
     source_id = "im_provider:lark:#{ctx.connect["connect_id"]}:#{message_id}"
 
     Enum.filter(messages, fn message ->
-      get_in(message, ["agent_input", "trusted_origin", "source_message_id"]) == source_id
+      get_in(message, ["agent_input", :trusted_origin, "source_message_id"]) == source_id
     end)
   end
 
@@ -631,7 +852,7 @@ defmodule SalixIM.LarkProviderTest do
       assert {:ok, %{"ok" => true, "status" => "duplicate"}} = deliver(ctx, event)
 
       assert [message] = router_inputs(ctx, "om_private")
-      origin = message["agent_input"]["trusted_origin"]
+      origin = message["agent_input"][:trusted_origin]
       assert origin["provider"] == "lark"
       assert origin["source_text"] == "what can you do?"
 
@@ -837,9 +1058,53 @@ defmodule SalixIM.LarkProviderTest do
       assert router_inputs(ctx, "om_chatter") == []
       assert router_inputs(ctx, "om_other") == []
       assert [message] = router_inputs(ctx, "om_mention")
-      origin = message["agent_input"]["trusted_origin"]
-      # The bot's own mention is not part of the request; another person's is.
-      assert origin["source_text"] == "summarize @Carol"
+      origin = message["agent_input"][:trusted_origin]
+      # Every mention reads as `@name`, the bot's own one too.
+      assert origin["source_text"] == "@Bridge summarize @Carol"
+    end
+
+    test "a message for the bot is marked OnIt as it arrives, and group talk is not", ctx do
+      thread = "omt_om_marked_mention"
+      SystemsRuntime.put_env(:salix_im, :lark_test_threads, %{"om_marked_follow" => thread})
+
+      mention =
+        message_event("om_marked_mention", @group, "group", "@_user_1 hi",
+          mentions: [bot_mention()]
+        )
+
+      private = message_event("om_marked_private", @private, "p2p", "hello")
+
+      assert {:ok, %{"status" => "queued"}} = deliver(ctx, mention)
+      assert {:ok, %{"status" => "queued"}} = deliver(ctx, private)
+
+      assert {:ok, _answer} =
+               deliver(ctx, message_event("om_marked_chatter", @group, "group", "lunch?"))
+
+      # A reply in a thread the bot answered in reaches the Router unmarked.
+      assert {:ok, _sent} =
+               call(
+                 ctx,
+                 "lark.send_message",
+                 %{"text" => "Hello.", "reply_to" => "om_marked_mention"},
+                 origin(ctx, @group, "om_marked_mention")
+               )
+
+      follow_up =
+        "om_marked_follow"
+        |> message_event(@group, "group", "thanks")
+        |> put_in(["event", "message", "thread_id"], thread)
+
+      assert {:ok, %{"status" => "queued"}} = deliver(ctx, follow_up)
+
+      # Lark delivers the mention again: it is not marked twice.
+      assert {:ok, %{"status" => "duplicate"}} = deliver(ctx, mention)
+
+      marked = wait_for(fn -> if length(reactions()) >= 2, do: reactions(), else: [] end)
+
+      assert Enum.sort(marked) == [
+               {"om_marked_mention", "OnIt"},
+               {"om_marked_private", "OnIt"}
+             ]
     end
 
     test "a control command is answered under its message and never reaches the Router", ctx do
@@ -947,7 +1212,7 @@ defmodule SalixIM.LarkProviderTest do
       follow_up = in_thread.("om_follow", "can you read this document?", thread)
       assert {:ok, %{"ok" => true}} = deliver(ctx, follow_up)
       assert [message] = router_inputs(ctx, "om_follow")
-      context = message["agent_input"]["trusted_origin"]["provider_context"]
+      context = message["agent_input"][:trusted_origin]["provider_context"]
       assert context["message_thread_id"] == thread
 
       # The answer to it is a message of the same thread.
@@ -1015,6 +1280,322 @@ defmodule SalixIM.LarkProviderTest do
     end
   end
 
+  describe "an app made by a scan" do
+    setup ctx do
+      {group_id, _router} = group_with_router(ctx.tenant)
+      app_id = "cli_scan_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+      {:ok, connect} =
+        ProviderConnects.create_lark_im_connect(ctx.tenant, group_id, %{
+          "app_id" => app_id,
+          "app_secret" => @secret,
+          "events" => "socket",
+          "owner_only" => true,
+          "owner_open_id" => @user
+        })
+
+      drain()
+
+      %{
+        socket: connect,
+        socket_ctx: %{ctx | group_id: group_id, connect: connect, app_id: app_id}
+      }
+    end
+
+    test "connects without a request URL, token or key, and refuses the webhook", ctx do
+      assert %{"events" => "socket", "webhook_url" => "", "owner_open_id" => @user} = ctx.socket
+      refute inspect(ctx.socket) =~ @secret
+
+      check = %{"type" => "url_verification", "challenge" => "c-1", "token" => ""}
+
+      assert {:error, :verification_material_missing} =
+               ProviderHTTP.handle_lark_request(ctx.socket["app_id"], check, [], "")
+
+      assert {:error, {:bad_request, "invalid events"}} =
+               ProviderConnects.create_lark_im_connect(ctx.tenant, ctx.group_id, %{
+                 "app_id" => "cli_other",
+                 "app_secret" => @secret,
+                 "events" => "push"
+               })
+    end
+
+    test "its owner's message on the long connection reaches the Router; anyone else's does not",
+         ctx do
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(
+          ctx.socket["group_id"],
+          ctx.socket["connect_id"],
+          "lark"
+        )
+
+      mine = message_event("om_socket_owner", @private, "p2p", "hello")
+
+      assert {:ok, %{"ok" => true, "status" => "queued"}} =
+               SalixIM.LarkInbound.handle_socket_event(connect, mine)
+
+      assert [_message] = router_inputs(ctx.socket_ctx, "om_socket_owner")
+
+      theirs =
+        message_event("om_socket_other", @private, "p2p", "hello",
+          sender: %{"sender_id" => %{"open_id" => "ou_someone_else"}, "sender_type" => "user"}
+        )
+
+      assert {:ok, %{"ok" => true}} = SalixIM.LarkInbound.handle_socket_event(connect, theirs)
+      assert router_inputs(ctx.socket_ctx, "om_socket_other") == []
+
+      # One person's bot whose owner is missing answers nobody, and cannot be made.
+      ownerless = Map.put(connect, "owner_open_id", "")
+
+      assert {:ok, %{"ok" => true}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 ownerless,
+                 message_event("om_socket_ownerless", @private, "p2p", "hello")
+               )
+
+      assert router_inputs(ctx.socket_ctx, "om_socket_ownerless") == []
+
+      assert {:error, {:bad_request, "owner_open_id is required for an owner's bot"}} =
+               ProviderConnects.create_lark_im_connect(ctx.tenant, ctx.group_id, %{
+                 "app_id" => "cli_ownerless",
+                 "app_secret" => @secret,
+                 "events" => "socket",
+                 "owner_only" => true
+               })
+
+      # Said while the socket was down: read back from the chat's history once,
+      # what did arrive is not delivered again, and nobody else's message is.
+      SystemsRuntime.put_env(:salix_im, :lark_test_history, %{
+        @private => [
+          history_item("om_socket_owner", @user, "hello"),
+          history_item("om_socket_missed", @user, "are you there?"),
+          history_item("om_socket_other_missed", "ou_someone_else", "hi")
+        ]
+      })
+
+      handed =
+        SalixIM.LarkSocket.CatchUp.run(connect, 0, &SalixIM.LarkInbound.handle_socket_event/2)
+
+      assert handed == 3
+      assert [_once] = router_inputs(ctx.socket_ctx, "om_socket_owner")
+      assert [missed] = router_inputs(ctx.socket_ctx, "om_socket_missed")
+      assert missed["agent_input"][:trusted_origin]["source_text"] == "are you there?"
+      assert router_inputs(ctx.socket_ctx, "om_socket_other_missed") == []
+
+      # A chat silent for weeks is read back like any other, and so is a group
+      # the bot is in that has had no message for it yet.
+      SalixIM.ProviderObservations.upsert_lark_chat(connect, %{
+        "chat_id" => "oc_silent",
+        "chat_type" => "p2p",
+        "last_message_at" => 0
+      })
+
+      SystemsRuntime.put_env(:salix_im, :lark_test_history, %{
+        "oc_silent" => [history_item("om_silent", @user, "back after a month")],
+        "oc_group" => [history_item("om_new_group", @user, "hi all")]
+      })
+
+      test = SystemsRuntime.Proc.self()
+
+      SalixIM.LarkSocket.CatchUp.run(connect, 0, fn _connect, envelope ->
+        SystemsRuntime.Proc.send(
+          test,
+          {:handed, envelope["event"]["message"]["chat_id"],
+           envelope["event"]["message"]["message_id"]}
+        )
+
+        {:ok, %{}}
+      end)
+
+      assert_received {:handed, "oc_silent", "om_silent"}
+      assert_received {:handed, "oc_group", "om_new_group"}
+
+      # A webhook connect takes no event as if it came on a long connection.
+      assert {:error, :invalid_envelope} =
+               SalixIM.LarkInbound.handle_socket_event(ctx.connect, mine)
+    end
+
+    test "the bot added to a group asks the Router for one optional welcome there", ctx do
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(
+          ctx.socket["group_id"],
+          ctx.socket["connect_id"],
+          "lark"
+        )
+
+      added = fn event_id, open_id ->
+        %{
+          "schema" => "2.0",
+          "header" => %{
+            "event_type" => "im.chat.member.bot.added_v1",
+            "event_id" => event_id,
+            "tenant_key" => "t_1"
+          },
+          "event" => %{
+            "chat_id" => "oc_new_team",
+            "operator_id" => %{"open_id" => open_id},
+            "name" => "New team",
+            "external" => false
+          }
+        }
+      end
+
+      assert {:ok, %{"ok" => true, "status" => "queued"}} =
+               SalixIM.LarkInbound.handle_socket_event(connect, added.("evt_add", @user))
+
+      assert [input] = router_inputs(ctx.socket_ctx, "channel_joined:oc_new_team:evt_add")
+      origin = input["agent_input"][:trusted_origin]
+      assert SalixAgent.IFC.ChannelOnboarding.origin?(origin)
+
+      assert %{"chat_id" => "oc_new_team", "event_type" => "im.chat.member.bot.added_v1"} =
+               origin["provider_context"]
+
+      # Lark delivers it again: the Router still has one input.
+      assert {:ok, _answer} =
+               SalixIM.LarkInbound.handle_socket_event(connect, added.("evt_add", @user))
+
+      assert [_once] = router_inputs(ctx.socket_ctx, "channel_joined:oc_new_team:evt_add")
+
+      # One person's bot added by someone else stays silent.
+      assert {:ok, %{"ok" => true}} =
+               SalixIM.LarkInbound.handle_socket_event(
+                 connect,
+                 added.("evt_other", "ou_someone_else")
+               )
+
+      assert router_inputs(ctx.socket_ctx, "channel_joined:oc_new_team:evt_other") == []
+    end
+
+    test "a message the catch-up failed to hand over is tried again", ctx do
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(
+          ctx.socket["group_id"],
+          ctx.socket["connect_id"],
+          "lark"
+        )
+
+      # A group the bot is in, as the catch-up lists it.
+      SystemsRuntime.put_env(:salix_im, :lark_test_history, %{
+        @group => [
+          history_item("om_retry_ok", @user, "first"),
+          history_item("om_retry_failed", @user, "second")
+        ]
+      })
+
+      test = SystemsRuntime.Proc.self()
+      {:ok, attempts} = Agent.start_link(fn -> %{} end)
+
+      # The Router is unavailable for one message the first two times.
+      handler = fn _connect, envelope ->
+        id = envelope["event"]["message"]["message_id"]
+
+        n =
+          Agent.get_and_update(
+            attempts,
+            &{Map.get(&1, id, 0) + 1, Map.update(&1, id, 1, fn n -> n + 1 end)}
+          )
+
+        SystemsRuntime.Proc.send(test, {:handed, id, n})
+        if id == "om_retry_failed" and n <= 2, do: {:error, :router_unavailable}, else: {:ok, %{}}
+      end
+
+      sleep = fn ms -> SystemsRuntime.Proc.send(test, {:slept, ms}) end
+
+      assert SalixIM.LarkSocket.CatchUp.run(connect, 0, handler, sleep: sleep) == 2
+      assert_received {:handed, "om_retry_ok", 1}
+      assert_received {:handed, "om_retry_failed", 1}
+      assert_received {:slept, _first}
+      assert_received {:handed, "om_retry_failed", 2}
+      assert_received {:slept, _second}
+      assert_received {:handed, "om_retry_failed", 3}
+      # What was handed over is not handed again, and the tries end.
+      refute_received {:handed, "om_retry_ok", 2}
+      refute_received {:slept, _third}
+    end
+
+    test "the socket runtime finds socket connects through their index, not by reading every connect",
+         ctx do
+      socket_id = ctx.socket["connect_id"]
+      listed = fn -> ProviderConnects.list_socket_connects() end
+
+      assert {:ok, connects} = listed.()
+      assert socket_id in Enum.map(connects, & &1["connect_id"])
+      refute ctx.connect["connect_id"] in Enum.map(connects, & &1["connect_id"])
+
+      # A connect record nobody can read: reading every connect fails on it,
+      # and the list does not read it.
+      unreadable = Keys.ctl_im_connect(ctx.group_id, "imc_unreadable")
+      {:ok, _} = S3.put(unreadable, "not json")
+
+      assert {:ok, connects} = listed.()
+      assert socket_id in Enum.map(connects, & &1["connect_id"])
+
+      assert {:error, {:connect_record_unavailable, ^unreadable, _}} =
+               ProviderConnects.index_socket_connects()
+
+      # A socket connect stored before the index is found once the runtime
+      # indexed the connects when it started.
+      S3.delete(Keys.ctl_im_socket_connect(socket_id))
+      assert {:ok, connects} = listed.()
+      refute socket_id in Enum.map(connects, & &1["connect_id"])
+
+      S3.delete(unreadable)
+      assert :ok = ProviderConnects.index_socket_connects()
+      assert {:ok, connects} = listed.()
+      assert socket_id in Enum.map(connects, & &1["connect_id"])
+
+      # A connect that is deleted leaves the index.
+      assert :ok =
+               ProviderConnects.delete_im_connect(ctx.tenant, ctx.socket["group_id"], socket_id)
+
+      assert {:ok, connects} = listed.()
+      refute socket_id in Enum.map(connects, & &1["connect_id"])
+      assert {:error, :not_found} = CasRecord.get(Keys.ctl_im_socket_connect(socket_id))
+    end
+
+    test "an app the platform refuses for want of a scope names the scope, and a scan that updates the app clears it",
+         ctx do
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(
+          ctx.socket["group_id"],
+          ctx.socket["connect_id"],
+          "lark"
+        )
+
+      SystemsRuntime.put_env(:salix_im, :lark_test_missing_scope, true)
+      SalixIM.LarkSocket.CatchUp.run(connect, 0, fn _connect, _envelope -> {:ok, %{}} end)
+
+      assert {:ok, [listed]} =
+               ProviderConnects.list_group_im_connects(ctx.socket["group_id"], "lark")
+
+      assert listed["missing_scopes"] == ["im:chat:readonly"]
+
+      # A new scan of the same app (`clientID`) answers that app: the connect
+      # is the same one, with the scopes the scan gave and a new secret.
+      SystemsRuntime.put_env(:salix_im, :lark_registration_base_urls, %{
+        "lark" => BanditServer.serve!(__MODULE__.Registration, ctx.socket_ctx.app_id)
+      })
+
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_registration_base_urls) end)
+
+      assert {:ok, updated} =
+               ProviderConnects.finish_lark_registration(
+                 ctx.tenant,
+                 ctx.socket["group_id"],
+                 "lark",
+                 "device-code",
+                 owner: true
+               )
+
+      assert updated["connect_id"] == ctx.socket["connect_id"]
+      assert updated["missing_scopes"] == []
+
+      assert {:ok, %{"app_secret" => "rotated-secret"}} =
+               CasRecord.get(
+                 Keys.ctl_im_connect(ctx.socket["group_id"], ctx.socket["connect_id"])
+               )
+    end
+  end
+
   describe "lark.send_message" do
     test "a send answers in the chat of the source, under the source message", ctx do
       origin = origin(ctx, @group, "om_ask")
@@ -1039,6 +1620,29 @@ defmodule SalixIM.LarkProviderTest do
 
       assert_received {:lark_api, "POST", ["im", "v1", "messages"], %{"receive_id" => @group},
                        %{"receive_id_type" => "chat_id"}}
+    end
+
+    test "a send returns the message without its stored body", ctx do
+      # Lark stores a post as a plain text copy and the Markdown source; the
+      # pair read like the message shown twice and the model went to plain text.
+      assert {:ok, %{"message" => message}} =
+               call(ctx, "lark.send_message", %{"chat_id" => @group, "text" => "**Done.**"})
+
+      assert %{"message_id" => "om_sent" <> _, "msg_type" => "post"} = message
+      refute Map.has_key?(message, "body")
+    end
+
+    test "structured_mentions is refused and nothing is sent", ctx do
+      # The name of a source message's mention list is not the send's: the
+      # list was ignored and the people it named were not mentioned.
+      assert {:error, "structured_mentions is not a send parameter" <> _} =
+               call(ctx, "lark.send_message", %{
+                 "chat_id" => @group,
+                 "text" => "Please look.",
+                 "structured_mentions" => [%{"id" => "ou_alice", "name" => "Alice"}]
+               })
+
+      refute_received {:lark_api, "POST", _path, _body, _params}
     end
 
     test "a reply cannot leave the chat the send names", ctx do
@@ -1090,6 +1694,55 @@ defmodule SalixIM.LarkProviderTest do
                  "message_id" => "om_bot",
                  "text" => "Corrected."
                })
+    end
+  end
+
+  describe "lark.forward_message" do
+    test "a forward copies the message on Lark's side to the chat or person it names", ctx do
+      assert {:ok, %{"chat_id" => @private, "message" => %{"message_id" => "om_sent" <> _}}} =
+               Provider.call_api(ctx.router_id, "lark", "lark.forward_message", %{
+                 "connect_id" => ctx.connect["connect_id"],
+                 "tool_call_id" => "call-forward",
+                 "params" => %{"message_id" => "om_installer", "chat_id" => @private},
+                 "tool_context" => %{"trusted_origin" => origin(ctx, @group, "om_ask")}
+               })
+
+      assert_received {:lark_api, "POST", ["im", "v1", "messages", "om_installer", "forward"],
+                       %{"receive_id" => @private},
+                       %{"receive_id_type" => "chat_id", "uuid" => "bft_" <> _}}
+
+      # Nothing is read or uploaded: the bytes never pass through here.
+      refute_received {:lark_api, _method, ["im", "v1", "messages", _id, "resources" | _], _b, _p}
+      refute_received {:lark_api, "POST", ["im", "v1", "files"], _body, _params}
+
+      assert {:ok, %{"user_id" => @user, "chat_id" => "oc_direct"}} =
+               call(ctx, "lark.forward_message", %{
+                 "message_id" => "om_installer",
+                 "user_id" => @user
+               })
+
+      assert_received {:lark_api, "POST", ["im", "v1", "messages", "om_installer", "forward"],
+                       %{"receive_id" => @user}, %{"receive_id_type" => "open_id"}}
+    end
+
+    test "a forward names its message and its target", ctx do
+      origin = origin(ctx, @group, "om_ask")
+
+      # The chat of the source is not a default target.
+      assert {:error, "chat_id or user_id is required"} =
+               call(ctx, "lark.forward_message", %{"message_id" => "om_installer"}, origin)
+
+      assert {:error, "message_id is required"} =
+               call(ctx, "lark.forward_message", %{"chat_id" => @group})
+
+      assert {:error, "pass chat_id or user_id, not both"} =
+               call(ctx, "lark.forward_message", %{
+                 "message_id" => "om_installer",
+                 "chat_id" => @group,
+                 "user_id" => @user
+               })
+
+      refute_received {:lark_api, "POST", _path, _body, _params}
     end
   end
 
@@ -1155,7 +1808,7 @@ defmodule SalixIM.LarkProviderTest do
       refute Jason.encode!(answered) =~ "select_static"
 
       assert [message] = router_inputs(ctx, card_id)
-      origin = message["agent_input"]["trusted_origin"]
+      origin = message["agent_input"][:trusted_origin]
       assert origin["source_text"] == "Upgrade now"
       assert origin["provider_context"]["sender_open_id"] == @user
       assert origin["provider_context"]["chat_id"] == @group
@@ -1246,6 +1899,153 @@ defmodule SalixIM.LarkProviderTest do
     end
   end
 
+  describe "group management" do
+    test "the router discovers and creates a private group with the requested people", ctx do
+      assert {:ok, manual} = Provider.provider_manual("lark", ctx.router_id)
+      names = Enum.map(manual["apis"], & &1["name"])
+      assert "lark.create_chat" in names
+      assert "lark.add_chat_members" in names
+
+      params = %{"name" => "测试 拉群", "user_ids" => [@user, "ou_ben", "ou_shadow"]}
+
+      assert {:ok, %{"chat_id" => "oc_created", "name" => "测试 拉群"}} =
+               call(ctx, "lark.create_chat", params)
+
+      assert_received {:lark_api, "POST", ["im", "v1", "chats"], body, query}
+      assert query == %{"user_id_type" => "open_id"}
+
+      assert body == %{
+               "name" => "测试 拉群",
+               "user_id_list" => [@user, "ou_ben", "ou_shadow"],
+               "chat_mode" => "group",
+               "chat_type" => "private"
+             }
+    end
+
+    test "a replay of one tool call uses the same Lark creation key", ctx do
+      args = %{
+        "connect_id" => ctx.connect["connect_id"],
+        "tool_call_id" => "create-request-1",
+        "params" => %{"name" => "Launch", "user_ids" => [@user]}
+      }
+
+      assert {:ok, _} = Provider.call_api(ctx.router_id, "lark", "lark.create_chat", args)
+      assert_received {:lark_api, "POST", ["im", "v1", "chats"], _, %{"uuid" => first}}
+      assert is_binary(first) and byte_size(first) > 0
+
+      assert {:ok, _} = Provider.call_api(ctx.router_id, "lark", "lark.create_chat", args)
+      assert_received {:lark_api, "POST", ["im", "v1", "chats"], _, %{"uuid" => ^first}}
+
+      assert {:ok, _} =
+               Provider.call_api(ctx.router_id, "lark", "lark.create_chat", %{
+                 args
+                 | "tool_call_id" => "create-request-2"
+               })
+
+      assert_received {:lark_api, "POST", ["im", "v1", "chats"], _, %{"uuid" => second}}
+      refute first == second
+    end
+
+    test "member addition names its group and preserves an unavailable-member error", ctx do
+      assert {:ok, %{"invalid_id_list" => []}} =
+               call(ctx, "lark.add_chat_members", %{
+                 "chat_id" => "oc_created",
+                 "user_ids" => ["ou_ben", "ou_ben"]
+               })
+
+      assert_received {:lark_api, "POST", ["im", "v1", "chats", "oc_created", "members"],
+                       %{"id_list" => ["ou_ben"]},
+                       %{"member_id_type" => "open_id", "succeed_type" => "2"}}
+
+      assert {:error, reason} =
+               call(ctx, "lark.add_chat_members", %{
+                 "chat_id" => "oc_created",
+                 "user_ids" => ["ou_denied"]
+               })
+
+      assert reason =~ "230006"
+      assert reason =~ "availability range"
+    end
+
+    test "finds a public group the bot has not joined and joins it", ctx do
+      assert {:ok, %{"chats" => [%{"chat_id" => "oc_public"} = chat], "total" => 1}} =
+               call(ctx, "lark.search_chats", %{
+                 "query" => "Launch",
+                 "search_types" => ["public_not_joined"]
+               })
+
+      refute Map.has_key?(chat, "display_info")
+
+      assert_received {:lark_api, "POST", ["im", "v2", "chats", "search"],
+                       %{
+                         "query" => "Launch",
+                         "filter" => %{"search_types" => ["public_not_joined"]}
+                       }, %{"page_size" => "50"}}
+
+      assert {:ok, _} = call(ctx, "lark.join_chat", %{"chat_id" => "oc_public"})
+
+      assert_received {:lark_api, "PATCH",
+                       ["im", "v1", "chats", "oc_public", "members", "me_join"], _, _}
+    end
+
+    test "joining names its group and keeps a join verification refusal", ctx do
+      assert {:error, _} = call(ctx, "lark.join_chat", %{})
+      refute_received {:lark_api, "PATCH", _, _, _}
+
+      assert {:error, reason} = call(ctx, "lark.join_chat", %{"chat_id" => "oc_verified"})
+      assert reason =~ "232075"
+
+      assert {:error, _} = call(ctx, "lark.search_chats", %{"search_types" => ["everything"]})
+      refute_received {:lark_api, "POST", ["im", "v2", "chats", "search"], _, _}
+    end
+
+    test "invalid members and an omitted target do not send a mutation", ctx do
+      for ids <- [[], ["Ben"], [%{"open_id" => @user}], List.duplicate(@user, 51)] do
+        assert {:error, _} =
+                 call(ctx, "lark.create_chat", %{"name" => "Launch", "user_ids" => ids})
+      end
+
+      assert {:error, _} = call(ctx, "lark.create_chat", %{"user_ids" => [@user]})
+
+      assert {:error, _} =
+               call(
+                 ctx,
+                 "lark.add_chat_members",
+                 %{"user_ids" => [@user]},
+                 origin(ctx, @group, "om_request")
+               )
+
+      refute_received {:lark_api, "POST", ["im", "v1", "chats"], _, _}
+      refute_received {:lark_api, "POST", ["im", "v1", "chats", _, "members"], _, _}
+    end
+
+    test "workers cannot discover or dispatch group mutations", ctx do
+      worker =
+        SalixAgent.TestSupport.create_control_agent!(Ids.new_agent_id(ctx.group_id), %{
+          "tenant_id" => ctx.tenant,
+          "group_id" => ctx.group_id,
+          "name" => "Worker",
+          "role" => "worker"
+        })
+
+      assert {:ok, manual} = Provider.provider_manual("lark", worker["agent_id"])
+      names = Enum.map(manual["apis"], & &1["name"])
+
+      for api <- ["lark.create_chat", "lark.add_chat_members"] do
+        refute api in names
+
+        assert {:error, "operation is not available to this agent role"} =
+                 Provider.call_api(worker["agent_id"], "lark", api, %{
+                   "connect_id" => ctx.connect["connect_id"],
+                   "params" => %{"name" => "Launch", "chat_id" => @group, "user_ids" => [@user]}
+                 })
+      end
+
+      refute_received {:lark_api, "POST", ["im", "v1", "chats"], _, _}
+      refute_received {:lark_api, "POST", ["im", "v1", "chats", _, "members"], _, _}
+    end
+  end
+
   describe "chats, people and the directory" do
     test "the chat and the sender of a routed message are listed", ctx do
       assert {:ok, _queued} =
@@ -1267,8 +2067,11 @@ defmodule SalixIM.LarkProviderTest do
       assert {:ok, %{"users" => []}} =
                call(ctx, "lark.list_observed_users", %{"query" => "nobody"})
 
-      assert {:ok, %{"users" => [%{"open_id" => @user}], "source" => "observed_inbound_users"}} =
-               call(ctx, "lark.lookup_users", %{"query" => "alice", "limit" => 1})
+      assert {:ok,
+              %{
+                "users" => [%{"open_id" => @user, "source" => "observed"}],
+                "directory" => %{"searched" => false}
+              }} = call(ctx, "lark.lookup_users", %{"query" => "alice", "limit" => 1})
 
       # The lists are Lark's own: nothing went to the Feishu lists.
       assert {:ok, []} = SalixIM.ProviderObservations.list_feishu_chats(connect_id, "", 50)
@@ -1316,6 +2119,423 @@ defmodule SalixIM.LarkProviderTest do
 
       assert {:error, "department_id is required"} =
                call(ctx, "lark.list_department_users", %{})
+    end
+
+    test "a name search reads the whole contact data range", ctx do
+      assert {:ok,
+              %{
+                "users" => [%{"open_id" => @user, "name" => "Alice", "source" => "directory"}],
+                "directory" => %{"searched" => true, "complete" => true, "people_read" => 3}
+              } = result} = call(ctx, "lark.lookup_users", %{"query" => "alice"})
+
+      # One match needs no confirmation.
+      refute Map.has_key?(result, "confirm")
+
+      # Sub-departments come in one walk, and each department's direct
+      # members are read.
+      assert_received {:lark_api, "GET", ["contact", "v3", "departments", "od_eng", "children"],
+                       _body, %{"fetch_child" => "true"}}
+
+      assert_received {:lark_api, "GET", ["contact", "v3", "users", "find_by_department"], _body,
+                       %{"department_id" => "od_eng"}}
+
+      assert {:ok, %{"users" => [], "directory" => %{"complete" => true, "note" => note}}} =
+               call(ctx, "lark.lookup_users", %{"query" => "nobody"})
+
+      assert note =~ "Nobody in the app's Contacts data range matches"
+
+      assert {:ok, %{"users" => [_, _, _], "directory" => %{"complete" => true}}} =
+               call(ctx, "lark.lookup_users", %{"query" => "ali"})
+
+      # A search that stops at limit has not read the whole data range, before
+      # a root department and before a sub-department alike, and the Agent
+      # confirms the person.
+      for limit <- [1, 2] do
+        assert {:ok, %{"users" => users, "directory" => %{"complete" => false}, "confirm" => _}} =
+                 call(ctx, "lark.lookup_users", %{"query" => "ali", "limit" => limit})
+
+        assert length(users) == limit
+      end
+    end
+
+    test "everyone in the Contacts data range comes in one call", ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+      list = &call(ctx, "lark.list_directory_users", &1)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.small()
+      )
+
+      assert {:ok,
+              %{
+                "complete" => true,
+                "users" => users,
+                "people_returned" => 5,
+                "departments_read" => 4,
+                "data_range" => %{
+                  "root_departments" => 1,
+                  "root_users" => 1,
+                  "all_roots_reached" => true
+                }
+              } = result} = list.(%{})
+
+      refute Map.has_key?(result, "continue_from")
+
+      # Each person once, with every department they are in, and no phone
+      # number or avatar.
+      assert users == [
+               %{"open_id" => "ou_ceo", "name" => "Chen", "departments" => []},
+               %{
+                 "open_id" => "ou_alice",
+                 "name" => "Alice",
+                 "en_name" => "Alice Wu",
+                 "email" => "alice@acme.test",
+                 "employee_no" => "E1",
+                 "job_title" => "Engineer",
+                 "departments" => ["Engineering", "Engineering / Backend"]
+               },
+               %{
+                 "open_id" => "ou_bob",
+                 "name" => "Bob",
+                 "departments" => ["Engineering / Backend"]
+               },
+               %{"open_id" => "ou_carol", "name" => "Carol", "departments" => ["Design"]},
+               %{"open_id" => "ou_dana", "name" => "Dana", "departments" => ["Design"]}
+             ]
+    end
+
+    test "a range past one call's request budget goes on where it stopped", ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+      list = &call(ctx, "lark.list_directory_users", &1)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.wide(130)
+      )
+
+      assert {:ok, %{"complete" => false, "continue_from" => at, "requests" => 120} = first} =
+               list.(%{})
+
+      assert first["note"] =~ "continue_from"
+
+      assert {:ok, %{"complete" => true, "departments_read_total" => 131} = last} =
+               list.(%{"continue_from" => at})
+
+      refute Map.has_key?(last, "continue_from")
+
+      # Nobody is skipped, a call lists a person once, and the person in the
+      # first and the last department is in both calls.
+      ids = Enum.map(first["users"] ++ last["users"], & &1["open_id"])
+      departments = for n <- 1..130, do: "od_" <> String.pad_leading(Integer.to_string(n), 3, "0")
+      people = for "od_" <> n <- departments, do: "ou_" <> n
+      assert Enum.sort(Enum.uniq(ids)) == Enum.sort(["ou_both" | people])
+      assert length(ids) == length(people) + 2
+
+      for %{"users" => users} <- [first, last],
+          do: assert(Enum.uniq_by(users, & &1["open_id"]) == users)
+
+      # The second call read no department the first one had read.
+      for department <- ["0" | departments],
+          do:
+            assert_received(
+              {:lark_api, "GET", ["contact", "v3", "users", "find_by_department"], _,
+               %{"department_id" => ^department}}
+            )
+
+      refute_received {:lark_api, "GET", ["contact", "v3", "users", "find_by_department"], _, _}
+    end
+
+    test "a refused read is reported and the walk resumes at that department", ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+      list = &call(ctx, "lark.list_directory_users", &1)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        Map.put(SalixIM.TestSupport.ContactDirectory.small(), :failing, ["od_design"])
+      )
+
+      assert {:ok,
+              %{"complete" => false, "error" => error, "continue_from" => at, "users" => users}} =
+               list.(%{})
+
+      assert error =~ "Access denied"
+      assert Enum.map(users, & &1["open_id"]) == ~w(ou_ceo ou_alice ou_bob)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.small()
+      )
+
+      assert {:ok, %{"complete" => true, "users" => rest}} = list.(%{"continue_from" => at})
+      assert Enum.map(rest, & &1["open_id"]) == ~w(ou_carol ou_dana)
+
+      assert {:error, invalid} = list.(%{"continue_from" => "not-a-position"})
+      assert invalid =~ "without continue_from"
+    end
+
+    test "a name search reads departments at once and answers in the data range's order", ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.wide(130)
+      )
+
+      drain()
+
+      # P001 to P009 match, in departments that different chunks read.
+      assert {:ok,
+              %{
+                "users" => users,
+                "directory" => %{
+                  "complete" => false,
+                  "departments_read" => 117,
+                  "people_read" => 116
+                }
+              }} = call(ctx, "lark.lookup_users", %{"query" => "p00"})
+
+      assert Enum.map(users, & &1["open_id"]) == for(n <- 1..9, do: "ou_00#{n}")
+
+      # The request budget holds: 120 reads in all, of them the members of the
+      # first 116 departments of the listing (the tenant root first).
+      reads = contact_reads()
+      assert length(reads) == 120
+
+      members =
+        for {["contact", "v3", "users", "find_by_department"], query} <- reads,
+            do: query["department_id"]
+
+      departments = for n <- 1..115, do: "od_" <> String.pad_leading(Integer.to_string(n), 3, "0")
+      assert Enum.sort(members) == Enum.sort(["0" | departments])
+    end
+
+    test "a name search matches the stored directory first and walks it on a miss", ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+      small = SalixIM.TestSupport.ContactDirectory.small()
+      SystemsRuntime.put_env(:salix_im, :lark_test_directory, small)
+
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(ctx.group_id, ctx.connect["connect_id"])
+
+      assert :ok = DirectorySnapshot.sync(connect)
+
+      assert %{"complete" => true, "people" => people, "synced_at" => synced_at} =
+               DirectorySnapshot.read(connect)
+
+      assert Enum.map(people, & &1["open_id"]) == ~w(ou_ceo ou_alice ou_bob ou_carol ou_dana)
+
+      assert %{
+               "name" => "Alice",
+               "email" => "alice@acme.test",
+               "job_title" => "Engineer",
+               "departments" => ["Engineering", "Engineering / Backend"]
+             } = Enum.at(people, 1)
+
+      drain()
+
+      assert {:ok,
+              %{
+                "users" => [
+                  %{
+                    "open_id" => "ou_alice",
+                    "source" => "directory",
+                    "departments" => ["Engineering", "Engineering / Backend"]
+                  }
+                ],
+                "directory" => %{"stored" => true, "synced_at" => ^synced_at, "complete" => true}
+              }} = call(ctx, "lark.lookup_users", %{"query" => "alice"})
+
+      assert contact_reads() == []
+
+      # A person added after the sync is not stored: the search walks the
+      # directory and finds them.
+      erin = %{"open_id" => "ou_erin", "name" => "Erin", "department_ids" => ["od_design"]}
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        update_in(small, [:members, "od_design"], &(&1 ++ [erin]))
+      )
+
+      assert {:ok,
+              %{
+                "users" => [%{"open_id" => "ou_erin", "source" => "directory"}],
+                "directory" => %{"complete" => true} = directory
+              }} = call(ctx, "lark.lookup_users", %{"query" => "erin"})
+
+      refute Map.has_key?(directory, "stored")
+      assert contact_reads() != []
+    end
+
+    test "an unfinished sync keeps the last whole copy, one run at a time, and goes on later",
+         ctx do
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_directory) end)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.small()
+      )
+
+      {:ok, connect} =
+        ProviderConnects.get_active_connect_by_id(ctx.group_id, ctx.connect["connect_id"])
+
+      assert :ok = DirectorySnapshot.sync(connect)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.wide(130)
+      )
+
+      # One call of 120 requests does not read the whole range.
+      assert :incomplete = DirectorySnapshot.sync(connect, max_calls: 1)
+
+      assert %{"complete" => false, "continue_from" => at, "people" => kept} =
+               DirectorySnapshot.read(connect)
+
+      assert is_binary(at)
+      assert length(kept) == 5
+
+      assert {:ok,
+              %{"users" => [%{"open_id" => "ou_alice"}], "directory" => %{"stored" => true}}} =
+               call(ctx, "lark.lookup_users", %{"query" => "alice"})
+
+      # A run another node holds keeps this one from reading anything.
+      key = Keys.ctl_im_lark_directory(connect["connect_id"])
+      now = SystemsClock.system_time(:millisecond)
+      {:ok, _} = CasRecord.update(key, &Map.put(&1, "sync_started_at", now))
+      drain()
+
+      assert :busy = DirectorySnapshot.sync(connect)
+      assert contact_reads() == []
+
+      # Once that claim is free, the next run goes on from where the first
+      # stopped and replaces the copy.
+      {:ok, _} = CasRecord.update(key, &Map.put(&1, "sync_started_at", nil))
+      assert :ok = DirectorySnapshot.sync(connect)
+      assert %{"complete" => true, "people" => people} = DirectorySnapshot.read(connect)
+      ids = Enum.map(people, & &1["open_id"])
+      assert length(ids) == 131
+      assert Enum.uniq(ids) == ids
+      refute "ou_alice" in ids
+
+      # The person of the first and the last department, read in different
+      # calls, is one entry with both departments.
+      assert %{"departments" => ["Team od_001", "Team od_130"]} =
+               Enum.find(people, &(&1["open_id"] == "ou_both"))
+    end
+
+    test "a new connect reads its directory in the background", ctx do
+      previous = SystemsRuntime.get_env(:salix_im, :directory_sync)
+
+      on_exit(fn ->
+        restore(:salix_im, :directory_sync, previous)
+        SystemsRuntime.delete_env(:salix_im, :lark_test_directory)
+      end)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :lark_test_directory,
+        SalixIM.TestSupport.ContactDirectory.small()
+      )
+
+      SystemsRuntime.put_env(:salix_im, :directory_sync, true)
+
+      {:ok, other} =
+        ProviderConnects.create_lark_im_connect(ctx.tenant, ctx.group_id, attrs("cli_directory"))
+
+      for pid <- SystemsRuntime.TaskSupervisor.children(SalixIM.DirectorySyncTasks) do
+        ref = SystemsRuntime.Proc.monitor(pid)
+
+        receive do
+          {:DOWN, ^ref, _, _, _} -> :ok
+        end
+      end
+
+      assert %{"complete" => true, "people" => [_, _, _, _, _]} = DirectorySnapshot.read(other)
+    end
+  end
+
+  describe "who a person is" do
+    test "the app says a person's name, email and tenant", ctx do
+      assert {:ok, connect} =
+               SalixIM.ProviderConnects.get_active_connect_by_id(
+                 ctx.group_id,
+                 ctx.connect["connect_id"],
+                 "lark"
+               )
+
+      assert SalixIM.Provider.Lark.account(connect, @user) == %{
+               "name" => "Alice",
+               "email" => "alice@acme.test",
+               "workspace" => "Acme"
+             }
+    end
+
+    test "what the app may not read stays out, and nothing fails", ctx do
+      SystemsRuntime.put_env(:salix_im, :lark_test_missing_scope, true)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_missing_scope) end)
+
+      assert {:ok, connect} =
+               SalixIM.ProviderConnects.get_active_connect_by_id(
+                 ctx.group_id,
+                 ctx.connect["connect_id"],
+                 "lark"
+               )
+
+      assert %{"name" => nil, "email" => nil, "workspace" => nil} =
+               SalixIM.Provider.Lark.account(connect, "ou_nobody")
+    end
+  end
+
+  describe "which account a person is on a connect" do
+    defmodule Organizations do
+      @moduledoc "The product's organization names."
+      def organization_name(_tenant_id), do: "Acme Org"
+    end
+
+    setup do
+      SystemsRuntime.put_env(:salix_im, :organizations, Organizations)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :organizations) end)
+    end
+
+    test "the connect's bot is named with the person and the tenant", ctx do
+      assert SalixIM.ProviderAccounts.who(
+               ctx.group_id,
+               ctx.connect["connect_id"],
+               "lark",
+               @user
+             ) == %{
+               "name" => "Alice",
+               "email" => "alice@acme.test",
+               "workspace" => "Acme",
+               "bot" => "Bridge"
+             }
+    end
+
+    test "a tenant the app may not read gives the connect's organization", ctx do
+      SystemsRuntime.put_env(:salix_im, :lark_test_missing_scope, true)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_missing_scope) end)
+
+      assert %{"workspace" => "Acme Org", "bot" => "Bridge"} =
+               SalixIM.ProviderAccounts.who(
+                 ctx.group_id,
+                 ctx.connect["connect_id"],
+                 "lark",
+                 @user
+               )
+    end
+
+    test "a connect that cannot be read says nothing", ctx do
+      assert SalixIM.ProviderAccounts.who(ctx.group_id, "con_gone", "lark", @user) == %{}
+      assert SalixIM.ProviderAccounts.who(ctx.group_id, "con_gone", "telegram", @user) == %{}
     end
   end
 
@@ -1421,6 +2641,96 @@ defmodule SalixIM.LarkProviderTest do
 
       assert {:error, "Lark search is unavailable (message index is not configured)"} =
                call(ctx, "lark.search_messages", %{"query" => "deploy"})
+    end
+  end
+
+  defmodule SignedInMember do
+    @moduledoc "One Lark person who signed in for the Group."
+    @behaviour SalixIM.Ports.LarkUserAccounts
+
+    @impl true
+    def list(_group_id) do
+      {:ok,
+       [%{"alias" => "lark-ann", "open_id" => "ou_ann", "name" => "Ann", "status" => "active"}]}
+    end
+
+    @impl true
+    def access_token(_agent_id, alias_name), do: {:ok, "u-" <> alias_name}
+  end
+
+  describe "an external chat Lark refuses to read" do
+    alias SalixIM.LarkMessageRecord.BackfillRunner
+
+    setup do
+      SystemsRuntime.put_env(:salix_im, :lark_test_external_chat, true)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :lark_test_external_chat) end)
+    end
+
+    test "its history and threads come from the record, and say so", ctx do
+      event =
+        message_event("om_external", @group, "group", "the launch moved")
+        |> put_in(["event", "message", "thread_id"], "omt_ext")
+
+      assert {:ok, _ack} = deliver(ctx, event)
+      drain_outbox()
+
+      assert {:ok,
+              %{
+                "source" => "local_index",
+                "note" => note,
+                "has_more" => false,
+                "messages" => [%{"message_id" => "om_external", "text" => "the launch moved"}]
+              }} = call(ctx, "lark.get_chat_history", %{"chat_id" => @group})
+
+      assert note =~ "another organization"
+      assert note =~ "lark.list_accounts"
+
+      assert {:ok, %{"source" => "local_index", "messages" => [%{"message_id" => "om_external"}]}} =
+               call(ctx, "lark.get_thread_replies", %{"thread_id" => "omt_ext"})
+
+      assert {:ok, %{"messages" => []}} =
+               call(ctx, "lark.get_thread_replies", %{"thread_id" => "omt_other"})
+    end
+
+    test "a member's read that Lark refuses stays a refusal", ctx do
+      previous = SystemsRuntime.get_env(:salix_im, :lark_user_accounts_mod)
+      SystemsRuntime.put_env(:salix_im, :lark_user_accounts_mod, SignedInMember)
+      on_exit(fn -> restore(:salix_im, :lark_user_accounts_mod, previous) end)
+
+      assert {:error, reason} =
+               call(ctx, "lark.get_chat_history", %{"chat_id" => @group, "account" => "lark-ann"})
+
+      assert reason =~ "230027"
+    end
+
+    test "without a record the refusal stands", ctx do
+      SystemsRuntime.delete_env(:salix_im, :lark_message_record_reader_mod)
+
+      assert {:error, reason} = call(ctx, "lark.get_chat_history", %{"chat_id" => @group})
+      assert reason =~ "230027"
+    end
+
+    test "the backfill sets it aside until the next listing, and search stays incomplete", ctx do
+      assert {:ok, %{scan_complete: true}} = BackfillRunner.discover_once(nil)
+      drain()
+
+      assert {:ok, :idle} = BackfillRunner.run_once(pace_ms: 0)
+      assert :empty = BackfillRunner.run_once(pace_ms: 0)
+
+      assert {:ok, %{"incomplete" => %{"reason" => "not_synced"}}} =
+               call(ctx, "lark.search_messages", %{"query" => "in:#{@group} launch"})
+
+      # Once the app may read it, the next listing walks it.
+      SystemsRuntime.put_env(:salix_im, :lark_test_external_chat, false)
+      scope = %{"tenant_id" => ctx.connect["tenant_id"], "app_id" => ctx.app_id}
+
+      assert :ok =
+               SalixStore.LarkMirrorBackfillLedger.upsert_containers(scope, [
+                 %{"container_type" => "chat", "container_id" => @group, "chat_id" => @group}
+               ])
+
+      assert {:ok, [%{"container_id" => @group}]} =
+               SalixStore.LarkMirrorBackfillLedger.next_containers(scope, 1)
     end
   end
 
@@ -1908,6 +3218,10 @@ defmodule SalixIM.LarkProviderTest do
         "oc_person" => %{"chat_mode" => "p2p"}
       })
 
+      # The background listing ingress asks for, run in place.
+      for chat <- ~w(oc_room oc_public oc_shared oc_large oc_person oc_hidden),
+          do: Projection.refresh(scope, chat)
+
       assert {"oc_room", room} = Projection.facts(scope, "oc_room")
       assert %{kind: "room", display_name: "Launch", members: ["ou_alice", "ou_bob"]} = room
       refute Projection.space_audience?(room)
@@ -1951,6 +3265,7 @@ defmodule SalixIM.LarkProviderTest do
         )
 
       assert Projection.message_scope_id(scope, "om_elsewhere") == "oc_other"
+      Projection.refresh(scope, "oc_other")
 
       {:egress, destination} =
         SalixAgent.IFC.Destination.describe(
@@ -2155,7 +3470,7 @@ defmodule SalixIM.LarkProviderTest do
       SalixAgent.IFC.Destination.describe("im_api." <> api, args, %{})
     end
 
-    for api <- ~w(lark.send_message lark.update_message) do
+    for api <- ~w(lark.send_message lark.update_message lark.forward_message) do
       assert {:egress, %{"kind" => "provider_scope", "provider" => "lark", "scope_id" => @group}} =
                describe.(api, %{"connect_id" => "c", "chat_id" => @group})
     end
@@ -2168,6 +3483,9 @@ defmodule SalixIM.LarkProviderTest do
               "connect_id" => "c",
               "user_id" => @user
             }} = describe.("lark.send_message", %{"connect_id" => "c", "user_id" => @user})
+
+    assert {:egress, %{"kind" => "provider_direct", "user_id" => @user}} =
+             describe.("lark.forward_message", %{"connect_id" => "c", "user_id" => @user})
 
     for api <- ~w(lark.get_chat_history lark.search_messages lark.list_chats
                   lark.fetch_message_resource lark.list_observed_chats
@@ -2183,6 +3501,8 @@ defmodule SalixIM.LarkProviderTest do
     # Cloud documents and Minutes. A read is labelled at its result.
     for api <- ~w(lark.fetch_doc lark.list_doc_comments lark.list_doc_members
                   lark.fetch_doc_media lark.list_wiki_spaces lark.list_wiki_nodes
+                  lark.get_base lark.list_base_fields lark.list_base_records
+                  lark.get_sheet lark.get_sheet_range
                   lark.get_minute lark.list_minutes lark.fetch_minute_media) do
       assert {:read, _descriptor} = describe.(api, %{})
     end

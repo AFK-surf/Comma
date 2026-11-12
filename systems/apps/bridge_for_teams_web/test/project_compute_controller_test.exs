@@ -5,7 +5,8 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
   alias BridgeForTeams.CLI.Login, as: CLILogin
   alias BridgeForTeams.{Compute, Environments, Memberships, Projects}
   alias BridgeForTeamsWeb.DashboardEndpoint
-  alias SalixStore.{AgentVMMInstallations, Repo}
+  alias SalixStore.{AgentVMM, AgentVMMRegistrations, Repo}
+  import Ecto.Query, only: [from: 2]
 
   setup do
     %{user: user, org: org} = org_with_owner_fixture(org: %{slug: "compute-org"})
@@ -179,7 +180,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
        ctx do
     previous = SystemsRuntime.get_env(:salix_web, :public_base_url)
     on_exit(fn -> SystemsRuntime.put_env(:salix_web, :public_base_url, previous) end)
-    before_count = Repo.aggregate(AgentVMMInstallations.Operation, :count)
+    before_count = Repo.aggregate(AgentVMM.Registration, :count)
 
     for origin <- [nil, "http://untrusted.example.test"] do
       SystemsRuntime.put_env(:salix_web, :public_base_url, origin)
@@ -198,7 +199,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
       assert response.status == 503, response.resp_body
       assert get_resp_header(response, "cache-control") == ["no-store"]
-      assert Repo.aggregate(AgentVMMInstallations.Operation, :count) == before_count
+      assert Repo.aggregate(AgentVMM.Registration, :count) == before_count
     end
   end
 
@@ -216,14 +217,14 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
                authorize
              )
 
-    operation = Repo.get!(AgentVMMInstallations.Operation, first.operation.id)
+    operation = Repo.get!(AgentVMM.Registration, first.registration.id)
     assert operation.group_id == ctx.project.salix_group_id
     assert operation.delivery_target_type == "headless"
     assert operation.delivery_target_id == ctx.user.id
     assert operation.authorizing_subject_id == ctx.user.id
 
-    assert {:error, :no_pending_operation} =
-             AgentVMMInstallations.deliver_next("bft_runner", ctx.user.id)
+    assert {:error, :no_pending_registration} =
+             AgentVMMRegistrations.deliver_next("bft_runner", ctx.user.id)
 
     assert {:ok, retry} =
              Compute.request_agent_vmm_headless_install(
@@ -234,8 +235,8 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
                authorize
              )
 
-    assert retry.operation.id == first.operation.id
-    assert retry.operation.environment_id == first.operation.environment_id
+    assert retry.registration.id == first.registration.id
+    assert retry.registration.environment_id == first.registration.environment_id
 
     assert {:error, :scope_host_bound} =
              Compute.request_agent_vmm_headless_install(
@@ -255,8 +256,51 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
                fn -> {:error, :forbidden} end
              )
 
-    assert Repo.get!(AgentVMMInstallations.Operation, first.operation.id).ticket_generation ==
-             retry.operation.ticket_generation
+    assert Repo.get!(AgentVMM.Registration, first.registration.id).revision ==
+             retry.registration.revision
+  end
+
+  test "a new install command works after the Project's environment was revoked", ctx do
+    authorize = fn -> :ok end
+
+    assert {:ok, first} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               %{"request_id" => "before-revoke"},
+               authorize
+             )
+
+    environment = Repo.get!(SalixStore.Compute.Environment, first.registration.environment_id)
+
+    assert {:ok, %{desired_state: "revoked", generation: revoked_generation}} =
+             SalixStore.Compute.update_environment_intent(
+               environment.id,
+               environment.revision,
+               %{desired_state: "revoked"}
+             )
+
+    Repo.update_all(
+      from(r in AgentVMM.Registration, where: r.id == ^first.registration.id),
+      set: [ticket_expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
+    )
+
+    assert {:ok, second} =
+             Compute.request_agent_vmm_headless_install(
+               ctx.org,
+               ctx.project,
+               ctx.user,
+               %{"request_id" => "after-revoke"},
+               authorize
+             )
+
+    assert second.registration.environment_id == environment.id
+
+    reopened = Repo.get!(SalixStore.Compute.Environment, environment.id)
+    assert reopened.desired_state == "ready"
+    assert reopened.observed_state == "pending"
+    assert reopened.generation == revoked_generation + 1
   end
 
   test "a lost Linux command is visible and removable through the existing Project Devices API",
@@ -280,7 +324,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     removed = response |> recycle() |> delete(path <> "/cloud-vm/runner")
     assert removed.status == 200, removed.resp_body
 
-    assert Repo.get!(AgentVMMInstallations.Operation, descriptor.operation.id).authorization_status ==
+    assert Repo.get!(AgentVMM.Registration, descriptor.registration.id).status ==
              "revoked"
 
     assert {:ok, next} =
@@ -292,7 +336,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
                fn -> :ok end
              )
 
-    refute next.operation.id == descriptor.operation.id
+    refute next.registration.id == descriptor.registration.id
   end
 
   test "Agent VMM install API binds an exact online runner and never returns its ticket secret",
@@ -306,7 +350,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
              })
 
     path =
-      "/v1/orgs/#{org.slug}/projects/#{project.slug}/compute-nodes/agent-vmm/install-operations"
+      "/v1/orgs/#{org.slug}/projects/#{project.slug}/compute-nodes/agent-vmm/registrations"
 
     created =
       :post
@@ -353,68 +397,83 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
     assert revoked.resp_body
            |> Jason.decode!()
-           |> get_in(["data", "compute", "authorization_status"]) ==
-             "revoked"
+           |> get_in(["data", "compute", "status"]) ==
+             "removed"
   end
 
-  test "terminal Agent VMM retry is actionable without rotating handoff identity",
-       %{org: org, project: project, token: token} do
-    suffix = SystemsRuntime.Proc.unique_integer([:positive])
+  test "current Project admin replaces a headless Registration credential under the original Host proof",
+       ctx do
+    SystemsRuntime.Test.put_env(:salix_web, :public_base_url, "https://api.example.test")
 
-    assert {:ok, runner} =
-             Environments.register_mac_mini_provisioner(org.id, %{
-               "stable_id" => "runner-terminal-retry-#{suffix}",
-               "name" => "Runner terminal retry"
-             })
+    SystemsRuntime.Test.put_env(
+      :salix_store,
+      :agent_vmm_connection_config,
+      SalixStore.AgentVMMConnectionConfigFixtures.catalog()
+    )
+
+    {:ok, descriptor} =
+      Compute.request_agent_vmm_headless_install(
+        ctx.org,
+        ctx.project,
+        ctx.user,
+        %{"request_id" => "recover-headless"},
+        fn -> :ok end
+      )
+
+    id = descriptor.registration.id
+
+    {<<4, x::binary-size(32), y::binary-size(32)>>, private} =
+      SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
+
+    public = <<2 + Bitwise.band(:binary.last(y), 1), x::binary>>
+    identity = %{device_id: "headless-host", root_public_key: public, root_key_revision: 1}
+    original = String.duplicate("a", 43)
+    assert {:ok, _} = AgentVMMRegistrations.claim(id, descriptor.ticket, identity, original)
+    assert {:ok, _} = AgentVMMRegistrations.configure_registration(id, false)
+    admin = user_fixture()
+    {:ok, _} = Memberships.put_org_member(ctx.org.id, admin.id, "member")
+    {:ok, _} = Memberships.put_project_member(ctx.project.id, admin.id, "admin")
+    {:ok, %{token: token, session: session}} = Sessions.create(admin, device: "bft-cli")
+    {:ok, _} = CLILogin.grant_cli_session_orgs(session, [ctx.org.id], admin.id)
 
     path =
-      "/v1/orgs/#{org.slug}/projects/#{project.slug}/compute-nodes/agent-vmm/install-operations"
+      "/v1/orgs/#{ctx.org.slug}/projects/#{ctx.project.slug}/compute-nodes/agent-vmm/registrations/#{id}/recovery"
 
-    created =
-      :post
-      |> build_conn(path, Jason.encode!(%{"runner_id" => runner.stable_id}))
-      |> put_req_header("accept", "application/json")
-      |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer #{token}")
-      |> put_req_header("idempotency-key", "terminal-retry-#{suffix}")
-      |> DashboardEndpoint.call([])
+    candidate = String.duplicate("b", 43)
 
-    assert created.status == 200, created.resp_body
-    operation = created.resp_body |> Jason.decode!() |> get_in(["data", "compute"])
+    response =
+      api_json(:post, path <> "/challenge", token, %{
+        candidate_credential_hash: Base.encode64(:crypto.hash(:sha256, candidate))
+      })
 
-    before = Repo.get!(AgentVMMInstallations.Operation, operation["id"])
-    terminal_at = SystemsClock.utc_now()
+    assert response.status == 200, response.resp_body
+    c = Jason.decode!(response.resp_body)["challenge"]
+    {:ok, wire} = SalixStore.AgentVMMRecovery.wire(c)
 
-    assert {:ok, _terminal} =
-             before
-             |> Ecto.Changeset.change(%{
-               authorization_status: "handed_off",
-               ticket_status: "consumed",
-               ticket_consumed_at: terminal_at,
-               material_handed_off_at: terminal_at,
-               error_code: "agent_vmm.apply_failed"
-             })
-             |> Repo.update()
+    <<0x30, _, 0x02, r_size, rest::binary>> =
+      SystemsRuntime.Proc.sign(:ecdsa, :sha256, wire, [private, :secp256r1])
 
-    retried = api_json(:post, path <> "/#{operation["id"]}/retry", token, %{})
+    <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
+    r = :binary.decode_unsigned(r)
+    s = :binary.decode_unsigned(s)
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
-    assert retried.status == 409
+    proof = %{
+      device_id: identity.device_id,
+      root_public_key: Base.encode64(public),
+      root_key_revision: 1,
+      nonce: c["nonce"],
+      signature: Base.encode64(<<r::256, min(s, order - s)::256>>)
+    }
 
-    assert %{
-             "ok" => false,
-             "error" => %{
-               "code" => "operation_not_retryable",
-               "message" => "This install operation is terminal; start a new install operation."
-             }
-           } = Jason.decode!(retried.resp_body)
+    replaced =
+      api_json(:post, path, token, %{proof: proof, candidate_credential: Base.encode64(candidate)})
 
-    after_retry = Repo.get!(AgentVMMInstallations.Operation, operation["id"])
-    assert after_retry.id == before.id
-    assert after_retry.registration_id == before.registration_id
-    assert after_retry.ticket_generation == before.ticket_generation
-    assert after_retry.ticket_secret_hash == before.ticket_secret_hash
-    assert after_retry.authorization_status == "handed_off"
-    assert after_retry.material_handed_off_at == terminal_at
+    assert replaced.status == 200, replaced.resp_body
+    assert Jason.decode!(replaced.resp_body)["registration_id"] == id
+    assert SalixStore.AgentVMM.authenticate_registration(id, candidate) == :ok
+    assert SalixStore.AgentVMM.authenticate_registration(id, original) == {:error, :unauthorized}
+    refute Repo.get!(SalixStore.AgentVMM.Registration, id).desired_enabled
   end
 
   defp api(method, path, token) do

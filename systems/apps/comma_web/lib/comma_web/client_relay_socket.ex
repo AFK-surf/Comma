@@ -1,7 +1,7 @@
 defmodule CommaWeb.ClientRelaySocket do
   @moduledoc """
   The client relay WebSocket, `GET /v1/comma/station-relay?ticket=…`: Salix as
-  the relay of last resort between a member's device and the Workspace's
+  a relay between a member's device and the Workspace's
   stations, as `SalixWeb.StationRelay` is between stations. The device asks for
   a one-minute, single-use ticket with its session
   (`POST /v1/comma/workspaces/:id/station-relay`, `Comma.Stations.relay_ticket/3`);

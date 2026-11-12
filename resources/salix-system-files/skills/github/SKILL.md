@@ -63,7 +63,7 @@ Before requesting authorization or injecting OAuth credentials, first check whet
 
 For a Compute Workload, use the same `credential_env` array on `compute.exec` or `process.start`.
 Pass `command` as an argument array, for example `["gh", "api", "user", "--jq", ".login"]`.
-Use `env.exec` only for a connector environment. The credential applies only to the requested subprocess.
+Use `env.exec` only for a station environment. The credential applies only to the requested subprocess.
 
 Managed OAuth injects the token into the subprocess that needs GitHub access. `gh` honors `GH_TOKEN`.
 

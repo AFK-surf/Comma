@@ -302,6 +302,42 @@ defmodule SalixIM.TaskLoopTest do
     settle_receive({:task_loops, :end, ^by_user, "cancelled"})
   end
 
+  test "the Router completes a running Loop Task only at its stop condition or a person's request",
+       ctx do
+    id = create_task(ctx, "loop-complete", %{"cadence" => %{"every_minutes" => 1440}})
+    running = %{"status" => "active", "trigger" => %{"every_minutes" => 1440}}
+    TaskLoops.put_views(%{id => running})
+
+    complete = fn human_turn_at ->
+      ConversationServer.update_group_conversation(ctx.group_id, id, %{
+        "status" => "completed",
+        router_agent_id: ctx.router,
+        router_human_turn_at: human_turn_at
+      })
+    end
+
+    assert {:error, {:forbidden, refusal}} = complete.(nil)
+    assert refusal =~ "one report is one run"
+    assert task(ctx, id)["status"] == "active"
+    settle_refute_receive({:task_loops, :end, ^id, _})
+
+    TaskLoops.put_views(%{id => Map.put(running, "stop_condition", "the release shipped")})
+    assert {:ok, %{"status" => "completed"}} = complete.(nil)
+    settle_receive({:task_loops, :end, ^id, "completed"})
+
+    asked = create_task(ctx, "loop-complete-asked", %{"cadence" => %{"every_minutes" => 1440}})
+    TaskLoops.put_views(%{asked => running})
+
+    assert {:ok, %{"status" => "completed"}} =
+             ConversationServer.update_group_conversation(ctx.group_id, asked, %{
+               "status" => "completed",
+               router_agent_id: ctx.router,
+               router_human_turn_at: SystemsClock.system_time(:millisecond)
+             })
+
+    settle_receive({:task_loops, :end, ^asked, "completed"})
+  end
+
   test "the Task's waiting does not pause its Loop, and ready_for_review waits for its end",
        ctx do
     id = create_task(ctx, "loop-escalate", %{"cadence" => %{"every_minutes" => 15}})

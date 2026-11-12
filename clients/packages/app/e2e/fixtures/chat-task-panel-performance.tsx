@@ -52,7 +52,8 @@ declare global {
 
 const GROUP_ID = "group";
 const WORKSPACE_ID = "workspace";
-const STATUSES = ["in_progress", "ready_for_review", "completed"] as const;
+// Statuses that dock: an ended Task leaves the panel.
+const STATUSES = ["in_progress", "ready_for_review", "escalated"] as const;
 
 const taskId = (index: number) => `task-${index}`;
 

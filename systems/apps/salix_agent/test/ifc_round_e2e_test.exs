@@ -48,6 +48,14 @@ defmodule SalixAgent.IFCRoundE2ETest do
       do: SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :mode})
 
     def resolve(request) do
+      case SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :test_pid}, nil) do
+        pid when is_pid(pid) ->
+          SystemsRuntime.Proc.send(pid, {:ifc_resolve, request["destination"]})
+
+        _none ->
+          :ok
+      end
+
       {:ok,
        %{
          "mode" => SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :mode}),
@@ -68,8 +76,19 @@ defmodule SalixAgent.IFCRoundE2ETest do
     # agent's own workspace apart from a conversation.
     defp destination(%{"destination" => %{"kind" => "agent_private"}}), do: ["agent_private"]
 
-    defp destination(_request),
-      do: SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :destination})
+    defp destination(%{
+           "destination" => %{"kind" => "provider_direct", "provider" => "lark", "user_id" => id}
+         }) do
+      SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :destination})
+      |> Map.fetch!(id)
+    end
+
+    defp destination(_request) do
+      case SystemsRuntime.PersistentTerm.get({SalixAgent.IFCRoundE2ETest, :destination}) do
+        %{} = destinations -> Map.fetch!(destinations, "default")
+        atoms -> atoms
+      end
+    end
   end
 
   # Records every notification alongside whatever draft was live at that
@@ -120,7 +139,8 @@ defmodule SalixAgent.IFCRoundE2ETest do
         {:ok,
          [
            %{"connect_id" => "internal", "provider" => "internal"},
-           %{"connect_id" => "slack-1", "provider" => "slack"}
+           %{"connect_id" => "slack-1", "provider" => "slack"},
+           %{"connect_id" => "lark-1", "provider" => "lark"}
          ]}
 
     @impl true
@@ -174,6 +194,38 @@ defmodule SalixAgent.IFCRoundE2ETest do
                }
              }
            end
+       }}
+    end
+
+    def provider_manual("lark") do
+      {:ok,
+       %{
+         "provider" => "lark",
+         "apis" => [
+           %{
+             "name" => "lark.send_message",
+             "safety" => "write",
+             "required_params" => ["text"],
+             "parameters" => %{
+               "chat_id" => "Chat ID",
+               "user_id" => "Person",
+               "reply_to" => "Message ID",
+               "text" => "Text"
+             }
+           }
+           | for api <- ~w(lark.create_chat lark.add_chat_members) do
+               %{
+                 "name" => api,
+                 "safety" => "admin",
+                 "required_params" => ["user_ids"],
+                 "parameters" => %{
+                   "name" => "Group name",
+                   "chat_id" => "Group ID",
+                   "user_ids" => "Member IDs"
+                 }
+               }
+             end
+         ]
        }}
     end
 
@@ -279,9 +331,48 @@ defmodule SalixAgent.IFCRoundE2ETest do
 
   # One inbound from a person, into a conversation the agent may reply into, so
   # the round has a visible reply scope and a request it can cite.
+  defp commit_thread_inputs(agent, first, second) do
+    queued = fn queue_source, principal ->
+      %{
+        "type" => "queue_append",
+        "session_id" => @session_id,
+        "kind" => "user_message",
+        "wake" => true,
+        "dedupe_key" => queue_source,
+        "payload" => %{
+          "source_message_id" => queue_source,
+          "content" => queue_source,
+          "role" => "user",
+          "trusted_origin" => %{
+            "provider" => "slack",
+            "source_actor_type" => "provider_user",
+            "source_message_id" => queue_source,
+            "provider_context" => %{
+              "connect_id" => "cnx1",
+              "channel_id" => "C1",
+              "thread_ts" => "1.0"
+            },
+            "ifc" => %{
+              "label" => ["scope|cnx1|C1"],
+              "integrity" => "command",
+              "principal" => principal
+            }
+          }
+        }
+      }
+    end
+
+    {:ok, _session} =
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
+        %{"type" => "session_created", "session_id" => @session_id},
+        queued.("im_provider:slack:cnx1:first", first),
+        queued.("im_provider:slack:cnx1:second", second)
+      ])
+  end
+
   defp deliver_source(agent, conversation_kind \\ "user_chat", origin_overrides \\ %{}) do
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id}
       ])
 
@@ -405,6 +496,54 @@ defmodule SalixAgent.IFCRoundE2ETest do
   end
 
   # ---------------------------------------------------------------------------
+
+  for {members, allowed} <- [{["ou_alice"], true}, {["ou_alice", "ou_bob"], false}] do
+    @lark_members members
+    @lark_creation_allowed allowed
+    test "Lark group creation checks every recipient under enforce (allowed: #{allowed})", %{
+      agent: agent
+    } do
+      put_mode("enforce")
+
+      put_destination(%{
+        "default" => ["conversation|#{@conversation_id}"],
+        "ou_alice" => ["conversation|#{@conversation_id}"],
+        "ou_bob" => ["public"]
+      })
+
+      :ok = deliver_source(agent)
+
+      Mock.script([
+        {:assistant, "creating the requested group",
+         [
+           %{
+             id: "create-group",
+             name: "call",
+             args: %{
+               "tool" => "im_api.lark.create_chat",
+               "params" => %{
+                 "connect_id" => "lark-1",
+                 "name" => "Project",
+                 "user_ids" => @lark_members
+               },
+               "ifc" => %{"request" => "src:q-1", "sources" => ["src:q-1"]}
+             }
+           }
+         ]},
+        {:final, "done"}
+      ])
+
+      {:parked, _owned} = settle_quiet(agent)
+
+      if @lark_creation_allowed do
+        assert [{"lark", "lark.create_chat", %{"params" => params}}] = provider_calls(agent)
+        assert params["name"] == "Project"
+        assert params["user_ids"] == @lark_members
+      else
+        assert provider_calls(agent) == []
+      end
+    end
+  end
 
   for send_with_read <- [false, true] do
     @send_with_read send_with_read
@@ -707,6 +846,91 @@ defmodule SalixAgent.IFCRoundE2ETest do
     end
   end
 
+  # Lark's (and Feishu's) bot joins a chat, not a channel: the welcome is a
+  # chat send to the joined chat itself, and a reply in it is not a welcome.
+  for {target, sent} <- [
+        {%{"chat_id" => "oc_join"}, true},
+        {%{"chat_id" => "oc_join", "reply_to" => "om_1"}, false},
+        {%{"chat_id" => "oc_other"}, false}
+      ] do
+    @target target
+    @sent sent
+    @tag :onboarding
+
+    test "a Lark welcome #{inspect(target)} settles the optional activation (sent: #{sent})", %{
+      agent: _worker
+    } do
+      agent = SalixAgent.TestSupport.new_agent_id()
+      record = SalixAgent.TestSupport.create_control_agent!(agent, %{"role" => "router"})
+      {:ok, session_id} = SalixStore.RuntimeIds.persisted_router_session_id(record)
+      group = record["group_id"]
+      SalixAgent.TestSupport.create_control_group!(group, %{"router_agent_id" => agent})
+      source = "im_provider:lark:lark-1:channel_joined:oc_join:evt_join"
+
+      origin = %{
+        "provider" => "lark",
+        "source_actor_type" => "provider_user",
+        "agent_group_id" => group,
+        "source_message_id" => source,
+        "provider_context" => %{
+          "connect_id" => "lark-1",
+          "chat_id" => "oc_join",
+          "chat_type" => "group",
+          "event_id" => "evt_join",
+          "event_type" => "im.chat.member.bot.added_v1"
+        },
+        "ifc" => %{"label" => ["space|lark-1"], "integrity" => "data", "principal" => nil}
+      }
+
+      put_mode("enforce")
+      put_destination(["space|lark-1"])
+
+      Mock.script([
+        {:assistant, "welcome",
+         [
+           %{
+             id: "welcome",
+             name: "call",
+             args: %{
+               "tool" => "im_api.lark.send_message",
+               "params" => Map.merge(%{"connect_id" => "lark-1", "text" => "Hello"}, @target),
+               "ifc" => %{"sources" => []}
+             }
+           }
+         ]},
+        {:final, "done"}
+      ])
+
+      {:ok, _} = Fleet.ensure_started(agent, create: true)
+
+      assert {:ok, :created} =
+               SalixAgent.deliver(
+                 agent,
+                 %{session_id: session_id, content: "Optional welcome", trusted_origin: origin},
+                 source_message_id: source
+               )
+
+      Server.wake(agent)
+
+      assert eventually(
+               fn ->
+                 {:ok, current} = SalixAgent.InternalSessionStore.read(agent, session_id)
+
+                 Enum.any?(
+                   SalixAgent.InternalSession.get(current, :events),
+                   &(&1["kind"] == "channel_onboarding_settled")
+                 )
+               end,
+               3000
+             )
+
+      sends =
+        Enum.count(provider_calls(agent), fn {_, api, _} -> api == "lark.send_message" end)
+
+      assert sends == if(@sent, do: 1, else: 0)
+    end
+  end
+
   describe "Inspector effect authority" do
     test "a forbidden send never streams or dispatches, while its private report survives", %{
       agent: agent
@@ -829,6 +1053,85 @@ defmodule SalixAgent.IFCRoundE2ETest do
     end
   end
 
+  describe "one decision per call" do
+    test "a reply the round plans and then runs is decided once", %{agent: agent} do
+      put_mode("audit")
+      :ok = deliver_source(agent)
+      script_reply("the deal closes Friday")
+
+      {:parked, _owned} = settle_quiet(agent)
+
+      assert Enum.any?(provider_calls(agent), fn {_provider, api, _args} ->
+               api == "internal.send_message"
+             end)
+
+      assert [_one] = resolves()
+    end
+  end
+
+  defp resolves do
+    SystemsRuntime.Proc.receive do
+      {:ifc_resolve, destination} -> [destination | resolves()]
+    after
+      0 -> []
+    end
+  end
+
+  test "private rounds retain tool corrections and still refuse the corrected send", %{
+    agent: agent
+  } do
+    put_mode("enforce")
+    put_destination(["scope|cnx1|C_ELSEWHERE"])
+    :ok = deliver_source(agent)
+
+    Mock.script([
+      {:assistant, "checking the receipt",
+       [%{id: "bad-tool", name: "get_runtime_message", args: %{}}]},
+      {:assistant, "sending",
+       [
+         inspector_call("bad-params", "im_api.internal.send_message", %{
+           "connect_id" => "internal"
+         })
+       ]},
+      {:assistant, "correcting the parameters",
+       [
+         %{
+           id: "corrected-send",
+           name: "call",
+           args: %{
+             "tool" => "im_api.internal.send_message",
+             "params" => %{
+               "connect_id" => "internal",
+               "conversation_id" => "conv-elsewhere",
+               "content" => [%{"type" => "text", "text" => "the answer"}]
+             }
+           }
+         }
+       ]},
+      {:final, "I could not carry that over"}
+    ])
+
+    {:parked, _owned} = settle(agent)
+    {:ok, session} = SalixAgent.InternalSessionStore.read(agent, @session_id)
+
+    results =
+      for message <- SalixAgent.InternalSession.get(session, :messages),
+          message.role == "tool",
+          into: %{},
+          do: {message.tool_call_id, Jason.decode!(message.content)}
+
+    assert results["bad-tool"]["guidance_reason"] == "envelope_misuse"
+    assert results["bad-tool"]["error"] =~ "wait_for"
+    assert results["bad-params"]["guidance_reason"] == "invalid_params"
+    # This fixture has no membership facts for the other conversation.
+    # The corrected effect must fail closed at IFC and never reach the provider.
+    assert results["corrected-send"]["clause"] == "membership_unknown"
+
+    refute Enum.any?(provider_calls(agent), fn {_provider, api, _args} ->
+             api == "internal.send_message"
+           end)
+  end
+
   describe "a refused effect" do
     test "never reaches the provider seam, and says so to the person", %{agent: agent} do
       # The destination is a place the requester's own conversation is not a
@@ -868,6 +1171,205 @@ defmodule SalixAgent.IFCRoundE2ETest do
 
       # And the round still finished with something to say.
       assert "I could not carry that over" in assistant_contents(agent)
+    end
+
+    test "under audit reaches the provider seam with its requester and no evidence", %{
+      agent: agent
+    } do
+      put_mode("audit")
+      put_destination(["scope|cnx1|C_ELSEWHERE"])
+      :ok = deliver_source(agent)
+
+      Mock.script([
+        {:assistant, "relaying it",
+         [
+           %{
+             id: "send-1",
+             name: "call",
+             args: %{
+               "tool" => "im_api.internal.send_message",
+               "params" => %{
+                 "connect_id" => "internal",
+                 "conversation_id" => "conv-elsewhere",
+                 "content" => [%{"type" => "text", "text" => "the answer"}]
+               },
+               "ifc" => %{"request" => "src:q-1", "sources" => ["src:q-1"]}
+             }
+           }
+         ]},
+        {:final, "done"}
+      ])
+
+      {:parked, _owned} = settle_quiet(agent)
+
+      assert {_provider, _api, %{"tool_context" => context}} =
+               Enum.find(provider_calls(agent), &match?({_, "internal.send_message", _}, &1))
+
+      assert context["ifc_requester"] == @requester
+      refute Map.has_key?(context, "ifc_evidence")
+    end
+  end
+
+  describe "an activation holding one thread's inputs" do
+    test "decides each effect for the input it declares", %{agent: agent} do
+      put_mode("audit")
+      put_destination(["scope|cnx1|C_ELSEWHERE"])
+      first = "provider_user|cnx1|U-first"
+      second = "provider_user|cnx1|U-second"
+      commit_thread_inputs(agent, first, second)
+
+      send_call = fn id, ifc ->
+        %{
+          id: id,
+          name: "call",
+          args: %{
+            "tool" => "im_api.internal.send_message",
+            "params" => %{
+              "connect_id" => "internal",
+              "conversation_id" => "conv-elsewhere",
+              "content" => [%{"type" => "text", "text" => id}]
+            },
+            "ifc" => ifc
+          }
+        }
+      end
+
+      Mock.script([
+        {:assistant, "first",
+         [send_call.("send-first", %{"request" => "src:q-1", "sources" => ["src:q-1"]})]},
+        {:assistant, "second",
+         [send_call.("send-second", %{"request" => "src:q-2", "sources" => ["src:q-2"]})]},
+        {:final, "done"}
+      ])
+
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+      {:parked, _owned} = settle_quiet(agent)
+
+      assert [{first, "im_provider:slack:cnx1:first"}, {second, "im_provider:slack:cnx1:second"}] ==
+               provider_calls(agent)
+               |> Enum.filter(&match?({_, "internal.send_message", _}, &1))
+               |> Enum.map(fn {_provider, _api, %{"tool_context" => context}} ->
+                 {context["ifc_requester"], context["trusted_origin"]["source_message_id"]}
+               end)
+    end
+  end
+
+  describe "an activation with several senders" do
+    test "refuses an effect that names no input under enforce", %{agent: agent} do
+      put_mode("enforce")
+      put_destination(["scope|cnx1|C1"])
+      commit_thread_inputs(agent, "provider_user|cnx1|U-first", "provider_user|cnx1|U-second")
+
+      Mock.script([
+        {:assistant, "sending",
+         [
+           %{
+             id: "send-1",
+             name: "call",
+             args: %{
+               "tool" => "im_api.internal.send_message",
+               "params" => %{
+                 "connect_id" => "internal",
+                 "conversation_id" => "conv-elsewhere",
+                 "content" => [%{"type" => "text", "text" => "the answer"}]
+               },
+               "ifc" => %{"sources" => []}
+             }
+           }
+         ]},
+        {:final, "done"}
+      ])
+
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+      {:parked, _owned} = settle_quiet(agent)
+
+      refute Enum.any?(provider_calls(agent), &match?({_, "internal.send_message", _}, &1))
+    end
+  end
+
+  describe "a Loop that arrives beside a person" do
+    test "an effect that names no input acts for the person under enforce", %{agent: agent} do
+      put_mode("enforce")
+      put_destination(["scope|cnx1|C1"])
+      person = "provider_user|cnx1|U-person"
+      source = "im_provider:slack:cnx1:person"
+
+      {:ok, _session} =
+        SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
+          %{"type" => "session_created", "session_id" => @session_id},
+          %{
+            "type" => "queue_append",
+            "session_id" => @session_id,
+            "kind" => "user_message",
+            "wake" => true,
+            "dedupe_key" => source,
+            "payload" => %{
+              "source_message_id" => source,
+              "content" => "the person's question",
+              "role" => "user",
+              "trusted_origin" => %{
+                "provider" => "slack",
+                "source_actor_type" => "provider_user",
+                "source_message_id" => source,
+                "provider_context" => %{
+                  "connect_id" => "cnx1",
+                  "channel_id" => "C1",
+                  "thread_ts" => "1.0"
+                },
+                "ifc" => %{
+                  "label" => ["scope|cnx1|C1"],
+                  "integrity" => "command",
+                  "principal" => person
+                }
+              }
+            }
+          },
+          %{
+            "type" => "queue_append",
+            "session_id" => @session_id,
+            "kind" => "user_message",
+            "wake" => true,
+            "dedupe_key" => "loop:lop1:1",
+            "payload" => %{
+              "source_message_id" => "loop:lop1:1",
+              "content" => "the Loop's report",
+              "role" => "user"
+            }
+          }
+        ])
+
+      send_call = fn id ->
+        %{
+          id: id,
+          name: "call",
+          args: %{
+            "tool" => "im_api.internal.send_message",
+            "params" => %{
+              "connect_id" => "internal",
+              "conversation_id" => "conv-elsewhere",
+              "content" => [%{"type" => "text", "text" => id}]
+            },
+            "ifc" => %{"sources" => []}
+          }
+        }
+      end
+
+      Mock.script([
+        {:assistant, "first", [send_call.("send-first")]},
+        {:assistant, "second", [send_call.("send-second")]},
+        {:final, "done"}
+      ])
+
+      {:ok, _pid} = Fleet.ensure_started(agent, create: true)
+      {:parked, _owned} = settle_quiet(agent)
+
+      assert [{^person, ^source}, {^person, ^source}] =
+               provider_calls(agent)
+               |> Enum.filter(&match?({_, "internal.send_message", _}, &1))
+               |> Enum.map(fn {_provider, _api, %{"tool_context" => context}} ->
+                 {context["ifc_evidence"]["requester"],
+                  context["trusted_origin"]["source_message_id"]}
+               end)
     end
   end
 

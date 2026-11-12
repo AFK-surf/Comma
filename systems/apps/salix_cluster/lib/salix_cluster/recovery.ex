@@ -1,16 +1,10 @@
 defmodule SalixCluster.Recovery do
   @moduledoc """
-  The recovery singleton is the durable backstop that makes wake hints losable.
-  Periodically, while holding the double-gated `:recovery` S3 singleton lease,
-  it sweeps:
+  The recovery ticker dispatches committed PG work on every node.
+  Its S3 singleton lease controls connector and retention sweeps. It runs:
 
-    * Postgres eager/deferred candidate lanes — bounded, token-addressed
-      projections for durable non-stable sessions.
-      Eager work is paginated independently; deferred waits are ordered by
-      exact deadline and are not hydrated before they are due. Recovery
-      validates every hint against the session state that owns the token before
-      waking its exact target. Callback-only work has no global recovery scan;
-      its callback API remains the sole wake authority.
+    * committed Postgres Session due rows and capability deadlines. The
+      bounded worker dispatches hints through Placement and existing owners.
     * connector run mappings, two-tier: every tick walks the keys-only
       by-node index and sweeps runs owned by dead BEAM nodes
       (each snapshotted run resolved fresh and disconnected under an
@@ -33,9 +27,9 @@ defmodule SalixCluster.Recovery do
   The queued-marker and recent-strand lanes (the fair RecoveryWake action of
   the archived staged-delivery spec, A2 §3.5) retired with the staged delivery
   protocol (A2 §3.4): deliveries commit into session ledgers at deliver time,
-  so lost wakes are rediscovered exclusively through the candidate
-  projections. The notification listener subscribes before requesting catch-up;
-  durable candidate discovery repairs lost hints. The retired notification
+  so lost wakes are rediscovered exclusively through the committed due
+  rows. The notification listener subscribes before requesting catch-up;
+  committed due discovery repairs lost hints. The retired notification
   model is historical evidence, not a current machine-checked guarantee.
   """
   use SystemsRuntime.Server
@@ -82,8 +76,8 @@ defmodule SalixCluster.Recovery do
 
     # The queue-marker and recent-touch lanes retired with the staged delivery
     # protocol (A2 §3.4): deliveries commit into session ledgers at deliver
-    # time, and lost wakes are rediscovered through the PG candidate
-    # projection lanes — there is no agent-level staging left to re-home.
+    # time, and lost wakes are rediscovered through the PG due
+    # rows — there is no agent-level staging left to re-home.
 
     # Run resolution prunes mappings that no longer match the stable device.
     # A current connector whose owning node is gone has lost its socket, so
@@ -105,11 +99,8 @@ defmodule SalixCluster.Recovery do
      %{
        session_work_rewoken: session_work.rewoken,
        session_work_scanned: session_work.scanned,
-       session_work_cleaned: session_work.cleaned,
        session_work_failed: session_work.failed,
-       session_work_unproven_retained: session_work.unproven_retained,
-       session_work_cursor: session_work.next,
-       session_work_deferred_cursor: session_work.deferred_next,
+       session_work_cursors: session_work.cursors,
        session_work_last_attempted_lane: session_work.last_attempted_lane,
        env_disconnected: env_disconnected,
        oauth_states_purged: oauth_states_purged,
@@ -147,7 +138,7 @@ defmodule SalixCluster.Recovery do
       0
   end
 
-  @doc "Request a lease-gated durable Session-work catch-up after LISTEN succeeds."
+  @doc "Request committed Session-work catch-up after LISTEN succeeds."
   @spec request_session_work_catchup(GenServer.server()) :: :ok | {:error, :not_running}
   def request_session_work_catchup(server \\ __MODULE__) do
     case SystemsRuntime.Server.whereis(server) do
@@ -381,11 +372,7 @@ defmodule SalixCluster.Recovery do
       # Domain worker target. Production uses the supervised singleton; tests
       # may isolate cadence/failure behavior behind a separate name.
       session_work_recovery:
-        Keyword.get(opts, :session_work_recovery, SalixAgent.SessionWorkRecovery),
-      # A listener may reconnect on a follower Pod. Retain its catch-up request
-      # until this local Recovery owns the singleton lease; the current leader's
-      # periodic sweep remains the independent completeness backstop.
-      session_work_catch_up_pending: false
+        Keyword.get(opts, :session_work_recovery, SalixAgent.SessionWorkRecovery)
     }
 
     {:ok, state, {:continue, :tick}}
@@ -395,13 +382,9 @@ defmodule SalixCluster.Recovery do
   def handle_continue(:tick, state), do: {:noreply, tick(state)}
 
   @impl true
-  def handle_cast(:session_work_catch_up, %{lease: nil} = state) do
-    {:noreply, %{state | session_work_catch_up_pending: true}}
-  end
-
   def handle_cast(:session_work_catch_up, state) do
-    pending = not request_session_work_sweep(state.session_work_recovery)
-    {:noreply, %{state | session_work_catch_up_pending: pending}}
+    request_session_work_sweep(state.session_work_recovery)
+    {:noreply, state}
   end
 
   @impl true
@@ -412,6 +395,9 @@ defmodule SalixCluster.Recovery do
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp tick(state) do
+    # PG reservations share due work across nodes. Object-storage leadership
+    # only controls the unrelated connector and retention sweeps below.
+    request_session_work_sweep(state.session_work_recovery)
     state = acquire_or_renew(state)
 
     state =
@@ -432,12 +418,7 @@ defmodule SalixCluster.Recovery do
 
         log_sweep(result)
 
-        session_work_catch_up_pending =
-          not request_session_work_sweep(state.session_work_recovery)
-
-        state
-        |> Map.put(:session_work_catch_up_pending, session_work_catch_up_pending)
-        |> then(&%{&1 | tick_count: &1.tick_count + 1})
+        %{state | tick_count: state.tick_count + 1}
       else
         state
       end

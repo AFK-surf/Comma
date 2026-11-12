@@ -13,6 +13,7 @@ defmodule SystemsObservability.Trace do
     bft_salix: "bft.salix.call",
     comma_salix: "comma.salix.call",
     salix_session_repair: "salix.session.repair",
+    salix_conversation_admission: "salix.conversation.admission",
     salix_session_activation: "salix.session.activation",
     salix_round_config_build: "salix.round.config.build",
     salix_round_config_prepare: "salix.round.config.prepare",

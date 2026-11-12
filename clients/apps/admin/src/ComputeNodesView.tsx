@@ -296,23 +296,23 @@ function NodeDetails({
       <section className="compute-command-panel">
         <h3>{messages.admin_actions()}</h3>
         <div className="compute-command-actions">
-          {node.installation?.retryable ? (
+          {node.registration.retryable ? (
             <Button
               hierarchy="secondary-gray"
               onPress={() =>
                 beginCommand({
                   action: "retry_agent_vmm_install",
-                  expectedRevision: node.installation!.revision,
+                  expectedRevision: node.registration.revision,
                   label: messages.admin_retry_install(),
-                  targetId: node.installation!.id,
+                  targetId: node.id,
                 })
               }
             >
               {messages.admin_retry_install()}
             </Button>
           ) : null}
-          {node.installation?.status === "action_required" &&
-          !node.installation.retryable ? (
+          {node.registration.request_status === "action_required" &&
+          !node.registration.retryable ? (
             <span className="admin-help">
               {messages.admin_retry_install_elsewhere()}
             </span>

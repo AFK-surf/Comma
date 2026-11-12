@@ -70,11 +70,37 @@ defmodule SalixAgent.ToolsPeersTest do
        }}
     end
 
+    def get_device(_agent_id, "dev-sbx-task") do
+      {:ok,
+       %{"device_id" => "dev-sbx-task", "environments" => [%{"environment_id" => "sbx-task"}]}}
+    end
+
+    # A computer added through Add computer: its environment ids are hashes.
+    def get_device(_agent_id, "dev_added") do
+      {:ok,
+       %{
+         "device_id" => "dev_added",
+         "environments" => [
+           %{"environment_id" => "env-3f9a", "status" => "connected"},
+           %{"environment_id" => "env-offline", "status" => "disconnected"}
+         ]
+       }}
+    end
+
+    def get_device(_agent_id, "dev_idle"),
+      do: {:ok, %{"device_id" => "dev_idle", "environments" => []}}
+
     def get_device(_agent_id, "lookup-failed"), do: {:error, :timeout}
     def get_device(_agent_id, _device_id), do: {:error, :not_found}
 
     @impl true
+    def exec(_agent_id, %{device_id: "dev-sbx-task", environment_id: "sbx-task"}, cmd, _opts) do
+      {:ok, %{"status" => "completed", "exit_code" => 0, "stdout" => "self: " <> cmd}}
+    end
+
     def exec(_agent_id, %{device_id: "device-laptop", environment_id: "laptop"}, cmd, opts) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:forwarded_env, opts["env"]})
+
       {:ok,
        %{
          "status" => "completed",
@@ -234,7 +260,113 @@ defmodule SalixAgent.ToolsPeersTest do
         ),
         do: {:error, :android_profile_unavailable}
 
+    # A computer's own phone (device mode): a start without Salix's consent is refused.
+    def android(
+          _agent_id,
+          %{device_id: "device-laptop", environment_id: "android-own"},
+          %{"action" => "start"} = payload
+        ) do
+      if payload["consent"] == true,
+        do: {:ok, %{"ok" => true, "lease_id" => "lease-1"}},
+        else:
+          {:ok,
+           %{
+             "ok" => false,
+             "error_code" => "android_consent_required",
+             "target" => payload["target"],
+             "title" => "Pixel 8 · Android 15"
+           }}
+    end
+
+    def android(
+          _agent_id,
+          %{device_id: "device-laptop", environment_id: "android-own"},
+          %{"action" => "observe"}
+        ),
+        do:
+          {:ok,
+           %{
+             "ok" => true,
+             "observation_id" => 1,
+             "image_path" => "capture-phone.png",
+             "image_content_type" => "image/png",
+             "image_size_bytes" => 10,
+             "image_width" => 1080,
+             "image_height" => 2400,
+             "locked" => false
+           }}
+
     def android(_agent_id, _env, _payload), do: {:error, :android_not_authorized}
+
+    # A computer's own simulator: a start without Salix's consent is refused; a station from
+    # before has no simulators to offer.
+    @impl true
+    def screen(_agent_id, %{environment_id: "sim-old"}, _payload),
+      do: {:error, :screen_capability_missing}
+
+    def screen(_agent_id, %{environment_id: "sim-mac"}, %{"action" => "start"} = payload) do
+      if payload["consent"] == true,
+        do: {:ok, %{"ok" => true, "lease_id" => "lease-sim"}},
+        else:
+          {:ok,
+           %{
+             "ok" => false,
+             "error_code" => "screen_consent_required",
+             "target" => payload["target"],
+             "title" => "iPhone 17 Pro · iOS 27.2"
+           }}
+    end
+
+    def screen(_agent_id, %{environment_id: "sim-mac"}, %{"action" => "tap"}),
+      do:
+        {:ok,
+         %{
+           "ok" => false,
+           "error_code" => "screen_held_by_person",
+           "error" => "a person is driving this simulator in Comma now"
+         }}
+
+    def screen(_agent_id, %{environment_id: "sim-mac"}, %{"action" => "observe"}),
+      do:
+        {:ok,
+         %{
+           "ok" => true,
+           "observation_id" => 1,
+           "image_path" => "capture-sim.png",
+           "image_content_type" => "image/png",
+           "image_size_bytes" => 10,
+           "image_width" => 1206,
+           "image_height" => 2622
+         }}
+
+    @impl true
+    def request(
+          _agent_id,
+          %{device_id: "device-laptop", environment_id: "laptop"},
+          "screen_links",
+          %{}
+        ) do
+      {:ok,
+       %{
+         "device_id" => "device-laptop",
+         "screens" => [
+           %{
+             "link" =>
+               "comma:screen/device-laptop/simulator%3A0702F8CC-2E2A-4D0A-8401-C37FA01E1646",
+             "kind" => "simulator",
+             "title" => "iPhone 17 Pro · iOS 27.2"
+           }
+         ],
+         "bootable_simulators" => [],
+         "startable_avds" => []
+       }}
+    end
+
+    # A station from before `screen_links`, as the connector answers it.
+    def request(_agent_id, %{device_id: "device-old"}, "screen_links", _params),
+      do: {:error, "screen_links: unknown method: screen_links"}
+
+    def request(_agent_id, _env, _method, _params), do: {:error, :no_environment}
 
     @impl true
     def process_list(_agent_id, _env), do: {:error, :no_environment}
@@ -405,6 +537,27 @@ defmodule SalixAgent.ToolsPeersTest do
 
   # ---- device discovery ----
 
+  test "device.screens returns the station's links, and an older station says it cannot", %{
+    ctx: ctx
+  } do
+    with_fake_dispatch()
+
+    assert %{"result" => %{"screens" => [%{"link" => link, "kind" => "simulator"}]}} =
+             Jason.decode!(
+               Peers.screens(%{"device_id" => "device-laptop", "environment" => "laptop"}, ctx)
+             )
+
+    assert link == "comma:screen/device-laptop/simulator%3A0702F8CC-2E2A-4D0A-8401-C37FA01E1646"
+
+    assert_raise RuntimeError, ~r/^screens_unsupported: .*update Comma/, fn ->
+      Peers.screens(%{"device_id" => "device-old", "environment" => "mac"}, ctx)
+    end
+
+    assert_raise RuntimeError, ~r/'environment' is required/, fn ->
+      Peers.screens(%{"device_id" => "device-laptop"}, ctx)
+    end
+  end
+
   test "device discovery forwards a bounded page and opaque cursor", %{ctx: ctx} do
     with_fake_dispatch()
 
@@ -501,6 +654,53 @@ defmodule SalixAgent.ToolsPeersTest do
     assert decoded["timeout"] == 5
   end
 
+  test "an env tool that reaches no environment says whether the device or its environment is wrong",
+       %{ctx: ctx} do
+    with_fake_dispatch()
+
+    exec = fn device_id, environment ->
+      Peers.exec(
+        %{
+          "device_id" => device_id,
+          "environment" => environment,
+          "command" => "expense-cli list",
+          "description" => "list expenses"
+        },
+        ctx
+      )
+    end
+
+    assert_raise RuntimeError,
+                 ~s|tool "env.exec": device dev_added has no environment "station"; its environments: env-3f9a, env-offline|,
+                 fn -> exec.("dev_added", "station") end
+
+    assert_raise RuntimeError,
+                 ~s|tool "env.process_list": device dev_added has no environment "station"; its environments: env-3f9a, env-offline|,
+                 fn ->
+                   Peers.process_list(
+                     %{"device_id" => "dev_added", "environment" => "station"},
+                     ctx
+                   )
+                 end
+
+    assert_raise RuntimeError,
+                 ~r/device dev_idle has no environment "station"; it has no environment connected/,
+                 fn ->
+                   exec.("dev_idle", "station")
+                 end
+
+    assert_raise RuntimeError, ~r/device dev_gone is not in this workspace; device.list/, fn ->
+      exec.("dev_gone", "station")
+    end
+
+    # The right environment, not connected now, or a failed lookup: not connected.
+    for {device_id, environment} <- [{"dev_added", "env-offline"}, {"lookup-failed", "station"}] do
+      assert_raise RuntimeError,
+                   ~s|tool "env.exec" unavailable (not_installed): no environment connected|,
+                   fn -> exec.(device_id, environment) end
+    end
+  end
+
   # ---- Exec credential_env (willow exec.go + internal/oauth/resolver.go) ----
 
   @oauth_envs [:oauth_store_mod, :oauth_store_stub, :oauth_adapters_fn, :oauth_refresher_fn]
@@ -566,6 +766,30 @@ defmodule SalixAgent.ToolsPeersTest do
     "value" => "access_token"
   }
 
+  test "exec on self runs on the sandbox the call came through, and only from one", %{ctx: ctx} do
+    with_fake_dispatch()
+
+    args = %{
+      "device_id" => "self",
+      "environment" => "self",
+      "command" => "ls",
+      "description" => "list"
+    }
+
+    assert Jason.decode!(Peers.exec(args, Map.put(ctx, :station_device_id, "dev-sbx-task")))[
+             "stdout"
+           ] == "self: ls"
+
+    assert_raise RuntimeError, ~r/own sandbox/, fn -> Peers.exec(args, ctx) end
+
+    assert_raise RuntimeError, ~r/no other device_id/, fn ->
+      Peers.exec(
+        Map.put(args, "device_id", "device-laptop"),
+        Map.put(ctx, :station_device_id, "dev-sbx-task")
+      )
+    end
+  end
+
   test "exec resolves credential_env into env and strips the references", %{ctx: ctx} do
     with_fake_dispatch()
     with_oauth_seams([github_binding()])
@@ -581,11 +805,56 @@ defmodule SalixAgent.ToolsPeersTest do
     decoded = Jason.decode!(exec_with_credential_env(ctx, [@gh_entry]))
     forwarded = decoded["forwarded_opts"]
 
-    assert forwarded["env"] == %{"GH_TOKEN" => "tok-live"}
+    assert_received {:forwarded_env, %{"GH_TOKEN" => "tok-live"}}
+    # What the command prints reaches the model with the credential taken out.
+    assert forwarded["env"] == %{"GH_TOKEN" => "[redacted credential]"}
     refute Map.has_key?(forwarded, "credential_env")
     # untouched still-fresh connection: no refresh write happened
     assert {:ok, conn} = SalixStore.OAuth.get("conn-cred-1")
     assert conn["access_token"] == "tok-live"
+  end
+
+  test "exec passes a secret's fields and keeps only the secret ones out of its output",
+       %{ctx: ctx} do
+    with_fake_dispatch()
+
+    with_oauth_seams([
+      %{"provider" => "secret", "alias" => "hly", "connection_id" => "conn-cred-1"}
+    ])
+
+    SystemsRuntime.put_env(:salix_agent, :oauth_adapters_fn, fn
+      "secret" -> {:ok, SalixStore.OAuth.Adapters.Secret}
+      _ -> {:error, :unsupported_provider}
+    end)
+
+    seed_connection(%{
+      "provider" => "secret",
+      "status" => "active",
+      "fields" => [
+        %{"name" => "tenant", "secret" => false, "value" => "1001"},
+        %{"name" => "app_secret", "secret" => true, "value" => "s3cr3t-value"}
+      ]
+    })
+
+    entry = fn env_var, value ->
+      %{"env_var" => env_var, "provider" => "secret", "alias" => "hly", "value" => value}
+    end
+
+    decoded =
+      Jason.decode!(
+        exec_with_credential_env(ctx, [
+          entry.("HLY_TENANT", "tenant"),
+          entry.("HLY_APP_SECRET", "app_secret")
+        ])
+      )
+
+    assert_received {:forwarded_env,
+                     %{"HLY_TENANT" => "1001", "HLY_APP_SECRET" => "s3cr3t-value"}}
+
+    assert decoded["forwarded_opts"]["env"] == %{
+             "HLY_TENANT" => "1001",
+             "HLY_APP_SECRET" => "[redacted credential]"
+           }
   end
 
   test "exec refreshes an expiring token via CAS before injecting", %{ctx: ctx} do
@@ -604,8 +873,8 @@ defmodule SalixAgent.ToolsPeersTest do
       "version" => 1
     })
 
-    decoded = Jason.decode!(exec_with_credential_env(ctx, [@gh_entry]))
-    assert decoded["forwarded_opts"]["env"] == %{"GH_TOKEN" => "tok-refreshed"}
+    exec_with_credential_env(ctx, [@gh_entry])
+    assert_received {:forwarded_env, %{"GH_TOKEN" => "tok-refreshed"}}
 
     # the refreshed token was persisted; blank refresh fields preserved old values
     assert {:ok, conn} = SalixStore.OAuth.get("conn-cred-1")
@@ -742,6 +1011,82 @@ defmodule SalixAgent.ToolsPeersTest do
     assert decoded["result"]["profile"] == "api30-phone"
     assert decoded["result"]["lease_epoch"] == 2
     refute Map.has_key?(decoded["result"], "image_data")
+  end
+
+  test "android on a computer's own phone: an Agent's own consent is dropped, and a screenshot is a device image",
+       %{ctx: ctx} do
+    with_fake_dispatch()
+    own = %{"device_id" => "device-laptop", "environment" => "android-own"}
+
+    # Outside a Comma conversation nobody can be asked, whatever the Agent says it has.
+    assert_raise RuntimeError, ~r/android_consent_unavailable/, fn ->
+      Peers.android(
+        Map.merge(own, %{
+          "action" => "start",
+          "target" => "android:3B162S00P0N00000",
+          "consent" => true,
+          "args" => %{"consent" => true}
+        }),
+        ctx
+      )
+    end
+
+    assert [
+             %{"type" => "text", "text" => text},
+             %{"type" => "image", "file_ref" => ref, "width" => 1080}
+           ] =
+             Peers.android(
+               Map.put(own, "action", "observe"),
+               Map.put(ctx, :model_supports_images, true)
+             )
+             |> Jason.decode!()
+
+    assert %{"result" => %{"observation_id" => 1, "locked" => false}} = Jason.decode!(text)
+
+    assert ref == %{
+             "device_id" => "device-laptop",
+             "environment_id" => "android-own",
+             "path" => "capture-phone.png"
+           }
+  end
+
+  test "env.screen on a computer's simulator: an Agent's own consent is dropped, a person driving it and an old station refuse",
+       %{ctx: ctx} do
+    with_fake_dispatch()
+    mac = %{"device_id" => "device-laptop", "environment" => "sim-mac"}
+
+    # Outside a Comma conversation the computer's owner cannot be asked, whatever the Agent says it has.
+    assert_raise RuntimeError, ~r/screen_consent_unavailable/, fn ->
+      Peers.screen(
+        Map.merge(mac, %{
+          "action" => "start",
+          "target" => "simulator:0702F8CC-2E2A-4D0A-8401-C37FA01E1646",
+          "consent" => true,
+          "args" => %{"consent" => true}
+        }),
+        ctx
+      )
+    end
+
+    assert [%{"type" => "text"}, %{"type" => "image", "file_ref" => ref, "width" => 1206}] =
+             Peers.screen(
+               Map.put(mac, "action", "observe"),
+               Map.put(ctx, :model_supports_images, true)
+             )
+             |> Jason.decode!()
+
+    assert ref["path"] == "capture-sim.png"
+
+    assert_raise RuntimeError, ~r/^screen_held_by_person: /, fn ->
+      Peers.screen(Map.put(mac, "action", "tap"), ctx)
+    end
+
+    assert_raise RuntimeError, ~r/^screen_capability_missing: .*update Comma/, fn ->
+      Peers.screen(
+        %{"device_id" => "device-laptop", "environment" => "sim-old", "action" => "status"},
+        ctx
+      )
+    end
   end
 
   defp worker_tool_ctx(ctx) do

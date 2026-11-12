@@ -129,8 +129,8 @@ defmodule CommaSSH.TransportTest do
     read_until(ssh, channel, "hello from Comma")
 
     # The Task list owner exits when placement moves it, and the replacement
-    # can be unready: the ring places the Group on a node that does not serve
-    # it yet. The keeper releases the local owner, the terminal's subscription
+    # can be unreachable: the ring places the Group on a ready peer that this
+    # test never starts. The keeper releases the local owner, the terminal's subscription
     # fails and retries, and the count returns once placement is local again.
     # The screen holds "Tasks unavailable" until then, so no transient frame
     # is awaited.
@@ -146,6 +146,7 @@ defmodule CommaSSH.TransportTest do
     list_owner_ref = SystemsRuntime.Proc.monitor(list_owner)
     on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, unready, %{}}) end)
     SystemsRuntime.Proc.send(ring, {:nodeup, unready, %{}})
+    SystemsRuntime.Proc.send(ring, {:ring_ready, unready})
     assert_receive {:DOWN, ^list_owner_ref, :process, ^list_owner, :normal}
     read_until(ssh, channel, "Tasks unavailable")
     SystemsRuntime.Proc.send(ring, {:nodedown, unready, %{}})

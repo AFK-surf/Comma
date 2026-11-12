@@ -1,7 +1,8 @@
 defmodule SalixAgent.DeviceSecrets do
   @moduledoc """
   The Group's secrets for devices on the user's local network, such as a
-  Xiaomi lamp's miIO token or an ONVIF camera's password. Tools use a secret
+  Xiaomi lamp's miIO token, an ONVIF camera's password or a Home Assistant
+  token. Tools use a secret
   by name (`token_ref`, `secret_ref`); its value never returns to the model or
   to a client.
 
@@ -29,6 +30,9 @@ defmodule SalixAgent.DeviceSecrets do
 
   # Each kind declares the exact shape of its values.
   @formats %{
+    # A bearer token for a local API, such as Home Assistant's long-lived
+    # access token: printable ASCII without spaces.
+    "api_token" => %{value: ~S"\A[\x21-\x7E]{8,512}\z"},
     "miio_token" => %{value: ~S"\A[0-9a-fA-F]{32}\z"},
     # Printable ASCII without spaces.
     "onvif_password" => %{value: ~S"\A[\x21-\x7E]{4,64}\z"}
@@ -153,6 +157,26 @@ defmodule SalixAgent.DeviceSecrets do
 
         %{"kind" => other} ->
           {:error, {:wrong_kind, other}}
+      end
+    end
+  end
+
+  @doc """
+  The value of the secret `name` whatever its kind, for a LAN script's args.
+  Returns `{:ok, value, metadata}`, `{:error, :not_found}` or `{:error, reason}`.
+  """
+  def resolve(group_id, name) when is_binary(group_id) do
+    with {:ok, name} <- name(name),
+         {:ok, record} <- read(group_id) do
+      case Map.get(secrets(record), name) do
+        %{"kind" => kind, "ciphertext" => sealed} = entry ->
+          case unseal(group_id, name, kind, sealed) do
+            {:ok, value} -> {:ok, value, metadata(entry)}
+            {:error, _} = error -> error
+          end
+
+        _ ->
+          {:error, :not_found}
       end
     end
   end

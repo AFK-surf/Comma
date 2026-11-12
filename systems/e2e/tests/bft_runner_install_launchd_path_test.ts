@@ -25,9 +25,6 @@ test("BFT runner install writes launchd HOME and PATH", async () => {
         HOME: home,
         PATH: `${paths.toolDir}:${process.env.PATH ?? ""}`,
         BFT_INSTALL_PREFIX: prefix,
-        BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
-        BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
-        BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
         BFT_RUNNER_URL: paths.runner.path,
         BFT_RUNNER_SHA256: paths.runner.sha256,
         BFT_RUNNER_SIZE: String(paths.runner.size),
@@ -79,9 +76,6 @@ test("BFT runner install accepts an explicit launchd PATH", async () => {
         HOME: home,
         PATH: `${paths.toolDir}:${process.env.PATH ?? ""}`,
         BFT_INSTALL_PREFIX: prefix,
-        BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
-        BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
-        BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
         BFT_RUNNER_URL: paths.runner.path,
         BFT_RUNNER_SHA256: paths.runner.sha256,
         BFT_RUNNER_SIZE: String(paths.runner.size),
@@ -134,10 +128,6 @@ async function writeArtifacts(root: string) {
   await mkdir(dir, { recursive: true });
   await mkdir(toolDir, { recursive: true });
 
-  const salixConnector = await writeExecutable(
-    `${dir}/salix-connector`,
-    "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-  );
   const runner = await writeExecutable(
     `${dir}/mac-mini-provisioner`,
     "#!/bin/sh\nprintf 'fake bft runner\\n'\n",
@@ -164,7 +154,6 @@ async function writeArtifacts(root: string) {
   );
 
   return {
-    salixConnector,
     runner,
     agentVMMHost,
     toolDir,

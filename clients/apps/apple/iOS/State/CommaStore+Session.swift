@@ -11,12 +11,12 @@ struct SessionSnapshot: Sendable, Equatable {
     let sessionID: String?
     let audience: String?
     let expiresAt: Double
-    /// The account whose kept data the core shows: the confirmed one, or the stored credential's while it is checked.
-    let shownUserID: String?
     let problem: String?
     let attempt: SignInAttempt?
     /// Seconds the server asked to wait before another code for this address.
     let cooldown: Int?
+    /// The other accounts signed in on this iPhone, set aside.
+    let kept: [CommaUser]
 
     init(_ value: Any?) {
         let json = value as? NSDictionary ?? [:]
@@ -32,27 +32,29 @@ struct SessionSnapshot: Sendable, Equatable {
         sessionID = descriptor?.string("sessionId")
         audience = descriptor?.string("audience")
         expiresAt = descriptor?.double("expiresAtEpochSeconds") ?? 0
-        shownUserID = json.string("phase") == "signed_in" ? json.string("userId") : nil
         problem = lifecycle?.object("problem")?.string("code")
         let attempt = json.object("attempt")
         let challenge = attempt?.object("challenge")
         self.attempt = attempt?.object("ref").flatMap { ref in
             guard let data = try? JSONSerialization.data(withJSONObject: ref) else { return nil }
             return SignInAttempt(ref: String(decoding: data, as: UTF8.self), challengeID: challenge?.string("challengeId"),
-                                 linkingApple: challenge?.string("purpose") == "apple_link", email: challenge?.string("email"),
+                                 linkingApple: challenge?.string("purpose") == "apple_link",
+                                 linkingGoogle: challenge?.string("purpose") == "google_link", email: challenge?.string("email"),
                                  expired: challenge?.bool("expired") == true)
         }
         cooldown = json.object("emailCooldown")?.int("seconds")
+        kept = (json["accounts"] as? [NSDictionary] ?? []).compactMap { account in
+            account.string("userId").map { CommaUser(id: $0, email: account.text("email") ?? "") }
+        }
     }
 }
 
 /// Why a sign-in step did not work, as the login screen says it.
 enum SignInProblem: Equatable {
-    case invalidCode, rateLimited, unavailable, network, accountDisabled, storage, appleLinked, server
+    case invalidCode, rateLimited, unavailable, network, accountDisabled, storage, appleLinked, googleLinked, server
 
-    /// `apple`: the step was a Sign in with Apple one, where a conflict means the Apple ID belongs to another account.
-    /// Elsewhere a conflict means the session changed meanwhile, and trying again is the answer.
-    init(code: String, apple: Bool = false) {
+    /// Provider linking conflicts identify an account already linked elsewhere. Other conflicts require a fresh attempt.
+    init(code: String, apple: Bool = false, google: Bool = false) {
         switch code {
         case "invalid_challenge", "challenge_expired": self = .invalidCode
         case "rate_limited": self = .rateLimited
@@ -60,7 +62,7 @@ enum SignInProblem: Equatable {
         case "network_unavailable", "session_probe_unavailable": self = .network
         case "account_disabled": self = .accountDisabled
         case "credential_store_unavailable", "credential_store_unreadable", "credential_mutation_uncertain": self = .storage
-        case "conflict": self = apple ? .appleLinked : .server
+        case "conflict": self = apple ? .appleLinked : google ? .googleLinked : .server
         default: self = .server
         }
     }
@@ -74,6 +76,7 @@ enum SignInProblem: Equatable {
         case .accountDisabled: String(localized: "This account is disabled.")
         case .storage: String(localized: "Comma could not keep your sign-in on this iPhone.")
         case .appleLinked: String(localized: "This Apple ID is already linked to another account.")
+        case .googleLinked: String(localized: "This Google account is already linked to another account.")
         case .server: String(localized: "Something went wrong. Try again.")
         }
     }
@@ -85,6 +88,7 @@ extension CommaStore {
         let previous = lifecycle
         lifecycle = next
         signIn = next.attempt.flatMap { $0.challengeID == nil || $0.expired ? nil : $0 }
+        if otherAccounts != next.kept { otherAccounts = next.kept }
         sessionProblem = next.phase == "indeterminate" ? SignInProblem(code: next.problem ?? "") : nil
         if let cooldown = next.cooldown, cooldown > 0, cooldown != previous?.cooldown {
             resendAt = max(resendAt ?? .distantPast, Date().addingTimeInterval(TimeInterval(cooldown)))
@@ -93,11 +97,7 @@ extension CommaStore {
             if next.phase == "signed_in", let user = next.user, let id = next.sessionID {
                 return CommaSession(id: id, expiresAt: next.expiresAt, user: user)
             }
-            // The kept account shows while the core checks its session, offline too.
-            guard next.phase == "initializing", let kept = next.shownUserID, let identity = custody.identity(),
-                  identity.userId == kept else { return nil }
-            return CommaSession(id: identity.sessionId, expiresAt: Double(identity.expiresAtEpochSeconds),
-                                user: CommaUser(id: identity.userId, email: identity.email))
+            return nil
         }()
         if next.phase == "initializing" && shown == nil && !initialized { return }
         if shown?.id != session?.id || shown?.user.id != session?.user.id {
@@ -113,7 +113,7 @@ extension CommaStore {
         } else if let shown, shown != session {
             session = shown
         }
-        // The Workspace is found once the server confirmed the session (a kept account only shows meanwhile).
+        // Restore the Workspace from the account cache while the core refreshes it.
         if next.phase == "signed_in", let shown, connected != shown.user.id + "\n" + shown.id {
             connected = shown.user.id + "\n" + shown.id
             connect(shown)
@@ -159,11 +159,11 @@ extension CommaStore {
               let ref = try? JSONSerialization.jsonObject(with: Data(attempt.ref.utf8)) else { return .invalidCode }
         loading = true
         defer { loading = false }
-        let result = await SessionOperation.run(core, attempt.linkingApple ? "session.apple.linkVerify" : "session.email.verify",
+        let result = await SessionOperation.run(core, attempt.linkingApple ? "session.apple.linkVerify" : attempt.linkingGoogle ? "session.google.linkVerify" : "session.email.verify",
                                                 ["attempt": ref, "challengeId": challenge, "code": code])
         if let failure = result.code {
             if failure == "rate_limited" { resendAt = Date().addingTimeInterval(TimeInterval(result.retryAfterSeconds ?? 60)) }
-            return SignInProblem(code: failure, apple: attempt.linkingApple)
+            return SignInProblem(code: failure, apple: attempt.linkingApple, google: attempt.linkingGoogle)
         }
         return nil
     }
@@ -196,6 +196,20 @@ extension CommaStore {
         }
     }
 
+    func signInWithGoogle() async -> SignInProblem? {
+        guard let expected = absence() else { return .server }
+        loading = true
+        defer { loading = false }
+        AppleCredentialMonitor.pendingSubject = nil
+        let result = await SessionOperation.run(core, "session.google.desktop", ["expected": expected])
+        guard let code = result.code else { return nil }
+        switch code {
+        case "cancelled": return nil
+        case "unsupported": return .unavailable
+        default: return SignInProblem(code: code, google: true)
+        }
+    }
+
     /// The core finds out again what the session is, as Try Again asks.
     func retrySession() async { _ = try? await core.call("session.recover") }
 
@@ -223,6 +237,39 @@ extension CommaStore {
         let result = await SessionOperation.run(core, "session.signOut", ["expected": expected])
         if let code = result.code { error = SignInProblem(code: code).message }
         else { AppleCredentialMonitor.clear() }
+    }
+
+    // MARK: Other accounts signed in on this iPhone
+
+    /**
+     * Sets the account in use aside, still signed in, and opens the sign-in for another. Its notifications stop here
+     * until it is switched back to. Nil once done, else why not.
+     */
+    func addAccount() async -> SignInProblem? {
+        guard let current = lifecycle, current.phase == "signed_in" else { return .server }
+        let expected: [String: Any] = ["authorityInstanceId": current.authority, "generation": current.generation,
+                                       "expectedAudience": current.audience ?? "", "expectedSessionId": current.sessionID ?? ""]
+        loading = true
+        defer { loading = false }
+        _ = try? await core.call("notifications.unregisterDevice")
+        let result = await SessionOperation.run(core, "session.addAccount", ["expected": expected])
+        return result.code.map { SignInProblem(code: $0) }
+    }
+
+    /// Makes a kept account the one in use, without signing in again. Nil once done, else why not.
+    func switchAccount(to userID: String) async -> SignInProblem? {
+        loading = true
+        defer { loading = false }
+        // Notifications follow the account in use: this one's stop here.
+        if lifecycle?.phase == "signed_in" { _ = try? await core.call("notifications.unregisterDevice") }
+        let result = await SessionOperation.run(core, "session.switchAccount", ["userId": userID])
+        return result.code.map { SignInProblem(code: $0) }
+    }
+
+    /// Signs a kept account out of this iPhone. Nil once done, else why not.
+    func signOutAccount(_ userID: String) async -> SignInProblem? {
+        let result = await SessionOperation.run(core, "session.signOutAccount", ["userId": userID])
+        return result.code.map { SignInProblem(code: $0) }
     }
 
     /// What a sign-in expects of the session: nobody signed in, at this authority's generation.

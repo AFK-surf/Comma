@@ -97,7 +97,7 @@ function authorNames(s: Store, thread: number): (kind: AuthorKind, author: strin
     const key = `${kind}:${author}`;
     if (names.has(key)) return names.get(key)!;
     let name: string | null;
-    if (kind === "ember") name = "still.fail";
+    if (kind === "ember") name = "Comma";
     else if (kind === "agent") {
       // An agent goes by the name of the connect it posts through (on the page, of the connect that started it).
       const session = store.getSession(s, author);
@@ -105,7 +105,7 @@ function authorNames(s: Store, thread: number): (kind: AuthorKind, author: strin
       const connect = via !== undefined && via !== INTERNAL_CONNECT ? via : (session?.connect ?? null);
       const c = connects.find((c) => c.id === connect);
       name = c ? c.name : (session?.title ?? null);
-    } else if (th !== null && th.surface === store.STILLFAIL_SURFACE) {
+    } else if (th !== null && th.surface === store.COMMA_STATION_SURFACE) {
       name = author === "local" ? tr("station.author.admin") : (s.names.get(author) ?? author);
     } else {
       // A Slack person: by the name their connect's Slack gives them, as far as known.
@@ -210,10 +210,10 @@ function threadView(s: Store, t: ThreadSummary): Json {
   v.people = people(s, t.people);
   v.firstText = t.firstText;
   // A Slack channel's name, as far as known.
-  v.channelName = t.thread.surface === store.STILLFAIL_SURFACE ? null : knownChannel(s, t.sessions.map((m) => m.connect).find((c) => c !== INTERNAL_CONNECT) ?? null, t.thread.channel);
+  v.channelName = t.thread.surface === store.COMMA_STATION_SURFACE ? null : knownChannel(s, t.sessions.map((m) => m.connect).find((c) => c !== INTERNAL_CONNECT) ?? null, t.thread.channel);
   v.creator = creator(s, t.thread.createdBy);
   // A Task here that runs on another station (tasks.ts moveTo): there, its Session, its runtime and model.
-  const elsewhere = t.thread.surface === store.STILLFAIL_SURFACE ? store.runsElsewhere(s, t.thread.id) : null;
+  const elsewhere = t.thread.surface === store.COMMA_STATION_SURFACE ? store.runsElsewhere(s, t.thread.id) : null;
   if (elsewhere !== null) v.runsOn = elsewhere;
   return v;
 }

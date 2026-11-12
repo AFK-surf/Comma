@@ -31,9 +31,11 @@ defmodule CommaWeb.ProactiveNotebook do
 
   # Bounds of each section; the notebook is a summary, not an archive.
   @section_limit 12
-  @judged_limit 8
+  @judged_limit 24
   @recent_ms 7 * 24 * 60 * 60 * 1000
   @needs_you_ms 3 * 24 * 60 * 60 * 1000
+  @threads_shown 5
+  @context_bytes 10_000
 
   @doc "Queues one render for the owner. Renders queued within a minute merge."
   def enqueue(group, owner) when is_binary(group) and is_binary(owner) do
@@ -62,6 +64,103 @@ defmodule CommaWeb.ProactiveNotebook do
       {:ok, _entry} -> @path
       _ -> nil
     end
+  end
+
+  @doc """
+  The notebook as the proactive screening reads it: the stored file without
+  what Comma did not interrupt the owner about and what is done, cut at a line
+  end within #{@context_bytes} bytes. `nil` when there is no notebook, and
+  while the owner is not the Workspace's only member, even before the next
+  render deletes the file.
+  """
+  def context(workspace, owner, agent_id) do
+    case private?(workspace, owner) && AgentWorkspace.read(agent_id, @path) do
+      {:ok, body} when body != "" ->
+        skipped =
+          for locale <- ["zh-CN", "en"], t = text(locale), h <- [t.quiet, t.done], do: "## " <> h
+
+        body
+        |> String.split(~r/\n(?=## )/)
+        |> Enum.reject(&(hd(String.split(&1, "\n", parts: 2)) in skipped))
+        |> Enum.join("\n")
+        |> cut(@context_bytes)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp cut(text, limit) when byte_size(text) <= limit, do: text
+
+  defp cut(text, limit) do
+    head = binary_part(text, 0, limit)
+
+    case :binary.matches(head, "\n") do
+      [] -> ""
+      ends -> binary_part(head, 0, elem(List.last(ends), 0))
+    end
+  end
+
+  @doc """
+  The judged pool items that are the owner's next actions (`next_actions`)
+  and that wait on someone else (`waiting`), as the notebook lists them, for
+  `proactive.state`, while the owner is the Workspace's only member. Each
+  names its title, link, level, outcome and, while deferred, the reason and
+  the time it is judged again. `open_threads` lists what the owner left open
+  in their own messages, every open one, with the ID `proactive.thread`
+  takes (`open_thread_rows/1`).
+  """
+  def pool_lists(workspace, owner) do
+    # Like the notebook, private source titles only while the owner is the
+    # Workspace's only member.
+    {judged, threads} =
+      case private?(workspace, owner) && profile(workspace, owner) do
+        %{id: id} ->
+          {Comma.MemberSourceItems.judged(id, @judged_limit), Comma.OpenThreads.list(id)}
+
+        _ ->
+          {[], []}
+      end
+
+    row = fn item ->
+      Map.merge(
+        %{"title" => item.title, "url" => item.url},
+        Map.take(item.attention, ~w(urgency outcome reason next_at role))
+      )
+    end
+
+    %{
+      "next_actions" =>
+        judged |> Enum.filter(&next_action?/1) |> Enum.take(@section_limit) |> Enum.map(row),
+      "waiting" =>
+        judged
+        |> Enum.filter(&(&1.attention["outcome"] == "waiting"))
+        |> Enum.take(@section_limit)
+        |> Enum.map(row),
+      "open_threads" => open_thread_rows(threads)
+    }
+  end
+
+  @doc """
+  The owner's threads as `proactive.state` lists them: every open one, which
+  the notebook promises Comma can show (`Comma.OpenThreads` keeps at most 40),
+  then the latest resolved ones.
+  """
+  def open_thread_rows(threads) do
+    {open, rest} = Enum.split_with(threads, &(&1.status == "open"))
+    resolved = rest |> Enum.filter(&(&1.status == "resolved")) |> Enum.take(@section_limit)
+
+    Enum.map(
+      open ++ resolved,
+      &%{
+        "id" => &1.id,
+        "kind" => &1.kind,
+        "status" => &1.status,
+        "summary" => &1.summary,
+        "url" => &1.url,
+        "due_on" => &1.due_on && Date.to_iso8601(&1.due_on)
+      }
+    )
   end
 
   @impl Oban.Worker
@@ -133,7 +232,7 @@ defmodule CommaWeb.ProactiveNotebook do
         timezone: (profile && profile.timezone) || "Etc/UTC",
         automatic: MailInteraction.enabled?(conversation, owner),
         notifications: MailInteraction.notification_budget(conversation, owner, now),
-        urgent: MailInteraction.notification_budget(conversation, owner, now, "critical"),
+        urgent: MailInteraction.notification_budget(conversation, owner, now, true),
         matters:
           MailInteraction.entries(conversation)
           |> Map.values()
@@ -143,7 +242,8 @@ defmodule CommaWeb.ProactiveNotebook do
         judged:
           if(profile, do: Comma.MemberSourceItems.judged(profile.id, @judged_limit), else: []),
         briefing: briefing(workspace, owner, conversation),
-        portrait: CommaWeb.MemberPortrait.statements(workspace)
+        portrait: CommaWeb.MemberPortrait.statements(workspace),
+        open_threads: if(profile, do: Comma.OpenThreads.list(profile.id), else: [])
       }
 
       body = render(facts)
@@ -223,9 +323,10 @@ defmodule CommaWeb.ProactiveNotebook do
   `:automatic`, `:notifications` and `:urgent` (notification budget tuples
   for ordinary and critical matters), the owner's `:matters`,
   watch `:monitors`, pool source `:sources`, `:judged` pool items and the
-  latest Routine `:briefing` (`nil`, or its `:generated_at` and `:items`), and
+  latest Routine `:briefing` (`nil`, or its `:generated_at` and `:items`),
   the Condensed Workspace statements (`:portrait`), of which it lists the
-  portrait (`CommaWeb.MemberPortrait`).
+  portrait (`CommaWeb.MemberPortrait`), and the owner's `:open_threads`
+  (`Comma.OpenThreads`), of which it lists the open ones.
   """
   def render(facts) do
     t = text(facts.locale)
@@ -243,8 +344,9 @@ defmodule CommaWeb.ProactiveNotebook do
       status_line(facts, t),
       section(t.today, rows(matters, "today", facts, t), t.empty_today),
       section(briefing_heading(facts, t), briefing_rows(facts, t), nil),
-      section(t.later, rows(matters, "later", facts, t), nil),
-      section(t.waiting, rows(matters, "waiting", facts, t), nil),
+      section(t.later, rows(matters, "later", facts, t) ++ next_actions(facts, t), nil),
+      section(t.waiting, rows(matters, "waiting", facts, t) ++ others_move(facts, t), nil),
+      section(t.open_threads, open_threads(facts, t), nil),
       section(t.watching, watching(facts, t), t.empty_watching),
       section(t.portrait, portrait(facts), nil),
       section(t.quiet, rows(matters, "quiet", facts, t) ++ judged(facts, t), nil),
@@ -261,6 +363,38 @@ defmodule CommaWeb.ProactiveNotebook do
     for %{"text" => text} <- Map.get(facts, :portrait) || [],
         String.starts_with?(text, ["About you · ", "关于你 · "]),
         do: "- " <> text
+  end
+
+  # What the owner left open in their own messages, at most five by
+  # priority: a due date first (soonest first), then what the owner promised
+  # someone, then the newest. The rest are counted.
+  defp open_threads(facts, t) do
+    {shown, rest} =
+      (Map.get(facts, :open_threads) || [])
+      |> Enum.filter(&(&1.status == "open"))
+      |> Enum.sort_by(
+        &{is_nil(&1.due_on), &1.due_on && Date.to_iso8601(&1.due_on), &1.kind != "promised",
+         -DateTime.to_unix(&1.evidence_at)}
+      )
+      |> Enum.split(@threads_shown)
+
+    rows =
+      Enum.map(shown, fn thread ->
+        parts =
+          [
+            t.thread_kind.(thread.kind),
+            clean(thread.counterpart) && t.thread_counterpart.(clean(thread.counterpart)),
+            thread.due_on && t.thread_due.(Calendar.strftime(thread.due_on, "%m-%d"))
+          ]
+          |> Enum.filter(&is_binary/1)
+
+        "- " <> link(thread.summary, thread.url) <> " — " <> Enum.join(parts, t.separator)
+      end)
+
+    case length(rest) do
+      0 -> rows
+      more -> rows ++ ["- " <> t.thread_more.(more)]
+    end
   end
 
   defp section(_heading, [], nil), do: []
@@ -420,12 +554,57 @@ defmodule CommaWeb.ProactiveNotebook do
 
   defp briefing_urls(_facts), do: MapSet.new()
 
+  # Pool items that are the owner's move but did not interrupt them: what
+  # comes up next, and why a deferred one waits and until when.
+  defp next_actions(facts, t) do
+    facts.judged
+    |> Enum.filter(&next_action?/1)
+    |> Enum.take(@section_limit)
+    |> Enum.map(fn item ->
+      attention = item.attention
+
+      parts =
+        [
+          attention["urgency"] in ~w(critical high) && t.urgency.(attention["urgency"]),
+          attention["outcome"] == "deferred" && is_integer(attention["next_at"]) &&
+            t.deferred.(
+              t.deferred_reason.(attention["reason"]),
+              time(attention["next_at"], facts)
+            )
+        ]
+        |> Enum.filter(&is_binary/1)
+
+      "- " <>
+        link(item.title, item.url) <>
+        if(parts == [], do: "", else: " — " <> Enum.join(parts, t.separator))
+    end)
+  end
+
+  defp next_action?(%{attention: %{"role" => "act", "outcome" => outcome} = attention}),
+    do:
+      outcome in ~w(quiet deferred) and
+        get_in(attention, ["assessment", "link"]) not in ~w(subscribed none)
+
+  defp next_action?(_item), do: false
+
+  # Pool items whose next move belongs to someone else.
+  defp others_move(facts, t) do
+    for %{attention: %{"outcome" => "waiting"}} = item <- facts.judged do
+      "- " <> link(item.title, item.url) <> " — " <> t.others_move
+    end
+    |> Enum.take(@section_limit)
+  end
+
   # Pool items the check judged but did not hand over: why they stayed quiet.
   defp judged(facts, t) do
     in_briefing = briefing_urls(facts)
 
     facts.judged
-    |> Enum.filter(&(&1.attention["outcome"] in ~w(quiet off invalid)))
+    |> Enum.reject(&next_action?/1)
+    |> Enum.filter(
+      &(&1.attention["outcome"] in ~w(quiet resolved off invalid duplicate) or
+          &1.attention["isolated"] == true)
+    )
     |> Enum.map(fn item ->
       # The briefing is where quiet items go; say whether this one is there.
       reason =
@@ -444,6 +623,10 @@ defmodule CommaWeb.ProactiveNotebook do
     case item.attention do
       %{"outcome" => "off"} -> t.judged_off
       %{"outcome" => "invalid"} -> t.judged_invalid
+      %{"outcome" => "duplicate"} -> t.judged_duplicate
+      %{"isolated" => true} -> t.judged_isolated
+      %{"outcome" => "resolved"} -> t.judged_resolved
+      %{"role" => "reference"} -> t.judged_reference
       %{"urgency" => urgency} when is_binary(urgency) -> t.judged_below.(urgency)
       _ -> t.judged_quiet
     end
@@ -487,6 +670,11 @@ defmodule CommaWeb.ProactiveNotebook do
       waiting: "等待与跟进中",
       watching: "我在盯着",
       portrait: "我对你的了解（存在精简工作区里，说错了请告诉我）",
+      open_threads: "你可能还没结的事（从你在 Slack 的发言里找的；已经结了或不归你，告诉我一声）",
+      thread_kind: &%{"promised" => "你答应的", "asked" => "你问了还没人回", "blocked" => "你提过的问题"}[&1],
+      thread_counterpart: &"对方：#{&1}",
+      thread_due: &"#{&1} 前",
+      thread_more: &"还有 #{&1} 件没列出，问 Comma 可以看全部",
       empty_watching: "还没有连接的来源或盯着的事项。",
       quiet: "没打扰你的",
       done: "最近完成",
@@ -510,11 +698,23 @@ defmodule CommaWeb.ProactiveNotebook do
       judged_below:
         &"判断为#{%{"critical" => "紧急", "high" => "重要", "normal" => "一般", "low" => "低"}[&1] || &1}，留给每日简报",
       judged_quiet: "不需要你处理，留给每日简报",
+      judged_resolved: "来源显示已经解决或你已回复",
       judged_in_briefing: "在最新简报里",
       briefing: "最新简报",
       briefing_handled: "已处理",
       briefing_notified: "已提醒你",
       judged_invalid: "这次没能判断，留给每日简报",
+      judged_duplicate: "和已跟进的事项相同，没有新进展",
+      judged_isolated: "模型暂时判断不了这一条，稍后会再试",
+      judged_reference: "只是信息或别人的事，不需要你处理",
+      others_move: "等对方处理，阻塞到你时再找你",
+      deferred: &"#{&1}，#{&2} 再看",
+      deferred_reason:
+        &(%{
+            "notification_budget" => "今天的提醒额度暂满",
+            "handoff_budget" => "今天的自动检查额度暂满",
+            "budgets" => "今天的提醒额度暂满"
+          }[&1] || "暂缓"),
       separator: "；",
       colon: "："
     }
@@ -538,6 +738,17 @@ defmodule CommaWeb.ProactiveNotebook do
       watching: "Watching",
       portrait:
         "What I know about you (kept in the Condensed Workspace; tell me if something is wrong)",
+      open_threads:
+        "What you may have left open (from your own Slack messages; tell me when one is done or not yours)",
+      thread_kind:
+        &%{
+          "promised" => "you promised",
+          "asked" => "you asked, no answer yet",
+          "blocked" => "a problem you raised"
+        }[&1],
+      thread_counterpart: &"with #{&1}",
+      thread_due: &"by #{&1}",
+      thread_more: &"#{&1} more not listed; ask Comma to see them all",
       empty_watching: "No connected sources or watches yet.",
       quiet: "Did not interrupt you",
       done: "Recently done",
@@ -561,11 +772,23 @@ defmodule CommaWeb.ProactiveNotebook do
       judged_off: "automatic messages were off",
       judged_below: &"rated #{&1}, left for the daily briefing",
       judged_quiet: "nothing for you to do, left for the daily briefing",
+      judged_resolved: "the source shows it resolved or answered",
       judged_in_briefing: "in the latest briefing",
       briefing: "Latest briefing",
       briefing_handled: "handled",
       briefing_notified: "told you",
       judged_invalid: "could not be judged this time, left for the daily briefing",
+      judged_duplicate: "same as a matter Comma already follows, nothing new",
+      judged_isolated: "the model could not judge this one yet; Comma tries again later",
+      judged_reference: "information or someone else's work, nothing for you to do",
+      others_move: "waiting on someone else; Comma tells you when it blocks on you",
+      deferred: &"#{&1}, checking again #{&2}",
+      deferred_reason:
+        &(%{
+            "notification_budget" => "no automatic messages left for now",
+            "handoff_budget" => "no automatic checks left for now",
+            "budgets" => "no automatic messages left for now"
+          }[&1] || "waiting"),
       separator: "; ",
       colon: ": "
     }

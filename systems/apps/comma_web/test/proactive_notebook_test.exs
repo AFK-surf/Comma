@@ -81,6 +81,58 @@ defmodule CommaWeb.ProactiveNotebookTest do
               title: "routed",
               url: "https://example.com/r",
               attention: %{"outcome" => "routed", "urgency" => "high", "at" => @now}
+            },
+            %MemberSourceItem{
+              title: "slides",
+              url: "https://example.com/s",
+              attention: %{
+                "outcome" => "deferred",
+                "role" => "act",
+                "urgency" => "high",
+                "reason" => "notification_budget",
+                "next_at" => @now + @hour,
+                "at" => @now
+              }
+            },
+            %MemberSourceItem{
+              title: "notes",
+              url: "https://example.com/notes",
+              attention: %{
+                "outcome" => "quiet",
+                "role" => "act",
+                "urgency" => "normal",
+                "at" => @now
+              }
+            },
+            %MemberSourceItem{
+              title: "own pr",
+              url: "https://example.com/pr",
+              attention: %{
+                "outcome" => "waiting",
+                "role" => "waiting",
+                "urgency" => "normal",
+                "at" => @now
+              }
+            },
+            %MemberSourceItem{
+              title: "unanswerable",
+              url: "https://example.com/u",
+              attention: %{
+                "outcome" => "retry",
+                "failures" => 3,
+                "isolated" => true,
+                "at" => @now
+              }
+            },
+            %MemberSourceItem{
+              title: "teammate pr",
+              url: "https://example.com/tpr",
+              attention: %{
+                "outcome" => "quiet",
+                "role" => "reference",
+                "urgency" => "low",
+                "at" => @now
+              }
             }
           ],
           sources: [
@@ -109,7 +161,16 @@ defmodule CommaWeb.ProactiveNotebookTest do
     assert section(notebook, "Coming up") =~
              "[later](https://example.com/later) — checking again 09-30 16:33; before the review"
 
+    # What is the owner's move but did not interrupt them comes up next.
+    coming = section(notebook, "Coming up")
+
+    assert coming =~
+             "[slides](https://example.com/s) — important; no automatic messages left for now, checking again "
+
+    assert coming =~ "[notes](https://example.com/notes)\n"
+
     waiting = section(notebook, "Waiting and in progress")
+    assert waiting =~ "[own pr](https://example.com/pr) — waiting on someone else"
     assert waiting =~ "[task](https://example.com/task) — in a Task"
     assert waiting =~ "[undecided](https://example.com/undecided) — important"
 
@@ -117,6 +178,11 @@ defmodule CommaWeb.ProactiveNotebookTest do
     assert quiet =~ "[quiet](https://example.com/quiet) — stayed quiet: Milo owns it"
     assert quiet =~ "[newsletter](https://example.com/n) — rated low, left for the daily briefing"
     refute quiet =~ "routed"
+    refute quiet =~ "notes"
+    assert quiet =~ "[teammate pr](https://example.com/tpr) — information or someone else's work"
+
+    assert quiet =~
+             "[unanswerable](https://example.com/u) — the model could not judge this one yet"
 
     assert section(notebook, "Recently done") =~ "[done]"
     refute notebook =~ "[old]"
@@ -126,5 +192,81 @@ defmodule CommaWeb.ProactiveNotebookTest do
     # Read times show the owner's hour, so each collection does not rewrite the file.
     assert watching =~ "Source: Gmail — last read around 09-30 14:00"
     assert watching =~ "Source: Slack — the last read failed"
+  end
+
+  test "open threads show five by priority and count the rest" do
+    at = fn days -> DateTime.from_unix!(@now - days * 24 * @hour, :millisecond) end
+
+    thread = fn summary, attrs ->
+      struct(
+        Comma.Data.OpenThread,
+        Map.merge(
+          %{
+            summary: summary,
+            url: "https://team.slack.com/archives/C1/p" <> summary,
+            kind: "asked",
+            status: "open",
+            evidence_at: at.(1)
+          },
+          attrs
+        )
+      )
+    end
+
+    asked = for n <- 1..4, do: thread.("asked#{n}", %{evidence_at: at.(n)})
+
+    notebook =
+      ProactiveNotebook.render(
+        facts(%{
+          open_threads:
+            asked ++
+              [
+                thread.("promise", %{kind: "promised", counterpart: "Lena", evidence_at: at.(9)}),
+                thread.("dated", %{due_on: ~D[2026-10-02], evidence_at: at.(20)}),
+                thread.("dismissed", %{status: "dismissed"})
+              ]
+        })
+      )
+
+    open = section(notebook, "What you may have left open")
+    # A due date first, then a promise, then the newest questions.
+    assert open =~
+             ~r/dated.*by 10-02\n.*promise.*you promised; with Lena\n.*asked1.*\n.*asked2.*\n.*asked3/s
+
+    refute open =~ "asked4"
+    assert open =~ "1 more not listed"
+    refute notebook =~ "dismissed"
+  end
+
+  test "proactive.state lists every open thread the notebook counts, then the latest resolved" do
+    threads =
+      for n <- 1..20,
+          do: %Comma.Data.OpenThread{
+            id: "o#{n}",
+            kind: "asked",
+            status: "open",
+            summary: "o#{n}",
+            url: "u"
+          }
+
+    resolved =
+      for n <- 1..15,
+          do: %Comma.Data.OpenThread{
+            id: "r#{n}",
+            kind: "asked",
+            status: "resolved",
+            summary: "r#{n}",
+            url: "u"
+          }
+
+    dismissed = [
+      %Comma.Data.OpenThread{id: "d", kind: "asked", status: "dismissed", summary: "d", url: "u"}
+    ]
+
+    rows = ProactiveNotebook.open_thread_rows(resolved ++ threads ++ dismissed)
+
+    assert Enum.count(rows, &(&1["status"] == "open")) == 20
+    assert Enum.count(rows, &(&1["status"] == "resolved")) == 12
+    refute Enum.any?(rows, &(&1["id"] == "d"))
   end
 end

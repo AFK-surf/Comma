@@ -14,12 +14,16 @@ defmodule Mix.Tasks.Salix.ConversationSearch.Rebuild do
       mix salix.conversation_search.rebuild --gc --generation rollout-2026-08-24-a \
         --batch-size 100 --max-batches 1
 
-  `--writer-barrier` is the human-owner release decision that the named rollout
-  generation is fleet-complete. It resets the permanent canonical discovery
-  cursor and records the exact owner/change authority. `--mark-ready` succeeds
-  only after that required post-barrier cycle and the matching generation's
-  durable queue drain. It is the only transition that publishes reader
-  readiness.
+  A deployed release needs none of these: after core rollout success the
+  release runner records begin and the writer barrier
+  (`SalixStore.ConversationSearch.open_after_rollout/1`), and discovery seals
+  the generation. The stages stay for local and repair use.
+
+  `--writer-barrier` records that the named rollout generation is
+  fleet-complete. It resets the permanent canonical discovery cursor and
+  records the exact owner/change authority. `--mark-ready` succeeds only after
+  that required post-barrier cycle and the matching generation's durable queue
+  drain.
 
   A one-Group scoped repair remains available:
 

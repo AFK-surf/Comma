@@ -86,10 +86,10 @@ class InboxPage(private val shell: Shell) : LinearLayout(shell.activity) {
             setText(R.string.inbox_title)
             isAccessibilityHeading = true
         }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
-        val tools = LinearLayout(activity).apply {
+        val tools = surf.comma.android.ui.widget.GlassCapsule(activity).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            glass(elevated = false)
+            glassOver(R.color.token_bg_primary) { glass(elevated = false) }
             addView(LinearLayout(activity).apply {
                 orientation = HORIZONTAL
                 gravity = Gravity.CENTER

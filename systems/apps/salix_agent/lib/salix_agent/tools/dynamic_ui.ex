@@ -13,12 +13,13 @@ defmodule SalixAgent.Tools.DynamicUI do
                   {kind, ExJsonSchema.Schema.resolve(schema)}
                 end)
   @card_manual Enum.join(@card_contract["manual"], "\n")
+  @levels @card_contract["levels"]
   # comma.card sends its data in one Worker message, and the client stops a
   # widget whose message passes 32 KiB; this leaves room for the call's id,
   # kind and variant.
   @card_data_limit 31 * 1024
   # The brand keys the client card host ships logos for.
-  @card_brands ~w(apple apple-music app-store google google-play nvidia bitcoin ethereum github linear notion slack figma jira atlassian vercel supabase framer webflow todoist npm stack-overflow product-hunt replit x reddit discord telegram wechat whatsapp tiktok instagram facebook linkedin threads bluesky pinterest snapchat medium substack youtube spotify twitch steam playstation xbox nintendo-switch chrome safari firefox duolingo openai anthropic claude gemini deepseek qwen kimi minimax mistral meta-ai grok perplexity midjourney microsoft-copilot)
+  @card_brands ~w(apple apple-music app-store google google-play nvidia microsoft windows android linux bitcoin ethereum github linear notion slack figma jira atlassian vercel supabase framer webflow todoist npm stack-overflow product-hunt replit x reddit discord telegram wechat whatsapp tiktok instagram facebook linkedin threads bluesky pinterest snapchat medium substack youtube spotify twitch steam playstation xbox nintendo-switch chrome safari firefox duolingo openai anthropic claude gemini deepseek qwen kimi minimax mistral meta-ai grok perplexity midjourney microsoft-copilot cursor windsurf)
 
   # The first paragraph is the summary every Worker prompt shows, so it names
   # the card kinds: a Worker that never opens help still knows they exist.
@@ -33,10 +34,11 @@ defmodule SalixAgent.Tools.DynamicUI do
   @presentation """
   ## Presentation
 
-  Widgets suit structured results: forecasts, options to pick from, comparisons, metrics, trends, schedules, and lists of places, items or updates. Simple answers and missing-data reports remain text. The original user's format choice governs.
-  Sources and observation times belong in the visible widget and the fallback summary.
+  Widgets suit structured results: forecasts, options to pick from, comparisons, metrics, trends, schedules, orders and deliveries, and lists of places, items or updates. Simple answers and missing-data reports remain text. The original user's format choice governs.
+  A list of the user's own to-dos is a checklist card, not Markdown checkboxes. An item can carry actions that propose adding it to the user's calendar, reminders or Routine, such as {label: "加到日历", prompt: "把「…」加到我的日历，11/5 16:00"}; the prompt names the item, its time and its source, so the Router can do it once the user sends it.
+  The source and observation time stand in the visible widget as one short line (a card's source and observedAt fields; widget-meta or small in custom HTML) and in the fallback summary. In a widget of several cards, one card carries that line.
   Widget data gives observation times as ISO times; the widget shows them in the viewer's time zone.
-  The widget owns its detailed data. Accompanying text supplies a short conclusion and necessary caveats rather than duplicate rows.
+  The widget owns its detailed data and holds no other prose: how the data was queried, what a metric counts and what it leaves out, and caveats are not widget text. Accompanying text supplies a short conclusion and the necessary caveats in a sentence or two, rather than duplicate rows.
   Creation is part of the existing Task. Rejected input permits one repair attempt before a text result.
   Creation does not deliver the result. The returned content block belongs in the Task Message.
   Updates are new messages replying to the earlier widget in the same Conversation.
@@ -79,7 +81,7 @@ defmodule SalixAgent.Tools.DynamicUI do
           "type" => "string",
           "minLength" => 0,
           "description" =>
-            "Worker JS SDK: comma.card(id,kind,data,variant?) renders a Comma card template from plain data into an empty element (kinds and fields in help); comma.data and comma.state are initial JSON; comma.on(id, event, fn) handles click/input/change with {value,checked}; comma.text(id,plainText) (never HTML or table containers), comma.value(id,value), comma.visible(id,bool), comma.save(json), comma.request(text), comma.every(milliseconds,fn), comma.chart(id,{labels,values,type}), comma.onState(fn). Charts have at most 64 finite values and type bar or line. Date.now() is available. No DOM or connection APIs. Declare HTTPS dependencies with script src in html. All handlers must finish within one second."
+            "Worker JS SDK: comma.card(id,kind,data,variant?) renders a Comma card template from plain data into an empty element (kinds and fields in help); comma.data and comma.state are initial JSON; comma.on(id, event, fn) handles click/input/change with {value,checked}; comma.text(id,plainText) (never HTML or table containers), comma.value(id,value), comma.visible(id,bool), comma.save(json), comma.request(text), comma.every(milliseconds,fn), comma.chart(id,{labels,values,type}) or comma.chart(id,{labels,series:[{name,values}],type}) into a comma-chart element, comma.onState(fn). A chart has at most 64 labels, at most 4 series of finite values as long as the labels, and type bar or line. Date.now() is available. No DOM or connection APIs. Declare HTTPS dependencies with script src in html. All handlers must finish within one second."
         },
         "data" => %{
           "type" => "object",
@@ -119,7 +121,7 @@ defmodule SalixAgent.Tools.DynamicUI do
       args
       |> Map.take(~w(html script data summary previous_ui_ref))
       |> Map.reject(fn {key, value} -> key == "previous_ui_ref" and is_nil(value) end)
-      |> Map.put("version", 1)
+      |> Map.put("version", @levels["level"])
 
     cond do
       not is_binary(args["html"]) or String.trim(args["html"] || "") == "" ->
@@ -153,14 +155,23 @@ defmodule SalixAgent.Tools.DynamicUI do
       true ->
         with {:ok, tree} <- Floki.parse_fragment(args["html"]),
              :ok <- validate_charts(tree),
-             :ok <- validate_text_targets(tree, args["script"]),
+             :ok <- validate_sdk_targets(tree, args["script"]),
              :ok <- validate_card_calls(tree, args["script"], args["data"]),
              {:ok, _state} <- validate_nodes(tree, 0, {0, MapSet.new()}) do
-          {:ok, payload}
+          {:ok, Map.put(payload, "version", level(args["script"], args["data"]))}
         else
-          {:error, :text_target, id} ->
+          {:error, :sdk_target, "text", id, :structure} ->
             {:error, "script", "comma.text cannot update table structure at #{id}",
              "Author the layout in html. Update a text element inside each item with comma.text, and filter items with comma.visible"}
+
+          {:error, :sdk_target, call, id, :missing} ->
+            {:error, "script", "comma.#{call} target #{id} is not in html",
+             "Author the element with id=\"#{id}\" in html, or call comma.#{call} with an id that html has"}
+
+          {:error, :sdk_target, call, id, tags} ->
+            {:error, "script",
+             "comma.#{call} target #{id} is not a #{Enum.join(tags, " or ")} element in html",
+             "Author <#{hd(tags)} id=\"#{id}\"> in html for comma.#{call}"}
 
           {:error, :card_kind, kind} ->
             {:error, "script", "comma.card has no #{kind} template",
@@ -183,21 +194,43 @@ defmodule SalixAgent.Tools.DynamicUI do
 
   def validate(_), do: {:error, "payload", "An object is required", "Use the ui.create schema"}
 
-  # Early authoring feedback only. The runtime checks every resolved target.
-  defp validate_text_targets(tree, script) do
-    structural_ids =
-      tree
-      |> Floki.find("table[id], thead[id], tbody[id], tr[id]")
-      |> Floki.attribute("id")
-      |> MapSet.new()
+  # The element each SDK call needs, as the runtime requires it: the runtime
+  # stops the whole widget for an update whose target is missing or of another
+  # kind. Literal targets are checked here so the Worker repairs the html;
+  # targets the script computes are checked only by the runtime.
+  @sdk_targets %{
+    "text" => :any,
+    "visible" => :any,
+    "value" => ~w(input select progress),
+    "table" => ~w(table),
+    "chart" => ~w(comma-chart)
+  }
+  @table_structure ~w(table thead tbody tr)
 
-    case Regex.scan(~r/\bcomma\.text\s*\(\s*["']([a-zA-Z][\w-]{0,63})["']/, script,
-           capture: :all_but_first
-         )
-         |> Enum.find(fn [id] -> MapSet.member?(structural_ids, id) end) do
-      [id] -> {:error, :text_target, id}
-      nil -> :ok
-    end
+  defp validate_sdk_targets(tree, script) do
+    tags =
+      tree
+      |> Floki.find("[id]")
+      |> Map.new(fn {tag, attributes, _children} ->
+        {attributes |> Map.new() |> Map.fetch!("id"), tag}
+      end)
+
+    Regex.scan(
+      ~r/\bcomma\.(text|visible|value|table|chart)\s*\(\s*["']([^"']{0,64})["']\s*,/,
+      script,
+      capture: :all_but_first
+    )
+    |> Enum.find_value(:ok, fn [call, id] ->
+      tag = tags[id]
+      need = @sdk_targets[call]
+
+      cond do
+        is_nil(tag) -> {:error, :sdk_target, call, id, :missing}
+        call == "text" and tag in @table_structure -> {:error, :sdk_target, call, id, :structure}
+        need != :any and tag not in need -> {:error, :sdk_target, call, id, need}
+        true -> nil
+      end
+    end)
   end
 
   # The kind and target checks are early authoring feedback; the runtime checks
@@ -208,11 +241,8 @@ defmodule SalixAgent.Tools.DynamicUI do
   defp validate_card_calls(tree, script, data) do
     ids = tree |> Floki.find("[id]") |> Floki.attribute("id") |> MapSet.new()
 
-    Regex.scan(
-      ~r/\bcomma\.card\s*\(\s*["']([^"']{0,64})["']\s*,\s*["']([^"']{0,40})["'](?:\s*,\s*(comma\.data(?:\.[A-Za-z_$][\w$]*)*)\s*(?=[,)]))?/,
-      script,
-      capture: :all_but_first
-    )
+    script
+    |> card_calls()
     |> Enum.find_value(:ok, fn [id, kind | source] ->
       cond do
         kind not in @card_kinds ->
@@ -232,6 +262,53 @@ defmodule SalixAgent.Tools.DynamicUI do
       end
     end)
   end
+
+  # Each comma.card call with a literal target and kind: [id, kind] or, with
+  # data passed as comma.data or a key path under it, [id, kind, source].
+  defp card_calls(script) do
+    Regex.scan(
+      ~r/\bcomma\.card\s*\(\s*["']([^"']{0,64})["']\s*,\s*["']([^"']{0,40})["'](?:\s*,\s*(comma\.data(?:\.[A-Za-z_$][\w$]*)*)\s*(?=[,)]))?/,
+      script,
+      capture: :all_but_first
+    )
+  end
+
+  # The lowest runtime level that shows the widget, from the levels the card
+  # contract states (level.ts in the client contract). It is the version of the
+  # block and of the payload. A client below it shows the summary, so an older
+  # client never draws a widget in part. A card kind the script computes, or a
+  # card or chart reached other than by a literal call, cannot be read here, so
+  # that widget takes the current level.
+  defp level(script, data) do
+    kinds = script |> card_calls() |> Enum.map(&Enum.at(&1, 1))
+    charts = Regex.scan(~r/\bcomma\.chart\s*\(/, script)
+
+    # `comma` used other than as `comma.name` (an alias, brackets,
+    # destructuring) hides which calls the script makes.
+    if Regex.match?(~r/(?<![\w$.-])comma(?![\w$-])(?!\s*\.\s*[A-Za-z_$])/, script) or
+         length(kinds) < length(Regex.scan(~r/\bcomma\s*\.\s*card\b/, script)) or
+         length(charts) < length(Regex.scan(~r/\bcomma\s*\.\s*chart\b/, script)) do
+      @levels["level"]
+    else
+      features =
+        if charts != [] and chart_series?(script, data),
+          do: [@levels["features"]["chartSeries"]],
+          else: []
+
+      Enum.max([@levels["base"]] ++ Enum.map(kinds, &@levels["kinds"][&1]) ++ features)
+    end
+  end
+
+  # A chart's values can come from data or from the script, so a widget that
+  # draws a chart and names `series` in either counts as using several series.
+  defp chart_series?(script, data),
+    do: Regex.match?(~r/\bseries\b/, script) or names_series?(data)
+
+  defp names_series?(map) when is_map(map),
+    do: Map.has_key?(map, "series") or Enum.any?(Map.values(map), &names_series?/1)
+
+  defp names_series?(list) when is_list(list), do: Enum.any?(list, &names_series?/1)
+  defp names_series?(_value), do: false
 
   defp card_data_problem(kind, source, data) do
     case fetch_card_data(data, source |> String.split(".") |> Enum.drop(2)) do
@@ -510,6 +587,10 @@ defmodule SalixAgent.Tools.DynamicUI do
       A card presents any result that fits a kind below. Comma renders it natively: layout,
       type, color, icons, theme and narrow widths come from the template, the same in every
       widget. A requested list or table describes the information; the card that fits shows it.
+      The shape of the data names the kind: a few headline numbers are a metric, a number
+      per date is a trend, a number per category is bars, parts of one total are a
+      composition, and rows of several values are a table. A report is several such cards
+      in one widget.
       The help example is a complete call. Its core:
         html: <section id="card"></section>
         script: comma.card('card', 'place', comma.data.place);
@@ -528,8 +609,11 @@ defmodule SalixAgent.Tools.DynamicUI do
       - A value that is unknown or unverified is left out, and the card shows the facts it
         has. Placeholder text such as "unknown", "N/A", "暂无" or "未核验" in a field reads as
         a fact. Gaps, caveats and verification notes belong in the accompanying text.
-      - Numbers are JSON numbers without units. Moments are ISO times in the time fields.
-        Text is plain text. Links are real HTTPS source or detail URLs.
+      - Numbers are JSON numbers without units, and show with the decimals they have.
+        Moments are ISO times in the time fields. Text is plain text. Links are real HTTPS
+        source or detail URLs.
+      - A delta's value is text: the change with its unit and no sign, such as "37.6%" or
+        "3 min". Its direction says which way the number went.
       - A list holds the entries that answer the question, up to its limit; entries past the
         limit are dropped. A count in the title matches the entries the card shows.
       - feed and options filter their own rows with filters and filterKeys. An item shows
@@ -540,11 +624,14 @@ defmodule SalixAgent.Tools.DynamicUI do
         without comma.every. remainingSeconds is a static duration for a paused timer, with
         paused set to true. daysLeft is a static event-day display.
       - Checklist progress stays on this device, without comma.save.
-      A card uses 20 to 270 of the 500 nodes, and a feed of more than 12 items up to 390,
-      so such a feed takes a widget of its own.
+      The html holds at most 500 nodes. The cards rendered into it bring a widget to at
+      most 2,000 nodes: a card is 20 to 450 of them.
 
       #{@card_manual}
-      brand and sourceBrand take one of these keys. Other names show an initial:
+      brand draws a logo beside a card or an entry, and sourceBrand beside the source. Set
+      it wherever the subject is one of the companies, products or services below, by its
+      key. A stock takes its company's key: AAPL is apple. A name outside the list takes no
+      brand and shows its initial:
       #{Enum.join(@card_brands, ", ")}.
 
       ## Custom HTML
@@ -554,23 +641,29 @@ defmodule SalixAgent.Tools.DynamicUI do
       unavailable.
       - One shell: <section class="card"> with widget-head (widget-title and an optional
         widget-meta), widget-body for the content, and widget-footer only for actions. A card
-        element stands on its own, outside any shell.
+        element stands on its own, outside any shell. Content left outside a shell gets a
+        shell of its own.
       - hero or metric marks the one main value; unit and sub add short context. list-item
         rows hold lists, badge holds short labels, success and danger mark status text that
-        carries its own label. Icons: clock, check, info, sun, moon, cloud, partly-cloudy,
-        rain, snow, train, each with an aria-label. Images have meaningful alt text, or empty
-        alt when decorative.
+        carries its own label. progress shows a share, as <progress value="62" max="100">.
+        Icons: clock, check, info, sun, moon, cloud, partly-cloudy, rain, snow, train, each
+        with an aria-label. Images have meaningful alt text, or empty alt when decorative.
+      - An ISO time shows on the viewer's clock through the script, as
+        comma.text('at', new Date(comma.data.observedAt).toLocaleString()).
       - Repeated items are authored in html with stable IDs. comma.text fills their leaf text
         as plain text and comma.visible filters them. comma.value updates existing controls.
         No dynamic HTML insertion is available.
       - Whole-item navigation wraps the item in a href with a real HTTPS source or detail URL,
         which opens in the App sidebar, and holds no other controls. A labeled button does
         local UI work or proposes a follow-up through comma.request; no button reports a
-        business operation as done. Controls have keyboard focus and a 44px hit area.
+        business operation as done. Controls have keyboard focus, and a 44px hit area on
+        touch screens.
       - Widgets have no entrance animations, expand/collapse controls or media playback.
       - A chart uses already fetched labels and values:
           html: <comma-chart id="trend" aria-label="Temperature trend"></comma-chart>
           script: comma.chart('trend',{labels:comma.data.labels,values:comma.data.values,type:'line'});
+        Several series go as series: [{name, values}] in place of values, each as long as
+        labels. A chart alone in a widget is a trend or bars card.
 
       ## Facts and liveness
 
@@ -586,7 +679,8 @@ defmodule SalixAgent.Tools.DynamicUI do
 
       HTML, script and data together <= 256 KiB. One comma.card call's data <= 31 KiB.
       State <= 32 KiB.
-      Use <= 500 nodes, depth <= 20, <= 8 charts and <= 60 updates per second.
+      The html has <= 500 nodes and depth <= 20. The rendered widget has <= 2,000 nodes,
+      <= 8 charts and <= 60 updates per second.
       The comma calls made in one run of the script, one handler or one tick are one update.
       comma.every intervals must be >= 1000 ms. comma.save replaces the local JSON state.
       comma.onState(fn) receives state changes from another open copy on this device.
@@ -753,7 +847,7 @@ defmodule SalixAgent.Tools.DynamicUI do
       block = %{
         "type" => "dynamic_ui",
         "origin_task_id" => task_id,
-        "version" => 1,
+        "version" => payload["version"],
         "ui_ref" => ui_ref,
         "path" => path,
         "file_name" => id <> ".json",

@@ -1,10 +1,9 @@
 defmodule CommaWeb.StationReleases do
   @moduledoc """
   The station release manifest Comma pins (contract §7), served at
-  `/stations/releases/station.json` in still.fail's `releases/station.json`
-  shape (`{version, build, commit}`). Configuration supplies it inline
-  (COMMA_STATION_RELEASE_MANIFEST) or by URL (COMMA_STATION_RELEASE_MANIFEST_URL,
-  by default still.fail's stable `station.json`).
+  `/stations/releases/station.json` (`{version, build, commit, artifacts}`).
+  Configuration supplies it inline (COMMA_STATION_RELEASE_MANIFEST) or by URL
+  (COMMA_STATION_RELEASE_MANIFEST_URL, by default the latest Comma station).
   A URL is fetched by this one process, at most once per five minutes, so a
   burst of stations asking costs one upstream request; the last good copy is
   kept when a refresh fails.

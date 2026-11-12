@@ -57,6 +57,9 @@ class AuthActivity : ComponentActivity() {
     private lateinit var emailBox: TextInputLayout
     private lateinit var email: TextInputEditText
     private lateinit var emailMessage: TextView
+    /** The accounts still signed in on this device: one tap continues as one of them. */
+    private lateinit var keptAccounts: LinearLayout
+    private var shownKept: List<Account> = emptyList()
 
     private lateinit var codeInstruction: TextView
     private lateinit var codeAddress: TextView
@@ -117,7 +120,7 @@ class AuthActivity : ComponentActivity() {
             }
         })
         errorPage.onRetry = connectionError::retry
-        errorPage.onSwitchAccount = { AuthGraph.scope.launch { repository.logout() } }
+        errorPage.onSwitchAccount = { AuthGraph.scope.launch { repository.switchToAnotherAccount() } }
         val root = FrameLayout(this).apply {
             addView(content, FrameLayout.LayoutParams(-1, -1))
             addView(errorPage, FrameLayout.LayoutParams(-1, -1))
@@ -183,6 +186,30 @@ class AuthActivity : ComponentActivity() {
         addView(emailBox, params(24))
         emailMessage = message()
         addView(emailMessage, params(12))
+        keptAccounts = LinearLayout(this@AuthActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            isVisible = false
+        }
+        addView(keptAccounts, params(24))
+    }
+
+    /** "Continue as …" for each account still signed in here; going back to one needs no sign-in. */
+    private fun renderKept(accounts: List<Account>, busy: Boolean) {
+        if (accounts != shownKept) {
+            shownKept = accounts
+            keptAccounts.removeAllViews()
+            if (accounts.isNotEmpty()) keptAccounts.addView(label(Level.SMALL).apply {
+                setText(R.string.auth_signed_in_accounts)
+                setTextColor(getColor(R.color.token_text_quaternary))
+            })
+            for (account in accounts) keptAccounts.addView(textButton(R.string.auth_continue_as).apply {
+                text = getString(R.string.auth_continue_as, account.email)
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setOnClickListener { AuthGraph.scope.launch { repository.switchAccount(account.id) } }
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+        keptAccounts.isVisible = accounts.isNotEmpty()
+        for (index in 0 until keptAccounts.childCount) keptAccounts.getChildAt(index).isEnabled = !busy
     }
 
     private fun buildCodePage() = column().apply {
@@ -315,7 +342,7 @@ class AuthActivity : ComponentActivity() {
             DesignTypography.applyTo(this, Level.SMALL, DesignFonts.medium)
             setTextColor(getColor(R.color.token_text_quaternary))
             setPadding(dp(16), 0, dp(16), 0)
-            setOnClickListener { AuthGraph.scope.launch { repository.logout() } }
+            setOnClickListener { AuthGraph.scope.launch { repository.switchToAnotherAccount() } }
         }
         addView(logout, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(24) })
         addSpace()
@@ -410,6 +437,7 @@ class AuthActivity : ComponentActivity() {
             setMessage(emailMessage, problemText)
             setMessage(googleMessage, login.googleProblem?.takeIf { dismissedProblem !== login }?.let { getString(problemMessage(it)) })
             setGoogleBusy(login.googleBusy, available = !login.busy)
+            renderKept(login.keptAccounts, busy = login.busy || login.googleBusy)
             setPrimary(
                 text = if (resendSeconds > 0) countdownText(R.plurals.auth_resend_seconds, resendSeconds)
                 else getString(R.string.auth_continue_email),

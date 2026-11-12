@@ -39,6 +39,12 @@ export type SessionLoginTiming = {
 };
 
 export interface SessionAuthenticatorController {
+  /** Public CAPTCHA presentation owned by the current core attempt. */
+  readonly captcha?: {
+    get(): { challengeId: string; url: string } | undefined;
+    subscribe(listener: () => void): () => void;
+    answer(challengeId: string, token: string | null): Promise<boolean>;
+  };
   cancelCurrentAttempt(): Promise<void>;
   mountGoogleControl(input: {
     element: HTMLElement;
@@ -105,10 +111,29 @@ export interface SessionGuestController {
   subscribeImported(listener: () => void): () => void;
 }
 
+/** An account signed in on this device besides the one in use. */
+export type SessionKeptAccount = { userId: string; email: string };
+
+/**
+ * The accounts a device keeps signed in besides the one in use (hosts that keep the bearer: Electron). Each operation
+ * rejects with a displayable error.
+ */
+export interface SessionAccountsController {
+  get(): readonly SessionKeptAccount[];
+  subscribe(listener: () => void): () => void;
+  /** Sets the account in use aside, still signed in, and shows the sign-in for another. */
+  add(): Promise<void>;
+  /** Makes a kept account the one in use, without signing in again. */
+  switchTo(userId: string): Promise<void>;
+  /** Signs a kept account out of this device. */
+  signOut(userId: string): Promise<void>;
+}
+
 export interface SessionHostController {
   readonly apiBaseUrl: string;
   readonly authenticator: SessionAuthenticatorController;
   readonly guest?: SessionGuestController | undefined;
+  readonly accounts?: SessionAccountsController | undefined;
   readonly lifecycle: SessionLifecycleController;
   /**
    * The connection recovery the session's authority runs (the client core), on its clock: `trying` through its burst,

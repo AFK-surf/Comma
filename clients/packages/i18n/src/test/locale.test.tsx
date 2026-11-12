@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   formatNumber,
   initializeCommaI18n,
@@ -186,6 +186,37 @@ describe("CommaI18nProvider", () => {
 
     expect(screen.getByText("zh-CN:zh-CN:设置")).toBeTruthy();
     expect(document.documentElement.lang).toBe("zh-CN");
+  });
+
+  it("keeps message consumers still when only the change callback is new, and calls the latest one", () => {
+    let renders = 0;
+    let setPreference: ((preference: "zh-CN") => void) | undefined;
+    function MessagesConsumer() {
+      setPreference = useCommaI18n().setLocalePreference;
+      useCommaMessages();
+      renders += 1;
+      return null;
+    }
+    // The same element on every render, as a provider's own children are.
+    const consumer = <MessagesConsumer />;
+    const first = vi.fn();
+    const latest = vi.fn();
+    const view = render(
+      <CommaI18nProvider localePreference="en" onLocalePreferenceChange={first}>
+        {consumer}
+      </CommaI18nProvider>
+    );
+
+    view.rerender(
+      <CommaI18nProvider localePreference="en" onLocalePreferenceChange={latest}>
+        {consumer}
+      </CommaI18nProvider>
+    );
+    expect(renders).toBe(1);
+
+    setPreference!("zh-CN");
+    expect(first).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledWith("zh-CN");
   });
 
   it("updates an uncontrolled renderer locale in memory", async () => {

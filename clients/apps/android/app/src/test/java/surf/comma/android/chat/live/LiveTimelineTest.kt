@@ -11,15 +11,22 @@ import org.junit.Test
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
 import surf.comma.android.chat.model.TimelineBlockKinds
+import surf.comma.android.chat.render.MarkdownStyle
+import surf.comma.android.chat.render.MarkdownTree
 import surf.comma.android.chat.render.MessageActionLabels
+import surf.comma.android.chat.render.MessageContent
 import surf.comma.android.chat.render.messageActionsFor
 import surf.comma.android.conversation.ConversationState
 import surf.comma.android.conversation.display
+import surf.comma.android.conversation.MessagePart
 import surf.comma.android.conversation.ParticipantStatus
 import surf.comma.android.conversation.PendingMessage
 import surf.comma.android.conversation.PendingStatus
 import surf.comma.android.conversation.ReplyDraft
 import surf.comma.android.conversation.TimelineEntry
+import surf.comma.android.tasks.TaskStatusBucket
+import surf.comma.android.tasks.TaskSummary
+import surf.comma.android.tasks.ui.KnownTasks
 
 // Invented test data only.
 class LiveTimelineTest {
@@ -129,10 +136,9 @@ class LiveTimelineTest {
         // The participant frame the server sends when the agent's loop, not a message, wakes it.
         val woke = active.copy(status = "is thinking...", loopWake = true)
         val replied = state(question, canonical(2, "agent", text("done")), participant = woke)
-        val rows = mapConversation(replied, replyActions = true).rows
+        val rows = mapConversation(replied).rows
         assertTrue("no typing bubble", rows.none { it.cardKind == TimelineBlockKinds.LIVE_STATUS })
-        assertEquals("the finished reply keeps its actions", LiveRowKinds.REPLY_ACTIONS, rows.last().cardKind)
-        assertFalse(isGenerating(replied))
+        assertEquals("the finished reply ends the list", "done", rows.last().text)
         // Without the loop wake the agent is working on a message, and the bubble stays.
         assertTypingBubbleOnly(mapConversation(state(question, participant = woke.copy(loopWake = false))).rows)
     }
@@ -179,52 +185,142 @@ class LiveTimelineTest {
             block("image") { put("file_name", "chart.png"); put("width", 800); put("height", 400) },
             block("file") { put("path", "/files/report.pdf") },
         )
-        val rows = mapConversation(state(entry)).rows
-        assertEquals(listOf(null, LiveRowKinds.TASK_REF, null, LiveRowKinds.INTERACTIVE_SUMMARY, LiveRowKinds.ATTACHMENT,
+        val labels = LiveLabels(task = "Untitled fixture task")
+        val rows = mapConversation(state(entry), labels).rows
+        assertEquals(listOf(null, LiveRowKinds.INTERACTIVE_SUMMARY, LiveRowKinds.ATTACHMENT,
             LiveRowKinds.ATTACHMENT), rows.map { it.cardKind })
-        assertEquals("Created", rows[0].text)
-        assertEquals("for you.", rows[2].text)
-        assertEquals("A chart of sales", rows[3].text)
-        val task = LiveRowKinds.decodeTask(rows[1].cardPayload)
-        assertEquals("cnv_task", task.conversationId)
-        assertFalse(task.unavailable)
-        val image = LiveRowKinds.decodeAttachment(rows[4].cardPayload)
+        assertEquals("Created ${labels.task} for you.", rows[0].text)
+        assertEquals("A chart of sales", rows[1].text)
+        val image = LiveRowKinds.decodeAttachment(rows[2].cardPayload)
         assertFalse(image.image) // No source: an unavailable file card, even with image dimensions.
         assertEquals(800, image.widthPx)
         assertEquals(400, image.heightPx)
-        val file = LiveRowKinds.decodeAttachment(rows[5].cardPayload)
+        val file = LiveRowKinds.decodeAttachment(rows[3].cardPayload)
         assertFalse(file.image)
         assertEquals("report.pdf", file.name)
         assertEquals(rows.size, rows.map { it.id }.toSet().size)
     }
 
-    @Test fun `punctuation after an inline task chip stays on the chip's line`() {
-        fun chip(id: String) = block("conversation_ref") {
-            put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", id)
+    @Test fun `inline tasks keep surrounding text and exact title links in both mapping paths`() {
+        val title = "Review files"
+        val chip = block("conversation_ref") {
+            put("presentation", "inline"); put("kind", "agent_task")
+            put("conversation_id", "cnv_a"); put("title", title)
         }
-        val rows = mapConversation(state(canonical(2, "agent", text("Created "), chip("cnv_a"), text(". Next, "),
-            chip("cnv_b"), text("），然后"), chip("cnv_c"), text(".")))).rows
-        assertEquals(listOf(null, LiveRowKinds.TASK_REF, null, LiveRowKinds.TASK_REF, null, LiveRowKinds.TASK_REF),
-            rows.map { it.cardKind })
-        assertEquals(listOf("Created", "", "Next,", "", "然后", ""), rows.map { it.text })
-        assertEquals(listOf(".", "），", "."), rows.filter { it.cardKind == LiveRowKinds.TASK_REF }
-            .map { LiveRowKinds.decodeTask(it.cardPayload).suffix })
-        // The chip keeps everything else it carried.
-        assertEquals("cnv_b", LiveRowKinds.decodeTask(rows[3].cardPayload).conversationId)
+        for ((before, after) in listOf("稍后告诉你结果。（处理中：" to "）", "见 " to "。")) {
+            val entry = canonical(2, "agent", text(before), chip, text(after)) as TimelineEntry.Message
+            for (message in listOf(entry.message, entry.message.copy(markdown = null))) {
+                val row = mapConversation(state(entry.copy(message = message))).rows.single()
+                assertNull(row.cardKind)
+                assertEquals(before + title + after, row.text)
+                val block = surf.comma.android.chat.render.MarkdownTree.blocks(JSONArray(row.markdown)).single()
+                    as surf.comma.android.chat.render.MessageContent.Paragraph
+                val link = block.text.spans.single { it.href != null }
+                assertEquals(surf.comma.android.chat.render.MarkdownStyle.LINK, link.style)
+                assertEquals("comma:task/cnv_a", link.href)
+                assertEquals(title, block.text.text.substring(link.start, link.end))
+                assertEquals(row.text, entryText(state(entry.copy(message = message)), entry.key))
+            }
+        }
     }
 
-    @Test fun `only closing punctuation attaches to a chip`() {
+    @Test fun `a standalone task keeps its card and trailing punctuation in both mapping paths`() {
         val chip = block("conversation_ref") {
             put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", "cnv_a")
         }
-        val spaced = mapConversation(state(canonical(2, "agent", chip, text(" (draft)")))).rows
-        assertEquals("", LiveRowKinds.decodeTask(spaced[0].cardPayload).suffix)
-        assertEquals("(draft)", spaced[1].text)
-        val opening = mapConversation(state(canonical(3, "agent", chip, text("(draft)")))).rows
-        assertEquals("", LiveRowKinds.decodeTask(opening[0].cardPayload).suffix)
-        assertEquals("(draft)", opening[1].text)
+        val entry = canonical(2, "agent", chip, text("。")) as TimelineEntry.Message
+        for (message in listOf(entry.message, entry.message.copy(markdown = null))) {
+            val row = mapConversation(state(entry.copy(message = message))).rows.single()
+            assertEquals(LiveRowKinds.TASK_REF, row.cardKind)
+            assertEquals("。", LiveRowKinds.decodeTask(row.cardPayload).suffix)
+        }
         assertEquals(3, attachedPunctuationLength("?!) and more"))
         assertEquals(0, attachedPunctuationLength("word."))
+    }
+
+    /** A task chip as the server sends one inside a reply's text, without a title unless [configure] gives it one. */
+    private fun inlineChip(configure: JSONObject.() -> Unit = {}) = block("conversation_ref") {
+        put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", "cnv_a"); configure()
+    }
+
+    /** Each link in [row]'s text: where it goes, and the words it shows. */
+    private fun links(row: surf.comma.android.chat.model.ChatMessage): List<Pair<String?, String>> =
+        MarkdownTree.blocks(JSONArray(row.markdown)).flatMap { block ->
+            val text = when (block) {
+                is MessageContent.Paragraph -> block.text
+                is MessageContent.ListItem -> block.text
+                is MessageContent.Heading -> block.text
+                else -> return@flatMap emptyList()
+            }
+            text.spans.filter { it.style == MarkdownStyle.LINK }.map { it.href to text.text.substring(it.start, it.end) }
+        }
+
+    private val shipped = TaskSummary("cnv_a", "Ship the report", TaskStatusBucket.IN_PROGRESS)
+
+    @Test fun `a task in running text is titled by the task directory, then by its chip, then as a task`() {
+        val directory = KnownTasks(summaries = mapOf("cnv_a" to shipped))
+        val untitled = canonical(2, "agent", text("见 "), inlineChip(), text("。")) as TimelineEntry.Message
+        val titled = canonical(2, "agent", text("见 "), inlineChip { put("title", "Review files") }, text("。")) as TimelineEntry.Message
+        for ((entry, known, title) in listOf(
+            Triple(untitled, directory, "Ship the report"),
+            Triple(untitled, KnownTasks(), LiveLabels().task),
+            Triple(titled, KnownTasks(), "Review files"),
+            Triple(titled, directory, "Ship the report"),
+            Triple(titled, KnownTasks(summaries = mapOf("cnv_a" to shipped.copy(title = " "))), "Review files"),
+        )) for (message in listOf(entry.message, entry.message.copy(markdown = null))) {
+            val row = mapConversation(state(entry.copy(message = message)), tasks = known).rows.single()
+            assertNull(row.cardKind)
+            assertEquals("见 $title。", row.text)
+            assertEquals(listOf("comma:task/cnv_a" to title), links(row))
+        }
+    }
+
+    @Test fun `a task in running text that cannot be opened is plain words, as its card would say`() {
+        val entry = canonical(2, "agent", text("见 "), inlineChip(), text("。")) as TimelineEntry.Message
+        fun chipped(change: (MessagePart.TaskChip) -> MessagePart.TaskChip) =
+            entry.message.copy(parts = entry.message.parts.map { if (it is MessagePart.TaskChip) change(it) else it })
+        for ((message, known) in listOf(
+            // Withdrawn, or not an Agent task.
+            chipped { it.copy(conversationId = null, unavailable = true) } to KnownTasks(),
+            chipped { it.copy(conversationId = null) } to KnownTasks(),
+            chipped { it.copy(conversationId = "") } to KnownTasks(),
+            // The server answered and has no such task.
+            entry.message to KnownTasks(confirmed = setOf("cnv_a")),
+        )) for (shown in listOf(message, message.copy(markdown = null))) {
+            val row = mapConversation(state(entry.copy(message = shown)), tasks = known).rows.single()
+            assertNull(row.cardKind)
+            assertEquals("见 ${LiveLabels().taskUnavailable}。", row.text)
+            assertEquals(emptyList<Pair<String?, String>>(), links(row))
+        }
+    }
+
+    @Test fun `a task in a list item or a heading is a link in its text`() {
+        val known = KnownTasks(summaries = mapOf("cnv_a" to shipped))
+        val listed = mapConversation(state(canonical(2, "agent", text("- 已创建 "), inlineChip())), tasks = known).rows.single()
+        assertEquals("已创建 Ship the report", (MarkdownTree.blocks(JSONArray(listed.markdown)).single() as MessageContent.ListItem).text.text)
+        assertEquals(listOf("comma:task/cnv_a" to "Ship the report"), links(listed))
+
+        val heading = mapConversation(state(canonical(2, "agent", text("## "), inlineChip(), text(" 进度")))).rows.single()
+        assertEquals("${LiveLabels().task} 进度", (MarkdownTree.blocks(JSONArray(heading.markdown)).single() as MessageContent.Heading).text.text)
+        assertEquals(listOf("comma:task/cnv_a" to LiveLabels().task), links(heading))
+
+        val missing = mapConversation(state(canonical(2, "agent", text("- 已创建 "), inlineChip())),
+            tasks = KnownTasks(confirmed = setOf("cnv_a"))).rows.single()
+        assertEquals("已创建 ${LiveLabels().taskUnavailable}", missing.text)
+        assertEquals(emptyList<Pair<String?, String>>(), links(missing))
+    }
+
+    @Test fun `text without a parsed tree breaks into paragraphs at blank lines, without blank space at the break`() {
+        for (written in listOf("a\n\n\nb", "a \n\n b")) {
+            val row = mapConversation(state(canonical(1, "user", text(written), requestId = "req-1"))).rows.single()
+            val tree = JSONArray(row.markdown)
+            assertEquals(listOf(listOf("a"), listOf("b")), (0 until tree.length()).map { at ->
+                val paragraph = tree.getJSONArray(at)
+                assertEquals("p", paragraph.getString(0))
+                paragraph.getJSONArray(1).let { words -> (0 until words.length()).map(words::getString) }
+            })
+            assertEquals("a\n\nb", row.text)
+        }
     }
 
     @Test fun `a task payload without a suffix still decodes`() {
@@ -261,80 +357,6 @@ class LiveTimelineTest {
         assertEquals("交互内容暂不可用", rows.single().text)
     }
 
-    @Test fun `generating follows the live draft and the participant`() {
-        assertTrue(isGenerating(state(draft("x"))))
-        assertFalse(isGenerating(state(draft("x", ended = true))))
-        assertTrue(isGenerating(state(participant = ParticipantStatus("p", "active", null, null, null, null))))
-        assertFalse(isGenerating(state(pending("req-1", "q", PendingStatus.SENDING))))
-    }
-
-    private fun kinds(timeline: LiveTimeline) = timeline.rows.map { it.cardKind }
-
-    @Test fun `a finished reply of several messages gets one action row, after its last message`() {
-        val chip = block("conversation_ref") {
-            put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", "cnv_a"); put("title", "Draft")
-        }
-        val st = state(
-            canonical(1, "user", text("q1"), requestId = "req-1"),
-            canonical(2, "agent", text("First "), chip, text(".")),
-            canonical(3, "agent", text("```kt\nval x = 1\n```")),
-            canonical(4, "user", text("q2"), requestId = "req-2"),
-            canonical(5, "agent", text("Second")),
-        )
-        val timeline = mapConversation(st, replyActions = true)
-        assertEquals(listOf(null, null, LiveRowKinds.TASK_REF, null, LiveRowKinds.REPLY_ACTIONS, null, null,
-            LiveRowKinds.REPLY_ACTIONS), kinds(timeline))
-        val actions = timeline.rows.filter { it.cardKind == LiveRowKinds.REPLY_ACTIONS }
-        assertEquals(listOf("r:req-1", "r:req-2"), actions.map { it.cardPayload })
-        assertEquals(timeline.rows[1].turnId, actions[0].turnId)
-        assertEquals(ChatRole.AGENT, actions[0].role)
-        // The whole reply, as markdown source, one message per block.
-        assertEquals("First Draft.\n\n```kt\nval x = 1\n```", replyText(st, "r:req-1"))
-        assertEquals("Second", replyText(st, "r:req-2"))
-        // Without the option (the task page) nothing is added.
-        assertEquals(listOf(null, null, LiveRowKinds.TASK_REF, null, null, null), kinds(mapConversation(st)))
-    }
-
-    @Test fun `user messages and replies without text get no action row`() {
-        val ref = block("conversation_ref") {
-            put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", "cnv_a")
-        }
-        val rows = mapConversation(state(
-            canonical(1, "user", text("q"), requestId = "req-1"),
-            canonical(2, "agent", ref),
-            canonical(3, "user", text("unanswered"), requestId = "req-3"),
-        ), replyActions = true).rows
-        assertTrue(rows.none { it.cardKind == LiveRowKinds.REPLY_ACTIONS || it.cardKind == LiveRowKinds.REPLY_ACTIONS_RESERVED })
-    }
-
-    @Test fun `a reply on its way reserves the action row, which then arrives under its own id`() {
-        val user = canonical(1, "user", text("q"), requestId = "req-1")
-        val thinking = mapConversation(state(user, awaiting = true), replyActions = true)
-        assertEquals(listOf(null, TimelineBlockKinds.LIVE_STATUS, LiveRowKinds.REPLY_ACTIONS_RESERVED), kinds(thinking))
-        val streaming = mapConversation(state(user, draft("Hel")), replyActions = true)
-        assertEquals("a streaming draft looks like waiting", thinking.rows, streaming.rows)
-        assertEquals("", streaming.rows.last().text)
-        // A draft the server ended is not the reply: nothing to show, copy or act on.
-        val ended = state(user, draft("Hello", ended = true))
-        assertEquals(listOf<String?>(null), kinds(mapConversation(ended, replyActions = true)))
-        assertEquals("", replyText(ended, "r:req-1"))
-        val landed = mapConversation(state(user, canonical(2, "agent", text("Hello"))), replyActions = true)
-        assertEquals(listOf(null, null, LiveRowKinds.REPLY_ACTIONS), kinds(landed))
-        assertFalse(landed.rows.last().id == streaming.rows.last().id)
-        assertEquals("Hello", replyText(state(user, canonical(2, "agent", text("Hello"))), "r:req-1"))
-    }
-
-    @Test fun `an earlier reply keeps its action row while the next one is on its way`() {
-        val rows = mapConversation(state(
-            canonical(1, "user", text("q1"), requestId = "req-1"),
-            canonical(2, "agent", text("a1")),
-            canonical(3, "user", text("q2"), requestId = "req-3"),
-            draft("a2"),
-        ), replyActions = true).rows
-        assertEquals(listOf(null, null, LiveRowKinds.REPLY_ACTIONS, null, TimelineBlockKinds.LIVE_STATUS,
-            LiveRowKinds.REPLY_ACTIONS_RESERVED), rows.map { it.cardKind })
-    }
-
     @Test fun `every message row knows the entry it came from, with that entry's whole text`() {
         val chip = block("conversation_ref") {
             put("presentation", "inline"); put("kind", "agent_task"); put("conversation_id", "cnv_a"); put("title", "Plan")
@@ -347,24 +369,9 @@ class LiveTimelineTest {
         val timeline = mapConversation(st)
         val entries = timeline.rows.map { timeline.rowEntries[it.id] }
         // The typing bubble after the send on its way comes from no entry.
-        assertEquals(listOf("r:req-1", "m:msg_2", "m:msg_2", "m:msg_2", "r:req-3", null), entries)
+        assertEquals(listOf("r:req-1", "m:msg_2", "r:req-3", null), entries)
         assertEquals("Made Plan for you.", entryText(st, "m:msg_2"))
         assertEquals("later", entryText(st, "r:req-3"))
         assertNull(entryText(st, "m:missing"))
-    }
-
-    @Test fun `rows from elsewhere get the same buttons, reserved while the last one streams`() {
-        fun row(id: Long, turn: String, role: ChatRole, text: String, status: MessageStatus = MessageStatus.COMPLETED) =
-            surf.comma.android.chat.model.ChatMessage(id = id, conversationId = "c", turnId = turn, role = role, text = text,
-                createdAt = 0L, status = status)
-        val history = listOf(row(1, "", ChatRole.AGENT, "hello"), row(2, "t1", ChatRole.USER, "q"),
-            row(3, "t1", ChatRole.AGENT, "a"), row(4, "t2", ChatRole.USER, "q2"))
-        val streaming = withReplyActions(history + row(5, "t2", ChatRole.AGENT, "b", MessageStatus.STREAMING))
-        assertEquals(listOf(null, LiveRowKinds.REPLY_ACTIONS, null, null, LiveRowKinds.REPLY_ACTIONS, null, null,
-            LiveRowKinds.REPLY_ACTIONS_RESERVED), streaming.map { it.cardKind })
-        assertEquals(streaming.size, streaming.map { it.id }.toSet().size)
-        val done = withReplyActions(history + row(5, "t2", ChatRole.AGENT, "b"))
-        assertEquals(LiveRowKinds.REPLY_ACTIONS, done.last().cardKind)
-        assertEquals("t2", done.last().cardPayload)
     }
 }

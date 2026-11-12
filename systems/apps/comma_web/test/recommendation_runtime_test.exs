@@ -74,6 +74,10 @@ defmodule CommaWeb.RecommendationRuntimeTest do
                profile.agent_id
              )
 
+    assert {:ok, %{head: %{epoch: epoch}}} = SalixStore.AgentPGStore.read_root(profile.agent_id)
+    :ok = SalixAgent.OwnershipCell.install(profile.agent_id, epoch)
+    on_exit(fn -> SalixAgent.OwnershipCell.clear(profile.agent_id) end)
+
     assert {:ok, _} =
              InternalSessionStore.prepare_create(profile.agent_id, profile.session_id, %{
                "hidden" => true

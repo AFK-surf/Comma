@@ -1,5 +1,6 @@
 defmodule CommaWeb.ReviewLoginTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   alias Comma.Accounts
   alias Comma.Accounts.{AuthSession, User}
@@ -248,6 +249,7 @@ defmodule CommaWeb.ReviewLoginTest do
       end
 
     CommaWeb.Router.call(conn, CommaWeb.Router.init([]))
+    |> CommaWeb.AuthAbuseTestSupport.continue_http()
   end
 
   defp json(conn), do: Jason.decode!(conn.resp_body)

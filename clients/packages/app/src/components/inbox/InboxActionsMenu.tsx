@@ -1,5 +1,9 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { InboxDeleteIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import {
+  InboxDeleteIcon,
+  InboxMarkUnreadIcon,
+  MoreHorizontalIcon,
+} from "@comma/ui/components/icons";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { spacing } from "@comma/ui/tokens";
 import { taskToolbarIconButtonClassName } from "@comma/ui/components/task-workspace";
@@ -8,22 +12,27 @@ import { Button as AriaButton } from "react-aria-components";
 export interface InboxActionsMenuProps {
   canDeleteAll: boolean;
   canDeleteRead: boolean;
+  canMarkAllRead: boolean;
   onDeleteAll: () => void;
   onDeleteRead: () => void;
+  onMarkAllRead: () => void;
 }
 
 /**
- * The Inbox rail's "···" menu: bulk-deletes the notifications the rail
- * currently lists, filters included.
+ * The Inbox rail's "···" menu: marks read or bulk-deletes the notifications
+ * the rail currently lists, filters included.
  */
 export function InboxActionsMenu({
   canDeleteAll,
   canDeleteRead,
+  canMarkAllRead,
   onDeleteAll,
   onDeleteRead,
+  onMarkAllRead,
 }: InboxActionsMenuProps) {
   const messages = useCommaMessages();
   const disabledKeys = [
+    ...(canMarkAllRead ? [] : ["mark-all-read"]),
     ...(canDeleteAll ? [] : ["delete-all"]),
     ...(canDeleteRead ? [] : ["delete-read"]),
   ];
@@ -43,10 +52,19 @@ export function InboxActionsMenu({
           className="w-44 bg-popup-secondary px-sm py-sm shadow-2xl"
           disabledKeys={disabledKeys}
           onAction={(key) => {
-            if (key === "delete-all") onDeleteAll();
+            if (key === "mark-all-read") onMarkAllRead();
+            else if (key === "delete-all") onDeleteAll();
             else if (key === "delete-read") onDeleteRead();
           }}
         >
+          <MenuItem
+            contentClassName="h-8"
+            gutter="none"
+            icon={<InboxMarkUnreadIcon />}
+            id="mark-all-read"
+          >
+            {messages.inbox_mark_all_read()}
+          </MenuItem>
           <MenuItem
             contentClassName="h-8"
             gutter="none"

@@ -32,19 +32,12 @@ defmodule SalixStore.ConfigJsonTest do
       "feishu_action_activation_enabled" => true,
       "lark_action_activation_enabled" => true,
       "calendar_autojoin" => %{
-        "enabled" => true,
         "scan_interval_ms" => 120_000,
         "join_interval_ms" => 60_000,
         "max_groups_per_pass" => 25,
         "max_events_per_group" => 50,
         "max_concurrency" => 5,
-        "task_timeout_ms" => 30_000,
-        "channels" => %{
-          "slack-abc123" => %{
-            "channel" => "#botarena",
-            "calendars" => ["Comma Event"]
-          }
-        }
+        "task_timeout_ms" => 30_000
       }
     },
     "cloud_vm_archives" => %{
@@ -223,15 +216,6 @@ defmodule SalixStore.ConfigJsonTest do
               task_timeout_ms: 30_000
             ]} in env
 
-    assert {:salix_meet, :calendar_autojoin_channels,
-            [
-              %{
-                "connect_id" => "slack-abc123",
-                "channel" => "#botarena",
-                "calendars" => ["Comma Event"]
-              }
-            ]} in env
-
     # The meeting_join RPC bound is derived from the same task budget so the
     # RPC always returns strictly before the per-group task is killed.
     assert {:salix_env, :protocol_timeouts, %{"meeting_join" => 20_000}} in env
@@ -365,46 +349,29 @@ defmodule SalixStore.ConfigJsonTest do
     refute Enum.any?(ConfigJson.app_env(%{}), fn {_a, k, _v} -> k == :token_factory end)
   end
 
-  for {gate, config_key, env_key} <- [
-        {"multi-scope registration", "multi_scope_registration_enabled",
-         :agent_vmm_multi_scope_registration_enabled},
-        {"Environment-scoped binding", "environment_scoped_bindings_enabled",
-         :agent_vmm_environment_scoped_bindings_enabled}
-      ] do
-  end
+  test "the calendar worker runs wherever a meeting runtime is configured" do
+    with_runtime = ConfigJson.app_env(%{"meetings" => %{"runtime_url" => "http://meet:8080"}})
 
-  test "Agent VMM managed trust signer derives its public anchor and emits low-S signatures" do
-    private_key = :binary.copy(<<1>>, 32)
+    assert {:salix_meet, :calendar_autojoin,
+            [
+              scan_interval_ms: 120_000,
+              join_interval_ms: 60_000,
+              max_groups_per_pass: 25,
+              max_events_per_group: 50,
+              max_concurrency: 5,
+              task_timeout_ms: 30_000
+            ]} in with_runtime
 
-    assert {:salix_store, :agent_vmm_managed_trust_signing, signing} =
-             Enum.find(
-               ConfigJson.app_env(%{
-                 "agent_vmm" => %{
-                   "managed_trust_signing" => %{
-                     "private_key" => Base.encode64(private_key)
-                   }
-                 }
-               }),
-               &match?({:salix_store, :agent_vmm_managed_trust_signing, _}, &1)
-             )
+    refute config_entry?(ConfigJson.app_env(%{"meetings" => %{}}), :calendar_autojoin)
 
-    payload = "managed membership"
-    signature = signing.signer.(payload)
+    bad_bound = %{
+      "meetings" => %{
+        "runtime_url" => "http://meet:8080",
+        "calendar_autojoin" => %{"max_concurrency" => 0}
+      }
+    }
 
-    assert signing.authority_prefix == "salix-managed"
-
-    assert signing.key_id ==
-             "p256:" <>
-               Base.url_encode64(:crypto.hash(:sha256, signing.public_key), padding: false)
-
-    assert signing.key_revision == 2
-    assert byte_size(signing.public_key) == 33
-    assert SalixStore.P256Signature.valid_low_s?(signature)
-    assert SalixStore.P256Signature.verify(payload, signature, signing.public_key)
-
-    refute Enum.any?(ConfigJson.app_env(%{}), fn {_app, key, _value} ->
-             key == :agent_vmm_managed_trust_signing
-           end)
+    refute config_entry?(ConfigJson.app_env(bad_bound), :calendar_autojoin)
   end
 
   test "the example config parses and maps cleanly" do
@@ -418,31 +385,6 @@ defmodule SalixStore.ConfigJsonTest do
     assert {:salix_analytics, :clickhouse_url, "http://clickhouse:8123"} in env
     assert {:salix_meet, :runtime_base_url, "http://meeting-runtime:8080"} in env
     assert config_entry?(env, :calendar_autojoin)
-
-    assert {:salix_meet, :calendar_autojoin_channels,
-            [
-              %{
-                "connect_id" => "replace-with-feishu-connect-id",
-                "mode" => "notify",
-                "chat_id" => "oc_replace_with_target_group",
-                "calendars" => ["Your Team Calendar"],
-                "create_calendar" => "Your Team Calendar",
-                "mentions" => %{"mode" => "none", "users" => []}
-              },
-              %{
-                "connect_id" => "replace-with-lark-connect-id",
-                "mode" => "notify",
-                "chat_id" => "oc_replace_with_target_lark_group",
-                "calendars" => ["Your Team Calendar"],
-                "create_calendar" => "Your Team Calendar",
-                "mentions" => %{"mode" => "none", "users" => []}
-              },
-              %{
-                "connect_id" => "replace-with-slack-connect-id",
-                "channel" => "#your-channel",
-                "calendars" => ["Your Team Calendar"]
-              }
-            ]} in env
 
     assert Map.has_key?(
              ConfigJson.get(json, ~w(bridge_for_teams dashboard)),
@@ -464,11 +406,10 @@ defmodule SalixStore.ConfigJsonTest do
     assert {:salix_agent, :trajectory_eval_judge_providers, %{}} in env
   end
 
-  test "station_task_watch maps the canary Groups and the thresholds it names" do
+  test "station_task_watch maps the thresholds it names" do
     env =
       ConfigJson.app_env(%{
         "station_task_watch" => %{
-          "canary_group_ids" => ["grp1_canary", "", 7],
           "given_no_reply_ms" => 60_000,
           "idle_no_reply_ms" => 30_000
         }
@@ -477,16 +418,13 @@ defmodule SalixStore.ConfigJsonTest do
     assert {:salix_im, :station_task_watch,
             [
               given_no_reply_ms: 60_000,
-              idle_no_reply_ms: 30_000,
-              canary_group_ids: ["grp1_canary"]
+              idle_no_reply_ms: 30_000
             ]} in env
 
-    # Absent or malformed: nothing is set, and the watch keeps its defaults.
-    for json <- [%{}, %{"station_task_watch" => %{"canary_group_ids" => "grp1_canary"}}] do
-      refute Enum.any?(ConfigJson.app_env(json), fn {app, key, _value} ->
-               app == :salix_im and key == :station_task_watch
-             end)
-    end
+    # Absent: nothing is set, and the watch keeps its defaults.
+    refute Enum.any?(ConfigJson.app_env(%{}), fn {app, key, _value} ->
+             app == :salix_im and key == :station_task_watch
+           end)
   end
 
   defp restore_env(name, nil), do: System.delete_env(name)

@@ -6,6 +6,10 @@ defmodule CommaWeb.RecordingTranscription do
   """
   import Plug.Conn
 
+  require Logger
+
+  alias SalixAgent.AudioTranscriber
+
   @max_bytes 30 * 1024 * 1024
   @timeout_ms 610_000
 
@@ -93,7 +97,7 @@ defmodule CommaWeb.RecordingTranscription do
         try do
           run.()
         rescue
-          _ -> {:error, :asr_failed}
+          error -> {:error, error}
         catch
           _, _ -> {:error, :asr_failed}
         end
@@ -149,6 +153,16 @@ defmodule CommaWeb.RecordingTranscription do
     do: %{status: "error", reason: "Transcription failed. The audio remains in Drive."}
 
   defp observe_result(result, purpose, duration) do
+    with {:error, reason} <- result do
+      source = if purpose == :dictation, do: "dictation", else: "recording_upload"
+
+      Logger.warning(
+        "recording transcription failed: source=#{source} reason=#{AudioTranscriber.failure_reason(reason)}"
+      )
+
+      Salix.Telemetry.emit_asr_failure(source, reason)
+    end
+
     Salix.Telemetry.emit_operation(
       "salix_meet",
       if(purpose == :dictation, do: "dictation_asr", else: "meeting_asr"),

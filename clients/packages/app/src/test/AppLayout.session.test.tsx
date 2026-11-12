@@ -1,4 +1,13 @@
 import userEvent from "@testing-library/user-event";
+import {
+  chordKeybinding,
+  detectAppKeybindingPlatform,
+} from "@comma/ui/components/settings-shortcut";
+import {
+  commaClientAppShortcutOverridesSchema,
+  defaultCommaClientSettings,
+} from "@comma/native-bridge";
+import type { TerminalSessionSnapshot } from "@comma/session-contract";
 import type { DevicesValue, TopicValues } from "@comma/core/contract";
 import { initializeCommaI18n, type CommaLocale } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
@@ -17,7 +26,15 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useLayoutEffect, useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   CommaAuthenticatedLayout,
   CommaProductLayout,
@@ -40,7 +57,10 @@ import { useConversation } from "../components/chat/conversation/useConversation
 import { useComposerDraft } from "../components/chat/composer/conversationDraft";
 import { ChatSidebarProvider } from "../components/chat-sidebar/ChatSidebarContext";
 import { CommaAppearanceProvider } from "../components/commaAppearance";
-import { CommaWebClientSettingsProvider } from "../components/commaClientSettings";
+import {
+  CommaWebClientSettingsProvider,
+  commaClientSettingsStorageKey,
+} from "../components/commaClientSettings";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import { CommaSessionHostProvider } from "../session/react";
@@ -219,6 +239,46 @@ function renderSessionApp(
   );
 }
 
+function renderNewTaskApp(initial: TerminalSessionSnapshot = signedInSessionSnapshot) {
+  const controller = createTestSessionHostController({
+    apiBaseUrl: "https://api.example",
+    initial,
+  });
+  const router = createSessionRouter(() => {}, "/", CommaProductLayout);
+  renderSessionApp(controller, router);
+  return router;
+}
+
+/**
+ * Focuses a text field, as typing in a composer does. jsdom has no
+ * `isContentEditable`, so the rich composer would not count as one here.
+ */
+function focusTextField() {
+  const field = document.body.appendChild(document.createElement("textarea"));
+  act(() => field.focus());
+  onTestFinished(() => field.remove());
+  return field;
+}
+
+/** `keys` pressed with the primary modifier: ⌘ on macOS, Ctrl elsewhere. */
+function primaryChord(keys: string) {
+  const primary = detectAppKeybindingPlatform() === "macos" ? "Meta" : "Control";
+  return `{${primary}>}${keys}{/${primary}}`;
+}
+
+/** The desktop app's client settings: onboarding done, and `appShortcutOverrides`. */
+function seedDesktopClientSettings(appShortcutOverrides: Record<string, unknown> = {}) {
+  localStorage.setItem(
+    commaClientSettingsStorageKey,
+    JSON.stringify({
+      ...structuredClone(defaultCommaClientSettings),
+      appShortcutOverrides:
+        commaClientAppShortcutOverridesSchema.parse(appShortcutOverrides),
+      onboardingCompletedUserIds: [signedInSessionSnapshot.principal.userId],
+    })
+  );
+}
+
 describe("authenticated session layout", () => {
   beforeEach(() => {
     core = scriptedSessionCore();
@@ -227,6 +287,7 @@ describe("authenticated session layout", () => {
   });
 
   afterEach(() => {
+    localStorage.removeItem(commaClientSettingsStorageKey);
     vi.unstubAllGlobals();
     initializeCommaI18n(["en"]);
   });
@@ -405,6 +466,87 @@ describe("authenticated session layout", () => {
     expect(screen.queryByTestId("chat-empty")).toBeNull();
     expect(screen.queryByRole("button", { name: "Do anything" })).toBeNull();
     expect(routeErrors).toEqual([]);
+  });
+
+  it("opens New task with the primary chord N from any page, even while typing", async () => {
+    installNativeBridgeMock({ platform: "electron" });
+    seedDesktopClientSettings();
+    const router = renderNewTaskApp();
+    await flush();
+
+    // A chord that edits no text still runs while typing.
+    focusTextField();
+    await user().keyboard(primaryChord("n"));
+    await flush();
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeVisible();
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("leaves the primary chord N to the browser on the web", async () => {
+    renderNewTaskApp();
+    await flush();
+
+    await user().keyboard(primaryChord("n"));
+    await flush();
+    expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull();
+  });
+
+  it("opens New task with its rebound chord only", async () => {
+    installNativeBridgeMock({ platform: "electron" });
+    const primary =
+      detectAppKeybindingPlatform() === "macos"
+        ? ({ meta: true } as const)
+        : ({ control: true } as const);
+    seedDesktopClientSettings({
+      "new-task": chordKeybinding("KeyY", { ...primary, shift: true }),
+    });
+    renderNewTaskApp();
+    await flush();
+
+    focusTextField();
+    await user().keyboard(primaryChord("n"));
+    await flush();
+    expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull();
+
+    await user().keyboard(primaryChord("{Shift>}y{/Shift}"));
+    await flush();
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeVisible();
+  });
+
+  it("leaves a Control chord New task to macOS text fields", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    installNativeBridgeMock({ platform: "electron" });
+    seedDesktopClientSettings({
+      "new-task": chordKeybinding("KeyN", { control: true }),
+    });
+    renderNewTaskApp();
+    await flush();
+
+    // Ctrl+N moves down a line in a macOS text field.
+    const field = focusTextField();
+    await user().keyboard("{Control>}n{/Control}");
+    await flush();
+    expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull();
+
+    act(() => field.blur());
+    await user().keyboard("{Control>}n{/Control}");
+    await flush();
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeVisible();
+  });
+
+  it("gives a guest Session no New task chord", async () => {
+    installNativeBridgeMock({ platform: "electron" });
+    seedDesktopClientSettings();
+    renderNewTaskApp({
+      ...signedInSessionSnapshot,
+      principal: { ...signedInSessionSnapshot.principal, kind: "guest" },
+    });
+    await flush();
+    expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeVisible();
+
+    await user().keyboard(primaryChord("n"));
+    await flush();
+    expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull();
   });
 
   it("keeps the Profile name draft across a same-session reconcile and paints Home history immediately", async () => {

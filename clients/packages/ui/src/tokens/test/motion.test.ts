@@ -24,7 +24,8 @@ describe("reduced motion preference", () => {
     document.documentElement.setAttribute(commaReducedMotionAttribute, "true");
     expect(isReducedMotionEnabled()).toBe(true);
 
-    document.documentElement.setAttribute(commaReducedMotionAttribute, "false");
+    document.documentElement.removeAttribute(commaReducedMotionAttribute);
+    expect(isReducedMotionEnabled()).toBe(false);
     matchMedia.mockReturnValue({ matches: true });
     expect(isReducedMotionEnabled()).toBe(true);
   });

@@ -3,8 +3,13 @@ defmodule SalixMeet.Ports.CalendarOccurrences do
 
   @type occurrence :: %{required(String.t()) => term()}
 
+  @typedoc "The (start, event id) key a paged list continues after."
+  @type page_key :: %{required(String.t()) => term()}
+
+  # A group with "paged" => true asks for one page after its "page_after" key
+  # and gets the next page key back (nil at the end of the range).
   @callback list(group :: map(), range_start_ms :: integer(), range_end_ms :: integer()) ::
-              {:ok, [occurrence()]} | {:error, term()}
+              {:ok, [occurrence()]} | {:ok, [occurrence()], page_key() | nil} | {:error, term()}
   @callback revalidate(group :: map(), occurrence()) :: :ok | {:error, term()}
 
   def list(group, range_start_ms, range_end_ms),

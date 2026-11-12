@@ -25,6 +25,90 @@ defmodule SalixWeb.GitHubMiniAppTest do
     on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :github_http_options) end)
   end
 
+  test "repository selection pages organizations and searches only the chosen owner" do
+    test = self()
+
+    SystemsRuntime.put_env(:salix_web, :github_http_options,
+      plug: fn conn ->
+        conn = Plug.Conn.fetch_query_params(conn)
+        send(test, {:repo_read, conn.request_path, conn.query_params})
+
+        result =
+          case conn.request_path do
+            "/user" ->
+              %{
+                "login" => "ann",
+                "id" => 1,
+                "avatar_url" => "https://avatars.githubusercontent.com/u/1?v=4"
+              }
+
+            "/user/orgs" ->
+              [
+                %{
+                  "login" => "acme",
+                  "avatar_url" => "https://avatars.githubusercontent.com/u/2?v=4"
+                }
+              ]
+
+            "/search/repositories" ->
+              %{
+                "total_count" => 1001,
+                "incomplete_results" => false,
+                "items" => [
+                  %{"owner" => %{"login" => "acme"}, "name" => "ios", "private" => true},
+                  %{"owner" => %{"login" => "other"}, "name" => "leaked"}
+                ]
+              }
+
+            "/orgs/acme/repos" ->
+              [%{"owner" => %{"login" => "acme"}, "name" => "api", "default_branch" => "main"}]
+          end
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(result))
+      end
+    )
+
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :github_http_options) end)
+
+    assert {:ok,
+            %{
+              owners: [
+                %{
+                  login: "ann",
+                  kind: "user",
+                  avatar_url: "https://avatars.githubusercontent.com/u/1?v=4"
+                },
+                %{
+                  login: "acme",
+                  kind: "organization",
+                  avatar_url: "https://avatars.githubusercontent.com/u/2?v=4"
+                }
+              ],
+              has_more: false
+            }} = GitHub.repo_owners("t", 1)
+
+    assert {:ok, %{owners: [%{login: "acme"}]}} = GitHub.repo_owners("t", 2)
+
+    assert {:ok, %{repos: [%{owner: "acme", name: "api"}], has_more: false}} =
+             GitHub.repo_search("t", "acme", "organization", "", 2)
+
+    assert {:ok,
+            %{
+              repos: [%{owner: "acme", name: "ios", private: true}],
+              has_more: true,
+              limited: true
+            }} = GitHub.repo_search("t", "acme", "organization", "ios org:other", 2)
+
+    assert_received {:repo_read, "/orgs/acme/repos", %{"page" => "2", "per_page" => "100"}}
+
+    assert_received {:repo_read, "/search/repositories",
+                     %{"q" => "user:acme in:name fork:true ios org other", "page" => "2"}}
+
+    assert {:ok, %{has_more: false}} = GitHub.repo_search("t", "acme", "organization", "ios", 10)
+  end
+
   test "a commit is on the branch when the branch is at it or ahead of it" do
     stub(%{
       {"GET", "/repos/ann/app/compare/aaa...comma%2Fx"} => {200, %{"status" => "ahead"}},

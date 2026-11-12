@@ -59,7 +59,6 @@ export type AdminRedeemCode = typeof S.AdminRedeemCode.Type;
 export type AdminRedemption = typeof S.AdminRedemption.Type;
 export type AdminSupportSession = typeof S.AdminSupportSession.Type;
 export type AdminWorkspaceResult = typeof S.AdminWorkspaceResult.Type;
-export type AdminWorkspaceVm = typeof S.AdminWorkspaceVm.Type;
 export type AdminWorkspaceBilling = typeof S.AdminWorkspaceBilling.Type;
 export type AdminWorkspaceSignalNumber = typeof S.AdminWorkspaceSignalNumber.Type;
 export type AdminWorkspaceSandboxLimit = typeof S.AdminWorkspaceSandboxLimit.Type;
@@ -234,11 +233,6 @@ export interface AdminApiShape {
   ): Request<AdminWorkspaceResult>;
   getUser(id: string): Request<AdminUser>;
   getUserWorkspaceBilling(id: string): Request<AdminWorkspaceBilling>;
-  updateUserWorkspaceVm(
-    userId: string,
-    workspaceId: string,
-    input: AdminCommandMetadata & { enabled: boolean }
-  ): Request<AdminWorkspaceVm>;
   getUserWorkspaceSignalNumber(userId: string): Request<AdminWorkspaceSignalNumber>;
   /** Sets the Workspace's own Signal number; an empty `number` uses the platform number. */
   updateUserWorkspaceSignalNumber(
@@ -540,12 +534,6 @@ export const AdminApiLive = Layer.effect(
       getUser: (id) => lenient(user(id), S.AdminUser),
       getUserWorkspaceBilling: (id) =>
         strict(`${user(id)}/workspaces`, S.AdminWorkspaceBilling),
-      updateUserWorkspaceVm: (userId, workspaceId, input) =>
-        strict(
-          `${user(userId)}/workspaces/${encodeURIComponent(workspaceId)}/vm`,
-          S.AdminWorkspaceVm,
-          { body: { ...commandBody(input), enabled: input.enabled }, method: "PUT" }
-        ),
       getUserWorkspaceSignalNumber: (userId) =>
         lenient(
           `${user(userId)}/workspaces/signal-number`,

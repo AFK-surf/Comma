@@ -149,6 +149,28 @@ defmodule CommaWeb.CommaFilesTest do
       error -> {:error, error}
     end
 
+    # Parts go to the real blob store (S3 fake), keyed by the workspace.
+    @impl true
+    def begin_agent_file_upload(workspace, size) do
+      with {:ok, upload_id} <- SalixStore.Blob.begin_parts(workspace["id"], size) do
+        {:ok, %{upload_id: upload_id, part_size: SalixStore.Blob.upload_part_size()}}
+      end
+    end
+
+    @impl true
+    def put_agent_file_upload_part(workspace, upload_id, number, body),
+      do: SalixStore.Blob.put_part(workspace["id"], upload_id, number, body)
+
+    @impl true
+    def finish_agent_file_upload(workspace, upload_id, path, etags) do
+      with {:ok, ref} <- SalixStore.Blob.finish_parts(workspace["id"], upload_id, etags),
+           {:ok, stream, _size} <- SalixStore.Blob.stream(workspace["id"], ref) do
+        body = IO.iodata_to_binary(Enum.to_list(stream))
+        SystemsRuntime.Proc.send(test_pid!(), {:finish_agent_file_upload, workspace, path, body})
+        {:ok, %{"path" => path, "size" => ref.size}}
+      end
+    end
+
     @impl true
     def link_agent_blob(workspace, agent_id, ref, path) do
       SystemsRuntime.Proc.send(test_pid!(), {:link_agent_blob, workspace, agent_id, ref, path})
@@ -171,6 +193,33 @@ defmodule CommaWeb.CommaFilesTest do
         other ->
           other
       end
+    end
+
+    @impl true
+    def agent_file_ref(workspace, path) do
+      case Process.get({:agent_file_ref, workspace["id"], path}) do
+        nil -> {:error, :not_found}
+        ref -> {:ok, %{agent_id: workspace["router_agent_id"], ref: ref}}
+      end
+    end
+
+    @impl true
+    def stream_agent_blob(_workspace, _agent_id, ref, range) do
+      body = Process.get({:blob, ref["uuid"]})
+
+      body =
+        case range do
+          nil -> body
+          {offset, length} -> binary_part(body, offset, length)
+        end
+
+      {:ok, [body], byte_size(body)}
+    end
+
+    @impl true
+    def presign_agent_blob(_workspace, agent_id, ref, opts) do
+      SystemsRuntime.Proc.send(test_pid!(), {:presign_agent_blob, agent_id, ref, opts})
+      {:ok, "https://blobs.test/#{ref["uuid"]}"}
     end
 
     defp test_pid!, do: SystemsRuntime.fetch_env!(:comma_core, :comma_files_test_pid)
@@ -288,6 +337,67 @@ defmodule CommaWeb.CommaFilesTest do
 
     assert short["error"] == "upload_incomplete"
     refute_received {:write_agent_file_stream, _, _, _}
+  end
+
+  test "takes a file in parts, each a request of its own, and stores it whole" do
+    %{workspace: workspace, session: session} = create_fixture("files-parts@example.com")
+    part_size = SalixStore.Blob.upload_part_size()
+    source = :binary.copy("v", part_size) <> "tail"
+    uploads = "/v1/comma/groups/#{group_id_for_comma_workspace!(workspace["id"])}/uploads"
+
+    begun =
+      json_conn(:post, uploads, %{"size" => byte_size(source)})
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(201)
+
+    assert %{"upload_id" => upload_id, "part_size" => ^part_size} = begun
+    part = fn number, body -> part_conn(session["token"], uploads, upload_id, number, body) end
+
+    assert part.(2, "tai") |> expect_json(400) == %{"error" => "invalid_part"}
+    assert part.(1, source <> "x") |> expect_json(413) == %{"error" => "file_too_large"}
+    assert %{"etag" => last} = part.(2, "tail") |> expect_json(200)
+    assert %{"etag" => first} = part.(1, binary_part(source, 0, part_size)) |> expect_json(200)
+
+    file =
+      json_conn(:post, "#{uploads}/#{upload_id}/complete", %{
+        "name" => "clip one.mp4",
+        "etags" => [first, last]
+      })
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(201)
+
+    assert file["name"] == "clip one.mp4"
+    assert file["size"] == byte_size(source)
+    assert file["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-clip-one\.mp4$|
+    path = file["path"]
+    workspace_id = workspace["id"]
+    settle_receive({:finish_agent_file_upload, %{"id" => ^workspace_id}, ^path, ^source})
+  end
+
+  test "refuses a file in parts over the limit, and parts of another workspace's upload" do
+    %{workspace: workspace, session: session} = create_fixture("files-parts-refused@example.com")
+    %{workspace: other, session: other_session} = create_fixture("files-parts-other@example.com")
+    uploads = "/v1/comma/groups/#{group_id_for_comma_workspace!(workspace["id"])}/uploads"
+    other_uploads = "/v1/comma/groups/#{group_id_for_comma_workspace!(other["id"])}/uploads"
+
+    too_large =
+      json_conn(:post, uploads, %{"size" => Comma.GroupFiles.max_stream_upload_bytes() + 1})
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(413)
+
+    assert too_large["error"] == "file_too_large"
+
+    %{"upload_id" => upload_id} =
+      json_conn(:post, uploads, %{"size" => 4})
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(201)
+
+    assert part_conn(other_session["token"], other_uploads, upload_id, 1, "abcd")
+           |> expect_json(404) == %{"error" => "not_found"}
   end
 
   test "stores an agent's attachment of any size as a composer file by reference to its blob" do
@@ -472,6 +582,67 @@ defmodule CommaWeb.CommaFilesTest do
     assert expect_json(oversized, 404) == %{"error" => "not_found"}
   end
 
+  test "serves an uploaded file of any type whole, in byte ranges and from its media URL" do
+    %{user: user, workspace: workspace, session: session} =
+      create_fixture("files-upload-read@example.com")
+
+    group_id = workspace["default_group_id"]
+    name = String.duplicate("C", 22) <> "-clip-one.mp4"
+    body = :binary.copy("0123456789", 100)
+
+    ref = %{
+      "uuid" => String.duplicate("c", 32),
+      "hash" => String.duplicate("d", 64),
+      "size" => 1000
+    }
+
+    Process.put({:agent_file_ref, workspace["id"], "/uploads/" <> name}, ref)
+    Process.put({:blob, ref["uuid"]}, body)
+
+    read = fn token, name ->
+      conn(:get, "/v1/comma/groups/#{group_id}/uploads/#{name}") |> user_auth(token)
+    end
+
+    whole = session["token"] |> read.(name) |> call()
+    assert whole.status == 200
+    assert whole.resp_body == body
+    assert get_resp_header(whole, "content-type") == ["video/mp4"]
+    assert get_resp_header(whole, "cache-control") == ["private, no-store"]
+
+    part = session["token"] |> read.(name) |> put_req_header("range", "bytes=10-19") |> call()
+    assert part.status == 206
+    assert part.resp_body == "0123456789"
+    assert get_resp_header(part, "content-range") == ["bytes 10-19/1000"]
+
+    media =
+      :post
+      |> json_conn("/v1/comma/groups/#{group_id}/uploads/#{name}/media", %{})
+      |> user_auth(session["token"])
+      |> call()
+      |> expect_json(200)
+
+    assert media["url"] == "https://blobs.test/#{ref["uuid"]}"
+    router_agent_id = workspace["router_agent_id"]
+    settle_receive({:presign_agent_blob, ^router_agent_id, ^ref, opts})
+    assert opts[:content_type] == "video/mp4"
+    assert opts[:content_disposition] == "attachment; filename*=UTF-8''clip-one.mp4"
+
+    for missing <- [String.duplicate("C", 22) <> "-other.pdf", "short-clip.mp4", ".."] do
+      assert expect_json(session["token"] |> read.(missing) |> call(), 404) == %{
+               "error" => "not_found"
+             }
+    end
+
+    restricted =
+      admin_json(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", %{
+        "restricted" => true,
+        "group_id" => group_id
+      })
+      |> expect_json(201)
+
+    assert (restricted["token"] |> read.(name) |> call()).status == 403
+  end
+
   test "requires upload and image-read authentication and rejects restricted sessions" do
     %{user: user, workspace: workspace, session: session, conversation: conversation} =
       create_fixture("files-auth@example.com")
@@ -599,6 +770,14 @@ defmodule CommaWeb.CommaFilesTest do
     |> conn("/v1/comma/groups/#{group_id}/files?" <> URI.encode_query(params), body)
     |> put_req_header("content-type", "application/octet-stream")
     |> user_auth(token)
+  end
+
+  defp part_conn(token, uploads, upload_id, number, body) do
+    :put
+    |> conn("#{uploads}/#{upload_id}/parts/#{number}", body)
+    |> put_req_header("content-type", "application/octet-stream")
+    |> user_auth(token)
+    |> call()
   end
 
   # Replaces the declared size the body is checked against.

@@ -507,64 +507,6 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
       "compiled proof fixture",
     );
 
-    // Compiler snapshots must replace older state under the same compatibility
-    // key, including after a guest moves to another host.
-    const compiler = join(action, "typecheck-cache.mjs");
-    const typecheck = async (host, mode, key = "compatible") => {
-      const repo = join(root, host.name, "compiler");
-      mkdirSync(repo, { recursive: true });
-      const { stdout } = await run("node", [compiler, mode], {
-        env: {
-          ...process.env,
-          RUNNER_OS: "macOS",
-          GITHUB_WORKSPACE: repo,
-          SYNCH_CACHE_SHARED_DIRECTORY: host.shared,
-          TYPECHECK_CACHE_KEY: key,
-        },
-      });
-      return { repo, stdout };
-    };
-    const { repo: compilerA } = await typecheck(hosts[0], "restore");
-    mkdirSync(join(compilerA, "clients/node_modules/.tmp"), {
-      recursive: true,
-    });
-    mkdirSync(join(compilerA, "clients/packages/core/dist"), {
-      recursive: true,
-    });
-    const buildInfo = "clients/node_modules/.tmp/core.tsbuildinfo";
-    writeFileSync(join(compilerA, buildInfo), "first signatures");
-    writeFileSync(
-      join(compilerA, "clients/packages/core/dist/index.d.ts"),
-      "types",
-    );
-    await typecheck(hosts[0], "save");
-    const { repo: compilerB, stdout } = await typecheck(hosts[1], "restore");
-    assert.match(stdout, /restored compatible from peers/);
-    assert.equal(
-      readFileSync(join(compilerB, buildInfo), "utf8"),
-      "first signatures",
-    );
-    assert.equal(
-      readFileSync(
-        join(compilerB, "clients/packages/core/dist/index.d.ts"),
-        "utf8",
-      ),
-      "types",
-    );
-    writeFileSync(join(compilerB, buildInfo), "updated signatures");
-    await typecheck(hosts[1], "save");
-    await typecheck(hosts[0], "restore");
-    assert.equal(
-      readFileSync(join(compilerA, buildInfo), "utf8"),
-      "updated signatures",
-    );
-    const { repo: compilerC } = await typecheck(
-      hosts[2],
-      "restore",
-      "different-config",
-    );
-    assert.equal(existsSync(join(compilerC, buildInfo)), false);
-
     // Rust builds retain dependency downloads, compiled crates, and keyed
     // native binaries when the next job lands on another host.
     const rust = async (host, mode, key = "rust-toolchain-and-lockfiles") => {
@@ -604,7 +546,7 @@ test("runners on one LAN share tool caches through the Synchronicity gateway", a
       ["CARGO_HOME", "registry/crate", "download"],
       ["CARGO_HOME", "git/checkout", "git dependency"],
       ["CARGO_TARGET_DIR", "native/mesh/dependency.rlib", "compiled crate"],
-      ["STILLFAIL_NATIVE_CACHE", "mesh/source-key/mesh.node", "native binary"],
+      ["COMMA_STATION_NATIVE_CACHE", "mesh/source-key/mesh.node", "native binary"],
     ];
     for (const [variable, path, content] of rustEntries) {
       const file = join(rustA[variable], path);

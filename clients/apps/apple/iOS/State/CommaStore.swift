@@ -16,6 +16,8 @@ final class CommaStore {
     var session: CommaSession?
     /// The sign-in under way, as the core keeps it (any screen continues it).
     var signIn: SignInAttempt?
+    /// The other accounts signed in on this iPhone, set aside: switching to one needs no sign-in.
+    var otherAccounts: [CommaUser] = []
     /// Why the core cannot tell what the session is (it could not read this iPhone's credential store, or reach the
     /// server): the login says so and offers to try again.
     var sessionProblem: SignInProblem?
@@ -23,6 +25,14 @@ final class CommaStore {
     var resendAt: Date?
     var workspaces: [Workspace] = []
     var workspace: Workspace?
+    /// One foreground Mini App runtime or shared-link page.
+    var miniAppPresentation: MiniAppPresentation?
+    var miniAppSessions: [String: MiniAppSession] = [:]
+    @ObservationIgnored var miniAppMemoryObserver: NSObjectProtocol?
+    var miniAppTarget: MiniAppTarget? {
+        get { if case .run(let target) = miniAppPresentation { target } else { nil } }
+        set { miniAppPresentation = newValue.map(MiniAppPresentation.run) }
+    }
     var tasks: [TaskSummary] = []
     /// Tasks pinned in the Group, as the core's task list says.
     var pinnedTaskIDs: Set<String> = []
@@ -73,6 +83,8 @@ final class CommaStore {
     @ObservationIgnored let configuration: AppConfiguration
     /// The client core: the process's (`CoreRuntime`), or a test's.
     @ObservationIgnored let core: any CoreAPI
+    /// This phone's own answers to location requests, while the app is open.
+    @ObservationIgnored let locationAnswers: AgentLocationAnswers
     /// Where the core keeps the bearer, whose account shows while the core checks it.
     @ObservationIgnored let custody: SessionCustody
     /// The file a core download names (`download` topic's `path`) in its download directory; nil for one outside it.
@@ -101,6 +113,8 @@ final class CommaStore {
     @ObservationIgnored var onWorkspaceChanged: ((Workspace) -> Void)?
     @ObservationIgnored var validateSession: ((CommaSession) async throws -> Bool)?
     @ObservationIgnored var onAutomaticFollowingChanged: ((Bool) -> Void)?
+    /// The member accepted a Task's result: Mark as done, or ending the Task as Done.
+    @ObservationIgnored var onWorkAccepted: (() -> Void)?
     /// Runs before sign-out revokes the session, while it can still authorize cleanup requests.
     @ObservationIgnored var beforeLogout: (() async -> Void)?
     @ObservationIgnored private var started = false
@@ -112,6 +126,7 @@ final class CommaStore {
          downloadedFile: @escaping @Sendable (String) -> URL? = { _ in nil }, localFiles: HostLocalFiles? = nil) {
         self.configuration = configuration
         self.core = core
+        locationAnswers = AgentLocationAnswers(core: core)
         self.custody = custody
         self.downloadedFile = downloadedFile
         self.localFiles = localFiles
@@ -203,6 +218,8 @@ final class CommaStore {
     /// The app went to the background: the conversations let their streams go (the core keeps what it read).
     func suspend() {
         foreground = false
+        locationAnswers.setForeground(false)
+        for session in miniAppSessions.values { session.suspend() }
         for pane in panes { pane.setForeground(false) }
     }
 
@@ -210,6 +227,7 @@ final class CommaStore {
     func resume() async {
         foreground = true
         guard initialized else { return }
+        locationAnswers.setForeground(true)
         for pane in panes { pane.setForeground(true) }
         if lifecycle?.phase == "signed_in" {
             _ = try? await core.call("session.reconcile", ["reason": "focus"])
@@ -228,6 +246,8 @@ final class CommaStore {
         profileWatch?.cancel(); profileWatch = nil
         for pane in panes { pane.close() }
         router.reset(); task = nil
+        closeMiniApps()
+        miniAppTarget = nil
         workspaces = []; workspace = nil; tasks = []; tasksLoaded = false; taskListFailed = false; productFailed = false
         hasMoreTasks = false; loadingMore = false
         pinnedTaskIDs = []; taskBoardOrder = []
@@ -249,6 +269,7 @@ struct SignInAttempt: Equatable, Sendable {
     let challengeID: String?
     /// The emailed code links an Apple ID to an existing account.
     let linkingApple: Bool
+    var linkingGoogle: Bool = false
     let email: String?
     let expired: Bool
 }

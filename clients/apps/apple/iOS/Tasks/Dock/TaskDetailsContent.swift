@@ -8,8 +8,11 @@ struct TaskDetailsContent: View {
     let task: TaskSummary?
     /// The card is open (or still closing): its status glyph turns only while it can be seen.
     let shown: Bool
+    let openBrowser: () -> Void
     @State private var historyOpen = false
     @State private var labelsOpen = false
+    @State private var filesOpen = false
+    @State private var codingOpen = false
     /// The pills' glyphs and height grow with their text, so large text never sits beside a tiny glyph.
     @ScaledMetric(relativeTo: .subheadline) private var glyph: CGFloat = 18
     @ScaledMetric(relativeTo: .subheadline) private var pillHeight: CGFloat = 32
@@ -65,7 +68,30 @@ struct TaskDetailsContent: View {
                         }
                     }
                 }
+                if pane.state.codingSandbox {
+                    section("Code") {
+                        Button { codingOpen = true } label: {
+                            pill { CentralIcon("central-file-bend", size: glyph); Text("Code review") }
+                        }.buttonStyle(TactileButtonStyle())
+                    }
+                }
+                if pane.boundWorker != nil || pane.state.participant != nil {
+                    section("Browser") {
+                        Button(action: openBrowser) { pill { Text("Remote browser") } }.buttonStyle(TactileButtonStyle())
+                    }
+                }
                 section("Labels") { labels(task) }
+                section("Files") {
+                    Button { filesOpen = true } label: {
+                        pill {
+                            CentralIcon("central-file-bend", size: glyph, relativeTo: .subheadline)
+                            Text("Task files")
+                            CentralIcon("central-chevron-right-small", size: glyph, relativeTo: .subheadline)
+                        }
+                    }
+                    .buttonStyle(TactileButtonStyle())
+                    .accessibilityIdentifier("openTaskFiles")
+                }
                 if let loop = task.loop {
                     // Named by its kind, also once the Loop ended.
                     section(Text(verbatim: loop.kind.label)) { facts(loop) }
@@ -80,6 +106,16 @@ struct TaskDetailsContent: View {
                     .sheetCloseButton { labelsOpen = false }
             }
             .commaSheet([.large])
+        }
+        .sheet(isPresented: $codingOpen) {
+            NavigationStack {
+                PhoneCodingView(model: PhoneCodingModel(store: store, workspace: pane.workspace, task: pane.conversationID))
+                    .sheetCloseButton { codingOpen = false }
+            }.commaSheet([.large])
+        }
+        .sheet(isPresented: $filesOpen) {
+            NavigationStack { PhoneTaskFilesView(model: PhoneTaskFilesModel(store: store, pane: pane)) }
+                .commaSheet([.large])
         }
     }
 

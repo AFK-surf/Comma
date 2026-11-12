@@ -130,12 +130,12 @@ def replyRepair (state event : Term) : KernelM Term := do
   let fact := repair.put (b "kind") (b "visible_reply_repair") |>.put (b "seq") seq
   let events ← append ((← field updated "events").default (list [])) (list [fact])
   let time := (← Data.event event "created_at").default (← field updated "last_activity_at")
-  write updated [("events", events), ("last_seq", seq), ("llm_failure_streak", nil), ("last_activity_at", time)]
+  write updated [("events", events), ("last_seq", seq), ("llm_failure_streak", nil), ("last_activity_at", metadataSeconds time)]
 
 def replyIntent (state event : Term) : KernelM Term := do
   let intent ← stringify (select event ["assistant_message_id", "content", "scope", "idempotency_key", "created_at"])
   let time := (← Data.event event "created_at").default (← field state "last_activity_at")
-  write state [("visible_reply_intent", intent), ("last_activity_at", time)]
+  write state [("visible_reply_intent", intent), ("last_activity_at", metadataSeconds time)]
 
 def retireIntent (state event : Term) : KernelM Term := do
   let intent ← field state "visible_reply_intent"

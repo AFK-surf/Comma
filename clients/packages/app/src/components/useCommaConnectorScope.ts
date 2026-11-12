@@ -84,7 +84,7 @@ export function useCommaConnectorScope(enabled: boolean) {
   useEffect(() => {
     if (failed) setError("The account's Workspaces could not be read.");
     else if (missing)
-      setError("No active Workspace is available for Connector permissions.");
+      setError("No active Workspace is available for station permissions.");
   }, [failed, missing]);
 
   const setScope = useCallback(
@@ -98,7 +98,7 @@ export function useCommaConnectorScope(enabled: boolean) {
         // publishes the accepted scope through connectorRuntime.state.
         const result = await bridge.connectorRuntime.setScope({ scope, workspaceId });
         if (!result.available || result.scope !== scope)
-          throw new Error("Connector permission change was not acknowledged.");
+          throw new Error("Station permission change was not acknowledged.");
       } catch (reason) {
         if (mutationRef.current === operation) {
           setError(reason instanceof Error ? reason.message : String(reason));

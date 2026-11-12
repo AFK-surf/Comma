@@ -16,7 +16,7 @@ defmodule SalixMeet.PreparationTask do
     with {:ok, opened} <- MeetingPlan.open_trigger(group_id, plan_id, "decision", revision, opts),
          true <- opened["status"] in ~w(opened already_opened),
          {:ok, plan} <- MeetingPlan.get(group_id, plan_id),
-         true <- get_in(plan, ["publication_target", "provider"]) == "slack",
+         true <- MeetingPlan.system_track?(plan),
          {:ok, worker_id} <- select_worker(plan, router_id, worker_id),
          {:ok, %{"role" => "worker", "group_id" => ^group_id}} <-
            GroupDirectory.get_agent(worker_id),
@@ -127,9 +127,7 @@ defmodule SalixMeet.PreparationTask do
 
     Call meeting.preparation.record_decision. Adapt research to the meeting's
     purpose, cadence and agenda: prior follow-ups and relevant changes since then.
-    Use meeting.preparation.read_shared_source: one public Slack channel per call, operation
-    history, replies, search or file. Start from the notice channel. Private channels,
-    DMs and team memory are unavailable. Naming an integration grants no access. Do not ask Router.
+    #{source_instructions(plan)}
     Find the latest completed occurrence of THIS meeting before its current start.
     Verify dates and read its full human transcript or exchange, including continuation pages.
     Read newer public discussions. Cover changes since that occurrence ended, not just
@@ -145,7 +143,7 @@ defmodule SalixMeet.PreparationTask do
     Shared note: up to 3 neutral topics for ALL attendees, suitable for Calendar details.
     Select follow-ups, changes and decisions worth discussing, with sources.
     No private facts, notification tags, filler or progress demands.
-    Link the previous Slack summary once, or its Canvas if no summary link exists.
+    #{summary_instructions(plan)}
     Do not retell the whole summary. Omit headers, times and join links added by the system.
     Saved content serves the scheduled notice and enabled Calendar writeback. Saving is not delivery.
     #{personal_instructions(plan)}
@@ -154,6 +152,25 @@ defmodule SalixMeet.PreparationTask do
     Task final citing that status, without names, coverage claims or personal content.
     Report the completed research and any remaining blockers in this Task.
     """
+  end
+
+  defp source_instructions(plan) do
+    if get_in(plan, ["publication_target", "provider"]) in ["feishu", "lark"] do
+      "Use meeting.preparation.read_shared_source: one chat per call, operation history or " <>
+        "replies. Start from the notice chat; other chats must be public groups of the organization. " <>
+        "Private groups, DMs and team memory are unavailable. Naming an integration grants no access. " <>
+        "Do not ask Router."
+    else
+      "Use meeting.preparation.read_shared_source: one public Slack channel per call, operation " <>
+        "history, replies, search or file. Start from the notice channel. Private channels, " <>
+        "DMs and team memory are unavailable. Naming an integration grants no access. Do not ask Router."
+    end
+  end
+
+  defp summary_instructions(plan) do
+    if get_in(plan, ["publication_target", "provider"]) in ["feishu", "lark"],
+      do: "Link the previous meeting summary message once when the notice chat has one.",
+      else: "Link the previous Slack summary once, or its Canvas if no summary link exists."
   end
 
   defp personal_instructions(%{"personal_preparation" => false}),

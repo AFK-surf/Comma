@@ -5,7 +5,13 @@ import {
 } from "@comma/native-bridge";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useCommaAppPreferences() {
+/**
+ * `showsLaunchAtLogin`: the caller shows the login item (Settings). Main
+ * reuses a login-item readback up to 30 s old, so such a caller asks for a
+ * fresh read when it opens and when its window regains focus; Main publishes
+ * a change through the state.
+ */
+export function useCommaAppPreferences({ showsLaunchAtLogin = false } = {}) {
   const bridge = getNativeBridge();
   const available = bridge.platform === "electron";
   const availability = {
@@ -35,8 +41,18 @@ export function useCommaAppPreferences() {
     return bridge.appPreferences.state.subscribe(acceptPreferences);
   }, [acceptPreferences, available, bridge]);
 
+  const readsLaunchAtLogin = showsLaunchAtLogin && availability.launchAtLogin;
+  useEffect(() => {
+    if (!readsLaunchAtLogin) return;
+    void bridge.appPreferences.refreshLaunchAtLogin().catch(() => {
+      // The state subscription keeps the last readback Main published.
+    });
+  }, [bridge, readsLaunchAtLogin]);
+
   // Login-item and OS notification truth are owned outside Comma and change
-  // behind its back, so a window coming back into view re-reads them.
+  // behind its back, so a window coming back into view re-reads them. For
+  // these reads Main asks the OS for the login item at most once per 30 s,
+  // or every time while the login item waits for approval.
   useEffect(() => {
     if (!available || pending) return;
 
@@ -55,17 +71,27 @@ export function useCommaAppPreferences() {
     const refreshNativeReadbacksWhenVisible = () => {
       if (document.visibilityState === "visible") refreshNativeReadbacks();
     };
+    // Settings regaining focus is when the user comes back from System
+    // Settings, so the login item it shows is read fresh then.
+    const refreshOnFocus = () => {
+      refreshNativeReadbacks();
+      if (readsLaunchAtLogin) {
+        void bridge.appPreferences.refreshLaunchAtLogin().catch(() => {
+          // The state subscription keeps the last readback Main published.
+        });
+      }
+    };
 
-    window.addEventListener("focus", refreshNativeReadbacks);
+    window.addEventListener("focus", refreshOnFocus);
     document.addEventListener("visibilitychange", refreshNativeReadbacksWhenVisible);
     return () => {
-      window.removeEventListener("focus", refreshNativeReadbacks);
+      window.removeEventListener("focus", refreshOnFocus);
       document.removeEventListener(
         "visibilitychange",
         refreshNativeReadbacksWhenVisible
       );
     };
-  }, [acceptPreferences, available, bridge, pending]);
+  }, [acceptPreferences, available, bridge, pending, readsLaunchAtLogin]);
 
   // Resolves the snapshot Main acknowledged, or undefined when the update
   // failed and the preferences fell back to Main's state.
@@ -110,6 +136,12 @@ export function useCommaAppPreferences() {
     return bridge.appPreferences.openLoginItemsSettings();
   }, [available, bridge]);
 
+  // Quits and starts the desktop app again, for a setting read when it starts.
+  const relaunch = useCallback(async () => {
+    if (!available) return { relaunching: false as const };
+    return bridge.appPreferences.relaunch();
+  }, [available, bridge]);
+
   // macOS prompts while it has not asked about Comma yet. Main publishes the
   // answer through the state event the preferences follow, and resolves with it.
   const requestNotificationAuthorization = useCallback(
@@ -123,6 +155,7 @@ export function useCommaAppPreferences() {
     openNotificationSettings,
     pending,
     preferences,
+    relaunch,
     requestNotificationAuthorization,
     showInSystemTray,
     update,

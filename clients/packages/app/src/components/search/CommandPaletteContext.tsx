@@ -11,10 +11,12 @@ import {
 import { uiClock } from "@comma/ui/clock";
 import { useIsGuestSession } from "../auth-context";
 import { ChatConsumerBoundary } from "../chat/ChatProvider";
+import type { ChatSidebarActions } from "../chat-sidebar/ChatSidebarContext";
 import type { AppShortcutId } from "../shortcuts/appShortcutRegistry";
 import { AppCommandPalette } from "./AppCommandPalette";
 
 type AppShortcutRunner = (id: AppShortcutId) => void;
+type FilePreviewOpener = ChatSidebarActions["openFilePreview"];
 
 type CommandPaletteContextValue = {
   /**
@@ -34,6 +36,12 @@ type CommandPaletteContextValue = {
    * drive, and they sit below this provider.
    */
   provideShortcutRunner: (run: AppShortcutRunner) => () => void;
+  /**
+   * Lends the palette the Chat Sidebar's file preview for as long as the
+   * returned release stands, so a found file opens beside its Task. The
+   * sidebar sits below this provider, in the product layout.
+   */
+  provideFilePreview: (open: FilePreviewOpener) => () => void;
   toggle: () => void;
 };
 
@@ -86,6 +94,12 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     return () =>
       setShortcutRunner((current) => (current === entry ? undefined : current));
   }, []);
+  const [filePreview, setFilePreview] = useState<{ open: FilePreviewOpener }>();
+  const provideFilePreview = useCallback((openPreview: FilePreviewOpener) => {
+    const entry = { open: openPreview };
+    setFilePreview(entry);
+    return () => setFilePreview((current) => (current === entry ? undefined : current));
+  }, []);
   const paletteElement = useMemo(
     () =>
       guest ? null : (
@@ -95,10 +109,11 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
             onOpenChange={handleOpenChange}
             open={isOpen}
             {...(shortcutRunner ? { runShortcut: shortcutRunner.run } : {})}
+            {...(filePreview ? { openFilePreview: filePreview.open } : {})}
           />
         </ChatConsumerBoundary>
       ),
-    [closeAfterAction, guest, handleOpenChange, isOpen, shortcutRunner]
+    [closeAfterAction, filePreview, guest, handleOpenChange, isOpen, shortcutRunner]
   );
   const value = useMemo(
     () => ({
@@ -107,6 +122,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       isOpen,
       open,
       paletteElement,
+      provideFilePreview,
       provideShortcutRunner,
       toggle,
     }),
@@ -116,6 +132,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       isOpen,
       open,
       paletteElement,
+      provideFilePreview,
       provideShortcutRunner,
       toggle,
     ]
@@ -146,4 +163,10 @@ export function useOptionalCommandPalette() {
 export function useProvideCommandPaletteShortcutRunner(run: AppShortcutRunner) {
   const { provideShortcutRunner } = useCommandPalette();
   useEffect(() => provideShortcutRunner(run), [provideShortcutRunner, run]);
+}
+
+/** Offers the palette the Chat Sidebar's file preview while the calling surface is mounted. */
+export function useProvideCommandPaletteFilePreview(openPreview: FilePreviewOpener) {
+  const { provideFilePreview } = useCommandPalette();
+  useEffect(() => provideFilePreview(openPreview), [openPreview, provideFilePreview]);
 }

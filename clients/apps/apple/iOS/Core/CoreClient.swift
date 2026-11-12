@@ -7,6 +7,8 @@ struct CoreError: Error, Equatable, LocalizedError {
     let code: String
     let message: String
     var status: Int? = nil
+    /// What else the server said, as it said it (its JSON error body), for a UI that words it.
+    var detail: NSDictionary? = nil
 
     var errorDescription: String? { message.isEmpty ? code : message }
 }
@@ -28,13 +30,25 @@ enum TopicValue<T: Sendable>: Sendable {
 protocol CoreAPI: AnyObject, Sendable {
     /// A named call's answer, or a `CoreError`. Cancelled, the core is told to stop it.
     nonisolated(nonsending) func call(_ name: String, _ params: [String: Any]) async throws -> CoreJSON
+    /// A call that says how it goes before it answers: each of its progress values, in order, on the client's queue.
+    nonisolated(nonsending) func call(_ name: String, _ params: [String: Any],
+                                      progress: @escaping @Sendable (CoreJSON) -> Void) async throws -> CoreJSON
     /// A topic's values, each the whole current value read by `read` on the client's queue. The topic is let go when
     /// the stream ends.
     func subscribe<T: Sendable>(_ topic: [String: Any], read: @escaping @Sendable (Any?) -> T) -> AsyncStream<TopicValue<T>>
+    /// A place for a screen view's pictures (`devices.openScreenView`'s `sink`): the core's thread calls `handler` for
+    /// each, with no JSON. Nil where pictures come only as progress.
+    func screenSink(_ handler: @escaping @Sendable (ScreenFrame) -> Void) -> ScreenSinkToken?
 }
 
 extension CoreAPI {
+    func screenSink(_ handler: @escaping @Sendable (ScreenFrame) -> Void) -> ScreenSinkToken? { nil }
     nonisolated(nonsending) func call(_ name: String) async throws -> CoreJSON { try await call(name, [:]) }
+    /// A fake that has no progress to give answers as a plain call does.
+    nonisolated(nonsending) func call(_ name: String, _ params: [String: Any],
+                                      progress: @escaping @Sendable (CoreJSON) -> Void) async throws -> CoreJSON {
+        try await call(name, params)
+    }
 }
 
 /// What the core needs of the app besides its UI (CoreHost.swift is the app's). Each `call` is answered once through
@@ -80,6 +94,33 @@ protocol CoreEngineHost: AnyObject, Sendable {
     func callSync(_ op: String, json: Data) -> Data
     func emit(_ json: Data)
     func fatal(_ reason: String)
+    /// A screen view's picture for its decoder, on the core's thread: `bytes` valid only during the call.
+    func screenFrame(_ frame: ScreenFrame)
+}
+
+extension CoreEngineHost {
+    func screenFrame(_ frame: ScreenFrame) {}
+}
+
+/// A screen view's picture as the core hands it to the app's decoder (core screen-views.ts, host `screenFrames`):
+/// `kind` 1 an H.264 config, 2 an H.265 one (`bytes` its avcC or hvcC), 3 a frame, 4 a key frame. `bytes` is the
+/// core's memory, valid only while the sink runs: a sink copies what it keeps.
+struct ScreenFrame {
+    let sink: Int
+    let kind: Int
+    let ts: Double
+    let width: Int
+    let height: Int
+    let bytes: UnsafeRawBufferPointer
+}
+
+/// A decoder's place for its view's pictures, until `close`.
+final class ScreenSinkToken: Sendable {
+    let id: Int
+    private let closing: @Sendable () -> Void
+    init(id: Int, close: @escaping @Sendable () -> Void) { self.id = id; closing = close }
+    func close() { closing() }
+    deinit { closing() }
 }
 
 /// Starts an engine that asks `host` for what it needs; `config` is the JSON the core's script starts with.
@@ -120,6 +161,8 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     private var engine: (any CoreEngine)?
     private var nextId: UInt64 = 1
     private var calls: [UInt64: (Result<CoreJSON, CoreError>) -> Void] = [:]
+    /// The progress of the calls that asked for it, by id; gone with their answer.
+    private var progress: [UInt64: (CoreJSON) -> Void] = [:]
     private var subscriptions: [UInt64: Subscription] = [:]
     /// The order subscriptions were made in, which they are made again in.
     private var order: [UInt64] = []
@@ -151,7 +194,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
         host.attached(started)
         for id in order {
             guard let subscription = subscriptions[id] else { continue }
-            post(["id": id, "subscribe": subscription.topic, "keyed": true])
+            post(["id": id, "subscribe": subscription.topic])
         }
     }
 
@@ -181,6 +224,10 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
         func emit(_ json: Data) {
             guard let client, let engine else { return }
             client.queue.async { if client.engine === engine { client.receive(json) } }
+        }
+
+        func screenFrame(_ frame: ScreenFrame) {
+            client?.screenFrame(frame)
         }
 
         func fatal(_ reason: String) {
@@ -237,6 +284,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     private func rejectCalls(_ error: CoreError) {
         let waiting = Array(calls.values)
         calls.removeAll()
+        progress.removeAll()
         for call in waiting { call(.failure(error)) }
     }
 
@@ -268,17 +316,26 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
         guard let call = calls[id] else { return }
         if let ok = message["ok"] {
             calls[id] = nil
+            progress[id] = nil
             call(.success(CoreJSON(value: ok is NSNull ? nil : ok)))
         } else if message["error"] != nil {
             calls[id] = nil
+            progress[id] = nil
             call(.failure(Self.error(message["error"])))
+        } else if let value = message["value"] {
+            progress[id]?(CoreJSON(value: value is NSNull ? nil : value))
         }
     }
 
     private static func error(_ body: Any?) -> CoreError {
         let body = body as? NSDictionary
         let code = (body?["code"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "internal"
-        return CoreError(code: code, message: body?["message"] as? String ?? "", status: (body?["status"] as? NSNumber)?.intValue)
+        return CoreError(
+            code: code,
+            message: body?["message"] as? String ?? "",
+            status: (body?["status"] as? NSNumber)?.intValue,
+            detail: body?["detail"] as? NSDictionary
+        )
     }
 
     static func text(_ json: [String: Any]) -> String {
@@ -287,6 +344,16 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
     }
 
     nonisolated(nonsending) func call(_ name: String, _ params: [String: Any]) async throws -> CoreJSON {
+        try await call(name, params, onProgress: nil)
+    }
+
+    nonisolated(nonsending) func call(_ name: String, _ params: [String: Any],
+                                      progress: @escaping @Sendable (CoreJSON) -> Void) async throws -> CoreJSON {
+        try await call(name, params, onProgress: progress)
+    }
+
+    private nonisolated(nonsending) func call(_ name: String, _ params: [String: Any],
+                                              onProgress: (@Sendable (CoreJSON) -> Void)?) async throws -> CoreJSON {
         let box = CallBox(params)
         let state = CallState()
         return try await withTaskCancellationHandler {
@@ -303,6 +370,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
                         self.nextId += 1
                         state.id = id
                         self.calls[id] = { result in continuation.resume(with: result.mapError { $0 as any Error }) }
+                        if let onProgress { self.progress[id] = onProgress }
                         self.post(["id": id, "call": name, "params": box.params])
                     }
                 }
@@ -311,6 +379,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
             queue.async {
                 state.cancelled = true
                 guard let id = state.id, let waiting = self.calls.removeValue(forKey: id) else { return }
+                self.progress[id] = nil
                 self.post(["id": id, "cancel": true])
                 waiting(.failure(CoreError(code: "cancelled", message: "The call was cancelled.")))
             }
@@ -328,6 +397,30 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
         init(_ params: [String: Any]) { self.params = params }
     }
 
+    // The screen views' decoders, by sink: read on the core's thread for each picture, so behind a lock of their own.
+    private let sinkLock = NSLock()
+    private var sinks: [Int: @Sendable (ScreenFrame) -> Void] = [:]
+    private var nextSink = 1
+
+    func screenSink(_ handler: @escaping @Sendable (ScreenFrame) -> Void) -> ScreenSinkToken? {
+        let id = sinkLock.withLock { () -> Int in
+            let id = nextSink
+            nextSink += 1
+            sinks[id] = handler
+            return id
+        }
+        return ScreenSinkToken(id: id) { [weak self] in
+            guard let self else { return }
+            _ = self.sinkLock.withLock { self.sinks.removeValue(forKey: id) }
+        }
+    }
+
+    /// One picture, on the core's thread: to its view's decoder, if it still has one.
+    fileprivate func screenFrame(_ frame: ScreenFrame) {
+        guard let handler = sinkLock.withLock({ sinks[frame.sink] }) else { return }
+        handler(frame)
+    }
+
     func subscribe<T: Sendable>(_ topic: [String: Any], read: @escaping @Sendable (Any?) -> T) -> AsyncStream<TopicValue<T>> {
         let box = CallBox(topic)
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
@@ -342,7 +435,7 @@ final class CoreClient: CoreAPI, @unchecked Sendable {
                     onValue: { continuation.yield(.value(read($0))) },
                     onError: { continuation.yield(.failed($0)) })
                 self.order.append(id)
-                self.post(["id": id, "subscribe": box.params, "keyed": true])
+                self.post(["id": id, "subscribe": box.params])
             }
             continuation.onTermination = { _ in
                 self.queue.async {
@@ -391,5 +484,9 @@ final class HermesCoreEngine: NSObject, CoreEngine, CommaEngineHost, @unchecked 
     func engineCall(_ identifier: UInt64, op: String, json: Data, bytes: Data?) { host.call(identifier, op: op, json: json, bytes: bytes) }
     func engineCallSync(_ op: String, json: Data) -> Data? { host.callSync(op, json: json) }
     func engineEmit(_ json: Data) { host.emit(json) }
+    func engineScreenFrame(_ sink: UInt32, kind: Int32, ts: Double, width: Int32, height: Int32, bytes: UnsafeRawPointer, length: Int) {
+        host.screenFrame(ScreenFrame(sink: Int(sink), kind: Int(kind), ts: ts, width: Int(width), height: Int(height),
+                                     bytes: UnsafeRawBufferPointer(start: bytes, count: length)))
+    }
     func engineFatal(_ reason: String) { host.fatal(reason) }
 }

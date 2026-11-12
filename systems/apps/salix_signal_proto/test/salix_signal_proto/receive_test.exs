@@ -431,7 +431,9 @@ defmodule SalixSignalProto.ReceiveTest do
 
       broken = %{
         envelope
-        | payload: <<version>> <> binary_part(rest, 0, byte_size(rest) - 1) <> <<0>>
+        | payload:
+            <<version>> <>
+              binary_part(rest, 0, byte_size(rest) - 1) <> <<Bitwise.bxor(:binary.last(rest), 1)>>
       }
 
       result = Receive.open(broken, context(bob, authority))

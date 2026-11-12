@@ -6,7 +6,7 @@
 // Operations: mesh.bind {relayUrls, salixRelay} + key → {id, endpoint}; mesh.connect {id, addr} + alpn → {id, remote};
 // mesh.endpointClose {id}; mesh.openBi / mesh.acceptBi {id} → {id} or {end}; mesh.closed {id} → {reason};
 // mesh.close {id, code, reason}; mesh.nextVia {id, last} → {via, closed}; mesh.read {id} → bytes or {end};
-// mesh.write {id} + bytes; mesh.finish {id}; mesh.reset {id, code}; mesh.carry {id, url, ticket} → {id};
+// mesh.write {id} + bytes; mesh.finish {id}; mesh.stop {id, code}; mesh.reset {id, code}; mesh.carry {id, url, ticket} → {id};
 // mesh.carried {id} once that socket closed; mesh.uncarry {id}.
 import type { HostError } from "@comma/core-kernel";
 import type {
@@ -38,15 +38,19 @@ const fields = (answer: Answer): J => (answer.json ?? {}) as J;
 const asVia = (via: unknown): MeshVia | null =>
   via === "direct" || via === "relay" || via === "salix" ? via : null;
 
-/** This phone's mesh: bound when Stations first needs it, with the relays the control plane named and Salix. */
+/**
+ * This phone's mesh: bound when Stations first needs it, with the relays the control plane named and Salix. It reaches
+ * the person's own computers too (`ownComputers`), whose screens and devices the app views over it.
+ */
 export function mobileStations(ops: MeshOps): StationMeshPorts {
   return {
-    open: ({ secretKey, relays }) =>
+    ownComputers: true,
+    open: ({ secretKey, relays, routePolicy }) =>
       Effect.acquireRelease(
         Effect.map(
           ops.call(
             "mesh.bind",
-            { relayUrls: [...relays], salixRelay: true },
+            { relayUrls: [...relays], salixRelay: true, routePolicy },
             secretKey
           ),
           (answer) =>
@@ -200,8 +204,10 @@ function bridgedStream(ops: MeshOps, handle: number): BiStream {
         carry = chunk.subarray(max);
         return chunk.subarray(0, max);
       },
-      // As the station's addon: the reading half is not stopped; what the station still sends is left unread.
-      stop: () => {},
+      // A stream lasts until both of its halves are done: one left unread would hold it, counted against the streams the
+      // station lets be open.
+      stop: (code) =>
+        void Effect.runFork(Effect.ignore(ops.call("mesh.stop", { id: handle, code }))),
     },
   };
 }

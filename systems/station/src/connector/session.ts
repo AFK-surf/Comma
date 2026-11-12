@@ -158,7 +158,7 @@ export class Session {
     Deferred.doneUnsafe(this.closedSignal, Exit.void);
     this.options.onClose?.(reason);
     this.abortPendingTransfers(reasonText(reason) || "connection closed");
-    this.finishTunnels("connector socket closed", false);
+    this.finishTunnels("station socket closed", false);
   }
 
   // LAN tunnels (lan_tcp_dial): they belong to this generation and end with it.
@@ -292,8 +292,8 @@ export class Session {
     const reply = this.host.requestReply(this, msg);
     const bounded = this.host.deadlineApplies(msg.method ?? "") ? reply.pipe(Effect.timeoutOption(this.deadline(msg))) : reply.pipe(Effect.map(Option.some));
     return this.host.provide(bounded).pipe(
-      Effect.map((reply) => (reply._tag === "Some" ? reply.value : { id: msg.id, type: "error", error: `${msg.method}: connector request timed out` })),
-      Effect.catchDefect((defect) => Effect.succeed<Message>({ id: msg.id, type: "error", error: `${msg.method}: connector request panic: ${String(defect)}` })),
+      Effect.map((reply) => (reply._tag === "Some" ? reply.value : { id: msg.id, type: "error", error: `${msg.method}: station request timed out` })),
+      Effect.catchDefect((defect) => Effect.succeed<Message>({ id: msg.id, type: "error", error: `${msg.method}: station request panic: ${String(defect)}` })),
     );
   }
 
@@ -312,7 +312,7 @@ export class Session {
         Effect.catchDefect((defect) =>
           Effect.suspend(() => {
             this.finishPendingWrite(msg.id ?? "");
-            return this.send({ id: msg.id, type: "stream", error: `connector stream panic: ${String(defect)}`, stream: { channel: "done", eof: true } }).pipe(Effect.ignore);
+            return this.send({ id: msg.id, type: "stream", error: `station stream panic: ${String(defect)}`, stream: { channel: "done", eof: true } }).pipe(Effect.ignore);
           }),
         ),
         Effect.ensuring(

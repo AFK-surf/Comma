@@ -1,14 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import {
-  Cursor1Icon,
-  MacbookIcon,
-  MediaExpandIcon,
-  PanelRightIcon,
-  XIcon,
-} from "@comma/ui/components/icons";
+import { Cursor1Icon, PanelRightIcon, XIcon } from "@comma/ui/components/icons";
 import { registerKeepClearElement } from "@comma/ui/components/keep-clear/keepClear";
-import { usePointerPressFeedback } from "@comma/ui/components/chat-panel/usePointerPressFeedback";
-import { Tooltip } from "@comma/ui/components/tooltip";
 import { isReducedMotionEnabled, motionDuration } from "@comma/ui/tokens";
 import {
   useLayoutEffect,
@@ -16,16 +8,24 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { useScreenStreamTarget } from "./remoteScreenStream";
+import { useScreenStreamShows } from "./useScreenStreamShows";
+import { useScreenWatchHint } from "./useScreenWatchHint";
+import {
+  ScreenStreamAction,
+  ScreenStreamFullscreenAction,
+  ScreenStreamName,
+  ScreenStreamTargetAction,
+} from "./ScreenStreamChrome";
 import {
   ScreenStreamStage,
   useFullscreen,
   type ScreenStreamSource,
-  type ScreenStreamTarget,
 } from "./ScreenStreamStage";
+import { useScreenQuality } from "./screenQuality";
 import {
   frontScreenCard,
   holdScreenDeck,
@@ -34,7 +34,7 @@ import {
   useScreenDeck,
   type DragRoom,
 } from "./screenDeck";
-import type { ScreenStreamState } from "./screenStreamPeer";
+import type { ScreenStreamState } from "./meshScreenStream";
 
 /**
  * A small floating card that shows a computer's screen live: one app's
@@ -67,11 +67,22 @@ export function ScreenStreamWindow({
   onClose(): void;
 }) {
   const messages = useCommaMessages();
-  const [target, setTarget] = useState<ScreenStreamTarget>("app");
+  const [target, pickTarget] = useScreenStreamTarget(source.key);
   const [wantsControl, setWantsControl] = useState(false);
+  // The side panel's 画质: the same stream when it moves between them.
+  const [quality] = useScreenQuality();
+  const { locked, title, notice, canControl, forget, stage } = useScreenStreamShows({
+    target,
+    appName,
+    dropControl: () => setWantsControl(false),
+  });
+  const toggleTarget = () => {
+    forget();
+    pickTarget();
+  };
   const [state, setState] = useState<ScreenStreamState>("connecting");
-  // It shows once its first picture plays: a card that is still connecting,
-  // or never connects, is not put in front of the person.
+  // It shows once its first picture plays, or says why none will: a card that
+  // is still connecting is not put in front of the person.
   const [ready, setReady] = useState(false);
   const { depth, count, duplicate } = useScreenDeck(deckKey, ready);
   const behind = depth > 0;
@@ -81,6 +92,12 @@ export function ScreenStreamWindow({
   const card = useRef<HTMLElement>(null);
   const [full, toggleFull] = useFullscreen(card, wantsControl);
   const control = full && wantsControl;
+  const watchHint = useScreenWatchHint({
+    control,
+    canControl,
+    notice,
+    showing: `${source.key}\n${target}`,
+  });
   // The corner it rests in: the containment's top end corner, as the area resizes.
   const [corner, setCorner] = useState({ x: 0, y: 0 });
   useLayoutEffect(() => {
@@ -167,11 +184,6 @@ export function ScreenStreamWindow({
     };
   }, [behind, duplicate, ready]);
 
-  const title =
-    target === "display"
-      ? messages.remote_screen_desktop()
-      : (appName ?? messages.remote_screen_app());
-
   if (duplicate) return null;
   // Behind the front card: an edge of it alone, which brings it to the front. It holds no stream.
   if (behind) {
@@ -197,6 +209,7 @@ export function ScreenStreamWindow({
       data-control={control}
       data-dragging={dragging}
       data-full={full}
+      data-locked={locked}
       data-pending={!ready}
       data-state={state}
       data-testid={ready ? "remote-screen" : "remote-screen-pending"}
@@ -205,35 +218,37 @@ export function ScreenStreamWindow({
       style={{ "--comma-remote-screen-ratio": ratio } as CSSProperties}
     >
       <ScreenStreamStage
+        {...stage}
         control={control}
+        onControlRefused={(why) => {
+          setWantsControl(false);
+          watchHint.refused(why);
+        }}
         onShape={setRatio}
+        quality={quality}
         onState={(next) => {
           setState(next);
-          if (next === "live") setReady(true);
+          if (next !== "connecting") setReady(true);
         }}
         source={source}
         state={state}
         target={target}
+        // (not filling the screen, a press on the card moves it)
+        watching={full ? watchHint.watching : undefined}
       />
-      <div className="comma-remote-screen-name">
-        <span aria-hidden className="comma-remote-screen-dot" />
-        <strong>{title}</strong>
-        {count > 1 ? (
-          <span className="comma-remote-screen-count">1/{count}</span>
-        ) : null}
-      </div>
+      <ScreenStreamName count={count} title={notice ?? title} />
       <div className="comma-remote-screen-actions">
-        <ScreenStreamAction
-          icon={<MacbookIcon aria-hidden />}
-          label={messages.remote_screen_desktop()}
-          onClick={() => setTarget(target === "app" ? "display" : "app")}
-          pressed={target === "display"}
-        />
+        <ScreenStreamTargetAction onToggle={toggleTarget} target={target} />
         {full ? (
           <ScreenStreamAction
+            attention={watchHint.attention}
+            disabled={!wantsControl && !canControl}
             icon={<Cursor1Icon aria-hidden />}
             label={messages.remote_screen_control()}
-            onClick={() => setWantsControl(!wantsControl)}
+            onClick={() => {
+              if (!wantsControl) watchHint.asked();
+              setWantsControl(!wantsControl);
+            }}
             pressed={wantsControl}
           />
         ) : onExpand ? (
@@ -243,16 +258,7 @@ export function ScreenStreamWindow({
             onClick={onExpand}
           />
         ) : null}
-        <ScreenStreamAction
-          icon={<MediaExpandIcon aria-hidden />}
-          label={
-            full
-              ? messages.remote_screen_exit_fullscreen()
-              : messages.remote_screen_fullscreen()
-          }
-          onClick={toggleFull}
-          pressed={full}
-        />
+        <ScreenStreamFullscreenAction full={full} onToggle={toggleFull} />
         {full ? null : (
           <ScreenStreamAction
             icon={<XIcon aria-hidden />}
@@ -341,7 +347,14 @@ function leaveAsStill(root: HTMLElement) {
   still.dataset.leaving = "true";
   delete still.dataset.testid;
   const copy = still.querySelector("video");
-  if (copy && frame && frame.videoWidth > 0 && frame.videoHeight > 0) {
+  // (a picture hidden while it says locked stays hidden on the way out)
+  if (
+    copy &&
+    frame &&
+    root.dataset.locked !== "true" &&
+    frame.videoWidth > 0 &&
+    frame.videoHeight > 0
+  ) {
     const density = Math.min(
       1,
       (root.clientWidth * devicePixelRatio) / frame.videoWidth,
@@ -374,34 +387,4 @@ function leaveAsStill(root: HTMLElement) {
   return () => {
     cancelled = true;
   };
-}
-
-/** One round glass button on the picture. `pressed` makes it a toggle. */
-export function ScreenStreamAction({
-  icon,
-  label,
-  onClick,
-  pressed,
-}: {
-  icon: ReactNode;
-  label: string;
-  onClick(): void;
-  pressed?: boolean | undefined;
-}) {
-  // The press answers the pointer alone: a key press gets no motion.
-  const press = usePointerPressFeedback<HTMLButtonElement>();
-  return (
-    <Tooltip content={label} placement="top">
-      <button
-        aria-label={label}
-        aria-pressed={pressed}
-        className="comma-remote-screen-action"
-        onClick={onClick}
-        type="button"
-        {...press}
-      >
-        {icon}
-      </button>
-    </Tooltip>
-  );
 }

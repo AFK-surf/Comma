@@ -312,7 +312,8 @@ func importImage(ctx context.Context, client hostv1.AgentRuntimeServiceClient, m
 	if err := sendImageImportRequest(stream, &hostv1.ImportImageRequest{Payload: &hostv1.ImportImageRequest_Header{Header: header}}); err != nil {
 		return nil, err
 	}
-	return stream.CloseAndRecv()
+	response, err := stream.CloseAndRecv()
+	return response.GetImage(), err
 }
 
 func sendImageImportRequest(stream hostv1.AgentRuntimeService_ImportImageClient, request *hostv1.ImportImageRequest) error {

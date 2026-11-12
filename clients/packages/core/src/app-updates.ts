@@ -1,8 +1,10 @@
 // The desktop app's own update (the host's `desktop.updates`: Electron's Main and its Velopack feed). The core checks
 // the feed when it starts and then each hour; a failed check is tried again after 5 and 30 seconds, then after the
-// hour. A release found is downloaded at once, and then the core checks no more: the `appUpdate` topic offers the
-// restart until the app restarts into it. Check for Updates (`appUpdate.check`) joins the check under way, or checks
-// now, and moves the schedule as any check does. The main window coming back (`appUpdate.wake`: focus, the network)
+// hour. A release found is downloaded at once and the `appUpdate` topic offers the restart; the checks go on, and a
+// newer release than the one on disk (one downloaded before this run included) is downloaded and offered in its place,
+// so the restart, or the next start, goes to the newest rather than to one release and then another (2026-11-09).
+// Check for Updates (`appUpdate.check`) joins the check under way, or checks now, and moves the schedule as any check
+// does. The main window coming back (`appUpdate.wake`: focus, the network)
 // runs a check the wall clock says is overdue, as after the computer slept.
 //
 // Bounds: one schedule per device (the core's), one check at a time: one an hour, and two retries after a failure.
@@ -24,6 +26,8 @@ export class AppUpdates {
   readonly #ports: AppUpdatePorts | undefined;
   #ready: Ready | null = null;
   #downloading = false;
+  /** How far the download under way got, in percent: null until the host says. */
+  #progress: number | null = null;
   /** The check under way: the schedule and Check for Updates wait for the same one. */
   #check: Fiber.Fiber<Result.Result<Outcome, CoreError>> | null = null;
   /** Failed checks in a row: the retries used. */
@@ -58,13 +62,16 @@ export class AppUpdates {
           }),
       },
     });
-    if (this.#ports) ctx.runner.fork(this.#schedule());
+    if (this.#ports) {
+      this.#ports.onProgress((percent) => this.#downloaded(percent));
+      ctx.runner.fork(this.#schedule());
+    }
   }
 
-  /** Checks when due, until a release is on disk. Woken early, it looks at the clock again. */
+  /** Checks when due. Woken early, it looks at the clock again. */
   #schedule(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      while (!this.#ready) {
+      for (;;) {
         const wait = this.#due - this.#ctx.now();
         if (wait > 0)
           yield* Effect.raceFirst(
@@ -90,7 +97,6 @@ export class AppUpdates {
   #shared(): Effect.Effect<Result.Result<Outcome, CoreError>> {
     return Effect.suspend(() => {
       const ports = this.#ports;
-      if (this.#ready) return Effect.succeed(Result.succeed<Outcome>(this.#ready));
       if (!ports) return Effect.succeed(Result.succeed<Outcome>("unconfigured"));
       // It starts after a yield, so it is the one kept here before it can settle.
       this.#check ??= this.#ctx.runner.fork(
@@ -111,10 +117,23 @@ export class AppUpdates {
       if (status.error) return yield* Effect.fail(CoreError.host(status.error));
       const productName = status.productName ?? "Comma";
       const pending = status.pendingRestart;
-      if (pending) return { productName, version: pending.version, release: pending };
-      const release = yield* ports.check;
-      if (!release) return "current" as const;
+      // What is on disk: this run's download, else one from before (offered while the feed is asked).
+      const ready =
+        this.#ready ??
+        (pending ? { productName, version: pending.version, release: pending } : null);
+      if (ready && !this.#ready) {
+        this.#ready = ready;
+        this.#changed();
+      }
+      const checked = yield* Effect.result(ports.check);
+      // The feed not reached: what is on disk stays offered.
+      if (Result.isFailure(checked) && ready) return ready;
+      if (Result.isFailure(checked)) return yield* checked.failure;
+      const release = checked.success;
+      if (!release) return ready ?? ("current" as const);
+      if (ready && release.version === ready.version) return ready;
       this.#downloading = true;
+      this.#progress = null;
       this.#changed();
       if (!(yield* ports.download(release)))
         return yield* Effect.fail(CoreError.host("The update was not downloaded."));
@@ -126,6 +145,7 @@ export class AppUpdates {
   #settle(result: Result.Result<Outcome, CoreError>): void {
     this.#check = null;
     this.#downloading = false;
+    this.#progress = null;
     const now = this.#ctx.now();
     if (Result.isSuccess(result)) {
       if (typeof result.success !== "string") this.#ready = result.success;
@@ -136,6 +156,15 @@ export class AppUpdates {
       this.#failures = pause === undefined ? 0 : this.#failures + 1;
       this.#due = now + (pause ?? APP_UPDATE_INTERVAL_MS);
     }
+    this.#changed();
+  }
+
+  /** The host said how far the download got: a whole percent, told once it moves. */
+  #downloaded(percent: number): void {
+    if (!this.#downloading || !Number.isFinite(percent)) return;
+    const progress = Math.min(100, Math.max(0, Math.floor(percent)));
+    if (progress === this.#progress) return;
+    this.#progress = progress;
     this.#changed();
   }
 
@@ -155,6 +184,7 @@ export class AppUpdates {
     const ready = this.#ready;
     return {
       downloading: this.#downloading,
+      progress: this.#progress,
       ready: ready ? { productName: ready.productName, version: ready.version } : null,
     };
   }

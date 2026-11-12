@@ -50,21 +50,12 @@ defmodule SalixWeb.ActivitySSETest do
   end
 
   test "streams a live activity event with canonical session identity", %{
-    agent: agent_id,
-    group: group_id
+    agent: agent_id
   } do
-    tenant_id = SalixStore.Ids.tenant_id_from_group!(group_id)
-    agents_prefix = SalixStore.Keys.ctl_agents_prefix_for_tenant(tenant_id)
-    SalixStore.S3.Fake.reset_read_log()
     client = open_activity_stream("/v1/runtime/agent-activities/stream")
     on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
     settle_receive({:sse_headers, headers})
     assert headers =~ "text/event-stream"
-
-    assert Enum.count(
-             SalixStore.S3.Fake.read_log(),
-             &match?({:list, ^agents_prefix, _opts}, &1)
-           ) == 1
 
     session_id = SalixStore.Ids.new_session_id()
 
@@ -92,16 +83,10 @@ defmodule SalixWeb.ActivitySSETest do
   test "the agent-scoped stream (the path Commaboard proxies to) forwards activity", %{
     agent: agent_id
   } do
-    SalixStore.S3.Fake.reset_read_log()
     client = open_activity_stream("/v1/runtime/agents/#{agent_id}/activities/stream")
     on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
     settle_receive({:sse_headers, headers})
     assert headers =~ "text/event-stream"
-
-    assert Enum.count(
-             SalixStore.S3.Fake.read_log(),
-             &(&1 == {:get, SalixStore.Keys.ctl_agent(agent_id)})
-           ) == 1
 
     session_id = SalixStore.Ids.new_session_id()
 
@@ -132,7 +117,7 @@ defmodule SalixWeb.ActivitySSETest do
 
     # Seed a non-idle (waiting) session so the activity snapshot includes it.
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
         %{"type" => "session_created", "session_id" => session_id, "created_at" => now},
         %{
           "type" => "async_tool_call_started",

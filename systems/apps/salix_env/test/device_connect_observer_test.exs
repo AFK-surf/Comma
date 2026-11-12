@@ -14,7 +14,7 @@ defmodule SalixEnv.DeviceConnectObserverTest do
   end
 
   setup do
-    previous_observer = SystemsRuntime.get_env(:salix_env, :device_connect_observer)
+    previous_observer = SystemsRuntime.get_env(:salix_env, :device_connect_observers)
     previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
@@ -22,8 +22,8 @@ defmodule SalixEnv.DeviceConnectObserverTest do
 
     on_exit(fn ->
       if previous_observer,
-        do: SystemsRuntime.put_env(:salix_env, :device_connect_observer, previous_observer),
-        else: SystemsRuntime.delete_env(:salix_env, :device_connect_observer)
+        do: SystemsRuntime.put_env(:salix_env, :device_connect_observers, previous_observer),
+        else: SystemsRuntime.delete_env(:salix_env, :device_connect_observers)
 
       if previous,
         do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous),
@@ -52,7 +52,7 @@ defmodule SalixEnv.DeviceConnectObserverTest do
   end
 
   test "a committed connection reaches the product observer, which cannot fail it" do
-    SystemsRuntime.put_env(:salix_env, :device_connect_observer, Observer)
+    SystemsRuntime.put_env(:salix_env, :device_connect_observers, [Observer])
     assert {:ok, _transport, device} = connect("Comma-5D28")
     assert_receive {:connected, observed}
     assert observed["device_id"] == device["device_id"]
@@ -78,7 +78,7 @@ defmodule SalixEnv.DeviceConnectObserverTest do
     assert reconnected["name"] == "Comma-5D28"
     assert reconnected["display_name"] == "Kitchen"
 
-    SystemsRuntime.put_env(:salix_env, :device_connect_observer, FailingObserver)
+    SystemsRuntime.put_env(:salix_env, :device_connect_observers, [FailingObserver])
     assert {:ok, _transport, _device} = connect("Comma-BEEF")
   end
 end

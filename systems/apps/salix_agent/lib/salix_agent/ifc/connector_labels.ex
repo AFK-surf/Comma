@@ -43,6 +43,23 @@ defmodule SalixAgent.IFC.ConnectorLabels do
 
   def group_audience(result, _ctx), do: result
 
+  @doc """
+  The context for a file written from a connector result: the file records the
+  Group's audience joined with what the call drew on, as a read of it then
+  returns. Unchanged for a session that is not labelling.
+  """
+  @spec file_ctx(map()) :: map()
+  def file_ctx(ctx) when is_map(ctx) do
+    case Map.get(ctx, :ifc_evidence) do
+      %{"sources_label" => sources} = evidence when is_list(sources) ->
+        joined = SalixAgent.IFC.FileLabels.join_encoded(sources, label(ctx))
+        Map.put(ctx, :ifc_evidence, Map.put(evidence, "sources_label", joined))
+
+      _absent ->
+        ctx
+    end
+  end
+
   defp label(ctx) do
     case SalixAgent.IFC.text(Map.get(ctx, :group_id) || Map.get(ctx, "group_id")) do
       "" -> Codec.encode_label(Label.new([:agent_private]))

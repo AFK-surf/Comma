@@ -75,10 +75,10 @@ export class FakeControlPlane {
       const asked: Asked = { method: "GET", path: req.url ?? "", headers: req.headers, body: Buffer.alloc(0), verified: [] };
       this.asked.push(asked);
       const want = this.provider === "comma" ? "/v1/comma/stations/connect" : "/v1/stations/connect";
-      const station = String(req.headers["x-stillfail-station"] ?? "");
-      const ts = String(req.headers["x-stillfail-ts"] ?? "");
+      const station = String((req.headers["x-comma-station-station"] ?? req.headers["x-stillfail-station"]) ?? "");
+      const ts = String((req.headers["x-comma-station-ts"] ?? req.headers["x-stillfail-ts"]) ?? "");
       const tag = this.provider === "comma" ? "comma" : "stillfail";
-      if (asked.path !== want || !checks(station, `${tag}-station-connect-v1:${this.origin}:${station}:${ts}`, String(req.headers["x-stillfail-signature"] ?? ""))) {
+      if (asked.path !== want || !checks(station, `${tag}-station-connect-v1:${this.origin}:${station}:${ts}`, String((req.headers["x-comma-station-signature"] ?? req.headers["x-stillfail-signature"]) ?? ""))) {
         socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n");
         return;
       }
@@ -105,9 +105,10 @@ export class FakeControlPlane {
     return state;
   }
 
-  /// A device tool request pushed as Comma does over the presence socket (contract §8, presence transport).
+  /// A device tool request pushed as Comma does over the presence socket (contract §8, presence transport), with
+  /// `type` last as a map encoder writes it: a station reads the frame's type from the parsed frame, not its text.
   tool(id: string, request: unknown) {
-    for (const ws of this.sockets) ws.send(JSON.stringify({ type: "tool", id, request }));
+    for (const ws of this.sockets) ws.send(JSON.stringify({ id, request, type: "tool" }));
   }
 
   /// The roster, gateways and the rest pushed again to every station connected.
@@ -145,11 +146,11 @@ export class FakeControlPlane {
       return [200, answer];
     }
     // A signed post: by the station in the headers, over its tag and the body's digest.
-    const station = String(a.headers["x-stillfail-station"] ?? "");
-    const ts = String(a.headers["x-stillfail-ts"] ?? "");
+    const station = String((a.headers["x-comma-station-station"] ?? a.headers["x-stillfail-station"]) ?? "");
+    const ts = String((a.headers["x-comma-station-ts"] ?? a.headers["x-stillfail-ts"]) ?? "");
     const digest = sha256hex(a.body);
     const tags = a.path.endsWith("/notify") ? [comma ? "comma-station-notify-v1" : "ember-station-notify-v1"] : ["stillfail-station-telemetry-v1"];
-    for (const tag of tags) if (checks(station, `${tag}:${this.origin}:${station}:${ts}:${digest}`, String(a.headers["x-stillfail-signature"] ?? ""))) a.verified.push(tag);
+    for (const tag of tags) if (checks(station, `${tag}:${this.origin}:${station}:${ts}:${digest}`, String((a.headers["x-comma-station-signature"] ?? a.headers["x-stillfail-signature"]) ?? ""))) a.verified.push(tag);
     if (a.headers["x-ember-signature"]) {
       const emberTag = a.path.endsWith("/notify") ? "ember-station-notify-v1" : "ember-station-telemetry-v1";
       if (checks(station, `${emberTag}:${this.origin}:${station}:${ts}:${digest}`, String(a.headers["x-ember-signature"]))) a.verified.push(`ember:${emberTag}`);

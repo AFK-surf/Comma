@@ -22,8 +22,6 @@ import surf.comma.android.scroll.widget.LinearLayoutManager
 import surf.comma.android.scroll.widget.RecyclerView
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
-import surf.comma.android.chat.live.LiveRowKinds
-import surf.comma.android.chat.live.ReplyAction
 import surf.comma.android.chat.model.TimelineBlockKinds
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
@@ -64,7 +62,6 @@ class ChatTimelineView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        tailSpring.cancel()
         settleGlide(completely = true)
         reveals.finishAll()
         mediaStarted = false
@@ -81,8 +78,6 @@ class ChatTimelineView @JvmOverloads constructor(
     private val timelineAdapter = ChatTimelineAdapter().also { it.reveals = reveals }
     private var composerInsetPx: Int? = null
     private val composerGapPx = resources.getDimensionPixelSize(R.dimen.spacing_3xl)
-    private var hiddenTailPx = 0f
-    private val tailSpring = DesignSpring(this, HIDDEN_TAIL, DesignMotion.springSize)
     private val viewportWindow = IntArray(2)
 
     /**
@@ -151,36 +146,16 @@ class ChatTimelineView @JvmOverloads constructor(
         canvas.restoreToCount(save)
     }
 
-    /**
-     * [fromCommit]: the change came with a list commit (a reservation appeared or went), not from
-     * the composer moving, so while a glide runs it is folded in rather than followed 1:1.
-     */
-    private fun updateBottomPadding(fromCommit: Boolean = false) {
+    private fun updateBottomPadding() {
         val inset = composerInsetPx ?: return
-        // Keep the reservation in the layout, below the visible end. It never becomes a gutter.
-        val bottom = (inset + composerGapPx - hiddenTailPx.roundToInt()).coerceAtLeast(0)
+        val bottom = inset + composerGapPx
         if (paddingBottom == bottom) return
         val anchor = if (followMode == FollowMode.READING_HISTORY) visibleAnchor() else null
         setPadding(paddingLeft, paddingTop, paddingRight, bottom)
         if (anchor != null) {
             val child = viewForRow(anchor.messageId)
             if (child != null) timelineLayoutManager.scrollToPositionWithOffset(positionOf(anchor.messageId), child.top - paddingTop)
-        } else if (followMode != FollowMode.READING_HISTORY) pinWhenReady(smooth = false, streaming = fromCommit)
-    }
-
-    private fun updateHiddenTail(previous: List<PreparedChatMessage>, messages: List<PreparedChatMessage>) {
-        val tail = messages.asReversed().takeWhile { it.message.cardKind == LiveRowKinds.REPLY_ACTIONS_RESERVED }
-            .sumOf { it.cellHeightPx }.toFloat()
-        val revealingActions = tail < hiddenTailPx && previous.lastOrNull()?.message?.cardKind == LiveRowKinds.REPLY_ACTIONS_RESERVED &&
-            messages.lastOrNull()?.message?.cardKind == LiveRowKinds.REPLY_ACTIONS
-        if (revealingActions && followMode != FollowMode.READING_HISTORY) {
-            // The retained reservation becomes visible without a one-frame displacement.
-            tailSpring.animateTo(tail)
-        } else if (!tailSpring.isRunning || tail != 0f) {
-            tailSpring.cancel()
-            hiddenTailPx = tail
-            updateBottomPadding(fromCommit = true)
-        }
+        } else if (followMode != FollowMode.READING_HISTORY) pinWhenReady(smooth = false)
     }
 
     var onImageClick: ((String) -> Unit)?
@@ -214,12 +189,6 @@ class ChatTimelineView @JvmOverloads constructor(
         set(value) {
             timelineAdapter.onCopyCode = value
         }
-    /** A button under a finished reply; returns whether the action happened. */
-    internal var onReplyAction: ((ReplyAction, PreparedChatMessage) -> Boolean)?
-        get() = timelineAdapter.onReplyAction
-        set(value) {
-            timelineAdapter.onReplyAction = value
-        }
     var onReadingHistoryChanged: ((Boolean) -> Unit)? = null
 
     /** What question cards do on this page: answer, add images. Unset, each card shows as its receipt. */
@@ -234,6 +203,20 @@ class ChatTimelineView @JvmOverloads constructor(
         get() = timelineAdapter.requestHost
         set(value) {
             timelineAdapter.requestHost = value
+        }
+
+    /** What a suggested-reply chip does on this page; unset, the chips are inert. */
+    internal var onSuggestion: ((surf.comma.android.chat.live.ChatSuggestion) -> Unit)?
+        get() = timelineAdapter.onSuggestion
+        set(value) {
+            timelineAdapter.onSuggestion = value
+        }
+
+    /** What a generated UI card opens on this page; unset, the cards are inert. */
+    internal var onOpenDynamicUi: ((surf.comma.android.dynamicui.DynamicUiTarget) -> Unit)?
+        get() = timelineAdapter.onOpenDynamicUi
+        set(value) {
+            timelineAdapter.onOpenDynamicUi = value
         }
 
     /** A task brief row was tapped open or closed. */
@@ -317,6 +300,9 @@ class ChatTimelineView @JvmOverloads constructor(
                     newState == SCROLL_STATE_DRAGGING -> {
                         // A deliberate finger drag always wins over streaming auto-follow.
                         setFollowMode(FollowMode.READING_HISTORY)
+                        // At the top the list cannot scroll, so onScrolled never comes: a drag there asks again for
+                        // the history a read stopped short of.
+                        requestOlderHistoryIfNearTop()
                     }
                     newState == SCROLL_STATE_IDLE &&
                         followMode == FollowMode.READING_HISTORY &&
@@ -361,14 +347,14 @@ class ChatTimelineView @JvmOverloads constructor(
     }
 
     /**
-     * 距离用的是最后可见内容的底边，不包含隐藏的操作栏占位。内容停在这条线上时
+     * 距离用的是最后可见内容的底边。内容停在这条线上时
      * 下面没有东西会被遮，渐隐就该是 0；最后一个 item 还没进屏幕就按一屏算，满强度。
      */
     internal fun bottomOverflowPx(): Int {
         if (height <= 0 || (!canScrollVertically(1) && glidePx <= 0f)) return 0
         val lastPosition = lastVisibleContentIndex()
         if (lastPosition < 0) return 0
-        val last = timelineLayoutManager.findViewByPosition(lastPosition) ?: return height
+        val last = viewForRow(preparedMessages[lastPosition].message.id) ?: return height
         return (last.bottom + glidePx.roundToInt() - contentBottomPx).coerceAtLeast(0)
     }
 
@@ -413,7 +399,6 @@ class ChatTimelineView @JvmOverloads constructor(
             rowIndex = null
             reveals.onSubmit(previous, messages, live)
             onCommitted()
-            updateHiddenTail(previous, messages)
             if (prepended) {
                 // 历史接在了前面：把锚点行按原来的位置钉回去，屏幕上的内容一动不动。
                 restoreScrollAnchor(messages)
@@ -436,16 +421,19 @@ class ChatTimelineView @JvmOverloads constructor(
     /** Stable message identity + physical screen coordinates for the P1 displacement probe. */
     data class VisibleAnchor(val messageId: Long, val topPx: Int)
 
+    /** The topmost visible row still in the committed list, at its physical screen position. */
     fun visibleAnchor(): VisibleAnchor? {
-        val position = timelineLayoutManager.findFirstVisibleItemPosition()
-        val message = preparedMessages.getOrNull(position) ?: return null
-        return messageTopOnScreen(message.message.id)?.let { VisibleAnchor(message.message.id, it) }
+        for (index in 0 until childCount) {
+            val messageId = getChildItemId(getChildAt(index))
+            if (positionOf(messageId) < 0) continue
+            val top = messageTopOnScreen(messageId) ?: continue
+            return VisibleAnchor(messageId, top)
+        }
+        return null
     }
 
     fun messageTopOnScreen(messageId: Long): Int? {
-        val position = preparedMessages.indexOfFirst { it.message.id == messageId }
-        if (position < 0) return null
-        val child = timelineLayoutManager.findViewByPosition(position) ?: return null
+        val child = viewForRow(messageId) ?: return null
         // RecyclerView also attaches offscreen cached/prefetched rows. They are NOT visible anchors.
         if (child.bottom <= paddingTop || child.top >= contentBottomPx) return null
         val location = IntArray(2)
@@ -457,7 +445,7 @@ class ChatTimelineView @JvmOverloads constructor(
     fun bottomOffsetPx(): Int? {
         val position = lastVisibleContentIndex()
         if (position < 0) return null
-        val child = timelineLayoutManager.findViewByPosition(position) ?: return null
+        val child = viewForRow(preparedMessages[position].message.id) ?: return null
         val glide = glidePx.roundToInt()
         if (child.bottom + glide <= paddingTop || child.top + glide >= contentBottomPx) return null
         return child.bottom + glide - contentBottomPx
@@ -542,6 +530,33 @@ class ChatTimelineView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Brings media row [rowId] wholly into view, centred, as the media viewer pages to it, so closing the viewer can
+     * return to its tile. A row already wholly shown stays where it is; otherwise the list stops following.
+     */
+    fun revealMediaRow(rowId: Long) {
+        val position = positionOf(rowId)
+        if (position < 0) return
+        whenLaidOut {
+            val view = findViewHolderForItemId(rowId)?.itemView
+            if (view != null && view.top >= paddingTop && view.bottom <= height - paddingBottom) return@whenLaidOut
+            stopScroll()
+            settleGlide()
+            setFollowMode(FollowMode.READING_HISTORY)
+            val viewport = (height - paddingTop - paddingBottom).coerceAtLeast(0)
+            val rowHeight = view?.height ?: preparedMessages.getOrNull(position)?.cellHeightPx ?: 0
+            timelineLayoutManager.scrollToPositionWithOffset(position, ((viewport - rowHeight) / 2).coerceAtLeast(0))
+            doOnNextLayout { updateVisibleParts() }
+        }
+    }
+
+    /** What a chat media tile does when tapped: open the viewer at it. */
+    internal var onOpenMedia: ((PreparedChatMessage) -> Unit)?
+        get() = timelineAdapter.onOpenMedia
+        set(value) {
+            timelineAdapter.onOpenMedia = value
+        }
+
     fun followLatest() {
         setFollowMode(FollowMode.FOLLOWING_LATEST)
         pinWhenReady(smooth = true)
@@ -563,8 +578,13 @@ class ChatTimelineView @JvmOverloads constructor(
         return index[rowId] ?: -1
     }
 
-    /** The view showing a row, if it is laid out. */
-    fun viewForRow(rowId: Long): View? = positionOf(rowId).takeIf { it >= 0 }?.let(timelineLayoutManager::findViewByPosition)
+    /**
+     * The view showing a row, if it is laid out. Found by the id the view was bound with, not by
+     * position: from a commit until the next layout, a committed position still names the view of
+     * the row laid out there before, and what is set on it (a reply's fade, a send flight hiding
+     * its row) would stay on that other row.
+     */
+    fun viewForRow(rowId: Long): View? = findViewHolderForItemId(rowId)?.itemView
 
     private fun visibleBottomOf(rowId: Long): Float? {
         val child = viewForRow(rowId) ?: return null
@@ -631,9 +651,9 @@ class ChatTimelineView @JvmOverloads constructor(
     private var pendingPin: PinKind? = null
 
     /**
-     * Pin after the committed rows and their compensated bottom padding are laid out. Requests
-     * made before that layout are one pin, of the gentlest kind asked for: a commit that also
-     * changes the padding must not jump first and glide nowhere after.
+     * Pin after the committed rows and the bottom padding are laid out. Requests made before
+     * that layout are one pin, of the gentlest kind asked for: a commit that comes with a padding
+     * change must not jump first and glide nowhere after.
      */
     private fun pinWhenReady(smooth: Boolean, streaming: Boolean = false) {
         val kind = when {
@@ -664,9 +684,7 @@ class ChatTimelineView @JvmOverloads constructor(
         pinContentEnd(smooth, streaming)
     }
 
-    private fun lastVisibleContentIndex(): Int = preparedMessages.indexOfLast {
-        it.message.cardKind != LiveRowKinds.REPLY_ACTIONS_RESERVED
-    }
+    private fun lastVisibleContentIndex(): Int = preparedMessages.lastIndex
 
     private fun pinContentEnd(smooth: Boolean, streaming: Boolean = false) {
         val anchor = commitAnchor
@@ -824,14 +842,6 @@ class ChatTimelineView @JvmOverloads constructor(
             }
         }
 
-        val HIDDEN_TAIL = object : FloatPropertyCompat<ChatTimelineView>("hiddenReplyTail") {
-            override fun getValue(view: ChatTimelineView) = view.hiddenTailPx
-            override fun setValue(view: ChatTimelineView, value: Float) {
-                view.hiddenTailPx = value
-                view.updateBottomPadding()
-            }
-        }
-
         val PROGRAMMATIC_SCROLL_CURVE = PathInterpolator(0.2f, 0f, 0f, 1f)
         const val JUMP_TO_LATEST_MS = 300
         const val MAX_GLIDE_SCREENS = 2
@@ -844,8 +854,7 @@ class ChatTimelineView @JvmOverloads constructor(
  * or a reply still streaming. Only then does new agent text count as arriving live.
  */
 internal fun awaitingReply(messages: List<PreparedChatMessage>): Boolean {
-    // The space reserved for the reply's buttons is not the reply.
-    val last = messages.lastOrNull { it.message.cardKind != LiveRowKinds.REPLY_ACTIONS_RESERVED }?.message ?: return false
+    val last = messages.lastOrNull()?.message ?: return false
     return last.role == ChatRole.USER || last.cardKind == TimelineBlockKinds.LIVE_STATUS ||
         last.status == MessageStatus.STREAMING
 }
@@ -870,12 +879,10 @@ internal fun lastTurnStartIndex(messages: List<PreparedChatMessage>): Int {
     return messages.lastIndex
 }
 
-/** The rows of the last turn that show content; the reply-action rows have their own transition. */
+/** The rows of the last turn. */
 internal fun lastTurnRowIds(messages: List<PreparedChatMessage>): List<Long> {
     if (messages.isEmpty()) return emptyList()
-    return messages.subList(lastTurnStartIndex(messages), messages.size)
-        .filter { it.message.cardKind != LiveRowKinds.REPLY_ACTIONS_RESERVED && it.message.cardKind != LiveRowKinds.REPLY_ACTIONS }
-        .map { it.message.id }
+    return messages.subList(lastTurnStartIndex(messages), messages.size).map { it.message.id }
 }
 
 /** Height of the last user message plus the assistant replies that follow it. */

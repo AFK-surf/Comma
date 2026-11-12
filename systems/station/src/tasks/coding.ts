@@ -4,10 +4,9 @@
 // branch, made from `base_ref` (or from the branch itself when it was pushed before: a new sandbox of the same Task
 // goes on from what the last one pushed). The Session starts no turn until its checkout is made (Hub.prepare).
 //
-// The station keeps the session branch pushed: after each turn it pushes the commits the agent made. Salix asks it,
-// over the Task's requests (tasks.ts), where the worktree stands (`dirty`, `unpushed`, with task.status), for its
-// changes against the base (`task.diff`), to save it (`task.save`: commit what is not committed, push) before the
-// sandbox is deleted, and to open a pull request (`task.pull_request`, with gh).
+// Salix asks the station where the worktree stands (`dirty`, `unpushed`, with task.status), for its changes against
+// the base (`task.diff`), and to open a pull request (`task.pull_request`, with gh). The agent owns commits and pushes
+// during ordinary coding work. Turn completion and sandbox shutdown leave the repository unchanged.
 //
 // The sandbox holds no GitHub token: its L4ES node's proxy does, and uses it for the Task's repository and branch only
 // (l4h-sandbox DESIGN.md §31). git and gh present the sandbox's proxy token instead (/run/sbx/secrets/SBX_GITHUB_TOKEN,
@@ -15,7 +14,7 @@
 // never from a process's environment.
 //
 // A coding Session of a Task with a Mini App (`start.mini_app`) packs what its agent built for a deploy (`app_deploy`,
-// tools/apps.ts): the agent builds; the station saves and pushes the worktree as task.save does, then packs from the
+// tools/apps.ts): the agent builds; the explicit deploy commits and pushes the worktree, then packs from the
 // worktree: the manifest `comma-app.json`, `bundle.tar` (dist/ as POSIX ustar, regular files only), `source.tar.gz`
 // (git archive of HEAD), and `worker.js` (dist-worker/index.js) when the manifest names a backend.
 import { execFile } from "node:child_process";
@@ -242,31 +241,12 @@ export class Coding {
     return next;
   }
 
-  /// The push of `workspace` running now, or the last one.
-  pushed(workspace: string): Promise<boolean> {
-    return this.pushing.get(workspace) ?? Promise.resolve(false);
-  }
-
   private async pushNow(workspace: string): Promise<boolean> {
     const c = this.get(workspace);
     if (c === null || (await this.ahead(c)) === 0) return false;
     await this.git(c.worktree, ["push", "--set-upstream", "origin", `HEAD:refs/heads/${c.branch}`]);
     log.info("coding", "the session branch is pushed", { branch: c.branch });
     return true;
-  }
-
-  /// Commits what is not committed (as work in progress, or with `message`) and pushes. Before a sandbox is deleted,
-  /// and before a Mini App deploy is packed.
-  async save(workspace: string, message = "Work in progress, saved by Comma before the sandbox stopped"): Promise<Standing> {
-    const c = this.get(workspace);
-    if (c === null) throw new CodingRefused("this Session works in no repository");
-    const status = await this.git(c.worktree, ["status", "--porcelain"], QUICK_TIMEOUT_MS);
-    if (status.stdout.trim() !== "") {
-      await this.git(c.worktree, ["add", "--all"]);
-      await this.git(c.worktree, ["commit", "--no-verify", "-m", message]);
-    }
-    await this.push(workspace);
-    return (await this.standing(workspace))!;
   }
 
   // ── Mini Apps ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -288,14 +268,19 @@ export class Coding {
     }
   }
 
-  /// Saves and pushes the worktree (as `save`, with `message`), then packs what the agent built into `out` (made
+  /// Commits and pushes the worktree with `message`, then packs what the agent built into `out` (made
   /// here): the files of a deploy, in order, and the commit they are of. The push finishes before anything is packed.
-  /// Refused, with what to do, when the manifest or the build is missing.
-  async packApp(workspace: string, out: string, message: string): Promise<{ commit: string; files: PackedFile[] }> {
+  /// Refused, with what to do, when the manifest or the build is missing. `cover`: whether the manifest names a cover.
+  async packApp(workspace: string, out: string, message: string): Promise<{ commit: string; files: PackedFile[]; cover: boolean }> {
     const c = this.get(workspace);
     if (c === null) throw new CodingRefused("this Session works in no repository");
-    const standing = await this.save(workspace, message);
-    if (standing.unpushed) throw new CodingRefused("Nothing was deployed: the session branch was not pushed.");
+    const status = await this.git(c.worktree, ["status", "--porcelain"], QUICK_TIMEOUT_MS);
+    if (status.stdout.trim() !== "") {
+      await this.git(c.worktree, ["add", "--all"]);
+      await this.git(c.worktree, ["commit", "--no-verify", "-m", message]);
+    }
+    await this.push(workspace);
+    if ((await this.standing(workspace))!.unpushed) throw new CodingRefused("Nothing was deployed: the session branch was not pushed.");
     const commit = (await this.git(c.worktree, ["rev-parse", "HEAD"], QUICK_TIMEOUT_MS)).stdout.trim();
     const manifestPath = join(c.worktree, "comma-app.json");
     let manifest: Json;
@@ -330,7 +315,7 @@ export class Coding {
       copyFileSync(worker, join(out, "worker.js"));
       add("worker.js");
     }
-    return { commit, files };
+    return { commit, files, cover: typeof manifest.cover === "string" };
   }
 
   /// The session's changes, and the commits its branch has past its base (newest first, at most DIFF_MAX_COMMITS).

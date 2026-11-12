@@ -1,6 +1,8 @@
 defmodule BridgeForTeams.LoginLinksTest do
   use BridgeForTeams.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.LoginLinks
   alias BridgeForTeams.LoginLinks.Delivery.Fake, as: FakeDelivery
@@ -41,6 +43,32 @@ defmodule BridgeForTeams.LoginLinksTest do
                email,
                Keyword.merge([base_url: @base_url], opts)
              )
+  end
+
+  @log_metadata [
+    :event,
+    :outcome,
+    :request_id,
+    :org_id,
+    :user_id,
+    :link_id,
+    :provider_message_id,
+    :provider_status,
+    :provider_error_code
+  ]
+
+  # The private outcome line of one request, plus everything it logged.
+  defp request_log(org_slug, email, opts \\ []) do
+    request_id = uniq("req")
+
+    log =
+      capture_log([format: "$level $message $metadata\n", metadata: @log_metadata], fn ->
+        request!(org_slug, email, Keyword.put(opts, :request_id, request_id))
+      end)
+
+    assert log =~ "event=login_link_request"
+    assert log =~ "request_id=#{request_id}"
+    log
   end
 
   defp delivered_token! do
@@ -103,6 +131,104 @@ defmodule BridgeForTeams.LoginLinksTest do
 
       assert FakeDelivery.deliveries() == []
       assert Repo.all(LoginEmailLink) == []
+    end
+
+    test "logs each outcome privately: ids only, never the email, slug, or token" do
+      org = org_fixture()
+      user = member_fixture(org)
+      {:ok, outsider} = Accounts.create_user(%{email: uniq("outsider") <> "@example.com"})
+      {:ok, inactive} = Accounts.create_user(%{email: uniq("inactive") <> "@example.com"})
+      {:ok, inactive} = Accounts.update_user(inactive, %{status: "disabled"})
+      {:ok, _} = Memberships.put_org_member(org.id, inactive.id, "member")
+      sso_org = org_fixture()
+      sso_user = member_fixture(sso_org)
+      add_sso!(sso_org)
+      unknown_slug = uniq("nope")
+      ghost = uniq("ghost") <> "@example.com"
+
+      cases = [
+        {unknown_slug, user.email, "outcome=org_not_found", nil},
+        {org.slug, ghost, "outcome=user_not_found", nil},
+        {org.slug, outsider.email, "outcome=not_member", outsider.id},
+        {org.slug, inactive.email, "outcome=user_inactive", inactive.id},
+        {sso_org.slug, sso_user.email, "outcome=sso_configured", nil},
+        {org.slug, "not-an-email", "outcome=invalid_email", nil}
+      ]
+
+      for {slug, email, outcome, user_id} <- cases do
+        log = request_log(slug, email)
+        assert log =~ outcome
+        assert log =~ ~r/^info Login link request/m
+        if user_id, do: assert(log =~ "user_id=#{user_id}")
+        refute log =~ email
+        refute log =~ slug
+      end
+
+      assert request_log(org.slug, outsider.email) =~ "org_id=#{org.id}"
+      assert FakeDelivery.deliveries() == []
+
+      log = request_log(org.slug, user.email)
+      token = delivered_token!()
+      [link] = Repo.all(LoginEmailLink)
+      assert log =~ "outcome=accepted"
+      assert log =~ "org_id=#{org.id}"
+      assert log =~ "user_id=#{user.id}"
+      assert log =~ "link_id=#{link.id}"
+      assert log =~ "provider_message_id=fake-message-1"
+      refute log =~ user.email
+      refute log =~ org.slug
+      refute log =~ token
+      refute log =~ @base_url
+
+      assert [audit] = Observability.list_audit_logs(org.id, action: "login_link.requested")
+      assert audit.metadata["message_id"] == "fake-message-1"
+    end
+
+    test "classifies delivery failures without the provider's error text" do
+      org = org_fixture()
+      user = member_fixture(org)
+
+      FakeDelivery.script_result({:error, {:postmark, 422, 406}})
+      log = request_log(org.slug, user.email)
+      assert log =~ ~r/^warning Login link request/m
+      assert log =~ "outcome=recipient_suppressed"
+      assert log =~ "user_id=#{user.id}"
+
+      FakeDelivery.script_result({:error, {:postmark, 422, 300}})
+      log = request_log(org.slug, user.email)
+      assert log =~ "outcome=provider_rejected"
+      assert log =~ "provider_status=422"
+      assert log =~ "provider_error_code=300"
+
+      FakeDelivery.script_result({:error, {:transport, {:closed, "raw-term " <> user.email}}})
+      log = request_log(org.slug, user.email)
+      assert log =~ "outcome=provider_unreachable"
+      refute log =~ "raw-term"
+      refute log =~ user.email
+
+      # A failed send records no acceptance.
+      assert Observability.list_audit_logs(org.id, action: "login_link.requested") == []
+    end
+
+    test "logs which rate limit dropped a request" do
+      org = org_fixture()
+      user = member_fixture(org)
+
+      email_opts = [rate_limits: [email_burst: 1, email_rate: 0.0, ip_burst: 100, ip_rate: 0.0]]
+      assert request_log(org.slug, user.email, email_opts) =~ "outcome=accepted"
+      assert request_log(org.slug, user.email, email_opts) =~ "outcome=rate_limited_email"
+
+      other = member_fixture(org)
+
+      ip_opts = [
+        remote_ip: uniq("10.0.1"),
+        rate_limits: [ip_burst: 1, ip_rate: 0.0, email_burst: 100, email_rate: 0.0]
+      ]
+
+      assert request_log(org.slug, other.email, ip_opts) =~ "outcome=accepted"
+      log = request_log(org.slug, user.email, ip_opts)
+      assert log =~ "outcome=rate_limited_ip"
+      refute log =~ ip_opts[:remote_ip]
     end
 
     test "rate limits per org+email and per requester IP" do
@@ -189,6 +315,104 @@ defmodule BridgeForTeams.LoginLinksTest do
 
       assert :ok = Memberships.remove_org_member(org2.id, user2.id)
       assert {:error, :invalid_login_token} = LoginLinks.redeem_login_token_for_session(token2)
+    end
+  end
+
+  describe "delivery_evidence/3" do
+    test "reports matching state, suppression, and each link's provider events without the email" do
+      org = org_fixture()
+      user = member_fixture(org)
+      request!(org.slug, user.email, request_id: "req-evidence-1")
+      token = delivered_token!()
+      [link] = Repo.all(LoginEmailLink)
+
+      FakeDelivery.script_evidence(
+        :message_events,
+        {:ok,
+         %{
+           status: "Sent",
+           events: [
+             %{
+               type: "Bounced",
+               received_at: "2026-11-03T05:41:00Z",
+               bounce: %{type: "HardBounce", type_code: 1, inactive: true}
+             }
+           ]
+         }}
+      )
+
+      FakeDelivery.script_evidence(
+        :suppression,
+        {:ok, %{reason: "HardBounce", origin: "Recipient", created_at: "2026-11-03T05:41:01Z"}}
+      )
+
+      assert {:ok, evidence} = LoginLinks.delivery_evidence(org.id, user.id)
+
+      assert %{
+               org_id: org_id,
+               user_id: user_id,
+               delivery_configured: true,
+               sso_configured: false,
+               user_status: "active",
+               member: true,
+               suppression: %{reason: "HardBounce", origin: "Recipient"},
+               links: [
+                 %{
+                   link_id: link_id,
+                   request_id: "req-evidence-1",
+                   acceptance_recorded: true,
+                   provider_message_id: "fake-message-1",
+                   used_at: nil,
+                   provider_events: %{events: [%{type: "Bounced", bounce: %{type: "HardBounce"}}]}
+                 }
+               ]
+             } = evidence
+
+      assert {org_id, user_id, link_id} == {org.id, user.id, link.id}
+      refute inspect(evidence) =~ user.email
+      refute inspect(evidence) =~ token
+
+      FakeDelivery.script_evidence(:suppression, {:error, {:transport, {:closed, user.email}}})
+
+      assert {:ok, %{suppression: %{error: :provider_unreachable}} = evidence} =
+               LoginLinks.delivery_evidence(org.id, user.id)
+
+      refute inspect(evidence) =~ user.email
+
+      assert {:error, :not_found} =
+               LoginLinks.delivery_evidence(org.id, SystemsRuntime.Proc.uuid())
+    end
+
+    test "a link without an acceptance record reports unknown, not a provider answer" do
+      org = org_fixture()
+      user = member_fixture(org)
+
+      # A link row whose acceptance audit never got written (a failed send, or
+      # an audit write that failed after Postmark accepted it).
+      {:ok, link} =
+        %LoginEmailLink{}
+        |> LoginEmailLink.changeset(%{
+          "user_id" => user.id,
+          "org_id" => org.id,
+          "token_hash" => Sessions.hash_token("bft_login_unrecorded"),
+          "expires_at" => DateTime.add(SystemsClock.utc_now(), 900)
+        })
+        |> Repo.insert()
+
+      FakeDelivery.script_evidence(:message_events, {:error, :must_not_be_called})
+
+      assert {:ok, %{links: [evidence]}} = LoginLinks.delivery_evidence(org.id, user.id)
+
+      assert evidence == %{
+               link_id: link.id,
+               created_at: link.created_at,
+               expires_at: link.expires_at,
+               used_at: nil,
+               request_id: nil,
+               acceptance_recorded: false,
+               provider_message_id: nil,
+               provider_events: nil
+             }
     end
   end
 end

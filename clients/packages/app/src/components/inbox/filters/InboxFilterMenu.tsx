@@ -4,6 +4,7 @@ import {
   ChevronRightSmallIcon,
   CircleCheckIcon,
   Filter2Icon,
+  InviteIcon,
   SquareGridCircleIcon,
 } from "@comma/ui/components/icons";
 import {
@@ -35,12 +36,15 @@ import {
   TaskOriginIcon,
   taskOriginLabel,
 } from "../../tasks/taskOrigin";
+import { requestPersonOptions } from "../../tasks/requestPeople";
 import { taskLoopFilterOptions } from "../../tasks/taskChips";
 import {
   INBOX_NO_PLATFORM,
+  INBOX_NOT_REQUEST,
   isInboxFiltered,
   type InboxFilters,
   type InboxPlatformCounts,
+  type InboxRequestCounts,
   type InboxScheduleCounts,
 } from "./inboxFilters";
 
@@ -49,6 +53,7 @@ export interface InboxFilterMenuProps {
   onFiltersChange: (filters: InboxFilters) => void;
   statusCounts: TaskStatusCounts;
   platformCounts: InboxPlatformCounts;
+  requestCounts: InboxRequestCounts;
   scheduleCounts: InboxScheduleCounts;
   ruleSection?: TaskFilterSection | undefined;
   workspaceSelector?: InboxWorkspaceSelector | undefined;
@@ -69,6 +74,7 @@ export function InboxFilterMenu({
   filters,
   onFiltersChange,
   platformCounts,
+  requestCounts,
   scheduleCounts,
   ruleSection,
   statusCounts,
@@ -78,8 +84,10 @@ export function InboxFilterMenu({
   const hasWorkspaceFilter =
     workspaceSelector !== undefined && workspaceSelector.workspaces.length > 1;
   const isFiltered = isInboxFiltered(filters);
+  // Requests have a filter of their own, not a platform.
   const platformOptions: TaskFilterOption[] = TASK_ORIGIN_KEYS.filter(
-    (key) => platformCounts.has(key) || filters.platforms?.has(key)
+    (key) =>
+      key !== "task_request" && (platformCounts.has(key) || filters.platforms?.has(key))
   ).map((key) => ({
     count: platformCounts.get(key) ?? 0,
     icon: <TaskOriginIcon className="size-4" origin={key} />,
@@ -110,6 +118,34 @@ export function InboxFilterMenu({
     options: platformOptions,
     selected: filters.platforms ?? new Set(platformOptions.map((option) => option.id)),
   };
+  // Shown once a request came or went: each person who sent one, each person one went to, and everything else.
+  const requestOptions: TaskFilterOption[] = [
+    ...requestPersonOptions(requestCounts.from, messages.tasks_filter_from_request()),
+    ...requestPersonOptions(requestCounts.to, messages.task_panel_to()),
+    {
+      count: requestCounts.none,
+      id: INBOX_NOT_REQUEST,
+      label: messages.inbox_filter_not_request(),
+    },
+  ];
+  const requestSection: TaskFilterSection | undefined =
+    requestOptions.length > 1
+      ? {
+          icon: <InviteIcon />,
+          id: "request",
+          label: messages.tasks_filter_request(),
+          onChange: (selected) =>
+            onFiltersChange({
+              ...filters,
+              requests: requestOptions.every((option) => selected.has(option.id))
+                ? undefined
+                : selected,
+            }),
+          options: requestOptions,
+          selected:
+            filters.requests ?? new Set(requestOptions.map((option) => option.id)),
+        }
+      : undefined;
   const scheduleOptions = taskLoopFilterOptions(
     scheduleCounts,
     messages,
@@ -180,6 +216,22 @@ export function InboxFilterMenu({
               </div>
             </MenuPopover>
           </SubmenuTrigger>
+          {requestSection ? (
+            <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
+              <MenuItem {...submenuRowProps} icon={requestSection.icon} id="request">
+                {requestSection.label}
+              </MenuItem>
+              <MenuPopover offset={0} placement="right top">
+                <div data-testid="inbox-request-filter">
+                  <TaskSectionFilterPanel
+                    panelClassName="w-72"
+                    renderCount={(count) => <InboxNotificationCount count={count} />}
+                    section={requestSection}
+                  />
+                </div>
+              </MenuPopover>
+            </SubmenuTrigger>
+          ) : null}
           <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
             <MenuItem {...submenuRowProps} icon={platformSection.icon} id="platform">
               {platformSection.label}

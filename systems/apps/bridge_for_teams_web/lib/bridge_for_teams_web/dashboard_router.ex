@@ -122,6 +122,18 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       :agent_vmm_install_command
     )
 
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/recovery/challenge",
+      ProjectComputeController,
+      :agent_vmm_recovery_challenge
+    )
+
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/recovery",
+      ProjectComputeController,
+      :agent_vmm_replace_credential
+    )
+
     get("/session", DashboardAPIController, :session)
     get("/orgs/:org/context", DashboardAPIController, :context)
     get("/orgs/:org/overview", DashboardAPIController, :overview)
@@ -147,6 +159,10 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     # (messaging channels and accounts), the Overview's Websites panel, and
     # Settings with Access.
     scope "/orgs/:org/projects/:id" do
+      # The swarm's still.fail link: how it stands, its usage, connecting it.
+      get("/stillfail", DashboardAPIController, :project_stillfail)
+      post("/stillfail/line", DashboardAPIController, :connect_project_stillfail)
+      delete("/stillfail/stations", DashboardAPIController, :disconnect_project_stillfail)
       get("/agents", DashboardAPIController, :project_agents)
       post("/agents", DashboardAPIController, :create_project_agent)
       get("/agents/targets", DashboardAPIController, :project_agent_targets)
@@ -163,13 +179,20 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       )
 
       get("/devices", DashboardAPIController, :project_devices)
-      post("/devices", DashboardAPIController, :create_project_device)
-      get("/devices/provisioning", DashboardAPIController, :project_device_provisioning)
       get("/devices/runners", DashboardAPIController, :project_device_runners)
-      put("/devices/cloud", DashboardAPIController, :set_project_cloud_computer)
       put("/devices/cloud-vm/runner", DashboardAPIController, :set_project_cloud_vm_runner)
       delete("/devices/cloud-vm/runner", DashboardAPIController, :remove_project_cloud_vm_runner)
+      post("/devices/hardware", DashboardAPIController, :provision_project_hardware_device)
+      post("/devices/station", DashboardAPIController, :create_project_station_install)
+      post("/devices/refresh", DashboardAPIController, :refresh_project_devices)
       post("/devices/:device_id/disconnect", DashboardAPIController, :disconnect_project_device)
+
+      put(
+        "/devices/:device_id/operations",
+        DashboardAPIController,
+        :set_project_device_operations
+      )
+
       delete("/devices/:device_id", DashboardAPIController, :delete_project_device)
 
       post(
@@ -208,7 +231,39 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       post("/connections/feishu", DashboardAPIController, :create_project_feishu_connect)
       post("/connections/feishu/checks", DashboardAPIController, :run_project_feishu_checks)
       post("/connections/qq", DashboardAPIController, :create_project_qq_connect)
+      post("/connections/telegram", DashboardAPIController, :create_project_telegram_connect)
+
+      put(
+        "/connections/telegram/:connect_id/chats",
+        DashboardAPIController,
+        :update_project_telegram_chats
+      )
+
       post("/connections/lark", DashboardAPIController, :create_project_lark_connect)
+
+      post(
+        "/connections/feishu/registration",
+        DashboardAPIController,
+        :begin_project_feishu_registration
+      )
+
+      post(
+        "/connections/feishu/registration/poll",
+        DashboardAPIController,
+        :poll_project_feishu_registration
+      )
+
+      post(
+        "/connections/lark/registration",
+        DashboardAPIController,
+        :begin_project_lark_registration
+      )
+
+      post(
+        "/connections/lark/registration/poll",
+        DashboardAPIController,
+        :poll_project_lark_registration
+      )
 
       post(
         "/connections/lark/:connect_id/checks",
@@ -228,6 +283,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
         "/connections/slack/:connect_id/checks",
         DashboardAPIController,
         :run_project_slack_checks
+      )
+
+      put(
+        "/connections/slack/:connect_id/auto-join",
+        DashboardAPIController,
+        :update_project_slack_auto_join
       )
 
       put(
@@ -328,11 +389,26 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/orgs/:org/meetings/:project_id", DashboardAPIController, :meetings)
     put("/orgs/:org/meetings/:project_id/settings", DashboardAPIController, :save_meetings)
+
+    post(
+      "/orgs/:org/meetings/:project_id/calendars/subscribe",
+      DashboardAPIController,
+      :subscribe_meeting_calendar
+    )
+
     get("/orgs/:org/meetings/:project_id/:read", DashboardAPIController, :meetings_read)
     get("/orgs/:org/data-policy/:project_id", DashboardAPIController, :data_policy)
     patch("/orgs/:org/data-policy/:project_id", DashboardAPIController, :update_data_policy)
 
+    # The fingerprint travels in the JSON body, like a clearance's tag.
+    put(
+      "/orgs/:org/data-policy/:project_id/ssh-hosts",
+      DashboardAPIController,
+      :restrict_data_policy_ssh_host
+    )
+
     scope "/orgs/:org/data-policy/:project_id/connects/:connect_id" do
+      get("/people", DashboardAPIController, :data_policy_people)
       put("/scopes/:scope_id", DashboardAPIController, :classify_data_policy_scope)
       delete("/scopes/:scope_id", DashboardAPIController, :reset_data_policy_scope)
       post("/clearances", DashboardAPIController, :grant_data_policy_clearance)
@@ -383,7 +459,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     delete("/orgs/:org/runners/keys/:id", DashboardAPIController, :revoke_runner_key)
     post("/orgs/:org/runners/keys/:id/rotate", DashboardAPIController, :rotate_runner_key)
-    get("/orgs/:org/runners/:id/connectors", DashboardAPIController, :runner_connectors)
     delete("/orgs/:org/runners/:id", DashboardAPIController, :remove_runner)
 
     get("/orgs/:org/settings/general", DashboardAPIController, :settings_general)
@@ -525,7 +600,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     patch("/orgs/:org/projects/:project/agents/:agent", ProjectAgentController, :update)
 
     get("/orgs/:org/projects/:project/devices", ProjectDeviceController, :index)
-    post("/orgs/:org/projects/:project/devices", ProjectDeviceController, :create)
 
     post(
       "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-commands",
@@ -536,39 +610,51 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/projects/:project/compute", ProjectComputeController, :index)
 
     post(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations",
       ProjectComputeController,
       :request_agent_vmm_install
     )
 
     get(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations/:operation_id",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id",
       ProjectComputeController,
       :get_agent_vmm_install
     )
 
     post(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations/:operation_id/retry",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/retry",
       ProjectComputeController,
       :retry_agent_vmm_install
     )
 
     post(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations/:operation_id/revoke",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/revoke",
       ProjectComputeController,
       :revoke_agent_vmm_install
     )
 
     post(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations/:operation_id/enable",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/enable",
       ProjectComputeController,
       :enable_agent_vmm_install
     )
 
     post(
-      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/install-operations/:operation_id/disable",
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/disable",
       ProjectComputeController,
       :disable_agent_vmm_install
+    )
+
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/recovery/challenge",
+      ProjectComputeController,
+      :agent_vmm_recovery_challenge
+    )
+
+    post(
+      "/orgs/:org/projects/:project/compute-nodes/agent-vmm/registrations/:registration_id/recovery",
+      ProjectComputeController,
+      :agent_vmm_replace_credential
     )
 
     post("/orgs/:org/compute/pools", OrgComputeController, :create_pool)
@@ -621,12 +707,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       "/orgs/:org/projects/:project/compute/environments/:environment_id/revoke",
       ProjectComputeController,
       :revoke
-    )
-
-    post(
-      "/orgs/:org/projects/:project/devices/requests/:request_id/stop",
-      ProjectDeviceController,
-      :stop_request
     )
 
     post(
@@ -724,6 +804,9 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     post("/qq/connect", CLIController, :qq_connect)
     get("/qq/status", CLIController, :qq_status)
     post("/qq/menu", CLIController, :qq_menu)
+    post("/telegram/connect", CLIController, :telegram_connect)
+    get("/telegram/status", CLIController, :telegram_status)
+    post("/telegram/chats", CLIController, :telegram_chats)
     post("/lark/connect", CLIController, :lark_connect)
     get("/lark/status", CLIController, :lark_status)
     post("/lark/checks", CLIController, :lark_checks)
@@ -748,24 +831,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       MacMiniProvisionerController,
       :heartbeat
     )
-
-    post(
-      "/orgs/:org_id/runners/:provisioner_id/claim",
-      MacMiniProvisionerController,
-      :claim
-    )
-
-    get(
-      "/orgs/:org_id/runners/:provisioner_id/provision-requests/:request_id",
-      MacMiniProvisionerController,
-      :show_request
-    )
-
-    post(
-      "/orgs/:org_id/runners/:provisioner_id/provision-requests/:request_id/status",
-      MacMiniProvisionerController,
-      :status
-    )
   end
 
   # Authenticated dashboard pages.
@@ -785,6 +850,18 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     )
 
     get("/orgs/:org/operations/audit.csv", OperationsExportController, :audit)
+
+    # A member's own Slack authorization for daily-brief direct messages.
+    get("/orgs/:org/daily-brief/direct-messages/connect", DailyBriefController, :connect)
+    get("/orgs/:org/daily-brief/direct-messages/connected", DailyBriefController, :connected)
+
+    get(
+      "/orgs/:org/daily-brief/direct-messages/disconnect",
+      DailyBriefController,
+      :disconnect_form
+    )
+
+    post("/orgs/:org/daily-brief/direct-messages/disconnect", DailyBriefController, :disconnect)
 
     # Pages owned by the React dashboard (clients/apps/bft).
     get("/", SPAController, :index)

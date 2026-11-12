@@ -4,9 +4,40 @@ import {
   modelMentionMatches,
   modelMentionPlainText,
   modelMentionsAsWords,
+  requestMentionMatches,
+  requestMentionPlainText,
+  requestMentionsAsWords,
+  slackMentionLabel,
+  slackMentionMatches,
+  slackMentionsAsWords,
   splitUserTaskMentionParts,
   taskMentionPlainText,
 } from "../mentionSerialization";
+
+describe("Slack mentions", () => {
+  const channel = "[Slack #comma-app](https://app.slack.com/client/T1/C1)";
+  const member = "[Slack @CatsJuice](https://app.slack.com/team/U1)";
+  const direct = "[Slack DM @Amy Li](https://app.slack.com/team/U2)";
+
+  it("read a channel, a person in it as one mention, and a direct message", () => {
+    const text = `${channel} ${member} test ${channel} and ${direct}`;
+    expect([...slackMentionMatches(text)].map(slackMentionLabel)).toEqual([
+      "#comma-app · CatsJuice",
+      "#comma-app",
+      "Amy Li",
+    ]);
+    expect(slackMentionsAsWords(text)).toBe(
+      "#comma-app @CatsJuice test #comma-app and @Amy Li"
+    );
+  });
+
+  it("leave other links as written", () => {
+    const text =
+      "[Docs](https://app.slack.com/client/T1/C1) https://app.slack.com/team/U1";
+    expect([...slackMentionMatches(text)]).toEqual([]);
+    expect(slackMentionsAsWords(text)).toBe(text);
+  });
+});
 
 describe("model mentions", () => {
   it("travel as a comma:model link and show as the model's name", () => {
@@ -30,6 +61,24 @@ describe("model mentions", () => {
       { modelId: "gpt-5.5", effort: "high", name: "GPT 5.5 · high" },
     ]);
     expect(modelMentionsAsWords(`${effortful} go`)).toBe("@GPT 5.5 · high go");
+  });
+});
+
+describe("request mentions", () => {
+  it("travel as a comma:request link naming the grant and show as the person's name", () => {
+    const text = `${requestMentionPlainText("Cats [Juice]", "trg_1")} review the deck`;
+    expect(text).toBe("[Cats (Juice)](comma:request/trg_1) review the deck");
+    expect([...requestMentionMatches(text)]).toEqual([
+      {
+        grantId: "trg_1",
+        name: "Cats (Juice)",
+        start: 0,
+        end: 35,
+        text: text.slice(0, 35),
+      },
+    ]);
+    expect(requestMentionsAsWords(text)).toBe("@Cats (Juice) review the deck");
+    expect(requestMentionsAsWords("no mention")).toBe("no mention");
   });
 });
 

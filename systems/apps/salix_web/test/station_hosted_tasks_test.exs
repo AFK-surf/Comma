@@ -4,7 +4,8 @@ defmodule SalixWeb.StationHostedTasksTest do
   behind `SalixIM.Ports.StationHostedTasks`): `internal.task.list` lists them
   from the Task index, `internal.read_conversation` reads one and
   `internal.send_message` writes in it through the station's Connector
-  (`task.read`, `task.say`), and a station that is offline answers neither.
+  (`task.read`, `task.say`), also where the Group enforces IFC, and a station
+  that is offline answers neither.
   """
   use SystemsClock.Case, async: false
   use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixWeb", "Elixir.SalixEnv"]
@@ -70,7 +71,10 @@ defmodule SalixWeb.StationHostedTasksTest do
         tenant_id
       )
 
-    station_id = String.duplicate("ab", 32)
+    # Each test its own station: a station admitted again moves to the new Group.
+    station_id =
+      Base.encode16(<<SystemsRuntime.Proc.unique_integer([:positive])::256>>, case: :lower)
+
     device_id = "device-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     {:ok, _station, nil} = Stations.admit(tenant_id, group_id, station_id)
     {:ok, station} = Stations.active_station(station_id)
@@ -104,6 +108,7 @@ defmodule SalixWeb.StationHostedTasksTest do
     {:ok,
      router: router["agent_id"],
      view: %{tenant_id: tenant_id, group_id: group_id, device_id: device_id},
+     station_id: station_id,
      ref: "station:#{station_id}:7"}
   end
 
@@ -112,6 +117,127 @@ defmodule SalixWeb.StationHostedTasksTest do
       "connect_id" => "internal",
       "params" => params
     })
+  end
+
+  test "a Router pages a station's Tasks with their creators and adds up what was spent on each",
+       context do
+    {:ok, station} = Stations.active_station(context.station_id)
+
+    {:ok, _held} =
+      StationTaskIndex.apply_page(station, context.view.device_id, %{
+        "epoch" => "e1",
+        "since" => 1,
+        "through" => 2,
+        "rows" => [
+          %{
+            "thread" => "8",
+            "rev" => 2,
+            "title" => "Write the report",
+            "status" => "done",
+            "created_by" => "ann@x",
+            "created_at" => 1_500,
+            "last_activity_at" => 3_000,
+            "attention" => "done",
+            "waits_for" => ["bob@x"],
+            "note" => "The report is in report.md.",
+            "url" => "https://still.fail/c/8"
+          }
+        ]
+      })
+
+    assert {:ok, %{"tasks" => [first], "has_more" => true, "next_cursor" => cursor}} =
+             router_call(context.router, "internal.station_task.list", %{"limit" => 1})
+
+    assert %{"task_id" => "station:" <> _, "title" => "Write the report", "created_by" => "ann@x"} =
+             first
+
+    assert {:ok, %{"tasks" => [%{"task_id" => ref}], "has_more" => false}} =
+             router_call(context.router, "internal.station_task.list", %{
+               "limit" => 1,
+               "cursor" => cursor
+             })
+
+    assert ref == context.ref
+
+    assert {:ok, %{"tasks" => [%{"title" => "Write the report"}]}} =
+             router_call(context.router, "internal.station_task.list", %{"created_by" => "ann@x"})
+
+    # What a still.fail chat asks of whom, and only the Tasks that wait for one person.
+    assert {:ok, %{"tasks" => [asks], "has_more" => false}} =
+             router_call(context.router, "internal.station_task.list", %{
+               "waits_for" => "Bob@x",
+               "attention" => "done"
+             })
+
+    assert %{
+             "title" => "Write the report",
+             "attention" => "done",
+             "waits_for" => ["bob@x"],
+             "note" => "The report is in report.md.",
+             "url" => "https://still.fail/c/8"
+           } = asks
+
+    # A Task whose station says nothing of it carries none of these.
+    assert {:ok, %{"tasks" => [plain]}} =
+             router_call(context.router, "internal.station_task.list", %{"cursor" => cursor})
+
+    refute Enum.any?(~w(attention waits_for note url), &Map.has_key?(plain, &1))
+
+    assert {:ok, %{"tasks" => []}} =
+             router_call(context.router, "internal.station_task.list", %{"waits_for" => "ann@x"})
+
+    assert {:error, "attention must be one of" <> _} =
+             router_call(context.router, "internal.station_task.list", %{"attention" => "x"})
+
+    {:ok, station} = Stations.active_station(context.station_id)
+
+    {:ok, _} =
+      SalixStore.StationStatsIndex.apply_page(station, context.view.device_id, %{
+        "epoch" => "s1",
+        "reset" => true,
+        "since" => 0,
+        "through" => 0,
+        "rows" => [
+          %{
+            "key" => "u1",
+            "source" => "stillfail",
+            "kind" => "usage",
+            "rev" => 1,
+            "row" => %{
+              "day" => "2026-11-02",
+              "session" => "s1",
+              "thread" => 8,
+              "person" => "ann@x",
+              "model" => "m",
+              "runtime" => "claude",
+              "calls" => 3,
+              "input" => 30,
+              "cacheRead" => 0,
+              "cacheWrite" => 0,
+              "output" => 3,
+              "cost" => 1.25
+            }
+          }
+        ]
+      })
+
+    assert {:ok,
+            %{"by" => "task", "rows" => [%{"key" => task_key, "calls" => 3, "cost" => 1.25}]}} =
+             router_call(context.router, "internal.usage.query", %{
+               "from" => "2026-11-01",
+               "to" => "2026-11-30",
+               "by" => "task",
+               "person" => "ann@x"
+             })
+
+    assert task_key == "station:#{context.station_id}:8"
+
+    assert {:error, "by must be one of" <> _} =
+             router_call(context.router, "internal.usage.query", %{
+               "from" => "2026-11-01",
+               "to" => "2026-11-30",
+               "by" => "nonsense"
+             })
   end
 
   test "a Router lists, reads and writes in a Task a station hosts", context do
@@ -151,17 +277,19 @@ defmodule SalixWeb.StationHostedTasksTest do
                      %{
                        "task" => "EMBER/1792.000100",
                        "text" => "run the tests too",
-                       "key" => "req-1"
+                       "key" => "req-1",
+                       "requester_name" => "Hosted"
                      }}
 
-    # A Group that enforces information-flow checks: no unlabeled station content.
+    # A Group that enforces information-flow checks reads it too: the IFC
+    # check labels the unlabelled read, not this port.
     SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, __MODULE__.EnforcingFacts)
     on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod) end)
 
-    assert {:error, "this Group enforces information-flow checks" <> _} =
+    assert {:ok, %{"through_seq" => 2}} =
              router_call(context.router, "internal.read_conversation", %{"conversation_id" => ref})
 
-    refute_received {:asked, _, _, _}
+    assert_received {:asked, ^run_id, "task.read", %{"task" => "EMBER/1792.000100"}}
     SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod)
 
     # A Task no station of the Group hosts.

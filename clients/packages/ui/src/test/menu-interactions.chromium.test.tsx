@@ -2,6 +2,7 @@ import "@comma/ui/styles.css";
 
 import { Button } from "@comma/ui/components/Button";
 import { Dropdown } from "@comma/ui/components/dropdown";
+import { HoverCard } from "@comma/ui/components/hover-card";
 import {
   Menu,
   MenuItem,
@@ -336,6 +337,54 @@ function MenuFixture() {
 
 let root: Root | undefined;
 
+/** Two files whose hover cards open beside them, as a Task panel lists them, on the pointer's events alone. */
+function HoverCardFixture() {
+  return (
+    <div className="flex flex-col items-end p-40">
+      {["First", "Second"].map((name) => (
+        <HoverCard
+          closeDelay={0}
+          content={<p>{name} preview</p>}
+          delay={0}
+          key={name}
+          placement="start top"
+          pointerOnly
+        >
+          <button className="h-8 w-40" type="button">
+            {name} file
+          </button>
+        </HoverCard>
+      ))}
+      <div className="size-40" data-testid="hover-card-neutral-area" />
+    </div>
+  );
+}
+
+async function mountHoverCards() {
+  root?.unmount();
+  document.body.replaceChildren();
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  root.render(
+    <StrictMode>
+      <HoverCardFixture />
+    </StrictMode>
+  );
+  await expect.element(page.getByRole("button", { name: "First file" })).toBeVisible();
+}
+
+/** A card that leaves at once is clear in the next frame; React Aria may unmount it later. */
+const shown = (card: HTMLElement | undefined) =>
+  card !== undefined && getComputedStyle(card).opacity !== "0";
+const hoverCard = (text: string) =>
+  [...document.querySelectorAll<HTMLElement>('[data-slot="hover-card"]')].find((card) =>
+    card.textContent?.includes(text)
+  );
+/** A file's hover card, as the page shows it. */
+const previewOf = (name: string) =>
+  page.getByRole("tooltip").filter({ hasText: `${name} preview` });
+
 async function mountFixture() {
   root?.unmount();
   document.body.replaceChildren();
@@ -487,6 +536,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await commands.mouseUp().catch(() => {});
   document.documentElement.style.removeProperty("--motion-duration-menu-exit");
+  document.documentElement.style.removeProperty("--motion-duration-hover-card-exit");
   window.getSelection()?.removeAllRanges();
   root?.unmount();
   root = undefined;
@@ -518,6 +568,46 @@ describe("menu, tooltip and selection components in the browser", () => {
     const keyboardTooltip = page.getByRole("tooltip", { name: "Primary tip" });
     await expect.element(keyboardTooltip).toHaveAttribute("data-instant", "true");
     expect(transitionDurationsAreZero(keyboardTooltip.element())).toBe(true);
+  });
+
+  it("a hover card fades out when the pointer leaves, and goes at once when another takes over or a press dismisses it", async () => {
+    // A long exit, so a card that fades is still there to see.
+    document.documentElement.style.setProperty(
+      "--motion-duration-hover-card-exit",
+      "2000ms"
+    );
+    await mountHoverCards();
+    const first = page.getByRole("button", { name: "First file" });
+    const second = page.getByRole("button", { name: "Second file" });
+    const neutral = page.getByTestId("hover-card-neutral-area");
+    await userEvent.hover(neutral);
+
+    await userEvent.hover(first);
+    await expect.element(previewOf("First")).toBeInTheDocument();
+    expect(previewOf("First").element().dataset.instant).toBeUndefined();
+
+    // The next file's card replaces it at once.
+    await userEvent.hover(second);
+    await expect.element(previewOf("Second")).toHaveAttribute("data-instant", "true");
+    await nextFrames();
+    expect(shown(hoverCard("First preview"))).toBe(false);
+
+    // That card still fades out when the pointer leaves the list.
+    await userEvent.hover(neutral);
+    await expect.element(previewOf("Second")).toHaveAttribute("data-exiting");
+    const leaving = previewOf("Second").element();
+    expect(leaving.dataset.instant).toBeUndefined();
+    expect(transitionDurationsAreZero(leaving)).toBe(false);
+    await finishMotion();
+    await expect.element(previewOf("Second")).not.toBeInTheDocument();
+    await expect.element(previewOf("First")).not.toBeInTheDocument();
+
+    // A press dismisses the card at once.
+    await userEvent.hover(first);
+    await expect.element(previewOf("First")).toBeInTheDocument();
+    await userEvent.click(first);
+    await nextFrames();
+    expect(shown(hoverCard("First preview"))).toBe(false);
   });
 
   it("selection action bar rests above the selection and flips near the top edge", async () => {
@@ -705,9 +795,14 @@ describe("menu, tooltip and selection components in the browser", () => {
 
     const checked = page.getByRole("option", { name: "Family 280", exact: true });
     await expect.element(checked).toHaveFocus();
-    // Clamped at the viewport top, the list scrolls to the checked option.
+    // The list stops at its size's height (20rem for `sm`) and scrolls to the
+    // checked option, which opens over the trigger.
     await expect.poll(() => rectOf(checked.element()).top).toBeCloseTo(triggerTop, 0);
     const popover = query('[data-slot="dropdown-popover"]')!;
+    const rootFontSize = Number.parseFloat(
+      getComputedStyle(document.documentElement).fontSize
+    );
+    expect(rectOf(popover).height).toBeLessThanOrEqual(20 * rootFontSize);
     expect(popover.querySelectorAll('[role="option"]').length).toBeLessThan(60);
     expect(optionFont(checked.element())).toBe("serif");
 
@@ -781,7 +876,7 @@ describe("menu, tooltip and selection components in the browser", () => {
     expect(Math.abs(textLeft(label) - textLeft(trigger.element()))).toBeLessThan(0.5);
   });
 
-  it("a click opens a menu too tall for the room around its button and leaves it open", async () => {
+  it("a click opens a menu too tall for the room around its button beside it and leaves it open", async () => {
     await mountFixture();
     const trigger = page.getByRole("button", { name: "Open long list" });
     await userEvent.hover(trigger);
@@ -789,11 +884,15 @@ describe("menu, tooltip and selection components in the browser", () => {
     const menu = page.getByRole("menu");
     await expect.element(menu).toBeVisible();
     await finishMotion();
-    // The list runs over the button that opened it.
+    // The list scrolls within the room above its button instead of running
+    // over it, so the release lands on no row.
     const pressed = center(trigger.element());
     expect(
       document.elementFromPoint(pressed.x, pressed.y)?.closest('[role="menuitem"]')
-    ).not.toBeNull();
+    ).toBeNull();
+    const popover = query('[data-slot="menu-popover"]')!;
+    expect(rectOf(popover).top).toBeGreaterThanOrEqual(0);
+    expect(rectOf(popover).bottom).toBeLessThanOrEqual(rectOf(trigger.element()).top);
     await commands.mouseUp();
     await finishMotion();
     await expect.element(menu).toBeVisible();

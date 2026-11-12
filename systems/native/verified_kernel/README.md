@@ -53,15 +53,16 @@ The host does not select a branch.
 | `model_response`, `model_failure`, `guard_notice`, `commit_results`, `activate`, `wait_timeout` | `commit`, `build_record`, `run_tools`, `store_results`, `commit_planned_results` |
 | `record`, `tools_done`, `results_stored`, `fact`, `continue` | `fact`, `write`, `materialize`, `set_timer`, `cancel_timer`, `notify`, `stop` |
 
-A step is one transaction. It emits at most one `commit`, and only `notify` effects come before it.
-The host runs the step as the commit builder. A storage conflict re-runs the step on the fresh session.
-When the fresh session takes a different branch, the host continues with that step's effects.
+A step emits at most one `commit`, and only `notify` effects come before it.
+The host commits the captured write before it releases later effects.
+Unknown settlement retains the original write and continuation.
 A record carries the message id it was built at. The kernel requests a new record if the session moved.
 
 The loop owns stale-response steering, model failure and context-overflow recovery, final output,
 `end_turn` classification, tool turns, result settlement, continuation, guard parking, and the runtime
 failure notice. It also owns the activation decision: the Router check, the provider-wait yield, the
-wait extension, and the wait and retry timers. The tool turn advances the proven `AgentLoop.Round`
+wait extension, and the retry timer. Salix schedules durable waits from its PG due fields.
+The tool turn advances the proven `AgentLoop.Round`
 machine, so the intent commits before tools run and results commit before the round continues.
 The host keeps provider formatting, tool contexts, tool execution, the workspace commit, and the
 result projection.
@@ -227,157 +228,118 @@ Site-proxy translation and media APIs are separate from this agent-loop boundary
 ### Session archive domain
 
 The resident `session_archive` domain has `start` and `resume` operations.
-`ArchivePublication` captures the actual Session archive window, selects segments, validates landed records, and constructs the final advance event.
-The cursor stays resident. Each storage call transfers only one segment, not the remaining window or earlier observations.
-The host executes read, create-once, and codec requests. It commits the kernel's final event through the Session CAS path.
-The cursor is a transient Session projection, not another owner or storage format.
-`WorkArchivePublication`, `WorkArchiveObjects`, `WorkArchivePersistence`, and `WorkArchiveFence` connect capture, object creation and adoption, removal, metadata, native pending writes, and positive CAS to stored object facts.
-These proofs assume explicit storage and codec primitive contracts.
-The sealer reads one revision for publication and CAS. A conflict restarts publication from a new revision.
-External command/prerequisite binding is an assumption.
+`ArchivePublication` captures the archive window, selects segments, adopts existing objects, and returns one advance event.
+Each storage call transfers one segment.
+The host runs S3 and codec operations outside PostgreSQL locks.
+The Session transaction locks the captured frontier, publishes the directory and watermark, and deletes that PG body range atomically.
+It preserves the business storage identity; ordinary appends do not invalidate the captured immutable prefix.
 
-### Session commit domain
+`WorkArchivePublication`, `WorkArchiveObjects`, `WorkArchiveCommit`, and `WorkArchivePersistence` cover segment selection, object backing, reducer removal, and catalog preservation.
+`WorkArchiveByteStore` and `WorkArchiveByteExecution` relate immutable object bytes to those segment facts.
+The publication projection assumes the `seq > archived_through` physical input built by `PGCodec.archive_window`.
+This premise does not prove RAM cold-context restoration or release.
+These proofs state their codec and storage assumptions. They do not prove refinement of the PostgreSQL implementation.
+Transaction tests and the retained TLA model check publication with deletion.
 
-The resident `session_commit` domain captures one candidate at `start` and emits its exact CAS request.
-The continuation keeps that Session in the kernel until `resume`. It does not encode the snapshot again.
-A positive CAS response returns the captured Session and committed ETag. An unresolved write fails closed.
-The host compresses the bytes, executes the CAS, and returns its result to the continuation.
-This transient Session projection adds no durable identity or storage format.
+### Session batch and revision domains
 
-### Session batch domain
+The resident `session_batch` domain applies an event list in order.
+Each reducer completes before the next event starts.
+Clock and configuration observations resume the captured reducer.
+`WorkBatchExecution.start_executes_batch` derives the reducer batch from finite native execution.
+`WorkInputTimestamp.input_timestamp_batch_unchanged` proves that later timestamp preparation cannot replace the admitted batch.
+The host repairs command UTF-8 before admission.
 
-The resident `session_batch` domain captures an event list and applies it in order.
-Each reducer must finish before the continuation advances to the next event.
-Clock and configuration observations resume the captured reducer. They cannot replace the remaining events.
-The host returns a Session handle only after the complete batch succeeds.
-A telemetry failure cannot change the batch result.
-`WorkBatchExecution.start_executes_batch` derives the resident batch relation from finite native execution.
-Input commands fix missing or invalid lifecycle timestamps before they expose a write batch.
-`WorkInputTimestamp.input_timestamp_batch_unchanged` proves that later timestamp preparation cannot change that batch, even with a different clock value.
-UTF-8 repair precedes input admission at the host boundary.
+The `session_pending` domain retains one baseline, working state, revision, event list, HWM, and touched aliases.
+There is one pending writer.
+It captures accepted aliases after each reducer completes, including inputs consumed within the same pending revision.
+It does not run a reducer again to reconstruct its delta.
+`WorkPendingRevision.history_refines` derives the actual reducer history and preserves the baseline and revision.
+`WorkPendingMaterialize.materialize_write_preserves` connects queue retirement, materialized facts, and the HWM update.
 
-### Pending revision domain
+The `session_revision` domain holds a fresh state, a committed state and revision, or the pending cursor.
+`StorageDelta.project` returns changed control and context, new records, exact input changes, new aliases, source changes, and new archive entries.
+The PG `commit_delta` operation keeps only live queue aliases as a positive cache.
+PostgreSQL retains historical dedupe membership.
+A cache miss cannot authorize a new input.
 
-The resident `session_pending` domain owns the pending revision fields.
-Each write keeps the baseline and ETag, appends its events, and applies the optional HWM update after that batch.
-The `session_revision` domain holds snapshot absence, a committed Session/ETag pair, or the pending cursor.
-The host Revision keeps read-only projections. Fence and rollback read the native cursor and its constructor.
-The `session_read` continuation creates the hot-object key and keeps it through the storage response and load callbacks.
-Keys use the lowercase SHA-256 Session-ID component from `SalixStore.Keys` and `SalixStore.Crypto`.
-This hash is an address, not an authenticity check. The native reader owns key construction.
-It checks the loaded owner and Session before it initializes the native Revision with the observed ETag.
-The host supplies storage and codec results, clock values, and configuration observations.
-Invalid Session IDs fail before storage I/O. Scope mismatches cannot return a Revision.
-Even an empty write produces a pending cursor. Rollback restores the captured baseline and ETag.
-A failed write returns no partial pending revision. Older handles stay valid.
-The owner can pass a frozen continuation to its persistence task without changing its baseline or candidate.
-`WorkPendingRevision.history_refines` derives the complete reducer history from finite native writes and proves baseline and ETag retention.
+`InternalSessionStore.Revision` exposes the cursor's state and SQL `revision`.
+A reload reads control, context, inputs, sources, hot records, and the archive directory in one `REPEATABLE READ` transaction.
+Cold downloads use that directory after the read transaction ends.
+`archive_refs` is a read-only directory projection.
+It does not enter control, context, or a business delta.
+Salix Store uses no snapshot CAS or native snapshot reader.
 
-### Revision fence domain
+### Independent file host
 
-The resident `session_fence` domain captures a pending revision and its baseline ETag.
-It runs write preparation and fixed commit metadata events before it encodes the CAS candidate.
-The host supplies metadata values, not replacement Session states or reducer events.
-The captured owner and Session determine the snapshot address. A wrong host-supplied key could otherwise overwrite another Session's object.
-Both the native fence and snapshot commit reject an address mismatch before they issue a CAS request.
-`StorageAddress` owns this check and the key formula. The read continuation uses the same formula.
-Successful CAS settlement returns the captured candidate and committed ETag in a native committed revision. Earlier phases cannot confirm a commit.
-`Revision.confirmed_revision` binds that returned cursor to the exact encoded candidate, baseline ETag, and durable snapshot fact.
-`WorkRevisionFence.input_durable` derives complete input facts and earlier-work preservation through these actual native phases.
-The Store uses this path for versioned commits, including frozen pending revisions in persistence tasks.
-Unversioned commits use their separate storage continuation.
-The local command-result proofs below cover finite successful episodes.
+`systems/kernel_agent` stores one full Session snapshot on its local filesystem.
+It uses the native `session_read`, `session_fence`, and `session_commit` protocols.
+The native reader derives the object key, checks its scope, and retains the returned file ETag through load observations.
+The fence prepares and stamps the captured candidate, encodes it once, and retains it through the CAS result.
+A successful CAS returns that candidate and the file ETag.
+The command driver releases the original continuation only after confirmation.
+
+This host shares the pending writer and business reducers with Salix.
+Its revision is an opaque file ETag, not a PG row revision.
+Its full snapshot retains historical dedupe membership.
+It does not use PG `commit_delta`, which trims that membership after PostgreSQL owns it.
+The native snapshot protocol is an active file-host boundary, not a Salix fallback.
 
 ### Command driver domain
 
-The resident `session_command_driver` domain drives input, activation, log, and recovery commands from a native Revision.
-The `conversation_input` command adds ordered Conversation source admission to the same driver.
-It validates the source generation and position before ordinary input admission.
-It adds the frontier event to the input batch before any write, including after workspace effects.
-Scans and already admitted inputs advance the frontier without adding queued work.
-`WorkConservation.conversation_input_atomic_frontier` proves this batch shape for every successful command evaluation.
-`stage_conversation` keeps that same batch and returns `staged`, a working-state result without durable acknowledgment.
-The owner continues activation on that revision and fences both before acknowledging source admission.
-`WorkConservation.staged_frontier_write` proves that staging keeps the exact input/frontier batch.
-The theorems cover command planning. Runtime tests cover CAS failure, lost replies, retries, and Session rotation.
+The resident `session_command_driver` domain drives input, activation, log, and recovery commands from a Revision.
+It retains the command's events, HWM, and continuation.
+Write validation cannot replace the batch.
+The original command controls envelope dedupe, complete-batch capacity, reply admission, and Conversation source rules.
+The low-level event-group helper only supplies identity keys and typed identity results.
 
-The driver captures the actual command's events and continuation. Write validation cannot replace that batch.
-It keeps the HWM and fixes missing lifecycle timestamps before write validation.
-The host repairs command-argument UTF-8 before planning, including activation's leading events and system prompt.
-The driver resumes a successful write only after its native batch completes.
-It carries the fence continuation through the shared preparation, metadata, encoding, and CAS path.
-A successful CAS returns a confirmed command cursor. Its `next` operation resumes the captured continuation against the committed candidate.
-`WorkCommandDriver.input_confirmation_durable` connects the actual input batch and native CAS to that cursor, its complete input fact, and earlier-work preservation.
-The host cannot supply a successful write or fence observation to this path.
-A failed fence restores the captured baseline before the command returns its error.
-A clean duplicate uses the native committed constructor and the owner and epoch checks without another CAS.
-Authorization, entropy, workspace, notification, and draft cleanup are external observations, with request-specific result types.
-A monitor failure does not undo a committed input.
-Asynchronous activation passes its original native command cursor through the persistence task and resumes directly from the returned cursor.
-Fresh revisions have no CAS base and cannot use the clean-confirmation path.
-Creation claims the Session birth authority before work-index insertion. A creation conflict fails without replay against a different baseline.
-Recovery keeps the observed revision through its captured write and CAS before draft cleanup.
+`conversation_input` checks the source generation and position before ordinary input admission.
+It adds the source frontier to the same write, including after workspace effects.
+Duplicate bodies and scans can advance a valid source without adding queued work.
+A duplicate envelope does not parse or execute its attached batch again.
+`WorkConservation.conversation_input_atomic_frontier` proves the atomic batch shape.
+`staged_frontier_write` proves that volatile Conversation staging retains that shape.
+The owner commits the staged input and activation before it acknowledges the source.
 
-The `Work*` modules under `proofs/VerifiedKernelProofs/Session/` compose these local results. The main ones:
+The driver resumes a write after the native batch completes.
+The Store freezes the address, expected revision, captured epoch, storage revision, delta, and original command cursor.
+A successful SQL commit produces the committed cursor.
+Only then can `next` release the original continuation.
+Unknown settlement uses the same frozen input and does not run the builder, reducer, workspace, or tool again.
+A conflicting revision rejects the pending candidate.
+A clean command still checks its expected SQL revision and captured epoch.
 
-- `WorkDriverConfirmation.InputCommitTrace.confirms_same_input` composes the finite native input stages through notification and the committed return.
-  It derives the original command call, complete batch execution, and exact continuations instead of accepting independent application-stage premises.
-  It requires a binary source, `QueueReady`, format 3, and the stated storage and codec primitives.
-- `WorkPendingMaterialize` connects a materialization plan to the native pending write, its HWM update, and the snapshot CAS.
-  `Revision.plan_preserves` covers every changed native plan for all four plan modes. `Revision.plan_unchanged_captured` proves that an unchanged plan returns the exact original revision.
-- `WorkActivationReturn.ActivationCommitTrace.return_has_durable_work` connects activation's writes, CAS, cleanup callbacks, and public return, for both active activation and the inactive post-compaction path.
-- `WorkNonRetiring` covers every modern native reducer except queue ACK, selective consume, and archive removal.
-  Those three removals need the separate materialization and publication proofs.
-- The identity modules (`WorkLedger*`, `WorkIdentity*`, `WorkFork*`, `WorkArchiveIdentity`, `WorkArchiveLineage`, `WorkPhysical*`) trace each ledger identity to an actual input writer, queue item, or archive record, and preserve that support through batches, materialization, normalization, codec changes, archive reduction, fork, and reload.
-  Archive projection witnesses do not assert full equality between hot records and their normalized archive data.
-- `WorkKernelHistory` and `WorkPhysicalHistory` derive queue, format, ledger, catalog, watermark, and history invariants from actual creation, fork, batch, materialization, archive, persistence, and reload calls.
-- `WorkCurrentStorage` models one current object per key, not a set of all historical snapshots.
-  Its atomic successful CAS requires the expected revision or confirmed absence and leaves other keys unchanged.
-  Its read observation binds bytes and ETag to the same object. It does not prove application-level work preservation by itself.
-- `WorkCurrentVersion` states the storage-token contract: at one key, the same token identifies the same bytes.
-  Tokens may repeat for identical bytes. The proof does not require global token freshness or a monotone ETag counter.
-  Under that contract, the successful CAS matches the bytes captured by the read, even with intervening writers.
-- `WorkStorageAddress` binds the CAS address and base to the captured Session and revision. The host key is not a proof assumption.
-- `WorkReadInput` derives its starting invariants and baseline ETag from the native read, and preserves all old physical work facts in the actual CAS snapshot.
-- `WorkCurrentFence` and `WorkCurrentArchive` connect landed candidates and archive publications to the current object without a caller-reply premise.
-
-These local theorems cover finite successful episodes. The aggregate below composes current snapshot lineage and permitted Lean command episodes.
-External prerequisites follow explicit assumptions.
+`WorkCommandDriver` covers captured calls, effects, writes, rejected baselines, and continuation release.
+The `WorkDriver*` and `WorkRevision*` modules connect finite native observations and batches to their captured input, activation, log, recovery, and planning calls.
+These local results do not establish SQL durability.
+Authorization, workspace, entropy, notification, and draft cleanup remain external observations.
 
 ### Lean-only refinement
 
-The proof boundary is Lean. External code is an assumption, not a source-verification target.
-This includes Elixir/Erlang application code, standard libraries, C, BEAM/FFI, codecs, and storage.
-Theorems state the external contracts they need as explicit hypotheses:
-faithful call arguments, resource identity, response association, storage observations, and public confirmation reporting.
-Lean state transitions and their work-preservation results are proof obligations, not external assumptions.
-The proof does not inspect external source code or certify that external implementations satisfy these contracts.
-It does not claim a complete Actor-to-product refinement. The open composition is [issue #1799](https://github.com/AFK-surf/Comma/issues/1799).
+The kernel retains the accepted-work, identity, and archive properties that it owns:
 
-`WorkLeanBoundary.NativeProductRun.refinement` combines the two product safety properties over one finite storage history.
-`InputOccurrence.conserved` connects each declared input to a Lean submission and landed CAS, then derives its generated record and current backing.
-`ResidentReachable.conservation` preserves every physical fact from every earlier world, including inputs without acceptance labels.
-`NativeProductRun.conditional_safety` derives backing for all declared acceptance and confirmation labels and composes their protocol simulation.
-External contracts supply operation correspondence, not `ObserverBacked` or a work-preservation conclusion.
+| Property | Retained kernel proof | Storage implementation evidence |
+| --- | --- | --- |
+| Accepted input and earlier work survive reducers | `WorkInput`, `WorkPendingInput`, `WorkNonRetiring`, `WorkKernelHistory` | Store stale-materialization and reload tests |
+| Pending writes keep the baseline and exact reducer history | `WorkPendingRevision.history_refines`, `WorkRevision` | Resident write and frozen-commit tests |
+| Queue consumption materializes before retirement | `WorkPendingMaterialize`, `WorkMaterialize*` | Exact queue removal and accepted-input record tests |
+| Dedupe identities retain their kernel scope | `WorkLedger*`, `WorkIdentity*`, `WorkFork*`, `WorkPhysicalHistory` | Historical alias retry and complete-batch admission tests |
+| Archive objects back the published reducer event | `WorkArchiveObjects`, `WorkArchiveCommit`, `WorkArchiveByteStore` | Exact source-key reads, missing segments, and hot-residue tests |
+| File snapshot scope and exact CAS confirmation | `WorkStorageAddress`, `WorkReadRevision`, `WorkRevisionFence`, `WorkDriverConfirmation` | kernel_agent duplicate, kill/restart, and tool recovery tests |
+| Owner fencing and atomic SQL mutation | Outside the Lean kernel | `RpcDeliver.PgSpec`, `SessionEpochFence`, and real PostgreSQL tests |
+| Unknown commit retains its original continuation | Driver capture and continuation laws | Real lost-COMMIT-reply transport test |
 
-The domain starts with empty modern storage and uses the permitted `ResidentStep` constructors.
-It includes creation, fork/clone, reads, admitted writes, the four plan modes, archive extension, restart, and committed cursors.
-Landed input preservation does not require a CAS reply. Stale revisions are subject to the per-key token contract.
-Arbitrary legacy, imported, or corrupt initial snapshots need an additional initialization proof.
-Arbitrary overwrites, deletion, and writers outside this domain are not covered.
-Ordinary writes require `RawOrdinaryBatch`. The specialized activation path requires empty leading events, not arbitrary injected batches.
+`WorkCurrentStorage`, `WorkCurrentVersion`, `WorkReadRevision`, `WorkRevisionFence`, and the snapshot-CAS composition modules cover the independent file host.
+They assume its per-key file CAS, ETag-to-bytes association, codecs, and faithful host calls.
+They do not describe Salix online persistence or prove PostgreSQL behavior.
+PostgreSQL row locks, multi-table snapshots, commit results, and transport behavior use the implementation tests above.
+The TLA models cover their bounded protocol abstractions.
+Neither a passing model nor a Lean theorem proves runtime SQL conformance.
 
-The external history contract covers every relevant landed write, including lost replies, and preserves resource and request/response association.
-Each declared input supplies its scope key, source, and payload as Lean receives them through `atomFirst`.
-This is not a claim about raw request bytes before external processing.
-`InputOccurrence` identifies a compatible edge of the world history, not a unique external invocation or invocation count.
-The input-generation time and observation journals are existential Lean witnesses, not verified external clock or log values.
-The report contract `reports = labels` preserves order and multiplicity by assumption. It does not prove external delivery or exactly-once execution.
-
-`FactProtocol` maps registered facts into `WorkProtocol` as a coarse safety encoding.
-Its acceptance and confirmation projections do not reproduce physical queue, materialization, or archive locations.
-The declared input list has a conservation result over the same storage history, not an automatic insertion into the reported label sequence.
-The theorems cover finite-prefix safety. They do not establish liveness, external-effect rollback, or successful user-task completion.
+Lean proofs state the external codec, storage, FFI, call-association, and host-observation assumptions that they require.
+They cover finite successful kernel executions.
+They do not prove external-effect rollback, provider compliance, delivery progress, or exactly-once external execution.
+The open Actor-to-product composition remains [issue #1799](https://github.com/AFK-surf/Comma/issues/1799).
 
 ## Build and test
 
@@ -386,7 +348,7 @@ The NIF initializes the executable dispatcher, not the proof library.
 `scripts/check.sh` builds all runtime and proof modules before the axiom audit and native checks.
 
 Use Linux or macOS, the pinned Lean toolchain, OTP 29, and Elixir 1.20.
-Install CMake 3.24+, a C/C++20 compiler, pkg-config, libuv headers, and OpenSSL development packages.
+Install CMake 3.24+, a C/C++20 compiler, Python 3, pkg-config, libuv headers, and OpenSSL development packages.
 The first build downloads pinned Lean runtime and mimalloc sources.
 It does not build the Lean compiler.
 
@@ -394,7 +356,7 @@ On macOS, install Xcode Command Line Tools and the native dependencies:
 
 ```sh
 xcode-select --install
-brew install cmake pkg-config libuv openssl@3 elixir
+brew install cmake pkg-config libuv openssl@3 elixir python
 ```
 
 From this directory, install Lean and run the package checks on either platform:
@@ -907,9 +869,10 @@ No theorem here proves storage durability, Actor scheduling, external effects, o
 ## Native stack safety
 
 The NIF shares BEAM's process and runs on bounded dirty-scheduler stacks.
-Termination proofs do not establish a native stack bound. Do not increase the
-scheduler stack to compensate for traversal depth proportional to list width.
-Use loops or accumulators for byte scans and wide-list folds.
+The release gives dirty CPU schedulers an 8 MiB stack (`+sssdcpu 1024` in
+`systems/rel/vm.args.eex`) instead of BEAM's 320 KiB default. That headroom
+does not replace a bound: termination proofs do not establish a native stack
+bound, so use loops or accumulators for byte scans and wide-list folds.
 Core's compiled `List.zip` recurses once per item; `VerifiedKernel.Zip` gives every kernel
 call to it an accumulator loop through a `@[csimp]` lemma.
 
@@ -921,8 +884,39 @@ projection rather than silently deleting potentially referenced results. An
 over-depth stored message needs repair. It does not justify discarding result
 references.
 
-The stack review is a bounded code audit, not a proof that arbitrary native code cannot crash.
-Run `test/native_stack_test.exs` with the default native scheduler stack, not an increased `+sssdcpu` setting.
+The compiled recursion check runs in the existing native compiler check:
+
+```sh
+lake build VerifiedKernel.Native
+python3 scripts/audit-recursion.py
+python3 scripts/test-audit-recursion.py
+```
+
+The check discovers every export in the `VerifiedKernel.Native` import closure whose module starts with `VerifiedKernel`.
+It reads Lean 4.33.1's final IR, including imported functions and compiler specializations.
+Only an immediate self-call followed by its return counts as a loop, matching the C emitter.
+Closure creation does not add a frame. Closure flow tracks captured arguments, constructor fields, partial applications, and returned functions.
+Unknown callbacks, missing bodies, and exported function values fail the check.
+
+A recursive component passes only when its compiled calls carry a fixed upper bound and a decreasing natural-number rank.
+Every cycle must decrease that rank. Truncated subtraction is strict only on a branch that excludes zero.
+Input-derived fuel and Lean termination proofs alone do not establish a uniform bound.
+The JSON result gives a conservative maximum count of explicit Lean call frames for each export.
+Exit status 0 means every export passed; 1 means a path remains unproved; 2 means the checker could not run.
+There is no list of exempt recursive functions.
+
+The analysis trusts the pinned Lean compiler, its erased type information, and its ownership rules for constructor reuse.
+Unsafe definitions in the inspected project modules fail the check; the pinned standard library remains trusted.
+It uses explicit data-flow summaries for the runtime array primitives and `panicCore`; these operations do not invoke stored function values.
+Other externs that can receive a function or return a function container remain unproved.
+A compiler upgrade must update the IR reader, tail-call rule, and runtime summaries before the check can pass.
+
+Input-dependent tree walks use `Stackless`, which stores continuations on the heap and evaluates them in a tail loop.
+Lean checks the interpreter equivalence and the `@[csimp]` replacements for public logical definitions.
+The fixed 64-level parser limits remain in place.
+
+This check bounds explicit calls in compiled Lean code. It does not bound native stack bytes, heap use, implicit allocation or destruction, module initialization, work inside C externs, or re-entry from arbitrary C code.
+It does not replace native execution tests. Run `test/native_stack_test.exs` with BEAM's default scheduler stack, without an increased `+sssdcpu` setting.
 
 ## Static runtime
 

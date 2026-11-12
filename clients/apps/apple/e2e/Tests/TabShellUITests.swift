@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// The tab shell over the fixture: the app opens on the router chat and keeps its page across the background, tabs
 /// keep their state without reloading, the router chat opens over them and keeps its draft, Home's platform cards
@@ -6,6 +7,307 @@ import XCTest
 /// opens from the tab bar ready to type, and another Task takes over a minimized dock.
 @MainActor final class TabShellUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
+
+    func testMiniAppCardBodyPressAndIndependentGlassRun() throws {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--card-polish", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            let apps = app.buttons["tab-apps"]
+            XCTAssertTrue(apps.waitForExistence(timeout: 15)); apps.tap()
+            let card = app.buttons["mini-app-reading"]
+            let run = app.buttons["mini-app-run-reading"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10))
+            XCTAssertEqual(app.frame.width > app.frame.height, orientation != .portrait)
+            if orientation != .portrait { app.scrollViews.firstMatch.swipeUp() }
+            miniAppScreenshot(app, "Card normal " + orientationName(orientation))
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) { PerfSignal.captureMiniApp.post() }
+            card.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.75))
+                .press(forDuration: 1.5, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.85)))
+            XCTAssertTrue(run.isHittable, "Dragging out cancels the card's action")
+            if orientation != .portrait { app.scrollViews.firstMatch.swipeUp() }
+            card.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.86)).tap()
+            let detailRun = app.buttons["mini-app-detail-run"]
+            XCTAssertTrue(detailRun.waitForExistence(timeout: 10), "The description area opens app details")
+            miniAppScreenshot(app, "Details from card body " + orientationName(orientation))
+            let back = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Back", "Apps")).firstMatch
+            XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
+            back.tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 5))
+            run.tap()
+            let consent = app.alerts["Run this app?"]
+            XCTAssertTrue(consent.waitForExistence(timeout: 10), "Run opens the runtime directly")
+            consent.buttons["Cancel"].tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 5), "Run must not also navigate to details")
+            miniAppScreenshot(app, "Card after run cancelled " + orientationName(orientation))
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testAppStoreStyleMiniAppDetailsKeepRunAndManagement() throws {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--app-detail", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15)); app.buttons["tab-apps"].tap()
+            let card = app.buttons["mini-app-reading"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10))
+            miniAppScreenshot(app, "Apps with version artwork " + orientationName(orientation))
+            card.tap()
+            let mainRun = app.buttons["mini-app-detail-primary-run"]
+            XCTAssertTrue(mainRun.waitForExistence(timeout: 10), app.debugDescription)
+            XCTAssertTrue(app.frame.contains(mainRun.frame))
+            let appsTab = app.buttons["tab-apps"].frame
+            if appsTab.minX > app.frame.midX, appsTab.minY < app.frame.maxY - 100 {
+                XCTAssertLessThan(mainRun.frame.maxX, appsTab.minX, "Detail actions stay clear of the Duo system rail")
+            }
+            XCTAssertTrue(app.staticTexts["Preview"].exists, "API screenshot metadata reaches the native details page")
+            miniAppScreenshot(app, "App detail hero " + orientationName(orientation))
+            let scroll = app.scrollViews.firstMatch
+            let more = app.buttons["mini-app-detail-description-toggle"]
+            for _ in 0 ..< 5 where !more.isHittable { scroll.swipeUp() }
+            XCTAssertTrue(more.waitForExistence(timeout: 5), app.debugDescription)
+            miniAppScreenshot(app, "App detail preview and description " + orientationName(orientation))
+            more.tap(); XCTAssertEqual(more.label, "Less")
+            miniAppScreenshot(app, "App detail expanded description " + orientationName(orientation))
+            // On iOS 27, isHittable may stay true after expansion moves a SwiftUI
+            // button below the viewport. Bring its actual frame onscreen first.
+            let readingArea = app.frame.insetBy(dx: 0, dy: 80)
+            for _ in 0 ..< 5 where !readingArea.contains(more.frame) { scroll.swipeUp() }
+            XCTAssertTrue(readingArea.contains(more.frame), app.debugDescription)
+            more.tap(); XCTAssertEqual(more.label, "More")
+            let group = app.buttons["mini-app-detail-management"]
+            for _ in 0 ..< 4 where !group.isHittable { scroll.swipeUp() }
+            XCTAssertTrue(group.waitForExistence(timeout: 5), app.debugDescription); group.tap()
+            XCTAssertTrue(app.buttons["Preview version"].waitForExistence(timeout: 5), app.debugDescription)
+            for _ in 0 ..< 4 where !app.buttons["Disable app"].isHittable { scroll.swipeUp() }
+            XCTAssertTrue(app.buttons["Disable app"].waitForExistence(timeout: 5), app.debugDescription)
+            miniAppScreenshot(app, "App detail version management " + orientationName(orientation))
+            let run = app.buttons["mini-app-detail-run"]
+            XCTAssertTrue(run.isHittable, "Run remains available while reading the lower page")
+            run.tap()
+            XCTAssertTrue(app.alerts["Run this app?"].waitForExistence(timeout: 10))
+            app.alerts["Run this app?"].buttons["Cancel"].tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 5))
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testMiniAppPhotoPickerRequiresDeliveryConfirmation() throws {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--photo-picker", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15)); app.buttons["tab-apps"].tap()
+            app.buttons["mini-app-run-reading"].tap()
+            let consent = app.alerts["Run this app?"]
+            XCTAssertTrue(consent.waitForExistence(timeout: 10)); consent.buttons["Run"].tap()
+            let web = app.webViews.firstMatch
+            let choose = web.buttons["Choose app photos"]
+            XCTAssertTrue(choose.waitForExistence(timeout: 15)); choose.tap()
+            let library = app.buttons["mini-app-photo-library"]
+            XCTAssertTrue(library.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(app.staticTexts["Send to Reading tracker"].exists)
+            XCTAssertFalse(app.buttons["mini-app-photo-camera"].exists, "The Simulator must not pretend to have a camera")
+            miniAppScreenshot(app, "Photo request recipient " + orientationName(orientation))
+            XCTAssertFalse(app.buttons["mini-app-photo-share"].exists)
+            library.tap()
+            let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+            XCTAssertTrue(photo.waitForExistence(timeout: 15), app.debugDescription)
+            miniAppScreenshot(app, "System photo picker " + orientationName(orientation))
+            let system = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            system.name = "System photo library " + orientationName(orientation); system.lifetime = .keepAlways; add(system)
+            photo.tap()
+            let share = app.buttons["mini-app-photo-share"]
+            XCTAssertTrue(share.waitForExistence(timeout: 15), app.debugDescription)
+            XCTAssertFalse(web.staticTexts["Shared photo: image/png, buffer=true"].exists)
+            XCTAssertTrue(app.frame.contains(share.frame), "Delivery controls remain inside the screen")
+            miniAppScreenshot(app, "Photo preview before delivery " + orientationName(orientation))
+            share.tap()
+            XCTAssertTrue(web.staticTexts["Shared photo: image/png, buffer=true"].waitForExistence(timeout: 10), app.debugDescription)
+            miniAppScreenshot(app, "Photo delivered to SDK " + orientationName(orientation))
+            choose.tap(); XCTAssertTrue(library.waitForExistence(timeout: 5))
+            XCTAssertFalse(share.exists, "A new request must not reuse the previous photos")
+            app.navigationBars["Share photos"].buttons["Cancel"].tap()
+            XCTAssertTrue(web.staticTexts["Photo request cancelled"].waitForExistence(timeout: 5))
+            miniAppScreenshot(app, "Photo request cancelled " + orientationName(orientation))
+            choose.tap(); XCTAssertTrue(library.waitForExistence(timeout: 5))
+            XCUIApplication(bundleIdentifier: "com.apple.Preferences").activate()
+            XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5) || app.state == .runningBackgroundSuspended,
+                "The app must actually enter the OS background, state=\(app.state.rawValue)")
+            app.activate()
+            let cancelled = web.staticTexts.matching(NSPredicate(format: "label == %@ OR label == %@", "Photo request cancelled", "Photo request: unavailable")).firstMatch
+            XCTAssertTrue(cancelled.waitForExistence(timeout: 10), app.debugDescription)
+            XCTAssertTrue(library.waitUntilGone(), "A photo request cannot survive backgrounding")
+            miniAppScreenshot(app, "Background cancelled pending delivery " + orientationName(orientation))
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testMiniAppImmersiveModeAdaptsAndKeepsTheDocument() throws {
+        let expectsSide = UIDevice.current.name.contains("Duo")
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--chrome-mode", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            XCTAssertTrue(app.buttons["tab-apps"].waitForExistence(timeout: 15))
+            app.buttons["tab-apps"].tap()
+            let run = app.buttons["mini-app-run-reading"]
+            XCTAssertTrue(run.waitForExistence(timeout: 10)); run.tap()
+            let consent = app.alerts["Run this app?"]
+            XCTAssertTrue(consent.waitForExistence(timeout: 10)); consent.buttons["Run"].tap()
+            let web = app.webViews.firstMatch
+            XCTAssertTrue(web.staticTexts["Reading app ready"].waitForExistence(timeout: 15))
+            let menu = app.buttons["mini-app-menu"]
+            let header = app.otherElements["mini-app-header"]
+            XCTAssertFalse(header.exists, "New executions start in immersive mode")
+            XCTAssertFalse(app.statusBars.firstMatch.exists)
+            miniAppScreenshot(app, "Default immersive " + orientationName(orientation))
+            menu.tap()
+            let toggle = app.buttons["mini-app-immersive"]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 5), app.debugDescription)
+            miniAppScreenshot(app, "Immersive mode menu " + orientationName(orientation))
+            toggle.tap()
+            miniAppScreenshot(app, "Mode switched " + orientationName(orientation))
+            XCTAssertTrue(menu.waitUntilHittable(timeout: 5))
+            // Duo's system rail is on the right; ordinary iPhones keep controls in the header.
+            if expectsSide {
+                XCTAssertFalse(header.exists)
+                XCTAssertGreaterThan(menu.frame.midX, app.frame.maxX - 90)
+                XCTAssertGreaterThan(abs(menu.frame.midY - app.buttons["mini-app-back"].frame.midY), 30)
+                XCTAssertLessThan(web.frame.maxX, menu.frame.midX)
+            } else {
+                XCTAssertTrue(header.waitForExistence(timeout: 5))
+                XCTAssertLessThan(menu.frame.maxY, web.frame.minY + 1)
+            }
+            XCTAssertTrue(app.frame.insetBy(dx: 12, dy: 12).contains(menu.frame), "The controls avoid rounded corners")
+            XCTAssertEqual(web.frame.maxY, app.frame.maxY, accuracy: 1, "Nonimmersive content extends through the bottom safe area")
+            miniAppScreenshot(app, "Nonimmersive native chrome " + orientationName(orientation))
+            let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screen.name = "System chrome " + orientationName(orientation); screen.lifetime = .keepAlways
+            add(screen)
+            let input = web.textFields["Reading notes"]
+            input.tap(); input.typeText("Keep my mode and note")
+            app.buttons["mini-app-back"].tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 10)); XCTAssertTrue(run.label.hasPrefix("Continue"))
+            run.tap()
+            XCTAssertTrue(input.waitUntilHittable(timeout: 10))
+            XCTAssertEqual(input.value as? String, "Keep my mode and note")
+            if expectsSide { XCTAssertGreaterThan(menu.frame.midX, app.frame.maxX - 90) }
+            else { XCTAssertTrue(header.exists, "Continue keeps the execution's mode") }
+            miniAppScreenshot(app, "Continued nonimmersive app " + orientationName(orientation))
+            menu.tap(); XCTAssertTrue(toggle.waitForExistence(timeout: 5)); toggle.tap()
+            XCTAssertFalse(header.exists)
+            XCTAssertEqual(input.value as? String, "Keep my mode and note", "Switching mode preserves the same document")
+            XCTAssertLessThan(menu.frame.maxX, app.frame.midX)
+            miniAppScreenshot(app, "Immersive restored " + orientationName(orientation))
+            menu.tap(); app.buttons["mini-app-close"].tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 10))
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testMiniAppImmersiveChromeAndKeyboard() throws {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--hide-metrics"]
+                + (orientation == .portrait ? [] : ["--mini-app-landscape"]))
+            let apps = app.buttons["tab-apps"]
+            XCTAssertTrue(apps.waitForExistence(timeout: 15)); apps.tap()
+            XCTAssertEqual(app.frame.width > app.frame.height, orientation != .portrait)
+            let run = app.buttons["mini-app-run-reading"]
+            XCTAssertTrue(run.waitForExistence(timeout: 10))
+            let statusBefore = app.statusBars.firstMatch.exists
+            run.tap()
+            let consent = app.alerts["Run this app?"]
+            XCTAssertTrue(consent.waitForExistence(timeout: 10))
+            miniAppScreenshot(app, "Cloud consent " + orientationName(orientation))
+            consent.buttons["Run"].tap()
+            let web = app.webViews.firstMatch
+            XCTAssertTrue(web.staticTexts["Reading app ready"].waitForExistence(timeout: 15))
+            let back = app.buttons["mini-app-back"]
+            XCTAssertTrue(back.isHittable)
+            let menu = app.buttons["mini-app-menu"]
+            for control in [menu, back] {
+                XCTAssertTrue(app.frame.insetBy(dx: 24, dy: 24).contains(control.frame))
+            }
+            miniAppScreenshot(app, "Glass runtime " + orientationName(orientation))
+            menu.tap()
+            let reload = app.buttons["mini-app-reload"]
+            XCTAssertTrue(reload.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["mini-app-close"].isHittable)
+            miniAppScreenshot(app, "Native app menu " + orientationName(orientation))
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.85)).tap()
+            XCTAssertTrue(reload.waitUntilGone())
+            let input = web.textFields["Reading notes"]
+            input.tap(); input.typeText("Keep this note")
+            input.raiseKeyboard()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            XCTAssertTrue(back.isHittable)
+            miniAppScreenshot(app, "Runtime keyboard " + orientationName(orientation))
+            back.tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 10))
+            XCTAssertTrue(run.label.hasPrefix("Continue"))
+            XCTAssertEqual(app.statusBars.firstMatch.exists, statusBefore)
+            miniAppScreenshot(app, "Apps continue " + orientationName(orientation))
+            run.tap()
+            XCTAssertTrue(input.waitUntilHittable(timeout: 10))
+            XCTAssertEqual(input.value as? String, "Keep this note", "Continue reattaches the same document")
+            miniAppScreenshot(app, "Continued app " + orientationName(orientation))
+            XCUIDevice.shared.press(.home); app.activate()
+            XCTAssertTrue(input.waitUntilHittable(timeout: 10))
+            XCTAssertEqual(input.value as? String, "Keep this note", "OS backgrounding preserves the foreground document")
+            miniAppScreenshot(app, "App after OS background " + orientationName(orientation))
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5)))
+            XCTAssertTrue(run.waitForExistence(timeout: 10), "A native left-edge gesture returns without closing")
+            XCTAssertTrue(run.label.hasPrefix("Continue"))
+            miniAppScreenshot(app, "Apps after back swipe " + orientationName(orientation))
+            run.tap()
+            XCTAssertTrue(input.waitUntilHittable(timeout: 10))
+            XCTAssertEqual(input.value as? String, "Keep this note")
+            menu.tap()
+            XCTAssertTrue(app.buttons["mini-app-close"].waitForExistence(timeout: 5))
+            app.buttons["mini-app-close"].tap()
+            XCTAssertTrue(run.waitForExistence(timeout: 10))
+            XCTAssertTrue(run.label.hasPrefix("Run"), "Complete close retires the execution")
+            XCTAssertTrue(app.buttons["openRouterChat"].isHittable)
+            miniAppScreenshot(app, "Apps after complete close " + orientationName(orientation))
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    /// Apps without apps reads as the Inbox does: the same inline page title and the app's one empty state,
+    /// with no search field over nothing to search.
+    func testEmptyAppsUsesThePageTitleAndEmptyState() throws {
+        let app = XCUIApplication.fixture(light: true, arguments: ["--mini-app", "--mini-app-empty", "--hide-metrics"])
+        let inbox = app.buttons["tab-inbox"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 15)); inbox.tap()
+        XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 10))
+        let inboxBar = app.navigationBars.firstMatch.frame
+        app.buttons["tab-apps"].tap()
+        let empty = app.element("miniAppsEmpty")
+        XCTAssertTrue(empty.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["No apps yet"].exists)
+        XCTAssertFalse(app.element("miniAppSearch").exists, "Search waits for apps to search")
+        XCTAssertEqual(app.navigationBars.firstMatch.frame.height, inboxBar.height, accuracy: 1,
+                       "Apps uses the inline page title, as the Inbox does")
+        app.buttons["tab-inbox"].tap()
+        XCTAssertTrue(app.element("inbox-review0").waitForExistence(timeout: 10))
+        app.buttons["tab-apps"].tap()
+        XCTAssertTrue(empty.waitForExistence(timeout: 10))
+        miniAppScreenshot(app, "Apps empty")
+    }
+
+    private func orientationName(_ orientation: UIDeviceOrientation) -> String {
+        orientation == .portrait ? "portrait" : "landscape"
+    }
+
+    private func miniAppScreenshot(_ app: XCUIApplication, _ name: String) {
+        PerfSignal.captureMiniApp.post()
+        Thread.sleep(forTimeInterval: 0.3)
+        keepScreenshot(app, name)
+    }
 
     func testTabsKeepTheirStateWithoutReloading() throws {
         let app = XCUIApplication.fixture()

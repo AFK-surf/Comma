@@ -1,5 +1,11 @@
 defmodule SalixWeb.TaskStations do
-  @moduledoc "Select a machine before a runtime Task is invited; accepted Tasks keep their stored device."
+  @moduledoc """
+  Select a machine before a runtime Task is invited; accepted Tasks keep their
+  stored device. The order: an authorized VMM Station, the requesting member's
+  own connected Station, then a sandbox of the Task's own where the Group's
+  Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`), else its
+  Cloudflare Cloud VM.
+  """
 
   alias SalixStore.{Compute, StationMembers, StationDeviceLookup}
   alias SalixEnv.Registry
@@ -26,28 +32,36 @@ defmodule SalixWeb.TaskStations do
             limited
 
           _ ->
-            cloudflare(scope, model)
+            if SalixAgent.Sandboxes.cloud_vm_retired?(scope.group_id),
+              do: sandbox(scope),
+              else: cloudflare(scope, model)
         end
     end
   end
 
   def resolve(_, _), do: {:error, :invalid_runtime_model}
 
+  # A sandbox of the Task's own: the Group under its limit of them, and its
+  # start authorized against its credits (`Salix.Bindings.AgentConversations`).
+  defp sandbox(scope), do: Salix.Bindings.AgentConversations.sandbox_place(scope)
+
   defp vmm(scope, model) do
     with {:ok, record} <- Compute.group_station(scope.tenant_id, scope.group_id),
          true <- record["status"] == "ready" || {:error, :vmm_station_not_ready},
          :ok <- cloud_accounts(scope, model),
          {:ok, _} <- candidate(scope, record["device_id"], model) do
-      {:ok,
-       %{
-         "kind" =>
-           if(record["device_id"] == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id),
-             do: "cloud_vm",
-             else: "station"
-           ),
-         "device_id" => record["device_id"]
-       }}
+      {:ok, %{"kind" => vmm_kind(scope, record["device_id"]), "device_id" => record["device_id"]}}
     end
+  end
+
+  # The Group's own VM on the Host was named as its Cloud VM; where the Cloud
+  # VM is retired, that name is refused, and the VM is named as the station
+  # it is.
+  defp vmm_kind(scope, device_id) do
+    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) and
+         not SalixAgent.Sandboxes.cloud_vm_retired?(scope.group_id),
+       do: "cloud_vm",
+       else: "station"
   end
 
   defp physical(scope, model) do
@@ -72,6 +86,44 @@ defmodule SalixWeb.TaskStations do
            do: :station_candidate_page_exhausted,
            else: :no_personal_station
          )}
+    end
+  end
+
+  @doc """
+  The requesting member's own connected computers that take Tasks, whatever
+  runtime they run: a Worker inside Salix can drive any of them. VMM Stations
+  and the Group's Cloud VM are not a person's computers.
+  """
+  @spec personal_computers(map()) :: {:ok, [map()]} | {:error, term()}
+  def personal_computers(scope) do
+    with {:ok, member} <- requester(scope),
+         true <-
+           StationMembers.enroller?(scope.tenant_id, scope.group_id, member) ||
+             {:error, :requester_not_authorized},
+         rows when is_list(rows) <-
+           StationDeviceLookup.page(scope.tenant_id, scope.group_id, member, @member_candidates) do
+      {:ok, Enum.flat_map(rows, &personal_computer(scope, member, &1))}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :station_lookup_unavailable}
+    end
+  end
+
+  defp personal_computer(scope, member, row) do
+    with {:ok, device} <- usable_device(scope, row.device_id),
+         true <- get_in(device, ["meta", "owner_user_id"]) == member,
+         true <- get_in(device, ["meta", "station_id"]) == row.station_id,
+         true <- get_in(device, ["meta", "managed_compute"]) != true do
+      [
+        %{
+          "device_id" => row.device_id,
+          "station_id" => row.station_id,
+          "name" => device["display_name"] || get_in(device, ["meta", "name"]) || row.device_id,
+          "os" => get_in(device, ["meta", "os"]) || ""
+        }
+      ]
+    else
+      _ -> []
     end
   end
 
@@ -107,6 +159,15 @@ defmodule SalixWeb.TaskStations do
   end
 
   defp candidate(scope, device_id, model) do
+    with {:ok, device} <- usable_device(scope, device_id),
+         true <- runs_model?(get_in(device, ["meta", "capabilities", "task_models"]), model) do
+      {:ok, device}
+    else
+      _ -> {:error, :station_unavailable}
+    end
+  end
+
+  defp usable_device(scope, device_id) do
     with :ok <-
            SalixStore.ComputeStation.admit_device(scope.tenant_id, scope.group_id, device_id),
          {:ok, %{"status" => "connected", "connector_run_id" => run} = device}
@@ -116,8 +177,7 @@ defmodule SalixWeb.TaskStations do
            SalixEnv.StationConnection.authorize(
              SalixStore.ComputeStation.connection(scope.tenant_id, scope.group_id, device)
            ),
-         :ready <- SalixStore.StationReadiness.check(get_in(device, ["meta", "capabilities"])),
-         true <- runs_model?(get_in(device, ["meta", "capabilities", "task_models"]), model) do
+         :ready <- SalixStore.StationReadiness.check(get_in(device, ["meta", "capabilities"])) do
       {:ok, device}
     else
       _ -> {:error, :station_unavailable}

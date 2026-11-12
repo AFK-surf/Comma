@@ -1,3 +1,4 @@
+import { copyWithFeedback } from "../toast";
 import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
@@ -11,13 +12,8 @@ import { createPortal } from "react-dom";
 import { useCommaMessages } from "@comma/i18n/react";
 import { uiClock, type CancelUiTimer } from "../../clock";
 import { isReducedMotionEnabled, spacing } from "../../tokens";
-import {
-  CheckIcon,
-  CopyIcon,
-  DownloadIcon,
-  FileTextIcon,
-  PictureInPictureIcon,
-} from "../icons";
+import { CheckIcon, CopyIcon, DownloadIcon, PictureInPictureIcon } from "../icons";
+import { FileTypeIcon, resolveFileType } from "../file-type-icon";
 import { cx } from "../utils";
 import {
   ChatPanelMediaPlayer,
@@ -125,54 +121,6 @@ const scrollPlayerIntoView = (player: HTMLElement) =>
 
 const normalizeVideoAspectRatio = (value: number | undefined) =>
   value !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
-
-const mimeTypeLabels: Record<string, string> = {
-  "application/epub+zip": "EPUB",
-  "application/json": "JSON",
-  "application/msword": "DOC",
-  "application/pdf": "PDF",
-  "application/rtf": "RTF",
-  "application/vnd.ms-excel": "XLS",
-  "application/vnd.ms-powerpoint": "PPT",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
-  "application/zip": "ZIP",
-  "audio/mpeg": "MP3",
-  "image/jpeg": "JPG",
-  "text/csv": "CSV",
-  "text/plain": "TXT",
-  "video/mp4": "MP4",
-};
-
-const resolveFileType = ({
-  fileName,
-  mimeType,
-  typeLabel,
-}: {
-  fileName: string;
-  mimeType: string | undefined;
-  typeLabel: string | undefined;
-}) => {
-  if (typeLabel?.trim()) return typeLabel.trim().toUpperCase();
-
-  const normalizedMimeType = mimeType?.split(";")[0]?.trim().toLowerCase();
-  if (normalizedMimeType) {
-    const knownType = mimeTypeLabels[normalizedMimeType];
-    if (knownType) return knownType;
-
-    const subtype = normalizedMimeType.split("/")[1];
-    if (subtype) {
-      return subtype.replace(/^x-/, "").split(/[.+-]/).at(-1)!.toUpperCase();
-    }
-  }
-
-  const cleanFileName = fileName.split(/[?#]/)[0] ?? fileName;
-  const extension = cleanFileName.includes(".")
-    ? cleanFileName.split(".").at(-1)
-    : undefined;
-  return extension?.trim() ? extension.toUpperCase() : "FILE";
-};
 
 const convertImageBlobToPng = async (blob: Blob) => {
   const objectUrl = URL.createObjectURL(blob);
@@ -308,6 +256,7 @@ export const ChatPanelImage = ({
   previewTitle = "Generated image preview",
   src,
 }: ChatPanelImageProps) => {
+  const messages = useCommaMessages();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewInstantMotion, setPreviewInstantMotion] = useState(false);
@@ -329,20 +278,15 @@ export const ChatPanelImage = ({
   );
 
   const copyImage = async () => {
-    try {
-      if (onCopy) {
-        await onCopy();
-      } else {
-        await copyImageSource(src);
-      }
-      setCopyState("copied");
-      if (resetTimerRef.current) resetTimerRef.current();
-      resetTimerRef.current = uiClock.after(1400, () => setCopyState("idle"));
-    } catch {
-      setCopyState("error");
-      if (resetTimerRef.current) resetTimerRef.current();
-      resetTimerRef.current = uiClock.after(2000, () => setCopyState("idle"));
-    }
+    const success = await copyWithFeedback(
+      () => (onCopy ? onCopy() : copyImageSource(src)),
+      messages
+    );
+    setCopyState(success ? "copied" : "error");
+    if (resetTimerRef.current) resetTimerRef.current();
+    resetTimerRef.current = uiClock.after(success ? 1400 : 2000, () =>
+      setCopyState("idle")
+    );
   };
 
   const openPreview = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -459,7 +403,7 @@ export const ChatPanelFile = ({
         />
       ) : null}
       <span aria-hidden className="chat-panel-file-icon">
-        <FileTextIcon className="size-3xl" />
+        <FileTypeIcon className="size-3xl" fileName={fileName} mimeType={mimeType} />
       </span>
       <div className="chat-panel-file-details">
         <p className="chat-panel-file-name" title={fileName}>
@@ -631,7 +575,9 @@ export const ChatPanelVideo = ({
 
   useEffect(() => {
     const nextSuppliedAspectRatio = normalizeVideoAspectRatio(aspectRatio);
-    if (!nextSuppliedAspectRatio) return;
+    // The decoded video size is the truth once known; a supplied ratio only
+    // stands in for it until metadata arrives.
+    if (!nextSuppliedAspectRatio || ratioSourceRef.current === "metadata") return;
     ratioSourceRef.current = "supplied";
     setResolvedAspectRatio(nextSuppliedAspectRatio);
   }, [aspectRatio]);
@@ -666,7 +612,6 @@ export const ChatPanelVideo = ({
     event: React.SyntheticEvent<HTMLVideoElement>
   ) => {
     controller.handleLoadedMetadata(event);
-    if (suppliedAspectRatio) return;
     const video = event.currentTarget;
     const metadataAspectRatio = normalizeVideoAspectRatio(
       video.videoHeight > 0 ? video.videoWidth / video.videoHeight : undefined

@@ -2,7 +2,12 @@ import { useCall, useTopic } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
 import { uiClock } from "@comma/ui/clock";
-import { CallIcon, MicrophoneOffIcon } from "@comma/ui/components/icons";
+import { Button } from "@comma/ui/components/Button";
+import {
+  CallFilledIcon,
+  CallIcon,
+  MicrophoneOffFilledIcon,
+} from "@comma/ui/components/icons";
 import { toast } from "@comma/ui/components/toast";
 import { cx } from "@comma/ui/components/utils";
 import {
@@ -48,24 +53,28 @@ export function HomeCallControl({ workspaceId }: { workspaceId: string | undefin
   const { value: voice } = useTopic(
     enabled && workspaceId ? { topic: "voice", prefer: workspaceId } : null
   );
-  const ready = voice?.integration?.readiness.ready === true;
+  // The call goes over the voice API, not a phone line: an older server without its own readiness has only the line's.
+  const integration = voice?.integration;
+  const ready = (integration?.call_readiness ?? integration?.readiness)?.ready === true;
   if (!enabled || !voiceCall?.available) return null;
   if (voiceCall.phase !== "idle") return <CallCardAt />;
   if (!workspaceId || !ready) return null;
   return (
     <div className="comma-call-anchor">
-      <AriaButton
+      {/* The header row's own action size, beside the browser's: room above and below in the row. */}
+      <Button
         aria-label={m.voice_call_start()}
-        className="comma-call-button comma-icon-press"
+        hierarchy="tertiary-gray"
+        size="xs"
+        iconOnly
+        iconLeading={<CallIcon aria-hidden />}
         data-testid="voice-call-start"
         onPress={() => {
           void call("voiceCall.start", { workspace: workspaceId }).catch(() =>
             toast.error(m.voice_call_failed())
           );
         }}
-      >
-        <CallIcon aria-hidden className="size-5" />
-      </AriaButton>
+      />
     </div>
   );
 }
@@ -141,7 +150,7 @@ function CallCard() {
           onPress={() => void call("voiceCall.setMuted", { muted: !muted })}
         >
           {/* The phones' mute key: the crossed microphone, lit while muted. */}
-          <MicrophoneOffIcon aria-hidden className="size-5" />
+          <MicrophoneOffFilledIcon aria-hidden className="size-5" />
         </AriaButton>
         <AriaButton
           aria-label={m.voice_call_end()}
@@ -149,7 +158,7 @@ function CallCard() {
           data-testid="voice-call-end"
           onPress={() => void call("voiceCall.end", {})}
         >
-          <CallIcon aria-hidden className="comma-call-hang-up-icon size-5" />
+          <CallFilledIcon aria-hidden className="comma-call-hang-up-icon size-5" />
         </AriaButton>
       </div>
     </div>
@@ -265,6 +274,13 @@ export function DesktopCallAudio() {
               void bridge.voiceCall.microphone(pcm).catch(() => undefined),
             played: (name) =>
               void bridge.voiceCall.played({ name }).catch(() => undefined),
+            underrun: (gapMs) =>
+              console.warn(
+                "[voice call] the Router's audio ran out before its next frame",
+                {
+                  gapMs,
+                }
+              ),
           });
           current = next;
           setAudio(next);

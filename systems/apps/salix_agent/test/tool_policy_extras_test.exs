@@ -392,6 +392,39 @@ defmodule SalixAgent.ToolPolicyExtrasTest do
     assert Jason.decode!(read_result.content)["api"] == "slack.search"
   end
 
+  # Staging, 2026-10-30: a Router told its Worker to find a conversation with
+  # internal.task.list, which only a Router may call; the Worker's help said
+  # "not helpable". The Router now sees which of its tools a Worker lacks.
+  test "a Router sees which of its operations a Worker cannot call" do
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
+
+    router = ctx_for("router", :internal)
+    worker = ctx_for("worker", :internal)
+
+    %{"apis" => apis} =
+      run_tool("im.provider_apis_list", %{"provider" => "internal"})
+      |> Map.fetch!(:content)
+      |> Jason.decode!()
+
+    marked = for api <- apis, api["router_only"], do: api["api"]
+    assert "internal.task.list" in marked
+    refute "internal.search_conversations" in marked
+    refute "internal.send_message" in marked
+
+    router_help = Tools.help(%{"tool" => "im_api.internal.task.list"}, router) |> Jason.decode!()
+    assert router_help["manual"] =~ ToolDisclosure.router_only_note()
+
+    send_help = Tools.help(%{"tool" => "im_api.internal.send_message"}, router) |> Jason.decode!()
+    refute send_help["manual"] =~ ToolDisclosure.router_only_note()
+
+    # The Worker has no such tool, and its view carries no Router mark.
+    assert {:tool_status, "guidance", refusal, _} =
+             Tools.help(%{"tool" => "im_api.internal.task.list"}, worker)
+
+    assert refusal =~ "not helpable"
+    refute Enum.any?(worker.tool_disclosure["tools"], & &1["router_only"])
+  end
+
   test "dynamic IM operation can be called directly when facts are known" do
     SystemsRuntime.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
 
@@ -421,6 +454,36 @@ defmodule SalixAgent.ToolPolicyExtrasTest do
              "provider" => "slack",
              "api" => "slack.post_message"
            }
+  end
+
+  test "a provider call names its current source and every source its activation holds" do
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
+
+    origin = %{
+      "provider" => "slack",
+      "source_actor_type" => "provider_user",
+      "source_message_id" => "src-next"
+    }
+
+    res =
+      run_tool(
+        "im_api.slack.post_message",
+        %{"connect_id" => "sl1", "channel" => "C1", "text" => "hi", "thread_ts" => "123.45"},
+        %{
+          source_message_id: "src-next",
+          source_message_ids: ["src-mention", "src-next"],
+          trusted_origin: origin,
+          trusted_origins: [origin]
+        }
+      )
+
+    refute res.error
+    context = Jason.decode!(res.content)["args"]["tool_context"]
+
+    # Authorization reads the current source alone; reply observation reads
+    # the activation's sources (`SalixIM.MentionReplyLatency`).
+    assert context["source_message_ids"] == ["src-next"]
+    assert context["activation_source_message_ids"] == ["src-mention", "src-next"]
   end
 
   for {name, envelope} <- [

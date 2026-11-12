@@ -169,7 +169,6 @@ defmodule Comma.MixProject do
       salix_web: :load,
       salix_env: :load,
       salix_analytics: :load,
-      salix_migrate: :load,
       salix_media: :load,
       salix_meet_native: :load,
       salix_meet: :load,

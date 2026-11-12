@@ -16,7 +16,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
-const BIN: &str = env!("CARGO_BIN_EXE_stillfail-runner");
+const BIN: &str = env!("CARGO_BIN_EXE_comma-runner");
 
 /// A short path: socket paths are limited to about 100 bytes.
 fn tmpdir(name: &str) -> PathBuf {
@@ -445,7 +445,7 @@ fn a_directory_too_long_for_a_socket_keeps_it_under_tmp() {
     let info = ready_line(child.stdout.take().unwrap());
     let mut runner = Runner { dir, info, child: Some(child) };
     let sock = PathBuf::from(runner.info["socket"].as_str().unwrap());
-    let own = PathBuf::from(format!("/tmp/stillfail-runner-{}", unsafe { libc::geteuid() }));
+    let own = PathBuf::from(format!("/tmp/comma-runner-{}", unsafe { libc::geteuid() }));
     assert_eq!(sock.parent(), Some(own.as_path()));
     assert_eq!(fs::symlink_metadata(&own).unwrap().permissions().mode() & 0o777, 0o700);
     assert_eq!(fs::metadata(&sock).unwrap().permissions().mode() & 0o777, 0o600);

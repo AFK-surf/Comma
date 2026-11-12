@@ -1,4 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  requestScreenOnHome,
+  type PendingScreen,
+} from "../remote-screen/pendingScreen";
+import { hasScreenModels, latestRunningModel } from "../remote-screen/screenModels";
+import {
+  useScreenDevicesEnabled,
+  useScreenListing,
+} from "../remote-screen/useScreenListing";
 import { useNavigate } from "@tanstack/react-router";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
@@ -25,6 +34,7 @@ import { AddComputerCommand } from "./AddComputerCommand";
 import { LinuxComputeCommand } from "./LinuxComputeCommand";
 import { AddCommaDeviceOption, AddDevice } from "./AddDevice";
 import { prefillDeviceDraft } from "./routerDeviceDraft";
+import { PluginBrandArtwork } from "../plugins/PluginBrandArtwork";
 
 import { useComputeSettingsController } from "../useComputeSettingsController";
 import { ComputeSettingsView } from "../ComputeSettingsView";
@@ -39,6 +49,7 @@ export function useDeviceSettingsCategory(
   const navigate = useNavigate();
   const registry = useOptionalChatActionRegistry();
   const overlay = useCommaSettingsOverlay();
+  const screenViews = useScreenDevicesEnabled();
   const local = useCommaConnectorScope(enabled);
   const bridge = getNativeBridge();
   const workspaceId = useWorkspacePreference();
@@ -78,7 +89,10 @@ export function useDeviceSettingsCategory(
       : null
   );
   const viaOf = new Map(
-    (stationsShown?.stations ?? []).flatMap((station) =>
+    [
+      ...(stationsShown?.stations ?? []),
+      ...(stationsShown?.ownComputers ?? []),
+    ].flatMap((station) =>
       station.link.state === "online" && station.link.via
         ? [[station.id, station.link.via] as const]
         : []
@@ -89,10 +103,13 @@ export function useDeviceSettingsCategory(
     id: string;
     name: string;
     commaDevice: boolean;
+    /** A still.fail station: removing it is the still.fail plugin's Disconnect. */
+    stillfail: boolean;
   }>();
   const [deviceName, setDeviceName] = useState("");
   const [managementPending, setManagementPending] = useState(false);
-  const [managementError, setManagementError] = useState(false);
+  // Why the last rename or removal failed: the server's code when it names one, else just that it failed.
+  const [managementError, setManagementError] = useState<string | false>(false);
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
   const [accessPending, setAccessPending] = useState<readonly string[]>([]);
@@ -132,6 +149,21 @@ export function useDeviceSettingsCategory(
   useEffect(() => () => action.current?.abort(), [workspaceId, enabled]);
 
   const current = devices.find((device) => device.device_id === local.deviceId);
+  // This computer's simulators and emulators, for its "View simulators": one read of its station every 5 s
+  // (useScreenListing's, shared with any screen tab of it) while this page shows and the mesh is on.
+  const localScreens = useScreenListing(
+    shownWorkspace,
+    current?.station_id && current.status === "connected"
+      ? current.device_id
+      : undefined,
+    enabled && screenViews
+  );
+  /** A screen of this computer's in a tab beside Home's chat. */
+  const showOnHome = (screen: PendingScreen) => {
+    requestScreenOnHome(screen);
+    overlay.closeSettings();
+    void navigate({ to: "/" });
+  };
   // Which account this Mac's Codex and Claude Code run on in the workspace: a dropdown on each agent's row. Read from
   // this Mac's station over its local channel (not the mesh); other computers keep their rows as reported.
   const machineWorkspace =
@@ -203,8 +235,9 @@ export function useDeviceSettingsCategory(
         });
       if (management.kind === "remove") await call("devices.refresh", {});
       setManagement(undefined);
-    } catch {
-      setManagementError(true);
+    } catch (reason) {
+      const code = (reason as { code?: unknown } | null)?.code;
+      setManagementError(typeof code === "string" ? code : "failed");
     } finally {
       setManagementPending(false);
     }
@@ -215,10 +248,66 @@ export function useDeviceSettingsCategory(
       id: device.device_id,
       name: device.name,
       commaDevice: !!device.isCommaDevice,
+      stillfail: !!device.isStillfailStation,
     });
     setDeviceName(device.name);
     setManagementError(false);
   };
+  /**
+   * A still.fail station as the still.fail plugin shows it: its mark, its connection, the models it runs Tasks with
+   * (nothing when it reports none), and Disconnect, the same removal as the plugin's. It has no access value and
+   * answers no coding-agent check, and it names itself each time it connects.
+   */
+  const stillfailCard = (device: ShownDevice) => ({
+    id: device.device_id,
+    name: device.name,
+    mark: <PluginBrandArtwork brand="stillfail" name="still.fail" />,
+    badge: m.settings_devices_stillfail_station(),
+    detail:
+      device.status === "connected"
+        ? m.plugins_station_connected()
+        : m.plugins_station_offline(),
+    metadata: (
+      [
+        [m.settings_devices_device_id(), device.device_id],
+        [
+          m.settings_devices_disconnected_at(),
+          device.status !== "connected" && device.disconnected_at
+            ? new Date(device.disconnected_at * 1000).toLocaleString()
+            : undefined,
+        ],
+      ] as const
+    ).flatMap(([label, value]) => (value ? [[label, value] as [string, string]] : [])),
+    local: false,
+    connected: device.status === "connected",
+    status:
+      device.status === "connected"
+        ? m.plugins_station_connected()
+        : m.plugins_station_offline(),
+    agents: Object.entries(device.task_models ?? {})
+      .filter(([, models]) => models.length > 0)
+      .map(([provider, models]) => ({
+        id: `models_${provider}`,
+        provider,
+        name:
+          ({ codex: "Codex", claude: "Claude Code" } as Record<string, string>)[
+            provider
+          ] ?? provider,
+        status: "",
+        ready: true,
+        models: models.join(", "),
+        details: [[m.settings_devices_models(), models.join(", ")] as [string, string]],
+      })),
+    emptyAgentsLabel: null,
+    menu: [
+      {
+        id: "disconnect",
+        label: m.plugins_station_disconnect(),
+        destructive: true,
+        onAction: () => openManagement("remove", device),
+      },
+    ],
+  });
   // The Cloud VM belongs to the workspace: it can be renamed, not deleted here.
   const card = (device: ShownDevice | undefined, isLocal: boolean, isCloud = false) => {
     // The computer's one access value; a server from before says only whether it allows operations, and this
@@ -239,6 +328,9 @@ export function useDeviceSettingsCategory(
       const readiness = device?.tasks_readiness;
       if (!readiness || readiness === "offline" || readiness === "ready")
         return undefined;
+      // A computer below Full says no Tasks capability, whatever station it runs.
+      if (device?.access === "off" || device?.access === "read")
+        return m.settings_devices_tasks_needs_access();
       if (readiness === "device_needs_station")
         return m.settings_devices_tasks_needs_station();
       if (readiness === "station_outdated") return m.settings_devices_tasks_outdated();
@@ -249,7 +341,7 @@ export function useDeviceSettingsCategory(
         comma_dev: "Comma Dev",
         comma_staging: "Comma Staging",
         comma: "Comma",
-        connector: "Connector",
+        connector: "Station",
       } as Record<string, string>
     )[device?.system_info?.client_source ?? ""];
     const path = (() => {
@@ -565,6 +657,59 @@ export function useDeviceSettingsCategory(
           ? m.settings_devices_disconnected()
           : m.settings_devices_connecting(),
       menu: [
+        // The mesh on (useScreenDevicesEnabled): this person's computer's screen, in a tab beside Home's chat. Only where its station says
+        // it serves the display (`screen_view`: a Mac's or Windows' station, not Linux's). When an older server leaves it out,
+        // the core infers it from the platform (`screenSaid`), and the view may then fail. Not this device's own: it
+        // would show itself inside itself (its simulators and phones are in the screen panel's menu).
+        ...(!isLocal &&
+        device?.station_id &&
+        device.screen_view === true &&
+        device.status === "connected" &&
+        !isCloud &&
+        shownWorkspace !== undefined &&
+        screenViews
+          ? [
+              {
+                id: "view-screen",
+                label: m.remote_screen_view(),
+                onAction: () =>
+                  showOnHome({
+                    workspaceId: shownWorkspace,
+                    device: device.device_id,
+                    apps: [],
+                    target: "display",
+                  }),
+              },
+            ]
+          : []),
+        // This device's own: its simulators and emulators, where its station has any. The one chosen last of those
+        // running shows; where none runs, the tab offers its models to start.
+        ...(isLocal &&
+        device?.station_id &&
+        device.status === "connected" &&
+        shownWorkspace !== undefined &&
+        screenViews &&
+        hasScreenModels(localScreens)
+          ? [
+              {
+                id: "view-simulators",
+                label: m.remote_screen_view_simulators(),
+                onAction: () => {
+                  const running = latestRunningModel(
+                    localScreens,
+                    shownWorkspace,
+                    device.device_id
+                  );
+                  showOnHome({
+                    workspaceId: shownWorkspace,
+                    device: device.device_id,
+                    apps: [],
+                    ...(running ? { screen: running } : { target: "models" as const }),
+                  });
+                },
+              },
+            ]
+          : []),
         ...(device
           ? [
               {
@@ -577,7 +722,7 @@ export function useDeviceSettingsCategory(
         // The sandbox's own: stop it, disconnect it from the workspace, its settings.
         ...(isLocal && compute.node.available && compute.eligible
           ? [
-              ...(compute.card.kind === "available" && compute.canManage
+              ...(compute.binding && compute.canManage
                 ? [
                     {
                       id: "sandbox-stop",
@@ -588,8 +733,6 @@ export function useDeviceSettingsCategory(
                 : []),
               ...(compute.binding &&
               compute.canManage &&
-              (compute.card.kind === "available" ||
-                compute.card.kind === "attention") &&
               !compute.card.actions.some((entry) => entry.id === "remove")
                 ? [
                     {
@@ -668,7 +811,9 @@ export function useDeviceSettingsCategory(
         (device) =>
           bridge.platform !== "electron" || device.device_id !== local.deviceId
       )
-      .map((device) => card(device, false)),
+      .map((device) =>
+        device.isStillfailStation ? stillfailCard(device) : card(device, false)
+      ),
   ];
 
   const openRouter = async () => {
@@ -731,7 +876,15 @@ export function useDeviceSettingsCategory(
     id: "devices",
     icon: "devices",
     label: m.settings_devices(),
-    sections: [],
+    // Search still needs one indexable entry for the page; the page itself
+    // renders through `content`.
+    sections: [
+      {
+        id: "devices.list",
+        title: m.settings_devices(),
+        items: [{ id: "devices.list.page", title: m.settings_devices() }],
+      },
+    ],
     overlay: compute.nodeOverlay ?? compute.workloads.overlay,
     content: (
       <>
@@ -903,13 +1056,17 @@ export function useDeviceSettingsCategory(
             title={
               management.kind === "rename"
                 ? m.settings_devices_rename()
-                : m.settings_devices_remove()
+                : management.stillfail
+                  ? m.plugins_station_disconnect_title({ name: management.name })
+                  : m.settings_devices_remove()
             }
             description={
               management.kind === "remove"
                 ? management.commaDevice
                   ? m.devices_remove_message({ name: management.name })
-                  : m.settings_devices_remove_description({ name: management.name })
+                  : management.stillfail
+                    ? m.plugins_station_disconnect_description()
+                    : m.settings_devices_remove_description({ name: management.name })
                 : undefined
             }
             {...(management.kind === "rename"
@@ -940,7 +1097,9 @@ export function useDeviceSettingsCategory(
                 label:
                   management.kind === "rename"
                     ? m.settings_profile_save()
-                    : m.settings_devices_remove(),
+                    : management.stillfail
+                      ? m.plugins_station_disconnect()
+                      : m.settings_devices_remove(),
                 hierarchy: management.kind === "rename" ? "primary" : "destructive",
                 disabled:
                   managementPending ||
@@ -953,7 +1112,9 @@ export function useDeviceSettingsCategory(
           >
             {managementError && (
               <p role="alert" className="text-sm text-error-primary">
-                {m.settings_devices_manage_failed()}
+                {managementError === "device_stop_unconfirmed"
+                  ? m.settings_devices_remove_stop_unconfirmed()
+                  : m.settings_devices_manage_failed()}
               </p>
             )}
           </Dialog>

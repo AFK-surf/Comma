@@ -1,7 +1,8 @@
 // The station's commands other than `run` (the Rust station's main.rs `main`): enroll, status, id. Their output is what
-// people and `bin/stillfail` read, so its words are the catalog's, as the Rust station says them.
-import { existsSync, readFileSync } from "node:fs";
+// people and `bin/comma-station` read, so its words are the catalog's, as the Rust station says them.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { INSTANCES_DIR } from "./accounts/sources.ts";
 import { loadKey } from "./cloud/key.ts";
 import { readState, writeState, type CloudState } from "./cloud/state.ts";
 import { type Provider, specOf } from "./cloud/provider.ts";
@@ -29,6 +30,26 @@ export function placedState(origin: string, id: string, body: any, provider: Pro
   return state;
 }
 
+/// The connection to Salix an enrollment gave this machine: an instance of the station's (connector/service.ts), as the
+/// desktop app's are, under the name a later enrollment replaces.
+export function writeDeviceInstance(data: string, origin: string, connector: any) {
+  const dir = join(data, INSTANCES_DIR);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const config = {
+    comma: { workspace_id: connector.workspace_id },
+    connector: {
+      connector_token: connector.token,
+      name: connector.name,
+      reconnect: true,
+      device: true,
+      device_state_root: join(data, "connector", "device"),
+      workspace_id: connector.workspace_id,
+      server: connector.server || origin,
+    },
+  };
+  writeFileSync(join(dir, "device.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
 /// Joins a workspace with a one-time token: proves this station holds its key, writes cloud.json. `provider`: whose
 /// control plane it is (still.fail cloud unless told; cloud/provider.ts).
 export async function enroll(data: string, origin: string, token: string, provider: Provider = "stillfail") {
@@ -53,8 +74,10 @@ export async function enroll(data: string, origin: string, token: string, provid
     if (error !== "invalid_signature") throw new Error(`${plane.name} answered ${response.status}: ${text}`);
   }
   if (!response!.ok) throw new Error(`${plane.name} answered ${response!.status}: ${await response!.text()}`);
-  const state = placedState(origin, key.id, await response!.json(), provider);
+  const body: any = await response!.json();
+  const state = placedState(origin, key.id, body, provider);
   writeState(data, state);
+  if (typeof body?.connector?.token === "string") writeDeviceInstance(data, origin, body.connector);
   console.log(tr(stationLang(), "station.cli.joined", { workspace: state.workspace_name, name: state.name, id: key.id.slice(0, 12) }));
 }
 

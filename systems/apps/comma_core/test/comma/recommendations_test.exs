@@ -436,10 +436,11 @@ defmodule Comma.RecommendationsTest do
 
     stored = Repo.get!(RecommendationProfile, profile.id)
 
-    assert Comma.MemberSourceConsents.connection_id(workspace.id, user["id"], "gmail") ==
-             "ca-new-mail"
+    # A second account of the toolkit is consented beside the first.
+    assert Map.get(Comma.MemberSourceConsents.bindings(workspace.id, user["id"]), "gmail") ==
+             ["ca-mail", "ca-new-mail"]
 
-    assert Comma.MemberSourceConsents.connection_id(workspace.id, user["id"], "googlecalendar") ==
+    assert consented_id(workspace.id, user["id"], "googlecalendar") ==
              "ca-calendar"
 
     assert stored.schedule_hour == 14 and stored.schedule_minute == 25
@@ -654,5 +655,13 @@ defmodule Comma.RecommendationsTest do
       "template" => "text-list@1",
       "title" => "Unsupported"
     }
+  end
+
+  # The toolkit's one consented account, or nil.
+  defp consented_id(workspace_id, user_id, toolkit) do
+    case Comma.MemberSourceConsents.toolkit_bindings(workspace_id, user_id, toolkit) do
+      [] -> nil
+      [%{"connection_id" => id}] -> id
+    end
   end
 end

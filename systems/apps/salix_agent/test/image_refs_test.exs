@@ -389,6 +389,33 @@ defmodule SalixAgent.ImageRefsTest do
     assert message.content == image_read_content("/large.png", byte_size(source))
   end
 
+  @tag skip: is_nil(System.find_executable("heif-dec")) && "heif-dec is not installed"
+  test "a read HEIC photo reaches the model as JPEG", %{agent: a} do
+    source = SalixMedia.TestImage.small_heic()
+    {:ok, ev} = AgentWorkspace.prepare_write(a, "/IMG_1.HEIC", source)
+    assert {:ok, _} = AgentWorkspace.seed_operation(a, "heic-seed", %{}, [ev])
+
+    message = %{
+      role: "tool",
+      tool_name: "fs.read_file",
+      tool_call_id: "heic",
+      content:
+        Jason.encode!([
+          %{
+            "type" => "image",
+            "file_ref" => %{"environment_id" => "vfs", "path" => "/IMG_1.HEIC"},
+            "file_name" => "IMG_1.HEIC",
+            "mime_type" => "image/heic",
+            "size_bytes" => byte_size(source)
+          }
+        ])
+    }
+
+    assert [inlined] = ImageRefs.inline([message], %{agent_id: a})
+    assert [image] = Jason.decode!(inlined.content)
+    assert "data:image/jpeg;base64," <> _ = image["image_url"]["url"]
+  end
+
   test "an inbound user image is announced by path, never sent as model input", %{agent: a} do
     content = image_read_content("/pic.png", 8)
     [image_ref | _] = Jason.decode!(content)

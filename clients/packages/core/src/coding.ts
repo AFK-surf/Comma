@@ -3,7 +3,9 @@
 // so web and desktop work the same and no station need be reached from here.
 //
 // - `coding.repos`, `coding.branches`: one page (100) of what the workspace's connected GitHub account reaches.
-// - `coding.start`: a coding Task with its first message, owned by the person; made once per `key`.
+// - `coding.start`: a coding Task with its first message, owned by the person; made once per `key`. The files it
+//   names (`chat.uploadTaskFile`) are listed in that message as the composer lists them: the server binds them to it and
+//   the sandbox's station fetches them into its session's uploads, as for any message to the Task.
 // - `coding.session`: where the session stands: its repository and branch, and its sandbox's state.
 // - `coding.changes`: the session branch's changes, from the sandbox, or from GitHub once the sandbox is gone.
 // - `coding.history`: a page of the Session's execution history and its token use, from the sandbox
@@ -14,10 +16,15 @@
 //
 // Bounds: each call is one request, made when the person asks; reads of the same changes asked while one is on its way
 // (the Task's surfaces after a turn) share its answer.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Deferred, Effect } from "effect";
 import { z } from "zod";
 import { route } from "./api.ts";
+import {
+  composeMessageWithAttachments,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+} from "./chat/model/protocol.ts";
 import { historyItems } from "./coding-history.ts";
 import { pullRequestSchema, toPullRequest, usageSchema } from "./coding-wire.ts";
 import { CodingPullRequests } from "./coding-pull-requests.ts";
@@ -47,82 +54,119 @@ const optional = (raw: unknown, name: string, max = 256): string | undefined => 
   return typeof v === "string" && v !== "" && v.length <= max ? v : undefined;
 };
 
+/** The workspace files `coding.start` names, at most a message's. */
+const uploads = (raw: unknown): { name: string; path: string }[] => {
+  const v = (raw as { uploads?: unknown } | null)?.uploads;
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > MAX_ATTACHMENTS_PER_MESSAGE)
+    throw CoreError.invalid("uploads are invalid");
+  return v.map((u) => ({ name: text(u, "name", 1024), path: text(u, "path", 1024) }));
+};
+
+/** The first message `coding.start` sends: its words and the files it names, which may be them alone. */
+const message = (raw: unknown): string => {
+  const words = (raw as { text?: unknown } | null)?.text;
+  const v = composeMessageWithAttachments(
+    typeof words === "string" ? words : "",
+    uploads(raw)
+  );
+  if (v.trim() === "" || v.length > 16_000) throw CoreError.invalid("text is required");
+  return v;
+};
+
 const page = (raw: unknown): number => {
   const v = (raw as Record<string, unknown> | null)?.page;
   return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100 ? v : 1;
 };
 
-const repoSchema = z.object({
-  owner: z.string(),
-  name: z.string(),
-  default_branch: z.string().nullish(),
-  private: z.boolean().optional(),
-  pushed_at: z.string().nullish(),
-});
+const browsePage = (raw: unknown): number => {
+  const value = (raw as Record<string, unknown> | null)?.page;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+    ? value
+    : 1;
+};
 
-const pullRequestAnswer = z.object({ pull_request: pullRequestSchema.nullable() });
-
-const changesSchema = z.object({
-  source: z.enum(["sandbox", "github"]),
-  base: z.string().optional(),
-  branch: z.string().optional(),
-  truncated: z.boolean().optional(),
-  files: z
-    .array(
-      z.object({
-        path: z.string(),
-        status: z.string(),
-        additions: z.number().nullish(),
-        deletions: z.number().nullish(),
-        patch: z.string().nullish(),
-      })
-    )
-    .max(1000),
-  pull_request: pullRequestSchema.nullish(),
-  commits: z
-    .array(
-      z.object({
-        sha: z.string(),
-        title: z.string(),
-        author: z.string().nullish(),
-        at: z.string().nullish(),
-      })
-    )
-    .max(250)
-    .optional(),
-  uncommitted: z.boolean().optional(),
-});
-
-const historySchema = z.object({
-  available: z.boolean(),
-  start: z.number().int().min(0),
-  total: z.number().int().min(0),
-  entries: z
-    .array(
-      z.object({
-        at: z.string().nullable(),
-        kind: z.string(),
-        text: z.string(),
-        tool: z.string().optional(),
-        ok: z.boolean().optional(),
-        callId: z.string().optional(),
-        subagent: z.boolean().optional(),
-      })
-    )
-    .max(200),
-  usage: usageSchema.nullish(),
-});
-
-const sessionSchema = z.object({
-  repo: z.object({
+const repoSchema = lazySchema(() =>
+  z.object({
     owner: z.string(),
     name: z.string(),
-    base_ref: z.string().nullish(),
-    branch: z.string().nullish(),
-  }),
-  state: z.enum(["starting", "ready", "stopped", "lost", "failed", "ended"]),
-  reason: z.string().nullish(),
-});
+    default_branch: z.string().nullish(),
+    private: z.boolean().optional(),
+    pushed_at: z.string().nullish(),
+  })
+);
+
+const pullRequestAnswer = lazySchema(() =>
+  z.object({ pull_request: pullRequestSchema.nullable() })
+);
+
+const changesSchema = lazySchema(() =>
+  z.object({
+    source: z.enum(["sandbox", "github"]),
+    base: z.string().optional(),
+    branch: z.string().optional(),
+    truncated: z.boolean().optional(),
+    files: z
+      .array(
+        z.object({
+          path: z.string(),
+          status: z.string(),
+          additions: z.number().nullish(),
+          deletions: z.number().nullish(),
+          patch: z.string().nullish(),
+        })
+      )
+      .max(1000),
+    pull_request: pullRequestSchema.nullish(),
+    commits: z
+      .array(
+        z.object({
+          sha: z.string(),
+          title: z.string(),
+          author: z.string().nullish(),
+          at: z.string().nullish(),
+        })
+      )
+      .max(250)
+      .optional(),
+    uncommitted: z.boolean().optional(),
+  })
+);
+
+const historySchema = lazySchema(() =>
+  z.object({
+    available: z.boolean(),
+    start: z.number().int().min(0),
+    total: z.number().int().min(0),
+    entries: z
+      .array(
+        z.object({
+          at: z.string().nullable(),
+          kind: z.string(),
+          text: z.string(),
+          tool: z.string().optional(),
+          ok: z.boolean().optional(),
+          callId: z.string().optional(),
+          subagent: z.boolean().optional(),
+        })
+      )
+      .max(200),
+    usage: usageSchema.nullish(),
+  })
+);
+
+const sessionSchema = lazySchema(() =>
+  z.object({
+    repo: z.object({
+      owner: z.string(),
+      name: z.string(),
+      base_ref: z.string().nullish(),
+      branch: z.string().nullish(),
+    }),
+    state: z.enum(["starting", "ready", "stopped", "lost", "failed", "ended"]),
+    reason: z.string().nullish(),
+  })
+);
 
 const base = (workspace: string) => route`/v1/comma/workspaces/${workspace}/coding`;
 
@@ -175,6 +219,73 @@ export function registerCoding(ctx: Ctx): void {
           )
         ),
     },
+    "coding.repoOwners": {
+      run: (p) =>
+        request(
+          "GET",
+          `${base(text(p, "workspaceId"))}/repo-owners?page=${browsePage(p)}`,
+          z.object({
+            owners: z
+              .array(
+                z.object({
+                  login: z.string(),
+                  kind: z.enum(["user", "organization"]),
+                  avatar_url: z.string().nullish(),
+                })
+              )
+              .max(101),
+            has_more: z.boolean(),
+          })
+        ).pipe(
+          Effect.map((r) => ({
+            owners: r.owners.map((owner) => ({
+              login: owner.login,
+              kind: owner.kind,
+              avatarUrl: owner.avatar_url ?? null,
+            })),
+            hasMore: r.has_more,
+          }))
+        ),
+    },
+    "coding.repoSearch": {
+      run: (p) => {
+        const owner = text(p, "owner", 100);
+        const kind = text(p, "kind");
+        if (kind !== "user" && kind !== "organization")
+          throw CoreError.invalid("Invalid repository owner kind");
+        const term = (p as { query?: unknown }).query ?? "";
+        if (typeof term !== "string" || term.length > 100)
+          throw CoreError.invalid("Repository search is too long");
+        const query = new URLSearchParams({
+          owner,
+          kind,
+          q: term,
+          page: String(browsePage(p)),
+        });
+        return request(
+          "GET",
+          `${base(text(p, "workspaceId"))}/repo-search?${query}`,
+          z.object({
+            repos: z.array(repoSchema).max(100),
+            has_more: z.boolean(),
+            limited: z.boolean(),
+          })
+        ).pipe(
+          Effect.map((r) => ({
+            repos: r.repos.map(
+              (repo): CodingRepo => ({
+                owner: repo.owner,
+                name: repo.name,
+                defaultBranch: repo.default_branch ?? null,
+                private: repo.private ?? false,
+              })
+            ),
+            hasMore: r.has_more,
+            limited: r.limited,
+          }))
+        );
+      },
+    },
     "coding.branches": {
       run: (p) =>
         request(
@@ -192,14 +303,19 @@ export function registerCoding(ctx: Ctx): void {
         const model = (p as { model?: Record<string, unknown> } | null)?.model;
         const body = {
           client_request_id: text(p, "key", 128),
-          text: text(p, "text", 16_000),
-          repo: {
-            owner: text(repo, "owner", 100),
-            name: text(repo, "name", 100),
-            ...(optional(repo, "baseRef")
-              ? { base_ref: optional(repo, "baseRef") }
-              : {}),
-          },
+          text: message(p),
+          // Without a repository the Task is a plain sandbox Task: the same sandbox, nothing checked out.
+          ...(repo
+            ? {
+                repo: {
+                  owner: text(repo, "owner", 100),
+                  name: text(repo, "name", 100),
+                  ...(optional(repo, "baseRef")
+                    ? { base_ref: optional(repo, "baseRef") }
+                    : {}),
+                },
+              }
+            : {}),
           ...(provider === "claude" || provider === "codex"
             ? {
                 model: {

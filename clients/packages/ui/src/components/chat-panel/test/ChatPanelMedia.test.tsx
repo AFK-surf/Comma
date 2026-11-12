@@ -1,3 +1,4 @@
+import { toast } from "../../toast";
 import userEvent from "@testing-library/user-event";
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import { useState } from "react";
@@ -67,9 +68,13 @@ const DetachedPlaybackHarness = () => {
 };
 
 afterEach(() => {
+  toast.dismissAll();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** The type whose artwork the file card's icon draws. */
+const iconType = () => screen.getByTestId("file-type-icon").dataset.fileType;
 
 describe("ChatPanel generated media", () => {
   it.each(["audio", "video"] as const)(
@@ -329,6 +334,7 @@ describe("ChatPanel generated media", () => {
     expect(fileSurface).not.toBeNull();
     expect(fileSurface?.querySelector(".chat-panel-file-icon")).toBeInTheDocument();
     expect(fileSurface?.querySelector('[data-slot="file-icon-surface"]')).toBeNull();
+    expect(iconType()).toBe("docx");
 
     rerender(
       <ChatPanelFile fileName="quarterly-report.pdf" mimeType="application/pdf" />
@@ -336,12 +342,40 @@ describe("ChatPanel generated media", () => {
     expect(screen.getByText("PDF")).toBeInTheDocument();
     expect(screen.queryByText(/PDF ·/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(iconType()).toBe("pdf");
 
     rerender(<ChatPanelFile fileName="cover.final.png" fileSize="840KB" />);
     expect(screen.getByText("PNG · 840KB")).toBeInTheDocument();
+    expect(iconType()).toBe("png");
+
+    rerender(<ChatPanelFile fileName="diagram.svg" mimeType="image/svg+xml" />);
+    expect(screen.getByText("SVG")).toBeInTheDocument();
+    expect(iconType()).toBe("svg");
+
+    rerender(<ChatPanelFile fileName="Brand.ai" mimeType="application/postscript" />);
+    expect(iconType()).toBe("ai");
+
+    rerender(<ChatPanelFile fileName="train.py" mimeType="text/x-python" />);
+    expect(iconType()).toBe("py");
+
+    // The label names the type the icon shows, even when the MIME type says otherwise.
+    rerender(<ChatPanelFile fileName="index.ts" mimeType="video/mp2t" />);
+    expect(screen.getByText("TS")).toBeInTheDocument();
+    expect(iconType()).toBe("ts");
+
+    rerender(
+      <ChatPanelFile fileName="data.json" mimeType="application/octet-stream" />
+    );
+    expect(screen.getByText("JSON")).toBeInTheDocument();
+    expect(iconType()).toBe("json");
+
+    rerender(<ChatPanelFile fileName="model.blend" />);
+    expect(screen.getByText("BLEND")).toBeInTheDocument();
+    expect(iconType()).toBe("none");
   });
 
-  it("uses the code-block icon swap after an image copy succeeds", async () => {
+  it("confirms an image copy with a toast and the code-block icon swap", async () => {
+    const success = vi.spyOn(toast, "success");
     const user = userEvent.setup();
     const imageBlob = new Blob(["generated image"], { type: "image/png" });
     const clipboardItem = { types: ["image/png"] };
@@ -372,6 +406,10 @@ describe("ChatPanel generated media", () => {
       "image/png": imageBlob,
     });
     expect(write).toHaveBeenCalledWith([clipboardItem]);
+    expect(success).toHaveBeenCalledWith(
+      "Copied",
+      expect.objectContaining({ id: "copy-feedback" })
+    );
     const copiedButton = screen.getByRole("button", { name: "Image copied" });
     expect(copiedButton.querySelector(".t-icon-swap")).toHaveAttribute(
       "data-state",
@@ -439,6 +477,62 @@ describe("ChatPanel generated media", () => {
       .querySelector<HTMLElement>(".chat-panel-media-preview-stage");
     expect(
       previewStage?.style.getPropertyValue("--chat-panel-video-aspect-ratio")
+    ).toBe("0.5625");
+  });
+
+  it("lets the decoded video size override a supplied aspect ratio", () => {
+    const { container } = render(
+      <ChatPanelVideo
+        alt="Portrait clip"
+        aspectRatio={16 / 9}
+        poster={imageSource}
+        src={videoSource}
+      />
+    );
+
+    const video = screen.getByLabelText("Portrait clip") as HTMLVideoElement;
+    Object.defineProperties(video, {
+      videoHeight: { configurable: true, value: 1280 },
+      videoWidth: { configurable: true, value: 720 },
+    });
+    fireEvent.loadedMetadata(video);
+
+    expect(
+      container
+        .querySelector<HTMLElement>(".chat-panel-video")
+        ?.style.getPropertyValue("--chat-panel-video-aspect-ratio")
+    ).toBe("0.5625");
+  });
+
+  it("keeps the decoded video size when a supplied aspect ratio changes later", () => {
+    const { container, rerender } = render(
+      <ChatPanelVideo
+        alt="Portrait clip"
+        aspectRatio={16 / 9}
+        poster={imageSource}
+        src={videoSource}
+      />
+    );
+
+    const video = screen.getByLabelText("Portrait clip") as HTMLVideoElement;
+    Object.defineProperties(video, {
+      videoHeight: { configurable: true, value: 1280 },
+      videoWidth: { configurable: true, value: 720 },
+    });
+    fireEvent.loadedMetadata(video);
+    rerender(
+      <ChatPanelVideo
+        alt="Portrait clip"
+        aspectRatio={4 / 3}
+        poster={imageSource}
+        src={videoSource}
+      />
+    );
+
+    expect(
+      container
+        .querySelector<HTMLElement>(".chat-panel-video")
+        ?.style.getPropertyValue("--chat-panel-video-aspect-ratio")
     ).toBe("0.5625");
   });
 

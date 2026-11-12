@@ -24,9 +24,7 @@ defmodule CommaWeb.RecommendationOutlookPreview do
     with true <- supported_href?(href) and workspace["owner_user_id"] == viewer,
          {:ok, profile} <- Recommendations.get_runtime_profile(workspace["id"], viewer),
          true <- profile.relevance_mode == "member",
-         %{"connection_id" => id} = consent <-
-           MemberSourceConsents.binding(workspace["id"], viewer, "outlook"),
-         true <- is_nil(source_id) or source_id == id,
+         %{"connection_id" => id} = consent <- consent(workspace, viewer, source_id),
          {:ok, {source, item, kind, resource_id}} <- current(profile, workspace, viewer, id, href),
          %{"provider_user_id" => provider_user} <- source.state.subject,
          {:ok, data} <-
@@ -39,7 +37,7 @@ defmodule CommaWeb.RecommendationOutlookPreview do
              href
            ),
          true <- valid_card_data?(data),
-         ^consent <- MemberSourceConsents.binding(workspace["id"], viewer, "outlook"),
+         ^consent <- MemberSourceConsents.binding(workspace["id"], viewer, "outlook", id),
          {:ok, new_profile} <- Recommendations.get_runtime_profile(workspace["id"], viewer),
          true <-
            new_profile.id == profile.id and new_profile.source_revision == profile.source_revision,
@@ -136,4 +134,15 @@ defmodule CommaWeb.RecommendationOutlookPreview do
   end
 
   defp starts_at(_), do: nil
+
+  # The viewer's Outlook account the link names, or the only one they consented.
+  defp consent(workspace, viewer, nil) do
+    case MemberSourceConsents.toolkit_bindings(workspace["id"], viewer, "outlook") do
+      [only] -> only
+      _ -> nil
+    end
+  end
+
+  defp consent(workspace, viewer, source_id),
+    do: MemberSourceConsents.binding(workspace["id"], viewer, "outlook", source_id)
 end

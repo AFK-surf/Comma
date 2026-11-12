@@ -22,7 +22,7 @@ command -v sha256sum >/dev/null
 jq -e '
   .schemaVersion == 3 and
   (.sourceRevision | type == "string" and length > 0) and
-  ([.images[].class] | sort == ["meeting", "shell", "station"]) and
+  ([.images[].class] | sort == ["shell", "station"]) and
   (all(.images[]; . as $image |
     ($image.inputDigest | test("^sha256:[0-9a-f]{64}$")) and
     ($image.manifestDigest | test("^sha256:[0-9a-f]{64}$")) and

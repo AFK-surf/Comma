@@ -7,6 +7,7 @@ import {
   chatSmokeWorkspaceChat,
   startChatSmokeStub,
 } from "../../../e2e/p0/chat-stub";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 // The stub's Loop runs in Asia/Shanghai. On a UTC page, its rule always names
 // that zone as an offset, whatever zone the machine uses.
@@ -766,8 +767,7 @@ test("new Task labels share server approval permissions with Settings and can re
     await expect(
       page.locator('[data-entering] > [data-slot="settings-dialog"]')
     ).toHaveCount(0);
-    await dropdown.click();
-    await page.getByRole("option", { name: "Always ask", exact: true }).click();
+    await chooseDropdownOption(dropdown, "Always ask");
     await expect(dropdown).toHaveText("Always ask");
     expect(policies).toEqual([{ approval_policy: "ask" }]);
     await page.goto(chatUrl);

@@ -10,7 +10,7 @@ import {
   MenuTrigger,
   menuCompactClasses,
 } from "@comma/ui/components/menu";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import { spacing } from "@comma/ui/tokens";
 import { useState } from "react";
 import { copyTextToClipboard } from "../chat/thread/inline/linkActions";
@@ -48,17 +48,11 @@ export function MiniAppLinkField({
       setPending(false);
     }
   };
-  const copy = async (url: string) => {
-    try {
-      await copyTextToClipboard(url);
-      toast.success(messages.mini_app_share_copied(), { id: LINK_TOAST_ID });
-    } catch {
-      toast.error(messages.copy_failed_title(), {
-        description: messages.copy_failed_detail(),
-        id: LINK_TOAST_ID,
-      });
-    }
-  };
+  const copy = (url: string) =>
+    copyWithFeedback(() => copyTextToClipboard(url), messages, {
+      copied: messages.mini_app_share_copied(),
+      id: LINK_TOAST_ID,
+    });
 
   if (!link)
     return (

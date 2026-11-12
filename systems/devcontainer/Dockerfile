@@ -32,6 +32,8 @@ RUN apt-get update \
       inotify-tools \
       jq \
       less \
+      libheif-examples \
+      libheif-plugin-libde265 \
       libopus-dev \
       libsodium-dev \
       libsrtp2-dev \

@@ -1,5 +1,5 @@
-import VerifiedKernel.Session.Query.Materialize
 import VerifiedKernelProofs.Session.AppendOnly.Core
+import VerifiedKernel.Session.Query.Materialize
 
 /-! Conservation of accepted input at the queue-to-record boundary.
 Queue acknowledgments retire materialized input, not completed user work.
@@ -79,6 +79,55 @@ theorem matching_subset {f : Term → KernelM Bool} {xs selected : List Term} {l
     selected ⊆ xs := by
   simpa [takeMatching] using matching_loop_subset h
 
+/-- A person's overtaking activation comes only from the waiting items. -/
+theorem thread_activation_subset {first : Term} {deferred taken : List Term} {room : Nat}
+    {j r : List Term} (h : threadActivation first deferred room j = .ok (taken, r)) :
+    taken ⊆ deferred := by
+  unfold threadActivation at h
+  obtain ⟨key, j1, _, h⟩ := bind_ok h
+  split at h
+  · have eq := pure_ok h
+    cases eq
+    exact List.nil_subset _
+  · obtain ⟨members, j2, _, h⟩ := bind_ok h
+    obtain ⟨sources, j3, _, h⟩ := bind_ok h
+    exact matching_subset h
+
+theorem overtake_subset {deferred taken : List Term} {room : Nat} {j r : List Term}
+    (h : personOvertake deferred room j = .ok (taken, r)) : taken ⊆ deferred := by
+  unfold personOvertake at h
+  obtain ⟨person, j', _, h⟩ := bind_ok h
+  split at h
+  · have eq := pure_ok h
+    cases eq
+    exact List.nil_subset _
+  · obtain ⟨key, j1, _, h⟩ := bind_ok h
+    obtain ⟨first, j2, _, h⟩ := bind_ok h
+    split at h
+    · have eq := pure_ok h
+      cases eq
+      exact List.nil_subset _
+    · obtain ⟨matched, j3, hm, h⟩ := bind_ok h
+      have eq := pure_ok h
+      cases eq
+      have sub : matched ⊆ deferred := by
+        unfold personActivation at hm
+        split at hm
+        · exact matching_subset hm
+        · exact thread_activation_subset hm
+      split
+      · exact sub
+      · exact List.nil_subset _
+
+/-- The items that go with an overtaking person are a prefix of the leading items. -/
+theorem overtake_leading_prefix {deferred leading kept : List Term} {j r : List Term}
+    (h : overtakeLeading deferred leading j = .ok (kept, r)) : kept <+: leading := by
+  unfold overtakeLeading at h
+  obtain ⟨⟨front, back⟩, j', hs, h⟩ := bind_ok h
+  have eq := pure_ok h
+  cases eq
+  exact ⟨back, split_partition hs⟩
+
 /-- An ACK covers a selected prefix. Every selective consume is also selected. -/
 def Plan (items selected : List Term) (ack : Term) (consumes : List Term) : Prop :=
   ∃ pre, pre <+: items ∧ pre ⊆ selected ∧
@@ -117,6 +166,40 @@ theorem batch_plan {state : Term} {items selected consumes : List Term} {ack : T
         exact List.mem_append_right _ (matching_subset ht hc)
   · obtain ⟨⟨leading, deferred⟩, j'', hs, h⟩ := bind_ok h
     have partition := split_partition hs
+    obtain ⟨jumped, j''', hj, h⟩ := bind_ok h
+    split at h
+    case isFalse overtook =>
+      -- A person overtook: the ACK stops within the leading prefix, the person is consumed.
+      obtain ⟨kept, j'''', hk, h⟩ := bind_ok h
+      have eq := pure_ok h
+      cases eq
+      have lead : kept <+: items :=
+        (((overtake_leading_prefix hk).trans (take_prefix leading limit)).trans
+          ⟨deferred, partition⟩).trans (take_prefix items limit)
+      refine ⟨kept, lead, List.subset_append_left _ _, rfl,
+        List.subset_append_right _ _, ?_⟩
+      intro item member
+      rcases List.mem_append.mp member with hp | hc
+      · exact lead.subset hp
+      · have waiting : item ∈ takeUpTo items limit := by
+          rw [← partition]
+          exact List.mem_append_right _ (overtake_subset hj hc)
+        exact (take_prefix items limit).subset waiting
+    obtain ⟨thread, j4, ht', h⟩ := bind_ok h
+    split at h
+    case isFalse =>
+      have eq := pure_ok h
+      cases eq
+      have lead : takeUpTo leading limit <+: items :=
+        ((take_prefix leading limit).trans ⟨deferred, partition⟩).trans (take_prefix items limit)
+      refine ⟨_, lead, List.subset_append_left _ _, rfl, List.subset_append_right _ _, ?_⟩
+      intro item member
+      rcases List.mem_append.mp member with hp | hc
+      · exact lead.subset hp
+      · have waiting : item ∈ takeUpTo items limit := by
+          rw [← partition]
+          exact List.mem_append_right _ (thread_activation_subset ht' hc)
+        exact (take_prefix items limit).subset waiting
     have eq := pure_ok h
     cases eq
     have pre : takeUpTo (takeUpTo leading limit ++ takeUpTo deferred 1) limit <+: items := by

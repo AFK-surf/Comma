@@ -8,6 +8,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
+import surf.comma.android.R
+import surf.comma.android.voice.ui.CallPresentation
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CallLifetimeTest {
@@ -96,19 +98,20 @@ class CallLifetimeTest {
     }
 
     @Test fun notificationTextCoversEveryStateAndResult() {
-        fun text(phase: CallPhase, result: CallResult? = null) = callNotificationText(CallState(phase = phase, result = result))
-        assertEquals(CallNotificationText("Calling…", true), text(CallPhase.Preparing))
-        assertEquals(CallNotificationText("Calling…", true), text(CallPhase.Calling))
-        assertEquals(CallNotificationText("Voice call active", true), text(CallPhase.Connected))
-        assertEquals(CallNotificationText("Ending…", true), text(CallPhase.Ending))
-        assertEquals(CallNotificationText("Call ended", false), text(CallPhase.Ended, CallResult.Ended))
-        assertEquals(CallNotificationText("Call ended", false), text(CallPhase.Idle))
-        assertEquals(CallNotificationText("Call interrupted", false), text(CallPhase.Failed, CallResult.Interrupted))
-        assertEquals(CallNotificationText("Call not connected", false), text(CallPhase.Failed, CallResult.Busy))
-        assertEquals(CallNotificationText("Call not connected", false), text(CallPhase.Failed, CallResult.Unavailable))
-        assertEquals(CallNotificationText("Call failed", false), text(CallPhase.Failed, CallResult.CredentialsExpired))
-        assertEquals(CallNotificationText("Voice calls are disabled for this workspace.", false), text(CallPhase.Failed, CallResult.Disabled))
-        assertEquals(CallNotificationText(MICROPHONE_ACCESS_MESSAGE, false),
-            callNotificationText(CallState(phase = CallPhase.Failed), MICROPHONE_ACCESS_MESSAGE))
+        fun text(phase: CallPhase, result: CallResult? = null, notice: String? = null) =
+            callNotificationText(CallControllerState(call = CallState(phase = phase, result = result), notice = notice))
+        assertEquals(CallNotificationText(R.string.call_calling, true), text(CallPhase.Preparing))
+        assertEquals(CallNotificationText(R.string.call_calling, true), text(CallPhase.Calling))
+        assertEquals(CallNotificationText(R.string.call_active, true), text(CallPhase.Connected))
+        assertEquals(CallNotificationText(R.string.call_ending, true), text(CallPhase.Ending))
+        // A live call keeps its phase's words; a notice shows only once the call is over.
+        assertEquals(CallNotificationText(R.string.call_active, true), text(CallPhase.Connected, notice = "Could not change audio output."))
+        // Finished calls say what the call UI says.
+        for (phase in listOf(CallPhase.Idle, CallPhase.Ended, CallPhase.Failed)) for (result in CallResult.entries) {
+            val state = CallControllerState(call = CallState(phase = phase, result = result))
+            assertEquals(CallNotificationText(CallPresentation.resultText(state), false), callNotificationText(state))
+        }
+        assertEquals(CallNotificationText(R.string.call_interrupted, false, MICROPHONE_ACCESS_MESSAGE),
+            text(CallPhase.Failed, CallResult.Interrupted, MICROPHONE_ACCESS_MESSAGE))
     }
 }

@@ -12,6 +12,7 @@ import { uiClock } from "@comma/ui/clock";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -71,6 +72,7 @@ export function ChatLabelProposals({
   proposals: proposalSubset,
   replyKey,
   revealOnAppear = true,
+  shownProposalIds,
   workspaceId,
 }: {
   conversationId: string;
@@ -91,6 +93,13 @@ export function ChatLabelProposals({
    * request should: an older card stays where the reader left it.
    */
   revealOnAppear?: boolean | undefined;
+  /**
+   * The proposals the conversation's cards have shown, kept by the owner of
+   * the cards. A card remounts when its reply moves (a send trims the oldest
+   * loaded message it was anchored to); proposals it showed before do not ask
+   * for the room again.
+   */
+  shownProposalIds?: Set<string> | undefined;
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
@@ -190,22 +199,39 @@ export function ChatLabelProposals({
   // The transcript pins the reply's turn at its top and leaves what follows
   // to the reader; a decision should not hide below the fold. Once the
   // thread has settled its own anchoring, the cards ask for the room they
-  // need, and only if they are actually cut off.
+  // need, and only if they are actually cut off. A settled card asks nothing
+  // when it appears: the thread mounts it once the reader reaches its reply.
+  // Whether to ask is read as the card appears, so a decision or a newer
+  // round taking over later does not move the reader.
+  const asksOnAppear = useEffectEvent(
+    () => revealOnAppear && proposals.some((proposal) => proposal.status === "pending")
+  );
   const cardsRef = useRef<HTMLDivElement>(null);
   const revealedRef = useRef(false);
+  const ownShownIdsRef = useRef<Set<string>>(undefined);
   useEffect(() => {
     if (!visibleKey) return undefined;
+    const shown = shownProposalIds ?? (ownShownIdsRef.current ??= new Set());
+    const fresh = visibleKey.split("|").filter((id) => !shown.has(id));
+    const markShown = () => {
+      for (const id of fresh) shown.add(id);
+    };
     const appearing = !revealedRef.current;
     revealedRef.current = true;
-    if (appearing && !revealOnAppear) return undefined;
+    if (fresh.length === 0) return undefined;
+    if (appearing && !asksOnAppear()) {
+      markShown();
+      return undefined;
+    }
     const timer = uiClock.after(250, () => {
+      markShown();
       const cards = cardsRef.current;
       if (cards && typeof cards.scrollIntoView === "function") {
         cards.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
     });
     return () => timer();
-  }, [revealOnAppear, visibleKey]);
+  }, [shownProposalIds, visibleKey]);
 
   const [busy, setBusy] = useState<string>();
   const [failed, setFailed] = useState(false);

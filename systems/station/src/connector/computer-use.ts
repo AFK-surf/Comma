@@ -426,7 +426,7 @@ export function makeComputerUse(cfg: ComputerUseConfig, fork: (effect: Effect.Ef
     return images.with(sweep(dir)).pipe(Effect.asVoid, Effect.ignore);
   });
 
-  return { available, call, shutdown, helperCommand, storeImage, readImage, imageDirectory, sweepAtStart };
+  return { available, call, shutdown, helperCommand, storeImage, readImage, imageDirectory, sweepAtStart, ensureDaemon, authToken: token };
 }
 
 export type ComputerUse = ReturnType<typeof makeComputerUse>;

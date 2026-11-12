@@ -11,6 +11,8 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
   }
 
   alias SalixAgent.InternalSession.State
+  alias SalixAgent.InternalSessionStore.PG
+  alias SalixStore.Repo
 
   @source "ses1_0000000000000000860"
 
@@ -24,10 +26,10 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
       start_supervised!(SalixStore.S3.Fake)
     end
 
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
-
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
+    {:ok, _} = SalixAgent.Placement.ensure_started(agent_id, process_on_init: false)
+    assert {:parked, _} = SalixAgent.Server.info(agent_id)
     {:ok, agent_id: agent_id}
   end
 
@@ -89,13 +91,8 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
       |> InternalSession.apply_events([creation | events])
       |> InternalSession.normalize()
 
-    key = SalixStore.Keys.agent_internal_runtime_session(agent_id, @source)
-
-    {:ok, _} =
-      SalixStore.S3.put(
-        key,
-        SalixStore.Codec.encode_snapshot(InternalSession.export(state))
-      )
+    assert {:ok, imported} = PG.prepare_import(agent_id, state, %{})
+    assert {:ok, :ok} = Repo.transaction(fn -> PG.import_session!(imported) end)
 
     case extra_events do
       [] ->
@@ -104,6 +101,21 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
       extra ->
         {:ok, state} = InternalSessionStore.prepare_commit(agent_id, @source, extra)
         state
+    end
+  end
+
+  defp archive_all(agent, session, left \\ 100) do
+    case InternalSessionStore.archive_pending(agent, session) do
+      {:ok, :archived} ->
+        assert left > 0
+
+        case PG.archive_head(agent, session) do
+          {:ok, %{target: nil}} -> {:ok, :archived}
+          _ -> archive_all(agent, session, left - 1)
+        end
+
+      result ->
+        result
     end
   end
 
@@ -240,13 +252,8 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
     assert InternalSession.get(source, :async_results) == []
     assert InternalSession.get(source, :async_result_refs) == %{ref => 2}
 
-    source_key = SalixStore.Keys.agent_internal_runtime_session(agent_id, @source)
-
-    assert {:ok, _} =
-             SalixStore.S3.put(
-               source_key,
-               SalixStore.Codec.encode_snapshot(InternalSession.export(source))
-             )
+    assert {:ok, imported} = PG.prepare_import(agent_id, source, %{})
+    assert {:ok, :ok} = Repo.transaction(fn -> PG.import_session!(imported) end)
 
     # Deliberately do not create the archive object. If the actor fetches the
     # source's full archived ref set before applying cutoff 1, this fork fails.
@@ -310,7 +317,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
                nil
              )
 
-    assert {:ok, :archived} = SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @source)
+    assert {:ok, :archived} = archive_all(agent_id, @source)
     assert {:ok, archived_source} = InternalSessionStore.read(agent_id, @source)
     assert InternalSession.get(archived_source, :async_results) == []
     assert InternalSession.get(archived_source, :async_result_refs) == %{ref => 2}
@@ -333,6 +340,117 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
     assert InternalSession.get(fork, :async_result_refs) == %{ref => fork_record["seq"]}
     assert fork_record["result_json"] == result_json
     assert fork_record["result_sha256"] == result_sha256
+  end
+
+  test "a selected live result forks from its JSONL source key and range", %{agent_id: agent_id} do
+    alias SalixStore.{ArchiveLog, S3}
+    ref = "trf1_0000000000000000021"
+
+    source =
+      InternalSession.new(agent_id, @source)
+      |> InternalSession.apply_events([
+        deliver(1),
+        stored_result(ref, "jsonl-source-result"),
+        result_capsule(2, ref, "jsonl-source-result"),
+        %{"type" => "compaction", "summary" => "covered", "compacted_through" => 1}
+      ])
+
+    all = InternalSessionStore.window_records_shaped(source)
+    covered = Enum.take(all, 2)
+    [[first, last, messages, offset, length]] = spans = ArchiveLog.spans(covered, 0)
+    key = "agents/borrowed-agent/internal_runtime/sessions/borrowed-session/archive.jsonl"
+    body = ArchiveLog.encode(all)
+    assert {:ok, _} = S3.put(key, body)
+
+    refs = %{
+      first => %{
+        "first_seq" => first,
+        "last_seq" => last,
+        "message_count" => messages,
+        "record_count" => last - first + 1,
+        "uncompressed_bytes" => length,
+        "encoding" => "jsonl",
+        "object_key" => key,
+        "byte_offset" => offset,
+        "byte_length" => length,
+        "source_session" =>
+          :erlang.term_to_binary(%{
+            "agent_id" => "borrowed-agent",
+            "session_id" => "borrowed-session"
+          })
+      }
+    }
+
+    source =
+      InternalSession.apply_event(source, %{
+        "type" => "archive_advance",
+        "archived_through" => 2,
+        "segments" => []
+      })
+
+    assert {:ok, imported} = PG.prepare_import(agent_id, source, refs)
+    assert {:ok, :ok} = Repo.transaction(fn -> PG.import_session!(imported) end)
+    assert {:ok, before} = InternalSessionStore.read(agent_id, @source)
+    assert InternalSession.get(before, :archive_chunks) == spans
+    S3.Fake.reset_read_log()
+
+    assert {:ok, forked} =
+             InternalAgentRuntime.fork_session_local(agent_id, @source, %{
+               "fork_request_id" => "jsonl-live-ref",
+               "message_id" => 2
+             })
+
+    gets = for {:get, key} <- S3.Fake.read_log(), String.contains?(key, "archive.jsonl"), do: key
+    assert gets == [key]
+    assert {:ok, child} = InternalSessionStore.read(agent_id, forked["session_id"])
+    assert InternalSession.get(child, :archive_chunks) == []
+    assert InternalSession.get(child, :segment_catalog) == []
+
+    assert {:ok, record} =
+             InternalSessionStore.fetch_tool_result(agent_id, forked["session_id"], ref)
+
+    assert record["tool_call_id"] == "jsonl-source-result"
+    assert record["result_json"] == stored_result(ref, "jsonl-source-result")["result_json"]
+    assert {:ok, %{body: ^body}} = S3.get(key)
+  end
+
+  test "forking an uncompacted cold source reuses its resident result body", %{agent_id: agent_id} do
+    ref = "trf1_0000000000000000011"
+    call_id = "call-cold-uncompacted"
+
+    seed_source(agent_id, [
+      deliver(1),
+      stored_result(ref, call_id),
+      result_capsule(2, ref, call_id)
+    ])
+
+    assert {:ok, _} =
+             Registry.register(
+               SalixAgent.Registry,
+               InternalSessionActor.key(agent_id, @source),
+               nil
+             )
+
+    assert {:ok, captured} = PG.admit_archive_maintenance(agent_id, @source)
+    assert {:ok, :archived} = InternalSessionStore.archive_captured(captured)
+    assert {:ok, source} = InternalSessionStore.read(agent_id, @source)
+    assert InternalSession.get(source, :compacted_seq) == 0
+    assert [%{"seq" => 2}] = InternalSession.get(source, :async_results)
+    assert InternalSession.fork_inline_result_seqs(source, %{}) == []
+    key = SalixStore.Keys.agent_internal_runtime_session_segment(agent_id, @source, 1)
+    SalixStore.S3.Fake.reset_read_log()
+
+    assert {:ok, forked} =
+             InternalAgentRuntime.fork_session_local(agent_id, @source, %{
+               "fork_request_id" => "req-cold-uncompacted-result"
+             })
+
+    assert for({:get, ^key} <- SalixStore.S3.Fake.read_log(), do: key) == [key]
+    assert {:ok, child} = InternalSessionStore.read(agent_id, forked["session_id"])
+    assert Enum.map(InternalSession.get(child, :messages), & &1.role) == ["user", "tool"]
+
+    assert {:ok, %{"tool_call_id" => ^call_id}} =
+             InternalSessionStore.fetch_tool_result(agent_id, forked["session_id"], ref)
   end
 
   test "a live runtime capsule carries its archived tool result into a fork", %{
@@ -370,7 +488,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
                nil
              )
 
-    assert {:ok, :archived} = SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @source)
+    assert {:ok, :archived} = archive_all(agent_id, @source)
     assert {:ok, archived_source} = InternalSessionStore.read(agent_id, @source)
     assert InternalSession.get(archived_source, :async_results) == []
     assert InternalSession.get(archived_source, :async_result_refs) == %{ref => 2}
@@ -433,7 +551,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
                nil
              )
 
-    assert {:ok, :archived} = SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @source)
+    assert {:ok, :archived} = archive_all(agent_id, @source)
     assert {:ok, archived_source} = InternalSessionStore.read(agent_id, @source)
     assert InternalSession.get(archived_source, :async_results) == []
     assert InternalSession.get(archived_source, :async_result_refs) == %{ref => 2}
@@ -496,7 +614,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
                }
              ])
 
-    assert {:ok, :archived} = SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @source)
+    assert {:ok, :archived} = archive_all(agent_id, @source)
     assert {:ok, archived} = InternalSessionStore.read(agent_id, @source)
     assert Map.keys(InternalSession.get(archived, :async_result_refs)) == [List.last(refs)]
 
@@ -507,9 +625,15 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
                "fork_request_id" => "req-bounded-provider-result-refs"
              })
 
-    archive_key = SalixStore.Keys.agent_internal_runtime_session_archive(agent_id, @source)
+    gets =
+      for {:get, key} <- SalixStore.S3.Fake.read_log(),
+          String.contains?(key, "/segments/"),
+          do: key
 
-    assert Enum.count(SalixStore.S3.Fake.read_log(), &(&1 == {:get, archive_key})) == 1
+    # The source context and its one live protected result share an object,
+    # but are independent reads; retired result refs add no reads.
+    key = SalixStore.Keys.agent_internal_runtime_session_segment(agent_id, @source, 1)
+    assert gets == [key, key]
 
     assert {:ok, fork} = InternalSessionStore.read(agent_id, forked["session_id"])
 
@@ -555,46 +679,6 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
 
     assert InternalSession.get(fork, :last_seq) == 10
     assert InternalSession.get(fork, :fork_request_id) == "req-window"
-  end
-
-  test "an ambiguous-but-landed addressed fork settles to the one committed target", %{
-    agent_id: agent_id
-  } do
-    seed_source(agent_id, [deliver(1), deliver(2)])
-    target = "ses1_0000000000000000862"
-    target_key = SalixStore.Keys.agent_internal_runtime_session(agent_id, target)
-
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_after, :put, target_key})
-
-    assert {:ok, forked} =
-             InternalAgentRuntime.fork_session_local(agent_id, @source, %{
-               "target_session_id" => target,
-               "fork_request_id" => "req-amb-after"
-             })
-
-    assert forked["session_id"] == target
-    assert forked["fork_request_id"] == "req-amb-after"
-
-    assert {:ok, sessions} = InternalSessionStore.list(agent_id)
-    assert Enum.count(sessions, &(SalixAgent.InternalSession.session_id(&1) != @source)) == 1
-  end
-
-  test "an ambiguous-lost addressed fork retries the same address within the budget", %{
-    agent_id: agent_id
-  } do
-    seed_source(agent_id, [deliver(1)])
-    target = "ses1_0000000000000000863"
-    target_key = SalixStore.Keys.agent_internal_runtime_session(agent_id, target)
-
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_before, :put, target_key})
-
-    assert {:ok, forked} =
-             InternalAgentRuntime.fork_session_local(agent_id, @source, %{
-               "target_session_id" => target,
-               "fork_request_id" => "req-amb-before"
-             })
-
-    assert forked["session_id"] == target
   end
 
   test "a different SOURCE with the same target and request key is a conflict, not adoption",
@@ -816,13 +900,8 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
         last_seq: 0
     }
 
-    key = SalixStore.Keys.agent_internal_runtime_session(agent_id, legacy_source)
-
-    {:ok, _} =
-      SalixStore.S3.put(
-        key,
-        SalixStore.Codec.encode_snapshot(state)
-      )
+    assert {:ok, imported} = PG.prepare_import(agent_id, InternalSession.open(state), %{})
+    assert {:ok, :ok} = Repo.transaction(fn -> PG.import_session!(imported) end)
 
     attrs = %{"fork_request_id" => "req-legacy-retry", "name" => "L"}
 
@@ -969,7 +1048,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
 
     assert source_result_seq <= InternalSession.get(compacted, :compacted_seq)
 
-    assert {:ok, :archived} = SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @source)
+    assert {:ok, :archived} = archive_all(agent_id, @source)
     assert {:ok, archived_source} = InternalSessionStore.read(agent_id, @source)
     assert InternalSession.archived_through(archived_source) >= source_result_seq
     assert InternalSession.get(archived_source, :async_results) == []

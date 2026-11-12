@@ -108,6 +108,112 @@ defmodule Comma.Conversations do
     end
   end
 
+  @doc """
+  The Messages of one Task whose text matches `query`, oldest first, each as
+  its id and `seq`: a client steps through them in the Task. A session scoped
+  to another Task finds none.
+  """
+  def search_task_messages(user, session, group_id, conversation_id, query) do
+    with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+         {:ok, matches} <-
+           salix_task_message_matches(
+             workspace,
+             session["conversation_id"],
+             conversation_id,
+             to_string(query || "")
+           ),
+         {:ok, data} <- public_message_matches(matches) do
+      {:ok, %{"data" => data}}
+    end
+  end
+
+  @doc """
+  One page of the files Agents attached to a Group's Tasks, newest first
+  (`SalixIM.TaskFiles`). `"conversation_id"` keeps one Task's files and `"q"`
+  finds files whose name contains it; a search answers one page. A session
+  scoped to one Task sees only that Task's files. Each file names its Task,
+  Message and block index, which the attachment routes read.
+  """
+  def list_task_files(user, session, group_id, params) when is_map(params) do
+    with {:ok, opts} <- task_files_options(params),
+         {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
+         {:ok, opts} <- task_files_scope(session, group_id, opts),
+         {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+         {:ok, %{"files" => files} = page} <- salix_list_task_files(workspace, opts) do
+      {:ok, %{"data" => files, "next_cursor" => page["next_cursor"]}}
+    else
+      {:error, :indexing} -> {:error, :task_files_indexing}
+      {:error, :invalid} -> {:error, :invalid_task_files_query}
+      {:error, :unavailable} -> {:error, :salix_unavailable}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @task_files_max_query 128
+
+  defp task_files_options(params) do
+    query = params |> Map.get("q") |> to_string() |> String.trim()
+    conversation_id = Map.get(params, "conversation_id")
+    cursor = Map.get(params, "cursor")
+    {default_limit, max_limit} = if query == "", do: {50, 200}, else: {20, 50}
+
+    with {:ok, limit} <- task_files_limit(Map.get(params, "limit"), default_limit, max_limit),
+         true <-
+           String.length(query) <= @task_files_max_query and not String.contains?(query, <<0>>),
+         true <- is_nil(cursor) or (is_binary(cursor) and byte_size(cursor) in 1..1_024),
+         true <-
+           conversation_id in [nil, ""] or SalixStore.Ids.valid_conversation_id?(conversation_id) do
+      {:ok,
+       [limit: limit]
+       |> maybe_put_keyword(:query, if(query == "", do: nil, else: query))
+       |> maybe_put_keyword(:cursor, cursor)
+       |> maybe_put_keyword(
+         :conversation_id,
+         if(conversation_id == "", do: nil, else: conversation_id)
+       )}
+    else
+      _invalid -> {:error, :invalid_task_files_query}
+    end
+  end
+
+  defp task_files_limit(nil, default, _max), do: {:ok, default}
+
+  defp task_files_limit(limit, default, max) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {limit, ""} -> task_files_limit(limit, default, max)
+      _invalid -> {:error, :invalid_task_files_query}
+    end
+  end
+
+  defp task_files_limit(limit, _default, max)
+       when is_integer(limit) and limit >= 1 and limit <= max,
+       do: {:ok, limit}
+
+  defp task_files_limit(_limit, _default, _max), do: {:error, :invalid_task_files_query}
+
+  # A session scoped to one Task reads only that Task's files.
+  defp task_files_scope(session, group_id, opts) do
+    case Keyword.get(opts, :conversation_id) || session["conversation_id"] do
+      nil ->
+        {:ok, opts}
+
+      conversation_id ->
+        with :ok <- Workspaces.group_session_scope(session, group_id, conversation_id),
+             do: {:ok, Keyword.put(opts, :conversation_id, conversation_id)}
+    end
+  end
+
+  defp salix_list_task_files(workspace, opts) do
+    client = Comma.Salix.Client.impl()
+
+    if callback_exported?(client, :list_task_files, 2) do
+      client.list_task_files(workspace, opts)
+    else
+      {:error, :salix_conversation_read_not_supported}
+    end
+  end
+
   @doc "List the authorized canonical Tasks pinned in a Group."
   def list_pinned_tasks(user, session, group_id) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -584,10 +690,15 @@ defmodule Comma.Conversations do
     end
   end
 
+  @doc """
+  A Conversation with its newest Messages. With `after_seq` (the newest seq
+  the client holds) it carries only the Messages after it, as `events/5` does.
+  """
   def get(user, session, group_id, conversation_id, opts \\ []) do
     with {:ok, workspace, binding} <-
-           authorize_conversation_read(user, session, group_id, conversation_id) do
-      read_conversation(workspace, binding, opts)
+           authorize_conversation_read(user, session, group_id, conversation_id),
+         {:ok, conversation} <- read_conversation(workspace, binding, opts) do
+      {:ok, messages_after(conversation, Keyword.get(opts, :after_seq))}
     end
   end
 
@@ -874,9 +985,10 @@ defmodule Comma.Conversations do
   @doc """
   Runs a Task on another model, and so perhaps in another place
   (`SalixIM.TaskRun`): `attrs` names `runs_on` (`{kind: salix}`,
-  `{kind: cloud_vm}` or `{kind: station, device_id}`) and `model` (a Model
-  Choice, or null for the place's default). Whoever may set the Task's status
-  may. The Task as read after.
+  `{kind: cloud_vm}` or `{kind: station, device_id}`; `{kind: sandbox}` for a
+  sandbox Task without a repository, which stays on its sandbox) and `model`
+  (a Model Choice, or null for the place's default). Whoever may set the
+  Task's status may. The Task as read after.
   """
   def set_task_run(user, session, group_id, conversation_id, attrs, opts \\ []) do
     attrs = stringify(attrs)
@@ -1014,6 +1126,11 @@ defmodule Comma.Conversations do
 
   The returned snapshot is canonical Salix state. Subsequent notifications are
   hints only; no Salix sequence or durable Comma cursor is exposed.
+
+  `after_seq` is the newest Message seq the client already holds: the snapshot
+  then carries only the Messages after it (and says `after_seq`), as Messages
+  never change once written. A stream opens again every window and on each
+  invalidation, so without it every open sent the whole tail again.
   """
   def events(user, session, group_id, conversation_id, opts \\ []) do
     with {:ok, workspace} <- Workspaces.authorize_group(user, session, group_id),
@@ -1032,8 +1149,21 @@ defmodule Comma.Conversations do
         }
         |> maybe_put_participant_stream(workspace, binding)
 
-      {:ok, Map.put(conversation, "type", "snapshot"), [], stream_context}
+      {:ok,
+       conversation
+       |> Map.put("type", "snapshot")
+       |> messages_after(Keyword.get(opts, :after_seq)), [], stream_context}
     end
+  end
+
+  defp messages_after(snapshot, nil), do: snapshot
+
+  defp messages_after(snapshot, after_seq) do
+    snapshot
+    |> Map.update!("messages", fn messages ->
+      Enum.filter(messages, &(is_integer(&1["seq"]) and &1["seq"] > after_seq))
+    end)
+    |> Map.put("after_seq", after_seq)
   end
 
   def public(binding), do: Map.drop(binding, ["internal"])
@@ -1287,7 +1417,8 @@ defmodule Comma.Conversations do
       "source" => public_code(detail["source"]),
       "profile_id" => public_profile_id(detail["profile_id"]),
       "profile_name" => public_profile_name(detail["profile_name"]),
-      "reset_at" => public_reset_at(detail["reset_at"])
+      "reset_at" => public_reset_at(detail["reset_at"]),
+      "credits" => if(detail["credits"] == true, do: true)
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
@@ -1703,6 +1834,10 @@ defmodule Comma.Conversations do
     %{}
     |> put_optional("client_kind", nonempty_string(session["client_kind"]))
     |> put_optional("client_platform", nonempty_string(session["client_platform"]))
+    # A restricted session (an ops support or Mini App panel session) may post
+    # in Home but acts for nobody: Salix sends no Task request for it
+    # (`SalixIM.RouterConversationInput`).
+    |> put_optional("restricted_session", if(session["restricted"] == true, do: true))
   end
 
   defp session_client_metadata(_session), do: %{}
@@ -1940,6 +2075,22 @@ defmodule Comma.Conversations do
     binding
     |> put_optional("origin", provider)
     |> put_optional("client_platform", nonempty_string(origin["client_platform"]))
+    # Who sent the Task Request this Task was accepted from
+    # (`Comma.TaskRequests`). A display fact; it grants nothing.
+    |> put_optional(
+      "requested_by",
+      nonempty_string(get_in(salix_conversation, ["metadata", "task_request", "sender_name"]))
+    )
+    # The sender's User id: a client groups Tasks by who asked for them, and
+    # two senders with the same name stay apart.
+    |> put_optional(
+      "requested_by_id",
+      nonempty_string(get_in(salix_conversation, ["metadata", "task_request", "sender_user_id"]))
+    )
+    # The sender's avatar as the Task's owner reads it
+    # (`Comma.TaskRequests.sender_avatar/5`): the request and the revision
+    # the Task was made with.
+    |> put_optional("requested_by_avatar", requested_by_avatar(salix_conversation))
     # The Message the Task was created from, such as the person's Home request
     # that the Router answered with this Task. A client reads it to show that
     # request becoming the Task; it grants nothing.
@@ -1984,6 +2135,9 @@ defmodule Comma.Conversations do
       "origin",
       "meeting",
       "client_platform",
+      "requested_by",
+      "requested_by_id",
+      "requested_by_avatar",
       "parent_message_id",
       "loop",
       "pull_request",
@@ -2212,6 +2366,30 @@ defmodule Comma.Conversations do
     end
   end
 
+  defp salix_task_message_matches(_workspace, scoped_conversation_id, conversation_id, _query)
+       when is_binary(scoped_conversation_id) and scoped_conversation_id != conversation_id,
+       do: {:ok, []}
+
+  defp salix_task_message_matches(workspace, _scoped_conversation_id, conversation_id, query) do
+    client = Comma.Salix.Client.impl()
+
+    if callback_exported?(client, :task_message_matches, 3) do
+      client.task_message_matches(workspace, conversation_id, query)
+    else
+      {:error, :salix_conversation_search_not_supported}
+    end
+  end
+
+  defp public_message_matches(matches) when is_list(matches) do
+    public = Enum.map(matches, &put_message_position(%{}, &1))
+
+    if Enum.all?(public, &(map_size(&1) == 2)),
+      do: {:ok, public},
+      else: {:error, :invalid_salix_conversation_search}
+  end
+
+  defp public_message_matches(_matches), do: {:error, :invalid_salix_conversation_search}
+
   defp public_search_results(results) when is_list(results) do
     Enum.reduce_while(results, {:ok, []}, fn result, {:ok, acc} ->
       case public_search_result(result) do
@@ -2259,6 +2437,7 @@ defmodule Comma.Conversations do
           "highlights" => ranges
         }
         |> put_optional("updated_at", updated_at)
+        |> put_message_position(result)
 
       {:ok, maybe_put_content_match(public, content_match)}
     else
@@ -2277,12 +2456,12 @@ defmodule Comma.Conversations do
 
   defp public_content_match(nil), do: {:ok, nil}
 
-  defp public_content_match(%{"snippet" => snippet, "highlights" => highlights})
+  defp public_content_match(%{"snippet" => snippet, "highlights" => highlights} = content_match)
        when is_binary(snippet) and is_list(highlights) do
     with true <- String.valid?(snippet),
          true <- byte_size(snippet) <= SearchDocumentEnvelope.max_bytes(:message),
          {:ok, ranges} <- public_highlights(highlights, snippet) do
-      {:ok, %{"snippet" => snippet, "highlights" => ranges}}
+      {:ok, put_message_position(%{"snippet" => snippet, "highlights" => ranges}, content_match)}
     else
       false -> :error
       :error -> :error
@@ -2290,6 +2469,18 @@ defmodule Comma.Conversations do
   end
 
   defp public_content_match(_content_match), do: :error
+
+  # The matched Message's id and `seq`, so a client reads the page around it
+  # (`around`) instead of the history before it. A position Salix did not give
+  # in full is left out; the match itself still shows.
+  defp put_message_position(match, %{"message_id" => message_id, "message_seq" => seq})
+       when is_binary(message_id) and is_integer(seq) and seq > 0 do
+    if SalixStore.Ids.valid_message_id?(message_id),
+      do: Map.merge(match, %{"message_id" => message_id, "message_seq" => seq}),
+      else: match
+  end
+
+  defp put_message_position(match, _source), do: match
 
   defp maybe_put_content_match(result, nil), do: result
 
@@ -2528,6 +2719,18 @@ defmodule Comma.Conversations do
     do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
   defp stringify(_attrs), do: %{}
+
+  defp requested_by_avatar(salix_conversation) do
+    case get_in(salix_conversation, ["metadata", "task_request"]) do
+      %{"id" => request, "sender_avatar_id" => revision, "workspace_id" => workspace}
+      when is_binary(request) and is_binary(revision) and revision != "" and
+             is_binary(workspace) ->
+        %{"workspace" => workspace, "request" => request, "revision" => revision}
+
+      _other ->
+        nil
+    end
+  end
 
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, _key, ""), do: map

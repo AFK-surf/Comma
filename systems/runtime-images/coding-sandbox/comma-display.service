@@ -1,0 +1,17 @@
+[Unit]
+Description=Virtual display of a coding sandbox
+After=sbx-firstboot.service
+
+[Service]
+User=comma
+Group=comma
+# Xvfb as the login user cannot make the socket directory (as root: "+").
+ExecStartPre=+/usr/bin/install -d -m 1777 /tmp/.X11-unix
+# A sandbox that was stopped without a shutdown keeps the old lock on its disk.
+ExecStartPre=-/usr/bin/rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x720x24 -nolisten tcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

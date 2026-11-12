@@ -88,12 +88,16 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
               {key, if(is_map(message), do: Map.take(message, ~w(text ts user)), else: nil)}
             end)
 
+          # The sender is the handle the search returns, not a looked-up name:
+          # a failed lookup would change the item's context and judge it again.
           context =
-            CommaWeb.RecommendationSourceContext.attach(
-              neighbors,
-              Map.keys(neighbors),
+            neighbors
+            |> Map.put("sender", item["username"])
+            |> CommaWeb.RecommendationSourceContext.attach(
+              ["sender" | Map.keys(neighbors)],
               "search_neighbors"
-            )["context"]
+            )
+            |> Map.fetch!("context")
 
           item
           |> Map.take(~w(text ts permalink memberRelation))
@@ -116,14 +120,23 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
   end
 
   @own_threads 15
+  @own_replies 6
+  @reply_chars 400
 
   @doc """
   The member's own messages from the last #{@own_days} days, newest first, each
   with the text of the thread it answered: what the member said and did, the
   evidence of their portrait (`CommaWeb.MemberPortrait`). At most
   #{@own_threads} threads are read.
+
+  Option `replies: true` also reads the threads the member started and gives
+  each message the thread's later messages (`"replies"`, at most
+  #{@own_replies}, each `"from"` `you` or `other`), so a reader can tell
+  whether someone answered (`CommaWeb.OpenThreads`).
   """
-  def own_messages(request, now, expected_subject \\ nil) do
+  def own_messages(request, now, expected_subject \\ nil, opts \\ []) do
+    replies? = Keyword.get(opts, :replies, false)
+
     with {:ok, auth} <- request.("GET", SlackWebAPI.url("auth.test"), []),
          true <- auth["ok"] == true and is_nil(auth["bot_id"]),
          user when is_binary(user) <- auth["user_id"],
@@ -134,26 +147,35 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
            slack_search(request, {"from:<@#{user}> after:#{after_date}", @own_count}) do
       own = Enum.filter(matches, &(&1["user"] == user))
 
-      parents =
+      read =
         own
         |> Enum.flat_map(fn message ->
-          case {get_in(message, ["channel", "id"]), slack_thread(message)} do
+          case {get_in(message, ["channel", "id"]), own_thread(message, replies?)} do
             {channel, thread} when is_binary(channel) and is_binary(thread) -> [{channel, thread}]
             _ -> []
           end
         end)
         |> Enum.uniq()
         |> Enum.take(@own_threads)
-        |> RecommendationMemberRead.map(&thread_parent(request, &1), 3)
+        # Thread reads with replies go one at a time and take a smaller page,
+        # to lower the load on the shared conversations.replies allowance.
+        |> RecommendationMemberRead.map(
+          &thread_read(request, &1, replies?),
+          if(replies?, do: 1, else: 3)
+        )
         |> Enum.flat_map(fn
-          {:ok, key, text} -> [{key, text}]
+          {:ok, key, messages} -> [{key, messages}]
           _ -> []
         end)
         |> Map.new()
 
+      parents =
+        Map.new(read, fn {key, [first | _]} -> {key, String.slice(first["text"], 0, 1_200)} end)
+
       {:ok,
        Enum.map(own, fn message ->
          key = {get_in(message, ["channel", "id"]), slack_thread(message)}
+         thread = {get_in(message, ["channel", "id"]), own_thread(message, replies?)}
 
          %{
            "text" => message["text"],
@@ -163,9 +185,10 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
            "direct" =>
              get_in(message, ["channel", "is_im"]) == true or
                get_in(message, ["channel", "is_mpim"]) == true,
-           "thread" => parents[key]
+           "thread" => parents[key],
+           "replies" => if(replies?, do: later(read[thread], message["ts"], user))
          }
-         |> Map.reject(fn {_key, value} -> is_nil(value) end)
+         |> Map.reject(fn {_key, value} -> value in [nil, []] end)
        end),
        %{"provider_user_id" => user, "provider_workspace_id" => team, "handle" => auth["user"]}}
     else
@@ -174,23 +197,108 @@ defmodule CommaWeb.RecommendationSlackMemberSource do
     end
   end
 
-  defp thread_parent(request, {channel, thread}) do
+  @doc """
+  The messages of each tracked thread after its checked ts, read one thread
+  at a time: `threads` maps an ID to `{channel, thread_ts, since}`. Returns
+  the ID to its new messages (`"ts"`, `"from"` `you` or `other`, `"text"`),
+  at most #{@own_replies * 2} each; a thread that cannot be read is left out
+  (`CommaWeb.OpenThreads`).
+  """
+  def thread_news(request, threads) do
+    with {:ok, %{"ok" => true, "user_id" => user}} when is_binary(user) <-
+           request.("GET", SlackWebAPI.url("auth.test"), []) do
+      {:ok,
+       threads
+       |> Enum.to_list()
+       |> RecommendationMemberRead.map(&thread_since(request, &1, user), 1)
+       |> Enum.flat_map(fn
+         {:ok, id, messages} -> [{id, messages}]
+         _ -> []
+       end)
+       |> Map.new()}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :member_identity_or_source_unavailable}
+    end
+  end
+
+  defp thread_since(request, {id, {channel, thread, since}}, user) do
     case request.(
            "GET",
            SlackWebAPI.url("conversations.replies", %{
              "channel" => channel,
              "ts" => thread,
-             "limit" => 1
+             "oldest" => since,
+             "inclusive" => "false",
+             "limit" => 15
            }),
            max_bytes: 200_000
          ) do
-      {:ok, %{"ok" => true, "messages" => [%{"text" => text} | _]}} when is_binary(text) ->
-        {:ok, {channel, thread}, String.slice(text, 0, 1_200)}
+      {:ok, %{"ok" => true, "messages" => messages}} when is_list(messages) ->
+        {:ok, id,
+         messages
+         |> Enum.filter(&(is_binary(&1["text"]) and ts_after?(&1["ts"], since)))
+         |> Enum.take(@own_replies * 2)
+         |> Enum.map(
+           &%{
+             "ts" => &1["ts"],
+             "from" => if(&1["user"] == user and is_nil(&1["bot_id"]), do: "you", else: "other"),
+             "text" => String.slice(&1["text"], 0, @reply_chars)
+           }
+         )}
 
       _ ->
         :error
     end
   end
+
+  # The thread a message belongs to; with replies, also the one it starts.
+  defp own_thread(message, false), do: slack_thread(message)
+  defp own_thread(message, true), do: slack_thread(message) || message["ts"]
+
+  # The thread's start, and with replies its first messages.
+  defp thread_read(request, {channel, thread}, replies?) do
+    case request.(
+           "GET",
+           SlackWebAPI.url("conversations.replies", %{
+             "channel" => channel,
+             "ts" => thread,
+             "limit" => if(replies?, do: 15, else: 1)
+           }),
+           max_bytes: 200_000
+         ) do
+      {:ok, %{"ok" => true, "messages" => [%{"text" => text} | _] = messages}}
+      when is_binary(text) ->
+        {:ok, {channel, thread}, Enum.filter(messages, &is_binary(&1["text"]))}
+
+      _ ->
+        :error
+    end
+  end
+
+  # The thread's messages after `ts`, from the member (`you`) or anyone else.
+  defp later(nil, _ts, _user), do: nil
+
+  defp later(messages, ts, user) do
+    messages
+    |> Enum.filter(&ts_after?(&1["ts"], ts))
+    |> Enum.take(@own_replies)
+    |> Enum.map(
+      &%{
+        "from" => if(&1["user"] == user and is_nil(&1["bot_id"]), do: "you", else: "other"),
+        "text" => String.slice(&1["text"], 0, @reply_chars)
+      }
+    )
+  end
+
+  defp ts_after?(a, b) when is_binary(a) and is_binary(b) do
+    case {Float.parse(a), Float.parse(b)} do
+      {{x, _}, {y, _}} -> x > y
+      _ -> false
+    end
+  end
+
+  defp ts_after?(_a, _b), do: false
 
   defp target_searches(_request, []), do: {:ok, [], []}
 

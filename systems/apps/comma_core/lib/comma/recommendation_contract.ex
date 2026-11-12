@@ -52,23 +52,32 @@ defmodule Comma.RecommendationContract do
   repaired here; `validate/1` still rejects any structural fault in what
   remains.
   """
-  def bound(%{"cards" => cards} = snapshot) when is_list(cards) do
-    kept_cards = Enum.take(cards, @max_cards)
-    counts = allocate_rows(kept_cards, @max_total_items)
-
-    bounded =
-      Enum.zip_with(kept_cards, counts, fn
-        %{"items" => items} = card, count when is_list(items) ->
-          Map.put(card, "items", Enum.take(items, count))
-
-        card, _count ->
-          card
-      end)
-
-    Map.put(snapshot, "cards", bounded)
-  end
+  def bound(%{"cards" => cards} = snapshot) when is_list(cards),
+    do: Map.put(snapshot, "cards", bound_cards(cards, @max_cards, @max_total_items))
 
   def bound(snapshot), do: snapshot
+
+  @doc """
+  Puts `lead` first and keeps it whole, then bounds the other cards to what
+  it leaves, as `bound/1` does. `lead` holds at most one card's rows.
+  """
+  def bound_after(snapshot, %{"items" => items} = lead) when is_list(items) do
+    rest = bound_cards(snapshot["cards"] || [], @max_cards - 1, @max_total_items - length(items))
+    Map.put(snapshot, "cards", [lead | rest])
+  end
+
+  defp bound_cards(cards, max_cards, budget) do
+    kept_cards = Enum.take(cards, max_cards)
+    counts = allocate_rows(kept_cards, budget)
+
+    Enum.zip_with(kept_cards, counts, fn
+      %{"items" => items} = card, count when is_list(items) ->
+        Map.put(card, "items", Enum.take(items, count))
+
+      card, _count ->
+        card
+    end)
+  end
 
   defp allocate_rows(cards, budget) do
     sizes =
@@ -328,7 +337,8 @@ defmodule Comma.RecommendationContract do
   defp valid_optional_source_ids?(ids),
     do: is_list(ids) and length(ids) <= 12 and Enum.all?(ids, &nonblank?(&1, 256))
 
-  defp valid_url?(value) when is_binary(value) do
+  @doc "Whether `value` is one link destination a Routine row can carry."
+  def valid_url?(value) when is_binary(value) do
     # URI.parse accepts spaces and newlines in paths. A prose field beginning
     # with a link is not one destination, even when URI.parse gives it a host.
     if Regex.match?(~r/\s/u, value) do
@@ -345,7 +355,7 @@ defmodule Comma.RecommendationContract do
     end
   end
 
-  defp valid_url?(_value), do: false
+  def valid_url?(_value), do: false
 
   defp valid_media_url?(value) when is_binary(value) do
     case URI.parse(value) do

@@ -581,6 +581,188 @@ defmodule SalixAgent.StateTest do
              ) == [unrelated_source <> ":source-context", unrelated_source]
     end
 
+    test "a person goes ahead of waiting bot activations and keeps the bots' order" do
+      queued =
+        reduce_session([
+          %{type: "session_created", session_id: "s1"},
+          overtake_report("report-1"),
+          overtake_context("bot-1"),
+          overtake_input("bot-1", "provider_system", 1_000),
+          overtake_input("bot-2", "provider_system", 2_000),
+          overtake_context("person-1"),
+          overtake_input("person-1", "provider_user", 61_000),
+          overtake_input("person-2", "provider_user", 62_000)
+        ])
+
+      {events, true, _hwm} = materialize(queued)
+
+      # A report ahead of the passed bot goes with the person, under the ACK.
+      # The bot's own source context does not: it stays sealed to the bot. The
+      # person and its context go by exact consume, and the later person waits
+      # for its own activation.
+      assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["source_message_id"]) ==
+               ["report-1", "person-1:source-context", "person-1"]
+
+      assert Enum.map(Enum.filter(events, &(&1["type"] == "queue_ack")), & &1["queue_ack_id"]) ==
+               [1]
+
+      assert Enum.map(Enum.filter(events, &(&1["type"] == "queue_consume")), & &1["queue_id"]) ==
+               [5, 6]
+
+      assert :ok = SessionState.validate_events(events)
+      overtaken = SessionData.apply_events(queued, events)
+
+      assert Enum.map(overtaken.input_queue, &queue_payload_content/1) ==
+               ["bot-1 context", "bot-1", "bot-2", "person-2"]
+    end
+
+    test "everything queued for one Slack thread is one activation" do
+      queued =
+        reduce_session([
+          %{type: "session_created", session_id: "s1"},
+          thread_input("app-1", "provider_system", "t1", 1_000),
+          thread_input("other-thread", "provider_system", "t2", 2_000),
+          overtake_report("report-1"),
+          overtake_context("person-1"),
+          thread_input("person-1", "provider_user", "t1", 3_000),
+          thread_input("other-person", "provider_user", "t3", 900_000),
+          thread_input("app-2", "provider_system", "t1", 901_000)
+        ])
+
+      {events, true, _hwm} = materialize(queued)
+
+      assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["source_message_id"]) ==
+               ["app-1", "person-1:source-context", "person-1", "app-2"]
+
+      assert :ok = SessionState.validate_events(events)
+      activation = SessionData.apply_events(queued, events)
+
+      assert Enum.map(activation.input_queue, &queue_payload_content/1) ==
+               ["other-thread", "report-1", "other-person"]
+    end
+
+    test "one thread's requests reply as their last person" do
+      activation = fn inputs ->
+        queued = reduce_session([%{type: "session_created", session_id: "s1"} | inputs])
+        {events, true, _hwm} = materialize(queued)
+        queued |> SessionData.apply_events(events) |> InternalSession.open()
+      end
+
+      slack = fn source, actor, thread ->
+        source
+        |> thread_input(actor, thread, 1_000)
+        |> put_in([:payload, :trusted_origin, "provider_context", "message_ts"], source)
+      end
+
+      person_then_app =
+        activation.([
+          slack.("person-1", "provider_user", "t1"),
+          slack.("app-1", "provider_system", "t1")
+        ])
+
+      assert %{
+               "source_message_id" => "person-1",
+               "trusted_origin" => %{"source_actor_type" => "provider_user"}
+             } =
+               InternalSession.terminal_reply_source_scope(person_then_app)
+
+      assert {"person-1", %{"source_actor_type" => "provider_user"}} =
+               InternalSession.current_turn_source(person_then_app, ["person-1", "app-1"])
+
+      apps =
+        activation.([
+          slack.("app-1", "provider_system", "t1"),
+          slack.("app-2", "provider_system", "t1")
+        ])
+
+      assert InternalSession.terminal_reply_source_scope(apps) == nil
+    end
+
+    test "a Loop or schedule with no authority beside a person leaves their reply scope" do
+      activation = fn inputs ->
+        queued = reduce_session([%{type: "session_created", session_id: "s1"} | inputs])
+        {events, true, _hwm} = materialize(queued)
+        activated = SessionData.apply_events(queued, events)
+        {events, _more, _hwm} = materialize(activated)
+        activated |> SessionData.apply_events(events) |> InternalSession.open()
+      end
+
+      person =
+        "person-1"
+        |> thread_input("provider_user", "t1", 1_000)
+        |> put_in([:payload, :trusted_origin, "provider_context", "message_ts"], "person-1")
+
+      no_authority = fn source ->
+        source
+        |> overtake_input(nil, 2_000)
+        |> update_in([:payload], &Map.delete(&1, :trusted_origin))
+      end
+
+      for later <- ["loop:l1:1", "schedule:s1:1"] do
+        assert %{
+                 "source_message_id" => "person-1",
+                 "context_source_message_ids" => ["person-1", ^later],
+                 "trusted_origin" => %{"source_actor_type" => "provider_user"}
+               } =
+                 InternalSession.terminal_reply_source_scope(
+                   activation.([person, no_authority.(later)])
+                 )
+      end
+
+      assert InternalSession.terminal_reply_source_scope(
+               activation.([no_authority.("loop:l1:1")])
+             ) == nil
+    end
+
+    test "a person overtaking other threads brings their thread's queued messages" do
+      queued =
+        reduce_session([
+          %{type: "session_created", session_id: "s1"},
+          thread_input("bot-other", "provider_system", "t1", 1_000),
+          thread_input("app-1", "provider_system", "t2", 2_000),
+          thread_input("person-1", "provider_user", "t2", 3_000)
+        ])
+
+      {events, true, _hwm} = materialize(queued)
+
+      assert Enum.map(Enum.filter(events, &(&1["type"] == "delivery")), & &1["source_message_id"]) ==
+               ["app-1", "person-1"]
+
+      assert :ok = SessionState.validate_events(events)
+    end
+
+    for {label, inputs, first} <- [
+          {"a person delivered more than five minutes later",
+           [{"bot-1", "provider_system", 1_000}, {"person-1", "provider_user", 301_001}],
+           "bot-1"},
+          {"a waiting input without a delivery time",
+           [{"bot-1", "provider_system", nil}, {"person-1", "provider_user", 2_000}], "bot-1"},
+          {"a schedule fire that is not a person",
+           [{"bot-1", "provider_system", 1_000}, {"schedule-1", nil, 2_000}], "bot-1"},
+          {"a person already first in line",
+           [{"person-1", "provider_user", 1_000}, {"person-2", "provider_user", 2_000}],
+           "person-1"}
+        ] do
+      test "arrival order holds for #{label}" do
+        queued =
+          reduce_session(
+            [%{type: "session_created", session_id: "s1"}] ++
+              Enum.map(unquote(Macro.escape(inputs)), fn {source, actor, at} ->
+                overtake_input(source, actor, at)
+              end)
+          )
+
+        {events, true, _hwm} = materialize(queued)
+
+        assert Enum.map(
+                 Enum.filter(events, &(&1["type"] == "delivery")),
+                 & &1["source_message_id"]
+               ) == [unquote(first)]
+
+        assert List.last(events)["queue_ack_id"] == 1
+      end
+    end
+
     for {label, event, error} <- [
           {"delivery events",
            %{
@@ -845,6 +1027,71 @@ defmodule SalixAgent.StateTest do
 
   defp materialize(state, limit),
     do: state |> InternalSession.open() |> InternalSession.materialize_pending_input_events(limit)
+
+  # A Slack input as admission queues it. `actor` nil is a schedule fire.
+  defp overtake_input(source, actor, delivered_at_ms) do
+    origin =
+      if actor,
+        do: %{"provider" => "slack", "source_actor_type" => actor, "source_message_id" => source},
+        else: %{"provider" => "schedule", "schedule_id" => source}
+
+    payload =
+      %{source_message_id: source, content: source, trusted_origin: origin}
+      |> then(fn payload ->
+        if delivered_at_ms, do: Map.put(payload, :delivered_at_ms, delivered_at_ms), else: payload
+      end)
+
+    %{
+      type: "queue_append",
+      session_id: "s1",
+      kind: "user_message",
+      wake: true,
+      dedupe_key: source,
+      payload: payload
+    }
+  end
+
+  defp thread_input(source, actor, thread, delivered_at_ms) do
+    source
+    |> overtake_input(actor, delivered_at_ms)
+    |> put_in([:payload, :trusted_origin, "provider_context"], %{
+      "connect_id" => "c1",
+      "channel_id" => "C1",
+      "thread_ts" => thread
+    })
+  end
+
+  # A Task Worker report: internal, not a human source, so it batches.
+  defp overtake_report(source) do
+    %{
+      type: "queue_append",
+      session_id: "s1",
+      kind: "user_message",
+      wake: true,
+      dedupe_key: source,
+      payload: %{
+        source_message_id: source,
+        content: source,
+        trusted_origin: %{"provider" => "internal", "source_actor_type" => "agent"}
+      }
+    }
+  end
+
+  defp overtake_context(source) do
+    %{
+      type: "queue_append",
+      session_id: "s1",
+      kind: "user_message",
+      wake: false,
+      dedupe_key: source <> ":source-context",
+      payload: %{
+        source_message_id: source <> ":source-context",
+        activation_source_message_id: source,
+        role: "summary",
+        content: source <> " context"
+      }
+    }
+  end
 
   defp queue_payload_content(item) do
     payload = item["payload"] || item[:payload] || %{}

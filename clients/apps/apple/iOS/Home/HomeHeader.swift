@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// Home's first row: a greeting for the time of day. Once the routine has anything to show, a summary or a connected
-/// app, the greeting carries a small chevron and opens the whole routine. Task search opens from the tab bar.
+/// app, the greeting carries a small chevron and opens the whole routine. Task search opens beside the greeting.
 struct HomeHeader: View {
     let store: CommaStore
-    let openBriefing: () -> Void
+    let openBriefing: (() -> Void)?
+    var openSearch: (() -> Void)? = nil
     /// Half the greeting's cap height: the chevron's centre sits this far above the last line's baseline.
     @ScaledMetric(relativeTo: .title3) private var capMiddle: CGFloat = 7
 
@@ -13,11 +14,19 @@ struct HomeHeader: View {
         // Redrawn each minute, so the greeting turns at noon and at six without a relaunch. It waits
         // unseen for the name rather than greeting the email first and correcting itself.
         TimelineView(.everyMinute) { context in
-            greeting(Text(Self.greeting(at: context.date, name: name ?? "")))
+            HStack {
+                greeting(Text(Self.greeting(at: context.date, name: name ?? "")))
+                    .frame(maxWidth: .infinity, alignment: .leading).opacity(name == nil ? 0 : 1)
+                if let openSearch {
+                    Button(action: openSearch) { CentralIcon("icon-search", size: 24, relativeTo: .body) }
+                        .buttonStyle(.plain).foregroundStyle(CommaTheme.textSecondary)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("Search tasks").accessibilityIdentifier("openTaskSearch")
+                }
+            }
         }
         // A touch target's height, with or without the routine's button, so the cards below never move.
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .opacity(name == nil ? 0 : 1)
         .animation(CommaMotion.stateChange, value: name == nil)
         .padding(.horizontal, 20).padding(.top, 8)
     }
@@ -27,7 +36,7 @@ struct HomeHeader: View {
     @ViewBuilder private func greeting(_ text: Text) -> some View {
         let title = text.font(.title3.weight(.semibold)).foregroundStyle(CommaTheme.textPrimary)
         let capMiddle = capMiddle
-        if let feed = store.routines.feed, feed.hasSnapshot || !feed.platforms.isEmpty {
+        if let openBriefing, let feed = store.routines.feed, feed.hasSnapshot || !feed.platforms.isEmpty {
             Button(action: openBriefing) {
                 // On the last line, so a greeting that wraps at large text sizes still ends in its chevron.
                 HStack(alignment: .lastTextBaseline, spacing: 4) {

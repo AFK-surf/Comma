@@ -150,7 +150,7 @@ defmodule SalixSignal.RouterIngressTest do
       )
 
     for message <- messages,
-        origin = get_in(message, ["agent_input", "trusted_origin"]),
+        origin = get_in(message, ["agent_input", :trusted_origin]),
         is_map(origin),
         do: origin
   end

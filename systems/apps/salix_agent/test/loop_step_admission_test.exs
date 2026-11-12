@@ -40,7 +40,7 @@ defmodule SalixAgent.LoopStepAdmissionTest do
 
       assert machine["phase"] == "results_only"
 
-      assert {_, [{:commit, [], [], nil}, {:notify, :timers, _}, {:stop, :committed}]} =
+      assert {_, [{:commit, [], [], nil}, {:stop, :committed}]} =
                step(ctx.session, machine, {:results_stored, [], nil, ctx.next, []})
 
       ack = %{"type" => "queue_ack", "session_id" => @sid, "queue_ack_id" => 1}

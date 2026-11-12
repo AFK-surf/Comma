@@ -77,6 +77,12 @@ class VideoCardView(context: Context) : FrameLayout(context) {
     }
 
     private var play: (VideoCover?, File) -> Unit = { _, _ -> }
+
+    /**
+     * Opens the video somewhere else (the chat's media viewer) instead of playing it from here; its Play button then
+     * opens it at once, whatever the read has reached. Only an unavailable video does nothing.
+     */
+    var onOpen: (() -> Unit)? = null
     private var playWhenReady = false
     private var lastCover: VideoCover? = null
 
@@ -171,6 +177,11 @@ class VideoCardView(context: Context) : FrameLayout(context) {
 
     private fun onControl() {
         val download = download ?: return
+        onOpen?.let { open ->
+            val state = download.state.value
+            if (state !is MediaDownloadState.Failed || state.reason == MediaDownloadState.Failure.NETWORK) open()
+            return
+        }
         when (val state = download.state.value) {
             MediaDownloadState.Idle -> { control.cancelledByUser = false; playWhenReady = true; download.start() }
             is MediaDownloadState.Downloading -> { control.cancelledByUser = true; playWhenReady = false; download.cancel() }

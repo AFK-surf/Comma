@@ -7,7 +7,6 @@ import Ecto.Query
 alias BridgeForTeams.Repo
 
 alias BridgeForTeams.Schema.{
-  EnvironmentProvisionRequest,
   FeishuAppBinding,
   MacMiniProvisioner,
   OrgCreationInvite
@@ -188,41 +187,6 @@ runtime_project =
       {:ok, project} -> project
       {:error, reason} -> raise "could not seed runtime project: #{inspect(reason)}"
     end
-
-for {suffix, status} <- [
-      {"connected-a", "connected"},
-      {"connected-b", "connected"},
-      {"failed", "failed"},
-      {"stopped", "stopped"}
-    ] do
-  connector_run_id = "connector-run-e2e-fin-#{suffix}"
-
-  attrs = %{
-    org_id: org.id,
-    project_id: runtime_project.id,
-    provisioner_id: runner.id,
-    salix_group_id: runtime_project.salix_group_id,
-    name: "E2E Fin #{suffix}",
-    env_alias: "e2e-fin-#{suffix}",
-    status: status,
-    connector_run_id: if(status == "connected", do: connector_run_id)
-  }
-
-  case Repo.get_by(EnvironmentProvisionRequest,
-         org_id: org.id,
-         env_alias: attrs.env_alias
-       ) do
-    nil ->
-      %EnvironmentProvisionRequest{}
-      |> EnvironmentProvisionRequest.changeset(attrs)
-      |> Repo.insert!()
-
-    request ->
-      request
-      |> EnvironmentProvisionRequest.changeset(attrs)
-      |> Repo.update!()
-  end
-end
 
 runtime_fixtures =
   for suffix <- ["a", "b"] do

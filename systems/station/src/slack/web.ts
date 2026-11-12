@@ -1,13 +1,13 @@
 // Slack's Web API over HTTP (chat/slack.rs `slack_api`, chat/slack_apps.rs `call`): one client for both, with one
 // rule for 429 (wait what Slack says, up to five times). Where Slack is can be changed: tests point it at a stand-in
-// ($STILLFAIL_SLACK_API, or the client's `base`).
+// ($COMMA_STATION_SLACK_API, or the client's `base`).
 type Json = any;
 
 export const SLACK_API = "https://slack.com/api";
 
-/// Where Slack's Web API is: $STILLFAIL_SLACK_API (or the old $EMBER_SLACK_API), else Slack itself.
+/// Where Slack's Web API is: $COMMA_STATION_SLACK_API (or the old $EMBER_SLACK_API), else Slack itself.
 export function apiBase(): string {
-  return process.env.STILLFAIL_SLACK_API || process.env.EMBER_SLACK_API || SLACK_API;
+  return process.env.COMMA_STATION_SLACK_API || process.env.EMBER_SLACK_API || SLACK_API;
 }
 
 /// Form fields, in order.

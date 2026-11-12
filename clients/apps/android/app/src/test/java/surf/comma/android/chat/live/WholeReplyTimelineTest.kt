@@ -4,7 +4,6 @@ import surf.comma.android.conversation.replyOf
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import surf.comma.android.chat.model.ChatMessage
@@ -52,7 +51,7 @@ class WholeReplyTimelineTest {
     ) = ConversationState(conversationId = conversation, timeline = entries.toList(), participant = participant,
         reply = replyOf(participant, awaiting, entries.toList()), connection = connection, problem = problem)
 
-    private fun rows(state: ConversationState) = mapConversation(state, replyActions = true).rows
+    private fun rows(state: ConversationState) = mapConversation(state).rows
     private fun List<ChatMessage>.typing() = count { it.cardKind == TimelineBlockKinds.LIVE_STATUS }
     private fun List<ChatMessage>.texts() = filter { it.cardKind == null }.map { it.text }
 
@@ -62,14 +61,12 @@ class WholeReplyTimelineTest {
             participant = active))
         assertEquals(listOf("q", "First part, complete."), one.texts())
         assertEquals(1, one.typing())
-        assertEquals(listOf(null, null, TimelineBlockKinds.LIVE_STATUS, LiveRowKinds.REPLY_ACTIONS_RESERVED),
-            one.map { it.cardKind })
-        // The second lands, the agent finishes: no bubble, buttons under the whole reply.
+        assertEquals(listOf(null, null, TimelineBlockKinds.LIVE_STATUS), one.map { it.cardKind })
+        // The second lands, the agent finishes: no bubble.
         val two = rows(state(question, message(2, "agent", "First part, **complete**."),
             message(3, "agent", "Second part."), participant = active.copy(state = "stopped")))
         assertEquals(listOf("q", "First part, complete.", "Second part."), two.texts())
         assertEquals(0, two.typing())
-        assertEquals(LiveRowKinds.REPLY_ACTIONS, two.last().cardKind)
         assertEquals("the first message keeps its row", one[1].id, two[1].id)
         assertTrue(two.none { it.status == MessageStatus.STREAMING })
     }
@@ -97,7 +94,6 @@ class WholeReplyTimelineTest {
             participant = active.copy(state = "stopped")))
         assertEquals(listOf("q"), cancelled.texts())
         assertEquals(0, cancelled.typing())
-        assertTrue(cancelled.none { it.cardKind == LiveRowKinds.REPLY_ACTIONS_RESERVED })
     }
 
     @Test fun `while the connection is down the bubble waits instead of spinning`() {
@@ -143,10 +139,5 @@ class WholeReplyTimelineTest {
         assertEquals(ChatRole.SYSTEM, gap.role)
         assertEquals(ChatRole.SYSTEM, rows.single { it.text == "Workspace is ready" }.role)
         assertEquals(ChatRole.AGENT, rows.single { it.text == "after the gap" }.role)
-        // Nothing the system says is copied as the reply.
-        val copied = replyText(state(question, message(2, "agent", "Answer"), message(3, "system", "Workspace is ready")),
-            "r:req-1")
-        assertEquals("Answer", copied)
-        assertFalse(rows.any { it.role == ChatRole.SYSTEM && it.cardKind == LiveRowKinds.REPLY_ACTIONS })
     }
 }

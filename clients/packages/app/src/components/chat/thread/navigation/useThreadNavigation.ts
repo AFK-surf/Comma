@@ -4,6 +4,7 @@ import { useStickToBottom } from "../scroll/useStickToBottom";
 import type { TranscriptLayout } from "../layout/useTranscriptLayout";
 import type { PendingHistoryReveal } from "../replies/useReplyHistory";
 import type { AnchoredTail } from "../turns/useAnchoredTails";
+import type { EarlierHistory } from "./useConversationTurnWindow";
 import { useThreadTurnWindow } from "./useThreadTurnWindow";
 import { useTurnReveal, type RevealTurnHandle } from "./useTurnReveal";
 
@@ -13,6 +14,7 @@ export function useThreadNavigation({
   assistantDraft,
   assistantResponseSlotId,
   cancelHistoryRequest,
+  earlier,
   historyReveal,
   historyScope,
   layout: {
@@ -32,6 +34,7 @@ export function useThreadNavigation({
   assistantDraft: ChatAssistantDraft | undefined;
   assistantResponseSlotId: string;
   cancelHistoryRequest: () => void;
+  earlier: EarlierHistory;
   historyReveal: RefObject<PendingHistoryReveal | null>;
   historyScope: string;
   layout: TranscriptLayout;
@@ -63,6 +66,7 @@ export function useThreadNavigation({
     assistantResponseSlotId,
     canonicalLayout,
     draftTimestamp,
+    earlier,
     follow,
     outgoing,
     pendingUserMessage,

@@ -1,21 +1,16 @@
 defmodule SalixAgent.CompactionLlmTest do
-  require SystemsRuntime.Proc
-
   @moduledoc """
   The willow-parity compaction port: LLM-backed summarization (the session's
   own model answers a `<compaction-summary>` request; the stored summary is
   wrapped in `<compacted-context>` tags), soft-fail on a tag-less or erroring
   response, and the auto trigger at 0.9 × the template context window
-  (provider-reported tokens). Against the Fake S3 backend with the scriptable
-  `LLM.Mock`.
+  (provider-reported tokens), with the scriptable `LLM.Mock`.
   """
   use SystemsClock.Case, async: false
 
   alias SalixAgent.{
-    AgentWorkspace,
     Compaction,
     InternalSession,
-    InternalSessionActor,
     InternalSessionFleet,
     InternalSessionStore,
     SessionDriver,
@@ -23,7 +18,6 @@ defmodule SalixAgent.CompactionLlmTest do
   }
 
   alias SalixAgent.LLM.Mock
-  alias SalixStore.Agent.Owned
 
   defmodule FailingLlmResolver do
     @behaviour SalixAgent.LlmResolver
@@ -83,6 +77,7 @@ defmodule SalixAgent.CompactionLlmTest do
   end
 
   setup do
+    SalixAgent.TestSupport.stop_all_agents()
     prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
     prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
     prev_llm_resolver = SystemsRuntime.get_env(:salix_agent, :llm_resolver)
@@ -99,6 +94,7 @@ defmodule SalixAgent.CompactionLlmTest do
     Mock.script([])
 
     on_exit(fn ->
+      SalixAgent.TestSupport.stop_all_agents()
       SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
       restore(:llm, prev_llm)
       restore(:llm_resolver, prev_llm_resolver)
@@ -108,6 +104,8 @@ defmodule SalixAgent.CompactionLlmTest do
 
     agent = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent)
+    {:ok, _} = SalixAgent.Placement.ensure_started(agent, process_on_init: false)
+    assert {:parked, _} = SalixAgent.Server.info(agent)
     runtime = %{agent_id: agent}
 
     commit_session!(agent, "ses1_0000000000000001001", [
@@ -166,8 +164,7 @@ defmodule SalixAgent.CompactionLlmTest do
 
       assert session.compacted_through == 2
       assert session.summary_sequence == 1
-      # Compaction preserves the archived transcript and removes the hot prefix.
-      assert session.messages == []
+      # The context drops the summarized prefix before the archive worker runs.
 
       assert {:ok, %{messages: messages}} =
                InternalSessionStore.transcript(owned.agent_id, handle(session), {:tail, 2})
@@ -218,7 +215,7 @@ defmodule SalixAgent.CompactionLlmTest do
                  end
                )
 
-      assert_receive {:summarized_ids, [1, 2]}
+      assert_received {:summarized_ids, [1, 2]}
       reloaded = read_session!(owned.agent_id, session_id)
       assert reloaded.compacted_through == 2
       assert InternalSession.has_pending_stable_input?(handle(reloaded))
@@ -319,58 +316,12 @@ defmodule SalixAgent.CompactionLlmTest do
       # `{:run_round, context}` continuation from the old actor.
       session = read_session!(owned.agent_id, session_id)
       assert session.compacted_through == 3
-      assert Enum.map(session.messages, & &1.id) == [4, 5]
       assert InternalSession.needs_transcript_continuation?(handle(session))
       assert InternalSession.derived_state(handle(session)) == :queued
       assert Enum.map(Compaction.context(handle(session)), & &1[:id]) == [0, 4, 5]
     end
 
-    test "a prepared legacy compaction cannot commit across the migration coordinate boundary", %{
-      owned: owned
-    } do
-      session_id = "ses1_0000000000000001001"
-      key = SalixStore.Keys.agent_internal_runtime_session(owned.agent_id, session_id)
-      legacy = %{read_session!(owned.agent_id, session_id) | storage_format: 1}
-
-      {:ok, _} =
-        SalixStore.S3.put(
-          key,
-          SalixStore.Codec.encode_snapshot(legacy)
-        )
-
-      {:ok, owner} =
-        InternalSessionFleet.ensure_started(owned.agent_id, session_id, process_on_init: false)
-
-      assert {:prepared, prepared} =
-               prepare_compaction(runtime_context(owned, session_id), :compact)
-
-      # Even when visible messages happen to retain their coordinates, the
-      # old plan's pinned fact/result ceiling has lost its coordinate contract.
-      migrated = %{legacy | storage_format: 2}
-
-      {:ok, _} =
-        SalixStore.S3.put(
-          key,
-          SalixStore.Codec.encode_snapshot(migrated)
-        )
-
-      parent = SystemsRuntime.Proc.self()
-
-      :sys.replace_state(
-        owner,
-        fn data ->
-          result = commit_prepared(prepared, {:ok, {:summary, "old coordinate summary"}})
-          SystemsRuntime.Proc.send(parent, {:migration_compaction, result})
-          data
-        end,
-        :infinity
-      )
-
-      assert_receive {:migration_compaction, {:error, {:stale_compaction_snapshot, _}}}
-      assert read_session!(owned.agent_id, session_id).summary == migrated.summary
-    end
-
-    test "commit revalidates the semantic fence after a conditional-write conflict", %{
+    test "a prepared summary cannot replace a newer semantic compaction", %{
       owned: owned
     } do
       session_id = "ses1_0000000000000001001"
@@ -380,36 +331,6 @@ defmodule SalixAgent.CompactionLlmTest do
         InternalSessionFleet.ensure_started(owned.agent_id, session_id, process_on_init: false)
 
       assert {:prepared, prepared} = prepare_compaction(context, :compact)
-
-      key = SalixStore.Keys.agent_internal_runtime_session(owned.agent_id, session_id)
-      :ok = SalixStore.S3.Fake.set_fault({:pause, :put, key})
-
-      on_exit(fn ->
-        if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) && SalixStore.S3.Fake.paused?(),
-          do: SalixStore.S3.Fake.release_pause()
-      end)
-
-      parent = SystemsRuntime.Proc.self()
-
-      commit_task =
-        SystemsRuntime.Task.async(fn ->
-          :sys.replace_state(
-            owner,
-            fn state ->
-              result =
-                commit_prepared(
-                  prepared,
-                  {:ok, {:summary, "<compacted-context>stale loser</compacted-context>"}}
-                )
-
-              SystemsRuntime.Proc.send(parent, {:racing_compaction_result, result})
-              state
-            end,
-            :infinity
-          )
-        end)
-
-      assert eventually(&SalixStore.S3.Fake.paused?/0)
 
       current = read_session!(owned.agent_id, session_id)
 
@@ -425,11 +346,25 @@ defmodule SalixAgent.CompactionLlmTest do
                  }
                ])
 
-      :ok = SalixStore.S3.Fake.release_pause()
+      parent = SystemsRuntime.Proc.self()
 
-      assert_receive {:racing_compaction_result, {:error, {:stale_compaction_snapshot, _details}}}
+      :sys.replace_state(
+        owner,
+        fn state ->
+          result =
+            commit_prepared(
+              prepared,
+              {:ok, {:summary, "<compacted-context>stale loser</compacted-context>"}}
+            )
 
-      _ = SystemsRuntime.Task.await(commit_task, :infinity)
+          SystemsRuntime.Proc.send(parent, {:racing_compaction_result, result})
+          state
+        end,
+        :infinity
+      )
+
+      assert_received {:racing_compaction_result,
+                       {:error, {:stale_compaction_snapshot, _details}}}
 
       session = read_session!(owned.agent_id, session_id)
       assert session.summary == "<compacted-context>winner summary</compacted-context>"
@@ -453,6 +388,8 @@ defmodule SalixAgent.CompactionLlmTest do
 
       agent = SalixAgent.TestSupport.new_agent_id()
       SalixAgent.TestSupport.create_control_agent!(agent)
+      {:ok, _} = SalixAgent.Placement.ensure_started(agent, process_on_init: false)
+      assert {:parked, _} = SalixAgent.Server.info(agent)
 
       # The Worker follows the platform Worker model: a Responses endpoint.
       SalixAgent.TestSupport.configure_platform_tier!(
@@ -486,7 +423,7 @@ defmodule SalixAgent.CompactionLlmTest do
                  "ses1_0000000000000001001"
                )
 
-      assert_receive {:native_compact, messages, opts}
+      assert_received {:native_compact, messages, opts}
 
       refute Enum.any?(
                messages,
@@ -544,7 +481,7 @@ defmodule SalixAgent.CompactionLlmTest do
                  "ses1_0000000000000001001"
                )
 
-      assert_receive {:compaction_opts, opts}
+      assert_received {:compaction_opts, opts}
       assert opt(opts, "entrypoint") == "compaction"
       assert opt(opts, "actor_type") == "system"
       assert opts |> opt("billing_context") |> opt("billing_account_id") == "ba-compact"
@@ -687,15 +624,22 @@ defmodule SalixAgent.CompactionLlmTest do
       SystemsRuntime.put_env(:salix_agent, :llm, Mock)
       Mock.script([{:final, "<compaction-summary>hard failure summary</compaction-summary>"}])
 
-      SalixStore.S3.Fake.set_fault(
-        {:fail, 503, :put,
-         SalixStore.Keys.agent_internal_runtime_session(agent, "ses1_0000000000000001005")}
+      quoted = String.replace(agent, "'", "''")
+
+      SalixStore.Repo.query!(
+        "ALTER TABLE salix_sessions ADD CONSTRAINT compaction_summary_reject CHECK (agent_id <> '#{quoted}' OR session_id <> 'ses1_0000000000000001005' OR compacted_seq = 0) NOT VALID"
       )
+
+      on_exit(fn ->
+        SalixStore.Repo.query!(
+          "ALTER TABLE salix_sessions DROP CONSTRAINT IF EXISTS compaction_summary_reject"
+        )
+      end)
 
       assert {:error, {:compact_failed_hard, hard_reason}} =
                SalixAgent.Runtime.compact_session(agent, "ses1_0000000000000001005")
 
-      assert hard_reason =~ "{:http, 503}"
+      assert is_binary(hard_reason) and byte_size(hard_reason) > 0
 
       [hard_event] = compact_result_events(read_session!(agent, "ses1_0000000000000001005"))
       assert hard_event["status"] == "failed_hard"
@@ -1053,15 +997,5 @@ defmodule SalixAgent.CompactionLlmTest do
   defp compact_result_events(session) do
     session.events
     |> Enum.filter(&(&1["kind"] == "session_compact_result"))
-  end
-
-  defp eventually(fun, retries \\ 1500)
-
-  defp eventually(fun, retries) do
-    case fun.() do
-      true -> true
-      _ when retries <= 0 -> false
-      _ -> SystemsRuntime.Proc.sleep(20) && eventually(fun, retries - 1)
-    end
   end
 end

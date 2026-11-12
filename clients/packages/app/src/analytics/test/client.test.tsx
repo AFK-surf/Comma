@@ -9,9 +9,11 @@ import { createCoreSessionHostController } from "../../session/core-session-host
 import {
   beginCommaMessageSend,
   captureCommaPageView,
+  captureCommaWidgetFailure,
   commaAnalyticsRoute,
   sanitizeCommaAnalyticsEvent,
   startCommaAnalytics,
+  captureCommaRecordingTranscriptionFailed,
   markCommaClientReady,
   reportCommaClientError,
   reportCommaGoogleLoginFailure,
@@ -311,6 +313,72 @@ describe("Comma client analytics", () => {
     ).toBe(false);
     expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain("private@example.com");
     expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain("secret-session-id");
+  });
+
+  it("reports a failed send's core error code and never its message", () => {
+    const host = start("user-a");
+    host.publish("user-a");
+    beginCommaMessageSend("route")(
+      "failed",
+      "runtime",
+      Object.assign(new Error("Chat session grp_secret/cnv_secret is not retained."), {
+        code: "chat_not_retained",
+      })
+    );
+    beginCommaMessageSend("route")("failed", "runtime", { code: "private text" });
+    expect(
+      sdk.capture.mock.calls
+        .filter(([name]) => name === "comma_message_send_failed")
+        .map(([, properties]) => (properties as { error_kind?: string }).error_kind)
+    ).toEqual(["chat_not_retained", "other"]);
+    expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain("secret");
+  });
+
+  it("reports a failed recording transcription by its kind only", () => {
+    const host = start("user-a");
+    host.publish("user-a");
+    captureCommaRecordingTranscriptionFailed({ reason: "too_large" });
+    expect(
+      sdk.capture.mock.calls.filter(
+        ([name]) => name === "comma_recording_transcribe_failed"
+      )
+    ).toEqual([["comma_recording_transcribe_failed", { error_kind: "too_large" }]]);
+  });
+
+  it("reports widget failures by the runtime's own reasons, never a script's text", () => {
+    const host = start("user-a");
+    host.publish("user-a");
+    captureCommaWidgetFailure("part", "Invalid chart data");
+    // A script can throw its own data; the report keeps only the class.
+    captureCommaWidgetFailure(
+      "display",
+      "UI script failed: Error: alice@example.com owes 42"
+    );
+    captureCommaWidgetFailure("part", "Card data needs places");
+    captureCommaWidgetFailure("load", "private server text");
+    expect(
+      sdk.capture.mock.calls
+        .filter(([name]) => name === "comma_widget_failed")
+        .map(([, properties]) => properties)
+    ).toEqual([
+      { error_kind: "part", widget_reason: "Invalid chart data" },
+      { error_kind: "display", widget_reason: "UI script failed" },
+      { error_kind: "part", widget_reason: "Card data invalid" },
+      { error_kind: "load", widget_reason: "other" },
+    ]);
+    expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain("alice");
+    expect(
+      sanitizeCommaAnalyticsEvent({
+        uuid: "widget-1",
+        event: "comma_widget_failed",
+        properties: { error_kind: "display", widget_reason: "alice@example.com" },
+      })?.properties
+    ).toEqual({ error_kind: "display" });
+    for (let i = 0; i < 60; i++)
+      captureCommaWidgetFailure("part", "Invalid text update");
+    expect(
+      sdk.capture.mock.calls.filter(([name]) => name === "comma_widget_failed")
+    ).toHaveLength(50);
   });
 
   it("deduplicates navigation notifications and strips route identifiers and search values", () => {

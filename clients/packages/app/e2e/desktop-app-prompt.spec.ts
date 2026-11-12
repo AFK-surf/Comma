@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 // A Mac reader: the download page starts the macOS download for them.
 test.use({
@@ -118,8 +119,7 @@ test("desktop-only settings in the browser offer the desktop app and keep their 
   // A choice from the meeting dropdown is not saved either.
   await page.getByRole("button", { name: "Meeting", exact: true }).click();
   const recording = page.getByRole("button", { name: /Start recording$/ });
-  await recording.click();
-  await page.getByRole("option", { name: "Auto", exact: true }).click();
+  await chooseDropdownOption(recording, "Auto");
   await expect(prompt).toContainText("Meeting recording needs the Comma desktop app.");
   await expect(prompt).toBeFocused();
   await page.keyboard.press("Escape");

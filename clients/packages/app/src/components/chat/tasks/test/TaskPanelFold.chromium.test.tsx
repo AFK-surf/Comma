@@ -57,19 +57,25 @@ function TaskHost({ width }: { width: number }) {
 
 /**
  * Resolves when the details column's content starts its reveal or fade, the
- * motion a fold keeps. The event comes in the frame's animation step, outside
- * the resize delivery the fold lands in, so the test may resize or unmount
- * the host from there.
+ * motion a fold keeps, or when the fold cancels the reveal still running. The
+ * event comes in the frame's animation step, outside the resize delivery the
+ * fold lands in, so the test may resize or unmount the host from there.
+ *
+ * A fold back while the reveal has not moved its opacity yet (its compositor
+ * animation not started, on a busy runner) has nothing to fade: the reveal is
+ * cancelled and no fade runs.
  */
 const nextReveal = (body: HTMLElement) =>
   new Promise<void>((resolve) => {
     const inner = body.querySelector<HTMLElement>(".comma-task-panel-inner")!;
-    const onRun = (event: TransitionEvent) => {
+    const onMotion = (event: TransitionEvent) => {
       if (event.target !== inner || event.propertyName !== "opacity") return;
-      inner.removeEventListener("transitionrun", onRun);
+      inner.removeEventListener("transitionrun", onMotion);
+      inner.removeEventListener("transitioncancel", onMotion);
       resolve();
     };
-    inner.addEventListener("transitionrun", onRun);
+    inner.addEventListener("transitionrun", onMotion);
+    inner.addEventListener("transitioncancel", onMotion);
   });
 
 const trackTransitions = (body: HTMLElement) =>

@@ -16,8 +16,14 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
   alias SalixIM.RouterConversationInput
   alias SalixWeb.Dashboard.{Format, MessageContent}
 
-  @tabs ~w(overview conversations oauth composio drive router im connectors api-keys voice signal tailnet)
-  @tab_labels %{"api-keys" => "Inbound API", "tailnet" => "Tailscale"}
+  alias SalixWeb.Dashboard.{RoutingForm, RoutingModels, RoutingMetrics}
+
+  @tabs ~w(overview model-routing conversations oauth composio drive router im connectors api-keys voice signal tailnet)
+  @tab_labels %{
+    "model-routing" => "Model routing",
+    "api-keys" => "Inbound API",
+    "tailnet" => "Tailscale"
+  }
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -29,7 +35,7 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
            group_id: id,
            group: group,
            page_title: group["name"],
-           providers: SalixStore.OAuth.Adapters.supported(),
+           providers: SalixStore.OAuth.Adapters.with_app(),
            env_connect: nil,
            new_api_key: nil,
            new_voice_key: nil,
@@ -69,6 +75,31 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
         do: [],
         else: [{Map.get(@tab_labels, tab, String.capitalize(tab)), nil}]
       )
+  end
+
+  defp load_tab(socket, "model-routing") do
+    policy = socket.assigns.group["task_model_selection"]
+
+    socket
+    |> assign(
+      routing_policy: policy,
+      routing_rows: RoutingForm.rows(policy),
+      routing_enabled: policy != nil and policy["enabled"] != false,
+      routing_learning: RoutingForm.learning?(policy),
+      routing_learned: routing_learned(socket.assigns.group_id, policy),
+      routing_models: [],
+      routing_loading: true,
+      routing_models_error: nil,
+      routing_truncated: false,
+      routing_saving: false,
+      routing_error: nil,
+      routing_dirty: false
+    )
+    |> assign_new(:routing_metrics, fn -> nil end)
+    |> assign_new(:routing_metrics_days, fn -> 7 end)
+    |> assign_new(:routing_metrics_scope, fn -> "current" end)
+    |> load_routing_models()
+    |> load_routing_metrics()
   end
 
   # Inbound API keys (docs/product-features.md). The list is
@@ -269,9 +300,224 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
     Enum.filter(environments, &(&1["group_id"] == group_id))
   end
 
+  defp load_routing_models(socket) do
+    group = socket.assigns.group
+    tenant = socket.assigns.current_tenant
+    socket = assign(socket, routing_loading: true, routing_models_error: nil)
+
+    if connected?(socket),
+      do: start_async(socket, :routing_models, fn -> RoutingModels.load(group, tenant) end),
+      else: socket
+  end
+
+  # One load per tab open or explicit refresh/filter change. No per-client timer.
+  defp load_routing_metrics(socket) do
+    %{
+      group_id: group,
+      current_tenant: tenant,
+      routing_metrics_days: days,
+      routing_metrics_scope: scope
+    } = socket.assigns
+
+    # The last result stays on screen, dimmed, until the new one arrives.
+    socket = assign(socket, routing_metrics_loading: true, routing_metrics_error: false)
+
+    if connected?(socket),
+      do:
+        start_async(socket, :routing_metrics, fn ->
+          RoutingMetrics.load(group, tenant, days, scope)
+        end),
+      else: socket
+  end
+
+  @impl true
+  def handle_async(:routing_metrics, {:ok, {:ok, data}}, socket),
+    do: {:noreply, assign(socket, routing_metrics: data, routing_metrics_loading: false)}
+
+  # The last result was for other filters or an earlier moment, so it goes too.
+  def handle_async(:routing_metrics, _, socket) do
+    {:noreply,
+     assign(socket,
+       routing_metrics: nil,
+       routing_metrics_error: true,
+       routing_metrics_loading: false
+     )}
+  end
+
+  @impl true
+  def handle_async(:routing_models, {:ok, {:ok, result}}, socket) do
+    {:noreply,
+     assign(socket,
+       routing_models: result["models"],
+       routing_loading: false,
+       routing_models_error: nil,
+       routing_truncated: result["truncated"]
+     )}
+  end
+
+  def handle_async(:routing_models, _, socket) do
+    {:noreply,
+     assign(socket,
+       routing_models: [],
+       routing_loading: false,
+       routing_models_error:
+         "Could not verify available models. Refresh to retry. Saved mappings are preserved."
+     )}
+  end
+
+  def handle_async(:routing_save, {:ok, {:ok, group}}, socket) do
+    {:noreply,
+     socket
+     |> assign(group: group)
+     |> load_tab("model-routing")
+     |> put_flash(:info, "Model routing saved. New tasks use this configuration.")}
+  end
+
+  def handle_async(:routing_save, result, socket) do
+    message =
+      case result do
+        {:ok, {:error, message}} when is_binary(message) -> message
+        _ -> "Could not verify model access or save routing. Refresh and try again."
+      end
+
+    {:noreply, assign(socket, routing_saving: false, routing_error: message, routing_dirty: true)}
+  end
+
   # ---- OAuth events ----
 
   @impl true
+  def handle_event(event, _, %{assigns: %{routing_saving: true}} = socket)
+      when event in ~w(change-routing add-routing remove-routing reset-routing save-routing refresh-routing-models import-routing export-routing routing-file-error),
+      do: {:noreply, socket}
+
+  def handle_event("import-routing", %{"json" => json}, socket) do
+    if RoutingForm.editable?(socket.assigns.routing_policy) do
+      case RoutingForm.import_table(json) do
+        {:ok, rows} ->
+          {:noreply, assign(socket, routing_rows: rows, routing_dirty: true, routing_error: nil)}
+
+        {:error, message} ->
+          {:noreply, assign(socket, routing_error: message)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("export-routing", _, socket) do
+    if RoutingForm.editable?(socket.assigns.routing_policy) do
+      case RoutingForm.export_table(socket.assigns.routing_rows) do
+        {:ok, json} ->
+          {:noreply,
+           push_event(socket, "download-routing", %{filename: "model-routing.json", json: json})}
+
+        {:error, message} ->
+          {:noreply, assign(socket, routing_error: message)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("routing-file-error", %{"reason" => reason}, socket) do
+    message =
+      if reason == "too_large",
+        do: "Choose a JSON file no larger than 64 KiB.",
+        else: "Could not read this file. Choose the JSON file again."
+
+    {:noreply, assign(socket, routing_error: message)}
+  end
+
+  def handle_event("change-routing", %{"routing" => params}, socket) do
+    rows =
+      RoutingForm.change(
+        socket.assigns.routing_rows,
+        params["rows"] || %{},
+        socket.assigns.routing_models
+      )
+
+    enabled = params["enabled"] == "true"
+    learning = params["learning"] == "true"
+
+    dirty =
+      socket.assigns.routing_dirty or rows != socket.assigns.routing_rows or
+        enabled != socket.assigns.routing_enabled or
+        learning != socket.assigns.routing_learning
+
+    {:noreply,
+     assign(socket,
+       routing_rows: rows,
+       routing_enabled: enabled,
+       routing_learning: learning,
+       routing_dirty: dirty,
+       routing_error: nil
+     )}
+  end
+
+  def handle_event("add-routing", _, socket) do
+    rows = RoutingForm.add(socket.assigns.routing_rows)
+    {:noreply, assign(socket, routing_rows: rows, routing_dirty: true, routing_error: nil)}
+  end
+
+  def handle_event("remove-routing", %{"id" => id}, socket) do
+    rows = Map.delete(socket.assigns.routing_rows, id)
+    {:noreply, assign(socket, routing_rows: rows, routing_dirty: true, routing_error: nil)}
+  end
+
+  def handle_event("refresh-routing-models", _, socket),
+    do: {:noreply, load_routing_models(socket)}
+
+  def handle_event("refresh-routing-metrics", _, socket),
+    do: {:noreply, load_routing_metrics(socket)}
+
+  def handle_event(
+        "filter-routing-metrics",
+        %{"metrics" => %{"days" => days, "scope" => scope}},
+        socket
+      )
+      when days in ["1", "7", "30"] and scope in ["current", "all"] do
+    {:noreply,
+     socket
+     |> assign(routing_metrics_days: String.to_integer(days), routing_metrics_scope: scope)
+     |> load_routing_metrics()}
+  end
+
+  def handle_event("reset-routing", _, socket), do: {:noreply, load_tab(socket, "model-routing")}
+
+  def handle_event("save-routing", %{"routing" => params}, socket) do
+    rows =
+      RoutingForm.change(
+        socket.assigns.routing_rows,
+        params["rows"] || %{},
+        socket.assigns.routing_models
+      )
+
+    enabled = params["enabled"] == "true"
+    learning = params["learning"] == "true"
+    original = socket.assigns.routing_policy
+    tenant = socket.assigns.current_tenant
+    id = socket.assigns.group_id
+
+    socket =
+      assign(socket,
+        routing_rows: rows,
+        routing_enabled: enabled,
+        routing_learning: learning,
+        routing_saving: true,
+        routing_error: nil
+      )
+
+    {:noreply,
+     start_async(socket, :routing_save, fn ->
+       with {:ok, group} <- Groups.get(id, tenant),
+            {:ok, available} <- routing_models_for_save(group, tenant, original, rows, enabled),
+            {:ok, policy} <-
+              RoutingForm.policy(original, rows, enabled, available["models"], learning) do
+         Groups.update_task_model_selection(id, tenant, original, policy)
+       end
+     end)}
+  end
+
   def handle_event("authorize", params, socket) do
     attrs = %{"alias" => params["alias"], "scopes" => params["scopes"]}
 
@@ -556,28 +802,6 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
              else: "VFS control commands disabled."
            )
          )}
-
-      {:error, {_, msg}} ->
-        {:noreply, put_flash(socket, :error, msg)}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Update failed: #{inspect(reason)}")}
-    end
-  end
-
-  def handle_event("toggle-cloud-vm", %{"enabled" => enabled}, socket) do
-    enabled = enabled == "true"
-
-    case Groups.update(
-           socket.assigns.group_id,
-           %{"cloud_vm_enabled" => enabled},
-           socket.assigns.current_tenant
-         ) do
-      {:ok, group} ->
-        {:noreply,
-         socket
-         |> assign(group: group)
-         |> put_flash(:info, if(enabled, do: "Cloud VM enabled.", else: "Cloud VM disabled."))}
 
       {:error, {_, msg}} ->
         {:noreply, put_flash(socket, :error, msg)}
@@ -1021,6 +1245,35 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
 
   defp api_key_time(_other), do: "—"
 
+  # What each route has learned, by key: its best arm so far and its samples.
+  # One read of at most 32 rows; nothing when the table does not learn.
+  defp routing_learned(group_id, policy) do
+    with true <- RoutingForm.learning?(policy),
+         {:ok, %{"routes" => routes}} <- Salix.TaskRoutingLearning.summary(group_id, policy) do
+      Map.new(routes, fn route ->
+        best = List.first(route["arms"])
+
+        {route["key"],
+         %{"label" => RoutingForm.arm_label(best["choice"]), "tasks" => route["revision"]}}
+      end)
+    else
+      _ -> %{}
+    end
+  end
+
+  defp routing_models_for_save(group, tenant, original, rows, enabled) do
+    cond do
+      RoutingForm.editable?(original) and map_size(rows) == 0 ->
+        {:ok, %{"models" => []}}
+
+      not enabled and original != nil and rows == RoutingForm.rows(original) ->
+        {:ok, %{"models" => []}}
+
+      true ->
+        RoutingModels.load(group, tenant)
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -1041,6 +1294,7 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
 
       <.tabs class="[&>nav]:flex-wrap [&>nav]:gap-y-0">
         <:tab label="Overview" patch={"/dash/groups/#{@group_id}"} active={@tab == "overview"} />
+        <:tab label="Model routing" patch={"/dash/groups/#{@group_id}?tab=model-routing"} active={@tab == "model-routing"} />
         <:tab
           label="Conversations"
           patch={"/dash/groups/#{@group_id}?tab=conversations"}
@@ -1069,6 +1323,16 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
           active={@tab == "tailnet"}
         />
       </.tabs>
+
+      <SalixWeb.Dashboard.RoutingPanel.panel :if={@tab == "model-routing"}
+        enabled={@routing_enabled} learning={@routing_learning} learned={@routing_learned}
+        rows={@routing_rows} policy={@routing_policy}
+        error={@routing_error} dirty={@routing_dirty} models={@routing_models}
+        loading={@routing_loading}
+        saving={@routing_saving} models_error={@routing_models_error} truncated={@routing_truncated} />
+      <SalixWeb.Dashboard.RoutingMetricsPanel.panel :if={@tab == "model-routing"}
+        data={@routing_metrics} loading={@routing_metrics_loading} error={@routing_metrics_error}
+        days={@routing_metrics_days} scope={@routing_metrics_scope} />
 
       <div :if={@tab == "overview"} class="space-y-3">
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1143,22 +1407,6 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
               phx-value-enabled={
                 if @group["control_command_vfs_enabled"] == true, do: "false", else: "true"
               }
-            />
-          </div>
-        </.card>
-        <.card>
-          <:title>Cloud VM</:title>
-          <div class="flex flex-wrap items-center justify-between gap-4">
-            <p class="max-w-2xl text-sm text-neutral-700">
-              Let this group's Agents start the group's Cloud VM and run Tasks on it.
-            </p>
-            <.toggle
-              id="cloud-vm-toggle"
-              name="cloud_vm_enabled"
-              label={if @group["cloud_vm_enabled"] == true, do: "Enabled", else: "Disabled"}
-              checked={@group["cloud_vm_enabled"] == true}
-              phx-click="toggle-cloud-vm"
-              phx-value-enabled={if @group["cloud_vm_enabled"] == true, do: "false", else: "true"}
             />
           </div>
         </.card>
@@ -1594,10 +1842,6 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
             This connector credential is shown only once. Copy it now.
           </p>
           <div class="space-y-3">
-            <div>
-              <p class="mb-1 text-xs font-medium text-neutral-600">Connect command</p>
-              <pre class="overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 p-3 font-mono text-xs text-neutral-800">salix-connect --server {@env_connect["server"]} --connector-token {@env_connect["token"]}</pre>
-            </div>
             <div>
               <p class="mb-1 text-xs font-medium text-neutral-600">Environment variables</p>
               <pre class="overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 p-3 font-mono text-xs text-neutral-800">{env_vars(@env_connect)}</pre>

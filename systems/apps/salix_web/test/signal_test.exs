@@ -16,6 +16,17 @@ defmodule SalixWeb.SignalTest do
 
   @endpoint SalixWeb.DashboardEndpoint
 
+  defmodule ChannelLinks do
+    @moduledoc false
+    @behaviour SalixIM.Ports.ChannelLinks
+
+    @impl true
+    def signal_bound(bound) do
+      send(SystemsRuntime.fetch_env!(:salix_im, :channel_links_test_pid), {:signal_bound, bound})
+      :ok
+    end
+  end
+
   setup do
     prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
     SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
@@ -162,12 +173,31 @@ defmodule SalixWeb.SignalTest do
     alice = sender()
     assert :needs_permission = IMHandler.incoming_call(platform.id, %{peer_aci: alice})
 
+    # The product hears of the binding, for a Router waiting on the claim.
+    previous_port = SystemsRuntime.get_env(:salix_im, :channel_links)
+    SystemsRuntime.put_env(:salix_im, :channel_links_test_pid, self())
+    SystemsRuntime.put_env(:salix_im, :channel_links, __MODULE__.ChannelLinks)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_im, :channel_links_test_pid)
+
+      if previous_port,
+        do: SystemsRuntime.put_env(:salix_im, :channel_links, previous_port),
+        else: SystemsRuntime.delete_env(:salix_im, :channel_links)
+    end)
+
     assert :ok =
              IMHandler.handle_inbound(
                platform.id,
                1,
                text_inbound(alice, claim["command"], 1_700_000_000_000)
              )
+
+    # The binding, and the word to the product, happened before handle_inbound returned.
+    group_id = ctx.group_id
+
+    assert_received {:signal_bound,
+                     %{"group_id" => ^group_id, "binding" => %{"peer" => ^alice, "kind" => "user"}}}
 
     status = req_as(ctx.tenant_key, :get, base).body
 

@@ -1,7 +1,7 @@
+import VerifiedKernelProofs.Session.WorkArchiveWindow
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkArchiveWindow
 
 namespace VerifiedKernel.Session.ArchivePublication
 open Data WorkConservation

@@ -114,14 +114,25 @@ defmodule SalixAgent.DecideFixture do
             a =
               case q["type"] do
                 "choice" ->
-                  choice = if state == "unknown", do: "unauthorized", else: "meetings"
+                  choice =
+                    if state == "unknown",
+                      do: "unauthorized",
+                      else: q["criteria"] |> Map.keys() |> Enum.sort() |> hd()
+
                   confidence = if state == "uncertain", do: 0.01, else: 0.81239
 
                   %{
                     "type" => "choice",
                     "choice" => choice,
                     "confidence" => confidence,
-                    "probabilities" => %{"meetings" => 0.9, "none" => 0.1}
+                    "probabilities" =>
+                      Map.new(q["criteria"], fn {candidate, _description} ->
+                        {candidate,
+                         if(candidate == choice,
+                           do: 0.9,
+                           else: 0.1 / (map_size(q["criteria"]) - 1)
+                         )}
+                      end)
                   }
 
                 "noul" ->

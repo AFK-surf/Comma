@@ -10,7 +10,7 @@ export {
   type ErrorBody,
   type Result,
 } from "./error.ts";
-export { diff, apply, largerThan, type Op, type Segment } from "./delta.ts";
+export { type Op, type Segment } from "./delta.ts";
 export {
   diffKeyed,
   applyKeyed,
@@ -46,6 +46,8 @@ export {
   type StoreOptions,
   type Value,
 } from "./store.ts";
+export { noWork, type Meter, type Work } from "./meter.ts";
+export { share, shared, madeOnce, mapKept, LastMade } from "./keep.ts";
 export { Scheduler, Priority } from "./scheduler.ts";
 export { Doing, FAILED_SHOWN_MS, type DoingItem } from "./doing.ts";
 export {
@@ -67,6 +69,7 @@ export {
 export {
   equal,
   isObject,
+  jsonBytes,
   compareKeys,
   sorted,
   toJson,

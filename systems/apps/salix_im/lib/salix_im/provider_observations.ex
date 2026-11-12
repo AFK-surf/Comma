@@ -7,6 +7,10 @@ defmodule SalixIM.ProviderObservations do
   # How many message ids a QQ chat remembers to recognize a redelivery.
   @qq_recent_message_ids 32
   @qq_message_refs 64
+  # A Feishu or Lark event names its sender by id only. Records written before
+  # the sender's name was dropped hold the event's `sender_type` ("user") as
+  # the name, so a listed user carries ids only.
+  @unobserved_user_fields ~w(name email)
 
   def upsert_telegram_chat(connect, attrs) when is_map(connect) and is_map(attrs) do
     connect_id = connect["connect_id"]
@@ -285,6 +289,86 @@ defmodule SalixIM.ProviderObservations do
     end
   end
 
+  @doc """
+  Records the newest message a LINE chat sent to the bot, with the reply
+  token LINE gave for it. A reply with that token is free; any other send is
+  a push message, which counts against the channel's monthly quota.
+  `take_line_reply_token/3` spends the token.
+  """
+  def upsert_line_chat(connect, attrs) when is_map(connect) and is_map(attrs) do
+    connect_id = connect["connect_id"]
+    chat_id = trim(attrs["chat_id"])
+    message_at = attrs["message_at"] || now()
+
+    if chat_id == "" do
+      :ok
+    else
+      observed = %{
+        "connect_id" => connect_id,
+        "chat_id" => chat_id,
+        "chat_type" => trim(attrs["chat_type"]),
+        "last_sender_id" => trim(attrs["sender_id"]),
+        "last_message_id" => trim(attrs["message_id"]),
+        "last_message_at" => message_at,
+        "reply_token" => trim(attrs["reply_token"]),
+        "updated_at" => now()
+      }
+
+      # A redelivered or late event never replaces a newer message's token.
+      CasRecord.update(Keys.ctl_im_line_chat(connect_id, chat_id), fn
+        nil ->
+          Map.put(observed, "created_at", observed["updated_at"])
+
+        current ->
+          if num(current["last_message_at"]) > message_at or
+               trim(current["last_message_id"]) == observed["last_message_id"],
+             do: {:unchanged, current},
+             else: Map.merge(current, observed)
+      end)
+      |> case do
+        {:ok, _chat} -> :ok
+        other -> other
+      end
+    end
+  end
+
+  @doc """
+  Takes the reply token of the chat's newest message once, while it is
+  younger than `max_age_ms`. Returns `{:ok, token}` or `:none`.
+  """
+  def take_line_reply_token(connect_id, chat_id, max_age_ms) do
+    now = now()
+
+    CasRecord.update(
+      Keys.ctl_im_line_chat(connect_id, trim(chat_id)),
+      fn current ->
+        token = trim(current["reply_token"])
+
+        if token != "" and now - num(current["last_message_at"]) < max_age_ms,
+          do: current |> Map.put("reply_token", "") |> Map.put("taken_reply_token", token),
+          else: {:error, :no_reply_token}
+      end,
+      create: false
+    )
+    |> case do
+      {:ok, %{"taken_reply_token" => token}} when token != "" -> {:ok, token}
+      _none -> :none
+    end
+  end
+
+  def get_line_chat(connect_id, chat_id),
+    do: CasRecord.get(Keys.ctl_im_line_chat(connect_id, trim(chat_id)))
+
+  def list_line_chats(connect_id, query, limit) do
+    with {:ok, records} <- scan_records(Keys.ctl_im_line_chats_prefix(connect_id)) do
+      {:ok,
+       records
+       |> Enum.map(&Map.drop(&1, ["reply_token", "taken_reply_token"]))
+       |> filter(query, ["chat_id", "chat_type"])
+       |> Enum.take(clamp_limit(limit))}
+    end
+  end
+
   def upsert_feishu_chat(connect, attrs) when is_map(connect) and is_map(attrs) do
     connect_id = connect["connect_id"]
     chat_id = trim(attrs["chat_id"])
@@ -314,8 +398,6 @@ defmodule SalixIM.ProviderObservations do
         "open_id" => open_id,
         "union_id" => trim(attrs["union_id"]),
         "user_id" => trim(attrs["user_id"]),
-        "name" => trim(attrs["name"]),
-        "email" => trim(attrs["email"]),
         "last_seen_at" => attrs["last_seen_at"] || now()
       })
     end
@@ -334,7 +416,8 @@ defmodule SalixIM.ProviderObservations do
     with {:ok, records} <- scan_records(Keys.ctl_im_feishu_users_prefix(connect_id)) do
       {:ok,
        records
-       |> filter(query, ["open_id", "union_id", "user_id", "name", "email"])
+       |> Enum.map(&Map.drop(&1, @unobserved_user_fields))
+       |> filter(query, ["open_id", "union_id", "user_id"])
        |> Enum.take(clamp_limit(limit))}
     end
   end
@@ -368,8 +451,6 @@ defmodule SalixIM.ProviderObservations do
         "open_id" => open_id,
         "union_id" => trim(attrs["union_id"]),
         "user_id" => trim(attrs["user_id"]),
-        "name" => trim(attrs["name"]),
-        "email" => trim(attrs["email"]),
         "last_seen_at" => attrs["last_seen_at"] || now()
       })
     end
@@ -388,7 +469,8 @@ defmodule SalixIM.ProviderObservations do
     with {:ok, records} <- scan_records(Keys.ctl_im_lark_users_prefix(connect_id)) do
       {:ok,
        records
-       |> filter(query, ["open_id", "union_id", "user_id", "name", "email"])
+       |> Enum.map(&Map.drop(&1, @unobserved_user_fields))
+       |> filter(query, ["open_id", "union_id", "user_id"])
        |> Enum.take(clamp_limit(limit))}
     end
   end

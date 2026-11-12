@@ -10,7 +10,7 @@ import java.io.File
 import java.io.IOException
 import surf.comma.android.ui.Background
 
-/** A downloaded video's first frame, stored next to it, and the video's displayed size. */
+/** A downloaded video's first frame, stored in the app cache, and the video's displayed size. */
 data class VideoCover(val file: File, val dimensions: ImageDimensions)
 
 /** Writes the first frame of [video], at most [maxEdge] on its long side, as a JPEG to [output]. */
@@ -26,6 +26,7 @@ fun interface VideoFrameReader {
  */
 class VideoCovers(
     private val sizes: AspectRatioCache,
+    private val directory: File,
     private val reader: VideoFrameReader = AndroidVideoFrameReader,
     private val maxEdge: Int = 1280,
     private val dispatcher: CoroutineDispatcher = Background.files,
@@ -36,9 +37,16 @@ class VideoCovers(
     fun dimensions(key: String): ImageDimensions? = sizes.get(key)
 
     suspend fun cover(key: String, video: File): VideoCover? = withContext(dispatcher) {
-        val output = File(video.parentFile?.parentFile ?: throw IOException("No cover directory"), COVER)
-        sizes.get(key)?.let { known -> if (output.isFile && output.length() > 0) return@withContext VideoCover(output, known) }
+        val output = File(directory, "$key.jpg")
+        fun cached(): VideoCover? = sizes.get(key)?.let { known ->
+            if (output.isFile && output.length() > 0) VideoCover(output, known) else null
+        }
+        cached()?.let { return@withContext it }
         extraction.withLock {
+            cached()?.let { return@withLock it }
+            // Older versions wrote one shared cover into the core's account directory.
+            File(video.parentFile?.parentFile ?: throw IOException("No video directory"), COVER).delete()
+            if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create cover cache")
             val temporary = File(output.path + ".tmp")
             try {
                 val size = reader.write(video, maxEdge, temporary) ?: return@withLock null
@@ -51,7 +59,12 @@ class VideoCovers(
         }
     }
 
-    suspend fun clear() { sizes.clear() }
+    suspend fun clear() = withContext(dispatcher) {
+        extraction.withLock {
+            directory.deleteRecursively()
+            sizes.clear()
+        }
+    }
 
     private companion object { const val COVER = "cover.jpg" }
 }

@@ -1018,9 +1018,6 @@ defmodule SalixWeb.ConversationMessagingTest do
     end
   end
 
-  defp fake_dump_body(%{body: body}), do: body
-  defp fake_dump_body(body), do: body
-
   defp create_conversation(group_id, attrs) do
     attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
@@ -1120,15 +1117,9 @@ defmodule SalixWeb.ConversationMessagingTest do
     assert command["kind"] == "app_event"
     assert command["delivery_filter"] == %{"participant_ids" => [participant_id]}
 
-    delivery_record_key =
-      delivery_key(
-        group_id,
-        conversation_id,
-        response.body["message_id"],
-        participant_id
-      )
+    delivery =
+      eventually_delivery(group_id, conversation_id, response.body["message_id"], participant_id)
 
-    delivery = eventually_delivery(delivery_record_key)
     assert delivery["delivery_kind"] == "participant_notification"
     assert delivery["notification_kind"] == "provider_participant_message"
     assert delivery["participant_actor_type"] == "provider"
@@ -1139,6 +1130,1206 @@ defmodule SalixWeb.ConversationMessagingTest do
     assert delivery["message_content"] == [
              %{"type" => "text", "text" => "Task: https://task.example"}
            ]
+  end
+
+  test "a product Task without a Router round selects a model with its prepared Participant identity",
+       %{
+         group_id: group_id,
+         agent_id: router_id
+       } do
+    alias SalixAgent.DecideFixture
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, false)
+
+    policy = %{
+      "mode" => "jev",
+      "instructions" => "Choose the model for this Task.",
+      "candidates" => [
+        %{"model" => "gpt-6-sol", "reasoning_effort" => "medium", "description" => "Workhorse"},
+        %{"model" => "gpt-6-luna", "reasoning_effort" => "medium", "description" => "Small model"}
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    Mock.script([{:final, "Product task complete"}])
+
+    assert {:ok, created} =
+             SalixIM.TaskPlacement.create_task_conversation(group_id, router_id, %{
+               "content" => "Find the answer",
+               "title" => "Product task",
+               "client_request_id" => "product-selection"
+             })
+
+    settle_receive({:decision_request, _, _, _})
+    settle_receive({:decision_meter_before, %{entrypoint: "task_model_selection"} = before})
+    assert before.salix_agent_id == router_id
+    assert before.session_id == router_session_id(router_id, group_id)
+    assert before.billing_context["salix_agent_id"] == router_id
+    assert before.billing_context["salix_group_id"] == group_id
+    settle_receive({:decision_archive, %{boundary: :llm_request} = archived})
+    assert archived.agent_id == before.salix_agent_id
+    assert archived.session_id == before.session_id
+
+    participant =
+      Enum.find(
+        conversation_participants(group_id, created["conversation_id"]),
+        &(&1["role_label"] == "worker")
+      )
+
+    assert participant["payload"]["session_model"]["model"] == "gpt-6-sol"
+
+    {:ok, conversation} =
+      SalixIM.Conversations.get_group_conversation(group_id, created["conversation_id"])
+
+    evidence = conversation["metadata"]["task_model_selection"]
+    assert evidence["session_id"] == participant["payload"]["session_id"]
+    assert evidence["policy_mode"] == "jev"
+    assert evidence["decision_source"] == "jev"
+    assert evidence["usage"] == %{"input_tokens" => 123, "output_tokens" => 7}
+    refute Enum.any?(~w(request decision route source), &Map.has_key?(evidence, &1))
+  end
+
+  test "routing and explicit Tasks keep the same paid and platform choices", ctx do
+    alias SalixWeb.Dashboard.{RoutingForm, RoutingModels}
+
+    {:ok, _profile} =
+      SalixAgent.AccountPool.create(ctx.tenant_id, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "deepseek",
+        "api_key" => "fixture-routing-paid-key-0000000000"
+      })
+
+    paid = %{
+      "kind" => "catalog",
+      "model" => "deepseek-flash",
+      "reasoning_effort" => "high",
+      "allow_paid" => true
+    }
+
+    {:ok, group} = Salix.Control.Groups.get(ctx.group_id, ctx.tenant_id)
+    {:ok, %{"models" => models}} = RoutingModels.load(group, ctx.tenant_id)
+
+    for {kind, choice} <- [
+          {"paid", paid},
+          {"platform", %{"kind" => "platform", "tier" => "worker"}}
+        ] do
+      rows = %{
+        "0" => %{
+          "key" => "research",
+          "description" => "Research tasks",
+          "model" => RoutingForm.model_key(choice),
+          "effort" => choice["reasoning_effort"] || "default"
+        }
+      }
+
+      {:ok, policy} = RoutingForm.policy(nil, rows, true, models)
+
+      for {id, model} <- [{"explicit-#{kind}", choice}, {"routed-#{kind}", nil}] do
+        if is_nil(model) do
+          assert req(:patch, "/v1/runtime/agent-groups/#{ctx.group_id}",
+                   json: %{task_model_selection: policy}
+                 ).status == 200
+        end
+
+        Mock.script([{:final, "Task complete"}])
+
+        assert {:ok, created} =
+                 SalixIM.TaskPlacement.create_task_conversation(ctx.group_id, ctx.agent_id, %{
+                   "content" => "Research the question",
+                   "client_request_id" => id,
+                   "model" => model
+                 })
+
+        worker =
+          Enum.find(
+            conversation_participants(ctx.group_id, created["conversation_id"]),
+            &(&1["role_label"] == "worker")
+          )
+
+        assert worker["payload"]["session_model"] == choice
+
+        if is_nil(model) do
+          {:ok, conversation} =
+            SalixIM.Conversations.get_group_conversation(ctx.group_id, created["conversation_id"])
+
+          assert conversation["metadata"]["task_model_selection"]["selected_model"] == choice
+        end
+      end
+    end
+  end
+
+  test "explicit Task selection rejects inherited choices and commits the requested effort", %{
+    group_id: group_id,
+    agent_id: router_id
+  } do
+    policy = %{
+      "mode" => "explicit",
+      "actions" => [
+        %{"model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    worker =
+      req(:post, "/v1/runtime/agents",
+        json: %{group_id: group_id, name: "Explicit worker", role: "worker"}
+      ).body
+
+    params = %{
+      "runs_on" => %{"kind" => "default"},
+      "agent_id" => worker["agent_id"],
+      "content" => "List the requested records",
+      "title" => "Explicit task"
+    }
+
+    assert {:error, _} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "explicit-omitted"
+             )
+
+    choice = %{"kind" => "catalog", "model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+
+    assert {:error, _} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               Map.put(params, "model", Map.delete(choice, "reasoning_effort")),
+               "explicit-effort-omitted"
+             )
+
+    Mock.script([{:final, "Explicit task complete"}])
+
+    assert {:ok, created} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               Map.put(params, "model", choice),
+               "explicit-valid"
+             )
+
+    participant =
+      Enum.find(
+        conversation_participants(group_id, created["conversation_id"]),
+        &(&1["agent_id"] == worker["agent_id"])
+      )
+
+    assert eventually(fn ->
+             case SalixAgent.InternalSessionStore.read(
+                    worker["agent_id"],
+                    participant["payload"]["session_id"]
+                  ) do
+               {:ok, session} ->
+                 SalixAgent.InternalSession.get(session, :model)["reasoning_effort"] == "medium"
+
+               _ ->
+                 false
+             end
+           end)
+  end
+
+  test "product Task creation enforces explicit choices before committing", %{
+    group_id: group_id,
+    agent_id: router_id
+  } do
+    policy = %{
+      "mode" => "explicit",
+      "actions" => [
+        %{"model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    attrs = %{"content" => "List records", "client_request_id" => "product-explicit"}
+    choice = %{"kind" => "catalog", "model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+
+    for model <- [
+          nil,
+          Map.put(choice, "model", "gpt-6-luna"),
+          Map.delete(choice, "reasoning_effort")
+        ] do
+      assert {:error, {:bad_request, message}} =
+               SalixIM.TaskPlacement.create_task_conversation(
+                 group_id,
+                 router_id,
+                 attrs
+                 |> Map.put("model", model)
+                 |> Map.put("client_request_id", "product-explicit-" <> Jason.encode!(model))
+               )
+
+      assert message =~ "choose an allowed model"
+    end
+
+    assert {:ok, page} = SalixIM.Conversations.list_group_conversations(group_id, limit: 100)
+    refute Enum.any?(page["data"], &(&1["kind"] == "agent_task"))
+
+    Mock.script([{:final, "Explicit product task complete"}])
+
+    assert {:ok, created} =
+             SalixIM.TaskPlacement.create_task_conversation(
+               group_id,
+               router_id,
+               Map.put(attrs, "model", choice)
+             )
+
+    worker =
+      Enum.find(
+        conversation_participants(group_id, created["conversation_id"]),
+        &(&1["role_label"] == "worker")
+      )
+
+    assert worker["payload"]["session_model"]["reasoning_effort"] == "medium"
+  end
+
+  test "routing errors explain recovery and leave no Task, while direct routes keep metadata small",
+       %{
+         group_id: group_id,
+         agent_id: router_id
+       } do
+    alias SalixAgent.DecideFixture
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, false)
+
+    entry = %{
+      "key" => "all",
+      "description" => "All tasks",
+      "model" => %{"kind" => "catalog", "model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+    }
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "compact",
+      "entries" => [entry, Map.put(entry, "key", "other")]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    long = String.duplicate("任务", 12_000)
+    attrs = %{"client_request_id" => "failed-routing"}
+
+    assert {:error, {:task_model_selection_failed, oversized}} =
+             SalixIM.TaskPlacement.create_task_conversation(
+               group_id,
+               router_id,
+               Map.put(attrs, "content", long)
+             )
+
+    assert oversized =~ "input_too_large"
+    assert oversized =~ "64 KiB"
+    assert oversized =~ "Shorten"
+    settle_refute_receive({:decision_request, _, _, _})
+
+    for {content, code} <- [{"rate", "rate_limited"}, {"slow", "timeout"}] do
+      assert {:error, {:task_model_selection_failed, message}} =
+               SalixIM.TaskPlacement.create_task_conversation(
+                 group_id,
+                 router_id,
+                 attrs
+                 |> Map.put("content", content)
+                 |> Map.put("client_request_id", "failed-routing-" <> content)
+               )
+
+      assert message =~ code
+      assert message =~ "Retry"
+      settle_receive({:decision_request, _, _, _})
+    end
+
+    assert {:ok, page} = SalixIM.Conversations.list_group_conversations(group_id, limit: 100)
+    refute Enum.any?(page["data"], &(&1["kind"] == "agent_task"))
+
+    # One entry requires no inference, so a large command is still valid.
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: Map.put(policy, "entries", [entry])}
+           ).status == 200
+
+    Mock.script([{:final, "Long task complete"}])
+
+    assert {:ok, created} =
+             SalixIM.TaskPlacement.create_task_conversation(
+               group_id,
+               router_id,
+               Map.put(attrs, "content", long)
+             )
+
+    {:ok, conversation} =
+      SalixIM.Conversations.get_group_conversation(group_id, created["conversation_id"])
+
+    evidence = conversation["metadata"]["task_model_selection"]
+    assert evidence["policy_mode"] == "routes"
+    assert evidence["decision_source"] == "direct"
+    assert evidence["rule_version"] == "compact"
+    assert evidence["tag_key"] == "all"
+    assert byte_size(Jason.encode!(evidence)) < 1024
+    refute Enum.any?(~w(request decision route source), &Map.has_key?(evidence, &1))
+    settle_refute_receive({:decision_request, _, _, _})
+  end
+
+  test "Task tool selects a model with code-built Jev input and preserves it on retry", %{
+    group_id: group_id,
+    agent_id: router_id
+  } do
+    alias SalixAgent.DecideFixture
+
+    state =
+      SalixAgent.InternalSession.new(router_id, router_session_id(router_id, group_id), %{
+        "billing_context" => %{"billing_account_id" => "selection-test"}
+      })
+
+    :ok = SalixAgent.TestSupport.SessionFixture.seed(router_id, state)
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, false)
+
+    policy = %{
+      "mode" => "jev",
+      "instructions" => "Choose the model for this Task.",
+      "candidates" => [
+        %{"model" => "gpt-6-sol", "reasoning_effort" => "medium", "description" => "Workhorse"},
+        %{"model" => "gpt-6-luna", "reasoning_effort" => "medium", "description" => "Small model"}
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    worker =
+      req(:post, "/v1/runtime/agents",
+        json: %{group_id: group_id, name: "Selected worker", role: "worker"}
+      ).body
+
+    worker_id = worker["agent_id"]
+
+    params = %{
+      "runs_on" => %{"kind" => "default"},
+      "agent_id" => worker_id,
+      "content" => "Find the answer",
+      "title" => "Selected task"
+    }
+
+    {:ok, manual} = SalixIM.Provider.provider_manual("internal", router_id)
+    create = Enum.find(manual["apis"], &(&1["name"] == "internal.task.create"))
+    assert Map.has_key?(create["input_schema"]["properties"], "model")
+    assert Map.has_key?(create["input_schema"]["properties"], "runs_on")
+
+    Mock.script([{:final, "Explicit model complete"}])
+
+    assert {:ok, explicit} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               Map.put(params, "model", %{"kind" => "catalog", "model" => "gpt-6-luna"}),
+               "override"
+             )
+
+    explicit_worker =
+      Enum.find(
+        conversation_participants(group_id, explicit["conversation_id"]),
+        &(&1["agent_id"] == worker_id)
+      )
+
+    assert explicit_worker["payload"]["session_model"]["model"] == "gpt-6-luna"
+
+    # Invalid target discovery must not spend a decision call.
+    assert {:error, _} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               Map.put(params, "agent_id", "missing-worker"),
+               "missing-worker"
+             )
+
+    settle_refute_receive({:decision_request, _, _, _})
+
+    Mock.script([{:final, "Task complete"}])
+
+    assert {:ok, created} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "selected-task"
+             )
+
+    settle_receive({:decision_request, _, _, request})
+
+    assert request ==
+             Map.put(
+               SalixIM.TaskModelSelection.request(policy, params["content"]),
+               "model",
+               "jev-fixture"
+             )
+
+    settle_receive({:decision_meter_before, %{entrypoint: "task_model_selection"} = before})
+    assert before.entrypoint == "task_model_selection"
+    assert before.salix_agent_id == router_id
+    assert before.session_id == router_session_id(router_id, group_id)
+
+    settle_receive(
+      {:decision_archive,
+       %{boundary: :llm_request, agent_id: ^router_id, payload: %{"request_body" => _}} = archived}
+    )
+
+    assert archived.session_id == before.session_id
+    assert Jason.decode!(archived.payload["request_body"]) == request
+
+    conversation_id = created["conversation_id"]
+
+    participant =
+      Enum.find(
+        conversation_participants(group_id, conversation_id),
+        &(&1["agent_id"] == worker_id)
+      )
+
+    assert participant["payload"]["session_model"]["model"] == "gpt-6-sol"
+
+    session =
+      eventually(fn ->
+        case SalixAgent.InternalSessionStore.read(worker_id, participant["payload"]["session_id"]) do
+          {:ok, session} -> if SalixAgent.InternalSession.get(session, :model), do: session
+          _ -> nil
+        end
+      end)
+
+    assert SalixAgent.InternalSession.get(session, :model)["model"] == "gpt-6-sol"
+
+    assert {:ok, replay} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "selected-task"
+             )
+
+    assert replay["conversation_id"] == conversation_id
+    assert replay["inserted"] == false
+    settle_refute_receive({:decision_request, _, _, _})
+  end
+
+  test "a learning route table learns from accepted reviews and rejects replay conflicts and other tenants",
+       context do
+    %{group_id: group_id, agent_id: router_id, tenant_id: tenant_id} = context
+    alias SalixAgent.TaskRouting.Learner
+    params = prepare_learning_worker(context)
+
+    entry = %{
+      "key" => "records",
+      "description" => "Read records",
+      "model" => %{"kind" => "catalog", "model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+    }
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "learning",
+      "learning" => true,
+      "entries" => [entry]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    generation = Learner.generation(entry["key"], entry["description"])
+    Mock.script([{:final, "Graded work complete"}])
+
+    assert {:ok, task} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "learning-1"
+             )
+
+    id = task["conversation_id"]
+    {:ok, conversation} = SalixIM.Conversations.get_group_conversation(group_id, id)
+    evidence = conversation["metadata"]["task_model_selection"]
+    assert evidence["learning_generation"] == generation
+    assert evidence["learning_reason"] in ~w(initial explore)
+    arm = Jason.decode!(evidence["learning_arm"])
+    assert arm["model"] == evidence["selected_model"]["model"]
+    assert arm["reasoning_effort"] == evidence["selected_model"]["reasoning_effort"]
+
+    await_learning_worker(group_id, id, "Graded work complete")
+
+    {:ok, review} =
+      ConversationServer.update_group_conversation(group_id, id, %{
+        "status" => "ready_for_review"
+      })
+
+    assert {:ok, %{"status" => "completed"}} =
+             ConversationServer.set_task_status(
+               group_id,
+               id,
+               "completed",
+               review["updated_at"],
+               "usr_learning"
+             )
+
+    # Accepting the review records the Task's sample without a grader.
+    assert eventually(fn ->
+             match?(
+               {:ok, %{"routes" => [%{"revision" => 1}]}},
+               Salix.TaskRoutingLearning.get(group_id, tenant_id)
+             )
+           end)
+
+    {:ok, %{"routes" => [route]}} = Salix.TaskRoutingLearning.get(group_id, tenant_id)
+    assert route["generation"] == generation
+    assert Enum.any?(route["arms"], &(&1["arm"] == evidence["learning_arm"] and &1["tasks"] == 1))
+
+    grade = %{"outcome" => "task_failure"}
+
+    # The Task gave its one sample; a different grade conflicts with it.
+    assert req(:post, "/v1/runtime/agent-groups/#{group_id}/routing-learning/feedback/#{id}",
+             json: grade
+           ).status == 409
+
+    assert req(:post, "/v1/runtime/agent-groups/#{group_id}/routing-learning/feedback/#{id}",
+             json: %{outcome: String.duplicate("x", 5000)}
+           ).status == 413
+
+    {:ok, other} = Salix.Control.Tenants.create(%{"name" => "Other learning tenant"})
+
+    assert {:error, :not_found} =
+             Salix.TaskRoutingLearning.feedback(group_id, other["tenant_id"], id, grade)
+
+    # A changed description starts new evidence for its route only.
+    changed = put_in(policy, ["entries", Access.at(0), "description"], "Read many records")
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: changed}
+           ).status == 200
+
+    assert {:ok, %{"routes" => [%{"revision" => 0}]}} =
+             Salix.TaskRoutingLearning.get(group_id, tenant_id)
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: Map.delete(changed, "learning")}
+           ).status == 200
+
+    assert {:error, :learning_disabled} = Salix.TaskRoutingLearning.get(group_id, tenant_id)
+  end
+
+  test "the platform route table routes built-in Tasks and learns in its own evidence only",
+       context do
+    %{group_id: group_id, agent_id: router_id} = context
+    alias SalixAgent.{AccountPool, PlatformModels}
+    alias SalixAgent.TaskRouting.Learner
+    params = prepare_learning_worker(context)
+    platform = AccountPool.platform_tenant()
+
+    on_exit(fn ->
+      SalixStore.S3.delete(Keys.ctl_system_platform_models())
+
+      SalixAgent.SubscriptionStore.query(
+        "DELETE FROM subscription_accounts WHERE tenant_id=$1",
+        [platform]
+      )
+    end)
+
+    {:ok, profile} =
+      AccountPool.create(platform, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "api_key" => "sk-platform-routing-0123456789",
+        "base_url" => "https://gateway.example.test/v1",
+        "protocol" => "responses",
+        "models" => ["gpt-6-sol", "gpt-6-luna"]
+      })
+
+    {:ok, _} =
+      PlatformModels.put(%{
+        "tiers" => %{"worker" => %{"profile_id" => profile["id"], "model" => "gpt-6-luna"}}
+      })
+
+    # A fresh route key: the platform's evidence is shared by every Group.
+    entry = %{
+      "key" => "records-" <> SystemsRuntime.Proc.uuid(),
+      "description" => "Read records",
+      "model" => %{
+        "kind" => "platform",
+        "tier" => "worker",
+        "model" => "gpt-6-sol",
+        "reasoning_effort" => "low"
+      }
+    }
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "platform-learning",
+      "learning" => true,
+      "entries" => [entry]
+    }
+
+    {:ok, _} = PlatformModels.put_routing(nil, policy)
+
+    # Learning must keep distinct effort arms, including exploration candidates.
+    choices =
+      for n <- 1..100 do
+        {:ok, choice, _} =
+          Salix.TaskRoutingLearning.choose(
+            %{"routing_scope" => "platform"},
+            policy,
+            %{"tag_key" => entry["key"]},
+            entry["model"],
+            "effort-task-#{n}"
+          )
+
+        choice
+      end
+
+    assert Enum.any?(choices, &(&1["reasoning_effort"] == "low"))
+    assert Enum.any?(choices, &(&1["reasoning_effort"] in ["medium", "high"]))
+
+    generation = Learner.generation(entry["key"], entry["description"])
+    Mock.script([{:final, "Platform routed work complete"}])
+
+    assert {:ok, task} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "platform-routing-1"
+             )
+
+    id = task["conversation_id"]
+    {:ok, conversation} = SalixIM.Conversations.get_group_conversation(group_id, id)
+    evidence = conversation["metadata"]["task_model_selection"]
+    assert evidence["routing_scope"] == "platform"
+    assert evidence["tag_key"] == entry["key"]
+    assert evidence["learning_generation"] == generation
+    %{"kind" => "platform", "tier" => "worker", "model" => chosen} = evidence["selected_model"]
+    assert chosen in ~w(gpt-6-sol gpt-6-luna)
+    assert Jason.decode!(evidence["learning_arm"]) == evidence["selected_model"]
+
+    worker = await_learning_worker(group_id, id, "Platform routed work complete")
+    assert worker["payload"]["session_model"] == evidence["selected_model"]
+
+    assert {:ok, llm} =
+             SalixAgent.ModelChoice.resolve_llm(evidence["selected_model"], context.tenant_id)
+
+    llm = Map.new(llm, fn {key, value} -> {to_string(key), value} end)
+    assert llm["model"] == chosen
+    assert llm["reasoning_effort"] == evidence["selected_model"]["reasoning_effort"]
+
+    transport = fn url, opts ->
+      assert url == "https://gateway.example.test/v1/responses"
+      body = Jason.decode!(opts[:body])
+      assert body["model"] == chosen
+
+      assert get_in(body, ["reasoning", "effort"]) ==
+               evidence["selected_model"]["reasoning_effort"]
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "output" => [
+             %{"type" => "message", "content" => [%{"type" => "output_text", "text" => "ok"}]}
+           ]
+         }
+       }}
+    end
+
+    assert {:final, "ok"} =
+             SalixLlm.Provider.complete(
+               [%{role: "user", content: "Check route"}],
+               [],
+               Map.put(llm, "transport", transport)
+             )
+
+    {:ok, review} =
+      ConversationServer.update_group_conversation(group_id, id, %{
+        "status" => "ready_for_review"
+      })
+
+    assert {:ok, %{"status" => "completed"}} =
+             ConversationServer.set_task_status(
+               group_id,
+               id,
+               "completed",
+               review["updated_at"],
+               "usr_platform_learning"
+             )
+
+    # The accepted review is the platform's sample, not the Group's.
+    assert eventually(fn ->
+             match?(
+               {:ok, %{"routes" => [%{"revision" => 1}]}},
+               Salix.TaskRoutingLearning.platform_summary(policy)
+             )
+           end)
+
+    assert {:ok, %{"routes" => [%{"revision" => 0}]}} =
+             Salix.TaskRoutingLearning.summary(group_id, policy)
+
+    # A tenant cannot grade the platform's evidence.
+    assert req(:post, "/v1/runtime/agent-groups/#{group_id}/routing-learning/feedback/#{id}",
+             json: %{outcome: "task_failure"}
+           ).status == 409
+
+    # A Slack thread bound to Tasks makes a built-in Task: the platform table
+    # routes it once, and redelivery keeps its model.
+    slack_id = Ids.new_conversation_id()
+
+    materialization = %{
+      "title" => "Slack request",
+      "command" => "Read the records",
+      "created_at" => SystemsClock.system_time(:millisecond)
+    }
+
+    for _delivery <- 1..2 do
+      assert {:ok, %{"conversation_id" => ^slack_id}} =
+               TaskConversationInput.ensure_with_id(
+                 group_id,
+                 slack_id,
+                 params["agent_id"],
+                 materialization
+               )
+    end
+
+    {:ok, slack} = SalixIM.Conversations.get_group_conversation(group_id, slack_id)
+    slack_evidence = slack["metadata"]["task_model_selection"]
+    assert slack_evidence["routing_scope"] == "platform"
+    assert slack_evidence["tag_key"] == entry["key"]
+
+    slack_worker =
+      Enum.find(conversation_participants(group_id, slack_id), &(&1["role_label"] == "worker"))
+
+    assert slack_worker["payload"]["session_model"] == slack_evidence["selected_model"]
+
+    # A Group with its own route table keeps it: the platform table is not used.
+    group_entry = %{
+      "key" => "records",
+      "description" => "Read records",
+      "model" => %{"kind" => "catalog", "model" => "gpt-6-sol", "reasoning_effort" => "medium"}
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{
+               task_model_selection: %{
+                 "mode" => "routes",
+                 "schema_version" => 2,
+                 "revision" => "group",
+                 "entries" => [group_entry]
+               }
+             }
+           ).status == 200
+
+    Mock.script([{:final, "Group routed work complete"}])
+
+    assert {:ok, group_task} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "platform-routing-2"
+             )
+
+    {:ok, group_conversation} =
+      SalixIM.Conversations.get_group_conversation(group_id, group_task["conversation_id"])
+
+    group_evidence = group_conversation["metadata"]["task_model_selection"]
+    assert group_evidence["routing_scope"] == "group"
+    assert group_evidence["selected_model"]["model"] == "gpt-6-sol"
+  end
+
+  defp await_learning_worker(group_id, id, content) do
+    worker = Enum.find(conversation_participants(group_id, id), &(&1["role_label"] == "worker"))
+
+    assert eventually(fn ->
+             case SalixAgent.InternalAgentRuntime.get_session_messages(
+                    worker["agent_id"],
+                    worker["payload"]["session_id"]
+                  ) do
+               {:ok, history} ->
+                 Enum.any?(
+                   history["messages"],
+                   &(&1["role"] == "assistant" and content_text(&1["content"]) == content)
+                 )
+
+               _ ->
+                 false
+             end
+           end)
+
+    worker
+  end
+
+  defp prepare_learning_worker(%{group_id: group_id, agent_id: router_id, tenant_id: tenant_id}) do
+    alias SalixAgent.DecideFixture
+
+    state =
+      SalixAgent.InternalSession.new(router_id, router_session_id(router_id, group_id), %{
+        "billing_context" => %{"billing_account_id" => "learning-test"}
+      })
+
+    :ok = SalixAgent.TestSupport.SessionFixture.seed(router_id, state)
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, false)
+    profile_id = SalixAgent.SubscriptionStore.id()
+
+    {:ok, sealed} =
+      SalixAgent.SubscriptionStore.seal(tenant_id, profile_id, %{
+        "access_token" => "test-only-subscription"
+      })
+
+    {:ok, _} =
+      SalixAgent.SubscriptionStore.create(tenant_id, %{
+        "id" => profile_id,
+        "credential" => "subscription",
+        "source" => "codex",
+        "email" => "learning-test@example.com",
+        "disabled" => false,
+        "status" => "ok",
+        "credentials" => sealed,
+        "prepared" => true,
+        "expires_at" => DateTime.to_iso8601(DateTime.add(SystemsClock.utc_now(), 3600))
+      })
+
+    worker =
+      req(:post, "/v1/runtime/agents",
+        json: %{group_id: group_id, name: "Learning worker", role: "worker"}
+      ).body
+
+    %{
+      "runs_on" => %{"kind" => "default"},
+      "agent_id" => worker["agent_id"],
+      "content" => "List the records",
+      "title" => "Learning task"
+    }
+  end
+
+  test "route tables apply updated rules while committed Tasks keep their model", %{
+    group_id: group_id,
+    agent_id: router_id
+  } do
+    alias SalixAgent.DecideFixture
+
+    state =
+      SalixAgent.InternalSession.new(router_id, router_session_id(router_id, group_id), %{
+        "billing_context" => %{"billing_account_id" => "tag-rule-test"}
+      })
+
+    :ok = SalixAgent.TestSupport.SessionFixture.seed(router_id, state)
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, false)
+
+    tenant_id = SalixStore.Ids.tenant_id_from_group!(group_id)
+    profile_id = SalixAgent.SubscriptionStore.id()
+
+    {:ok, sealed} =
+      SalixAgent.SubscriptionStore.seal(tenant_id, profile_id, %{
+        "access_token" => "test-only-subscription"
+      })
+
+    {:ok, _} =
+      SalixAgent.SubscriptionStore.create(tenant_id, %{
+        "id" => profile_id,
+        "credential" => "subscription",
+        "source" => "codex",
+        "email" => "rule-test@example.com",
+        "disabled" => false,
+        "status" => "ok",
+        "credentials" => sealed,
+        "prepared" => true,
+        "expires_at" => DateTime.to_iso8601(DateTime.add(SystemsClock.utc_now(), 3600))
+      })
+
+    policy = %{
+      "mode" => "routes",
+      "schema_version" => 2,
+      "revision" => "R0",
+      "entries" => [
+        %{
+          "key" => "records",
+          "description" => "Record lookups",
+          "model" => %{
+            "kind" => "catalog",
+            "model" => "gpt-6-sol",
+            "reasoning_effort" => "medium"
+          }
+        },
+        %{
+          "key" => "other",
+          "description" => "Everything else",
+          "model" => %{"kind" => "catalog", "model" => "gpt-6-luna", "reasoning_effort" => "high"}
+        }
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    worker =
+      req(:post, "/v1/runtime/agents",
+        json: %{group_id: group_id, name: "Rule worker", role: "worker"}
+      ).body
+
+    worker_id = worker["agent_id"]
+
+    params = %{
+      "runs_on" => %{"kind" => "default"},
+      "agent_id" => worker_id,
+      "content" => "List the requested records",
+      "title" => "Rule task"
+    }
+
+    Mock.script([{:final, "Explicit task complete"}])
+
+    assert {:ok, explicit} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               Map.put(params, "model", %{"kind" => "catalog", "model" => "gpt-6-luna"}),
+               "tag-override"
+             )
+
+    participant =
+      Enum.find(
+        conversation_participants(group_id, explicit["conversation_id"]),
+        &(&1["agent_id"] == worker_id)
+      )
+
+    assert participant["payload"]["session_model"]["model"] == "gpt-6-luna"
+
+    settle_refute_receive({:decision_request, _, _, _})
+
+    Mock.script([{:final, "First task complete"}])
+
+    assert {:ok, created} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "tag-rule-task"
+             )
+
+    settle_receive({:decision_request, _, _, request})
+    assert request["state"] == params["content"]
+
+    assert request["questions"] ==
+             SalixIM.TaskModelSelection.request(policy, params["content"])["questions"]
+
+    conversation =
+      req(
+        :get,
+        "/v1/runtime/agent-groups/#{group_id}/conversations/#{created["conversation_id"]}"
+      ).body
+
+    evidence = conversation["metadata"]["task_model_selection"]
+    assert evidence["policy_mode"] == "routes"
+    assert evidence["decision_source"] == "jev"
+    assert evidence["usage"] == %{"input_tokens" => 123, "output_tokens" => 7}
+    refute Enum.any?(~w(request decision route source), &Map.has_key?(evidence, &1))
+    assert evidence["tag_key"] == "records"
+    assert evidence["rule_version"] == "R0"
+    assert evidence["selected_model"]["model"] == "gpt-6-sol"
+
+    participant =
+      Enum.find(
+        conversation_participants(group_id, created["conversation_id"]),
+        &(&1["agent_id"] == worker_id)
+      )
+
+    first_session_id = participant["payload"]["session_id"]
+
+    assert eventually(fn ->
+             {:ok, history} =
+               SalixAgent.InternalAgentRuntime.get_session_messages(worker_id, first_session_id)
+
+             Enum.any?(
+               history["messages"],
+               &(&1["role"] == "assistant" and
+                   content_text(&1["content"]) == "First task complete")
+             )
+           end)
+
+    policy =
+      policy
+      |> Map.put("revision", "R1")
+      |> put_in(
+        ["entries", Access.at(0), "model"],
+        %{"kind" => "catalog", "model" => "gpt-6-luna", "reasoning_effort" => "high"}
+      )
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    assert {:ok, replay} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "tag-rule-task"
+             )
+
+    assert replay["conversation_id"] == created["conversation_id"]
+    settle_refute_receive({:decision_request, _, _, _})
+    {:ok, first_session} = SalixAgent.InternalSessionStore.read(worker_id, first_session_id)
+    assert SalixAgent.InternalSession.get(first_session, :model)["model"] == "gpt-6-sol"
+
+    Mock.script([{:final, "Second task complete"}])
+
+    assert {:ok, next} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "tag-rule-next"
+             )
+
+    settle_receive({:decision_request, _, _, next_request})
+    assert next_request == request
+
+    next_conversation =
+      req(:get, "/v1/runtime/agent-groups/#{group_id}/conversations/#{next["conversation_id"]}").body
+
+    next_evidence = next_conversation["metadata"]["task_model_selection"]
+    assert next_evidence["rule_version"] == "R1"
+    assert next_evidence["tag_key"] == evidence["tag_key"]
+    assert next_evidence["selected_model"]["model"] == "gpt-6-luna"
+    assert next_evidence["selected_model"]["reasoning_effort"] == "high"
+
+    next_participant =
+      Enum.find(
+        conversation_participants(group_id, next["conversation_id"]),
+        &(&1["agent_id"] == worker_id)
+      )
+
+    assert eventually(fn ->
+             {:ok, history} =
+               SalixAgent.InternalAgentRuntime.get_session_messages(
+                 worker_id,
+                 next_participant["payload"]["session_id"]
+               )
+
+             Enum.any?(
+               history["messages"],
+               &(&1["role"] == "assistant" and
+                   content_text(&1["content"]) == "Second task complete")
+             )
+           end)
+
+    {:ok, second_session} =
+      SalixAgent.InternalSessionStore.read(worker_id, next_participant["payload"]["session_id"])
+
+    assert SalixAgent.InternalSession.get(second_session, :model)["reasoning_effort"] == "high"
+  end
+
+  test "failed automatic selection creates no Task and can retry the same command", %{
+    group_id: group_id,
+    agent_id: router_id
+  } do
+    alias SalixAgent.DecideFixture
+
+    state =
+      SalixAgent.InternalSession.new(router_id, router_session_id(router_id, group_id), %{
+        "billing_context" => %{"billing_account_id" => "selection-test"}
+      })
+
+    :ok = SalixAgent.TestSupport.SessionFixture.seed(router_id, state)
+    DecideFixture.start_provider()
+    DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
+    DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
+    DecideFixture.put_env(:decide_test_deny, true)
+
+    policy = %{
+      "mode" => "jev",
+      "instructions" => "Choose the model",
+      "candidates" => [
+        %{"model" => "gpt-6-sol", "reasoning_effort" => "medium", "description" => "Workhorse"},
+        %{"model" => "gpt-6-luna", "reasoning_effort" => "medium", "description" => "Small model"}
+      ]
+    }
+
+    assert req(:patch, "/v1/runtime/agent-groups/#{group_id}",
+             json: %{task_model_selection: policy}
+           ).status == 200
+
+    worker =
+      req(:post, "/v1/runtime/agents",
+        json: %{group_id: group_id, name: "Retry worker", role: "worker"}
+      ).body
+
+    params = %{
+      "runs_on" => %{"kind" => "default"},
+      "agent_id" => worker["agent_id"],
+      "content" => "Retry this command"
+    }
+
+    assert {:error, error} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "retry-selection"
+             )
+
+    assert error =~ "task_model_selection_failed"
+    assert {:ok, page} = SalixIM.Conversations.list_group_conversations(group_id, limit: 100)
+    refute Enum.any?(page["data"], &(&1["kind"] == "agent_task"))
+    SystemsRuntime.put_env(:salix_agent, :decide_test_deny, false)
+    Mock.script([{:final, "Task complete"}])
+
+    assert {:ok, _} =
+             call_internal_provider(
+               router_id,
+               group_id,
+               "internal.task.create",
+               params,
+               "retry-selection"
+             )
+
+    settle_receive({:decision_request, _, _, _})
   end
 
   test "internal Task-create provider returns production binding validation failures as errors",
@@ -2925,25 +4116,16 @@ defmodule SalixWeb.ConversationMessagingTest do
     end)
   end
 
-  defp eventually_delivery(key) do
-    eventually(fn -> delivery_record(key) end)
-  end
+  defp eventually_delivery(group_id, conversation_id, message_id, participant_id) do
+    scope = SalixIM.ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
+    delivery_id = Enum.join([group_id, conversation_id, message_id, participant_id], ":")
 
-  defp delivery_record(key) do
-    with %{^key => body} <- SalixStore.S3.Fake.dump() do
-      body |> fake_dump_body() |> Jason.decode!()
-    else
-      _ -> nil
-    end
-  end
-
-  defp delivery_key(group_id, conversation_id, delivery_identity, participant_id) do
-    Keys.ctl_group_conversation_participant_delivery_state(
-      group_id,
-      conversation_id,
-      participant_id,
-      Enum.join([group_id, conversation_id, delivery_identity, participant_id], ":")
-    )
+    eventually(fn ->
+      case SalixIM.ConversationParticipantPGStore.read_delivery(scope, delivery_id) do
+        {:ok, record, _revision} -> record
+        _ -> nil
+      end
+    end)
   end
 
   defp content_text(content) when is_binary(content), do: content

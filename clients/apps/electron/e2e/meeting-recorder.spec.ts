@@ -38,6 +38,7 @@ const fixture = resolve(clients, "apps/electron/e2e/fixtures/meeting-recorder");
 const aliases = Object.fromEntries(
   [
     ["@comma/app/styles.css", "packages/app/src/styles.css"],
+    ["@comma/i18n/messages", "packages/i18n/src/paraglide/messages.js"],
     ["@comma/i18n/react", "packages/i18n/src/react.tsx"],
     ["@comma/i18n", "packages/i18n/src/index.ts"],
     ["@comma/native-bridge", "packages/native-bridge/src/index.ts"],
@@ -1229,10 +1230,16 @@ test("Comma permission menu stays above the browser and closes on Escape, outsid
           if (!popup || !parent) return null;
           const bounds = popup.getBounds();
           const content = parent.getContentBounds();
+          // The page sits in a clip View that rounds its corners.
+          // oxlint-disable-next-line unicorn/consistent-function-scoping -- Playwright serializes this Main callback without outer functions.
+          const views = (view: Electron.View): Electron.View[] => [
+            view,
+            ...view.children.flatMap(views),
+          ];
           return {
             visible: popup.isVisible(),
             focusable: popup.isFocusable(),
-            browserAttached: parent.contentView.children.some(
+            browserAttached: views(parent.contentView).some(
               (view) =>
                 view instanceof WebContentsView &&
                 view.webContents.getURL().startsWith("https://meet.google.com/")

@@ -1,13 +1,10 @@
-import { existsSync } from "node:fs";
 import { electron, expect, test } from "./electron-test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
 import { closeElectronTestApp } from "./close-electron-test-app";
 import { defaultAgentVMMHostLifecyclePath } from "../src/main/modules/compute-node";
-import { recordElectronOnboardingCompleted } from "../../../e2e/helpers/electron-profile";
-import { startSessionProjectionStub } from "../../../e2e/helpers/session-fixture";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
 const electronMain = resolve(electronAppDir, ".vite/build/main.js");
@@ -17,426 +14,6 @@ const electronMain = resolve(electronAppDir, ".vite/build/main.js");
 // keeps window focus from every later Electron test in the serial job. The
 // mock keychain keeps Safe Storage in the process.
 const TEMPORARY_HOME_KEYCHAIN_ARGS = ["--use-mock-keychain"];
-
-test(
-  "compute node resumes acknowledged enrollment and re-enables an existing Shell across restart",
-  { tag: "@mac" },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), "comma-compute-node-e2e-"));
-    const userDataPath = join(directory, "user-data");
-    const runtimeDirectory = join(directory, "runtime");
-    const lifecycle = defaultAgentVMMHostLifecyclePath(directory);
-    const workspaceId = "wsp_compute_node_e2e";
-    const workspace = {
-      id: workspaceId,
-      group_id: "grp_compute_node_e2e",
-      name: "Compute",
-    };
-    let operationId = "vmm_install_compute_node_e2e";
-    let productStatus: "processing" | "ready" | "stopped" | "removed" = "processing";
-    const productRequests: string[] = [];
-    const authorizationKeys: string[] = [];
-    let loseAuthorizationResponse = true;
-    const sessionStub = await startSessionProjectionStub({
-      email: "compute-node@comma.local",
-      handleRequest: (request, response, path) => {
-        productRequests.push(`${request.method ?? "UNKNOWN"} ${path}`);
-        // The client core reads Compute for a workspace of the account's list.
-        if (request.method === "GET" && path === "/v1/comma/workspaces") {
-          respondJson(response, { data: [workspace] });
-          return true;
-        }
-        // The window's Home opens the account's chat on start: an empty one, so
-        // no "Chat is temporarily unavailable" toast offers a Retry of its own.
-        if (request.method === "POST" && path === "/v1/comma/me/bootstrap") {
-          respondJson(response, { status: "ready", workspace });
-          return true;
-        }
-        if (
-          request.method === "POST" &&
-          path === `/v1/comma/groups/${workspace.group_id}/assistant-chat`
-        ) {
-          respondJson(response, {
-            id: "conv_compute_node_e2e",
-            group_id: workspace.group_id,
-            kind: "user_chat",
-            messages: [],
-            status: "open",
-            title: "Chat",
-          });
-          return true;
-        }
-        if (
-          request.method === "GET" &&
-          path === `/v1/comma/workspaces/${workspaceId}/compute`
-        ) {
-          respondJson(response, { can_manage: true, environments: [], workloads: [] });
-          return true;
-        }
-        const requestedWorkspace =
-          path.match(/workspaces\/([^/]+)\/compute-nodes/)?.[1] ?? workspaceId;
-        const operationPath = `/v1/comma/workspaces/${requestedWorkspace}/compute-nodes/agent-vmm/install-operations`;
-        if (
-          request.method === "POST" &&
-          (path === operationPath || path === `${operationPath}/${operationId}/retry`)
-        ) {
-          request.resume();
-          productStatus = "ready";
-          if (path === operationPath)
-            authorizationKeys.push(String(request.headers["idempotency-key"]));
-          if (loseAuthorizationResponse) {
-            loseAuthorizationResponse = false;
-            // The request is delivered and its answer is lost after it began:
-            // the app cannot know whether the product authorized it. (A
-            // connection that drops before any answer, the network stack
-            // sends again by itself.)
-            request.on("end", () => {
-              response.writeHead(200, { "content-type": "application/json" });
-              response.write("{", () => request.socket.destroy());
-            });
-            return true;
-          }
-          respondJson(response, {
-            descriptor: {
-              exchange_url:
-                "https://api.comma.test/v1/compute/agent-vmm/install-operations/exchange",
-              expires_at: "2099-01-01T00:00:00Z",
-              one_time_secret: "vmmi_e2e",
-              operation_id: operationId,
-              version: 1,
-            },
-            operation: {
-              id: operationId,
-              registration_id: `${operationId}_registration`,
-              status: productStatus,
-            },
-          });
-          return true;
-        }
-        if (path === `${operationPath}/${operationId}` && request.method === "GET") {
-          respondJson(response, {
-            operation: {
-              authorization_status: existsSync(join(runtimeDirectory, "installed"))
-                ? "handed_off"
-                : "requested",
-              status: existsSync(join(runtimeDirectory, "installed"))
-                ? productStatus
-                : "processing",
-            },
-          });
-          return true;
-        }
-        const action = path.slice(`${operationPath}/${operationId}/`.length);
-        if (
-          request.method === "POST" &&
-          path.startsWith(`${operationPath}/${operationId}/`) &&
-          ["enable", "disable", "revoke"].includes(action)
-        ) {
-          request.resume();
-          productStatus =
-            action === "enable"
-              ? "ready"
-              : action === "disable"
-                ? "stopped"
-                : "removed";
-          respondJson(response, {
-            operation: {
-              authorization_status: action === "revoke" ? "revoked" : "handed_off",
-              status: productStatus,
-            },
-          });
-          return true;
-        }
-        return false;
-      },
-    });
-    await mkdir(userDataPath, { recursive: true });
-    recordElectronOnboardingCompleted(userDataPath, [sessionStub.userId]);
-    await mkdir(runtimeDirectory, { recursive: true });
-    await mkdir(resolve(lifecycle, ".."), { recursive: true });
-    await writeFile(lifecycle, lifecycleFixture(runtimeDirectory), { mode: 0o700 });
-    await writeFile(
-      join(userDataPath, "compute-node-intent.json"),
-      JSON.stringify({
-        desiredEnabled: false,
-        revision: 1,
-        version: 1,
-      })
-    );
-    await chmod(lifecycle, 0o700);
-    await writeFile(join(runtimeDirectory, "fail-install"), "once");
-
-    const launch = (seedSession = true) => {
-      const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
-      return electron.launch({
-        args: [
-          electronMain,
-          "--lang=en-US",
-          `--user-data-dir=${userDataPath}`,
-          ...TEMPORARY_HOME_KEYCHAIN_ARGS,
-        ],
-        cwd: electronAppDir,
-        env: {
-          ...hostEnv,
-          HOME: directory,
-          COMMA_API_BASE_URL: sessionStub.baseUrl,
-          ...(seedSession
-            ? {
-                COMMA_ELECTRON_STARTUP_SESSION_EMAIL: "compute-node@comma.local",
-                COMMA_ELECTRON_STARTUP_SESSION_TOKEN: "comma_sess_compute_node_e2e",
-              }
-            : {}),
-          COMMA_ELECTRON_E2E_COMPUTE_NODE_LIFECYCLE_PATH: lifecycle,
-          NODE_ENV: "test",
-        },
-      });
-    };
-
-    let app = await launch();
-    try {
-      await findElectronWindowByNativeRole(app, "main-window");
-
-      let page = await openComputeNode(app);
-      await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
-      // Main continues the setup by itself: the authorization whose answer was
-      // lost is asked again under the same idempotency key, and the install
-      // that failed after registering resumes the same operation.
-      await expect
-        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
-        .toMatchObject({ status: "ready", observationFresh: true });
-      expect(authorizationKeys).toHaveLength(2);
-      expect(authorizationKeys[1]).toBe(authorizationKeys[0]);
-      const commands = await readFile(join(runtimeDirectory, "commands"), "utf8");
-      expect(commands).toContain(
-        "install --service-type agent --request-id vmm_install_compute_node_e2e --operation-stdin"
-      );
-      expect(commands).toContain(`--resume-operation ${operationId}`);
-      await expect(sandboxReady(page)).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Retry", exact: true })
-      ).toHaveCount(0);
-
-      // A terminal helper receipt keeps the server's retry counter
-      // authoritative: Main stops continuing and offers no retry.
-      await closeElectronTestApp(app);
-      const receiptPath = join(runtimeDirectory, "operation.json");
-      await writeFile(
-        receiptPath,
-        JSON.stringify({
-          operationId,
-          kind: "install-managed",
-          outcome: "failed",
-          attempt: 3,
-          failureStage: "register",
-          failureCode: "retry_limit_reached",
-          failureMessage: "private transport details",
-        })
-      );
-      await rm(join(runtimeDirectory, "loaded"));
-      app = await launch(false);
-      page = await openComputeNode(app);
-      // Only the Sandbox's own actions: a toast elsewhere (the stub serves no
-      // chat) can offer a Retry of its own.
-      const sandbox = page.locator('section[aria-label="Sandbox"]');
-      await expect(
-        sandbox.getByText(/The connection reached its retry limit/)
-      ).toBeVisible();
-      await expect(
-        sandbox.getByRole("button", { name: "Retry", exact: true })
-      ).toHaveCount(0);
-      await expect(
-        sandbox.getByRole("button", { name: "Reconnect", exact: true })
-      ).toHaveCount(0);
-      const nativeMutations = async () =>
-        (await readFile(join(runtimeDirectory, "commands"), "utf8"))
-          .split("\n")
-          .filter((line) =>
-            /^(install|repair|registration-state|registration-revoke) /.test(line)
-          );
-      const beforeCheck = await nativeMutations();
-      const observedAt = async () =>
-        (await page.evaluate(() => window.commaNative!.computeNode.state.get()))
-          .observedAt;
-      const observedBeforeCheck = await observedAt();
-      // The only manual status check is in the collapsed diagnostics of Local settings.
-      await deviceMenu(page, "Local settings");
-      await page.getByText("Diagnostic details", { exact: true }).click();
-      await page.getByRole("button", { name: "Check status", exact: true }).click();
-      // The check reads the node again and changes nothing natively.
-      await expect.poll(observedAt).not.toBe(observedBeforeCheck);
-      expect(await nativeMutations()).toEqual(beforeCheck);
-      await closeElectronTestApp(app);
-      await rm(receiptPath);
-      await writeFile(join(runtimeDirectory, "loaded"), "");
-      app = await launch(false);
-      page = await openComputeNode(app);
-      await expect
-        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
-        .toMatchObject({ status: "ready", observationFresh: true });
-      const enables = productRequests.filter((request) =>
-        request.endsWith("/enable")
-      ).length;
-      await page.evaluate(async (id) => {
-        const state = await window.commaNative!.computeNode.state.get();
-        await window.commaNative!.computeNode.drain({
-          workspaceId: state.bindingWorkspaceId!,
-          installationId: state.bindingInstallationId ?? null,
-          confirmationId: state.confirmationId,
-          bindingRevision: state.bindingRevision!,
-        });
-        await window.commaNative!.computeNode.configure({
-          desiredEnabled: true,
-          workspaceId: id,
-        });
-      }, workspaceId);
-      await expect
-        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
-        .toMatchObject({ status: "ready" });
-      expect(
-        productRequests.filter((request) => request.endsWith("/enable"))
-      ).toHaveLength(enables + 1);
-      await page.screenshot({
-        path: "/tmp/compute-lifecycle-repair-visual/existing-shell-reenabled-electron.png",
-        fullPage: true,
-      });
-      await closeElectronTestApp(app);
-      app = await launch(false);
-      page = await openComputeNode(app);
-      await expect(sandboxReady(page)).toBeVisible();
-      // Workspace connection actions are in the computer's menu on its card, not in Local settings.
-      await deviceMenu(page, "Stop providing compute…");
-      await expect(page.getByText(/Running work may not stop at once/)).toBeVisible();
-      await page.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect(sandboxReady(page)).toBeVisible();
-      expect(
-        productRequests.filter((request) => request.endsWith("/disable"))
-      ).toHaveLength(1);
-      for (const [action, nextWorkspace] of [
-        ["Disable node", "wsp_other"],
-        ["Remove compute node", workspaceId],
-      ] as const) {
-        await deviceMenu(
-          page,
-          action === "Disable node"
-            ? "Stop providing compute…"
-            : "Disconnect this workspace…"
-        );
-        // Another window replaces the binding while this confirmation remains open.
-        await page.evaluate(async (id) => {
-          const state = await window.commaNative!.computeNode.state.get();
-          await window.commaNative!.computeNode.remove({
-            workspaceId: state.bindingWorkspaceId!,
-            installationId: state.bindingInstallationId ?? null,
-            confirmationId: state.confirmationId,
-            bindingRevision: state.bindingRevision!,
-          });
-          await window.commaNative!.computeNode.configure({
-            desiredEnabled: true,
-            workspaceId: id,
-          });
-        }, nextWorkspace);
-        const mutations = productRequests.filter(
-          (request) => request.endsWith("/disable") || request.endsWith("/revoke")
-        );
-        await expect(
-          page.getByRole("dialog", { name: action, exact: true })
-        ).toHaveCount(0);
-        await expect
-          .poll(async () =>
-            page.evaluate(() => window.commaNative!.computeNode.state.get())
-          )
-          .toMatchObject({
-            desiredEnabled: true,
-            bindingWorkspaceId: nextWorkspace,
-            status: "ready",
-          });
-        expect(
-          productRequests.filter(
-            (request) => request.endsWith("/disable") || request.endsWith("/revoke")
-          )
-        ).toEqual(mutations);
-      }
-      await deviceMenu(page, "Stop providing compute…");
-      await page.getByRole("button", { name: "Disable node", exact: true }).click();
-      // Not enabled: the Sandbox row offers Enable this Mac again.
-      await expect(
-        page.getByRole("button", { name: "Enable this Mac", exact: true })
-      ).toBeVisible();
-
-      // A completed local reset fences this install even while cloud handoff remains accepted.
-      const maintenanceDirectory = join(
-        directory,
-        "Library",
-        "Application Support",
-        "Agent VMM Maintenance"
-      );
-      await mkdir(maintenanceDirectory, { recursive: true });
-      await writeFile(
-        join(maintenanceDirectory, "state.json"),
-        JSON.stringify({
-          version: 1,
-          uninstalled: false,
-          blockedInstalls: { [operationId]: true },
-        })
-      );
-      await writeFile(join(runtimeDirectory, "reset"), "confirmed");
-      await closeElectronTestApp(app);
-      app = await launch(false);
-      page = await openComputeNode(app);
-      await expect(
-        page.getByRole("button", { name: "Finish removal", exact: true })
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Retry", exact: true })
-      ).toHaveCount(0);
-      const commandsBeforeResetRecovery = await readFile(
-        join(runtimeDirectory, "commands"),
-        "utf8"
-      );
-      await page.evaluate(async () => {
-        const state = await window.commaNative!.computeNode.state.get();
-        await window.commaNative!.computeNode.configure({
-          desiredEnabled: true,
-          workspaceId: state.bindingWorkspaceId!,
-        });
-      });
-      const commandsAfterResetRecovery = await readFile(
-        join(runtimeDirectory, "commands"),
-        "utf8"
-      );
-      expect(
-        commandsAfterResetRecovery
-          .split("\n")
-          .filter((line) => line.startsWith("install "))
-      ).toEqual(
-        commandsBeforeResetRecovery
-          .split("\n")
-          .filter((line) => line.startsWith("install "))
-      );
-      const revocations = () =>
-        productRequests.filter((request) => request.endsWith(`/${operationId}/revoke`));
-      const revocationsBeforeConfirmation = revocations().length;
-      await page.getByRole("button", { name: "Finish removal", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Remove compute node", exact: true })
-        .getByRole("button", { name: "Remove compute node", exact: true })
-        .click();
-      await expect
-        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
-        .toMatchObject({ status: "removed" });
-      expect(revocations()).toHaveLength(revocationsBeforeConfirmation + 1);
-      operationId = "vmm_install_after_reset_e2e";
-      await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
-      await expect
-        .poll(() => page.evaluate(() => window.commaNative!.computeNode.state.get()))
-        .toMatchObject({ status: "ready", bindingInstallationId: operationId });
-    } finally {
-      await closeElectronTestApp(app).catch(() => {});
-      await sessionStub.close();
-      await rm(directory, { force: true, recursive: true });
-    }
-  }
-);
 
 test("signed-out desktop can inspect local resources without cloud authority", async () => {
   const directory = await mkdtemp(join(tmpdir(), "comma-local-resources-e2e-"));
@@ -449,8 +26,8 @@ test("signed-out desktop can inspect local resources without cloud authority", a
 set -eu
 cat >/dev/null
 case "$1" in
-local-environments) printf '%s' '${JSON.stringify({ collectedAt, bootId: "fixture-boot", environments: [{ id: "fixture-local-env", origin: "local", state: "observed_active", revision: "1", privateDiskBytes: "256", sampledAt: collectedAt }] })}' ;;
-local-disk) printf '%s' '${JSON.stringify({ collectedAt, bootId: "fixture-boot", guestStateFs: { usedBytes: "1024", capacityBytes: "4096", importReservationBytes: "512" } })}' ;;
+local-environments) printf '%s' '${JSON.stringify({ collectedAt, bootId: "fixture-boot", environments: [{ id: "fixture-local-env", origin: "local", state: "observed_active", revision: "1", privateDiskBytes: "1", sampledAt: collectedAt }] })}' ;;
+local-disk) printf '%s' '${JSON.stringify({ collectedAt, bootId: "fixture-boot", guestStateFs: { usedBytes: "1024", capacityBytes: "4096", importReservationBytes: "512", imageRuntimeBytes: "700", buildCacheBytes: "300", privateBytes: "1", otherBytes: "23", breakdownSampledAt: collectedAt } })}' ;;
 *) exit 2 ;;
 esac
 `,
@@ -484,14 +61,26 @@ esac
     await page
       .getByRole("button", { name: "Manage local resources", exact: true })
       .click();
-    await page.getByRole("button", { name: "Manage storage", exact: true }).click();
     await expect(
       page.getByRole("group", {
         name: "1 KiB used of 4 KiB",
         exact: true,
       })
     ).toBeVisible();
-    await expect(page.getByText(/Local environment/).first()).toBeVisible();
+    expect(
+      await page.evaluate(() => window.commaNative!.computeNode.localOverview({}))
+    ).toMatchObject({
+      availability: "available",
+      disk: {
+        usedBytes: "1024",
+        imageRuntimeBytes: "700",
+        buildCacheBytes: "300",
+        privateBytes: "1",
+        otherBytes: "23",
+        breakdownSampledAt: collectedAt,
+      },
+    });
+    await expect(page.getByText("Local data", { exact: true }).first()).toBeVisible();
     await page.getByRole("button", { name: /Node actions$/ }).click();
     await expect(
       page.getByRole("menuitem", { name: "Delete local environment", exact: true })
@@ -504,93 +93,3 @@ esac
     await rm(directory, { force: true, recursive: true });
   }
 });
-
-/** One entry of this computer's menu on its card (the Sandbox's stop, disconnect and settings are there). */
-async function deviceMenu(page: import("@playwright/test").Page, entry: string) {
-  await page
-    .locator('article[data-slot="device-card"]')
-    .first()
-    .getByRole("button", { name: /^More actions for/ })
-    .click();
-  await page.getByRole("menuitem", { name: entry, exact: true }).click();
-}
-
-/** The Sandbox row while its compute is available: it says nothing then. */
-const sandboxReady = (page: import("@playwright/test").Page) =>
-  page.locator('section[aria-label="Sandbox"][data-ready="true"]');
-
-async function openComputeNode(app: Awaited<ReturnType<typeof electron.launch>>) {
-  const page = await findElectronWindowByNativeRole(app, "main-window");
-  await page.waitForLoadState("domcontentloaded");
-  await page.evaluate(() => {
-    window.location.hash = "#/settings";
-  });
-  await page.getByRole("button", { name: "Devices" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Devices" })).toBeVisible();
-  return page;
-}
-
-function lifecycleFixture(runtimeDirectory: string) {
-  return `#!/bin/sh
-set -eu
-runtime=${JSON.stringify(runtimeDirectory)}
-mkdir -p "$runtime"
-printf '%s\n' "$*" >> "$runtime/commands"
-case "\${1:-}" in
-maintenance-status) cat >/dev/null; printf null ;;
-status)
-  if [ -f "$runtime/installed" ]; then installed=true; else installed=false; fi
-  if [ -f "$runtime/loaded" ]; then loaded=true; else loaded=false; fi
-  if [ "$installed" = true ]; then registration_read=present; else registration_read=absent; fi
-  if [ -f "$runtime/reset" ]; then registration_read=absent; loaded=false; fi
-  if [ -f "$runtime/revoked" ]; then registration_state=revoked; elif [ -f "$runtime/draining" ]; then registration_state=draining; else registration_state=enabled; fi
-  if [ "$installed" = true ]; then
-    host_readable=true
-    host_healthy=true
-  else
-    host_readable=false
-    host_healthy=false
-  fi
-  operation=null
-  if [ -f "$runtime/operation.json" ]; then operation=$(cat "$runtime/operation.json"); fi
-  printf '{"operation":%s,"appInstalled":%s,"hostInstalled":%s,"connectorInstalled":%s,"hostLoaded":%s,"connectorLoaded":%s,"hostReadable":%s,"hostHealthy":%s,"salixRevoked":false,"registrationRead":"%s","registrationState":"%s"}\n' "$operation" "$installed" "$installed" "$installed" "$host_healthy" "$loaded" "$host_readable" "$host_healthy" "$registration_read" "$registration_state"
-  ;;
-install|repair)
-  case " $* " in *" --operation-stdin "*) cat >/dev/null ;; esac
-  if [ -f "$runtime/fail-install" ]; then
-    rm "$runtime/fail-install"
-    touch "$runtime/installed"
-    request_id=""
-    previous=""
-    for argument in "$@"; do
-      if [ "$previous" = "--request-id" ]; then request_id="$argument"; fi
-      previous="$argument"
-    done
-    printf '{"operationId":"%s","kind":"install-managed","outcome":"failed","attempt":1,"failureStage":"register","failureCode":"transient_unavailable","retryable":true,"failureMessage":"private transport details"}' "$request_id" > "$runtime/operation.json"
-    cat "$runtime/operation.json"
-    exit 1
-  fi
-  rm -f "$runtime/revoked" "$runtime/draining" "$runtime/reset" "$runtime/operation.json"
-  touch "$runtime/installed" "$runtime/loaded"
-  ;;
-registration-state)
-  case "$*" in
-    *"--state enabled"*) rm -f "$runtime/draining"; touch "$runtime/loaded" ;;
-    *"--state draining"*) touch "$runtime/draining"; rm -f "$runtime/loaded" ;;
-    *) exit 2 ;;
-  esac
-  ;;
-registration-revoke) touch "$runtime/revoked"; rm -f "$runtime/loaded" ;;
-drain) rm -f "$runtime/loaded" ;;
-*) exit 2 ;;
-esac
-`;
-}
-
-function respondJson(response: import("node:http").ServerResponse, body: unknown) {
-  response.writeHead(200, {
-    "cache-control": "no-store",
-    "content-type": "application/json",
-  });
-  response.end(JSON.stringify(body));
-}

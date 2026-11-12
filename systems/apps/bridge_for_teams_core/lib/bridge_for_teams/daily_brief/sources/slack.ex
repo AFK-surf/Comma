@@ -2,19 +2,54 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
   @moduledoc """
   The Slack adapter of the daily brief: turns mirror messages into
   `SourceItem`s, writes Slack mentions as people labels for the model, and
-  fetches permalinks. Everything that knows Slack's formats is here.
+  links to messages. Everything that knows Slack's formats is here.
   """
 
   alias BridgeForTeams.DailyBrief.{ActorRef, Members, People, SourceItem}
   alias BridgeForTeams.Salix.Client, as: Salix
   alias BridgeForTeams.Schema.DailyBriefSetting
 
-  @mention ~r/<@([UW][A-Z0-9]{2,32})(?:\|[^>]*)?>/
-  @permalink_batch 50
+  # Slack user ids carry a digit; `<@USLACK>`-like chips from other apps
+  # (Comma writes its Slack integration so) are names, not people.
+  @mention ~r/<@([UW](?=[A-Z0-9]*\d)[A-Z0-9]{2,32})(?:\|[^>]*)?>/
+  @chip ~r/<@([UW]([A-Z]{2,32}))>/
   # The named-messages read takes at most 200 per channel.
   @max_roots 200
 
-  @doc "A message of the shared stream, from the Salix mirror."
+  @permalink_batch 50
+
+  @doc "Permalinks of the cited items that have none yet, by item key."
+  @spec permalinks([SourceItem.t()], DailyBriefSetting.t()) :: map()
+  def permalinks(items, settings) do
+    items = Enum.reject(items, &is_binary(&1.permalink))
+
+    with [_ | _] <- items, {:ok, salix} <- Members.source(settings) do
+      by_key = Map.new(items, &{{&1.container_id, &1.id}, &1})
+
+      items
+      |> Enum.chunk_every(@permalink_batch)
+      |> Enum.reduce(%{}, fn batch, acc ->
+        messages = Enum.map(batch, &%{channel_id: &1.container_id, ts: &1.id})
+
+        case Salix.impl().daily_brief_permalinks(Map.put(salix, :messages, messages)) do
+          {:ok, links} ->
+            Enum.reduce(links, acc, fn {key, url}, acc ->
+              case Map.fetch(by_key, key) do
+                {:ok, item} -> Map.put(acc, SourceItem.key(item), url)
+                :error -> acc
+              end
+            end)
+
+          {:error, _reason} ->
+            acc
+        end
+      end)
+    else
+      _none -> %{}
+    end
+  end
+
+  @doc "A message of the shared stream, or one of the member's direct messages."
   @spec shared_item(map()) :: SourceItem.t()
   def shared_item(message) do
     %SourceItem{
@@ -27,6 +62,7 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
       at: ts_datetime(message.ts),
       text: message.text || "",
       mentions: mentions(message.text),
+      permalink: message[:permalink],
       origin: message
     }
   end
@@ -42,6 +78,8 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
   @doc "The text with each Slack mention written as its people label."
   @spec label_text(String.t(), People.t()) :: String.t()
   def label_text(text, people) do
+    text = Regex.replace(@chip, text, fn _whole, _id, name -> "@" <> String.capitalize(name) end)
+
     Regex.replace(@mention, text, fn whole, id ->
       People.label(people, ActorRef.slack(id)) || whole
     end)
@@ -78,6 +116,9 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
 
   @doc "Where an item was said, for the model: a channel name or a kind of direct message."
   @spec conversation(SourceItem.t(), %{String.t() => String.t()}) :: String.t()
+  def conversation(%SourceItem{origin: %{kind: "im"}}, _names), do: "私信"
+  def conversation(%SourceItem{origin: %{kind: "mpim"}}, _names), do: "群私信"
+
   def conversation(%SourceItem{container_id: id}, names),
     do: "#" <> (names[id] || id)
 
@@ -155,35 +196,20 @@ defmodule BridgeForTeams.DailyBrief.Sources.Slack do
     end
   end
 
-  @doc "Permalinks of the cited items that have none yet, by item key."
-  @spec permalinks([SourceItem.t()], DailyBriefSetting.t()) :: map()
-  def permalinks(items, settings) do
-    items = Enum.reject(items, &is_binary(&1.permalink))
+  @doc """
+  A link that opens the item's message in the Slack app (inside its thread
+  when it is a reply), or `nil` without the workspace.
+  """
+  @spec deep_link(SourceItem.t(), String.t() | nil) :: String.t() | nil
+  def deep_link(_item, nil), do: nil
 
-    with [_ | _] <- items, {:ok, salix} <- Members.source(settings) do
-      by_key = Map.new(items, &{{&1.container_id, &1.id}, &1})
+  def deep_link(%SourceItem{container_id: channel, id: ts, thread_id: thread}, team) do
+    query =
+      [team: team, id: channel] ++
+        if(is_binary(thread) and thread != ts, do: [thread_ts: thread], else: []) ++
+        [message: ts]
 
-      items
-      |> Enum.chunk_every(@permalink_batch)
-      |> Enum.reduce(%{}, fn batch, acc ->
-        messages = Enum.map(batch, &%{channel_id: &1.container_id, ts: &1.id})
-
-        case Salix.impl().daily_brief_permalinks(Map.put(salix, :messages, messages)) do
-          {:ok, links} ->
-            Enum.reduce(links, acc, fn {key, url}, acc ->
-              case Map.fetch(by_key, key) do
-                {:ok, item} -> Map.put(acc, SourceItem.key(item), url)
-                :error -> acc
-              end
-            end)
-
-          {:error, _reason} ->
-            acc
-        end
-      end)
-    else
-      _none -> %{}
-    end
+    "slack://channel?" <> URI.encode_query(query)
   end
 
   defp ts_datetime(ts) when is_binary(ts) do

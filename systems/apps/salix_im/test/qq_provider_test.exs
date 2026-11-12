@@ -615,7 +615,7 @@ defmodule SalixIM.QQProviderTest do
       )
 
     Enum.filter(messages, fn message ->
-      get_in(message, ["agent_input", "trusted_origin", "source_message_id"]) == source_id
+      get_in(message, ["agent_input", :trusted_origin, "source_message_id"]) == source_id
     end)
   end
 
@@ -1135,7 +1135,7 @@ defmodule SalixIM.QQProviderTest do
 
       source_id = "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_private"
       assert [message] = router_inputs(ctx.group_id, source_id)
-      origin = message["agent_input"]["trusted_origin"]
+      origin = message["agent_input"][:trusted_origin]
 
       assert origin["provider"] == "qq"
       assert origin["source_text"] == "你是什么ai"
@@ -1165,14 +1165,16 @@ defmodule SalixIM.QQProviderTest do
 
       source_id = "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_group"
       assert [message] = router_inputs(ctx.group_id, source_id)
-      context = message["agent_input"]["trusted_origin"]["provider_context"]
+      context = message["agent_input"][:trusted_origin]["provider_context"]
       assert context["chat_id"] == "group:" <> @group
       assert context["chat_type"] == "group"
       assert context["from_username"] == "小明"
 
       # The transcript is context for the Router, never the request or a command.
-      assert message["agent_input"]["trusted_origin"]["source_text"] == "hi"
-      assert inspect(message["content"]) =~ "the deploy finished at noon"
+      assert message["agent_input"][:trusted_origin]["source_text"] == "hi"
+
+      assert inspect(message["content"], printable_limit: :infinity, limit: :infinity) =~
+               "the deploy finished at noon"
 
       unmentioned =
         "ROBOT1.0_all"
@@ -1300,17 +1302,17 @@ defmodule SalixIM.QQProviderTest do
       source = "im_provider:qq:#{ctx.connect["connect_id"]}:"
       assert {:ok, _ack} = deliver(ctx, group_mention("ROBOT1.0_weekly", " /周报"))
       assert [weekly] = router_inputs(ctx.group_id, source <> "ROBOT1.0_weekly")
-      assert weekly["agent_input"]["trusted_origin"]["source_text"] == "根据本周群聊生成周报"
+      assert weekly["agent_input"][:trusted_origin]["source_text"] == "根据本周群聊生成周报"
 
       # A shortcut without a prompt arrives as written, and a group shortcut
       # means nothing in a private chat.
       assert {:ok, _ack} = deliver(ctx, group_mention("ROBOT1.0_plan", " /plan"))
       assert [plan] = router_inputs(ctx.group_id, source <> "ROBOT1.0_plan")
-      assert plan["agent_input"]["trusted_origin"]["source_text"] == "/plan"
+      assert plan["agent_input"][:trusted_origin]["source_text"] == "/plan"
 
       assert {:ok, _ack} = deliver(ctx, private_message("ROBOT1.0_private", "/周报"))
       assert [private] = router_inputs(ctx.group_id, source <> "ROBOT1.0_private")
-      assert private["agent_input"]["trusted_origin"]["source_text"] == "/周报"
+      assert private["agent_input"][:trusted_origin]["source_text"] == "/周报"
 
       for {items, message} <- [
             {[%{"name" => "clear"}], "clear is a control command and cannot be a menu item"},
@@ -1435,7 +1437,7 @@ defmodule SalixIM.QQProviderTest do
       assert {:ok, _} = deliver(ctx, mention)
       source = "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_bare"
       assert [message] = router_inputs(ctx.group_id, source)
-      input = message["agent_input"]["trusted_origin"]
+      input = message["agent_input"][:trusted_origin]
       refute Map.has_key?(input, "source_text")
       assert input["provider_context"]["from_user_id"] == @user
       content = Enum.map_join(message["content"], "\n", & &1["text"])
@@ -1461,7 +1463,7 @@ defmodule SalixIM.QQProviderTest do
       assert [message] = router_inputs(ctx.group_id, source)
       content = Enum.map_join(message["content"], "\n", & &1["text"])
       assert content =~ "帮我写个 Word 文档，介绍 Comma"
-      refute Map.has_key?(message["agent_input"]["trusted_origin"], "source_text")
+      refute Map.has_key?(message["agent_input"][:trusted_origin], "source_text")
       refute_received {:history_reader, _}
     end
 
@@ -1470,7 +1472,7 @@ defmodule SalixIM.QQProviderTest do
       assert {:ok, _} = deliver(ctx, group_mention("ROBOT1.0_no_history", ""))
       source = "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_no_history"
       assert [message] = router_inputs(ctx.group_id, source)
-      refute Map.has_key?(message["agent_input"]["trusted_origin"], "source_text")
+      refute Map.has_key?(message["agent_input"][:trusted_origin], "source_text")
       assert Enum.map_join(message["content"], "\n", & &1["text"]) =~ "could not be read"
     end
 
@@ -1542,7 +1544,7 @@ defmodule SalixIM.QQProviderTest do
       assert {:ok, %{"op" => 12}} = deliver(ctx, full_mention)
       assert [routed] = router_inputs(ctx.group_id, source <> "ROBOT1.0_full")
 
-      assert routed["agent_input"]["trusted_origin"]["source_text"] ==
+      assert routed["agent_input"][:trusted_origin]["source_text"] ==
                "ask @Carol for the numbers"
 
       # Another bot's mention is recorded and goes no further.
@@ -2183,7 +2185,7 @@ defmodule SalixIM.QQProviderTest do
       assert [message] =
                router_inputs(ctx.group_id, "im_provider:qq:#{ctx.connect["connect_id"]}:tap-1")
 
-      origin = message["agent_input"]["trusted_origin"]
+      origin = message["agent_input"][:trusted_origin]
 
       assert origin["source_text"] ==
                "[button tapped: <salix-command>clear</salix-command>]"
@@ -2296,7 +2298,9 @@ defmodule SalixIM.QQProviderTest do
                  "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_voice"
                )
 
-      assert inspect(message["content"]) =~ "明天上午十点开会"
+      assert inspect(message["content"], printable_limit: :infinity, limit: :infinity) =~
+               "明天上午十点开会"
+
       assert inspect(message) =~ "voice.wav"
       refute inspect(message) =~ "voice.amr"
     end
@@ -2317,7 +2321,7 @@ defmodule SalixIM.QQProviderTest do
                  "im_provider:qq:#{ctx.connect["connect_id"]}:ROBOT1.0_role"
                )
 
-      assert message["agent_input"]["trusted_origin"]["provider_context"]["from_member_role"] ==
+      assert message["agent_input"][:trusted_origin]["provider_context"]["from_member_role"] ==
                "admin"
     end
   end

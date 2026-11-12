@@ -31,7 +31,7 @@ theorem read_input_physical {framing : CodecFraming} {objects : Objects} {store 
       trace.result afterCAS)
     (sourceValue : RoundQuery.atomFirst entry "source_message_id" = .binary source) :
     objectKey = SessionDomain.ReadRevision.key agent session ∧ trace.key = objectKey ∧
-      trace.requestedKey = objectKey ∧ trace.requestedBase = .binary etag ∧ trace.staged.etag = .binary etag ∧
+      trace.requestedKey = objectKey ∧ trace.requestedBase = .binary etag ∧ trace.staged.revision = .binary etag ∧
       HotRead beforeCAS objectKey bytes (.binary etag) ∧
       ∃ committed snapshotAfter encodedBytes event now first last item,
         ETF.encode (.tuple [a "comma_internal_session", i 3, snapshotAfter]) = .ok encodedBytes ∧
@@ -59,11 +59,11 @@ theorem read_input_physical {framing : CodecFraming} {objects : Objects} {store 
   obtain ⟨_, baseEq, committed, snapshotAfter, encodedBytes, event, now, first, last, item,
     encoded, persisted, stored, afterHistory, generated, fact, canonical, present, _, notified, returned⟩ :=
     committedTrace.physical_input contextHistory sourceValue
-  change trace.staged.etag = context.candidate.etag at baseEq
+  change trace.staged.revision = context.candidate.revision at baseEq
   change afterCAS.current trace.key committed snapshotAfter at stored
   obtain ⟨writeAddress, issuedKey, issuedBase⟩ := committedTrace.scoped_address contextHistory
   have sameKey : trace.key = objectKey := writeAddress.trans addressed.symm
-  have sameBase : trace.staged.etag = .binary etag := by
+  have sameBase : trace.staged.revision = .binary etag := by
     simpa only [contextEq, Revision.Cursor.candidate] using baseEq
   have requestedKey : trace.requestedKey = objectKey := issuedKey.trans sameKey
   have requestedBase : trace.requestedBase = .binary etag := issuedBase.trans sameBase

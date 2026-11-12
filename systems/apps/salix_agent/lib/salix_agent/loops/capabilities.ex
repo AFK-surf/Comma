@@ -26,6 +26,12 @@ defmodule SalixAgent.Loops.Capabilities do
       Agent's own tool disclosure, so a Loop cannot reach further than the
       Agent that wrote it. Journal events a tool returns are discarded: a
       Loop owns no Session revision.
+    * `im_api.internal.read_conversation`, and, where the Group's Cloud VM is retired
+      (`SalixAgent.Sandboxes.cloud_vm_retired?/1`), `im_api.internal.task.create`: a Task Loop's
+      Worker creates a sandbox Task for a run that needs a machine, in
+      place of the Group's Cloud VM that `env.exec` reached. The Task of the
+      Loop is the new Task's parent, and the Group's Router takes its result
+      (`SalixIM.Provider.Internal`).
 
   Environment tools, SSH tools, `composio.execute`, and `web.http_request` are the Loop's hands on the
   outside world: a Loop can run a command on a connected device, tail or
@@ -121,8 +127,20 @@ defmodule SalixAgent.Loops.Capabilities do
           read_tool_names() ++
           environment_tool_names() ++
           external_request_tool_names() ++
-          ["im_api.internal.read_conversation"]
+          ["im_api.internal.read_conversation"] ++
+          task_create_names()
       )
+
+  # Where a Group's Cloud VM is retired, a Loop's Worker creates sandbox Tasks
+  # for a run that needs a machine (`SalixIM.Provider.Internal`), in place of
+  # the Cloud VM that `env.exec` reached. The allowlist names it wherever
+  # sandboxes are set up; the Loop's disclosure offers it, and the provider
+  # takes it, only where its Group's Cloud VM is retired.
+  defp task_create_names do
+    if SalixAgent.Sandboxes.enabled?(),
+      do: ["im_api.internal.task.create"],
+      else: []
+  end
 
   @doc """
   The whole Loop allowlist plus the tools the Loop's product binding pins,
@@ -452,6 +470,7 @@ defmodule SalixAgent.Loops.Capabilities do
       role: role,
       runtime_kind: :internal,
       loop_id: loop.loop_id,
+      task_conversation_id: loop[:task_conversation_id],
       round_id: "loop:" <> loop.loop_id <> ":" <> Integer.to_string(loop.incarnation),
       ifc_mode: ifc_mode,
       defer_tool_observations: true
@@ -464,7 +483,7 @@ defmodule SalixAgent.Loops.Capabilities do
         role,
         :internal,
         base,
-        SalixAgent.Tools.ImRouter.internal_read_disclosure_entries(base),
+        SalixAgent.Tools.ImRouter.internal_task_disclosure_entries(base),
         pinned_mcp_entries(loop, tool_name, base)
       )
     )
@@ -578,7 +597,7 @@ defmodule SalixAgent.Loops.Capabilities do
         # Loop's Session directly.
         delivered =
           if opts[:lifecycle] == true,
-            do: TaskOwner.wake(record, payload, "loop:" <> loop_id <> ":" <> dedup),
+            do: task_wake(record, payload, "loop:" <> loop_id <> ":" <> dedup),
             else: task_or_product_delivery(record, loop_id, content, dedup, payload)
 
         case delivered do
@@ -622,8 +641,31 @@ defmodule SalixAgent.Loops.Capabilities do
     end
   end
 
+  # A Task Loop's Worker that took its Task up in a new Session is woken
+  # there: the Loop follows it first, once per wake.
+  defp task_wake(record, payload, source_id) do
+    case TaskOwner.wake(record, payload, source_id) do
+      {:error, {:task_worker_moved, session}} ->
+        loop_id = record["id"] || record[:loop_id]
+
+        case Loops.follow_task_worker(loop_id, session) do
+          :ok -> TaskOwner.wake(put_session(record, session), payload, source_id)
+          {:error, _} = error -> error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp put_session(record, session) do
+    if Map.has_key?(record, "session_id"),
+      do: Map.put(record, "session_id", session),
+      else: Map.put(record, :session_id, session)
+  end
+
   defp task_or_product_delivery(record, loop_id, content, dedup, payload) do
-    case TaskOwner.wake(record, payload, "loop:" <> loop_id <> ":" <> dedup) do
+    case task_wake(record, payload, "loop:" <> loop_id <> ":" <> dedup) do
       :default -> product_delivery(loop_id, content, dedup, payload[:trusted_origin])
       result -> result
     end

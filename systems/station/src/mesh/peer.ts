@@ -8,7 +8,9 @@ import { type Cloud, workspaceIds, workspaceKey } from "../cloud/state.ts";
 import { type PeerCall, Refused, type Remote, Unreachable } from "../jobs/remote.ts";
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 
-export const PEER_ALPN = Buffer.from("stillfail/station/1");
+export const PEER_ALPN = Buffer.from("comma-station/station/1");
+/// What a station from before the rename takes and asks.
+export const FORMER_PEER_ALPN = Buffer.from("stillfail/station/1");
 const MAX_MESSAGE = 1024 * 1024;
 
 /// The workspace a peer is asked or heard in, if it is another station of it now; throws why not. `workspace` may be
@@ -75,7 +77,7 @@ export function peerCall(endpoint: Endpoint, cloud: Cloud, addr: (id: string) =>
       let conn = connections.get(target);
       if (conn === undefined || conn.isClosed()) {
         try {
-          conn = await endpoint.connect(addr(target), PEER_ALPN);
+          conn = await endpoint.connect(addr(target), PEER_ALPN).catch(() => endpoint.connect(addr(target), FORMER_PEER_ALPN));
         } catch (error) {
           throw new Unreachable(`peer unavailable or does not support station RPC: ${(error as Error).message}`);
         }

@@ -580,6 +580,62 @@ defmodule CommaWeb.CommaEventsContractTest do
            |> sse_payloads("station_tasks_invalidated") == []
   end
 
+  test "a task list stream that asks says when a request to the Workspace came, or one the person sent changed" do
+    %{workspace: workspace, session: session, user: user} =
+      create_fixture("task-requests@example.com")
+
+    group_id = workspace["default_group_id"]
+    topic = "task_requests:" <> workspace["id"]
+    sent_topic = "sent_task_requests:" <> user["id"]
+
+    events = fn query ->
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group_id}/conversations/events?wait=300" <> query
+        )
+      end)
+    end
+
+    with_requests = events.("&with=station_tasks,task_requests")
+    plain = events.("")
+
+    assert eventually(fn ->
+             length(Registry.lookup(CommaWeb.PubSub, topic)) == 1 and
+               length(Registry.lookup(CommaWeb.PubSub, sent_topic)) == 1
+           end)
+
+    # Another Workspace's request is not this stream's.
+    Phoenix.PubSub.broadcast(
+      CommaWeb.PubSub,
+      "task_requests:wsp_other",
+      {:task_requests_changed, "wsp_other"}
+    )
+
+    Phoenix.PubSub.broadcast(CommaWeb.PubSub, topic, {:task_requests_changed, workspace["id"]})
+
+    Phoenix.PubSub.broadcast(
+      CommaWeb.PubSub,
+      sent_topic,
+      {:sent_task_requests_changed, user["id"]}
+    )
+
+    assert [
+             %{"type" => "task_requests_invalidated", "group_id" => ^group_id},
+             %{"type" => "task_requests_invalidated", "group_id" => ^group_id}
+           ] =
+             with_requests
+             |> settled_await()
+             |> expect_status(200)
+             |> sse_payloads("task_requests_invalidated")
+
+    assert plain
+           |> settled_await()
+           |> expect_status(200)
+           |> sse_payloads("task_requests_invalidated") == []
+  end
+
   describe "the Group change feed (?changes=1)" do
     test "names each conversation that changed, its kind and a message's seq" do
       %{workspace: workspace, session: session, conversation: chat} =
@@ -867,6 +923,512 @@ defmodule CommaWeb.CommaEventsContractTest do
     refute response.body =~ "after_event_id"
   end
 
+  test "a user_chat stream or read asked after a seq carries only the messages after it" do
+    %{workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("events-resume@example.com")
+
+    for {seq, text} <- [{1, "held one"}, {2, "held two"}, {3, "new reply"}] do
+      SalixClientFake.put_message(conversation["id"], %{
+        "actor_type" => "agent",
+        "content" => text,
+        "seq" => seq
+      })
+    end
+
+    events =
+      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/events?wait=60"
+
+    resumed = user_req(session["token"], :get, events <> "&after_seq=2")
+    assert [snapshot] = sse_payloads(resumed.body, "snapshot")
+    assert snapshot["after_seq"] == 2
+    assert [%{"seq" => 3, "content" => "new reply"}] = snapshot["messages"]
+
+    caught_up = user_req(session["token"], :get, events <> "&after_seq=3")
+    assert [%{"messages" => [], "after_seq" => 3}] = sse_payloads(caught_up.body, "snapshot")
+
+    whole = user_req(session["token"], :get, events)
+    assert [snapshot] = sse_payloads(whole.body, "snapshot")
+    refute Map.has_key?(snapshot, "after_seq")
+    assert Enum.map(snapshot["messages"], & &1["seq"]) == [1, 2, 3]
+
+    read =
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}?after_seq=2"
+      )
+
+    assert %{"after_seq" => 2, "messages" => [%{"seq" => 3}]} = expect_status(read, 200)
+  end
+
+  test "a request's card takes what its person fills in: a secret, then a Workspace's own app" do
+    %{session: session, user: user, workspace: workspace, conversation: conversation} =
+      create_fixture("card-input@example.com")
+
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+
+    request! = fn provider, owner, input ->
+      state = "state-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
+
+      :ok =
+        SalixStore.OAuth.AuthState.create(%{
+          "state" => state,
+          "tenant" => tenant,
+          "group_id" => group,
+          "agent_id" => agent["agent_id"],
+          "provider" => provider,
+          "alias" => "card",
+          "owner" => owner,
+          "scopes" => [],
+          "code_verifier" => "verifier",
+          "redirect_uri" => "https://api.example.com/v1/oauth/#{provider}/callback",
+          "origin" => "agent",
+          "status" => "pending",
+          "expires_at" => SystemsClock.system_time(:millisecond) + 600_000,
+          "created_at" => SystemsClock.system_time(:millisecond)
+        })
+
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" => state,
+          "request_type" => "oauth_authorization",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => %{"conversation_id" => conversation["id"]},
+          "request_payload" => %{
+            "oauth_authorization" => %{
+              "provider" => provider,
+              "alias" => "card",
+              "state" => state,
+              "reason" => "It is needed.",
+              "scopes" => [],
+              "input" => input
+            }
+          }
+        })
+
+      request["request_id"]
+    end
+
+    # Someone else's credential is theirs to fill in.
+    theirs = request!.("secret", "comma_user|usr_someone_else", %{"kind" => "secret"})
+
+    assert user_req(session["token"], :post, "#{path}/#{theirs}/input",
+             json: %{"value" => "sk-mine"}
+           ).status ==
+             403
+
+    mine =
+      request!.("secret", "comma_user|" <> user["id"], %{
+        "kind" => "secret",
+        "label" => "OpenAI API Key"
+      })
+
+    assert %{"data" => listed} = user_req(session["token"], :get, path) |> expect_status(200)
+
+    assert %{"input" => %{"kind" => "secret", "label" => "OpenAI API Key"}} =
+             Enum.find(listed, &(&1["id"] == mine))["oauth"]
+
+    assert user_req(session["token"], :post, "#{path}/#{mine}/input", json: %{"value" => "  "}).status ==
+             400
+
+    filled =
+      user_req(session["token"], :post, "#{path}/#{mine}/input", json: %{"value" => "sk-mine"})
+      |> expect_status(200)
+
+    assert %{"status" => "completed", "outcome" => "connected", "oauth" => oauth} = filled
+    refute Map.has_key?(oauth, "input")
+    refute Jason.encode!(filled) =~ "sk-mine"
+
+    # A Workspace owner gives its app; the card then has the provider's page.
+    app = request!.("lark", "comma_user|" <> user["id"], %{"kind" => "app"})
+
+    opened =
+      user_req(session["token"], :post, "#{path}/#{app}/input",
+        json: %{
+          "client_id" => "cli_own",
+          "client_secret" => "own-secret"
+        }
+      )
+      |> expect_status(200)
+
+    assert %{"status" => "pending", "oauth" => %{"authorization_url" => url} = oauth} = opened
+    assert url =~ "cli_own"
+    refute Map.has_key?(oauth, "input")
+    refute Jason.encode!(opened) =~ "own-secret"
+
+    assert {:ok, %{"client_id" => "cli_own"}} = Salix.Control.OAuthApps.get_own(tenant, "lark")
+
+    # Answered once: the card takes nothing more.
+    assert user_req(session["token"], :post, "#{path}/#{mine}/input", json: %{"value" => "again"}).status ==
+             409
+  end
+
+  test "a Router asks to install a plugin: its card waits for the install from any page, or a decline" do
+    %{session: session, user: user, workspace: workspace, conversation: conversation} =
+      create_fixture("plugin-card@example.com")
+
+    group = workspace["default_group_id"]
+    tenant = workspace["salix_tenant_id"]
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    plugin! = fn name ->
+      {:ok, definition} =
+        Salix.Control.Plugins.create_definition(tenant, group, %{
+          "name" => name,
+          "owner_scope" => "group"
+        })
+
+      definition["plugin_id"]
+    end
+
+    notes = plugin!.("Test notes")
+    sheets = plugin!.("Test sheets")
+
+    ctx = fn sender, tool_call_id ->
+      %{
+        agent_id: agent["agent_id"],
+        session_id: SalixStore.Ids.new_session_id(),
+        tool_call_id: tool_call_id,
+        group_id: group,
+        tenant_id: tenant,
+        trusted_origin: %{
+          "provider" => "internal",
+          "conversation_id" => conversation["id"],
+          "message_id" => "msg-plugin-card",
+          "principal_ref" => %{"namespace" => "comma_user", "subject_id" => sender}
+        }
+      }
+    end
+
+    ask = fn plugin_id, tool_call_id ->
+      SalixAgent.Tools.PluginInstall.request_install(
+        %{"plugin_id" => plugin_id, "reason" => "To keep the meeting notes."},
+        ctx.(user["id"], tool_call_id)
+      )
+    end
+
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+
+    assert {content, [%{"type" => "async_tool_call_started"} | _]} = ask.(notes, "call-notes")
+
+    assert %{"status" => "running", "plugin" => %{"name" => "Test notes"}} =
+             Jason.decode!(content)
+
+    assert %{"data" => [card]} = user_req(session["token"], :get, path) |> expect_status(200)
+
+    assert %{
+             "type" => "plugin_install",
+             "status" => "pending",
+             "source_message_id" => "msg-plugin-card",
+             "plugin" => %{
+               "id" => ^notes,
+               "name" => "Test notes",
+               "reason" => "To keep the meeting notes.",
+               "workspace_id" => workspace_id
+             }
+           } = card
+
+    assert workspace_id == workspace["id"]
+
+    # Installed on the Plugins page: the card's request ends, and the Router's call returns installed.
+    user_req(
+      session["token"],
+      :post,
+      "/v1/comma/workspaces/#{workspace_id}/plugins/#{notes}/install",
+      json: %{}
+    )
+    |> expect_status(200)
+
+    assert {:ok, ended} = SalixAgent.CapabilityRequests.get(group, card["id"], tenant)
+    assert ended["status"] == "completed"
+    assert ended["response_payload"] == %{"status" => "installed", "plugin_id" => notes}
+    assert Jason.decode!(ended["result"]["content"])["status"] == "installed"
+
+    assert %{"data" => [%{"status" => "completed", "outcome" => "installed"}]} =
+             user_req(session["token"], :get, path) |> expect_status(200)
+
+    # Installed: a second ask answers so and puts up no card.
+    assert %{"status" => "installed", "plugin" => %{"id" => ^notes}} =
+             ask.(notes, "call-notes-again") |> Jason.decode!()
+
+    # Declined on the card: the call returns that the person declined.
+    assert {_content, _events} = ask.(sheets, "call-sheets")
+
+    assert %{"data" => cards} = user_req(session["token"], :get, path) |> expect_status(200)
+    declining = Enum.find(cards, &(&1["status"] == "pending"))
+
+    assert %{"status" => "completed", "outcome" => "declined"} =
+             user_req(session["token"], :post, "#{path}/#{declining["id"]}/decline", json: %{})
+             |> expect_status(200)
+
+    assert {:ok, declined} = SalixAgent.CapabilityRequests.get(group, declining["id"], tenant)
+    assert declined["result"]["error_class"] == "permission_denied"
+
+    # Only the Workspace owner installs; an id the catalog lacks names the plugins there are.
+    {:ok, other} =
+      Comma.Accounts.create_user(%{
+        "email" =>
+          "plugin-card-other-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
+      })
+
+    assert {:tool_failure, _content, "forbidden", _, _, _} =
+             SalixAgent.Tools.PluginInstall.request_install(
+               %{"plugin_id" => sheets, "reason" => "To read the sheets."},
+               ctx.(other["id"], "call-other")
+             )
+
+    assert {:tool_failure, unknown, "unknown_plugin", _, _, _} = ask.("no-such-plugin", "call-x")
+    assert Enum.any?(Jason.decode!(unknown)["plugins"], &(&1["id"] == sheets))
+
+    # The Mac apps run on the member's own Mac: they are added there, not from a card.
+    assert {:tool_failure, _content, "device_plugin", _, _, _} = ask.("mac-apps", "call-mac")
+  end
+
+  test "an install ends its plugin's waiting card behind more than a page of newer requests" do
+    %{session: session, user: user, workspace: workspace, conversation: conversation} =
+      create_fixture("plugin-card-page@example.com")
+
+    group = workspace["default_group_id"]
+    tenant = workspace["salix_tenant_id"]
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    plugin! = fn name ->
+      {:ok, definition} =
+        Salix.Control.Plugins.create_definition(tenant, group, %{
+          "name" => name,
+          "owner_scope" => "group"
+        })
+
+      definition["plugin_id"]
+    end
+
+    notes = plugin!.("Paged notes")
+    sheets = plugin!.("Paged sheets")
+
+    ask = fn plugin_id, tool_call_id ->
+      SalixAgent.Tools.PluginInstall.request_install(
+        %{"plugin_id" => plugin_id, "reason" => "To keep the meeting notes."},
+        %{
+          agent_id: agent["agent_id"],
+          session_id: SalixStore.Ids.new_session_id(),
+          tool_call_id: tool_call_id,
+          group_id: group,
+          tenant_id: tenant,
+          trusted_origin: %{
+            "provider" => "internal",
+            "conversation_id" => conversation["id"],
+            "message_id" => "msg-plugin-page",
+            "principal_ref" => %{"namespace" => "comma_user", "subject_id" => user["id"]}
+          }
+        }
+      )
+    end
+
+    assert {_content, _events} = ask.(notes, "call-notes")
+    {:ok, [waiting]} = SalixAgent.CapabilityRequests.list_group(group, tenant, status: "pending")
+
+    # More newer pending requests than one page of the Group's requests holds.
+    SystemsClock.advance(2_000)
+    for n <- 1..101, do: assert({_content, _events} = ask.(sheets, "call-sheets-#{n}"))
+
+    user_req(
+      session["token"],
+      :post,
+      "/v1/comma/workspaces/#{workspace["id"]}/plugins/#{notes}/install",
+      json: %{}
+    )
+    |> expect_status(200)
+
+    assert {:ok, %{"status" => "completed", "response_payload" => %{"status" => "installed"}}} =
+             SalixAgent.CapabilityRequests.get(group, waiting["request_id"], tenant)
+
+    {:ok, pending} =
+      SalixAgent.CapabilityRequests.list_group(group, tenant, status: "pending", limit: 500)
+
+    assert length(pending) == 101
+  end
+
+  test "a person's location stream tells of the requests their own messages led to, and only those" do
+    %{user: user, workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("requests-location-stream@example.com")
+
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+    requester = "comma_user|" <> user["id"]
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    request! = fn who ->
+      surface_ref =
+        if who,
+          do: %{"conversation_id" => conversation["id"], "requester" => who},
+          else: %{"conversation_id" => conversation["id"]}
+
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" =>
+            "call-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
+          "request_type" => "location",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => surface_ref,
+          "request_payload" => %{"location" => %{"reason" => "Directions."}},
+          "expires_at" => SystemsClock.system_time(:second) + 120
+        })
+
+      request["request_id"]
+    end
+
+    before = request!.(requester)
+    anothers = request!.("comma_user|someone-else")
+    no_ones = request!.(nil)
+    topic = SalixAgent.CapabilityRequests.location_requester_topic(requester)
+
+    stream =
+      SystemsRuntime.Task.async(fn ->
+        user_req(session["token"], :get, "/v1/comma/location-requests/events")
+      end)
+
+    assert eventually(fn -> Registry.lookup(SalixWeb.PubSub, topic) != [] end)
+    after_snapshot = request!.(requester)
+
+    assert {:ok, %{"result" => %{"content" => result}}} =
+             SalixAgent.CapabilityRequests.share_location(
+               group,
+               before,
+               %{
+                 "status" => "success",
+                 "location" => %{"latitude" => 35.67, "longitude" => 139.76, "accuracy_m" => 20}
+               },
+               tenant
+             )
+
+    assert result =~ "read_at"
+    assert result =~ "accuracy_m"
+
+    # An unreadable change ends the stream, so the test can read what it sent.
+    Phoenix.PubSub.broadcast(
+      SalixWeb.PubSub,
+      topic,
+      {:location_request_event, group, tenant, "car_missing"}
+    )
+
+    body = stream |> settled_await() |> expect_status(200)
+    assert body =~ "event: snapshot"
+    assert body =~ before
+    assert body =~ after_snapshot
+    assert body =~ group
+    refute body =~ anothers
+    refute body =~ no_ones
+    refute body =~ "35.67"
+  end
+
+  test "an Agent's location request: a reader shares once or declines, and no card shows the position" do
+    %{workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("requests-location@example.com")
+
+    %{session: outsider} = create_fixture("requests-location-outsider@example.com")
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "router",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+
+    request! = fn ->
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" =>
+            "call-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
+          "request_type" => "location",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => %{"conversation_id" => conversation["id"], "message_id" => "msg-1"},
+          "request_payload" => %{"location" => %{"reason" => "Find cafes near you."}},
+          "expires_at" => SystemsClock.system_time(:second) + 120
+        })
+
+      request["request_id"]
+    end
+
+    shared = request!.()
+
+    assert %{"data" => listed} = user_req(session["token"], :get, path) |> expect_status(200)
+
+    assert %{
+             "type" => "location",
+             "status" => "pending",
+             "source_message_id" => "msg-1",
+             "location" => %{"reason" => "Find cafes near you."}
+           } = Enum.find(listed, &(&1["id"] == shared))
+
+    position = %{"latitude" => 35.67, "longitude" => 139.76, "accuracy_m" => 20}
+
+    assert user_req(outsider["token"], :post, "#{path}/#{shared}/location", json: position).status ==
+             404
+
+    assert user_req(session["token"], :post, "#{path}/#{shared}/location",
+             json: %{"latitude" => 91, "longitude" => 0}
+           ).status == 400
+
+    answered =
+      user_req(session["token"], :post, "#{path}/#{shared}/location", json: position)
+      |> expect_status(200)
+
+    assert %{"status" => "completed", "outcome" => "shared"} = answered
+    refute Jason.encode!(answered) =~ "35.67"
+
+    assert {:ok, %{"response_payload" => %{"location" => %{"latitude" => 35.67}}}} =
+             SalixAgent.CapabilityRequests.get(group, shared, tenant)
+
+    # Answered once: the card takes nothing more.
+    assert user_req(session["token"], :post, "#{path}/#{shared}/location", json: position).status ==
+             409
+
+    declined = request!.()
+
+    assert %{"status" => "completed", "outcome" => "declined"} =
+             user_req(session["token"], :post, "#{path}/#{declined}/decline")
+             |> expect_status(200)
+  end
+
   test "an Agent's requests in a Conversation: its readers see and decline them, nobody else" do
     %{workspace: workspace, session: session, conversation: conversation} =
       create_fixture("requests@example.com")
@@ -945,6 +1507,191 @@ defmodule CommaWeb.CommaEventsContractTest do
 
     assert %{"data" => [%{"outcome" => "declined"}]} =
              user_req(session["token"], :get, path) |> expect_status(200)
+  end
+
+  test "a phone's consent card: its Conversation's readers see it, only the computer's owner allows it" do
+    %{workspace: workspace, session: session, user: user, conversation: conversation} =
+      create_fixture("phone-consent@example.com")
+
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "worker",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    device! = fn owner ->
+      {:ok, token} =
+        SalixEnv.ConnectorTokens.create_group_connector_token(group, tenant, %{
+          "meta" => %{"owner_user_id" => owner, "surface" => "comma"}
+        })
+
+      token["device_id"]
+    end
+
+    request! = fn device_id, capability ->
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" =>
+            "call-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
+          "request_type" => "computer_use_start",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => %{"conversation_id" => conversation["id"]},
+          "expires_at" => SystemsClock.system_time(:second) + 600,
+          "request_payload" => %{
+            "computer_use_start" => %{
+              "capability" => capability,
+              "tool_name" => "env.android",
+              "device_id" => device_id,
+              "target" => "android:3B162S00P0N00000",
+              "title" => "Pixel 8 · Android 15"
+            }
+          }
+        })
+
+      request["request_id"]
+    end
+
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+    mine = request!.(device!.(user["id"]), "android_phone")
+    theirs = request!.(device!.("usr_someone_else"), "android_phone")
+    # Another computer-use start is no card here.
+    _other = request!.(device!.(user["id"]), "computer_use")
+
+    assert %{"data" => listed} = user_req(session["token"], :get, path) |> expect_status(200)
+    assert listed |> Enum.map(& &1["id"]) |> Enum.sort() == Enum.sort([mine, theirs])
+
+    assert %{
+             "type" => "computer_use_start",
+             "status" => "pending",
+             "phone" => %{"title" => "Pixel 8 · Android 15"}
+           } =
+             Enum.find(listed, &(&1["id"] == mine))
+
+    # Someone else's phone is theirs to allow.
+    assert user_req(session["token"], :post, "#{path}/#{theirs}/decision",
+             json: %{"approved" => true}
+           ).status ==
+             403
+
+    assert user_req(session["token"], :post, "#{path}/#{mine}/decision", json: %{}).status == 400
+
+    assert %{"status" => "completed", "outcome" => "allowed"} =
+             user_req(session["token"], :post, "#{path}/#{mine}/decision",
+               json: %{"approved" => true}
+             )
+             |> expect_status(200)
+
+    assert user_req(session["token"], :post, "#{path}/#{mine}/decision",
+             json: %{"approved" => false}
+           ).status ==
+             409
+  end
+
+  test "a simulator's consent card: shown in its Conversation, only the computer's owner allows it" do
+    %{workspace: workspace, session: session, user: user, conversation: conversation} =
+      create_fixture("simulator-consent@example.com")
+
+    group = workspace["default_group_id"]
+    {:ok, %{"salix_tenant_id" => tenant}} = Comma.Workspaces.get_by_group(group)
+
+    agent =
+      SalixAgent.TestSupport.create_control_agent_in_group!(tenant, group, %{
+        "role" => "worker",
+        "runtime_config" => %{"kind" => "internal"}
+      })
+
+    device! = fn owner ->
+      {:ok, token} =
+        SalixEnv.ConnectorTokens.create_group_connector_token(group, tenant, %{
+          "meta" => %{"owner_user_id" => owner, "surface" => "comma"}
+        })
+
+      token["device_id"]
+    end
+
+    request! = fn device_id ->
+      {:ok, request} =
+        SalixAgent.CapabilityRequests.create_capability_request(%{
+          "source_agent_id" => agent["agent_id"],
+          "source_session_id" => SalixStore.Ids.new_session_id(),
+          "tool_call_id" =>
+            "call-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
+          "request_type" => "computer_use_start",
+          "group_id" => group,
+          "tenant_id" => tenant,
+          "surface_kind" => "conversation",
+          "surface_ref" => %{"conversation_id" => conversation["id"]},
+          "expires_at" => SystemsClock.system_time(:second) + 600,
+          "request_payload" => %{
+            "computer_use_start" => %{
+              "capability" => "ios_simulator",
+              "tool_name" => "env.screen",
+              "device_id" => device_id,
+              "target" => "simulator:0702F8CC-2E2A-4D0A-8401-C37FA01E1646",
+              "title" => "iPhone 17 Pro · iOS 27.2"
+            }
+          }
+        })
+
+      request
+    end
+
+    path = "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests"
+    mine = request!.(device!.(user["id"]))
+    theirs = request!.(device!.("usr_someone_else"))
+    # The call that asked waits for the card's answer.
+    assert SalixAgent.CapabilityRequests.tool_name_for_request(mine) == "env.screen"
+
+    assert %{"data" => listed} = user_req(session["token"], :get, path) |> expect_status(200)
+
+    assert listed |> Enum.map(& &1["id"]) |> Enum.sort() ==
+             Enum.sort([mine["request_id"], theirs["request_id"]])
+
+    # A simulator on someone else's computer is theirs to allow.
+    assert user_req(session["token"], :post, "#{path}/#{theirs["request_id"]}/decision",
+             json: %{"approved" => true}
+           ).status == 403
+
+    assert %{"status" => "completed", "outcome" => "allowed"} =
+             user_req(session["token"], :post, "#{path}/#{mine["request_id"]}/decision",
+               json: %{"approved" => true}
+             )
+             |> expect_status(200)
+  end
+
+  test "an Agent's request stream ends on a change it cannot read, so the client reads the list again" do
+    %{workspace: workspace, session: session, conversation: conversation} =
+      create_fixture("requests-stream@example.com")
+
+    group = workspace["default_group_id"]
+    topic = SalixAgent.CapabilityRequests.topic(group)
+
+    stream =
+      SystemsRuntime.Task.async(fn ->
+        user_req(
+          session["token"],
+          :get,
+          "/v1/comma/groups/#{group}/conversations/#{conversation["id"]}/requests/events"
+        )
+      end)
+
+    assert eventually(fn -> Registry.lookup(SalixWeb.PubSub, topic) != [] end)
+
+    Phoenix.PubSub.broadcast(
+      SalixWeb.PubSub,
+      topic,
+      {:capability_request_event, group, "car_missing"}
+    )
+
+    body = stream |> settled_await() |> expect_status(200)
+    assert body =~ "event: snapshot"
   end
 
   test "user_chat SSE projects the subscribed participant activity snapshot" do

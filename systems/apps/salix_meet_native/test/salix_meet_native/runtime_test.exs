@@ -65,6 +65,9 @@ defmodule SalixMeetNative.RuntimeTest do
     assert is_integer(ts)
 
     FakeSession.emit(session, participant("spaces/s/devices/1", "Alice", "joined"))
+    # Carol joins and never speaks; the bot's own device is not a participant.
+    FakeSession.emit(session, participant("spaces/s/devices/2", "Carol", "joined"))
+    FakeSession.emit(session, participant("spaces/s/devices/9", "Cue", "joined"))
 
     FakeSession.emit(
       session,
@@ -141,7 +144,8 @@ defmodule SalixMeetNative.RuntimeTest do
              "event_id" => "mtg_1:runtime:done",
              "status" => "done",
              "transcript_source" => "captions",
-             "artifacts" => [transcript, audio]
+             "artifacts" => [transcript, audio],
+             "participants" => ["Alice", "Carol"]
            } =
              delivered()
 

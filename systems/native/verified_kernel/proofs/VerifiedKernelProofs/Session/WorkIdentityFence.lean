@@ -1,7 +1,7 @@
 import VerifiedKernelProofs.Session.WorkPlannedIdentity
 import VerifiedKernelProofs.Session.WorkIdentityInitial
 import VerifiedKernelProofs.Session.WorkRevisionFence
-
+import VerifiedKernelProofs.Session.WorkPendingInput
 namespace VerifiedKernel.Session.WorkConservation
 open Data
 set_option Elab.async false

@@ -118,6 +118,7 @@ export class Admin {
     const keyed = key !== undefined && key !== "" && key.length <= 200 && r.method !== "GET" && r.method !== "HEAD";
     const answer = keyed ? await this.once(`${r.viewer.email}\0${r.path}\0${key}`, () => this.answer(r)) : await this.answer(r);
     // Every answer says this station keeps writes to once.
+    answer.headers["comma-station-idempotent"] = "1";
     answer.headers["stillfail-idempotent"] = "1";
     return answer;
   }

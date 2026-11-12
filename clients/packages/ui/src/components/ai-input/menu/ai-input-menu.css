@@ -105,6 +105,13 @@
   color: inherit;
 }
 
+.comma-ai-input-token-icon [data-token-icon-mask] {
+  width: 100%;
+  height: 100%;
+  background-color: currentColor;
+  mask: var(--comma-token-icon-mask) center / contain no-repeat;
+}
+
 .comma-ai-input-token-icon svg[fill]:not([fill="none"]),
 .comma-ai-input-token-icon
   svg

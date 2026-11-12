@@ -240,12 +240,19 @@ defmodule SalixIM.TaskLoop do
 
   @doc """
   The Router may not move a Task whose requested Loop has not ended to
-  `ready_for_review`: one report is one run, not the end of the work. Reads
-  the Task's Loop only for that update.
+  `ready_for_review`: one report is one run, not the end of the work. Nor may
+  it complete such a Task on its own: the server ends the Loop at its run limit
+  or end time, so the Router completes it only when its stop condition holds
+  (it has one) or in a turn a person's message started (`human_turn_at`).
+  Reads the Task's Loop only for those updates.
   """
+  def status_allowed(conversation, updates, router_id \\ nil, human_turn_at \\ nil)
+
   def status_allowed(
         %{"kind" => "agent_task", "agent_group_id" => group_id, "conversation_id" => id},
-        %{"status" => "ready_for_review"}
+        %{"status" => "ready_for_review"},
+        _router_id,
+        _human_turn_at
       ) do
     case get(group_id, id) do
       {:ok, view} ->
@@ -262,7 +269,30 @@ defmodule SalixIM.TaskLoop do
     end
   end
 
-  def status_allowed(_conversation, _updates), do: :ok
+  def status_allowed(
+        %{"kind" => "agent_task", "agent_group_id" => group_id, "conversation_id" => id},
+        %{"status" => "completed"},
+        router_id,
+        human_turn_at
+      )
+      when is_binary(router_id) and not is_integer(human_turn_at) do
+    case get(group_id, id) do
+      {:ok, view} ->
+        if running?(view) and view["stop_condition"] in [nil, ""],
+          do:
+            {:error,
+             {:forbidden,
+              "This Task runs a Loop with no stop condition, and one report is one run: the " <>
+                "server ends the Loop at its run limit or end time. Keep the Task active; " <>
+                "complete it only when a person asks to stop it"}},
+          else: :ok
+
+      {:error, reason} ->
+        {:error, {:task_loops, reason}}
+    end
+  end
+
+  def status_allowed(_conversation, _updates, _router_id, _human_turn_at), do: :ok
 
   @doc """
   The Router may restart the Loop of its own Task after a new human request.
@@ -442,7 +472,8 @@ defmodule SalixIM.TaskLoop do
   defp timed_guidance(%{"events" => _events}),
     do:
       ". The program waits for its events with sf_event_next (a secret URL from loop.webhook, " <>
-        "a Composio trigger, or loop.send)"
+        "a Composio trigger, a product event such as meeting.completed from loop.subscribe, " <>
+        "or loop.send)"
 
   defp timed_guidance(_cadence),
     do:

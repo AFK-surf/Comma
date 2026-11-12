@@ -46,6 +46,8 @@ export interface AiInputMenuItem {
   icon?: ReactNode;
   /** Defaults to the item label. */
   tokenLabel?: string;
+  /** The token's glyph, when it is not the row's own icon. */
+  tokenIconMarkup?: string;
   /** Defaults to `${trigger}${id}`. */
   plainText?: string;
   /** Insert editable text instead of an atomic mention token. */
@@ -67,12 +69,19 @@ export interface AiInputMenuItem {
    */
   browse?: AiInputMenuBrowse;
   /**
-   * Set on the trailing "View more" row the filter appends to a group with
-   * `browse`: selecting it (Enter, click, or ArrowRight) opens that group's
-   * browse panel in place of the list instead of inserting a token. Product
-   * code never sets this; the filter does.
+   * A navigation-only row: selecting it opens the named group or row's
+   * browse panel instead of inserting a token. The filter sets this for
+   * "View more"; product menus can also use it for parent rows such as vendors.
    */
   browseGroupId?: string;
+  /**
+   * Listed only once something is typed: a row that a parent row (such as
+   * a vendor's) holds while the query is empty, and that a search finds
+   * directly.
+   */
+  searchOnly?: boolean;
+  /** The id says nothing a person would type (a provider's id): a query does not match it. */
+  opaqueId?: boolean;
 }
 
 /**
@@ -83,6 +92,8 @@ export interface AiInputMenuItem {
 export interface AiInputMenuBrowse {
   /** A few choices (a row's own second level): the panel fits them instead of a full-height list. */
   compact?: boolean | undefined;
+  /** The panel opens unfiltered, as a row's own second level does: the query found the row. */
+  startsUnfiltered?: boolean | undefined;
   onQueryChange?: ((query: string | null) => void) | undefined;
   /** The next page, asked for as the reader scrolls or arrows past the end. */
   onLoadMore?: (() => void) | undefined;
@@ -308,9 +319,9 @@ function coalesceTextSegments(segments: readonly AiInputRichSegment[]) {
 }
 
 function itemRank(item: AiInputMenuItem, query: string) {
-  if (!query) return 0;
+  if (!query) return item.searchOnly ? undefined : 0;
 
-  const primary = [item.searchText, item.label, item.id]
+  const primary = [item.searchText, item.label, item.opaqueId ? undefined : item.id]
     .filter(Boolean)
     .map((value) => value!.toLocaleLowerCase());
   if (primary.some((value) => value.startsWith(query))) return 0;

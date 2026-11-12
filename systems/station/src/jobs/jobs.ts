@@ -1,6 +1,6 @@
 // Background jobs (the Rust station's jobs.rs): commands a session's agent starts that the station runs and keeps, apart from
 // the agent's turns. Each runs in a process group of its own with its output in a log file; the agent hears when it
-// ends, and whatever the job says on the way (`stillfail-job notify …`). A job with a port is a web service: kept up
+// ends, and whatever the job says on the way (`comma-job notify …`). A job with a port is a web service: kept up
 // (started again when it ends, with a growing pause), and seen by the workspace's members through the station's
 // /preview. Jobs outlive the station: a restart takes up what still runs, and starts again what does not (the machine
 // restarted). They are not run under runners: their own groups and exit files are what lets them outlive it.
@@ -51,22 +51,22 @@ export const NOTIFY_BODY_LIMIT = 64 * 1024;
 /// start it (it outlived the one that did) still learns how it ended.
 export const WRAPPER = `/bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2"; exit "$code"`;
 
-/// What `stillfail-job` is, in each job's PATH: `stillfail-job notify <words>` (or the words on stdin) tells the agent.
+/// What `comma-job` is, in each job's PATH: `comma-job notify <words>` (or the words on stdin) tells the agent.
 /// `ember-job`, its name before the rename, is a link to it; a job started then has only the EMBER_JOB_* variables.
 export const JOB_COMMAND = `#!/bin/sh
-# stillfail-job notify <words>: tells the agent that started this job (the words, or stdin's).
-token=\${STILLFAIL_JOB_TOKEN:-\${EMBER_JOB_TOKEN:-}}
-notify=\${STILLFAIL_JOB_NOTIFY:-\${EMBER_JOB_NOTIFY:-}}
+# comma-job notify <words>: tells the agent that started this job (the words, or stdin's).
+token=\${COMMA_STATION_JOB_TOKEN:-\${EMBER_JOB_TOKEN:-}}
+notify=\${COMMA_STATION_JOB_NOTIFY:-\${EMBER_JOB_NOTIFY:-}}
 case "$1" in
   notify)
     shift
     if [ "$#" -gt 0 ]; then printf '%s' "$*"; else cat; fi |
       curl -fsS -X POST -H "Authorization: Bearer $token" -H "content-type: text/plain; charset=utf-8" --data-binary @- "$notify" >/dev/null
     ;;
-  *) echo "usage: stillfail-job notify <words>" >&2; exit 2 ;;
+  *) echo "usage: comma-job notify <words>" >&2; exit 2 ;;
 esac
 `;
-export const JOB_COMMAND_NAME = "stillfail-job";
+export const JOB_COMMAND_NAME = "comma-job";
 const FORMER_JOB_COMMAND_NAME = "ember-job";
 
 /// Tells a session's agent something (the hub's notify).
@@ -161,7 +161,7 @@ export class Jobs {
   readonly dir: string;
   private notify: Notify;
   private link: Link;
-  /// Where `stillfail-job notify` posts (the MCP endpoint's /jobs/notify).
+  /// Where `comma-job notify` posts (the MCP endpoint's /jobs/notify).
   private notifyUrl = "";
   private running = new Map<string, Running>();
   /// Shutting down: jobs go on without the station and stay recorded as running, to be taken up by the next one.
@@ -189,7 +189,7 @@ export class Jobs {
     } catch (error) {
       // The script is there for a POSIX shell; only another shell's way to it (no Git's sh on Windows) is missing.
       if (!existsSync(script)) throw error;
-      log.warn("jobs", "no stillfail-job for cmd and PowerShell", { error: String(error) });
+      log.warn("jobs", "no comma-job for cmd and PowerShell", { error: String(error) });
     }
     // The old name, for jobs and agents used to it: a link to the new one (in place of the script it was).
     const former = join(dir, "bin", FORMER_JOB_COMMAND_NAME);
@@ -211,7 +211,7 @@ export class Jobs {
     this.timed = (effect) => Effect.runPromise(clock ? effect.pipe(Effect.provideService(Clock.Clock, clock)) : effect);
   }
 
-  /// Where `stillfail-job notify` posts, once the endpoint listens.
+  /// Where `comma-job notify` posts, once the endpoint listens.
   setNotifyUrl(url: string): void {
     this.notifyUrl = url;
   }
@@ -304,7 +304,7 @@ export class Jobs {
     rmSync(exit, { force: true });
     const env: NodeJS.ProcessEnv = platform.prependPath(process.env, join(this.dir, "bin"));
     // Under both names: scripts written against the old ones go on working.
-    for (const prefix of ["STILLFAIL_", "EMBER_"]) {
+    for (const prefix of ["COMMA_STATION_", "EMBER_"]) {
       env[`${prefix}JOB_ID`] = job.id;
       env[`${prefix}JOB_TOKEN`] = job.token;
       env[`${prefix}JOB_NOTIFY`] = this.notifyUrl;
@@ -503,7 +503,7 @@ export class Jobs {
   /// AWAKE; an idle one is not woken for it.
   async stopFor(id: string, who: string): Promise<JobRow> {
     const job = await this.stop(id);
-    if (this.awake(job.sessionKey)) this.tell(job, `${named(job)} was stopped by ${who} from still.fail's page.`);
+    if (this.awake(job.sessionKey)) this.tell(job, `${named(job)} was stopped by ${who} from Comma's page.`);
     return job;
   }
 
@@ -522,7 +522,7 @@ export class Jobs {
         continue;
       }
       try {
-        appendFileSync(job.log, `\n[still.fail] stopped: ${why}\n`);
+        appendFileSync(job.log, `\n[Comma] stopped: ${why}\n`);
       } catch {}
     }
   }
@@ -613,7 +613,7 @@ export class Jobs {
     await Effect.runPromise(Scope.close(this.scope, Exit.void));
   }
 
-  /// `stillfail-job notify`: the job with this token tells its agent something.
+  /// `comma-job notify`: the job with this token tells its agent something.
   notified(token: string, text: string): void {
     const job = this.store.jobByToken(token);
     if (!job) throw new Error("unknown job token");
@@ -631,7 +631,7 @@ export class Jobs {
   }
 }
 
-/// POST /jobs/notify on the MCP endpoint (server.rs `answer_mcp`): a job's `stillfail-job notify`, its token as the
+/// POST /jobs/notify on the MCP endpoint (server.rs `answer_mcp`): a job's `comma-job notify`, its token as the
 /// bearer, its words as the body (at most 64 KiB). The HTTP wiring is the server's: it gives the authorization header
 /// and the body read so far (more than the limit is refused).
 export function notifyEndpoint(jobs: Jobs, authorization: string | undefined, body: Buffer | string): { status: number; body: Json } {

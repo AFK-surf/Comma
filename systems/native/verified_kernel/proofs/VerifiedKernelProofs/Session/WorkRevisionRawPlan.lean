@@ -1,5 +1,4 @@
 import VerifiedKernelProofs.Session.WorkRevisionPlan
-
 namespace VerifiedKernel.Session.Revision
 open Data WorkConservation
 set_option Elab.async false
@@ -23,16 +22,19 @@ theorem PlanTrace.fixed {initial final : Output} (trace : PlanTrace initial fina
   | resume => exact (notObserve _ rfl).elim
 
 def planBatchCursor (outcome : Term) (cursor : PendingRevision.Cursor) (batch : Term) : Term :=
-  .tuple [a "session_revision_plan_batch", outcome, .tuple [a "session_pending_batch", cursor.pack, batch]]
+  .tuple [a "session_revision_plan_batch", outcome, .tuple [a "session_delta_batch", cursor.pack, batch]]
+
+def planObserveCursor (outcome : Term) (cursor : PendingRevision.Cursor) (before event batch : Term) : Term :=
+  .tuple [a "session_revision_plan_batch", outcome, .tuple [a "session_delta_observe", cursor.pack, before, event, batch]]
 
 inductive PlanBatchOutput (outcome : Term) : Output → Prop where
   | done (cursor : PendingRevision.Cursor) : PlanBatchOutput outcome (planned cursor outcome)
   | run (cursor : PendingRevision.Cursor) (state event : Term) (remaining : List Term) :
       PlanBatchOutput outcome
         (some (planBatchCursor outcome cursor (BatchExecution.pending state (event :: remaining))), .tuple [a "next"])
-  | resume (cursor : PendingRevision.Cursor) (token request : Term) (remaining : List Term) :
+  | resume (cursor : PendingRevision.Cursor) (before event token request : Term) (remaining : List Term) :
       PlanBatchOutput outcome
-        (some (planBatchCursor outcome cursor (BatchExecution.observing token remaining)), .tuple [a "observe", request])
+        (some (planObserveCursor outcome cursor before event (BatchExecution.observing token remaining)), .tuple [a "observe", request])
   | failed (response : Term) : PlanBatchOutput outcome (none, response)
 
 theorem plan_batch_next_valid (outcome : Term) (cursor : PendingRevision.Cursor)
@@ -43,14 +45,32 @@ theorem plan_batch_next_valid (outcome : Term) (cursor : PendingRevision.Cursor)
   | nil => exact .done { cursor with working := state }
   | cons event remaining => exact .run cursor state event remaining
 
-theorem plan_batch_accept_valid (outcome : Term) (cursor : PendingRevision.Cursor)
-    (remaining : List Term) (result : Term) :
+theorem plan_capture_next_valid (outcome : Term) (cursor : PendingRevision.Cursor)
+    (before state event : Term) (remaining : List Term) :
     PlanBatchOutput outcome
-      (acceptPlanBatch outcome (PendingRevision.accept cursor (BatchExecution.accept remaining result))) := by
+      (acceptPlanBatch outcome (PendingRevision.captureDelta cursor before state event (BatchExecution.next state remaining))) := by
+  cases captured : StorageDelta.captureDedupe before state event [] with
+  | ok result =>
+    obtain ⟨added, rest⟩ := result
+    cases rest with
+    | nil =>
+      simp only [PendingRevision.captureDelta, captured]
+      exact plan_batch_next_valid outcome _ _ _
+    | cons head tail => simp only [PendingRevision.captureDelta, captured]; exact .failed _
+  | error signal =>
+    cases signal <;> simp only [PendingRevision.captureDelta, captured] <;> exact .failed _
+
+theorem plan_batch_accept_valid (outcome : Term) (cursor : PendingRevision.Cursor)
+    (before event : Term) (remaining : List Term) (result : Term) :
+    PlanBatchOutput outcome
+      (acceptPlanBatch outcome (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining result))) := by
   unfold BatchExecution.accept
   split
-  · exact plan_batch_next_valid _ _ _ _
-  · exact .resume cursor _ _ remaining
+  · rename_i state
+    cases remaining with
+    | nil => exact plan_capture_next_valid outcome cursor before state event []
+    | cons head tail => exact plan_capture_next_valid outcome cursor before state event (head :: tail)
+  · exact .resume cursor before event _ _ remaining
   · exact .failed _
 
 theorem plan_batch_run_captured (outcome : Term) (cursor : PendingRevision.Cursor)
@@ -58,14 +78,16 @@ theorem plan_batch_run_captured (outcome : Term) (cursor : PendingRevision.Curso
     resident (some (planBatchCursor outcome cursor (BatchExecution.pending state (event :: remaining))))
       (a "run") (list observations) =
       acceptPlanBatch outcome
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (runTrusted state event observations))) := rfl
+        (PendingRevision.acceptCaptured cursor state event (BatchExecution.accept remaining (runTrusted state event observations))) := by
+  rfl
 
 theorem plan_batch_resume_captured (outcome : Term) (cursor : PendingRevision.Cursor)
-    (token observation : Term) (remaining : List Term) :
-    resident (some (planBatchCursor outcome cursor (BatchExecution.observing token remaining)))
+    (before event token observation : Term) (remaining : List Term) :
+    resident (some (planObserveCursor outcome cursor before event (BatchExecution.observing token remaining)))
       (a "resume") observation =
       acceptPlanBatch outcome
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (resumeTrusted token observation))) := rfl
+        (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining (resumeTrusted token observation))) := by
+  rfl
 
 theorem plan_batch_start_valid (outcome : Term) (cursor : Cursor) (events : List Term) (hwm : Term) :
     PlanBatchOutput outcome (acceptPlanBatch outcome (PendingRevision.write cursor.candidate events hwm)) := by
@@ -88,12 +110,12 @@ theorem plan_batch_next_shape {outcome saved : Term}
 
 theorem plan_batch_observation_shape {outcome saved request : Term}
     (valid : PlanBatchOutput outcome (some saved, .tuple [a "observe", request])) :
-    ∃ cursor token remaining, saved = planBatchCursor outcome cursor (BatchExecution.observing token remaining) := by
+    ∃ cursor before event token remaining, saved = planObserveCursor outcome cursor before event (BatchExecution.observing token remaining) := by
   generalize same : (some saved, Term.tuple [a "observe", request]) = output at valid
   cases valid with
   | done => simp [planned, a] at same
   | run => simp [a] at same
-  | resume cursor token _ remaining => exact ⟨cursor, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
+  | resume cursor before event token _ remaining => exact ⟨cursor, before, event, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
   | failed => cases congrArg Prod.fst same
 
 theorem plan_batch_trace_reflect {outcome : Term} {initial : Output} {final : PendingRevision.Cursor}
@@ -109,14 +131,14 @@ theorem plan_batch_trace_reflect {outcome : Term} {initial : Output} {final : Pe
     apply PlanBatchTrace.run (observations := observations)
     apply ih
     · rw [plan_batch_run_captured]
-      exact plan_batch_accept_valid _ _ _ _
+      apply plan_batch_accept_valid
     · exact ending
   | @resume saved request observation output tail ih =>
-    obtain ⟨cursor, token, remaining, rfl⟩ := plan_batch_observation_shape valid
+    obtain ⟨cursor, before, event, token, remaining, rfl⟩ := plan_batch_observation_shape valid
     apply PlanBatchTrace.resume (observation := observation)
     apply ih
     · rw [plan_batch_resume_captured]
-      exact plan_batch_accept_valid _ _ _ _
+      apply plan_batch_accept_valid
     · exact ending
 
 theorem plan_batch_output_preserved {outcome : Term} {initial final : Output}
@@ -128,12 +150,12 @@ theorem plan_batch_output_preserved {outcome : Term} {initial final : Output}
     obtain ⟨cursor, state, event, remaining, rfl⟩ := plan_batch_next_shape valid
     apply ih
     rw [plan_batch_run_captured]
-    exact plan_batch_accept_valid _ _ _ _
+    apply plan_batch_accept_valid
   | resume tail ih =>
-    obtain ⟨cursor, token, remaining, rfl⟩ := plan_batch_observation_shape valid
+    obtain ⟨cursor, before, event, token, remaining, rfl⟩ := plan_batch_observation_shape valid
     apply ih
     rw [plan_batch_resume_captured]
-    exact plan_batch_accept_valid _ _ _ _
+    apply plan_batch_accept_valid
 
 theorem plan_batch_done_outcome {outcome other : Term} {final : PendingRevision.Cursor}
     (valid : PlanBatchOutput outcome (planned final other)) : outcome = other := by
@@ -277,7 +299,7 @@ theorem fast_plan_preserves {cursor : Cursor} {observations : List Term}
     (trace : PlanTrace
       (resident (some cursor.pack) (a "plan") (.tuple [a "fast", list observations]))
       (planned final outcome)) :
-    final.baseline = cursor.candidate.baseline ∧ final.etag = cursor.candidate.etag ∧
+    final.baseline = cursor.candidate.baseline ∧ final.revision = cursor.candidate.revision ∧
       QueueReady final.working ∧
       final.working.get (a "storage_format") = cursor.candidate.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
@@ -329,7 +351,7 @@ theorem ordinary_plan_preserves {cursor : Cursor} {observations : List Term} {mo
     (trace : PlanTrace
       (resident (some cursor.pack) (a "plan") (.tuple [mode, list observations]))
       (planned final outcome)) :
-    final.baseline = cursor.candidate.baseline ∧ final.etag = cursor.candidate.etag ∧
+    final.baseline = cursor.candidate.baseline ∧ final.revision = cursor.candidate.revision ∧
       QueueReady final.working ∧
       final.working.get (a "storage_format") = cursor.candidate.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
@@ -364,11 +386,11 @@ theorem planned_snapshot_preserves {cursor : Revision.Cursor} {staged : PendingR
       (a "encode") nil = (some saved, request))
     (primitive : ArchivePublication.SnapshotCASMeaning request result durable)
     (resumed : resident (some saved) (a "cas_result") result = (some restored, .tuple [a "ok", etag])) :
-    staged.baseline = cursor.candidate.baseline ∧ staged.etag = cursor.candidate.etag ∧ restored = stamped ∧
+    staged.baseline = cursor.candidate.baseline ∧ staged.revision = cursor.candidate.revision ∧ restored = stamped ∧
       ∃ snapshot, durable key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
         ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →
           ValueSemantics.Represented snapshot sealed item := by
-  have preservation : staged.baseline = cursor.candidate.baseline ∧ staged.etag = cursor.candidate.etag ∧
+  have preservation : staged.baseline = cursor.candidate.baseline ∧ staged.revision = cursor.candidate.revision ∧
       QueueReady staged.working ∧
       staged.working.get (a "storage_format") = cursor.candidate.working.get (a "storage_format") ∧
       ∀ sealed item, ValueSemantics.Represented cursor.candidate.working sealed item →

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { clockSleep, type MainClock } from "../../../clock";
+import cursorScript from "./cursor.js?raw";
 import pageScript from "./page.js?raw";
 
 /**
@@ -147,6 +148,12 @@ export interface BrowserAgentRefs {
   next: number;
 }
 
+/** Where the agent's cursor is in the tab's viewport. */
+export interface BrowserAgentPoint {
+  x: number;
+  y: number;
+}
+
 export interface BrowserAgentTab {
   readonly cdp: BrowserAgentCdp;
   readonly clock: MainClock;
@@ -159,7 +166,11 @@ export interface BrowserAgentTab {
   navigate(url: string): Promise<string | undefined>;
   title(): string;
   url(): string;
+  /** Whether the person can see the tab now: the agent's cursor glides only then. */
+  visible(): boolean;
   refs: BrowserAgentRefs | undefined;
+  /** Kept across documents, so a new page shows the cursor where it was. */
+  cursor: BrowserAgentPoint | undefined;
 }
 
 interface Dialog {
@@ -235,7 +246,14 @@ export class BrowserAgentSession {
       this.#tab.clock.now() + BROWSER_AGENT_COMMAND_TIMEOUT_MS - 1_000;
     try {
       if (!this.#started) await this.#start();
-      return await this.#run(op, input);
+      // The page shows that the agent works on it for the whole command,
+      // then for a short while after.
+      await this.#present(BROWSER_AGENT_COMMAND_TIMEOUT_MS);
+      try {
+        return await this.#run(op, input);
+      } finally {
+        if (!this.#stopped) await this.#present();
+      }
     } catch (error) {
       if (error instanceof BrowserAgentError) {
         return { tabId: this.#tab.tabId, error: error.reason, ...error.details };
@@ -333,6 +351,7 @@ export class BrowserAgentSession {
           if (step.x === undefined || step.y === undefined)
             return fail("invalid_input");
           this.#noDialog();
+          await this.#pointAt({ x: step.x, y: step.y }, true);
           return this.#click(step.x, step.y);
         }
         const ref = await this.#resolve(target);
@@ -347,6 +366,7 @@ export class BrowserAgentSession {
           return result;
         });
         this.#noDialog();
+        await this.#pointAt(point, true);
         await this.#elementCall(ref, "armClick");
         await this.#click(point.x, point.y);
         // A window that is not on screen drops mouse input. The element then
@@ -362,6 +382,7 @@ export class BrowserAgentSession {
       case "fill": {
         const ref = await this.#resolve(targetOf(step) ?? fail("invalid_input"));
         this.#noDialog();
+        await this.#pointAt({ ref }, false);
         const reason =
           (await this.#elementCall(ref, "numberFill", [step.text])) ??
           (await this.#elementCall(ref, "prepareFill"));
@@ -375,6 +396,7 @@ export class BrowserAgentSession {
         const target = targetOf(step);
         if (target) {
           const ref = await this.#resolve(target);
+          await this.#pointAt({ ref }, false);
           await this.#elementCall(ref, "focus");
         }
         this.#noDialog();
@@ -386,6 +408,7 @@ export class BrowserAgentSession {
           const ref = await this.#resolve(target);
           const reason = await this.#elementCall(ref, "scrollTo");
           if (reason) fail(reason as string);
+          await this.#pointAt({ ref }, false);
           return;
         }
         if (step.y === undefined) return fail("invalid_input");
@@ -396,6 +419,7 @@ export class BrowserAgentSession {
       case "select": {
         const ref = await this.#resolve(targetOf(step) ?? fail("invalid_input"));
         this.#noDialog();
+        await this.#pointAt({ ref }, true);
         // A dialog opened by the change handler means the option was selected.
         try {
           const reason = await this.#elementCall(ref, "selectOption", [step.value]);
@@ -681,7 +705,7 @@ export class BrowserAgentSession {
     }
   }
 
-  async #evaluateOnce(expression: string) {
+  async #evaluateOnce(expression: string, prelude = pageScript) {
     if (!this.#mainFrame) await this.#readFrame();
     const world = (await this.#send("Page.createIsolatedWorld", {
       frameId: this.#mainFrame,
@@ -690,7 +714,7 @@ export class BrowserAgentSession {
     const result = (await this.#send("Runtime.evaluate", {
       awaitPromise: true,
       contextId: world.executionContextId,
-      expression: `${pageScript}\n${expression}`,
+      expression: `${prelude}\n${expression}`,
       returnByValue: true,
     })) as { exceptionDetails?: unknown; result?: { value?: unknown } };
     if (result.exceptionDetails) return fail("browser_operation_failed");
@@ -707,6 +731,42 @@ export class BrowserAgentSession {
     );
     if (!isRecord(result) || result.stale) return fail("stale_element");
     return result.value;
+  }
+
+  // Shows the person watching the tab where the agent acts: the cursor glides
+  // to the point or element first (cursor.js). It never fails the action.
+  async #pointAt(target: BrowserAgentPoint | { ref: string }, press: boolean) {
+    const options = JSON.stringify({ animate: this.#tab.visible(), press });
+    const at = JSON.stringify(this.#tab.cursor ?? null);
+    const move =
+      "ref" in target
+        ? `(() => { const el = __commaAgent.element(${JSON.stringify(target.ref)}); return el ? __commaAgentCursor.moveToElement(el, ${options}, ${at}) : false; })()`
+        : `__commaAgentCursor.moveTo(${target.x}, ${target.y}, ${options}, ${at})`;
+    await this.#cursorCall(move);
+  }
+
+  async #present(holdMs?: number) {
+    if (this.#dialog) return;
+    await this.#cursorCall(
+      `__commaAgentCursor.activate(${holdMs ?? "undefined"}, ${JSON.stringify(this.#tab.cursor ?? null)})`
+    );
+  }
+
+  // Runs a cursor.js call and keeps where it left the cursor.
+  async #cursorCall(call: string) {
+    try {
+      const point = await this.#evaluateOnce(call, `${pageScript}\n${cursorScript}`);
+      if (
+        !this.#stopped &&
+        isRecord(point) &&
+        typeof point.x === "number" &&
+        typeof point.y === "number"
+      ) {
+        this.#tab.cursor = { x: point.x, y: point.y };
+      }
+    } catch (error) {
+      if (!(error instanceof BrowserAgentError)) throw error;
+    }
   }
 
   async #click(x: number, y: number) {

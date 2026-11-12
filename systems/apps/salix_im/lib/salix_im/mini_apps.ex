@@ -9,6 +9,8 @@ defmodule SalixIM.MiniApps do
       Mini App and its GitHub repository (from the template, or an existing
       repository that has `comma-app.json`), and answers its `app_id`, `repo`
       and `url`: the Comma page that runs the app for the Workspace's members.
+      `trusted_origin` is the server-sealed origin of the message the turn
+      answers: the product records its sender as who made the app.
     * `list/1`, `get/2`: the Router tools `internal.apps.list` and
       `internal.apps.get`. The Group's apps that its Router may name to any
       member (not a member's own private app), each as `app_id`, `name`,
@@ -24,7 +26,12 @@ defmodule SalixIM.MiniApps do
       Comma-managed Telegram chat gives (`SalixIM.Provider.Telegram`).
   """
 
-  @type scope :: %{tenant_id: String.t(), group_id: String.t(), agent_id: String.t()}
+  @type scope :: %{
+          required(:tenant_id) => String.t(),
+          required(:group_id) => String.t(),
+          required(:agent_id) => String.t(),
+          optional(:trusted_origin) => map() | nil
+        }
   @type repo :: %{String.t() => String.t()}
 
   @callback create(scope(), params :: map()) ::

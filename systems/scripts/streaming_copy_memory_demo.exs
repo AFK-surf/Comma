@@ -1,7 +1,10 @@
-# Live streaming-copy validation against MinIO and the real Go Connector.
+# Live streaming-copy validation against MinIO and the real station connector.
 #
 # Run:
-#   MIX_ENV=test mix run scripts/streaming_copy_memory_demo.exs
+#   STATION_CONNECTOR_BIN=... MIX_ENV=test mix run scripts/streaming_copy_memory_demo.exs
+#
+# STATION_CONNECTOR_BIN runs the station with the connector flags it is given
+# (systems/e2e/helpers/station.ts writes one).
 #
 # Exits non-zero on failure. The default source payload is 100 MiB: above the
 # 16 KiB VFS blob threshold and above S3's 5 MiB multipart part size. Override
@@ -685,16 +688,7 @@ defmodule StreamingCopyMemoryDemo do
   end
 
   defp start_connector(group_id, name, root, http_port \\ nil) do
-    binary = Path.join(@root, "salix-connect-amd64")
-
-    unless File.exists?(binary) do
-      source = Path.join([File.cwd!(), "connector", "salix-connect"])
-
-      {output, code} =
-        System.cmd("go", ["build", "-o", binary, "."], cd: source, stderr_to_stdout: true)
-
-      if code != 0, do: raise("Go Connector build failed: #{output}")
-    end
+    binary = System.fetch_env!("STATION_CONNECTOR_BIN")
 
     http_port = http_port || SalixWeb.Application.http_port()
     ws_url = "ws://127.0.0.1:#{http_port}"
@@ -707,6 +701,8 @@ defmodule StreamingCopyMemoryDemo do
         "--server",
         ws_url,
         "--name",
+        name,
+        "--alias",
         name,
         "--root",
         root,

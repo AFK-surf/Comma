@@ -17,7 +17,7 @@ defmodule Salix.Control.Groups do
     memory_ask_worker_enabled
     control_command_vfs_enabled
     condensed_workspace_enabled
-    cloud_vm_enabled
+    task_model_selection
     ifc
   )
 
@@ -32,7 +32,10 @@ defmodule Salix.Control.Groups do
   # are written in (§6.4); Chinese when it says nothing, which is what every
   # existing workspace already reads.
   @ifc_languages SalixAgent.IFC.languages()
-  @ifc_settings ~w(mode language)
+  # Supervisors read everything in the Group, sealed conversations included
+  # (docs/verification.md). They are provider users, named by principal key.
+  @ifc_settings ~w(mode language supervisors)
+  @ifc_max_supervisors 50
 
   def list(tenant_id) do
     if Ids.valid_tenant_id?(tenant_id) do
@@ -116,7 +119,7 @@ defmodule Salix.Control.Groups do
          :ok <- validate_memory_ask_worker_enabled(attrs),
          :ok <- validate_control_command_vfs_enabled(attrs),
          :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
-         :ok <- validate_cloud_vm_enabled(attrs, group),
+         :ok <- SalixIM.TaskModelSelection.validate(attrs["task_model_selection"]),
          :ok <- validate_ifc(attrs),
          :ok <- validate_group_agent_refs(attrs, group["tenant_id"], group["group_id"]),
          {:ok, attrs} <- normalize_owner_emails(attrs) do
@@ -133,6 +136,47 @@ defmodule Salix.Control.Groups do
   end
 
   def update(_id, _attrs, _tenant_id), do: {:error, {:bad_request, "invalid request body"}}
+
+  @doc """
+  Retire the Group's Cloud VM for good (`SalixAgent.Sandboxes.cloud_vm_retired?/1`):
+  no Agent of it starts one or places a Task there again. A Group already
+  retired is left as it is; one that is gone is `{:error, :not_found}`.
+  """
+  def retire_cloud_vm(id, tenant_id) when is_binary(id) and is_binary(tenant_id) do
+    field = SalixAgent.Sandboxes.field()
+
+    with {:ok, group} <- get(id, tenant_id) do
+      if group[field] == true do
+        :ok
+      else
+        case Store.update_record(Keys.ctl_group(id), &Map.put(&1, field, true)) do
+          {:ok, _group} -> :ok
+          {:error, _} = error -> error
+        end
+      end
+    end
+  end
+
+  def retire_cloud_vm(_id, _tenant_id), do: {:error, :not_found}
+
+  @doc "Save the route table only if the editor's original configuration is still current."
+  def update_task_model_selection(id, tenant_id, expected, policy) do
+    with {:ok, _} <- get(id, tenant_id),
+         :ok <- SalixIM.TaskModelSelection.validate(policy) do
+      Store.update_record_checked(Keys.ctl_group(id), fn group ->
+        cond do
+          group["tenant_id"] != tenant_id ->
+            {:error, :not_found}
+
+          group["task_model_selection"] != expected ->
+            {:error, "Routing changed since this page loaded. Reload the page before saving."}
+
+          true ->
+            {:ok, Map.put(group, "task_model_selection", policy)}
+        end
+      end)
+    end
+  end
 
   defp update_group_record(id, attrs) do
     write = fn ->
@@ -177,6 +221,7 @@ defmodule Salix.Control.Groups do
                   :ok <- SalixAgent.SSH.delete_group_data(id),
                   :ok <- SalixAgent.DeviceSecrets.delete_group_data(id),
                   :ok <- SalixAgent.Tailnet.delete_group_data(id),
+                  :ok <- SalixStore.TaskRoutingLearning.delete_group(id),
                   do: Store.delete_record(Keys.ctl_group(id))
            end) do
       _ = PluginCatalogCache.invalidate_group(id)
@@ -264,24 +309,21 @@ defmodule Salix.Control.Groups do
   end
 
   defp ensure_group_unreferenced(group_id) do
-    refs =
-      group_id
-      |> Keys.ctl_agents_prefix_for_group()
-      |> Store.list_keyed_records()
-      |> Enum.count(fn
-        {key, %{"agent_id" => agent_id} = agent} ->
-          key == Keys.ctl_agent(agent_id) and
-            Ids.valid_agent_id_for_group?(agent_id, group_id) and
-            agent["group_id"] == group_id and not Map.has_key?(agent, "archived_at")
+    tenant_id = Ids.tenant_id_from_group!(group_id)
 
-        _ ->
-          false
-      end)
+    with {:ok, refs} <-
+           count_agent_references(%{tenant_id: tenant_id, group_id: group_id}, nil, 0) do
+      if refs == 0,
+        do: :ok,
+        else: {:error, {:conflict, "agent group is referenced by agents: #{refs} agent(s)"}}
+    end
+  end
 
-    if refs == 0 do
-      :ok
-    else
-      {:error, {:conflict, "agent group is referenced by agents: #{refs} agent(s)"}}
+  defp count_agent_references(scope, cursor, count) do
+    with {:ok, %{items: agents, next: next}} <-
+           SalixStore.AgentPGStore.page_configs(scope, limit: 500, cursor: cursor) do
+      count = count + Enum.count(agents, &(not Map.has_key?(&1, "archived_at")))
+      if is_nil(next), do: {:ok, count}, else: count_agent_references(scope, next, count)
     end
   end
 
@@ -304,7 +346,7 @@ defmodule Salix.Control.Groups do
          :ok <- validate_memory_ask_worker_enabled(attrs),
          :ok <- validate_control_command_vfs_enabled(attrs),
          :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
-         :ok <- reject_create_cloud_vm(attrs),
+         :ok <- SalixIM.TaskModelSelection.validate(attrs["task_model_selection"]),
          :ok <- validate_group_agent_refs(attrs, tenant_id, group_id),
          {:ok, attrs} <- normalize_owner_emails(attrs) do
       rec =
@@ -316,9 +358,10 @@ defmodule Salix.Control.Groups do
           "router_conversation_id" => Ids.new_conversation_id(),
           "memory_ask_worker_enabled" => attrs["memory_ask_worker_enabled"] == true,
           "control_command_vfs_enabled" => attrs["control_command_vfs_enabled"] == true,
-          "condensed_workspace_enabled" => attrs["condensed_workspace_enabled"] == true,
-          "cloud_vm_enabled" => false
+          "condensed_workspace_enabled" => attrs["condensed_workspace_enabled"] == true
         }
+        |> put_cloud_vm_retired()
+        |> Store.put_optional("task_model_selection", attrs["task_model_selection"])
         |> Store.put_optional("purpose", attrs["purpose"])
         |> Store.put_optional("hidden", attrs["hidden"])
         |> Store.put_optional("router_agent_id", attrs["router_agent_id"])
@@ -369,44 +412,16 @@ defmodule Salix.Control.Groups do
     |> Map.put_new("memory_ask_worker_enabled", false)
     |> Map.put_new("control_command_vfs_enabled", false)
     |> Map.put_new("condensed_workspace_enabled", false)
-    |> Map.put_new("cloud_vm_enabled", false)
+    |> Map.delete("cloud_vm_enabled")
   end
 
-  # `cloud_vm_enabled` is the Group's Cloud VM switch, the one thing that
-  # decides whether the Group's Agents may start its Cloud VM and place Tasks
-  # there (`SalixAgent.CloudVM.allowed?/1`). Turning it on checks that the
-  # Group's Cloudflare provider is configured. A guest
-  # (router-only) Tenant has no Cloud VM.
-  defp validate_cloud_vm_enabled(attrs, group) do
-    case Map.fetch(attrs, "cloud_vm_enabled") do
-      :error ->
-        :ok
-
-      {:ok, true} ->
-        cond do
-          group["cloud_vm_enabled"] == true ->
-            :ok
-
-          SalixStore.TenantProfiles.router_only?(group["tenant_id"]) ->
-            {:error, {:bad_request, "this tenant has no Cloud VM"}}
-
-          true ->
-            SalixAgent.CloudVM.validate_group_enabled(group["tenant_id"], group["group_id"])
-        end
-
-      {:ok, false} ->
-        :ok
-
-      {:ok, _value} ->
-        {:error, {:bad_request, "cloud_vm_enabled must be a boolean"}}
-    end
-  end
-
-  # A new Group starts with its Cloud VM switch off; an update turns it on.
-  defp reject_create_cloud_vm(attrs) do
-    if Map.has_key?(attrs, "cloud_vm_enabled"),
-      do: {:error, {:bad_request, "cloud_vm_enabled is set by a Group update"}},
-      else: :ok
+  # A Group created where sandboxes are set up never has a Cloud VM: a sandbox
+  # of each Task's own takes its place (`SalixAgent.Sandboxes.cloud_vm_retired?/1`).
+  # Groups created before keep theirs until the cutover release retires it.
+  defp put_cloud_vm_retired(rec) do
+    if SalixAgent.Sandboxes.enabled?(),
+      do: Map.put(rec, SalixAgent.Sandboxes.field(), true),
+      else: rec
   end
 
   # The only thing a caller may set is the mode, and only to a mode that
@@ -434,12 +449,33 @@ defmodule Salix.Control.Groups do
              {:bad_request,
               "ifc.language must be one of: #{Enum.join(Enum.sort(@ifc_languages), ", ")}"}}
 
+          not valid_supervisors?(settings) ->
+            {:error,
+             {:bad_request,
+              "ifc.supervisors must be at most #{@ifc_max_supervisors} provider user keys"}}
+
           true ->
             :ok
         end
 
       {:ok, _invalid} ->
         {:error, {:bad_request, "ifc must be a non-empty object of information-flow settings"}}
+    end
+  end
+
+  defp valid_supervisors?(settings) do
+    case Map.fetch(settings, "supervisors") do
+      :error ->
+        true
+
+      {:ok, keys} when is_list(keys) and length(keys) <= @ifc_max_supervisors ->
+        Enum.all?(
+          keys,
+          &match?({:ok, {:provider_user, _, _}}, SalixIFC.Codec.decode_principal(&1))
+        )
+
+      {:ok, _invalid} ->
+        false
     end
   end
 

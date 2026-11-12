@@ -16,7 +16,11 @@ const path = "/v1/comma/workspaces/wsp_1/recommendations/link-preview";
 const href = "https://github.com/AFK-surf/Comma/pull/845";
 const preview = {
   additions: 1,
-  author: null,
+  author: {
+    avatarRef: "v1.YQ.Yg",
+    avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
+    login: "dana",
+  },
   changedFiles: 1,
   deletions: 0,
   href,

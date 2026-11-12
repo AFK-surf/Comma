@@ -376,6 +376,89 @@ test("a personal source missing a newly required scope asks for a reconnect", as
   }
 });
 
+test("a member's own Lark bot that lacks a scope names it, and Reconnect scans to update the app", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub();
+  await installBrowserTestSession(page, {
+    apiBaseUrl: stub.baseUrl,
+    email: "plugin-lark-scope@comma.local",
+    token: "comma_sess_plugin_lark_scope",
+  });
+  const lark = { ...plugin, id: "lark", name: "Lark", brand: "lark", installed: true };
+  const reauthorized: unknown[] = [];
+  let confirmed = false;
+  let updated = false;
+
+  try {
+    await page.route(
+      `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/plugins`,
+      (route) => route.fulfill({ json: { data: [lark] } })
+    );
+    await page.route("**/plugins/lark/personal-sources", (route) =>
+      route.fulfill({
+        json: {
+          pluginId: "lark",
+          sources: updated
+            ? []
+            : [
+                {
+                  connectionId: "lark-im",
+                  toolkit: "lark",
+                  kind: "im_connect",
+                  state: "needs_reauthorization",
+                  missingScopes: ["im:message.group_msg"],
+                  candidates: [],
+                },
+              ],
+        },
+      })
+    );
+    await page.route("**/plugins/lark/reauthorize", async (route) => {
+      const body = route.request().postDataJSON() as { registration?: string };
+      reauthorized.push(body);
+      // Waiting until the member confirms in Lark.
+      if (!body.registration || !confirmed)
+        return route.fulfill({
+          json: {
+            plugin: lark,
+            authorization: null,
+            registration: {
+              state: "waiting",
+              url: "https://open.larksuite.com/page/cli?user_code=ABCD-1234&clientID=cli_scanned",
+              intervalS: 1,
+              expiresInS: 600,
+              token: "sealed-0",
+            },
+          },
+        });
+      updated = true;
+      return route.fulfill({ json: { plugin: lark, authorization: null } });
+    });
+
+    await page.goto("/#/plugins");
+    await page.getByRole("button", { name: "View Lark plugin details" }).click();
+    await expect(
+      page.getByText(
+        "The app lacks im:message.group_msg. Reconnect to scan again and grant it"
+      )
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Reconnect Lark", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Open in Lark" })).toBeVisible();
+    confirmed = true;
+    await expect(page.getByRole("button", { name: "Open in Lark" })).toBeHidden();
+    await expect(page.getByText(/lacks im:message.group_msg/)).toBeHidden();
+    // The scan is asked with the app's connection, then with the sealed registration.
+    expect(reauthorized[0]).toEqual({ connection_id: "lark-im" });
+    expect(reauthorized.at(-1)).toEqual({
+      connection_id: "lark-im",
+      registration: "sealed-0",
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
 test("an Outlook integration shows the Outlook logo, not its initial", async ({
   page,
 }) => {

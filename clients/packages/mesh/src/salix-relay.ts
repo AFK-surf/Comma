@@ -1,4 +1,4 @@
-// Salix as the relay of last resort, on a client's side (a station's is systems/station/src/mesh/salix-relay.ts): the
+// Salix as a relay, on a client's side (a station's is systems/station/src/mesh/salix-relay.ts): the
 // endpoint bound with `salixRelay` hands its packets for Salix here, and sockets to Comma's client relay
 // (`GET /v1/comma/station-relay`, one for each Workspace, each in its Group) carry them. Salix passes a packet only to
 // a peer in the Group of the socket it came on, so a peer's packets go on the socket that peer was last heard on;
@@ -23,6 +23,8 @@ const BATCH = 64;
 const MAX_ROUTES = 4096;
 /** Salix closes a socket silent for three minutes. */
 const PING_MS = 60_000;
+/** A socket holding more than this that it has not written takes no more packets: it can pass this by one packet. */
+const MAX_UNWRITTEN = 128 * 1024;
 /** A socket not registered by then is given up. */
 const REGISTER_MS = 30_000;
 
@@ -35,6 +37,8 @@ const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 /** The part of a WebSocket the relay uses. */
 export interface RelaySocket {
   send(data: string | Uint8Array<ArrayBuffer>): void;
+  /** What it has taken and not yet written, in bytes. */
+  buffered?(): number;
   close(code?: number, reason?: string): void;
 }
 
@@ -57,6 +61,7 @@ const openWebSocket: OpenRelaySocket = (url, on) => {
   socket.addEventListener("close", () => on.closed());
   return {
     send: (data) => socket.send(data),
+    buffered: () => socket.bufferedAmount,
     close: (code, reason) => socket.close(code, reason),
   };
 };
@@ -105,7 +110,11 @@ export class SalixRelay {
         clearTimeout(giveUp);
         signal?.removeEventListener("abort", abandon);
       };
-      const carrier: Carrier = (to, data) => socket?.send(frame(to, data));
+      // The link's to lose (QUIC sends them again): what piles up in front of a narrow one is bounded.
+      const carrier: Carrier = (to, data) => {
+        if ((socket?.buffered?.() ?? 0) > MAX_UNWRITTEN) return;
+        socket?.send(frame(to, data));
+      };
       const register = async (challenge: string) => {
         const proof = await this.#sign(
           new TextEncoder().encode(`comma-salix-relay-v1:${ticketId}:${challenge}`)

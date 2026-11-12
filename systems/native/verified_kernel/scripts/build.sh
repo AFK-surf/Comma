@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LEAN_NUM_THREADS=1
+# elan installs the Lean toolchain under ~/.elan/bin, which a tool that runs
+# mix outside a login shell may not have on its PATH.
+command -v lake >/dev/null 2>&1 || export PATH="$HOME/.elan/bin:$PATH"
 lake build VerifiedKernel.Native
 lean_prefix="$(lean --print-prefix)"
 erts_include="$(erl +S 1:1 -noshell -eval 'io:format("~s/usr/include", [code:root_dir()]), halt().')"

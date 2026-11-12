@@ -21,15 +21,16 @@ import SwiftUI
 /// Rows follow native menus: a row lights on touch-down, sliding across rows moves the light with a
 /// selection tick, and release on a row chooses it.
 struct AttachmentMenu: View {
-    enum Choice: CaseIterable { case camera, photos, files }
+    enum Choice: CaseIterable { case camera, photos, files, drive }
 
+    var showsDrive = false
     let choose: (Choice) -> Void
     @State private var highlighted: Choice?
     @State private var rowFrames: [Choice: CGRect] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Choice.allCases, id: \.self, content: row)
+            ForEach(Choice.allCases.filter { $0 != .drive || showsDrive }, id: \.self, content: row)
         }
         .padding(8)
         .contentShape(Rectangle())
@@ -76,6 +77,7 @@ private extension AttachmentMenu.Choice {
         case .camera: "icon-camera"
         case .photos: "icon-photos"
         case .files: "icon-files"
+        case .drive: "central-file-bend"
         }
     }
 
@@ -84,6 +86,7 @@ private extension AttachmentMenu.Choice {
         case .camera: "Camera"
         case .photos: "Photos"
         case .files: "Files"
+        case .drive: "Drive and System Files"
         }
     }
 }

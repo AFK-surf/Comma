@@ -6,7 +6,7 @@ defmodule BridgeForTeams.Compute do
   alias BridgeForTeams.Environments
   alias BridgeForTeams.Repo, as: BFTRepo
   alias BridgeForTeams.Schema.{MacMiniProvisioner, Organization, Project, User}
-  alias SalixStore.{AgentVMMInstallations, Compute, Repo}
+  alias SalixStore.{AgentVMMRegistrations, Compute, Repo}
 
   @permissions ~w(runtime workspace service_route hosting)
 
@@ -147,12 +147,12 @@ defmodule BridgeForTeams.Compute do
     with :ok <- scope_matches(org, project),
          {:ok, request_id} <- id(attrs["request_id"]),
          {:ok, pool} <- Compute.ensure_managed_default_pool(org.salix_tenant_id, "agent_vmm") do
-      AgentVMMInstallations.request(
+      AgentVMMRegistrations.request(
         %{
           tenant_id: org.salix_tenant_id,
           group_id: project.salix_group_id,
           surface: "bft",
-          scope_key: project.id,
+          owner_id: project.id,
           client_request_id: request_id,
           provider: "agent-vmm",
           delivery_target_type: "headless",
@@ -162,14 +162,17 @@ defmodule BridgeForTeams.Compute do
         one_per_scope: true,
         authorize: authorize,
         create_environment: fn ->
-          Compute.ensure_environment(%{
-            id: new_id("env"),
-            tenant_id: org.salix_tenant_id,
-            owner_type: "project",
-            owner_id: project.id,
-            pool_id: pool.id,
-            retention: %{"mode" => "retain"}
-          })
+          with {:ok, environment} <-
+                 Compute.ensure_environment(%{
+                   id: new_id("env"),
+                   tenant_id: org.salix_tenant_id,
+                   owner_type: "project",
+                   owner_id: project.id,
+                   pool_id: pool.id,
+                   retention: %{"mode" => "retain"}
+                 }) do
+            Compute.reopen_revoked_environment(environment)
+          end
         end
       )
     end
@@ -200,12 +203,12 @@ defmodule BridgeForTeams.Compute do
              retention: %{"mode" => "retain"}
            }),
          {:ok, descriptor} <-
-           AgentVMMInstallations.request(
+           AgentVMMRegistrations.request(
              %{
                tenant_id: org.salix_tenant_id,
                group_id: project.salix_group_id,
                surface: "bft",
-               scope_key: project.id,
+               owner_id: project.id,
                client_request_id: request_id,
                provider: "agent-vmm",
                environment_id: environment.id,
@@ -214,7 +217,7 @@ defmodule BridgeForTeams.Compute do
              },
              one_per_scope: true
            ) do
-      {:ok, descriptor.operation}
+      {:ok, descriptor.registration}
     else
       nil -> {:error, :runner_not_found}
       "online" -> {:error, :runner_offline}
@@ -318,12 +321,12 @@ defmodule BridgeForTeams.Compute do
     with :ok <- scope_matches(org, project),
          %{} = binding <- project_runner(org, project) || {:error, :not_found},
          :ok <- vm_not_on(project, binding["registration_id"]) do
-      revoke_agent_vmm_install(org, project, binding["operation_id"])
+      revoke_agent_vmm_install(org, project, binding["registration_id"])
     end
   end
 
   defp project_runner(org, project) do
-    case AgentVMMInstallations.live_for_scope("bft", project.id, 1) do
+    case AgentVMMRegistrations.live_for_owner("bft", project.id, 1) do
       [operation] ->
         runner =
           if operation.delivery_target_type == "bft_runner",
@@ -335,8 +338,7 @@ defmodule BridgeForTeams.Compute do
             else: runner_name(runner, operation.delivery_target_id)
 
         %{
-          "operation_id" => operation.id,
-          "registration_id" => operation.registration_id,
+          "registration_id" => operation.id,
           "status" => operation.status,
           "runner_id" => runner && runner.id,
           "name" => name
@@ -362,9 +364,9 @@ defmodule BridgeForTeams.Compute do
   defp runner_location(org, registration_id) do
     stable_id =
       Repo.one(
-        from(o in AgentVMMInstallations.Operation,
+        from(o in SalixStore.AgentVMM.Registration,
           where:
-            o.registration_id == ^registration_id and o.surface == "bft" and
+            o.id == ^registration_id and o.surface == "bft" and
               o.delivery_target_type == "bft_runner",
           select: o.delivery_target_id
         )
@@ -410,13 +412,90 @@ defmodule BridgeForTeams.Compute do
   defp uuid({:ok, value}), do: {:ok, value}
   defp uuid(:error), do: {:error, :runner_not_found}
 
-  def get_agent_vmm_install(%Organization{} = org, %Project{} = project, operation_id) do
+  def registration_claim_authority(registration) do
+    env = Repo.get(Compute.Environment, registration.environment_id)
+    project = env && BFTRepo.get(Project, env.owner_id)
+    org = project && BFTRepo.get(Organization, project.org_id)
+
+    cond do
+      is_nil(project) or is_nil(org) ->
+        {:error, :not_found}
+
+      org.salix_tenant_id != registration.tenant_id or
+          project.salix_group_id != registration.group_id ->
+        {:error, :not_found}
+
+      registration.delivery_target_type == "bft_runner" ->
+        if runner_by_stable_id(org, registration.delivery_target_id),
+          do: :ok,
+          else: {:error, :not_found}
+
+      registration.delivery_target_type == "headless" ->
+        BridgeForTeams.Memberships.authorize(registration.delivery_target_id, :write, %{
+          project_id: project.id,
+          min_project_role: "admin"
+        })
+
+      true ->
+        {:error, :not_found}
+    end
+  end
+
+  def credential_recovery(org, project, user, session, id, action, params, authorize) do
     with :ok <- scope_matches(org, project),
-         {:ok, operation} <- AgentVMMInstallations.get(operation_id),
+         {:ok, r} <- get_agent_vmm_install(org, project, id),
+         true <-
+           r.delivery_target_type != "bft_runner" or
+             not is_nil(runner_by_stable_id(org, r.delivery_target_id)),
+         :ok <-
+           BridgeForTeams.Memberships.authorize(user.id, :write, %{
+             project_id: project.id,
+             min_project_role: "admin"
+           }) do
+      base = SystemsRuntime.get_env(:salix_web, :public_base_url)
+      uri = URI.parse(base)
+      audience = URI.to_string(%{uri | path: nil, query: nil, fragment: nil})
+
+      authority = %{
+        subject: user.id,
+        session_id: session.id,
+        audience: audience,
+        tenant_id: org.salix_tenant_id,
+        group_id: project.salix_group_id,
+        owner_id: project.id
+      }
+
+      opts = [authorize: authorize]
+
+      case action do
+        :challenge ->
+          AgentVMMRegistrations.recovery_challenge(
+            id,
+            authority,
+            Keyword.put(opts, :candidate_credential_hash, params["candidate_credential_hash"])
+          )
+
+        :replace ->
+          AgentVMMRegistrations.replace_credential(
+            id,
+            authority,
+            params["proof"],
+            params["candidate_credential"],
+            opts
+          )
+      end
+    else
+      false -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
+  def get_agent_vmm_install(%Organization{} = org, %Project{} = project, registration_id) do
+    with :ok <- scope_matches(org, project),
+         {:ok, operation} <- AgentVMMRegistrations.get(registration_id),
          true <-
            (operation.tenant_id == org.salix_tenant_id and
-              operation.group_id == project.salix_group_id and
-              operation.scope_key == project.id and operation.surface == "bft") ||
+              operation.owner_id == project.id and operation.surface == "bft") ||
              {:error, :not_found} do
       {:ok, operation}
     else
@@ -424,52 +503,52 @@ defmodule BridgeForTeams.Compute do
     end
   end
 
-  def retry_agent_vmm_install(org, project, operation_id) do
-    with {:ok, _operation} <- get_agent_vmm_install(org, project, operation_id),
-         {:ok, descriptor} <- AgentVMMInstallations.retry(operation_id) do
-      {:ok, descriptor.operation}
+  def retry_agent_vmm_install(org, project, registration_id) do
+    with {:ok, _operation} <- get_agent_vmm_install(org, project, registration_id),
+         {:ok, descriptor} <- AgentVMMRegistrations.retry(registration_id) do
+      {:ok, descriptor.registration}
     end
   end
 
-  def revoke_agent_vmm_install(org, project, operation_id) do
-    with {:ok, _operation} <- get_agent_vmm_install(org, project, operation_id),
-         {:ok, operation} <- AgentVMMInstallations.revoke(operation_id) do
+  def revoke_agent_vmm_install(org, project, registration_id) do
+    with {:ok, _operation} <- get_agent_vmm_install(org, project, registration_id),
+         {:ok, operation} <- AgentVMMRegistrations.revoke(registration_id) do
       {:ok, operation}
     end
   end
 
-  def configure_agent_vmm_install(org, project, operation_id, enabled)
+  def configure_agent_vmm_install(org, project, registration_id, enabled)
       when is_boolean(enabled) do
-    with {:ok, _operation} <- get_agent_vmm_install(org, project, operation_id),
+    with {:ok, _operation} <- get_agent_vmm_install(org, project, registration_id),
          {:ok, operation} <-
-           AgentVMMInstallations.configure_registration(operation_id, enabled) do
+           AgentVMMRegistrations.configure_registration(registration_id, enabled) do
       {:ok, operation}
     end
   end
 
   def deliver_agent_vmm_install(%MacMiniProvisioner{} = runner) do
-    AgentVMMInstallations.deliver_next("bft_runner", runner.stable_id)
+    AgentVMMRegistrations.deliver_next("bft_runner", runner.stable_id)
   end
 
   def report_agent_vmm_install_failures(%MacMiniProvisioner{} = runner, reports)
       when is_list(reports) and length(reports) <= 8 do
-    Enum.reduce_while(reports, {:ok, []}, fn report, {:ok, operation_ids} ->
-      with %{"operation_id" => operation_id, "failure_code" => failure_code} <- report,
+    Enum.reduce_while(reports, {:ok, []}, fn report, {:ok, registration_ids} ->
+      with %{"registration_id" => registration_id, "failure_code" => failure_code} <- report,
            {:ok, operation} <-
-             AgentVMMInstallations.report_delivery_failure(
+             AgentVMMRegistrations.report_delivery_failure(
                "bft_runner",
                runner.stable_id,
-               operation_id,
+               registration_id,
                failure_code
              ) do
-        {:cont, {:ok, [operation.id | operation_ids]}}
+        {:cont, {:ok, [operation.id | registration_ids]}}
       else
         {:error, _} = error -> {:halt, error}
         _ -> {:halt, {:error, :invalid_install_failure_report}}
       end
     end)
     |> case do
-      {:ok, operation_ids} -> {:ok, Enum.reverse(operation_ids)}
+      {:ok, registration_ids} -> {:ok, Enum.reverse(registration_ids)}
       {:error, _} = error -> error
     end
   end
@@ -478,7 +557,7 @@ defmodule BridgeForTeams.Compute do
     do: {:error, :invalid_install_failure_reports}
 
   def agent_vmm_control_page(%MacMiniProvisioner{} = runner, cursor) do
-    AgentVMMInstallations.control_page("bft_runner", runner.stable_id, cursor)
+    AgentVMMRegistrations.control_page("bft_runner", runner.stable_id, cursor)
   end
 
   def update_provider(%Organization{} = org, binding_id, attrs) do

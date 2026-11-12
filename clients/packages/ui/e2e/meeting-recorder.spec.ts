@@ -309,8 +309,14 @@ test("unhovered recording matches 227 × 42 and reverses expansion from its curr
   expect(Math.abs(alignment.title - alignment.card)).toBeLessThan(0.5);
   await expect(card.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
   await expect(card.getByRole("button", { name: "Choose microphone" })).toBeHidden();
+  // Hold the page's animations still, so each width transition is still running when the test reads
+  // it however late the runner gets to it; the test sets each frame's time itself.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Animation.enable");
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 0 });
   await card.hover();
   await expect(card).not.toHaveAttribute("data-compact");
+  // getAnimations() applies the hover's style change, which starts the transition.
   const midway = await surface.evaluate((element) => {
     const animation = element
       .parentElement!.parentElement!.getAnimations()
@@ -338,6 +344,7 @@ test("unhovered recording matches 227 × 42 and reverses expansion from its curr
     return width;
   });
   expect(Math.abs(reversed - midway)).toBeLessThan(1);
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 });
   await expect
     .poll(() => surface.evaluate((element) => element.getBoundingClientRect().width))
     .toBe(227);

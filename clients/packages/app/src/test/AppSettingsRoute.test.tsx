@@ -36,6 +36,7 @@ import {
 import {
   CommaAppearanceProvider,
   defaultCommaAppearancePreferences,
+  useCommaWindowTransparencyTarget,
 } from "../components/commaAppearance";
 import {
   CommaClientSettingsI18nProvider,
@@ -86,6 +87,12 @@ const defaultAuth = (): CommaAuthContextValue => {
 
 type Scripted = ReturnType<typeof createScriptedCore>;
 
+/** The app shell Settings opens over, which shows the window transparency. */
+const WindowShell = () => {
+  const { ref } = useCommaWindowTransparencyTarget();
+  return <div data-testid="window-shell" ref={ref} />;
+};
+
 const renderSettings = (
   auth = defaultAuth(),
   appShortcutPlatform?: AppShortcutPlatform,
@@ -98,6 +105,7 @@ const renderSettings = (
           <CommaAuthContext.Provider value={auth}>
             <RouterIdentityProvider>
               <CommaAppearanceProvider>
+                <WindowShell />
                 <CommaAppShortcutsProvider
                   {...(appShortcutPlatform ? { platform: appShortcutPlatform } : {})}
                 >
@@ -160,6 +168,18 @@ describe("AppSettingsRoute", () => {
     vi.unstubAllGlobals();
     initializeCommaI18n(["en"]);
     localStorage.clear();
+  });
+
+  it("saves the default home view and restores it when Settings reopens", async () => {
+    const view = renderSettings();
+    const trigger = () => setting("app.default-home-view").getByRole("button");
+    expect(trigger()).toHaveTextContent("Home (default)");
+    await user.click(trigger());
+    await user.click(dropdownOptions().getByRole("option", { name: "Tasks" }));
+    expect(readStoredClientSettings().defaultHomeView).toBe("tasks");
+    view.unmount();
+    renderSettings();
+    expect(trigger()).toHaveTextContent("Tasks");
   });
 
   it("persists Meeting controls with Reminder, visible recorder and Smart summary defaults", async () => {
@@ -237,6 +257,61 @@ describe("AppSettingsRoute", () => {
     expect(summary).toBeEnabled();
     expect(start).toBeEnabled();
   });
+  it("asks for a restart while Reach my computers differs from what the app started with", async () => {
+    let preferences = appPreferencesSchema.parse({
+      clientSettings: defaultCommaClientSettings,
+      computerMeshAtLaunch: "on",
+      launchAtLogin: false,
+      notificationSound: true,
+      notifyRouterMessages: true,
+      showInDock: true,
+      showInMenuBar: true,
+      systemNotifications: true,
+    });
+    const update = vi.fn(async (patch: AppPreferencesPatch) => {
+      preferences = appPreferencesSchema.parse({
+        ...preferences,
+        ...patch,
+        clientSettings: {
+          ...(preferences.clientSettings ?? defaultCommaClientSettings),
+          ...patch.clientSettings,
+        },
+        revision: preferences.revision + 1,
+      });
+      return preferences;
+    });
+    const relaunch = vi.fn(async () => ({ relaunching: true }));
+    installNativeBridgeMock({
+      appPreferences: {
+        state: createNativeStateBridgeMock(() => preferences),
+        update,
+        relaunch,
+      },
+      platform: "electron",
+    });
+    renderElectronSettings();
+    await user.click(screen.getByRole("button", { name: "Debug" }));
+    const row = () => setting("debug.computer-mesh.mode");
+    const choose = async (name: string) => {
+      await user.click(row().getByRole("button", { name: /Reach my computers/ }));
+      await user.click(dropdownOptions().getByRole("option", { name }));
+      await flush();
+    };
+    const pending = /Restart Comma to apply/;
+    expect(row().queryByText(pending)).toBeNull();
+    expect(row().queryByRole("button", { name: "Restart" })).toBeNull();
+
+    await choose("Off");
+    expect(row().getByText(pending)).toBeInTheDocument();
+    await user.click(row().getByRole("button", { name: "Restart" }));
+    expect(relaunch).toHaveBeenCalledTimes(1);
+
+    // Back to what is running: nothing waits for a restart.
+    await choose("On");
+    await waitFor(() => expect(row().queryByText(pending)).toBeNull());
+    expect(row().queryByRole("button", { name: "Restart" })).toBeNull();
+  });
+
   it("lists Inbound API, Devices, Tailscale and Debug under Advanced, after Shared", async () => {
     renderSettings();
     await flush();
@@ -258,6 +333,26 @@ describe("AppSettingsRoute", () => {
     ]);
     expect(groupItems("System")).not.toEqual(
       expect.arrayContaining(["Inbound API", "Devices", "Tailscale", "Debug"])
+    );
+  });
+
+  it("finds Devices by its sidebar label and opens the page", async () => {
+    renderSettings();
+    await flush();
+
+    await user.click(screen.getByRole("searchbox", { name: "Search settings" }));
+    await user.paste("Devices");
+    const results = document.querySelector<HTMLElement>(
+      '[data-slot="settings-search-results"]'
+    );
+    expect(results).not.toBeNull();
+    await user.click(within(results!).getByRole("button", { name: /Devices/ }));
+    await flush();
+
+    expect(screen.getByRole("searchbox", { name: "Search settings" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Devices" })).toHaveAttribute(
+      "data-selected",
+      "true"
     );
   });
 
@@ -479,6 +574,172 @@ describe("AppSettingsRoute", () => {
     );
   });
 
+  it("deletes the account with the mailed code, after renewal is turned off", async () => {
+    const profile: ProfileValue = {
+      status: "ready",
+      profile: { email: "ada@example.com", id: "usr_ada", name: "Ada" },
+    };
+    let renewing = true;
+    const core = createScriptedCore({
+      values: (topic) => (topic.topic === "profile" ? profile : undefined),
+      calls: (name, params) => {
+        if (name === "accountDeletion.requestCode") {
+          if (renewing)
+            throw Object.assign(new Error("subscription_active"), {
+              code: "subscription_active",
+            });
+          return { challengeId: "chl-1" };
+        }
+        if (name === "accountDeletion.delete") {
+          if ((params as { code: string }).code !== "123456")
+            throw Object.assign(new Error("invalid_verification_code"), {
+              code: "invalid_verification_code",
+            });
+          return null;
+        }
+        return null;
+      },
+    });
+    renderProfileSettings(defaultAuth(), core);
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await flush();
+
+    // Delete account sits in its own section, apart from the account's other rows.
+    const danger = within(screen.getByRole("region", { name: "Danger zone" }));
+    expect(danger.getByRole("button", { name: "Delete account" })).toBeInTheDocument();
+    expect(danger.queryByRole("button", { name: "Sign out" })).toBeNull();
+    await user.click(
+      setting("account.delete").getByRole("button", { name: "Delete account" })
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    // The code goes only once the account email is typed.
+    const typed = await screen.findByRole("textbox", { name: "Account email" });
+    expect(screen.getByRole("button", { name: "Send code" })).toBeDisabled();
+    await user.type(typed, "someone@example.com");
+    expect(screen.getByRole("button", { name: "Send code" })).toBeDisabled();
+    await user.clear(typed);
+    await user.type(typed, "Ada@Example.com");
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await flush();
+    // A subscription that still renews: the person is sent to billing first.
+    expect(
+      screen.getByRole("dialog", { name: "Cancel your subscription first" })
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    renewing = false;
+    await user.click(
+      setting("account.delete").getByRole("button", { name: "Delete account" })
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.type(
+      await screen.findByRole("textbox", { name: "Account email" }),
+      "ada@example.com"
+    );
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await flush();
+    const code = await screen.findByRole("textbox", { name: "Verification code" });
+    await user.type(code, "000000");
+    await user.click(screen.getByRole("button", { name: "Confirm deletion" }));
+    await flush();
+    expect(screen.getByText("That code is wrong or has expired.")).toBeInTheDocument();
+
+    await user.clear(code);
+    await user.type(code, "123456");
+    await user.click(screen.getByRole("button", { name: "Confirm deletion" }));
+    await flush();
+    expect(core.sentTo("accountDeletion.delete")).toEqual([
+      { challengeId: "chl-1", code: "000000" },
+      { challengeId: "chl-1", code: "123456" },
+    ]);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Delete account" })).toBeNull()
+    );
+  });
+
+  it("changes the email with a code from the current and the new mailbox", async () => {
+    const profile: ProfileValue = {
+      status: "ready",
+      profile: { email: "ada@work.example", id: "usr_ada", name: "Ada" },
+    };
+    const core = createScriptedCore({
+      values: (topic) => (topic.topic === "profile" ? profile : undefined),
+      calls: (name, params) => {
+        if (name === "emailChange.requestCode") return { challengeId: "current-1" };
+        if (name === "emailChange.requestNewCode") {
+          if ((params as { email: string }).email === "taken@example.com")
+            throw Object.assign(new Error("email_pending_deletion"), {
+              code: "email_pending_deletion",
+              detail: {
+                error: "email_pending_deletion",
+                deletion_scheduled_at: "2026-11-08T12:00:00Z",
+              },
+            });
+          return { challengeId: "new-1" };
+        }
+        if (name === "emailChange.confirm") return { email: "ada@home.example" };
+        return null;
+      },
+    });
+    renderProfileSettings(defaultAuth(), core);
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await flush();
+
+    await user.click(
+      setting("account.email").getByRole("button", { name: "Change email" })
+    );
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await flush();
+    await user.type(
+      await screen.findByRole("textbox", { name: "Verification code" }),
+      "111111"
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await user.type(
+      await screen.findByRole("textbox", { name: "New email" }),
+      "taken@example.com"
+    );
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await advance(50);
+    // The first code was used up: the change starts again from the current mailbox.
+    expect(
+      screen.getByText(
+        "The account with this email is waiting to be deleted. You can use this email after Nov 8, 2026. Sign in with this email to cancel the deletion."
+      )
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await flush();
+    await user.type(
+      await screen.findByRole("textbox", { name: "Verification code" }),
+      "111111"
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.type(
+      await screen.findByRole("textbox", { name: "New email" }),
+      "ada@home.example"
+    );
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await flush();
+    await user.type(
+      await screen.findByRole("textbox", { name: "Verification code" }),
+      "222222"
+    );
+    await user.click(screen.getByRole("button", { name: "Change email" }));
+    await flush();
+
+    expect(core.sentTo("emailChange.requestNewCode")).toEqual([
+      { email: "taken@example.com", challengeId: "current-1", code: "111111" },
+      { email: "ada@home.example", challengeId: "current-1", code: "111111" },
+    ]);
+    expect(core.sentTo("emailChange.confirm")).toEqual([
+      { challengeId: "new-1", code: "222222" },
+    ]);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Change email" })).toBeNull()
+    );
+  });
+
   it("opens the crop dialog before uploading a chosen avatar", async () => {
     const inputClick = vi.spyOn(HTMLInputElement.prototype, "click");
     // The avatar image is read through the session's API, not the core.
@@ -671,13 +932,15 @@ describe("AppSettingsRoute", () => {
     const transparency = screen.getByRole("slider", { name: "Transparency" });
     expect(transparency).toHaveAttribute("aria-valuenow", "50");
 
-    // Arrow keys glide the preview and store the value once they stop.
+    // Arrow keys glide the preview on the shell and store the value once they stop.
     transparency.focus();
     await user.keyboard("{ArrowRight}");
     await advance(1_000);
     expect(transparency).toHaveAttribute("aria-valuenow", "51");
     expect(
-      document.documentElement.style.getPropertyValue("--comma-window-transparency")
+      screen
+        .getByTestId("window-shell")
+        .style.getPropertyValue("--comma-window-transparency")
     ).toBe("51%");
     await user.click(translucency);
     expect(translucency).not.toBeChecked();
@@ -1902,6 +2165,25 @@ describe("AppSettingsRoute", () => {
     play.mockRestore();
   });
 
+  it("plays the request sound by default, and keeps its sample while it is off", async () => {
+    const play = vi
+      .spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+
+    const sound = screen.getByRole("switch", { name: "Request sound" });
+    expect(sound).toBeChecked();
+    await user.click(sound);
+    await flush();
+    expect(readStoredClientSettings().requestSound).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Play request sound" }));
+    expect(play).toHaveBeenCalledOnce();
+
+    play.mockRestore();
+  });
+
   it("gates every native preference toggle while a write is in flight", async () => {
     let preferences = appPreferencesSchema.parse({
       launchAtLogin: false,
@@ -1954,6 +2236,34 @@ describe("AppSettingsRoute", () => {
     expect(showInMenuBar).toBeEnabled();
     expect(launchAtLogin).toBeEnabled();
     expect(showInDock).toBeEnabled();
+  });
+
+  // Main keeps the login item's readback for 30 s, because the read stalls its
+  // thread. Settings shows the login item, so opening it and coming back to it
+  // from System Settings ask for a fresh read; Main publishes a change through
+  // the preferences state.
+  it("asks Main for a fresh login-item read when Settings opens and when its window regains focus", async () => {
+    const preferences = appPreferencesSchema.parse({
+      launchAtLogin: false,
+      showInDock: true,
+      showInMenuBar: true,
+    });
+    const refreshLaunchAtLogin = vi.fn(async () => preferences);
+    installNativeBridgeMock({
+      appPreferences: {
+        refreshLaunchAtLogin,
+        state: createNativeStateBridgeMock(() => preferences),
+      },
+      os: "macos",
+      platform: "electron",
+    });
+    renderSettings();
+    await flush();
+    expect(refreshLaunchAtLogin).toHaveBeenCalledOnce();
+
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(refreshLaunchAtLogin).toHaveBeenCalledTimes(2);
   });
 
   it("guides macOS users to approve a pending login item", async () => {

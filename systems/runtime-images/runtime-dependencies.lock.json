@@ -2,13 +2,10 @@
   "schemaVersion": 1,
   "baseImages": {
     "go": "golang:1.26.10-bookworm@sha256:fe3da92a5cb2881e4aa75e625cb0b7c50571632fb4cf340cbe53e6ccdcffdd51",
-    "shell": "alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40",
-    "meeting": "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132",
-    "imageTools": "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132",
     "station": "node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d",
     "codingSandbox": "node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea"
   },
-  "packageSnapshot": "20261026T082042Z",
+  "packageSnapshot": "20261105T035013Z",
   "npm": {
     "package": "npm",
     "version": "11.19.0",
@@ -72,7 +69,7 @@
   },
   "meetnative": {
     "repository": "https://github.com/afk-surf/meetnative.git",
-    "revision": "f65f8ccfb804c90bc59f5d8690a29706b87f8239"
+    "revision": "fd6669ef09a92c5e0ba4f73ec7d08a679a6c9cd0"
   },
   "claudeAmd64": {
     "package": "@anthropic-ai/claude-code-linux-x64",
@@ -86,6 +83,13 @@
     "license": "MIT",
     "tarball": "https://codeload.github.com/kn007/silk-v3-decoder/tar.gz/507be6bca8ce1fb977a061481f1d79e8c610e309",
     "integrity": "sha512-twjdjYUpmUv0rQ8jeTPjl9N2VXa2jDUR8E5TlfS2Oj2M2aIoNyunYJzEd2gT2os/5s1tQKXy3IRuZoaH9o0SjA=="
+  },
+  "elanAmd64": {
+    "repository": "https://github.com/leanprover/elan",
+    "version": "4.2.4",
+    "license": "Apache-2.0",
+    "tarball": "https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz",
+    "integrity": "sha512-WLc6FplvvISusV58UzcXKVsfQ3hKA5f+Z8iX/8Ecblgw9kGyL3KKcaAFubn2dy5dbtTDFcXscel3fcVQOw8l7Q=="
   },
   "uv": {
     "version": "0.12.22",

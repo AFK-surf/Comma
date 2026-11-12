@@ -77,6 +77,7 @@ defmodule SalixAgent.IFC.Provenance do
 
   defp text_key("im_api.slack.send_dm"), do: {:text, "text"}
   defp text_key("im_api.slack.update_message"), do: {:text, "text"}
+  defp text_key("im_api.feishu.send_message"), do: {:text, "text"}
   defp text_key("im_api.feishu.send_text"), do: {:text, "text"}
   defp text_key("im_api.feishu.reply_text"), do: {:text, "text"}
   defp text_key("im_api.lark.send_message"), do: {:text, "text"}

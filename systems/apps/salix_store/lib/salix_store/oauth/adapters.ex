@@ -18,6 +18,7 @@ defmodule SalixStore.OAuth.Adapters do
     "lark" => SalixStore.OAuth.Adapters.Lark,
     "linear" => SalixStore.OAuth.Adapters.Linear,
     "notion" => SalixStore.OAuth.Adapters.Notion,
+    "secret" => SalixStore.OAuth.Adapters.Secret,
     "slack" => SalixStore.OAuth.Adapters.Slack,
     "x" => SalixStore.OAuth.Adapters.X
   }
@@ -28,9 +29,17 @@ defmodule SalixStore.OAuth.Adapters do
   """
   @spec for_provider(String.t()) :: {:ok, module()} | {:error, :unsupported_provider}
   def for_provider(provider) when is_binary(provider) do
-    case Map.fetch(@adapters, provider |> String.trim() |> String.downcase()) do
-      {:ok, mod} -> {:ok, mod}
-      :error -> {:error, :unsupported_provider}
+    name = provider |> String.trim() |> String.downcase()
+
+    cond do
+      custom?(name) ->
+        {:ok, SalixWeb.OAuthCustomAdapter}
+
+      true ->
+        case Map.fetch(@adapters, name) do
+          {:ok, mod} -> {:ok, mod}
+          :error -> {:error, :unsupported_provider}
+        end
     end
   end
 
@@ -39,4 +48,15 @@ defmodule SalixStore.OAuth.Adapters do
   @doc "Sorted list of supported provider names (willow `Registry.Providers`)."
   @spec supported() :: [String.t()]
   def supported, do: @adapters |> Map.keys() |> Enum.sort()
+
+  @doc "The providers that sign in through an OAuth app a tenant or the deployment configures."
+  @spec with_app() :: [String.t()]
+  def with_app, do: List.delete(supported(), "secret")
+
+  @doc "True for a provider a Workspace defined itself: `custom.<key>`."
+  @spec custom?(term()) :: boolean()
+  def custom?(provider) when is_binary(provider),
+    do: Regex.match?(~r/\Acustom\.[a-z0-9][a-z0-9_-]{0,63}\z/, provider)
+
+  def custom?(_provider), do: false
 end

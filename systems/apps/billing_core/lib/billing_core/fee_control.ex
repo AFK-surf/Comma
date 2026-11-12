@@ -184,8 +184,9 @@ defmodule BillingCore.FeeControl do
           AND status = 'active'
           AND valid_from <= $2
           AND (expires_at IS NULL OR expires_at > $2)
+          AND #{Credits.pays_for_sql("$3")}
         """,
-        [account_id, checked_at]
+        [account_id, checked_at, to_string(attrs[:resource_kind])]
       )
 
     balance =
@@ -286,13 +287,14 @@ defmodule BillingCore.FeeControl do
   defp state_availability(%{state: %State{} = state} = attrs) do
     account_id = Map.fetch!(attrs, :billing_account_id)
     at = checked_at(attrs)
+    resource_kind = attrs[:resource_kind]
 
     %{
-      balance_snapshot: Credits.available_credits(state.grants, account_id, at),
+      balance_snapshot: Credits.available_credits(state.grants, account_id, at, resource_kind),
       account_status: Map.get(attrs, :account_status, "active"),
       entitlement_policy:
         state.grants
-        |> Credits.active_policies(account_id, at)
+        |> Credits.active_policies(account_id, at, resource_kind)
         |> Policy.merge_active()
     }
   end

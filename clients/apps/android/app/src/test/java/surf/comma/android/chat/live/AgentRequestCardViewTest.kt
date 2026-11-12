@@ -13,6 +13,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import surf.comma.android.conversation.AgentRequest
+import surf.comma.android.conversation.AgentRequestInput
 import surf.comma.android.conversation.AgentRequestOutcome
 import surf.comma.android.conversation.AgentRequestStatus
 import java.time.Duration
@@ -26,6 +27,7 @@ class AgentRequestCardViewTest {
         override val opened = HashSet<String>()
         val authorized = mutableListOf<String>()
         val declined = mutableListOf<String>()
+        val filled = mutableListOf<String>()
         var takes = true
 
         override fun authorize(url: String) {
@@ -35,6 +37,22 @@ class AgentRequestCardViewTest {
         override fun decline(requestId: String, done: (Boolean) -> Unit) {
             declined += requestId
             done(takes)
+        }
+
+        override fun fill(request: AgentRequest, done: (Boolean) -> Unit) {
+            filled += request.id
+            done(takes)
+        }
+
+        val shared = mutableListOf<String>()
+        var locationAnswer = AgentLocationAnswer.TAKEN
+        var answering = false
+
+        override fun answeringLocation(requestId: String) = answering
+
+        override fun shareLocation(requestId: String, done: (AgentLocationAnswer) -> Unit) {
+            shared += requestId
+            done(locationAnswer)
         }
     }
 
@@ -74,6 +92,47 @@ class AgentRequestCardViewTest {
         assertEquals(listOf("cap-1"), host.declined)
         assertEquals("Could not decline. Try again.", card.noteShown)
         assertTrue(card.decline.isEnabled)
+    }
+
+    @Test fun `a request with input asks for it, and a refused answer says so on the card`() = withCard { card, host ->
+        val secret = request().copy(provider = "secret", alias = "openai", label = "OpenAI API Key",
+            input = AgentRequestInput(AgentRequestInput.Kind.SECRET, helpUrl = null, redirectUri = null))
+        card.show(secret)
+        assertEquals("Fill in", card.authorize.text)
+        host!!.takes = false
+        card.authorize.performClick()
+        assertEquals(listOf("cap-1"), host.filled)
+        assertEquals(emptyList<String>(), host.authorized)
+        assertEquals("Could not save. Try again.", card.noteShown)
+    }
+
+    @Test fun `a location request shares through the host, says why it could not, and ends in a receipt`() = withCard { card, host ->
+        val asked = AgentRequest("cap-2", AgentRequestStatus.PENDING, null, now + 90_000, createdAt = now, sourceMessageId = "msg-1",
+            provider = AgentRequest.LOCATION_PROVIDER, reason = "Find cafes near you.", authorizationUrl = null, account = null)
+        card.show(asked)
+        assertEquals("Share location", card.authorize.text)
+        assertTrue(card.authorize.isEnabled)
+        host!!.locationAnswer = AgentLocationAnswer.DENIED
+        card.authorize.performClick()
+        assertEquals(listOf("cap-2"), host.shared)
+        assertEquals("Location is off for Comma. Turn it on in your settings, then try again.", card.noteShown)
+        card.show(asked.copy(status = AgentRequestStatus.COMPLETED, outcome = AgentRequestOutcome.SHARED))
+        assertEquals("Location shared", card.receiptLine)
+        card.show(asked.copy(status = AgentRequestStatus.COMPLETED, outcome = AgentRequestOutcome.DECLINED))
+        assertEquals("You did not share your location", card.receiptLine)
+    }
+
+    @Test fun `while the phone answers by itself the card only says so, and asks again if it could not`() = withCard { card, host ->
+        val asked = AgentRequest("cap-2", AgentRequestStatus.PENDING, null, now + 90_000, createdAt = now, sourceMessageId = null,
+            provider = AgentRequest.LOCATION_PROVIDER, reason = "Find cafes near you.", authorizationUrl = null, account = null)
+        host!!.answering = true
+        card.show(asked)
+        assertEquals("Getting your location…", card.noteShown)
+        assertFalse(card.authorize.isEnabled)
+        host.answering = false
+        card.show(asked)
+        assertEquals(null, card.noteShown)
+        assertTrue(card.authorize.isEnabled)
     }
 
     @Test fun `the card closes into a receipt when its deadline passes`() = withCard { card, _ ->

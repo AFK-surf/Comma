@@ -63,12 +63,9 @@ class WorkspaceStore internal constructor(
     private val mutableMarks = MutableStateFlow(InboxMarks())
     val inboxMarks: StateFlow<InboxMarks> = mutableMarks.asStateFlow()
 
-    private val mutableOpenTask = MutableStateFlow<String?>(null)
+    private val mutableOpenTask = MutableStateFlow(OpenTask(null, 0))
     /** The Task shown in the dock. Opening another replaces it; the router chat is untouched. */
-    val openTask: StateFlow<String?> = mutableOpenTask.asStateFlow()
-    private val mutableTaskReveal = MutableStateFlow(0)
-    /** Advances on every request to show a Task, including the one already open, so its sheet rises. */
-    val taskReveal: StateFlow<Int> = mutableTaskReveal.asStateFlow()
+    val openTask: StateFlow<OpenTask> = mutableOpenTask.asStateFlow()
 
     private val mutableToast = MutableStateFlow<Toast?>(null)
     val toast: StateFlow<Toast?> = mutableToast.asStateFlow()
@@ -77,8 +74,17 @@ class WorkspaceStore internal constructor(
     /** Runs what belongs to [scope]: its topics and the calls made for it. Cancelled when the scope changes. */
     private var scopeJobs: CoroutineScope? = null
 
-    /** A notice over the app: what failed, or what just happened with a way to take it back. */
-    data class Toast(val id: Long, val message: String, val error: Boolean, val undo: (suspend () -> Unit)? = null)
+    /** A notice over the app: what failed, or what just happened, with what can be done about it. */
+    data class Toast(val id: Long, val message: String, val error: Boolean, val action: Action? = null) {
+        data class Action(val title: String, val run: suspend () -> Unit)
+    }
+
+    /**
+     * The open Task, none when [id] is null. [reveal] advances on every request to show a Task, including the one
+     * already open, so its sheet rises; letting the Task go keeps it. One value holds both, so a reader of a request
+     * reads the Task it asks for, whenever it runs.
+     */
+    data class OpenTask(val id: String?, val reveal: Int)
 
     fun start() {
         io.launch { auth.conversationScope.collect(::bind) }
@@ -94,7 +100,7 @@ class WorkspaceStore internal constructor(
         mutablePinned.value = emptySet()
         mutableSkills.value = null
         mutableModels.value = null
-        mutableOpenTask.value = null
+        mutableOpenTask.update { it.copy(id = null) }
         mutableMarks.value = InboxMarks()
         routines.reset()
         if (next == null) return
@@ -126,16 +132,24 @@ class WorkspaceStore internal constructor(
 
     fun isCurrent(value: ConversationScope) = scope === value && auth.isCurrentGeneration(value.generation)
 
+    /** Calls for the scope and Workspace shown now; null while signed out. They stop once either changes. */
+    fun workspaceCalls(): WorkspaceCalls? {
+        val scope = scope ?: return null
+        val workspaceId = workspace?.id ?: scope.workspaceId.takeIf(String::isNotEmpty) ?: return null
+        return WorkspaceCalls(api, workspaceId, scope.groupId) {
+            isCurrent(scope) && (workspace?.id ?: scope.workspaceId) == workspaceId
+        }
+    }
+
     // MARK: Open Task
 
     fun openTask(id: String) {
-        mutableTaskReveal.value++
-        mutableOpenTask.value = id
+        mutableOpenTask.update { OpenTask(id, it.reveal + 1) }
         task(id)?.let(::markSeen)
     }
 
     fun closeTask() {
-        mutableOpenTask.value = null
+        mutableOpenTask.update { it.copy(id = null) }
     }
 
     // MARK: Actions
@@ -307,8 +321,11 @@ class WorkspaceStore internal constructor(
 
     private var toastIds = 0L
 
-    fun showToast(message: String, error: Boolean = false, undo: (suspend () -> Unit)? = null) {
-        mutableToast.value = Toast(++toastIds, message, error, undo)
+    fun showToast(message: String, error: Boolean = false, undo: (suspend () -> Unit)? = null) =
+        showToast(message, error, undo?.let { Toast.Action(context.getString(R.string.shell_undo), it) })
+
+    fun showToast(message: String, error: Boolean, action: Toast.Action?) {
+        mutableToast.value = Toast(++toastIds, message, error, action)
     }
 
     fun dismissToast(id: Long) {

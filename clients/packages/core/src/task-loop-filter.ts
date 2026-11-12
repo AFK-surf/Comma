@@ -1,3 +1,4 @@
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 import type { TaskLoop, TaskLoopCadence } from "./contract.ts";
 import { readCadence } from "./comma/task-loop.ts";
@@ -5,11 +6,17 @@ import { readCadence } from "./comma/task-loop.ts";
 // A filter value, not a Loop identity. Match the saved trigger, never display
 // text, execution progress or stop conditions. Two crons share a key only when
 // the parsed pattern describes each of them exactly.
-const ruleSchema = z.union([
-  z.tuple([z.literal("interval"), z.number().int().positive()]),
-  z.tuple([z.literal("cron"), z.string().min(1).max(256), z.string().min(1).max(256)]),
-  z.tuple([z.literal("events"), z.string().min(1).max(2_048)]),
-]);
+const ruleSchema = lazySchema(() =>
+  z.union([
+    z.tuple([z.literal("interval"), z.number().int().positive()]),
+    z.tuple([
+      z.literal("cron"),
+      z.string().min(1).max(256),
+      z.string().min(1).max(256),
+    ]),
+    z.tuple([z.literal("events"), z.string().min(1).max(2_048)]),
+  ])
+);
 
 /** Ended Loops have no current rule; a new Loop on the same Task supplies one. */
 export function taskLoopRuleKey(loop: TaskLoop | undefined): string | undefined {

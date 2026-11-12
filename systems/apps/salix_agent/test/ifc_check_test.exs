@@ -110,7 +110,7 @@ defmodule SalixAgent.IFCCheckTest do
     do: %{"destination" => %{"label" => atoms, "writers" => writers}}
 
   # A session where A wrote in their DM and B wrote in a public channel, and
-  # a search result from #legal is in context.
+  # search results from #legal and A's DM are in context.
   defp wire(opts \\ []) do
     requester = Keyword.get(opts, :requester, @a)
     scope = Keyword.get(opts, :source_scope, [@dm_a])
@@ -138,7 +138,13 @@ defmodule SalixAgent.IFCCheckTest do
             "integrity" => "data",
             "principal" => nil
           },
-          %{"ref" => "src:t-11", "label" => ["public"], "integrity" => "data", "principal" => nil}
+          %{
+            "ref" => "src:t-11",
+            "label" => ["public"],
+            "integrity" => "data",
+            "principal" => nil
+          },
+          %{"ref" => "src:t-12", "label" => [@dm_a], "integrity" => "data", "principal" => nil}
         ] ++ Keyword.get(opts, :items, []),
       "requester" => requester,
       "source_scope" => scope,
@@ -171,6 +177,164 @@ defmodule SalixAgent.IFCCheckTest do
   end
 
   # ---------------------------------------------------------------------------
+
+  defmodule GuidanceArchive do
+    @behaviour SalixAgent.EventArchive
+
+    @impl true
+    def record(fact) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:guidance_archive, fact})
+      :ok
+    end
+  end
+
+  defmodule GuidanceObservability do
+    def tool_call(fact) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:guidance_tool_fact, fact})
+      :ok
+    end
+
+    def agent_run(_fact), do: :ok
+    def inbox_dead_letter(_fact), do: :ok
+    def round_phase(_fact), do: :ok
+    def llm_attempt(_fact), do: :ok
+  end
+
+  describe "prepared correction at the dispatch boundary" do
+    setup do
+      disclosure = %{
+        "tools" => [
+          %{
+            "name" => "im_api.slack.send_dm",
+            "callable" => true,
+            "input_schema" => %{
+              "type" => "object",
+              "properties" => %{"user_id" => %{"type" => "string"}},
+              "required" => ["user_id"]
+            }
+          }
+        ]
+      }
+
+      dispatch_ctx =
+        ctx(consumed: ["src:q-1"])
+        |> Map.merge(%{llm_tool_envelope: true, tool_disclosure: disclosure})
+
+      {:ok, dispatch_ctx: dispatch_ctx}
+    end
+
+    test "sync dispatch returns pseudo-tool correction without an IFC decision", %{
+      dispatch_ctx: ctx
+    } do
+      SystemsRuntime.put_env(:salix_agent, :event_archive_mod, GuidanceArchive)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :event_archive_mod) end)
+      Facts.start(fn _ -> flunk("guidance must not authorize an effect") end)
+      ctx = Map.put(ctx, :billing_context, %{"salix_tenant_id" => "tnt"})
+      invalid = call("get_runtime_message", %{})
+
+      decided = SalixAgent.SessionToolDispatch.decide_ifc_once([invalid], ctx)
+      assert :fallback = SalixAgent.SessionToolDispatch.plan_async_intent([invalid], decided)
+      [result] = SalixAgent.SessionToolDispatch.execute([invalid], decided)
+
+      assert result.status == "guidance"
+      assert result.call_index == 0
+      assert result.guidance_reason == "envelope_misuse"
+      assert result.name == "get_runtime_message"
+      assert Jason.decode!(result.content)["error"] =~ "wait_for"
+      assert @dm_a in result.ifc["label"]
+      refute "public" in result.ifc["label"]
+
+      assert_received {:guidance_archive,
+                       %{
+                         boundary: :tool_call,
+                         session_id: "session_1",
+                         tenant_id: "tnt",
+                         payload: %{
+                           "withheld" => [%{"call" => archived, "refusal" => correction}]
+                         }
+                       }}
+
+      assert archived["id"] == invalid.id
+      assert correction["guidance_reason"] == "envelope_misuse"
+    end
+
+    test "async dispatch preserves invalid params and checks the corrected effect", %{
+      dispatch_ctx: ctx
+    } do
+      invalid = call("call", %{"tool" => "im_api.slack.send_dm", "params" => %{}})
+      Facts.start(fn _ -> flunk("invalid params must not authorize an effect") end)
+
+      {[result], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([invalid], ctx)
+      assert result.status == "guidance"
+      assert result.guidance_reason == "invalid_params"
+      assert Jason.decode!(result.content)["error"] =~ "user_id"
+      assert @dm_a in result.ifc["label"]
+
+      corrected =
+        call("call", %{
+          "tool" => "im_api.slack.send_dm",
+          "params" => %{"user_id" => "U_B"},
+          "ifc" => %{"request" => "src:q-2", "sources" => ["src:q-1"]}
+        })
+
+      ctx =
+        Map.put(
+          ctx,
+          :ifc,
+          wire(requester: @b, source_scope: [@general], request: "src:q-2", consumed: ["src:q-2"])
+        )
+
+      Facts.start(fn _ -> {:ok, facts(destination([@space]))} end)
+      {[refused], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([corrected], ctx)
+      assert refused.status == "guidance", inspect(refused)
+      assert Jason.decode!(refused.content)["clause"] == "flow_denied"
+    end
+
+    test "a dispatched correction records one guidance tool observation", %{
+      dispatch_ctx: ctx
+    } do
+      SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, GuidanceObservability)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :agent_observability_mod) end)
+      Facts.start(fn _ -> flunk("invalid params must not authorize an effect") end)
+      invalid = call("call", %{"tool" => "im_api.slack.send_dm", "params" => %{}})
+
+      decided = SalixAgent.SessionToolDispatch.decide_ifc_once([invalid], ctx)
+      [sync] = SalixAgent.SessionToolDispatch.execute([invalid], decided)
+      assert sync.status == "guidance"
+
+      assert_received {:guidance_tool_fact,
+                       %{status: "guidance", guidance_reason: "invalid_params"} = fact}
+
+      assert fact.tool_name == "im_api.slack.send_dm"
+      refute_received {:guidance_tool_fact, _}
+
+      {[async], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([invalid], ctx)
+      refute Map.has_key?(async, :tool_observations)
+      assert_received {:guidance_tool_fact, %{guidance_reason: "invalid_params"}}
+      refute_received {:guidance_tool_fact, _}
+
+      deferred = Map.put(ctx, :defer_tool_observations, true)
+      {[held], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([invalid], deferred)
+      assert [%{guidance_reason: "invalid_params"}] = held.tool_observations
+      refute_received {:guidance_tool_fact, _}
+    end
+
+    test "a supplied guidance marker cannot cause the original tool to execute", %{
+      dispatch_ctx: ctx
+    } do
+      Facts.start(fn _ -> flunk("guidance must not authorize an effect") end)
+
+      marked =
+        call("call", %{
+          "tool" => "im_api.slack.send_dm",
+          "params" => %{"user_id" => "U_B", "_guidance_error" => "retry"}
+        })
+
+      {[result], []} = SalixAgent.SessionToolDispatch.execute_with_async_window([marked], ctx)
+      assert result.status == "guidance"
+      assert Jason.decode!(result.content)["error"] == "retry"
+    end
+  end
 
   test "identified Slack app requests dispatch under their own identity; legacy anonymous inputs do not retry" do
     source_id = "im_provider:slack:cnx1:C_GENERAL:123.456"
@@ -241,6 +405,57 @@ defmodule SalixAgent.IFCCheckTest do
     refute Map.has_key?(guidance, "help_tool")
   end
 
+  defmodule ResolveLog do
+    @moduledoc false
+    def log(%{meta: %{ifc_resolve: fields}}, %{config: %{owner: owner}}),
+      do: SystemsRuntime.Proc.send(owner, {:ifc_resolve, fields})
+
+    def log(_event, _config), do: :ok
+  end
+
+  @doc false
+  def resolve_operation(_event, _measurements, metadata, owner) do
+    if metadata[:operation] == "ifc_resolve",
+      do: SystemsRuntime.Proc.send(owner, {:resolve_operation, metadata})
+  end
+
+  test "a slow facts read is measured and names atom kinds, not ids" do
+    owner = SystemsRuntime.Proc.self()
+    handler = {__MODULE__, :ifc_resolve}
+
+    :ok =
+      SystemsRuntime.Telemetry.attach(
+        handler,
+        [:salix, :operation, :stop],
+        &__MODULE__.resolve_operation/4,
+        owner
+      )
+
+    :ok = :logger.add_handler(:ifc_resolve_test, ResolveLog, %{config: %{owner: owner}})
+
+    on_exit(fn ->
+      SystemsRuntime.Telemetry.detach(handler)
+      :logger.remove_handler(:ifc_resolve_test)
+    end)
+
+    Process.put(:ifc_test_resolver, fn request ->
+      SystemsRuntime.Proc.send(owner, {:atoms, length(request["atoms"])})
+      SystemsClock.advance(1_500)
+      {:ok, facts(%{})}
+    end)
+
+    Check.authorize(
+      [{:execute, call("fs.write_file", %{"path" => "/notes/a.txt"}, %{"sources" => "context"})}],
+      ctx()
+    )
+
+    assert_received {:atoms, count} when count > 0
+    assert_received {:resolve_operation, %{operation: "ifc_resolve", outcome: "ok"}}
+    assert_received {:ifc_resolve, %{outcome: "ok", duration_ms: 1_500, atoms: atoms}}
+    assert Enum.sum(Map.values(atoms)) == count
+    assert Enum.all?(Map.keys(atoms), &is_atom/1)
+  end
+
   test "Lean IFC decisions reach the shared scrape without content labels" do
     reporter = Module.concat(__MODULE__, Reporter)
 
@@ -252,7 +467,7 @@ defmodule SalixAgent.IFCCheckTest do
     tool =
       call("fs.write_file", %{"path" => "/notes/private.txt", "content" => "secret-canary"}, %{
         "request" => "src:q-1",
-        "sources" => ["src:q-1"]
+        "sources" => ["src:t-12"]
       })
 
     allowed = fn -> authorize(tool, ctx(), facts(destination(["agent_private"]))) end
@@ -365,7 +580,31 @@ defmodule SalixAgent.IFCCheckTest do
                Destination.describe("im_api.slack.message_search", %{"query" => "x"}, %{})
 
       assert {:read, _} = Destination.describe("fs.read_file", %{}, %{})
+
+      for provider <- ~w(feishu lark) do
+        assert {:read, _} =
+                 Destination.describe(
+                   "im_api.#{provider}.read_message_link",
+                   %{"url" => "https://applink.feishu.cn/client/message/link/open?token=x"},
+                   %{}
+                 )
+      end
+
+      for name <- ~w(device.list device.get) do
+        assert {:read, _} = Destination.describe(name, %{"device_id" => "dev_1"}, %{})
+      end
+
       assert {:none, _} = Destination.describe("help", %{}, %{})
+    end
+
+    test "a bot finding and joining a public group carries no content" do
+      for provider <- ~w(feishu lark) do
+        assert {:read, _} =
+                 Destination.describe("im_api.#{provider}.search_chats", %{"query" => "x"}, %{})
+
+        assert {:none, _} =
+                 Destination.describe("im_api.#{provider}.join_chat", %{"chat_id" => "oc_1"}, %{})
+      end
     end
 
     test "a write onto the Drive is a write the Group's humans will read" do
@@ -457,7 +696,7 @@ defmodule SalixAgent.IFCCheckTest do
               {:execute,
                call("im_api.internal.update_conversation_titles", %{"titles" => titles}, %{
                  "request" => "src:q-1",
-                 "sources" => ["src:q-1"]
+                 "sources" => ["src:t-12"]
                })}
             ],
             ctx()
@@ -477,6 +716,112 @@ defmodule SalixAgent.IFCCheckTest do
     end
   end
 
+  describe "Lark and Feishu group management" do
+    test "creation and member addition name every distinct recipient on the selected connect" do
+      args = %{
+        "connect_id" => @connect,
+        "chat_id" => "oc_project",
+        "user_ids" => ["ou_alice", "ou_bob", "ou_alice"]
+      }
+
+      for provider <- ~w(lark feishu),
+          api <- ["im_api.#{provider}.create_chat", "im_api.#{provider}.add_chat_members"] do
+        assert {:egress, first} = Destination.describe(api, args, %{})
+        assert [{:egress, second}] = Destination.additional_destinations(api, args, %{})
+
+        assert first == %{
+                 "kind" => "provider_direct",
+                 "provider" => provider,
+                 "connect_id" => @connect,
+                 "user_id" => "ou_alice"
+               }
+
+        assert second == %{first | "user_id" => "ou_bob"}
+      end
+    end
+
+    test "both operations require every recipient to admit their declared private sources" do
+      Facts.start(fn request ->
+        case request["destination"] do
+          %{"kind" => "provider_direct", "user_id" => "ou_alice"} ->
+            {:ok, facts(destination([@dm_a]))}
+
+          %{"kind" => "provider_direct", "user_id" => "ou_bob"} ->
+            {:ok, facts(destination([@finance]))}
+
+          %{"kind" => "public"} ->
+            {:ok, facts(destination(["public"]))}
+        end
+      end)
+
+      check = fn api, ids ->
+        args = %{
+          "connect_id" => @connect,
+          "name" => "Project",
+          "chat_id" => "oc_project",
+          "user_ids" => ids
+        }
+
+        [decision] =
+          Check.authorize(
+            [
+              {:execute,
+               call(api, args, %{
+                 "request" => "src:q-1",
+                 "sources" => ["src:t-12"]
+               })}
+            ],
+            ctx()
+          )
+
+        decision
+      end
+
+      for provider <- ~w(lark feishu),
+          api <- ["im_api.#{provider}.create_chat", "im_api.#{provider}.add_chat_members"] do
+        assert {:execute, _} = check.(api, ["ou_alice"])
+        assert {:blocked, _} = check.(api, ["ou_alice", "ou_bob"])
+        assert {:blocked, _} = check.(api, ["ou_bob", "ou_alice"])
+        assert {:blocked, _} = check.(api, [])
+      end
+    end
+
+    test "a send or forward goes to the named chat, the source chat, or one person" do
+      origin = %{
+        "provider" => "feishu",
+        "provider_context" => %{"connect_id" => @connect, "chat_id" => "oc_source"}
+      }
+
+      for provider <- ~w(lark feishu),
+          api <- ["im_api.#{provider}.send_message", "im_api.#{provider}.forward_message"] do
+        ctx = %{trusted_origin: Map.put(origin, "provider", provider)}
+
+        assert {:egress,
+                %{"kind" => "provider_scope", "provider" => ^provider, "scope_id" => "oc_x"}} =
+                 Destination.describe(api, %{"connect_id" => @connect, "chat_id" => "oc_x"}, ctx)
+
+        assert {:egress,
+                %{"kind" => "provider_direct", "provider" => ^provider, "user_id" => "ou_bob"}} =
+                 Destination.describe(
+                   api,
+                   %{"connect_id" => @connect, "user_id" => "ou_bob"},
+                   ctx
+                 )
+      end
+
+      for provider <- ~w(lark feishu) do
+        ctx = %{trusted_origin: Map.put(origin, "provider", provider)}
+
+        assert {:egress, %{"scope_id" => "oc_source"}} =
+                 Destination.describe(
+                   "im_api.#{provider}.send_message",
+                   %{"connect_id" => @connect},
+                   ctx
+                 )
+      end
+    end
+  end
+
   describe "Worker configuration writes" do
     test "agent.update persists to the trusted Group, not public or model-selected scope" do
       assert {:persist, %{"kind" => "agent_configuration", "group_id" => "grp"}} =
@@ -488,15 +833,15 @@ defmodule SalixAgent.IFCCheckTest do
     end
 
     test "private and unknown-membership sources are still refused" do
-      for {input, reply} <- [
-            {wire(), facts(destination(["group|grp"]))},
-            {wire(requester: @b, request: "src:q-2", source_scope: [@space]),
+      for {input, source, reply} <- [
+            {wire(), "src:t-12", facts(destination(["group|grp"]))},
+            {wire(requester: @b, request: "src:q-2", source_scope: [@space]), "src:q-2",
              facts(destination(["group|grp"])) |> Map.put("placements", %{})}
           ] do
         update =
           call("agent.update", %{"agent_id" => "worker", "purpose" => "Private content"}, %{
             "request" => input["request"],
-            "sources" => [input["request"]]
+            "sources" => [source]
           })
 
         assert {:blocked, %{status: "guidance"}} = authorize(update, ctx(ifc: input), reply)
@@ -515,7 +860,7 @@ defmodule SalixAgent.IFCCheckTest do
         authorize(
           call("fs.write_file", %{"path" => "/drive/leaked.txt", "content" => "note"}, %{
             "request" => "src:q-1",
-            "sources" => ["src:q-1"]
+            "sources" => ["src:t-12"]
           }),
           ctx(),
           facts(destination(["group|grp"]))
@@ -524,6 +869,23 @@ defmodule SalixAgent.IFCCheckTest do
       assert {:blocked, result} = decision
       assert result.status == "guidance"
       assert result.guidance_reason == "information_flow"
+    end
+
+    test "what the requester wrote in their DM is written onto the Drive when they ask" do
+      decision =
+        authorize(
+          call("fs.write_file", %{"path" => "/drive/token", "content" => "their token"}, %{
+            "request" => "src:q-1",
+            "sources" => ["src:q-1"]
+          }),
+          ctx(),
+          facts(destination(["group|grp"]))
+        )
+
+      assert {:execute, admitted} = decision
+
+      assert %{"decision" => %{"sources" => [%{"ref" => "src:q-1", "clause" => "authored"}]}} =
+               admitted.ifc_evidence
     end
 
     test "content the Group may already read is written onto the Drive" do
@@ -790,6 +1152,22 @@ defmodule SalixAgent.IFCCheckTest do
         )
 
       assert {:execute, _call} = decision
+    end
+
+    test "a denied effect keeps its requester and no evidence" do
+      decision =
+        authorize(
+          call("im_api.slack.post_message", %{"channel" => "C_GEN"}, %{
+            "request" => "src:q-2",
+            "sources" => ["src:q-1"]
+          }),
+          ctx(mode: :audit, requester: @guest, source_scope: [@legal], request: "src:q-2"),
+          facts(destination([@space])) |> Map.put("mode", "audit")
+        )
+
+      assert {:execute, executed} = decision
+      assert executed.ifc_requester == @guest
+      refute Map.has_key?(executed, :ifc_evidence)
     end
   end
 

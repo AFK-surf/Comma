@@ -12,10 +12,10 @@ export const agentHomePaths = (agentHome: string): [string, string] => [join(age
 
 /// The skills the station brings, by directory name: about its own tools, so they are rewritten at every start and
 /// change with the station (the team's own skills sit beside them).
-const BUILTIN_SKILLS = ["stillfail-jobs", "stillfail-show", "stillfail-viz"];
-/// When to offer a bug report to the still.fail team: only from a station on the stable channel, beside the
+const BUILTIN_SKILLS = ["comma-jobs", "comma-show", "comma-viz"];
+/// When to offer a bug report to the Comma team: only from a station on the stable channel, beside the
 /// `feedback_send` tool; gone from one on the test channel (the team's own).
-const FEEDBACK_SKILL = "stillfail-feedback";
+const FEEDBACK_SKILL = "comma-feedback";
 /// The station's own skills as they were named before the rename: gone once the new ones are written (they would be
 /// listed twice). A directory with more in it than the SKILL.md the station wrote is left.
 const FORMER_BUILTIN_SKILLS = ["ember-jobs", "ember-show", "ember-viz"];
@@ -35,7 +35,7 @@ function onlySkill(dir: string): boolean {
   }
 }
 
-/// Writes the station's own skills into the shared skills directory; `feedback`: the stillfail-feedback skill too
+/// Writes the station's own skills into the shared skills directory; `feedback`: the comma-feedback skill too
 /// (else it is taken away, unless someone added to it).
 export function writeBuiltinSkills(agentHome: string, feedback: boolean) {
   const [, skills] = agentHomePaths(agentHome);
@@ -84,7 +84,7 @@ function link(target: string, path: string) {
 export function linkAgentHome(agentHome: string, profiles: ProfileHome[]) {
   const [memory, skills] = agentHomePaths(agentHome);
   mkdirSync(skills, { recursive: true });
-  if (!existsSync(memory)) writeFileSync(memory, "# still.fail memory\n");
+  if (!existsSync(memory)) writeFileSync(memory, "# Comma memory\n");
   for (const { runtimes, home } of profiles) {
     mkdirSync(home, { recursive: true });
     // Each runtime it runs reads the memory under its own name.

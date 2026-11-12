@@ -2,15 +2,13 @@ import SwiftUI
 import UIKit
 import CommaCore
 
-/// Home's platform cards: one per connected app, two and a peek per screen (one and a peek at accessibility text
-/// sizes, where two would cut every name short), with a scroll indicator under them once they do not all fit. Stands
+/// Home's platform cards: one per connected app, at a fixed width, with a scroll indicator when they do not all fit. Stands
 /// in with placeholders, a retry or a hint to connect apps when there are no cards to show. Cards line up with the
 /// page's 20pt text margin.
 struct PlatformCarousel: View {
     let store: CommaStore
     let open: (PlatformRoutine) -> Void
     @State private var track = PlatformStripTrack()
-    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.layoutDirection) private var layoutDirection
 
     static let spacing: CGFloat = 12
@@ -29,7 +27,6 @@ struct PlatformCarousel: View {
                             ForEach(platforms) { platform in
                                 PlatformCard(platform: platform, count: store.preTasks(of: platform).count,
                                              refreshing: model.isRefreshing) { open(platform) }
-                                    .cardWidth(perScreen)
                                     .contextMenu {
                                         Button { Task { await model.refresh(store: store) } } label: {
                                             Label("Refresh routines", image: "central-arrow-rotate-clockwise")
@@ -42,15 +39,13 @@ struct PlatformCarousel: View {
                             PlatformStripReading(geometry, count: platforms.count, spacing: Self.spacing,
                                                  rightToLeft: layoutDirection == .rightToLeft)
                         } action: { _, reading in track.reading = reading }
-                        if platforms.count > Int(perScreen) {
-                            PlatformScrollIndicator(ids: platforms.map(\.id), span: Int(perScreen), track: track) { id in
-                                withAnimation(PlatformScrollIndicator.glide) { reader.scrollTo(id, anchor: .leading) }
-                            }
+                        PlatformScrollIndicator(ids: platforms.map(\.id), track: track) { id in
+                            withAnimation(PlatformScrollIndicator.glide) { reader.scrollTo(id, anchor: .leading) }
                         }
                     }
                 }
             } else if model.feed == nil, model.failure == nil {
-                strip { ForEach(0..<2, id: \.self) { PlatformCard.placeholder($0).cardWidth(perScreen) } }
+                strip { ForEach(0..<2, id: \.self) { PlatformCard.placeholder($0) } }
                     .scrollDisabled(true)
             } else if model.feed == nil {
                 unavailable(retry: { Task { await model.load(store: store) } })
@@ -80,9 +75,6 @@ struct PlatformCarousel: View {
         let resets: Int
     }
 
-    /// How many cards a screen shows, the last fraction being the next card's peek.
-    private var perScreen: CGFloat { typeSize.isAccessibilitySize ? 1.2 : 2.2 }
-
     /// Cards in a row that settles on a card's leading edge, inset like the list below it. A throw carries the row as far
     /// as its speed takes it, as any scroll does, and it settles on the card nearest where it would come to rest.
     private func strip(@ViewBuilder _ cards: () -> some View) -> some View {
@@ -110,14 +102,6 @@ struct PlatformCarousel: View {
     }
 }
 
-private extension View {
-    /// `perScreen` cards per screen, the fraction a peek of the next. The container's width already leaves out
-    /// the margins.
-    func cardWidth(_ perScreen: CGFloat) -> some View {
-        containerRelativeFrame(.horizontal) { width, _ in (width - PlatformCarousel.spacing) / perScreen }
-    }
-}
-
 /// How far the cards' strip has scrolled, written on every scrolled frame. Only the indicator reads it, so scrolling
 /// redraws the indicator and not the cards.
 @MainActor @Observable final class PlatformStripTrack {
@@ -129,6 +113,7 @@ struct PlatformStripReading: Equatable {
     var offset: CGFloat = 0
     var step: CGFloat = 0
     var end: CGFloat = 0
+    var visibleCards: Int = 1
 
     init() {}
 
@@ -139,6 +124,8 @@ struct PlatformStripReading: Equatable {
         offset = geometry.contentOffset.x + (rightToLeft ? -margin : margin)
         step = count > 0 ? (geometry.contentSize.width + spacing) / CGFloat(count) : 0
         end = max(0, geometry.contentSize.width - geometry.containerSize.width)
+        let visibleWidth = max(0, geometry.containerSize.width - geometry.contentInsets.leading - geometry.contentInsets.trailing)
+        visibleCards = step > 0 ? max(1, Int((visibleWidth + spacing) / step)) : 1
     }
 
     /// The card at the leading edge, between two while the cards move, up to the last whole card; the scroll's last
@@ -160,8 +147,6 @@ struct PlatformStripReading: Equatable {
 /// through the same cards under the system's page control.
 struct PlatformScrollIndicator: View {
     let ids: [String]
-    /// How many cards a screen shows whole.
-    let span: Int
     let track: PlatformStripTrack
     let scroll: (String) -> Void
 
@@ -176,25 +161,27 @@ struct PlatformScrollIndicator: View {
 
     var body: some View {
         let reading = track.reading
-        let first = min(max(Int(reading.leadingCard(count: ids.count, span: span).rounded()), 0), ids.count - 1)
+        let first = min(max(Int(reading.leadingCard(count: ids.count, span: reading.visibleCards).rounded()), 0), ids.count - 1)
         let (start, length) = Self.thumbFrame(reading)
-        ZStack(alignment: .leading) {
-            Capsule().fill(CommaTheme.borderSecondary)
-            // Placed by its leading padding, which follows the layout direction as the strip does.
-            Capsule().fill(CommaTheme.textPrimary)
-                .frame(width: length)
-                .padding(.leading, start)
-        }
-        .frame(width: Self.width, height: Self.height)
-        .frame(maxWidth: .infinity)
-        .accessibilityElement()
-        .accessibilityLabel("Platforms")
-        .accessibilityValue(Text("Card \(first + 1) of \(ids.count)"))
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: scroll(ids[min(first + 1, ids.count - 1)])
-            case .decrement: scroll(ids[max(first - 1, 0)])
-            @unknown default: break
+        if reading.end > 0 {
+            ZStack(alignment: .leading) {
+                Capsule().fill(CommaTheme.borderSecondary)
+                // Placed by its leading padding, which follows the layout direction as the strip does.
+                Capsule().fill(CommaTheme.textPrimary)
+                    .frame(width: length)
+                    .padding(.leading, start)
+            }
+            .frame(width: Self.width, height: Self.height)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement()
+            .accessibilityLabel("Platforms")
+            .accessibilityValue(Text("Card \(first + 1) of \(ids.count)"))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: scroll(ids[min(first + 1, ids.count - 1)])
+                case .decrement: scroll(ids[max(first - 1, 0)])
+                @unknown default: break
+                }
             }
         }
     }

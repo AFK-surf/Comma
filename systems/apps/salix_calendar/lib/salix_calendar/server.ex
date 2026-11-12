@@ -103,6 +103,35 @@ defmodule SalixCalendar.Server do
     end
   end
 
+  @doc """
+  One page of the items indexed for a range across the selected sources, in
+  item id order after `:after_item` (at most `:limit` index entries), and
+  where the next page starts (nil at the end).
+  """
+  def query_items_page(group_id, calendar_id, range_start_ms, range_end_ms, opts \\ []) do
+    with {:ok, selected} <- selected_source_ids(group_id, calendar_id, opts[:source_ids]),
+         {:ok, results} <-
+           call_sources(
+             group_id,
+             calendar_id,
+             selected,
+             {:query_items_page, range_start_ms, range_end_ms, opts[:after_item],
+              Keyword.get(opts, :limit, 50)}
+           ) do
+      # Every source pages the same calendar index, so their pages end alike;
+      # the earliest end keeps the merged page complete.
+      nexts = for {_items, next} <- results, not is_nil(next), do: next
+      next = if nexts == [], do: nil, else: Enum.min(nexts)
+
+      {:ok,
+       results
+       |> Enum.flat_map(&elem(&1, 0))
+       |> Enum.filter(&(is_nil(next) or &1["calendar_item_id"] <= next))
+       |> Enum.uniq_by(& &1["calendar_item_id"])
+       |> Enum.sort_by(& &1["calendar_item_id"]), next}
+    end
+  end
+
   def list_link_items(group_id, calendar_id, link_id, opts \\ []) do
     with {:ok, selected} <- selected_source_ids(group_id, calendar_id, opts[:source_ids]),
          {:ok, results} <-

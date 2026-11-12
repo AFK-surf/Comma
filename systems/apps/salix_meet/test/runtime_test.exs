@@ -170,7 +170,7 @@ defmodule SalixMeet.RuntimeTest do
     assert Ids.valid_session_id?(meeting_agent["meeting_session_id"])
     assert meeting_agent["billing_owner"]["billing_account_id"] == "ba-meeting-" <> group_id
 
-    {:ok, agent} = read_json(Keys.ctl_agent(meeting_agent["meeting_agent_id"]))
+    {:ok, agent} = SalixAgent.Control.get_record(meeting_agent["meeting_agent_id"])
     assert agent["tenant_id"] == tenant_id
     assert agent["group_id"] == group_id
     assert agent["role"] == "meeting"
@@ -710,7 +710,7 @@ defmodule SalixMeet.RuntimeTest do
         overrides
       )
 
-    {:ok, _} = S3.put(Keys.ctl_agent(agent_id), Jason.encode!(rec), if_none_match: "*")
+    {:ok, _} = SalixStore.AgentPGStore.create(agent_id, to_string(node()), SalixAgent.State, rec)
     rec
   end
 
@@ -733,28 +733,11 @@ defmodule SalixMeet.RuntimeTest do
   end
 
   defp create_valid_meeting_state!(agent_id, session_id) do
-    create_agent_state!(agent_id, [
-      %{
-        "type" => "session_created",
-        "session_id" => session_id,
+    {:ok, _} =
+      SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id, %{
         "name" => "__internal_meeting_agent",
-        "hidden" => true,
-        "created_at" => SystemsClock.system_time(:second)
-      }
-    ])
-  end
-
-  defp create_agent_state!(agent_id, events) do
-    {:ok, owned} = SalixStore.Agent.create(agent_id, Atom.to_string(node()), SalixAgent.State)
-
-    case SalixStore.Agent.commit(owned, events) do
-      {:ok, owned} ->
-        SalixStore.Agent.release(owned)
-
-      {:error, _} = err ->
-        _ = SalixStore.Agent.release(owned)
-        flunk("failed to seed agent state: #{inspect(err)}")
-    end
+        "hidden" => true
+      })
   end
 
   defp read_json(key) do

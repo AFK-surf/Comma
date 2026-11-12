@@ -25,7 +25,9 @@ import {
 import type { CommaApiSessionTransport } from "./controller";
 import { renderGoogleSignInButton } from "../auth/googleIdentityServices";
 import type {
+  SessionAccountsController,
   SessionAuthenticatorController,
+  SessionKeptAccount,
   SessionLoginTiming,
   SessionGuestController,
   SessionHostController,
@@ -81,6 +83,8 @@ export function createCoreSessionHostController(input: {
   const recoveryListeners = new Set<() => void>();
   let stopRecovery: (() => void) | null = null;
   let guestImports: number | undefined;
+  let kept: readonly SessionKeptAccount[] = [];
+  const keptListeners = new Set<() => void>();
   const snapshotListeners = new Set<(snapshot: SessionLifecycleSnapshot) => void>();
   const attemptListeners = new Set<() => void>();
   const importListeners = new Set<() => void>();
@@ -125,6 +129,11 @@ export function createCoreSessionHostController(input: {
       if (guestImports !== undefined && imports > guestImports)
         for (const listener of Array.from(importListeners)) listener();
       guestImports = imports;
+      const nextKept = value.accounts ?? [];
+      if (JSON.stringify(nextKept) !== JSON.stringify(kept)) {
+        kept = nextKept;
+        for (const listener of Array.from(keptListeners)) listener();
+      }
     },
     () => undefined
   );
@@ -222,6 +231,22 @@ export function createCoreSessionHostController(input: {
   };
 
   const authenticator: SessionAuthenticatorController = {
+    captcha: {
+      get: () => attempt?.captcha,
+      subscribe(listener) {
+        attemptListeners.add(listener);
+        return () => void attemptListeners.delete(listener);
+      },
+      answer(challengeId, token) {
+        if (!attempt || attempt.captcha?.challengeId !== challengeId)
+          return Promise.resolve(false);
+        return call("session.captcha.answer", {
+          attempt: attempt.ref,
+          challengeId,
+          token,
+        });
+      },
+    },
     cancelCurrentAttempt,
     async requestEmailLogin(email, options) {
       pendingGoogle = undefined;
@@ -388,10 +413,36 @@ export function createCoreSessionHostController(input: {
     },
   };
 
+  const accountError = (code: string) => operationError(code);
+  const accounts: SessionAccountsController = {
+    get: () => kept,
+    subscribe(listener) {
+      keptListeners.add(listener);
+      return () => void keptListeners.delete(listener);
+    },
+    async add() {
+      if (snapshot.phase !== "signed_in") throw stale();
+      const result = await call("session.addAccount", {
+        expected: sessionExpectation(snapshot),
+      });
+      if (!result.ok) throw accountError(result.error.code);
+    },
+    async switchTo(userId) {
+      pendingGoogle = undefined;
+      const result = await call("session.switchAccount", { userId });
+      if (!result.ok) throw accountError(result.error.code);
+    },
+    async signOut(userId) {
+      const result = await call("session.signOutAccount", { userId });
+      if (!result.ok) throw accountError(result.error.code);
+    },
+  };
+
   return {
     apiBaseUrl: input.apiBaseUrl,
     authenticator,
-    ...(electron ? {} : { guest }),
+    // Electron keeps the bearers (Main), and with them the other accounts signed in.
+    ...(electron ? { accounts } : { guest }),
     lifecycle,
     // Subscribed while a window shows the recovery: the core runs it only then.
     connectionRecovery: {

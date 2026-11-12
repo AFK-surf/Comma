@@ -1,5 +1,7 @@
 import { initializeCommaI18n } from "@comma/i18n";
+import { flush } from "@comma/test-utils/fake-clock";
 import { render, screen } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
 import {
@@ -178,5 +180,78 @@ describe("isPrivateMailLink", () => {
     ).toBe(false);
     expect(isPrivateMailLink("https://github.com/AFK-surf/Comma/pull/845")).toBe(false);
     expect(isPrivateMailLink("not a url")).toBe(false);
+  });
+});
+
+const pullRequestPreview = {
+  additions: 12,
+  author: {
+    avatarRef: "v1.YQ.Yg",
+    avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
+    login: "CatsJuice",
+  },
+  changedFiles: 3,
+  deletions: 4,
+  href: "https://github.com/AFK-surf/Comma/pull/845",
+  kind: "github_pull_request",
+  number: 845,
+  repository: "AFK-surf/Comma",
+  state: "merged",
+  title: "feat(chat): add inline task elements",
+  updatedAt: new Date(2026, 7, 22, 10).getTime(),
+} satisfies CommaRecommendationLinkPreview;
+
+describe("LinkCardPerson", () => {
+  it("reads a pull request author's avatar through the core by the preview's reference", async () => {
+    pinNoon();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:avatar");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const core = createScriptedCore({
+      calls: (name) =>
+        name === "files.read"
+          ? { bytes: new Uint8Array([137, 80, 78, 71]), type: "image/png" }
+          : null,
+    });
+    render(
+      core.wrap(
+        <LinkPreviewCard
+          preview={pullRequestPreview}
+          source={{ appId: "github", appName: "GitHub" }}
+        />
+      )
+    );
+    await flush();
+
+    expect(core.sentTo("files.read")).toEqual([
+      { source: "link-preview-avatar", ref: "v1.YQ.Yg" },
+    ]);
+    const card = screen.getByTestId("recommendation-link-card");
+    expect(card).toHaveTextContent("CatsJuice");
+    expect(
+      card.querySelector(".comma-recommendation-link-card-avatar img")
+    ).toHaveAttribute("src", "blob:avatar");
+  });
+
+  it("stands the author's initials in for an avatar the preview does not carry", async () => {
+    pinNoon();
+    const core = createScriptedCore({});
+    render(
+      core.wrap(
+        <LinkPreviewCard
+          preview={{
+            ...pullRequestPreview,
+            author: { avatarRef: null, avatarUrl: null, login: "CatsJuice" },
+          }}
+        />
+      )
+    );
+    await flush();
+
+    const avatar = screen
+      .getByTestId("recommendation-link-card")
+      .querySelector(".comma-recommendation-link-card-avatar");
+    expect(avatar).toHaveTextContent("C");
+    expect(avatar?.querySelector("img")).toBeNull();
+    expect(core.sentTo("files.read")).toEqual([]);
   });
 });

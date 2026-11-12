@@ -9,6 +9,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { expect, it, vi } from "vitest";
 
 /** A user whose waits run on the fake clock. */
@@ -243,6 +244,7 @@ function renderDialog(core: ReturnType<typeof createScriptedCore>) {
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   render(<RouterProvider router={router} />);
+  return router;
 }
 
 const spec = () => new File(["%PDF"], "spec.pdf", { type: "application/pdf" });
@@ -530,6 +532,8 @@ it("starts a coding session in a cloud sandbox with a repository, its base branc
   await flush();
 
   await user().click(screen.getByRole("button", { name: "Machine" }));
+  // Where sandboxes are not set up, no plain sandbox is offered.
+  expect(screen.queryByRole("menuitemradio", { name: "Sandbox" })).toBeNull();
   await user().click(screen.getByRole("menuitemradio", { name: "Code" }));
   await flush();
   // The account's repositories, recently pushed first; another is chosen, and its branches read.
@@ -545,9 +549,6 @@ it("starts a coding session in a cloud sandbox with a repository, its base branc
   await user().click(screen.getByRole("menuitemradio", { name: "from release/2.1" }));
   await user().click(screen.getByRole("button", { name: "Model" }));
   await user().click(screen.getByRole("menuitemradio", { name: "Claude Code" }));
-  // A coding session takes no files: its repository is its files.
-  expect(screen.queryByRole("button", { name: "Add attachment" })).toBeNull();
-
   await user().type(
     screen.getByRole("textbox", { name: "What should it do?" }),
     "fix the flaky test"
@@ -565,6 +566,102 @@ it("starts a coding session in a cloud sandbox with a repository, its base branc
   ]);
   expect(router.state.location.pathname).toBe("/tasks/w1/grp_1/cnv_code");
   expect(onClose).toHaveBeenCalled();
+});
+
+it("starts a plain sandbox Task, with nothing checked out and no files, where sandboxes are set up", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              ...workspaceModels,
+              agents: {
+                workspace_id: "w1",
+                agents: {},
+                task_model: { selection: { kind: "builtin" } },
+                task_place: { place: { kind: "salix" }, sandboxes: true },
+              },
+            }
+          : undefined,
+    calls: (name) =>
+      name === "coding.start" ? { taskId: "cnv_box", groupId: "grp_1" } : null,
+  });
+  const router = renderDialog(core);
+  await flush();
+
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "Sandbox" }));
+  await flush();
+  // No repository to choose: the sandbox starts empty.
+  expect(screen.queryByRole("button", { name: "Repository" })).toBeNull();
+  expect(core.sentTo("coding.repos")).toEqual([]);
+
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "convert the videos to mp4"
+  );
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  expect(core.sentTo("coding.start")).toEqual([
+    {
+      workspaceId: "w1",
+      key: expect.any(String),
+      text: "convert the videos to mp4",
+      model: { provider: "codex" },
+    },
+  ]);
+  expect(router.state.location.pathname).toBe("/tasks/w1/grp_1/cnv_box");
+});
+
+it("uploads a coding session's image as a cloud Task's, and starts the session with it alone", async () => {
+  const path = `/uploads/${"f".repeat(22)}-shot.png`;
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : undefined,
+    calls: (name) => {
+      if (name === "chat.uploadTaskFile") return { name: "shot.png", path, size: 3 };
+      if (name === "coding.repos")
+        return [{ owner: "acme", name: "web", defaultBranch: "main", private: false }];
+      if (name === "coding.branches") return ["main"];
+      if (name === "coding.start") return { taskId: "cnv_code", groupId: "grp_1" };
+      return null;
+    },
+  });
+  renderDialog(core);
+  await flush();
+  await user().click(screen.getByRole("button", { name: "Machine" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "Code" }));
+  await flush();
+
+  await user().upload(
+    fileInput(),
+    new File(["png"], "shot.png", { type: "image/png" })
+  );
+  // jsdom reads the file's bytes on a timer.
+  await advance(50);
+  expect(core.sentTo("chat.uploadTaskFile")).toEqual([
+    { workspaceId: "w1", name: "shot.png", bytes: expect.any(Uint8Array) },
+  ]);
+  expect(
+    screen.getByTestId("new-station-task").querySelector('[data-state="loading"]')
+  ).toBeNull();
+
+  // The image alone is something to start the session from.
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  expect(core.sentTo("coding.start")).toEqual([
+    {
+      workspaceId: "w1",
+      key: expect.any(String),
+      text: "",
+      uploads: [{ name: "shot.png", path }],
+      repo: { owner: "acme", name: "web", baseRef: "main" },
+      model: { provider: "codex" },
+    },
+  ]);
 });
 
 /** A signed-in subscription as the core shows it. */
@@ -671,4 +768,243 @@ it("runs a coding session on the subscription and model chosen, or the runtime's
       accountId: "acct_home",
     }),
   ]);
+});
+
+it("as a request's card, accepts it with the chosen model, or sends it to the Router", async () => {
+  const sent: [string, unknown][] = [];
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? {
+              workspace: "w1",
+              catalog: { sources: {}, models: [] },
+              presets: [],
+              profiles: [],
+              moreProfiles: false,
+              models: [
+                {
+                  id: "gpt-5.5",
+                  name: "GPT 5.5",
+                  vendor: "openai",
+                  efforts: [],
+                  serving: ["p1"],
+                },
+              ],
+            }
+          : undefined,
+    calls: (name, params) => {
+      sent.push([name, params]);
+      if (name === "taskRequests.accept") return { task: { group_id: "g1", id: "c9" } };
+      return null;
+    },
+  });
+  const onClose = vi.fn();
+  const request = { id: "trq_1", title: "From Sam", content: "Summarize Q3" };
+  const rootRoute = createRootRoute({
+    component: () =>
+      core.wrap(
+        <NewStationTaskDialog onClose={onClose} request={request} workspace="w1" />
+      ),
+  });
+  const page = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tasks/$workspaceId/$groupId/$conversationId",
+    component: () => null,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([page]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  await flush();
+
+  // A card, not a dialog, opening with the request's words; no files can be added.
+  expect(screen.getByTestId("task-request-card")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("textbox", { name: "What should it do?" })).toHaveProperty(
+    "value",
+    "Summarize Q3"
+  );
+  expect(screen.queryByTestId("new-station-task-attach")).toBeNull();
+
+  await user().click(screen.getByRole("button", { name: "Send to Router" }));
+  await flush();
+  expect(sent.find(([name]) => name === "taskRequests.accept")?.[1]).toEqual({
+    workspace: "w1",
+    request: "trq_1",
+    to: "router",
+    content: "Summarize Q3",
+  });
+  expect(onClose).toHaveBeenCalledTimes(1);
+
+  sent.length = 0;
+  await user().click(screen.getByRole("button", { name: "Create task" }));
+  await flush();
+  expect(sent.find(([name]) => name === "taskRequests.accept")?.[1]).toEqual({
+    workspace: "w1",
+    request: "trq_1",
+    to: "task",
+    content: "Summarize Q3",
+    run: { kind: "cloud", model: "gpt-5.5" },
+  });
+  expect(decodeURIComponent(router.state.location.pathname)).toBe("/tasks/w1/g1/c9");
+});
+
+/** A workspace whose invite the person accepted, as the core's `taskRequests` topic lists it. */
+const requestTarget = (grant: string, owner: string, name: string, sentToday = 0) => ({
+  grant_id: grant,
+  workspace: {
+    id: `w_${grant}`,
+    name,
+    owner: { id: `u_${grant}`, name: owner, email: null, avatar_id: `avt_${grant}` },
+  },
+  mode: "review",
+  daily_limit: 20,
+  pending_limit: 10,
+  sent_today: sentToday,
+  pending: 0,
+});
+
+it("switches to a New request where the person may send them, and sends the words alone to the chosen owner", async () => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "models"
+          ? workspaceModels
+          : topic.topic === "taskRequests"
+            ? {
+                workspace: "w1",
+                incoming: [],
+                grants: [],
+                targets: [
+                  // Its day's requests are spent: it cannot be chosen.
+                  requestTarget("trg_full", "Ann", "Ann's", 20),
+                  requestTarget("trg_cat", "CatsJuice", "Cats"),
+                  requestTarget("trg_bo", "Bo", "Bo's"),
+                ],
+                sent: [],
+                links: [],
+                error: false,
+              }
+            : undefined,
+    calls: (name) => (name === "taskRequests.send" ? { status: "pending" } : null),
+  });
+  const onClose = vi.fn();
+  const rootRoute = createRootRoute({
+    component: () =>
+      core.wrap(<NewStationTaskDialog onClose={onClose} workspace="w1" />),
+  });
+  render(
+    <RouterProvider
+      router={createRouter({
+        routeTree: rootRoute,
+        history: createMemoryHistory({ initialEntries: ["/"] }),
+      })}
+    />
+  );
+  await flush();
+
+  await user().click(screen.getByRole("button", { name: "What to make" }));
+  await user().click(screen.getByRole("menuitemradio", { name: "New request" }));
+  // Whom it goes to leads the title, the first who can take one chosen; nothing of what runs it, and no files.
+  expect(screen.getByRole("button", { name: "Send to" })).toHaveTextContent(
+    "CatsJuice"
+  );
+  // Each person by name and avatar, read through the person's grant.
+  expect(core.sentTo("files.read")).toContainEqual({
+    source: "target-avatar",
+    grant: "trg_cat",
+    revision: "avt_trg_cat",
+  });
+  expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+  expect(screen.queryByTestId("new-station-task-attach")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create task" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+
+  await user().click(screen.getByRole("button", { name: "Send to" }));
+  expect(screen.getByRole("menuitemradio", { name: /Ann/ })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  await user().click(screen.getByRole("menuitemradio", { name: /Bo/ }));
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    " review the deck "
+  );
+  await user().click(screen.getByRole("button", { name: "Send request" }));
+  await flush();
+  expect(core.sentTo("taskRequests.send")).toEqual([
+    {
+      grant: "trg_bo",
+      content: "review the deck",
+      key: expect.any(String),
+      workspace: "w1",
+    },
+  ]);
+  expect(core.sentTo("chat.startTask")).toEqual([]);
+  expect(onClose).toHaveBeenCalled();
+});
+
+/** The window in a router, on a core whose person may send requests to `targets`. */
+const inRouter = (targets: unknown[], dialog: ReactNode) => {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "stations"
+        ? { workspace: "w1", loading: false, stations: [] }
+        : topic.topic === "taskRequests"
+          ? { workspace: "w1", targets }
+          : undefined,
+  });
+  return render(
+    <RouterProvider
+      router={createRouter({
+        routeTree: createRootRoute({ component: () => core.wrap(dialog) }),
+        history: createMemoryHistory({ initialEntries: ["/"] }),
+      })}
+    />
+  );
+};
+
+it("keeps a plain title where the person may send no requests, and opens as a request to the target it is given", async () => {
+  const { unmount } = inRouter(
+    [],
+    <NewStationTaskDialog onClose={() => {}} workspace="w1" />
+  );
+  await flush();
+  expect(screen.queryByRole("button", { name: "What to make" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "New task" })).toBeVisible();
+  unmount();
+
+  inRouter(
+    [
+      requestTarget("trg_cat", "CatsJuice", "Cats"),
+      requestTarget("trg_bo", "Bo", "Bo's"),
+    ],
+    <NewStationTaskDialog onClose={() => {}} requestTo="trg_bo" workspace="w1" />
+  );
+  await flush();
+  expect(screen.getByRole("button", { name: "What to make" })).toHaveTextContent(
+    "New request"
+  );
+  expect(screen.getByRole("button", { name: "Send to" })).toHaveTextContent("Bo");
+});
+
+it("keeps the recipient it was opened for when they can take no more today, and holds Send", async () => {
+  inRouter(
+    [
+      requestTarget("trg_ann", "Ann", "Ann's", 20),
+      requestTarget("trg_bo", "Bo", "Bo's"),
+    ],
+    <NewStationTaskDialog onClose={() => {}} requestTo="trg_ann" workspace="w1" />
+  );
+  await flush();
+  expect(screen.getByRole("button", { name: "Send to" })).toHaveTextContent("Ann");
+  await user().type(
+    screen.getByRole("textbox", { name: "What should it do?" }),
+    "review the deck"
+  );
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
 });

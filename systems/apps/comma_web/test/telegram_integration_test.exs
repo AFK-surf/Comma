@@ -2,6 +2,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
   require SystemsRuntime.Proc
 
   use SystemsClock.Case, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
   require SystemsClock
 
   use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
@@ -330,6 +331,29 @@ defmodule CommaWeb.TelegramIntegrationTest do
       %{worker: worker}
     end
 
+    test "a Task asked for elsewhere sends no card, also with an earlier Participant", c do
+      assert complete_login(c.session, c.workspace).status == 200
+      group = c.workspace["default_group_id"]
+      id = create_card_task(c, "Asked on Lark", "lark")
+      set_task(c, id, %{"status" => "ready_for_review"})
+      settle_refute_receive({:telegram_card, _, _, _, _}, 200)
+
+      {:ok, target} = CommaWeb.ProactiveDelivery.telegram_target(c.workspace, c.user["id"])
+
+      assert {:ok, %{"status" => "no_card"}} =
+               CommaWeb.TelegramTaskCards.deliver(
+                 %{
+                   "agent_group_id" => group,
+                   "conversation_id" => id,
+                   "conversation_status" => "ready_for_review",
+                   "participant_payload" => target
+                 },
+                 %{"connect_id" => target["connect_id"]}
+               )
+
+      settle_refute_receive({:telegram_card, _, _, _, _}, 200)
+    end
+
     test "the bound owner accepts a reviewed Task once from its card", c do
       assert complete_login(c.session, c.workspace).status == 200
       id = create_card_task(c, "Ship the launch notes")
@@ -603,6 +627,64 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     assert connect_id == link.connect_id
     assert chat_id == link.telegram_user_id
+  end
+
+  test "the owner connects Telegram from the chat: the login link goes to the user and the callback ends the waiting call",
+       c do
+    ctx = %{
+      agent_id: c.workspace["router_agent_id"],
+      session_id: SalixStore.Ids.new_session_id(),
+      tool_call_id: "call-telegram-1",
+      group_id: c.workspace["default_group_id"],
+      trusted_origin: %{
+        "provider" => "internal",
+        "principal_ref" => %{"namespace" => "comma_user", "subject_id" => c.user["id"]}
+      }
+    }
+
+    assert {content, [%{"type" => "async_tool_call_started", "status" => "running"} | _]} =
+             SalixAgent.Tools.ChannelLink.link(%{"provider" => "telegram"}, ctx)
+
+    pending = Jason.decode!(content)
+    assert pending["status"] == "pending"
+    assert pending["bot_url"] == "https://t.me/comma_product_bot"
+    assert pending["instructions"] =~ "link_url"
+
+    state =
+      pending["link_url"]
+      |> URI.parse()
+      |> Map.fetch!(:query)
+      |> URI.decode_query()
+      |> Map.fetch!("state")
+
+    group = c.workspace["default_group_id"]
+    tenant = c.workspace["salix_tenant_id"]
+    {:ok, [request]} = SalixAgent.CapabilityRequests.list_group(group, tenant, status: "pending")
+    assert request["request_type"] == "channel_link"
+
+    # The user signs in with Telegram: the binding completes as from Settings,
+    # and the Router's call returns linked.
+    assert login_callback(state).status == 200
+    settle_receive({:telegram_message, "42001", _confirmation})
+
+    {:ok, ended} = SalixAgent.CapabilityRequests.get(group, request["request_id"], tenant)
+    assert ended["status"] == "completed"
+
+    assert ended["response_payload"] == %{
+             "status" => "linked",
+             "provider" => "telegram",
+             "telegram_username" => "alice"
+           }
+
+    # Connected: a second call says so and starts nothing.
+    assert %{"status" => "connected", "telegram_username" => "alice"} =
+             SalixAgent.Tools.ChannelLink.link(%{"provider" => "telegram"}, %{
+               ctx
+               | tool_call_id: "call-telegram-2"
+             })
+             |> Jason.decode!()
+
+    assert {:ok, []} = SalixAgent.CapabilityRequests.list_group(group, tenant, status: "pending")
   end
 
   test "OIDC binds one private Telegram identity and disconnect retires it", %{
@@ -882,9 +964,9 @@ defmodule CommaWeb.TelegramIntegrationTest do
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous) end)
 
     {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group_id)
-    key = SalixStore.Keys.ctl_group_conversation(group_id, conversation["conversation_id"])
-    :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, key})
-    on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
+
+    unblock =
+      CommaWeb.TestConversationFaults.block_append!(group_id, conversation["conversation_id"])
 
     webhook_request(update, @webhook_secret) |> expect_json(503)
     settle_refute_receive({:interaction_input, _, _, _})
@@ -893,7 +975,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert decided["status"] == "decided"
     assert decided["response"] == %{"status" => "answered", "answer" => "继续"}
 
-    SalixStore.S3.Fake.clear_blackhole()
+    :ok = unblock.()
     webhook_request(update, @webhook_secret) |> expect_json(200)
     settle_receive({:interaction_input, ^agent_id, payload, opts})
 
@@ -965,6 +1047,38 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert replay.status == 400
     assert replay.resp_body =~ "Telegram connection failed"
     assert replay.resp_body =~ "expired or is no longer active"
+  end
+
+  test "a failed callback logs its reason class, step and owner", %{
+    session: session,
+    user: user,
+    workspace: workspace
+  } do
+    SystemsRuntime.put_env(
+      :comma_web,
+      :telegram_access_result,
+      {:error, {:telegram_http_error, 403}}
+    )
+
+    on_exit(fn -> SystemsRuntime.delete_env(:comma_web, :telegram_access_result) end)
+    state = start_login(session, workspace)
+
+    log =
+      ExUnit.CaptureLog.capture_log(
+        [
+          format: "$message $metadata",
+          metadata: [:event, :reason_class, :connect_step, :user_id, :workspace_id]
+        ],
+        fn -> assert login_callback(state).status == 400 end
+      )
+
+    assert log =~ "event=telegram_connect_failed"
+    assert log =~ "reason_class=telegram_http_error_403"
+    assert log =~ "connect_step=verify"
+    assert log =~ "user_id=#{user["id"]}"
+    assert log =~ "workspace_id=#{workspace["id"]}"
+    refute log =~ state
+    assert Logger.metadata()[:workspace_id] == nil
   end
 
   test "commands give deterministic guidance before and after binding without reaching the agent",
@@ -1695,7 +1809,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
     |> put_req_header("content-type", "application/json")
   end
 
-  defp call(conn), do: CommaWeb.Router.call(conn, @router_opts)
+  defp call(conn),
+    do: CommaWeb.Router.call(conn, @router_opts) |> CommaWeb.AuthAbuseTestSupport.continue_http()
 
   defp expect_json(conn, status) do
     assert conn.status == status, conn.resp_body
@@ -1728,7 +1843,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     :ok
   end
 
-  defp create_card_task(c, title) do
+  defp create_card_task(c, title, origin \\ "telegram") do
     id = SalixStore.Ids.new_conversation_id()
     router = c.workspace["router_agent_id"]
 
@@ -1740,6 +1855,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
                c.worker["agent_id"],
                %{
                  "title" => title,
+                 "conversation_metadata" => %{"origin" => %{"provider" => origin}},
                  "content" => "Work on " <> title,
                  "schedule" => %{"schedule_id" => nil, "command" => "Work on " <> title},
                  "workflow" => nil,

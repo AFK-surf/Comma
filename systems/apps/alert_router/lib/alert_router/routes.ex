@@ -2,7 +2,7 @@ defmodule AlertRouter.Routes do
   @moduledoc """
   Fail-closed route resolver. Shadow remains pinned to `#xp-test`; live routes
   use the reviewed public-channel ID materialized from environment desired
-  state.
+  state, and carry only the alerts of the Router's own environment.
   """
 
   alias AlertRouter.CanonicalEvent
@@ -26,8 +26,10 @@ defmodule AlertRouter.Routes do
     end
   end
 
-  def resolve(%CanonicalEvent{environment: "staging"}, :live) do
-    with {:ok, channel_id} <- configured_channel("live") do
+  def resolve(%CanonicalEvent{environment: environment}, :live)
+      when environment in ["staging", "production"] do
+    with :ok <- own_environment(environment),
+         {:ok, channel_id} <- configured_channel("live") do
       {:ok,
        %{
          route_id: "live",
@@ -42,6 +44,13 @@ defmodule AlertRouter.Routes do
     do: {:error, {:unapproved_route_environment, "live", environment}}
 
   def resolve(_event, mode), do: {:error, {:unsupported_route_mode, mode}}
+
+  defp own_environment(environment) do
+    case SystemsRuntime.get_env(:alert_router, :environment) do
+      ^environment -> :ok
+      _other -> {:error, {:unapproved_route_environment, "live", environment}}
+    end
+  end
 
   defp configured_mode, do: SystemsRuntime.get_env(:alert_router, :mode, :disabled)
 

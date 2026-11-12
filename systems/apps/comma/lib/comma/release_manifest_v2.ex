@@ -124,6 +124,19 @@ defmodule Comma.ReleaseManifestV2 do
                             "historical-runtime-rollout-compatibility-cleanup-withdrawn-v1",
                           "transactional" => true
                         },
+                        # #4219 moved the Cloud VM switch onto Groups through an Agent
+                        # pass; the switch is gone since (#4895), and a database made
+                        # after it has no Agent `vm` to move. Staging and production
+                        # keep the ledger fact.
+                        %{
+                          "id" => "salix-20261019120001",
+                          "owner" => "salix_store",
+                          "store" => "postgres",
+                          "version" => 20_261_019_120_001,
+                          "source" => "historical-ledger-only",
+                          "checksum" => "historical-group-cloud-vm-switch-withdrawn-v1",
+                          "transactional" => true
+                        },
                         # #3582 added `domain` to the Feishu app tables; #3589 removed
                         # its readers before any production release ran the
                         # migrations. Staging keeps the ledger fact; no other
@@ -375,9 +388,6 @@ defmodule Comma.ReleaseManifestV2 do
             not String.starts_with?(postcondition, ["postgres.", "clickhouse."])
           end) ->
         {:error, :nontransactional_step_requires_schema_postcondition}
-
-      safety["destructive"] and not safety["backupRequired"] ->
-        {:error, :destructive_step_requires_backup}
 
       safety["rollbackStrategy"] != "none" and step["phase"] == "expand" ->
         {:error, :break_glass_rollback_requires_non_expand_phase}

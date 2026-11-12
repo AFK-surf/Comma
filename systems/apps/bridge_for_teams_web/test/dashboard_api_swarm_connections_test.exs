@@ -94,6 +94,27 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
       conn |> put_resp_content_type("application/json") |> send_resp(status, Jason.encode!(body))
     end
 
+    # Telegram's getMe: any token but the wrong one is the same bot.
+    def call(%{request_path: "/botwrong-token/getMe"} = conn, _opts) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(401, Jason.encode!(%{"ok" => false, "description" => "Unauthorized"}))
+    end
+
+    def call(%{request_path: "/bot" <> _} = conn, _opts) do
+      body = %{
+        "ok" => true,
+        "result" => %{
+          "id" => 900,
+          "first_name" => "Acme",
+          "username" => "acme_bot",
+          "can_read_all_group_messages" => false
+        }
+      }
+
+      conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
+    end
+
     def call(%{request_path: "/users/@me"} = conn, _opts) do
       conn
       |> put_resp_content_type("application/json")
@@ -552,6 +573,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
     prev_feishu_api_base = SystemsRuntime.get_env(:salix_im, :feishu_api_base_url)
     prev_feishu_public_base = SystemsRuntime.get_env(:salix_im, :public_base_url)
     prev_qq_api_base = SystemsRuntime.get_env(:salix_im, :qq_api_base_url)
+    prev_telegram_api_base = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url)
     prev_lark_api_base = SystemsRuntime.get_env(:salix_im, :lark_api_base_url)
 
     %{pid: bandit, url: mock_feishu_url} =
@@ -564,11 +586,13 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
     SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, mock_feishu_url <> "/open-apis")
     SystemsRuntime.put_env(:salix_im, :public_base_url, mock_feishu_url)
     SystemsRuntime.put_env(:salix_im, :qq_api_base_url, mock_feishu_url)
+    SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, mock_feishu_url)
     # The Lark open platform answers on the same paths as Feishu's.
     SystemsRuntime.put_env(:salix_im, :lark_api_base_url, mock_feishu_url <> "/open-apis")
 
     on_exit(fn ->
       restore_env(:salix_im, :qq_api_base_url, prev_qq_api_base)
+      restore_env(:salix_im, :telegram_api_base_url, prev_telegram_api_base)
       restore_env(:salix_im, :lark_api_base_url, prev_lark_api_base)
       restore_env(:salix_im, :feishu_api_base_url, prev_feishu_api_base)
       restore_env(:salix_im, :public_base_url, prev_feishu_public_base)
@@ -1009,6 +1033,81 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
     end
   end
 
+  describe "Telegram" do
+    test "an admin connects a bot and allows a group, without the token ever coming back", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      bot = %{"bot_token" => "123:fake-telegram-token"}
+
+      assert %{"notice" => "Telegram bot connected." <> _} =
+               conn
+               |> post(connections_path(org, project, "/telegram"), bot)
+               |> json_response(201)
+               |> data()
+
+      body = conn |> get(connections_path(org, project)) |> response(200)
+      refute body =~ "fake-telegram-token"
+      telegram = body |> Jason.decode!() |> data() |> get_in(["messaging", "telegram"])
+
+      assert [
+               %{
+                 "connect_id" => "imc1_" <> _ = connect_id,
+                 "bot_name" => "acme_bot",
+                 "reads_all_group_messages" => false,
+                 "chats" => []
+               }
+             ] = telegram["connects"]
+
+      assert %{"status" => "ready", "connect_id" => ^connect_id} = telegram["route"]
+
+      # The bot is a new connect's alone.
+      assert %{"error" => %{"code" => "provider_app_in_use"}} =
+               conn
+               |> post(connections_path(org, project, "/telegram"), bot)
+               |> json_response(409)
+
+      assert %{"notice" => "Telegram chats saved."} =
+               conn
+               |> put(connections_path(org, project, "/telegram/#{connect_id}/chats"), %{
+                 "allowed_chat_ids" => ["-1001"]
+               })
+               |> json_response(200)
+               |> data()
+
+      data = conn |> get(connections_path(org, project)) |> json_response(200) |> data()
+
+      assert [
+               %{
+                 "chats" => [
+                   %{"id" => "-1001", "allowed" => true, "title" => nil}
+                 ]
+               }
+             ] = data["messaging"]["telegram"]["connects"]
+
+      assert %{"error" => %{"code" => "invalid_chats"}} =
+               conn
+               |> put(connections_path(org, project, "/telegram/#{connect_id}/chats"), %{
+                 "allowed_chat_ids" => "-1001"
+               })
+               |> json_response(422)
+    end
+
+    test "a bad token is refused and leaves nothing", %{conn: conn, org: org, project: project} do
+      body =
+        conn
+        |> post(connections_path(org, project, "/telegram"), %{"bot_token" => "wrong-token"})
+        |> response(422)
+
+      assert %{"error" => %{"code" => "connect_rejected"}} = Jason.decode!(body)
+      refute body =~ "wrong-token"
+
+      data = conn |> get(connections_path(org, project)) |> json_response(200) |> data()
+      assert data["messaging"]["telegram"]["connects"] == []
+    end
+  end
+
   describe "QQ" do
     test "connecting a bot shows its callback address, never the secret", %{
       conn: conn,
@@ -1214,6 +1313,41 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
 
       assert message == "Choose the Router of this Agent Swarm, or Tasks."
       assert slack_connects(conn, org, project) == []
+    end
+
+    test "an admin turns off and on joining new public channels", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      assert {:ok, %{"connect_id" => connect_id}} =
+               ProjectIMConnects.create_project_connect(
+                 org.id,
+                 project.id,
+                 "slack",
+                 slack_attrs()
+               )
+
+      # A connect joins new public channels until an admin turns it off.
+      assert [%{"auto_join_public_channels" => true, "inbound_agent" => inbound}] =
+               slack_connects(conn, org, project)
+
+      auto_join = connections_path(org, project, "/slack/#{connect_id}/auto-join")
+
+      assert %{"notice" => "The Slack app no longer joins new public channels" <> _} =
+               conn |> put(auto_join, %{"enabled" => false}) |> json_response(200) |> data()
+
+      # Only the switch changes; the connect still delivers where it did.
+      assert [%{"auto_join_public_channels" => false, "inbound_agent" => ^inbound}] =
+               slack_connects(conn, org, project)
+
+      assert %{"notice" => "The Slack app joins new public channels by itself."} =
+               conn |> put(auto_join, %{"enabled" => true}) |> json_response(200) |> data()
+
+      assert [%{"auto_join_public_channels" => true}] = slack_connects(conn, org, project)
+
+      assert %{"error" => %{"code" => "invalid_auto_join"}} =
+               conn |> put(auto_join, %{"enabled" => "no"}) |> json_response(422)
     end
 
     test "a connect is disabled, enabled and deleted", %{conn: conn, org: org, project: project} do
@@ -1422,6 +1556,63 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmConnectionsTest do
                pending["redirect_after"],
                "/orgs/#{org.slug}/projects/#{project.id}/connections"
              )
+    end
+
+    test "a secret's fields go to Salix's form, and the list names them without values", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      fields = [
+        %{"name" => "app_id", "secret" => false},
+        %{"name" => "app_secret", "secret" => true}
+      ]
+
+      assert %{"redirect_url" => url} =
+               conn
+               |> post(connections_path(org, project, "/accounts"), %{
+                 "provider" => "secret",
+                 "alias" => "hly",
+                 "fields" => fields
+               })
+               |> json_response(200)
+               |> data()
+
+      state = URI.parse(url).query |> URI.decode_query() |> Map.fetch!("state")
+      assert {:ok, pending} = SalixStore.OAuth.AuthState.get(state)
+
+      assert pending["fields"] == [
+               %{"name" => "app_id", "label" => "app_id", "secret" => false},
+               %{"name" => "app_secret", "label" => "app_secret", "secret" => true}
+             ]
+
+      assert %{"error" => %{"code" => "invalid_fields"}} =
+               conn
+               |> post(connections_path(org, project, "/accounts"), %{
+                 "provider" => "secret",
+                 "alias" => "hly",
+                 "fields" => [%{"name" => "app id"}]
+               })
+               |> json_response(422)
+
+      binding = seed_oauth_connection(org, project, "secret", "hly", "")
+      {:ok, record} = SalixStore.OAuth.get(binding["connection_id"])
+
+      :ok =
+        SalixStore.OAuth.put(
+          binding["connection_id"],
+          Map.put(record, "fields", [
+            %{"name" => "app_id", "secret" => false, "value" => "cli_a1"},
+            %{"name" => "app_secret", "secret" => true, "value" => "s3cr3t-value"}
+          ])
+        )
+
+      body = conn |> get(connections_path(org, project)) |> response(200)
+      refute body =~ "cli_a1"
+      refute body =~ "s3cr3t-value"
+
+      assert [%{"alias" => "hly", "fields" => ["app_id", "app_secret"]}] =
+               body |> Jason.decode!() |> data() |> get_in(["accounts", "connections"])
     end
 
     test "an account is disabled, enabled and disconnected", %{

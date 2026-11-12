@@ -1,8 +1,8 @@
+import VerifiedKernelProofs.Session.WorkOwner
+import VerifiedKernelProofs.Session.WorkSemanticPipeline
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkOwner
-import VerifiedKernelProofs.Session.WorkSemanticPipeline
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

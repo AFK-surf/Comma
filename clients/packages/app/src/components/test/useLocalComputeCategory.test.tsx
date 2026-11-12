@@ -13,6 +13,8 @@ const mock = vi.hoisted(() => ({
   listener: undefined as ((state: ComputeNodeState) => void) | undefined,
   overview: vi.fn(),
   workloads: vi.fn(),
+  dispose: vi.fn(),
+  resume: vi.fn(),
   maintenance: vi.fn().mockResolvedValue({
     installation: "installed",
     selectedReleaseId: "test",
@@ -38,6 +40,8 @@ const bridge = {
     hostMaintenanceState: mock.maintenance,
     localOverview: mock.overview,
     localWorkloads: mock.workloads,
+    disposeLocal: mock.dispose,
+    resumeLocalDisposal: mock.resume,
   },
 };
 import { useLocalComputeCategory } from "../useLocalComputeCategory";
@@ -75,6 +79,30 @@ afterEach(() => {
   vi.restoreAllMocks();
   mock.overview.mockReset();
   mock.workloads.mockReset();
+  mock.dispose.mockReset();
+  mock.resume.mockReset();
+});
+
+it("reads the bounded overview after a deletion attempt fails instead of leaving its old receipt and rows untouched", async () => {
+  mock.overview.mockResolvedValue(page);
+  mock.dispose.mockRejectedValue(new Error("connection closed after acceptance"));
+  const { result } = renderHook(() => useLocalComputeCategory(true), scriptCore());
+  await flush();
+  expect(result.current.data?.environments).toHaveLength(1);
+  const before = mock.overview.mock.calls.length;
+  mock.overview.mockResolvedValue({
+    availability: "available",
+    environments: [],
+    disposal: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      outcome: "completed",
+    },
+  });
+  await act(async () => result.current.dispose("opaque-A"));
+  expect(mock.dispose).toHaveBeenCalledWith({ key: "opaque-A" });
+  expect(mock.overview).toHaveBeenCalledTimes(before + 1);
+  expect(result.current.data?.environments).toHaveLength(0);
+  expect(result.current.disposal?.outcome).toBe("completed");
 });
 
 it("bounds visible reads, leaves pagination to the user, and withdraws old cloud detail while retaining local management", async () => {

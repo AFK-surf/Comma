@@ -89,6 +89,14 @@ defmodule SalixWeb.SalixFacadeTest do
 
     # Placement recovers: the SAME source id retries and lands exactly once.
     SystemsRuntime.put_env(:salix_agent, :placement, InertPlacement)
+    {:ok, owned} = SalixStore.Agent.claim(agent, to_string(node()), SalixAgent.State)
+    :ok = SalixAgent.OwnershipCell.install(agent, owned.epoch)
+
+    on_exit(fn ->
+      SalixStore.Agent.release(owned)
+      SalixAgent.OwnershipCell.clear(agent)
+    end)
+
     SalixAgent.LLM.Mock.script([{:final, "ok"}])
 
     assert {:ok, :created} =
@@ -96,8 +104,14 @@ defmodule SalixWeb.SalixFacadeTest do
                source_message_id: "req-remote-down"
              )
 
-    {:ok, state} = SalixAgent.InternalSessionStore.read(agent, session_id)
-    assert MapSet.member?(SalixAgent.InternalSession.get(state, :input_dedupe), "req-remote-down")
+    assert {:ok, _state} = SalixAgent.InternalSessionStore.read(agent, session_id)
+
+    assert {:ok, true} =
+             SalixAgent.InternalSessionStore.input_committed?(
+               agent,
+               session_id,
+               "req-remote-down"
+             )
   end
 
   test "placement local owner delegates to configured placement seam", %{agent: agent} do

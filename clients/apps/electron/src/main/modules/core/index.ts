@@ -71,7 +71,8 @@ const restartPausesMs = [0, 1_000, 5_000, 30_000];
 export interface CoreAppUpdates {
   status(): Promise<AppUpdateStatus>;
   check(): Promise<AppRelease | null>;
-  download(release: AppRelease): Promise<boolean>;
+  /** `progress`: how far it got, in percent, as it goes. */
+  download(release: AppRelease, progress: (percent: number) => void): Promise<boolean>;
   apply(release: AppRelease): Promise<boolean>;
 }
 
@@ -147,6 +148,7 @@ export class CoreHostService {
   readonly #testClock: boolean;
   readonly #stationPeers: Record<string, string[]> | undefined;
   readonly #meshAddon: string | undefined;
+  readonly #computerMesh: "on" | "salix" | undefined;
   /** Moves of the core's test clock under way, by id (`advanceClock`). */
   readonly #clockMoves = new Map<
     number,
@@ -205,6 +207,8 @@ export class CoreHostService {
     stationPeers?: Record<string, string[]> | undefined;
     /** The mesh addon of the station the app carries (`mesh.node`): the core reaches stations on it. */
     meshAddon?: string | undefined;
+    /** Settings › Debug, as the app started with it. */
+    computerMesh?: "on" | "salix" | undefined;
     /** Draws a workspace image the core read again with the platform's decoder (nativeImage). */
     renderImagePreview?: (input: {
       bytes: Uint8Array;
@@ -250,6 +254,7 @@ export class CoreHostService {
     this.#testClock = options.testClock === true;
     this.#stationPeers = options.stationPeers;
     this.#meshAddon = options.meshAddon;
+    this.#computerMesh = options.computerMesh;
     this.#localDrive = options.localDrive;
     this.#localFileUpload = options.localFileUpload;
     this.#localFileRead = options.localFileRead;
@@ -320,6 +325,7 @@ export class CoreHostService {
         : {}),
       ...(this.#stationPeers ? { stationPeers: this.#stationPeers } : {}),
       ...(this.#meshAddon ? { meshAddon: this.#meshAddon } : {}),
+      ...(this.#computerMesh ? { computerMesh: this.#computerMesh } : {}),
     });
     for (const event of this.#meeting?.events() ?? []) this.meetingEvent(event);
     // A call the core before this one made has no one to answer it.
@@ -658,7 +664,11 @@ export class CoreHostService {
       case "updateCheck":
         return this.#updates(message.op, (updates) => updates.check());
       case "updateDownload":
-        return this.#updates(message.op, (updates) => updates.download(message.input));
+        return this.#updates(message.op, (updates) =>
+          updates.download(message.input, (percent) =>
+            this.#post({ type: "update-progress", percent })
+          )
+        );
       case "updateApply":
         return this.#updates(message.op, (updates) => updates.apply(message.input));
     }

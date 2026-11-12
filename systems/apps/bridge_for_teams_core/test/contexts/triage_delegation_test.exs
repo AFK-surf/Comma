@@ -105,7 +105,7 @@ defmodule BridgeForTeams.TriageDelegationTest do
 
     {:ok, control_router} = SalixAgent.Control.get(router.salix_agent_id)
     {:ok, session_id} = RuntimeIds.persisted_router_session_id(control_router)
-    {:ok, _} = InternalSessionStore.prepare_create(router.salix_agent_id, session_id)
+    :ok = create_session_fixture!(router.salix_agent_id, session_id)
 
     %{
       project: project,
@@ -243,7 +243,7 @@ defmodule BridgeForTeams.TriageDelegationTest do
        %{project: project, router: router, worker: worker, second_worker: second_worker} do
     claim = claim(project, router)
     archive_agent_fixture!(worker)
-    assert :ok = SalixStore.S3.delete(SalixStore.Keys.ctl_agent(second_worker.salix_agent_id))
+    assert :ok = remove_agent_configuration_fixture!(second_worker.salix_agent_id)
 
     for worker_ref <- [
           worker.salix_agent_id,
@@ -296,6 +296,17 @@ defmodule BridgeForTeams.TriageDelegationTest do
     refute_received {:router_admission, _, _, _}
   end
 
+  defp remove_agent_configuration_fixture!(agent_id) do
+    %{num_rows: 1} =
+      SalixStore.Repo.query!(
+        "UPDATE salix_agents SET config_revision=0 WHERE agent_id=$1",
+        [agent_id]
+      )
+
+    assert {:error, :not_found} = SalixAgent.Control.get(agent_id)
+    :ok
+  end
+
   defp change_authority!(:archived_project, project, _router),
     do: Repo.update!(Ecto.Changeset.change(project, archived_at: SystemsClock.utc_now()))
 
@@ -314,7 +325,7 @@ defmodule BridgeForTeams.TriageDelegationTest do
     do: archive_agent_fixture!(router)
 
   defp change_authority!(:missing_router, _project, router),
-    do: SalixStore.S3.delete(SalixStore.Keys.ctl_agent(router.salix_agent_id))
+    do: remove_agent_configuration_fixture!(router.salix_agent_id)
 
   defp change_authority!(:reassigned_router, project, _router) do
     replacement = agent!(project, "Replacement Router", "router")

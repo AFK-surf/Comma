@@ -5,8 +5,8 @@ import { useApi, useResource } from "./resource";
 
 const t = messages.swarmAgents;
 
-/** Where a Task runs: inside Salix, a device's station or the swarm's Cloud VM. */
-export type PlaceLocation = "salix" | "station" | "cloud_vm";
+/** Where a Task runs: inside Salix, a sandbox of the Task's own, a device's station or the swarm's Cloud VM. */
+export type PlaceLocation = "salix" | "sandbox" | "station" | "cloud_vm";
 
 /**
  * The swarm's places (`…/agents/targets`): its devices' stations and its
@@ -53,7 +53,7 @@ export function PlaceFields({
   onStation: (deviceId: string) => void;
   disabled: boolean;
 }) {
-  const { stations, cloud_vm: cloud } = targets;
+  const { stations, cloud_vm: cloud, sandbox } = targets;
   const station = stations.find((item) => item.id === deviceId && item.selectable);
   return (
     <>
@@ -65,7 +65,9 @@ export function PlaceFields({
           label: t.locations[item],
           ...(item === "cloud_vm" && !cloud.selectable
             ? { disabled: true, ...(cloud.issue ? { subtitle: cloud.issue } : {}) }
-            : {}),
+            : item === "sandbox" && !sandbox.selectable
+              ? { disabled: true }
+              : {}),
         }))}
         label={t.locationLabel}
         onChange={(item) => onLocation(item as PlaceLocation)}

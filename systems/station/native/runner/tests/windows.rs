@@ -20,7 +20,7 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_stillfail-runner");
+const BIN: &str = env!("CARGO_BIN_EXE_comma-runner");
 
 fn tmpdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sfr-{}-{name}", std::process::id()));
@@ -213,7 +213,7 @@ fn the_ready_line_says_where_everything_is() {
     assert_eq!(info["id"], "a");
     assert_eq!(info["program"], "cmd");
     let socket = info["socket"].as_str().unwrap();
-    assert!(socket.starts_with(r"\\.\pipe\stillfail-runner-") && socket.ends_with("-a"), "{socket}");
+    assert!(socket.starts_with(r"\\.\pipe\comma-runner-") && socket.ends_with("-a"), "{socket}");
     assert_eq!(info["out"], format!(r"{dir}\a.out"));
     assert_eq!(info["err"], format!(r"{dir}\a.err"));
     assert_eq!(info["runner"].as_u64().unwrap(), runner.child.as_ref().unwrap().id() as u64);

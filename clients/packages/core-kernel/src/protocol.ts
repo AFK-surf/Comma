@@ -1,5 +1,5 @@
 // Messages between a UI and the core. A UI calls by name (`{id, call, params}`), subscribes to a topic
-// (`{id, subscribe: {topic, …params}, keyed}`), lets one go (`{id, unsubscribe: true}`) or stops a call under way
+// (`{id, subscribe: {topic, …params}}`), lets one go (`{id, unsubscribe: true}`) or stops a call under way
 // (`{id, cancel: true}`). The core answers a call once (`{id, ok}` or `{id, error}`; `{id, value}` before that says how
 // far it got) and a subscription with its whole value first, then what changed (`{id, delta}`), or its error.
 import type { AnyOp } from "./collections.ts";
@@ -14,7 +14,7 @@ export type RequestId = number;
 /// UI → core.
 export type ClientMessage =
   | { kind: "call"; id: RequestId; call: string; params: unknown }
-  | { kind: "subscribe"; id: RequestId; subscribe: Topic; keyed?: boolean }
+  | { kind: "subscribe"; id: RequestId; subscribe: Topic }
   | { kind: "unsubscribe"; id: RequestId }
   | { kind: "cancel"; id: RequestId };
 
@@ -99,9 +99,7 @@ export function parseClientMessage(
   if ("subscribe" in raw) {
     const topic = parseTopic(raw.subscribe, specs);
     if (!topic) return { invalid: "unknown topic" };
-    return raw.keyed === true
-      ? { kind: "subscribe", id, subscribe: topic, keyed: true }
-      : { kind: "subscribe", id, subscribe: topic };
+    return { kind: "subscribe", id, subscribe: topic };
   }
   if (raw.unsubscribe === true) return { kind: "unsubscribe", id };
   if (raw.cancel === true) return { kind: "cancel", id };

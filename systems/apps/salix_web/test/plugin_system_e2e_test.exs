@@ -157,7 +157,7 @@ defmodule SalixWeb.PluginSystemE2ETest do
       for agent <- [router, worker] do
         id = agent["agent_id"]
         session = Ids.new_session_id()
-        {:ok, _} = SalixAgent.InternalSessionStore.prepare_create(id, session)
+        {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(id, session)
         {id, session}
       end
 

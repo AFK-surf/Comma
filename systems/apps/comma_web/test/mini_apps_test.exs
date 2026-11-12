@@ -282,6 +282,93 @@ defmodule CommaWeb.MiniAppsTest do
     }
   end
 
+  test "Version artwork deploys, follows rollback and pins, and keeps the app's access rules",
+       ctx do
+    app = create_app!(ctx)
+    png = <<137, 80, 78, 71, 13, 10, 26, 10, 1>>
+    files = files!(ctx.tmp, screenshots: [{"cover.png", png}])
+    assert {:ok, _} = CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "media-v1"), files)
+    ws = ctx.workspace.id
+    base = "/v1/comma/workspaces/#{ws}/apps/#{app["id"]}"
+    url = "/v1/comma/apps/#{app["id"]}/screenshots/0?v=1"
+    via = [{"x-comma-app-via", "workspace/#{ws}"}]
+
+    assert %{status: 200, body: %{"screenshot_urls" => [^url]}} =
+             req(ctx, :get, base, ctx.ann)
+
+    assert %{status: 200, body: ^png} = req(ctx, :get, url, ctx.ann, nil, via)
+    assert %{status: 404} = req(ctx, :get, url, ctx.bob, nil, via)
+    assert %{status: 404} = req(ctx, :get, url, ctx.cat, nil, via)
+    assert %{status: 404} = req(ctx, :get, String.replace(url, "/0?", "/6?"), ctx.ann, nil, via)
+
+    newer = files!(ctx.tmp, screenshots: [{"new.png", png <> <<2>>}])
+    assert {:ok, _} = CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "media-v2"), newer)
+    assert %{status: 200} = req(ctx, :post, base <> "/rollback", ctx.ann, %{"version" => 1})
+
+    assert %{status: 200, body: %{"screenshot_urls" => [^url]}} =
+             req(ctx, :get, base, ctx.ann)
+
+    assert %{status: 200} = req(ctx, :put, base <> "/link", ctx.ann)
+    assert %{status: 200, body: %{"token" => token}} = req(ctx, :get, base <> "/link", ctx.ann)
+    link_via = [{"x-comma-app-via", "link/" <> token}]
+    assert %{status: 200, body: ^png} = req(ctx, :get, url, ctx.cat, nil, link_via)
+    assert %{status: 200, body: ^png} = req(ctx, :get, url, guest!(), nil, link_via)
+
+    assert %{status: 404} =
+             req(ctx, :get, String.replace(url, "v=1", "v=2"), ctx.cat, nil, link_via)
+
+    assert %{status: 200} =
+             req(ctx, :post, "/v1/comma/workspaces/#{ctx.other.id}/apps/install", ctx.cat, %{
+               "token" => token,
+               "pinned_version" => 1
+             })
+
+    assert %{status: 200} = req(ctx, :post, base <> "/rollback", ctx.ann, %{"version" => 2})
+
+    assert %{status: 200, body: ^png} =
+             req(ctx, :get, url, ctx.cat, nil, [{"x-comma-app-via", "workspace/#{ctx.other.id}"}])
+
+    assert %{status: 200} = req(ctx, :delete, base <> "/link", ctx.ann)
+    assert %{status: 404} = req(ctx, :get, url, ctx.cat, nil, link_via)
+
+    bad = files!(ctx.tmp, screenshots: [{"bad.png", "not a PNG"}])
+
+    assert {:error, {:invalid, _}} =
+             CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "bad-media"), bad)
+
+    oversized =
+      files!(ctx.tmp, screenshots: [{"large.png", png <> :binary.copy(<<0>>, 2 * 1024 * 1024)}])
+
+    assert {:error, {:invalid, _}} =
+             CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "large-media"), oversized)
+
+    missing = %{
+      files
+      | manifest: Jason.encode!(%{"name" => "App", "screenshots" => ["missing.png"]})
+    }
+
+    assert {:error, {:invalid, _}} =
+             CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "missing-media"), missing)
+
+    assert {:error, _} =
+             Comma.MiniApps.Manifest.validate(%{
+               "name" => "App",
+               "screenshots" => ["../private.png"]
+             })
+
+    assert {:error, _} =
+             Comma.MiniApps.Manifest.validate(%{
+               "name" => "App",
+               "screenshots" => List.duplicate("cover.png", 7)
+             })
+
+    assert {:error, _} =
+             Comma.MiniApps.Manifest.validate(%{
+               "name" => "App",
+               "screenshots" => ["cover.png", "cover.png"]
+             })
+  end
+
   test "a backend manifest provisions namespaced storage and appears in the app view", ctx do
     classes = start_supervised!({Agent, fn -> MapSet.new() end})
 
@@ -352,7 +439,7 @@ defmodule CommaWeb.MiniAppsTest do
   test "deploy checks the commit and files, stores the Version once per key, and uploads its backend",
        ctx do
     app = create_app!(ctx)
-    files = files!(ctx.tmp, backend?: true)
+    files = files!(ctx.tmp, backend?: true, capabilities: ["usb", "bluetooth"])
 
     # A commit that is not on the pushed session branch makes no Version.
     assert {:error, :commit_not_on_branch} =
@@ -364,7 +451,7 @@ defmodule CommaWeb.MiniAppsTest do
     # A manifest the schema refuses comes back as every problem it has.
     bad = %{
       files
-      | manifest: Jason.encode!(%{"name" => "", "capabilities" => ["camera"], "x" => 1})
+      | manifest: Jason.encode!(%{"name" => "", "capabilities" => ["unknown.device"], "x" => 1})
     }
 
     assert {:error, {:invalid, errors}} =
@@ -1366,6 +1453,100 @@ defmodule CommaWeb.MiniAppsTest do
              req(ctx, :post, "/v1/comma/apps/#{app_id}/open", ctx.ann, %{}, via)
   end
 
+  # Serves one avatar image, whatever its key.
+  defmodule AvatarStorage do
+    @moduledoc false
+    @behaviour Comma.ProfileAvatar.Storage
+
+    def start_put(_key, _content_type), do: {:error, :unused}
+    def finish_put(_url, _path, _content_type, _size), do: {:error, :unused}
+    def cancel_put(_url), do: :ok
+    def get(_key), do: {:ok, "avatar-png"}
+    def delete(_key), do: :ok
+  end
+
+  test "an app the Router made is the asking member's, shared with the Workspace",
+       ctx do
+    {bob, _} = ctx.bob
+    ws = ctx.workspace.id
+    group = ctx.workspace.salix_group_id
+    previous = SystemsRuntime.get_env(:comma_core, :profile_avatar)
+    SystemsRuntime.put_env(:comma_core, :profile_avatar, adapter: AvatarStorage, bucket: "test")
+    on_exit(fn -> SystemsRuntime.put_env(:comma_core, :profile_avatar, previous) end)
+
+    avatar =
+      Repo.insert!(%Comma.Accounts.UserAvatar{
+        id: "avt_bob",
+        user_id: bob["id"],
+        object_key: "users/#{bob["id"]}/avt_bob.png",
+        content_type: "image/png",
+        byte_size: 10,
+        status: "active"
+      })
+
+    Repo.get!(Comma.Accounts.User, bob["id"])
+    |> Ecto.Changeset.change(name: "Bob", avatar_id: avatar.id)
+    |> Repo.update!()
+
+    sent_by = fn principal_ref -> %{"principal_ref" => principal_ref} end
+
+    assert {:ok, %{"app_id" => app_id, "repo" => repo}} =
+             CommaWeb.MiniAppPort.create(
+               %{
+                 group_id: group,
+                 trusted_origin:
+                   sent_by.(%{"namespace" => "comma_user", "subject_id" => bob["id"]})
+               },
+               %{"name" => "Fretboard"}
+             )
+
+    # A chat user without a linked Comma account names nobody.
+    assert {:ok, %{"app_id" => unlinked_id}} =
+             CommaWeb.MiniAppPort.create(
+               %{
+                 group_id: group,
+                 trusted_origin: sent_by.(%{"connect_id" => "slack-x", "subject_id" => "U1"})
+               },
+               %{"name" => "Unlinked"}
+             )
+
+    app = %{"id" => app_id, "repo" => repo}
+    assert {:ok, _} = CommaWeb.MiniAppPort.deploy(deploy_ctx(ctx, app, "key-v1"), files!(ctx.tmp))
+
+    via = [{"x-comma-app-via", "workspace/#{ws}"}]
+    avatar_url = "/v1/comma/apps/#{app_id}/author-avatar/avt_bob"
+
+    # Ann, the owner, did not ask for it and still sees it as Bob's.
+    assert %{status: 200, body: %{"app" => %{"author" => author, "visibility" => "workspace"}}} =
+             req(ctx, :post, "/v1/comma/apps/#{app_id}/open", ctx.ann, %{}, via)
+
+    assert author == %{"name" => "Bob", "avatar_url" => avatar_url}
+    assert Repo.get!(Comma.MiniApps.App, app_id).created_by == bob["id"]
+
+    assert %{status: 200, body: "avatar-png"} = req(ctx, :get, avatar_url, ctx.ann, nil, via)
+
+    assert %{status: 404} =
+             req(ctx, :get, "/v1/comma/apps/#{app_id}/author-avatar/avt_other", ctx.ann, nil, via)
+
+    assert %{status: 404} = req(ctx, :get, avatar_url, ctx.cat, nil, via)
+
+    assert %{status: 200, body: %{"data" => apps}} =
+             req(ctx, :get, "/v1/comma/workspaces/#{ws}/apps", ctx.ann)
+
+    assert %{"author" => %{"name" => "Comma user", "avatar_url" => nil}} =
+             Enum.find(apps, &(&1["id"] == unlinked_id))
+
+    # With no creator it stays shared: nobody would see it as private.
+    assert %{status: 400, body: %{"message" => "an app with no creator cannot be private"}} =
+             req(ctx, :patch, "/v1/comma/workspaces/#{ws}/apps/#{unlinked_id}", ctx.ann, %{
+               "visibility" => "private"
+             })
+
+    # The Router still finds both.
+    assert {:ok, %{"apps" => [_, _]}} = CommaWeb.MiniAppPort.list(group)
+    assert {:ok, %{"app_id" => ^app_id}} = CommaWeb.MiniAppPort.get(group, app_id)
+  end
+
   test "a Router lists and reads its Workspace's apps with their URLs, but not a member's private app",
        ctx do
     group = ctx.workspace.salix_group_id
@@ -2189,7 +2370,10 @@ defmodule CommaWeb.MiniAppsTest do
         [
           {~c"index.html", "<!doctype html><div id=app></div>"},
           {~c"icon.png", <<137, 80, 78, 71>>}
-        ] ++ if(cover, do: [{String.to_charlist(elem(cover, 0)), elem(cover, 1)}], else: [])
+        ] ++
+          Enum.map(List.wrap(cover) ++ Keyword.get(opts, :screenshots, []), fn {path, body} ->
+            {String.to_charlist(path), body}
+          end)
       )
 
     :ok = :erl_tar.create(String.to_charlist(source), [{~c"README.md", "hi"}], [:compressed])
@@ -2209,6 +2393,11 @@ defmodule CommaWeb.MiniAppsTest do
         "storage" => ["app", "user", "device"]
       }
       |> then(fn m -> if cover, do: Map.put(m, "cover", elem(cover, 0)), else: m end)
+      |> then(fn m ->
+        if opts[:screenshots],
+          do: Map.put(m, "screenshots", Enum.map(opts[:screenshots], &elem(&1, 0))),
+          else: m
+      end)
       |> then(fn m ->
         if opts[:backend?],
           do:

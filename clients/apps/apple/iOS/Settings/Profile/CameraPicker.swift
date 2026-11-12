@@ -1,11 +1,13 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The system camera for a new profile photo, facing the member as Contacts' does. It only takes the picture;
 /// Move and Scale frames it afterwards, as it does a photo from the library.
 struct CameraPicker: UIViewControllerRepresentable {
     let take: (UIImage) -> Void
     let cancel: () -> Void
+    var preferredDevice: UIImagePickerController.CameraDevice = .front
 
     /// False on a device without a camera, such as the Simulator; Take Photo is not offered there.
     static var available: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
@@ -13,7 +15,9 @@ struct CameraPicker: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
         picker.sourceType = .camera
-        if UIImagePickerController.isCameraDeviceAvailable(.front) { picker.cameraDevice = .front }
+        picker.mediaTypes = [UTType.image.identifier]
+        picker.cameraCaptureMode = .photo
+        if UIImagePickerController.isCameraDeviceAvailable(preferredDevice) { picker.cameraDevice = preferredDevice }
         picker.delegate = context.coordinator
         return picker
     }

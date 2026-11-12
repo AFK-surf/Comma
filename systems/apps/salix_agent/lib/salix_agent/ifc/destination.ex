@@ -67,14 +67,19 @@ defmodule SalixAgent.IFC.Destination do
   # the inbound.
   @qq_egress ~w(qq.send_message qq.stream_message qq.post_task_card)
 
+  # A LINE send addresses a chat that wrote to the account. `chat_id` defaults
+  # to the chat of the current LINE source, so the default resolves to the
+  # same atom as the inbound.
+  @line_egress ~w(line.send_message)
+
   # A Lark send or edit names a chat the bot is in. `chat_id` defaults to the
   # chat of the current Lark source, so the default resolves to the same atom
-  # as the inbound.
-  @lark_egress ~w(lark.send_message lark.update_message)
+  # as the inbound. A forward always names its chat.
+  @lark_egress ~w(lark.send_message lark.update_message lark.forward_message)
 
-  # `lark.send_message` can name one person (`user_id`) instead of a chat.
+  # A send or a forward can name one person (`user_id`) instead of a chat.
   # The person's ID is then the destination, whatever kind of ID it is.
-  @lark_direct_egress ~w(lark.send_message)
+  @lark_direct_egress ~w(lark.send_message lark.forward_message)
 
   # A Lark Task card answers a message, and its audience is the chat of that
   # message. `chat_id` is a hint; without it the resolver asks Lark which
@@ -111,6 +116,10 @@ defmodule SalixAgent.IFC.Destination do
 
   @feishu_direct_id_types ~w(open_id user_id union_id email)
 
+  # `feishu.send_message` and `feishu.forward_message` take Lark's contract:
+  # a chat (the chat of the current Feishu source by default) or one person.
+  @feishu_chat_egress ~w(feishu.send_message feishu.forward_message)
+
   # Feishu cloud documents. New content in an existing document, a media block,
   # or a comment reaches everyone who can read that document; the resolver
   # names that audience from the document's own link setting.
@@ -121,32 +130,32 @@ defmodule SalixAgent.IFC.Destination do
   # document's own blocks. They add nothing the document did not hold.
   @feishu_document_reshape ~w(block_delete block_move_after block_copy_insert_after)
 
-  # Writes with no content of their own: a reaction, a pin, a join. They move
-  # no information, so they carry no decision.
+  # Metadata operations exempt from content-flow decisions. Provider and role
+  # authorization still apply.
   @contentless MapSet.new(~w(
     slack.add_reaction slack.pin_message slack.unpin_message slack.delete_message
-    slack.join_channel slack.create_channel slack.invite_users slack.list_emoji
+    slack.join_channel slack.leave_thread slack.create_channel slack.invite_users slack.list_emoji
     slack.set_canvas_access slack.delete_canvas_access slack.delete_canvas
     feishu.add_reaction feishu.remove_reaction feishu.pin_message
     feishu.unpin_message feishu.delete_message
     feishu.resolve_doc_comment feishu.remove_doc_member feishu.delete_doc
-    feishu.request_minute_access
+    feishu.request_minute_access feishu.join_chat
     signal.react signal.delete_message signal.join_group signal.add_members
     signal.remove_members signal.leave_group
     qq.delete_message
     lark.add_reaction lark.remove_reaction lark.pin_message lark.unpin_message
     lark.delete_message
     lark.resolve_doc_comment lark.remove_doc_member lark.delete_doc
-    lark.request_minute_access
+    lark.request_minute_access lark.join_chat
   ))
 
   # Reads. Labelled at the result, never filtered.
   @read_prefixes ~w(
     slack.get_ slack.list_ slack.search slack.message_search slack.semantic_search
-    slack.fetch_ feishu.get_ feishu.list_ feishu.fetch_ feishu.lookup_
+    slack.fetch_ feishu.get_ feishu.list_ feishu.search_ feishu.fetch_ feishu.lookup_ feishu.read_
     internal.read_ internal.search_ internal.list_ internal.get_
-    telegram.get_ wechat.get_ signal.list_ qq.list_ qq.search_ qq.fetch_ qq.get_
-    lark.get_ lark.list_ lark.search_ lark.fetch_ lark.lookup_
+    telegram.get_ wechat.get_ signal.list_ qq.list_ qq.search_ qq.fetch_ qq.get_ line.list_
+    lark.get_ lark.list_ lark.search_ lark.fetch_ lark.lookup_ lark.read_
   )
 
   @doc """
@@ -207,6 +216,24 @@ defmodule SalixAgent.IFC.Destination do
     end
   end
 
+  def additional_destinations(name, args, ctx)
+      when name in [
+             "im_api.lark.create_chat",
+             "im_api.lark/create_chat",
+             "im_api.lark.add_chat_members",
+             "im_api.lark/add_chat_members"
+           ],
+      do: args |> member_destinations("lark", ctx) |> Enum.drop(1)
+
+  def additional_destinations(name, args, ctx)
+      when name in [
+             "im_api.feishu.create_chat",
+             "im_api.feishu/create_chat",
+             "im_api.feishu.add_chat_members",
+             "im_api.feishu/add_chat_members"
+           ],
+      do: args |> member_destinations("feishu", ctx) |> Enum.drop(1)
+
   def additional_destinations(_name, _args, _ctx), do: []
 
   # ---------------------------------------------------------------------------
@@ -222,6 +249,15 @@ defmodule SalixAgent.IFC.Destination do
 
       read_operation?(api) ->
         {:read, %{}}
+
+      api in @feishu_chat_egress and arg(args, "user_id") != "" ->
+        {:egress, provider_direct(api, "user_id", args, ctx)}
+
+      api in @feishu_chat_egress ->
+        {:egress, feishu_chat(args, ctx)}
+
+      api in ~w(feishu.create_chat feishu.add_chat_members) ->
+        args |> member_destinations("feishu", ctx) |> List.first()
 
       api in @feishu_receive_egress ->
         {:egress, feishu_receive(api, args, ctx)}
@@ -258,6 +294,9 @@ defmodule SalixAgent.IFC.Destination do
       api in @qq_egress ->
         {:egress, qq_chat(args, ctx)}
 
+      api in @line_egress ->
+        {:egress, source_chat("line", args, ctx)}
+
       api in @lark_document_egress ->
         if api == "lark.update_doc" and arg(args, "command") in @lark_document_reshape,
           do: {:none, %{}},
@@ -268,6 +307,9 @@ defmodule SalixAgent.IFC.Destination do
 
       api == "lark.share_doc" ->
         {:egress, lark_member(arg(args, "member_type"), arg(args, "member_id"), args, ctx)}
+
+      api in ~w(lark.create_chat lark.add_chat_members) ->
+        args |> member_destinations("lark", ctx) |> List.first()
 
       api == "lark.update_doc_link_share" ->
         if String.starts_with?(arg(args, "link_share_entity"), "tenant"),
@@ -435,16 +477,19 @@ defmodule SalixAgent.IFC.Destination do
     end
   end
 
-  defp lark_chat(args, ctx) do
+  defp lark_chat(args, ctx), do: source_chat("lark", args, ctx)
+  defp feishu_chat(args, ctx), do: source_chat("feishu", args, ctx)
+
+  defp source_chat(provider, args, ctx) do
     chat_id =
       case arg(args, "chat_id") do
-        "" -> trusted_lark_chat_id(ctx)
+        "" -> trusted_chat_id(provider, ctx)
         chat_id -> chat_id
       end
 
     %{
       "kind" => "provider_scope",
-      "provider" => "lark",
+      "provider" => provider,
       "connect_id" => connect_id(args, ctx),
       "scope_id" => chat_id,
       "thread_id" => ""
@@ -463,10 +508,10 @@ defmodule SalixAgent.IFC.Destination do
     }
   end
 
-  defp trusted_lark_chat_id(ctx) do
+  defp trusted_chat_id(provider, ctx) do
     origin = Map.get(ctx, :trusted_origin) || Map.get(ctx, "trusted_origin") || %{}
 
-    if SalixAgent.IFC.text(SalixAgent.IFC.value(origin, "provider")) == "lark" do
+    if SalixAgent.IFC.text(SalixAgent.IFC.value(origin, "provider")) == provider do
       provider_context = SalixAgent.IFC.value(origin, "provider_context") || %{}
       SalixAgent.IFC.text(SalixAgent.IFC.value(provider_context, "chat_id"))
     else
@@ -617,6 +662,27 @@ defmodule SalixAgent.IFC.Destination do
     end
   end
 
+  # Creation sends the group name to its invitees; member grants can expose
+  # history. As with document sharing, check declared sources against every
+  # new recipient before the call runs.
+  # Invalid or oversized requests stay fail closed until provider validation.
+  defp member_destinations(args, provider, ctx) do
+    member = if provider == "feishu", do: &feishu_member/4, else: &lark_member/4
+
+    case arg_list(args, "user_ids") do
+      ids when length(ids) in 1..50 ->
+        ids
+        |> Enum.uniq()
+        |> Enum.map(fn
+          id when is_binary(id) and id != "" -> {:egress, member.("user", id, args, ctx)}
+          _invalid -> {:egress, %{"kind" => "public"}}
+        end)
+
+      _invalid ->
+        [{:egress, %{"kind" => "public"}}]
+    end
+  end
+
   # A document shared with a chat or a person becomes readable there, as a
   # message sent there would be. A department is wider than any one
   # conversation, so it is the space.
@@ -756,7 +822,8 @@ defmodule SalixAgent.IFC.Destination do
   # path is on the Drive. `loop.create` stores the program's config and grants
   # and `loop.send` queues an event, both where only that Agent's Loop reads
   # them (§7: the Loop's own reads keep Group-level authorization and carry
-  # the sealed origin). Pause, resume, delete, and webhook management carry no content.
+  # the sealed origin). Pause, resume, delete, webhook and subscription
+  # management carry no content.
   defp tool(name, _args, _ctx) when name in ~w(loop.sdk loop.list loop.get), do: {:read, %{}}
 
   defp tool("loop.build", args, ctx) do
@@ -770,8 +837,9 @@ defmodule SalixAgent.IFC.Destination do
   defp tool(name, _args, _ctx) when name in ~w(loop.create loop.send),
     do: {:persist, %{"kind" => "agent_private"}}
 
-  defp tool(name, _args, _ctx) when name in ~w(loop.pause loop.resume loop.delete loop.webhook),
-    do: {:none, %{}}
+  defp tool(name, _args, _ctx)
+       when name in ~w(loop.pause loop.resume loop.delete loop.webhook loop.subscribe),
+       do: {:none, %{}}
 
   # A filesystem write is private unless it lands on the user's Drive
   # (`SalixAgent.DriveMount`, `/drive/...`): that mount is the Workspace's
@@ -823,12 +891,13 @@ defmodule SalixAgent.IFC.Destination do
   # it is the restrictive public egress.
   defp tool("device.lan_request", _args, _ctx), do: {:egress, %{"kind" => "public"}}
 
-  # A miIO command goes to a device on the user's local network, like
+  # Raw TCP bytes go to a device on the user's local network, like
   # device.lan_request.
-  defp tool("device.miio_request", _args, _ctx), do: {:egress, %{"kind" => "public"}}
+  defp tool("device.lan_tcp_send", _args, _ctx), do: {:egress, %{"kind" => "public"}}
 
-  # A Gree request goes to a device on the user's local network as well.
-  defp tool("device.gree_request", _args, _ctx), do: {:egress, %{"kind" => "public"}}
+  # A LAN script sends its args to devices on the user's local network, like
+  # device.lan_request.
+  defp tool("device.lan_script", _args, _ctx), do: {:egress, %{"kind" => "public"}}
 
   # A saved device secret is Group configuration: every Agent of the Group
   # can use it and list its name, host and model. Its value never comes back.
@@ -836,6 +905,12 @@ defmodule SalixAgent.IFC.Destination do
     do: {:persist, %{"kind" => "device_secret", "group_id" => group_id(ctx)}}
 
   defp tool("device.secret_list", _args, _ctx), do: {:read, %{}}
+
+  # Listing a computer's screens sends nothing to it and brings their names in.
+  defp tool("device.screens", _args, _ctx), do: {:read, %{}}
+
+  # Listing the Group's devices or reading one sends nothing anywhere.
+  defp tool(name, _args, _ctx) when name in ~w(device.list device.get), do: {:read, %{}}
   defp tool("device.secret_delete", _args, _ctx), do: {:none, %{}}
 
   # Tailnet settings are Group configuration like a device secret; status and
@@ -943,8 +1018,9 @@ defmodule SalixAgent.IFC.Destination do
       String.starts_with?(name, "peers.") or String.starts_with?(name, "meeting.") ->
         {:none, %{}}
 
-      # It writes a time of day; no content leaves.
-      name == "daily_brief.set_time" ->
+      # They write a time of day or the requester's own brief settings; no
+      # content leaves.
+      name in ~w(daily_brief.set_time daily_brief.set_channel daily_brief.set_project) ->
         {:none, %{}}
 
       String.starts_with?(name, "calendar.") ->

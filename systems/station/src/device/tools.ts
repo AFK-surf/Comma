@@ -7,6 +7,7 @@
 // (`protect`); `exec` and `process.*` under `full` run as the station's user and can reach what that user can, which is
 // why they need `full`.
 import { type ChildProcess, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, lstat, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -16,6 +17,8 @@ import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.t
 import { findCommand } from "../updates/runtimes.ts";
 import { versionIn } from "../updates/versions.ts";
 import { wall } from "../ops/fibers.ts";
+import { fileErrorMessage, withFolderDenialHint } from "../ops/files.ts";
+import { stationLang } from "../ops/i18n.ts";
 import { endCommand, startCommand } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
 import type { Access } from "./access.ts";
@@ -62,6 +65,8 @@ const MAX_PROCESSES = 32;
 type Kept = {
   id: string;
   command: string;
+  cwd: string;
+  context: Context;
   child: ChildProcess;
   startedAt: number;
   /// Its output, both streams in order of arrival: `chunks` from byte `base` on, `total` bytes so far.
@@ -96,7 +101,7 @@ const io = <A>(f: () => Promise<A>) =>
     try: f,
     catch: (e) => {
       const code = (e as NodeJS.ErrnoException).code;
-      return new ToolError({ code: code === "ENOENT" ? "not_found" : code === "EACCES" || code === "EPERM" ? "forbidden" : "failed", message: (e as Error).message });
+      return new ToolError({ code: code === "ENOENT" ? "not_found" : code === "EACCES" || code === "EPERM" ? "forbidden" : "failed", message: fileErrorMessage(stationLang(), e as Error) });
     },
   });
 
@@ -171,10 +176,27 @@ export class DeviceTools {
   }
 
   /// One op, as `access` lets it: its result, or why not.
-  run(op: string, args: Args, context: Context, access: Access): Effect.Effect<unknown, ToolError> {
+  run(op: string, args: Args, context: Context, access: Access, workspace = context.workspace): Effect.Effect<unknown, ToolError> {
     if (!OPS.includes(op)) return fail("unknown_op", `unknown op ${op}`);
     if (!permitted(access, op)) return fail("forbidden", access === "off" ? "device tools are turned off on this station" : `${op} needs full access; this station allows ${access}`);
-    const a = args ?? {};
+    const a = { ...args };
+    const scoped = workspace && context.agent && context.conversation
+      ? resolve(this.home, ".comma-work", createHash("sha256").update(JSON.stringify([workspace, context.agent, context.conversation])).digest("hex"))
+      : this.home;
+    if (op.startsWith("fs.") && typeof a.path === "string") a.path = pathOf(scoped, a.path);
+    if (op === "exec" || op === "process.start") {
+      const explicit = typeof a.cwd === "string";
+      a.cwd = pathOf(scoped, explicit ? a.cwd as string : ".");
+      // Only the default directory is created. An explicit directory must exist.
+      if (!explicit && scoped !== this.home) {
+        return Effect.flatMap(this.allowed(scoped), (path) =>
+          Effect.flatMap(io(() => mkdir(path, { recursive: true })), () => this.dispatch(op, a, context)));
+      }
+    }
+    return this.dispatch(op, a, context);
+  }
+
+  private dispatch(op: string, a: Args, context: Context): Effect.Effect<unknown, ToolError> {
     switch (op) {
       case "exec":
         return this.exec(a);
@@ -187,7 +209,7 @@ export class DeviceTools {
       case "fs.stat":
         return this.stat(a);
       case "process.start":
-        return this.start(a);
+        return this.start(a, context);
       case "process.write":
         return this.processWrite(a);
       case "process.tail":
@@ -240,7 +262,7 @@ export class DeviceTools {
         });
         child.on("close", (code) => {
           cancel();
-          const result = { exit_code: code, stdout: out.text(), stderr: err.text(), truncated: out.truncated() || err.truncated() };
+          const result = withFolderDenialHint(stationLang(), { cwd, exit_code: code, stdout: out.text(), stderr: err.text(), truncated: out.truncated() || err.truncated() }, cwd);
           resume(timedOut ? Effect.succeed({ ...result, timed_out: true }) : Effect.succeed(result));
         });
         // Interrupted (the gateway went): the command goes too.
@@ -324,7 +346,7 @@ export class DeviceTools {
 
   // ── processes ──
 
-  private start(a: Args) {
+  private start(a: Args, context: Context) {
     const self = this;
     return Effect.gen(function* () {
       const command = yield* need(a, "command");
@@ -341,7 +363,7 @@ export class DeviceTools {
         try: () => startCommand(platform.posixShell(self.env), ["-c", command], { cwd, env: { ...self.env, ...env }, stdio: ["pipe", "pipe", "pipe"] }),
         catch: (e) => new ToolError({ code: "failed", message: (e as Error).message }),
       });
-      const kept: Kept = { id, command, child, startedAt: self.now(), chunks: [], base: 0, total: 0, exited: false, exitCode: null };
+      const kept: Kept = { id, command, cwd, context: { workspace: context.workspace, agent: context.agent, conversation: context.conversation }, child, startedAt: self.now(), chunks: [], base: 0, total: 0, exited: false, exitCode: null };
       const take = (chunk: Buffer) => {
         kept.chunks.push(chunk);
         kept.total += chunk.length;
@@ -364,7 +386,7 @@ export class DeviceTools {
         kept.exitCode = code;
       });
       self.processes.set(id, kept);
-      return { process_id: id };
+      return { process_id: id, cwd };
     });
   }
 
@@ -405,7 +427,7 @@ export class DeviceTools {
   }
 
   private shown(p: Kept) {
-    return { process_id: p.id, command: p.command, pid: p.child.pid ?? null, started_at_ms: p.startedAt, exited: p.exited, exit_code: p.exitCode };
+    return { process_id: p.id, command: p.command, cwd: p.cwd, context: p.context, pid: p.child.pid ?? null, started_at_ms: p.startedAt, exited: p.exited, exit_code: p.exitCode };
   }
 
   // ── runtimes ──

@@ -1,8 +1,8 @@
+import VerifiedKernelProofs.Session.WorkPersistence
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
 import VerifiedKernel.Dispatch
-import VerifiedKernelProofs.Session.WorkPersistence
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

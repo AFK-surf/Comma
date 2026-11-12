@@ -6,6 +6,9 @@ defmodule SalixCalendar.OccurrenceQualification.Result do
 
   @type reason ::
           :google_meet
+          | :lark_meeting
+          | :zoom_meeting
+          | :teams_meeting
           | :not_event
           | :cancelled
           | :free_busy_only
@@ -28,8 +31,29 @@ defmodule SalixCalendar.OccurrenceQualification do
   The single qualification decision for a calendar occurrence.
 
   Stable item eligibility is evaluated independently from the occurrence-effective
-  conference. The only currently authorized conference is an HTTPS Google Meet URL
-  on `meet.google.com`.
+  conference. An eligible occurrence qualifies when its conference is a
+  recognized video-meeting link; every qualified meeting is prepared and
+  announced, and only a Google Meet is joined by the meeting bot (the join
+  path checks the Meet link again on its own).
+
+  Recognized links (`canonical_meeting_url/1`) are HTTPS, without userinfo,
+  on the default port, on one of these hosts (exact, or a subdomain on a
+  label boundary where stated; never a substring) and, except for Google
+  Meet, with a path that joins a meeting. A product page, a download page or
+  a Teams channel or chat link on the same host is not a meeting.
+
+  | Provider | Hosts | Meeting paths | Reason |
+  | --- | --- | --- | --- |
+  | `:google_meet` | `meet.google.com` | any | `:google_meet` |
+  | `:lark` | `vc.feishu.cn`, `vc.larksuite.com`, `vc.larkoffice.com` and regional `vc-<region>.` forms of them | `/j/<digits>` | `:lark_meeting` |
+  | `:zoom` | `zoom.us`, `zoom.com` and their subdomains | `/j/<id>`, `/s/<id>`, `/w/<id>`, `/my/<name>`, `/wc/join/<id>`, `/wc/<id>/join` | `:zoom_meeting` |
+  | `:teams` | `teams.microsoft.com`, `teams.live.com` | `/l/meetup-join/...`, `/meet/<digits>` | `:teams_meeting` |
+
+  The source adapter decides which of its fields may carry the conference.
+  A Google Meet link is taken only from a provider's own conference fields:
+  a link found in free text (`text_meeting_url/1`, the event's location or
+  description, which an outside inviter can write) never names a Google Meet,
+  so text cannot make the bot join a meeting.
   """
 
   alias SalixCalendar.OccurrenceQualification.Result
@@ -39,6 +63,26 @@ defmodule SalixCalendar.OccurrenceQualification do
   # the first match to swallow the second would let the first host decide
   # whether a later Google Meet URL is redacted.
   @https_url ~r{https://(?:(?!https://)[^\s<>"'])+}iu
+  # The same scan over raw bytes for free text: a URL ends at whitespace,
+  # markup, a quote or any non-ASCII byte (descriptions often run a link
+  # straight into CJK text), so a byte-bounded slice needs no UTF-8 boundary.
+  @text_url ~r{https://(?:(?!https://)[^\x00-\x20<>"'\x7f-\xff])+}i
+  @max_text_bytes 64 * 1_024
+  @lark_domains ~w(feishu.cn larksuite.com larkoffice.com)
+  @lark_region ~r/\Avc-[a-z0-9]{1,16}\z/
+  @teams_hosts ~w(teams.microsoft.com teams.live.com)
+  @zoom_domains ~w(zoom.us zoom.com)
+  @meeting_paths %{
+    lark: ~r{\A/j/\d+/?\z},
+    zoom: ~r{\A/(?:(?:j|s|w)/\d+|my/[a-z0-9._-]+|wc/join/\d+|wc/\d+/join)/?\z}i,
+    teams: ~r{\A/(?:l/meetup-join/[^/]+(?:/.*)?|meet/\d+/?)\z}
+  }
+  @reasons %{
+    google_meet: :google_meet,
+    lark: :lark_meeting,
+    zoom: :zoom_meeting,
+    teams: :teams_meeting
+  }
 
   @type result :: Result.t()
 
@@ -69,8 +113,104 @@ defmodule SalixCalendar.OccurrenceQualification do
 
   def evaluate(_item, _occurrence), do: denied(:unauthorized_meeting)
 
+  @doc """
+  Whether any occurrence of the item could qualify: a meeting scan leaves out
+  the others (all-day, free, cancelled, no meeting link) before it counts
+  occurrences against its limit. An item with per-occurrence overrides is kept,
+  since an override can add a link.
+  """
+  @spec may_qualify?(map()) :: boolean()
+  def may_qualify?(item) when is_map(item) do
+    object = item["object"] || %{}
+
+    object["@type"] == "Event" and is_nil(item["tombstoned_at"]) and
+      object["status"] != "cancelled" and object["freeBusyStatus"] != "free" and
+      object["showWithoutTime"] != true and
+      (map_size(object["recurrenceOverrides"] || %{}) > 0 or
+         meeting_url?(get_in(object, ["virtualLocations", "conference", "uri"])))
+  end
+
+  def may_qualify?(_item), do: false
+
   @spec google_meet_url?(term()) :: boolean()
   def google_meet_url?(url), do: not is_nil(canonical_google_meet_url(url))
+
+  @doc "Whether the URL is a recognized video-meeting link."
+  @spec meeting_url?(term()) :: boolean()
+  def meeting_url?(url), do: not is_nil(canonical_meeting_url(url))
+
+  @doc """
+  The provider and canonical form (host in lower case) of a recognized
+  video-meeting link, or nil. See the table in the moduledoc.
+  """
+  @spec canonical_meeting_url(term()) :: {:google_meet | :lark | :zoom | :teams, String.t()} | nil
+  def canonical_meeting_url(url) when is_binary(url) and byte_size(url) <= 4_096 do
+    with {:ok, %URI{scheme: "https", host: host, userinfo: nil, port: 443} = uri}
+         when is_binary(host) <- URI.new(String.trim(url)),
+         host = String.downcase(host),
+         provider when not is_nil(provider) <- meeting_provider(host),
+         true <- meeting_path?(provider, uri.path) do
+      {provider, uri |> Map.put(:host, host) |> URI.to_string()}
+    else
+      _ -> nil
+    end
+  end
+
+  def canonical_meeting_url(_url), do: nil
+
+  @doc """
+  The first recognized meeting link in free text (an event's location or
+  description, possibly HTML), other than a Google Meet link, or nil. Only
+  the first #{div(@max_text_bytes, 1_024)} KiB are read.
+  """
+  @spec text_meeting_url(term()) :: String.t() | nil
+  def text_meeting_url(text) when is_binary(text) do
+    text = binary_part(text, 0, min(byte_size(text), @max_text_bytes))
+
+    @text_url
+    |> Regex.scan(text)
+    |> Enum.find_value(fn [candidate] ->
+      case candidate |> clean_text_url() |> canonical_meeting_url() do
+        {:google_meet, _url} -> nil
+        {_provider, url} -> url
+        nil -> nil
+      end
+    end)
+  end
+
+  def text_meeting_url(_text), do: nil
+
+  # An HTML attribute encodes `&` as `&amp;`; sentence punctuation or an
+  # entity such as `&nbsp;` right after a link is not part of it.
+  defp clean_text_url(candidate) do
+    cleaned =
+      candidate
+      |> String.replace(~r/&(amp|#0*38|#x0*26);/i, "&")
+      |> String.replace(~r/(&#?[a-z0-9]{1,8};|[.,;:!?*)\]}])+\z/i, "")
+
+    if cleaned == candidate, do: cleaned, else: clean_text_url(cleaned)
+  end
+
+  defp meeting_path?(:google_meet, _path), do: true
+
+  defp meeting_path?(provider, path) when is_binary(path),
+    do: Regex.match?(Map.fetch!(@meeting_paths, provider), path)
+
+  defp meeting_path?(_provider, _path), do: false
+
+  defp meeting_provider("meet.google.com"), do: :google_meet
+  defp meeting_provider(host) when host in @teams_hosts, do: :teams
+
+  defp meeting_provider(host) do
+    case String.split(host, ".", parts: 2) do
+      [label, domain] when domain in @lark_domains ->
+        if label == "vc" or Regex.match?(@lark_region, label), do: :lark
+
+      _ ->
+        if Enum.any?(@zoom_domains, &(host == &1 or String.ends_with?(host, "." <> &1))),
+          do: :zoom
+    end
+  end
 
   @spec canonical_google_meet_url(term()) :: String.t() | nil
   def canonical_google_meet_url(url) when is_binary(url) do
@@ -122,7 +262,13 @@ defmodule SalixCalendar.OccurrenceQualification do
   # The legacy reason distinguishes a conference-only denial from an item denial;
   # the old `authorized` boolean alone is never used to revive a denied item.
   defp item_eligibility(%{"reason" => reason})
-       when reason in ["google_meet", "no_supported_conference"],
+       when reason in [
+              "google_meet",
+              "lark_meeting",
+              "zoom_meeting",
+              "teams_meeting",
+              "no_supported_conference"
+            ],
        do: :eligible
 
   defp item_eligibility(%{"reason" => reason}), do: {:denied, item_reason(reason)}
@@ -133,13 +279,13 @@ defmodule SalixCalendar.OccurrenceQualification do
   defp item_reason("all_day_event"), do: :all_day_event
   defp item_reason(_reason), do: :unauthorized_meeting
 
-  defp qualify_conference(nil), do: denied(:no_supported_conference)
-  defp qualify_conference(""), do: denied(:no_supported_conference)
-
   defp qualify_conference(url) do
-    case canonical_google_meet_url(url) do
-      meet_url when is_binary(meet_url) ->
-        %Result{authorized: true, meet_url: meet_url, reason: :google_meet}
+    case canonical_meeting_url(url) do
+      {provider, meeting_url} ->
+        %Result{authorized: true, meet_url: meeting_url, reason: Map.fetch!(@reasons, provider)}
+
+      nil when url in [nil, ""] ->
+        denied(:no_supported_conference)
 
       nil ->
         denied(:unsupported_conference)

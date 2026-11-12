@@ -37,6 +37,34 @@ defmodule SalixIM.AgentDeliveryPayloadReminderTest do
     refute routed["content"] =~ "metadata-spoof"
   end
 
+  test "a Slack source tells the Router to leave a thread it is told to stop following" do
+    group_id = Ids.new_group_id(Ids.new_tenant_id())
+    router_id = Ids.new_agent_id(group_id)
+    group = %{"group_id" => group_id, "router_agent_id" => router_id}
+
+    router = %{
+      "agent_id" => router_id,
+      "role" => "router",
+      "router_session_id" => Ids.new_session_id()
+    }
+
+    metadata = %{
+      "provider" => "slack",
+      "connect_id" => "sl1",
+      "channel_id" => "C1",
+      "thread_ts" => "10.000"
+    }
+
+    assert {:ok, routed} =
+             AgentDeliveryPayload.provider_router_delivery(group, router, "闭嘴", metadata,
+               source_message_id: "slack-admitted-source"
+             )
+
+    assert routed["content"] =~ "(stop watching, shut up, 别跟了, 闭嘴)"
+    assert routed["content"] =~ "staying silent is not enough"
+    assert routed["content"] =~ "call im_api.slack.leave_thread as your last action"
+  end
+
   test "only the server option can carry Triage authority into Router input" do
     group_id = Ids.new_group_id(Ids.new_tenant_id())
     router_id = Ids.new_agent_id(group_id)

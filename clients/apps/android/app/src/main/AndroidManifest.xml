@@ -3,7 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Voice input in the composer; requested the first time the user dictates or holds to talk. -->
+    <!-- The microphone for voice calls, requested before each new call, and for dictating a message. -->
+    <!-- An Agent's location request; asked when the person first shares from its card, then answered while the app is open. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Communication mode, audio focus and call output selection. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -32,7 +36,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Public Mini App links (`/a/<token>`) of this build's environment. Access checks stay on the server. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${miniAppLinkHost}" android:pathPrefix="/a/" />
+            </intent-filter>
         </activity>
+        <!-- The restricted Mini App container. It keeps its WebView across rotation and theme changes. -->
+        <activity android:name=".miniapps.MiniAppActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.Comma.Settings" />
         <!-- Hands the camera app a private file to write the composer's photo into. -->
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.composer.files"
@@ -46,6 +61,9 @@
         <activity android:name=".media.video.VideoPlayerActivity" android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.Comma.VideoPlayer" />
+        <!-- Save as for a downloaded attachment: the document picker's result, with no window of its own. -->
+        <activity android:name=".media.file.SaveAttachmentActivity" android:exported="false"
+            android:theme="@style/Theme.Comma.Invisible" />
         <!-- Opens downloaded attachments in other apps, one read grant per file. -->
         <provider android:name=".media.file.MediaFileProvider"
             android:authorities="${applicationId}.media.files"
@@ -63,6 +81,8 @@
         <!-- Lays out formulas in a process with no permissions, files or network of its own. -->
         <service android:name=".chat.math.MathLayoutService" android:exported="false"
             android:isolatedProcess="true" android:process=":math" />
+        <activity android:name=".auth.CaptchaActivity" android:exported="false"
+            android:theme="@style/Theme.Comma.Auth" />
         <activity android:name=".auth.AuthActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.Comma.Auth" />
     </application>

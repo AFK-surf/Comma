@@ -13,6 +13,7 @@
 //
 // Bounds: at most 32 retained meetings; one send at a time; two delayed retries of a failed finalize; a question about
 // a meeting found after a restart holds the lane until it is answered.
+import { lazySchema } from "@comma/chat-contract";
 import {
   CoreError,
   fromUtf8,
@@ -20,7 +21,8 @@ import {
   type Scoped,
   utf8,
 } from "@comma/core-kernel";
-import { type CommaLocale, formatDate, messages } from "@comma/i18n";
+import { type CommaLocale, formatDate } from "@comma/i18n";
+import * as messages from "@comma/i18n/messages";
 import {
   Cause,
   DateTime,
@@ -64,30 +66,32 @@ import { meetingCommand } from "./ports.ts";
 /** Where the journal is kept on the device. */
 export const MEETING_JOURNAL_KEY = "meeting-tasks";
 
-export const meetingTaskReceiptSchema = z.object({
-  group_id: z.string(),
-  task_id: z.string(),
-  status: z.string(),
-  meeting: z
-    .object({
-      occurrence_id: z.string(),
-      name: z.string(),
-      archive_date: z.string(),
-      started_at: z.number(),
-      phase: z.enum([
-        "awaiting_recording",
-        "recording",
-        "paused",
-        "dismissed",
-        "discarded",
-        "saving",
-        "processing",
-        "saved",
-      ]),
-      version: z.number().int().nonnegative(),
-    })
-    .strip(),
-});
+export const meetingTaskReceiptSchema = lazySchema(() =>
+  z.object({
+    group_id: z.string(),
+    task_id: z.string(),
+    status: z.string(),
+    meeting: z
+      .object({
+        occurrence_id: z.string(),
+        name: z.string(),
+        archive_date: z.string(),
+        started_at: z.number(),
+        phase: z.enum([
+          "awaiting_recording",
+          "recording",
+          "paused",
+          "dismissed",
+          "discarded",
+          "saving",
+          "processing",
+          "saved",
+        ]),
+        version: z.number().int().nonnegative(),
+      })
+      .strip(),
+  })
+);
 export type MeetingTaskReceipt = z.infer<typeof meetingTaskReceiptSchema>;
 
 type MeetingTaskCommand = { version: number } & (
@@ -104,60 +108,66 @@ type MeetingTaskCommand = { version: number } & (
     }
 );
 
-const recordingSchema = z
-  .object({
-    channels: z.number(),
-    durationMs: z.number(),
-    driveFile: z.object({ space: z.string(), path: z.string() }),
-    file: z.object({
-      mediaType: z.enum(["audio/wav", "audio/mp4"]),
-      name: z.string(),
-      size: z.number(),
-    }),
-    sampleRate: z.number(),
-  })
-  .strip();
-
-const entrySchema = z.object({
-  /** `${audience}:${userId}`: whose meeting it is. */
-  account: z.string(),
-  /** The presence key of the meeting it was entered for (it moves to a replacement). */
-  key: z.string(),
-  app: z.string(),
-  entry: z.object({
-    occurrence_id: z.string(),
-    name: z.string(),
-    started_at: z.number(),
-    archive_date: z.string(),
-  }),
-  workspace: z.object({ id: z.string(), group_id: z.string() }).optional(),
-  receipt: meetingTaskReceiptSchema.optional(),
-  file: z
+const recordingSchema = lazySchema(() =>
+  z
     .object({
-      localFileRef: z.string(),
-      mediaType: z.string(),
-      name: z.string(),
-      size: z.number(),
+      channels: z.number(),
+      durationMs: z.number(),
+      driveFile: z.object({ space: z.string(), path: z.string() }),
+      file: z.object({
+        mediaType: z.enum(["audio/wav", "audio/mp4"]),
+        name: z.string(),
+        size: z.number(),
+      }),
+      sampleRate: z.number(),
     })
     .strip()
-    .optional(),
-  outputs: z.array(z.enum(meetingOutputExtensions)).max(3).default([]),
-  /** Archiving its outputs failed, and that was shown: later tries are quiet until they save them. */
-  archiveFailureShown: z.boolean().optional(),
-  version: z.number().int().nonnegative(),
-  action: z.enum(["recording", "paused", "dismiss", "discard", "finalize"]).optional(),
-  final: z
-    .object({
-      recording: recordingSchema,
-      /** The saved recording's local copy, as Main named it (only Main reads it). */
-      sourcePath: z.string(),
-      recordingId: z.string(),
-      smartSummary: z.boolean(),
-    })
-    .optional(),
-});
+);
+
+const entrySchema = lazySchema(() =>
+  z.object({
+    /** `${audience}:${userId}`: whose meeting it is. */
+    account: z.string(),
+    /** The presence key of the meeting it was entered for (it moves to a replacement). */
+    key: z.string(),
+    app: z.string(),
+    entry: z.object({
+      occurrence_id: z.string(),
+      name: z.string(),
+      started_at: z.number(),
+      archive_date: z.string(),
+    }),
+    workspace: z.object({ id: z.string(), group_id: z.string() }).optional(),
+    receipt: meetingTaskReceiptSchema.optional(),
+    file: z
+      .object({
+        localFileRef: z.string(),
+        mediaType: z.string(),
+        name: z.string(),
+        size: z.number(),
+      })
+      .strip()
+      .optional(),
+    outputs: z.array(z.enum(meetingOutputExtensions)).max(3).default([]),
+    /** Archiving its outputs failed, and that was shown: later tries are quiet until they save them. */
+    archiveFailureShown: z.boolean().optional(),
+    version: z.number().int().nonnegative(),
+    action: z
+      .enum(["recording", "paused", "dismiss", "discard", "finalize"])
+      .optional(),
+    final: z
+      .object({
+        recording: recordingSchema,
+        /** The saved recording's local copy, as Main named it (only Main reads it). */
+        sourcePath: z.string(),
+        recordingId: z.string(),
+        smartSummary: z.boolean(),
+      })
+      .optional(),
+  })
+);
 type Entry = z.infer<typeof entrySchema>;
-const journalSchema = z.array(entrySchema).max(32);
+const journalSchema = lazySchema(() => z.array(entrySchema).max(32));
 
 /** A meeting's Task as the recorder shows it. */
 export type MeetingTaskState = {
@@ -215,7 +225,9 @@ type Command =
   /** The outputs saved so far (an archive worker's checkpoint). */
   | { kind: "checkpoint"; job: MeetingOutputJob; reply: Reply<void> }
   /** An archive worker ended its job. */
-  | { kind: "archived"; job: MeetingOutputJob; end: MeetingOutputEnd };
+  | { kind: "archived"; job: MeetingOutputJob; end: MeetingOutputEnd }
+  /** The meetings present now: unrecorded Tasks of meetings no longer present are dismissed. */
+  | { kind: "settle"; meetings: readonly MeetingPresenceMeeting[] };
 
 /** The Task the server saved for `entry`, and the workspace that opens it. */
 function taskReference(entry: Entry): MeetingTaskReference | undefined {
@@ -367,6 +379,15 @@ export class MeetingTasks {
     return this.#ask((reply) => ({ kind: "retry", person, reply }));
   }
 
+  /**
+   * The meetings present now. A Task entered for a meeting that ended unrecorded while nothing saw it end (Comma
+   * quit, the Mac slept, the recorder showed an error, the account changed) is dismissed, so it does not stay in
+   * progress. One left by a restart while its app still holds a meeting stays, for the continuity question.
+   */
+  settle(meetings: readonly MeetingPresenceMeeting[]): void {
+    if (!this.#closed) Queue.offerUnsafe(this.#commands, { kind: "settle", meetings });
+  }
+
   close(): void {
     this.#closed = true;
     this.#ctx.runner.close(this.#scope);
@@ -484,6 +505,8 @@ export class MeetingTasks {
             return this.#persist();
           })
         );
+      case "settle":
+        return this.#settle(command.meetings);
       case "archived":
         return Effect.gen({ self: this }, function* () {
           const { job, end } = command;
@@ -720,6 +743,31 @@ export class MeetingTasks {
       for (const entry of pending)
         yield* Effect.exit(this.#sync(entry, { schedule: true }));
     });
+  }
+
+  #settle(meetings: readonly MeetingPresenceMeeting[]): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.#ready()) return;
+      const account = this.account();
+      const owned = new Set(this.#current.values());
+      const stale = this.#entries.filter(
+        (e) =>
+          e.account === account &&
+          !e.action &&
+          !closedWithoutAudio(e) &&
+          !meetings.some(
+            (m) =>
+              m.key === e.key || (m.name === e.app && !owned.has(e.entry.occurrence_id))
+          )
+      );
+      if (stale.length === 0) return;
+      for (const entry of stale) {
+        entry.action = "dismiss";
+        entry.version++;
+      }
+      yield* this.#persist();
+      for (const entry of stale) yield* this.#syncQuietly(entry);
+    }).pipe(Effect.ignore);
   }
 
   #get(key: string): Entry | undefined {

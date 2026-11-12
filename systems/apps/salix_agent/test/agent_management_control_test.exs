@@ -2,7 +2,7 @@ defmodule SalixAgent.AgentManagementControlTest do
   use SystemsClock.Case, async: false
 
   alias SalixAgent.Control
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.{AgentPGStore, Ids, Repo, S3}
 
   setup do
     old = SystemsRuntime.get_env(:salix_store, :s3_backend)
@@ -30,8 +30,8 @@ defmodule SalixAgent.AgentManagementControlTest do
                  Control.page_workers(ctx.tenant, ctx.group, limit: 50, cursor: cursor)
 
         reads = S3.Fake.read_log()
-        assert Enum.count(reads, &match?({:list, _, _}, &1)) == 1
-        assert Enum.count(reads, &match?({:get, _}, &1)) <= 50
+        assert reads == []
+        assert length(page.items) <= 50
         assert page.returned_count == length(page.items)
         {seen ++ Enum.map(page.items, & &1["agent_id"]), page.next_cursor}
       end)
@@ -58,26 +58,15 @@ defmodule SalixAgent.AgentManagementControlTest do
              )
   end
 
-  test "a failed record read cannot masquerade as an empty successful page", ctx do
-    agent = worker(ctx)
-    S3.Fake.set_fault({:fail, 503, :get, Keys.ctl_agent(agent["agent_id"])})
-    assert {:error, :read_unavailable} = Control.page_workers(ctx.tenant, ctx.group)
-  end
+  test "a failed database page cannot appear to be an empty successful page", ctx do
+    worker(ctx)
 
-  test "ambiguous configuration writes expose their actual state to caller recovery", ctx do
-    agent = worker(ctx)
-    S3.Fake.set_fault({:ambiguous_after, :put, Keys.ctl_agent(agent["agent_id"])})
-
-    assert {:error, _} =
-             Control.configure(
-               agent["agent_id"],
-               %{"name" => "Reviewer", "purpose" => "Review"},
-               ctx.tenant
-             )
-
-    assert {:ok, record} = Control.get(agent["agent_id"])
-    assert record["name"] == "Reviewer"
-    assert record["management_purpose"] == "Review"
+    assert {:error, :rollback} =
+             Repo.transaction(fn ->
+               Repo.query!("SET LOCAL search_path = pg_catalog")
+               assert {:error, :read_unavailable} = Control.page_workers(ctx.tenant, ctx.group)
+               :ok
+             end)
   end
 
   test "permanent archive survives restore, stale metadata, same-id create and repeated archive",
@@ -87,11 +76,7 @@ defmodule SalixAgent.AgentManagementControlTest do
     schedule_id = "permanent-" <> id
     stale_admission = %{"kind" => "migration", "operation_id" => "archive-test-migration"}
 
-    assert {:ok, _} =
-             S3.put(
-               Keys.ctl_agent(id),
-               Jason.encode!(Map.put(agent, "session_admission", stale_admission))
-             )
+    put_fixture_config(id, Map.put(agent, "session_admission", stale_admission))
 
     assert {:ok, _} =
              SalixStore.Schedules.create(
@@ -112,11 +97,7 @@ defmodule SalixAgent.AgentManagementControlTest do
     assert archived["permanent_archive"] == true
     refute Map.has_key?(archived, "session_admission")
 
-    assert {:ok, _} =
-             S3.put(
-               Keys.ctl_agent(id),
-               Jason.encode!(Map.put(archived, "session_admission", stale_admission))
-             )
+    put_fixture_config(id, Map.put(archived, "session_admission", stale_admission))
 
     assert {:error, {:bad_request, "agent is archived"}} =
              SalixAgent.RoundConfig.build_round_config(id, "worker", %{})
@@ -160,6 +141,11 @@ defmodule SalixAgent.AgentManagementControlTest do
 
     assert config.session_config == snapshot.session_config
     assert S3.Fake.read_log() == []
+  end
+
+  defp put_fixture_config(id, record) do
+    assert {:ok, %{revision: revision}} = AgentPGStore.read_config(id)
+    assert {:ok, _} = AgentPGStore.put_config(id, record, revision)
   end
 
   defp worker(ctx, attrs \\ %{}) do

@@ -1,6 +1,7 @@
 import VerifiedKernel.Session.Ops
 import VerifiedKernel.Session.Kernel
 import VerifiedKernel.Session.Query.StateCore
+import VerifiedKernel.Session.StorageDelta
 
 /-! Queries ported from the session work index, format migrations, backups, and snapshot repair. See the README query catalog. -/
 
@@ -70,11 +71,15 @@ def windowRecords (state : Term) : KernelM Term := do
   let results ← collect "async_results" (b "seq") "async_result"
   return list (← sortBy (messages ++ events ++ results) (fun record => pure (record.get (a "seq"))))
 
-/-- Capture the contiguous window and compaction ceiling before storage I/O. -/
+/-- Capture the unarchived committed window before storage I/O.
+Resident model context can also hold already-cold, uncompacted records. -/
 def archiveWindow (state : Term) : KernelM Term := do
-  let records ← windowRecords state
-  let first ← add ((← field state "archived_through").default (i 0)) (i 1)
-  let checked ← (← asList records).foldlM (fun result record => do
+  let through := (← field state "archived_through").default (i 0)
+  let ceiling := (← field state "last_seq").default (i 0)
+  let records ← (← asList (← windowRecords state)).filterM (fun record => do
+    greater (record.get (a "seq")) through)
+  let first ← add through (i 1)
+  let checked ← records.foldlM (fun result record => do
     match result with
     | .tuple [.atom "error", _] => pure result
     | expected =>
@@ -84,11 +89,15 @@ def archiveWindow (state : Term) : KernelM Term := do
       add expected (i 1)) first
   match checked with
   | .tuple [.atom "error", _] => return checked
-  | _ => return .tuple [a "ok", records, (← field state "compacted_seq").default (i 0)]
+  | _ => return .tuple [a "ok", list records, ceiling]
 
 /-- Name → operation. Names match the Elixir functions they replace. -/
 def table : OpTable :=
-  [("terminal_results_from_backup", fun state _ => terminalResultsFromBackup state),
+  [("input_identity_keys", fun _ args => do
+     let events ← asList args
+     let nested ← events.mapM (fun event => do StorageDelta.identityGroups (← shallowStringify event))
+     return list nested.flatten.flatten),
+   ("terminal_results_from_backup", fun state _ => terminalResultsFromBackup state),
    ("archive_window_records", fun state _ => windowRecords state),
    ("archive_window", fun state _ => archiveWindow state)]
 

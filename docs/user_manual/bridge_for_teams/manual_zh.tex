@@ -278,7 +278,7 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
   \item 在 Agent Swarm 中打开 \textbf{Tasks}。
   \item 点击 \textbf{New task}。
   \item 填写目标和必要背景。
-  \item 在 \textbf{Run on} 中选择运行位置：Salix、Cloud VM（Agent Swarm 开启 Cloud VM 时）或一台已连接、可以运行任务的设备；在 \textbf{Model} 中选择模型。两项默认都是 Agent Swarm 的设置。Agent Swarm 的成员都可以创建任务。
+  \item 在 \textbf{Run on} 中选择运行位置：Salix、Cloud VM（此 Agent Swarm 的云电脑未被沙箱取代时）或一台已连接、可以运行任务的设备；在 \textbf{Model} 中选择模型。两项默认都是 Agent Swarm 的设置。Agent Swarm 的成员都可以创建任务。
   \item 提交后打开任务详情，查看进展。
   \item 需要补充信息时，在任务详情中继续发送消息。
 \end{enumerate}
@@ -294,7 +294,7 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 Agent Swarm 的 \textbf{Connections} 页面分为两部分：
 
 \begin{itemize}
-  \item \textbf{Messaging}：成员通过哪些消息渠道联系 Agent Swarm，以及 Agent Swarm 在哪里回复。目前支持 Feishu、Slack、QQ 和 Signal。
+  \item \textbf{Messaging}：成员通过哪些消息渠道联系 Agent Swarm，以及 Agent Swarm 在哪里回复。目前支持 Feishu、Slack、QQ、Telegram 和 Signal。
   \item \textbf{Accounts}：Agent 代表团队使用的第三方帐号，包括 OAuth 帐号和通过 Composio 连接的应用。
 \end{itemize}
 
@@ -326,6 +326,19 @@ Agent Swarm 的所有成员都可以查看此页面。只有 Agent Swarm 管理�
 \end{enumerate}
 
 应用权限或事件订阅发生变化后，请重新完成页面给出的检查。停用或删除 connect 前，先通知仍在使用对应群聊或频道的成员。
+
+\subsection{连接 Telegram}
+
+Telegram 通过 BotFather 创建的机器人接入。每个机器人连接一个 Agent Swarm，只在你放行的群里工作。
+
+\begin{enumerate}
+  \item 在 Telegram 里用 \texttt{@BotFather} 创建机器人，复制它的 token。保持 privacy mode 开启，也不要把机器人设为群管理员，否则机器人会读到群里的每条消息。没有 @ 它、没有发命令、也没有回复它的消息不触发模型调用，但会留在它的上下文里。
+  \item 进入 Agent Swarm 的 \textbf{Connections}，在 \textbf{Telegram} 部分点击 \textbf{Add Telegram bot}，填入 token 并点击 \textbf{Connect}。
+  \item 把机器人拉进 Telegram 群。回到 \textbf{Connections}，这个群会出现在机器人的 \textbf{Chats} 里，勾选后机器人开始在群里工作。
+  \item 机器人进群后，在 \texttt{@BotFather} 里关闭 \texttt{/setjoingroups}。
+\end{enumerate}
+
+Telegram 允许任何人私聊机器人或把它拉进群。没有放行的会话不会进入 Agent，Agent 也不能向这些会话发消息。
 
 \subsection{连接 QQ}
 
@@ -419,6 +432,8 @@ Signal 消息和通话音频会在 Comma 服务器上解密，以便 Agent 回�
 
 如果没有所需服务，请联系组织 owner 或 admin 检查 \textbf{Settings} → \textbf{Integrations} 中的 \textbf{Composio} 配置。
 
+工具需要 API 密钥或 Token 时（例如公司系统的命令行工具），管理员在 \textbf{Connect an account} 的 \textbf{API key or secret} 一行点击 \textbf{Add}，填写名称后继续，在下一页填写密钥。系统需要多个值时（例如 App ID 和 App Secret，或用户名、密码和租户编号），在同一个对话框中点击 \textbf{Add a field}，为每个值填写字段名；可以显示的值（例如租户编号）取消勾选 \textbf{Secret}。下一页会逐个填写这些字段。密钥归整个 Agent Swarm 共用，以 \textbf{API key} 和名称列在 \textbf{Connected accounts} 中，名称下方列出字段名；Agent 按名称和字段名使用它，密钥不会出现在聊天中。
+
 \section{Plugins 与 Skills}
 
 \textbf{Plugins} 用于为当前 Agent Swarm 启用已获准的插件；\textbf{Skills} 用于查看和配置 Agent 可使用的技能。
@@ -454,9 +469,23 @@ Signal 消息和通话音频会在 Comma 服务器上解密，以便 Agent 回�
 
 同一页面还包括 \textbf{Compute environments} 和 \textbf{Android setup}。
 
+\subsection{硬件设备}
+
+Comma 硬件板子（AFK-surf/Hardware 的固件，例如 ESP32 DevKit 或 T-Circle-S3）接入后，此 Agent Swarm 的 Agent 可以访问板子所在局域网里的设备。用 Chrome 或 Edge 在有蓝牙的电脑上操作：
+
+\begin{enumerate}
+  \item 给板子通电。配过的板子先按住 BOOT 3 秒后松开，进入配对模式。
+  \item 进入 Agent Swarm，打开 \textbf{Devices}，点击 \textbf{Add hardware device}，再点击 \textbf{Find board}。
+  \item 在浏览器的蓝牙列表中选择 \texttt{Comma-XXXX}。板子屏幕上显示六位数字时，在系统弹窗中输入这串数字。
+  \item 选择 2.4 GHz 的 Wi-Fi 网络，输入密码，点击 \textbf{Connect}。板子连上 Wi-Fi 后，页面为它创建凭证并写入板子。
+  \item 板子出现在设备列表里，标为 \textbf{Hardware gateway · Read-only}。在设备行的操作菜单中选择 \textbf{Allow operations}，Agent 才能通过它发送请求。选择 \textbf{Make read-only} 可以收回。
+\end{enumerate}
+
+删除硬件设备时，它的凭证和语音 key 一起作废。
+
 \subsection{云电脑}
 
-页面顶部的 \textbf{Cloud VM} 区域显示此 Agent Swarm 的云电脑：它的状态（例如 \textbf{Ready}、\textbf{Sleeping}、\textbf{Waking}）、运行位置（\textbf{Cloudflare} 或组织的某台 Runner），以及此 Agent Swarm 使用的 Runner。云电脑空闲时会休眠，有任务时自动唤醒。Agent Swarm 管理员可以用该区域的开关启用或停用云电脑。
+页面顶部的 \textbf{Cloud VM} 区域显示此 Agent Swarm 的云电脑：它的状态（例如 \textbf{Ready}、\textbf{Sleeping}、\textbf{Waking}）、运行位置（\textbf{Cloudflare} 或组织的某台 Runner），以及此 Agent Swarm 使用的 Runner。云电脑空闲时会休眠，有任务时自动唤醒。
 
 云电脑创建之前，管理员可以让它运行在组织的 Runner 上：
 

@@ -12,7 +12,7 @@ defmodule Comma.Admin do
   alias Comma.Accounts
   alias Comma.Accounts.{Email, Identity, User}
   alias Comma.Admin.{AccessOverride, AuditEvent, AuditPageCursor}
-  alias Comma.Data.{ExternalOperation, Workspace}
+  alias Comma.Data.Workspace
   alias Comma.{Repo, WorkspaceBootstrap}
 
   @default_admin_email_domain "comma.surf"
@@ -25,6 +25,7 @@ defmodule Comma.Admin do
   @default_audit_lease_seconds 2 * 60
   @comma_transaction_actions ~w(
     update_free_router_models
+    change_user_email
     create_user
     update_user
     set_admin_access
@@ -281,36 +282,6 @@ defmodule Comma.Admin do
 
   def get_user_workspace_billing(_user_id), do: {:error, :not_found}
 
-  # The Admin boundary authorizes the operator; retain the owner's normal
-  # Workspace mutation path so configuration and its convergence job commit
-  # together. Lock before merging to preserve provider settings.
-  def update_user_workspace_vm(user_id, workspace_id, enabled) when is_boolean(enabled) do
-    Repo.transaction(fn ->
-      workspace =
-        Repo.one(
-          from(workspace in Workspace,
-            where: workspace.id == ^workspace_id and workspace.owner_user_id == ^user_id,
-            lock: "FOR UPDATE"
-          )
-        )
-
-      with %Workspace{} <- workspace,
-           {:ok, owner} <- Accounts.get_user(user_id),
-           {:ok, _updated} <-
-             Comma.Workspaces.update(owner, %{}, workspace_id, %{
-               "vm" => Map.put(workspace.vm || %{}, "enabled", enabled)
-             }) do
-        public_workspace_vm(Repo.get!(Workspace, workspace_id))
-      else
-        nil -> Repo.rollback(:not_found)
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-  end
-
-  def update_user_workspace_vm(_user_id, _workspace_id, _enabled),
-    do: {:error, :invalid_workspace_vm}
-
   @doc """
   The Salix tenant of the user's ready Workspace, for Workspace settings that
   Salix owns (the Signal number, docs/messaging-voice.md).
@@ -484,6 +455,13 @@ defmodule Comma.Admin do
 
   def update_user(id, attrs) do
     with {:ok, user} <- Accounts.update_user(id, attrs) do
+      {:ok, decorate_user(user)}
+    end
+  end
+
+  @doc "Changes a User's login email for support (`Comma.EmailChange.change/2`)."
+  def change_user_email(user_id, email) do
+    with {:ok, user} <- Comma.EmailChange.change(user_id, email) do
       {:ok, decorate_user(user)}
     end
   end
@@ -1077,28 +1055,8 @@ defmodule Comma.Admin do
       "tenant_id" => workspace.salix_tenant_id,
       "group_id" => workspace.salix_group_id,
       "billing_account_id" => workspace.billing_owner_id,
-      "cloud_vm" => public_workspace_vm(workspace),
       "created_at" => unix(workspace.inserted_at),
       "updated_at" => unix(workspace.updated_at)
-    }
-  end
-
-  defp public_workspace_vm(%Workspace{} = workspace) do
-    operation =
-      Repo.one(
-        from(operation in ExternalOperation,
-          where:
-            operation.owner_type == "workspace" and operation.owner_id == ^workspace.id and
-              operation.operation_type == "workspace_convergence",
-          order_by: [desc: operation.generation],
-          limit: 1
-        )
-      )
-
-    %{
-      "workspace_id" => workspace.id,
-      "enabled" => get_in(workspace.vm || %{}, ["enabled"]) == true,
-      "convergence_status" => if(operation, do: operation.status, else: nil)
     }
   end
 

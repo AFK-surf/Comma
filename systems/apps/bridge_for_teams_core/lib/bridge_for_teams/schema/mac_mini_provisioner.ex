@@ -26,8 +26,6 @@ defmodule BridgeForTeams.Schema.MacMiniProvisioner do
     field(:os_summary, :string)
     field(:version, :string)
     field(:capabilities, :map, default: %{})
-    field(:capacity, :integer, default: 1)
-    field(:current_connector_count, :integer, default: 0)
     field(:last_seen_at, :utc_datetime_usec)
     field(:effective_status, :string, virtual: true)
     field(:last_seen_age_seconds, :integer, virtual: true)
@@ -54,14 +52,10 @@ defmodule BridgeForTeams.Schema.MacMiniProvisioner do
       :os_summary,
       :version,
       :capabilities,
-      :capacity,
-      :current_connector_count,
       :last_seen_at
     ])
     |> validate_required([:org_id, :stable_id, :name, :status])
     |> validate_inclusion(:status, @statuses)
-    |> validate_number(:capacity, greater_than_or_equal_to: 0)
-    |> validate_number(:current_connector_count, greater_than_or_equal_to: 0)
     |> unique_constraint([:org_id, :stable_id])
   end
 

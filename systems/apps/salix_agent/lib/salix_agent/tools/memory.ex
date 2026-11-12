@@ -32,10 +32,13 @@ defmodule SalixAgent.Tools.Memory do
     * `MemorySearch` pre-filtered candidate files with SQL `LIKE` on the
       agent-DB `vfs_entries` table; Salix has no per-agent SQLite — it scans
       `/memory/**/*.md` manifest entries via `AgentWorkspace.list/2` + `Blob` reads.
-      Match semantics (case-insensitive substring per line, context snippet
-      of previous..next line, limit clamp 1..50 default 10, `truncated` true
-      iff a matching line exists beyond the limit, path-ascending order) are
-      ported exactly.
+      Willow matched the whole query as one case-insensitive substring per
+      line. Salix splits the query on whitespace and matches each term on its
+      own: a line matches when it holds any term, and lines that hold more
+      terms rank first (path-ascending, then line-ascending among equals). A
+      one-word query behaves as in willow. The context snippet (previous..next
+      line), limit clamp 1..50 default 10, and `truncated` (a matching line
+      exists beyond the limit) are willow's.
     * Willow wrapped append's read-modify-write in `sqltx.RetryTx` so two
       concurrent appends never lose data. Salix tools read a fixed `state`
       snapshot and return events: two `MemoryWrite` appends in the SAME tool
@@ -67,6 +70,7 @@ defmodule SalixAgent.Tools.Memory do
   @semantic_agent_path "/memory/semantic/agent.md"
   @semantic_user_path "/memory/semantic/user.md"
   @semantic_people_path "/memory/semantic/people.md"
+  @semantic_glossary_path "/memory/semantic/glossary.md"
   @environments_dir "/memory/semantic/environments/"
   @scoped_dir "/memory/scoped/"
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
@@ -97,7 +101,8 @@ defmodule SalixAgent.Tools.Memory do
     "properties" => %{
       "query" => %{
         "type" => "string",
-        "description" => "Case-insensitive text to search for in /memory markdown files."
+        "description" =>
+          "Case-insensitive keywords to search for in /memory markdown files, separated by spaces. A line matches when it contains any keyword; lines with more keywords rank first."
       },
       "limit" => %{
         "type" => "integer",
@@ -177,7 +182,11 @@ defmodule SalixAgent.Tools.Memory do
        "Search markdown files under /memory when you do not know which memory file has relevant context.",
        @search_schema, &__MODULE__.memory_search/2, @normal_auto_wait_seconds, @router_role_opts},
       {@write_tool_name,
-       "Update durable memory only for state that must be written during the live session: explicit remember requests, long-lived preferences, or handoff/wait state.",
+       "Update durable memory only for state that must be written during the live session: explicit remember requests, long-lived preferences, or handoff/wait state. " <>
+         "#{@semantic_glossary_path} spells names in meeting transcripts and notes: one item per line, " <>
+         "`- heard form / other heard form → Correct form`, or `- → Correct form` for a name with no known misheard form. " <>
+         "Add an entry whenever a person corrects a name, product or term. " <>
+         "Comma adds entries daily between `<!-- comma:glossary` markers: keep the markers, and change or remove an entry there when a person asks.",
        @write_schema, &__MODULE__.memory_write/2, @normal_auto_wait_seconds, @router_role_opts},
       {@ask_worker_tool_name,
        "Search historical Task Conversations and ask the matching Worker Sessions what they remember.",
@@ -325,33 +334,32 @@ defmodule SalixAgent.Tools.Memory do
     if query == "", do: raise("'query' is required")
 
     limit = args |> int_arg("limit") |> normalize_limit()
-    needle = String.downcase(query)
+    terms = query_terms(query)
 
-    {matches, truncated} =
+    hits =
       ctx.agent_id
       |> AgentWorkspace.list("/memory/")
       |> Enum.filter(&String.ends_with?(&1, ".md"))
-      |> Enum.reduce_while({[], false}, fn path, acc ->
+      |> Enum.flat_map(fn path ->
         case AgentWorkspace.read(ctx.agent_id, path) do
           {:ok, content} when is_binary(content) ->
-            if String.valid?(content) do
-              collect_file_matches(path, content, needle, limit, acc)
-            else
-              {:cont, acc}
-            end
+            if String.valid?(content), do: file_hits(path, content, terms), else: []
 
           _ ->
-            {:cont, acc}
+            []
         end
       end)
 
-    matches = Enum.reverse(matches)
+    # Lines that match more terms rank first; the stable sort keeps the
+    # path-ascending, line-ascending order among equal scores.
+    {top, rest} = hits |> Enum.sort_by(fn {score, _match} -> -score end) |> Enum.split(limit)
+    matches = Enum.map(top, fn {_score, match} -> match end)
 
     # Each match names its own file, so each carries that file's audience and
     # citing one hit is exactly as restrictive as citing the file. Without
     # that, one note under `/memory/scoped/` would drag every later search
     # down to its audience.
-    %{"matches" => matches, "truncated" => truncated}
+    %{"matches" => matches, "truncated" => rest != []}
     |> Jason.encode!()
     |> Labels.per_hit(Enum.map(matches, & &1["path"]), ctx)
   end
@@ -360,32 +368,27 @@ defmodule SalixAgent.Tools.Memory do
   defp normalize_limit(limit) when limit > 50, do: 50
   defp normalize_limit(limit), do: limit
 
-  # Willow's per-file loop: each matching line appends a match; a matching
-  # line found while the list is already full flips `truncated` and stops.
-  defp collect_file_matches(path, content, needle, limit, {matches, _truncated}) do
+  # A model often sends several keywords at once ("gitlab token 账号"). Each
+  # whitespace-separated term is matched on its own; a whole-query substring
+  # match would find nothing unless one line held every word in that order.
+  defp query_terms(query) do
+    query |> String.downcase() |> String.split(~r/\s+/u, trim: true) |> Enum.uniq()
+  end
+
+  defp file_hits(path, content, terms) do
     lines = String.split(content, "\n")
     total = length(lines)
 
-    result =
-      lines
-      |> Enum.with_index()
-      |> Enum.reduce_while({matches, false}, fn {line, idx}, {acc, _} ->
-        cond do
-          not String.contains?(String.downcase(line), needle) ->
-            {:cont, {acc, false}}
+    lines
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {line, idx} ->
+      line = String.downcase(line)
 
-          length(acc) >= limit ->
-            {:halt, {acc, true}}
-
-          true ->
-            {:cont, {[build_match(path, lines, total, idx) | acc], false}}
-        end
-      end)
-
-    case result do
-      {matches, true} -> {:halt, {matches, true}}
-      {matches, false} -> {:cont, {matches, false}}
-    end
+      case Enum.count(terms, &String.contains?(line, &1)) do
+        0 -> []
+        score -> [{score, build_match(path, lines, total, idx)}]
+      end
+    end)
   end
 
   defp build_match(path, lines, total, idx) do
@@ -417,7 +420,8 @@ defmodule SalixAgent.Tools.Memory do
 
     unless allowed_write_path?(path) do
       raise "Unsupported memory path. Use /memory/semantic/user.md, /memory/semantic/agent.md, " <>
-              "/memory/semantic/people.md, /memory/semantic/environments/<alias>.md, " <>
+              "/memory/semantic/people.md, /memory/semantic/glossary.md, " <>
+              "/memory/semantic/environments/<alias>.md, " <>
               "/memory/index.md, /memory/scoped/<name>.md, or /memory/episodes/YYYY-MM-DD.md."
     end
 
@@ -488,6 +492,7 @@ defmodule SalixAgent.Tools.Memory do
              @semantic_agent_path,
              @semantic_user_path,
              @semantic_people_path,
+             @semantic_glossary_path,
              "/memory/index.md"
            ],
       do: true

@@ -3,6 +3,8 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBucketArgs, MINIO_IMAGE } from "../helpers/minio.ts";
+import { releasePorts, reservePort } from "../helpers/ports.ts";
+import { stationConnector } from "../helpers/station.ts";
 
 // Builds and subprocesses here take longer than the five-second default.
 setDefaultTimeout(30 * 60_000);
@@ -11,6 +13,7 @@ const SALIX_ROOT = new URL("../..", import.meta.url).pathname;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const PAYLOAD_MB = Number(process.env.SALIX_E2E_PAYLOAD_MB ?? "100");
 const E2E_PERF_FACTOR = positiveNumber(process.env.E2E_PERF_FACTOR, 1);
+const NODE_GC_ALLOWANCE_KB = 64 * 1024;
 
 test("large-file streaming transfer stays bounded without whole-file buffering", async () => {
   const id = crypto.randomUUID().slice(0, 8);
@@ -22,6 +25,7 @@ test("large-file streaming transfer stays bounded without whole-file buffering",
   const peerHttpPort = reservePort();
   const peerTransferPort = reservePort();
   let salixConfigPath: string | undefined;
+  const station = await stationConnector();
 
   minioPort.release();
   await run("docker", [
@@ -82,6 +86,7 @@ test("large-file streaming transfer stays bounded without whole-file buffering",
           SALIX_STREAM_COPY_SIZE_MB: String(PAYLOAD_MB),
           SALIX_E2E_PEER_HTTP_PORT: String(peerHttpPort.port),
           SALIX_E2E_PEER_TRANSFER_PORT: String(peerTransferPort.port),
+          STATION_CONNECTOR_BIN: station.bin,
         },
       },
     );
@@ -108,6 +113,15 @@ test("large-file streaming transfer stays bounded without whole-file buffering",
       "remote_to_remote_cross_node_reverse",
     );
     const payloadBytes = PAYLOAD_MB * 1024 * 1024;
+    // The station's RSS also holds chunks already written and not yet
+    // collected: Node frees external buffers in batches, once about 64 MiB
+    // of them accumulate, whatever the file size. Buffering the whole file
+    // would add the payload on top of that, so the bound is that allowance
+    // plus half the payload.
+    const connectorRssLimitKb = PAYLOAD_MB * 512 + NODE_GC_ALLOWANCE_KB;
+    for (const line of output.combined.split("\n")) {
+      if (line.includes("connector_rss_delta_kb=")) console.log(line);
+    }
     // A healthy local run usually completes this 100MB multi-leg streaming
     // flow in well under 30s. If it runs longer than that, investigate stream
     // backpressure/deadlock bugs before increasing timeouts.
@@ -148,32 +162,32 @@ test("large-file streaming transfer stays bounded without whole-file buffering",
     );
     assertLessThan(
       vfsToConnector.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "VFS→connector RSS delta",
     );
     assertLessThan(
       remoteToRemoteSame.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "remote→remote same-connector RSS delta",
     );
     assertLessThan(
       remoteToRemoteDifferent.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "remote→remote different-connectors RSS delta",
     );
     assertLessThan(
       connectorToVfs.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "connector→VFS RSS delta",
     );
     assertLessThan(
       remoteToRemoteCrossNode.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "remote→remote cross-node RSS delta",
     );
     assertLessThan(
       remoteToRemoteCrossNodeReverse.connectorRssDeltaKb,
-      PAYLOAD_MB * 512,
+      connectorRssLimitKb,
       "remote→remote cross-node reverse RSS delta",
     );
 
@@ -193,6 +207,7 @@ test("large-file streaming transfer stays bounded without whole-file buffering",
     }
   } finally {
     if (salixConfigPath) await rm(salixConfigPath).catch(() => {});
+    await station.cleanup();
     await run("docker", ["rm", "-f", minioName], { allowFailure: true });
     releasePorts(
       minioPort,
@@ -210,34 +225,6 @@ type RunOptions = {
   timeoutMs?: number;
   allowFailure?: boolean;
 };
-
-type PortLease = {
-  port: number;
-  release: () => void;
-};
-
-function reservePort(): PortLease {
-  const listener = Bun.listen({
-    hostname: "127.0.0.1",
-    port: 0,
-    socket: { data() {} },
-  });
-  const port = listener.port;
-  let released = false;
-
-  return {
-    port,
-    release() {
-      if (released) return;
-      released = true;
-      listener.stop(true);
-    },
-  };
-}
-
-function releasePorts(...ports: PortLease[]) {
-  for (const port of ports) port.release();
-}
 
 async function run(command: string, args: string[], opts: RunOptions = {}) {
   const child = Bun.spawn([command, ...args], {

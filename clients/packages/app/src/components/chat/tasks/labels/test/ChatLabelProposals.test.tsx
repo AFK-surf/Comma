@@ -1,6 +1,7 @@
 import type { TaskLabelProposal } from "@comma/core/contract";
-import { flush } from "@comma/test-utils/fake-clock";
+import { advance, flush } from "@comma/test-utils/fake-clock";
 import { render as renderBase, screen, within } from "@comma/test-utils/render";
+import { stubProperty } from "@comma/test-utils/stub-property";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { labelCatalog, labelsCore } from "../../../../../test/labelsCore";
@@ -456,6 +457,47 @@ describe("ChatLabelProposals", () => {
     expect(resolved()).toEqual([]);
   });
 
+  it("asks for the room when a decision appears, never for a settled card", async () => {
+    const asked: Element[] = [];
+    stubProperty(HTMLElement.prototype, "scrollIntoView", {
+      value(this: HTMLElement) {
+        asked.push(this);
+      },
+    });
+    stubGroup([
+      {
+        ...targetedCreate("prp_settled"),
+        application_status: "applied",
+        status: "approved",
+      },
+    ]);
+    const settled = render(renderCard("m1"));
+    await flush();
+    await advance(250);
+    // A settled card appears when the reader reaches its reply; it asks nothing.
+    expect(screen.getByTestId("chat-label-proposals-create-approved")).toBeVisible();
+    expect(asked).toEqual([]);
+    settled.unmount();
+
+    stubGroup([targetedCreate("prp_decision")]);
+    render(renderCard("m1"));
+    await flush();
+    await advance(250);
+    const card = screen.getByTestId("chat-label-proposals");
+    expect(asked).toEqual([card]);
+
+    // Deciding settles the card where it is.
+    await user.click(
+      within(screen.getByTestId("chat-label-proposals-create")).getByRole("button", {
+        name: "Approve",
+      })
+    );
+    await flush();
+    await advance(250);
+    expect(screen.getByTestId("chat-label-proposals-create-approved")).toBeVisible();
+    expect(asked).toEqual([card]);
+  });
+
   it("re-reads proposals and their server approval status when a new reply lands", async () => {
     const { reads, resolved, setProposals } = stubGroup([]);
     const { rerender } = render(renderCard("m1"));
@@ -478,5 +520,44 @@ describe("ChatLabelProposals", () => {
     expect(screen.queryByTestId("chat-label-proposals-create")).toBeNull();
     expect(reads()).toBe(3);
     expect(resolved()).toEqual([]);
+  });
+
+  it("asks for the room once per proposal, not again when its card remounts", async () => {
+    // A send trims the oldest loaded message; a card anchored to it moves to
+    // another reply and remounts. Smooth-scrolling to it then dragged the whole
+    // transcript up through history and back.
+    const reveals: Element[] = [];
+    stubProperty(Element.prototype, "scrollIntoView", {
+      value(this: Element) {
+        reveals.push(this);
+      },
+    });
+    const { setProposals } = stubGroup([applyProposal("prp_apply", CHAT)]);
+    const shown = new Set<string>();
+    const card = (anchor: string, replyKey: string) => (
+      <ChatLabelProposals
+        conversationId={CHAT}
+        groupId={GROUP}
+        key={anchor}
+        replyKey={replyKey}
+        shownProposalIds={shown}
+        workspaceId="wsp_1"
+      />
+    );
+    const { rerender } = render(card("msg_oldest", "m1"));
+    await flush();
+    await advance(300);
+    expect(reveals).toEqual([screen.getByTestId("chat-label-proposals")]);
+
+    rerender(card("msg_next", "m1"));
+    await flush();
+    await advance(300);
+    expect(reveals).toHaveLength(1);
+
+    setProposals([applyProposal("prp_apply", CHAT), createProposal("prp_new", CHAT)]);
+    rerender(card("msg_next", "m2"));
+    await flush();
+    await advance(300);
+    expect(reveals).toHaveLength(2);
   });
 });

@@ -35,7 +35,7 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
 
     previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
     previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
@@ -143,6 +143,76 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
     await_settled!(agent_id)
   end
 
+  # A settled end_turn record keeps no calls. Without its call in later
+  # requests a model saw only runtime-written get_runtime_message calls in its
+  # history, imitated them and never ended its turns (M² Square, 2026-11-04).
+  test "an end_turn with no_reply reports its sources, and a plain one does not", %{
+    agent_id: agent_id
+  } do
+    handler = {__MODULE__, :no_reply}
+
+    SystemsRuntime.Telemetry.attach(
+      handler,
+      [:salix, :turn, :no_reply],
+      &__MODULE__.forward_no_reply/4,
+      SystemsRuntime.Proc.self()
+    )
+
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
+
+    deliver!(agent_id, "turn-outcome:plain", "first")
+    respond!(end_turn("finish-plain"))
+    await_settled!(agent_id)
+    refute_received {:no_reply, _source_ids}
+
+    deliver!(agent_id, "turn-outcome:silence", "please be quiet")
+
+    respond!(
+      {:assistant, "",
+       [
+         %{
+           id: "finish-silent",
+           name: "end_turn",
+           args: %{"outcome" => "done", "no_reply" => true}
+         }
+       ]}
+    )
+
+    await_settled!(agent_id)
+
+    # The Round reports before it ends, so the next activation's request follows it.
+    deliver!(agent_id, "turn-outcome:after-silence", "next")
+    {llm_pid, _messages, _tools} = await_request!()
+    assert_received {:no_reply, ["turn-outcome:silence"]}
+    SystemsRuntime.Proc.send(llm_pid, {:explicit_turn_llm_response, end_turn("finish-after")})
+    await_settled!(agent_id)
+  end
+
+  @doc false
+  def forward_no_reply(_event, _measurements, %{source_ids: source_ids}, owner),
+    do: SystemsRuntime.Proc.send(owner, {:no_reply, source_ids})
+
+  test "later requests show a settled end_turn and its result", %{agent_id: agent_id} do
+    deliver!(agent_id, "turn-outcome:settled-call", "say hello")
+
+    respond!(end_turn("finish-first"))
+    await_settled!(agent_id)
+
+    deliver!(agent_id, "turn-outcome:after-settled", "handle the next request")
+    {llm_pid, messages, _tools} = await_request!()
+
+    for chat <- [
+          SalixLlm.ConvertOpenAI.to_chat(messages),
+          SalixLlm.Convert.to_anthropic(messages, nil) |> elem(1)
+        ] do
+      assert call_index = Enum.find_index(chat, &settled_call?/1)
+      assert settled_result?(Enum.at(chat, call_index + 1))
+    end
+
+    SystemsRuntime.Proc.send(llm_pid, {:explicit_turn_llm_response, end_turn("finish-second")})
+    await_settled!(agent_id)
+  end
+
   for recovery <- [:operator, :sweep, :record_only, :foreign_sweep, :cancelled_prefetch] do
     test "#{recovery} recovers a stored guard and processes the first queued input", %{
       agent_id: agent_id
@@ -186,14 +256,14 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
           refute result["recovery"]["processing_observed"]
 
         sweep when sweep in [:sweep, :foreign_sweep] ->
-          SalixAgent.SessionWorkRecovery.sweep()
+          recover_due_work!(agent_id)
 
         :record_only ->
           assert {:ok, %{"sessions" => [result]}} =
                    SalixAgent.force_recover(agent_id, session_id: @session_id, wake: false)
 
           assert result["recovery"]["state"] == "command_recorded"
-          SalixAgent.SessionWorkRecovery.sweep()
+          recover_due_work!(agent_id)
       end
 
       {first_pid, messages, _, started} = await_recovery_request!(agent_id)
@@ -206,7 +276,7 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
                end)
       end
 
-      text = inspect(messages, limit: :infinity)
+      text = Enum.map_join(messages, "\n", &to_string(&1[:content] || &1["content"] || ""))
       assert text =~ "FIRST_QUEUED_REQUEST"
       refute text =~ "SECOND_QUEUED_REQUEST"
       refute text =~ "force-recovered by an operator"
@@ -218,7 +288,9 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
       )
 
       {second_pid, messages, _} = await_request!()
-      assert inspect(messages, limit: :infinity) =~ "SECOND_QUEUED_REQUEST"
+
+      assert Enum.map_join(messages, "\n", &to_string(&1[:content] || &1["content"] || "")) =~
+               "SECOND_QUEUED_REQUEST"
 
       SystemsRuntime.Proc.send(
         second_pid,
@@ -242,6 +314,48 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
     end
   end
 
+  # A malformed call is refused with guidance that the model corrects in its
+  # next round. Two such rounds in a row are not a runaway turn.
+  test "two refused-call rounds do not fail the current turn", %{agent_id: agent_id} do
+    SystemsRuntime.delete_env(:salix_agent, :runaway_unsettled_round_cap)
+    deliver!(agent_id, "turn-outcome:refused", "create the Task")
+    respond!(refused_call("refused-one"))
+    respond!(refused_call("refused-two"))
+
+    {pid, messages, _tools} = await_request!()
+    assert inspect(messages) =~ "cannot be nested"
+    SystemsRuntime.Proc.send(pid, {:explicit_turn_llm_response, end_turn("finish-refused")})
+    state = await_settled!(agent_id)
+
+    refute Enum.any?(
+             SalixAgent.InternalSession.get(state, :events),
+             &(&1["kind"] == "runtime_runaway_retired")
+           )
+  end
+
+  # A model that imitates the runtime's `get_runtime_message` calls names a new
+  # runtime message each round. The repeated-result guard still ends the loop.
+  test "refused get_runtime_message calls with different ids end at the repeated-result cap",
+       %{agent_id: agent_id} do
+    deliver!(agent_id, "turn-outcome:imitation", "create the Task")
+    {pid, _messages, _tools} = await_request!()
+    deliver!(agent_id, "turn-outcome:queued-behind", "process this after the loop")
+
+    SystemsRuntime.Proc.send(
+      pid,
+      {:explicit_turn_llm_response, runtime_message_call("imitation-1", "queue-pressure:1")}
+    )
+
+    for round <- 2..5 do
+      respond!(runtime_message_call("imitation-#{round}", "queue-pressure:#{round}"))
+    end
+
+    {next_pid, messages, _tools} = await_request!()
+    assert inspect(messages) =~ "process this after the loop"
+    SystemsRuntime.Proc.send(next_pid, {:explicit_turn_llm_response, end_turn("finish-queued")})
+    await_settled!(agent_id)
+  end
+
   test "two no-tool rounds fail the current turn and admit a queued request", %{
     agent_id: agent_id
   } do
@@ -254,6 +368,10 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
 
     {next_pid, messages, _tools} = await_request!()
     assert inspect(messages) =~ "process this after the failed turn"
+    # The next activation is told which request ended, so the model does not
+    # carry its work into the queued request.
+    assert inspect(messages) =~ "The runtime ended an earlier request as failed"
+    assert inspect(messages) =~ "turn-outcome:runaway"
     state = read_session!(agent_id)
 
     assert Enum.any?(SalixAgent.InternalSession.get(state, :events), fn event ->
@@ -303,7 +421,7 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
       SalixAgent.Control.configure(agent_id, %{"system_prompt" => current_instructions})
 
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent_id, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id},
         %{
           "type" => "session_system_prompt",
@@ -343,7 +461,57 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
     await_settled!(agent_id)
   end
 
+  defp settled_call?(%{"tool_calls" => [%{"id" => "finish-first", "function" => function}]}),
+    do: function["name"] == "end_turn"
+
+  defp settled_call?(%{"role" => "assistant", "content" => blocks}) when is_list(blocks),
+    do:
+      Enum.any?(
+        blocks,
+        &match?(%{"type" => "tool_use", "id" => "finish-first", "name" => "end_turn"}, &1)
+      )
+
+  defp settled_call?(_message), do: false
+
+  defp settled_result?(%{
+         "role" => "tool",
+         "tool_call_id" => "finish-first",
+         "content" => content
+       }),
+       do: Jason.decode!(content) == %{"outcome" => "done", "status" => "accepted"}
+
+  defp settled_result?(%{
+         "role" => "user",
+         "content" => [%{"type" => "tool_result"} = block | _]
+       }),
+       do: block["tool_use_id"] == "finish-first"
+
+  defp settled_result?(_message), do: false
+
   defp no_tool(content), do: {:assistant, content, []}
+
+  # The runtime refuses a nested call envelope with guidance before dispatch.
+  defp refused_call(id) do
+    {:assistant, "",
+     [
+       %{
+         id: id,
+         name: "call",
+         args: %{"tool" => "call", "params" => %{"tool" => "help", "params" => %{}}}
+       }
+     ]}
+  end
+
+  defp runtime_message_call(id, runtime_message_id) do
+    {:assistant, "",
+     [
+       %{
+         id: id,
+         name: "get_runtime_message",
+         args: %{"runtime_message_id" => runtime_message_id}
+       }
+     ]}
+  end
 
   defp business_tool(id, tool \\ "fs.read_file") do
     {:assistant, "working",
@@ -439,6 +607,23 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
              )
   end
 
+  defp recover_due_work!(agent_id) do
+    # This test runs one sweep, with no periodic recovery worker. Make its
+    # existing work due on the database clock that the sweep reads, even if
+    # the application clock that wrote next_run_at is slightly ahead.
+    assert %{num_rows: 1} =
+             SalixStore.Repo.query!(
+               """
+               UPDATE salix_sessions SET next_run_at=clock_timestamp()-interval '1 second'
+               WHERE agent_id=$1 AND session_id=$2 AND next_run_at IS NOT NULL
+               """,
+               [agent_id, @session_id]
+             )
+
+    assert %{rewoken: [^agent_id], scanned: 1, failed: 0} =
+             SalixAgent.SessionWorkRecovery.sweep()
+  end
+
   defp seed_guarded_queue!(agent_id, foreign?) do
     events =
       [
@@ -524,7 +709,8 @@ defmodule SalixAgent.ExplicitTurnOutcomeTest do
         events
       end
 
-    assert {:ok, _session} = InternalSessionStore.prepare_commit(agent_id, @session_id, events)
+    assert {:ok, _session} =
+             SalixAgent.TestSupport.SessionFixture.commit(agent_id, @session_id, events)
   end
 
   # A provider request can be observed before the owner's fence lands; join

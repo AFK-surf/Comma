@@ -5,7 +5,6 @@ defmodule SalixStore.SlackSearchSources do
   The epoch is an accepted-change fact, not a substitute for ClickHouse's
   current row identity. Pending state is the existing indexed outbox itself;
   there is no second counter to drift when an old drainer deletes a row.
-  Modeled in tla/salix/MessageSearchSource.tla and MessageSearchBuild.tla.
   """
   alias SalixStore.Repo
 
@@ -15,19 +14,30 @@ defmodule SalixStore.SlackSearchSources do
 
   @doc "Bump accepted source epochs inside the caller's outbox transaction."
   def admit!(rows) when is_list(rows) and length(rows) <= 200 do
-    keys = Enum.map(rows, &Map.take(&1, @source_keys))
+    keys =
+      Enum.map(
+        rows,
+        &(Map.take(&1, @source_keys) |> Map.put("live", &1["ingest_source"] == "webhook"))
+      )
 
     Repo.query!(
       """
       INSERT INTO slack_semantic.search_sources
-        (tenant_id, workspace_id, channel_id, message_ts_us, change_epoch)
-      SELECT tenant_id, workspace_id, channel_id, message_ts_us, count(*)
+        (tenant_id, workspace_id, channel_id, message_ts_us, change_epoch, dispatch_live, dispatch_epoch)
+      SELECT tenant_id, workspace_id, channel_id, message_ts_us, count(*), bool_or(live), count(*)
       FROM jsonb_to_recordset($1::jsonb) AS r(
-        tenant_id text, workspace_id text, channel_id text, message_ts_us bigint)
+        tenant_id text, workspace_id text, channel_id text, message_ts_us bigint, live boolean)
       GROUP BY tenant_id, workspace_id, channel_id, message_ts_us
       ORDER BY tenant_id, workspace_id, channel_id, message_ts_us
       ON CONFLICT (tenant_id, workspace_id, channel_id, message_ts_us)
-      DO UPDATE SET change_epoch = search_sources.change_epoch + EXCLUDED.change_epoch
+      DO UPDATE SET change_epoch = search_sources.change_epoch + EXCLUDED.change_epoch,
+        dispatch_cursor=CASE WHEN search_sources.dispatched_epoch=search_sources.change_epoch
+          THEN '{}'::jsonb ELSE search_sources.dispatch_cursor END,
+        dispatch_epoch=CASE WHEN search_sources.dispatched_epoch=search_sources.change_epoch
+          THEN search_sources.change_epoch+EXCLUDED.change_epoch ELSE search_sources.dispatch_epoch END,
+        dispatch_live=search_sources.dispatch_live OR EXCLUDED.dispatch_live,
+        dispatch_due=CASE WHEN search_sources.dispatched_epoch < search_sources.change_epoch
+          THEN search_sources.dispatch_due ELSE timezone('UTC', clock_timestamp()) END
       """,
       [keys]
     )
@@ -35,6 +45,149 @@ defmodule SalixStore.SlackSearchSources do
     SalixStore.SlackSearchCatalog.remember_admitted!(rows)
 
     :ok
+  end
+
+  @doc "Commit one source fanout page and its Oban jobs under the source lock."
+  def dispatch_page(enqueue) do
+    safe(fn ->
+      Repo.transaction(fn ->
+        live = claim_dispatch_source!(true)
+        rows = if live == [], do: claim_dispatch_source!(false), else: live
+
+        case rows do
+          [] ->
+            :idle
+
+          [[tenant, workspace, channel, timestamp, epoch, live, cursor, dispatch_epoch]] ->
+            key = [tenant, workspace, channel, timestamp]
+
+            pending =
+              Repo.query!(
+                """
+                SELECT 1 FROM slack_semantic.search_sources s
+                WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3 AND message_ts_us=$4
+                  AND EXISTS (#{pending_sql("s")})
+                """,
+                key
+              ).rows != []
+
+            if pending do
+              Repo.query!(
+                """
+                UPDATE slack_semantic.search_sources SET dispatch_due=timezone('UTC', clock_timestamp())+interval '1 second'
+                WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3 AND message_ts_us=$4
+                """,
+                key
+              )
+
+              :waiting
+            else
+              scopes =
+                Repo.query!(
+                  """
+                    WITH candidates AS MATERIALIZED (
+                    SELECT group_id, connect_id FROM slack_semantic.search_channels
+                    WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3
+                      AND (group_id,connect_id) > ($4,$5)
+                    ORDER BY group_id,connect_id LIMIT 20
+                  )
+                  SELECT c.group_id,c.connect_id,i.connect_generation,i.active
+                  FROM candidates c LEFT JOIN slack_semantic.search_connects i
+                    ON i.tenant_id=$1 AND i.workspace_id=$2
+                      AND i.group_id=c.group_id AND i.connect_id=c.connect_id
+                  ORDER BY c.group_id,c.connect_id
+                  """,
+                  [tenant, workspace, channel, cursor["group"] || "", cursor["connect"] || ""]
+                ).rows
+
+              Enum.each(scopes, fn
+                [group, connect, generation, true] ->
+                  scope = %{
+                    "tenant_id" => tenant,
+                    "workspace_id" => workspace,
+                    "channel_id" => channel,
+                    "group_id" => group,
+                    "connect_id" => connect,
+                    "connect_generation" => generation
+                  }
+
+                  case enqueue.(scope, timestamp, live) do
+                    {:ok, _} -> :ok
+                    error -> Repo.rollback(error)
+                  end
+
+                _ ->
+                  :ok
+              end)
+
+              next =
+                case List.last(scopes) do
+                  nil -> cursor
+                  [group, connect, _, _] -> %{"group" => group, "connect" => connect}
+                end
+
+              done = length(scopes) < 20
+
+              Repo.query!(
+                """
+                UPDATE slack_semantic.search_sources
+                SET dispatch_cursor=CASE WHEN $6 THEN '{}'::jsonb ELSE $5 END,
+                  dispatched_epoch=CASE WHEN $6 THEN $8 ELSE dispatched_epoch END,
+                  dispatch_epoch=CASE WHEN $6 THEN $7 ELSE dispatch_epoch END,
+                  dispatch_live=CASE WHEN $6 AND $7=$8 THEN false ELSE dispatch_live END,
+                  dispatch_due=timezone('UTC', clock_timestamp())+interval '1 millisecond'
+                WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3 AND message_ts_us=$4
+                """,
+                [tenant, workspace, channel, timestamp, next, done, epoch, dispatch_epoch]
+              )
+
+              :advanced
+            end
+        end
+      end)
+    end)
+  end
+
+  defp claim_dispatch_source!(live) do
+    priority = if live, do: "dispatch_live", else: "NOT dispatch_live"
+
+    Repo.query!("""
+    SELECT tenant_id, workspace_id, channel_id, message_ts_us,
+      change_epoch, dispatch_live, dispatch_cursor, dispatch_epoch
+    FROM slack_semantic.search_sources
+    WHERE dispatched_epoch < change_epoch AND #{priority}
+      AND dispatch_due <= timezone('UTC', clock_timestamp())
+    ORDER BY dispatch_due, tenant_id, workspace_id, channel_id, message_ts_us
+    LIMIT 1 FOR UPDATE SKIP LOCKED
+    """).rows
+  end
+
+  @doc "Classify one finite initialization page without reading job arguments."
+  def live_timestamps!(scope, timestamps) when length(timestamps) <= 20 do
+    Repo.query!(
+      """
+      SELECT message_ts_us FROM slack_semantic.search_sources
+      WHERE tenant_id=$1 AND workspace_id=$2 AND channel_id=$3 AND message_ts_us=ANY($4)
+        AND dispatched_epoch < change_epoch AND dispatch_live
+      """,
+      [scope["tenant_id"], scope["workspace_id"], scope["channel_id"], timestamps]
+    ).rows
+    |> MapSet.new(&hd/1)
+  end
+
+  def live_pending? do
+    case Repo.query("""
+         WITH candidates AS MATERIALIZED (
+           SELECT * FROM slack_semantic.search_sources
+           WHERE dispatched_epoch < change_epoch AND dispatch_live
+             AND dispatch_due <= timezone('UTC', clock_timestamp())
+           ORDER BY dispatch_due LIMIT 20
+         )
+         SELECT 1 FROM candidates s WHERE NOT EXISTS (#{pending_sql("s")}) LIMIT 1
+         """) do
+      {:ok, %{rows: []}} -> false
+      _ -> true
+    end
   end
 
   @doc "Capture one source epoch while no accepted source write remains pending."
@@ -156,6 +309,7 @@ defmodule SalixStore.SlackSearchSources do
           )
 
         if result.num_rows != 1, do: Repo.rollback(:superseded_build)
+        SalixStore.SlackSearchFiles.schedule_refresh!(component)
         :ok
       end)
       |> case do

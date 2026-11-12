@@ -163,7 +163,7 @@ defmodule SalixAgent.RepairCompactionTest do
       session_id = "ses1_0000000000000000601"
 
       {:ok, session} =
-        InternalSessionStore.prepare_commit(
+        SalixAgent.TestSupport.SessionFixture.commit(
           a,
           session_id,
           [
@@ -188,7 +188,9 @@ defmodule SalixAgent.RepairCompactionTest do
       assert result["error"] == true
       refute Enum.any?(events, &(&1["type"] in ["assistant", "async_tool_call_started"]))
 
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events, hwm: 2)
+      {:ok, repaired} =
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, events, hwm: 2)
+
       assert {[], _} = Repair.plan_session(repaired)
     end
 
@@ -196,7 +198,7 @@ defmodule SalixAgent.RepairCompactionTest do
       # Simulate a crash: an assistant turn with tool calls is committed, but the
       # tool_results were never persisted (separate-commit scenario).
       {:ok, session} =
-        InternalSessionStore.prepare_commit(
+        SalixAgent.TestSupport.SessionFixture.commit(
           a,
           "ses1_0000000000000000601",
           [
@@ -261,7 +263,9 @@ defmodule SalixAgent.RepairCompactionTest do
 
       # Applying them yields a complete result set; re-planning finds nothing.
       {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events, hwm: 3)
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", events,
+          hwm: 3
+        )
 
       assert SalixAgent.InternalSession.derived_state(handle(repaired)) == :queued
       assert {[], _} = Repair.plan_session(repaired)
@@ -297,7 +301,7 @@ defmodule SalixAgent.RepairCompactionTest do
 
     test "InternalSessionActor repairs its target session on wake", %{agent: a} do
       {:ok, _session} =
-        InternalSessionStore.prepare_commit(
+        SalixAgent.TestSupport.SessionFixture.commit(
           a,
           "ses1_0000000000000000601",
           [
@@ -394,7 +398,7 @@ defmodule SalixAgent.RepairCompactionTest do
 
     test "marks running async tool calls failed and emits runtime_recovered", %{agent: a} do
       {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", [
           %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
           %{
             "type" => "async_tool_call_started",
@@ -436,7 +440,7 @@ defmodule SalixAgent.RepairCompactionTest do
                delivery["payload"]["source_refs"]["failed_tool_calls"]
 
       {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", events,
           hwm: next_id - 1
         )
 
@@ -476,7 +480,7 @@ defmodule SalixAgent.RepairCompactionTest do
       settle()
 
       {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "async_tool_call_started",
@@ -533,7 +537,7 @@ defmodule SalixAgent.RepairCompactionTest do
       assert get_in(List.first(events), ["result", "content"]) == "private remote failure"
       refute Enum.any?(events, &(&1["type"] in ["queue_append", "visible_reply_repair"]))
 
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events)
+      {:ok, repaired} = SalixAgent.TestSupport.SessionFixture.commit(a, session_id, events)
 
       assert {:ok,
               %{
@@ -577,7 +581,7 @@ defmodule SalixAgent.RepairCompactionTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       {:ok, _} =
-        InternalSessionStore.prepare_commit(a, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "async_tool_call_started",
@@ -651,7 +655,7 @@ defmodule SalixAgent.RepairCompactionTest do
       settle()
 
       {:ok, _} =
-        InternalSessionStore.prepare_commit(a, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "async_tool_call_started",
@@ -669,36 +673,50 @@ defmodule SalixAgent.RepairCompactionTest do
           )
         ])
 
-      # Hold the woken Server in its cycle, before it wakes the indexed
-      # session: at its owner check, which reads the agent root.
-      SalixStore.S3.Fake.set_fault({:pause, :get, SalixStore.Keys.agent_state(a)})
-      assert {:ok, _} = SalixAgent.AgentControl.wake(a)
-      :ok = SalixStore.S3.Fake.await_pause()
+      # Queue a wake before recovery asks the Server to stop. Resuming it must
+      # let that cycle finish before recovery stops any Session it started.
+      [{server, _}] = Registry.lookup(SalixAgent.Registry, a)
+      :erlang.suspend_process(server)
 
-      recovery =
-        SystemsRuntime.Task.async(fn ->
-          SalixAgent.AgentControl.force_recover(a, session_id: session_id, wake: false)
-        end)
+      try do
+        assert {:ok, _} = SalixAgent.AgentControl.wake(a)
 
-      # force_recover now waits for the held Server to stop.
-      settle()
-      assert SystemsRuntime.Task.yield(recovery, 0) == nil
+        recovery =
+          SystemsRuntime.Task.async(fn ->
+            SalixAgent.AgentControl.force_recover(a, session_id: session_id, wake: false)
+          end)
 
-      # The Server completes its cycle, which wakes the session, and stops.
-      SalixStore.S3.Fake.release_pause()
-      assert {:ok, %{"sessions" => [%{"session_id" => ^session_id}]}} = settled_await(recovery)
+        assert settle_until(fn ->
+                 case Process.info(recovery.pid, :monitors) do
+                   {:monitors, monitors} -> {:process, server} in monitors
+                   nil -> false
+                 end
+               end)
 
-      assert [] =
-               SystemsRuntime.Registry.lookup(
-                 SalixAgent.Registry,
-                 SalixAgent.InternalSessionActor.key(a, session_id)
-               )
+        assert SystemsRuntime.Task.yield(recovery, 0) == nil
+        :erlang.resume_process(server)
+        assert {:ok, %{"sessions" => [%{"session_id" => ^session_id}]}} = settled_await(recovery)
+
+        assert [] =
+                 SystemsRuntime.Registry.lookup(
+                   SalixAgent.Registry,
+                   SalixAgent.InternalSessionActor.key(a, session_id)
+                 )
+      after
+        if Process.alive?(server) do
+          try do
+            :erlang.resume_process(server)
+          catch
+            :error, :badarg -> :ok
+          end
+        end
+      end
     end
 
     test "does not fail process-local async tool calls still tracked by the live session actor",
          %{agent: a} do
       {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", [
           %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
           %{
             "type" => "async_tool_call_started",
@@ -743,7 +761,7 @@ defmodule SalixAgent.RepairCompactionTest do
       assert {:ok, _} = AgentWorkspace.seed_operation(a, operation_id, stored_result, [])
 
       {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "async_tool_call_started",
@@ -775,7 +793,7 @@ defmodule SalixAgent.RepairCompactionTest do
 
     test "recovers an active in-flight LLM call after restart", %{agent: a} do
       {:ok, session} =
-        InternalSessionStore.prepare_commit(
+        SalixAgent.TestSupport.SessionFixture.commit(
           a,
           "ses1_0000000000000000601",
           [
@@ -818,7 +836,7 @@ defmodule SalixAgent.RepairCompactionTest do
                "runtime_restarted"
 
       {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", events,
           hwm: next_id - 1
         )
 
@@ -830,7 +848,7 @@ defmodule SalixAgent.RepairCompactionTest do
       session_id = "ses1_0000000000000000601"
 
       {:ok, _session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "visible_reply_repair",
@@ -872,20 +890,10 @@ defmodule SalixAgent.RepairCompactionTest do
                &(&1.role == "assistant")
              )
 
-      {:ok, _session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
-          %{
-            "type" => "queue_append",
-            "session_id" => session_id,
-            "kind" => "user_message",
-            "dedupe_key" => "retry-after-safe-failure",
-            "wake" => true,
-            "payload" => %{
-              "source_message_id" => "retry-after-safe-failure",
-              "content" => "try again"
-            }
-          }
-        ])
+      assert {:ok, :created} =
+               SalixAgent.deliver(a, %{session_id: session_id, content: "try again"},
+                 source_message_id: "retry-after-safe-failure"
+               )
 
       :ok = InternalSessionFleet.wake(a, session_id)
 
@@ -904,7 +912,7 @@ defmodule SalixAgent.RepairCompactionTest do
       use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
 
       {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", [
           %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
           # User-interaction call awaiting an external OAuth callback: pending
           # capability request ⇒ not a restart casualty.
@@ -951,7 +959,7 @@ defmodule SalixAgent.RepairCompactionTest do
                delivery["payload"]["source_refs"]["pending_external_callback_tool_calls"]
 
       {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000601", events,
           hwm: next_id - 1
         )
 
@@ -980,10 +988,10 @@ defmodule SalixAgent.RepairCompactionTest do
         "completed_at" => SystemsClock.system_time(:millisecond)
       }
 
-      {:ok, session} = InternalSessionStore.prepare_commit(a, sid, [terminal_event])
+      {:ok, session} = SalixAgent.TestSupport.SessionFixture.commit(a, sid, [terminal_event])
       assert Map.has_key?(InternalSession.get(session, :async_tool_calls), "terminal-first")
       {events, _} = Repair.plan_session(session)
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, sid, events)
+      {:ok, repaired} = SalixAgent.TestSupport.SessionFixture.commit(a, sid, events)
       refute Map.has_key?(InternalSession.get(repaired, :async_tool_calls), "terminal-first")
 
       assert {:ok, %{"status" => "completed", "result" => %{"content" => "winner"}}} =
@@ -1020,12 +1028,13 @@ defmodule SalixAgent.RepairCompactionTest do
         "expires_at" => SystemsClock.system_time(:second) + 600
       })
 
+    SalixAgent.TestSupport.cleanup_capability_request_on_exit(request)
     request
   end
 
   defp callback_session!(agent_id, sid, id) do
     {:ok, session} =
-      InternalSessionStore.prepare_commit(agent_id, sid, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, sid, [
         %{"type" => "session_created", "session_id" => sid},
         %{
           "type" => "async_tool_call_started",
@@ -1046,7 +1055,7 @@ defmodule SalixAgent.RepairCompactionTest do
     test "summarizes over budget without deleting, and bounds the context", %{agent: a} do
       # Seed several user/assistant messages.
       {:ok, _session} =
-        InternalSessionStore.prepare_commit(
+        SalixAgent.TestSupport.SessionFixture.commit(
           a,
           "ses1_0000000000000000601",
           [%{"type" => "session_created", "session_id" => "ses1_0000000000000000601"}] ++
@@ -1077,9 +1086,7 @@ defmodule SalixAgent.RepairCompactionTest do
 
       session = read_session!(a, "ses1_0000000000000000601")
 
-      # The transcript remains readable after the compacted prefix is archived.
-      assert SalixAgent.InternalSession.get(session, :messages) == []
-
+      # Compaction keeps the full durable transcript readable.
       assert {:ok, %{messages: messages}} =
                InternalSessionStore.transcript(a, handle(session), {:tail, 6})
 

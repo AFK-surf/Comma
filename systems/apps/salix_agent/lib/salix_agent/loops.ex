@@ -16,7 +16,9 @@ defmodule SalixAgent.Loops do
     * the restart budget (`record_failure/3`), which reloads a faulted Loop
       from its checkpoint a bounded number of times before marking it
       `failed`;
-    * archive pause and unarchive resume, mirroring Schedules.
+    * archive pause and unarchive resume, mirroring Schedules;
+    * a pause that waits for a device (`pause_until_device/3`), ended by the
+      device connecting (`device_connected/1`).
 
   Programs come from exactly one place: spinfoam's embedded compiler
   (`build/4`). There are no packaged templates. The compiled ELF is stored
@@ -45,9 +47,11 @@ defmodule SalixAgent.Loops do
 
   A Worker holds one Session per Task, so a Loop that a Worker creates while
   it works a Task belongs to that Task (`task_conversation_id`, in the
-  Loop's own Group, never changed). A Task has at most one Loop. Tool calls
-  from that Task's rounds manage only that Loop; every other round manages
-  only the Agent's Loops that belong to no Task (`scope/1`).
+  Loop's own Group, never changed). A Task has at most one Loop: the row
+  (id, trigger, limits, runs, checkpoint) is the Task's, and `loop.create`
+  in the Task again replaces its program and restarts it (`create/2`).
+  Tool calls from that Task's rounds manage only that Loop; every other
+  round manages only the Agent's Loops that belong to no Task (`scope/1`).
 
   A Loop Task is a Loop that a Task requested: `request_task_loop/1` writes
   it `pending` with its trigger and limits before the Task exists, and the
@@ -60,7 +64,7 @@ defmodule SalixAgent.Loops do
   """
 
   alias SalixAgent.Control
-  alias SalixAgent.{AgentWorkspace, FileBackend, StorageAuthorization}
+  alias SalixAgent.{AgentWorkspace, EnvDispatch, FileBackend, StorageAuthorization}
   alias SalixAgent.Loops.{Capabilities, Host, Reconciler, TaskOwner}
   alias SalixAgent.Spinfoam.Build
   alias SalixStore.Ids
@@ -206,10 +210,17 @@ defmodule SalixAgent.Loops do
   creator's authority.
 
   A Worker round that works a Task binds the Loop to that Task
-  (`round_task/1`). When the Task requested its Loop, the program binds to
-  that `pending` row, which keeps the requested trigger and limits; a
-  trigger argument is then refused. A second Loop for the Task is refused
-  with `{:error, {:task_loop_exists, loop_id}}`.
+  (`round_task/1`). A Task has one Loop: the row (id, trigger, limits, run
+  count, checkpoint) belongs to the Task, and its program is replaceable.
+  When the Task requested its Loop, the program binds to that `pending`
+  row, which keeps the requested trigger and limits. When the Task's Loop
+  already has a program (`active`, `paused` for any reason but `archive`,
+  or `failed`), `create` replaces it (`replace/2`) and restarts the Loop at
+  a new incarnation. A trigger argument is refused in both cases
+  (`{:invalid, "trigger"}`: the Loop keeps its trigger); an `ended` Loop is
+  refused with `{:error, {:not_active, "ended"}}` and one paused by archive
+  with `{:error, :agent_archived}`. Outside a Task every call makes a new
+  Loop.
   """
   @spec create(ctx(), map()) :: {:ok, map()} | {:error, term()}
   def create(%{agent_id: agent_id} = ctx, attrs) when is_map(attrs) do
@@ -224,7 +235,7 @@ defmodule SalixAgent.Loops do
          {:ok, config} <- validate_config(attrs["config"]),
          {:ok, trigger} <- trigger(attrs, ctx),
          {:ok, task} <- round_task(ctx),
-         {:ok, requested} <- requested_loop(agent, task) do
+         {:ok, existing} <- task_loop(agent, task) do
       program = %{
         "session_id" => session_id,
         "name" => name,
@@ -234,13 +245,22 @@ defmodule SalixAgent.Loops do
         "ifc" => ifc_authority(ctx)
       }
 
-      result =
-        case requested do
-          %{} when not is_nil(trigger) ->
-            {:error, {:invalid, "trigger"}}
+      # A replacement keeps the name and config the call leaves out.
+      replacement =
+        program
+        |> then(&if(is_nil(attrs["name"]), do: Map.delete(&1, "name"), else: &1))
+        |> then(&if(is_nil(attrs["config"]), do: Map.delete(&1, "config"), else: &1))
 
-          %{} = pending ->
-            admit(pending, {:update, pending["id"], &bind(&1, agent_id, program, now)})
+      result =
+        case existing do
+          %{} = row ->
+            with :ok <- task_program(row, agent_id, trigger) do
+              admit(
+                row,
+                {:update, row["id"],
+                 &put_task_program(&1, agent_id, trigger, program, replacement, now)}
+              )
+            end
 
           nil ->
             record =
@@ -262,6 +282,12 @@ defmodule SalixAgent.Loops do
 
       case result do
         {:ok, created} ->
+          # A replaced program may still run here: its object goes the way
+          # a pause retires one before the new incarnation loads. The
+          # incarnation bump already fences its host calls and late notices.
+          if match?(%{"status" => status} when status != "pending", existing),
+            do: Reconciler.release_loop(agent_id, created["id"])
+
           Reconciler.adopt(agent_id)
           {:ok, public(created)}
 
@@ -271,26 +297,62 @@ defmodule SalixAgent.Loops do
     end
   end
 
-  # The pending Loop the round's Task requested, or nil.
-  defp requested_loop(_agent, nil), do: {:ok, nil}
+  # The round's Task's Loop, or nil. A Task has one Loop (the Store's unique
+  # Task index).
+  defp task_loop(_agent, nil), do: {:ok, nil}
 
-  defp requested_loop(agent, task) do
+  defp task_loop(agent, task) do
     with {:ok, rows} <- Store.list_by_tasks(agent["group_id"], [task]) do
-      {:ok, Enum.find(rows, &(&1["status"] == "pending"))}
+      {:ok, List.first(rows)}
     end
   end
 
-  defp bind(%{"status" => "pending", "agent_id" => agent_id} = current, agent_id, program, now) do
-    {:ok,
-     current
-     |> Map.merge(program)
-     |> Map.merge(%{"status" => "active", "started_at" => now, "updated_at" => now})}
+  # Whether a program may go onto the Task's Loop `row`: bound to a pending
+  # request, or replacing the program of a Loop that has one. Checked before
+  # the quota and again under the row's lock.
+  defp task_program(%{"agent_id" => agent_id} = row, agent_id, trigger) do
+    cond do
+      row["status"] == "ended" -> {:error, {:not_active, "ended"}}
+      row["status"] == "paused" and row["paused_by"] == "archive" -> {:error, :agent_archived}
+      not is_nil(trigger) -> {:error, {:invalid, "trigger"}}
+      true -> :ok
+    end
   end
 
-  defp bind(%{"status" => "pending"}, _agent_id, _program, _now), do: {:error, :not_found}
+  defp task_program(_row, _agent_id, _trigger), do: {:error, :not_found}
 
-  defp bind(current, _agent_id, _program, _now),
-    do: {:error, {:task_loop_exists, current["id"]}}
+  defp put_task_program(current, agent_id, trigger, program, replacement, now) do
+    case {task_program(current, agent_id, trigger), current["status"]} do
+      {:ok, "pending"} ->
+        {:ok,
+         current
+         |> Map.merge(program)
+         |> Map.merge(%{"status" => "active", "started_at" => now, "updated_at" => now})}
+
+      {:ok, _has_program} ->
+        replace(current, replacement)
+
+      {{:error, _} = error, _status} ->
+        error
+    end
+  end
+
+  # A new program for the Task's Loop. The row keeps its id, trigger,
+  # limits, runs and checkpoint; the program, its Session and authority are
+  # the new call's. The Loop runs again at a new incarnation, with the
+  # previous program's outcome and restart budget cleared.
+  defp replace(current, replacement) do
+    activate(
+      current,
+      :ok,
+      Map.merge(replacement, %{
+        "failure" => nil,
+        "exit_code" => nil,
+        "restart_count" => 0,
+        "restart_window_start_ms" => nil
+      })
+    )
+  end
 
   @doc """
   The Loops a tool call manages (`t:owner/0`): a Worker round that works a
@@ -369,20 +431,53 @@ defmodule SalixAgent.Loops do
 
   @spec list(owner()) :: {:ok, [map()]} | {:error, term()}
   def list(owner) do
-    with {:ok, records} <- Store.list_by_agent(owner_agent(owner)) do
-      {:ok, records |> Enum.filter(&in_scope?(&1, owner)) |> Enum.map(&public/1)}
-    end
+    with {:ok, records} <- list_records(owner), do: {:ok, Enum.map(records, &public/1)}
+  end
+
+  @doc """
+  `list/1` with the audience label of each Loop, as recorded at creation
+  (`nil` when none was recorded).
+  """
+  @spec list_labelled(owner()) :: {:ok, [{map(), [String.t()] | nil}]} | {:error, term()}
+  def list_labelled(owner) do
+    with {:ok, records} <- list_records(owner),
+         do: {:ok, Enum.map(records, &{public(&1), audience(&1)})}
+  end
+
+  defp list_records(owner) do
+    with {:ok, records} <- Store.list_by_agent(owner_agent(owner)),
+         do: {:ok, Enum.filter(records, &in_scope?(&1, owner))}
   end
 
   @spec get(owner(), String.t()) :: {:ok, map()} | {:error, term()}
   def get(owner, loop_id) when is_binary(loop_id) do
+    with {:ok, view, _label} <- get_labelled(owner, loop_id), do: {:ok, view}
+  end
+
+  @doc """
+  `get/2` with the Loop's audience label: the label of the sources its creator
+  declared (`ifc_authority/1`). It is the label every wake and lifecycle
+  notice of the Loop carries, so the facts `loop.get` returns (config, status,
+  failure) read as what those notices already said. `nil` when none was
+  recorded.
+  """
+  @spec get_labelled(owner(), String.t()) ::
+          {:ok, map(), [String.t()] | nil} | {:error, term()}
+  def get_labelled(owner, loop_id) when is_binary(loop_id) do
     with {:ok, record} <- owned(loop_id, owner) do
-      {:ok, record |> public() |> Map.merge(runtime_view(record))}
+      {:ok, record |> public() |> Map.merge(runtime_view(record)), audience(record)}
     end
   end
 
-  @spec pause(owner(), String.t()) :: {:ok, map()} | {:error, term()}
-  def pause(owner, loop_id) do
+  defp audience(record) do
+    case record["ifc"] do
+      %{"label" => label} when is_list(label) -> label
+      _other -> nil
+    end
+  end
+
+  @spec pause(owner(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def pause(owner, loop_id, paused_by \\ "user") do
     with {:ok, _current} <- owned(loop_id, owner),
          {:ok, record} <-
            Store.update(loop_id, fn row ->
@@ -397,7 +492,7 @@ defmodule SalixAgent.Loops do
                  {:ok,
                   Map.merge(row, %{
                     "status" => "paused",
-                    "paused_by" => "user",
+                    "paused_by" => paused_by,
                     "updated_at" => now_ms()
                   })}
              end
@@ -406,6 +501,77 @@ defmodule SalixAgent.Loops do
       {:ok, public(record)}
     end
   end
+
+  @doc """
+  Pause a Loop until `device_id` connects (`device_connected/1`). The device's
+  status is read after the row commits: a device that connected earlier found
+  no waiting Loop, so the Loop resumes here instead.
+  """
+  @spec pause_until_device(owner(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def pause_until_device(owner, loop_id, device_id) do
+    paused_by = device_wait(device_id)
+
+    with {:ok, %{"agent_id" => agent_id} = current} <- owned(loop_id, owner),
+         {:ok, _device} <- EnvDispatch.get_device(agent_id, device_id),
+         {:ok, _paused} <- pause(owner, loop_id, paused_by) do
+      case EnvDispatch.get_device(agent_id, device_id) do
+        {:ok, %{"status" => "connected"}} ->
+          if resume_waiting(current, paused_by), do: Reconciler.adopt(agent_id)
+
+        _ ->
+          :ok
+      end
+
+      get(owner, loop_id)
+    end
+  end
+
+  @doc "The `SalixEnv` device-connect observer: resume the Loops waiting for this device."
+  def device_connected(%{"group_id" => group_id, "device_id" => device_id})
+      when is_binary(group_id) and is_binary(device_id) do
+    resume_device_waits(group_id, device_wait(device_id), "")
+  end
+
+  def device_connected(_device), do: :ok
+
+  defp resume_device_waits(group_id, paused_by, after_id) do
+    page = SystemsRuntime.get_env(:salix_agent, :loops_device_wait_page, 100)
+
+    case Store.list_paused_by(group_id, paused_by, after_id, page) do
+      {:ok, records} ->
+        records
+        |> Enum.filter(&resume_waiting(&1, paused_by))
+        |> Enum.uniq_by(& &1["agent_id"])
+        |> Enum.each(&Reconciler.adopt(&1["agent_id"]))
+
+        if length(records) == page,
+          do: resume_device_waits(group_id, paused_by, List.last(records)["id"]),
+          else: :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  # The people told it would continue on its own hear when the quota stops it.
+  defp resume_waiting(record, paused_by) do
+    readmit(record, paused_by)
+    |> tap(fn
+      false ->
+        with {:ok, %{"paused_by" => "quota"} = current} <- Store.get(record["id"]) do
+          notify_lifecycle(
+            current,
+            "device-quota:#{current["incarnation"]}",
+            "paused: the active Loop quota is full"
+          )
+        end
+
+      true ->
+        :ok
+    end)
+  end
+
+  defp device_wait(device_id), do: "device:" <> device_id
 
   # Resume bumps the incarnation itself: a late notice from the object the
   # pause or fault retired can then never match the resumed row, even before
@@ -868,6 +1034,72 @@ defmodule SalixAgent.Loops do
     result
   end
 
+  # Product events a Loop may subscribe to with `loop.subscribe`. A product
+  # source publishes one with `deliver_product_event/3`.
+  @product_events ["meeting.completed"]
+
+  @doc "The product events a Loop may subscribe to."
+  @spec product_events() :: [String.t()]
+  def product_events, do: @product_events
+
+  @doc "Subscribe the owner's Loop to one product event. Nil removes the subscription."
+  @spec subscribe_product_event(owner(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def subscribe_product_event(owner, loop_id, event)
+      when is_nil(event) or event in @product_events do
+    agent_id = owner_agent(owner)
+
+    with {:ok, record} <-
+           Store.update(loop_id, fn record ->
+             if record["agent_id"] == agent_id and in_scope?(record, owner),
+               do:
+                 {:ok, Map.merge(record, %{"product_event" => event, "updated_at" => now_ms()})},
+               else: {:error, :not_found}
+           end) do
+      {:ok, public(record)}
+    end
+  end
+
+  def subscribe_product_event(_owner, _loop_id, _event), do: {:error, {:invalid, "event"}}
+
+  @doc """
+  Deliver one product event to every active Loop of `group_id` subscribed to
+  `topic`. `:ok` when each subscriber accepted it, already had it, or is no
+  longer subscribed or active; `{:error, reason}` when a delivery failed and the
+  publisher must retry. The event_id makes a retry a duplicate.
+  """
+  @spec deliver_product_event(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def deliver_product_event(group_id, topic, event)
+      when is_binary(group_id) and topic in @product_events and is_map(event) do
+    with {:ok, normalized} <- normalize_event(Map.put(event, "topic", topic)),
+         {:ok, rows} <- Store.product_event_subscribers(group_id, topic) do
+      # At most 100 active Loops per Group. Each batch has 20 workers, and
+      # each admission is one row-locked transaction.
+      rows
+      |> SystemsClock.async_stream(&deliver_subscribed(&1, normalized),
+        max_concurrency: 20,
+        timeout: 6_000,
+        on_timeout: :kill_task
+      )
+      |> Enum.find_value(:ok, fn
+        {:ok, {:ok, _reply}} -> nil
+        {:ok, {:error, reason}} when reason in [:not_found, :binding_changed] -> nil
+        {:ok, {:error, {:not_active, _}}} -> nil
+        {:ok, {:error, reason}} -> {:error, reason}
+        {:exit, reason} -> {:error, {:delivery_exit, reason}}
+      end)
+    end
+  end
+
+  def deliver_product_event(_group_id, _topic, _event), do: {:error, {:invalid, "event"}}
+
+  defp deliver_subscribed(row, event) do
+    started = SystemsClock.monotonic_time()
+    result = deliver_to_owner(row, event)
+    emit("loop_event", event_outcome(result), SystemsClock.monotonic_time() - started)
+    result
+  end
+
   # The PostgreSQL receipt owns accepted work. Placement/runtime failure after
   # this commit cannot turn it back into an unaccepted event.
   @max_pending_events 32
@@ -1108,19 +1340,29 @@ defmodule SalixAgent.Loops do
     end
   end
 
-  @doc "The guest returned from `main`: pause with reason `exited` and tell the Session once."
-  @spec record_exit(String.t(), integer(), integer() | nil) :: :ok
-  def record_exit(loop_id, incarnation, exit_code) do
+  @doc """
+  The guest returned from `main`: pause with reason `exited` and tell the
+  Session once. A non-zero exit after a failed host call
+  (`%{"capability", "message"}`, from the Host) records that call as the
+  Loop's `failure` and names it in the notice: the guest itself saw only
+  `SF_HOST_ERROR`.
+  """
+  @spec record_exit(String.t(), integer(), integer() | nil, map() | nil) :: :ok
+  def record_exit(loop_id, incarnation, exit_code, last_host_error \\ nil) do
+    failure = exit_failure(exit_code, last_host_error)
+
     case Store.update(loop_id, fn current ->
            if current["incarnation"] == incarnation and current["status"] == "active" do
              {:ok,
-              Map.merge(current, %{
+              current
+              |> Map.merge(%{
                 "status" => "paused",
                 "paused_by" => "exited",
                 "exit_code" => exit_code,
                 "object_id" => nil,
                 "updated_at" => now_ms()
-              })}
+              })
+              |> then(&if(failure, do: Map.put(&1, "failure", failure), else: &1))}
            else
              {:error, :stale_incarnation}
            end
@@ -1129,7 +1371,7 @@ defmodule SalixAgent.Loops do
         notify_lifecycle(
           record,
           "exited:#{incarnation}",
-          "exited with code #{inspect(exit_code)}"
+          "exited with code #{inspect(exit_code)}" <> if(failure, do: "; " <> failure, else: "")
         )
 
         :ok
@@ -1138,6 +1380,14 @@ defmodule SalixAgent.Loops do
         :ok
     end
   end
+
+  defp exit_failure(0, _last_host_error), do: nil
+
+  defp exit_failure(_code, %{"capability" => capability, "message" => message})
+       when is_binary(capability) and is_binary(message),
+       do: "last failed host call #{capability}: #{message}"
+
+  defp exit_failure(_code, _last_host_error), do: nil
 
   @doc """
   The guest faulted. Within the restart budget the Loop is reloaded from its
@@ -1261,9 +1511,11 @@ defmodule SalixAgent.Loops do
   The notification target Session cannot be resolved: pause with reason
   `undeliverable`. Only a Loop that was running is reported as stopped: a
   lifecycle notice that cannot be delivered follows a stop already reported.
+  With `notify: true`, for a pause that no failed delivery caused, the Loop's
+  Task or Session is told once, off the caller's process.
   """
-  @spec mark_undeliverable(String.t()) :: :ok
-  def mark_undeliverable(loop_id) do
+  @spec mark_undeliverable(String.t(), keyword()) :: :ok
+  def mark_undeliverable(loop_id, opts \\ []) do
     result =
       Store.update(loop_id, fn current ->
         if current["status"] == "active" do
@@ -1283,11 +1535,74 @@ defmodule SalixAgent.Loops do
       {:ok, record} ->
         Reconciler.release_loop(record["agent_id"], loop_id)
 
+        if opts[:notify] == true do
+          {:ok, _pid} =
+            SystemsRuntime.Task.start(fn ->
+              notify_lifecycle(record, "undeliverable", "paused: its Agent cannot host it")
+            end)
+        end
+
       _ ->
         :ok
     end
 
     :ok
+  end
+
+  @doc """
+  A Task Loop follows its Task's Worker into the Session that took the Task
+  up (a switch of the Task's model or place gives the Worker a new Session,
+  `SalixIM.TaskRun`). Only the Loop of a Task moves: any other Loop's Session
+  is its target.
+  """
+  @spec follow_task_worker(String.t(), String.t()) :: :ok | {:error, term()}
+  def follow_task_worker(loop_id, session_id) when is_binary(session_id) do
+    case Store.update(loop_id, fn current ->
+           cond do
+             not is_binary(current["task_conversation_id"]) ->
+               {:error, :not_task_loop}
+
+             current["session_id"] == session_id ->
+               {:unchanged, current}
+
+             true ->
+               {:ok, Map.merge(current, %{"session_id" => session_id, "updated_at" => now_ms()})}
+           end
+         end) do
+      {:ok, _record} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc """
+  One bounded page of Task Loops paused as `undeliverable` (the Reconciler's
+  sweep): each whose Task has its Worker again follows that Worker's Session
+  and runs again. A Task still without its Worker keeps its Loop paused. The
+  page after `cursor` is taken; the answer is the cursor of the next sweep,
+  nil once the set is exhausted.
+  """
+  @spec recover_undeliverable_tasks(String.t() | nil, pos_integer()) :: String.t() | nil
+  def recover_undeliverable_tasks(cursor, limit \\ 20) do
+    case Store.undeliverable_task_loops(cursor, limit) do
+      {:ok, rows} ->
+        Enum.each(rows, &recover_undeliverable_task/1)
+        if length(rows) < limit, do: nil, else: List.last(rows)["id"]
+
+      {:error, _} ->
+        cursor
+    end
+  end
+
+  # An archived Agent cannot host the Loop however its Task stands: its Loop
+  # would be stranded and paused again.
+  defp recover_undeliverable_task(record) do
+    with {:ok, agent} <- Control.get(record["agent_id"]),
+         false <- Control.archived?(agent),
+         {:ok, session} when is_binary(session) <- TaskOwner.worker_session(record),
+         :ok <- follow_task_worker(record["id"], session),
+         true <- readmit(record, "undeliverable") do
+      Reconciler.adopt(record["agent_id"])
+    end
   end
 
   @doc "Archive: every active Loop of the Agent becomes `paused(archive)`."
@@ -1328,8 +1643,15 @@ defmodule SalixAgent.Loops do
       {:ok, _} ->
         true
 
+      # Under the row's lock: a Loop someone else resumed counts against the
+      # quota it was refused by, and must stay active.
       {:error, {:quota, _, _}} ->
-        _ = set_status(record["id"], "paused", "quota")
+        _ =
+          Store.update(record["id"], fn current ->
+            with :ok <- precondition.(current) do
+              {:ok, Map.merge(current, %{"paused_by" => "quota", "updated_at" => now_ms()})}
+            end
+          end)
 
         false
 
@@ -1370,6 +1692,7 @@ defmodule SalixAgent.Loops do
       "loop_id" => record["id"],
       "webhook_url" => webhook_url(record),
       "composio_trigger" => record["composio_trigger"],
+      "product_event" => record["product_event"],
       "trigger" => record["trigger"],
       "max_runs" => record["max_runs"],
       "ends_at" => record["ends_at"],
@@ -1407,8 +1730,17 @@ defmodule SalixAgent.Loops do
 
     if node == Atom.to_string(node()) do
       case Host.object_get(object_id) do
-        {:ok, status} -> Map.merge(checkpoint, %{"runtime" => status})
-        {:error, _} -> Map.merge(checkpoint, %{"runtime" => %{"state" => "detached"}})
+        {:ok, status} ->
+          status =
+            case Host.last_host_error(object_id) do
+              %{} = error -> Map.put(status, "last_host_error", error)
+              nil -> status
+            end
+
+          Map.merge(checkpoint, %{"runtime" => status})
+
+        {:error, _} ->
+          Map.merge(checkpoint, %{"runtime" => %{"state" => "detached"}})
       end
     else
       Map.merge(checkpoint, %{"runtime" => %{"state" => "remote", "node" => node}})
@@ -1431,15 +1763,6 @@ defmodule SalixAgent.Loops do
       "lifecycle:" <> dedup_suffix,
       lifecycle: true
     )
-  end
-
-  defp set_status(loop_id, status, paused_by, extra \\ %{}) do
-    Store.update(loop_id, fn current ->
-      {:ok,
-       current
-       |> Map.merge(%{"status" => status, "paused_by" => paused_by, "updated_at" => now_ms()})
-       |> Map.merge(extra)}
-    end)
   end
 
   # `create/2` reads the file the way the Agent sees it (visibility rules
@@ -1569,7 +1892,7 @@ defmodule SalixAgent.Loops do
         |> put_present("label", evidence["sources_label"])
 
       _absent ->
-        %{}
+        put_present(%{}, "creator", SalixAgent.IFC.unchecked_creator(ctx))
     end
   end
 

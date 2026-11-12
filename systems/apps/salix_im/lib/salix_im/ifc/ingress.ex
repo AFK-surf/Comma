@@ -287,6 +287,28 @@ defmodule SalixIM.IFC.Ingress do
     end
   end
 
+  # A private LINE chat is `user:<userId>`, and that user is the sender:
+  # record it as that one-to-one. A group (`group:`) or multi-person chat
+  # (`room:`) is a room, as for QQ.
+  defp audience("line", scope, metadata) do
+    chat_id = text(metadata["chat_id"])
+    sender = text(metadata["from_user_id"])
+
+    cond do
+      chat_id == "" ->
+        nil
+
+      sender != "" and chat_id == "user:" <> sender ->
+        Projection.observe_direct(scope, chat_id, sender)
+        scope_id = Projection.direct_scope_id(sender)
+        atoms(scope, scope_id, stored(scope, scope_id, "direct"))
+
+      true ->
+        {canonical, row} = Projection.structure(scope, chat_id)
+        atoms(scope, canonical, if(is_nil(row.kind), do: %{row | kind: "room"}, else: row))
+    end
+  end
+
   # A message posted through the group's inbound API belongs to the whole
   # group (docs/product-features.md): the caller addressed
   # the group, not any one of its channels, so the content may reach any

@@ -1,5 +1,5 @@
 // The mesh on iroh's browser build (clients/packages/mesh/wasm, `@comma/mesh/web`): an endpoint on the relays alone (a
-// browser has no UDP), and Salix as the relay of last resort on the page's WebSocket. It answers as the station's addon
+// browser has no UDP), and Salix as a relay on the page's WebSocket. It answers as the station's addon
 // does (native-link.ts), and signs with the endpoint's key itself (Salix's proof). The page loads the module; the core
 // binds it when it first reaches a station.
 import { NativeMeshEndpoint, type NativeEndpoint } from "./native-link.ts";
@@ -18,18 +18,24 @@ export interface WebMesh {
     secretKey: Uint8Array;
     relayUrls: string[];
     salixRelay: boolean;
+    routePolicy?: string;
   }): Promise<WebNativeEndpoint>;
 }
 
 /** Binds this tab's endpoint with `secretKey` on `relays`, through Salix as well. */
 export async function bindWebEndpoint(
   mesh: WebMesh,
-  options: { secretKey: Uint8Array; relays: readonly string[] }
+  options: {
+    secretKey: Uint8Array;
+    relays: readonly string[];
+    routePolicy?: string | undefined;
+  }
 ): Promise<NativeMeshEndpoint<Uint8Array, SalixRelay>> {
   const native = await mesh.bind({
     secretKey: options.secretKey,
     relayUrls: [...options.relays],
     salixRelay: true,
+    ...(options.routePolicy ? { routePolicy: options.routePolicy } : {}),
   });
   const relay = new SalixRelay(native, (message) => native.sign(message));
   return new NativeMeshEndpoint(native, relay, (bytes) => bytes);

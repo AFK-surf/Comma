@@ -6,8 +6,35 @@ defmodule SalixAgent.AgentModelsTest do
   alias SalixAgent.SubscriptionStore, as: Store
   alias SalixStore.{Ids, S3}
 
+  defmodule ModelWorker do
+    use GenServer
+    def start_link(state), do: GenServer.start_link(__MODULE__, state)
+    def init(state), do: {:ok, state}
+
+    def handle_call({:start, id, data, reply_to}, _from, state) do
+      command = Jason.decode!(data)
+
+      Agent.update(state, &[command["op"] | &1])
+
+      SystemsRuntime.Proc.send(
+        reply_to,
+        {:subscription, id, %{"type" => "error", "status" => 502, "code" => "models_unavailable"}}
+      )
+
+      {:reply, :ok, state}
+    end
+
+    def handle_cast(_, state), do: {:noreply, state}
+  end
+
   setup do
     old_ports = SystemsRuntime.get_env(:salix_agent, :agent_management_ports)
+    old_worker = SystemsRuntime.get_env(:salix_agent, :subscription_worker)
+
+    state = start_supervised!({Agent, fn -> [] end})
+
+    worker = start_supervised!({ModelWorker, state})
+    SystemsRuntime.put_env(:salix_agent, :subscription_worker, worker)
 
     SystemsRuntime.put_env(
       :salix_agent,
@@ -28,9 +55,17 @@ defmodule SalixAgent.AgentModelsTest do
       if old_ports,
         do: SystemsRuntime.put_env(:salix_agent, :agent_management_ports, old_ports),
         else: SystemsRuntime.delete_env(:salix_agent, :agent_management_ports)
+
+      if old_worker,
+        do: SystemsRuntime.put_env(:salix_agent, :subscription_worker, old_worker),
+        else: SystemsRuntime.delete_env(:salix_agent, :subscription_worker)
     end)
 
-    %{tenant: tenant, ctx: %{agent_id: router["agent_id"], session_id: "s", tool_call_id: "t"}}
+    %{
+      tenant: tenant,
+      state: state,
+      ctx: %{agent_id: router["agent_id"], session_id: "s", tool_call_id: "t"}
+    }
   end
 
   test "lists no model only a platform Profile serves", c do
@@ -135,6 +170,87 @@ defmodule SalixAgent.AgentModelsTest do
 
     assert {:ok, %{"models" => [%{"id" => "gpt-5.5"}], "truncated" => false}} =
              AgentManagement.run(:models, %{"limit" => 1}, c.ctx)
+  end
+
+  test "model lists stay local even when subscription discovery is unavailable", c do
+    {:ok, _} = key(c.tenant, "openai", "sk-openai-0123456789abcdefgh")
+    assert {:ok, %{"models" => [_ | _]}} = AgentManagement.run(:models, %{}, c.ctx)
+
+    profile = subscription(c.tenant, "codex", "ok")
+    assert {:ok, %{"models" => models}} = AgentManagement.run(:models, %{}, c.ctx)
+    assert Enum.any?(models, &(&1["served_by"] == "subscription"))
+
+    assert {:ok, %{"models" => [_ | _]}} =
+             AccountPool.servable_models(c.tenant, profile_id: profile["id"])
+
+    assert Agent.get(c.state, & &1) == []
+  end
+
+  test "a Codex Profile lists GPT-6.1 Terra and accepts it as a model choice", c do
+    profile = subscription(c.tenant, "codex", "ok")
+
+    assert {:ok, %{"models" => [%{"id" => "gpt-6.1-terra", "served_by" => "subscription"}]}} =
+             AgentManagement.run(:models, %{"query" => "gpt-6.1-terra"}, c.ctx)
+
+    assert {:ok, %{"model" => "gpt-6.1-terra", "allow_paid" => false}} =
+             SalixAgent.ModelChoice.choose(
+               %{
+                 "kind" => "catalog",
+                 "model" => "gpt-6.1-terra",
+                 "reasoning_effort" => "ultra",
+                 "profile_id" => profile["id"]
+               },
+               c.tenant
+             )
+
+    assert Agent.get(c.state, & &1) == []
+  end
+
+  test "a pinned model lookup does not borrow other tenant Profiles", c do
+    {:ok, pinned} =
+      key(c.tenant, "custom", "fixture-key-0000000000", %{
+        "base_url" => "https://one.example.test/v1",
+        "protocol" => "chat_completions",
+        "models" => ["only-one"]
+      })
+
+    {:ok, _other} =
+      key(c.tenant, "custom", "fixture-key-1111111111", %{
+        "base_url" => "https://two.example.test/v1",
+        "protocol" => "chat_completions",
+        "models" => ["only-two"]
+      })
+
+    assert {:ok, %{"models" => [%{"id" => "only-one"}], "truncated" => false}} =
+             AccountPool.servable_models(c.tenant, profile_id: pinned["id"])
+
+    assert Agent.get(c.state, & &1) == []
+
+    {:ok, _} =
+      AccountPool.update(c.tenant, pinned["id"], %{
+        "disabled" => true,
+        "version" => pinned["version"]
+      })
+
+    assert {:ok, %{"models" => []}} =
+             AccountPool.servable_models(c.tenant, profile_id: pinned["id"])
+  end
+
+  test "a Profile pin is resolved within the tenant", c do
+    other_tenant = SalixAgent.TestSupport.new_tenant_id()
+
+    {:ok, foreign} =
+      key(other_tenant, "custom", "fixture-key-2222222222", %{
+        "base_url" => "https://foreign.example.test/v1",
+        "protocol" => "chat_completions",
+        "models" => ["foreign-model"]
+      })
+
+    assert {:ok, %{"models" => []}} =
+             AccountPool.servable_models(c.tenant, profile_id: foreign["id"])
+
+    assert {:ok, %{"models" => []}} =
+             AccountPool.servable_models(c.tenant, profile_id: "missing-profile")
   end
 
   defmodule RaisingPorts do

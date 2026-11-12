@@ -12,19 +12,15 @@ defmodule SalixStore.ServerReleaseDescriptor do
   @targets [
     {"runner", "darwin-amd64", "mac-mini-provisioner"},
     {"runner", "darwin-arm64", "mac-mini-provisioner"},
-    {"salix-connect", "linux-amd64", "salix-connect"},
-    {"salix-connect", "linux-arm64", "salix-connect"},
-    {"salix-connect", "darwin-amd64", "salix-connect"},
-    {"salix-connect", "darwin-arm64", "salix-connect"},
+    {"runner-service-executor", "darwin-amd64", "bft-runner-service-executor"},
+    {"runner-service-executor", "darwin-arm64", "bft-runner-service-executor"},
     {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
-    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"},
-    {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
-    {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
+    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"}
   ]
   @target_files MapSet.new(@targets)
   # Optional delivery targets do not gate existing installation surfaces.
   @required_target_files MapSet.reject(@target_files, fn {component, platform, _} ->
-                           component == "computer-use-helper" or
+                           component == "runner-service-executor" or
                              {component, platform} == {"agent-vmm-host", "linux-arm64"}
                          end)
   @primary_artifacts Map.new(@targets, fn {component, platform, artifact} ->

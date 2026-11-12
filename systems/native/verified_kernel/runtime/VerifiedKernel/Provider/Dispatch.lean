@@ -54,9 +54,9 @@ def run : Term → Term → KernelM Term
   | .atom "transport_error", .tuple [protocol, reason] => pure (Error.transport (providerName protocol) reason)
   | .atom "retry", .tuple [status, seen, .integer attempts] =>
     pure (retry status seen attempts)
-  | .atom "anthropic_parts", .tuple [.list messages, model] => Messages.anthropicParts messages model
-  | .atom "chat_messages", .tuple [.list messages, model] => Messages.chat messages model
-  | .atom "responses_parts", .list messages => Messages.responsesParts messages
+  | .atom "anthropic_parts", .tuple [.list messages, model] => Messages.anthropicParts (Messages.settledTurns false messages) model
+  | .atom "chat_messages", .tuple [.list messages, model] => Messages.chat (Messages.settledTurns false messages) model
+  | .atom "responses_parts", .list messages => Messages.responsesParts (Messages.settledTurns true messages)
   | .atom "tools", .tuple [.binary protocol, .list tools] => return list (← tools.mapM (toolSpec (String.fromUTF8! protocol)))
   | .atom "cache", .tuple [system, tools, messages, enabled, trailing] => pure (Request.cache system tools messages enabled trailing)
   | .atom "parse_anthropic", .tuple [resp, model] => Response.anthropic resp model

@@ -245,6 +245,79 @@ defmodule SalixMeet.CalendarAutojoinTest do
     assert [] = CalendarAutojoin.join_sweep([@group], now: @now, dry_run: true)
   end
 
+  test "a meeting listed by its Zoom, Teams or Feishu/Lark link is projected but never joined" do
+    links = [
+      "https://us02web.zoom.us/j/81234567890?pwd=abc",
+      "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0",
+      "https://vc-sg.larksuite.com/j/123456789"
+    ]
+
+    prepared_only =
+      for {url, n} <- Enum.with_index(links),
+          do: Map.put(ev("other-#{n}", @now + 30_000), "meet_url", url)
+
+    set_events([ev("meet", @now + 30_000) | prepared_only])
+
+    assert [{"g-test", 4}] = CalendarAutojoin.scan_once([@group], now: @now)
+
+    assert [%{action: :would_join, title: "T-meet"}] =
+             CalendarAutojoin.join_sweep([@group], now: @now, dry_run: true)
+  end
+
+  test "a Feishu/Lark link is joined only when the Group has a bot of its platform" do
+    link = fn id, start, url -> Map.put(ev(id, start), "meet_url", url) end
+
+    set_events([
+      link.("zoom", @now + 10_000, "https://us02web.zoom.us/j/81234567890"),
+      link.("feishu", @now + 20_000, "https://vc.feishu.cn/j/987654321"),
+      link.("lark", @now + 30_000, "https://vc-sg.larksuite.com/j/123456789")
+    ])
+
+    group = Map.put(@group, "lark_join", %{"lark" => "lark-bot"})
+
+    # The joinable meeting keeps the projection's one place.
+    assert [{"g-test", 1}] =
+             CalendarAutojoin.scan_once([group], now: @now, max_events_per_group: 1)
+
+    assert [%{action: :would_join, title: "T-lark"}] =
+             CalendarAutojoin.join_sweep([group],
+               now: @now,
+               dry_run: true,
+               max_events_per_group: 1
+             )
+
+    # Without a Lark bot the same meeting is only prepared.
+    assert [] =
+             CalendarAutojoin.join_sweep([@group],
+               now: @now,
+               dry_run: true,
+               max_events_per_group: 1
+             )
+  end
+
+  test "more prepare-only meetings than the projection holds never push a Google Meet out" do
+    zooms =
+      for n <- 1..5,
+          do:
+            Map.put(
+              ev("zoom-#{n}", @now + 10_000 + n),
+              "meet_url",
+              "https://us02web.zoom.us/j/8123456789#{n}"
+            )
+
+    set_events(zooms ++ [ev("meet", @now + 30_000)])
+
+    assert [{"g-test", 3}] =
+             CalendarAutojoin.scan_once([@group], now: @now, max_events_per_group: 3)
+
+    assert [%{action: :would_join, title: "T-meet"}] =
+             CalendarAutojoin.join_sweep([@group],
+               now: @now,
+               dry_run: true,
+               max_events_per_group: 3
+             )
+  end
+
   test "meeting id differs across occurrences and survives a Meet-link change" do
     set_events([ev("s", @now + 30_000), ev("s", @now + 40_000)])
     CalendarAutojoin.scan_once([@group], now: @now)

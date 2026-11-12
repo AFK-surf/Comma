@@ -14,6 +14,7 @@
 // and 64 in all (the oldest goes first); 60 invocations a minute per app on this device, 5 of them notifications.
 // Device storage: 1 MiB per app (32 KiB per value), for at most 128 apps per account (the least recently written
 // go first). Bundles kept in memory by digest: at most 8, 64 MiB in all.
+import { lazySchema } from "@comma/chat-contract";
 import {
   CoreError,
   fromUtf8,
@@ -65,6 +66,16 @@ import type { QuickChat } from "./quick-chat.ts";
 type Scope = "app" | "user" | "device";
 type Grant = "once" | "each" | "none";
 
+/** Whether `value` is an https URL without credentials. */
+function httpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 /** Each capability: its ops and its grant (design §7.4). */
 export const MINI_APP_CAPABILITIES: Record<string, { grant: Grant; ops: string[] }> = {
   "identity.basic": { grant: "once", ops: ["viewer"] },
@@ -81,13 +92,57 @@ export const MINI_APP_CAPABILITIES: Record<string, { grant: Grant; ops: string[]
   notifications: { grant: "once", ops: ["notify"] },
   "clipboard.write": { grant: "none", ops: ["clipboard.write"] },
   "links.open": { grant: "each", ops: ["links.open"] },
+  microphone: {
+    grant: "once",
+    ops: [
+      "microphone.devices",
+      "microphone.watch",
+      "microphone.start",
+      "microphone.startChannels",
+      "microphone.stop",
+    ],
+  },
+  // The host's camera sheet is the confirmation: the viewer takes each photo.
+  camera: { grant: "each", ops: ["camera.capture"] },
+  location: { grant: "once", ops: ["location.current"] },
+  "screen.wake": { grant: "none", ops: ["screen.keepAwake"] },
+  fullscreen: { grant: "none", ops: ["screen.fullscreen"] },
+  "clipboard.read": { grant: "each", ops: ["clipboard.read"] },
+  // The system share sheet is the confirmation.
+  share: { grant: "none", ops: ["share"] },
+  haptics: { grant: "none", ops: ["haptics"] },
+  midi: { grant: "once", ops: ["midi.start", "midi.stop"] },
+  // Native device APIs use the browser's chooser rather than an SDK operation.
+  usb: { grant: "none", ops: [] },
+  bluetooth: { grant: "none", ops: [] },
 };
+
+/** Device capabilities that only the web and Mac hosts run (the phone apps have no host for them yet). */
+const DEVICE_CAPABILITIES = new Set([
+  "microphone",
+  "camera",
+  "location",
+  "screen.wake",
+  "fullscreen",
+  "clipboard.read",
+  "share",
+  "haptics",
+  "midi",
+  "usb",
+  "bluetooth",
+]);
+/** Device capabilities that the Mac app cannot run: it has no location entitlement, share sheet or vibration. */
+const MAC_UNSUPPORTED = new Set(["location", "share", "haptics"]);
 
 const capabilityOf = new Map(
   Object.entries(MINI_APP_CAPABILITIES).flatMap(([cap, { ops }]) =>
     ops.map((op) => [op, cap] as const)
   )
 );
+
+/** The phone apps run the same restricted, cloud-only container. */
+const mobilePlatform = (platform: MiniAppPlatform) =>
+  platform === "ios" || platform === "android";
 
 /**
  * Whether this platform and viewer can use `capability` at all. The Mac apps Calendar is on Mac only. A guest
@@ -101,6 +156,10 @@ export function miniAppCapabilitySupported(
   linkOnly = false
 ): boolean {
   if (!(capability in MINI_APP_CAPABILITIES)) return false;
+  if (DEVICE_CAPABILITIES.has(capability))
+    return (
+      platform === "web" || (platform === "mac" && !MAC_UNSUPPORTED.has(capability))
+    );
   if (capability === "calendar.read") return platform === "mac" && !guest;
   if (capability === "drive.app_folder") return !guest && !linkOnly;
   if (guest && capability === "tasks.create") return false;
@@ -123,19 +182,40 @@ const BUNDLE_TIMEOUT_MS = 60_000;
 const ICON_CACHE_ENTRIES = 64;
 /** At most 160 KiB each (the server's limit), so the kept covers stay under about 10 MB. */
 const COVER_CACHE_ENTRIES = 48;
-/** The only paths an app's `icon_url` and `cover_url` name (CommaCore.MiniApps): a read of anything else is refused. */
+/** At most 2 MiB each (the server's limit): a details page's few. */
+const SCREENSHOT_CACHE_ENTRIES = 8;
+/**
+ * The only paths an app's `icon_url`, `cover_url`, `screenshot_urls` and `author.avatar_url` name (CommaCore.MiniApps): a
+ * read of anything else is refused.
+ */
 const ICON_PATH = /^\/v1\/comma\/apps\/[A-Za-z0-9_-]{1,128}\/icon\?v=[1-9][0-9]{0,9}$/;
 const COVER_PATH =
   /^\/v1\/comma\/apps\/[A-Za-z0-9_-]{1,128}\/cover\?v=[1-9][0-9]{0,9}$/;
+const SCREENSHOT_PATH =
+  /^\/v1\/comma\/apps\/[A-Za-z0-9_-]{1,128}\/screenshots\/[0-5]\?v=[1-9][0-9]{0,9}$/;
+const AVATAR_PATH =
+  /^\/v1\/comma\/apps\/[A-Za-z0-9_-]{1,128}\/author-avatar\/[A-Za-z0-9_-]{1,128}$/;
 
-type ImageRead = { kind: "icon" | "cover"; url: string; via: MiniAppVia };
+type ImageRead = {
+  kind: "icon" | "cover" | "screenshot" | "avatar";
+  url: string;
+  via: MiniAppVia;
+};
 
-/** A `miniAppImage` topic's image: an icon or cover URL, reached through exactly one access path; null otherwise. */
+/** A `miniAppImage` topic's image: an icon, cover or screenshot URL, reached through exactly one access path; null otherwise. */
 function imageRead(topic: Topic): ImageRead | null {
   const url = String(topic.url ?? "");
   const workspace = String(topic.workspace ?? "");
   const link = String(topic.link ?? "");
-  const kind = ICON_PATH.test(url) ? "icon" : COVER_PATH.test(url) ? "cover" : null;
+  const kind = ICON_PATH.test(url)
+    ? "icon"
+    : COVER_PATH.test(url)
+      ? "cover"
+      : SCREENSHOT_PATH.test(url)
+        ? "screenshot"
+        : AVATAR_PATH.test(url)
+          ? "avatar"
+          : null;
   if (
     !kind ||
     (workspace === "") === (link === "") ||
@@ -149,22 +229,24 @@ export const MINI_APP_DRIVE_MAX_BYTES = 20 * 1_048_576;
 const DRIVE_TIMEOUT_MS = 120_000;
 const CALENDAR_MAX_RANGE_MS = 366 * 86_400_000;
 
-const driveListSchema = z
-  .object({
-    data: z
-      .array(
-        z
-          .object({
-            name: z.string().max(1_024),
-            kind: z.enum(["file", "dir"]),
-            size: z.number().int().nonnegative().nullish(),
-            updated_at: z.string().max(64).nullish(),
-          })
-          .strip()
-      )
-      .max(10_000),
-  })
-  .strip();
+const driveListSchema = lazySchema(() =>
+  z
+    .object({
+      data: z
+        .array(
+          z
+            .object({
+              name: z.string().max(1_024),
+              kind: z.enum(["file", "dir"]),
+              size: z.number().int().nonnegative().nullish(),
+              updated_at: z.string().max(64).nullish(),
+            })
+            .strip()
+        )
+        .max(10_000),
+    })
+    .strip()
+);
 
 type Session = {
   id: string;
@@ -189,10 +271,12 @@ type DeviceStore = {
   bytes: number;
 };
 
-const viaSchema = z.union([
-  z.object({ workspace: z.string().min(1).max(256) }).strict(),
-  z.object({ token: z.string().min(1).max(512) }).strict(),
-]);
+const viaSchema = lazySchema(() =>
+  z.union([
+    z.object({ workspace: z.string().min(1).max(256) }).strict(),
+    z.object({ token: z.string().min(1).max(512) }).strict(),
+  ])
+);
 
 /** A call's `via`: the access path the app is reached by. */
 const viaParam = (raw: unknown): MiniAppVia => {
@@ -382,9 +466,10 @@ export class MiniApps {
   readonly #calls = new Map<string, number[]>();
   readonly #notifies = new Map<string, number[]>();
   readonly #bundles = new Map<string, MiniAppBundle["files"]>();
-  /** Icons and covers read, as `data:` URLs (null: the app has none), by access path and URL. */
+  /** Icons, covers and screenshots read, as `data:` URLs (null: the app has none), by access path and URL. */
   readonly #icons = new Map<string, string | null>();
   readonly #covers = new Map<string, string | null>();
+  readonly #screenshots = new Map<string, string | null>();
   /** The `miniAppImage` topics shown, by topic key. */
   readonly #images = new Map<string, MiniAppImageValue>();
   #accountKey: string | null = null;
@@ -444,7 +529,7 @@ export class MiniApps {
                 src: null,
               },
             }
-          : { err: CoreError.invalid("url is not an app's icon or cover") },
+          : { err: CoreError.invalid("url is not an app's icon, cover or screenshot") },
     });
     ctx.session.onChange(() => {
       const key = ctx.session.accountKey();
@@ -455,6 +540,7 @@ export class MiniApps {
       this.#linkGrants.clear();
       this.#icons.clear();
       this.#covers.clear();
+      this.#screenshots.clear();
       for (const topic of kernel.store.liveTopics()) {
         if (topic.topic === "miniApps") {
           this.#live.stop(topic);
@@ -805,7 +891,13 @@ export class MiniApps {
             const capability = requiredString(p, "capability", 64);
             if (
               MINI_APP_CAPABILITIES[capability]?.grant !== "once" ||
-              !session.app.capabilities.includes(capability)
+              !session.app.capabilities.includes(capability) ||
+              !miniAppCapabilitySupported(
+                capability,
+                session.platform,
+                session.guest,
+                "token" in session.via
+              )
             )
               throw CoreError.invalid("capability is not one the app asks for");
             return this.#grant(session, capability);
@@ -1064,8 +1156,13 @@ export class MiniApps {
     const app = requiredString(p, "app");
     const via = viaParam(p);
     const platform = (p as { platform?: unknown }).platform;
-    if (platform !== "mac" && platform !== "web")
-      throw CoreError.invalid("platform is mac or web");
+    if (
+      platform !== "mac" &&
+      platform !== "web" &&
+      platform !== "ios" &&
+      platform !== "android"
+    )
+      throw CoreError.invalid("platform is mac, web, ios or android");
     // A Task's card previews the Version its agent deployed; anything else opens what the server serves.
     const version =
       (p as { version?: unknown }).version === undefined
@@ -1107,7 +1204,9 @@ export class MiniApps {
           guest: opened.guest,
         },
         grants,
-        storage: shown.storage,
+        storage: shown.storage.filter(
+          (scope) => !mobilePlatform(platform) || scope !== "device"
+        ),
         paused: false,
       };
       this.#keep(session);
@@ -1140,7 +1239,14 @@ export class MiniApps {
           "token" in session.via
         )
       ),
-      grants: [...session.grants],
+      grants: [...session.grants].filter((capability) =>
+        miniAppCapabilitySupported(
+          capability,
+          session.platform,
+          session.guest,
+          "token" in session.via
+        )
+      ),
       storage: session.storage,
       backend: session.app.has_backend,
     };
@@ -1188,8 +1294,13 @@ export class MiniApps {
 
   /** A shown `miniAppImage` topic's read: the image, or null when it could not be read (a later showing reads again). */
   #readImage(topic: Topic, read: ImageRead): Effect.Effect<void> {
-    const kept = read.kind === "icon" ? this.#icons : this.#covers;
-    const entries = read.kind === "icon" ? ICON_CACHE_ENTRIES : COVER_CACHE_ENTRIES;
+    // An author's avatar is an icon-sized image, kept with the icons.
+    const [kept, entries] =
+      read.kind === "icon" || read.kind === "avatar"
+        ? [this.#icons, ICON_CACHE_ENTRIES]
+        : read.kind === "cover"
+          ? [this.#covers, COVER_CACHE_ENTRIES]
+          : [this.#screenshots, SCREENSHOT_CACHE_ENTRIES];
     return this.#image(kept, entries, read.url, read.via).pipe(
       Effect.orElseSucceed(() => null),
       Effect.flatMap((src) =>
@@ -1203,8 +1314,8 @@ export class MiniApps {
   }
 
   /**
-   * An app's icon or cover, read with the account's session and the access path, as an `<img>` cannot: the server
-   * answers its `icon_url` and `cover_url` only to a signed-in viewer that names how it reaches the app. A URL names
+   * An app's icon, cover or screenshot, read with the account's session and the access path, as an `<img>` cannot: the
+   * server answers its image URLs only to a signed-in viewer that names how it reaches the app. A URL names
    * one Version's image, so a read is kept for the account's session, the `entries` most recent in `cache`.
    */
   #image(
@@ -1232,7 +1343,11 @@ export class MiniApps {
             .split(";")[0]!
             .trim()
             .toLowerCase() ?? "";
-        return /^image\/[a-z0-9.+-]+$/.test(type) && response.body.length > 0
+        return ["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(
+          type
+        ) &&
+          response.body.length > 0 &&
+          response.body.length <= 2 * 1_048_576
           ? `data:${type};base64,${base64(response.body)}`
           : null;
       }),
@@ -1423,7 +1538,8 @@ export class MiniApps {
           return Effect.succeed(fail("rate_limited", "Too many notifications."));
         return Effect.succeed({ status: "host", op, args });
       default:
-        // chat.draft, clipboard.write, files.pick, links.open, calendar.events (Main's): the host's own effects.
+        // chat.draft, clipboard.write, files.pick, links.open, calendar.events (Main's) and the device
+        // capabilities: the host's own effects.
         return Effect.succeed({ status: "host", op, args });
     }
   }
@@ -1474,21 +1590,94 @@ export class MiniApps {
           : fail("invalid", "text is required");
       case "clipboard.write":
         return text("text", 100_000) ? undefined : fail("invalid", "text is required");
+      case "microphone.startChannels": {
+        const count = args.channelCount;
+        const channels = args.channels;
+        if (
+          typeof count !== "number" ||
+          !Number.isInteger(count) ||
+          count < 1 ||
+          count > 32
+        )
+          return fail("invalid", "channelCount must be an integer from 1 to 32.");
+        if (
+          channels !== undefined &&
+          (!Array.isArray(channels) ||
+            channels.length === 0 ||
+            channels.length > count ||
+            channels.some(
+              (channel) => !Number.isInteger(channel) || channel < 0 || channel >= count
+            ) ||
+            new Set(channels).size !== channels.length)
+        )
+          return fail(
+            "invalid",
+            "channels must contain unique input indices below channelCount."
+          );
+        return args.deviceId === undefined || text("deviceId", 512)
+          ? undefined
+          : fail("invalid", "deviceId is a string of up to 512 characters.");
+      }
+      case "microphone.start":
+        return args.deviceId === undefined || text("deviceId", 512)
+          ? undefined
+          : fail("invalid", "deviceId is a string of up to 512 characters.");
+      case "microphone.stop":
+      case "midi.stop":
+        return Number.isSafeInteger(args.stream)
+          ? undefined
+          : fail("invalid", "stream is required");
+      case "camera.capture":
+        return args.facing === undefined ||
+          args.facing === "user" ||
+          args.facing === "environment"
+          ? undefined
+          : fail("invalid", "facing is user or environment");
+      case "screen.keepAwake":
+      case "screen.fullscreen":
+        return typeof args.on === "boolean"
+          ? undefined
+          : fail("invalid", "on is true or false");
+      case "share": {
+        if (
+          (args.title !== undefined && !text("title", 200)) ||
+          (args.text !== undefined && !text("text", 4000)) ||
+          (args.url !== undefined && !text("url", 4000))
+        )
+          return fail("invalid", "title, text and url are strings");
+        if (
+          args.title === undefined &&
+          args.text === undefined &&
+          args.url === undefined
+        )
+          return fail("invalid", "Share a title, text or url.");
+        if (args.url === undefined) return undefined;
+        return httpsUrl(args.url as string)
+          ? undefined
+          : fail("invalid", "Only https links are shared.");
+      }
+      case "haptics": {
+        const pattern = args.pattern;
+        return Array.isArray(pattern) &&
+          pattern.length >= 1 &&
+          pattern.length <= 10 &&
+          pattern.every((ms) => Number.isInteger(ms) && ms >= 0 && ms <= 5000) &&
+          pattern.reduce((sum: number, ms: number) => sum + ms, 0) <= 5000
+          ? undefined
+          : fail(
+              "invalid",
+              "pattern is 1 to 10 durations of at most 5 seconds in total"
+            );
+      }
       case "notify":
         return text("title", 200) && (args.body === undefined || text("body", 1000))
           ? undefined
           : fail("invalid", "title is required");
-      case "links.open": {
+      case "links.open":
         if (!text("url", 4000)) return fail("invalid", "url is required");
-        try {
-          const url = new URL(args.url as string);
-          return url.protocol === "https:" && !url.username && !url.password
-            ? undefined
-            : fail("invalid", "Only https links open.");
-        } catch {
-          return fail("invalid", "url is not a URL");
-        }
-      }
+        return httpsUrl(args.url as string)
+          ? undefined
+          : fail("invalid", "Only https links open.");
       case "drive.list":
       case "drive.read":
       case "drive.write":

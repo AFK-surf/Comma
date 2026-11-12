@@ -37,6 +37,26 @@ it("opens clicked run links in the current router before ordinary handlers", () 
     cleanup();
   }
 });
+it("leaves right and middle presses on run links alone", () => {
+  const cleanup = installMiniAppRunLinkClicks(document);
+  const anchor = document.createElement("a");
+  anchor.href = "https://app-staging.comma.surf/#/apps/other/app/run";
+  document.body.append(anchor);
+  try {
+    for (const button of [1, 2]) {
+      const press = new MouseEvent("auxclick", {
+        bubbles: true,
+        cancelable: true,
+        button,
+      });
+      anchor.dispatchEvent(press);
+      expect(press.defaultPrevented).toBe(false);
+      expect(window.location.hash).toBe("");
+    }
+  } finally {
+    cleanup();
+  }
+});
 it("routes programmatic web opens and reports malformed addresses", async () => {
   installNativeBridgeMock({ platform: "web" });
   const open = vi.spyOn(window, "open").mockReturnValue(null);

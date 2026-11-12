@@ -20,7 +20,7 @@ import { setChannelIn } from "../src/updates/channel.ts";
 import { exe, launcher, script as stand_in } from "./accounts-fakes.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-delete process.env.STILLFAIL_CONFIG;
+delete process.env.COMMA_STATION_CONFIG;
 delete process.env.EMBER_CONFIG;
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "stillfail-updates-")));
@@ -78,13 +78,13 @@ async function cloudWithRelease(latest: string, build: string, held = false): Pr
   let origin = "";
   const installer = () => `#!/bin/sh
 set -eu
-run="$STILLFAIL_DATA/run"
+run="$COMMA_STATION_DATA/run"
 printf 'download\\n' > "$run/update.step"
 echo "### 50.0%"
-printf '%s %s %s\\n' "$STILLFAIL_CHANNEL" "$EMBER_DATA" "$STILLFAIL_DATA" > "$STILLFAIL_DATA/installer-saw"
+printf '%s %s %s\\n' "$COMMA_STATION_CHANNEL" "$EMBER_DATA" "$COMMA_STATION_DATA" > "$COMMA_STATION_DATA/installer-saw"
 curl -fsS "${origin}/download" > /dev/null
 printf 'handoff\\n' > "$run/update.step"
-printf '${build}\\n' > "$STILLFAIL_DATA/app/BUILD"
+printf '${build}\\n' > "$COMMA_STATION_DATA/app/BUILD"
 `;
   const [base, server] = await serve(async (path, search) => {
     asked.push(path + search);
@@ -241,7 +241,7 @@ describe("updates", { concurrency: true }, () => {
   });
 
   test("the installer's download percent reads complete curl bars", () => {
-    assert.equal(curlPercent("下载 still.fail station…\n\r                 0.0%"), 0);
+    assert.equal(curlPercent("下载 Comma station…\n\r                 0.0%"), 0);
     assert.equal(curlPercent("\r###   12.4%\r########   44.9%\r#########  45."), 44);
     assert.equal(curlPercent("\r######## 100.0%\n"), 100);
     for (const log of ["", "\r#=#=#", "error 44.0%", "### NaN%", "### 101.0%", "### -1.0%"]) assert.equal(curlPercent(log), null, log);
@@ -402,7 +402,7 @@ describe("updates", { concurrency: true }, () => {
     const run = join(dir, "run 'x'");
     mkdirSync(run);
     const installer = [
-      "Write-Host ('下载 still.fail station… ' + $env:STILLFAIL_CHANNEL + ' ' + $env:STILLFAIL_DATA)",
+      "Write-Host ('下载 Comma station… ' + $env:COMMA_STATION_CHANNEL + ' ' + $env:COMMA_STATION_DATA)",
       "[Console]::Error.WriteLine('没能更新')",
       "exit 3",
     ].join("\r\n");
@@ -412,9 +412,9 @@ describe("updates", { concurrency: true }, () => {
       return path === "/install.ps1" ? { type: "text/plain; charset=utf-8", body: installer } : null;
     });
     t.after(() => server.close());
-    const env = { STILLFAIL_DATA: dir, STILLFAIL_CHANNEL: "beta", PATH: "C:\\nowhere" };
+    const env = { COMMA_STATION_DATA: dir, COMMA_STATION_CHANNEL: "beta", PATH: "C:\\nowhere" };
     const ps1 = join(run, "update.ps1");
-    const text = windowsUpdateScript(origin, run, env, "still.fail station (test, not registered) update", "zh");
+    const text = windowsUpdateScript(origin, run, env, "Comma station (test, not registered) update", "zh");
     // Only the station's own variables: the task has the user's PATH.
     assert.ok(!text.includes("nowhere"));
     writeFileSync(ps1, text);
@@ -425,7 +425,7 @@ describe("updates", { concurrency: true }, () => {
     assert.deepEqual(asked, ["/install.ps1?lang=zh"]);
     assert.equal(readFileSync(join(run, "update.exit"), "utf8").trim(), "3");
     const log = readFileSync(join(run, "update.log"), "utf8");
-    assert.ok(log.includes(`下载 still.fail station… beta ${dir}`), log);
+    assert.ok(log.includes(`下载 Comma station… beta ${dir}`), log);
     assert.ok(log.includes("没能更新"), log);
   });
 

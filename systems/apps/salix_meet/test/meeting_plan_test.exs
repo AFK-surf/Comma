@@ -238,6 +238,104 @@ defmodule SalixMeet.MeetingPlanTest do
      occurrence: occurrence}
   end
 
+  for {meeting_status, task_status} <- [
+        {"done", "completed"},
+        {"failed", "failed"},
+        {"cancelled", "cancelled"}
+      ] do
+    @meeting_status meeting_status
+    @task_status task_status
+    test "published #{@meeting_status} meeting ends its Task as #{@task_status}",
+         %{group_id: group_id, item: item, occurrence: occurrence} do
+      assert {:ok, plan} =
+               MeetingPlan.ensure(group_id, item, occurrence,
+                 now: @start_ms - 60_000,
+                 publication_target: slack_publication_target("completion")
+               )
+
+      meeting_id = "meeting-completion-" <> plan["meeting_plan_id"]
+
+      state = %{
+        "group_id" => group_id,
+        "status" => @meeting_status,
+        "source" => %{"meeting_plan_id" => plan["meeting_plan_id"]},
+        "delivery" => %{"published_at" => 1, "activation" => %{"status" => "pending"}}
+      }
+
+      assert {:ok, _, _} = SalixMeet.Store.create_once(meeting_id, state: state)
+      assert SalixMeet.Delivery.deliver_one(meeting_id) in [:activated, :activation_skipped]
+
+      assert {:ok, ended} =
+               Conversations.get_group_conversation(group_id, plan["conversation_id"])
+
+      assert ended["status"] == @task_status
+
+      tasks =
+        for _ <- 1..4,
+            do: SystemsRuntime.Task.async(fn -> SalixMeet.MeetingTaskCompletion.finish(state) end)
+
+      assert Enum.map(tasks, &SystemsRuntime.Task.await(&1, :infinity)) == [:ok, :ok, :ok, :ok]
+      assert :ok = SalixMeet.MeetingTaskCompletion.finish(state)
+      assert :ok = SalixMeet.MeetingTaskCompletion.finish(Map.put(state, "status", "cancelled"))
+
+      assert {:ok, ^ended} =
+               Conversations.get_group_conversation(group_id, plan["conversation_id"])
+    end
+  end
+
+  test "calendar cancellation ends only the plan Task",
+       %{group_id: group_id, item: item, occurrence: occurrence, router_agent_id: router_id} do
+    assert {:ok, plan} =
+             MeetingPlan.ensure(group_id, item, occurrence,
+               now: @start_ms - 60_000,
+               publication_target: slack_publication_target("cancel-completion")
+             )
+
+    {_worker_id, _session_id, research} = start_research_task!(group_id, router_id, plan)
+
+    assert {:error, :not_meeting_plan_task} =
+             ConversationServer.finish_meeting_plan(
+               group_id,
+               research["conversation_id"],
+               plan["meeting_plan_id"],
+               "completed"
+             )
+
+    assert {:ok, _} = MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
+    assert {:ok, ended} = Conversations.get_group_conversation(group_id, plan["conversation_id"])
+    assert ended["status"] == "cancelled"
+    assert {:ok, _} = MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
+    assert {:ok, ^ended} = Conversations.get_group_conversation(group_id, plan["conversation_id"])
+
+    assert {:ok, %{"status" => "active"}} =
+             Conversations.get_group_conversation(group_id, research["conversation_id"])
+  end
+
+  test "a deleted plan Task does not block activation or calendar cancellation",
+       %{group_id: group_id, item: item, occurrence: occurrence} do
+    assert {:ok, plan} =
+             MeetingPlan.ensure(group_id, item, occurrence,
+               now: @start_ms - 60_000,
+               publication_target: slack_publication_target("deleted-completion")
+             )
+
+    assert :ok = ConversationServer.delete_group_conversation(group_id, plan["conversation_id"])
+
+    meeting_id = "meeting-deleted-" <> plan["meeting_plan_id"]
+
+    state = %{
+      "group_id" => group_id,
+      "status" => "done",
+      "source" => %{"meeting_plan_id" => plan["meeting_plan_id"]},
+      "delivery" => %{"published_at" => 1, "activation" => %{"status" => "pending"}}
+    }
+
+    assert {:ok, _, _} = SalixMeet.Store.create_once(meeting_id, state: state)
+    assert SalixMeet.Delivery.deliver_one(meeting_id) in [:activated, :activation_skipped]
+    assert {:ok, %{"status" => "cancelled"}} =
+             MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
+  end
+
   test "one occurrence schedules Router kickoff and deterministic notices without Router publication",
        %{group_id: group_id, router_agent_id: router_id, item: item, occurrence: occurrence} do
     target = slack_publication_target("primary")
@@ -1246,7 +1344,7 @@ defmodule SalixMeet.MeetingPlanTest do
     assert {:ok, []} = SalixMeet.PersonalPreparation.pending(plan)
   end
 
-  test "personal preference changes only the signed Slack requester", %{group_id: group_id} do
+  test "personal preference changes only the signed provider requester", %{group_id: group_id} do
     alias SalixMeet.PersonalPreparation
 
     origin = %{
@@ -1262,14 +1360,14 @@ defmodule SalixMeet.MeetingPlanTest do
     assert {:ok, false} = PersonalPreparation.enabled?(group_id, "slack-personal", "UPENG")
     assert {:ok, true} = PersonalPreparation.enabled?(group_id, "slack-personal", "UJINFEI")
 
-    assert {:error, :personal_preparation_requires_slack_request} =
+    assert {:error, :personal_preparation_requires_provider_request} =
              PersonalPreparation.set_preference(
                group_id,
                Map.put(origin, "source_actor_type", "provider_system"),
                true
              )
 
-    assert {:error, :personal_preparation_requires_slack_request} =
+    assert {:error, :personal_preparation_requires_provider_request} =
              PersonalPreparation.set_preference(
                Ids.new_group_id(Ids.new_tenant_id()),
                origin,
@@ -1278,6 +1376,26 @@ defmodule SalixMeet.MeetingPlanTest do
 
     assert {:ok, %{"enabled" => true}} =
              PersonalPreparation.set_preference(group_id, origin, true)
+
+    # A Feishu/Lark person is their open_id, the id their meeting names them by.
+    lark = %{
+      "provider" => "lark",
+      "source_actor_type" => "provider_user",
+      "agent_group_id" => group_id,
+      "provider_context" => %{"connect_id" => "lark-personal", "sender_open_id" => "ou_peng"}
+    }
+
+    assert {:ok, %{"enabled" => false}} =
+             PersonalPreparation.set_preference(group_id, lark, false)
+
+    assert {:ok, false} = PersonalPreparation.enabled?(group_id, "lark-personal", "ou_peng")
+
+    assert {:error, :personal_preparation_requires_provider_request} =
+             PersonalPreparation.set_preference(
+               group_id,
+               put_in(lark, ["provider_context", "sender_open_id"], "UPENG"),
+               true
+             )
   end
 
   test "IFC-off Worker saves reviewed public-source advice and never reads private memory", ctx do
@@ -1668,13 +1786,11 @@ defmodule SalixMeet.MeetingPlanTest do
     %{group_id: group_id, router_agent_id: router_id} = ctx
     {item, occurrence} = live_calendar_occurrence!(group_id)
     target = slack_publication_target("organization")
-    previous_enrollment = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
     previous_runtime = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
     previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
     previous_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
 
     on_exit(fn ->
-      restore(:salix_meet, :calendar_autojoin_channels, previous_enrollment)
       restore(:salix_agent, :meeting_preparation_mod, previous_runtime)
       restore(:salix_agent, :llm, previous_llm)
       restore(:salix_agent, :oauth_store_mod, previous_oauth)
@@ -1712,11 +1828,25 @@ defmodule SalixMeet.MeetingPlanTest do
       ]
     }
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    assert {:ok, settings} =
+             SalixStore.MeetingCalendarSettings.put(
+               group_id,
+               ctx.tenant_id,
+               Map.put(entry, "enabled", true),
+               fn -> :ok end
+             )
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.query!(
+        SalixStore.Repo,
+        "DELETE FROM meeting_calendar_settings WHERE group_id = $1",
+        [group_id]
+      )
+    end)
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
-               entry,
+               settings,
                group,
                group,
                SystemsClock.system_time(:millisecond)
@@ -1729,7 +1859,11 @@ defmodule SalixMeet.MeetingPlanTest do
              )
 
     assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
+             MeetingPlan.ensure(group_id, item, occurrence,
+               publication_target: target,
+               managed_calendar: true,
+               policy_revision: settings["settings_revision"]
+             )
 
     assert {:ok, schedule} = Schedules.get(plan["preparation"]["schedule_ids"]["decision"])
     assert {:ok, :fired} = Schedules.fire(schedule, plan["preparation"]["decision_at"])
@@ -2068,7 +2202,13 @@ defmodule SalixMeet.MeetingPlanTest do
                | session_id: "different"
              })
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    assert {:ok, _} =
+             SalixStore.MeetingCalendarSettings.put(
+               group_id,
+               ctx.tenant_id,
+               Map.merge(entry, %{"enabled" => false}),
+               fn -> :ok end
+             )
 
     assert {:error, :meeting_preparation_scope_denied} =
              SalixMeet.PreparationAuthority.authorize_call(read, tool_ctx)

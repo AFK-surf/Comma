@@ -77,7 +77,7 @@ describe("a workspace's task list", () => {
     expect(shown()).toMatchObject({ source: "live-sync", items: [{ id: "grp_a:c1" }] });
   });
 
-  it("shows what the device kept, offline, with each task's labels, platform and archive facts", async () => {
+  it("shows what the device kept, offline, with each task's labels, platform, creation and archive facts", async () => {
     const host = new FakeHost();
     host.api.on("GET", listA, {
       data: [
@@ -86,6 +86,7 @@ describe("a workspace's task list", () => {
           client_platform: "ios",
           origin: "telegram",
           archive_availability: { allowed: false, reason: "not_finished" },
+          created_at: 1_690_000_000,
           secret_internal_field: "dropped",
         }),
       ],
@@ -116,6 +117,7 @@ describe("a workspace's task list", () => {
           archiveAvailability: { allowed: false, reason: "not_finished" },
           archiveVersion: 1_700_000_000,
           updatedAt: 1_700_000_000_000,
+          createdAt: 1_690_000_000_000,
           workspaceName: "Alpha",
           // Every client shows it in the same section.
           statusBucket: "in_progress",
@@ -253,6 +255,48 @@ describe("a workspace's task list", () => {
     t.api.open(eventsA)!.event(invalidated("2"));
     await t.time.pass(100);
     expect(t.api.seen("GET", listA)).toHaveLength(2);
+    // The workspaces were read once: a list read again does not read them again.
+    expect(t.api.seen("GET", "/v1/comma/workspaces")).toHaveLength(1);
+  });
+
+  it("keeps the group's stream for the lists still shown after the one that opened it is gone", async () => {
+    const t = setup();
+    let version = 1;
+    t.api.on("GET", listA, () =>
+      json(200, { data: [conversation("c1", { title: `v${version}` })] })
+    );
+    t.core.observeSession(signedIn());
+    const open = (topic: Topic) => {
+      let value: ProductInboxListResult | undefined;
+      const stop = t.client.subscribe(
+        topic,
+        (v) => (value = v as ProductInboxListResult),
+        () => undefined
+      );
+      return { shown: () => value, stop };
+    };
+    // The Inbox shows the workspace's list first; Home's follows the focus to the same one.
+    const inbox = open({ topic: "tasks", workspace: "wsp_a" });
+    await t.time.pass(100);
+    const home = open({ topic: "tasks" });
+    await t.time.pass(100);
+    expect(home.shown()).toMatchObject({ items: [{ title: "v1" }] });
+    const streams = () => t.api.streams.filter((s) => s.path === eventsA && !s.closed);
+    expect(streams()).toHaveLength(1);
+
+    // The Inbox closes: its topic goes after the grace, the stream stays for Home.
+    inbox.stop();
+    await t.time.pass(61_000, 1_000);
+    expect(streams()).toHaveLength(1);
+    version = 2;
+    t.api.open(eventsA)!.event(invalidated("2"));
+    await t.time.pass(100);
+    expect(home.shown()).toMatchObject({ items: [{ title: "v2" }] });
+
+    // Home closes too: nothing shows the list, so the stream ends.
+    home.stop();
+    await t.time.pass(61_000, 1_000);
+    expect(streams()).toHaveLength(0);
   });
 
   it("sends a change to one task of a long list as one op on that task", async () => {
@@ -328,6 +372,34 @@ describe("a workspace's task list", () => {
     t.api.on("GET", listA, { data: [conversation("c1")] });
     await t.time.pass(1_100, 100);
     expect(shown()).toMatchObject({ source: "live-sync", items: [{ id: "grp_a:c1" }] });
+  });
+
+  it("shows a list another view follows as it is, and tries a failed read again while its stream stays up and says nothing", async () => {
+    const t = setup();
+    let failing = false;
+    t.api.on("GET", listA, () =>
+      failing
+        ? json(503, { error: "unavailable" })
+        : json(200, { data: [conversation("c1")] })
+    );
+    t.core.observeSession(signedIn());
+    t.watch({ topic: "tasks", workspace: "wsp_a" });
+    await t.time.pass(100);
+    // The Inbox opens on the list read and followed already: it is current as it is, and not read again.
+    const inbox = t.watch({ topic: "tasks", workspace: "wsp_a", hosted: "1" });
+    await t.time.pass(100);
+    expect(inbox()).toMatchObject({ source: "live-sync" });
+    expect(t.api.seen("GET", listA)).toHaveLength(1);
+    // Read again while a server restarts: the read fails, the stream on the other server stays up.
+    failing = true;
+    await t.client.call("tasks.refresh", { workspace: "wsp_a" }).catch(() => undefined);
+    await t.time.pass(100);
+    expect(inbox()).toMatchObject({ source: "cache", errorCode: "unknown" });
+    failing = false;
+    await t.time.pass(1_000, 100);
+    expect(inbox()).toMatchObject({ source: "live-sync" });
+    expect(inbox().errorCode).toBeUndefined();
+    expect(t.api.streams.filter((s) => s.path === eventsA)).toHaveLength(1);
   });
 
   it("follows the focused workspace, and retries its read though another group's stream is open", async () => {

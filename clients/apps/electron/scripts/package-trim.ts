@@ -2,6 +2,7 @@ import type { HookFunction } from "@electron/packager";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { crossCompilingMacOS } from "./build-target";
 
 /**
  * The Chromium locales the app keeps whole: the languages Comma itself speaks
@@ -39,7 +40,7 @@ export function trimVelopackNatives(
   for (const file of readdirSync(nativeDir)) {
     if (file !== kept) rmSync(join(nativeDir, file), { force: true });
   }
-  if (platform === "darwin" && process.platform === "darwin") {
+  if (platform === "darwin" && (process.platform === "darwin" || crossCompilingMacOS)) {
     const binary = join(nativeDir, kept);
     const slice = arch === "x64" ? "x86_64" : arch;
     execFileSync("lipo", [binary, "-thin", slice, "-output", binary]);

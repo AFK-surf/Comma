@@ -735,6 +735,13 @@ function sampleCommandInput(id: string) {
       return { action: "accept", requestId: "11111111-1111-4111-8111-111111111111" };
     case "airDrop.preview":
       return { index: 0, requestId: "11111111-1111-4111-8111-111111111111" };
+    case "nearby.ask":
+      return {
+        inviteUrl: `https://comma.example/#/settings?invite=${"t".repeat(43)}`,
+        peerId: "b-mac",
+      };
+    case "nearby.answer":
+      return { accept: true, requestId: "11111111-1111-4111-8111-111111111111" };
     case "meetingRecorder.setInteractive":
       return { interactive: true };
     case "meetingRecorder.layoutWindow":
@@ -774,10 +781,10 @@ function sampleCommandInput(id: string) {
         key: "00000000-0000-4000-8000-000000000001",
         confirmationId: "authority-1:3",
       };
-    case "computeNode.abandon":
+    case "computeNode.reauthorize":
       return {
         workspaceId: "workspace-1",
-        installationId: "installation-1",
+        registrationId: "registration-1",
         confirmationId: "authority-1:3",
         bindingRevision: 1,
       };
@@ -1043,6 +1050,10 @@ function sampleCommandInput(id: string) {
       return { requirement: "calendars" };
     case "macApps.openItem":
       return { app: "reminders", title: "Send the weekly report" };
+    case "blender.setEnabled":
+      return { enabled: true };
+    case "blender.open":
+      return { file: "/work/robot.blend" };
     case "macApps.calendarEvents":
       return { from: "2026-10-01T00:00:00Z", to: "2026-10-08T00:00:00Z" };
     case "windows.create":
@@ -1050,6 +1061,8 @@ function sampleCommandInput(id: string) {
     case "windows.focus":
     case "windows.close":
       return { windowId: "win_main" };
+    case "windows.focusScreen":
+      return { name: "comma-screen:test" };
     case "surfaces.windowControl":
       return { action: "minimize" };
     default:

@@ -230,7 +230,7 @@ defmodule SalixVoice.CallActor do
       instructions: state.instructions,
       settings: state.model_settings,
       voice: state.voice,
-      input: state.input
+      input: state.input ++ [%{"role" => "developer", "text" => state.greeting}]
     }
 
     state = %{state | model_settings: nil}
@@ -663,17 +663,21 @@ defmodule SalixVoice.CallActor do
 
   defp timer(%{profile_task: {task, _started}} = state, :profile_deadline) do
     SystemsRuntime.Task.shutdown(task, :brutal_kill)
+    Logger.warning("voice call profile timed out call=#{state.call_id} group=#{state.group_id}")
     profile_done(state, {:error, "timeout"})
   end
 
   defp timer(state, _event), do: state
 
   # Wait for both ends of the audio path. Either may become ready first.
-  # The carrier must keep sending input audio, including silence:
+  # GPT-Live opens the conversation from the greeting given twice: as a
+  # developer message in the session's startup input (`start_model/1`), and
+  # once started as commentary with no delegation. The carrier must keep
+  # sending input audio, including silence:
   # https://developers.openai.com/api/docs/guides/live-conversations#greet-before-the-caller-speaks
   defp maybe_greet(%{phase: :live, closing: nil, greeted: false} = state)
        when is_integer(state.model_started_mono) and SystemsRuntime.Proc.is_process(state.socket) do
-    append(state, :instructions, nil, state.greeting)
+    append(state, :commentary, nil, state.greeting)
     %{state | greeted: true, call_started_task: enqueue_call_started(state)}
   end
 
@@ -1225,37 +1229,8 @@ defmodule SalixVoice.CallActor do
 
   defp finalize(state), do: state
 
-  defp meter(state) do
-    case SystemsRuntime.get_env(:salix_voice, :metering_mod) do
-      nil ->
-        :ok
-
-      mod ->
-        attrs = metering_attrs(state)
-
-        if Enum.any?(attrs.components, &(&1.quantity > 0)) do
-          group_directory =
-            SystemsRuntime.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
-
-          SystemsRuntime.TaskSupervisor.start_child(SalixVoice.TaskSupervisor, fn ->
-            try do
-              owner =
-                case group_directory.get_group(state.group_id) do
-                  {:ok, group} when is_map(group) -> group["billing_owner"]
-                  _ -> nil
-                end
-
-              mod.charge(Map.put(attrs, :owner_snapshot, owner))
-            catch
-              kind, reason ->
-                Logger.error(
-                  "voice metering failed call=#{state.call_id} #{inspect({kind, reason})}"
-                )
-            end
-          end)
-        end
-    end
-  end
+  defp meter(state),
+    do: SalixVoice.charge(state.group_id, metering_attrs(state), "call=#{state.call_id}")
 
   @doc false
   def metering_attrs(state) do

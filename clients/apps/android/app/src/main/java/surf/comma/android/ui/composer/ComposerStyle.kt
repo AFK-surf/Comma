@@ -24,9 +24,11 @@ internal class ComposerStyle(private val context: Context) {
     val fgQuaternary = color(R.color.token_fg_quaternary)
     val borderPrimary = color(R.color.token_border_primary)
     val composerBg = color(R.color.token_composer_bg)
-    val composerBorder = color(R.color.token_composer_border)
-    val composerShadowAmbient = color(R.color.token_composer_shadow_ambient)
-    val composerShadowSpot = color(R.color.token_composer_shadow_spot)
+    /** The field's own fill: clear over the experimental glass, whose shader does the tinting. */
+    val composerSurface get() = if (surf.comma.android.ui.widget.LiquidGlass.enabled) android.graphics.Color.TRANSPARENT else composerBg
+    /** The field's edge: the experimental glass draws its own. */
+    val composerBorder = if (surf.comma.android.ui.widget.LiquidGlass.enabled) android.graphics.Color.TRANSPARENT else color(R.color.token_composer_border)
+    val composerShadow = color(R.color.token_composer_shadow)
     val onBrand = 0xFFFFFFFF.toInt()
     val scrim = 0x73000000
 

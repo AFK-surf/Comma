@@ -277,7 +277,7 @@ export const unix: Platform = {
   isLauncher(pid) {
     try {
       const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-      return command.includes("stillfail-station") || command.includes("ember-station");
+      return command.includes("comma-station") || command.includes("stillfail-station") || command.includes("ember-station");
     } catch {
       return false;
     }
@@ -305,5 +305,7 @@ export const unix: Platform = {
   hasFolderPermissions: MACOS,
   hasComputerUse: MACOS,
   hasWindowsComputerUse: false,
+  hasWindowsScreen: false,
+  hasLinuxDesktop: process.platform === "linux",
   hasHomebrew: MACOS,
 };

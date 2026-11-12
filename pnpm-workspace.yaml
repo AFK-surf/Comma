@@ -48,6 +48,15 @@ patchedDependencies:
   # patch versions each scope: a renderer re-renders only for the global mapping
   # or its own scope, and the registry revision helpers become public exports.
   markstream-react@0.0.52: patches/markstream-react@0.0.52.patch
+  # Chromium writes a DevTools message into its debugging pipe 64 KB at a time
+  # and, when one write fails, drops the rest of the message and still writes
+  # the NUL separator (devtools_pipe_handler.cc). On the mac runners this gave
+  # empty frames (the first write failed) and frames cut at 65536 bytes.
+  # Playwright parsed each frame as JSON outside any handler, so the test
+  # process died with a bare JSON error. The transport skips an empty frame,
+  # which holds no message, and a frame that is not whole JSON fails with its
+  # size and the kernel's mbuf counters, which show whether socket memory ran out.
+  playwright-core@1.61.0: patches/playwright-core@1.61.0.patch
   # Keep cancellation listeners until every CSS property has settled.
   # A once-only listener retains detached chat viewports after multiple cancellations.
   react-aria@3.49.0: patches/react-aria@3.49.0.patch

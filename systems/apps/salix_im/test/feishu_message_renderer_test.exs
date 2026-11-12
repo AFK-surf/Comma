@@ -32,6 +32,41 @@ defmodule SalixIM.Provider.Feishu.MessageRendererTest do
     end
   end
 
+  test "a structured mention goes where the text places it; other at-tags stay text" do
+    for renderer <- [Renderer, SalixIM.Provider.Lark.MessageRenderer] do
+      mentions = [%{open_id: "ou_amara", name: "Amara"}, %{open_id: "ou_jade", name: "Jade"}]
+
+      source = """
+      1. Todpay payout blocked
+         Owner: <at user_id="ou_amara">Amara</at> | <at user_id="ou_eve">Eve</at>
+      2. `<at user_id="ou_amara">code</at>`
+      """
+
+      assert {:ok, body} = renderer.render(%Input{markdown: source}, mentions: mentions)
+      # Amara is placed inline, so only Jade stays at the start.
+      assert [[%{"tag" => "at", "user_id" => "ou_jade"}], [%{"tag" => "md", "text" => markdown}]] =
+               rows(body)
+
+      assert [~s(<at user_id="ou_amara">), "</at>"] ==
+               for(%MDEx.HtmlInline{literal: literal} <- nodes(markdown), do: literal)
+
+      assert {:ok, text} =
+               renderer.render(%Input{markdown: source},
+                 format: "text",
+                 mentions: mentions
+               )
+
+      assert %{"text" => plain} = Jason.decode!(text["content"])
+      assert plain =~ ~r/^<at user_id="ou_jade">Jade<\/at> 1\. /
+      assert plain =~ ~s(Owner: <at user_id="ou_amara">Amara</at> | <​at user_id="ou_eve">)
+
+      assert {:error, _} =
+               renderer.render(%Input{markdown: ~s(<at user_id="ou_jade">Jade\n\nnext</at>)},
+                 mentions: mentions
+               )
+    end
+  end
+
   test "task cards render as updatable interactive cards with escaped Markdown" do
     surface = %Surface{
       kind: :task_card,

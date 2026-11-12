@@ -6,11 +6,11 @@ defmodule SalixIM.PlatformMessage do
   @providers ~w(slack telegram feishu wechat imessage signal discord lark)
   @text_operations ~w(slack.post_message slack.reply_message slack.post_channel_message slack.send_dm
     telegram.send_message telegram.remove_reply_keyboard wechat.reply_text
-    feishu.send_text feishu.reply_text imessage.send_message signal.send_message
-    lark.send_message)
+    feishu.send_message feishu.send_text feishu.reply_text imessage.send_message
+    signal.send_message lark.send_message)
   @media_operations ~w(slack.upload_file telegram.send_photo telegram.send_document
     wechat.reply_image wechat.reply_file wechat.reply_video feishu.send_image feishu.send_file
-    feishu.reply_file imessage.send_image)
+    feishu.reply_file imessage.send_image imessage.send_file)
 
   # Home readers are every Group user, outside the IFC reader model. A Group
   # that labels provider content keeps it agent-private instead, including rows
@@ -83,17 +83,17 @@ defmodule SalixIM.PlatformMessage do
   defp record_success({:ok, sent} = result, scope, connect, api, params, upload) do
     # Without a receipt identity a retry could append the same send twice.
     with true <- api in @text_operations or api in @media_operations,
-         false <- personal_copy?(connect),
          %{} = message <- outbound(connect["provider"], api, params, sent),
          key when is_binary(key) <- receipt_key(scope, connect, api, params, sent) do
-      reply_source = wechat_reply_source(scope, connect)
+      reply_source = reply_source(scope, connect, params, sent)
+      copy_of = if personal_copy?(connect), do: copy_text(params)
       image = sent_image(api, params, upload)
       context = SystemsObservability.Context.capture()
 
       case SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationProjectionTasks, fn ->
              SystemsObservability.Context.run(context, fn ->
                message = bind_image(message, scope.agent_id, image)
-               record(scope.group_id, scope.agent_id, message, key, reply_source)
+               record(scope.group_id, scope.agent_id, message, key, reply_source, copy_of)
              end)
            end) do
         {:ok, _pid} -> :ok
@@ -103,9 +103,6 @@ defmodule SalixIM.PlatformMessage do
       result
     else
       false ->
-        result
-
-      true ->
         result
 
       nil ->
@@ -130,10 +127,11 @@ defmodule SalixIM.PlatformMessage do
 
   defp sent_image(_api, _params, _upload), do: nil
 
-  # A send to the owner's bound personal chat is a second copy of a Home reply
-  # unless the current source is a message from that same chat. Home already
-  # shows the reply, so only the conversation held in that chat is presented
-  # again. Other sources of the same activation do not count.
+  # A send to the owner's bound personal chat may be a second copy of a Home
+  # reply unless the current source is a message from that same chat. Other
+  # sources of the same activation do not count. Such a send stays out of Home
+  # only when Home already shows the same text from the Router: a reminder
+  # sent to the personal chat alone is presented like any other send.
   defp personal_copy?(%{
          "managed_by" => "comma_product",
          "provider" => provider,
@@ -153,11 +151,12 @@ defmodule SalixIM.PlatformMessage do
   # provider caller never waits for the history owner or repeats platform I/O.
   # Home presents only the Router's own sends; Task Workers report in their
   # Task. Labelled Groups keep sends out of Home as they do inputs.
-  defp record(group_id, agent_id, message, key, reply_source) do
+  defp record(group_id, agent_id, message, key, reply_source, copy_of) do
     with {:ok, %{"router_agent_id" => ^agent_id} = group} <-
            SalixIM.GroupDirectory.get_group(group_id),
          false <- SalixIM.IFC.Ingress.enabled?(group),
          {:ok, conversation} <- SalixIM.RouterConversationInput.ensure(group_id),
+         false <- home_shows?(group_id, conversation["conversation_id"], agent_id, copy_of),
          {:ok, _} <-
            SalixIM.ConversationServer.append_platform_message(
              group_id,
@@ -178,9 +177,77 @@ defmodule SalixIM.PlatformMessage do
     _, _ -> Logger.warning("platform_message_history_write_failed")
   end
 
+  # The Router sends the copy after its Home reply, so the reply is among the
+  # latest Home Messages. One bounded tail page is read; a failed read records.
+  @copy_window 20
+
+  defp home_shows?(_group_id, _conversation_id, _agent_id, nil), do: false
+
+  defp home_shows?(group_id, conversation_id, agent_id, text) do
+    case SalixIM.Conversations.list_group_conversation_message_page(group_id, conversation_id,
+           limit: @copy_window
+         ) do
+      {:ok, %{"messages" => messages}} ->
+        Enum.any?(messages, fn message ->
+          message["actor_type"] == "agent" and message["agent_id"] == agent_id and
+            copy_text(%{"text" => content_text(message["content"])}) == text
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp copy_text(params) do
+    case params["text"] || params["caption"] do
+      text when is_binary(text) ->
+        case text |> String.split() |> Enum.join(" ") do
+          "" -> nil
+          normalized -> normalized
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp content_text(text) when is_binary(text), do: text
+
+  defp content_text(blocks) when is_list(blocks) do
+    blocks
+    |> Enum.flat_map(fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> [text]
+      _ -> []
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp content_text(_content), do: nil
+
   # Capture current ingress provenance before leaving the provider caller.
   # The Conversation owner resolves it against its committed input Message.
-  defp wechat_reply_source(scope, %{"provider" => "wechat", "connect_id" => connect_id}) do
+  # A WeChat reply always answers its source. An iMessage send answers its source
+  # only when it replied inline to that Message; only the source maps to a Comma
+  # Message here, so a reply to an older Message presents without a relationship.
+  defp reply_source(scope, %{"provider" => "wechat"} = connect, _params, _sent),
+    do: source_reply(scope, connect)
+
+  defp reply_source(scope, %{"provider" => "imessage"} = connect, params, sent) do
+    target = params["reply_to_message_id"]
+    origin = SalixIM.Provider.current_tool_context()["trusted_origin"]
+
+    with true <- is_binary(target) and target != "",
+         false <- is_map(sent) and Map.has_key?(sent, "reply_fallback"),
+         %{"provider_context" => %{"message_id" => ^target}} <- origin do
+      source_reply(scope, connect)
+    else
+      _ -> nil
+    end
+  end
+
+  defp reply_source(_scope, _connect, _params, _sent), do: nil
+
+  defp source_reply(scope, %{"provider" => provider, "connect_id" => connect_id}) do
     context = SalixIM.Provider.current_tool_context()
     source = context["source_message_id"]
     session = context["session_id"]
@@ -188,7 +255,7 @@ defmodule SalixIM.PlatformMessage do
     with true <- is_binary(source) and source != "" and is_binary(session) and session != "",
          true <- source in List.wrap(context["source_message_ids"]),
          %{
-           "provider" => "wechat",
+           "provider" => ^provider,
            "source_actor_type" => "provider_user",
            "source_message_id" => ^source,
            "agent_group_id" => group_id,
@@ -200,8 +267,6 @@ defmodule SalixIM.PlatformMessage do
       _ -> nil
     end
   end
-
-  defp wechat_reply_source(_scope, _connect), do: nil
 
   defp outbound(provider, api, params, sent) do
     text = params["text"] || params["caption"] || params["initial_comment"]
@@ -218,7 +283,8 @@ defmodule SalixIM.PlatformMessage do
 
     media =
       if api in @media_operations or
-           (api in ["signal.send_message", "lark.send_message"] and params["path"]) do
+           (api in ["signal.send_message", "lark.send_message", "feishu.send_message"] and
+              params["path"]) do
         name = if is_map(sent), do: sent["filename"]
         [media_block(name || params["path"], api)]
       else

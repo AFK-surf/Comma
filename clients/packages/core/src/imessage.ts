@@ -42,6 +42,8 @@ export class IMessage {
     this.#live = new Live(ctx.runner);
     const { kernel } = ctx;
     kernel.source("imessage", {
+      // A page coming to Channels reads it: a binding can finish while no read waits for it.
+      evictAfterMs: 0,
       start: (topic) => {
         this.#states.set(topic.workspace as string, fresh());
         this.#live.run(topic, this.#keep(topic.workspace as string, true));
@@ -77,11 +79,16 @@ export class IMessage {
         doing: true,
         run: (p) => {
           const workspace = params.string(p, "workspace");
-          const handle = params.string(p, "handle");
+          const handle = (p as { handle?: unknown }).handle;
+          // No handle: a dedicated line takes the code from whoever sends it.
+          const body =
+            handle === undefined
+              ? { transport: "photon" }
+              : { handle: params.string(p, "handle") };
           return this.#action(workspace, (w) =>
-            this.#send("POST", `${imessagePath(w)}/connect`, z.unknown(), {
-              handle,
-            }).pipe(Effect.andThen(this.#read(w)))
+            this.#send("POST", `${imessagePath(w)}/connect`, z.unknown(), body).pipe(
+              Effect.andThen(this.#read(w))
+            )
           );
         },
       },

@@ -1,7 +1,15 @@
 #include <erl_nif.h>
 #include <lean/lean.h>
+#include <lean/mimalloc.h>
 #include <openssl/evp.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>
+#define VERIFIED_KERNEL_MALLINFO2 1
+#endif
 
 /* SHA-256 for `VerifiedKernel.ByteDigest.sha256Bytes`, from OpenSSL libcrypto.
  * The Lean side borrows `message`; the 32-byte digest is a fresh ByteArray. */
@@ -35,13 +43,16 @@ extern uint8_t salix_verified_kernel_terminal_app_cursor(lean_obj_arg);
  * the objects keep single-threaded reference counts. Marking the state
  * multi-threaded instead made every count update atomic, which more than
  * doubled the cost of each pass over a long transcript. */
-typedef struct {
+typedef struct lineage {
     ErlNifMutex *mutex;
     ErlNifMutex *pending_mutex;
     lean_object **pending;
     size_t pending_len;
     size_t pending_cap;
     int refs;
+    long residents;
+    struct lineage *prev;
+    struct lineage *next;
 } lineage;
 
 /* A Session state that stays resident in the Lean heap. The BEAM holds it
@@ -64,6 +75,20 @@ typedef struct {
 static ErlNifResourceType *terminal_type;
 static ERL_NIF_TERM atom_nil;
 
+/* Live native objects, for `memory_stats/0`. The BEAM accounts a resource
+ * term at its struct size, so these counts are the only view of how much
+ * Lean heap the live handles keep. */
+static long live_residents;
+static long live_terminals;
+/* Every live lineage, so `memory_stats/0` can report how its residents
+ * spread. Only lineage creation, release and that read take the lock. */
+static ErlNifMutex *lineages_mutex;
+static lineage *lineages_head;
+
+static void count(long *counter, long delta) {
+    __atomic_add_fetch(counter, delta, __ATOMIC_RELAXED);
+}
+
 static lineage *lineage_new(void) {
     lineage *l = enif_alloc(sizeof(lineage));
     if (!l) return NULL;
@@ -73,12 +98,19 @@ static lineage *lineage_new(void) {
     l->pending_len = 0;
     l->pending_cap = 0;
     l->refs = 1;
+    l->residents = 0;
+    l->prev = NULL;
     if (!l->mutex || !l->pending_mutex) {
         if (l->mutex) enif_mutex_destroy(l->mutex);
         if (l->pending_mutex) enif_mutex_destroy(l->pending_mutex);
         enif_free(l);
         return NULL;
     }
+    enif_mutex_lock(lineages_mutex);
+    l->next = lineages_head;
+    if (lineages_head) lineages_head->prev = l;
+    lineages_head = l;
+    enif_mutex_unlock(lineages_mutex);
     return l;
 }
 
@@ -129,6 +161,11 @@ static void lineage_release(lineage *l) {
     int remaining = --l->refs;
     enif_mutex_unlock(l->pending_mutex);
     if (remaining > 0) return;
+    enif_mutex_lock(lineages_mutex);
+    if (l->prev) l->prev->next = l->next;
+    else lineages_head = l->next;
+    if (l->next) l->next->prev = l->prev;
+    enif_mutex_unlock(lineages_mutex);
     /* No resident and no call references the lineage: nothing can contend. */
     if (l->pending_len) {
         lean_initialize_thread();
@@ -147,21 +184,49 @@ static void resident_destroy(ErlNifEnv *env, void *object) {
     (void)env;
     resident_state *state = object;
     lineage *l = state->lineage;
-    if (enif_mutex_trylock(l->mutex) == 0) {
-        lean_initialize_thread();
-        lean_dec(state->term);
-        lineage_drain(l);
-        lean_finalize_thread();
-        enif_mutex_unlock(l->mutex);
-    } else {
-        lineage_defer(l, state->term);
+    if (state->term) {
+        count(&live_residents, -1);
+        count(&l->residents, -1);
+        if (enif_mutex_trylock(l->mutex) == 0) {
+            lean_initialize_thread();
+            lean_dec(state->term);
+            lineage_drain(l);
+            lean_finalize_thread();
+            enif_mutex_unlock(l->mutex);
+        } else {
+            lineage_defer(l, state->term);
+        }
     }
     lineage_release(l);
+}
+
+/* session_release(resident) -> ok
+ * Drops the state behind a handle now, without waiting for the VM to
+ * collect the handle. The handle keeps its lineage until it is collected;
+ * a later call with it is a badarg. Released twice is a no-op. */
+static ERL_NIF_TERM session_release(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    resident_state *state;
+    if (argc != 1 || !enif_get_resource(env, argv[0], resident_type, (void **)&state))
+        return enif_make_badarg(env);
+    lineage *l = state->lineage;
+    enif_mutex_lock(l->mutex);
+    if (state->term) {
+        lean_initialize_thread();
+        lean_dec(state->term);
+        state->term = NULL;
+        lineage_drain(l);
+        lean_finalize_thread();
+        count(&live_residents, -1);
+        count(&l->residents, -1);
+    }
+    enif_mutex_unlock(l->mutex);
+    return enif_make_atom(env, "ok");
 }
 
 static void terminal_destroy(ErlNifEnv *env, void *object) {
     (void)env;
     terminal_state *terminal = object;
+    count(&live_terminals, -1);
     if (terminal->state) {
         lean_initialize_thread();
         lean_dec(terminal->state);
@@ -179,6 +244,8 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     terminal_type = enif_open_resource_type(env, NULL, "verified_kernel_terminal_state",
                                             terminal_destroy, ERL_NIF_RT_CREATE, NULL);
     if (!terminal_type) return -1;
+    lineages_mutex = enif_mutex_create("verified_kernel_lineages");
+    if (!lineages_mutex) return -1;
     atom_nil = enif_make_atom(env, "nil");
     lean_initialize_runtime_module();
     /* Initialize the executable dispatcher. Proof tooling is not part of the NIF runtime. */
@@ -240,6 +307,11 @@ static ERL_NIF_TERM session(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
     lineage *l = current ? lineage_retain(current->lineage) : lineage_new();
     if (!l) return enif_raise_exception(env, enif_make_atom(env, "enomem"));
     enif_mutex_lock(l->mutex);
+    if (current && !current->term) {
+        enif_mutex_unlock(l->mutex);
+        lineage_release(l);
+        return enif_make_badarg(env);
+    }
     lean_initialize_thread();
     lean_object *resident = lean_box(0);
     if (current) {
@@ -256,13 +328,21 @@ static ERL_NIF_TERM session(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
     lean_dec(reply);
 
     ERL_NIF_TERM handle = atom_nil;
-    if (!lean_is_scalar(next)) {
+    if (!lean_is_scalar(next) && current && lean_ctor_get(next, 0) == current->term) {
+        /* A read (query, get, persist, export) returns the state it was given.
+         * The caller's handle already holds it: a new handle would only be an
+         * alias that keeps this revision alive until the caller collects. */
+        lean_dec(next);
+        handle = argv[0];
+    } else if (!lean_is_scalar(next)) {
         lean_object *term = lean_ctor_get(next, 0);
         lean_inc(term);
         lean_dec(next);
         resident_state *stored = enif_alloc_resource(resident_type, sizeof(resident_state));
         stored->term = term;
         stored->lineage = lineage_retain(l);
+        count(&live_residents, 1);
+        count(&l->residents, 1);
         handle = enif_make_resource(env, stored);
         enif_release_resource(stored);
     }
@@ -284,6 +364,7 @@ static ERL_NIF_TERM terminal_new(ErlNifEnv *env, int argc, const ERL_NIF_TERM ar
     terminal_state *terminal = enif_alloc_resource(terminal_type, sizeof(terminal_state));
     if (!terminal) return enif_raise_exception(env, enif_make_atom(env, "enomem"));
     terminal->state = NULL;
+    count(&live_terminals, 1);
     terminal->mutex = enif_mutex_create("verified_kernel_terminal");
     if (!terminal->mutex) {
         enif_release_resource(terminal);
@@ -369,13 +450,118 @@ static ERL_NIF_TERM terminal_app_cursor(ErlNifEnv *env, int argc, const ERL_NIF_
     return enif_make_atom(env, app ? "true" : "false");
 }
 
+static int compare_long(const void *a, const void *b) {
+    long x = *(const long *)a, y = *(const long *)b;
+    return (x > y) - (x < y);
+}
+
+/* Nearest-rank percentile of sorted values. */
+static long percentile(const long *sorted, size_t n, unsigned int pct) {
+    return n ? sorted[(n * pct + 99) / 100 - 1] : 0;
+}
+
+/* Bytes of a mapping that are in physical memory, from mincore(2). */
+static size_t resident_bytes(void *base, size_t size) {
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return 0;
+    size_t pages = (size + (size_t)page - 1) / (size_t)page;
+    unsigned char *vec = enif_alloc(pages);
+    if (!vec) return 0;
+    size_t resident = 0;
+    if (mincore(base, size, (void *)vec) == 0) {
+        for (size_t i = 0; i < pages; i++) resident += vec[i] & 1;
+    }
+    enif_free(vec);
+    return resident * (size_t)page;
+}
+
+/* memory_stats() -> map of live native objects and C heap bytes */
+static ERL_NIF_TERM memory_stats(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    (void)argv;
+    if (argc != 0) return enif_make_badarg(env);
+    /* A lineage holds Lean objects only while it has a resident. After its
+     * last resident is released it stays listed, empty, until the VM collects
+     * the handles that still point to it. */
+    long *spread = NULL;
+    size_t listed = 0, spread_len = 0;
+    enif_mutex_lock(lineages_mutex);
+    for (lineage *l = lineages_head; l; l = l->next) listed++;
+    if (listed) spread = enif_alloc(listed * sizeof(long));
+    if (spread) {
+        for (lineage *l = lineages_head; l; l = l->next) {
+            long residents = __atomic_load_n(&l->residents, __ATOMIC_RELAXED);
+            if (residents > 0) spread[spread_len++] = residents;
+        }
+    }
+    enif_mutex_unlock(lineages_mutex);
+    if (listed && !spread) return enif_raise_exception(env, enif_make_atom(env, "enomem"));
+    if (spread) qsort(spread, spread_len, sizeof(long), compare_long);
+
+    const char *names[14];
+    ERL_NIF_TERM values[14];
+    size_t n = 0;
+#define STAT(name, value)                                    \
+    do {                                                     \
+        names[n] = (name);                                   \
+        values[n] = enif_make_int64(env, (ErlNifSInt64)(value)); \
+        n++;                                                 \
+    } while (0)
+    STAT("residents", __atomic_load_n(&live_residents, __ATOMIC_RELAXED));
+    STAT("lineages", spread_len);
+    STAT("released_lineages", listed - spread_len);
+    STAT("terminals", __atomic_load_n(&live_terminals, __ATOMIC_RELAXED));
+    /* Residents per lineage that holds a state. A lineage needs only its
+     * current revision; more mean older revisions are still held. */
+    STAT("lineage_residents_p50", percentile(spread, spread_len, 50));
+    STAT("lineage_residents_p99", percentile(spread, spread_len, 99));
+    STAT("lineage_residents_max", spread_len ? spread[spread_len - 1] : 0);
+    if (spread) enif_free(spread);
+    /* The Lean heap. Lean allocates every object through the embedded
+     * mimalloc, which reserves address space in arenas, commits it eagerly
+     * where the OS overcommits, and returns purged pages to the OS. The
+     * release build keeps no object totals. The resident pages of the
+     * arenas are the measure of the heap: the Lean objects plus freed pages
+     * mimalloc has not purged yet; memory mapped from the OS outside the
+     * arenas is not counted. mimalloc's own commit counter
+     * (mi_process_info) is not a measure of it: it read below zero on
+     * production nodes. */
+    size_t lean_reserved = 0, lean_resident = 0;
+    for (mi_arena_id_t id = 1;; id++) {
+        size_t size = 0;
+        void *base = mi_arena_area(id, &size);
+        if (!base) break;
+        lean_reserved += size;
+        lean_resident += resident_bytes(base, size);
+    }
+    STAT("lean_reserved_bytes", lean_reserved);
+    STAT("lean_resident_bytes", lean_resident);
+#ifdef VERIFIED_KERNEL_MALLINFO2
+    /* The process-wide glibc heap of other native code, outside the Lean
+     * heap and the ERTS carriers. */
+    struct mallinfo2 info = mallinfo2();
+    STAT("malloc_arena_bytes", info.arena);
+    STAT("malloc_mmap_bytes", info.hblkhd);
+    STAT("malloc_in_use_bytes", info.uordblks);
+    STAT("malloc_free_bytes", info.fordblks);
+    STAT("malloc_releasable_bytes", info.keepcost);
+#endif
+#undef STAT
+    ERL_NIF_TERM keys[14];
+    for (size_t i = 0; i < n; i++) keys[i] = enif_make_atom(env, names[i]);
+    ERL_NIF_TERM map;
+    enif_make_map_from_arrays(env, keys, values, n, &map);
+    return map;
+}
+
 static ErlNifFunc functions[] = {
     {"invoke_etf", 1, invoke, ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"session", 2, session, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"session_release", 1, session_release, ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"terminal_new", 2, terminal_new, 0},
     {"terminal_feed", 2, terminal_feed, ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"terminal_resize", 3, terminal_resize, 0},
     {"terminal_snapshot", 1, terminal_snapshot, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"terminal_app_cursor", 1, terminal_app_cursor, 0}
+    {"terminal_app_cursor", 1, terminal_app_cursor, 0},
+    {"memory_stats", 0, memory_stats, ERL_NIF_DIRTY_JOB_CPU_BOUND}
 };
 ERL_NIF_INIT(Elixir.SalixVerifiedKernel.Native, functions, load, NULL, NULL, NULL)

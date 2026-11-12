@@ -6,6 +6,10 @@ import { useEffect, useState } from "react";
  * The ready browser, if any, that this conversation's participant runs, as the
  * core reads it: every 10 seconds while the page is visible. A hidden page lets
  * the core stop; the last answer stays shown until the core reads it again.
+ *
+ * The participant stays the conversation's last known one while the caller
+ * names none: its status clears for a moment when the member sends, and the
+ * browser it runs has not changed then.
  */
 export function useSessionBrowser(
   enabled: boolean,
@@ -14,7 +18,17 @@ export function useSessionBrowser(
   participantId: string | undefined
 ) {
   const call = useCall();
-  const scope = JSON.stringify([workspaceId, conversationId, participantId]);
+  const conversationScope = JSON.stringify([workspaceId, conversationId]);
+  const [known, setKnown] = useState<{ scope: string; participant: string }>();
+  if (
+    participantId &&
+    (known?.scope !== conversationScope || known.participant !== participantId)
+  )
+    setKnown({ scope: conversationScope, participant: participantId });
+  const participant =
+    participantId ??
+    (known?.scope === conversationScope ? known.participant : undefined);
+  const scope = JSON.stringify([workspaceId, conversationId, participant]);
   const [hidden, setHidden] = useState(() => document.hidden);
   useEffect(() => {
     const seen = () => setHidden(document.hidden);
@@ -22,11 +36,11 @@ export function useSessionBrowser(
     return () => document.removeEventListener("visibilitychange", seen);
   }, []);
   const target =
-    enabled && workspaceId && conversationId && participantId
+    enabled && workspaceId && conversationId && participant
       ? {
           workspace: workspaceId,
           conversation: conversationId,
-          participant: participantId,
+          participant,
         }
       : null;
   const { value } = useTopic(

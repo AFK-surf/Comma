@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.text.Editable
+import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.TextWatcher
@@ -101,6 +102,18 @@ internal sealed interface ComposerMention {
             }
             return out.toString()
         }
+
+        /** Each Task and model link [serialize] wrote in [markup], in order, with where it is. */
+        fun links(markup: String): List<Pair<IntRange, ComposerMention>> {
+            if ("](comma:" !in markup) return emptyList()
+            val tasks = TASK_LINK.findAll(markup).map { it.range to TaskMention(it.groupValues[1], it.groupValues[2]) }
+            val models = ModelMentionLinks.PATTERN.findAll(markup).map {
+                it.range to ModelMention(it.groupValues[1], it.groupValues[2], it.groupValues[3].ifEmpty { null })
+            }
+            return (tasks + models).sortedBy { it.first.first }.toList()
+        }
+
+        private val TASK_LINK = Regex("\\[([^\\]\\n]+)\\]\\(comma:task/([A-Za-z0-9][A-Za-z0-9._-]*)\\)")
     }
 }
 
@@ -229,6 +242,27 @@ internal class TriggerMenu(
         mentions.retainAll { it.displayText in field.text }
         return ComposerMention.serialize(text, mentions)
     }
+
+    /**
+     * [markup], a draft as [serialize] wrote it, as the field shows it: each Task and model link is a mention again,
+     * as if picked.
+     */
+    fun project(markup: String): CharSequence {
+        val out = SpannableStringBuilder()
+        var at = 0
+        for ((range, mention) in ComposerMention.links(markup)) {
+            out.append(markup, at, range.first)
+            val start = out.length
+            out.append(mention.displayText)
+            out.setSpan(mentionSpan(mention), start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            mentions += mention
+            at = range.last + 1
+        }
+        return out.append(markup, at, markup.length)
+    }
+
+    /** The field holds another conversation's draft now: no mention picked for the one before is linked. */
+    fun forgetMentions() = mentions.clear()
 
     /** The locations of the skills the outgoing text names. */
     fun skillLocations(text: String): List<String> = Skill.mentionedLocations(text, skills().orEmpty())
@@ -434,12 +468,14 @@ internal class TriggerMenu(
         text.replace(match.start, end, insertion)
         item.mention?.let { mention ->
             mentions += mention
-            text.setSpan(MentionSpan(mention, context.getColor(R.color.token_markdown_text_link), DesignFonts.inter(context, DesignFonts.medium)),
-                match.start, match.start + mention.displayText.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            text.setSpan(mentionSpan(mention), match.start, match.start + mention.displayText.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         field.setSelection((match.start + insertion.length).coerceAtMost(field.text.length))
         hide()
     }
+
+    private fun mentionSpan(mention: ComposerMention) =
+        MentionSpan(mention, context.getColor(R.color.token_markdown_text_link), DesignFonts.inter(context, DesignFonts.medium))
 
     /** A mention whose words were changed is text again; a deletion that reached into one takes the rest of it, as on the desktop. */
     private fun keepMentions(text: Editable) {

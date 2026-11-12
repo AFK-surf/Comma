@@ -30,7 +30,7 @@ data class PickedFile(val name: String, val mimeType: String?, val size: Long?) 
     val tooLarge: Boolean get() = !isImage && (size ?: 0) > MediaLimits.MAX_FILE_UPLOAD_BYTES
 
     companion object {
-        /** What [resolver] says of [uri]; what it leaves out comes from the URI itself. */
+        /** Reads provider metadata; opaque content ids are never used as user-facing names. */
         fun describe(resolver: ContentResolver, uri: Uri): PickedFile {
             var name: String? = null
             var size: Long? = null
@@ -44,14 +44,36 @@ data class PickedFile(val name: String, val mimeType: String?, val size: Long?) 
                     }
                 }
             } catch (_: RuntimeException) {
-                // A provider that cannot answer: the URI's own name, and no size.
+                // Some providers do not expose openable metadata; use a readable fallback below.
             }
             if (size == null && uri.scheme == ContentResolver.SCHEME_FILE) {
                 size = uri.path?.let(::File)?.takeIf { it.isFile }?.length()
             }
             val mime = try { resolver.getType(uri) } catch (_: RuntimeException) { null }
                 ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(extensionOf(name ?: uri.lastPathSegment))
-            return PickedFile(withExtension(FileKinds.safeFileName(name ?: uri.lastPathSegment), mime), mime, size)
+            val picker = uri.authority == "media" && uri.pathSegments.firstOrNull() in setOf("picker", "picker_get_content")
+            // The photo picker can synthesize DISPLAY_NAME as <media-id>.<extension>.
+            val synthetic = picker && name?.substringBeforeLast('.', name.orEmpty()) == uri.lastPathSegment
+            val providerName = name?.takeIf { it.isNotBlank() && !synthetic }
+            val pathName = if (uri.scheme == ContentResolver.SCHEME_FILE) uri.lastPathSegment else null
+            val readable = providerName ?: pathName ?: fallbackName(mime)
+            return PickedFile(withExtension(FileKinds.safeFileName(readable), mime), mime, size)
+        }
+
+        private fun fallbackName(mime: String?): String = when (mime?.substringBefore('/')) {
+            "video" -> "video"
+            "image" -> "image"
+            "audio" -> "audio"
+            else -> "file"
+        }
+
+        /** [name], numbered (`video-2.mp4`) when one of [taken] already has it, so files in one draft tell apart. */
+        fun distinctName(name: String, taken: Set<String>): String {
+            if (name !in taken) return name
+            val extension = extensionOf(name)
+            val base = if (extension.isEmpty()) name else name.dropLast(extension.length + 1)
+            val suffix = if (extension.isEmpty()) "" else ".$extension"
+            return generateSequence(2) { it + 1 }.map { "$base-$it$suffix" }.first { it !in taken }
         }
 
         /** [name], given the extension of [mime] when it has none. */

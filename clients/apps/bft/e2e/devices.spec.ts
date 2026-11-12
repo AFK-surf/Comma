@@ -56,7 +56,6 @@ const page1 = (overrides: Record<string, unknown> = {}) => ({
     }),
     device("dev-box", "Build box", { status: "disconnected", disconnectable: false }),
   ],
-  provisioning: false,
   android: {
     status: "ok",
     entitled: false,
@@ -108,10 +107,6 @@ const cloudVmSection = (page: Page) =>
   main(page).getByRole("region", { name: "Cloud VM" });
 const writes = (requests: RecordedRequest[]) =>
   requests.filter((request) => request.method !== "GET");
-const pageReads = (requests: RecordedRequest[]) =>
-  requests.filter((request) => request.method === "GET" && request.path === api);
-const polls = (requests: RecordedRequest[]) =>
-  requests.filter((request) => request.path === `${api}/provisioning`);
 
 test("lists the Cloud VM, the devices, Compute and Android setup", async ({ page }) => {
   await open(page);
@@ -146,7 +141,7 @@ test("lists the Cloud VM, the devices, Compute and Android setup", async ({ page
   ).toBeVisible();
   await expect(
     m.getByText(
-      "Android setup is unavailable because this organization has no Android connector entitlement. Contact your platform administrator."
+      "Android setup is unavailable because this organization has no Android device entitlement. Contact your platform administrator."
     )
   ).toBeVisible();
   await expect(
@@ -158,9 +153,9 @@ test("lists the Cloud VM, the devices, Compute and Android setup", async ({ page
 
 test("a device that cannot take tasks says how to upgrade it", async ({ page }) => {
   const needsStation =
-    "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma.";
+    "This device has no station, so it cannot take tasks. Install the station on it with the command from Add computer.";
   const outdated =
-    "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page.";
+    "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `comma-station update` or use its Updates page.";
   await open(page, undefined, () =>
     page1({
       devices: [
@@ -193,7 +188,7 @@ test("a device that cannot take tasks says how to upgrade it", async ({ page }) 
   await expect(notes.nth(1)).toContainText(outdated);
 });
 
-test("an entitled swarm shows its Android connector, profiles and slots", async ({
+test("an entitled swarm shows its Android device, profiles and slots", async ({
   page,
 }) => {
   await open(page, undefined, () =>
@@ -228,7 +223,7 @@ test("an entitled swarm shows its Android connector, profiles and slots", async 
     m.getByText("Allowed profiles: api30-phone · One concurrent lease")
   ).toBeVisible();
   await expect(
-    m.getByText("The Android connector is registered to this Agent Swarm.")
+    m.getByText("The Android device is registered to this Agent Swarm.")
   ).toBeVisible();
   for (const line of [
     "Configured profiles: api30-phone, api35-phone-google-apis",
@@ -280,155 +275,6 @@ test("turns the Cloud VM off and reads the page again", async ({ page }) => {
   expect(writes(requests)).toEqual([
     expect.objectContaining({ method: "PUT", csrf, body: { enabled: false } }),
   ]);
-});
-
-test("adds a device on a runner, then polls only until it is provisioned", async ({
-  page,
-}) => {
-  await page.clock.install();
-  let provisioning = false;
-  let answers = [true, false];
-  const requests = await open(
-    page,
-    (request) => {
-      if (request.path === `${api}/runners`)
-        return ok({
-          runners: [
-            { id: "run-1", label: "Lab Mac mini" },
-            { id: "run-2", label: "Spare Mac mini" },
-          ],
-          runners_href: "/orgs/acme/fin",
-        });
-      if (request.method === "POST" && request.path === api) {
-        provisioning = true;
-        return {
-          status: 201,
-          body: { ok: true, data: { notice: "Device connection request created." } },
-        };
-      }
-      if (request.path === `${api}/provisioning`) {
-        const active = answers.shift() ?? false;
-        provisioning = active;
-        return ok({ active });
-      }
-      return undefined;
-    },
-    () => page1({ provisioning })
-  );
-
-  await page.getByRole("button", { name: "Add device" }).click();
-  const dialog = page.getByRole("dialog", { name: "Add device" });
-  await dialog.getByLabel("Name").fill("staging-box");
-  await dialog.getByLabel("Alias").fill("prod-mac");
-  await dialog.getByRole("button", { name: /Runner/ }).click();
-  await page.getByRole("option", { name: "Spare Mac mini" }).click();
-  await dialog.getByRole("button", { name: "Create on runner" }).click();
-
-  await expect(page.getByText("Device connection request created.")).toBeVisible();
-  await expect(dialog).toHaveCount(0);
-  expect(writes(requests)).toEqual([
-    expect.objectContaining({
-      method: "POST",
-      path: api,
-      csrf,
-      body: { name: "staging-box", alias: "prod-mac", runner_id: "run-2" },
-    }),
-  ]);
-  const status = main(page).getByText(
-    "A device is being connected. The list updates when it is ready."
-  );
-  await expect(status).toBeVisible();
-  const readsBefore = pageReads(requests).length;
-
-  // Still provisioning: the page is not read again.
-  await page.clock.runFor(2_100);
-  await expect.poll(() => polls(requests).length).toBe(1);
-  expect(pageReads(requests)).toHaveLength(readsBefore);
-  // Done: the page is read once more and the poll stops.
-  await page.clock.runFor(2_100);
-  await expect.poll(() => polls(requests).length).toBe(2);
-  await expect(status).toHaveCount(0);
-  expect(pageReads(requests)).toHaveLength(readsBefore + 1);
-  await page.clock.runFor(10_000);
-  expect(polls(requests)).toHaveLength(2);
-});
-
-test("the provisioning poll waits for each reply, pauses while hidden and stops on leaving", async ({
-  page,
-}) => {
-  await page.clock.install();
-  const requests = await open(
-    page,
-    (request) =>
-      request.path === `${api}/provisioning` ? ok({ active: true }) : undefined,
-    () => page1({ provisioning: true })
-  );
-  // Every poll is counted when it leaves; the first reply is held until released.
-  const sent: number[] = [];
-  let release: (() => void) | undefined;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  await page.route(`**/dashboard/api/v1${api}/provisioning`, async (route) => {
-    sent.push(sent.length + 1);
-    if (sent.length === 1) await held;
-    await route.fallback();
-  });
-
-  await page.clock.runFor(2_100);
-  await expect.poll(() => sent.length).toBe(1);
-  await page.clock.runFor(10_000);
-  expect(sent).toHaveLength(1);
-  release?.();
-  await expect.poll(() => polls(requests).length).toBe(1);
-  await page.clock.runFor(2_100);
-  await expect.poll(() => sent.length).toBe(2);
-
-  const setHidden = (hidden: boolean) =>
-    page.evaluate((value) => {
-      Object.defineProperty(document, "hidden", {
-        configurable: true,
-        get: () => value,
-      });
-      document.dispatchEvent(new Event("visibilitychange"));
-    }, hidden);
-  await setHidden(true);
-  await page.clock.runFor(10_000);
-  expect(sent).toHaveLength(2);
-  // Visible again: it checks at once.
-  await setHidden(false);
-  await expect.poll(() => sent.length).toBe(3);
-
-  await page.evaluate(() => {
-    window.history.pushState(null, "", "/orgs/acme/members");
-    window.dispatchEvent(new Event("bft:locationchange"));
-  });
-  await page.clock.runFor(10_000);
-  expect(sent).toHaveLength(3);
-});
-
-test("without an online runner the dialog links Runners and checks again", async ({
-  page,
-}) => {
-  const requests = await open(page, (request) =>
-    request.path === `${api}/runners`
-      ? ok({ runners: [], runners_href: "/orgs/acme/fin" })
-      : undefined
-  );
-
-  await page.getByRole("button", { name: "Add device" }).click();
-  const dialog = page.getByRole("dialog", { name: "No runners connected" });
-  await expect(
-    dialog.getByText("Connect a runner in Runners before creating a project device.")
-  ).toBeVisible();
-  await expect(dialog.getByRole("link", { name: "Open Runners" })).toHaveAttribute(
-    "href",
-    "/orgs/acme/fin"
-  );
-  const reads = () =>
-    requests.filter((request) => request.path === `${api}/runners`).length;
-  const before = reads();
-  await dialog.getByRole("button", { name: "Check for runners" }).click();
-  await expect.poll(reads).toBe(before + 1);
-  expect(writes(requests)).toEqual([]);
 });
 
 test("disconnects and deletes a device after confirming", async ({ page }) => {
@@ -544,7 +390,6 @@ test("a swarm member reads the page without admin controls", async ({ page }) =>
   await expect(
     cloudVmSection(page).getByText("Cloudflare", { exact: true })
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Add device" })).toHaveCount(0);
   await expect(m.getByRole("switch")).toHaveCount(0);
   await expect(m.getByRole("button", { name: "Choose runner" })).toHaveCount(0);
   await expect(m.getByRole("button", { name: /^Actions for/ })).toHaveCount(0);

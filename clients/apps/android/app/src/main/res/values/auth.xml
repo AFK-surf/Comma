@@ -85,4 +85,6 @@
     <string name="auth_google_unavailable">这台设备没有 Google Play 服务，无法用 Google 账号登录，请用邮箱登录。</string>
     <string name="auth_google_rejected">没能通过 Google 验证你的账号，请重试或用邮箱登录。</string>
     <string name="auth_google_conflict">这个 Google 账号不能用来登录，请用邮箱登录。</string>
+    <string name="auth_signed_in_accounts">已在此设备登录的账号</string>
+    <string name="auth_continue_as">继续使用 %1$s</string>
 </resources>

@@ -213,7 +213,7 @@ config :comma_core, Comma.Repo,
 
 operation_claim_timeout_ms = 300_000
 
-# Queue concurrency is per Comma node: 4 external operations, 8 Routine
+# Queue concurrency is per Comma node: 4 core external operations, 2 Drive jobs, 8 Routine
 # generations, and 2 Routine control jobs. Model waits do not hold DB leases
 # or consume control slots. Oban shares Comma.Repo's pool rather than owning another
 # connection pool. The Postgres peer elects plugin leadership only; durable
@@ -227,6 +227,7 @@ config :comma_core, Oban,
   peer: {Oban.Peers.Postgres, []},
   queues: [
     comma_external: 4,
+    comma_drive: 2,
     comma_analytics: 1,
     comma_recommendations: 8,
     comma_recommendation_control: 2,
@@ -240,6 +241,9 @@ config :comma_core, Oban,
        {"*/5 * * * *", Comma.Workers.ProfileAvatarCleanup},
        {"17 * * * *", Comma.Workers.MemberSourceItemRetention},
        {"41 * * * *", Comma.Workers.MiniAppCleanup},
+       {"53 * * * *", Comma.Workers.AccountDeletionSweep},
+       {"29 * * * *", Comma.Workers.FreeMonthlyCredits},
+       {"37 3 * * *", CommaWeb.MemberGlossarySweep},
        {"* * * * *", Comma.Analytics.ProfileSweep}
      ]}
   ],
@@ -304,6 +308,8 @@ config :comma_web, :telegram,
   oidc_enabled: false,
   bot_adapter: CommaWeb.TelegramBot.Req,
   oidc_adapter: CommaWeb.TelegramOIDC.Oidcc
+
+config :comma_web, :line, enabled: false
 
 config :billing_core,
   repo: BillingCore.Repo

@@ -14,7 +14,7 @@ test("an archive lock is held across processes", async () => {
   const mesh = loadMesh();
   const mine = await mesh.fileLock(path);
   // Another process asks for it: it gets it only once this one lets go.
-  const native = process.env.STILLFAIL_MESH_NATIVE ?? new URL("../native/mesh/target/release/libstillfail_mesh.dylib", import.meta.url).pathname;
+  const native = process.env.COMMA_STATION_MESH_NATIVE ?? new URL("../native/mesh/target/release/libcomma_station_mesh.dylib", import.meta.url).pathname;
   const child = spawn(process.execPath, ["-e", `const m={exports:{}};process.dlopen(m,${JSON.stringify(native)});m.exports.fileLock(${JSON.stringify(path)}).then(()=>{console.log("got");process.exit(0)})`], { stdio: ["ignore", "pipe", "inherit"] });
   let got = false;
   child.stdout.on("data", () => (got = true));

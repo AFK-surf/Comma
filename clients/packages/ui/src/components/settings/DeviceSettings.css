@@ -87,6 +87,11 @@
   gap: var(--spacing-xl);
 }
 
+/* A panel the page adds after the cards (the sandbox on the web) sits on their gap. */
+.comma-devices__column > .compute-panel {
+  margin-top: var(--spacing-xl);
+}
+
 .comma-device {
   min-width: 0;
   border: var(--device-hairline);
@@ -318,6 +323,20 @@
 }
 .comma-device__note[role="alert"] {
   color: var(--color-text-error-primary);
+}
+/* A failed read or check: an agent row's padding and columns, in the error's colors. */
+.comma-device__problem .comma-device__agent-mark {
+  border-color: var(--color-utility-error-200);
+  background: var(--color-utility-error-50);
+  color: var(--color-text-error-primary);
+}
+.comma-device__problem-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-error-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  overflow-wrap: anywhere;
 }
 
 .comma-device__agent {

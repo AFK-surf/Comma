@@ -15,7 +15,7 @@ struct PhoneLoginView: View {
     @State private var codeError: String?
 
     private var challengeID: String? { store.signIn?.challengeID }
-    private var appleLink: Bool { store.signIn?.linkingApple == true }
+    private var providerLink: Bool { store.signIn?.linkingApple == true || store.signIn?.linkingGoogle == true }
     private var resendDeadline: Date { store.resendAt ?? .distantPast }
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -76,6 +76,18 @@ struct PhoneLoginView: View {
         VStack(spacing: 24) {
             LoginHeading(title: "Welcome to Comma", subtitle: Text("Work anywhere with your agents"))
 
+            Button {
+                Task {
+                    localError = nil
+                    if let problem = await store.signInWithGoogle() { localError = problem.message }
+                }
+            } label: {
+                Label { Text("Sign in with Google") } icon: { Image("GoogleSignIn").renderingMode(.original) }
+            }
+            .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
+            .disabled(signingInWithApple || requestingCode || store.loading)
+            .accessibilityIdentifier("googleSignIn")
+
             AppleSignInButton(style: colorScheme == .dark ? .white : .whiteOutline) {
                 Task { await signInWithApple() }
             }
@@ -125,6 +137,26 @@ struct PhoneLoginView: View {
                 Text(message).font(.subheadline).foregroundStyle(CommaTheme.errorPrimary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            // The accounts still signed in on this iPhone: one tap goes back to one, without signing in again.
+            if !store.otherAccounts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Signed in on this iPhone").font(.subheadline.weight(.medium)).foregroundStyle(CommaTheme.textSecondary)
+                    ForEach(store.otherAccounts) { account in
+                        Button {
+                            Task {
+                                localError = nil
+                                if let problem = await store.switchAccount(to: account.id) { localError = problem.message }
+                            }
+                        } label: {
+                            Text("Continue as \(account.email)")
+                        }
+                        .buttonStyle(CommaButtonStyle(hierarchy: .secondary))
+                        .disabled(signingInWithApple || requestingCode || store.loading)
+                        .accessibilityIdentifier("continueAsKeptAccount")
+                    }
+                }
+            }
         }
         .animation(CommaMotion.stateChange, value: emailInvalid)
         .announcing(emailInvalid ? String(localized: "Please enter a valid email address.") : nil)
@@ -148,7 +180,7 @@ struct PhoneLoginView: View {
                     .transition(.opacity)
             } else if store.loading {
                 ProgressView().transition(.opacity)
-            } else if !appleLink {
+            } else if !providerLink {
                 ResendCodeLine(deadline: resendDeadline, disabled: requestingCode) {
                     Task { await requestCode(resend: true) }
                 }

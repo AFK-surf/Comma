@@ -1,6 +1,5 @@
 import VerifiedKernelProofs.Session.WorkConfirmedStorage
 import VerifiedKernelProofs.Session.WorkBatchExecution
-
 namespace VerifiedKernel.Session.WorkConservation.ValueSemantics
 open Data CommandExecution DurableConfirmation ArchivePublication
 set_option Elab.async false

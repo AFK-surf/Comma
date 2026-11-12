@@ -1,27 +1,30 @@
 // How the Comma API writes a coding Session's pull request and token use: in the answers of the coding calls
 // (coding.ts), and in what a coding Task's run keeps of them (`facts`, comma/api-schemas.ts).
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 import type { CodingPullRequest } from "./contract.ts";
 
 /** The branch's pull request as Comma reads it from GitHub. */
-export const pullRequestSchema = z.object({
-  url: z.string(),
-  number: z.number().nullish(),
-  title: z.string().nullish(),
-  body: z.string().nullish(),
-  head_sha: z.string().nullish(),
-  state: z.enum(["open", "draft", "merged", "closed"]),
-  mergeable: z.enum(["mergeable", "conflicting", "unknown"]).nullish(),
-  checks: z
-    .object({
-      passed: z.number(),
-      failed: z.number().optional(),
-      skipped: z.number().optional(),
-      total: z.number(),
-    })
-    .nullish(),
-  new_commits: z.boolean().nullish(),
-});
+export const pullRequestSchema = lazySchema(() =>
+  z.object({
+    url: z.string(),
+    number: z.number().nullish(),
+    title: z.string().nullish(),
+    body: z.string().nullish(),
+    head_sha: z.string().nullish(),
+    state: z.enum(["open", "draft", "merged", "closed"]),
+    mergeable: z.enum(["mergeable", "conflicting", "unknown"]).nullish(),
+    checks: z
+      .object({
+        passed: z.number(),
+        failed: z.number().optional(),
+        skipped: z.number().optional(),
+        total: z.number(),
+      })
+      .nullish(),
+    new_commits: z.boolean().nullish(),
+  })
+);
 
 export const toPullRequest = (
   pr: z.output<typeof pullRequestSchema>
@@ -45,10 +48,12 @@ export const toPullRequest = (
 });
 
 /** The tokens a Session's model calls used, as its station counts them. */
-export const usageSchema = z.object({
-  modelCalls: z.number(),
-  inputTokens: z.number(),
-  cachedTokens: z.number(),
-  outputTokens: z.number(),
-  model: z.string().nullable(),
-});
+export const usageSchema = lazySchema(() =>
+  z.object({
+    modelCalls: z.number(),
+    inputTokens: z.number(),
+    cachedTokens: z.number(),
+    outputTokens: z.number(),
+    model: z.string().nullable(),
+  })
+);

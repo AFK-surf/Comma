@@ -31,7 +31,7 @@ test("a computed topic sends its whole value first, then only keyed changes, coa
     compute: () => (computed++, { ok: { items } }),
   });
   const ui = kernel.connect();
-  kernel.receive(ui, { id: 1, subscribe: { topic: "rows" }, keyed: true });
+  kernel.receive(ui, { id: 1, subscribe: { topic: "rows" } });
   await time.pass(0);
   assert.deepEqual(sent.splice(0), [
     [ui, { id: 1, value: { items: [{ id: "a", n: 1, body }] } }],
@@ -60,14 +60,14 @@ test("a subscriber that comes back within the grace is sent the value as it is n
   let items = [{ id: "a", n: 1 }];
   kernel.source("rows", { start() {}, stop() {}, compute: () => ({ ok: { items } }) });
   const ui = kernel.connect();
-  kernel.receive(ui, { id: 1, subscribe: { topic: "rows" }, keyed: true });
+  kernel.receive(ui, { id: 1, subscribe: { topic: "rows" } });
   await time.pass(0);
   kernel.receive(ui, { id: 1, unsubscribe: true });
   items = [{ id: "a", n: 2 }];
   kernel.store.invalidateAll((topic) => topic.topic === "rows");
   await time.pass(60);
   sent.splice(0);
-  kernel.receive(ui, { id: 2, subscribe: { topic: "rows" }, keyed: true });
+  kernel.receive(ui, { id: 2, subscribe: { topic: "rows" } });
   await time.pass(0);
   assert.deepEqual(sent.splice(0), [
     [ui, { id: 2, value: { items: [{ id: "a", n: 2 }] } }],

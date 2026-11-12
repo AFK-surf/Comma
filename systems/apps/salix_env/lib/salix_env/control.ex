@@ -12,25 +12,26 @@ defmodule SalixEnv.Control do
 
   @probe_fields ~w(model model_provider reasoning_effort version version_detected auth_ready auth native_server_startable ready status readiness_issue readiness_message readiness_checked_at readiness_valid_until probe_trigger probe_duration_ms)
 
-  @device_fields ~w(display_name connector_run_id environment_id device_id connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id skills capabilities os arch node_id status connected_at disconnected_at updated_at environments system_info system_info_updated_at connector_health connector_health_updated_at device_runtimes process_instance_id last_exec)
+  @device_fields ~w(display_name connector_run_id environment_id device_id device_kind connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id skills capabilities os arch node_id status connected_at disconnected_at updated_at environments system_info system_info_updated_at connector_health connector_health_updated_at device_runtimes process_instance_id last_exec)
   @environment_fields ~w(environment_id environment_provider environment_runtime_id alias name description device_id capabilities risk shares_user_files requires_permission path_semantics status permission_message)
   @runtime_fields ~w(status issue message provider runtime_id device_runtime_id device_id model model_provider reasoning_effort version readiness_checked_at readiness_valid_until updated_at auth)
-  @capability_fields ~w(exec persistent_processes computer_use_tool android_device_tool android host_access_required runtime_probe runtime_auth_v1 meeting_runtime execution_boundary component_versions component_releases lan_gateway tasks task_models access)
+  @capability_fields ~w(exec persistent_processes computer_use_tool android_device_tool screen_device_tool screen_view android host_access_required runtime_probe runtime_auth_v1 meeting_runtime execution_boundary component_versions component_releases lan_gateway tasks task_models access account_source)
   # A device's one access value, as its station reports it (systems/station/src/device/access.ts).
   @access_levels ~w(off read full)
   # What a station's Tasks may choose to run there: models by runtime, as its profiles enable them.
   @task_model_runtimes ~w(claude codex)
   @task_model_limit 64
-  @lan_gateway_methods ~w(lan_http_request http_request lan_discover lan_tcp_dial udp_request)
+  @lan_gateway_methods ~w(lan_http_request http_request lan_discover lan_tcp_dial udp_request lan_script)
+  @lan_script_fields ~w(api max_source_bytes max_result_bytes max_timeout_ms heap_bytes max_request_bytes)
   @lan_discover_probe_fields ~w(max_probes max_payload_bytes max_answer_bytes max_total_answer_bytes)
-  @android_capability_fields ~w(protocol_version profiles profile_details default_profile active_profile target_profile phase state capacity available_slots)
+  @android_capability_fields ~w(protocol_version mode profiles profile_details default_profile active_profile target_profile phase state capacity available_slots)
   @android_profile_fields ~w(id api_level abi image_flavor status issue)
   @health_fields ~w(schema_version observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes)
   @system_info_fields ~w(client_source hostname os_type os_release os_version arch cpu_model go_version cpu_count memory_total collected_at)
   @release_fields ~w(component version release_id commit built_at goos goarch go_version)
   @integer_fields ~w(connected_at disconnected_at updated_at system_info_updated_at connector_health_updated_at readiness_checked_at readiness_valid_until schema_version protocol_version capacity available_slots observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes cpu_count memory_total collected_at at)
-  @boolean_fields ~w(exec persistent_processes computer_use_tool android_device_tool host_access_required runtime_probe runtime_auth_v1 meeting_runtime shares_user_files requires_permission)
-  @text_fields ~w(display_name connector_run_id environment_id device_id connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id os arch node_id process_instance_id environment_provider environment_runtime_id risk path_semantics status permission_message issue message provider runtime_id device_runtime_id model model_provider reasoning_effort version execution_boundary client_source hostname os_type os_release os_version cpu_model go_version component release_id commit built_at goos goarch description)
+  @boolean_fields ~w(exec persistent_processes computer_use_tool android_device_tool screen_device_tool screen_view host_access_required runtime_probe runtime_auth_v1 meeting_runtime shares_user_files requires_permission)
+  @text_fields ~w(display_name connector_run_id environment_id device_id device_kind connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id os arch node_id process_instance_id environment_provider environment_runtime_id risk path_semantics status permission_message issue message provider runtime_id device_runtime_id model model_provider reasoning_effort version execution_boundary client_source hostname os_type os_release os_version cpu_model go_version component release_id commit built_at goos goarch description)
 
   @doc "List all stable devices visible to a tenant."
   @spec list_environments(String.t()) :: [map()]
@@ -59,7 +60,7 @@ defmodule SalixEnv.Control do
           {:ok, %{records: [map()], next_cursor: String.t() | nil}} | {:error, term()}
   def page_group_environments(group_id, tenant_id, opts) do
     if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
-      case Registry.page_by_group(group_id, opts) do
+      case Registry.page_by_group(group_id, Keyword.put(opts, :keep, &public_environment?/1)) do
         {:ok, %{records: records, next_cursor: next_cursor}} ->
           {:ok, %{records: public_environments(records), next_cursor: next_cursor}}
 
@@ -92,11 +93,13 @@ defmodule SalixEnv.Control do
   # Only connected sandboxes provide an entry point in public device lists.
   defp public_environments(records) do
     records
-    |> Enum.reject(fn record ->
-      SalixStore.CodingSandboxes.device?(record["device_id"]) and
-        record["status"] != "connected"
-    end)
+    |> Enum.filter(&public_environment?/1)
     |> Enum.map(&environment_json/1)
+  end
+
+  defp public_environment?(record) do
+    not (SalixStore.CodingSandboxes.device?(record["device_id"]) and
+           record["status"] != "connected")
   end
 
   @doc "The device of a tenant/group's Cloud VM, or nil when the Group has none."
@@ -914,6 +917,8 @@ defmodule SalixEnv.Control do
       "connector_run_id" => connector_run_id,
       "environment_id" => default_environment_id(environments),
       "device_id" => device_id,
+      # What the minter set the device up as ("hardware" for a Comma board).
+      "device_kind" => meta["device_kind"],
       "connector_id" => rec["connector_id"],
       # The station the Connector proved it runs (`relay_register`), its id.
       "station_id" => meta["station_id"],
@@ -1001,6 +1006,9 @@ defmodule SalixEnv.Control do
   # `tasks` 2: a Comma station that takes Tasks as stations ask each other
   # (systems/station/docs/tasks.md); products list it as a station.
   defp public_value("tasks", version) when version in [1, 2], do: version
+  # 1: a desktop Workspace's connection takes `account_source` (the local
+  # sign-in, chosen by the computer's owner from a conversation).
+  defp public_value("account_source", 1), do: 1
 
   defp public_value("task_models", value) when is_map(value) do
     for {runtime, models} <- value, runtime in @task_model_runtimes, is_list(models), into: %{} do
@@ -1067,6 +1075,7 @@ defmodule SalixEnv.Control do
         |> positive_limits()
         |> put_limits("response_chunks", value, ~w(max_total_bytes chunk_bytes))
         |> put_limits("discover_probes", value, @lan_discover_probe_fields)
+        |> put_limits("script", value, @lan_script_fields)
         |> Map.put("methods", known)
     end
   end
@@ -1196,7 +1205,7 @@ defmodule SalixEnv.Control do
       "risk" => "remote-connector",
       "shares_user_files" => true,
       "requires_permission" => false,
-      "path_semantics" => "real OS filesystem on the connector host (jailed to its --root)"
+      "path_semantics" => "real OS filesystem on the station's machine (jailed to its --root)"
     }
   end
 
@@ -1451,7 +1460,7 @@ defmodule SalixEnv.Control do
       cond do
         connector_status != "connected" ->
           {"disconnected", "connector_disconnected",
-           "The Connector is disconnected from this device."}
+           "The station on this device is disconnected."}
 
         runtime["readiness_issue"] == "permission_required" ->
           {"unavailable", "permission_required",

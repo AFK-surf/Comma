@@ -1,7 +1,7 @@
 #!/bin/sh
 # Two copies of a station's data for comparing the Rust station with this one (test/compare.sh), from a station's
-# stillfail.db and archive/threads packed as <tar.gz>: <work>/rust and <work>/ts, the same test workspace (keys of our
-# own: station-load setup), still.fail's relays, no agents left to run (a copy must not start the station's agents).
+# station.db and archive/threads packed as <tar.gz>: <work>/rust and <work>/ts, the same test workspace (keys of our
+# own: station-load setup), Comma's relays, no agents left to run (a copy must not start the station's agents).
 # prepare.sh <tar.gz> <work>
 set -eu
 tarball=$1 work=$2
@@ -18,7 +18,7 @@ json.dump(d, open(p, "w"), indent=2)
 PY
 tar xzf "$tarball" -C "$work/rust"
 echo '{"profiles":[],"autoUpdate":false}' > "$work/rust/config.json"
-sqlite3 "$work/rust/stillfail.db" "
+sqlite3 "$work/rust/station.db" "
   update jobs set state='exited' where state not in ('exited','stopped','failed');
   delete from processes;
   update deliveries set delivered_at=coalesce(delivered_at,0);

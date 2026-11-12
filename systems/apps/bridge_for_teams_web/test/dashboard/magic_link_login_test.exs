@@ -44,7 +44,7 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     %{"token" => token} = URI.decode_query(URI.parse(url).query)
 
     conn = conn |> recycle() |> get("/auth/email/verify", %{"token" => token})
-    assert redirected_to(conn) == "/"
+    assert redirected_to(conn) == "/orgs/" <> org.slug
 
     session_token = Plug.Conn.get_session(conn, DashAuth.session_token_key())
     assert {:ok, %{user_id: user_id}} = Sessions.fetch(session_token)
@@ -54,6 +54,19 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     conn = conn |> recycle() |> get("/auth/email/verify", %{"token" => token})
     assert redirected_to(conn) == "/login"
     assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "invalid, expired, or already used"
+  end
+
+  test "the link opens the org it was issued for, not the user's first org", %{conn: conn} do
+    %{org: org, user: user} = sso_less_org_with_member()
+    other_org = org_fixture()
+    {:ok, _} = Memberships.put_org_member(other_org.id, user.id, "owner")
+
+    conn = post(conn, "/auth/email/send", %{"org_slug" => org.slug, "email" => user.email})
+    assert [%{url: url}] = FakeDelivery.deliveries()
+    %{"token" => token} = URI.decode_query(URI.parse(url).query)
+
+    conn = conn |> recycle() |> get("/auth/email/verify", %{"token" => token})
+    assert redirected_to(conn) == "/orgs/" <> org.slug
   end
 
   test "sending shows the same neutral message whether or not anything matched", %{conn: conn} do

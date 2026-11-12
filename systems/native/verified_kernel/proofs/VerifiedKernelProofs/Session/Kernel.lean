@@ -1,8 +1,8 @@
+import VerifiedKernelProofs.Session.Progress
 import VerifiedKernelProofs.Order
 import VerifiedKernel.Session.Kernel
 import VerifiedKernel.Session.Metadata
 import VerifiedKernel.Session.Activity
-import VerifiedKernelProofs.Session.Progress
 import VerifiedKernel.Session.Async
 import VerifiedKernel.Session.Queue
 import VerifiedKernel.Session.Replies

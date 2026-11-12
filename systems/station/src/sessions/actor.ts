@@ -84,9 +84,9 @@ export type SessionDeps = {
   mcpUrl(): string;
   reposDir(): string;
   memoryPath(): string;
-  /// What a Session working in `workspace` is told besides the station's instructions: a coding Session's checkout
-  /// and how it keeps its work (tasks/coding.ts); null for any other.
-  workspaceInstructions(workspace: string): string | null;
+  /// What Session `key` working in `workspace` is told besides the station's instructions: a coding Session's checkout
+  /// and how it keeps its work (tasks/coding.ts), a Salix Task Session's Salix tools (tools/salix.ts); null for any other.
+  workspaceInstructions(workspace: string, key: string): string | null;
   maxNudges(): number;
   backgroundOnMessage(key: string): boolean;
   /// Where the runtime's live steps go, for whoever watches the session (and that it went on in a new runtime session).
@@ -635,7 +635,7 @@ export class SessionActor {
       this.deps.live?.event(this.key, { kind: "phase", phase: "starting" });
       let agent = await this.ensureAgent();
       const row = store.getSession(this.key);
-      // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
+      // A session begun in a terminal and continued here: its first turn here says so, with how Comma works.
       const continued = row && row.cwd && !store.hasTurns(this.key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, this.deps.reposDir(), this.deps.memoryPath())) : null;
       const lost = this.resumeLost;
       this.resumeLost = false;
@@ -647,7 +647,7 @@ export class SessionActor {
       // What changed in how it works since it was last told (migrations): once, before what it is handed.
       const told = store.toldNotes(this.key) ?? latestNote();
       if (told < latestNote()) {
-        const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
+        const full = row ? join(row.workspace, ".comma-station-instructions.md") : "";
         if (row) {
           const { writeFileSync } = await import("node:fs");
           try {
@@ -744,7 +744,13 @@ export class SessionActor {
     // Its runtime process goes on while it is the runtime session the session runs in, as the store says: one left for
     // a new one (store.leaveRuntimeSession) or of another runtime (configure) is not.
     const current = this.deps.store.getSession(this.key)?.runtimeSessionId ?? null;
-    if (this.agent && this.profile === profile.id && this.agent.runtime === runtime && this.agent.session.id() === current) return this.agent.session;
+    const driver = this.deps.driver(runtime);
+    if (this.agent && this.profile === profile.id && this.agent.runtime === runtime && this.agent.session.id() === current) {
+      // Its process was started for an older version of the profile (edited, or a key lent to the station renewed) and
+      // is idle: let go, and opened again below (resume) in one started with the profile as it is now.
+      if (!driver.stale?.(this.agent.session, profile)) return this.agent.session;
+      log.info("session", "its profile changed; the session goes on in a new runtime process", { session: this.key, profile: profile.id });
+    }
     if (this.agent) {
       const previous = this.agent;
       this.agent = null;
@@ -754,7 +760,6 @@ export class SessionActor {
     const store = this.deps.store;
     const row = store.getSession(this.key);
     if (!row) throw new Error(`session ${this.key} disappeared`);
-    const driver = this.deps.driver(runtime);
     const base = openOptions(row, profile, this.deps);
     // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
     // on a session continued in ~/Documents): told as it is instead.
@@ -994,7 +999,7 @@ export function openOptions(row: any, profile: Profile & { spelling?(model: stri
     model,
     effort: row.effort ?? undefined,
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
-    instructions: row.cwd ? "" : withWorkspace(sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath()), deps.workspaceInstructions(row.workspace)),
+    instructions: row.cwd ? "" : withWorkspace(sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath()), deps.workspaceInstructions(row.workspace, row.key)),
     mcpToken: row.token,
     mcpUrl: deps.mcpUrl(),
     route: row.key,

@@ -357,6 +357,32 @@ defmodule CommaWeb.MiniAppEndpoints do
     end)
   end
 
+  # An avatar ID names one image, which never changes.
+  def author_avatar(conn, id, avatar_id) do
+    with_runtime(conn, id, fn user, session ->
+      with {:ok, type, body} <- MiniApps.author_avatar(user, session, id, via(conn), avatar_id) do
+        conn
+        |> put_resp_header("cache-control", "private, max-age=31536000, immutable")
+        |> put_resp_content_type(type, nil)
+        |> send_resp(200, body)
+      end
+    end)
+  end
+
+  def screenshot(conn, id, index) do
+    with_runtime(conn, id, fn user, session ->
+      with {:ok, body, type} <-
+             MiniApps.screenshot(user, session, id, via(conn), conn.query_params["v"], index) do
+        conn
+        |> put_resp_header("cache-control", "private, max-age=86400")
+        |> put_resp_header("content-security-policy", "sandbox")
+        |> put_resp_header("x-content-type-options", "nosniff")
+        |> put_resp_content_type(type, nil)
+        |> send_resp(200, body)
+      end
+    end)
+  end
+
   ## App folder in the viewer Workspace's Drive (`drive.app_folder`)
 
   def drive_list(conn, id) do

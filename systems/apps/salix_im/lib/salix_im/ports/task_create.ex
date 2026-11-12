@@ -30,6 +30,13 @@ defmodule SalixIM.Ports.TaskCreate do
   """
   @callback runs_on(scope :: map(), request :: map()) :: {:ok, map()} | {:error, term()}
   @doc """
+  The requesting person's own connected computers in the Group, as
+  `%{"device_id", "station_id", "name", "os"}` (`SalixIM.ComputerChoice`).
+  `scope` carries `tenant_id`, `group_id` and `trusted_origin`.
+  """
+  @callback personal_computers(scope :: map()) :: {:ok, [map()]} | {:error, term()}
+
+  @doc """
   The Worker a Task takes when the Router names none. `scope` carries
   `tenant_id` and `group_id`.
   """
@@ -42,7 +49,55 @@ defmodule SalixIM.Ports.TaskCreate do
   `tenant_id` and `group_id`.
   """
   @callback default_task_model(scope :: map()) :: {:ok, map() | nil} | {:error, term()}
-  @optional_callbacks session_model: 2, runs_on: 2, task_worker: 1, default_task_model: 1
+  @doc """
+  The platform route table (`SalixAgent.PlatformModels.routing/0`), or nil:
+  it chooses the model of a Task that runs Comma's built-in model.
+  """
+  @callback platform_routing() :: map() | nil
+
+  @optional_callbacks session_model: 2,
+                      runs_on: 2,
+                      personal_computers: 1,
+                      task_worker: 1,
+                      default_task_model: 1,
+                      platform_routing: 0,
+                      select_model: 3,
+                      task_status_changed: 1
+  @callback select_model(map(), map(), String.t()) :: {:ok, map(), map()} | {:error, term()}
+
+  @doc """
+  A Task's status was published, with its whole record. The product may learn
+  from how a routed Task ended (`Salix.TaskRoutingLearning`). It queues its own
+  work and returns at once.
+  """
+  @callback task_status_changed(map()) :: :ok
+
+  def task_status_changed(conversation) when is_map(conversation) do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and
+         function_exported?(impl, :task_status_changed, 1),
+       do: impl.task_status_changed(conversation),
+       else: :ok
+  end
+
+  def select_model(context, policy, content) do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and function_exported?(impl, :select_model, 3),
+      do: impl.select_model(context, policy, content),
+      else: {:error, :model_selection_unsupported}
+  end
+
+  @spec personal_computers(map()) :: {:ok, [map()]} | {:error, term()}
+  def personal_computers(scope) when is_map(scope) do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and
+         function_exported?(impl, :personal_computers, 1),
+       do: impl.personal_computers(scope),
+       else: {:ok, []}
+  end
 
   @spec task_worker(map()) :: {:ok, String.t()} | {:error, term()}
   def task_worker(scope) when is_map(scope) do
@@ -61,6 +116,15 @@ defmodule SalixIM.Ports.TaskCreate do
          function_exported?(impl, :default_task_model, 1),
        do: impl.default_task_model(scope),
        else: {:ok, nil}
+  end
+
+  @spec platform_routing() :: map() | nil
+  def platform_routing do
+    impl = impl()
+
+    if SystemsRuntime.Proc.ensure_loaded?(impl) and function_exported?(impl, :platform_routing, 0),
+      do: impl.platform_routing(),
+      else: nil
   end
 
   @spec session_model(map(), map()) :: {:ok, map()} | {:error, term()}

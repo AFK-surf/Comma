@@ -11,7 +11,10 @@ defmodule SalixStore.PersonalMeshProto do
     AuthorityDescriptor,
     EndpointObservation,
     MembershipCredential,
-    MeshCommitResponse,
+    CreateMeshResponse,
+    CommitJoinResponse,
+    CommitRevokeResponse,
+    GetSnapshotResponse,
     MeshMembership,
     MeshSnapshot,
     MeshTombstone,
@@ -51,9 +54,18 @@ defmodule SalixStore.PersonalMeshProto do
     }
   end
 
-  def encode_commit_response(snapshot) do
-    decoded = Agentvmm.Trust.V1.MeshSnapshot.decode(encode_snapshot(snapshot).snapshot)
-    Protobuf.encode(%MeshCommitResponse{snapshot: decoded})
+  def encode_registry_response(snapshot, kind) do
+    decoded = MeshSnapshot.decode(encode_snapshot(snapshot).snapshot)
+
+    module =
+      case kind do
+        :create -> CreateMeshResponse
+        :join -> CommitJoinResponse
+        :revoke -> CommitRevokeResponse
+        :snapshot -> GetSnapshotResponse
+      end
+
+    Protobuf.encode(struct!(module, snapshot: decoded))
   end
 
   def encode_endpoint_response(snapshot) do

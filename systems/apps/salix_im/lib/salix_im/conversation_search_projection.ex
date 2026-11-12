@@ -15,25 +15,6 @@ defmodule SalixIM.ConversationSearchProjection do
 
   @group_page_limit 100
 
-  @spec schedule_rebuild(String.t(), String.t()) :: :ok | {:error, :full | :unavailable}
-  def schedule_rebuild(group_id, conversation_id),
-    do: SalixIM.ConversationSearchEnqueuer.submit(:rebuild, group_id, conversation_id)
-
-  @spec schedule_message(String.t(), String.t(), String.t(), pos_integer()) ::
-          :ok | {:error, :full | :unavailable}
-  def schedule_message(group_id, conversation_id, message_id, seq),
-    do:
-      SalixIM.ConversationSearchEnqueuer.submit_message(
-        group_id,
-        conversation_id,
-        message_id,
-        seq
-      )
-
-  @spec schedule_delete(String.t(), String.t()) :: :ok | {:error, :full | :unavailable}
-  def schedule_delete(group_id, conversation_id),
-    do: SalixIM.ConversationSearchEnqueuer.submit(:delete, group_id, conversation_id)
-
   @spec process_claim(ConversationSearch.claim()) :: :ok | {:error, term()}
   def process_claim(%{operation: :delete} = claim), do: ConversationSearch.apply_delete(claim)
 
@@ -45,7 +26,7 @@ defmodule SalixIM.ConversationSearchProjection do
       {:ok, %{"kind" => "agent_task"} = conversation} ->
         apply_exact_message(claim, conversation)
 
-      {:ok, %{"kind" => "user_chat"}} ->
+      {:ok, %{"kind" => kind}} when is_binary(kind) and kind != "" ->
         ConversationSearch.apply_non_task(claim)
 
       {:ok, _invalid} ->
@@ -126,7 +107,7 @@ defmodule SalixIM.ConversationSearchProjection do
         snapshot = snapshot(conversation)
         rebuild_task(claim, conversation, snapshot)
 
-      {:ok, %{"kind" => "user_chat"}} ->
+      {:ok, %{"kind" => kind}} when is_binary(kind) and kind != "" ->
         ConversationSearch.apply_non_task(claim)
 
       {:ok, _invalid} ->

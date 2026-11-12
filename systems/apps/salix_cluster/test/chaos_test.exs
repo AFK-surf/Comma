@@ -40,7 +40,6 @@ defmodule SalixCluster.ChaosTest do
   # ---- S3 blackhole: leadership fails closed ----
 
   describe "S3 blackhole — singleton lease fails closed" do
-
     test "a second acquirer cannot win while the holder is valid and the store is blackholed" do
       assert {:ok, _token_a} = S3Lease.acquire(:recovery, "node-a", now: 1_000, ttl_ms: 30_000)
 
@@ -56,7 +55,14 @@ defmodule SalixCluster.ChaosTest do
 
     test "the Recovery GenServer does not sweep when it cannot hold the lease", %{agent: a} do
       # Stage a stranded queued agent that a leader WOULD re-home.
-      {:ok, owned} = Agent.create(a, "creator", @sm)
+      config = %{
+        "agent_id" => a,
+        "tenant_id" => SalixStore.Ids.tenant_id_from_agent!(a),
+        "group_id" => SalixStore.Ids.group_id_from_agent!(a),
+        "role" => "worker"
+      }
+
+      {:ok, owned} = Agent.create(a, "creator", @sm, config: config)
       :ok = Agent.release(owned)
 
       # Blackhole every singleton PUT so the recovery GenServer can never acquire

@@ -33,7 +33,7 @@ const imageTypeByExtension: Record<string, string> = {
 };
 
 /** The type an audio, video or image attachment is read as: the one it declares, else its name's. */
-function streamMediaType(
+export function streamMediaType(
   source: ConversationFileSource,
   kind: "audio" | "video" | "image"
 ) {
@@ -49,8 +49,18 @@ export function FilePreviewPanel({
   panelId,
   onOpenBrowser,
   onAttachFiles,
+  annotationContext,
   onAttachConversationFiles,
 }: {
+  annotationContext?:
+    | {
+        scope: string;
+        onSend: (
+          text: string,
+          files?: { bytes: Uint8Array; name: string; size: number }[]
+        ) => void;
+      }
+    | undefined;
   source: ConversationFileSource;
   panelId: string;
   onOpenBrowser: (url: string) => void;
@@ -182,6 +192,19 @@ export function FilePreviewPanel({
   );
   return (
     <SharedFilePreviewPanel
+      annotationContext={
+        annotationContext
+          ? {
+              storageKey: `comma:artifact-notes:${annotationContext.scope}:${key}`,
+              onSend: (text) => annotationContext.onSend(`Attachment: ${key}\n${text}`),
+            }
+          : undefined
+      }
+      requestEdits={
+        annotationContext
+          ? { reference: key, send: annotationContext.onSend }
+          : undefined
+      }
       fileName={source.fileName}
       mimeType={source.mimeType}
       blob={state.blob}

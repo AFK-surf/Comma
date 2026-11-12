@@ -56,7 +56,7 @@ defmodule SalixAgent.InternalAgentRuntimeStatusTest do
     configure_worker_model!("claude-opus-5")
 
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent_id, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id},
         %{
           "type" => "delivery",

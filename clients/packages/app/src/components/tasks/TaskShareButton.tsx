@@ -19,7 +19,7 @@ import {
 import { Tooltip } from "@comma/ui/components/tooltip";
 import { cx } from "@comma/ui/components/utils";
 import { spacing } from "@comma/ui/tokens";
-import { toast } from "@comma/ui/components/toast";
+import { copyWithFeedback, toast } from "@comma/ui/components/toast";
 import { useCall, useTopic, type TaskShare } from "@comma/core-client";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
@@ -159,17 +159,12 @@ function TaskShareDialog({
     // Clearing first makes a repeat copy confirm again: the button label
     // flips back, and the shared toast id replaces any earlier result.
     setCopiedUrl(undefined);
-    try {
-      await copyTextToClipboard(url);
-      setCopiedUrl(url);
-      toast.success(messages.task_share_copied(), { id: SHARE_TOAST_ID });
-    } catch {
-      if (!reportFailure) return;
-      toast.error(messages.copy_failed_title(), {
-        description: messages.copy_failed_detail(),
-        id: SHARE_TOAST_ID,
-      });
-    }
+    const copied = await copyWithFeedback(() => copyTextToClipboard(url), messages, {
+      copied: messages.task_share_copied(),
+      id: SHARE_TOAST_ID,
+      reportFailure,
+    });
+    if (copied) setCopiedUrl(url);
   };
 
   const publish = () => run(() => call("taskShare.publish", target));

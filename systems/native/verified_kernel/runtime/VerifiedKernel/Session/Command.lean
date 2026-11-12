@@ -2,6 +2,7 @@ import VerifiedKernel.Session.Query.Round
 import VerifiedKernel.Session.Query.Repair
 import VerifiedKernel.Session.Query.Materialize
 import VerifiedKernel.Session.Recovery
+import VerifiedKernel.Session.StorageDelta
 
 namespace VerifiedKernel.Session.Command
 open Data
@@ -344,24 +345,7 @@ def inputEvents (entry : Term) : KernelM (List Term) := do
   return events.map (fun event => timestampLifecycle event now)
 
 /-- Use the identity writers' key rules, including context and transcript records. -/
-def inputIdentityGroups (event : Term) : KernelM (List (List Term)) := do
-  let kind := event.get (b "type")
-  if kind == b "queue_append" then
-    let payload ← stringify ((event.get (b "payload")).default empty)
-    return [← queueKeys event payload (event.get (b "kind"))]
-  if kind == b "runtime_message" then
-    if event.get (b "from_queue") != a "true" && event.get (b "from_context_provider") != a "true" then return []
-    return [← runtimeKeys event]
-  if kind == b "delivery" then
-    if event.get (b "from_queue") != a "true" then return []
-    return [uniq ([event.get (b "source_message_id"), event.get (b "dedupe_key")].filter (· != nil))]
-  if kind == b "session_log_message" then
-    return [uniq ([event.get (b "source_message_id"), event.get (b "dedupe_key")].filter (!missing ·))]
-  if kind == b "transcript_seed" then
-    enumFold ((event.get (b "entries")).default (list [])) [] (fun groups raw => do
-      let entry ← stringify raw
-      return (← seedKeys entry) :: groups)
-  else pure []
+abbrev inputIdentityGroups := StorageDelta.identityGroups
 
 /-- Identity aliases must not let one input in a batch suppress another input. -/
 def inputIdentitiesDistinct (events : List Term) : KernelM Bool := do
@@ -474,12 +458,29 @@ def conversationInput (state args : Term) : KernelM Term := do
       commitInput state entry [] false
     else do
       let result ← input state args
-      if isDuplicateInput result then commitInput state entry [] false else pure result
+      if isDuplicateInput result then pure (writeInput (list []) false) else pure result
   return withConversationFrontier progress result
 
-/-- Direct-log admission returns working state, never a durable acknowledgment.
-The owner must fence this revision, normally together with activation, before
-advancing its source cursor. Generic input retains its durable acknowledgment. -/
+def inputSourceKeys (entry : Term) : KernelM (List Term) := do
+  let source := value entry "source_message_id"
+  let normalized ← if source.isMap || source.isList then stringify source else pure source
+  return uniq ([source, normalized].filter (!missing ·))
+
+def plannedInputEvents : Term → List Term
+  | .tuple [.atom "perform", .tuple [.atom "write", .list events, _], _] => events
+  | .tuple [.atom "perform", .tuple [.atom "workspace", _, _, _, _],
+      .tuple [.binary phase, .list events, _]] =>
+    if phase == "input_workspace".toUTF8 then events else []
+  | _ => []
+
+/-- PG requests identities lazily. The existing command makes the sole envelope
+admission decision before any attached body's identities are read. -/
+def pgInput (_state args : Term) : KernelM Term := do
+  let .tuple [entry, _, _] := args | fail "function_clause"
+  let keys ← inputSourceKeys entry
+  return perform (.tuple [a "input_dedupe", list keys])
+    (.tuple [b "pg_input_source", args, list keys])
+
 def stageConversationResult (result : Term) : Term :=
   match result with
   | .tuple [.atom "perform", request@(.tuple [.atom "write", events, _]),
@@ -493,10 +494,25 @@ def stageConversationResult (result : Term) : Term :=
     else result
   | _ => result
 
+def pgInputSource (state args sourceKeys : Term) : KernelM Term := do
+  let .tuple [entry, born, command] := args | fail "function_clause"
+  let planned ← if command == a "conversation_input" || command == a "stage_conversation" then conversationInput state (.tuple [entry, born])
+    else input state (.tuple [entry, born])
+  let groups ← (plannedInputEvents planned).mapM StorageDelta.identityGroups
+  let planned := if command == a "stage_conversation" then stageConversationResult planned else planned
+  let queried := wrap sourceKeys
+  let keys := (uniq groups.flatten.flatten).filter (fun key => !queried.contains key)
+  if keys.isEmpty then return planned
+  return perform (.tuple [a "input_dedupe", list keys]) (.tuple [b "pg_input_ready", planned])
+
+/-- Direct-log admission returns working state, never a durable acknowledgment.
+The owner must fence this revision, normally together with activation, before
+advancing its source cursor. Generic input retains its durable acknowledgment. -/
 def resumeCommitted (state args : Term) : KernelM Term := do
   let .tuple [continuation, result] := args | fail "function_clause"
   match continuation with
   | .tuple [.binary phase, args, candidate] =>
+    if phase == "pg_input_source".toUTF8 then return ← pgInputSource state args candidate
     if phase == "input_workspace".toUTF8 then
       return if result == a "ok" then writeInput args candidate.truthy else finish result
     if phase == "activation_authorized".toUTF8 then
@@ -523,6 +539,7 @@ def resumeCommitted (state args : Term) : KernelM Term := do
       | _ => fail "invalid_observation"
     fail "invalid_observation"
   | .tuple [.binary phase, events] =>
+    if phase == "pg_input_ready".toUTF8 then return events
     if phase == "recovered".toUTF8 then
       match result with
       | .atom "ok" =>
@@ -565,6 +582,7 @@ def resume (state args : Term) : KernelM Term := do
 def start (state args : Term) : KernelM Term := do
   let .tuple [command, args, checkpoint] := args | fail "function_clause"
   if command == a "input" then input state args
+  else if command == a "pg_input" then pgInput state args
   else if command == a "conversation_input" then conversationInput state args
   else if command == a "stage_conversation" then
     return stageConversationResult (← conversationInput state args)

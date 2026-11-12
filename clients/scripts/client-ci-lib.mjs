@@ -29,21 +29,21 @@ export function isClientCiPath(path) {
   return (
     exactClientFiles.has(path) ||
     (path.startsWith("clients/") && !path.startsWith(androidRoot)) ||
-    path.startsWith("systems/connector/salix-connect/") ||
+    path.startsWith("systems/station/computer-use/") ||
     // How every macOS client job installs its dependencies and caches.
     path.startsWith(".github/actions/setup-macos-cache/")
   );
 }
 
-const connectorRoot = "systems/connector/salix-connect/";
+const helperRoot = "systems/station/computer-use/";
 
 export function isComputerUseCiPath(path) {
   return (
-    path.startsWith(`${connectorRoot}native/macos/ComputerUseHost/`) ||
-    path.startsWith(`${connectorRoot}native/macos/patches/permission-flow-`) ||
-    path === `${connectorRoot}scripts/package-computer-use-helper.sh` ||
-    path === `${connectorRoot}scripts/test_packaged_computer_use.py` ||
-    path === `${connectorRoot}scripts/fixtures/permission_flow_panel.swift` ||
+    path.startsWith(`${helperRoot}native/macos/ComputerUseHost/`) ||
+    path.startsWith(`${helperRoot}native/macos/patches/permission-flow-`) ||
+    path === `${helperRoot}scripts/package-computer-use-helper.sh` ||
+    path === `${helperRoot}scripts/test_packaged_computer_use.py` ||
+    path === `${helperRoot}scripts/fixtures/permission_flow_panel.swift` ||
     path === "clients/apps/electron/e2e/computer-use-permissions.spec.ts"
   );
 }
@@ -165,6 +165,8 @@ export function androidCiChanged(paths) {
 export function clientBuildChanged(paths) {
   return paths.some((path) => {
     if (path.startsWith(".github/actions/r2-artifact/")) return true;
+    // How the Electron build gets the station's native parts.
+    if (path.startsWith(".github/actions/station-native/")) return true;
     if (!isClientCiPath(path)) return false;
     if (!path.startsWith("clients/")) return true;
     return !(

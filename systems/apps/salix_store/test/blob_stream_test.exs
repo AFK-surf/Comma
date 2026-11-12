@@ -53,6 +53,33 @@ defmodule SalixStore.BlobStreamTest do
     assert Blob.read_range("agt_test", ref, 10, 4) == {:ok, ""}
   end
 
+  test "a body sent in parts, each a request of its own, is stored whole for its agent only" do
+    part_size = Blob.upload_part_size()
+    first = :binary.copy("a", part_size)
+    body = first <> "tail"
+
+    {:ok, upload} = Blob.begin_parts("agt_test", byte_size(body))
+
+    assert Blob.put_part("agt_other", upload, 1, first) == {:error, :not_found}
+    assert Blob.put_part("agt_test", upload, 2, "tai") == {:error, :invalid_part}
+    assert Blob.put_part("agt_test", upload, 3, "tail") == {:error, :invalid_part}
+    assert {:ok, last} = Blob.put_part("agt_test", upload, 2, "tail")
+    assert {:ok, head} = Blob.put_part("agt_test", upload, 1, first)
+    assert Blob.finish_parts("agt_test", upload, [head]) == {:error, :upload_incomplete}
+
+    assert {:ok, ref} = Blob.finish_parts("agt_test", upload, [head, last])
+    assert ref.size == byte_size(body)
+    assert ref.hash == SalixStore.Crypto.hex(body)
+    {:ok, stream, _size} = Blob.stream("agt_test", ref)
+    assert IO.iodata_to_binary(Enum.to_list(stream)) == body
+    assert S3.Fake.pending_multipart_uploads() == 0
+
+    # Still a preparation the sweeper owns until a manifest commits it.
+    {:ok, %{body: intent}} = S3.get(SalixStore.Keys.prepared_blob_cleanup(ref.uuid))
+    assert %{"status" => "prepared", "upload_id" => nil} = Jason.decode!(intent)
+    assert Blob.put_part("agt_test", upload, 2, "tail") == {:error, :not_found}
+  end
+
   test "an enumerable exception aborts the latest multipart upload state" do
     first_part = String.duplicate("x", 5 * 1024 * 1024)
 

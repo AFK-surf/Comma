@@ -108,7 +108,6 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
   setup do
     previous = %{
       mod: SystemsRuntime.get_env(:salix_meet, :calendar_enrollment_mod),
-      channels: SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels),
       s3: SystemsRuntime.get_env(:salix_store, :s3_backend)
     }
 
@@ -124,7 +123,6 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
 
     on_exit(fn ->
       restore(:calendar_enrollment_mod, previous.mod)
-      restore(:calendar_autojoin_channels, previous.channels)
       SystemsRuntime.put_env(:salix_store, :s3_backend, previous.s3)
       SystemsRuntime.delete_env(:salix_meet, :test_enrollment_map)
       SystemsRuntime.delete_env(:salix_meet, :test_enrollment_fail)
@@ -145,13 +143,12 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
       "slack-c" => resolved_group("slack-c", "grp1_y", "C3")
     })
 
-    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [
-      channel("slack-a"),
-      channel("slack-b"),
-      channel("slack-c")
-    ])
+    group_ids =
+      [channel("slack-a"), channel("slack-b"), channel("slack-c")]
+      |> CalendarAutojoin.enabled_groups()
+      |> Enum.map(& &1["group_id"])
+      |> Enum.sort()
 
-    group_ids = CalendarAutojoin.enabled_groups() |> Enum.map(& &1["group_id"]) |> Enum.sort()
     assert group_ids == ["grp1_y"]
   end
 
@@ -183,6 +180,36 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
     on_exit(fn -> stop_server(pid) end)
     assert %{groups: []} = :sys.get_state(pid, :infinity)
     settle_refute_receive({:calendar_enrollment_identity_resolved, _pid}, 50)
+  end
+
+  test "a slow enrollment, also the first one after taking the lease, does not hold up join passes" do
+    SystemsRuntime.put_env(:salix_meet, :test_enrollment_listener, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_meet, :test_enrollment_block_target, "slack-a")
+
+    SystemsRuntime.put_env(:salix_meet, :test_enrollment_map, %{
+      "slack-a" => resolved_group("slack-a", "grp1_x", "C1")
+    })
+
+    {:ok, pid} =
+      CalendarAutojoin.start_link(
+        name: :"caj_async_enroll_#{SystemsRuntime.Proc.unique_integer([:positive])}",
+        channels: [channel("slack-a")],
+        scan_interval_ms: 3_600_000,
+        join_interval_ms: 3_600_000,
+        node: "async-node"
+      )
+
+    on_exit(fn -> stop_server(pid) end)
+
+    # The first scan takes the lease and enrolls in a task, which blocks.
+    settle_receive({:calendar_enrollment_target_waiting, waiter, "slack-a"})
+
+    SystemsRuntime.Proc.send(pid, :join_tick)
+
+    assert %{enrollment: %{}, groups: [], lease: %SalixStore.Lease{}} =
+             :sys.get_state(pid, :infinity)
+
+    SystemsRuntime.Proc.send(waiter, {:continue_calendar_enrollment_target, "slack-a"})
   end
 
   test "lease loss during target resolution discards stale cache writes" do
@@ -219,7 +246,8 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
 
     on_exit(fn -> stop_server(pid) end)
 
-    settle_receive({:calendar_enrollment_target_waiting, ^pid, "slack-a"})
+    # Enrollment resolves in a task of the worker.
+    settle_receive({:calendar_enrollment_target_waiting, waiter, "slack-a"})
 
     assert {:ok, %{epoch: 2} = replacement_lease} =
              SalixStore.Lease.acquire(
@@ -247,8 +275,8 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
                SystemsClock.system_time(:millisecond)
              )
 
-    SystemsRuntime.Proc.send(pid, {:continue_calendar_enrollment_target, "slack-a"})
-    assert %{lease: nil, groups: [], resolved: %{}} = :sys.get_state(pid, :infinity)
+    SystemsRuntime.Proc.send(waiter, {:continue_calendar_enrollment_target, "slack-a"})
+    assert %{lease: nil, groups: [], resolved: %{}} = enrolled(pid)
 
     assert {:ok, %{group: %{"channel_id" => "C2"}}} =
              SalixMeet.CalendarEnrollmentCache.load(put_entry, put_identity)
@@ -274,8 +302,7 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
         Keyword.put(opts, :name, :"caj_first_#{SystemsRuntime.Proc.unique_integer([:positive])}")
       )
 
-    assert %{groups: [%{"group_id" => "grp1_x", "channel_id" => "C1"}]} =
-             :sys.get_state(first, :infinity)
+    assert %{groups: [%{"group_id" => "grp1_x", "channel_id" => "C1"}]} = enrolled(first)
 
     [persisted] =
       SalixStore.S3.Fake.dump()
@@ -304,8 +331,7 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
 
     on_exit(fn -> stop_server(restarted) end)
 
-    assert %{groups: [%{"group_id" => "grp1_x", "channel_id" => "C1"}]} =
-             :sys.get_state(restarted, :infinity)
+    assert %{groups: [%{"group_id" => "grp1_x", "channel_id" => "C1"}]} = enrolled(restarted)
   end
 
   test "invalidates a persisted enrollment when its Slack connect becomes inactive" do
@@ -325,7 +351,7 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
         Keyword.put(opts, :name, :"caj_active_#{SystemsRuntime.Proc.unique_integer([:positive])}")
       )
 
-    assert %{groups: [%{"group_id" => "grp1_x"}]} = :sys.get_state(first, :infinity)
+    assert %{groups: [%{"group_id" => "grp1_x"}]} = enrolled(first)
     GenServer.stop(first)
 
     SystemsRuntime.put_env(:salix_meet, :test_enrollment_map, %{})
@@ -341,7 +367,7 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
 
     on_exit(fn -> stop_server(restarted) end)
 
-    assert %{groups: []} = :sys.get_state(restarted, :infinity)
+    assert %{groups: []} = enrolled(restarted)
 
     refute Enum.any?(SalixStore.S3.Fake.dump(), fn {key, _} ->
              String.starts_with?(key, SalixStore.Keys.ctl_meet_calendar_enrollments_prefix())
@@ -383,4 +409,11 @@ defmodule SalixMeet.CalendarAutojoinEnrollmentTest do
 
   defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_meet, key)
   defp restore(key, value), do: SystemsRuntime.put_env(:salix_meet, key, value)
+
+  # The worker enrolls in a task; this returns its state once the task's
+  # result has been applied.
+  defp enrolled(pid) do
+    settle_until(fn -> :sys.get_state(pid, :infinity).enrollment == nil end)
+    :sys.get_state(pid, :infinity)
+  end
 end

@@ -40,7 +40,7 @@ defmodule Salix.Bindings.MeetingCalendarStatusTest do
              })
 
     assert {:ok, _} =
-             CasRecord.create(Keys.ctl_agent(agent_id), %{
+             SalixStore.AgentPGStore.create(agent_id, to_string(node()), SalixAgent.State, %{
                "tenant_id" => tenant_id,
                "group_id" => group_id,
                "agent_id" => agent_id,

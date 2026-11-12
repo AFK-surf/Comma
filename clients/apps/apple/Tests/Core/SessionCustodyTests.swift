@@ -63,4 +63,36 @@ final class SessionCustodyTests: XCTestCase {
         custody.gate(signedIn(authority, revision: 2, generation: 1), lease: lease)
         XCTAssertNil(custody.acquire(lease))
     }
+
+    /// Another account is kept beside the one in use, read again from the record, and switched to without signing in.
+    func testAnotherAccountIsKeptAndSwitchedToWithoutSigningInAgain() throws {
+        let record = MemoryRecord()
+        let custody = try SessionCustody(record: record, apiOrigin: origin)
+        XCTAssertTrue(custody.adoptEarlier(StoredBearer(token: "bearer-1", audience: custody.audience, sessionId: session,
+                                                        userId: "user-1", email: "one@example.com",
+                                                        expiresAtEpochSeconds: 4_102_444_800)))
+        let kept = try XCTUnwrap(try custody.change(["kind": "keep"]) as? [String: Any])
+        XCTAssertTrue(kept["active"] is NSNull)
+
+        let answer: [String: Any] = ["token": "bearer-2", "session_id": "session-2", "expires_at": 4_102_444_800,
+                                     "user": ["id": "user-2", "email": "two@example.com"]]
+        let body = custody.keepBearer(try JSONSerialization.data(withJSONObject: answer), request: 1)
+        let issued = try XCTUnwrap((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["credential"] as? String)
+        let committed = try XCTUnwrap(try custody.change(["kind": "commit", "issued": issued, "supersede": [String]()]) as? [String: Any])
+        XCTAssertEqual((committed["active"] as? [String: Any])?["userId"] as? String, "user-2")
+        XCTAssertEqual((committed["pending"] as? [Any])?.count, 0)
+
+        let again = try SessionCustody(record: record, apiOrigin: origin)
+        let stored = again.vault()
+        let ref = try XCTUnwrap(((stored["kept"] as? [[String: Any]])?.first)?["ref"] as? String)
+        let switched = try XCTUnwrap(try again.change(["kind": "activate", "kept": ref]) as? [String: Any])
+        let active = try XCTUnwrap(switched["active"] as? [String: Any])
+        XCTAssertEqual(active["userId"] as? String, "user-1")
+        XCTAssertEqual(again.tokenFor(try XCTUnwrap(active["ref"] as? String)), "bearer-1")
+        let other = try XCTUnwrap(((switched["kept"] as? [[String: Any]])?.first)?["ref"] as? String)
+
+        let forgotten = try XCTUnwrap(try again.change(["kind": "forget", "kept": other]) as? [String: Any])
+        XCTAssertNil(forgotten["kept"])
+        XCTAssertEqual((forgotten["pending"] as? [Any])?.count, 1)
+    }
 }

@@ -1,10 +1,6 @@
-FROM golang:1.26.10-bookworm AS connector-builder
-
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . ./
-RUN CGO_ENABLED=0 go build -trimpath -o /out/salix-connect .
+# The build context is the station release (systems/station/scripts/bundle.sh)
+# for Linux on the Docker host's architecture.
+FROM golang:1.26.10-bookworm AS go-toolchain
 
 FROM python:3.11-slim
 
@@ -23,8 +19,8 @@ RUN npm install --global \
     dompurify@3.0 ejs@3.1 express@4.18 jsdom@24 ts-node@10.9 typescript@5
 
 RUN useradd -m -u 10001 agent
-COPY --from=connector-builder /out/salix-connect /usr/local/bin/salix-connect
-COPY --from=connector-builder /usr/local/go /usr/local/go
+COPY . /opt/comma-station
+COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 ENV NODE_PATH="/usr/local/lib/node_modules"
 ENV NPM_CONFIG_OFFLINE="true"
@@ -33,5 +29,5 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 
 USER agent
 WORKDIR /workspace
-ENTRYPOINT ["/usr/local/bin/salix-connect"]
+ENTRYPOINT ["/opt/comma-station/mesh/target/release/comma-station", "run", "--app", "/opt/comma-station", "--data", "/tmp/comma-station", "--"]
 CMD ["--config", "/run/secrets/salix-connector.json"]

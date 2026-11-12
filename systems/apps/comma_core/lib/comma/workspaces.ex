@@ -3,8 +3,6 @@ defmodule Comma.Workspaces do
 
   import Ecto.Query
 
-  require Logger
-
   alias Comma.Accounts.User
   alias Comma.Data.{Workspace, WorkspaceMembership}
   alias Comma.Operations
@@ -20,11 +18,6 @@ defmodule Comma.Workspaces do
   def create_for_user(user_id, attrs \\ %{}) do
     id = attrs["workspace_id"] || attrs[:workspace_id] || new_id("wsp")
     vm = Map.get(attrs, "vm", Map.get(attrs, :vm))
-
-    vm =
-      if is_nil(vm),
-        do: %{"enabled" => not SystemsRuntime.get_env(:comma_core, :selfhost, false)},
-        else: vm
 
     with :ok <- reject_salix_identity(attrs),
          {:ok, vm} <- normalize_vm(vm, allow_recreate?: false) do
@@ -81,7 +74,6 @@ defmodule Comma.Workspaces do
       "default_group_id" => group_id,
       "router_agent_id" => Ids.new_agent_id(group_id),
       "default_worker_agent_id" => nil,
-      "vm" => %{"enabled" => false},
       "created_at" => unix_time(SystemsClock.utc_now()),
       "updated_at" => unix_time(SystemsClock.utc_now())
     }
@@ -142,24 +134,14 @@ defmodule Comma.Workspaces do
   def get_by_group(_group_id), do: {:error, :not_found}
 
   @doc """
-  After the rollout that moved the Cloud VM switch onto the Group (the
-  release's post-rollout job, `Comma.Release`): sets the Group switch of at
-  most 100 provisioned Workspaces after `after_id` (nil: the first) from the
-  Workspace's `vm.enabled`, through the same path as a VM change. A change a
-  server of the release before wrote only onto Agents is kept that way. The
-  Workspace row stays locked while its switch is written, so a VM change made
-  meanwhile lands after it. A Workspace without `vm` keeps the switch Salix
-  derived from its Agents. A switch Salix refuses for good (a Group with no
-  Cloud VM or no VM provider, or one that is gone) is logged and left as it
-  is; any other error fails the page, which runs again. Answers the cursor of
-  the next page (nil: done).
+  Requeues at most 100 failed Workspace provisions after rollout. Each retry
+  uses a new convergence generation and preserves the prior operation and all
+  provider identities. Core provisioning must succeed before readiness.
   """
-  def converge_group_cloud_vm_page(after_id) do
+  def retry_failed_provisioning_page(after_id) do
     ids =
       from(workspace in Workspace,
-        where:
-          workspace.status in ["active", "suspended"] and not is_nil(workspace.salix_group_id) and
-            not is_nil(workspace.salix_tenant_id),
+        where: workspace.status == "provisioning_failed",
         order_by: [asc: workspace.id],
         limit: 100,
         select: workspace.id
@@ -171,60 +153,47 @@ defmodule Comma.Workspaces do
 
     with :ok <-
            Enum.reduce_while(ids, :ok, fn id, :ok ->
-             case converge_group_cloud_vm(id) do
+             case retry_failed_provisioning(id) do
                :ok -> {:cont, :ok}
                {:error, reason} -> {:halt, {:error, {:workspace, id, reason}}}
              end
            end) do
-      next = if length(ids) == 100, do: List.last(ids)
-      {:ok, %{processed: length(ids), next_cursor: next}}
+      {:ok, %{processed: length(ids), next_cursor: if(length(ids) == 100, do: List.last(ids))}}
     end
   end
 
-  defp converge_group_cloud_vm(id) do
-    {:ok, result} =
-      Repo.transaction(fn ->
-        case Repo.one(
-               from(workspace in Workspace, where: workspace.id == ^id, lock: "FOR UPDATE")
-             ) do
-          %Workspace{vm: vm} = workspace when is_map(vm) ->
-            Comma.Salix.Client.impl().update_workspace_vm(
-              %{
-                "id" => workspace.id,
-                "salix_tenant_id" => workspace.salix_tenant_id,
-                "default_group_id" => workspace.salix_group_id,
-                "vm" => vm
-              },
-              vm
-            )
+  defp retry_failed_provisioning(id) do
+    Multi.new()
+    |> Multi.run(:locked_workspace, fn repo, _changes ->
+      {:ok,
+       repo.one(from(workspace in Workspace, where: workspace.id == ^id, lock: "FOR UPDATE"))}
+    end)
+    |> Multi.merge(fn %{locked_workspace: workspace} ->
+      if match?(%Workspace{status: "provisioning_failed"}, workspace) and
+           match?(%User{status: "active"}, Repo.get(User, workspace.owner_user_id)) and
+           active_owner?(workspace, workspace.owner_user_id) do
+        generation = workspace.lock_version + 1
+        operation_id = convergence_operation_id(id, generation)
 
-          _no_vm ->
-            :ok
-        end
-      end)
-
-    case result do
-      {:error, reason} = error ->
-        if salix_refuses_group_cloud_vm?(reason) do
-          Logger.warning(
-            "workspace Cloud VM switch left as it is: workspace=#{id} reason=#{inspect(reason)}"
-          )
-
-          :ok
-        else
-          error
-        end
-
-      _ok ->
-        :ok
+        Multi.new()
+        |> Multi.update(
+          :workspace,
+          Ecto.Changeset.change(workspace, status: "provisioning", lock_version: generation)
+        )
+        |> Operations.create_with_job(
+          convergence_operation_attrs(id, generation),
+          Comma.Workers.WorkspaceConvergence.new(%{"operation_id" => operation_id})
+        )
+      else
+        Multi.new()
+      end
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, _changes} -> :ok
+      {:error, _step, reason, _changes} -> {:error, reason}
     end
   end
-
-  # Salix answers the same whenever it is asked again: it refuses the switch
-  # (`Salix.Control.Groups.update/3`), or the Group is gone.
-  defp salix_refuses_group_cloud_vm?({:bad_request, _message}), do: true
-  defp salix_refuses_group_cloud_vm?(:not_found), do: true
-  defp salix_refuses_group_cloud_vm?(_reason), do: false
 
   @doc false
   def group_binding_revision(workspace) when is_map(workspace) do
@@ -653,8 +622,10 @@ defmodule Comma.Workspaces do
     vm = stringify(vm)
 
     cond do
-      Map.has_key?(vm, "enabled") and not is_boolean(vm["enabled"]) ->
-        {:error, {:bad_request, "vm.enabled must be boolean"}}
+      Map.has_key?(vm, "enabled") ->
+        {:error,
+         {:bad_request,
+          "vm.enabled is retired: a Group has a Cloud VM unless sandboxes take its place"}}
 
       vm["provider"] not in [nil, "", "cloudflare"] ->
         {:error, {:bad_request, "vm.provider must be cloudflare"}}
@@ -668,7 +639,6 @@ defmodule Comma.Workspaces do
       true ->
         normalized =
           %{}
-          |> put_optional("enabled", vm["enabled"])
           |> put_optional("provider", blank_to_nil(vm["provider"]))
           |> put_optional("recreate", vm["recreate"])
 

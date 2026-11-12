@@ -39,7 +39,10 @@ export const RichEditorMenu = ({
               backLabel: messages.ui_ai_menu_back(),
               group: browseGroup,
               // A row's own choices start unfiltered: the query found the row.
-              initialQuery: browseGroup.browse?.compact ? "" : renderedMenu.query,
+              initialQuery:
+                browseGroup.browse?.compact || browseGroup.browse?.startsUnfiltered
+                  ? ""
+                  : renderedMenu.query,
               onBack: closeBrowse,
               onBlur: handleBrowseBlur,
             }

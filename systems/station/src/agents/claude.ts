@@ -23,7 +23,8 @@ import { wall } from "../ops/fibers.ts";
 
 type Json = any;
 
-const MCP_TOKEN_VAR = "STILLFAIL_MCP_TOKEN";
+const MCP_TOKEN_VAR = "COMMA_STATION_MCP_TOKEN";
+const MCP_URL_VAR = "COMMA_STATION_MCP_URL";
 /// Inherited variables that would let a session authenticate as something other than its profile.
 const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
 
@@ -157,7 +158,7 @@ export class ClaudeDriver implements AgentDriver {
       throw new Error(`no claude transcript for session ${options.resume}`);
     }
     const sessionId = options.resume ?? uuid();
-    const mcpConfig = { mcpServers: { stillfail: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
+    const mcpConfig = { mcpServers: { comma: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
     const model = options.model ?? profileModel(options.profile);
     const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions"];
     if (options.resume !== undefined) args.push("--resume", sessionId);
@@ -171,6 +172,8 @@ export class ClaudeDriver implements AgentDriver {
     const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) };
     env.CLAUDE_CONFIG_DIR = home;
     env[MCP_TOKEN_VAR] = options.mcpToken;
+    // The `comma` command's way to the station (connector/comma-client-cli.ts, its Salix backend).
+    env[MCP_URL_VAR] = options.mcpUrl;
     // Lets the agent name its own transcript, e.g. for an independent reviewer (codex has CODEX_THREAD_ID).
     for (const name of bothNames("RUNTIME_SESSION_ID")) env[name] = sessionId;
     // A machine profile runs on the machine's own login, handed over as its current token (machine_logins.rs).

@@ -1,5 +1,9 @@
 defmodule SalixMeet.PersonalPreparation do
-  @moduledoc "Private report state for the assigned meeting Worker and fixed Slack recipients."
+  @moduledoc """
+  Private report state for the assigned meeting Worker and fixed recipients:
+  Slack users found by their attendee email, or the Feishu/Lark people of the
+  meeting by their open_id.
+  """
 
   alias SalixMeet.MeetingPlan
   alias SalixMeet.Ports.PersonalPreparation, as: Provider
@@ -216,23 +220,34 @@ defmodule SalixMeet.PersonalPreparation do
   def set_preference(group_id, origin, enabled) when is_map(origin) and is_boolean(enabled) do
     context = origin["provider_context"] || %{}
     connect_id = context["connect_id"]
-    user_id = context["user_id"]
+    user_id = requester(origin["provider"], context)
 
-    if origin["provider"] == "slack" and origin["source_actor_type"] == "provider_user" and
+    if origin["source_actor_type"] == "provider_user" and
          origin["agent_group_id"] == group_id and Ids.valid_group_id?(group_id) and
-         is_binary(connect_id) and connect_id != "" and is_binary(user_id) and
-         Regex.match?(~r/^[UW][A-Z0-9]+$/, user_id) do
+         is_binary(connect_id) and connect_id != "" and is_binary(user_id) do
       case Store.set_preference(group_id, connect_id, user_id, enabled) do
         :ok -> {:ok, %{"enabled" => enabled}}
         {:error, _} = error -> error
       end
     else
-      {:error, :personal_preparation_requires_slack_request}
+      {:error, :personal_preparation_requires_provider_request}
     end
   end
 
   def set_preference(_group_id, _origin, _enabled),
-    do: {:error, :personal_preparation_requires_slack_request}
+    do: {:error, :personal_preparation_requires_provider_request}
+
+  # A Slack person is their user id; a Feishu/Lark person is their open_id,
+  # the id their meeting's attendee list names them by.
+  defp requester("slack", %{"user_id" => user_id}) when is_binary(user_id) do
+    if Regex.match?(~r/^[UW][A-Z0-9]+$/, user_id), do: user_id
+  end
+
+  defp requester(provider, %{"sender_open_id" => "ou_" <> _ = open_id})
+       when provider in ["feishu", "lark"],
+       do: open_id
+
+  defp requester(_provider, _context), do: nil
 
   defp source_labels(%{"sources_label" => labels, "declassified" => []})
        when is_list(labels) and length(labels) <= 32,
@@ -244,7 +259,7 @@ defmodule SalixMeet.PersonalPreparation do
     now = Keyword.get(opts, :now, SystemsClock.system_time(:millisecond))
     deadline = get_in(plan, ["preparation", "publish_deadline_at"])
 
-    with true <- get_in(plan, ["publication_target", "provider"]) == "slack",
+    with true <- MeetingPlan.system_track?(plan),
          true <- plan["status"] == "planned" and is_integer(deadline) and now < deadline,
          :ok <- MeetingPlan.validate_report(plan) do
       :ok

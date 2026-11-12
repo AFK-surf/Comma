@@ -124,4 +124,4 @@ export const expandRoute = (env: Record<string, string>, route: string): Record<
 
 /// Both names of a variable the station sets for what it starts (former.rs `both`): the new one, and the old one for
 /// scripts written against it.
-export const bothNames = (name: string): [string, string] => [`STILLFAIL_${name}`, `EMBER_${name}`];
+export const bothNames = (name: string): [string, string] => [`COMMA_STATION_${name}`, `EMBER_${name}`];

@@ -1,6 +1,7 @@
 // What chat's calls share: their params checked, and their errors as the core's.
 import { CoreError } from "@comma/core-kernel";
 import type { z } from "zod";
+import { ChatError } from "./api.ts";
 import { StaleChatSessionError } from "./coordinator/entries/sessionBoundary.ts";
 
 /** A call's params through `schema`, or the call fails as invalid. */
@@ -18,7 +19,7 @@ export function asCoreError(error: unknown): CoreError {
     : error instanceof StaleChatSessionError
       ? new CoreError("session_changed", error.message)
       : new CoreError(
-          "chat_refused",
+          (error instanceof ChatError && error.code) || "chat_refused",
           error instanceof Error ? error.message : String(error),
           (error as { status?: number }).status,
           // What the server said, for a UI that words it (a refused Task run's `reason`).

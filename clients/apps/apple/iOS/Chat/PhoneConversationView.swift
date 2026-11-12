@@ -10,11 +10,13 @@ import CommaCore
 struct PhoneConversationView: View {
     let store: CommaStore
     let pane: ConversationPane
+    var taskActions: TaskDockActions? = nil
     var composerFocus: FocusState<Bool>.Binding? = nil
     @State var previewURL: URL?
     @State var downloading = false
     @State var photos: [PhotosPickerItem] = []
     @State var filePickerOpen = false
+    @State var drivePickerOpen = false
     @State var allPhotosOpen = false
     /// Picked photos or files are still being read, from iCloud or the library.
     @State var preparing = false
@@ -26,6 +28,7 @@ struct PhoneConversationView: View {
     @Environment(AppNavigation.self) private var navigation: AppNavigation?
     /// A Task's conversation under its minimized bar.
     @Environment(\.ambientMotionPaused) private var covered
+    @Environment(\.locale) private var locale
 
     private var focus: FocusState<Bool>.Binding { composerFocus ?? $composerFocused }
 
@@ -55,6 +58,7 @@ struct PhoneConversationView: View {
                     onReplyOpened: { focus.wrappedValue = true })
                 .equatable()
                 .id(pane.target)
+                .id(store.boundaryToken)
             }
         }
         // The full width, so the page's colour is under the loading spinner too and not a column the spinner's width.
@@ -65,21 +69,31 @@ struct PhoneConversationView: View {
             report(failure, fresh: old.revision != failure.revision)
         }
         .onDisappear { store.toasts.withdraw(toastID) }
+        .onChange(of: failure.onScreen, initial: true) { _, visible in pane.setSuggestionsVisible(visible) }
+        .onDisappear { pane.setSuggestionsVisible(false) }
         .overlay(alignment: .top) {
             if downloading { downloadingPill.padding(.top, 8).transition(.opacity) }
         }
         .animation(CommaMotion.stateChange, value: downloading)
-        .floatingBottomBar {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             ConversationComposer(store: store, pane: pane, focus: focus, flight: flight, preparing: preparing,
-                                 button: attachments)
+                                 button: attachments, taskActions: taskActions)
+                .frame(maxWidth: .infinity)
         }
         .coordinateSpace(.chat)
+        .task(id: locale.identifier) { pane.setSuggestionLocale(locale.identifier) }
         .overlay { OutgoingFlightOverlay(controller: flight) }
         .overlay { AttachmentOverlay(button: attachments, actions: attachmentActions) }
         .photosPicker(isPresented: $allPhotosOpen, selection: $photos, maxSelectionCount: max(1, pane.attachmentRoom),
                       matching: .images, preferredItemEncoding: .compatible)
         .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             Task { await uploadFiles(result) }
+        }
+        .sheet(isPresented: $drivePickerOpen) {
+            NavigationStack {
+                PhoneDriveView(model: PhoneDriveModel(store: store, workspace: pane.workspace), pane: pane)
+                    .sheetCloseButton { drivePickerOpen = false }
+            }.commaSheet([.large])
         }
         .quickLookPreview($previewURL)
         .onChange(of: pane.target) { _, _ in previewURL = nil }

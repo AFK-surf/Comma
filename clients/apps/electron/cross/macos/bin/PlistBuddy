@@ -1,0 +1,55 @@
+#!/usr/bin/env node
+const { readFileSync, writeFileSync } = require("node:fs");
+
+const fail = (message) => {
+  console.error(message);
+  process.exit(1);
+};
+
+const args = process.argv.slice(2);
+const commands = [];
+let file;
+for (let index = 0; index < args.length; index += 1) {
+  if (args[index] === "-c") commands.push(args[++index]);
+  else if (!args[index].startsWith("-")) file = args[index];
+}
+if (!file || commands.length === 0) fail('usage: PlistBuddy -c "Set :Key Value" FILE');
+
+const escapeXml = (value) =>
+  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const unescapeXml = (value) =>
+  value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+let xml = readFileSync(file, "utf8");
+if (!xml.startsWith("<?xml"))
+  fail(`PlistBuddy (cross/macos): ${file} is not an XML property list`);
+let changed = false;
+
+for (const command of commands) {
+  const match = /^(Set|Print|Add) :([^: ]+)(?: (.*))?$/s.exec(command);
+  if (!match) fail(`PlistBuddy (cross/macos): unsupported command "${command}"`);
+  const [, operation, key, rest = ""] = match;
+  const entry = new RegExp(
+    `(<key>${escapeRegExp(key)}</key>\\s*<string>)([^<]*)(</string>)`
+  );
+  if (operation === "Print") {
+    const found = entry.exec(xml);
+    if (!found) fail(`Print: Entry, ":${key}", Does Not Exist`);
+    console.log(unescapeXml(found[2]));
+  } else if (operation === "Set") {
+    if (!entry.test(xml)) fail(`Set: Entry, ":${key}", Does Not Exist`);
+    xml = xml.replace(entry, (_, open, _old, close) => open + escapeXml(rest) + close);
+    changed = true;
+  } else {
+    const [type, ...value] = rest.split(" ");
+    if (type !== "string")
+      fail(`PlistBuddy (cross/macos): Add supports only string values`);
+    if (entry.test(xml)) fail(`Add: ":${key}" Entry Already Exists`);
+    const end = xml.lastIndexOf("</dict>");
+    xml = `${xml.slice(0, end)}\t<key>${escapeXml(key)}</key>\n\t<string>${escapeXml(value.join(" "))}</string>\n${xml.slice(end)}`;
+    changed = true;
+  }
+}
+
+if (changed) writeFileSync(file, xml);

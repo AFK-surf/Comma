@@ -78,7 +78,7 @@ theorem raw_ordinary_write_physical {framing : CodecFraming} {objects : Objects}
     (history : PhysicalHistory framing objects owner session cursor.working sealed)
     (batch : RawOrdinaryBatch events)
     (execution : Execution (resident (some cursor.pack) (a "write") (.tuple [list events, hwm])) final) :
-    final.etag = cursor.etag ∧ PhysicalHistory framing objects owner session final.working sealed ∧
+    final.revision = cursor.revision ∧ PhysicalHistory framing objects owner session final.working sealed ∧
       ∀ fact, PhysicalIdentityFact objects cursor.working fact → PhysicalIdentityFact objects final.working fact := by
   obtain ⟨_, _, _, token, _, _, applied⟩ := write_executes execution
   obtain ⟨middle, ordinaryBatch, hwmBatch⟩ := resident_batch_append applied

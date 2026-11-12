@@ -1,9 +1,8 @@
 defmodule SalixAgent.SessionHistory.Worker do
   @moduledoc "Bounded index maintenance outside Session actors and their dependency pools."
   use SystemsRuntime.Server
-  alias SalixAgent.InternalSession
-  alias SalixAgent.SessionHistory.{Hot, Source, Document}
-  alias SalixStore.{S3, Codec, Keys}
+  alias SalixAgent.SessionHistory.{Hot, Source, Document, Scheduler}
+  alias SalixAgent.InternalSessionStore
   @hints __MODULE__.Hints
   @slots 1024
   @visit_batches 32
@@ -12,7 +11,7 @@ defmodule SalixAgent.SessionHistory.Worker do
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   # Admission is non-blocking and bounded. Duplicate hints keep their original
-  # queue position. Overflow is repaired by durable discovery, not chat retries.
+  # queue position. Overflow is covered by the durable pending-target query.
   def hint(agent, session) do
     count = SystemsRuntime.ETS.update_counter(@hints, :count, {2, 1}, {:count, 0})
 
@@ -27,19 +26,12 @@ defmodule SalixAgent.SessionHistory.Worker do
       SystemsRuntime.ETS.update_counter(@hints, :count, {2, -1})
     end
 
+    SystemsRuntime.Server.cast(__MODULE__, :drain)
     :ok
   rescue
     _ -> :ok
   catch
     _, _ -> :ok
-  end
-
-  def take_hint do
-    # This scan is bounded to 1,024 identities and runs only off the chat path.
-    case Enum.min_by(pending_hints(), fn {_, queued_at} -> queued_at end, fn -> nil end) do
-      {key, _} -> take_key(key)
-      nil -> nil
-    end
   end
 
   def pending_hints do
@@ -66,52 +58,78 @@ defmodule SalixAgent.SessionHistory.Worker do
 
   def init(_) do
     SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :tick)
-    {:ok, 0}
+    {:ok, %{cursor: nil, archive_cursor: nil}}
   end
 
-  def handle_info(:tick, n) do
-    safely("session_history_index", fn ->
-      Enum.each(Hot.due(), fn [agent, session] ->
-        if SalixAgent.SessionHistory.Scheduler.maintenance({agent, session}) == :ok do
-          try do
-            index(agent, session)
-          after
-            SalixAgent.SessionHistory.Scheduler.complete()
-          end
-        end
-      end)
-    end)
+  def handle_info(:tick, state) do
+    cursor =
+      case safely("session_history_pending", fn -> Hot.due(state.cursor) end) do
+        {rows, cursor} when is_list(rows) ->
+          Enum.each(rows, fn [agent, session] -> hint(agent, session) end)
+          cursor
 
-    if rem(n, 10) == 0, do: safely("session_history_discovery", &discover/0)
+        _ ->
+          state.cursor
+      end
+
+    archive_cursor =
+      case safely("session_archive_pending", fn ->
+             InternalSessionStore.PG.archive_work_page(state.archive_cursor)
+           end) do
+        {:ok, rows, cursor} ->
+          Enum.each(rows, fn [agent, session] -> hint(agent, session) end)
+          cursor
+
+        _ ->
+          state.archive_cursor
+      end
+
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, 250)
-    {:noreply, n + 1}
+    {:noreply, %{state | cursor: cursor, archive_cursor: archive_cursor}}
+  end
+
+  def handle_cast(:drain, state) do
+    Scheduler.drain()
+    {:noreply, state}
   end
 
   def index(agent, session) do
-    with {:ok, state} <- Source.read(agent, session) do
-      Hot.track(agent, session)
-      recent_state(agent, session, state)
+    position = Hot.state(agent, session)
+    state = %{session_id: session, last_seq: position.target}
+    deadline = SystemsClock.monotonic_time(:millisecond) + @visit_budget_ms
 
-      # A session far behind catches up over several batches per visit, bounded
-      # by count and time so other sessions still get their turn.
-      deadline = SystemsClock.monotonic_time(:millisecond) + @visit_budget_ms
-      repeat(@visit_batches, deadline, fn -> append_batch(agent, session, state) end)
-      repeat(@visit_batches, deadline, fn -> transfer(agent, session) end)
-    end
+    append =
+      if position.indexed < position.target,
+        do: repeat(@visit_batches, deadline, fn -> append_batch(agent, session, state) end),
+        else: :ok
+
+    transfer = repeat(@visit_batches, deadline, fn -> transfer(agent, session) end)
+    archive = InternalSessionStore.archive_pending(agent, session)
+    Enum.find([append, transfer, archive], :ok, &match?({:error, _}, &1))
   end
 
   defp repeat(0, _deadline, _step), do: :ok
 
   defp repeat(left, deadline, step) do
-    if match?({:ok, _}, step.()) and SystemsClock.monotonic_time(:millisecond) < deadline,
-      do: repeat(left - 1, deadline, step),
-      else: :ok
+    case step.() do
+      {:ok, _} ->
+        if SystemsClock.monotonic_time(:millisecond) < deadline,
+          do: repeat(left - 1, deadline, step),
+          else: :ok
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        :ok
+    end
   end
 
   defp append_batch(agent, session, state) do
     position = Hot.state(agent, session)
 
-    with {:ok, [_ | _] = records} <- Source.page(agent, state, position.indexed) do
+    with true <- position.indexed < state.last_seq,
+         {:ok, [_ | _] = records} <- Source.page(agent, state, position.indexed) do
       part = Hot.pending_part(agent, session, position.indexed + 1)
 
       documents =
@@ -130,38 +148,23 @@ defmodule SalixAgent.SessionHistory.Worker do
       # Partial records remain hot. Coverage advances only after their last chunk.
       Hot.append(agent, session, position.indexed, through, batch)
     else
+      false -> :caught_up
       {:ok, []} -> :caught_up
       error -> error
     end
   end
 
-  def recent(agent, session) do
-    with {:ok, state} <- Source.read(agent, session) do
-      Hot.track(agent, session)
-      recent_state(agent, session, state)
-    end
-  end
-
-  defp recent_state(agent, session, state) do
-    with {:ok, tail} <-
-           Source.page(
-             agent,
-             state,
-             max(
-               InternalSession.archived_through(state),
-               InternalSession.get(state, :last_seq) - 32
-             )
-           ) do
-      docs = tail |> Enum.reverse() |> Enum.flat_map(&Document.documents/1) |> Enum.take(128)
-      Hot.recent(agent, session, docs)
-    end
-  end
-
   def transfer(agent, session) do
     with {:ok, {before, through, docs}} when through > before <-
-           Hot.transfer_batch(agent, session),
-         :ok <- confirm(agent, session, docs) do
-      Hot.release(agent, session, before, through)
+           Hot.transfer_batch(agent, session) do
+      case confirm(agent, session, docs) do
+        :ok ->
+          Hot.release(agent, session, before, through)
+
+        {:error, _} = error ->
+          Hot.defer_transfer(agent, session, before)
+          error
+      end
     else
       {:ok, {_before, _through, _docs}} -> :caught_up
       error -> error
@@ -178,37 +181,6 @@ defmodule SalixAgent.SessionHistory.Worker do
         :session_history_cold,
         SalixAnalytics.SessionHistoryIndex
       )
-
-  def discover do
-    cursor = Hot.discovery_cursor()
-    opts = [max_keys: 50] ++ if(cursor, do: [start_after: cursor], else: [])
-
-    with {:ok, %{objects: objects, next: next}} <- S3.list("agents/", opts) do
-      Enum.each(objects, fn %{key: key} ->
-        case Regex.run(
-               ~r{\Aagents/([^/]+)/internal_runtime/sessions/[^/]+/state\.etf\.zst\z},
-               key
-             ) do
-          [_, agent] ->
-            with {:ok, %{body: body}} <- S3.get(key),
-                 {:ok, state} <- InternalSession.load(Codec.snapshot_etf(body)),
-                 session_id = InternalSession.session_id(state),
-                 true <-
-                   InternalSession.agent_id(state) == agent and
-                     key == Keys.agent_internal_runtime_session(agent, session_id) do
-              Hot.track(agent, session_id)
-            else
-              error -> throw({:discovery_failed, error})
-            end
-
-          _ ->
-            :ok
-        end
-      end)
-
-      Hot.advance_discovery(cursor, if(is_nil(next), do: nil, else: List.last(objects).key))
-    end
-  end
 
   def safely(operation, fun) do
     started = SystemsClock.monotonic_time()

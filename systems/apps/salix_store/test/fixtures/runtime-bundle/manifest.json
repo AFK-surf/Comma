@@ -3,15 +3,6 @@
   "sourceRevision": "test-runtime-revision",
   "images": [
     {
-      "class": "meeting",
-      "inputDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "reference": "comma.local/runtime/meeting@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "platform": "linux/arm64",
-      "archiveSize": 8,
-      "archiveSha256": "0e797b06369432dd10c43faad07f160bfcdcad90349efa26f31cec83aad97845",
-      "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    },
-    {
       "class": "shell",
       "inputDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "reference": "comma.local/runtime/shell@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

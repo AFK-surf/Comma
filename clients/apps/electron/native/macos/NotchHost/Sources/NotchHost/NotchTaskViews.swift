@@ -169,7 +169,9 @@ struct CommaNotchTasksView: View {
     let listTitle: String
     let listSubtitle: String
     let openChatLabel: String
+    let dismissTaskLabel: String
     let onOpen: (String) -> Void
+    let onDismiss: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: NotchTaskMetrics.listSectionSpacing) {
@@ -191,7 +193,9 @@ struct CommaNotchTasksView: View {
                         CommaNotchTaskCardView(
                             task: task,
                             openChatLabel: openChatLabel,
-                            onOpen: { onOpen(task.id) }
+                            dismissTaskLabel: dismissTaskLabel,
+                            onOpen: { onOpen(task.id) },
+                            onDismiss: { onDismiss(task.id) }
                         )
                         .transition(reduceMotion ? .opacity : .commaTaskCardMutation)
                     }
@@ -246,7 +250,9 @@ private struct CommaNotchTaskCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let task: CommaNotchScenePayloadTask
     let openChatLabel: String
+    let dismissTaskLabel: String
     let onOpen: () -> Void
+    let onDismiss: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -294,6 +300,8 @@ private struct CommaNotchTaskCardView: View {
 
             actionButton(title: openChatLabel, emphasized: true, action: onOpen)
             .fixedSize()
+
+            CommaNotchDismissButton(label: dismissTaskLabel, action: onDismiss)
         }
         .padding(.init(top: 8, leading: 12, bottom: 8, trailing: 12))
         .background(
@@ -331,6 +339,30 @@ private struct CommaNotchTaskCardView: View {
         .buttonStyle(.plain)
     }
 
+}
+
+/// The × at a row's end: the row leaves the Notch. The same height as the
+/// row's action button, with a circle that shows on hover.
+private struct CommaNotchDismissButton: View {
+    let label: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white.opacity(hovered ? 0.95 : 0.5))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(.white.opacity(hovered ? 0.16 : 0)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
+        .accessibilityLabel(label)
+        .help(label)
+    }
 }
 
 /// A row's title. When the row stays and its text or state changes (a Quick

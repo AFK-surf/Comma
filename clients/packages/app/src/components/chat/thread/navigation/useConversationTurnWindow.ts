@@ -35,12 +35,34 @@ function anchorLayoutOffset(anchor: HTMLElement, viewport: HTMLElement) {
   );
 }
 
+/** The conversation's messages before those the transcript holds, which the core reads (`chatView.older`). */
+export type EarlierHistory = {
+  available: boolean;
+  /** The core is reading them; once it stops, the window looks again whether the reader is still at the top. */
+  loading: boolean;
+  load: (() => unknown) | undefined;
+};
+
+const noEarlierHistory: EarlierHistory = {
+  available: false,
+  loading: false,
+  load: undefined,
+};
+
 export function useConversationTurnWindow({
+  earlier = noEarlierHistory,
   getViewport,
+  heldTurnKeys,
   requiredTurnKeys,
   turnKeys,
 }: {
+  earlier?: EarlierHistory | undefined;
   getViewport: () => HTMLElement | null;
+  /**
+   * Turns that hold a question for the reader. Each stays mounted like a
+   * required turn; once released, the window keeps what it held.
+   */
+  heldTurnKeys?: ReadonlySet<string> | undefined;
   requiredTurnKeys?: ReadonlySet<string> | undefined;
   turnKeys: readonly string[];
 }) {
@@ -82,8 +104,10 @@ export function useConversationTurnWindow({
   );
 
   const effectiveRequiredTurnKeys = useMemo(() => {
-    if (!revealRequest) return requiredTurnKeys;
+    if (!revealRequest && !heldTurnKeys?.size) return requiredTurnKeys;
     const keys = new Set(requiredTurnKeys);
+    for (const key of heldTurnKeys ?? []) keys.add(key);
+    if (!revealRequest) return keys;
     keys.add(revealRequest.key);
     // Reuse one bounded history page above the target so it can land in the
     // reading area, including when it was just inside the mounted boundary.
@@ -96,7 +120,45 @@ export function useConversationTurnWindow({
       ];
     if (precedingKey) keys.add(precedingKey);
     return keys;
-  }, [requiredTurnKeys, revealRequest, turnKeys]);
+  }, [heldTurnKeys, requiredTurnKeys, revealRequest, turnKeys]);
+
+  // A held turn released (the reader decided on its card) leaves what it
+  // mounted in place: the reader may be on that turn. The start it held
+  // becomes the window's own, as the reader's history load would, and a later
+  // slide at the tail trims it.
+  const [previousHeldTurnKeys, setPreviousHeldTurnKeys] = useState(heldTurnKeys);
+  if (previousHeldTurnKeys !== heldTurnKeys) {
+    setPreviousHeldTurnKeys(heldTurnKeys);
+    const heldStart = resolveWindowStart({
+      requiredTurnKeys: previousHeldTurnKeys,
+      startKey,
+      turnKeys,
+    });
+    const nextStart = resolveWindowStart({
+      requiredTurnKeys: effectiveRequiredTurnKeys,
+      startKey,
+      turnKeys,
+    });
+    if (heldStart < nextStart) setStartKey(turnKeys[heldStart] ?? null);
+  }
+
+  // While the core reads earlier messages, the window keeps the turns it showed and leaves what comes in above them
+  // unmounted until the reader goes on up. It holds them by their place before its last turn: earlier messages can
+  // join its first turn (which then has another key) or come in as a new first turn under the same key.
+  const [earlierHold, setEarlierHold] = useState<{
+    lastKey: string;
+    shown: number;
+  } | null>(null);
+  const [previousTurnKeys, setPreviousTurnKeys] = useState(turnKeys);
+  if (previousTurnKeys !== turnKeys) {
+    setPreviousTurnKeys(turnKeys);
+    const last = earlierHold ? turnKeys.indexOf(earlierHold.lastKey) : -1;
+    const heldKey =
+      earlierHold && last >= 0
+        ? (turnKeys[Math.max(0, last - earlierHold.shown + 1)] ?? null)
+        : startKey;
+    if (heldKey !== startKey) setStartKey(heldKey);
+  }
 
   const visibleStart = useMemo(
     () =>
@@ -135,6 +197,7 @@ export function useConversationTurnWindow({
         };
       }
       pendingRef.current = true;
+      setEarlierHold(null);
       setStartKey(nextKey);
       return true;
     },
@@ -155,6 +218,24 @@ export function useConversationTurnWindow({
     },
     [commitStart, effectiveRequiredTurnKeys, startKey, turnKeys]
   );
+
+  const earlierRef = useRef(earlier);
+  earlierRef.current = earlier;
+  /**
+   * Asks the core for the messages before those held, once the window shows every turn it has. The window holds its
+   * start, so what comes in stays above it until the reader goes on up.
+   */
+  const loadEarlier = useCallback(() => {
+    const { available, loading, load } = earlierRef.current;
+    const lastKey = turnKeys.at(-1);
+    if (visibleStart > 0 || !available || loading || !load || lastKey === undefined)
+      return false;
+    setEarlierHold({ lastKey, shown: turnKeys.length - visibleStart });
+    void Promise.resolve()
+      .then(load)
+      .catch(() => undefined);
+    return true;
+  }, [turnKeys, visibleStart]);
 
   const reconcileViewport = useCallback(
     (
@@ -178,13 +259,13 @@ export function useConversationTurnWindow({
         loadArmedRef.current &&
         allowOlder &&
         shouldLoadOlderTurns({
-          hasOlder,
+          hasOlder: hasOlder || earlierRef.current.available,
           metrics,
           pending: pendingRef.current,
           pinnedToBottom: pinned,
         })
       ) {
-        if (expandOlder(true)) {
+        if (expandOlder(true) || loadEarlier()) {
           loadArmedRef.current = false;
         }
         return;
@@ -201,7 +282,7 @@ export function useConversationTurnWindow({
         expandOlder(false);
       }
     },
-    [expandOlder, hasOlder, readMetrics]
+    [expandOlder, hasOlder, loadEarlier, readMetrics]
   );
 
   useLayoutEffect(() => {
@@ -238,6 +319,7 @@ export function useConversationTurnWindow({
       const nextKey = startKeyAfterSlide(turnKeys, currentStart);
       if (nextKey !== startKey) {
         restoreRef.current = null;
+        setEarlierHold(null);
         setStartKey(nextKey);
       }
     }
@@ -282,8 +364,23 @@ export function useConversationTurnWindow({
     visibleStart,
   ]);
 
+  // After the window's own restore above, so a step up it takes from here restores the reader's place itself.
+  // A read of earlier messages ended: a reader still at the top goes on up into what it brought, or asks for more
+  // when it brought nothing the transcript shows.
+  const wasLoadingEarlierRef = useRef(earlier.loading);
+  useLayoutEffect(() => {
+    const wasLoading = wasLoadingEarlierRef.current;
+    wasLoadingEarlierRef.current = earlier.loading;
+    if (!wasLoading || earlier.loading) return;
+    setEarlierHold(null);
+    loadArmedRef.current = true;
+    reconcileViewport();
+  }, [earlier.loading, reconcileViewport]);
+
   return {
     hasOlder,
+    /** Messages lie above the window: unmounted turns, or earlier ones the core can read. */
+    olderAbove: hasOlder || earlier.available,
     hiddenOlderCount,
     initialTurns: CONVERSATION_TURN_WINDOW.initialTurns,
     reconcileViewport,

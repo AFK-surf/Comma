@@ -107,8 +107,7 @@ class SendFlightFrostTest {
                     status = MessageStatus.PENDING)
                 publishNow()
                 true
-            },
-            sendVoice = { _, _ -> true })
+            })
         flow.bind()
         composer.onImeOffset = { boundary() }
         composer.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> boundary() }

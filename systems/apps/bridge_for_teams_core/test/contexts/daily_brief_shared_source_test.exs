@@ -10,6 +10,11 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
     def daily_brief_read_window(request), do: reply(:read_window, request)
     def daily_brief_member_threads(request), do: reply(:member_threads, request)
 
+    def daily_brief_active_channels(request) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:salix, :active_channels, request})
+      SystemsRuntime.get_env(:bridge_for_teams_core, :daily_brief_test_active, {:ok, %{}})
+    end
+
     defp reply(name, request) do
       SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:salix, name, request})
       SystemsRuntime.fetch_env!(:bridge_for_teams_core, :daily_brief_fake).(name, request)
@@ -25,6 +30,7 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
     on_exit(fn ->
       SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous)
       SystemsRuntime.delete_env(:bridge_for_teams_core, :daily_brief_fake)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :daily_brief_test_active)
     end)
 
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
@@ -132,11 +138,13 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
         :read_window, %{channel_id: "C_DOWN"} ->
           {:error, :source_unavailable}
 
-        :member_threads, %{slack_user_id: "UALICE1"} ->
-          {:ok, %{threads: [%{channel_id: "C_MAIN", thread_ts: "0.5"}], complete?: true}}
+        :member_threads, %{slack_user_id: "UALICE1", threads: threads} ->
+          # Only the window's threads are asked about.
+          assert threads == [%{channel_id: "C_MAIN", thread_ts: "0.5"}]
+          {:ok, %{threads: threads, complete?: true}}
 
         :member_threads, _request ->
-          {:ok, %{threads: [], complete?: false}}
+          {:error, :source_unavailable}
       end)
 
       assert {:ok, result} = SharedSource.read(ctx.settings, @window)
@@ -157,6 +165,113 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       assert [%{id: "C_DOWN", reason: :source_unavailable}] = coverage.failed
       assert coverage.threads_complete == %{ctx.alice.id => true, ctx.bob.id => false}
       refute SharedSource.complete?(coverage)
+    end
+
+    test "a member's main channels bring in what people said there", ctx do
+      # Bob wrote most in C_MAIN lately, so he follows it by default; Alice
+      # follows C_OPS with its bot messages, and dropped C_MAIN.
+      SystemsRuntime.put_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_active,
+        {:ok,
+         %{
+           "UBOB1" => [%{channel_id: "C_MAIN", count: 9}, %{channel_id: "C_OPS", count: 2}],
+           "UALICE1" => [%{channel_id: "C_MAIN", count: 30}]
+         }}
+      )
+
+      {:ok, _} =
+        DailyBrief.put_aliases(ctx.alice, [
+          %{term: "C_OPS", kind: "channel_bots"},
+          %{term: "C_MAIN", kind: "channel_off"}
+        ])
+
+      fake(fn
+        :channels, _request ->
+          {:ok,
+           %{
+             workspace_id: "T1",
+             complete?: true,
+             channels: [%{id: "C_MAIN", name: "main"}, %{id: "C_OPS", name: "ops"}],
+             gaps: %{}
+           }}
+
+        :read_window, %{channel_id: "C_MAIN"} ->
+          {:ok,
+           %{
+             messages: [
+               msg("C_MAIN", "1.0", "UCAROL1", "shipping today"),
+               msg("C_MAIN", "2.0", "BDEPLOY1", "deployed", nil, "bot")
+             ],
+             next_cursor: nil,
+             has_more?: false
+           }}
+
+        :read_window, %{channel_id: "C_OPS"} ->
+          {:ok,
+           %{
+             messages: [
+               msg("C_OPS", "3.0", "BALERT1", "P1: replicas below 1", nil, "bot"),
+               msg("C_OPS", "4.0", "UCAROL1", "looking")
+             ],
+             next_cursor: nil,
+             has_more?: false
+           }}
+
+        :member_threads, _request ->
+          {:ok, %{threads: [], complete?: true}}
+      end)
+
+      members = Members.enabled(ctx.org.id)
+      assert {:ok, result} = SharedSource.read(ctx.settings, @window, members: members)
+
+      assert_received {:salix, :active_channels, %{channel_ids: ["C_MAIN", "C_OPS"]} = asked}
+      assert Enum.sort(asked.slack_user_ids) == ["UALICE1", "UBOB1"]
+
+      assert picked(result, ctx.bob) == [{"1.0", [:channel], :p1}]
+
+      assert picked(result, ctx.alice) == [
+               {"3.0", [:channel], :p1},
+               {"4.0", [:channel], :p1}
+             ]
+    end
+
+    test "a member gets at most 250 main-channel messages, the newest", ctx do
+      SystemsRuntime.put_env(
+        :bridge_for_teams_core,
+        :daily_brief_test_active,
+        {:ok, %{"UBOB1" => [%{channel_id: "C_MAIN", count: 9}]}}
+      )
+
+      fake(fn
+        :channels, _request ->
+          {:ok,
+           %{
+             workspace_id: "T1",
+             complete?: true,
+             channels: [%{id: "C_MAIN", name: "main"}],
+             gaps: %{}
+           }}
+
+        :read_window, %{channel_id: "C_MAIN"} ->
+          talk = for i <- 1..300, do: msg("C_MAIN", "#{1000 + i}.0", "UCAROL1", "talk #{i}")
+          mention = msg("C_MAIN", "1.0", "UCAROL1", "<@UBOB1> look")
+          {:ok, %{messages: [mention | talk], next_cursor: nil, has_more?: false}}
+
+        :member_threads, _request ->
+          {:ok, %{threads: [], complete?: true}}
+      end)
+
+      assert {:ok, result} =
+               SharedSource.read(ctx.settings, @window,
+                 members: [Repo.preload(ctx.bob, :aliases)]
+               )
+
+      picked = picked(result, ctx.bob)
+      assert length(picked) == 251
+      assert {"1.0", [:mention, :channel], :p0} in picked
+      refute Enum.any?(picked, fn {ts, _, _} -> ts == "1050.0" end)
+      assert Enum.any?(picked, fn {ts, _, _} -> ts == "1051.0" end)
     end
 
     test "names channels left unread when the page budget runs out", ctx do
@@ -190,6 +305,30 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
   end
 
   describe "classifier" do
+    test "main channels choose from activity, and choices override it" do
+      member = %{
+        aliases: [
+          %{term: "C_B", kind: "channel_off"},
+          %{term: "C_X", kind: "channel"},
+          %{term: "C_GONE", kind: "channel"}
+        ]
+      }
+
+      activity =
+        for {id, n} <-
+              [{"C_A", 40}, {"C_B", 30}, {"C_C", 4}, {"C_D", 9}, {"C_E", 8}] ++
+                for(i <- 1..6, do: {"C_F#{i}", 6}),
+            do: %{channel_id: id, count: n}
+
+      readable = MapSet.new(~w(C_A C_B C_C C_D C_E C_X) ++ for(i <- 1..6, do: "C_F#{i}"))
+      focus = BridgeForTeams.DailyBrief.Focus.of(member, activity, readable)
+
+      # The six busiest with five or more messages, less the dropped one, plus
+      # the added one that the bot can read.
+      assert focus.humans == MapSet.new(~w(C_A C_D C_E C_F1 C_F2 C_X))
+      assert focus.bots == MapSet.new()
+    end
+
     test "matches ASCII aliases as words and other aliases as text" do
       member =
         Classifier.member(
@@ -201,6 +340,22 @@ defmodule BridgeForTeams.DailyBriefSharedSourceTest do
       assert Classifier.reasons(msg("C", "1", "UX1", "ask XP first"), member) == [:alias]
       assert Classifier.reasons(msg("C", "2", "UX1", "export it"), member) == []
       assert Classifier.reasons(msg("C", "3", "UX1", "找鹏哥确认"), member) == [:alias]
+    end
+
+    test "a bot counts when it mentions the member or replies in their thread" do
+      member =
+        Classifier.member("UME1", [%{term: "XP", kind: "name"}], [
+          %{channel_id: "C", thread_ts: "1.0"}
+        ])
+
+      assert Classifier.reasons(msg("C", "2.0", "B1", "deployed", "1.0", "bot"), member) ==
+               [:thread]
+
+      assert Classifier.reasons(msg("C", "3.0", "B1", "ping <@UME1>", nil, "bot"), member) ==
+               [:mention]
+
+      assert Classifier.reasons(msg("C", "4.0", "B1", "XP deployed", nil, "bot"), member) == []
+      assert Classifier.reasons(msg("C", "5.0", "B1", "deployed", "9.0", "bot"), member) == []
     end
   end
 

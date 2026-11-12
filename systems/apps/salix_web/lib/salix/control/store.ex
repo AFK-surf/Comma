@@ -90,20 +90,23 @@ defmodule Salix.Control.Store do
     end
   end
 
-  def update_record(key, fun), do: update_record(key, fun, 5)
+  def update_record(key, fun, attempts \\ 5),
+    do: update_record_checked(key, fn record -> {:ok, fun.(record)} end, attempts)
 
-  def update_record(_key, _fun, 0), do: {:error, :precondition_failed}
+  # The callback checks its expected field again after an ETag conflict.
+  # This keeps unrelated Group writes while rejecting stale routing editors.
+  def update_record_checked(key, fun, attempts \\ 5)
+  def update_record_checked(_key, _fun, 0), do: {:error, :precondition_failed}
 
-  def update_record(key, fun, attempts) do
+  def update_record_checked(key, fun, attempts) do
     with {:ok, %{body: body, etag: etag}} <- S3.get(key),
          {:ok, rec} <- Jason.decode(body),
-         updated <- fun.(rec),
+         {:ok, updated} <- fun.(rec),
          {:ok, _} <- put_record_bytes(key, updated, if_match: etag) do
       {:ok, updated}
     else
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, :precondition_failed} -> update_record(key, fun, attempts - 1)
-      {:error, reason} -> {:error, reason}
+      {:error, :precondition_failed} -> update_record_checked(key, fun, attempts - 1)
+      {:error, _} = error -> error
     end
   end
 

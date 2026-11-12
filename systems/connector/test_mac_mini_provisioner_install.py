@@ -14,7 +14,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import tarfile
 import tempfile
 import unittest
 import urllib.parse
@@ -133,7 +132,7 @@ def write_host_runtime_archive(
         "python3 - \"$3\" \"$HOME\" <<'PY'\n"
         "import json, pathlib, shutil, sys\n"
         "home = pathlib.Path(sys.argv[2])\n"
-        "policy = home / 'Library/Application Support/Agent VMM Maintenance/state.json'\n"
+        "policy = home / 'Library/Application Support/AgentVMM/state.json'\n"
         "if policy.exists():\n"
         "    state = json.loads(policy.read_text())\n"
         "    if state.get('uninstalled') or state.get('activeRequest'): raise SystemExit('native owner denied publication')\n"
@@ -155,18 +154,6 @@ def write_host_runtime_archive(
         for path in sorted(app.rglob("*")):
             archive.write(path, path.relative_to(archive_path.parent))
     shutil.rmtree(app)
-    return hashlib.sha256(archive_path.read_bytes()).hexdigest()
-
-
-def write_computer_use_helper_archive(archive_path: pathlib.Path, daemon: str) -> str:
-    app = "native/macos/Comma Computer Use.app"
-    with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp)
-        executable = root / app / "Contents" / "MacOS" / "CommaComputerUseDaemon"
-        executable.parent.mkdir(parents=True)
-        write_executable(executable, daemon)
-        with tarfile.open(archive_path, "w:gz") as archive:
-            archive.add(root / "native", arcname="native")
     return hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
 
@@ -258,9 +245,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
         merged.update(env)
         for url_key, size_key in (
             ("BFT_RUNNER_URL", "BFT_RUNNER_SIZE"),
-            ("BFT_SALIX_CONNECTOR_URL", "BFT_SALIX_CONNECTOR_SIZE"),
             ("BFT_AGENT_VMM_HOST_URL", "BFT_AGENT_VMM_HOST_SIZE"),
-            ("BFT_COMPUTER_USE_HELPER_URL", "BFT_COMPUTER_USE_HELPER_SIZE"),
         ):
             raw_url = merged.get(url_key)
             if raw_url and size_key not in merged:
@@ -278,17 +263,13 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
-    def test_downloads_salix_connect_without_echoing_token(self) -> None:
+    def test_downloads_runner_without_echoing_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             artifacts = root / "artifacts"
             artifacts.mkdir()
             prefix = root / "install"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             secret = "bft_secret_token_should_not_be_logged"
 
@@ -296,8 +277,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 {
                     "HOME": str(root / "home"),
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -313,16 +292,13 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertNotIn(secret, proc.stdout)
             self.assertNotIn(secret, proc.stderr)
 
-            salix_connect = prefix / "bin" / "salix-connect"
             runner = prefix / "bin" / "bft-runner"
-            self.assertTrue(os.access(salix_connect, os.X_OK))
             self.assertTrue(os.access(runner, os.X_OK))
-            for installed in (salix_connect, runner):
-                self.assertFalse(
-                    pathlib.Path(str(installed) + ".sha256").exists(),
-                    f"local checksum sidecar must not be written: {installed}",
-                )
-            self.assertEqual(hashlib.sha256(salix_connect.read_bytes()).hexdigest(), connector_sha)
+            self.assertFalse(
+                pathlib.Path(str(runner) + ".sha256").exists(),
+                "local checksum sidecar must not be written",
+            )
+            self.assertFalse((prefix / "bin" / "salix-connect").exists())
             self.assertEqual(
                 hashlib.sha256(runner.read_bytes()).hexdigest(), worker_sha
             )
@@ -335,11 +311,10 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             launchd_payload = plistlib.loads(launchd_plist.read_bytes())
 
             self.assertEqual(config["runner_token"], secret)
-            self.assertEqual(config["paths"]["salix_connect"], str(salix_connect))
+            self.assertNotIn("salix_connect", config["paths"])
             self.assertEqual(config["paths"]["runner"], str(runner))
             self.assertEqual(status_payload["status"], "ready")
             self.assertEqual(status_payload["install"]["runner_source"], "download")
-            self.assertEqual(status_payload["install"]["fallback_tooling_source"], "skipped")
             self.assertEqual(status_payload["launchd"]["plist"], str(launchd_plist))
             self.assertFalse(status_payload["launchd"]["installed"])
             self.assertFalse(status_payload["launchd"]["loaded"])
@@ -384,18 +359,12 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
 
             proc = self.run_installer(
                 {
                     "HOME": str(root / "home"),
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -419,47 +388,40 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 artifacts = root / "artifacts"
                 artifacts.mkdir()
                 prefix = root / "install"
-                connector_sha = write_executable(
-                    artifacts / "salix-connector", "#!/bin/sh\nexit 0\n"
-                )
-                connector_size = (artifacts / "salix-connector").stat().st_size
+                runner_sha = write_worker(artifacts / "mac-mini-provisioner")
+                runner_size = (artifacts / "mac-mini-provisioner").stat().st_size
 
                 proc = self.run_installer(
                     {
                         "HOME": str(root / "home"),
                         "BFT_INSTALL_PREFIX": str(prefix),
-                        "BFT_SALIX_CONNECTOR_URL": (
-                            artifacts / "salix-connector"
-                        ).as_uri(),
-                        "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
-                        "BFT_SALIX_CONNECTOR_SIZE": str(connector_size + delta),
+                        **agent_vmm_host_env(root, artifacts),
+                        "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
+                        "BFT_RUNNER_SHA256": runner_sha,
+                        "BFT_RUNNER_SIZE": str(runner_size + delta),
                     }
                 )
 
                 self.assertNotEqual(proc.returncode, 0)
-                self.assertIn("preflight.salix_connect_size_mismatch", proc.stderr)
+                self.assertIn("preflight.runner_size_mismatch", proc.stderr)
                 self.assertIn(detail, proc.stderr)
-                self.assertFalse((prefix / "bin" / "salix-connect").exists())
+                self.assertFalse((prefix / "bin" / "bft-runner").exists())
 
     def test_completed_uninstall_during_download_prevents_late_publication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             artifacts = root / "artifacts"
             artifacts.mkdir()
-            connector = artifacts / "salix-connector"
-            connector_sha = write_executable(connector, "#!/bin/sh\nexit 0\n")
             runner = artifacts / "runner"
             runner_sha = write_worker(runner)
             env = {
                 "HOME": str(root / "home"),
                 "BFT_INSTALL_PREFIX": str(root / "install"),
-                "BFT_SALIX_CONNECTOR_URL": connector.as_uri(),
-                "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                 "BFT_RUNNER_URL": runner.as_uri(),
                 "BFT_RUNNER_SHA256": runner_sha,
                 **agent_vmm_host_env(root, artifacts),
             }
-            policy = root / "home/Library/Application Support/Agent VMM Maintenance/state.json"
+            policy = root / "home/Library/Application Support/AgentVMM/state.json"
             archive = artifacts / "agent-vmm-host.zip"
             env["BFT_AGENT_VMM_HOST_SHA256"] = write_host_runtime_archive(
                 archive, root / "host-lifecycle.log", uninstall_after_version=policy
@@ -475,20 +437,16 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             root = pathlib.Path(tmp)
             artifacts = root / "artifacts"
             artifacts.mkdir()
-            connector = artifacts / "salix-connector"
-            connector_sha = write_executable(connector, "#!/bin/sh\nexit 0\n")
             runner = artifacts / "runner"
             runner_sha = write_worker(runner)
             env = {
                 "HOME": str(root / "home"),
                 "BFT_INSTALL_PREFIX": str(root / "install"),
-                "BFT_SALIX_CONNECTOR_URL": connector.as_uri(),
-                "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                 "BFT_RUNNER_URL": runner.as_uri(),
                 "BFT_RUNNER_SHA256": runner_sha,
                 **agent_vmm_host_env(root, artifacts),
             }
-            policy = root / "home" / "Library" / "Application Support" / "Agent VMM Maintenance" / "state.json"
+            policy = root / "home" / "Library" / "Application Support" / "AgentVMM" / "state.json"
             policy.parent.mkdir(parents=True)
             app = root / "home" / "Library" / "Application Support" / "Agent VMM Host" / "current" / "Agent VMM Host.app"
             for state in ({"version": 1, "uninstalled": True}, {"version": 1, "uninstalled": False, "activeRequest": "maintenance-1"}, {"version": 2, "uninstalled": False}):
@@ -510,10 +468,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             host_log = root / "host-lifecycle.log"
             write_fake_host_tools(command_dir)
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             host_sha = write_host_runtime_archive(artifacts / "agent-vmm-host.zip", host_log)
 
@@ -521,8 +475,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_AGENT_VMM_SERVICE_TYPE": "auto",
@@ -615,7 +567,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             command_dir.mkdir()
             write_fake_host_tools(command_dir)
             write_executable(command_dir / "codesign", "#!/bin/sh\nexit 1\n")
-            connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             execution_marker = root / "staged-helper-executed"
             host_sha = write_host_runtime_archive(
@@ -629,8 +580,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(root / "install"),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
@@ -650,7 +599,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             artifacts.mkdir()
             command_dir.mkdir()
             write_fake_host_tools(command_dir)
-            connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             host_log = root / "host-lifecycle.log"
             diagnostic = (
@@ -668,8 +616,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(root / "install"),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_VMM_REQUEST_ID": "bft-host-install-test",
@@ -703,7 +649,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             artifacts.mkdir()
             command_dir.mkdir()
             write_fake_host_tools(command_dir)
-            connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             host_log = root / "host-lifecycle.log"
             host_sha = write_host_runtime_archive(
@@ -716,8 +661,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 "HOME": str(root / "home"),
                 "PATH": f"{command_dir}:{os.environ['PATH']}",
                 "BFT_INSTALL_PREFIX": str(root / "install"),
-                "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                 "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                 "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                 "BFT_VMM_REQUEST_ID": "bft-host-recovery-test",
@@ -746,7 +689,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             artifacts.mkdir()
             command_dir.mkdir()
             write_fake_host_tools(command_dir)
-            connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             new_log = root / "new-host-lifecycle.log"
             host_sha = write_host_runtime_archive(
@@ -782,8 +724,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(home),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(root / "install"),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_VMM_REQUEST_ID": "bft-host-install",
@@ -809,7 +749,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             artifacts.mkdir()
             command_dir.mkdir()
             write_fake_host_tools(command_dir)
-            connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             host_sha = write_host_runtime_archive(
                 artifacts / "agent-vmm-host.zip", root / "host-lifecycle.log", ready=False
@@ -820,8 +759,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(root / "install"),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
@@ -843,9 +780,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             host_log = root / "host-lifecycle.log"
             write_fake_host_tools(command_dir)
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector", "#!/bin/sh\nprintf 'fake salix connector\\n'\n"
-            )
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             host_sha = write_host_runtime_archive(
                 artifacts / "agent-vmm-host.zip",
@@ -858,8 +792,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{command_dir}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     "BFT_AGENT_VMM_HOST_URL": (artifacts / "agent-vmm-host.zip").as_uri(),
                     "BFT_AGENT_VMM_HOST_SHA256": host_sha,
                     "BFT_VMM_REQUEST_ID": "bft-host-install",
@@ -887,18 +819,12 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             prefix = root / "install"
             worker_args = root / "worker-args.log"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             worker_sha = write_worker_recorder(artifacts / "mac-mini-provisioner", worker_args)
 
             proc = self.run_installer(
                 {
                     "HOME": str(root / "home"),
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -938,10 +864,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             existing_bin.mkdir()
             launch_agents = root / "LaunchAgents"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
             secret = "bft_launchd_secret_should_not_leak"
 
@@ -950,8 +872,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{existing_bin}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts, existing_bin),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -992,10 +912,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             launch_agents = root / "LaunchAgents"
             launchctl_log = root / "launchctl.log"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
 
@@ -1005,8 +921,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{existing_bin}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts, existing_bin),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -1043,10 +957,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                 existing_bin.mkdir()
                 launchctl_log = root / "launchctl.log"
 
-                connector_sha = write_executable(
-                    artifacts / "salix-connector",
-                    "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-                )
                 write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
                 worker_sha = write_worker(artifacts / "mac-mini-provisioner")
 
@@ -1055,8 +965,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                         "HOME": str(root / "home"),
                         "PATH": f"{existing_bin}:{os.environ['PATH']}",
                         "BFT_INSTALL_PREFIX": str(prefix),
-                        "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                        "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                         **agent_vmm_host_env(root, artifacts, existing_bin),
                         "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                         "BFT_RUNNER_SHA256": worker_sha,
@@ -1081,10 +989,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             launch_agents.mkdir()
             launchctl_log = root / "launchctl.log"
 
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             write_fake_launchctl(existing_bin / "launchctl", launchctl_log)
             worker_sha = write_worker(artifacts / "mac-mini-provisioner")
 
@@ -1096,8 +1000,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{existing_bin}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts, existing_bin),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                     "BFT_RUNNER_SHA256": worker_sha,
@@ -1127,133 +1029,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertTrue(status_payload["launchd"]["last_remove_removed"])
             self.assertTrue((prefix / "com.bridgeforteams.runner.plist").exists())
 
-    def computer_use_helper_install_env(
-        self, root: pathlib.Path, artifacts: pathlib.Path
-    ) -> dict[str, str]:
-        connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
-        # The installer runs the real runner to replace the helper.
-        runner = artifacts / "mac-mini-provisioner"
-        subprocess.run(
-            ["go", "build", "-o", str(runner), "."],
-            cwd=str(REPO_ROOT / "systems" / "connector" / "mac-mini-provisioner"),
-            env={**os.environ, "CGO_ENABLED": "0"},
-            check=True,
-        )
-        worker_sha = hashlib.sha256(runner.read_bytes()).hexdigest()
-        return {
-            "HOME": str(root / "home"),
-            "BFT_INSTALL_PREFIX": str(root / "install"),
-            "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-            "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
-            **agent_vmm_host_env(root, artifacts),
-            "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
-            "BFT_RUNNER_SHA256": worker_sha,
-        }
-
-    @unittest.skipUnless(shutil.which("go"), "the helper install runs the Go runner")
-    def test_installs_computer_use_helper_beside_salix_connect(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            artifacts = root / "artifacts"
-            artifacts.mkdir()
-            env = self.computer_use_helper_install_env(root, artifacts)
-            native = root / "install" / "bin" / "native" / "macos"
-            app = native / "Comma Computer Use.app"
-            daemon = app / "Contents" / "MacOS" / "CommaComputerUseDaemon"
-            config_path = root / "install" / "runner.json"
-
-            # A server release without the helper installs everything else.
-            proc = self.run_installer(env)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("Computer Use helper is not part of this server release", proc.stdout)
-            self.assertFalse(app.exists())
-
-            archive = artifacts / "comma-computer-use.tar.gz"
-            first_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho first\n")
-            helper_env = {
-                "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
-                "BFT_COMPUTER_USE_HELPER_SHA256": first_sha,
-                "BFT_COMPUTER_USE_HELPER_SIZE": str(archive.stat().st_size),
-            }
-            proc = self.run_installer({**env, **helper_env})
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("first", daemon.read_text(encoding="utf-8"))
-            self.assertTrue(os.access(daemon, os.X_OK))
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(config["capabilities"]["component_digests"]["computer-use-helper"], first_sha)
-
-            # The installed release is not downloaded again.
-            archive.unlink()
-            proc = self.run_installer({**env, **helper_env})
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("first", daemon.read_text(encoding="utf-8"))
-
-            second_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho second\n")
-            proc = self.run_installer(
-                {
-                    **env,
-                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
-                    "BFT_COMPUTER_USE_HELPER_SHA256": second_sha,
-                    "BFT_COMPUTER_USE_HELPER_SIZE": str(archive.stat().st_size),
-                }
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("second", daemon.read_text(encoding="utf-8"))
-            self.assertEqual(
-                sorted(path.name for path in native.iterdir()),
-                [".Comma Computer Use.app.lock", "Comma Computer Use.app"],
-            )
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(config["capabilities"]["component_digests"]["computer-use-helper"], second_sha)
-
-    @unittest.skipUnless(shutil.which("go"), "the helper install runs the Go runner")
-    def test_rejects_unsigned_computer_use_helper_and_keeps_the_installed_one(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            artifacts = root / "artifacts"
-            artifacts.mkdir()
-            env = self.computer_use_helper_install_env(root, artifacts)
-            archive = artifacts / "comma-computer-use.tar.gz"
-            installed_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho installed\n")
-            proc = self.run_installer(
-                {
-                    **env,
-                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
-                    "BFT_COMPUTER_USE_HELPER_SHA256": installed_sha,
-                }
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-
-            command_dir = root / "unsigned-helper-tools"
-            command_dir.mkdir()
-            write_executable(
-                command_dir / "codesign",
-                "#!/bin/sh\n"
-                "for argument in \"$@\"; do\n"
-                "  case \"$argument\" in */.comma-computer-use-*) exit 1 ;; esac\n"
-                "done\n",
-            )
-            unsigned_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho unsigned\n")
-            proc = self.run_installer(
-                {
-                    **env,
-                    "PATH": f"{command_dir}:{env['PATH']}",
-                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
-                    "BFT_COMPUTER_USE_HELPER_SHA256": unsigned_sha,
-                }
-            )
-
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Code: computer_use_helper.signature_invalid", proc.stderr)
-            self.assertIn("install.computer_use_helper_install_failed", proc.stderr)
-            native = root / "install" / "bin" / "native" / "macos"
-            daemon = native / "Comma Computer Use.app" / "Contents" / "MacOS" / "CommaComputerUseDaemon"
-            self.assertIn("installed", daemon.read_text(encoding="utf-8"))
-            self.assertEqual(
-                sorted(path.name for path in native.iterdir()),
-                [".Comma Computer Use.app.lock", "Comma Computer Use.app"],
-            )
-
     def test_missing_runner_sha_identifies_runner_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -1262,10 +1037,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             prefix = root / "install"
             existing_bin = root / "existing-bin"
             existing_bin.mkdir()
-            connector_sha = write_executable(
-                artifacts / "salix-connector",
-                "#!/bin/sh\nprintf 'fake salix connector\\n'\n",
-            )
             write_worker(artifacts / "mac-mini-provisioner")
 
             proc = self.run_installer(
@@ -1273,8 +1044,6 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
                     "HOME": str(root / "home"),
                     "PATH": f"{existing_bin}:{os.environ['PATH']}",
                     "BFT_INSTALL_PREFIX": str(prefix),
-                    "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
-                    "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
                     **agent_vmm_host_env(root, artifacts, existing_bin),
                     "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
                 }

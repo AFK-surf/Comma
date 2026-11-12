@@ -1,5 +1,5 @@
 // Where the station stands with still.fail cloud: <data>/mesh/cloud.json (its fields, mode and pretty JSON as the Rust
-// station writes them: the desktop app and `bin/stillfail` read it too). One copy in memory, written through on every
+// station writes them: the desktop app and `bin/comma-station` read it too). One copy in memory, written through on every
 // change and told to whoever listens; the file is watched only for `enroll` writing it from another process.
 import { existsSync, readFileSync, watch } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ export type CloudState = {
   workspace_name: string;
   name: string;
   relay_url: string;
-  /// Every relay, still.fail's (`relay_url`) first; missing from files of before there were several.
+  /// Every relay, Comma's (`relay_url`) first; missing from files of before there were several.
   relay_urls: string[];
   grant_keys: any;
   /// The workspace's stations this one may call (peer RPC); none from old clouds.
@@ -63,7 +63,7 @@ export function readState(data: string): CloudState | null {
 }
 
 /// Pretty JSON, field order as the Rust struct's, the removal only while there is one; the provider, the gateways and
-/// the workspace's ids of before only when there are (a still.fail station's file is as it always was).
+/// the workspace's ids of before only when there are (a Comma station's file is as it always was).
 export function writeState(data: string, s: CloudState) {
   const out: Record<string, unknown> = {
     ...(s.provider !== undefined ? { provider: s.provider } : {}),
@@ -144,7 +144,7 @@ export class Cloud {
     return this.state?.removed_at !== undefined;
   }
 
-  /// still.fail's relays, ours first, as `relays()` in the Rust station: `relay_urls`, else `relay_url`; what is no URL
+  /// Comma's relays, ours first, as `relays()` in the Rust station: `relay_urls`, else `relay_url`; what is no URL
   /// left out.
   relays(): string[] {
     const s = this.state;

@@ -6,6 +6,7 @@ import {
   useOverlayPosition,
   useTooltip,
 } from "react-aria";
+import { FocusableProvider } from "react-aria/private/interactions/useFocusable";
 import {
   useCallback,
   useContext,
@@ -149,19 +150,30 @@ export function HoverCard({
     },
     [onOpenChange]
   );
-  const close = useCallback(() => {
-    pointerOverCard.current = false;
+  // A card the pointer leaves fades out, even one that opened at once. A card that
+  // takes over makes it instant afterwards, in the same update.
+  const fadeOut = useCallback(() => {
+    if (!openRef.current) return;
+    setIsInstant(false);
     updateOpen(false);
   }, [updateOpen]);
+  // A card the person dismisses goes at once: a press, Escape, or another surface
+  // taking the pointer. It may already be fading out, when React Aria closed it.
+  const dismiss = useCallback(() => {
+    pointerOverCard.current = false;
+    if (!openRef.current && activeHoverCard?.id !== id) return;
+    setIsInstant(true);
+    updateOpen(false);
+  }, [id, updateOpen]);
   const handleCardRef = useCallback(
     (element: HTMLDivElement | null) => {
       if (element) {
-        activeHoverCard = { close, id, makeInstant };
+        activeHoverCard = { close: dismiss, id, makeInstant };
       } else if (activeHoverCard?.id === id) {
         activeHoverCard = null;
       }
     },
-    [close, id, makeInstant]
+    [dismiss, id, makeInstant]
   );
   const handleOpenChange = (open: boolean) => {
     if (open && (hoverCardSuspensionCount > 0 || dismissedByPress.current)) return;
@@ -173,7 +185,8 @@ export function HoverCard({
       setIsInstant(previousCard !== null && previousCard.id !== id);
     }
     if (!open && pointerOverCard.current) return;
-    updateOpen(open);
+    if (open) updateOpen(true);
+    else fadeOut();
   };
   const handleOpenChangeRef = useRef(handleOpenChange);
   handleOpenChangeRef.current = handleOpenChange;
@@ -190,21 +203,30 @@ export function HoverCard({
     if (!isOpen) return;
 
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      pointerOverCard.current = false;
-      updateOpen(false);
+      if (event.key === "Escape") dismiss();
     };
     document.addEventListener("keydown", handleEscape, true);
     return () => document.removeEventListener("keydown", handleEscape, true);
-  }, [isOpen, updateOpen]);
+  }, [dismiss, isOpen]);
 
   const trigger = children as ReactElement<TriggerProps>;
   // A press keeps the card closed until the trigger loses focus. A pointer-only
   // trigger never takes focus, so the pointer leaving it ends the press.
+  // React Aria closes the card as a press starts on its trigger, before these
+  // handlers run; the press dismisses it, so it goes at once.
   const dismissibleTrigger = cloneElement(trigger, {
+    onPointerDown: (event) => {
+      dismiss();
+      trigger.props.onPointerDown?.(event);
+    },
+    onKeyDown: (event) => {
+      // Only a key that presses the trigger dismisses; Tab, arrows and the rest leave the card as it is.
+      if (!pointerOnly && (event.key === "Enter" || event.key === " ")) dismiss();
+      trigger.props.onKeyDown?.(event);
+    },
     onClick: (event) => {
       dismissedByPress.current = true;
-      close();
+      dismiss();
       trigger.props.onClick?.(event);
     },
     onBlur: (event) => {
@@ -246,13 +268,16 @@ export function HoverCard({
         }}
         onMouseLeave={() => {
           pointerOverCard.current = false;
-          updateOpen(false);
+          fadeOut();
         }}
         placement={placement}
         ref={handleCardRef}
         {...(anchorRef ? { triggerRef: anchorRef } : {})}
       >
-        {content}
+        {/* React sees the card inside its trigger's focusable context. Without
+            this reset a tooltip trigger in the content, such as a Loop chip's
+            hover card, takes over the anchor and the card follows its own chip. */}
+        <FocusableProvider>{content}</FocusableProvider>
       </HoverCardTooltip>
     </AriaTooltipTrigger>
   );

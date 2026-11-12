@@ -11,6 +11,8 @@ defmodule CommaWeb.RecommendationRuntime do
   def read(ctx), do: read(%{}, ctx)
   def read(args, ctx), do: CommaWeb.ProactiveRoutine.read(args, ctx)
   def dismiss(args, ctx), do: CommaWeb.ProactiveRoutine.dismiss(args, ctx)
+  def add(args, ctx), do: CommaWeb.ProactiveRoutine.add(args, ctx)
+  def remove_added(args, ctx), do: CommaWeb.ProactiveRoutine.remove_added(args, ctx)
 
   def ensure(user, session, workspace, timezone \\ nil, opts \\ []) do
     with {:ok, envelope} <-

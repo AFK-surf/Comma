@@ -148,7 +148,9 @@ test("chat bubbles group blocks, keep actions beside messages, and tighten conse
       assistantCopy!.x - assistantBubble!.x - assistantBubble!.width
     ).toBeLessThanOrEqual(13);
     expect(assistantCopy!.y).toBeLessThan(assistantBubble!.y + assistantBubble!.height);
-    expect(assistantBubble!.width).toBeLessThanOrEqual(500);
+    // The long reply fills the 600px agent cap, wider than the user's 500px cap.
+    expect(assistantBubble!.width).toBeGreaterThan(500);
+    expect(assistantBubble!.width).toBeLessThanOrEqual(600);
     for (const row of [replyOne, replyTwo]) {
       await expect(row.locator(".comma-chat-assistant-source-avatar")).toHaveCSS(
         "width",

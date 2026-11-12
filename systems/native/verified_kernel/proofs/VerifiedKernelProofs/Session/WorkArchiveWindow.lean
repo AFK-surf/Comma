@@ -64,28 +64,25 @@ theorem archiveWindow_numbered {state ceiling : Term} {records : List Term} {bas
     (h : StorageQuery.archiveWindow state j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     Numbered (base + 1) records := by
   unfold StorageQuery.archiveWindow at h
-  obtain ⟨projected, _, _, h⟩ := bind_ok h
   obtain ⟨stored, _, storedRead, h⟩ := bind_ok h
-  have storedEq := field_value storedRead
-  rw [storedEq, numeric] at h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain ⟨selected, _, _, h⟩ := bind_ok h
+  rw [field_value storedRead, numeric] at h
   obtain ⟨first, _, added, h⟩ := bind_ok h
   rw [add_integer] at added
   have firstEq := (Prod.mk.inj (Except.ok.inj added)).1
   subst first
-  obtain ⟨values, _, valuesRead, h⟩ := bind_ok h
   obtain ⟨checked, _, checkedRead, h⟩ := bind_ok h
   split at h
   · have impossible := pure_ok h
     simp [a, Term.tuple.injEq] at impossible
   · rename_i success
-    obtain ⟨_, _, _, h⟩ := bind_ok h
     have equal := pure_ok h
     simp only [Term.tuple.injEq, List.cons.injEq, true_and, and_true] at equal
-    have projectedEq := equal.1
-    subst projected
-    have valuesEq : values = records := by
-      exact (Prod.mk.inj (Except.ok.inj valuesRead)).1.symm
-    subst values
+    have same : records = selected := Term.list.inj equal.1
+    subst selected
     apply window_fold_numbered checkedRead
     intro reason impossible
     exact success reason impossible
@@ -147,7 +144,7 @@ theorem message_projection_sequence {record projected : Term}
 /-- Compose actual publication with actual removal on the captured Session state. -/
 theorem published_archive_removed_projections {state event next : Term} {records live : List Term}
     {base ceiling line : Int} {before after : Objects} {final : Output} {j r : List Term}
-    (sorted : SeqSorted state)
+    (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (numeric : (state.get (a "archived_through")).default (i 0) = i base) (nonnegative : base ≥ 0)
     (initial : StateCatalogBacked before state)
     (window : StorageQuery.archiveWindow state [] = .ok (.tuple [a "ok", list records, i ceiling], []))
@@ -174,7 +171,7 @@ theorem published_archive_removed_projections {state event next : Term} {records
     rw [splitLive]
     exact List.mem_append_left _ member
   obtain ⟨projected, projectedMember, projection⟩ :=
-    ArchiveProjection.archiveWindow_messages sorted read liveMember window
+    ArchiveProjection.archiveWindow_messages sorted physical read liveMember window
   have throughRead : event.get (b "archived_through") = through := by rw [eventEq]; rfl
   have bound := bounded record member
   rw [throughRead] at bound

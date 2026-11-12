@@ -5,6 +5,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleXIcon,
+  ExclamationTriangleIcon,
   EyeIcon,
   InfinityIcon,
   PauseIcon,
@@ -12,6 +13,7 @@ import {
 import {
   taskLoopLabel,
   taskLoopPausedLabel,
+  taskLoopStoppedOnError,
   taskLoopTriggerText,
 } from "./taskLoopLabels";
 
@@ -22,8 +24,12 @@ export interface TaskLoopDetail {
   text: string;
   /** The hover text, when it says more than `text`. */
   title?: string | undefined;
-  /** An ended Loop reads muted. A paused Loop shows its pause glyph in the warning colour. */
-  tone?: "muted" | "warning" | undefined;
+  /**
+   * An ended Loop reads muted. A paused Loop shows its pause glyph in the
+   * warning colour; one that stopped on an error, the error glyph in the error
+   * colour.
+   */
+  tone?: "muted" | "warning" | "error" | undefined;
 }
 
 /**
@@ -70,9 +76,10 @@ export function useTaskLoopDetails(loop: TaskLoop): {
   else if (loop.state === "paused")
     details.push({
       key: "paused",
-      Icon: PauseIcon,
+      ...(taskLoopStoppedOnError(loop)
+        ? { Icon: ExclamationTriangleIcon, tone: "error" as const }
+        : { Icon: PauseIcon, tone: "warning" as const }),
       text: taskLoopPausedLabel(loop, messages) ?? messages.task_loop_paused(),
-      tone: "warning",
     });
   // An active Loop whose rule this client cannot read still says that it runs.
   else if (!cadence)

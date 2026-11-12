@@ -152,6 +152,7 @@ describe("the Tasks a workspace's stations host", () => {
       conversationId: `station:${"a".repeat(64)}:7`,
       groupId: "g",
       title: "Task 7",
+      createdAt: 1,
       // In a Task's words: at work.
       status: "active",
       unsupported: ["comma"],

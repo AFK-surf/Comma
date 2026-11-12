@@ -13,6 +13,7 @@ import {
   commaThemeLightnessMax,
   commaThemeLightnessMin,
 } from "../../ui/src/tokens/colors/oklch";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 // Web shell layout scenarios that do not run on the test clock yet. The other
 // scenarios of the web shell's layout are in
@@ -927,8 +928,10 @@ test("font size preference scales core conversation typography without changing 
     );
 
     await page.getByRole("button", { name: "Appearance" }).click();
-    await page.getByRole("button", { name: /Select font size/ }).click();
-    await page.getByRole("option", { name: "Small" }).click();
+    await chooseDropdownOption(
+      page.getByRole("button", { name: /Select font size/ }),
+      /Small/
+    );
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "small");
     await expect
       .poll(async () => (await readMixedStrokeIcon()).width)
@@ -947,8 +950,10 @@ test("font size preference scales core conversation typography without changing 
       smallActionRect.clientHeight
     );
 
-    await page.getByRole("button", { name: /Select font size/ }).click();
-    await page.getByRole("option", { name: "Large" }).click();
+    await chooseDropdownOption(
+      page.getByRole("button", { name: /Select font size/ }),
+      /Large/
+    );
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "large");
     await expect
       .poll(async () => (await readMixedStrokeIcon()).width)
@@ -1044,8 +1049,7 @@ test("font size preference scales core conversation typography without changing 
     await page.keyboard.press("Enter");
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "small");
 
-    await fontSizeTrigger.click();
-    await page.getByRole("option", { name: "Large" }).click();
+    await chooseDropdownOption(fontSizeTrigger, /Large/);
     await expect(page.locator("html")).toHaveAttribute("data-comma-font-size", "large");
     await page.setViewportSize({ width: 1280, height: 800 });
 

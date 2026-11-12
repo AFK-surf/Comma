@@ -1,11 +1,7 @@
-const sidebarNavItemIds = [
-  "home",
-  "inbox",
-  "tasks",
-  "drive",
-  "apps",
-  "plugins",
-] as const;
+import { commaDefaultHomeViewSchema } from "@comma/native-bridge";
+
+// The rail's pages are the views a launch can open (Settings > Default home view).
+const sidebarNavItemIds = commaDefaultHomeViewSchema.options;
 
 export type SidebarNavItemId = (typeof sidebarNavItemIds)[number];
 

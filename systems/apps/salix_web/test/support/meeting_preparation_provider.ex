@@ -13,6 +13,7 @@ defmodule SalixWeb.Test.MeetingPreparationProvider do
       end)
 
   def requests, do: Agent.get(__MODULE__, & &1.requests)
+  def reset_requests, do: Agent.update(__MODULE__, &%{&1 | requests: []})
 
   def init(opts), do: opts
 
@@ -23,7 +24,7 @@ defmodule SalixWeb.Test.MeetingPreparationProvider do
     request =
       case Jason.decode(raw) do
         {:ok, decoded} when is_map(decoded) -> decoded
-        _ -> %{}
+        _ -> URI.decode_query(raw)
       end
 
     Agent.update(__MODULE__, fn s ->

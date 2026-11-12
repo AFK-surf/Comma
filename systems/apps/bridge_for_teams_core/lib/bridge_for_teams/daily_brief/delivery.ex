@@ -23,9 +23,18 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
   require Logger
 
   alias BridgeForTeams.Repo
-  alias BridgeForTeams.DailyBrief.{Compose, Members, RunLease, SharedSource, Sinks}
+
+  alias BridgeForTeams.DailyBrief.{
+    Compose,
+    DirectMessages,
+    Members,
+    RunLease,
+    SharedSource,
+    Sinks
+  }
+
   alias BridgeForTeams.Salix.Client, as: Salix
-  alias BridgeForTeams.Schema.{DailyBriefMember, DailyBriefRun, DailyBriefSetting}
+  alias BridgeForTeams.Schema.{DailyBriefMember, DailyBriefRun, DailyBriefSetting, Organization}
 
   @shared_interval_seconds 20 * 3600
   @default_window_seconds 86_400
@@ -153,19 +162,38 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
     _ = ensure_team_brief(settings, now, model_opts)
 
     with {:ok, shared} <- SharedSource.read(settings, window, members: [member]),
+         {shared, direct} = with_direct_messages(shared, settings, member, window),
          input = %{
            settings: settings,
            member: member,
            shared: shared,
            team_brief: latest_team_brief(settings),
            previous: last_brief_text(member),
+           followups: last_mine(member),
            now: now
          },
-         {:ok, %{text: text, usage: usage}} <- Compose.write(input, model_opts),
-         rendered = Sinks.Slack.render_personal(title(member.timezone, now), text),
-         coverage = %{"shared_complete" => SharedSource.complete?(shared.coverage)},
+         {:ok, %{text: text, usage: usage} = written} <- Compose.write(input, model_opts),
+         rendered =
+           Sinks.Slack.render_personal(
+             title(member.timezone, now),
+             text,
+             footer(settings, member)
+           ),
+         coverage = %{
+           "shared_complete" => SharedSource.complete?(shared.coverage),
+           "direct_messages" => direct
+         },
          {:ok, pending} <-
-           record_pending(settings, member, window, coverage, text, rendered, usage) do
+           record_pending(
+             settings,
+             member,
+             window,
+             coverage,
+             text,
+             rendered,
+             usage,
+             written[:mine]
+           ) do
       post_brief(settings, claimed, pending, now)
     else
       # A brief that cannot be written is recorded and, unless the failure
@@ -176,6 +204,49 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
         record_failed(settings, member, window, reason, usage)
         if transient?(reason), do: release_claim(settings, claimed, now)
         {:error, reason}
+    end
+  end
+
+  # The member's own direct messages join their relevant messages. A failed
+  # read is noted in the coverage; the brief is written without them.
+  defp with_direct_messages(shared, settings, member, window) do
+    case DirectMessages.read(settings, member, window) do
+      {:ok, %{messages: []}} when member.dm_status != "on" ->
+        {shared, "off"}
+
+      {:ok, %{messages: messages, complete?: complete?}} ->
+        picked = for m <- messages, do: %{message: m, reasons: [:direct], tier: :p0}
+
+        shared = %{
+          shared
+          | messages: shared.messages ++ messages,
+            relevant: Map.update(shared.relevant, member.id, picked, &(&1 ++ picked))
+        }
+
+        {shared, if(complete?, do: "read", else: "partial")}
+
+      {:error, reason} ->
+        Logger.warning(
+          "bridge_for_teams.daily_brief.direct_messages.failed reason=#{inspect(reason)}"
+        )
+
+        {shared, "failed"}
+    end
+  end
+
+  # A member whose direct messages are not read is offered the switch.
+  defp footer(_settings, %DailyBriefMember{dm_status: "on"}), do: nil
+
+  defp footer(settings, _member) do
+    with base when is_binary(base) and base != "" <-
+           SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url),
+         %Organization{slug: slug} when is_binary(slug) <-
+           Repo.get(Organization, settings.org_id) do
+      "这份简报只读了公开频道。想让它也看你的私信和群私信（只读，原文不保存）：<" <>
+        String.trim_trailing(base, "/") <>
+        "/orgs/#{slug}/daily-brief/direct-messages/connect|开启>"
+    else
+      _unavailable -> nil
     end
   end
 
@@ -250,7 +321,7 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
 
   defp pending_content(_run), do: {:error, :brief_unreadable}
 
-  defp record_pending(settings, member, window, coverage, written, rendered, usage) do
+  defp record_pending(settings, member, window, coverage, written, rendered, usage, mine) do
     Repo.insert(%DailyBriefRun{
       org_id: settings.org_id,
       project_id: settings.project_id,
@@ -260,7 +331,12 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
       window_before: window.before,
       status: "pending",
       coverage: coverage,
-      notes: %{"brief" => written, "text" => rendered.text, "blocks" => rendered.blocks},
+      notes: %{
+        "brief" => written,
+        "mine" => mine || [],
+        "text" => rendered.text,
+        "blocks" => rendered.blocks
+      },
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens
     })
@@ -567,6 +643,14 @@ defmodule BridgeForTeams.DailyBrief.Delivery do
         limit: 1
       )
     )
+  end
+
+  # The member's things the last brief listed, carried to the next one.
+  defp last_mine(member) do
+    case last_brief(member) do
+      %DailyBriefRun{notes: %{"mine" => mine}} when is_list(mine) -> mine
+      _none -> []
+    end
   end
 
   defp last_brief_text(member) do

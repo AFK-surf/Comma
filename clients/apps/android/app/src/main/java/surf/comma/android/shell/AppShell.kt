@@ -32,6 +32,7 @@ import surf.comma.android.settings.RootPage
 import surf.comma.android.settings.SettingsGraph
 import surf.comma.android.settings.SettingsHost
 import surf.comma.android.tasks.list.TaskActions
+import surf.comma.android.ui.widget.LiquidGlass
 import surf.comma.android.ui.kit.dp
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
@@ -64,7 +65,12 @@ class AppShell(
     private val pages = surf.comma.android.ui.widget.BackdropBlurLayout(activity)
     private val home = HomePage(this)
     private val inbox = InboxPage(this)
-    private val settings = SettingsHost(activity, embedded = true, toast = { text, error -> store.showToast(text, error) })
+    private val settings = SettingsHost(activity, embedded = true, toast = { text, error -> store.showToast(text, error) },
+        links = surf.comma.android.settings.SettingsLinks(
+            openRouter = { openRouter() },
+            attachToRouter = { name, bytes -> routerRepository.attach(name, bytes) != null },
+        ))
+    private val apps = surf.comma.android.miniapps.MiniAppsTab(activity, store)
     private val tabBar = ShellTabBar(activity)
     private val routerLayer = FrameLayout(activity).apply { visibility = GONE; isClickable = true }
     private val dock = TaskDock(this) { open, raised -> dockChanged(open, raised) }
@@ -80,12 +86,15 @@ class AppShell(
     private var dockRaised = false
     /** Whether the app is on screen; the router chat keeps its stream only while it is and no Task covers it. */
     private var foreground = true
-    /** The last Task request ([WorkspaceStore.taskReveal]) shown, so a restart does not raise the dock again. */
+    /** The last Task request ([WorkspaceStore.OpenTask.reveal]) shown, so a restart does not raise the dock again. */
     private var handledReveal: Int? = null
     /** A Task left minimized before the activity was recreated comes back minimized. */
     private var restoreMinimized = false
     private var safeTop = 0
     private var safeBottom = 0
+    private var displayCorners = surf.comma.android.ui.kit.DisplayCorners.UNKNOWN
+    /** The open Task's browser viewer from before the activity was recreated (a rotation); it opens again with it. */
+    private var restoreBrowser: String? = null
     private var seenReplySeq = Long.MAX_VALUE
     /** The account scope [seenReplySeq] counts in; another one starts the count again. */
     private var seenReplyScope: ConversationScope? = null
@@ -111,7 +120,10 @@ class AppShell(
         setBackgroundColor(android.graphics.Color.BLACK)
         pages.addView(home, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         pages.addView(inbox, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        pages.addView(apps.host, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         pages.addView(settings.host, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        surf.comma.android.miniapps.MiniAppRuntimes.start(activity)
+        surf.comma.android.miniapps.MiniAppRuntimes.draftTarget = ::insertIntoRouter
         settings.open(RootPage(settings))
         card.addView(pages, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         card.addView(tabBar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
@@ -125,16 +137,24 @@ class AppShell(
         router.onOpenSidebar = ::closeRouter
         // As on iOS, a Task's card in the router chat opens the Task in the dock, over the chat.
         router.onOpenTaskCard = { id, _ -> store.openTask(id) }
+        router.onOpenBrowser = ::openRouterBrowser
         routerLayer.outlineProvider = routerOutline
         tabBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> frostUnderTabBar() }
+        tabBar.onGlassTouch = { pages.trackPress("tabs", it) }
+        tabBar.backdrop = { canvas ->
+            canvas.save()
+            canvas.translate((pages.left - tabBar.left).toFloat(), (pages.top - tabBar.top).toFloat())
+            pages.drawContent(canvas)
+            canvas.restore()
+        }
         tabBar.onSelect = ::select
-        tabBar.onSearch = ::openSearch
         tabBar.onRouter = { openRouter() }
         activity.onBackPressedDispatcher.addCallback(activity, routerBack)
         ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             safeTop = bars.top
             safeBottom = bars.bottom
+            displayCorners = surf.comma.android.ui.kit.DisplayCorners.of(insets.toWindowInsets())
             layoutInsets()
             val keyboard = insets.isVisible(WindowInsetsCompat.Type.ime())
             home.setKeyboardVisible(keyboard && !routerOpen)
@@ -161,18 +181,20 @@ class AppShell(
                 launch { routerRepository.state.collect(::routerChanged) }
                 launch { ReplyNotifications.get(activity).enabled.collect { updateSettingsAttention() } }
                 // The store lets the Task go on sign-out or another account or Workspace: so does the dock.
-                launch { store.openTask.collect { id -> if (id == null) dock.dismissNow() } }
+                launch { store.openTask.collect { open -> if (open.id == null) dock.dismissNow() } }
                 // Each request to show a Task raises it once; the same request read again on a restart leaves a
                 // minimized dock as it is.
                 launch {
-                    store.taskReveal.collect { reveal ->
-                        if (reveal == handledReveal) return@collect
-                        handledReveal = reveal
+                    store.openTask.collect { open ->
+                        if (open.reveal == handledReveal) return@collect
+                        handledReveal = open.reveal
                         // Only the first request read after a recreation is the Task that was open before it.
                         val raise = !restoreMinimized
                         restoreMinimized = false
-                        val id = store.openTask.value ?: return@collect
+                        val id = open.id ?: return@collect
                         dock.open(id, raise)
+                        restoreBrowser?.let { viewer -> dock.openBrowser(viewer, raise = false) }
+                        restoreBrowser = null
                     }
                 }
                 launch {
@@ -213,12 +235,14 @@ class AppShell(
 
     /** The tab bar's glass shows the page blurred under its capsule and its circle. */
     private fun frostUnderTabBar() {
-        val shapes = tabBar.frostShapes()
-        listOf("tabs", "router").forEachIndexed { index, key ->
-            val (rect, radius) = shapes[index]
-            rect.offset(tabBar.left - pages.left, tabBar.top - pages.top)
-            pages.setFloatingPatch(key, if (tabBar.visibility == VISIBLE) rect else null, radius)
-        }
+        val shapes = if (tabBar.visibility == VISIBLE) tabBar.frostShapes() else emptyList()
+        shapes.forEach { it.bounds.offset(tabBar.left - pages.left, tabBar.top - pages.top) }
+        val density = resources.displayMetrics.density
+        pages.setFloatingGroup("tabs", shapes, LiquidGlass.BLEND_DP * density)
+        val capsule = shapes.firstOrNull()?.bounds
+        pages.setGroupPress("tabs", ((capsule?.width() ?: 0) * ShellTabBar.LENS_BAR_SCALE / 2f).toInt(),
+            ((capsule?.height() ?: 0) * ShellTabBar.LENS_BAR_SCALE / 2f).toInt(), ShellTabBar.LENS_BLEND_DP * density,
+            if (resources.configuration.isNightModeActive) ShellTabBar.LENS_VEIL_DARK else ShellTabBar.LENS_VEIL)
     }
 
     // MARK: Tabs
@@ -228,6 +252,7 @@ class AppShell(
             when (next) {
                 AppTab.HOME -> home.reselected()
                 AppTab.INBOX -> inbox.reselected()
+                AppTab.APPS -> apps.reselected()
                 AppTab.SETTINGS -> settings.host.popToRoot()
             }
             return
@@ -240,6 +265,8 @@ class AppShell(
         tabBar.select(next)
         home.isVisible = next == AppTab.HOME
         inbox.isVisible = next == AppTab.INBOX
+        apps.host.isVisible = next == AppTab.APPS
+        apps.active = next == AppTab.APPS
         settings.host.isVisible = next == AppTab.SETTINGS
         settings.active = next == AppTab.SETTINGS
         if (next == AppTab.HOME) home.shown()
@@ -258,14 +285,24 @@ class AppShell(
         home.setInsets(safeTop, reserve)
         inbox.setInsets(safeTop, reserve)
         settings.bottomReserve = reserve + activity.dp(8) - safeBottom
+        apps.bottomReserve = reserve + activity.dp(8) - safeBottom
         val dockReserve = if (docked) TaskDock.reserve(activity, safeBottom) else 0
         (card.layoutParams as LayoutParams).bottomMargin = dockReserve
         card.clipToOutline = dockReserve > 0
         card.outlineProvider = if (dockReserve > 0) object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: android.graphics.Outline) =
-                outline.setRoundRect(0, 0, view.width, view.height, activity.dp(28).toFloat())
+            override fun getOutline(view: View, outline: android.graphics.Outline) = cardCorners().outline(view, outline)
         } else android.view.ViewOutlineProvider.BACKGROUND
         card.requestLayout()
+    }
+
+    /**
+     * The app's corners above a docked Task: its foot rounds, each corner no rounder than the display's corner on
+     * that side (a foldable's outer screen has small ones), and its top meets the display's own corners.
+     */
+    internal fun cardCorners(): surf.comma.android.ui.kit.CornerRadii {
+        val radius = activity.dp(CARD_RADIUS_DP).toFloat()
+        val cap = surf.comma.android.ui.kit.DisplayCorners.Companion::cap
+        return surf.comma.android.ui.kit.CornerRadii(0f, 0f, cap(radius, displayCorners.bottomRight), cap(radius, displayCorners.bottomLeft))
     }
 
     // MARK: Task dock
@@ -289,7 +326,10 @@ class AppShell(
     private fun applyForeground() = routerRepository.setForeground(foreground && !dockRaised)
 
     /** The activity ends: the open Task's conversation, its chat and their streams stop with it. */
-    fun release() = dock.release()
+    fun release() {
+        surf.comma.android.miniapps.MiniAppRuntimes.releaseDraftTarget(::insertIntoRouter)
+        dock.release()
+    }
 
     // MARK: Back
 
@@ -307,6 +347,7 @@ class AppShell(
     fun saveState(out: Bundle) {
         out.putString(STATE_TAB, tab.name)
         out.putBoolean(STATE_DOCK_MINIMIZED, dockMinimized)
+        dock.browserViewer?.let { out.putString(STATE_TASK_BROWSER, it) }
         out.putBoolean(STATE_ROUTER_OPEN, routerOpen || launchRouter)
     }
 
@@ -315,6 +356,7 @@ class AppShell(
         state ?: return
         state.getString(STATE_TAB)?.let { name -> AppTab.entries.firstOrNull { it.name == name } }?.let(::showTab)
         restoreMinimized = state.getBoolean(STATE_DOCK_MINIMIZED)
+        restoreBrowser = state.getString(STATE_TASK_BROWSER)
         launchRouter = state.getBoolean(STATE_ROUTER_OPEN, true)
         if (launchRouter && store.auth.conversationScope.value != null) {
             launchRouter = false
@@ -328,7 +370,7 @@ class AppShell(
 
     // MARK: Search
 
-    private fun openSearch() {
+    override fun openSearch() {
         if (search != null) return
         if (routerOpen) closeRouter()
         val layer = SearchLayer(this) {
@@ -438,6 +480,22 @@ class AppShell(
         showTab(AppTab.SETTINGS)
     }
 
+    /** The router chat's own remote browser: the browser of the participant working in the router conversation. */
+    private fun openRouterBrowser(participant: String) {
+        val calls = store.workspaceCalls() ?: return
+        val conversation = routerRepository.state.value.conversationId ?: return
+        surf.comma.android.remote.RemoteBrowserSheet(activity, surf.comma.android.remote.RemoteBrowser(calls, conversation, participant)).show()
+    }
+
+    /** A shared app link: the Apps tab opens its page over the list, above the router chat. */
+    fun openMiniAppLink(token: String) {
+        closeRouter()
+        search?.dismiss()
+        if (dock.isOpen) dock.minimize()
+        showTab(AppTab.APPS)
+        apps.openShared(token)
+    }
+
     /** A tapped reply notification: the Task dock steps down and the router chat comes forward. */
     fun revealRouter() {
         if (dock.isOpen) dock.minimize()
@@ -450,6 +508,8 @@ class AppShell(
         private const val STATE_TAB = "shell.tab"
         private const val STATE_DOCK_MINIMIZED = "shell.dockMinimized"
         private const val STATE_ROUTER_OPEN = "shell.routerOpen"
+        private const val STATE_TASK_BROWSER = "shell.taskBrowser"
+        private const val CARD_RADIUS_DP = 28
 
         private val ZOOM = object : FloatPropertyCompat<AppShell>("zoom") {
             override fun getValue(shell: AppShell) = shell.zoom

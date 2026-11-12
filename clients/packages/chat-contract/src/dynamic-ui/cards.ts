@@ -28,6 +28,15 @@ export interface CardEngine {
     spec: { kind: unknown; data: unknown; variant?: unknown },
     key: string
   ): DocumentFragment;
+  /**
+   * Draws `comma.chart` data the way the trend and bars cards draw theirs.
+   * The runtime has checked the data: equal lengths, finite numbers.
+   */
+  chart(spec: {
+    type: "bar" | "line";
+    labels: string[];
+    series: Array<{ name: string; values: number[] }>;
+  }): DocumentFragment;
   receiveIcons(icons: unknown): void;
   /** Progress that another open copy of this widget saved. */
   receiveState(state: unknown): void;
@@ -62,6 +71,10 @@ export function cardEngine(env: CardEnv): CardEngine {
     paused: "Paused",
     timeUp: "Time's up",
     timerCycle: "Session {current} of {total}",
+    arrivesBy: "Arrives by {time}",
+    orderHeadline: "{status}, {arrival}",
+    offline: "Offline",
+    upNext: "Up next",
   };
   const copy: CardCopy = { ...english };
   for (const name of Object.keys(english) as Array<keyof CardCopy>) {
@@ -128,6 +141,40 @@ export function cardEngine(env: CardEnv): CardEngine {
     if (typeof source === "string") markup(node, source);
     return node;
   };
+  /**
+   * Shapes the templates draw themselves, so controls and seals show on every
+   * host, including phones that pass no icons.
+   */
+  const shapes: Record<string, string> = {
+    play: "M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6Z",
+    pause:
+      "M7.5 5h2a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 9.5 19h-2A1.5 1.5 0 0 1 6 17.5v-11A1.5 1.5 0 0 1 7.5 5Zm7 0h2A1.5 1.5 0 0 1 18 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-2a1.5 1.5 0 0 1-1.5-1.5v-11A1.5 1.5 0 0 1 14.5 5Z",
+    next: "M4.5 6.3v11.4a1 1 0 0 0 1.56.83l8.3-5.7a1 1 0 0 0 0-1.66l-8.3-5.7A1 1 0 0 0 4.5 6.3ZM17.25 5h.5c.69 0 1.25.56 1.25 1.25v11.5c0 .69-.56 1.25-1.25 1.25h-.5c-.69 0-1.25-.56-1.25-1.25V6.25c0-.69.56-1.25 1.25-1.25Z",
+    check: "m5 12.5 4.5 4.5L19 7.5",
+  };
+  const shape = (name: string, className?: string) =>
+    hidden(
+      h(
+        "span",
+        cx("wc-icon", className),
+        svg(
+          "svg",
+          { viewBox: "0 0 24 24", fill: name === "check" ? "none" : "currentColor" },
+          svg(
+            "path",
+            name === "check"
+              ? {
+                  d: shapes[name]!,
+                  stroke: "currentColor",
+                  "stroke-width": 2.5,
+                  "stroke-linecap": "round",
+                  "stroke-linejoin": "round",
+                }
+              : { d: shapes[name]! }
+          )
+        )
+      )
+    );
   const fill = (template: string, values: Record<string, string | number>) =>
     template.replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? ""));
   // SVG ids are document-wide; a prefix keeps two engines on one page apart.
@@ -141,18 +188,14 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
-  // Text past its room ends in an ellipsis, so a cut never reads as the whole.
-  const text = (value: unknown, max = 200) =>
-    typeof value === "string" && value.trim()
-      ? value.length > max
-        ? `${value.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "")}…`
-        : value
-      : undefined;
+  // Text stays as written: the card's width decides how much of it shows.
+  const text = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value : undefined;
   // Ids and filter keys stay as written: they must match saved progress.
   const ident = (value: unknown, max: number) =>
     typeof value === "string" && value.trim() ? value.slice(0, max) : undefined;
-  const need = (value: unknown, field: string, max = 200) =>
-    text(value, max) ?? fail(`Card data needs ${field}`);
+  const need = (value: unknown, field: string) =>
+    text(value) ?? fail(`Card data needs ${field}`);
   const num = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) ? value : undefined;
   const list = <T>(
@@ -176,6 +219,34 @@ export function cardEngine(env: CardEnv): CardEngine {
     Array.isArray(value) && value.length > 0
       ? `Card data ${name}[0] needs ${needs}`
       : undefined;
+  /**
+   * How wide text is, in ems of its own size: a CJK or other full-width
+   * character counts one, any other 0.62. Layouts size a column or pick
+   * themselves from it before anything is drawn.
+   */
+  const widthOf = (value: string) => {
+    let total = 0;
+    for (const character of value)
+      total +=
+        /[\u1100-\u11ff\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(
+          character
+        )
+          ? 1
+          : 0.62;
+    return total;
+  };
+  /**
+   * `label` in pieces a narrow slot may wrap between: after a dot, slash, dash
+   * or underscore inside it. A domain or a path then breaks there before it
+   * breaks inside a word.
+   */
+  const breakable = (label: string): Child[] =>
+    label
+      .replaceAll(/(.)([./_-])(?=[^\s./_-])/g, "$1$2\n")
+      .split("\n")
+      .flatMap((piece, index) =>
+        index ? [document.createElement("wbr"), piece] : [piece]
+      );
   const tones: Tone[] = ["neutral", "brand", "success", "warning", "error"];
   const toneOf = (value: unknown): Tone =>
     tones.includes(value as Tone) ? (value as Tone) : "neutral";
@@ -192,21 +263,37 @@ export function cardEngine(env: CardEnv): CardEngine {
       return undefined;
     }
   };
-  const deltaOf = (value: unknown): Delta | undefined =>
-    isRecord(value) && text(value.value, 40)
-      ? {
-          value: text(value.value, 40)!,
-          direction:
-            value.direction === "down" || value.direction === "flat"
-              ? value.direction
-              : "up",
-          good: value.good !== false,
-        }
-      : undefined;
+  // The arrow shows which way a change went, so a sign written in its text is
+  // not shown twice; a change with no direction takes it from that sign. A
+  // rise is good and a fall is not, unless the data says otherwise.
+  const deltaOf = (value: unknown): Delta | undefined => {
+    if (!isRecord(value) || !text(value.value)) return undefined;
+    const written = text(value.value)!.trim();
+    const sign = /^[+＋]/.test(written)
+      ? "up"
+      : /^[-−–－]/.test(written)
+        ? "down"
+        : undefined;
+    const direction =
+      value.direction === "up" ||
+      value.direction === "down" ||
+      value.direction === "flat"
+        ? value.direction
+        : (sign ?? "up");
+    const unsigned = written.replace(/^[-+−–＋－]\s*/, "");
+    return {
+      value: direction === "flat" || !unsigned ? written : unsigned,
+      direction,
+      good: typeof value.good === "boolean" ? value.good : direction !== "down",
+    };
+  };
+  // A status is its label alone, or a label with a tone.
   const statusOf = (value: unknown) =>
-    isRecord(value) && text(value.label, 40)
-      ? { label: text(value.label, 40)!, tone: toneOf(value.tone) }
-      : undefined;
+    text(value)
+      ? { label: text(value)!, tone: "neutral" as Tone }
+      : isRecord(value) && text(value.label)
+        ? { label: text(value.label)!, tone: toneOf(value.tone) }
+        : undefined;
   // An ISO time with an offset names one moment; anything else is not a moment.
   const momentOf = (value: unknown) => {
     if (
@@ -258,21 +345,43 @@ export function cardEngine(env: CardEnv): CardEngine {
     const moment = momentOf(value);
     return moment === undefined ? undefined : clockOf(moment);
   };
+  const actionsOf = (value: unknown, limit: number): Frame["actions"] =>
+    list(value, limit, (action) =>
+      // The prompt is sent, not shown, so a cut adds no ellipsis to it.
+      isRecord(action) && text(action.label) && ident(action.prompt, 4000)
+        ? { label: text(action.label)!, prompt: ident(action.prompt, 4000)! }
+        : undefined
+    );
+  // Actions only propose a follow-up; the user sends it from the chat.
+  const actionButton = (action: Frame["actions"][number]) => {
+    const button = h("button", "wc-action", action.label) as HTMLButtonElement;
+    button.type = "button";
+    button.addEventListener("click", (event) => {
+      if (event.isTrusted) env.send({ type: "request", value: action.prompt });
+    });
+    return button;
+  };
   const frameOf = (data: Record<string, unknown>): Frame => ({
     title: need(data.title, "a title"),
-    meta: text(data.meta, 60),
-    source: text(data.source, 120),
+    meta: text(data.meta),
+    source: text(data.source),
     sourceBrand: brandOf(data.sourceBrand),
-    updatedAt: text(data.updatedAt, 60),
+    updatedAt: text(data.updatedAt),
     observedAt: momentText(data.observedAt),
-    actions: list(data.actions, 2, (action) =>
-      // The prompt is sent, not shown, so a cut adds no ellipsis to it.
-      isRecord(action) && text(action.label, 40) && ident(action.prompt, 4000)
-        ? { label: text(action.label, 40)!, prompt: ident(action.prompt, 4000)! }
-        : undefined
-    ),
+    actions: actionsOf(data.actions, 2),
   });
 
+  // A number as it was given, grouped for the reader: every digit a double
+  // holds, so 0.001 stays 0.001 and 0.1 + 0.2 reads 0.3.
+  let formatNumber: (value: number) => string;
+  try {
+    const format = new Intl.NumberFormat(env.locale || undefined, {
+      maximumSignificantDigits: 15,
+    });
+    formatNumber = (value) => format.format(value);
+  } catch {
+    formatNumber = (value) => String(value);
+  }
   let formatCompact: (value: number) => string;
   try {
     const format = new Intl.NumberFormat(env.locale || undefined, {
@@ -318,15 +427,20 @@ export function cardEngine(env: CardEnv): CardEngine {
       });
     queued.add(brand);
   };
-  /** A known brand's logo on a neutral tile; anything else gets a monogram of the same size. */
+  /**
+   * A known brand's logo on a neutral tile. A name with no brand gets a tinted
+   * monogram of the same size, or, among entries that have logos (`plain`), its
+   * initial on their tile: one set of entries reads as one family.
+   */
   const avatarTones = ["blue", "purple", "success", "orange", "pink", "indigo"];
   const initialOf = (name: string) => [...name][0] ?? "";
   const mark = (
     brand: string | undefined,
     name: string,
-    size: "sm" | "md" | "lg" = "md"
+    size: "sm" | "md" | "lg" = "md",
+    plain = false
   ) => {
-    if (!brand) {
+    if (!brand && !plain) {
       const hash = [...name].reduce((sum, char) => sum + (char.codePointAt(0) ?? 0), 0);
       return hidden(
         h(
@@ -337,10 +451,15 @@ export function cardEngine(env: CardEnv): CardEngine {
       );
     }
     const tile = hidden(h("span", `wc-mark wc-mark-${size} wc-brand`));
-    tile.dataset.initial = initialOf(name);
-    place(tile, brand);
+    if (brand) {
+      tile.dataset.initial = initialOf(name);
+      place(tile, brand);
+    } else tile.textContent = initialOf(name);
     return tile;
   };
+  /** Whether any of `entries` has a brand, so each of them takes a tile. */
+  const branded = (entries: Array<{ brand?: string | undefined }>) =>
+    entries.some((entry) => entry.brand);
 
   // --------------------------------------------------------- primitives
   const badge = (label: string, color: "brand" | "gray") =>
@@ -376,6 +495,29 @@ export function cardEngine(env: CardEnv): CardEngine {
     return h("span", cx("wc-wx", tone, className), icon(name), sr(label));
   };
 
+  /**
+   * Where bars of `values` stand in a plot that runs from the lowest value, or
+   * zero, to the highest, `full` or zero. `headroom` is the share of the plot
+   * kept clear above the highest bar for its value. A bar runs between zero
+   * and its value, so a negative one hangs under the zero line.
+   */
+  const barPlot = (values: number[], headroom = 0, full = 0) => {
+    const low = Math.min(0, ...values);
+    const size = (Math.max(0, full, ...values) - low) / (1 - headroom) || 1;
+    const at = (value: number) => (value - low) / size;
+    return {
+      /** Whether a bar hangs under zero, so the zero line shows. */
+      signed: low < 0,
+      /** How far along the plot `value` is, from 0 to 1. */
+      at,
+      /** Where the bar of `value` starts and how long it is, as shares of the plot. */
+      bar: (value: number) => ({
+        from: at(Math.min(value, 0)),
+        length: Math.abs(value) / size,
+      }),
+    };
+  };
+  const percent = (share: number) => `${share * 100}%`;
   const scale = (points: number[], height: number, inset: number) => {
     const min = Math.min(...points);
     const max = Math.max(...points);
@@ -564,8 +706,8 @@ export function cardEngine(env: CardEnv): CardEngine {
   type FilterOption = { key: string; label: string };
   const filtersOf = (value: unknown) =>
     list(value, 4, (filter): FilterOption | undefined =>
-      isRecord(filter) && ident(filter.key, 40) && text(filter.label, 20)
-        ? { key: ident(filter.key, 40)!, label: text(filter.label, 20)! }
+      isRecord(filter) && ident(filter.key, 40) && text(filter.label)
+        ? { key: ident(filter.key, 40)!, label: text(filter.label)! }
         : undefined
     );
   const filterKeysOf = (value: unknown) =>
@@ -641,20 +783,17 @@ export function cardEngine(env: CardEnv): CardEngine {
         "wc-foot",
         h("p", "wc-src", glyph, h("span", null, provenance))
       );
-      for (const action of frame.actions) {
-        const button = h("button", "wc-action", action.label) as HTMLButtonElement;
-        button.type = "button";
-        // Actions only propose a follow-up; the user sends it from the chat.
-        button.addEventListener("click", (event) => {
-          if (event.isTrusted) env.send({ type: "request", value: action.prompt });
-        });
-        foot.append(button);
-      }
+      for (const action of frame.actions) foot.append(actionButton(action));
       root.append(foot);
     }
     return root;
   };
 
+  type Stage = {
+    label: string;
+    detail?: string | undefined;
+    state: "done" | "current" | "upcoming";
+  };
   // --------------------------------------------------------------- clock
   const tickers = new Set<(now: number) => void>();
   let clockTimer: number | undefined;
@@ -767,13 +906,13 @@ export function cardEngine(env: CardEnv): CardEngine {
         : undefined;
     const days = list(data.days, 7, (day): Day | undefined =>
       isRecord(day) &&
-      text(day.label, 20) &&
+      text(day.label) &&
       num(day.high) !== undefined &&
       num(day.low) !== undefined
         ? {
-            label: text(day.label, 20)!,
+            label: text(day.label)!,
             condition: conditionOf(day.condition),
-            conditionLabel: text(day.conditionLabel, 40) ?? "",
+            conditionLabel: text(day.conditionLabel) ?? "",
             high: num(day.high)!,
             low: num(day.low)!,
             precipitation: num(day.precipitation),
@@ -789,11 +928,11 @@ export function cardEngine(env: CardEnv): CardEngine {
       );
     return {
       frame: frameOf(data),
-      location: text(data.location, 60),
+      location: text(data.location),
       current: current && {
         temperature: num(current.temperature)!,
         condition: conditionOf(current.condition),
-        label: text(current.label, 40) ?? "",
+        label: text(current.label) ?? "",
         details: [
           num(current.feelsLike) === undefined
             ? null
@@ -801,13 +940,13 @@ export function cardEngine(env: CardEnv): CardEngine {
           num(current.humidity) === undefined
             ? null
             : `${copy.humidity} ${num(current.humidity)}%`,
-          text(current.wind, 40),
+          text(current.wind),
         ]
           .filter(Boolean)
           .join(" · "),
       },
       days,
-      highlight: text(data.highlight, 200),
+      highlight: text(data.highlight),
     };
   };
   const highLow = (day: Day | undefined) =>
@@ -962,18 +1101,18 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   const optionsOf = (data: Record<string, unknown>): Options => {
     const items = list(data.items, 8, (item): Option | undefined =>
-      isRecord(item) && text(item.primary, 80)
+      isRecord(item) && text(item.primary)
         ? {
             id: ident(item.id, 60) ?? ident(item.primary, 80)!,
-            primary: text(item.primary, 80)!,
-            secondary: text(item.secondary, 40),
-            span: text(item.span, 40),
-            meta: text(item.meta, 120),
-            price: text(item.price, 40),
-            priceNote: text(item.priceNote, 20),
+            primary: text(item.primary)!,
+            secondary: text(item.secondary),
+            span: text(item.span),
+            meta: text(item.meta),
+            price: text(item.price),
+            priceNote: text(item.priceNote),
             status: statusOf(item.status),
-            tags: list(item.tags, 3, (tag) => text(tag, 20)),
-            reason: text(item.reason, 240),
+            tags: list(item.tags, 3, (tag) => text(tag)),
+            reason: text(item.reason),
             recommended: item.recommended === true,
             filterKeys: filterKeysOf(item.filterKeys),
           }
@@ -1129,7 +1268,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                         "span",
                         "wc-col wc-grow",
                         h("span", "wc-sm wc-w5 wc-c1 wc-clip", item.primary),
-                        item.meta && h("span", "wc-xs wc-c3 wc-clip", item.meta)
+                        item.meta && h("span", "wc-xs wc-c3", item.meta)
                       ),
                       h(
                         "span",
@@ -1176,14 +1315,14 @@ export function cardEngine(env: CardEnv): CardEngine {
       num(data.goal.target) !== undefined
         ? data.goal
         : undefined;
-    const metrics = list(data.metrics, 4, (metric): Metric | undefined =>
-      isRecord(metric) && text(metric.value, 40)
+    const metrics = list(data.metrics, 6, (metric): Metric | undefined =>
+      isRecord(metric) && text(metric.value)
         ? {
-            label: text(metric.label, 40) ?? "",
-            value: text(metric.value, 40)!,
-            unit: text(metric.unit, 12),
+            label: text(metric.label) ?? "",
+            value: text(metric.value)!,
+            unit: text(metric.unit),
             delta: deltaOf(metric.delta),
-            caption: text(metric.caption, 60),
+            caption: text(metric.caption),
             series: numbers(metric.series, 64),
           }
         : undefined
@@ -1201,9 +1340,9 @@ export function cardEngine(env: CardEnv): CardEngine {
       goal: goal && {
         current: num(goal.current)!,
         target: num(goal.target)!,
-        valueLabel: need(goal.valueLabel, "goal.valueLabel", 40),
-        targetLabel: need(goal.targetLabel, "goal.targetLabel", 60),
-        note: text(goal.note, 120),
+        valueLabel: need(goal.valueLabel, "goal.valueLabel"),
+        targetLabel: need(goal.targetLabel, "goal.targetLabel"),
+        note: text(goal.note),
       },
     };
   };
@@ -1214,6 +1353,42 @@ export function cardEngine(env: CardEnv): CardEngine {
       metric.value,
       metric.unit && h("span", "wc-unit", metric.unit)
     );
+  /**
+   * The tiles of several metrics. A tile is as wide as its widest value needs,
+   * so a number is never broken across lines: long values get fewer columns.
+   * Five or six metrics take three columns at most, so no row is left with one.
+   */
+  const metricTiles = (metrics: Metric[]) => {
+    const widest = Math.max(
+      ...metrics.map(
+        (metric) => widthOf(metric.value) + widthOf(metric.unit ?? "") * 0.7
+      )
+    );
+    const grid = h(
+      "ul",
+      "wc-metric-grid",
+      ...metrics.map((metric) =>
+        h(
+          "li",
+          "wc-tile",
+          h("span", "wc-xs wc-c3", metric.label),
+          value(metric, "wc-title-3"),
+          metric.delta && delta(metric.delta),
+          metric.caption && h("span", "wc-xs wc-c3", metric.caption)
+        )
+      )
+    );
+    // A little over the estimate, so the widest value never breaks in its tile.
+    grid.style.setProperty("--wc-tile-ems", (widest + 0.4).toFixed(2));
+    // Four metrics sit four or two in a row, five or six sit three or two:
+    // the wider count when a full-width card's tiles hold the widest value.
+    const [many, room] = metrics.length > 4 ? [3, 7] : [4, 5];
+    grid.style.setProperty(
+      "--wc-tile-columns",
+      String(metrics.length > 3 && widest > room ? 2 : many)
+    );
+    return grid;
+  };
   const metricLayouts: Array<Layout<Metrics>> = [
     [
       "goal",
@@ -1239,6 +1414,8 @@ export function cardEngine(env: CardEnv): CardEngine {
                 goal.note && h("span", "wc-xs wc-c2 wc-pad-t", goal.note)
               )
             ),
+            // Metrics given beside a goal show under it.
+            data.metrics.length > 0 && metricTiles(data.metrics),
           ]),
         };
       },
@@ -1259,7 +1436,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                 value(metric, "wc-display-md wc-tight"),
                 h(
                   "span",
-                  "wc-row-center wc-gap-sm",
+                  "wc-row-center wc-wrap wc-gap-sm",
                   metric.delta && delta(metric.delta),
                   metric.caption && h("span", "wc-xs wc-c3", metric.caption)
                 )
@@ -1277,23 +1454,7 @@ export function cardEngine(env: CardEnv): CardEngine {
     [
       "grid",
       (data) => data.goal === undefined && data.metrics.length > 1,
-      (data) => ({
-        root: card(data.frame, [
-          h(
-            "ul",
-            "wc-metric-grid",
-            ...data.metrics.map((metric) =>
-              h(
-                "li",
-                "wc-tile",
-                h("span", "wc-xs wc-c3", metric.label),
-                value(metric, "wc-title-3"),
-                metric.delta && delta(metric.delta)
-              )
-            )
-          ),
-        ]),
-      }),
+      (data) => ({ root: card(data.frame, [metricTiles(data.metrics)]) }),
     ],
   ];
 
@@ -1326,36 +1487,35 @@ export function cardEngine(env: CardEnv): CardEngine {
     const trend: Trend = {
       frame: frameOf(data),
       brand: brandOf(data.brand),
-      value: text(data.value, 40),
+      value: text(data.value),
       delta: deltaOf(data.delta),
       ranges: list(data.ranges, 4, (range) => {
-        if (!isRecord(range) || !ident(range.key, 20) || !text(range.label, 20))
+        if (!isRecord(range) || !ident(range.key, 20) || !text(range.label))
           return undefined;
         const points = numbers(range.points, 64);
         return points.length > 1
           ? {
               key: ident(range.key, 20)!,
-              label: text(range.label, 20)!,
+              label: text(range.label)!,
               points,
-              axis: list(range.axis, 6, (tick) => text(tick, 20)),
+              axis: list(range.axis, 6, (tick) => text(tick)),
             }
           : undefined;
       }),
       bars: bars && {
-        labels: list(bars.labels, 31, (label) => text(label, 12) ?? ""),
+        labels: list(bars.labels, 31, (label) => text(label) ?? ""),
         values: numbers(bars.values, 31),
-        valueLabels: list(bars.valueLabels, 31, (label) => text(label, 20) ?? ""),
-        averageLabel: text(bars.averageLabel, 40),
+        valueLabels: list(bars.valueLabels, 31, (label) => text(label) ?? ""),
+        averageLabel: text(bars.averageLabel),
       },
       series: list(data.series, 6, (item): Series | undefined => {
-        if (!isRecord(item) || !text(item.label, 12) || !text(item.value, 20))
-          return undefined;
+        if (!isRecord(item) || !text(item.label) || !text(item.value)) return undefined;
         const points = numbers(item.points, 64);
         return points.length > 1
           ? {
-              label: text(item.label, 12)!,
+              label: text(item.label)!,
               brand: brandOf(item.brand),
-              value: text(item.value, 20)!,
+              value: text(item.value)!,
               delta: deltaOf(item.delta),
               points,
             }
@@ -1381,18 +1541,160 @@ export function cardEngine(env: CardEnv): CardEngine {
       );
     return trend;
   };
+  /** The trend's main value, its change and its brand; nothing when the data has none. */
   const headline = (data: Trend) =>
-    h(
-      "div",
-      "wc-row-center wc-gap-md",
-      data.brand && mark(data.brand, data.frame.title, "lg"),
+    data.brand || data.value || data.delta
+      ? h(
+          "div",
+          "wc-row-center wc-gap-md",
+          data.brand && mark(data.brand, data.frame.title, "lg"),
+          h(
+            "div",
+            "wc-col wc-gap-xxs",
+            data.value && h("span", "wc-title-2 wc-w6 wc-c1", data.value),
+            data.delta && delta(data.delta)
+          )
+        )
+      : null;
+  /** Sets an upright bar between zero and its value in the plot. */
+  const stand = (
+    bar: HTMLElement,
+    extent: { from: number; length: number },
+    down: boolean
+  ) => {
+    bar.style.height = percent(extent.length);
+    if (extent.from > 0) bar.style.setProperty("--wc-lift", extent.from.toFixed(4));
+    if (down) bar.classList.add("wc-bar-down");
+  };
+  /** Lays a sideways bar's fill between zero and its value on its track. */
+  const lay = (track: HTMLElement, extent: { from: number; length: number }) => {
+    track.style.setProperty("--wc-share", percent(extent.length));
+    if (extent.from > 0) track.style.setProperty("--wc-from", percent(extent.from));
+  };
+  /** The zero line of a plot that has a bar under it. */
+  const zeroLine = (area: ReturnType<typeof barPlot>) => {
+    if (!area.signed) return null;
+    const line = hidden(h("div", "wc-bars-zero"));
+    line.style.bottom = percent(area.at(0));
+    return line;
+  };
+  /**
+   * Upright bars over their labels. A series of periods marks its latest bar;
+   * up to eight bars each carry their value, and more than that only the
+   * latest does. The plot keeps room above its tallest bar for a value.
+   */
+  const columnBars = (options: {
+    title: string;
+    labels: string[];
+    values: number[];
+    shown: string[];
+    averageLabel?: string | undefined;
+    /** The last bar is the current period. */
+    latest: boolean;
+    tones?: Array<Tone | undefined> | undefined;
+  }) => {
+    const { labels, values, shown } = options;
+    const count = values.length;
+    const last = count - 1;
+    const few = count <= 8;
+    // Of many bars only one carries its value: the latest of a series of
+    // periods, the tallest of anything else.
+    const marked = options.latest ? last : values.indexOf(Math.max(...values));
+    const area = barPlot(values, 0.2);
+    const average = values.reduce((sum, item) => sum + item, 0) / count;
+    // The dashed line is the mean of the bars and shows only with its label.
+    const averageLine = options.averageLabel
+      ? hidden(h("div", "wc-bars-average"))
+      : null;
+    const plot = hidden(
       h(
         "div",
-        "wc-col wc-gap-xxs",
-        data.value && h("span", "wc-title-2 wc-w6 wc-c1", data.value),
-        data.delta && delta(data.delta)
+        "wc-bars-plot",
+        ...values.map((item, index) => {
+          const bar = h(
+            "div",
+            cx("wc-bar-col", options.latest && index === last && "wc-bar-latest")
+          );
+          // Bars that are not a series of periods are all drawn in their tone.
+          if (!options.latest) bar.dataset.tone = options.tones?.[index] ?? "brand";
+          stand(bar, area.bar(item), item < 0);
+          const label =
+            few || index === marked
+              ? h(
+                  "span",
+                  cx(
+                    "wc-bars-value",
+                    index === marked &&
+                      (options.latest
+                        ? "wc-bars-value-latest"
+                        : !few && "wc-bars-value-peak")
+                  ),
+                  h("span", null, shown[index]!)
+                )
+              : null;
+          // A value stands over its bar, and over the zero line when the bar
+          // hangs under it. The styles lift it onto the average line where
+          // the bar ends just under that; they read both heights.
+          label?.style.setProperty("--wc-bar", percent(area.at(Math.max(item, 0))));
+          return h("div", "wc-bar-slot", bar, label);
+        }),
+        averageLine,
+        zeroLine(area)
       )
     );
+    if (averageLine) plot.style.setProperty("--wc-average", percent(area.at(average)));
+    const figure = h(
+      "figure",
+      cx("wc-bars", options.averageLabel && "wc-bars-averaged"),
+      h(
+        "figcaption",
+        cx("wc-bars-legend", !options.averageLabel && "wc-sr"),
+        sr(options.title),
+        options.averageLabel && hidden(h("span", "wc-bars-swatch")),
+        options.averageLabel ?? ""
+      ),
+      plot,
+      hidden(
+        h(
+          "div",
+          cx("wc-bars-axis", few && "wc-bars-axis-all"),
+          // Every label of a few bars shows, on up to two lines.
+          ...labels.map((tick) =>
+            h("span", null, h("span", null, ...(few ? breakable(tick) : [tick])))
+          )
+        )
+      )
+    );
+    // A card is wide, medium or narrow (its container queries); the plot
+    // holds about this many ems of its smallest text at each width.
+    const widths = [
+      ["wide", 40],
+      ["medium", 26],
+      ["narrow", 18],
+    ] as const;
+    // Every value shows where the widest one fits over its own bar.
+    const widestValue = Math.max(...shown.map(widthOf)) + 1;
+    figure.dataset.values = few
+      ? widths
+          .filter(([, ems]) => widestValue * count <= ems)
+          .map(([name]) => name)
+          .join(" ")
+      : "";
+    if (!few) {
+      // Many bars are a sequence, so every nth label stands for its
+      // neighbours. The step leaves each shown label its own width, counted
+      // back from the latest bar.
+      const widest = Math.max(...labels.map(widthOf), 1) + 1;
+      const ticks = [...figure.querySelectorAll(".wc-bars-axis>span")];
+      for (const [name, ems] of widths) {
+        const step = Math.max(1, Math.ceil((widest * count) / ems));
+        ticks.forEach((tick, index) => {
+          if ((last - index) % step === 0) tick.classList.add(`wc-tick-${name}`);
+        });
+      }
+    }
+    return figure;
+  };
   const trendLayouts: Array<Layout<Trend>> = [
     [
       "area",
@@ -1459,15 +1761,13 @@ export function cardEngine(env: CardEnv): CardEngine {
         };
         const initial = (data.ranges[1] ?? data.ranges[0]!).key;
         show(initial);
+        const head = headline(data);
+        const picker =
+          data.ranges.length > 1 && segmented(copy.range, data.ranges, initial, show);
         return {
           root: card(data.frame, [
-            h(
-              "div",
-              "wc-row-end wc-wrap wc-between wc-gap-md",
-              headline(data),
-              data.ranges.length > 1 &&
-                segmented(copy.range, data.ranges, initial, show)
-            ),
+            (head || picker) &&
+              h("div", "wc-row-end wc-wrap wc-between wc-gap-md", head, picker),
             figure,
           ]),
         };
@@ -1478,55 +1778,19 @@ export function cardEngine(env: CardEnv): CardEngine {
       (data) => (data.bars?.values.length ?? 0) > 0,
       (data) => {
         const bars = data.bars!;
-        const max = Math.max(...bars.values) * 1.3 || 1;
-        const average =
-          bars.values.reduce((sum, item) => sum + item, 0) / bars.values.length;
-        const last = bars.values.length - 1;
-        const averageLine = hidden(h("div", "wc-bars-average"));
-        averageLine.style.bottom = `${(average / max) * 100}%`;
         return {
           root: card(data.frame, [
             headline(data),
-            h(
-              "figure",
-              "wc-bars",
-              h(
-                "figcaption",
-                "wc-bars-legend",
-                sr(data.frame.title),
-                bars.averageLabel && hidden(h("span", "wc-bars-swatch")),
-                bars.averageLabel ?? ""
+            columnBars({
+              title: data.frame.title,
+              labels: bars.labels,
+              values: bars.values,
+              shown: bars.values.map(
+                (item, index) => bars.valueLabels[index] || formatCompact(item)
               ),
-              hidden(
-                h(
-                  "div",
-                  "wc-bars-plot",
-                  ...bars.values.map((item, index) => {
-                    const bar = h(
-                      "div",
-                      cx("wc-bar-col", index === last && "wc-bar-latest")
-                    );
-                    bar.style.height = `${(item / max) * 100}%`;
-                    const label =
-                      index === last && bars.valueLabels[index]
-                        ? h("span", "wc-bars-value", bars.valueLabels[index]!)
-                        : null;
-                    if (label) label.style.bottom = `${(item / max) * 100}%`;
-                    return h("div", "wc-bar-slot", bar, label);
-                  }),
-                  averageLine
-                )
-              ),
-              hidden(
-                h(
-                  "div",
-                  "wc-bars-axis",
-                  ...bars.labels.map((tick, index) =>
-                    h("span", null, index % 2 === last % 2 ? tick : "")
-                  )
-                )
-              )
-            ),
+              averageLabel: bars.averageLabel,
+              latest: true,
+            }),
           ]),
         };
       },
@@ -1538,7 +1802,7 @@ export function cardEngine(env: CardEnv): CardEngine {
         root: card(data.frame, [
           h(
             "ul",
-            "wc-list",
+            "wc-list wc-watchlist",
             ...data.series.map((item) => {
               const up = item.delta?.direction !== "down";
               return h(
@@ -1547,8 +1811,8 @@ export function cardEngine(env: CardEnv): CardEngine {
                 h(
                   "span",
                   "wc-watch-name",
-                  mark(item.brand, item.label),
-                  h("span", "wc-sm wc-w6 wc-c1", item.label)
+                  mark(item.brand, item.label, "md", branded(data.series)),
+                  h("span", "wc-sm wc-w6 wc-c1 wc-clip", item.label)
                 ),
                 sparkline(item.points, up ? ink.success : ink.error, {
                   area: false,
@@ -1589,10 +1853,10 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   const comparisonOf = (data: Record<string, unknown>): Comparison => {
     const subjects = list(data.subjects, 3, (subject): Subject | undefined =>
-      isRecord(subject) && text(subject.name, 40)
+      isRecord(subject) && text(subject.name)
         ? {
-            name: text(subject.name, 40)!,
-            caption: text(subject.caption, 60),
+            name: text(subject.name)!,
+            caption: text(subject.caption),
             recommended: subject.recommended === true,
             brand: brandOf(subject.brand),
           }
@@ -1600,17 +1864,13 @@ export function cardEngine(env: CardEnv): CardEngine {
     );
     if (subjects.length < 2) fail("Card data needs two or three subjects");
     const rows = list(data.rows, 8, (item) => {
-      if (!isRecord(item) || !text(item.label, 24)) return undefined;
-      const values = list(
-        item.values,
-        subjects.length,
-        (cell) => text(cell, 60) ?? "—"
-      );
+      if (!isRecord(item) || !text(item.label)) return undefined;
+      const values = list(item.values, subjects.length, (cell) => text(cell) ?? "—");
       if (values.length !== subjects.length) return undefined;
       const scores = numbers(item.scores, 2);
       const best = num(item.best);
       return {
-        label: text(item.label, 24)!,
+        label: text(item.label)!,
         values,
         best:
           best !== undefined && best >= 0 && best < subjects.length ? best : undefined,
@@ -1625,13 +1885,13 @@ export function cardEngine(env: CardEnv): CardEngine {
         unread(data.rows, "rows", "a label and one value per subject") ??
           "Card data needs rows with one value per subject"
       );
-    return { frame: frameOf(data), subjects, rows, verdict: text(data.verdict, 240) };
+    return { frame: frameOf(data), subjects, rows, verdict: text(data.verdict) };
   };
-  const subjectName = (subject: Subject, className: string) =>
+  const subjectName = (subject: Subject, className: string, among: Subject[]) =>
     h(
       "span",
       "wc-row-center wc-wrap wc-gap-sm",
-      subject.brand && mark(subject.brand, subject.name),
+      branded(among) && mark(subject.brand, subject.name, "md", true),
       h("span", className, subject.name),
       subject.recommended && badge(copy.recommended, "brand")
     );
@@ -1644,6 +1904,10 @@ export function cardEngine(env: CardEnv): CardEngine {
       (data) => {
         const corner = h("th", "wc-cmp-corner", sr(copy.attribute));
         corner.setAttribute("scope", "col");
+        corner.style.setProperty(
+          "--wc-label-ems",
+          Math.max(...data.rows.map((item) => widthOf(item.label))).toFixed(2)
+        );
         return {
           root: comparisonCard(
             data,
@@ -1668,7 +1932,8 @@ export function cardEngine(env: CardEnv): CardEngine {
                         h(
                           "span",
                           "wc-row-center wc-gap-sm",
-                          subject.brand && mark(subject.brand, subject.name),
+                          branded(data.subjects) &&
+                            mark(subject.brand, subject.name, "md", true),
                           h("span", "wc-sm wc-w6 wc-c1", subject.name)
                         ),
                         subject.caption && h("span", "wc-xs wc-c3", subject.caption)
@@ -1746,7 +2011,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                     h(
                       "span",
                       "wc-col wc-gap-xxs",
-                      subjectName(subject, "wc-sm wc-w5 wc-c1"),
+                      subjectName(subject, "wc-sm wc-w5 wc-c1", data.subjects),
                       subject.caption && h("span", "wc-xs wc-c3", subject.caption)
                     )
                   );
@@ -1807,7 +2072,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                 h(
                   "span",
                   "wc-vs-name",
-                  left.brand && mark(left.brand, left.name),
+                  branded(data.subjects) && mark(left.brand, left.name, "md", true),
                   h("span", "wc-md wc-w6 wc-c1 wc-clip", left.name),
                   left.recommended && badge(copy.recommended, "brand")
                 ),
@@ -1817,7 +2082,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                   "wc-vs-name wc-vs-right",
                   right.recommended && badge(copy.recommended, "brand"),
                   h("span", "wc-md wc-w6 wc-c1 wc-clip", right.name),
-                  right.brand && mark(right.brand, right.name)
+                  branded(data.subjects) && mark(right.brand, right.name, "md", true)
                 )
               ),
               h(
@@ -1847,6 +2112,8 @@ export function cardEngine(env: CardEnv): CardEngine {
   type Event = {
     start: string;
     end?: string | undefined;
+    /** The date an ISO start falls on; events of several dates show under their dates. */
+    day?: string | undefined;
     title: string;
     detail?: string | undefined;
     state: "done" | "current" | "upcoming";
@@ -1856,56 +2123,90 @@ export function cardEngine(env: CardEnv): CardEngine {
     frame: Frame;
     now?: string | undefined;
     events: Event[];
-    stages: Array<{
-      label: string;
-      detail?: string | undefined;
-      state: "done" | "current" | "upcoming";
-    }>;
+    stages: Stage[];
     summary?: string | undefined;
   };
   const stateOf = (input: unknown) =>
     input === "done" || input === "current" ? input : "upcoming";
+  /**
+   * An event time as the card shows it. An ISO time that names a moment is a
+   * clock time in the schedule's zone, or on the viewer's clock without one.
+   * An ISO time with no offset is the place's own clock time and shows as
+   * written. Anything else is display text.
+   */
+  const clockTime = (input: unknown, zone: unknown) => {
+    const written = text(input);
+    if (!written) return undefined;
+    const zoned = zonedOf(written, zone);
+    if (zoned) return { time: zoned.time, day: zoned.date };
+    const local =
+      /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d{1,9})?)?$/.exec(
+        written.trim()
+      );
+    if (!local) return { time: written, day: undefined };
+    const date = Date.UTC(Number(local[1]), Number(local[2]) - 1, Number(local[3]));
+    return {
+      time: `${local[4]}:${local[5]}`,
+      day: Number.isFinite(date)
+        ? new Intl.DateTimeFormat(env.locale || undefined, {
+            timeZone: "UTC",
+            month: "short",
+            day: "numeric",
+            weekday: "short",
+          }).format(date)
+        : undefined,
+    };
+  };
   const scheduleOf = (data: Record<string, unknown>): Schedule => {
     const schedule: Schedule = {
       frame: frameOf(data),
-      now: text(data.now, 12),
+      now: clockTime(data.now, data.zone)?.time,
       events: list(data.events, 8, (event) =>
-        isRecord(event) && text(event.start, 12) && text(event.title, 80)
+        isRecord(event) && text(event.start) && text(event.title)
           ? {
-              start: text(event.start, 12)!,
-              end: text(event.end, 12),
-              title: text(event.title, 80)!,
-              detail: text(event.detail, 80),
+              start: clockTime(event.start, data.zone)!.time,
+              end: clockTime(event.end, data.zone)?.time,
+              day: clockTime(event.start, data.zone)!.day,
+              title: text(event.title)!,
+              detail: text(event.detail),
               state: stateOf(event.state),
               tone: toneOf(event.tone),
             }
           : undefined
       ),
       stages: list(data.stages, 6, (stage) =>
-        isRecord(stage) && text(stage.label, 20)
+        isRecord(stage) && text(stage.label)
           ? {
-              label: text(stage.label, 20)!,
-              detail: text(stage.detail, 40),
+              label: text(stage.label)!,
+              detail: text(stage.detail),
               state: stateOf(stage.state),
             }
           : undefined
       ),
-      summary: text(data.summary, 120),
+      summary: text(data.summary),
     };
     if (!schedule.events.length && schedule.stages.length < 2)
       fail(
         unread(data.events, "events", "a start and a title") ??
           "Card data needs events or at least two stages"
       );
+    // One date needs no heading: the card's title names the day.
+    if (new Set(schedule.events.map((event) => event.day)).size < 2)
+      for (const event of schedule.events) event.day = undefined;
     return schedule;
   };
+  /** The heading of a date, before the first event that falls on it. */
+  const dayHeading = (event: Event, previous: Event | undefined) =>
+    event.day && event.day !== previous?.day ? h("li", "wc-day", event.day) : null;
   const scheduleLayouts: Array<Layout<Schedule>> = [
     [
       "agenda",
       (data) => data.events.length > 0,
       (data) => {
         const items: HTMLElement[] = [];
-        for (const event of data.events) {
+        for (const [index, event] of data.events.entries()) {
+          const heading = dayHeading(event, data.events[index - 1]);
+          if (heading) items.push(heading);
           items.push(
             h(
               "li",
@@ -1931,7 +2232,7 @@ export function cardEngine(env: CardEnv): CardEngine {
                 ),
                 h(
                   "span",
-                  "wc-xs wc-c3 wc-clip",
+                  "wc-xs wc-c3",
                   [event.end ? `${event.start}–${event.end}` : null, event.detail]
                     .filter(Boolean)
                     .join(" · ")
@@ -1955,7 +2256,7 @@ export function cardEngine(env: CardEnv): CardEngine {
         return {
           root: card(data.frame, [
             data.summary && insight(data.summary),
-            h("ol", "wc-list", ...items),
+            h("ol", "wc-list wc-times wc-agenda-list", ...items),
           ]),
         };
       },
@@ -1968,8 +2269,9 @@ export function cardEngine(env: CardEnv): CardEngine {
           data.summary && insight(data.summary),
           h(
             "ol",
-            "wc-list",
-            ...data.events.map((event, index) =>
+            "wc-list wc-times",
+            ...data.events.flatMap((event, index) => [
+              dayHeading(event, data.events[index - 1]),
               h(
                 "li",
                 "wc-step",
@@ -2001,10 +2303,17 @@ export function cardEngine(env: CardEnv): CardEngine {
                     cx("wc-sm wc-w5", event.state === "done" ? "wc-c3" : "wc-c1"),
                     event.title
                   ),
-                  event.detail && h("span", "wc-xs wc-c3", event.detail)
+                  (event.end || event.detail) &&
+                    h(
+                      "span",
+                      "wc-xs wc-c3",
+                      [event.end ? `${event.start}–${event.end}` : null, event.detail]
+                        .filter(Boolean)
+                        .join(" · ")
+                    )
                 )
-              )
-            )
+              ),
+            ])
           ),
         ]),
       }),
@@ -2103,25 +2412,27 @@ export function cardEngine(env: CardEnv): CardEngine {
         label: string;
         detail?: string | undefined;
         done: boolean;
+        actions: Frame["actions"];
       }>;
     }>;
   };
   const checklistOf = (data: Record<string, unknown>): Checklist => {
-    let budget = 12;
+    let budget = 20;
     const groups = list(data.groups, 4, (group) => {
       if (!isRecord(group)) return undefined;
       const items = list(group.items, budget, (item) =>
-        isRecord(item) && text(item.label, 80)
+        isRecord(item) && text(item.label)
           ? {
               id: ident(item.id, 60) ?? ident(item.label, 80)!,
-              label: text(item.label, 80)!,
-              detail: text(item.detail, 80),
+              label: text(item.label)!,
+              detail: text(item.detail),
               done: item.done === true,
+              actions: actionsOf(item.actions, 3),
             }
           : undefined
       );
       budget -= items.length;
-      return items.length ? { label: text(group.label, 40) ?? "", items } : undefined;
+      return items.length ? { label: text(group.label) ?? "", items } : undefined;
     });
     if (!groups.length)
       fail(
@@ -2153,6 +2464,8 @@ export function cardEngine(env: CardEnv): CardEngine {
       saved.get(key) ?? items.filter((item) => item.done).map((item) => item.id);
     const done = new Set(initial());
     const inputs: Array<{ input: HTMLInputElement; id: string }> = [];
+    // One item's actions show at a time.
+    const folds: Array<(open: boolean) => void> = [];
     const bar = progressBar("");
     const counts: Array<{ node: HTMLElement; ids: string[] }> = [];
     const meta = h("span", "wc-meta");
@@ -2177,7 +2490,7 @@ export function cardEngine(env: CardEnv): CardEngine {
         env.send({ type: "card-state", value: Object.fromEntries(saved) });
         refresh();
       });
-      return h(
+      const check = h(
         "label",
         "wc-check",
         input,
@@ -2189,6 +2502,36 @@ export function cardEngine(env: CardEnv): CardEngine {
           item.detail && h("span", "wc-xs wc-c3", item.detail)
         )
       );
+      if (!item.actions.length) return check;
+      // A button inside the label would also toggle the box, so the item's
+      // actions sit beside it, folded behind one quiet button. They are built
+      // when first shown: a full checklist stays within the node budget.
+      const entry = h("div", "wc-check-item", check);
+      const more = h("button", "wc-check-more") as HTMLButtonElement;
+      more.type = "button";
+      more.setAttribute(
+        "aria-label",
+        item.actions.map((action) => action.label).join(" / ")
+      );
+      more.setAttribute("aria-expanded", "false");
+      let actions: HTMLElement | undefined;
+      const fold = (open: boolean) => {
+        if (open && !actions)
+          entry.append(
+            (actions = h("div", "wc-check-actions", ...item.actions.map(actionButton)))
+          );
+        if (actions) actions.hidden = !open;
+        more.setAttribute("aria-expanded", String(open));
+      };
+      folds.push(fold);
+      // Showing the actions sends nothing, so a script may open them too.
+      more.addEventListener("click", () => {
+        const open = more.getAttribute("aria-expanded") !== "true";
+        for (const other of folds) other(false);
+        fold(open);
+      });
+      entry.insertBefore(more, check.nextSibling);
+      return entry;
     };
     const body = grouped
       ? h(
@@ -2253,11 +2596,11 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   const compositionOf = (data: Record<string, unknown>): Composition => {
     const segments = list(data.segments, 6, (segment) =>
-      isRecord(segment) && text(segment.label, 30) && (num(segment.value) ?? -1) >= 0
+      isRecord(segment) && text(segment.label) && (num(segment.value) ?? -1) >= 0
         ? {
-            label: text(segment.label, 30)!,
+            label: text(segment.label)!,
             value: num(segment.value)!,
-            valueLabel: text(segment.valueLabel, 20) ?? String(num(segment.value)),
+            valueLabel: text(segment.valueLabel) ?? String(num(segment.value)),
             muted: segment.muted === true,
           }
         : undefined
@@ -2269,8 +2612,12 @@ export function cardEngine(env: CardEnv): CardEngine {
       );
     return {
       frame: frameOf(data),
-      total: need(data.total, "a total", 40),
-      totalLabel: text(data.totalLabel, 40) ?? "",
+      // A total given as a number shows grouped as the viewer's locale writes it.
+      total:
+        num(data.total) === undefined
+          ? need(data.total, "a total")
+          : formatNumber(num(data.total)!),
+      totalLabel: text(data.totalLabel) ?? "",
       segments,
     };
   };
@@ -2278,6 +2625,8 @@ export function cardEngine(env: CardEnv): CardEngine {
     segment.muted ? ink.muted : seriesInk[index % seriesInk.length]!;
   const legend = (data: Composition, two: boolean) => {
     const sum = data.segments.reduce((total, segment) => total + segment.value, 0);
+    // Labels that already state a percent are not followed by a second one.
+    const shares = !data.segments.every((segment) => /[%％]/.test(segment.valueLabel));
     return h(
       "ul",
       cx("wc-legend", two && "wc-legend-two"),
@@ -2290,11 +2639,12 @@ export function cardEngine(env: CardEnv): CardEngine {
           swatch,
           h("span", "wc-grow wc-sm wc-c2 wc-clip", segment.label),
           h("span", "wc-sm wc-w5 wc-c1 wc-num", segment.valueLabel),
-          h(
-            "span",
-            "wc-legend-share",
-            sum > 0 ? `${Math.round((segment.value / sum) * 100)}%` : "0%"
-          )
+          shares &&
+            h(
+              "span",
+              "wc-legend-share",
+              sum > 0 ? `${Math.round((segment.value / sum) * 100)}%` : "0%"
+            )
         );
       })
     );
@@ -2329,7 +2679,8 @@ export function cardEngine(env: CardEnv): CardEngine {
     ],
     [
       "donut",
-      () => true,
+      // The ring's centre holds a short total and a label of two short lines.
+      (data) => widthOf(data.total) <= 5.6 && widthOf(data.totalLabel) <= 12,
       (data) => {
         const sum = data.segments.reduce((total, segment) => total + segment.value, 0);
         let offset = 0;
@@ -2402,17 +2753,17 @@ export function cardEngine(env: CardEnv): CardEngine {
   type Places = { frame: Frame; places: Place[] };
   const placesOf = (data: Record<string, unknown>): Places => {
     const places = list(data.places, 8, (item): Place | undefined =>
-      isRecord(item) && text(item.name, 60)
+      isRecord(item) && text(item.name)
         ? {
-            name: text(item.name, 60)!,
-            category: text(item.category, 30),
-            note: text(item.note, 120),
+            name: text(item.name)!,
+            category: text(item.category),
+            note: text(item.note),
             rating: num(item.rating),
-            reviews: text(item.reviews, 30),
+            reviews: text(item.reviews),
             status: statusOf(item.status),
-            address: text(item.address, 120),
-            distance: text(item.distance, 20),
-            eta: text(item.eta, 30),
+            address: text(item.address),
+            distance: text(item.distance),
+            eta: text(item.eta),
             href: httpsOf(item.href),
           }
         : undefined
@@ -2504,8 +2855,8 @@ export function cardEngine(env: CardEnv): CardEngine {
                           "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
                           ...facts
                         ),
-                      item.note && h("span", "wc-xs wc-c2 wc-clamp-2", item.note),
-                      item.address && h("span", "wc-xs wc-c3 wc-clip", item.address)
+                      item.note && h("span", "wc-xs wc-c2", item.note),
+                      item.address && h("span", "wc-xs wc-c3", item.address)
                     ),
                     (item.distance || item.eta) &&
                       h(
@@ -2553,15 +2904,15 @@ export function cardEngine(env: CardEnv): CardEngine {
     const feed: Feed = {
       frame: frameOf(data),
       items: list(data.items, 60, (item) =>
-        isRecord(item) && text(item.title, 160) && text(item.source, 40)
+        isRecord(item) && text(item.title) && text(item.source)
           ? {
-              source: text(item.source, 40)!,
+              source: text(item.source)!,
               brand: brandOf(item.brand),
-              title: text(item.title, 160)!,
-              excerpt: text(item.excerpt, 160),
-              time: momentText(item.at) ?? text(item.time, 30),
+              title: text(item.title)!,
+              excerpt: text(item.excerpt),
+              time: momentText(item.at) ?? text(item.time),
               status: statusOf(item.status),
-              tags: list(item.tags, 3, (tag) => text(tag, 20)),
+              tags: list(item.tags, 3, (tag) => text(tag)),
               href: httpsOf(item.href),
               filterKeys: filterKeysOf(item.filterKeys),
             }
@@ -2569,12 +2920,12 @@ export function cardEngine(env: CardEnv): CardEngine {
       ),
       filters: filtersOf(data.filters),
       groups: list(data.groups, 6, (group) =>
-        isRecord(group) && text(group.source, 40) && text(group.summary, 160)
+        isRecord(group) && text(group.source) && text(group.summary)
           ? {
-              source: text(group.source, 40)!,
+              source: text(group.source)!,
               brand: brandOf(group.brand),
               count: Math.max(0, Math.round(num(group.count) ?? 0)),
-              summary: text(group.summary, 160)!,
+              summary: text(group.summary)!,
               tone: toneOf(group.tone),
             }
           : undefined
@@ -2609,12 +2960,12 @@ export function cardEngine(env: CardEnv): CardEngine {
               row(
                 item.href,
                 "wc-news",
-                mark(item.brand, item.source),
+                mark(item.brand, item.source, "md", branded(data.items)),
                 h(
                   "span",
                   "wc-col wc-gap-xxs wc-grow",
                   h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.title),
-                  item.excerpt && h("span", "wc-xs wc-c2 wc-clamp-1", item.excerpt),
+                  item.excerpt && h("span", "wc-xs wc-c2", item.excerpt),
                   h(
                     "span",
                     "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
@@ -2683,7 +3034,7 @@ export function cardEngine(env: CardEnv): CardEngine {
               h(
                 "li",
                 "wc-digest",
-                mark(group.brand, group.source),
+                mark(group.brand, group.source, "md", branded(data.groups)),
                 h(
                   "span",
                   "wc-col wc-gap-xxs wc-grow",
@@ -2731,7 +3082,7 @@ export function cardEngine(env: CardEnv): CardEngine {
     const total = Math.round(num(cycle?.total) ?? 0);
     const timer: Timer = {
       frame: frameOf(data),
-      label: need(data.label, "a label", 80),
+      label: need(data.label, "a label"),
       deadline: Number.isFinite(deadline) ? deadline : undefined,
       remaining: num(data.remainingSeconds),
       total: num(data.totalSeconds),
@@ -2742,9 +3093,9 @@ export function cardEngine(env: CardEnv): CardEngine {
           ? { current, total }
           : undefined,
       daysLeft: num(data.daysLeft),
-      date: text(data.date, 40),
+      date: text(data.date),
       elapsedRatio: num(data.elapsedRatio),
-      note: text(data.note, 120),
+      note: text(data.note),
     };
     if (
       timer.deadline === undefined &&
@@ -3019,6 +3370,1766 @@ export function cardEngine(env: CardEnv): CardEngine {
     ],
   ];
 
+  // =============================================================== order
+  type Order = {
+    frame: Frame;
+    brand?: string | undefined;
+    orderId?: string | undefined;
+    status: string;
+    arrival?: string | undefined;
+    items: Array<{
+      name: string;
+      quantity?: number | undefined;
+      detail?: string | undefined;
+      price?: string | undefined;
+    }>;
+    total?: string | undefined;
+    totalLabel?: string | undefined;
+    address?: string | undefined;
+    stages: Stage[];
+  };
+  const orderOf = (data: Record<string, unknown>): Order => {
+    const by = momentText(data.arrivesBy);
+    const stages = list<Stage>(data.stages, 5, (stage) =>
+      isRecord(stage) && text(stage.label)
+        ? { label: text(stage.label)!, state: stateOf(stage.state) }
+        : undefined
+    );
+    return {
+      frame: frameOf(data),
+      brand: brandOf(data.brand),
+      orderId: text(data.orderId),
+      status: need(data.status, "a status"),
+      arrival: by ? fill(copy.arrivesBy, { time: by }) : text(data.arrival),
+      items: list(data.items, 6, (item) => {
+        if (!isRecord(item) || !text(item.name)) return undefined;
+        const quantity = num(item.quantity);
+        return {
+          name: text(item.name)!,
+          quantity:
+            quantity !== undefined && quantity >= 1 ? Math.floor(quantity) : undefined,
+          detail: text(item.detail),
+          price: text(item.price),
+        };
+      }),
+      total: text(data.total),
+      totalLabel: text(data.totalLabel),
+      address: text(data.address),
+      stages: stages.length > 1 ? stages : [],
+    };
+  };
+  /**
+   * A header tile: the brand's logo, else the kind's glyph, else (on a host
+   * that passes no icons) the title's initial.
+   */
+  const glyphTile = (brand: string | undefined, title: string, glyph: string) =>
+    brand || typeof env.icons[glyph] !== "string"
+      ? mark(brand, title, "lg")
+      : hidden(h("span", "wc-order-tile", icon(glyph)));
+  /** The merchant's logo, or a shopping bag, then its name and the order number. */
+  const orderHead = (data: Order) =>
+    h(
+      "header",
+      "wc-row-center wc-gap-md",
+      glyphTile(data.brand, data.frame.title, "shopping-bag"),
+      h("h3", "wc-order-merchant", data.frame.title),
+      data.orderId && h("span", "wc-md wc-c4 wc-num wc-clip", data.orderId),
+      data.frame.meta && h("span", "wc-meta wc-clip wc-push", data.frame.meta)
+    );
+  const orderHeadline = (data: Order) =>
+    data.arrival
+      ? fill(copy.orderHeadline, { status: data.status, arrival: data.arrival })
+      : data.status;
+  const itemLine = (item: Order["items"][number]) =>
+    [
+      item.quantity === undefined ? item.name : `${item.quantity} × ${item.name}`,
+      item.detail,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  /**
+   * How far the order got, on a rail from where it left to where it arrives:
+   * the rail fills to a marker at the current stage, and reaching the last
+   * stage fills it whole.
+   */
+  const orderRail = (stages: Stage[], slim = false) => {
+    const current = stages.findIndex((stage) => stage.state === "current");
+    const reached =
+      current === -1
+        ? stages.findLastIndex((stage) => stage.state === "done")
+        : current;
+    const done = current === -1 && reached === stages.length - 1;
+    const ratio = Math.max(reached, 0) / (stages.length - 1);
+    const native = h("progress", "wc-sr") as HTMLProgressElement;
+    native.max = 100;
+    native.value = Math.round(ratio * 100);
+    native.setAttribute(
+      "aria-label",
+      stages[Math.max(reached, 0)]?.label ?? stages[0]?.label ?? ""
+    );
+    const rail = hidden(
+      h(
+        "span",
+        cx("wc-order-rail", slim && "wc-order-rail-slim"),
+        h("span", "wc-order-fill"),
+        !slim && h("span", "wc-order-start", icon("send")),
+        !slim && h("span", "wc-order-now", icon(done ? "check" : "tag"))
+      )
+    );
+    rail.style.setProperty("--wc-order-progress", String(ratio));
+    return h("div", "wc-order-track", native, rail);
+  };
+  const orderLayouts: Array<Layout<Order>> = [
+    [
+      "tracking",
+      (data) => data.stages.length > 1,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            orderHead(data),
+            h(
+              "div",
+              "wc-col wc-gap-xs",
+              h("p", "wc-lg wc-w6 wc-c1", orderHeadline(data)),
+              data.items.length > 0 &&
+                h(
+                  "ul",
+                  "wc-col",
+                  ...data.items.map((item) =>
+                    h("li", "wc-md wc-c3 wc-clip", itemLine(item))
+                  )
+                )
+            ),
+            orderRail(data.stages),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+    [
+      "receipt",
+      (data) => data.total !== undefined || data.items.some((item) => item.price),
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            orderHead(data),
+            h("p", "wc-lg wc-w6 wc-c1", orderHeadline(data)),
+            data.items.length > 0 &&
+              h(
+                "ul",
+                "wc-col wc-gap-md",
+                ...data.items.map((item) =>
+                  h(
+                    "li",
+                    "wc-row-start wc-gap-md",
+                    h(
+                      "span",
+                      "wc-col wc-grow",
+                      h("span", "wc-md wc-c1 wc-clamp-2", item.name),
+                      item.detail && h("span", "wc-sm wc-c3", item.detail)
+                    ),
+                    item.quantity !== undefined &&
+                      h("span", "wc-md wc-c3 wc-num", `× ${item.quantity}`),
+                    item.price && h("span", "wc-md wc-c1 wc-num wc-trail", item.price)
+                  )
+                )
+              ),
+            data.total &&
+              h(
+                "div",
+                "wc-order-total",
+                h("span", "wc-md wc-c2", data.totalLabel),
+                h("span", "wc-title-3 wc-w6 wc-c1 wc-num wc-trail", data.total)
+              ),
+            data.address && h("p", "wc-sm wc-c3", data.address),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+    [
+      "compact",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            h(
+              "div",
+              "wc-row-center wc-gap-md",
+              glyphTile(data.brand, data.frame.title, "shopping-bag"),
+              h(
+                "span",
+                "wc-col wc-grow",
+                h("span", "wc-md wc-w6 wc-c1 wc-clip", orderHeadline(data)),
+                h(
+                  "span",
+                  "wc-sm wc-c3 wc-clip",
+                  [data.frame.title, data.items[0] && itemLine(data.items[0])]
+                    .filter(Boolean)
+                    .join(" · ")
+                )
+              )
+            ),
+            data.stages.length > 1 && orderRail(data.stages, true),
+          ],
+          { header: false, small: true }
+        ),
+      }),
+    ],
+  ];
+
+  // ------------------------------------------------- shared by the kinds below
+  /** A moment as a clock time and a date in `zone`, or on the viewer's clock. */
+  const zonedOf = (input: unknown, zone: unknown) => {
+    const moment = momentOf(input);
+    if (moment === undefined) return undefined;
+    const format = (options: Intl.DateTimeFormatOptions) => {
+      const named =
+        typeof zone === "string" && /^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*$/.test(zone)
+          ? zone
+          : env.timeZone || undefined;
+      try {
+        return new Intl.DateTimeFormat(env.locale || undefined, {
+          ...options,
+          timeZone: named,
+        }).format(moment);
+      } catch {
+        return new Intl.DateTimeFormat(env.locale || undefined, options).format(moment);
+      }
+    };
+    return {
+      time: format({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+      date: format({ month: "short", day: "numeric", weekday: "short" }),
+      month: format({ month: "short" }),
+      day: format({ day: "numeric" }),
+      weekday: format({ weekday: "short" }),
+    };
+  };
+  type Zoned = NonNullable<ReturnType<typeof zonedOf>>;
+  type Fact = { label: string; value: string };
+  const factsOf = (input: unknown, max: number) =>
+    list(input, max, (item): Fact | undefined =>
+      isRecord(item) && text(item.label) && text(item.value)
+        ? { label: text(item.label)!, value: text(item.value)! }
+        : undefined
+    );
+  type Control = { label: string; prompt: string };
+  const controlOf = (item: unknown): Control | undefined =>
+    isRecord(item) && text(item.label) && ident(item.prompt, 4000)
+      ? { label: text(item.label)!, prompt: ident(item.prompt, 4000)! }
+      : undefined;
+  /** A button that proposes its prompt, as a card action does. */
+  const proposer = (
+    prompt: string,
+    className: string,
+    label: string,
+    ...children: Child[]
+  ) => {
+    const button = h("button", className, ...children) as HTMLButtonElement;
+    button.type = "button";
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", (event) => {
+      if (event.isTrusted) env.send({ type: "request", value: prompt });
+    });
+    return button;
+  };
+  const factRows = (facts: Fact[]) =>
+    h(
+      "dl",
+      "wc-facts",
+      ...facts.map((fact) =>
+        h(
+          "div",
+          "wc-fact",
+          h("dt", "wc-sm wc-c3", fact.label),
+          h("dd", "wc-sm wc-c1 wc-num", fact.value)
+        )
+      )
+    );
+  /** An HTTPS picture, fetched as the runtime fetches authored images; a tile stands in without one. */
+  const picture = (
+    src: string | undefined,
+    alt: string,
+    className: string,
+    glyph: string
+  ) => {
+    const tile = h(
+      "span",
+      cx("wc-pic", className),
+      glyph in shapes ? shape(glyph, "wc-pic-glyph") : icon(glyph, "wc-pic-glyph")
+    );
+    if (!src) return hidden(tile);
+    const img = document.createElement("img");
+    img.alt = alt;
+    img.decoding = "async";
+    img.loading = "lazy";
+    img.setAttribute("crossorigin", "anonymous");
+    img.setAttribute("referrerpolicy", "no-referrer");
+    img.addEventListener("error", () => img.remove());
+    img.src = src;
+    tile.append(img);
+    return tile;
+  };
+  /** A header row: the brand's logo or a glyph tile, the title, and trailing context. */
+  const kindHead = (
+    frame: Frame,
+    brand: string | undefined,
+    glyph: string,
+    ...trailing: Child[]
+  ) =>
+    h(
+      "header",
+      "wc-row-center wc-gap-md",
+      glyphTile(brand, frame.title, glyph),
+      h("h3", "wc-order-merchant", frame.title),
+      ...trailing,
+      frame.meta && h("span", "wc-meta wc-clip wc-push", frame.meta)
+    );
+
+  // ============================================================== ticket
+  type Endpoint = {
+    place: string;
+    code?: string | undefined;
+    at: Zoned;
+    terminal?: string | undefined;
+  };
+  type Ticket = {
+    frame: Frame;
+    brand?: string | undefined;
+    mode: "train" | "flight";
+    number: string;
+    depart: Endpoint;
+    arrive: Endpoint;
+    duration?: string | undefined;
+    facts: Fact[];
+    passenger?: string | undefined;
+    status?: { label: string; tone: Tone } | undefined;
+    reference?: string | undefined;
+  };
+  const endpointOf = (end: unknown, name: string): Endpoint => {
+    if (!isRecord(end) || !text(end.place))
+      return fail(`Card data needs ${name} with a place and an ISO time at`);
+    const at = zonedOf(end.at, end.zone);
+    if (!at) return fail(`Card data ${name}.at needs an ISO time with an offset`);
+    return {
+      place: text(end.place)!,
+      code: text(end.code),
+      at,
+      terminal: text(end.terminal),
+    };
+  };
+  const ticketOf = (data: Record<string, unknown>): Ticket => ({
+    frame: frameOf(data),
+    brand: brandOf(data.brand),
+    mode: data.mode === "flight" ? "flight" : "train",
+    number: need(data.number, "a number"),
+    depart: endpointOf(data.depart, "depart"),
+    arrive: endpointOf(data.arrive, "arrive"),
+    duration: text(data.duration),
+    facts: factsOf(data.details, 4),
+    passenger: text(data.passenger),
+    status: statusOf(data.status),
+    reference: text(data.reference),
+  });
+  const ticketEnd = (end: Endpoint, align: "start" | "end") =>
+    h(
+      "div",
+      cx("wc-col wc-gap-xxs wc-ticket-end", align === "end" && "wc-end"),
+      h("span", "wc-display-md wc-tight wc-w6 wc-c1 wc-num", end.at.time),
+      h(
+        "span",
+        "wc-md wc-w5 wc-c1 wc-clip",
+        end.code ? `${end.place} ${end.code}` : end.place
+      ),
+      h(
+        "span",
+        "wc-xs wc-c3 wc-clip",
+        [end.at.date, end.terminal].filter(Boolean).join(" · ")
+      )
+    );
+  const ticketRoute = (data: Ticket, withNumber = true) =>
+    h(
+      "div",
+      "wc-ticket-route",
+      ticketEnd(data.depart, "start"),
+      h(
+        "div",
+        "wc-ticket-mid",
+        withNumber && h("span", "wc-xs wc-w5 wc-c2 wc-clip", data.number),
+        hidden(
+          h(
+            "span",
+            "wc-ticket-line",
+            icon(data.mode === "flight" ? "airplane" : "train", "wc-ticket-glyph")
+          )
+        ),
+        data.duration && h("span", "wc-xs wc-c3 wc-clip", data.duration)
+      ),
+      ticketEnd(data.arrive, "end")
+    );
+  /** Labeled values side by side, as a pass prints them. */
+  const passFields = (facts: Fact[], className?: string) =>
+    h(
+      "dl",
+      cx("wc-pass-fields", className),
+      ...facts.map((fact) =>
+        h(
+          "div",
+          "wc-col wc-gap-xxs wc-pass-field",
+          h("dt", "wc-micro wc-w5 wc-c3 wc-caps wc-clip", fact.label),
+          h("dd", "wc-lg wc-w6 wc-c1 wc-num wc-clip", fact.value)
+        )
+      )
+    );
+  const ticketLayouts: Array<Layout<Ticket>> = [
+    [
+      "ticket",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            kindHead(
+              data.frame,
+              data.brand,
+              data.mode === "flight" ? "airplane" : "train",
+              data.status && h("span", "wc-push", status(data.status))
+            ),
+            ticketRoute(data),
+            data.facts.length > 0 && passFields(data.facts),
+            (data.passenger || data.reference) &&
+              h(
+                "p",
+                "wc-xs wc-c3 wc-num",
+                [data.passenger, data.reference].filter(Boolean).join(" · ")
+              ),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+    [
+      "pass",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            kindHead(
+              data.frame,
+              data.brand,
+              data.mode === "flight" ? "airplane" : "train",
+              h("span", "wc-sm wc-w5 wc-c2 wc-num wc-push wc-clip", data.number)
+            ),
+            ticketRoute(data, false),
+            hidden(h("span", "wc-perforation")),
+            data.facts.length > 0 && passFields(data.facts),
+            (data.passenger || data.status || data.reference) &&
+              h(
+                "div",
+                "wc-row-center wc-between wc-gap-md",
+                h(
+                  "span",
+                  "wc-col wc-gap-xxs",
+                  data.passenger &&
+                    h("span", "wc-md wc-w6 wc-c1 wc-clip", data.passenger),
+                  data.status && status(data.status)
+                ),
+                data.reference &&
+                  h("span", "wc-xs wc-c3 wc-num wc-clip", data.reference)
+              ),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+  ];
+
+  // ================================================================ ride
+  type Ride = {
+    frame: Frame;
+    brand?: string | undefined;
+    status: string;
+    eta?: string | undefined;
+    plate?: string | undefined;
+    car?: string | undefined;
+    driver?:
+      | { name: string; rating?: number | undefined; trips?: string | undefined }
+      | undefined;
+    pickup?: string | undefined;
+    dropoff?: string | undefined;
+    fare?: string | undefined;
+  };
+  const rideOf = (data: Record<string, unknown>): Ride => ({
+    frame: frameOf(data),
+    brand: brandOf(data.brand),
+    status: need(data.status, "a status"),
+    eta: text(data.eta),
+    plate: text(data.plate),
+    car: text(data.car),
+    driver:
+      isRecord(data.driver) && text(data.driver.name)
+        ? {
+            name: text(data.driver.name)!,
+            rating: num(data.driver.rating),
+            trips: text(data.driver.trips),
+          }
+        : undefined,
+    pickup: text(data.pickup),
+    dropoff: text(data.dropoff),
+    fare: text(data.fare),
+  });
+  const driverLine = (data: Ride) =>
+    data.driver &&
+    h(
+      "span",
+      "wc-sm wc-c3 wc-num wc-clip",
+      [
+        data.driver.name,
+        data.driver.rating === undefined ? null : `★ ${data.driver.rating.toFixed(1)}`,
+        data.driver.trips,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    );
+  const route = (from?: string, to?: string) =>
+    (from || to) &&
+    h(
+      "ol",
+      "wc-route",
+      from &&
+        h(
+          "li",
+          "wc-route-stop",
+          hidden(h("span", "wc-route-dot wc-route-from")),
+          h("span", "wc-sm wc-c1", from)
+        ),
+      to &&
+        h(
+          "li",
+          "wc-route-stop",
+          hidden(h("span", "wc-route-dot wc-route-to")),
+          h("span", "wc-sm wc-c1", to)
+        )
+    );
+  const rideLayouts: Array<Layout<Ride>> = [
+    [
+      "pickup",
+      (data) => data.plate !== undefined,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            kindHead(data.frame, data.brand, "car"),
+            h(
+              "div",
+              "wc-col wc-gap-xxs",
+              h("p", "wc-lg wc-w6 wc-c1", data.status),
+              data.eta && h("span", "wc-title-3 wc-w6 wc-text-success wc-num", data.eta)
+            ),
+            h(
+              "div",
+              "wc-row-center wc-gap-lg",
+              h("span", "wc-plate wc-num", data.plate),
+              h(
+                "span",
+                "wc-col wc-grow",
+                data.car && h("span", "wc-md wc-c1 wc-clip", data.car),
+                driverLine(data)
+              )
+            ),
+            route(data.pickup, data.dropoff),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+    [
+      "trip",
+      (data) => data.pickup !== undefined || data.dropoff !== undefined,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            kindHead(
+              data.frame,
+              data.brand,
+              "car",
+              data.fare && h("span", "wc-md wc-w6 wc-c1 wc-num wc-push", data.fare)
+            ),
+            h(
+              "div",
+              "wc-col wc-gap-xxs",
+              h("p", "wc-lg wc-w6 wc-c1", data.status),
+              data.eta && h("span", "wc-sm wc-c2", data.eta)
+            ),
+            route(data.pickup, data.dropoff),
+            (data.plate || data.car || data.driver) &&
+              h(
+                "div",
+                "wc-row-center wc-gap-md wc-ride-foot",
+                data.plate && h("span", "wc-plate wc-plate-sm wc-num", data.plate),
+                h(
+                  "span",
+                  "wc-col wc-grow",
+                  data.car && h("span", "wc-sm wc-c1 wc-clip", data.car),
+                  driverLine(data)
+                )
+              ),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+  ];
+
+  // ============================================================= product
+  type Product = {
+    name: string;
+    image?: string | undefined;
+    price: string;
+    originalPrice?: string | undefined;
+    badge?: string | undefined;
+    shop?: string | undefined;
+    rating?: number | undefined;
+    sales?: string | undefined;
+    href?: string | undefined;
+  };
+  type Products = { frame: Frame; products: Product[] };
+  const productsOf = (data: Record<string, unknown>): Products => {
+    const products = list(data.products, 6, (item): Product | undefined =>
+      isRecord(item) && text(item.name) && text(item.price)
+        ? {
+            name: text(item.name)!,
+            image: httpsOf(item.image),
+            price: text(item.price)!,
+            originalPrice: text(item.originalPrice),
+            badge: text(item.badge),
+            shop: text(item.shop),
+            rating: num(item.rating),
+            sales: text(item.sales),
+            href: httpsOf(item.href),
+          }
+        : undefined
+    );
+    if (!products.length)
+      fail(
+        unread(data.products, "products", "a name and a price") ??
+          "Card data needs products"
+      );
+    return { frame: frameOf(data), products };
+  };
+  const priceLine = (item: Product, size: string) =>
+    h(
+      "span",
+      "wc-baseline wc-gap-xs",
+      item.badge && h("span", "wc-xs wc-w5 wc-text-error", item.badge),
+      h("span", cx(size, "wc-w6 wc-text-error wc-num"), item.price),
+      item.originalPrice && h("s", "wc-xs wc-c4 wc-num", item.originalPrice)
+    );
+  const productFacts = (item: Product) =>
+    [
+      item.rating === undefined ? null : `★ ${item.rating.toFixed(1)}`,
+      item.sales,
+      item.shop,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  const productLayouts: Array<Layout<Products>> = [
+    [
+      "hero",
+      (data) => data.products.length === 1,
+      (data) => {
+        const item = data.products[0]!;
+        return {
+          root: card(data.frame, [
+            row(
+              item.href,
+              "wc-product-hero",
+              picture(item.image, item.name, "wc-pic-hero", "shopping-bag"),
+              h(
+                "span",
+                "wc-col wc-gap-xs wc-grow",
+                h("span", "wc-md wc-w5 wc-c1 wc-clamp-2", item.name),
+                productFacts(item) &&
+                  h("span", "wc-xs wc-c3 wc-clip", productFacts(item)),
+                priceLine(item, "wc-title-3")
+              )
+            ),
+          ]),
+        };
+      },
+    ],
+    [
+      "grid",
+      (data) => data.products.length > 1,
+      (data) => ({
+        root: card(data.frame, [
+          h(
+            "ul",
+            "wc-product-grid",
+            ...data.products.map((item) =>
+              h(
+                "li",
+                null,
+                row(
+                  item.href,
+                  "wc-product-tile",
+                  picture(item.image, item.name, "wc-pic-tile", "shopping-bag"),
+                  h("span", "wc-sm wc-c1 wc-clamp-2", item.name),
+                  priceLine(item, "wc-md"),
+                  item.shop && h("span", "wc-xs wc-c3 wc-clip", item.shop)
+                )
+              )
+            )
+          ),
+        ]),
+      }),
+    ],
+    [
+      "list",
+      () => true,
+      (data) => ({
+        root: card(data.frame, [
+          h(
+            "ol",
+            "wc-list",
+            ...data.products.map((item) =>
+              h(
+                "li",
+                "wc-divided",
+                row(
+                  item.href,
+                  "wc-row-center",
+                  picture(item.image, item.name, "wc-pic-thumb", "shopping-bag"),
+                  h(
+                    "span",
+                    "wc-col wc-gap-xxs wc-grow",
+                    h("span", "wc-sm wc-c1 wc-clamp-2", item.name),
+                    productFacts(item) &&
+                      h("span", "wc-xs wc-c3 wc-clip", productFacts(item))
+                  ),
+                  h(
+                    "span",
+                    "wc-col wc-end wc-trail",
+                    h("span", "wc-md wc-w6 wc-text-error wc-num", item.price),
+                    item.originalPrice &&
+                      h("s", "wc-xs wc-c4 wc-num", item.originalPrice)
+                  )
+                )
+              )
+            )
+          ),
+        ]),
+      }),
+    ],
+  ];
+
+  // ============================================================= booking
+  type Booking = {
+    frame: Frame;
+    brand?: string | undefined;
+    status?: { label: string; tone: Tone } | undefined;
+    at: Zoned;
+    details: Fact[];
+    confirmation?: string | undefined;
+    address?: string | undefined;
+  };
+  const bookingOf = (data: Record<string, unknown>): Booking => ({
+    frame: frameOf(data),
+    brand: brandOf(data.brand),
+    status: statusOf(data.status),
+    at:
+      zonedOf(data.at, data.zone) ??
+      fail("Card data at needs an ISO time with an offset"),
+    details: factsOf(data.details, 6),
+    confirmation: text(data.confirmation),
+    address: text(data.address),
+  });
+  const bookingLayouts: Array<Layout<Booking>> = [
+    [
+      "confirmation",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            h(
+              "div",
+              "wc-row-center wc-gap-lg",
+              hidden(
+                h(
+                  "span",
+                  "wc-cal",
+                  h("span", "wc-cal-month", data.at.month),
+                  h("span", "wc-cal-day wc-num", data.at.day)
+                )
+              ),
+              h(
+                "span",
+                "wc-col wc-gap-xxs wc-grow",
+                h("h3", "wc-order-merchant", data.frame.title),
+                h("span", "wc-md wc-c1 wc-num", `${data.at.date} ${data.at.time}`),
+                data.status && status(data.status)
+              )
+            ),
+            data.details.length > 0 && factRows(data.details),
+            (data.confirmation || data.address) &&
+              h(
+                "div",
+                "wc-col wc-gap-xxs",
+                data.confirmation &&
+                  h("span", "wc-sm wc-w5 wc-c1 wc-num", data.confirmation),
+                data.address && h("span", "wc-sm wc-c3", data.address)
+              ),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+    [
+      "compact",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            kindHead(
+              data.frame,
+              data.brand,
+              "check",
+              data.status && h("span", "wc-push", status(data.status))
+            ),
+            h(
+              "div",
+              "wc-col wc-gap-xxs",
+              h("p", "wc-lg wc-w6 wc-c1 wc-num", `${data.at.date} ${data.at.time}`),
+              data.details.length > 0 &&
+                h(
+                  "span",
+                  "wc-sm wc-c3",
+                  data.details.map((fact) => fact.value).join(" · ")
+                )
+            ),
+            data.address && h("p", "wc-sm wc-c3", data.address),
+          ],
+          { header: false }
+        ),
+      }),
+    ],
+  ];
+
+  // ============================================================== device
+  type Device = {
+    name: string;
+    on?: boolean | undefined;
+    online: boolean;
+    value?: string | undefined;
+    unit?: string | undefined;
+    mode?: string | undefined;
+    detail?: string | undefined;
+    controls: Control[];
+  };
+  type Devices = { frame: Frame; devices: Device[] };
+  const devicesOf = (data: Record<string, unknown>): Devices => {
+    const devices = list(data.devices, 6, (item): Device | undefined =>
+      isRecord(item) && text(item.name)
+        ? {
+            name: text(item.name)!,
+            on: typeof item.on === "boolean" ? item.on : undefined,
+            online: item.online !== false,
+            value: text(item.value),
+            unit: text(item.unit),
+            mode: text(item.mode),
+            detail: text(item.detail),
+            controls: list(item.controls, 4, controlOf),
+          }
+        : undefined
+    );
+    if (!devices.length)
+      fail(unread(data.devices, "devices", "a name") ?? "Card data needs devices");
+    return { frame: frameOf(data), devices };
+  };
+  const power = (device: Device) =>
+    h(
+      "span",
+      cx(
+        "wc-power",
+        !device.online
+          ? "wc-power-off"
+          : device.on === false
+            ? "wc-power-idle"
+            : "wc-power-on"
+      ),
+      !device.online ? copy.offline : (device.mode ?? "")
+    );
+  const reading = (device: Device, size: string) =>
+    device.value &&
+    h(
+      "span",
+      cx("wc-baseline", !device.online && "wc-dim"),
+      h("span", cx(size, "wc-tight wc-w6 wc-c1 wc-num"), device.value),
+      device.unit && h("span", "wc-lg wc-c3", device.unit)
+    );
+  const controlRow = (device: Device) =>
+    device.controls.length > 0 &&
+    h(
+      "div",
+      "wc-row-center wc-wrap wc-gap-sm",
+      ...device.controls.map((control) =>
+        proposer(control.prompt, "wc-action", control.label, control.label)
+      )
+    );
+  const deviceLayouts: Array<Layout<Devices>> = [
+    [
+      "single",
+      (data) => data.devices.length === 1,
+      (data) => {
+        const device = data.devices[0]!;
+        return {
+          root: card(data.frame, [
+            h(
+              "div",
+              "wc-row-end wc-between wc-gap-md",
+              h(
+                "span",
+                "wc-col wc-gap-xxs",
+                h("span", "wc-md wc-w6 wc-c1", device.name),
+                device.detail && h("span", "wc-sm wc-c3", device.detail)
+              ),
+              power(device)
+            ),
+            reading(device, "wc-display-lg"),
+            controlRow(device),
+          ]),
+        };
+      },
+    ],
+    [
+      "grid",
+      (data) => data.devices.length > 1,
+      (data) => ({
+        root: card(data.frame, [
+          h(
+            "ul",
+            "wc-device-grid",
+            ...data.devices.map((device) =>
+              h(
+                "li",
+                cx("wc-device", device.on && device.online && "wc-device-on"),
+                h(
+                  "span",
+                  "wc-row-center wc-between wc-gap-sm",
+                  h("span", "wc-sm wc-w5 wc-c1 wc-clip", device.name),
+                  power(device)
+                ),
+                reading(device, "wc-title-2") ||
+                  (device.detail && h("span", "wc-sm wc-c3", device.detail)),
+                device.controls.length > 0 &&
+                  h(
+                    "span",
+                    "wc-row-center wc-wrap wc-gap-xs",
+                    ...device.controls.map((control) =>
+                      proposer(
+                        control.prompt,
+                        "wc-action wc-action-sm",
+                        control.label,
+                        control.label
+                      )
+                    )
+                  )
+              )
+            )
+          ),
+        ]),
+      }),
+    ],
+  ];
+
+  // ============================================================= payment
+  type Payment = {
+    frame: Frame;
+    brand?: string | undefined;
+    amount: string;
+    status: { label: string; tone: Tone };
+    counterparty?: string | undefined;
+    at?: string | undefined;
+    details: Fact[];
+  };
+  const paymentOf = (data: Record<string, unknown>): Payment => ({
+    frame: frameOf(data),
+    brand: brandOf(data.brand),
+    amount: need(data.amount, "an amount"),
+    status: statusOf(data.status) ?? fail("Card data needs a status with a label"),
+    counterparty: text(data.counterparty),
+    at: momentText(data.at),
+    details: factsOf(data.details, 5),
+  });
+  /** A drawn check for a payment that went through; the host's arrow otherwise. */
+  const sealGlyph = (tone: Tone) =>
+    tone === "success" ? shape("check") : icon("arrow-right");
+  const paymentLayouts: Array<Layout<Payment>> = [
+    [
+      "receipt",
+      () => true,
+      (data) => ({
+        root: card(data.frame, [
+          h(
+            "div",
+            "wc-col wc-gap-sm wc-pay-hero",
+            hidden(
+              h(
+                "span",
+                cx("wc-pay-seal", `wc-pay-${data.status.tone}`),
+                sealGlyph(data.status.tone)
+              )
+            ),
+            h("span", "wc-display-md wc-tight wc-w6 wc-c1 wc-num", data.amount),
+            h(
+              "span",
+              "wc-col wc-gap-xxs",
+              h(
+                "span",
+                cx("wc-md wc-w5", `wc-text-${data.status.tone}`),
+                data.status.label
+              ),
+              (data.counterparty || data.at) &&
+                h(
+                  "span",
+                  "wc-sm wc-c3 wc-num",
+                  [data.counterparty, data.at].filter(Boolean).join(" · ")
+                )
+            )
+          ),
+          data.details.length > 0 && factRows(data.details),
+        ]),
+      }),
+    ],
+    [
+      "compact",
+      () => true,
+      (data) => ({
+        root: card(
+          data.frame,
+          [
+            h(
+              "div",
+              "wc-row-center wc-gap-md",
+              data.brand
+                ? mark(data.brand, data.frame.title, "lg")
+                : hidden(
+                    h(
+                      "span",
+                      cx("wc-pay-seal wc-pay-seal-sm", `wc-pay-${data.status.tone}`),
+                      sealGlyph(data.status.tone)
+                    )
+                  ),
+              h(
+                "span",
+                "wc-col wc-grow",
+                h(
+                  "span",
+                  "wc-md wc-w6 wc-c1 wc-clip",
+                  data.counterparty ?? data.frame.title
+                ),
+                h(
+                  "span",
+                  "wc-sm wc-c3 wc-clip wc-num",
+                  [data.status.label, data.at].filter(Boolean).join(" · ")
+                )
+              ),
+              h("span", "wc-lg wc-w6 wc-c1 wc-num wc-trail", data.amount)
+            ),
+          ],
+          { header: false, small: true }
+        ),
+      }),
+    ],
+  ];
+
+  // =============================================================== media
+  type Media = {
+    frame: Frame;
+    brand?: string | undefined;
+    track: string;
+    artist?: string | undefined;
+    album?: string | undefined;
+    cover?: string | undefined;
+    playing: boolean;
+    position?: number | undefined;
+    duration?: number | undefined;
+    controls: { previous?: string; toggle?: string; next?: string };
+    queue: Array<{ track: string; artist?: string | undefined }>;
+  };
+  const mediaOf = (data: Record<string, unknown>): Media => {
+    const controls = isRecord(data.controls) ? data.controls : {};
+    const prompt = (input: unknown) => ident(input, 4000);
+    const duration = num(data.duration);
+    const position = num(data.position);
+    return {
+      frame: frameOf(data),
+      brand: brandOf(data.brand),
+      track: need(data.track, "a track"),
+      artist: text(data.artist),
+      album: text(data.album),
+      cover: httpsOf(data.cover),
+      playing: data.playing === true,
+      duration: duration !== undefined && duration > 0 ? duration : undefined,
+      position: position !== undefined && position >= 0 ? position : undefined,
+      controls: Object.fromEntries(
+        (["previous", "toggle", "next"] as const)
+          .map((name) => [name, prompt(controls[name])])
+          .filter(([, given]) => given)
+      ),
+      queue: list(data.queue, 5, (item) =>
+        isRecord(item) && text(item.track)
+          ? { track: text(item.track)!, artist: text(item.artist) }
+          : undefined
+      ),
+    };
+  };
+  const clockOfSeconds = (seconds: number) => {
+    const whole = Math.floor(seconds);
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    const rest = String(whole % 60).padStart(2, "0");
+    return hours
+      ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}`
+      : `${minutes}:${rest}`;
+  };
+  const transport = (data: Media, size: "lg" | "sm" = "lg") => {
+    const { previous, toggle, next } = data.controls;
+    if (!previous && !toggle && !next) return null;
+    return h(
+      "div",
+      cx("wc-transport", size === "sm" && "wc-transport-sm"),
+      previous && proposer(previous, "wc-tbtn", "previous", shape("next", "wc-flip")),
+      toggle &&
+        proposer(
+          toggle,
+          "wc-tbtn wc-tbtn-main",
+          data.playing ? "pause" : "play",
+          shape(data.playing ? "pause" : "play")
+        ),
+      next && proposer(next, "wc-tbtn", "next", shape("next"))
+    );
+  };
+  /** Elapsed time, a thin rail, and the time left, as a now-playing screen shows them. */
+  const scrubber = (data: Media) => {
+    if (data.duration === undefined) return null;
+    const at = Math.min(data.position ?? 0, data.duration);
+    const native = h("progress", "wc-sr") as HTMLProgressElement;
+    native.max = 100;
+    native.value = Math.round((at / data.duration) * 100);
+    native.setAttribute("aria-label", data.track);
+    const rail = hidden(h("span", "wc-scrub-rail", h("span", "wc-scrub-fill")));
+    rail.style.setProperty("--wc-scrub", String(at / data.duration));
+    return h(
+      "div",
+      "wc-col wc-gap-xs",
+      native,
+      rail,
+      h(
+        "span",
+        "wc-row-center wc-between wc-micro wc-w5 wc-num wc-player-dim",
+        h("span", null, clockOfSeconds(at)),
+        h("span", null, `−${clockOfSeconds(data.duration - at)}`)
+      )
+    );
+  };
+  /** The cover, blurred past the card's edges, is the card's own color. */
+  const playerCard = (data: Media, children: Child[]) => {
+    const root = card(data.frame, children);
+    root.classList.add("wc-player");
+    const backdrop = hidden(picture(data.cover, "", "wc-player-backdrop", "play"));
+    root.prepend(backdrop);
+    return root;
+  };
+  const nowPlaying = (data: Media, cover: string) =>
+    h(
+      "div",
+      "wc-row-center wc-gap-lg",
+      picture(data.cover, data.album ?? data.track, cover, "play"),
+      h(
+        "span",
+        "wc-col wc-gap-xxs wc-grow",
+        h("span", "wc-lg wc-w6 wc-player-ink wc-clamp-2", data.track),
+        (data.artist || data.album) &&
+          h(
+            "span",
+            "wc-sm wc-player-dim wc-clip",
+            [data.artist, data.album].filter(Boolean).join(" — ")
+          )
+      )
+    );
+  const mediaLayouts: Array<Layout<Media>> = [
+    [
+      "player",
+      () => true,
+      (data) => ({
+        root: playerCard(data, [
+          nowPlaying(data, "wc-pic-cover"),
+          scrubber(data),
+          transport(data),
+        ]),
+      }),
+    ],
+    [
+      "queue",
+      (data) => data.queue.length > 0,
+      (data) => ({
+        root: playerCard(data, [
+          h(
+            "div",
+            "wc-row-center wc-gap-md",
+            h("span", "wc-grow", nowPlaying(data, "wc-pic-thumb")),
+            transport(data, "sm")
+          ),
+          h(
+            "div",
+            "wc-col wc-gap-xs wc-player-queue",
+            h("span", "wc-xs wc-w6 wc-player-dim", copy.upNext),
+            h(
+              "ol",
+              "wc-col",
+              ...data.queue.map((item) =>
+                h(
+                  "li",
+                  "wc-row-center wc-gap-md wc-queue-row",
+                  h(
+                    "span",
+                    "wc-col wc-grow",
+                    h("span", "wc-sm wc-w5 wc-player-ink wc-clip", item.track),
+                    item.artist && h("span", "wc-xs wc-player-dim wc-clip", item.artist)
+                  )
+                )
+              )
+            )
+          ),
+        ]),
+      }),
+    ],
+  ];
+
+  // ================================================================ bars
+  type BarItem = {
+    label: string;
+    value: number;
+    shown: string;
+    compare?: number | undefined;
+    compareShown?: string | undefined;
+    delta?: Delta | undefined;
+    caption?: string | undefined;
+    status?: { label: string; tone: Tone } | undefined;
+    tone?: Tone | undefined;
+    brand?: string | undefined;
+    href?: string | undefined;
+  };
+  type Bars = {
+    frame: Frame;
+    items: BarItem[];
+    /** Where each bar lies on a track that runs to what a full bar stands for. */
+    area: ReturnType<typeof barPlot>;
+    /** The data says what a full bar stands for, so every layout keeps that scale. */
+    scaled: boolean;
+    legend?: { value: string; compare: string } | undefined;
+  };
+  const barsOf = (data: Record<string, unknown>): Bars => {
+    const items = list(data.items, 12, (item): BarItem | undefined => {
+      if (!isRecord(item) || !text(item.label) || num(item.value) === undefined)
+        return undefined;
+      const compare = num(item.compare);
+      return {
+        label: text(item.label)!,
+        value: num(item.value)!,
+        shown: text(item.valueLabel) ?? formatNumber(num(item.value)!),
+        compare,
+        compareShown:
+          compare === undefined
+            ? undefined
+            : (text(item.compareLabel) ?? formatNumber(compare)),
+        delta: deltaOf(item.delta),
+        caption: text(item.caption),
+        status: statusOf(item.status),
+        tone: tones.includes(item.tone as Tone) ? (item.tone as Tone) : undefined,
+        brand: brandOf(item.brand),
+        href: httpsOf(item.href),
+      };
+    });
+    if (!items.length)
+      fail(
+        unread(data.items, "items", "a label and a number as value") ??
+          "Card data needs items"
+      );
+    const full = num(data.max);
+    return {
+      frame: frameOf(data),
+      items,
+      area: barPlot(
+        items.flatMap((item) => [item.value, item.compare ?? 0]),
+        0,
+        full
+      ),
+      scaled: full !== undefined,
+      legend:
+        isRecord(data.legend) &&
+        text(data.legend.value) &&
+        text(data.legend.compare) &&
+        items.some((item) => item.compare !== undefined)
+          ? { value: text(data.legend.value)!, compare: text(data.legend.compare)! }
+          : undefined,
+    };
+  };
+  const barsLegend = (data: Bars) =>
+    data.legend &&
+    h(
+      "div",
+      "wc-rank-legend",
+      hidden(h("span", "wc-rank-swatch wc-dot-brand")),
+      h("span", null, data.legend.value),
+      hidden(h("span", "wc-rank-swatch wc-rank-swatch-compare")),
+      h("span", null, data.legend.compare)
+    );
+  /** One item's bar, and under it the bar of the series it is compared with. */
+  const barTracks = (data: Bars, item: BarItem) => {
+    // The fill is the track's own pseudo-element, so a bar is one node.
+    const track = (amount: number, tone: string) => {
+      const node = h("span", "wc-rank-track");
+      node.dataset.tone = tone;
+      lay(node, data.area.bar(amount));
+      return node;
+    };
+    return hidden(
+      h(
+        "span",
+        "wc-rank-tracks",
+        track(item.value, item.tone ?? "brand"),
+        item.compare !== undefined && track(item.compare, "compare")
+      )
+    );
+  };
+  /** An item's value, the value it is compared with, and its change. */
+  const barValues = (item: BarItem) => [
+    h("span", "wc-sm wc-w5 wc-c1 wc-num", item.shown),
+    item.compareShown !== undefined &&
+      h("span", "wc-xs wc-c3 wc-num", item.compareShown),
+    item.delta && delta(item.delta),
+  ];
+  const barsLayouts: Array<Layout<Bars>> = [
+    [
+      "rows",
+      () => true,
+      (data) => ({
+        root: card(data.frame, [
+          barsLegend(data),
+          h(
+            "ul",
+            "wc-list wc-rank",
+            ...data.items.map((item) =>
+              h(
+                "li",
+                null,
+                row(
+                  item.href,
+                  "wc-rank-row",
+                  h(
+                    "span",
+                    "wc-rank-head",
+                    h(
+                      "span",
+                      "wc-rank-name",
+                      branded(data.items) && mark(item.brand, item.label, "sm", true),
+                      h("span", "wc-sm wc-c1", item.label),
+                      item.status && status(item.status)
+                    ),
+                    h("span", "wc-rank-values", ...barValues(item))
+                  ),
+                  barTracks(data, item),
+                  item.caption && h("span", "wc-xs wc-c3", item.caption)
+                )
+              )
+            )
+          ),
+        ]),
+      }),
+    ],
+    [
+      "compact",
+      (data) =>
+        data.items.every(
+          (item) =>
+            widthOf(item.label) <= 9 && !item.caption && !item.status && !item.href
+        ),
+      (data) => {
+        // Values, compared values and changes each share a column, so a
+        // column exists in every row when any item has its part.
+        const compared = data.items.some((item) => item.compare !== undefined);
+        const changed = data.items.some((item) => item.delta);
+        const rows = h(
+          "ul",
+          "wc-list wc-rank-compact",
+          ...data.items.map((item) => {
+            const [shown, other, change] = barValues(item);
+            return h(
+              "li",
+              null,
+              h(
+                "span",
+                "wc-rank-name",
+                branded(data.items) && mark(item.brand, item.label, "sm", true),
+                h("span", "wc-sm wc-c1", item.label)
+              ),
+              barTracks(data, item),
+              shown,
+              compared && (other || h("span")),
+              changed && (change || h("span"))
+            );
+          })
+        );
+        rows.style.setProperty(
+          "--wc-rank-columns",
+          String(1 + Number(compared) + Number(changed))
+        );
+        return { root: card(data.frame, [barsLegend(data), rows]) };
+      },
+    ],
+    [
+      "columns",
+      // Upright bars scale to their tallest, so they do not draw a stated full value.
+      (data) =>
+        !data.scaled &&
+        data.items.length >= 2 &&
+        data.items.length <= 7 &&
+        data.items.every(
+          (item) =>
+            widthOf(item.label) <= 5 &&
+            item.compare === undefined &&
+            !item.caption &&
+            !item.status &&
+            !item.delta &&
+            !item.href &&
+            !item.brand
+        ),
+      (data) => ({
+        root: card(data.frame, [
+          columnBars({
+            title: data.frame.title,
+            labels: data.items.map((item) => item.label),
+            values: data.items.map((item) => item.value),
+            shown: data.items.map((item) => item.shown),
+            latest: false,
+            tones: data.items.map((item) => item.tone),
+          }),
+        ]),
+      }),
+    ],
+  ];
+
+  // =============================================================== table
+  type Cell = { text: string; tone?: Tone | undefined; numeric: boolean };
+  type Table = { frame: Frame; columns: string[]; rows: Cell[][] };
+  // A number, with the sign, currency or unit it is written with.
+  const numeric = /^[-+−–]?[$¥€£]?\d[\d.,]*\s?[%‰]?[^\d\s]{0,3}$/;
+  const cellOf = (input: unknown): Cell | undefined => {
+    if (input === null || (typeof input === "string" && !input.trim()))
+      return { text: "", numeric: true };
+    if (num(input) !== undefined)
+      return { text: formatNumber(num(input)!), numeric: true };
+    const written = isRecord(input) ? text(input.text) : text(input);
+    if (!written) return undefined;
+    return {
+      text: written,
+      tone:
+        isRecord(input) && tones.includes(input.tone as Tone)
+          ? (input.tone as Tone)
+          : undefined,
+      numeric: numeric.test(written.trim()),
+    };
+  };
+  const tableOf = (data: Record<string, unknown>): Table => {
+    // A column may have no heading, as the one that names the rows often has.
+    const columns = list(data.columns, 8, (column) =>
+      typeof column === "string" ? column.trim() : undefined
+    );
+    if (columns.length < 2 || !columns.some(Boolean))
+      fail("Card data needs two or more columns with headings");
+    const rows = list(data.rows, 24, (item) => {
+      if (!Array.isArray(item)) return undefined;
+      const cells = list(item, columns.length, cellOf);
+      return cells.length === columns.length && cells[0]!.text ? cells : undefined;
+    });
+    if (!rows.length)
+      fail(
+        unread(data.rows, "rows", "one cell per column, the first naming the row") ??
+          "Card data needs rows with one cell per column"
+      );
+    return { frame: frameOf(data), columns, rows };
+  };
+  const tableLayouts: Array<Layout<Table>> = [
+    [
+      "grid",
+      () => true,
+      (data) => {
+        // A column of numbers reads down its right edge.
+        const end = data.columns.map(
+          (_, column) =>
+            column > 0 &&
+            data.rows.some((cells) => cells[column]!.text) &&
+            data.rows.every((cells) => cells[column]!.numeric)
+        );
+        // Short row names keep to one line; long ones wrap in their column.
+        const fits = data.rows.every((cells) => widthOf(cells[0]!.text) <= 8);
+        // What each column needs, in ems: its longest entry on one line, or a
+        // short line of the entries that wrap.
+        const ems = data.columns.map((heading, column) => {
+          const widest = Math.max(
+            widthOf(heading),
+            ...data.rows.map((cells) => widthOf(cells[column]!.text))
+          );
+          const oneLine = column === 0 ? fits : end[column];
+          return (oneLine ? widest : Math.min(widest, 6)) + 0.4;
+        });
+        const table = h(
+          "table",
+          cx("wc-table", fits && "wc-table-names-fit"),
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              ...data.columns.map((column, index) => {
+                const head = h("th", end[index] && "wc-table-end", column);
+                head.setAttribute("scope", "col");
+                head.style.setProperty("--wc-column-ems", ems[index]!.toFixed(2));
+                return head;
+              })
+            )
+          ),
+          h(
+            "tbody",
+            null,
+            ...data.rows.map((cells) =>
+              h(
+                "tr",
+                null,
+                ...cells.map((item, index) => {
+                  const node = h(
+                    index === 0 ? "th" : "td",
+                    cx(
+                      index === 0 && "wc-table-name",
+                      end[index] && "wc-table-end",
+                      item.tone && `wc-text-${item.tone}`
+                    ),
+                    item.text
+                  );
+                  if (index === 0) node.setAttribute("scope", "row");
+                  else node.dataset.label = data.columns[index]!;
+                  return node;
+                })
+              )
+            )
+          )
+        );
+        // In a card narrower than its columns need, each row stacks into
+        // label and value pairs.
+        const fit = h("div", "wc-table-fit", table);
+        fit.style.setProperty(
+          "--wc-table-ems",
+          ems.reduce((sum, width) => sum + width, 0).toFixed(2)
+        );
+        fit.style.setProperty("--wc-table-columns", String(data.columns.length));
+        return { root: card(data.frame, [fit]) };
+      },
+    ],
+  ];
+
+  // =============================================================== chart
+  /** The names of several series, each beside the color its marks are drawn in. */
+  const seriesLegend = (names: string[]) =>
+    h(
+      "div",
+      "wc-rank-legend",
+      ...names.flatMap((name, index) => {
+        const swatch = hidden(h("span", "wc-rank-swatch"));
+        swatch.style.backgroundColor = seriesInk[index % seriesInk.length]!;
+        return [swatch, h("span", null, name)];
+      })
+    );
+  /** The labels under a plot: all of up to eight, every nth of more. */
+  const plotAxis = (labels: string[]) => {
+    const few = labels.length <= 8;
+    const axis = hidden(
+      h(
+        "div",
+        cx("wc-bars-axis", few && "wc-bars-axis-all"),
+        ...labels.map((tick) =>
+          h("span", null, h("span", null, ...(few ? breakable(tick) : [tick])))
+        )
+      )
+    );
+    if (!few) {
+      const last = labels.length - 1;
+      const widest = Math.max(...labels.map(widthOf), 1) + 1;
+      [...axis.children].forEach((tick, index) => {
+        for (const [name, ems] of [
+          ["wide", 40],
+          ["medium", 26],
+          ["narrow", 18],
+        ] as const)
+          if (
+            (last - index) % Math.max(1, Math.ceil((widest * labels.length) / ems)) ===
+            0
+          )
+            tick.classList.add(`wc-tick-${name}`);
+      });
+    }
+    return axis;
+  };
+  const chartOf = (spec: Parameters<CardEngine["chart"]>[0]) => {
+    const { labels, series } = spec;
+    const count = labels.length;
+    const first = series[0]!;
+    if (spec.type === "bar" && series.length === 1) {
+      // Labels that fit under their bars, or stand for a long sequence, keep
+      // the bars upright. Up to sixteen that do not fit turn the bars
+      // sideways, so every label and value shows.
+      const widest = Math.max(...labels.map(widthOf), 1) + 1;
+      if (count <= 8 ? widest * count <= 80 : widest * count <= 40 || count > 16)
+        return columnBars({
+          title: "",
+          labels,
+          values: first.values,
+          shown: first.values.map(formatNumber),
+          latest: false,
+        });
+      const area = barPlot(first.values);
+      const rows = h(
+        "ul",
+        "wc-list wc-rank-compact",
+        ...labels.map((label, index) => {
+          const track = h("span", "wc-rank-track");
+          track.dataset.tone = "brand";
+          lay(track, area.bar(first.values[index]!));
+          return h(
+            "li",
+            null,
+            h("span", "wc-rank-name", h("span", "wc-sm wc-c1", label)),
+            hidden(h("span", "wc-rank-tracks", track)),
+            h("span", "wc-sm wc-w5 wc-c1 wc-num", formatNumber(first.values[index]!))
+          );
+        })
+      );
+      rows.style.setProperty("--wc-rank-columns", "1");
+      return rows;
+    }
+    const all = series.flatMap((item) => item.values);
+    if (spec.type === "bar") {
+      // Several series stand side by side over each label.
+      const area = barPlot(all);
+      return h(
+        "figure",
+        "wc-bars",
+        h(
+          "figcaption",
+          "wc-bars-legend",
+          seriesLegend(series.map((item) => item.name))
+        ),
+        hidden(
+          h(
+            "div",
+            "wc-bars-plot",
+            ...labels.map((_, index) =>
+              h(
+                "div",
+                "wc-bar-slot wc-bar-group",
+                ...series.map((item, order) => {
+                  const bar = h("div", "wc-bar-col");
+                  stand(bar, area.bar(item.values[index]!), item.values[index]! < 0);
+                  bar.style.backgroundColor = seriesInk[order % seriesInk.length]!;
+                  return bar;
+                })
+              )
+            ),
+            zeroLine(area)
+          )
+        ),
+        plotAxis(labels)
+      );
+    }
+    // Lines run through the middle of each label's slot, as bars stand in it.
+    const y = scale(all, 100, 6);
+    const x = (index: number) => ((index + 0.5) / count) * 100;
+    const path = (values: number[]) =>
+      values
+        .map(
+          (item, index) =>
+            `${index ? "L" : "M"}${x(index).toFixed(2)},${y(item).toFixed(2)}`
+        )
+        .join(" ");
+    const id = nextId();
+    const single = series.length === 1;
+    const high = h(
+      "span",
+      "wc-area-label wc-area-high",
+      formatCompact(Math.max(...all))
+    );
+    high.style.top = `${y(Math.max(...all))}%`;
+    const low = h("span", "wc-area-label wc-area-low", formatCompact(Math.min(...all)));
+    low.style.top = `${y(Math.min(...all))}%`;
+    return h(
+      "figure",
+      "wc-area",
+      !single &&
+        h(
+          "figcaption",
+          "wc-bars-legend",
+          seriesLegend(series.map((item) => item.name))
+        ),
+      hidden(
+        h(
+          "div",
+          "wc-area-plot",
+          h("div", "wc-area-grid", h("div"), h("div"), h("div")),
+          svg(
+            "svg",
+            {
+              class: "wc-area-svg",
+              viewBox: "0 0 100 100",
+              preserveAspectRatio: "none",
+            },
+            ...(single
+              ? [
+                  gradient(id, ink.brand, 0.22),
+                  svg("path", {
+                    d: `${path(first.values)} L${x(count - 1).toFixed(2)},100 L${x(0).toFixed(2)},100 Z`,
+                    fill: `url(#${id})`,
+                  }),
+                ]
+              : []),
+            ...series.map((item, order) =>
+              svg("path", {
+                d: path(item.values),
+                fill: "none",
+                stroke: seriesInk[order % seriesInk.length]!,
+                "stroke-linecap": "round",
+                "stroke-linejoin": "round",
+                "stroke-width": 2,
+                "vector-effect": "non-scaling-stroke",
+              })
+            )
+          ),
+          high,
+          Math.max(...all) !== Math.min(...all) && low
+        )
+      ),
+      plotAxis(labels)
+    );
+  };
+
   // ------------------------------------------------------------- dispatch
   type Kind = {
     parse: (data: Record<string, unknown>) => unknown;
@@ -3043,6 +5154,16 @@ export function cardEngine(env: CardEnv): CardEngine {
     place: kind(placesOf, placeLayouts),
     feed: kind(feedOf, feedLayouts),
     timer: kind(timerOf, timerLayouts),
+    order: kind(orderOf, orderLayouts),
+    ticket: kind(ticketOf, ticketLayouts),
+    ride: kind(rideOf, rideLayouts),
+    product: kind(productsOf, productLayouts),
+    booking: kind(bookingOf, bookingLayouts),
+    device: kind(devicesOf, deviceLayouts),
+    payment: kind(paymentOf, paymentLayouts),
+    media: kind(mediaOf, mediaLayouts),
+    bars: kind(barsOf, barsLayouts),
+    table: kind(tableOf, tableLayouts),
   };
 
   const mounted = new Map<HTMLElement, Built>();
@@ -3073,6 +5194,11 @@ export function cardEngine(env: CardEnv): CardEngine {
       mounted.set(target, built);
       const fragment = document.createDocumentFragment();
       fragment.append(built.root);
+      return fragment;
+    },
+    chart(spec) {
+      const fragment = document.createDocumentFragment();
+      fragment.append(chartOf(spec));
       return fragment;
     },
     receiveIcons(icons) {

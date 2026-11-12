@@ -133,11 +133,129 @@ defmodule SalixAgent.PlatformModelsTest do
     assert config["base_url"] =~ "lmhub.lmhub.svc.cluster.local"
   end
 
+  test "the transcription tier names a model for declined audio at the same Profile", c do
+    {:ok, _} =
+      PlatformModels.put(%{
+        "tiers" => %{
+          "transcription" => %{
+            "profile_id" => c.profile["id"],
+            "model" => "gemini-3.7-flash",
+            "fallback_model" => "gemini-3.6-flash"
+          }
+        }
+      })
+
+    assert {:ok, llm} = PlatformModels.llm("transcription")
+    assert llm["model"] == "gemini-3.7-flash"
+    assert llm["fallback_model"] == "gemini-3.6-flash"
+    assert llm["base_url"] == "https://gateway.example.test/v1"
+  end
+
   test "an entry needs a platform Profile and a model id" do
     assert {:error, :invalid_platform_models} =
              PlatformModels.put(%{"tiers" => %{"worker" => %{"model" => "gpt-6-sol"}}})
 
     assert {:error, :invalid_platform_models} =
              PlatformModels.put(%{"tiers" => %{"max" => %{"profile_id" => "p", "model" => "m"}}})
+  end
+
+  test "a model the platform route table returns runs at a platform key, seen only by name", c do
+    routed = %{"kind" => "platform", "tier" => "worker", "model" => "gpt-6-sol"}
+
+    assert {:ok, llm} = ModelChoice.resolve_llm(routed, c.tenant)
+    llm = Map.new(llm, fn {key, value} -> {to_string(key), value} end)
+    assert llm["base_url"] == "https://gateway.example.test/v1"
+    assert llm["api_key"] == "sk-platform-0123456789"
+    assert llm["model"] == "gpt-6-sol"
+    assert llm["credential_scope"] == "platform"
+
+    assert {:ok, public} = ModelChoice.public(routed, c.tenant)
+    assert public["name"] == "Comma"
+    assert public["provider"] == "comma"
+    refute inspect(public) =~ "gpt-6-sol"
+
+    # No platform key serves it: the Task's model is unavailable.
+    assert {:error, :platform_model_unavailable} =
+             PlatformModels.routed_record("gpt-unknown")
+  end
+
+  test "routed effort survives storage and reaches the provider without inheriting the tier", c do
+    configure(c.profile)
+
+    for effort <- ["low", "medium", nil] do
+      choice = %{
+        "kind" => "platform",
+        "tier" => "worker",
+        "model" => "gpt-6-sol",
+        "reasoning_effort" => effort
+      }
+
+      policy = %{
+        "mode" => "routes",
+        "schema_version" => 2,
+        "revision" => "effort",
+        "entries" => [%{"key" => "code", "description" => "Write code", "model" => choice}]
+      }
+
+      assert {:ok, _} = PlatformModels.put_routing(PlatformModels.routing(), policy)
+      assert %{"entries" => [%{"model" => stored}]} = PlatformModels.routing()
+      assert {:ok, llm} = ModelChoice.resolve_llm(stored, c.tenant)
+      llm = Map.new(llm, fn {key, value} -> {to_string(key), value} end)
+      assert llm["model"] == "gpt-6-sol"
+      assert llm["reasoning_effort"] == effort
+      assert llm["credential_scope"] == "platform"
+    end
+
+    choice = %{"kind" => "platform", "tier" => "worker", "model" => "gpt-6-sol"}
+
+    for invalid <- [
+          Map.put(choice, "profile_id", "foreign"),
+          Map.put(choice, "reasoning_effort", "unsupported")
+        ] do
+      assert {:error, {:model_choice, :invalid_model_configuration}} =
+               ModelChoice.resolve_llm(invalid, c.tenant)
+    end
+  end
+
+  test "the platform route table names models of the worker tier only", c do
+    entry_model = fn model ->
+      %{"key" => "hard", "description" => "Hard tasks", "model" => model}
+    end
+
+    table = fn model ->
+      %{
+        "mode" => "routes",
+        "schema_version" => 2,
+        "revision" => "r1",
+        "entries" => [entry_model.(model)]
+      }
+    end
+
+    routed = %{"kind" => "platform", "tier" => "worker", "model" => "gpt-6-sol"}
+    worker = %{"profile_id" => c.profile["id"], "model" => "gpt-6-sol"}
+    {:ok, _} = PlatformModels.put(%{"tiers" => %{"worker" => worker}})
+
+    # A member's own model, a bare tier, another tier or a pinned Profile has
+    # no place in the platform's table.
+    for model <- [
+          %{"kind" => "catalog", "model" => "gpt-6-sol"},
+          %{"kind" => "platform", "tier" => "worker"},
+          %{"kind" => "platform", "tier" => "router", "model" => "gpt-6-sol"}
+        ] do
+      assert {:error, :invalid_platform_routing} = PlatformModels.put_routing(nil, table.(model))
+    end
+
+    assert {:error, :invalid_platform_routing} =
+             PlatformModels.put_routing(nil, Map.put(table.(routed), "profile_id", "p"))
+
+    assert {:ok, saved} = PlatformModels.put_routing(nil, table.(routed))
+    assert PlatformModels.routing() == saved
+
+    # A stale editor does not overwrite the table.
+    assert {:error, :conflict} = PlatformModels.put_routing(nil, table.(routed))
+
+    # Saving the tiers keeps the table.
+    {:ok, _} = PlatformModels.put(%{"name" => "Comma", "tiers" => %{"worker" => worker}})
+    assert PlatformModels.routing() == saved
   end
 end

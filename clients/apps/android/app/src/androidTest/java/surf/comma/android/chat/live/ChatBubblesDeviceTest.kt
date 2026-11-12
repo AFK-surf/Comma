@@ -30,8 +30,8 @@ import java.io.File
 
 /**
  * On a device, with made-up messages only: a sent message flies into a bubble with a tail; long
- * press opens the message menu, whose copy, like the reply's copy button and a code block's copy,
- * puts the right text on the clipboard. Screens are saved to the app's external files, under
+ * press opens the message menu, whose copy, like a code block's copy, puts the right text on the
+ * clipboard. Screens are saved to the app's external files, under
  * `bubbles/`, for review.
  */
 @RunWith(AndroidJUnit4::class)
@@ -159,24 +159,12 @@ class ChatBubblesDeviceTest {
             onView(withText(R.string.action_copy_message)).inRoot(isPlatformPopup()).perform(click())
             settle(300)
             assertEquals(firstAnswer, clipboard())
-
-            // The reply's copy button copies both answers around the system notice, once.
-            val actions = main {
-                (0 until timeline.childCount).map(timeline::getChildAt).filterIsInstance<ReplyActionsRow>()
-            }
-            assertEquals("one set of buttons for the reply", 1, actions.size)
-            awaitNoClipboardOverlay()
-            val (bx, by) = main { screenCenter(actions.single().getChildAt(0)) }
-            press(bx, by, 60)
-            settle(300)
-            shot("reply-copied-${if (night) "dark" else "light"}")
-            assertEquals("Creating it now.\n\nDone. I invited the team.", clipboard())
         }
     }
 
-    @Test fun longPressMenuAndReplyCopyInLight() = longPressMenuCopiesTheMessage(night = false)
+    @Test fun longPressMenuCopyInLight() = longPressMenuCopiesTheMessage(night = false)
 
-    @Test fun longPressMenuAndReplyCopyInDark() = longPressMenuCopiesTheMessage(night = true)
+    @Test fun longPressMenuCopyInDark() = longPressMenuCopiesTheMessage(night = true)
 
     @Test fun codeBlockCopyButtonCopiesTheCode() {
         demo("code", false).use { scenario ->

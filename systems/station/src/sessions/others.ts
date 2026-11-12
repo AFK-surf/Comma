@@ -3,7 +3,7 @@
 // what its agents did.
 import { parseThreadAddress, threadAddress } from "../agents/instructions.ts";
 import { iso, type TimelineEntry } from "../read/transcript.ts";
-import { STILLFAIL_SURFACE, type SessionRow, type SessionThread, type ThreadRow } from "../store/store.ts";
+import { COMMA_STATION_SURFACE, type SessionRow, type SessionThread, type ThreadRow } from "../store/store.ts";
 import { type Args, jsNumber, jsString } from "./args.ts";
 import { threadHistory } from "./conversations.ts";
 import type { Hub } from "./hub.ts";
@@ -36,7 +36,7 @@ export function percentDecode(s: string): string {
 }
 
 /// A session key a reference holds, in whichever form people pass chats around: a chat's page (…/chats/<key>), a
-/// still.fail link (…/o/<workspace>/<station>/<key>), a link to execution history (?history=<key>&entry=<n>).
+/// Comma link (…/o/<workspace>/<station>/<key>), a link to execution history (?history=<key>&entry=<n>).
 export function linkedSession(reference: string): [string, number | null] | null {
   const end = (s: string) => {
     const at = s.search(/[/?#)>|"'\s]/u);
@@ -69,7 +69,7 @@ export function linkedSession(reference: string): [string, number | null] | null
   return null;
 }
 
-/// The station a link to a chat is on: a still.fail link (…/o/<workspace>/<station>/<key>) or a chat's page under its
+/// The station a link to a chat is on: a Comma link (…/o/<workspace>/<station>/<key>) or a chat's page under its
 /// station's (…/w/<workspace>/s/<station>/chats/<key>, as a reference written in a chat is).
 export function linkedStation(reference: string): string | null {
   const page = /\/w\/[^/\s]+\/s\/([^/?#\s]+)\/chats\//u.exec(reference);
@@ -208,7 +208,7 @@ export function chatList(hub: Hub, key: string, args: Args): string {
     matched++;
     if (lines.length >= limit) continue;
     const address = threadAddress(t.thread.channel, t.thread.threadTs);
-    const place = t.thread.surface === STILLFAIL_SURFACE ? "still.fail chat" : t.thread.surface === TASK_SURFACE ? "Task of another station" : "Slack thread";
+    const place = t.thread.surface === COMMA_STATION_SURFACE ? "Comma chat" : t.thread.surface === TASK_SURFACE ? "Task of another station" : "Slack thread";
     const title = titles.length > 0 ? line(titles[0]!, 80) : "(untitled)";
     const agents = t.sessions.map((m) => `${m.session}${m.session === key ? " (you)" : ""}${(sessions.get(m.session)?.archivedAt ?? null) !== null ? " archived" : ""}`);
     const at = iso(t.lastMessage?.createdAt ?? t.thread.createdAt);

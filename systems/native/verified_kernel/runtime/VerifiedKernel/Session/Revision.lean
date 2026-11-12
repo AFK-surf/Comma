@@ -21,8 +21,8 @@ def unpack : Term → Option Cursor
   | saved => (PendingRevision.unpack saved).map Cursor.pending
 
 def Cursor.candidate : Cursor → PendingRevision.Cursor
-  | .fresh state => ⟨state, state, nil, [], nil⟩
-  | .committed state etag => ⟨state, state, etag, [], nil⟩
+  | .fresh state => ⟨state, state, nil, [], nil, []⟩
+  | .committed state etag => ⟨state, state, etag, [], nil, []⟩
   | .pending cursor => cursor
 
 def Cursor.isPending : Cursor → Bool
@@ -34,7 +34,7 @@ def Cursor.baseline : Cursor → Cursor
   | .fresh state => .fresh state
   | .committed state etag => .committed state etag
   | .pending cursor =>
-    if cursor.etag == nil then .fresh cursor.baseline else .committed cursor.baseline cursor.etag
+    if cursor.revision == nil then .fresh cursor.baseline else .committed cursor.baseline cursor.revision
 
 def committedResult : Output → Output
   | (some state, .tuple [.atom "ok", etag]) =>
@@ -42,6 +42,16 @@ def committedResult : Output → Output
   | other => other
 
 def invalid : Output := (none, .tuple [a "raised", .tuple [a "invalid_observation", list []]])
+
+def withInputHits (context : Cursor) (hits : List Term) : KernelM Cursor := do
+  let augment (state : Term) := do
+    let cache ← addDedupe ((← field state "input_dedupe").default Lifecycle.emptySet) hits
+    write state [("input_dedupe", cache)]
+  match context with
+  | .fresh state => return .fresh (← augment state)
+  | .committed state revision => return .committed (← augment state) revision
+  | .pending cursor =>
+    return .pending { cursor with baseline := ← augment cursor.baseline, working := ← augment cursor.working }
 
 def acceptPlanBatch (outcome : Term) : Output → Output
   | (some saved, .tuple [.atom "done"]) => (some saved, .tuple [a "planned", .tuple [outcome, Term.bool true]])
@@ -82,19 +92,39 @@ def resident (current : Option Term) (operation args : Term) : Output :=
     if operation == a "run" || operation == a "resume" then
       acceptPlanBatch outcome (PendingRevision.resident (some batch) operation args)
     else invalid
-  | _, some (.tuple [.atom "session_pending_batch", _, _]) =>
+  | _, some (.tuple [.atom "session_delta_batch", _, _]) =>
+    PendingRevision.resident current operation args
+  | _, some (.tuple [.atom "session_delta_observe", _, _, _, _]) =>
     PendingRevision.resident current operation args
   | _, some saved =>
     match unpack saved with
     | some cursor =>
       match operation, args with
       | .atom "working", _ =>
-        (some cursor.candidate.working, .tuple [a "revision", cursor.candidate.etag, Term.bool cursor.isPending])
+        (some cursor.candidate.working, .tuple [a "revision", cursor.candidate.revision, Term.bool cursor.isPending])
       | .atom "is_pending", _ => (some saved, .tuple [a "pending", Term.bool cursor.isPending])
       | .atom "baseline", _ =>
         (some cursor.baseline.pack, .tuple [a "done"])
       | .atom "metadata", _ =>
         (some saved, .tuple [a "metadata", list cursor.candidate.events, cursor.candidate.hwm])
+      | .atom "delta", _ =>
+        match StorageDelta.project cursor.candidate.baseline cursor.candidate.working
+            (cursor.candidate.revision == nil) cursor.candidate.dedupeAdded [] with
+        | .ok (delta, []) => (some saved, .tuple [a "value", delta])
+        | .error (.raised reason) => (none, .tuple [a "raised", reason])
+        | _ => invalid
+      | .atom "commit_delta", .tuple [.integer revision, refs] =>
+        match (do
+            let state ← StorageDelta.committedView cursor.candidate.working
+            write state [("archive_refs", refs)]) [] with
+        | .ok (state, []) => (some (Cursor.committed state (i revision)).pack, .tuple [a "done"])
+        | .error (.raised reason) => (none, .tuple [a "raised", reason])
+        | _ => invalid
+      | .atom "input_hits", .list hits =>
+        match withInputHits cursor hits [] with
+        | .ok (next, []) => (some next.pack, .tuple [a "done"])
+        | .error (.raised reason) => (none, .tuple [a "raised", reason])
+        | _ => invalid
       | .atom "write", .tuple [.list events, hwm] =>
         PendingRevision.resident (some cursor.candidate.pack) (a "write") (.tuple [list events, hwm])
       | .atom "plan", .tuple [mode, .list observations] => plan cursor mode observations

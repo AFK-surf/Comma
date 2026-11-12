@@ -10,8 +10,10 @@ import {
   type CardIconName,
 } from "@comma/chat-contract/dynamic-ui-cards";
 import {
+  AirplaneIcon,
   ArrowRightIcon,
   ArrowUpIcon,
+  CarIcon,
   CheckIcon,
   CheckLargeIcon,
   ChevronRightSmallIcon,
@@ -19,8 +21,12 @@ import {
   CloudySunIcon,
   MoonIcon,
   RainIcon,
+  SendIcon,
+  ShoppingBagIcon,
   SnowIcon,
   SunIcon,
+  TagLabelIcon,
+  TrainIcon,
 } from "@comma/ui/components/icons";
 import { brandMarks, isBrandKey } from "@comma/ui/components/icons/brandMarks";
 
@@ -41,6 +47,12 @@ const cardIcons: Record<CardIconName, ComponentType> = {
   "arrow-up": ArrowUpIcon,
   "arrow-right": ArrowRightIcon,
   "chevron-right": ChevronRightSmallIcon,
+  "shopping-bag": ShoppingBagIcon,
+  send: SendIcon,
+  tag: TagLabelIcon,
+  train: TrainIcon,
+  airplane: AirplaneIcon,
+  car: CarIcon,
 };
 
 let iconMarkup: Record<string, string> | undefined;
@@ -89,6 +101,13 @@ export const cardCopy = (
       { current: "{current}", total: "{total}" },
       options
     ),
+    arrivesBy: messages.chat_ui_card_arrives_by({ time: "{time}" }, options),
+    orderHeadline: messages.chat_ui_card_order_headline(
+      { status: "{status}", arrival: "{arrival}" },
+      options
+    ),
+    offline: messages.chat_ui_card_offline({}, options),
+    upNext: messages.chat_ui_card_up_next({}, options),
   };
 };
 

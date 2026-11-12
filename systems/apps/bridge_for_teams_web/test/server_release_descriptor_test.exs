@@ -7,14 +7,8 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
   @targets [
     {"runner", "darwin-amd64", "mac-mini-provisioner"},
     {"runner", "darwin-arm64", "mac-mini-provisioner"},
-    {"salix-connect", "linux-amd64", "salix-connect"},
-    {"salix-connect", "linux-arm64", "salix-connect"},
-    {"salix-connect", "darwin-amd64", "salix-connect"},
-    {"salix-connect", "darwin-arm64", "salix-connect"},
     {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
-    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"},
-    {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
-    {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
+    {"agent-vmm-host", "linux-arm64", "Agent-VMM-Host.tar.gz"}
   ]
   @build_id String.duplicate("a", 40)
 
@@ -33,12 +27,6 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
 
     assert {:error, {:release_target_unavailable, "runner", "linux-arm64"}} =
              ServerReleaseDescriptor.target("runner", "linux-arm64", root)
-
-    assert {:ok, helper} =
-             ServerReleaseDescriptor.target("computer-use-helper", "darwin-arm64", root)
-
-    assert helper.source =~
-             "/releases/#{@build_id}/computer-use-helper/darwin-arm64/comma-computer-use.tar.gz"
   end
 
   test "missing Linux delivery does not disable the existing Mac target" do
@@ -61,30 +49,15 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
              ServerReleaseDescriptor.target("agent-vmm-host", "linux-arm64", root)
   end
 
-  test "a descriptor without the Computer Use helper keeps the other updates" do
-    {root, descriptor} = fixture!()
-
-    without_helper =
-      Map.update!(descriptor, "artifacts", fn artifacts ->
-        Enum.reject(artifacts, &(&1["component"] == "computer-use-helper"))
-      end)
-
-    File.write!(Path.join(root, "release-descriptor.json"), Jason.encode!(without_helper))
+  test "runners are offered the Agent VMM Host update only" do
+    {root, _descriptor} = fixture!()
     target = &ServerReleaseDescriptor.target(&1, &2, root)
 
-    assert {:error, {:release_target_unavailable, "computer-use-helper", "darwin-arm64"}} =
-             target.("computer-use-helper", "darwin-arm64")
+    assert %{"agent-vmm" => %{"component" => "agent-vmm-host", "artifact_url" => url}} =
+             updates = MacMiniRelease.update_targets("darwin-arm64", target)
 
-    updates = MacMiniRelease.update_targets("darwin-arm64", target)
-    assert Map.keys(updates) |> Enum.sort() == ["agent-vmm", "salix-connect"]
-    assert updates["salix-connect"]["artifact_url"] =~ "/salix-connect/darwin-arm64/"
-
-    File.write!(Path.join(root, "release-descriptor.json"), Jason.encode!(descriptor))
-
-    assert %{"computer-use-helper" => %{"artifact_url" => url}} =
-             MacMiniRelease.update_targets("darwin-arm64", target)
-
-    assert url =~ "/computer-use-helper/darwin-arm64/comma-computer-use.tar.gz"
+    assert Map.keys(updates) == ["agent-vmm"]
+    assert url =~ "/agent-vmm-host/darwin-arm64/Agent-VMM-Host.zip"
   end
 
   test "fails closed on malformed descriptor authority fields" do

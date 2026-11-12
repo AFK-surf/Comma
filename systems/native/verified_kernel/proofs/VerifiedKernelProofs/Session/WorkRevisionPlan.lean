@@ -37,21 +37,21 @@ inductive PlanBatchTrace (outcome : Term) : Output â†’ PendingRevision.Cursor â†
       {final : PendingRevision.Cursor}
       (tail : PlanBatchTrace outcome
         (resident (some (.tuple [a "session_revision_plan_batch", outcome,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
           (a "run") (list observations)) final) :
       PlanBatchTrace outcome
         (some (.tuple [a "session_revision_plan_batch", outcome,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
           .tuple [a "next"]) final
-  | resume {cursor : PendingRevision.Cursor} {token request observation : Term} {remaining : List Term}
+  | resume {cursor : PendingRevision.Cursor} {before event token request observation : Term} {remaining : List Term}
       {final : PendingRevision.Cursor}
       (tail : PlanBatchTrace outcome
         (resident (some (.tuple [a "session_revision_plan_batch", outcome,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]))
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]))
           (a "resume") observation) final) :
       PlanBatchTrace outcome
         (some (.tuple [a "session_revision_plan_batch", outcome,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]),
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]),
           .tuple [a "observe", request]) final
 
 theorem accept_plan_done {outcome : Term} {inner : Output} {final : PendingRevision.Cursor}
@@ -91,7 +91,7 @@ theorem plan_batch_reflect {outcome : Term} {inner : Output} {final : PendingRev
     apply PendingRevision.Execution.run (observations := observations)
     apply ih
     rw [plan_batch_captured _ _ _ _ (Or.inl rfl)]
-  | @resume cursor token request observation remaining final tail ih =>
+  | @resume cursor before event token request observation remaining final tail ih =>
     rw [accept_plan_batch (by simp [a]) origin]
     apply PendingRevision.Execution.resume (observation := observation)
     apply ih

@@ -171,11 +171,6 @@ defmodule Comma.AdminTest do
              "tenant_id" => workspace["salix_tenant_id"],
              "group_id" => workspace["default_group_id"],
              "billing_account_id" => workspace["billing_account_id"],
-             "cloud_vm" => %{
-               "workspace_id" => workspace["id"],
-               "enabled" => true,
-               "convergence_status" => "pending"
-             },
              "created_at" => projected_workspace["created_at"],
              "updated_at" => projected_workspace["updated_at"]
            }

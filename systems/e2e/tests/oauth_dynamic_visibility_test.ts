@@ -1,5 +1,5 @@
 import { setDefaultTimeout, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { stationConnector } from "../helpers/station.ts";
 
 // Builds and subprocesses here take longer than the five-second default.
 setDefaultTimeout(30 * 60_000);
@@ -8,15 +8,9 @@ const SYSTEMS_ROOT = new URL("../..", import.meta.url).pathname;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 test("OAuth dynamic visibility works through mock OAuth and real env.exec", async () => {
-  const id = crypto.randomUUID().slice(0, 8);
-  const bin = `/tmp/salix-connect-oauth-dynamic-${id}`;
+  const station = await stationConnector();
 
   try {
-    await run("go", ["build", "-o", bin, "."], {
-      cwd: `${SYSTEMS_ROOT}/connector/salix-connect`,
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-    });
-
     const output = await run(
       "mix",
       ["run", "scripts/oauth_dynamic_visibility_e2e.exs"],
@@ -28,14 +22,14 @@ test("OAuth dynamic visibility works through mock OAuth and real env.exec", asyn
           PATH: pathWithAsdf(),
           MIX_ENV: "test",
           COMMA_SUBSYSTEMS: "salix",
-          SALIX_CONNECT_BIN: bin,
+          STATION_CONNECTOR_BIN: station.bin,
         },
       },
     );
 
     assertIncludes(output.combined, "OAUTH_DYNAMIC_VISIBILITY_E2E: PASS");
   } finally {
-    await rm(bin).catch(() => {});
+    await station.cleanup();
   }
 });
 

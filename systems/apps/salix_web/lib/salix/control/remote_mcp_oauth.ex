@@ -163,6 +163,10 @@ defmodule Salix.Control.RemoteMCPOAuth do
 
   def resolve_headers(_mcp_binding), do: {:ok, %{}}
 
+  @doc "A connection's access token, for `credential_env`: the MCP gateway's own path."
+  def connection_token(tenant_id, connection_id),
+    do: valid_remote_token(tenant_id, connection_id)
+
   def redaction_values(%{"remote_oauth_binding_id" => binding_id} = mcp_binding)
       when is_binary(binding_id) and binding_id != "" do
     tenant_id = string(mcp_binding["tenant_id"])

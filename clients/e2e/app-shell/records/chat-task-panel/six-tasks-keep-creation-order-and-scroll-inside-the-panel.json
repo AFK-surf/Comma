@@ -26,13 +26,23 @@
     },
     {
      "id": "cnv_task_fleet_4",
-     "status": "completed",
+     "status": "needs_review",
      "title": "生成周报摘要"
     },
     {
      "id": "cnv_task_fleet_5",
      "status": "in_progress",
      "title": "排查构建缓存问题"
+    },
+    {
+     "id": "cnv_task_fleet_6",
+     "status": "completed",
+     "title": "归档上周会议纪要"
+    },
+    {
+     "id": "cnv_task_fleet_7",
+     "status": "cancelled",
+     "title": "预订周五晚餐"
     }
    ],
    "inlineTaskReference": true,
@@ -47,8 +57,7 @@
     "id": 1,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -173,8 +182,7 @@
     "id": 2,
     "subscribe": {
      "topic": "pluginNotices"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -184,8 +192,7 @@
     "id": 3,
     "subscribe": {
      "topic": "session"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -195,8 +202,7 @@
     "id": 4,
     "subscribe": {
      "topic": "workspace"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -207,8 +213,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": ""
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -219,8 +224,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxDeleted"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -231,8 +235,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "inboxUnread"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -243,8 +246,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "taskReviewSeen"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -255,8 +257,7 @@
     "subscribe": {
      "topic": "marks",
      "kind": "chatTaskDismissed"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -266,8 +267,7 @@
     "id": 10,
     "subscribe": {
      "topic": "workspaceChat"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -277,8 +277,7 @@
     "id": 11,
     "subscribe": {
      "topic": "meetingRecorder"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -288,8 +287,7 @@
     "id": 12,
     "subscribe": {
      "topic": "profile"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -472,15 +470,24 @@
    "dir": "in",
    "data": {
     "id": 4,
-    "value": {
-     "status": "ready",
-     "workspace": {
-      "id": "ws-smoke",
-      "groupId": "grp-smoke",
-      "name": "Smoke Workspace"
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      },
-     "selected": false
-    }
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": {
+       "id": "ws-smoke",
+       "groupId": "grp-smoke",
+       "name": "Smoke Workspace"
+      }
+     }
+    ]
    }
   },
   {
@@ -491,8 +498,7 @@
     "subscribe": {
      "topic": "tasks",
      "workspace": "ws-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -523,11 +529,9 @@
    "data": {
     "id": 16,
     "subscribe": {
-     "topic": "tasks",
-     "workspace": "ws-smoke",
-     "hosted": "1"
-    },
-    "keyed": true
+     "topic": "taskRequests",
+     "prefer": "ws-smoke"
+    }
    }
   },
   {
@@ -535,6 +539,18 @@
    "dir": "out",
    "data": {
     "id": 17,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke",
+     "hosted": "1"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
     "call": "tasks.focus",
     "params": {
      "workspace": "ws-smoke"
@@ -545,13 +561,12 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 18,
+    "id": 19,
     "subscribe": {
      "topic": "router",
      "workspace": "ws-smoke",
      "read": "0"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -580,22 +595,32 @@
    "dir": "in",
    "data": {
     "id": 12,
-    "value": {
-     "status": "ready",
-     "profile": {
-      "avatar_id": null,
-      "email": "smoke@comma.local",
-      "id": "e2e-user:smoke@comma.local",
-      "name": null
+    "delta": [
+     {
+      "path": [
+       "profile"
+      ],
+      "set": {
+       "avatar_id": null,
+       "email": "smoke@comma.local",
+       "id": "e2e-user:smoke@comma.local",
+       "name": null
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
      }
-    }
+    ]
    }
   },
   {
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 19,
+    "id": 20,
     "call": "profile.update",
     "params": {
      "locale": "en"
@@ -607,31 +632,26 @@
    "dir": "in",
    "data": {
     "id": 10,
-    "value": {
-     "status": "ready",
-     "chat": {
-      "workspaceId": "ws-smoke",
-      "groupId": "grp-smoke",
-      "conversationId": "cnv_public_chat_smoke",
-      "createdAt": 1720000000,
-      "updatedAt": 1720000000
+    "delta": [
+     {
+      "path": [
+       "chat"
+      ],
+      "set": {
+       "workspaceId": "ws-smoke",
+       "groupId": "grp-smoke",
+       "conversationId": "cnv_public_chat_smoke",
+       "createdAt": 1720000000,
+       "updatedAt": 1720000000
+      }
      },
-     "kept": false
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "out",
-   "data": {
-    "id": 20,
-    "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "timezone": "UTC",
-     "locale": "en"
-    },
-    "keyed": true
+     {
+      "path": [
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
    }
   },
   {
@@ -640,10 +660,11 @@
    "data": {
     "id": 21,
     "subscribe": {
-     "topic": "creditWarning",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "timezone": "UTC",
+     "locale": "en"
+    }
    }
   },
   {
@@ -652,10 +673,9 @@
    "data": {
     "id": 22,
     "subscribe": {
-     "topic": "mentionTasks",
-     "group": "grp-smoke"
-    },
-    "keyed": true
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -664,11 +684,9 @@
    "data": {
     "id": 23,
     "subscribe": {
-     "topic": "recommendations",
-     "workspace": "ws-smoke",
-     "reads": "once"
-    },
-    "keyed": true
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    }
    }
   },
   {
@@ -677,10 +695,10 @@
    "data": {
     "id": 24,
     "subscribe": {
-     "topic": "plugins",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    }
    }
   },
   {
@@ -689,12 +707,9 @@
    "data": {
     "id": 25,
     "subscribe": {
-     "topic": "taskLabels",
-     "group": "grp-smoke",
-     "key": "",
-     "mode": ""
-    },
-    "keyed": true
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    }
    }
   },
   {
@@ -703,13 +718,11 @@
    "data": {
     "id": 26,
     "subscribe": {
-     "topic": "chatView",
-     "workspace": "ws-smoke",
+     "topic": "taskLabels",
      "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke",
-     "surface": "web:70cc1e70-40ae-4d59-95ed-c82deaaa26f5"
-    },
-    "keyed": true
+     "key": "",
+     "mode": ""
+    }
    }
   },
   {
@@ -718,10 +731,12 @@
    "data": {
     "id": 27,
     "subscribe": {
-     "topic": "skills",
-     "workspace": "ws-smoke"
-    },
-    "keyed": true
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:70cc1e70-40ae-4d59-95ed-c82deaaa26f5"
+    }
    }
   },
   {
@@ -729,6 +744,17 @@
    "dir": "out",
    "data": {
     "id": 28,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 29,
     "call": "workspace.select",
     "params": {
      "workspace": "ws-smoke"
@@ -739,7 +765,7 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 29,
+    "id": 30,
     "call": "chatView.setDraft",
     "params": {
      "draft": "请安排这些任务",
@@ -782,7 +808,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 17,
+    "id": 18,
     "ok": null
    }
   },
@@ -794,7 +820,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 28,
+    "id": 29,
     "ok": null
    }
   },
@@ -802,7 +828,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 29,
+    "id": 30,
     "ok": {
      "revision": 3,
      "draftEpoch": 1
@@ -836,6 +862,23 @@
    "data": {
     "id": 16,
     "value": {
+     "workspace": null,
+     "incoming": null,
+     "grants": null,
+     "targets": null,
+     "sent": null,
+     "links": null,
+     "own": null,
+     "error": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "value": {
      "activeWorkspaceId": "ws-smoke",
      "workspaces": [
       {
@@ -855,19 +898,18 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 30,
+    "id": 31,
     "subscribe": {
      "topic": "taskOrder",
      "group": "grp-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 18,
+    "id": 19,
     "value": null
    }
   },
@@ -891,7 +933,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 21,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -899,14 +941,6 @@
      "discovering": false,
      "refreshing": false
     }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 21,
-    "value": null
    }
   },
   {
@@ -922,6 +956,14 @@
    "dir": "in",
    "data": {
     "id": 23,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
     "value": {
      "workspace": "ws-smoke",
      "envelope": null,
@@ -935,7 +977,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 24,
+    "id": 25,
     "value": {
      "status": "loading"
     }
@@ -945,7 +987,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 26,
     "value": {
      "catalog": null,
      "error": false,
@@ -957,7 +999,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "value": {
      "session": {
       "sessionId": "e2e-session:smoke@comma.local",
@@ -997,7 +1039,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 27,
+    "id": 28,
     "value": {
      "status": "loading",
      "skills": []
@@ -1027,7 +1069,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 19,
+    "id": 20,
     "ok": {
      "avatar_id": null,
      "email": "smoke@comma.local",
@@ -1045,7 +1087,28 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 20,
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 21,
     "delta": [
      {
       "path": [
@@ -1075,7 +1138,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 22,
+    "id": 23,
     "value": []
    }
   },
@@ -1083,7 +1146,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 23,
+    "id": 24,
     "delta": [
      {
       "path": [
@@ -1105,6 +1168,40 @@
        "snapshot": null,
        "state": "empty"
       }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
      }
     ]
    }
@@ -1114,6 +1211,27 @@
    "dir": "in",
    "data": {
     "id": 26,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1151,20 +1269,19 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 31,
+    "id": 32,
     "subscribe": {
      "topic": "agentRequests",
      "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 30,
+    "id": 31,
     "value": {
      "orders": {},
      "sections": [
@@ -1196,95 +1313,61 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 5,
+    "id": 28,
     "delta": [
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      },
+      "before": null
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "delta": [
+      "key": [
+       "skill_id"
+      ],
+      "put": {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      "before": "weekly-reminder"
+     },
      {
       "path": [
-       "lastSyncedAt"
+       "skills"
       ],
-      "set": 1768478400100
-     }
-    ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "rest"
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 24,
-    "delta": [
-     {
-      "path": [
-       "error"
+      "key": [
+       "skill_id"
       ],
-      "set": {
-       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
-       "status": 404,
-       "detail": {
-        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
-       }
-      }
+      "put": {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      "before": "code-review"
      },
      {
       "path": [
        "status"
       ],
-      "set": "error"
-     },
-     {
-      "path": [
-       "workspace"
-      ],
-      "set": "ws-smoke"
+      "set": "ready"
      }
     ]
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 25,
-    "value": {
-     "catalog": null,
-     "error": true,
-     "loading": false
-    }
    }
   },
   {
@@ -1292,37 +1375,6 @@
    "dir": "in",
    "data": {
     "id": 27,
-    "value": {
-     "status": "ready",
-     "skills": [
-      {
-       "skill_id": "weekly-summary",
-       "name": "周会总结",
-       "description": "整理会议要点和后续事项",
-       "location": "salix://skills/weekly-summary"
-      },
-      {
-       "skill_id": "code-review",
-       "name": "代码审查",
-       "description": "检查实现风险和测试缺口",
-       "location": "salix://skills/code-review"
-      },
-      {
-       "skill_id": "weekly-reminder",
-       "name": "周会提醒",
-       "description": "提醒周会议程",
-       "location": "salix://skills/weekly-reminder",
-       "activation": "per-message"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 100,
-   "dir": "in",
-   "data": {
-    "id": 26,
     "delta": [
      {
       "path": [
@@ -1357,21 +1409,20 @@
    "at": 100,
    "dir": "out",
    "data": {
-    "id": 32,
+    "id": 33,
     "subscribe": {
      "topic": "sessionBrowser",
      "workspace": "ws-smoke",
      "conversation": "cnv_public_chat_smoke",
      "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "value": {
      "requests": [],
      "loading": true,
@@ -1387,7 +1438,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 31,
+    "id": 32,
     "delta": [
      {
       "path": [
@@ -1408,7 +1459,7 @@
    "at": 100,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": null
    }
   },
@@ -1420,7 +1471,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 33,
+    "id": 34,
     "call": "chatView.send",
     "params": {
      "text": "请安排这些任务",
@@ -1444,7 +1495,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "value": {
      "accepted": true
     }
@@ -1458,7 +1509,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 32,
+    "id": 33,
     "value": {
      "browser": null
     }
@@ -1468,7 +1519,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1594,21 +1645,13 @@
   },
   {
    "at": 128,
-   "dir": "out",
-   "data": {
-    "id": 32,
-    "unsubscribe": true
-   }
-  },
-  {
-   "at": 128,
    "dir": "rest"
   },
   {
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 33,
+    "id": 34,
     "ok": {
      "revision": 12,
      "draftEpoch": 2
@@ -1623,7 +1666,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 26,
+    "id": 27,
     "delta": [
      {
       "path": [
@@ -1927,7 +1970,7 @@
        {
         "actorType": "agent",
         "attachments": [],
-        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_4\",\"kind\":\"agent_task\",\"title\":\"生成周报摘要\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_4\",\"kind\":\"agent_task\",\"title\":\"生成周报摘要\",\"status\":\"needs_review\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
         "createdAt": 1720000007,
         "delivery": "sent",
         "messageId": "msg-assistant-extra-task-4",
@@ -1946,8 +1989,8 @@
           "task": {
            "activityStatus": "idle",
            "conversationId": "cnv_task_fleet_4",
-           "status": "completed",
-           "statusBucket": "done",
+           "status": "needs_review",
+           "statusBucket": "needs_review",
            "title": "生成周报摘要",
            "unavailable": false,
            "updatedAt": 1720000003
@@ -2029,6 +2072,130 @@
          {
           "conversationId": "cnv_task_fleet_5",
           "title": "排查构建缓存问题",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "已创建任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 。"
+          ]
+         ]
+        ]
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_6\",\"kind\":\"agent_task\",\"title\":\"归档上周会议纪要\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "createdAt": 1720000009,
+        "delivery": "sent",
+        "messageId": "msg-assistant-extra-task-6",
+        "notice": {
+         "preview": "已创建任务\n。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "已创建任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_task_fleet_6",
+           "status": "completed",
+           "statusBucket": "done",
+           "title": "归档上周会议纪要",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "已创建任务 \n 。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_task_fleet_6",
+          "title": "归档上周会议纪要",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "已创建任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 。"
+          ]
+         ]
+        ]
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_7\",\"kind\":\"agent_task\",\"title\":\"预订周五晚餐\",\"status\":\"cancelled\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "createdAt": 1720000010,
+        "delivery": "sent",
+        "messageId": "msg-assistant-extra-task-7",
+        "notice": {
+         "preview": "已创建任务\n。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "已创建任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_task_fleet_7",
+           "status": "cancelled",
+           "statusBucket": "cancelled",
+           "title": "预订周五晚餐",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "已创建任务 \n 。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_task_fleet_7",
+          "title": "预订周五晚餐",
           "updatedAt": 1720000003
          }
         ],
@@ -2371,7 +2538,7 @@
        {
         "actorType": "agent",
         "attachments": [],
-        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_4\",\"kind\":\"agent_task\",\"title\":\"生成周报摘要\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_4\",\"kind\":\"agent_task\",\"title\":\"生成周报摘要\",\"status\":\"needs_review\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
         "createdAt": 1720000007,
         "delivery": "sent",
         "messageId": "msg-assistant-extra-task-4",
@@ -2390,8 +2557,8 @@
           "task": {
            "activityStatus": "idle",
            "conversationId": "cnv_task_fleet_4",
-           "status": "completed",
-           "statusBucket": "done",
+           "status": "needs_review",
+           "statusBucket": "needs_review",
            "title": "生成周报摘要",
            "unavailable": false,
            "updatedAt": 1720000003
@@ -2491,6 +2658,130 @@
           ]
          ]
         ]
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_6\",\"kind\":\"agent_task\",\"title\":\"归档上周会议纪要\",\"status\":\"completed\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "createdAt": 1720000009,
+        "delivery": "sent",
+        "messageId": "msg-assistant-extra-task-6",
+        "notice": {
+         "preview": "已创建任务\n。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "已创建任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_task_fleet_6",
+           "status": "completed",
+           "statusBucket": "done",
+           "title": "归档上周会议纪要",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "已创建任务 \n 。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_task_fleet_6",
+          "title": "归档上周会议纪要",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "已创建任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 。"
+          ]
+         ]
+        ]
+       },
+       {
+        "actorType": "agent",
+        "attachments": [],
+        "blocksKey": "[{\"type\":\"text\",\"text\":\"已创建任务 \"},{\"type\":\"conversation_ref\",\"presentation\":\"inline\",\"conversation_id\":\"cnv_task_fleet_7\",\"kind\":\"agent_task\",\"title\":\"预订周五晚餐\",\"status\":\"cancelled\",\"activity_status\":\"idle\",\"freshness\":{\"state\":\"fresh\"},\"updated_at\":1720000003},{\"type\":\"text\",\"text\":\" 。\"}]",
+        "createdAt": 1720000010,
+        "delivery": "sent",
+        "messageId": "msg-assistant-extra-task-7",
+        "notice": {
+         "preview": "已创建任务\n。"
+        },
+        "replyToMessageId": "msg-user-smoke",
+        "threadRootMessageId": "msg-user-smoke",
+        "parts": [
+         {
+          "kind": "markdown",
+          "text": "已创建任务 "
+         },
+         {
+          "kind": "inline-task",
+          "task": {
+           "activityStatus": "idle",
+           "conversationId": "cnv_task_fleet_7",
+           "status": "cancelled",
+           "statusBucket": "cancelled",
+           "title": "预订周五晚餐",
+           "unavailable": false,
+           "updatedAt": 1720000003
+          }
+         },
+         {
+          "kind": "markdown",
+          "text": " 。"
+         }
+        ],
+        "refs": [],
+        "role": "assistant",
+        "source": "server",
+        "status": "committed",
+        "text": "已创建任务 \n 。",
+        "createdTasks": [
+         {
+          "conversationId": "cnv_task_fleet_7",
+          "title": "预订周五晚餐",
+          "updatedAt": 1720000003
+         }
+        ],
+        "markdown": [
+         [
+          "p",
+          [
+           "已创建任务 ",
+           [
+            "comma-inline",
+            {
+             "key": "element-1"
+            }
+           ],
+           " 。"
+          ]
+         ]
+        ]
        }
       ]
      },
@@ -2515,7 +2806,7 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 34,
+    "id": 35,
     "call": "taskLabels.refresh",
     "params": {
      "group": "grp-smoke"
@@ -2526,28 +2817,12 @@
    "at": 128,
    "dir": "out",
    "data": {
-    "id": 35,
+    "id": 36,
     "subscribe": {
      "topic": "taskSummaries",
      "group": "grp-smoke",
-     "ids": "cnv_public_task_smoke,cnv_task_fleet_1,cnv_task_fleet_2,cnv_task_fleet_3,cnv_task_fleet_4,cnv_task_fleet_5"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 128,
-   "dir": "out",
-   "data": {
-    "id": 36,
-    "subscribe": {
-     "topic": "chatSuggestions",
-     "group": "grp-smoke",
-     "conversation": "cnv_public_chat_smoke",
-     "message": "msg-assistant-extra-task-5",
-     "locale": "en"
-    },
-    "keyed": true
+     "ids": "cnv_public_task_smoke,cnv_task_fleet_1,cnv_task_fleet_2,cnv_task_fleet_3,cnv_task_fleet_4,cnv_task_fleet_5,cnv_task_fleet_6,cnv_task_fleet_7"
+    }
    }
   },
   {
@@ -2556,12 +2831,12 @@
    "data": {
     "id": 37,
     "subscribe": {
-     "topic": "sessionBrowser",
-     "workspace": "ws-smoke",
+     "topic": "chatSuggestions",
+     "group": "grp-smoke",
      "conversation": "cnv_public_chat_smoke",
-     "participant": "ptp-router-smoke"
-    },
-    "keyed": true
+     "message": "msg-assistant-extra-task-7",
+     "locale": "en"
+    }
    }
   },
   {
@@ -2573,8 +2848,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_public_task_smoke"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2587,8 +2861,7 @@
      "group": "grp-smoke",
      "key": "",
      "mode": "known"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2600,8 +2873,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_1"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2613,8 +2885,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_2"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2626,8 +2897,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_3"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2639,8 +2909,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_4"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2652,8 +2921,7 @@
      "topic": "taskSummaries",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_5"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2662,11 +2930,10 @@
    "data": {
     "id": 45,
     "subscribe": {
-     "topic": "taskWorkers",
+     "topic": "taskSummaries",
      "group": "grp-smoke",
-     "ids": "cnv_task_fleet_3"
-    },
-    "keyed": true
+     "ids": "cnv_task_fleet_6"
+    }
    }
   },
   {
@@ -2675,11 +2942,34 @@
    "data": {
     "id": 46,
     "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_task_fleet_7"
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 47,
+    "subscribe": {
+     "topic": "taskWorkers",
+     "group": "grp-smoke",
+     "ids": "cnv_task_fleet_3"
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 48,
+    "subscribe": {
      "topic": "taskWorkers",
      "group": "grp-smoke",
      "ids": "cnv_task_fleet_5"
-    },
-    "keyed": true
+    }
    }
   },
   {
@@ -2690,7 +2980,526 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 25,
+    "id": 5,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "set": [
+       {
+        "archiveAvailability": {
+         "allowed": false,
+         "reason": null
+        },
+        "archiveVersion": 1720000003,
+        "conversationId": "cnv_public_task_smoke",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_public_task_smoke",
+        "kind": "agent_task",
+        "labels": [],
+        "createdAt": 1720000002000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "冒烟任务",
+        "updatedAt": 1720000003000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000011,
+        "conversationId": "cnv_task_fleet_1",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_1",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000010000,
+        "createdAt": 1720000010000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "整理季度 OKR 草稿",
+        "updatedAt": 1720000011000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000013,
+        "conversationId": "cnv_task_fleet_2",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_2",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000012000,
+        "createdAt": 1720000012000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "翻译产品发布公告",
+        "updatedAt": 1720000013000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000015,
+        "conversationId": "cnv_task_fleet_3",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_3",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000014000,
+        "createdAt": 1720000014000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
+        "updatedAt": 1720000015000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000017,
+        "conversationId": "cnv_task_fleet_4",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_4",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000016000,
+        "createdAt": 1720000016000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "生成周报摘要",
+        "updatedAt": 1720000017000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000019,
+        "conversationId": "cnv_task_fleet_5",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_5",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000018000,
+        "createdAt": 1720000018000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "排查构建缓存问题",
+        "updatedAt": 1720000019000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000021,
+        "conversationId": "cnv_task_fleet_6",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_6",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000020000,
+        "createdAt": 1720000020000,
+        "source": "salix.conversation",
+        "status": "completed",
+        "title": "归档上周会议纪要",
+        "updatedAt": 1720000021000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "done",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000023,
+        "conversationId": "cnv_task_fleet_7",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_7",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000022000,
+        "createdAt": 1720000022000,
+        "source": "salix.conversation",
+        "status": "cancelled",
+        "title": "预订周五晚餐",
+        "updatedAt": 1720000023000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "cancelled",
+        "statusFailed": false
+       }
+      ]
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "out",
+   "data": {
+    "id": 49,
+    "subscribe": {
+     "topic": "taskWorkers",
+     "group": "grp-smoke",
+     "ids": "cnv_task_fleet_3,cnv_task_fleet_5"
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "set": [
+       {
+        "archiveAvailability": {
+         "allowed": false,
+         "reason": null
+        },
+        "archiveVersion": 1720000003,
+        "conversationId": "cnv_public_task_smoke",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_public_task_smoke",
+        "kind": "agent_task",
+        "labels": [],
+        "createdAt": 1720000002000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "冒烟任务",
+        "updatedAt": 1720000003000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000011,
+        "conversationId": "cnv_task_fleet_1",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_1",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000010000,
+        "createdAt": 1720000010000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "整理季度 OKR 草稿",
+        "updatedAt": 1720000011000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000013,
+        "conversationId": "cnv_task_fleet_2",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_2",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000012000,
+        "createdAt": 1720000012000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "翻译产品发布公告",
+        "updatedAt": 1720000013000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000015,
+        "conversationId": "cnv_task_fleet_3",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_3",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000014000,
+        "createdAt": 1720000014000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
+        "updatedAt": 1720000015000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000017,
+        "conversationId": "cnv_task_fleet_4",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_4",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000016000,
+        "createdAt": 1720000016000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "生成周报摘要",
+        "updatedAt": 1720000017000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000019,
+        "conversationId": "cnv_task_fleet_5",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_5",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000018000,
+        "createdAt": 1720000018000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "排查构建缓存问题",
+        "updatedAt": 1720000019000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000021,
+        "conversationId": "cnv_task_fleet_6",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_6",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000020000,
+        "createdAt": 1720000020000,
+        "source": "salix.conversation",
+        "status": "completed",
+        "title": "归档上周会议纪要",
+        "updatedAt": 1720000021000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "done",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000023,
+        "conversationId": "cnv_task_fleet_7",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_7",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000022000,
+        "createdAt": 1720000022000,
+        "source": "salix.conversation",
+        "status": "cancelled",
+        "title": "预订周五晚餐",
+        "updatedAt": 1720000023000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "cancelled",
+        "statusFailed": false
+       }
+      ]
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "delta": [
+     {
+      "path": [
+       "items"
+      ],
+      "set": [
+       {
+        "archiveAvailability": {
+         "allowed": false,
+         "reason": null
+        },
+        "archiveVersion": 1720000003,
+        "conversationId": "cnv_public_task_smoke",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_public_task_smoke",
+        "kind": "agent_task",
+        "labels": [],
+        "createdAt": 1720000002000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "冒烟任务",
+        "updatedAt": 1720000003000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000011,
+        "conversationId": "cnv_task_fleet_1",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_1",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000010000,
+        "createdAt": 1720000010000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "整理季度 OKR 草稿",
+        "updatedAt": 1720000011000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000013,
+        "conversationId": "cnv_task_fleet_2",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_2",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000012000,
+        "createdAt": 1720000012000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "翻译产品发布公告",
+        "updatedAt": 1720000013000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000015,
+        "conversationId": "cnv_task_fleet_3",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_3",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000014000,
+        "createdAt": 1720000014000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
+        "updatedAt": 1720000015000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000017,
+        "conversationId": "cnv_task_fleet_4",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_4",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000016000,
+        "createdAt": 1720000016000,
+        "source": "salix.conversation",
+        "status": "needs_review",
+        "title": "生成周报摘要",
+        "updatedAt": 1720000017000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "needs_review",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000019,
+        "conversationId": "cnv_task_fleet_5",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_5",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000018000,
+        "createdAt": 1720000018000,
+        "source": "salix.conversation",
+        "status": "in_progress",
+        "title": "排查构建缓存问题",
+        "updatedAt": 1720000019000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "in_progress",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000021,
+        "conversationId": "cnv_task_fleet_6",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_6",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000020000,
+        "createdAt": 1720000020000,
+        "source": "salix.conversation",
+        "status": "completed",
+        "title": "归档上周会议纪要",
+        "updatedAt": 1720000021000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "done",
+        "statusFailed": false
+       },
+       {
+        "archiveVersion": 1720000023,
+        "conversationId": "cnv_task_fleet_7",
+        "groupId": "grp-smoke",
+        "id": "grp-smoke:cnv_task_fleet_7",
+        "kind": "agent_task",
+        "labels": [],
+        "runStartedAt": 1720000022000,
+        "createdAt": 1720000022000,
+        "source": "salix.conversation",
+        "status": "cancelled",
+        "title": "预订周五晚餐",
+        "updatedAt": 1720000023000,
+        "workspaceId": "ws-smoke",
+        "workspaceName": "Smoke Workspace",
+        "statusBucket": "cancelled",
+        "statusFailed": false
+       }
+      ]
+     },
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400128
+     }
+    ]
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -2705,18 +3514,110 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 35,
-    "value": {
-     "summaries": []
-    }
-   }
-  },
-  {
-   "at": 128,
-   "dir": "in",
-   "data": {
     "id": 36,
-    "value": null
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "labels": [],
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_1",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "整理季度 OKR 草稿",
+       "updated_at": 1720000011,
+       "labels": [],
+       "run_started_at": 1720000010000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_2",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "needs_review",
+       "title": "翻译产品发布公告",
+       "updated_at": 1720000013,
+       "labels": [],
+       "run_started_at": 1720000012000,
+       "status_bucket": "needs_review",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_3",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
+       "updated_at": 1720000015,
+       "labels": [],
+       "run_started_at": 1720000014000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_4",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "needs_review",
+       "title": "生成周报摘要",
+       "updated_at": 1720000017,
+       "labels": [],
+       "run_started_at": 1720000016000,
+       "status_bucket": "needs_review",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_5",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "排查构建缓存问题",
+       "updated_at": 1720000019,
+       "labels": [],
+       "run_started_at": 1720000018000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_6",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "completed",
+       "title": "归档上周会议纪要",
+       "updated_at": 1720000021,
+       "labels": [],
+       "run_started_at": 1720000020000,
+       "status_bucket": "done",
+       "status_failed": false
+      },
+      {
+       "id": "cnv_task_fleet_7",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "cancelled",
+       "title": "预订周五晚餐",
+       "updated_at": 1720000023,
+       "labels": [],
+       "run_started_at": 1720000022000,
+       "status_bucket": "cancelled",
+       "status_failed": false
+      }
+     ]
+    }
    }
   },
   {
@@ -2733,7 +3634,23 @@
    "data": {
     "id": 38,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_public_task_smoke",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "labels": [],
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2755,7 +3672,20 @@
    "data": {
     "id": 40,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_1",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "整理季度 OKR 草稿",
+       "updated_at": 1720000011,
+       "labels": [],
+       "run_started_at": 1720000010000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2765,7 +3695,20 @@
    "data": {
     "id": 41,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_2",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "needs_review",
+       "title": "翻译产品发布公告",
+       "updated_at": 1720000013,
+       "labels": [],
+       "run_started_at": 1720000012000,
+       "status_bucket": "needs_review",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2775,7 +3718,20 @@
    "data": {
     "id": 42,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_3",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
+       "updated_at": 1720000015,
+       "labels": [],
+       "run_started_at": 1720000014000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2785,7 +3741,20 @@
    "data": {
     "id": 43,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_4",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "needs_review",
+       "title": "生成周报摘要",
+       "updated_at": 1720000017,
+       "labels": [],
+       "run_started_at": 1720000016000,
+       "status_bucket": "needs_review",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2795,7 +3764,20 @@
    "data": {
     "id": 44,
     "value": {
-     "summaries": []
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_5",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "排查构建缓存问题",
+       "updated_at": 1720000019,
+       "labels": [],
+       "run_started_at": 1720000018000,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
     }
    }
   },
@@ -2804,7 +3786,22 @@
    "dir": "in",
    "data": {
     "id": 45,
-    "value": {}
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_6",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "completed",
+       "title": "归档上周会议纪要",
+       "updated_at": 1720000021,
+       "labels": [],
+       "run_started_at": 1720000020000,
+       "status_bucket": "done",
+       "status_failed": false
+      }
+     ]
+    }
    }
   },
   {
@@ -2812,6 +3809,37 @@
    "dir": "in",
    "data": {
     "id": 46,
+    "value": {
+     "summaries": [
+      {
+       "id": "cnv_task_fleet_7",
+       "group_id": "grp-smoke",
+       "kind": "agent_task",
+       "status": "cancelled",
+       "title": "预订周五晚餐",
+       "updated_at": 1720000023,
+       "labels": [],
+       "run_started_at": 1720000022000,
+       "status_bucket": "cancelled",
+       "status_failed": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 47,
+    "value": {}
+   }
+  },
+  {
+   "at": 128,
+   "dir": "in",
+   "data": {
+    "id": 48,
     "value": {}
    }
   },
@@ -2823,7 +3851,7 @@
    "at": 128,
    "dir": "in",
    "data": {
-    "id": 34,
+    "id": 35,
     "error": {
      "code": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
      "message": "unhandled GET /v1/comma/groups/grp-smoke/task-labels",
@@ -2839,553 +3867,10 @@
    "dir": "rest"
   },
   {
-   "at": 150,
-   "dir": "due"
-  },
-  {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
-    "id": 5,
-    "delta": [
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000019,
-       "conversationId": "cnv_task_fleet_5",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_5",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000018000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "排查构建缓存问题",
-       "updatedAt": 1720000019000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": null
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000017,
-       "conversationId": "cnv_task_fleet_4",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_4",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000016000,
-       "source": "salix.conversation",
-       "status": "completed",
-       "title": "生成周报摘要",
-       "updatedAt": 1720000017000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_5"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000015,
-       "conversationId": "cnv_task_fleet_3",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_3",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000014000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-       "updatedAt": 1720000015000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_4"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000013,
-       "conversationId": "cnv_task_fleet_2",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_2",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000012000,
-       "source": "salix.conversation",
-       "status": "needs_review",
-       "title": "翻译产品发布公告",
-       "updatedAt": 1720000013000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "needs_review",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_3"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000011,
-       "conversationId": "cnv_task_fleet_1",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_1",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000010000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "整理季度 OKR 草稿",
-       "updatedAt": 1720000011000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_2"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveAvailability": {
-        "allowed": false,
-        "reason": null
-       },
-       "archiveVersion": 1720000003,
-       "conversationId": "cnv_public_task_smoke",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_public_task_smoke",
-       "kind": "agent_task",
-       "labels": [],
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updatedAt": 1720000003000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_1"
-     },
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "out",
-   "data": {
-    "id": 47,
-    "subscribe": {
-     "topic": "taskWorkers",
-     "group": "grp-smoke",
-     "ids": "cnv_task_fleet_3,cnv_task_fleet_5"
-    },
-    "keyed": true
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 13,
-    "delta": [
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000019,
-       "conversationId": "cnv_task_fleet_5",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_5",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000018000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "排查构建缓存问题",
-       "updatedAt": 1720000019000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": null
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000017,
-       "conversationId": "cnv_task_fleet_4",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_4",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000016000,
-       "source": "salix.conversation",
-       "status": "completed",
-       "title": "生成周报摘要",
-       "updatedAt": 1720000017000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_5"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000015,
-       "conversationId": "cnv_task_fleet_3",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_3",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000014000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-       "updatedAt": 1720000015000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_4"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000013,
-       "conversationId": "cnv_task_fleet_2",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_2",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000012000,
-       "source": "salix.conversation",
-       "status": "needs_review",
-       "title": "翻译产品发布公告",
-       "updatedAt": 1720000013000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "needs_review",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_3"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000011,
-       "conversationId": "cnv_task_fleet_1",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_1",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000010000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "整理季度 OKR 草稿",
-       "updatedAt": 1720000011000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_2"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveAvailability": {
-        "allowed": false,
-        "reason": null
-       },
-       "archiveVersion": 1720000003,
-       "conversationId": "cnv_public_task_smoke",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_public_task_smoke",
-       "kind": "agent_task",
-       "labels": [],
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updatedAt": 1720000003000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_1"
-     },
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 16,
-    "delta": [
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000019,
-       "conversationId": "cnv_task_fleet_5",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_5",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000018000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "排查构建缓存问题",
-       "updatedAt": 1720000019000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": null
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000017,
-       "conversationId": "cnv_task_fleet_4",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_4",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000016000,
-       "source": "salix.conversation",
-       "status": "completed",
-       "title": "生成周报摘要",
-       "updatedAt": 1720000017000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "done",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_5"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000015,
-       "conversationId": "cnv_task_fleet_3",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_3",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000014000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-       "updatedAt": 1720000015000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_4"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000013,
-       "conversationId": "cnv_task_fleet_2",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_2",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000012000,
-       "source": "salix.conversation",
-       "status": "needs_review",
-       "title": "翻译产品发布公告",
-       "updatedAt": 1720000013000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "needs_review",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_3"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveVersion": 1720000011,
-       "conversationId": "cnv_task_fleet_1",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_task_fleet_1",
-       "kind": "agent_task",
-       "labels": [],
-       "runStartedAt": 1720000010000,
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "整理季度 OKR 草稿",
-       "updatedAt": 1720000011000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_2"
-     },
-     {
-      "path": [
-       "items"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "archiveAvailability": {
-        "allowed": false,
-        "reason": null
-       },
-       "archiveVersion": 1720000003,
-       "conversationId": "cnv_public_task_smoke",
-       "groupId": "grp-smoke",
-       "id": "grp-smoke:cnv_public_task_smoke",
-       "kind": "agent_task",
-       "labels": [],
-       "source": "salix.conversation",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updatedAt": 1720000003000,
-       "workspaceId": "ws-smoke",
-       "workspaceName": "Smoke Workspace",
-       "statusBucket": "in_progress",
-       "statusFailed": false
-      },
-      "before": "grp-smoke:cnv_task_fleet_1"
-     },
-     {
-      "path": [
-       "lastSyncedAt"
-      ],
-      "set": 1768478400128
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "rest"
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 25,
+    "id": 26,
     "delta": [
      {
       "path": [
@@ -3397,7 +3882,7 @@
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
     "id": 39,
@@ -3412,460 +3897,38 @@
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
-    "id": 36,
+    "id": 37,
     "value": []
    }
   },
   {
-   "at": 150,
+   "at": 128,
    "dir": "in",
    "data": {
-    "id": 37,
-    "value": {
-     "browser": null
-    }
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 35,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_5",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "排查构建缓存问题",
-       "updated_at": 1720000019,
-       "labels": [],
-       "run_started_at": 1720000018000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
-     },
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_4",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "completed",
-       "title": "生成周报摘要",
-       "updated_at": 1720000017,
-       "labels": [],
-       "run_started_at": 1720000016000,
-       "status_bucket": "done",
-       "status_failed": false
-      },
-      "before": "cnv_task_fleet_5"
-     },
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_3",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-       "updated_at": 1720000015,
-       "labels": [],
-       "run_started_at": 1720000014000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": "cnv_task_fleet_4"
-     },
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_2",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "needs_review",
-       "title": "翻译产品发布公告",
-       "updated_at": 1720000013,
-       "labels": [],
-       "run_started_at": 1720000012000,
-       "status_bucket": "needs_review",
-       "status_failed": false
-      },
-      "before": "cnv_task_fleet_3"
-     },
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_1",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "整理季度 OKR 草稿",
-       "updated_at": 1720000011,
-       "labels": [],
-       "run_started_at": 1720000010000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": "cnv_task_fleet_2"
-     },
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_public_task_smoke",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updated_at": 1720000003,
-       "archive_availability": {
-        "allowed": false,
-        "reason": null
-       },
-       "labels": [],
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": "cnv_task_fleet_1"
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 38,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_public_task_smoke",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "冒烟任务",
-       "updated_at": 1720000003,
-       "archive_availability": {
-        "allowed": false,
-        "reason": null
-       },
-       "labels": [],
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 40,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_1",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "整理季度 OKR 草稿",
-       "updated_at": 1720000011,
-       "labels": [],
-       "run_started_at": 1720000010000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 41,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_2",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "needs_review",
-       "title": "翻译产品发布公告",
-       "updated_at": 1720000013,
-       "labels": [],
-       "run_started_at": 1720000012000,
-       "status_bucket": "needs_review",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 42,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_3",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-       "updated_at": 1720000015,
-       "labels": [],
-       "run_started_at": 1720000014000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 43,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_4",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "completed",
-       "title": "生成周报摘要",
-       "updated_at": 1720000017,
-       "labels": [],
-       "run_started_at": 1720000016000,
-       "status_bucket": "done",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 44,
-    "delta": [
-     {
-      "path": [
-       "summaries"
-      ],
-      "key": [
-       "id"
-      ],
-      "put": {
-       "id": "cnv_task_fleet_5",
-       "group_id": "grp-smoke",
-       "kind": "agent_task",
-       "status": "in_progress",
-       "title": "排查构建缓存问题",
-       "updated_at": 1720000019,
-       "labels": [],
-       "run_started_at": 1720000018000,
-       "status_bucket": "in_progress",
-       "status_failed": false
-      },
-      "before": null
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 30,
-    "delta": [
-     {
-      "path": [
-       "sections",
-       0,
-       "ids"
-      ],
-      "append": [
-       "cnv_public_task_smoke",
-       "cnv_task_fleet_1",
-       "cnv_task_fleet_3",
-       "cnv_task_fleet_5"
-      ]
-     },
-     {
-      "path": [
-       "sections",
-       1,
-       "ids"
-      ],
-      "append": [
-       "cnv_task_fleet_2"
-      ]
-     },
-     {
-      "path": [
-       "sections",
-       2,
-       "ids"
-      ],
-      "append": [
-       "cnv_task_fleet_4"
-      ]
-     }
-    ]
-   }
-  },
-  {
-   "at": 150,
-   "dir": "rest"
-  },
-  {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 47,
+    "id": 49,
     "value": {}
    }
   },
   {
-   "at": 150,
-   "dir": "in",
-   "data": {
-    "id": 22,
-    "value": [
-     {
-      "id": "cnv_task_fleet_5",
-      "status": "in_progress",
-      "title": "排查构建缓存问题",
-      "updatedAt": 1720000019
-     },
-     {
-      "id": "cnv_task_fleet_4",
-      "status": "completed",
-      "title": "生成周报摘要",
-      "updatedAt": 1720000017
-     },
-     {
-      "id": "cnv_task_fleet_3",
-      "status": "in_progress",
-      "title": "汇总本周用户反馈并归类到对应模块，标注优先级和负责人，输出跟进清单",
-      "updatedAt": 1720000015
-     },
-     {
-      "id": "cnv_task_fleet_2",
-      "status": "needs_review",
-      "title": "翻译产品发布公告",
-      "updatedAt": 1720000013
-     },
-     {
-      "id": "cnv_task_fleet_1",
-      "status": "in_progress",
-      "title": "整理季度 OKR 草稿",
-      "updatedAt": 1720000011
-     },
-     {
-      "id": "cnv_public_task_smoke",
-      "status": "in_progress",
-      "title": "冒烟任务",
-      "updatedAt": 1720000003
-     }
-    ]
-   }
+   "at": 128,
+   "dir": "rest"
   },
   {
    "at": 150,
-   "dir": "rest"
+   "dir": "due"
   },
   {
    "at": 178,
    "dir": "due"
   },
   {
-   "at": 200,
-   "dir": "due"
-  },
-  {
-   "at": 304,
+   "at": 592,
    "dir": "out",
    "data": {
-    "id": 48,
+    "id": 50,
     "call": "marks.mark",
     "params": {
      "kind": "chatTaskDismissed",
@@ -3879,46 +3942,50 @@
    }
   },
   {
-   "at": 304,
+   "at": 592,
    "dir": "rest"
   },
   {
-   "at": 304,
+   "at": 592,
    "dir": "in",
    "data": {
-    "id": 48,
+    "id": 50,
     "ok": null
    }
   },
   {
-   "at": 304,
+   "at": 592,
    "dir": "rest"
   },
   {
-   "at": 354,
+   "at": 642,
    "dir": "due"
   },
   {
-   "at": 354,
+   "at": 642,
    "dir": "in",
    "data": {
     "id": 9,
-    "value": {
-     "marks": {
-      "cnv_task_fleet_4": 1720000016000
+    "delta": [
+     {
+      "path": [
+       "marks",
+       "cnv_task_fleet_4"
+      ],
+      "set": 1720000016000
      }
-    }
+    ]
    }
   },
   {
-   "at": 354,
+   "at": 642,
    "dir": "rest"
   },
   {
-   "at": 752,
+   "at": 816,
    "dir": "out",
    "data": {
-    "id": 49,
+    "id": 51,
     "call": "marks.mark",
     "params": {
      "kind": "chatTaskDismissed",
@@ -3932,27 +3999,27 @@
    }
   },
   {
-   "at": 752,
+   "at": 816,
    "dir": "rest"
   },
   {
-   "at": 752,
+   "at": 816,
    "dir": "in",
    "data": {
-    "id": 49,
+    "id": 51,
     "ok": null
    }
   },
   {
-   "at": 752,
+   "at": 816,
    "dir": "rest"
   },
   {
-   "at": 802,
+   "at": 866,
    "dir": "due"
   },
   {
-   "at": 802,
+   "at": 866,
    "dir": "in",
    "data": {
     "id": 9,
@@ -3968,7 +4035,7 @@
    }
   },
   {
-   "at": 802,
+   "at": 866,
    "dir": "rest"
   }
  ]

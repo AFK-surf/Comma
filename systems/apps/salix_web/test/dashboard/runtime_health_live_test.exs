@@ -453,7 +453,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
           [
             %{
               "event_kind" => "llm",
-              "tenant_id" => "other-tenant",
+              "tenant_id" => "ten1_0000000000000000042",
               "group_id" => "g9",
               "salix_agent_id" => "ag-other",
               "session_id" => "sess-other",
@@ -863,7 +863,14 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     assert html =~ "the fetched sample has 5+ calls"
 
     # Switching to all tenants re-queries with :all and shows the other
-    # tenant's failed model call, labelled.
+    # tenant's failed model call, labelled with that tenant's name although
+    # the session selects only "default".
+    {:ok, _} =
+      Salix.Control.Tenants.create_preallocated(
+        %{"name" => "Other Org"},
+        "ten1_0000000000000000042"
+      )
+
     html =
       view
       |> element("#runtime-filters")
@@ -872,7 +879,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     settle_receive({:activity_trace_scope, :all, _opts})
     assert html =~ "tenants=all"
     assert html =~ "sess-other"
-    assert html =~ "other-tenant"
+    assert html =~ "Other Org"
     assert html =~ "FAILED: rate_limited"
     assert html =~ "1 failed"
   end

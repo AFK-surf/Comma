@@ -16,6 +16,12 @@ export type MessageReply = {
   fromMember?: true;
 };
 
+/**
+ * Where a reply line runs past a row: at the bubbles' text inset beside a
+ * Router that shows no identity, in the avatar gutter otherwise.
+ */
+export type ReplyLinePlace = "bubble" | "gutter";
+
 export type ReplyChainState = "active" | "muted" | undefined;
 
 /** One row's place among its neighbours, as values that memo can compare. */
@@ -44,6 +50,17 @@ export function messageThreadRoots(messages: readonly ChatMessage[]) {
     );
   }
   return roots;
+}
+
+/**
+ * A Router's row in a Router's chat (Home) shows no avatar or label; its reply
+ * line runs at the bubbles' text inset instead of in the avatar gutter.
+ */
+export function hidesRouterIdentity(
+  actorRole: ChatMessage["actorRole"],
+  defaultActorRole: ChatMessage["actorRole"]
+) {
+  return defaultActorRole === "router" && (actorRole ?? defaultActorRole) === "router";
 }
 
 export function sameMessageSender(a: ChatMessage, b: ChatMessage) {
@@ -146,5 +163,20 @@ export function messageRelationships(
       ...(first.role === "user" ? { fromMember: true as const } : {}),
     });
   }
-  return { positions, replies };
+  // A line runs down from what a reply answers into the reply, past the top of
+  // every message on the way and whatever heads it, such as a timestamp. Each
+  // crossed message maps to the message whose row places the line: an Agent's
+  // reply, or what a member's reply answers (MessageReplyLines).
+  const crossedByLine = new Map<string, ChatMessage>();
+  for (const reply of replies.values()) {
+    if (reply.presentation !== "line") continue;
+    const placedBy =
+      messages[
+        indexes.get(reply.fromMember ? reply.targetAnchorId : reply.messageId)!
+      ]!;
+    const end = indexes.get(reply.messageId)!;
+    for (let index = indexes.get(reply.targetAnchorId)! + 1; index <= end; index += 1)
+      crossedByLine.set(messages[index]!.messageId, placedBy);
+  }
+  return { crossedByLine, positions, replies };
 }

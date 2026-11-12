@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+real=/opt/swift/usr/bin/swift
+if [ "${1:-}" != build ] || [ "${COMMA_TARGET_PLATFORM:-}" != darwin ]; then
+  exec "$real" "$@"
+fi
+shift
+module_cache=${COMMA_CROSS_CACHE:-/cache}/swift-module-cache
+
+case "${COMMA_TARGET_ARCH:-arm64}" in
+  x64 | x86_64) arch=x86_64 ;;
+  *) arch=arm64 ;;
+esac
+
+plugins=()
+if [ -n "${MACOS_SWIFT_PLUGIN_DIR:-}" ]; then
+  for module in SwiftUIMacros PreviewsMacros; do
+    plugins+=(-Xswiftc -load-plugin-executable -Xswiftc "$MACOS_SWIFT_PLUGIN_DIR/$module#$module")
+  done
+fi
+
+exec "$real" build --build-system native \
+  --triple "${arch}-apple-macosx${MACOSX_DEPLOYMENT_TARGET:-13.0}" \
+  --sdk "${MACOS_SDK:?MACOS_SDK is not set; run prepare-sdk.sh first}" \
+  -Xswiftc -resource-dir -Xswiftc "$SWIFT_DARWIN_RESOURCE_DIR" \
+  -Xswiftc "-ld-path=$MACOS_LD" \
+  -Xswiftc -Xclang-linker -Xswiftc -mlinker-version=1166 \
+  -Xcc -isysroot -Xcc "$MACOS_SDK" \
+  -Xswiftc -module-cache-path -Xswiftc "$module_cache" \
+  -Xcc "-fmodules-cache-path=$module_cache" \
+  "${plugins[@]}" \
+  "$@"

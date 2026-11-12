@@ -3,7 +3,7 @@
 // - The station: its release says its version in BUILD (`0.1.<n>`); the latest is what still.fail cloud serves as
 //   releases/station.json, or on the test channel (`updateChannel: "beta"` in config.json; a release installed from the
 //   beta and not told otherwise is on it) releases/station-beta.json. Switched back from the beta, the older stable
-//   release is offered as going back (`downgrade`), only then. It is updated as `stillfail update` does: by the cloud's
+//   release is offered as going back (`downgrade`), only then. It is updated as `comma-station update` does: by the cloud's
 //   installer, run apart from the station; only a release that installer put in <data>/app is (the desktop app's
 //   comes with the desktop app, a clone's with the clone). Such a station does so by itself once it has been quiet a
 //   while (never back from the beta, and a version it already went for, not again), unless its config says
@@ -14,7 +14,7 @@
 // The TS release (docs/station-ts-native.md) is updated by the same installer and the same files as the Rust one:
 // run/update.started (this side's, so the process that runs after a handover or restart follows the update to its
 // end), run/update.step (download | handoff | drain | restart, the installer's), run/update.log and run/update.exit,
-// and the installer is started the same way (STILLFAIL_CHANNEL, STILLFAIL_DATA and EMBER_DATA, `?lang=`). Where it
+// and the installer is started the same way (COMMA_STATION_CHANNEL, COMMA_STATION_DATA and EMBER_DATA, `?lang=`). Where it
 // differs (see also the report in the station-ts work):
 // - The release is `--app` (Paths.app), not two up from dist/admin; BUILD and CHANNEL are read from it the same way.
 // - The installer's handoff (swap <data>/app, SIGUSR2 to the pid in run/station.json) reaches the launcher, which
@@ -28,7 +28,7 @@
 //   drain's count of running turns, in place of a look every second.
 // - Words the pages show are kept as catalog keys and said in each reader's language (the Rust said them once, in the
 //   language of whoever caused the reading).
-// - `stillfail-station channel` reaches this process as the launcher's `{"op":"hup"}` (it holds SIGHUP for it):
+// - `comma-station channel` reaches this process as the launcher's `{"op":"hup"}` (it holds SIGHUP for it):
 //   `answerChannelAsk`.
 
 import { type FSWatcher, createWriteStream, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
@@ -158,7 +158,7 @@ type Started = { at: number; from: string | null };
 export const startInstaller = (origin: string, runDir: string, env: Record<string, string>, app: string, lang = stationLang()): Promise<boolean> =>
   machine.startInstaller(origin, runDir, env, app, lang);
 
-const UA = { "user-agent": "stillfail-station" };
+const UA = { "user-agent": "comma-station" };
 
 async function fetchJson(url: string, ms = 15_000): Promise<any> {
   const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(ms) });
@@ -507,7 +507,7 @@ export class Updates {
     this.changed();
   }
 
-  /// `stillfail-station channel <name>` asked the running station (SIGHUP, through the launcher's `hup`): takes the
+  /// `comma-station channel <name>` asked the running station (SIGHUP, through the launcher's `hup`): takes the
   /// channel in run/channel-ask, keeps it, reads what is out on it, and answers in run/channel-answer.
   answerChannelAsk() {
     answerChannelAsk(join(this.data, "run"), (channel) => {
@@ -667,7 +667,7 @@ export class Updates {
     } catch {
       return null;
     }
-    const file = join(tmpdir(), `stillfail-codex-${version}-${p}.tgz`);
+    const file = join(tmpdir(), `comma-station-codex-${version}-${p}.tgz`);
     try {
       await this.download("codex", version, url, file);
       this.say("codex", INSTALLING, null);
@@ -762,7 +762,7 @@ export class Updates {
     };
   }
 
-  /// Runs the cloud's installer apart from the station, as `stillfail update` does, and follows it: by this process,
+  /// Runs the cloud's installer apart from the station, as `comma-station update` does, and follows it: by this process,
   /// and after a handover or a restart by the one that runs then (run/update.started says to).
   private async updateStation(lang: Lang): Promise<void> {
     const origin = this.origin() || null;
@@ -779,7 +779,7 @@ export class Updates {
     for (const [k, v] of Object.entries(this.env)) if (v !== undefined) env[k] = v;
     // Under both names: the cloud's installer from before the rename reads the old one. The release of its channel
     // (the installer from before channels takes the stable one).
-    Object.assign(env, { STILLFAIL_DATA: this.data, EMBER_DATA: this.data, STILLFAIL_CHANNEL: channel });
+    Object.assign(env, { COMMA_STATION_DATA: this.data, EMBER_DATA: this.data, COMMA_STATION_CHANNEL: channel });
     const ok = await startInstaller(origin, runDir, env, this.app);
     if (!ok) {
       Object.assign(station, before);
@@ -963,7 +963,7 @@ export class Updates {
   }
 }
 
-/// Where `stillfail-station channel` asks the running station for an update channel, and where it answers.
+/// Where `comma-station channel` asks the running station for an update channel, and where it answers.
 export const CHANNEL_ASK = "channel-ask";
 export const CHANNEL_ANSWER = "channel-answer";
 

@@ -31,10 +31,11 @@
   padding: var(--spacing-xl) var(--spacing-xl) 0;
 }
 
+/* The title is the conversation's text size (text-sm, the assistant message's), set apart by its weight alone. */
 .comma-agent-card-title {
   margin: 0;
-  font-size: var(--text-md);
-  line-height: var(--text-md--line-height);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
   font-weight: var(--font-weight-semibold);
   text-wrap: balance;
 }
@@ -219,6 +220,61 @@
 .comma-agent-card-detail dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* A device code the person enters on the provider's page. */
+.comma-agent-card-code {
+  margin: var(--spacing-lg) var(--spacing-xl) 0;
+  padding: var(--spacing-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.1em;
+  text-align: center;
+  user-select: all;
+}
+
+/* What a request's card asks the person to fill in. */
+.comma-agent-card-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg) var(--spacing-xl) 0;
+}
+
+.comma-agent-card-link {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: var(--spacing-xxs);
+  color: var(--color-text-brand-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-agent-card-link svg {
+  width: var(--spacing-md);
+  height: var(--spacing-md);
+}
+
+.comma-agent-card-reveal {
+  display: grid;
+  place-items: center;
+  color: var(--color-fg-tertiary);
+  cursor: pointer;
+  /* The field's trailing slot lets clicks through to the field. */
+  pointer-events: auto;
+}
+
+.comma-agent-card-reveal[aria-pressed="true"] {
+  color: var(--color-fg-brand-primary);
+}
+
+.comma-agent-card-reveal svg {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
 }
 
 /* What is under way, in the foot's leading place. */

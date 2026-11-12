@@ -156,7 +156,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
              Salix.Control.Groups.get(group_id)
   end
 
-  test "update_group turning on the Cloud VM degrades to VM-less when no provider is configured" do
+  test "an update_group of the release before that carries the Cloud VM switch sends the rest" do
     tenant_id = SalixStore.Ids.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
 
@@ -170,24 +170,17 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
         "attrs" => %{"name" => "Renamed", "cloud_vm_enabled" => true}
       })
 
-    # The tenant has no VM provider (and no platform default), yet the row
-    # drains clean: the rest of the update lands and the group stays VM-less.
     assert {:ok, 1} = Reconciler.drain_once()
     assert row("update_group").status == "done"
 
-    assert {:ok, %{"name" => "Renamed", "cloud_vm_enabled" => false}} =
-             Salix.Control.Groups.get(group_id)
+    assert {:ok, %{"name" => "Renamed"} = group} = Salix.Control.Groups.get(group_id)
+    refute Map.has_key?(group, "cloud_vm_enabled")
   end
 
-  # A Salix node of the release before, during a rolling release.
-  defmodule OldReleaseSalix do
-    def update_group(_group_id, _tenant_id, _attrs),
-      do: {:error, {:bad_request, "unsupported group update fields: cloud_vm_enabled"}}
-  end
-
-  test "an update_group a node of the release before refuses stays pending until this release takes it" do
+  test "rows of the release before that set the Cloud VM switch alone are done and change nothing" do
     tenant_id = SalixStore.Ids.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
+    agent_id = SalixStore.Ids.new_agent_id(group_id)
 
     {:ok, _} = Salix.Control.Tenants.create_preallocated(%{}, tenant_id)
     {:ok, _} = Salix.Control.Groups.create_preallocated(%{}, tenant_id, group_id)
@@ -196,46 +189,8 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
       Reconciler.enqueue("project", group_id, "update_group", %{
         "group_id" => group_id,
         "tenant_id" => tenant_id,
-        "attrs" => %{"name" => "Renamed", "cloud_vm_enabled" => false}
+        "attrs" => %{"cloud_vm_enabled" => false}
       })
-
-    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
-    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, OldReleaseSalix)
-
-    assert {:ok, 0} = Reconciler.drain_once()
-    deferred = row("update_group")
-    assert deferred.status == "pending"
-    assert deferred.last_error =~ "cloud_vm_switch_unknown"
-
-    restore_env(:bridge_for_teams_core, :salix_client, prev)
-
-    assert {:ok, 1} = Reconciler.drain_once()
-    assert row("update_group").status == "done"
-
-    assert {:ok, %{"name" => "Renamed", "cloud_vm_enabled" => false}} =
-             Salix.Control.Groups.get(group_id)
-  end
-
-  test "a VM row written for an agent before the switch moved sets its group's switch" do
-    tenant_id = SalixStore.Ids.new_tenant_id()
-    group_id = SalixStore.Ids.new_group_id(tenant_id)
-    agent_id = SalixStore.Ids.new_agent_id(group_id)
-
-    {:ok, _} =
-      Salix.Control.Tenants.create_preallocated(
-        %{
-          "config" =>
-            Jason.encode!(%{
-              "vm" => %{
-                "default_provider" => "cloudflare",
-                "providers" => %{"cloudflare" => %{"enabled" => true}}
-              }
-            })
-        },
-        tenant_id
-      )
-
-    {:ok, _} = Salix.Control.Groups.create_preallocated(%{}, tenant_id, group_id)
 
     {:ok, _} =
       Reconciler.enqueue("agent", agent_id, "apply_product_vm_default", %{
@@ -244,9 +199,11 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
         "attrs" => %{"vm" => %{"enabled" => true}}
       })
 
-    assert {:ok, 1} = Reconciler.drain_once()
+    assert {:ok, 2} = Reconciler.drain_once()
+    assert row("update_group").status == "done"
     assert row("apply_product_vm_default").status == "done"
-    assert {:ok, %{"cloud_vm_enabled" => true}} = Salix.Control.Groups.get(group_id)
+    assert {:ok, group} = Salix.Control.Groups.get(group_id)
+    refute Map.has_key?(group, "cloud_vm_enabled")
   end
 
   test "drains update_group, sets the group's router agent" do
@@ -350,6 +307,89 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
     assert {:ok, 1} = Reconciler.drain_once()
     assert row("do_a_barrel_roll").status == "failed"
     assert row("do_a_barrel_roll").last_error =~ "unknown op"
+  end
+
+  # Outside the SQL sandbox: the wait is between two committed transactions on
+  # separate connections, which the sandbox would serialize away.
+  test "settling an aggregate waits for the drainer that holds its rows, then applies them" do
+    test_pid = SystemsRuntime.Proc.self()
+    aggregate_id = "settle-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    {:ok, row} =
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+        Reconciler.enqueue("weird", aggregate_id, "do_a_barrel_roll", %{})
+      end)
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+        Repo.delete_all(from(r in ReconcileOutbox, where: r.id == ^row.id))
+      end)
+    end)
+
+    # Another drainer has the row in its batch (the periodic drain does).
+    holder =
+      SystemsRuntime.Task.async(fn ->
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+          Repo.transaction(fn ->
+            Repo.all(from(r in ReconcileOutbox, where: r.id == ^row.id, lock: "FOR UPDATE"))
+            %{rows: [[backend]]} = Repo.query!("SELECT pg_backend_pid()")
+            SystemsRuntime.Proc.send(test_pid, {:held, backend})
+
+            receive do
+              :release -> :ok
+            end
+          end)
+        end)
+      end)
+
+    holder_backend =
+      receive do
+        {:held, backend} -> backend
+      end
+
+    # A drain skips the held row.
+    assert {:ok, 0} =
+             Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn -> Reconciler.drain_once() end)
+
+    reader =
+      SystemsRuntime.Task.async(fn ->
+        result =
+          Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+            Reconciler.settle_aggregate("weird", aggregate_id)
+          end)
+
+        SystemsRuntime.Proc.send(test_pid, {:settled, result})
+        result
+      end)
+
+    assert :blocked = blocked_on(holder_backend)
+    SystemsRuntime.Proc.send(holder.pid, :release)
+    assert {:ok, :ok} = SystemsRuntime.Task.await(holder, :infinity)
+
+    assert {:ok, 1} = SystemsRuntime.Task.await(reader, :infinity)
+
+    assert %{status: "failed"} =
+             Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+               Repo.get!(ReconcileOutbox, row.id)
+             end)
+  end
+
+  # Until a connection waits on `backend`'s lock, or the settle answered first.
+  defp blocked_on(backend) do
+    receive do
+      {:settled, result} -> {:settled_without_waiting, result}
+    after
+      0 ->
+        %{rows: [[waiting]]} =
+          Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
+            Repo.query!(
+              "SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))",
+              [backend]
+            )
+          end)
+
+        if waiting > 0, do: :blocked, else: blocked_on(backend)
+    end
   end
 
   test "failed organization reconcile rows emit org-scoped observability events without payload" do

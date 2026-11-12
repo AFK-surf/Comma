@@ -58,6 +58,44 @@ defmodule SalixAgent.RepeatedToolResultGuardTest do
     )
   end
 
+  defp refused(id, attrs \\ %{}) do
+    result(
+      id,
+      Map.merge(
+        %{
+          "tool_name" => "call",
+          "input" => %{"id" => "queue-pressure:#{id}"},
+          "status" => "guidance",
+          "error" => false,
+          "error_class" => nil,
+          "error_message" => nil,
+          "guidance_reason" => "envelope_misuse",
+          "content" => "get_runtime_message is not a tool."
+        },
+        attrs
+      )
+    )
+  end
+
+  test "a refused call repeats whatever its input, and a different refusal starts over" do
+    four = SessionData.apply_events(base(), [input(1) | Enum.map(2..5, &refused/1)])
+    assert SessionData.query(four, :consecutive_repeated_tool_results) == 4
+    refute SessionData.query(four, :repeated_tool_results_exhausted?)
+
+    other = SessionData.apply_event(four, refused(6, %{"content" => "wait_for is direct."}))
+    assert SessionData.query(other, :consecutive_repeated_tool_results) == 1
+
+    five = SessionData.apply_event(four, refused(6))
+    assert SessionData.query(five, :consecutive_repeated_tool_results) == 5
+    assert SessionData.query(five, :repeated_tool_results_exhausted?)
+  end
+
+  test "a real result with a different input is not a repeat" do
+    results = Enum.map(2..6, &result(&1, %{"input" => %{"id" => &1}}))
+    session = SessionData.apply_events(base(), [input(1) | results])
+    assert SessionData.query(session, :consecutive_repeated_tool_results) == 1
+  end
+
   test "five identical results in a row park the session; four do not" do
     four = SessionData.apply_events(base(), [input(1) | Enum.map(2..5, &result/1)])
     assert SessionData.query(four, :consecutive_repeated_tool_results) == 4

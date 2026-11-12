@@ -21,9 +21,5 @@ export function installMiniAppRunLinkClicks(document: Document): () => void {
     event.stopPropagation();
   };
   document.addEventListener("click", click, true);
-  document.addEventListener("auxclick", click, true);
-  return () => {
-    document.removeEventListener("click", click, true);
-    document.removeEventListener("auxclick", click, true);
-  };
+  return () => document.removeEventListener("click", click, true);
 }

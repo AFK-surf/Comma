@@ -3,8 +3,20 @@ defmodule SalixStore.ManagedReleaseCatalogContractMigrationTest do
 
   alias SalixStore.Repo
 
+  defmodule MigrationRepo do
+    use Ecto.Repo, otp_app: :salix_store, adapter: Ecto.Adapters.Postgres
+  end
+
+  @operations_version 20_260_824_000_001
   @expand_version 20_260_826_000_101
   @contract_version 20_260_827_000_101
+
+  unless Code.ensure_loaded?(SalixStore.Repo.Migrations.CreateAgentVMMInstallOperations) do
+    Code.require_file(
+      "../priv/repo/migrations/20260824000001_create_agent_vmm_install_operations.exs",
+      __DIR__
+    )
+  end
 
   unless Code.ensure_loaded?(SalixStore.Repo.Migrations.ExpandManagedReleaseCatalog) do
     Code.require_file(
@@ -21,30 +33,45 @@ defmodule SalixStore.ManagedReleaseCatalogContractMigrationTest do
   end
 
   test "contract migration removes the catalog graph and obsolete operation identity" do
-    on_exit(&restore_expand_schema!/0)
-    restore_expand_schema!()
+    database = "catalog_contract_" <> String.replace(SystemsRuntime.Proc.uuid(), "-", "")
+    Repo.query!("CREATE DATABASE #{database}")
+    on_exit(fn -> Repo.query!("DROP DATABASE #{database} WITH (FORCE)") end)
 
-    Repo.query!("""
+    config =
+      Repo.config()
+      |> Keyword.take([:hostname, :port, :username, :password])
+      |> Keyword.merge(database: database, pool_size: 2)
+
+    start_supervised!({MigrationRepo, config})
+
+    for {version, migration} <- [
+          {@operations_version, SalixStore.Repo.Migrations.CreateAgentVMMInstallOperations},
+          {@expand_version, SalixStore.Repo.Migrations.ExpandManagedReleaseCatalog}
+        ] do
+      assert :ok = Ecto.Migrator.up(MigrationRepo, version, migration, log: false)
+    end
+
+    MigrationRepo.query!("""
     INSERT INTO managed_component_releases (id, component, revision, targets, created_at)
     VALUES ('release', 'agent-vmm-host', 1, '{}'::jsonb, now())
     """)
 
-    Repo.query!("""
+    MigrationRepo.query!("""
     INSERT INTO managed_release_catalogs (id, created_at)
     VALUES ('catalog', now())
     """)
 
-    Repo.query!("""
+    MigrationRepo.query!("""
     INSERT INTO managed_release_catalog_components (catalog_id, component, component_release_id)
     VALUES ('catalog', 'agent-vmm-host', 'release')
     """)
 
-    Repo.query!("""
+    MigrationRepo.query!("""
     INSERT INTO active_release_catalogs (purpose, catalog_id, activated_at)
     VALUES ('runner_install', 'catalog', now())
     """)
 
-    Repo.query!("""
+    MigrationRepo.query!("""
     INSERT INTO agent_vmm_install_operations (
       id, tenant_id, group_id, surface, scope_key, client_request_id, provider,
       delivery_target_type, delivery_target_id, registration_id,
@@ -63,7 +90,7 @@ defmodule SalixStore.ManagedReleaseCatalogContractMigrationTest do
     apply_contract!()
 
     assert %{rows: [["contract-operation", "revoked"]]} =
-             Repo.query!("""
+             MigrationRepo.query!("""
              SELECT id, authorization_status
              FROM agent_vmm_install_operations
              WHERE id = 'contract-operation'
@@ -71,7 +98,7 @@ defmodule SalixStore.ManagedReleaseCatalogContractMigrationTest do
 
     for column <- ~w(host_component_release_id platform material_digest) do
       assert %{rows: [[false]]} =
-               Repo.query!(
+               MigrationRepo.query!(
                  """
                  SELECT EXISTS (
                    SELECT 1
@@ -91,44 +118,14 @@ defmodule SalixStore.ManagedReleaseCatalogContractMigrationTest do
           managed_release_catalogs
           managed_component_releases
         ) do
-      assert %{rows: [[nil]]} = Repo.query!("SELECT to_regclass($1)", [table])
+      assert %{rows: [[nil]]} = MigrationRepo.query!("SELECT to_regclass($1)", [table])
     end
-  end
-
-  defp restore_expand_schema! do
-    Repo.query!("""
-    ALTER TABLE agent_vmm_install_operations
-      DROP CONSTRAINT IF EXISTS agent_vmm_install_operations_host_component_release_id_fkey,
-      DROP CONSTRAINT IF EXISTS agent_vmm_install_operation_platform,
-      DROP COLUMN IF EXISTS host_component_release_id,
-      DROP COLUMN IF EXISTS platform,
-      ADD COLUMN IF NOT EXISTS material_digest bytea
-    """)
-
-    Repo.query!("DROP TABLE IF EXISTS active_release_catalogs")
-    Repo.query!("DROP TABLE IF EXISTS managed_release_catalog_components")
-    Repo.query!("DROP TABLE IF EXISTS managed_release_catalogs")
-    Repo.query!("DROP TABLE IF EXISTS managed_component_releases")
-
-    Repo.query!("DELETE FROM salix_schema_migrations WHERE version IN ($1, $2)", [
-      @expand_version,
-      @contract_version
-    ])
-
-    assert :ok =
-             Ecto.Migrator.up(
-               Repo,
-               @expand_version,
-               SalixStore.Repo.Migrations.ExpandManagedReleaseCatalog,
-               strict_version_order: false,
-               log: false
-             )
   end
 
   defp apply_contract! do
     assert :ok =
              Ecto.Migrator.up(
-               Repo,
+               MigrationRepo,
                @contract_version,
                SalixStore.Repo.Migrations.ContractManagedReleaseCatalog,
                strict_version_order: false,

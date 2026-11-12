@@ -65,6 +65,9 @@ pub struct Quota {
     pub plan_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_credits: Option<crate::quota::ResetCredits>,
+    /// The resets the account holds, a kind each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resets: Vec<crate::quota::Reset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<crate::quota::Credits>,
 }
@@ -111,6 +114,9 @@ pub struct Profile {
     pub status: Status,
     #[serde(default)]
     pub quota: Option<Quota>,
+    /// Its owner lets it spend the plan's credits once a window is used up (ChatGPT).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_credits: bool,
     /// Passed over until then (ms since the epoch): a provider asked to wait.
     #[serde(default)]
     pub cooldown_until: Option<i64>,

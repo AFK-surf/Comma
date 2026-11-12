@@ -121,35 +121,24 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
              )
   end
 
-  test "the install wrapper carries the Computer Use helper only when the release has it", %{
+  test "the install wrapper carries the runner and the Agent VMM Host only", %{
     org: org,
     release: release
   } do
     assert {:ok, %{install_code: install_code}} = create_code(org)
 
-    wrapper = fn release ->
+    wrapper =
       MacMiniOnboarding.wrapper_script(%{
         org: org,
         install_code: install_code,
         token: "bft_token",
         release: release
       })
-    end
 
-    helper = %{
-      source: "https://releases.example.test/computer-use-helper",
-      sha256: String.duplicate("c", 64),
-      size: 43
-    }
+    assert wrapper =~ "export BFT_RUNNER_URL='https://releases.example.test/runner'"
 
-    with_helper =
-      wrapper.(put_in(release, [:targets, "darwin-arm64", "computer-use-helper"], helper))
-
-    assert with_helper =~
-             "export BFT_COMPUTER_USE_HELPER_URL='https://releases.example.test/computer-use-helper'"
-
-    assert with_helper =~ "export BFT_COMPUTER_USE_HELPER_SIZE='43'"
-    refute wrapper.(release) =~ "BFT_COMPUTER_USE_HELPER_URL="
+    assert wrapper =~
+             "export BFT_AGENT_VMM_HOST_URL='https://releases.example.test/agent-vmm-host'"
   end
 
   defp create_code(org, opts \\ []) do
@@ -167,7 +156,7 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
 
   defp release_fixture do
     components =
-      for component <- ~w(runner salix-connect agent-vmm-host), into: %{} do
+      for component <- ~w(runner agent-vmm-host), into: %{} do
         {component,
          %{
            source: "https://releases.example.test/#{component}",

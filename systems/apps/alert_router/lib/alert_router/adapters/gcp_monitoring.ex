@@ -53,7 +53,8 @@ defmodule AlertRouter.Adapters.GCPMonitoring do
            observed_at: observed_at,
            evidence_values:
              Helpers.compact_string_map([
-               {"observed", incident["observed_value"]}
+               {"observed", incident["observed_value"]},
+               {"scope", scope(incident["metric"])}
              ]),
            links: %{"incident" => incident_url}
          },
@@ -65,6 +66,32 @@ defmodule AlertRouter.Adapters.GCPMonitoring do
 
   def normalize(%{"version" => version}, _opts), do: {:error, {:unsupported_gcp_schema, version}}
   def normalize(_payload, _opts), do: {:error, :invalid_gcp_payload}
+
+  # The series labels a PromQL condition groups by (the failing route, the
+  # stuck provider and state) say where the alert is. Only reviewed keys with
+  # plain values are shown; anything else stays out of the card.
+  @scope_keys ~w(route provider state stage phase outcome)
+
+  defp scope(%{"labels" => labels}) when is_map(labels) do
+    @scope_keys
+    |> Enum.flat_map(fn key ->
+      case labels[key] do
+        value when is_binary(value) ->
+          if Regex.match?(~r/\A[A-Za-z0-9_.\/*:-]{1,80}\z/, value),
+            do: ["#{key}=#{value}"],
+            else: []
+
+        _ ->
+          []
+      end
+    end)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " ")
+    end
+  end
+
+  defp scope(_metric), do: nil
 
   defp lifecycle("open"), do: {:ok, "firing", "not_applicable"}
   defp lifecycle("closed"), do: {:ok, "resolved", "unknown"}

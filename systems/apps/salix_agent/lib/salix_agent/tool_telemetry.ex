@@ -171,7 +171,8 @@ defmodule SalixAgent.ToolTelemetry do
              field(output, :guidance_reason)
          ) do
       value
-      when value in ~w(not_callable not_disclosed invalid_params envelope_misuse unauthorized_target) ->
+      when value in ~w(not_callable not_disclosed invalid_params envelope_misuse unauthorized_target queued_person
+                   unanswered_person) ->
         value
 
       _ ->

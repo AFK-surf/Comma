@@ -71,8 +71,9 @@ theorem conversation_input_atomic_frontier {s args result : Term} {j r : List Te
         · obtain ⟨original, _, inputRead, h⟩ := bind_ok h
           split at h
           · obtain ⟨pending, _, read, h⟩ := bind_ok h
-            rw [pure_ok h]
-            exact frontier_commit read
+            rw [pure_ok h, pure_ok read]
+            exact Or.inr (Or.inr (Or.inr (Or.inr
+              ⟨[], _, false, frontier_input_start (Or.inl rfl), by simp, by simp⟩)))
           · rename_i notDuplicate
             obtain ⟨pending, _, read, h⟩ := bind_ok h
             rw [pure_ok h, pure_ok read]

@@ -108,6 +108,7 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
         workloads: Array<{
           id: string;
           name: string;
+          kind: string;
           observed_state: string;
           deletion?: { phase: string } | null;
         }>;
@@ -122,12 +123,13 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
       });
       await page.getByRole("button", { name: "Devices", exact: true }).click();
       // Enabling binds the one workspace the card names: there is no dialog.
-      await page.getByRole("button", { name: "Set up", exact: true }).click();
+      await page.getByRole("button", { name: "Enable this Mac", exact: true }).click();
       await expect
         .poll(
           async () =>
-            (await projection()).workloads.filter((w) => w.observed_state === "ready")
-              .length
+            (await projection()).workloads.filter(
+              (w) => w.kind === "shell" && w.observed_state === "ready"
+            ).length
         )
         .toBe(1);
       // The card shows setup progress in place; the workloads stay on the same page.
@@ -137,7 +139,9 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
       await page
         .getByRole("button", { name: "Refresh workloads", exact: true })
         .click();
-      await page.getByRole("button", { name: /Node actions$/ }).click();
+      await page
+        .getByRole("button", { name: "Shell Node actions", exact: true })
+        .click();
       await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
       await page
         .getByRole("dialog", { name: "Rename", exact: true })
@@ -155,11 +159,13 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
       await expect
         .poll(
           async () =>
-            (await projection()).workloads.filter((w) => w.observed_state === "ready")
-              .length
+            (await projection()).workloads.filter(
+              (w) => w.kind === "shell" && w.observed_state === "ready"
+            ).length
         )
         .toBe(2);
-      const shells = (await projection()).workloads;
+      const shells = (await projection()).workloads.filter((w) => w.kind === "shell");
+      const deleteTarget = shells.find((w) => w.name === "Delete target")!;
       for (const shell of shells)
         await expect
           .poll(() =>
@@ -170,18 +176,11 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
       await page
         .getByRole("button", { name: "Refresh workloads", exact: true })
         .click();
+      // Delete the named target through its actions menu, independent of row order.
       await page
-        .getByRole("button", { name: /Node actions$/ })
-        .first()
+        .getByRole("button", { name: "Delete target Node actions", exact: true })
         .click();
-      // Locate the target by opening its own row, rather than relying on sort order.
-      await page.keyboard.press("Escape");
-      const targetButton = page.getByRole("button", {
-        name: "Delete target",
-        exact: true,
-      });
-      await targetButton.click();
-      await page.getByRole("button", { name: "Delete Shell", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Delete Shell", exact: true }).click();
       await page
         .getByRole("dialog", { name: "Delete Shell", exact: true })
         .getByRole("button", { name: "Delete workload", exact: true })
@@ -198,12 +197,19 @@ let stdin = ''; process.stdin.on('data', chunk => stdin += chunk); process.stdin
           ?.phase
       ).not.toBe("complete");
       await native("fixture-reconnect");
+      // The list omits completed deletions; read the exact workload's proof.
       await expect
-        .poll(
-          async () =>
-            (await projection()).workloads.find((w) => w.name === "Delete target")
-              ?.deletion?.phase
-        )
+        .poll(async () => {
+          const response = await fetch(
+            `${config.api_base_url}/v1/comma/workspaces/${config.workspace_id}/compute/workloads/${deleteTarget.id}`,
+            { headers: { Authorization: `Bearer ${config.token}` } }
+          );
+          expect(response.status).toBe(200);
+          const value = (await response.json()) as {
+            workload: { deletion?: { phase: string } | null };
+          };
+          return value.workload.deletion?.phase;
+        })
         .toBe("complete");
       expect(
         (await projection()).workloads.find((w) => w.name === "Keep neighbor")?.deletion

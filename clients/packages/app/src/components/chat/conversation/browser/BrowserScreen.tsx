@@ -42,7 +42,7 @@ export function BrowserScreen({
       height={720}
       tabIndex={0}
       aria-label={messages.chat_browser_screen()}
-      className="block aspect-video w-full bg-black outline-none focus-visible:ring-2"
+      className="block aspect-video w-full max-w-[calc(40vh*var(--comma-browser-ratio,16/9))] outline-none focus-visible:ring-2"
       onContextMenu={(event) => event.preventDefault()}
       onPointerMove={(event) => {
         const now = uiClock.monotonic();

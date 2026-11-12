@@ -142,7 +142,7 @@ function usePrepareNeighbours(
 }
 
 /** One half of the step pill. */
-function StepButton({
+export function StepButton({
   className,
   disabled,
   icon,
@@ -156,11 +156,11 @@ function StepButton({
   icon: ReactNode;
   label: string;
   onPress: () => void;
-  shortcut: string;
+  shortcut?: string | undefined;
   testId: string;
 }) {
   return (
-    <Tooltip content={label} placement="bottom" shortcut={shortcut}>
+    <Tooltip content={label} placement="bottom" {...(shortcut ? { shortcut } : {})}>
       <AriaButton
         aria-label={label}
         className={cx(

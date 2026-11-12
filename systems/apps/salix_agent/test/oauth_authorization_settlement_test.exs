@@ -135,11 +135,15 @@ defmodule SalixAgent.OAuthAuthorizationSettlementTest do
     assert ids.(CapabilityRequests.list_conversation(ctx.group, ctx.tenant, "cnv-1", limit: 1)) ==
              [waiting["request_id"]]
 
-    SalixStore.S3.Fake.set_fault(
-      {:fail, 503, :get, SalixStore.Keys.ctl_capability_request(ctx.group, waiting["request_id"])}
-    )
+    assert {:error, :rollback} =
+             SalixStore.Repo.transaction(fn ->
+               SalixStore.Repo.query!("SET LOCAL search_path TO pg_catalog")
 
-    assert {:error, _} = CapabilityRequests.list_conversation(ctx.group, ctx.tenant, "cnv-1")
+               assert {:error, :unavailable} =
+                        CapabilityRequests.list_conversation(ctx.group, ctx.tenant, "cnv-1")
+
+               SalixStore.Repo.rollback(:rollback)
+             end)
   end
 
   test "a decline needs a connect-account request", ctx do

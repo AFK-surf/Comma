@@ -36,6 +36,7 @@ defmodule SalixWeb.Application do
     :ok = SalixWeb.LocalOAuthMock.configure!()
     Salix.App.configure()
     SalixWeb.ConnectorTaskAdmission.initialize()
+    SalixEnv.Registry.observe_device_connects(SalixAgent.Loops)
 
     opts = [strategy: :one_for_one, name: SalixWeb.Supervisor]
     SystemsRuntime.Supervisor.start_link(children(), opts)
@@ -52,6 +53,7 @@ defmodule SalixWeb.Application do
        max_children: SystemsRuntime.get_env(:salix_web, :connector_control_task_limit, 16)},
       SalixWeb.ConnectorDisconnectQueue,
       SalixWeb.StationRelay,
+      SalixWeb.StationRelay.Gate,
       SalixWeb.StationTaskIndex,
       background(SalixWeb.SubscriptionRuntimeWorker, :subscription_runtime_worker),
       {SystemsRuntime.TaskSupervisor,
@@ -70,7 +72,10 @@ defmodule SalixWeb.Application do
        max_children: SystemsRuntime.get_env(:salix_web, :connector_stream_task_limit, 32)},
       {SystemsRuntime.TaskSupervisor, name: SalixWeb.OAuthMCPRefreshSupervisor, max_children: 16},
       {SystemsRuntime.TaskSupervisor,
+       name: Salix.TaskRoutingLearning.Supervisor, max_children: 16},
+      {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.CloudVM.ImageArchiveSupervisor, max_children: 4},
+      {SystemsRuntime.TaskSupervisor, name: SalixWeb.SiteOgImage.Supervisor, max_children: 8},
       background(SalixWeb.CloudVM.ArchiveGC, :cloud_vm_archive_gc),
       # What this node recently made true in L4ES workspaces.
       background(SalixWeb.L4ESRecent, :l4es_recent),

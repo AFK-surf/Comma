@@ -128,9 +128,17 @@ defmodule SalixAgent.ToolDisclosure do
         fn {_key, value} -> value != false end
       )
 
-    case restricted do
+    flags =
+      case restricted do
+        [] -> nil
+        flags -> "  " <> Enum.map_join(flags, ", ", fn {key, _} -> "#{key}=false" end)
+      end
+
+    router_only = if entry["router_only"] == true, do: "  Router only: a Worker cannot call it."
+
+    case Enum.reject([flags, router_only], &is_nil/1) do
       [] -> nil
-      flags -> "  " <> Enum.map_join(flags, ", ", fn {key, _} -> "#{key}=false" end)
+      lines -> Enum.join(lines, "\n")
     end
   end
 
@@ -202,6 +210,7 @@ defmodule SalixAgent.ToolDisclosure do
       |> Enum.filter(&SalixAgent.InspectorPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.map(&SalixAgent.InspectorPolicy.describe(&1, ctx))
       |> reject_unconfigured_capabilities(ctx)
+      |> reject_for_sandboxes(role, ctx)
       |> Enum.with_index()
       |> Enum.map(fn {candidate, index} -> Map.put(candidate, "__order__", index) end)
 
@@ -420,7 +429,7 @@ defmodule SalixAgent.ToolDisclosure do
     end
   end
 
-  defp candidate_to_disclosure(candidate, _role, runtime_kind) do
+  defp candidate_to_disclosure(candidate, role, runtime_kind) do
     name = candidate["name"]
 
     %{
@@ -440,6 +449,27 @@ defmodule SalixAgent.ToolDisclosure do
       "__registry__" => candidate["__source__"] == :registry
     }
     |> maybe_put_safety(candidate["safety"])
+    |> maybe_mark_router_only(candidate, role)
+  end
+
+  # A Router delegates to Workers, so it must know which of its tools a Worker
+  # lacks. The mark comes from the same role metadata that removes the tool
+  # from a Worker's disclosure.
+  @router_only_note "Router only: a Worker cannot call this tool. Use it yourself and put its result in the Task content instead of telling a Worker to use it."
+
+  @doc false
+  def router_only_note, do: @router_only_note
+
+  defp maybe_mark_router_only(disclosure, candidate, role) do
+    roles = List.wrap(candidate["roles"])
+
+    if normalize_role(role) == "router" and roles != [] and "worker" not in roles do
+      disclosure
+      |> Map.put("router_only", true)
+      |> Map.update!("manual", &String.trim("#{&1}\n#{@router_only_note}"))
+    else
+      disclosure
+    end
   end
 
   defp maybe_put_safety(disclosure, safety) when is_binary(safety) and safety != "",
@@ -517,7 +547,6 @@ defmodule SalixAgent.ToolDisclosure do
         candidates
       else
         candidates
-        |> maybe_reject_family("oauth.", fn -> oauth_configured?(tenant) end)
         |> maybe_reject_family("composio.", fn -> composio_configured?(tenant) end)
       end
 
@@ -547,6 +576,35 @@ defmodule SalixAgent.ToolDisclosure do
     end
   end
 
+  # Where the Group's Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`)
+  # its tools are not offered, and a Worker creates sandbox Tasks of its own
+  # in its place (`SalixIM.Provider.Internal`); elsewhere only a Router
+  # creates Tasks. A round's context carries the answer from its one read of
+  # the Group record (`SalixAgent.RoundConfig`).
+  defp reject_for_sandboxes(candidates, role, ctx) do
+    cond do
+      cloud_vm_retired?(ctx) ->
+        Enum.reject(candidates, &String.starts_with?(&1["name"], "cloud_vm."))
+
+      normalize_role(role) == "router" ->
+        candidates
+
+      true ->
+        Enum.reject(candidates, &(&1["name"] == "im_api.internal.task.create"))
+    end
+  end
+
+  defp cloud_vm_retired?(ctx) do
+    case Map.get(ctx, :cloud_vm_retired) do
+      retired when is_boolean(retired) ->
+        retired
+
+      nil ->
+        group = group_id(ctx)
+        SalixAgent.Sandboxes.cloud_vm_retired?(if group != "", do: group)
+    end
+  end
+
   defp maybe_reject_family(candidates, prefix, configured_fn) do
     has_family? = Enum.any?(candidates, &String.starts_with?(&1["name"], prefix))
 
@@ -560,22 +618,6 @@ defmodule SalixAgent.ToolDisclosure do
   # Any supported provider with resolvable client credentials (tenant record
   # or platform default — the store's provider_app already falls back) keeps
   # the oauth.* family visible.
-  defp oauth_configured?(tenant) do
-    case SalixAgent.OAuthStore.impl() do
-      nil ->
-        true
-
-      _mod ->
-        Enum.any?(SalixStore.OAuth.Adapters.supported(), fn provider ->
-          case SalixAgent.OAuthStore.provider_app(tenant, provider) do
-            {:ok, _app} -> true
-            {:error, :not_configured} -> false
-            _other -> true
-          end
-        end)
-    end
-  end
-
   # `email.send_to_owners` is only useful when the session's group carries a
   # non-empty platform-managed `owner_emails` list, so the family is dropped
   # when the group record definitively has none. Fail-open mirrors the tenant

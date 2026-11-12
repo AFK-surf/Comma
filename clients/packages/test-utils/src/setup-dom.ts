@@ -169,6 +169,9 @@ if (typeof Element !== "undefined") {
   scrollableElementPrototype.scrollIntoView ??= () => {};
 }
 
+// The document's list of running animations is empty for the same reason.
+if (typeof Document !== "undefined") Document.prototype.getAnimations ??= () => [];
+
 // jsdom runs no layout, so Range carries none of the CSSOM View geometry that
 // selection-anchored UI reads. A zero rect and no client rects are the honest
 // answer for a DOM with no boxes; a test that needs real geometry stubs these

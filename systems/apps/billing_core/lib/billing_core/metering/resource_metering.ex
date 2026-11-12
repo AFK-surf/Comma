@@ -176,6 +176,7 @@ defmodule BillingCore.ResourceMetering do
     else
       BillingCore.FeeControl.check_cached(%{
         billing_account_id: context.billing_account_id,
+        resource_kind: kind,
         provider: attrs[:provider],
         sku: attrs[:sku],
         repo: attrs[:repo],

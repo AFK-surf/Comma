@@ -60,7 +60,7 @@ defmodule SalixIM.ConversationMessageCodec do
          ProviderRecipientIdentity.valid_owner_identity?(
            row[ProviderRecipientIdentity.owner_field()]
          ) and
-         nonblank?(row["request_fingerprint"]) and
+         (is_nil(row["request_fingerprint"]) or nonblank?(row["request_fingerprint"])) and
          is_integer(row["created_at"]) and row["created_at"] >= 0 and
          match?({:ok, _validated}, ConversationMessage.validate(row)),
        do: :ok,

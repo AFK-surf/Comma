@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useMemo, useState, type ReactNode } from "react";
 import { ResizeContainer } from "../../dev";
+import { fileTypesWithIcons } from "../file-type-icon";
 import {
   Button,
   ChatPanelAudio,
@@ -214,3 +215,19 @@ const FileActionsPreview = () => {
 };
 
 export const FileActions: Story = { render: () => <FileActionsPreview /> };
+
+/** One file of every type that has artwork, then one without. */
+const fileTypeSamples = [
+  ...fileTypesWithIcons.filter((type) => type !== "none"),
+  "blend",
+].map((extension) => `sample.${extension}`);
+
+export const FileTypes: Story = {
+  render: () => (
+    <div className="grid grid-cols-2 gap-md bg-main-panel-bg p-3xl">
+      {fileTypeSamples.map((fileName) => (
+        <ChatPanelFile fileName={fileName} fileSize={482400} key={fileName} />
+      ))}
+    </div>
+  ),
+};

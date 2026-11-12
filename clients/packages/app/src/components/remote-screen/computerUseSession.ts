@@ -6,9 +6,21 @@ export type ComputerUseSession = {
   device: string;
   /** App names from `start`. Empty when the Worker named none: the frontmost app. */
   apps: readonly string[];
+  /**
+   * The computer's device it leased: an Android device (`env.android`'s `target`, `android:<serial>`) or an iOS
+   * Simulator (`env.screen`'s, `simulator:<udid>`).
+   */
+  screen?: string;
 };
 
 const COMPUTER_USE = "env.computer_use";
+const ANDROID = "env.android";
+const SIMULATOR = "env.screen";
+/** What each device tool leases, by its target's prefix. */
+const LEASED: Record<string, string> = {
+  [ANDROID]: "android:",
+  [SIMULATOR]: "simulator:",
+};
 
 /**
  * The computer-use session that the loaded steps leave open, if any. `start`
@@ -20,7 +32,26 @@ export function openComputerUseSession(
 ): ComputerUseSession | undefined {
   let session: ComputerUseSession | undefined;
   for (const entry of entries) {
-    if (!entry.tool || entry.item.tools[0] !== COMPUTER_USE) continue;
+    if (!entry.tool) continue;
+    const leased = LEASED[entry.item.tools[0] ?? ""];
+    if (leased !== undefined) {
+      if (entry.item.kind === "error") continue;
+      const args = entryArguments(entry);
+      const action = typeof args.action === "string" ? args.action.trim() : "";
+      const device = typeof args.device_id === "string" ? args.device_id : "";
+      const inner = (args.args ?? {}) as { target?: unknown };
+      const target = typeof args.target === "string" ? args.target : inner.target;
+      if (action === "end") session = undefined;
+      else if (
+        action === "start" &&
+        device &&
+        typeof target === "string" &&
+        target.startsWith(leased)
+      )
+        session = { device, apps: [], screen: target };
+      continue;
+    }
+    if (entry.item.tools[0] !== COMPUTER_USE) continue;
     if (entry.item.kind === "error") continue;
     const args = entryArguments(entry);
     const action =
@@ -46,6 +77,10 @@ const PASSIVE_ACTIONS = new Set([
   "permissions_status",
   "open_permission_flow",
   "read_image",
+  // They name no app, and a `start` that names one usually follows: the screen shows that app only.
+  "list_apps",
+  "list_applications",
+  "list_windows",
 ]);
 
 function startApps(args: unknown): string[] {

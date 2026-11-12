@@ -9,14 +9,13 @@ defmodule SystemsSim.Scheduler do
   # the process that holds the turn) reports every spawn, message, scheduling
   # and end of the world to it.
   #
-  # The VM holds a trace message back when another thread has the
-  # scheduler's message queue locked (`enif_send` in erl_nif.c), and the
-  # tracee's later trace messages wait with it: a process the holder spawned
-  # can then run before the scheduler sees it. A dirty scheduler collecting
-  # the scheduler's own garbage is such a thread, so the scheduler keeps its
-  # heap small (its record lives in a table, its messages off its heap); and
-  # a process of the world other than the holder that is scheduled in fails
-  # the run (`running/2`).
+  # A large collection of the scheduler's garbage runs on a dirty scheduler
+  # (a message of the world is in it: one of 80,000 words is usual), and
+  # the one normal scheduler thread is then free: a process the holder just
+  # spawned, which the scheduler has not suspended yet, could run there. So
+  # while the scheduler is away from that thread, its guard takes it
+  # (`guard/0`). A process of the world other than the holder that is
+  # scheduled in fails the run (`running/2`).
   #
   # A suspended process still takes in its signals, when the VM runs it for
   # that: a message only joins its mailbox, an exit signal ends it. Left to
@@ -77,10 +76,9 @@ defmodule SystemsSim.Scheduler do
     {pid, mref} =
       spawn_monitor(fn ->
         Process.flag(:priority, :high)
-        # Its heap stays small, so its garbage collection never moves to a
-        # dirty scheduler and runs beside a process of the world: the trace
-        # messages and the record wait outside it.
+        # The trace messages wait outside its heap until it takes them.
         Process.flag(:message_queue_data, :off_heap)
+        guard()
         send(caller, {tag, start(fun, seed, opts, tag)})
       end)
 
@@ -91,6 +89,39 @@ defmodule SystemsSim.Scheduler do
 
       {:DOWN, ^mref, :process, ^pid, reason} ->
         raise "SystemsSim scheduler crashed: #{inspect(reason)}"
+    end
+  end
+
+  # Each time the scheduler is scheduled out, its guard, as urgent as it,
+  # holds the normal scheduler thread for as long as a dirty CPU scheduler
+  # has work: the scheduler's own collection, or a native function of the
+  # holder, which no process of the world runs beside either. The guard
+  # yields between its looks, so the scheduler runs when it is back. When
+  # the scheduler waits, no dirty CPU scheduler has work of the world, and
+  # the guard waits too.
+  defp guard do
+    sched = self()
+    guard = :erlang.spawn_opt(fn -> guarding(sched, Process.monitor(sched)) end, priority: :high)
+    :erlang.trace(sched, true, [:running, {:tracer, guard}])
+  end
+
+  defp guarding(sched, mref) do
+    receive do
+      {:trace, ^sched, :out, _} -> hold_thread(sched, mref)
+      {:trace, ^sched, _, _} -> guarding(sched, mref)
+      {:DOWN, ^mref, :process, _, _} -> :ok
+    end
+  end
+
+  defp hold_thread(sched, mref) do
+    # The run queues' active tasks: the normal ones', then the dirty CPU
+    # one's, then the dirty I/O one's.
+    # ast-grep-ignore: ex-harness-real-clock -- decides only when the world may run, never what it does
+    if Enum.at(:erlang.statistics(:active_tasks_all), -2) > 0 do
+      :erlang.yield()
+      hold_thread(sched, mref)
+    else
+      guarding(sched, mref)
     end
   end
 

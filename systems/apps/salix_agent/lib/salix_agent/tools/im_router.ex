@@ -116,8 +116,27 @@ defmodule SalixAgent.Tools.ImRouter do
     ]
   end
 
+  @read_conversation "im_api.internal.read_conversation"
+  @task_create "im_api.internal.task.create"
+
   @doc false
-  def internal_read_disclosure_entries(ctx) do
+  def internal_read_disclosure_entries(ctx), do: internal_entries(ctx, [@read_conversation])
+
+  @doc """
+  The internal operations a Worker calls from outside a round, as a Loop or
+  a Task's station: the read of its Task, and, where the Group's Cloud VM is retired,
+  the creation of sandbox Tasks (`SalixIM.Provider.Internal`).
+  """
+  def internal_task_disclosure_entries(ctx) do
+    names =
+      if SalixAgent.Sandboxes.cloud_vm_retired?(ctx[:group_id]),
+        do: [@read_conversation, @task_create],
+        else: [@read_conversation]
+
+    internal_entries(ctx, names)
+  end
+
+  defp internal_entries(ctx, names) do
     mod = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
 
     if is_nil(mod) do
@@ -126,7 +145,7 @@ defmodule SalixAgent.Tools.ImRouter do
       case discovery_manual(mod, "internal", ctx) do
         {:ok, manual} ->
           manual_entries(manual, "internal", ctx)
-          |> Enum.filter(&(&1["name"] == "im_api.internal.read_conversation"))
+          |> Enum.filter(&(&1["name"] in names))
 
         _ ->
           []
@@ -301,7 +320,8 @@ defmodule SalixAgent.Tools.ImRouter do
         "manual_available" => true,
         "helpable" => true,
         "callable" => true,
-        "safety" => api["safety"] || api[:safety]
+        "safety" => api["safety"] || api[:safety],
+        "roles" => contract_list(api, "roles")
       }
       |> put_required_scopes(api)
     end
@@ -358,7 +378,7 @@ defmodule SalixAgent.Tools.ImRouter do
             "apis" =>
               apis
               |> Enum.filter(&operation_allowed?(&1, ctx))
-              |> Enum.map(&provider_api_summary(provider, &1, connect))
+              |> Enum.map(&provider_api_summary(provider, &1, connect, ctx_role(ctx)))
           })
 
         {:ok, _manual} ->
@@ -404,7 +424,7 @@ defmodule SalixAgent.Tools.ImRouter do
     end
   end
 
-  defp provider_api_summary(provider, api, connect) when is_map(api) do
+  defp provider_api_summary(provider, api, connect, role) when is_map(api) do
     name = to_string(api["name"] || api[:name] || "")
 
     %{
@@ -417,7 +437,19 @@ defmodule SalixAgent.Tools.ImRouter do
       "callable" => true
     }
     |> put_scope_availability(api, connect)
+    |> put_router_only(api, role)
   end
+
+  # The Router sees its own operations here; a Worker it delegates to does not.
+  defp put_router_only(summary, api, "router") do
+    roles = contract_list(api, "roles")
+
+    if roles != [] and "worker" not in roles,
+      do: Map.put(summary, "router_only", true),
+      else: summary
+  end
+
+  defp put_router_only(summary, _api, _role), do: summary
 
   defp require_visible_connect(mod, ctx, provider, connect_id_arg) do
     case visible_connect(mod, ctx, provider, connect_id_arg) do
@@ -623,7 +655,7 @@ defmodule SalixAgent.Tools.ImRouter do
   end
 
   defp operation_provider_hint("slack", "slack.send_dm") do
-    "For Slack DMs to a named or handle target without a user_id, resolve the target with slack.list_users using a query, then put the returned id into user_id. Ask for clarification if there is no clear single match."
+    "For Slack DMs to a named or handle target without a user_id, resolve the target with slack.list_users using a query, then put the returned id into user_id and the person's name or email into recipient. Ask for clarification if there is no clear single match."
   end
 
   defp operation_provider_hint("slack", _api) do
@@ -774,6 +806,23 @@ defmodule SalixAgent.Tools.ImRouter do
     |> Map.delete(String.to_atom(key))
   end
 
+  @doc """
+  A Message the server writes for the Agent, sent through the same internal
+  send seam as the Agent's own (delivery, egress archive): `binding` is tool
+  context that only server code sets, such as the computer and runtime of a
+  local-account question card (`SalixAgent.Tools.DeviceConnection`).
+  """
+  def server_send(ctx, params, binding) when is_map(params) and is_map(binding) do
+    case SystemsRuntime.get_env(:salix_agent, :im_provider_mod) do
+      nil ->
+        {:error, :im_unavailable}
+
+      mod ->
+        ctx = Map.merge(ctx, binding)
+        call_seam(mod, ctx, "internal", "internal", "internal.send_message", params)
+    end
+  end
+
   defp call_seam(mod, ctx, provider, connect_id, api, params) do
     broker = maybe_start_egress_archive_broker(ctx, provider, api)
 
@@ -783,6 +832,7 @@ defmodule SalixAgent.Tools.ImRouter do
       |> Map.put(
         "tool_context",
         provider_tool_context(ctx)
+        |> maybe_put_own_work(provider, api, params)
         |> maybe_put_egress_archive_broker(broker)
       )
 
@@ -807,7 +857,7 @@ defmodule SalixAgent.Tools.ImRouter do
 
           result =
             if provider == "internal" and api == "internal.task.create",
-              do: SalixAgent.Tools.TaskCard.after_create(result, ctx),
+              do: SalixAgent.Tools.TaskCard.after_create(result, ctx, params),
               else: result
 
           with_ifc(encode_provider_result(result), ifc)
@@ -825,6 +875,17 @@ defmodule SalixAgent.Tools.ImRouter do
       SalixAgent.EventArchive.EgressReservationBroker.stop(broker)
     end
   end
+
+  # A Task the Router creates for its own duty or initiative (`own_work`) is
+  # nobody's request, so the person still in the activation is not its source:
+  # it takes neither their thread as its reply source nor a card there.
+  defp maybe_put_own_work(tool_context, "internal", "internal.task.create", params) do
+    if SalixAgent.Tools.TaskCard.own_work?(params),
+      do: Map.put(tool_context, "person_source_superseded", true),
+      else: tool_context
+  end
+
+  defp maybe_put_own_work(tool_context, _provider, _api, _params), do: tool_context
 
   # A labelled read hands the dispatcher its label alongside the content;
   # `SalixAgent.IFC.Check.stamp_results/3` keeps it instead of falling back.
@@ -1032,18 +1093,22 @@ defmodule SalixAgent.Tools.ImRouter do
     do: "im_api." <> provider <> "." <> String.replace_prefix(api, provider <> ".", "")
 
   defp provider_tool_context(ctx) when is_map(ctx) do
-    source_message_ids = correlated_source_message_ids(ctx)
-    source_message_id = current_source_message_id(ctx, source_message_ids)
+    activation_source_ids = correlated_source_message_ids(ctx)
+    source_message_id = current_source_message_id(ctx, activation_source_ids)
     trusted_origin = ctx[:trusted_origin] || ctx["trusted_origin"]
 
     {source_message_ids, trusted_origins} =
-      operation_provenance(ctx, source_message_id, source_message_ids, trusted_origin)
+      operation_provenance(ctx, source_message_id, activation_source_ids, trusted_origin)
 
     %{
       "agent_id" => ctx[:agent_id] || ctx["agent_id"],
       "session_id" => ctx[:session_id] || ctx["session_id"],
       "source_message_id" => source_message_id,
       "source_message_ids" => source_message_ids,
+      # Every source the activation holds, narrowed above for authorization:
+      # its send in a held mention's thread answers that mention
+      # (`SalixIM.MentionReplyLatency`).
+      "activation_source_message_ids" => activation_source_ids,
       "tenant_id" => ctx[:tenant_id] || ctx["tenant_id"],
       "group_id" => ctx[:group_id] || ctx["group_id"],
       "runtime_kind" => ctx[:runtime_kind] || ctx["runtime_kind"],
@@ -1052,10 +1117,21 @@ defmodule SalixAgent.Tools.ImRouter do
       "trusted_origins" => trusted_origins,
       "triage_slack_read_source" => ctx[:triage_slack_read_source],
       "triage_scopes" => ctx[:triage_scopes],
+      # The Task a station or Loop calls for (`SalixAgent.StationToolCalls`,
+      # `SalixAgent.Loops.Capabilities`): a Worker's own Task creation names
+      # it as the new Task's parent.
+      "task_conversation_id" => ctx[:task_conversation_id] || ctx["task_conversation_id"],
       # What the information-flow decision established about this exact call.
       # A provider operation that creates a durable resource records it as
       # that resource's provenance (docs/verification.md).
-      "ifc_evidence" => ctx[:ifc_evidence] || ctx["ifc_evidence"]
+      "ifc_evidence" => ctx[:ifc_evidence] || ctx["ifc_evidence"],
+      # The person of a call that audit denied, which has no evidence.
+      "ifc_requester" => ctx[:ifc_requester] || ctx["ifc_requester"],
+      # A Task created now does not belong to the answered person who is still
+      # the turn source (`SalixAgent.Tools.TaskCard.person_superseded?/1`).
+      "person_source_superseded" => SalixAgent.Tools.TaskCard.person_superseded?(ctx) || nil,
+      # Set only by server code (`server_send/3`), never from tool arguments.
+      "local_account_binding" => ctx[:local_account_binding]
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" or value == [] end)
     |> Map.new()

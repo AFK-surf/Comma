@@ -23,10 +23,6 @@
   SalixAgent.SessionResidency =>
     "every hour, samples the fixed healthy node of the test configuration: no pressure, no eviction",
 
-  # Reads only.
-  SalixMeet.MeetingGroupProjectionAuditor =>
-    "every 5 minutes, reads one page of the bucket and of the projection and reports drift",
-
   # First due after any run has ended: no BEAM test process lasts an hour
   # (a CI job is stopped after 10 minutes).
   BridgeForTeams.Observability.Pruner => "prunes 24 hours after the node starts",

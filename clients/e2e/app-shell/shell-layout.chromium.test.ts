@@ -57,7 +57,7 @@ const stubs: [string | RegExp, WebAppStubOptions["stub"]][] = [
     },
   ],
   [
-    "chat sidebar tabs share the strip, scroll past their minimum, and hold widths for repeated closes",
+    "chat sidebar tabs share the strip, scroll past their minimum, and close with motion under held widths",
     {
       assistantReply: "[Open docs](https://docs.alpha-long-hostname.example.com/)",
     },
@@ -1730,7 +1730,7 @@ test("global chat sidebar animates, resizes, and keeps themed shell hover tokens
   await expect(sidebar.getByRole("textbox", { name: "Address" })).toBeVisible();
 });
 
-test("chat sidebar tabs share the strip, scroll past their minimum, and hold widths for repeated closes", async ({
+test("chat sidebar tabs share the strip, scroll past their minimum, and close with motion under held widths", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -1752,7 +1752,6 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
   for (const host of [
     "beta-release-notes.example.org",
     "gamma-long-hostname.example.net",
-    "delta-dashboard.internal.example.com",
   ]) {
     await newTab.click();
     await address.fill(`https://${host}/`);
@@ -1769,7 +1768,7 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
       const widths = await tabWidths();
       return {
         even: new Set(widths).size === 1,
-        narrowed: widths[0]! < 180 && widths[0]! >= 80,
+        narrowed: widths[0]! < 180 && widths[0]! >= 120,
         overflow: await tablist.evaluate(
           (element) => element.scrollWidth > element.clientWidth + 1
         ),
@@ -1778,7 +1777,9 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
     .toEqual({ even: true, narrowed: true, overflow: false });
 
   // Closing with the pointer holds every width until the pointer leaves, so
-  // the next tab's close button lands where the pointer already is.
+  // the next tab's close button lands where the pointer already is. The
+  // closed tab fades where it was, and the tab after it glides into its place
+  // from where it was drawn; both are recorded in the click's own task.
   const closeCenter = async (index: number) => {
     const item = tablist.locator("[data-tab-item]").nth(index);
     await item.hover();
@@ -1786,16 +1787,69 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
     return { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
   };
   const [narrowedWidth] = await tabWidths();
+  // The layout distance from the closed tab to the one after it.
+  const pitch = await tablist.evaluate((element) => {
+    const items = element.querySelectorAll<HTMLElement>("[data-tab-item]");
+    return items[2]!.offsetLeft - items[1]!.offsetLeft;
+  });
+  await tablist.evaluate((element) => {
+    new MutationObserver((mutations, observer) => {
+      const copy = mutations
+        .flatMap((mutation) => [...mutation.addedNodes])
+        .find(
+          (node): node is HTMLElement =>
+            node instanceof HTMLElement && node.dataset.tabClosing !== undefined
+        );
+      if (!copy) return;
+      observer.disconnect();
+      const effects = [copy, ...element.querySelectorAll("[data-tab-item]")].map(
+        (target) =>
+          target
+            .getAnimations()
+            .map((animation) => (animation.effect as KeyframeEffect).getKeyframes())
+      );
+      (window as { commaTabClose?: unknown }).commaTabClose = {
+        copyFades: effects[0]!.map((frames) => frames.map((frame) => frame.opacity)),
+        copyHidden: copy.getAttribute("aria-hidden"),
+        glides: effects
+          .slice(1)
+          .map((itemEffects) => itemEffects.map((frames) => frames[0]?.transform)),
+      };
+    }).observe(element, { childList: true, subtree: true });
+  });
   const target = await closeCenter(1);
   await page.mouse.click(target.x, target.y);
-  await expect(tablist.locator("[data-tab-item]")).toHaveCount(3);
-  expect(await tabWidths()).toEqual([narrowedWidth, narrowedWidth, narrowedWidth]);
+  await expect(tablist.locator("[data-tab-item]")).toHaveCount(2);
+  expect(
+    await page.evaluate(() => (window as { commaTabClose?: unknown }).commaTabClose)
+  ).toEqual({
+    copyFades: [["1", "0"]],
+    copyHidden: "true",
+    glides: [[], [`translateX(${pitch}px)`]],
+  });
+  expect(await tabWidths()).toEqual([narrowedWidth, narrowedWidth]);
+  // The selected tab is revealed where it rests, not where its glide starts.
+  expect(await tablist.evaluate((element) => element.scrollLeft)).toBe(0);
   const next = await closeCenter(1);
   expect(next.x).toBeCloseTo(target.x, 0);
   expect(next.y).toBeCloseTo(target.y, 0);
-  await page.mouse.click(next.x, next.y);
-  await expect(tablist.locator("[data-tab-item]")).toHaveCount(2);
-  expect(await tabWidths()).toEqual([narrowedWidth, narrowedWidth]);
+  // The copy leaves once it has faded, and the strip, held at its width
+  // while the tabs glide, lets go with the add button already beside the
+  // last tab.
+  await expect(tablist.locator("[data-tab-closing]")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      tablist.evaluate((element) => {
+        const items = element.querySelectorAll("[data-tab-item]");
+        const last = items[items.length - 1]!.getBoundingClientRect();
+        const add = element.parentElement!.nextElementSibling!.getBoundingClientRect();
+        return {
+          addBesideLastTab: Math.round(add.left - last.right) <= 12,
+          held: element.parentElement!.style.minWidth,
+        };
+      })
+    )
+    .toEqual({ addBesideLastTab: true, held: "" });
   await page.mouse.move(640, 600);
   await expect.poll(tabWidths).toEqual([180, 180]);
 
@@ -1830,7 +1884,7 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
           .getBoundingClientRect();
         return {
           atMinimum: [...element.querySelectorAll("[data-tab-item]")].every(
-            (item) => Math.round(item.getBoundingClientRect().width) === 80
+            (item) => Math.round(item.getBoundingClientRect().width) === 120
           ),
           overflow: element.scrollWidth > element.clientWidth + 1,
           selectedVisible:
@@ -1847,6 +1901,16 @@ test("chat sidebar tabs share the strip, scroll past their minimum, and hold wid
     .poll(() => tablist.evaluate((element) => element.scrollLeft))
     .toBeLessThan(scrolledLeft);
 });
+
+/** How an avatar's disc is painted: its fill, border and ring. */
+function disc(element: Element) {
+  const style = getComputedStyle(element);
+  return {
+    background: style.backgroundColor,
+    border: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
+    outline: `${style.outlineWidth} ${style.outlineStyle} ${style.outlineColor}`,
+  };
+}
 
 test("Task activity reserves running avatars and hides them on errors", async ({
   page,
@@ -1893,11 +1957,10 @@ test("Task activity reserves running avatars and hides them on errors", async ({
     status: "is composing a message...",
     updated_at: 1,
   };
-  await app.stub().call("setTaskParticipants", [router, worker]);
-  await expect(slot.getByRole("status")).toHaveText("Comma and Worker are thinking");
-  await expect(slot).not.toContainText("Default workspace");
-  await expect(slot.locator(".comma-chat-activity-line")).toHaveCount(1);
-  await expect(slot.locator(".comma-chat-activity-avatar")).toHaveCount(2);
+  // The Router alone shows the animated mark, with no disc of its own.
+  await app.stub().call("setTaskParticipants", [router]);
+  await expect(slot.getByRole("status")).toHaveText("Comma is thinking");
+  await expect(slot.locator(".comma-chat-activity-avatar")).toHaveCount(1);
   await expect(slot).toHaveCSS("height", "40px");
   const routerAvatar = slot.locator('[data-actor-role="router"]');
   const workerAvatar = slot.locator('[data-actor-role="worker"]');
@@ -1910,8 +1973,6 @@ test("Task activity reserves running avatars and hides them on errors", async ({
   // painted path inside the animated transform (whose bounds vary by phase).
   const animatedMark = routerAvatar.locator('[data-slot="comma-logo-animation"]');
   await expect(routerAvatar).toHaveCSS("width", "16px");
-  await expect(workerAvatar).toHaveCSS("width", "16px");
-  await expect(workerAvatar).toHaveCSS("height", "16px");
   const transforms = new Set<string>();
   for (const elapsed of [0, 1000, 1999, 2500]) {
     await animatedMark.evaluate((mark, time) => {
@@ -1936,8 +1997,33 @@ test("Task activity reserves running avatars and hides them on errors", async ({
     "none"
   );
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  // The stub's Task names no model maker: the Worker shows the generic mark.
-  await expect(workerAvatar.locator("svg")).toBeVisible();
+  // While the Worker's model maker is not known, it shows the Comma mark too:
+  // the Router's animated mark stands for both.
+  await app.stub().call("setTaskParticipants", [router, worker]);
+  await expect(slot.getByRole("status")).toHaveText("Comma and Worker are thinking");
+  await expect(slot.locator(".comma-chat-activity-avatar")).toHaveCount(1);
+  await expect(animatedMark).toBeVisible();
+  // Beside a Worker on another maker's model the Router's mark is a still disc
+  // like the Worker's.
+  await app.stub().call("setTaskRun", {
+    place: { kind: "cloud_vm" },
+    model: { kind: "catalog", name: "Claude Sonnet", vendor: "anthropic" },
+  });
+  await expect(slot).not.toContainText("Default workspace");
+  await expect(slot.locator(".comma-chat-activity-line")).toHaveCount(1);
+  await expect(slot.locator(".comma-chat-activity-avatar")).toHaveCount(2);
+  await expect(slot).toHaveCSS("height", "40px");
+  await expect(slot.locator('[data-slot="comma-logo-animation"]')).toHaveCount(0);
+  await expect(routerAvatar).toHaveAttribute("data-model-vendor", "comma");
+  await expect(routerAvatar.locator('[data-slot="comma-product-mark"]')).toBeVisible();
+  for (const avatar of [routerAvatar, workerAvatar]) {
+    await expect(avatar).toHaveCSS("width", "16px");
+    await expect(avatar).toHaveCSS("height", "16px");
+  }
+  const routerDisc = await routerAvatar.evaluate(disc);
+  expect(routerDisc.border).not.toMatch(/^0px/);
+  expect(routerDisc).toEqual(await workerAvatar.evaluate(disc));
+  await expect(workerAvatar).toHaveAttribute("data-model-vendor", "anthropic");
   await expect
     .poll(async () => {
       const first = await routerAvatar.boundingBox();
@@ -3503,11 +3589,11 @@ test("settings navigation and controls remain usable at narrow supported widths"
       await page.setViewportSize({ width, height: 700 });
 
       await expect(languageControl).toBeVisible();
-      // Settings is a modal over the shell; the rail stays and marks its item.
+      // Settings is a modal over the shell; the rail stays and marks its account item.
       await expect(
         page.getByRole("button", {
           exact: true,
-          name: locale === "en" ? "Settings" : "设置",
+          name: locale === "en" ? "Account" : "账号",
         })
       ).toHaveAttribute("aria-current", "page");
       await expect(
@@ -4045,7 +4131,7 @@ test("Settings returns to the complete Home without committing the startup page"
   await expectSettledSettingsModal(page);
   await expect(page.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
   await expect(page.getByTestId("comma-window-bar")).toBeVisible();
-  await expectActiveRailItem(page, "Settings", "button");
+  await expectActiveRailItem(page, "Account", "button");
   const sidebarSlot = page.getByTestId("comma-sidebar-slot");
   await expect(sidebarSlot).toHaveAttribute("data-collapsed", "false");
   await page.keyboard.press(`${primaryModifier}+b`);
@@ -4214,8 +4300,9 @@ test("Settings opens and closes without rewriting the document root style", asyn
   const settings = page.getByRole("dialog", { name: "Settings sections" });
   await page
     .locator(".comma-sidebar-body")
-    .getByRole("button", { name: "Settings", exact: true })
+    .getByRole("button", { name: "Account", exact: true })
     .click();
+  await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
   await expect(settings).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(settings).toBeHidden();

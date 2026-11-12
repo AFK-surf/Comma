@@ -9,16 +9,18 @@ defmodule CommaWeb.RecommendationMemberIdentity do
 
   alias Salix.Control.OAuthBindings
 
-  @managed_toolkits CommaWeb.RecommendationPreviewCatalog.managed_toolkits()
+  @member_toolkits CommaWeb.RecommendationPreviewCatalog.member_toolkits()
 
   def resolve(workspace, user_id, %{"kind" => "managed_oauth", "appId" => provider} = source)
-      when provider in @managed_toolkits do
+      when provider in @member_toolkits do
     with true <- present?(user_id) and workspace["owner_user_id"] == user_id,
          {:ok, binding} <-
            OAuthBindings.get(workspace["default_group_id"], source["connectionId"]),
          true <- binding["tenant_id"] == workspace["salix_tenant_id"],
          true <- binding["group_id"] == workspace["default_group_id"],
-         true <- binding["provider"] == provider and binding["alias"] == provider,
+         true <-
+           binding["provider"] == provider and
+             binding["alias"] == CommaWeb.RecommendationPreviewCatalog.binding_alias(provider),
          true <- binding["enabled"] != false,
          true <- present?(binding["connection_id"]),
          {:ok, connection} <- SalixStore.OAuth.get(binding["connection_id"]),
@@ -74,6 +76,10 @@ defmodule CommaWeb.RecommendationMemberIdentity do
 
   defp provider_identity("slack", metadata),
     do: scoped_identity(metadata["authed_user_id"], metadata["team_id"])
+
+  # A Feishu or Lark open_id is per app; the tenant key names the organization.
+  defp provider_identity(provider, metadata) when provider in ~w(feishu lark),
+    do: scoped_identity(metadata["open_id"], metadata["tenant_key"])
 
   defp provider_identity(_provider, _metadata), do: {:error, :member_identity_unavailable}
 

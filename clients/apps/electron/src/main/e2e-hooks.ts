@@ -496,9 +496,11 @@ export function decorateElectronE2eAppPreferencesProvider(
     },
     initializeClientSettings: (input) => provider.initializeClientSettings(input),
     openLoginItemsSettings: (input) => provider.openLoginItemsSettings(input),
+    relaunch: (input) => provider.relaunch(input),
     openNotificationSettings: (input) => provider.openNotificationSettings(input),
     requestNotificationAuthorization: (input) =>
       provider.requestNotificationAuthorization(input),
+    refreshLaunchAtLogin: (input) => provider.refreshLaunchAtLogin(input),
     async update(input) {
       const gateThisAcknowledgement = gateNextUpdateAcknowledgement;
       gateNextUpdateAcknowledgement = false;
@@ -703,7 +705,7 @@ export function createElectronE2eUpdateFeed(): UpdateFeed {
   return {
     status: async () => (await feed()).status(),
     check: async () => (await feed()).check(),
-    download: async (update) => (await feed()).download(update),
+    download: async (update, progress) => (await feed()).download(update, progress),
     apply: async (update) => (await feed()).apply(update),
   };
 }

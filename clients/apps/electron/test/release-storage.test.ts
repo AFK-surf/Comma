@@ -84,7 +84,7 @@ function getReleaseAsset(fileName: string, content: string) {
 
 function runReleaseStorage(
   harness: ReleaseHarness,
-  command: "promote-production" | "publish-staging",
+  command: "promote-production" | "publish-production-pending" | "publish-staging",
   extraEnvironment: NodeJS.ProcessEnv = {},
   extraArguments: string[] = []
 ) {
@@ -99,7 +99,7 @@ function runReleaseStorage(
     harness.prefix,
   ];
 
-  if (command === "publish-staging") {
+  if (command !== "promote-production") {
     cliArguments.push("--release-dir", harness.releaseDir);
   }
   cliArguments.push(...extraArguments);
@@ -122,6 +122,45 @@ function readAwsOperations(harness: ReleaseHarness) {
     .split("\n")
     .filter(Boolean)
     .map((line) => (JSON.parse(line) as { arguments: string[] }).arguments);
+}
+
+/** A feed entry of the given version and type, as `vpk pack` writes it, for a package of `content`. */
+function getFeedAsset(
+  packageId: string,
+  version: string,
+  type: "Delta" | "Full",
+  content: string
+) {
+  return {
+    ...getReleaseAsset(`Comma-${version}-${type.toLowerCase()}.nupkg`, content),
+    PackageId: packageId,
+    Version: version,
+    Type: type,
+  };
+}
+
+/** Writes each asset's package beside the feed, with `packageBytes(asset)` as its bytes. */
+function writeLocalPackages(
+  harness: ReleaseHarness,
+  assets: ReturnType<typeof getFeedAsset>[]
+) {
+  for (const asset of assets) {
+    writeFileSync(resolve(harness.releaseDir, asset.FileName), packageBytes(asset));
+  }
+}
+
+function packageBytes(asset: { Type: string; Version: string }) {
+  return `${asset.Type} ${asset.Version}`;
+}
+
+function stagingVersion(build: number) {
+  return `1.0.14-staging.${build}`;
+}
+
+function feedDeltaVersions(feed: { Assets: { Type: string; Version: string }[] }) {
+  return feed.Assets.filter((asset) => asset.Type === "Delta").map(
+    (asset) => asset.Version
+  );
 }
 
 afterEach(() => {
@@ -200,13 +239,154 @@ describe("release storage publication", () => {
       (arguments_) =>
         arguments_[0] === "s3" &&
         arguments_[1] === "cp" &&
-        arguments_[3]?.endsWith("/releases.staging.json")
+        arguments_[3] ===
+          `s3://${harness.bucket}/${harness.prefix}/releases.staging.json`
     );
 
     expect(syncIndex).toBeGreaterThanOrEqual(0);
     expect(packageHeadIndex).toBeGreaterThan(syncIndex);
     expect(activeFeedIndex).toBe(operations.length - 1);
     expect(operations.flat()).not.toContain("--delete");
+  });
+
+  it("keeps the remote feed's newest deltas, so a client several versions behind gets each step", () => {
+    const harness = createHarness("comma/electron/staging");
+    const packageId = "surf.comma.desktop.staging";
+    const asset = (build: number, type: "Delta" | "Full") =>
+      getFeedAsset(
+        packageId,
+        stagingVersion(build),
+        type,
+        packageBytes({ Type: type, Version: stagingVersion(build) })
+      );
+
+    // The live feed after a run of releases from build 5 to build 40 that merged their feeds.
+    const remoteAssets = [asset(40, "Full")];
+    for (let build = 40; build >= 5; build -= 1)
+      remoteAssets.push(asset(build, "Delta"));
+    remoteAssets.push(asset(39, "Full"));
+    // An older upload under the new delta's name: the packed entry must win.
+    remoteAssets.push({ ...asset(41, "Delta"), Size: 1 });
+    const remoteFeed = JSON.stringify({ Assets: remoteAssets });
+    writeRemote(harness, "releases.staging.json", remoteFeed);
+    for (const remote of remoteAssets.slice(0, -1)) {
+      writeRemote(harness, remote.FileName, packageBytes(remote));
+    }
+
+    // What `vpk pack` writes for build 41: its full package and delta, and the previous full package it downloaded.
+    const packed = [asset(41, "Full"), asset(41, "Delta"), asset(40, "Full")];
+    writeLocalPackages(harness, packed);
+    writeFileSync(
+      resolve(harness.releaseDir, "releases.staging.json"),
+      JSON.stringify({ Assets: packed })
+    );
+
+    // Each listed package must be in the bucket before the feed changes.
+    rmSync(getRemotePath(harness, asset(20, "Delta").FileName));
+    const missing = runReleaseStorage(harness, "publish-staging", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toContain(asset(20, "Delta").FileName);
+    expect(readFileSync(getRemotePath(harness, "releases.staging.json"), "utf8")).toBe(
+      remoteFeed
+    );
+
+    writeRemote(harness, asset(20, "Delta").FileName, packageBytes(asset(20, "Delta")));
+    writeFileSync(
+      resolve(harness.releaseDir, "releases.staging.json"),
+      JSON.stringify({ Assets: packed })
+    );
+    const published = runReleaseStorage(harness, "publish-staging", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(published.status, published.stderr).toBe(0);
+
+    const feed = JSON.parse(
+      readFileSync(getRemotePath(harness, "releases.staging.json"), "utf8")
+    ) as { Assets: ReturnType<typeof getFeedAsset>[] };
+    // The packed entries first and unchanged, then the 29 newest remote deltas: 30 deltas from build 41 to 12.
+    expect(feed.Assets.slice(0, 3)).toEqual(packed);
+    expect(feedDeltaVersions(feed)).toEqual(
+      Array.from({ length: 30 }, (_, index) => stagingVersion(41 - index))
+    );
+    expect(
+      feed.Assets.filter((entry) => entry.Type === "Full").map((entry) => entry.Version)
+    ).toEqual([stagingVersion(41), stagingVersion(40)]);
+    // Deltas out of the window leave the feed, not the bucket.
+    expect(existsSync(getRemotePath(harness, asset(5, "Delta").FileName))).toBe(true);
+  });
+
+  it("merges the active production feed into the pending one, which sign-off promotes", () => {
+    const harness = createHarness("comma/electron/prod");
+    const packageId = "surf.comma.desktop";
+    const asset = (version: string, type: "Delta" | "Full") =>
+      getFeedAsset(
+        packageId,
+        version,
+        type,
+        packageBytes({ Type: type, Version: version })
+      );
+
+    const activeAssets = [
+      asset("1.0.1", "Full"),
+      asset("1.0.1", "Delta"),
+      asset("1.0.0", "Full"),
+    ];
+    const activeFeed = JSON.stringify({ Assets: activeAssets });
+    writeRemote(harness, "releases.prod.json", activeFeed);
+    // A pending release that was never promoted: no client has 1.0.2, and 1.0.3 is made from 1.0.1.
+    const stalePending = [
+      asset("1.0.2", "Full"),
+      asset("1.0.2", "Delta"),
+      asset("1.0.1", "Full"),
+    ];
+    writeRemote(
+      harness,
+      "releases.prod.pending.json",
+      JSON.stringify({ Assets: stalePending })
+    );
+    for (const remote of [...activeAssets, ...stalePending]) {
+      writeRemote(harness, remote.FileName, packageBytes(remote));
+    }
+
+    const packed = [
+      asset("1.0.3", "Full"),
+      asset("1.0.3", "Delta"),
+      asset("1.0.1", "Full"),
+    ];
+    writeLocalPackages(harness, packed);
+    // The release job's "Prepare pending production feed" copy of the packed feed.
+    for (const name of ["releases.prod.json", "releases.prod.pending.json"]) {
+      writeFileSync(
+        resolve(harness.releaseDir, name),
+        JSON.stringify({ Assets: packed })
+      );
+    }
+
+    const published = runReleaseStorage(harness, "publish-production-pending", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(published.status, published.stderr).toBe(0);
+    expect(readFileSync(getRemotePath(harness, "releases.prod.json"), "utf8")).toBe(
+      activeFeed
+    );
+    const pending = JSON.parse(
+      readFileSync(getRemotePath(harness, "releases.prod.pending.json"), "utf8")
+    ) as { Assets: ReturnType<typeof getFeedAsset>[] };
+    expect(feedDeltaVersions(pending)).toEqual(["1.0.3", "1.0.1"]);
+
+    const promoted = runReleaseStorage(harness, "promote-production", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(promoted.status, promoted.stderr).toBe(0);
+    expect(
+      JSON.parse(readFileSync(getRemotePath(harness, "releases.prod.json"), "utf8"))
+    ).toEqual(pending);
   });
 
   it("does not promote production when a feed asset is missing or corrupted", () => {

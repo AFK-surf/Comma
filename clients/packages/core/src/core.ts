@@ -8,6 +8,7 @@ import {
   Runner,
   Scheduler,
   type ClientId,
+  type Meter,
   type Topic,
 } from "@comma/core-kernel";
 import { Clock, Effect } from "effect";
@@ -19,6 +20,7 @@ import { DesktopPages } from "./desktop-pages.ts";
 import { Billing } from "./billing.ts";
 import { Channels } from "./channels.ts";
 import { IMessage } from "./imessage.ts";
+import { Line } from "./line.ts";
 import { Compute } from "./compute.ts";
 import { Condensed } from "./condensed.ts";
 import { DeviceSetup } from "./device-setup/controller.ts";
@@ -31,6 +33,8 @@ import { TaskPreviews } from "./task-previews.ts";
 import { GroupTasks } from "./group-tasks.ts";
 import { MentionTasks } from "./mention-tasks.ts";
 import { ChatSuggestions } from "./chat-suggestions.ts";
+import { SlackChannelMembers } from "./slack-channel-members.ts";
+import { SlackDirectories } from "./slack-directory.ts";
 import { TaskWorkers } from "./task-workers.ts";
 import { SessionBrowsers } from "./session-browsers.ts";
 import {
@@ -47,12 +51,15 @@ import { DynamicUiStates } from "./dynamic-ui-state.ts";
 import { LocalFiles } from "./local-files.ts";
 import { Profiles } from "./profile.ts";
 import { QuickChat } from "./quick-chat.ts";
+import { registerAccountDeletion } from "./account-deletion.ts";
+import { registerEmailChange } from "./email-change.ts";
 import { AccountSessions } from "./account-sessions.ts";
 import { Downloads } from "./downloads.ts";
 import { FileStreams } from "./file-streams.ts";
 import { DriveCatalog } from "./drive-catalog.ts";
 import { DriveFiles } from "./drive/index.ts";
 import { registerSystemFiles } from "./system-files.ts";
+import { registerTaskFiles } from "./task-files.ts";
 import { CORE_LIMITS, type CoreLimits } from "./limits.ts";
 import { Marks } from "./marks.ts";
 import { MeetingRecorder, registerNoMeetingRecorder } from "./meeting/recorder.ts";
@@ -60,6 +67,9 @@ import { registerNoVoiceCall, VoiceCall } from "./voice-call.ts";
 import { Recommendations } from "./recommendations.ts";
 import { RecommendationMock } from "./recommendation-mock.ts";
 import { Recordings } from "./recordings.ts";
+import { registerScreenDebug } from "./screen-debug.ts";
+import { registerScreenLogs } from "./screen-logs.ts";
+import { registerScreenViews } from "./screen-views.ts";
 import { registerFiles } from "./files.ts";
 import { LoopbackSignIns } from "./sign-in-loopback.ts";
 import { Models } from "./models.ts";
@@ -90,6 +100,7 @@ import { ElectronSessionLifecycle } from "./session/electron-lifecycle.ts";
 import { WebSessionLifecycle } from "./session/web-lifecycle.ts";
 import { History } from "./history.ts";
 import { TaskOrder } from "./task-order.ts";
+import { TaskRequests } from "./task-requests.ts";
 import { TaskShares } from "./task-shares.ts";
 import { MiniApps } from "./miniapps.ts";
 import { StationTasks } from "./station-tasks.ts";
@@ -107,6 +118,8 @@ export interface CoreOptions {
   recorder?: Recorder;
   /** How many times the core reads before it gives up (`CORE_LIMITS` unless given). */
   limits?: Partial<CoreLimits>;
+  /** Counts the work each change takes (a test's core: `testing/work.ts`). */
+  meter?: Meter;
 }
 
 /** Where each topic's keyed lists are. */
@@ -138,9 +151,11 @@ export class Core {
   readonly billing: Billing;
   readonly channels: Channels;
   readonly imessage: IMessage;
+  readonly line: Line;
   readonly telegram: Telegram;
   readonly linear: Linear;
   readonly routerKeys: RouterKeys;
+  readonly taskRequests: TaskRequests;
   readonly tailnet: Tailnet;
   readonly labels: Labels;
   readonly agentRequests: AgentRequests;
@@ -162,6 +177,8 @@ export class Core {
   readonly recommendationMock: RecommendationMock;
   readonly mentionTasks: MentionTasks;
   readonly chatSuggestions: ChatSuggestions;
+  readonly slackDirectories: SlackDirectories;
+  readonly slackChannelMembers: SlackChannelMembers;
   readonly taskWorkers: TaskWorkers;
   readonly sessionBrowsers: SessionBrowsers;
   readonly computeNodeOperations: ComputeNodeOperations;
@@ -214,8 +231,9 @@ export class Core {
       topics: TOPICS as never,
       specOf,
       ...(options.coalesceMs !== undefined ? { coalesceMs: options.coalesceMs } : {}),
+      ...(options.meter ? { meter: options.meter } : {}),
     });
-    this.session = new Session(host, this.runner, now);
+    this.session = new Session(host, this.runner, now, options.meter);
     const scheduler = new Scheduler(this.runner, this.runner.root, (lane) =>
       lane === API_LANE ? 4 : 2
     );
@@ -247,11 +265,19 @@ export class Core {
       }
       this.kernel.store.invalidate({ topic: "session" });
     });
+    // Checks the session with the server again, so it shows what the server now says of the account.
+    let recheckSession: (() => Effect.Effect<unknown>) | null = null;
     if (host.sessionSource === "core") {
       const deps = { host, runner: this.runner, session: this.session, now };
       const lifecycle = host.bearerSession
         ? new ElectronSessionLifecycle(deps)
         : new WebSessionLifecycle(deps);
+      recheckSession = () => {
+        const expected = lifecycle.expectation();
+        return expected
+          ? lifecycle.reconcile({ expected, reason: "peer_mutation" })
+          : Effect.void;
+      };
       // The embedder's operations on it are inputs too: it sees it through the recorder (the core's own wiring does not).
       const exposed = recorder ? recorder.lifecycle(lifecycle) : lifecycle;
       if (lifecycle instanceof ElectronSessionLifecycle)
@@ -292,9 +318,12 @@ export class Core {
     this.billing = new Billing(ctx, this.workspaces);
     this.channels = new Channels(ctx);
     this.imessage = new IMessage(ctx);
+    this.line = new Line(ctx);
     this.telegram = new Telegram(ctx, this.workspaces);
     this.linear = new Linear(ctx);
     this.routerKeys = new RouterKeys(ctx, this.workspaces);
+    this.taskRequests = new TaskRequests(ctx, this.workspaces);
+    this.tasks.onTaskRequestsChanged = () => this.taskRequests.changed();
     this.tailnet = new Tailnet(ctx, this.workspaces);
     this.labels = new Labels(ctx);
     this.agentRequests = new AgentRequests(ctx);
@@ -303,6 +332,9 @@ export class Core {
     this.notifications = new Notifications(ctx);
     const deviceSetup = new DeviceSetup(ctx, registerConnectorCredentials(ctx));
     this.devices = new Devices(ctx, this.workspaces, deviceSetup);
+    registerScreenViews(ctx, this.stations);
+    registerScreenLogs(ctx, this.stations);
+    registerScreenDebug(ctx, this.stations);
     this.stationActivity = new StationActivity(ctx, this.stations);
     this.stationChats = new StationChats(ctx, this.stations, this.stationActivity);
     // A Task a station hosts waits for its review once its chat asks its person nothing.
@@ -341,6 +373,8 @@ export class Core {
     this.groupTasks = new GroupTasks(ctx);
     this.mentionTasks = new MentionTasks(ctx);
     this.chatSuggestions = new ChatSuggestions(ctx);
+    this.slackDirectories = new SlackDirectories(ctx);
+    this.slackChannelMembers = new SlackChannelMembers(ctx);
     this.taskWorkers = new TaskWorkers(ctx);
     this.sessionBrowsers = new SessionBrowsers(ctx);
     this.computeNodeOperations = new ComputeNodeOperations(ctx);
@@ -350,9 +384,17 @@ export class Core {
     this.taskConversations = new TaskConversations(ctx);
     this.profiles = new Profiles(ctx);
     this.accountSessions = new AccountSessions(ctx);
+    registerAccountDeletion(ctx);
+    registerEmailChange(ctx, () =>
+      Effect.all([
+        recheckSession?.() ?? Effect.void,
+        Effect.ignore(this.profiles.refresh()),
+      ])
+    );
     this.downloads = new Downloads(ctx);
     this.fileStreams = new FileStreams(ctx);
     registerSystemFiles(ctx);
+    registerTaskFiles(ctx, () => this.stationConversations);
     registerCoding(ctx);
     this.driveCatalog = new DriveCatalog(ctx);
     this.marks = new Marks(ctx);
@@ -385,6 +427,9 @@ export class Core {
     this.history = new History(ctx);
     this.chat = new Chat(ctx);
     this.chat.hosted = this.stationConversations;
+    // A Task's own conversation, as a chat read it, is the newest word on the Task: its cards and docks take it.
+    this.chat.onTaskRead = (task) => this.taskSummaries.record(task);
+    this.quickChat.chat = this.chat;
     // What a Task's list and page do to one a station hosts is done on its station.
     this.tasksArchive.hosted = this.stationConversations;
     this.labels.hosted = this.stationConversations;

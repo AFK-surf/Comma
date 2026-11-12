@@ -4,7 +4,9 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
   Task cards render as interactive cards (see `render_surface/2`).
 
   MDEx handles images and literal HTML without changing code nodes. Only
-  structured mentions can notify. External images become links, without IO.
+  structured mentions can notify. A mention goes where the text places it
+  with `<at user_id="ID">name</at>`, else at the start; an at-tag for an ID
+  not in `mentions` stays plain text. External images become links, without IO.
   `format: "text"` retains the explicit plain-text transport.
   """
 
@@ -22,6 +24,9 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
   # Slack IDs are 9+ uppercase characters with a digit; shorter tenant-defined
   # Feishu user IDs such as `C001` stay valid.
   @slack_id ~r/\A(?:[UWCG](?=[A-Z]*[0-9])[A-Z0-9]{8,}|<[@#][^>]+>)\z/
+  @at_open ~r/\A<at\s+user_id\s*=\s*"([^"<>]+)"\s*>\z/i
+  @at_close ~r/\A<\/at\s*>\z/i
+  @text_at ~r/<at\s+user_id\s*=\s*"([^"<>]+)"\s*>([^<]*)<\/at\s*>/i
 
   # Task cards use the Feishu card JSON 2.0 schema with `update_multi`, so a
   # later PATCH updates the card for every chat member. Feishu rejects a card
@@ -37,8 +42,13 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
 
     with :ok <- validate_source(text, format),
          {:ok, mentions} <- mentions(Keyword.get(opts, :mentions)),
-         mentions <- maybe_mention_all(mentions, Keyword.get(opts, :mention_all)),
-         {:ok, body} <- render_content(text, format, mentions),
+         {:ok, content, placed} <-
+           render_text(text, format, MapSet.new(mentions, & &1["user_id"])),
+         mentions <-
+           mentions
+           |> Enum.reject(&MapSet.member?(placed, &1["user_id"]))
+           |> maybe_mention_all(Keyword.get(opts, :mention_all)),
+         {:ok, body} <- render_content(content, format, mentions),
          :ok <- validate_request(body) do
       {:ok, body}
     end
@@ -166,60 +176,116 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
     end
   end
 
-  defp render_content(text, "text", mentions) do
-    text =
-      (Enum.map(mentions, fn mention ->
-         ~s(<at user_id="#{xml_escape(mention["user_id"])}">#{xml_escape(mention["user_name"])}</at>)
-       end) ++ [xml_escape(String.trim(text))])
-      |> Enum.join(" ")
+  # Keep the at-tags of IDs in `mentions` where the text puts them; every
+  # other at-tag shows as typed. Returns the content and the IDs placed.
+  defp render_text(text, "text", ids) do
+    {parts, placed} =
+      Regex.split(@text_at, String.trim(text), include_captures: true)
+      |> Enum.map_reduce(MapSet.new(), fn part, placed ->
+        case Regex.run(@text_at, part) do
+          [^part, id, name] ->
+            if MapSet.member?(ids, id),
+              do: {~s(<at user_id="#{id}">#{name}</at>), MapSet.put(placed, id)},
+              else: {literal_text(part), placed}
 
-    {:ok, %{"msg_type" => "text", "content" => Jason.encode!(%{"text" => text})}}
+          _ ->
+            {literal_text(part), placed}
+        end
+      end)
+
+    {:ok, Enum.join(parts), placed}
   end
 
-  defp render_content(text, "markdown", mentions) do
+  defp render_text(text, "markdown", ids) do
     with {:ok, document} <- MDEx.parse_document(text, @markdown_options) do
-      {document, changed?} = MDEx.traverse_and_update(document, false, &safe_node/2)
+      state = %{changed?: false, ids: ids, open: nil, placed: MapSet.new(), unclosed?: false}
+      {document, state} = MDEx.traverse_and_update(document, state, &safe_node/2)
 
-      case if(changed?, do: MDEx.to_markdown(document, @markdown_options), else: {:ok, text}) do
-        {:ok, markdown} ->
-          rows = if mentions == [], do: [], else: [mentions]
-          content = %{"zh_cn" => %{"content" => rows ++ [[%{"tag" => "md", "text" => markdown}]]}}
-          {:ok, %{"msg_type" => "post", "content" => Jason.encode!(content)}}
+      cond do
+        state.unclosed? or state.open != nil ->
+          {:error, ~s(Close each <at user_id="..."> tag with </at> in the same paragraph)}
 
-        {:error, _} ->
-          {:error, "Feishu Markdown could not be rendered"}
+        not state.changed? ->
+          {:ok, text, state.placed}
+
+        true ->
+          case MDEx.to_markdown(document, @markdown_options) do
+            {:ok, markdown} -> {:ok, markdown, state.placed}
+            {:error, _} -> {:error, "Feishu Markdown could not be rendered"}
+          end
       end
     else
       {:error, _} -> {:error, "Feishu Markdown could not be parsed"}
     end
   end
 
-  defp safe_node(%MDEx.Image{url: url, nodes: nodes} = node, changed?) do
+  defp render_content(text, "text", mentions) do
+    text =
+      (Enum.map(mentions, fn mention ->
+         ~s(<at user_id="#{xml_escape(mention["user_id"])}">#{xml_escape(mention["user_name"])}</at>)
+       end) ++ [text])
+      |> Enum.join(" ")
+
+    {:ok, %{"msg_type" => "text", "content" => Jason.encode!(%{"text" => text})}}
+  end
+
+  defp render_content(markdown, "markdown", mentions) do
+    rows = if mentions == [], do: [], else: [mentions]
+    content = %{"zh_cn" => %{"content" => rows ++ [[%{"tag" => "md", "text" => markdown}]]}}
+    {:ok, %{"msg_type" => "post", "content" => Jason.encode!(content)}}
+  end
+
+  defp safe_node(%MDEx.Image{url: url, nodes: nodes} = node, state) do
     cond do
       Regex.match?(@image_key, url) ->
-        {node, changed?}
+        {node, state}
 
       web_url?(url) ->
         {%MDEx.Link{
            url: url,
            title: "",
            nodes: [%MDEx.Text{literal: "Image: "} | image_label(nodes)]
-         }, true}
+         }, changed(state)}
 
       true ->
-        {%MDEx.Text{literal: "[Image unavailable: #{plain_label(nodes)}]"}, true}
+        {%MDEx.Text{literal: "[Image unavailable: #{plain_label(nodes)}]"}, changed(state)}
     end
   end
 
   # Native at/img extensions are HTML to CommonMark. Treat model-authored HTML
   # as visible text, including tags inside image labels. Code stays literal.
-  defp safe_node(%MDEx.HtmlInline{literal: literal}, _changed?),
-    do: {%MDEx.Text{literal: literal}, true}
+  # Only an at-tag pair for an ID in `mentions` stays a tag.
+  defp safe_node(%MDEx.HtmlInline{literal: literal} = node, state) do
+    case {state.open, Regex.run(@at_open, literal), Regex.match?(@at_close, literal)} do
+      {nil, [_, id], _} ->
+        if MapSet.member?(state.ids, id),
+          do: {node, %{state | open: id}},
+          else: {%MDEx.Text{literal: literal}, changed(state)}
 
-  defp safe_node(%MDEx.HtmlBlock{literal: literal}, _changed?),
-    do: {%MDEx.Paragraph{nodes: [%MDEx.Text{literal: String.trim_trailing(literal)}]}, true}
+      {id, _, true} when is_binary(id) ->
+        {node, %{state | open: nil, placed: MapSet.put(state.placed, id)}}
 
-  defp safe_node(node, changed?), do: {node, changed?}
+      _ ->
+        {%MDEx.Text{literal: literal}, changed(state)}
+    end
+  end
+
+  defp safe_node(%MDEx.HtmlBlock{literal: literal}, state),
+    do:
+      {%MDEx.Paragraph{nodes: [%MDEx.Text{literal: String.trim_trailing(literal)}]},
+       changed(block(state))}
+
+  defp safe_node(%block{} = node, state)
+       when block in [MDEx.Paragraph, MDEx.Heading, MDEx.TableCell, MDEx.CodeBlock],
+       do: {node, block(state)}
+
+  defp safe_node(node, state), do: {node, state}
+
+  defp changed(state), do: %{state | changed?: true}
+
+  # A block starting while an at-tag is open means the tag was never closed.
+  defp block(%{open: nil} = state), do: state
+  defp block(state), do: %{state | open: nil, unclosed?: true}
 
   defp image_label(nodes), do: [%MDEx.Text{literal: plain_label(nodes)}]
 
@@ -305,6 +371,11 @@ defmodule SalixIM.Provider.Feishu.MessageRenderer do
     do: mentions ++ [%{"tag" => "at", "user_id" => "all", "user_name" => "所有人"}]
 
   defp maybe_mention_all(mentions, _), do: mentions
+
+  # A text message shows entities such as `&lt;` as typed, so the text stays as
+  # written. Only an at-tag is parsed: a zero-width space after its `<` keeps
+  # model text from mentioning anyone.
+  defp literal_text(text), do: String.replace(text, ~r/<(?=\/?at\b)/i, "<\u200B")
 
   defp xml_escape(text) do
     text

@@ -59,7 +59,7 @@ describe("a recording's transcript", () => {
     expect(sent.headers).toContainEqual(["accept", "text/event-stream"]);
   });
 
-  it("says why there is none: the provider's reason, a stream that ended early, or audio too large", async () => {
+  it("says why there is none and of what kind: the provider's reason, a stream that ended early, or audio too large", async () => {
     const t = setup();
     t.api.on("POST", PATH, () =>
       events(
@@ -67,19 +67,32 @@ describe("a recording's transcript", () => {
       )
     );
     expect(await t.transcribe()).toMatchObject({
-      error: { code: "transcription_failed", message: "ASR is not configured" },
+      error: {
+        code: "transcription_failed",
+        message: "ASR is not configured",
+        detail: { kind: "server" },
+      },
     });
     t.api.on("POST", PATH, () => events(": heartbeat\n\n"));
     expect(await t.transcribe()).toMatchObject({
-      error: { message: expect.stringContaining("interrupted") },
+      error: {
+        message: expect.stringContaining("interrupted"),
+        detail: { kind: "interrupted" },
+      },
     });
     t.api.on("POST", PATH, json(503, { error: "unavailable" }));
     expect(await t.transcribe()).toMatchObject({
-      error: { message: expect.stringContaining("unavailable") },
+      error: {
+        message: expect.stringContaining("unavailable"),
+        detail: { kind: "unavailable" },
+      },
     });
     const sent = t.api.seen("POST", PATH).length;
     expect(await t.transcribe(new Uint8Array(30 * 1024 * 1024 + 1))).toMatchObject({
-      error: { message: expect.stringContaining("30 MiB") },
+      error: {
+        message: expect.stringContaining("30 MiB"),
+        detail: { kind: "too_large" },
+      },
     });
     expect(t.api.seen("POST", PATH)).toHaveLength(sent);
   });
@@ -96,7 +109,7 @@ describe("a recording's transcript", () => {
     const a = t.transcribe();
     const b = t.transcribe();
     expect(await t.transcribe()).toMatchObject({
-      error: { message: expect.stringContaining("busy") },
+      error: { message: expect.stringContaining("busy"), detail: { kind: "busy" } },
     });
     first();
     second();

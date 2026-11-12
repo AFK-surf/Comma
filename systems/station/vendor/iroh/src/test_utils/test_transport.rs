@@ -741,4 +741,144 @@ mod tests {
         router.shutdown().await.anyerr()?;
         Ok(())
     }
+
+    /// A relay's front door the test opens and shuts: shut, it drops what runs through it and takes nothing new.
+    struct RelayDoor {
+        url: crate::RelayUrl,
+        open: Arc<std::sync::atomic::AtomicBool>,
+        running: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    }
+
+    impl RelayDoor {
+        async fn to(relay: &crate::RelayUrl) -> Result<Self> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.anyerr()?;
+            let port = listener.local_addr().anyerr()?.port();
+            let host = relay.host_str().expect("host").to_string();
+            let target = format!("{host}:{}", relay.port().expect("port"));
+            let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let running: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
+            let (accepting, tasks) = (open.clone(), running.clone());
+            tokio::spawn(async move {
+                while let Ok((mut inbound, _)) = listener.accept().await {
+                    if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
+                        continue;
+                    }
+                    let target = target.clone();
+                    tasks.lock().unwrap().push(tokio::spawn(async move {
+                        if let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await {
+                            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                        }
+                    }));
+                }
+            });
+            Ok(Self {
+                url: format!("https://{host}:{port}").parse().expect("url"),
+                open,
+                running,
+            })
+        }
+
+        fn shut(&self) {
+            self.open.store(false, std::sync::atomic::Ordering::SeqCst);
+            for task in self.running.lock().unwrap().drain(..) {
+                task.abort();
+            }
+        }
+
+        fn reopen(&self) {
+            self.open.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// comma: `custom_transports_last` picks a working relay over a faster custom transport and carries data on it; the
+    /// relay lost, the custom transport carries it within about 30 s (the path's idle timeout); an open connection stays
+    /// there once the relay is back.
+    #[tokio::test]
+    async fn custom_transports_last_prefers_the_relay_and_falls_back() -> Result<()> {
+        const ALPN: &[u8] = b"comma/test/route";
+        let (_map, relay_url, _relay_server) = run_relay_server().await.anyerr()?;
+        let door = RelayDoor::to(&relay_url).await?;
+        let network = TestNetwork::new();
+        let bind = |secret: SecretKey, url: crate::RelayUrl| {
+            let transport = network.create_transport(secret.public());
+            async move {
+                Endpoint::builder(presets::Minimal)
+                    .secret_key(secret)
+                    .relay_mode(RelayMode::Custom(RelayMap::from_iter([url])))
+                    .ca_tls_config(crate::tls::CaTlsConfig::insecure_skip_verify())
+                    .add_custom_transport(transport.anyerr()?)
+                    .clear_ip_transports()
+                    .custom_transports_last()
+                    .alpns(vec![ALPN.to_vec()])
+                    .bind()
+                    .await
+                    .anyerr()
+            }
+        };
+        let server = bind(SecretKey::generate(), door.url.clone()).await?;
+        let client = bind(SecretKey::generate(), door.url.clone()).await?;
+        server.online().await;
+        let server_id = server.id();
+        let addr = EndpointAddr::from_parts(
+            server_id,
+            [
+                TransportAddr::Relay(door.url.clone()),
+                TransportAddr::Custom(to_custom_addr(server_id)),
+            ],
+        );
+        let accepting = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let conn = server.accept().await.expect("accept").await.expect("handshake");
+                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                    tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut recv, &mut send).await;
+                        let _ = send.finish();
+                    });
+                }
+            }
+        });
+        let conn = client.connect(addr, ALPN).await.anyerr()?;
+        let selected = |conn: &Connection| {
+            conn.paths().iter().find(|p| p.is_selected()).map(|p| p.remote_addr().clone())
+        };
+        // Traffic while it waits: a dead path is found by what it does not carry, and each echo says data got through.
+        let until = |wanted: fn(&TransportAddr) -> bool, what: &'static str, within: u64| {
+            let conn = conn.clone();
+            async move {
+                let started = std::time::Instant::now();
+                let done = tokio::time::timeout(Duration::from_secs(within), async {
+                    loop {
+                        if selected(&conn).as_ref().is_some_and(wanted) {
+                            return;
+                        }
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(300),
+                            verify_echo(&conn, b"are you there"),
+                        )
+                        .await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                })
+                .await;
+                println!("{what}: {:?}, took {:?}", selected(&conn), started.elapsed());
+                done.anyerr()
+            }
+        };
+        until(|a| matches!(a, TransportAddr::Relay(_)), "first the relay", 20).await?;
+        verify_echo(&conn, b"through the relay").await?;
+
+        door.shut();
+        until(|a| matches!(a, TransportAddr::Custom(_)), "the relay shut", 60).await?;
+        verify_echo(&conn, b"through the custom transport").await?;
+
+        // Back: a connection that moved off the relay stays where it went, and the next one takes the relay again.
+        door.reopen();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        verify_echo(&conn, b"still through the custom transport").await?;
+        assert!(matches!(selected(&conn), Some(TransportAddr::Custom(_))));
+        conn.close(0u32.into(), b"done");
+        accepting.abort();
+        Ok(())
+    }
 }

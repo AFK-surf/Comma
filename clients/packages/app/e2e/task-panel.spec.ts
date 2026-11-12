@@ -1,11 +1,10 @@
 import { defaultCommaClientSettings } from "@comma/native-bridge";
 import { expect, test } from "@playwright/test";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import {
   createE2eSessionProjection,
   startSessionProjectionStub,
 } from "../../../e2e/helpers/session-fixture";
+import { startE2eTestServer } from "./test-server";
 
 const target = "group_id=grp_panel&conversation_id=cnv_panel";
 const previewPath = "/v1/comma/groups/grp_panel/conversations/cnv_panel/preview";
@@ -463,7 +462,7 @@ test("Telegram Web iframe keeps its restricted Task session across requests", as
 }) => {
   const panelCookie = "comma_panel_session=iframe-panel-session";
   const readCookies: string[] = [];
-  const api = createServer((request, response) => {
+  const api = await startE2eTestServer((request, response) => {
     const origin = request.headers.origin ?? "*";
     response.setHeader("access-control-allow-origin", origin);
     response.setHeader("access-control-allow-credentials", "true");
@@ -532,16 +531,13 @@ test("Telegram Web iframe keeps its restricted Task session across requests", as
 
     response.writeHead(404).end();
   });
-  await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
-  const apiPort = (api.address() as AddressInfo).port;
-  const host = createServer((_request, response) => {
+  // The Task panel's own site differs from the page that frames it.
+  const host = await startE2eTestServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end(
       `<iframe src="${baseURL}/task-panel.html?${target}&source=telegram"></iframe>`
     );
-  });
-  await new Promise<void>((resolve) => host.listen(0, "localhost", resolve));
-  const hostPort = (host.address() as AddressInfo).port;
+  }, "localhost");
 
   try {
     await page.addInitScript((apiBaseUrl) => {
@@ -550,17 +546,14 @@ test("Telegram Web iframe keeps its restricted Task session across requests", as
       Object.defineProperty(window, "Telegram", {
         value: { WebApp: { initData: "signed-launch", ready: () => {} } },
       });
-    }, `http://127.0.0.1:${apiPort}`);
-    await page.goto(`http://localhost:${hostPort}/`);
+    }, api.origin);
+    await page.goto(`${host.origin}/`);
     await expect(
       page.frameLocator("iframe").getByRole("heading", { name: "Iframe Telegram Task" })
     ).toBeVisible();
     expect(readCookies.some((cookie) => cookie.includes(panelCookie))).toBe(true);
   } finally {
-    await Promise.all([
-      new Promise<void>((resolve) => api.close(() => resolve())),
-      new Promise<void>((resolve) => host.close(() => resolve())),
-    ]);
+    await Promise.all([api.close(), host.close()]);
   }
 });
 

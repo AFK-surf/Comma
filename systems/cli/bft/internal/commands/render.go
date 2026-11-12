@@ -32,7 +32,6 @@ Human mode:
   bft agents create --org acme --project bridge --name codex-worker --role worker --confirm-mutating
   bft agents rebind --org acme --project bridge --agent codex-worker --runtime devrt_123 --confirm-mutating
   bft devices list --org acme --project bridge
-  bft devices create --org acme --project bridge --runner studio --confirm-mutating
   bft conversations list --org acme --project bridge --limit 100
   bft conversations show --org acme --project bridge --conversation task-123 --json
   bft conversations send --org acme --project bridge --conversation task-123 --text "run the smoke check" --request smoke-1 --confirm-mutating
@@ -50,6 +49,9 @@ Human mode:
   bft lark status --org acme --project bridge
   bft lark checks --org acme --project bridge
   bft lark scopes --output text
+  bft telegram connect --org acme --project bridge --bot-token-env BFT_TELEGRAM_TOKEN --confirm-mutating
+  bft telegram status --org acme --project bridge
+  bft telegram chats --org acme --project bridge --chat -1002233445566 --confirm-mutating
   bft qq connect --org acme --project bridge --app-id 1900012345 --app-secret-env BFT_QQ_APP_SECRET --confirm-mutating
   bft qq status --org acme --project bridge
   bft qq menu --org acme --project bridge
@@ -92,7 +94,7 @@ func computeNodeHelpData() map[string]any {
 		"helper_env":        vmmLifecycleEnv,
 		"default_helper":    "~/" + sharedVMMLifecyclePath,
 		"commands":          computeNodeOperationNames(),
-		"mutating_commands": []string{"install", "repair", "stop", "remove"},
+		"mutating_commands": []string{"install", "repair", "stop", "remove", "reauthorize"},
 		"confirm_flag":      "--confirm-mutating",
 		"status_semantics": map[string]any{
 			"unreadable":    "The helper could not be read.",
@@ -108,7 +110,8 @@ func computeNodeHelpText() string {
 		"  bft compute-node install --confirm-mutating\n" +
 		"  bft compute-node repair --confirm-mutating\n" +
 		"  bft compute-node stop --confirm-mutating\n" +
-		"  bft compute-node remove --confirm-mutating [--purge]\n\n" +
+		"  bft compute-node remove --confirm-mutating [--purge]\n" +
+		"  bft compute-node reauthorize --org ORG --project PROJECT --registration ID --confirm-mutating\n\n" +
 		"Helper: " + vmmLifecycleEnv + " (default ~/" + sharedVMMLifecyclePath + ")\n" +
 		"Status keeps unreadable/last-known state and never treats VMM ready as runner online.\n"
 }
@@ -212,8 +215,6 @@ func commandSchema() map[string]any {
 			{"name": "agents create", "example": "bft agents create --org acme --project support --name codex-worker --role worker --confirm-mutating --json", "mutates": true},
 			{"name": "agents rebind", "example": "bft agents rebind --org acme --project support --agent codex-worker --runtime devrt_123 --confirm-mutating --json", "mutates": true},
 			{"name": "devices list", "example": "bft devices list --org acme --project support --limit 20 --json", "mutates": false, "bounded": true},
-			{"name": "devices create", "example": "bft devices create --org acme --project support --runner studio --confirm-mutating --json", "mutates": true},
-			{"name": "devices stop", "example": "bft devices stop --org acme --project support --request req_123 --confirm-mutating --json", "mutates": true},
 			{"name": "devices disconnect", "example": "bft devices disconnect --org acme --project support --device dev_123 --confirm-mutating --json", "mutates": true},
 			{"name": "conversations list", "example": "bft conversations list --org acme --project support --limit 100 --json", "mutates": false, "bounded": true},
 			{"name": "conversations show", "example": "bft conversations show --org acme --project support --conversation task-123 --json", "mutates": false, "bounded": true},
@@ -232,6 +233,9 @@ func commandSchema() map[string]any {
 			{"name": "lark status", "example": "bft lark status --org acme --project support --json", "mutates": false},
 			{"name": "lark checks", "example": "bft lark checks --org acme --project support --json", "mutates": false},
 			{"name": "lark scopes", "example": "bft lark scopes --json", "mutates": false},
+			{"name": "telegram connect", "example": "bft telegram connect --org acme --project support --bot-token-env BFT_TELEGRAM_TOKEN --confirm-mutating --json", "mutates": true},
+			{"name": "telegram status", "example": "bft telegram status --org acme --project support --json", "mutates": false},
+			{"name": "telegram chats", "example": "bft telegram chats --org acme --project support --chat -1002233445566 --confirm-mutating --json", "mutates": true, "requires_confirm": true},
 			{"name": "qq connect", "example": "bft qq connect --org acme --project support --app-id 1900012345 --app-secret-env BFT_QQ_APP_SECRET --confirm-mutating --json", "mutates": true},
 			{"name": "qq status", "example": "bft qq status --org acme --project support --json", "mutates": false},
 			{"name": "qq menu", "example": "bft qq menu --org acme --project support --json", "mutates": false},
@@ -244,6 +248,7 @@ func commandSchema() map[string]any {
 			{"name": "slack connects list", "example": "bft slack connects list --org acme --project support --json", "mutates": false},
 			{"name": "slack connects create", "example": "bft slack connects create --org acme --project support --app-id A123 --client-id 123.abc --client-secret-env BFT_SLACK_CLIENT_SECRET --signing-secret-env BFT_SLACK_SIGNING_SECRET --inbound-agent agent_123 --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects update", "example": "bft slack connects update --org acme --project support --connect conn_123 --inbound-agent agent_456 --confirm-mutating --json", "mutates": true},
+			{"name": "slack connects update (auto-join)", "example": "bft slack connects update --org acme --project support --connect conn_123 --auto-join-public-channels off --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects disable", "example": "bft slack connects disable --org acme --project support --connect conn_123 --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects enable", "example": "bft slack connects enable --org acme --project support --connect conn_123 --confirm-mutating --json", "mutates": true},
 			{"name": "slack connects delete", "example": "bft slack connects delete --org acme --project support --connect conn_123 --confirm-mutating --json", "mutates": true},
@@ -409,21 +414,16 @@ func agentHelp(topic string) (map[string]any, bool) {
 			"next_action": "Run runners list after the install command has been executed on the target machine.",
 		},
 		"devices": {
-			"summary": "Project devices are created from org runners and expose Salix connector runs plus discovered runtimes.",
+			"summary": "Project devices are the stations connected to the Agent Swarm; each exposes its current connection and discovered runtimes.",
 			"rules": []string{
-				"List runners before creating a project device, then pass the selected runner id, stable id, or unique name explicitly.",
-				"Use devices list to inspect device requests, current connector runs, device ids, and runtime counts.",
-				"Use devices stop for a pending or running device request.",
+				"Use devices list to inspect current connections, device ids, and runtime counts.",
 				"Use devices disconnect for the stable device whose current connection should stop.",
 			},
 			"commands": []string{
-				"bft runners list --org <org> --limit 20 --json",
-				"bft devices create --org <org> --project <project> --runner <id-or-stable-id-or-name> --confirm-mutating --json",
 				"bft devices list --org <org> --project <project> --limit 20 --json",
-				"bft devices stop --org <org> --project <project> --request <request_id> --confirm-mutating --json",
 				"bft devices disconnect --org <org> --project <project> --device <device_id> --confirm-mutating --json",
 			},
-			"next_action": "Run bft runners list, choose the target runner, then create the project device.",
+			"next_action": "Run bft devices list, then inspect the agents bound to its stations.",
 		},
 		"output": {
 			"summary": "JSON output is the automation contract; stdout carries results, stderr carries errors.",
@@ -640,7 +640,6 @@ func agentText(prefix string, data map[string]any) string {
 
 func devicesText(data map[string]any) string {
 	devices, _ := data["devices"].([]any)
-	requests, _ := data["device_requests"].([]any)
 	lines := []string{"Devices", "device_id\tstatus\tname\truntimes\tconnector_run_id"}
 	for _, raw := range devices {
 		row, _ := raw.(map[string]any)
@@ -657,22 +656,6 @@ func devicesText(data map[string]any) string {
 		lines = append(lines, "(none)")
 	}
 
-	lines = append(lines, "", "Device requests", "request_id\tstatus\tname\trunner\tconnector_run_id")
-	for _, raw := range requests {
-		row, _ := raw.(map[string]any)
-		runner, _ := row["runner"].(map[string]any)
-		lines = append(lines, fmt.Sprintf(
-			"%s\t%s\t%s\t%s\t%s",
-			stringField(row, "id"),
-			stringField(row, "status"),
-			stringField(row, "name"),
-			firstNonEmpty(stringField(runner, "name"), stringField(runner, "id")),
-			stringField(row, "connector_run_id"),
-		))
-	}
-	if len(requests) == 0 {
-		lines = append(lines, "(none)")
-	}
 	if footer := listFooter(data); footer != "" {
 		lines = append(lines, footer)
 	}
@@ -683,19 +666,11 @@ func devicesText(data map[string]any) string {
 }
 
 func deviceMutationText(prefix string, data map[string]any) string {
-	request, _ := data["device_request"].(map[string]any)
 	device, _ := data["device"].(map[string]any)
 	lines := []string{prefix}
-	if request != nil {
-		lines = append(lines, "Request: "+stringField(request, "id"))
-		lines = append(lines, "Status: "+stringField(request, "status"))
-		if runID := stringField(request, "connector_run_id"); runID != "" {
-			lines = append(lines, "Connector run: "+runID)
-		}
-	}
 	if device != nil {
 		lines = append(lines, "Device: "+stringField(device, "device_id"))
-		lines = append(lines, "Connector run: "+stringField(device, "connector_run_id"))
+		lines = append(lines, "Station run: "+stringField(device, "connector_run_id"))
 		lines = append(lines, "Status: "+stringField(device, "status"))
 	}
 	if next := stringField(data, "next_action"); next != "" {
@@ -743,11 +718,11 @@ func slackSetupText(data map[string]any) string {
 
 func slackConnectsText(data map[string]any) string {
 	connects, _ := data["connects"].([]any)
-	lines := []string{"connect_id\tapp_id\tapp_name\tworkspace\tbot_user_id\tbot_username\tinbound_agent_id\tinstall_status\tdisabled\toauth_url"}
+	lines := []string{"connect_id\tapp_id\tapp_name\tworkspace\tbot_user_id\tbot_username\tinbound_agent_id\tinstall_status\tdisabled\tauto_join_public_channels\toauth_url"}
 	for _, raw := range connects {
 		row, _ := raw.(map[string]any)
 		lines = append(lines, fmt.Sprintf(
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s",
 			stringField(row, "connect_id"),
 			stringField(row, "app_id"),
 			stringField(row, "app_name"),
@@ -757,10 +732,20 @@ func slackConnectsText(data map[string]any) string {
 			stringField(row, "inbound_agent_id"),
 			stringField(row, "install_status"),
 			stringField(row, "disabled_at") != "",
+			slackAutoJoinField(row),
 			stringField(row, "oauth_url"),
 		))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// slackAutoJoinField says whether the app joins new public channels by
+// itself; a connect from a server without the switch always does.
+func slackAutoJoinField(connect map[string]any) string {
+	if enabled, ok := connect["auto_join_public_channels"].(bool); ok && !enabled {
+		return "off"
+	}
+	return "on"
 }
 
 func slackWorkspaceField(connect map[string]any) string {
@@ -802,6 +787,9 @@ func slackConnectText(prefix string, data map[string]any) string {
 	}
 	if installStatus := stringField(connect, "install_status"); installStatus != "" {
 		lines = append(lines, "Install status: "+installStatus)
+	}
+	if stringField(connect, "provider") == "slack" {
+		lines = append(lines, "Auto-join new public channels: "+slackAutoJoinField(connect))
 	}
 	if oauthURL := stringField(data, "oauth_url"); oauthURL != "" {
 		lines = append(lines, "OAuth URL: "+oauthURL)
@@ -985,6 +973,61 @@ func larkChecklistLines(data map[string]any) []string {
 		}
 	}
 	return lines
+}
+
+func telegramConnectText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	connect, _ := data["connect"].(map[string]any)
+	lines := []string{"Telegram bot connected to " + stringField(project, "name"), "Secrets printed: false", "Bot: " + stringField(connect, "bot_username")}
+	return strings.Join(append(lines, qqChecklistLines(data)...), "\n") + "\n"
+}
+
+func telegramStatusText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	connects, _ := data["connects"].([]any)
+	if len(connects) == 0 {
+		return "No Telegram bot is connected to " + stringField(project, "name") + ".\n"
+	}
+	lines := []string{"Telegram bots of " + stringField(project, "name")}
+	for _, item := range connects {
+		connect, _ := item.(map[string]any)
+		state := "enabled"
+		if connect["disabled_at"] != nil {
+			state = "disabled"
+		}
+		lines = append(lines, "", stringField(connect, "bot_username")+" ("+state+")", "  Connect: "+stringField(connect, "connect_id"))
+		if connect["can_read_all_group_messages"] == true {
+			lines = append(lines, "  Privacy mode was off at connect: the bot reads every message in an allowed group.")
+		}
+		allowed := map[string]bool{}
+		allowedChats, _ := connect["allowed_chat_ids"].([]any)
+		for _, id := range allowedChats {
+			if value, ok := id.(string); ok {
+				allowed[value] = true
+				lines = append(lines, "  Allowed: "+value)
+			}
+		}
+		observed, _ := connect["observed_chats"].([]any)
+		for _, chat := range observed {
+			fields, _ := chat.(map[string]any)
+			if !allowed[stringField(fields, "id")] {
+				lines = append(lines, "  Not allowed: "+stringField(fields, "id")+" "+stringField(fields, "title"))
+			}
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func telegramChatsText(data map[string]any) string {
+	connect, _ := data["connect"].(map[string]any)
+	lines := []string{"Chats of " + stringField(connect, "bot_username") + " saved."}
+	allowed, _ := connect["allowed_chat_ids"].([]any)
+	for _, id := range allowed {
+		if value, ok := id.(string); ok {
+			lines = append(lines, "  Allowed: "+value)
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func qqConnectText(data map[string]any) string {

@@ -79,6 +79,8 @@ class AuthRepository internal constructor(
         val attempt: Attempt?,
         val cooldownEmail: String?,
         val cooldownSeconds: Long,
+        /** The other accounts signed in on this device, set aside. */
+        val kept: List<Account>,
     )
 
     /** The core's `workspaceChat` topic: the account's chat with Comma, the one kept on the device until confirmed. */
@@ -235,6 +237,10 @@ class AuthRepository internal constructor(
             },
             cooldownEmail = cooldown?.optString("email"),
             cooldownSeconds = cooldown?.optLong("seconds") ?: 0,
+            kept = json.optJSONArray("accounts")?.let { list ->
+                (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+                    .map { Account(it.optString("userId"), it.optString("email"), null, "active") }
+            }.orEmpty(),
         )
     }
 
@@ -320,7 +326,7 @@ class AuthRepository internal constructor(
                 when {
                     chat != null && chat.shown -> AuthState.Connected(current.user ?: saved!!, WorkspaceSelection(
                         Workspace(chat.workspaceId!!, chat.groupId!!, workspaceNames[chat.workspaceId].orEmpty()),
-                        chat.conversationId!!))
+                        chat.conversationId!!), current.kept)
                     chat?.status == "provisioning" -> AuthState.Connecting(ConnectionStep.PROVISIONING, chat.retryAtMillis)
                     chat?.status == "hidden" -> AuthState.Retry(AuthProblem.NO_WORKSPACE)
                     chat?.status == "error" -> AuthState.Retry(AuthProblem.NETWORK)
@@ -343,6 +349,7 @@ class AuthRepository internal constructor(
                 googleBusy = form.googleBusy,
                 googleProblem = form.googleProblem,
                 linkingGoogle = current.attempt?.linkingGoogle == true,
+                keptAccounts = current.kept,
             )
         }
     }
@@ -512,6 +519,39 @@ class AuthRepository internal constructor(
             session?.let(::showScope)
             render()
         }
+    }
+
+    // --- Other accounts signed in on this device --------------------------------------------------------------
+
+    /**
+     * Sets the account in use aside, still signed in, and opens the sign-in page for another. False when the core
+     * refused (no account in use, or as many kept as the device keeps).
+     */
+    suspend fun addAccount(): Boolean = withContext(io) {
+        val expected = synchronized(lock) {
+            val current = session?.takeIf { it.phase == "signed_in" } ?: return@withContext false
+            JSONObject().put("authorityInstanceId", current.authority).put("generation", current.generation)
+                .put("expectedAudience", current.audience).put("expectedSessionId", current.sessionId)
+        }
+        operation("session.addAccount", JSONObject().put("expected", expected)).error == null
+    }
+
+    /**
+     * "Switch account" while connecting: the account in use stays signed in, set aside, and the sign-in page opens.
+     * A session the core cannot set aside (not signed in, or the store is full) is signed out, as before.
+     */
+    suspend fun switchToAnotherAccount() = withContext(io) {
+        if (!addAccount()) logout()
+    }
+
+    /** Makes a kept account the one in use, without signing in again. False when the core refused. */
+    suspend fun switchAccount(userId: String): Boolean = withContext(io) {
+        operation("session.switchAccount", JSONObject().put("userId", userId)).error == null
+    }
+
+    /** Signs a kept account out of this device. False when the core refused. */
+    suspend fun signOutAccount(userId: String): Boolean = withContext(io) {
+        operation("session.signOutAccount", JSONObject().put("userId", userId)).error == null
     }
 
     /** The app came back to the front: the core checks the session again. */

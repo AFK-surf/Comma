@@ -25,8 +25,8 @@ import surf.comma.android.ui.composer.ComposerView
 
 /**
  * Debug-only playground for [ComposerView]: a fake conversation, a fake streamed reply and fake
- * uploads, so keyboard follow, the attachment panel, thumbnails, the generating state, dictation
- * and hold-to-talk can all be exercised without a backend.
+ * uploads, so keyboard follow, the attachment panel, thumbnails and sending can all be exercised
+ * without a backend.
  *
  * adb shell am start -n surf.comma.android.dev/surf.comma.android.ui.composer.demo.ComposerDemoActivity
  */
@@ -68,10 +68,10 @@ class ComposerDemoActivity : ComponentActivity() {
         composer = ComposerView(this)
         composer.attachTo(root)
         composer.onSend = ::onSend
-        composer.onVoiceSend = { text ->
-            logSnapshot()
-            addMessage(Message(text, fromUser = true, viaVoice = true))
-            startReply(text)
+        composer.transcribeDictation = { audio ->
+            kotlinx.coroutines.delay(800)
+            AppLog.info(TAG, "dictation bytes=${audio.size}")
+            "这是一段假的转录"
         }
         composer.onAttachmentsAdded = { added -> added.forEach { simulateUpload(it.id) } }
         composer.onAttachmentRetry = { id -> simulateUpload(id) }
@@ -115,14 +115,13 @@ class ComposerDemoActivity : ComponentActivity() {
         val snapshot = composer.captureSendSnapshot()
         AppLog.info(
             TAG,
-            "snapshot voice=${snapshot.fromVoice} lines=${snapshot.textLayout?.lineCount ?: 0} " +
+            "snapshot lines=${snapshot.textLayout?.lineCount ?: 0} " +
                 "surface=${snapshot.surfaceBounds} images=${snapshot.attachments.size}",
         )
     }
 
     private fun startReply(prompt: String) {
         stopReply()
-        composer.setGenerating(true)
         val reply = Message("", fromUser = false)
         addMessage(reply)
         val full = FAKE_REPLY.replace("%s", prompt.take(24).ifBlank { "这几张图" })
@@ -136,7 +135,6 @@ class ComposerDemoActivity : ComponentActivity() {
                     main.postDelayed(this, 60)
                 } else {
                     replyStep = null
-                    composer.setGenerating(false)
                 }
             }
         }
@@ -147,7 +145,6 @@ class ComposerDemoActivity : ComponentActivity() {
     private fun stopReply() {
         replyStep?.let(main::removeCallbacks)
         replyStep = null
-        composer.setGenerating(false)
     }
 
     // ---- Fake uploads: pending → uploading → done; every third image fails once ----
@@ -194,7 +191,7 @@ class ComposerDemoActivity : ComponentActivity() {
         adapter.notifyDataSetChanged()
     }
 
-    private class Message(var text: String, val fromUser: Boolean, val viaVoice: Boolean = false)
+    private class Message(var text: String, val fromUser: Boolean)
 
     private inner class MessageAdapter : RecyclerView.Adapter<MessageAdapter.Holder>() {
         inner class Holder(val label: TextView) : RecyclerView.ViewHolder(
@@ -219,7 +216,7 @@ class ComposerDemoActivity : ComponentActivity() {
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val message = messages[position]
             val label = holder.label
-            label.text = if (message.viaVoice) "🎙 ${message.text}" else message.text
+            label.text = message.text
             val lp = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 if (message.fromUser) Gravity.END else Gravity.START,
@@ -249,15 +246,10 @@ class ComposerDemoActivity : ComponentActivity() {
         const val TAG = "ComposerDemo"
         const val FAKE_REPLY = "收到：「%s」。这是一段假的流式回复，用来检验生成中的停止按钮：" +
             "回复还在往外吐字的时候，输入框右侧是实心方块；后端还没有停止接口，所以它先是灰的、点了没反应。" +
-            "回复结束后按钮原位恢复成麦克风或发送。" +
             "你可以在生成过程中继续打字，但发送会被挡住，直到这段话说完。"
         val SEED = listOf(
             "帮我看看这张收据上的金额对不对",
             "可以，把图片发过来就行。拍照、相册、文件三种方式都支持，一次最多十张。",
-            "长按输入框能直接说话吗？",
-            "能。按住输入框或者麦克风开始录音，识别出来的文字会实时显示在输入框上方；松手就发出去，上滑到取消区再松手就作废。",
-            "那点一下麦克风呢？",
-            "点一下是听写：声纹条代替输入区，识别结果实时出现；点 ✓ 把文字填进输入框但不发送，点 ✕ 丢弃。",
             "键盘弹起来的时候输入框会跟着走吗？",
             "会逐帧跟着键盘。打开附件面板时，面板和键盘一样高，所以两者互相切换时输入框一个像素都不动。",
         )

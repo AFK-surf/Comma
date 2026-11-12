@@ -2,6 +2,7 @@ import { useCommaMessages } from "@comma/i18n/react";
 import { useCallback, useMemo, type ReactNode } from "react";
 import type { CommaTaskLabel, CommaTaskLabelCatalog } from "@comma/core/api-schemas";
 import type { TaskLoop } from "@comma/core/contract";
+import type { ProductInboxItem } from "@comma/core-client";
 import { openNativePlatformExternalUrl } from "../../nativePlatformActions";
 import { useTaskLabelsCatalog } from "../chat/tasks/labels/useTaskLabelsCatalog";
 import {
@@ -10,10 +11,12 @@ import {
   TaskLabelOverflowChip,
   TaskPlatformChip,
   TaskPullRequestChip,
+  TaskRequestChip,
   TaskScheduleChip,
   type TaskPullRequest,
 } from "./taskChips";
 import { taskLoopFilterKey } from "./taskLoopLabels";
+import { requestPersonKey } from "./requestPeople";
 import { taskOriginKey, taskOriginLabel, type TaskOriginKey } from "./taskOrigin";
 import type { TasksFilterLink } from "./taskChips";
 
@@ -33,6 +36,8 @@ type LoadedTask = {
   loop?: TaskLoop | undefined;
   /** Set on a Task a station hosts. */
   host?: TaskHostFacts | undefined;
+  /** Set on a Task accepted from another person's request. */
+  requestedBy?: ProductInboxItem["requestedBy"];
 };
 
 type TaskHostFacts = {
@@ -129,9 +134,20 @@ export function useTaskBadges(
     [tasks]
   );
 
+  const requesters = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) =>
+          task.requestedBy ? [[task.conversationId, task.requestedBy] as const] : []
+        )
+      ),
+    [tasks]
+  );
+
   const renderTaskBadges = useCallback(
     (task: { conversationId: string; origin?: string | undefined }): ReactNode => {
       const host = hosts.get(task.conversationId);
+      const requestedBy = requesters.get(task.conversationId);
       const origin = taskOriginKey(task.origin);
       const loop = loops.get(task.conversationId);
       const pullRequest = pullRequests.get(task.conversationId);
@@ -162,10 +178,11 @@ export function useTaskBadges(
           onOpen={onOpen}
           origin={origin}
           pullRequest={pullRequest}
+          requestedBy={requestedBy}
         />
       );
     },
-    [catalogById, hosts, loops, metaById, onOpen, pullRequests]
+    [catalogById, hosts, loops, metaById, onOpen, pullRequests, requesters]
   );
 
   return { catalog, catalogById, metaById, renderTaskBadges };
@@ -173,9 +190,8 @@ export function useTaskBadges(
 
 /**
  * The chips every Task card wears: the trigger type on a Loop Task, its labels, the
- * "+N labels" fold for squeezed list rows, its pull request, then its platform. With `onOpen`
- * each chip opens the Tasks page narrowed to it; without, they are plain (a
- * hover card).
+ * "+N labels" fold for squeezed list rows, its pull request, then its platform (or, for a Task from a request, who
+ * sent it). With `onOpen` each chip opens the Tasks page narrowed to it; without, they are plain (a hover card).
  */
 export function TaskBadgeChips({
   labels,
@@ -183,6 +199,7 @@ export function TaskBadgeChips({
   onOpen,
   origin,
   pullRequest,
+  requestedBy,
 }: {
   labels: readonly CommaTaskLabel[];
   /** A Loop Task: one a Loop runs or ran. */
@@ -191,6 +208,8 @@ export function TaskBadgeChips({
   origin: TaskOriginKey | undefined;
   /** A coding Task's pull request; with `onOpen` its chip opens it, as the other chips act. */
   pullRequest?: TaskPullRequest | undefined;
+  /** Who sent the request the Task came from: its chip names them. */
+  requestedBy?: ProductInboxItem["requestedBy"];
 }) {
   const messages = useCommaMessages();
   // A squeezed row keeps two chips; the trigger chip takes the first place.
@@ -229,7 +248,24 @@ export function TaskBadgeChips({
           pullRequest={pullRequest}
         />
       ) : null}
-      {origin ? (
+      {origin === "task_request" && requestedBy ? (
+        <TaskRequestChip
+          avatar={
+            requestedBy.avatar
+              ? { source: "sender-avatar", ...requestedBy.avatar }
+              : undefined
+          }
+          direction="from"
+          name={requestedBy.name}
+          nested
+          onOpen={
+            onOpen
+              ? () => onOpen({ request: requestPersonKey("from", requestedBy) })
+              : undefined
+          }
+          testId="task-card-request"
+        />
+      ) : origin ? (
         <TaskPlatformChip
           label={taskOriginLabel(messages, origin)}
           nested

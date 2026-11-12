@@ -1,10 +1,41 @@
 import { readFile } from "node:fs/promises";
-import type { AudioCaptureRecording } from "@comma/native-bridge";
-import type { RecordingTranscript } from "@comma/core/contract";
+import type {
+  AudioCaptureRecording,
+  AudioCaptureTranscriptionFailed,
+} from "@comma/native-bridge";
+import type {
+  RecordingTranscript,
+  TranscriptionFailureKind,
+} from "@comma/core/contract";
 import type { DriveRecordingStore, RecordingDriveTarget } from "./drive-recordings";
 
 /** The client core's transcription (`recordings.transcribe`): the audio's transcript, or why there is none. */
 export type TranscribeRecording = (audio: Uint8Array) => Promise<RecordingTranscript>;
+
+/** Told the kind of each failed transcription, to report it without its text. */
+export type ReportTranscriptionFailure = (
+  reason: AudioCaptureTranscriptionFailed["reason"]
+) => void;
+
+const coreFailureKinds = new Set<TranscriptionFailureKind>([
+  "too_large",
+  "busy",
+  "timeout",
+  "unavailable",
+  "unexpected",
+  "interrupted",
+  "server",
+]);
+
+/** The core's kind of a `transcription_failed`; anything else failed here in Main (`local`). */
+function failureReason(error: unknown): AudioCaptureTranscriptionFailed["reason"] {
+  const kind = (error as { code?: unknown; detail?: { kind?: unknown } } | undefined)
+    ?.detail?.kind;
+  return (error as { code?: unknown } | undefined)?.code === "transcription_failed" &&
+    coreFailureKinds.has(kind as TranscriptionFailureKind)
+    ? (kind as TranscriptionFailureKind)
+    : "local";
+}
 
 export interface RecordingTranscriptSession {
   /** Fails once the account the recording was made under is no longer the session's. */
@@ -14,13 +45,14 @@ export interface RecordingTranscriptSession {
 /**
  * Audio is already in Drive. Main hands its bytes to the client core, which asks the server's ASR (and bounds how many
  * at once), and writes what it answers beside the audio: the text and a JSON receipt, or a JSON error. ASR failures
- * cannot change the saved audio.
+ * cannot change the saved audio. Each failure's kind (never its text) goes to `reportFailure`.
  */
 export class RecordingTranscriptionService {
   constructor(
     private readonly drive: Pick<DriveRecordingStore, "writeTranscript">,
     private readonly bindSession: () => RecordingTranscriptSession,
-    private readonly transcribe: TranscribeRecording
+    private readonly transcribe: TranscribeRecording,
+    private readonly reportFailure: ReportTranscriptionFailure = () => undefined
   ) {}
 
   async process(
@@ -46,6 +78,7 @@ export class RecordingTranscriptionService {
       );
     } catch (error) {
       session.assertCurrent();
+      this.reportFailure(failureReason(error));
       await this.drive.writeTranscript(
         recording,
         target,

@@ -24,6 +24,8 @@ const script = fileURLToPath(
 // One gateway: a unified read view, and each host's own write view.
 function gateway() {
   const objects = new Map();
+  // Keys the gateway lists and answers HEAD for but cannot serve.
+  const unservable = new Set();
   let clock = 0;
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://gateway");
@@ -43,6 +45,7 @@ function gateway() {
       req.on("data", (chunk) => chunks.push(chunk));
       req.on("end", () => {
         clock += 1;
+        unservable.delete(key);
         objects.set(key, {
           body: Buffer.concat(chunks),
           at: new Date(Date.UTC(2026, 0, 1, 0, 0, clock)).toISOString(),
@@ -53,6 +56,9 @@ function gateway() {
       objects.delete(key);
       res.statusCode = 204;
       res.end();
+    } else if (req.method === "GET" && unservable.has(key)) {
+      res.statusCode = 503;
+      res.end();
     } else if (!objects.has(key)) {
       res.statusCode = 404;
       res.end();
@@ -60,11 +66,11 @@ function gateway() {
       res.end(req.method === "HEAD" ? undefined : objects.get(key).body);
     }
   });
-  return { server, objects };
+  return { server, objects, unservable };
 }
 
 test("a Linux runner restores and saves path snapshots through its gateway", async () => {
-  const { server, objects } = gateway();
+  const { server, objects, unservable } = gateway();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   // Real paths: bsdtar does not extract through a symlinked /var.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "synch cache-")));
@@ -193,6 +199,34 @@ test("a Linux runner restores and saves path snapshots through its gateway", asy
     });
     assert.equal(exact.outputs["cache-hit"], "true");
 
+    // A key the gateway lists but cannot serve is a miss that says why, and
+    // the next save publishes it again instead of taking it as published.
+    const broken = [...objects.keys()].find((key) => key.endsWith("/mix-abc-1.tar"));
+    unservable.add(broken);
+    const unserved = await job("pr", {
+      MODE: "restore",
+      FAMILY: "mix",
+      KEY: "mix-abc-1",
+      PATHS: paths,
+    });
+    assert.equal(unserved.outputs["cache-hit"], "false");
+    assert.match(unserved.stdout, /no peer snapshot for mix-abc-1 \(\(22\) .*503\)/);
+    const republished = await job("main", {
+      MODE: "save",
+      FAMILY: "mix",
+      KEY: "mix-abc-1",
+      PATHS: paths,
+    });
+    assert.match(republished.stdout, /mix-abc-1 is listed but cannot be read \(\(22\) .*503\)/);
+    assert.match(republished.stdout, /published mix-abc-1/);
+    const served = await job("pr", {
+      MODE: "restore",
+      FAMILY: "mix",
+      KEY: "mix-abc-1",
+      PATHS: paths,
+    });
+    assert.equal(served.outputs["cache-hit"], "true");
+
     // Each host keeps its newest snapshots of a family.
     for (const key of ["mix-abc-3", "mix-abc-4"]) {
       await job("main", {
@@ -222,6 +256,7 @@ test("a Linux runner restores and saves path snapshots through its gateway", asy
       "",
     );
     assert.equal(hosted.outputs["cache-hit"], "false");
+    assert.equal(hosted.outputs.gateway, "false");
     assert.match(hosted.stdout, /no gateway on this runner/);
     assert.equal(existsSync(join(hosted.workspace, "systems", "deps")), false);
   } finally {

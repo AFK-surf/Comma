@@ -200,7 +200,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
         <.card :if={@tab == "overview"}>
           <:title>Overview</:title>
           <div class="grid gap-3 md:grid-cols-3">
-            <.kv label="Product authorization">{installation(@node)}</.kv>
+            <.kv label="Product authorization">{@node["registration"]["request_status"]}</.kv>
             <.kv label="Registration">{@node["registration"]["status"]}</.kv>
             <.kv label="Admission">{enabled(@node)}</.kv>
             <.kv label="Gateway observation">{@node["connection"]["status"]}</.kv>
@@ -221,9 +221,6 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
             <.kv label="Host health">{observation_value(@node, ["health", "status"])}</.kv>
             <.kv label="Health issue">{observation_value(@node, ["health", "issue"])}</.kv>
             <.kv label="Observed / received">{Format.datetime(@node["connection"]["last_observed_at"])} / {Format.datetime(@node["connection"]["received_at"])}</.kv>
-            <.kv label="Protocol / Host API">{observation_value(@node, ["protocol_version"])} / {observation_value(@node, ["host_api_version"])}</.kv>
-            <.kv label="Connector release">{observation_value(@node, ["connector_release"])}</.kv>
-            <.kv label="Features">{feature_list(@node)}</.kv>
             <.kv label="Capacity">{observation_map(@node, "capacity")}</.kv>
             <.kv label="Active workload usage">{observation_map(@node, "usage")}</.kv>
           </div>
@@ -302,9 +299,6 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
     """
   end
 
-  defp installation(%{"installation" => nil}), do: "Not requested"
-  defp installation(node), do: node["installation"]["status"]
-
   defp enabled(node),
     do: if(node["registration"]["desired_enabled"], do: "enabled", else: "disabled")
 
@@ -312,13 +306,6 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
     case get_in(node["connection"], path) do
       nil -> "Not reported"
       value -> to_string(value)
-    end
-  end
-
-  defp feature_list(node) do
-    case node["connection"]["supported_features"] do
-      [] -> "Not reported"
-      features -> Enum.join(features, ", ")
     end
   end
 

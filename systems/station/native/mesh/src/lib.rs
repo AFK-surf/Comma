@@ -23,7 +23,19 @@ use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use tokio::sync::Mutex;
 
-const MDNS_SERVICE: &str = "stillfail";
+/// How often a path that carries nothing is asked whether it is still there, and how long one may say nothing before
+/// it is given up (packets go on on another path meanwhile: the relay, or a direct one): iroh's own 5 s and 15 s held a
+/// connection on a direct path whose peer had gone (a station restarted on another port) that long, every stream on
+/// it waiting. As still.fail's mesh (station/native/mesh/src/lib.rs `PATH_KEEP_ALIVE`, `PATH_IDLE`).
+const PATH_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(1);
+const PATH_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a connection may hear nothing before it is given up: iroh's 30 s gave up every connection of a phone app
+/// frozen in the background that long, each dialled anew on its return (still.fail's `CONNECTION_IDLE_MS`). A peer
+/// gone with a connection open is told by the core's ping (`PING_EVERY_MS`), not by this. The peers take the lower of
+/// theirs.
+const CONNECTION_IDLE_MS: u32 = 10 * 60_000;
+
+const MDNS_SERVICE: &str = "comma-station";
 const FORMER_MDNS_SERVICE: &str = "ember";
 
 fn failed(error: impl std::fmt::Display) -> napi::Error {
@@ -39,7 +51,7 @@ pub struct Options {
     /// The station's 32-byte key (<data>/mesh/secret.key).
     pub secret_key: Buffer,
     pub alpns: Vec<Buffer>,
-    /// still.fail's relays, ours first; none: relays off (tests on one machine).
+    /// Comma's relays, ours first; none: relays off (tests on one machine).
     pub relay_urls: Vec<String>,
     /// Found on the LAN and through the DHT, as a station is. Off for tests.
     pub discovery: Option<bool>,
@@ -50,8 +62,10 @@ pub struct Options {
     pub lookup: Option<bool>,
     /// Relays alone, no IP transports: what measures the way through a relay must not go direct.
     pub relay_only: Option<bool>,
-    /// Packets through Salix too, as the relay of last resort (salix.rs): the TypeScript carries them.
+    /// Packets through Salix too (salix.rs): the TypeScript carries them.
     pub salix_relay: Option<bool>,
+    /// `relay-first`: direct, then an iroh relay, then Salix. Else `salix-first`: Salix with direct, an iroh relay as backup.
+    pub route_policy: Option<String>,
 }
 
 #[napi]
@@ -79,12 +93,15 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
         .secret_key(key.clone())
         .alpns(options.alpns.iter().map(|a| a.to_vec()).collect())
         .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(iroh::RelayMap::from_iter(relays.clone())) })
-        .transport_config(QuicTransportConfig::builder().congestion_controller_factory(Arc::new(bbr)).build());
+        .transport_config(QuicTransportConfig::builder().congestion_controller_factory(Arc::new(bbr)).default_path_keep_alive_interval(PATH_KEEP_ALIVE).default_path_max_idle_timeout(PATH_IDLE).max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(CONNECTION_IDLE_MS).into())).build());
     if let Some(addr) = &options.bind_addr {
         builder = builder.bind_addr(addr.parse::<std::net::SocketAddr>().map_err(failed)?).map_err(failed)?;
     }
     if options.relay_only.unwrap_or(false) {
         builder = builder.clear_ip_transports();
+    }
+    if options.route_policy.as_deref() == Some("relay-first") {
+        builder = builder.custom_transports_last();
     }
     let mut relay = None;
     if options.salix_relay.unwrap_or(false) {
@@ -189,7 +206,7 @@ impl Endpoint {
         Ok(())
     }
 
-    /// iroh's own public relays: added while none of still.fail's answers, removed once one does (`keep_relays`).
+    /// iroh's own public relays: added while none of Comma's answers, removed once one does (`keep_relays`).
     #[napi]
     pub async fn public_relays(&self, on: bool) {
         let public: Vec<Arc<iroh::RelayConfig>> = iroh::defaults::prod::default_relay_map().relays();
@@ -339,7 +356,8 @@ pub struct RelayState {
     pub connected: bool,
 }
 
-/// One way a connection can go: through a relay (its URL) or direct; the one chosen now, and its round trip.
+/// One way a connection can go: through a relay (its URL) or direct; the one chosen now, and its round trip. Its
+/// congestion window (bytes), congestion events, UDP datagrams sent and packets lost on it so far (a screen's frames' times).
 #[napi(object)]
 pub struct PathState {
     pub selected: bool,
@@ -347,6 +365,10 @@ pub struct PathState {
     pub rtt_ms: f64,
     /// "direct", "relay" or "salix", as `via` says.
     pub via: String,
+    pub cwnd: f64,
+    pub congestion_events: f64,
+    pub sent_datagrams: f64,
+    pub lost_packets: f64,
 }
 
 /// How a connection runs after a change (`next_via`): null while no way is chosen.
@@ -370,6 +392,8 @@ fn via_of(ip: bool, relay: bool) -> &'static str {
 #[napi(object)]
 pub struct Stats {
     pub rx_bytes: f64,
+    /// UDP datagrams received: a live client's path keep-alives alone bring one each PATH_KEEP_ALIVE.
+    pub rx_packets: f64,
     pub tx_bytes: f64,
     pub tx_packets: f64,
     pub lost_packets: f64,
@@ -475,24 +499,64 @@ impl Connection {
         self.inner.close_reason().map(|e| close_info(&e))
     }
 
+    /// Whether the other end is still there: asked with a datagram (which a live end acknowledges at once) a few times
+    /// within `within_ms`, true as soon as anything is heard from it. A process killed with the connection open says
+    /// nothing, and the connection would only go at its idle timeout (CONNECTION_IDLE_MS). An end that takes no
+    /// datagrams is not asked, and counts as there. Ported from still.fail station/native/mesh/src/lib.rs `answers`.
+    #[napi]
+    pub async fn answers(&self, within_ms: u32) -> bool {
+        let heard = self.inner.stats().udp_rx.datagrams;
+        let within = std::time::Duration::from_millis(within_ms.into());
+        let deadline = tokio::time::Instant::now() + within;
+        let mut ask = tokio::time::Instant::now();
+        loop {
+            if self.inner.close_reason().is_some() {
+                return false;
+            }
+            if self.inner.stats().udp_rx.datagrams > heard {
+                return true;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            if now >= ask {
+                match self.inner.send_datagram(vec![0u8].into()) {
+                    Ok(()) => {}
+                    Err(iroh::endpoint::SendDatagramError::ConnectionLost(_)) => return false,
+                    Err(_) => return true,
+                }
+                ask = now + within / 3;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// Every way it can go now.
     #[napi]
     pub fn paths(&self) -> Vec<PathState> {
-        self.inner.paths().iter().map(|p| PathState {
-            selected: p.is_selected(),
-            relay: match p.remote_addr() {
-                iroh::TransportAddr::Relay(url) => Some(url.to_string()),
-                _ => None,
-            },
-            rtt_ms: p.rtt().as_secs_f64() * 1000.0,
-            via: via_of(p.is_ip(), p.is_relay()).to_string(),
+        self.inner.paths().iter().map(|p| {
+            let stats = p.stats();
+            PathState {
+                selected: p.is_selected(),
+                relay: match p.remote_addr() {
+                    iroh::TransportAddr::Relay(url) => Some(url.to_string()),
+                    _ => None,
+                },
+                rtt_ms: stats.rtt.as_secs_f64() * 1000.0,
+                via: via_of(p.is_ip(), p.is_relay()).to_string(),
+                cwnd: stats.cwnd as f64,
+                congestion_events: stats.congestion_events as f64,
+                sent_datagrams: stats.udp_tx.datagrams as f64,
+                lost_packets: stats.lost_packets as f64,
+            }
         }).collect()
     }
 
     #[napi]
     pub fn stats(&self) -> Stats {
         let stats = self.inner.stats();
-        Stats { rx_bytes: stats.udp_rx.bytes as f64, tx_bytes: stats.udp_tx.bytes as f64, tx_packets: stats.udp_tx.datagrams as f64, lost_packets: stats.lost_packets as f64 }
+        Stats { rx_bytes: stats.udp_rx.bytes as f64, rx_packets: stats.udp_rx.datagrams as f64, tx_bytes: stats.udp_tx.bytes as f64, tx_packets: stats.udp_tx.datagrams as f64, lost_packets: stats.lost_packets as f64 }
     }
 
     /// A stream one way: what measures a round trip sends a byte on it (mesh.rs `sample_relay_rtt`).
@@ -583,6 +647,15 @@ impl Stream {
         // The future owns what it waits on: taken under the lock and awaited without it, so writes go on meanwhile.
         let stopped = self.send.lock().await.stopped();
         let _ = stopped.await;
+    }
+
+    /// Stops reading it: the other end's writes fail with `code`, and the stream goes once it has finished sending (a
+    /// half left unread would hold it open, counted against the streams the other end may open). A read waiting gives
+    /// up first, as it holds the receiving half.
+    #[napi]
+    pub async fn stop(&self, code: u32) {
+        let _ = self.reset.send(true);
+        let _ = self.recv.lock().await.stop(code.into());
     }
 
     /// Ends it at once, both ways: a read waiting gives up first, so the receiving half can be stopped.

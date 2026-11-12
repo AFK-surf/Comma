@@ -16,6 +16,47 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
              SalixVerifiedKernel.invoke_session_commit(resident, :start, {wrong_key, "base"})
   end
 
+  test "a delta names the catalog entries an archive advance adds, and no others" do
+    session = "ses1_0000000000000000001"
+    published = [[1, 10, 10, 100], [11, 20, 10, 100]]
+    added = [[21, 30, 10, 100], [31, 40, 10, 100]]
+
+    initial =
+      "agent"
+      |> Session.new(session)
+      |> Session.export()
+      |> Map.merge(%{segment_catalog: published, compacted_seq: 40, last_seq: 40})
+      |> Session.open()
+
+    revision = Session.start_revision(initial, "base")
+
+    pending =
+      Session.write_revision(
+        revision,
+        [
+          %{
+            "type" => "archive_advance",
+            "archived_through" => 40,
+            "segments" => published ++ added
+          }
+        ],
+        nil,
+        fn _, _ -> :ok end
+      )
+
+    assert {:ok, %{"archives_add" => ^added}} = Session.revision_delta(pending)
+
+    unchanged =
+      Session.write_revision(
+        Session.start_revision(initial, "base"),
+        [%{"type" => "status", "session_id" => session, "status" => "active"}],
+        nil,
+        fn _, _ -> :ok end
+      )
+
+    assert {:ok, %{"archives_add" => []}} = Session.revision_delta(unchanged)
+  end
+
   test "a native storage read retains the observed revision through a later write" do
     agent = "agent"
     session_id = "ses1_0000000000000000001"
@@ -601,17 +642,17 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
     assert event["dedupe_key"] == "runtime-recovered:llm:" <> <<255, 128>> <> ":message-1"
   end
 
-  test "tool settlement counts guidance and parks at the configured progress budget" do
+  # A refused call is corrected in the next round, so a batch of only refused
+  # calls neither counts toward the runaway guard nor clears it.
+  test "tool settlement leaves guidance out of the runaway count" do
     previous = Application.get_env(:salix_agent, :runaway_unsettled_round_cap)
-    Application.put_env(:salix_agent, :runaway_unsettled_round_cap, 1)
+    Application.put_env(:salix_agent, :runaway_unsettled_round_cap, 2)
 
     on_exit(fn ->
       if previous == nil,
         do: Application.delete_env(:salix_agent, :runaway_unsettled_round_cap),
         else: Application.put_env(:salix_agent, :runaway_unsettled_round_cap, previous)
     end)
-
-    session = trusted_session() |> apply_events([%{"type" => "status", "status" => "active"}])
 
     unsettled = %{
       "type" => "session_event",
@@ -621,6 +662,12 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
 
     reset = %{"type" => "session_event", "kind" => "runaway_guard_reset", "event" => %{}}
 
+    session =
+      trusted_session()
+      |> apply_events([%{"type" => "status", "status" => "active"}, unsettled])
+
+    assert Session.query(session, :consecutive_unsettled_rounds) == 1
+
     events =
       Session.query(
         session,
@@ -629,8 +676,9 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
       )
 
     next = apply_events(session, events)
-    assert Session.get(next, :status) == :idle
-    assert Session.query(next, :runaway_unsettled_rounds_exhausted?)
+    assert Session.get(next, :status) == :active
+    assert Session.query(next, :consecutive_unsettled_rounds) == 1
+    refute Session.query(next, :runaway_unsettled_rounds_exhausted?)
 
     events =
       Session.query(
@@ -639,7 +687,7 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
         {[], [%{status: "completed"}], true, unsettled, reset, false}
       )
 
-    refute Session.query(apply_events(session, events), :runaway_unsettled_rounds_exhausted?)
+    assert Session.query(apply_events(session, events), :consecutive_unsettled_rounds) == 0
   end
 
   defp hot_key do
@@ -1139,6 +1187,7 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
         session_id: "session",
         archived_through: 0,
         compacted_seq: 3,
+        last_seq: 3,
         segment_catalog: [],
         events: [],
         async_results: [],
@@ -1186,10 +1235,63 @@ defmodule SalixVerifiedKernel.SessionBoundaryTest do
     assert Session.get(session, :archived_through) == 0
   end
 
+  test "archive cut planning across pages keeps the publication encoder's crossing record" do
+    records = Enum.map(1..8, &%{seq: &1, content: String.duplicate("x", 100)})
+
+    full =
+      open(
+        agent_id: "agent",
+        session_id: "session",
+        archived_through: 0,
+        compacted_seq: 8,
+        last_seq: 8,
+        messages: records,
+        events: [],
+        async_results: [],
+        segment_catalog: []
+      )
+
+    first =
+      open(
+        archived_through: 0,
+        compacted_seq: 2,
+        last_seq: 2,
+        messages: Enum.take(records, 2),
+        events: [],
+        async_results: []
+      )
+
+    second =
+      open(
+        archived_through: 2,
+        compacted_seq: 8,
+        last_seq: 8,
+        messages: Enum.drop(records, 2),
+        events: [],
+        async_results: []
+      )
+
+    assert {:ok, 2, used} = Session.archive_cut(first, 700, 0)
+    assert used < 700
+    assert {:ok, selected, total} = Session.archive_cut(second, 700, used)
+    assert total >= 700
+
+    assert {:advance, event} =
+             Session.archive_publication(full, 700, fn
+               {:read_segment, _, _, _} -> {:error, :not_found}
+               {:create_segment, _, _, _, _} -> :created
+             end)
+
+    assert [1, last, _, ^total] = hd(event["segments"])
+    assert last == 2 + selected
+    assert Session.get(full, :archived_through) == 0
+  end
+
   test "archive projection orders all hot collections and refuses a sequence gap" do
     fields = [
       archived_through: 4,
       compacted_seq: 7,
+      last_seq: 7,
       messages: [%{seq: 7, role: "user", content: %{nested: [%{value: "text"}]}}],
       events: [%{"seq" => 5, "kind" => "status"}],
       async_results: [%{"seq" => 6, "kind" => "tool_result", "output" => "done"}]

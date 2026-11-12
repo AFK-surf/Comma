@@ -13,11 +13,12 @@ defmodule Comma.Stations.Config do
     * Origin: `COMMA_STATION_ORIGIN`, else the origin of the request that
       reached it (`origin/1`).
     * Relays: `COMMA_STATION_RELAY_URLS`, else n0's public iroh relays.
-    * Releases: still.fail's stable `station.json`.
+    * Releases: the Comma station's latest (`.github/workflows/station-release.yml`); a
+      Comma release pins its own revision's (`COMMA_STATION_RELEASE_MANIFEST_URL`).
   """
 
-  @default_release_base "https://app.still.fail/releases"
-  @default_release_manifest_url "https://app.still.fail/releases/station.json"
+  @default_release_base "https://cue-release.afk.surf/station-release"
+  @default_release_manifest_url "https://cue-release.afk.surf/station-release/latest.json"
   # n0's public production relays (iroh `defaults::prod`), until Comma runs its own.
   @default_relay_urls [
     "https://use1-1.relay.n0.iroh.link./",
@@ -36,6 +37,18 @@ defmodule Comma.Stations.Config do
     end
   end
 
+  @doc """
+  Which way goes first for a desktop's station and its client: `salix-first` (direct and Salix race, an iroh relay is the
+  backup) until a relay of our own is deployed, as the rest would go through n0's public ones; then `relay-first`
+  (direct, an iroh relay, then Salix).
+  """
+  def route_policy do
+    case string(:route_policy) do
+      "relay-first" -> "relay-first"
+      _ -> "salix-first"
+    end
+  end
+
   def gateway_keys, do: list(:gateway_keys)
   def release_base_url, do: string(:release_base_url) || @default_release_base
   def release_manifest, do: get()[:release_manifest]
@@ -45,16 +58,6 @@ defmodule Comma.Stations.Config do
 
   @doc "Whether the keys that sign member credentials are available (the KEK is set or derivable)."
   def enabled?, do: match?({:ok, _}, SalixStore.Stations.SigningKeys.kek())
-
-  @doc """
-  `COMMA_STATIONS_DEVICE_CUTOVER` (on unless set to `false`): user devices of
-  members who use stations run Worker turns as station chats and get the
-  station installer instead of the device Connector. It never applies to a
-  member without an enrolled station (`CommaWeb.StationWorkers`,
-  `CommaWeb.Stations.DeviceInstall`), and has no effect while the control
-  plane itself is unavailable.
-  """
-  def device_cutover?, do: get()[:device_cutover] != false and enabled?()
 
   defp get, do: SystemsRuntime.get_env(:comma_core, :stations, [])
 

@@ -449,7 +449,7 @@ defmodule SalixAgent.Tools.Schemas do
         "url" => %{
           "type" => "string",
           "description" =>
-            "Absolute http or https URL of the API endpoint. No user:password part; only public hosts are reachable."
+            "Absolute http or https URL of the API endpoint. No user:password part; only public hosts are reachable unless via_tailnet or tailcat is set."
         },
         "method" => %{
           "type" => "string",
@@ -493,7 +493,8 @@ defmodule SalixAgent.Tools.Schemas do
               },
               "value" => %{
                 "type" => "string",
-                "description" => "Credential value to insert (usually access_token)"
+                "description" =>
+                  "Credential value to insert: access_token, or for a secret with fields the field's name"
               }
             },
             "required" => ["env_var", "provider", "alias", "value"]
@@ -503,6 +504,17 @@ defmodule SalixAgent.Tools.Schemas do
           "type" => "integer",
           "description" =>
             "Time to wait for the response, 1000 to 60000 milliseconds (default 20000)."
+        },
+        "via_tailnet" => %{
+          "type" => "boolean",
+          "description" =>
+            "Send the request to a device in the Group's tailnet: the URL host is a MagicDNS name or Tailscale address from tailnet.peers."
+        },
+        "tailcat" => %{
+          "type" => "string",
+          "maxLength" => 2048,
+          "description" =>
+            "A Tailcat address (tc...) or a DNS name with a tailcat= TXT record: the request goes to the URL's port on that Tailcat server, and the URL host only names the Host header. Not with via_tailnet."
         }
       },
       "required" => ["url"]
@@ -619,14 +631,20 @@ defmodule SalixAgent.Tools.Schemas do
       "properties" => %{
         "meeting_plan_id" => %{"type" => "string"},
         "dispatch_revision" => %{"type" => "string"},
-        "channel" => %{"type" => "string", "pattern" => "^C[A-Z0-9]+$"},
+        # A Slack channel (`C…`) or a Feishu/Lark chat (`oc_…`).
+        "channel" => %{"type" => "string", "pattern" => "^(C[A-Z0-9]+|oc_[A-Za-z0-9_-]+)$"},
         "operation" => %{"type" => "string", "enum" => ["history", "replies", "search", "file"]},
         "file_id" => %{"type" => "string", "pattern" => "^F[A-Z0-9]+$"},
         "query" => %{"type" => "string", "maxLength" => 2000},
         "ts" => %{"type" => "string"},
         "cursor" => %{"type" => ["string", "null"], "maxLength" => 1024},
         "oldest" => %{"type" => "string"},
-        "latest" => %{"type" => "string"}
+        "latest" => %{"type" => "string"},
+        # Feishu/Lark: replies name the thread; pages continue by page_token.
+        "thread_id" => %{"type" => "string", "minLength" => 1, "maxLength" => 128},
+        "page_token" => %{"type" => ["string", "null"], "maxLength" => 1024},
+        "start_time" => %{"type" => "string", "pattern" => "^[0-9]{1,12}$"},
+        "end_time" => %{"type" => "string", "pattern" => "^[0-9]{1,12}$"}
       },
       "required" => ["meeting_plan_id", "dispatch_revision", "channel", "operation"]
     },
@@ -638,6 +656,43 @@ defmodule SalixAgent.Tools.Schemas do
         "time" => %{"type" => "string", "pattern" => "^([01][0-9]|2[0-3]):[0-5][0-9]$"}
       },
       "required" => ["brief", "time"]
+    },
+    "daily_brief.set_channel" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "channel" => %{"type" => "string", "minLength" => 1, "maxLength" => 200},
+        "mode" => %{
+          "type" => "string",
+          "enum" => ["follow", "follow_with_bots", "ignore", "default"]
+        }
+      },
+      "required" => ["channel", "mode"]
+    },
+    "daily_brief.set_project" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "term" => %{"type" => "string", "minLength" => 1, "maxLength" => 128},
+        "mode" => %{"type" => "string", "enum" => ["add", "remove"]}
+      },
+      "required" => ["term", "mode"]
+    },
+    "meeting.settings.get_destination" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{},
+      "required" => []
+    },
+    "meeting.settings.set_destination" => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "platform" => %{"type" => "string", "enum" => ["slack", "feishu", "lark"]},
+        "connect_id" => %{"type" => "string", "minLength" => 1, "maxLength" => 128},
+        "chat_or_channel_id" => %{"type" => "string", "minLength" => 1, "maxLength" => 128}
+      },
+      "required" => ["platform"]
     },
     "meeting.preparation.set_personal_reminders" => %{
       "type" => "object",
@@ -802,7 +857,8 @@ defmodule SalixAgent.Tools.Schemas do
         },
         "environment" => %{
           "type" => "string",
-          "description" => "Stable environment_id from device.get (required)"
+          "description" =>
+            "Stable environment_id from device.get (required). From a Task's own sandbox, self with device_id self is that sandbox."
         },
         "command" => %{"type" => "string", "description" => "Shell command to execute"},
         "shell" => %{
@@ -819,7 +875,7 @@ defmodule SalixAgent.Tools.Schemas do
         },
         "working_dir" => %{
           "type" => "string",
-          "description" => "Working directory (default: connector root)"
+          "description" => "Working directory (default: station root)"
         },
         "timeout" => %{"type" => "integer", "description" => "Timeout in seconds (default: 120)"},
         "credential_env" => %{
@@ -843,7 +899,8 @@ defmodule SalixAgent.Tools.Schemas do
               },
               "value" => %{
                 "type" => "string",
-                "description" => "Credential value to inject (usually access_token)"
+                "description" =>
+                  "Credential value to inject: access_token, client_id for the app's public id, or for a secret with fields the field's name"
               }
             },
             "required" => ["env_var", "provider", "alias", "value"]
@@ -988,6 +1045,20 @@ defmodule SalixAgent.Tools.Schemas do
       },
       "required" => ["device_id"]
     },
+    "device.screens" => %{
+      "type" => "object",
+      "properties" => %{
+        "device_id" => %{
+          "type" => "string",
+          "description" => "The computer's device_id from device.list or device.get."
+        },
+        "environment" => %{
+          "type" => "string",
+          "description" => "Stable environment_id of that computer from device.get."
+        }
+      },
+      "required" => ["device_id", "environment"]
+    },
     "env.computer_use" => %{
       "type" => "object",
       "properties" => %{
@@ -1034,7 +1105,12 @@ defmodule SalixAgent.Tools.Schemas do
         "profile" => %{
           "type" => "string",
           "description" =>
-            "Installed profile id from device.get. Start defaults to the administrator's default profile. Every leased action must retain the profile returned by start."
+            "Installed profile id from device.get, for a station-hosted emulator. Start defaults to the administrator's default profile. Every leased action must retain the profile returned by start."
+        },
+        "target" => %{
+          "type" => "string",
+          "description" =>
+            "For a computer's own device (capabilities.android.mode=device): the device to start a lease on, as action=status lists it (android:<serial>). A phone needs its owner's consent in this conversation the first time."
         },
         "action" => %{
           "type" => "string",
@@ -1053,7 +1129,40 @@ defmodule SalixAgent.Tools.Schemas do
         "args" => %{
           "type" => "object",
           "description" =>
-            "Bounded action-specific arguments such as ref, coordinates, text, package, staging_name, source_path, or guest_path."
+            "Bounded action-specific arguments such as ref, coordinates, text, package, staging_name, source_path, or guest_path. On a computer's own device: tap {x, y}, swipe {from: [x, y], to: [x, y], duration_ms?}, type {text}, key {key: home, back, enter, delete, tab, app_switch, wakeup, ...}, launch {package}, in pixels of the latest observe screenshot."
+        }
+      },
+      "required" => ["device_id", "environment", "action"]
+    },
+    "env.screen" => %{
+      "type" => "object",
+      "properties" => %{
+        "device_id" => %{
+          "type" => "string",
+          "description" =>
+            "The computer's device_id: the <device> of a comma:screen/<device>/<screen> link, or from device.list."
+        },
+        "environment" => %{
+          "type" => "string",
+          "description" =>
+            "Stable environment_id of that device whose capabilities include screen_device_tool=true (device.get)."
+        },
+        "target" => %{
+          "type" => "string",
+          "description" =>
+            "For start: the simulator, simulator:<udid> as status lists it (the <screen> of a comma:screen link, URL-decoded). The computer's owner allows this chat on a card the first time."
+        },
+        "action" => %{
+          "type" => "string",
+          "enum" => ~w(status start observe tap swipe type key end)
+        },
+        "lease_id" => %{"type" => "string"},
+        "lease_epoch" => %{"type" => "integer", "minimum" => 1},
+        "lease_seconds" => %{"type" => "integer", "minimum" => 60, "maximum" => 3600},
+        "args" => %{
+          "type" => "object",
+          "description" =>
+            "In pixels of the latest observe screenshot: tap {x, y}, swipe {from: [x, y], to: [x, y], duration_ms?}, type {text}, key {key: home, app_switcher, lock, keyboard, enter, delete, tab, escape, space, up, down, left, right}."
         }
       },
       "required" => ["device_id", "environment", "action"]
@@ -1154,6 +1263,19 @@ defmodule SalixAgent.Tools.Schemas do
     # ---- oauth (willow listoauth.go / request_oauth_auth.go /
     # complete_oauth_auth.go Parameters; tool-name references renamed) ----
     "oauth.list_credentials" => %{"type" => "object", "properties" => %{}, "required" => []},
+    "oauth.login_card" => %{
+      "type" => "object",
+      "properties" => %{
+        "login" => %{"type" => "string"},
+        "program" => %{"type" => "string"},
+        "reason" => %{"type" => "string"},
+        "url" => %{"type" => "string"},
+        "code" => %{"type" => "string"},
+        "paste" => %{"type" => "boolean"},
+        "ended" => %{"type" => "string", "enum" => ["done", "failed"]}
+      },
+      "required" => ["login", "program"]
+    },
     "oauth.request_authorization" => %{
       "type" => "object",
       "properties" => %{
@@ -1161,7 +1283,13 @@ defmodule SalixAgent.Tools.Schemas do
         "provider" => %{
           "type" => "string",
           "description" =>
-            "OAuth provider name. Supported: #{Enum.join(SalixStore.OAuth.Adapters.supported(), ", ")}."
+            "OAuth provider name. Supported: #{Enum.join(SalixStore.OAuth.Adapters.supported(), ", ")}, or custom.<key> from oauth.define_provider. secret asks the person to type in an API key or token with no OAuth behind it."
+        },
+        "flow" => %{
+          "type" => "string",
+          "enum" => ["device"],
+          "description" =>
+            "device: the person confirms a code on the provider's page instead of being redirected back. Only for a custom provider with a device_authorization_url. Then call oauth.complete_authorization once they confirmed."
         },
         "alias" => %{
           "type" => "string",
@@ -1173,9 +1301,54 @@ defmodule SalixAgent.Tools.Schemas do
           "items" => %{"type" => "string"},
           "description" => "Optional scopes to request. Adapter defaults are used when omitted."
         },
+        "shared" => %{
+          "type" => "boolean",
+          "description" =>
+            "True for an account the whole group may use. Default false: the credential is the requesting person's, and only work done for them can use it."
+        },
         "reason" => %{
           "type" => "string",
           "description" => "Short user-facing explanation of why authorization is needed."
+        },
+        "label" => %{
+          "type" => "string",
+          "description" =>
+            "provider secret: what the person fills in, as they call it, such as OpenAI API Key."
+        },
+        "help_url" => %{
+          "type" => "string",
+          "description" => "provider secret: the https page where the person finds the value."
+        },
+        "fields" => %{
+          "type" => "array",
+          "maxItems" => 8,
+          "description" =>
+            "provider secret: for a system that needs several values (an app id and its secret, a user and a password, a tenant id or base URL), one credential with a field each. The person fills in all of them on one form. In credential_env, value is the field's name. Omit for a single value (value access_token).",
+          "items" => %{
+            "type" => "object",
+            "properties" => %{
+              "name" => %{
+                "type" => "string",
+                "description" =>
+                  "Letters, digits and _, starting with a letter, at most 32 characters, e.g. app_secret. Not access_token or client_id."
+              },
+              "label" => %{
+                "type" => "string",
+                "description" => "What the form shows, e.g. App Secret. Defaults to the name."
+              },
+              "secret" => %{
+                "type" => "boolean",
+                "description" =>
+                  "Default true: the form masks the value. Set false for every value that is not confidential, such as an app id, tenant id or code, account or user name, or base URL: the person then sees what they type, and it stays readable in command output. Only real secrets (passwords, API keys, app secrets, tokens) stay true."
+              }
+            },
+            "required" => ["name"]
+          }
+        },
+        "own_app" => %{
+          "type" => "boolean",
+          "description" =>
+            "lark or feishu: the account connects through the customer's own app. The card first asks a Workspace owner for its App ID and App Secret, unless the Workspace already has them."
         },
         "timeout_seconds" => %{
           "type" => "integer",
@@ -1196,6 +1369,38 @@ defmodule SalixAgent.Tools.Schemas do
         }
       },
       "required" => ["state"]
+    },
+    "oauth.define_provider" => %{
+      "type" => "object",
+      "properties" => %{
+        "key" => %{
+          "type" => "string",
+          "description" => "Lower-case name: the provider becomes custom.<key>."
+        },
+        "client_id" => %{"type" => "string", "description" => "The OAuth client id."},
+        "client_secret_alias" => %{
+          "type" => "string",
+          "description" =>
+            "Alias of a secret credential holding the client secret. Omit for a public client."
+        },
+        "authorize_url" => %{"type" => "string", "description" => "https authorization endpoint."},
+        "token_url" => %{"type" => "string", "description" => "https token endpoint."},
+        "device_authorization_url" => %{
+          "type" => "string",
+          "description" => "https device authorization endpoint (RFC 8628), for flow device."
+        },
+        "scopes" => %{
+          "type" => "array",
+          "items" => %{"type" => "string"},
+          "description" => "Scopes a sign-in asks for by default."
+        },
+        "client_auth" => %{
+          "type" => "string",
+          "enum" => ["post", "basic"],
+          "description" => "How the client authenticates at the token endpoint. Default post."
+        }
+      },
+      "required" => ["key", "client_id", "token_url"]
     },
     "oauth.delete_credential" => %{
       "type" => "object",
@@ -1509,6 +1714,11 @@ defmodule SalixAgent.Tools.Schemas do
           "type" => "string",
           "description" =>
             "Optional absolute .txt artifact path. Reuse the same path for retries of the same immutable recording; a .json sidecar preserves ASR metadata. Use a new output for changed source bytes."
+        },
+        "locale" => %{
+          "type" => "string",
+          "description" =>
+            "Optional app locale of the person the transcript is for, such as zh-CN or zh-TW. It chooses simplified or traditional characters for spoken Chinese."
         }
       },
       "required" => ["path"],

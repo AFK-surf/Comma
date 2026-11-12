@@ -7,24 +7,6 @@ defmodule Comma.Release do
   retained only as offline baseline evidence.
   """
 
-  # The pages after the rollout that moved the Cloud VM switch onto the Group
-  # (docs/architecture/DOMAIN_CONCEPTS.md, Group): no server of the release
-  # before is left to write an Agent's `vm`. Salix converges the Groups no
-  # product owns from their Agents and removes `vm` from every Agent
-  # (`SalixAgent.Migrations.GroupCloudVMSwitch`); then each product sets its
-  # Groups' switch from its own fact: the Comma Workspace's `vm`, the BFT
-  # Project's `vm_enabled`. Each stage runs on a node that serves it, else
-  # passes. The marker `group_cloud_vm_switch_v1` records the stage and cursor
-  # of the next page (`GroupCloudVMSwitch.after_rollout_page/1`): a run cut off
-  # resumes there, and once the last page is done the stages do nothing. The
-  # release after this one deletes these stages.
-  @group_cloud_vm_steps [
-    {"group_cloud_vm", :salix, [SalixAgent, Migrations, GroupCloudVMSwitch], :page},
-    {"workspace_cloud_vm", :comma_product, [Comma, Workspaces], :converge_group_cloud_vm_page},
-    {"project_cloud_vm", :bridge_for_teams, [BridgeForTeams, Projects],
-     :converge_group_cloud_vm_page}
-  ]
-
   @doc """
   One bounded Agent handoff page, called by the release runner ONLY after core
   rollout success. Use release RPC on a serving node; no application bootstrap,
@@ -48,8 +30,17 @@ defmodule Comma.Release do
         is_map(decoded) and decoded["stage"] == "station_roster" ->
           finish_station_roster()
 
-        is_map(decoded) and decoded["stage"] == "group_cloud_vm" ->
-          group_cloud_vm_page()
+        is_map(decoded) and decoded["stage"] == "conversation_search" ->
+          open_conversation_search()
+
+        is_map(decoded) and decoded["stage"] == "task_files" ->
+          open_task_files()
+
+        is_map(decoded) and decoded["stage"] == "cloud_vm_cutover" ->
+          cloud_vm_cutover_page()
+
+        is_map(decoded) and decoded["stage"] == "workspace_provisioning" ->
+          retry_workspace_provisioning_page(decoded["source"])
 
         true ->
           with {:ok, phase} <- apply(rollout, :state, []) do
@@ -131,97 +122,198 @@ defmodule Comma.Release do
          SystemsRuntime.Proc.whereis(repo) != nil do
       case apply(copy, :finish, [repo]) do
         {:ok, _} ->
-          {:ok, %{processed: 1, next_cursor: %{"stage" => "group_cloud_vm"}}}
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "conversation_search"}}}
 
         {:error, reason} ->
           {:error, {:station_roster, reason}}
       end
     else
-      {:ok, %{processed: 0, next_cursor: %{"stage" => "group_cloud_vm"}}}
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "conversation_search"}}}
     end
   end
 
-  defp group_cloud_vm_page do
-    switch = Module.concat([SalixAgent, Migrations, GroupCloudVMSwitch])
+  # Core rollout has succeeded, so every writer runs the configured Task-search
+  # generation: the release records that fleet fact and opens a bounded PG
+  # backfill. The generation seals after the scan and its jobs finish. A node without Salix
+  # or without a configured generation has nothing to open. Search failing to
+  # open does not fail the release: it stays unavailable until the next one.
+  defp open_conversation_search do
+    search = Module.concat([SalixStore, ConversationSearch])
+    authority = "comma-release:" <> (System.get_env("COMMA_REVISION") || "unknown")
 
-    case apply(switch, :after_rollout_page, [&group_cloud_vm_step/1]) do
-      {:ok, %{processed: processed, done: true}} ->
-        {:ok, %{processed: processed, next_cursor: nil}}
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(search) do
+      case apply(search, :open_after_rollout, [authority]) do
+        {:ok, :opened} ->
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "task_files"}}}
 
-      {:ok, %{processed: processed, done: false}} ->
-        {:ok, %{processed: processed, next_cursor: %{"stage" => "group_cloud_vm"}}}
-
-      {:error, reason} ->
-        {:error, {:group_cloud_vm, reason}}
-    end
-  end
-
-  # One page of the stage at `position` (nil: the first stage's first page);
-  # answers the position of the next page, nil after the last stage.
-  defp group_cloud_vm_step(position) do
-    {stage, source} =
-      case position do
-        %{"stage" => stage, "source" => source} -> {stage, source}
-        nil -> {@group_cloud_vm_steps |> hd() |> elem(0), nil}
-      end
-
-    case Enum.find_index(@group_cloud_vm_steps, &(elem(&1, 0) == stage)) do
-      nil -> {:error, {:unknown_stage, stage}}
-      index -> group_cloud_vm_step(index, source)
-    end
-  end
-
-  defp group_cloud_vm_step(index, source) do
-    {stage, subsystem, module, fun} = Enum.at(@group_cloud_vm_steps, index)
-    module = Module.concat(module)
-
-    next_stage =
-      case Enum.at(@group_cloud_vm_steps, index + 1) do
-        {next, _subsystem, _module, _fun} -> %{"stage" => next, "source" => nil}
-        nil -> nil
-      end
-
-    args = if stage == "group_cloud_vm", do: [source, [after_rollout: true]], else: [source]
-
-    if enabled?(subsystem, enabled_subsystems()) and Code.ensure_loaded?(module) do
-      case apply(module, fun, args) do
-        {:ok, %{processed: processed, next_cursor: nil}} ->
-          {:ok, %{processed: processed, next: next_stage}}
-
-        {:ok, %{processed: processed, next_cursor: next}} ->
-          {:ok, %{processed: processed, next: %{"stage" => stage, "source" => next}}}
+        {:ok, _state} ->
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_files"}}}
 
         {:error, reason} ->
-          {:error, {stage, reason}}
+          IO.puts(:stderr, "Task search was not opened: #{inspect(reason)}")
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "task_files"}}}
       end
     else
-      {:ok, %{processed: 0, next: next_stage}}
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "workspace_provisioning"}}}
+    end
+  end
+
+  # The Task file index (`SalixIM.TaskFiles`): core rollout has succeeded, so
+  # no server of the release before is left to append a Message without
+  # indexing it. The release records that and opens the backfill, which every
+  # Pod drains (`SalixIM.TaskFilesBackfill`); Task file reads open once it
+  # completes. A node without Salix has nothing to open. The backfill failing to
+  # open does not fail the release: Task files stay unavailable until the next.
+  defp open_task_files do
+    files = Module.concat([SalixIM, TaskFiles])
+    authority = "comma-release:" <> (System.get_env("COMMA_REVISION") || "unknown")
+
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(files) do
+      case apply(files, :open_after_rollout, [authority]) do
+        {:ok, :opened} ->
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
+
+        {:ok, _state} ->
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
+
+        {:error, reason} ->
+          IO.puts(:stderr, "Task files were not opened: #{inspect(reason)}")
+          {:ok, %{processed: 0, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
+    end
+  end
+
+  # The Cloud VM cutover (`SalixWeb.Migrations.CloudVMCutover`): where the
+  # deployment retires the Cloud VM, what names it is changed once, page by
+  # page, and the Cloudflare VMs are asked to stop. Elsewhere, and once done,
+  # it does nothing. A node without Salix has nothing to change. A page that
+  # fails pauses the job, which runs the same page again.
+  defp cloud_vm_cutover_page do
+    cutover = Module.concat([SalixWeb, Migrations, CloudVMCutover])
+
+    if enabled?(:salix, enabled_subsystems()) and Code.ensure_loaded?(cutover) do
+      case apply(cutover, :after_rollout_page, []) do
+        {:ok, %{processed: processed, done: true}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "workspace_provisioning"}}}
+
+        {:ok, %{processed: processed, done: false}} ->
+          {:ok, %{processed: processed, next_cursor: %{"stage" => "cloud_vm_cutover"}}}
+
+        {:error, reason} ->
+          {:error, {:cloud_vm_cutover, reason}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "workspace_provisioning"}}}
+    end
+  end
+
+  # Queue recovery after core rollout. Billing and Salix are rechecked by the
+  # worker; this page does not wait for any provider, including Synchronicity.
+  defp retry_workspace_provisioning_page(cursor) do
+    workspaces = Module.concat([Comma, Workspaces])
+    repo = Module.concat([Comma, Repo])
+
+    if enabled?(:comma_product, enabled_subsystems()) and Code.ensure_loaded?(workspaces) and
+         SystemsRuntime.Proc.whereis(repo) != nil do
+      case apply(workspaces, :retry_failed_provisioning_page, [cursor]) do
+        {:ok, %{next_cursor: nil} = summary} ->
+          {:ok, summary}
+
+        {:ok, %{next_cursor: next} = summary} ->
+          {:ok,
+           %{summary | next_cursor: %{"stage" => "workspace_provisioning", "source" => next}}}
+
+        {:error, reason} ->
+          {:error, {:workspace_provisioning, reason}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: nil}}
     end
   end
 
   @synchronicity_default_limit 100
   @synchronicity_max_limit 1_000
 
-  @doc """
-  Explicit online format-3 migration after the runtime rollout has completed.
-  Run in a dedicated operator process, never in the serving VM. Defaults to a
-  read-only inventory; writes require `dry_run: false`.
+  @doc "Read one bounded S or C source page without changing source data or progress."
+  def inventory_salix_pg(unit, cursor \\ nil, opts \\ []) when unit in [:s, :c] do
+    source = salix_pg_import_module(unit)
+    common = Module.concat([SalixStore, PGAuthorityImport])
+    apply(common, :with_dependencies, [fn -> apply(source, :inventory, [cursor, opts]) end])
+  end
 
-      bin/comma eval 'Comma.Release.migrate_salix_format3()'
-      bin/comma eval 'Comma.Release.migrate_salix_format3(dry_run: false)'
-  """
-  def migrate_salix_format3(opts \\ []) do
-    {:ok, _} = Application.ensure_all_started(:salix_store)
+  @doc "Import bounded S or C pages in the release runner's writer-frozen maintenance window."
+  def import_salix_pg(unit, opts \\ []) when unit in [:s, :c] do
+    unless Keyword.get(opts, :confirm_no_writers, false),
+      do: raise(ArgumentError, "PG authority import requires confirm_no_writers: true")
 
-    case apply(Module.concat([SalixAgent, InternalSessionFormat3Cutover]), :run, [opts]) do
-      {:ok, summary} ->
-        IO.puts("salix format-3 migration: #{inspect(summary)}")
-        {:ok, summary}
+    source = salix_pg_import_module(unit)
+    common = Module.concat([SalixStore, PGAuthorityImport])
+    apply(common, :with_dependencies, [fn -> apply(source, :run, [opts]) end])
+  end
 
-      {:error, reason} ->
-        raise "salix format-3 migration stopped: #{inspect(reason)}"
+  @doc "Complete both bounded imports inside the release runner's exclusive stage."
+  def migrate_salix_pg_authority(opts \\ []) do
+    common = Module.concat([SalixStore, PGAuthorityImport])
+
+    apply(common, :with_dependencies, [
+      fn ->
+        apply(common, :with_source_budget, [
+          fn shared ->
+            {:ok, supervisor} = Task.Supervisor.start_link(max_children: 2)
+
+            try do
+              results =
+                Task.Supervisor.async_stream_nolink(
+                  supervisor,
+                  [:s, :c],
+                  &complete_salix_pg_unit(&1, Keyword.merge(opts, shared)),
+                  max_concurrency: 2,
+                  ordered: true,
+                  timeout: :infinity
+                )
+                |> Enum.to_list()
+
+              # Exhaust both tasks before reporting an error: the peer must no
+              # longer be reading or committing when dependencies are stopped.
+              Enum.zip([:s, :c], results)
+              |> Enum.each(fn
+                {_unit, {:ok, :ok}} ->
+                  :ok
+
+                {unit, result} ->
+                  raise "Salix #{unit} authority import failed: #{inspect(result)}"
+              end)
+            after
+              Supervisor.stop(supervisor)
+            end
+          end,
+          opts
+        ])
+      end
+    ])
+
+    :ok
+  end
+
+  defp complete_salix_pg_unit(unit, opts) do
+    apply(salix_pg_import_module(unit), :with_context, [
+      &complete_salix_pg_import(unit, &1),
+      opts
+    ])
+  end
+
+  defp complete_salix_pg_import(unit, opts) do
+    case apply(salix_pg_import_module(unit), :step, [opts]) do
+      {:ok, %{phase: "complete", cursor: %{"phase" => "complete"}}} -> :ok
+      {:ok, _progress} -> complete_salix_pg_import(unit, opts)
+      error -> error
     end
   end
+
+  defp salix_pg_import_module(:s), do: Module.concat([SalixAgent, PGImport])
+  defp salix_pg_import_module(:c), do: Module.concat([SalixIM, PGImport])
 
   @doc "Prune expired, verified format-3 migration backups; defaults to dry-run."
   def prune_salix_format3_backups(opts \\ []) do

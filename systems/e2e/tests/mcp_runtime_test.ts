@@ -1,38 +1,30 @@
 import { setDefaultTimeout, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { stationConnector } from "../helpers/station.ts";
 
 // Builds and subprocesses here take longer than the five-second default.
 setDefaultTimeout(30 * 60_000);
 
 const SYSTEMS_ROOT = new URL("../..", import.meta.url).pathname;
-const CONNECTOR_ROOT = new URL("../../connector/salix-connect", import.meta.url)
-  .pathname;
 const DEFAULT_TIMEOUT_MS = 600_000;
 
 test("Salix MCP runtime covers definitions, bindings, discovery, device execution, async calls, and disconnect behavior", async () => {
-  const id = crypto.randomUUID().slice(0, 8);
-  const bin = `/tmp/salix-connect-mcp-${id}`;
+  const station = await stationConnector();
 
   try {
-    await run("go", ["build", "-o", bin, "."], {
-      cwd: CONNECTOR_ROOT,
-      timeoutMs: 120_000,
-    });
-
     const output = await run("mix", ["run", "scripts/mcp_runtime_e2e.exs"], {
       cwd: SYSTEMS_ROOT,
       env: {
         ...process.env,
         PATH: pathWithAsdf(),
         MIX_ENV: "test",
-        SALIX_CONNECT_BIN: bin,
+        STATION_CONNECTOR_BIN: station.bin,
       },
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
 
     assertIncludes(output.combined, "MCP_RUNTIME_E2E: PASS");
   } finally {
-    await rm(bin).catch(() => {});
+    await station.cleanup();
   }
 });
 

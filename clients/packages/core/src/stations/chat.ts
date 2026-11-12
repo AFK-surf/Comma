@@ -20,7 +20,7 @@
 // opens again; one read per gap and per older page asked; for the Activity, one read at a time of pages of
 // ACTIVITY_PAGE entries, back to the chat's first. An agent's post is parsed once per version of it held.
 import type { ChatTaskActivity } from "@comma/chat-contract";
-import { CoreError } from "@comma/core-kernel";
+import { CoreError, share } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { route } from "../api.ts";
 import {
@@ -192,7 +192,11 @@ type Open = {
   /** Reading the history for the Activity, or stopped short of the chat's first entry. */
   activityEarlier: ChatTaskActivity["earlier"];
   readingActivity: boolean;
+  /** Its messages as last shown: made again from the entries, those that did not change stay as they were. */
+  messages?: StationChatMessage[];
 };
+
+const BY_SEQ = { key: ["seq"] };
 
 /** A chat on a station, in its workspace. */
 export type ChatAt = { workspace: string; station: string; thread: number };
@@ -598,7 +602,13 @@ export class StationChats {
       running: agentState(agent).status === "running" || agent.process === "running",
     }));
     const outbox = this.#outbox(station, thread);
-    const messages = open ? this.#messages(open, row, outbox) : [];
+    const messages = open
+      ? (open.messages = share(
+          open.messages,
+          this.#messages(open, row, outbox),
+          BY_SEQ
+        ))
+      : [];
     const activity = open ? this.#activityOf(open) : undefined;
     // As its row says it (kept live with the station's rows), else as its summary did.
     const run = row?.runsOn ?? (row ? undefined : open?.view?.runsOn);

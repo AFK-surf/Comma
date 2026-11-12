@@ -15,8 +15,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { arch, platform } from "node:process";
 import { dirname, join, resolve } from "node:path";
+import {
+  crossCompilingMacOS,
+  targetArch as arch,
+  targetPlatform as platform,
+} from "./build-target";
 import { getCommaReleaseConfig } from "../src/release-config";
 import {
   computerUseAppName,
@@ -58,6 +62,10 @@ import {
   snapshotPaths,
 } from "./native-build-cache";
 import { buildNativeAddon } from "./native-addon-build";
+import {
+  buildMenuBarHostWithXcrun,
+  buildNativeAddonWithXcrun,
+} from "./macos-xcrun-build";
 import { fetchOpenDropKit } from "./opendropkit-release";
 import {
   cuaCursorTheme,
@@ -107,8 +115,8 @@ const notificationAuthorizationOnly = process.argv.includes(
   "--notification-authorization-only"
 );
 const nodeGypPath = resolve(repoRoot, "node_modules/.bin/node-gyp");
-/** The Computer Use helper's sources (they move beside the station once the Go connector goes). */
-const computerUseSourceDir = resolve(repoRoot, "systems/connector/salix-connect");
+/** The Computer Use helper's sources (beside the station). */
+const computerUseSourceDir = resolve(repoRoot, "systems/station/computer-use");
 const computerUsePackageScript = resolve(
   computerUseSourceDir,
   "scripts/package-computer-use-helper.sh"
@@ -300,30 +308,39 @@ function buildMenuBarHost() {
   }
   const xcodeConfiguration = configuration === "release" ? "Release" : "Debug";
   const derivedDataPath = resolve(menuBarProjectDir, ".derived");
-  run(
-    "xcodebuild",
-    [
-      "-project",
-      "Comma.xcodeproj",
-      "-scheme",
-      "Comma",
-      "-configuration",
-      xcodeConfiguration,
-      "-derivedDataPath",
-      derivedDataPath,
-      "CODE_SIGNING_ALLOWED=NO",
-      `PRODUCT_BUNDLE_IDENTIFIER=${menuBarHostBundleId(releaseConfig.appBundleId)}`,
-      "build",
-    ],
-    menuBarProjectDir
-  );
-
   const builtApp = resolve(
     derivedDataPath,
     "Build/Products",
     xcodeConfiguration,
     `${menuBarAppName}.app`
   );
+  if (crossCompilingMacOS) {
+    buildMenuBarHostWithXcrun({
+      projectDir: menuBarProjectDir,
+      appPath: builtApp,
+      executableName: menuBarAppName,
+      bundleId: menuBarHostBundleId(releaseConfig.appBundleId),
+      configuration,
+    });
+  } else {
+    run(
+      "xcodebuild",
+      [
+        "-project",
+        "Comma.xcodeproj",
+        "-scheme",
+        "Comma",
+        "-configuration",
+        xcodeConfiguration,
+        "-derivedDataPath",
+        derivedDataPath,
+        "CODE_SIGNING_ALLOWED=NO",
+        `PRODUCT_BUNDLE_IDENTIFIER=${menuBarHostBundleId(releaseConfig.appBundleId)}`,
+        "build",
+      ],
+      menuBarProjectDir
+    );
+  }
   const cache = installCache(
     "menu-bar",
     {
@@ -376,6 +393,10 @@ function buildNodeAddon(options: {
   output: string;
   targetName: string;
 }) {
+  if (crossCompilingMacOS) {
+    buildNativeAddonWithXcrun({ ...options, configuration, incremental });
+    return;
+  }
   buildNativeAddon({ ...options, nodeGypPath, configuration, incremental });
 }
 
@@ -470,6 +491,8 @@ function buildComputerUseHelper() {
             packageDir,
             "Sources/CommaComputerUseDaemon/Resources/panel-logo.png"
           ),
+          // Built into the app's Resources by the package script.
+          resolve(computerUseSourceDir, "../vendor/serve-sim/Sources/SimDuoHID/main.m"),
         ]),
         bundleId: releaseConfig.appBundleId,
         displayName: releaseConfig.productName,

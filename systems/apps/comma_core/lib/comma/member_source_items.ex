@@ -8,24 +8,39 @@ defmodule Comma.MemberSourceItems do
   items that arrived or changed, and each consumer records its own outcome.
   The pool keeps bounded excerpts, never raw provider payloads. An item expires
   5 days after collection last saw it. Revoking, removing or turning off a
-  source, or leaving member mode, deletes its items at once.
+  source, or leaving member mode, deletes its items and open threads at once.
   """
 
   import Ecto.Query
   alias Comma.Repo
-  alias Comma.Data.{MemberSourceItem, MemberSourceState, RecommendationProfile, Workspace}
+
+  alias Comma.Data.{
+    MemberSourceItem,
+    MemberSourceState,
+    OpenThread,
+    OpenThreadCursor,
+    RecommendationProfile,
+    Workspace
+  }
 
   @retention_days 5
   # An unusable judgment keeps an item waiting for at most this many attempts.
   @judge_attempts 3
+  # A matter that waits for a closed budget is judged again at its `next_at`,
+  # at most this many times. Its own due time (`due_at`) wakes it apart from
+  # that bound: each judgment sets the next one, at most twice per due time.
+  @rechecks 4
   @per_source_limit 400
   # A still-present item refreshes its last-seen time a few times a day, not on
   # every collection, so retention does not rewrite every row on every check.
   @touch_after_s 6 * 60 * 60
+  # A source's open threads (`Comma.OpenThreads`) leave with its items.
+  @source_schemas [MemberSourceItem, MemberSourceState, OpenThread, OpenThreadCursor]
   @content ~w(toolkit url app title excerpt context prompt_context relationship recipient facts provider_ids fingerprint)a
 
   def retention_days, do: @retention_days
   def judge_attempts, do: @judge_attempts
+  def rechecks, do: @rechecks
 
   @doc """
   Records one collection and deletes the items and states of sources the
@@ -106,12 +121,13 @@ defmodule Comma.MemberSourceItems do
     do: for(%{"enabled" => true, "connectionId" => id} <- sources || [], is_binary(id), do: id)
 
   @doc """
-  Deletes the items and states of every source outside `source_ids`, such as
-  a source the member turned off. Recording checks the current profile under
-  its lock, so a late read cannot restore a disabled source.
+  Deletes the items, states and open threads of every source outside
+  `source_ids`, such as a source the member turned off. Recording checks the
+  current profile under its lock, so a late read cannot restore a disabled
+  source.
   """
   def retain_sources(profile_id, source_ids) when is_binary(profile_id) and is_list(source_ids) do
-    for schema <- [MemberSourceItem, MemberSourceState] do
+    for schema <- @source_schemas do
       from(r in schema, where: r.profile_id == ^profile_id and r.source_id not in ^source_ids)
       |> Repo.delete_all()
     end
@@ -391,8 +407,11 @@ defmodule Comma.MemberSourceItems do
   # An arrived or changed item without an outcome waits for consumers while
   # its source's latest successful collection still returns it and no later
   # attempt failed as a whole. Mail the member answered, or a thread that no
-  # longer needs them, leaves the result and stops waiting.
+  # longer needs them, leaves the result and stops waiting. A judged item
+  # waits again from its budget `next_at` or its `due_at`.
   defp pending_items(profile_id) do
+    now = SystemsClock.system_time(:millisecond)
+
     from(i in MemberSourceItem,
       join: s in MemberSourceState,
       on: s.profile_id == i.profile_id and s.source_id == i.source_id,
@@ -400,7 +419,12 @@ defmodule Comma.MemberSourceItems do
         i.profile_id == ^profile_id and
           (is_nil(i.attention) or
              (fragment("?->>'outcome'", i.attention) == "retry" and
-                fragment("(?->>'attempts')::int", i.attention) < ^@judge_attempts)) and
+                fragment("(?->>'attempts')::int", i.attention) < ^@judge_attempts) or
+             (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting"] and
+                fragment("(?->>'next_at')::bigint", i.attention) <= ^now and
+                fragment("coalesce((?->>'rechecks')::int, 0)", i.attention) < ^@rechecks) or
+             (fragment("?->>'outcome'", i.attention) in ["deferred", "waiting", "quiet"] and
+                fragment("(?->>'due_at')::bigint", i.attention) <= ^now)) and
           not i.baseline and
           fragment("? = ANY(?)", i.item_key, s.current_keys) and
           (is_nil(s.failure) or s.attempted_at <= s.collected_at)
@@ -473,7 +497,7 @@ defmodule Comma.MemberSourceItems do
   """
   def purge_source(workspace_id, source_id, user_id \\ nil) do
     with_locked_profiles(workspace_id, user_id, fn ids ->
-      for schema <- [MemberSourceItem, MemberSourceState] do
+      for schema <- @source_schemas do
         from(r in schema, where: r.source_id == ^source_id and r.profile_id in ^ids)
         |> Repo.delete_all()
       end
@@ -481,21 +505,21 @@ defmodule Comma.MemberSourceItems do
   end
 
   @doc """
-  Deletes the profile's items and source states, so the next collection
-  records a new baseline.
+  Deletes the profile's items, source states and open threads, so the next
+  collection records a new baseline.
   """
   def reset(profile_id) do
-    for schema <- [MemberSourceItem, MemberSourceState] do
+    for schema <- @source_schemas do
       from(r in schema, where: r.profile_id == ^profile_id) |> Repo.delete_all()
     end
 
     :ok
   end
 
-  @doc "Deletes the workspace's items and states from removed apps."
+  @doc "Deletes the workspace's items, states and open threads from removed apps."
   def purge_toolkits(workspace_id, toolkits) when is_list(toolkits) do
     with_locked_profiles(workspace_id, nil, fn ids ->
-      for schema <- [MemberSourceItem, MemberSourceState] do
+      for schema <- @source_schemas do
         from(r in schema, where: r.toolkit in ^toolkits and r.profile_id in ^ids)
         |> Repo.delete_all()
       end

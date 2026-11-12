@@ -110,7 +110,7 @@ theorem SealedImagesBacked.mono {before after : Objects} {state : Term} {sealed 
 
 theorem published_archive_sealed_images {state event next : Term} {records live sealed : List Term}
     {base ceiling line : Int} {before after : Objects} {final : Output} {journal rest : List Term}
-    (framing : CodecFraming) (sorted : SeqSorted state)
+    (framing : CodecFraming) (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (numeric : (state.get (a "archived_through")).default (i 0) = i base) (nonnegative : base ≥ 0)
     (initial : StateCatalogBacked before state)
     (catalog : ∀ value ∈ wrap ((state.get (a "segment_catalog")).default (list [])), validSegment value = true)
@@ -133,7 +133,7 @@ theorem published_archive_sealed_images {state event next : Term} {records live 
   have exactFilter := publication_catalog_filter_exact framing numeric nonnegative initial catalog window positive execution emitted
   rcases archiveAdvance_keeps_published_catalog exactFilter reduced with same | included
   · exact unchanged same
-  rcases published_archive_ledger_supported framing sorted numeric nonnegative initial catalog window positive
+  rcases published_archive_ledger_supported framing sorted physical numeric nonnegative initial catalog window positive
       execution emitted read supported reduced with same | ⟨dropped, kept, partition, nextRead, nextSupport, images⟩
   · exact unchanged same
   refine ⟨dropped, kept, partition, nextRead, nextSupport, ?_⟩

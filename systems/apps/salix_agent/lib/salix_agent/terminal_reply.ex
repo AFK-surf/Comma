@@ -1,6 +1,6 @@
 defmodule SalixAgent.TerminalReply do
   @moduledoc """
-  Source-bound replies for IM and Comma, plus optional Slack channel welcomes.
+  Source-bound replies for IM and Comma, plus optional channel welcomes (Slack, Feishu, Lark).
   Ordinary replies can accompany an explicit end_turn decision. Existing
   terminal records and interactive-card settlement retain their result-commit semantics.
   A welcome attempt settles on success or refusal without acknowledging later
@@ -14,7 +14,8 @@ defmodule SalixAgent.TerminalReply do
   Derive the one Telegram request owner without dropping activation provenance.
 
   Trusted Worker/system and no-wake inputs are context, not additional human
-  requests. Unknown carriers and multiple human requests fail closed. This
+  requests. Several requests of one thread answer there, and their last person
+  owns the reply. Unknown carriers and requests of several places fail closed. This
   `source_message_id` and `trusted_origin` identify that request and destination.
   `context_source_message_ids` retains all execution sources for IFC and tool
   checks. This projection is not a capability token or a second source ledger.

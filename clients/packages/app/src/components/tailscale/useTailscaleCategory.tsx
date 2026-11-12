@@ -1,3 +1,4 @@
+import { copyWithFeedback } from "@comma/ui/components/toast";
 import { useEffect, useState } from "react";
 import { useCall, useTopic, type TailnetStatus } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
@@ -132,6 +133,11 @@ export function useTailscaleCategory(active: boolean): SettingsCategoryDefinitio
   if (loadError) description = m.settings_tailscale_error();
   else if (saveError) description = m.settings_tailscale_save_failed();
   else if (!workspaceId || !status) description = m.settings_telegram_loading();
+  else if (status.error?.code === "tailnet_mismatch" && status.tailnet)
+    description = m.settings_tailscale_mismatch({
+      tailnet: status.tailnet,
+      expected: status.settings.expected_tailnet ?? "—",
+    });
   else if (status.state === "error" || status.error)
     description = m.settings_tailscale_node_error({
       code: status.error?.code ?? "tailnet_unavailable",
@@ -213,7 +219,12 @@ export function useTailscaleCategory(active: boolean): SettingsCategoryDefinitio
             </Button>
             <Button
               hierarchy="secondary-gray"
-              onPress={() => void nativePlatformClipboard.writeText(loginUrl)}
+              onPress={() =>
+                void copyWithFeedback(
+                  () => nativePlatformClipboard.writeText(loginUrl),
+                  m
+                )
+              }
               size="sm"
             >
               {m.settings_tailscale_login_copy()}
@@ -221,7 +232,9 @@ export function useTailscaleCategory(active: boolean): SettingsCategoryDefinitio
           </div>
         </div>
       ) : null}
-      {status.enabled && (status.tailnet || status.state === "running") ? (
+      {status.enabled &&
+      status.state !== "error" &&
+      (status.tailnet || status.state === "running") ? (
         <p className="text-xs leading-5 text-tertiary">
           {status.key_expiry
             ? m.settings_tailscale_key_expiry({

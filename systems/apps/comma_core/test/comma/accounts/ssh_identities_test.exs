@@ -1,5 +1,6 @@
 defmodule Comma.Accounts.SSHIdentitiesTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
   alias Comma.Accounts.SSHIdentities
 
   setup do
@@ -51,7 +52,7 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
 
   test "a regular login code cannot enroll a key and one key cannot change accounts" do
     {:ok, challenge} =
-      Comma.AuthChallenges.request_email_login(%{
+      Comma.AuthAbuseTestSupport.request_email_login(%{
         "email" => "regular-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       })
 

@@ -1,5 +1,5 @@
 // Members' connections over the mesh (the Rust station's main.rs `serve`, `relay_request`). Wire format, on ALPN
-// `stillfail/admin/1` (and `ember/admin/1`, as clients from before the rename ask): the first bidirectional stream
+// `comma-station/admin/1` (and `ember/admin/1`, as clients from before the rename ask): the first bidirectional stream
 // carries credentials, one JSON line each, answered with one JSON line (a later line renews); every other stream is
 // one request: a JSON head line `{method, path, headers}`, then the body until the stream finishes, answered by a
 // JSON head line `{status, headers}` and the response body.
@@ -16,8 +16,9 @@ import { answerAdb, type Shares } from "./adb.ts";
 import { Traces, parseParent, route } from "./traces.ts";
 import { FrameReader, SocketRefused, openSocket, previewTarget, pumpSocket } from "../jobs/preview.ts";
 
-export const ALPN = Buffer.from("stillfail/admin/1");
+export const ALPN = Buffer.from("comma-station/admin/1");
 export const FORMER_ALPN = Buffer.from("ember/admin/1");
+export const RENAMED_ALPN = Buffer.from("stillfail/admin/1");
 // Keep old clients admitted until protocol-2 clients have reached the stable channel.
 const MIN_CLIENT_PROTOCOL = 1;
 const MAX_HEAD = 16 * 1024;
@@ -117,9 +118,9 @@ export async function serve(m: Members, conn: Connection) {
   if (protocol < MIN_CLIENT_PROTOCOL) {
     await writeLine(first, {
       code: "client_upgrade_required",
-      error: "Please update still.fail to the latest version, or reload the web page, before connecting to this station.",
+      error: "Please update Comma to the latest version, or reload the web page, before connecting to this station.",
       required_protocol: MIN_CLIENT_PROTOCOL,
-      update_url: "https://still.fail",
+      update_url: "https://comma.surf",
     });
     await first.finish().catch(() => {});
     wall.after(200, () => conn.close(4, "client_upgrade_required"));
@@ -213,8 +214,8 @@ function tracing(traces: Traces | undefined, head: any, method: string, path: st
       ["http.response.status_code", outcome.status],
       ["http.request.body.size", outcome.received],
     ];
-    attributes.push(streamed ? ["stillfail.stream", true] : ["http.response.body.size", outcome.sent]);
-    if (via !== null) attributes.push(["stillfail.path", via]);
+    attributes.push(streamed ? ["station.stream", true] : ["http.response.body.size", outcome.sent]);
+    if (via !== null) attributes.push(["station.path", via]);
     if (error !== null) attributes.push(["error.type", error.message]);
     traces.end(span, `${method} ${route(path)}`, attributes, error !== null || outcome.status >= 500);
     span = null;
@@ -273,7 +274,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(head.headers ?? {})) {
     const lower = name.toLowerCase();
-    if (HOP.includes(lower) || lower.startsWith("x-stillfail-") || lower.startsWith("x-ember-") || lower === "traceparent" || lower === "tracestate") continue;
+    if (HOP.includes(lower) || lower.startsWith("x-comma-station-") || lower.startsWith("x-ember-") || lower === "traceparent" || lower === "tracestate") continue;
     if (typeof value === "string") headers[name] = value;
   }
   if (!m.up()) return answer(502, { error: "station unreachable: not started" });

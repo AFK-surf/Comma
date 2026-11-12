@@ -356,7 +356,7 @@ defmodule SalixAgent.RoundConfig do
              ),
              if(cached,
                do: {:known, {:ok, cached.group_flags}},
-               else: fn -> {:ok, group_flags(base_disclosure_context)} end
+               else: fn -> {:ok, group_flags(base_disclosure_context, role)} end
              ),
              fn ->
                {:ok, SalixAgent.Tools.ImRouter.dynamic_disclosure_entries(im_disclosure_context)}
@@ -406,6 +406,8 @@ defmodule SalixAgent.RoundConfig do
           )
           |> Map.put("recommendation_policy", Atom.to_string(recommendation_policy))
           |> Map.put("guest_policy", Atom.to_string(guest_policy))
+          |> Map.put("automatic_task_model", group_flags.task_model_selection)
+          |> Map.put("cloud_vm_retired", group_flags.cloud_vm_retired)
           |> Map.put("inspector_policy", runtime_config[:inspector_policy])
 
         config = %{
@@ -418,7 +420,7 @@ defmodule SalixAgent.RoundConfig do
           system_prompt:
             SalixAgent.ToolPolicy.session_prompt(
               role,
-              runtime_config.prompts,
+              role_prompts(role, runtime_config.prompts, group_flags),
               agent_id,
               runtime_kind,
               disclosure,
@@ -447,7 +449,7 @@ defmodule SalixAgent.RoundConfig do
   end
 
   # One read of the Group record answers every Group-owned flag a round uses.
-  defp group_flags(ctx) do
+  defp group_flags(ctx, role) do
     group =
       with tenant_id when is_binary(tenant_id) and tenant_id != "" <- ctx[:tenant_id],
            group_id when is_binary(group_id) and group_id != "" <- ctx[:group_id],
@@ -458,10 +460,33 @@ defmodule SalixAgent.RoundConfig do
       end
 
     %{
+      task_model_selection: SalixAgent.TaskRouting.automatic?(group["task_model_selection"]),
       memory_ask_worker_enabled: group["memory_ask_worker_enabled"] == true,
-      condensed_workspace_enabled: group["condensed_workspace_enabled"] == true
+      condensed_workspace_enabled: group["condensed_workspace_enabled"] == true,
+      cloud_vm_retired: SalixAgent.Sandboxes.cloud_vm_retired?(group),
+      router_reply_style: router_reply_style(role, group, ctx[:group_id])
     }
   end
+
+  # The reply style is the workspace owner's choice, stored on the Group's
+  # Router (Settings › General). A Worker writes in the same style.
+  defp router_reply_style("worker", group, group_id) do
+    with agent_id when is_binary(agent_id) and agent_id != "" <- group["router_agent_id"],
+         {:ok, %{"role" => "router", "group_id" => ^group_id} = router} <-
+           SalixAgent.AgentControl.get_record(agent_id) do
+      router["reply_style"]
+    else
+      _ -> nil
+    end
+  end
+
+  defp router_reply_style(_role, _group, _group_id), do: nil
+
+  defp role_prompts("worker", prompts, %{router_reply_style: style}) when is_binary(style),
+    do: Map.put(prompts, "reply_style", style)
+
+  defp role_prompts("worker", prompts, _group_flags), do: Map.delete(prompts, "reply_style")
+  defp role_prompts(_role, prompts, _group_flags), do: prompts
 
   # Branches start from the control records the caller already holds, and
   # the caller learns what the branches read, so a later step in the same

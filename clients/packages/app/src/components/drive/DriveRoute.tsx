@@ -14,6 +14,7 @@ import {
   type CSSProperties,
 } from "react";
 import { revealLabel } from "../../runtime-files/fileDownloads";
+import { RailResizeHandle, useRailWidth } from "../railResize";
 import { commaDriveSpaceRailWidth } from "../shellGeometry";
 import { useCall } from "@comma/core-client";
 import {
@@ -83,6 +84,12 @@ export function DriveRoute() {
   const node = driveNodeAvailable();
   const revealSearch = useSearch({ strict: false });
   const routeRef = useRef<HTMLElement>(null);
+  // The reader may widen the space rail up to half the window; its divider resets it.
+  const spaceRailRef = useRef<HTMLDivElement | null>(null);
+  const { width: spaceRailWidth, setWidth: setSpaceRailWidth } = useRailWidth(
+    "comma.driveSpaceRailWidth",
+    commaDriveSpaceRailWidth
+  );
   const call = useCall();
   const transferDeps = useMemo(
     () => ({ call, bridge, locale }),
@@ -642,9 +649,7 @@ export function DriveRoute() {
     const measure = () => {
       // Compare against the pane WITH the rail, even while it is hidden. Using
       // the expanded pane here would toggle the rail on every resize delivery.
-      setSpaceRailCollapsed(
-        bar.offsetWidth > route.clientWidth - commaDriveSpaceRailWidth
-      );
+      setSpaceRailCollapsed(bar.offsetWidth > route.clientWidth - spaceRailWidth);
     };
     measure();
     // Two fixed elements per mounted Drive route; no per-file observation.
@@ -652,7 +657,7 @@ export function DriveRoute() {
     observer.observe(route);
     observer.observe(bar);
     return () => observer.disconnect();
-  }, [hasSelection]);
+  }, [hasSelection, spaceRailWidth]);
 
   const onToggleFiles = useCallback(
     (files: readonly DriveFile[], selected: boolean) => {
@@ -790,12 +795,24 @@ export function DriveRoute() {
             className="comma-drive-space-rail-slot"
             data-folded={hasSelection && spaceRailCollapsed ? "true" : "false"}
             inert={hasSelection && spaceRailCollapsed}
+            ref={spaceRailRef}
             style={
               {
-                "--comma-drive-space-rail-width": `${commaDriveSpaceRailWidth}px`,
+                "--comma-drive-space-rail-width": `${spaceRailWidth}px`,
               } as CSSProperties
             }
           >
+            <RailResizeHandle
+              edge="inside"
+              hint={messages.rail_resize_hint()}
+              label={messages.drive_space_rail_resize()}
+              minWidth={commaDriveSpaceRailWidth}
+              onWidthChange={setSpaceRailWidth}
+              rail={spaceRailRef}
+              testId="drive-space-rail-resize"
+              variable="--comma-drive-space-rail-width"
+              width={spaceRailWidth}
+            />
             <DriveSpaceRail
               onMenuAction={onSpaceMenuAction}
               onRailAction={onRailAction}

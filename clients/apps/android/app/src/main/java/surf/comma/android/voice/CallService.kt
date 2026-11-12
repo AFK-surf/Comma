@@ -128,7 +128,7 @@ class CallService : Service() {
     /** Stop in this callback if foreground promotion fails, before Android's startup watchdog. */
     private fun startupFailed(id: Long, message: String) {
         controller.finish(id, CallState(phase = CallPhase.Failed, result = CallResult.Interrupted), message)
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        Toast.makeText(this, notifier.notice(message), Toast.LENGTH_LONG).show()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -310,7 +310,7 @@ class CallService : Service() {
             notifier.post(controller.state.value)
             stopTimer.schedule(id, state.phase == CallPhase.Failed)
         }
-        if (notice != null) main.post { Toast.makeText(this, notice, Toast.LENGTH_LONG).show() }
+        if (notice != null) main.post { Toast.makeText(this, notifier.notice(notice), Toast.LENGTH_LONG).show() }
     }
 
     override fun onDestroy() {

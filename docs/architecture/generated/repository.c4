@@ -10,8 +10,14 @@ model {
         link ../../../clients/apps/admin/package.json 'package.json'
       }
 
+      comma_analytics = code_module '@comma/analytics' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/analytics/package.json 'package.json'
+      }
+
       comma_app = code_module '@comma/app' {
-        description '包；10 个仓库内源码依赖'
+        description '包；11 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/packages/app/package.json 'package.json'
       }
@@ -23,7 +29,7 @@ model {
       }
 
       comma_chat-contract = code_module '@comma/chat-contract' {
-        description '包；0 个仓库内源码依赖'
+        description '包；1 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/packages/chat-contract/package.json 'package.json'
       }
@@ -34,8 +40,26 @@ model {
         link ../../../clients/packages/config/package.json 'package.json'
       }
 
+      comma_core = code_module '@comma/core' {
+        description '包；7 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/core/package.json 'package.json'
+      }
+
+      comma_core-client = code_module '@comma/core-client' {
+        description '包；2 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/core-client/package.json 'package.json'
+      }
+
+      comma_core-kernel = code_module '@comma/core-kernel' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/core-kernel/package.json 'package.json'
+      }
+
       comma_electron = code_module '@comma/electron' {
-        description '应用；8 个仓库内源码依赖'
+        description '应用；10 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/apps/electron/package.json 'package.json'
       }
@@ -52,16 +76,22 @@ model {
         link ../../../clients/packages/layout-inspector/package.json 'package.json'
       }
 
+      comma_mesh = code_module '@comma/mesh' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/mesh/package.json 'package.json'
+      }
+
+      comma_miniapp-sdk = code_module '@comma/miniapp-sdk' {
+        description '包；0 个仓库内源码依赖'
+        technology 'TypeScript Workspace'
+        link ../../../clients/packages/miniapp-sdk/package.json 'package.json'
+      }
+
       comma_native-bridge = code_module '@comma/native-bridge' {
         description '包；2 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/packages/native-bridge/package.json 'package.json'
-      }
-
-      comma_product-inbox-runtime = code_module '@comma/product-inbox-runtime' {
-        description '包；2 个仓库内源码依赖'
-        technology 'TypeScript Workspace'
-        link ../../../clients/packages/product-inbox-runtime/package.json 'package.json'
       }
 
       comma_recommendation-contract = code_module '@comma/recommendation-contract' {
@@ -76,20 +106,14 @@ model {
         link ../../../clients/packages/session-contract/package.json 'package.json'
       }
 
-      comma_session-history-runtime = code_module '@comma/session-history-runtime' {
-        description '包；2 个仓库内源码依赖'
-        technology 'TypeScript Workspace'
-        link ../../../clients/packages/session-history-runtime/package.json 'package.json'
-      }
-
       comma_test-utils = code_module '@comma/test-utils' {
-        description '包；1 个仓库内源码依赖'
+        description '包；6 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/packages/test-utils/package.json 'package.json'
       }
 
       comma_ui = code_module '@comma/ui' {
-        description '包；2 个仓库内源码依赖'
+        description '包；3 个仓库内源码依赖'
         technology 'TypeScript Workspace'
         link ../../../clients/packages/ui/package.json 'package.json'
       }
@@ -105,31 +129,46 @@ model {
       comma_admin .depends_on comma_ui '产品/Peer 依赖'
       comma_app .depends_on comma_chat-contract '产品/Peer 依赖'
       comma_app .depends_on comma_config '产品/Peer 依赖'
+      comma_app .depends_on comma_core '产品/Peer 依赖'
+      comma_app .depends_on comma_core-client '产品/Peer 依赖'
       comma_app .depends_on comma_i18n '产品/Peer 依赖'
       comma_app .depends_on comma_layout-inspector '产品/Peer 依赖'
       comma_app .depends_on comma_native-bridge '产品/Peer 依赖'
-      comma_app .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
       comma_app .depends_on comma_recommendation-contract '产品/Peer 依赖'
       comma_app .depends_on comma_session-contract '产品/Peer 依赖'
-      comma_app .depends_on comma_session-history-runtime '产品/Peer 依赖'
       comma_app .depends_on comma_ui '产品/Peer 依赖'
+      comma_app .depends_on comma_analytics '产品/Peer 依赖'
       comma_bft .depends_on comma_ui '产品/Peer 依赖'
+      comma_chat-contract .depends_on comma_miniapp-sdk '产品/Peer 依赖'
+      comma_core .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_core .depends_on comma_core-kernel '产品/Peer 依赖'
+      comma_core .depends_on comma_i18n '产品/Peer 依赖'
+      comma_core .depends_on comma_mesh '产品/Peer 依赖'
+      comma_core .depends_on comma_recommendation-contract '产品/Peer 依赖'
+      comma_core .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_core .depends_on comma_miniapp-sdk '开发依赖'
+      comma_core-client .depends_on comma_core '产品/Peer 依赖'
+      comma_core-client .depends_on comma_core-kernel '产品/Peer 依赖'
       comma_electron .depends_on comma_app '产品/Peer 依赖'
       comma_electron .depends_on comma_chat-contract '产品/Peer 依赖'
       comma_electron .depends_on comma_config '产品/Peer 依赖'
+      comma_electron .depends_on comma_core '产品/Peer 依赖'
+      comma_electron .depends_on comma_core-client '产品/Peer 依赖'
+      comma_electron .depends_on comma_core-kernel '产品/Peer 依赖'
       comma_electron .depends_on comma_i18n '产品/Peer 依赖'
+      comma_electron .depends_on comma_mesh '产品/Peer 依赖'
       comma_electron .depends_on comma_native-bridge '产品/Peer 依赖'
-      comma_electron .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
       comma_electron .depends_on comma_session-contract '产品/Peer 依赖'
-      comma_electron .depends_on comma_session-history-runtime '产品/Peer 依赖'
       comma_layout-inspector .depends_on comma_test-utils '开发依赖'
       comma_native-bridge .depends_on comma_chat-contract '产品/Peer 依赖'
       comma_native-bridge .depends_on comma_session-contract '产品/Peer 依赖'
-      comma_product-inbox-runtime .depends_on comma_native-bridge '产品/Peer 依赖'
-      comma_product-inbox-runtime .depends_on comma_session-contract '产品/Peer 依赖'
-      comma_session-history-runtime .depends_on comma_native-bridge '产品/Peer 依赖'
-      comma_session-history-runtime .depends_on comma_session-contract '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_chat-contract '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_core '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_core-client '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_core-kernel '产品/Peer 依赖'
+      comma_test-utils .depends_on comma_i18n '产品/Peer 依赖'
       comma_test-utils .depends_on comma_native-bridge '产品/Peer 依赖'
+      comma_ui .depends_on comma_core '产品/Peer 依赖'
       comma_ui .depends_on comma_i18n '产品/Peer 依赖'
       comma_ui .depends_on comma_layout-inspector '开发依赖'
       comma_web .depends_on comma_app '产品/Peer 依赖'
@@ -137,9 +176,9 @@ model {
       comma_web .depends_on comma_config '产品/Peer 依赖'
       comma_web .depends_on comma_i18n '产品/Peer 依赖'
       comma_web .depends_on comma_native-bridge '产品/Peer 依赖'
-      comma_web .depends_on comma_product-inbox-runtime '产品/Peer 依赖'
       comma_web .depends_on comma_session-contract '产品/Peer 依赖'
-      comma_web .depends_on comma_session-history-runtime '产品/Peer 依赖'
+      comma_web .depends_on comma_core '产品/Peer 依赖'
+      comma_web .depends_on comma_core-client '产品/Peer 依赖'
     }
 
     otp_apps = source_group 'OTP 应用清单' {
@@ -283,10 +322,10 @@ model {
         link ../../../systems/apps/salix_meet/mix.exs 'mix.exs'
       }
 
-      salix_migrate = code_module 'salix_migrate' {
+      salix_meet_native = code_module 'salix_meet_native' {
         description '所属子系统：salix'
         technology 'Elixir / OTP 应用'
-        link ../../../systems/apps/salix_migrate/mix.exs 'mix.exs'
+        link ../../../systems/apps/salix_meet_native/mix.exs 'mix.exs'
       }
 
       salix_signal = code_module 'salix_signal' {
@@ -319,35 +358,68 @@ model {
         link ../../../systems/apps/salix_web/mix.exs 'mix.exs'
       }
 
+      systems_clock = code_module 'systems_clock' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/systems_clock/mix.exs 'mix.exs'
+      }
+
       systems_observability = code_module 'systems_observability' {
         description '所属子系统：传递/支持应用'
         technology 'Elixir / OTP 应用'
         link ../../../systems/apps/systems_observability/mix.exs 'mix.exs'
       }
 
+      systems_runtime = code_module 'systems_runtime' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/systems_runtime/mix.exs 'mix.exs'
+      }
+
+      systems_sim = code_module 'systems_sim' {
+        description '所属子系统：传递/支持应用'
+        technology 'Elixir / OTP 应用'
+        link ../../../systems/apps/systems_sim/mix.exs 'mix.exs'
+      }
+
+      alert_router .depends_on systems_clock '生产 in_umbrella 依赖'
+      alert_router .depends_on systems_runtime '生产 in_umbrella 依赖'
       alert_router .depends_on systems_observability '生产 in_umbrella 依赖'
       alert_router .depends_on salix_store '生产 in_umbrella 依赖'
+      billing_commerce .depends_on systems_clock '生产 in_umbrella 依赖'
       billing_commerce .depends_on billing_core '生产 in_umbrella 依赖'
       billing_commerce .depends_on salix_analytics '生产 in_umbrella 依赖'
+      billing_core .depends_on systems_clock '生产 in_umbrella 依赖'
+      billing_core .depends_on systems_runtime '生产 in_umbrella 依赖'
       billing_core .depends_on systems_observability '生产 in_umbrella 依赖'
       billing_core .depends_on salix_analytics '生产 in_umbrella 依赖'
+      billing_stripe .depends_on systems_clock '生产 in_umbrella 依赖'
       billing_stripe .depends_on billing_commerce '生产 in_umbrella 依赖'
       billing_stripe .depends_on billing_core '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on systems_observability '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on systems_clock '生产 in_umbrella 依赖'
+      bridge_for_teams_core .depends_on systems_runtime '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on billing_core '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on billing_commerce '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on salix_store '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on salix_calendar '生产 in_umbrella 依赖'
       bridge_for_teams_core .depends_on comma_log '生产 in_umbrella 依赖'
+      bridge_for_teams_web .depends_on systems_clock '生产 in_umbrella 依赖'
       bridge_for_teams_web .depends_on systems_observability '生产 in_umbrella 依赖'
       bridge_for_teams_web .depends_on bridge_for_teams_core '生产 in_umbrella 依赖'
       comma .depends_on systems_observability '生产 in_umbrella 依赖'
+      comma_core .depends_on systems_clock '生产 in_umbrella 依赖'
+      comma_core .depends_on systems_runtime '生产 in_umbrella 依赖'
       comma_core .depends_on systems_observability '生产 in_umbrella 依赖'
       comma_core .depends_on billing_core '生产 in_umbrella 依赖'
       comma_core .depends_on salix_store '生产 in_umbrella 依赖'
       comma_core .depends_on salix_agent '生产 in_umbrella 依赖'
+      comma_log .depends_on systems_clock '生产 in_umbrella 依赖'
       comma_log .depends_on systems_observability '生产 in_umbrella 依赖'
       comma_ssh .depends_on comma_core '生产 in_umbrella 依赖'
+      comma_ssh .depends_on comma_tui '生产 in_umbrella 依赖'
+      comma_ssh .depends_on systems_clock '生产 in_umbrella 依赖'
+      comma_web .depends_on systems_clock '生产 in_umbrella 依赖'
       comma_web .depends_on systems_observability '生产 in_umbrella 依赖'
       comma_web .depends_on billing_core '生产 in_umbrella 依赖'
       comma_web .depends_on billing_commerce '生产 in_umbrella 依赖'
@@ -358,43 +430,59 @@ model {
       comma_web .depends_on salix_im '生产 in_umbrella 依赖'
       comma_web .depends_on salix_mcp '生产 in_umbrella 依赖'
       comma_web .depends_on salix_web '生产 in_umbrella 依赖'
+      comma_web .depends_on salix_meet_native '生产 in_umbrella 依赖'
       salix_agent .depends_on systems_observability '生产 in_umbrella 依赖'
       salix_agent .depends_on salix_ifc '生产 in_umbrella 依赖'
       salix_agent .depends_on salix_store '生产 in_umbrella 依赖'
       salix_agent .depends_on salix_media '生产 in_umbrella 依赖'
+      salix_agent .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_analytics .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_analytics .depends_on salix_store '生产 in_umbrella 依赖'
       salix_analytics .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_calendar .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_calendar .depends_on salix_store '生产 in_umbrella 依赖'
       salix_cluster .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_cluster .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_cluster .depends_on salix_agent '生产 in_umbrella 依赖'
       salix_cluster .depends_on salix_calendar '生产 in_umbrella 依赖'
       salix_cluster .depends_on salix_env '生产 in_umbrella 依赖'
       salix_cluster .depends_on salix_im '生产 in_umbrella 依赖'
       salix_env .depends_on salix_store '生产 in_umbrella 依赖'
       salix_env .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_env .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_im .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_im .depends_on systems_runtime '生产 in_umbrella 依赖'
       salix_im .depends_on salix_ifc '生产 in_umbrella 依赖'
       salix_im .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_llm .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_llm .depends_on systems_observability '生产 in_umbrella 依赖'
       salix_llm .depends_on salix_agent '生产 in_umbrella 依赖'
       salix_llm .depends_on salix_media '生产 in_umbrella 依赖'
+      salix_mcp .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_mcp .depends_on salix_agent '生产 in_umbrella 依赖'
       salix_mcp .depends_on salix_store '生产 in_umbrella 依赖'
       salix_mcp .depends_on salix_env '生产 in_umbrella 依赖'
+      salix_media .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_meet .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_meet .depends_on systems_observability '生产 in_umbrella 依赖'
       salix_meet .depends_on salix_store '生产 in_umbrella 依赖'
       salix_meet .depends_on salix_agent '生产 in_umbrella 依赖'
       salix_meet .depends_on salix_calendar '生产 in_umbrella 依赖'
       salix_meet .depends_on salix_cluster '生产 in_umbrella 依赖'
       salix_meet .depends_on salix_im '生产 in_umbrella 依赖'
-      salix_migrate .depends_on salix_store '生产 in_umbrella 依赖'
-      salix_migrate .depends_on salix_agent '生产 in_umbrella 依赖'
+      salix_meet_native .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_signal .depends_on salix_signal_proto '生产 in_umbrella 依赖'
       salix_signal .depends_on salix_voice '生产 in_umbrella 依赖'
       salix_signal .depends_on salix_store '生产 in_umbrella 依赖'
       salix_signal .depends_on salix_cluster '生产 in_umbrella 依赖'
+      salix_signal .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_signal_proto .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_store .depends_on comma_log '生产 in_umbrella 依赖'
       salix_store .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_store .depends_on systems_clock '生产 in_umbrella 依赖'
+      salix_store .depends_on systems_runtime '生产 in_umbrella 依赖'
       salix_voice .depends_on salix_store '生产 in_umbrella 依赖'
+      salix_voice .depends_on systems_clock '生产 in_umbrella 依赖'
       salix_voice .depends_on salix_agent '生产 in_umbrella 依赖'
       salix_voice .depends_on salix_im '生产 in_umbrella 依赖'
       salix_voice .depends_on salix_cluster '生产 in_umbrella 依赖'
@@ -403,6 +491,7 @@ model {
       salix_web .depends_on salix_im '生产 in_umbrella 依赖'
       salix_web .depends_on salix_mcp '生产 in_umbrella 依赖'
       salix_web .depends_on salix_meet '生产 in_umbrella 依赖'
+      salix_web .depends_on salix_meet_native '生产 in_umbrella 依赖'
       salix_web .depends_on salix_calendar '生产 in_umbrella 依赖'
       salix_web .depends_on salix_env '生产 in_umbrella 依赖'
       salix_web .depends_on salix_cluster '生产 in_umbrella 依赖'
@@ -412,6 +501,11 @@ model {
       salix_web .depends_on salix_llm '生产 in_umbrella 依赖'
       salix_web .depends_on salix_analytics '生产 in_umbrella 依赖'
       salix_web .depends_on systems_observability '生产 in_umbrella 依赖'
+      salix_web .depends_on systems_clock '生产 in_umbrella 依赖'
+      systems_clock .depends_on systems_runtime '生产 in_umbrella 依赖'
+      systems_observability .depends_on systems_clock '生产 in_umbrella 依赖'
+      systems_observability .depends_on systems_runtime '生产 in_umbrella 依赖'
+      systems_sim .depends_on systems_clock '生产 in_umbrella 依赖'
     }
 
     native_contracts = source_group 'Native Capability Namespace' {
@@ -436,7 +530,7 @@ model {
       }
 
       appPreferences = code_module 'appPreferences' {
-        description '5 个 command · 1 个 event · 1 个 replay-last state'
+        description '6 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -448,13 +542,13 @@ model {
       }
 
       browserSidebar = code_module 'browserSidebar' {
-        description '7 个 command · 2 个 event · 0 个 replay-last state'
+        description '10 个 command · 2 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
       chat = code_module 'chat' {
-        description '23 个 command · 2 个 event · 2 个 replay-last state'
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -466,7 +560,7 @@ model {
       }
 
       computeNode = code_module 'computeNode' {
-        description '14 个 command · 1 个 event · 1 个 replay-last state'
+        description '18 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -483,8 +577,8 @@ model {
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
-      driveCatalog = code_module 'driveCatalog' {
-        description '2 个 command · 1 个 event · 1 个 replay-last state'
+      core = code_module 'core' {
+        description '1 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -495,14 +589,20 @@ model {
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
-      localData = code_module 'localData' {
-        description '1 个 command · 0 个 event · 0 个 replay-last state'
+      localFiles = code_module 'localFiles' {
+        description '2 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
-      localFiles = code_module 'localFiles' {
-        description '2 个 command · 0 个 event · 0 个 replay-last state'
+      localStation = code_module 'localStation' {
+        description '4 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      macApps = code_module 'macApps' {
+        description '6 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -514,7 +614,7 @@ model {
       }
 
       meetingRecorder = code_module 'meetingRecorder' {
-        description '8 个 command · 1 个 event · 1 个 replay-last state'
+        description '3 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -538,19 +638,13 @@ model {
       }
 
       onboarding = code_module 'onboarding' {
-        description '3 个 command · 2 个 event · 1 个 replay-last state'
+        description '4 个 command · 2 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
       peers = code_module 'peers' {
         description '1 个 command · 0 个 event · 0 个 replay-last state'
-        technology '生成式 Native Capability Namespace'
-        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
-      }
-
-      productInbox = code_module 'productInbox' {
-        description '4 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -562,13 +656,7 @@ model {
       }
 
       session = code_module 'session' {
-        description '8 个 command · 1 个 event · 1 个 replay-last state'
-        technology '生成式 Native Capability Namespace'
-        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
-      }
-
-      sessionHistory = code_module 'sessionHistory' {
-        description '4 个 command · 1 个 event · 1 个 replay-last state'
+        description '1 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -579,44 +667,32 @@ model {
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
-      sideChat = code_module 'sideChat' {
-        description '12 个 command · 2 个 event · 2 个 replay-last state'
-        technology '生成式 Native Capability Namespace'
-        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
-      }
-
       sitePermissionMenu = code_module 'sitePermissionMenu' {
         description '2 个 command · 1 个 event · 1 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
-      subscriptionAuthorization = code_module 'subscriptionAuthorization' {
-        description '3 个 command · 0 个 event · 0 个 replay-last state'
-        technology '生成式 Native Capability Namespace'
-        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
-      }
-
       surfaces = code_module 'surfaces' {
-        description '2 个 command · 3 个 event · 2 个 replay-last state'
+        description '4 个 command · 4 个 event · 3 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
       synchronicity = code_module 'synchronicity' {
-        description '21 个 command · 0 个 event · 0 个 replay-last state'
-        technology '生成式 Native Capability Namespace'
-        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
-      }
-
-      tokenDanceAuthorization = code_module 'tokenDanceAuthorization' {
-        description '4 个 command · 0 个 event · 0 个 replay-last state'
+        description '22 个 command · 0 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
 
       transport = code_module 'transport' {
         description '1 个 command · 0 个 event · 0 个 replay-last state'
+        technology '生成式 Native Capability Namespace'
+        link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
+      }
+
+      voiceCall = code_module 'voiceCall' {
+        description '2 个 command · 1 个 event · 0 个 replay-last state'
         technology '生成式 Native Capability Namespace'
         link ../../../clients/packages/native-bridge/src/capability-leaves.ts 'Leaf Registry'
       }
@@ -628,7 +704,7 @@ model {
       }
 
       frozen_legacy_raw_ipc = code_module '冻结的 legacy raw IPC' {
-        description '10 个 allowlist channel：comma:connector:configure, comma:connector:restart, comma:connector:start, comma:connector:status, comma:connector:stop, comma:connector:uninstall, comma:updates:apply, comma:updates:check, comma:updates:download, comma:updates:status'
+        description '6 个 allowlist channel：comma:connector:configure, comma:connector:restart, comma:connector:start, comma:connector:status, comma:connector:stop, comma:connector:uninstall'
         technology '手写 ipcMain.handle'
         link ../../../clients/apps/electron/src/main/index.ts '当前例外'
       }
@@ -719,8 +795,8 @@ views '06 · 程序化证据' {
     include comma_platform.source_inventory.otp_apps.salix_signal_proto
     include comma_platform.source_inventory.otp_apps.salix_signal
     include comma_platform.source_inventory.otp_apps.salix_mcp
+    include comma_platform.source_inventory.otp_apps.salix_meet_native
     include comma_platform.source_inventory.otp_apps.salix_web
-    include comma_platform.source_inventory.otp_apps.salix_migrate
     include comma_platform.source_inventory.otp_apps.salix_media
     include comma_platform.source_inventory.otp_apps.salix_meet
   }

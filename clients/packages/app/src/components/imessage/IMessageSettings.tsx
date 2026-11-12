@@ -1,7 +1,9 @@
+import { copyWithFeedback } from "@comma/ui/components/toast";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
 import { ArrowUpRightIcon, CopyIcon } from "@comma/ui/components/icons";
 import { InputField } from "@comma/ui/components/input";
+import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
 import {
   nativePlatformClipboard,
@@ -21,7 +23,7 @@ function normalizeHandle(value: string): string {
 
 /** A Messages compose link to `line` with `code` in the body (`sms:+1…&body=…`). */
 export function messagesLink(line: string, code: string): string {
-  return `sms:${encodeURIComponent(line)}&body=${encodeURIComponent(code)}`;
+  return `sms:${line}&body=${encodeURIComponent(code)}`;
 }
 
 /** `m:ss` of what is left of an attempt. */
@@ -105,7 +107,7 @@ export function IMessageAccountForm({
   );
 }
 
-/** The attempt under way: the line, the code, time left, and a one-tap Messages link. */
+/** The attempt under way: the line, the code, time left, a QR code and a one-tap Messages link. */
 export function IMessageCodePanel({
   code,
   line,
@@ -117,19 +119,16 @@ export function IMessageCodePanel({
 }: {
   code: string;
   line: string;
-  phone: string;
+  /** The account that must send the code. Without one, any account can. */
+  phone: string | undefined;
   remainingMs: number;
   busy: boolean;
   onNewCode: () => void;
-  onChangeNumber: () => void;
+  onChangeNumber: (() => void) | undefined;
 }) {
   const m = useCommaMessages();
-  const [copied, setCopied] = useState<"line" | "code">();
-  const copy = (value: string, what: "line" | "code") => {
-    void nativePlatformClipboard.writeText(value).then(
-      () => setCopied(what),
-      () => undefined
-    );
+  const copy = (value: string) => {
+    void copyWithFeedback(() => nativePlatformClipboard.writeText(value), m);
   };
   const expired = remainingMs <= 0;
 
@@ -143,14 +142,16 @@ export function IMessageCodePanel({
           <Button disabled={busy} hierarchy="primary" onPress={onNewCode} size="sm">
             {m.settings_imessage_new_code()}
           </Button>
-          <Button
-            disabled={busy}
-            hierarchy="secondary-gray"
-            onPress={onChangeNumber}
-            size="sm"
-          >
-            {m.settings_imessage_change_number()}
-          </Button>
+          {onChangeNumber ? (
+            <Button
+              disabled={busy}
+              hierarchy="secondary-gray"
+              onPress={onChangeNumber}
+              size="sm"
+            >
+              {m.settings_imessage_change_number()}
+            </Button>
+          ) : null}
         </div>
       </div>
     );
@@ -161,63 +162,92 @@ export function IMessageCodePanel({
       className="flex w-full flex-col gap-md"
       data-testid="imessage-code"
     >
-      <p className="m-0 text-sm font-medium text-primary">
-        {m.settings_imessage_code_title()}
-      </p>
-      <p className="m-0 text-sm leading-5 text-tertiary">
-        {m.settings_imessage_code_steps({ line, phone })}
-      </p>
-      <dl className="m-0 grid grid-cols-[auto_1fr] items-center gap-x-xl gap-y-sm">
-        <dt className="text-xs text-tertiary">{m.settings_imessage_line_label()}</dt>
-        <dd className="m-0 font-mono text-sm text-primary" data-testid="imessage-line">
-          {line}
-        </dd>
-        <dt className="text-xs text-tertiary">{m.settings_imessage_code_label()}</dt>
-        <dd
-          className="m-0 font-mono text-lg font-semibold tracking-wide text-primary [overflow-wrap:anywhere]"
-          data-testid="imessage-code-value"
-        >
-          {code}
-        </dd>
-      </dl>
-      <div className="flex flex-wrap gap-sm">
-        <Button
-          hierarchy="primary"
-          iconTrailing={<ArrowUpRightIcon />}
-          onPress={() => {
-            void openNativePlatformExternalUrl(messagesLink(line, code)).catch(
-              () => undefined
-            );
-          }}
-          size="sm"
-        >
-          {m.settings_imessage_open_messages()}
-        </Button>
-        <Button
-          hierarchy="secondary-gray"
-          iconLeading={<CopyIcon />}
-          onPress={() => copy(code, "code")}
-          size="sm"
-        >
-          {copied === "code" ? m.common_copied() : m.settings_imessage_copy_code()}
-        </Button>
-        <Button
-          hierarchy="secondary-gray"
-          iconLeading={<CopyIcon />}
-          onPress={() => copy(line, "line")}
-          size="sm"
-        >
-          {copied === "line" ? m.common_copied() : m.settings_imessage_copy_number()}
-        </Button>
+      <div className="flex flex-col gap-xs">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-md">
+          <p className="m-0 text-sm font-medium text-primary">
+            {m.settings_imessage_code_title()}
+          </p>
+          <p className="m-0 text-sm text-tertiary" data-testid="imessage-expiry">
+            {m.settings_imessage_expires_in({ time: formatRemaining(remainingMs) })}
+          </p>
+        </div>
+        <p className="m-0 text-pretty text-sm leading-5 text-tertiary">
+          {phone
+            ? m.settings_imessage_code_steps({ phone })
+            : m.settings_imessage_code_steps_any()}
+        </p>
       </div>
-      <p
-        className="m-0 text-xs leading-5 text-quaternary"
-        data-testid="imessage-expiry"
-      >
-        {m.settings_imessage_expires_in({ time: formatRemaining(remainingMs) })}
-        {" · "}
-        {m.settings_imessage_waiting_reply()}
-      </p>
+      <div className="flex flex-wrap items-center gap-xl">
+        <figure
+          aria-label={m.settings_imessage_qr_label()}
+          className="m-0 w-fit rounded-md border border-secondary bg-white p-sm"
+          data-testid="imessage-qr"
+        >
+          <QRCodeSVG
+            aria-hidden
+            marginSize={0}
+            size={112}
+            value={messagesLink(line, code)}
+          />
+        </figure>
+        <div className="flex min-w-0 flex-col items-start gap-sm">
+          <p className="m-0 text-sm text-tertiary">
+            {m.settings_imessage_manual_title()}
+          </p>
+          <dl className="m-0 grid grid-cols-[auto_auto_auto] items-center gap-x-md">
+            <dt className="text-sm text-tertiary">
+              {m.settings_imessage_line_label()}
+            </dt>
+            <dd className="m-0 text-sm text-primary" data-testid="imessage-line">
+              {line}
+            </dd>
+            <dd className="m-0 flex">
+              <Button
+                aria-label={m.settings_imessage_copy_number()}
+                hierarchy="tertiary-gray"
+                iconLeading={<CopyIcon />}
+                className="h-6 w-6 p-xs"
+                iconOnly
+                onPress={() => copy(line)}
+                size="xs"
+              />
+            </dd>
+            <dt className="text-sm text-tertiary">
+              {m.settings_imessage_code_label()}
+            </dt>
+            <dd
+              className="m-0 font-mono text-sm font-medium text-primary [overflow-wrap:anywhere]"
+              data-testid="imessage-code-value"
+            >
+              {code}
+            </dd>
+            <dd className="m-0 flex">
+              <Button
+                aria-label={m.settings_imessage_copy_code()}
+                hierarchy="tertiary-gray"
+                iconLeading={<CopyIcon />}
+                className="h-6 w-6 p-xs"
+                iconOnly
+                onPress={() => copy(code)}
+                size="xs"
+              />
+            </dd>
+          </dl>
+          <Button
+            hierarchy="link-color"
+            iconTrailing={<ArrowUpRightIcon />}
+            onPress={() => {
+              void openNativePlatformExternalUrl(messagesLink(line, code)).catch(
+                () => undefined
+              );
+            }}
+            className="-ml-[2px] h-auto"
+            size="sm"
+          >
+            {m.settings_imessage_open_messages()}
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }

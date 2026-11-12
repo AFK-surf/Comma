@@ -83,6 +83,10 @@ test("a floating video keeps clear of the meeting recorder, which stays on top",
 
   await wheel(300, 6);
   await expect(floating).toBeVisible();
+  // The placeholder left in the message keeps the player's dark backdrop.
+  await expect(
+    page.locator('.chat-panel-video-stage[data-picture-in-picture="true"]')
+  ).toHaveCSS("background-color", "rgb(0, 0, 0)");
   const recorded = await box(recorder);
   const docked = await settled(floating);
   expect(overlaps(docked, recorded)).toBe(false);

@@ -4,6 +4,7 @@ import { Dialog } from "../dialog";
 import { SettingsControlView } from "../settings-panel";
 import {
   DevicesIcon,
+  ExclamationTriangleIcon,
   PlusSmallIcon,
   OpenAiIcon,
   ClaudeAiIcon,
@@ -37,6 +38,8 @@ export interface DeviceSettingsAgent {
   details?: readonly (readonly [string, string])[];
   /** What its runtime said of itself: shown in the details only. */
   note?: string | undefined;
+  /** The models it runs, under its name in place of a status (a still.fail station's). */
+  models?: string | undefined;
   /** Not signed in: a button that signs it in, before the source; `busy` while its page waits in the browser. */
   signIn?: {
     label: string;
@@ -71,6 +74,14 @@ export interface DeviceSettingsItem {
   local?: boolean;
   /** A Comma device: its own icon, and no agents of its own. */
   commaDevice?: boolean;
+  /** Its own mark in place of the computer's icon (a still.fail station's brand). */
+  mark?: ReactNode;
+  /** A short label beside its name that says what it is ("still.fail station"). */
+  badge?: string | undefined;
+  /** A line under its name (its connection, where the card does not otherwise say it). */
+  detail?: string | undefined;
+  /** What the agents section says when it has none, in place of the page's; null says nothing. */
+  emptyAgentsLabel?: string | null;
   /** Hardware, source and identity, each a label and its value: shown in the details dialog only. */
   metadata?: readonly (readonly [string, string])[] | undefined;
   /** The overflow menu's own entries after Details (rename, remove, settings). */
@@ -97,11 +108,14 @@ export interface DeviceSettingsItem {
       }
     | undefined;
   agents: DeviceSettingsAgent[];
-  access: {
-    level: DeviceAccessLevel;
-    disabled: boolean;
-    onChange(level: DeviceAccessLevel): void;
-  };
+  /** Its access value and control; none for a device without one (a still.fail station takes Tasks only). */
+  access?:
+    | {
+        level: DeviceAccessLevel;
+        disabled: boolean;
+        onChange(level: DeviceAccessLevel): void;
+      }
+    | undefined;
 }
 
 export interface DeviceSettingsProps {
@@ -188,9 +202,11 @@ function AgentRow({ agent }: { agent: DeviceSettingsAgent }) {
   // source always says which account it uses.
   const below = signIn?.error
     ? signIn.error
-    : (source || !agent.ready) && agent.status
-      ? agent.status
-      : undefined;
+    : agent.models
+      ? agent.models
+      : (source || !agent.ready) && agent.status
+        ? agent.status
+        : undefined;
   return (
     <div className="comma-device__agent">
       <span className="comma-device__agent-mark" aria-hidden="true">
@@ -256,6 +272,88 @@ function AgentRow({ agent }: { agent: DeviceSettingsAgent }) {
   );
 }
 
+/**
+ * What keeps the agents section from saying how its agents stand (a failed read, a failed check): a row as an agent's,
+ * its mark the error's, its words in the row's name column, and its retry where a row has its control.
+ */
+function ProblemRow({
+  label,
+  retryLabel,
+  disabled,
+  onRetry,
+}: {
+  label: string;
+  retryLabel: string;
+  disabled?: boolean | undefined;
+  onRetry(): void;
+}) {
+  return (
+    <div className="comma-device__agent comma-device__problem" role="alert">
+      <span className="comma-device__agent-mark" aria-hidden="true">
+        <ExclamationTriangleIcon className="size-4" />
+      </span>
+      <span className="comma-device__problem-label">{label}</span>
+      <Button
+        className="shrink-0"
+        hierarchy="secondary-gray"
+        size="sm"
+        {...(disabled ? { disabled } : {})}
+        onPress={onRetry}
+      >
+        {retryLabel}
+      </Button>
+    </div>
+  );
+}
+
+/** Nothing for the agents section to say: none, and none to be said of (`emptyAgentsLabel` null). */
+const quietAgents = (device: DeviceSettingsItem) =>
+  device.emptyAgentsLabel === null &&
+  !device.agents.length &&
+  !device.notice &&
+  !device.runtimeCheck &&
+  !device.agentsProblem;
+
+/** The computer's access: a row like an agent's, its choice the same control as a settings row's (Language, say). */
+function AccessRow({
+  device,
+  access,
+  label,
+  levels,
+}: {
+  device: string;
+  access: NonNullable<DeviceSettingsItem["access"]>;
+  label: string;
+  levels: DeviceSettingsProps["accessLevels"];
+}) {
+  return (
+    <div className="comma-device__agent comma-device__access">
+      <span className="comma-device__agent-mark" aria-hidden="true">
+        <ShieldCheckIcon className="size-4" />
+      </span>
+      <span className="comma-device__agent-name">{label}</span>
+      <SettingsControlView
+        label={label}
+        control={{
+          type: "dropdown",
+          ariaLabel: `${device} ${label}`,
+          disabled: access.disabled,
+          value: access.level,
+          items: (["off", "read", "full"] as const).map((level) => ({
+            id: level,
+            label: levels[level].label,
+            subtitle: levels[level].description,
+          })),
+          onChange: (id) => {
+            const level = id as DeviceAccessLevel;
+            if (level !== access.level) access.onChange(level);
+          },
+        }}
+      />
+    </div>
+  );
+}
+
 export function DeviceSettings(props: DeviceSettingsProps) {
   const [detailsId, setDetailsId] = useState<string>();
   const [adding, setAdding] = useState(false);
@@ -267,11 +365,12 @@ export function DeviceSettings(props: DeviceSettingsProps) {
   const header = (device: DeviceSettingsItem) => (
     <div className="comma-device__header">
       <span className="comma-device__icon">
-        {device.commaDevice ? (
-          <CubeIcon className="size-5" />
-        ) : (
-          <DevicesIcon className="size-5" />
-        )}
+        {device.mark ??
+          (device.commaDevice ? (
+            <CubeIcon className="size-5" />
+          ) : (
+            <DevicesIcon className="size-5" />
+          ))}
       </span>
       <div className="comma-device__identity">
         <div className="comma-device__name">
@@ -279,7 +378,9 @@ export function DeviceSettings(props: DeviceSettingsProps) {
           {device.local && (
             <span className="comma-device__local">{props.localLabel}</span>
           )}
+          {device.badge && <span className="comma-device__local">{device.badge}</span>}
         </div>
+        {device.detail && <p>{device.detail}</p>}
       </div>
       <div className="comma-device__trailing">
         {device.loading && (
@@ -328,47 +429,39 @@ export function DeviceSettings(props: DeviceSettingsProps) {
       data-connected={device.connected}
     >
       {header(device)}
-      {!device.commaDevice && (
+      {!device.commaDevice && !quietAgents(device) && (
         <section className="comma-device__section" aria-label={props.agentsLabel}>
           {device.runtimeCheck?.pending && (
             <p className="comma-device__note">{device.runtimeCheck.label}</p>
           )}
           {device.runtimeCheck?.error && (
-            <p className="comma-device__note" role="alert">
-              {device.runtimeCheck.error}{" "}
-              <Button
-                className="text-xs"
-                hierarchy="link-gray"
-                size="xs"
-                disabled={device.runtimeCheck.disabled}
-                onPress={device.runtimeCheck.onCheck}
-              >
-                {device.runtimeCheck.label}
-              </Button>
-            </p>
+            <ProblemRow
+              label={device.runtimeCheck.error}
+              retryLabel={device.runtimeCheck.label}
+              disabled={device.runtimeCheck.disabled}
+              onRetry={device.runtimeCheck.onCheck}
+            />
           )}
           {device.notice && (
             <p className="comma-device__note" data-attention="true">
               {device.notice}
             </p>
           )}
-          {/* As a failed runtime check: a note in this section, with its retry. */}
+          {/* As a failed runtime check: a row of this section, with its retry. */}
           {device.agentsProblem && (
-            <p className="comma-device__note" role="alert">
-              {device.agentsProblem.label}{" "}
-              <Button
-                className="text-xs"
-                hierarchy="link-gray"
-                size="xs"
-                onPress={device.agentsProblem.onRetry}
-              >
-                {device.agentsProblem.retryLabel}
-              </Button>
-            </p>
+            <ProblemRow
+              label={device.agentsProblem.label}
+              retryLabel={device.agentsProblem.retryLabel}
+              onRetry={device.agentsProblem.onRetry}
+            />
           )}
-          {device.connected && !device.agents.length && (
-            <p className="comma-device__note">{props.emptyAgentsLabel}</p>
-          )}
+          {device.connected &&
+            !device.agents.length &&
+            device.emptyAgentsLabel !== null && (
+              <p className="comma-device__note">
+                {device.emptyAgentsLabel ?? props.emptyAgentsLabel}
+              </p>
+            )}
           {/* A row says nothing about an agent that works; only what keeps it from working. */}
           {agentRows(device.agents).map((agent) => (
             <AgentRow key={agent.id} agent={agent} />
@@ -376,31 +469,14 @@ export function DeviceSettings(props: DeviceSettingsProps) {
         </section>
       )}
       {/* Agents and access are the station's; the sandbox (the VMM) is a part of its own, after a divider. */}
-      <div className="comma-device__agent comma-device__access">
-        <span className="comma-device__agent-mark" aria-hidden="true">
-          <ShieldCheckIcon className="size-4" />
-        </span>
-        <span className="comma-device__agent-name">{props.accessLabel}</span>
-        {/* The same control as a settings row's (Language, say). */}
-        <SettingsControlView
+      {device.access && (
+        <AccessRow
+          device={device.name}
+          access={device.access}
           label={props.accessLabel}
-          control={{
-            type: "dropdown",
-            ariaLabel: `${device.name} ${props.accessLabel}`,
-            disabled: device.access.disabled,
-            value: device.access.level,
-            items: (["off", "read", "full"] as const).map((level) => ({
-              id: level,
-              label: props.accessLevels[level].label,
-              subtitle: props.accessLevels[level].description,
-            })),
-            onChange: (id) => {
-              const level = id as DeviceAccessLevel;
-              if (level !== device.access.level) device.access.onChange(level);
-            },
-          }}
+          levels={props.accessLevels}
         />
-      </div>
+      )}
       {device.content && <div className="comma-device__sandbox">{device.content}</div>}
     </article>
   );

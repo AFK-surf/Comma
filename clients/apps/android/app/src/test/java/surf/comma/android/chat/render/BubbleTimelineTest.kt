@@ -14,7 +14,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLooper
 import surf.comma.android.R
-import surf.comma.android.chat.live.LiveRowKinds
 import surf.comma.android.chat.model.ChatMessage
 import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.TimelineBlockKinds
@@ -72,19 +71,17 @@ class BubbleTimelineTest {
         val past = history(3)
         val question = message(100, "t9", ChatRole.USER, "and then?")
         val typing = message(101, "t9", ChatRole.AGENT, "", TimelineBlockKinds.LIVE_STATUS)
-        val reserved = message(102, "t9", ChatRole.AGENT, "", LiveRowKinds.REPLY_ACTIONS_RESERVED)
-        submit(past + question + typing + reserved)
+        submit(past + question + typing)
         assertTrue(timeline.isPinnedToEnd())
         val first = message(110, "t9", ChatRole.AGENT, paragraphs)
-        submit(past + question + first + typing + reserved)
+        submit(past + question + first + typing)
         assertTrue(timeline.isPinnedToEnd())
         assertEquals("no tail while the reply goes on", 0, shown.single { it.message.id == 110L }.tailPx)
         val second = message(111, "t9", ChatRole.AGENT, "Short closing line.")
-        val actions = message(103, "t9", ChatRole.AGENT, "", LiveRowKinds.REPLY_ACTIONS).copy(cardPayload = "t9")
-        submit(past + question + first + second + actions)
+        submit(past + question + first + second)
         assertEquals(0, shown.single { it.message.id == 110L }.tailPx)
         assertTrue("the last message ends the run", shown.single { it.message.id == 111L }.tailPx > 0)
-        assertRestsAboveComposer(103)
+        assertRestsAboveComposer(111)
     }
 
     @Test fun `a short exchange rests with its tail above the composer`() {

@@ -6,7 +6,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { formatHistory, parseThreadAddress, threadAddress } from "../agents/instructions.ts";
 import { log } from "../ops/log.ts";
 import { iso } from "../read/transcript.ts";
-import { type Attachment, STILLFAIL_SURFACE, type SessionThread, type ThreadRow, milestoneTitles } from "../store/store.ts";
+import { type Attachment, COMMA_STATION_SURFACE, type SessionThread, type ThreadRow, milestoneTitles } from "../store/store.ts";
 import { TASK_SURFACE } from "../tasks/names.ts";
 import type { DeclaredState } from "./actor.ts";
 import {
@@ -125,11 +125,11 @@ export async function chatPost(hub: Hub, key: string, args: Args): Promise<strin
   if (only && kind !== null) throw new Error("a post of milestones alone does not end your turn: give text with kind, or record the ending with chat_state");
   const thread = target(hub, key, args.to);
   if (store.runsOn(thread.thread.id) !== null) throw new Error("this Task runs on another station now: it is answered there, not here");
-  if (milestones !== null && thread.thread.surface !== STILLFAIL_SURFACE && thread.thread.surface !== TASK_SURFACE) {
-    throw new Error("milestones are recorded only in still.fail chats (Tasks); in a Slack thread, say what you finished in the text");
+  if (milestones !== null && thread.thread.surface !== COMMA_STATION_SURFACE && thread.thread.surface !== TASK_SURFACE) {
+    throw new Error("milestones are recorded only in Comma chats (Tasks); in a Slack thread, say what you finished in the text");
   }
-  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE) {
-    throw new Error('cards (options, a text field) are shown only in still.fail chats (EMBER/…); in a Slack thread, write the choices or the question in the text and end with kind "need_human"');
+  if (card !== null && thread.thread.surface !== COMMA_STATION_SURFACE) {
+    throw new Error('cards (options, a text field) are shown only in Comma chats (EMBER/…); in a Slack thread, write the choices or the question in the text and end with kind "need_human"');
   }
   if (card !== null && text === "") throw new Error("text is required with a card: what it asks and the facts it turns on, so it can be answered from this message alone");
   let about: [number, number, string] | null = null;
@@ -140,16 +140,16 @@ export async function chatPost(hub: Hub, key: string, args: Args): Promise<strin
     about = [m.thread, m.n, m.ts];
   }
   // Slack gets the files in the thread below the text. An app made before it could upload (no files:write) links to
-  // them in still.fail instead.
-  if (thread.thread.surface === STILLFAIL_SURFACE || thread.thread.surface === TASK_SURFACE) {
+  // them in Comma instead.
+  if (thread.thread.surface === COMMA_STATION_SURFACE || thread.thread.surface === TASK_SURFACE) {
     const row = store.getSession(key);
     if (!row) throw new Error("unknown session");
     text = prepare(text, paths, row.workspace);
   }
-  const slack = thread.thread.surface !== STILLFAIL_SURFACE && thread.thread.surface !== TASK_SURFACE && paths.length > 0;
+  const slack = thread.thread.surface !== COMMA_STATION_SURFACE && thread.thread.surface !== TASK_SURFACE && paths.length > 0;
   const link = () => {
     const link = hub.link(key);
-    if (link === undefined) throw new Error("files cannot be shown from Slack until this station is in a still.fail workspace; mention their paths in the text instead");
+    if (link === undefined) throw new Error("files cannot be shown from Slack until this station is in a Comma workspace; mention their paths in the text instead");
     return link;
   };
   const files = await keep(paths.length === 0 ? [] : attach(hub, key, paths), thumbsDir(hub.config().dataDir));

@@ -97,7 +97,7 @@ theorem Equivalent.tuple_value {items : List Term} {right : Term}
 
 /-- Actual archive projection retains complete work after semantic codec round trips. -/
 theorem archiveWindow_recorded_input_fact {s ceiling item record : Term} {records j r : List Term}
-    (inv : SeqSorted s) (present : ContainsRecord s record) (recorded : Recorded item record)
+    (inv : SeqSorted s) (physical : ArchiveProjection.UnarchivedWindow s) (present : ContainsRecord s record) (recorded : Recorded item record)
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records, Equivalent (queueWorkProjection item)
       ((projected.get (a "data")).get (b "accepted_input")) := by
@@ -106,18 +106,18 @@ theorem archiveWindow_recorded_input_fact {s ceiling item record : Term} {record
   obtain ⟨before, after, equal, plain, beforeDifferent, afterDifferent⟩ :=
     ArchiveProjection.record_shape_field recorded.wellFormed actual (by intro impossible; cases impossible)
   rw [equal] at present fact
-  obtain ⟨projected, member, field⟩ := ArchiveProjection.archiveWindow_tuple_field inv present plain
+  obtain ⟨projected, member, field⟩ := ArchiveProjection.archiveWindow_tuple_field inv physical present plain
     (by decide) (by decide) beforeDifferent afterDifferent h
   refine ⟨projected, member, ?_⟩
   rw [field]
   exact fact
 
 theorem reachable_archiveWindow_recorded_input_fact {s ceiling item record : Term} {records j r : List Term}
-    (reachable : HistoryReachable s) (present : ContainsRecord s record) (recorded : Recorded item record)
+    (reachable : HistoryReachable s) (physical : ArchiveProjection.UnarchivedWindow s) (present : ContainsRecord s record) (recorded : Recorded item record)
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records, Equivalent (queueWorkProjection item)
       ((projected.get (a "data")).get (b "accepted_input")) :=
-  archiveWindow_recorded_input_fact reachable.sequence.1 present recorded h
+  archiveWindow_recorded_input_fact reachable.sequence.1 physical present recorded h
 
 end ValueSemantics
 end VerifiedKernel.Session.WorkConservation

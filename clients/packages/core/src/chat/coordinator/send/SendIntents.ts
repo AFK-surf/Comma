@@ -6,7 +6,7 @@ import type {
   ChatTarget,
 } from "@comma/chat-contract";
 import { Effect } from "effect";
-import { ChatError } from "../../api";
+import { ChatError, type CommaConversation } from "../../api";
 import type { CommaGroupFile } from "../../../comma/api-schemas";
 import type { AttachmentUploadInput } from "../../model/conversationChannel";
 import type { ChatEntries } from "../entries/ChatEntries";
@@ -39,7 +39,9 @@ export class SendIntents {
     const active = entry.activeSendIntent;
     if (active) {
       if (!isReservedBy(active, input)) {
-        throw new Error("A send is already in progress for this draft.");
+        throw new ChatError("A send is already in progress for this draft.", {
+          code: "send_in_progress",
+        });
       }
       return {
         draftEpoch: active.draftEpoch,
@@ -120,31 +122,69 @@ export class SendIntents {
   }
 
   /**
-   * Sends `text` outside any draft as the request `requestId`: the server keeps one message per request, so sending it
-   * again (an answer lost on the way) is the same message. The message's id, as the server accepted it.
+   * Shows `text` in the conversation, when it is open here, as the request `requestId` being sent while its words are
+   * still being prepared; again, it replaces them. `sendRequest` sends it with the final words, or `failHeldRequest`
+   * ends it as a failed message.
    */
-  sendDetachedRequest(
+  holdRequest(
     target: ChatTarget,
     text: string,
-    requestId: string
-  ): Effect.Effect<string, Error> {
+    requestId: string,
+    messageType?: "quick_chat"
+  ): void {
+    this.#open(target)?.channel.hold(text, {
+      clientRequestId: requestId,
+      ...(messageType ? { messageType } : {}),
+    });
+  }
+
+  failHeldRequest(target: ChatTarget, requestId: string): void {
+    this.#open(target)?.channel.failHeld(requestId);
+  }
+
+  /** The conversation's entry, when it is open here under the current session. */
+  #open(target: ChatTarget) {
+    const boundary = this.#entries.openBoundary();
+    boundary.assertCurrent();
+    const entry = this.#entries.get(chatKey(target));
+    return entry && isSameLiveBoundary(entry.boundary, boundary) ? entry : undefined;
+  }
+
+  /**
+   * Sends `text` outside any draft as the request `requestId`: the server keeps one message per request, so sending it
+   * again (an answer lost on the way) is the same message. A conversation open here shows it at once, as being sent,
+   * as a typed message is; sent again, its failed or held message goes with these words. The message's id, as the
+   * server accepted it; undefined when its answer named none.
+   */
+  sendRequest(
+    target: ChatTarget,
+    text: string,
+    requestId: string,
+    messageType?: "quick_chat"
+  ): Effect.Effect<string | undefined, Error> {
     return Effect.suspend(() => {
       const boundary = this.#entries.openBoundary();
       boundary.assertCurrent();
+      const entry = this.#entries.get(chatKey(target));
       const clientDeviceId = this.#getClientDeviceId?.(target.workspaceId);
-      return boundary.api
-        .sendMessage(target.groupId, target.conversationId, {
-          text,
-          clientRequestId: requestId,
-          ...(clientDeviceId ? { clientDeviceId } : {}),
-        })
-        .pipe(
-          Effect.flatMap((conversation) =>
-            conversation.accepted_message_id
-              ? Effect.succeed(conversation.accepted_message_id)
-              : Effect.fail(new ChatError("The server kept no message."))
-          )
-        );
+      const sent: Effect.Effect<CommaConversation | undefined, Error> =
+        entry && isSameLiveBoundary(entry.boundary, boundary)
+          ? entry.channel
+              .getSnapshot()
+              .pending.some((item) => item.clientRequestId === requestId)
+            ? entry.channel.retry(requestId, text)
+            : entry.channel.send(text, {
+                consumeDraft: false,
+                clientRequestId: requestId,
+                ...(messageType ? { messageType } : {}),
+              })
+          : boundary.api.sendMessage(target.groupId, target.conversationId, {
+              text,
+              clientRequestId: requestId,
+              ...(messageType ? { messageType } : {}),
+              ...(clientDeviceId ? { clientDeviceId } : {}),
+            });
+      return sent.pipe(Effect.map((conversation) => conversation?.accepted_message_id));
     });
   }
 }

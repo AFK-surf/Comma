@@ -18,6 +18,7 @@ const task = (index: number): ChatCreatedTask => ({
   messageId: undefined,
   needsAttention: false,
   needsInput: false,
+  loopStop: undefined,
   statusBucket: "in_progress",
   title: `Task ${index}`,
   turnKey: undefined,

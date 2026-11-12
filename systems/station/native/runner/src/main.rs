@@ -1,4 +1,4 @@
-//! stillfail-runner: keeps one agent process (claude, codex app-server) for the station, so the agent outlives the
+//! comma-runner: keeps one agent process (claude, codex app-server) for the station, so the agent outlives the
 //! station restarting or crashing (docs/station-ts-native.md, section 1).
 //!
 //! The runner holds the agent's stdin and appends its stdout and stderr to `<id>.out` and `<id>.err` as they come. A
@@ -20,6 +20,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
+mod lan_script;
+
 #[cfg_attr(unix, path = "sys/unix.rs")]
 #[cfg_attr(windows, path = "sys/windows.rs")]
 mod sys;
@@ -34,8 +36,9 @@ enum Signal {
     Int,
 }
 
-const USAGE: &str = "usage: stillfail-runner --dir <run/runners> --id <id> [--cwd <dir>] -- <program> <args…>
-       (Windows) stillfail-runner --job -- <program> <args…>";
+const USAGE: &str = "usage: comma-runner --dir <run/runners> --id <id> [--cwd <dir>] -- <program> <args…>
+       comma-runner --lan-script
+       (Windows) comma-runner --job -- <program> <args…>";
 /// How long a runner whose agent has exited waits for a `done` before it cleans up by itself.
 const LINGER: Duration = Duration::from_secs(24 * 3600);
 /// After the agent exits, how long its output may take to end (something it started can hold the pipes open).
@@ -114,13 +117,17 @@ struct Push {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    // A LAN script for the station's lan_script (lan_script.rs), over stdin and stdout.
+    if raw.first().map(String::as_str) == Some("--lan-script") {
+        std::process::exit(lan_script::serve());
+    }
     // Windows only: a job's process group (see sys::run_job).
     #[cfg(windows)]
     if raw.first().map(String::as_str) == Some("--job") {
         match raw.get(1).map(String::as_str) {
             Some("--") if raw.len() > 2 => sys::run_job(&raw[2], &raw[3..]),
             _ => {
-                eprintln!("stillfail-runner: usage: stillfail-runner --job -- <program> <args…>");
+                eprintln!("comma-runner: usage: comma-runner --job -- <program> <args…>");
                 std::process::exit(2);
             }
         }
@@ -128,7 +135,7 @@ fn main() {
     let args = match parse_args(raw) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("stillfail-runner: {e}\n{USAGE}");
+            eprintln!("comma-runner: {e}\n{USAGE}");
             std::process::exit(2);
         }
     };
@@ -136,7 +143,7 @@ fn main() {
     let (shared, listener) = match start(&args) {
         Ok(started) => started,
         Err(e) => {
-            eprintln!("stillfail-runner: {e}");
+            eprintln!("comma-runner: {e}");
             std::process::exit(1);
         }
     };

@@ -9,6 +9,9 @@ import {
 import { commaLogoUrl, getActiveCommaConfig } from "@comma/config";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
+import { ChevronRightSmallIcon } from "@comma/ui/components/icons";
+import { Button as AriaButton } from "react-aria-components";
+import { UserAvatar } from "./UserAvatar";
 import { Login } from "@comma/ui/components/login";
 import { Text } from "@comma/ui/components/Text";
 import type { LoginCopy } from "@comma/ui/components/login";
@@ -37,6 +40,11 @@ type LoginScreenProps = {
    * opaque, so the client app's name is unknown here by design.
    */
   oauthResumeNotice?: string | undefined;
+  /**
+   * The accounts still signed in on this device (another one is being added, or the one in use signed out): each
+   * continues without signing in again. Rejects with a displayable error.
+   */
+  keptAccounts?: readonly { email: string; continue(): Promise<void> }[] | undefined;
 };
 
 const noLoginTiming: SessionLoginTiming = {};
@@ -66,6 +74,7 @@ function StagedLoginScreen({
   requestGoogleLogin,
   revocationPending = false,
   oauthResumeNotice,
+  keptAccounts,
 }: LoginScreenProps & {
   requestGoogleLogin: NonNullable<SessionAuthenticatorController["requestGoogleLogin"]>;
 }) {
@@ -340,7 +349,12 @@ function StagedLoginScreen({
 
   return (
     <main className="app-login-shell">
-      <div className="app-login-stage">
+      <div
+        className="app-login-stage"
+        {...(keptAccounts && keptAccounts.length > 0
+          ? { "data-kept-accounts": "" }
+          : {})}
+      >
         {oauthResumeNotice && <LoginNotice text={oauthResumeNotice} />}
         {guestHandoffNotice && <LoginNotice text={guestHandoffNotice} />}
         {appLinkPending && <LoginNotice text={messages.mini_app_sign_in_notice()} />}
@@ -385,6 +399,14 @@ function StagedLoginScreen({
                   },
                 }
               : {})}
+          />
+        )}
+
+        {!hasChallenge && keptAccounts && keptAccounts.length > 0 && (
+          <KeptAccounts
+            accounts={keptAccounts}
+            disabled={busy}
+            onError={(message) => setError(message)}
           />
         )}
 
@@ -745,6 +767,60 @@ function LegacyLoginScreen({
         </section>
       </div>
     </main>
+  );
+}
+
+/** The accounts still signed in here: one press goes back to one, without signing in again. */
+function KeptAccounts({
+  accounts,
+  disabled,
+  onError,
+}: {
+  accounts: NonNullable<LoginScreenProps["keptAccounts"]>;
+  disabled: boolean;
+  onError: (message: string) => void;
+}) {
+  const messages = useCommaMessages();
+  const [pending, setPending] = useState<string>();
+  const title = messages.auth_signed_in_accounts();
+  return (
+    <section aria-label={title} className="app-login-kept">
+      <div className="app-login-kept-divider">
+        <Text size="textSm" className="app-login-kept-title">
+          {title}
+        </Text>
+      </div>
+      <div className="app-login-kept-list">
+        {accounts.map((account) => (
+          <AriaButton
+            key={account.email}
+            aria-label={messages.auth_continue_as({ email: account.email })}
+            className="app-login-kept-account"
+            isDisabled={disabled || pending !== undefined}
+            onPress={() => {
+              setPending(account.email);
+              account.continue().then(
+                () => setPending(undefined),
+                (error: unknown) => {
+                  setPending(undefined);
+                  onError(error instanceof Error ? error.message : String(error));
+                }
+              );
+            }}
+          >
+            <UserAvatar email={account.email} size="xs" />
+            <span className="app-login-kept-email">{account.email}</span>
+            {pending === account.email ? (
+              <LoadingIndicator
+                label={messages.auth_continue_as({ email: account.email })}
+              />
+            ) : (
+              <ChevronRightSmallIcon className="app-login-kept-chevron" />
+            )}
+          </AriaButton>
+        ))}
+      </div>
+    </section>
   );
 }
 

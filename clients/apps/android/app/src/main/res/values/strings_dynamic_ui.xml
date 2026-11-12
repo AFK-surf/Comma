@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dynamic_ui_title">交互内容</string>
+    <string name="dynamic_ui_add_to_draft">加入草稿</string>
+    <string name="dynamic_ui_open_link_title">打开此链接？</string>
+    <string name="dynamic_ui_open_link">打开链接</string>
+    <string name="dynamic_ui_load_failed">无法加载交互内容</string>
+    <string name="dynamic_ui_failed">交互内容加载失败</string>
+    <string name="dynamic_ui_runtime_missing">缺少交互内容运行环境。</string>
+    <string name="dynamic_ui_copy_recommended">推荐</string>
+    <string name="dynamic_ui_copy_alternatives">其他选项</string>
+    <string name="dynamic_ui_copy_high">高</string>
+    <string name="dynamic_ui_copy_low">低</string>
+    <string name="dynamic_ui_copy_feels_like">体感</string>
+    <string name="dynamic_ui_copy_humidity">湿度</string>
+    <string name="dynamic_ui_copy_ongoing">现在</string>
+    <string name="dynamic_ui_copy_directions">路线</string>
+    <string name="dynamic_ui_copy_range">范围</string>
+    <string name="dynamic_ui_copy_days">天</string>
+    <string name="dynamic_ui_copy_attribute">属性</string>
+    <string name="dynamic_ui_copy_option">选项</string>
+    <!-- The runtime fills {done} and {total}. -->
+    <string name="dynamic_ui_copy_checklist_progress">已完成 {done} / {total} 项</string>
+    <string name="dynamic_ui_copy_focus">专注</string>
+    <string name="dynamic_ui_copy_rest">休息</string>
+    <string name="dynamic_ui_copy_paused">已暂停</string>
+    <string name="dynamic_ui_copy_time_up">时间到</string>
+    <!-- The runtime fills {current} and {total}. -->
+    <string name="dynamic_ui_copy_timer_cycle">第 {current} / {total} 轮</string>
+    <string name="dynamic_ui_copy_arrives_by">预计 {time} 前送达</string>
+    <string name="dynamic_ui_copy_order_headline">{status}，{arrival}</string>
+    <string name="dynamic_ui_copy_offline">离线</string>
+    <string name="dynamic_ui_copy_up_next">接下来播放</string>
+    <string name="dynamic_ui_copy_part_failed">这部分无法显示</string>
+</resources>

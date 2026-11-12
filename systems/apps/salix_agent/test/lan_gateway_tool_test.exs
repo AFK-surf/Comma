@@ -253,8 +253,11 @@ defmodule SalixAgent.LanGatewayToolTest do
   end
 
   describe "discovery probes" do
-    alias SalixAgent.LanCodec.{Gree, Miio}
-    alias SalixAgent.TestSupport.FakeGreeUnit
+    # greeclimate's cipher.py (CipherV1 and CipherV2) sealed these scan
+    # replies of a unit named "Living room".
+    @scan_ecb "gSoGwqIM2nQgxTqjg6mOsDYTa4hdMuh/bBITRDNv7u9TPPR/T0nC0AF6eKvxQE6b047j2v4fDKtZTQ2mEIDD/t8ZgkQZwjnLmDZbSA1+3uury4AytdYm9P8zJPc3obUra/2J+AaCJX8L9TRrtcuvJLPdrG7obL8weXnGvRhFh7ds8+PNZS2+h12w+RUnd+2ZcCcLRQKLl2weGh8LoKX66L7V+TYaEnEbEm2qsWk1iB4KDo8YqhnOqbJatZYxx9jms4wXSFL3ScoMBAI4PY4eAOSvfICx+lQfMAn9a6dk6ys1mps/SBhwApP6S3vWrYe6"
+    @scan_gcm {"JtoKliwv65S28N6bemsWXstjssMAhBP/MVUxCruIx/3INCFPzwM9aNK19evWD4Ccz7+yUNTuYrJU+JrIJ7yR06PTjU65PBoqfJ4zH7TsNpxU/6ORBpWo2obop5B9rvgIA7zqrHsVV+fHEDX9wAut6DajQD8HnL0yeYTAWK9ehI5rung8T0eoMqe3/xg2Sa3wmeLlUUjOh5z18TDskoEgfnazkHN/3RuC9ZmCJjwiMe05Wb+9wcxmP/lu3+kAoEUJYu+Qsu9p5B2m7lp2NCQ2tS8r0V2DR3II4GxcNF2UWE9huw==",
+               "sVgqZbWC9U4+RjgxA1Oa/Q=="}
 
     @limits %{
       "max_probes" => 8,
@@ -268,10 +271,28 @@ defmodule SalixAgent.LanGatewayToolTest do
 
     defp answer(id, bytes), do: %{"id" => id, "payload_b64" => Base.encode64(bytes)}
 
-    defp gree_answer do
-      {reply, _unit} = FakeGreeUnit.answer(Gree.scan(), FakeGreeUnit.unit())
-      reply
-    end
+    defp gree_answer(pack \\ @scan_ecb)
+
+    defp gree_answer({pack, tag}),
+      do:
+        Jason.encode!(%{
+          "t" => "pack",
+          "i" => 1,
+          "uid" => 0,
+          "cid" => "f4911e7aca59",
+          "pack" => pack,
+          "tag" => tag
+        })
+
+    defp gree_answer(pack),
+      do:
+        Jason.encode!(%{
+          "t" => "pack",
+          "i" => 1,
+          "uid" => 0,
+          "cid" => "f4911e7aca59",
+          "pack" => pack
+        })
 
     defp miio_answer,
       do: <<0x21, 0x31, 0x00, 0x20, 0::32, 1, 2, 3, 4, 1_000::32, 0::128>>
@@ -301,11 +322,13 @@ defmodule SalixAgent.LanGatewayToolTest do
       assert gree == %{
                "id" => "gree",
                "port" => 7000,
-               "payload_b64" => Base.encode64(Gree.scan())
+               "payload_b64" => Base.encode64(~s({"t":"scan"}))
              }
 
       assert %{"id" => "miio", "port" => 54_321} = miio
-      assert Base.decode64!(miio["payload_b64"]) == Miio.hello()
+
+      assert Base.decode64!(miio["payload_b64"]) ==
+               <<0x21, 0x31, 0x00, 0x20, :binary.copy(<<0xFF>>, 28)::binary>>
 
       discover(%{"sources" => ["mdns"]})
       assert_received {:request, _, _, "lan_discover", params}
@@ -330,12 +353,21 @@ defmodule SalixAgent.LanGatewayToolTest do
           "sources" => ["arp"],
           "probes" => [answer("gree", gree_answer())]
         },
+        %{"ip" => "192.168.5.32", "probes" => [answer("gree", gree_answer(@scan_gcm))]},
         %{
           "ip" => "192.168.5.19",
           "sources" => ["arp"],
           "probes" => [answer("miio", miio_answer())]
         },
         %{"ip" => "192.168.5.40", "services" => [%{"type" => "_wled._tcp", "name" => "Desk"}]},
+        %{
+          "ip" => "192.168.5.41",
+          "services" => [%{"type" => "_ipp._tcp", "name" => "HP Smart Tank"}]
+        },
+        %{
+          "ip" => "192.168.5.42",
+          "services" => [%{"type" => "_home-assistant._tcp", "name" => "Home"}]
+        },
         # Answers that are not the protocol identify nothing.
         %{
           "ip" => "192.168.5.50",
@@ -349,25 +381,50 @@ defmodule SalixAgent.LanGatewayToolTest do
 
       result = discover(%{})
       refute result =~ "payload_b64"
-      refute result =~ FakeGreeUnit.unit().key
 
-      assert %{"hosts" => [gree, miio, wled, other, unknown], "probes_truncated" => false} =
+      assert %{
+               "hosts" => [gree, gree_gcm, miio, wled, printer, home, other, unknown],
+               "probes_truncated" => false
+             } =
                Jason.decode!(result)
 
       assert gree["device"] == %{
                "protocol" => "gree",
                "kind" => "air_conditioner",
                "control" => "open",
-               "tool" => "device.gree_request",
+               "tool" => "device.lan_script",
                "skill" => "gree-ac",
+               "script" => "/.runtime/skills/gree-ac/gree.js",
                "name" => "Living room",
                "brand" => "gree"
              }
 
-      assert %{"protocol" => "miio", "control" => "needs_key", "key" => "miio_token"} =
-               miio["device"]
+      assert gree_gcm["device"] == gree["device"]
+
+      assert %{
+               "protocol" => "miio",
+               "control" => "needs_key",
+               "key" => "miio_token",
+               "tool" => "device.lan_script",
+               "script" => "/.runtime/skills/miio-lights/miio.js"
+             } = miio["device"]
 
       assert %{"protocol" => "wled", "control" => "open", "skill" => "wled"} = wled["device"]
+
+      assert %{
+               "kind" => "printer",
+               "control" => "open",
+               "tool" => "device.lan_script",
+               "script" => "/.runtime/skills/lan-printer/ipp.js"
+             } = printer["device"]
+
+      assert %{
+               "protocol" => "home_assistant",
+               "control" => "needs_key",
+               "key" => "api_token",
+               "script" => "/.runtime/skills/home-assistant/ha.js"
+             } = home["device"]
+
       refute Map.has_key?(other, "device")
       refute Map.has_key?(unknown, "device")
     end

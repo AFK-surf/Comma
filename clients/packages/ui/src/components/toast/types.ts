@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 export type ToastVariant = "single" | "description" | "action";
 
 export type ToastIntent = "info" | "success" | "warning" | "error";
@@ -20,6 +22,8 @@ export interface ToastProps {
   variant?: ToastVariant;
   intent?: ToastIntent;
   icon?: ToastGlyph;
+  /** In place of the status icon: whom the toast is about, as their 20px avatar. */
+  leading?: ReactNode;
   onClose?: () => void;
   actions?: ToastAction[];
   className?: string;

@@ -47,6 +47,15 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
 
       :ok
     end
+
+    def task_created(group_id, conversation_id, _created_at, placement) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :status_card_test_pid),
+        {:created, group_id, conversation_id, placement}
+      )
+
+      :ok
+    end
   end
 
   defmodule AgentDelivery do
@@ -65,6 +74,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
               :telegram_api_base_url,
               :task_status_personal_adapter,
               :task_status_observer,
+              :product_activity_observer,
               :status_card_test_pid,
               :status_card_test_targets,
               :status_card_test_result
@@ -155,6 +165,15 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     assert participant["notification_filter"]["statuses"] == "all"
   end
 
+  test "a Task asked for on another provider does not follow to the Telegram chat", ctx do
+    SystemsRuntime.put_env(:salix_im, :status_card_test_targets, fn _ -> [ctx.target] end)
+
+    for origin <- ["lark", "slack", "comma"] do
+      id = create_task(ctx, "Asked on " <> origin, nil, origin)
+      assert status_participant(ctx.group, id) == nil
+    end
+  end
+
   test "ready for review hands the status record to the Comma card adapter", ctx do
     SystemsRuntime.put_env(:salix_im, :status_card_test_targets, fn _ -> [ctx.target] end)
     id = create_task(ctx, "Review me")
@@ -200,7 +219,17 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     assert snapshot["owner_user_id"] == "usr_task_owner"
     assert snapshot["agent_group_id"] == ctx.group
     assert is_integer(snapshot["provider_status_version"])
+    assert is_integer(snapshot["created_at"])
     settle_refute_receive({:observed, %{"conversation_id" => ^unowned}}, 200)
+  end
+
+  test "a new Task tells the product where it runs", ctx do
+    SystemsRuntime.put_env(:salix_im, :product_activity_observer, Observer)
+    id = create_task(ctx, "Placed", "usr_task_owner")
+
+    settle_receive({:created, group, ^id, placement})
+    assert group == ctx.group
+    assert Map.keys(placement) -- ~w(runs_on repo mini_app session_model) == []
   end
 
   defp status_participant(group, id) do
@@ -210,7 +239,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     Enum.find(participants, &(&1["role_label"] == "task_status_personal"))
   end
 
-  defp create_task(ctx, title, owner \\ nil) do
+  defp create_task(ctx, title, owner \\ nil, origin \\ "telegram") do
     id = Ids.new_conversation_id()
 
     assert {:ok, _} =
@@ -222,6 +251,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
                %{
                  "title" => title,
                  "owner_user_id" => owner,
+                 "conversation_metadata" => %{"origin" => %{"provider" => origin}},
                  "content" => "Work on " <> title,
                  "schedule" => %{"schedule_id" => nil, "command" => "Work on " <> title},
                  "workflow" => nil,

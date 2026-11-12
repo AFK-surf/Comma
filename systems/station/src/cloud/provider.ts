@@ -1,7 +1,7 @@
 // Which control plane a station is enrolled in, and how each one is spoken to: still.fail cloud (the default, as it
 // always was) or Comma (docs/cloud.md, "Control planes"). Only names, paths and signing tags differ; the scheme is one:
 // Ed25519 over "<tag>:<origin>:<station>:<ts>[:<sha256 of the body>]" with the station's key, in x-<prefix>-* headers.
-// cloud.json says which (`provider`, absent: still.fail).
+// cloud.json says which (`provider`, absent: Comma).
 
 export type Provider = "stillfail" | "comma";
 
@@ -33,7 +33,7 @@ export type ProviderSpec = {
   readonly releaseBase: (origin: string) => string;
   /// Member credentials it signs: their `iss` and header `typ`.
   readonly credential: Accepted;
-  /// Bug reports to the still.fail team, and the session pages at `<origin>/o/…`.
+  /// Bug reports to the Comma team, and the session pages at `<origin>/o/…`.
   readonly feedback: boolean;
   readonly pages: boolean;
   /// Its gateways' iroh ids may call the device tools (`comma/tools/1`).
@@ -88,16 +88,18 @@ export const COMMA: ProviderSpec = {
 export const specOf = (provider: Provider): ProviderSpec => (provider === "comma" ? COMMA : STILLFAIL);
 
 /// The x-<prefix>-* headers of a request signed by `prefixes`: the station, the time, and each prefix's own signature
-/// of `message(prefix)`. The signing scheme every provider shares; `x-stillfail-*` always carries the first prefix's.
+/// of `message(prefix)`. The signing scheme every provider shares; `x-comma-station-*` always carries the first prefix's.
 export function signedHeaders(prefixes: readonly string[], station: string, ts: number, sign: (prefix: string) => string, extra: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const prefix of prefixes) {
-    // Comma reads the still.fail header names (contract §1): its signature goes in them.
-    const h = prefix === "comma" ? "stillfail" : prefix;
-    headers[`x-${h}-station`] = station;
-    headers[`x-${h}-ts`] = String(ts);
-    headers[`x-${h}-signature`] = sign(prefix);
-    for (const [k, v] of Object.entries(extra)) headers[`x-${h}-${k}`] = v;
+    // Comma reads the Comma header names (contract §1): its signature goes in them, and in the names from before the
+    // rename while a Comma not yet deployed may be asked.
+    for (const h of prefix === "comma" ? ["comma-station", "stillfail"] : [prefix]) {
+      headers[`x-${h}-station`] = station;
+      headers[`x-${h}-ts`] = String(ts);
+      headers[`x-${h}-signature`] = sign(prefix);
+      for (const [k, v] of Object.entries(extra)) headers[`x-${h}-${k}`] = v;
+    }
   }
   return headers;
 }

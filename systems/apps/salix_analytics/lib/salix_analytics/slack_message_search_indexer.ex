@@ -6,7 +6,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
   next slice is a separate durable job, so text beyond 8,000 characters is not
   silently omitted or trapped in a job that can never meet its deadline.
   One attachment is inserted only after the existing extraction stream has
-  completed and validated every unit. MessageSearchBuild.tla models this seam.
+  completed and validated every unit.
   """
   alias SalixAnalytics.{SlackMessageSearchIndex, SlackSemanticIndex}
   alias SalixStore.SlackSearchSources
@@ -62,7 +62,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
 
               current?(old, source, captured) and old["file_epoch"] == captured.file_epoch and
                   (not editable?(file) or old["refresh_due"] in [false, 0]) ->
-                publish_existing(scope, source, old)
+                publish_existing(scope, source, Map.put(old, "editable_file", editable?(file)))
 
               true ->
                 with {:ok, units} <-
@@ -72,7 +72,16 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
                          &SlackSemanticIndex.media(&1, &2, opts),
                          opts
                        ) do
-                  store(scope, source, captured, build, component, file_id, units)
+                  store(
+                    scope,
+                    source,
+                    captured,
+                    build,
+                    component,
+                    file_id,
+                    units,
+                    editable?(file)
+                  )
                 end
             end
           else
@@ -163,7 +172,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
   defp publish_existing(scope, source, old),
     do: scope |> Map.merge(source) |> Map.merge(old) |> SlackSearchSources.publish()
 
-  defp store(scope, source, captured, build, component, file_id, units) do
+  defp store(scope, source, captured, build, component, file_id, units, editable \\ false) do
     # The sequence is allocated before the source read. Every complete component
     # in this job gets its own non-reused build ID; transport never retries a
     # different body under that ID. A rescued job allocates a fresh sequence.
@@ -184,6 +193,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
           |> DateTime.to_date()
           |> Date.to_iso8601(),
         "component" => component,
+        "editable_file" => editable,
         "file_id" => file_id,
         "file_epoch" => if(file_id == "", do: 0, else: captured.file_epoch),
         "change_epoch" => captured.change_epoch,
@@ -197,7 +207,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
         "ends" => Enum.map(units, & &1["segment_end_ms"])
       })
 
-    with :ok <- SlackSemanticIndex.insert_search_component(row),
+    with :ok <- SlackSemanticIndex.insert_search_component(Map.delete(row, "editable_file")),
          do: SlackSearchSources.publish(row)
   end
 

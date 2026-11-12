@@ -145,8 +145,9 @@ test("Session history is opt-in, releases open views when disabled and remembers
     // would leave Home and close the Chat Sidebar with the Session in it.
     await page
       .locator(".comma-sidebar-body")
-      .getByRole("button", { name: "Settings", exact: true })
+      .getByRole("button", { name: "Account", exact: true })
       .click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
     await page
       .locator('[data-slot="settings-sidebar-item"]', { hasText: "Debug" })
       .click();

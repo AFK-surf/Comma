@@ -4,9 +4,9 @@ import VerifiedKernel.ByteDigest
 
 namespace VerifiedKernel.Data
 
-private def deterministicBody : Nat → Term → KernelM ByteArray
-  | 0, _ => fail "invalid_term_depth"
-  | fuel + 1, term => do
+private def deterministicBodyDeferred : Nat → Term → KernelEval ByteArray
+  | 0, _ => monadLift (fail "invalid_term_depth")
+  | fuel + 1, term => KernelEval.defer fun _ => do
     match term with
     | .integer n => return ETF.integer n
     | .floatBits bits => return ⟨#[70]⟩ ++ ETF.be bits.toNat 8
@@ -17,23 +17,26 @@ private def deterministicBody : Nat → Term → KernelM ByteArray
     | .binary bytes => return ⟨#[109]⟩ ++ ETF.be bytes.size 4 ++ bytes
     | .tuple xs =>
       let header := if xs.length < 256 then ⟨#[104, UInt8.ofNat xs.length]⟩ else ⟨#[105]⟩ ++ ETF.be xs.length 4
-      xs.foldlM (fun bytes x => return bytes ++ (← deterministicBody fuel x)) header
+      xs.foldlM (fun bytes x => return bytes ++ (← deterministicBodyDeferred fuel x)) header
     | .list [] => return ⟨#[106]⟩
     | .list xs =>
       if xs.length ≤ 65535 && xs.all (fun x => x.isInteger && 0 ≤ integerValue x && integerValue x ≤ 255) then
         return ⟨#[107]⟩ ++ ETF.be xs.length 2 ++ (xs.map (fun x => UInt8.ofNat (integerValue x).toNat)).toByteArray
-      let bytes ← xs.foldlM (fun bytes x => return bytes ++ (← deterministicBody fuel x)) (⟨#[108]⟩ ++ ETF.be xs.length 4)
+      let bytes ← xs.foldlM (fun bytes x => return bytes ++ (← deterministicBodyDeferred fuel x)) (⟨#[108]⟩ ++ ETF.be xs.length 4)
       return bytes.push 106
     | .improper xs tail =>
-      let bytes ← xs.foldlM (fun bytes x => return bytes ++ (← deterministicBody fuel x)) (⟨#[108]⟩ ++ ETF.be xs.length 4)
-      return bytes ++ (← deterministicBody fuel tail)
+      let bytes ← xs.foldlM (fun bytes x => return bytes ++ (← deterministicBodyDeferred fuel x)) (⟨#[108]⟩ ++ ETF.be xs.length 4)
+      return bytes ++ (← deterministicBodyDeferred fuel tail)
     | .map xs =>
       let keys ← sortedKeys (xs.map Prod.fst)
       keys.foldlM (fun bytes key => do
-        let keyBytes ← deterministicBody fuel key
-        let valueBytes ← deterministicBody fuel (term.get key)
+        let keyBytes ← deterministicBodyDeferred fuel key
+        let valueBytes ← deterministicBodyDeferred fuel (term.get key)
         return bytes ++ keyBytes ++ valueBytes) (⟨#[116]⟩ ++ ETF.be xs.length 4)
     | .bitstring bytes lastBits => return ⟨#[77]⟩ ++ ETF.be bytes.size 4 ++ ⟨#[lastBits]⟩ ++ bytes
+
+private def deterministicBody (fuel : Nat) (value : Term) : KernelM ByteArray :=
+  KernelEval.run (deterministicBodyDeferred fuel value)
 
 def deterministic (term : Term) : KernelM ByteArray := do
   return (ByteArray.mk #[131]) ++ (← deterministicBody (term.depth + 1) term)

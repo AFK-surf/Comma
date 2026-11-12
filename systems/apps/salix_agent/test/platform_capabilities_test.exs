@@ -72,4 +72,38 @@ defmodule SalixAgent.PlatformCapabilitiesTest do
     assert changed["content"] =~ "Current-source interaction tools: []"
     assert next == Map.put(known, "interaction_tools", %{"tools" => []})
   end
+
+  test "later activations keep the stored interaction tools, so the reminder is not resent" do
+    disclosure = %{"tools" => [%{"name" => "question.request"}]}
+    config = %{tool_disclosure: disclosure}
+
+    activate = fn states, id, origin ->
+      message = %{id: id, role: "user", source_message_id: "u#{id}"}
+      session = %{session_id: "s1", messages: [message], context_provider_states: states}
+
+      delta =
+        case ContextProviders.prepare_activation_delta(session, config) do
+          {:delta, delta} -> delta
+          :none -> nil
+        end
+
+      delta = ContextProviders.with_interaction_reminder(delta, session, disclosure, origin)
+
+      reminders =
+        Enum.filter(
+          delta[:messages] || [],
+          &String.starts_with?(&1["runtime_message_id"] || "", "interaction-tools:")
+        )
+
+      next = if delta, do: ContextProviders.adopted_provider_state(delta), else: states
+      {reminders, next}
+    end
+
+    {[_reminder], states} = activate.(%{}, 1, %{"provider" => "telegram"})
+    # A new input refreshes the time context, so each activation stores a new
+    # snapshot. An internal input and a later external input must keep the set.
+    {[], states} = activate.(states, 2, %{"provider" => "internal"})
+    assert states["interaction_tools"] == %{"tools" => ["question.request"]}
+    assert {[], _} = activate.(states, 3, %{"provider" => "telegram"})
+  end
 end

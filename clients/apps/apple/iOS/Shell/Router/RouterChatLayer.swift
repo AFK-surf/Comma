@@ -7,8 +7,10 @@ import UIKit
 struct RouterChatLayer: UIViewControllerRepresentable {
     let store: CommaStore
     let open: Bool
+    var sharesRoutineColumn = false
     @Environment(AppNavigation.self) private var navigation
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(CallController.self) private var call: CallController?
 
     func makeUIViewController(context: Context) -> RouterLayerController {
         RouterLayerController(content: content(context))
@@ -21,7 +23,8 @@ struct RouterChatLayer: UIViewControllerRepresentable {
     /// The layer's SwiftUI side, built here where the navigation is in the environment; the controller takes it
     /// whole and finds the navigation on it.
     private func content(_ context: Context) -> HostedContent<RouterLayerContent> {
-        HostedContent(content: RouterLayerContent(store: store, navigation: navigation), environment: context.environment)
+        HostedContent(content: RouterLayerContent(store: store, navigation: navigation, call: call,
+                                                 sharesRoutineColumn: sharesRoutineColumn), environment: context.environment)
     }
 }
 
@@ -114,7 +117,7 @@ final class RouterLayerController: UIViewController {
     /// Open from the start, as the app opens on the chat: it is simply there, with no zoom out of its button.
     private func appear() {
         open = true
-        view.accessibilityViewIsModal = true
+        view.accessibilityViewIsModal = !hosting.rootView.content.sharesRoutineColumn
         closedAtRest = false
         land()
         navigation.routerSettled()
@@ -122,6 +125,7 @@ final class RouterLayerController: UIViewController {
 
     func update(content: HostedContent<RouterLayerContent>, open next: Bool, reduceMotion: Bool) {
         hosting.rootView = content
+        viewIfLoaded?.accessibilityViewIsModal = next && !content.content.sharesRoutineColumn
         self.reduceMotion = reduceMotion
         wantsOpen = next
         if laidOut, next != open { move(open: next, velocity: 0) }
@@ -147,7 +151,7 @@ final class RouterLayerController: UIViewController {
     func move(open next: Bool, velocity: CGFloat) {
         open = next
         wantsOpen = next
-        view.accessibilityViewIsModal = next
+        view.accessibilityViewIsModal = next && !hosting.rootView.content.sharesRoutineColumn
         // The keyboard goes down before the closing zoom starts.
         if !next { view.endEditing(true) }
         let fromButton = closedAtRest

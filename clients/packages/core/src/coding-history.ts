@@ -50,7 +50,12 @@ export function historyItems(
     switch (entry.kind) {
       case "user":
         close();
-        items.push({ kind: "received", id, text: entry.text, at: entry.at });
+        items.push({
+          kind: "received",
+          id,
+          text: promptWords(entry.text),
+          at: entry.at,
+        });
         return;
       case "assistant":
         close();
@@ -105,6 +110,47 @@ export function historyItems(
   });
   close();
   return items;
+}
+
+const MESSAGE_OPEN = '<message via="';
+const MESSAGE_CLOSE = "</message>";
+/** How the station ends words it cut to its length (station `read/transcript.ts`). */
+const CLIPPED = /\n… \(\d+ more characters\)$/;
+
+/**
+ * What a prompt the station built said: the words of the messages it carried (`formatInbound`), without their tags or
+ * its own notes around them. A prompt that carries none is its own words. A message begins a line, so what merely
+ * shows the shape of one (a list of instructions, a person's quote) stays as it is.
+ */
+function promptWords(text: string): string {
+  const said: string[] = [];
+  let at = 0;
+  for (;;) {
+    const open = text.indexOf(MESSAGE_OPEN, at);
+    if (open < 0) break;
+    if (open > 0 && text[open - 1] !== "\n") {
+      at = open + MESSAGE_OPEN.length;
+      continue;
+    }
+    const head = tagEnd(text, open);
+    if (head === null) break;
+    const close = text.indexOf(MESSAGE_CLOSE, head);
+    if (close < 0 && !CLIPPED.test(text)) break;
+    said.push(text.slice(head + 1, close < 0 ? text.length : close).trim());
+    if (close < 0) break;
+    at = close + MESSAGE_CLOSE.length;
+  }
+  return said.length > 0 ? said.join("\n") : text;
+}
+
+/** Where a tag opened at `open` ends, past the `>` its quoted values may hold. */
+function tagEnd(text: string, open: number): number | null {
+  let quoted = false;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '"') quoted = !quoted;
+    else if (text[i] === ">" && !quoted) return i;
+  }
+  return null;
 }
 
 const time = (at: string | null) => (at === null ? Number.NaN : Date.parse(at));

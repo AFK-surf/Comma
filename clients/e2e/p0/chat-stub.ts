@@ -971,6 +971,15 @@ export async function startChatSmokeStub({
       return;
     }
 
+    // No Agent of the stub's Tasks attached a file.
+    if (
+      req.method === "GET" &&
+      path === `/v1/comma/groups/${chatSmokeWorkspace.group_id}/task-files`
+    ) {
+      writeJson(res, { data: [], next_cursor: null });
+      return;
+    }
+
     if (
       taskLabels &&
       req.method === "GET" &&
@@ -1036,7 +1045,8 @@ export async function startChatSmokeStub({
       uploadId.writeUInt32BE(uploads.length + 1, 12);
       if (filename.includes("fail-once") && !failedOnce.has(filename)) {
         failedOnce.add(filename);
-        writeJson(res, { error: "file_too_large" }, 413);
+        // A failure another try can pass: a refusal for the file itself (413, 415) offers no retry.
+        writeJson(res, { error: "unavailable" }, 503);
         return;
       }
 

@@ -5,14 +5,19 @@
 // once the server reports it, or a later version of the task.
 //
 // Bounds: one read per workspace in flight (the scheduler's key), each request given up after 5 s; one event stream per
-// shown workspace, reconnected after 1, 2, 4… up to 15 s; a failed read without a stream to wake it is tried again
-// after 1, 2, 4… up to 15 s. No polling of the list. The stream of the read's own group owns its recovery once the
-// read has settled which group it is.
+// shown workspace, reconnected after 1, 2, 4… up to 15 s; a failed read is tried again after 1, 2, 4… up to 15 s, except
+// one its stream asked for, which starts the stream again. No polling of a list that reads.
 //
 // A list asked with `hosted` takes in the Tasks the workspace's stations host (station-tasks.ts keeps them, while such
 // a list is shown), each among the others by its last change: one list, whichever kept a Task.
 import { taskStatusBucket, taskStatusFailed } from "@comma/i18n";
-import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  madeOnce,
+  Priority,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Effect, Option, Result } from "effect";
 import type { Account } from "./account.ts";
 import { route } from "./api.ts";
@@ -56,7 +61,7 @@ type State = {
   live: boolean;
   /** Why the last read failed. */
   error?: NonNullable<ProductInboxListResult["errorCode"]>;
-  /** The group whose event stream is open, and so wakes a failed read. */
+  /** The group whose event stream is open. */
   streaming?: string;
   retry: number;
 };
@@ -95,6 +100,19 @@ export function taskItem(
     ...(conversation.parent_message_id === undefined
       ? {}
       : { parentMessageId: conversation.parent_message_id }),
+    ...(conversation.requested_by === undefined
+      ? {}
+      : {
+          requestedBy: {
+            name: conversation.requested_by,
+            ...(conversation.requested_by_id === undefined
+              ? {}
+              : { id: conversation.requested_by_id }),
+            ...(conversation.requested_by_avatar === undefined
+              ? {}
+              : { avatar: conversation.requested_by_avatar }),
+          },
+        }),
     ...(conversation.review_version
       ? { reviewVersion: conversation.review_version }
       : {}),
@@ -102,6 +120,9 @@ export function taskItem(
     ...(conversation.run_started_at === undefined
       ? {}
       : { runStartedAt: conversation.run_started_at }),
+    ...(conversation.created_at === undefined
+      ? {}
+      : { createdAt: epochMs(conversation.created_at) }),
     source: "salix.conversation",
     status: conversation.status,
     title: conversation.title,
@@ -113,11 +134,26 @@ export function taskItem(
 }
 
 /** The item with the section its status folds into, as every client shows it. */
-const withStatus = (item: ProductInboxItem): ProductInboxItem => ({
-  ...item,
-  statusBucket: taskStatusBucket(item.status),
-  statusFailed: taskStatusFailed(item.status),
-});
+const withStatus = madeOnce(
+  (item: ProductInboxItem): ProductInboxItem => ({
+    ...item,
+    statusBucket: taskStatusBucket(item.status),
+    statusFailed: taskStatusFailed(item.status),
+  })
+);
+
+/** A task as a change a person made shows it, made once for the same task and status. */
+const staged = madeOnce(
+  (item: ProductInboxItem, status: string): ProductInboxItem => ({ ...item, status })
+);
+
+const taskWorkspace = madeOnce(
+  (w: { group_id: string; id: string; name: string }): TaskWorkspace => ({
+    group_id: w.group_id,
+    id: w.id,
+    name: w.name,
+  })
+);
 
 function errorCode(error: CoreError): NonNullable<ProductInboxListResult["errorCode"]> {
   if (error.code === "network" || error.code === "timeout")
@@ -183,6 +219,12 @@ export class Tasks {
   readonly #ctx: Ctx;
   readonly #workspaces: Workspaces;
   readonly #live: Live;
+  /**
+   * What keeps a workspace's list current for as long as any topic shows it (its group's event stream, a read tried
+   * again later), in a scope of the workspace's own: a topic that stops takes nothing from the others.
+   */
+  readonly #kept: Live;
+  readonly #keptWorkspaces = new Set<string>();
   readonly #states = new Map<string, State>();
   /** Validators of the reads this run made, and what they answered: a 304 answers with it. */
   readonly #etags = new Map<string, { etag: string; value: unknown }>();
@@ -190,6 +232,8 @@ export class Tasks {
   #nextStage = 0;
   /** Told when a workspace's task stream says its stations changed their Tasks. */
   onStationTasksChanged: ((workspace: string) => void) | undefined;
+  /** Told when a workspace's task stream says a request to it came or was withdrawn. */
+  onTaskRequestsChanged: ((workspace: string) => void) | undefined;
   /** The Tasks a workspace's stations host, as the list shows them (`hosted`), and what keeps them current while shown. */
   hosted:
     | {
@@ -205,6 +249,7 @@ export class Tasks {
     this.#ctx = ctx;
     this.#workspaces = workspaces;
     this.#live = new Live(ctx.runner);
+    this.#kept = new Live(ctx.runner);
     ctx.kernel.source("tasks", {
       start: (topic) =>
         this.#live.run(
@@ -219,6 +264,7 @@ export class Tasks {
       stop: (topic) => {
         this.#live.stop(topic);
         if (topic.hosted === "1") this.hosted?.stop(topic);
+        this.#settleKept();
       },
       compute: (topic): Value => ({ ok: this.#value(topic) }),
     });
@@ -227,6 +273,8 @@ export class Tasks {
       const key = ctx.session.accountKey();
       if (key === this.#accountKey) return;
       this.#accountKey = key;
+      this.#kept.stopAll();
+      this.#keptWorkspaces.clear();
       this.#states.clear();
       this.#etags.clear();
       this.#stages.clear();
@@ -256,6 +304,7 @@ export class Tasks {
               ctx.kernel.store.invalidate(topic);
               this.#live.run(topic, this.#keep(topic));
             }
+            this.#settleKept();
             return null;
           }),
       },
@@ -402,11 +451,7 @@ export class Tasks {
             ? [taskItem(parsed.data, workspace)]
             : [];
         });
-        account.putDoc(
-          doc(workspace.id),
-          { pages: [{ items }], readAt: 0 } satisfies Kept,
-          ctx.now()
-        );
+        this.#putKept(account, workspace.id, { pages: [{ items }], readAt: 0 });
       }
       if (kept.length > 0 && !this.#workspaces.list(account))
         account.putDoc(
@@ -417,6 +462,16 @@ export class Tasks {
       account.setMeta("legacyTasksImported", true);
       this.#invalidate();
     }).pipe(Effect.ignore);
+  }
+
+  /** A workspace's list as kept (the account holds it as read, the same objects while it does not change). */
+  #keptList(account: Account, workspace: string): Kept | undefined {
+    return account.doc<Kept>(doc(workspace))?.value;
+  }
+
+  /** Keeps a list read again (the account keeps the tasks that did not change as they were). */
+  #putKept(account: Account, workspace: string, kept: Kept): boolean {
+    return account.putDoc(doc(workspace), kept, this.#ctx.now());
   }
 
   #invalidate(): void {
@@ -438,11 +493,7 @@ export class Tasks {
 
   /** The workspaces the list knows: as last read (the workspaces' own list). */
   #known(account: Account): TaskWorkspace[] {
-    return (this.#workspaces.list(account) ?? []).map((w) => ({
-      group_id: w.group_id,
-      id: w.id,
-      name: w.name,
-    }));
+    return (this.#workspaces.list(account) ?? []).map(taskWorkspace);
   }
 
   /** A topic's or call's workspace: its own, else the one in focus, else the first known; "" while none is known. */
@@ -457,7 +508,10 @@ export class Tasks {
     );
   }
 
-  /** Keeps a shown list current: read now, then as its stream says. */
+  /**
+   * Keeps a shown list current: read now, then as its stream says. A list another topic shows already, read and with
+   * its stream open, is current as it is.
+   */
   #keep(topic: Topic): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const account = yield* this.#account().pipe(Effect.option);
@@ -468,24 +522,33 @@ export class Tasks {
         yield* this.#workspaces.refresh().pipe(Effect.ignore);
         workspace = this.#workspaceOf(account.value, topic.workspace);
       }
-      yield* this.#refresh(account.value, workspace, Priority.shown, []).pipe(
-        Effect.ignore
-      );
+      const state = this.#state(workspace);
+      if (!(state.live && state.streaming && state.error === undefined))
+        yield* this.#refresh(account.value, workspace, Priority.shown, []).pipe(
+          Effect.ignore
+        );
       return yield* Effect.never;
     });
   }
 
-  /** Reads a workspace's first page again (and `conversations` exactly), keeps it, and keeps its stream open. */
+  /**
+   * Reads a workspace's first page again (and `conversations` exactly), keeps it, and keeps its stream open. A failed
+   * read is tried again after a while: a stream that stays up says nothing until the list changes. `streamed` is a read
+   * its stream asked for, whose failure starts the stream again, and the new stream's resync reads again.
+   */
   #refresh(
     account: Account,
     wanted: string,
     priority: number,
-    conversations: string[]
+    conversations: string[],
+    streamed = false
   ): Effect.Effect<void, CoreError> {
     const ctx = this.#ctx;
     const key = `${account.dbName}:${doc(wanted)}${conversations.length ? `:${conversations.join(",")}` : ""}`;
     const read = Effect.gen({ self: this }, function* () {
-      yield* this.#workspaces.refresh(priority);
+      // The workspaces are read again only for one they do not name yet.
+      if (!this.#known(account).some((w) => w.id === wanted))
+        yield* this.#workspaces.refresh(priority);
       const known = this.#known(account);
       const workspace = known.find((w) => w.id === wanted) ?? known[0];
       if (!workspace) {
@@ -522,13 +585,12 @@ export class Tasks {
         ...(page.has_more === undefined ? {} : { hasMore: page.has_more }),
         ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
       };
-      const kept = account.doc<Kept>(doc(workspace.id))?.value;
+      const kept = this.#keptList(account, workspace.id);
       if (
-        !account.putDoc(
-          doc(workspace.id),
-          { pages: refreshed(kept?.pages ?? [], first), readAt: ctx.now() },
-          ctx.now()
-        )
+        !this.#putKept(account, workspace.id, {
+          pages: refreshed(kept?.pages ?? [], first),
+          readAt: ctx.now(),
+        })
       )
         return;
       const state = this.#state(workspace.id);
@@ -544,8 +606,7 @@ export class Tasks {
           const state = this.#state(wanted);
           state.error = errorCode(error);
           this.#invalidate();
-          // A stream on the workspace's group wakes the list again; without one, try again after a while.
-          if (!state.streaming) {
+          if (!streamed) {
             const delay = RETRY_MS[Math.min(state.retry, RETRY_MS.length - 1)]!;
             state.retry++;
             this.#later(wanted, delay);
@@ -556,21 +617,47 @@ export class Tasks {
     return ctx.scheduler.ask(API_LANE, key, priority, read);
   }
 
-  /** A read after `ms`, in the fiber of the topics that show the workspace (gone with them). */
+  /** A read after `ms`, kept while a topic shows the workspace (gone with the last of them). */
   #later(workspace: string, ms: number): void {
-    for (const topic of this.#ctx.kernel.store.liveTopics()) {
-      if (topic.topic !== "tasks") continue;
-      const account = this.#ctx.session.current();
-      if (!account || this.#workspaceOf(account, topic.workspace) !== workspace)
-        continue;
-      this.#live.run(
-        topic,
-        Effect.sleep(ms).pipe(
-          Effect.andThen(this.#refresh(account, workspace, Priority.background, [])),
-          Effect.ignore
-        )
+    const account = this.#ctx.session.current();
+    if (!account || !this.#shown(account, workspace)) return;
+    this.#keepFor(
+      workspace,
+      Effect.sleep(ms).pipe(
+        Effect.andThen(this.#refresh(account, workspace, Priority.background, [])),
+        Effect.ignore
+      )
+    );
+  }
+
+  /** Whether a live topic shows the workspace's list. */
+  #shown(account: Account, workspace: string): boolean {
+    return this.#ctx.kernel.store
+      .liveTopics()
+      .some(
+        (t) =>
+          t.topic === "tasks" && this.#workspaceOf(account, t.workspace) === workspace
       );
-      return;
+  }
+
+  /** The scope of what keeps a workspace's list current: one per workspace, not one per topic. */
+  static #keptOf(workspace: string): Topic {
+    return { topic: "tasks", workspace, kept: "1" };
+  }
+
+  /** Runs `work` in the workspace's own scope: it lives while any topic shows the workspace. */
+  #keepFor(workspace: string, work: Effect.Effect<unknown, unknown>): void {
+    this.#keptWorkspaces.add(workspace);
+    this.#kept.run(Tasks.#keptOf(workspace), work);
+  }
+
+  /** Ends what kept a workspace's list current once no topic shows the workspace any more. */
+  #settleKept(): void {
+    const account = this.#ctx.session.current();
+    for (const workspace of this.#keptWorkspaces) {
+      if (account && this.#shown(account, workspace)) continue;
+      this.#keptWorkspaces.delete(workspace);
+      this.#kept.stop(Tasks.#keptOf(workspace));
     }
   }
 
@@ -601,7 +688,7 @@ export class Tasks {
     const ctx = this.#ctx;
     return Effect.gen({ self: this }, function* () {
       const workspace = this.#known(account).find((w) => w.id === wanted);
-      const kept = account.doc<Kept>(doc(wanted))?.value;
+      const kept = this.#keptList(account, wanted);
       const cursor = kept?.pages.at(-1)?.nextCursor;
       if (!workspace || !kept || !cursor) return;
       const path = `${route`/v1/comma/groups/${workspace.group_id}/conversations`}?archive=include&limit=${LIMIT}&cursor=${encodeURIComponent(cursor)}`;
@@ -619,13 +706,11 @@ export class Tasks {
         ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
       };
       // The list moved on meanwhile (read again from its start): this page is not its next one any more.
-      if (account.doc<Kept>(doc(wanted))?.value.pages.at(-1)?.nextCursor !== cursor)
-        return;
-      account.putDoc(
-        doc(wanted),
-        { pages: appended(kept.pages, next), readAt: kept.readAt },
-        ctx.now()
-      );
+      if (this.#keptList(account, wanted)?.pages.at(-1)?.nextCursor !== cursor) return;
+      this.#putKept(account, wanted, {
+        pages: appended(kept.pages, next),
+        readAt: kept.readAt,
+      });
       this.#invalidate();
     }).pipe(
       // Said as the list says it (its error codes), for the page that asked.
@@ -642,22 +727,19 @@ export class Tasks {
     );
   }
 
-  /** Keeps the workspace's group's event stream open while the list is shown: each change it says reads the list again. */
+  /**
+   * Keeps the workspace's group's event stream open while any topic shows the list: each change it says reads the
+   * list again. The stream is the workspace's, not one topic's: the Inbox closing leaves Home's list current.
+   */
   #stream(account: Account, workspace: TaskWorkspace): void {
     const state = this.#state(workspace.id);
     if (state.streaming === workspace.group_id) return;
-    const topic = this.#ctx.kernel.store
-      .liveTopics()
-      .find(
-        (t) =>
-          t.topic === "tasks" &&
-          this.#workspaceOf(account, t.workspace) === workspace.id
-      );
-    if (!topic) return;
+    if (!this.#shown(account, workspace.id)) return;
     state.streaming = workspace.group_id;
     const ctx = this.#ctx;
-    // `with=station_tasks`: the stream also says when the group's stations changed their Tasks (station-tasks.ts).
-    const path = `${route`/v1/comma/groups/${workspace.group_id}/conversations/events`}?with=station_tasks`;
+    // `with=`: the stream also says when the group's stations changed their Tasks (station-tasks.ts), and to the
+    // workspace's owner when a request to it came or was withdrawn (task-requests.ts).
+    const path = `${route`/v1/comma/groups/${workspace.group_id}/conversations/events`}?with=station_tasks,task_requests`;
     let lastVersion: string | undefined;
     let backoff = 0;
     const once = Effect.scoped(
@@ -679,6 +761,14 @@ export class Tasks {
               this.onStationTasksChanged?.(workspace.id);
               return;
             }
+            if (event.data.type === "task_requests_invalidated") {
+              this.onTaskRequestsChanged?.(workspace.id);
+              return;
+            }
+            // A (re)connected stream starts with a resync: a request hint sent while it was down is lost, so the
+            // requests are read again too.
+            if (event.data.type === "conversation_list_resync_required")
+              this.onTaskRequestsChanged?.(workspace.id);
             if (
               event.data.type !== "conversation_list_resync_required" &&
               event.data.version === lastVersion
@@ -687,15 +777,15 @@ export class Tasks {
             lastVersion = event.data.version;
             // A version is only a hint: a read that does not settle starts the stream again, whose resync replays it.
             const read = yield* Effect.result(
-              this.#refresh(account, workspace.id, Priority.shown, [])
+              this.#refresh(account, workspace.id, Priority.shown, [], true)
             );
             if (Result.isFailure(read)) return yield* Effect.fail(read.failure);
           })
         );
       })
     );
-    this.#live.run(
-      topic,
+    this.#keepFor(
+      workspace.id,
       Effect.gen(function* () {
         for (;;) {
           const ended = yield* Effect.result(once);
@@ -720,7 +810,7 @@ export class Tasks {
     const workspaces = this.#known(account);
     const workspace = this.#workspaceOf(account, topic.workspace);
     const state = this.#state(workspace);
-    const kept = workspace ? account.doc<Kept>(doc(workspace))?.value : undefined;
+    const kept = workspace ? this.#keptList(account, workspace) : undefined;
     const hosted =
       topic.hosted === "1" && workspace && this.hosted
         ? this.hosted.items(account, workspace)
@@ -782,7 +872,7 @@ export class Tasks {
     return shown.size === 0
       ? items
       : items.map((item) =>
-          shown.has(item.id) ? { ...item, status: shown.get(item.id)! } : item
+          shown.has(item.id) ? staged(item, shown.get(item.id)!) : item
         );
   }
 }

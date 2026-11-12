@@ -15,7 +15,7 @@ theorem WriteCommitTrace.physical_history {framing : CodecFraming} {objects : Ob
       trace.confirmed = .tuple [a "session_command_driver_confirmed",
         (Revision.Cursor.committed trace.stamped etag).pack, continuation] ∧
       (.tuple [a "cas", trace.requestedKey, trace.requestedBytes, trace.requestedBase] : Term) =
-        .tuple [a "cas", trace.key, .binary bytes, cursor.etag] ∧
+        .tuple [a "cas", trace.key, .binary bytes, cursor.revision] ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       durable trace.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       ∀ item, PhysicalIdentityFact objects cursor.working (.work item) → PhysicalIdentityFact objects snapshot (.work item) := by
@@ -73,7 +73,7 @@ theorem ActivationCommitTrace.physical_history {framing : CodecFraming} {objects
       trace.fence.confirmed = .tuple [a "session_command_driver_confirmed",
         (Revision.Cursor.committed trace.fence.stamped etag).pack, trace.continuation] ∧
       (.tuple [a "cas", trace.fence.requestedKey, trace.fence.requestedBytes, trace.fence.requestedBase] : Term) =
-        .tuple [a "cas", trace.fence.key, .binary bytes, trace.staged.etag] ∧
+        .tuple [a "cas", trace.fence.key, .binary bytes, trace.staged.revision] ∧
       ETF.encode (.tuple [a "comma_internal_session", i 3, snapshot]) = .ok bytes ∧
       durable trace.fence.key etag snapshot ∧ PhysicalHistory framing objects owner session snapshot sealed ∧
       ∀ item, PhysicalIdentityFact objects context.candidate.working (.work item) →

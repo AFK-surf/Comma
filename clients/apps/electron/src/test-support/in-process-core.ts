@@ -17,7 +17,21 @@ const fromPromise = <A>(run: (signal: AbortSignal) => Promise<A>) =>
   });
 
 /** Starts a core on `session` (Main's session host), on the real clock; `client` is a window's channel to it. */
-export function startInProcessCore(session: MainSessionHost) {
+export function startInProcessCore(
+  session: MainSessionHost,
+  native: Partial<
+    Pick<
+      BearerSessionPorts,
+      | "clientKind"
+      | "clientPlatform"
+      | "google"
+      | "apple"
+      | "abuseProof"
+      | "sha256"
+      | "captcha"
+    >
+  > = {}
+) {
   const host = new FakeHost({ sessionSource: "core", time: null });
   let requestId = 0;
   const ports: BearerSessionPorts = {
@@ -29,6 +43,7 @@ export function startInProcessCore(session: MainSessionHost) {
     gate: (snapshot, lease) => session.gate(snapshot, lease),
     google: (input) => fromPromise((signal) => session.google(input, signal)),
     googleDone: (grant, ok) => Effect.sync(() => session.googleDone(grant, ok)),
+    ...native,
   };
   host.bearerSession = ports;
   host.authFetch = (request) => {

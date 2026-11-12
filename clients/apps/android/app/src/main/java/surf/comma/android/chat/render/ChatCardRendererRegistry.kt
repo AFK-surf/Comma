@@ -7,8 +7,6 @@ import surf.comma.android.chat.live.AgentRequestCardRenderer
 import surf.comma.android.chat.live.AttachmentCardRenderer
 import surf.comma.android.chat.live.CallLogCardRenderer
 import surf.comma.android.chat.live.QuestionCardRenderer
-import surf.comma.android.chat.live.ReplyActionsCardRenderer
-import surf.comma.android.chat.live.ReservedReplyActionsRenderer
 import surf.comma.android.chat.live.TaskRefCardRenderer
 import surf.comma.android.chat.model.TimelineBlockKinds
 import surf.comma.android.tasks.ui.TaskInfoCardRenderer
@@ -68,24 +66,26 @@ internal object ChatCardRendererRegistry {
     private const val PHOTO_VIEW_TYPE = 104
     private const val TASK_REF_VIEW_TYPE = 105
     private const val ATTACHMENT_VIEW_TYPE = 106
-    private const val REPLY_ACTIONS_VIEW_TYPE = 107
-    private const val REPLY_ACTIONS_RESERVED_VIEW_TYPE = 108
     private const val TASK_INFO_VIEW_TYPE = 109
     private const val CALL_LOG_VIEW_TYPE = 110
     private const val QUESTION_VIEW_TYPE = 112
     private const val AGENT_REQUEST_VIEW_TYPE = 113
+    private const val MINI_APP_VIEW_TYPE = 114
+    private const val SUGGESTIONS_VIEW_TYPE = 115
+    private const val DYNAMIC_UI_VIEW_TYPE = 116
     private val renderers: List<ChatCardRenderer> = listOf(
         surf.comma.android.settings.devices.DeviceSetupOfferCardRenderer(111),
         PhotoCardRenderer(TimelineBlockKinds.PHOTO_GRID, PHOTO_VIEW_TYPE),
         PhotoCardRenderer(TimelineBlockKinds.INLINE_PHOTO, PHOTO_VIEW_TYPE),
         TaskRefCardRenderer(TASK_REF_VIEW_TYPE),
         AttachmentCardRenderer(ATTACHMENT_VIEW_TYPE),
-        ReplyActionsCardRenderer(REPLY_ACTIONS_VIEW_TYPE),
-        ReservedReplyActionsRenderer(REPLY_ACTIONS_RESERVED_VIEW_TYPE),
         TaskInfoCardRenderer(TASK_INFO_VIEW_TYPE),
         CallLogCardRenderer(CALL_LOG_VIEW_TYPE),
         QuestionCardRenderer(QUESTION_VIEW_TYPE),
         AgentRequestCardRenderer(AGENT_REQUEST_VIEW_TYPE),
+        surf.comma.android.miniapps.MiniAppCardRenderer(MINI_APP_VIEW_TYPE),
+        surf.comma.android.chat.live.ChatSuggestionsRenderer(SUGGESTIONS_VIEW_TYPE),
+        surf.comma.android.dynamicui.DynamicUiCardRenderer(DYNAMIC_UI_VIEW_TYPE),
     )
 
     fun forKind(kind: String?): ChatCardRenderer? =

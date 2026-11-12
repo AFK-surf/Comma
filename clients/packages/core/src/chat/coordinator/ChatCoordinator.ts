@@ -179,12 +179,26 @@ export class ChatCoordinator implements ChatProvider {
     return this.#sends.sendDetached(target, text);
   }
 
-  sendDetachedRequest(
+  sendRequest(
     target: ChatTarget,
     text: string,
-    requestId: string
-  ): Effect.Effect<string, Error> {
-    return this.#sends.sendDetachedRequest(target, text, requestId);
+    requestId: string,
+    messageType?: "quick_chat"
+  ): Effect.Effect<string | undefined, Error> {
+    return this.#sends.sendRequest(target, text, requestId, messageType);
+  }
+
+  holdRequest(
+    target: ChatTarget,
+    text: string,
+    requestId: string,
+    messageType?: "quick_chat"
+  ): void {
+    this.#sends.holdRequest(target, text, requestId, messageType);
+  }
+
+  failHeldRequest(target: ChatTarget, requestId: string): void {
+    this.#sends.failHeldRequest(target, requestId);
   }
 
   /** `onAccepted`: told once the message is pending (its draft consumed), before its server has it. */

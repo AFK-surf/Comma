@@ -564,6 +564,12 @@ defmodule SalixMeetNative.Runtime do
     }
     |> then(fn u -> if error, do: Map.put(u, "error", error), else: u end)
     |> then(fn u ->
+      case participant_names(state) do
+        [] -> u
+        names -> Map.put(u, "participants", names)
+      end
+    end)
+    |> then(fn u ->
       case artifacts do
         [] ->
           u
@@ -771,6 +777,16 @@ defmodule SalixMeetNative.Runtime do
     %{session: session, session_module: module} = state
     Task.start(fn -> safe(fn -> module.leave(session) end) end)
     :ok
+  end
+
+  # Everyone the meeting named while the bot was in it, also those who never
+  # spoke, so the summary can list them.
+  defp participant_names(state) do
+    state.names
+    |> Enum.reject(fn {device, _name} -> device == state.self_device end)
+    |> Enum.map(fn {_device, name} -> name end)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp online_others(state) do

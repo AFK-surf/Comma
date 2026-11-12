@@ -1,6 +1,6 @@
 defmodule SalixStore.Stations.Station do
   @moduledoc """
-  A still.fail station of a Salix Group (`SalixStore.Stations`). The id is the
+  A Comma station of a Salix Group (`SalixStore.Stations`). The id is the
   station's Ed25519 public key in hex; the station proves it on every signed
   request. `removed_at` set means removed. `kind` is `device` for a station
   enrolled from someone's machine and `cloud_vm` for the station the control
@@ -8,6 +8,8 @@ defmodule SalixStore.Stations.Station do
   product user's id, opaque to Salix; nil for a placed station.
   `index_epoch` and `index_through` say how much of the station's Task index
   Salix holds (`SalixStore.StationTaskIndex`).
+  `stats_epoch` and `stats_through` say the same of its Stats index
+  (`SalixStore.StationStatsIndex`).
   """
   use Ecto.Schema
 
@@ -29,6 +31,8 @@ defmodule SalixStore.Stations.Station do
     field(:last_seen_at, :utc_datetime_usec)
     field(:index_epoch, :string)
     field(:index_through, :integer)
+    field(:stats_epoch, :string)
+    field(:stats_through, :integer)
 
     timestamps()
   end

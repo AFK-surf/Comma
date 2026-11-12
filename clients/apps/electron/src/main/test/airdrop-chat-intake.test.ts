@@ -41,6 +41,7 @@ const offer: AirDropOffer = {
   senderName: "iPhone",
   files: [{ name: "report.pdf", isDirectory: false }],
   linkCount: 0,
+  links: [],
 };
 /** The chat the window shows, as the server gives it. */
 const conversation = (id: string) => ({

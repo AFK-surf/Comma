@@ -26,6 +26,11 @@ fun interface GoogleIdTokens {
     fun request(clientId: String, nonce: String): String?
 }
 
+/** Platform proof and isolated CAPTCHA; cancellation fences callbacks and closes native UI. */
+fun interface NativeAbuse {
+    fun request(op: String, input: JSONObject, complete: (JSONObject?, String?) -> Unit): () -> Unit
+}
+
 /**
  * The app as the client core's host: what `packages/core/src/hosts/mobile.ts` asks for.
  *
@@ -34,7 +39,7 @@ fun interface GoogleIdTokens {
  *   shuts the gate and tells the core. Redirects are not followed.
  * - Auth requests (`auth.fetch`) carry the credential the core names by reference; a bearer in the answer stays in
  *   [custody].
- * - The session ports (`session.*`) are [custody]'s and [google]'s.
+ * - Session ports (`session.*`) use [custody], native sign-in, and bounded abuse verification.
  * - The databases (`sql.*`) are SQLite files in [dataDir], used at once on the core's thread.
  * - A product request may send a file of [localFiles] as its body (`localFileRef`), and the core reads a part of one
  *   to send it to a station (`localFiles.read`); without them the core asks neither.
@@ -52,6 +57,7 @@ class CoreHost(
     private val localFiles: HostLocalFiles? = null,
     /** The app's version, as the core's requests report it. */
     private val appVersion: String? = null,
+    private val abuse: NativeAbuse? = null,
 ) : CoreHostOps {
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(0, TimeUnit.SECONDS).build()
@@ -64,6 +70,7 @@ class CoreHost(
 
     /** Requests under way, by the core's operation id (what `abort` names). */
     private val calls = ConcurrentHashMap<Long, Call>()
+    private val nativeCalls = ConcurrentHashMap<Long, () -> Unit>()
     private val open = ConcurrentHashMap<Long, Stream>()
     private val nextStream = AtomicLong(1)
     private val grants = ConcurrentHashMap<String, Boolean>()
@@ -79,6 +86,8 @@ class CoreHost(
             // The core went: its databases close, its requests end, and what it had not settled is queued.
             for (call in calls.values) call.cancel()
             calls.clear()
+            for (cancel in nativeCalls.values) cancel()
+            nativeCalls.clear()
             for (stream in open.values) stream.call.cancel()
             open.clear()
             downloads.closeAll()
@@ -115,6 +124,7 @@ class CoreHost(
             "abort" -> {
                 val aborted = input.optLong("id")
                 calls.remove(aborted)?.cancel()
+                nativeCalls.remove(aborted)?.invoke()
                 streams.execute { runCatching { custody.dropped(aborted) } }
             }
             "fetch" -> product(id, input, bytes, reply, stream = false)
@@ -162,6 +172,38 @@ class CoreHost(
                 answering(reply) {
                     reply.ok(JSONObject().put("value", custody.change(input.getJSONObject("change")) ?: JSONObject.NULL))
                 }
+            }
+            "session.sha256" -> streams.execute {
+                answering(reply) {
+                    val inputs = input.getJSONArray("inputs")
+                    require(inputs.length() <= 256) { "Invalid digest batch." }
+                    val digests = JSONArray()
+                    for (index in 0 until inputs.length()) {
+                        val bytes = inputs.getString(index).toByteArray(Charsets.UTF_8)
+                        require(bytes.size <= 4096) { "Invalid digest input." }
+                        digests.put(java.util.Base64.getEncoder().encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)))
+                    }
+                    reply.ok(JSONObject().put("digests", digests))
+                }
+            }
+            "session.abuseProof", "session.captcha" -> {
+                val adapter = abuse
+                if (adapter == null) { reply.fail("Native abuse verification is unavailable."); return }
+                // Install before starting: a synchronous callback or an immediate abort still has one owner.
+                val active = java.util.concurrent.atomic.AtomicBoolean(true)
+                val cancellation = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+                nativeCalls[id] = {
+                    active.set(false)
+                    cancellation.get()?.invoke()
+                }
+                val cancel = adapter.request(op, input) { value, error ->
+                    if (active.compareAndSet(true, false)) {
+                        nativeCalls.remove(id)
+                        if (error != null) reply.fail(error) else reply.ok(value ?: JSONObject())
+                    }
+                }
+                cancellation.set(cancel)
+                if (!active.get()) cancel()
             }
             "session.google" -> streams.execute {
                 answering(reply) {

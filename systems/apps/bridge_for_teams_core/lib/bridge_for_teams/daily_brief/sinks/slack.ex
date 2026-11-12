@@ -10,7 +10,8 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
   # Slack refuses a message over 50 blocks.
   @max_text_sections 40
   @summary_chars 200
-  @max_button_url 2_000
+  # Slack refuses a link over 3,000 characters in a block.
+  @max_link_url 2_000
 
   @spec render(String.t(), String.t()) :: %{text: String.t(), blocks: [map()]}
   def render(title, text) do
@@ -24,11 +25,12 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
 
   @doc """
   A member's brief laid out by its parts: the title, the opening, then each
-  part under its heading, one block per numbered or bulleted entry with its
-  message as a button. Text of any other shape stays a plain section.
+  part under its heading, one block per numbered or bulleted entry. An
+  entry keeps its title, with message previews and native-open links in
+  small print underneath.
   """
   @spec render_personal(String.t(), String.t()) :: %{text: String.t(), blocks: [map()]}
-  def render_personal(title, text) do
+  def render_personal(title, text, footer \\ nil) do
     {opening, rest} =
       text
       |> String.split(~r/\n{2,}/)
@@ -41,9 +43,17 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
         if(rest == [], do: [], else: [%{"type" => "divider"}]) ++
         Enum.flat_map(rest, &personal_part/1)
 
+    # The footer is product text, not the model's: it always keeps its place.
+    footer =
+      if is_binary(footer),
+        do: [%{"type" => "context", "elements" => [mrkdwn(footer)]}],
+        else: []
+
     %{
       text: summary(title, text),
-      blocks: Enum.take([%{"type" => "header", "text" => plain(title)} | blocks], 49)
+      blocks:
+        Enum.take([%{"type" => "header", "text" => plain(title)} | blocks], 49 - length(footer)) ++
+          footer
     }
   end
 
@@ -62,30 +72,14 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
     rest = Enum.reject(others, &(String.trim(&1) == ""))
 
     head ++
-      Enum.flat_map(if(rest == [], do: [], else: [Enum.join(rest, "\n")]), &section_blocks/1) ++
-      Enum.map(entries, &entry/1)
-  end
-
-  defp entry(line) do
-    {body, url} = take_link(line)
-    section = %{"type" => "section", "text" => mrkdwn(cut(body))}
-
-    if url,
-      do:
-        Map.put(section, "accessory", %{
-          "type" => "button",
-          "text" => plain("原消息"),
-          "url" => url,
-          "action_id" => "bft_brief_source"
-        }),
-      else: section
+      Enum.flat_map(if(rest == [], do: [], else: [Enum.join(rest, "\n")]), &sourced/1) ++
+      Enum.flat_map(entries, &sourced/1)
   end
 
   @doc """
   The team brief laid out by its parts: the title and what it read, the
-  opening story, then one section per line of work with its message as a
-  button, what needs everyone, and the small items in small print. A
-  paragraph of any other shape stays a plain section.
+  opening story, then one section per line of work, what needs everyone, and
+  the small items in small print. Sources are drawn as in a member's brief.
   """
   @spec render_team(String.t(), String.t(), String.t() | nil) :: %{
           text: String.t(),
@@ -103,7 +97,7 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
     blocks =
       [%{"type" => "header", "text" => plain(title)}] ++
         if(read, do: [context(read)], else: []) ++
-        Enum.flat_map(opening, &section_blocks/1) ++
+        Enum.flat_map(opening, &sourced/1) ++
         if(rest == [], do: [], else: [%{"type" => "divider"}]) ++
         Enum.flat_map(rest, &part/1)
 
@@ -116,7 +110,7 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
   defp part(paragraph) do
     cond do
       Regex.match?(@attention, paragraph) ->
-        section_blocks(":warning: *需要大家注意*\n" <> Regex.replace(@attention, paragraph, ""))
+        sourced(":warning: *需要大家注意*\n" <> Regex.replace(@attention, paragraph, ""))
 
       Regex.match?(@aside, paragraph) ->
         [context("顺带一提：" <> Regex.replace(@aside, paragraph, ""))]
@@ -126,46 +120,44 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
     end
   end
 
-  # A line of work: "*name*：text <url|原消息>" becomes its name over its text,
-  # with the message behind a button.
+  # A line of work: "*name*：text" becomes its name over its text.
   defp line(paragraph) do
     case Regex.run(~r/^\x{200B}?\*([^*\n]+)\*\x{200B}?[:：]\s*(.+)$/us, paragraph,
            capture: :all_but_first
          ) do
-      [name, body] ->
-        {body, url} = take_link(body)
-        section = %{"type" => "section", "text" => mrkdwn(cut("*#{name}*\n" <> body))}
-
-        [
-          if(url,
-            do:
-              Map.put(section, "accessory", %{
-                "type" => "button",
-                "text" => plain("原消息"),
-                "url" => url,
-                "action_id" => "bft_team_brief_source"
-              }),
-            else: section
-          )
-        ]
-
-      nil ->
-        section_blocks(paragraph)
+      [name, body] -> sourced("*#{name}*\n" <> body)
+      nil -> sourced(paragraph)
     end
   end
 
-  # The paragraph's last message link, taken out of its text.
-  defp take_link(body) do
-    case Regex.scan(~r/\s*<(https?:\/\/[^|>]+)\|[^>]*>/u, body) do
-      [] ->
-        {body, nil}
+  # A source link as Compose writes it: "<url|#channel · 10/27 22:14>".
+  @source ~r/\s*<((?:https?|slack):\/\/[^|>]+)\|(#[^|>]+ · \d{2}\/\d{2} \d{2}:\d{2})>(?: · <(slack:\/\/[^|>]+)\|打开>)?/u
+  # Keep both source actions together in the context line, including when
+  # the title contains a mention or another link.
+  defp sourced(text) do
+    sources =
+      for [whole, url, label | rest] <- Regex.scan(@source, text),
+          open = List.first(rest, ""),
+          byte_size(url) <= @max_link_url,
+          byte_size(open) <= @max_link_url,
+          do: {whole, url, label, open}
 
-      links ->
-        case List.last(links) do
-          # Slack refuses a button URL over 3,000 characters.
-          [_whole, url] when byte_size(url) > @max_button_url -> {body, nil}
-          [whole, url] -> {body |> String.replace(whole, "") |> String.trim(), url}
-        end
+    body =
+      Enum.reduce(sources, text, fn {whole, _url, _label, _open}, body ->
+        String.replace(body, whole, "")
+      end)
+
+    case sources do
+      [] ->
+        section_blocks(text)
+
+      sources ->
+        small =
+          Enum.map_join(sources, "  /  ", fn {_whole, url, label, open} ->
+            "<#{url}|#{label}>" <> if(open == "", do: "", else: " · <#{open}|打开>")
+          end)
+
+        section_blocks(String.trim(body)) ++ [context(small)]
     end
   end
 
@@ -184,7 +176,8 @@ defmodule BridgeForTeams.DailyBrief.Sinks.Slack do
       text
       |> String.split("\n", trim: true)
       |> List.first("")
-      |> then(&Regex.replace(~r/<(https?:[^|>]+)\|([^>]*)>/, &1, "\\2"))
+      |> then(&Regex.replace(@source, &1, ""))
+      |> then(&Regex.replace(~r/<((?:https?|slack):[^|>]+)\|([^>]*)>/, &1, "\\2"))
       |> String.replace(["*", "​"], "")
       |> String.slice(0, @summary_chars)
 

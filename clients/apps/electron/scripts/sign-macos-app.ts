@@ -21,7 +21,12 @@ const outDir = process.env.COMMA_FORGE_OUT_DIR ?? resolve(appDir, "out");
 const entitlements = resolve(appDir, "build/entitlements.mac.entitlements");
 const computerUsePackageScript = resolve(
   repoRoot,
-  "systems/connector/salix-connect/scripts/package-computer-use-helper.sh"
+  "systems/station/computer-use/scripts/package-computer-use-helper.sh"
+);
+// The iPhone Duo guest runs inside the simulator and needs the DYLD_ROOT_PATH a hardened runtime removes.
+const duoGuestEntitlements = resolve(
+  repoRoot,
+  "systems/station/computer-use/scripts/duo-hid.entitlements"
 );
 
 function run(command: string, args: string[]) {
@@ -139,7 +144,11 @@ async function main() {
     identity,
     keychain,
     platform: "darwin",
-    optionsForFile: () => ({ hardenedRuntime: true, entitlements }),
+    optionsForFile: (filePath) => ({
+      hardenedRuntime: true,
+      entitlements:
+        basename(filePath) === "comma-duo-hid" ? duoGuestEntitlements : entitlements,
+    }),
     preAutoEntitlements: false,
     preEmbedProvisioningProfile: false,
     binaries,

@@ -343,14 +343,8 @@ model {
 
       connector = application 'Salix Connector / Fin machine' {
         description '设备侧能力与远程执行 runtime；通过 WebSocket 连接 SalixEnv'
-        technology 'Go connector + local services'
-        link ../../../systems/connector/README.md 'Source guide'
-      }
-
-      runtime_agent = application 'Salix Runtime Agent' {
-        description '会议 runtime carrier：durable input、stable event ID、ACK 与 catch-up；只使用 outbound scoped credential'
-        technology 'salix-connect --runtime-agent'
-        link ../../../systems/connector/salix-connect/main.go 'Source'
+        technology 'Comma station (TypeScript) + local services'
+        link ../../../systems/station/README.md 'Source guide'
       }
 
       agent_vmm = application 'Agent VMM host / connector' {
@@ -398,7 +392,6 @@ model {
     systems.salix.integration_runtime .request collaboration_providers 'IM/日历/OAuth/MCP API 与回调'
     systems.comma_product.recommendation_sources .request collaboration_providers '有界只读：Salix 解析 Group OAuth binding 凭证并直连 GitHub/Linear/Notion；其他 provider 经 Composio exact connected-account recipe'
     systems.salix.integration_runtime .command edge_runtimes.connector 'WebSocket Bridge 与执行 Stream'
-    systems.salix.compute_providers .command edge_runtimes.runtime_agent 'Provider bootstrap 后 outbound attach'
     systems.salix.integration_runtime .command edge_runtimes.vm_gateway '受管 Cloud VM Attach/Control'
     edge_runtimes.vm_gateway .request runtime_providers 'Sandbox 生命周期'
     systems.comma_product.comma_core .request identity_email 'OIDC Discovery/JWKS 与邮件投递'

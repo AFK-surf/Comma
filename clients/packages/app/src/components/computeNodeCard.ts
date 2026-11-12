@@ -14,10 +14,9 @@ export type ComputeCardActionId =
   | "remove"
   | "recover"
   | "update_host"
-  | "reinstall_reset"
-  | "reset_local_record"
   | "manage_storage"
   | "resume_maintenance"
+  | "reinstall_reset"
   | "check_status";
 
 export interface ComputeCardAction {
@@ -47,8 +46,6 @@ export interface ComputeCardInput {
     active: boolean;
     title: string;
   };
-  /** A finished maintenance whose workspace owner is not read again yet. */
-  workspaceUnconfirmed: boolean;
   /** The last read of the node failed. */
   readFailed?: boolean;
   /** The workspace this Mac works for, as a person reads it. */
@@ -74,10 +71,7 @@ const action = (id: ComputeCardActionId, label: string): ComputeCardAction => ({
 
 /** Maps Main's node and maintenance state to one card: one state, one reason, at most one action. */
 export function computeNodeCard(input: ComputeCardInput, m: Messages): ComputeCard {
-  const described = describe(input, m);
-  const card = input.maintenance.state?.automaticReset
-    ? { ...described, notice: m.compute_maintenance_automatic_reset() }
-    : described;
+  const card = describe(input, m);
   if (input.canManage) return card;
   const actions = card.actions.filter((entry) => !workspaceActions.has(entry.id));
   return actions.length === card.actions.length
@@ -93,90 +87,111 @@ export function computeNodeCard(input: ComputeCardInput, m: Messages): ComputeCa
 }
 
 function describe(input: ComputeCardInput, m: Messages): ComputeCard {
-  const s = input.state;
-  const host = input.maintenance.state;
-  const operation = host?.operation;
-  const retry = action("retry", m.compute_retry());
-  const reinstallReset = action(
-    "reinstall_reset",
-    m.compute_maintenance_action_reinstall_reset()
-  );
-  const attention = (
-    reason: string,
-    actions: ComputeCardAction[] = []
-  ): ComputeCard => ({
+  const state = input.state;
+  const base = { actions: [] as ComputeCardAction[] };
+  const attention = (reason: string, primary?: ComputeCardAction): ComputeCard => ({
     kind: "attention",
     label: m.compute_attention(),
     reason,
-    actions,
+    actions: primary ? [primary] : [],
   });
-  const preparing = (reason: string): ComputeCard => ({
-    kind: "preparing",
-    label: m.compute_preparing(),
-    reason,
-    deadlineAt: s?.status === "processing" ? s.deadlineAt : undefined,
-    actions: [],
-  });
-
-  // The whole-Mac components come first: while they need attention no node action can finish.
-  if (host?.recordUnreadable || s?.issue === "local_record_unreadable")
-    return attention(m.compute_reason_record_unreadable(), [
-      action("reset_local_record", m.compute_reset_local_record()),
-    ]);
-  if (operation?.outcome === "failed")
+  if (input.maintenance.state?.recordUnreadable)
     return attention(
-      maintenanceFailureReason(operation, m),
-      operation.failureCode === "host_start_failed"
-        ? [reinstallReset]
-        : [action("resume_maintenance", m.compute_maintenance_continue())]
+      m.compute_reason_record_unreadable(),
+      action("check_status", m.compute_check_status())
     );
-  if (host?.hostStartFailure)
-    return attention(m.compute_reason_host_start_failed(), [reinstallReset]);
-  if (input.maintenance.active) return preparing(input.maintenance.title);
-  if (input.workspaceUnconfirmed)
-    return input.readFailed
-      ? attention(m.compute_read_failed(), [
-          action("check_status", m.compute_check_status()),
-        ])
-      : preparing(m.compute_maintenance_checking());
-  if (!s) return preparing(m.compute_loading());
-  const notEnabled: ComputeCard = {
+  if (input.maintenance.state?.operation?.outcome === "failed")
+    return attention(
+      maintenanceFailureReason(input.maintenance.state.operation, m),
+      maintenanceNeedsReset(input.maintenance.state.operation)
+        ? action("reinstall_reset", m.compute_maintenance_action_reinstall_reset())
+        : action("resume_maintenance", m.compute_maintenance_continue())
+    );
+  if (input.maintenance.active)
+    return {
+      ...base,
+      kind: "preparing",
+      label: m.compute_preparing(),
+      reason: input.maintenance.title,
+    };
+  if (!state)
+    return {
+      ...base,
+      kind: "preparing",
+      label: m.compute_preparing(),
+      reason: m.compute_loading(),
+    };
+  if (state.status === "action_required") {
+    const primary = state.primaryAction;
+    const labels = {
+      continue:
+        state.currentRequest?.kind === "remove"
+          ? m.compute_continue_remove()
+          : state.currentRequest?.kind === "drain"
+            ? m.compute_continue_stop()
+            : m.compute_continue_enable(),
+      remove: m.compute_finish_remove(),
+      recover: m.compute_recovery_title(),
+      update_host:
+        input.maintenance.state?.installation === "not_installed"
+          ? reinstallLabel(input.maintenance.state.operation, m)
+          : m.compute_maintenance_update(),
+      check_status: m.compute_check_status(),
+    };
+    return attention(
+      state.problem
+        ? computeProblemMessage(state.problem, m, state)
+        : m.compute_attention_note(),
+      primary
+        ? action(primary === "continue" ? "retry" : primary, labels[primary])
+        : undefined
+    );
+  }
+  if (state.status === "processing")
+    return {
+      ...base,
+      kind: "preparing",
+      label: m.compute_preparing(),
+      reason:
+        state.currentRequest?.kind === "remove"
+          ? m.compute_removing()
+          : state.currentRequest?.kind === "drain"
+            ? m.compute_stopping()
+            : m.compute_preparing_note(),
+      deadlineAt: state.deadlineAt,
+    };
+  if (state.status === "ready")
+    return {
+      ...base,
+      kind: "available",
+      label: m.compute_available(),
+      reason: m.compute_available_note({ workspace: input.workspace }),
+    };
+  return {
     kind: "not_enabled",
     label: m.compute_not_enabled(),
     reason: m.compute_not_enabled_note({ workspace: input.workspace }),
     actions: [action("enable", m.compute_enable())],
   };
-  // Main finished the removal: no earlier result of the removed installation applies. An unconfirmed cloud result
-  // (a scoped 404) stays in diagnostics: the server retires its own record, and enabling again authorizes anew.
-  if (s.status === "removed") return notEnabled;
+}
 
-  if (
-    s.status === "action_required" ||
-    (s.status === "ready" &&
-      s.issue !== undefined &&
-      s.issue !== "connection" &&
-      s.issue !== "shell_initialization_pending") ||
-    s.issue === "revoked"
-  )
-    return attention(...needsAttention(s, m, retry, reinstallReset));
-  if (s.status === "processing")
-    return preparing(
-      s.operation?.kind === "drain"
-        ? m.compute_stopping()
-        : s.operation?.kind === "remove"
-          ? m.compute_removing()
-          : m.compute_preparing_note()
-    );
-  if (s.status === "ready")
-    return s.observationFresh && s.facets.connection === "connected" && !s.issue
-      ? {
-          kind: "available",
-          label: m.compute_available(),
-          reason: m.compute_available_note({ workspace: input.workspace }),
-          actions: [],
-        }
-      : preparing(m.compute_connecting_note());
-  return notEnabled;
+/** Continuing this failed request cannot help: only a confirmed reinstall on empty data moves on. */
+export function maintenanceNeedsReset(
+  operation: NonNullable<HostMaintenanceState["operation"]>
+): boolean {
+  return operation.outcome === "failed" && operation.failureCode !== undefined;
+}
+
+/** The reinstall action of an absent Host. It names kept data only while the last request left some. */
+export function reinstallLabel(
+  operation: HostMaintenanceState["operation"],
+  m: Messages
+): string {
+  return operation?.action === "uninstall" &&
+    operation.dataPolicy === "reset" &&
+    operation.outcome === "succeeded"
+    ? m.compute_maintenance_action_install()
+    : m.compute_maintenance_action_reinstall();
 }
 
 /**
@@ -189,6 +204,8 @@ export function maintenanceFailureReason(
 ): string {
   if (operation.failureCode === "host_start_failed")
     return m.compute_reason_host_start_failed();
+  if (operation.failureCode === "target_older_than_data")
+    return m.compute_problem_target_older_than_data();
   const reason =
     operation.failedPhase === "stopping"
       ? m.compute_maintenance_failed_stopping()
@@ -200,87 +217,4 @@ export function maintenanceFailureReason(
             ? m.compute_maintenance_failed_checking()
             : m.compute_maintenance_failed_preparing();
   return m.compute_maintenance_retry_hint({ reason });
-}
-
-function needsAttention(
-  s: ComputeNodeState,
-  m: Messages,
-  retry: ComputeCardAction,
-  reinstallReset: ComputeCardAction
-): [string, ComputeCardAction[]] {
-  const problem = s.problem;
-  const issue = s.issue;
-  const offered = s.recoveryActions ?? [];
-  const reason = (fallback: string) =>
-    problem ? computeProblemMessage(problem, m, s) : fallback;
-  const remove = action("remove", m.settings_compute_node_remove());
-  if (problem === "insufficient_disk" || issue === "insufficient_disk")
-    return [
-      computeProblemMessage("insufficient_disk", m, s),
-      [action("manage_storage", m.compute_ui_manage_storage())],
-    ];
-  if (problem === "registration_revoked" || issue === "revoked")
-    return [m.compute_problem_registration_revoked(), [remove]];
-  // Enable again retires the old installation and starts a new one in one step.
-  if (problem === "registration_invalid")
-    return [
-      m.compute_problem_registration_invalid(),
-      [action("enable", m.compute_reenable())],
-    ];
-  if (issue === "unsupported") return [m.compute_unsupported(), []];
-  if (problem === "automatic_retry_exhausted" || issue === "retry_budget_exhausted")
-    return [m.compute_problem_automatic_retry_exhausted(), [retry]];
-  if (problem === "target_older_than_data")
-    return [m.compute_problem_target_older_than_data(), [reinstallReset]];
-  if (problem === "host_update_interrupts_work" || issue === "host_update_required")
-    return [
-      m.compute_problem_host_update_interrupts_work(),
-      [action("update_host", m.compute_update_interrupting_work())],
-    ];
-  if (problem === "local_data_migration" || issue === "local_data_migration")
-    return [m.compute_problem_local_data_migration(), [reinstallReset]];
-  if (problem === "clock_skew" || problem === "identity_mismatch")
-    return [computeProblemMessage(problem, m, s), [retry]];
-  if (issue === "capability_missing")
-    return [
-      m.compute_host_update_required(),
-      [action("update_host", m.compute_maintenance_update())],
-    ];
-  if (issue === "authorization" || issue === "authorization_unavailable")
-    return [
-      issue === "authorization"
-        ? m.compute_authorization_problem()
-        : m.compute_current_login_unavailable(),
-      [action("recover", m.compute_recovery_title())],
-    ];
-  if (issue === "removal_incomplete" || offered.includes("finish_remove"))
-    return [
-      reason(m.compute_removal_incomplete()),
-      [action("remove", m.compute_finish_remove())],
-    ];
-  const fallback =
-    issue === "preparation_failed"
-      ? m.compute_preparation_problem()
-      : issue === "enable_incomplete"
-        ? m.compute_enable_incomplete()
-        : issue === "connection"
-          ? m.compute_connection_problem()
-          : issue === "operation_unknown"
-            ? m.compute_operation_unknown()
-            : m.compute_attention_note();
-  if (offered.includes("continue_enable")) return [reason(fallback), [retry]];
-  if (offered.includes("reset_local_record"))
-    return [
-      reason(fallback),
-      [action("reset_local_record", m.compute_reset_local_record())],
-    ];
-  if (offered.includes("update_host"))
-    return [
-      reason(fallback),
-      [action("update_host", m.compute_update_interrupting_work())],
-    ];
-  if (offered.includes("reinstall_reset")) return [reason(fallback), [reinstallReset]];
-  if (offered.includes("check_status"))
-    return [reason(fallback), [action("check_status", m.compute_check_status())]];
-  return [reason(fallback), []];
 }

@@ -1,6 +1,7 @@
 package surf.comma.android.settings.devices
 
 import android.view.View
+import surf.comma.android.R
 import androidx.activity.ComponentActivity
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,19 +35,50 @@ class DeviceSetupOfferTest {
             card.localReporter = { "phone-two" }
             card.show(offer)
             assertEquals(View.GONE, card.connect.visibility)
-            assertEquals("Set up from the phone near it", offer.presentation("phone-two", 0).label)
             card.localReporter = { "phone-one" }
             card.show(offer.copy(status = "started"))
             assertEquals(View.VISIBLE, card.connect.visibility)
-            for ((state, label) in listOf("done" to "Set up", "expired" to "Expired", "dismissed" to "Dismissed")) {
+            for (state in listOf("done", "expired", "dismissed")) {
                 card.show(offer.copy(status = state))
                 assertEquals(View.GONE, card.connect.visibility)
                 assertEquals(View.GONE, card.dismiss.visibility)
-                assertEquals(label, offer.copy(status = state).presentation("phone-one", 0).label)
             }
             assertFalse(offer.copy(expiresAt = 100).presentation("phone-one", 100).connect)
-            assertEquals("Dismissed", offer.copy(status = "dismissed", expiresAt = 100).presentation("phone-one", 200).label)
         } finally { activity.pause().stop().destroy() }
+    }
+
+    @Test @Config(qualifiers = "zh-rCN")
+    fun cardUsesChineseResources() = assertLocalizedCard()
+
+    @Test @Config(qualifiers = "en")
+    fun cardUsesEnglishResources() = assertLocalizedCard()
+
+    private fun assertLocalizedCard() {
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val card = DeviceSetupOfferCard(activity).apply { localReporter = { "phone-one" } }
+            fun texts(view: View): List<String> = when (view) {
+                is android.widget.TextView -> listOf(view.text.toString())
+                is android.view.ViewGroup -> (0 until view.childCount).flatMap { texts(view.getChildAt(it)) }
+                else -> emptyList()
+            }
+            card.show(offer)
+            assertEquals(activity.getString(R.string.devices_offer_connect), card.connect.text.toString())
+            assertEquals(activity.getString(R.string.devices_nearby_permission_not_now), card.dismiss.text.toString())
+            assertEquals(card.connect.text, card.connect.contentDescription)
+            assertEquals(card.dismiss.text, card.dismiss.contentDescription)
+            for ((state, resource) in listOf("open" to R.string.devices_offer_ready,
+                "started" to R.string.devices_offer_started, "done" to R.string.devices_offer_done,
+                "dismissed" to R.string.devices_offer_dismissed, "expired" to R.string.devices_offer_expired,
+                "unknown" to R.string.devices_offer_unavailable)) {
+                card.show(offer.copy(status = state))
+                assertTrue("$state shows its localized status", activity.getString(resource) in texts(card))
+            }
+            card.localReporter = { "phone-two" }
+            card.show(offer)
+            assertTrue(activity.getString(R.string.devices_offer_nearby_phone) in texts(card))
+        } finally { controller.pause().stop().destroy() }
     }
 
     @Test fun `a message's offer is a card row after its text`() {

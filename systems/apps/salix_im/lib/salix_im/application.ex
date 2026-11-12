@@ -12,6 +12,7 @@ defmodule SalixIM.Application do
     # itself, never with any crashable worker (round-11 shape).
     SalixIM.ProviderIdentityScanLimiter.create_table!()
     SalixIM.IFC.AudiencePlacement.create_table!()
+    SalixIM.IFC.MemberRefresh.create_table!()
     SalixIM.Triage.SourceSpeakerLabels.create_table!()
     # Same ownership shape: the Triage admission-config table lets ingress read
     # a Runtime's static mode/namespace without a call into its mailbox.
@@ -51,7 +52,6 @@ defmodule SalixIM.Application do
       # Search hot admission is correctness-independent and must not share the
       # Conversation owner restart domain. A stalled projection database can
       # fill only this bounded pool; it cannot block or restart owners.
-      SalixIM.ConversationSearchEnqueuer,
       {SystemsRuntime.TaskSupervisor,
        name: SalixIM.ConversationNotificationTasks, max_children: 64},
       {SystemsRuntime.TaskSupervisor,
@@ -59,18 +59,40 @@ defmodule SalixIM.Application do
       # One bounded Slack call per delivered @-mention; over the cap the
       # :eyes: is skipped, never the delivery.
       {SystemsRuntime.TaskSupervisor, name: SalixIM.SlackMentionAckTasks, max_children: 64},
+      # The same for a Feishu or Lark message for the bot (`OnIt`).
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.LarkMessageAckTasks, max_children: 64},
+      # Background member listings for IFC facts; a decision never waits on
+      # one. Over the cap a listing is asked for again by the next inbound.
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.IFCMemberRefreshTasks, max_children: 8},
+      # Feishu and Lark directory syncs (`DirectorySnapshot`); a lookup never
+      # waits for one. Over the cap a sync is asked for again by the next
+      # lookup.
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.DirectorySyncTasks, max_children: 8},
       conversation_owner_supervisor()
     ] ++
       conversation_recovery_children() ++
+      station_task_watch_recovery_children() ++
       private_chat_status_children() ++
       slack_router_status_children() ++
       slack_triage_clickhouse_patrol_children() ++
+      conversation_archive_children() ++
       conversation_search_children() ++
+      task_files_children() ++
       provider_runtime_children() ++
+      lark_socket_children() ++
       slack_message_mirror_children() ++
       feishu_message_mirror_children() ++
       qq_message_record_children() ++
-      lark_message_record_children()
+      lark_message_record_children() ++
+      mention_reply_latency_children()
+  end
+
+  defp mention_reply_latency_children do
+    if SystemsRuntime.get_env(:salix_im, :mention_reply_latency, true) do
+      [SalixIM.MentionReplyLatency]
+    else
+      []
+    end
   end
 
   defp conversation_recovery_children do
@@ -79,6 +101,16 @@ defmodule SalixIM.Application do
     else
       []
     end
+  end
+
+  # Starts the owners of active station Tasks after a node start, so their
+  # watches are armed again. Needs the control database the station rows are
+  # in; the test configuration turns it off and calls `sweep/1` itself.
+  defp station_task_watch_recovery_children do
+    enabled? = SystemsRuntime.get_env(:salix_im, :station_task_watch_recovery, true) != false
+    repo? = SystemsRuntime.get_env(:salix_store, :start_repo, false)
+
+    if enabled? and repo?, do: [SalixIM.StationTaskWatchRecovery], else: []
   end
 
   defp slack_triage_clickhouse_patrol_children do
@@ -164,6 +196,19 @@ defmodule SalixIM.Application do
       else: []
   end
 
+  defp task_files_children do
+    enabled? = SystemsRuntime.get_env(:salix_im, :task_files_backfill, true) != false
+    repo? = SystemsRuntime.get_env(:salix_store, :start_repo, false)
+    if enabled? and repo?, do: [SalixIM.TaskFilesBackfill], else: []
+  end
+
+  defp conversation_archive_children do
+    enabled? = SystemsRuntime.get_env(:salix_im, :conversation_archive_worker, true) != false
+    repo? = SystemsRuntime.get_env(:salix_store, :start_repo, false)
+
+    if enabled? and repo?, do: [SalixIM.ConversationArchiveWorker], else: []
+  end
+
   defp slack_router_status_supervisor do
     children = [
       {SystemsRuntime.Registry,
@@ -189,6 +234,34 @@ defmodule SalixIM.Application do
       opts when is_list(opts) -> [{SalixIM.ProviderRuntime, opts}]
       _ -> [SalixIM.ProviderRuntime]
     end
+  end
+
+  # The long connections of Lark apps made by a scan. The registry and the
+  # task supervisor always run, so a test can start a socket by hand; the
+  # runtime that opens them follows `:lark_socket_runtime`.
+  defp lark_socket_children do
+    sockets = [
+      {SystemsRuntime.Registry, keys: :unique, name: SalixIM.LarkSocketRegistry},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixIM.LarkSocketSupervisor, strategy: :one_for_one},
+      {SystemsRuntime.TaskSupervisor, name: SalixIM.LarkSocketTaskSupervisor}
+    ]
+
+    runtime =
+      case SystemsRuntime.get_env(:salix_im, :lark_socket_runtime, true) do
+        false -> []
+        opts when is_list(opts) -> [{SalixIM.LarkSocketRuntime, opts}]
+        _ -> [SalixIM.LarkSocketRuntime]
+      end
+
+    [
+      %{
+        id: SalixIM.LarkSocketSupervisor.Root,
+        start:
+          {Supervisor, :start_link,
+           [sockets ++ runtime, [strategy: :rest_for_one, name: SalixIM.LarkSocketRoot]]}
+      }
+    ]
   end
 
   # The two Slack mirror writers run wherever the mirror has a store to write

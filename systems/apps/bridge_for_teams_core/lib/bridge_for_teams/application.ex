@@ -30,6 +30,7 @@ defmodule BridgeForTeams.Application do
   @impl true
   def start(_type, _args) do
     configure_salix_im_diagnostic_sink()
+    SystemsRuntime.put_env(:salix_im, :organizations, BridgeForTeams.Orgs)
     configure_salix_schedule_diagnostic_sink()
     SalixStore.StationMembers.register(BridgeForTeams.StationMembers)
 

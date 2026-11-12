@@ -405,4 +405,34 @@ defmodule SalixIFCPropertyTest do
       for l <- labels, do: assert(Label.restricted_at_least?(joined, l))
     end
   end
+
+  # Parts that concatenate to the same bytes, and one id under two kinds.
+  defp gen_lookalike_atom do
+    one_of([
+      gen_atom(),
+      member_of([{:scope, "w", "ab"}, {:scope, "wa", "b"}, {:scope, "w|a", "b"}]),
+      member_of([{:task, "x"}, {:conversation, "x"}, {:group, "x"}])
+    ])
+  end
+
+  # The set reading of a label: `public` only when it is the sole atom.
+  defp model(atoms) do
+    case atoms |> MapSet.new() |> MapSet.delete(:public) |> Enum.sort() do
+      [] -> [:public]
+      atoms -> atoms
+    end
+  end
+
+  property "10. building and joining labels keep exactly the set of their atoms" do
+    check all(groups <- list_of(list_of(gen_lookalike_atom(), max_length: 40), max_length: 8)) do
+      labels = Enum.map(groups, &Label.new/1)
+
+      for {atoms, label} <- Enum.zip(groups, labels),
+          do: assert(Label.atoms(label) == model(atoms))
+
+      joined = Label.join_all(labels)
+      assert Label.atoms(joined) == model(List.flatten(groups))
+      assert Label.equal?(joined, Enum.reduce(labels, Label.bottom(), &Label.join(&2, &1)))
+    end
+  end
 end

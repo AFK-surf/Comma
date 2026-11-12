@@ -92,13 +92,15 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
         slack = Enum.filter(connects, &(&1["provider"] == "slack"))
         qq = Enum.filter(connects, &(&1["provider"] == "qq"))
         lark = Enum.filter(connects, &(&1["provider"] == "lark"))
+        telegram = Enum.filter(connects, &(&1["provider"] == "telegram"))
 
         %{
           "status" => "ok",
           "feishu" => feishu(org, feishu, router),
           "slack" => slack(org, project, slack, router, router_id),
           "qq" => qq(qq, router),
-          "lark" => lark(lark, router)
+          "lark" => lark(lark, router),
+          "telegram" => telegram(org, project, telegram, router)
         }
 
       {:error, reason} ->
@@ -107,7 +109,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
           "feishu" => nil,
           "slack" => nil,
           "qq" => nil,
-          "lark" => nil
+          "lark" => nil,
+          "telegram" => nil
         }
     end
   end
@@ -139,6 +142,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
       "app_secret_configured" => connect["app_secret_configured"] == true,
       "verification_token_configured" => connect["verification_token_configured"] == true,
       "encrypt_key_configured" => connect["encrypt_key_configured"] == true,
+      "events" => connect["events"] || "webhook",
+      "missing_scopes" => List.wrap(connect["missing_scopes"]),
       "updated_at" => iso_timestamp(connect["updated_at"])
     }
   end
@@ -200,6 +205,54 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
     }
   end
 
+  # The swarm's Telegram bots. Each serves the chats an admin allows, picked
+  # from the ones its bot has been added to.
+  defp telegram(org, project, connects, router) do
+    %{
+      "connects" =>
+        Enum.map(connects, fn connect ->
+          %{
+            "connect_id" => connect["connect_id"],
+            "status" => connect["status"] || "configured",
+            "disabled" => not is_nil(connect["disabled_at"]),
+            "bot_name" => text(connect["bot_username"]),
+            "reads_all_group_messages" => connect["can_read_all_group_messages"] == true,
+            "chats" => telegram_chats(org, project, connect),
+            "updated_at" => iso_timestamp(connect["updated_at"])
+          }
+        end),
+      "route" => feishu_route(connects, router)
+    }
+  end
+
+  # An allowed chat stays on the page when its record is missing or unreadable:
+  # the list is what the bot serves. The response sanitizer redacts a `chat_id`
+  # key, and an admin needs the id here, so it goes out as `id`.
+  defp telegram_chats(org, project, connect) do
+    allowed = List.wrap(connect["allowed_chat_ids"])
+
+    noted =
+      case ProjectIMConnects.list_project_telegram_chats(org, project, connect["connect_id"]) do
+        {:ok, chats} -> chats
+        {:error, _reason} -> []
+      end
+
+    known = Map.new(noted, &{&1["chat_id"], &1})
+
+    (allowed ++ Enum.map(noted, & &1["chat_id"]))
+    |> Enum.uniq()
+    |> Enum.map(fn chat_id ->
+      chat = known[chat_id] || %{}
+
+      %{
+        "id" => chat_id,
+        "title" => text(chat["title"]) || text(chat["username"]),
+        "type" => text(chat["chat_type"]),
+        "allowed" => chat_id in allowed
+      }
+    end)
+  end
+
   # The swarm's Lark apps. Each connect holds its own app credentials; the
   # page shows the request URL to save in the Lark Developer Console.
   defp lark(connects, router) do
@@ -216,6 +269,8 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
             "app_secret_configured" => connect["app_secret_configured"] == true,
             "verification_token_configured" => connect["verification_token_configured"] == true,
             "encrypt_key_configured" => connect["encrypt_key_configured"] == true,
+            "events" => connect["events"] || "webhook",
+            "missing_scopes" => List.wrap(connect["missing_scopes"]),
             "updated_at" => iso_timestamp(connect["updated_at"])
           }
         end),
@@ -260,6 +315,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
       "install_url" => web_url(connect["oauth_url"]),
       "client_secret_configured" => connect["client_secret_configured"] == true,
       "signing_secret_configured" => connect["signing_secret_configured"] == true,
+      "auto_join_public_channels" => connect["auto_join_public_channels"] != false,
       "updated_at" => iso_timestamp(connect["updated_at"])
     }
   end
@@ -467,7 +523,9 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
         text(connection["provider_account_name"]) || text(connection["provider_account_id"]),
       "scopes" => Enum.filter(List.wrap(connection["scopes"]), &is_binary/1),
       "status" => connection["status"] || "active",
-      "enabled" => Map.get(connection, "enabled", true) != false
+      "enabled" => Map.get(connection, "enabled", true) != false,
+      # A secret's field names; the values never leave Salix.
+      "fields" => for(%{"name" => name} <- List.wrap(connection["fields"]), do: name)
     }
   end
 
@@ -591,6 +649,144 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
     end
   end
 
+  @registration_max_age_s 3_600
+
+  @doc """
+  Begin making a Lark app by a scan for this swarm. The answer carries the
+  link to show as a QR code, how often to ask, and `registration`: the
+  device code and platform, encrypted with the endpoint's secret, which the
+  page sends back to `poll_lark_registration/5`.
+  """
+  def begin_lark_registration(org, user, project, role, params \\ %{}),
+    do: begin_registration("lark", org, user, project, role, params)
+
+  @doc "Begin making a Feishu app by a scan for this swarm, as `begin_lark_registration/4`."
+  def begin_feishu_registration(org, user, project, role, params \\ %{}),
+    do: begin_registration("feishu", org, user, project, role, params)
+
+  @doc """
+  Ask once whether the scan made the app. `state` is `pending` (ask again
+  after `interval_s`, with the new `registration`), `connected`, `denied`,
+  `expired` or `failed`.
+  """
+  def poll_lark_registration(org, user, project, role, params),
+    do: poll_registration("lark", org, user, project, role, params)
+
+  @doc "Ask once whether the scan made the Feishu app, as `poll_lark_registration/5`."
+  def poll_feishu_registration(org, user, project, role, params),
+    do: poll_registration("feishu", org, user, project, role, params)
+
+  defp begin_registration(provider, org, user, project, role, params) do
+    with :ok <- authorize_im(org, user, project, role, "integration.#{provider}.created") do
+      case begin_scan(provider, org.id, project.id, nonblank_id(params["connect_id"])) do
+        {:ok, begun} ->
+          {:ok,
+           %{
+             "url" => begun.url,
+             "interval_s" => begun.interval_s,
+             "expires_in_s" => begun.expires_in_s,
+             "registration" => seal_registration(provider, begun.domain, begun.device_code)
+           }}
+
+        {:error, reason} ->
+          im_error(reason)
+      end
+    end
+  end
+
+  defp poll_registration(provider, org, user, project, role, params) do
+    with :ok <- authorize_im(org, user, project, role, "integration.#{provider}.created") do
+      case unseal_registration(provider, params["registration"]) do
+        {:ok, domain, code} ->
+          case finish_scan(provider, org.id, project.id, domain, code, audit_opts(user)) do
+            {:ok, connect} ->
+              {:ok,
+               %{
+                 "state" => "connected",
+                 "app_id" => connect["app_id"],
+                 "notice" => connected_notice(provider)
+               }}
+
+            {kind, next} when kind in [:pending, :slow_down] ->
+              {:ok,
+               %{
+                 "state" => "pending",
+                 "slow_down" => kind == :slow_down,
+                 "registration" => seal_registration(provider, next, code)
+               }}
+
+            {:error, :denied} ->
+              {:ok, %{"state" => "denied"}}
+
+            {:error, :expired} ->
+              {:ok, %{"state" => "expired"}}
+
+            {:error, :provider_app_in_use} ->
+              {:error, 409, "provider_app_in_use", app_in_use(provider), %{}}
+
+            {:error, reason} when is_binary(reason) ->
+              {:ok, %{"state" => "failed", "error" => reason}}
+
+            {:error, reason} ->
+              im_error(reason)
+          end
+
+        :error ->
+          {:ok, %{"state" => "expired"}}
+      end
+    end
+  end
+
+  defp begin_scan("lark", org_id, project_id, connect_id),
+    do: ProjectIMConnects.begin_lark_registration(org_id, project_id, connect_id)
+
+  defp begin_scan("feishu", org_id, project_id, connect_id),
+    do: ProjectIMConnects.begin_feishu_registration(org_id, project_id, connect_id)
+
+  defp nonblank_id(id) when is_binary(id) and id != "", do: id
+  defp nonblank_id(_id), do: nil
+
+  defp finish_scan("lark", org_id, project_id, domain, code, opts),
+    do: ProjectIMConnects.finish_lark_registration(org_id, project_id, domain, code, opts)
+
+  defp finish_scan("feishu", org_id, project_id, domain, code, opts),
+    do: ProjectIMConnects.finish_feishu_registration(org_id, project_id, domain, code, opts)
+
+  defp connected_notice("lark"), do: gettext("Lark app made and connected.")
+  defp connected_notice("feishu"), do: gettext("Feishu app made and connected.")
+
+  defp app_in_use("lark"),
+    do: gettext("This Lark app is already connected to another Agent Swarm.")
+
+  defp app_in_use("feishu"),
+    do: gettext("This Feishu app is already connected to another Agent Swarm.")
+
+  # Each platform seals with its own salt, so a registration of one is never
+  # finished as the other.
+  defp registration_salt(provider), do: "bft/#{provider}/registration/v1"
+
+  defp seal_registration(provider, domain, code),
+    do:
+      Plug.Crypto.encrypt(
+        BridgeForTeamsWeb.DashboardEndpoint.config(:secret_key_base),
+        registration_salt(provider),
+        [domain, code]
+      )
+
+  defp unseal_registration(provider, sealed) when is_binary(sealed) do
+    case Plug.Crypto.decrypt(
+           BridgeForTeamsWeb.DashboardEndpoint.config(:secret_key_base),
+           registration_salt(provider),
+           sealed,
+           max_age: @registration_max_age_s
+         ) do
+      {:ok, [domain, code]} when is_binary(domain) and is_binary(code) -> {:ok, domain, code}
+      _ -> :error
+    end
+  end
+
+  defp unseal_registration(_provider, _sealed), do: :error
+
   @doc "Connect a QQ bot to this swarm with the bot's AppID and AppSecret."
   def create_qq(org, user, project, role, params) do
     with :ok <- authorize_im(org, user, project, role, "integration.qq.created") do
@@ -629,6 +825,70 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
       end
     end
   end
+
+  @doc "Connect a Telegram bot to this swarm with its BotFather token."
+  def create_telegram(org, user, project, role, params) do
+    with :ok <- authorize_im(org, user, project, role, "integration.telegram.created") do
+      case ProjectIMConnects.create_project_connect(
+             org.id,
+             project.id,
+             "telegram",
+             %{"bot_token" => text(params["bot_token"])},
+             audit_opts(user)
+           ) do
+        {:ok, _connect} ->
+          {:ok,
+           %{
+             "notice" =>
+               gettext(
+                 "Telegram bot connected. Add it to a group, then allow that group on this page."
+               )
+           }}
+
+        {:error, :provider_app_in_use} ->
+          {:error, 409, "provider_app_in_use",
+           gettext(
+             "This Telegram bot is already connected. One bot serves one Agent Swarm; delete the existing connect or use a different bot."
+           ), %{}}
+
+        {:error, :connect_rejected} ->
+          {:error, 422, "connect_rejected",
+           gettext("Telegram rejected this token. Copy it again from BotFather and retry."), %{}}
+
+        {:error, reason} ->
+          im_error(reason)
+      end
+    end
+  end
+
+  @doc "Replace the chats a Telegram bot serves."
+  def update_telegram_chats(org, user, project, role, connect_id, params) do
+    with :ok <-
+           authorize_im(org, user, project, role, "integration.telegram.updated", %{
+             "connect_id_configured" => present?(connect_id)
+           }),
+         {:ok, chat_ids} <- telegram_chat_ids(params["allowed_chat_ids"]) do
+      case ProjectIMConnects.update_project_telegram_chats(
+             org.id,
+             project.id,
+             connect_id,
+             chat_ids,
+             audit_opts(user)
+           ) do
+        {:ok, _connect} -> {:ok, %{"notice" => gettext("Telegram chats saved.")}}
+        {:error, reason} -> im_error(reason)
+      end
+    end
+  end
+
+  defp telegram_chat_ids(ids) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1),
+      do: {:ok, ids},
+      else: telegram_chat_ids(nil)
+  end
+
+  defp telegram_chat_ids(_ids),
+    do: {:error, 422, "invalid_chats", gettext("Send the chats as a list of ids."), %{}}
 
   @doc "Replace the shortcuts of a QQ bot's command menu; QQ gets the new menu at once."
   def update_qq_menu(org, user, project, role, connect_id, params) do
@@ -673,6 +933,46 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
   end
 
   defp qq_menu_notice(_sync), do: gettext("Menu saved.")
+
+  @doc """
+  Turn on or off whether a Slack app joins each new public channel by itself.
+  The app's Slack scopes and event subscriptions stay as they are.
+  """
+  def update_slack_auto_join(org, user, project, role, connect_id, params) do
+    with :ok <-
+           authorize_im(org, user, project, role, "integration.slack.updated", %{
+             "connect_id_configured" => present?(connect_id)
+           }),
+         {:ok, enabled} <- auto_join_enabled(params["enabled"]) do
+      case ProjectIMConnects.update_project_slack_auto_join(
+             org.id,
+             project.id,
+             connect_id,
+             enabled,
+             audit_opts(user)
+           ) do
+        {:ok, _connect} when enabled ->
+          {:ok, %{"notice" => gettext("The Slack app joins new public channels by itself.")}}
+
+        {:ok, _connect} ->
+          {:ok,
+           %{
+             "notice" =>
+               gettext(
+                 "The Slack app no longer joins new public channels by itself. Invite it to a channel to add it."
+               )
+           }}
+
+        {:error, reason} ->
+          im_error(reason)
+      end
+    end
+  end
+
+  defp auto_join_enabled(enabled) when is_boolean(enabled), do: {:ok, enabled}
+
+  defp auto_join_enabled(_enabled),
+    do: {:error, 422, "invalid_auto_join", gettext("Send enabled as true or false."), %{}}
 
   @doc "Create a Slack connect from the app the admin created from the manifest."
   def create_slack(org, user, project, role, params) do
@@ -943,6 +1243,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
            ) do
       attrs = %{
         "alias" => text(params["alias"]),
+        "fields" => params["fields"],
         "redirect_after" => return_to(base_url, org, project),
         "scopes" => ProviderScopes.scopes(provider, capabilities(user))
       }
@@ -1239,6 +1540,21 @@ defmodule BridgeForTeamsWeb.DashboardSwarmConnections do
        gettext("That platform isn't configured for your organization yet."), %{}}
 
   defp oauth_error({:precondition_failed, _detail}), do: oauth_error(:provider_not_configured)
+
+  defp oauth_error(:alias_required),
+    do: {:error, 422, "alias_required", gettext("Give the key a name."), %{}}
+
+  defp oauth_error(:alias_taken),
+    do:
+      {:error, 422, "alias_taken",
+       gettext("A member already keeps a key under this name. Choose another name."), %{}}
+
+  defp oauth_error(:invalid_fields),
+    do:
+      {:error, 422, "invalid_fields",
+       gettext(
+         "Check the field names: letters, numbers and _, starting with a letter, up to 32 characters, each name once, up to 8 fields."
+       ), %{}}
 
   defp oauth_error(:not_found),
     do: {:error, 404, "account_not_found", gettext("That account is no longer connected."), %{}}

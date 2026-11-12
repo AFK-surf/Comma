@@ -19,7 +19,9 @@ extension TaskDockViewController {
         // The grabber and header own the drag; the transcript keeps its own scrolling.
         let location = pan.location(in: panel)
         let velocity = pan.velocity(in: panel)
-        return location.y <= Self.barHeight && abs(velocity.y) >= abs(velocity.x)
+        if progress > 0.5, case .leading(let width, _) = placement, location.x > width { return false }
+        return (location.y <= Self.barHeight || (placement.isLeading && progress <= 0.5)) && (placement.isLeading
+            ? abs(velocity.x) >= abs(velocity.y) : abs(velocity.y) >= abs(velocity.x))
     }
 
     /// SwiftUI's own recognizers in the header (the title tap, the close button) must not block the drag;
@@ -37,14 +39,14 @@ extension TaskDockViewController {
             stopAtPresentation()
             state.covered = false
             dragStart = progress
-            if progress <= 0.5, pan.velocity(in: view).y < 0 { onExpand() }
+            if progress <= 0.5, openingComponent(pan.velocity(in: view)) > 0 { onExpand() }
             view.endEditing(true)
         case .changed:
-            let raw = dragStart - pan.translation(in: view).y / travel
+            let raw = dragStart + openingComponent(pan.translation(in: view)) / travel
             // Rubber-band past either end, like a sheet at its detent limits.
             apply(raw > 1 ? 1 + (raw - 1) * 0.12 : raw < 0 ? raw * 0.12 : raw)
         case .ended, .cancelled, .failed:
-            let velocity = -pan.velocity(in: view).y / travel
+            let velocity = openingComponent(pan.velocity(in: view)) / travel
             // Where a flick would carry the sheet, with UIScrollView's normal deceleration rate, as the
             // router chat decides; the spring then carries on at the finger's speed.
             let projected = progress + velocity * 0.998 / (1 - 0.998) / 1000
@@ -54,19 +56,27 @@ extension TaskDockViewController {
         }
     }
 
-    /// Closing slides the sheet off the bottom while the dim behind it fades in place; the Task is
+    /// Closing slides the panel off its presentation edge while the dim fades in place; the Task is
     /// removed only once the sheet is gone, so nothing behind it moves with it. `archiving` leaves the same
     /// way and archives once the sheet is gone; taking the sheet back mid-close keeps the Task unarchived.
-    func dismiss(archiving task: TaskSummary? = nil) {
+    func dismiss(archiving task: TaskSummary? = nil, velocity: CGFloat = 0) {
         guard !dismissing else { return }
         dismissing = true
         view.endEditing(true)
         state.detailsOpen = false
         stopAtPresentation()
-        let offscreen = -(Self.barHeight + safeBottom + 24) / travel
-        let spring = UISpringTimingParameters(mass: 1, stiffness: 320, damping: 34, initialVelocity: .zero)
-        let closing = UIViewPropertyAnimator(duration: 0, timingParameters: spring)
-        closing.addAnimations { self.apply(offscreen) }
+        let offscreen = placement.isLeading ? -(minimizedWidth + 24) / travel : -(Self.barHeight + safeBottom + 24) / travel
+        let distance = offscreen - progress
+        let relative = abs(distance) > 0.001 ? max(-20, min(20, velocity / distance)) : 0
+        let spring = UISpringTimingParameters(mass: 1, stiffness: 320, damping: 34,
+            initialVelocity: placement.isLeading ? CGVector(dx: relative, dy: 0) : CGVector(dx: 0, dy: relative))
+        let reduced = placement.isLeading && UIAccessibility.isReduceMotionEnabled
+        let closing = reduced ? UIViewPropertyAnimator(duration: 0.15, curve: .easeOut)
+            : UIViewPropertyAnimator(duration: 0, timingParameters: spring)
+        closing.addAnimations {
+            if reduced { self.panel.alpha = 0; self.shadow.alpha = 0 }
+            else { self.apply(offscreen) }
+        }
         closing.addCompletion { [weak self] position in
             guard let self, position == .end, self.dismissing else { return }
             self.animator = nil
@@ -89,6 +99,7 @@ extension TaskDockViewController {
     }
 
     func animate(to target: CGFloat, velocity: CGFloat) {
+        targetProgress = target
         // The spring's speed is relative to the distance left from where the panel is drawn, not from where
         // an interrupted spring was heading.
         stopAtPresentation()
@@ -97,9 +108,22 @@ extension TaskDockViewController {
         let relative = abs(distance) > 0.001 ? max(-20, min(20, velocity / distance)) : 0
         // Close to the system sheet spring; the finger's speed carries into the settle.
         let spring = UISpringTimingParameters(mass: 1, stiffness: 320, damping: 34,
-                                              initialVelocity: CGVector(dx: 0, dy: relative))
-        let animator = UIViewPropertyAnimator(duration: 0, timingParameters: spring)
-        animator.addAnimations { self.apply(target) }
+                                              initialVelocity: placement.isLeading ? CGVector(dx: relative, dy: 0) : CGVector(dx: 0, dy: relative))
+        let reduced = placement.isLeading && UIAccessibility.isReduceMotionEnabled
+        let animator = reduced ? UIViewPropertyAnimator(duration: 0.15, curve: .easeOut)
+            : UIViewPropertyAnimator(duration: 0, timingParameters: spring)
+        if reduced {
+            panel.alpha = 0
+            shadow.alpha = 0
+            apply(target)
+        } else {
+            panel.alpha = 1
+            shadow.alpha = 1
+        }
+        animator.addAnimations {
+            if reduced { self.panel.alpha = 1; self.shadow.alpha = 1 }
+            else { self.apply(target) }
+        }
         // The transcript wakes as soon as it may show, and rests only once the bar has covered it.
         if target > 0 { state.covered = false }
         animator.addCompletion { [weak self] position in
@@ -117,11 +141,12 @@ extension TaskDockViewController {
     }
 
     /// Stops a running spring where it currently draws the panel, so whatever follows starts from there.
-    private func stopAtPresentation() {
+    func stopAtPresentation() {
         defer { self.animator = nil }
         guard let animator, animator.isRunning else { return }
+        let transform = panel.layer.presentation()?.affineTransform() ?? panel.transform
         animator.stopAnimation(true)
-        let drawn = panel.layer.presentation()?.affineTransform().ty ?? panel.transform.ty
+        let drawn = placement.isLeading ? -transform.tx : transform.ty
         apply(1 - drawn / travel)
     }
 
@@ -143,6 +168,7 @@ extension TaskDockViewController {
         guard dismissing else { return }
         dismissing = false
         settled = false
+        panel.alpha = 1
     }
 
     private func settle() {
@@ -151,9 +177,13 @@ extension TaskDockViewController {
         onSettled()
     }
 
-    /// Touches outside the panel reach the app while minimized; expanded, the sheet takes them all.
-    fileprivate func owns(_ point: CGPoint) -> Bool {
-        progress > 0.5 || panel.frame.contains(point)
+    /// A leading panel always leaves the adjacent app interactive. A raised bottom sheet owns the full screen.
+    func owns(_ point: CGPoint) -> Bool {
+        placement.isLeading ? panel.frame.contains(point) : progress > 0.5 || panel.frame.contains(point)
+    }
+
+    private func openingComponent(_ point: CGPoint) -> CGFloat {
+        placement.isLeading ? point.x : -point.y
     }
 }
 
@@ -161,9 +191,16 @@ extension TaskDockViewController {
 
 extension TaskDockViewController {
     func updateInsets() {
+        if state.browserInline != placement.isLeading { state.browserInline = placement.isLeading }
+        let trailingInset = view.window?.safeAreaInsets.right ?? view.safeAreaInsets.right
+        if state.browserTrailingInset != trailingInset { state.browserTrailingInset = trailingInset }
+        let topInset = placement.isLeading ? (view.window?.safeAreaInsets.top ?? view.safeAreaInsets.top) : 0
+        if state.topInset != topInset { state.topInset = topInset }
         let inset = max(keyboardOverlap, safeBottom)
         if state.bottomInset != inset { state.bottomInset = inset }
         if state.sideInset != safeSides { state.sideInset = safeSides }
+        let actionsByComposer = usesVerticalBar && !placement.isLeading
+        if state.actionsByComposer != actionsByComposer { state.actionsByComposer = actionsByComposer }
     }
 
     /// Only the transcript's bottom inset follows the keyboard. SwiftUI lays the conversation out once at the

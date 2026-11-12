@@ -37,6 +37,12 @@
 (*   - LogEpochMonotone: epochs never regress across the log.              *)
 (*   - OwnedEpochUnique: two live handles never share an epoch.            *)
 (***************************************************************************)
+(* PG code mapping: AgentPGStore uses root_revision for this model's ETag.*)
+(* Conditional SQL changes owner/epoch/revision with the root state.      *)
+(* Renewal advances that revision without rewriting the root payload.    *)
+(* The S3 helper is an atomic conditional-value abstraction, not a call   *)
+(* to online S3. Deadline arithmetic and unpublished creation are outside *)
+(* this model; implementation regressions cover those separate details.  *)
 EXTENDS Naturals, Sequences, TLC
 
 CONSTANTS Node,      \* contending nodes, e.g. {n1, n2}

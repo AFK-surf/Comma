@@ -20,6 +20,17 @@ export type CommaAuthContextValue = {
   sessionSignal: AbortSignal;
   sessionTransport: CommaApiSessionTransport;
   signOut: () => void;
+  /**
+   * The accounts signed in on this device besides this one, and what can be done with them (hosts that keep the
+   * bearer: Electron). Absent where a device keeps one account.
+   */
+  otherAccounts?: {
+    list: readonly { userId: string; email: string }[];
+    /** Sets this account aside, still signed in, and shows the sign-in for another. */
+    add(): Promise<void>;
+    switchTo(userId: string): Promise<void>;
+    signOut(userId: string): Promise<void>;
+  };
   userId?: string;
   userDisplayName?: string;
   userEmail: string;

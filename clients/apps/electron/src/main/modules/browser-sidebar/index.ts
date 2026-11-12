@@ -23,6 +23,7 @@ import {
   type BrowserSidebarCaptureInput,
   type BrowserSidebarCaptureResult,
   type BrowserSidebarCloseInput,
+  type BrowserSidebarCornerRadii,
   type BrowserSidebarInspectInput,
   type BrowserSidebarInspectResult,
   type BrowserSidebarNavigateInput,
@@ -48,6 +49,7 @@ import {
   BrowserAgentSession,
   type BrowserAgentInput,
   type BrowserAgentOperation,
+  type BrowserAgentPoint,
   type BrowserAgentRefs,
 } from "./agent";
 import { randomUUID } from "node:crypto";
@@ -65,6 +67,15 @@ export const BROWSER_SIDEBAR_PARTITION = "persist:comma-browser-sidebar";
 const BROWSER_SIDEBAR_ROLE = "browser-sidebar";
 const BROWSER_SIDEBAR_CLOSE_CONFIRMATION_TIMEOUT_MS = 250;
 const BROWSER_SIDEBAR_CAPTURE_ATTEMPTS = 3;
+
+/**
+ * A capture the renderer gets no stand-in for: it hides the live view
+ * without one, and this reason is the only trace of why.
+ */
+function standInUnavailable(reason: string) {
+  console.warn(`Browser sidebar stand-in unavailable: ${reason}.`);
+  return { status: "unavailable" as const };
+}
 // The longest edge a model reads an image at; a larger capture is scaled down.
 const BROWSER_INSPECTION_SCREENSHOT_MAX_EDGE = 1568;
 export const CLIENT_CDP_TIMEOUT_MS = 10_000;
@@ -251,6 +262,27 @@ export interface BrowserSidebarNativeViewLike {
 
 export interface BrowserSidebarViewLike extends BrowserSidebarNativeViewLike {
   readonly webContents: BrowserSidebarWebContentsLike;
+  /** What the window holds when the page sits in a clip (`browser-sidebar-view.ts`). */
+  readonly nativeView?: BrowserSidebarNativeViewLike;
+  /** Rounds the page's corners from its next bounds on. A view without it stays square. */
+  setCornerRadii?(radii: BrowserSidebarCornerRadii): void;
+}
+
+const squareCorners: BrowserSidebarCornerRadii = {
+  bottomLeft: 0,
+  bottomRight: 0,
+  topLeft: 0,
+  topRight: 0,
+};
+
+/** Places a page with the shape the renderer gave its bounds. */
+function placeView(
+  view: BrowserSidebarViewLike,
+  bounds: SurfaceBounds,
+  cornerRadii: BrowserSidebarCornerRadii = squareCorners
+) {
+  view.setCornerRadii?.(cornerRadii);
+  view.setBounds(bounds);
 }
 
 interface BrowserInspectionComposer {
@@ -337,6 +369,8 @@ export interface BrowserSidebarProvider {
 interface ActiveBrowserSidebar {
   /** The document the agent's element refs belong to, and the next ref. */
   agentRefs?: BrowserAgentRefs | undefined;
+  /** Where the agent's cursor last was in the tab, kept across its documents. */
+  agentCursor?: BrowserAgentPoint | undefined;
   /** The agent's session, kept attached while a page dialog waits for its answer. */
   agentSession?: BrowserAgentSession | undefined;
   closing: boolean;
@@ -734,7 +768,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       }
       this.#hideOtherSessions(ownerWindowId, parsed.sessionId);
       this.#touchActive(previous);
-      previous.view.setBounds(parsed.bounds);
+      placeView(previous.view, parsed.bounds, parsed.cornerRadii);
       previous.inspectionComposer?.position();
       previous.view.setVisible(true);
       const requestedNavigationRevision = parsed.navigationRevision ?? 0;
@@ -830,12 +864,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       );
       this.#installNavigationStatePublishing(active);
       this.#installPasskeys(active);
-      view.setBounds(parsed.bounds);
+      placeView(view, parsed.bounds, parsed.cornerRadii);
       view.setVisible(true);
-      owner.contentView.addChildView(view);
+      owner.contentView.addChildView(view.nativeView ?? view);
     } catch (error: unknown) {
       try {
-        owner.contentView.removeChildView(view);
+        owner.contentView.removeChildView(view.nativeView ?? view);
       } catch {
         // Continue to the explicit WebContents close below.
       }
@@ -913,14 +947,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     return this.#enqueueOwnerOperation(ownerWindowId, async () => {
       this.#requireAvailable();
       const active = this.#active(ownerWindowId, parsed.sessionId);
-      if (
-        !active ||
-        active.closing ||
-        active.webContents.isDestroyed() ||
-        !active.view.getVisible()
-      ) {
-        return { status: "unavailable" };
-      }
+      if (!active) return standInUnavailable("no session");
+      if (active.closing || active.webContents.isDestroyed())
+        return standInUnavailable("session closing");
+      if (!active.view.getVisible()) return standInUnavailable("view hidden");
       // Chromium's compositor can refuse one copy of a frame it is still
       // producing (`UnknownVizError` on macOS CI, about one capture in a
       // hundred); the next request gets the frame. Each attempt rechecks that
@@ -931,7 +961,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
             pngImage: (await active.webContents.capturePage()).toPNG(),
             status: "ready",
           };
-        } catch {
+        } catch (error) {
           if (
             attempt === BROWSER_SIDEBAR_CAPTURE_ATTEMPTS ||
             active.closing ||
@@ -939,8 +969,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
             !active.view.getVisible() ||
             this.#active(ownerWindowId, parsed.sessionId) !== active
           ) {
-            // The caller falls back to hiding without a stand-in.
-            return { status: "unavailable" };
+            return standInUnavailable(
+              `capture attempt ${attempt} failed (${error instanceof Error ? error.message : String(error)})`
+            );
           }
         }
       }
@@ -1030,6 +1061,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       set refs(refs) {
         active.agentRefs = refs;
       },
+      get cursor() {
+        return active.agentCursor;
+      },
+      set cursor(cursor) {
+        active.agentCursor = cursor;
+      },
       navigate: async (url) => {
         await this.#startNavigation(active, url);
         return active.reason;
@@ -1038,6 +1075,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       tabId: active.tabId,
       title: () => active.webContents.getTitle(),
       url: () => currentSafeUrl(active.webContents, active.url),
+      visible: () => active.view.getVisible(),
     });
   }
 
@@ -1182,7 +1220,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     this.#touchActive(active);
 
     if (parsed.bounds) {
-      active.view.setBounds(parsed.bounds);
+      placeView(active.view, parsed.bounds, parsed.cornerRadii);
       active.inspectionComposer?.position();
       await this.#surfaces.updateView(active.id, active.view, {
         bounds: parsed.bounds,
@@ -1384,7 +1422,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
 
     try {
-      active.owner.contentView.removeChildView(active.view);
+      active.owner.contentView.removeChildView(active.view.nativeView ?? active.view);
     } catch (error: unknown) {
       firstError ??= error;
     }
@@ -1447,7 +1485,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     active.closing = true;
     this.#deleteActive(active);
     try {
-      active.owner.contentView.removeChildView(active.view);
+      active.owner.contentView.removeChildView(active.view.nativeView ?? active.view);
     } catch {
       // The owner may already be closing; the WebContents is still explicitly gone.
     }
@@ -1609,6 +1647,14 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     });
     active.webContents.on("did-stop-loading", () => {
       active.navigationPendingAction = undefined;
+      // A first page that moved itself on (a hash route, a locale redirect)
+      // settles a load Main no longer counts as its own: the tab is ready
+      // when its loading stops, or failed with the reason did-fail-load kept.
+      if (active.reason) {
+        this.#rejectPendingClientTabOpen(active.tabId, new Error(active.reason));
+      } else {
+        this.#resolvePendingClientTabOpen(active);
+      }
       publish();
     });
     active.webContents.on("page-title-updated", publish);
@@ -1806,6 +1852,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   }
 
   #pauseNavigation(active: ActiveBrowserSidebar) {
+    // A tab an agent opened (`openClientTab`) loads its first page wherever
+    // the user is: the renderer hides it at once when no browser panel shows.
+    if (this.#pendingClientTabOpens.has(active.tabId)) return;
     const resumableUrl =
       active.navigationPendingGeneration === active.navigationGeneration
         ? active.navigationUrl

@@ -1,6 +1,6 @@
 # comma-station-gateway
 
-The gateway lets Salix call tools on still.fail stations enrolled in a Comma
+The gateway lets Salix call tools on Comma stations enrolled in a Comma
 workspace. Salix sends HTTP requests. The gateway forwards each request to the
 station over iroh on ALPN `comma/tools/1` and returns the station response.
 The wire contract is the station control-plane contract, sections 8 and 9.

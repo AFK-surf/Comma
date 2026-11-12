@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -27,6 +29,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import surf.comma.android.auth.AuthActivity
 import surf.comma.android.auth.AuthGraph
 import surf.comma.android.auth.AuthRepository
+import surf.comma.android.chat.live.AgentLocationAnswers
 import surf.comma.android.chat.data.ConversationSourceFactory
 import surf.comma.android.chat.live.ChatGraph
 import surf.comma.android.shell.AppShell
@@ -35,9 +38,6 @@ import surf.comma.android.chat.live.ChatNavigator
 import surf.comma.android.chat.live.HomeTopBar
 import surf.comma.android.chat.live.LiveChatScreen
 import surf.comma.android.chat.live.routeFor
-import surf.comma.android.chat.live.withReplyActions
-import surf.comma.android.chat.model.ChatRole
-import surf.comma.android.chat.render.MessageCopy
 import surf.comma.android.chat.model.ChatMessage
 import surf.comma.android.chat.render.ChatTimelineView
 import surf.comma.android.chat.render.MessageLayoutPrecomputer
@@ -46,15 +46,19 @@ import surf.comma.android.chat.render.codeSyntaxTheme
 import surf.comma.android.performance.ConversationTelemetry
 import surf.comma.android.performance.ConversationTelemetryFactory
 import surf.comma.android.settings.BLUETOOTH_PERMISSIONS
+import surf.comma.android.settings.ConfirmDialog
 import surf.comma.android.settings.devices.NearbyDevices
 import surf.comma.android.settings.devices.NearbyPermissionDialog
 import surf.comma.android.media.viewer.ImageViewerActivity
+import surf.comma.android.miniapps.MiniAppLinks
 import surf.comma.android.media.localViewerImage
 import surf.comma.android.notify.ReplyLink
 import surf.comma.android.notify.ReplyNotifications
 import surf.comma.android.ui.MessageActionsPopup
 import surf.comma.android.ui.widget.BackdropBlurLayout
 import surf.comma.android.voice.CallController
+import surf.comma.android.voice.CallMicrophone
+import surf.comma.android.voice.callMicrophone
 import surf.comma.android.voice.ui.CallScreen
 import kotlin.coroutines.resume
 
@@ -79,11 +83,19 @@ class MainActivity : ComponentActivity() {
     }
     private var callScreen: CallScreen? = null
     /**
-     * Asked before each new call: the microphone (without it the call shows why it cannot start)
-     * and, so the ongoing-call notification can show, notifications (a call works without them).
+     * Asked before each new call: the microphone (without it no call starts) and, so the ongoing-call
+     * notification can show, notifications (a call works without them).
      */
     private val callPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        startCall()
+        when (callMicrophone(granted(Manifest.permission.RECORD_AUDIO),
+            shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO))) {
+            CallMicrophone.START_CALL -> startCall()
+            // Denied, but the system shows the dialog again on the next tap.
+            CallMicrophone.NONE -> Unit
+            // Denied for good: just now, or before, when the system answers without showing the dialog. A first
+            // dialog dismissed without an answer looks the same; the next tap still shows the system dialog.
+            CallMicrophone.OPEN_SETTINGS -> showMicrophoneSettings()
+        }
     }
 
     // Local measured conversation.
@@ -128,6 +140,7 @@ class MainActivity : ComponentActivity() {
         screen.bind()
         openReply(intent)
         openCall(intent)
+        openLink(intent)
         lifecycleScope.launch { session.start() }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -157,6 +170,21 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         openReply(intent)
         openCall(intent)
+        openLink(intent)
+    }
+
+    /**
+     * A public Mini App link opens its Shared app page (after sign-in when needed). A link of another environment gets
+     * an error, never the other environment.
+     */
+    private fun openLink(intent: Intent?) {
+        val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data ?: return
+        val shell = shell ?: return
+        intent.data = null
+        val api = android.net.Uri.parse(BuildConfig.BACKEND_BASE_URL)
+        val store = surf.comma.android.workspace.WorkspaceGraph.get(this)
+        MiniAppLinks.sharedToken(url, api)?.let { return shell.openMiniAppLink(it) }
+        if (MiniAppLinks.isClaimed(url)) store.showToast(getString(R.string.mini_apps_link_invalid), error = true)
     }
 
     /** The call notification opens the call page; it never starts a call. */
@@ -172,11 +200,25 @@ class MainActivity : ComponentActivity() {
             callScreen?.expand()
             return
         }
+        // Without the microphone, always ask: the system shows its dialog again after a one-time grant expires,
+        // after a revocation in settings, and after a dismissed dialog. Only its answer tells a denial for good.
         val missing = buildList {
             if (!granted(Manifest.permission.RECORD_AUDIO)) add(Manifest.permission.RECORD_AUDIO)
             if (!granted(Manifest.permission.POST_NOTIFICATIONS)) add(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (missing.isEmpty()) startCall() else callPermissions.launch(missing.toTypedArray())
+    }
+
+    /** Only the app's settings can grant the microphone now; the next tap calls once it is on. */
+    private fun showMicrophoneSettings() {
+        ConfirmDialog(this,
+            title = getString(R.string.call_microphone_title),
+            message = getString(R.string.call_microphone_message),
+            confirm = getString(R.string.call_microphone_open_settings),
+            destructive = false,
+        ) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        }.show()
     }
 
     private fun startCall() {
@@ -214,6 +256,7 @@ class MainActivity : ComponentActivity() {
         // The router chat, and an open Task's, unless a raised Task covers the router.
         shell?.setForeground(true)
         replies?.chatShown()
+        auth?.let { AgentLocationAnswers.of(this).setForeground(true) }
     }
 
     override fun onResume() {
@@ -232,6 +275,7 @@ class MainActivity : ComponentActivity() {
         // Before the stream pauses, so a hold keeps it open without a reconnect.
         replies?.chatHidden()
         shell?.setForeground(false)
+        auth?.let { AgentLocationAnswers.of(this).setForeground(false) }
         if (live != null) navigator.onChatStopped()
         super.onStop()
     }
@@ -274,13 +318,6 @@ class MainActivity : ComponentActivity() {
         timeline.onImageClick = { image -> localViewerImage(image)?.let { ImageViewerActivity.start(this, listOf(it), 0) } }
         timeline.onLongPressMessage = MessageActionsPopup::show
         timeline.onCopyCode = { MessageActionsPopup.copyCode(this, it) }
-        timeline.onReplyAction = { _, item ->
-            val reply = MessageCopy.reply(prepared.filter {
-                it.message.turnId == item.message.turnId && it.message.role == ChatRole.AGENT && it.message.cardKind == null
-            }.map { it.message.text })
-            MessageActionsPopup.copyMessage(this, reply)
-            reply.isNotBlank()
-        }
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
         status = TextView(this).apply {
             id = R.id.conversation_status
@@ -347,9 +384,8 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun render(messages: List<ChatMessage>) {
         val metrics = resources.displayMetrics
-        // The fixtures carry the live chat's reply buttons, so the benchmarks measure them too.
         prepared = precomputer.prepareChanged(
-            previous = prepared, messages = withReplyActions(messages), viewportWidthPx = timeline.width,
+            previous = prepared, messages = messages, viewportWidthPx = timeline.width,
             density = metrics.density, fontScale = resources.configuration.fontScale,
             syntaxTheme = codeSyntaxTheme(this),
             darkTheme = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES,
@@ -363,9 +399,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** `top_backdrop` = blur (default), fade or off; only fixture builds read it. */
+    /** `top_backdrop` = blur (default), glass, fade or off; only fixture builds read it. */
     private fun backdropMode(intent: Intent): BackdropBlurLayout.Mode =
         when (intent.getStringExtra("top_backdrop").takeIf { source.canReplay }) {
+            "glass" -> BackdropBlurLayout.Mode.GLASS
             "fade" -> BackdropBlurLayout.Mode.FADE
             "off" -> BackdropBlurLayout.Mode.OFF
             else -> BackdropBlurLayout.Mode.BLUR

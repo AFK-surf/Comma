@@ -255,7 +255,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
 
     previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
     previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
@@ -714,8 +714,11 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
       if unquote(adapter) == :model_failure do
         # A platform-funded provider out of quota stops as `model_unavailable`.
-        assert inspect(message["content"]) =~ "Choose another model"
-        refute inspect(message["content"]) =~ "private credit details"
+        assert inspect(message["content"], printable_limit: :infinity, limit: :infinity) =~
+                 "Choose another model"
+
+        refute inspect(message["content"], printable_limit: :infinity, limit: :infinity) =~
+                 "private credit details"
       else
         assert message["content"] == [
                  %{"type" => "text", "text" => "I will prepare the calendar."}
@@ -763,12 +766,91 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     deliver_telegram!(agent_id, "tg-final-B", "B: independent next request")
     {next, messages, _} = await_request!()
     assert request_text(messages) =~ "B: independent next request"
-    SystemsRuntime.Proc.send(next, {:reply_obligation_llm_response, end_turn("tg-final-end-b")})
+
+    SystemsRuntime.Proc.send(
+      next,
+      {:reply_obligation_llm_response, silent_end_turn("tg-final-end-b")}
+    )
+
     await_source_settled!(agent_id, session_id, "tg-final-B")
     settle_refute_receive({:telegram_call, ^agent_id, _}, 100)
   end
 
   @tag :terminal_reply
+  test "a Loop delivery that arrives while a person waits leaves their end_turn reply", %{
+    agent_id: agent_id,
+    session_id: session_id
+  } do
+    deliver_telegram!(agent_id, "tg-with-loop", "answer me")
+    {first, _, _} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      first,
+      {:reply_obligation_llm_response, idle_call("before-the-loop")}
+    )
+
+    deliver_internal!(agent_id, "loop:lop1:1", "the Loop's report")
+
+    {second, messages, _} = await_request!()
+    assert request_text(messages) =~ "the Loop's report"
+
+    SystemsRuntime.Proc.send(
+      second,
+      {:reply_obligation_llm_response, terminal_telegram_reply("terminal-with-loop")}
+    )
+
+    settle_receive(
+      {:telegram_call, ^agent_id, %{"tool_context" => %{"source_message_id" => "tg-with-loop"}}}
+    )
+
+    settled = await_source_settled!(agent_id, session_id, "tg-with-loop")
+    assert Enum.count(settled.events, &(&1["kind"] == "terminal_reply_delivered")) == 1
+  end
+
+  # Production: a Router ran one probing command for a person, then ended
+  # with done, no reply and no Task. Ending continues nothing, so the person
+  # waited until she asked again. That done is refused and the source stays.
+  test "a done that leaves the activation's person with nothing is refused until they get a reply",
+       %{agent_id: agent_id, session_id: session_id} do
+    deliver_telegram!(agent_id, "tg-unanswered", "check the release")
+    {first, _, _} = await_request!()
+
+    SystemsRuntime.Proc.send(first, {:reply_obligation_llm_response, idle_call("probe")})
+    {second, _, _} = await_request!()
+    SystemsRuntime.Proc.send(second, {:reply_obligation_llm_response, end_turn("bare-done")})
+
+    {third, messages, _} = await_request!()
+    assert request_text(messages) =~ "unanswered_person"
+    pending = read_session!(agent_id, session_id)
+    assert pending.last_ack_message_id < find_source_message!(pending, "tg-unanswered").id
+    settle_refute_receive({:telegram_call, ^agent_id, _}, 50)
+
+    SystemsRuntime.Proc.send(
+      third,
+      {:reply_obligation_llm_response, terminal_telegram_reply("status-note")}
+    )
+
+    settle_receive(
+      {:telegram_call, ^agent_id, %{"tool_context" => %{"source_message_id" => "tg-unanswered"}}}
+    )
+
+    await_source_settled!(agent_id, session_id, "tg-unanswered")
+  end
+
+  test "a done that declares no_reply settles with nothing sent", %{
+    agent_id: agent_id,
+    session_id: session_id
+  } do
+    deliver_telegram!(agent_id, "tg-silent", "no need to answer this")
+    {first, _, _} = await_request!()
+
+    SystemsRuntime.Proc.send(first, {:reply_obligation_llm_response, silent_end_turn("silent")})
+
+    await_source_settled!(agent_id, session_id, "tg-silent")
+    settle_refute_receive({:reply_obligation_llm_request, _, _, _}, 100)
+    settle_refute_receive({:telegram_call, ^agent_id, _}, 50)
+  end
+
   test "an end_turn reply retains a failed source and admits input queued during its successful retry",
        %{agent_id: agent_id, session_id: session_id} do
     CaptureSlack.telegram_response({:error, "telegram request rejected"})
@@ -820,7 +902,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
     SystemsRuntime.Proc.send(
       next,
-      {:reply_obligation_llm_response, end_turn("terminal-B-finish")}
+      {:reply_obligation_llm_response, silent_end_turn("terminal-B-finish")}
     )
 
     await_source_settled!(agent_id, session_id, "tg-terminal-B")
@@ -1014,12 +1096,22 @@ defmodule SalixAgent.ProviderReplyObligationTest do
       assert current.wait == nil
       refute Enum.any?(current.async_tool_calls, fn {_, call} -> call["status"] == "running" end)
       assert Enum.any?(current.events, &(&1["kind"] == "terminal_reply_delivered"))
-      SystemsRuntime.Proc.send(b_pid, {:reply_obligation_llm_response, end_turn("native-B-end")})
+
+      SystemsRuntime.Proc.send(
+        b_pid,
+        {:reply_obligation_llm_response, silent_end_turn("native-B-end")}
+      )
+
       await_source_settled!(c.agent_id, c.session_id, "native-B")
       deliver_telegram!(c.agent_id, "native-C", "Answer to native-A: 杭州")
       {c_pid, c_messages, _} = await_request!()
       assert request_text(c_messages) =~ "Answer to native-A: 杭州"
-      SystemsRuntime.Proc.send(c_pid, {:reply_obligation_llm_response, end_turn("native-C-end")})
+
+      SystemsRuntime.Proc.send(
+        c_pid,
+        {:reply_obligation_llm_response, silent_end_turn("native-C-end")}
+      )
+
       await_source_settled!(c.agent_id, c.session_id, "native-C")
       settle_refute_receive({:native_prompt, _, _, _, _, _}, 200)
     end
@@ -1069,7 +1161,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     current = read_session!(agent_id, session_id)
     assert current.last_ack_message_id < find_source_message!(current, "tg-next").id
     refute Enum.any?(current.events, &(&1["kind"] == "terminal_reply_delivered"))
-    SystemsRuntime.Proc.send(next, {:reply_obligation_llm_response, end_turn("next-end")})
+    SystemsRuntime.Proc.send(next, {:reply_obligation_llm_response, silent_end_turn("next-end")})
     await_source_settled!(agent_id, session_id, "tg-next")
 
     [{actor, _}] =
@@ -1154,7 +1246,11 @@ defmodule SalixAgent.ProviderReplyObligationTest do
                  &1["event"]["outcome"] == "blocked")
            )
 
-    SystemsRuntime.Proc.send(next, {:reply_obligation_llm_response, end_turn("model-next-end")})
+    SystemsRuntime.Proc.send(
+      next,
+      {:reply_obligation_llm_response, silent_end_turn("model-next-end")}
+    )
+
     await_source_settled!(agent_id, session_id, "tg-model-next")
     settle_refute_receive({:telegram_call, ^agent_id, _}, 100)
 
@@ -1214,7 +1310,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
     # The durable boundary after the provider failure, before reserving a send.
     assert {:ok, pending} =
-             InternalSessionStore.prepare_commit(agent_id, session_id, [
+             SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
                %{"type" => "session_created", "session_id" => session_id},
                %{
                  "type" => "delivery",
@@ -1310,7 +1406,12 @@ defmodule SalixAgent.ProviderReplyObligationTest do
       end
 
       assert current.last_ack_message_id < find_source_message!(current, "tg-after-guard").id
-      SystemsRuntime.Proc.send(next, {:reply_obligation_llm_response, end_turn("next-guard-end")})
+
+      SystemsRuntime.Proc.send(
+        next,
+        {:reply_obligation_llm_response, silent_end_turn("next-guard-end")}
+      )
+
       await_source_settled!(agent_id, session_id, "tg-after-guard")
       settle_refute_receive({:telegram_call, ^agent_id, _}, 100)
     end
@@ -1344,6 +1445,8 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     assert {:ok, persisted_request} =
              SalixAgent.CapabilityRequests.create_capability_request(request)
 
+    SalixAgent.TestSupport.cleanup_capability_request_on_exit(persisted_request)
+
     origin = %{
       "provider" => "internal",
       "source_actor_type" => "user",
@@ -1351,7 +1454,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
     }
 
     assert {:ok, _} =
-             InternalSessionStore.prepare_commit(agent_id, session_id, [
+             SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
                %{"type" => "session_created", "session_id" => session_id},
                %{
                  "type" => "async_tool_call_started",
@@ -1631,7 +1734,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
       end)
 
     assert {:ok, _} =
-             InternalSessionStore.prepare_commit(agent_id, session_id, [
+             SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
                %{"type" => "session_created", "session_id" => session_id} | inputs
              ])
 
@@ -1694,7 +1797,7 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
     SystemsRuntime.Proc.send(
       delegate_pid,
-      {:reply_obligation_llm_response, end_turn("delegated")}
+      {:reply_obligation_llm_response, silent_end_turn("delegated")}
     )
 
     await_settled!(agent_id, session_id)
@@ -1764,6 +1867,8 @@ defmodule SalixAgent.ProviderReplyObligationTest do
       session_id: session_id
     } do
       outcome = unquote(outcome)
+      # A done that sends nothing declares the silence; blocked never needs to.
+      silence = if outcome == "done", do: %{"no_reply" => true}, else: %{}
 
       deliver!(
         agent_id,
@@ -1790,7 +1895,11 @@ defmodule SalixAgent.ProviderReplyObligationTest do
             %{
               id: "end-a",
               name: "end_turn",
-              args: %{"outcome" => outcome, "reason" => "No reply is needed to the system notice"}
+              args:
+                Map.merge(
+                  %{"outcome" => outcome, "reason" => "No reply is needed to the system notice"},
+                  silence
+                )
             }
           ]}}
       )
@@ -1886,6 +1995,317 @@ defmodule SalixAgent.ProviderReplyObligationTest do
 
     settled = await_settled!(agent_id, session_id)
     assert ProviderReplyObligation.pending_count(SalixAgent.InternalSession.open(settled)) == 0
+  end
+
+  # A Router that answers a person and then waits keeps that person in its
+  # activation. A Task created when a schedule run wakes it later belongs to
+  # that run, so it takes neither the person's thread for its card nor that
+  # thread as its reply source. A person not yet answered keeps the card.
+  for answered? <- [true, false] do
+    test "a Task for a schedule run after #{if answered?, do: "an answered", else: "a waiting"} person #{if answered?, do: "gets no", else: "keeps the"} Slack card",
+         %{agent_id: agent_id, session_id: session_id} do
+      group_id = SalixStore.Ids.group_id_from_agent!(agent_id)
+
+      deliver!(
+        agent_id,
+        @source_a1,
+        slack_input(@thread_a, "A: turn on the air conditioner"),
+        obligation(@thread_a),
+        %{"agent_group_id" => group_id}
+      )
+
+      {first_pid, _messages, _tools} = await_request!()
+
+      if unquote(answered?) do
+        SystemsRuntime.Proc.send(
+          first_pid,
+          {:reply_obligation_llm_response, slack_post("reply-a", @thread_a)}
+        )
+
+        assert_slack_call!(agent_id, @thread_a, @source_a1)
+        {wait_pid, _messages, _tools} = await_request!()
+
+        SystemsRuntime.Proc.send(
+          wait_pid,
+          {:reply_obligation_llm_response, wait_for("wait-after-a", 1800)}
+        )
+      else
+        SystemsRuntime.Proc.send(
+          first_pid,
+          {:reply_obligation_llm_response, wait_for("wait-before-a", 1800)}
+        )
+      end
+
+      await_waiting!(agent_id, session_id)
+      deliver_internal!(agent_id, "schedule:sch-test:1", "Scheduled run: write the PR brief")
+
+      {create_pid, messages, _tools} = await_request!()
+      assert request_text(messages) =~ "Scheduled run: write the PR brief"
+
+      SystemsRuntime.Proc.send(
+        create_pid,
+        {:reply_obligation_llm_response,
+         task_create("create-for-schedule", %{"test_auto_card" => true})}
+      )
+
+      settle_receive({:reply_obligation_task_create, ^agent_id, args, task_create_pid})
+      SystemsRuntime.Proc.send(task_create_pid, :reply_obligation_complete_task_create)
+
+      if unquote(answered?) do
+        assert args["tool_context"]["person_source_superseded"] == true
+        {_end_pid, messages, _tools} = await_request!()
+        assert request_text(messages) =~ "not_applicable"
+        settle_refute_receive({:reply_obligation_card_post, ^agent_id, _args}, 100)
+      else
+        refute Map.has_key?(args["tool_context"], "person_source_superseded")
+
+        settle_receive(
+          {:reply_obligation_card_post, ^agent_id, %{"params" => %{"thread_ts" => @thread_a}}}
+        )
+      end
+    end
+  end
+
+  # Staging, 2026-11-06: a Router that had answered its person kept the
+  # activation open for nine minutes on work of its own while two people
+  # waited behind it. Once everyone in the activation has had their reply and
+  # a person is queued, work of its own is refused and runs nothing; the
+  # queued person's activation then starts within a bounded number of rounds,
+  # with that person's own source and thread.
+  test "an answered activation with a person queued runs no other work and yields to them",
+       %{agent_id: agent_id} do
+    deliver!(
+      agent_id,
+      @source_a1,
+      slack_input(@thread_a, "A: does Photon do WhatsApp?"),
+      obligation(@thread_a)
+    )
+
+    {first_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      first_pid,
+      {:reply_obligation_llm_response, slack_post("reply-a", @thread_a)}
+    )
+
+    assert_slack_call!(agent_id, @thread_a, @source_a1)
+
+    {own_work_pid, _messages, _tools} = await_request!()
+
+    deliver!(
+      agent_id,
+      @source_b,
+      slack_input(@thread_b, "B: the customer wants Slack"),
+      obligation(@thread_b)
+    )
+
+    b_pid = until_queued_person_admitted!(own_work_pid, "B: the customer wants Slack")
+    settle_refute_receive({:telegram_call, ^agent_id, _args}, 100)
+
+    SystemsRuntime.Proc.send(
+      b_pid,
+      {:reply_obligation_llm_response, slack_post("reply-b", @thread_b)}
+    )
+
+    assert_slack_call!(agent_id, @thread_b, @source_b)
+  end
+
+  # The guard is decided on the session each response is accepted against:
+  # while nobody is queued the Router's own work runs; a person who arrives
+  # after the answer engages it.
+  test "a person queued after the answer engages the guard from then on",
+       %{agent_id: agent_id} do
+    deliver!(agent_id, @source_a1, slack_input(@thread_a, "A: question"), obligation(@thread_a))
+    {first_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      first_pid,
+      {:reply_obligation_llm_response, slack_post("reply-a", @thread_a)}
+    )
+
+    assert_slack_call!(agent_id, @thread_a, @source_a1)
+
+    {free_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      free_pid,
+      {:reply_obligation_llm_response, telegram_post("before-b")}
+    )
+
+    settle_receive({:telegram_call, ^agent_id, %{"tool_call_id" => "before-b"}})
+
+    {late_pid, messages, _tools} = await_request!()
+    refute request_text(messages) =~ "queued person"
+
+    deliver!(agent_id, @source_b, slack_input(@thread_b, "B: late"), obligation(@thread_b))
+    b_pid = until_queued_person_admitted!(late_pid, "B: late")
+    settle_refute_receive({:telegram_call, ^agent_id, _args}, 100)
+
+    SystemsRuntime.Proc.send(
+      b_pid,
+      {:reply_obligation_llm_response, slack_post("reply-b", @thread_b)}
+    )
+
+    assert_slack_call!(agent_id, @thread_b, @source_b)
+  end
+
+  # A person not yet answered still owns the activation: the Router keeps
+  # working for them, whoever is queued.
+  test "an unanswered activation with a person queued is not guarded", %{agent_id: agent_id} do
+    deliver!(
+      agent_id,
+      @source_a1,
+      slack_input(@thread_a, "A: does Photon do WhatsApp?"),
+      obligation(@thread_a)
+    )
+
+    {first_pid, _messages, _tools} = await_request!()
+
+    deliver!(
+      agent_id,
+      @source_b,
+      slack_input(@thread_b, "B: the customer wants Slack"),
+      obligation(@thread_b)
+    )
+
+    SystemsRuntime.Proc.send(
+      first_pid,
+      {:reply_obligation_llm_response, telegram_post("research-for-a")}
+    )
+
+    settle_receive({:telegram_call, ^agent_id, %{"tool_call_id" => "research-for-a"}})
+
+    {_next_pid, messages, _tools} = await_request!()
+    text = request_text(messages)
+    refute text =~ "queued person"
+    refute text =~ "B: the customer wants Slack"
+  end
+
+  # Two people in one thread share one reply target and batch into one
+  # activation: neither is answered until that target resolves, and only then
+  # does the person queued behind them engage the guard.
+  test "two people in one activation are answered together by their thread's reply",
+       %{agent_id: agent_id} do
+    deliver!(agent_id, @source_a1, slack_input(@thread_a, "A1: first"), obligation(@thread_a))
+    {first_pid, _messages, _tools} = await_request!()
+
+    deliver!(agent_id, @source_a2, slack_input(@thread_a, "A2: second"), obligation(@thread_a))
+
+    deliver!(
+      agent_id,
+      "im_provider:slack:slack-1:C0AQ0C0KVMH:1787628920.000001",
+      slack_input(@thread_a, "A3: third"),
+      obligation(@thread_a),
+      %{
+        "provider_context" => %{
+          "connect_id" => "slack-1",
+          "channel_id" => @channel,
+          "thread_ts" => @thread_a,
+          "message_ts" => "1787628920.000001",
+          "user_id" => "U_THIRD"
+        }
+      }
+    )
+
+    deliver!(agent_id, @source_b, slack_input(@thread_b, "B: waiting"), obligation(@thread_b))
+
+    SystemsRuntime.Proc.send(
+      first_pid,
+      {:reply_obligation_llm_response, slack_post("reply-a1", @thread_a)}
+    )
+
+    assert_slack_call!(agent_id, @thread_a, @source_a1)
+    {end_pid, _messages, _tools} = await_request!()
+    SystemsRuntime.Proc.send(end_pid, {:reply_obligation_llm_response, end_turn("end-a1")})
+
+    # A2 and A3 share the next activation; B still waits behind it.
+    {work_pid, messages, _tools} = await_request!()
+    text = request_text(messages)
+    assert text =~ "A2: second"
+    assert text =~ "A3: third"
+    refute text =~ "B: waiting"
+
+    # Not answered yet: work for the thread runs.
+    SystemsRuntime.Proc.send(work_pid, {:reply_obligation_llm_response, telegram_post("for-a")})
+    settle_receive({:telegram_call, ^agent_id, %{"tool_call_id" => "for-a"}})
+
+    {reply_pid, _messages, _tools} = await_request!()
+
+    SystemsRuntime.Proc.send(
+      reply_pid,
+      {:reply_obligation_llm_response, slack_post("reply-a", @thread_a)}
+    )
+
+    settle_receive(
+      {:reply_obligation_slack_call, ^agent_id, %{"params" => %{"thread_ts" => @thread_a}}}
+    )
+
+    {after_pid, _messages, _tools} = await_request!()
+    b_pid = until_queued_person_admitted!(after_pid, "B: waiting")
+    settle_refute_receive({:telegram_call, ^agent_id, _args}, 100)
+
+    SystemsRuntime.Proc.send(
+      b_pid,
+      {:reply_obligation_llm_response, slack_post("reply-b", @thread_b)}
+    )
+
+    assert_slack_call!(agent_id, @thread_b, @source_b)
+  end
+
+  # A Router can start a duty of its own (a PR brief poll) while a person's
+  # activation is still open and that person still waits for a reply. Nothing
+  # in the activation tells the two apart, so the Router marks the Task
+  # own_work: it takes neither the person's thread for its card nor that
+  # thread as its reply source, and the person keeps their reply target. The
+  # same Task without own_work is the person's and keeps the card.
+  for own_work? <- [true, false] do
+    test "a Task #{if own_work?, do: "marked own_work gets no", else: "without own_work keeps the"} Slack card while the person waits",
+         %{agent_id: agent_id, session_id: session_id} do
+      group_id = SalixStore.Ids.group_id_from_agent!(agent_id)
+
+      deliver!(
+        agent_id,
+        @source_a1,
+        slack_input(@thread_a, "A: does Photon support WhatsApp?"),
+        obligation(@thread_a),
+        %{"agent_group_id" => group_id}
+      )
+
+      {create_pid, _messages, _tools} = await_request!()
+
+      params =
+        if unquote(own_work?),
+          do: %{"test_auto_card" => true, "own_work" => true},
+          else: %{"test_auto_card" => true}
+
+      SystemsRuntime.Proc.send(
+        create_pid,
+        {:reply_obligation_llm_response, task_create("create-own-work", params)}
+      )
+
+      settle_receive({:reply_obligation_task_create, ^agent_id, args, task_create_pid})
+      SystemsRuntime.Proc.send(task_create_pid, :reply_obligation_complete_task_create)
+
+      if unquote(own_work?) do
+        assert args["tool_context"]["person_source_superseded"] == true
+        {_next_pid, messages, _tools} = await_request!()
+        assert request_text(messages) =~ "not_applicable"
+        settle_refute_receive({:reply_obligation_card_post, ^agent_id, _args}, 100)
+
+        assert [%{"thread_ts" => @thread_a} = target] =
+                 ProviderReplyObligation.pending(
+                   SalixAgent.InternalSession.open(read_session!(agent_id, session_id))
+                 )
+
+        refute target["kind"] == "task_card"
+      else
+        refute Map.has_key?(args["tool_context"], "person_source_superseded")
+
+        settle_receive(
+          {:reply_obligation_card_post, ^agent_id, %{"params" => %{"thread_ts" => @thread_a}}}
+        )
+      end
+    end
   end
 
   # A Slack bot gets no automatic Task card, so its Task must not leave a card
@@ -2277,6 +2697,12 @@ defmodule SalixAgent.ProviderReplyObligationTest do
   defp end_turn(id),
     do: {:assistant, "", [%{id: id, name: "end_turn", args: %{"outcome" => "done"}}]}
 
+  # A done that sends nothing to the activation's person declares it.
+  defp silent_end_turn(id),
+    do:
+      {:assistant, "",
+       [%{id: id, name: "end_turn", args: %{"outcome" => "done", "no_reply" => true}}]}
+
   defp terminal_telegram_reply(id) do
     {:assistant, content, [call]} = telegram_post(id)
     reply = Map.take(call.args, ["tool", "params"])
@@ -2445,6 +2871,29 @@ defmodule SalixAgent.ProviderReplyObligationTest do
                },
                source_message_id: source_message_id
              )
+  end
+
+  # Answer every request with work of its own (a Telegram send) until the
+  # queued person's input shows up, at most four rounds. Each refused round
+  # carries the guard's guidance; the caller checks that no send ran.
+  defp until_queued_person_admitted!(pid, marker, rounds \\ 4)
+
+  defp until_queued_person_admitted!(_pid, marker, 0),
+    do: flunk("queued person not admitted: #{marker}")
+
+  defp until_queued_person_admitted!(pid, marker, rounds) do
+    SystemsRuntime.Proc.send(
+      pid,
+      {:reply_obligation_llm_response, telegram_post("own-work-#{rounds}")}
+    )
+
+    {next_pid, messages, _tools} = await_request!()
+    text = request_text(messages)
+    assert text =~ "queued person"
+
+    if text =~ marker,
+      do: next_pid,
+      else: until_queued_person_admitted!(next_pid, marker, rounds - 1)
   end
 
   defp await_request! do

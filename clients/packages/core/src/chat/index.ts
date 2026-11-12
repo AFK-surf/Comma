@@ -13,6 +13,7 @@
 // Bounds: the coordinator's (at most 32 conversations retained, one let go 30 s after its last view; one stream per
 // retained conversation, reconnected after 250 ms while a reply is awaited, else 3 s, failures backing off 1 s doubling
 // to 15 s). A client's leases end when it disconnects.
+import { lazySchema } from "@comma/chat-contract";
 import {
   chatLeasedAttachInputSchema,
   chatLeasedAttachLocalFilesInputSchema,
@@ -31,12 +32,8 @@ import {
   type ChatRuntimeSnapshot,
   type ChatTarget,
 } from "@comma/chat-contract";
-import {
-  baseLocale,
-  messages as i18n,
-  supportedLocales,
-  type CommaLocale,
-} from "@comma/i18n";
+import { baseLocale, supportedLocales, type CommaLocale } from "@comma/i18n";
+import * as i18n from "@comma/i18n/messages";
 import {
   CoreError,
   type Call,
@@ -50,10 +47,15 @@ import { Duration, Effect, Fiber } from "effect";
 /** The longest the core waits for a workspace being made before it asks again. */
 const MAX_PROVISIONING_WAIT_SECONDS = 10;
 import { z } from "zod";
-import type { ChatSessionIdentity } from "../contract.ts";
+import type { Account } from "../account.ts";
+import type { ChatSessionIdentity, TaskSummary } from "../contract.ts";
 import { readFile } from "../files.ts";
 import type { Ctx } from "../ctx.ts";
-import type { CommaConversation, CommaLocalFileRef } from "./api.ts";
+import {
+  CommaApiError,
+  type CommaConversation,
+  type CommaLocalFileRef,
+} from "./api.ts";
 import { coreChatEnv } from "./clock.ts";
 import {
   ChatCoordinator,
@@ -160,15 +162,17 @@ type Received = {
   retained: boolean;
 };
 
-const receivedItemSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("upload"),
-    name: z.string().min(1),
-    size: z.number().int().nonnegative(),
-    bytes: z.instanceof(Uint8Array),
-  }),
-  z.object({ kind: z.literal("local_file"), file: chatLocalFileSchema }),
-]);
+const receivedItemSchema = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("upload"),
+      name: z.string().min(1),
+      size: z.number().int().nonnegative(),
+      bytes: z.instanceof(Uint8Array),
+    }),
+    z.object({ kind: z.literal("local_file"), file: chatLocalFileSchema }),
+  ])
+);
 
 /** Local files a send committed, for Main to mark bound (`chatCommittedFiles`). */
 export type ChatCommittedFiles = {
@@ -177,11 +181,13 @@ export type ChatCommittedFiles = {
   committedAtMs: number | null;
 };
 
-const intakeOutcomeSchema = z.object({
-  cancelled: z.boolean(),
-  errorCount: z.number().int().nonnegative(),
-  errors: z.array(z.unknown()).optional(),
-});
+const intakeOutcomeSchema = lazySchema(() =>
+  z.object({
+    cancelled: z.boolean(),
+    errorCount: z.number().int().nonnegative(),
+    errors: z.array(z.unknown()).optional(),
+  })
+);
 
 /** A call's params without the session it names (`session`), and that session. */
 function splitSession(p: unknown): { session: unknown; rest: unknown } {
@@ -202,9 +208,9 @@ function sameSession(asked: unknown, current: ChatSessionIdentity): boolean {
 const DESKTOP = Symbol("desktop");
 
 /** A window's pick: no sources (a window never names a file on this computer). */
-const pickInputSchema = chatLeasedPickAttachmentsInputSchema
-  .omit({ sources: true })
-  .strict();
+const pickInputSchema = lazySchema(() =>
+  chatLeasedPickAttachmentsInputSchema.omit({ sources: true }).strict()
+);
 
 /** How long a call waits for the core to know the window's sign-in. */
 const ACCOUNT_WAIT_MS = 10_000;
@@ -213,6 +219,8 @@ export class Chat {
   readonly #ctx: Ctx;
   /** Conversations the coordinator does not hold (a Task a station hosts): their views are shown and acted on there. */
   hosted: HostedConversations | undefined;
+  /** Told a Task's facts (status, title, version) each time a chat's read of its conversation changes them. */
+  onTaskRead: ((task: TaskSummary) => void) | undefined;
 
   /**
    * What the coordinator answers a call with, as the call's effect: its error as the core's. Work it starts runs in
@@ -364,6 +372,88 @@ export class Chat {
         (typeof subscriberId !== "string" || !subscriberId.startsWith(`${surface}:`)))
     )
       throw new CoreError("forbidden", "a window acts only as itself");
+  }
+
+  /** The Home chat of `workspaceId` that a window's resolution found this session, if one did. */
+  knownHome(workspaceId: string): ChatTarget | undefined {
+    return this.#workspaceChats.known(workspaceId);
+  }
+
+  /**
+   * Sends `text` to `target` as the request `requestId` of `account`, outside any draft; a conversation open here
+   * shows it at once. Fails `signed_out` once another session is current: the send never goes as its account. The
+   * message's id, as the server accepted it.
+   */
+  sendRequest(
+    account: Account,
+    target: ChatTarget,
+    text: string,
+    requestId: string,
+    messageType?: "quick_chat"
+  ): Effect.Effect<string, CoreError> {
+    return Effect.suspend(() =>
+      account.closed || this.#ctx.session.current() !== account
+        ? Effect.fail(new CoreError("signed_out", "The session ended before the send."))
+        : this.#coordinator.sendRequest(target, text, requestId, messageType)
+    ).pipe(
+      // The server's refusal keeps its own code, as the core's other requests do.
+      Effect.mapError((error) =>
+        error instanceof CommaApiError
+          ? new CoreError(
+              typeof error.body?.error === "string" ? error.body.error : "chat_refused",
+              error.message,
+              error.status,
+              error.body
+            )
+          : asCoreError(error)
+      ),
+      // A stale session refuses the send.
+      Effect.catchDefect((defect) => Effect.fail(asCoreError(defect))),
+      Effect.filterOrFail(
+        (messageId): messageId is string => !!messageId,
+        () => new CoreError("bad_response", "The server kept no message.")
+      )
+    );
+  }
+
+  /**
+   * Shows `text` in `target`, when it is open here, as the request `requestId` of `account` being sent while its
+   * words are still being prepared; again, it replaces them. `sendRequest` sends it, or `failHeldRequest` ends it as a
+   * failed message. Shows nothing once another session is current.
+   */
+  holdRequest(
+    account: Account,
+    target: ChatTarget,
+    text: string,
+    requestId: string,
+    messageType?: "quick_chat"
+  ): Effect.Effect<void, CoreError> {
+    return this.#held(account, (coordinator) =>
+      coordinator.holdRequest(target, text, requestId, messageType)
+    );
+  }
+
+  failHeldRequest(
+    account: Account,
+    target: ChatTarget,
+    requestId: string
+  ): Effect.Effect<void, CoreError> {
+    return this.#held(account, (coordinator) =>
+      coordinator.failHeldRequest(target, requestId)
+    );
+  }
+
+  #held(
+    account: Account,
+    change: (coordinator: ChatCoordinator) => void
+  ): Effect.Effect<void, CoreError> {
+    return Effect.sync(() => {
+      if (!account.closed && this.#ctx.session.current() === account)
+        change(this.#coordinator);
+    }).pipe(
+      // A stale session shows nothing.
+      Effect.catchDefect((defect) => Effect.fail(asCoreError(defect)))
+    );
   }
 
   /** The core is closed in order: the device's last draft edits are written now (see ChatStore.flush). */
@@ -609,7 +699,8 @@ export class Chat {
         ].slice(-RING);
         ctx.kernel.store.invalidate({ topic: "chatCommittedFiles" });
       },
-      onStateChanged: () => {
+      onStateChanged: (snapshot) => {
+        this.#tellTasksRead(snapshot);
         ctx.kernel.store.invalidateAll(
           (topic) => topic.topic === "chat" || topic.topic === "chatView"
         );
@@ -659,6 +750,35 @@ export class Chat {
 
   #invalidate(): void {
     this.#ctx.kernel.store.invalidateAll((topic) => topic.topic.startsWith("chat"));
+  }
+
+  /** The Tasks the coordinator's conversations are, as their own records say, to `onTaskRead`. */
+  #tellTasksRead(snapshot: ChatRuntimeSnapshot): void {
+    const tell = this.onTaskRead;
+    if (!tell) return;
+    for (const { state } of snapshot.sessions) {
+      const conversation = state.conversation;
+      if (
+        !conversation ||
+        conversation.kind !== "agent_task" ||
+        conversation.updatedAt === undefined ||
+        this.hosted?.owns(conversation.id)
+      )
+        continue;
+      tell({
+        id: conversation.id,
+        group_id: conversation.groupId,
+        kind: conversation.kind,
+        status: conversation.status,
+        title: conversation.title,
+        updated_at: conversation.updatedAt,
+        ...(conversation.labels === undefined ? {} : { labels: conversation.labels }),
+        ...(conversation.origin === undefined ? {} : { origin: conversation.origin }),
+        ...(conversation.clientPlatform === undefined
+          ? {}
+          : { client_platform: conversation.clientPlatform }),
+      });
+    }
   }
 
   /** The runtime snapshot as one surface sees it: only its own presentation fences. */
@@ -795,8 +915,8 @@ export class Chat {
           )
       ),
       /**
-       * A file for a cloud Task, checked as a composer attachment is and put in the workspace's Router chat: the
-       * workspace file its first message names (`chat.startTask`).
+       * A file for a cloud or coding Task, checked as a composer attachment is and put in the workspace's Router chat:
+       * the workspace file its first message names (`chat.startTask`, `coding.start`).
        */
       "chat.uploadTaskFile": sync(
         z.object({

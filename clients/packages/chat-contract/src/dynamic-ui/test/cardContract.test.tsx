@@ -3,31 +3,51 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { renderCardContract } from "../../../scripts/card-contract-codegen.mjs";
-import { cardDataSchemas, cardFrame } from "../cardContract";
+import { cardContractLevels, cardDataSchemas, cardFrame } from "../cardContract";
 import {
   agendaFixture,
+  boardingPassFixture,
+  bookingFixture,
   barTrendFixture,
   breakTimerFixture,
   checklistFixture,
+  cohortTableFixture,
   comparisonFixture,
   compositionFixture,
+  deviceFixture,
+  devicesFixture,
   digestFixture,
+  eventBarsFixture,
   eventCountdownFixture,
   forecastFixture,
+  funnelBarsFixture,
   goalFixture,
   groupedChecklistFixture,
+  todoChecklistFixture,
   hotelOptionsFixture,
   itineraryFixture,
+  leaderboardTableFixture,
+  mediaFixture,
   metricFixture,
   metricGridFixture,
   newsFixture,
+  orderFixture,
+  paymentFixture,
   placeFixture,
+  productFixture,
   planComparisonFixture,
+  progressBarsFixture,
   pullRequestsFixture,
+  ratingBarsFixture,
+  receiptFixture,
+  regionTableFixture,
+  rideFixture,
+  sourceBarsFixture,
   stagesFixture,
   storageFixture,
   timerFixture,
   trainOptionsFixture,
+  trainTicketFixture,
   trendFixture,
   versusFixture,
   watchlistFixture,
@@ -55,6 +75,7 @@ const fixtures: Array<[CardKind, object]> = [
   ["schedule", stagesFixture],
   ["checklist", checklistFixture],
   ["checklist", groupedChecklistFixture],
+  ["checklist", todoChecklistFixture],
   ["composition", compositionFixture],
   ["composition", storageFixture],
   ["place", placeFixture],
@@ -64,6 +85,25 @@ const fixtures: Array<[CardKind, object]> = [
   ["timer", timerFixture],
   ["timer", breakTimerFixture],
   ["timer", eventCountdownFixture],
+  ["order", orderFixture],
+  ["order", receiptFixture],
+  ["ticket", trainTicketFixture],
+  ["ticket", boardingPassFixture],
+  ["ride", rideFixture],
+  ["product", productFixture],
+  ["booking", bookingFixture],
+  ["device", deviceFixture],
+  ["device", devicesFixture],
+  ["payment", paymentFixture],
+  ["media", mediaFixture],
+  ["bars", eventBarsFixture],
+  ["bars", sourceBarsFixture],
+  ["bars", funnelBarsFixture],
+  ["bars", progressBarsFixture],
+  ["bars", ratingBarsFixture],
+  ["table", leaderboardTableFixture],
+  ["table", cohortTableFixture],
+  ["table", regionTableFixture],
 ];
 
 function mount(kind: CardKind, data: unknown) {
@@ -137,7 +177,7 @@ describe("card contract", () => {
       "../../../../../../systems/apps/salix_agent/priv/dynamic_ui/card-contract.json"
     );
     expect(readFileSync(committed, "utf8")).toBe(
-      renderCardContract(cardDataSchemas, cardFrame)
+      renderCardContract(cardDataSchemas, cardFrame, cardContractLevels)
     );
   });
 

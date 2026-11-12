@@ -1,7 +1,7 @@
 defmodule Comma.ComputeAgentAccessTest do
   use SystemsClock.Case, async: false
   import Ecto.Query
-  alias SalixStore.{Compute, Ids, Keys, Repo, S3}
+  alias SalixStore.{AgentPGStore, Compute, Ids, Repo}
   alias SalixAgent.Tools.Compute, as: Tools
 
   defmodule Runtime do
@@ -88,7 +88,7 @@ defmodule Comma.ComputeAgentAccessTest do
       "router_session_id" => Ids.new_session_id()
     }
 
-    {:ok, _} = S3.put(Keys.ctl_agent(id), Jason.encode!(record))
+    {:ok, _} = AgentPGStore.create(id, "compute-test", SalixAgent.State, record)
 
     %{
       role: role,
@@ -244,7 +244,7 @@ defmodule Comma.ComputeAgentAccessTest do
     assert {:tool_failure, _, "workload_not_available", _, _, []} =
              call("process.list", %{"workload_id" => "shell-a"}, ctx)
 
-    :ok = S3.delete(Keys.ctl_agent(ctx.agent_id))
+    Repo.query!("DELETE FROM salix_agents WHERE agent_id=$1", [ctx.agent_id])
 
     assert {:tool_failure, _, "compute_workspace_unavailable", _, _, []} =
              call("compute.workloads.list", %{}, ctx)

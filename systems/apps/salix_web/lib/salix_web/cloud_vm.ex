@@ -211,35 +211,14 @@ defmodule SalixWeb.CloudVM do
     do: {:error, {:bad_request, "vm.provider must be cloudflare"}}
 
   @doc """
-  Validate that the Cloud VM switch of `group_id` may be turned on: the
-  Group's existing VM, or where a new one goes (`placement/2`).
+  Whether the Group can have a Cloud VM: its VM on an Agent VMM Host, or one
+  of `provider` that the Tenant's VM configuration makes (`validate_enabled/2`).
   """
-  @spec validate_group_enabled(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def validate_group_enabled(tenant_id, group_id, provider) do
+  @spec available?(String.t(), String.t(), String.t()) :: boolean()
+  def available?(tenant_id, group_id, provider) do
     case SalixStore.Compute.group_workload(group_id) do
-      {:ok, %{"provider" => "agent_vmm"}} -> :ok
-      _ -> validate_enabled(tenant_id, provider)
-    end
-  end
-
-  @spec validate_group_provider(String.t(), String.t()) :: :ok | {:error, term()}
-  def validate_group_provider(group_id, provider) do
-    case SalixStore.Compute.group_workload(group_id) do
-      {:ok, %{"provider" => ^provider}} ->
-        :ok
-
-      # The Group's VM on its Agent VMM Host serves its Agents' Cloud VM.
-      {:ok, %{"provider" => "agent_vmm"}} when provider == "cloudflare" ->
-        :ok
-
-      {:ok, _} ->
-        {:error, {:conflict, "vm provider change requires a data-preserving Compute handoff"}}
-
-      {:error, :not_found} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, %{"provider" => "agent_vmm"}} -> true
+      _ -> validate_enabled(tenant_id, provider) == :ok
     end
   end
 

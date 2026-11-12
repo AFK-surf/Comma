@@ -1,18 +1,14 @@
 defmodule SalixEnv.LocalFileRefs do
   @moduledoc """
-  Ref-only routing and message binding for desktop-local immutable snapshots.
+  Ref-only routes for desktop-local immutable snapshots.
 
   A local-file ref is an identifier, not a bearer capability. Registration
-  records only the stable device and owner. Binding reserves the exact
-  canonical message id before append; the reservation is inert until a
-  bounded canonical-message read proves that the same user-authored message
-  committed the ref. No function in this module accepts a host path.
+  records the stable device and owner. Conversation publication binds the ref
+  and its exact Message on the same PostgreSQL transaction connection.
+  A bounded canonical-message read must still prove that the user-authored
+  Message committed the ref before a reader can use its route.
+  No function in this module accepts a host path.
 
-  The reserve -> bind -> same-id append handshake is intentionally fail closed:
-  a crash may leave an inert bound route, but can never authorize an
-  uncommitted message or rebind a ref to another message.
-
-  Modeled in `tla/salix/LocalFileImport.tla`.
   """
 
   alias SalixEnv.Registry
@@ -63,7 +59,11 @@ defmodule SalixEnv.LocalFileRefs do
 
   @doc "Reserve every ref in one message for that exact message and author."
   @spec bind_message(String.t(), String.t(), map()) :: :ok | {:error, term()}
-  def bind_message(group_id, conversation_id, message) when is_map(message) do
+  def bind_message(group_id, conversation_id, message),
+    do: bind_message(group_id, conversation_id, message, SystemsClock.system_time(:millisecond))
+
+  def bind_message(group_id, conversation_id, message, now)
+      when is_map(message) and is_integer(now) do
     refs = local_file_refs(message)
 
     cond do
@@ -78,8 +78,10 @@ defmodule SalixEnv.LocalFileRefs do
 
       true ->
         with :ok <- require_bind_identity(group_id, conversation_id, message) do
-          Enum.reduce_while(refs, :ok, fn ref, :ok ->
-            case bind_ref(ref, group_id, conversation_id, message) do
+          refs
+          |> Enum.sort_by(&Store.ref_digest/1)
+          |> Enum.reduce_while(:ok, fn ref, :ok ->
+            case bind_ref(ref, group_id, conversation_id, message, now) do
               :ok -> {:cont, :ok}
               {:error, _} = error -> {:halt, error}
             end
@@ -88,7 +90,7 @@ defmodule SalixEnv.LocalFileRefs do
     end
   end
 
-  def bind_message(_group_id, _conversation_id, _message),
+  def bind_message(_group_id, _conversation_id, _message, _now),
     do: {:error, :invalid_local_file_message}
 
   @doc "Resolve an exact committed message/ref into its current fenced route."
@@ -159,9 +161,7 @@ defmodule SalixEnv.LocalFileRefs do
 
   defp create_or_reuse(record), do: Store.insert_registration(record)
 
-  defp bind_ref(ref, group_id, conversation_id, message) do
-    now = SystemsClock.system_time(:millisecond)
-
+  defp bind_ref(ref, group_id, conversation_id, message, now) do
     case Store.bind(
            ref,
            group_id,

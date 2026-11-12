@@ -157,6 +157,7 @@ theorem archiveAdvance_suffix {s e t : Term} {j r : List Term} {xs : List Term}
   simp only [Bool.or_eq_true, Bool.not_eq_true', not_or, Bool.not_eq_false] at hkinds
   obtain ⟨i, hi⟩ := isInteger_exists hkinds.2
   subst hi
+  let cutoff := min i (integerValue ((s.get (a "compacted_seq")).default (Data.i 0)))
   try dsimp only at h
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, hread, h⟩ := bind_ok h
@@ -170,27 +171,27 @@ theorem archiveAdvance_suffix {s e t : Term} {j r : List Term} {xs : List Term}
   obtain ⟨kept0, _, hfilter, h⟩ := bind_ok h
   have decided : ∀ m ∈ xs, ∃ b, Runs (fun message => do
       let seq ← access message (a "seq")
-      if seq.isInteger then greater seq (.integer i) else pure true) m b := by
+      if seq.isInteger then greater seq (.integer cutoff) else pure true) m b := by
     intro m hm
     obtain ⟨k, hk⟩ := stamped m hm
-    exact ⟨_, archive_runs i (plain m hm) hk⟩
+    exact ⟨_, archive_runs cutoff (plain m hm) hk⟩
   have mono : xs.Pairwise (fun m n => Runs (fun message => do
       let seq ← access message (a "seq")
-      if seq.isInteger then greater seq (.integer i) else pure true) m true → Runs (fun message => do
+      if seq.isInteger then greater seq (.integer cutoff) else pure true) m true → Runs (fun message => do
       let seq ← access message (a "seq")
-      if seq.isInteger then greater seq (.integer i) else pure true) n true) := by
+      if seq.isInteger then greater seq (.integer cutoff) else pure true) n true) := by
     refine List.Pairwise.imp_of_mem ?_ sorted
     intro m n hm hn hle hkeep
     obtain ⟨km, hkm⟩ := stamped m hm
     obtain ⟨kn, hkn⟩ := stamped n hn
-    have runm := archive_runs i (plain m hm) hkm
-    have runn := archive_runs i (plain n hn) hkn
-    have : decide (i < km) = true := by
+    have runm := archive_runs cutoff (plain m hm) hkm
+    have runn := archive_runs cutoff (plain n hn) hkn
+    have : decide (cutoff < km) = true := by
       have := (hkeep []).symm.trans (runm [])
       simpa using this
     rw [hkm, hkn] at hle
     simp only [integerValue] at hle
-    have : decide (i < kn) = true := by
+    have : decide (cutoff < kn) = true := by
       simp only [decide_eq_true_eq] at this ⊢
       exact Int.lt_of_lt_of_le this hle
     rw [this] at runn
@@ -210,9 +211,10 @@ theorem archiveAdvance_suffix {s e t : Term} {j r : List Term} {xs : List Term}
   · intro m hm
     obtain ⟨k, hk⟩ := stamped m (by rw [hxs]; exact List.mem_append_left _ hm)
     have plainm := plain m (by rw [hxs]; exact List.mem_append_left _ hm)
-    have := (hdrop m hm []).symm.trans (archive_runs i plainm hk [])
+    have := (hdrop m hm []).symm.trans (archive_runs cutoff plainm hk [])
     simp only [Except.ok.injEq, Prod.mk.injEq] at this
     rw [hk, ← hthrough_eq]
-    simpa [integerValue] using this.1
+    have below : k ≤ cutoff := by simpa [integerValue] using this.1
+    exact Int.le_trans below (Int.min_le_left _ _)
 
 end VerifiedKernel.Session

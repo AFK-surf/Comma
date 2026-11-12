@@ -31,7 +31,7 @@ tunnels. The web has no sockets.
 
 ## On the wire
 
-Over the member link (ALPN `stillfail/admin/1`; station/src/mesh/serve.ts):
+Over the member link (ALPN `comma-station/admin/1`; station/src/mesh/serve.ts):
 
 1. **The offer**, a stream the phone opens: the head line
    `{"method":"POST","path":"/admin/api/adb","headers":{},"adb":{"op":"share","phone":"<its device key, hex>","device":"Pixel 8","android":"14","package":"fail.still.android","adbd":true,"pair":false}}`,
@@ -65,3 +65,7 @@ Android app (an App Link). Sharing starts only when the person taps 开始共享
 
 Every agent on the station can use a phone shared with it. The person agrees to
 this when they share it.
+
+A phone shared here is not a screen of the station. A phone on the computer's own
+adb, which its owner chose in the screen panel, is a screen, and Salix Workers
+lease it through `env.android` (docs/android-screen.md).

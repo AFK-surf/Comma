@@ -3,10 +3,83 @@ defmodule SalixAgent.Tools.TaskCard do
 
   @moduledoc false
 
+  # A Slack bot or app, a Worker report and a schedule get no Slack card. The
+  # kernel adds no card obligation for this status, so a person's Slack reply
+  # target that arrives later is not turned into a card that nobody publishes.
+  @no_slack_card %{
+    "status" => "not_applicable",
+    "next_action" => "No Slack Task card is published or required for this Task's source."
+  }
+
+  # The current turn source is the activation's last person, even after the
+  # Router answered that person and a schedule, a loop or a Worker report woke
+  # a later round. A Router that waits keeps one activation open, so a Task
+  # created for that later input would otherwise take the person's thread for
+  # its card and its reply source. A person still waiting for a reply keeps
+  # the Task, whatever arrived after them, unless the Router says the Task is
+  # its own work: a duty or initiative of its own that no source asked for,
+  # which nothing in the activation can tell apart from the person's request.
+  def after_create(result, ctx, params \\ %{}) do
+    if own_work?(params) or person_superseded?(ctx) do
+      if result["created"] == true,
+        do: Map.put(result, "task_card", @no_slack_card),
+        else: result
+    else
+      publish_card(result, ctx)
+    end
+  end
+
+  @doc false
+  def own_work?(params) when is_map(params),
+    do: Map.get(params, "own_work", Map.get(params, :own_work)) == true
+
+  def own_work?(_params), do: false
+
+  @doc false
+  def person_superseded?(ctx) do
+    case ctx[:trusted_origin] do
+      %{"source_message_id" => source} = origin when is_binary(source) ->
+        not no_person?(origin) and answered?(origin, ctx[:pending_reply_targets]) and
+          ctx
+          |> later_sources(source)
+          |> Enum.any?(&(not person_source?(&1, ctx)))
+
+      _origin ->
+        false
+    end
+  end
+
+  # Only Slack keeps reply targets. A Slack person is answered once no reply
+  # target for the thread is pending. Without that state a person stays current.
+  defp answered?(%{"provider" => "slack"} = origin, targets) when is_list(targets) do
+    context = origin["provider_context"] || %{}
+    thread = context["thread_ts"] || context["message_ts"]
+
+    not Enum.any?(targets, fn target ->
+      target["kind"] != "task_card" and target["connect_id"] == context["connect_id"] and
+        target["channel"] == context["channel_id"] and target["thread_ts"] == thread
+    end)
+  end
+
+  defp answered?(_origin, _targets), do: false
+
+  defp later_sources(ctx, source) do
+    (ctx[:source_message_ids] || [])
+    |> Enum.drop_while(&(&1 != source))
+    |> Enum.drop(1)
+  end
+
+  defp person_source?(source, ctx) do
+    Enum.any?(
+      ctx[:trusted_origins] || [],
+      &(is_map(&1) and &1["source_message_id"] == source and not no_person?(&1))
+    )
+  end
+
   # Use the same authorization, archive, timeout and provider delivery path as
   # an explicit provider tool call. Only an admitted human source supplies
   # the destination. A worker result cannot publish a new Task surface.
-  def after_create(result, %{trusted_origin: %{"provider" => "telegram"}} = ctx) do
+  defp publish_card(result, %{trusted_origin: %{"provider" => "telegram"}} = ctx) do
     origin = ctx.trusted_origin
     target = origin["provider_context"] || %{}
 
@@ -43,7 +116,7 @@ defmodule SalixAgent.Tools.TaskCard do
     end
   end
 
-  def after_create(result, %{trusted_origin: %{"provider" => "qq"} = origin} = ctx) do
+  defp publish_card(result, %{trusted_origin: %{"provider" => "qq"} = origin} = ctx) do
     target = origin["provider_context"] || %{}
 
     if result["created"] == true and origin["source_actor_type"] == "provider_user" and
@@ -69,7 +142,7 @@ defmodule SalixAgent.Tools.TaskCard do
     end
   end
 
-  def after_create(result, %{trusted_origin: %{"provider" => "feishu"} = origin} = ctx) do
+  defp publish_card(result, %{trusted_origin: %{"provider" => "feishu"} = origin} = ctx) do
     target = origin["provider_context"] || %{}
     chat_type = if target["chat_type"] == "p2p", do: "p2p", else: "group"
 
@@ -103,7 +176,7 @@ defmodule SalixAgent.Tools.TaskCard do
 
   # A Task a person asked for in Lark gets its card under that message, or
   # under the root message of its thread.
-  def after_create(result, %{trusted_origin: %{"provider" => "lark"} = origin} = ctx) do
+  defp publish_card(result, %{trusted_origin: %{"provider" => "lark"} = origin} = ctx) do
     target = origin["provider_context"] || %{}
     chat_type = if target["chat_type"] == "p2p", do: "p2p", else: "group"
 
@@ -135,15 +208,7 @@ defmodule SalixAgent.Tools.TaskCard do
     end
   end
 
-  # A Slack bot or app, a Worker report and a schedule get no Slack card. The
-  # kernel adds no card obligation for this status, so a person's Slack reply
-  # target that arrives later is not turned into a card that nobody publishes.
-  @no_slack_card %{
-    "status" => "not_applicable",
-    "next_action" => "No Slack Task card is published or required for this Task's source."
-  }
-
-  def after_create(result, ctx) do
+  defp publish_card(result, ctx) do
     case ctx[:trusted_origin] do
       %{"provider" => "slack"} = origin ->
         after_slack_create(result, origin, ctx)

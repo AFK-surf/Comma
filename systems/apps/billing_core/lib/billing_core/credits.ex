@@ -188,29 +188,47 @@ defmodule BillingCore.Credits do
     end
   end
 
-  @spec available_credits([map()], String.t(), DateTime.t()) :: non_neg_integer()
-  def available_credits(grants, account_id, at) when is_list(grants) do
+  @doc """
+  SQL condition on `credit_grants`: the grant can pay for the resource kind in the
+  text parameter. A grant without `usage_credits.resource_kinds` pays for every kind.
+  """
+  @spec pays_for_sql(String.t()) :: String.t()
+  def pays_for_sql(param) do
+    "COALESCE(policy_snapshot->'usage_credits'->'resource_kinds', jsonb_build_array(#{param}::text)) ? #{param}::text"
+  end
+
+  @doc "Spendable credits for one resource kind. Without a kind, only grants that pay for every kind count."
+  @spec available_credits([map()], String.t(), DateTime.t(), atom() | String.t() | nil) ::
+          non_neg_integer()
+  def available_credits(grants, account_id, at, resource_kind \\ nil) when is_list(grants) do
     grants
-    |> Enum.filter(&active_grant?(&1, account_id, at))
+    |> Enum.filter(&(active_grant?(&1, account_id, at) and pays_for?(&1, resource_kind)))
     |> Enum.reduce(
       0,
       &(Map.get(&1, :remaining_credits, Map.get(&1, "remaining_credits", 0)) + &2)
     )
   end
 
-  @spec active_policies([map()], String.t(), DateTime.t()) :: [map()]
-  def active_policies(grants, account_id, at) when is_list(grants) do
+  @spec pays_for?(map(), atom() | String.t() | nil) :: boolean()
+  def pays_for?(grant, resource_kind) do
+    policy = Map.get(grant, :policy_snapshot) || Map.get(grant, "policy_snapshot")
+    Policy.pays_for?(policy, resource_kind)
+  end
+
+  @spec active_policies([map()], String.t(), DateTime.t(), atom() | String.t() | nil) :: [map()]
+  def active_policies(grants, account_id, at, resource_kind \\ nil) when is_list(grants) do
     grants
-    |> Enum.filter(&active_entitlement?(&1, account_id, at))
+    |> Enum.filter(&(active_entitlement?(&1, account_id, at) and pays_for?(&1, resource_kind)))
     |> Enum.map(
       &(Map.get(&1, :policy_snapshot) || Map.get(&1, "policy_snapshot") || Policy.default())
     )
   end
 
-  @spec active_usage_mode([map()], String.t(), DateTime.t()) :: :metered | :unlimited_metered
-  def active_usage_mode(grants, account_id, at) when is_list(grants) do
+  @spec active_usage_mode([map()], String.t(), DateTime.t(), atom() | String.t() | nil) ::
+          :metered | :unlimited_metered
+  def active_usage_mode(grants, account_id, at, resource_kind \\ nil) when is_list(grants) do
     grants
-    |> active_policies(account_id, at)
+    |> active_policies(account_id, at, resource_kind)
     |> Policy.active_usage_mode()
   end
 

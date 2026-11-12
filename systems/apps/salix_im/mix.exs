@@ -35,6 +35,10 @@ defmodule SalixIM.MixProject do
       {:salix_agent, in_umbrella: true, only: :test},
       {:telemetry_metrics, "~> 1.0"},
       {:req, "~> 0.5"},
+      # The long connection of Lark apps made by a scan (`SalixIM.LarkSocket`).
+      {:mint, "~> 1.0"},
+      {:mint_web_socket, "~> 1.0.6"},
+      {:protobuf, "~> 0.17"},
       {:jason, "~> 1.4"},
       {:ex_json_schema, "~> 0.11"},
       {:mdex, "~> 0.13"},
@@ -42,6 +46,7 @@ defmodule SalixIM.MixProject do
       # Keep MDEx 0.13's node schema; later native releases add required fields.
       {:mdex_native, "0.2.3"},
       {:bandit, "~> 1.5", only: :test},
+      {:websock_adapter, "~> 0.5", only: :test},
       {:plug, "~> 1.16"}
     ]
   end

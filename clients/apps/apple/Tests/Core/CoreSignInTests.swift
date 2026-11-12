@@ -19,13 +19,13 @@ final class CoreSignInTests: XCTestCase {
         directories = []
     }
 
-    private func start(_ server: FakeServer, custody: SessionCustody) async throws -> (CommaStore, CoreRuntime) {
+    private func start(_ server: FakeServer, custody: SessionCustody, google: any GoogleIdentityTokens = GoogleSignInSheet()) async throws -> (CommaStore, CoreRuntime) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let downloads = directory.appendingPathComponent("downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
         directories.append(directory)
         let runtime = try CoreRuntime.make(custody: custody, dataDirectory: directory.appendingPathComponent("core"),
-                                           downloadRoot: downloads, configuration: server.configuration)
+                                           downloadRoot: downloads, configuration: server.configuration, google: google)
         runtimes.append(runtime)
         let store = CommaStore(configuration: AppConfiguration(baseURL: URL(string: server.origin)!, credentialService: "CoreSignInTests"),
                                runtime: runtime, workspacePreferences: UserDefaults(suiteName: UUID().uuidString)!)
@@ -79,6 +79,75 @@ final class CoreSignInTests: XCTestCase {
         XCTAssertEqual(logout.authorization, "Bearer issued_secret")
     }
 
+    func testGoogleSignsInThroughTheCoreAndKeepsTheBearerInCustody() async throws {
+        let server = FakeServer()
+        server.on("POST", "/v1/comma/auth/google/attempt", json: ["platform": "ios", "attempt_id": "gla_ios_1", "client_id": "ios-client", "nonce": "server-nonce"])
+        server.on("POST", "/v1/comma/auth/google", json: session("google_secret"))
+        let custody = try SessionCustody(record: MemoryRecord(), apiOrigin: server.origin)
+        let google = GoogleTokenFixture { clientId, nonce in
+            XCTAssertEqual(clientId, "ios-client")
+            XCTAssertEqual(nonce, "server-nonce")
+            return "nonce-bound-id-token"
+        }
+        let (store, runtime) = try await start(server, custody: custody, google: google)
+        await phase(runtime.core, "signed_out")
+        let problem = await store.signInWithGoogle()
+        XCTAssertNil(problem)
+        await until { store.session != nil }
+        XCTAssertEqual(custody.identity()?.userId, "user-1")
+        let attempt = try XCTUnwrap(server.requests("POST", "/v1/comma/auth/google/attempt").first)
+        XCTAssertEqual(attempt.body["platform"] as? String, "ios")
+        let completion = try XCTUnwrap(server.requests("POST", "/v1/comma/auth/google").first)
+        XCTAssertEqual(completion.body["credential"] as? String, "nonce-bound-id-token")
+        XCTAssertEqual(completion.body["attempt_id"] as? String, "gla_ios_1")
+        XCTAssertEqual(completion.body["nonce"] as? String, "server-nonce")
+        XCTAssertEqual(completion.body["client_kind"] as? String, "ios")
+        let profile = await server.first("GET", "/v1/comma/me/profile")
+        XCTAssertEqual(profile.authorization, "Bearer google_secret")
+        let snapshot = await runtime.core.first(["topic": "session"]) { CoreJSON(value: $0) }
+        let published = try JSONSerialization.data(withJSONObject: try XCTUnwrap(snapshot?.value))
+        XCTAssertFalse(String(decoding: published, as: UTF8.self).contains("google_secret"))
+    }
+
+    func testGoogleLinkUsesTheExistingCodeStageAndGoogleVerification() async throws {
+        let server = FakeServer()
+        server.on("POST", "/v1/comma/auth/google/attempt", json: ["platform": "ios", "attempt_id": "gla_ios_2", "client_id": "ios-client", "nonce": "nonce"])
+        server.on("POST", "/v1/comma/auth/google", json: ["status": "otp_required", "challenge_id": "google-link", "email": "peng@example.com"])
+        server.on("POST", "/v1/comma/auth/google/link/verify", json: session("linked_secret"))
+        let custody = try SessionCustody(record: MemoryRecord(), apiOrigin: server.origin)
+        let (store, runtime) = try await start(server, custody: custody, google: GoogleTokenFixture { _, _ in "google-token" })
+        await phase(runtime.core, "signed_out")
+        let started = await store.signInWithGoogle()
+        XCTAssertNil(started)
+        await until { store.signIn?.challengeID != nil }
+        XCTAssertEqual(store.signIn?.linkingGoogle, true)
+        XCTAssertEqual(store.signIn?.email, "peng@example.com")
+        XCTAssertNil(custody.identity())
+        let verified = await store.verify(code: "123456")
+        XCTAssertNil(verified)
+        await until { store.session != nil }
+        XCTAssertEqual(custody.identity()?.userId, "user-1")
+        let verification = try XCTUnwrap(server.requests("POST", "/v1/comma/auth/google/link/verify").first)
+        XCTAssertEqual(verification.body["challenge_id"] as? String, "google-link")
+        XCTAssertEqual(verification.body["code"] as? String, "123456")
+        XCTAssertTrue(server.requests("POST", "/v1/comma/auth/email/verify").isEmpty)
+    }
+
+    func testCancelledGoogleAuthorizationDoesNotExchangeOrKeepCredentials() async throws {
+        let server = FakeServer()
+        server.on("POST", "/v1/comma/auth/google/attempt", json: ["platform": "ios", "attempt_id": "gla_ios_3", "client_id": "ios-client", "nonce": "nonce"])
+        let custody = try SessionCustody(record: MemoryRecord(), apiOrigin: server.origin)
+        let (store, runtime) = try await start(server, custody: custody, google: GoogleTokenFixture { _, _ in throw CancellationError() })
+        await phase(runtime.core, "signed_out")
+        let problem = await store.signInWithGoogle()
+        XCTAssertNil(problem)
+        await phase(runtime.core, "signed_out")
+        XCTAssertNil(store.session)
+        XCTAssertNil(custody.identity())
+        XCTAssertFalse(store.loading)
+        XCTAssertTrue(server.requests("POST", "/v1/comma/auth/google").isEmpty)
+    }
+
     func testAKeptSessionIsCheckedAndShownAgainAtLaunch() async throws {
         let server = FakeServer()
         server.on("GET", "/v1/comma/auth/session", json: session())
@@ -91,6 +160,33 @@ final class CoreSignInTests: XCTestCase {
         await until { store.session != nil }
         XCTAssertEqual(store.session?.id, "session-1")
         XCTAssertEqual(server.requests("GET", "/v1/comma/auth/session").first?.authorization, "Bearer kept_secret")
+    }
+
+    /// A service outage must not remove the saved account from the phone's main interface.
+    func testServiceOutageKeepsTheSavedAccountAndExplicitRejectionEndsIt() async throws {
+        let server = FakeServer()
+        server.on("GET", "/v1/comma/auth/session", status: 503, json: ["error": "unavailable"])
+        let custody = try SessionCustody(record: MemoryRecord(), apiOrigin: server.origin)
+        custody.adoptEarlier(StoredBearer(token: "kept_secret", audience: custody.audience, sessionId: "session-1",
+                                          userId: "user-1", email: "peng@example.com", expiresAtEpochSeconds: 4_102_444_800))
+        let (store, runtime) = try await start(server, custody: custody)
+        _ = await server.first("GET", "/v1/comma/auth/session")
+        _ = try await runtime.core.call("session.recover")
+        let snapshot = await runtime.core.first(["topic": "session"]) { value -> SessionSnapshot? in
+            let snapshot = SessionSnapshot(value)
+            return snapshot.phase == "initializing" ? nil : snapshot
+        }
+        store.observe(try XCTUnwrap(snapshot))
+        XCTAssertEqual(store.session?.user.id, "user-1")
+        XCTAssertEqual(store.session?.id, "session-1")
+        XCTAssertNil(store.sessionProblem)
+        XCTAssertEqual(custody.identity()?.userId, "user-1")
+
+        server.on("GET", "/v1/comma/auth/session", status: 401, json: ["error": "unauthorized"])
+        _ = try await runtime.core.call("session.recover")
+        await phase(runtime.core, "signed_out")
+        await until { store.session == nil }
+        XCTAssertNil(custody.identity())
     }
 
     /// A probe the server refuses ends the kept session: the person signs in again.
@@ -132,4 +228,9 @@ final class CoreSignInTests: XCTestCase {
         XCTAssertEqual(upload.authorization, "Bearer kept_secret")
         XCTAssertTrue(String(decoding: upload.raw, as: UTF8.self).contains("hello"))
     }
+}
+
+private struct GoogleTokenFixture: GoogleIdentityTokens {
+    let answer: @Sendable (String, String) throws -> String
+    func request(clientId: String, nonce: String) async throws -> String { try answer(clientId, nonce) }
 }

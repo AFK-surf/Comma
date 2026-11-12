@@ -17,6 +17,15 @@ defmodule Salix.Bindings.TaskLoopOwner do
         source_id
       )
 
+  @impl true
+  def loop_worker(loop),
+    do:
+      SalixIM.ConversationServer.task_loop_worker(
+        loop["group_id"],
+        loop["conversation_id"],
+        loop
+      )
+
   # A Task that is gone took its Loop's end with it.
   @impl true
   def loop_ended(loop, fact) do

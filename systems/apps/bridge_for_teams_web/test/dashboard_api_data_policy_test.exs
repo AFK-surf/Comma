@@ -41,6 +41,18 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
     def ifc_put_placement_override(_tenant, group_id, connect_id, user_id, placement),
       do: called({:put_placement, group_id, connect_id, user_id, placement})
 
+    def ifc_people(_tenant, group_id, connect_id, query),
+      do: called({:people, group_id, connect_id, query}, {:ok, Process.get(:people, [])})
+
+    def ifc_describe_people(_tenant, group_id, connect_id, ids),
+      do:
+        called({:describe_people, group_id, connect_id, ids}, {:ok, Process.get(:described, %{})})
+
+    def ssh_known_hosts(_tenant, _group_id), do: Process.get(:ssh_known_hosts, {:ok, []})
+
+    def ssh_restrict_host(_tenant, group_id, fingerprint, tag),
+      do: called({:restrict_ssh_host, group_id, fingerprint, tag})
+
     # Same argument order as the behaviour and `BridgeForTeams.Salix.Erpc`.
     def update_group(group_id, tenant_id, attrs) when is_binary(tenant_id) and is_map(attrs),
       do: called({:update_group, group_id, attrs}, {:ok, %{}})
@@ -151,6 +163,30 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
       assert %{"name" => "Broken", "available" => false} = broken
     end
 
+    test "people come with name and email, found by query or described by id",
+         %{conn: conn, org: org, project: project} do
+      ann = %{"id" => "U01", "name" => "Ann Li", "email" => "ann@acme.test", "token" => "x"}
+
+      Process.put(:people, [ann])
+      path = policy_path(org, project) <> "/connects/cnx1/people"
+
+      # Only the id, name and email of a person reach the page.
+      assert %{"people" => [shown]} =
+               conn |> get(path, %{"query" => "ann"}) |> json_response(200) |> data()
+
+      assert shown == %{"id" => "U01", "name" => "Ann Li", "email" => "ann@acme.test"}
+
+      assert_received {:people, group_id, "cnx1", "ann"}
+      assert group_id == project.salix_group_id
+
+      Process.put(:described, %{"U02" => %{"id" => "U02", "name" => "Bob", "email" => nil}})
+
+      assert %{"people" => %{"U02" => %{"name" => "Bob"}}} =
+               conn |> get(path, %{"ids" => "U02,U03"}) |> json_response(200) |> data()
+
+      assert_received {:describe_people, _group, "cnx1", ["U02", "U03"]}
+    end
+
     test "another organization's Agent Swarm is not found", %{conn: conn, org: org} do
       foreign = bare_project_fixture(org_fixture())
 
@@ -230,6 +266,55 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
     end
   end
 
+  describe "supervisors" do
+    test "are written as principal keys of this Group's connects, and read back",
+         %{conn: conn, org: org, project: project} do
+      Process.put(
+        :ifc_overview,
+        {:ok,
+         Client.overview(project.salix_group_id, %{
+           "supervisors" => ["provider_user|cnx1|ou_carol"],
+           "connects" => [%{"connect_id" => "cnx1", "provider" => "lark"}]
+         })}
+      )
+
+      assert %{"supervisors" => [%{"connect_id" => "cnx1", "id" => "ou_carol"}]} =
+               conn
+               |> patch(policy_path(org, project), %{
+                 "supervisors" => [
+                   %{"connect_id" => "cnx1", "id" => " ou_carol "},
+                   %{"connect_id" => "cnx1", "id" => "ou_dave"}
+                 ]
+               })
+               |> json_response(200)
+               |> data()
+
+      assert_received {:update_group, group_id,
+                       %{
+                         "ifc" => %{
+                           "supervisors" => [
+                             "provider_user|cnx1|ou_carol",
+                             "provider_user|cnx1|ou_dave"
+                           ]
+                         }
+                       }}
+
+      assert group_id == project.salix_group_id
+
+      for invalid <- [
+            %{"connect_id" => "elsewhere", "id" => "ou_carol"},
+            %{"connect_id" => "cnx1", "id" => ""},
+            %{"connect_id" => "cnx1", "id" => "a|b"}
+          ] do
+        assert conn
+               |> patch(policy_path(org, project), %{"supervisors" => [invalid]})
+               |> json_response(422)
+      end
+
+      refute_received {:update_group, _, _}
+    end
+  end
+
   describe "conversations, clearances and placements" do
     test "classifying sends the tags, audience and sealed flag as set",
          %{conn: conn, org: org, project: project} do
@@ -275,6 +360,70 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
 
         assert_received {:delete_clearance, ^group_id, "cnx1", ^tag, "provider_user|cnx1|U01ABC"}
       end
+    end
+  end
+
+  describe "SSH hosts" do
+    test "lists each trusted host with its tag, and restricts or lifts one by fingerprint",
+         %{conn: conn, org: org, project: project} do
+      Process.put(
+        :ssh_known_hosts,
+        {:ok,
+         [
+           %{
+             "name" => "db.acme.internal",
+             "host" => "db.acme.internal",
+             "port" => 22,
+             "key_type" => "ssh-ed25519",
+             "public_key" => "AAAA",
+             "fingerprint" => "SHA256:db",
+             "first_seen_at" => "2026-11-05T00:00:00.000Z",
+             "first_seen_by_agent_id" => "agt_1",
+             "ifc_tag" => "dba"
+           }
+         ]}
+      )
+
+      data = conn |> get(policy_path(org, project)) |> json_response(200) |> data()
+
+      assert data["ssh_hosts_available"] == true
+
+      assert data["ssh_hosts"] == [
+               %{
+                 "name" => "db.acme.internal",
+                 "key_type" => "ssh-ed25519",
+                 "fingerprint" => "SHA256:db",
+                 "first_seen_at" => "2026-11-05T00:00:00.000Z",
+                 "tag" => "dba"
+               }
+             ]
+
+      conn
+      |> put(policy_path(org, project) <> "/ssh-hosts", %{
+        "fingerprint" => "SHA256:db",
+        "tag" => " dba "
+      })
+      |> json_response(200)
+
+      assert_received {:restrict_ssh_host, group_id, "SHA256:db", "dba"}
+      assert group_id == project.salix_group_id
+
+      conn
+      |> put(policy_path(org, project) <> "/ssh-hosts", %{"fingerprint" => "SHA256:db"})
+      |> json_response(200)
+
+      assert_received {:restrict_ssh_host, ^group_id, "SHA256:db", ""}
+
+      assert %{"error" => %{"code" => "invalid_data_policy"}} =
+               conn
+               |> put(policy_path(org, project) <> "/ssh-hosts", %{"tag" => "dba"})
+               |> json_response(422)
+
+      # An unreadable host list leaves the rest of the page usable.
+      Process.put(:ssh_known_hosts, {:error, :unavailable})
+
+      assert %{"ssh_hosts_available" => false, "ssh_hosts" => []} =
+               conn |> get(policy_path(org, project)) |> json_response(200) |> data()
     end
   end
 

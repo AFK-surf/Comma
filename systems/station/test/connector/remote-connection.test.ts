@@ -1,15 +1,19 @@
 // Ported from systems/connector/salix-connect/main_test.go: the connection to Salix (same test names).
 // The connector dials /v1/connect with its token, sends metadata first, answers heartbeats without metadata-only
-// fields, closes a connection that hears nothing within the read timeout and dials again, keeps one whose heartbeats
-// come, re-reports system info on a timer without probing runtimes and keeps doing so after a failed publish, fails a
-// send blocked by a slow peer within the write deadline, and stops reconnecting once a cleanup failure is fatal.
+// fields, abandons a dial whose handshake does not complete within the dial timeout and dials again, gives up a pending
+// dial at once on a fatal error, closes a connection that hears nothing within the read timeout and dials again, keeps
+// one whose heartbeats come, re-reports system info on a timer without probing runtimes and keeps doing so after a
+// failed publish, fails a send blocked by a slow peer within the write deadline, and stops reconnecting once a cleanup
+// failure is fatal.
 // Salix is the in-memory Sockets service; timers run on the connector's TestClock.
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Deferred, Duration, Effect, Exit, Fiber, Queue } from "effect";
-import { CLEANUP_QUEUE_SIZE, type Connector, ConnectorFatal, MAX_FILE_BYTES, WEBSOCKET_READ_TIMEOUT, WEBSOCKET_WRITE_TIMEOUT, makeConnector } from "../../src/connector/connector.ts";
+import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { CLEANUP_QUEUE_SIZE, type Connector, ConnectorFatal, MAX_FILE_BYTES, WEBSOCKET_DIAL_TIMEOUT, WEBSOCKET_READ_TIMEOUT, WEBSOCKET_WRITE_TIMEOUT, makeConnector } from "../../src/connector/connector.ts";
+import { STREAM_FRAMES_HEADER, binaryStreamFrame, readBinaryStreamFrame } from "../../src/connector/message.ts";
+import { Sockets } from "../../src/connector/sockets.ts";
 import { settle } from "./support/memory-net.ts";
 import { type Peer, memorySockets } from "./support/memory-socket.ts";
 import { tempDir } from "./support/temp.ts";
@@ -45,6 +49,52 @@ test("TestRunRemoteOnceRepliesToHeartbeat", () =>
       assert.ok(!("skills" in reply), "the heartbeat carried metadata-only skills");
       yield* peer.close;
       yield* Fiber.await(session);
+      yield* c.close();
+    }),
+  ));
+
+test("TestRemoteHungDialIsAbandonedAfterDialTimeout", () =>
+  run(
+    Effect.gen(function* () {
+      // The handshake never completes: the computer slept before Salix's answer came and woke with a half-open socket.
+      let dials = 0;
+      let abandoned = 0;
+      const hung = Layer.succeed(Sockets)({
+        dial: () => Effect.sync(() => void dials++).pipe(Effect.andThen(Effect.never), Effect.onInterrupt(() => Effect.sync(() => void abandoned++))),
+      });
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "token", name: "hung-dial", root: tempDir(), reconnect: true, testClock: true }, hung);
+      const remote = yield* Effect.forkChild(c.runRemote);
+      yield* settle;
+      yield* c.advanceClockForTest(Duration.millis(Duration.toMillis(WEBSOCKET_DIAL_TIMEOUT) - 1_000));
+      yield* settle;
+      assert.deepEqual([dials, abandoned], [1, 0], "the connector gave up a dial before the dial timeout");
+      yield* c.advanceClockForTest(Duration.seconds(1));
+      yield* settle;
+      assert.equal(abandoned, 1, "the connector kept a dial whose handshake had not completed past the dial timeout");
+      // The first reconnect backoff is at most 1.2 seconds.
+      yield* c.advanceClockForTest(Duration.seconds(2));
+      yield* settle;
+      assert.equal(dials, 2, "the connector did not dial again after the abandoned dial");
+      yield* Fiber.interrupt(remote);
+      yield* c.close();
+    }),
+  ));
+
+test("TestRemoteFatalAbandonsPendingDial", () =>
+  run(
+    Effect.gen(function* () {
+      let abandoned = 0;
+      const hung = Layer.succeed(Sockets)({
+        dial: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void abandoned++))),
+      });
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "token", name: "fatal-dial", root: tempDir(), reconnect: true, testClock: true }, hung);
+      const remote = yield* Effect.forkChild(c.runRemote);
+      yield* settle;
+      c.reportFatal(new Error("cleanup failed"));
+      // No clock advance: the fatal error alone ends the dial and runRemote.
+      const exit = yield* Fiber.await(remote);
+      assert.ok(Exit.isFailure(exit) && String(exit.cause).includes(ConnectorFatal.name), `runRemote returned a non-terminal result: ${String(exit)}`);
+      assert.equal(abandoned, 1, "the fatal error left the pending dial running");
       yield* c.close();
     }),
   ));
@@ -104,12 +154,11 @@ test("TestRemoteWebSocketBlockedDataSendFailsWithinWriteDeadline", () =>
       const peer = yield* Queue.take(salix.accepted);
       yield* peer.receive;
       yield* peer.send({ id: "blocked-send", type: "request", method: "read", params: { path: "large.bin" } });
-      // The 10 MB read runs on real file I/O; once its reply is being written, the write deadline passes.
-      for (let attempt = 0; attempt < 10_000 && session.pollUnsafe() === undefined; attempt++) {
-        yield* settle;
-        yield* c.advanceClockForTest(WEBSOCKET_WRITE_TIMEOUT);
-        yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
-      }
+      // The 10 MB read runs on real file I/O; the clock moves only once its reply waits to be written, so the
+      // write deadline passes before Salix's silence reaches the read deadline.
+      yield* peer.sendBlocked;
+      yield* settle;
+      yield* c.advanceClockForTest(WEBSOCKET_WRITE_TIMEOUT);
       const exit = yield* Fiber.await(session);
       assert.ok(Exit.isFailure(exit), "a blocked websocket send returned no error");
       // The write deadline ended it, not the read timeout: Salix is silent here as well.
@@ -272,7 +321,7 @@ test("a device connection whose Salix refuses or cannot take the next credential
       yield* settle;
       yield* c.renewCredential("second");
       const renew = yield* nextRequest(refusing, "connector_credential_renew");
-      yield* refusing.send({ id: renew.id, type: "error", error: "connector credential not renewed" });
+      yield* refusing.send({ id: renew.id, type: "error", error: "station credential not renewed" });
       yield* refusing.closed;
       yield* c.advanceClockForTest(Duration.seconds(2));
       yield* settle;
@@ -354,6 +403,72 @@ test("the station registers its endpoint id and carries packets through Salix in
       yield* peer.close;
       yield* Fiber.await(session);
       assert.equal(send, null, "the relay stayed attached to a closed connection");
+      yield* c.close();
+    }),
+  ));
+
+test("stream bytes go both ways in binary frames once Salix takes them", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const root = tempDir();
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "t", name: "laptop", root, testClock: true }, salix.layer);
+      const session = yield* Effect.forkChild(c.runRemoteOnce);
+      const peer = yield* Queue.take(salix.accepted);
+      assert.equal(peer.headers[STREAM_FRAMES_HEADER], "binary");
+      yield* peer.receive;
+      yield* peer.send({ type: "connected", connector_run_id: "run-1", binary_streams: true });
+      const reply = (id: string) =>
+        Effect.gen(function* () {
+          for (;;) {
+            const frame = yield* peer.receive;
+            if (frame.id === id) return frame;
+          }
+        });
+      const bytes = Buffer.from(Array.from({ length: 70_000 }, (_, i) => i % 251));
+      yield* peer.send({ id: "w", type: "request", method: "write_stream", params: { path: "big.bin" } });
+      assert.equal((yield* reply("w")).type, "response");
+      peer.sendBinary(binaryStreamFrame({ id: "w", type: "stream", stream: { channel: "data", data: bytes, seq: 1 } })!);
+      assert.deepEqual((yield* reply("w")).stream, { channel: "ack", seq: 1 });
+      yield* peer.send({ id: "w", type: "stream", stream: { channel: "data", eof: true, seq: 2 } });
+      assert.deepEqual((yield* reply("w")).stream, { channel: "done", data: JSON.stringify({ size: bytes.length }), eof: true });
+      assert.deepEqual(readFileSync(join(root, "big.bin")), bytes);
+
+      yield* peer.send({ id: "r", type: "request", method: "read_stream", params: { path: "big.bin" } });
+      const got: Buffer[] = [];
+      for (let seq = 1; got.reduce((n, b) => n + b.length, 0) < bytes.length; seq++) {
+        yield* settle;
+        const frame = readBinaryStreamFrame(peer.binaries().at(-1)!)!;
+        assert.deepEqual([frame.id, frame.stream!.seq], ["r", seq], "a read chunk went as JSON");
+        got.push(frame.stream!.data as Buffer);
+        yield* peer.send({ id: "r", type: "stream", stream: { channel: "ack", seq } });
+      }
+      assert.deepEqual(Buffer.concat(got), bytes);
+      assert.deepEqual((yield* reply("r")).result, { size: bytes.length });
+      yield* peer.close;
+      yield* Fiber.await(session);
+      yield* c.close();
+    }),
+  ));
+
+test("stream bytes go as base64 to a Salix that does not take binary frames", () =>
+  run(
+    Effect.gen(function* () {
+      const salix = yield* memorySockets();
+      const root = tempDir();
+      writeFileSync(join(root, "small.bin"), "hello");
+      const c = makeConnector({ ...isolated, server: "https://salix.test", token: "t", name: "laptop", root, testClock: true }, salix.layer);
+      const session = yield* Effect.forkChild(c.runRemoteOnce);
+      const peer = yield* Queue.take(salix.accepted);
+      yield* peer.receive;
+      yield* peer.send({ type: "connected", connector_run_id: "run-1" });
+      yield* peer.send({ id: "r", type: "request", method: "read_stream", params: { path: "small.bin" } });
+      let frame = yield* peer.receive;
+      while (frame.id !== "r") frame = yield* peer.receive;
+      assert.deepEqual(frame.stream, { channel: "data", data: Buffer.from("hello").toString("base64"), eof: true, seq: 1 });
+      assert.equal(peer.binaries().length, 0);
+      yield* peer.close;
+      yield* Fiber.await(session);
       yield* c.close();
     }),
   ));

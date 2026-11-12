@@ -19,7 +19,6 @@ defmodule BridgeForTeams.Salix.Reconciler do
     * `"create_group"`         — `%{"attrs" => map}`            → `create_group/1`
     * `"delete_group_im_connects"` — tenant/group-scoped route retirement after archival
     * `"update_group"`         — `%{"group_id" =>, "tenant_id" =>, "attrs" =>}` → `update_group/3`
-      (`attrs.cloud_vm_enabled` is the Project's Cloud VM switch, `Project.vm_enabled`)
     * `"update_agent"`         — `%{"agent_id" =>, "tenant_id" =>, "attrs" =>}` → `update_agent/3`
 
   ## Outcome handling
@@ -77,12 +76,38 @@ defmodule BridgeForTeams.Salix.Reconciler do
   @spec drain_once(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def drain_once(opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
+    drain(fn -> lock_pending(limit) end)
+  end
+
+  @doc """
+  Apply the pending outbox rows of one aggregate now, for a read that needs
+  their effect (a new project's Salix group). Unlike `drain_once/1`, rows that
+  another drainer holds are waited for, not skipped: when that drainer commits,
+  its applied rows are no longer pending and the rest are applied here. Returns
+  the count of rows this call advanced.
+  """
+  @spec settle_aggregate(String.t(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def settle_aggregate(aggregate, aggregate_id) do
+    drain(fn ->
+      from(r in ReconcileOutbox,
+        where:
+          r.status == "pending" and r.aggregate == ^aggregate and
+            r.aggregate_id == ^aggregate_id,
+        order_by: [asc: r.created_at],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+    end)
+  end
+
+  defp drain(lock_rows) do
     started = SystemsClock.monotonic_time()
 
     try do
       result =
         Repo.transaction(fn ->
-          rows = lock_pending(limit)
+          rows = lock_rows.()
           count = Enum.reduce(rows, 0, fn row, acc -> acc + process_row(row) end)
           count
         end)
@@ -242,21 +267,9 @@ defmodule BridgeForTeams.Salix.Reconciler do
     create_agent(fetch(payload, "attrs", %{}))
   end
 
-  # Rows written before the Project's Cloud VM switch moved to its Group: the
-  # Project's switch, sent for one of its Agents, is its Group's switch.
-  defp apply_op(
-         "apply_product_vm_default",
-         %{"attrs" => %{"vm" => %{"enabled" => enabled}}} = payload
-       )
-       when is_boolean(enabled) do
-    agent_id = fetch(payload, "agent_id")
-
-    update_group(
-      SalixStore.Ids.group_id_from_agent!(agent_id),
-      fetch(payload, "tenant_id"),
-      %{"cloud_vm_enabled" => enabled}
-    )
-  end
+  # A row written before the Project's Cloud VM switch moved to its Group, and
+  # the switch is gone since: there is nothing left to set.
+  defp apply_op("apply_product_vm_default", _payload), do: {:ok, :cloud_vm_switch_retired}
 
   defp apply_op("update_agent", payload) do
     Client.impl().update_agent(
@@ -273,46 +286,17 @@ defmodule BridgeForTeams.Salix.Reconciler do
 
   defp create_agent_with(attrs, create), do: create.(attrs)
 
-  # A Project's Cloud VM is on by default. When its tenant (and the platform)
-  # has no VM provider configured, turning on its Group's switch fails soft: the
-  # rest of the update still lands and the Group stays without a Cloud VM;
-  # turning the switch on again once a provider is configured is an ordinary
-  # update.
-  #
-  # During a rolling release a Salix node of the release before does not know
-  # the switch and refuses the field: the row stays pending until a node of
-  # this release takes it.
+  # The Group's Cloud VM switch is gone (docs/architecture/DOMAIN_CONCEPTS.md,
+  # Group): a row of the release before that still carries it sends the rest.
   defp update_group(group_id, tenant_id, attrs) do
-    case Client.impl().update_group(group_id, tenant_id, attrs) do
-      {:error, {:bad_request, message}} = error ->
-        stripped = Map.delete(attrs, "cloud_vm_enabled")
+    case Map.delete(attrs, "cloud_vm_enabled") do
+      stripped when map_size(stripped) == 0 and map_size(attrs) > 0 ->
+        {:ok, :cloud_vm_switch_retired}
 
-        cond do
-          not Map.has_key?(attrs, "cloud_vm_enabled") -> error
-          cloud_vm_switch_unknown?(message) -> {:error, {:transient, :cloud_vm_switch_unknown}}
-          not vm_config_missing?(message) -> error
-          stripped == %{} -> {:ok, :cloud_vm_not_configured}
-          true -> Client.impl().update_group(group_id, tenant_id, stripped)
-        end
-
-      result ->
-        result
+      stripped ->
+        Client.impl().update_group(group_id, tenant_id, stripped)
     end
   end
-
-  # Salix's "the Cloud VM requires tenant vm provider configuration[: provider]".
-  defp vm_config_missing?(message) when is_binary(message),
-    do: String.contains?(message, "vm provider configuration")
-
-  defp vm_config_missing?(_message), do: false
-
-  # A node of the release before: "unsupported group update fields: cloud_vm_enabled".
-  defp cloud_vm_switch_unknown?(message) when is_binary(message),
-    do:
-      String.starts_with?(message, "unsupported group update fields") and
-        String.contains?(message, "cloud_vm_enabled")
-
-  defp cloud_vm_switch_unknown?(_message), do: false
 
   # ---- Row updates --------------------------------------------------------
 

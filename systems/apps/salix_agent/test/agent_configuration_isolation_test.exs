@@ -65,7 +65,7 @@ defmodule SalixAgent.AgentConfigurationIsolationTest do
           do: agent["router_session_id"],
           else: "ses1_0000000000000000101"
 
-      {:ok, _} = SalixAgent.InternalSessionStore.prepare_create(agent["agent_id"], session_id)
+      {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(agent["agent_id"], session_id)
 
       {:ok, session_actor} =
         SalixAgent.InternalSessionFleet.ensure_started(agent["agent_id"], session_id,

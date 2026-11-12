@@ -12,6 +12,7 @@
 //
 // Bounds: one part of one file going up at a time per chat, PART bytes a request; files up to MAX_FILE, MAX_FILES a
 // message.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -75,25 +76,29 @@ type Draft = ComposerDraft & {
   loaded: boolean;
 };
 
-const keptSchema = z.object({
-  text: z.string(),
-  files: z
-    .array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        size: z.number(),
-        image: z.boolean(),
-        done: z.object({ name: z.string(), path: z.string(), size: z.number() }),
-      })
-    )
-    .max(MAX_FILES),
-});
+const keptSchema = lazySchema(() =>
+  z.object({
+    text: z.string(),
+    files: z
+      .array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          size: z.number(),
+          image: z.boolean(),
+          done: z.object({ name: z.string(), path: z.string(), size: z.number() }),
+        })
+      )
+      .max(MAX_FILES),
+  })
+);
 
-const partSchema = z.object({
-  have: z.number(),
-  file: z.object({ name: z.string(), path: z.string(), size: z.number() }).optional(),
-});
+const partSchema = lazySchema(() =>
+  z.object({
+    have: z.number(),
+    file: z.object({ name: z.string(), path: z.string(), size: z.number() }).optional(),
+  })
+);
 
 const keyOf = (at: DraftAt) =>
   `${at.station}\t${at.thread}${at.question === undefined ? "" : `\t${at.question}`}`;

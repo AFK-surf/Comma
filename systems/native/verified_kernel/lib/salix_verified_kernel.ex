@@ -15,6 +15,7 @@ defmodule SalixVerifiedKernel.Native do
   The resident state never crosses the boundary as data.
   """
   def session(_resident, _bytes), do: :erlang.nif_error(:not_loaded)
+  def session_release(_resident), do: :erlang.nif_error(:not_loaded)
 
   # `SalixVerifiedKernel.Terminal`: a resident terminal emulator state.
   def terminal_new(_cols, _rows), do: :erlang.nif_error(:not_loaded)
@@ -22,6 +23,7 @@ defmodule SalixVerifiedKernel.Native do
   def terminal_resize(_terminal, _cols, _rows), do: :erlang.nif_error(:not_loaded)
   def terminal_snapshot(_terminal), do: :erlang.nif_error(:not_loaded)
   def terminal_app_cursor(_terminal), do: :erlang.nif_error(:not_loaded)
+  def memory_stats, do: :erlang.nif_error(:not_loaded)
 end
 
 defmodule SalixVerifiedKernel do
@@ -299,6 +301,7 @@ defmodule SalixVerifiedKernel do
     :atom_subset,
     :atom_valid,
     :atoms,
+    :authored,
     :clause,
     :command,
     :compaction_label,
@@ -655,6 +658,32 @@ defmodule SalixVerifiedKernel do
   @doc false
   def lean_atoms, do: @lean_atoms
 
+  @doc """
+  Live native objects and C heap bytes of this node.
+
+  `:erlang.memory/0` counts a resident state or terminal at its handle size,
+  not the Lean heap behind it. `residents` and `terminals` count the live
+  states; a handle released with `Session.release/1` leaves `residents` at
+  once, and a dropped handle when the VM runs its destructor, which can be
+  after the collection that dropped it. `lineages` counts the lineages that
+  hold at least one resident state. `released_lineages` counts lineages
+  whose states were all released but whose handles the VM has not
+  collected yet; they hold no Lean objects. `lineage_residents_p50`,
+  `lineage_residents_p99` and `lineage_residents_max` give the residents
+  per lineage counted in `lineages`; a lineage needs only its current
+  revision, so more mean older revisions are still held.
+  `lean_resident_bytes` is the Lean heap: the pages of the embedded
+  mimalloc's arenas that are in physical memory, which hold the resident
+  states behind the handles plus freed pages mimalloc has not returned to
+  the OS yet. Memory mimalloc maps from the OS outside its arenas, such as
+  one request larger than the arena reservation, is not counted.
+  `lean_reserved_bytes` is the address space those arenas reserve. The
+  `malloc_*` keys are the process-wide glibc heap of other native code,
+  present only on glibc builds; the Lean heap is not in them.
+  """
+  @spec memory_stats() :: %{atom() => non_neg_integer()}
+  def memory_stats, do: SalixVerifiedKernel.Native.memory_stats()
+
   def invoke(domain, operation, payload) when is_atom(domain) and is_atom(operation) do
     bytes = :erlang.term_to_binary({1, domain, 1, operation, payload}, minor_version: 2)
     response = SalixVerifiedKernel.Native.invoke_etf(bytes)
@@ -804,6 +833,9 @@ defmodule SalixVerifiedKernel.Session do
   @typedoc "A reference to a Session state resident in the kernel."
   @type handle :: {:verified_kernel, 1, :session_state, reference()}
 
+  @typedoc "A reference to a revision cursor resident in the kernel."
+  @type revision :: {:verified_kernel, 1, :session_revision, reference()}
+
   @typedoc "A pending observation over a resident state."
   @type token :: {:verified_kernel, 1, :session, reference(), term(), :resident | :state}
 
@@ -822,6 +854,18 @@ defmodule SalixVerifiedKernel.Session do
     {:ok, resident, :opened} = drive(nil, :open, state)
     handle(resident)
   end
+
+  @doc """
+  Drops the state behind a handle now instead of when the VM collects the
+  handle. A process that reads a state and then idles would otherwise keep
+  the state resident until its next collection. After the release every
+  call with the handle raises `ArgumentError`, so release only a handle this
+  process created and did not share. A second release is a no-op.
+  """
+  @spec release(handle() | revision()) :: :ok
+  def release({:verified_kernel, 1, kind, resident})
+      when kind in [:session_state, :session_revision],
+      do: SalixVerifiedKernel.Native.session_release(resident)
 
   @doc "Returns the resident Session state as data. For tests and one-off tools."
   @spec export(handle()) :: map()
@@ -900,6 +944,14 @@ defmodule SalixVerifiedKernel.Session do
   end
 
   @doc false
+  def archive_cut({:verified_kernel, 1, :session_state, resident}, line, bytes) do
+    {:ok, _resident, result} =
+      SalixVerifiedKernel.invoke_session_archive(resident, :plan, {line, bytes})
+
+    result
+  end
+
+  @doc false
   def start_storage_commit({:verified_kernel, 1, :session_state, resident}, key, base) do
     case SalixVerifiedKernel.invoke_session_commit(resident, :start, {key, base}) do
       {:ok, cursor, {:cas, _, _, _} = request} ->
@@ -927,17 +979,19 @@ defmodule SalixVerifiedKernel.Session do
   end
 
   @doc false
-  def start_pending_revision({:verified_kernel, 1, :session_state, resident}, etag) do
-    {:ok, pending, {:done}} = SalixVerifiedKernel.invoke_session_pending(resident, :init, etag)
+  def start_pending_revision({:verified_kernel, 1, :session_state, resident}, revision) do
+    {:ok, pending, {:done}} =
+      SalixVerifiedKernel.invoke_session_pending(resident, :init, revision)
+
     {:verified_kernel, 1, :pending_revision, pending}
   end
 
   @doc false
-  def start_revision({:verified_kernel, 1, :session_state, resident}, etag) do
-    operation = if is_nil(etag), do: :fresh, else: :init
+  def start_revision({:verified_kernel, 1, :session_state, resident}, revision) do
+    operation = if is_nil(revision), do: :fresh, else: :init
 
     {:ok, cursor, {:done}} =
-      SalixVerifiedKernel.invoke_session_revision(resident, operation, etag)
+      SalixVerifiedKernel.invoke_session_revision(resident, operation, revision)
 
     {:verified_kernel, 1, :session_revision, cursor}
   end
@@ -1008,6 +1062,28 @@ defmodule SalixVerifiedKernel.Session do
       SalixVerifiedKernel.invoke_session_revision(cursor, :metadata, nil)
 
     {events, hwm}
+  end
+
+  @doc false
+  def revision_delta({:verified_kernel, 1, :session_revision, cursor}) do
+    case SalixVerifiedKernel.invoke_session_revision(cursor, :delta, nil) do
+      {:ok, _cursor, {:value, delta}} -> {:ok, delta}
+      {:ok, _cursor, {:raised, reason}} -> raise_kernel(reason)
+    end
+  end
+
+  @doc false
+  def commit_revision_delta({:verified_kernel, 1, :session_revision, cursor}, revision) do
+    case SalixVerifiedKernel.invoke_session_revision(cursor, :commit_delta, revision) do
+      {:ok, committed, {:done}} -> {:verified_kernel, 1, :session_revision, committed}
+      {:ok, _cursor, {:raised, reason}} -> raise_kernel(reason)
+    end
+  end
+
+  @doc false
+  def add_input_hits({:verified_kernel, 1, :session_revision, cursor}, hits) do
+    {:ok, next, {:done}} = SalixVerifiedKernel.invoke_session_revision(cursor, :input_hits, hits)
+    {:verified_kernel, 1, :session_revision, next}
   end
 
   @doc false

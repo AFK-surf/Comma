@@ -77,7 +77,12 @@ defmodule SalixIM.PrivateChatStatusTest do
 
     def get_session(_, _, _), do: {:error, :not_supported}
     def get_session_messages(_, _), do: {:error, :not_supported}
-    def ensure_started(a, c, m), do: PrivateChatStatus.ensure_local(a, c, m)
+
+    def ensure_started(a, c, m) do
+      SystemsRuntime.Proc.send(Agent.get(__MODULE__, & &1.parent), {:ensure_started, a, c, m})
+      PrivateChatStatus.ensure_local(a, c, m)
+    end
+
     def local_owner?(_), do: Agent.get(__MODULE__, & &1.owner?)
     def lose_owner, do: Agent.update(__MODULE__, &Map.put(&1, :owner?, false))
   end
@@ -404,6 +409,24 @@ defmodule SalixIM.PrivateChatStatusTest do
 
     settle_receive({:api, "sendMessage", %{"text" => "Still delivered", "parse_mode" => "HTML"}})
     settle_refute_receive({:api, _, _}, 50)
+  end
+
+  # Rolling-release regression: a draining node leaves the ring while its
+  # Router still runs, so the next tick saw another owner and the actor
+  # exited with the indicator still on and nothing on the owner node.
+  @tag wechat: true
+  test "losing ring ownership clears typing and hands the chat to the owner", c do
+    pid = start_actor(c)
+    Runtime.put({:ok, active(c, "thinking")})
+    PrivateChatStatusActor.activate(pid, c.source, c.session_id)
+    settle_receive({:api, "sendtyping", %{"status" => 1}})
+
+    monitor = SystemsRuntime.Proc.monitor(pid)
+    Runtime.lose_owner()
+    settle_receive({:api, "sendtyping", %{"status" => 2}})
+    agent_id = c.agent_id
+    settle_receive({:ensure_started, ^agent_id, _connect, %{"wechat_id" => "wx-peer"}})
+    settle_receive({:DOWN, ^monitor, :process, ^pid, :normal})
   end
 
   @tag wechat: true

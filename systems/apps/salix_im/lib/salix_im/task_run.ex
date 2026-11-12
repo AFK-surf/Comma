@@ -33,12 +33,22 @@ defmodule SalixIM.TaskRun do
        its station had not answered.
 
   The Task keeps its id, Messages, labels, status and Router.
+
+  A sandbox Task (`runs_on {kind: sandbox}`) stays on the sandbox made for
+  it: it is switched to another runtime model there (`runs_on {kind:
+  sandbox}`, `model {kind: runtime, provider, model?}`, or nil for the
+  sandbox's default), and its station starts a new Session in place of the
+  old one (`replace`, step 1 above). Nothing is placed again: no sandbox is
+  started, authorized or counted. A sandbox that is not running takes no
+  Session (`{:station, :sandbox_not_running}`): a Message to the Task
+  starts it. A coding Task (one with `repo`) is not switched: its Session
+  holds the checkout.
   """
 
   alias SalixIM.{ConversationParticipantActivity, ConversationServer, ConversationSource}
   alias SalixIM.{Conversations, GroupDirectory}
   alias SalixIM.{TaskConversationInput, TaskLoop, TaskPlacement}
-  alias SalixIM.Ports.TaskStations
+  alias SalixIM.Ports.{TaskCreate, TaskStations}
 
   @message_type "task_run_switched"
 
@@ -48,15 +58,16 @@ defmodule SalixIM.TaskRun do
   @doc """
   Run Task `conversation_id` of Group `group_id` where `params` says
   (`"runs_on"`: `{kind: salix}`, `{kind: cloud_vm}` or `{kind: station,
-  device_id}`) with its `"model"` (a Model Choice, or nil for the default),
-  as `user_id` asks. Answers the Task record, or why not: a refusal of
-  `SalixIM.TaskPlacement` (`{:placement, refusal}`), `{:station, reason}`
-  when the station did not take it, or an error of the reads.
+  device_id}`; `{kind: sandbox}` for a sandbox Task, which stays there) with
+  its `"model"` (a Model Choice, or nil for the default), as `user_id` asks.
+  Answers the Task record, or why not: a refusal of `SalixIM.TaskPlacement`
+  (`{:placement, refusal}`), `{:station, reason}` when the station did not
+  take it, or an error of the reads.
   """
   @spec switch(String.t(), String.t(), map(), String.t()) :: {:ok, map()} | {:error, term()}
   def switch(group_id, conversation_id, params, user_id) when is_map(params) do
     with {:ok, conversation} <- task(group_id, conversation_id),
-         {:ok, runs_on} <- requested_place(params["runs_on"]),
+         {:ok, runs_on} <- requested_place(conversation, params["runs_on"]),
          {:ok, group} <- GroupDirectory.get_group(group_id),
          scope = %{tenant_id: group["tenant_id"], group_id: group_id},
          worker_agent_id = conversation["task_worker_agent_id"],
@@ -79,10 +90,11 @@ defmodule SalixIM.TaskRun do
 
   defp task(group_id, conversation_id) do
     case Conversations.get_group_conversation(group_id, conversation_id) do
-      # A sandbox Task runs on the sandbox made for it: it moves nowhere.
-      {:ok, %{"kind" => "agent_task", "runs_on" => %{"kind" => "sandbox"}}} ->
+      # A coding Task's Session holds the checkout on its sandbox: no other
+      # Session takes its place.
+      {:ok, %{"kind" => "agent_task", "runs_on" => %{"kind" => "sandbox"}, "repo" => %{}}} ->
         {:error,
-         {:bad_request, "a sandbox Task runs on its own sandbox; its model is not switched"}}
+         {:bad_request, "a coding Task runs on its own sandbox; its model is not switched"}}
 
       {:ok, %{"kind" => "agent_task", "task_worker_agent_id" => worker} = conversation}
       when is_binary(worker) and worker != "" ->
@@ -97,16 +109,34 @@ defmodule SalixIM.TaskRun do
   end
 
   # The place is always named: a switch never falls to the Group's default.
-  defp requested_place(%{"kind" => "salix"} = place) when map_size(place) == 1, do: {:ok, place}
+  # A sandbox Task names its sandbox; no other Task moves to one.
+  defp requested_place(%{"runs_on" => %{"kind" => "sandbox"}}, %{"kind" => "sandbox"} = place)
+       when map_size(place) == 1,
+       do: {:ok, place}
 
-  defp requested_place(%{"kind" => "cloud_vm"} = place) when map_size(place) == 1,
+  defp requested_place(%{"runs_on" => %{"kind" => "sandbox"}}, _place),
+    do:
+      {:error,
+       {:bad_request, "a sandbox Task stays on its sandbox: runs_on must be {kind: sandbox}"}}
+
+  defp requested_place(_conversation, %{"kind" => "sandbox"}),
+    do:
+      {:error,
+       {:bad_request,
+        "a Task is not moved to a sandbox; a sandbox Task is made with runs_on {kind: sandbox}"}}
+
+  defp requested_place(_conversation, %{"kind" => "salix"} = place) when map_size(place) == 1,
     do: {:ok, place}
 
-  defp requested_place(%{"kind" => "station", "device_id" => device} = place)
+  defp requested_place(_conversation, %{"kind" => "cloud_vm"} = place)
+       when map_size(place) == 1,
+       do: {:ok, place}
+
+  defp requested_place(_conversation, %{"kind" => "station", "device_id" => device} = place)
        when map_size(place) == 2 and is_binary(device) and device != "",
        do: {:ok, place}
 
-  defp requested_place(_place),
+  defp requested_place(_conversation, _place),
     do:
       {:error,
        {:bad_request,
@@ -151,6 +181,30 @@ defmodule SalixIM.TaskRun do
     end
   end
 
+  # A sandbox Task is not placed again: it keeps its sandbox (`runs_on`, with
+  # the device its sandbox's stations register as), and its model is a
+  # runtime choice checked against what the sandbox's station runs, as a
+  # station's is (`SalixIM.Ports.TaskCreate.session_model/2`).
+  defp placement(
+         scope,
+         %{"runs_on" => %{"kind" => "sandbox"} = runs_on},
+         _worker_agent_id,
+         _requested,
+         params
+       ) do
+    with {:ok, model} <- sandbox_model(Map.put(scope, :runs_on, runs_on), params["model"]) do
+      {:ok,
+       %{
+         params: params,
+         runs_on: runs_on,
+         repo: nil,
+         mini_app: nil,
+         session_model: model,
+         source: :requested
+       }}
+    end
+  end
+
   defp placement(scope, conversation, worker_agent_id, runs_on, params) do
     case TaskPlacement.resolve(
            scope,
@@ -163,6 +217,38 @@ defmodule SalixIM.TaskRun do
     end
   end
 
+  defp sandbox_model(_scope, nil), do: {:ok, nil}
+
+  defp sandbox_model(scope, %{"kind" => "runtime", "provider" => provider} = choice)
+       when map_size(choice) == 2 and provider in ~w(codex claude),
+       do: station_model(scope, choice)
+
+  defp sandbox_model(
+         scope,
+         %{"kind" => "runtime", "provider" => provider, "model" => model} = choice
+       )
+       when map_size(choice) == 3 and provider in ~w(codex claude) and is_binary(model) and
+              model != "",
+       do: station_model(scope, choice)
+
+  defp sandbox_model(_scope, _choice),
+    do:
+      {:error,
+       {:bad_request,
+        "a sandbox Task's model is {kind: runtime, provider: codex | claude, model?}, " <>
+          "or null for the sandbox's default"}}
+
+  # The sandbox's station must run the runtime, and the model when one is
+  # named, as it last said: a Session that cannot start would be the only
+  # answer otherwise.
+  defp station_model(scope, choice) do
+    case TaskCreate.session_model(scope, choice) do
+      {:ok, model} -> {:ok, model}
+      {:error, {:model, _reason} = refusal} -> {:error, {:placement, refusal}}
+      {:error, reason} -> {:error, {:placement, {:model, reason}}}
+    end
+  end
+
   # The station that runs the Task now is asked first; one that ran it
   # already replaces its Session. Inside Salix, no station is asked.
   defp invite(_scope, _conversation_id, _worker_agent_id, %{runs_on: nil}, _stations),
@@ -170,6 +256,7 @@ defmodule SalixIM.TaskRun do
 
   defp invite(scope, conversation_id, worker_agent_id, placement, stations) do
     device = placement.runs_on["device_id"]
+    sandbox? = placement.runs_on["kind"] == "sandbox"
     start = TaskConversationInput.station_start(worker_agent_id, placement.session_model)
     before = Map.get(stations, device)
 
@@ -193,6 +280,11 @@ defmodule SalixIM.TaskRun do
 
       {:ok, session} ->
         {:ok, to(scope, conversation_id, device, session, worker_agent_id, start)}
+
+      # The Task's sandbox is not running (stopped idle, or not up yet): it
+      # takes no Session now. A Message to the Task starts it.
+      {:error, :device_offline} when sandbox? ->
+        {:error, {:station, :sandbox_not_running}}
 
       {:error, reason} ->
         {:error, {:station, reason}}
@@ -266,6 +358,7 @@ defmodule SalixIM.TaskRun do
 
   defp place_words(nil), do: "Comma's own servers"
   defp place_words(%{"kind" => "cloud_vm"}), do: "the workspace's Cloud VM"
+  defp place_words(%{"kind" => "sandbox"}), do: "its sandbox"
   defp place_words(%{"device_id" => device}), do: "the computer #{device}"
 
   defp model_words(%{session_model: %{"model" => model}}) when is_binary(model),
@@ -277,5 +370,6 @@ defmodule SalixIM.TaskRun do
     do: "#{runtime}'s default model"
 
   defp model_words(%{runs_on: nil}), do: "the workspace's default Task model"
+  defp model_words(%{runs_on: %{"kind" => "sandbox"}}), do: "the sandbox's default model"
   defp model_words(_placement), do: "the station's default model"
 end

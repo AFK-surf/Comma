@@ -1,6 +1,6 @@
 // Files a window's media element (audio, video, image) reads in ranges (`fileStream`), so a file of any size plays or
 // shows without being held whole.
-// A message's attachment plays from its media URL (`POST …/attachments/:index/media`): a URL the blob store signed, so
+// A message's attachment, or a file uploaded to the group, plays from its media URL (`POST …/media`): a URL the blob store signed, so
 // its bytes never pass through the Comma server. It expires on its own, so it is minted again before it does. On the desktop app the host opens a URL for the file (Main's
 // `comma-file://stream/<token>`) and forgets it once no window shows the topic: for an attachment Main reads the media
 // URL with no credential; for any other file whose bytes are a GET it adds the session's credential to each range the
@@ -18,7 +18,7 @@ import type { Topic, Value } from "@comma/core-kernel";
 import { Effect, type Fiber } from "effect";
 import type { FileStreamValue } from "./contract.ts";
 import type { Ctx } from "./ctx.ts";
-import { fileRequest, fileSourceSchema, mintMediaUrl } from "./files.ts";
+import { fileRequest, fileSourceSchema, hasMediaUrl, mintMediaUrl } from "./files.ts";
 import type { DesktopPorts } from "./host.ts";
 
 const TOPIC = "fileStream";
@@ -228,7 +228,7 @@ function streamRequest(
     if (!parsed.success) return null;
     const request = fileRequest(parsed.data);
     return request.method === "GET"
-      ? { path: request.path, type, attachment: parsed.data.source === "attachment" }
+      ? { path: request.path, type, attachment: hasMediaUrl(parsed.data) }
       : null;
   } catch {
     return null;

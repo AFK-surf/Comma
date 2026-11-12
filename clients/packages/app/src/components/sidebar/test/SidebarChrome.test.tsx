@@ -1,5 +1,5 @@
 import { initializeCommaI18n } from "@comma/i18n";
-import { act, render, screen } from "@comma/test-utils/render";
+import { act, render, screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { useSyncExternalStore, type ReactNode } from "react";
 import {
@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestCommaAuthValue } from "../../../test/productInboxProjectionHarness";
-import { CommaAuthContext } from "../../auth-context";
+import { CommaAuthContext, type CommaAuthContextValue } from "../../auth-context";
 import { CommaWebClientSettingsProvider } from "../../commaClientSettings";
 import { CommaAppShortcutsProvider } from "../../shortcuts/commaAppShortcuts";
 import { SidebarChrome } from "../SidebarChrome";
@@ -45,8 +45,16 @@ vi.mock("@comma/ui/components/left-rail", async (importOriginal) => {
 function renderRail({
   children,
   initialEntry = "/",
-}: { children?: ReactNode; initialEntry?: string } = {}) {
-  const auth = createTestCommaAuthValue();
+  otherAccounts,
+}: {
+  children?: ReactNode;
+  initialEntry?: string;
+  otherAccounts?: CommaAuthContextValue["otherAccounts"];
+} = {}) {
+  const auth = {
+    ...createTestCommaAuthValue(),
+    ...(otherAccounts ? { otherAccounts } : {}),
+  };
   const rail = (
     <>
       {children}
@@ -83,6 +91,42 @@ function renderRail({
 }
 
 describe("SidebarChrome", () => {
+  it("switches to an account kept signed in, or adds one, from the account menu", async () => {
+    const otherAccounts = {
+      list: [{ userId: "user-2", email: "two@example.com" }],
+      add: vi.fn(async () => undefined),
+      switchTo: vi.fn(async () => undefined),
+      signOut: vi.fn(async () => undefined),
+    };
+    renderRail({ otherAccounts });
+    await userEvent.click(await screen.findByRole("button", { name: "Account" }));
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Switch account" }));
+    const switcher = await screen.findByTestId("sidebar-account-switcher");
+    expect(
+      within(switcher).getByRole("menuitem", { name: /two@example.com/ })
+    ).toBeVisible();
+    await userEvent.click(
+      within(switcher).getByRole("menuitem", { name: /two@example.com/ })
+    );
+    expect(otherAccounts.switchTo).toHaveBeenCalledWith("user-2");
+
+    await userEvent.click(screen.getByRole("button", { name: "Account" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Switch account" }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Add an account…" })
+    );
+    expect(otherAccounts.add).toHaveBeenCalledOnce();
+  });
+
+  it("offers no account switching where the device keeps one account", async () => {
+    renderRail();
+    await userEvent.click(await screen.findByRole("button", { name: "Account" }));
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Switch account" })).toBeNull();
+  });
+
   beforeAll(() => {
     initializeCommaI18n(["en"]);
   });
@@ -140,7 +184,8 @@ describe("SidebarChrome", () => {
     const home = await screen.findByRole("link", { name: "Home" });
     const badge = () => home.querySelector('[data-slot="left-rail-item-badge"]');
     act(() => publish(null));
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Account" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
     act(() => publish("first-reply"));
     expect(badge()).not.toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Close settings" }));

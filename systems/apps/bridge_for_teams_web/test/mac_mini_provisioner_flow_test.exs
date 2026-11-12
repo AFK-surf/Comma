@@ -3,8 +3,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
   End-to-end API tests for the BFT runner control-plane slice.
 
   These drive the real Endpoint pipeline with org API keys so the tests cover
-  authentication, scope checks, request claiming, one-time connector-token
-  handoff, and non-secret provisioning status callbacks.
+  authentication, scope checks and the heartbeat's Agent VMM handoffs.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
 
@@ -163,10 +162,8 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
         "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/heartbeat",
         api_key,
         %{
-          "current_connector_count" => 1,
           "capabilities" => %{
-            "salix_connect" => true,
-            "component_versions" => %{"salix-connect" => "0.1.0"}
+            "component_versions" => %{"agent-vmm-host" => "0.1.0"}
           }
         },
         [{"x-request-id", "req-api-heartbeat-online"}]
@@ -174,8 +171,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
 
     assert conn.status == 200
     %{"runner" => heartbeat} = Jason.decode!(conn.resp_body)
-    assert heartbeat["current_connector_count"] == 1
-    assert heartbeat["capabilities"]["component_versions"]["salix-connect"] == "0.1.0"
+    assert heartbeat["capabilities"]["component_versions"]["agent-vmm-host"] == "0.1.0"
 
     degraded_conn =
       authed(
@@ -262,7 +258,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
 
     assert wrong.status == 200
     wrong_response = Jason.decode!(wrong.resp_body)
-    refute Map.has_key?(wrong_response, "agent_vmm_install")
+    refute Map.has_key?(wrong_response, "agent_vmm_registration")
 
     assert wrong_response["agent_vmm_controls"] == %{
              "version" => 1,
@@ -281,18 +277,18 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
     assert exact.status == 200
     assert get_resp_header(exact, "cache-control") == ["no-store"]
     response = Jason.decode!(exact.resp_body)
-    descriptor = response["agent_vmm_install"]
-    assert descriptor["operation_id"] == operation.id
+    descriptor = response["agent_vmm_registration"]
+    assert descriptor["registration_id"] == operation.id
     assert descriptor["version"] == 1
 
-    assert descriptor["exchange_url"] ==
-             "https://salix.example.test/v1/compute/agent-vmm/install-operations/exchange"
+    assert descriptor["claim_url"] ==
+             "https://salix.example.test/v1/compute/agent-vmm/registrations/claim"
 
-    assert is_binary(descriptor["one_time_secret"])
+    assert is_binary(descriptor["ticket"])
     assert response["agent_vmm_controls"]["items"] == []
 
     stored = Repo.get!(BridgeForTeams.Schema.MacMiniProvisioner, first["id"])
-    refute inspect(stored) =~ descriptor["one_time_secret"]
+    refute inspect(stored) =~ descriptor["ticket"]
   end
 
   test "heartbeat acknowledges an exact terminal install report before redelivery", %{
@@ -315,9 +311,9 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
         "/v1/orgs/#{org.id}/runners/#{runner["id"]}/heartbeat",
         api_key,
         %{
-          "agent_vmm_install_failures" => [
+          "agent_vmm_registration_failures" => [
             %{
-              "operation_id" => operation.id,
+              "registration_id" => operation.id,
               "failure_code" => "agent_vmm.install_failed"
             }
           ]
@@ -326,227 +322,14 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
 
     assert response.status == 200
     body = Jason.decode!(response.resp_body)
-    assert body["agent_vmm_install_failure_acks"] == [operation.id]
-    refute Map.has_key?(body, "agent_vmm_install")
+    assert body["agent_vmm_registration_failure_acks"] == [operation.id]
+    refute Map.has_key?(body, "agent_vmm_registration")
 
     assert {:ok, stored} =
              BridgeForTeams.Compute.get_agent_vmm_install(org, project, operation.id)
 
-    assert stored.authorization_status == "action_required"
+    assert stored.status == "action_required"
     assert stored.error_code == "agent_vmm.install_failed"
-  end
-
-  test "claim returns a one-time connector token and stores only its hash", %{
-    org: org,
-    project: project,
-    api_key: api_key
-  } do
-    provisioner = register_provisioner(org, api_key)
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner["id"],
-               "name" => "prod-mac",
-               "alias" => "prod"
-             })
-
-    conn =
-      authed(
-        :post,
-        "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/claim",
-        api_key,
-        %{}
-      )
-
-    assert conn.status == 200
-    body = Jason.decode!(conn.resp_body)
-    assert body["action"] == "create"
-    refute Map.has_key?(body["connect"], "token_hash")
-    refute Map.has_key?(body["connect"], "meta")
-
-    assert %{"token" => token, "env" => env} = body["connect"]
-    assert String.starts_with?(token, "salix_conn_")
-
-    assert env == %{
-             "SALIX_CONNECTOR_TOKEN" => token,
-             "SALIX_SERVER" => body["connect"]["server"]
-           }
-
-    assert body["device_request"]["id"] == request.id
-    assert body["device_request"]["status"] == "preflight"
-
-    assert body["launch"] == %{
-             "name" => "prod-mac",
-             "alias" => "prod",
-             "root" => "agents/bft_" <> String.replace(request.id, "-", "_")
-           }
-
-    assert {:ok, reloaded} = Environments.get_device_provision_request(request.id)
-    assert reloaded.status == "preflight"
-    assert reloaded.connector_token_hash == Sessions.hash_token(token)
-    refute inspect(reloaded) =~ token
-
-    assert {:ok, tenant_id, token_record} =
-             SalixEnv.ConnectorTokens.validate_connector_token(token)
-
-    assert tenant_id == org.salix_tenant_id
-    assert token_record["group_id"] == project.salix_group_id
-    assert token_record["meta"]["provision_request_id"] == request.id
-    assert token_record["meta"]["provisioner_id"] == provisioner["id"]
-
-    status_path =
-      "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/provision-requests/#{request.id}/status"
-
-    waiting =
-      authed(
-        :post,
-        status_path,
-        api_key,
-        %{
-          "status" => "waiting_for_attach",
-          "connector_run_id" => "env_spoofed_by_worker",
-          "progress" => %{
-            "stage" => "waiting_for_attach",
-            "dry_run" => true,
-            "pid" => 1234,
-            "restart_count" => 1,
-            "root" => "/tmp/work/agents/bft_req_1",
-            "cleanup" => %{
-              "mode" => "remove_on_stop",
-              "removed" => ["root"],
-              "raw_path" => token
-            },
-            "launch" => %{
-              "argv_shape" => ["salix-connect", "--connector-token", "<token>"],
-              "argv" => ["salix-connect", token]
-            },
-            "raw_token" => token,
-            "stdout" => "secret #{token}"
-          }
-        },
-        [{"x-request-id", "req-api-status-waiting"}]
-      )
-
-    assert waiting.status == 200
-    waiting_body = Jason.decode!(waiting.resp_body)
-    refute Map.has_key?(waiting_body, "connect")
-    assert waiting_body["provision_request"]["status"] == "waiting_for_attach"
-    assert waiting_body["provision_request"]["connector_run_id"] == nil
-    assert waiting_body["provision_request"]["progress"]["stage"] == "waiting_for_attach"
-    assert waiting_body["provision_request"]["progress"]["dry_run"] == true
-    assert waiting_body["provision_request"]["progress"]["restart_count"] == 1
-    assert waiting_body["provision_request"]["progress"]["cleanup"]["mode"] == "remove_on_stop"
-    assert waiting_body["provision_request"]["progress"]["cleanup"]["removed"] == ["root"]
-    assert waiting_body["provision_request"]["progress"]["launch"]["argv_shape"]
-    refute Map.has_key?(waiting_body["provision_request"]["progress"], "raw_token")
-    refute Map.has_key?(waiting_body["provision_request"]["progress"], "stdout")
-    refute Map.has_key?(waiting_body["provision_request"]["progress"]["cleanup"], "raw_path")
-    refute Map.has_key?(waiting_body["provision_request"]["progress"]["launch"], "argv")
-    refute inspect(waiting_body) =~ token
-
-    connected_attempt =
-      authed(:post, status_path, api_key, %{
-        "status" => "connected",
-        "connector_run_id" => "env_mac_prod",
-        "progress" => %{"stage" => "connected", "connector_run_id" => "env_mac_prod"}
-      })
-
-    assert connected_attempt.status == 422
-    assert Jason.decode!(connected_attempt.resp_body)["error"] == "unsupported_provisioner_status"
-
-    show =
-      authed(
-        :get,
-        "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/provision-requests/#{request.id}",
-        api_key,
-        %{}
-      )
-
-    assert show.status == 200
-    show_body = Jason.decode!(show.resp_body)
-    assert show_body["provision_request"]["status"] == "waiting_for_attach"
-    assert show_body["provision_request"]["connector_run_id"] == nil
-    assert show_body["provision_request"]["progress"]["stage"] == "waiting_for_attach"
-    refute Map.has_key?(show_body, "connect")
-    refute inspect(show_body) =~ token
-
-    assert {:ok, waiting_request} = Environments.get_device_provision_request(request.id)
-    assert waiting_request.connector_run_id == nil
-    assert waiting_request.connector_token_hash == Sessions.hash_token(token)
-    assert waiting_request.progress["stage"] == "waiting_for_attach"
-
-    waiting_events =
-      Observability.list_events(org.id,
-        resource_type: "device_provision_request",
-        resource_id: request.id
-      )
-
-    waiting_event =
-      Enum.find(waiting_events, &(&1.event_type == "device.provision.waiting_for_attach"))
-
-    assert waiting_event.evidence["request_id"] == "req-api-status-waiting"
-  end
-
-  test "claim returns stop action before create work without exposing token", %{
-    org: org,
-    project: project,
-    api_key: api_key
-  } do
-    provisioner = register_provisioner(org, api_key)
-
-    assert {:ok, request} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner["id"],
-               "name" => "prod-mac",
-               "alias" => "prod"
-             })
-
-    assert {:ok, connected} =
-             Environments.update_device_provision_request_status(
-               request,
-               "connected",
-               %{"connector_run_id" => "env_mac_prod"}
-             )
-
-    assert {:ok, _stop_requested} = Environments.request_device_provision_stop(connected.id)
-
-    assert {:ok, _pending_create} =
-             Environments.create_device_provision_request(project.id, %{
-               "provisioner_id" => provisioner["id"],
-               "name" => "next-mac"
-             })
-
-    conn =
-      authed(
-        :post,
-        "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/claim",
-        api_key,
-        %{"available_capacity" => 0}
-      )
-
-    assert conn.status == 200
-    body = Jason.decode!(conn.resp_body)
-    assert body["action"] == "stop"
-    assert body["connect"] == %{}
-    refute inspect(body) =~ "salix_conn_"
-    assert body["launch"]["provision_request_id"] == request.id
-    assert body["launch"]["connector_run_id"] == "env_mac_prod"
-    assert body["device_request"]["status"] == "stopping"
-  end
-
-  test "claim with no pending request returns no content", %{org: org, api_key: api_key} do
-    provisioner = register_provisioner(org, api_key)
-
-    conn =
-      authed(
-        :post,
-        "/v1/orgs/#{org.id}/runners/#{provisioner["id"]}/claim",
-        api_key,
-        %{}
-      )
-
-    assert conn.status == 204
-    assert conn.resp_body == ""
   end
 
   test "org API keys cannot operate another org provisioner route", %{api_key: api_key} do

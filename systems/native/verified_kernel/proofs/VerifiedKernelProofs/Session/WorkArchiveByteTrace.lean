@@ -1,5 +1,4 @@
 import VerifiedKernelProofs.Session.WorkArchiveByteExecution
-
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication
 set_option Elab.async false
@@ -53,6 +52,7 @@ theorem BytePublicationTrace.staging {before after : ByteStore} {cursor : Revisi
     {final : ArchivePublication.Output} {event : Term}
     (roundtrip : ∀ value bytes, ETF.encode value = .ok bytes →
       ∃ decoded, ETF.decode bytes = .ok decoded ∧ ValueSemantics.Equivalent value decoded)
+    (physical : ArchiveProjection.UnarchivedWindow cursor.candidate.working)
     (window : StorageQuery.archiveWindow cursor.candidate.working [] =
       .ok (.tuple [a "ok", list records, i ceiling], [])) (positive : line > 0)
     (trace : BytePublicationTrace (ArchivePublication.start cursor.candidate.working (i line)) before final after)
@@ -60,6 +60,6 @@ theorem BytePublicationTrace.staging {before after : ByteStore} {cursor : Revisi
     (written : PendingRevision.Execution
       (PendingRevision.resident (some cursor.candidate.pack) (a "write") (.tuple [list [event], nil])) next) :
     Staging after.objects cursor after.objects (.pending next) :=
-  .archive window positive (trace.at_final roundtrip) emitted written
+  .archive physical window positive (trace.at_final roundtrip) emitted written
 
 end VerifiedKernel.Session.WorkConservation.CurrentExecution

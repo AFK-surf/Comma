@@ -313,7 +313,11 @@ export function DriveSpaceRail({
         );
       }}
       ref={railRef}
-      style={{ flexBasis: commaDriveSpaceRailWidth, width: commaDriveSpaceRailWidth }}
+      // The Drive route's slot sizes the rail, which the reader may widen (`railResize.tsx`).
+      style={{
+        flexBasis: `var(--comma-drive-space-rail-width, ${commaDriveSpaceRailWidth}px)`,
+        width: `var(--comma-drive-space-rail-width, ${commaDriveSpaceRailWidth}px)`,
+      }}
     >
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-xxs px-md py-lg">

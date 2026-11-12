@@ -102,6 +102,8 @@ func Run(args []string, stdout, stderr io.Writer, env envFunc) int {
 		return rt.lark(args[1:])
 	case "qq":
 		return rt.qq(args[1:])
+	case "telegram":
+		return rt.telegram(args[1:])
 	case "slack":
 		return rt.slack(args[1:])
 	case "meetings":
@@ -130,6 +132,9 @@ func (rt runtime) computeNode(args []string) int {
 	confirm := fs.Bool("confirm-mutating", false, "confirm a local compute-node lifecycle change")
 	purge := fs.Bool("purge", false, "also remove local Agent VMM Host data and logs")
 	requestID := fs.String("request", "", "stable opaque operation request id")
+	org := fs.String("org", "", "organization for credential reauthorization")
+	project := fs.String("project", "", "project for credential reauthorization")
+	registration := fs.String("registration", "", "exact Registration to reauthorize")
 	if err := parse(fs, flagArgs, opts); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
@@ -157,6 +162,10 @@ func (rt runtime) computeNode(args []string) int {
 	}
 	if operation != "status" && strings.TrimSpace(*requestID) == "" {
 		*requestID = fmt.Sprintf("bft-compute-node-%d", time.Now().UnixNano())
+	}
+
+	if operation == "reauthorize" {
+		return rt.reauthorizeVMM(opts, *org, *project, *registration, *requestID)
 	}
 
 	helperPath := resolveVMMLifecyclePath(rt.env)
@@ -952,7 +961,7 @@ func (rt runtime) agentsRebind(args []string) int {
 
 func (rt runtime) devices(args []string) int {
 	if len(args) == 0 {
-		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_devices_command", "Run bft devices list, create, stop, or disconnect.", nil))
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_devices_command", "Run bft devices list or disconnect.", nil))
 	}
 
 	switch args[0] {
@@ -987,74 +996,6 @@ func (rt runtime) devices(args []string) int {
 		}
 		data = boundList(data, "devices", *limit, *filter)
 		return rt.render(opts.outputOptions(), data, func() string { return devicesText(data) }, output.ExitOK)
-
-	case "create":
-		fs, opts := rt.newFlagSet("bft devices create")
-		org := fs.String("org", "", "org id or slug")
-		project := fs.String("project", "", "project id or slug")
-		runner := fs.String("runner", "", "runner id, stable id, or unique name")
-		name := fs.String("name", "", "device name")
-		alias := fs.String("alias", "", "device alias")
-		confirm := fs.Bool("confirm-mutating", false, "confirm project device creation")
-		if err := parse(fs, args[1:], opts); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("org", *org); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("project", *project); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("runner", *runner); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if !*confirm {
-			return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the target runner.", map[string]any{"command": "devices.create"}))
-		}
-		api, err := rt.apiClient(opts)
-		if err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		attrs := map[string]any{}
-		putIfPresent(attrs, "runner", *runner)
-		putIfPresent(attrs, "name", *name)
-		putIfPresent(attrs, "alias", *alias)
-		data, apiErr := api.Post(context.Background(), projectDevicesPath(*org, *project), attrs)
-		if apiErr.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
-		}
-		return rt.render(opts.outputOptions(), data, func() string { return deviceMutationText("Device request created.", data) }, output.ExitOK)
-
-	case "stop":
-		fs, opts := rt.newFlagSet("bft devices stop")
-		org := fs.String("org", "", "org id or slug")
-		project := fs.String("project", "", "project id or slug")
-		request := fs.String("request", "", "device request id")
-		confirm := fs.Bool("confirm-mutating", false, "confirm device request stop")
-		if err := parse(fs, args[1:], opts); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("org", *org); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("project", *project); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if err := require("request", *request); err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		if !*confirm {
-			return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the device request.", map[string]any{"command": "devices.stop"}))
-		}
-		api, err := rt.apiClient(opts)
-		if err.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), err)
-		}
-		data, apiErr := api.Post(context.Background(), projectDevicesPath(*org, *project)+"/requests/"+urlPathEscape(*request)+"/stop", nil)
-		if apiErr.ExitCode != 0 {
-			return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
-		}
-		return rt.render(opts.outputOptions(), data, func() string { return deviceMutationText("Device request stop requested.", data) }, output.ExitOK)
 
 	case "disconnect":
 		fs, opts := rt.newFlagSet("bft devices disconnect")
@@ -1587,6 +1528,117 @@ func (rt runtime) larkScopes(args []string) int {
 	return rt.render(opts.outputOptions(), data, func() string { return larkScopesText(data) }, output.ExitOK)
 }
 
+func (rt runtime) telegram(args []string) int {
+	if len(args) == 0 {
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_telegram_command", "Run bft telegram connect, status or chats.", nil))
+	}
+	switch args[0] {
+	case "connect":
+		return rt.telegramConnect(args[1:])
+	case "status":
+		return rt.telegramStatus(args[1:])
+	case "chats":
+		return rt.telegramChats(args[1:])
+	}
+	return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_telegram_command", "Unknown Telegram command.", map[string]any{"command": args[0]}))
+}
+
+// telegramConnect connects a Telegram bot to a project. The token comes from an
+// environment variable, so it is never an argument or in shell history.
+func (rt runtime) telegramConnect(args []string) int {
+	fs, opts := rt.newFlagSet("bft telegram connect")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	tokenEnv := fs.String("bot-token-env", "", "environment variable containing the BotFather token")
+	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	for name, value := range map[string]string{"org": *org, "project": *project, "bot-token-env": *tokenEnv} {
+		if err := require(name, value); err.ExitCode != 0 {
+			return output.RenderError(rt.stderr, opts.outputOptions(), err)
+		}
+	}
+	body := map[string]any{"org": *org, "project": *project}
+	putSecretFromEnv(body, "bot_token", *tokenEnv, rt.env)
+	if _, ok := body["bot_token"]; !ok {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_telegram_token", "The environment variable named by --bot-token-env is empty.", map[string]any{"env": *tokenEnv}))
+	}
+	if !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to connect the Telegram bot.", map[string]any{"command": "telegram.connect"}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/telegram/connect", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return telegramConnectText(data) }, output.ExitOK)
+}
+
+func (rt runtime) telegramStatus(args []string) int {
+	fs, opts := rt.newFlagSet("bft telegram status")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Get(context.Background(), "/v1/cli/telegram/status", map[string]string{"org": *org, "project": *project})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return telegramStatusText(data) }, output.ExitOK)
+}
+
+// telegramChats replaces the chats a bot serves: the agent neither hears nor
+// writes to any other chat. --chat is repeated, once per chat id.
+func (rt runtime) telegramChats(args []string) int {
+	fs, opts := rt.newFlagSet("bft telegram chats")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	bot := fs.String("bot", "", "bot username, when the project has more than one bot")
+	var chats stringList
+	fs.Var(&chats, "chat", "chat id the bot serves; repeat for each chat, none to allow no chat")
+	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to replace the Telegram bot's chats.", map[string]any{"command": "telegram.chats"}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	allowed := []string(chats)
+	if allowed == nil {
+		allowed = []string{}
+	}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/telegram/chats", map[string]any{"org": *org, "project": *project, "bot_username": *bot, "allowed_chat_ids": allowed})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return telegramChatsText(data) }, output.ExitOK)
+}
+
 func (rt runtime) qq(args []string) int {
 	if len(args) == 0 {
 		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_qq_command", "Run bft qq connect, status or menu.", nil))
@@ -2024,6 +2076,7 @@ func (rt runtime) slackConnectsUpdate(args []string) int {
 	project := fs.String("project", "", "project id or slug")
 	connectID := fs.String("connect", "", "Slack connect id")
 	inboundAgent := fs.String("inbound-agent", "", "Salix agent id that should receive inbound Slack messages")
+	autoJoin := fs.String("auto-join-public-channels", "", "on or off: whether the app joins each new public channel by itself")
 	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
 	if err := parse(fs, args, opts); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
@@ -2037,18 +2090,31 @@ func (rt runtime) slackConnectsUpdate(args []string) int {
 	if err := require("connect", *connectID); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
-	if err := require("inbound-agent", *inboundAgent); err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	body := map[string]any{}
+	if *inboundAgent != "" {
+		body["inbound_agent_id"] = *inboundAgent
+	}
+	switch *autoJoin {
+	case "":
+	case "on":
+		body["auto_join_public_channels"] = true
+	case "off":
+		body["auto_join_public_channels"] = false
+	default:
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("invalid_auto_join_public_channels", "Pass --auto-join-public-channels on or off.", map[string]any{"value": *autoJoin}))
+	}
+	if len(body) == 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_slack_connect_update", "Pass --inbound-agent, --auto-join-public-channels, or both.", nil))
 	}
 	if !*confirm {
-		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the target connect and inbound agent.", map[string]any{"command": "slack.connects.update"}))
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the target connect and the change.", map[string]any{"command": "slack.connects.update"}))
 	}
 	api, err := rt.apiClient(opts)
 	if err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
 	path := slackConnectsPath(*org, *project) + "/" + urlPathEscape(*connectID)
-	data, apiErr := api.Patch(context.Background(), path, map[string]any{"inbound_agent_id": *inboundAgent})
+	data, apiErr := api.Patch(context.Background(), path, body)
 	if apiErr.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
 	}
@@ -2653,7 +2719,7 @@ func splitTopicArgs(args []string) (string, []string, output.Error) {
 func flagNeedsValue(arg string) bool {
 	name := strings.SplitN(arg, "=", 2)[0]
 	switch name {
-	case "--output", "--fields", "--config", "--url", "--api-base-url", "--env", "--token-env", "--client-name":
+	case "--output", "--fields", "--config", "--url", "--api-base-url", "--env", "--token-env", "--client-name", "--org", "--project", "--registration", "--request":
 		return true
 	default:
 		return false
@@ -2967,4 +3033,14 @@ func larkAvailable(path string) bool {
 	}
 	_, err := exec.LookPath(path)
 	return err == nil
+}
+
+// stringList is a flag given once per value.
+type stringList []string
+
+func (list *stringList) String() string { return strings.Join(*list, ",") }
+
+func (list *stringList) Set(value string) error {
+	*list = append(*list, value)
+	return nil
 }

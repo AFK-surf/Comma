@@ -85,22 +85,31 @@ function zhErrorView(issue: string, status: string) {
 }
 
 describe("Task activity summary", () => {
-  it("animates only the active Router avatar, and shows the Worker by its model's maker", () => {
-    const view = render(statusView([router, worker], "en", "anthropic"));
+  it("animates the Router avatar alone, and beside a Worker draws it as a still disc", () => {
+    const view = render(statusView([router], "en", "anthropic"));
     const routerAvatar = view.container.querySelector('[data-actor-role="router"]');
-    const workerAvatar = view.container.querySelector('[data-actor-role="worker"]');
     const logo = routerAvatar?.querySelector('[data-slot="comma-logo-animation"]');
     expect(logo).toBeInTheDocument();
     // Real 16px sizing is asserted with the application CSS in Playwright.
     expect(routerAvatar).toHaveClass("comma-chat-assistant-router-mark");
     expect(logo).toHaveAttribute("data-paused", "false");
-    expect(workerAvatar).toHaveAttribute("data-model-vendor", "anthropic");
-    expect(workerAvatar?.querySelector("img")).toBeInTheDocument();
 
-    view.rerender(statusView([{ ...router, updatedAt: 2 }, worker], "en", "anthropic"));
+    view.rerender(statusView([{ ...router, updatedAt: 2 }], "en", "anthropic"));
     expect(view.container.querySelector('[data-slot="comma-logo-animation"]')).toBe(
       logo
     );
+
+    view.rerender(statusView([router, worker], "en", "anthropic"));
+    const workerAvatar = view.container.querySelector('[data-actor-role="worker"]');
+    expect(
+      view.container.querySelector('[data-slot="comma-logo-animation"]')
+    ).toBeNull();
+    expect(view.container.querySelector('[data-actor-role="router"]')).toHaveAttribute(
+      "data-model-vendor",
+      "comma"
+    );
+    expect(workerAvatar).toHaveAttribute("data-model-vendor", "anthropic");
+    expect(workerAvatar?.querySelector("img")).toBeInTheDocument();
 
     view.rerender(
       statusView([{ ...router, state: "error", status: "Runtime unavailable" }])
@@ -115,17 +124,24 @@ describe("Task activity summary", () => {
     expect(view.container.querySelector(".comma-chat-activity-avatar")).toBeNull();
   });
 
-  it("draws the Comma mark once when the Worker runs Comma's own model", () => {
-    const view = render(statusView([router, worker], "en", "comma"));
-    const avatars = view.container.querySelectorAll(".comma-chat-activity-avatar");
-    expect(avatars).toHaveLength(1);
-    expect(avatars[0]).toHaveAttribute("data-actor-role", "router");
+  it.each(["comma", undefined])(
+    "draws the Comma mark once when the Worker's model maker is %s",
+    (vendor) => {
+      const view = render(statusView([router, worker], "en", vendor));
+      const avatars = view.container.querySelectorAll(".comma-chat-activity-avatar");
+      expect(avatars).toHaveLength(1);
+      expect(avatars[0]).toHaveAttribute("data-actor-role", "router");
+      expect(
+        avatars[0]!.querySelector('[data-slot="comma-logo-animation"]')
+      ).toBeInTheDocument();
 
-    view.rerender(statusView([worker], "en", "comma"));
-    const alone = view.container.querySelectorAll(".comma-chat-activity-avatar");
-    expect(alone).toHaveLength(1);
-    expect(alone[0]).toHaveAttribute("data-model-vendor", "comma");
-  });
+      view.rerender(statusView([worker], "en", vendor));
+      const alone = view.container.querySelectorAll(".comma-chat-activity-avatar");
+      expect(alone).toHaveLength(1);
+      expect(alone[0]).toHaveAttribute("data-actor-role", "worker");
+      expect(alone[0]!.querySelector('[data-slot="comma-product-mark"]')).toBeVisible();
+    }
+  );
 
   it.each([
     [[router], "Router is thinking"],
@@ -224,6 +240,36 @@ describe("a Task the viewer may switch to another model", () => {
     ]);
     await userEvent.click(actions[1]!);
     expect(onSwitchRun).toHaveBeenCalledOnce();
+  });
+
+  it("offers a used-up plan's credits first, and one Switch model", async () => {
+    render(
+      <CommaI18nProvider locale="en">
+        <ParticipantStatusSlot
+          participantStatus={undefined}
+          participantStatuses={[
+            {
+              ...worker,
+              issue: "quota_exhausted",
+              issueDetail: { source: "codex", profileId: "prof_1", credits: true },
+              state: "error",
+              status: "error",
+            },
+          ]}
+          onSwitchRun={vi.fn()}
+        />
+      </CommaI18nProvider>
+    );
+    expect(document.body).toHaveTextContent("still has ChatGPT credits");
+    const actions = within(screen.getByTestId("chat-funding-actions")).getAllByRole(
+      "button"
+    );
+    expect(actions.map((button) => button.textContent)).toEqual([
+      "Continue with credits",
+      "Switch model",
+    ]);
+    await userEvent.click(actions[0]!);
+    expect(window.location.hash).toBe("#/settings?category=models&profile=prof_1");
   });
 });
 
@@ -388,7 +434,7 @@ describe("ParticipantStatusSlot", () => {
             : "正在处理「整理本周周报」的新进展"
         );
         const bubble = bubbleOf(view.container);
-        expect(bubble.querySelector(".comma-chat-thinking-logo")).not.toBeNull();
+        expectStillRouterDisc(bubble);
         // The Worker shows as the mark of its model's maker.
         expect(bubble.querySelectorAll("[data-worker-avatar]")).toHaveLength(1);
         expect(bubble.querySelector("[data-worker-avatar]")).toHaveAttribute(
@@ -545,10 +591,23 @@ describe("ParticipantStatusSlot", () => {
         })
       );
       const following = bubbleOf(view.container);
-      expect(following.querySelector(".comma-chat-thinking-logo")).not.toBeNull();
+      expectStillRouterDisc(following);
       const marks = following.querySelectorAll("[data-worker-avatar]");
       expect(marks).toHaveLength(1);
       expect(marks[0]).toHaveAttribute("data-model-vendor", "anthropic");
+
+      // A Worker whose model's maker is not known yet shows the Comma mark too.
+      const unknown = { ...weekly, worker: { ...codex, vendor: undefined } };
+      view.rerender(
+        slotView({
+          activity: waitFrame,
+          participantStatus: { ...router, workingConversationIds: ["task_weekly"] },
+          focus: focusOf("following", [unknown]),
+        })
+      );
+      const alone = bubbleOf(view.container);
+      expect(alone.querySelector('[data-slot="comma-logo-animation"]')).not.toBeNull();
+      expect(alone.querySelectorAll(".comma-chat-thinking-worker")).toHaveLength(0);
 
       view.rerender(
         slotView({
@@ -1289,6 +1348,14 @@ const inertTaskLink = (task: ActivityFocusTask) => (
 );
 const bubbleOf = (container: HTMLElement) =>
   container.querySelector<HTMLElement>(".comma-chat-thinking-bubble")!;
+
+/** Beside Worker discs the Router's mark is a still Comma disc, not the animation. */
+function expectStillRouterDisc(bubble: HTMLElement) {
+  expect(bubble.querySelector('[data-slot="comma-logo-animation"]')).toBeNull();
+  expect(
+    bubble.querySelector(".comma-chat-thinking-worker:not([data-worker-avatar])")
+  ).toHaveAttribute("data-model-vendor", "comma");
+}
 
 function currentSummary(container: HTMLElement) {
   return container.querySelector(

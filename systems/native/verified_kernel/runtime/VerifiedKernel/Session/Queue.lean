@@ -65,20 +65,23 @@ def queueAppend (state event : Term) : KernelM Term := do
   let next ← maximum ((← field state "next_queue_id").default (i 1)) (← add id (i 1))
   let dedupe ← addDedupe dedupe keys
   let activity := (← Data.event event "created_at").default (← field state "last_activity_at")
-  write state [("input_queue", list queue), ("next_queue_id", next), ("input_dedupe", dedupe), ("last_activity_at", activity)]
+  write state [("input_queue", list queue), ("next_queue_id", next), ("input_dedupe", dedupe), ("last_activity_at", metadataSeconds activity)]
 
-private def collectRefsFuel : Nat → Term → KernelM (List Term)
-  | 0, _ => fail "invalid_observation"
-  | fuel + 1, value => do
+private def collectRefsFuelDeferred : Nat → Term → KernelEval (List Term)
+  | 0, _ => monadLift (fail "invalid_observation")
+  | fuel + 1, value => KernelEval.defer fun _ => do
     match value with
     | .map _ =>
       let direct := if value.has (b "result_ref") then value.get (b "result_ref") else value.get (a "result_ref")
       let initial := if direct.isBinary && direct != b "" then [direct] else []
-      enumFold value initial (fun acc pair => do
+      enumFoldEval value initial (fun acc pair => do
         let .tuple [_, item] := pair | fail "function_clause"
-        return acc ++ (← collectRefsFuel fuel item))
-    | .list xs => xs.foldlM (fun acc x => return acc ++ (← collectRefsFuel fuel x)) []
+        return acc ++ (← collectRefsFuelDeferred fuel item))
+    | .list xs => xs.foldlM (fun acc x => return acc ++ (← collectRefsFuelDeferred fuel x)) []
     | _ => pure []
+
+private def collectRefsFuel (fuel : Nat) (value : Term) : KernelM (List Term) :=
+  KernelEval.run (collectRefsFuelDeferred fuel value)
 
 def collectRefs (value : Term) : KernelM (List Term) := do
   let journal ← get

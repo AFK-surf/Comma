@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The app's one empty state: a 24pt glyph, a 15pt title, an optional 13pt line of explanation and the way out, as
-/// the desktop's text-sm, centred in the space it is given. Home, Inbox, Search, the Archive, conversations, sheets
+/// The app's one empty state: a 24pt glyph, a 17pt semibold title, an optional 13pt line of explanation and the way
+/// out, centred in the space it is given. Home, Inbox, Search, the Archive, conversations, sheets
 /// and the start-up failure all use it, so an empty surface reads the same everywhere. Actions are bordered buttons.
 /// Give it the room to centre in: an overlay over a list, or a row whose height is the list's room.
 struct EmptyState<Icon: View, Actions: View>: View {
@@ -22,7 +22,7 @@ struct EmptyState<Icon: View, Actions: View>: View {
             VStack(spacing: 8) {
                 icon.foregroundStyle(CommaTheme.textTertiary).accessibilityHidden(true)
                 VStack(spacing: 4) {
-                    title.font(.subheadline.weight(.semibold)).foregroundStyle(CommaTheme.textPrimary)
+                    title.font(.headline).foregroundStyle(CommaTheme.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     if let description {
                         description.font(.footnote).foregroundStyle(CommaTheme.textTertiary)

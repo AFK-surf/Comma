@@ -45,10 +45,17 @@ data class ConversationState(
     val loadingOlder: Boolean = false,
     /** Where the next reply stands, as the core reads it for every client. */
     val reply: ReplyState = ReplyState(),
+    /**
+     * The composer's text as the core keeps it, on the device too, with each mention as its link; null until the
+     * conversation has loaded.
+     */
+    val draft: String? = null,
     /** The files the composer's draft holds, as the core uploads them. */
     val attachments: List<DraftAttachment> = emptyList(),
     /** The images each open question card's other answer holds, by the question's message; apart from the draft. */
     val questionAttachments: Map<String, List<DraftAttachment>> = emptyMap(),
+    /** The Task runs on a coding sandbox with a repository checked out: Task details offer its code review. */
+    val codingSandbox: Boolean = false,
     /** Orders this state against the receipt of a call: a receipt's revision is in every later state. */
     val revision: Long = 0,
     /** Identity only, used to reject prepared rows after their account generation ends. */
@@ -130,9 +137,13 @@ sealed interface MessagePart {
         val version: Long?,
         val originTaskId: String?,
         val blockIndex: Int,
+        /** What opens it; null when the core gave no content to read it by. */
+        val target: surf.comma.android.dynamicui.DynamicUiTarget? = null,
     ) : MessagePart
     /** An Agent's question: a card of its own after the message's text, never part of its Markdown. */
     data class Question(val question: AgentQuestion) : MessagePart
+    /** A Mini App Version a build deployed: a launch card after the message's text, never part of its Markdown. */
+    data class MiniApp(val app: surf.comma.android.miniapps.MiniAppCardValue) : MessagePart
 }
 
 data class BlobRef(val uuid: String, val hash: String, val size: Long)
@@ -212,6 +223,7 @@ data class DraftAttachment(
     val status: DraftAttachmentStatus,
     val path: String? = null,
     val error: String? = null,
+    val isImage: Boolean = false,
 )
 
 data class ReplyDraft(

@@ -223,7 +223,9 @@ private def noticeText (binding : Term) : String :=
   else if key binding "failure_reason" == b "model" then modelSummary else failureSummary
 
 /-- The send operation of the failure notice. The runtime dispatches it; it is
-not a model call and the transcript does not record it. -/
+not a model call and the transcript does not record it. Its text is the
+runtime's own, so it declares no sources: IFC then checks it against nothing
+in the context, which may hold other places' content. -/
 private def noticeCall (binding : Term) : Term :=
   let model := key binding "failure_reason" == b "model"
   let summary := b (noticeText binding)
@@ -244,7 +246,8 @@ private def noticeCall (binding : Term) : Term :=
   let intent := if model then [(b "reply_mode", b "progress")]
     else [(b "reply_mode", b "final"), (b "final_outcome", b "blocked")]
   .map [(b "id", key binding "tool_call_id"), (b "name", b "call"),
-    (b "args", .map ([(b "tool", tool), (b "params", params)] ++ intent)),
+    (b "args", .map ([(b "tool", tool), (b "params", params),
+      (b "ifc", .map [(b "sources", list [])])] ++ intent)),
     (b "runtime_failure_reply", binding)]
 
 /-- The transcript record of the failure notice `call`: a no-wake runtime
@@ -449,8 +452,6 @@ private def intentRecord (state machine record : Term) : KernelM Term := do
   let machine := (((phase machine "tools").put (b "aid") aid).put (b "planned") (Term.bool planned)).put
     (b "progress_event") progress
   return result machine [commit events hwm mode,
-    notify "timers" (.tuple [list (if planned then wrap (key admission "events") else []),
-      Term.bool (key record "speculative").truthy]),
     notify "telemetry" (a "response_commit"), notify "activity" (.tuple [a "tool_calls_started", calls]),
     .tuple [a "run_tools", calls, .map [(b "mode", b "model_turn"), (b "planned", Term.bool planned),
       (b "aid", aid), (b "progress_event", progress)]]]
@@ -481,10 +482,10 @@ private def resultsStored (ask : Ask) (state machine events hwm base stored : Te
   let committed ← asList settled
   if key machine "phase" == b "results_only" then
     return result (phase machine "done")
-      [commit committed hwm, notify "timers" (.tuple [settled, a "false"]), stop (a "committed")]
+      [commit committed hwm, stop (a "committed")]
   let machine := (phase machine (if key machine "phase" == b "notice_results" then "notice_committed" else "continuation")).put
     (b "settled") (Term.bool (Settlement.settled committed))
-  return result machine [commit committed hwm, notify "timers" (.tuple [settled, a "false"]), cont]
+  return result machine [commit committed hwm, cont]
 
 private def waitSet (results : Term) : Bool :=
   (wrap results).any (fun r =>
@@ -551,7 +552,7 @@ private def expire (state machine busy : Term) : KernelM Term := do
   | .tuple [.atom "extend", next] =>
     let event ← waitSetEvent state next
     if timer then
-      return result (phase machine "done") [commit [event], setTimer "wait_for" next,
+      return result (phase machine "done") [commit [event],
         notify "wait_extended" (.tuple [next, b "timer"]), stop (a "ignored")]
     return result entry [commit [event], notify "wait_extended" (.tuple [next, b "recovery"]), cont]
   | _ =>
@@ -580,7 +581,7 @@ private def activation (ask : Ask) (state machine : Term) : KernelM Term := do
     return result machine [.tuple [a "write", list events], cont]
   | .atom "expire" => expireEntry state machine
   | .atom "materialize" => return result done [materialize "until_wake"]
-  | .atom "wait" => return result done [setTimer "wait", stop (a "wait")]
+  | .atom "wait" => return result done [stop (a "wait")]
   | .tuple [.atom "retry", retryAt] => return result done [setTimer "retry" retryAt, stop (a "wait")]
   | .atom "resume" => return result done [.tuple [a "cancel_timer", a "retry"], materialize "run"]
   | .atom "run" => return result done [materialize "run"]

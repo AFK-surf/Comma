@@ -24,12 +24,14 @@ defmodule SalixAgent.InternalSession.State do
   # parks until new input advances the transcript. Configurable; 0 disables.
   @llm_failure_activation_cap 3
 
-  # Circuit breaker for consecutive non-settling assistant rounds, including
-  # guidance-only dispatch results. The session counter resets on a committed
-  # admitted tool result (including failure or async start), newly materialized
-  # wakeable input, or an advancing accepted ACK, never on a proposed tool call.
+  # Circuit breaker for consecutive non-settling assistant rounds. A round of
+  # only refused calls (guidance: a malformed call the model can correct) neither
+  # counts nor resets it. The session counter resets on a committed admitted
+  # tool result (including failure or async start), newly materialized wakeable
+  # input, or an advancing accepted ACK, never on a proposed tool call.
   # At the cap, the runtime fails the current activation and retires its replies.
   # Queued input and accepted async work are not acknowledged or cancelled.
+  # The next activation is told which request ended (`RunawayRetirementNotice`).
   @runaway_unsettled_round_cap 2
   # Consecutive identical tool results (same tool, same input, same outcome)
   # before the session parks. Polling tools repeat by design and are exempt.
@@ -100,6 +102,7 @@ defmodule SalixAgent.InternalSession.State do
             archived_through: 0,
             archive_chunks: [],
             segment_catalog: [],
+            archive_refs: %{},
             flush_id: nil,
             async_results: [],
             async_result_refs: %{},
@@ -126,7 +129,7 @@ defmodule SalixAgent.InternalSession.State do
   # eligibility, catalog span bounds, and result addressing key off them —
   # and are fixed at first assignment forever. Message ids keep their LLM/context
   # semantics untouched; the two coordinate spaces never compare. Watermark
-  # invariant: `archived_through <= compacted_seq <= last_seq`.
+  # bounds: `archived_through <= last_seq` and `compacted_seq <= last_seq`.
   # Legacy snapshots retain their source format while being read. The write
   # boundary fixes legacy coordinates and publishes only format 3 in one CAS.
 

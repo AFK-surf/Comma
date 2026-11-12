@@ -190,6 +190,33 @@ describe("message thread layout", () => {
     expect(replies.get("C")?.targetAnchorId).toBe("A");
   });
 
+  it("knows which messages a reply line runs down into, and whose row places it", () => {
+    const { crossedByLine } = messageRelationships([
+      message("A", "router"),
+      message("other", "worker"),
+      message("B", "router", "A", "A"),
+      message("C", "worker-c", "B", "A"),
+      message("unrelated", "worker"),
+    ]);
+    // A's line to B passes over the other thread's message into B, placed by
+    // B; C extends the line from B. Neither the line's top nor what follows it
+    // is crossed.
+    expect(
+      [...crossedByLine].map(([crossed, placedBy]) => [crossed, placedBy.messageId])
+    ).toEqual([
+      ["other", "B"],
+      ["B", "B"],
+      ["C", "C"],
+    ]);
+    // A member's reply hangs its line from under what it answers.
+    const member = messageRelationships([
+      { ...message("A", "user"), role: "user" },
+      message("B", "router", "A", "A"),
+      { ...message("R", "user", "B", "A"), role: "user" },
+    ]);
+    expect(member.crossedByLine.get("R")?.messageId).toBe("B");
+  });
+
   it("breaks sender groups at timestamps without splitting the thread", () => {
     const { positions, replies } = messageRelationships(
       [

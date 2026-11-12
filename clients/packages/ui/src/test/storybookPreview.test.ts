@@ -15,8 +15,9 @@ describe("Storybook reduced motion toolbar", () => {
     expect(isReducedMotionEnabled()).toBe(true);
 
     applyDocumentReducedMotion("full");
-    expect(document.documentElement.getAttribute(commaReducedMotionAttribute)).toBe(
-      "false"
+    expect(document.documentElement.hasAttribute(commaReducedMotionAttribute)).toBe(
+      false
     );
+    expect(isReducedMotionEnabled()).toBe(false);
   });
 });

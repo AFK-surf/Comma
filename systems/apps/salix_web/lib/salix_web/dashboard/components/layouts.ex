@@ -131,7 +131,7 @@ defmodule SalixWeb.Dashboard.Layouts do
             navigate="/dash/tenants"
             class="block border-t border-neutral-100 px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-50"
           >
-            Manage tenants
+            Browse tenants
           </.link>
         </.dropdown>
       </div>

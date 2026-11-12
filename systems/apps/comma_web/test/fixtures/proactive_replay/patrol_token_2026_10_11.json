@@ -540,9 +540,8 @@
    "name": "steady_state",
    "portrait": "refresh",
    "expect": {
-    "urgency_any": [
-     "critical",
-     "high"
+    "decision_any": [
+      "interrupt"
     ]
    }
   },
@@ -559,8 +558,8 @@
    ],
    "expect": {
     "collected_any": null,
-    "urgency_any": [
-     "ask"
+    "decision_any": [
+      "ask"
     ]
    }
   },
@@ -578,9 +577,8 @@
    ],
    "expect": {
     "collected_any": null,
-    "urgency_any": [
-     "critical",
-     "high"
+    "decision_any": [
+      "interrupt"
     ]
    }
   },

@@ -1,5 +1,6 @@
 defmodule Comma.AppleAuthTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   @moduletag database_isolation: "SERIALIZABLE"
 
@@ -39,27 +40,50 @@ defmodule Comma.AppleAuthTest do
   test "verified Apple subject creates one account and survives missing or changed email", %{
     key: key
   } do
-    email = email("first")
+    email = "apple.first#{SystemsRuntime.Proc.unique_integer([:positive])}@gmail.com"
     {:ok, attempt} = AppleAuth.start_attempt()
     token = token(key, claims(attempt, %{"email" => email}))
-    assert {:ok, first} = AppleAuth.complete(completion(attempt, token))
+    assert {:ok, first} = Comma.AuthAbuseTestSupport.complete_apple(completion(attempt, token))
     assert {:ok, user, session} = Accounts.validate_session(first["token"])
     assert user["email"] == email
+    registered = Repo.get!(Comma.Accounts.User, user["id"])
+    assert registered.signup_credit_eligible
+    assert registered.signup_credit_gmail_claimed
     assert session["client_kind"] == "ios"
     stored = Repo.get!(AuthSession, first["session_id"])
     assert stored.auth_method == "apple"
     assert Repo.get!(Identity, stored.login_identity_id).subject == "stable-subject"
-    assert {:error, :invalid_apple_attempt} = AppleAuth.complete(completion(attempt, token))
+
+    assert {:error, :invalid_apple_attempt} =
+             Comma.AuthAbuseTestSupport.complete_apple(completion(attempt, token))
 
     for extra <- [%{"email" => email("new")}, %{"email" => nil}] do
       {:ok, next} = AppleAuth.start_attempt()
 
       assert {:ok, returning} =
-               AppleAuth.complete(completion(next, token(key, claims(next, extra))))
+               Comma.AuthAbuseTestSupport.complete_apple(
+                 completion(next, token(key, claims(next, extra)))
+               )
 
       assert returning["user"]["id"] == first["user"]["id"]
       assert returning["user"]["email"] == email
     end
+  end
+
+  @tag :analytics
+  test "an iOS signup's registration names the iOS client", ctx do
+    {:ok, attempt} = AppleAuth.start_attempt()
+    token = token(ctx.key, claims(attempt, %{"email" => email("ios-signup")}))
+    assert {:ok, session} = Comma.AuthAbuseTestSupport.complete_apple(completion(attempt, token))
+
+    assert [registration] =
+             ctx.analytics_worker
+             |> Comma.AnalyticsTestSupport.collect()
+             |> Enum.filter(&(&1["event"] == "comma_user_registered"))
+
+    assert registration["distinct_id"] == session["user"]["id"]
+    assert registration["properties"]["client_kind"] == "ios"
+    assert registration["properties"]["client_platform"] == "ios"
   end
 
   test "existing email requires account OTP and rejects unverified first-login emails", %{
@@ -70,7 +94,7 @@ defmodule Comma.AppleAuthTest do
     {:ok, attempt} = AppleAuth.start_attempt()
 
     assert {:ok, %{"status" => "otp_required", "challenge_id" => id, "code" => code}} =
-             AppleAuth.complete(
+             Comma.AuthAbuseTestSupport.complete_apple(
                completion(attempt, token(key, claims(attempt, %{"email" => email})))
              )
 
@@ -91,7 +115,7 @@ defmodule Comma.AppleAuthTest do
     {:ok, next} = AppleAuth.start_attempt()
 
     assert {:error, :apple_email_required} =
-             AppleAuth.complete(
+             Comma.AuthAbuseTestSupport.complete_apple(
                completion(
                  next,
                  token(
@@ -140,7 +164,10 @@ defmodule Comma.AppleAuthTest do
 
   test "disabled Apple identity rejects its existing bearer", %{key: key} do
     {:ok, attempt} = AppleAuth.start_attempt()
-    {:ok, issued} = AppleAuth.complete(completion(attempt, token(key, claims(attempt))))
+
+    {:ok, issued} =
+      Comma.AuthAbuseTestSupport.complete_apple(completion(attempt, token(key, claims(attempt))))
+
     identity_id = Repo.get!(AuthSession, issued["session_id"]).login_identity_id
 
     Repo.get!(Identity, identity_id)

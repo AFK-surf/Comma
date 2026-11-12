@@ -9,7 +9,7 @@
     <item name="chat_sidebar_settings" type="id" />
     <item name="tab_home" type="id" />
     <item name="tab_inbox" type="id" />
-    <item name="tab_search" type="id" />
+    <item name="home_search" type="id" />
     <item name="tab_settings" type="id" />
     <item name="tab_router" type="id" />
     <item name="shell_root" type="id" />
@@ -18,5 +18,6 @@
     <item name="inbox_list" type="id" />
     <item name="search_field" type="id" />
     <item name="task_dock" type="id" />
+    <item name="task_dock_grabber" type="id" />
     <item name="remote_image_job" type="id" />
 </resources>

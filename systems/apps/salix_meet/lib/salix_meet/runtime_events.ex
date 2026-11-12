@@ -225,7 +225,7 @@ defmodule SalixMeet.RuntimeEvents do
   defp with_reason(update, _event), do: update
 
   defp joiner_status_notification_key(%{"type" => "status", "status" => status})
-       when status in ~w(waiting_room in_meeting left error guest_fallback),
+       when status in ~w(waiting_room in_meeting left error guest_fallback lark_join_blocked),
        do: status
 
   defp joiner_status_notification_key(_event), do: nil
@@ -242,6 +242,8 @@ defmodule SalixMeet.RuntimeEvents do
       "left" -> %{"status" => "processing", "left_at" => parse_timestamp(event["timestamp"])}
       "error" -> %{"status" => "failed", "error" => trim(event["message"])}
       "guest_fallback" -> %{"joined_as" => "guest"}
+      # A Feishu/Lark meeting refused the bot for now (`SalixMeet.LarkBot`).
+      "lark_join_blocked" -> %{"lark_join_blocked" => trim(event["lark_reason"])}
       _ -> %{}
     end
     |> with_reason(event)
@@ -258,7 +260,8 @@ defmodule SalixMeet.RuntimeEvents do
       "artifact_root" => root,
       "artifacts" => if(map_size(artifacts) > 0, do: artifacts, else: nil),
       "captions" => list_or_nil(event["captions"]),
-      "chats" => list_or_nil(event["chats"])
+      "chats" => list_or_nil(event["chats"]),
+      "participants" => names_or_nil(event["participants"])
     }
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
@@ -286,7 +289,7 @@ defmodule SalixMeet.RuntimeEvents do
     state
     |> merge_simple(
       update,
-      ~w(status error reason_code summary summary_status summary_error transcript_source artifact_root joined_at left_at joined_as)
+      ~w(status error reason_code summary summary_status summary_error transcript_source artifact_root joined_at left_at joined_as participants)
     )
     |> merge_artifacts(update["artifacts"])
     |> append_list("captions", update["captions"], event_key)
@@ -879,6 +882,20 @@ defmodule SalixMeet.RuntimeEvents do
 
   defp list_or_nil(value) when is_list(value), do: Enum.map(value, &stringify/1)
   defp list_or_nil(_value), do: nil
+
+  defp names_or_nil(names) when is_list(names) do
+    case names
+         |> Enum.filter(&is_binary/1)
+         |> Enum.map(&(&1 |> String.trim() |> String.slice(0, 100)))
+         |> Enum.reject(&(&1 == ""))
+         |> Enum.uniq()
+         |> Enum.take(200) do
+      [] -> nil
+      kept -> kept
+    end
+  end
+
+  defp names_or_nil(_names), do: nil
 
   defp present(value) do
     case trim(value) do

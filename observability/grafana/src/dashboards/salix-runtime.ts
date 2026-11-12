@@ -13,6 +13,8 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
     "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above.";
   const first =
     " Managed Prometheus takes a pod's first sample of a series as its zero, so the first event of each series on a pod is never counted and the series shows from its second; no query form recovers it.";
+  const zeroFromStart =
+    " These series read 0 from process start for each label value but other (zero_series in SystemsObservability.Metrics), so a pod's first event is counted.";
   const managesBusinessAlerts = environment.name === "staging";
   const pagingContext = managesBusinessAlerts
     ? "Cloud Monitoring owns platform paging; the two bounded LLM queries below also feed staging-only Grafana P2 rules."
@@ -493,8 +495,8 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
       timeSeriesPanel(
         environment,
         571,
-        "Dependency and event pressure",
-        `${lazyContext} Compare active dependency work with detached Connector event backlog; sustained pressure should be read with timeout and saturation outcomes.`,
+        "Dependency pressure",
+        `${lazyContext} Active dependency work; sustained pressure should be read with timeout and saturation outcomes.`,
         { x: 12, y: 61, w: 12, h: 8 },
         [
           {
@@ -503,31 +505,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
               'max by (workload, kind) (salix_dependency_jobs_active{namespace="comma",workload="comma"})',
             legend: "{{workload}} {{kind}} active jobs",
           },
-          {
-            refId: "B",
-            expression:
-              'max by (workload) (salix_connector_external_event_queue_depth{namespace="comma",workload="comma"})',
-            legend: "{{workload}} external-event queue",
-          },
         ],
-      ),
-    )
-    .withPanel(
-      timeSeriesPanel(
-        environment,
-        572,
-        "Connector external-event outcomes",
-        `${lazyContext} Completion and terminal/cache-hit outcomes should keep pace with accepted and retry outcomes; sustained retry, timeout, or saturation indicates dependency trouble.`,
-        { x: 0, y: 69, w: 12, h: 8 },
-        [
-          {
-            refId: "A",
-            expression:
-              'sum by (workload, outcome) (rate(salix_connector_external_events_total{namespace="comma",workload="comma"}[5m]))',
-            legend: "{{workload}} {{outcome}}",
-          },
-        ],
-        "ops",
       ),
     )
     .withPanel(
@@ -536,7 +514,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         573,
         "Connector ownership cleanup",
         `${lazyContext} Pending RPC and stream outcomes expose caller, deadline, capacity, and transport cleanup without high-cardinality operation identities.`,
-        { x: 12, y: 69, w: 12, h: 8 },
+        { x: 0, y: 69, w: 24, h: 8 },
         [
           {
             refId: "A",
@@ -698,7 +676,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         environment,
         600,
         "Station Task delegations unanswered",
-        `${lazyContext} One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.${first}`,
+        `${lazyContext} One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM, a sandbox or a desktop station (kind). The Cloud Monitoring P2 pages for cloud_vm and sandbox on the stages that are failures; given_no_reply is counted only, because a long turn and a dead one look alike, and a desktop station's owner closing a laptop is no failure.${zeroFromStart}`,
         { x: 0, y: 93, w: 12, h: 8 },
         [
           {
@@ -716,7 +694,7 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         environment,
         601,
         "Station Task first reply p95",
-        `${lazyContext} Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.${first}`,
+        `${lazyContext} Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.${zeroFromStart}`,
         { x: 12, y: 93, w: 12, h: 8 },
         [
           {
@@ -874,6 +852,174 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
             expression:
               'sum by (provider, reason) (increase(salix_vm_container_loss_total{namespace="comma",workload="comma"}[24h]))',
             legend: "{{provider}} {{reason}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      statPanel(
+        environment,
+        620,
+        "Sandbox records by state",
+        "How many sandbox Task Workloads stand in each state (salix_sandbox_records): starting (reserved or being made), ready (its station connected), stopped (idle), lost (L4ES no longer runs it), failed, ended (its Task did). Every node publishes the same fleet once a minute from one aggregate read; the max across pods is the fleet. 0 is a real zero.",
+        { x: 6, y: 117, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'max by (state) (salix_sandbox_records{namespace="comma",workload="comma"})',
+            legend: "{{state}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        621,
+        "Sandbox start p50 / p95",
+        `${lazyContext} Seconds from a sandbox Workload's starting to its station's connection (outcome ok), over the starts of the last six hours: create is a new Task's first sandbox, wake a stopped, lost, failed or ended one started again from its disk for a Message. Starts are few, so a point is a few starts; the failed ones are counted in the starts-per-day panel.${zeroFromStart}`,
+        { x: 12, y: 117, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'histogram_quantile(0.5, sum by (le, kind) (rate(salix_sandbox_start_duration_seconds_bucket{namespace="comma",workload="comma",outcome="ok"}[6h])))',
+            legend: "{{kind}} p50",
+          },
+          {
+            refId: "B",
+            expression:
+              'histogram_quantile(0.95, sum by (le, kind) (rate(salix_sandbox_start_duration_seconds_bucket{namespace="comma",workload="comma",outcome="ok"}[6h])))',
+            legend: "{{kind}} p95",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        622,
+        "Sandbox starts per day",
+        `${lazyContext} Starts that ended in the last 24 hours, by kind and outcome: the station connected (ok), or Salix gave up (failed: no connection in 5 minutes, L4ES refused the sandbox, the Workspace had no GitHub token for a coding Task). A failed start writes its reason into the Task.${zeroFromStart}`,
+        { x: 18, y: 117, w: 6, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (kind, outcome) (increase(salix_sandbox_start_duration_seconds_count{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{kind}} {{outcome}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        623,
+        "Sandbox oldest record starting",
+        "How long the oldest sandbox Workload in starting has stood there, or with none, how long since the last fleet publish: the current time minus salix_sandbox_starting_oldest_timestamp_seconds, max across pods. With none starting it rises to about 90 seconds between publishes. A start passes in seconds to minutes and is failed after 5. More means the checks (SalixWeb.CodingSandboxes) do not reach it, or no node publishes. comma_alerting:sandbox_checks_stalled pages above 300 seconds for 10 minutes.",
+        { x: 0, y: 125, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'time() - max(salix_sandbox_starting_oldest_timestamp_seconds{namespace="comma",workload="comma"})',
+            legend: "oldest starting",
+          },
+        ],
+        "s",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        624,
+        "Sandbox runs ended per day",
+        `${lazyContext} Runs (a sandbox starting or ready) that ended in the last 24 hours, by the state recorded: stopped (idle for 2 hours, or 3 minutes in review), lost (L4ES no longer ran it, without Salix stopping it), failed, ended (its Task did). A rising lost count is the sandbox counterpart of a Cloud VM container loss.${zeroFromStart}`,
+        { x: 8, y: 125, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (state) (increase(salix_sandbox_ends_total{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{state}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      statPanel(
+        environment,
+        625,
+        "Stations that lost a Task's thread (24h)",
+        "Stations invited to a Task again in the last 24 hours because they had no thread of it (salix_station_tasks_lost_thread_total), by kind. For a sandbox it is a disk L4ES gave up, so the sandbox started empty, or a lost station state; its new Session is given the Task from its start. Each kind reads 0 from process start, so a pod's first loss is counted.",
+        { x: 16, y: 125, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (kind) (increase(salix_station_tasks_lost_thread_total{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{kind}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        626,
+        "Sandbox start success rate (24h)",
+        `${lazyContext} Share of the starts that ended in the last 24 hours with the station connected (ok), by kind. A failed start also counts a Workspace with no GitHub account, which its people must fix, and a Task that fails again and again counts each time, so read it with the starts-per-hour panel. No point means no start ended in the window.${zeroFromStart}`,
+        { x: 0, y: 133, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (kind) (increase(salix_sandbox_start_duration_seconds_count{namespace="comma",workload="comma",outcome="ok"}[24h])) / sum by (kind) (increase(salix_sandbox_start_duration_seconds_count{namespace="comma",workload="comma"}[24h]))',
+            legend: "{{kind}}",
+          },
+        ],
+        "percentunit",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        627,
+        "Sandbox starts per hour",
+        `${lazyContext} Starts that ended in the last hour, by kind and outcome. A start counts when its station connects (ok) or when Salix gives up on it (failed), not when it begins. comma_alerting:sandbox_start_failed pages at three failed starts in 30 minutes.${zeroFromStart}`,
+        { x: 8, y: 133, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (kind, outcome) (increase(salix_sandbox_start_duration_seconds_count{namespace="comma",workload="comma"}[1h]))',
+            legend: "{{kind}} {{outcome}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        628,
+        "Sandbox runs ended per hour",
+        `${lazyContext} Runs that ended in the last hour, by the state recorded: stopped (idle), lost (L4ES ended it outside Comma), failed, ended (its Task did). comma_alerting:sandbox_lost pages on one lost run.${zeroFromStart}`,
+        { x: 16, y: 133, w: 8, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (state) (increase(salix_sandbox_ends_total{namespace="comma",workload="comma"}[1h]))',
+            legend: "{{state}}",
           },
         ],
         "short",

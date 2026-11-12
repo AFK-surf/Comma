@@ -13,6 +13,7 @@ import {
   grayLightMode,
   hexToOklch,
   oklchChromaGainFromSample,
+  writeDocumentReducedMotion,
 } from "@comma/ui/tokens";
 import {
   createContext,
@@ -21,6 +22,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -61,10 +63,33 @@ export const commaFontSizeScale = {
 
 /**
  * How much of the macOS window material shows through the window color, as a
- * percentage on the page root. The Appearance slider previews a drag by
- * writing it before the setting commits.
+ * percentage. Only the element that tints the window holds it, and it is
+ * registered and not inherited (styles.css), so a change restyles that
+ * element alone.
  */
-export const commaWindowTransparencyProperty = "--comma-window-transparency";
+const commaWindowTransparencyProperty = "--comma-window-transparency";
+
+const showWindowTransparency = (element: HTMLElement, value: number) => {
+  const shown = `${Math.round(Math.min(100, Math.max(0, value)))}%`;
+  if (element.style.getPropertyValue(commaWindowTransparencyProperty) !== shown) {
+    element.style.setProperty(commaWindowTransparencyProperty, shown);
+  }
+};
+
+/**
+ * Where the window transparency shows: the app shell, which tints the window
+ * over its material. The shell hands its element over with `ref`; the provider
+ * writes the saved value there, and the Appearance slider previews a drag
+ * there before the value commits, without a React render.
+ */
+export interface CommaWindowTransparencyTarget {
+  ref: (element: HTMLElement | null) => void;
+  /** Shows `value`, a percentage, until the saved value changes. */
+  preview: (value: number) => void;
+}
+
+const CommaWindowTransparencyTargetContext =
+  createContext<CommaWindowTransparencyTarget | null>(null);
 
 /** A chosen family leads Comma's own stack, which still covers glyphs it lacks. */
 export const commaFontFamilyStack = (family: string) =>
@@ -433,11 +458,31 @@ export function CommaAppearanceProvider({
     if (root.dataset.commaWindowTranslucency !== value) {
       root.dataset.commaWindowTranslucency = value;
     }
-    root.style.setProperty(
-      commaWindowTransparencyProperty,
-      `${preferences.windowTransparency}%`
-    );
-  }, [preferences.windowTranslucency, preferences.windowTransparency]);
+  }, [preferences.windowTranslucency]);
+
+  // A window without an app shell (an accessory renderer) shows no transparency.
+  const windowTransparencyElementRef = useRef<HTMLElement | null>(null);
+  const savedWindowTransparencyRef = useRef(preferences.windowTransparency);
+  const windowTransparencyTarget = useMemo<CommaWindowTransparencyTarget>(
+    () => ({
+      ref: (element) => {
+        windowTransparencyElementRef.current = element;
+        if (element) {
+          showWindowTransparency(element, savedWindowTransparencyRef.current);
+        }
+      },
+      preview: (value) => {
+        const element = windowTransparencyElementRef.current;
+        if (element) showWindowTransparency(element, value);
+      },
+    }),
+    []
+  );
+  useLayoutEffect(() => {
+    savedWindowTransparencyRef.current = preferences.windowTransparency;
+    const element = windowTransparencyElementRef.current;
+    if (element) showWindowTransparency(element, preferences.windowTransparency);
+  }, [preferences.windowTransparency]);
 
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -448,11 +493,7 @@ export function CommaAppearanceProvider({
   }, [preferences.pointerCursors]);
 
   useLayoutEffect(() => {
-    const root = document.documentElement;
-    const value = String(reducedMotionEnabled);
-    if (root.getAttribute(commaReducedMotionAttribute) !== value) {
-      root.setAttribute(commaReducedMotionAttribute, value);
-    }
+    writeDocumentReducedMotion(reducedMotionEnabled);
   }, [reducedMotionEnabled]);
 
   // Keep root styles in place during live edits; clear them only on unmount.
@@ -465,7 +506,6 @@ export function CommaAppearanceProvider({
       delete root.dataset.commaFontSize;
       delete root.dataset.commaPointerCursors;
       delete root.dataset.commaWindowTranslucency;
-      root.style.removeProperty(commaWindowTransparencyProperty);
       root.style.removeProperty("--font-sans");
       root.style.removeProperty("--comma-theme-h");
       root.style.removeProperty("--comma-theme-c");
@@ -531,7 +571,9 @@ export function CommaAppearanceProvider({
 
   return (
     <CommaAppearanceContext.Provider value={value}>
-      <CommaUiThemeProvider theme={resolvedTheme}>{children}</CommaUiThemeProvider>
+      <CommaWindowTransparencyTargetContext.Provider value={windowTransparencyTarget}>
+        <CommaUiThemeProvider theme={resolvedTheme}>{children}</CommaUiThemeProvider>
+      </CommaWindowTransparencyTargetContext.Provider>
     </CommaAppearanceContext.Provider>
   );
 }
@@ -546,12 +588,8 @@ export function CommaReducedMotionRootSync({ children }: { children: ReactNode }
   const reducedMotion = clientSettings.settings.appearance.reducedMotion;
 
   useLayoutEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute(
-      commaReducedMotionAttribute,
-      String(reducedMotion || systemReducedMotion)
-    );
-    return () => root.removeAttribute(commaReducedMotionAttribute);
+    writeDocumentReducedMotion(reducedMotion || systemReducedMotion);
+    return () => document.documentElement.removeAttribute(commaReducedMotionAttribute);
   }, [reducedMotion, systemReducedMotion]);
 
   return <>{children}</>;
@@ -561,6 +599,17 @@ export function useCommaAppearance(): CommaAppearanceContextValue {
   const value = useContext(CommaAppearanceContext);
   if (!value) {
     throw new Error("useCommaAppearance must be used within CommaAppearanceProvider.");
+  }
+  return value;
+}
+
+/** Stays the same for the provider's life, so a consumer renders only once for it. */
+export function useCommaWindowTransparencyTarget(): CommaWindowTransparencyTarget {
+  const value = useContext(CommaWindowTransparencyTargetContext);
+  if (!value) {
+    throw new Error(
+      "useCommaWindowTransparencyTarget must be used within CommaAppearanceProvider."
+    );
   }
   return value;
 }

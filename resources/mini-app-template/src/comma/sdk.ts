@@ -24,6 +24,17 @@ export const miniAppCapabilities = [
   "notifications",
   "clipboard.write",
   "links.open",
+  "microphone",
+  "camera",
+  "location",
+  "screen.wake",
+  "fullscreen",
+  "clipboard.read",
+  "share",
+  "haptics",
+  "midi",
+  "usb",
+  "bluetooth",
 ] as const;
 export type MiniAppCapability = (typeof miniAppCapabilities)[number];
 
@@ -40,6 +51,24 @@ export const miniAppCapabilityOps: Record<MiniAppCapability, readonly string[]> 
   notifications: ["notify"],
   "clipboard.write": ["clipboard.write"],
   "links.open": ["links.open"],
+  microphone: [
+    "microphone.devices",
+    "microphone.watch",
+    "microphone.start",
+    "microphone.startChannels",
+    "microphone.stop",
+  ],
+  camera: ["camera.capture"],
+  location: ["location.current"],
+  "screen.wake": ["screen.keepAwake"],
+  fullscreen: ["screen.fullscreen"],
+  "clipboard.read": ["clipboard.read"],
+  share: ["share"],
+  haptics: ["haptics"],
+  midi: ["midi.start", "midi.stop"],
+  // Native browser APIs. The iframe policy and browser device chooser control access.
+  usb: [],
+  bluetooth: [],
 };
 
 export const miniAppStorageScopes = ["device", "user", "app"] as const;
@@ -63,6 +92,19 @@ export type MiniAppOp =
   | "notify"
   | "clipboard.write"
   | "links.open"
+  | "microphone.devices"
+  | "microphone.watch"
+  | "microphone.start"
+  | "microphone.stop"
+  | "camera.capture"
+  | "location.current"
+  | "screen.keepAwake"
+  | "screen.fullscreen"
+  | "clipboard.read"
+  | "share"
+  | "haptics"
+  | "midi.start"
+  | "midi.stop"
   | "backend.fetch"
   | `storage.${MiniAppStorageScope}.${MiniAppStorageMethod}`;
 
@@ -172,7 +214,20 @@ export type MiniAppHostPortMessage =
   | { type: "theme"; theme: MiniAppTheme; tokens: Record<string, string> }
   | { type: "grants"; grants: string[] }
   | { type: "stop"; reason: string }
-  | { type: "ping"; n: number };
+  | { type: "ping"; n: number }
+  | MiniAppStreamMessage;
+
+/**
+ * Host -> frame, over the port: data of a stream that `microphone.start`, `microphone.watch` or `midi.start`
+ * opened, or its end. `stream` is the ID that the start call returned.
+ */
+export type MiniAppStreamMessage =
+  | {
+      type: "stream";
+      stream: number;
+      data: Float32Array | Float32Array[] | MiniAppAudioInput[] | MiniAppMidiMessage;
+    }
+  | { type: "stream-end"; stream: number; reason: string };
 
 /** Frame -> host, over the port. */
 export type MiniAppFramePortMessage =
@@ -270,6 +325,72 @@ export interface MiniAppBackendFetchValue {
   body: ArrayBuffer;
 }
 
+/** One photo that the viewer took with the host's camera sheet. */
+export interface MiniAppPhoto {
+  mime: string;
+  width: number;
+  height: number;
+  data: ArrayBuffer;
+}
+
+export interface MiniAppLocation {
+  latitude: number;
+  longitude: number;
+  /** Meters, at the 95% confidence level. */
+  accuracy: number;
+  /** ISO time of the position fix. */
+  at: string;
+}
+
+export interface MiniAppShareArgs {
+  title?: string;
+  text?: string;
+  /** An https URL. */
+  url?: string;
+}
+
+/** `vibrate`: milliseconds, alternating on and off, at most 10 entries and 5 seconds in total. */
+export interface MiniAppHapticsArgs {
+  pattern: number[];
+}
+
+/** An audio input device. `id` is stable for this app on this device until the viewer clears site data. */
+export interface MiniAppAudioInput {
+  id: string;
+  name: string;
+  /** Browser-reported ranges, absent when unavailable. Not physical port names or a guarantee that every combination works. */
+  channelCount?: { min: number; max: number };
+  sampleRate?: { min: number; max: number };
+}
+
+export interface MiniAppMicrophoneChannelsOptions {
+  deviceId?: string;
+  /** Exact input channel count, 1 to 32 (Web Audio's limit). Unsupported counts fail instead of mixing down. */
+  channelCount: number;
+  /** Zero-based input channel indices, in delivery order. Default: all channels. No duplicates. */
+  channels?: number[];
+}
+
+export interface MiniAppMicrophoneChannels {
+  sampleRate: number;
+  device: MiniAppAudioInput;
+  channelCount: number;
+  channels: number[];
+}
+
+export interface MiniAppMidiInput {
+  id: string;
+  name: string;
+}
+
+/** One MIDI message from an input device. System exclusive messages are not sent. */
+export interface MiniAppMidiMessage {
+  input: string;
+  data: Uint8Array;
+  /** Milliseconds, from the host's `performance.now()` clock. */
+  time: number;
+}
+
 /** Each operation's arguments and value, as they cross the port. */
 export interface MiniAppOpTable {
   viewer: { args: Record<string, never>; value: MiniAppViewer };
@@ -296,6 +417,38 @@ export interface MiniAppOpTable {
   notify: { args: { title: string; body: string }; value: null };
   "clipboard.write": { args: { text: string }; value: null };
   "links.open": { args: { url: string }; value: { opened: boolean } };
+  "microphone.devices": {
+    args: Record<string, never>;
+    value: { devices: MiniAppAudioInput[] };
+  };
+  "microphone.watch": {
+    args: Record<string, never>;
+    value: { stream: number; devices: MiniAppAudioInput[] };
+  };
+  "microphone.start": {
+    args: { deviceId?: string };
+    value: { stream: number; sampleRate: number; device: MiniAppAudioInput };
+  };
+  "microphone.startChannels": {
+    args: MiniAppMicrophoneChannelsOptions;
+    value: MiniAppMicrophoneChannels & { stream: number };
+  };
+  "microphone.stop": { args: { stream: number }; value: null };
+  "camera.capture": {
+    args: { facing?: "user" | "environment" };
+    value: MiniAppPhoto | null;
+  };
+  "location.current": { args: Record<string, never>; value: MiniAppLocation };
+  "screen.keepAwake": { args: { on: boolean }; value: null };
+  "screen.fullscreen": { args: { on: boolean }; value: null };
+  "clipboard.read": { args: Record<string, never>; value: { text: string } };
+  share: { args: MiniAppShareArgs; value: { shared: boolean } };
+  haptics: { args: MiniAppHapticsArgs; value: { played: boolean } };
+  "midi.start": {
+    args: Record<string, never>;
+    value: { stream: number; inputs: MiniAppMidiInput[] };
+  };
+  "midi.stop": { args: { stream: number }; value: null };
   "backend.fetch": { args: MiniAppBackendFetchArgs; value: MiniAppBackendFetchValue };
 }
 export type MiniAppStorageOpTable = {
@@ -388,9 +541,66 @@ export interface Comma {
     }): Promise<MiniAppCalendarEvent[]>;
   };
   notify(title: string, body: string): Promise<void>;
-  clipboard: { write(text: string): Promise<void> };
+  clipboard: {
+    write(text: string): Promise<void>;
+    /** Reads the clipboard's text. The viewer confirms each read. */
+    read(): Promise<string>;
+  };
   /** Opens an https URL outside Comma after the user confirms. */
   open(url: string): Promise<{ opened: boolean }>;
+  microphone: {
+    /** Captures separate PCM arrays in `channels` order, at the returned sample rate. Uses the microphone grant and lifetime of `start`. */
+    startChannels(
+      options: MiniAppMicrophoneChannelsOptions,
+      onSamples: (samples: Float32Array[]) => void,
+      onEnd?: (reason: string) => void
+    ): Promise<MiniAppStreamHandle & MiniAppMicrophoneChannels>;
+    /** Lists the audio input devices and their available capability ranges. */
+    devices(): Promise<MiniAppAudioInput[]>;
+    /**
+     * Calls `onChange` with the new list each time an audio input device is connected or removed, until `stop()`.
+     * `devices` is the list when it starts.
+     */
+    watch(
+      onChange: (devices: MiniAppAudioInput[]) => void,
+      onEnd?: (reason: string) => void
+    ): Promise<MiniAppStreamHandle & { devices: MiniAppAudioInput[] }>;
+    /**
+     * Starts the microphone. Comma records it and calls `onSamples` with mono PCM chunks (-1 to 1) at `sampleRate`
+     * until `stop()`, the app stops, the device is removed (reason `ended`), or the viewer revokes the grant (then
+     * `onEnd` gets the reason). `options.deviceId` is an `id` from `devices()`; without it, the system's default
+     * input. `device` is the input that records.
+     */
+    start(
+      onSamples: (samples: Float32Array) => void,
+      onEnd?: (reason: string) => void,
+      options?: { deviceId?: string }
+    ): Promise<MiniAppStreamHandle & { sampleRate: number; device: MiniAppAudioInput }>;
+  };
+  camera: {
+    /** Opens Comma's camera sheet. Resolves with the photo the viewer takes, or null when they close the sheet. */
+    capture(options?: {
+      facing?: "user" | "environment";
+    }): Promise<MiniAppPhoto | null>;
+  };
+  location: { current(): Promise<MiniAppLocation> };
+  screen: {
+    /** Keeps the screen on while the app is visible, until `keepAwake(false)` or the app stops. */
+    keepAwake(on: boolean): Promise<void>;
+    /** Shows the app full screen, or leaves full screen. Call it from a click or a key press. */
+    fullscreen(on: boolean): Promise<void>;
+  };
+  /** Opens the system share sheet. `shared` is false when the viewer cancels it. */
+  share(content: MiniAppShareArgs): Promise<{ shared: boolean }>;
+  /** Vibrates the device. `played` is false when the device cannot vibrate. */
+  haptics(pattern: number | number[]): Promise<{ played: boolean }>;
+  midi: {
+    /** Listens to every MIDI input device until `stop()`. */
+    start(
+      onMessage: (message: MiniAppMidiMessage) => void,
+      onEnd?: (reason: string) => void
+    ): Promise<MiniAppStreamHandle & { inputs: MiniAppMidiInput[] }>;
+  };
   backend: {
     /** Calls the app's own backend (`worker/`). `path` starts with `/`. */
     fetch(path: string, init?: MiniAppFetchInit): Promise<Response>;
@@ -400,6 +610,10 @@ export interface Comma {
   asset(path: string): string;
   /** Calls `listener` when the Comma theme changes. Returns an unsubscribe function. */
   onTheme(listener: (change: MiniAppThemeChange) => void): () => void;
+}
+
+export interface MiniAppStreamHandle {
+  stop(): Promise<void>;
 }
 
 export interface MiniAppFetchInit {

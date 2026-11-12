@@ -1,6 +1,6 @@
+import VerifiedKernelProofs.Session.WorkLifecycle
 import VerifiedKernelProofs.AgentLoop.Round
 import VerifiedKernelProofs.IFC.Identity
-import VerifiedKernelProofs.Session.WorkLifecycle
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

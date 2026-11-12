@@ -1,5 +1,6 @@
 defmodule Comma.AuthChallengesHardeningTest do
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
   use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
 
   import ExUnit.CaptureLog
@@ -48,7 +49,9 @@ defmodule Comma.AuthChallengesHardeningTest do
     SystemsRuntime.put_env(:comma_core, :auth, Keyword.put(current, :secret, nil))
 
     assert {:error, :auth_not_configured} =
-             AuthChallenges.request_email_login(%{"email" => "missing-secret@example.com"})
+             Comma.AuthAbuseTestSupport.request_email_login(%{
+               "email" => "missing-secret@example.com"
+             })
 
     SystemsRuntime.put_env(
       :comma_core,
@@ -57,7 +60,9 @@ defmodule Comma.AuthChallengesHardeningTest do
     )
 
     assert {:error, :auth_not_configured} =
-             AuthChallenges.request_email_login(%{"email" => "missing-rate-secret@example.com"})
+             Comma.AuthAbuseTestSupport.request_email_login(%{
+               "email" => "missing-rate-secret@example.com"
+             })
 
     settle_refute_receive({:login_code_delivery, _email, _code, _challenge_id, _purpose})
   end
@@ -84,7 +89,8 @@ defmodule Comma.AuthChallengesHardeningTest do
     assert {:ok, _} = Comma.Admin.update_user(user["id"], %{"review_login_code" => "037291"})
 
     for _ <- 1..2 do
-      assert {:ok, challenge} = AuthChallenges.request_email_login(%{"email" => user["email"]})
+      assert {:ok, challenge} =
+               Comma.AuthAbuseTestSupport.request_email_login(%{"email" => user["email"]})
 
       assert {:ok, session} =
                AuthChallenges.verify_email_login(Map.put(challenge, "code", "037291"))

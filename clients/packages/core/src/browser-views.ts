@@ -1,12 +1,13 @@
 // One viewer's session with an agent's browser (the conversation's browser panel): its tabs, the selected tab's frames
 // and who controls it, and the person's control and input. The tabs are read when the view is shown and on
-// `browserView.reconnect`; the selected tab is streamed while shown: a stream that ends is opened again 250 ms later on
-// the core's Clock, one that fails stops (the person reconnects). A stream event older than the last control change
-// applied cannot undo it. Input goes to the tab one command at a time, in order, while this viewer controls the same
-// tab; a failed one lets go of control.
+// `browserView.reconnect`; a read that fails stops the view (the person reconnects). The selected tab is streamed while
+// shown: a stream that ends is opened again 250 ms later on the core's Clock, one that fails stops (the person
+// reconnects). A stream event older than the last control change applied cannot undo it. Input goes to the tab one
+// command at a time, in order, while this viewer controls the same tab; a failed one lets go of control.
 //
 // Bounds: per shown view (one per open panel): one tabs read, one stream, one control command and one input command in
 // flight; at most 32 inputs waiting; only the newest frame is kept. Everything stops as soon as no window shows it.
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, type Topic, type Value, topicKey } from "@comma/core-kernel";
 import { Duration, Effect, Option, Result } from "effect";
 import { z } from "zod";
@@ -24,62 +25,65 @@ import { readEvents } from "./sse.ts";
 export const BROWSER_RECONNECT_MS = 250;
 const MAX_QUEUED = 32;
 
-const resultSchema = bindingSchema
-  .extend({
-    tabs: z
-      .array(
-        z.object({ tab_id: z.string(), title: z.string(), url: z.string() }).strip()
-      )
-      .max(32)
-      .optional(),
-  })
-  .strip();
-const eventSchema = z
-  .object({
-    browser: bindingSchema,
-    can_control: z.boolean(),
-    frame: z
+const resultSchema = lazySchema(() =>
+  bindingSchema
+    .extend({
+      tabs: z
+        .array(
+          z.object({ tab_id: z.string(), title: z.string(), url: z.string() }).strip()
+        )
+        .max(32)
+        .optional(),
+    })
+    .strip()
+);
+const eventSchema = lazySchema(() =>
+  z
+    .object({
+      browser: bindingSchema,
+      can_control: z.boolean(),
+      frame: z
+        .object({
+          data: z.string().max(1_400_000),
+          tab_id: z.string(),
+          metadata: z
+            .object({ deviceWidth: z.number(), deviceHeight: z.number() })
+            .loose(),
+        })
+        .nullable(),
+    })
+    .strip()
+);
+const inputSchema = lazySchema(() =>
+  z.union([
+    z.object({ type: z.literal("text"), text: z.string().max(4096) }).strip(),
+    z
       .object({
-        data: z.string().max(1_400_000),
-        tab_id: z.string(),
-        metadata: z
-          .object({ deviceWidth: z.number(), deviceHeight: z.number() })
-          .loose(),
+        type: z.enum(["keyDown", "keyUp"]),
+        key: z.string().max(64),
+        code: z.string().max(64),
+        keyCode: z.number(),
+        modifiers: z.number(),
       })
-      .nullable(),
-  })
-  .strip();
-const inputSchema = z.union([
-  z.object({ type: z.literal("text"), text: z.string().max(4096) }).strip(),
-  z
-    .object({
-      type: z.enum(["keyDown", "keyUp"]),
-      key: z.string().max(64),
-      code: z.string().max(64),
-      keyCode: z.number(),
-      modifiers: z.number(),
-    })
-    .strip(),
-  z
-    .object({
-      type: z.enum(["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"]),
-      x: z.number(),
-      y: z.number(),
-      button: z.enum(["none", "left", "right", "middle"]),
-      clickCount: z.number(),
-      buttons: z.number().optional(),
-      modifiers: z.number(),
-      deltaX: z.number().optional(),
-      deltaY: z.number().optional(),
-    })
-    .strip(),
-]);
-const operationSchema = z.enum([
-  "take_control",
-  "return_control",
-  "close",
-  "clear_storage",
-]);
+      .strip(),
+    z
+      .object({
+        type: z.enum(["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"]),
+        x: z.number(),
+        y: z.number(),
+        button: z.enum(["none", "left", "right", "middle"]),
+        clickCount: z.number(),
+        buttons: z.number().optional(),
+        modifiers: z.number(),
+        deltaX: z.number().optional(),
+        deltaY: z.number().optional(),
+      })
+      .strip(),
+  ])
+);
+const operationSchema = lazySchema(() =>
+  z.enum(["take_control", "return_control", "close", "clear_storage"])
+);
 
 type View = BrowserViewValue & {
   readonly topic: Topic;
@@ -272,10 +276,19 @@ export class BrowserViews {
     return Effect.gen({ self: this }, function* () {
       view.controlVersion = "";
       view.queue = [];
-      this.#set(view, { tab: "", tabs: [], controlling: false });
+      this.#set(view, {
+        tab: "",
+        tabs: [],
+        controlling: false,
+        status: "loading",
+        error: null,
+      });
       const answer = yield* this.#post(view, "tabs", {}).pipe(Effect.result);
       if (Result.isFailure(answer)) {
-        this.#set(view, { error: "tabs" });
+        this.#set(view, {
+          status: "disconnected",
+          error: busy(answer.failure) ? "busy" : "tabs",
+        });
         return;
       }
       const tabs: BrowserViewTab[] = answer.success.tabs ?? [];
@@ -362,7 +375,10 @@ export class BrowserViews {
       );
       if (this.#views.get(topicKey(view.topic)) !== view) return false;
       if (Result.isFailure(answer)) {
-        this.#set(view, { pending: false, error: "control" });
+        this.#set(view, {
+          pending: false,
+          error: busy(answer.failure) ? "busy" : "control",
+        });
         return false;
       }
       if (view.target !== target) {
@@ -407,6 +423,13 @@ export class BrowserViews {
       )
     );
   }
+}
+
+/** The server still runs an earlier operation on this browser (the agent's, or one whose outcome is unknown). */
+function busy(error: CoreError): boolean {
+  return (
+    error.code === "browser_outcome_pending" || error.code === "browser_driver_busy"
+  );
 }
 
 function valueOf(view: View): BrowserViewValue {

@@ -1,5 +1,5 @@
-// `stillfail-station channel [stable|beta] [--app DIR] [--data DIR]` (the Rust station's main.rs): the channel the
-// station is updated on, set when one is named, then said on the last line (`bin/stillfail update [--beta|--stable]`
+// `comma-station channel [stable|beta] [--app DIR] [--data DIR]` (the Rust station's main.rs): the channel the
+// station is updated on, set when one is named, then said on the last line (`bin/comma-station update [--beta|--stable]`
 // reads it). A station running there holds the config (an edit of its own would write over one made beside it): it is
 // asked (SIGHUP to the pid in run/station.json, the channel in run/channel-ask) and its answer waited for; with none
 // running, the config is written here.
@@ -16,7 +16,7 @@ import { CHANNEL_ANSWER, CHANNEL_ASK, writeWhole } from "./updates.ts";
 import { type Channel, channelOf, channelOfId } from "./versions.ts";
 import { platform } from "../platform/index.ts";
 
-const configPath = (data: string) => process.env.STILLFAIL_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
+const configPath = (data: string) => process.env.COMMA_STATION_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
 
 /// Whether `pid` is a station (its command says so), as the installer checks it: a pid left in station.json may be
 /// another process's by now.
@@ -31,7 +31,7 @@ const alive = (pid: number) => {
   }
 };
 
-/// Sets the channel in the config (`stillfail update --beta`/`--stable` with no station running to ask). A config that
+/// Sets the channel in the config (`comma-station update --beta`/`--stable` with no station running to ask). A config that
 /// is there but cannot be read is not written over.
 export function setChannelIn(data: string, channel: Channel) {
   const path = configPath(data);

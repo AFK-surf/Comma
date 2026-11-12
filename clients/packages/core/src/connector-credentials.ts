@@ -5,6 +5,7 @@
 // (`hostOnlyCalls`): their answers are credentials.
 //
 // Bounds: one request per call, given up after 10 s on the Clock (a revocation: what the caller gives, at most 10 s).
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError } from "@comma/core-kernel";
 import { Effect, Result } from "effect";
 import { z } from "zod";
@@ -71,7 +72,7 @@ export function deviceVoiceServer(
   return { server: url.origin, group: decodeURIComponent(path[2]) };
 }
 
-const id = z.string().min(1).max(160);
+const id = lazySchema(() => z.string().min(1).max(160));
 const parse = <S extends z.ZodType>(schema: S, raw: unknown): z.output<S> => {
   const out = schema.safeParse(raw);
   if (!out.success)
@@ -232,7 +233,7 @@ export function registerConnectorCredentials(ctx: Ctx) {
                   return yield* Effect.fail(
                     new CoreError(
                       "bad_response",
-                      "The Connector token is not one for a device."
+                      "The station token is not one for a device."
                     )
                   );
                 }

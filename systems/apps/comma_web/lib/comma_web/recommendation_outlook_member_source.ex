@@ -31,7 +31,7 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
           "$filter" => "receivedDateTime ge #{since}",
           "$orderby" => "receivedDateTime desc",
           "$select" =>
-            "id,conversationId,subject,from,receivedDateTime,bodyPreview,uniqueBody,webLink,importance"
+            "id,conversationId,subject,from,receivedDateTime,bodyPreview,uniqueBody,webLink,importance,hasAttachments"
         })
     end
 
@@ -102,10 +102,7 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
           "messageTimestamp" => m["receivedDateTime"],
           "webUrl" => m["webLink"]
         }
-        |> Map.put(
-          "context",
-          RecommendationSourceContext.attach(mail_text(m), ~w(body bodyPreview))["context"]
-        )
+        |> Map.put("context", mail_context(m))
         |> RecommendationSourceQuote.put(
           title: m["subject"],
           author:
@@ -135,6 +132,17 @@ defmodule CommaWeb.RecommendationOutlookMemberSource do
   end
 
   defp junk(_junk, _messages), do: []
+
+  # The pool keeps no attachment. The proactive check reads a mail's attachments
+  # before it judges one marked unread.
+  defp mail_context(message) do
+    context =
+      RecommendationSourceContext.attach(mail_text(message), ~w(body bodyPreview))["context"]
+
+    if message["hasAttachments"] == true,
+      do: Map.put(context, "attachments", "unread"),
+      else: context
+  end
 
   defp mail_text(message) do
     case ProactiveOutlookMailSource.message_text(message) do

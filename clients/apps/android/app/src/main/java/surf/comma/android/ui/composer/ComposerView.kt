@@ -1,30 +1,37 @@
 package surf.comma.android.ui.composer
 
-import android.Manifest
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.DrawableWrapper
 import android.net.Uri
 import android.os.Bundle
-import android.os.SystemClock
+import android.Manifest
+import android.content.pm.PackageManager
 import android.text.InputType
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
-import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -39,44 +46,48 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.dynamicanimation.animation.DynamicAnimation
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import surf.comma.android.R
 import surf.comma.android.media.PickedFile
-import surf.comma.android.platform.asr.AsrCredentialProvider
-import surf.comma.android.platform.asr.AsrError
-import surf.comma.android.platform.asr.DebugLocalAsrCredentialProvider
-import surf.comma.android.platform.asr.SpeechRecognizer
 import surf.comma.android.platform.logging.AppLog
 import java.io.File
 import java.util.UUID
-import kotlin.math.ceil
+import surf.comma.android.ui.widget.GlassPress
+import surf.comma.android.ui.widget.GlassShape
+import surf.comma.android.ui.widget.LiquidGlass
+import kotlin.math.roundToInt
 import surf.comma.android.ui.theme.DesignMotion
 import surf.comma.android.ui.theme.DesignSpring
 import surf.comma.android.ui.theme.DesignTypography
 
 /**
- * The chat input: a rounded surface with "+", a growing multi-line field and one trailing button
- * (send with content or while a reply generates, microphone otherwise). A draft longer than
- * one line takes the full width, with the buttons on a row under it ([ComposerRow]). Images sit
- * above the text inside the same surface. Tapping the microphone dictates into the field; pressing and
- * holding the field or the microphone talks and sends on release.
+ * The chat input: a rounded surface with "+", a growing multi-line field and a send button, dimmed
+ * and inert while the draft is empty. A draft longer than one line takes the full width, with the
+ * buttons on a row under it ([ComposerRow]). Images sit above the text inside the same surface.
  *
  * Usage: `ComposerView(activity).attachTo(root)`. The host activity must use
  * `windowSoftInputMode="adjustNothing"`; the composer accounts for its host's bottom padding
  * while following the keyboard, frame by frame. "+" opens a small menu floating above
  * the composer ([AttachMenuView]); it leaves the keyboard alone, so nothing underneath moves.
+ *
+ * With [transcribeDictation] set, a microphone sits before send. Tapping it records and shows the waveform in the
+ * composer; tapping the composer ends the recording, and the words go into the draft at the caret ([DictationModel]).
+ * While it dictates the composer holds its one-row capsule, and "+" turns into the × that cancels.
  */
 class ComposerView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-    private val credentialProvider: AsrCredentialProvider = DebugLocalAsrCredentialProvider(),
 ) : FrameLayout(context, attrs) {
 
     // ---- Public API ----
@@ -88,12 +99,9 @@ class ComposerView @JvmOverloads constructor(
     var onSubmit: ((String, List<ComposerAttachment>, (Boolean) -> Unit) -> Unit)? = null
     private var submitting = false
 
-    /** Hold-to-talk released outside the cancel zone with something recognised. */
-    var onVoiceSend: ((text: String) -> Unit)? = null
-
     /**
-     * How far the composer is lifted above its resting line by navigation or the keyboard, in px,
-     * every animation frame. Hosts move page content (an empty state, the list's bottom inset) by it.
+     * The composer's lift from navigation or the keyboard, including its extra keyboard spacing, in px.
+     * Hosts move page content (an empty state, the list's bottom inset) by it each animation frame.
      */
     var onImeOffset: ((Float) -> Unit)? = null
 
@@ -109,6 +117,25 @@ class ComposerView @JvmOverloads constructor(
     /** Images picked for a question card's other answer ([pickQuestionImages]), apart from the draft. */
     var onQuestionImagesPicked: ((questionMessageId: String, List<Uri>) -> Unit)? = null
 
+    /**
+     * A picker or the camera opened from here came over the app (true), or it went (false): it answered or was
+     * cancelled, the app came back without its answer, or the composer left its window and can take none.
+     */
+    var onPicking: ((Boolean) -> Unit)? = null
+
+    /** Writes out a recording's words, and shows the microphone. Throws when it cannot; empty when it heard none. */
+    var transcribeDictation: (suspend (ByteArray) -> String)? = null
+        set(value) {
+            field = value
+            microphone.visibility = if (value == null) GONE else VISIBLE
+        }
+
+    /** A dictation ended with no words. The host says why; without a host the composer does. */
+    internal var onDictationFailed: ((DictationFailure) -> Unit)? = null
+
+    /** Dictated words were put in the draft. */
+    var onDictated: (() -> Unit)? = null
+
     val text: String get() = model.text
     val attachments: List<ComposerAttachment>
         get() = model.attachments.map { files.getValue(it.id) }
@@ -118,6 +145,44 @@ class ComposerView @JvmOverloads constructor(
 
     /** Part of the host covered by the keyboard; the backdrop still reaches under navigation. */
     internal val keyboardInsetPx: Float get() = imeOffset
+
+    /** The field and its shape changed in a way the layout does not show; for the glass under it. */
+    var onSurfaceChanged: (() -> Unit)? = null
+    /** Sees every touch on the composer, for the glass under it. */
+    var onGlassTouch: ((MotionEvent) -> Unit)? = null
+
+    /** The field and, while it stands apart from it, the attachment button, in the parent's coordinates. */
+    fun glassShapes(): List<GlassShape> {
+        if (visibility != VISIBLE) return emptyList()
+        pill.outlineProvider.getOutline(pill, shadowOutline)
+        if (!shadowOutline.getRect(shadowBounds)) return emptyList()
+        val field = Rect(shadowBounds).apply { offset((x + pill.x).roundToInt(), (y + pill.y).roundToInt()) }
+        val shapes = mutableListOf(GlassShape(field, shadowOutline.radius))
+        if (!expanded()) {
+            val rest = plusBounds()
+            val halfWidth = rest.width() * plusButton.scaleX / 2f
+            val halfHeight = rest.height() * plusButton.scaleY / 2f
+            val centerX = rest.exactCenterX() + plusButton.translationX + x
+            val centerY = rest.exactCenterY() + plusButton.translationY + y
+            val plus = Rect((centerX - halfWidth).roundToInt(), (centerY - halfHeight).roundToInt(), (centerX + halfWidth).roundToInt(), (centerY + halfHeight).roundToInt())
+            shapes += GlassShape(plus, minOf(plus.width(), plus.height()) / 2f)
+        }
+        return shapes
+    }
+
+    private fun plusBounds() = Rect().also {
+        plusButton.getDrawingRect(it)
+        offsetDescendantRectToMyCoords(plusButton, it)
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        onGlassTouch?.invoke(event)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            plusTouched = !expanded() && plusBounds().contains(event.x.toInt(), event.y.toInt())
+        }
+        if (plusTouched) plusPress?.track(event)
+        return super.dispatchTouchEvent(event)
+    }
 
     /** Actual capsule edge in the parent, including the current keyboard/panel translation. */
     val capsuleTop: Float get() = y + pill.y
@@ -139,6 +204,15 @@ class ComposerView @JvmOverloads constructor(
 
     /** The text field, for the @ and / menus that read and edit the draft at the caret. */
     internal val field: EditText get() = editText
+    /** A physical keyboard's Tab in the field; true when it was taken. */
+    internal var onTabKey: (() -> Boolean)? = null
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val tab = event.keyCode == android.view.KeyEvent.KEYCODE_TAB && event.action == android.view.KeyEvent.ACTION_DOWN &&
+            !event.isShiftPressed
+        if (tab && editText.hasFocus() && onTabKey?.invoke() == true) return true
+        return super.dispatchKeyEvent(event)
+    }
 
     /** Rewrites the draft as it is sent, such as task mentions into their links; the field keeps what was typed. */
     var transformOutgoing: ((String) -> String)? = null
@@ -146,15 +220,7 @@ class ComposerView @JvmOverloads constructor(
     /** Puts the caret in the field and raises the keyboard. */
     fun focusInput() {
         editText.requestFocus()
-        editText.post {
-            context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.showSoftInput(editText, 0)
-        }
-    }
-
-    fun setGenerating(generating: Boolean) {
-        if (model.generating == generating) return
-        model.setGenerating(generating)
-        render(animate = true)
+        requestKeyboard()
     }
 
     fun setAttachmentState(id: String, state: AttachmentUploadState) {
@@ -162,6 +228,34 @@ class ComposerView @JvmOverloads constructor(
         thumbs[id]?.state = state
         render(animate = true)
     }
+
+    /**
+     * Shows [shown], the draft's files as the host lists them, in order and each with how its upload goes: a file no
+     * longer listed goes, and one that changed is drawn again. From then on the host's list alone takes a file away:
+     * a file the person removes ([onAttachmentRemoved]) goes once the host no longer lists it.
+     */
+    fun showAttachments(shown: List<ShownAttachment>) {
+        listed = true
+        val ids = shown.mapTo(HashSet()) { it.attachment.id }
+        files.keys.filter { it !in ids }.forEach(::dropThumb)
+        shown.forEachIndexed { index, (attachment, state) ->
+            if (files[attachment.id] != attachment) {
+                dropThumb(attachment.id)
+                addThumb(attachment, index)
+            }
+            val thumb = thumbs.getValue(attachment.id)
+            if (strip.getChildAt(index) !== thumb) {
+                strip.removeView(thumb)
+                strip.addView(thumb, index)
+            }
+            thumb.state = state
+        }
+        model.showAttachments(shown.map { ComposerModel.Slot(it.attachment.id, it.state) })
+        render(animate = true)
+    }
+
+    /** Drops a recording and any words still on their way; the draft stays as it is. */
+    fun cancelDictation() = dictation.cancel()
 
     /** Hide the keyboard and the attachment menu, as a tap on the page does. */
     fun dismiss() {
@@ -171,18 +265,14 @@ class ComposerView @JvmOverloads constructor(
 
     /**
      * A frozen copy of the message being sent: text layout, positions and thumbnails in window
-     * coordinates. Call it from [onSend] or [onVoiceSend]; afterwards the composer clears.
+     * coordinates. Call it from [onSend]; afterwards the composer clears.
      */
-    fun captureSendSnapshot(): ComposerSendSnapshot =
-        if (sendingVoice) snapshotOf(holdOverlay?.bubble, fromVoice = true)
-        else snapshotOf(editText, fromVoice = false)
+    fun captureSendSnapshot(): ComposerSendSnapshot = snapshotOf(editText)
 
-    /** Adds the composer, its attachment menu and its voice overlay to the bottom of [root]. */
+    /** Adds the composer and its attachment menu to the bottom of [root]. */
     fun attachTo(root: FrameLayout) {
-        hostRoot = root
         root.addView(this, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         root.addView(menu, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        root.addView(holdOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         root.setOnClickListener { dismiss() }
         // Being clickable made the whole page focusable. Focused outside touch mode (after a key
         // press, once the field let go) it wore the system focus highlight: the screen greyed
@@ -200,19 +290,10 @@ class ComposerView @JvmOverloads constructor(
     private var navigationOffset = 0f
     private val files = LinkedHashMap<String, ComposerAttachment>()
     private val thumbs = LinkedHashMap<String, AttachmentThumbView>()
-    private val hold = HoldToTalk(
-        touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(),
-        cancelDistance = style.dp(CANCEL_DISTANCE_DP.toFloat()),
-        longPressMs = ViewConfiguration.getLongPressTimeout().toLong(),
-    )
-    private var hostRoot: FrameLayout? = null
+    /** Whether the host lists the draft's files ([showAttachments]). */
+    private var listed = false
     private val scales = HashMap<View, ButtonScale>()
-    private var recognizer: SpeechRecognizer? = null
-    private var awaitingFinal = false
-    private var sendingVoice = false
-    private var holdTarget: View? = null
     private var pendingCameraUri: Uri? = null
-    private var dictateAfterPermission = false
 
     // ---- Views ----
 
@@ -220,18 +301,30 @@ class ComposerView @JvmOverloads constructor(
     private val stripScroll = ScrollContainer(context).apply { orientation = ScrollContainer.HORIZONTAL }
     private val strip = LinearLayout(context)
     private val plusButton = iconButton(R.drawable.ic_composer_plus, R.string.composer_attach)
-    private val dictationCancel = iconButton(R.drawable.ic_composer_close, R.string.composer_dictation_cancel)
-    private val micButton = iconButton(R.drawable.ic_composer_mic, R.string.composer_mic)
+
+    /** Standing apart from the field, the button presses as glass of its own. */
+    private val plusPress = if (LiquidGlass.enabled) GlassPress(plusButton) { _, _, _ -> onSurfaceChanged?.invoke() } else null
+    private var plusTouched = false
     private val actionFill = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+    private val actionCircle = VisibleScaleDrawable(actionFill)
     private val actionButton = iconButton(R.drawable.ic_composer_arrow_up, R.string.composer_send)
-    private val confirmButton = iconButton(R.drawable.ic_composer_check, R.string.composer_dictation_confirm)
-    private val timer = TextView(context)
+    private val microphone = iconButton(R.drawable.ic_call_mic, R.string.composer_dictate).apply { visibility = GONE }
     private val editText = EditText(context)
+    private val dictation = DictationModel(
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        microphone = object : DictationMicrophone {
+            override suspend fun start(ended: () -> Unit) = dictationAudio.start(ended)
+        },
+        allowed = ::microphoneAllowed,
+        transcribe = { audio -> transcribeDictation?.invoke(audio).orEmpty() },
+        failed = { failure -> onDictationFailed?.invoke(failure) ?: toast(failure.message) },
+        phaseChanged = ::dictationChanged,
+    )
+    /** The recorder; replaceable in tests. */
+    internal var dictationAudio: DictationMicrophone = DictationRecorder(context)
+    private val dictationCapsule = DictationCapsule(context, style) { dictation.level }
+    private val dictationPress = DictationPress({ dictation.phase }, { dictation.asking }, ::toggleDictation)
     private lateinit var row: ComposerRow
-    private val dictationLayer = LinearLayout(context)
-    private val dictationTranscript = TextView(context)
-    private val dictationWave = VoiceWaveView(context, style)
-    private val holdWave = VoiceWaveView(context, style)
     private val menu = AttachMenuView(context, style, onEntry = { entry ->
         // Like any menu, it closes as soon as a row is chosen; the picker opens over the page.
         closeMenu()
@@ -241,15 +334,9 @@ class ComposerView @JvmOverloads constructor(
             AttachEntry.FILES -> launchFiles()
         }
     }, onDismiss = { closeMenu() })
-    private val holdOverlay = HoldOverlayView(context, style)
 
     private val backCallback = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() {
-            when {
-                model.voice == VoiceMode.DICTATION -> cancelDictation()
-                menu.shown -> closeMenu()
-            }
-        }
+        override fun handleOnBackPressed() = if (menu.shown) closeMenu() else dictation.cancel()
     }
 
     private var cameraLauncher: ActivityResultLauncher<Uri>? = null
@@ -258,11 +345,20 @@ class ComposerView @JvmOverloads constructor(
     private var documentLauncher: ActivityResultLauncher<Array<String>>? = null
     private var questionPhotosLauncher: ActivityResultLauncher<Int>? = null
     private var questionPhotoLauncher: ActivityResultLauncher<PickVisualMediaRequest>? = null
+    private var microphoneLauncher: ActivityResultLauncher<String>? = null
+    /** The answer the microphone permission prompt is awaited for. */
+    private var microphoneAnswer: CompletableDeferred<Boolean>? = null
     /** The question card the photo picker is open for; kept across a recreation so its result still reaches it. */
     private var pickingQuestion: String? = null
+    /** Whether a picker or the camera opened from here is over the app; see [onPicking]. */
+    private var picking = false
+    /** The app coming back without a picker's answer, such as from a camera in a task of its own, ends the pick. */
+    private val returnWatch = LifecycleEventObserver { _, event ->
+        if (event == Lifecycle.Event.ON_START) setPicking(false)
+        if (event == Lifecycle.Event.ON_STOP) dictation.leftApp()
+    }
     /** The photo picker's own cap; replaceable in tests. */
     internal var systemPhotoLimit: () -> Int = CappedPhotoPicker::systemLimit
-    private var micPermissionLauncher: ActivityResultLauncher<String>? = null
     /** This composer's place among the activity's attached composers, which keys its results; -1 while detached. */
     private var resultSlot = -1
 
@@ -274,9 +370,6 @@ class ComposerView @JvmOverloads constructor(
         setPadding(style.dp(SIDE_DP), style.dp(TOP_DP), style.dp(SIDE_DP), style.dp(BOTTOM_DP))
         buildPill()
         addView(pill, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
-        holdOverlay.visibility = GONE
-        holdOverlay.alpha = 0f
-        model.voiceAvailable = credentialProvider.isAvailable
         setupImeFollow()
         render(animate = false)
     }
@@ -289,72 +382,47 @@ class ComposerView @JvmOverloads constructor(
             overScrollMode = OVER_SCROLL_NEVER
             clipToPadding = false
             visibility = GONE
-            setPadding(style.dp(8), style.dp(8), style.dp(8), 0)
+            setPadding(style.dp(10), style.dp(10), style.dp(10), 0)
             addView(strip, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         }
         strip.orientation = LinearLayout.HORIZONTAL
         pill.addView(stripScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        val slot = style.dp(SLOT_DP)
         val button = style.dp(BUTTON_DP)
 
         val leading = FrameLayout(context)
-        plusButton.setOnClickListener { if (menu.shown) closeMenu() else openMenu() }
-        dictationCancel.background = circle(style.bgPrimary)
-        dictationCancel.setOnClickListener { cancelDictation() }
+        if (plusPress != null) plusButton.onPressedChanged = null
+        plusButton.setOnClickListener {
+            if (dictation.busy) dictation.cancel() else if (menu.shown) closeMenu() else openMenu()
+        }
         leading.addView(plusButton, LayoutParams(button, button, Gravity.CENTER))
-        leading.addView(dictationCancel, LayoutParams(button, button, Gravity.CENTER))
 
         val center = FrameLayout(context)
         buildEditText()
         center.addView(editText, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
-        dictationLayer.apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = slot
-            setPadding(style.dp(4), style.dp(12), 0, style.dp(12))
-            dictationTranscript.apply {
-                setTextColor(style.textPrimary)
-                style.applyText(this, DesignTypography.Level.REGULAR)
-                maxLines = 4
-                ellipsize = TextUtils.TruncateAt.START
-            }
-            addView(dictationTranscript, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = style.dp(4)
-            })
-            addView(dictationWave, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, style.dp(20)))
-        }
-        center.addView(dictationLayer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
-        center.addView(holdWave, LayoutParams(LayoutParams.MATCH_PARENT, style.dp(24), Gravity.CENTER_VERTICAL).apply {
-            marginStart = style.dp(4)
-        })
 
         val trailing = FrameLayout(context)
-        micButton.setOnClickListener { startDictation() }
-        actionButton.background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), actionFill, null)
-        actionButton.setOnClickListener { onActionTapped() }
-        confirmButton.background = circle(style.brand)
-        confirmButton.setColorFilter(style.onBrand)
-        confirmButton.setOnClickListener { confirmDictation() }
-        timer.apply {
-            gravity = Gravity.CENTER
-            setTextColor(style.textTertiary)
-            style.applyText(this, DesignTypography.Level.SMALL)
-            fontFeatureSettings = "tnum"
-        }
-        trailing.addView(micButton, LayoutParams(button, button, Gravity.CENTER))
+        actionButton.background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), InsetDrawable(actionCircle, style.dp(6)), null)
+        actionButton.setPadding(style.dp(13), style.dp(13), style.dp(13), style.dp(13))
+        actionButton.setImageDrawable(VisibleScaleDrawable(actionButton.drawable))
+        actionButton.setColorFilter(style.onBrand)
+        actionButton.setOnClickListener { sendNow() }
         trailing.addView(actionButton, LayoutParams(button, button, Gravity.CENTER))
-        trailing.addView(confirmButton, LayoutParams(button, button, Gravity.CENTER))
-        trailing.addView(timer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
-        row = ComposerRow(context, style, leading, center, trailing, ::draftNeedsOwnRow).apply {
+        bindDictationPress(microphone)
+        bindDictationPress(dictationCapsule)
+
+        row = ComposerRow(context, style, leading, center, trailing, microphone, dictationCapsule, ::draftNeedsOwnRow,
+            ::expanded, ::applyArrangement).apply {
             // The strip beside the buttons of a stacked draft belongs to the field.
             isSoundEffectsEnabled = false
-            setOnClickListener { if (model.voice == VoiceMode.NONE) showKeyboard() }
+            setOnClickListener { showKeyboard() }
         }
         pill.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
     }
 
+    // The listener observes touches. EditText still handles clicks and text selection.
+    @SuppressLint("ClickableViewAccessibility")
     private fun buildEditText() = editText.apply {
         background = null
         val vertical = (style.dp(SLOT_DP) - style.dp(24)) / 2
@@ -376,6 +444,28 @@ class ComposerView @JvmOverloads constructor(
             setSize(style.dp(2), 0)
             setColor(style.brand)
         }
+        onFocusChangeListener = OnFocusChangeListener { _, focused ->
+            row.refresh(animate = true)
+            row.requestLayout()
+            if (!focused) removeCallbacks(showInput)
+        }
+        setOnTouchListener { _, event ->
+            // Let the first touch give the field focus before requesting the IME.
+            if (!hasFocus() && (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP)) {
+                requestKeyboard()
+            }
+            false
+        }
+        // A physical keyboard's Return sends and the field keeps focus; Shift- or Alt-Return breaks the line. The
+        // software keyboard's Return still types a line break. The @ and / menus do not take Return.
+        setOnKeyListener { _, _, event ->
+            val action = hardwareReturnAction(event) ?: return@setOnKeyListener false
+            if (event.action == KeyEvent.ACTION_DOWN) when (action) {
+                HardwareReturn.SEND -> if (event.repeatCount == 0) sendNow()
+                HardwareReturn.LINE_BREAK -> insertLineBreak()
+            }
+            true
+        }
         doAfterTextChanged {
             val before = model.text
             model.updateText(it?.toString().orEmpty())
@@ -386,17 +476,91 @@ class ComposerView @JvmOverloads constructor(
         }
     }
 
-    /** Voice always uses the single row; it only ever starts from an empty draft. */
-    private fun draftNeedsOwnRow(inlineWidthPx: Int): Boolean =
-        model.voice == VoiceMode.NONE && ComposerRow.needsOwnRow(
-            editText.text, inlineWidthPx - editText.paddingLeft - editText.paddingRight,
-        ) { Layout.getDesiredWidth(it, editText.paint) }
+    private fun expanded(): Boolean = !dictation.busy && (editText.hasFocus() || model.attachments.isNotEmpty())
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        row.refresh(animate = false)
+    }
+
+    private fun compactHeight() = resources.configuration.screenHeightDp < 480
+
+    private fun draftNeedsOwnRow(): Boolean = expanded() && (!compactHeight() || model.attachments.isNotEmpty())
+
+    private var plusOnCard: Boolean? = null
+
+    private fun applyArrangement(stacked: Boolean, expanded: Boolean) {
+        pill.setExpanded(expanded)
+        if (plusOnCard != expanded) {
+            plusOnCard = expanded
+            // Glass answers a press itself. A ripple would swell with the button and be cut by the composer's edge.
+            plusButton.background = if (plusPress != null) null else RippleDrawable(
+                ColorStateList.valueOf(0x14000000),
+                if (expanded) null else circle(style.composerSurface).apply {
+                    setStroke(style.dp(ComposerPill.BORDER_DP).toInt().coerceAtLeast(1), style.composerBorder)
+                }, circle(android.graphics.Color.BLACK),
+            )
+        }
+        val top = if (stacked) { if (model.attachments.isEmpty()) 16 else 12 } else 11
+        editText.setPaddingRelative(
+            style.dp(if (stacked || expanded) 0 else 16), style.dp(top), 0,
+            style.dp(if (stacked) 10 else 11),
+        )
+        val minimum = if (stacked) 0 else style.dp(SLOT_DP)
+        if (editText.minHeight != minimum) editText.minHeight = minimum
+        val lines = if (dictation.busy) 1 else if (expanded && !stacked) 2 else MAX_LINES
+        if (editText.maxLines != lines) editText.maxLines = lines
+        onSurfaceChanged?.invoke()
+    }
+
+    private val surfaceShadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val tokens = this@ComposerView.style
+        color = tokens.composerBg
+        // The iOS material fallback uses black at 6%, radius 10 and a 3pt downward offset.
+        setShadowLayer(tokens.dp(10f), 0f, tokens.dp(3f), tokens.composerShadow)
+    }
+    private val shadowOutline = Outline()
+    private val shadowBounds = Rect()
+    private val shadowRect = RectF()
+
+    override fun dispatchDraw(canvas: Canvas) {
+        // The shadow's caster is a solid fill, which would cover the glass.
+        if (LiquidGlass.enabled) return super.dispatchDraw(canvas)
+        pill.outlineProvider.getOutline(pill, shadowOutline)
+        if (shadowOutline.getRect(shadowBounds)) {
+            shadowRect.set(shadowBounds)
+            shadowRect.offset(pill.x, pill.y)
+            drawSurfaceShadow(canvas, shadowOutline.radius)
+        }
+        if (!expanded()) {
+            plusButton.getDrawingRect(shadowBounds)
+            offsetDescendantRectToMyCoords(plusButton, shadowBounds)
+            shadowRect.set(shadowBounds)
+            val saved = canvas.save()
+            canvas.scale(plusButton.scaleX, plusButton.scaleY, shadowRect.centerX(), shadowRect.centerY())
+            drawSurfaceShadow(canvas, shadowRect.width() / 2f)
+            canvas.restoreToCount(saved)
+        }
+        super.dispatchDraw(canvas)
+    }
+
+    private fun drawSurfaceShadow(canvas: Canvas, radius: Float) {
+        canvas.drawRoundRect(shadowRect, radius, radius, surfaceShadow)
+    }
 
     private fun iconButton(icon: Int, description: Int) = PressableImageView(context).apply {
         onPressedChanged = { pressed -> scaleOf(this).setPressed(pressed) }
         setImageResource(icon)
-        setColorFilter(style.fgPrimary)
-        scaleType = ImageView.ScaleType.CENTER
+        setColorFilter(style.textPrimary)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        val glyphSize = when (icon) {
+            R.drawable.ic_composer_plus -> 22
+            R.drawable.ic_composer_arrow_up -> 18
+            R.drawable.ic_call_mic -> 20
+            else -> 24
+        }
+        val inset = style.dp((BUTTON_DP - glyphSize) / 2)
+        setPadding(inset, inset, inset, inset)
         contentDescription = context.getString(description)
         background = RippleDrawable(ColorStateList.valueOf(0x14000000), null, circle(0xFF000000.toInt()))
         isClickable = true
@@ -410,104 +574,74 @@ class ComposerView @JvmOverloads constructor(
 
     // ---- Rendering ----
 
-    private var renderedTrailing: TrailingAction? = null
-
     private fun render(animate: Boolean) {
         val animated = animate && ComposerStyle.motionEnabled && isLaidOut
-        val voice = model.voice
-        setShown(plusButton, voice == VoiceMode.NONE, animated)
-        setShown(dictationCancel, voice == VoiceMode.DICTATION, animated)
-        editText.visibility = if (voice == VoiceMode.NONE) VISIBLE else INVISIBLE
-        dictationLayer.visibility = if (voice == VoiceMode.DICTATION) VISIBLE else GONE
-        holdWave.visibility = if (voice == VoiceMode.HOLD) VISIBLE else GONE
-        setShown(confirmButton, voice == VoiceMode.DICTATION, animated)
-        timer.visibility = if (voice == VoiceMode.HOLD) VISIBLE else GONE
-        stripScroll.visibility = if (model.attachments.isNotEmpty()) VISIBLE else GONE
+        stripScroll.visibility = if (model.attachments.isNotEmpty() && !dictation.busy) VISIBLE else GONE
         row.refresh(animate = false)
 
-        val trailing = model.trailingAction
-        val idle = voice == VoiceMode.NONE
-        setShown(micButton, idle && trailing == TrailingAction.MIC, animated)
-        setShown(actionButton, idle && trailing != TrailingAction.MIC, animated)
-        micButton.imageAlpha = if (model.voiceAvailable) 255 else DIMMED_IMAGE_ALPHA
-        micButton.contentDescription = context.getString(
-            if (model.voiceAvailable) R.string.composer_mic else R.string.composer_voice_unavailable,
-        )
-        if (trailing != TrailingAction.MIC) {
-            if (trailing != renderedTrailing) {
-                actionButton.setImageResource(R.drawable.ic_composer_arrow_up)
-                actionButton.contentDescription = context.getString(R.string.composer_send)
-            }
-            // Keep send tappable to explain unfinished uploads; an empty draft sends nothing.
-            actionFill.setColor(if (model.canSend) style.brand else style.textPlaceholder)
-            actionButton.setColorFilter(style.onBrand)
-        }
-        renderedTrailing = trailing
-        confirmButton.isEnabled = !awaitingFinal
-        confirmButton.imageAlpha = if (awaitingFinal) DIMMED_IMAGE_ALPHA else 255
+        // An empty draft has nothing to send: send stays in its place, dimmed and inert.
+        actionButton.isEnabled = model.hasContent
+        // Keep send tappable to explain unfinished uploads.
+        setActionFill(if (model.canSend) style.brand else style.textPlaceholder, animated)
         plusButton.contentDescription = context.getString(
-            if (menu.shown) R.string.composer_attach_close else R.string.composer_attach,
+            if (dictation.busy) R.string.composer_dictate_cancel
+            else if (menu.shown) R.string.composer_attach_close else R.string.composer_attach,
         )
         menu.bind(AttachMenuState.of(model))
-        backCallback.isEnabled = menu.shown || voice == VoiceMode.DICTATION
+        backCallback.isEnabled = menu.shown || dictation.busy
     }
 
-    /**
-     * Buttons trade places in the same slot, never sliding: opacity fades on a duration and curve,
-     * scale follows [DesignMotion.springScale] (see [ButtonScale]).
-     */
-    private fun setShown(view: View, shown: Boolean, animated: Boolean) {
-        if (view.getTag(R.id.composer_shown) == shown) return
-        view.setTag(R.id.composer_shown, shown)
-        view.animate().cancel()
-        val scale = scaleOf(view)
+    private var actionFillTarget: Int? = null
+    private var actionFillShown = 0
+    private var actionFillAnimator: ValueAnimator? = null
+
+    /** Send's fill changes colour on the duration and curve of [DesignMotion.stateChange]. */
+    private fun setActionFill(color: Int, animated: Boolean) {
+        if (color == actionFillTarget) return
+        actionFillTarget = color
+        actionFillAnimator?.cancel()
+        actionFillAnimator = null
+        val targetLevel = if (model.canSend) 10000 else 9200
+        val startLevel = actionCircle.level
         if (!animated) {
-            view.visibility = if (shown) VISIBLE else INVISIBLE
-            view.alpha = if (shown) 1f else 0f
-            scale.setShown(true, animated = false)
+            actionCircle.level = targetLevel
+            actionButton.drawable.level = targetLevel
+            actionFillShown = color
+            actionFill.setColor(color)
             return
         }
-        if (shown) {
-            if (view.visibility != VISIBLE) {
-                view.alpha = 0f
-                scale.setShown(false, animated = false)
-                view.visibility = VISIBLE
+        actionFillAnimator = ValueAnimator.ofArgb(actionFillShown, color).apply {
+            duration = DesignMotion.durationMillis(DesignMotion.stateChange)
+            interpolator = DesignMotion.softInOut
+            addUpdateListener {
+                val level = (startLevel + (targetLevel - startLevel) * it.animatedFraction).toInt()
+                actionCircle.level = level
+                actionButton.drawable.level = level
+                actionFillShown = it.animatedValue as Int
+                actionFill.setColor(actionFillShown)
             }
-            view.animate().alpha(1f)
-                .setDuration(DesignMotion.durationMillis(DesignMotion.stateChange))
-                .setInterpolator(DesignMotion.softInOut)
-                .start()
-        } else {
-            view.animate().alpha(0f)
-                .setDuration(DesignMotion.durationMillis(DesignMotion.stateChange))
-                .setInterpolator(DesignMotion.softInOut)
-                .withEndAction { if (view.getTag(R.id.composer_shown) == false) view.visibility = INVISIBLE }
-                .start()
+            start()
         }
-        scale.setShown(shown, animated = true)
     }
 
     private fun scaleOf(view: View): ButtonScale = scales.getOrPut(view) { ButtonScale(view, action = true) }
 
     // ---- Send ----
 
-    private fun onActionTapped() {
-        when (model.trailingAction) {
-            TrailingAction.SEND -> sendNow()
-            TrailingAction.MIC -> Unit
-        }
-    }
-
     private fun sendNow() {
-        if (submitting) return
+        // A dictation still on its way holds send, so its words are not left behind.
+        if (submitting || dictation.busy) return
         if (!model.canSend) {
-            if (!model.uploadsSettled) toast(R.string.composer_uploads_pending)
+            when (model.sendBlock) {
+                ComposerModel.SendBlock.UPLOAD_FAILED -> toast(R.string.composer_uploads_failed)
+                ComposerModel.SendBlock.UPLOADING -> toast(R.string.composer_uploads_pending)
+                else -> Unit
+            }
             return
         }
         val draftText = model.text
         val outgoingText = draftText.trim()
         val outgoing = attachments
-        sendingVoice = false
         performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         fun complete(accepted: Boolean) {
             submitting = false
@@ -533,6 +667,15 @@ class ComposerView @JvmOverloads constructor(
         }
     }
 
+    /** A line break replaces the selection, or goes at the end with no caret, and the caret follows it. */
+    private fun insertLineBreak() {
+        val text = editText.text
+        val start = minOf(editText.selectionStart, editText.selectionEnd).takeIf { it >= 0 } ?: text.length
+        val end = maxOf(editText.selectionStart, editText.selectionEnd).takeIf { it >= 0 } ?: text.length
+        text.replace(start, end, "\n")
+        editText.setSelection(start + 1)
+    }
+
     // ---- Attachments ----
 
     private fun addUris(uris: List<Uri>) {
@@ -547,16 +690,13 @@ class ComposerView @JvmOverloads constructor(
         if (picked.size < described.size) toast(R.string.composer_attach_too_large)
         if (picked.isEmpty()) return
         val ids = model.addAttachments(picked.size)
-        val added = ids.mapIndexed { index, id -> ComposerAttachment(id, picked[index].first, picked[index].second) }
-        added.forEach { attachment ->
-            files[attachment.id] = attachment
-            val thumb = AttachmentThumbView(context, style, attachment, ::removeAttachment) {
-                onAttachmentRetry?.invoke(it)
-            }
-            thumbs[attachment.id] = thumb
-            val size = style.dp(AttachmentThumbView.SIZE_DP)
-            strip.addView(thumb, LinearLayout.LayoutParams(size, size).apply { marginEnd = style.dp(8) })
+        val names = files.values.mapTo(HashSet()) { it.file.name }
+        val added = ids.mapIndexed { index, id ->
+            val file = picked[index].second
+            val named = file.copy(name = PickedFile.distinctName(file.name, names)).also { names += it.name }
+            ComposerAttachment(id, picked[index].first, named)
         }
+        added.forEach { addThumb(it) }
         val dropped = picked.size - ids.size
         if (dropped > 0) toast(R.string.composer_attach_dropped, ComposerModel.MAX_ATTACHMENTS, dropped)
         render(animate = true)
@@ -564,10 +704,29 @@ class ComposerView @JvmOverloads constructor(
         if (added.isNotEmpty()) onAttachmentsAdded?.invoke(added)
     }
 
-    private fun removeAttachment(id: String) {
-        if (!model.removeAttachment(id)) return
+    private fun addThumb(attachment: ComposerAttachment, index: Int = -1) {
+        files[attachment.id] = attachment
+        val thumb = AttachmentThumbView(context, style, attachment, ::removeAttachment) {
+            onAttachmentRetry?.invoke(it)
+        }
+        thumbs[attachment.id] = thumb
+        val size = style.dp(AttachmentThumbView.SIZE_DP)
+        strip.addView(thumb, index, LinearLayout.LayoutParams(size, size).apply { marginEnd = style.dp(8) })
+    }
+
+    private fun dropThumb(id: String) {
         files.remove(id)
         thumbs.remove(id)?.let(strip::removeView)
+    }
+
+    private fun removeAttachment(id: String) {
+        if (listed) {
+            // It goes when the host's list leaves it out.
+            onAttachmentRemoved?.invoke(id)
+            return
+        }
+        if (!model.removeAttachment(id)) return
+        dropThumb(id)
         render(animate = true)
         onAttachmentRemoved?.invoke(id)
     }
@@ -585,7 +744,7 @@ class ComposerView @JvmOverloads constructor(
         }
         pendingCameraUri = uri
         try {
-            launcher.launch(uri)
+            launcher.open(uri)
         } catch (_: ActivityNotFoundException) {
             pendingCameraUri = null
             toast(R.string.composer_camera_unavailable)
@@ -596,8 +755,8 @@ class ComposerView @JvmOverloads constructor(
         when (val pick = PhotoPick.forRemaining(model.remainingSlots, systemPhotoLimit())) {
             PhotoPick.None -> toast(R.string.composer_attach_limit, ComposerModel.MAX_ATTACHMENTS)
             PhotoPick.Single ->
-                photoLauncher?.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-            is PhotoPick.Multiple -> photosLauncher?.launch(pick.limit)
+                photoLauncher?.open(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            is PhotoPick.Multiple -> photosLauncher?.open(pick.limit)
         }
     }
 
@@ -612,12 +771,13 @@ class ComposerView @JvmOverloads constructor(
         when (pick) {
             PhotoPick.None -> Unit
             PhotoPick.Single ->
-                questionPhotoLauncher?.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            is PhotoPick.Multiple -> questionPhotosLauncher?.launch(pick.limit)
+                questionPhotoLauncher?.open(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            is PhotoPick.Multiple -> questionPhotosLauncher?.open(pick.limit)
         }
     }
 
     private fun onQuestionPicked(picked: List<Uri>) {
+        setPicking(false)
         val question = pickingQuestion ?: return
         pickingQuestion = null
         if (picked.isNotEmpty()) onQuestionImagesPicked?.invoke(question, picked)
@@ -627,15 +787,33 @@ class ComposerView @JvmOverloads constructor(
         if (model.remainingSlots <= 0) return toast(R.string.composer_attach_limit, ComposerModel.MAX_ATTACHMENTS)
         try {
             // Any file: the core says which types it takes, as on every client.
-            documentLauncher?.launch(arrayOf("*/*"))
+            documentLauncher?.open(arrayOf("*/*"))
         } catch (error: ActivityNotFoundException) {
             AppLog.warn(TAG, error, "No document picker")
         }
     }
 
     private fun onPicked(picked: List<Uri>) {
+        setPicking(false)
         if (picked.isEmpty()) return
         addUris(picked)
+    }
+
+    /** Opens this picker over the app, which [onPicking] tells the host until it goes. */
+    private fun <I> ActivityResultLauncher<I>.open(input: I) {
+        setPicking(true)
+        try {
+            launch(input)
+        } catch (error: Throwable) {
+            setPicking(false)
+            throw error
+        }
+    }
+
+    private fun setPicking(open: Boolean) {
+        if (picking == open) return
+        picking = open
+        onPicking?.invoke(open)
     }
 
     // ---- Attachment menu & keyboard ----
@@ -646,27 +824,90 @@ class ComposerView @JvmOverloads constructor(
         menu.bringToFront()
         applyTranslation()
         menu.show()
-        rotatePlus(PLUS_OPEN_ROTATION)
+        rotatePlus()
         render(animate = true)
     }
 
     private fun closeMenu() {
         if (!menu.shown) return
         menu.hide()
-        rotatePlus(0f)
+        rotatePlus()
         render(animate = true)
     }
 
     private val plusRotation = DesignSpring(plusButton, DynamicAnimation.ROTATION, DesignMotion.springRotation)
 
-    private fun rotatePlus(degrees: Float) = plusRotation.animateTo(degrees)
+    /** "+" is one glyph, turned into the × that closes the menu or cancels a dictation; nothing about it lays out. */
+    private fun rotatePlus() = plusRotation.animateTo(if (menu.shown || dictation.busy) PLUS_OPEN_ROTATION else 0f)
+
+    // ---- Dictation ----
+
+    private fun toggleDictation() {
+        if (dictation.phase == DictationPhase.IDLE) dismiss()
+        dictation.toggle(::insertDictation)
+    }
+
+    // The listener takes the whole press, for hold-to-talk. TalkBack's click still toggles.
+    @SuppressLint("ClickableViewAccessibility")
+    private fun bindDictationPress(view: View) {
+        view.setOnClickListener { if (dictation.phase != DictationPhase.TRANSCRIBING) toggleDictation() }
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    view.isPressed = true
+                    dictationPress.down(event.eventTime)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    view.isPressed = false
+                    dictationPress.up(event.eventTime, event.actionMasked == MotionEvent.ACTION_CANCEL)
+                }
+            }
+            true
+        }
+    }
+
+    private fun dictationChanged(phase: DictationPhase) {
+        when (phase) {
+            DictationPhase.RECORDING -> performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
+            DictationPhase.TRANSCRIBING -> performHapticFeedback(HapticFeedbackConstants.GESTURE_END)
+            DictationPhase.IDLE -> Unit
+        }
+        dictationCapsule.show(phase)
+        val quiet = if (phase == DictationPhase.IDLE) 1f else 0f
+        val fade = DesignMotion.durationMillis(DesignMotion.stateChange)
+        listOf(editText.parent as View, actionButton.parent as View, microphone).forEach {
+            it.animate().alpha(quiet).setDuration(fade).setInterpolator(DesignMotion.softInOut).start()
+        }
+        rotatePlus()
+        row.refresh(animate = true)
+        render(animate = true)
+        invalidate()
+    }
+
+    private fun insertDictation(words: String) {
+        val edit = dictationEdit(editText.text, editText.selectionStart, editText.selectionEnd, words)
+        editText.text.replace(edit.start, edit.end, edit.inserted)
+        editText.setSelection(edit.start + edit.inserted.length)
+        onDictated?.invoke()
+    }
+
+    private suspend fun microphoneAllowed(): Boolean {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) return true
+        val launcher = microphoneLauncher ?: return false
+        val answer = CompletableDeferred<Boolean>()
+        microphoneAnswer = answer
+        launcher.launch(Manifest.permission.RECORD_AUDIO)
+        return answer.await()
+    }
 
     /** The single place the composer's vertical position is set; the menu rides along. */
     private fun applyTranslation() {
-        val lifted = maxOf(imeOffset, navigationOffset)
+        val extraGap = (imeOffset - navigationOffset).coerceIn(
+            0f, (resources.getDimensionPixelSize(R.dimen.spacing_xl) - paddingBottom).coerceAtLeast(0).toFloat(),
+        )
+        val lifted = maxOf(imeOffset, navigationOffset) + extraGap
         translationY = -lifted
         menu.follow(height, lifted, leading = left + paddingLeft)
-        holdOverlay.setBottomClearance((lifted + height).toInt())
         onImeOffset?.invoke(lifted)
     }
 
@@ -681,7 +922,7 @@ class ComposerView @JvmOverloads constructor(
             navigationOffset = (navigation - reserved).toFloat().coerceAtLeast(0f)
             applyTranslation()
             val nowVisible = ime > 0
-            if (imeVisible && !nowVisible) releaseFocusIfEmpty()
+            if (imeVisible && !nowVisible) releaseInputFocus()
             imeVisible = nowVisible
         }
         // Static insets arrive with the end state before an animation starts; ignore them then.
@@ -710,14 +951,22 @@ class ComposerView @JvmOverloads constructor(
         })
     }
 
-    private fun releaseFocusIfEmpty() {
-        if (editText.text.isBlank()) editText.clearFocus()
+    private fun releaseInputFocus() {
+        editText.clearFocus()
     }
 
     private fun showKeyboard() {
-        editText.requestFocus()
+        focusInput()
         editText.setSelection(editText.text.length)
-        inputMethodManager().showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private val showInput = Runnable {
+        if (editText.isShown && editText.hasFocus()) inputMethodManager().showSoftInput(editText, 0)
+    }
+
+    private fun requestKeyboard() {
+        editText.removeCallbacks(showInput)
+        editText.post(showInput)
     }
 
     private fun hideKeyboard() {
@@ -728,344 +977,7 @@ class ComposerView @JvmOverloads constructor(
     private fun inputMethodManager() =
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
-    // ---- Dictation (tap the microphone) ----
-
-    private fun startDictation() {
-        model.voiceAvailable = credentialProvider.isAvailable
-        when (model.beginDictation()) {
-            ComposerModel.VoiceStart.UNAVAILABLE -> return toast(R.string.composer_voice_unavailable)
-            ComposerModel.VoiceStart.IGNORED -> return
-            ComposerModel.VoiceStart.STARTED -> Unit
-        }
-        if (!hasMicPermission()) {
-            model.endDictation(null, 0, 0)
-            dictateAfterPermission = true
-            requestMicPermission()
-            return
-        }
-        hideKeyboard()
-        closeMenu()
-        awaitingFinal = false
-        dictationTranscript.text = ""
-        dictationTranscript.hint = context.getString(R.string.composer_listening)
-        dictationTranscript.setHintTextColor(style.textPlaceholder)
-        dictationWave.color = style.fgPrimary
-        dictationWave.start()
-        render(animate = true)
-        startRecognizer(object : SpeechRecognizer.Callbacks {
-            override fun onTranscript(text: String) {
-                dictationTranscript.text = text
-            }
-
-            override fun onFinal(text: String) = finishDictation(text)
-
-            override fun onError(error: AsrError) {
-                finishDictation(null)
-                toastFor(error)
-            }
-
-            override fun onSpectrum(bars: FloatArray) = dictationWave.setBars(bars)
-        })
-    }
-
-    private fun confirmDictation() {
-        if (model.voice != VoiceMode.DICTATION || awaitingFinal) return
-        awaitingFinal = true
-        dictationWave.stop()
-        dictationTranscript.hint = context.getString(R.string.composer_recognizing)
-        render(animate = true)
-        val active = recognizer
-        if (active == null) finishDictation(dictationTranscript.text?.toString()) else active.stop()
-    }
-
-    private fun cancelDictation() {
-        if (model.voice != VoiceMode.DICTATION) return
-        stopRecognizer()
-        finishDictation(null)
-    }
-
-    private fun finishDictation(transcript: String?) {
-        awaitingFinal = false
-        dictationWave.stop()
-        recognizer = null
-        val insertion = model.endDictation(transcript, editText.selectionStart, editText.selectionEnd)
-        if (insertion != null) {
-            editText.setText(insertion.text)
-            editText.setSelection(insertion.caret.coerceIn(0, editText.text.length))
-        }
-        render(animate = true)
-    }
-
-    // ---- Hold to talk ----
-
-    private val longPressRunnable = Runnable { onLongPressElapsed() }
-    private val holdTick = object : Runnable {
-        override fun run() {
-            val now = SystemClock.uptimeMillis()
-            when (val event = hold.tick(now)) {
-                is HoldToTalk.Event.End -> return finishHold(event.cancelled)
-                else -> Unit
-            }
-            val remaining = hold.remainingMs(now)
-            val elapsed = (hold.maxDurationMs - remaining) / 1000
-            timer.text = elapsedLabel(elapsed)
-            holdOverlay.setAutoEndSeconds(
-                if (remaining <= AUTO_END_WARNING_MS) ceil(remaining / 1000.0).toInt() else null,
-            )
-            postDelayed(this, HOLD_TICK_MS)
-        }
-    }
-
-    /** Where a press can turn into hold-to-talk: the microphone, or the empty unfocused field. */
-    private fun holdTargetAt(x: Float, y: Float): View? {
-        if (model.voice != VoiceMode.NONE || awaitingFinal || model.hasContent) return null
-        return when {
-            micButton.visibility == VISIBLE && hitTest(micButton, x, y) -> micButton
-            !editText.hasFocus() && editText.visibility == VISIBLE && hitTest(editText, x, y) -> editText
-            else -> null
-        }
-    }
-
-    private fun hitTest(view: View, x: Float, y: Float): Boolean {
-        val here = IntArray(2)
-        val there = IntArray(2)
-        getLocationInWindow(here)
-        view.getLocationInWindow(there)
-        val left = there[0] - here[0]
-        val top = there[1] - here[1]
-        return x >= left && x < left + view.width && y >= top && y < top + view.height
-    }
-
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-            val target = holdTargetAt(ev.x, ev.y) ?: return false
-            holdTarget = target
-            hold.down(ev.rawY, SystemClock.uptimeMillis())
-            target.isPressed = true
-            postDelayed(longPressRunnable, hold.longPressMs)
-            return true
-        }
-        return false
-    }
-
-    @Suppress("ClickableViewAccessibility") // hold-to-talk has an accessible twin: tap to dictate
-    override fun onTouchEvent(ev: MotionEvent): Boolean {
-        if (holdTarget == null) return super.onTouchEvent(ev)
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_MOVE -> handleHoldEvent(hold.move(ev.rawY))
-            MotionEvent.ACTION_UP -> {
-                removeCallbacks(longPressRunnable)
-                handleHoldEvent(hold.up())
-                releaseHoldTarget()
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                removeCallbacks(longPressRunnable)
-                handleHoldEvent(hold.cancel())
-                releaseHoldTarget()
-            }
-        }
-        return true
-    }
-
-    private fun releaseHoldTarget() {
-        holdTarget?.isPressed = false
-        holdTarget = null
-    }
-
-    private fun onLongPressElapsed() {
-        val event = hold.longPressElapsed(SystemClock.uptimeMillis())
-        if (event != HoldToTalk.Event.Start) return
-        model.voiceAvailable = credentialProvider.isAvailable
-        when (model.beginHold()) {
-            ComposerModel.VoiceStart.UNAVAILABLE -> {
-                hold.cancel()
-                return toast(R.string.composer_voice_unavailable)
-            }
-            ComposerModel.VoiceStart.IGNORED -> {
-                hold.cancel()
-                return
-            }
-            ComposerModel.VoiceStart.STARTED -> Unit
-        }
-        if (!hasMicPermission()) {
-            model.endHold(null, cancelled = true)
-            hold.cancel()
-            dictateAfterPermission = false
-            requestMicPermission()
-            return
-        }
-        holdTarget?.isPressed = false
-        parent?.requestDisallowInterceptTouchEvent(true)
-        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        showHoldOverlay(true)
-        holdWave.color = style.fgPrimary
-        holdWave.start()
-        timer.text = elapsedLabel(0)
-        render(animate = true)
-        postDelayed(holdTick, HOLD_TICK_MS)
-        startRecognizer(object : SpeechRecognizer.Callbacks {
-            override fun onTranscript(text: String) = holdOverlay.setTranscript(text)
-
-            override fun onFinal(text: String) = deliverHold(text)
-
-            override fun onError(error: AsrError) {
-                removeCallbacks(holdTick)
-                model.endHold(null, cancelled = true)
-                endHoldUi()
-                toastFor(error)
-            }
-
-            override fun onSpectrum(bars: FloatArray) = holdWave.setBars(bars)
-        })
-    }
-
-    private fun handleHoldEvent(event: HoldToTalk.Event) {
-        when (event) {
-            is HoldToTalk.Event.Abandoned -> {
-                removeCallbacks(longPressRunnable)
-                if (event.wasTap) onHoldTargetTapped()
-            }
-            is HoldToTalk.Event.ZoneChanged -> {
-                performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
-                holdOverlay.setCancelZone(event.inCancelZone)
-                holdWave.color = if (event.inCancelZone) style.textError else style.fgPrimary
-                pill.setFillColor(if (event.inCancelZone) cancelTint() else style.composerBg)
-            }
-            is HoldToTalk.Event.End -> finishHold(event.cancelled)
-            HoldToTalk.Event.Start, HoldToTalk.Event.None -> Unit
-        }
-    }
-
-    private fun onHoldTargetTapped() {
-        when (holdTarget) {
-            micButton -> {
-                micButton.performClick()
-            }
-            editText -> {
-                performClick()
-                showKeyboard()
-            }
-        }
-    }
-
-    private fun finishHold(cancelled: Boolean) {
-        removeCallbacks(holdTick)
-        if (model.voice != VoiceMode.HOLD) return
-        if (cancelled) {
-            performHapticFeedback(HapticFeedbackConstants.REJECT)
-            stopRecognizer()
-            model.endHold(null, cancelled = true)
-            endHoldUi()
-            return
-        }
-        awaitingFinal = true
-        holdWave.stop()
-        holdOverlay.showRecognizing()
-        val active = recognizer
-        if (active == null) deliverHold(null) else active.stop()
-    }
-
-    private fun deliverHold(transcript: String?) {
-        awaitingFinal = false
-        recognizer = null
-        val send = model.endHold(transcript, cancelled = false)
-        if (send != null) {
-            holdOverlay.setTranscript(send)
-            sendingVoice = true
-            performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-            onVoiceSend?.invoke(send)
-            sendingVoice = false
-        } else {
-            toast(R.string.composer_voice_empty)
-        }
-        endHoldUi()
-    }
-
-    private fun endHoldUi() {
-        awaitingFinal = false
-        holdWave.stop()
-        pill.setFillColor(style.composerBg)
-        showHoldOverlay(false)
-        render(animate = true)
-    }
-
-    private fun showHoldOverlay(show: Boolean) {
-        holdOverlay.animate().cancel()
-        if (show) {
-            holdOverlay.reset()
-            // Over everything the host added after the composer (scroll-to-latest, the task pill).
-            holdOverlay.bringToFront()
-            holdOverlay.visibility = VISIBLE
-            applyTranslation()
-            if (ComposerStyle.motionEnabled) {
-                holdOverlay.alpha = 0f
-                holdOverlay.animate().alpha(1f).setDuration(DesignMotion.durationMillis(DesignMotion.stateChange))
-                    .setInterpolator(DesignMotion.smoothOut).start()
-            } else {
-                holdOverlay.alpha = 1f
-            }
-        } else if (ComposerStyle.motionEnabled) {
-            holdOverlay.animate().alpha(0f).setDuration(DesignMotion.durationMillis(DesignMotion.feedbackOut))
-                .withEndAction { holdOverlay.visibility = GONE }.start()
-        } else {
-            holdOverlay.visibility = GONE
-        }
-    }
-
-    private fun elapsedLabel(seconds: Long): String =
-        String.format(java.util.Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60)
-
-    private fun cancelTint(): Int {
-        val error = style.textError
-        // 12% of the error colour over the resting fill, opaque so the shadow never shows through.
-        return ColorUtils.compositeColors((0x1F shl 24) or (error and 0x00FFFFFF), style.composerBg)
-    }
-
-    // ---- Recognizer ----
-
-    private fun startRecognizer(callbacks: SpeechRecognizer.Callbacks) {
-        stopRecognizer()
-        val created = SpeechRecognizer(credentialProvider)
-        recognizer = created
-        created.start(callbacks)
-    }
-
-    private fun stopRecognizer() {
-        recognizer?.cancel()
-        recognizer = null
-    }
-
-    private fun toastFor(error: AsrError) = toast(
-        when (error) {
-            AsrError.NOT_CONFIGURED, AsrError.UNAUTHORIZED -> R.string.composer_voice_unavailable
-            AsrError.MICROPHONE -> R.string.composer_asr_microphone
-            AsrError.NETWORK -> R.string.composer_asr_network
-            AsrError.SERVER -> R.string.composer_asr_failed
-        },
-    )
-
-    // ---- Permissions & activity results ----
-
-    private fun hasMicPermission() =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-
-    private fun requestMicPermission() {
-        val launcher = micPermissionLauncher ?: return toast(R.string.composer_mic_denied)
-        launcher.launch(Manifest.permission.RECORD_AUDIO)
-    }
-
-    private fun onMicPermissionResult(granted: Boolean) {
-        val dictate = dictateAfterPermission
-        dictateAfterPermission = false
-        if (granted) {
-            if (dictate) startDictation() else toast(R.string.composer_mic_granted_hold)
-            return
-        }
-        val activity = hostActivity()
-        val permanentlyDenied = activity != null &&
-            !activity.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
-        toast(if (permanentlyDenied) R.string.composer_mic_denied_forever else R.string.composer_mic_denied)
-    }
+    // ---- Activity results ----
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -1091,16 +1003,17 @@ class ComposerView @JvmOverloads constructor(
                 putString(STATE_QUESTION, pickingQuestion)
             }
         }
+        // Every answer, nothing picked included, ends the pick.
         cameraLauncher = registry.register("$KEY_CAMERA.$slot", ActivityResultContracts.TakePicture()) { saved ->
             val uri = pendingCameraUri
             pendingCameraUri = null
-            if (saved && uri != null) onPicked(listOf(uri))
+            onPicked(listOfNotNull(uri?.takeIf { saved }))
         }
         photosLauncher = registry.register(
             "$KEY_PHOTOS.$slot", CappedPhotoPicker(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
         ) { onPicked(it) }
         photoLauncher = registry.register("$KEY_PHOTO.$slot", ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) onPicked(listOf(uri))
+            onPicked(listOfNotNull(uri))
         }
         documentLauncher = registry.register("$KEY_DOCUMENT.$slot", ActivityResultContracts.OpenMultipleDocuments()) {
             onPicked(it)
@@ -1111,35 +1024,42 @@ class ComposerView @JvmOverloads constructor(
         questionPhotoLauncher = registry.register("$KEY_QUESTION_PHOTO.$slot", ActivityResultContracts.PickVisualMedia()) { uri ->
             onQuestionPicked(listOfNotNull(uri))
         }
-        micPermissionLauncher = registry.register(
-            "$KEY_MIC.$slot", ActivityResultContracts.RequestPermission(), ::onMicPermissionResult,
-        )
+        microphoneLauncher = registry.register("$KEY_MICROPHONE.$slot", ActivityResultContracts.RequestPermission()) { granted ->
+            microphoneAnswer?.complete(granted)
+            microphoneAnswer = null
+        }
         activity.onBackPressedDispatcher.addCallback(backCallback)
+        activity.lifecycle.addObserver(returnWatch)
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        removeCallbacks(longPressRunnable)
-        removeCallbacks(holdTick)
-        stopRecognizer()
-        if (model.voice == VoiceMode.HOLD) model.endHold(null, cancelled = true)
-        if (model.voice == VoiceMode.DICTATION) model.endDictation(null, 0, 0)
+        // Its answer can no longer reach this composer.
+        setPicking(false)
+        dictation.cancel()
         listOf(cameraLauncher, photosLauncher, photoLauncher, documentLauncher, questionPhotosLauncher, questionPhotoLauncher,
-            micPermissionLauncher).forEach { it?.unregister() }
+            microphoneLauncher).forEach { it?.unregister() }
         cameraLauncher = null
         photosLauncher = null
         photoLauncher = null
         documentLauncher = null
         questionPhotosLauncher = null
         questionPhotoLauncher = null
-        micPermissionLauncher = null
+        microphoneLauncher = null
         backCallback.remove()
         val activity = hostActivity() as? ComponentActivity
+        activity?.lifecycle?.removeObserver(returnWatch)
         if (activity != null && resultSlot >= 0) {
             activity.savedStateRegistry.unregisterSavedStateProvider("$KEY_STATE.$resultSlot")
             SLOTS[activity]?.remove(resultSlot)
         }
         resultSlot = -1
+    }
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        // Hidden on its page: gone from the member's sight. The window hiding is the app leaving (see [returnWatch]).
+        if (!isVisible && windowVisibility == VISIBLE) dictation.cancel()
     }
 
     private fun hostActivity(): Activity? {
@@ -1157,34 +1077,21 @@ class ComposerView @JvmOverloads constructor(
 
     // ---- Send snapshot ----
 
-    private fun snapshotOf(source: TextView?, fromVoice: Boolean): ComposerSendSnapshot {
-        val paint = TextPaint(source?.paint ?: editText.paint)
+    private fun snapshotOf(source: TextView): ComposerSendSnapshot {
+        val paint = TextPaint(source.paint)
         val window = IntArray(2)
         val surface = RectF()
-        val radius: Float
-        if (fromVoice && source != null) {
-            source.getLocationInWindow(window)
-            surface.set(window[0].toFloat(), window[1].toFloat(), window[0] + source.width.toFloat(), window[1] + source.height.toFloat())
-            radius = style.dp(20f)
-        } else {
-            pill.getLocationInWindow(window)
-            surface.set(window[0].toFloat(), window[1].toFloat(), window[0] + pill.width.toFloat(), window[1] + pill.height.toFloat())
-            radius = style.dp(ComposerPill.CORNER_DP.toFloat())
-        }
-        val text: CharSequence = source?.text?.toString().orEmpty()
-        val live = source?.layout
-        val origin = PointF()
-        val frozen = if (source != null && live != null && text.isNotEmpty()) {
-            if (fromVoice) freezeVoice(source, text, paint, origin, surface) else freeze(source, live, text, paint, live.width)
-        } else null
-        if (source != null && !fromVoice) {
-            source.getLocationInWindow(window)
-            origin.set(
-                (window[0] + source.totalPaddingLeft).toFloat(),
-                (window[1] + source.extendedPaddingTop - source.scrollY).toFloat(),
-            )
-        }
-        val thumbnails = if (fromVoice) emptyList() else thumbs.values.map { thumb ->
+        pill.getLocationInWindow(window)
+        surface.set(window[0].toFloat(), window[1].toFloat(), window[0] + pill.width.toFloat(), window[1] + pill.height.toFloat())
+        val text: CharSequence = source.text.toString()
+        val live = source.layout
+        val frozen = if (live != null && text.isNotEmpty()) freeze(source, live, text, paint, live.width) else null
+        source.getLocationInWindow(window)
+        val origin = PointF(
+            (window[0] + source.totalPaddingLeft).toFloat(),
+            (window[1] + source.extendedPaddingTop - source.scrollY).toFloat(),
+        )
+        val thumbnails = thumbs.values.map { thumb ->
             thumb.getLocationInWindow(window)
             val visible = android.graphics.Rect()
             val visibleBounds = if (thumb.getLocalVisibleRect(visible)) RectF(visible).apply {
@@ -1197,26 +1104,7 @@ class ComposerView @JvmOverloads constructor(
                 visibleBounds,
             )
         }
-        return ComposerSendSnapshot(text, frozen, paint, origin, surface, radius, thumbnails, fromVoice)
-    }
-
-    /**
-     * The voice bubble has only just been given the final transcript and has not been laid out
-     * with it, so the text is laid out here at its natural width (up to the bubble's widest),
-     * centred where the bubble is centred. [origin] and [surface] are set.
-     */
-    private fun freezeVoice(source: TextView, text: CharSequence, paint: TextPaint, origin: PointF, surface: RectF): Layout {
-        val window = IntArray(2)
-        source.getLocationInWindow(window)
-        val widest = ((hostRoot?.width ?: resources.displayMetrics.widthPixels) - style.dp(HoldOverlayView.SIDE_MARGIN_DP) * 2 -
-            source.totalPaddingLeft - source.totalPaddingRight).coerceAtLeast(1)
-        val width = kotlin.math.ceil(Layout.getDesiredWidth(text, paint)).toInt().coerceIn(1, widest)
-        val centre = window[0] + source.width / 2f
-        origin.set(centre - width / 2f, (window[1] + source.totalPaddingTop).toFloat())
-        val layout = freeze(source, source.layout, text, paint, width)
-        surface.set(origin.x - source.totalPaddingLeft, window[1].toFloat(), origin.x + width + source.totalPaddingRight,
-            window[1] + source.totalPaddingTop + layout.height + source.totalPaddingBottom.toFloat())
-        return layout
+        return ComposerSendSnapshot(text, frozen, paint, origin, surface, thumbnails)
     }
 
     /** A static copy of the live layout, so the snapshot survives the field being cleared. */
@@ -1234,19 +1122,15 @@ class ComposerView @JvmOverloads constructor(
     private companion object {
         const val TAG = "Composer"
         const val SLOT_DP = ComposerRow.SLOT_DP
-        const val BUTTON_DP = 36
+        const val BUTTON_DP = 44
         /** Page gutter beside the composer. */
-        const val SIDE_DP = 24
+        const val SIDE_DP = 12
         /** Above the composer, between it and the list. */
         const val TOP_DP = 8
         /** Under the composer, above the gesture bar (or the keyboard). */
-        const val BOTTOM_DP = 20
+        const val BOTTOM_DP = 8
         const val MAX_LINES = 6
-        const val DIMMED_IMAGE_ALPHA = 102
         const val PLUS_OPEN_ROTATION = 45f
-        const val CANCEL_DISTANCE_DP = 80
-        const val HOLD_TICK_MS = 200L
-        const val AUTO_END_WARNING_MS = 10_000L
         const val CAMERA_DIRECTORY = "composer-camera"
         const val KEY_CAMERA = "comma.composer.camera"
         const val KEY_PHOTOS = "comma.composer.photos"
@@ -1254,11 +1138,36 @@ class ComposerView @JvmOverloads constructor(
         const val KEY_DOCUMENT = "comma.composer.document"
         const val KEY_QUESTION_PHOTOS = "comma.composer.question.photos"
         const val KEY_QUESTION_PHOTO = "comma.composer.question.photo"
-        const val KEY_MIC = "comma.composer.mic"
+        const val KEY_MICROPHONE = "comma.composer.microphone"
         const val KEY_STATE = "comma.composer.state"
         const val STATE_CAMERA_URI = "cameraUri"
         const val STATE_QUESTION = "pickingQuestion"
         /** The places taken by each activity's attached composers; see [onAttachedToWindow]. */
         val SLOTS = java.util.WeakHashMap<Activity, MutableSet<Int>>()
+    }
+}
+
+/** What a Return key press in the composer does. */
+internal enum class HardwareReturn { SEND, LINE_BREAK }
+
+/**
+ * A physical keyboard's Return sends, and with Shift or Alt it breaks the line. Null for any other key and for a
+ * Return a software keyboard sends, which keeps typing a line break.
+ */
+internal fun hardwareReturnAction(event: KeyEvent): HardwareReturn? {
+    if (event.keyCode != KeyEvent.KEYCODE_ENTER && event.keyCode != KeyEvent.KEYCODE_NUMPAD_ENTER) return null
+    if (event.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD || event.flags and KeyEvent.FLAG_SOFT_KEYBOARD != 0) return null
+    return if (event.isShiftPressed || event.isAltPressed) HardwareReturn.LINE_BREAK else HardwareReturn.SEND
+}
+
+/** A newly assigned image remains visible before its first animated state update. */
+private class VisibleScaleDrawable(drawable: android.graphics.drawable.Drawable) :
+    DrawableWrapper(drawable) {
+    override fun draw(canvas: Canvas) {
+        val scale = if (level == 0) 1f else level / 10000f
+        val saved = canvas.save()
+        canvas.scale(scale, scale, bounds.exactCenterX(), bounds.exactCenterY())
+        super.draw(canvas)
+        canvas.restoreToCount(saved)
     }
 }

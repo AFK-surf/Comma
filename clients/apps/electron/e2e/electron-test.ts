@@ -10,9 +10,11 @@ import {
   _electron,
   test as base,
   type ElectronApplication,
+  type Frame,
   type Page,
 } from "@playwright/test";
 import { closeElectronTestApp, trackElectronTestApp } from "./close-electron-test-app";
+import { electronPageNavigation, recordElectronContents } from "./electron-operations";
 import { describeElectronMain } from "./electron-main-diagnostics";
 import { startElectronTestServer } from "./electron-test-server";
 import type { ElectronE2eStartHookEnv } from "../src/main/e2e-start-hooks";
@@ -576,6 +578,8 @@ async function startWorkerElectron(): Promise<WorkerElectron> {
       },
       { shared: true }
     );
+    // Before its windows load: a failed reset's report says what each page loaded.
+    await recordElectronContents(app);
     const mainWindow = await startedMainWindow(app, { reset: false });
     await recordMainAsLaunched(app);
     return { app, mainWindow };
@@ -772,10 +776,33 @@ async function startedMainWindow(
   return mainWindow;
 }
 
-/** The app's open main window, once its document loaded and it shows no one signed in. */
+/**
+ * The app's open main window, once its document loaded and it shows no one signed in. When the page cannot be asked,
+ * the failure says what Main and Playwright each saw of the page's documents.
+ */
 async function signedOutMainWindow(app: ElectronApplication): Promise<Page> {
   const page = await loadedMainWindow(app);
-  await sessionPhase(page, "signed_out");
+  const seen = [`${electronReportTime()} Main says the page has loaded`];
+  const navigated = (frame: Frame) => {
+    if (frame === page.mainFrame())
+      seen.push(`${electronReportTime()} framenavigated ${frame.url()}`);
+  };
+  const loaded = () => seen.push(`${electronReportTime()} load`);
+  page.on("framenavigated", navigated);
+  page.on("load", loaded);
+  try {
+    await sessionPhase(page, "signed_out");
+  } catch (error: unknown) {
+    seen.push(`${electronReportTime()} the session's evaluate failed`);
+    throw new Error(
+      `${String(error)}\nMain saw of the page:\n  ${(await electronPageNavigation(app, page)).join("\n  ")}` +
+        `\nPlaywright saw of it:\n  ${seen.join("\n  ")}`,
+      { cause: error }
+    );
+  } finally {
+    page.off("framenavigated", navigated);
+    page.off("load", loaded);
+  }
   return page;
 }
 
@@ -821,26 +848,46 @@ export async function openedWindow(
   return page;
 }
 
-/** Resolves once Main says the page's window has loaded its document. */
+let documentMarks = 0;
+
+/**
+ * Resolves once Main says the page's window has loaded its document, and Playwright runs what it is asked in that
+ * document. Playwright hears of a page's new document by its own events, which can come after Main's: until then an
+ * evaluate runs in the document before, and fails when the new one replaces it. Main has the document it says has
+ * loaded write a mark to the console: Playwright hears of it after the document itself.
+ */
 async function pageLoaded(app: ElectronApplication, page: Page) {
+  const mark = `comma-e2e-document ${++documentMarks}`;
+  const heard = page.waitForEvent("console", {
+    predicate: (message) => message.text() === mark,
+    timeout: 0,
+  });
+  heard.catch(() => undefined);
   const window = await app.browserWindow(page);
   await window.evaluate(
-    (browserWindow) =>
+    (browserWindow, text) =>
       new Promise<void>((done) => {
         const contents = browserWindow.webContents;
         const loaded = () =>
           !contents.isLoadingMainFrame() &&
           contents.getURL() !== "" &&
           contents.getURL() !== "about:blank";
-        if (loaded()) return done();
+        const marked = () => {
+          void contents
+            .executeJavaScript(`console.debug(${JSON.stringify(text)})`)
+            .then(() => done());
+        };
+        if (loaded()) return marked();
         const stopped = () => {
           if (!loaded()) return;
           contents.off("did-stop-loading", stopped);
-          done();
+          marked();
         };
         contents.on("did-stop-loading", stopped);
-      })
+      }),
+    mark
   );
+  await heard;
 }
 
 /** Resolves once the window's session (Main's, as the bridge replays it) is in `phase`. */

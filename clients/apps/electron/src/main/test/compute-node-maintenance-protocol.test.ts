@@ -1,77 +1,54 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { AgentVMMCommandAdapter } from "../modules/compute-node/runtime-adapter";
-import {
-  HostMaintenanceIncompatibleError,
-  MaintenanceCapabilityProbe,
-} from "../modules/compute-node/host-maintenance-protocol";
-import {
-  AgentVMMHostPreparation,
-  resolveHostConfiguration,
-} from "../modules/compute-node/host-preparation";
 
-it.each(["repair", "enable", "install", "resume"] as const)(
-  "probes the installed helper once per action before a %s mutation and rejects only that operation",
-  async (action) => {
-    let compatible = true;
-    const effects: string[] = [];
-    const run = vi.fn(async (_path: string, args: string[]) => {
-      if (args[0] === "maintenance-status") return compatible ? "null" : "{}";
-      effects.push(args[0]!);
-      return "";
-    });
-    const adapter = new AgentVMMCommandAdapter(
-      "isolated-helper",
-      run,
-      new MaintenanceCapabilityProbe(run)
-    );
-    const invoke = () => adapter[action]("exact-operation", "exact-registration");
-    adapter.beginAction();
-    await invoke();
-    await invoke();
-    expect(effects).toHaveLength(2);
-    const probes = () =>
-      run.mock.calls.filter(([, args]) => args[0] === "maintenance-status").length;
-    expect(probes()).toBe(1);
-    compatible = false;
-    adapter.beginAction();
-    await expect(invoke()).rejects.toBeInstanceOf(HostMaintenanceIncompatibleError);
-    expect(effects).toHaveLength(2);
-    expect(probes()).toBe(2);
-    // Drain and remove never depend on the maintenance protocol.
-    await adapter.drain("exact-operation", "exact-registration");
-    await adapter.remove("exact-operation", "exact-registration");
-    expect(effects.slice(2)).toEqual(["registration-state", "registration-revoke"]);
-    expect(probes()).toBe(2);
-  }
-);
+it("submits typed actions directly and reads any accepted request through the native owner", async () => {
+  const run = vi.fn(async (_file: string, args: string[]) =>
+    ["operation", "registration-claim"].includes(args[0]!)
+      ? JSON.stringify({
+          requestId: "request-1",
+          targetRegistrationId: "registration-1",
+          kind: "registration-claim",
+          outcome: "failed",
+          retryable: true,
+        })
+      : "{}"
+  );
+  const adapter = new AgentVMMCommandAdapter("/host/helper", run);
+  await adapter.install("request-1", '{"registration_id":"registration-1"}');
+  expect(run.mock.calls[0]?.[1]).toEqual([
+    "registration-claim",
+    "--service-type",
+    "agent",
+    "--request-id",
+    "request-1",
+    "--descriptor-stdin",
+  ]);
+  expect(await adapter.receipt("request-1")).toMatchObject({
+    outcome: "failed",
+    retryable: true,
+  });
+  await adapter.remove("request-2", "registration-1");
+  expect(run.mock.calls.at(-1)?.[1]?.[0]).toBe("registration-remove");
+});
 
-it("does not replay a legacy pending update through an old installed helper", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "comma-old-update-"));
-  try {
-    const config = resolveHostConfiguration("prod", {}, directory);
-    await mkdir(join(config.appPath, "Contents", "Helpers"), { recursive: true });
-    await writeFile(config.lifecyclePath, "isolated legacy helper", { mode: 0o700 });
-    await writeFile(
-      join(config.directory, ".pending-update.json"),
-      JSON.stringify({
-        sourceApp: join(config.directory, ".Agent VMM Host.legacy.app"),
-        targetReleaseId: "legacy-release",
-        requestId: "legacy-update",
-      })
-    );
-    const run = vi.fn(async () => {
-      throw new Error("unknown maintenance-status command");
-    });
-    const download = vi.fn();
-    await expect(
-      new AgentVMMHostPreparation(config, run, download).ensure(() => {})
-    ).rejects.toThrow("Update Agent VMM Host");
-    expect(download).not.toHaveBeenCalled();
-    expect(run.mock.calls).toHaveLength(1);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+it("consumes the exact enable receipt and rejects a different accepted action", async () => {
+  let kind = "registration-enable";
+  const run = vi.fn(async () =>
+    JSON.stringify({
+      requestId: "enable-request",
+      targetRegistrationId: "registration-1",
+      kind,
+      outcome: "pending",
+    })
+  );
+  const adapter = new AgentVMMCommandAdapter("/host/helper", run);
+  expect(await adapter.enable("enable-request", "registration-1")).toMatchObject({
+    requestId: "enable-request",
+    kind: "registration-enable",
+    outcome: "pending",
+  });
+  kind = "registration-claim";
+  await expect(adapter.enable("enable-request", "registration-1")).rejects.toThrow(
+    "another action"
+  );
 });

@@ -16,6 +16,8 @@
   "computeRuntimeBaseURL": "https://salix.comma.surf",
   "l4es": {
     "url": "https://l4es.afk.surf",
-    "maxSandboxes": 5
+    "labels": [],
+    "maxSandboxes": 5,
+    "cloudVmRetired": true
   }
 }

@@ -9,12 +9,15 @@
       "default": "./src/index.ts"
     },
     "./dynamic-ui-runtime": "./src/dynamic-ui/runtime.ts",
+    "./dynamic-ui-level": "./src/dynamic-ui/level.ts",
     "./dynamic-ui-cards": "./src/dynamic-ui/cardsEntry.ts",
     "./dynamic-ui-card-fixtures": "./src/dynamic-ui/cardFixtures.ts",
     "./mini-app-runtime": "./src/mini-app/runtime.ts"
   },
   "scripts": {
-    "generate:card-contract": "node --experimental-strip-types ./scripts/generate-card-contract.mjs"
+    "generate:card-contract": "node --experimental-strip-types ./scripts/generate-card-contract.mjs",
+    "generate:card-token-defaults": "node --experimental-strip-types ./scripts/generate-card-token-defaults.mjs",
+    "generate:card-icon-defaults": "node ./scripts/generate-card-icon-defaults.mjs"
   },
   "dependencies": {
     "@comma/miniapp-sdk": "workspace:*",

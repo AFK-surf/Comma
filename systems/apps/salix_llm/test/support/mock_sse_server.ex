@@ -96,14 +96,14 @@ defmodule SalixLlm.MockSSEServer do
 
     SystemsRuntime.Proc.receive do
       {:release_mock_sse_barrier, ^tag} -> conn
-    after
-      5_000 -> conn
     end
   end
 
+  # The pause between chunks runs on the test clock: a real sleep looks idle
+  # to it, so the clock could jump past a stream deadline mid-body.
   defp stream_chunk(piece, conn) when is_binary(piece) do
     {:ok, conn} = chunk(conn, piece)
-    SystemsRuntime.Proc.sleep(2)
+    SystemsClock.sleep(2)
     conn
   end
 

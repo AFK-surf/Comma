@@ -14,7 +14,8 @@ defmodule CommaWeb.ClientSurface do
     "/v1/comma/integrations/telegram/webhook",
     "/v1/comma/integrations/linear/connect/callback",
     "/v1/comma/integrations/linear/webhook",
-    "/v1/comma/integrations/imessage/photon/webhook"
+    "/v1/comma/integrations/imessage/photon/webhook",
+    "/v1/comma/integrations/line/webhook"
   ]
   @public_auth_paths [
     "/v1/comma/auth/apple/attempt",
@@ -23,6 +24,7 @@ defmodule CommaWeb.ClientSurface do
     "/v1/comma/auth/watch/exchange",
     "/v1/comma/auth/email/login",
     "/v1/comma/auth/email/verify",
+    "/v1/comma/auth/registration/complete",
     "/v1/comma/auth/google/attempt",
     "/v1/comma/auth/google",
     "/v1/comma/auth/google/link/verify",

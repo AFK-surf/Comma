@@ -34,7 +34,8 @@ test("toasts stay reachable over the Settings modal and leave it open", async ({
   await expect(dismiss).toHaveCount(1);
   await expect(dismiss.first()).toBeVisible();
 
-  await page.getByRole("button", { exact: true, name: "Settings" }).click();
+  await page.getByRole("button", { exact: true, name: "Account" }).click();
+  await page.getByRole("menuitem", { exact: true, name: "Settings" }).click();
   const dialog = page.getByRole("dialog", { name: "Settings sections" });
   await expect(dialog).toBeVisible();
 

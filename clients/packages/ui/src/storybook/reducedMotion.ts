@@ -1,12 +1,9 @@
-import { commaReducedMotionAttribute } from "../tokens";
+import { writeDocumentReducedMotion } from "../tokens";
 
 export type StorybookMotionPreference = "full" | "reduced";
 
 export const applyDocumentReducedMotion = (preference: StorybookMotionPreference) => {
-  document.documentElement.setAttribute(
-    commaReducedMotionAttribute,
-    String(preference === "reduced")
-  );
+  writeDocumentReducedMotion(preference === "reduced");
 };
 
 export const reducedMotionToolbarItems = [

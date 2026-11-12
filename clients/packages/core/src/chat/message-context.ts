@@ -3,6 +3,7 @@
 // a window shows them.
 //
 // Bounds: one read per call; the server bounds the page.
+import { lazySchema } from "@comma/chat-contract";
 import type { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -19,14 +20,16 @@ import {
 } from "./model/conversationChannel.ts";
 import { transcriptMessages } from "./model/taskActivity.ts";
 
-const id = z.string().min(1).max(256);
+const id = lazySchema(() => z.string().min(1).max(256));
 
-export const messageContextInputSchema = z.object({
-  groupId: id,
-  conversationId: id,
-  messageId: id,
-  conversationKind: commaConversationKindSchema,
-});
+export const messageContextInputSchema = lazySchema(() =>
+  z.object({
+    groupId: id,
+    conversationId: id,
+    messageId: id,
+    conversationKind: commaConversationKindSchema,
+  })
+);
 
 export function readMessageContext(
   ctx: Ctx,

@@ -8,12 +8,11 @@ import {
   startTestCore,
 } from "../src/testing/index.ts";
 
-const base = "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/install-operations/op1";
-const target = { workspaceId: "wsp", operationId: "op1" };
+const base = "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/registrations/reg1";
+const target = { workspaceId: "wsp", registrationId: "reg1" };
 const operation = (status: string) => ({
-  operation: {
-    id: "op1",
-    authorization_status: "handed_off",
+  registration: {
+    id: "reg1",
     status,
     work_activity: "idle",
   },
@@ -44,35 +43,22 @@ function setup() {
   return { client, window, core, time: host.time!, api: host.api };
 }
 
-describe("a compute node's install operation", () => {
-  it("reads the server's Shell phase and revocation reason, and drops an unknown reason", async () => {
-    const t = setup();
-    t.api.on("GET", base, {
-      operation: {
-        ...operation("action_required").operation,
-        authorization_status: "revoked",
-        shell_phase: "ready",
-        registration_revocation_reason: "authorization_expired",
-      },
-    });
-    const read = t.client.call("computeNode.inspect", { ...target, lease });
-    await t.time.pass(100);
-    await expect(read).resolves.toEqual({
-      authorizationStatus: "revoked",
-      status: "action_required",
-      workActivity: "idle",
-      shellPhase: "ready",
-      registrationRevocationReason: "authorization_expired",
-    });
-    t.api.on("GET", base, {
-      operation: {
-        ...operation("action_required").operation,
-        registration_revocation_reason: "a_future_reason",
-      },
-    });
-    const later = t.client.call("computeNode.inspect", { ...target, lease });
-    await t.time.pass(100);
-    expect(await later).not.toHaveProperty("registrationRevocationReason");
+it("reads Registration status and the independent Shell phase", async () => {
+  const t = setup();
+  t.api.on("GET", base, {
+    registration: {
+      id: "reg1",
+      status: "ready",
+      work_activity: "idle",
+      shell_phase: "failed",
+    },
+  });
+  const read = t.client.call("computeNode.inspect", { ...target, lease });
+  await t.time.pass(100);
+  await expect(read).resolves.toEqual({
+    status: "ready",
+    workActivity: "idle",
+    shellPhase: "failed",
   });
 });
 
@@ -84,7 +70,7 @@ describe("Linux install command", () => {
       command:
         "curl -fsSL 'https://api.comma.test/v1/compute/agent-vmm/install.sh' | sudo sh -s -- linux-op.secret",
       expires_at: "2026-10-23T10:00:00Z",
-      operation: { id: "linux-op" },
+      registration: { id: "linux-op" },
     });
     const answer = t.window.call("computeNode.installCommand", {
       workspaceId: "wsp",
@@ -105,14 +91,13 @@ describe("Linux install command", () => {
 });
 
 describe("Main's compute node requests", () => {
-  const installs =
-    "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/install-operations";
+  const installs = "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/registrations";
   const descriptor = {
-    exchange_url:
-      "https://api.comma.test/v1/compute/agent-vmm/install-operations/exchange",
+    claim_url: "https://api.comma.test/v1/compute/agent-vmm/registrations/claim",
     expires_at: "2026-08-25T00:00:00Z",
-    one_time_secret: "ticket-secret",
-    operation_id: "op1",
+    ticket: "ticket-secret",
+    registration_id: "reg1",
+    request_id: "enable-request",
     version: 1,
   };
 
@@ -120,7 +105,7 @@ describe("Main's compute node requests", () => {
     const t = setup();
     t.api.on("POST", installs, {
       descriptor,
-      operation: { id: "op1", registration_id: "reg1" },
+      registration: { id: "reg1", registration_id: "reg1" },
     });
     const answer = t.client.call("computeNode.authorize", {
       workspaceId: "wsp",
@@ -128,11 +113,12 @@ describe("Main's compute node requests", () => {
       lease,
     });
     await t.time.pass(100);
-    await expect(answer).resolves.toEqual({
-      descriptor: JSON.stringify(descriptor),
-      operationId: "op1",
-      registrationId: "reg1",
-    });
+    const authorization = (await answer) as {
+      descriptor: string;
+      registrationId: string;
+    };
+    expect(authorization.registrationId).toBe("reg1");
+    expect(JSON.parse(authorization.descriptor)).toEqual(descriptor);
     const [sent] = t.api.seen("POST", installs);
     expect(sent!.headers).toContainEqual(["idempotency-key", "request-1"]);
     expect(sent!.body).toEqual({});
@@ -227,4 +213,24 @@ describe("Main's Connector credential requests", () => {
     await t.time.pass(100);
     await why;
   });
+});
+
+it("cancels the original Registration request through the current Main lease", async () => {
+  const t = setup();
+  const path =
+    "/v1/comma/workspaces/wsp/compute-nodes/agent-vmm/registrations/requests/original-client-request/cancel";
+  t.api.on("POST", path, {
+    registration: { id: "revoked-pending", status: "removed", host_bound: false },
+  });
+  const answer = t.client.call("computeNode.cancelRequest", {
+    workspaceId: "wsp",
+    requestId: "original-client-request",
+    lease,
+  });
+  await t.time.pass(100);
+  await expect(answer).resolves.toEqual({
+    registrationId: "revoked-pending",
+    hostBound: false,
+  });
+  expect(t.api.seen("POST", path)[0]!.body).toEqual({});
 });

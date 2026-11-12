@@ -48,6 +48,44 @@ final class TriggerMenuModelTests: XCTestCase {
         XCTAssertNil(model.match(in: pane.draftText))
     }
 
+    func testShiftReturnBreaksTheLineAtTheCaret() throws {
+        let pane = try pane(), model = TriggerMenuModel()
+        type("hello world", caret: 5, into: pane, model: model)
+        model.insertLineBreak(pane: pane)
+        XCTAssertEqual(pane.draftText, "hello\n world")
+        XCTAssertEqual(try caretOffset(model, in: pane), 6)
+        model.selectionBinding(for: pane).wrappedValue = TextSelection(
+            range: pane.draftText.index(pane.draftText.startIndex, offsetBy: 6)..<pane.draftText.endIndex)
+        model.insertLineBreak(pane: pane)
+        XCTAssertEqual(pane.draftText, "hello\n\n", "A selection is replaced")
+        XCTAssertEqual(try caretOffset(model, in: pane), 7)
+    }
+
+    func testDictationGoesAtTheCaretSpacedOnlyBetweenWords() throws {
+        let pane = try pane(), model = TriggerMenuModel()
+        type("Call and", caret: 4, into: pane, model: model)
+        model.insertDictation("Mia", pane: pane)
+        XCTAssertEqual(pane.draftText, "Call Mia and", "A space parts the words on the side that needs one")
+        XCTAssertEqual(try caretOffset(model, in: pane), 8)
+        type("订会议室", caret: 2, into: pane, model: model)
+        model.insertDictation("周五", pane: pane)
+        XCTAssertEqual(pane.draftText, "订会周五议室", "Chinese joins without spaces")
+        let other = try self.pane(), fresh = TriggerMenuModel()
+        other.draftText = "Hi"
+        fresh.insertDictation("there", pane: other)
+        XCTAssertEqual(other.draftText, "Hi there", "Without a caret the words go at the end")
+    }
+
+    func testDictationReplacesASelection() throws {
+        let pane = try pane(), model = TriggerMenuModel()
+        type("Call Bob now", into: pane, model: model)
+        let text = pane.draftText
+        model.selectionBinding(for: pane).wrappedValue = TextSelection(
+            range: text.index(text.startIndex, offsetBy: 5)..<text.index(text.startIndex, offsetBy: 8))
+        model.insertDictation("Mia", pane: pane)
+        XCTAssertEqual(pane.draftText, "Call Mia now")
+    }
+
     func testEscapeKeepsTheMenuClosedUntilTheTextChangesAndATapReopensIt() throws {
         let pane = try pane(), model = TriggerMenuModel()
         type("hi /pd", into: pane, model: model)

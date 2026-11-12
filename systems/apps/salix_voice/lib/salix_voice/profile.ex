@@ -191,6 +191,9 @@ defmodule SalixVoice.Profile do
   @spec language_name(String.t() | nil) :: String.t()
   def language_name(code), do: Map.get(@language_names, code, "English")
 
+  @doc "Whether `code` is a language code this module knows."
+  def language?(code), do: Map.has_key?(@language_names, code)
+
   @doc "The instruction block for `lines`, or nil without lines."
   @spec block([String.t()]) :: String.t() | nil
   def block([]), do: nil

@@ -9,6 +9,8 @@ import Foundation
 final class FakeCore: CoreAPI, @unchecked Sendable {
     typealias Answer = @Sendable (_ params: [String: Any]) throws -> Any?
     typealias Source = @Sendable (_ topic: [String: Any]) -> Any?
+    /// A call that says how it goes (`call(_:_:progress:)`): each value given to `progress`, then its answer.
+    typealias Streamed = @Sendable (_ params: [String: Any], _ progress: @escaping @Sendable (Any) -> Void) async throws -> Any?
 
     private struct Subscriber {
         let topic: [String: Any]
@@ -17,12 +19,38 @@ final class FakeCore: CoreAPI, @unchecked Sendable {
 
     private let lock = NSLock()
     private var answers: [String: Answer] = [:]
+    private var streams: [String: Streamed] = [:]
     private var made: [(name: String, params: [String: Any])] = []
     private var sources: [String: Source] = [:]
     private var subscribers: [UUID: Subscriber] = [:]
     private var waiting: [(name: String, matches: @Sendable ([String: Any]) -> Bool, continuation: CheckedContinuation<[String: Any], Never>)] = []
 
     func on(_ name: String, _ answer: @escaping Answer) { lock.withLock { answers[name] = answer } }
+
+    func onStream(_ name: String, _ answer: @escaping Streamed) { lock.withLock { streams[name] = answer } }
+
+    /// Set: views get a sink (`screenSink`), and the test hands pictures to it as the core's thread would.
+    var sinks = false
+    private var sinkHandlers: [Int: @Sendable (ScreenFrame) -> Void] = [:]
+
+    func screenSink(_ handler: @escaping @Sendable (ScreenFrame) -> Void) -> ScreenSinkToken? {
+        guard sinks else { return nil }
+        let id = lock.withLock { () -> Int in
+            let id = sinkHandlers.count + 1
+            sinkHandlers[id] = handler
+            return id
+        }
+        return ScreenSinkToken(id: id) { [weak self] in
+            guard let self else { return }
+            _ = self.lock.withLock { self.sinkHandlers.removeValue(forKey: id) }
+        }
+    }
+
+    /// One picture to sink `sink`, as `engineScreenFrame` gives it.
+    func screenFrame(sink: Int, kind: Int, ts: Double, width: Int = 0, height: Int = 0, bytes: [UInt8]) {
+        guard let handler = lock.withLock({ sinkHandlers[sink] }) else { return }
+        bytes.withUnsafeBytes { handler(ScreenFrame(sink: sink, kind: kind, ts: ts, width: width, height: height, bytes: $0)) }
+    }
 
     /// What a new subscriber to `topic` (by name) first gets; nothing until `publish` when there is no source.
     func serve(_ topic: String, _ source: @escaping Source) { lock.withLock { sources[topic] = source } }
@@ -70,6 +98,21 @@ final class FakeCore: CoreAPI, @unchecked Sendable {
         }
         for continuation in ready { continuation.resume(returning: params) }
         return CoreJSON(value: try answer?(params).map(Self.foundation))
+    }
+
+    nonisolated(nonsending) func call(_ name: String, _ params: [String: Any],
+                                      progress: @escaping @Sendable (CoreJSON) -> Void) async throws -> CoreJSON {
+        guard let streamed = lock.withLock({ streams[name] }) else { return try await call(name, params) }
+        nonisolated(unsafe) let params = params
+        let ready = lock.withLock { () -> [CheckedContinuation<[String: Any], Never>] in
+            made.append((name, params))
+            let ready = waiting.filter { $0.name == name && $0.matches(params) }
+            waiting.removeAll { $0.name == name && $0.matches(params) }
+            return ready.map(\.continuation)
+        }
+        for continuation in ready { continuation.resume(returning: params) }
+        let answer = try await streamed(params) { value in progress(CoreJSON(value: Self.foundation(value))) }
+        return CoreJSON(value: answer.map(Self.foundation))
     }
 
     func subscribe<T: Sendable>(_ topic: [String: Any], read: @escaping @Sendable (Any?) -> T) -> AsyncStream<TopicValue<T>> {

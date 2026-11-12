@@ -7,10 +7,13 @@
     <item name="settings_reply_notifications" type="id" />
     <item name="settings_theme" type="id" />
     <item name="settings_font_size" type="id" />
+    <item name="settings_glass" type="id" />
     <item name="settings_devices" type="id" />
     <item name="settings_devices_status" type="id" />
     <item name="settings_devices_sign_out_others" type="id" />
     <item name="settings_sign_out" type="id" />
+    <item name="settings_delete_account" type="id" />
+    <item name="settings_delete_account_code_input" type="id" />
     <item name="settings_version" type="id" />
     <item name="settings_licenses" type="id" />
     <item name="settings_avatar_choose" type="id" />
@@ -20,4 +23,9 @@
     <item name="settings_dialog_confirm" type="id" />
     <item name="settings_workspace" type="id" />
     <item name="settings_notifications_toggle" type="id" />
+    <item name="settings_add_account" type="id" />
+    <item name="settings_email" type="id" />
+    <item name="settings_change_email_input" type="id" />
+    <item name="settings_change_email_code_input" type="id" />
+    <item name="settings_delete_account_email_input" type="id" />
 </resources>

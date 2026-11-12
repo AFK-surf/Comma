@@ -14,10 +14,13 @@ const failed = (e: unknown) =>
 
 export function webStations(load: () => Promise<WebMesh>): StationMeshPorts {
   return {
-    open: ({ secretKey, relays }) =>
+    // The person's own computers too, whose screens and devices the page views over it (screen-views.ts).
+    ownComputers: true,
+    open: ({ secretKey, relays, routePolicy }) =>
       Effect.acquireRelease(
         Effect.tryPromise({
-          try: async () => bindWebEndpoint(await load(), { secretKey, relays }),
+          try: async () =>
+            bindWebEndpoint(await load(), { secretKey, relays, routePolicy }),
           catch: failed,
         }),
         (endpoint) => Effect.promise(() => endpoint.close().catch(() => undefined))

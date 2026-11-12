@@ -1,5 +1,10 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
+import {
+  isBackgroundWorkspaceRead,
+  unconfiguredChannelRead,
+} from "../../../e2e/helpers/workspace-reads";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const workspaceId = "wsp_linear_e2e";
@@ -96,9 +101,14 @@ const openLinearSettings = async (page: Page) => {
       });
       return;
     }
-    // The Router's label reads its models; this test does not show them.
-    if (url.pathname.endsWith("/agent-models")) {
+    // The client core reads the active workspace on its own; this test does not show it.
+    if (isBackgroundWorkspaceRead(request.method(), url.pathname)) {
       await json({}, 404);
+      return;
+    }
+    const channel = unconfiguredChannelRead(request.method(), url.pathname);
+    if (channel) {
+      await json(channel);
       return;
     }
 
@@ -210,8 +220,10 @@ test("connects a Linear account, installs Comma into its organization and keeps 
 
   // The settings pick what happens to the issue; its Task runs where and on
   // what the workspace's defaults say, so there is no Worker to pick.
-  await card.getByRole("button", { name: /When a Task completes/ }).click();
-  await page.getByRole("option", { name: "Move the issue to In Review" }).click();
+  await chooseDropdownOption(
+    card.getByRole("button", { name: /When a Task completes/ }),
+    /Move the issue to In Review/
+  );
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toEqual({ completion_state_policy: "in_review" });
 

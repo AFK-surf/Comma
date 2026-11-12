@@ -1799,13 +1799,13 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
              })
 
     assert {:ok, _} =
-             CasRecord.create(Keys.ctl_agent(agent), %{
+             SalixStore.AgentPGStore.create(agent, to_string(node()), SalixAgent.State, %{
                "tenant_id" => tenant,
                "group_id" => group,
                "agent_id" => agent,
                "role" => "router",
                "heartbeat_schedule_id" => "test-heartbeat",
-               "router_session_id" => "test-session"
+               "router_session_id" => Ids.new_session_id()
              })
 
     connect = %{

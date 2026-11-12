@@ -162,9 +162,8 @@
         "routed_any": [
           "screencam_report"
         ],
-        "urgency_any": [
-          "critical",
-          "high",
+        "decision_any": [
+          "interrupt",
           "ask"
         ]
       }

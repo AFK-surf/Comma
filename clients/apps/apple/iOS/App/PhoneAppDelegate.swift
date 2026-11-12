@@ -12,6 +12,8 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     /// The voice call, created with the store and living as long as the process.
     @Published private(set) var call: CallController?
     let activity: TaskActivityCoordinator
+    /// Asks for an App Store rating once the member accepted enough results.
+    private let reviewPrompt = ReviewPrompt()
     private let makeStore: @MainActor () throws -> CommaStore
     private let notificationSetup: (@MainActor (PhoneAppDelegate, CommaStore) throws -> Void)?
     private var bootstrapTask: Task<Void, Never>?
@@ -151,6 +153,7 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
                 await self.activity.setAutomaticFollowing(enabled)
             }
         }
+        value.onWorkAccepted = { [reviewPrompt] in Task { await reviewPrompt.workAccepted() } }
         appleCredentialObservation = NotificationCenter.default.publisher(for: ASAuthorizationAppleIDProvider.credentialRevokedNotification)
             .sink { [weak self, weak value] _ in
                 Task { @MainActor [weak self, weak value] in

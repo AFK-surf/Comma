@@ -290,7 +290,12 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
     ),
   ];
 
-  // The balance includes all active grants. The subscription expiry is a separate fact.
+  const nonLlmCredits = summary?.non_llm_credits ?? 0;
+  const nonLlmExpiry = summary?.non_llm_credits_expires_at
+    ? new Date(summary.non_llm_credits_expires_at)
+    : undefined;
+
+  // The balance includes the grants that pay for hosted models. The subscription expiry is a separate fact.
   const balanceRows: SettingsPanelItem[] = [
     {
       id: "billing.credits.balance",
@@ -318,6 +323,27 @@ export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefin
           }
         : {}),
     },
+    ...(!loading && nonLlmCredits > 0
+      ? [
+          {
+            id: "billing.credits.nonLlm",
+            title: number.format(nonLlmCredits),
+            description: [
+              zh
+                ? "仅用于云端沙箱和存储，不能用于模型调用"
+                : "For cloud sandboxes and storage only, not hosted models",
+              nonLlmExpiry
+                ? zh
+                  ? `到期日：${formatDate(nonLlmExpiry, locale, { dateStyle: "medium" })}`
+                  : `Expires ${formatDate(nonLlmExpiry, locale, { dateStyle: "medium" })}`
+                : undefined,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            keywords: ["credits", "sandbox", "storage", "沙箱", "存储"],
+          },
+        ]
+      : []),
   ];
 
   // Subscription plans: the period switch is the card's first row, then one

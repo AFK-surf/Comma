@@ -5,6 +5,7 @@ defmodule Salix.Bindings.MeetingChannelTest do
   alias Salix.Control.Store, as: ControlStore
   alias Salix.Control.Tenants
   alias SalixStore.{Ids, Keys}
+  alias SalixWeb.Test.MeetingPreparationProvider, as: MockExternalHTTP
 
   setup do
     previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
@@ -75,6 +76,98 @@ defmodule Salix.Bindings.MeetingChannelTest do
     assert {:error, _reason} =
              MeetingChannel.resolve(group(context, "slack-worker", "T-primary", "C-x"))
   end
+
+  describe "organizer delivery" do
+    setup context do
+      previous = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+      ensure_started!(MockExternalHTTP)
+
+      port =
+        Enum.find_value(1..10, fn _ ->
+          port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
+
+          case start_supervised({Bandit, plug: MockExternalHTTP, port: port, ip: {127, 0, 0, 1}},
+                 id: {:meeting_channel_bandit, port}
+               ) do
+            {:ok, _pid} -> port
+            {:error, _reason} -> nil
+          end
+        end)
+
+      SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+      on_exit(fn -> restore_env(:salix_im, :slack_api_base_url, previous) end)
+      seed_connect(context, "slack-primary", "T-primary")
+
+      MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn %{"email" => email} ->
+        case email do
+          "organizer@acme.test" -> slack_user("UORGANIZER", email)
+          "member@acme.test" -> slack_user("UMEMBER", email)
+          _ -> %{"ok" => false, "error" => "users_not_found"}
+        end
+      end)
+
+      MockExternalHTTP.stub("POST", "/api/conversations.open", fn %{"users" => user} ->
+        %{"ok" => true, "channel" => %{"id" => "D" <> String.trim_leading(user, "U")}}
+      end)
+
+      group =
+        context
+        |> group("slack-primary", "T-primary", "C-team")
+        |> Map.merge(%{"delivery" => "organizer", "account_email" => "member@acme.test"})
+
+      {:ok, organizer_group: group}
+    end
+
+    test "starts the thread in a DM to the organizer, else the member, else the team channel",
+         %{organizer_group: group} do
+      assert {:ok, %{"channel_id" => "DORGANIZER"}} =
+               MeetingChannel.resolve(group, %{"organizer_email" => "organizer@acme.test"})
+
+      assert {:ok, %{"channel_id" => "DMEMBER"}} =
+               MeetingChannel.resolve(group, %{"organizer_email" => "guest@outside.test"})
+
+      assert {:ok, %{"channel_id" => "C-team"}} =
+               MeetingChannel.resolve(
+                 Map.delete(group, "account_email"),
+                 %{"organizer_email" => "guest@outside.test"}
+               )
+
+      assert {:ok, %{"channel_id" => "C-team"}} =
+               MeetingChannel.resolve(Map.delete(group, "delivery"), %{
+                 "organizer_email" => "organizer@acme.test"
+               })
+    end
+
+    test "without a team channel, a meeting whose people are not in Slack has no thread",
+         %{organizer_group: group} do
+      group = Map.put(group, "channel_id", "")
+
+      assert {:ok, %{"channel_id" => "DORGANIZER"}} =
+               MeetingChannel.resolve(group, %{"organizer_email" => "organizer@acme.test"})
+
+      assert {:error, :meeting_direct_message_unavailable} =
+               MeetingChannel.resolve(
+                 Map.delete(group, "account_email"),
+                 %{"organizer_email" => "guest@outside.test"}
+               )
+    end
+
+    test "a rate-limited lookup keeps the direct message and does not fall back to the team channel",
+         %{organizer_group: group} do
+      MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn _form ->
+        %{"ok" => false, "error" => "ratelimited"}
+      end)
+
+      assert {:error, {:slack_direct_message, "ratelimited"}} =
+               MeetingChannel.resolve(group, %{"organizer_email" => "organizer@acme.test"})
+    end
+  end
+
+  defp slack_user(id, email),
+    do: %{
+      "ok" => true,
+      "user" => %{"id" => id, "team_id" => "T-primary", "profile" => %{"email" => email}}
+    }
 
   defp group(context, connect_id, workspace_id, channel_id) do
     %{

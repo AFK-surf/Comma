@@ -14,6 +14,7 @@ import { Button } from "../Button";
 import { Badge, type BadgeColor } from "../Badge";
 import { Collapse, CollapseContent } from "../collapse";
 import { Dropdown, type DropdownItem } from "../dropdown";
+import { selectRowHeightClassName } from "../dropdown/select-primitives";
 import {
   Menu,
   MenuItem,
@@ -134,7 +135,7 @@ export type SettingsControl =
       label: string;
       disabled?: boolean;
       onPress?: () => void;
-      tone?: "default" | "danger";
+      tone?: "default" | "danger" | "quiet";
     }
   | {
       type: "shortcut";
@@ -188,7 +189,7 @@ export interface SettingsPanelItem {
       onPress?: () => void;
     }[];
     content?: ReactNode;
-    note: string;
+    note?: string;
   };
   description?: string;
   descriptionLoading?: boolean;
@@ -210,6 +211,12 @@ export interface SettingsPanelItem {
   control?: SettingsControl;
   /** Sits beside the control, for an action that acts on the setting itself. */
   controlLeading?: ReactNode;
+  /**
+   * A labelled button before the control, for an action on the setting, such
+   * as applying a choice that waits for a restart. It matches the row's
+   * dropdown and button controls in height, radius, border and text.
+   */
+  action?: { label: string; onPress: () => void };
   /**
    * Full-width content under the row's copy and control, such as a live
    * preview of the setting. `null` keeps an empty slot, so content that
@@ -284,6 +291,12 @@ const defaultSections: SettingsPanelSection[] = [
   },
 ];
 
+/**
+ * A labelled button in a row's trailing edge stands as tall as the row's
+ * dropdown (its `sm` select row), at every font size, so the two line up.
+ */
+const settingsButtonClassName = selectRowHeightClassName.sm;
+
 /** A settings row's control, for a surface that lays its own rows out (Devices). */
 export const SettingsControlView = ({
   control,
@@ -312,6 +325,7 @@ export const SettingsControlView = ({
           />
         ) : (
           <Button
+            className={settingsButtonClassName}
             hierarchy="secondary-gray"
             size="sm"
             {...definedProps({ disabled: control.disabled })}
@@ -547,7 +561,15 @@ export const SettingsControlView = ({
   if (control.type === "button") {
     return (
       <Button
-        hierarchy={control.tone === "danger" ? "destructive" : "secondary-gray"}
+        // A quiet button is a link, with no box to line up.
+        {...(control.tone === "quiet" ? {} : { className: settingsButtonClassName })}
+        hierarchy={
+          control.tone === "danger"
+            ? "destructive"
+            : control.tone === "quiet"
+              ? "link-gray"
+              : "secondary-gray"
+        }
         size="sm"
         {...definedProps({
           disabled: control.disabled,
@@ -792,7 +814,9 @@ const SettingsRowView = ({
             {integration.content ? (
               <div className="min-w-0">{integration.content}</div>
             ) : null}
-            <p className="text-pretty text-xs text-quaternary">{integration.note}</p>
+            {integration.note ? (
+              <p className="text-pretty text-xs text-quaternary">{integration.note}</p>
+            ) : null}
           </div>
         </div>
       </div>
@@ -880,7 +904,7 @@ const SettingsRowView = ({
           )}
         </div>
       )}
-      {item.control || item.controlLeading || item.status ? (
+      {item.control || item.controlLeading || item.action || item.status ? (
         <div
           className={cx(
             "flex max-w-full items-center gap-md",
@@ -905,6 +929,16 @@ const SettingsRowView = ({
             </Badge>
           ) : null}
           {item.controlLeading}
+          {item.action ? (
+            <Button
+              className={settingsButtonClassName}
+              hierarchy="secondary-gray"
+              onPress={item.action.onPress}
+              size="sm"
+            >
+              {item.action.label}
+            </Button>
+          ) : null}
           {item.control ? (
             <SettingsControlView
               control={item.control}

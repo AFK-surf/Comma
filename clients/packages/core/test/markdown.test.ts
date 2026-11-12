@@ -37,6 +37,24 @@ const reply = [
 ].join("\n");
 
 describe("a chat message's Markdown", () => {
+  it("makes code that is nothing but a web address a link, and no other code", () => {
+    const address = "https://a.mguide.jp/0/mappaexpo?dp=4259";
+    expect(treeOf(`打开 \`${address}\` 看看`)).toEqual([
+      [
+        "p",
+        ["打开 ", ["a", [["code", { code: address }]], { href: address }], " 看看"],
+      ],
+    ]);
+    for (const code of [
+      "make test",
+      "curl https://x.test",
+      "https://x.test/<id>",
+      "https://{host}/a",
+      "ftp://x.test",
+    ])
+      expect(treeOf(`\`${code}\``)).toEqual([["p", [["code", { code }]]]]);
+  });
+
   it("is the parsed document as a tree about as long as its text, read back as the parser's nodes", () => {
     const tree = messageMarkdown([{ kind: "markdown", text: reply }]);
     expect(tree[0]).toEqual(["h", ["Plan"], { level: 2 }]);
@@ -246,6 +264,35 @@ describe("the Markdown syntax", () => {
       ["mathblock", { content: "y_1", markup: "[]" }],
       ["p", ["[guide]"]],
     ]);
+  });
+
+  it("keeps prose between \\( \\) or $ $ as text, and formulas there as math", () => {
+    expect(treeOf("PR #4243 \\(Task next/previous navigation\\)")).toEqual([
+      ["p", ["PR #4243 (Task next/previous navigation)"]],
+    ]);
+    expect(treeOf("$Task next/previous navigation$")).toEqual([
+      ["p", ["$Task next/previous navigation$"]],
+    ]);
+    expect(treeOf("\\(see the docs\\) and $see the docs$")).toEqual([
+      ["p", ["(see the docs) and $see the docs$"]],
+    ]);
+    for (const tex of [
+      "x",
+      "n+1",
+      "x > 0",
+      "O(n)",
+      "f'(x)",
+      "10^6",
+      "2^{10}",
+      "a and b",
+      "\\alpha",
+      "\\text{if } x > 0",
+      "v = speed of light",
+    ])
+      expect([treeOf(`\\(${tex}\\)`), treeOf(`$${tex}$`)]).toEqual([
+        [["p", [["math", { content: tex, markup: "\\(\\)" }]]]],
+        [["p", [["math", { content: tex, markup: "$" }]]]],
+      ]);
   });
 
   it("links references and footnotes defined after them, and reads character references and inline HTML", () => {

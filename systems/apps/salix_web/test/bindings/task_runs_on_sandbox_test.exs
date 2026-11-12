@@ -45,6 +45,30 @@ defmodule Salix.Bindings.TaskRunsOnSandboxTest do
     def sign(claims), do: {:ok, claims}
   end
 
+  defmodule Billing do
+    @moduledoc "A fee control that refuses every VM start, and keeps what it was asked."
+    def authorize_vm(attrs) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :sandbox_test_pid),
+        {:authorized, attrs}
+      )
+
+      {:error,
+       {:billing_unavailable,
+        %BillingCore.FeeControl.Decision{reason: "insufficient_credits", allowed?: false}}}
+    end
+  end
+
+  defmodule Restricted do
+    @moduledoc "A product that admits no Workspace to managed sandboxes."
+    def admitted?(_tenant, _group), do: false
+  end
+
+  defmodule BillingOutage do
+    @moduledoc "A fee control that does not answer."
+    def authorize_vm(_attrs), do: {:error, :timeout}
+  end
+
   setup do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Sandbox runs_on"})
 
@@ -61,8 +85,18 @@ defmodule Salix.Bindings.TaskRunsOnSandboxTest do
     SystemsRuntime.put_env(:salix_web, :l4es_assertion_signer, Signer)
     SystemsRuntime.put_env(:salix_web, :coding_github, GitHub)
 
+    SystemsRuntime.put_env(:salix_web, :sandbox_test_pid, SystemsRuntime.Proc.self())
+
     on_exit(fn ->
-      for key <- [:l4es, :l4es_assertion_signer, :coding_github, :sandbox_test_unconnected],
+      for key <- [
+            :l4es,
+            :l4es_assertion_signer,
+            :coding_github,
+            :sandbox_test_unconnected,
+            :sandbox_test_pid,
+            :vm_authorization_mod,
+            :sandbox_admission
+          ],
           do: SystemsRuntime.delete_env(:salix_web, key)
     end)
 
@@ -184,6 +218,94 @@ defmodule Salix.Bindings.TaskRunsOnSandboxTest do
 
     assert AgentConversations.runs_on(scope, %{"kind" => "sandbox"}) ==
              {:error, {:sandbox_limit, 2}}
+  end
+
+  defmodule EnforcingFacts do
+    @moduledoc "An IFC facts resolver for a Group that enforces."
+    def mode(_tenant_id, _group_id), do: %{"mode" => "enforce"}
+  end
+
+  test "under IFC enforce, a Task made from private sources still gets a sandbox of its own",
+       %{scope: scope} do
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, __MODULE__.EnforcingFacts)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_agent, :ifc_facts_mod) end)
+
+    dm = SalixIFC.Codec.encode_label(SalixIFC.Label.new([{:scope, "lark", "oc_dm"}]))
+
+    assert {:ok, %{runs_on: %{"kind" => "sandbox"}}} =
+             SalixIM.TaskPlacement.resolve(
+               %{tenant_id: scope.tenant_id, group_id: scope.group_id, ifc_sources: dm},
+               scope.agent_id,
+               %{"runs_on" => %{"kind" => "sandbox"}},
+               false
+             )
+  end
+
+  test "a Workspace whose billing refuses a VM start gets no sandbox; one with no billing account is not asked",
+       %{scope: scope} do
+    SystemsRuntime.put_env(:salix_web, :vm_authorization_mod, Billing)
+
+    # No billing account: nothing to authorize against, nothing to charge.
+    assert {:ok, %{"kind" => "sandbox"}} =
+             AgentConversations.runs_on(scope, %{"kind" => "sandbox"})
+
+    refute_received {:authorized, _}
+
+    {:ok, _} =
+      Salix.Control.Groups.update(
+        scope.group_id,
+        %{"billing_owner" => %{"billing_account_id" => "ba_sandbox", "surface" => "comma"}},
+        scope.tenant_id
+      )
+
+    assert {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}} =
+             AgentConversations.runs_on(scope, %{"kind" => "sandbox"})
+
+    assert_received {:authorized, asked}
+    assert asked.provider == "l4es"
+    assert asked.sku == "sandbox-default"
+    assert asked.action == :start
+    assert asked.entrypoint == "sandbox_place"
+    assert asked.billing_owner["billing_account_id"] == "ba_sandbox"
+
+    # A coding Task is refused the same way, before GitHub is asked anything.
+    assert {:error, {:billing_unavailable, decision}} =
+             sandbox(scope, %{"owner" => "acme", "name" => "api"})
+
+    # What the Router is told, from the fee control's own struct.
+    assert SalixIM.TaskPlacement.message({:runs_on, {:billing_unavailable, decision}, :requested}) =~
+             "no credits for a sandbox"
+
+    # A fee control that does not answer is told apart from one that refuses.
+    SystemsRuntime.put_env(:salix_web, :vm_authorization_mod, BillingOutage)
+
+    assert {:error, {:billing_error, :timeout}} =
+             AgentConversations.runs_on(scope, %{"kind" => "sandbox"})
+
+    assert SalixIM.TaskPlacement.message({:runs_on, {:billing_error, :timeout}, :requested}) =~
+             "billing is temporarily unavailable"
+  end
+
+  test "a Workspace the product does not admit gets no sandbox, before its billing is asked",
+       %{scope: scope} do
+    SystemsRuntime.put_env(:salix_web, :vm_authorization_mod, Billing)
+    SystemsRuntime.put_env(:salix_web, :sandbox_admission, Restricted)
+
+    {:ok, _} =
+      Salix.Control.Groups.update(
+        scope.group_id,
+        %{"billing_owner" => %{"billing_account_id" => "ba_sandbox", "surface" => "comma"}},
+        scope.tenant_id
+      )
+
+    assert {:error, {:billing_unavailable, %{reason: "sandbox_restricted"} = decision}} =
+             AgentConversations.runs_on(scope, %{"kind" => "sandbox"})
+
+    refute_received {:authorized, _}
+    assert SalixAgent.BillingAvailability.denied?({:billing_unavailable, decision})
+
+    assert SalixIM.TaskPlacement.message({:runs_on, {:billing_unavailable, decision}, :requested}) =~
+             "managed sandboxes are not available"
   end
 
   test "a Workspace's own limit replaces the default in the check and the assertion",

@@ -2,13 +2,13 @@ defmodule Salix.Bindings.MeetingCalendarPreparation do
   @moduledoc "Calendar effects resolve their account and event from the enrolled meeting plan."
   @behaviour SalixMeet.Ports.CalendarPreparation
 
-  alias Salix.Bindings.GoogleCalendarSource
+  alias Salix.Bindings.{GoogleCalendarSource, LarkCalendarSource}
   alias SalixCalendar.{Occurrences, Server}
 
   @impl true
   def write(%{"calendar_writeback" => true} = plan) do
     with :ok <- SalixMeet.MeetingPlan.validate_report(plan),
-         {:ok, source, item, occurrence} <- resolve(plan),
+         {:ok, %{"adapter" => "google_calendar"} = source, item, occurrence} <- resolve(plan),
          :ok <- authorize_writeback(plan, source) do
       GoogleCalendarSource.write_preparation(
         source,
@@ -16,14 +16,27 @@ defmodule Salix.Bindings.MeetingCalendarPreparation do
         occurrence,
         get_in(plan, ["preparation", "report"])
       )
+    else
+      # Only a Google occurrence takes the preparation block.
+      {:ok, _source, _item, _occurrence} -> {:ok, %{"status" => "disabled"}}
+      other -> other
     end
   end
 
   def write(_plan), do: {:ok, %{"status" => "disabled"}}
 
+  # A Google attendee is the event's attendee map (email, responseStatus); a
+  # Feishu/Lark attendee is `%{"user_id", "name", "organizer"}` by open_id.
   def read_attendees(plan) do
-    with {:ok, source, item, occurrence} <- resolve(plan) do
-      GoogleCalendarSource.read_attendees(source, item, occurrence)
+    case resolve(plan) do
+      {:ok, %{"adapter" => "google_calendar"} = source, item, occurrence} ->
+        GoogleCalendarSource.read_attendees(source, item, occurrence)
+
+      {:ok, source, item, occurrence} ->
+        LarkCalendarSource.read_attendees(source, item, occurrence)
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -48,8 +61,9 @@ defmodule Salix.Bindings.MeetingCalendarPreparation do
              source_ids: plan["calendar_source_ids"]
            ),
          %{"kind" => "source", "source_id" => source_id} <- item["origin"],
-         {:ok, %{"adapter" => "google_calendar"} = source} <-
-           Server.get_source(group_id, ref["calendar_id"], source_id) do
+         {:ok, %{"adapter" => adapter} = source} <-
+           Server.get_source(group_id, ref["calendar_id"], source_id),
+         true <- adapter == "google_calendar" or LarkCalendarSource.adapter?(adapter) do
       {:ok, source, item, occurrence}
     else
       {:error, _} = error -> error

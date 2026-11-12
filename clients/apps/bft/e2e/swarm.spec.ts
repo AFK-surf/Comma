@@ -597,7 +597,7 @@ test("Settings picks the default place to run Tasks from the swarm's places", as
             label: "Linux CI / dev-old",
             connected: true,
             selectable: false,
-            issue: "This device runs an old connector. Update it to run a station.",
+            issue: "This device has no station. Install one to run tasks.",
             models: {},
           },
         ],

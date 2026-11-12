@@ -94,7 +94,7 @@ function setup(host = new FakeHost()) {
     schedule: () => undefined,
   });
   let value: ChatViewValue | undefined;
-  client.subscribe(
+  const leave = client.subscribe(
     view,
     (v) => (value = v as ChatViewValue),
     () => undefined
@@ -103,6 +103,7 @@ function setup(host = new FakeHost()) {
     host,
     core,
     client,
+    leave,
     time: host.time!,
     state: () => value!.state!,
     seqs: () => value!.state!.messages.map((m) => m.seq),
@@ -137,6 +138,23 @@ describe("a conversation's history in a window's view", () => {
     expect(t.seqs()[0]).toBe(1);
     expect(t.state().history).toMatchObject({ hasOlder: false, ranges: [[1, 260]] });
     expect(t.seqs()).toHaveLength(260);
+  });
+
+  it("shows every message it read, however many: the window reads earlier pages past the newest 500", async () => {
+    const host = new FakeHost();
+    servePages(host, () => run(1, 700));
+    const t = setup(host);
+    await t.time.pass(1_500);
+    t.stream().named("snapshot", snapshot(run(201, 700)));
+    await t.time.pass(100);
+    expect(t.seqs()).toHaveLength(500);
+
+    await t.client.call("chatView.older", named);
+    await t.time.pass(100);
+    await t.client.call("chatView.older", named);
+    await t.time.pass(100);
+    expect(t.state().history).toMatchObject({ hasOlder: false, ranges: [[1, 700]] });
+    expect(t.seqs()).toEqual(run(1, 700).map((m) => m.seq));
   });
 
   it("shows what was read on both sides of a gap, and closes it by paging forward from the older side", async () => {
@@ -179,6 +197,38 @@ describe("a conversation's history in a window's view", () => {
     expect(after.filter(Boolean)[0]).toBe("3");
   });
 
+  it("asks each stream after the newest message held, and keeps what it holds when only newer ones come", async () => {
+    const host = new FakeHost();
+    servePages(host, () => run(1, 261));
+    const t = setup(host);
+    await t.time.pass(1_500);
+    t.stream().named("snapshot", snapshot(run(237, 260)));
+    await t.time.pass(100);
+
+    // The window ends: the next stream says nothing new, and the transcript stays as it is.
+    t.stream().end();
+    await t.time.pass(60_000);
+    t.stream().named("snapshot", { ...snapshot([]), after_seq: 260 });
+    await t.time.pass(100);
+    expect(t.seqs()).toEqual(run(237, 260).map((m) => m.seq));
+    expect(t.state().syncWarning).toBeUndefined();
+
+    // A new message: the stream opens again and is told only of it.
+    t.stream().named("conversation_invalidated", { type: "conversation_invalidated" });
+    await t.time.pass(1_500);
+    t.stream().named("snapshot", { ...snapshot(run(261, 261)), after_seq: 260 });
+    await t.time.pass(100);
+    expect(t.seqs()).toEqual(run(237, 261).map((m) => m.seq));
+    expect(t.state().history?.ranges).toEqual([[237, 261]]);
+
+    const asked = host.api.seen("GET", events).map(query);
+    expect(asked.map((q) => q.get("after_seq"))).toEqual([null, "260", "260"]);
+    expect(asked.every((q) => q.get("message_limit") === "24")).toBe(true);
+    t.stream().end();
+    await t.time.pass(60_000);
+    expect(query(host.api.seen("GET", events).at(-1)!).get("after_seq")).toBe("261");
+  });
+
   it("counts a hidden message as read: no gap opens around one the transcript does not show", async () => {
     const host = new FakeHost();
     const hidden = message(2, {
@@ -194,6 +244,155 @@ describe("a conversation's history in a window's view", () => {
     expect(t.seqs()).toEqual([1, 3]);
     expect(t.state().history?.ranges).toEqual([[1, 3]]);
     expect(host.api.seen("GET", `${base}/messages`)).toEqual([]);
+  });
+
+  describe("reading past pages the transcript hides whole", () => {
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- read beside the tests that use it
+    const hidden = (seq: number) =>
+      message(seq, {
+        actor_type: "system",
+        kind: "app_event",
+        metadata: { event_type: "provider.status" },
+      });
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- read beside the tests that use it
+    const hiddenRun = (first: number, last: number) =>
+      Array.from({ length: last - first + 1 }, (_, i) => hidden(first + i));
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- read beside the tests that use it
+    const befores = (host: FakeHost) =>
+      host.api
+        .seen("GET", `${base}/messages`)
+        .map((request) => query(request).get("before"));
+
+    async function opened(host: FakeHost, tail: ReturnType<typeof message>[]) {
+      const t = setup(host);
+      await t.time.pass(1_500);
+      t.stream().named("snapshot", snapshot(tail));
+      await t.time.pass(100);
+      return t;
+    }
+
+    it("goes on to the next page until one adds a message it shows", async () => {
+      const host = new FakeHost();
+      servePages(host, () => [...run(1, 50), ...hiddenRun(51, 300), ...run(301, 330)]);
+      const t = await opened(host, run(301, 330));
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toEqual(["301", "201", "101"]);
+      expect(t.seqs()).toEqual([...run(1, 50), ...run(301, 330)].map((m) => m.seq));
+      expect(t.state().history).toEqual({
+        hasOlder: false,
+        loadingOlder: false,
+        ranges: [[1, 330]],
+      });
+    });
+
+    it("stops at the conversation's first message when everything before is hidden", async () => {
+      const host = new FakeHost();
+      servePages(host, () => [...hiddenRun(1, 250), ...run(251, 260)]);
+      const t = await opened(host, run(251, 260));
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toEqual(["251", "151", "51"]);
+      expect(t.seqs()).toEqual(run(251, 260).map((m) => m.seq));
+      expect(t.state().history).toEqual({
+        hasOlder: false,
+        loadingOlder: false,
+        ranges: [[1, 260]],
+      });
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toHaveLength(3);
+    });
+
+    it("reads at most ten pages a call, and the next call goes on from there", async () => {
+      const host = new FakeHost();
+      servePages(host, () => [...run(1, 5), ...hiddenRun(6, 1500), ...run(1501, 1510)]);
+      const t = await opened(host, run(1501, 1510));
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toHaveLength(10);
+      expect(t.seqs()).toEqual(run(1501, 1510).map((m) => m.seq));
+      expect(t.state().history).toEqual({
+        hasOlder: true,
+        loadingOlder: false,
+        ranges: [[501, 1510]],
+      });
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host).slice(10)).toEqual(["501", "401", "301", "201", "101"]);
+      expect(t.seqs()[0]).toBe(1);
+      expect(t.state().history?.hasOlder).toBe(false);
+    });
+
+    it("keeps what it read when a page fails, and the next call goes on from there", async () => {
+      const host = new FakeHost();
+      let reads = 0;
+      let failing = true;
+      servePages(
+        host,
+        () => [...run(1, 100), ...hiddenRun(101, 300), ...run(301, 310)],
+        () => !(failing && ++reads === 2)
+      );
+      const t = await opened(host, run(301, 310));
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toEqual(["301", "201"]);
+      expect(t.seqs()).toEqual(run(301, 310).map((m) => m.seq));
+      expect(t.state().history).toEqual({
+        hasOlder: true,
+        loadingOlder: false,
+        ranges: [[201, 310]],
+      });
+
+      failing = false;
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host).slice(2)).toEqual(["201", "101"]);
+      expect(t.seqs()).toEqual([...run(1, 100), ...run(301, 310)].map((m) => m.seq));
+    });
+
+    it("stops when a page reaches no further back", async () => {
+      const host = new FakeHost();
+      host.api.on("GET", `${base}/messages`, () =>
+        json(200, {
+          data: [],
+          covered: null,
+          bounds: { first: 1, last: 310 },
+          has_older: true,
+        })
+      );
+      const t = await opened(host, run(301, 310));
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      expect(befores(host)).toEqual(["301"]);
+      expect(t.state().history).toEqual({
+        hasOlder: true,
+        loadingOlder: false,
+        ranges: [[301, 310]],
+      });
+    });
+
+    it("reads no further page once the window has left the conversation", async () => {
+      const host = new FakeHost();
+      servePages(host, () => [...run(1, 50), ...hiddenRun(51, 300), ...run(301, 330)]);
+      const t = await opened(host, run(301, 330));
+      const answer = host.api.hold("GET", `${base}/messages`);
+
+      await t.client.call("chatView.older", named);
+      await t.time.pass(100);
+      t.leave();
+      await t.time.pass(100);
+      answer();
+      await t.time.pass(1_000);
+      expect(befores(host)).toEqual(["301"]);
+    });
   });
 
   it("carries an image's pixel size, and a reference's status", async () => {

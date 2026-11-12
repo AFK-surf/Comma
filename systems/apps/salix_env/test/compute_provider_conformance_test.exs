@@ -51,9 +51,13 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
     )
 
     assert {:error, :revision_conflict} =
-             Compute.update_environment_intent(fixture.environment.id, 1, %{
-               desired_state: "draining"
-             })
+             Compute.update_environment_intent(
+               fixture.environment.id,
+               fixture.environment.revision - 1,
+               %{
+                 desired_state: "draining"
+               }
+             )
 
     # Inventory observations can advance revision without changing generation.
     # Read and update under one lock so this checks generation fencing deterministically.
@@ -205,12 +209,12 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
 
   defp compute_fixture do
     {:ok, registration} =
-      SalixStore.AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     Repo.update_all(

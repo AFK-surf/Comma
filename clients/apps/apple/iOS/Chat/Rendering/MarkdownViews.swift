@@ -19,10 +19,10 @@ struct MarkdownBubbles: View {
             case .task(let id, let title, let section, let unavailable):
                 return unavailable ? .words(String(localized: "Task unavailable"))
                     : .task(id: id, title: title ?? String(localized: "Task"), bucket: section.map { TaskBucket(section: $0) })
-            case .interactive(let summary): return summary.map { .words($0) }
+            case .interactive: return nil
             case .markdown(let text): return .words(text)
             // The card follows the message's bubbles (`QuestionCard`).
-            case .question, .other: return nil
+            case .question, .miniApp, .other: return nil
             }
         }
         self.tail = tail

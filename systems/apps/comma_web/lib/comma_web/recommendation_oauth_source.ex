@@ -5,6 +5,7 @@ defmodule CommaWeb.RecommendationOAuthSource do
   alias Salix.Control.OAuthBindings
 
   @managed_toolkits CommaWeb.RecommendationPreviewCatalog.managed_toolkits()
+  @member_toolkits CommaWeb.RecommendationPreviewCatalog.member_toolkits()
 
   # Bounded reads: the existing resolver owns authorization and refresh,
   # and Req owns HTTP/JSON. Official provider SDKs target other languages;
@@ -207,7 +208,7 @@ defmodule CommaWeb.RecommendationOAuthSource do
   def read_member(workspace, user_id, source, deadline \\ RecommendationMemberRead.deadline())
 
   def read_member(workspace, user_id, %{"appId" => provider} = source, deadline)
-      when provider in @managed_toolkits do
+      when provider in @member_toolkits do
     with {:ok, identity} <-
            CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
          {:ok, token} <- member_token(workspace, identity, provider),
@@ -261,7 +262,8 @@ defmodule CommaWeb.RecommendationOAuthSource do
         workspace,
         user_id,
         %{"appId" => "slack"} = source,
-        deadline \\ RecommendationMemberRead.deadline()
+        deadline \\ RecommendationMemberRead.deadline(),
+        opts \\ []
       ) do
     with {:ok, identity} <-
            CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
@@ -273,7 +275,34 @@ defmodule CommaWeb.RecommendationOAuthSource do
           end)
         end,
         SystemsClock.utc_now(),
-        Map.take(identity, ~w(provider_user_id provider_workspace_id))
+        Map.take(identity, ~w(provider_user_id provider_workspace_id)),
+        opts
+      )
+    end
+  end
+
+  @doc """
+  The new messages of tracked Slack threads through the source's managed
+  grant, as `CommaWeb.RecommendationSlackMemberSource.thread_news/2` reads
+  them.
+  """
+  def slack_thread_news(
+        workspace,
+        user_id,
+        %{"appId" => "slack"} = source,
+        threads,
+        deadline \\ RecommendationMemberRead.deadline()
+      ) do
+    with {:ok, identity} <-
+           CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
+         {:ok, token} <- member_token(workspace, identity, "slack") do
+      CommaWeb.RecommendationSlackMemberSource.thread_news(
+        fn "GET", url, options ->
+          RecommendationMemberRead.request(deadline, fn ->
+            request("slack", token, {:get, url, options})
+          end)
+        end,
+        threads
       )
     end
   end
@@ -404,6 +433,17 @@ defmodule CommaWeb.RecommendationOAuthSource do
     CommaWeb.RecommendationNotionMemberSource.read(identity, fn kind, method, url, options ->
       http.(kind, {method, url, options})
     end)
+  end
+
+  defp member_request(provider, http, identity, _source) when provider in ~w(feishu lark) do
+    CommaWeb.RecommendationLarkMemberSource.read(
+      provider,
+      fn method, path, options ->
+        http.(provider, {method, lark_url(provider, path), options})
+      end,
+      SystemsClock.utc_now(),
+      identity
+    )
   end
 
   defp member_request("slack", http, identity, source) do
@@ -929,9 +969,21 @@ defmodule CommaWeb.RecommendationOAuthSource do
     options = if provider == "slack", do: bound_slack_response(options, limit), else: options
 
     case Req.request(options) do
-      {:ok, %{status: status, body: body}} when status in 200..299 -> normalize(provider, body)
-      {:ok, %{status: status}} -> {:error, {:oauth_provider_http, status}}
-      {:error, _} -> {:error, :oauth_provider_unavailable}
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        normalize(provider, body)
+
+      # Feishu and Lark refuse a scope or a token with a 4xx and their own code.
+      # Throttling stays a 429, which the member read waits out and retries.
+      {:ok, %{status: status, body: %{"code" => code}}}
+      when status in 400..499 and status != 429 and provider in ~w(feishu lark) and
+             is_integer(code) ->
+        {:error, {:member_provider_error, Integer.to_string(code)}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:oauth_provider_http, status}}
+
+      {:error, _} ->
+        {:error, :oauth_provider_unavailable}
     end
   end
 
@@ -947,6 +999,21 @@ defmodule CommaWeb.RecommendationOAuthSource do
       end
     )
   end
+
+  # The same base URLs as the connect's own API calls (`SalixIM.Provider.Feishu.API`).
+  defp lark_url("feishu", path),
+    do:
+      SystemsRuntime.get_env(:salix_im, :feishu_api_base_url, "https://open.feishu.cn/open-apis") <>
+        path
+
+  defp lark_url("lark", path),
+    do:
+      SystemsRuntime.get_env(
+        :salix_im,
+        :lark_api_base_url,
+        "https://open.larksuite.com/open-apis"
+      ) <>
+        path
 
   defp request_options("github"),
     do:
@@ -1043,6 +1110,13 @@ defmodule CommaWeb.RecommendationOAuthSource do
 
   defp normalize("notion", %{"results" => pages}) when is_list(pages),
     do: {:ok, %{"values" => pages}}
+
+  # Feishu and Lark answer `code` 0 with the result under `data`.
+  defp normalize(provider, %{"code" => 0} = body) when provider in ~w(feishu lark),
+    do: {:ok, body["data"] || %{}}
+
+  defp normalize(provider, %{"code" => code}) when provider in ~w(feishu lark),
+    do: {:error, {:member_provider_error, to_string(code)}}
 
   defp normalize(_, _), do: {:error, :invalid_provider_response}
 end

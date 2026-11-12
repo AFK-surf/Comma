@@ -23,7 +23,7 @@ defmodule CommaWeb.ProactiveMailSource do
                {:ok, thread} <-
                  get(settings, session, "threads/" <> message["threadId"] <> "?format=full"),
                {:ok, result} <- normalize(message, thread, email) do
-            {:ok, result}
+            {:ok, Map.merge(result, attachments(settings, session, message))}
           else
             {:error, _} = error -> error
             _ -> {:error, :invalid_mail_response}
@@ -34,6 +34,53 @@ defmodule CommaWeb.ProactiveMailSource do
       end
     else
       {:error, :invalid_message_id}
+    end
+  end
+
+  # The read message's file parts, read as `CommaWeb.ProactiveMailAttachments`
+  # says. A small file carries its bytes inline; a larger one is fetched.
+  defp attachments(settings, session, message) do
+    files =
+      case parts(message["payload"] || %{}, 0) do
+        {:ok, parts} -> Enum.filter(parts, &(&1["filename"] not in [nil, ""]))
+        _ -> []
+      end
+
+    if files == [] do
+      %{}
+    else
+      read = fn body -> attachment_bytes(settings, session, message["id"], body) end
+
+      %{
+        "attachments" =>
+          files
+          |> Enum.map(&{&1["filename"], &1["mimeType"], get_in(&1, ["body", "size"]), &1["body"]})
+          |> CommaWeb.ProactiveMailAttachments.read(read),
+        "attachments_read" => true
+      }
+    end
+  end
+
+  defp attachment_bytes(_settings, _session, _id, %{"data" => data}) when is_binary(data),
+    do: decode(data)
+
+  defp attachment_bytes(settings, session, id, %{"attachmentId" => attachment})
+       when is_binary(attachment) do
+    with true <- byte_size(attachment) <= 1_024 and Regex.match?(~r/^[A-Za-z0-9_-]+$/, attachment),
+         {:ok, %{"data" => data}} when is_binary(data) <-
+           get(settings, session, "messages/" <> id <> "/attachments/" <> attachment) do
+      decode(data)
+    else
+      _ -> nil
+    end
+  end
+
+  defp attachment_bytes(_settings, _session, _id, _body), do: nil
+
+  defp decode(data) do
+    case Base.url_decode64(data, padding: false) do
+      {:ok, raw} -> raw
+      _ -> nil
     end
   end
 
@@ -67,6 +114,14 @@ defmodule CommaWeb.ProactiveMailSource do
   @doc "Plain text of one Gmail API message: its text/plain parts, else its HTML as text."
   def text(message) when is_map(message) do
     with {:ok, parts} <- parts(message["payload"] || %{}, 0), do: body_text(parts)
+  end
+
+  @doc "Whether one Gmail API message has a file part."
+  def attachments?(message) when is_map(message) do
+    case parts(message["payload"] || %{}, 0) do
+      {:ok, parts} -> Enum.any?(parts, &(&1["filename"] not in [nil, ""]))
+      _ -> false
+    end
   end
 
   @doc """

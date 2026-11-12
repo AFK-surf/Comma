@@ -1,3 +1,4 @@
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 import type { Calls } from "../contract.ts";
 
@@ -21,18 +22,22 @@ export interface WifiNetwork {
   rssi: number;
   secure: boolean;
 }
-export const infoSchema = z.object({
-  mac: z.string().min(1).max(64),
-  name: z.string().min(1).max(63),
-  model: z.string().optional(),
-  fw_version: z.string().optional(),
-  provisioned: z.boolean(),
-});
-export const statusSchema = z.object({
-  state: z.string(),
-  ssid: z.string().optional(),
-  error: z.string().optional(),
-});
+export const infoSchema = lazySchema(() =>
+  z.object({
+    mac: z.string().min(1).max(64),
+    name: z.string().min(1).max(63),
+    model: z.string().optional(),
+    fw_version: z.string().optional(),
+    provisioned: z.boolean(),
+  })
+);
+export const statusSchema = lazySchema(() =>
+  z.object({
+    state: z.string(),
+    ssid: z.string().optional(),
+    error: z.string().optional(),
+  })
+);
 export type DeviceStatus = z.infer<typeof statusSchema>;
 export const utf8Length = (value: string) => new TextEncoder().encode(value).length;
 export const validName = (name: string) =>
@@ -106,23 +111,25 @@ export function credentialsJson(
   return value;
 }
 
-const pageSchema = z.object({
-  page: z.number().int().min(0).max(31),
-  pages: z.number().int().min(1).max(32),
-  aps: z
-    .array(
-      z.object({
-        ssid: z
-          .string()
-          .min(1)
-          .max(32)
-          .refine((value) => utf8Length(value) <= 32),
-        rssi: z.number(),
-        secure: z.boolean(),
-      })
-    )
-    .max(20),
-});
+const pageSchema = lazySchema(() =>
+  z.object({
+    page: z.number().int().min(0).max(31),
+    pages: z.number().int().min(1).max(32),
+    aps: z
+      .array(
+        z.object({
+          ssid: z
+            .string()
+            .min(1)
+            .max(32)
+            .refine((value) => utf8Length(value) <= 32),
+          rssi: z.number(),
+          secure: z.boolean(),
+        })
+      )
+      .max(20),
+  })
+);
 export class WifiPages {
   private total = 0;
   private pages = new Map<number, WifiNetwork[]>();

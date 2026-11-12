@@ -25,7 +25,7 @@ defmodule SalixAgent.Tools.Plugin do
        "Replace the refs on a mutable group or tenant plugin definition without changing child domain state.",
        schema(:refs_put), &__MODULE__.refs_put/2, @normal_auto_wait_seconds},
       {"plugin.enable",
-       "Enable a visible plugin for the current group. This only writes plugin enablement.",
+       "Enable a visible plugin for the current group. This only writes plugin enablement; it does not install a Comma plugin for the user (use plugin.request_install).",
        schema(:enable), &__MODULE__.enable/2, @normal_auto_wait_seconds},
       {"plugin.disable",
        "Disable a visible plugin for the current group. This only writes plugin enablement; locked plugins cannot be disabled.",

@@ -3,7 +3,6 @@ import { observeDesktopLaunch } from "../analytics-launch";
 import { clockInterval, realMainClock, type MainClock } from "../clock";
 import { ComputeNodeInstallAuthorization } from "./compute-node/install-authorization";
 import { LocalHostMaintenance } from "./compute-node/host-maintenance";
-import { MaintenanceCapabilityProbe } from "./compute-node/host-maintenance-protocol";
 import { homedir } from "node:os";
 import { AccountComputeNodeService } from "./compute-node/account-service";
 import { getCommaReleaseConfig } from "../../release-config";
@@ -16,6 +15,8 @@ import { unavailableComputerUseBridge } from "@comma/native-bridge";
 import { AirDropService } from "./airdrop";
 import type { SpawnAirDropHelper } from "./airdrop/helper-process";
 import { AirDropSender } from "./airdrop/sender";
+import { NearbyService } from "./airdrop/nearby";
+import { LanNearby, type LanNearbyPlatform } from "./airdrop/lan-nearby";
 import { resolveAirDropVfsPath } from "./airdrop/vfs-source";
 import { approveAirDropForChat } from "./airdrop/chat-intake";
 import {
@@ -27,6 +28,7 @@ import { defaultLocalRoots } from "./synchronicity/default-root";
 import { resolveLocalDriveTarget } from "./synchronicity/local-path";
 import { FileMacAppsSwitches, MacAppsService } from "./mac-apps";
 import { MacAppsEngine } from "./mac-apps/engine";
+import { BlenderService, type BlenderProvider, type JpegEncoder } from "./blender";
 import {
   StatusTrayInProgressTasks,
   statusTrayPreferenceContent,
@@ -39,17 +41,21 @@ import {
   defaultCommaClientSettings,
   defaultAirDropName,
   airDropStateChangedEvent,
+  nearbyStateChangedEvent,
   appPreferencesChangedEvent,
   voiceCallAudioEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
   connectorRuntimeStateChangedEvent,
   macAppsStateChangedEvent,
+  blenderStateCapability,
+  blenderStateChangedEvent,
   generatedNativeCapabilityManifest,
   messageNotificationsEvent,
   sessionStateChangedEvent,
   surfacesChangedEvent,
   audioCaptureStateChangedEvent,
+  audioCaptureTranscriptionFailedEvent,
   meetingPresenceStateChangedEvent,
   computeNodeStateChangedEvent,
   unavailableBrowserSidebarState,
@@ -169,7 +175,11 @@ import {
 import type { BrowserImportPlatform } from "./browser-sidebar/browser-import";
 import type { HybridPasskeys } from "./browser-sidebar/hybrid";
 import { HelperRecordingEncoder } from "./audio-capture/encoder";
-import type { NativeAudioCapture } from "./audio-capture/native-audio";
+import {
+  createMicrophoneWatchLoader,
+  startMicrophoneWatchWorker,
+  type MicrophoneWatch,
+} from "./meeting-presence/microphone-watch";
 import { DriveRecordingStore } from "./audio-capture/drive-recordings";
 import { RecordingTranscriptionService } from "./audio-capture/transcription";
 import { createCurrentMainSessionApiBinding } from "./session/main-session-transport";
@@ -222,12 +232,10 @@ export interface ElectronMainRuntimeDeps {
   dragMeetingRecorderWindow?: (input: MeetingRecorderWindowDrag) => void;
   setMeetingRecorderInteractive?: (interactive: boolean) => void;
   /**
-   * Loads the native audio SDK that meeting detection watches the machine's
-   * apps through. Defaults to the real SDK.
+   * Starts the CoreAudio worker that meeting detection watches the machine's
+   * apps through. Defaults to the real SDK in a worker thread.
    */
-  loadMeetingPresenceNative?:
-    | (() => Promise<NativeAudioCapture | undefined>)
-    | undefined;
+  loadMeetingPresenceNative?: (() => Promise<MicrophoneWatch | undefined>) | undefined;
   appPreferencesFilePath: string;
   appPreferencesPlatform: AppPreferencesPlatform;
   /** Bundle id used to open this app's row in the macOS Notifications pane. */
@@ -287,6 +295,8 @@ export interface ElectronMainRuntimeDeps {
   /** Starts both AirDrop helpers. Absent, the binaries above run as processes. */
   spawnAirDropHelper?: SpawnAirDropHelper | undefined;
   getAirDropSurfaceId?: () => string | undefined;
+  /** Node's HTTP and mDNS for nearby connect on the local network. Absent: AirDrop only. */
+  lanNearbyPlatform?: (LanNearbyPlatform & { close(): void }) | undefined;
   /**
    * Toast focus, Notch actions, QuickLook previews and Finder. Absent (tests)
    * every AirDrop offer is declined.
@@ -312,6 +322,10 @@ export interface ElectronMainRuntimeDeps {
   microphoneHostPath?: string | undefined;
   /** Path to MacAppsHost, the Mac apps MCP server; absent or missing means no Mac apps. */
   macAppsHostPath?: string | undefined;
+  /** Encodes a Blender picture as JPEG (Electron's nativeImage); absent, Blender is unavailable. */
+  encodeBlenderJpeg?: JpegEncoder | undefined;
+  /** The system's file picker for a Blender app or executable. */
+  pickBlenderApp?: (() => Promise<string | undefined>) | undefined;
   /**
    * Quick Chat on macOS 26 and later and on Windows: the QuickChatHost helper,
    * the Notch that shows message delivery on macOS, and how its Home opens.
@@ -432,6 +446,7 @@ export interface ElectronMainContext {
   coreHost: CoreHostService | undefined;
   airDropReception: AirDropReception;
   airdropSender: AirDropSender;
+  nearby: NearbyService;
   appPreferences: AppPreferencesRuntime;
   audioCapture: AudioCaptureRuntime;
   meetingPresence: MeetingPresenceService;
@@ -444,6 +459,7 @@ export interface ElectronMainContext {
   files: FilesProvider;
   synchronicity: SynchronicityProvider;
   macApps: MacAppsService;
+  blender: BlenderService | undefined;
   gateway: IpcGateway;
   localFiles: LocalFileSnapshotStore;
   localFilePicker: LocalFilePickerProvider;
@@ -636,6 +652,7 @@ export async function createElectronMainContext(
   /** The menu-bar menu has a Quick Chat row while it runs. */
   let quickChatAvailable = false;
   const appPreferencesService = await AppPreferencesService.open({
+    clock,
     filePath: deps.appPreferencesFilePath,
     onStateChanged: (preferences) => {
       const preference = preferences.clientSettings?.localePreference;
@@ -669,7 +686,9 @@ export async function createElectronMainContext(
           airDropShown && session.state().phase === "signed_in"
             ? airdrop.start({ rename })
             : airdrop.stop()
-        ).catch(() => deps.logger?.warn("AirDrop visibility change failed.", {}));
+        )
+          .catch(() => deps.logger?.warn("AirDrop visibility change failed.", {}))
+          .finally(() => syncLanNearby?.());
       }
     },
     platform: deps.appPreferencesPlatform,
@@ -721,8 +740,16 @@ export async function createElectronMainContext(
       }),
     openLoginItemsSettings: async () =>
       deps.appPreferencesPlatform.openLoginItemsSettings?.() ?? { opened: false },
+    relaunch: async () => {
+      const relaunch = deps.appPreferencesPlatform.relaunch;
+      if (!relaunch) return { relaunching: false };
+      // After this answer reaches the renderer: the quit closes the windows.
+      setImmediate(relaunch);
+      return { relaunching: true };
+    },
     requestNotificationAuthorization: () =>
       appPreferencesService.requestSystemNotificationsAuthorization(),
+    refreshLaunchAtLogin: () => appPreferencesService.refreshLaunchAtLogin(),
     state: () => {
       refreshSystemNotificationsStatus();
       refreshKeepAwakeWhenLidClosedStatus();
@@ -768,6 +795,10 @@ export async function createElectronMainContext(
   let connectorRuntimeRef: WorkspaceConnectorRuntimeLike | undefined;
   let clientControlCredentials: { endpoint: string; token: string } | undefined;
   let airdropSender: AirDropSender | undefined;
+  let nearby: NearbyService | undefined;
+  let lanNearby: LanNearby | undefined;
+  /** The local network receiver follows the AirDrop one: on while signed in and shown nearby. */
+  let syncLanNearby: (() => void) | undefined;
   const airDropReception = new AirDropReception({
     clock,
     locale: currentMainLocale,
@@ -793,6 +824,7 @@ export async function createElectronMainContext(
       if (state.generation !== publishedSessionGeneration) {
         publishedSessionGeneration = state.generation;
         airDropReception.reset();
+        nearby?.reset();
         void airdropSender?.reset();
         void airdrop
           ?.stop()
@@ -804,10 +836,13 @@ export async function createElectronMainContext(
               return airdrop?.start();
             return undefined;
           })
-          .catch(() => deps.logger?.warn("AirDrop session transition failed.", {}));
+          .catch(() => deps.logger?.warn("AirDrop session transition failed.", {}))
+          // A new account is a new name and a new AirDrop receiver.
+          .finally(() => syncLanNearby?.());
       }
       if (state.phase !== "signed_in") {
         airDropReception.reset();
+        nearby?.reset();
         void airdropSender?.reset();
         void browserSidebarService?.reset().catch(() => undefined);
       }
@@ -819,9 +854,12 @@ export async function createElectronMainContext(
         if (appPreferencesService.state().showInAirDrop)
           void airdrop
             ?.start()
-            .catch(() => deps.logger?.warn("AirDrop could not start.", {}));
+            .catch(() => deps.logger?.warn("AirDrop could not start.", {}))
+            .finally(() => syncLanNearby?.());
+        else syncLanNearby?.();
       } else {
         void airdrop?.stop().catch(() => undefined);
+        syncLanNearby?.();
       }
       followStatusTrayTasks();
       nativeEventBus.emit(sessionStateChangedEvent, state);
@@ -834,6 +872,11 @@ export async function createElectronMainContext(
     dirname(deps.secureSessionFilePath),
     "meeting-tasks.json"
   );
+  // Settings › Debug, read once: the core and the station go by the same answer until the app next starts.
+  const computerMeshSetting =
+    appPreferencesService.state().computerMeshAtLaunch ??
+    defaultCommaClientSettings.computerMesh;
+  const computerMesh = computerMeshSetting === "off" ? undefined : computerMeshSetting;
   coreHost = deps.coreDataDir
     ? new CoreHostService({
         clock,
@@ -847,6 +890,7 @@ export async function createElectronMainContext(
         testClock: deps.coreTestClock,
         stationPeers: deps.coreStationPeers,
         meshAddon: deps.coreMeshAddon,
+        computerMesh,
         desktop: {
           start: {
             app: {
@@ -901,8 +945,9 @@ export async function createElectronMainContext(
     : undefined;
   coreHost?.start();
   // The first windows depend on the session (the onboarding hold): wait for the core's startup probe, bounded so a
-  // core that cannot start leaves Main usable (its gate stays shut).
-  if (coreHost) await session.settled(15_000);
+  // core that cannot start leaves Main usable (its gate stays shut). The onboarding is kept per user, so a startup
+  // seed's placeholder user is not yet an answer.
+  if (coreHost) await session.settled(15_000, deps.startupSession?.userId);
   const localFiles = await LocalFileSnapshotStore.open({
     clock,
     rootDir: deps.localFileIndexRoot,
@@ -920,6 +965,7 @@ export async function createElectronMainContext(
     new WorkspaceConnectorRuntimeService({
       clock,
       station: deps.station,
+      computerMesh: computerMesh !== undefined,
       computerUseHelperApp: deps.computerUseHelperApp,
       clientControl: () => clientControlCredentials,
       connectorFileRoot: deps.connectorFileRoot ?? dirname(deps.localFileIndexRoot),
@@ -1057,6 +1103,14 @@ export async function createElectronMainContext(
         (await sessionAdmissionGuard.runOwned(() =>
           host.client().call("quickChat.sendMessage", params)
         )) as QuickChatMessage,
+      prepareMessage: async (params) =>
+        await sessionAdmissionGuard.runOwned(() =>
+          host.client().call("quickChat.prepareMessage", params)
+        ),
+      failPreparation: async (params) =>
+        await sessionAdmissionGuard.runOwned(() =>
+          host.client().call("quickChat.failPreparation", params)
+        ),
       transcribe: async (audio, purpose) =>
         (
           (await sessionAdmissionGuard.runOwned(() =>
@@ -1123,7 +1177,8 @@ export async function createElectronMainContext(
             .call("recordings.transcribe", { audio }) as Promise<RecordingTranscript>)
         : Promise.reject(
             new Error("Transcription is unavailable. The audio remains in Drive.")
-          )
+          ),
+    (reason) => nativeEventBus.emit(audioCaptureTranscriptionFailedEvent, { reason })
   );
   // Audio capture and meeting detection share one SDK load, so the first
   // CoreAudio call is made once, off Main's thread.
@@ -1204,8 +1259,15 @@ export async function createElectronMainContext(
   const meetingPresence = new MeetingPresenceService({
     clock,
     browserBundleIdentifier: deps.browserAppBundleIdentifier,
-    // Test apps skip the native SDK; otherwise detection shares the worker-first load.
-    loadNative: deps.loadMeetingPresenceNative ?? loadNativeAudio,
+    // Test apps skip the native SDK. Otherwise detection waits for the shared
+    // worker-first load, then makes its CoreAudio calls in its own worker.
+    loadNative:
+      deps.loadMeetingPresenceNative ??
+      createMicrophoneWatchLoader({
+        loadNative: loadNativeAudio,
+        startWatch: () =>
+          startMicrophoneWatchWorker({ logger: deps.nativeAudioLogger }),
+      }),
     readBrowserMeetings: async () => browserSidebarService?.readMeetings() ?? [],
     readAppIcon: createMeetingAppIconReader(deps.microphoneHostPath),
     onStateChanged: (state) => {
@@ -1238,8 +1300,6 @@ export async function createElectronMainContext(
     run: runComputeCommand,
     ...(deps.confirmLocalDisposal ? { confirm: deps.confirmLocalDisposal } : {}),
   });
-  // One Host capability probe per user action, shared by every lifecycle helper caller.
-  const hostProbe = new MaintenanceCapabilityProbe(runComputeCommand);
   const computeNodeFilePath =
     deps.computeNodeFilePath ??
     join(dirname(deps.secureSessionFilePath), "compute-node-intent.json");
@@ -1249,8 +1309,7 @@ export async function createElectronMainContext(
         deps.computeNodeAdapter ??
         new AgentVMMCommandAdapter(
           deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
-          runComputeCommand,
-          hostProbe
+          runComputeCommand
         ),
       ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
         ? {
@@ -1258,8 +1317,7 @@ export async function createElectronMainContext(
               hostConfiguration,
               runComputeCommand,
               fetch,
-              clock,
-              hostProbe
+              clock
             ),
           }
         : {}),
@@ -1274,11 +1332,10 @@ export async function createElectronMainContext(
     localCompute,
     new LocalHostMaintenance(
       new AgentVMMHostPreparation(
-        resolveHostConfiguration("prod", {}),
+        resolveHostConfiguration("prod"),
         runComputeCommand,
         fetch,
-        clock,
-        hostProbe
+        clock
       ),
       join(homedir(), "Library", "Application Support", "Agent VMM Maintenance"),
       runComputeCommand,
@@ -1345,6 +1402,7 @@ export async function createElectronMainContext(
   airdropSender = new AirDropSender({
     clock,
     binaryPath: deps.airDropSenderBinaryPath,
+    onChange: (operation) => nearby?.onOperation(operation),
     ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
     resolveVfs: (path) =>
       resolveAirDropVfsPath(path, deps.synchronicityProvider ?? synchronicity),
@@ -1357,31 +1415,68 @@ export async function createElectronMainContext(
     },
   });
   const airDropDataDir = join(dirname(deps.secureSessionFilePath), "airdrop");
+  const resolveAirDropName = async () => {
+    const saved = appPreferencesService.state().airDropName;
+    if (saved !== null) return saved;
+    const snapshot = session.state();
+    if (snapshot.phase !== "signed_in")
+      throw new Error("AirDrop starts only for a signed-in account.");
+    let name: string | null | undefined;
+    try {
+      name = await sessionAdmissionGuard.runOwned(() =>
+        coreHost ? profileName(coreHost.client(), 5_000, clock) : Promise.resolve(null)
+      );
+    } catch {
+      // Offline, AirDrop still works nearby and the email names the account.
+    }
+    return defaultAirDropName({ email: snapshot.principal.email, name });
+  };
+  const lanNearbyPlatform = deps.lanNearbyPlatform;
+  lanNearby = lanNearbyPlatform
+    ? new LanNearby({
+        clock,
+        platform: lanNearbyPlatform,
+        onInvite: async (invite, signal) => nearby?.lanInvite(invite, signal) ?? false,
+      })
+    : undefined;
+  // On while signed in and shown nearby, asked again once the name is read; it
+  // names this Mac's AirDrop receiver so a scan that finds both lists it once.
+  syncLanNearby = () => {
+    // Bound to the session it was asked in: a name read for an account that
+    // has since been replaced is dropped, and the start queued for the new
+    // account brings the receiver up under its name.
+    const generation = session.state().generation;
+    const wanted = () =>
+      session.state().generation === generation &&
+      session.state().phase === "signed_in" &&
+      appPreferencesService.state().showInAirDrop;
+    void lanNearby
+      ?.start(
+        () => (wanted() ? resolveAirDropName() : Promise.resolve("")),
+        wanted,
+        () => airdrop?.status().service
+      )
+      .catch(() => deps.logger?.warn("Nearby local network receiver failed.", {}));
+  };
+  nearby = new NearbyService({
+    lan: lanNearby,
+    log: { warn: (message) => deps.logger?.warn(message, { source: "airdrop" }) },
+    publish: (state) => nativeEventBus.emit(nearbyStateChangedEvent, state),
+    sender: airdropSender,
+    senderName: resolveAirDropName,
+    surfaceId: () => deps.getAirDropSurfaceId?.(),
+  });
   airdrop = new AirDropService({
     clock,
     binaryPath: deps.airDropBinaryPath,
     ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
     dataDir: airDropDataDir,
-    resolveName: async () => {
-      const saved = appPreferencesService.state().airDropName;
-      if (saved !== null) return saved;
-      const snapshot = session.state();
-      if (snapshot.phase !== "signed_in")
-        throw new Error("AirDrop starts only for a signed-in account.");
-      let name: string | null | undefined;
-      try {
-        name = await sessionAdmissionGuard.runOwned(() =>
-          coreHost
-            ? profileName(coreHost.client(), 5_000, clock)
-            : Promise.resolve(null)
-        );
-      } catch {
-        // Offline, AirDrop still works nearby and the email names the account.
-      }
-      return defaultAirDropName({ email: snapshot.principal.email, name });
-    },
+    resolveName: resolveAirDropName,
     onOffer: async (offer, signal) =>
       sessionAdmissionGuard.runOwned(async () => {
+        // An invite from someone nearby is the connect card's, not a chat's.
+        const invite = nearby?.offer(offer, signal, deps.getAirDropSurfaceId?.());
+        if (invite) return invite;
         if (!deps.airDropPresentation) return undefined;
         const boundary = createCurrentMainSessionApiBinding({ session });
         const intake = await approveAirDropForChat({
@@ -1415,8 +1510,11 @@ export async function createElectronMainContext(
   airDropShown = appPreferencesService.state().showInAirDrop;
   airDropSavedName = appPreferencesService.state().airDropName;
   if (session.state().phase === "signed_in" && airDropShown) {
-    void airdrop.start().catch(() => deps.logger?.warn("AirDrop could not start.", {}));
-  }
+    void airdrop
+      .start()
+      .catch(() => deps.logger?.warn("AirDrop could not start.", {}))
+      .finally(() => syncLanNearby?.());
+  } else syncLanNearby?.();
   const macAppsHostPath = deps.macAppsHostPath;
   const macApps: MacAppsService = new MacAppsService({
     clock,
@@ -1442,6 +1540,26 @@ export async function createElectronMainContext(
         .then((snapshot) => nativeEventBus.emit(macAppsStateChangedEvent, snapshot));
     },
   });
+  // Blender on this computer; Agents reach it through the station's client_mcp.
+  const encodeBlenderJpeg = deps.encodeBlenderJpeg;
+  const blender: BlenderService | undefined = encodeBlenderJpeg
+    ? new BlenderService({
+        clock,
+        root: join(dirname(deps.secureSessionFilePath), "blender"),
+        encodeJpeg: encodeBlenderJpeg,
+        ...(deps.pickBlenderApp ? { pickApp: deps.pickBlenderApp } : {}),
+        onChange: () => {
+          void blender
+            ?.state()
+            .then((snapshot) =>
+              nativeEventBus.emit(blenderStateChangedEvent, snapshot)
+            );
+        },
+      })
+    : undefined;
+  void blender
+    ?.resume()
+    .catch(() => deps.logger?.warn("The Blender bridge could not start.", {}));
   const clientControlArtifactRoot = join(
     dirname(deps.secureSessionFilePath),
     "client-control-artifacts"
@@ -1473,9 +1591,12 @@ export async function createElectronMainContext(
     }),
     token: clientControlToken,
     // Salix reaches the Mac apps through the station's client_mcp.
-    mcpServers: macApps.available
-      ? { "mac-apps": (message) => macApps.handleMcp(message) }
-      : {},
+    mcpServers: {
+      ...(macApps.available
+        ? { "mac-apps": (message: unknown) => macApps.handleMcp(message) }
+        : {}),
+      ...(blender ? { blender: (message: unknown) => blender.handleMcp(message) } : {}),
+    },
   });
   clientControlCredentials = {
     endpoint: clientControlApi.endpoint,
@@ -1525,6 +1646,7 @@ export async function createElectronMainContext(
     coreHost,
     airDropReception,
     airdropSender,
+    nearby,
     audioCapture,
     browserSidebar,
     meetingPresence,
@@ -1536,6 +1658,7 @@ export async function createElectronMainContext(
     files: fileDownloads,
     synchronicity: deps.synchronicityProvider ?? synchronicity,
     macApps,
+    blender,
     gateway,
     localFiles,
     localFilePicker,
@@ -1564,6 +1687,8 @@ export async function createElectronMainContext(
       await airdrop?.close();
       airDropReception.close();
       await airdropSender?.close();
+      await lanNearby?.stop();
+      deps.lanNearbyPlatform?.close();
       // A live tap must not outlive Main; drop it before the snapshot store goes.
       await meetingPresence.close();
       await audioCapture.close();
@@ -1577,6 +1702,7 @@ export async function createElectronMainContext(
       await synchronicity.close();
       await clientControlApi.close();
       await macApps.stop();
+      await blender?.stop();
       await localFiles.close();
       await browserSidebarService?.dispose();
       statusTrayTasks?.follow(undefined);
@@ -1628,6 +1754,7 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
   };
   registerNativeBridgeHandlers({
     airDrop: context.airDropReception,
+    nearby: context.nearby,
     appPreferences: context.appPreferences,
     computerUse: context.runtimeDeps.computerUse ?? {
       getPermissions: unavailableComputerUseBridge.getPermissions,
@@ -1673,11 +1800,19 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
     computeNode: context.computeNode,
     connectorRuntime,
     macApps: context.macApps,
+    blender: context.blender ?? unavailableBlenderProvider,
     synchronicity: context.synchronicity,
     windowAppearance: context.windowAppearance,
     windows: context.windows,
   });
 }
+
+const unavailableBlenderProvider: BlenderProvider = {
+  state: async () => blenderStateCapability.webFallback,
+  setEnabled: async () => blenderStateCapability.webFallback,
+  open: async () => ({ opened: false, reason: "no_blender" as const }),
+  chooseApp: async () => blenderStateCapability.webFallback,
+};
 
 const unavailableWindowsProvider: WindowsProvider = {
   close() {
@@ -1688,6 +1823,9 @@ const unavailableWindowsProvider: WindowsProvider = {
   },
   focus() {
     throw new Error("Window commands are unavailable in this runtime.");
+  },
+  focusScreen() {
+    return { focused: false };
   },
 };
 

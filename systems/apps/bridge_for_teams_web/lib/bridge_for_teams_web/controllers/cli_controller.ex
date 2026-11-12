@@ -519,7 +519,7 @@ defmodule BridgeForTeamsWeb.CLIController do
     [
       "In the Lark Developer Console, add the Bot capability to the app.",
       "Under Events & Callbacks, choose \"Send events to developer's server\" and save the callback URL as the request URL.",
-      "Subscribe to the events im.message.receive_v1 and im.message.recalled_v1.",
+      "Subscribe to the events im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1.",
       "Under Permissions & Scopes, batch-import the JSON that bft lark scopes prints. It has im:message.group_msg, so that people can go on in a thread without mentioning the bot, and every message of a group is recorded.",
       "Create a version of the app and publish it; scopes and events take effect with the published version.",
       "Add the bot to a group and mention it, or write to it in a private chat.",
@@ -659,6 +659,169 @@ defmodule BridgeForTeamsWeb.CLIController do
       "Add the bot to a group and mention it, or write to it in a private chat.",
       "For messages later than 5 minutes after a mention, a group admin turns on \"机器人主动在群聊内发言\" in the bot's settings in that group.",
       "To record the whole group conversation, a group admin sets \"机器人可获取的群聊消息范围\" to \"获取群内全部消息\"."
+    ]
+  end
+
+  @doc "Connects a Telegram bot to a project. It serves no chat until one is allowed."
+  def telegram_connect(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, token} <- telegram_token(params) do
+      case ProjectIMConnects.create_project_connect(org.id, project.id, "telegram", %{
+             "bot_token" => token
+           }) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "telegram_connect",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "action" => connect["action"] || "created",
+            "connect" => public_telegram_connect(connect),
+            "manual_checklist" => telegram_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not connect the Telegram bot.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc "The Telegram bots of a project and the chats each has seen."
+  def telegram_status(conn, params) do
+    with {:ok, org} <- require_org(params),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :read) do
+      case ProjectIMConnects.list_project_connects(org.id, project.id, "telegram") do
+        {:ok, connects} ->
+          send_ok(conn, %{
+            "mode" => "telegram_status",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connects" =>
+              Enum.map(connects, fn connect ->
+                connect
+                |> public_telegram_connect()
+                |> Map.put("observed_chats", telegram_observed_chats(org, project, connect))
+              end),
+            "manual_checklist" => telegram_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not read the Telegram bots.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc """
+  Replaces the chats a Telegram bot serves. `bot_username` names the bot when
+  the project has more than one.
+  """
+  def telegram_chats(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, chat_ids} <- telegram_chat_ids(params["allowed_chat_ids"]),
+         {:ok, connects} <-
+           ProjectIMConnects.list_project_connects(org.id, project.id, "telegram"),
+         {:ok, connect} <- telegram_connect_named(connects, trim(params["bot_username"])) do
+      case ProjectIMConnects.update_project_telegram_chats(
+             org.id,
+             project.id,
+             connect["connect_id"],
+             chat_ids
+           ) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "telegram_chats",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connect" => public_telegram_connect(connect)
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not update the Telegram bot's chats.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  defp telegram_token(params) do
+    case trim(params["bot_token"]) do
+      "" -> error(400, "missing_telegram_token", "Pass the Telegram bot's token.")
+      token -> {:ok, token}
+    end
+  end
+
+  defp telegram_chat_ids(ids) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1),
+      do: {:ok, ids},
+      else: telegram_chat_ids(nil)
+  end
+
+  defp telegram_chat_ids(_ids),
+    do: error(400, "invalid_telegram_chats", "Pass the chats as a list of ids.")
+
+  defp telegram_connect_named([connect], ""), do: {:ok, connect}
+
+  defp telegram_connect_named([], _username),
+    do:
+      error(
+        404,
+        "telegram_bot_not_found",
+        "This project has no Telegram bot. Run bft telegram connect first."
+      )
+
+  defp telegram_connect_named(_connects, ""),
+    do:
+      error(
+        400,
+        "telegram_bot_required",
+        "This project has more than one Telegram bot. Pass --bot."
+      )
+
+  defp telegram_connect_named(connects, username) do
+    case Enum.find(connects, &(&1["bot_username"] == username)) do
+      nil ->
+        error(404, "telegram_bot_not_found", "This project has no Telegram bot of that name.")
+
+      connect ->
+        {:ok, connect}
+    end
+  end
+
+  defp public_telegram_connect(connect) do
+    connect
+    |> public_connect()
+    |> Map.merge(Map.take(connect, ~w(bot_username allowed_chat_ids can_read_all_group_messages)))
+  end
+
+  defp telegram_observed_chats(org, project, connect) do
+    case ProjectIMConnects.list_project_telegram_chats(org, project, connect["connect_id"]) do
+      # The response sanitizer redacts a `chat_id` key; an admin needs the id here.
+      {:ok, chats} ->
+        Enum.map(chats, fn chat ->
+          chat |> Map.take(~w(chat_type title username)) |> Map.put("id", chat["chat_id"])
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp telegram_manual_checklist do
+    [
+      "Add the bot to a Telegram group. It shows up in bft telegram status.",
+      "Allow the group with bft telegram chats --chat <id>.",
+      "Keep privacy mode on in BotFather and do not make the bot a group admin: otherwise the bot reads every message in the group. Messages that do not mention it, send a command or reply to it start no model turn but stay in its context.",
+      "After adding the bot to its groups, turn off /setjoingroups in BotFather."
     ]
   end
 
@@ -949,7 +1112,11 @@ defmodule BridgeForTeamsWeb.CLIController do
           "required_scopes" => FeishuScopes.required_scope_ids(:bot),
           "batch_import_payload" => FeishuScopes.import_payload(:bot),
           "optional_scopes" => FeishuScopes.optional_bot_scopes(),
-          "event_subscriptions" => ["im.message.receive_v1", "im.message.recalled_v1"],
+          "event_subscriptions" => [
+            "im.message.receive_v1",
+            "im.message.recalled_v1",
+            "im.chat.member.bot.added_v1"
+          ],
           "manual_checklist" => feishu_manual_checklist(),
           "limitations" => [
             "One bot-enabled Feishu app can be connected to one Agent Swarm until multi-route support lands.",
@@ -1216,7 +1383,7 @@ defmodule BridgeForTeamsWeb.CLIController do
       "Enable group bot (IM) on the org Feishu app binding.",
       "Create or resync the Agent Swarm Feishu connect to generate the callback URL.",
       "Paste the callback URL into Feishu Events & Callbacks.",
-      "Subscribe to im.message.receive_v1 and im.message.recalled_v1.",
+      "Subscribe to im.message.receive_v1, im.message.recalled_v1 and im.chat.member.bot.added_v1.",
       "Batch-import the required bot scopes, publish/install the app version, and add the bot to the target group.",
       "Run bft feishu checks --json and then test a real @Bridge message."
     ]

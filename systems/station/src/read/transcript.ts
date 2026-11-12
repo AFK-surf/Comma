@@ -123,7 +123,7 @@ function toText(v: Json): string {
 }
 
 /// A post: shown whole in the history, where the agent made it (its words are what people read, not a call to cut).
-export const isPosting = (tool: string) => tool === "mcp__stillfail__chat_post" || tool === "mcp__ember__chat_post";
+export const isPosting = (tool: string) => tool === "mcp__comma__chat_post" || tool === "mcp__stillfail__chat_post" || tool === "mcp__ember__chat_post";
 
 /// What reading keeps between lines: calls taken out of a script.
 export type ReadState = { inner: Map<string, number> };

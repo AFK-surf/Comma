@@ -88,3 +88,62 @@ export function parseJson(
     return undefined;
   }
 }
+
+/// The UTF-8 bytes of `v` as JSON text, counted only as far as `limit`: a number above it once it has more (so
+/// weighing a few ops against a long value costs what the ops cost, not what the value does).
+export function jsonBytes(v: unknown, limit = Infinity): number {
+  const out = { n: 0 };
+  bytesOf(v, limit, out);
+  return out.n;
+}
+
+function bytesOf(v: unknown, limit: number, out: { n: number }): void {
+  if (out.n > limit) return;
+  if (typeof v === "string") {
+    // Each UTF-16 unit is at least a byte, and the quotes two more: a long string is over the limit untold.
+    if (out.n + v.length + 2 > limit) {
+      out.n += v.length + 2;
+      return;
+    }
+    out.n += utf8Length(JSON.stringify(v));
+    return;
+  }
+  if (v === null || typeof v !== "object") {
+    out.n += (JSON.stringify(v) ?? "null").length;
+    return;
+  }
+  if (Array.isArray(v)) {
+    out.n += 1 + Math.max(0, v.length - 1) + 1;
+    for (const item of v) {
+      bytesOf(item === undefined ? null : item, limit, out);
+      if (out.n > limit) return;
+    }
+    return;
+  }
+  if (typeof (v as { toJSON?: unknown }).toJSON === "function") {
+    out.n += utf8Length(JSON.stringify(v));
+    return;
+  }
+  let fields = 0;
+  out.n += 2;
+  for (const [key, item] of Object.entries(v)) {
+    if (item === undefined || typeof item === "function") continue;
+    out.n += (fields++ > 0 ? 1 : 0) + utf8Length(JSON.stringify(key)) + 1;
+    bytesOf(item, limit, out);
+    if (out.n > limit) return;
+  }
+}
+
+function utf8Length(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
+}

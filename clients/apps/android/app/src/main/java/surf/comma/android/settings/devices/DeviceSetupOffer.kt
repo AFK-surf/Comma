@@ -1,6 +1,8 @@
 package surf.comma.android.settings.devices
 
 import org.json.JSONObject
+import androidx.annotation.StringRes
+import surf.comma.android.R
 
 /**
  * A projection of the server-owned offer. The highest [revision] wins; [revision] is null only on
@@ -19,12 +21,12 @@ data class DeviceSetupOffer(
     val bluetoothName: String get() = "Comma-$shortId"
 
     fun presentation(localDeviceId: String, now: Long): OfferPresentation = when {
-        status == "done" -> OfferPresentation("Set up")
-        status == "dismissed" -> OfferPresentation("Dismissed")
-        status == "expired" || now >= expiresAt -> OfferPresentation("Expired")
-        status !in setOf("open", "started") -> OfferPresentation("Unavailable")
-        reporterDeviceId != localDeviceId -> OfferPresentation("Set up from the phone near it", dismiss = true)
-        else -> OfferPresentation(if (status == "started") "Setup started" else "Ready to set up", connect = true, dismiss = true)
+        status == "done" -> OfferPresentation(R.string.devices_offer_done)
+        status == "dismissed" -> OfferPresentation(R.string.devices_offer_dismissed)
+        status == "expired" || now >= expiresAt -> OfferPresentation(R.string.devices_offer_expired)
+        status !in setOf("open", "started") -> OfferPresentation(R.string.devices_offer_unavailable)
+        reporterDeviceId != localDeviceId -> OfferPresentation(R.string.devices_offer_nearby_phone, dismiss = true)
+        else -> OfferPresentation(if (status == "started") R.string.devices_offer_started else R.string.devices_offer_ready, connect = true, dismiss = true)
     }
 
     /** As the client core says an offer (`ChatDeviceSetupOffer`): what [parse] reads. */
@@ -55,4 +57,4 @@ data class DeviceSetupOffer(
     }
 }
 
-data class OfferPresentation(val label: String, val connect: Boolean = false, val dismiss: Boolean = false)
+data class OfferPresentation(@StringRes val label: Int, val connect: Boolean = false, val dismiss: Boolean = false)

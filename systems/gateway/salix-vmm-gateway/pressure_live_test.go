@@ -26,7 +26,7 @@ import (
 // The extra fixture wiring imports a local test image and supplies the callback
 // network through ForwardTCP, without changing the Guest's egress policy.
 func TestCommaVMMPressureGatewayE2E(t *testing.T) {
-	path := os.Getenv("COMMA_VMM_E2E_CONFIG")
+	path := os.Getenv("AGENT_VMM_EXTERNAL_E2E_CONFIG")
 	if path == "" {
 		t.Skip("run with Comma's isolated pressure integration fixture")
 	}

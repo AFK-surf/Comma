@@ -168,7 +168,7 @@ defmodule SalixIM.TelegramTaskTopicsTest do
     assert {:ok, :duplicate} = ProviderHTTP.handle_telegram_update(ctx.connect, update)
     assert task_text(ctx.group, first) =~ "Change only the first task"
     refute task_text(ctx.group, second) =~ "Change only the first task"
-    assert_worker_input(ctx.worker["agent_id"], "Change only the first task")
+    assert_agent_input(ctx.worker["agent_id"], "Change only the first task")
 
     assert {:ok, _} =
              SalixIM.Provider.call_api(
@@ -197,6 +197,41 @@ defmodule SalixIM.TelegramTaskTopicsTest do
     )
 
     settle_refute_receive({:telegram, "sendMessage", _}, 100)
+  end
+
+  test "a reply in the topic of a Task that ended reaches the Router", ctx do
+    router = ctx.router["agent_id"]
+    task = create_task(ctx, "Ended")
+    {:ok, binding} = open(ctx, task)
+    settle_receive({:telegram, "createForumTopic", _})
+
+    # While the Task runs, the topic is the Worker's.
+    assert {:ok, :queued} =
+             ProviderHTTP.handle_telegram_update(ctx.connect, update(binding, 701, "Go on"))
+
+    assert_agent_input(ctx.worker["agent_id"], "Go on")
+    refute_agent_input(router, "Go on")
+
+    # Once it ended, its Worker is not asked again: the Router takes the turn.
+    {:ok, current} = Conversations.get_group_conversation(ctx.group, task)
+
+    assert {:ok, %{"status" => "completed"}} =
+             SalixIM.ConversationServer.set_task_status(
+               ctx.group,
+               task,
+               "completed",
+               current["updated_at"],
+               "user-1"
+             )
+
+    assert {:ok, :queued} =
+             ProviderHTTP.handle_telegram_update(
+               ctx.connect,
+               update(binding, 702, "One more thing")
+             )
+
+    assert task_text(ctx.group, task) =~ "One more thing"
+    assert_agent_input(router, "One more thing")
   end
 
   test "wrong peer, Worker caller, and retired connection cannot open or continue a topic", ctx do
@@ -260,14 +295,31 @@ defmodule SalixIM.TelegramTaskTopicsTest do
     refute task_text(ctx.group, task) =~ "old topic"
   end
 
-  defp assert_worker_input(worker, text, attempts \\ 10)
-  defp assert_worker_input(_, _, 0), do: flunk("Worker did not receive the topic follow-up")
+  defp assert_agent_input(agent, text, attempts \\ 10)
+  defp assert_agent_input(_, _, 0), do: flunk("the Agent did not receive the topic follow-up")
 
-  defp assert_worker_input(worker, text, attempts) do
-    settle_receive({:agent_input, ^worker, payload, _})
+  defp assert_agent_input(agent, text, attempts) do
+    settle_receive({:agent_input, ^agent, payload, _})
 
     if not String.contains?(inspect(payload[:content]), text),
-      do: assert_worker_input(worker, text, attempts - 1)
+      do: assert_agent_input(agent, text, attempts - 1)
+  end
+
+  # The deliveries in flight are done on the test clock, and none of them
+  # gave the Agent `text`.
+  defp refute_agent_input(agent, text) do
+    SystemsClock.run_for(100)
+    drain_agent_input(agent, text)
+  end
+
+  defp drain_agent_input(agent, text) do
+    receive do
+      {:agent_input, ^agent, payload, _} ->
+        refute String.contains?(inspect(payload[:content]), text)
+        drain_agent_input(agent, text)
+    after
+      0 -> :ok
+    end
   end
 
   defp create_task(ctx, title) do

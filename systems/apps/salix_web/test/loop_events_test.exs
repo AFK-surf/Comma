@@ -172,6 +172,114 @@ defmodule SalixWeb.LoopEventsTest do
     assert webhook(replacement, %{}).status == 404
   end
 
+  test "loop.subscribe changes only the caller's own Loop and knows its events", ctx do
+    alias SalixAgent.Tools.Loops, as: Tools
+    owner = %{agent_id: ctx.agent_id}
+    args = %{"loop_id" => ctx.loop_id, "event" => "meeting.completed"}
+
+    assert Jason.decode!(Tools.subscribe(args, owner))["product_event"] == "meeting.completed"
+    assert Jason.decode!(Tools.get(args, owner))["product_event"] == "meeting.completed"
+
+    assert_raise RuntimeError, "loop not found", fn ->
+      Tools.subscribe(%{"loop_id" => ctx.loop_id}, %{agent_id: "foreign"})
+    end
+
+    assert_raise RuntimeError, ~r/unknown product event/, fn ->
+      Tools.subscribe(%{args | "event" => "meeting.started"}, owner)
+    end
+
+    assert {:ok, %{"product_event" => "meeting.completed"}} = SalixStore.Loops.get(ctx.loop_id)
+
+    refute Map.has_key?(
+             Jason.decode!(Tools.subscribe(%{"loop_id" => ctx.loop_id}, owner)),
+             "product_event"
+           )
+
+    assert {:ok, %{"product_event" => nil}} = SalixStore.Loops.get(ctx.loop_id)
+  end
+
+  test "a finished meeting reaches its own Group's subscribed Loops once, with no meeting text",
+       ctx do
+    previous = SystemsRuntime.get_env(:salix_meet, :events_mod)
+    SystemsRuntime.put_env(:salix_meet, :events_mod, Salix.Bindings.ProductEvents)
+    on_exit(fn -> restore_env(:salix_meet, :events_mod, previous) end)
+
+    {:ok, _} =
+      SalixAgent.Loops.subscribe_product_event(ctx.agent_id, ctx.loop_id, "meeting.completed")
+
+    other_group = SalixStore.Ids.new_group_id(ctx.tenant_id)
+
+    loop = fn group_id, agent_id, product_event ->
+      {:ok, row} =
+        SalixStore.Loops.create(%{
+          "id" => SalixStore.Ids.new_loop_id(),
+          "tenant_id" => ctx.tenant_id,
+          "group_id" => group_id,
+          "agent_id" => agent_id,
+          "session_id" => SalixStore.Ids.new_session_id(),
+          "product_event" => product_event,
+          "elf_sha256" => "abc",
+          "elf_path" => "/loops/main.elf",
+          "created_at" => SystemsClock.system_time(:millisecond)
+        })
+
+      row["id"]
+    end
+
+    unsubscribed = loop.(ctx.group_id, ctx.agent_id, nil)
+    foreign = loop.(other_group, SalixStore.Ids.new_agent_id(other_group), "meeting.completed")
+
+    meeting = %{
+      "meeting_id" => "mtg-loop-event",
+      "group_id" => ctx.group_id,
+      "status" => "done",
+      "provider" => "slack",
+      "title" => "Board strategy",
+      "summary" => %{"key_points" => ["Confidential plan"]},
+      "participants" => ["Alice", "Bob", "Comma Notetaker"],
+      "bot_name" => "Comma Notetaker",
+      "joined_at" => 1_000,
+      "left_at" => 1_600
+    }
+
+    assert :ok = SalixMeet.Ports.Events.meeting_completed(meeting)
+    assert :ok = SalixMeet.Ports.Events.meeting_completed(meeting)
+
+    assert {:ok, %{"pending_events" => pending}} = SalixStore.Loops.get(ctx.loop_id)
+
+    assert %{
+             "meeting.completed:mtg-loop-event" => %{
+               "topic" => "meeting.completed",
+               "payload" => %{
+                 "meeting_id" => "mtg-loop-event",
+                 "provider" => "slack",
+                 "started_at" => 1_000,
+                 "ended_at" => 1_600,
+                 "duration_seconds" => 600,
+                 "participant_count" => 2
+               }
+             }
+           } = pending
+
+    assert map_size(pending) == 1
+    payload = pending["meeting.completed:mtg-loop-event"]["payload"]
+    assert map_size(payload) == 6
+
+    for id <- [unsubscribed, foreign] do
+      assert {:ok, %{"pending_events" => empty}} = SalixStore.Loops.get(id)
+      assert empty == %{}
+    end
+
+    # A full mailbox is a failed delivery the publisher retries.
+    full = Map.new(1..32, &{"filler-#{&1}", %{"event_id" => "filler-#{&1}"}})
+
+    {:ok, _} =
+      SalixStore.Loops.update(ctx.loop_id, fn r -> {:ok, Map.put(r, "pending_events", full)} end)
+
+    assert {:error, :mailbox_full} =
+             SalixMeet.Ports.Events.meeting_completed(%{meeting | "meeting_id" => "mtg-full"})
+  end
+
   test "webhooks enforce input bounds, backpressure and the Loop lifecycle", ctx do
     # The clock stands still while the requests are made: the limit's window
     # holds all of them, however long they take.
@@ -208,9 +316,9 @@ defmodule SalixWeb.LoopEventsTest do
   test "header-free HTTP delivery reaches the guest and preserves explicit retry identity", ctx do
     alias SalixAgent.{AgentWorkspace, Fleet, InternalSessionStore, Loops, SpinfoamFixture}
     alias SalixAgent.Loops.Host
-    {:ok, _} = InternalSessionStore.prepare_commit(ctx.agent_id, ctx.session_id, [])
     {:ok, _} = Fleet.ensure_started(ctx.agent_id, create: false)
     :ok = Fleet.await_ownership_installed(ctx.agent_id)
+    {:ok, _} = InternalSessionStore.prepare_commit(ctx.agent_id, ctx.session_id, [])
     elf = SpinfoamFixture.compile!(webhook_program())
     path = "/loops/webhook.elf"
     {:ok, write} = AgentWorkspace.prepare_write(ctx.agent_id, path, elf)
@@ -365,9 +473,9 @@ defmodule SalixWeb.LoopEventsTest do
     alias SalixAgent.Loops.Host
     alias SalixAgent.Tools.ComposioTriggers
     {state, url} = composio_setup(ctx)
-    {:ok, _} = InternalSessionStore.prepare_commit(ctx.agent_id, ctx.session_id, [])
     {:ok, _} = Fleet.ensure_started(ctx.agent_id, create: false)
     :ok = Fleet.await_ownership_installed(ctx.agent_id)
+    {:ok, _} = InternalSessionStore.prepare_commit(ctx.agent_id, ctx.session_id, [])
 
     program =
       String.replace(

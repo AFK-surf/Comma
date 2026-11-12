@@ -1,7 +1,7 @@
 defmodule SalixIM.IFCTaskAudienceTest do
   use SystemsClock.Case, async: false
 
-  alias SalixIM.IFC.{AudiencePlacement, Facts}
+  alias SalixIM.IFC.Facts
   alias SalixIFC.{Activation, Codec, Effect, Item, Label}
   alias SalixStore.{Ids, Keys, S3}
   alias SalixStore.IFC, as: Store
@@ -93,11 +93,25 @@ defmodule SalixIM.IFCTaskAudienceTest do
   defp calls, do: Agent.get(Slack, fn {_, calls} -> Enum.reverse(calls) end)
 
   defp task(ctx, members) do
-    put(Keys.ctl_group_conversation(ctx.scope.group_id, ctx.task), %{
-      "conversation_id" => ctx.task,
-      "kind" => "agent_task",
-      "source_refs" => %{"ifc_members" => Enum.map(members, &principal(ctx, &1))}
-    })
+    scope = SalixIM.ConversationPGStore.new(ctx.scope.group_id, ctx.task)
+    refs = %{"ifc_members" => Enum.map(members, &principal(ctx, &1))}
+
+    case SalixIM.ConversationPGStore.read(scope) do
+      {:error, :not_found} ->
+        assert {:ok, :inserted, _, _} =
+                 SalixIM.ConversationPGStore.create(scope, %{
+                   "kind" => "agent_task",
+                   "source_refs" => refs
+                 })
+
+      {:ok, _, revision} ->
+        assert {:ok, _, _, _} =
+                 SalixIM.ConversationPGStore.update(
+                   scope,
+                   revision,
+                   &Map.put(&1, "source_refs", refs)
+                 )
+    end
   end
 
   defp facts(ctx) do

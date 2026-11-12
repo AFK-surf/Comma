@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Task details sections -->
+    <string name="task_details_code">Code</string>
+    <string name="task_details_code_review">Code review</string>
+    <string name="task_details_browser">Browser</string>
+    <string name="task_details_files">Files</string>
+    <string name="task_tools_retry">Retry</string>
+
+    <!-- Task files -->
+    <string name="task_files_title">Task files</string>
+    <string name="task_files_search">Search loaded files</string>
+    <string name="task_files_indexing">Older task files are being indexed. Try refreshing shortly.</string>
+    <string name="task_files_refresh">Refresh</string>
+    <string name="task_files_empty">No files yet</string>
+    <string name="task_files_loading">Loading…</string>
+    <string name="task_files_load_more">Load more</string>
+    <string name="task_files_failed">Couldn’t load task files</string>
+    <string name="task_files_actions">Actions for %1$s</string>
+    <string name="task_files_preview">Preview</string>
+    <string name="task_files_add_to_context">Add to context</string>
+
+    <!-- Remote browser -->
+    <string name="remote_browser_title">Remote browser</string>
+    <string name="remote_browser_viewport">Remote browser viewport</string>
+    <string name="remote_browser_none">This conversation has no running browser.</string>
+    <string name="remote_browser_tab">Tab</string>
+    <string name="remote_browser_control">Control</string>
+    <string name="remote_browser_you">You</string>
+    <string name="remote_browser_agent">Agent</string>
+    <string name="remote_browser_return_control">Return control</string>
+    <string name="remote_browser_take_control">Take control</string>
+    <string name="remote_browser_keyboard">Keyboard</string>
+    <string name="remote_browser_text_hint">Text to type</string>
+    <string name="remote_browser_type">Type text</string>
+    <string name="remote_browser_key_tab">Tab</string>
+    <string name="remote_browser_key_enter">Enter</string>
+    <string name="remote_browser_key_escape">Escape</string>
+    <string name="remote_browser_key_page_up">Page up</string>
+    <string name="remote_browser_key_page_down">Page down</string>
+    <string name="remote_browser_reconnect">Reconnect</string>
+    <string name="remote_browser_clear">Clear browser storage</string>
+    <string name="remote_browser_clear_title">Clear browser storage?</string>
+    <string name="remote_browser_clear_message">Saved website sessions in this browser will be removed.</string>
+    <string name="remote_browser_clear_confirm">Clear storage</string>
+    <string name="remote_browser_failed">The browser connection failed.</string>
+
+    <!-- Code review -->
+    <string name="coding_review_title">Code review</string>
+    <string name="coding_environment">Environment</string>
+    <string name="coding_repository">Repository</string>
+    <string name="coding_branch">Branch</string>
+    <string name="coding_base_branch">Base branch</string>
+    <string name="coding_sandbox">Sandbox</string>
+    <string name="coding_open_terminal">Open terminal</string>
+    <string name="coding_history">Execution history</string>
+    <string name="coding_history_unavailable">Execution history is available while the sandbox is running.</string>
+    <string name="coding_thinking">Thinking</string>
+    <string name="coding_changes">Changes</string>
+    <string name="coding_compare">Compare</string>
+    <string name="coding_all_changes">All changes</string>
+    <string name="coding_uncommitted">Uncommitted</string>
+    <string name="coding_no_changes">No changes</string>
+    <string name="coding_truncated">Some changes are too large to display. Review the complete branch on GitHub.</string>
+    <string name="coding_no_diff">This file has no text diff. Open the pull request to review it.</string>
+    <string name="coding_pull_request">Pull request</string>
+    <string name="coding_checks">Checks</string>
+    <string name="coding_checks_summary">%1$d passed · %2$d failed · %3$d total</string>
+    <string name="coding_open_github">Open on GitHub</string>
+    <string name="coding_edit_pr">Edit pull request</string>
+    <string name="coding_ready_pr">Mark ready for review</string>
+    <string name="coding_merge_pr">Merge pull request</string>
+    <string name="coding_merge_title">Merge pull request?</string>
+    <string name="coding_create_pr">Create pull request</string>
+    <string name="coding_pr_title">Title</string>
+    <string name="coding_pr_description">Description</string>
+    <string name="coding_pr_draft">Draft</string>
+    <string name="coding_pr_save">Save</string>
+    <string name="coding_state_ready">Ready</string>
+    <string name="coding_state_starting">Starting</string>
+    <string name="coding_state_stopped">Stopped</string>
+    <string name="coding_state_lost">Disconnected</string>
+    <string name="coding_state_failed">Failed</string>
+    <string name="coding_state_ended">Ended</string>
+    <string name="coding_state_open">Open</string>
+    <string name="coding_state_draft">Draft</string>
+    <string name="coding_state_merged">Merged</string>
+    <string name="coding_state_closed">Closed</string>
+
+    <!-- New task -->
+    <string name="new_task_title">New task</string>
+    <string name="new_task_prompt">What would you like it to do?</string>
+    <string name="new_task_instructions">Task instructions</string>
+    <string name="new_task_run_in">Run in</string>
+    <string name="new_task_cloud">Comma cloud</string>
+    <string name="new_task_code">Write code</string>
+    <string name="new_task_default_model">Default</string>
+    <string name="new_task_models_unavailable">Model settings are unavailable in this workspace.</string>
+    <string name="new_task_create">Create task</string>
+    <string name="new_task_default_branch">Default branch</string>
+    <string name="new_task_more_branches">Load more branches</string>
+    <string name="new_task_model">Model</string>
+    <string name="new_task_model_account">Model and account</string>
+    <string name="new_task_confirm">Confirm</string>
+    <string name="new_task_search_owners">Search organizations</string>
+    <string name="new_task_search_in">Search in %1$s</string>
+    <string name="new_task_organizations">Organizations</string>
+    <string name="new_task_refine">Refine your search to see more results.</string>
+    <string name="new_task_no_results">No results</string>
+</resources>

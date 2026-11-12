@@ -36,6 +36,7 @@ function open({
   labs = true,
   platform = "electron" as "electron" | "web",
   call = { phase: "idle" } as Partial<VoiceCallValue>,
+  callReady = true,
 } = {}) {
   installNativeBridgeMock({ platform });
   let current: VoiceCallValue = {
@@ -55,9 +56,13 @@ function open({
           ? {
               workspace,
               integration: {
-                lines: ["+15550001111"],
+                // No phone line: the desktop's call does not need one.
+                lines: [],
                 numbers: [],
-                readiness: { ready: true, reason: null },
+                readiness: { ready: false, reason: "no_platform_lines" },
+                call_readiness: callReady
+                  ? { ready: true, reason: null }
+                  : { ready: false, reason: "disabled" },
                 sessions_url: "wss://salix.example/s",
                 readiness_url: "https://salix.example/r",
                 preferences: { voice: null, custom_voice: null, router_calls: true },
@@ -127,7 +132,10 @@ it("calls the Router, shows the card while it rings and talks, and leaves nothin
   expect(screen.getByRole("button", { name: "Call" })).toBeInTheDocument();
 });
 
-it("offers no call without voice labs, or off the desktop", async () => {
+it("offers no call without voice labs, off the desktop, or while voice is off on the server", async () => {
+  open({ callReady: false });
+  expect(screen.queryByRole("button", { name: "Call" })).toBeNull();
+  document.body.replaceChildren();
   open({ labs: false });
   expect(screen.queryByRole("button", { name: "Call" })).toBeNull();
   document.body.replaceChildren();
@@ -199,8 +207,13 @@ afterEach(() => vi.unstubAllGlobals());
 async function fakeCallAudio() {
   let process: ((event: { inputBuffer: AudioBuffer }) => void) | undefined;
   const sources: EventTarget[] = [];
+  /** When each source was told to start, on the context's clock. */
+  const starts: number[] = [];
+  const clock = { now: 0 };
   class FakeAudioContext {
-    currentTime = 0;
+    get currentTime() {
+      return clock.now;
+    }
     destination = {};
     createMediaStreamSource = () => ({ connect: () => {} });
     createScriptProcessor = () => ({
@@ -216,7 +229,7 @@ async function fakeCallAudio() {
       const source = Object.assign(new EventTarget(), {
         buffer: null,
         connect: () => {},
-        start: () => {},
+        start: (at: number) => starts.push(at),
         stop: () => {},
       });
       sources.push(source);
@@ -230,9 +243,11 @@ async function fakeCallAudio() {
   });
   const frames: Uint8Array[] = [];
   const played: string[] = [];
+  const underruns: number[] = [];
   const audio = new CallAudio({
     microphone: (pcm) => frames.push(pcm),
     played: (name) => played.push(name),
+    underrun: (gapMs) => underruns.push(gapMs),
   });
   await audio.start();
   return {
@@ -240,6 +255,12 @@ async function fakeCallAudio() {
     frames,
     played,
     sources,
+    starts,
+    underruns,
+    /** Moves the audio clock to `seconds`. */
+    at: (seconds: number) => {
+      clock.now = seconds;
+    },
     /** 960 samples of a loud voice: two 20 ms frames. */
     speak: () =>
       process!({
@@ -278,6 +299,36 @@ it("answers every mark after a piece of audio once it has played", async () => {
   expect(played).toEqual(["a", "b"]);
   sources[1]!.dispatchEvent(new Event("ended"));
   expect(played).toEqual(["a", "b", "c"]);
+
+  audio.stop();
+});
+
+it("starts each run of speech a little ahead, so frames that come late still play without a gap", async () => {
+  const { audio, starts, underruns, at } = await fakeCallAudio();
+  // 20 ms frames: the first starts 150 ms ahead, the next right after it.
+  audio.play(new Uint8Array(960));
+  at(0.1);
+  audio.play(new Uint8Array(960));
+  expect(starts[0]).toBeCloseTo(0.15);
+  expect(starts[1]).toBeCloseTo(0.17);
+  // A frame 100 ms late still follows the queue: nothing was heard missing.
+  at(0.18);
+  audio.play(new Uint8Array(960));
+  expect(starts[2]).toBeCloseTo(0.19);
+  expect(underruns).toEqual([]);
+
+  // One later than the cushion leaves a gap: reported, and the run starts ahead again.
+  at(0.5);
+  audio.play(new Uint8Array(960));
+  expect(underruns).toEqual([290]);
+  expect(starts[3]).toBeCloseTo(0.65);
+
+  // After a clear (the caller spoke over it) the next speech is a new run, not a stutter.
+  audio.clear();
+  at(1);
+  audio.play(new Uint8Array(960));
+  expect(starts[4]).toBeCloseTo(1.15);
+  expect(underruns).toEqual([290]);
 
   audio.stop();
 });

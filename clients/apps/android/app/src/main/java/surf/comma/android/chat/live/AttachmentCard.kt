@@ -5,6 +5,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import kotlinx.coroutines.*
 import surf.comma.android.R
@@ -13,9 +14,11 @@ import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
 import surf.comma.android.chat.render.*
 import surf.comma.android.media.*
+import surf.comma.android.media.file.AttachmentFileActions
 import surf.comma.android.media.file.FileCardView
 import surf.comma.android.media.video.VideoCardView
 import surf.comma.android.media.video.VideoPlayerActivity
+import surf.comma.android.media.viewer.ChatMediaLink
 import surf.comma.android.media.viewer.ImageViewerActivity
 import surf.comma.android.ui.theme.DesignTypography
 
@@ -45,6 +48,11 @@ internal class AttachmentCardRenderer(override val viewType: Int) : ChatCardRend
 /** A fixed-size row; only its pixels and controls change when media arrives. */
 internal class AttachmentView(context: Context) : FrameLayout(context), TimelineMediaCell, FlightTarget {
     var onSendFailed: ((Long) -> Unit)? = null
+    /** Opens the chat's media viewer at this row's image or video; false when no page handled it. */
+    var onOpenMedia: ((PreparedChatMessage) -> Boolean)? = null
+    /** The picture's read failed; a tap then retries or opens the file instead of the viewer. */
+    private var failed = false
+    private var registered: Long? = null
     private var item: PreparedChatMessage? = null
     private var scope: CoroutineScope? = null
     private var binding: MediaImageBinding? = null
@@ -104,42 +112,43 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         surface.removeAllViews()
         if (!currentSession()) return
         val widthPx = boxWidth(current)
+        failed = false
+        if (attachment.display != AttachmentDisplay.FILE) {
+            ChatMediaLink.register(current.message.id, surface)
+            registered = current.message.id
+            surface.setOnLongClickListener { showMenu(); true }
+        }
         when (attachment.display) {
             AttachmentDisplay.IMAGE -> {
                 val image = SendImageView(context)
                 flightImage = image.presentation
-                var retry: TextView? = null
-                fun showRetry() {
-                    if (retry == null) {
-                        retry = TextView(context).apply {
-                            DesignTypography.applyTo(this, DesignTypography.Level.SMALL)
-                            setTextColor(context.getColor(R.color.token_text_tertiary))
-                            setText(R.string.media_viewer_load_failed)
-                            gravity = Gravity.CENTER
-                            setOnClickListener { visibility = View.GONE; binding?.retry() }
-                        }.also { surface.addView(it, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)) }
-                    }
-                    retry?.visibility = View.VISIBLE
-                }
                 surface.addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                 image.contentDescription = attachment.file.displayName
+                image.stateDescription = null
+                image.setOnLongClickListener { showMenu(); true }
                 image.setOnClickListener {
-                    val currentImage = item?.message?.attachment
-                    if (currentSession() && currentImage != null && currentImage.gallery.isNotEmpty())
-                        ImageViewerActivity.start(context, currentImage.gallery, currentImage.galleryIndex)
+                    when {
+                        failed -> if (attachment.file.source is MediaSource.MessageAttachment) openFile() else retry()
+                        // A tap on a loading tile leaves its read running.
+                        image.presentation.target == null -> Unit
+                        else -> open()
+                    }
                 }
                 owner.launch {
                     val images = media.images()
                     if (!currentSession()) return@launch
                     try {
                         binding = images.bind(image, attachment.image()!!, widthPx, visible,
-                            AttachmentCardRenderer.ratio(current.message).toDouble()) { showRetry() }
+                            AttachmentCardRenderer.ratio(current.message).toDouble(), onLoaded = ::clearFailure) { showFailure() }
                     } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { showRetry() }
+                    catch (_: Exception) { showFailure() }
                 }
             }
             AttachmentDisplay.VIDEO -> {
                 val card = VideoCardView(context).also { video = it }
+                // A video opens in the viewer from its Play button, even before its cover is read.
+                card.onOpen = { open() }
+                card.setOnLongClickListener { showMenu(); true }
                 surface.addView(card)
                 owner.launch {
                     val covers = media.covers()
@@ -179,7 +188,103 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         video?.setVisible(visible)
     }
 
+    /** The read failed: the tile keeps its size and shows the file's name with a file glyph instead. */
+    private fun showFailure() {
+        failed = true
+        val name = item?.message?.attachment?.file?.displayName.orEmpty()
+        val panel = surface.findViewWithTag<View>(FAILURE_TAG) ?: LinearLayout(context).apply {
+            tag = FAILURE_TAG
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val padding = (8 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, padding)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(context.getColor(R.color.token_bg_secondary))
+                setStroke((resources.displayMetrics.density).toInt().coerceAtLeast(1), context.getColor(R.color.token_border_primary))
+                cornerRadius = resources.getDimension(R.dimen.radius_4xl)
+            }
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_media_file_image)
+                imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(R.color.token_text_secondary))
+            }, LinearLayout.LayoutParams((20 * resources.displayMetrics.density).toInt(), (20 * resources.displayMetrics.density).toInt()))
+            addView(TextView(context).apply {
+                DesignTypography.applyTo(this, DesignTypography.Level.MINI)
+                setTextColor(context.getColor(R.color.token_text_secondary))
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER
+                text = name
+            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (6 * resources.displayMetrics.density).toInt() })
+            // The panel passes taps and presses to the tile under it.
+            isClickable = false
+            surface.addView(this, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        }
+        panel.visibility = View.VISIBLE
+        (surface.getChildAt(0) as? SendImageView)?.stateDescription = context.getString(R.string.media_tile_unavailable)
+    }
+
+    private fun clearFailure() {
+        failed = false
+        surface.findViewWithTag<View>(FAILURE_TAG)?.visibility = View.GONE
+        (surface.getChildAt(0) as? SendImageView)?.stateDescription = null
+    }
+
+    private fun retry() {
+        clearFailure()
+        binding?.retry()
+        val attachment = item?.message?.attachment
+        if (attachment?.display == AttachmentDisplay.VIDEO) MediaGraph.get(context).files.download(attachment.file)?.start()
+    }
+
+    private fun open() {
+        val current = item ?: return
+        val attachment = current.message.attachment ?: return
+        val media = MediaGraph.get(context)
+        val session = media.http.session.value ?: return
+        if (attachment.session != null && (attachment.session != session.id || !media.http.isCurrent(session))) return
+        if (onOpenMedia?.invoke(current) == true) return
+        if (attachment.gallery.isNotEmpty()) ImageViewerActivity.start(context, attachment.gallery, attachment.galleryIndex)
+    }
+
+    /** Downloads the message's attachment and hands it to another app. */
+    private fun openFile() = withFile { file, attachment -> FileCardView.open(context, file, attachment) }
+
+    /** Downloads the message's attachment, then runs [act] with it while this row still shows it. */
+    private fun withFile(act: (java.io.File, MediaAttachment) -> Unit) {
+        val attachment = item?.message?.attachment?.file ?: return
+        val owner = scope ?: return
+        val download = MediaGraph.get(context).files.download(attachment) ?: return
+        owner.launch {
+            val file = download.awaitFile() ?: return@launch
+            if (isAttachedToWindow) act(file, attachment)
+        }
+    }
+
+    /** The tile's menu: Retry while it has no picture, then Open file, Save as and Share for a downloadable file. */
+    private fun showMenu() {
+        val attachment = item?.message?.attachment ?: return
+        val menu = surf.comma.android.ui.ActionMenu(context)
+        val pictureMissing = if (attachment.display == AttachmentDisplay.VIDEO)
+            MediaGraph.get(context).files.download(attachment.file)?.state?.value is surf.comma.android.media.MediaDownloadState.Failed
+        else (surface.getChildAt(0) as? SendImageView)?.presentation?.target == null
+        if (pictureMissing) menu.item(context.getString(R.string.media_tile_retry)) { retry() }
+        if (attachment.file.source is MediaSource.MessageAttachment) menu.item(context.getString(R.string.media_tile_open_file)) { openFile() }
+        if (attachment.file.source != null) {
+            menu.item(context.getString(R.string.media_file_save_as)) {
+                withFile { file, media -> AttachmentFileActions.saveAs(context, file, media) }
+            }
+            menu.item(context.getString(R.string.media_file_share)) {
+                withFile { file, media -> AttachmentFileActions.share(context, file, media) }
+            }
+        }
+        menu.show(surface, haptic = true)
+    }
+
     override fun releaseMedia() {
+        registered?.let { ChatMediaLink.unregister(it, surface) }
+        registered = null
+        surface.setOnLongClickListener(null)
+        surface.findViewWithTag<View>(FAILURE_TAG)?.let(surface::removeView)
         binding?.close(); binding = null
         flightImage?.clear(); flightImage = null
         video?.unbind(); video = null
@@ -195,6 +300,10 @@ internal class AttachmentView(context: Context) : FrameLayout(context), Timeline
         return if (current.message.attachment?.display == AttachmentDisplay.FILE)
             (resources.displayMetrics.widthPixels - current.sideMarginPx * 2).coerceAtLeast(1)
         else (body * AttachmentCardRenderer.ratio(current.message)).toInt().coerceAtLeast(1)
+    }
+
+    private companion object {
+        const val FAILURE_TAG = "attachment-failure"
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

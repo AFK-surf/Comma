@@ -39,6 +39,9 @@ interface Shell {
     /** Adds [text] to the router composer after a blank line, opens the router and focuses the composer. */
     fun insertIntoRouter(text: String)
 
+    /** Opens task search over the tabs. */
+    fun openSearch()
+
     /** Turns message notifications on, when they are off and can be turned on here; null otherwise. */
     fun notificationsOff(): (() -> Unit)?
 }

@@ -43,7 +43,7 @@ test("BFT CLI has no historical runner release selector", async () => {
       "--release",
       "historical-release",
       "--component",
-      "salix-connect",
+      "agent-vmm-host",
       "--confirm-mutating",
       "--config",
       config,

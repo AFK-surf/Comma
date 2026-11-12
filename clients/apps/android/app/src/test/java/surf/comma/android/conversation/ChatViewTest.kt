@@ -1,5 +1,6 @@
 package surf.comma.android.conversation
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -86,7 +87,8 @@ class ChatViewTest {
         shown()
         val row = view.attach("photo.jpg", byteArrayOf(1, 2, 3))!!
         val attached = await { it.attachments.isNotEmpty() }.attachments.single()
-        assertEquals(DraftAttachment(row, "photo.jpg", 3, DraftAttachmentStatus.UPLOADED, "/uploads/abcdefghijklmnopqrstuv-photo.jpg"), attached)
+        assertEquals(DraftAttachment(row, "photo.jpg", 3, DraftAttachmentStatus.UPLOADED, "/uploads/abcdefghijklmnopqrstuv-photo.jpg",
+            isImage = true), attached)
         val file = core.calls.single { it.first == "chatView.attach" }.second.getJSONArray("files").getJSONObject(0)
         assertEquals("AQID", file.getJSONObject("bytes").getString("\$bytes"))
 
@@ -164,6 +166,54 @@ class ChatViewTest {
         assertFalse(view.isCurrent(first))
         sessions.scopes.value = null
         assertNull(await { it.scope == null }.groupId)
+    }
+
+    @Test fun `a hidden chat's conversation stays while a picker or a reply holds it, each let go on its own`() = onScreen { view ->
+        view.setHold(ChatView.Hold.PICKER, true)
+        view.setForeground(false)
+        assertEquals("a picker over the app keeps the conversation", 1, core.reading.value)
+        view.setHold(ChatView.Hold.REPLY, true)
+        view.setHold(ChatView.Hold.PICKER, false)
+        assertEquals("the reply still holds it", 1, core.reading.value)
+        view.setHold(ChatView.Hold.PICKER, true)
+        view.setHold(ChatView.Hold.REPLY, false)
+        assertEquals("the picker still holds it", 1, core.reading.value)
+        assertEquals("held all along, it was never read again", 1, core.subscribed.count { it.getString("topic") == "chatView" })
+        view.setHold(ChatView.Hold.PICKER, false)
+        assertEquals("with nothing holding it, it goes as leaving does", 0, core.reading.value)
+    }
+
+    @Test fun `a picker's hold ends when its account signs out or the chat shows another conversation`() = onScreen { view ->
+        view.setHold(ChatView.Hold.PICKER, true)
+        view.setForeground(false)
+        sessions.scopes.value = null
+        view.state.first { it.scope == null }
+        sessions.scopes.value = scope(2, account = "usr_test_b")
+        view.state.first { it.scope?.generation == 2L }
+        assertEquals("the next account's conversation is not read in the background", 0, core.reading.value)
+
+        view.setHold(ChatView.Hold.PICKER, true)
+        assertEquals(1, core.reading.value)
+        sessions.scopes.value = scope(3, account = "usr_test_b", chat = "cnv_test_other")
+        view.state.first { it.scope?.generation == 3L }
+        assertEquals(0, core.reading.value)
+        assertTrue(core.subscribed.none { it.optString("conversation") == "cnv_test_other" })
+    }
+
+    /** The chat on screen, by a view whose work runs where it is asked: what the core reads is settled at each return. */
+    private fun onScreen(block: suspend (ChatView) -> Unit) = runBlocking {
+        val held = ChatView(sessions, core, io = Dispatchers.Unconfined)
+        try {
+            core.show(messages(1L..2L))
+            sessions.scopes.value = scope(1)
+            held.start()
+            held.setForeground(true)
+            held.state.first { it.cacheLoaded }
+            assertEquals(1, core.reading.value)
+            block(held)
+        } finally {
+            held.close()
+        }
     }
 
     @Test fun `a view of a task shows the conversation it is given`() = runBlocking {
@@ -259,7 +309,8 @@ class ChatViewTest {
         shown()
         val row = view.attach("photo.jpg", byteArrayOf(1, 2, 3), questionMessageId = "msg_q")!!
         val attached = await { it.questionAttachments.isNotEmpty() }
-        assertEquals(DraftAttachment(row, "photo.jpg", 3, DraftAttachmentStatus.UPLOADED, "/uploads/abcdefghijklmnopqrstuv-photo.jpg"),
+        assertEquals(DraftAttachment(row, "photo.jpg", 3, DraftAttachmentStatus.UPLOADED, "/uploads/abcdefghijklmnopqrstuv-photo.jpg",
+            isImage = true),
             attached.questionAttachments.getValue("msg_q").single())
         assertTrue(attached.attachments.isEmpty())
         val params = core.calls.single { it.first == "chatView.attach" }.second

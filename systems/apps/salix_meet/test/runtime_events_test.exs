@@ -176,7 +176,8 @@ defmodule SalixMeet.RuntimeEventsTest do
         "type" => "meeting_runtime_update",
         "meeting_id" => id,
         "status" => "done",
-        "reason_code" => "removed_from_meeting"
+        "reason_code" => "removed_from_meeting",
+        "participants" => ["Alice", " ", "Carol", "Alice", 7]
       },
       "done"
     )
@@ -185,6 +186,8 @@ defmodule SalixMeet.RuntimeEventsTest do
     assert doc["state"]["status"] == "done"
     assert doc["state"]["reason_code"] == "removed_from_meeting"
     assert [%{"text" => "recorded before removal"}] = doc["state"]["captions"]
+    # The roster names everyone who joined, also those no caption names.
+    assert doc["state"]["participants"] == ["Alice", "Carol"]
   end
 
   defp apply_event!(event, source) do
@@ -223,6 +226,7 @@ defmodule SalixMeet.RuntimeEventsTest do
     assert doc["state"]["joined_at"] == 1_000
     assert doc["state"]["left_at"] == 1_601
   end
+
   describe "terminal one-way valve" do
     test "a late done event cannot rewrite a terminal status or summary" do
       meeting_id = "valve-late-done-#{SystemsRuntime.Proc.unique_integer([:positive])}"

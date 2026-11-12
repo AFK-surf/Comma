@@ -11,6 +11,9 @@ defmodule CommaWeb.Auth do
     {conn, credential} = presented(conn)
 
     cond do
+      CommaWeb.AuthCaptcha.public_page?(conn) ->
+        conn
+
       conn.request_path in ["/live", "/ready", "/health"] ->
         conn
 
@@ -85,6 +88,8 @@ defmodule CommaWeb.Auth do
   defp integration_public_path?("/v1/comma/integrations/linear/webhook"), do: true
   # Photon reaches its webhook without a Comma session; it carries Photon's HMAC.
   defp integration_public_path?("/v1/comma/integrations/imessage/photon/webhook"), do: true
+  # LINE reaches its webhook without a Comma session; it carries LINE's HMAC.
+  defp integration_public_path?("/v1/comma/integrations/line/webhook"), do: true
   defp integration_public_path?(_path), do: false
 
   defp presented(conn) do

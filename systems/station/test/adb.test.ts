@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
-import { GRACE, PORTS, SETTLE, Shares, answerAdb, bind, isPackage, text } from "../src/mesh/adb.ts";
+import { GRACE, PORTS, SETTLE, Shares, answerAdb, bind, isPackage, run, text } from "../src/mesh/adb.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import type { Connection, Stream } from "../src/mesh/native.ts";
 import { Reader, writeLine } from "../src/mesh/serve.ts";
@@ -93,8 +93,8 @@ function testClock() {
 class Memory {
   raw = "";
   finished = false;
-  private stop!: () => void;
-  private stopping = new Promise<void>((r) => (this.stop = r));
+  private hearStop!: () => void;
+  private stopping = new Promise<void>((r) => (this.hearStop = r));
   async read() {
     return null;
   }
@@ -108,7 +108,7 @@ class Memory {
     return this.stopping;
   }
   async reset() {
-    this.stop();
+    this.hearStop();
   }
   lines(): any[] {
     return this.raw.split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -269,8 +269,8 @@ class End implements Stream {
   private queue: (Buffer | null)[] = [];
   private waiting: ((b: Buffer | null) => void) | null = null;
   private broken = false;
-  private stop!: () => void;
-  private stopping = new Promise<void>((r) => (this.stop = r));
+  private hearStop!: () => void;
+  private stopping = new Promise<void>((r) => (this.hearStop = r));
   take(b: Buffer | null) {
     const w = this.waiting;
     this.waiting = null;
@@ -298,7 +298,7 @@ class End implements Stream {
       end.broken = true;
       end.take(null);
     }
-    this.peer.stop();
+    this.peer.hearStop();
   }
 }
 
@@ -317,7 +317,7 @@ function connected(stationId: string, phoneId: string): [Connection, Connection]
         else incoming.push(s);
       },
       remoteId: () => id,
-      alpn: () => Buffer.from("stillfail/admin/1"),
+      alpn: () => Buffer.from("comma-station/admin/1"),
       via: () => null,
       acceptBi: async () => (incoming.length > 0 ? incoming.shift()! : closed ? null : new Promise<Stream | null>((r) => (waiting = r))),
       openBi: async () => {
@@ -511,4 +511,17 @@ test("over the mesh: a phone adb is not paired with, or whose adbd turned the tu
     await mesh.close();
     await time.close();
   }
+});
+
+test("adb connects to no phone on the network by itself, whatever the station was started with", async (t) => {
+  const before = process.env.ADB_MDNS_AUTO_CONNECT;
+  process.env.ADB_MDNS_AUTO_CONNECT = "1";
+  t.after(() => {
+    if (before === undefined) delete process.env.ADB_MDNS_AUTO_CONNECT;
+    else process.env.ADB_MDNS_AUTO_CONNECT = before;
+  });
+  const dir = mkdtempSync(join(tmpdir(), "adb-env-"));
+  const adb = join(dir, "adb");
+  script(adb, `printf '%s' "$ADB_MDNS_AUTO_CONNECT"`);
+  assert.equal(await run(exe(adb), ["start-server"], null), "0");
 });

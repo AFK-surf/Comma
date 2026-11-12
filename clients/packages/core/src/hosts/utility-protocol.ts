@@ -46,12 +46,20 @@ export interface BearerCredential {
   expiresAtEpochSeconds: number;
 }
 
+/** How many accounts a device keeps signed in besides the one in use. */
+export const MAX_KEPT_CREDENTIALS = 7;
+
 /** What the host's credential store holds, as the core may know it. */
 export type BearerVault =
   | {
       status: "readable";
-      /** The credential product requests carry once the session is confirmed. */
+      /** The saved credential product requests carry. The server checks each request. */
       active: BearerCredential | null;
+      /**
+       * The other accounts signed in on this device, set aside while another is in use (at most
+       * `MAX_KEPT_CREDENTIALS`, one per account): their credentials stay valid. Absent: none.
+       */
+      kept?: BearerCredential[];
       /** Credentials to revoke at the server (signed out, replaced, or issued to a sign-in that lost). */
       pending: { ref: CredentialRef; audience: string; sessionId?: string }[];
       cleanup: SessionCleanup;
@@ -64,10 +72,19 @@ export type BearerVault =
  */
 export type BearerVaultChange =
   /**
-   * The issued credential becomes the active one; one active before it, and the credentials issued to the sign-ins
-   * it replaced (`supersede`), are queued for revocation in the same write.
+   * The issued credential becomes the active one; one active before it, the credentials issued to the sign-ins it
+   * replaced (`supersede`), and a kept credential of the same account, are queued for revocation in the same write.
    */
   | { kind: "commit"; issued: CredentialRef; supersede: CredentialRef[] }
+  /**
+   * Another account is being added: the active credential is set aside (kept, still signed in) and none is active.
+   * Changes nothing (null) when there is no active credential or `MAX_KEPT_CREDENTIALS` are kept already.
+   */
+  | { kind: "keep" }
+  /** Switching account: the kept credential becomes the active one, and the one active before it is kept. */
+  | { kind: "activate"; kept: CredentialRef }
+  /** A kept account signs out of this device: its credential is queued for revocation. */
+  | { kind: "forget"; kept: CredentialRef }
   /** The active credential, confirmed by the server: kept, with the identity the server answered. */
   | {
       kind: "adopt";
@@ -404,6 +421,8 @@ export type MainToCore =
       stationPeers?: Record<string, string[]> | undefined;
       /** The station's mesh addon (`mesh.node`) in the station the app carries: the core's endpoint to stations. */
       meshAddon?: string | undefined;
+      /** Settings › Debug: how this device reaches its person's own computers' stations (off when absent). */
+      computerMesh?: "on" | "salix" | undefined;
     }
   /** Moves the core's test clock `ms` forward (`testClock`); answered `clock-done` once what fell due settled. */
   | { type: "clock"; id: number; ms: number }
@@ -411,6 +430,8 @@ export type MainToCore =
   | { type: "drive-done"; id: number; value?: unknown; error?: string }
   /** The Drive node's files changed. */
   | { type: "drive-changed" }
+  /** How far Main's download of the app's update got (`updateDownload`), in percent. */
+  | { type: "update-progress"; percent: number }
   /** A session port's answer (`session` from the core). */
   | { type: "session-done"; id: number; value?: unknown; error?: string }
   /** Main refused a window's request for `lease` (a 401 on its `/v1` proxy): its gate is shut. */

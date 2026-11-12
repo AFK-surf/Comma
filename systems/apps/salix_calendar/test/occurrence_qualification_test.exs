@@ -32,6 +32,89 @@ defmodule SalixCalendar.OccurrenceQualificationTest do
     end
   end
 
+  test "every recognized meeting link qualifies on any item; look-alike links do not" do
+    qualified = [
+      {"https://meet.google.com/abc-defg-hij", :google_meet},
+      {"https://vc.feishu.cn/j/123456789", :lark_meeting},
+      {"https://vc-sg.larksuite.com/j/123456789", :lark_meeting},
+      {"https://VC.LarkOffice.com/j/123456789", :lark_meeting},
+      {"https://us02web.zoom.us/j/81234567890?pwd=abc", :zoom_meeting},
+      {"https://zoom.us/my/team", :zoom_meeting},
+      {"https://acme.zoom.com/s/81234567890", :zoom_meeting},
+      {"https://zoom.us/wc/join/81234567890", :zoom_meeting},
+      {"https://teams.microsoft.com/meet/2345678901234?p=abc", :teams_meeting},
+      {"https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0", :teams_meeting},
+      {"https://teams.live.com/meet/9312345678901", :teams_meeting}
+    ]
+
+    for {url, reason} <- qualified do
+      item = item(locations(url))
+      result = OccurrenceQualification.evaluate(item, occurrence(nil))
+
+      assert %{authorized: true, reason: ^reason} = result, url
+      assert result.meet_url == String.replace(url, "VC.LarkOffice.com", "vc.larkoffice.com")
+      assert OccurrenceQualification.may_qualify?(item), url
+    end
+
+    unsupported = [
+      "https://zoom.us.evil.test/j/1",
+      "https://evilzoom.us/j/1",
+      "https://zoom.us@evil.test/j/1",
+      "https://guest@zoom.us/j/1",
+      "http://zoom.us/j/1",
+      "https://zoom.us:8443/j/1",
+      "https://teams.microsoft.com.evil.test/l/meetup-join/1",
+      "https://vc.feishu.cn.example.test/j/1",
+      "https://vcx.feishu.cn/j/1",
+      # A recognized host without a meeting path is no meeting.
+      "https://zoom.us/download",
+      "https://zoom.com/pricing",
+      "https://us02web.zoom.us/j/",
+      "https://teams.microsoft.com/l/channel/19%3aabc%40thread.tacv2/General",
+      "https://teams.live.com/",
+      "https://vc.feishu.cn/",
+      "https://vc.larksuite.com/j/abc",
+      "https://video.example.test/room"
+    ]
+
+    for url <- unsupported do
+      assert %{authorized: false, meet_url: nil, reason: :unsupported_conference} =
+               OccurrenceQualification.evaluate(item(locations(url)), occurrence(nil)),
+             url
+
+      refute OccurrenceQualification.may_qualify?(item(locations(url))), url
+    end
+  end
+
+  test "a meeting link in free text is found in HTML, but a Google Meet link there is not" do
+    meet = "https://meet.google.com/abc-defg-hij"
+
+    html =
+      ~s(<p>Agenda: https://docs.example.test/brief. Dial in: #{meet}</p>) <>
+        ~s(<a href="https://www.google.com/url?q=https://us02web.zoom.us/j/812?pwd=a&amp;b=c&amp;sa=D">) <>
+        ~s(Zoom</a> or https://teams.live.com/meet/931&nbsp;)
+
+    assert OccurrenceQualification.text_meeting_url(html) ==
+             "https://us02web.zoom.us/j/812?pwd=a&b=c&sa=D"
+
+    assert OccurrenceQualification.text_meeting_url("Join #{meet} or call in.") == nil
+
+    assert OccurrenceQualification.text_meeting_url("会议链接：https://vc-sg.larksuite.com/j/123。谢谢") ==
+             "https://vc-sg.larksuite.com/j/123"
+
+    assert OccurrenceQualification.text_meeting_url("Room 4 (https://zoom.us/j/99).") ==
+             "https://zoom.us/j/99"
+
+    assert OccurrenceQualification.text_meeting_url(
+             "Install https://zoom.us/download first, then https://zoom.us/j/55"
+           ) == "https://zoom.us/j/55"
+
+    # Only the first 64 KiB of a description are read.
+    assert OccurrenceQualification.text_meeting_url(
+             String.duplicate("x", 64 * 1_024) <> " https://zoom.us/j/1"
+           ) == nil
+  end
+
   test "independent item denials override every master and exception conference combination" do
     conference_cases = [
       {locations(@master_meet), nil},

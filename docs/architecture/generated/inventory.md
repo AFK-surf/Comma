@@ -36,21 +36,25 @@
 | 模块 | 类型 | 产品/Peer 依赖 | 开发依赖 |
 | --- | --- | --- | --- |
 | [@comma/admin](../../../clients/apps/admin/package.json) | 应用 | @comma/config<br>@comma/i18n<br>@comma/ui | — |
-| [@comma/app](../../../clients/packages/app/package.json) | 包 | @comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/layout-inspector<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/recommendation-contract<br>@comma/session-contract<br>@comma/session-history-runtime<br>@comma/ui | — |
+| [@comma/analytics](../../../clients/packages/analytics/package.json) | 包 | — | — |
+| [@comma/app](../../../clients/packages/app/package.json) | 包 | @comma/chat-contract<br>@comma/config<br>@comma/core<br>@comma/core-client<br>@comma/i18n<br>@comma/layout-inspector<br>@comma/native-bridge<br>@comma/recommendation-contract<br>@comma/session-contract<br>@comma/ui<br>@comma/analytics | — |
 | [@comma/bft](../../../clients/apps/bft/package.json) | 应用 | @comma/ui | — |
-| [@comma/chat-contract](../../../clients/packages/chat-contract/package.json) | 包 | — | — |
+| [@comma/chat-contract](../../../clients/packages/chat-contract/package.json) | 包 | @comma/miniapp-sdk | — |
 | [@comma/config](../../../clients/packages/config/package.json) | 包 | — | — |
-| [@comma/electron](../../../clients/apps/electron/package.json) | 应用 | @comma/app<br>@comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/session-contract<br>@comma/session-history-runtime | — |
+| [@comma/core](../../../clients/packages/core/package.json) | 包 | @comma/chat-contract<br>@comma/core-kernel<br>@comma/i18n<br>@comma/mesh<br>@comma/recommendation-contract<br>@comma/session-contract | @comma/miniapp-sdk |
+| [@comma/core-client](../../../clients/packages/core-client/package.json) | 包 | @comma/core<br>@comma/core-kernel | — |
+| [@comma/core-kernel](../../../clients/packages/core-kernel/package.json) | 包 | — | — |
+| [@comma/electron](../../../clients/apps/electron/package.json) | 应用 | @comma/app<br>@comma/chat-contract<br>@comma/config<br>@comma/core<br>@comma/core-client<br>@comma/core-kernel<br>@comma/i18n<br>@comma/mesh<br>@comma/native-bridge<br>@comma/session-contract | — |
 | [@comma/i18n](../../../clients/packages/i18n/package.json) | 包 | — | — |
 | [@comma/layout-inspector](../../../clients/packages/layout-inspector/package.json) | 包 | — | @comma/test-utils |
+| [@comma/mesh](../../../clients/packages/mesh/package.json) | 包 | — | — |
+| [@comma/miniapp-sdk](../../../clients/packages/miniapp-sdk/package.json) | 包 | — | — |
 | [@comma/native-bridge](../../../clients/packages/native-bridge/package.json) | 包 | @comma/chat-contract<br>@comma/session-contract | — |
-| [@comma/product-inbox-runtime](../../../clients/packages/product-inbox-runtime/package.json) | 包 | @comma/native-bridge<br>@comma/session-contract | — |
 | [@comma/recommendation-contract](../../../clients/packages/recommendation-contract/package.json) | 包 | — | — |
 | [@comma/session-contract](../../../clients/packages/session-contract/package.json) | 包 | — | — |
-| [@comma/session-history-runtime](../../../clients/packages/session-history-runtime/package.json) | 包 | @comma/native-bridge<br>@comma/session-contract | — |
-| [@comma/test-utils](../../../clients/packages/test-utils/package.json) | 包 | @comma/native-bridge | — |
-| [@comma/ui](../../../clients/packages/ui/package.json) | 包 | @comma/i18n | @comma/layout-inspector |
-| [@comma/web](../../../clients/apps/web/package.json) | 应用 | @comma/app<br>@comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/session-contract<br>@comma/session-history-runtime | — |
+| [@comma/test-utils](../../../clients/packages/test-utils/package.json) | 包 | @comma/chat-contract<br>@comma/core<br>@comma/core-client<br>@comma/core-kernel<br>@comma/i18n<br>@comma/native-bridge | — |
+| [@comma/ui](../../../clients/packages/ui/package.json) | 包 | @comma/core<br>@comma/i18n | @comma/layout-inspector |
+| [@comma/web](../../../clients/apps/web/package.json) | 应用 | @comma/app<br>@comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/native-bridge<br>@comma/session-contract<br>@comma/core<br>@comma/core-client | — |
 
 ## Release 子系统成员
 
@@ -59,7 +63,7 @@
 | 子系统 | 按启动顺序排列的 OTP 应用 |
 | --- | --- |
 | `alert_router` | `alert_router` |
-| `salix` | `salix_store`, `salix_calendar`, `salix_analytics`, `billing_core`, `billing_commerce`, `billing_stripe`, `salix_agent`, `salix_cluster`, `salix_llm`, `salix_env`, `salix_im`, `salix_voice`, `salix_signal_proto`, `salix_signal`, `salix_mcp`, `salix_web`, `salix_migrate`, `salix_media`, `salix_meet` |
+| `salix` | `salix_store`, `salix_calendar`, `salix_analytics`, `billing_core`, `billing_commerce`, `billing_stripe`, `salix_agent`, `salix_cluster`, `salix_llm`, `salix_env`, `salix_im`, `salix_voice`, `salix_signal_proto`, `salix_signal`, `salix_mcp`, `salix_meet_native`, `salix_web`, `salix_media`, `salix_meet` |
 | `comma_product` | `billing_core`, `billing_commerce`, `billing_stripe`, `comma_core`, `comma_web`, `comma_tui`, `comma_ssh` |
 | `bridge_for_teams` | `billing_core`, `billing_commerce`, `bridge_for_teams_core`, `bridge_for_teams_web` |
 
@@ -67,36 +71,39 @@
 
 | OTP 应用 | 运行时子系统成员 | 生产 in_umbrella 依赖 |
 | --- | --- | --- |
-| [`alert_router`](../../../systems/apps/alert_router/mix.exs) | `alert_router` | `systems_observability`, `salix_store` |
-| [`billing_commerce`](../../../systems/apps/billing_commerce/mix.exs) | `salix`, `comma_product`, `bridge_for_teams` | `billing_core`, `salix_analytics` |
-| [`billing_core`](../../../systems/apps/billing_core/mix.exs) | `salix`, `comma_product`, `bridge_for_teams` | `systems_observability`, `salix_analytics` |
-| [`billing_stripe`](../../../systems/apps/billing_stripe/mix.exs) | `salix`, `comma_product` | `billing_commerce`, `billing_core` |
-| [`bridge_for_teams_core`](../../../systems/apps/bridge_for_teams_core/mix.exs) | `bridge_for_teams` | `systems_observability`, `billing_core`, `billing_commerce`, `salix_store`, `salix_calendar`, `comma_log` |
-| [`bridge_for_teams_web`](../../../systems/apps/bridge_for_teams_web/mix.exs) | `bridge_for_teams` | `systems_observability`, `bridge_for_teams_core` |
+| [`alert_router`](../../../systems/apps/alert_router/mix.exs) | `alert_router` | `systems_clock`, `systems_runtime`, `systems_observability`, `salix_store` |
+| [`billing_commerce`](../../../systems/apps/billing_commerce/mix.exs) | `salix`, `comma_product`, `bridge_for_teams` | `systems_clock`, `billing_core`, `salix_analytics` |
+| [`billing_core`](../../../systems/apps/billing_core/mix.exs) | `salix`, `comma_product`, `bridge_for_teams` | `systems_clock`, `systems_runtime`, `systems_observability`, `salix_analytics` |
+| [`billing_stripe`](../../../systems/apps/billing_stripe/mix.exs) | `salix`, `comma_product` | `systems_clock`, `billing_commerce`, `billing_core` |
+| [`bridge_for_teams_core`](../../../systems/apps/bridge_for_teams_core/mix.exs) | `bridge_for_teams` | `systems_observability`, `systems_clock`, `systems_runtime`, `billing_core`, `billing_commerce`, `salix_store`, `salix_calendar`, `comma_log` |
+| [`bridge_for_teams_web`](../../../systems/apps/bridge_for_teams_web/mix.exs) | `bridge_for_teams` | `systems_clock`, `systems_observability`, `bridge_for_teams_core` |
 | [`comma`](../../../systems/apps/comma/mix.exs) | 传递/支持应用 | `systems_observability` |
-| [`comma_core`](../../../systems/apps/comma_core/mix.exs) | `comma_product` | `systems_observability`, `billing_core`, `salix_store`, `salix_agent` |
-| [`comma_log`](../../../systems/apps/comma_log/mix.exs) | 传递/支持应用 | `systems_observability` |
-| [`comma_ssh`](../../../systems/apps/comma_ssh/mix.exs) | `comma_product` | `comma_core` |
+| [`comma_core`](../../../systems/apps/comma_core/mix.exs) | `comma_product` | `systems_clock`, `systems_runtime`, `systems_observability`, `billing_core`, `salix_store`, `salix_agent` |
+| [`comma_log`](../../../systems/apps/comma_log/mix.exs) | 传递/支持应用 | `systems_clock`, `systems_observability` |
+| [`comma_ssh`](../../../systems/apps/comma_ssh/mix.exs) | `comma_product` | `comma_core`, `comma_tui`, `systems_clock` |
 | [`comma_tui`](../../../systems/apps/comma_tui/mix.exs) | `comma_product` | — |
-| [`comma_web`](../../../systems/apps/comma_web/mix.exs) | `comma_product` | `systems_observability`, `billing_core`, `billing_commerce`, `billing_stripe`, `comma_core`, `salix_agent`, `salix_cluster`, `salix_im`, `salix_mcp`, `salix_web` |
-| [`salix_agent`](../../../systems/apps/salix_agent/mix.exs) | `salix` | `systems_observability`, `salix_ifc`, `salix_store`, `salix_media` |
-| [`salix_analytics`](../../../systems/apps/salix_analytics/mix.exs) | `salix` | `salix_store`, `salix_cluster` |
-| [`salix_calendar`](../../../systems/apps/salix_calendar/mix.exs) | `salix` | `salix_store` |
-| [`salix_cluster`](../../../systems/apps/salix_cluster/mix.exs) | `salix` | `salix_store`, `salix_agent`, `salix_calendar`, `salix_env`, `salix_im` |
-| [`salix_env`](../../../systems/apps/salix_env/mix.exs) | `salix` | `salix_store`, `systems_observability` |
+| [`comma_web`](../../../systems/apps/comma_web/mix.exs) | `comma_product` | `systems_clock`, `systems_observability`, `billing_core`, `billing_commerce`, `billing_stripe`, `comma_core`, `salix_agent`, `salix_cluster`, `salix_im`, `salix_mcp`, `salix_web`, `salix_meet_native` |
+| [`salix_agent`](../../../systems/apps/salix_agent/mix.exs) | `salix` | `systems_observability`, `salix_ifc`, `salix_store`, `salix_media`, `systems_clock` |
+| [`salix_analytics`](../../../systems/apps/salix_analytics/mix.exs) | `salix` | `systems_clock`, `salix_store`, `salix_cluster` |
+| [`salix_calendar`](../../../systems/apps/salix_calendar/mix.exs) | `salix` | `systems_clock`, `salix_store` |
+| [`salix_cluster`](../../../systems/apps/salix_cluster/mix.exs) | `salix` | `salix_store`, `systems_clock`, `salix_agent`, `salix_calendar`, `salix_env`, `salix_im` |
+| [`salix_env`](../../../systems/apps/salix_env/mix.exs) | `salix` | `salix_store`, `systems_observability`, `systems_clock` |
 | [`salix_ifc`](../../../systems/apps/salix_ifc/mix.exs) | 传递/支持应用 | — |
-| [`salix_im`](../../../systems/apps/salix_im/mix.exs) | `salix` | `salix_ifc`, `salix_store` |
-| [`salix_llm`](../../../systems/apps/salix_llm/mix.exs) | `salix` | `systems_observability`, `salix_agent`, `salix_media` |
-| [`salix_mcp`](../../../systems/apps/salix_mcp/mix.exs) | `salix` | `salix_agent`, `salix_store`, `salix_env` |
-| [`salix_media`](../../../systems/apps/salix_media/mix.exs) | `salix` | — |
-| [`salix_meet`](../../../systems/apps/salix_meet/mix.exs) | `salix` | `systems_observability`, `salix_store`, `salix_agent`, `salix_calendar`, `salix_cluster`, `salix_im` |
-| [`salix_migrate`](../../../systems/apps/salix_migrate/mix.exs) | `salix` | `salix_store`, `salix_agent` |
-| [`salix_signal`](../../../systems/apps/salix_signal/mix.exs) | `salix` | `salix_signal_proto`, `salix_voice`, `salix_store`, `salix_cluster` |
-| [`salix_signal_proto`](../../../systems/apps/salix_signal_proto/mix.exs) | `salix` | — |
-| [`salix_store`](../../../systems/apps/salix_store/mix.exs) | `salix` | `comma_log`, `systems_observability` |
-| [`salix_voice`](../../../systems/apps/salix_voice/mix.exs) | `salix` | `salix_store`, `salix_agent`, `salix_im`, `salix_cluster` |
-| [`salix_web`](../../../systems/apps/salix_web/mix.exs) | `salix` | `salix_store`, `salix_agent`, `salix_im`, `salix_mcp`, `salix_meet`, `salix_calendar`, `salix_env`, `salix_cluster`, `salix_voice`, `salix_signal`, `bridge_for_teams_core`, `salix_llm`, `salix_analytics`, `systems_observability` |
-| [`systems_observability`](../../../systems/apps/systems_observability/mix.exs) | 传递/支持应用 | — |
+| [`salix_im`](../../../systems/apps/salix_im/mix.exs) | `salix` | `systems_clock`, `systems_runtime`, `salix_ifc`, `salix_store` |
+| [`salix_llm`](../../../systems/apps/salix_llm/mix.exs) | `salix` | `systems_clock`, `systems_observability`, `salix_agent`, `salix_media` |
+| [`salix_mcp`](../../../systems/apps/salix_mcp/mix.exs) | `salix` | `systems_clock`, `salix_agent`, `salix_store`, `salix_env` |
+| [`salix_media`](../../../systems/apps/salix_media/mix.exs) | `salix` | `systems_clock` |
+| [`salix_meet`](../../../systems/apps/salix_meet/mix.exs) | `salix` | `systems_clock`, `systems_observability`, `salix_store`, `salix_agent`, `salix_calendar`, `salix_cluster`, `salix_im` |
+| [`salix_meet_native`](../../../systems/apps/salix_meet_native/mix.exs) | `salix` | `systems_clock` |
+| [`salix_signal`](../../../systems/apps/salix_signal/mix.exs) | `salix` | `salix_signal_proto`, `salix_voice`, `salix_store`, `salix_cluster`, `systems_clock` |
+| [`salix_signal_proto`](../../../systems/apps/salix_signal_proto/mix.exs) | `salix` | `systems_clock` |
+| [`salix_store`](../../../systems/apps/salix_store/mix.exs) | `salix` | `comma_log`, `systems_observability`, `systems_clock`, `systems_runtime` |
+| [`salix_voice`](../../../systems/apps/salix_voice/mix.exs) | `salix` | `salix_store`, `systems_clock`, `salix_agent`, `salix_im`, `salix_cluster` |
+| [`salix_web`](../../../systems/apps/salix_web/mix.exs) | `salix` | `salix_store`, `salix_agent`, `salix_im`, `salix_mcp`, `salix_meet`, `salix_meet_native`, `salix_calendar`, `salix_env`, `salix_cluster`, `salix_voice`, `salix_signal`, `bridge_for_teams_core`, `salix_llm`, `salix_analytics`, `systems_observability`, `systems_clock` |
+| [`systems_clock`](../../../systems/apps/systems_clock/mix.exs) | 传递/支持应用 | `systems_runtime` |
+| [`systems_observability`](../../../systems/apps/systems_observability/mix.exs) | 传递/支持应用 | `systems_clock`, `systems_runtime` |
+| [`systems_runtime`](../../../systems/apps/systems_runtime/mix.exs) | 传递/支持应用 | — |
+| [`systems_sim`](../../../systems/apps/systems_sim/mix.exs) | 传递/支持应用 | `systems_clock` |
 
 ## Native Capability Namespace
 
@@ -107,37 +114,34 @@
 | `airDrop` | 3 | 1 | 1 | airDrop.act<br>airDrop.preview<br>airDrop.state<br>airDrop.state.changed |
 | `appearance` | 2 | 0 | 0 | appearance.fontFamilies<br>appearance.setResolvedTheme |
 | `applicationMenu` | 1 | 1 | 0 | applicationMenu.command<br>applicationMenu.update |
-| `appPreferences` | 5 | 1 | 1 | appPreferences.initializeClientSettings<br>appPreferences.openNotificationSettings<br>appPreferences.requestNotificationAuthorization<br>appPreferences.state<br>appPreferences.state.changed<br>appPreferences.update |
+| `appPreferences` | 6 | 1 | 1 | appPreferences.initializeClientSettings<br>appPreferences.openLoginItemsSettings<br>appPreferences.openNotificationSettings<br>appPreferences.requestNotificationAuthorization<br>appPreferences.state<br>appPreferences.state.changed<br>appPreferences.update |
 | `audioCapture` | 11 | 1 | 1 | audioCapture.cancel<br>audioCapture.microphones<br>audioCapture.openPermissionSettings<br>audioCapture.openSaved<br>audioCapture.pause<br>audioCapture.resume<br>audioCapture.selectMicrophone<br>audioCapture.sources<br>audioCapture.start<br>audioCapture.state<br>audioCapture.state.changed<br>audioCapture.stop |
-| `browserSidebar` | 7 | 2 | 0 | browserSidebar.capture<br>browserSidebar.changed<br>browserSidebar.close<br>browserSidebar.inspect<br>browserSidebar.navigate<br>browserSidebar.open<br>browserSidebar.openTabRequested<br>browserSidebar.showPermissions<br>browserSidebar.update |
-| `chat` | 23 | 2 | 2 | chat.acceptTaskReview<br>chat.acknowledgeIntakeFailures<br>chat.attach<br>chat.attachLocalFiles<br>chat.beginSendIntent<br>chat.cancelSendIntent<br>chat.clearPresentation<br>chat.discard<br>chat.drafts<br>chat.drafts.changed<br>chat.listSkills<br>chat.pickAttachments<br>chat.presentInSideChat<br>chat.readGroupImage<br>chat.refresh<br>chat.release<br>chat.removeAttachment<br>chat.resolveWorkspaceChat<br>chat.retain<br>chat.retry<br>chat.retryAttachment<br>chat.send<br>chat.setDraft<br>chat.state<br>chat.state.changed |
+| `browserSidebar` | 10 | 2 | 0 | browserSidebar.capture<br>browserSidebar.changed<br>browserSidebar.close<br>browserSidebar.dismissPasskey<br>browserSidebar.importCookies<br>browserSidebar.inspect<br>browserSidebar.listImportProfiles<br>browserSidebar.navigate<br>browserSidebar.open<br>browserSidebar.openTabRequested<br>browserSidebar.showPermissions<br>browserSidebar.update |
+| `chat` | 1 | 0 | 0 | chat.pickAttachments |
 | `clipboard` | 4 | 0 | 0 | clipboard.readImage<br>clipboard.readText<br>clipboard.writeImage<br>clipboard.writeText |
-| `computeNode` | 14 | 1 | 1 | computeNode.abandon<br>computeNode.configure<br>computeNode.disposeLocal<br>computeNode.drain<br>computeNode.localOverview<br>computeNode.localWorkloads<br>computeNode.rebuild<br>computeNode.recover<br>computeNode.recoveryCandidates<br>computeNode.refresh<br>computeNode.remove<br>computeNode.repair<br>computeNode.resumeLocalDisposal<br>computeNode.state<br>computeNode.state.changed |
+| `computeNode` | 18 | 1 | 1 | computeNode.abandon<br>computeNode.configure<br>computeNode.disposeLocal<br>computeNode.drain<br>computeNode.hostMaintenanceState<br>computeNode.localOverview<br>computeNode.localWorkloads<br>computeNode.maintainHost<br>computeNode.rebuild<br>computeNode.recover<br>computeNode.recoveryCandidates<br>computeNode.refresh<br>computeNode.remove<br>computeNode.repair<br>computeNode.resetLocalRecord<br>computeNode.resumeHostMaintenance<br>computeNode.resumeLocalDisposal<br>computeNode.state<br>computeNode.state.changed |
 | `computerUse` | 2 | 0 | 0 | computerUse.getPermissions<br>computerUse.openPermissionFlow |
 | `connectorRuntime` | 4 | 1 | 1 | connectorRuntime.copyConnectCommand<br>connectorRuntime.scope<br>connectorRuntime.setScope<br>connectorRuntime.state<br>connectorRuntime.state.changed |
-| `driveCatalog` | 2 | 1 | 1 | driveCatalog.query<br>driveCatalog.state<br>driveCatalog.state.changed |
+| `core` | 1 | 0 | 0 | core.open |
 | `files` | 5 | 0 | 0 | files.copyDownload<br>files.listOpenApplications<br>files.openDownload<br>files.revealDownload<br>files.saveDownload |
-| `localData` | 1 | 0 | 0 | localData.status |
 | `localFiles` | 2 | 0 | 0 | localFiles.pick<br>localFiles.preview |
+| `localStation` | 4 | 0 | 0 | localStation.accounts<br>localStation.setAccountSource<br>localStation.signIn<br>localStation.stopSignIn |
+| `macApps` | 6 | 1 | 1 | macApps.calendarEvents<br>macApps.icons<br>macApps.openItem<br>macApps.openPrivacySettings<br>macApps.setEnabled<br>macApps.state<br>macApps.state.changed |
 | `meetingPresence` | 2 | 1 | 1 | meetingPresence.icon<br>meetingPresence.state<br>meetingPresence.state.changed |
-| `meetingRecorder` | 8 | 1 | 1 | meetingRecorder.acknowledgeSaved<br>meetingRecorder.action<br>meetingRecorder.dragWindow<br>meetingRecorder.layoutWindow<br>meetingRecorder.retryTaskSync<br>meetingRecorder.selectMicrophone<br>meetingRecorder.setInteractive<br>meetingRecorder.state<br>meetingRecorder.state.changed |
+| `meetingRecorder` | 3 | 0 | 0 | meetingRecorder.dragWindow<br>meetingRecorder.layoutWindow<br>meetingRecorder.setInteractive |
 | `messageNotifications` | 0 | 1 | 0 | messageNotifications.event |
 | `native` | 1 | 0 | 0 | native.info |
 | `notch` | 10 | 1 | 0 | notch.close<br>notch.event<br>notch.hide<br>notch.open<br>notch.preview<br>notch.pulse<br>notch.show<br>notch.status<br>notch.stop<br>notch.toggle<br>notch.update |
-| `onboarding` | 3 | 2 | 1 | onboarding.closeWindow<br>onboarding.handoff<br>onboarding.presentWindow<br>onboarding.window<br>onboarding.window.changed |
+| `onboarding` | 4 | 2 | 1 | onboarding.closeWindow<br>onboarding.handoff<br>onboarding.outputVolume<br>onboarding.presentWindow<br>onboarding.window<br>onboarding.window.changed |
 | `peers` | 1 | 0 | 0 | peers.connect |
-| `productInbox` | 4 | 1 | 1 | productInbox.refresh<br>productInbox.release<br>productInbox.retain<br>productInbox.state<br>productInbox.state.changed |
 | `recommendationMedia` | 1 | 0 | 0 | recommendationMedia.load |
-| `session` | 8 | 1 | 1 | session.cancelAuthAttempt<br>session.reconcile<br>session.requestEmailLogin<br>session.signInWithGoogle<br>session.signOut<br>session.state<br>session.state.changed<br>session.verifyEmailLogin<br>session.verifyGoogleLink |
-| `sessionHistory` | 4 | 1 | 1 | sessionHistory.load<br>sessionHistory.release<br>sessionHistory.retain<br>sessionHistory.state<br>sessionHistory.state.changed |
+| `session` | 1 | 1 | 1 | session.state<br>session.state.changed |
 | `shell` | 1 | 0 | 0 | shell.openExternal |
-| `sideChat` | 12 | 2 | 2 | sideChat.close<br>sideChat.closeTestWindow<br>sideChat.debugSettings<br>sideChat.debugSettings.changed<br>sideChat.finishInteractiveProgress<br>sideChat.openSettings<br>sideChat.openTestWindow<br>sideChat.presentation<br>sideChat.presentation.changed<br>sideChat.resetDebugSettings<br>sideChat.setContentSize<br>sideChat.setInteractiveProgress<br>sideChat.updateDebugSettings<br>sideChat.updateShortcut |
 | `sitePermissionMenu` | 2 | 1 | 1 | sitePermissionMenu.act<br>sitePermissionMenu.changed<br>sitePermissionMenu.state |
-| `subscriptionAuthorization` | 3 | 0 | 0 | subscriptionAuthorization.cancel<br>subscriptionAuthorization.start<br>subscriptionAuthorization.status |
-| `surfaces` | 2 | 3 | 2 | surfaces.changed<br>surfaces.state<br>surfaces.windowFullScreen<br>surfaces.windowFullScreen.changed<br>surfaces.windowResizeSettled |
-| `synchronicity` | 21 | 0 | 0 | synchronicity.adopt<br>synchronicity.adoptTree<br>synchronicity.delete<br>synchronicity.importFile<br>synchronicity.list<br>synchronicity.openLocalRoot<br>synchronicity.pickFolder<br>synchronicity.pin<br>synchronicity.read<br>synchronicity.replicaSet<br>synchronicity.replicaSync<br>synchronicity.restart<br>synchronicity.saveDownload<br>synchronicity.scan<br>synchronicity.setDomain<br>synchronicity.setSpaceSettings<br>synchronicity.sourceAdd<br>synchronicity.sourceRemove<br>synchronicity.state<br>synchronicity.versions<br>synchronicity.write |
-| `tokenDanceAuthorization` | 4 | 0 | 0 | tokenDanceAuthorization.cancel<br>tokenDanceAuthorization.save<br>tokenDanceAuthorization.start<br>tokenDanceAuthorization.status |
+| `surfaces` | 4 | 4 | 3 | surfaces.changed<br>surfaces.state<br>surfaces.windowControl<br>surfaces.windowFullScreen<br>surfaces.windowFullScreen.changed<br>surfaces.windowMaximized<br>surfaces.windowMaximized.changed<br>surfaces.windowResizeSettled |
+| `synchronicity` | 22 | 0 | 0 | synchronicity.adopt<br>synchronicity.adoptTree<br>synchronicity.delete<br>synchronicity.list<br>synchronicity.openLocalRoot<br>synchronicity.openStream<br>synchronicity.pickFolder<br>synchronicity.pin<br>synchronicity.read<br>synchronicity.replicaSet<br>synchronicity.replicaSync<br>synchronicity.restart<br>synchronicity.saveDownload<br>synchronicity.scan<br>synchronicity.setDomain<br>synchronicity.setSpaceSettings<br>synchronicity.sourceAdd<br>synchronicity.sourceRemove<br>synchronicity.stageImport<br>synchronicity.state<br>synchronicity.versions<br>synchronicity.write |
 | `transport` | 1 | 0 | 0 | transport.status |
+| `voiceCall` | 2 | 1 | 0 | voiceCall.audio<br>voiceCall.microphone<br>voiceCall.played |
 | `windows` | 3 | 0 | 0 | windows.close<br>windows.create<br>windows.focus |
 
 ### 冻结的 raw IPC 例外
@@ -150,10 +154,6 @@
 - `comma:connector:status`
 - `comma:connector:stop`
 - `comma:connector:uninstall`
-- `comma:updates:apply`
-- `comma:updates:check`
-- `comma:updates:download`
-- `comma:updates:status`
 
 ## 当前部署表面
 

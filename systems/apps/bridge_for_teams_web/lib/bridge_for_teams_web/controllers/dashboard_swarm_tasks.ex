@@ -128,7 +128,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
 
       not optional_object?(params["runs_on"]) or not optional_object?(params["model"]) ->
         {:error, 422, "invalid_place",
-         gettext("Choose Salix, the Cloud VM or a station of this swarm."), %{}}
+         gettext("Choose Salix, a sandbox, the Cloud VM or a station of this swarm."), %{}}
 
       true ->
         {:ok,
@@ -183,9 +183,12 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
        gettext("Could not create the task. Salix is unavailable — retry shortly."), %{}}
 
   defp place_error(:cloud_vm_disabled),
+    do: {:error, 422, "cloud_vm_disabled", gettext("No Cloud VM is set up for this swarm."), %{}}
+
+  defp place_error(:cloud_vm_retired),
     do:
-      {:error, 422, "cloud_vm_disabled", gettext("The Cloud VM is turned off for this swarm."),
-       %{}}
+      {:error, 422, "cloud_vm_retired",
+       gettext("The Cloud VM is retired here: a sandbox takes its place."), %{}}
 
   defp place_error(:device_offline),
     do:
@@ -198,19 +201,21 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
   defp place_error(_reason),
     do:
       {:error, 422, "invalid_place",
-       gettext("Choose Salix, the Cloud VM or a station of this swarm."), %{}}
+       gettext("Choose Salix, a sandbox, the Cloud VM or a station of this swarm."), %{}}
 
   @doc """
   The places and models the New task form offers. `places`: inside Salix
-  (always), the swarm's Cloud VM while it is on, and each connected station
-  that takes Tasks, each with the models it runs per coding agent (`models`)
-  and whether it is the swarm's default place (`default`). `models`: the
-  models a Task inside Salix can choose (the platform model and the org's
-  offered models), after the swarm's default Task model (key "").
+  (always), a sandbox of the Task's own where sandboxes are set up, the
+  swarm's Cloud VM while it is on and not retired, and each connected station that takes
+  Tasks, each with the models it runs per coding agent (`models`) and whether
+  it is the swarm's default place (`default`). `models`: the models a Task
+  inside Salix can choose (the platform model and the org's offered models),
+  after the swarm's default Task model (key "").
   """
   def targets(org, project, role) do
     if role in @task_roles do
-      {:ok, %{"stations" => stations, "cloud_vm" => cloud_vm}} = Agents.list_stations(project)
+      {:ok, %{"stations" => stations, "cloud_vm" => cloud_vm, "sandbox" => sandbox}} =
+        Agents.list_stations(project)
 
       default =
         case Projects.default_task_place(project) do
@@ -220,6 +225,19 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
 
       places =
         [%{"id" => "salix", "kind" => "salix", "label" => gettext("Salix"), "models" => %{}}] ++
+          if(sandbox["enabled"],
+            do: [
+              %{
+                "id" => "sandbox",
+                "kind" => "sandbox",
+                "label" => gettext("A sandbox"),
+                # A sandbox runs Codex or Claude Code on the runtime's default
+                # model unless the Task names one.
+                "models" => %{"codex" => [], "claude" => []}
+              }
+            ],
+            else: []
+          ) ++
           if(cloud_vm["enabled"],
             do: [
               %{

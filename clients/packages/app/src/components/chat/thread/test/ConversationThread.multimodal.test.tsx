@@ -157,6 +157,62 @@ describe("real chat Markdown and attachment composition", () => {
     expect(screen.queryByTestId("chat-attachment-file-msg_coding_image-0")).toBeNull();
   });
 
+  it("draws a reply's workspace-path image from its attachment instead of loading the path", async () => {
+    const posted = normalizeServerMessages(
+      [
+        {
+          message_id: "msg_artifact_image",
+          kind: "message",
+          actor_type: "agent",
+          agent_id: "agt_router",
+          content: [
+            {
+              type: "text",
+              text: "Here it is:\n\n![](/artifacts/test-image-1.png)\n\n![Chart](/artifacts/chart.png)\n\n> See ![Shot](/artifacts/test-image-1.png)",
+            },
+            {
+              type: "file",
+              file_name: "test-image-1.png",
+              path: "/artifacts/test-image-1.png",
+              blob_ref: {
+                kind: "blob",
+                uuid: "c".repeat(32),
+                hash: "d".repeat(64),
+                size: 67,
+              },
+            },
+          ],
+        },
+      ],
+      [],
+      "user_chat",
+      "cnv_router"
+    );
+    const preview = vi.fn(async () => ({ url: previewUrl, release: vi.fn() }));
+    const core = createScriptedCore();
+    const { container } = render(
+      core.wrap(
+        <ConversationThread
+          conversationId="cnv_router"
+          groupId="grp_1"
+          messages={posted}
+          onDiscard={noop}
+          onPreviewLocalFile={preview}
+          onRetry={noop}
+          workspaceId="wsp_1"
+        />
+      )
+    );
+
+    const image = await screen.findByRole("img", { name: "test-image-1.png" });
+    expect(image).toHaveAttribute("src", previewUrl);
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    // A path the message did not attach shows as its alt text.
+    expect(container).toHaveTextContent("Chart");
+    // One nested in a quote is left out as well.
+    expect(container).not.toHaveTextContent("Shot");
+  });
+
   it("keeps a streamed Comma reply in its source turn when an external user message arrives", async () => {
     const home = message("msg_home", "user", "Home question");
     const external = message("msg_wechat", "user", "WeChat question", {
@@ -370,6 +426,43 @@ describe("real chat Markdown and attachment composition", () => {
       await withProse.findByRole("button", { name: "Copy code" })
     ).toBeInTheDocument();
     expect(withProse.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
+  });
+
+  it("leaves a reply that is only an image to the image's own Copy", async () => {
+    const preview = vi.fn(async () => ({ url: previewUrl, release: noop }));
+    const { container } = render(
+      <ConversationThread
+        groupId="grp_1"
+        workspaceId="wsp_1"
+        messages={[
+          message("msg_image", "assistant", "", {
+            attachments: [attachments[0]!],
+          }),
+          message("msg_captioned", "assistant", "The report", {
+            attachments: [{ ...attachments[0]!, fileName: "captioned.png" }],
+          }),
+        ]}
+        onDiscard={noop}
+        onPreviewLocalFile={preview}
+        onRetry={noop}
+      />
+    );
+
+    const imageOnly = within(
+      container.querySelector<HTMLElement>('[data-message-id="msg_image"]')!
+    );
+    expect(
+      await imageOnly.findByRole("button", { name: "Copy image" })
+    ).toBeInTheDocument();
+    expect(imageOnly.queryByRole("button", { name: "Copy reply" })).toBeNull();
+
+    const captioned = within(
+      container.querySelector<HTMLElement>('[data-message-id="msg_captioned"]')!
+    );
+    expect(
+      await captioned.findByRole("button", { name: "Copy image" })
+    ).toBeInTheDocument();
+    expect(captioned.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
   });
 
   it("hands a growing Markdown reply to its canonical trusted task, image group, and media file cards", async () => {

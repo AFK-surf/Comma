@@ -61,30 +61,25 @@ function nextPatchVersion(version: StableVersion) {
   return `${version.major}.${version.minor}.${version.patch + 1}`;
 }
 
-function parseStagingRunNumber(value: string | undefined) {
-  if (!value) {
-    throw new Error("GITHUB_RUN_NUMBER is required for staging release versions.");
-  }
+// The macOS and Windows staging workflows build the same commit, so the build
+// number comes from the commit (its count of ancestors), not a workflow's own
+// run number: both platforms then publish the same version.
+function stagingBuildNumber() {
+  const value = git(["rev-list", "--count", "HEAD"]);
 
   if (!/^[1-9]\d*$/.test(value)) {
-    throw new Error(`Invalid staging run number: ${value}`);
+    throw new Error(`Invalid staging build number: ${value}`);
   }
 
   return value;
 }
 
-function resolveStagingReleaseVersion({
-  baseVersion,
-  runNumber,
-}: {
-  baseVersion: string;
-  runNumber: string | undefined;
-}) {
+function resolveStagingReleaseVersion(baseVersion: string) {
   if (!parseStableVersion(baseVersion)) {
     throw new Error(`Invalid base staging version: ${baseVersion || "<missing>"}`);
   }
 
-  const stagingBuild = parseStagingRunNumber(runNumber);
+  const stagingBuild = stagingBuildNumber();
   const version = `${baseVersion}-staging.${stagingBuild}`;
 
   return {
@@ -113,14 +108,11 @@ async function main() {
     latestStableTag && latestStableVersion
       ? nextPatchVersion(latestStableVersion)
       : currentPackageVersion();
-  const { build, tag, version } = resolveStagingReleaseVersion({
-    baseVersion,
-    runNumber: process.env.GITHUB_RUN_NUMBER,
-  });
+  const { build, tag, version } = resolveStagingReleaseVersion(baseVersion);
 
   console.log(`latest stable release tag: ${latestStableTag ?? "<none>"}`);
   console.log(`base staging version: ${baseVersion}`);
-  console.log(`staging run number: ${build}`);
+  console.log(`staging build number: ${build}`);
   console.log(`resolved staging version: ${version}`);
   console.log(`resolved staging tag: ${tag}`);
 

@@ -22,6 +22,12 @@ defmodule CommaWeb.Coding.EndpointsTest do
            }
          ]}
 
+    def repo_owners("ghu_x", 2),
+      do: {:ok, %{owners: [%{login: "acme", kind: "organization"}], has_more: false}}
+
+    def repo_search("ghu_x", "acme", "organization", "ios", 2),
+      do: {:ok, %{repos: [%{owner: "acme", name: "ios"}], has_more: false, limited: false}}
+
     def branches("ghu_x", "acme", "api", 1), do: {:ok, ["main", "release/2.1"]}
     def branches("ghu_x", _owner, _name, _page), do: {:error, :not_found}
   end
@@ -72,6 +78,19 @@ defmodule CommaWeb.Coding.EndpointsTest do
 
     assert %{status: 404} = get(ctx.base <> "/repos/acme/other/branches", ctx.owner)
     assert %{status: 401} = Req.get!(ctx.base <> "/repos", retry: false)
+  end
+
+  test "a member browses owners and searches within one owner", ctx do
+    assert %{status: 200, body: %{"owners" => [%{"login" => "acme"}], "has_more" => false}} =
+             get(ctx.base <> "/repo-owners?page=2", ctx.viewer)
+
+    assert %{status: 200, body: %{"repos" => [%{"owner" => "acme", "name" => "ios"}]}} =
+             get(ctx.base <> "/repo-search?owner=acme&kind=organization&q=ios&page=2", ctx.viewer)
+
+    assert %{status: 400} =
+             get(ctx.base <> "/repo-search?owner=acme%20org:other&kind=organization", ctx.owner)
+
+    assert %{status: 401} = Req.get!(ctx.base <> "/repo-owners", retry: false)
   end
 
   test "a read-only member starts no session, and a start needs its words and request id", ctx do

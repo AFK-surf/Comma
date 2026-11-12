@@ -14,12 +14,16 @@ defmodule SalixAgent.TranscriptUtf8RobustnessTest do
   setup do
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
     :ok
   end
 
   test "commit scrubs invalid UTF-8 out of every transcript-bound event field" do
-    agent_id = "agt1_" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
+    agent_id = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(agent_id)
+    {:ok, _} = SalixAgent.Fleet.ensure_started(agent_id, create: false, startup_mode: :passive)
+    :ok = SalixAgent.Fleet.await_ownership_installed(agent_id)
+    on_exit(fn -> SalixAgent.TestSupport.stop_all_agents() end)
 
     corrupt_prompt = "You are an agent.\n- 通过 Slack " <> @truncated_cjk
     corrupt_summary = "<compacted-context>\n当有人说" <> @truncated_cjk <> "\n</compacted-context>"

@@ -10,16 +10,20 @@ defmodule SalixAgent.Models do
   subscription plan.
 
   The catalog is platform data. `scripts/generate-model-catalog.mjs` reads the
-  pinned pi-ai model data and adds newer models from provider documentation.
+  committed models.dev snapshot with Cue-owned source mappings and subscription limits.
   It holds no tenant data and no credentials.
   """
 
   @path Path.expand("../../priv/model_catalog.json", __DIR__)
   @external_resource @path
   @catalog @path |> File.read!() |> Jason.decode!()
+  @generated_from @catalog["generated_from"]
   @sources @catalog["sources"]
   @list @catalog["models"]
   @by_id Map.new(@list, &{&1["id"], &1})
+
+  @doc "The price and model data the catalog was generated from."
+  def generated_from, do: @generated_from
 
   @doc "Sources by id: `%{\"name\" => ..., \"kind\" => \"api_key\" | \"subscription\"}`."
   def sources, do: @sources

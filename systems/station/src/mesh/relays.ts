@@ -1,4 +1,4 @@
-// Keeps the station on still.fail's relays (the Rust station's main.rs `keep_relays`): the ones browsers reach (they
+// Keeps the station on Comma's relays (the Rust station's main.rs `keep_relays`): the ones browsers reach (they
 // know no others), iroh homing on the nearest and the station kept on the rest too (keepers), so a device that reaches
 // only some of them still reaches it. Those the cloud adds or takes away are put in or taken out as it pushes them.
 // iroh's public relays come in only while none of ours answers (so the station can still be reached; the DHT says
@@ -25,7 +25,7 @@ export const keepRelays = (endpoint: Endpoint) =>
         Effect.promise(async () => {
           const now = cloud.state.relays();
           if (now.length === 0 || JSON.stringify(now) === JSON.stringify(ours)) return;
-          log.info("mesh", "still.fail's relays changed", { relays: now });
+          log.info("mesh", "Comma's relays changed", { relays: now });
           const was = ours;
           ours = now;
           for (const url of now.filter((u) => !was.includes(u))) await endpoint.insertRelay(url);
@@ -50,11 +50,11 @@ export const keepRelays = (endpoint: Endpoint) =>
         }
       }
       if (!up && !added) {
-        log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: ours });
+        log.warn("mesh", "none of Comma's relays answers; adding iroh's public relays until one does", { relays: ours });
         await endpoint.publicRelays(true);
         added = true;
       } else if (up && added) {
-        log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
+        log.info("mesh", "Comma's relays answer again; back home to them", { relays: ours });
         await endpoint.publicRelays(false);
         added = false;
       }

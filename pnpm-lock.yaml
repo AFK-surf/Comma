@@ -21,6 +21,9 @@ patchedDependencies:
   markstream-react@0.0.52:
     hash: d243b3691ce81e3c24a5ed62b75b7d7c72f560d661501167cf0e4dfd7e0a5a4b
     path: patches/markstream-react@0.0.52.patch
+  playwright-core@1.61.0:
+    hash: 7359719bb486b673d22f8836749ad82140b96f9aa3dfd739d4c4d9ad53151215
+    path: patches/playwright-core@1.61.0.patch
   react-aria@3.49.0:
     hash: 9b24d6911faf87dd8d77ba1111bb6d4492d03ca40501141ffe539ae66de2cd18
     path: patches/react-aria@3.49.0.patch
@@ -30,9 +33,6 @@ importers:
   .:
     devDependencies:
       '@earendil-works/pi-agent-core':
-        specifier: 1.1.0
-        version: 1.1.0(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1)(@smithy/signature-v4@5.7.3)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3)
-      '@earendil-works/pi-ai':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1)(@smithy/signature-v4@5.7.3)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3)
       '@earendil-works/pi-coding-agent':
@@ -180,6 +180,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.0.2
         version: 6.0.5(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.23.1)(yaml@2.9.0))
+      qrcode.react:
+        specifier: ^4.2.0
+        version: 4.2.0(react@19.2.7)
       react:
         specifier: ^19.2.7
         version: 19.2.7
@@ -247,6 +250,9 @@ importers:
       '@recappi/sdk':
         specifier: ^1.2.0
         version: 1.2.0
+      bonjour-service:
+        specifier: 1.4.4
+        version: 1.4.4
       cborg:
         specifier: ^6.1.3
         version: 6.1.3
@@ -602,8 +608,8 @@ importers:
         specifier: ^7.29.7
         version: 7.29.7
       '@central-icons-react/round-outlined-radius-2-stroke-2':
-        specifier: ^1.1.296
-        version: 1.1.296(react@19.2.7)
+        specifier: ^1.2.31
+        version: 1.2.31(react@19.2.7)
       magic-string:
         specifier: ^0.30.21
         version: 0.30.21
@@ -739,14 +745,14 @@ importers:
   clients/packages/ui:
     dependencies:
       '@central-icons-react/round-filled-radius-2-stroke-2':
-        specifier: ^1.1.300
-        version: 1.1.300(react@19.2.7)
+        specifier: ^1.2.31
+        version: 1.2.31(react@19.2.7)
       '@central-icons-react/round-outlined-radius-2-stroke-1.5':
-        specifier: ^1.1.315
-        version: 1.1.315(react@19.2.7)
+        specifier: ^1.2.31
+        version: 1.2.31(react@19.2.7)
       '@central-icons-react/round-outlined-radius-2-stroke-2':
-        specifier: ^1.1.296
-        version: 1.1.296(react@19.2.7)
+        specifier: ^1.2.31
+        version: 1.2.31(react@19.2.7)
       '@comma/core':
         specifier: workspace:*
         version: link:../core
@@ -881,6 +887,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.1
+      '@xterm/headless':
+        specifier: 6.0.0
+        version: 6.0.0
       effect:
         specifier: 4.0.0
         version: 4.0.0
@@ -1175,20 +1184,20 @@ packages:
     resolution: {integrity: sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw==}
     hasBin: true
 
-  '@central-icons-react/round-filled-radius-2-stroke-2@1.1.300':
-    resolution: {integrity: sha512-WkKovkHX5cYyhD+2rCvvt/IkXYXIizUL8g+T14gz+xRh478cF8cRhbA+iFzaGnI5lZ+BvxUTh444zHGY9zp5Zw==}
+  '@central-icons-react/round-filled-radius-2-stroke-2@1.2.31':
+    resolution: {integrity: sha512-DN0yscC5VR1Q9nCHdf8pyGn7IWG0qO6Apli5QBaMwyA4pkSxFv0hBQ5Og+jxKqcgKpyP1jJ/O19gZ4bnQW4ADQ==}
     peerDependencies:
-      react: '>=14.0.0 <= 19'
+      react: '>=16.6.0 <20'
 
-  '@central-icons-react/round-outlined-radius-2-stroke-1.5@1.1.315':
-    resolution: {integrity: sha512-CHnX6LJsUP6++ACQUAPGWIBHBAdi1w8QihoB1LbGV0a4dMZHgDSFwwi53JtbbC1cCS2FaRQRzNZNDjTylheE4A==}
+  '@central-icons-react/round-outlined-radius-2-stroke-1.5@1.2.31':
+    resolution: {integrity: sha512-ztqjUvy5TcOjlsIlby6b7BxCxl5CVGDwxcMTzoPpVTb0tmgkQBmwI7E8GQNpRVB/gBlIGjf1gJnaDQ0CZbkGyw==}
     peerDependencies:
-      react: '>=14.0.0 <= 19'
+      react: '>=16.6.0 <20'
 
-  '@central-icons-react/round-outlined-radius-2-stroke-2@1.1.296':
-    resolution: {integrity: sha512-ffd/j674kS1pFwVic8ychGjkzSm5qOvPEzeHWmabyOCc2NzUMYcU/MrsK4wLiL6Tn+r93wWQ1+JxFFELGomRWA==}
+  '@central-icons-react/round-outlined-radius-2-stroke-2@1.2.31':
+    resolution: {integrity: sha512-8YHhwcwBtYHJe/TwO7sjzhr5YtXmvO+S80OFKNpCF2tX1csNOQTfkPnaA+I8eabgaolItIkfXC5zlUeWCzUydA==}
     peerDependencies:
-      react: '>=14.0.0 <= 19'
+      react: '>=16.6.0 <20'
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
@@ -2588,6 +2597,9 @@ packages:
     peerDependencies:
       tslib: '2'
 
+  '@leichtgewicht/ip-codec@2.0.5':
+    resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
+
   '@likec4/core@1.59.2':
     resolution: {integrity: sha512-UTxJkWe7SFIbPGgu2aIGOFQNkveTiBlylRjYHlPW5zdRot+uPSg1m7u6vg0GvDH9F6ALtnBPQIy6CZUjmzkDPw==}
 
@@ -3682,6 +3694,7 @@ packages:
   '@smithy/core@3.33.3':
     resolution: {integrity: sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -4559,6 +4572,9 @@ packages:
     engines: {node: '>=14.6'}
     deprecated: this version has critical issues, please update to the latest version
 
+  '@xterm/headless@6.0.0':
+    resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
+
   '@xtuc/ieee754@1.2.0':
     resolution: {integrity: sha512-DX8nKgqcGwsc0eJSqYt5lwP4DH5FlHnmuWWBRy7X0NcaGR0ZtuyeESgMwTYVEtxmsNGY+qit4QYT/MIYTOTPeA==}
 
@@ -4730,6 +4746,9 @@ packages:
   body-parser@2.3.0:
     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
     engines: {node: '>=18'}
+
+  bonjour-service@1.4.4:
+    resolution: {integrity: sha512-jCZcVv7eoc4QesRscwEZtSROBen+6LpKAmBIsQYQrsAeVHLyMXWX/t6eIV5KiRZYNUBl8eVqImEEMQ8L5+c/Kw==}
 
   boolean@3.2.0:
     resolution: {integrity: sha512-d0II/GO9uf9lfUHH2BQsjxzRJZBdsjgsBiW4BvhWk/3qoKwQFjIDVN19PfX8F2D/r9PCMTtLWjYVCFrpeYUzsw==}
@@ -5300,6 +5319,10 @@ packages:
 
   dir-compare@4.2.0:
     resolution: {integrity: sha512-2xMCmOoMrdQIPHdsTawECdNPwlVFB9zGcz3kuhmBO6U3oU+UQjsue0i8ayLKpgBcm+hcXPMVSGUN9d+pvJ6+VQ==}
+
+  dns-packet@5.6.1:
+    resolution: {integrity: sha512-l4gcSouhcgIKRvyy99RNVOgxXiicE+2jZoNmaNmZ6JXiGajBOJAesk1OBlJuM5k2c+eudGdLxDqXuPCKIj6kpw==}
+    engines: {node: '>=6'}
 
   doctrine@3.0.0:
     resolution: {integrity: sha512-yS+Q5i3hBf7GBkd4KG8a7eBNNWNGLTaEwwYWUijIYM7zrlYDM0BFXHjjPWlWZ1Rg7UaddZeIDmi9jF3HmqiQ2w==}
@@ -6757,6 +6780,10 @@ packages:
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
+  multicast-dns@7.2.5:
+    resolution: {integrity: sha512-2eznPJP8z2BFLX50tf0LuODrpINqP1RVIm/CObbTcBRITQgmC/TjcREF1NeTBzIcR5XO/ukWo+YHOjBbFwIupg==}
+    hasBin: true
+
   murmur-32@0.2.0:
     resolution: {integrity: sha512-ZkcWZudylwF+ir3Ld1n7gL6bI2mQAzXvSobPwVtu8aYi2sbXeipeSkdcanRLzIofLcM5F53lGaKm2dk7orBi7Q==}
 
@@ -7843,6 +7870,9 @@ packages:
     peerDependencies:
       tslib: ^2
 
+  thunky@1.1.0:
+    resolution: {integrity: sha512-eHY7nBftgThBqOyHGVN+l8gF0BucP09fMo0oO/Lb0w1OF80dJv+lDVpXG60WMQvkcxAkNybKsrEIE3ZtKGmPrA==}
+
   tiny-each-async@2.0.3:
     resolution: {integrity: sha512-5ROII7nElnAirvFn8g7H7MtpfV1daMcyfTGQwsn/x2VtyV+VPiO5CjReCJtWLvoKTDEDmZocf3cNPraiMnBXLA==}
 
@@ -8913,15 +8943,15 @@ snapshots:
     dependencies:
       css-tree: 3.2.1
 
-  '@central-icons-react/round-filled-radius-2-stroke-2@1.1.300(react@19.2.7)':
+  '@central-icons-react/round-filled-radius-2-stroke-2@1.2.31(react@19.2.7)':
     dependencies:
       react: 19.2.7
 
-  '@central-icons-react/round-outlined-radius-2-stroke-1.5@1.1.315(react@19.2.7)':
+  '@central-icons-react/round-outlined-radius-2-stroke-1.5@1.2.31(react@19.2.7)':
     dependencies:
       react: 19.2.7
 
-  '@central-icons-react/round-outlined-radius-2-stroke-2@1.1.296(react@19.2.7)':
+  '@central-icons-react/round-outlined-radius-2-stroke-2@1.2.31(react@19.2.7)':
     dependencies:
       react: 19.2.7
 
@@ -10453,6 +10483,8 @@ snapshots:
       '@jsonjoy.com/buffers': 17.67.0(tslib@2.8.1)
       '@jsonjoy.com/codegen': 17.67.0(tslib@2.8.1)
       tslib: 2.8.1
+
+  '@leichtgewicht/ip-codec@2.0.5': {}
 
   '@likec4/core@1.59.2':
     dependencies:
@@ -12238,6 +12270,8 @@ snapshots:
 
   '@xmldom/xmldom@0.9.10': {}
 
+  '@xterm/headless@6.0.0': {}
+
   '@xtuc/ieee754@1.2.0': {}
 
   '@xtuc/long@4.2.2': {}
@@ -12406,6 +12440,11 @@ snapshots:
       type-is: 2.1.0
     transitivePeerDependencies:
       - supports-color
+
+  bonjour-service@1.4.4:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      multicast-dns: 7.2.5
 
   boolean@3.2.0:
     optional: true
@@ -12973,6 +13012,10 @@ snapshots:
     dependencies:
       minimatch: 3.1.5
       p-limit: 3.1.0
+
+  dns-packet@5.6.1:
+    dependencies:
+      '@leichtgewicht/ip-codec': 2.0.5
 
   doctrine@3.0.0:
     dependencies:
@@ -14801,6 +14844,11 @@ snapshots:
 
   ms@2.1.3: {}
 
+  multicast-dns@7.2.5:
+    dependencies:
+      dns-packet: 5.6.1
+      thunky: 1.1.0
+
   murmur-32@0.2.0:
     dependencies:
       encode-utf8: 1.0.3
@@ -15127,7 +15175,7 @@ snapshots:
 
   playwright-core@1.60.0: {}
 
-  playwright-core@1.61.0: {}
+  playwright-core@1.61.0(patch_hash=7359719bb486b673d22f8836749ad82140b96f9aa3dfd739d4c4d9ad53151215): {}
 
   playwright@1.60.0:
     dependencies:
@@ -15137,7 +15185,7 @@ snapshots:
 
   playwright@1.61.0:
     dependencies:
-      playwright-core: 1.61.0
+      playwright-core: 1.61.0(patch_hash=7359719bb486b673d22f8836749ad82140b96f9aa3dfd739d4c4d9ad53151215)
     optionalDependencies:
       fsevents: 2.3.2
 
@@ -15980,6 +16028,8 @@ snapshots:
   thingies@2.6.1(tslib@2.8.1):
     dependencies:
       tslib: 2.8.1
+
+  thunky@1.1.0: {}
 
   tiny-each-async@2.0.3:
     optional: true

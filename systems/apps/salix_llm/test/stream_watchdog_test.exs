@@ -16,8 +16,7 @@ defmodule SalixLlm.StreamWatchdogTest do
 
   alias SalixLlm.{Provider, SiteProxy, StreamWatchdog}
 
-  # Generous enough that a loaded CI runner cannot blur the two allowances
-  # together, short enough to keep the suite quick.
+  # The two allowances, on the clock the tests drive.
   @idle_ms 300
   @first_event_ms 1_000
 
@@ -65,19 +64,19 @@ defmodule SalixLlm.StreamWatchdogTest do
 
     defp stream(conn, {:stall_after, first, hold_ms, rest}) do
       conn = write(conn, first)
-      SystemsRuntime.Proc.sleep(hold_ms)
+      SystemsClock.sleep(hold_ms)
       Enum.reduce(rest, conn, &write(&2, &1))
     end
 
     defp stream(conn, {:stall_before_first, hold_ms, chunks}) do
-      SystemsRuntime.Proc.sleep(hold_ms)
+      SystemsClock.sleep(hold_ms)
       Enum.reduce(chunks, conn, &write(&2, &1))
     end
 
     defp stream(conn, {:trickle, chunks, gap_ms}) do
       Enum.reduce(chunks, conn, fn piece, conn ->
         conn = write(conn, piece)
-        SystemsRuntime.Proc.sleep(gap_ms)
+        SystemsClock.sleep(gap_ms)
         conn
       end)
     end
@@ -107,6 +106,12 @@ defmodule SalixLlm.StreamWatchdogTest do
       restore(:llm_stream_idle_timeout_ms, previous.idle)
       restore(:llm_stream_first_event_timeout_ms, previous.first)
     end)
+
+    # The allowances, the server's holds and the measured spans all run on a
+    # clock this test drives: a stall ends at its exact clock time, however
+    # busy the machine is.
+    SystemsClock.manual(drive: true)
+    on_exit(&SystemsClock.reset/0)
 
     start_supervised!(StallServer)
 
@@ -157,9 +162,9 @@ defmodule SalixLlm.StreamWatchdogTest do
   defp deltas(rec), do: rec |> Agent.get(& &1) |> Enum.reverse()
 
   defp timed(fun) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     result = fun.()
-    {result, System.monotonic_time(:millisecond) - started}
+    {result, SystemsClock.monotonic_time(:millisecond) - started}
   end
 
   defp assert_stalled(result, provider, phase) do

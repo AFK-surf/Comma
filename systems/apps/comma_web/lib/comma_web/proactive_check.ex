@@ -1,9 +1,11 @@
 defmodule CommaWeb.ProactiveCheck do
   @moduledoc """
   The proactive consumer of the member source item pool. It reads items that
-  arrived or changed, ranks the most urgent one, and hands it to the Router
-  in the Home conversation when the owner personally must act on it. The
-  Router session alone decides whether to notify the owner.
+  arrived or changed, groups them into matters, reads each matter's current
+  state, and screens each matter once: the screening is the only place that
+  decides whether a matter interrupts the owner. A matter it decides to
+  interrupt goes to the Router in the Home conversation, which writes and
+  sends the reminder.
 
   The pool owns what arrived. The Home Conversation owns reminder state and
   the automatic message budget. This consumer records its outcome on each
@@ -22,30 +24,43 @@ defmodule CommaWeb.ProactiveCheck do
   alias CommaWeb.RecommendationRuntime
   alias SalixIM.{ConversationServer, Conversations, MailInteraction}
 
-  # One judgment reads at most this many pending items; later items wait for
+  # One check reads at most this many pending items; later items wait for
   # the next run.
   @judged_limit 24
+  # Each matter is screened in its own model call, a few at once: one call
+  # that reasons over a whole batch outlasts the timeout.
+  @screen_concurrency 8
   @judge_timeout_ms 45_000
+  # Link and full-mail reads before the screening, for the newest matters.
+  @evidence_limit 8
+  # One check hands over at most this many matters, earliest due first.
+  @handoffs_per_check 3
   @history_bytes 2_400
-  # An unclear answer judges the rest again in the same check, at most this
-  # many times, so one unclear item does not hold back the others.
-  @unclear_rejudgments 2
+  # Items a failed judgment returned wait at most this long behind new
+  # arrivals once their backoff passed.
+  @retry_after_ms 60 * 60 * 1000
+  @failure_backoff_ms 15 * 60 * 1000
+  @failure_backoff_max_ms 6 * 60 * 60 * 1000
   # The judgment sees the owner's latest Home matters, so a later notice about
   # the same matter is judged with what happened to the earlier one.
   @matters_limit 20
   @matters_days 60
 
-  # The model ranks urgency; the Router alone decides whether to interrupt the
-  # owner. Items the owner personally must act on reach the Router as evidence,
-  # and so do items that may be theirs (`ask`), for the Router to ask about.
-  # Lower levels stay in the daily briefing.
-  @routed_urgencies ~w(critical high ask)
+  # The level the Home value and the notebook keep for each decision.
+  @urgency %{"interrupt" => "high", "ask" => "ask", "briefing" => "normal", "resolved" => "low"}
+
+  # A matter handed over recently is not handed over again for the same
+  # evidence: a later copy needs a higher level, a nearer due time or newly
+  # reserve-eligible cost. A handled matter stays handled for longer.
+  @repeat_ms 24 * 60 * 60 * 1000
+  @handled_repeat_ms 7 * 24 * 60 * 60 * 1000
+  @levels_by_rank ~w(low normal ask high critical)
 
   def enqueue(profile_id),
     do: %{"profile_id" => profile_id} |> new() |> then(&Oban.insert(Comma.Oban, &1))
 
   @impl Oban.Worker
-  def timeout(_job), do: 90_000
+  def timeout(_job), do: 180_000
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"profile_id" => profile_id}}) do
@@ -125,6 +140,7 @@ defmodule CommaWeb.ProactiveCheck do
       settle(dismissed, "dismissed")
       # The Home Conversation records each spend on this clock.
       now = SystemsClock.system_time(:millisecond)
+      fresh = batch(fresh, now)
 
       cond do
         fresh == [] ->
@@ -135,173 +151,540 @@ defmodule CommaWeb.ProactiveCheck do
           settle(fresh, "off")
           {:ok, :off}
 
-        match?({:closed, _}, MailInteraction.automatic_budget(conversation, owner, now)) ->
-          # Pending items wait for the budget instead of being dropped.
-          {:ok, :deferred}
-
-        match?(
-          {:closed, _},
-          MailInteraction.notification_budget(conversation, owner, now, "critical")
-        ) ->
-          # Not even a critical matter could notify today: judging would only
-          # spend a model call. Items wait for the daily cap to reopen.
-          {:ok, :deferred}
-
+        # The budgets limit handoffs and notifications, not organization: every
+        # check judges what arrived, so a matter that must reach the reserve is
+        # found while the ordinary pools are closed, and the rest is settled
+        # with whose move it is instead of waiting unjudged.
         true ->
-          judge_and_route(
+          # A mail's attachments are read before its first judgment: the text
+          # often only points to them ("details in the attached file").
+          fresh = Enum.map(fresh, &with_attachments(ctx, &1))
+
+          screen_and_route(
             workspace,
             ctx,
             home,
             profile,
             conversation,
             CommaWeb.ProactiveMatters.group(fresh),
-            now,
-            @unclear_rejudgments
+            now
           )
       end
     end
   end
 
-  defp judge_and_route(workspace, ctx, home, profile, conversation, items, now, rejudgments) do
-    judged = judge(workspace, profile, ctx, home, conversation, items)
+  defp screen_and_route(workspace, ctx, home, profile, conversation, matters, now) do
+    at = DateTime.from_unix!(now, :millisecond)
 
-    # The Router could not notify about a non-critical item now. The items
-    # stay pending and are judged again once the notification spacing passed.
-    judged =
-      with {:ok, {_item, urgency, _message}} when urgency != "critical" <- judged,
-           {:closed, _} <- MailInteraction.notification_budget(conversation, profile.user_id, now) do
-        Logger.info("proactive_check deferred urgency=#{urgency} notification_budget=closed")
-        :deferred
-      else
-        _ -> judged
+    with {:ok, model} <- RecommendationRuntime.model(workspace["router_agent_id"]),
+         {:ok, history} <-
+           Conversations.list_group_conversation_messages(ctx.group_id, home,
+             tail: 12,
+             limit: 12
+           ) do
+      known = matters(conversation, profile.user_id, at)
+      statements = CommaWeb.MemberPortrait.statements(workspace)
+      notebook = CommaWeb.ProactiveNotebook.context(workspace, profile.user_id, ctx.agent_id)
+
+      read =
+        matters
+        |> Enum.sort_by(&arrived/1, :desc)
+        |> Enum.take(@evidence_limit)
+        |> MapSet.new(& &1["id"])
+
+      screened =
+        matters
+        |> SystemsClock.async_stream(
+          fn matter ->
+            matter =
+              if MapSet.member?(read, matter["id"]),
+                do: with_evidence(workspace, ctx, profile, matter),
+                else: matter
+
+            input = attention_input([matter], history, statements, at, known, notebook)
+            {matter, screen(workspace, model, profile, input, matter, at, known)}
+          end,
+          max_concurrency: @screen_concurrency,
+          timeout: @judge_timeout_ms + 5_000,
+          on_timeout: :kill_task,
+          ordered: true
+        )
+        |> Enum.zip(matters)
+        |> Enum.map(fn
+          {{:ok, result}, _matter} -> result
+          {{:exit, _reason}, matter} -> {matter, {:error, :model_timed_out}}
+        end)
+
+      route_screened(workspace, ctx, home, profile, conversation, screened, now)
+    end
+  end
+
+  # When the matter's newest item arrived, for the evidence reads.
+  defp arrived(%{"arrivedAt" => %DateTime{} = at}), do: DateTime.to_unix(at, :microsecond)
+  defp arrived(_matter), do: 0
+
+  # The matter's current state before the screening: the full text of a mail
+  # whose excerpt was cut off, and its links (`linked`).
+  defp with_evidence(workspace, ctx, profile, matter) do
+    matter =
+      case full_mail(ctx, matter) do
+        {:ok, read} -> read
+        :error -> matter
       end
 
-    case judged do
-      :deferred ->
-        {:ok, :deferred}
+    # An empty read is kept: the screening saw that no link said anything.
+    Map.put(
+      matter,
+      "linked",
+      CommaWeb.ProactiveEvidence.linked(workspace, profile.user_id, profile.sources, matter)
+    )
+  end
 
-      # Like a Loop's defer: the evidence could not tell, so nothing settles.
-      # The items are judged again, a bounded number of times.
-      # A mail whose pooled excerpt was cut off is read in full once, and the
-      # same items are judged again with its text.
-      {:ok, {:unclear, item}} when rejudgments > 0 ->
-        case full_mail(ctx, item) do
-          {:ok, read} ->
-            items = Enum.map(items, &if(&1 == item, do: read, else: &1))
+  defp screen(workspace, model, profile, input, matter, now, known) do
+    with {:ok, answer} <-
+           RecommendationRenderer.attention(workspace, model, profile, input, @judge_timeout_ms),
+         do: decide(answer, matter, now, known)
+  end
 
-            judge_and_route(
-              workspace,
-              ctx,
-              home,
-              profile,
-              conversation,
-              items,
-              now,
-              rejudgments - 1
-            )
+  # Settles each screened matter by its decision and hands over at most
+  # #{@handoffs_per_check} `interrupt` or `ask` matters, earliest due first.
+  # The others the screening would hand over stay pending for the next check.
+  # A failure the model could not finish counts on its matter alone; any
+  # other error (billing) leaves every item pending.
+  defp route_screened(workspace, ctx, home, profile, conversation, screened, now) do
+    fatal =
+      Enum.find_value(screened, fn
+        {_matter, {:error, reason} = error} ->
+          if not failed_judgment?(reason) and reason != :invalid_attention_decision, do: error
 
-          :error ->
-            unclear(workspace, ctx, home, profile, conversation, items, item, now, rejudgments)
-        end
+        _ ->
+          nil
+      end)
 
-      {:ok, {:unclear, item}} ->
-        unclear(workspace, ctx, home, profile, conversation, items, item, now, rejudgments)
+    if fatal do
+      fatal
+    else
+      handoffs =
+        Enum.flat_map(screened, fn {matter, result} ->
+          settle_screened(matter, result, now)
+        end)
 
-      {:ok, nil} ->
-        settle(items, "quiet")
-        {:ok, :quiet}
+      {now_batch, _later} =
+        handoffs
+        |> Enum.sort_by(fn {item, _message} -> {due_ms(item) || :infinity, arrived(item)} end)
+        |> Enum.split(@handoffs_per_check)
 
-      {:ok, {:below, urgency, assessment}} ->
-        # The most urgent item needs no action from the owner, so no other
-        # judged item does. They stay in the daily briefing.
-        settle(items, "quiet", urgency, assessment)
-        {:ok, :quiet}
+      outcomes =
+        Enum.map(now_batch, fn {item, message} ->
+          result = dispose(workspace, ctx, home, profile, conversation, item, message, now)
 
-      {:ok, {item, urgency, message}} ->
-        # The judgment read the item before a model call. It is routed only if it
-        # still waits unchanged: revocation, a source turned off or a newer
-        # collection may have withdrawn it meanwhile.
-        # Provider reads happen before the item rows are locked.
-        linked =
-          CommaWeb.ProactiveEvidence.linked(workspace, profile.user_id, profile.sources, item)
+          Logger.info(
+            "proactive_check disposed decision=#{item["decision"]} role=#{item["role"]} " <>
+              "outcome=#{inspect(elem(result, 1))}"
+          )
 
-        routed =
-          MemberSourceItems.while_pending(item["record"], fn ->
-            route(ctx, home, profile.user_id, conversation, item, message, linked)
-          end)
+          result
+        end)
 
-        case routed do
-          {:ok, _} ->
-            # The other items stay pending and are judged again when the
-            # budget allows another handoff.
-            settle([item], "routed", urgency, item["assessment"])
-            {:ok, :routed}
+      case Enum.find(outcomes, &(elem(&1, 0) != :ok)) do
+        nil -> {:ok, summary(outcomes, screened)}
+        error -> error
+      end
+    end
+  end
 
-          {:error, :withdrawn} ->
-            # Nothing is sent. The other judged items wait for the next check.
-            {:ok, :withdrawn}
+  # One screened matter: settled now, or a handoff to dispose.
+  defp settle_screened(matter, result, now) do
+    case result do
+      {:ok, {:handoff, item, message}} ->
+        Logger.info("proactive_attention decision=#{item["decision"]} routed=true")
+        [{item, message}]
 
-          {:error, :proactive_budget_exhausted} ->
-            {:ok, :deferred}
+      {:ok, {:settle, decision, assessment}} ->
+        Logger.info("proactive_attention decision=#{decision} routed=false")
 
-          {:error, :proactive_disabled} ->
-            settle(items, "off")
-            {:ok, :off}
+        outcome =
+          if decision == "resolved", do: "resolved", else: outcome(assessment["role"])
 
-          {:error, reason} when reason in [:mail_source_handled, :mail_source_changed] ->
-            settle(items, "quiet")
-            {:ok, :quiet}
+        settle([matter], outcome, @urgency[decision], Map.delete(assessment, "reason"),
+          decision: decision,
+          reason: assessment["reason"],
+          due_at: due_wake(assessment, now)
+        )
 
-          {:error, _} = error ->
-            error
-        end
+        []
+
+      {:ok, :unclear} ->
+        # The evidence could not tell, so nothing settles. The matter is
+        # screened again, a bounded number of times.
+        retry([matter])
+        []
 
       {:error, :invalid_attention_decision} ->
         # An unusable answer decides nothing: the items keep waiting and are
-        # judged again, a bounded number of times, instead of being dropped.
-        retry(items)
+        # screened again, a bounded number of times, instead of being dropped.
+        retry([matter])
+        []
+
+      {:error, reason} ->
+        # The model could not finish (a timeout or a permanent provider
+        # error). The items stay pending with the failure counted and are
+        # screened again after a backoff (`batch/2`).
+        Logger.warning(
+          "proactive_check judgment_failed reason=#{inspect(reason, limit: 3)} " <>
+            "items=#{length(ProactiveMatters.items([matter]))}"
+        )
+
+        failed([matter])
+        []
+    end
+  end
+
+  defp summary(outcomes, screened) do
+    results = Enum.map(outcomes, &elem(&1, 1))
+
+    cond do
+      :routed in results -> :routed
+      :off in results -> :off
+      :deferred in results -> :deferred
+      Enum.any?(screened, &match?({_, {:error, _}}, &1)) -> :deferred
+      :withdrawn in results -> :withdrawn
+      true -> :quiet
+    end
+  end
+
+  defp due_ms(item) do
+    with due when is_binary(due) <- get_in(item, ["assessment", "due"]),
+         {:ok, at, _offset} <- DateTime.from_iso8601(due),
+         do: DateTime.to_unix(at, :millisecond),
+         else: (_ -> nil)
+  end
+
+  defp failed_judgment?(:model_timed_out), do: true
+  defp failed_judgment?({:model_error, "permanent_provider_error"}), do: true
+  defp failed_judgment?(_reason), do: false
+
+  # A failed screening of these items. An item that failed alone is marked
+  # `isolated`: the model cannot answer it, and it keeps being retried at the
+  # longest backoff, visible in the owner's notebook.
+  defp failed(items) do
+    now = SystemsClock.system_time(:millisecond)
+    records = ProactiveMatters.items(items)
+
+    Enum.each(records, fn item ->
+      attention = item["record"].attention || %{}
+
+      MemberSourceItems.settle([item["record"]], %{
+        "outcome" => "retry",
+        "attempts" => attention["attempts"] || 0,
+        "failures" => (attention["failures"] || 0) + 1,
+        "isolated" => length(records) == 1,
+        "at" => now
+      })
+    end)
+  end
+
+  defp failures(view), do: get_in(view, ["record", Access.key(:attention), "failures"]) || 0
+
+  # How long items wait after their latest failed judgment: 15 minutes,
+  # doubling with each failure, at most 6 hours.
+  defp failure_backoff(failures),
+    do: min(@failure_backoff_ms * Integer.pow(2, max(failures - 1, 0)), @failure_backoff_max_ms)
+
+  # The items one check judges. Items a failed judgment returned are judged
+  # apart from new arrivals, so an item the model cannot answer does not hold
+  # back the rest: new arrivals and woken items every time; the returned
+  # items once their backoff passed and nothing new waits, or they waited an
+  # hour longer, fewest failures first, in a batch that halves with each
+  # failure, so an item that keeps failing ends up judged alone.
+  defp batch(views, now) do
+    at = &(get_in(&1, ["record", Access.key(:attention), "at"]) || 0)
+
+    {new, retried} = Enum.split_with(views, &(failures(&1) == 0))
+    ready = Enum.filter(retried, &(at.(&1) + failure_backoff(failures(&1)) <= now))
+
+    overdue =
+      Enum.any?(ready, &(at.(&1) + failure_backoff(failures(&1)) + @retry_after_ms <= now))
+
+    if ready != [] and (new == [] or overdue) do
+      ready = Enum.sort_by(ready, &failures/1)
+      least = failures(hd(ready))
+      Enum.take(ready, max(div(length(ready), Integer.pow(2, least)), 1))
+    else
+      new
+    end
+  end
+
+  # What happens to a matter the screening decided to hand over: a handoff
+  # only when it is routable, not a copy of one handed over, and both its
+  # handoff and its notification could be spent now. Otherwise it settles
+  # with why and when it can be judged again.
+  defp dispose(workspace, ctx, home, profile, conversation, item, message, now_ms) do
+    owner = profile.user_id
+    now = DateTime.from_unix!(now_ms, :millisecond)
+    key = item_key(item)
+    pool = if reserve_eligible?(item, now), do: "reserve", else: "ordinary"
+    reserve = pool == "reserve"
+    item = Map.put(item, "pool", pool)
+
+    cond do
+      not routable?(item) ->
+        # Someone else has the next move, or it only informs the owner. A
+        # matter with a due time is looked at again as it comes near.
+        settle([item], outcome(item["role"]), item["urgency"], item["assessment"],
+          due_at: due_wake(item["assessment"], now_ms)
+        )
+
+        {:ok, :quiet}
+
+      repeat = repeated(conversation, owner, key, item, now_ms) ->
+        settle([item], "duplicate", item["urgency"], item["assessment"], of: repeat)
+        {:ok, :quiet}
+
+      true ->
+        handoff = MailInteraction.automatic_budget(conversation, owner, now_ms, reserve)
+        notify = MailInteraction.notification_budget(conversation, owner, now_ms, reserve)
+
+        case {handoff, notify} do
+          {{:open, _}, {:open, _}} ->
+            route_judged(workspace, ctx, home, profile, conversation, item, message)
+
+          _ ->
+            # The Router could not notify about it now, so a handoff would only
+            # spend its cost. The matter waits with the reason and the time the
+            # closed pool opens, or sooner when its due time comes into the
+            # action window.
+            {reason, opens} =
+              case {handoff, notify} do
+                {{:closed, at}, {:closed, other}} -> {"budgets", max(at, other)}
+                {{:closed, at}, _} -> {"handoff_budget", at}
+                {_, {:closed, at}} -> {"notification_budget", at}
+              end
+
+            # The pool that closed opens later than now.
+            next_at = max(opens, now_ms + 1)
+
+            Logger.info(
+              "proactive_check deferred urgency=#{item["urgency"]} pool=#{pool} " <>
+                "reason=#{reason} next_at=#{next_at}"
+            )
+
+            settle([item], "deferred", item["urgency"], item["assessment"],
+              reason: reason,
+              next_at: next_at,
+              # The matter's own time is a separate wake, kept also after the
+              # budget rechecks run out.
+              due_at: due_wake(item["assessment"], now_ms),
+              rechecks: rechecks(item),
+              pool: pool
+            )
+
+            {:ok, :deferred}
+        end
+    end
+  end
+
+  defp route_judged(workspace, ctx, home, profile, conversation, item, message) do
+    # The judgment read the item before a model call. It is routed only if it
+    # still waits unchanged: revocation, a source turned off or a newer
+    # collection may have withdrawn it meanwhile.
+    # Provider reads happen before the item rows are locked.
+    # The links the screening read travel as `linked`. A matter whose links
+    # were not read before the screening is read now; that read is evidence
+    # the screening did not have (`linked_after_screening`), and the Router
+    # may withhold the matter for it.
+    evidence =
+      if Map.has_key?(item, "linked"),
+        do: %{"linked" => item["linked"]},
+        else: %{
+          "linked_after_screening" =>
+            CommaWeb.ProactiveEvidence.linked(workspace, profile.user_id, profile.sources, item)
+        }
+
+    routed =
+      MemberSourceItems.while_pending(item["record"], fn ->
+        route(ctx, home, profile.user_id, conversation, item, message, evidence)
+      end)
+
+    case routed do
+      {:ok, _} ->
+        settle([item], "routed", item["urgency"], item["assessment"],
+          pool: item["pool"],
+          decision: item["decision"],
+          reason: item["reason"]
+        )
+
+        {:ok, :routed}
+
+      {:error, :withdrawn} ->
+        # Nothing is sent. The other judged items wait for the next check.
+        {:ok, :withdrawn}
+
+      {:error, :proactive_budget_exhausted} ->
+        # Another check spent the last handoff meanwhile.
         {:ok, :deferred}
+
+      {:error, :proactive_disabled} ->
+        settle([item], "off")
+        {:ok, :off}
+
+      {:error, reason} when reason in [:mail_source_handled, :mail_source_changed] ->
+        settle([item], "quiet")
+        {:ok, :quiet}
 
       {:error, _} = error ->
         error
     end
   end
 
-  # Only the unclear item spends a retry. The others are judged again
-  # without it, so a request the owner must act on is not held back.
-  defp unclear(workspace, ctx, home, profile, conversation, items, item, now, rejudgments) do
-    retry([item])
-
-    case List.delete(items, item) do
-      rest when rest != [] and rejudgments > 0 ->
-        judge_and_route(workspace, ctx, home, profile, conversation, rest, now, rejudgments - 1)
+  # How often the item has waited for its `next_at` already, this time included.
+  defp rechecks(item) do
+    case item["record"].attention do
+      %{"outcome" => outcome} = attention when outcome in ~w(deferred waiting) ->
+        (attention["rechecks"] || 0) + 1
 
       _ ->
-        {:ok, :deferred}
+        1
     end
   end
 
-  # The full text of a mail item whose pooled excerpt was cut off, read once
-  # through the owner's consented mail account. Other items, a complete
-  # excerpt or a failed read leave the item as it is.
-  defp full_mail(
-         ctx,
-         %{"toolkit" => toolkit, "messageId" => id, "context" => %{"truncated" => true}} = item
-       )
-       when toolkit in ~w(gmail outlook) and is_binary(id) do
-    with {:ok, mail} <-
+  @doc "Whether a judged item may reach the Router: the owner must act, or may be the person someone waits on (`ask`)."
+  def routable?(item) do
+    # What ties the item to the owner: watching or being copied is not
+    # responsibility. An answer without a link keeps the earlier behavior.
+    linked = get_in(item, ["assessment", "link"]) not in ~w(subscribed none)
+
+    linked and
+      (item["role"] == "act" or
+         (item["urgency"] == "ask" and item["role"] not in ~w(waiting reference)))
+  end
+
+  defp outcome("waiting"), do: "waiting"
+  defp outcome(_role), do: "quiet"
+
+  @doc """
+  Whether a judged matter may spend the reserve pools
+  (`SalixIM.MailInteraction.reserve_eligible?/2`): the owner must act and a
+  cost lands inside the action window, or cannot be undone and names no time.
+  The Home Conversation checks it again when it spends.
+  """
+  def reserve_eligible?(item, now \\ SystemsClock.utc_now()) do
+    MailInteraction.reserve_eligible?(
+      Map.put(item["assessment"] || %{}, "role", item["role"]),
+      DateTime.to_unix(now, :millisecond)
+    )
+  end
+
+  # When a matter with a due time is judged again: as it enters the reserve
+  # window, then at the due time itself, whichever is still ahead. Each
+  # judgment sets the next one, so a due time wakes a matter at most twice.
+  # Any role: a meeting next week or a review someone else is doing may need
+  # the owner as it comes near.
+  defp due_wake(assessment, now_ms) do
+    with nil <- MailInteraction.reserve_window_at(assessment, now_ms),
+         {:ok, due, _offset} <- DateTime.from_iso8601((assessment || %{})["due"] || ""),
+         at when at > now_ms <- DateTime.to_unix(due, :millisecond) do
+      at
+    else
+      at when is_integer(at) -> at
+      _ -> nil
+    end
+  end
+
+  # The Home matter this one only repeats. The judgment must say so
+  # (`repeats`: a copy, a resend, another alert of the same failure, with no
+  # new cost, deadline, person waiting or change of state); the server can
+  # tell a copy from a new event in the same thread or chain only through
+  # that answer. Then a matter of the same key that changed within a day (a
+  # week once handled), or the earlier matter it continues in another thread
+  # once the Router stayed quiet about it or it was handled, absorbs it,
+  # unless the new judgment rates it higher, gives an earlier due time or
+  # makes it reserve-eligible. A later step that is not a copy reaches the
+  # Router with the earlier matter, its decision and reason (`continues`),
+  # and the Router weighs what the owner already said.
+  defp repeated(conversation, owner, key, item, now) do
+    entries = MailInteraction.entries(conversation)
+    earlier = get_in(item, ["assessment", "continues", "key"])
+
+    [{key, :same}, {earlier, :continues}]
+    |> Enum.filter(fn {matter_key, _} -> is_binary(matter_key) end)
+    |> Enum.uniq_by(&elem(&1, 0))
+    |> Enum.find_value(fn {matter_key, relation} ->
+      value = entries[matter_key]
+
+      with true <- get_in(item, ["assessment", "repeats"]) == true,
+           %{"owner_id" => ^owner, "urgency" => urgency} when is_binary(urgency) <- value,
+           changed when is_integer(changed) <- value["changed_at"],
+           true <-
+             now - changed <
+               if(value["state"] == "handled", do: @handled_repeat_ms, else: @repeat_ms),
+           true <- relation == :same or value["state"] in ~w(handled quiet),
+           false <- escalates?(item, value) do
+        matter_key
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  defp escalates?(item, value) do
+    rank(item["urgency"]) > rank(value["urgency"]) or
+      (item["pool"] == "reserve" and value["pool"] != "reserve") or
+      earlier?(get_in(item, ["assessment", "due"]), get_in(value, ["assessment", "due"]))
+  end
+
+  defp rank(level), do: Enum.find_index(@levels_by_rank, &(&1 == level)) || -1
+
+  defp earlier?(due, previous) do
+    with {:ok, due, _} <- DateTime.from_iso8601(due || ""),
+         previous <- DateTime.from_iso8601(previous || "") do
+      case previous do
+        {:ok, previous, _} -> DateTime.compare(due, previous) == :lt
+        _ -> true
+      end
+    else
+      _ -> false
+    end
+  end
+
+  defp with_attachments(ctx, %{"context" => %{"attachments" => "unread"}} = item) do
+    case full_mail(ctx, item) do
+      {:ok, read} -> read
+      :error -> item
+    end
+  end
+
+  defp with_attachments(_ctx, item), do: item
+
+  # The full text of a mail item whose pooled excerpt was cut off or whose
+  # attachments were not read, read once through the owner's consented mail
+  # account, with the text of its small text attachments. Other items or a
+  # failed read leave the item as it is.
+  defp full_mail(ctx, %{"toolkit" => toolkit, "messageId" => id, "context" => context} = item)
+       when toolkit in ~w(gmail outlook) and is_binary(id) and is_map(context) do
+    with true <- context["truncated"] == true or context["attachments"] == "unread",
+         {:ok, mail} <-
            CommaWeb.ProactiveMail.read(
              %{"message_id" => id, "connection_id" => item["sourceId"]},
              ctx
            ),
          %{"body" => body} when is_binary(body) and body != "" <-
            Enum.find(mail["messages"] || [], &(&1["message_id"] == id)) do
-      {:ok,
-       Map.put(item, "context", %{
-         "scope" => "full_message",
-         "text" => String.replace(body, ~r/\s+/u, " "),
-         "truncated" => false
-       })}
+      text =
+        [body | attachment_texts(mail["attachments"])]
+        |> Enum.join("\n")
+        |> String.replace(~r/\s+/u, " ")
+
+      read = %{"scope" => "full_message", "text" => text, "truncated" => false}
+
+      # An attachment list that could not be read stays unread for the judgment.
+      read =
+        if context["attachments"],
+          do:
+            Map.put(read, "attachments", if(mail["attachments_read"], do: "read", else: "unread")),
+          else: read
+
+      {:ok, Map.put(item, "context", read)}
     else
       _ -> :error
     end
@@ -309,22 +692,45 @@ defmodule CommaWeb.ProactiveCheck do
 
   defp full_mail(_ctx, _item), do: :error
 
+  # Each attachment by name; a file that was not read says so.
+  defp attachment_texts(attachments) do
+    for %{"name" => name} = file <- List.wrap(attachments) do
+      case file["text"] do
+        text when is_binary(text) ->
+          "attachment #{name}" <>
+            if(file["truncated"], do: " (cut off)", else: "") <> ":\n" <> text
+
+        _ ->
+          "attachment #{name} (#{file["content_type"]}, #{file["size"]} bytes): not read"
+      end
+    end
+  end
+
   # The assessment belongs to the judged matter only; the other items settle
-  # with the level it set.
-  defp settle(items, outcome, urgency \\ nil, assessment \\ nil) do
+  # with the level it set. `opts` adds when the item is judged again
+  # (`next_at` for a budget, `due_at` for its due time), why it waits
+  # (`reason`), the pool it may spend (`pool`) and
+  # the matter it repeats (`of`).
+  defp settle(items, outcome, urgency \\ nil, assessment \\ nil, opts \\ []) do
     attention =
       %{"outcome" => outcome, "at" => SystemsClock.system_time(:millisecond)}
       |> then(&if(urgency, do: Map.put(&1, "urgency", urgency), else: &1))
+      |> then(&if(role = (assessment || %{})["role"], do: Map.put(&1, "role", role), else: &1))
+      |> Map.merge(
+        opts
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      )
 
     {judged, others} =
       case assessment do
         %{"id" => id} -> Enum.split_with(items, &(&1["id"] == id))
-        %{} -> {items, []}
-        nil -> {[], items}
+        %{"cost" => _} -> {items, []}
+        _ -> {[], items}
       end
 
     for {matters, attention} <- [
-          {judged, Map.put(attention, "assessment", Map.delete(assessment || %{}, "id"))},
+          {judged, Map.put(attention, "assessment", Map.drop(assessment || %{}, ~w(id role)))},
           {others, attention}
         ],
         do:
@@ -419,34 +825,9 @@ defmodule CommaWeb.ProactiveCheck do
         item["toolkit"]
       )
 
-  defp judge(workspace, profile, ctx, home, conversation, items) do
-    now = SystemsClock.utc_now()
-    matters = matters(conversation, profile.user_id, now)
-
-    with {:ok, model} <- RecommendationRuntime.model(workspace["router_agent_id"]),
-         {:ok, history} <-
-           Conversations.list_group_conversation_messages(ctx.group_id, home,
-             tail: 12,
-             limit: 12
-           ),
-         input =
-           attention_input(
-             items,
-             history,
-             CommaWeb.MemberPortrait.statements(workspace),
-             now,
-             matters
-           ),
-         {:ok, decision} <-
-           RecommendationRenderer.attention(
-             workspace,
-             model,
-             profile,
-             input,
-             @judge_timeout_ms
-           ) do
-      choice(decision, items, now, matters)
-    end
+  defp item_key(item) do
+    ref = reference(item)
+    MailInteraction.key(item["sourceId"], ref["source_ref"])
   end
 
   @doc """
@@ -488,76 +869,101 @@ defmodule CommaWeb.ProactiveCheck do
 
   @doc """
   The judgment input: the items as the model sees them, the latest Home
-  messages and the Condensed Workspace, portrait first. The proactive replay judges the same
-  input.
+  messages, the Condensed Workspace, portrait first, and the owner's notebook
+  (`CommaWeb.ProactiveNotebook.context/3`). The proactive replay judges the
+  same input.
   """
   def attention_input(
         items,
         home_messages,
         statements \\ [],
         now \\ SystemsClock.utc_now(),
-        matters \\ []
+        matters \\ [],
+        notebook \\ nil
       ),
       do:
         %{
           "candidates" => Enum.map(items, &model_view(&1, now)),
           "conversation" => history(home_messages),
           "member" => CommaWeb.MemberPortrait.view(statements),
-          "matters" => Enum.map(matters, &Map.delete(&1, "key"))
+          "matters" => Enum.map(matters, &Map.delete(&1, "key")),
+          "notebook" => notebook
         }
-        |> Map.reject(fn {key, value} -> key in ~w(member matters) and value == [] end)
+        |> Map.reject(fn {key, value} ->
+          key in ~w(member matters notebook) and value in [[], nil, ""]
+        end)
 
   @doc """
-  The checked judgment: `nil`, `{:unclear, item}`, `{:below, urgency, assessment}` or
-  `{item, urgency, message}`; an answer outside the offered items or levels is
-  `{:error, :invalid_attention_decision}`.
-
-  The answer's cost, due time and reversibility set a floor under the level:
-  a cost that lands within two days, or a cost that cannot be undone and lands
-  within a week, is critical; any other cost is at least high. Ask and
-  unclear answers keep their level. A routed item carries the assessment.
+  The checked screening of one matter: `{:ok, :unclear}`,
+  `{:ok, {:settle, decision, assessment}}` for `briefing` and `resolved`, or
+  `{:ok, {:handoff, item, message}}` for an `interrupt` or `ask` matter the
+  Router may receive. An answer about another candidate, with an unknown
+  decision, or a handoff without a usable message is
+  `{:error, :invalid_attention_decision}`. The server does not change a
+  decision. An `interrupt` or `ask` matter that is not routable (another
+  person's move, or only watched) settles as `briefing`.
   """
-  def choice(decision, items, now \\ SystemsClock.utc_now(), matters \\ [])
+  def decide(answer, matter, now \\ SystemsClock.utc_now(), matters \\ [])
 
-  def choice(%{"most_urgent" => nil}, _items, _now, _matters), do: {:ok, nil}
-
-  def choice(
-        %{"most_urgent" => %{"id" => id, "urgency" => urgency, "message" => message} = answer},
-        items,
-        now,
+  def decide(
+        %{"id" => id, "decision" => decision} = answer,
+        %{"id" => id} = matter,
+        _now,
         matters
       )
-      when is_binary(id) and is_binary(message) do
-    message = String.trim(message)
-    item = Enum.find(items, &(&1["id"] == id))
-    assessment = assessment(answer, matters)
-    urgency = with_floor(urgency, assessment, now)
+      when is_binary(decision) do
+    # An answer without a role keeps the earlier behavior: the owner must act.
+    role =
+      if answer["role"] in RecommendationRenderer.attention_roles(),
+        do: answer["role"],
+        else: "act"
+
+    reason =
+      if is_binary(answer["reason"]), do: String.slice(String.trim(answer["reason"]), 0, 400)
+
+    assessment =
+      answer
+      |> assessment(matters)
+      |> Map.put("role", role)
+      |> then(
+        &if(answer["link"] in RecommendationRenderer.attention_links(),
+          do: Map.put(&1, "link", answer["link"]),
+          else: &1
+        )
+      )
+      |> then(&if(reason, do: Map.put(&1, "reason", reason), else: &1))
+
+    message = String.trim(if is_binary(answer["message"]), do: answer["message"], else: "")
+
+    item =
+      matter
+      |> Map.put("urgency", @urgency[decision])
+      |> Map.put("role", role)
+      |> Map.put("decision", decision)
+      |> Map.put("reason", reason)
+      |> Map.put("assessment", Map.delete(assessment, "reason"))
 
     cond do
-      is_map(item) and urgency == "unclear" ->
-        Logger.info("proactive_attention urgency=unclear routed=false")
-        {:ok, {:unclear, item}}
+      decision == "unclear" ->
+        {:ok, :unclear}
 
-      not is_map(item) or urgency not in RecommendationRenderer.attention_urgencies() or
-        message == "" or byte_size(message) > 2_400 ->
+      decision not in RecommendationRenderer.attention_decisions() ->
         {:error, :invalid_attention_decision}
 
-      urgency in @routed_urgencies ->
-        Logger.info("proactive_attention urgency=#{urgency} routed=true")
+      decision in ~w(interrupt ask) and routable?(item) ->
+        if message == "" or byte_size(message) > 2_400,
+          do: {:error, :invalid_attention_decision},
+          else: {:ok, {:handoff, item, message}}
 
-        {:ok,
-         {item |> Map.put("urgency", urgency) |> Map.put("assessment", assessment), urgency,
-          message}}
+      decision in ~w(interrupt ask) ->
+        {:ok, {:settle, "briefing", assessment}}
 
       true ->
-        Logger.info("proactive_attention urgency=#{urgency} routed=false")
-        {:ok, {:below, urgency, Map.put(assessment, "id", id)}}
+        {:ok, {:settle, decision, assessment}}
     end
   end
 
-  def choice(_decision, _items, _now, _matters), do: {:error, :invalid_attention_decision}
-
-  @levels ~w(low normal high critical)
+  def decide(_answer, _matter, _now, _matters), do: {:error, :invalid_attention_decision}
 
   # What the answer says happens if the owner does nothing, kept with the
   # item's attention so a quiet judgment can be explained.
@@ -581,38 +987,21 @@ defmodule CommaWeb.ProactiveCheck do
     %{
       "cost" => if(is_binary(answer["cost"]), do: String.trim(answer["cost"]), else: ""),
       "due" => due,
-      "reversible" => answer["reversible"] != false
+      "reversible" => answer["reversible"] != false,
+      "repeats" => answer["repeats"] == true
     }
     |> then(&if(continues, do: Map.put(&1, "continues", continues), else: &1))
   end
 
-  defp with_floor(urgency, %{"cost" => cost} = assessment, now)
-       when urgency in @levels and cost != "" do
-    hours =
-      with due when is_binary(due) <- assessment["due"],
-           {:ok, at, _offset} <- DateTime.from_iso8601(due),
-           do: DateTime.diff(at, now, :hour),
-           else: (_ -> nil)
-
-    least =
-      cond do
-        is_integer(hours) and hours <= 48 -> "critical"
-        is_integer(hours) and hours <= 7 * 24 and not assessment["reversible"] -> "critical"
-        true -> "high"
-      end
-
-    Enum.max_by([urgency, least], &Enum.find_index(@levels, fn level -> level == &1 end))
-  end
-
-  defp with_floor(urgency, _assessment, _now), do: urgency
-
-  # `minutesAgo` says how long ago Comma first saw the item, so a judgment can
-  # tell a fresh login code from an old one.
+  # Mail age starts at provider receipt. Collection can find an expired code
+  # for the first time. An unknown receipt time does not make the mail fresh.
   defp model_view(item, now) do
+    at = age_from(item)
+
     %{
       "minutesAgo" =>
-        if(match?(%DateTime{}, item["arrivedAt"]),
-          do: max(DateTime.diff(now, item["arrivedAt"], :minute), 0)
+        if(match?(%DateTime{}, at),
+          do: max(DateTime.diff(now, at, :minute), 0)
         ),
       "id" => item["id"],
       "app" => item["app"],
@@ -622,11 +1011,23 @@ defmodule CommaWeb.ProactiveCheck do
       "recipient" => item["recipient"],
       "context" => item["context"],
       "facts" => item["facts"],
-      "related" => item["related"]
+      "related" => item["related"],
+      "linked" => item["linked"]
     }
     |> Enum.reject(fn {_key, value} -> value in [nil, "", %{}, []] end)
     |> Map.new()
   end
+
+  defp age_from(%{"toolkit" => toolkit} = item) when toolkit in ~w(gmail outlook) do
+    with timestamp when is_binary(timestamp) <- get_in(item, ["facts", "messageTimestamp"]),
+         {:ok, at, _offset} <- DateTime.from_iso8601(timestamp) do
+      at
+    else
+      _ -> nil
+    end
+  end
+
+  defp age_from(item), do: item["arrivedAt"]
 
   # The latest visible messages, newest kept first when the budget runs out.
   defp history(messages) do
@@ -655,7 +1056,7 @@ defmodule CommaWeb.ProactiveCheck do
     |> elem(0)
   end
 
-  defp route(ctx, home, owner, conversation, item, message, linked) do
+  defp route(ctx, home, owner, conversation, item, message, evidence) do
     ref = reference(item)
     key = MailInteraction.key(item["sourceId"], ref["source_ref"])
     current = MailInteraction.entries(conversation)[key]
@@ -664,6 +1065,13 @@ defmodule CommaWeb.ProactiveCheck do
       "action" => "present",
       "automatic" => true,
       "urgency" => item["urgency"],
+      # The screening's decision: the Router delivers it, and withholds it
+      # only for evidence the screening did not have.
+      "decision" => item["decision"],
+      "reason" => item["reason"],
+      # The pool the handoff and the Router's notification may spend: the
+      # reserve only for a reserve-eligible matter.
+      "pool" => item["pool"],
       # What happens if the owner does nothing: cost, due time, reversibility.
       "assessment" => Map.delete(item["assessment"] || %{}, "continues"),
       # The earlier matter this one continues: the Router sees its decision,
@@ -683,8 +1091,10 @@ defmodule CommaWeb.ProactiveCheck do
       "source_url" => item["url"],
       "read" => ref["live_read"] || ref["read"],
       "text" => CommaWeb.Proactive.message(message, item["title"], item["url"]),
-      # What the matter's links say now, read only for a handoff.
-      "linked" => linked
+      # What the matter's links said when it was screened, or, for a matter
+      # whose links the screening did not read, when it was handed over.
+      "linked" => evidence["linked"],
+      "linked_after_screening" => evidence["linked_after_screening"]
     }
 
     with {:ok, command} <- HomeMail.retire_completed_task(command, ctx, home) do

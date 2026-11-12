@@ -117,25 +117,24 @@ defmodule SalixWeb.StationProfiles do
   end
 
   # The platform's model, lent as a profile of an endpoint here whose key is a
-  # token of this connection: a new connection is a new key, so a new version.
-  # Only a Workload's station is lent it.
+  # token of this station's Workload generation: a reconnect keeps the key, so
+  # the version changes only with the model or the generation. Only a
+  # Workload's station is lent it.
   defp platform(%{owner_user_id: _member}), do: []
 
   defp platform(%{tenant_id: tenant} = connection) do
     with {:ok, template} <- SalixWeb.StationLLM.tier(),
          {:ok, token} <-
-           SalixWeb.StationLLM.token(
-             tenant,
-             connection.group_id,
-             connection.device_id,
-             connection.connector_run_id
-           ) do
+           SalixWeb.StationLLM.token(connection) do
       name = template["name"]
 
       [
         %{
           "id" => platform_id(tenant),
-          "version" => :erlang.phash2({template["model"], connection.connector_run_id}),
+          "version" =>
+            :erlang.phash2(
+              {template["model"], connection[:workload_id], connection[:workload_generation]}
+            ),
           "name" => name,
           "profile" => %{
             "name" => name,

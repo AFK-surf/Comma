@@ -11,10 +11,16 @@ extension View {
 
     /// A sheet's way out, the same on every sheet: the cross at the leading edge. `id` keeps an accessibility
     /// identifier a test reaches it by.
-    func sheetCloseButton(id: String? = nil, _ close: @escaping () -> Void) -> some View {
+    func sheetCloseButton(id: String? = nil, horizontalOnly: Bool = false, _ close: @escaping () -> Void) -> some View {
         toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                if let id { SheetCloseButton(close: close).accessibilityIdentifier(id) } else { SheetCloseButton(close: close) }
+            if horizontalOnly {
+                ToolbarItem(placement: .cancellationAction) {
+                    if let id { SheetCloseButton(close: close).accessibilityIdentifier(id) } else { SheetCloseButton(close: close) }
+                }.horizontalBarOnly()
+            } else {
+                ToolbarItem(placement: .cancellationAction) {
+                    if let id { SheetCloseButton(close: close).accessibilityIdentifier(id) } else { SheetCloseButton(close: close) }
+                }
             }
         }
     }

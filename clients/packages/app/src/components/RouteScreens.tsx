@@ -1,4 +1,5 @@
 import { HomeCallControl, useDesktopCallEnabled } from "./voice/DesktopCall";
+import { useOpenPendingScreen } from "./remote-screen/pendingScreen";
 import {
   createChatDraftSnippet,
   useConversationDraftSnippets,
@@ -64,10 +65,16 @@ import {
 // Rail geometry updates do not change the conversation or its data sources.
 export const HomeRoute = memo(function HomeRoute({
   onConnectApps,
+  onRequestedDraftTaken,
+  requestedDraft,
   surfaceActive = true,
   workspaceId,
 }: {
   onConnectApps?: (() => void) | undefined;
+  /** Called once Home has taken `requestedDraft` into its composer. */
+  onRequestedDraftTaken?: (() => void) | undefined;
+  /** Text another page hands to the composer, such as a skill's "Try in Chat". */
+  requestedDraft?: string | undefined;
   surfaceActive?: boolean;
   workspaceId?: string | undefined;
 } = {}) {
@@ -166,7 +173,7 @@ export const HomeRoute = memo(function HomeRoute({
       if (observableSend && attempt.isCurrent()) finishAnalytics("accepted", boundary);
     } catch (error) {
       if (attempt.isCurrent() && !isStaleChatSessionError(error))
-        finishAnalytics("failed", boundary);
+        finishAnalytics("failed", boundary, error);
       if (attempt.isCurrent() && !sendAccepted && !isStaleChatSessionError(error)) {
         setPendingDraft(text);
         setPendingError(
@@ -221,10 +228,12 @@ export const HomeRoute = memo(function HomeRoute({
       onDraftChange={handleDraftChange}
       onPendingDraftApplied={handlePendingDraftApplied}
       onPendingErrorClear={handlePendingErrorClear}
+      onRequestedDraftTaken={onRequestedDraftTaken}
       onRetry={chat.retry}
       onSend={handleSend}
       pendingDraft={pendingDraft}
       pendingError={pendingError}
+      requestedDraft={requestedDraft}
       surfaceActive={surfaceActive}
       workspaceState={chat.state}
     />
@@ -329,10 +338,12 @@ function HomeConversation({
   onDraftChange,
   onPendingDraftApplied,
   onPendingErrorClear,
+  onRequestedDraftTaken,
   onRetry,
   onSend,
   pendingDraft,
   pendingError,
+  requestedDraft,
   surfaceActive,
   workspaceState,
 }: {
@@ -345,10 +356,12 @@ function HomeConversation({
   onDraftChange: (draft: string) => void;
   onPendingDraftApplied: () => void;
   onPendingErrorClear: () => void;
+  onRequestedDraftTaken?: (() => void) | undefined;
   onRetry: () => unknown;
   onSend: (draft: string) => unknown;
   pendingDraft: string;
   pendingError: string | undefined;
+  requestedDraft?: string | undefined;
   surfaceActive: boolean;
   workspaceState: WorkspaceChatState;
 }) {
@@ -375,11 +388,24 @@ function HomeConversation({
   const conversation = useConversation(workspaceId, groupId, conversationId);
   const skills = useWorkspaceSkills(guest ? "" : (workspaceId ?? ""));
   const { openBrowser, openChat } = useChatSidebarActions();
+  // A computer's screen asked for from Settings › Devices opens beside this chat.
+  useOpenPendingScreen(
+    conversationId && groupId && workspaceId
+      ? { conversationId, groupId, workspaceId }
+      : undefined
+  );
   // The onboarding's "Start chatting" lands on this composer.
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   useOnboardingHandoff(() => {
     if (surfaceActive) setComposerFocusRequest((request) => request + 1);
   });
+  // Each hand-over from another page is written into the composer once.
+  const [composerDraftRequest, setComposerDraftRequest] = useState<{ text: string }>();
+  useEffect(() => {
+    if (!requestedDraft) return;
+    setComposerDraftRequest({ text: requestedDraft });
+    onRequestedDraftTaken?.();
+  }, [onRequestedDraftTaken, requestedDraft]);
 
   useLayoutEffect(() => {
     if (!workspaceId || !groupId || !conversationId) return;
@@ -584,6 +610,7 @@ function HomeConversation({
   const composerPresentation = useMemo<ConversationComposerPresentation>(
     () => ({
       disabled: composerDisabled,
+      draftRequest: composerDraftRequest,
       focusRequest: composerFocusRequest,
       snippets: composerDraftSnippets,
       feedback: (
@@ -598,6 +625,7 @@ function HomeConversation({
     }),
     [
       composerDisabled,
+      composerDraftRequest,
       composerDraftSnippets,
       composerFocusRequest,
       composerPlaceholder,

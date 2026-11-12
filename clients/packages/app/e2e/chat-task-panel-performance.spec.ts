@@ -4,6 +4,7 @@ import {
   reactRenderWork,
 } from "../../../e2e/helpers/render-work";
 import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
+import { installVirtualTime } from "../../../e2e/helpers/virtual-time";
 // Build the real chat surface in production mode, the React build users run.
 const test = baseTest.extend<{}, { panelBaseURL: string }>({
   panelBaseURL: [
@@ -32,17 +33,15 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
   panelBaseURL,
 }, testInfo) => {
   await installReactRenderCounter(page, "data-message-id", "data-testid");
+  // Each step runs its page time on the test clock, so what one step starts
+  // (a fold, a refreshed row) ends inside it however slow the runner is.
+  const time = await installVirtualTime(page);
   await page.goto(new URL("/chat-task-panel-performance.html", panelBaseURL).href);
   await page.waitForFunction(() => Boolean(window.chatTaskPanelStress));
+  await time.attach(page);
   const panel = page.getByTestId("chat-task-panel");
   const rows = page.locator('[data-testid^="chat-task-item-"]');
-  const paint = () =>
-    page.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-        )
-    );
+  const paint = () => time.advanceFrames(2);
   const mount = await reactRenderWork(page, async () => {
     await page.evaluate(
       (count) => window.chatTaskPanelStress.load(count),
@@ -50,7 +49,7 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
     );
     await expect(panel).toBeVisible();
     // Canonical summaries land a batch at a time; let the list go quiet.
-    await page.waitForTimeout(1_500);
+    await time.advance(1_500);
   });
   // Each step may render the rows it mounts and the rows whose Task changed.
   // Rows that stay mounted and unchanged keep their elements.
@@ -91,7 +90,7 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
     toggles.push(
       await step(async () => {
         await toggle.evaluate((element) => (element as HTMLElement).click());
-        await page.waitForTimeout(200);
+        await time.advance(200);
       })
     );
   }
@@ -105,7 +104,7 @@ test(`Chat task panel stress ${stressTaskCount} tasks`, async ({
     updates.push(
       await step(async () => {
         await page.evaluate(() => window.chatTaskPanelStress.update());
-        await page.waitForTimeout(120);
+        await time.advance(120);
       })
     );
   }

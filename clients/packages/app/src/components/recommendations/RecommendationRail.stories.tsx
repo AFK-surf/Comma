@@ -642,6 +642,72 @@ export const FullRail = {
   ),
 };
 
+// What the server puts first when the member added matters through their
+// Router (Comma.Recommendations.add_item/4): one with a source link, one without.
+const addedCard = {
+  fallbackText: "与程炜智过 PLM 库; 落实韦晓余的金蝶账号开通",
+  id: "routine-added",
+  items: [
+    {
+      action: {
+        label: "处理",
+        prompt: "落实韦晓余的金蝶账号开通",
+        requiresConfirmation: true,
+        type: "send_to_comma",
+      },
+      id: "added-kingdee",
+      parts: [
+        { kind: "markdown", text: "落实韦晓余的金蝶账号开通" },
+        { kind: "markdown", text: " · 你答应周四前" },
+      ],
+    },
+    {
+      action: {
+        label: "处理",
+        prompt: "与程炜智过 PLM 库\nhttps://example.feishu.cn/messenger/plm",
+        requiresConfirmation: true,
+        type: "send_to_comma",
+      },
+      id: "added-plm",
+      parts: [
+        {
+          kind: "inline-link",
+          link: {
+            href: "https://example.feishu.cn/messenger/plm",
+            label: "与程炜智过 PLM 库",
+            sourceId: "comma-added",
+          },
+        },
+        { kind: "markdown", text: " · 今天 16:00，程炜智私聊" },
+      ],
+    },
+  ],
+  sourceIds: ["comma-added"],
+  template: "text-list@1",
+  title: "你加的事项",
+} satisfies RecommendationGeneratedCard;
+
+export const AddedMatters = {
+  render: () => (
+    <RailFrame
+      envelope={{
+        ...envelope,
+        snapshot: {
+          ...envelope.snapshot,
+          cards: [addedCard, ...envelope.snapshot.cards],
+        },
+      }}
+    >
+      <RecommendationRail
+        onOpenTask={noop}
+        onOpenUrl={noop}
+        onUsePrompt={noop}
+        workspaceId="storybook-workspace"
+      />
+    </RailFrame>
+  ),
+};
+
 export const EmptyState = {
   render: () => (
     <RailFrame envelope={emptyEnvelope}>

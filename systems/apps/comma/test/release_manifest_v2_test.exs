@@ -210,7 +210,7 @@ defmodule Comma.ReleaseManifestV2Test do
     assert_invalid(
       manifest,
       ["steps", Access.at(destructive_index), "safety", "backupRequired"],
-      false
+      nil
     )
 
     assert Enum.all?(manifest["steps"], &(&1["safety"]["rollbackStrategy"] == "none"))

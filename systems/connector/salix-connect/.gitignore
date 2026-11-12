@@ -1,2 +1,0 @@
-# go build in this main-package directory drops the binary here; never commit it.
-/salix-connect

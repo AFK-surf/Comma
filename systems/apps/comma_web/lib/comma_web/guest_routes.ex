@@ -50,6 +50,8 @@ defmodule CommaWeb.GuestRoutes do
     {"POST", ~r{#{@app}/ai/decide$}},
     {"POST", ~r{#{@app}/web/search$}},
     {"GET", ~r{#{@app}/icon$}},
+    {"GET", ~r{#{@app}/author-avatar/#{@segment}$}},
+    {"GET", ~r{#{@app}/screenshots/[0-5]$}},
     # The app answers `unsupported`: a guest has no Drive.
     {"GET", ~r{#{@app}/drive(/file)?$}},
     {"PUT", ~r{#{@app}/drive/file$}},

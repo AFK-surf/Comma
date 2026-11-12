@@ -37,18 +37,23 @@ object ProviderMarks {
     val samples = listOf("linear", "slack", "github", "googledrive")
 
     private val artwork = mapOf(
+        "canva" to R.drawable.provider_canva,
+        "dropbox" to R.drawable.provider_dropbox,
         "feishu" to R.drawable.provider_feishu,
         "github" to R.drawable.provider_github,
         "gmail" to R.drawable.provider_gmail,
         "google" to R.drawable.provider_google,
         "googlecalendar" to R.drawable.provider_googlecalendar,
         "googledrive" to R.drawable.provider_googledrive,
+        "hubspot" to R.drawable.provider_hubspot,
         "lark" to R.drawable.provider_lark,
         "linear" to R.drawable.provider_linear,
         "notion" to R.drawable.provider_notion,
         "outlook" to R.drawable.provider_outlook,
+        "posthog" to R.drawable.provider_posthog,
         "signal" to R.drawable.provider_signal,
         "slack" to R.drawable.provider_slack,
+        "stripe" to R.drawable.provider_stripe,
         "telegram" to R.drawable.provider_telegram,
         "wechat" to R.drawable.provider_wechat,
     )

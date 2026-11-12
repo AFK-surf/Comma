@@ -1,9 +1,9 @@
 #!/bin/sh
-# Installs the still.fail station on this machine and enrolls it in a Comma Workspace:
+# Installs the Comma station on this machine and enrolls it in a Comma Workspace:
 #   curl -fsSL __ORIGIN__/stations/install.sh | sh -s -- <token>
 # The token comes from "Add station" in Comma (single use, one hour). Without a token, a station that is
-# already enrolled is updated in place and keeps its data (~/.stillfail).
-# Served by Comma (CommaWeb.StationEndpoints); mirrors still.fail's cloud/src/install.ts: the release is the one
+# already enrolled is updated in place and keeps its data (~/.comma-station).
+# Served by Comma (CommaWeb.StationEndpoints); the release is the one
 # Comma's manifest pins, Node comes from __RELEASES__, the station runs as a user service (launchd, or systemd
 # --user with lingering), and an update
 # hands over to the new release (SIGUSR2) or drains and restarts (SIGUSR1) so running turns are not cut off.
@@ -11,7 +11,17 @@ set -eu
 origin="__ORIGIN__"
 releases="__RELEASES__"
 token="${1:-}"
-data="${STILLFAIL_DATA:-$HOME/.stillfail}"
+# STILLFAIL_DATA is not read: an agent of a still.fail station on this machine has it set, to that station's directory.
+data="${COMMA_STATION_DATA:-$HOME/.comma-station}"
+# A Comma station from before its rename lives in ~/.stillfail under launchd's fail.still.station. It moves here, once,
+# when the update restarts it (migrate_data): a link stays at the old place, for the paths its chats keep. A still.fail
+# station in that directory is another product's and stays.
+final_data="$data"
+if grep -q '"provider" *: *"comma"' "$HOME/.stillfail/mesh/cloud.json" 2>/dev/null && [ ! -L "$HOME/.stillfail" ]; then
+  if [ "$data" = "$HOME/.comma-station" ] && [ ! -f "$data/mesh/cloud.json" ]; then
+    data="$HOME/.stillfail"
+  fi
+fi
 # Where the update is, for the station to show (download, handoff, drain, restart).
 step() { [ -d "$data/run" ] && printf '%s\n' "$1" > "$data/run/update.step" 2>/dev/null || true; }
 if [ -z "$token" ] && [ ! -f "$data/mesh/cloud.json" ]; then
@@ -21,7 +31,7 @@ if [ -z "$token" ] && [ ! -f "$data/mesh/cloud.json" ]; then
 fi
 # A station enrolled elsewhere (still.fail cloud, or another Comma) is left alone: updating it from here would
 # replace its release with Comma's, and enrolling it would move it out of its workspace. Moving it needs
-# --move-station after the token. A cloud.json without a provider is a still.fail one.
+# --move-station after the token. A cloud.json without a provider is a Comma one.
 cloud="$data/mesh/cloud.json"
 if [ -f "$cloud" ]; then
   enrolled_provider=$(sed -n 's/.*"provider" *: *"\([^"]*\)".*/\1/p' "$cloud" | head -1)
@@ -53,36 +63,37 @@ case "$os-$(uname -m)" in
   *) echo "This machine is not supported: $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 app="$data/app"
-label="fail.still.station"
+label="surf.comma.station"
+former_label="fail.still.station"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-unit="stillfail-station.service"
+unit="comma-station.service"
 user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Downloading the still.fail station $release_version..."
+echo "Downloading the Comma station $release_version..."
 step download
-curl -fL --progress-bar "$artifact" -o "$tmp/stillfail.tar.gz"
+curl -fL --progress-bar "$artifact" -o "$tmp/comma-station.tar.gz"
 if [ -n "$artifact_sha" ]; then
-  got=$({ shasum -a 256 "$tmp/stillfail.tar.gz" 2>/dev/null || sha256sum "$tmp/stillfail.tar.gz"; } | cut -d' ' -f1)
+  got=$({ shasum -a 256 "$tmp/comma-station.tar.gz" 2>/dev/null || sha256sum "$tmp/comma-station.tar.gz"; } | cut -d' ' -f1)
   if [ "$got" != "$artifact_sha" ]; then
     echo "The station download does not match the sha256 Comma pins for $release_version. Nothing was changed." >&2
     exit 1
   fi
 fi
-tar -xzf "$tmp/stillfail.tar.gz" -C "$tmp"
-if [ -n "$release_commit" ] && [ "$(cat "$tmp/stillfail/VERSION" 2>/dev/null)" != "$release_commit" ]; then
+tar -xzf "$tmp/comma-station.tar.gz" -C "$tmp"
+if [ -n "$release_commit" ] && [ "$(cat "$tmp/comma-station/VERSION" 2>/dev/null)" != "$release_commit" ]; then
   echo "The station at $artifact is not the release Comma pins ($release_version). Nothing was changed." >&2
   exit 1
 fi
-printf '%s\n' stable > "$tmp/stillfail/CHANNEL"
+printf '%s\n' stable > "$tmp/comma-station/CHANNEL"
 
 # The Node the release runs on (NODE_VERSION) is kept apart in <data>/node/v<version>, once per version, and linked
 # at <app>/node. The machine's own Node is used when it is exactly that version; else it is downloaded and checked.
 node_dir=""
-if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
-  node_version=$(cat "$tmp/stillfail/NODE_VERSION")
+if [ -f "$tmp/comma-station/NODE_VERSION" ]; then
+  node_version=$(cat "$tmp/comma-station/NODE_VERSION")
   node_dir="$data/node/v$node_version"
   if [ ! -x "$node_dir/bin/node" ]; then
     rm -rf "$node_dir.part"
@@ -108,7 +119,7 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
     "$node_dir.part/bin/node" -v >/dev/null 2>&1 || { echo "Node $node_version does not run on this machine." >&2; exit 1; }
     mv "$node_dir.part" "$node_dir"
   fi
-  ln -s "$node_dir" "$tmp/stillfail/node"
+  ln -s "$node_dir" "$tmp/comma-station/node"
 fi
 prune_node() {
   [ -n "$node_dir" ] || return 0
@@ -127,12 +138,12 @@ if [ "$os" = Darwin ]; then
 <plist version="1.0">
 <dict>
     <key>Label</key><string>$label</string>
-    <key>ProgramArguments</key><array><string>$app/bin/stillfail</string><string>start</string></array>
-    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$agent_path</string><key>STILLFAIL_DATA</key><string>$data</string></dict>
+    <key>ProgramArguments</key><array><string>$final_data/app/bin/comma-station</string><string>start</string></array>
+    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$agent_path</string><key>COMMA_STATION_DATA</key><string>$final_data</string></dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$data/stillfail.log</string>
-    <key>StandardErrorPath</key><string>$data/stillfail.log</string>
+    <key>StandardOutPath</key><string>$final_data/station.log</string>
+    <key>StandardErrorPath</key><string>$final_data/station.log</string>
 </dict>
 </plist>
 PLIST
@@ -141,18 +152,18 @@ elif user_systemd; then
   # KillMode=process: stopping the service stops the station, not the jobs it runs.
   cat > "$tmp/service" <<UNIT
 [Unit]
-Description=still.fail station
+Description=Comma station
 After=network-online.target
 
 [Service]
-ExecStart=$app/bin/stillfail start
+ExecStart=$final_data/app/bin/comma-station start
 Environment=PATH=$agent_path
-Environment=STILLFAIL_DATA=$data
+Environment=COMMA_STATION_DATA=$final_data
 Restart=always
 RestartSec=5
 KillMode=process
-StandardOutput=append:$data/stillfail.log
-StandardError=append:$data/stillfail.log
+StandardOutput=append:$final_data/station.log
+StandardError=append:$final_data/station.log
 
 [Install]
 WantedBy=default.target
@@ -168,7 +179,7 @@ pid=""
 if [ -z "$token" ] && [ -f "$station_json" ]; then
   pid=$(said pid)
   case "$(ps -p "${pid:-0}" -o command= 2>/dev/null)" in
-    *stillfail-station*) ;;
+    *comma-station*|*stillfail-station*) ;;
     *) pid="" ;;
   esac
 fi
@@ -183,7 +194,7 @@ inside_station() {
   return 1
 }
 
-if [ -n "$pid" ] && [ -f "$app/VERSION" ] && cmp -s "$tmp/stillfail/VERSION" "$app/VERSION" && same_service; then
+if [ -n "$pid" ] && [ -f "$app/VERSION" ] && cmp -s "$tmp/comma-station/VERSION" "$app/VERSION" && same_service; then
   echo "The station is up to date ($(cut -c1-7 "$app/VERSION"))."
   exit 0
 fi
@@ -193,13 +204,13 @@ swap_app() {
   mkdir -p "$data"
   rm -rf "$app.old"
   [ -d "$app" ] && mv "$app" "$app.old"
-  mv "$tmp/stillfail" "$app"
+  mv "$tmp/comma-station" "$app"
   swapped=yes
 }
 
 # Handed over without stopping: the new release takes the old one's place and the running station execs it.
 handed=""
-if [ -n "$pid" ] && [ -n "$(said handoff)" ] && same_service; then
+if [ -n "$pid" ] && [ -n "$(said handoff)" ] && [ "$data" = "$final_data" ] && same_service; then
   started=$(said startedAt)
   swap_app
   rm -f "$data/run/handoff-failed"
@@ -228,7 +239,7 @@ if [ -n "$pid" ] && [ -n "$(said handoff)" ] && same_service; then
 fi
 
 restart_and_finish() {
-if [ -z "$handed" ] && [ -n "$pid" ] && [ -n "$(said drain)" ] && [ -z "${STILLFAIL_NO_DRAIN:-}" ]; then
+if [ -z "$handed" ] && [ -n "$pid" ] && [ -n "$(said drain)" ] && [ -z "${COMMA_STATION_NO_DRAIN:-}" ]; then
   # Restarted once no turn runs (at most about 10 minutes; it takes no new turns meanwhile).
   rm -f "$data/run/drained"
   step drain
@@ -245,25 +256,46 @@ step restart
 if [ "$os" = Darwin ]; then
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || break; sleep 1; done
+  if [ "$data" != "$final_data" ]; then
+    launchctl bootout "gui/$(id -u)/$former_label" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/$former_label" >/dev/null 2>&1 || break; sleep 1; done
+    rm -f "$HOME/Library/LaunchAgents/$former_label.plist"
+  fi
 else
   if user_systemd; then
     systemctl --user stop "$unit" 2>/dev/null || true
+    if [ "$data" != "$final_data" ]; then
+      systemctl --user disable --now stillfail-station.service 2>/dev/null || true
+      rm -f "$unit_dir/stillfail-station.service"
+    fi
   fi
-  if [ -f "$data/stillfail.pid" ]; then
+  if [ "$data" != "$final_data" ] && [ -f "$data/stillfail.pid" ]; then
     kill "$(cat "$data/stillfail.pid")" 2>/dev/null || true
     rm -f "$data/stillfail.pid"
+  fi
+  if [ -f "$data/station.pid" ]; then
+    kill "$(cat "$data/station.pid")" 2>/dev/null || true
+    rm -f "$data/station.pid"
   fi
 fi
 [ -n "$swapped" ] || swap_app
 rm -rf "$app.old"
 prune_node
+if [ "$data" != "$final_data" ]; then
+  rm -rf "$final_data"
+  mv "$data" "$final_data"
+  ln -s "$final_data" "$data"
+  rm -f "$HOME/.local/bin/stillfail"
+  data="$final_data"
+  app="$data/app"
+fi
 fi
 mkdir -p "$HOME/.local/bin"
-ln -sf "$app/bin/stillfail" "$HOME/.local/bin/stillfail"
+ln -sf "$app/bin/comma-station" "$HOME/.local/bin/comma-station"
 
 if [ -n "$token" ]; then
   echo "Enrolling this station in Comma..."
-  "$app/bin/stillfail" station enroll "$origin" "$token" --provider comma
+  "$app/bin/comma-station" station enroll "$origin" "$token" --provider comma
 fi
 
 if [ -n "$handed" ]; then
@@ -286,8 +318,8 @@ else
     systemctl --user restart "$unit"
     loginctl enable-linger "$(id -un)" 2>/dev/null || lingering="no"
   else
-    nohup env PATH="$agent_path" STILLFAIL_DATA="$data" "$app/bin/stillfail" start >> "$data/stillfail.log" 2>&1 &
-    echo $! > "$data/stillfail.pid"
+    nohup env PATH="$agent_path" COMMA_STATION_DATA="$data" "$app/bin/comma-station" start >> "$data/station.log" 2>&1 &
+    echo $! > "$data/station.pid"
     no_service="yes"
   fi
 fi
@@ -300,7 +332,7 @@ else
 fi
 echo "  App: $app"
 echo "  Data: $data"
-echo "  Status: stillfail status"
+echo "  Status: comma-station status"
 [ "$os" = Linux ] && [ -z "${no_service:-}" ] && echo "  Service: systemctl --user status $unit"
 [ -n "${lingering:-}" ] && echo "  To keep it running while signed out: sudo loginctl enable-linger $(id -un)"
 [ -n "${no_service:-}" ] && echo "  No user service manager here: it runs in the background and does not start again after a reboot."

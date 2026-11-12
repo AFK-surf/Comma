@@ -9,60 +9,35 @@ defmodule BridgeForTeams.Environments do
   through a durable project/device cursor; mutations and point lookups still
   cross the typed Salix boundary.
 
-  Creating a project device records a runner-backed provision request. The
-  runner claims that request, receives the Salix connector credential once,
-  and starts `salix-connect`; the current connector run materializes when the
-  connector actually attaches. Project device operations address the stable
-  `device_id`.
+  A project device is a station connected to the Agent Swarm's Salix Group;
+  its current connector run materializes when the station attaches. Project
+  device operations address the stable `device_id`.
   """
   import Ecto.Query
   require Logger
 
   alias BridgeForTeams.{Repo, RuntimeAuth, Telemetry}
-  alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.Observability
   alias BridgeForTeams.Salix.Client
-  alias BridgeForTeams.Salix.Reconciler
 
   alias BridgeForTeams.Schema.{
-    EnvironmentProvisionRequest,
     MacMiniProvisioner,
-    OrgMembership,
     Organization,
     Project,
     ProjectDeviceProjection,
-    ProjectDeviceProjectionScan,
-    ProjectMembership
+    ProjectDeviceProjectionScan
   }
 
-  @provision_request_attach_statuses ~w(preflight starting_connector waiting_for_attach)
-  @active_device_provision_request_statuses ~w(pending preflight preflight_complete starting_connector waiting_for_attach stop_requested stopping)
-  @provision_request_timeout_statuses ~w(waiting_for_attach)
-  @provisioner_reportable_statuses ~w(preflight_complete starting_connector waiting_for_attach failed stopped)
-  @provisioner_status_transitions %{
-    "preflight" => ~w(preflight_complete starting_connector waiting_for_attach failed),
-    "preflight_complete" => ~w(starting_connector waiting_for_attach failed),
-    # The runner may restart the persisted local connector for the same
-    # device request, and the connector launch path reports starting_connector again.
-    "starting_connector" => ~w(starting_connector waiting_for_attach failed),
-    "waiting_for_attach" => ~w(starting_connector waiting_for_attach failed),
-    # Connected requests can temporarily go back through attach states while the
-    # runner restarts the same persisted connector credential.
-    "connected" => ~w(starting_connector waiting_for_attach failed),
-    "stopping" => ~w(stopped failed)
-  }
   @mac_mini_status_event_types ~w(runner.registered runner.status_observed runner.status_changed)
   @environment_runtime_event_types ~w(device.runtime.observed device.runtime.disconnected device.runtime.degraded device.runtime.recovered)
-  @default_provision_reconcile_limit 50
-  @max_provision_reconcile_limit 100
-  @default_provision_request_list_limit 100
-  @max_provision_request_list_limit 500
-  @default_attach_timeout_ms 300_000
+  @default_device_list_limit 100
+  # A hardware board must first connect within this window (as in Comma).
+  @hardware_registration_seconds 600
+  @max_device_list_limit 500
   @mac_mini_online_ttl_seconds 45
   @mac_mini_recently_lost_ttl_seconds 300
   @default_mac_mini_page_limit 25
   @max_mac_mini_page_limit 100
-  @default_runner_connector_page_limit 50
   @device_projection_scan_id "project-devices"
   @default_device_projection_page_limit 50
   @default_device_projection_lease_ms 30_000
@@ -219,72 +194,6 @@ defmodule BridgeForTeams.Environments do
     }
   end
 
-  @doc "Summarize provisioning states for connector assignments on a bounded runner set."
-  def runner_connector_assignment_status_counts(org_id, runner_ids, user_id) do
-    runner_ids = runner_ids |> Enum.uniq() |> Enum.take(@max_mac_mini_page_limit)
-
-    org_id
-    |> runner_connector_assignments_query(user_id)
-    |> where([request: r], r.provisioner_id in ^runner_ids)
-    |> group_by([request: r], [r.provisioner_id, r.status])
-    |> order_by([request: r], asc: r.provisioner_id, asc: r.status)
-    |> select([request: r], %{
-      runner_id: r.provisioner_id,
-      provisioning_status: r.status,
-      count: count(r.id)
-    })
-    |> Repo.all()
-    |> Enum.group_by(& &1.runner_id, &{&1.provisioning_status, &1.count})
-  end
-
-  @doc "Page connector assignments for one runner, including every provisioning state."
-  def page_runner_connector_assignments(org_id, runner_id, user_id, opts \\ []) do
-    requested_limit = Keyword.get(opts, :limit, @default_runner_connector_page_limit)
-    limit = requested_limit |> min(@max_mac_mini_page_limit) |> max(1)
-
-    rows =
-      org_id
-      |> runner_connector_assignments_query(user_id)
-      |> where([request: r], r.provisioner_id == ^runner_id)
-      |> maybe_after_runner_connector(Keyword.get(opts, :after))
-      |> order_by([request: r], asc: r.id)
-      |> limit(^(limit + 1))
-      |> select([request: r, project: p], %{
-        id: r.id,
-        project_id: p.id,
-        project_name: p.name,
-        name: r.name,
-        env_alias: r.env_alias,
-        provisioning_status: r.status
-      })
-      |> Repo.all()
-
-    entries = Enum.take(rows, limit)
-    next_cursor = if length(rows) > limit, do: List.last(entries).id
-    %{entries: entries, cursor: Keyword.get(opts, :after), next_cursor: next_cursor}
-  end
-
-  defp runner_connector_assignments_query(org_id, user_id) do
-    from(r in EnvironmentProvisionRequest,
-      as: :request,
-      join: p in Project,
-      as: :project,
-      on: p.id == r.project_id,
-      join: org_membership in OrgMembership,
-      on: org_membership.org_id == r.org_id and org_membership.user_id == ^user_id,
-      left_join: project_membership in ProjectMembership,
-      on: project_membership.project_id == p.id and project_membership.user_id == ^user_id,
-      where:
-        r.org_id == ^org_id and not is_nil(r.provisioner_id) and
-          (org_membership.role in ["owner", "admin"] or not is_nil(project_membership.id))
-    )
-  end
-
-  defp maybe_after_runner_connector(query, cursor) when is_binary(cursor) and cursor != "",
-    do: where(query, [request: r], r.id > ^cursor)
-
-  defp maybe_after_runner_connector(query, _cursor), do: query
-
   @doc "Fetch an org-scoped runner."
   @spec get_mac_mini_provisioner(Ecto.UUID.t()) ::
           {:ok, MacMiniProvisioner.t()} | {:error, :not_found}
@@ -345,101 +254,14 @@ defmodule BridgeForTeams.Environments do
     end
   end
 
-  defp create_environment_provision_request(project_id, attrs, opts) do
-    attrs = normalize(attrs)
-
-    result =
-      with {:ok, project} <- fetch_project(project_id),
-           %Organization{} = org <- Repo.get(Organization, project.org_id),
-           {:ok, provisioner} <- fetch_org_provisioner(org.id, attrs["provisioner_id"]),
-           :ok <- ensure_provisioner_online(provisioner),
-           :ok <- ensure_group_ready(project) do
-        request_attrs =
-          provision_request_attrs(org, project, provisioner, attrs)
-
-        result =
-          %EnvironmentProvisionRequest{}
-          |> EnvironmentProvisionRequest.changeset(request_attrs)
-          |> Repo.insert()
-          |> observe_provision_result("created", "bft.write_path", opts)
-
-        case result do
-          {:ok, %EnvironmentProvisionRequest{} = request} ->
-            maybe_record_environment_audit(
-              "device.provision_requested",
-              org,
-              project,
-              "device_provision_request",
-              request.id,
-              request.name || request.env_alias || request.id,
-              environment_provision_metadata(request),
-              opts
-            )
-
-          _other ->
-            :ok
-        end
-
-        result
-      end
-
-    maybe_record_environment_write_attempt(
-      result,
-      "device.provision_requested",
-      project_id,
-      attrs["provisioner_id"],
-      attrs,
-      opts
-    )
-
-    result
-  end
-
-  @doc "Create a runner-backed project device request."
-  @spec create_device_provision_request(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def create_device_provision_request(project_id, attrs, opts \\ []) do
-    create_environment_provision_request(project_id, attrs, opts)
-  end
-
-  defp list_environment_provision_requests(project_id, opts) do
-    limit =
-      opts
-      |> Keyword.get(:limit, @default_provision_request_list_limit)
-      |> max(1)
-      |> min(@max_provision_request_list_limit)
-
-    Repo.all(
-      from(r in EnvironmentProvisionRequest,
-        where: r.project_id == ^project_id,
-        preload: [:provisioner],
-        order_by: [desc: r.created_at, desc: r.id],
-        limit: ^limit
-      )
-    )
-  end
-
-  @doc """
-  List the bounded PostgreSQL projection of device provision requests.
-
-  External attachment reconciliation is exclusively owned by
-  `BridgeForTeams.EnvironmentProvisioning.Reconciler`; this read path never
-  calls Salix or mutates request state.
-  """
-  @spec list_device_provision_requests(Ecto.UUID.t(), keyword()) ::
-          [EnvironmentProvisionRequest.t()]
-  def list_device_provision_requests(project_id, opts \\ []) do
-    list_environment_provision_requests(project_id, opts)
-  end
-
   @doc "List a bounded rebuildable PostgreSQL projection of project devices."
   @spec list_projected_environments(Ecto.UUID.t(), keyword()) :: {:ok, [map()]}
   def list_projected_environments(project_id, opts \\ []) do
     limit =
       opts
-      |> Keyword.get(:limit, @default_provision_request_list_limit)
+      |> Keyword.get(:limit, @default_device_list_limit)
       |> max(1)
-      |> min(@max_provision_request_list_limit)
+      |> min(@max_device_list_limit)
 
     rows =
       Repo.all(
@@ -453,74 +275,93 @@ defmodule BridgeForTeams.Environments do
     {:ok, Enum.map(rows, &projected_environment/1)}
   end
 
-  @doc "Return whether a project has an active device provision request."
-  @spec device_provisioning_active?(Ecto.UUID.t()) :: boolean()
-  def device_provisioning_active?(project_id) do
-    Repo.exists?(
-      from(r in EnvironmentProvisionRequest,
-        where:
-          r.project_id == ^project_id and
-            r.status in ^@active_device_provision_request_statuses
-      )
-    )
-  end
-
-  defp reconcile_environment_provision_requests(opts, claim) do
-    limit =
-      opts
-      |> Keyword.get(:limit, @default_provision_reconcile_limit)
-      |> max(1)
-      |> min(@max_provision_reconcile_limit)
-
-    now = Keyword.get(opts, :now, SystemsClock.utc_now())
-    attach_timeout_ms = Keyword.get(opts, :attach_timeout_ms, @default_attach_timeout_ms)
-
-    requests = active_provision_requests(limit)
-
-    with {:ok, {updated_by_id, connected_count, checked_groups}} <-
-           reconcile_attached_request_batch(requests, claim, opts),
-         :ok <- renew_device_projection_claim(claim, opts) do
-      connected_ids = MapSet.new(Map.keys(updated_by_id))
-
-      timed_out_count =
-        timeout_stale_attach_requests(
-          requests,
-          connected_ids,
-          checked_groups,
-          now,
-          attach_timeout_ms
-        )
-
-      _status_events = observe_mac_mini_statuses(now)
-
-      {:ok,
-       %{
-         scanned: length(requests),
-         checked_groups: MapSet.size(checked_groups),
-         connected: connected_count,
-         timed_out: timed_out_count
-       }}
+  @doc """
+  Read one project's devices from Salix into the projection now (one bounded
+  page), so a device set up, deleted or changed from the Devices page shows on
+  the next read instead of when the round-robin scan reaches the project.
+  Without a next page the projection drops the project's devices Salix no
+  longer has.
+  """
+  @spec refresh_project_devices(Ecto.UUID.t()) :: :ok | {:error, term()}
+  def refresh_project_devices(project_id) do
+    with {:ok, %Project{salix_group_id: group_id} = project, %Organization{} = org}
+         when is_binary(group_id) <- fetch_project_with_org(project_id),
+         {:ok, %{records: records, next_cursor: next_cursor}} when is_list(records) <-
+           Client.impl().page_group_envs(group_id, org.salix_tenant_id,
+             limit: @default_device_projection_page_limit
+           ) do
+      commit_project_device_refresh(project, records, next_cursor)
+    else
+      {:ok, %Project{}, %Organization{}} -> {:error, :not_found}
+      {:ok, _page} -> {:error, :invalid_device_projection_page}
+      {:error, _reason} = error -> error
     end
   end
 
-  @doc "Reconcile active project device requests against the Salix registry."
-  @spec reconcile_device_provision_requests(keyword()) ::
-          {:ok, %{required(atom()) => non_neg_integer()}}
-  def reconcile_device_provision_requests(opts \\ []) do
+  # Rows carry the scan's current generation, so a scan pass already under
+  # way keeps them; it only drops rows older than the pass.
+  defp commit_project_device_refresh(project, records, next_cursor) do
+    now = SystemsClock.utc_now()
+
+    Repo.transaction(fn ->
+      generation =
+        Repo.one(
+          from(s in ProjectDeviceProjectionScan,
+            where: s.id == @device_projection_scan_id,
+            lock: "FOR UPDATE",
+            select: s.generation
+          )
+        ) || 0
+
+      claim = %{project: project, project_generation: generation}
+
+      rows =
+        records
+        |> Enum.map(&device_projection_row(claim, &1, now))
+        |> Enum.reject(&is_nil/1)
+
+      upsert_device_projection_rows(rows)
+
+      if is_nil(next_cursor) do
+        device_ids = Enum.map(rows, & &1.device_id)
+
+        Repo.delete_all(
+          from(p in ProjectDeviceProjection,
+            where: p.project_id == ^project.id and p.device_id not in ^device_ids
+          )
+        )
+      end
+
+      :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Refresh one page of the device projection from the Salix registry and
+  record runner status changes.
+  """
+  @spec reconcile_devices(keyword()) :: {:ok, %{projected: non_neg_integer()}} | {:error, term()}
+  def reconcile_devices(opts \\ []) do
     case claim_device_projection_scan(opts) do
       {:complete, _count} ->
-        {:ok, empty_provision_reconcile_summary()}
+        {:ok, %{projected: 0}}
 
       {:busy, _generation} ->
-        {:ok, empty_provision_reconcile_summary()}
+        {:ok, %{projected: 0}}
 
       {:error, _reason} = error ->
         error
 
       {:ok, claim} ->
-        with {:ok, summary} <- reconcile_environment_provision_requests(opts, claim),
-             {:ok, projected} <- reconcile_claimed_device_projection(claim, opts) do
-          {:ok, Map.put(summary, :projected, projected)}
+        _status_events =
+          observe_mac_mini_statuses(Keyword.get(opts, :now, SystemsClock.utc_now()))
+
+        with {:ok, projected} <- reconcile_claimed_device_projection(claim, opts) do
+          {:ok, %{projected: projected}}
         end
     end
   end
@@ -560,128 +401,6 @@ defmodule BridgeForTeams.Environments do
     end
   end
 
-  defp empty_provision_reconcile_summary do
-    %{scanned: 0, checked_groups: 0, connected: 0, timed_out: 0, projected: 0}
-  end
-
-  defp get_environment_provision_request(request_id) do
-    case Repo.get(EnvironmentProvisionRequest, request_id) do
-      nil -> {:error, :not_found}
-      request -> {:ok, request}
-    end
-  end
-
-  @doc "Fetch one device provision request."
-  @spec get_device_provision_request(Ecto.UUID.t()) ::
-          {:ok, EnvironmentProvisionRequest.t()} | {:error, :not_found}
-  def get_device_provision_request(request_id) do
-    get_environment_provision_request(request_id)
-  end
-
-  defp get_environment_provision_request_for_provisioner(org_id, provisioner_id, request_id) do
-    with {:ok, request} <- get_environment_provision_request(request_id),
-         :ok <- ensure_request_owner(request, org_id, provisioner_id) do
-      {:ok, request}
-    end
-  end
-
-  @doc "Fetch a device provision request if it belongs to the calling runner."
-  @spec get_device_provision_request_for_provisioner(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          Ecto.UUID.t()
-        ) :: {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def get_device_provision_request_for_provisioner(org_id, provisioner_id, request_id) do
-    get_environment_provision_request_for_provisioner(org_id, provisioner_id, request_id)
-  end
-
-  defp update_environment_provision_request_status(request_or_id, status, attrs)
-
-  defp update_environment_provision_request_status(
-         %EnvironmentProvisionRequest{} = request,
-         status,
-         attrs
-       ) do
-    update_environment_provision_request_status_from(request, status, attrs, "bft.write_path")
-  end
-
-  defp update_environment_provision_request_status(request_id, status, attrs) do
-    with {:ok, request} <- get_environment_provision_request(request_id) do
-      update_environment_provision_request_status(request, status, attrs)
-    end
-  end
-
-  defp update_environment_provision_request_status_from(
-         %EnvironmentProvisionRequest{} = request,
-         status,
-         attrs,
-         source,
-         opts \\ []
-       ) do
-    attrs =
-      attrs
-      |> normalize()
-      |> Map.take([
-        "failure_code",
-        "failure_message",
-        "connector_run_id",
-        "connector_token_hash",
-        "progress"
-      ])
-      |> sanitize_progress_attr()
-      |> Map.put("status", status)
-      |> clear_connector_run_unless_live()
-
-    request
-    |> EnvironmentProvisionRequest.changeset(attrs)
-    |> Repo.update()
-    |> observe_provision_result(lifecycle_event_for_status(status), source, opts)
-  end
-
-  defp claim_environment_provision_request(org_id, provisioner_id, opts) do
-    opts = normalize(opts)
-
-    with {:ok, provisioner} <- fetch_org_provisioner(org_id, provisioner_id),
-         :ok <- ensure_provisioner_online(provisioner),
-         %Organization{} = org <- Repo.get(Organization, org_id) do
-      case claim_stop_request(provisioner, opts) do
-        {:ok, request} ->
-          {:ok, %{action: "stop", request: request, connect: %{}, launch: stop_spec(request)}}
-
-        {:error, :no_stop_request} ->
-          if available_capacity(opts) <= 0 do
-            {:error, :no_pending_request}
-          else
-            with {:ok, request} <- claim_pending_request(provisioner, opts) do
-              claim_with_connector_token(org, request, opts)
-            end
-          end
-      end
-    else
-      {:error, reason} ->
-        {:error, reason}
-
-      nil ->
-        {:error, :not_found}
-    end
-  end
-
-  @doc "Claim the next pending project device request for an org-scoped runner."
-  @spec claim_device_provision_request(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
-          {:ok,
-           %{
-             action: String.t(),
-             request: EnvironmentProvisionRequest.t(),
-             connect: map(),
-             launch: map()
-           }}
-          | {:error, term()}
-  def claim_device_provision_request(org_id, provisioner_id, opts \\ %{}) do
-    observe_runner(:runner_claim, fn ->
-      claim_environment_provision_request(org_id, provisioner_id, opts)
-    end)
-  end
-
   defp observe_runner(operation, fun) do
     started = SystemsClock.monotonic_time()
 
@@ -705,124 +424,6 @@ defmodule BridgeForTeams.Environments do
   defp runner_outcome({:ok, _result}), do: "ok"
   defp runner_outcome({:error, :no_pending_request}), do: "ok"
   defp runner_outcome(_result), do: "error"
-
-  @spec request_environment_provision_stop(Ecto.UUID.t()) ::
-          {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  defp request_environment_provision_stop(request_id) do
-    with {:ok, request} <- get_environment_provision_request(request_id),
-         :ok <- ensure_stoppable_request(request) do
-      update_environment_provision_request_status(request, "stop_requested", %{})
-    end
-  end
-
-  @doc "Request that a runner stop/remove a previously provisioned device."
-  @spec request_device_provision_stop(Ecto.UUID.t()) ::
-          {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def request_device_provision_stop(request_id) do
-    request_environment_provision_stop(request_id)
-  end
-
-  defp request_environment_provision_stop(project_id, request_id, opts) do
-    with {:ok, request} <- get_environment_provision_request(request_id),
-         :ok <- ensure_request_project(request, project_id),
-         :ok <- ensure_stoppable_request(request) do
-      result = update_environment_provision_request_status(request, "stop_requested", %{})
-
-      case result do
-        {:ok, %EnvironmentProvisionRequest{} = stopped} ->
-          maybe_record_environment_audit(
-            "device.stop_requested",
-            %Organization{id: stopped.org_id},
-            %Project{
-              id: stopped.project_id,
-              name: stopped.name || stopped.env_alias || "Device"
-            },
-            "device_provision_request",
-            stopped.id,
-            stopped.name || stopped.env_alias || stopped.id,
-            environment_provision_metadata(stopped),
-            opts
-          )
-
-        _other ->
-          :ok
-      end
-
-      result
-    end
-  end
-
-  @doc "Request stop for a device provision request that belongs to a project."
-  @spec request_device_provision_stop(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
-          {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def request_device_provision_stop(project_id, request_id, opts \\ []) do
-    request_environment_provision_stop(project_id, request_id, opts)
-  end
-
-  defp update_environment_provision_request_from_provisioner(
-         org_id,
-         provisioner_id,
-         request_id,
-         status,
-         attrs,
-         opts
-       ) do
-    attrs =
-      attrs
-      |> normalize()
-      |> Map.take(["failure_code", "failure_message", "connector_run_id", "progress"])
-      |> sanitize_progress_attr()
-
-    with {:ok, request} <- get_environment_provision_request(request_id),
-         :ok <- ensure_request_owner(request, org_id, provisioner_id),
-         :ok <- ensure_provisioner_reportable_status(status),
-         :ok <- ensure_provisioner_status_transition(request, status) do
-      update_environment_provision_request_status_from(
-        request,
-        status,
-        attrs,
-        "bft.provisioner_api",
-        opts
-      )
-    end
-  end
-
-  @doc "Update a device provision request if it belongs to the calling runner."
-  @spec update_device_provision_request_from_provisioner(
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          Ecto.UUID.t(),
-          String.t(),
-          map(),
-          keyword() | map()
-        ) :: {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def update_device_provision_request_from_provisioner(
-        org_id,
-        provisioner_id,
-        request_id,
-        status,
-        attrs \\ %{},
-        opts \\ []
-      ) do
-    update_environment_provision_request_from_provisioner(
-      org_id,
-      provisioner_id,
-      request_id,
-      status,
-      attrs,
-      opts
-    )
-  end
-
-  @doc "Advance a device provision request's status without exposing connector secrets."
-  @spec update_device_provision_request_status(
-          EnvironmentProvisionRequest.t() | Ecto.UUID.t(),
-          String.t(),
-          map()
-        ) :: {:ok, EnvironmentProvisionRequest.t()} | {:error, term()}
-  def update_device_provision_request_status(request_or_id, status, attrs \\ %{}) do
-    update_environment_provision_request_status(request_or_id, status, attrs)
-  end
 
   @doc """
   List a bounded PostgreSQL projection of the project's devices.
@@ -1196,6 +797,7 @@ defmodule BridgeForTeams.Environments do
     case result do
       {:ok, record, current} ->
         maybe_record_environment_disconnect_audit(record, current, opts)
+        _ = refresh_project_devices(project_id)
         {:ok, record}
 
       {:error, _reason} ->
@@ -1219,20 +821,15 @@ defmodule BridgeForTeams.Environments do
              fetch_project_with_org(project_id),
            {:ok, current} <-
              Client.impl().get_env(device_id, project.salix_group_id, org.salix_tenant_id),
-           request = provision_request_for_environment(project.id, current),
            {:ok, record} <-
-             Client.impl().delete_env(
-               device_id,
-               project.salix_group_id,
-               org.salix_tenant_id,
-               request && request.connector_token_hash
-             ) do
-        {:ok, record, current, project, org, request}
+             Client.impl().delete_env(device_id, project.salix_group_id, org.salix_tenant_id, nil) do
+        {:ok, record, current, project, org}
       end
 
     case result do
-      {:ok, record, current, project, org, request} ->
-        maybe_request_deleted_device_stop(request)
+      {:ok, record, current, project, org} ->
+        delete_hardware_voice_keys(project, org, device_id)
+        _ = refresh_project_devices(project.id)
 
         maybe_record_environment_audit(
           "device.deleted",
@@ -1241,9 +838,7 @@ defmodule BridgeForTeams.Environments do
           "device",
           device_id,
           environment_runtime_label(current),
-          environment_disconnect_metadata(project, current)
-          |> Map.put("provision_request_id", current["provision_request_id"])
-          |> compact_provision_attrs(),
+          environment_disconnect_metadata(project, current),
           opts
         )
 
@@ -1259,6 +854,233 @@ defmodule BridgeForTeams.Environments do
 
         result
     end
+  end
+
+  @doc """
+  Mint the two credentials a Comma hardware board (AFK-surf/Hardware) stores
+  when it is set up for this project: a Connector token it must first connect
+  with within ten minutes, and a voice key named after the device. All or
+  nothing: what was made before a failure is revoked. The result is the JSON
+  the board's BLE `credentials` characteristic takes.
+  """
+  @spec provision_hardware_device(Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def provision_hardware_device(project_id, name, opts \\ []) do
+    with {:ok, name} <- hardware_device_name(name),
+         {:ok, %Project{} = project, %Organization{} = org} <- fetch_project_with_org(project_id),
+         {:ok, token} <-
+           Client.impl().create_group_connector_token(
+             project.salix_group_id,
+             org.salix_tenant_id,
+             %{
+               "name" => name,
+               "registration_expires_in_seconds" => @hardware_registration_seconds,
+               "meta" => %{
+                 "surface" => "bft",
+                 "workspace_id" => project.id,
+                 "device_kind" => "hardware"
+               }
+             }
+           ),
+         {:ok, credentials} <- hardware_voice_credentials(project, org, name, token) do
+      _ = refresh_project_devices(project.id)
+
+      maybe_record_environment_audit(
+        "device.provisioned",
+        org,
+        project,
+        "device",
+        token["device_id"],
+        name,
+        %{"salix_group_id" => project.salix_group_id},
+        opts
+      )
+
+      {:ok, credentials}
+    end
+  end
+
+  @doc """
+  The one-line command that installs the station on a computer and enrolls it
+  in this project's Group, issued as the member who asked (who then owns the
+  device). It works once and expires after an hour. No device exists until the
+  station first connects.
+  """
+  @spec create_station_install(Ecto.UUID.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def create_station_install(project_id, name, user_id, opts \\ []) do
+    with {:ok, name} <- hardware_device_name(name),
+         {:ok, %Project{} = project, %Organization{} = org} <- fetch_project_with_org(project_id),
+         {:ok, install} <-
+           Client.impl().create_station_install(
+             project.salix_group_id,
+             org.salix_tenant_id,
+             name,
+             user_id
+           ) do
+      maybe_record_environment_audit(
+        "device.station_install_created",
+        org,
+        project,
+        "device",
+        nil,
+        name,
+        %{"salix_group_id" => project.salix_group_id},
+        opts
+      )
+
+      {:ok, install}
+    end
+  end
+
+  defp hardware_voice_credentials(project, org, name, token) do
+    group_id = project.salix_group_id
+    revoke = fn -> revoke_connector_token(group_id, org.salix_tenant_id, token["token"]) end
+
+    with {:ok, device_id, connect_url} <- hardware_token(token),
+         {:ok, key} <-
+           Client.impl().create_group_voice_key(group_id, org.salix_tenant_id, %{
+             "name" => hardware_voice_key_name(name, device_id)
+           })
+           |> on_error(revoke),
+         {:ok, server} <-
+           hardware_voice_server(Client.impl().group_voice_urls(group_id))
+           |> on_error(fn ->
+             _ =
+               Client.impl().delete_group_voice_key(group_id, org.salix_tenant_id, key["key_id"])
+
+             revoke.()
+           end) do
+      {:ok,
+       %{
+         "device_id" => device_id,
+         "server" => server,
+         "connect_url" => connect_url,
+         "workspace_id" => project.id,
+         "group_id" => group_id,
+         "connector_token" => token["token"],
+         "voice_key" => key["key"],
+         "device_name" => name
+       }}
+    else
+      {:error, :bad_token} ->
+        revoke.()
+        {:error, :bad_token}
+
+      error ->
+        error
+    end
+  end
+
+  defp hardware_token(%{"device_id" => device_id, "connect_url" => "ws" <> _ = url, "token" => t})
+       when is_binary(device_id) and device_id != "" and is_binary(t),
+       do: {:ok, device_id, url}
+
+  defp hardware_token(_token), do: {:error, :bad_token}
+
+  # The board's `server` is the origin of the Group's voice readiness URL.
+  defp hardware_voice_server(%{"readiness_url" => url}) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} = uri
+      when scheme in ["https", "http"] and is_binary(host) ->
+        {:ok, URI.to_string(%URI{scheme: scheme, host: host, port: uri.port})}
+
+      _ ->
+        {:error, :no_voice_server}
+    end
+  end
+
+  defp hardware_voice_server(_urls), do: {:error, :no_voice_server}
+
+  defp on_error({:ok, _} = ok, _cleanup), do: ok
+
+  defp on_error(error, cleanup) do
+    cleanup.()
+    error
+  end
+
+  defp revoke_connector_token(group_id, tenant_id, token) do
+    case Client.impl().revoke_group_connector_token(group_id, tenant_id, token) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("hardware_token_revoke_failed reason=#{inspect(reason)}")
+    end
+  end
+
+  # The board stores at most 63 bytes of name.
+  defp hardware_device_name(name) when is_binary(name) do
+    name = String.trim(name)
+
+    if name != "" and byte_size(name) <= 63 and String.valid?(name),
+      do: {:ok, name},
+      else: {:error, :invalid_name}
+  end
+
+  defp hardware_device_name(_name), do: {:error, :invalid_name}
+
+  # Voice key names hold at most 80 characters and end in the device id, which
+  # `delete_environment/3` uses to find them.
+  defp hardware_voice_key_name(name, device_id) do
+    suffix = " (#{device_id})"
+    String.slice(name, 0, max(80 - String.length(suffix), 0)) <> suffix
+  end
+
+  @doc """
+  Let a project device run operations, or make it read-only again. The
+  device's Connector applies the change and reports it in its metadata, which
+  the device projection picks up.
+  """
+  @spec set_device_operations(Ecto.UUID.t(), String.t(), boolean(), keyword()) ::
+          {:ok, boolean()} | {:error, term()}
+  def set_device_operations(project_id, device_id, allow, opts \\ []) when is_boolean(allow) do
+    with {:ok, %Project{} = project, %Organization{} = org} <- fetch_project_with_org(project_id),
+         {:ok, current} <-
+           Client.impl().get_env(device_id, project.salix_group_id, org.salix_tenant_id),
+         {:ok, run_id} <- live_connector_run(current),
+         {:ok, %{"allows_operations" => ^allow}} <-
+           Client.impl().connector_request(run_id, "device_access", %{
+             "allow_operations" => allow
+           }) do
+      maybe_record_environment_audit(
+        if(allow, do: "device.operations_allowed", else: "device.operations_blocked"),
+        org,
+        project,
+        "device",
+        device_id,
+        environment_runtime_label(current),
+        %{"salix_group_id" => project.salix_group_id},
+        opts
+      )
+
+      _ = refresh_project_devices(project.id)
+      {:ok, allow}
+    else
+      {:ok, _other} -> {:error, :device_access_unavailable}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp live_connector_run(%{"status" => "connected", "connector_run_id" => run_id})
+       when is_binary(run_id) and run_id != "",
+       do: {:ok, run_id}
+
+  defp live_connector_run(_record), do: {:error, :device_offline}
+
+  # A deleted hardware board loses its voice key too. A group holds at most 20
+  # voice keys, so this is one bounded read.
+  defp delete_hardware_voice_keys(project, org, device_id) do
+    suffix = " (#{device_id})"
+
+    with {:ok, keys} <-
+           Client.call_optional(:list_group_voice_keys, [
+             project.salix_group_id,
+             org.salix_tenant_id
+           ]) do
+      for %{"key_id" => key_id, "name" => name} <- keys, String.ends_with?(name, suffix) do
+        Client.impl().delete_group_voice_key(project.salix_group_id, org.salix_tenant_id, key_id)
+      end
+    end
+
+    :ok
   end
 
   # ---- internal ----
@@ -1320,40 +1142,6 @@ defmodule BridgeForTeams.Environments do
       end
     end
   end
-
-  defp maybe_record_environment_write_attempt(
-         {:error, reason},
-         action,
-         project_id,
-         resource_id,
-         attrs,
-         opts
-       ) do
-    if audit_enabled?(opts) do
-      with {:ok, %Project{} = project} <- fetch_project(project_id),
-           %Organization{} = org <- Repo.get(Organization, project.org_id) do
-        record_environment_write_attempt(
-          org.id,
-          action,
-          resource_id || project_id,
-          environment_label(project, attrs),
-          reason,
-          environment_request_metadata(project, attrs),
-          opts
-        )
-      end
-    end
-  end
-
-  defp maybe_record_environment_write_attempt(
-         _result,
-         _action,
-         _project_id,
-         _resource_id,
-         _attrs,
-         _opts
-       ),
-       do: :ok
 
   defp maybe_record_environment_write_attempt_from_opts(
          {:error, reason},
@@ -1432,31 +1220,6 @@ defmodule BridgeForTeams.Environments do
     end
   end
 
-  defp environment_request_metadata(%Project{} = project, attrs) do
-    attrs = normalize(attrs)
-
-    %{
-      "project_id" => project.id,
-      "salix_group_id" => project.salix_group_id,
-      "name_configured" => configured?(attrs["name"]),
-      "alias_configured" => configured?(attrs["alias"]),
-      "provisioner_id" => attrs["provisioner_id"]
-    }
-    |> compact_provision_attrs()
-  end
-
-  defp environment_provision_metadata(%EnvironmentProvisionRequest{} = request) do
-    %{
-      "project_id" => request.project_id,
-      "provisioner_id" => request.provisioner_id,
-      "salix_group_id" => request.salix_group_id,
-      "status" => request.status,
-      "name_configured" => configured?(request.name),
-      "alias_configured" => configured?(request.env_alias)
-    }
-    |> compact_provision_attrs()
-  end
-
   defp environment_disconnect_metadata(%Project{} = project, record) do
     %{
       "project_id" => project.id,
@@ -1464,25 +1227,7 @@ defmodule BridgeForTeams.Environments do
       "status" => environment_runtime_status(record),
       "salix_group_id" => project.salix_group_id
     }
-    |> compact_provision_attrs()
-  end
-
-  defp provision_request_for_environment(project_id, %{"provision_request_id" => request_id})
-       when is_binary(request_id) and request_id != "",
-       do: Repo.get_by(EnvironmentProvisionRequest, id: request_id, project_id: project_id)
-
-  defp provision_request_for_environment(_project_id, _record), do: nil
-
-  defp maybe_request_deleted_device_stop(%EnvironmentProvisionRequest{status: status} = request)
-       when status in ~w(preflight_complete starting_connector waiting_for_attach connected failed) do
-    request_environment_provision_stop(request.id)
-  end
-
-  defp maybe_request_deleted_device_stop(_request), do: :ok
-
-  defp environment_label(%Project{} = project, attrs) do
-    attrs = normalize(attrs)
-    attrs["name"] || attrs["alias"] || project.name
+    |> compact_attrs()
   end
 
   defp audit_enabled?(opts) do
@@ -1510,109 +1255,11 @@ defmodule BridgeForTeams.Environments do
     end
   end
 
-  defp ensure_group_ready(%Project{} = project) do
-    case Client.impl().get_group(project.salix_group_id) do
-      {:ok, _group} ->
-        :ok
-
-      {:error, _reason} ->
-        _ = Reconciler.drain_once()
-        :ok
-    end
-  end
-
   defp normalize(attrs) when is_map(attrs) do
     Map.new(attrs, fn {k, v} -> {to_string(k), v} end)
   end
 
-  defp sanitize_progress_attr(%{"progress" => progress} = attrs) do
-    Map.put(attrs, "progress", sanitize_progress(progress))
-  end
-
-  defp sanitize_progress_attr(attrs), do: attrs
-
-  defp clear_connector_run_unless_live(%{"status" => status} = attrs)
-       when status in ~w(connected stop_requested stopping),
-       do: attrs
-
-  defp clear_connector_run_unless_live(attrs), do: Map.put(attrs, "connector_run_id", nil)
-
-  defp sanitize_progress(progress) when is_map(progress) do
-    progress = normalize(progress)
-
-    progress
-    |> Map.take([
-      "stage",
-      "updated_at",
-      "dry_run",
-      "pid",
-      "restart_count",
-      "root",
-      "exit_code",
-      "connector_run_id",
-      "stop",
-      "cleanup",
-      "launch"
-    ])
-    |> maybe_sanitize_launch()
-    |> maybe_sanitize_stop()
-    |> maybe_sanitize_cleanup()
-  end
-
-  defp sanitize_progress(_progress), do: %{}
-
-  defp maybe_sanitize_launch(%{"launch" => launch} = progress) when is_map(launch) do
-    launch = normalize(launch)
-
-    Map.put(progress, "launch", Map.take(launch, ["argv_shape"]))
-  end
-
-  defp maybe_sanitize_launch(progress), do: progress
-
-  defp maybe_sanitize_stop(%{"stop" => stop} = progress) when is_map(stop) do
-    stop = normalize(stop)
-
-    Map.put(progress, "stop", Map.take(stop, ["managed", "exit_code", "restart_count"]))
-  end
-
-  defp maybe_sanitize_stop(progress), do: progress
-
-  defp maybe_sanitize_cleanup(%{"cleanup" => cleanup} = progress) when is_map(cleanup) do
-    cleanup = normalize(cleanup)
-
-    Map.put(progress, "cleanup", Map.take(cleanup, ["mode", "removed", "error"]))
-  end
-
-  defp maybe_sanitize_cleanup(progress), do: progress
-
-  defp fetch_org_provisioner(org_id, provisioner_id)
-       when is_binary(provisioner_id) and provisioner_id != "" do
-    case Repo.get(MacMiniProvisioner, provisioner_id) do
-      %MacMiniProvisioner{org_id: ^org_id} = provisioner ->
-        {:ok, with_effective_mac_mini_status(provisioner)}
-
-      %MacMiniProvisioner{} ->
-        {:error, :provisioner_not_found}
-
-      nil ->
-        {:error, :provisioner_not_found}
-    end
-  end
-
-  defp fetch_org_provisioner(_org_id, _provisioner_id), do: {:error, :provisioner_not_found}
-
-  defp ensure_provisioner_online(%MacMiniProvisioner{} = provisioner) do
-    if effective_mac_mini_provisioner_status(provisioner) == "online" do
-      :ok
-    else
-      {:error, :provisioner_offline}
-    end
-  end
-
-  defp with_effective_mac_mini_status(
-         %MacMiniProvisioner{} = provisioner,
-         now \\ SystemsClock.utc_now()
-       ) do
+  defp with_effective_mac_mini_status(%MacMiniProvisioner{} = provisioner, now) do
     %{
       provisioner
       | effective_status: effective_mac_mini_provisioner_status(provisioner, now),
@@ -1756,14 +1403,12 @@ defmodule BridgeForTeams.Environments do
       effective_status: provisioner.effective_status,
       previous_effective_status: latest && latest.status,
       heartbeat_age_seconds: provisioner.last_seen_age_seconds,
-      capacity: provisioner.capacity,
-      current_connector_count: provisioner.current_connector_count,
       version: provisioner.version,
       os_summary: provisioner.os_summary,
       component_versions: capabilities["component_versions"]
     }
     |> maybe_put_request_id(opts)
-    |> compact_provision_attrs()
+    |> compact_attrs()
   end
 
   defp mac_mini_label(%MacMiniProvisioner{name: name}) when is_binary(name) and name != "",
@@ -1886,7 +1531,7 @@ defmodule BridgeForTeams.Environments do
       occurred_at: environment_runtime_occurred_at(record)
     }
     |> maybe_put_runtime_runner(record, project.org_id)
-    |> compact_provision_attrs()
+    |> compact_attrs()
   end
 
   defp maybe_put_runtime_runner(attrs, %{"provisioner_id" => provisioner_id}, org_id)
@@ -1962,7 +1607,7 @@ defmodule BridgeForTeams.Environments do
       provision_request_id: record["provision_request_id"],
       provisioner_id: record["provisioner_id"]
     }
-    |> compact_provision_attrs()
+    |> compact_attrs()
   end
 
   defp environment_runtime_correlation_id(record) do
@@ -2026,290 +1671,6 @@ defmodule BridgeForTeams.Environments do
     nonblank(record["status"], "unknown")
   end
 
-  defp ensure_stoppable_request(%EnvironmentProvisionRequest{status: status})
-       when status in ~w(preflight_complete starting_connector waiting_for_attach connected failed) do
-    :ok
-  end
-
-  defp ensure_stoppable_request(%EnvironmentProvisionRequest{status: "stopped"}), do: :ok
-  defp ensure_stoppable_request(_request), do: {:error, :not_stoppable}
-
-  defp provision_request_attrs(org, project, provisioner, attrs) do
-    name = nonblank(attrs["name"], "Project device")
-    env_alias = nonblank(attrs["alias"], nil)
-
-    %{
-      "org_id" => org.id,
-      "project_id" => project.id,
-      "provisioner_id" => provisioner.id,
-      "salix_group_id" => project.salix_group_id,
-      "name" => name,
-      "env_alias" => env_alias,
-      "status" => "pending",
-      "spec" => %{
-        "provisioner_stable_id" => provisioner.stable_id,
-        "salix_group_id" => project.salix_group_id
-      }
-    }
-  end
-
-  defp claim_with_connector_token(
-         %Organization{} = org,
-         %EnvironmentProvisionRequest{} = request,
-         opts
-       ) do
-    with {:ok, connect} <- mint_provision_request_connector_token(org, request),
-         {:ok, request} <- record_claimed_request(request, connect, opts) do
-      {:ok, %{action: "create", request: request, connect: connect, launch: launch_spec(request)}}
-    else
-      {:error, reason} ->
-        _ =
-          update_environment_provision_request_status_from(
-            request,
-            "failed",
-            %{
-              "failure_code" => "device_connection.create_failed",
-              "failure_message" => device_connection_failure_message(reason)
-            },
-            "bft.provisioner_api",
-            opts
-          )
-
-        {:error, :device_connection_create_failed}
-    end
-  end
-
-  defp claim_stop_request(%MacMiniProvisioner{} = provisioner, opts) do
-    Repo.transaction(fn ->
-      request =
-        Repo.one(
-          from(r in EnvironmentProvisionRequest,
-            where:
-              r.org_id == ^provisioner.org_id and
-                r.provisioner_id == ^provisioner.id and
-                r.status == "stop_requested",
-            order_by: [asc: r.updated_at],
-            limit: 1,
-            lock: "FOR UPDATE SKIP LOCKED"
-          )
-        )
-
-      case request do
-        nil ->
-          Repo.rollback(:no_stop_request)
-
-        %EnvironmentProvisionRequest{} = request ->
-          request
-          |> EnvironmentProvisionRequest.changeset(%{"status" => "stopping"})
-          |> Repo.update()
-          |> observe_provision_result("stopping", "bft.provisioner_api", opts)
-          |> case do
-            {:ok, updated} -> updated
-            {:error, changeset} -> Repo.rollback(changeset)
-          end
-      end
-    end)
-    |> case do
-      {:ok, request} -> {:ok, request}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp available_capacity(%{"available_capacity" => value}) when is_integer(value), do: value
-
-  defp available_capacity(%{"available_capacity" => value}) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} -> int
-      _ -> 1
-    end
-  end
-
-  defp available_capacity(_opts), do: 1
-
-  defp claim_pending_request(%MacMiniProvisioner{} = provisioner, opts) do
-    Repo.transaction(fn ->
-      request =
-        Repo.one(
-          from(r in EnvironmentProvisionRequest,
-            where:
-              r.org_id == ^provisioner.org_id and
-                r.provisioner_id == ^provisioner.id and
-                r.status == "pending",
-            order_by: [asc: r.created_at],
-            limit: 1,
-            lock: "FOR UPDATE SKIP LOCKED"
-          )
-        )
-
-      case request do
-        nil ->
-          Repo.rollback(:no_pending_request)
-
-        %EnvironmentProvisionRequest{} = request ->
-          request
-          |> EnvironmentProvisionRequest.changeset(%{"status" => "preflight"})
-          |> Repo.update()
-          |> observe_provision_result("claimed", "bft.provisioner_api", opts)
-          |> case do
-            {:ok, updated} -> updated
-            {:error, changeset} -> Repo.rollback(changeset)
-          end
-      end
-    end)
-    |> case do
-      {:ok, request} -> {:ok, request}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp active_provision_requests(limit) do
-    Repo.all(
-      from(r in EnvironmentProvisionRequest,
-        where: r.status in ^@provision_request_attach_statuses,
-        order_by: [asc: r.updated_at],
-        limit: ^limit
-      )
-    )
-  end
-
-  defp reconcile_attached_request_batch([], _claim, _opts) do
-    {:ok, {%{}, 0, MapSet.new()}}
-  end
-
-  defp reconcile_attached_request_batch(requests, claim, opts) do
-    requests
-    |> Enum.group_by(& &1.salix_group_id)
-    |> Enum.reduce_while(
-      {:ok, {%{}, 0, MapSet.new()}},
-      fn {group_id, group_requests}, {:ok, {updated_by_id, connected_count, checked_groups}} ->
-        tenant_id = group_requests |> List.first() |> request_tenant_id()
-
-        with :ok <- renew_device_projection_claim(claim, opts),
-             {:ok, envs} <- tenant_id && Client.impl().list_group_envs(group_id, tenant_id),
-             :ok <- renew_device_projection_claim(claim, opts) do
-          connected_envs = Enum.filter(envs, &(&1["status"] == "connected"))
-
-          {group_updates, group_count} =
-            Enum.reduce(group_requests, {%{}, 0}, fn request, {updates, count} ->
-              updated = maybe_reconcile_attached_request(request, connected_envs)
-
-              if updated.status == "connected" and request.status != "connected" do
-                {Map.put(updates, request.id, updated), count + 1}
-              else
-                {updates, count}
-              end
-            end)
-
-          {:cont,
-           {:ok,
-            {
-              Map.merge(updated_by_id, group_updates),
-              connected_count + group_count,
-              MapSet.put(checked_groups, group_id)
-            }}}
-        else
-          {:error, :stale_device_projection_claim} = error -> {:halt, error}
-          _provider_error -> {:cont, {:ok, {updated_by_id, connected_count, checked_groups}}}
-        end
-      end
-    )
-  end
-
-  defp request_tenant_id(%EnvironmentProvisionRequest{project_id: project_id}) do
-    case fetch_project_with_org(project_id) do
-      {:ok, _project, org} -> org.salix_tenant_id
-      _error -> nil
-    end
-  end
-
-  defp request_tenant_id(_request), do: nil
-
-  defp maybe_reconcile_attached_request(
-         %EnvironmentProvisionRequest{status: status} = request,
-         connected_envs
-       )
-       when status in @provision_request_attach_statuses do
-    case Enum.find(connected_envs, &env_matches_provision_request?(&1, request)) do
-      %{} = env ->
-        connector_run_id = env["connector_run_id"]
-
-        if is_binary(connector_run_id) and connector_run_id != "" do
-          request
-          |> EnvironmentProvisionRequest.changeset(%{
-            "status" => "connected",
-            "connector_run_id" => connector_run_id,
-            "failure_code" => nil,
-            "failure_message" => nil,
-            "progress" =>
-              Map.merge(request.progress || %{}, %{
-                "stage" => "connected",
-                "connector_run_id" => connector_run_id
-              })
-          })
-          |> Repo.update()
-          |> observe_provision_result("connected", "salix.env")
-          |> case do
-            {:ok, updated} -> Repo.preload(updated, :provisioner)
-            {:error, _changeset} -> request
-          end
-        else
-          request
-        end
-
-      _ ->
-        request
-    end
-  end
-
-  defp maybe_reconcile_attached_request(request, _connected_envs), do: request
-
-  defp timeout_stale_attach_requests(requests, connected_ids, checked_groups, now, timeout_ms) do
-    cutoff = DateTime.add(now, -timeout_ms, :millisecond)
-
-    Enum.reduce(requests, 0, fn request, acc ->
-      if timeout_candidate?(request, connected_ids, checked_groups, cutoff) do
-        case mark_attach_timeout(request, timeout_ms) do
-          {:ok, _request} -> acc + 1
-          {:error, _reason} -> acc
-        end
-      else
-        acc
-      end
-    end)
-  end
-
-  defp timeout_candidate?(request, connected_ids, checked_groups, cutoff) do
-    request.status in @provision_request_timeout_statuses and
-      not MapSet.member?(connected_ids, request.id) and
-      MapSet.member?(checked_groups, request.salix_group_id) and
-      stale_timestamp?(request.updated_at, cutoff)
-  end
-
-  defp stale_timestamp?(%DateTime{} = updated_at, cutoff) do
-    DateTime.compare(updated_at, cutoff) in [:lt, :eq]
-  end
-
-  defp stale_timestamp?(_, _cutoff), do: false
-
-  defp mark_attach_timeout(request, timeout_ms) do
-    request
-    |> update_environment_provision_request_status_from(
-      "failed",
-      %{
-        "failure_code" => "connector.attach_timeout",
-        "failure_message" => "connector did not attach within #{timeout_ms}ms",
-        "progress" => Map.merge(request.progress || %{}, %{"stage" => "attach_timeout"})
-      },
-      "salix.env"
-    )
-  end
-
-  defp env_matches_provision_request?(%{"provision_request_id" => provision_request_id}, request) do
-    provision_request_id == request.id
-  end
-
-  defp env_matches_provision_request?(_env, _request), do: false
-
   defp projected_environment(%ProjectDeviceProjection{} = projection) do
     inventory = projection.runtime_inventory || %{}
 
@@ -2321,7 +1682,9 @@ defmodule BridgeForTeams.Environments do
       "status" => projection.status,
       "updated_at" => projection.source_updated_at,
       "device_runtimes" => inventory["items"] || [],
+      "device_kind" => inventory["device_kind"],
       "capabilities" => inventory["capabilities"],
+      "allows_operations" => inventory["allows_operations"] == true,
       "system_info" => inventory["system_info"],
       "system_info_updated_at" => inventory["system_info_updated_at"],
       "os" => inventory["os"],
@@ -2538,23 +1901,7 @@ defmodule BridgeForTeams.Environments do
         |> Enum.map(&device_projection_row(claim, &1, now))
         |> Enum.reject(&is_nil/1)
 
-      if rows != [] do
-        Repo.insert_all(ProjectDeviceProjection, rows,
-          conflict_target: [:project_id, :device_id],
-          on_conflict:
-            {:replace,
-             [
-               :connector_run_id,
-               :connector_id,
-               :name,
-               :status,
-               :source_updated_at,
-               :runtime_inventory,
-               :observed_generation,
-               :updated_at
-             ]}
-        )
-      end
+      upsert_device_projection_rows(rows)
 
       if is_nil(next_cursor) do
         Repo.delete_all(
@@ -2585,6 +1932,28 @@ defmodule BridgeForTeams.Environments do
   defp commit_device_projection_page(_claim, _result),
     do: {:error, :invalid_device_projection_page}
 
+  defp upsert_device_projection_rows([]), do: :ok
+
+  defp upsert_device_projection_rows(rows) do
+    Repo.insert_all(ProjectDeviceProjection, rows,
+      conflict_target: [:project_id, :device_id],
+      on_conflict:
+        {:replace,
+         [
+           :connector_run_id,
+           :connector_id,
+           :name,
+           :status,
+           :source_updated_at,
+           :runtime_inventory,
+           :observed_generation,
+           :updated_at
+         ]}
+    )
+
+    :ok
+  end
+
   defp device_projection_row(claim, %{"device_id" => device_id} = record, now)
        when is_binary(device_id) and device_id != "" do
     %{
@@ -2597,7 +1966,9 @@ defmodule BridgeForTeams.Environments do
       source_updated_at: integer_or_nil(record["updated_at"]),
       runtime_inventory: %{
         "items" => List.wrap(record["device_runtimes"]),
+        "device_kind" => record["device_kind"],
         "capabilities" => record["capabilities"],
+        "allows_operations" => allows_operations?(record),
         "system_info" => record["system_info"],
         "system_info_updated_at" => record["system_info_updated_at"],
         "os" => record["os"],
@@ -2611,6 +1982,13 @@ defmodule BridgeForTeams.Environments do
   end
 
   defp device_projection_row(_claim, _record, _now), do: nil
+
+  # A read-only device's command environments all require permission.
+  defp allows_operations?(record) do
+    Enum.any?(List.wrap(record["environments"]), fn env ->
+      is_map(env) and env["requires_permission"] == false
+    end)
+  end
 
   defp fail_device_projection_scan(claim, reason) do
     error_class =
@@ -2646,231 +2024,7 @@ defmodule BridgeForTeams.Environments do
 
   defp integer_or_nil(_value), do: nil
 
-  defp mint_provision_request_connector_token(%Organization{} = org, request) do
-    Client.impl().create_group_connector_token(
-      request.salix_group_id,
-      org.salix_tenant_id,
-      %{
-        "name" => request.name,
-        "alias" => request.env_alias,
-        "meta" => %{
-          "provision_request_id" => request.id,
-          "provisioner_id" => request.provisioner_id
-        }
-      }
-    )
-  end
-
-  defp record_claimed_request(request, %{"token" => token}, opts) do
-    spec =
-      request
-      |> request_spec()
-      |> Map.merge(launch_spec(request))
-
-    request
-    |> EnvironmentProvisionRequest.changeset(%{
-      "status" => "preflight",
-      "connector_token_hash" => Sessions.hash_token(token),
-      "spec" => spec
-    })
-    |> Repo.update()
-    |> observe_provision_result("preflight", "bft.provisioner_api", opts)
-  end
-
-  defp record_claimed_request(_request, _connect, _opts),
-    do: {:error, :device_connection_create_failed}
-
-  defp device_connection_failure_message(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp device_connection_failure_message(reason), do: inspect(reason)
-
-  # The relative root preserves the runner-owned workdir and existing files.
-  defp launch_spec(request) do
-    %{
-      "name" => request.name,
-      "alias" => request.env_alias,
-      "root" => Path.join("agents", connector_root_name(request))
-    }
-  end
-
-  defp stop_spec(request) do
-    %{
-      "provision_request_id" => request.id,
-      "connector_run_id" => request.connector_run_id,
-      "name" => request.name,
-      "alias" => request.env_alias
-    }
-  end
-
-  defp request_spec(%EnvironmentProvisionRequest{spec: spec}) when is_map(spec), do: spec
-  defp request_spec(_), do: %{}
-
-  # The name derives from the request id so restarts and reinstalls find the
-  # same connector root.
-  defp connector_root_name(%{id: id}) when is_binary(id) do
-    "bft_" <> String.replace(id, "-", "_")
-  end
-
-  defp observe_provision_result(result, lifecycle, source, opts \\ [])
-
-  defp observe_provision_result(
-         {:ok, %EnvironmentProvisionRequest{} = request} = result,
-         lifecycle,
-         source,
-         opts
-       ) do
-    case observe_provision_request(request, lifecycle, source, opts) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "device_provision_observability_failed reason=#{inspect(reason)} request_id=#{request.id}"
-        )
-    end
-
-    result
-  end
-
-  defp observe_provision_result(result, _lifecycle, _source, _opts), do: result
-
-  defp observe_provision_request(
-         %EnvironmentProvisionRequest{} = request,
-         lifecycle,
-         source,
-         opts
-       ) do
-    lifecycle = lifecycle_event_for_status(lifecycle)
-
-    with {:ok, run} <- Observability.create_operation_run(provision_run_attrs(request, opts)),
-         {:ok, _event} <-
-           Observability.create_event(
-             provision_event_attrs(request, run, lifecycle, source, opts)
-           ) do
-      :ok
-    end
-  end
-
-  defp provision_run_attrs(%EnvironmentProvisionRequest{} = request, opts) do
-    %{
-      org_id: request.org_id,
-      project_id: request.project_id,
-      runner_type: "mac_mini_provisioner",
-      runner_id: request.provisioner_id,
-      run_type: "device_provision",
-      external_run_id: request.id,
-      request_id: request.id,
-      status: provision_run_status(request.status),
-      reason_class: request.failure_code,
-      evidence: provision_evidence(request, opts),
-      started_at: request.created_at,
-      finished_at: provision_finished_at(request),
-      duration_ms: provision_duration_ms(request)
-    }
-    |> compact_provision_attrs()
-  end
-
-  defp provision_event_attrs(request, run, lifecycle, source, opts) do
-    %{
-      org_id: request.org_id,
-      project_id: request.project_id,
-      runner_type: "mac_mini_provisioner",
-      runner_id: request.provisioner_id,
-      run_record_id: run.id,
-      domain: "device",
-      resource_type: "device_provision_request",
-      resource_id: request.id,
-      source: source,
-      event_type: "device.provision.#{lifecycle}",
-      severity: provision_event_severity(request.status),
-      status: request.status,
-      reason_class: request.failure_code,
-      summary: provision_event_summary(request, lifecycle),
-      evidence: provision_evidence(request, opts),
-      correlation_id: "#{request.id}:#{lifecycle}",
-      occurred_at: request.updated_at || SystemsClock.utc_now()
-    }
-    |> compact_provision_attrs()
-  end
-
-  defp provision_evidence(%EnvironmentProvisionRequest{} = request, opts) do
-    %{
-      provision_request_id: request.id,
-      provisioner_id: request.provisioner_id,
-      salix_group_id: request.salix_group_id,
-      connector_run_id: request.connector_run_id,
-      status: request.status,
-      failure_code: request.failure_code,
-      progress: provision_progress_evidence(request.progress)
-    }
-    |> maybe_put_request_id(opts)
-    |> compact_provision_attrs()
-  end
-
-  defp provision_progress_evidence(progress) when is_map(progress) do
-    progress
-    |> normalize()
-    |> Map.take([
-      "stage",
-      "dry_run",
-      "restart_count",
-      "exit_code",
-      "connector_run_id",
-      "stop",
-      "cleanup",
-      "launch"
-    ])
-    |> compact_provision_attrs()
-  end
-
-  defp provision_progress_evidence(_progress), do: %{}
-
-  defp provision_run_status("pending"), do: "pending"
-  defp provision_run_status(status) when status in ~w(connected stopped), do: "ok"
-  defp provision_run_status("failed"), do: "failed"
-  defp provision_run_status(_status), do: "running"
-
-  defp provision_event_severity("failed"), do: "error"
-  defp provision_event_severity("stop_requested"), do: "warning"
-  defp provision_event_severity(_status), do: "info"
-
-  defp provision_event_summary(
-         %EnvironmentProvisionRequest{status: "failed"} = request,
-         _lifecycle
-       ) do
-    "Device provision failed: #{request.failure_code || "unknown"}"
-  end
-
-  defp provision_event_summary(_request, lifecycle) do
-    lifecycle
-    |> String.replace("_", " ")
-    |> then(&"Device provision #{&1}")
-  end
-
-  defp lifecycle_event_for_status("preflight_complete"), do: "preflight_complete"
-  defp lifecycle_event_for_status("starting_connector"), do: "connector_starting"
-  defp lifecycle_event_for_status("waiting_for_attach"), do: "waiting_for_attach"
-  defp lifecycle_event_for_status(status) when is_binary(status), do: status
-  defp lifecycle_event_for_status(status) when is_atom(status), do: Atom.to_string(status)
-
-  defp provision_finished_at(%EnvironmentProvisionRequest{status: status, updated_at: updated_at})
-       when status in ~w(connected stopped failed) do
-    updated_at
-  end
-
-  defp provision_finished_at(_request), do: nil
-
-  defp provision_duration_ms(%EnvironmentProvisionRequest{
-         created_at: %DateTime{} = started_at,
-         updated_at: %DateTime{} = updated_at,
-         status: status
-       })
-       when status in ~w(connected stopped failed) do
-    max(DateTime.diff(updated_at, started_at, :second), 0) * 1_000
-  end
-
-  defp provision_duration_ms(_request), do: nil
-
-  defp compact_provision_attrs(attrs) do
+  defp compact_attrs(attrs) do
     attrs
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
@@ -2895,36 +2049,6 @@ defmodule BridgeForTeams.Environments do
   end
 
   defp request_id_from_opts(_opts), do: nil
-
-  defp ensure_request_owner(
-         %EnvironmentProvisionRequest{org_id: org_id, provisioner_id: provisioner_id},
-         org_id,
-         provisioner_id
-       ),
-       do: :ok
-
-  defp ensure_request_owner(_request, _org_id, _provisioner_id),
-    do: {:error, :provision_request_not_found}
-
-  defp ensure_request_project(%EnvironmentProvisionRequest{project_id: project_id}, project_id),
-    do: :ok
-
-  defp ensure_request_project(_request, _project_id), do: {:error, :provision_request_not_found}
-
-  defp ensure_provisioner_reportable_status(status)
-       when status in @provisioner_reportable_statuses,
-       do: :ok
-
-  defp ensure_provisioner_reportable_status(_status),
-    do: {:error, :unsupported_provisioner_status}
-
-  defp ensure_provisioner_status_transition(%EnvironmentProvisionRequest{status: current}, next) do
-    if next in Map.get(@provisioner_status_transitions, current, []) do
-      :ok
-    else
-      {:error, :invalid_provisioner_status_transition}
-    end
-  end
 
   defp maybe_after_mac_mini_cursor(query, cursor) when cursor in [nil, ""], do: query
 

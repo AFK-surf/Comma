@@ -771,6 +771,9 @@ defmodule MCPRemoteOAuthE2E do
   end
 
   defp ensure_session!(tenant_key, agent_id, session_id, run_id) do
+    {:ok, server} = SalixAgent.Placement.ensure_started(agent_id, startup_mode: :passive)
+    {:parked, _} = SalixAgent.Server.info(server)
+
     attrs = %{"name" => "MCP remote OAuth E2E #{run_id}", "hidden" => true}
 
     case SalixAgent.InternalSessionStore.prepare_create(agent_id, session_id, attrs) do
@@ -925,7 +928,9 @@ defmodule MCPRemoteOAuthE2E do
   end
 
   defp call_mcp_tool!(tenant_key, agent_id, operation_id, marker) do
-    result = session_tool_result!(tenant_key, agent_id, operation_id, %{"marker" => marker})
+    result =
+      session_tool_settled_result!(tenant_key, agent_id, operation_id, %{"marker" => marker})
+
     assert!(result.error == false, "MCP call failed: #{inspect(result)}")
 
     assert!(
@@ -938,7 +943,9 @@ defmodule MCPRemoteOAuthE2E do
   end
 
   defp assert_disabled_call!(tenant_key, agent_id, operation_id) do
-    result = session_tool_result!(tenant_key, agent_id, operation_id, %{"marker" => "disabled"})
+    result =
+      session_tool_settled_result!(tenant_key, agent_id, operation_id, %{"marker" => "disabled"})
+
     payload = decode_result_content(result)
 
     assert!(
@@ -956,7 +963,9 @@ defmodule MCPRemoteOAuthE2E do
          group_id,
          oauth_binding_id
        ) do
-    result = session_tool_result!(tenant_key, agent_id, operation_id, %{"marker" => "reauth"})
+    result =
+      session_tool_settled_result!(tenant_key, agent_id, operation_id, %{"marker" => "reauth"})
+
     payload = decode_result_content(result)
 
     assert!(
@@ -987,7 +996,9 @@ defmodule MCPRemoteOAuthE2E do
     MCPRemoteOAuthE2E.MockState.put(:reject_valid_bearer_once, true)
 
     result =
-      session_tool_result!(tenant_key, agent_id, operation_id, %{"marker" => "invalid-token"})
+      session_tool_settled_result!(tenant_key, agent_id, operation_id, %{
+        "marker" => "invalid-token"
+      })
 
     payload = decode_result_content(result)
 
@@ -1620,6 +1631,14 @@ defmodule MCPRemoteOAuthE2E do
   end
 
   defp session_tool_completed_result!(tenant_key, agent_id, tool_name, attrs) do
+    result = session_tool_settled_result!(tenant_key, agent_id, tool_name, attrs)
+    assert!(result.error == false, "#{tool_name} failed: #{inspect(result)}")
+    result
+  end
+
+  # The HTTP tool route answers with a running handle when the tool has not
+  # finished within its request wait; the call's own result comes later.
+  defp session_tool_settled_result!(tenant_key, agent_id, tool_name, attrs) do
     result = session_tool_result!(tenant_key, agent_id, tool_name, attrs)
 
     case result.body do
@@ -1629,7 +1648,6 @@ defmodule MCPRemoteOAuthE2E do
         %{completed | body: async_tool_payload(completed)}
 
       _ ->
-        assert!(result.error == false, "#{tool_name} failed: #{inspect(result)}")
         result
     end
   end
@@ -1661,12 +1679,8 @@ defmodule MCPRemoteOAuthE2E do
     %{status: conn.status, error: conn.status >= 400, body: body, content: content}
   end
 
-  defp wait_for_tool_result!(tenant_key, agent_id, tool_call_id, attempts \\ 50)
-
-  defp wait_for_tool_result!(_tenant_key, _agent_id, tool_call_id, 0),
-    do: raise("timed out waiting for tool result #{tool_call_id}")
-
-  defp wait_for_tool_result!(tenant_key, agent_id, tool_call_id, attempts) do
+  # No deadline of its own: a slow tool ends only at the bun test's limit.
+  defp wait_for_tool_result!(tenant_key, agent_id, tool_call_id) do
     result =
       session_tool_result!(tenant_key, agent_id, "tool_call.get_result", %{
         "tool_call_id" => tool_call_id
@@ -1677,7 +1691,7 @@ defmodule MCPRemoteOAuthE2E do
     case record["status"] do
       "running" ->
         Process.sleep(100)
-        wait_for_tool_result!(tenant_key, agent_id, tool_call_id, attempts - 1)
+        wait_for_tool_result!(tenant_key, agent_id, tool_call_id)
 
       "completed" ->
         %{result | body: record, content: async_record_content(record), error: false}
@@ -1713,10 +1727,10 @@ defmodule MCPRemoteOAuthE2E do
 
   defp async_tool_payload(%{body: %{"result" => %{"content" => content}}})
        when is_binary(content),
-       do: Jason.decode!(content)
+       do: decode_json_or_empty(content)
 
   defp async_tool_payload(%{body: %{"result" => %{"output" => output}}}) when is_binary(output),
-    do: Jason.decode!(output)
+    do: decode_json_or_empty(output)
 
   defp async_tool_payload(%{content: content}) when is_binary(content) do
     case Jason.decode(content) do

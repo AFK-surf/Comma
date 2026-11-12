@@ -38,10 +38,11 @@ defmodule CommaWeb.MiniAppPort do
   # --- SalixIM.MiniApps
 
   @impl true
-  def create(%{group_id: group_id}, params) when is_map(params) do
+  def create(%{group_id: group_id} = scope, params) when is_map(params) do
     with %Workspace{status: "active"} = workspace <-
            Repo.get_by(Workspace, salix_group_id: group_id) || {:error, :not_found},
-         {:ok, app} <- create_app(workspace, nil, params) do
+         {:ok, app} <-
+           create_app(workspace, requester(scope[:trusted_origin]), params, "workspace") do
       {:ok,
        %{
          "app_id" => app.id,
@@ -56,6 +57,34 @@ defmodule CommaWeb.MiniAppPort do
   end
 
   def create(_scope, _params), do: {:error, {:invalid, "params must be an object"}}
+
+  # Who made the app the Router made: the Comma User who sent the message the
+  # turn answers, from its server-sealed principal, or the Comma account a chat
+  # user linked. Nil when it names none; the app is made all the same. The app
+  # is the Workspace's (`workspace`), so every member and the Router see it.
+  defp requester(origin) when is_map(origin) do
+    user_id =
+      case SalixAgent.IFC.principal(origin) do
+        {:comma_user, user_id} ->
+          user_id
+
+        {:provider_user, connect, subject} ->
+          case Comma.ProviderUserLinks.resolve(connect, subject) do
+            {:ok, user_id} -> user_id
+            :none -> nil
+          end
+
+        _other ->
+          nil
+      end
+
+    case user_id && Comma.Accounts.get_user(user_id) do
+      {:ok, %{"id" => id}} -> id
+      _ -> nil
+    end
+  end
+
+  defp requester(_origin), do: nil
 
   @impl true
   def list(group_id) do
@@ -199,8 +228,9 @@ defmodule CommaWeb.MiniAppPort do
   `comma-app.json`, else from the template as private repository
   `comma-app-<slug>` of the connected GitHub account.
   """
-  def create_app(%Workspace{} = workspace, user_id, params) do
+  def create_app(%Workspace{} = workspace, user_id, params, visibility \\ "private") do
     with {:ok, attrs} <- MiniApps.app_attrs(params),
+         attrs = Map.put(attrs, :visibility, visibility),
          {:ok, %{token: token}} <-
            github().token(workspace.salix_tenant_id, workspace.salix_group_id) do
       case params["repo"] do
@@ -265,7 +295,11 @@ defmodule CommaWeb.MiniAppPort do
   shared live Version's source archive, then a Coding Task on it.
   """
   def remix(user, session, workspace_id, token, opts \\ []) do
-    creator = if Keyword.get(opts, :initiator_kind) == "agent", do: nil, else: user["id"]
+    # A Router's remix is the Workspace's, as an app it makes.
+    {creator, visibility} =
+      if Keyword.get(opts, :initiator_kind) == "agent",
+        do: {nil, "workspace"},
+        else: {user["id"], "private"}
 
     with {:ok, workspace, _role} <- MiniApps.member(user, session, workspace_id, :write),
          {:ok, source_app} <- MiniApps.resolve_link(token),
@@ -283,7 +317,8 @@ defmodule CommaWeb.MiniAppPort do
              name: source_app.name,
              description: source_app.description || "",
              repo_owner: login,
-             repo_name: "comma-app-" <> slug
+             repo_name: "comma-app-" <> slug,
+             visibility: visibility
            }),
          {:ok, _repo} <-
            made_or_discarded(

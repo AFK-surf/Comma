@@ -55,6 +55,8 @@ export function useBrowserSession(
     closeBrowser: () => command("close"),
     controlling,
     error: value?.error ?? undefined,
+    // The screen shows the tab once its first frame has come.
+    hasFrame: value?.frame != null,
     pending: value?.pending ?? false,
     reconnect: () => {
       void call("browserView.reconnect", view).catch(ignore);

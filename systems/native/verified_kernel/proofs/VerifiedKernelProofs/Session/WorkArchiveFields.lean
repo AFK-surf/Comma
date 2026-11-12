@@ -1,7 +1,7 @@
+import VerifiedKernelProofs.Session.WorkArchiveProjection
 import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkArchiveProjection
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -165,7 +165,7 @@ theorem stringifyFuel_tuple_value {fuel : Nat} {items : List Term} {value : Term
 
 theorem archiveWindow_tuple_field {s ceiling : Term} {records j r : List Term}
     {before after : List (String × Term)} {key : String} {items : List Term}
-    (inv : SeqSorted s)
+    (inv : SeqSorted s) (physical : ArchiveProjection.UnarchivedWindow s)
     (present : ContainsRecord s (atomFields (before ++ (key, Term.tuple items) :: after)))
     (plain : ∀ pair ∈ before ++ (key, Term.tuple items) :: after, pair.1 ≠ "__struct__")
     (notSeq : key ≠ "seq") (notNil : key ≠ "nil")
@@ -176,7 +176,7 @@ theorem archiveWindow_tuple_field {s ceiling : Term} {records j r : List Term}
       (projected.get (a "data")).get (b key) =
         (atomFields (before ++ (key, Term.tuple items) :: after)).get (a key) := by
   obtain ⟨messages, read, member⟩ := present
-  obtain ⟨projected, member, projection⟩ := archiveWindow_messages inv read member h
+  obtain ⟨projected, member, projection⟩ := archiveWindow_messages inv physical read member h
   obtain ⟨converted, _, _, _, normalized, field⟩ :=
     projected_atom_field plain notSeq notNil afterDifferent projection
   exact ⟨projected, member, (field.trans (stringifyFuel_tuple_value normalized)).trans
@@ -184,7 +184,7 @@ theorem archiveWindow_tuple_field {s ceiling : Term} {records j r : List Term}
 
 theorem archiveWindow_input_fact {s ceiling item : Term} {records j r : List Term}
     {before after : List (String × Term)} {items : List Term}
-    (inv : SeqSorted s)
+    (inv : SeqSorted s) (physical : ArchiveProjection.UnarchivedWindow s)
     (present : ContainsRecord s (atomFields (before ++ ("accepted_input", Term.tuple items) :: after)))
     (recorded : ValueSemantics.Recorded item
       (atomFields (before ++ ("accepted_input", Term.tuple items) :: after)))
@@ -194,7 +194,7 @@ theorem archiveWindow_input_fact {s ceiling item : Term} {records j r : List Ter
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records, ValueSemantics.Equivalent (queueWorkProjection item)
       ((projected.get (a "data")).get (b "accepted_input")) := by
-  obtain ⟨projected, member, field⟩ := archiveWindow_tuple_field inv present plain
+  obtain ⟨projected, member, field⟩ := archiveWindow_tuple_field inv physical present plain
     (by decide) (by decide) beforeDifferent afterDifferent h
   refine ⟨projected, member, ?_⟩
   rw [field]
@@ -203,7 +203,7 @@ theorem archiveWindow_input_fact {s ceiling item : Term} {records j r : List Ter
 /-- Actual archive-window output retains each selected binary field from the original message. -/
 theorem archiveWindow_binary_field {s ceiling : Term} {records j r : List Term}
     {before after : List (String × Term)} {key : String} {raw : ByteArray}
-    (inv : SeqSorted s)
+    (inv : SeqSorted s) (physical : ArchiveProjection.UnarchivedWindow s)
     (present : ContainsRecord s (atomFields (before ++ (key, Term.binary raw) :: after)))
     (plain : ∀ pair ∈ before ++ (key, Term.binary raw) :: after, pair.1 ≠ "__struct__")
     (notSeq : key ≠ "seq") (notNil : key ≠ "nil")
@@ -214,7 +214,7 @@ theorem archiveWindow_binary_field {s ceiling : Term} {records j r : List Term}
       (projected.get (a "data")).get (b key) =
         (atomFields (before ++ (key, Term.binary raw) :: after)).get (a key) := by
   obtain ⟨messages, read, member⟩ := present
-  obtain ⟨projected, member, projection⟩ := archiveWindow_messages inv read member h
+  obtain ⟨projected, member, projection⟩ := archiveWindow_messages inv physical read member h
   exact ⟨projected, member, (projected_binary_field plain notSeq notNil afterDifferent projection).trans
     (atom_field_lookup beforeDifferent).symm⟩
 
@@ -251,14 +251,14 @@ theorem record_shape_field {record value : Term} {key : String}
 
 /-- Writer-derived record shape discharges the archive field-shape premises for queued work. -/
 theorem archiveWindow_queued_input_fact {s ceiling item record : Term} {records j r : List Term}
-    (inv : SeqSorted s) (present : ContainsRecord s record) (recorded : QueuedRecord item record)
+    (inv : SeqSorted s) (physical : ArchiveProjection.UnarchivedWindow s) (present : ContainsRecord s record) (recorded : QueuedRecord item record)
     (h : StorageQuery.archiveWindow s j = .ok (.tuple [a "ok", list records, ceiling], r)) :
     ∃ projected ∈ records,
       (projected.get (a "data")).get (b "accepted_input") = StateQuery.acceptedInput item := by
   obtain ⟨before, after, equal, plain, beforeDifferent, afterDifferent⟩ :=
     record_shape_field recorded.2.1 recorded.1 (by intro impossible; cases impossible)
   rw [equal] at present recorded
-  obtain ⟨projected, member, field⟩ := archiveWindow_tuple_field inv present plain
+  obtain ⟨projected, member, field⟩ := archiveWindow_tuple_field inv physical present plain
     (by decide) (by decide) beforeDifferent afterDifferent h
   exact ⟨projected, member, field.trans recorded.1⟩
 

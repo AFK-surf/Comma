@@ -3,7 +3,7 @@ defmodule SalixEnv.Connector do
   Behaviour for dispatching a request to a live connector run.
 
   A connector is the transport that carries a small request envelope to a
-  registered `salix-connect` session and returns its response. The registry
+  registered station connection and returns its response. The registry
   (`SalixEnv.Registry`) tracks the current run and its owner node; this
   behaviour is the dispatch transport for one run. Keeping it a behaviour lets
   the real transport and the in-memory `SalixEnv.Connector.Fake` be swapped via

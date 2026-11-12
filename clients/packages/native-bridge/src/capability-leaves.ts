@@ -157,6 +157,8 @@ export type NativeBridgeError =
         | "COMPUTE_CLOUD_UNAVAILABLE"
         | "COMPUTE_CONNECTION_FAILED"
         | "COMPUTE_RECOVERY_UNVERIFIED"
+        /** The helper already exchanged the install request: the server refuses to close it. */
+        | "COMPUTE_REQUEST_HANDED_OFF"
         /** This Mac's station did not answer in time (or at all): read again. */
         | "LOCAL_STATION_UNAVAILABLE"
         /** The station refused the change for its current state (409): read again. */
@@ -420,6 +422,8 @@ export const notchTaskItemSchema = z.object({
   groupId: z.string().min(1).max(256),
   id: z.string().min(1).max(256),
   /** Quick Chat uses `sent` after Home accepts its message; settled rows show no progress. */
+  /** When the Task's latest run started (Unix milliseconds); a row dismissed in the Notch comes back at its next run. */
+  runStartedAt: z.number().int().min(1).optional(),
   status: z.enum(["in_progress", "failed", "sent"]),
   subtitle: z.string().max(2_048),
   title: z.string().max(2_048),
@@ -472,6 +476,8 @@ export const notchScenePayloadSchema = z.object({
   title: z.string().optional(),
   subtitle: z.string().optional(),
   detail: z.string().optional(),
+  /** Each row's dismiss button; Main keeps a dismissed row out until its Task runs anew (`runStartedAt`). */
+  dismissTaskLabel: z.string().max(128).optional(),
   hasActivity: z.boolean().optional(),
   listSubtitle: z.string().max(2_048).optional(),
   listTitle: z.string().max(256).optional(),
@@ -497,7 +503,7 @@ const notchSideWidthSchema = z
 
 /** The longest name nearby devices see for Comma in AirDrop, like a profile name. */
 export const airDropNameMaxLength = 64;
-const airDropNameSchema = z
+export const airDropNameSchema = z
   .string()
   .trim()
   .min(1)
@@ -634,12 +640,26 @@ export interface ViewSurface {
   lifecycle: "creating" | "ready" | "destroying" | "destroyed";
 }
 
+/**
+ * The page view paints above the renderer's whole DOM, so a rounded panel
+ * around it cannot clip it: the renderer sends the radii of the corners the
+ * page shares with that panel, in whole CSS pixels.
+ */
+export interface BrowserSidebarCornerRadii {
+  topLeft: number;
+  topRight: number;
+  bottomRight: number;
+  bottomLeft: number;
+}
+
 export interface BrowserSidebarOpenInput {
   sessionId: string;
   /** Stable renderer-owned tab identity. `sessionId` remains the native view key. */
   tabId?: string | undefined;
   url: string;
   bounds: SurfaceBounds;
+  /** The shape of `bounds`; absent: square corners. */
+  cornerRadii?: BrowserSidebarCornerRadii | undefined;
   closeBeforeOpenSessionIds?: string[] | undefined;
   navigationRevision?: number | undefined;
 }
@@ -648,6 +668,8 @@ export interface BrowserSidebarUpdateInput {
   sessionId: string;
   url?: string | undefined;
   bounds?: SurfaceBounds | undefined;
+  /** The shape of `bounds`, sent only with them; absent: square corners. */
+  cornerRadii?: BrowserSidebarCornerRadii | undefined;
   visible?: boolean | undefined;
 }
 
@@ -980,6 +1002,7 @@ export const commaClientAppShortcutIds = [
   "go-drive",
   "go-tasks",
   "go-plugins",
+  "new-task",
   "toggle-left-sidebar",
   "history-back",
   "history-forward",
@@ -1082,6 +1105,7 @@ export const commaClientAppShortcutOverridesSchema = z
     "go-drive": commaClientAppKeybindingSchema.nullable().optional(),
     "go-tasks": commaClientAppKeybindingSchema.nullable().optional(),
     "go-plugins": commaClientAppKeybindingSchema.nullable().optional(),
+    "new-task": commaClientAppKeybindingSchema.nullable().optional(),
     "toggle-left-sidebar": commaClientAppKeybindingSchema.nullable().optional(),
     "history-back": commaClientAppKeybindingSchema.nullable().optional(),
     "history-forward": commaClientAppKeybindingSchema.nullable().optional(),
@@ -1267,11 +1291,21 @@ export function withoutRetiredAppPreferences(
   };
 }
 
+export const commaDefaultHomeViewSchema = z.enum([
+  "home",
+  "inbox",
+  "tasks",
+  "drive",
+  "apps",
+  "plugins",
+]);
+
 export const commaClientSettingsSchema = z
   .object({
     appShortcutOverrides: commaClientAppShortcutOverridesSchema,
     appearance: commaClientAppearancePreferencesSchema,
     localePreference: commaClientLocalePreferenceSchema,
+    defaultHomeView: commaDefaultHomeViewSchema.default("home"),
     sessionHistoryEnabled: z.boolean().default(false),
     // Shows the screen an Agent drives through computer use, live.
     computerUseScreenEnabled: z.boolean().default(false),
@@ -1279,9 +1313,14 @@ export const commaClientSettingsSchema = z
     condensedWorkspaceSettingsVisible: z.boolean().default(false),
     // Debug: shows Settings › Voice › Calls (call voice, custom voice, Router calls).
     voiceLabsEnabled: z.boolean().default(false),
+    // Reaches this person's own computers over the mesh, which their screens' cards and views need: on by default, off
+    // or through Salix alone (`salix`, to test that path) in Settings › Debug. Read when the app starts.
+    computerMesh: z.enum(["off", "on", "salix"]).default("on"),
     meetingStartRecording: z.enum(["reminder", "auto"]).default("reminder"),
     meetingHideRecorder: z.boolean().default(false),
     meetingSmartSummary: z.boolean().default(true),
+    // Plays a sound when a request from another person arrives.
+    requestSound: z.boolean().default(true),
     openCommaShortcut: globalShortcutBindingSchema.default(defaultOpenCommaShortcut),
     // Null: the platform's own, a double tap of ⌘ (Ctrl on Windows).
     quickChatShortcut: quickChatShortcutSchema.nullable().default(null),
@@ -1314,13 +1353,16 @@ export const commaClientSettingsPatchSchema = z
       .strict()
       .optional(),
     localePreference: commaClientLocalePreferenceSchema.optional(),
+    defaultHomeView: commaDefaultHomeViewSchema.optional(),
     sessionHistoryEnabled: z.boolean().optional(),
     computerUseScreenEnabled: z.boolean().optional(),
     condensedWorkspaceSettingsVisible: z.boolean().optional(),
     voiceLabsEnabled: z.boolean().optional(),
+    computerMesh: z.enum(["off", "on", "salix"]).optional(),
     meetingStartRecording: z.enum(["reminder", "auto"]).optional(),
     meetingHideRecorder: z.boolean().optional(),
     meetingSmartSummary: z.boolean().optional(),
+    requestSound: z.boolean().optional(),
     openCommaShortcut: globalShortcutBindingSchema.optional(),
     quickChatShortcut: quickChatShortcutSchema.nullable().optional(),
     sidebarNavOrder: z.array(z.string()).optional(),
@@ -1370,6 +1412,11 @@ export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   quickChatShortcutStatus: z.enum(["registered", "unset", "unavailable"]).optional(),
   /** This machine can run Quick Chat, which Settings offers. Never saved. */
   quickChatSupported: z.boolean().optional(),
+  /**
+   * `clientSettings.computerMesh` as this process started with it, which the core and station keep until a restart.
+   * Absent: it started without client settings, so with the default (`defaultCommaClientSettings`). Never saved.
+   */
+  computerMeshAtLaunch: z.enum(["off", "on", "salix"]).optional(),
   launchAtLoginStatus: appLaunchAtLoginStatusSchema.optional(),
   // Defaults keep preference files written before notifications, AirDrop,
   // and the Notch settings shipped parseable; patches derive from the default-free
@@ -1538,12 +1585,24 @@ export const browserSidebarBoundsSchema = z
   })
   .strict() satisfies z.ZodType<SurfaceBounds>;
 
+const browserSidebarCornerRadiusSchema = z.number().int().min(0).max(16_384);
+
+export const browserSidebarCornerRadiiSchema = z
+  .object({
+    topLeft: browserSidebarCornerRadiusSchema,
+    topRight: browserSidebarCornerRadiusSchema,
+    bottomRight: browserSidebarCornerRadiusSchema,
+    bottomLeft: browserSidebarCornerRadiusSchema,
+  })
+  .strict() satisfies z.ZodType<BrowserSidebarCornerRadii>;
+
 export const browserSidebarOpenInputSchema = z
   .object({
     sessionId: browserSidebarSessionIdSchema,
     tabId: browserSidebarTabIdSchema.optional(),
     url: browserSidebarUrlSchema,
     bounds: browserSidebarBoundsSchema,
+    cornerRadii: browserSidebarCornerRadiiSchema.optional(),
     closeBeforeOpenSessionIds: browserSidebarCloseBeforeOpenSessionIdsSchema.optional(),
     navigationRevision: z.number().int().nonnegative().optional(),
   })
@@ -1565,6 +1624,7 @@ export const browserSidebarUpdateInputSchema = z
     sessionId: browserSidebarSessionIdSchema,
     url: browserSidebarUrlSchema.optional(),
     bounds: browserSidebarBoundsSchema.optional(),
+    cornerRadii: browserSidebarCornerRadiiSchema.optional(),
     visible: z.boolean().optional(),
   })
   .strict()
@@ -1574,7 +1634,11 @@ export const browserSidebarUpdateInputSchema = z
       input.bounds !== undefined ||
       input.visible !== undefined,
     "At least one browser sidebar update must be provided."
-  ) satisfies z.ZodType<BrowserSidebarUpdateInput>;
+  )
+  .refine((input) => input.cornerRadii === undefined || input.bounds !== undefined, {
+    message: "Browser sidebar corner radii are sent with the bounds they shape.",
+    path: ["cornerRadii"],
+  }) satisfies z.ZodType<BrowserSidebarUpdateInput>;
 
 export const browserSidebarCaptureInputSchema = z
   .object({
@@ -1970,6 +2034,28 @@ export const appPreferencesOpenNotificationSettingsCapability = defineNativeCapa
   webFallback: { opened: false },
 });
 
+// Quits the desktop app through its ordinary shutdown and starts it again, so a
+// setting read when the app starts (`computerMeshAtLaunch`) takes effect.
+export const appPreferencesRelaunchCapability = defineNativeCapability({
+  bridge: { method: "relaunch", namespace: "appPreferences" },
+  channel: "comma:app-preferences:relaunch",
+  handler: {
+    exportName: "AppPreferencesProvider",
+    member: "relaunch",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "appPreferences",
+  },
+  id: "appPreferences.relaunch",
+  input: z.void(),
+  mock: { relaunching: false },
+  output: z.object({ relaunching: z.boolean() }).strict(),
+  permission: "app-preferences.relaunch",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Restarts the local desktop application. No Session state is involved.",
+  webFallback: { relaunching: false },
+});
+
 // macOS: opens Login Items, where the user allows Comma's sleep guard daemon
 // once. Main then reads the approval back through the preferences state.
 export const appPreferencesOpenLoginItemsSettingsCapability = defineNativeCapability({
@@ -1990,6 +2076,30 @@ export const appPreferencesOpenLoginItemsSettingsCapability = defineNativeCapabi
   sessionAdmissionRationale:
     "Opens the operating-system Login Items pane. No Session state is involved.",
   webFallback: { opened: false },
+});
+
+// Reads the login item from the OS now. Main reuses a login-item readback up
+// to 30 s old for ordinary state reads, because the read blocks its thread;
+// Settings shows the login item, so it asks for a fresh read when it opens.
+// Main publishes a change through the preferences state.
+export const appPreferencesRefreshLaunchAtLoginCapability = defineNativeCapability({
+  bridge: { method: "refreshLaunchAtLogin", namespace: "appPreferences" },
+  channel: "comma:app-preferences:refresh-launch-at-login",
+  handler: {
+    exportName: "AppPreferencesProvider",
+    member: "refreshLaunchAtLogin",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "appPreferences",
+  },
+  id: "appPreferences.refreshLaunchAtLogin",
+  input: z.void(),
+  mock: defaultAppPreferences,
+  output: appPreferencesSchema,
+  permission: "app-preferences.settings",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads the operating-system login item for Settings. No Session state is involved.",
+  webFallback: defaultAppPreferences,
 });
 
 // Asks the OS to let Comma notify: macOS shows its prompt while it has not asked
@@ -2377,6 +2487,159 @@ export const macAppsIconsCapability = defineNativeCapability({
   sessionAdmissionRationale:
     "Reads the public macOS icons of the Mac apps; no Session data or credentials.",
   webFallback: {},
+});
+
+/** Blender on this computer: Comma's bridge in it and the Blender windows connected to it. */
+export const blenderSnapshotSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    /** Comma's bridge script is in Blender and this app listens for it. */
+    enabled: z.boolean(),
+    /** The Blenders installed in the usual places. */
+    installs: z.array(
+      z
+        .object({ path: z.string().max(4096), version: z.string().max(16).optional() })
+        .strict()
+    ),
+    /** The Blender versions whose startup folder holds the bridge. */
+    versions: z.array(z.string().max(16)),
+    /** The Blender windows connected now. */
+    instances: z.array(
+      z
+        .object({
+          id: z.string().max(64),
+          version: z.string().max(64),
+          file: z.string().max(4096).optional(),
+          dirty: z.boolean().optional(),
+        })
+        .strict()
+    ),
+    /** Blenders running without the bridge: they started before it was there. */
+    waiting: z.number().int().nonnegative(),
+  })
+  .strict();
+export type BlenderSnapshot = z.output<typeof blenderSnapshotSchema>;
+
+const unavailableBlender = blenderSnapshotSchema.parse({
+  revision: 0,
+  enabled: false,
+  installs: [],
+  versions: [],
+  instances: [],
+  waiting: 0,
+});
+
+export const blenderStateCapability = defineNativeCapability({
+  bridge: { method: "state", namespace: "blender" },
+  channel: "comma:blender:state",
+  handler: {
+    exportName: "BlenderProvider",
+    member: "state",
+    module: "../../../apps/electron/src/main/modules/blender/index",
+    provider: "blender",
+  },
+  id: "blender.state",
+  input: z.void(),
+  mock: unavailableBlender,
+  output: blenderSnapshotSchema,
+  permission: "blender.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads where Blender is installed on this computer and which Blender windows are connected; no credentials or authenticated transport.",
+  webFallback: unavailableBlender,
+});
+
+export const blenderStateChangedEvent = defineNativeEvent({
+  channel: "comma:blender:state-changed",
+  id: "blender.state.changed",
+  mock: unavailableBlender,
+  payload: blenderSnapshotSchema,
+  permission: blenderStateCapability.permission,
+  target: { type: "all" },
+});
+
+export const blenderStateLeaf = defineNativeState({
+  bridge: { method: "state", namespace: "blender" },
+  get: blenderStateCapability,
+  id: "blender.state",
+  subscribe: blenderStateChangedEvent,
+});
+
+export const blenderSetEnabledCapability = defineNativeCapability({
+  bridge: { method: "setEnabled", namespace: "blender" },
+  channel: "comma:blender:set-enabled",
+  handler: {
+    exportName: "BlenderProvider",
+    member: "setEnabled",
+    module: "../../../apps/electron/src/main/modules/blender/index",
+    provider: "blender",
+  },
+  id: "blender.setEnabled",
+  input: z.object({ enabled: z.boolean() }).strict(),
+  mock: unavailableBlender,
+  output: blenderSnapshotSchema,
+  permission: "blender.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Puts Comma's bridge script into this computer's Blender startup folders, or removes it; no credentials or authenticated transport.",
+  webFallback: unavailableBlender,
+});
+
+/** What starting Blender did; a failure is an answer the page words itself. */
+export const blenderOpenedSchema = z.union([
+  z.object({ opened: z.literal(true) }).strict(),
+  z
+    .object({ opened: z.literal(false), reason: z.enum(["no_blender", "not_blend"]) })
+    .strict(),
+  z
+    .object({
+      opened: z.literal(false),
+      reason: z.literal("start_failed"),
+      path: z.string().max(4096),
+      detail: z.string().max(2000),
+    })
+    .strict(),
+]);
+export type BlenderOpened = z.output<typeof blenderOpenedSchema>;
+
+export const blenderOpenCapability = defineNativeCapability({
+  bridge: { method: "open", namespace: "blender" },
+  channel: "comma:blender:open",
+  handler: {
+    exportName: "BlenderProvider",
+    member: "open",
+    module: "../../../apps/electron/src/main/modules/blender/index",
+    provider: "blender",
+  },
+  id: "blender.open",
+  input: z.object({ file: z.string().min(1).max(4096).optional() }).strict(),
+  mock: { opened: false, reason: "no_blender" },
+  output: blenderOpenedSchema,
+  permission: "blender.open",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Starts Blender on this computer, with a .blend file or a new scene; no credentials or authenticated transport.",
+  webFallback: { opened: false, reason: "no_blender" },
+});
+
+export const blenderChooseAppCapability = defineNativeCapability({
+  bridge: { method: "chooseApp", namespace: "blender" },
+  channel: "comma:blender:choose-app",
+  handler: {
+    exportName: "BlenderProvider",
+    member: "chooseApp",
+    module: "../../../apps/electron/src/main/modules/blender/index",
+    provider: "blender",
+  },
+  id: "blender.chooseApp",
+  input: z.void(),
+  mock: unavailableBlender,
+  output: blenderSnapshotSchema,
+  permission: "blender.write",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Asks the user, in the system's file picker, for a Blender this computer has outside the usual places; no credentials or authenticated transport.",
+  webFallback: unavailableBlender,
 });
 
 export const connectorRuntimeSetScopeCapability = defineNativeCapability({
@@ -3006,6 +3269,34 @@ export const windowsFocusCapability = defineNativeCapability({
   sessionAdmissionRationale:
     "Focuses a local BrowserWindow surface without Session state or authenticated transport.",
   webFallback: surfaceListWebFallback,
+});
+
+/**
+ * Brings forward a screen window of the app's page: a computer's screen it opened with `window.open` under a
+ * `comma-screen:` name (packages/app remote-screen/screenWindows.ts). Electron does not raise a window for the page's
+ * own `focus()` of it.
+ */
+export const windowsFocusScreenCapability = defineNativeCapability({
+  bridge: {
+    method: "focusScreen",
+    namespace: "windows",
+  },
+  channel: "comma:windows:focus-screen",
+  handler: {
+    exportName: "WindowsProvider",
+    member: "focusScreen",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "windows",
+  },
+  id: "windows.focusScreen",
+  input: z.object({ name: z.string().startsWith("comma-screen:").max(128) }).strict(),
+  mock: { focused: false },
+  output: z.object({ focused: z.boolean() }),
+  permission: "windows.focus",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Brings a local screen window forward without Session state or authenticated transport.",
+  webFallback: { focused: false },
 });
 
 export const windowsCloseCapability = defineNativeCapability({
@@ -4857,14 +5148,10 @@ export const computeNodeStatusSchema = z.enum([
 ]);
 
 export const computeNodeOperationSchema = z.strictObject({
-  connectionEpoch: z.string().min(1).max(160),
-  kind: z.enum(["configure", "repair", "drain", "remove", "rebuild"]),
-  leaseGeneration: z.number().int().nonnegative(),
-  operationId: z.string().min(1).max(160),
+  kind: z.enum(["configure", "repair", "drain", "remove", "rebuild", "recover"]),
   outcome: z.enum(["pending", "succeeded", "failed", "unknown"]),
   requestId: z.string().min(1).max(160),
-  targetRef: z.string().min(1).max(160),
-  targetRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  stage: z.string().max(160).optional(),
 });
 
 export type ComputeNodeOperation = z.infer<typeof computeNodeOperationSchema>;
@@ -4887,9 +5174,10 @@ export const computeNodeProblemSchema = z.enum([
   "remote_revocation_unconfirmed",
   "intent_unreadable",
   "operation_unknown",
+  "request_blocked",
   "operation_failed",
-  /** Automatic continuation used its attempt budget or overall deadline. Retry continues the same request. */
-  "automatic_retry_exhausted",
+  /** Automatic continuation reached its overall deadline. Retry continues the same request. */
+  "continuation_paused",
   /** A workspace manager revoked this registration. Main does not reinstall it automatically. */
   "registration_revoked",
   /** The server revoked this registration without a known reason. Enable again retires it and installs a new one. */
@@ -4906,25 +5194,23 @@ export const computeNodeProblemSchema = z.enum([
   "target_older_than_data",
   /** The Host cannot start because its local data needs a migration that it cannot make. */
   "local_data_migration",
+  /** The person uninstalled the Host. Setup waits for their reinstall (`update_host`). */
+  "host_uninstalled",
+  "comma_update_required",
+  "service_update_required",
 ]);
 
 export type ComputeNodeProblem = z.infer<typeof computeNodeProblemSchema>;
 
 export const computeNodeStateSchema = z.strictObject({
-  setup: z
-    .strictObject({
-      components: z.enum(["not_started", "preparing", "ready", "failed", "unknown"]),
-      connection: z.enum(["not_started", "connecting", "ready", "failed", "unknown"]),
-      shell: z.enum([
-        "not_initialized",
-        "preparing",
-        "ready",
-        "failed",
-        "deleting",
-        "deleted",
-        "unknown",
-      ]),
+  currentRequest: z
+    .object({
+      requestId: z.string(),
+      kind: z.enum(["configure", "drain", "remove", "repair", "rebuild", "recover"]),
     })
+    .optional(),
+  primaryAction: z
+    .enum(["continue", "recover", "remove", "update_host", "check_status"])
     .optional(),
   preparation: z
     .strictObject({
@@ -4947,7 +5233,7 @@ export const computeNodeStateSchema = z.strictObject({
     .optional(),
   confirmationId: z.string().min(1).max(160).optional(),
   bindingWorkspaceId: z.string().min(1).max(160).optional(),
-  bindingInstallationId: z.string().min(1).max(160).optional(),
+  bindingRegistrationId: z.string().min(1).max(160).optional(),
   bindingRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   observedAt: z.string().optional(),
   observationFresh: z.boolean().optional(),
@@ -4966,6 +5252,8 @@ export const computeNodeStateSchema = z.strictObject({
       "shell_initialization_pending",
       "authorization_unavailable",
       "capability_missing",
+      "comma_update_required",
+      "service_update_required",
       "revoked",
       "insufficient_disk",
       "host_update_required",
@@ -4976,7 +5264,7 @@ export const computeNodeStateSchema = z.strictObject({
     .optional(),
   /**
    * The actions for `issue`. `reset_local_record` calls `resetLocalRecord`. `update_host` calls `maintainHost`
-   * with update/preserve. `reinstall_reset` calls `maintainHost` with reinstall/reset (Main confirms it natively).
+   * with update/preserve (reinstall/preserve when the Host is not installed). `reinstall_reset` calls `maintainHost` with reinstall/reset (Main confirms it natively).
    */
   recoveryActions: z
     .array(
@@ -5076,7 +5364,7 @@ export const hostMaintenanceStateSchema = z.strictObject({
     .shape.phase.optional(),
   installation: z.enum(["installed", "not_installed", "unreadable"]),
   installedReleaseId: z.string().max(200).optional(),
-  selectedReleaseId: z.string().max(200),
+  selectedReleaseId: z.string().max(200).optional(),
   updateAvailable: z.boolean(),
   operation: z
     .strictObject({
@@ -5100,9 +5388,10 @@ export const hostMaintenanceStateSchema = z.strictObject({
       problem: z.string().max(2000).optional(),
       /**
        * `host_start_failed`: the Host cannot start after this request, and Main's automatic recovery has no step
-       * left. The action is a confirmed reinstall/reset.
+       * left. `target_older_than_data`: the Host's preflight refused this Mac's data, so the same request fails
+       * again. The action for both is a confirmed reinstall/reset.
        */
-      failureCode: z.enum(["host_start_failed"]).optional(),
+      failureCode: z.enum(["host_start_failed", "target_older_than_data"]).optional(),
     })
     .optional(),
   /**
@@ -5112,7 +5401,7 @@ export const hostMaintenanceStateSchema = z.strictObject({
   automaticReset: z.literal(true).optional(),
   /** The installed Host cannot start on this Mac's local data. The action is a confirmed reinstall/reset. */
   hostStartFailure: z
-    .enum(["data_newer_than_host", "data_requires_conversion"])
+    .enum(["STATE_SCHEMA_INCOMPATIBLE", "STATE_MIGRATION_FAILED"])
     .optional(),
   /** Main's local maintenance receipt is unreadable. The action is `resetLocalRecord`. */
   recordUnreadable: z.boolean().optional(),
@@ -5189,6 +5478,12 @@ export const localComputeEnvironmentSchema = z.strictObject({
   privateDiskBytes: localComputeByteCount.optional(),
   sampledAt: z.string().optional(),
   canDisposeLocal: z.boolean(),
+  disposalScope: z
+    .strictObject({
+      key: z.string().min(1).max(200),
+      label: z.string().max(80),
+    })
+    .optional(),
   canReadWorkloads: z.boolean(),
   canOperate: z.boolean(),
 });
@@ -5201,6 +5496,11 @@ export const localComputeOverviewSchema = z.strictObject({
       usedBytes: localComputeByteCount,
       capacityBytes: localComputeByteCount,
       importReservationBytes: localComputeByteCount,
+      imageRuntimeBytes: localComputeByteCount.optional(),
+      buildCacheBytes: localComputeByteCount.optional(),
+      privateBytes: localComputeByteCount.optional(),
+      otherBytes: localComputeByteCount.optional(),
+      breakdownSampledAt: z.string().optional(),
     })
     .optional(),
   environments: z.array(localComputeEnvironmentSchema).max(32),
@@ -5473,48 +5773,55 @@ export const computeNodeRefreshCapability = defineNativeCapability({
   webFallback: unavailableComputeNodeState,
 });
 
-export const computeNodeRepairCapability = defineNativeCapability({
-  bridge: { method: "repair", namespace: "computeNode" },
-  channel: "comma:compute-node:repair",
+export const computeNodeContinueCapability = defineNativeCapability({
+  bridge: { method: "continue", namespace: "computeNode" },
+  channel: "comma:compute-node:continue",
   handler: {
     exportName: "ComputeNodeProvider",
-    member: "repair",
+    member: "continue",
     module: "../../../apps/electron/src/main/modules/native/index",
     provider: "computeNode",
   },
-  id: "computeNode.repair",
+  id: "computeNode.continue",
   input: z.void(),
   mock: unavailableComputeNodeState,
   output: computeNodeStateSchema,
   permission: "compute-node.write",
   sessionAdmission: "local_only",
-  sessionAdmissionRationale: "Repairs the Main-owned local compute node lifecycle.",
+  sessionAdmissionRationale:
+    "Continues the confirmed Main-owned registration request through native execution.",
   webFallback: unavailableComputeNodeState,
 });
 
-export const computeNodeRebuildCapability = defineNativeCapability({
-  bridge: { method: "rebuild", namespace: "computeNode" },
-  channel: "comma:compute-node:rebuild",
+export const computeNodeReauthorizeCapability = defineNativeCapability({
+  bridge: { method: "reauthorize", namespace: "computeNode" },
+  channel: "comma:compute-node:reauthorize",
   handler: {
     exportName: "ComputeNodeProvider",
-    member: "rebuild",
+    member: "reauthorize",
     module: "../../../apps/electron/src/main/modules/native/index",
     provider: "computeNode",
   },
-  id: "computeNode.rebuild",
-  input: z.void(),
+  id: "computeNode.reauthorize",
+  input: z.strictObject({
+    workspaceId: z.string().min(1).max(160),
+    registrationId: z.string().min(1).max(160).nullable(),
+    bindingRevision: z.number().int().positive(),
+    confirmationId: z.string().min(1).max(160).optional(),
+  }),
   mock: unavailableComputeNodeState,
   output: computeNodeStateSchema,
   permission: "compute-node.write",
   sessionAdmission: "local_only",
-  sessionAdmissionRationale: "Rebuilds the Main-owned local compute node lifecycle.",
+  sessionAdmissionRationale:
+    "Continues the confirmed Main-owned registration request through native execution.",
   webFallback: unavailableComputeNodeState,
 });
 
 export const computeNodeExpectedBindingSchema = z.strictObject({
   confirmationId: z.string().min(1).max(160).optional(),
   workspaceId: z.string().min(1).max(160),
-  installationId: z.string().min(1).max(160).nullable(),
+  registrationId: z.string().min(1).max(160).nullable(),
   bindingRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 export type ComputeNodeExpectedBinding = z.infer<
@@ -5556,46 +5863,6 @@ export const computeNodeRemoveCapability = defineNativeCapability({
   permission: "compute-node.write",
   sessionAdmission: "local_only",
   sessionAdmissionRationale: "Removes the Main-owned local compute node lifecycle.",
-  webFallback: unavailableComputeNodeState,
-});
-
-export const computeNodeAbandonCapability = defineNativeCapability({
-  bridge: { method: "abandon", namespace: "computeNode" },
-  channel: "comma:compute-node:abandon",
-  handler: {
-    exportName: "ComputeNodeProvider",
-    member: "abandon",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "computeNode",
-  },
-  id: "computeNode.abandon",
-  input: computeNodeExpectedBindingSchema,
-  mock: unavailableComputeNodeState,
-  output: computeNodeStateSchema,
-  permission: "compute-node.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Main rechecks the current account and cloud owner before closing an unexchanged request.",
-  webFallback: unavailableComputeNodeState,
-});
-
-export const computeNodeResetLocalRecordCapability = defineNativeCapability({
-  bridge: { method: "resetLocalRecord", namespace: "computeNode" },
-  channel: "comma:compute-node:reset-local-record",
-  handler: {
-    exportName: "ComputeNodeProvider",
-    member: "resetLocalRecord",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "computeNode",
-  },
-  id: "computeNode.resetLocalRecord",
-  input: z.void(),
-  mock: unavailableComputeNodeState,
-  output: computeNodeStateSchema,
-  permission: "compute-node.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Archives only Main's own unreadable local compute records and starts them clean. It changes no Host or cloud state.",
   webFallback: unavailableComputeNodeState,
 });
 
@@ -5894,6 +6161,38 @@ export const audioCaptureStateLeaf = defineNativeState({
   get: audioCaptureStateCapability,
   id: "audioCapture.state",
   subscribe: audioCaptureStateChangedEvent,
+});
+
+/**
+ * A saved recording's transcription failed (Main wrote the error beside the audio): the kind of failure for the main
+ * window's product analytics, never its text or the recording.
+ */
+export const audioCaptureTranscriptionFailedSchema = z
+  .object({
+    reason: z.enum([
+      "too_large",
+      "busy",
+      "timeout",
+      "unavailable",
+      "unexpected",
+      "interrupted",
+      "server",
+      "local",
+    ]),
+  })
+  .strict();
+export type AudioCaptureTranscriptionFailed = z.output<
+  typeof audioCaptureTranscriptionFailedSchema
+>;
+
+export const audioCaptureTranscriptionFailedEvent = defineNativeEvent({
+  bridge: { method: "onTranscriptionFailed", namespace: "audioCapture" },
+  channel: "comma:audio-capture:transcription-failed",
+  id: "audioCapture.transcriptionFailed",
+  mock: { reason: "server" },
+  payload: audioCaptureTranscriptionFailedSchema,
+  permission: audioCaptureStateCapability.permission,
+  target: { type: "window", windowId: "win_main" },
 });
 
 export const audioCaptureSourcesCapability = defineNativeCapability({
@@ -6423,6 +6722,184 @@ export const airDropStateLeaf = defineNativeState({
   get: airDropStateCapability,
   id: "airDrop.state",
   subscribe: airDropStateChangedEvent,
+});
+// -- nearby -----------------------------------------------------------------
+//
+// Settings › Task requests › Add someone nearby. Main finds the Comma
+// receivers around this computer, over AirDrop on a Mac and on the same local
+// network on any desktop, and sends a picked one an invite link
+// (`taskRequests.createInvite`) the way it was found. On the other computer
+// the link is held, not saved: the window shows the connect card, which accepts
+// the invite in the core and then answers, so the sender learns the answer.
+// Nothing here is a Session read; the core reads and accepts the invite.
+
+/** The token of a Comma invite link (`…invite=<token>`), as the core reads it (`taskRequestInviteToken`). */
+export function nearbyInviteToken(url: string): string | null {
+  return /[?&]invite=([A-Za-z0-9_-]{43})(?:[&#]|$)/.exec(url)?.[1] ?? null;
+}
+export const nearbyStateSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    /** This computer can look for and ask people nearby: the AirDrop helper or a local network receiver. */
+    available: z.boolean(),
+    scan: z.enum(["idle", "scanning", "done", "failed"]),
+    /** Comma receivers the last scan found, as they are found. */
+    peers: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(256),
+            /** The name the receiver shows in AirDrop, such as “Ada’s Comma”. */
+            name: z.string().max(160),
+            /** Found over AirDrop (right beside this Mac) or on the same local network. */
+            via: z.enum(["airdrop", "wifi"]),
+          })
+          .strict()
+      )
+      .max(64),
+    /** Invites sent to peers: `asking` until the other person answers, `accepted` or `unanswered` after. */
+    asks: z
+      .array(
+        z
+          .object({
+            peerId: z.string().min(1).max(256),
+            status: z.enum(["asking", "accepted", "unanswered"]),
+          })
+          .strict()
+      )
+      .max(64),
+    /** Invites someone nearby sent this Mac, held until this person answers or the sender gives up. */
+    offers: z
+      .array(
+        z
+          .object({
+            invite: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+            requestId: z.string().uuid(),
+            senderName: z.string().max(160).optional(),
+            /** The window that shows the card; absent, any window does. */
+            surfaceId: z.string().min(1).max(256).optional(),
+          })
+          .strict()
+      )
+      .max(4),
+  })
+  .strict();
+export type NearbyState = z.infer<typeof nearbyStateSchema>;
+export const emptyNearbyState: NearbyState = {
+  revision: 0,
+  available: false,
+  scan: "idle",
+  peers: [],
+  asks: [],
+  offers: [],
+};
+export const nearbyStateCapability = defineNativeCapability({
+  bridge: { method: "state", namespace: "nearby" },
+  channel: "comma:nearby:state",
+  handler: {
+    exportName: "NearbyProvider",
+    member: "state",
+    module: "../../../apps/electron/src/main/modules/airdrop/nearby",
+    provider: "nearby",
+  },
+  id: "nearby.state",
+  input: z.void(),
+  output: nearbyStateSchema,
+  mock: emptyNearbyState,
+  webFallback: emptyNearbyState,
+  permission: "airdrop.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads only Main's local AirDrop scan and held offers; the core reads whose invite an offer carries.",
+});
+export const nearbyFindCapability = defineNativeCapability({
+  bridge: { method: "find", namespace: "nearby" },
+  channel: "comma:nearby:find",
+  handler: {
+    exportName: "NearbyProvider",
+    member: "find",
+    module: "../../../apps/electron/src/main/modules/airdrop/nearby",
+    provider: "nearby",
+  },
+  id: "nearby.find",
+  input: z.void(),
+  output: nearbyStateSchema,
+  mock: emptyNearbyState,
+  webFallback: emptyNearbyState,
+  permission: "airdrop.control",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Scans for nearby Comma receivers over AirDrop (anonymous identity) and mDNS; no account data leaves this computer.",
+});
+export const nearbyAskCapability = defineNativeCapability({
+  bridge: { method: "ask", namespace: "nearby" },
+  channel: "comma:nearby:ask",
+  handler: {
+    exportName: "NearbyProvider",
+    member: "ask",
+    module: "../../../apps/electron/src/main/modules/airdrop/nearby",
+    provider: "nearby",
+  },
+  id: "nearby.ask",
+  input: z
+    .object({
+      /** An invite link the core made for this person (`taskRequests.createInvite`). */
+      inviteUrl: z
+        .string()
+        .url()
+        .max(2_048)
+        .refine((url) => /^https?:/.test(url) && nearbyInviteToken(url) !== null, {
+          message: "Expected a Comma invite link.",
+        }),
+      peerId: z.string().min(1).max(256),
+    })
+    .strict(),
+  output: nearbyStateSchema,
+  mock: emptyNearbyState,
+  webFallback: emptyNearbyState,
+  permission: "airdrop.control",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Sends only an invite link the core already made to a receiver the last scan found; the link itself grants nothing until the other person accepts it in their core.",
+});
+export const nearbyAnswerCapability = defineNativeCapability({
+  bridge: { method: "answer", namespace: "nearby" },
+  channel: "comma:nearby:answer",
+  handler: {
+    exportName: "NearbyProvider",
+    member: "answer",
+    module: "../../../apps/electron/src/main/modules/airdrop/nearby",
+    provider: "nearby",
+  },
+  id: "nearby.answer",
+  input: z
+    .object({
+      /** True once the core accepted the invite; false declines the offer. */
+      accept: z.boolean(),
+      requestId: z.string().uuid(),
+    })
+    .strict(),
+  output: nearbyStateSchema,
+  mock: emptyNearbyState,
+  webFallback: emptyNearbyState,
+  permission: "airdrop.control",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Answers only Main's held local AirDrop offer; the core accepted the invite against its own Session authority.",
+});
+export const nearbyStateChangedEvent = defineNativeEvent({
+  channel: "comma:nearby:state-changed",
+  id: "nearby.state.changed",
+  mock: emptyNearbyState,
+  payload: nearbyStateSchema,
+  permission: nearbyStateCapability.permission,
+  target: { type: "all" },
+});
+export const nearbyStateLeaf = defineNativeState({
+  bridge: { method: "state", namespace: "nearby" },
+  get: nearbyStateCapability,
+  id: "nearby.state",
+  subscribe: nearbyStateChangedEvent,
 });
 // -- synchronicity ----------------------------------------------------------
 //
@@ -7387,6 +7864,7 @@ export const applicationMenuCommandSchema = z.enum([
   "go-routines",
   "go-shortcuts",
   "go-recording-settings",
+  "new-task",
   "history-back",
   "history-forward",
   "toggle-left-sidebar",
@@ -7401,6 +7879,8 @@ export const applicationMenuCommandSchema = z.enum([
   "drive-download",
   "browser-new-tab",
   "browser-close-tab",
+  "browser-next-tab",
+  "browser-previous-tab",
   "check-updates",
 ]);
 export type ApplicationMenuCommand = z.infer<typeof applicationMenuCommandSchema>;
@@ -7528,7 +8008,9 @@ export const nativeCapabilityRegistry = [
   appPreferencesCapability,
   appPreferencesInitializeClientSettingsCapability,
   appPreferencesOpenLoginItemsSettingsCapability,
+  appPreferencesRelaunchCapability,
   appPreferencesOpenNotificationSettingsCapability,
+  appPreferencesRefreshLaunchAtLoginCapability,
   appPreferencesRequestNotificationAuthorizationCapability,
   appPreferencesUpdateCapability,
   connectorRuntimeStateCapability,
@@ -7545,6 +8027,10 @@ export const nativeCapabilityRegistry = [
   macAppsOpenItemCapability,
   macAppsIconsCapability,
   macAppsCalendarEventsCapability,
+  blenderStateCapability,
+  blenderSetEnabledCapability,
+  blenderOpenCapability,
+  blenderChooseAppCapability,
   appearanceSetResolvedThemeCapability,
   appearanceFontFamiliesCapability,
   notchStatusCapability,
@@ -7563,6 +8049,7 @@ export const nativeCapabilityRegistry = [
   surfacesWindowControlCapability,
   windowsCreateCapability,
   windowsFocusCapability,
+  windowsFocusScreenCapability,
   windowsCloseCapability,
   onboardingPresentWindowCapability,
   onboardingCloseWindowCapability,
@@ -7600,8 +8087,8 @@ export const nativeCapabilityRegistry = [
   computeNodeStateCapability,
   computeNodeConfigureCapability,
   computeNodeRefreshCapability,
-  computeNodeRepairCapability,
-  computeNodeRebuildCapability,
+  computeNodeContinueCapability,
+  computeNodeReauthorizeCapability,
   localComputeOverviewCapability,
   localComputeDisposeCapability,
   localComputeResumeCapability,
@@ -7613,8 +8100,6 @@ export const nativeCapabilityRegistry = [
   localComputeWorkloadsCapability,
   computeNodeDrainCapability,
   computeNodeRemoveCapability,
-  computeNodeAbandonCapability,
-  computeNodeResetLocalRecordCapability,
   chatPickAttachmentsCapability,
   audioCaptureStateCapability,
   voiceCallMicrophoneCapability,
@@ -7637,6 +8122,10 @@ export const nativeCapabilityRegistry = [
   airDropStateCapability,
   airDropActCapability,
   airDropPreviewCapability,
+  nearbyStateCapability,
+  nearbyFindCapability,
+  nearbyAskCapability,
+  nearbyAnswerCapability,
   synchronicityStateCapability,
   synchronicityListCapability,
   synchronicityReadCapability,
@@ -7667,6 +8156,7 @@ export const nativeEventRegistry = [
   appPreferencesChangedEvent,
   connectorRuntimeStateChangedEvent,
   macAppsStateChangedEvent,
+  blenderStateChangedEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
   surfacesChangedEvent,
@@ -7679,10 +8169,12 @@ export const nativeEventRegistry = [
   messageNotificationsEvent,
   computeNodeStateChangedEvent,
   audioCaptureStateChangedEvent,
+  audioCaptureTranscriptionFailedEvent,
   voiceCallAudioEvent,
   meetingPresenceStateChangedEvent,
   surfacesWindowResizeSettledEvent,
   airDropStateChangedEvent,
+  nearbyStateChangedEvent,
 ] as const;
 
 export const nativeStateRegistry = [
@@ -7690,6 +8182,7 @@ export const nativeStateRegistry = [
   appPreferencesStateLeaf,
   connectorRuntimeStateLeaf,
   macAppsStateLeaf,
+  blenderStateLeaf,
   surfacesStateLeaf,
   surfacesWindowFullScreenStateLeaf,
   surfacesWindowMaximizedStateLeaf,
@@ -7699,6 +8192,7 @@ export const nativeStateRegistry = [
   audioCaptureStateLeaf,
   meetingPresenceStateLeaf,
   airDropStateLeaf,
+  nearbyStateLeaf,
 ] as const;
 
 function parseLeafFixture({

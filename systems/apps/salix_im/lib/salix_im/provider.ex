@@ -33,7 +33,7 @@ defmodule SalixIM.Provider do
   # Role-based access remains separate from the exact Task execution scope.
   # Workers see every provider that has an operation they may call; WeChat,
   # iMessage and voice offer only sends.
-  @worker_external_providers ["slack", "feishu", "lark", "qq", "telegram", "signal"]
+  @worker_external_providers ["slack", "feishu", "lark", "qq", "telegram", "signal", "line"]
 
   # Non-mutating media downloads explicitly granted to workers beyond the
   # `safety: read` class. Uploads and any other non-read operation — including
@@ -165,7 +165,15 @@ defmodule SalixIM.Provider do
       with {:ok, manual} <- Manuals.manual(platform) do
         {:ok,
          Map.update!(manual, "apis", fn apis ->
-           Enum.filter(apis, &(&1["name"] in granted or &1["name"] in names))
+           scoped_apis =
+             case baseline do
+               {:ok, scoped} -> Map.new(scoped["apis"], &{&1["name"], &1})
+               _ -> %{}
+             end
+
+           apis
+           |> Enum.filter(&(&1["name"] in granted or &1["name"] in names))
+           |> Enum.map(&Map.get(scoped_apis, &1["name"], &1))
          end)}
       end
     end
@@ -177,8 +185,13 @@ defmodule SalixIM.Provider do
   defp manual_provider_visible?(platform, scope),
     do: platform in visible_external_providers(scope)
 
-  defp manual_for_scope("internal", %{agent: %{"role" => "router"}, group_id: group_id}) do
-    with {:ok, manual} <- Manuals.manual("internal") do
+  defp manual_for_scope("internal", %{
+         agent: %{"role" => "router"},
+         group_id: group_id,
+         tenant_id: tenant_id
+       }) do
+    with {:ok, manual} <- Manuals.manual("internal"),
+         {:ok, group} <- GroupDirectory.get_group(group_id, tenant_id) do
       catalog =
         case SalixIM.TaskLabels.list(group_id) do
           {:ok, %{"labels" => labels}} ->
@@ -192,6 +205,8 @@ defmodule SalixIM.Provider do
        Map.update!(manual, "apis", fn apis ->
          Enum.map(apis, fn
            %{"name" => "internal.task.create"} = api ->
+             api = SalixIM.TaskModelSelection.manual(api, group["task_model_selection"])
+
              update_in(
                api,
                ["input_schema", "properties", "label_ids", "description"],
@@ -273,10 +288,47 @@ defmodule SalixIM.Provider do
           dispatch_api(scope, platform, api, connect_id, params, provider_opts)
         end)
 
+      observe_slack_reply(result, started_ms, scope, platform, api, args)
+
       log_operation_finish(result, started_ms, scope, platform, api, connect_id)
       result
     end
   end
+
+  defp observe_slack_reply(result, started, scope, "slack", "slack.reply_message", args) do
+    context = args["tool_context"] || %{}
+    params = args["params"] || %{}
+
+    reply_at =
+      with {:ok, %{"ts" => ts}} <- result,
+           {:ok, micros} <- SalixIM.SlackMessageMirror.Row.slack_ts_micros(ts),
+           do: div(micros, 1_000)
+
+    fields =
+      SalixAgent.DeliveryTelemetry.identity(
+        scope.agent_id,
+        context["session_id"],
+        context["source_message_id"]
+      )
+      |> Map.merge(%{
+        tool_key: SalixAgent.DeliveryTelemetry.source_key(args["tool_call_id"]),
+        thread_key: SalixAgent.DeliveryTelemetry.source_key(params["thread_ts"]),
+        reply_at_ms: reply_at
+      })
+
+    SalixAgent.DeliveryTelemetry.emit(
+      :slack_reply,
+      if(match?({:ok, _}, result), do: :ok, else: :error),
+      SystemsClock.monotonic_time(:millisecond) - started,
+      fields
+    )
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp observe_slack_reply(_, _, _, _, _, _), do: :ok
 
   def current_tool_context do
     Process.get(:salix_im_provider_tool_context) || %{}
@@ -344,6 +396,11 @@ defmodule SalixIM.Provider do
           if api == "qq.post_task_card",
             do: SalixIM.QQTaskCard.post(scope, connect, params),
             else: SalixIM.Provider.QQ.call(scope.agent_id, connect, api, params)
+        end)
+
+      "line" ->
+        call_external(scope, connect_id, "line", api, params, fn connect ->
+          SalixIM.Provider.Line.call(scope.agent_id, connect, api, params)
         end)
 
       "lark" ->

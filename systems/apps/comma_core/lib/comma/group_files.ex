@@ -19,7 +19,47 @@ defmodule Comma.GroupFiles do
   @max_jpeg_header_bytes 1_048_576
   @jpeg_sof_markers [0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF]
   @jpeg_standalone_markers [0x01, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8]
-  @upload_image_path ~r|\A/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\z|
+  @upload_path ~r|\A/uploads/[A-Za-z0-9_-]{22}-[A-Za-z0-9._-]+\z|
+  @upload_content_types %{
+    ".aac" => "audio/aac",
+    ".csv" => "text/csv",
+    ".doc" => "application/msword",
+    ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".flac" => "audio/flac",
+    ".gif" => "image/gif",
+    ".htm" => "text/html",
+    ".html" => "text/html",
+    ".jpeg" => "image/jpeg",
+    ".jpg" => "image/jpeg",
+    ".json" => "application/json",
+    ".jsonl" => "application/jsonl",
+    ".log" => "text/plain",
+    ".m4a" => "audio/mp4",
+    ".m4v" => "video/x-m4v",
+    ".markdown" => "text/markdown",
+    ".md" => "text/markdown",
+    ".mov" => "video/quicktime",
+    ".mp3" => "audio/mpeg",
+    ".mp4" => "video/mp4",
+    ".ogg" => "audio/ogg",
+    ".pdf" => "application/pdf",
+    ".png" => "image/png",
+    ".ppt" => "application/vnd.ms-powerpoint",
+    ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".svg" => "image/svg+xml",
+    ".toml" => "application/toml",
+    ".tsv" => "text/tab-separated-values",
+    ".txt" => "text/plain",
+    ".wav" => "audio/wav",
+    ".webm" => "video/webm",
+    ".webp" => "image/webp",
+    ".xls" => "application/vnd.ms-excel",
+    ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xml" => "application/xml",
+    ".yaml" => "application/yaml",
+    ".yml" => "application/yaml",
+    ".zip" => "application/zip"
+  }
   @image_content_types %{
     ".gif" => "image/gif",
     ".jpeg" => "image/jpeg",
@@ -75,6 +115,48 @@ defmodule Comma.GroupFiles do
   end
 
   @doc """
+  Begin a file of any type and `size` bytes that arrives in parts, each in a
+  request of its own (`put_upload_part/4`, then `finish_upload/4`), so a file
+  larger than one request may carry still arrives. Returns the upload's id and
+  the size of every part but the last.
+  """
+  def begin_upload(group_scope, size) when is_map(group_scope) and is_integer(size) do
+    with :ok <- validate_stream_size(size),
+         {:ok, %{upload_id: upload_id, part_size: part_size}} <-
+           Comma.Salix.Client.begin_agent_file_upload(group_scope, size) do
+      {:ok, %{"upload_id" => upload_id, "part_size" => part_size}}
+    end
+  end
+
+  def begin_upload(_group_scope, _size), do: {:error, :file_required}
+
+  @doc "Store part `number` (from 1) of upload `upload_id`; returns its etag."
+  def put_upload_part(group_scope, upload_id, number, body)
+      when is_map(group_scope) and is_binary(upload_id) and is_integer(number) and
+             is_binary(body) do
+    case Comma.Salix.Client.put_agent_file_upload_part(group_scope, upload_id, number, body) do
+      {:ok, etag} -> {:ok, %{"etag" => etag}}
+      {:error, :invalid_part} -> {:error, {:bad_request, "invalid_part"}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Store upload `upload_id` as the composer file `filename`, from the etags of
+  its parts in part order.
+  """
+  def finish_upload(group_scope, upload_id, filename, etags)
+      when is_map(group_scope) and is_binary(upload_id) and is_list(etags) do
+    name = filename |> filename_to_string() |> nonblank("file")
+    path = upload_path(name)
+
+    case Comma.Salix.Client.finish_agent_file_upload(group_scope, upload_id, path, etags) do
+      {:ok, %{"size" => size}} -> {:ok, %{"path" => path, "name" => name, "size" => size}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Store a conversation attachment that `Comma.ConversationAttachments.open/4`
   gave as a Router VFS file of its own, by reference to the same blob: no bytes
   are read or copied, so it has no size bound.
@@ -114,6 +196,41 @@ defmodule Comma.GroupFiles do
       fn _received -> :ok end
     )
   end
+
+  @doc """
+  The file uploaded as `name` (`/uploads/<name>`, as `store/3` and
+  `store_stream/4` named it), ready for `Comma.ConversationAttachments.stream/2`
+  and `presign/2`: read from the blob it is stored as, at any size and in byte
+  ranges. Its content type comes from its extension. `{:error, :not_found}` for
+  a name no upload has.
+  """
+  def open_upload(group_scope, name) when is_map(group_scope) and is_binary(name) do
+    path = "/uploads/" <> name
+
+    with true <- byte_size(path) <= @max_upload_path_bytes and String.valid?(path),
+         true <- Regex.match?(@upload_path, path),
+         {:ok, %{agent_id: agent_id, ref: ref}} <-
+           Comma.Salix.Client.agent_file_ref(group_scope, path),
+         size when is_integer(size) and size >= 0 <- ref["size"] do
+      {:ok,
+       %{
+         content_type:
+           Map.get(
+             @upload_content_types,
+             String.downcase(Path.extname(path)),
+             "application/octet-stream"
+           ),
+         file_name: binary_part(name, 23, byte_size(name) - 23),
+         size: size,
+         source: {group_scope, agent_id, ref}
+       }}
+    else
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :not_found}
+    end
+  end
+
+  def open_upload(_group_scope, _name), do: {:error, :not_found}
 
   @doc """
   Read one uploaded image through its compatibility Router VFS locator.
@@ -163,7 +280,7 @@ defmodule Comma.GroupFiles do
 
   defp image_content_type(path)
        when is_binary(path) and byte_size(path) <= @max_upload_path_bytes do
-    if String.valid?(path) and Regex.match?(@upload_image_path, path) do
+    if String.valid?(path) and Regex.match?(@upload_path, path) do
       case Map.fetch(@image_content_types, String.downcase(Path.extname(path))) do
         {:ok, content_type} -> {:ok, content_type}
         :error -> {:error, :not_found}

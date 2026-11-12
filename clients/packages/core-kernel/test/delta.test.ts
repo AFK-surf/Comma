@@ -1,7 +1,9 @@
 import { expect, test } from "vitest";
 import { applyDelta } from "../src/client/apply.ts";
 import { diffKeyed } from "../src/collections.ts";
-import { diff } from "../src/delta.ts";
+import { jsonBytes, toJson, utf8 } from "../src/json.ts";
+
+const diff = (old: unknown, next: unknown) => diffKeyed(old, next, null);
 
 // A delta crosses to the page as it is (a worker's message keeps a field
 // whose value is undefined), but a record, or any transport that writes
@@ -56,4 +58,25 @@ test("a string that only grew at its end goes out as what it gained, in a keyed 
   const keyed = diffKeyed(listed, grew, spec);
   expect(JSON.stringify(keyed)).toContain('"extend":"And more."');
   expect(applyDelta(listed, keyed as never)).toEqual(grew);
+});
+
+test("weighs a value as writing it out would, and stops once it outweighs a limit", () => {
+  const values: unknown[] = [
+    null,
+    '名字 with   and "quotes"',
+    [1, undefined, "x", { a: undefined, b: [true, null] }],
+    { z: 1, a: { nested: ["é", 2.5, -0] }, skip: undefined },
+    {
+      items: Array.from({ length: 500 }, (_, i) => ({
+        id: `r${i}`,
+        title: `Row ${i}`,
+      })),
+    },
+  ];
+  for (const value of values) {
+    const whole = utf8(toJson(value)).length;
+    expect(jsonBytes(value)).toBe(whole);
+    for (const limit of [0, 10, 100, 10_000])
+      expect(jsonBytes(value, limit) > limit).toBe(whole > limit);
+  }
 });

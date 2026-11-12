@@ -72,6 +72,20 @@ defmodule CommaWeb.PluginConnectionsTest do
       {:ok, %{"status" => 200, "data" => %{"id" => "member@example.com"}}}
     end
 
+    def proxy_execute(
+          _settings,
+          "session-" <> id,
+          %{"endpoint" => "https://gmail.googleapis.com/gmail/v1/users/me/profile"},
+          _opts
+        ) do
+      mailboxes = SystemsRuntime.get_env(:comma_web, :plugin_connection_mailboxes, %{})
+      reads = SystemsRuntime.get_env(:comma_web, :plugin_connection_mailbox_reads, [])
+      SystemsRuntime.put_env(:comma_web, :plugin_connection_mailbox_reads, reads ++ [id])
+
+      {:ok,
+       %{"status" => 200, "data" => %{"emailAddress" => mailboxes[id] || "member@example.com"}}}
+    end
+
     def proxy_execute(_settings, "session-" <> id, _request, _opts) do
       SystemsRuntime.Proc.send(caller(), {:identity_checked, id})
 
@@ -138,8 +152,144 @@ defmodule CommaWeb.PluginConnectionsTest do
       SystemsRuntime.delete_env(:comma_web, :plugin_connection_results)
       SystemsRuntime.delete_env(:comma_web, :plugin_connection_link_id)
       SystemsRuntime.delete_env(:comma_web, :plugin_connection_identity)
+      SystemsRuntime.delete_env(:comma_web, :plugin_connection_mailboxes)
+      SystemsRuntime.delete_env(:comma_web, :plugin_connection_mailbox_reads)
       Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner)
     end)
+  end
+
+  test "a sole owner's every connected mailbox is read once, also one the Router connected" do
+    {:ok, user} =
+      Comma.Accounts.create_user(%{
+        "email" => "plugin-accounts-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
+      })
+
+    workspace = create_composio_workspace!(user, "gmail")
+    assert {:ok, _} = Comma.Plugins.install(user, %{}, workspace["id"], composio_plugin_id())
+    group_id = workspace["default_group_id"]
+
+    account = fn id, created_at ->
+      %{
+        "id" => id,
+        "user_id" => group_id,
+        "toolkit" => %{"slug" => "gmail"},
+        "status" => "ACTIVE",
+        "created_at" => created_at
+      }
+    end
+
+    # The work mailbox was installed through Comma. The personal one was
+    # connected later, twice: Composio kept the older connection.
+    SystemsRuntime.put_env(:comma_web, :plugin_connection_accounts, [
+      account.("ca_work", "2026-11-01T00:00:00Z"),
+      account.("ca_personal_old", "2026-11-02T00:00:00Z"),
+      account.("ca_personal", "2026-11-03T00:00:00Z")
+    ])
+
+    SystemsRuntime.put_env(:comma_web, :plugin_connection_mailboxes, %{
+      "ca_work" => "me@work.test",
+      "ca_personal_old" => "me@home.test",
+      "ca_personal" => "me@home.test"
+    })
+
+    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "gmail", "ca_work")
+    # The personal mailbox was consented on its older connection.
+    {:ok, :ok} =
+      Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "gmail", "ca_personal_old")
+
+    gmail = fn sources ->
+      sources
+      |> Enum.filter(&(&1["appId"] == "gmail"))
+      |> Enum.map(& &1["connectionId"])
+      |> Enum.sort()
+    end
+
+    # Each mailbox is read once, on its newest connection.
+    assert {:ok, sources} =
+             CommaWeb.RecommendationSources.discover(workspace, user["id"], "member")
+
+    assert gmail.(sources) == ["ca_personal", "ca_work"]
+
+    assert Comma.MemberSourceConsents.bindings(workspace["id"], user["id"])
+           |> Map.get("gmail")
+           |> Enum.sort() == ["ca_personal", "ca_work"]
+
+    # The consented identities are stored: a second discovery reads only the
+    # connection without a receipt.
+    SystemsRuntime.put_env(:comma_web, :plugin_connection_mailbox_reads, [])
+
+    assert {:ok, sources} =
+             CommaWeb.RecommendationSources.discover(workspace, user["id"], "member")
+
+    assert gmail.(sources) == ["ca_personal", "ca_work"]
+
+    assert SystemsRuntime.get_env(:comma_web, :plugin_connection_mailbox_reads) == [
+             "ca_personal_old"
+           ]
+
+    # A sole owner's accounts are all read: Plugins offers nothing to choose.
+    assert {:ok, %{"sources" => [personal]}} =
+             PluginConnections.personal_sources(user, %{}, workspace["id"], composio_plugin_id())
+
+    assert personal["state"] == "ready"
+    assert Enum.sort(personal["selectedAccountIds"]) == ["ca_personal", "ca_work"]
+    assert personal["candidates"] == []
+  end
+
+  test "Dropbox, Canva and HubSpot install through their Composio toolkits" do
+    {:ok, user} =
+      Comma.Accounts.create_user(%{
+        "email" =>
+          "plugin-connection-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
+      })
+
+    workspace = create_ready_workspace!(user)
+    group_id = workspace["default_group_id"]
+
+    assert {:ok, plugins} = Comma.Plugins.list(user, %{}, workspace["id"])
+
+    for toolkit <- ~w(dropbox canva hubspot) do
+      assert %{"brand" => ^toolkit, "installed" => false, "credentialSetup" => nil} =
+               Enum.find(plugins, &(&1["id"] == toolkit))
+
+      assert {:ok, started} = PluginConnections.install(user, %{}, workspace["id"], toolkit)
+
+      assert started["plugin"]["installed"] == false
+
+      assert started["authorization"]["authorizationUrl"] ==
+               "https://connect.composio.dev/link/#{toolkit}"
+
+      assert_received {:connect_link, ^toolkit, ^group_id, []}
+
+      SystemsRuntime.put_env(:comma_web, :plugin_connection_accounts, [
+        %{
+          "id" => "ca_#{toolkit}",
+          "user_id" => group_id,
+          "toolkit" => %{"slug" => toolkit},
+          "status" => "ACTIVE"
+        }
+      ])
+
+      assert {:ok, finished} =
+               PluginConnections.install(user, %{}, workspace["id"], toolkit, %{
+                 "authorization_state" => started["authorization"]["state"],
+                 "verify_only" => true
+               })
+
+      assert finished["plugin"]["installed"] == true
+      assert finished["authorization"] == nil
+
+      # Not a personal source: nothing joins Routine.
+      assert consented_id(workspace["id"], user["id"], toolkit) == nil
+
+      assert {:ok, %{"sources" => []}} =
+               PluginConnections.personal_sources(user, %{}, workspace["id"], toolkit)
+
+      assert {:ok, _} = PluginConnections.uninstall(user, %{}, workspace["id"], toolkit)
+      assert_received {:deleted_connected_account, _}
+
+      SystemsRuntime.put_env(:comma_web, :plugin_connection_accounts, [])
+    end
   end
 
   test "Composio installation stays disabled until its group-scoped authorization completes" do
@@ -259,7 +409,7 @@ defmodule CommaWeb.PluginConnectionsTest do
     assert completed["authorization"] == nil
     assert completed["plugin"]["installed"] == true
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+    assert consented_id(workspace["id"], user["id"], "slack") ==
              "ca_slack"
 
     # Consent must not create a default-UTC Routine before its first client read.
@@ -276,7 +426,7 @@ defmodule CommaWeb.PluginConnectionsTest do
 
     assert removed["installed"] == false
     assert_received {:deleted_connected_account, "ca_slack"}
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+    assert consented_id(workspace["id"], user["id"], "slack") == nil
 
     # A duplicate verification from the completed pre-uninstall attempt is
     # fenced by the persisted server attempt generation, even if provider
@@ -506,7 +656,7 @@ defmodule CommaWeb.PluginConnectionsTest do
              PluginConnections.personal_sources(user, %{}, workspace["id"], composio_plugin_id())
 
     assert Enum.map(candidates, & &1["id"]) == ~w(ca_old ca_new)
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+    assert consented_id(workspace["id"], user["id"], "slack") == nil
 
     assert {:ok, prepared} =
              PluginConnections.prepare_existing(
@@ -532,7 +682,7 @@ defmodule CommaWeb.PluginConnectionsTest do
 
     assert_received {:identity_checked, "ca_old"}
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+    assert consented_id(workspace["id"], user["id"], "slack") ==
              "ca_old"
 
     assert Enum.any?(Comma.Repo.all(Oban.Job), fn job ->
@@ -634,7 +784,7 @@ defmodule CommaWeb.PluginConnectionsTest do
                prepared["state"]
              )
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+    assert consented_id(workspace["id"], user["id"], "slack") == nil
 
     SystemsRuntime.delete_env(:comma_web, :plugin_connection_identity)
 
@@ -666,7 +816,7 @@ defmodule CommaWeb.PluginConnectionsTest do
                prepared_again["state"]
              )
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") == nil
+    assert consented_id(workspace["id"], user["id"], "slack") == nil
   end
 
   test "targeted reauthorization preserves the old account until the new grant completes" do
@@ -701,7 +851,7 @@ defmodule CommaWeb.PluginConnectionsTest do
     assert started["plugin"]["installed"] == true
     assert started["authorization"]["authorizationUrl"] =~ "/slack"
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+    assert consented_id(workspace["id"], user["id"], "slack") ==
              "ca_old"
 
     refute_received {:deleted_connected_account, "ca_old"}
@@ -730,7 +880,7 @@ defmodule CommaWeb.PluginConnectionsTest do
                "authorization_state" => started["authorization"]["state"]
              })
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+    assert consented_id(workspace["id"], user["id"], "slack") ==
              "ca_old"
 
     refute_received {:deleted_connected_account, "ca_old"}
@@ -745,7 +895,7 @@ defmodule CommaWeb.PluginConnectionsTest do
     assert finished["plugin"]["installed"] == true
     assert finished["authorization"] == nil
 
-    assert Comma.MemberSourceConsents.connection_id(workspace["id"], user["id"], "slack") ==
+    assert consented_id(workspace["id"], user["id"], "slack") ==
              "ca_new"
 
     assert_received {:deleted_connected_account, "ca_old"}
@@ -787,4 +937,12 @@ defmodule CommaWeb.PluginConnectionsTest do
 
   defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
+
+  # The toolkit's one consented account, or nil.
+  defp consented_id(workspace_id, user_id, toolkit) do
+    case Comma.MemberSourceConsents.toolkit_bindings(workspace_id, user_id, toolkit) do
+      [] -> nil
+      [%{"connection_id" => id}] -> id
+    end
+  end
 end

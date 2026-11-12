@@ -83,6 +83,7 @@ const projectPages = [
   ["plugins", "projectPlugins", "/plugins"],
   ["skills", "projectSkills", "/skills"],
   ["connections", "projectConnections", "/connections"],
+  ["stillfail", "projectStillfail", "/stillfail"],
   ["settings", "projectSettings", "/settings"],
 ] as const satisfies readonly [string, keyof typeof messages.nav, string][];
 

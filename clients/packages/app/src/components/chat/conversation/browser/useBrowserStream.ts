@@ -29,6 +29,11 @@ export function useBrowserStream(frame: BrowserViewValue["frame"]) {
         surface.width = image.naturalWidth;
         surface.height = image.naturalHeight;
         surface.style.aspectRatio = `${image.naturalWidth}/${image.naturalHeight}`;
+        // The screen is never taller than 40% of the window: its width follows the page's proportions.
+        surface.style.setProperty(
+          "--comma-browser-ratio",
+          `${image.naturalWidth / image.naturalHeight}`
+        );
         surface.getContext("2d")?.drawImage(image, 0, 0);
       }
       drawing.current = false;

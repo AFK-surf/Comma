@@ -35,70 +35,68 @@ private def structName : Term → Option String
 private def grouped (left right : String) (values : List String) : String :=
   left ++ String.intercalate ", " values ++ right
 
-private def renderFuel : Nat → Nat → Nat → Term → String
-  | 0, _, _, _ => "..."
-  | fuel + 1, limit, printableLimit, value =>
-    let render := renderFuel fuel limit printableLimit
-    let items := fun (xs : List Term) =>
-      (xs.take limit).map render ++ if xs.length > limit then ["..."] else []
+private def renderDeferred : Nat → Nat → Nat → Term → Stackless String
+  | 0, _, _, _ => .done "..."
+  | fuel + 1, limit, printableLimit, value => .delay fun _ => do
+    let render := renderDeferred fuel limit printableLimit
+    let items := fun (xs : List Term) => do
+      return (← Stackless.mapM render (xs.take limit)) ++ if xs.length > limit then ["..."] else []
     match value with
-    | .integer n => toString n
-    | .floatBits bits => Number.floatText bits true
-    | .atom name => atomText name
+    | .integer n => return toString n
+    | .floatBits bits => return Number.floatText bits true
+    | .atom name => return atomText name
     | .binary raw =>
       match String.fromUTF8? raw with
       | some text =>
         if text.toList.all printable then
           let chars := text.toList
-          "\"" ++ escaped (String.ofList (chars.take printableLimit)) ++ "\"" ++
+          return "\"" ++ escaped (String.ofList (chars.take printableLimit)) ++ "\"" ++
             (if chars.length > printableLimit then " <> ..." else "")
-        else grouped "<<" ">>" (items (raw.toList.map (fun byte => i byte.toNat)))
-      | none => grouped "<<" ">>" (items (raw.toList.map (fun byte => i byte.toNat)))
+        else return grouped "<<" ">>" (← items (raw.toList.map (fun byte => i byte.toNat)))
+      | none => return grouped "<<" ">>" (← items (raw.toList.map (fun byte => i byte.toNat)))
     | .bitstring raw lastBits =>
       let bytes := raw.toList
       let full := bytes.take (bytes.length - 1)
       let tail := (bytes.getLast?.getD 0).toNat / 2^(8 - lastBits.toNat)
-      grouped "<<" ">>" (full.map (fun byte => toString byte.toNat) ++ [toString tail ++ "::size(" ++ toString lastBits.toNat ++ ")"])
-    | .tuple xs => grouped "{" "}" (items xs)
-    | .list [] => "[]"
+      return grouped "<<" ">>" (full.map (fun byte => toString byte.toNat) ++ [toString tail ++ "::size(" ++ toString lastBits.toNat ++ ")"])
+    | .tuple xs => return grouped "{" "}" (← items xs)
+    | .list [] => return "[]"
     | .list xs =>
       let chars := xs.filterMap (fun x => match x with
         | .integer n => if n ≥ 0 && n ≤ 0x10FFFF then some (Char.ofNat n.toNat) else none
         | _ => none)
       if chars.length == xs.length && chars.all printable then
-        "~c\"" ++ escaped (String.ofList (chars.take printableLimit)) ++ "\""
+        return "~c\"" ++ escaped (String.ofList (chars.take printableLimit)) ++ "\""
       else
         let keyword := xs.all (fun x => match x with | .tuple [.atom _, _] => true | _ => false)
         if keyword then
-          let entries := (xs.take limit).map (fun x => match x with
-            | .tuple [.atom key, value] => (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ render value
-            | _ => "...")
-          grouped "[" "]" (entries ++ if xs.length > limit then ["..."] else [])
-        else grouped "[" "]" (items xs)
-    | .improper xs tail => "[" ++ String.intercalate ", " (items xs) ++ " | " ++ render tail ++ "]"
+          let entries ← Stackless.mapM (fun x => do match x with
+            | .tuple [.atom key, value] => return (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ (← render value)
+            | _ => return "...") (xs.take limit)
+          return grouped "[" "]" (entries ++ if xs.length > limit then ["..."] else [])
+        else return grouped "[" "]" (← items xs)
+    | .improper xs tail => return "[" ++ String.intercalate ", " (← items xs) ++ " | " ++ (← render tail) ++ "]"
     | .map xs =>
       if value.get (a "__struct__") == a "Elixir.MapSet" then
         let members := match value.get (a "map") with | .map pairs => pairs.map Prod.fst | _ => []
-        "MapSet.new(" ++ grouped "[" "]" (items members) ++ ")"
+        return "MapSet.new(" ++ grouped "[" "]" (← items members) ++ ")"
       else if let some module := structName (value.get (a "__struct__")) then
-        -- A struct renders by its module name, without its struct and
-        -- exception markers. Field order is the map's order.
         let fields := xs.filter (fun pair => pair.1 != a "__struct__" &&
           !(pair.1 == a "__exception__" && pair.2 == a "true"))
-        let entries := (fields.take limit).map (fun pair =>
+        let entries ← Stackless.mapM (fun pair => do
           let key := match pair.1 with | .atom name => name | _ => ""
-          (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ render pair.2)
-        "%" ++ atomText module ++ grouped "{" "}" (entries ++ if fields.length > limit then ["..."] else [])
+          return (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ (← render pair.2)) (fields.take limit)
+        return "%" ++ atomText module ++ grouped "{" "}" (entries ++ if fields.length > limit then ["..."] else [])
       else
         let keyword := xs.all (fun pair => match pair.1 with | .atom _ => true | _ => false)
-        let entries := (xs.take limit).map (fun pair =>
+        let entries ← Stackless.mapM (fun pair => do
           if keyword then
             let key := match pair.1 with | .atom name => name | _ => ""
-            (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ render pair.2
-          else render pair.1 ++ " => " ++ render pair.2)
-        grouped "%{" "}" (entries ++ if xs.length > limit then ["..."] else [])
+            return (if identifier key then key else "\"" ++ escaped key ++ "\"") ++ ": " ++ (← render pair.2)
+          else return (← render pair.1) ++ " => " ++ (← render pair.2)) (xs.take limit)
+        return grouped "%{" "}" (entries ++ if xs.length > limit then ["..."] else [])
 
 def render (value : Term) (limit : Nat := 50) (printableLimit : Nat := 4096) : String :=
-  renderFuel (value.depth + 1) limit printableLimit value
+  (renderDeferred (value.depth + 1) limit printableLimit value).run
 
 end VerifiedKernel.Inspect

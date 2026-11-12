@@ -3,6 +3,9 @@ package surf.comma.android.conversation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import surf.comma.android.auth.ConversationScope
@@ -165,14 +168,17 @@ internal fun ConversationState.texts() = timeline.map { entry ->
 /**
  * The client core's `chatView` topic for one conversation, as far as the app's own code reads it: what is sent goes
  * into `pending`, and becomes a canonical message when [accept] is set (at once, or on a retry); otherwise it fails.
- * A file attached (or retried) uploads at once unless [uploads] is false. The conversation itself (the stream, paging, gaps, what
- * is kept) is the core's and is tested there.
+ * A file attached (or retried) uploads at once unless [uploads] is false. The draft's text is kept per conversation, as
+ * the core keeps it on the device: a core made with another's [kept] drafts is that core started again. The
+ * conversation itself (the stream, paging, gaps, what is kept) is the core's and is tested there.
  */
-internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
+internal class FakeChatViewCore(kept: Map<String, String> = emptyMap()) : surf.comma.android.core.CoreApi {
     /** Every send and retry handed to the core: the `chatView.send` params of that message. */
     val sends = CopyOnWriteArrayList<JSONObject>()
     val calls = CopyOnWriteArrayList<Pair<String, JSONObject>>()
     val subscribed = CopyOnWriteArrayList<JSONObject>()
+    /** How many windows read the `chatView` topic now; at none, the core lets the conversation go. */
+    val reading = MutableStateFlow(0)
     /** How many times the conversation was asked to read again. */
     val refreshes = MutableStateFlow(0)
     @Volatile var accept = false
@@ -181,6 +187,10 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
     private val messages = ArrayList<JSONObject>()
     private val pending = LinkedHashMap<String, JSONObject>()
     private val attached = LinkedHashMap<String, JSONObject>()
+    /** The draft's text of each conversation. */
+    private val drafts = HashMap(kept)
+    /** The conversation the window shows: the draft the value carries. */
+    private var shown: String? = null
     /** Images of question cards' other answers, by question. */
     private val questionAttached = LinkedHashMap<String, LinkedHashMap<String, JSONObject>>()
     /** Whether the core takes a question card's answer. */
@@ -210,6 +220,7 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
             .put("messages", JSONArray(pending.keys.map { id ->
                 JSONObject().put("source", "pending").put("clientRequestId", id).apply { displays[id]?.let { put("display", it) } }
             }))
+            .put("draft", drafts[shown].orEmpty())
             .put("draftAttachments", JSONArray(attached.values.toList())).put("awaitingReply", pending.isNotEmpty())
             .put("questionAttachments", JSONObject().apply {
                 for ((question, files) in questionAttached) put(question, JSONArray(files.values.toList()))
@@ -223,6 +234,12 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
         }
         value.value = viewValue(state, ++revision)
     }
+
+    /** The draft's text of [conversation], as the core keeps it. */
+    fun draft(conversation: String): String = synchronized(lock) { drafts[conversation].orEmpty() }
+
+    /** Every conversation's draft as the device keeps it, for a core started again. */
+    val kept: Map<String, String> get() = synchronized(lock) { HashMap(drafts) }
 
     private fun settle(id: String) {
         val item = pending[id] ?: return
@@ -243,6 +260,7 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
                 val text = params.getString("text")
                 if (text.isBlank() && files.isEmpty()) return@synchronized receipt()
                 sends += params
+                if (params.optBoolean("consumeDraft", true)) drafts.remove(params.optString("conversation"))
                 val body = if (files.isEmpty()) text else text.trim().ifEmpty { "I've attached some files:" } + "\n\n" +
                     "Attached files in your workspace:\n" + files.joinToString("\n") { "- ${it.getString("name")} (workspace file: ${it.getString("path")})" }
                 displays[id] = shown(text.trim(), files.map { WorkspaceFile(it.getString("name"), it.getString("path")) })
@@ -256,6 +274,10 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
                 sends.lastOrNull { it.optString("clientRequestId") == id }?.let { sends += it }
                 pending[id]?.let { pending[id] = JSONObject(it.toString()).put("status", "sending") }
                 settle(id)
+                publish()
+            }
+            "chatView.setDraft" -> {
+                drafts[params.getString("conversation")] = params.getString("draft")
                 publish()
             }
             "chatView.discard" -> {
@@ -322,7 +344,15 @@ internal class FakeChatViewCore : surf.comma.android.core.CoreApi {
     override fun <T> subscribe(topic: JSONObject, read: (Any?) -> T): kotlinx.coroutines.flow.Flow<surf.comma.android.core.TopicValue<T>> {
         subscribed += topic
         return when (topic.optString("topic")) {
-            "chatView" -> value.map { surf.comma.android.core.TopicValue.Value(read(it)) }
+            "chatView" -> {
+                synchronized(lock) {
+                    val was = drafts[shown].orEmpty()
+                    shown = topic.optString("conversation")
+                    if (drafts[shown].orEmpty() != was) publish()
+                }
+                value.map { surf.comma.android.core.TopicValue.Value(read(it)) }
+                    .onStart { reading.update { it + 1 } }.onCompletion { reading.update { it - 1 } }
+            }
             "agentRequests" -> requests.map { surf.comma.android.core.TopicValue.Value(read(it)) }
             else -> kotlinx.coroutines.flow.emptyFlow()
         }

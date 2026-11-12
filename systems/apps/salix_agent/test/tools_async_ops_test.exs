@@ -21,15 +21,13 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
     def fetch(result, key), do: Map.fetch(result, key)
   end
 
-  alias SalixAgent.{DependencyJob, ToolDisclosure, Tools}
+  alias SalixAgent.{ToolDisclosure, Tools}
   alias SalixAgent.Tools.AsyncOps
-  alias SalixAgent.TestSupport.SessionData
   alias SalixAgent.{AsyncToolResults, Fleet, InternalSessionStore, Round, Server, Waits}
   alias SalixAgent.InternalSession.State, as: SessionState
   alias SalixAgent.LLM.Mock
-  alias SalixStore.{Agent, Keys, S3}
+  alias SalixStore.Agent
   alias SalixStore.S3.Fake
-  alias SalixStore.Timers, as: StoreTimers
 
   defmodule CapabilityRequestStoreStub do
     @moduledoc false
@@ -140,6 +138,10 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
         SalixAgent.TestSupport.create_control_agent!(agent_id)
         :ok
     end
+
+    {:ok, _} = Fleet.ensure_started(agent_id, process_on_init: false)
+    _ = Server.info(agent_id)
+    :ok
   end
 
   defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
@@ -232,6 +234,7 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
 
   defp seed_timeout_session(timeouts, extra_tail \\ []) do
     agent_id = SalixAgent.TestSupport.new_agent_id()
+    ensure_control_agent!(agent_id)
 
     wakes =
       Enum.flat_map(1..timeouts//1, fn i ->
@@ -247,16 +250,22 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
         ]
       end)
 
-    messages = [%{id: 1, role: "user", content: "watch the deploy"}] ++ wakes ++ extra_tail
+    messages =
+      ([%{id: 1, role: "user", content: "watch the deploy"}] ++ wakes ++ extra_tail)
+      |> Enum.with_index(1)
+      |> Enum.map(fn {message, seq} -> Map.put(message, :seq, seq) end)
 
     base =
       SalixAgent.InternalSession.new(agent_id, "ses1_0000000000000000802", %{
-        "created_at" => "2026-07-08T00:00:00Z"
+        "created_at" => DateTime.to_unix(~U[2026-07-08 00:00:00Z])
       })
 
+    %SessionState{} = exported = SalixAgent.InternalSession.export(base)
+
     state = %SessionState{
-      SalixAgent.InternalSession.export(base)
+      exported
       | messages: messages,
+        last_seq: length(messages),
         next_message_id: 1000
     }
 
@@ -351,15 +360,13 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
                :wait
              )["wait_id"] == "wait-success"
 
-      assert {:ok, _} =
-               S3.head(
-                 Keys.timer(
-                   agent,
-                   "ses1_0000000000000000802",
-                   "wait-success",
-                   StoreTimers.minute_bucket(deadline)
-                 )
+      assert %{rows: [[due]]} =
+               SalixStore.Repo.query!(
+                 "SELECT next_run_at FROM salix_sessions WHERE agent_id=$1 AND session_id=$2",
+                 [agent, "ses1_0000000000000000802"]
                )
+
+      assert DateTime.to_unix(due, :millisecond) <= deadline
     end
   end
 
@@ -521,6 +528,42 @@ defmodule SalixAgent.Tools.AsyncOpsTest do
       assert request["request_type"] == "location"
       assert request["request_payload"] == %{"location" => %{"reason" => "find nearby cafes"}}
       assert is_integer(request["expires_at"])
+      assert request["surface_kind"] == nil
+    end
+
+    test "a request from a Comma conversation is shown there, under the reply to the turn's message" do
+      origin = %{"provider" => "internal", "conversation_id" => "cnv-1", "message_id" => "msg-1"}
+
+      AsyncOps.request_location(
+        %{"reason" => "find nearby cafes"},
+        Map.put(@ctx, :trusted_origin, origin)
+      )
+
+      settle_receive({:created_capability_request, request})
+      assert request["surface_kind"] == "conversation"
+      assert request["surface_ref"] == %{"conversation_id" => "cnv-1", "message_id" => "msg-1"}
+    end
+
+    test "names the person whose message the turn serves, so only their phone answers it" do
+      origin = %{"provider" => "internal", "conversation_id" => "cnv-1"}
+      ctx = Map.put(@ctx, :trusted_origin, origin)
+
+      AsyncOps.request_location(
+        %{"reason" => "directions"},
+        Map.put(ctx, :ifc, %{"requester" => "comma_user|u1"})
+      )
+
+      settle_receive({:created_capability_request, by_person})
+      assert by_person["surface_ref"]["requester"] == "comma_user|u1"
+
+      # A schedule or another Agent is not the person: their card asks.
+      AsyncOps.request_location(
+        %{"reason" => "directions"},
+        Map.put(ctx, :ifc, %{"requester" => "schedule|s1|comma_user|u1"})
+      )
+
+      settle_receive({:created_capability_request, by_schedule})
+      refute Map.has_key?(by_schedule["surface_ref"], "requester")
     end
   end
 

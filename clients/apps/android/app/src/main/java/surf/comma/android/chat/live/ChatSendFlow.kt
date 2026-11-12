@@ -9,7 +9,6 @@ import surf.comma.android.chat.render.PreparedChatMessage
 import surf.comma.android.conversation.requestKey
 import surf.comma.android.ui.composer.ComposerAttachment
 import surf.comma.android.ui.composer.ComposerView
-import java.util.UUID
 import kotlin.coroutines.resume
 
 /**
@@ -35,8 +34,6 @@ internal class ChatSendFlow(
     private val draftRequestId: () -> String,
     /** Admits the draft with [draftRequestId]; false when it was refused. */
     private val sendDraft: suspend (String, List<ComposerAttachment>) -> Boolean,
-    /** Admits a voice message under the given request id; false when it was refused. */
-    private val sendVoice: suspend (text: String, requestId: String) -> Boolean,
     private val onRefused: () -> Unit = {},
 ) {
     private var conversationId: String? = null
@@ -49,27 +46,14 @@ internal class ChatSendFlow(
                 val accepted = try { sendDraft(text, attachments) }
                 catch (cancelled: CancellationException) { flight.cancel(turn); throw cancelled }
                 catch (_: Exception) { false }
+                // Lay out the latest rows on the flight's glide before it resolves its targets.
+                if (accepted) timeline.followLatest()
                 complete(accepted)
                 if (accepted) flight.accept(turn) else {
                     flight.cancel(turn)
                     onRefused()
                 }
             }
-        }
-        composer.onVoiceSend = ::sendVoiceMessage
-    }
-
-    /** A voice message. Its bubble is already gone from the composer, so the frozen copy shows at once. */
-    private fun sendVoiceMessage(text: String) {
-        if (text.isBlank()) return
-        val requestId = UUID.randomUUID().toString()
-        val turn = requestKey(requestId)
-        flight.hold(composer.captureSendSnapshot(), turn)
-        flight.accept(turn)
-        scope.launch {
-            try { if (!sendVoice(text, requestId)) flight.cancel(turn) }
-            catch (cancelled: CancellationException) { flight.cancel(turn); throw cancelled }
-            catch (error: Exception) { flight.cancel(turn); throw error }
         }
     }
 

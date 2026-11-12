@@ -56,7 +56,9 @@ Implementation: [station tool](../../systems/station/src/tools/chat.ts), [replic
 ## Authority
 
 Mutate Conversation facts only through `ConversationServer -> ConversationActor`.
-The owner serializes metadata, Message append, and Participant membership transitions. Participant mutation is separate from Message append.
+The owner serializes metadata, Message append, and Participant membership transitions. Ordinary append does not mutate Participants.
+Explicit creation commits metadata, initial Participants, and an optional first Message in one transaction.
+Participant owners retain subsequent membership, lifecycle, and delivery mutations.
 Participants are delivery targets, not senders. Never persist the in-memory `participant_count` aggregate.
 ParticipantActor owns provider delivery, retry, recovery, and participant runtime status.
 All Agent Participants use the log admission path below. Do not create a global dispatcher that bypasses these owners.
@@ -105,6 +107,22 @@ A wait on a running tool call gives `wait_tool`, the canonical tool name. Anothe
 Comma shows these only on Home. Agent tools omit them.
 See [Storage](../storage-search.md) for archive errors and [Tasks](tasks-background-execution.md) for Task state.
 
+## Task files
+
+A Task file is a `file` or `image` block with a complete blob ref in a visible Agent Message of a Task.
+`salix_task_files` keeps one row per Task file, keyed by the Message sequence and the block index. A download reads the Message again.
+The Conversation source transaction writes the rows with their Message, applies a title change, and deletes the rows with the Task.
+Reads join the live Conversation row: the files of a deleted Task do not show while its cleanup runs.
+Messages of earlier releases get rows from a backfill under the marker `task_files_v1`.
+The after-rollout stage `task_files` opens it after core rollout success, when no server of an earlier release appends Messages.
+Each Pod drains it with `SalixIM.TaskFilesBackfill`, one page at a time. The marker holds the next position, and one Pod records each page. A Message whose archived body is lost gets no rows and counts in the marker's `skipped`.
+Until the marker is `complete`, reads fail with `task_files_indexing` (HTTP 503). On a local stack, `mix salix.task_files.backfill` opens and drains it.
+A Task that a station hosts has no rows. A file only in a sandbox, on a Station, or in a VFS is not a Task file. Workers attach deliverables to their report.
+The Router lists or finds files with `im_api.internal.list_task_files`, then reads one with `internal.read_conversation` and its `message_id`.
+Comma serves `GET /v1/comma/groups/:group_id/task-files` (`conversation_id`, `q`, `cursor`, `limit`) to Group members. A session scoped to one Task reads only that Task's files.
+The Task panel's Files section, Drive's read-only Task Files space (one folder per Task) and the command palette read it.
+Bounds: a page has at most 200 rows and a search at most 50. Each read is one indexed statement within 500 ms; a search walks one Group's files. A backfill page reads at most 25 Tasks and 500 Messages. The Task panel lists a Task's newest 200 files, Drive the Group's newest 1,000.
+
 ## Provider ingress and egress
 
 Every provider adapter uses the same ownership path. Provider threads supply context, not Conversation ownership.
@@ -121,7 +139,7 @@ Reset copies internal Session frontiers. A retired Router Session has no interna
 Chat shows `platform_message` when present, never provider prompt envelopes or delivery control events. Search omits internal delivery records.
 Public Message appends cannot supply owner-only input fields.
 After a successful explicit send, the dispatcher attempts a `provider.message` record through that owner, with no delivery targets or Agent input.
-A send to the owner's Comma-managed Telegram or WeChat chat is recorded only when the turn answers a message from that chat.
+A send to the owner's Comma-managed Telegram or WeChat chat that does not answer a message from that chat copies a Home reply when one of the latest 20 Home Messages is a Router Message with the same text. Such a copy is not recorded. Other sends there, such as a reminder sent only to that chat, are recorded.
 The record deduplicates by tool call or provider receipt.
 History writes use 64 shared projection slots. Failure or saturation can omit history, but never fails or repeats a successful platform send.
 Provider Participants consume the same log. There is no second delivery queue, outbox, or durable wakeup marker.
@@ -144,6 +162,7 @@ Each Session stores progress by Participant ID. A single CAS commits input and p
 Non-target and imported transcript records advance progress without input.
 Muted Participants do not consume the log. A later Task join can admit the required suffix.
 
+Version conflicts clear the resident Session revision before retry. Exhausted conflicts leave the source position unchanged for recovery, without rejecting the input.
 Admission makes three attempts for other transient failures. A terminal failure records `last_rejection` with its source position.
 An exhausted Triage command escalates its Task before the rejected position commits. Escalation keeps the grant, so an accepted Worker can still complete the Task.
 If storage cannot commit the rejection, progress stays unchanged and recovery retries after five seconds.
@@ -163,11 +182,12 @@ Retired Sessions report `status: "retired"`. Storage failures report `status: "u
 Provider delivery records stay in `deliveries`.
 
 Recovery uses the PostgreSQL `conversation_log_recovery` due index. It never traverses Group or Conversation directories.
-One row per pending Conversation records the greatest prepared sequence and provider status version.
-Append prepares the segment and all locators, marks the index, then publishes the tail. A failed index write prevents tail publication.
-If publication stops, recovery finishes the prepared append through ConversationActor and its normal Store CAS.
-Metadata changes register their next provider status version before CAS. Recovery fences an older version with a normal metadata CAS. This keeps product facts and the Task business version.
-Recovery removes only the observed sequence and status version after publication and durable consumer progress. A greater concurrent target prevents deletion.
+One row per pending Conversation records the greatest committed sequence, provider status version, and membership revision.
+One PostgreSQL transaction commits the Message, refs, metadata tail, search target, and recovery target.
+Metadata changes publish their recovery target in the same transaction. A failed target write rolls back publication.
+Recovery reads committed metadata through ConversationActor. It does not complete an S3 prepared append or repeat a metadata mutation.
+A missing committed target returns `conversation_target_unavailable` and keeps recovery pending.
+Recovery removes only the observed sequence and status version after durable consumer progress. A greater concurrent target prevents deletion.
 Agent filter and Session binding changes, including the first Triage join, register recovery before activation.
 Cleanup carries the observed membership revision. A changed revision or owner rejects cleanup and keeps the candidate.
 

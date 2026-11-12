@@ -23,6 +23,16 @@ export type CompositionData = CardDataByKind["composition"];
 export type PlaceData = CardDataByKind["place"];
 export type FeedData = CardDataByKind["feed"];
 export type TimerData = CardDataByKind["timer"];
+export type OrderData = CardDataByKind["order"];
+export type TicketData = CardDataByKind["ticket"];
+export type RideData = CardDataByKind["ride"];
+export type ProductData = CardDataByKind["product"];
+export type BookingData = CardDataByKind["booking"];
+export type DeviceData = CardDataByKind["device"];
+export type PaymentData = CardDataByKind["payment"];
+export type MediaData = CardDataByKind["media"];
+export type BarsData = CardDataByKind["bars"];
+export type TableData = CardDataByKind["table"];
 
 /** Localized chrome text. `{name}` placeholders are filled by the runtime. */
 export interface CardCopy {
@@ -47,6 +57,12 @@ export interface CardCopy {
   timeUp: string;
   /** e.g. "第 {current} / {total} 个番茄钟". */
   timerCycle: string;
+  /** e.g. "预计 {time} 前送达". */
+  arrivesBy: string;
+  /** e.g. "{status}，{arrival}". */
+  orderHeadline: string;
+  offline: string;
+  upNext: string;
 }
 
 /** Glyphs the templates draw. The host renders each one from its icon registry. */
@@ -62,6 +78,12 @@ export const cardIconNames = [
   "arrow-up",
   "arrow-right",
   "chevron-right",
+  "shopping-bag",
+  "send",
+  "tag",
+  "train",
+  "airplane",
+  "car",
 ] as const;
 
 export type CardIconName = (typeof cardIconNames)[number];
@@ -84,6 +106,10 @@ export const cardColorTokens = [
   "--color-button-secondary-bg",
   "--color-button-secondary-fg",
   "--color-button-secondary-border",
+  "--color-button-primary-bg",
+  "--color-button-primary-bg-hover",
+  "--color-button-primary-fg",
+  "--color-button-primary-border",
   "--color-text-primary",
   "--color-text-secondary",
   "--color-text-tertiary",
@@ -97,6 +123,12 @@ export const cardColorTokens = [
   "--color-fg-quaternary",
   "--color-fg-quinary",
   "--color-fg-white",
+  "--color-alpha-black-30",
+  "--color-alpha-black-50",
+  "--color-alpha-white-20",
+  "--color-alpha-white-30",
+  "--color-alpha-white-60",
+  "--color-alpha-white-80",
   ...[
     "gray",
     "brand",

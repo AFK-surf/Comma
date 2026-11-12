@@ -6,6 +6,11 @@ import {
 
 /** A node that belongs to one published reply instead of to the newest turn. */
 export type AnchoredTail = {
+  /**
+   * The node asks the reader to decide. Its reply's turn then stays mounted
+   * wherever it is, so the question cannot wait unseen above the window.
+   */
+  awaitsDecision?: boolean | undefined;
   /** Identity for React; stable while the node stays with its reply. */
   key: string;
   /** The reply that owns the node; the newest turn when nothing dates it. */
@@ -18,8 +23,9 @@ export function useAnchoredTails(
   conversationTurns: ConversationTurn[],
   lastTurnKey: string | undefined
 ) {
-  // A reply that owns an anchored tail can sit above the mount window. The
-  // window then has to reach it, or the node would lose the place it holds.
+  // A reply that owns an anchored tail can sit above the mount window. The node
+  // then shows when the reader reaches that turn, as the reply does; only one
+  // that awaits a decision holds the turn mounted (useThreadTurnWindow).
   const anchoredTailsByTurnKey = useMemo(() => {
     const byTurnKey = new Map<string, AnchoredTail[]>();
     if (!anchoredTails || anchoredTails.length === 0) return byTurnKey;

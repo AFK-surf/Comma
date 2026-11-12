@@ -57,7 +57,7 @@ defmodule SalixMeet.Meeting do
       interval: Keyword.get(opts, :interval_ms, @renew_interval),
       etag: nil,
       doc: nil,
-      copilot_running: false
+      live_work_running: false
     }
 
     {:ok, state, {:continue, :acquire}}
@@ -70,7 +70,7 @@ defmodule SalixMeet.Meeting do
   def handle_info(:tick, state), do: {:noreply, tick(state)}
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state),
-    do: {:noreply, %{state | copilot_running: false}}
+    do: {:noreply, %{state | live_work_running: false}}
 
   @impl true
   def handle_call(:leader?, _from, state), do: {:reply, leader_held?(state), state}
@@ -79,21 +79,39 @@ defmodule SalixMeet.Meeting do
 
   defp tick(state) do
     state = acquire_or_renew(state)
-    state = maybe_run_copilot(state)
+    state = maybe_run_live_work(state)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     state
   end
 
-  defp maybe_run_copilot(%{copilot_running: true} = state), do: state
+  defp maybe_run_live_work(%{live_work_running: true} = state), do: state
 
-  defp maybe_run_copilot(state) do
-    if copilot_enabled?() and leader_held?(state) and active?(state.doc) do
-      id = state.id
-      spawn_monitor(fn -> SalixMeet.Ports.Copilot.maybe_speak(id) end)
-      %{state | copilot_running: true}
-    else
-      state
+  defp maybe_run_live_work(state) do
+    id = state.id
+
+    cond do
+      not leader_held?(state) ->
+        state
+
+      # Lark holds this bot in the meeting: the leader reads what Lark heard,
+      # and the copilot answers what that read brought.
+      SalixMeet.LarkBot.live?(state.doc) ->
+        spawn_live_work(state, fn ->
+          _ = SalixMeet.LarkBot.poll(id)
+          if copilot_enabled?(), do: SalixMeet.Ports.Copilot.maybe_speak(id)
+        end)
+
+      copilot_enabled?() and active?(state.doc) ->
+        spawn_live_work(state, fn -> SalixMeet.Ports.Copilot.maybe_speak(id) end)
+
+      true ->
+        state
     end
+  end
+
+  defp spawn_live_work(state, work) do
+    spawn_monitor(work)
+    %{state | live_work_running: true}
   end
 
   defp active?(doc), do: get_in(doc || %{}, ["state", "status"]) == "active"

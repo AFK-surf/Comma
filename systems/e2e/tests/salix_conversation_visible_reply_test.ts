@@ -3,6 +3,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBucketArgs, MINIO_IMAGE } from "../helpers/minio.ts";
+import { releasePorts, reservePort } from "../helpers/ports.ts";
 
 // Builds and subprocesses here take longer than the five-second default.
 setDefaultTimeout(30 * 60_000);
@@ -81,34 +82,6 @@ type RunOptions = {
   timeoutMs?: number;
   allowFailure?: boolean;
 };
-
-type PortLease = {
-  port: number;
-  release: () => void;
-};
-
-function reservePort(): PortLease {
-  const listener = Bun.listen({
-    hostname: "127.0.0.1",
-    port: 0,
-    socket: { data() {} },
-  });
-  const port = listener.port;
-  let released = false;
-
-  return {
-    port,
-    release() {
-      if (released) return;
-      released = true;
-      listener.stop(true);
-    },
-  };
-}
-
-function releasePorts(...ports: PortLease[]) {
-  for (const port of ports) port.release();
-}
 
 async function run(command: string, args: string[], opts: RunOptions = {}) {
   const child = Bun.spawn([command, ...args], {

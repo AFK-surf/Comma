@@ -22,9 +22,19 @@ defmodule SalixIM.Provider.Telegram do
 
   # ---- Telegram dispatch ----
 
+  @doc """
+  Whether a connect serves a chat. Telegram lets anyone write to a bot or add it
+  to a group, so a connect with `allowed_chat_ids` takes and sends only those
+  chats. A private chat's id is the person's id. A connect without the field
+  serves every chat, and a Comma-managed connect is bound to its one peer.
+  """
+  def chat_allowed?(%{"managed_by" => "comma_product"}, _chat_id), do: true
+  def chat_allowed?(%{"allowed_chat_ids" => ids}, chat_id) when is_list(ids), do: chat_id in ids
+  def chat_allowed?(_connect, _chat_id), do: true
+
   def call(agent_id, connect, api, params) do
     with :ok <- ensure_connected(connect),
-         :ok <- authorize_managed_call(connect, api, params) do
+         :ok <- authorize_call(connect, api, params) do
       do_call_telegram(agent_id, connect, api, params)
     end
   end
@@ -92,7 +102,7 @@ defmodule SalixIM.Provider.Telegram do
              params["query"],
              params["limit"]
            ) do
-      {:ok, %{"chats" => chats}}
+      {:ok, %{"chats" => Enum.filter(chats, &chat_allowed?(connect, str(&1["chat_id"])))}}
     end
   end
 
@@ -246,7 +256,7 @@ defmodule SalixIM.Provider.Telegram do
     _, _ -> :ok
   end
 
-  defp authorize_managed_call(%{"managed_by" => "comma_product"} = connect, api, params) do
+  defp authorize_call(%{"managed_by" => "comma_product"} = connect, api, params) do
     peer_id = str(connect["managed_peer_id"])
 
     cond do
@@ -267,7 +277,15 @@ defmodule SalixIM.Provider.Telegram do
     end
   end
 
-  defp authorize_managed_call(_connect, _api, _params), do: :ok
+  defp authorize_call(_connect, api, _params)
+       when api in ["telegram.list_chats", "telegram.list_users"],
+       do: :ok
+
+  defp authorize_call(connect, _api, params) do
+    if chat_allowed?(connect, str(params["chat_id"])),
+      do: :ok,
+      else: {:error, "Telegram chat_id is not allowed for this connect"}
+  end
 
   defp telegram_api_base(_connect),
     do:

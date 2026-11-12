@@ -11,7 +11,7 @@ import { type Lang, tr } from "../ops/i18n.ts";
 import { wall } from "../ops/fibers.ts";
 
 /// The header a core names its person's language in (lang.rs HEADER).
-const LANG_HEADER = "stillfail-lang";
+const LANG_HEADER = "comma-station-lang";
 /// Headers that belong to the hop to here (and the admin call's own), not to the service.
 const HOP = ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "host", "authorization", "traceparent", "tracestate", LANG_HEADER];
 /// Answers the service gives that would stop its page from being shown framed on another origin.
@@ -44,7 +44,7 @@ export function proxyPreview(method: string, headers: [string, string][], body: 
   if (!TOKEN.test(method)) return Promise.resolve(plain(400, tr(lang, "station.preview.badMethod", { method })));
   const sent: Record<string, string | string[]> = {};
   for (const [name, value] of headers) {
-    if (HOP.includes(name) || name.startsWith("x-stillfail-") || name.startsWith("x-ember-") || name === "accept-encoding") continue;
+    if (HOP.includes(name) || name.startsWith("x-comma-station-") || name.startsWith("x-ember-") || name === "accept-encoding") continue;
     const was = sent[name];
     sent[name] = was === undefined ? value : [...(Array.isArray(was) ? was : [was]), value];
   }

@@ -32,6 +32,10 @@ defmodule SalixIM.TaskExecutionTest do
     def direct_members(_, _, _, _), do: nil
   end
 
+  defmodule UnavailableTaskLoops do
+    def task_loops(_group, _conversations), do: {:error, :unavailable}
+  end
+
   defmodule Delivery do
     def notify_conversation(agent, source),
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
@@ -87,6 +91,11 @@ defmodule SalixIM.TaskExecutionTest do
   # The schedule application adds only the ordinary command envelope here.
   # Task identity, participants, source protection and delivery use real owners.
   defmodule TaskCreate do
+    def personal_computers(_scope),
+      do: {:ok, SystemsRuntime.get_env(:salix_im, :task_execution_test_computers, [])}
+
+    def runs_on(_scope, request), do: {:ok, request}
+
     def create_task_conversation(group, router, worker, attrs) do
       with {:ok, id} <-
              SalixIM.ConversationServer.reserve_task_conversation_id(group, router, worker, attrs) do
@@ -365,8 +374,11 @@ defmodule SalixIM.TaskExecutionTest do
         %{"request" => request_ref, "sources" => [request_ref]}
       )
 
-    assert unlinked.error or unlinked.status == "guidance", inspect(unlinked)
-    settle_refute_receive({:telegram, _}, 20)
+    # The request is the requester's own words, so it goes where they send
+    # it even though the chat's members are unknown.
+    refute unlinked.error, inspect(unlinked)
+    assert unlinked.status == "completed", inspect(unlinked)
+    settle_receive({:telegram, %{"reply_markup" => %{"remove_keyboard" => true}}})
     SystemsRuntime.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
 
     refused =
@@ -540,12 +552,17 @@ defmodule SalixIM.TaskExecutionTest do
 
     settle_refute_receive({:telegram, _}, 20)
 
-    assert :none =
-             Provider.task_execution_request(
-               "fs.write_file",
-               %{"path" => "/drive/leak", "content" => "x"},
-               ctx
-             )
+    # The Worker acts for the Task's person in a Drive write, and the kernel
+    # still keeps the unrelated private source off the Drive.
+    leak =
+      execute(
+        ctx,
+        "fs.write_file",
+        %{"path" => "/drive/leak", "content" => "PRIVATE_CANARY"},
+        %{"request" => ref, "sources" => [foreign_ref]}
+      )
+
+    assert leak.status == "guidance", inspect(leak)
 
     assert :none =
              Provider.task_execution_request(
@@ -555,6 +572,59 @@ defmodule SalixIM.TaskExecutionTest do
              )
 
     assert ctx.ifc["requester"] == nil
+  end
+
+  describe "which of the person's computers" do
+    setup do
+      SystemsRuntime.put_env(:salix_im, :task_execution_test_computers, [
+        %{
+          "device_id" => "dev_mbp",
+          "station_id" => "aaa",
+          "name" => "MacBook Pro",
+          "os" => "darwin"
+        },
+        %{
+          "device_id" => "dev_mini",
+          "station_id" => "bbb",
+          "name" => "Mac mini",
+          "os" => "darwin"
+        }
+      ])
+
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :task_execution_test_computers) end)
+    end
+
+    test "a Router's Task aimed at one computer is refused until the person says which", f do
+      create = fn context, params ->
+        Provider.call_api(f.router, "internal", "internal.task.create", %{
+          "connect_id" => "internal",
+          "tool_context" => context,
+          "params" => Map.merge(%{"agent_id" => f.worker}, params)
+        })
+      end
+
+      inside = %{"content" => "在 station:bbb 上跑起来", "runs_on" => %{"kind" => "salix"}}
+
+      on_mini = %{
+        "content" => "跑起来",
+        "runs_on" => %{"kind" => "station", "device_id" => "dev_mini"}
+      }
+
+      asked = router_context_saying(f, "把 iOS 版本在我 Mac 上跑起来")
+      assert {:error, message} = create.(asked, inside)
+      assert message =~ "question card"
+      assert message =~ "Mac mini"
+      assert {:error, message} = create.(asked, on_mini)
+      assert message =~ "question card"
+
+      # A Task that aims at no computer is not held up.
+      assert {:ok, _} =
+               create.(asked, %{"content" => "写一份总结", "runs_on" => %{"kind" => "salix"}})
+
+      flush_deliveries(f.worker)
+
+      assert {:ok, _} = create.(router_context_saying(f, "用 mini 跑"), inside)
+    end
   end
 
   test "Task admission rejects unsupported scopes and cannot widen an exact retry", f do
@@ -664,6 +734,8 @@ defmodule SalixIM.TaskExecutionTest do
         },
         :enforce
       )
+
+    assert {:error, :requester_required} = SalixIM.TaskExecution.task_requester(context)
 
     ctx = runtime_context(f, context, "worker", :enforce)
     ref = SalixAgent.IFC.input_ref(1)
@@ -974,11 +1046,65 @@ defmodule SalixIM.TaskExecutionTest do
     refute Enum.any?(messages, &(inspect(&1["content"]) =~ "PRIVATE_REPORT_CANARY"))
   end
 
+  test "an ordinary Task's Worker acts for the Task's person outside IM operations and for a child Task",
+       f do
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    {task, context} = create_task(f, %{"execution_requests" => nil}, :enforce)
+    ctx = runtime_context(f, context, "worker", :enforce)
+    person = "comma_user|" <> f.user
+    source = context["source_message_id"]
+
+    # A tool with no grant of its own, as its sandbox would call it.
+    assert {:ok, ^source, ^person} =
+             Provider.task_execution_request("compute.workloads.list", %{}, ctx)
+
+    # In the runtime's reminder too; never in another Session's turn.
+    assert {:ok, _, ^person} =
+             Provider.task_execution_request(
+               "compute.workloads.list",
+               %{},
+               runtime_context(f, remind_worker(f, task), "worker", :enforce)
+             )
+
+    assert :none =
+             Provider.task_execution_request("compute.workloads.list", %{}, %{
+               ctx
+               | session_id: "another-session"
+             })
+
+    # A child Task, which belongs to the Task's person anyway; another IM
+    # operation still needs its own grant.
+    assert {:ok, ^source, ^person} =
+             Provider.task_execution_request(
+               "im_api.internal.task.create",
+               %{"connect_id" => "internal", "runs_on" => %{"kind" => "sandbox"}},
+               ctx
+             )
+
+    assert :none =
+             Provider.task_execution_request(
+               "im_api.telegram.remove_reply_keyboard",
+               %{"connect_id" => f.connect, "chat_id" => "123"},
+               ctx
+             )
+  end
+
   test "a Worker's turn in an ordinary Task names the person whose request created it", f do
     {_task, context} = create_task(f, %{"execution_requests" => nil})
 
     assert {:ok, user} = SalixIM.TaskExecution.task_requester(context)
     assert user == f.user
+
+    previous = SystemsRuntime.get_env(:salix_im, :task_loops_mod)
+    SystemsRuntime.put_env(:salix_im, :task_loops_mod, UnavailableTaskLoops)
+
+    try do
+      assert {:error, :requester_required} = SalixIM.TaskExecution.task_requester(context)
+    after
+      SystemsRuntime.put_env(:salix_im, :task_loops_mod, previous)
+    end
 
     # Another Session, a turn that did not consume the command, or the Router
     # itself names no one.
@@ -1372,6 +1498,213 @@ defmodule SalixIM.TaskExecutionTest do
     end
   end
 
+  test "a Worker the runtime reminded can still say in its Task what blocked it", f do
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    {task, _context} = create_task(f, %{}, :enforce)
+    reminded = remind_worker(f, task)
+    ctx = runtime_context(f, reminded, "worker", :enforce)
+    ref = SalixAgent.IFC.input_ref(1)
+
+    args = %{
+      "connect_id" => "internal",
+      "conversation_id" => task["conversation_id"],
+      "content" => [%{"type" => "text", "text" => "Blocked: no grant for the keyboard"}]
+    }
+
+    report =
+      execute(ctx, "im_api.internal.send_message", args, %{"request" => ref, "sources" => [ref]})
+
+    assert report.status == "completed", inspect(report)
+
+    {:ok, messages} =
+      Conversations.list_group_conversation_messages(f.group, task["conversation_id"])
+
+    assert Enum.any?(messages, &(inspect(&1["content"]) =~ "Blocked: no grant"))
+
+    # The reminder authorizes the report only: an IM grant stays with the
+    # Task's first command.
+    assert :none =
+             Provider.task_execution_request(
+               "im_api.telegram.remove_reply_keyboard",
+               %{"connect_id" => f.connect, "chat_id" => "123", "text" => "x"},
+               ctx
+             )
+  end
+
+  test "a Composio grant runs the exact tool for the person who asked, in every turn of its assignment",
+       f do
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    {task, context} =
+      create_task(f, %{"execution_requests" => [composio_issue_request()]}, :enforce)
+
+    {:ok, record} = Conversations.get_group_conversation_record(f.group, task["conversation_id"])
+
+    assert [%{"provider" => "composio", "params" => %{"tool_slug" => "GITHUB_CREATE_AN_ISSUE"}}] =
+             get_in(record, ["source_refs", "task_execution", "requests"])
+
+    person = "comma_user|" <> f.user
+    first = runtime_context(f, context, "worker", :enforce)
+    assert_composio_grant(first, person)
+
+    # A later command (the Router lets the Worker go ahead after a hold) and the
+    # runtime's reminder are turns of the same assignment.
+    assert {:ok, _} =
+             Provider.call_api(f.router, "internal", "internal.send_message", %{
+               "connect_id" => "internal",
+               "tool_context" => router_request_context(f),
+               "params" => %{
+                 "conversation_id" => task["conversation_id"],
+                 "content" => [%{"type" => "text", "text" => "Go ahead and file it"}]
+               }
+             })
+
+    worker = f.worker
+    settle_receive({:delivered, ^worker, payload})
+
+    assert_composio_grant(
+      runtime_context(f, tool_context(f, worker, payload), "worker", :enforce),
+      person
+    )
+
+    assert_composio_grant(runtime_context(f, remind_worker(f, task), "worker", :enforce), person)
+
+    # Another Session, or a Task the Router has closed, acts for no one.
+    assert :none =
+             Provider.task_execution_request("composio.execute", issue_args(), %{
+               first
+               | session_id: "another-session"
+             })
+
+    assert {:ok, _} =
+             ConversationServer.update_group_conversation(f.group, task["conversation_id"], %{
+               "status" => "cancelled"
+             })
+
+    assert :none = Provider.task_execution_request("composio.execute", issue_args(), first)
+  end
+
+  test "a person in Slack grants a Composio operation, and the Task records who asked", f do
+    {task, router_ctx, _connect} = slack_task(f, [composio_issue_request()])
+
+    person =
+      "provider_user|" <>
+        get_in(router_ctx, [:trusted_origin, "provider_context", "connect_id"]) <> "|U1"
+
+    {:ok, record} = Conversations.get_group_conversation_record(f.group, task["conversation_id"])
+    assert get_in(record, ["source_refs", "task_execution", "requester"]) == person
+    assert get_in(record, ["source_refs", "ifc_requester"]) == person
+
+    worker = f.worker
+    settle_receive({:delivered, ^worker, payload})
+
+    assert_composio_grant(
+      runtime_context(f, tool_context(f, worker, payload), "worker", :enforce),
+      person
+    )
+
+    # An IM operation binds an installation of a personal Comma owner: a person
+    # in a provider chat cannot grant one.
+    ref = SalixAgent.IFC.input_ref(1)
+
+    refused =
+      execute(
+        router_ctx,
+        "im_api.internal.task.create",
+        Map.merge(task_params(f), %{"connect_id" => "internal", "content" => "another"}),
+        %{"request" => ref, "sources" => [ref]}
+      )
+
+    assert refused.error or refused.status != "completed", inspect(refused)
+  end
+
+  defp composio_issue_request do
+    %{
+      "api" => "composio.execute",
+      "connect_id" => "composio",
+      "params" => %{
+        "tool_slug" => "github_create_an_issue",
+        "arguments" => %{"owner" => "AFK-surf", "repo" => "still.fail"}
+      }
+    }
+  end
+
+  defp issue_args(extra \\ %{}) do
+    %{
+      "tool_slug" => "GITHUB_CREATE_AN_ISSUE",
+      "arguments" =>
+        Map.merge(%{"owner" => "AFK-surf", "repo" => "still.fail", "title" => "Bug"}, extra)
+    }
+  end
+
+  defp assert_composio_grant(ctx, person) do
+    assert {:ok, _source, ^person} =
+             Provider.task_execution_request("composio.execute", issue_args(), ctx)
+
+    assert {:ok, _source, ^person} =
+             Provider.task_execution_request(
+               "composio.execute",
+               Map.put(issue_args(), "tool_slug", "github_create_an_issue"),
+               ctx
+             )
+
+    assert {:ok, _source, ^person} =
+             Provider.task_execution_request(
+               "composio.get_tool",
+               %{"tool_slug" => "GITHUB_CREATE_AN_ISSUE"},
+               ctx
+             )
+
+    for {name, args} <- [
+          {"composio.execute", issue_args(%{"repo" => "Comma"})},
+          {"composio.execute", Map.put(issue_args(), "arguments", %{"title" => "Bug"})},
+          {"composio.execute", Map.put(issue_args(), "tool_slug", "GITHUB_DELETE_A_REPOSITORY")},
+          {"composio.get_tool", %{"tool_slug" => "GITHUB_DELETE_A_REPOSITORY"}},
+          {"composio.list_tools", %{"query" => "github"}}
+        ] do
+      assert :none = Provider.task_execution_request(name, args, ctx), inspect({name, args})
+    end
+  end
+
+  # The runtime's reminder to a Worker that stopped without reporting, as
+  # `SalixIM.TaskWorkerWatch` appends it; its delivery's tool context.
+  defp remind_worker(f, task) do
+    {:ok, owner} = SalixIM.ConversationPlacement.ensure_started(f.group, task["conversation_id"])
+
+    {:ok, %{"participants" => participants}} =
+      Conversations.list_group_conversation_participants(f.group, task["conversation_id"])
+
+    participant = Enum.find(participants, &(&1["agent_id"] == f.worker))
+
+    attrs = %{
+      "idempotency_key" => "task-worker-watch:nudge:" <> Ids.new_message_id(),
+      "role_label" => "runtime",
+      "content" => SalixIM.TaskWorkerWatch.nudge_content("stopped"),
+      "metadata" => %{
+        "message_type" => SalixIM.TaskWorkerWatch.nudge_type(),
+        "task_worker_watch" => %{"epoch_seq" => 1}
+      }
+    }
+
+    # Only the Task's own watch may append it, so the append runs in that
+    # process, exactly where the watch's own reminder comes from.
+    {:ok, watch} = SalixIM.ConversationActor.task_worker_watch(owner)
+
+    :sys.replace_state(watch, fn state ->
+      {:ok, _message} =
+        SalixIM.ConversationActor.send_system_message(owner, participant["participant_id"], attrs)
+
+      state
+    end)
+
+    worker = f.worker
+    settle_receive({:delivered, ^worker, payload})
+    tool_context(f, worker, payload)
+  end
+
   defp router_report_context(f, task) do
     {:ok, result} =
       ConversationServer.append_group_conversation_agent_message(
@@ -1394,7 +1727,7 @@ defmodule SalixIM.TaskExecutionTest do
     runtime_context(f, tool_context(f, router, payload), "router", :enforce)
   end
 
-  defp slack_task(f) do
+  defp slack_task(f, execution_requests \\ nil) do
     connect = Ids.new_connect_id()
 
     {:ok, _} =
@@ -1413,6 +1746,12 @@ defmodule SalixIM.TaskExecutionTest do
 
     {:ok, _} =
       CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    # What ingress records about the channel the request came from.
+    SalixIM.IFC.Projection.structure(
+      %{tenant_id: f.tenant, group_id: f.group, connect_id: connect},
+      "C1"
+    )
 
     source = "im_provider:slack:#{connect}:event1"
     principal = "provider_user|#{connect}|U1"
@@ -1461,7 +1800,12 @@ defmodule SalixIM.TaskExecutionTest do
     }
 
     ref = SalixAgent.IFC.input_ref(1)
-    params = Map.merge(task_params(f), %{"execution_requests" => nil, "connect_id" => "internal"})
+
+    params =
+      Map.merge(task_params(f), %{
+        "execution_requests" => execution_requests,
+        "connect_id" => "internal"
+      })
 
     result =
       execute(ctx, "im_api.internal.task.create", params, %{"request" => ref, "sources" => [ref]})
@@ -1561,11 +1905,13 @@ defmodule SalixIM.TaskExecutionTest do
     result
   end
 
-  defp router_request_context(f) do
+  defp router_request_context(f), do: router_context_saying(f, "清除我 Telegram 里的定位测试键盘")
+
+  defp router_context_saying(f, content) do
     {:ok, _} =
       RouterConversationInput.append_user_message(f.group, %{
         "user_id" => f.user,
-        "content" => "清除我 Telegram 里的定位测试键盘",
+        "content" => content,
         "client_request_id" => Ids.new_message_id()
       })
 

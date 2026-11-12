@@ -17,6 +17,8 @@ interface EngineHost {
     fun emit(json: ByteArray)
     /** The core cannot go on; nothing else comes from it. */
     fun fatal(reason: ByteArray)
+    /** A screen view's picture for the decoder [sink] ([ScreenFrame]), on the core's thread: no JSON. */
+    fun screenFrame(sink: Int, kind: Int, ts: Double, width: Int, height: Int, bytes: ByteArray) {}
 }
 
 /** One running core. Tests put a fake in its place. */

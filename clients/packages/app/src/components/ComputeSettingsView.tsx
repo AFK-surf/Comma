@@ -1,16 +1,14 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button } from "@comma/ui/components/Button";
-import { Dialog } from "@comma/ui/components/dialog";
 import { InputField } from "@comma/ui/components/input";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
-import { CubeIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { CubeIcon, MoreHorizontalIcon, ReloadIcon } from "@comma/ui/components/icons";
 import {
   DeviceSettingsSection as Section,
   DeviceSettingsRow as Row,
   DeviceSettingsFacts as Facts,
   DeviceSettingsStatus as Status,
-  DeviceSettingsSteps as Steps,
   DeviceSettingsResource,
   DeviceSettingsDetail,
   deviceSettingsButtonClassName,
@@ -23,7 +21,11 @@ import {
 import type { useComputeSettingsController } from "./useComputeSettingsController";
 import type { ComputeWorkload as CommaComputeWorkload } from "@comma/core/contract";
 import { needsDesktopApp, requestDesktopApp } from "./DesktopAppPrompt";
-import { maintenanceFailureReason } from "./computeNodeCard";
+import {
+  maintenanceFailureReason,
+  maintenanceNeedsReset,
+  reinstallLabel,
+} from "./computeNodeCard";
 
 type Controller = ReturnType<typeof useComputeSettingsController>;
 
@@ -79,7 +81,6 @@ export function ComputeSettingsView({
   const m = useCommaMessages();
   const { workloads: w, local: l, state: s } = c;
   const h = l.maintenance;
-  const [localScope, setLocalScope] = useState<string>();
   const heading = useRef<HTMLHeadingElement>(null);
   const screen = w.mode ?? c.detail ?? "home";
   useEffect(() => {
@@ -90,24 +91,7 @@ export function ComputeSettingsView({
     c.setDetail(detail);
   };
   const home = () => go(c.localOnly ? "settings" : undefined);
-  const back =
-    screen === "owner"
-      ? w.backToWorkload
-      : screen === "local" || screen === "maintenance"
-        ? () => go("settings")
-        : screen === "erase"
-          ? () => go("local")
-          : home;
-  const phaseLabel = (phase: string | undefined) =>
-    phase === "ready"
-      ? m.compute_setup_ready()
-      : phase === "failed"
-        ? m.compute_ui_step_failed()
-        : phase === "preparing" || phase === "connecting"
-          ? m.compute_setup_preparing()
-          : phase === "unknown"
-            ? m.compute_ui_maintenance_unknown()
-            : m.compute_ui_setup_wait();
+  const back = home;
   const kindLabel = (kind: string) =>
     kind === "shell"
       ? "Shell"
@@ -124,29 +108,23 @@ export function ComputeSettingsView({
           action.label,
           () => c.run(action.id),
           !c.canRun(action.id),
-          index === 0
-            ? "primary"
-            : action.id === "reinstall_reset"
-              ? "destructive"
-              : "secondary-gray"
+          index === 0 ? "primary" : "secondary-gray"
         )}
       </Fragment>
     ));
   const available = card.kind === "available";
-  const abandon = () =>
-    c.canAbandon &&
-    c.canManage &&
-    act(m.compute_close_request(), () => c.openConfirm("abandon"), c.busy, "link-gray");
   const workloadStatus = (item: CommaComputeWorkload) =>
-    item.phase === "cloud_retired"
-      ? m.compute_cloud_retired()
-      : item.phase === "deleted" || item.deletion?.phase === "complete"
-        ? m.compute_deleted()
-        : item.deletion?.error === "original_device_offline"
-          ? m.compute_delete_waiting_original_device()
-          : item.deletion
-            ? m.compute_deleting()
-            : w.stateLabel(item);
+    w.deleteUncertainId === item.id
+      ? m.compute_delete_result_unknown()
+      : item.phase === "cloud_retired"
+        ? m.compute_cloud_retired()
+        : item.phase === "deleted" || item.deletion?.phase === "complete"
+          ? m.compute_deleted()
+          : item.deletion?.error === "original_device_offline"
+            ? m.compute_delete_waiting_original_device()
+            : item.deletion
+              ? m.compute_deleting()
+              : w.stateLabel(item);
   const policy = (item?: CommaComputeWorkload) => (
     <Section title={m.compute_shell_policy()}>
       <div className="compute-panel compute-inset">
@@ -156,21 +134,20 @@ export function ComputeSettingsView({
               m.compute_ui_disk_limit(),
               item?.runtime_policy
                 ? item.runtime_policy.resources.writable_quota_bytes === undefined
-                  ? m.compute_activity_unknown()
+                  ? "—"
                   : formatComputeBytes(
                       String(item.runtime_policy.resources.writable_quota_bytes)
                     )
                 : item
-                  ? m.compute_activity_unknown()
+                  ? "—"
                   : "2 GiB",
             ],
             [
               m.compute_ui_pid_limit(),
               item?.runtime_policy
-                ? (item.runtime_policy.resources.pid_max ??
-                  m.compute_activity_unknown())
+                ? (item.runtime_policy.resources.pid_max ?? "—")
                 : item
-                  ? m.compute_activity_unknown()
+                  ? "—"
                   : "512",
             ],
             [
@@ -178,14 +155,15 @@ export function ComputeSettingsView({
               ["none", "deny_all"].includes(item?.runtime_policy?.egress_mode ?? "") ||
               !item
                 ? m.compute_ui_no_network()
-                : item.runtime_policy?.egress_mode === "allow_all"
-                  ? m.compute_network_allowed()
-                  : m.compute_activity_unknown(),
+                : item.runtime_policy?.egress_mode === "public_internet"
+                  ? m.compute_network_internet()
+                  : item.runtime_policy?.egress_mode === "allow_all"
+                    ? m.compute_network_allowed()
+                    : "—",
             ],
           ]}
         />
       </div>
-      <p className="compute-muted compute-note">{m.compute_ui_template_managed()}</p>
     </Section>
   );
   const maintenance = c.startMaintenance;
@@ -204,28 +182,7 @@ export function ComputeSettingsView({
           <MenuItem id="details" onAction={() => w.openWorkload(item)}>
             {m.compute_details()}
           </MenuItem>
-          {(item.uses ?? []).map((use) => (
-            <MenuItem
-              id={`use-${use.kind}-${use.id}`}
-              key={`${use.kind}-${use.id}`}
-              onAction={() => {
-                w.openWorkload(item);
-                w.openUse(use);
-              }}
-            >
-              {use.label ?? m.compute_usage()}
-            </MenuItem>
-          ))}
-          {item.actions?.retry && (
-            <MenuItem
-              id="retry"
-              isDisabled={w.pending}
-              onAction={() => void w.retry(item)}
-            >
-              {m.compute_retry_workload()}
-            </MenuItem>
-          )}
-          {item.actions?.rename && (
+          {item.actions?.rename && w.deleteUncertainId !== item.id && (
             <MenuItem
               id="rename"
               isDisabled={w.pending}
@@ -234,7 +191,7 @@ export function ComputeSettingsView({
               {m.compute_rename()}
             </MenuItem>
           )}
-          {item.actions?.delete && (
+          {item.actions?.delete && w.deleteUncertainId !== item.id && (
             <MenuItem
               id="delete"
               tone="destructive"
@@ -253,21 +210,13 @@ export function ComputeSettingsView({
       ? m.settings_compute_node()
       : screen === "settings"
         ? m.compute_local_settings()
-        : screen === "local"
-          ? m.compute_ui_storage()
-          : screen === "erase"
-            ? m.compute_clear_all_data()
-            : screen === "authorization"
-              ? m.compute_recovery_title()
-              : screen === "maintenance"
-                ? m.compute_maintenance_title()
-                : screen === "create"
-                  ? m.compute_new_shell()
-                  : screen === "owner"
-                    ? (w.selectedUse?.label ?? m.compute_usage())
-                    : w.current
-                      ? w.workloadLabel(w.current)
-                      : m.compute_details();
+        : screen === "authorization"
+          ? m.compute_recovery_title()
+          : screen === "create"
+            ? m.compute_new_shell()
+            : w.current
+              ? w.workloadLabel(w.current)
+              : m.compute_details();
   const disk = l.data?.disk;
   const diskSummary = disk
     ? m.compute_disk_summary({
@@ -295,7 +244,7 @@ export function ComputeSettingsView({
           ],
           [
             m.compute_maintenance_target_version(),
-            h.state?.selectedReleaseId ?? m.compute_maintenance_unknown(),
+            h.state?.selectedReleaseId ?? m.compute_maintenance_version_unknown(),
           ],
           [m.compute_last_check(), s?.observedAt ?? m.compute_activity_unknown()],
           [
@@ -306,27 +255,6 @@ export function ComputeSettingsView({
           ],
         ]}
       />
-      {s?.setup && (
-        <Steps
-          steps={[
-            {
-              label: m.compute_setup_components(),
-              phase: s.setup.components,
-              status: phaseLabel(s.setup.components),
-            },
-            {
-              label: m.compute_setup_connection(),
-              phase: s.setup.connection,
-              status: phaseLabel(s.setup.connection),
-            },
-            {
-              label: m.compute_setup_shell(),
-              phase: s.setup.shell,
-              status: phaseLabel(s.setup.shell),
-            },
-          ]}
-        />
-      )}
       {s?.problemDetail && <p>{s.problemDetail}</p>}
       {s?.preparation?.error && <p>{s.preparation.error}</p>}
       {h.state?.operation?.problem && <p>{h.state.operation.problem}</p>}
@@ -369,47 +297,33 @@ export function ComputeSettingsView({
             {!unavailable && card.notice && (
               <span className="comma-device__agent-status">{card.notice}</span>
             )}
-            {c.node.error && (
-              <span
-                role="alert"
-                className="comma-device__agent-status"
-                data-attention="true"
-              >
-                {c.node.error}
-              </span>
-            )}
           </span>
           <div className="compute-actions">
             {unavailable ? (
               act(m.compute_ui_desktop(), () => requestDesktopApp("compute-node"))
             ) : (
-              <>
-                {renderHome && abandon()}
-                {cardActions()}
-              </>
+              <>{cardActions()}</>
             )}
           </div>
         </div>
         {/* On a computer's card these are in its menu; on the page alone they follow the row. */}
         {!unavailable && !renderHome && (
           <div className="compute-summary-actions">
-            {abandon()}
-            {available &&
+            {c.binding &&
               c.canManage &&
               act(
                 m.compute_ui_stop(),
                 () => c.openConfirm("drain"),
-                c.busy,
+                false,
                 "link-gray"
               )}
             {c.binding &&
               c.canManage &&
               !card.actions.some((action) => action.id === "remove") &&
-              (available || card.kind === "attention") &&
               act(
                 m.compute_ui_disconnect(),
                 () => c.openConfirm("remove"),
-                c.busy,
+                false,
                 "link-gray"
               )}
             {act(m.compute_local_settings(), () => go("settings"), false, "link-gray")}
@@ -417,24 +331,67 @@ export function ComputeSettingsView({
         )}
       </section>
     );
+  const deletionAction = (
+    item: CommaComputeWorkload,
+    hierarchy: "link-gray" | "tertiary-gray"
+  ) => {
+    const reconfirm =
+      w.legacyDeleteTargetId === item.id &&
+      item.generation !== undefined &&
+      item.actions?.delete;
+    return act(
+      w.canContinueDeletion
+        ? m.compute_continue_deletion()
+        : reconfirm
+          ? m.compute_reconfirm_deletion()
+          : m.compute_check_status(),
+      w.canContinueDeletion
+        ? w.resumeDeletion
+        : reconfirm
+          ? () => w.openDialog("delete", item)
+          : w.checkDeletion,
+      w.pending,
+      hierarchy
+    );
+  };
   const resource = (item: CommaComputeWorkload) => (
     <DeviceSettingsResource
       key={item.id}
       name={w.workloadLabel(item)}
-      description={`${kindLabel(item.kind)} · ${w.location(item)}`}
+      description={w.location(item)}
       onOpen={() => w.openWorkload(item)}
       actions={
         <>
-          {w.needsRetry(item) &&
-            act(m.compute_retry(), () => void w.retry(item), w.pending, "link-gray")}
+          {w.deleteUncertainId === item.id
+            ? deletionAction(item, "link-gray")
+            : w.rowActionError?.id === item.id
+              ? act(m.compute_ui_check_result(), w.refresh, w.pending, "link-gray")
+              : w.needsRetry(item) &&
+                act(
+                  m.compute_retry(),
+                  () => void w.retry(item),
+                  w.pending,
+                  "link-gray"
+                )}
           {menu(item)}
         </>
       }
-      statusNote={w.problemReason(item)}
+      statusNote={
+        w.deleteUncertainId === item.id
+          ? undefined
+          : w.rowActionError?.id === item.id
+            ? w.rowActionError.message
+            : item.phase === "action_required"
+              ? w.problemReason(item)
+              : undefined
+      }
       status={
         <Status
-          tone={workTone(item)}
-          pending={["allocating", "starting"].includes(item.phase ?? "")}
+          tone={w.deleteUncertainId === item.id ? "warning" : workTone(item)}
+          pending={
+            w.deleteUncertainId !== item.id &&
+            ["allocating", "starting"].includes(item.phase ?? "")
+          }
         >
           {workloadStatus(item)}
         </Status>
@@ -445,8 +402,29 @@ export function ComputeSettingsView({
     <Section
       title={m.compute_workspace_workloads()}
       action={
-        w.canManage &&
-        act(m.compute_new_shell(), w.openCreate, w.pending || !!w.creation)
+        <div className="compute-actions">
+          <Button
+            hierarchy="tertiary-gray"
+            size={w.observationPaused ? "sm" : "xs"}
+            className={
+              w.observationPaused
+                ? deviceSettingsButtonClassName
+                : deviceSettingsMenuClassName
+            }
+            iconOnly={!w.observationPaused}
+            iconLeading={<ReloadIcon />}
+            aria-label={
+              w.observationPaused
+                ? m.compute_continue_checking()
+                : m.compute_workloads_refresh()
+            }
+            onPress={w.refresh}
+          >
+            {w.observationPaused ? m.compute_continue_checking() : null}
+          </Button>
+          {w.canManage &&
+            act(m.compute_new_shell(), w.openCreate, w.pending || !!w.creation)}
+        </div>
       }
     >
       <div className="compute-panel">
@@ -463,26 +441,26 @@ export function ComputeSettingsView({
           w.rows.map(resource)
         )}
       </div>
-      {w.creation && (
+      {(w.creation || w.createError) && (
         <div className="compute-notice">
-          <p>
-            {w.pending
+          <p role={w.createError ? "alert" : undefined}>
+            {w.creation && w.pending
               ? m.compute_workloads_creating()
-              : w.error || m.compute_creation_unknown()}
+              : w.createError || m.compute_creation_unknown()}
           </p>
-          <p className="compute-muted">{m.compute_creation_recovery()}</p>
-          {act(m.compute_retry_creation(), () => void w.create(), w.pending)}
+          {w.creation && (
+            <>
+              <p className="compute-muted">{m.compute_creation_recovery()}</p>
+              {act(m.compute_retry_creation(), () => void w.create(), w.pending)}
+            </>
+          )}
         </div>
       )}
-      {w.error && w.projection && !w.creation && (
+      {w.error && w.projection && (
         <p role="alert" className="compute-error">
           {w.error}
         </p>
       )}
-      <div className="compute-foot compute-list-foot">
-        <p className="compute-muted">{m.compute_ui_refresh_note()}</p>
-        {act(m.compute_workloads_refresh(), w.refresh)}
-      </div>
       {(w.hasPreviousPage || w.projection?.next_workload_cursor) && (
         <div className="compute-actions">
           {w.hasPreviousPage && act(m.compute_first_page(), w.firstPage)}
@@ -490,6 +468,97 @@ export function ComputeSettingsView({
         </div>
       )}
     </Section>
+  );
+  const environments = l.data?.environments ?? [];
+  const disposalScopes = [
+    ...new Map(
+      environments.flatMap((row) =>
+        row.disposalScope ? [[row.disposalScope.key, row.disposalScope] as const] : []
+      )
+    ).values(),
+  ];
+  // Main supplies short identity discriminators here, not environment names.
+  const environmentRow = (row: (typeof environments)[number]) => (
+    <div className="compute-environment" key={row.key}>
+      <Row
+        title={m.compute_local_data_group()}
+        description={[
+          row.label ? `…${row.label}` : undefined,
+          l.fresh && row.state !== "unknown" ? l.stateLabel(row.state) : undefined,
+          row.privateDiskBytes !== undefined
+            ? formatComputeBytes(row.privateDiskBytes)
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+        action={
+          (!row.disposalScope || row.canReadWorkloads) && (
+            <MenuTrigger>
+              <Button
+                className={`compute-menu ${deviceSettingsMenuClassName}`}
+                hierarchy="tertiary-gray"
+                size="xs"
+                iconOnly
+                iconLeading={<MoreHorizontalIcon />}
+                aria-label={`${row.label} ${m.compute_more()}`}
+              />
+              <MenuPopover>
+                <Menu>
+                  {!row.disposalScope && (
+                    <MenuItem
+                      id="scope"
+                      isDisabled={!row.canDisposeLocal || !l.fresh || l.mutating}
+                      onAction={() => void l.dispose(row.key)}
+                    >
+                      {m.compute_ui_remove_local()}
+                    </MenuItem>
+                  )}
+                  {row.canReadWorkloads && (
+                    <MenuItem
+                      id="workloads"
+                      onAction={() => {
+                        l.select(row.key);
+                        void l.readWorkloads(row.key);
+                      }}
+                    >
+                      {m.compute_workloads_title()}
+                    </MenuItem>
+                  )}
+                </Menu>
+              </MenuPopover>
+            </MenuTrigger>
+          )
+        }
+      />
+      {l.selected === row.key && (
+        <div className="compute-inset">
+          {l.cloudWorkloads?.workloads.map((work) => {
+            // Main keeps the cloud workload's id; its retry is on the workspace's list.
+            const workload = {
+              problem: work.problem ?? null,
+              location: {
+                provider: "agent_vmm",
+                ...(work.deviceId ? { device_id: work.deviceId } : {}),
+              },
+            };
+            const reason = w.problemReason(workload);
+            return (
+              <div key={work.label}>
+                <p>
+                  {work.label} · {work.state} · {w.location(workload)}
+                </p>
+                {reason && <p className="compute-muted">{reason}</p>}
+              </div>
+            );
+          })}
+          {l.cloudWorkloads?.nextCursor &&
+            act(
+              m.compute_local_next(),
+              () => void l.readWorkloads(row.key, l.cloudWorkloads?.nextCursor)
+            )}
+        </div>
+      )}
+    </div>
   );
   let body: ReactNode;
   if (screen === "home")
@@ -507,47 +576,49 @@ export function ComputeSettingsView({
             <Row
               title={h.title}
               description={
-                h.needsInstall
-                  ? m.compute_ui_retained()
+                h.failed && h.state?.operation
+                  ? maintenanceFailureReason(h.state.operation, m)
                   : m.compute_maintenance_shared_scope()
               }
               action={
-                h.unfinished
-                  ? act(m.compute_ui_view_progress(), () => go("maintenance"))
-                  : h.needsUpdate && !h.needsInstall
-                    ? act(
+                h.failed &&
+                h.state?.operation &&
+                maintenanceNeedsReset(h.state.operation) ? (
+                  act(
+                    m.compute_maintenance_action_reinstall_reset(),
+                    () => maintenance("reinstall_reset"),
+                    h.pending,
+                    "destructive"
+                  )
+                ) : h.unfinished ? (
+                  act(m.compute_maintenance_continue(), h.resume, h.pending)
+                ) : h.needsInstall ? (
+                  act(
+                    reinstallLabel(h.state?.operation, m),
+                    () => maintenance("reinstall"),
+                    h.blocked
+                  )
+                ) : (
+                  <div className="compute-actions">
+                    {!(
+                      h.state?.selectedReleaseId &&
+                      h.state.installedReleaseId === h.state.selectedReleaseId
+                    ) &&
+                      act(
                         m.compute_maintenance_update(),
                         () => maintenance("update"),
                         h.blocked
-                      )
-                    : undefined
+                      )}
+                    {act(
+                      m.compute_ui_repair(),
+                      () => maintenance("reinstall"),
+                      h.blocked
+                    )}
+                  </div>
+                )
               }
             />
-            {!h.needsInstall && !h.unfinished && (
-              <Row
-                title={m.compute_ui_repair_title()}
-                description={m.compute_ui_repair_note()}
-                action={act(
-                  m.compute_ui_repair(),
-                  () => maintenance("reinstall"),
-                  h.blocked
-                )}
-              />
-            )}
-          </div>
-        </Section>
-        <Section title={m.compute_ui_data_storage()}>
-          <div className="compute-panel">
-            <Row
-              title={m.compute_ui_storage_data()}
-              description={diskSummary}
-              action={act(m.compute_ui_manage_storage(), () => go("local"))}
-            />
-          </div>
-        </Section>
-        {!h.needsInstall && (
-          <Section title={m.compute_ui_removal()}>
-            <div className="compute-panel">
+            {!h.needsInstall && (
               <Row
                 title={m.compute_ui_uninstall_title()}
                 description={m.compute_ui_uninstall_note()}
@@ -558,15 +629,11 @@ export function ComputeSettingsView({
                   "destructive"
                 )}
               />
-            </div>
-          </Section>
-        )}
-        {diagnostics}
-      </>
-    );
-  else if (screen === "local")
-    body = (
-      <>
+            )}
+          </div>
+          {h.error && !h.state?.operation?.problem && <p role="alert">{h.error}</p>}
+        </Section>
+
         <Section title={m.compute_disk_title()}>
           <div className="compute-panel compute-inset">
             {disk && l.data?.collectedAt ? (
@@ -574,25 +641,12 @@ export function ComputeSettingsView({
                 usedBytes={disk.usedBytes}
                 capacityBytes={disk.capacityBytes}
                 collectedAt={l.data.collectedAt}
-                environments={
-                  l.fresh
-                    ? l.data.environments.flatMap((row) =>
-                        row.privateDiskBytes !== undefined && row.sampledAt
-                          ? [
-                              {
-                                key: row.key,
-                                label: row.label,
-                                bytes: row.privateDiskBytes,
-                                sampledAt: row.sampledAt,
-                              },
-                            ]
-                          : []
-                      )
-                    : []
-                }
-                onSelect={l.select}
+                breakdown={l.fresh ? disk : undefined}
                 labels={{
                   used: m.compute_disk_used(),
+                  imageRuntime: m.compute_disk_image_runtime(),
+                  buildCache: m.compute_disk_build_cache(),
+                  privateData: m.compute_disk_private_data(),
                   otherUsed: m.compute_disk_other(),
                   remaining: m.compute_disk_remaining(),
                   detailUnavailable: m.compute_disk_detail_unavailable(),
@@ -608,11 +662,10 @@ export function ComputeSettingsView({
         </Section>
         <Section title={m.compute_local_manage()}>
           <div className="compute-panel">
-            {(l.data?.environments ?? []).map((row) => (
-              <div className="compute-environment" key={row.key}>
+            {disposalScopes.map((scope) => (
+              <div className="compute-environment" key={scope.key}>
                 <Row
-                  title={m.compute_local_environment({ id: row.label })}
-                  description={`${l.fresh ? l.stateLabel(row.state) : m.compute_local_unknown()} · ${row.privateDiskBytes !== undefined ? formatComputeBytes(row.privateDiskBytes) : m.compute_disk_detail_unavailable()}`}
+                  title={m.compute_local_data_group()}
                   action={
                     <MenuTrigger>
                       <Button
@@ -621,60 +674,35 @@ export function ComputeSettingsView({
                         size="xs"
                         iconOnly
                         iconLeading={<MoreHorizontalIcon />}
-                        aria-label={`${row.label} ${m.compute_more()}`}
+                        aria-label={`${scope.label} ${m.compute_more()}`}
                       />
                       <MenuPopover>
                         <Menu>
-                          <MenuItem id="scope" onAction={() => setLocalScope(row.key)}>
-                            {m.compute_ui_remove_local()}
+                          <MenuItem
+                            id="delete"
+                            tone="destructive"
+                            isDisabled={
+                              !l.fresh ||
+                              l.mutating ||
+                              !environments.some(
+                                (row) => row.key === scope.key && row.canDisposeLocal
+                              )
+                            }
+                            onAction={() => void l.dispose(scope.key)}
+                          >
+                            {m.compute_force_delete()}
                           </MenuItem>
-                          {row.canReadWorkloads && (
-                            <MenuItem
-                              id="workloads"
-                              onAction={() => {
-                                l.select(row.key);
-                                void l.readWorkloads(row.key);
-                              }}
-                            >
-                              {m.compute_workloads_title()}
-                            </MenuItem>
-                          )}
                         </Menu>
                       </MenuPopover>
                     </MenuTrigger>
                   }
                 />
-                {l.selected === row.key && (
-                  <div className="compute-inset">
-                    {l.cloudWorkloads?.workloads.map((work) => {
-                      // Main keeps the cloud workload's id; its retry is on the workspace's list.
-                      const workload = {
-                        problem: work.problem ?? null,
-                        location: {
-                          provider: "agent_vmm",
-                          ...(work.deviceId ? { device_id: work.deviceId } : {}),
-                        },
-                      };
-                      const reason = w.problemReason(workload);
-                      return (
-                        <div key={work.label}>
-                          <p>
-                            {work.label} · {work.state} · {w.location(workload)}
-                          </p>
-                          {reason && <p className="compute-muted">{reason}</p>}
-                        </div>
-                      );
-                    })}
-                    {l.cloudWorkloads?.nextCursor &&
-                      act(
-                        m.compute_local_next(),
-                        () =>
-                          void l.readWorkloads(row.key, l.cloudWorkloads?.nextCursor)
-                      )}
-                  </div>
-                )}
+                {environments
+                  .filter((row) => row.disposalScope?.key === scope.key)
+                  .map(environmentRow)}
               </div>
             ))}
+            {environments.filter((row) => !row.disposalScope).map(environmentRow)}
             {!l.data?.environments.length && (
               <div className="compute-empty">
                 <p>{m.compute_local_no_workloads()}</p>
@@ -688,56 +716,28 @@ export function ComputeSettingsView({
         </Section>
         {l.disposal && !["completed", "superseded"].includes(l.disposal.outcome) && (
           <div className="compute-notice">
-            <p>{m.compute_local_delete_pending()}</p>
-            {act(m.compute_check_status(), () => void l.resumeDisposal(), l.mutating)}
+            <p>
+              {l.disposal.outcome === "unknown"
+                ? m.compute_local_delete_unknown()
+                : m.compute_local_delete_pending()}
+            </p>
+            {act(m.compute_finish_remove(), () => void l.resumeDisposal(), l.mutating)}
           </div>
         )}
-        <Section title={m.compute_clear_all_data()}>
+        <details className="compute-diagnostics">
+          <summary>{m.compute_clear_all_data()}</summary>
           <p className="compute-muted">{m.compute_clear_all_data_warning()}</p>
           <div className="compute-actions compute-note">
             {act(
-              m.compute_ui_view_scope(),
-              () => go("erase"),
+              m.compute_ui_confirm_clear(),
+              () => maintenance("clear"),
               h.blocked,
               "destructive"
             )}
           </div>
-        </Section>
-        <details className="compute-diagnostics">
-          <summary>{m.compute_ui_statistics()}</summary>
-          <p>{m.compute_ui_statistics_note()}</p>
         </details>
         {l.error && <p role="alert">{l.error}</p>}
-      </>
-    );
-  else if (screen === "erase")
-    body = (
-      <>
-        <Section title={m.compute_ui_shared_scope()}>
-          <div className="compute-panel compute-inset">
-            <Facts
-              rows={[
-                [m.compute_this_mac(), m.compute_ui_current_device()],
-                [m.compute_ui_includes(), m.compute_ui_files_volumes()],
-                [m.compute_ui_also_removes(), m.compute_ui_credentials()],
-                [m.compute_ui_affects(), m.compute_ui_apps()],
-              ]}
-            />
-          </div>
-        </Section>
-        <Section title={m.compute_ui_clear_after()}>
-          <p className="compute-muted">{m.compute_ui_clear_note()}</p>
-        </Section>
-        <div className="compute-bottom">
-          {act(m.compute_back(), () => go("local"))}
-          {act(
-            m.compute_ui_confirm_clear(),
-            () => maintenance("clear"),
-            h.blocked,
-            "destructive",
-            true
-          )}
-        </div>
+        {diagnostics}
       </>
     );
   else if (screen === "authorization") {
@@ -797,98 +797,6 @@ export function ComputeSettingsView({
         </div>
       </>
     );
-  } else if (screen === "maintenance") {
-    const operation = h.state?.operation;
-    const failed = operation?.outcome === "failed";
-    // A failed request names the step where it stopped: the earlier steps are done, the later ones did not start.
-    const phase = failed
-      ? (operation.failedPhase ?? "preparing")
-      : (operation?.phase ?? "preparing");
-    const index =
-      phase === "preparing"
-        ? 0
-        : phase === "stopping"
-          ? 1
-          : phase === "installing" || phase === "removing"
-            ? 2
-            : phase === "checking"
-              ? 3
-              : 4;
-    const step = (at: number) =>
-      operation?.outcome === "succeeded" || index > at
-        ? "ready"
-        : index === at
-          ? failed
-            ? "failed"
-            : "preparing"
-          : "not_started";
-    body = (
-      <>
-        <div className="compute-notice">
-          <output>{h.title}</output>
-          <p className="compute-muted">
-            {failed
-              ? maintenanceFailureReason(operation, m)
-              : m.compute_maintenance_shared_scope()}
-          </p>
-        </div>
-        <Steps
-          steps={[
-            {
-              label: m.compute_maintenance_preparing(),
-              phase: step(0),
-              status: step(0) === "preparing" ? h.title : phaseLabel(step(0)),
-            },
-            {
-              label: m.compute_ui_stop_shared(),
-              phase: step(1),
-              status: phaseLabel(step(1)),
-            },
-            {
-              label:
-                operation?.action === "uninstall"
-                  ? m.compute_maintenance_uninstall()
-                  : m.compute_setup_components(),
-              phase: step(2),
-              status: phaseLabel(step(2)),
-            },
-            {
-              label: m.compute_ui_check_result(),
-              phase: step(3),
-              status: phaseLabel(step(3)),
-            },
-          ]}
-        />
-        {h.retryFailed && (
-          <p role="alert" className="compute-error">
-            {m.compute_maintenance_retry_failed()}
-          </p>
-        )}
-        {h.error && (
-          <p role="alert" className="compute-error">
-            {h.error}
-          </p>
-        )}
-        {h.unfinished &&
-          (operation?.failureCode === "host_start_failed" && !h.readingError
-            ? act(
-                m.compute_maintenance_action_reinstall_reset(),
-                () => c.run("reinstall_reset"),
-                !c.canRun("reinstall_reset"),
-                "destructive"
-              )
-            : act(
-                h.readingError
-                  ? m.compute_check_status()
-                  : m.compute_maintenance_continue(),
-                h.resume,
-                h.pending
-              ))}
-        {h.readingError && <p role="alert">{m.compute_maintenance_read_failed()}</p>}
-        {!operation && act(m.compute_check_status(), () => void h.refresh())}
-        {diagnostics}
-      </>
-    );
   } else if (screen === "create")
     body = w.canPrepare ? (
       <form
@@ -918,7 +826,7 @@ export function ComputeSettingsView({
           </div>
         </Section>
         {policy()}
-        {w.error && <p role="alert">{w.error}</p>}
+        {w.createError && <p role="alert">{w.createError}</p>}
         <div className="compute-bottom">
           {act(m.settings_profile_cancel(), home)}
           <Button
@@ -937,16 +845,6 @@ export function ComputeSettingsView({
         <div className="compute-panel compute-empty">
           <p className="compute-muted">{w.createUnavailable()}</p>
           <div className="compute-actions compute-note">
-            {c.node.available
-              ? cardActions(card.actions.slice(0, 1))
-              : !needsDesktopApp()
-                ? null
-                : act(
-                    m.compute_ui_desktop(),
-                    () => requestDesktopApp("compute-node"),
-                    false,
-                    "primary"
-                  )}
             {act(m.compute_workloads_refresh(), w.refresh)}
           </div>
         </div>
@@ -959,7 +857,8 @@ export function ComputeSettingsView({
         <Section
           title=""
           action={
-            (item.actions?.retry || w.needsRetry(item)) &&
+            w.deleteUncertainId !== item.id &&
+            w.needsRetry(item) &&
             act(
               m.compute_retry_workload(),
               () => void w.retry(item),
@@ -971,9 +870,28 @@ export function ComputeSettingsView({
           <div className="compute-panel">
             <Row
               title={m.compute_ui_current_status()}
-              description={w.problemReason(item)}
-              action={<Status tone={workTone(item)}>{workloadStatus(item)}</Status>}
-            />
+              description={
+                w.deleteUncertainId !== item.id && item.phase === "action_required"
+                  ? w.problemReason(item)
+                  : undefined
+              }
+              action={
+                <Status
+                  tone={w.deleteUncertainId === item.id ? "warning" : workTone(item)}
+                >
+                  {workloadStatus(item)}
+                </Status>
+              }
+            >
+              {(w.detailError ||
+                (w.rowActionError?.id === item.id &&
+                  w.deleteUncertainId !== item.id &&
+                  w.rowActionError.message)) && (
+                <p role="alert" className="compute-error">
+                  {w.detailError || w.rowActionError?.message}
+                </p>
+              )}
+            </Row>
             <Row title={m.compute_location()} description={w.location(item)}>
               {(item.phase_observed_at || item.updated_at) && (
                 <p className="compute-muted">
@@ -986,13 +904,16 @@ export function ComputeSettingsView({
               )}
             </Row>
             <div className="compute-foot">
-              {act(
-                m.compute_check_status(),
-                () => w.openWorkload(item),
-                w.pending,
-                "tertiary-gray"
-              )}
+              {w.deleteUncertainId === item.id
+                ? deletionAction(item, "tertiary-gray")
+                : act(
+                    m.compute_check_status(),
+                    w.refreshDetail,
+                    w.pending,
+                    "tertiary-gray"
+                  )}
               {!item.owner &&
+                w.deleteUncertainId !== item.id &&
                 item.actions?.rename &&
                 act(
                   m.compute_rename(),
@@ -1017,7 +938,7 @@ export function ComputeSettingsView({
                   : m.compute_delete_cleanup_pending()}
               </p>
               {item.deletion.error !== "original_device_offline" &&
-                act(m.compute_check_status(), () => w.openWorkload(item))}
+                act(m.compute_check_status(), w.refreshDetail)}
             </div>
           )}
         {item.owner || item.uses?.length ? (
@@ -1025,17 +946,12 @@ export function ComputeSettingsView({
             <p className="compute-muted">{m.compute_ui_owner_note()}</p>
             <div className="compute-actions compute-note">
               {item.uses?.map((use) => (
-                <Button
-                  key={`${use.kind}-${use.id}`}
-                  className={deviceSettingsButtonClassName}
-                  size="sm"
-                  onPress={() => w.openUse(use)}
-                >
+                <p key={`${use.kind}-${use.id}`}>
                   {use.label ??
                     (use.kind === "meeting"
                       ? m.settings_meeting()
                       : m.compute_use_service())}
-                </Button>
+                </p>
               ))}
             </div>
             {item.uses_truncated && <p>{m.compute_more_uses()}</p>}
@@ -1044,9 +960,8 @@ export function ComputeSettingsView({
         <details className="compute-diagnostics">
           <summary>{m.compute_shell_policy()}</summary>
           {policy(item)}
-          <p className="compute-muted compute-note">{m.compute_ui_not_measured()}</p>
         </details>
-        {item.actions?.delete && (
+        {item.actions?.delete && w.deleteUncertainId !== item.id && (
           <Section title={m.compute_ui_delete_section()}>
             <p className="compute-muted">
               {item.kind === "shell"
@@ -1063,16 +978,12 @@ export function ComputeSettingsView({
             </div>
           </Section>
         )}
-        {w.error && <p role="alert">{w.error}</p>}
         <details className="compute-diagnostics">
           <summary>{m.compute_diagnostics()}</summary>
           <Facts
             rows={[
               [m.compute_identifier(), item.id],
-              [
-                m.compute_ui_network(),
-                item.runtime_policy?.egress_mode ?? m.compute_activity_unknown(),
-              ],
+              [m.compute_ui_network(), item.runtime_policy?.egress_mode ?? "—"],
               [
                 m.compute_last_check(),
                 item.phase_observed_at ??
@@ -1095,34 +1006,7 @@ export function ComputeSettingsView({
         </details>
       </>
     );
-  } else if (screen === "owner")
-    body = (
-      <Section title={m.compute_usage()}>
-        <div className="compute-panel">
-          <Row
-            title={w.selectedUse?.label ?? m.compute_business_owner()}
-            description={m.compute_ui_owner_note()}
-          />
-          <Row
-            title={m.compute_workloads_title()}
-            description={
-              w.current ? w.workloadLabel(w.current) : m.compute_activity_unknown()
-            }
-          />
-        </div>
-        <details className="compute-diagnostics">
-          <summary>{m.compute_diagnostics()}</summary>
-          <Facts
-            rows={[
-              [m.compute_identifier(), w.selectedUse?.id],
-              [m.compute_usage(), w.selectedUse?.kind],
-            ]}
-          />
-        </details>
-      </Section>
-    );
-  else body = null;
-  const selectedLocal = l.data?.environments.find((row) => row.key === localScope);
+  } else body = null;
   if (screen === "home" && renderHome)
     return (
       <div className="compute-home" data-compute-screen="home">
@@ -1138,39 +1022,9 @@ export function ComputeSettingsView({
       onBack={
         screen !== "home" && !(c.localOnly && screen === "settings") ? back : undefined
       }
-      subtitle={`${screen === "workload" && w.current ? `${kindLabel(w.current.kind)} · ` : ""}${screen === "settings" || screen === "local" || screen === "erase" ? m.compute_this_mac() : (w.workspaceName ?? c.workspaceLabel(c.workspaceId))}`}
+      subtitle={`${screen === "workload" && w.current ? `${kindLabel(w.current.kind)} · ` : ""}${screen === "settings" ? m.compute_this_mac() : (w.workspaceName ?? c.workspaceLabel(c.workspaceId))}`}
     >
       {body}
-      {selectedLocal && (
-        <Dialog
-          isOpen
-          title={m.compute_ui_remove_local()}
-          description={`${selectedLocal.label} · ${selectedLocal.privateDiskBytes !== undefined ? formatComputeBytes(selectedLocal.privateDiskBytes) : m.compute_disk_detail_unavailable()}. ${m.compute_ui_remove_local_note()}`}
-          onOpenChange={(open) => {
-            if (!open) setLocalScope(undefined);
-          }}
-          actions={[
-            {
-              label: m.settings_profile_cancel(),
-              hierarchy: "secondary-gray",
-              onPress: () => setLocalScope(undefined),
-            },
-            ...(selectedLocal.canDisposeLocal
-              ? [
-                  {
-                    label: m.compute_force_delete(),
-                    hierarchy: "destructive" as const,
-                    disabled: !l.fresh || l.mutating || h.unfinished || h.pending,
-                    onPress: () => {
-                      void l.dispose(selectedLocal.key);
-                      setLocalScope(undefined);
-                    },
-                  },
-                ]
-              : []),
-          ]}
-        />
-      )}
     </DeviceSettingsDetail>
   );
 }

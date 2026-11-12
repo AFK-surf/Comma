@@ -36,9 +36,8 @@ defmodule BridgeForTeams.ProjectsTest do
 
       ops = Enum.map(project_rows, & &1.op) |> Enum.sort()
       # The org's tenant is created by Orgs.create_org; the project creates a
-      # group, assigns the default router after the agent is provisioned, and
-      # turns on the group's Cloud VM switch.
-      assert ops == ["create_group", "update_group", "update_group"]
+      # group and assigns the default router after the agent is provisioned.
+      assert ops == ["create_group", "update_group"]
 
       assert Enum.all?(project_rows, &(&1.status == "pending"))
 
@@ -49,17 +48,7 @@ defmodule BridgeForTeams.ProjectsTest do
       assert agent_row.op == "create_owned_agent"
       assert agent_row.payload["attrs"]["role"] == "router"
       assert agent_row.payload["attrs"]["group_id"] == p.salix_group_id
-      # VM is on by default so OAuth-backed tasks work out of the box: it is
-      # the group's switch, not the router's.
-      assert p.vm_enabled == true
       refute Map.has_key?(agent_row.payload["attrs"], "vm")
-
-      assert [%{"cloud_vm_enabled" => true}] =
-               for(
-                 %{op: "update_group", payload: %{"attrs" => %{"cloud_vm_enabled" => _} = a}} <-
-                   project_rows,
-                 do: a
-               )
 
       update_row =
         Enum.find(
@@ -311,72 +300,6 @@ defmodule BridgeForTeams.ProjectsTest do
       assert rename_row
       assert rename_row.status == "pending"
       assert rename_row.payload["group_id"] == p.salix_group_id
-    end
-  end
-
-  describe "set_vm_enabled/3" do
-    test "toggling off flips the flag and enqueues the group's Cloud VM switch", %{org: org} do
-      {:ok, project} = Projects.create_project(org.id, %{name: "P", slug: "p"})
-      router = pending_router(project.id)
-
-      assert {:ok, updated} = Projects.set_vm_enabled(project, false)
-      assert updated.vm_enabled == false
-
-      assert [vm_row] =
-               Repo.all(ReconcileOutbox)
-               |> Enum.filter(
-                 &(&1.aggregate == "project" and &1.aggregate_id == project.id and
-                     &1.op == "update_group" and
-                     &1.payload["attrs"] == %{"cloud_vm_enabled" => false})
-               )
-
-      assert vm_row.payload["group_id"] == project.salix_group_id
-      assert vm_row.payload["tenant_id"] == org.salix_tenant_id
-
-      refute Enum.any?(
-               Repo.all(ReconcileOutbox),
-               &(&1.aggregate == "agent" and &1.aggregate_id == router.id and
-                   &1.op == "apply_product_vm_default")
-             )
-    end
-  end
-
-  describe "converge_group_cloud_vm_page/1" do
-    test "queues each live project's Cloud VM switch from vm_enabled", %{org: org} do
-      {:ok, on} = Projects.create_project(org.id, %{name: "On", slug: "on"})
-      {:ok, off} = Projects.create_project(org.id, %{name: "Off", slug: "off"})
-      {:ok, off} = Projects.set_vm_enabled(off, false)
-      {:ok, archived} = Projects.create_project(org.id, %{name: "Gone", slug: "gone"})
-      {:ok, _archived} = Projects.archive_project(archived)
-      Repo.delete_all(ReconcileOutbox)
-
-      assert {:ok, %{processed: 2, next_cursor: nil}} = Projects.converge_group_cloud_vm_page(nil)
-
-      rows = Repo.all(ReconcileOutbox)
-
-      assert Enum.sort(for row <- rows, do: {row.aggregate_id, row.op, row.payload}) ==
-               Enum.sort([
-                 {on.id, "update_group",
-                  %{
-                    "group_id" => on.salix_group_id,
-                    "tenant_id" => org.salix_tenant_id,
-                    "attrs" => %{"cloud_vm_enabled" => true}
-                  }},
-                 {off.id, "update_group",
-                  %{
-                    "group_id" => off.salix_group_id,
-                    "tenant_id" => org.salix_tenant_id,
-                    "attrs" => %{"cloud_vm_enabled" => false}
-                  }}
-               ])
-
-      assert Enum.all?(rows, &(&1.status == "pending"))
-
-      # Past the last project: nothing more.
-      last = Enum.max([on.id, off.id])
-
-      assert {:ok, %{processed: 0, next_cursor: nil}} =
-               Projects.converge_group_cloud_vm_page(last)
     end
   end
 end

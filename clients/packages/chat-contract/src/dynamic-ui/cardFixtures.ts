@@ -1,13 +1,23 @@
 import type {
+  BarsData,
+  BookingData,
   ChecklistData,
   ComparisonData,
   CompositionData,
+  DeviceData,
   FeedData,
   ForecastData,
+  MediaData,
   MetricData,
   OptionsData,
+  OrderData,
+  PaymentData,
   PlaceData,
+  ProductData,
+  RideData,
   ScheduleData,
+  TableData,
+  TicketData,
   TimerData,
   TrendData,
 } from "./cardTypes";
@@ -572,6 +582,36 @@ export const groupedChecklistFixture: ChecklistData = {
   ],
 };
 
+const followUps = (item: string, when: string) => [
+  { label: "加到日历", prompt: `把「${item}」加到我的日历，${when}` },
+  { label: "加到提醒", prompt: `提醒我「${item}」，${when}` },
+  { label: "加到例程", prompt: `把「${item}」加到我的例程` },
+];
+
+export const todoChecklistFixture: ChecklistData = {
+  title: "待办 · 今天 / 已逾期",
+  source: "飞书私聊",
+  groups: [
+    {
+      items: [
+        {
+          id: "plm",
+          label: "确认今天 16 点与程炜智过 PLM 库",
+          detail: "来源：程炜智私聊 · 截止今天",
+          actions: followUps("与程炜智过 PLM 库", "11/5 16:00"),
+        },
+        {
+          id: "kingdee",
+          label: "落实韦晓余的金蝶账号开通",
+          detail: "来源：韦晓余私聊 · 你答应周四前",
+          actions: followUps("落实韦晓余的金蝶账号开通", "11/6 10:00"),
+        },
+        { id: "quote", label: "回复供应商报价", detail: "已回复", done: true },
+      ],
+    },
+  ],
+};
+
 export const compositionFixture: CompositionData = {
   title: "9 月支出",
   source: "招商银行账单",
@@ -898,4 +938,433 @@ export const eventCountdownFixture: TimerData = {
   date: "10 月 5 日 周日",
   elapsedRatio: 0.71,
   note: "计划周期 42 天，已过 30 天",
+};
+
+export const orderFixture: OrderData = {
+  title: "京东七鲜",
+  orderId: "3666470013591050",
+  status: "正在出库",
+  arrival: "预计 10月29日 周四 送达",
+  items: [{ name: "七鲜柔韧抽纸 120抽×6包", quantity: 4 }],
+  stages: [
+    { label: "已下单", state: "done" },
+    { label: "出库", state: "current" },
+    { label: "配送中", state: "upcoming" },
+    { label: "已送达", state: "upcoming" },
+  ],
+};
+
+export const receiptFixture: OrderData = {
+  title: "京东七鲜",
+  orderId: "3666470013591050",
+  status: "已付款",
+  arrivesBy: "2026-10-29T15:18:00+08:00",
+  items: [
+    {
+      name: "七鲜柔韧抽纸",
+      detail: "120抽×6包",
+      quantity: 4,
+      price: "¥19.6",
+    },
+    { name: "配送费", price: "¥5.0" },
+  ],
+  total: "¥24.6",
+  totalLabel: "实付",
+  address: "怡恩居 306",
+  stages: [
+    { label: "已下单", state: "done" },
+    { label: "出库", state: "current" },
+    { label: "配送中", state: "upcoming" },
+    { label: "已送达", state: "upcoming" },
+  ],
+};
+
+export const trainTicketFixture: TicketData = {
+  title: "中国铁路 12306",
+  mode: "train",
+  number: "G7",
+  depart: { place: "北京南", at: "2026-11-08T09:00:00+08:00", zone: "Asia/Shanghai" },
+  arrive: { place: "上海虹桥", at: "2026-11-08T13:28:00+08:00", zone: "Asia/Shanghai" },
+  duration: "4 小时 28 分",
+  details: [
+    { label: "车厢", value: "05 车" },
+    { label: "座位", value: "12F" },
+    { label: "席别", value: "二等座" },
+  ],
+  passenger: "郭*伟",
+  status: { label: "已出票", tone: "success" },
+  reference: "E512345678",
+};
+
+export const boardingPassFixture: TicketData = {
+  title: "东方航空",
+  mode: "flight",
+  number: "MU523",
+  depart: {
+    place: "上海浦东",
+    code: "PVG",
+    at: "2026-11-09T08:40:00+08:00",
+    zone: "Asia/Shanghai",
+    terminal: "T1",
+  },
+  arrive: {
+    place: "东京成田",
+    code: "NRT",
+    at: "2026-11-09T12:55:00+09:00",
+    zone: "Asia/Tokyo",
+    terminal: "T2",
+  },
+  duration: "3 小时 15 分",
+  details: [
+    { label: "登机口", value: "B23" },
+    { label: "座位", value: "32A" },
+    { label: "舱位", value: "经济舱" },
+  ],
+  passenger: "GUO ZANWEI",
+  status: { label: "准点", tone: "success" },
+  reference: "PNR 7XKQ2M",
+};
+
+export const rideFixture: RideData = {
+  title: "滴滴快车",
+  status: "司机正在赶来",
+  eta: "3 分钟",
+  plate: "沪A·D3726",
+  car: "白色 · 丰田 卡罗拉",
+  driver: { name: "王师傅", rating: 4.9, trips: "1.2 万单" },
+  pickup: "漕河泾开发区 · 宜山路 900 号东门",
+  dropoff: "虹桥火车站 · P9 网约车上客点",
+  fare: "预估 ¥46",
+};
+
+export const productFixture: ProductData = {
+  title: "京东 · 抽纸",
+  products: [
+    {
+      name: "七鲜 柔韧抽纸 3 层 120 抽 × 6 包",
+      price: "¥19.9",
+      originalPrice: "¥29.9",
+      badge: "券后",
+      shop: "七鲜自营",
+      rating: 4.8,
+      sales: "月销 2 万+",
+    },
+    {
+      name: "维达 超韧抽纸 3 层 130 抽 × 24 包 整箱",
+      price: "¥59.9",
+      originalPrice: "¥79",
+      shop: "维达京东自营旗舰店",
+      rating: 4.9,
+      sales: "月销 10 万+",
+    },
+    {
+      name: "清风 原木纯品抽纸 3 层 100 抽 × 18 包",
+      price: "¥36.8",
+      badge: "包邮",
+      shop: "清风官方旗舰店",
+      rating: 4.7,
+      sales: "月销 5 万+",
+    },
+  ],
+};
+
+export const bookingFixture: BookingData = {
+  title: "新荣记（南京西路店）",
+  status: { label: "已确认", tone: "success" },
+  at: "2026-11-08T18:30:00+08:00",
+  zone: "Asia/Shanghai",
+  details: [
+    { label: "人数", value: "4 位" },
+    { label: "座位", value: "包间 · 牡丹厅" },
+    { label: "预订人", value: "郭先生" },
+  ],
+  confirmation: "确认号 A82931",
+  address: "静安区南京西路 1376 号 4 楼",
+};
+
+export const deviceFixture: DeviceData = {
+  title: "客厅",
+  devices: [
+    {
+      name: "格力空调",
+      on: true,
+      value: "26",
+      unit: "°C",
+      mode: "制冷",
+      detail: "室内 28°C · 湿度 62%",
+      controls: [
+        { label: "−1°", prompt: "把客厅空调调到 25 度" },
+        { label: "+1°", prompt: "把客厅空调调到 27 度" },
+        { label: "关闭", prompt: "关掉客厅空调" },
+      ],
+    },
+  ],
+};
+
+export const devicesFixture: DeviceData = {
+  title: "家里 · 4 个设备",
+  devices: [
+    {
+      name: "客厅空调",
+      on: true,
+      value: "26",
+      unit: "°C",
+      mode: "制冷",
+      controls: [{ label: "关闭", prompt: "关掉客厅空调" }],
+    },
+    {
+      name: "吊灯",
+      on: true,
+      value: "60",
+      unit: "%",
+      mode: "暖光",
+      controls: [{ label: "关闭", prompt: "关掉客厅吊灯" }],
+    },
+    {
+      name: "卧室灯带",
+      on: false,
+      mode: "已关",
+      controls: [{ label: "打开", prompt: "打开卧室灯带" }],
+    },
+    { name: "阳台摄像头", online: false },
+  ],
+};
+
+export const paymentFixture: PaymentData = {
+  title: "Wise",
+  amount: "¥7,180.00",
+  status: { label: "转账成功", tone: "success" },
+  counterparty: "付给 Tanaka Yuki",
+  at: "2026-11-06T10:42:00+08:00",
+  details: [
+    { label: "对方收到", value: "¥150,000 JPY" },
+    { label: "汇率", value: "1 CNY = 20.89 JPY" },
+    { label: "手续费", value: "¥42.36" },
+    { label: "付款方式", value: "招商银行 储蓄卡 尾号 8821" },
+  ],
+};
+
+export const mediaFixture: MediaData = {
+  title: "Apple Music",
+  track: "晴天",
+  artist: "周杰伦",
+  album: "叶惠美",
+  playing: true,
+  position: 83,
+  duration: 269,
+  controls: {
+    previous: "上一首",
+    toggle: "暂停播放",
+    next: "下一首",
+  },
+  queue: [
+    { track: "七里香", artist: "周杰伦" },
+    { track: "稻香", artist: "周杰伦" },
+    { track: "告白气球", artist: "周杰伦" },
+  ],
+};
+
+/** Two periods side by side, a change on every row. */
+export const eventBarsFixture: BarsData = {
+  title: "产品事件",
+  meta: "昨日对比前天",
+  source: "PostHog",
+  observedAt: "2026-11-11T01:00:00Z",
+  legend: { value: "昨日", compare: "前天" },
+  items: [
+    {
+      label: "注册",
+      value: 76,
+      compare: 48,
+      delta: { value: "58.3%", direction: "up" },
+    },
+    {
+      label: "工作区就绪",
+      value: 32,
+      compare: 45,
+      delta: { value: "28.9%", direction: "down" },
+    },
+    {
+      label: "下载点击",
+      value: 26,
+      compare: 29,
+      delta: { value: "10.3%", direction: "down" },
+    },
+    {
+      label: "网站开 App",
+      value: 40,
+      compare: 44,
+      delta: { value: "9.1%", direction: "down" },
+    },
+    {
+      label: "桌面启动",
+      value: 75,
+      compare: 80,
+      delta: { value: "6.3%", direction: "down" },
+    },
+    {
+      label: "创建任务",
+      value: 206,
+      compare: 285,
+      delta: { value: "27.7%", direction: "down" },
+    },
+    {
+      label: "客户端打开",
+      value: 179,
+      compare: 201,
+      delta: { value: "10.9%", direction: "down" },
+    },
+  ],
+};
+
+/** A ranking: a value per source, largest first. */
+export const sourceBarsFixture: BarsData = {
+  title: "流量来源 Top 5",
+  meta: "访客",
+  items: [
+    { label: "直接访问", value: 118 },
+    { label: "google.com", value: 31, brand: "google" },
+    { label: "t.co", value: 17, brand: "x" },
+    { label: "bing.com", value: 9 },
+    { label: "github.com", value: 8, brand: "github" },
+  ],
+};
+
+/** Funnel steps, each with how many of the step before reached it. */
+export const funnelBarsFixture: BarsData = {
+  title: "上周注册转化漏斗",
+  meta: "11/2–11/8",
+  source: "PostHog",
+  items: [
+    { label: "访问官网", value: 4812, valueLabel: "4,812" },
+    {
+      label: "点击下载",
+      value: 1203,
+      valueLabel: "1,203",
+      caption: "转化 25.0% · 中位 38 秒",
+      status: { label: "掉得最多", tone: "error" },
+    },
+    { label: "完成安装并首次启动", value: 644, caption: "转化 53.5% · 中位 6 分钟" },
+    { label: "注册账号", value: 498, caption: "转化 77.3% · 中位 2 分钟" },
+    { label: "工作区就绪", value: 301, caption: "转化 60.4% · 中位 4 分钟" },
+    { label: "创建第一个任务", value: 187, caption: "转化 62.1% · 中位 11 分钟" },
+  ],
+};
+
+/** Progress toward several goals on one scale, with the ones to act on marked. */
+export const progressBarsFixture: BarsData = {
+  title: "Q4 OKR 进度",
+  meta: "季度已过 46%",
+  max: 100,
+  items: [
+    {
+      label: "激活率",
+      value: 46,
+      valueLabel: "46%",
+      caption: "38% → 45% · 当前 41.2%",
+    },
+    { label: "崩溃率", value: 80, valueLabel: "80%", tone: "success" },
+    {
+      label: "冷启动 P50",
+      value: 22,
+      valueLabel: "22%",
+      status: { label: "落后", tone: "warning" },
+      tone: "warning",
+    },
+    { label: "SSO 接入", value: 0, valueLabel: "0%", status: "有风险", tone: "error" },
+  ],
+};
+
+/** A distribution over a few short labels. */
+export const ratingBarsFixture: BarsData = {
+  title: "星级分布",
+  meta: "共 1,284 个评分",
+  source: "App Store Connect",
+  items: [
+    { label: "5 星", value: 962 },
+    { label: "4 星", value: 187 },
+    { label: "3 星", value: 61 },
+    { label: "2 星", value: 28 },
+    { label: "1 星", value: 46 },
+  ],
+};
+
+/** A leaderboard: a name, two numbers and a colored change per row. */
+export const leaderboardTableFixture: TableData = {
+  title: "上周热销商品",
+  meta: "11/2–11/8",
+  source: "Shopify",
+  observedAt: "2026-11-09T04:00:00Z",
+  columns: ["商品", "销量", "销售额", "较上周"],
+  rows: [
+    ["机械键盘 K8 Pro（茶轴）", 312, "¥186,888", { text: "↑2", tone: "success" }],
+    ["人体工学鼠标 M3", 287, "¥57,113", "—"],
+    ["4K 显示器支架", 240, "¥47,760", { text: "↓2", tone: "error" }],
+    ["Type-C 扩展坞 11 合 1", 198, "¥59,202", { text: "↑1", tone: "success" }],
+    ["桌面理线套装", 176, "¥8,624", { text: "↑4", tone: "success" }],
+    ["降噪耳机 Q30", 133, "¥66,367", { text: "新上榜", tone: "brand" }],
+  ],
+};
+
+/** A grid with cells that have no value yet, and a column with no heading. */
+export const cohortTableFixture: TableData = {
+  title: "新用户周留存",
+  meta: "按注册周",
+  columns: ["", "人数", "W1", "W2", "W3", "W4", "W5", "W6"],
+  rows: [
+    ["9/15", 398, "45.2%", "37.9%", "33.4%", "30.1%", "28.6%", "27.4%"],
+    ["9/22", 412, "46.1%", "38.3%", "33.0%", "30.6%", "29.1%", null],
+    ["9/29", 388, "44.8%", "36.9%", "31.2%", "29.4%", null, null],
+    ["10/6", 455, "48.4%", "40.2%", "35.6%", null, null, null],
+    ["10/13", 501, "51.3%", "43.1%", null, null, null, null],
+    ["10/20", 476, "49.6%", null, null, null, null, null],
+  ],
+};
+
+/** Columns of amounts and names, wider together than a card: each row stacks. */
+export const regionTableFixture: TableData = {
+  title: "各区域季度营收",
+  meta: "2026 Q1–Q3",
+  columns: [
+    "区域",
+    "Q1 营收",
+    "Q2 营收",
+    "Q3 营收",
+    "同比",
+    "毛利率",
+    "订单数",
+    "负责人",
+  ],
+  rows: [
+    [
+      "华东大区（含上海）",
+      "¥12,486,888",
+      "¥13,904,112",
+      "¥15,230,450",
+      { text: "+18.4%", tone: "success" },
+      "41.2%",
+      18422,
+      "陈思远",
+    ],
+    [
+      "华南大区",
+      "¥9,113,020",
+      "¥9,870,664",
+      "¥10,412,900",
+      { text: "+9.7%", tone: "success" },
+      "38.9%",
+      13310,
+      "欧阳静怡",
+    ],
+    [
+      "海外（北美 + 欧洲）",
+      "$4,220,100",
+      "$4,018,730",
+      "$3,902,255",
+      { text: "-6.1%", tone: "error" },
+      "44.0%",
+      5120,
+      "Alex Morgan-Whitfield",
+    ],
+  ],
 };

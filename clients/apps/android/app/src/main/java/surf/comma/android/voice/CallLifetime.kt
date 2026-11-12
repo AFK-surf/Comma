@@ -1,9 +1,12 @@
 package surf.comma.android.voice
 
+import androidx.annotation.StringRes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import surf.comma.android.R
+import surf.comma.android.voice.ui.CallPresentation
 
 /** Reserves ownership before Android delivers the service start, including concurrent taps. */
 internal class CallSingleFlight(initialSequence: Long = 0L) {
@@ -48,24 +51,19 @@ internal class CallStopTimer(private val scope: CoroutineScope, private val stop
     }
 }
 
-internal data class CallNotificationText(val text: String, val ongoing: Boolean)
+/** The phase's string [res]; a service [notice] replaces it once the call is no longer ongoing. */
+internal data class CallNotificationText(@StringRes val res: Int, val ongoing: Boolean, val notice: String? = null)
 
 internal const val MICROPHONE_ACCESS_MESSAGE = "Allow microphone access in Android Settings, then try again."
 
-/** No Android dependency: every surface uses the same terminal result wording. */
-internal fun callNotificationText(state: CallState, notice: String? = null): CallNotificationText {
-    val ongoing = state.phase in setOf(CallPhase.Preparing, CallPhase.Calling, CallPhase.Connected, CallPhase.Ending)
-    val text = notice?.takeUnless { ongoing } ?: when (state.phase) {
-        CallPhase.Preparing, CallPhase.Calling -> "Calling…"
-        CallPhase.Connected -> "Voice call active"
-        CallPhase.Ending -> "Ending…"
-        CallPhase.Failed -> when (state.result) {
-            CallResult.Interrupted -> "Call interrupted"
-            CallResult.Busy, CallResult.Unavailable -> "Call not connected"
-            CallResult.Disabled -> "Voice calls are disabled for this workspace."
-            else -> "Call failed"
-        }
-        CallPhase.Idle, CallPhase.Ended -> "Call ended"
+/** No Context: the notifier resolves the call UI's strings, so every surface uses the same terminal result wording. */
+internal fun callNotificationText(state: CallControllerState): CallNotificationText {
+    val ongoing = state.call.phase in setOf(CallPhase.Preparing, CallPhase.Calling, CallPhase.Connected, CallPhase.Ending)
+    val res = when (state.call.phase) {
+        CallPhase.Preparing, CallPhase.Calling -> R.string.call_calling
+        CallPhase.Connected -> R.string.call_active
+        CallPhase.Ending -> R.string.call_ending
+        CallPhase.Failed, CallPhase.Idle, CallPhase.Ended -> CallPresentation.resultText(state)
     }
-    return CallNotificationText(text, ongoing)
+    return CallNotificationText(res, ongoing, state.notice?.takeUnless { ongoing })
 }

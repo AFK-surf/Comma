@@ -42,7 +42,9 @@ object CallStateReducer {
             is CallSignal.Audio -> if (state.phase == CallPhase.Calling)
                 connected(state.copy(receivedAudio = true)) else state
             is CallSignal.HangUp -> if (state.phase in live) state.copy(phase = CallPhase.Ending) else state
-            is CallSignal.Finished -> if (state.phase in live || state.phase == CallPhase.Ending)
+            is CallSignal.Finished -> if (state.phase == CallPhase.Ending)
+                state.copy(phase = CallPhase.Ended, result = CallResult.Ended)
+            else if (state.phase in live)
                 state.copy(phase = if (signal.result == CallResult.Ended) CallPhase.Ended else CallPhase.Failed,
                     result = signal.result) else state
             is CallSignal.DismissFailure -> if (state.phase == CallPhase.Failed) state.copy(phase = CallPhase.Ended) else state

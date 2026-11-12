@@ -2,11 +2,10 @@ defmodule SalixStore.Repo do
   @moduledoc """
   Salix control-plane PostgreSQL repository (database `salix`).
 
-  Holds queryable control metadata — unique lookups, filtered/ordered listings,
-  transactions — per `docs/storage-search.md`. Authoritative
-  conversation/session content, blobs, and append-shaped data stay in S3 behind
-  `SalixStore.S3`; PostgreSQL may hold explicitly rebuildable, bounded query
-  projections derived from that owner-committed state.
+  Owns online Agent, Session, Conversation, Message, Participant, and receipt facts.
+  Transactions also update their query projections and pending work targets.
+  S3 retains immutable attachments and sealed history bodies. PostgreSQL directories
+  identify published history. See `docs/storage-search.md`.
 
   The repo lives in `salix_store` (not a product app) because control metadata
   must be readable on every node that runs the `salix` subsystem, including the

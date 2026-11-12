@@ -113,6 +113,7 @@ describe("chat task panel", () => {
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
+      loopStop: undefined,
       statusBucket: "needs_review" as const,
       title: "Review the arrival",
       turnKey: "msg_u1",
@@ -157,6 +158,7 @@ describe("chat task panel", () => {
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
+      loopStop: undefined,
       statusBucket: "in_progress" as const,
       title: "Cancelled arrival",
       turnKey: "msg_u1",
@@ -185,6 +187,7 @@ describe("chat task panel", () => {
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
+      loopStop: undefined,
       statusBucket: "in_progress" as const,
       title: "Folded away",
       turnKey: "msg_u1",
@@ -252,7 +255,7 @@ describe("chat task panel", () => {
 
   it("clears an acknowledged settled task until it runs again", async () => {
     const user = userEvent.setup();
-    const { setState } = renderConversation({ state: taskState("done") });
+    const { setState } = renderConversation({ state: taskState("needs_review") });
 
     // Acknowledging a settled row commits the clearance in the same beat: the
     // row leaves by unmounting, with no exit motion to wait out.
@@ -280,7 +283,7 @@ describe("chat task panel", () => {
 
   it("shows a newer settle that this device never saw run", async () => {
     const user = userEvent.setup();
-    const { setState } = renderConversation({ state: taskState("done") });
+    const { setState } = renderConversation({ state: taskState("needs_review") });
     await screen.findByTestId("chat-task-item-cnv_task_1");
     await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
@@ -297,15 +300,40 @@ describe("chat task panel", () => {
     await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
 
-    // The review is accepted elsewhere: a newer version of the same run.
-    setState(taskState("completed", [], 1, 9));
+    // The Task is renamed elsewhere: a newer version of the same run.
+    setState(taskState("needs_review", [], 1, 9));
     await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
     expect(screen.queryByTestId("chat-task-item-cnv_task_1")).toBeNull();
   });
 
+  it("lets a task that ended leave the panel without an acknowledgement", async () => {
+    const { setState } = renderConversation({ state: taskState("in_progress") });
+    await screen.findByTestId("chat-task-item-cnv_task_1");
+
+    for (const status of ["completed", "cancelled"]) {
+      setState(taskState(status));
+      await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
+      setState(taskState("in_progress", [], 2));
+      await screen.findByTestId("chat-task-item-cnv_task_1");
+    }
+  });
+
+  it("keeps a failed task until it is dismissed", async () => {
+    const user = userEvent.setup();
+    const { setState } = renderConversation({ state: taskState("in_progress") });
+    await screen.findByTestId("chat-task-item-cnv_task_1");
+
+    setState(taskState("failed"));
+    await waitFor(() =>
+      expect(screen.getByTestId("chat-task-dismiss-cnv_task_1")).toBeTruthy()
+    );
+    await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
+    expect(screen.queryByTestId("chat-task-panel")).toBeNull();
+  });
+
   it("keeps a dismissal when another surface still sees the task running", async () => {
     const user = userEvent.setup();
-    renderConversation({ state: taskState("done") });
+    renderConversation({ state: taskState("needs_review") });
     // The rail reads the same chat with facts that can lag: it still has the
     // Task running long after it settled.
     renderConversation({ state: taskState("in_progress"), variant: "rail" });
@@ -387,6 +415,38 @@ describe("chat task panel", () => {
     expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeNull();
   });
 
+  it("shows a Task whose Loop stopped on an error as stopped, not running", async () => {
+    render(
+      <ChatTaskPanel
+        items={[
+          {
+            archiveVersion: undefined,
+            conversationId: "cnv_task_paused",
+            messageId: undefined,
+            needsAttention: false,
+            needsInput: false,
+            loopStop: { text: "Stopped · couldn’t reach this task", failed: true },
+            statusBucket: "in_progress",
+            title: "Daily digest",
+            turnKey: undefined,
+            version: 1,
+          },
+        ]}
+        onArchive={vi.fn()}
+        onDismiss={vi.fn()}
+        onOpen={vi.fn()}
+        onReveal={vi.fn()}
+      />
+    );
+
+    const item = await screen.findByTestId("chat-task-item-cnv_task_paused");
+    expect(item).toHaveTextContent("Stopped · couldn’t reach this task");
+    expect(item).not.toHaveTextContent("In progress");
+    expect(item.querySelector(".comma-task-status-spin")).toBeNull();
+    expect(item.querySelector(".comma-task-status-loop-failed")).not.toBeNull();
+    expect(item.querySelector(".comma-shiny-text")).toBeNull();
+  });
+
   it("splits the row between opening the task and revealing its turn", async () => {
     const user = userEvent.setup();
     const task = {
@@ -395,6 +455,7 @@ describe("chat task panel", () => {
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
+      loopStop: undefined,
       statusBucket: "in_progress" as const,
       title: "Build the release",
       turnKey: "msg_u1",
@@ -436,6 +497,7 @@ describe("chat task panel", () => {
       messageId: "msg_a1",
       needsAttention: false,
       needsInput: false,
+      loopStop: undefined,
       statusBucket: "needs_review" as const,
       title: "Review the release",
       turnKey: "msg_u1",

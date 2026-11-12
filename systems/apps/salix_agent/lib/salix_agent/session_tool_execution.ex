@@ -62,6 +62,8 @@ defmodule SalixAgent.SessionToolExecution do
           context
         )
 
+      ctx = SessionToolDispatch.decide_ifc_once([tool_call], ctx)
+
       with {:ok, admission} <- admit_direct_capability(tool_call, ctx, runtime_kind) do
         {[result], pending_async} =
           SessionToolDispatch.execute_with_async_window([tool_call], ctx)
@@ -995,12 +997,11 @@ defmodule SalixAgent.SessionToolExecution do
   end
 
   defp visible_reply_policy_events(events, agent_id, session_id, :internal, result) do
-    case InternalSessionStore.read(agent_id, session_id) do
-      {:ok, session} ->
-        VisibleReplyPolicy.async_completion_events(events, session, result)
-
-      {:error, _reason} ->
-        Enum.reject(events, &runtime_notification?/1)
+    case InternalSessionStore.with_session(agent_id, session_id, fn session ->
+           {:ok, VisibleReplyPolicy.async_completion_events(events, session, result)}
+         end) do
+      {:ok, events} -> events
+      {:error, _reason} -> Enum.reject(events, &runtime_notification?/1)
     end
   end
 

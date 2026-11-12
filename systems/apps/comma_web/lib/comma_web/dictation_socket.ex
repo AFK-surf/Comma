@@ -29,6 +29,15 @@ defmodule CommaWeb.DictationSocket do
   words. The provider's last guess stays a partial meanwhile, and is the final
   when the transcription fails.
 
+  The transcription model writes whole made-up requests for audio without
+  speech (room noise, typing, a cough), and the pause detector opens a segment
+  for any sound that is loud enough. So the transcription's words stand only
+  for a segment in which the provider also heard words. A segment that the
+  provider recognized to its end without a word has no words: its final is
+  empty, and a transcription not yet started is not asked. When the provider
+  failed before it heard a word, there is no second hearing, and the
+  transcription's words stand.
+
   Bounds: two sockets per member on a node, frames up to 16 KiB, three minutes
   of audio, five minutes of socket, two segments transcribed at once. Close
   codes: 1003 a frame that is not PCM, 4008 thirty seconds without audio, 4009
@@ -190,6 +199,11 @@ defmodule CommaWeb.DictationSocket do
   @impl WebSock
   def handle_info({:interim, segment, result}, state) do
     case state.segments[segment] do
+      # The transcription waited for the provider to hear words too. A result
+      # without text is no word heard.
+      %{final?: false, transcript: transcript} when is_binary(transcript) and result.text != "" ->
+        settle(state, segment, transcript)
+
       %{final?: false} = meta ->
         if meta.text == "", do: observe_first_result(meta)
         state = put_in(state.segments[segment].text, result.text)
@@ -207,24 +221,32 @@ defmodule CommaWeb.DictationSocket do
         state = put_in(state.segments[segment], %{meta | text: result.text, heard?: true})
         {:push, {:text, frame("partial", meta.index, result.text)}, state}
 
+      # Words the provider settled let a waiting transcription's words stand;
+      # a final without text is a segment without words.
       %{final?: false} = meta ->
         state = put_in(state.segments[segment], %{meta | text: result.text, heard?: true})
-        settle(state, segment, result.text)
+        words = if result.text == "", do: "", else: meta.transcript || result.text
+        settle(state, segment, words)
 
       _ ->
         {:ok, state}
     end
   end
 
-  # The transcription's words are the segment's. When it failed, the
-  # provider's are, once it has settled them.
+  # The transcription's words are the segment's when the provider heard words
+  # there too, and wait while it may still hear some. When the transcription
+  # failed, the provider's words are the segment's, once it has settled them.
   def handle_info({:transcribed, segment, result}, state) do
     case {state.segments[segment], result} do
-      {%{final?: false}, {:ok, text}} when is_binary(text) and text != "" ->
+      {%{final?: false} = meta, {:ok, text}} when is_binary(text) and text != "" ->
         state =
           state |> put_in([:segments, segment, :transcription], :done) |> start_transcriptions()
 
-        settle(state, segment, String.trim(text))
+        case spoken(meta) do
+          :yes -> settle(state, segment, String.trim(text))
+          :no -> settle(state, segment, "")
+          :unknown -> {:ok, put_in(state.segments[segment].transcript, String.trim(text))}
+        end
 
       {%{final?: false} = meta, _failed} ->
         state =
@@ -238,9 +260,10 @@ defmodule CommaWeb.DictationSocket do
   end
 
   # A segment the provider gave up on keeps its last guess as its words, unless
-  # its transcription is still to come. A waiting connection that failed is made
-  # again when speech comes.
-  def handle_info({:DOWN, _ref, :process, segment, _reason}, state) do
+  # its transcription is still to come. One the provider recognized to its end
+  # (`:normal`) without a word has none. A waiting connection that failed is
+  # made again when speech comes.
+  def handle_info({:DOWN, _ref, :process, segment, reason}, state) do
     state = if state.segment == segment, do: %{state | segment: nil}, else: state
 
     case state.segments[segment] do
@@ -253,11 +276,17 @@ defmodule CommaWeb.DictationSocket do
       %{final?: true} ->
         maybe_done(%{state | segments: Map.delete(state.segments, segment)}, [])
 
-      %{transcription: pending} = meta when pending in [:queued, :running] ->
-        {:ok, put_in(state.segments[segment], %{meta | heard?: true, gone?: true})}
-
       meta ->
-        settle(put_in(state.segments[segment].gone?, true), segment, meta.text)
+        meta = %{meta | heard?: true, gone?: true, failed?: reason != :normal}
+        state = put_in(state.segments[segment], meta)
+
+        case {meta.transcription, spoken(meta)} do
+          # A transcription not yet asked is not needed for a segment without words.
+          {:queued, :no} -> settle(state, segment, "")
+          {pending, _spoken} when pending in [:queued, :running] -> {:ok, state}
+          {_transcription, :no} -> settle(state, segment, "")
+          {_transcription, _yes} -> settle(state, segment, meta.transcript || meta.text)
+        end
     end
   end
 
@@ -303,6 +332,10 @@ defmodule CommaWeb.DictationSocket do
           # The provider settled its words, or gave up.
           heard?: false,
           gone?: false,
+          # The provider failed for good, so what it did not hear says nothing.
+          failed?: false,
+          # The transcription's words, while the provider may still hear words.
+          transcript: nil,
           # The segment's audio, newest first until it is sealed, then whole until transcribed.
           audio: [],
           # :none, :queued, :running, :done or :failed.
@@ -380,6 +413,14 @@ defmodule CommaWeb.DictationSocket do
   catch
     kind, reason -> {:error, {kind, reason}}
   end
+
+  # Whether someone spoke in the segment: the provider heard words there, or
+  # failed and cannot say. One that recognized all of it without a word says
+  # no; one still listening does not know yet.
+  defp spoken(%{text: text}) when text != "", do: :yes
+  defp spoken(%{failed?: true}), do: :yes
+  defp spoken(%{gone?: true}), do: :no
+  defp spoken(_meta), do: :unknown
 
   # The segment's final words; a segment whose provider is gone is done.
   defp settle(state, segment, text) do

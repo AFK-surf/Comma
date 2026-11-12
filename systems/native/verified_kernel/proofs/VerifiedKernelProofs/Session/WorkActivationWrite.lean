@@ -25,7 +25,7 @@ theorem activation_raw_write_preserves {context : Context} {hwm prompt active ch
     (write : BatchTrace (resident (some saved) (a "write_result") (a "ok")) (writeFenced final after)) :
     (∃ details capturedCheckpoint capturedActive,
       after = .tuple [b "activation_written", details, capturedCheckpoint, capturedActive]) ∧
-    final.baseline = context.candidate.baseline ∧ final.etag = context.candidate.etag ∧
+    final.baseline = context.candidate.baseline ∧ final.revision = context.candidate.revision ∧
     final.events = context.candidate.events ++ events ∧ QueueReady final.working ∧
     final.working.get (a "storage_format") = context.candidate.working.get (a "storage_format") ∧
     ∀ sealed item, ValueSemantics.Represented context.candidate.working sealed item →

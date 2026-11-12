@@ -35,6 +35,8 @@ export function taskRunRefusal(messages: CommaMessages, error: unknown): string 
       return messages.task_run_refused_outdated();
     case "cloud_vm_not_running":
       return messages.task_run_refused_cloud_vm();
+    case "sandbox_not_running":
+      return messages.task_run_refused_sandbox();
     case "task_running":
       return messages.task_run_refused_running();
     default:
@@ -109,8 +111,9 @@ export function useTaskRunChoice(
 
 /**
  * Runs a Task on another model, perhaps in another place: Comma's models, the Cloud VM's and those of the person's
- * computers that take a Task now (`taskRunOptions`), each under where it runs. The Task goes on from where it is;
- * the new model reads what was said so far.
+ * computers that take a Task now (`taskRunOptions`), each under where it runs. A sandbox Task stays on its sandbox and
+ * picks from the models its station runs; none while the sandbox is not running, which the dialog says. The Task goes
+ * on from where it is; the new model reads what was said so far.
  */
 export function TaskRunDialog({
   unsupported = [],
@@ -132,9 +135,10 @@ export function TaskRunDialog({
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
+  const sandbox = run?.place.kind === "sandbox";
   const { busy, chosen, error, items, loading, picked, setChosen, switchRun } =
     useTaskRunChoice(workspaceId, onSwitch, {
-      ...(unsupported.includes("move") ? { within: run } : {}),
+      ...(unsupported.includes("move") || sandbox ? { within: run } : {}),
       computers: unsupported.includes("comma"),
     });
 
@@ -185,6 +189,7 @@ export function TaskRunDialog({
             loading={loading}
             onChange={setChosen}
             placeholder={messages.task_run_pick()}
+            size="sm"
             {...(chosen ? { value: chosen } : {})}
           />
           {error ? (

@@ -43,7 +43,7 @@ export class InternalChat implements ChatSurface {
 
   /// Nothing to send anywhere: the message is recorded under the ts this gives, and the page reads it from there.
   async post(thread: ThreadRef, _message: string, _files: Attachment[]): Promise<string> {
-    if (thread.channel !== INTERNAL_CHANNEL) throw new Error(`no still.fail chat ${thread.channel}/${thread.threadTs}`);
+    if (thread.channel !== INTERNAL_CHANNEL) throw new Error(`no Comma chat ${thread.channel}/${thread.threadTs}`);
     return nextTsAt(this.clock.currentTimeMillisUnsafe());
   }
 

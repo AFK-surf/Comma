@@ -13,7 +13,7 @@ import { slackTools } from "./slack.ts";
 export const CHAT_POST = {
   name: "chat_post",
   description:
-    "Post a message to one of your conversations: in Slack's formatting (mrkdwn) for a Slack thread, Markdown for a still.fail chat. Users always have a chat input box and can reply freely. An optional card can make a real decision easier: concrete options to pick from, or a field to write in; do not add filler options or create unnecessary questions. A post that ends your turn says how with kind: all_done (nothing in the chat is left unfinished: done says why, with the evidence) or need_human (a person has to give, do or decide something: need says what; after posting a card, this is how the turn ends). People follow your work on a Task through its Activity, shown beside the chat: each time you finish a key step, record it in milestones, one short line in the language people use there that names the outcome, not the tool (e.g. Wrote the invite for Bob). Record one per item when the work covers a few items (each recipient, file or source); for many items, one per batch (e.g. Wrote invoices 1-50 of 200), so one request gets about eight at most. Record none for trivial steps, for reporting back, or for a run that found nothing new. Steps finished together go in one post. A post of milestones alone (no text) shows nowhere but the Activity and wakes no one: post it in the same response as your next tool calls, or give the milestones with your next post or your report.",
+    "Post a message to one of your conversations: in Slack's formatting (mrkdwn) for a Slack thread, Markdown for a Comma chat. Users always have a chat input box and can reply freely. An optional card can make a real decision easier: concrete options to pick from, or a field to write in; do not add filler options or create unnecessary questions. A post that ends your turn says how with kind: all_done (nothing in the chat is left unfinished: done says why, with the evidence) or need_human (a person has to give, do or decide something: need says what; after posting a card, this is how the turn ends). People follow your work on a Task through its Activity, shown beside the chat: each time you finish a key step, record it in milestones, one short line in the language people use there that names the outcome, not the tool (e.g. Wrote the invite for Bob). Record one per item when the work covers a few items (each recipient, file or source); for many items, one per batch (e.g. Wrote invoices 1-50 of 200), so one request gets about eight at most. Record none for trivial steps, for reporting back, or for a run that found nothing new. Steps finished together go in one post. A post of milestones alone (no text) shows nowhere but the Activity and wakes no one: post it in the same response as your next tool calls, or give the milestones with your next post or your report.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -36,7 +36,7 @@ export const CHAT_POST = {
           "type": "string",
           "maxLength": 80
         },
-        "description": "Still.fail chats (Tasks) only: the key steps you finished since your last post, in order, each one line of at most 80 characters naming the outcome. Shown only in the Task's Activity, never in the chat. Without text, the post records them alone: it notifies no one and cannot end your turn (chat_state does)."
+        "description": "Comma chats (Tasks) only: the key steps you finished since your last post, in order, each one line of at most 80 characters naming the outcome. Shown only in the Task's Activity, never in the chat. Without text, the post records them alone: it notifies no one and cannot end your turn (chat_state does)."
       },
       "kind": {
         "type": "string",
@@ -67,11 +67,11 @@ export const CHAT_POST = {
       },
       "title": {
         "type": "string",
-        "description": "The conversation's name in still.fail lists (including Slack threads; does not rename anything in Slack): a few words on what it is about, in the language people use there (at most 30 characters). Give one with your first post that ends a turn in a chat. Give another only when the chat has moved to something else and the name no longer says what it is about, not to reword it; the station changes it rarely, and never over a name people gave."
+        "description": "The conversation's name in Comma lists (including Slack threads; does not rename anything in Slack): a few words on what it is about, in the language people use there (at most 30 characters). Give one with your first post that ends a turn in a chat. Give another only when the chat has moved to something else and the name no longer says what it is about, not to reword it; the station changes it rarely, and never over a name people gave."
       },
       "card": {
         "type": "object",
-        "description": "Still.fail chats only: what people answer this message with, shown with it and on their list of things waiting for them (奏). {\"type\": \"options\", \"options\": [...]} when they choose between answers you can name (1 to 6, recommend one if you can): shown under the message, a tap answers. {\"type\": \"text\", \"placeholder\": \"…\"} when they must write something (a value, a name, a key): a field on their 奏 page. An option with action=close ends the wait silently; other answers reach you as their message quoting this one, and anything they write in the chat instead answers it too. A card waits until a person writes in the chat or you post a newer one. It says nothing of your turn: end the turn need_human (with need) after posting one.",
+        "description": "Comma chats only: what people answer this message with, shown with it and on their list of things waiting for them (奏). {\"type\": \"options\", \"options\": [...]} when they choose between answers you can name (1 to 6, recommend one if you can): shown under the message, a tap answers. {\"type\": \"text\", \"placeholder\": \"…\"} when they must write something (a value, a name, a key): a field on their 奏 page. An option with action=close ends the wait silently; other answers reach you as their message quoting this one, and anything they write in the chat instead answers it too. A card waits until a person writes in the chat or you post a newer one. It says nothing of your turn: end the turn need_human (with need) after posting one.",
         "properties": {
           "type": {
             "type": "string",
@@ -245,7 +245,7 @@ export const CHAT_HISTORY = {
 export const CHAT_LIST = {
   name: "chat_list",
   description:
-    "List the conversations on this station (still.fail chats and Slack threads), the latest first: each with its address, title, agents (session keys) and last message. Use it to find a chat people refer to.",
+    "List the conversations on this station (Comma chats and Slack threads), the latest first: each with its address, title, agents (session keys) and last message. Use it to find a chat people refer to.",
   inputSchema: {
     "type": "object",
     "properties": {

@@ -10,7 +10,7 @@ defmodule SalixStore.StationReadiness do
     app (it includes the station) or the standalone station.
   - another `tasks` (1: task.changed/read/post): a station too old for the
     current protocol: `station_outdated`. Its user updates the desktop app, or
-    a standalone station with `stillfail update` or its Updates page.
+    a standalone station with `comma-station update` or its Updates page.
 
   The reason is structured (`refusal/1`) so pages can say it in their own
   language; `instructions/1` is the English text for agents and APIs.
@@ -52,7 +52,7 @@ defmodule SalixStore.StationReadiness do
   @spec instructions(:device_needs_station | :station_outdated | String.t()) :: String.t()
   def instructions(reason) when reason in [:device_needs_station, "device_needs_station"],
     do:
-      "This device runs the old connector, which cannot take Tasks. " <>
+      "This device has no station, so it cannot take Tasks. " <>
         "Install the Comma desktop app on it (it includes the station), " <>
         "or install the station with the command from Add station in Comma."
 
@@ -60,7 +60,7 @@ defmodule SalixStore.StationReadiness do
     do:
       "This device's station is too old to take Tasks. " <>
         "Update the Comma desktop app, or on a standalone station " <>
-        "run `stillfail update` or use its Updates page."
+        "run `comma-station update` or use its Updates page."
 
   defp info(reason, tasks),
     do: %{"reason" => reason, "tasks" => tasks, "required_tasks" => @tasks}

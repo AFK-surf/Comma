@@ -28,6 +28,7 @@ defmodule SalixAgent.QueuePressureTest do
 
   defp slack, do: %{"provider" => "slack", "source_actor_type" => "provider_user"}
   defp comma_user, do: %{"provider" => "internal", "source_actor_type" => "user"}
+
   test "a Router with queued human requests receives one message naming them" do
     session = %{
       input_queue: [
@@ -43,7 +44,34 @@ defmodule SalixAgent.QueuePressureTest do
     assert message["content"] =~ "2 human requests are queued"
     assert message["content"] =~ "- slack request, waiting 3m10s"
     assert message["content"] =~ "- internal request, waiting 5s"
-    assert state == %{"queued" => [1, 2], "emitted_at_ms" => @now_ms}
+    assert state == %{"emitted_at_ms" => @now_ms}
+  end
+
+  # A schedule or Loop run with its creator's authority queues behind the
+  # activation like a person, but nobody waits on it: it alone sends nothing.
+  test "a queued schedule or Loop run is no queue pressure, a queued person is" do
+    schedule = %{"provider" => "schedule", "schedule_id" => "sch_1", "ifc" => %{}}
+    loop = %{"provider" => "loop", "loop_id" => "lop_1", "ifc" => %{}}
+    runs = %{input_queue: [item(1, schedule), item(2, loop)]}
+
+    assert {[], %{}} = QueuePressure.prepare(runs, @router, %{}, @now)
+
+    with_person = %{runs | input_queue: runs.input_queue ++ [item(3, slack())]}
+    {[message], _state} = QueuePressure.prepare(with_person, @router, %{}, @now)
+    assert message["summary"] =~ "1 human request queued"
+  end
+
+  test "a changed queue refreshes the message only after the refresh interval" do
+    session = %{input_queue: [item(1, slack()), item(2, slack())]}
+    previous = %{"queued" => [1], "emitted_at_ms" => @now_ms - 59_000}
+    known = %{"queue_pressure" => previous}
+
+    assert {[], ^previous} = QueuePressure.prepare(session, @router, known, @now)
+
+    known = %{"queue_pressure" => %{"emitted_at_ms" => @now_ms - 60_000}}
+    assert {[message], state} = QueuePressure.prepare(session, @router, known, @now)
+    assert message["content"] =~ "2 human requests are queued"
+    assert state == %{"emitted_at_ms" => @now_ms}
   end
 
   describe "on a resident kernel session" do
@@ -66,6 +94,7 @@ defmodule SalixAgent.QueuePressureTest do
 
     test "queued human input behind an open activation reaches the activation delta and is adopted once" do
       agent_id = SalixAgent.TestSupport.new_agent_id()
+      SalixAgent.TestSupport.create_control_agent!(agent_id)
       session_id = "ses1_0000000000000000778"
 
       queue_append = fn id, origin ->
@@ -84,16 +113,16 @@ defmodule SalixAgent.QueuePressureTest do
       end
 
       {:ok, state} =
-        InternalSessionStore.prepare_commit(agent_id, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
           queue_append.("A", slack())
         ])
 
       {events, _wake?, _hwm} = InternalSession.materialize_pending_input_events(state)
-      {:ok, _} = InternalSessionStore.prepare_commit(agent_id, session_id, events)
+      {:ok, _} = SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, events)
 
       {:ok, _} =
-        InternalSessionStore.prepare_commit(agent_id, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
           queue_append.("B", comma_user())
         ])
 
@@ -108,13 +137,13 @@ defmodule SalixAgent.QueuePressureTest do
       assert queue.content =~ "- internal request, waiting 2m"
 
       adopted_state = ContextProviders.adopted_provider_state(delta)
-      assert %{"queued" => [_], "emitted_at_ms" => _} = adopted_state["queue_pressure"]
+      assert %{"emitted_at_ms" => _} = adopted_state["queue_pressure"]
 
       # The round commits the adopted state on its assistant turn; the next
       # activation reads it back through the kernel and says nothing new
       # while the same request is still the only one waiting.
       {:ok, _} =
-        InternalSessionStore.prepare_commit(agent_id, session_id, [
+        SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [
           %{
             "type" => "assistant",
             "session_id" => session_id,

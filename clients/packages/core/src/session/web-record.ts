@@ -5,95 +5,114 @@
 // that is replaced when nothing is known of the Cookie), its generation (counted up each time the Cookie may name
 // another session), the revision of the record itself, what is under way (`in_flight`, with its deadline and the state
 // before it) and the recovery ticket (bounded attempts within a window, a backoff between them).
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 
 export const WEB_SESSION_LIFECYCLE_VERSION = "1";
 
-const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const positiveSafeInteger = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
-const boundedId = z.string().min(1).max(256);
-const boundedOrigin = z.string().url().max(2_048);
-const expectedSessionId = z.union([z.literal("unknown"), z.literal("none"), boundedId]);
+const safeInteger = lazySchema(() =>
+  z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+);
+const positiveSafeInteger = lazySchema(() =>
+  z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+);
+const boundedId = lazySchema(() => z.string().min(1).max(256));
+const boundedOrigin = lazySchema(() => z.string().url().max(2_048));
+const expectedSessionId = lazySchema(() =>
+  z.union([z.literal("unknown"), z.literal("none"), boundedId])
+);
 
-const stableState = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("absent") }),
-  z.strictObject({ kind: z.literal("present"), sessionId: boundedId }),
-]);
+const stableState = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("absent") }),
+    z.strictObject({ kind: z.literal("present"), sessionId: boundedId }),
+  ])
+);
 
-const settledState = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("stable"), state: stableState }),
-  z.strictObject({
-    activeAuthAttemptId: boundedId,
-    kind: z.literal("authenticating"),
-    operationEpoch: positiveSafeInteger,
-    state: z.strictObject({ kind: z.literal("absent") }),
-  }),
-]);
+const settledState = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("stable"), state: stableState }),
+    z.strictObject({
+      activeAuthAttemptId: boundedId,
+      kind: z.literal("authenticating"),
+      operationEpoch: positiveSafeInteger,
+      state: z.strictObject({ kind: z.literal("absent") }),
+    }),
+  ])
+);
 
-const recoveryExpectation = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("unknown_rebind") }),
-  z.strictObject({ kind: z.literal("exact_session"), sessionId: boundedId }),
-]);
+const recoveryExpectation = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("unknown_rebind") }),
+    z.strictObject({ kind: z.literal("exact_session"), sessionId: boundedId }),
+  ])
+);
 
-const recoveryProgress = z.discriminatedUnion("phase", [
-  z.strictObject({ phase: z.literal("ready") }),
-  z.strictObject({
-    nextAttemptNotBeforeEpochMs: safeInteger,
-    phase: z.literal("backoff"),
-    problem: z.enum(["network_unavailable", "session_probe_unavailable"]),
-  }),
-  z.strictObject({
-    ownerNonce: boundedId,
-    phase: z.literal("in_flight"),
-    startedAtEpochMs: safeInteger,
-  }),
-  z.strictObject({
-    phase: z.literal("exhausted"),
-    problem: z.enum([
-      "network_unavailable",
-      "protocol_mismatch",
-      "session_probe_unavailable",
-    ]),
-  }),
-]);
+const recoveryProgress = lazySchema(() =>
+  z.discriminatedUnion("phase", [
+    z.strictObject({ phase: z.literal("ready") }),
+    z.strictObject({
+      nextAttemptNotBeforeEpochMs: safeInteger,
+      phase: z.literal("backoff"),
+      problem: z.enum(["network_unavailable", "session_probe_unavailable"]),
+    }),
+    z.strictObject({
+      ownerNonce: boundedId,
+      phase: z.literal("in_flight"),
+      startedAtEpochMs: safeInteger,
+    }),
+    z.strictObject({
+      phase: z.literal("exhausted"),
+      problem: z.enum([
+        "network_unavailable",
+        "protocol_mismatch",
+        "session_probe_unavailable",
+      ]),
+    }),
+  ])
+);
 
-const recoveryTicket = z.strictObject({
-  attemptsStarted: safeInteger,
-  deadlineAtEpochMs: safeInteger,
-  expectation: recoveryExpectation,
-  maxAttempts: positiveSafeInteger,
-  progress: recoveryProgress,
-  ticketId: boundedId,
-});
+const recoveryTicket = lazySchema(() =>
+  z.strictObject({
+    attemptsStarted: safeInteger,
+    deadlineAtEpochMs: safeInteger,
+    expectation: recoveryExpectation,
+    maxAttempts: positiveSafeInteger,
+    progress: recoveryProgress,
+    ticketId: boundedId,
+  })
+);
 
-const inFlightOperation = z.discriminatedUnion("kind", [
-  z.strictObject({ expectedSessionId, kind: z.literal("reconcile") }),
-  z.strictObject({
-    expectedSessionId: boundedId,
-    kind: z.literal("product_unauthorized_reconcile"),
-  }),
-  z.strictObject({ expectedSessionId: boundedId, kind: z.literal("sign_out") }),
-  z.strictObject({
-    authAttemptId: boundedId,
-    expectedSessionId: z.literal("none"),
-    kind: z.literal("verify_email_login"),
-  }),
-  z.strictObject({
-    authAttemptId: boundedId,
-    expectedSessionId: z.literal("none"),
-    kind: z.literal("complete_google_login"),
-  }),
-  z.strictObject({
-    authAttemptId: boundedId,
-    expectedSessionId: z.literal("none"),
-    kind: z.literal("verify_google_link"),
-  }),
-  z.strictObject({
-    authAttemptId: boundedId,
-    expectedSessionId: z.literal("none"),
-    kind: z.literal("start_guest_session"),
-  }),
-]);
+const inFlightOperation = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ expectedSessionId, kind: z.literal("reconcile") }),
+    z.strictObject({
+      expectedSessionId: boundedId,
+      kind: z.literal("product_unauthorized_reconcile"),
+    }),
+    z.strictObject({ expectedSessionId: boundedId, kind: z.literal("sign_out") }),
+    z.strictObject({
+      authAttemptId: boundedId,
+      expectedSessionId: z.literal("none"),
+      kind: z.literal("verify_email_login"),
+    }),
+    z.strictObject({
+      authAttemptId: boundedId,
+      expectedSessionId: z.literal("none"),
+      kind: z.literal("complete_google_login"),
+    }),
+    z.strictObject({
+      authAttemptId: boundedId,
+      expectedSessionId: z.literal("none"),
+      kind: z.literal("verify_google_link"),
+    }),
+    z.strictObject({
+      authAttemptId: boundedId,
+      expectedSessionId: z.literal("none"),
+      kind: z.literal("start_guest_session"),
+    }),
+  ])
+);
 
 const header = {
   canonicalApiOrigin: boundedOrigin,
@@ -104,29 +123,35 @@ const header = {
   writeNonce: boundedId,
 };
 
-export const webSessionRecordSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ ...header, kind: z.literal("stable"), state: stableState }),
-  z.strictObject({
-    ...header,
-    activeAuthAttemptId: boundedId,
-    kind: z.literal("authenticating"),
-    operationEpoch: positiveSafeInteger,
-    state: z.strictObject({ kind: z.literal("absent") }),
-  }),
-  z.strictObject({
-    ...header,
-    kind: z.literal("in_flight"),
-    operation: inFlightOperation,
-    owner: z.strictObject({
-      deadlineAtEpochMs: safeInteger,
-      nonce: boundedId,
+export const webSessionRecordSchema = lazySchema(() =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({ ...header, kind: z.literal("stable"), state: stableState }),
+    z.strictObject({
+      ...header,
+      activeAuthAttemptId: boundedId,
+      kind: z.literal("authenticating"),
       operationEpoch: positiveSafeInteger,
-      startedAtEpochMs: safeInteger,
+      state: z.strictObject({ kind: z.literal("absent") }),
     }),
-    prior: settledState,
-  }),
-  z.strictObject({ ...header, kind: z.literal("recovering"), ticket: recoveryTicket }),
-]);
+    z.strictObject({
+      ...header,
+      kind: z.literal("in_flight"),
+      operation: inFlightOperation,
+      owner: z.strictObject({
+        deadlineAtEpochMs: safeInteger,
+        nonce: boundedId,
+        operationEpoch: positiveSafeInteger,
+        startedAtEpochMs: safeInteger,
+      }),
+      prior: settledState,
+    }),
+    z.strictObject({
+      ...header,
+      kind: z.literal("recovering"),
+      ticket: recoveryTicket,
+    }),
+  ])
+);
 
 export type WebSessionRecord = z.output<typeof webSessionRecordSchema>;
 export type SettledRecord = Extract<
@@ -175,12 +200,14 @@ export const webSessionChannelName = (origin: string) =>
 export const webSessionAuthorityKey = (origin: string) =>
   `comma.session-authority.v1:${encodeURIComponent(origin)}`;
 
-export const webSessionAuthoritySchema = z.strictObject({
-  authorityInstanceId: boundedId,
-  generation: safeInteger,
-  revision: safeInteger,
-  sessionId: boundedId.nullable(),
-});
+export const webSessionAuthoritySchema = lazySchema(() =>
+  z.strictObject({
+    authorityInstanceId: boundedId,
+    generation: safeInteger,
+    revision: safeInteger,
+    sessionId: boundedId.nullable(),
+  })
+);
 
 /** Where the core notes that a guest's chat waits to be imported into the next registered account. */
 export const guestImportMarkerKey = (origin: string) =>

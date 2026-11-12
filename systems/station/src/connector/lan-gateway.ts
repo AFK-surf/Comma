@@ -4,6 +4,7 @@ import { createSocket } from "node:dgram";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Duration, Effect } from "effect";
+import { lanScriptCapability } from "./lan-script.ts";
 import { defaultString, intParam, mapParam, stringFromAny, stringParam } from "./message.ts";
 
 export const LAN_GATEWAY_MAX_BYTES = 64 * 1024;
@@ -17,7 +18,12 @@ export const LAN_UDP_MAX_TIMEOUT_MS = 10_000;
 export const HTTP_REQUEST_MAX_BYTES = 10 * 1024 * 1024;
 
 export function lanGatewayCapability() {
-  return { methods: ["lan_http_request", "lan_tcp_dial", "udp_request"], max_bytes: LAN_GATEWAY_MAX_BYTES, max_timeout_seconds: LAN_GATEWAY_MAX_TIMEOUT_SECONDS };
+  return {
+    methods: ["lan_http_request", "lan_tcp_dial", "udp_request", "lan_script"],
+    max_bytes: LAN_GATEWAY_MAX_BYTES,
+    max_timeout_seconds: LAN_GATEWAY_MAX_TIMEOUT_SECONDS,
+    script: lanScriptCapability(),
+  };
 }
 
 export type HttpLimits = { defaultTimeout: Duration.Duration; maxTimeout?: Duration.Duration; maxBytes: number };

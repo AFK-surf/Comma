@@ -19,6 +19,20 @@ defmodule SalixCluster.Drain do
   discoverable through its durable session state + PG candidate row, which
   the Recovery session-work lanes re-wake through placement (the durable
   backstop; the agent-level queue-marker lane retired with A2 §3.4).
+
+  The draining node has left the ring (`SalixCluster.NodeLifecycle.mark_draining/0`),
+  so while another node is ready every agent has a different owner to go to,
+  and placement on this node routes there as well. The node-local
+  `SalixAgent.OwnershipCell` entry is released with the lease: it is what
+  `SalixCluster.Placement` consults first, and a plain Server stop leaves it
+  `:owned`, which would route the next inbound event back to this node and
+  start the agent here again, to be killed with the pod. A node alone in its
+  ring keeps itself as owner: the stopped agents restart here on demand.
+
+  Between the stop and the releases an event could still start a new Server
+  here through the lease this node holds; `SalixAgent.Fleet` refuses that
+  start while `SalixCluster.NodeLifecycle.admit_start/0` says the ring places
+  keys elsewhere.
   """
 
   require Logger
@@ -43,6 +57,8 @@ defmodule SalixCluster.Drain do
     * `:handoff` — when `true` (default), `:erpc.cast` the ring owner an
       `ensure_started` for each released agent whose owner is a different live
       node (best effort; Recovery's session-work lanes are the backstop).
+      With `:mark_draining` the node has left the ring, so that is every agent
+      while another node is ready.
     * `:ring` — ring module (default `SalixCluster.Ring`; must export
       `owner/1` and `nodes/0`). Injectable so tests stub a single-node ring.
 
@@ -108,7 +124,12 @@ defmodule SalixCluster.Drain do
         :ok = Fleet.stop_session_actors(agent_id)
         :ok = Fleet.stop(agent_id)
 
-        case SalixStore.Agent.release(owned) do
+        result = SalixStore.Agent.release(owned)
+        # Either way the Server is gone: the cell must not route the next
+        # event here once the lease is released or has expired.
+        _ = SalixAgent.OwnershipCell.release(agent_id, owned.epoch)
+
+        case result do
           :ok ->
             {:ok, hand_off(agent_id, handoff?, ring)}
 

@@ -63,12 +63,11 @@ defmodule SalixWeb.Router do
   alias SalixEnv.Control, as: EnvControl
   alias SalixWeb.E2EReports
 
-  @install_operation_paths [
-    "/v1/compute/agent-vmm/install-operations/install.sh",
-    "/v1/compute/agent-vmm/install-operations/exchange",
-    "/v1/compute/agent-vmm/install-operations/ack"
+  @registration_claim_paths [
+    "/v1/compute/agent-vmm/registrations/install.sh",
+    "/v1/compute/agent-vmm/registrations/claim"
   ]
-  @max_install_operation_body_bytes 16_384
+  @max_registration_claim_body_bytes 16_384
 
   defp serve_composio_webhook_configuration(conn, scope) do
     case ComposioSettings.configure_webhook(scope, conn.body_params) do
@@ -96,8 +95,15 @@ defmodule SalixWeb.Router do
   def cache_raw_body(conn, opts) do
     result =
       cond do
-        conn.request_path in @install_operation_paths ->
-          Plug.Conn.read_body(conn, Keyword.put(opts, :length, @max_install_operation_body_bytes))
+        String.starts_with?(conn.request_path, "/v1/runtime/agent-groups/") and
+            String.contains?(conn.request_path, "/routing-learning") ->
+          read_bounded_body(conn, opts, 4 * 1024)
+
+        conn.request_path in @registration_claim_paths ->
+          Plug.Conn.read_body(
+            conn,
+            Keyword.put(opts, :length, @max_registration_claim_body_bytes)
+          )
 
         SalixWeb.Auth.remote_shell_callback_path?(conn.request_path) ->
           read_bounded_body(conn, opts, 2_048)
@@ -174,15 +180,15 @@ defmodule SalixWeb.Router do
     end
   end
 
-  # Secret-free stage 1 of the copied Linux install command. It posts the
-  # command token in a body to the stage 2 route below.
+  # Secret-free stage 1 of the copied Compute Host install command. It posts the
+  # command token and the machine's platform in a body to the stage 2 route below.
   get "/v1/compute/agent-vmm/install.sh" do
     script =
-      case SalixStore.AgentVMMInstallations.Headless.bootstrap(
+      case SalixStore.AgentVMMRegistrations.Headless.bootstrap(
              SystemsRuntime.get_env(:salix_web, :public_base_url) || request_url(conn)
            ) do
         {:ok, script} -> script
-        {:error, _} -> SalixStore.AgentVMMInstallations.Headless.error_script()
+        {:error, _} -> SalixStore.AgentVMMRegistrations.Headless.error_script()
       end
 
     conn
@@ -192,20 +198,21 @@ defmodule SalixWeb.Router do
     |> send_resp(200, script)
   end
 
-  post "/v1/compute/agent-vmm/install-operations/install.sh" do
-    alias SalixStore.AgentVMMInstallations.Headless
+  post "/v1/compute/agent-vmm/registrations/install.sh" do
+    alias SalixStore.AgentVMMRegistrations.Headless
 
     script =
-      with %{"operation_id" => operation_id, "one_time_secret" => secret} <- conn.body_params,
-           true <- exact_keys?(conn.body_params, ["operation_id", "one_time_secret"]),
+      with %{"registration_id" => registration_id, "ticket" => secret, "platform" => platform} <-
+             conn.body_params,
+           true <- exact_keys?(conn.body_params, ["registration_id", "ticket", "platform"]),
+           {:ok, target} <- Headless.target(platform),
            {:ok, handoff} <-
-             SalixStore.AgentVMMInstallations.headless_handoff(operation_id, secret),
-           {:ok, target} <-
-             SalixStore.ServerReleaseDescriptor.target("agent-vmm-host", "linux-arm64"),
+             SalixStore.AgentVMMRegistrations.headless_handoff(registration_id, secret),
            {:ok, script} <-
              Headless.script(
                handoff,
                secret,
+               platform,
                target,
                SystemsRuntime.get_env(:salix_web, :public_base_url) || request_url(conn)
              ) do
@@ -221,81 +228,44 @@ defmodule SalixWeb.Router do
     |> send_resp(200, script)
   end
 
-  post "/v1/compute/agent-vmm/install-operations/exchange" do
-    exchange_install_operation(conn, conn.body_params)
-  end
+  post "/v1/compute/agent-vmm/registrations/claim" do
+    params = conn.body_params
 
-  post "/v1/compute/agent-vmm/install-operations/ack" do
-    with %{"operation_id" => operation_id, "host_identity_digest" => host_digest} <-
-           conn.body_params,
-         true <- exact_keys?(conn.body_params, ["operation_id", "host_identity_digest"]),
-         true <- is_binary(operation_id),
-         {:ok, host_digest} <- decode_install_operation_digest(host_digest),
-         {:ok, operation} <-
-           SalixStore.AgentVMMInstallations.acknowledge(
-             operation_id,
-             conn.assigns.install_operation_secret,
-             host_digest
+    with %{
+           "version" => 1,
+           "registration_id" => id,
+           "device_id" => device,
+           "root_public_key" => key,
+           "root_key_revision" => revision,
+           "candidate_credential" => credential
+         } <- params,
+         true <-
+           exact_keys?(
+             params,
+             ~w(version registration_id device_id root_public_key root_key_revision candidate_credential)
+           ),
+         true <- is_binary(id) and byte_size(id) in 1..200,
+         true <- is_binary(key) and byte_size(key) <= 684,
+         true <- is_binary(credential) and byte_size(credential) == 60,
+         {:ok, key} <- Base.decode64(key),
+         {:ok, credential} <- Base.decode64(credential),
+         {:ok, result} <-
+           SalixStore.AgentVMMRegistrations.claim(
+             id,
+             conn.assigns.registration_ticket,
+             %{device_id: device, root_public_key: key, root_key_revision: revision},
+             credential
            ) do
-      send_json(conn, 200, %{operation: operation})
+      send_json(conn, 200, result)
     else
-      {:error, reason} -> send_install_operation_error(conn, reason)
-      _ -> send_install_operation_error(conn, :invalid_request)
+      {:error, reason} -> send_registration_claim_error(conn, reason)
+      _ -> send_registration_claim_error(conn, :invalid_request)
     end
   end
 
   # The platform model a Workload's station is lent (SalixWeb.StationLLM); SalixWeb.Auth admitted the station.
   post "/v1/station-llm/responses" do
     SalixWeb.StationLLM.serve(conn)
-  end
-
-  post "/v1/compute/enroll" do
-    with {:ok, request} <- decode_b64_json(conn.body_params["request_b64"]),
-         registration_id when is_binary(registration_id) <- request["registrationId"],
-         %{
-           "deviceId" => device_id,
-           "rootPublicKey" => root_public_key,
-           "rootKeyRevision" => root_key_revision
-         } = device_identity <- request["deviceIdentity"],
-         true <-
-           is_binary(device_id) and is_binary(root_public_key) and is_binary(root_key_revision),
-         {:ok, token} <- Base.decode64(request["enrollmentToken"] || ""),
-         credential <- SystemsRuntime.Proc.random_bytes(32),
-         {:ok,
-          {_registration,
-           %{trust_anchor: trust_anchor, membership_credential: membership_credential}}} <-
-           SalixStore.AgentVMM.enroll_with_bundle(
-             registration_id,
-             token,
-             credential,
-             fn registration ->
-               if registration.device_id == device_id,
-                 do:
-                   SalixStore.AgentVMMTrust.issue_enrollment_bundle(registration, device_identity),
-                 else: {:error, :device_identity_mismatch}
-             end
-           ) do
-      response = %{
-        "protocolVersion" => request["protocolVersion"],
-        "registrationId" => registration_id,
-        "controllerDisplayName" => "Salix",
-        "credential" => Base.encode64(credential),
-        "enabledFeatures" => request["supportedFeatures"] || [],
-        "trustAnchor" => trust_anchor,
-        "membershipCredential" => membership_credential
-      }
-
-      send_json(conn, 200, %{response_b64: Base.encode64(Jason.encode!(response))})
-    else
-      {:error, reason} ->
-        send_json(conn, 403, %{
-          error: "enrollment_rejected",
-          reason: managed_enrollment_rejection_reason(reason)
-        })
-
-      _ ->
-        send_json(conn, 403, %{error: "enrollment_rejected", reason: "invalid_request"})
-    end
   end
 
   post "/v1/compute/authenticate" do
@@ -384,6 +354,9 @@ defmodule SalixWeb.Router do
         {:ok, _} ->
           send_json(conn, 500, %{error: "invalid_command_projection"})
 
+        {:error, :stale_connection} ->
+          send_json(conn, 409, %{error: "stale_connection"})
+
         {:error, :unauthorized} ->
           send_json(conn, 403, %{error: "registration_inactive"})
 
@@ -463,24 +436,6 @@ defmodule SalixWeb.Router do
     end
   end
 
-  get "/v1/compute/runtime/socket" do
-    with {:ok, token} <- runtime_bearer_token(conn) do
-      WebSockAdapter.upgrade(
-        conn,
-        SalixWeb.ComputeRuntimeSocket,
-        %{token: token},
-        compress: false,
-        # Runtime Agents are long-lived and may be idle while waiting for
-        # work. The carrier already owns bounded durable claims; an adapter
-        # idle timeout would close healthy sessions every minute with 1002.
-        timeout: :infinity,
-        max_frame_size: 8 * 1024 * 1024
-      )
-    else
-      _ -> send_json(conn, 401, %{error: "runtime_socket_unauthorized"})
-    end
-  end
-
   post "/v1/compute/registry/create" do
     with {:ok, request, _canonical, _descriptor_canonical} <- registry_request(conn.body_params),
          descriptor when is_map(descriptor) <- request["meshDescriptor"],
@@ -513,7 +468,7 @@ defmodule SalixWeb.Router do
                registry_audience: descriptor["registryAudience"]
              })
            ) do
-      registry_snapshot_response(conn, snapshot, :commit)
+      registry_snapshot_response(conn, snapshot, :create)
     else
       reason -> registry_error(conn, reason)
     end
@@ -525,7 +480,7 @@ defmodule SalixWeb.Router do
          membership when is_map(membership) <- operation["membership"],
          {:ok, attrs} <- registry_operation_attrs(operation, membership, "join"),
          {:ok, snapshot} <- SalixStore.PersonalMeshRegistry.join(attrs) do
-      registry_snapshot_response(conn, snapshot, :commit)
+      registry_snapshot_response(conn, snapshot, :join)
     else
       reason -> registry_error(conn, reason)
     end
@@ -537,7 +492,7 @@ defmodule SalixWeb.Router do
          membership when is_map(membership) <- operation["membership"],
          {:ok, attrs} <- registry_operation_attrs(operation, membership, "revoke"),
          {:ok, snapshot} <- SalixStore.PersonalMeshRegistry.revoke(attrs) do
-      registry_snapshot_response(conn, snapshot, :commit)
+      registry_snapshot_response(conn, snapshot, :revoke)
     else
       reason -> registry_error(conn, reason)
     end
@@ -774,6 +729,23 @@ defmodule SalixWeb.Router do
     send_oauth_callback_response(conn, RemoteMCPOAuth.handle_callback(conn.query_params))
   end
 
+  # A secret's link opens its form; what the form posts is the callback's code:
+  # its one value, or its fields by name.
+  get "/v1/oauth/secret/callback" do
+    conn = Plug.Conn.fetch_query_params(conn)
+    send_oauth_callback_response(conn, SalixWeb.OAuthFlow.secret_form(conn.query_params))
+  end
+
+  post "/v1/oauth/secret/callback" do
+    send_oauth_callback_response(
+      conn,
+      SalixWeb.OAuthFlow.handle_callback("secret", %{
+        "state" => conn.body_params["state"],
+        "code" => conn.body_params["fields"] || conn.body_params["value"]
+      })
+    )
+  end
+
   get "/v1/oauth/:provider/callback" do
     conn = Plug.Conn.fetch_query_params(conn)
 
@@ -798,6 +770,14 @@ defmodule SalixWeb.Router do
   delete "/v1/runtime/oauth/provider-apps/:provider" do
     case OAuthApps.delete(tenant_id(conn), provider) do
       :ok -> send_json(conn, 200, %{status: "deleted"})
+      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
+  put "/v1/runtime/oauth/custom-providers/:key" do
+    case OAuthApps.put_custom(tenant_id(conn), "custom." <> key, conn.body_params) do
+      {:ok, provider} -> send_json(conn, 200, provider)
+      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
       {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
     end
   end
@@ -2056,6 +2036,21 @@ defmodule SalixWeb.Router do
     send_json(conn, 200, Groups.list(tenant_id(conn)))
   end
 
+  get "/v1/runtime/agent-groups/:id/routing-learning" do
+    send_routing_learning(conn, Salix.TaskRoutingLearning.get(id, tenant_id(conn)))
+  end
+
+  post "/v1/runtime/agent-groups/:id/routing-learning/feedback/:conversation_id" do
+    if conn.assigns[:raw_body_too_large] do
+      send_json(conn, 413, %{error: "Routing feedback exceeds 4 KiB"})
+    else
+      send_routing_learning(
+        conn,
+        Salix.TaskRoutingLearning.feedback(id, tenant_id(conn), conversation_id, conn.body_params)
+      )
+    end
+  end
+
   post "/v1/runtime/agent-groups" do
     case Groups.create(conn.body_params, tenant_id(conn)) do
       {:ok, group} -> send_json(conn, 201, group)
@@ -2229,10 +2224,6 @@ defmodule SalixWeb.Router do
 
   post "/v1/remote-shell/:group_id/registrations/:request_id" do
     SalixWeb.RemoteShell.register(conn, group_id, request_id)
-  end
-
-  get "/v1/device-connection/*path" do
-    SalixWeb.DeviceConnection.serve(conn, path)
   end
 
   get "/v1/runtime/agent-groups/:id/conversations" do
@@ -2520,6 +2511,46 @@ defmodule SalixWeb.Router do
   get "/v1/runtime/agents" do
     opts = [status: conn.query_params["status"], group_id: conn.query_params["group_id"]]
     send_json(conn, 200, Control.list(tenant_id(conn), opts))
+  end
+
+  get "/v1/runtime/agents/page" do
+    group_id = conn.query_params["group_id"]
+
+    if trim(group_id) == "" do
+      send_json(conn, 400, %{error: "group_id is required"})
+    else
+      with_scoped_group(conn, group_id, fn ->
+        with {:ok, limit} <- agent_page_limit(conn.query_params["limit"]),
+             {:ok, page} <-
+               Control.page_agents(tenant_id(conn), group_id,
+                 limit: limit,
+                 cursor: conn.query_params["cursor"],
+                 lifecycle:
+                   if(truthy?(conn.query_params["include_archived"]),
+                     do: "all",
+                     else: "unarchived"
+                   )
+               ) do
+          status = conn.query_params["status"]
+          items = Enum.filter(page.items, &(status in [nil, ""] or &1["status"] == status))
+
+          send_json(conn, 200, %{
+            data: items,
+            next_cursor: page.next_cursor,
+            has_more: not is_nil(page.next_cursor)
+          })
+        else
+          {:error, :invalid_arguments} ->
+            send_json(conn, 400, %{error: "limit must be between 1 and 100"})
+
+          {:error, :invalid_cursor} ->
+            send_json(conn, 400, %{error: "invalid cursor"})
+
+          {:error, reason} ->
+            send_json(conn, 500, %{error: inspect(reason)})
+        end
+      end)
+    end
   end
 
   post "/v1/runtime/agents" do
@@ -3744,6 +3775,23 @@ defmodule SalixWeb.Router do
       else: send_json(conn, 400, %{error: "invalid session_id"})
   end
 
+  defp send_routing_learning(conn, {:ok, result}), do: send_json(conn, 200, result)
+
+  defp send_routing_learning(conn, {:error, :not_found}),
+    do: send_json(conn, 404, %{error: "Task or Group not found"})
+
+  defp send_routing_learning(conn, {:error, :learning_disabled}),
+    do: send_json(conn, 409, %{error: "Routing learning is disabled"})
+
+  defp send_routing_learning(conn, {:error, {:bad_request, message}}),
+    do: send_json(conn, 400, %{error: message})
+
+  defp send_routing_learning(conn, {:error, {:conflict, message}}),
+    do: send_json(conn, 409, %{error: message})
+
+  defp send_routing_learning(conn, {:error, _}),
+    do: send_json(conn, 503, %{error: "Routing learning is unavailable. Retry later."})
+
   defp send_json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
@@ -3826,9 +3874,8 @@ defmodule SalixWeb.Router do
   defp registry_snapshot_response(conn, snapshot, kind) do
     encoded =
       case kind do
-        :commit -> SalixStore.PersonalMeshProto.encode_commit_response(snapshot)
         :endpoint -> SalixStore.PersonalMeshProto.encode_endpoint_response(snapshot)
-        :snapshot -> SalixStore.PersonalMeshProto.encode_snapshot(snapshot).snapshot
+        kind -> SalixStore.PersonalMeshProto.encode_registry_response(snapshot, kind)
       end
 
     send_json(conn, 200, %{response_b64: Base.encode64(encoded)})
@@ -4489,6 +4536,17 @@ defmodule SalixWeb.Router do
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
 
+  defp agent_page_limit(nil), do: {:ok, 100}
+
+  defp agent_page_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} when limit in 1..100 -> {:ok, limit}
+      _ -> {:error, :invalid_arguments}
+    end
+  end
+
+  defp agent_page_limit(_), do: {:error, :invalid_arguments}
+
   defp truthy?(value), do: trim(value) in ["1", "true", "yes", "on"]
 
   defp cloud_vm_ops_page(conn, read) do
@@ -4584,13 +4642,6 @@ defmodule SalixWeb.Router do
   defp send_runtime_auth_error(conn, _reason),
     do: send_json(conn, 502, %{error: "runtime_auth_failed"})
 
-  defp runtime_bearer_token(conn) do
-    case get_req_header(conn, "authorization") do
-      ["Bearer " <> token] when token != "" -> {:ok, token}
-      _ -> {:error, :invalid_runtime_credential}
-    end
-  end
-
   # A draining pod still forwards HTTPS voice uploads: any pod can receive
   # them while endpoints propagate, and the call lives on its owner node.
   defp pod_drain_gate(conn, opts) do
@@ -4603,7 +4654,7 @@ defmodule SalixWeb.Router do
   # cached by an intermediary. Successful handlers repeat the header locally
   # to keep the endpoint contract obvious at the response boundary.
   defp put_runtime_auth_no_store(conn, _opts) do
-    if conn.request_path in @install_operation_paths do
+    if conn.request_path in @registration_claim_paths do
       put_resp_header(conn, "cache-control", "no-store")
     else
       put_runtime_no_store_by_path(conn)
@@ -4638,119 +4689,42 @@ defmodule SalixWeb.Router do
   defp exact_keys?(value, keys) when is_map(value),
     do: value |> Map.keys() |> Enum.sort() == Enum.sort(keys)
 
-  defp decode_install_operation_digest(value) when is_binary(value) do
-    case Base.url_decode64(value, padding: false) do
-      {:ok, decoded} when byte_size(decoded) == 32 -> {:ok, decoded}
-      _ -> {:error, :invalid_request}
-    end
+  defp send_registration_claim_error(conn, reason) do
+    status =
+      cond do
+        reason in [:invalid_ticket, :not_found] ->
+          401
+
+        reason in [:ticket_expired] ->
+          410
+
+        reason in [:registration_revoked, :authorization_expired, :authorization_changed] ->
+          403
+
+        reason in [
+          :host_identity_mismatch,
+          :credential_reauthorization_required,
+          :scope_host_bound
+        ] ->
+          409
+
+        reason in [:unavailable, :connection_config_unavailable] ->
+          503
+
+        true ->
+          400
+      end
+
+    send_json(conn, status, %{error: Atom.to_string(reason)})
   end
-
-  defp decode_install_operation_digest(_value), do: {:error, :invalid_request}
-
-  defp exchange_install_operation(conn, params) do
-    with %{
-           "version" => 2,
-           "operation_id" => operation_id,
-           "device_id" => device_id,
-           "root_public_key" => root_public_key,
-           "root_key_revision" => root_key_revision
-         } <- params,
-         true <-
-           exact_keys?(params, [
-             "version",
-             "operation_id",
-             "device_id",
-             "root_public_key",
-             "root_key_revision"
-           ]),
-         true <- is_binary(operation_id),
-         true <- is_binary(root_public_key),
-         {:ok, root_public_key} <- Base.decode64(root_public_key),
-         {:ok, result} <-
-           SalixStore.AgentVMMInstallations.exchange(
-             operation_id,
-             conn.assigns.install_operation_secret,
-             %{
-               device_id: device_id,
-               root_public_key: root_public_key,
-               root_key_revision: root_key_revision
-             },
-             &SalixStore.AgentVMMInstallMaterial.issue/2
-           ) do
-      send_install_operation_material(conn, result)
-    else
-      {:error, reason} -> send_install_operation_error(conn, reason)
-      _ -> send_install_operation_error(conn, :invalid_request)
-    end
-  end
-
-  defp send_install_operation_material(conn, result) do
-    response =
-      result.material
-      |> Map.put(
-        :host_identity_digest,
-        Base.url_encode64(result.host_identity_digest, padding: false)
-      )
-
-    send_json(conn, 200, response)
-  end
-
-  defp send_install_operation_error(conn, reason)
-       when reason in [:invalid_ticket, :not_found],
-       do: send_json(conn, 401, %{error: "install_operation_rejected"})
-
-  defp send_install_operation_error(conn, reason)
-       when reason in [:ticket_expired, :ticket_revoked, :handoff_expired],
-       do: send_json(conn, 410, %{error: "install_operation_closed"})
-
-  defp send_install_operation_error(conn, reason)
-       when reason in [
-              :host_identity_mismatch,
-              :handoff_complete,
-              :exchange_not_committed
-            ],
-       do: send_json(conn, 409, %{error: "install_operation_conflict"})
-
-  defp send_install_operation_error(conn, reason)
-       when reason in [
-              :install_material_unavailable,
-              :install_material_too_large,
-              :recovery_material_unavailable,
-              :recovery_material_invalid,
-              :unavailable
-            ],
-       do: send_json(conn, 503, %{error: "install_material_unavailable"})
-
-  defp send_install_operation_error(conn, _reason),
-    do: send_json(conn, 400, %{error: "invalid_install_request"})
-
-  # This endpoint is available only to the authenticated VMM gateway. Keep the
-  # vocabulary finite so operators can distinguish a bad one-time capability
-  # from a broken managed-trust issuer without returning database or exception
-  # text across the control boundary.
-  defp managed_enrollment_rejection_reason(reason)
-       when reason in [
-              :registration_not_found,
-              :invalid_enrollment,
-              :device_identity_mismatch,
-              :managed_anchor_unavailable,
-              :managed_trust_signer_unavailable,
-              :managed_trust_unavailable,
-              :anchor_inactive,
-              :authority_mismatch,
-              :invalid_expiry,
-              :signer_unavailable,
-              :already_exists
-            ],
-       do: Atom.to_string(reason)
-
-  defp managed_enrollment_rejection_reason(_reason), do: "control_unavailable"
 
   defp message_json(m) do
     %{
       id: m[:id] || m["id"],
       role: m[:role] || m["role"],
       content: m[:content] || m["content"],
+      model: m[:model] || m["model"],
+      created_at: m[:created_at] || m["created_at"],
       tool_call_id: m[:tool_call_id] || m["tool_call_id"],
       tool_calls: m[:tool_calls] || m["tool_calls"]
     }

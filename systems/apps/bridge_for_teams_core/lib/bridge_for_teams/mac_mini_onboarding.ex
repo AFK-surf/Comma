@@ -483,11 +483,10 @@ defmodule BridgeForTeams.MacMiniOnboarding do
       exports =
         for {component, prefix} <- [
               {"runner", "BFT_RUNNER"},
-              {"salix-connect", "BFT_SALIX_CONNECTOR"},
-              {"agent-vmm-host", "BFT_AGENT_VMM_HOST"},
-              {"computer-use-helper", "BFT_COMPUTER_USE_HELPER"}
+              {"runner-service-executor", "BFT_RUNNER_SERVICE_EXECUTOR"},
+              {"agent-vmm-host", "BFT_AGENT_VMM_HOST"}
             ],
-            # The installer skips the helper when the release does not carry it.
+            # Releases before the service executor do not carry it.
             Map.has_key?(components, component),
             {field, suffix} <- [{"source", "URL"}, {"sha256", "SHA256"}, {"size", "SIZE"}],
             into: %{} do

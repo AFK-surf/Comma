@@ -42,6 +42,11 @@ internal class SettingsActivity : ComponentActivity() {
             // A setup offer opens over the root, so back from it returns to Settings rather than leaving.
             settings.open(RootPage(settings))
             DeviceSetupOffer.parse(intent.getStringExtra(EXTRA_SETUP_OFFER))?.let { settings.open(AddDevicePage(settings, it)) }
+            // A debug build's way straight to one screen for a measured run (adb `am start` with these extras).
+            if (surf.comma.android.BuildConfig.DEBUG) intent.getStringExtra("commaOpenScreenDevice")?.let { device ->
+                settings.open(surf.comma.android.settings.desktop.ScreenPage(settings, device,
+                    intent.getStringExtra("commaOpenScreenTarget") ?: "display", startsAtOnce = true))
+            }
         } else {
             keys.mapNotNull(::pageFor).forEach(settings::restore)
             if (settings.host.top == null) settings.restore(RootPage(settings))

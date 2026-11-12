@@ -26,7 +26,7 @@ defmodule Comma.GuestModeTest do
     assert stored.kind == "guest"
     assert stored.salix_tenant_id == tenant_id
     assert is_nil(stored.salix_worker_agent_id)
-    assert stored.vm == %{"enabled" => false}
+    assert is_nil(stored.vm)
 
     {:ok, router} = SalixAgent.Control.get(stored.salix_router_agent_id, tenant_id)
     assert router["role"] == "router"
@@ -46,7 +46,9 @@ defmodule Comma.GuestModeTest do
     assert Repo.get!(Workspace, other["id"]).salix_tenant_id == tenant_id
 
     assert {:error, :forbidden} =
-             Comma.Workspaces.update(guest, %{}, workspace["id"], %{"vm" => %{"enabled" => true}})
+             Comma.Workspaces.update(guest, %{}, workspace["id"], %{
+               "vm" => %{"provider" => "cloudflare"}
+             })
   end
 
   test "handoff revokes the guest and one account redeems the claim once" do

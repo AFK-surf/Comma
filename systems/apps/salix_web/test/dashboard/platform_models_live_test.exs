@@ -87,4 +87,44 @@ defmodule SalixWeb.Dashboard.PlatformModelsLiveTest do
 
     assert render(view) =~ "Could not save"
   end
+
+  test "the platform route table routes to models the platform's keys serve", %{conn: conn} do
+    {:ok, options} = SalixWeb.Dashboard.RoutingModels.platform_models()
+
+    option =
+      Enum.find(
+        options,
+        &(SalixWeb.Dashboard.RoutingForm.choice(&1["key"])["model"] == "gpt-6.1-terra")
+      )
+
+    assert "low" in option["routing_efforts"]
+    {:ok, view, _html} = live(conn, "/dash/platform-model")
+
+    view |> element("#model-routing-form button", "Add entry") |> render_click()
+
+    rows = %{"0" => %{"key" => "code", "description" => "Write code", "model" => option["key"]}}
+
+    view
+    |> form("#model-routing-form", %{"routing" => %{"enabled" => "true", "rows" => rows}})
+    |> render_change()
+
+    rows = put_in(rows, ["0", "effort"], "low")
+
+    view
+    |> form("#model-routing-form", %{"routing" => %{"enabled" => "true", "rows" => rows}})
+    |> render_submit()
+
+    assert render(view) =~ "Platform routing saved."
+
+    assert %{"entries" => [%{"key" => "code", "model" => model}]} = PlatformModels.routing()
+
+    assert model ==
+             Map.put(
+               SalixWeb.Dashboard.RoutingForm.choice(option["key"]),
+               "reasoning_effort",
+               "low"
+             )
+
+    assert PlatformModels.routed_model?(model)
+  end
 end

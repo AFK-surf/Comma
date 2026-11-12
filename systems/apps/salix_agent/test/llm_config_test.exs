@@ -88,10 +88,13 @@ defmodule SalixAgent.LlmConfigTest do
     assert refreshed.session_config == snapshot.session_config
 
     # A failed live lookup must not release the cached credentials.
+    assert {:ok, current} = SalixStore.AgentPGStore.read_config(agent)
+
     assert {:ok, _} =
-             SalixStore.CasRecord.update(
-               Keys.ctl_agent(agent),
-               &Map.put(&1, "model", %{"kind" => "catalog", "model" => ""})
+             SalixStore.AgentPGStore.put_config(
+               agent,
+               Map.put(current.record, "model", %{"kind" => "catalog", "model" => ""}),
+               current.revision
              )
 
     assert {:error, _} = SalixAgent.RoundConfig.refresh_round_snapshot(agent, refreshed, %{})

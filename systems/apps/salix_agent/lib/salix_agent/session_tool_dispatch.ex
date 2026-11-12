@@ -26,6 +26,7 @@ defmodule SalixAgent.SessionToolDispatch do
     ctx = Map.put(ctx, :ifc_round_label, IFC.Check.round_label(calls, ctx))
     {decisions, executable} = authorize(calls, ctx)
     archive_withheld(calls, decisions, ctx)
+    decisions = observe_prepared_guidance(calls, decisions, ctx)
 
     executable
     |> Tools.execute(Map.put(ctx, :calls_prepared, true))
@@ -43,6 +44,7 @@ defmodule SalixAgent.SessionToolDispatch do
     ctx = Map.put(ctx, :ifc_round_label, IFC.Check.round_label(calls, ctx))
     {decisions, executable} = authorize(calls, ctx)
     archive_withheld(calls, decisions, ctx)
+    decisions = observe_prepared_guidance(calls, decisions, ctx)
 
     # The model response and committed intent are complete here. Only the same
     # calls that passed source, destination and IFC authorization may appear.
@@ -81,52 +83,25 @@ defmodule SalixAgent.SessionToolDispatch do
     end
   end
 
+  @doc """
+  Runs the information-flow decision for a batch once and returns the context
+  that carries it, so planning the batch and running it reuse one verdict per
+  call (`SalixAgent.IFC.Check.decide_once/2`).
+  """
+  def decide_ifc_once(calls, ctx) when is_list(calls) and is_map(ctx) do
+    calls = Tools.prepare_for_dispatch(calls, ctx)
+    ctx = Map.put(ctx, :ifc_round_label, IFC.Check.round_label(calls, ctx))
+
+    calls
+    |> policy_decisions(ctx)
+    |> IFC.Check.decide_once(ctx)
+    |> Map.delete(:ifc_round_label)
+  end
+
   defp authorize(calls, ctx) do
     decisions =
       calls
-      |> Enum.map(fn call ->
-        if SalixAgent.RecommendationPolicy.allowed_tool?(
-             ctx,
-             call[:name] || call["name"],
-             call[:args] || call["args"] || %{}
-           ) and SalixAgent.GuestPolicy.allowed_tool?(ctx, call[:name] || call["name"]) do
-          case SalixAgent.TerminalReply.authorize(call, ctx) do
-            {:ok, call} ->
-              {:execute, call}
-
-            {:error, reason} ->
-              {:blocked,
-               SalixAgent.InternalSession.presentation_policy(
-                 :terminal_guidance,
-                 {recommendation_policy_result(call), reason, ctx[:visible_reply_phase]}
-               )}
-          end
-        else
-          {:blocked, recommendation_policy_result(call)}
-        end
-      end)
-      |> Enum.map(fn
-        {:execute, call} = decision ->
-          if SalixAgent.InspectorPolicy.allowed_tool?(
-               ctx,
-               call[:name] || call["name"],
-               call[:args] || call["args"] || %{}
-             ) do
-            decision
-          else
-            {:blocked,
-             Map.put(
-               recommendation_policy_result(call),
-               :content,
-               SalixAgent.InspectorPolicy.refusal()
-             )}
-          end
-
-        blocked ->
-          blocked
-      end)
-      |> authorize_triage(ctx)
-      |> authorize_organization(ctx)
+      |> policy_decisions(ctx)
       |> IFC.Check.authorize(ctx)
 
     executable =
@@ -136,6 +111,67 @@ defmodule SalixAgent.SessionToolDispatch do
       end)
 
     {decisions, executable}
+  end
+
+  # Every check that runs before the information-flow decision.
+  defp policy_decisions(calls, ctx) do
+    calls
+    |> Enum.map(&execution_policy_decision(&1, ctx))
+    |> Enum.map(fn
+      {:execute, call} = decision ->
+        if SalixAgent.InspectorPolicy.allowed_tool?(
+             ctx,
+             call[:name] || call["name"],
+             call[:args] || call["args"] || %{}
+           ) do
+          decision
+        else
+          {:blocked,
+           Map.put(
+             recommendation_policy_result(call),
+             :content,
+             SalixAgent.InspectorPolicy.refusal()
+           )}
+        end
+
+      blocked ->
+        blocked
+    end)
+    |> authorize_triage(ctx)
+    |> authorize_organization(ctx)
+    |> Enum.map(fn
+      {:execute, call} = decision ->
+        # Prepared guidance is a result, never an effect for IFC to authorize.
+        case Tools.prepared_guidance_result(call) do
+          {:ok, result} -> {:blocked, result}
+          :not_guidance -> decision
+        end
+
+      blocked ->
+        blocked
+    end)
+  end
+
+  defp execution_policy_decision(call, ctx) do
+    if SalixAgent.RecommendationPolicy.allowed_tool?(
+         ctx,
+         call[:name] || call["name"],
+         call[:args] || call["args"] || %{}
+       ) and SalixAgent.GuestPolicy.allowed_tool?(ctx, call[:name] || call["name"]) do
+      case SalixAgent.TerminalReply.authorize(call, ctx) do
+        {:ok, call} ->
+          {:execute, call}
+
+        {:error, reason} ->
+          {:blocked,
+           SalixAgent.InternalSession.presentation_policy(
+             :terminal_guidance,
+             {recommendation_policy_result(call), reason, ctx[:visible_reply_phase]}
+           )}
+      end
+    else
+      {:blocked, recommendation_policy_result(call)}
+    end
   end
 
   defp authorize_triage(decisions, ctx) do
@@ -224,6 +260,26 @@ defmodule SalixAgent.SessionToolDispatch do
       end)
 
     SalixAgent.EventArchive.Emit.withheld_tool_calls(ctx, withheld)
+  end
+
+  # Prepared guidance settles here instead of in `Tools.execute`, so it records
+  # the tool observation that the executed path records for every result.
+  # Only dispatch records it: `decide_ifc_once/2` plans the same calls again.
+  defp observe_prepared_guidance(calls, decisions, ctx) do
+    calls
+    |> Enum.zip(decisions)
+    |> Enum.map(fn
+      {call, {:blocked, result} = decision} ->
+        if Tools.prepared_guidance_result(call) == {:ok, result} do
+          [observed] = Tools.observe_results([result], ctx)
+          {:blocked, observed}
+        else
+          decision
+        end
+
+      {_call, decision} ->
+        decision
+    end)
   end
 
   defp recommendation_policy_result(call) do

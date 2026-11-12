@@ -27,7 +27,7 @@ export type SlackOptions = {
   receive: (connect: string, event: ChatEvent) => Promise<void>;
   /// Whether the station is in its workspace: only then are connects connected.
   bound: () => boolean;
-  /// Where Slack's Web API is (tests: a stand-in); default $STILLFAIL_SLACK_API, else Slack.
+  /// Where Slack's Web API is (tests: a stand-in); default $COMMA_STATION_SLACK_API, else Slack.
   client?: SlackClient;
   /// Socket Mode's ping and silence limits (tests make them short).
   pingMs?: number;

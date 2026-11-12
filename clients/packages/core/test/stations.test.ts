@@ -46,6 +46,8 @@ function setup(
     stationClock?: () => number;
     /** The endpoint is reached through Salix too. */
     salix?: boolean;
+    /** The host also links the person's own computers' stations (Settings › Debug). */
+    ownComputers?: boolean;
   } = {}
 ) {
   const host = new FakeHost();
@@ -53,9 +55,11 @@ function setup(
   const stations = new FakeStations(options.stationClock ?? (() => time.now()));
   stations.salix = options.salix === true;
   if (options.mesh !== false)
-    host.stationMesh = options.always
-      ? { ...stations.ports, alwaysLinked: true }
-      : stations.ports;
+    host.stationMesh = {
+      ...stations.ports,
+      ...(options.always ? { alwaysLinked: true } : {}),
+      ...(options.ownComputers ? { ownComputers: true } : {}),
+    };
   const seconds = () => Math.floor(time.now() / 1000);
   host.api
     .on("GET", "/v1/comma/stations/me", me())
@@ -243,10 +247,11 @@ describe("Stations", () => {
       expect.arrayContaining([
         {
           id: "st_a",
+          scope: WS,
           relayUrl: "https://relay.example.test/",
           addresses: ["192.168.1.5:4770"],
         },
-        { id: "st_b" },
+        { id: "st_b", scope: WS },
       ])
     );
     expect(t.stations.mesh.dials).toHaveLength(2);
@@ -254,6 +259,7 @@ describe("Stations", () => {
     // It homed on another relay; the next connection goes there.
     t.api.open(eventsPath(WS))!.named("station", {
       id: "st_a",
+      scope: WS,
       online: true,
       home_relay: "https://relay2.example.test/",
     });
@@ -262,7 +268,7 @@ describe("Stations", () => {
     await t.time.pass(1_100);
     expect(links(value())).toEqual({ st_a: "online", st_b: "online" });
     expect(t.stations.mesh.dials.slice(2)).toEqual([
-      { id: "st_a", relayUrl: "https://relay2.example.test/" },
+      { id: "st_a", scope: WS, relayUrl: "https://relay2.example.test/" },
     ]);
   });
 
@@ -346,6 +352,64 @@ describe("Stations", () => {
     expect(link()).toEqual({ state: "online", via: "direct" });
   });
 
+  it("links the stations the person's own Devices name, apart from the roster, only where the host says", async () => {
+    const devicesPath = `/v1/comma/workspaces/${WS}/devices`;
+    const off = setup();
+    off.api.on("GET", listPath(WS), { stations: [station("st_a")] });
+    off.stations.station("st_a", WS);
+    const plain = off.watch<StationsValue>({ topic: "stations", workspace: WS });
+    await off.time.pass(100);
+    expect(plain()!.ownComputers).toBeUndefined();
+    expect(off.api.requests.some((r) => r.path.includes("/devices"))).toBe(false);
+
+    const t = setup({ ownComputers: true, salix: true });
+    const computer = "ab".repeat(32);
+    t.api
+      .on("GET", listPath(WS), { stations: [] })
+      .on("GET", devicesPath, {
+        devices: [{ station_id: computer }, { station_id: null }, {}],
+      })
+      .on("POST", relayPath(WS), {
+        url: "wss://relay.test/",
+        ticket: "t",
+        expires_at: 9e9,
+      });
+    t.stations.station(computer, WS);
+    const value = t.watch<StationsValue>({ topic: "stations", workspace: WS });
+    await t.time.pass(100);
+    t.stations.mesh.route(computer, "salix");
+    await t.time.pass(100);
+    // Not one of the workspace's stations: its row is apart, saying how it runs.
+    expect(value()!.stations).toEqual([]);
+    expect(value()!.ownComputers).toEqual([
+      { id: computer, link: { state: "online", via: "salix" } },
+    ]);
+    // With no listed station, still a relay socket: it may be the only way there.
+    expect(t.api.requests.some((r) => r.path === relayPath(WS))).toBe(true);
+  });
+
+  it("keeps a station in two workspaces apart: a link and a credential for each", async () => {
+    const t = setup({ ownComputers: true });
+    const computer = "ab".repeat(32);
+    const one = t.stations.station(computer, WS);
+    one.takesAlso = [OTHER];
+    for (const ws of [WS, OTHER])
+      t.api
+        .on("GET", listPath(ws), { stations: [] })
+        .onStream(eventsPath(ws))
+        .on("GET", `/v1/comma/workspaces/${ws}/devices`, {
+          devices: [{ station_id: computer }],
+        });
+    const a = t.watch<StationsValue>({ topic: "stations", workspace: WS });
+    const b = t.watch<StationsValue>({ topic: "stations", workspace: OTHER });
+    await t.time.pass(100);
+    expect(a()!.ownComputers![0]!.link.state).toBe("online");
+    expect(b()!.ownComputers![0]!.link.state).toBe("online");
+    expect(new Set(one.admitted.map((claims) => claims.ws))).toEqual(
+      new Set([WS, OTHER])
+    );
+  });
+
   it("says a station it cannot reach, and tries again shortly", async () => {
     const t = setup();
     t.api.on("GET", listPath(WS), { stations: [station("st_gone")] });
@@ -357,6 +421,22 @@ describe("Stations", () => {
     t.stations.station("st_gone", WS);
     await t.time.pass(1_000);
     expect(links(value())).toEqual({ st_gone: "online" });
+  });
+
+  it("gives up a connection whose station has answered nothing for 30 s, its computer gone", async () => {
+    const t = setup();
+    t.stations.station("st_a", WS);
+    t.api.on("GET", listPath(WS), { stations: [station("st_a")] });
+    const value = t.watch<StationsValue>({ topic: "stations", workspace: WS });
+    await t.time.pass(100);
+    expect(links(value())).toEqual({ st_a: "online" });
+
+    // Gone without a word: its connection stays open here, and no new one opens.
+    t.stations.mesh.crash("st_a");
+    await t.time.pass(20_000, 1_000);
+    expect(links(value())).toEqual({ st_a: "online" });
+    await t.time.pass(14_000, 1_000);
+    expect(links(value()).st_a).not.toBe("online");
   });
 
   it("asks a credential again shortly before the one it has expires", async () => {
@@ -432,7 +512,7 @@ describe("Stations", () => {
     expect(t.api.seen("POST", credentialPath(WS))).toHaveLength(2);
     await expect(
       t.client.call("stations.toolsAccess", { workspace: WS, station: "st_a" })
-    ).rejects.toMatchObject({ code: "unreachable" });
+    ).rejects.toMatchObject({ code: "unauthorized" });
     expect(t.api.seen("POST", credentialPath(WS))).toHaveLength(2);
 
     // It takes this workspace's again: the credential kept is admitted at the next try, and the station is as any other.

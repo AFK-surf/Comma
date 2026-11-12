@@ -116,7 +116,10 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
     %{org: org, user: user} = org_with_owner_fixture()
     old = SystemsRuntime.get_env(:salix_agent, :subscription_worker)
     worker = start_supervised!({SalixAgent.SubscriptionWorker, name: nil, command: {binary, []}})
-    quota_worker = start_supervised!({SalixWeb.TestSubscriptionQuotaWorker, worker})
+
+    quota_worker =
+      start_supervised!({SalixWeb.TestSubscriptionQuotaWorker, worker})
+
     SystemsRuntime.put_env(:salix_agent, :subscription_worker, quota_worker)
 
     on_exit(fn ->
@@ -311,6 +314,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
     test "the models page says which account serves each model", ctx do
       path = "/dashboard/api/v1/orgs/#{ctx.org.slug}/settings/models"
       subscription_fixture(ctx.org)
+      failing_worker = start_supervised!({ResetWorker, SystemsRuntime.Proc.self()})
+      SystemsRuntime.put_env(:salix_agent, :subscription_worker, failing_worker)
       option = fn data, key -> Enum.find(data["catalog"], &(&1["key"] == key)) end
 
       data = get_data(ctx.conn, path)
@@ -319,6 +324,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
       assert %{"served_by" => "subscription", "plans" => ["codex"], "key_sources" => []} =
                option.(data, "catalog:gpt-5.5")
 
+      # This page uses the local catalog even if remote model discovery fails.
+      assert %{"served_by" => "subscription"} = option.(data, "catalog:gpt-6.1-sol")
       assert %{"served_by" => nil} = option.(data, "catalog:claude-opus-4-8")
       refute option.(data, "catalog:claude-opus-4-8+paid")
 

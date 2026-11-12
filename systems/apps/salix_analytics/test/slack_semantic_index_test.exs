@@ -11,38 +11,6 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   @queue_scope Map.merge(@scope, %{"group_id" => "test-group", "connect_id" => "test-connect"})
   @ts 1_780_000_000_000_001
 
-  defmodule ScopeSource do
-    def next(state) do
-      {:ok,
-       %{
-         "tenant_id" => "semantic-tenant",
-         "workspace_id" => "T123",
-         "channel_id" => "C123",
-         "group_id" => "test-group",
-         "connect_id" => "test-connect"
-       }, state}
-    end
-  end
-
-  defmodule UnavailableScopeSource do
-    def next(_state), do: {:error, :discovery_unavailable}
-  end
-
-  defmodule TwoInstallationScopes do
-    def next(cursor) do
-      connect = if cursor == "denied", do: "allowed", else: "denied"
-
-      {:ok,
-       %{
-         "tenant_id" => "semantic-tenant",
-         "workspace_id" => "T123",
-         "channel_id" => "C123",
-         "group_id" => "test-group",
-         "connect_id" => connect
-       }, connect}
-    end
-  end
-
   defmodule HTTP do
     import Plug.Conn
     def init(state), do: state
@@ -293,6 +261,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     end
   end
 
+  defmodule UnavailableFileSource do
+    def extract(_scope, _file_id, _consumer, _opts) do
+      {:error, :semantic_attachment_unavailable}
+    end
+  end
+
   defmodule MixedFileSource do
     def extract(_scope, "Fbad", _consumer, _opts), do: {:error, :unsupported_attachment}
 
@@ -369,7 +343,6 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
          client_id: "test",
          client_secret: "test"
        ]},
-      {:salix_analytics, :slack_semantic_scope_source, ScopeSource},
       {:salix_im, :slack_semantic_reader, SlackSemanticIndex},
       {:salix_analytics, :slack_semantic_file_source, nil},
       {:salix_im, :slack_message_mirror_mod, SalixAnalytics.SlackMirror},
@@ -437,7 +410,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   test "production queues page historical work and repair a missed local offer", ctx do
     ts = SystemsClock.system_time(:microsecond) - 1_000_000
     for number <- 1..21, do: current_message!(ctx.database, ts + number, "backlog #{number}")
-    start_queue!()
+    start_queue!(initialization: :pending)
 
     eventually(
       fn ->
@@ -471,7 +444,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     for number <- 1..21,
         do: current_message!(ctx.database, ts + number, "older history #{number}")
 
-    start_queue!()
+    start_queue!(initialization: :pending)
 
     eventually(
       fn ->
@@ -593,7 +566,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       )
     end
 
-    start_queue!()
+    start_queue!(initialization: :pending)
 
     history_pending = fn ->
       SalixStore.Repo.query!("""
@@ -784,7 +757,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "one installation cannot consume another installation's historical file discovery", ctx do
-    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_scope_source, TwoInstallationScopes)
+    for id <- ["denied", "allowed"] do
+      scope = Map.put(@queue_scope, "connect_id", id)
+      :ok = SalixStore.SlackSearchCatalog.remember_connects([scope])
+      :ok = SalixStore.SlackSearchCatalog.remember_channels(scope, [scope["channel_id"]])
+    end
+
     SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, TwoInstallationFiles)
     ts = SystemsClock.system_time(:microsecond) - 90 * 86_400_000_000
 
@@ -796,16 +774,17 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     # synchronously, including the publication transaction.
     SystemsClock.manual(scope: ["Elixir.Salix"])
     on_exit(&SystemsClock.reset/0)
-    start_queue!(queues: [], plugins: [])
+    start_queue!(queues: [], plugins: [], initialization: :pending)
     :sys.get_state(SlackSemanticQueue)
 
-    for _ <- 1..2 do
+    for _ <- 1..8 do
+      SystemsClock.advance(1)
       SystemsRuntime.Proc.send(SlackSemanticIndexer, :tick)
       :sys.get_state(SlackSemanticIndexer)
     end
 
     for queue <- [:semantic_text, :semantic_files] do
-      assert %{failure: 0, snoozed: 0} =
+      assert %{failure: 0} =
                Oban.drain_queue(SlackSemanticQueue.Oban,
                  queue: queue,
                  with_recursion: true
@@ -825,11 +804,94 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     refute Enum.any?(denied_hits, &(&1["file_id"] == "F123"))
   end
 
+  test "completed initialization performs no more canonical reads or job inserts", ctx do
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
+    current_message!(ctx.database, @ts, "finite history")
+    start_queue!(queues: [], plugins: [], initialization: :pending)
+
+    for _ <- 1..3 do
+      SystemsRuntime.Proc.send(SlackSemanticIndexer, :tick)
+      :sys.get_state(SlackSemanticIndexer)
+    end
+
+    assert {:ok, @ts} = SlackSemanticQueue.history_cursor(@queue_scope)
+
+    assert [[true]] =
+             SalixStore.Repo.query!("SELECT completed FROM slack_semantic.search_cursors").rows
+
+    [[before]] = SalixStore.Repo.query!("SELECT count(*) FROM slack_semantic.oban_jobs").rows
+    owner = self()
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:finch, :request, :start],
+        fn _, _, _, _ -> send(owner, :canonical_read) end,
+        nil
+      )
+
+    try do
+      for _ <- 1..20 do
+        SystemsRuntime.Proc.send(SlackSemanticIndexer, :tick)
+        :sys.get_state(SlackSemanticIndexer)
+      end
+
+      refute_received :canonical_read
+
+      assert [[^before]] =
+               SalixStore.Repo.query!("SELECT count(*) FROM slack_semantic.oban_jobs").rows
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  test "a delayed live attachment retains its task while historical text publishes", ctx do
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, UnavailableFileSource)
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
+
+    current_message!(ctx.database, ts, "live attachment", %{
+      "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
+    })
+
+    start_queue!(queues: [], plugins: [], testing: :manual, initialization: :pending)
+    assert {:ok, job} = SlackSemanticQueue.enqueue(@queue_scope, ts, "file", true, "F123")
+
+    assert %{snoozed: 1, failure: 0} =
+             Oban.drain_queue(SlackSemanticQueue.Oban, queue: :semantic_files)
+
+    retry = SalixStore.Repo.get!(Oban.Job, job.id, prefix: "slack_semantic")
+    assert retry.state == "scheduled"
+    assert {:snooze, 300} = SalixAnalytics.SlackSemanticJob.perform(%{retry | attempt: 1000})
+
+    SystemsRuntime.Proc.send(SlackSemanticQueue, :refresh)
+    :sys.get_state(SlackSemanticQueue)
+    current_message!(ctx.database, ts - 1, "history still advances")
+    SystemsRuntime.Proc.send(SlackSemanticIndexer, :tick)
+    :sys.get_state(SlackSemanticIndexer)
+
+    assert %{failure: 0, snoozed: 0} =
+             Oban.drain_queue(SlackSemanticQueue.Oban,
+               queue: :semantic_text,
+               with_recursion: true
+             )
+
+    assert indexed_text(ctx.database) =~ "history still advances"
+
+    retained = SalixStore.Repo.get!(Oban.Job, retry.id, prefix: "slack_semantic")
+    assert retained.args == retry.args
+    assert retained.state == "scheduled"
+  end
+
   test "historical page commits atomically, rejects stale advancement and survives worker restart" do
     opts =
       SlackSemanticQueue.oban_options() |> Keyword.put(:queues, []) |> Keyword.put(:plugins, [])
 
     start_supervised!({Oban, opts})
+    :ok = SalixStore.SlackSearchCatalog.remember_channels(@queue_scope, ["C123"])
     assert {:ok, 0} = SlackSemanticQueue.history_cursor(@queue_scope)
     page = [%{"message_ts_us" => 30}, %{"message_ts_us" => 20}]
 
@@ -844,8 +906,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       refute match?({:ok, _}, SlackSemanticQueue.enqueue_history_page(@queue_scope, 0, page))
       assert [[0]] = SalixStore.Repo.query!("SELECT count(*) FROM slack_semantic.oban_jobs").rows
 
-      assert [[0]] =
-               SalixStore.Repo.query!("SELECT count(*) FROM slack_semantic.search_cursors").rows
+      assert {:ok, 0} = SlackSemanticQueue.history_cursor(@queue_scope)
     after
       SalixStore.Repo.query!(
         "ALTER TABLE slack_semantic.oban_jobs DROP CONSTRAINT test_reject_page_job"
@@ -873,7 +934,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     assert {:ok, 10} = SlackSemanticQueue.history_cursor(@queue_scope)
   end
 
-  test "a deleted live attachment settles and historical text resumes", ctx do
+  test "an inaccessible attachment retains its job and publishes after access returns", ctx do
     scope = seed_file_connect()
     Agent.update(ctx.state, &%{&1 | mode: :file_deleted})
 
@@ -883,26 +944,53 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       SalixIM.SlackSemanticFiles
     )
 
+    :ok = SalixStore.SlackSearchCatalog.remember_channels(scope, ["C123"])
     start_queue!()
     ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
-    live_message!(ts, "live file was removed", %{
+    live_message!(ts, "temporarily inaccessible attachment", %{
       "_semantic_context" => Map.take(scope, ~w(group_id connect_id)),
       "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
     })
 
     eventually(fn ->
-      assert [["cancelled"]] =
-               SalixStore.Repo.query!("""
-               SELECT state::text FROM slack_semantic.oban_jobs
-               WHERE priority=0 AND args->>'kind'='file'
-               """).rows
+      assert [["scheduled"]] =
+               SalixStore.Repo.query!(
+                 "SELECT state::text FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='file'"
+               ).rows
 
       refute SlackSemanticQueue.pending_live?()
     end)
 
-    current_message!(ctx.database, ts - 1, "history after revoked file")
-    eventually(fn -> assert indexed_text(ctx.database) =~ "history after revoked file" end, 300)
+    [[id]] =
+      SalixStore.Repo.query!(
+        "SELECT id FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='file'"
+      ).rows
+
+    current_message!(ctx.database, ts - 1, "history while access is unavailable")
+
+    eventually(fn ->
+      assert indexed_text(ctx.database) =~ "history while access is unavailable"
+    end)
+
+    Agent.update(ctx.state, &%{&1 | mode: :ok})
+
+    SalixStore.Repo.query!(
+      "UPDATE slack_semantic.oban_jobs SET scheduled_at=timezone('UTC',now()) WHERE id=$1",
+      [id]
+    )
+
+    eventually(fn ->
+      assert SalixStore.Repo.get!(Oban.Job, id, prefix: "slack_semantic").state == "completed"
+
+      assert {:ok, %{"messages" => hits}} =
+               queue_tool(
+                 %{"oldest" => slack_timestamp(ts), "latest" => slack_timestamp(ts + 1)},
+                 scope
+               )
+
+      assert Enum.any?(hits, &(&1["file_id"] == "F123"))
+    end)
   end
 
   test "new channels index through the real outbox without any configured scopes", ctx do
@@ -945,12 +1033,18 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     assert [[0]] = SalixStore.Repo.query!("SELECT count(*) FROM slack_mirror_outbox").rows
 
-    assert {:ok, %{rows: rows}} =
-             SalixStore.Repo.query(
-               "SELECT args->'scope' FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='text' ORDER BY id"
-             )
+    rows =
+      eventually(fn ->
+        assert {:ok, %{rows: rows}} =
+                 SalixStore.Repo.query(
+                   "SELECT args->'scope' FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='text' ORDER BY id"
+                 )
 
-    assert Enum.map(rows, fn [scope] -> scope["channel_id"] end) == ["C456", "C789"]
+        assert Enum.map(rows, fn [scope] -> scope["channel_id"] end) |> Enum.uniq() |> Enum.sort() ==
+                 ["C456", "C789"]
+
+        rows
+      end)
 
     assert Enum.all?(rows, fn [scope] ->
              scope["group_id"] == owner["group_id"] and scope["connect_id"] == owner["connect_id"]
@@ -964,28 +1058,33 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
              "2"
   end
 
-  test "existing installation discovery pages mirrored channels beyond one page", _ctx do
+  test "the connect owner initializes retained channels in finite pages", _ctx do
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
     owner = seed_file_connect()
-    expected = for number <- 1..23, do: "CAUTO#{String.pad_leading(to_string(number), 2, "0")}"
+    expected = for n <- 1..23, do: "CAUTO#{String.pad_leading(to_string(n), 2, "0")}"
+    :ok = SalixStore.SlackSearchCatalog.remember_channels(owner, expected)
+    SalixStore.Repo.query!("UPDATE slack_semantic.search_cursors SET completed=true")
 
-    # Workspace watermarks alone cannot grant another installation's data.
-    assert :ok = SalixStore.SlackSearchCatalog.remember_channels(owner, expected)
+    :ok = SalixStore.SlackSearchCatalog.remember_connects([Map.put(owner, "active", false)])
+    :ok = SalixStore.SlackSearchCatalog.remember_connects([Map.put(owner, "active", true)])
 
-    {found, _state} =
-      Enum.reduce_while(1..300, {MapSet.new(), nil}, fn _, {found, state} ->
-        assert {:ok, scope, next} = SalixIM.SlackSemanticScopes.next(state)
+    assert {:ok, :advanced} = SalixStore.SlackSearchCatalog.initialize_connect_page()
 
-        found =
-          if scope && scope["group_id"] == owner["group_id"],
-            do: MapSet.put(found, scope["channel_id"]),
-            else: found
+    assert [[20]] =
+             SalixStore.Repo.query!(
+               "SELECT count(*) FROM slack_semantic.search_cursors WHERE NOT completed"
+             ).rows
 
-        if MapSet.subset?(MapSet.new(expected), found),
-          do: {:halt, {found, next}},
-          else: {:cont, {found, next}}
-      end)
+    SystemsClock.advance(1)
+    assert {:ok, :advanced} = SalixStore.SlackSearchCatalog.initialize_connect_page()
 
-    assert MapSet.subset?(MapSet.new(expected), found)
+    assert [[23]] =
+             SalixStore.Repo.query!(
+               "SELECT count(*) FROM slack_semantic.search_cursors WHERE NOT completed"
+             ).rows
+
+    assert {:ok, :idle} = SalixStore.SlackSearchCatalog.initialize_connect_page()
   end
 
   test "production text queue indexes live arrivals while an attachment is stalled", ctx do
@@ -1056,6 +1155,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  "SELECT count() FROM #{ctx.database}.slack_message_search_components FINAL WHERE file_id='' AND startsWith(chunks[1], 'fresh #{number}')"
                )
              ) == "1"
+
       assert System.monotonic_time(:millisecond) - started < 5000
 
       count =
@@ -1077,15 +1177,42 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
   test "a failed live encode stays durable and does not block another live message", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :busy})
-    start_queue!()
     ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "retry me")
+
+    eventually(fn ->
+      assert String.trim(
+               sql!(
+                 "SELECT count() FROM #{ctx.database}.slack_messages FINAL WHERE message_ts_us=#{ts}"
+               )
+             ) == "1"
+    end)
+
+    start_queue!(initialization: :pending)
     assert_receive :gpu_started
+
+    # Initialization may enqueue the same source beside its live dispatch.
+    # Exercise that overlap, then follow the accepted live job by identity.
+    eventually(fn ->
+      assert {:ok, ^ts} = SlackSemanticQueue.history_cursor(@queue_scope)
+    end)
+
+    assert [[job_id]] =
+             SalixStore.Repo.query!(
+               """
+               SELECT id FROM slack_semantic.oban_jobs
+               WHERE args->>'kind'='text' AND args->>'live'='true'
+                 AND (args->>'timestamp')::bigint=$1
+               ORDER BY id LIMIT 1
+               """,
+               [ts]
+             ).rows
 
     eventually(fn ->
       assert [[state]] =
                SalixStore.Repo.query!(
-                 "SELECT state::text FROM slack_semantic.oban_jobs WHERE args->>'kind'='text'"
+                 "SELECT state::text FROM slack_semantic.oban_jobs WHERE id=$1",
+                 [job_id]
                ).rows
 
       assert state == "scheduled"
@@ -1112,6 +1239,14 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       end,
       300
     )
+
+    eventually(fn ->
+      assert [["completed"]] =
+               SalixStore.Repo.query!(
+                 "SELECT state::text FROM slack_semantic.oban_jobs WHERE id=$1",
+                 [job_id]
+               ).rows
+    end)
   end
 
   test "normal long work is not rescued early but an abandoned job remains recoverable", ctx do
@@ -1251,30 +1386,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     assert count > 0
   end
 
-  test "concurrent offers stay bounded and saturation never changes mirror acknowledgment", ctx do
-    pid = start_supervised!(SlackSemanticQueue)
-    :sys.suspend(pid)
-    ts = SystemsClock.system_time(:microsecond) - 1_000_000
-
-    try do
-      results =
-        1..2048
-        |> Task.async_stream(fn i -> SlackSemanticQueue.offer(@scope, ts + i) end,
-          max_concurrency: 16,
-          ordered: false
-        )
-        |> Enum.to_list()
-
-      assert Enum.count(results, &(&1 == {:ok, :ok})) == 1024
-      assert Enum.count(results, &(&1 == {:ok, {:error, :full}})) == 1024
-      live_message!(ts + 3000, "canonical write while local buffer is full")
-      assert String.trim(sql!("SELECT count() FROM #{ctx.database}.slack_messages FINAL")) == "1"
-    after
-      :sys.resume(pid)
-    end
-  end
-
-  test "persisted live jobs survive enqueue bridge and Oban restart", ctx do
+  test "accepted live sources survive a dispatcher and Oban restart", ctx do
     opts =
       SlackSemanticQueue.oban_options() |> Keyword.put(:queues, []) |> Keyword.put(:plugins, [])
 
@@ -1283,12 +1395,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "survive restart")
 
-    eventually(fn ->
-      assert [[1]] =
-               SalixStore.Repo.query!(
-                 "SELECT count(*) FROM slack_semantic.oban_jobs WHERE state='available'"
-               ).rows
-    end)
+    assert [[1, 0]] =
+             SalixStore.Repo.query!(
+               "SELECT change_epoch,dispatched_epoch FROM slack_semantic.search_sources"
+             ).rows
+
+    assert [[0]] = SalixStore.Repo.query!("SELECT count(*) FROM slack_semantic.oban_jobs").rows
 
     stop_supervised!(SlackSemanticQueue)
     stop_supervised!(SlackSemanticQueue.Oban)
@@ -1730,9 +1842,8 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     refute Enum.any?(Agent.get(ctx.state, & &1.calls), &(elem(&1, 0) == "/embed"))
   end
 
-  test "discovery failure leaves the reconciler and ordinary reads available", ctx do
+  test "an idle source dispatcher leaves ordinary reads available", ctx do
     message!(ctx.database, %{"text" => "ordinary history"})
-    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_scope_source, UnavailableScopeSource)
 
     pid = start_supervised!({SlackSemanticIndexer, start_delay_ms: 0})
     ref = SystemsRuntime.Proc.monitor(pid)
@@ -1937,6 +2048,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         record
       )
 
+    :ok = SalixStore.SlackSearchCatalog.remember_connects([record])
     scope
   end
 
@@ -2036,7 +2148,32 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     |> Enum.join("\n")
   end
 
-  defp start_queue!(oban_overrides \\ []) do
+  # Starts the production supervision over the registered installation.
+  #
+  # By default the installation's finite channel initialization has already
+  # completed, as in a settled installation: only source dispatch enqueues a
+  # message the test writes afterwards. `initialization: :pending` leaves the
+  # cursor open for tests of that pass. With the cursor open,
+  # `SlackSemanticIndexer` pages the channel one second after start, finds in
+  # ClickHouse any message written by then and enqueues it beside its source
+  # dispatch (at live priority while that dispatch is still pending), so a test
+  # that counts one job per observation would race the initializer.
+  defp start_queue!(opts \\ []) do
+    {initialization, oban_overrides} = Keyword.pop(opts, :initialization, :completed)
+
+    if SalixStore.Repo.query!("SELECT 1 FROM slack_semantic.search_connects LIMIT 1").rows == [] do
+      :ok = SalixStore.SlackSearchCatalog.remember_connects([@queue_scope])
+      :ok = SalixStore.SlackSearchCatalog.remember_channels(@queue_scope, ["C123"])
+    end
+
+    if initialization == :completed do
+      SalixStore.Repo.query!(
+        "UPDATE slack_semantic.search_connects SET initialization_pending=false"
+      )
+
+      SalixStore.Repo.query!("UPDATE slack_semantic.search_cursors SET completed=true")
+    end
+
     stop_supervised!(SlackSemanticIndex.HTTP)
 
     children =
@@ -2051,23 +2188,26 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     })
   end
 
-  defp current_message!(database, timestamp, text, attrs \\ %{}) do
-    message!(
-      database,
-      Map.merge(
-        %{
-          "event_date" =>
-            timestamp
-            |> DateTime.from_unix!(:microsecond)
-            |> DateTime.to_date()
-            |> Date.to_iso8601(),
-          "message_ts_us" => timestamp,
-          "message_ts" => slack_timestamp(timestamp),
-          "text" => text
-        },
-        attrs
-      )
-    )
+  defp current_message!(_database, timestamp, text, attrs \\ %{}) do
+    row =
+      Map.merge(@scope, %{
+        "event_date" =>
+          timestamp
+          |> DateTime.from_unix!(:microsecond)
+          |> DateTime.to_date()
+          |> Date.to_iso8601(),
+        "message_ts_us" => timestamp,
+        "message_ts" => slack_timestamp(timestamp),
+        "thread_ts" => "",
+        "version" => SystemsClock.system_time(:microsecond),
+        "text" => text,
+        "body_text" => "",
+        "deleted" => false,
+        "ingest_source" => "backfill",
+        "_semantic_context" => Map.take(@queue_scope, ~w(group_id connect_id connect_generation))
+      })
+
+    assert :ok = SalixIM.SlackMessageMirror.write_batch([Map.merge(row, attrs)])
   end
 
   defp live_message!(timestamp, text, attrs \\ %{}) do

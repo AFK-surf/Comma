@@ -78,7 +78,7 @@ defmodule CommaWeb.StationEndpoints do
         artifact = if is_map(artifacts[platform]), do: artifacts[platform], else: %{}
 
         [
-          {"__URL_#{key}__", artifact["url"] || "#{base}/stillfail-station-#{platform}.tar.gz"},
+          {"__URL_#{key}__", artifact["url"] || "#{base}/comma-station-#{platform}.tar.gz"},
           {"__SHA_#{key}__", artifact["sha256"] || ""}
         ]
       end)
@@ -396,7 +396,9 @@ defmodule CommaWeb.StationEndpoints do
   defp error(conn, _error), do: json(conn, 503, %{error: "stations_unavailable"})
 
   defp header(conn, name) do
-    case get_req_header(conn, "x-stillfail-" <> name) do
+    # x-stillfail-*: a station from before the rename, or a still.fail station enrolled here.
+    case get_req_header(conn, "x-comma-station-" <> name) ++
+           get_req_header(conn, "x-stillfail-" <> name) do
       [value | _] -> value
       [] -> nil
     end

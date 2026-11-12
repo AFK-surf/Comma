@@ -34,7 +34,7 @@ test("an app_mention over Socket Mode starts a turn; the agent's chat_post lands
   mkdirSync(home, { recursive: true });
   // A login in its file: nothing is looked for in the keychain.
   writeFileSync(join(home, ".credentials.json"), "{}");
-  delete process.env.STILLFAIL_CONFIG;
+  delete process.env.COMMA_STATION_CONFIG;
   delete process.env.EMBER_CONFIG;
   writeFileSync(
     join(data, "config.json"),
@@ -47,7 +47,7 @@ test("an app_mention over Socket Mode starts a turn; the agent's chat_post lands
   const slackStandIn = await FakeSlack.start();
   bot(slackStandIn);
   const config = new ConfigFile(data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const driver = new ClaudeDriver({ data });
   let url = "";
   let hub: Hub | undefined;

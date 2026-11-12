@@ -1,9 +1,8 @@
 defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
   use SystemsClock.Case, async: false
 
-  alias SalixIM.Migrations.ConversationParticipantNotificationFilter
-  alias SalixIM.{Conversations, Release}
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixIM.{ConversationParticipantPGStore, ConversationServer, Conversations, Release}
+  alias SalixStore.Ids
 
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
@@ -81,10 +80,14 @@ defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
       |> Map.put("wake_on_message", false)
     end)
 
-    assert {:ok, stats} = ConversationParticipantNotificationFilter.run(limit: 1)
-    assert stats.migrated == 3
-    assert stats.failed == []
-    assert stats.complete
+    for participant <- [legacy, silent, canonical] do
+      assert :migrated =
+               ConversationServer.migrate_participant_notification_filter(
+                 group_id,
+                 conversation_id,
+                 participant["participant_id"]
+               )
+    end
 
     assert {:ok, migrated_legacy} =
              Conversations.get_group_conversation_participant(
@@ -124,9 +127,14 @@ defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
     assert migrated_canonical["notification_filter"] == existing_filter
     refute Map.has_key?(migrated_canonical, "wake_on_message")
 
-    assert {:ok, rerun} = ConversationParticipantNotificationFilter.run(limit: 2)
-    assert rerun.migrated == 0
-    assert rerun.failed == []
+    for participant <- [legacy, silent, canonical] do
+      assert :skipped =
+               ConversationServer.migrate_participant_notification_filter(
+                 group_id,
+                 conversation_id,
+                 participant["participant_id"]
+               )
+    end
   end
 
   test "release command requires the explicit no-writer gate" do
@@ -136,17 +144,10 @@ defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
   end
 
   defp rewrite_participant!(group_id, conversation_id, participant_id, fun) do
-    key =
-      Keys.ctl_group_conversation_participant_state(
-        group_id,
-        conversation_id,
-        participant_id
-      )
-
-    assert {:ok, %{body: body, etag: etag}} = S3.get(key)
-
-    assert {:ok, _} =
-             S3.put(key, body |> Jason.decode!() |> fun.() |> Jason.encode!(), if_match: etag)
+    scope = ConversationParticipantPGStore.new(group_id, conversation_id, participant_id)
+    assert {:ok, record, revision} = ConversationParticipantPGStore.read(scope)
+    pending = ConversationParticipantPGStore.prepare(scope, revision, fun.(record), :updated)
+    assert {:ok, _} = ConversationParticipantPGStore.execute(pending)
   end
 
   defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)

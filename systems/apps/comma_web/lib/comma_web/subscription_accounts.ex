@@ -31,11 +31,12 @@ defmodule CommaWeb.SubscriptionAccounts do
          (not Map.has_key?(attrs, "credentials") or is_map(attrs["credentials"])) and
          (not Map.has_key?(attrs, "name") or is_binary(attrs["name"])) and
          (not Map.has_key?(attrs, "api_key") or is_binary(attrs["api_key"])) and
-         (not Map.has_key?(attrs, "disabled_models") or is_list(attrs["disabled_models"])) do
+         (not Map.has_key?(attrs, "disabled_models") or is_list(attrs["disabled_models"])) and
+         (not Map.has_key?(attrs, "use_credits") or is_boolean(attrs["use_credits"])) do
       AccountPool.update(
         tenant,
         id,
-        Map.take(attrs, ~w(version disabled credentials name api_key disabled_models))
+        Map.take(attrs, ~w(version disabled credentials name api_key disabled_models use_credits))
       )
     else
       {:error, :invalid_input}

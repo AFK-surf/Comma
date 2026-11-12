@@ -10,8 +10,10 @@ defmodule BridgeForTeams.DailyBrief.Compose do
   The model sees short references and people labels. What it writes is
   checked here before anyone sees it:
 
-    * a link is an item reference, replaced by its permalink, or a URL that
-      appears in the input; any other link is removed;
+    * a link is an item reference, replaced by a message preview link and a
+      native-open link, or a URL that appears in the input; any other link is
+      removed; a "#123" becomes the pull request or issue link the window's
+      messages carry;
     * a credential (an API key, a token) is cut to its prefix;
     * a people label becomes a Slack mention (in the team brief, for at most
       three people).
@@ -79,14 +81,15 @@ defmodule BridgeForTeams.DailyBrief.Compose do
          request = fit(Map.put(rest, "items", items), :newest),
          {:ok, %{text: text, usage: usage}} <-
            model_call(model, %{agent_id: agent_id, input: request, view: :team}) do
-      links = links(text, item_refs, settings)
+      links = links(text, item_refs, members, settings)
+      issues = issue_links(shared.messages)
       names? = settings.team_names == "shown"
       text = if names?, do: few_mentions(text, people), else: text
 
       {:ok,
        %{
          text: text |> finish(request, %{}, people) |> unnamed(names?),
-         posted: text |> finish(request, links, people) |> unnamed(names?),
+         posted: text |> finish(request, links, people) |> link_issues(issues) |> unnamed(names?),
          usage: usage
        }}
     else
@@ -123,10 +126,15 @@ defmodule BridgeForTeams.DailyBrief.Compose do
          {items, item_refs} =
            views(picked, earlier, people, Slack.channel_names(settings), member.timezone),
          request = fit(Map.put(rest, "items", items), :oldest),
+         {mine, listed} = mine(model, agent_id, request, input[:followups]),
          {:ok, %{text: text, usage: usage}} <-
-           model_call(model, %{agent_id: agent_id, input: request}) do
-      {:ok,
-       %{text: finish(text, request, links(text, item_refs, settings), people), usage: usage}}
+           model_call(model, %{agent_id: agent_id, input: Map.put(request, "mine", mine)}) do
+      written =
+        text
+        |> finish(request, links(text, item_refs, members, settings), people)
+        |> link_issues(issue_links(shared.messages))
+
+      {:ok, %{text: written, usage: add_usage(usage, listed), mine: mine}}
     else
       {:error, {reason, %{input_tokens: _, output_tokens: _} = usage}} -> {:error, reason, usage}
       {:error, reason} -> {:error, reason, nil}
@@ -160,6 +168,63 @@ defmodule BridgeForTeams.DailyBrief.Compose do
       else: {:error, :model_unavailable}
   end
 
+  @mine_keys ~w(kind what owner waiting due status evidence)
+  @mine_kinds ~w(promise assigned asked decide mine_moved watch)
+  @max_mine 40
+
+  # First the model lists what is the member's (promises, assignments,
+  # questions waiting on them, decisions, the follow-ups carried from the
+  # last brief with their new status); the note is then written from that
+  # list. Best effort: a list that cannot be read leaves the note to the
+  # messages alone.
+  defp mine(model, agent_id, request, followups) do
+    input = Map.put(request, "followups", followups(followups))
+
+    case model.compose(%{agent_id: agent_id, input: input, view: :mine}) do
+      {:ok, %{text: text, usage: usage}} when is_binary(text) -> {parse_mine(text), usage}
+      {:ok, %{usage: usage}} -> {[], usage}
+      {:error, {_reason, %{input_tokens: _, output_tokens: _} = usage}} -> {[], usage}
+      {:error, _reason} -> {[], nil}
+    end
+  end
+
+  @doc false
+  # The model's list as validated entries: known keys and kinds, text only.
+  def parse_mine(text) do
+    json = text |> String.trim() |> String.replace(~r/\A```(?:json)?\s*|\s*```\z/, "")
+
+    case Jason.decode(json) do
+      {:ok, %{"items" => items}} when is_list(items) ->
+        for %{"kind" => kind, "what" => what} = item <- items,
+            kind in @mine_kinds and is_binary(what) and what != "",
+            do: Map.new(@mine_keys, &{&1, text_field(item[&1])})
+
+      _invalid ->
+        []
+    end
+    |> Enum.take(@max_mine)
+  end
+
+  defp text_field(value) when is_binary(value), do: String.slice(value, 0, 300)
+  defp text_field(_value), do: ""
+
+  # Follow-ups carried over are the last brief's open entries.
+  defp followups(entries) when is_list(entries) do
+    entries
+    |> Enum.filter(&(is_map(&1) and not String.starts_with?(&1["status"] || "", "done")))
+    |> Enum.take(@max_mine)
+  end
+
+  defp followups(_none), do: []
+
+  defp add_usage(usage, nil), do: usage
+
+  defp add_usage(usage, listed),
+    do: %{
+      input_tokens: usage.input_tokens + listed.input_tokens,
+      output_tokens: usage.output_tokens + listed.output_tokens
+    }
+
   defp model_call(model, request) do
     case model.compose(request) do
       {:ok, %{text: text}} = ok when is_binary(text) and text != "" -> ok
@@ -178,7 +243,7 @@ defmodule BridgeForTeams.DailyBrief.Compose do
   defp me(member, people),
     do: %{
       "label" => People.label(people, ActorRef.slack(member.slack_user_id)),
-      "names" => for(a <- member.aliases, a.kind != "project", do: a.term)
+      "names" => for(a <- member.aliases, a.kind in ["name", "handle"], do: a.term)
     }
 
   # People who are not members are labelled by the name Slack shows.
@@ -191,10 +256,25 @@ defmodule BridgeForTeams.DailyBrief.Compose do
   # Labels are given in order, so adding the earlier context's people last
   # keeps everyone else's label.
   defp refs(candidates, context, earlier) do
-    Enum.flat_map(candidates, fn {_t, i} -> [i.author | i.mentions] end) ++
+    Enum.flat_map(candidates, fn {_t, i} -> [i.author | i.mentions] ++ reactors(i) end) ++
       Slack.mentions(context) ++
-      Enum.flat_map(earlier, &[&1.author | &1.mentions])
+      Enum.flat_map(earlier, &([&1.author | &1.mentions] ++ reactors(&1)))
   end
+
+  defp reactors(%SourceItem{origin: %{reactions: reactions}}) when is_list(reactions),
+    do: for(%{users: users} <- reactions, id <- users, do: ActorRef.slack(id))
+
+  defp reactors(_item), do: []
+
+  # "+1 @Bob @Carol; eyes @Dan": a reaction often is the answer.
+  defp reacted(%SourceItem{origin: %{reactions: [_ | _] = reactions}}, people) do
+    Enum.map_join(reactions, "; ", fn %{name: name, users: users} ->
+      name <>
+        " " <> Enum.map_join(users, " ", &(People.label(people, ActorRef.slack(&1)) || "@" <> &1))
+    end)
+  end
+
+  defp reacted(_item, _people), do: nil
 
   defp brief_text(text) when is_binary(text) and text != "", do: cap_bytes(text, @brief_bytes)
   defp brief_text(_none), do: nil
@@ -342,6 +422,7 @@ defmodule BridgeForTeams.DailyBrief.Compose do
             "text" => item.text |> Slack.label_text(people) |> String.slice(0, @text_cap)
           }
           |> put_if("t", threads[{item.container_id, item.thread_id}])
+          |> put_if("re", reacted(item, people))
 
         if MapSet.member?(earlier_keys, SourceItem.key(item)),
           do: Map.put(view, "earlier", true),
@@ -360,9 +441,11 @@ defmodule BridgeForTeams.DailyBrief.Compose do
   @url ~r/(?:https?:\/\/|www\.)[^\s<>()\[\]|"'`（）【】，。、；！？]+/iu
   @ref ~r/^m\d+$/
 
-  # Permalinks of the references the text cites: one fetch per source.
-  defp links(text, item_refs, settings) do
-    cited = for [_, _label, target] <- Regex.scan(@link, text), do: target
+  # Fetch only cited messages, once each. Keep native opening separate from
+  # the HTTPS message link Slack uses for hover previews.
+  defp links(text, item_refs, members, settings) do
+    team = Enum.find_value(members, & &1.slack_workspace_id)
+    cited = for [_, _label, ref] <- Regex.scan(@link, text), do: ref
     items = for ref <- cited, item = item_refs[ref], item, uniq: true, do: {ref, item}
 
     fetched =
@@ -372,17 +455,65 @@ defmodule BridgeForTeams.DailyBrief.Compose do
       |> Slack.permalinks(settings)
 
     for {ref, item} <- items,
-        url = item.permalink || fetched[SourceItem.key(item)],
-        is_binary(url),
+        {preview, open} =
+          {item.permalink || fetched[SourceItem.key(item)], Slack.deep_link(item, team)},
+        is_binary(preview) or is_binary(open),
         into: %{},
-        do: {ref, url}
+        do:
+          {ref,
+           if(is_binary(preview) and is_binary(open), do: {preview, open}, else: preview || open)}
+  end
+
+  @issue_url ~r{https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)}
+  @issue_ref ~r/(?<![\w\/&#-])#(\d{2,7})\b/u
+
+  @doc false
+  # The GitHub pull request and issue links the window's messages carry, any
+  # author's, by number: a number two repositories share links to neither.
+  def issue_links(messages) do
+    messages
+    |> Enum.flat_map(&Regex.scan(@issue_url, &1[:text] || ""))
+    |> Enum.uniq_by(fn [_url, repo, number] -> {repo, number} end)
+    |> Enum.group_by(fn [_url, _repo, number] -> number end, fn [url | _] -> url end)
+    |> Enum.flat_map(fn
+      {number, [url]} -> [{number, url}]
+      {_number, _shared} -> []
+    end)
+    |> Map.new()
+  end
+
+  @doc false
+  # A "#123" the text names becomes its link when the window's messages carry
+  # one; text already inside a link, a mention, or code is left alone.
+  def link_issues(text, issues) when map_size(issues) == 0, do: text
+
+  def link_issues(text, issues) do
+    ~r/<[^>]*>|`[^`]*`/u
+    |> Regex.split(text, include_captures: true)
+    |> Enum.map_join(fn
+      "<" <> _ = part ->
+        part
+
+      "`" <> _ = part ->
+        part
+
+      part ->
+        Regex.replace(@issue_ref, part, fn whole, number ->
+          case issues[number] do
+            nil -> whole
+            url -> "<#{url}|##{number}>"
+          end
+        end)
+    end)
   end
 
   @doc false
   # The model's Markdown as checked Slack mrkdwn.
   def finish(text, request, links, people) do
     known = known_urls(request)
-    {text, placeholders} = take_links(redact(text), links, known)
+
+    {text, placeholders} =
+      take_links(loose_refs(redact(text)), links, known, source_labels(request))
 
     text
     |> strip_unknown_urls(known)
@@ -392,6 +523,11 @@ defmodule BridgeForTeams.DailyBrief.Compose do
     |> put_links(placeholders, known)
     |> String.trim()
   end
+
+  # A ref the model wrote outside a link ("[原消息](m1)(m2)", "（m3）") is a
+  # link to that message too.
+  defp loose_refs(text),
+    do: Regex.replace(~r/(?<!\])[(（](m\d+)[)）]/u, text, " [原消息](\\1)")
 
   defp known_urls(request) do
     request["items"]
@@ -407,7 +543,16 @@ defmodule BridgeForTeams.DailyBrief.Compose do
     end
   end
 
-  defp take_links(text, links, known) do
+  # Where and when each item was said, as a source link's words:
+  # "#channel · 10/27 22:14".
+  defp source_labels(request) do
+    for %{"ref" => ref, "in" => where, "at" => at} <- request["items"] || [],
+        is_binary(where) and is_binary(at),
+        into: %{},
+        do: {ref, where <> " · " <> String.replace(at, "-", "/")}
+  end
+
+  defp take_links(text, links, known, sources) do
     Regex.scan(@link, text, return: :index)
     |> Enum.reverse()
     |> Enum.reduce({text, []}, fn [{start, len}, label_at, target_at], {text, acc} ->
@@ -420,6 +565,13 @@ defmodule BridgeForTeams.DailyBrief.Compose do
           MapSet.member?(known, target) -> target
           true -> nil
         end
+
+      # A link to a message says where and when it was said.
+      label =
+        if not is_nil(url) and Regex.match?(@ref, target) and
+             (Regex.match?(@ref, label) or source_label?(label)),
+           do: Map.get(sources, target, label),
+           else: label
 
       placeholder = "\u0001#{length(acc)}\u0001"
       {splice(text, start, len, placeholder), [{placeholder, label, url} | acc]}
@@ -454,8 +606,14 @@ defmodule BridgeForTeams.DailyBrief.Compose do
 
       replacement =
         case url do
-          nil -> if source_label?(label) or label == "", do: "", else: label
-          url -> "<#{url}|#{if label == "", do: "原消息", else: label}>"
+          nil ->
+            if source_label?(label) or label == "", do: "", else: label
+
+          {preview, open} ->
+            "<#{preview}|#{if label == "", do: "原消息", else: label}> · <#{open}|打开>"
+
+          url ->
+            "<#{url}|#{if label == "", do: "原消息", else: label}>"
         end
 
       String.replace(text, placeholder, replacement)
@@ -496,9 +654,13 @@ defmodule BridgeForTeams.DailyBrief.Compose do
     |> String.replace(~r/\n{3,}/, "\n\n")
   end
 
-  # Slack bolds only between word boundaries; a zero-width space makes one
-  # next to Chinese text.
-  defp bold(line), do: Regex.replace(~r/\*\*(.+?)\*\*/u, line, "​*\\1*​")
+  # Slack bolds and sets code only between word boundaries; a zero-width
+  # space makes one next to Chinese text.
+  defp bold(line) do
+    line
+    |> then(&Regex.replace(~r/(?<!`)`([^`\n]+)`(?!`)/u, &1, "​`\\1`​"))
+    |> then(&Regex.replace(~r/\*\*(.+?)\*\*/u, &1, "​*\\1*​"))
+  end
 
   ## Helpers
 

@@ -12,7 +12,6 @@ defmodule BridgeForTeams.Migrations.DefaultTaskPlacesTest do
   alias BridgeForTeams.Migrations.DefaultTaskPlaces
   alias BridgeForTeams.TestSupport.CanonicalAgentClient
   alias SalixAgent.TaskPlace
-  alias SalixStore.{CasRecord, Keys}
 
   @cloud_vm %{
     "runs_on" => %{"kind" => "cloud_vm"},
@@ -43,9 +42,7 @@ defmodule BridgeForTeams.Migrations.DefaultTaskPlacesTest do
   defp archive!(agent),
     do:
       {:ok, _} =
-        CasRecord.update(Keys.ctl_agent(agent["agent_id"]), &Map.put(&1, "archived_at", 1),
-          create: false
-        )
+        SalixAgent.Control.delete(agent["agent_id"])
 
   defp run, do: DefaultTaskPlaces.run(Repo, &SalixAgent.Migrations.DefaultTaskPlaces.derive/2)
 

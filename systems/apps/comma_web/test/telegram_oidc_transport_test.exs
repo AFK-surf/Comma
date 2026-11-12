@@ -187,7 +187,16 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
       Agent.update(context.state, &%{&1 | id_token: sign(key, claims)})
       start_provider!()
       await_ready!()
-      assert {:error, :invalid_telegram_credential} = exchange()
+
+      log =
+        ExUnit.CaptureLog.capture_log(
+          [format: "$message $metadata", metadata: [:event, :reason_class]],
+          fn -> assert {:error, :invalid_telegram_credential} = exchange() end
+        )
+
+      assert log =~ "event=telegram_oidc_exchange_rejected"
+      assert log =~ "reason_class="
+      refute log =~ @client_secret
       assert_receive {:provider_response, "/token", :gzip, <<31, 139, 8, _::binary>>}
     end
   end

@@ -80,11 +80,15 @@ export async function checkForUpdate() {
   return manager.checkForUpdatesAsync();
 }
 
-export async function downloadUpdate(update: UpdateInfo) {
+export async function downloadUpdate(
+  update: UpdateInfo,
+  onProgress: (percent: number) => void = () => {}
+) {
   const manager = createUpdateManager();
 
   await manager.downloadUpdateAsync(update, (progress) => {
     log.info(`Velopack download progress: ${progress}%`);
+    onProgress(progress);
   });
 
   return true;
@@ -111,7 +115,7 @@ export interface UpdateFeedStatus {
 export interface UpdateFeed {
   status(): UpdateFeedStatus | Promise<UpdateFeedStatus>;
   check(): Promise<UpdateInfo | null>;
-  download(update: UpdateInfo): Promise<boolean>;
+  download(update: UpdateInfo, progress: (percent: number) => void): Promise<boolean>;
   apply(update: UpdateInfo | VelopackAsset): Promise<boolean>;
 }
 
@@ -145,7 +149,8 @@ export function coreAppUpdates(feed: UpdateFeed): CoreAppUpdates {
         ? { version: update.TargetFullRelease.Version, release: update }
         : null;
     },
-    download: (release) => feed.download(release.release as UpdateInfo),
+    download: (release, progress) =>
+      feed.download(release.release as UpdateInfo, progress),
     apply: (release) => feed.apply(release.release as UpdateInfo | VelopackAsset),
   };
 }

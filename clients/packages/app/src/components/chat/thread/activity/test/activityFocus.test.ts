@@ -59,7 +59,7 @@ describe("selectActivityFocusTarget", () => {
     });
   });
 
-  it("waits only on running Tasks that the current turn delegated", () => {
+  it("waits on the current turn's running Tasks, else on every running Task", () => {
     const waiting = { ...router, waiting: true };
     expect(
       selectActivityFocusTarget({
@@ -71,6 +71,13 @@ describe("selectActivityFocusTarget", () => {
     expect(
       selectActivityFocusTarget({
         createdTasks: created,
+        currentTurnKey: "turn_3",
+        participantStatus: waiting,
+      })?.tasks.map((task) => task.conversationId)
+    ).toEqual(["t_old", "t_a", "t_b"]);
+    expect(
+      selectActivityFocusTarget({
+        createdTasks: created.filter((task) => task.statusBucket !== "in_progress"),
         currentTurnKey: "turn_3",
         participantStatus: waiting,
       })

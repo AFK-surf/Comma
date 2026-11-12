@@ -20,14 +20,13 @@ defmodule SalixAgent.Server do
       still hold in-flight work: then the lease is renewed from the in-memory
       handle and the Server re-parks, so the durable lease spans session
       execution.
-    * `:passivating` — release this Server's lease (head CAS clears owner; lease
-      index deleted) and stop this process. Role-specific agent and session
+    * `:passivating` — release this Server's lease (Agent row clears ownership) and stop this process. Role-specific agent and session
       actors have independent supervision and lifecycle rules.
 
   Any `{:error, :fenced}` from a commit or renew means the lease was stolen;
   the Server aborts the agent's whole local runtime (ownership cell fenced,
   session actors stopped — killing their in-flight LLM/tool jobs) and stops
-  (the fencing token is the head ETag, validated per write).
+  (the owner epoch and root revision are validated per write).
 
   The park/passivate boundary was modeled with the retired staged protocol's
   archived delivery spec (A2 §3.5). The lease guard before coordinator work
@@ -42,7 +41,7 @@ defmodule SalixAgent.Server do
 
   alias SalixAgent.{
     AgentActor,
-    SessionWorkIndex
+    SessionWorkRecovery
   }
 
   @park_ms 60_000
@@ -61,6 +60,7 @@ defmodule SalixAgent.Server do
       :node_id,
       :sm,
       :owned,
+      :pending_renew,
       :park_ms,
       :lease_guard_ms,
       :lease_ttl_ms,
@@ -128,7 +128,7 @@ defmodule SalixAgent.Server do
   `timeout` bounds the call: the statem runs the wake→target-session-wake
   cycle inline. Actual LLM/runtime work happens in session actors, so readers
   that can serve committed state pass a finite timeout and fall back to the
-  durable S3 read on `:exit`; control flows that NEED the live lease handle
+  durable PG read on `:exit`; control flows that NEED the live lease handle
   keep the default `:infinity`.
   """
   def info(pid_or_agent_id, timeout \\ :infinity)
@@ -241,7 +241,6 @@ defmodule SalixAgent.Server do
           epoch: owned.epoch
         })
 
-        :ok = SalixAgent.OwnershipCell.install(data.agent_id, owned.epoch)
         nudge_superseded_owner(data, owned)
         # Background Loops follow the lease: the node that holds the root
         # head runs the Agent's Loops (docs/salix/tasks-background-execution.md).
@@ -257,6 +256,9 @@ defmodule SalixAgent.Server do
         end
 
       {:error, reason} ->
+        reason =
+          if match?({:commit_indeterminate, _}, reason), do: :commit_indeterminate, else: reason
+
         Logger.warning("salix agent #{data.agent_id} could not claim: #{inspect(reason)}")
         CommaLog.log("server_claim_failed", %{agent_id: data.agent_id, reason: reason})
         log_stale_local_session_work(data, reason)
@@ -535,13 +537,8 @@ defmodule SalixAgent.Server do
     end
   end
 
-  # Repeated wake failures are not recoverable on this node right now (e.g. a
-  # session whose actor cannot start). Stop the fast local retry loop and
-  # release. Rediscovery is owned by the session work projection: every failed
-  # target still has durable session state and a PG candidate row, and the
-  # recovery lanes re-wake it through placement — which claims a fresh owner
-  # once this lease is gone. (The queue-marker re-home breadcrumb this path
-  # used to write retired with its lane, A2 §3.4.)
+  # Release after the existing local wake budget. Committed due rows remain
+  # discoverable through Placement after this owner stops.
   defp escalate_deferred_wake(data, reason) do
     CommaLog.log("server_wake_giveup", %{
       agent_id: data.agent_id,
@@ -575,11 +572,7 @@ defmodule SalixAgent.Server do
 
   defp wake_indexed_sessions(%Data{} = data) do
     with {:ok, records, next_cursor} <- list_work_index_pages(data) do
-      targets =
-        records
-        |> Enum.reject(&retire_router_work/1)
-        |> Enum.map(&indexed_wake_target/1)
-        |> Enum.reject(&is_nil/1)
+      targets = records
 
       data = %{data | work_index_cursor: next_cursor}
 
@@ -588,17 +581,6 @@ defmodule SalixAgent.Server do
         {:deferred, reason} -> {:deferred, data, targets, reason}
         {:error, reason} -> {:error, reason}
       end
-    end
-  end
-
-  # Local markers include callback-only work that global discovery does not
-  # scan. Retire only the listed generation, and never delete session history.
-  defp retire_router_work(record) do
-    if SessionWorkIndex.retired_router_session?(record) do
-      _ = SessionWorkIndex.delete_stale_record(record)
-      true
-    else
-      false
     end
   end
 
@@ -613,12 +595,8 @@ defmodule SalixAgent.Server do
   end
 
   defp do_list_work_index_pages(agent_id, cursor, page_size, pages_left, pages) do
-    opts =
-      [max_keys: page_size]
-      |> maybe_put_work_index_cursor(cursor)
-
-    case SessionWorkIndex.list_page(agent_id, opts) do
-      {:ok, %{records: records, next: next}} ->
+    case SessionWorkRecovery.local_work_page(agent_id, cursor, page_size) do
+      {:ok, records, next} ->
         pages = [records | pages]
 
         if is_nil(next) or pages_left == 1 do
@@ -631,24 +609,6 @@ defmodule SalixAgent.Server do
         error
     end
   end
-
-  defp maybe_put_work_index_cursor(opts, cursor) when is_binary(cursor) and cursor != "",
-    do: Keyword.put(opts, :continuation_token, cursor)
-
-  defp maybe_put_work_index_cursor(opts, _cursor), do: opts
-
-  defp indexed_wake_target(%{
-         "runtime_kind" => runtime_kind,
-         "session_id" => session_id,
-         "reasons" => reasons
-       })
-       when runtime_kind == "internal" do
-    if SessionWorkIndex.immediate_recovery_reasons?(reasons),
-      do: %{runtime: :internal, session_id: session_id},
-      else: nil
-  end
-
-  defp indexed_wake_target(_record), do: nil
 
   defp merge_wake_targets(left, right) do
     (left || [])
@@ -664,29 +624,23 @@ defmodule SalixAgent.Server do
     )
   end
 
-  defp claim(%Data{create: true} = data) do
-    case Agent.create(data.agent_id, data.node_id, data.sm, claim_opts(data)) do
-      {:ok, owned} -> {:ok, owned}
-      {:error, :exists} -> Agent.claim(data.agent_id, data.node_id, data.sm, claim_opts(data))
-      other -> other
-    end
-  end
-
   defp claim(%Data{} = data) do
     Agent.claim(data.agent_id, data.node_id, data.sm, claim_opts(data))
   end
 
-  # The ownership cell is installed as soon as the fenced head names this
-  # node, before the store writes its lease index: session actors waiting to
-  # bind their generation start one round trip earlier. The install after
-  # `claim/1` returns is the same epoch again.
+  # Publish startup completion only after the confirmed claim has retired
+  # old session actors and installed its ownership cell.
   defp claim_opts(%Data{lease_ttl_ms: ttl_ms} = data) when is_integer(ttl_ms) and ttl_ms > 0,
     do: [ttl_ms: ttl_ms, on_claimed: install_on_claimed(data)]
 
   defp claim_opts(%Data{} = data), do: [on_claimed: install_on_claimed(data)]
 
   defp install_on_claimed(%Data{agent_id: agent_id}) do
-    fn owned -> :ok = SalixAgent.OwnershipCell.install(agent_id, owned.epoch) end
+    fn owned ->
+      :ok = SalixAgent.Fleet.retire_superseded_session_actors(agent_id, owned.epoch)
+      :ok = SalixAgent.OwnershipCell.install(agent_id, owned.epoch)
+      SystemsRuntime.Registry.update_value(SalixAgent.Registry, agent_id, fn _ -> :ready end)
+    end
   end
 
   defp lease_guard_opts(%Data{} = data),
@@ -715,7 +669,7 @@ defmodule SalixAgent.Server do
   end
 
   # Keep-alive while session work is live: renew from the in-memory handle
-  # (one conditional PUT, no GET) and re-park at ~ttl/3 so the lease never
+  # (one conditional PG update after the database clock read) and re-park at ~ttl/3 so the lease never
   # goes stale under a healthy runner. Fail-closed: a fenced renew means
   # another node owns the agent — abort the local runtime immediately; a
   # transient store failure retries on a short park while lease time remains
@@ -741,9 +695,12 @@ defmodule SalixAgent.Server do
   end
 
   defp do_renew_and_park(%Data{} = data) do
-    case Agent.renew(data.owned) do
+    result =
+      if data.pending_renew, do: Agent.settle(data.pending_renew), else: Agent.renew(data.owned)
+
+    case result do
       {:ok, owned} ->
-        data = %{data | owned: owned}
+        data = %{data | owned: owned, pending_renew: nil}
         timeout = min(data.park_ms, max(div(owned.ttl_ms, 3), 1_000))
         {:next_state, :parked, state_timeout(data, timeout, :passivate), [:hibernate]}
 
@@ -753,6 +710,15 @@ defmodule SalixAgent.Server do
         {:stop, :normal}
 
       {:error, reason} ->
+        {reason, data} =
+          case reason do
+            {:commit_indeterminate, pending} ->
+              {:renew_unconfirmed, %{data | pending_renew: pending}}
+
+            reason ->
+              {reason, data}
+          end
+
         remaining =
           data.owned.head.lease_until -
             SystemsClock.system_time(:millisecond) -

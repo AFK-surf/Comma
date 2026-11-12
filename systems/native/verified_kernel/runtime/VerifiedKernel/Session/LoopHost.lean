@@ -229,15 +229,17 @@ def resultObligationEvents (state args : Term) : KernelM Term := do
 
 /-- Keys in Erlang term order, as `Jason.encode!/1` writes a map of at most 32
 keys. A larger map keeps its order. -/
-partial def jasonOrder (value : Term) : KernelM Term := do
+private partial def jasonOrderDeferred (value : Term) : KernelEval Term := KernelEval.defer fun _ => do
   match value with
   | .map pairs =>
-    let pairs ← pairs.mapM (fun (k, v) => do return (k, ← jasonOrder v))
+    let pairs ← pairs.mapM (fun (k, v) => do return (k, ← jasonOrderDeferred v))
     if pairs.length > 32 then return .map pairs
     let keys ← sorted (pairs.map Prod.fst)
     return .map (keys.filterMap (fun k => (pairs.find? (·.1 == k))))
-  | .list items => return .list (← items.mapM jasonOrder)
+  | .list items => return .list (← items.mapM jasonOrderDeferred)
   | other => return other
+
+def jasonOrder (value : Term) : KernelM Term := KernelEval.run (jasonOrderDeferred value)
 
 /-- `Jason.encode!/1`. -/
 def jason (value : Term) : KernelM Term := do
@@ -367,6 +369,13 @@ private def terminalProviderMeta (providerMeta call result : Term) : KernelM Ter
         RoundQuery.textKey item "call_id" == callId then [item, output] else [item])
   return providerMeta.put (b "responses_items") (list items)
 
+/-- The settled `end_turn` call and its result. The assistant record keeps no
+calls, so provider histories show the pair from here
+(`Provider.Messages.settledTurn`); without it the model never sees a turn end. -/
+private def settledCallMeta (providerMeta call result : Term) : KernelM Term := do
+  let base := if providerMeta.isMap then providerMeta else .map []
+  return base.put (b "settled_call") (.map [(b "call", normalizeCall call), (b "result", ← jason result)])
+
 /-- `ActivityEvent.tool_calls_phase/1`: messaging when every call sends. A
 call name counts after trimming, as `ActivityEvent.present/1` reads it. -/
 private def activityPhase (calls : Term) : KernelM Term := do
@@ -408,8 +417,9 @@ def loopRecord (state args : Term) : KernelM Term := do
     else pure providerMeta
   if RoundQuery.textKey spec "mode" == b "final" then
     let terminal := RoundQuery.textKey spec "terminal_call"
+    let terminalResult := RoundQuery.textKey spec "terminal_result"
     let providerMeta ← if terminal.truthy then
-        terminalProviderMeta providerMeta terminal (RoundQuery.textKey spec "terminal_result")
+        settledCallMeta (← terminalProviderMeta providerMeta terminal terminalResult) terminal terminalResult
       else pure providerMeta
     let assistant ← assistantEvent state spec facts aid (list []) providerMeta
     return .map [(b "record", .map [(b "leading", list leading), (b "assistant", assistant), (b "aid", aid),

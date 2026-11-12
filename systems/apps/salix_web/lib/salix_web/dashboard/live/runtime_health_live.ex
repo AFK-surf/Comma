@@ -35,7 +35,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
   """
   use SalixWeb.Dashboard, :live_view
 
-  alias Salix.Control.Groups
+  alias Salix.Control.{Groups, Tenants}
   alias SalixWeb.Dashboard.ActivityTimeline
   alias SalixWeb.Dashboard.Format
   import SalixWeb.Dashboard.LocalTime, only: [local_time: 1]
@@ -405,9 +405,22 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
       agent_names: Map.new(infos, fn {id, info} -> {id, info.name} end),
       agent_infos: infos,
       activity_roles: role_summary(timeline.lanes, infos),
-      tenant_names:
-        Map.new(socket.assigns.tenants, &{&1["tenant_id"], &1["name"] || &1["tenant_id"]})
+      tenant_names: tenant_names(Enum.map(timeline.lanes, & &1.tenant_id))
     )
+  end
+
+  # The session holds only the selected tenant, so names of the other
+  # tenants on an all-tenant page are read once per distinct tenant shown.
+  defp tenant_names(tenant_ids) do
+    tenant_ids
+    |> Enum.uniq()
+    |> Enum.flat_map(fn id ->
+      case Tenants.get(id) do
+        {:ok, tenant} -> [{id, tenant["name"] || id}]
+        {:error, _} -> []
+      end
+    end)
+    |> Map.new()
   end
 
   # Who did the work on this page: the Router's activations, the internal

@@ -118,7 +118,14 @@ type Json = Record<string, unknown>;
  * read leaves the place out, as a server older than it does.
  */
 function setup(
-  state: { profiles: Json[]; taskModel?: Json; taskPlace?: Json; replyStyle?: string },
+  state: {
+    profiles: Json[];
+    taskModel?: Json;
+    taskPlace?: Json;
+    sandboxes?: boolean;
+    replyStyle?: string;
+    routerName?: string;
+  },
   host = new FakeHost()
 ) {
   host.api.on("GET", "/v1/comma/workspaces", {
@@ -132,12 +139,21 @@ function setup(
     json(200, {
       workspace_id: WS,
       agents: {
-        router: state.replyStyle
-          ? { ...router, reply_style: state.replyStyle }
-          : router,
+        router: {
+          ...router,
+          ...(state.routerName ? { name: state.routerName } : {}),
+          ...(state.replyStyle ? { reply_style: state.replyStyle } : {}),
+        },
       },
       task_model: { selection: state.taskModel ?? taskModel },
-      ...(state.taskPlace ? { task_place: { place: state.taskPlace } } : {}),
+      ...(state.taskPlace
+        ? {
+            task_place: {
+              place: state.taskPlace,
+              ...(state.sandboxes === undefined ? {} : { sandboxes: state.sandboxes }),
+            },
+          }
+        : {}),
     })
   );
   host.api.on("PATCH", `${profilesPath}/*`, (request: SeenRequest) => {
@@ -221,12 +237,12 @@ describe("Settings › Model & API", () => {
       ["gpt-5.5", ["profile-codex", "profile-td"], false],
       ["local-llm", ["profile-td"], true],
     ]);
-    // The server leaves out the default place: Tasks run inside Comma's cloud.
+    // The server leaves out the default place: Tasks run inside Comma's cloud, and it has no sandboxes.
     expect(value.agents).toEqual({
       workspace_id: WS,
       agents: { router },
       task_model: { selection: taskModel },
-      task_place: { place: { kind: "salix" } },
+      task_place: { place: { kind: "salix" }, sandboxes: false },
     });
   });
 
@@ -357,6 +373,65 @@ describe("Settings › Model & API", () => {
     expect(profileOf(shown(), "profile-codex")?.version).toBe("v2");
   });
 
+  it("meters a Claude plan's Fable week and uses the reset kind a person picks", async () => {
+    const claude = {
+      ...codex,
+      id: "profile-claude",
+      source: "claude",
+      quota: {
+        plan_type: "ultra",
+        windows: [
+          { period: "week", remaining_percent: 61 },
+          { period: "week", remaining_percent: 46, model: "fable" },
+          { period: "short", remaining_percent: 8 },
+        ],
+        resets: [
+          { kind: "session", left: 1, usable: true },
+          {
+            kind: "model",
+            model: "Fable",
+            left: 2,
+            expiries: ["2026-12-01T00:00:00Z"],
+            usable: true,
+          },
+        ],
+      },
+    };
+    const t = setup({ profiles: [claude] });
+    t.api.on("POST", `${profilesPath}/profile-claude/quota/reset`, {
+      outcome: "unavailable",
+      account: claude,
+      quota_refreshed: true,
+    });
+    const shown = t.watch<ModelsValue>({ topic: "models", prefer: WS });
+    await t.time.pass(100);
+    expect(profileOf(shown(), "profile-claude")?.meters).toEqual([
+      { window: "5h", percent: 8 },
+      { window: "week", percent: 61 },
+      { window: "model", percent: 46, model: "Fable" },
+    ]);
+    const done = t.client.call("models.resetQuota", {
+      workspace: WS,
+      profile: "profile-claude",
+      kind: "model",
+    });
+    await t.time.pass(100);
+    await expect(done).resolves.toEqual({
+      outcome: "unavailable",
+      quota_refreshed: true,
+    });
+    expect(
+      t.api.seen("POST", `${profilesPath}/profile-claude/quota/reset`)[0]!.body
+    ).toMatchObject({ version: "v1", kind: "model" });
+    await expect(
+      t.client.call("models.resetQuota", {
+        workspace: WS,
+        profile: "profile-claude",
+        kind: "all",
+      })
+    ).rejects.toMatchObject({ code: "invalid_params" });
+  });
+
   it("asks again with the server's pending reset, and reads the profiles again on a 409", async () => {
     const t = setup({
       profiles: [
@@ -434,6 +509,32 @@ describe("Settings › Model & API", () => {
     await t.time.pass(100);
     await none;
     expect(t.api.seen("POST", profilesPath)).toHaveLength(1);
+  });
+
+  it("lets a ChatGPT plan spend its credits once its quota runs out", async () => {
+    const plan = {
+      ...structuredClone(codex),
+      quota: {
+        ...structuredClone(codex.quota),
+        credits: { has_credits: true, unlimited: false, balance: "60470" },
+      },
+    };
+    const t = setup({ profiles: [plan] });
+    const shown = t.watch<ModelsValue>({ topic: "models", prefer: WS });
+    await t.time.pass(100);
+    expect(shown().profiles?.[0]?.quota?.credits?.balance).toBe("60470");
+    const saved = t.client.call("models.updateProfile", {
+      workspace: WS,
+      profile: "profile-codex",
+      use_credits: true,
+    });
+    await t.time.pass(100);
+    await saved;
+    expect(t.api.seen("PATCH", `${profilesPath}/profile-codex`)[0]!.body).toEqual({
+      version: "v1",
+      use_credits: true,
+    });
+    expect(shown().profiles?.[0]?.use_credits).toBe(true);
   });
 
   it("keeps a new API key out of every topic while it is saved", async () => {
@@ -615,6 +716,32 @@ describe("Settings › Model & API", () => {
     expect(t.state.taskPlace).toEqual({ kind: "salix" });
   });
 
+  it("offers a sandbox as a place where sandboxes are set up, and keeps that after a save answers the place alone", async () => {
+    const t = setup({ profiles: [], taskPlace: { kind: "salix" }, sandboxes: true });
+    t.api.on("PUT", `${base}/task-place`, (request: SeenRequest) => {
+      const { place } = request.body as { place: Json };
+      t.state.taskPlace = place;
+      return json(200, { place });
+    });
+    const shown = t.watch<ModelsValue>({ topic: "models", prefer: WS });
+    await t.time.pass(100);
+    expect(shown().agents?.task_place).toEqual({
+      place: { kind: "salix" },
+      sandboxes: true,
+    });
+
+    await t.client.call("models.setTaskPlace", {
+      workspace: WS,
+      place: { kind: "sandbox" },
+    } as never);
+    await t.time.pass(100);
+    expect(shown().agents?.task_place).toEqual({
+      place: { kind: "sandbox" },
+      sandboxes: true,
+    });
+    expect(t.state.taskPlace).toEqual({ kind: "sandbox" });
+  });
+
   it("renames the Router by the id its read gave, and shows the name to every window", async () => {
     const t = setup({ profiles: [] });
     t.api.on("PATCH", `${base}/agents/router`, {});
@@ -653,6 +780,34 @@ describe("Settings › Model & API", () => {
     await renamed;
     expect(shown().name).toBe("Atlas");
     expect(shown().reply_style).toBe("concise");
+  });
+
+  it("refreshes the Router for every window, and a refresh read before a rename does not bring the old name back", async () => {
+    const t = setup({ profiles: [], replyStyle: "concise" });
+    t.api.on("PATCH", `${base}/agents/router`, {});
+    const shown = t.watch<{ name: string; reply_style?: string } | null>({
+      topic: "router",
+      workspace: WS,
+      read: "settings",
+    });
+    await t.time.pass(100);
+    expect(await t.client.call("router.refresh", { workspace: WS })).toMatchObject({
+      name: "Router",
+      reply_style: "concise",
+    });
+
+    // The server answers the old name; its body arrives after the rename.
+    const release = t.api.holdBody("GET", `${base}/agent-models`);
+    const refreshed = t.client.call("router.refresh", { workspace: WS });
+    await t.time.pass(100);
+    await t.client.call("models.renameAgent", { workspace: WS, name: "Atlas" });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({ name: "Atlas" });
+    t.state.routerName = "Atlas";
+    release();
+    expect(await refreshed).toMatchObject({ name: "Atlas" });
+    await t.time.pass(100);
+    expect(shown()).toMatchObject({ name: "Atlas", reply_style: "concise" });
   });
 
   it("shows the Router's reply style at once, saves it, and reads the Router again after a refusal", async () => {

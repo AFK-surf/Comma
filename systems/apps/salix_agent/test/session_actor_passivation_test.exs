@@ -136,7 +136,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
     SystemsRuntime.put_env(:salix_agent, :session_actor_idle_ms, 1_000)
 
     {:ok, _source} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000910", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000910", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000910",
@@ -193,7 +193,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
     SalixAgent.TestSupport.create_control_agent!(source_id)
 
     {:ok, _source} =
-      InternalSessionStore.prepare_commit(source_id, "ses1_0000000000000000910", [
+      SalixAgent.TestSupport.SessionFixture.commit(source_id, "ses1_0000000000000000910", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000910",
@@ -320,7 +320,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
     wait_b = SalixAgent.Waits.build("other wait", 20, "wait_for", %{"tool_call_id" => "b"})
 
     {:ok, _session_a} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000913", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000913", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000913",
@@ -330,7 +330,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
       ])
 
     {:ok, _session_b} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000914", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000914", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000914",
@@ -399,7 +399,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
     }
 
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000915", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000915", [
         %{"type" => "session_created", "session_id" => "ses1_0000000000000000915"},
         %{"type" => "wait_set", "session_id" => "ses1_0000000000000000915", "wait" => wait}
       ])
@@ -438,7 +438,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
       )
 
     {:ok, _session_a} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000917", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000917", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000917",
@@ -459,7 +459,7 @@ defmodule SalixAgent.SessionActorPassivationTest do
       ])
 
     {:ok, _session_b} =
-      InternalSessionStore.prepare_commit(agent_id, "ses1_0000000000000000918", [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, "ses1_0000000000000000918", [
         %{
           "type" => "session_created",
           "session_id" => "ses1_0000000000000000918",

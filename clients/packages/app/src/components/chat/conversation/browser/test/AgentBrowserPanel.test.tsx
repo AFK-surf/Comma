@@ -9,9 +9,12 @@ import { useSessionBrowser } from "../useSessionBrowser";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import type { ReactNode } from "react";
 
-const text = () => screen.getByRole("textbox", { name: "Text to type in the browser" });
+const frame = (seq: number) => ({ seq, data: "", width: 1280, height: 720 });
 
-it("requires takeover for input and stops its stream when unmounted", async () => {
+const text = () =>
+  screen.queryByRole("textbox", { name: "Text to type in the browser" });
+
+it("offers text input only under takeover and stops its stream when unmounted", async () => {
   const binding = {
     agent_id: "agent",
     session_id: "session",
@@ -46,8 +49,8 @@ it("requires takeover for input and stops its stream when unmounted", async () =
       />
     )
   );
-  await screen.findByRole("option", { name: "Test page" });
-  expect(text()).toBeDisabled();
+  await screen.findByText("Test page");
+  expect(text()).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Take control" }));
   const [taken] = core.sentTo("browserView.command") as Record<string, unknown>[];
   expect(taken).toMatchObject({
@@ -61,7 +64,7 @@ it("requires takeover for input and stops its stream when unmounted", async () =
     core.changed("browserView");
   });
   await waitFor(() => expect(text()).toBeEnabled());
-  fireEvent.change(text(), { target: { value: "中文輸入" } });
+  fireEvent.change(text()!, { target: { value: "中文輸入" } });
   await userEvent.click(screen.getByRole("button", { name: "Send text" }));
   await waitFor(() =>
     expect(core.sentTo("browserView.input")).toEqual([
@@ -84,7 +87,7 @@ it("requires takeover for input and stops its stream when unmounted", async () =
     };
     core.changed("browserView");
   });
-  await waitFor(() => expect(text()).toBeDisabled());
+  await waitFor(() => expect(text()).toBeNull());
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Some browser changes were saved."
   );
@@ -95,6 +98,101 @@ it("requires takeover for input and stops its stream when unmounted", async () =
       expect.objectContaining({ topic: "browserView" })
     )
   );
+});
+
+it("says why the browser cannot be shown and reconnects from there", async () => {
+  const binding = {
+    agent_id: "agent",
+    session_id: "session",
+    status: "ready",
+    control: "agent" as const,
+    busy: false,
+    updated_at: "2026-09-28T00:00:00.000000Z",
+  };
+  // The core could not read the tabs: the agent's last browser action is still running.
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "browserView"
+        ? {
+            tabs: [],
+            tab: "",
+            status: "disconnected",
+            controlling: false,
+            error: "busy",
+            pending: false,
+            frame: null,
+          }
+        : undefined,
+  });
+  let refreshed = 0;
+  render(
+    core.wrap(
+      <AgentBrowserPanel
+        workspaceId="workspace"
+        id="browser-panel"
+        binding={binding}
+        onRefresh={() => refreshed++}
+      />
+    )
+  );
+  await screen.findByText(
+    "The agent is still finishing a browser action. Try again when it's done."
+  );
+  expect(screen.queryByRole("status", { name: "Loading browser…" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+  expect(core.sentTo("browserView.reconnect")).toEqual([
+    expect.objectContaining({ agent: "agent", session: "session" }),
+  ]);
+  expect(refreshed).toBe(1);
+});
+
+it("keeps a live screen when the browser refuses a takeover as busy", async () => {
+  const binding = {
+    agent_id: "agent",
+    session_id: "session",
+    status: "ready",
+    control: "agent" as const,
+    busy: false,
+    updated_at: "2026-09-28T00:00:00.000000Z",
+  };
+  let view: Record<string, unknown> = {
+    tabs: [{ tab_id: "tab", title: "Test page", url: "https://example.com" }],
+    tab: "tab",
+    status: "agent",
+    controlling: false,
+    error: null,
+    pending: false,
+    frame: frame(1),
+  };
+  const core = createScriptedCore({
+    values: (topic) => (topic.topic === "browserView" ? view : undefined),
+  });
+  render(
+    core.wrap(
+      <AgentBrowserPanel
+        workspaceId="workspace"
+        id="browser-panel"
+        binding={binding}
+        onRefresh={() => {}}
+      />
+    )
+  );
+  await screen.findByText("Test page");
+  // The core's take_control was refused: the agent's action still runs, and its stream goes on.
+  act(() => {
+    view = { ...view, error: "busy" };
+    core.changed("browserView");
+  });
+  const notice =
+    "The agent is still finishing a browser action. Try again when it's done.";
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(notice));
+  act(() => {
+    view = { ...view, frame: frame(2) };
+    core.changed("browserView");
+  });
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(notice));
+  expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+  expect(screen.getByText("Agent controlling")).toBeVisible();
 });
 
 it("shows only the current participant's browser after switching, and asks the core to read it again", async () => {
@@ -147,6 +245,52 @@ it("shows only the current participant's browser after switching, and asks the c
   unmount();
 });
 
+it("keeps reading the conversation's participant while its status clears for a send", async () => {
+  const binding = {
+    agent_id: "agent",
+    session_id: "session",
+    status: "ready",
+    control: "agent" as const,
+    busy: false,
+    updated_at: "2026-09-28T00:00:00Z",
+  };
+  const subscribed: Record<string, unknown>[] = [];
+  const unsubscribed: Record<string, unknown>[] = [];
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "sessionBrowser" ? { browser: binding } : undefined,
+    onSubscribe: (topic) => subscribed.push(topic),
+    onUnsubscribe: (topic) => unsubscribed.push(topic),
+  });
+  const { result, rerender, unmount } = renderHook(
+    ({ participant }: { participant: string | undefined }) =>
+      useSessionBrowser(true, "workspace", "conversation", participant),
+    {
+      initialProps: { participant: "participant" as string | undefined },
+      wrapper: ({ children }: { children: ReactNode }) => core.wrap(children),
+    }
+  );
+  await waitFor(() => expect(result.current.browser).toEqual(binding));
+
+  // The member sends: the participant's status clears, then comes back.
+  rerender({ participant: undefined });
+  await act(async () => {});
+  expect(result.current.browser).toEqual(binding);
+  rerender({ participant: "participant" });
+  await act(async () => {});
+  expect(result.current.browser).toEqual(binding);
+  expect(subscribed).toEqual([
+    {
+      topic: "sessionBrowser",
+      workspace: "workspace",
+      conversation: "conversation",
+      participant: "participant",
+    },
+  ]);
+  expect(unsubscribed).toEqual([]);
+  unmount();
+});
+
 it("words the header trigger and the panel in the reader's language", () => {
   const binding = {
     agent_id: "agent",
@@ -180,10 +324,7 @@ it("words the header trigger and the panel in the reader's language", () => {
     expect(screen.getByRole("region", { name: "Agent 浏览器" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "接管控制" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled();
-    expect(screen.getByText("正在加载浏览器…")).toBeInTheDocument();
-    expect(
-      screen.getByRole("textbox", { name: "要在浏览器中输入的文字" })
-    ).toHaveAttribute("placeholder", "输入或粘贴文字，支持中文输入");
+    expect(screen.getByRole("status", { name: "正在加载浏览器…" })).toBeInTheDocument();
   } finally {
     initializeCommaI18n(["en"]);
   }

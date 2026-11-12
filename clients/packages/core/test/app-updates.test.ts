@@ -37,11 +37,11 @@ function setup(options: { replays?: boolean } = {}) {
 }
 
 describe("the app's update", () => {
-  it("is checked at start and each hour; a release found is downloaded, offered, and no more is checked", async () => {
+  it("is checked at start and each hour; a release found is downloaded and offered, the same one not downloaded again", async () => {
     const t = setup();
     await t.time.pass(10);
     expect(t.updates.count("check")).toBe(1);
-    expect(t.value()).toEqual({ downloading: false, ready: null });
+    expect(t.value()).toEqual({ downloading: false, progress: null, ready: null });
 
     t.updates.script.check = () => release("0.0.2");
     let finishDownload!: (downloaded: boolean) => void;
@@ -53,18 +53,24 @@ describe("the app's update", () => {
     expect(t.updates.asked).toContainEqual(["download", release("0.0.2")]);
     // Topic changes go out together, 50 ms after.
     await t.time.pass(100);
-    expect(t.value()).toEqual({ downloading: true, ready: null });
+    expect(t.value()).toEqual({ downloading: true, progress: null, ready: null });
+    // The feed says how far it got: whole percents, each change once.
+    t.updates.progress(41.6);
+    t.updates.progress(41.9);
+    await t.time.pass(100);
+    expect(t.value()).toEqual({ downloading: true, progress: 41, ready: null });
     expect(t.updates.count("apply")).toBe(0);
     finishDownload(true);
     await t.time.pass(100);
     expect(t.value()).toEqual({
       downloading: false,
+      progress: null,
       ready: { productName: "Comma Test", version: "0.0.2" },
     });
 
     await t.time.pass(3 * APP_UPDATE_INTERVAL_MS);
-    expect(t.updates.count("status")).toBe(2);
-    expect(t.updates.count("check")).toBe(2);
+    expect(t.updates.count("status")).toBe(5);
+    expect(t.updates.count("check")).toBe(5);
     expect(t.updates.count("download")).toBe(1);
     expect(t.updates.count("apply")).toBe(0);
     expect(t.value()?.ready?.version).toBe("0.0.2");
@@ -74,23 +80,50 @@ describe("the app's update", () => {
     expect(t.updates.asked.at(-1)).toEqual(["apply", release("0.0.2")]);
   });
 
-  it("offers a release downloaded before at once, without checking the feed", async () => {
+  it("offers a release downloaded before at once, not downloaded again while the feed has no newer", async () => {
     const t = setup();
     t.updates.script.status = () => ({
       configured: true,
       productName: "Comma Staging",
       pendingRestart: release("0.0.3"),
     });
+    t.updates.script.check = () => release("0.0.3");
     t.updates.script.apply = () => false;
-    await t.time.pass(10);
+    await t.time.pass(100);
     expect(t.value()?.ready).toEqual({
       productName: "Comma Staging",
       version: "0.0.3",
     });
-    expect(t.updates.count("check")).toBe(0);
+    expect(t.updates.count("check")).toBe(1);
     expect(t.updates.count("download")).toBe(0);
+    // The feed not reached: still offered.
+    t.updates.script.check = () => new HostError("offline");
+    expect(await t.call("appUpdate.check")).toEqual({ outcome: "ready" });
+    expect(t.value()?.ready?.version).toBe("0.0.3");
     // The platform could not start it: the window says so, and may ask again.
     expect(await t.call("appUpdate.apply")).toEqual({ applied: false });
+  });
+
+  it("downloads a release newer than the one on disk and restarts into the newest, not one after another", async () => {
+    const t = setup();
+    t.updates.script.status = () => ({
+      configured: true,
+      productName: "Comma Staging",
+      pendingRestart: release("0.0.3"),
+    });
+    t.updates.script.check = () => release("0.0.5");
+    await t.time.pass(100);
+    expect(t.updates.asked).toContainEqual(["download", release("0.0.5")]);
+    expect(t.value()?.ready?.version).toBe("0.0.5");
+
+    // Left open: a newer one comes out, and takes its place at the next check.
+    t.updates.script.check = () => release("0.0.6");
+    await t.time.pass(APP_UPDATE_INTERVAL_MS);
+    expect(t.updates.asked).toContainEqual(["download", release("0.0.6")]);
+    await t.time.pass(100);
+    expect(t.value()?.ready?.version).toBe("0.0.6");
+    expect(await t.call("appUpdate.apply")).toEqual({ applied: true });
+    expect(t.updates.asked.at(-1)).toEqual(["apply", release("0.0.6")]);
   });
 
   it("tries a failed check again after 5 and 30 seconds, then after the hour", async () => {
@@ -111,7 +144,7 @@ describe("the app's update", () => {
     await t.time.pass(30_000);
     expect(t.updates.count("status")).toBe(3);
     expect(t.updates.count("download")).toBe(1);
-    expect(t.value()).toEqual({ downloading: false, ready: null });
+    expect(t.value()).toEqual({ downloading: false, progress: null, ready: null });
 
     await t.time.pass(APP_UPDATE_INTERVAL_MS - 1_000);
     expect(t.updates.count("status")).toBe(3);
@@ -128,7 +161,7 @@ describe("the app's update", () => {
     t.updates.script.check = () => release("0.0.2");
     t.updates.script.download = () => new Promise((resolve) => (finish = resolve));
     await t.time.pass(10);
-    expect(t.value()).toEqual({ downloading: true, ready: null });
+    expect(t.value()).toEqual({ downloading: true, progress: null, ready: null });
 
     const manual = t.call("appUpdate.check");
     await t.time.pass(10);
@@ -137,9 +170,10 @@ describe("the app's update", () => {
     expect(t.updates.count("check")).toBe(1);
     expect(t.updates.count("download")).toBe(1);
 
-    // Once on disk, a check answers at once.
+    // Once on disk, a check asks the feed again and downloads nothing it has.
     expect(await t.call("appUpdate.check")).toEqual({ outcome: "ready" });
-    expect(t.updates.asked).toHaveLength(3);
+    expect(t.updates.count("check")).toBe(2);
+    expect(t.updates.count("download")).toBe(1);
   });
 
   it("answers Check for Updates with what the feed said, and moves the schedule as any check", async () => {

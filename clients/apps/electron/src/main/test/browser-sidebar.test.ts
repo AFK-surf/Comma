@@ -159,6 +159,49 @@ describe("NativeBrowserSidebarService", () => {
     });
   });
 
+  it("shapes the page as its bounds were sent and holds the page's clip in the window", async () => {
+    const harness = await createHarness();
+    const clip = {
+      getBounds: vi.fn(() => ({ height: 0, width: 0, x: 0, y: 0 })),
+      getVisible: vi.fn(() => true),
+      setBounds: vi.fn(),
+      setVisible: vi.fn(),
+    };
+    const setCornerRadii = vi.fn();
+    harness.createView.mockImplementationOnce(() => {
+      const page = Object.assign(createTestView(), {
+        nativeView: clip,
+        setCornerRadii,
+      });
+      harness.views.push(page);
+      return page;
+    });
+    const panelCorner = { bottomLeft: 0, bottomRight: 11, topLeft: 0, topRight: 0 };
+
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      cornerRadii: panelCorner,
+      sessionId: "host-a",
+      url: "https://example.com/start",
+    });
+    expect(setCornerRadii).toHaveBeenLastCalledWith(panelCorner);
+    expect(harness.owner.children).toEqual([clip]);
+
+    await harness.service.update({
+      bounds: { height: 680, width: 480, x: 800, y: 20 },
+      sessionId: "host-a",
+    });
+    expect(setCornerRadii).toHaveBeenLastCalledWith({
+      bottomLeft: 0,
+      bottomRight: 0,
+      topLeft: 0,
+      topRight: 0,
+    });
+
+    await harness.service.close({ sessionId: "host-a" });
+    expect(harness.owner.children).toEqual([]);
+  });
+
   it("publishes the document's icon from the tab's session until a new icon list replaces it", async () => {
     const harness = await createHarness();
     await harness.service.open({
@@ -369,6 +412,75 @@ describe("NativeBrowserSidebarService", () => {
     await expect(opening).resolves.toMatchObject({
       tabId: requested!.tabId,
       url: "https://example.com/slow",
+    });
+  });
+
+  it("keeps loading a client-opened tab that the renderer hides before its first page loaded", async () => {
+    // An agent opens a tab while the user's screen shows no browser panel:
+    // the renderer hides the new view at once.
+    const firstNavigation = deferred<unknown>();
+    let requested: BrowserSidebarOpenTabRequest | undefined;
+    const harness = await createHarness({
+      loadNavigation: () => firstNavigation.promise,
+      onClientOpenTabRequested: (_ownerWindowId, request) => {
+        requested = request;
+        return true;
+      },
+    });
+
+    const opening = harness.service.openClientTab({ url: "https://example.com/agent" });
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "renderer-session",
+      tabId: requested!.tabId,
+      url: requested!.url,
+    });
+    await harness.service.update({ sessionId: "renderer-session", visible: false });
+    expect(harness.views[0]!.webContents.stop).not.toHaveBeenCalled();
+
+    firstNavigation.resolve(undefined);
+    await expect(opening).resolves.toMatchObject({
+      tabId: requested!.tabId,
+      url: "https://example.com/agent",
+      visible: false,
+    });
+  });
+
+  it("settles a hidden client-opened tab whose first page redirected", async () => {
+    const firstNavigation = deferred<unknown>();
+    let requested: BrowserSidebarOpenTabRequest | undefined;
+    const harness = await createHarness({
+      loadNavigation: () => firstNavigation.promise,
+      onClientOpenTabRequested: (_ownerWindowId, request) => {
+        requested = request;
+        return true;
+      },
+    });
+
+    const opening = harness.service.openClientTab({ url: "https://example.com/app" });
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "renderer-session",
+      tabId: requested!.tabId,
+      url: requested!.url,
+    });
+    await harness.service.update({ sessionId: "renderer-session", visible: false });
+    // The page moves itself on (a hash route, a locale redirect) before its
+    // load ends, so the load that settles is no longer the one Main started.
+    const view = harness.views[0]!;
+    view.emitStateChange(
+      "did-start-navigation",
+      {},
+      "https://example.com/app#/",
+      false,
+      true
+    );
+    firstNavigation.resolve(undefined);
+    view.emitStateChange("did-stop-loading", {});
+
+    await expect(opening).resolves.toMatchObject({
+      tabId: requested!.tabId,
+      visible: false,
     });
   });
 

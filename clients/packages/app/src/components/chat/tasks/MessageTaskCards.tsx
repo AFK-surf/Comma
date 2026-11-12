@@ -15,6 +15,7 @@ import {
   type ReactElement,
 } from "react";
 import { useProductInboxItem } from "../../../product-inbox";
+import { taskLoopStop } from "../../tasks/taskLoopLabels";
 import { taskOriginKey } from "../../tasks/taskOrigin";
 import { useArchiveAction, useTaskSummary } from "../../tasks/useTaskArchive";
 import { TaskBadgeChips } from "../../tasks/useTaskBadges";
@@ -115,6 +116,7 @@ function MessageTaskCard({
   );
   const origin = taskOriginKey(canonical?.origin);
   const loop = canonical?.loop ?? projected?.loop;
+  const loopStop = taskLoopStop(summary.statusBucket, loop, messages);
   const link = renderInlineTaskLink(adapter, {
     // Named like every Task card: by its Task, apart from the inline chip's
     // "Open task" link to the same Task.
@@ -149,7 +151,7 @@ function MessageTaskCard({
                 }
                 interactive={interactive}
                 progress={follows ? step : undefined}
-                task={{ ...summary, title }}
+                task={{ ...summary, loopStop, title }}
                 titleClassName="line-clamp-2"
                 // The placeholder giving way to the first title is no rename.
                 titleIdentity={summary.title ? conversationId : undefined}

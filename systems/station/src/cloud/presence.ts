@@ -22,14 +22,14 @@ const CLOSE_REMOVED = 4004;
 const REMOVED_RETRY_MS = 600_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 
-/// REMOVED_RETRY, or STILLFAIL_REMOVED_RETRY_SECS (tests against a dev cloud).
+/// REMOVED_RETRY, or COMMA_STATION_REMOVED_RETRY_SECS (tests against a dev cloud).
 function removedRetry(): number {
-  const secs = Number(process.env.STILLFAIL_REMOVED_RETRY_SECS?.trim());
+  const secs = Number(process.env.COMMA_STATION_REMOVED_RETRY_SECS?.trim());
   return Number.isFinite(secs) && secs > 0 ? secs * 1000 : REMOVED_RETRY_MS;
 }
 
 /// Whether the station is online at still.fail cloud, and since when or why not: <data>/run/presence.json, for
-/// `stillfail status`.
+/// `comma-station status`.
 function writePresence(data: string, online: boolean, error: string | null) {
   mkdirSync(join(data, "run"), { recursive: true });
   writeFileSync(join(data, "run", "presence.json"), JSON.stringify({ online, at: nowSecs(), error }) + "\n");
@@ -130,8 +130,18 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec) =>
     socket.on("message", (data, binary) => {
       if (binary) return;
       const text = data.toString();
-      if (text === "pong") answered = true;
-      else if (!tool(s, plane, socket, text)) applyState(s, text);
+      if (text === "pong") {
+        answered = true;
+        return;
+      }
+      let body: any;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (body?.type === "tool") tool(s, plane, socket, body);
+      else applyFrame(s, body);
     });
     socket.on("close", (code) => {
       ping?.();
@@ -148,23 +158,16 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec) =>
 
 /// A device tool request pushed on the socket (`{type: "tool", id, request}`, contract §8 presence transport): run
 /// by the mesh's tools and answered `{type: "tool_result", id, response}`. Only a provider with device tools pushes
-/// them; anything else is not a tool frame.
-function tool(s: CloudState, plane: ProviderSpec, socket: WebSocket, text: string): boolean {
-  if (!text.startsWith('{"type":"tool"')) return false;
-  let body: any;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  if (body?.type !== "tool" || typeof body.id !== "string") return false;
+/// them. The frame is told by its parsed `type`, never by where that field sits in the text: a map encoder may put it
+/// anywhere.
+function tool(s: CloudState, plane: ProviderSpec, socket: WebSocket, body: any) {
+  if (typeof body.id !== "string") return;
   const run = plane.tools ? s.toolCalls : null;
   const reply = (response: unknown) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "tool_result", id: body.id, response }));
   };
   if (run === null) reply({ ok: false, error: { code: "unavailable", message: "this station takes no device tools now" } });
   else run(body.request).then(reply, (e) => reply({ ok: false, error: { code: "invalid_request", message: (e as Error).message } }));
-  return true;
 }
 
 /// The cloud says the station is out of its workspace: marked in cloud.json, kept through restarts.
@@ -196,6 +199,10 @@ export function applyState(s: CloudState, text: string) {
   } catch {
     return;
   }
+  applyFrame(s, body);
+}
+
+function applyFrame(s: CloudState, body: any) {
   if (body?.type === "state") {
     // Current before it is told, so whoever hears of the new roster reads it as current.
     s.peersCurrent = Array.isArray(body.peers);

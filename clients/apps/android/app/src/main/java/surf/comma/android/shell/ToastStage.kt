@@ -29,8 +29,9 @@ import surf.comma.android.workspace.WorkspaceStore
 /**
  * The app's toast, as the iOS app's: a glass capsule hugging its text under the status bar, where nothing on any
  * page waits for a thumb and neither the keyboard, the tab bar nor a composer can cover it. A failure's glyph carries
- * the colour, the words stay in the text colour; a change that can be taken back offers Undo. It drops in from the
- * top edge and leaves the way it came, by itself after four seconds (ten while TalkBack runs) or swiped up.
+ * the colour, the words stay in the text colour; a change that can be taken back offers Undo, and a failure may offer
+ * its way out. It drops in from the top edge and leaves the way it came, by itself after four seconds (ten while
+ * TalkBack runs) or swiped up.
  */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 class ToastStage(private val activity: ComponentActivity, private val store: WorkspaceStore) : FrameLayout(activity) {
@@ -44,8 +45,7 @@ class ToastStage(private val activity: ComponentActivity, private val store: Wor
     }
     private val icon = ImageView(activity)
     private val message = activity.label(Level.SMALL, R.color.token_text_primary, DesignFonts.medium, lines = 2)
-    private val undo = activity.label(Level.SMALL, R.color.token_bg_brand_solid, DesignFonts.semibold).apply {
-        setText(R.string.shell_undo)
+    private val action = activity.label(Level.SMALL, R.color.token_bg_brand_solid, DesignFonts.semibold).apply {
         gravity = Gravity.CENTER
         minHeight = activity.dp(44)
         setPadding(activity.dp(12), 0, activity.dp(12), 0)
@@ -62,7 +62,7 @@ class ToastStage(private val activity: ComponentActivity, private val store: Wor
         card.addView(message, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             marginEnd = activity.dp(10)
         })
-        card.addView(undo)
+        card.addView(action)
         addView(card, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             marginStart = activity.dp(16); marginEnd = activity.dp(16)
         })
@@ -90,13 +90,14 @@ class ToastStage(private val activity: ComponentActivity, private val store: Wor
         icon.isVisible = toast.error
         icon.setImageResource(R.drawable.ic_warning_triangle)
         icon.imageTintList = ColorStateList.valueOf(activity.getColor(R.color.token_text_error_primary))
-        undo.isVisible = toast.undo != null
-        undo.setOnClickListener {
-            val action = toast.undo ?: return@setOnClickListener
+        action.isVisible = toast.action != null
+        action.text = toast.action?.title
+        action.setOnClickListener {
+            val chosen = toast.action ?: return@setOnClickListener
             store.dismissToast(toast.id)
-            activity.lifecycleScope.launch { action() }
+            activity.lifecycleScope.launch { chosen.run() }
         }
-        card.setPadding(activity.dp(14), 0, activity.dp(if (toast.undo != null) 4 else 16), 0)
+        card.setPadding(activity.dp(14), 0, activity.dp(if (toast.action != null) 4 else 16), 0)
         card.visibility = VISIBLE
         if (!replacing) {
             card.translationY = -activity.dp(80).toFloat()

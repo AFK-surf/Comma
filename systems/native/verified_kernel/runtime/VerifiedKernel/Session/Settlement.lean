@@ -111,7 +111,7 @@ def onboarding (state : Term) (results events : List Term) (router : Bool) : Ker
   let exhausted := (← StateQuery.modelGuardExhausted next) ||
     integerValue nextId - integerValue source ≥ 24 ||
     (← RoundQuery.onboardingSendCompleted next (← field state "last_ack_message_id")).truthy ||
-    results.any (fun result => [b "im_api.slack.post_channel_message", b "im_api.slack.post_message"].contains (valueOf result "name") &&
+    results.any (fun result => RoundQuery.onboardingSendTools.contains (valueOf result "name") &&
       ![b "running", b "async_running"].contains (valueOf result "status"))
   if !exhausted || (← RoundQuery.sourceScope next) != scope || !(← ready next) ||
     (← RoundQuery.replyRunning next).truthy then return nil
@@ -209,12 +209,15 @@ def guardSettlement (state result : Term) (events : List Term) : KernelM Term :=
     return list (withoutWake events callId ++ terminalEvents sid hwm (b "runtime_failure_reply_settled") details)
   return list (events ++ [repair] ++ terminalEvents sid hwm (b "runtime_failure_reply_settled") details)
 
+/-- A batch of only refused calls (`guidance`: a malformed call the model can
+correct in its next round) neither counts toward the runaway guard nor resets
+it. Repeated identical refusals and the per-input round budget still bound it. -/
 def batch (state args : Term) : KernelM Term := do
-  let .tuple [events, results, track, unsettled, reset, router] := args | fail "function_clause"
+  let .tuple [events, results, track, _unsettled, reset, router] := args | fail "function_clause"
   let events ← asList events
   let results ← asList results
-  let guard := if track.truthy then
-    [if results.all (fun result => result.get (a "status") == b "guidance") then unsettled else reset] else []
+  let guard := if (track.truthy && !(results.all (fun result => result.get (a "status") == b "guidance"))) then
+    [reset] else []
   let events := events ++ guard
   let next ← project state events
   let parked := (!guard.isEmpty && (← StateQuery.runawayExhausted next)) || (← StateQuery.repeatedExhausted next) ||
@@ -278,6 +281,11 @@ def replyContext (state args : Term) : KernelM Term := do
     (b "last_ack_message_id", ← field state "last_ack_message_id")]
   if targets != list [] && origin.isMap && router then
     return .map ([(b "kind", RoundQuery.textKey origin "provider"), (b "targets", targets),
+      (b "eligible", Term.bool settle)] ++ common)
+  -- A Worker reports to the Task it was given; that report can end its turn.
+  if key "role" == b "worker" && (← RoundQuery.workerTaskSource state origin (key "source_message_id")) then
+    let settle := key "call_count" == i 1 && (← ready state) && !(← RoundQuery.replyRunning state).truthy
+    return .map ([(b "kind", b "agent_task"), (b "targets", RoundQuery.taskReplyTargets origin),
       (b "eligible", Term.bool settle)] ++ common)
   -- Telegram and the channel welcome keep their legacy destination binding.
   if !router then return nil

@@ -9,14 +9,14 @@ test("the session instructions name the session's places, and a project only whe
   for (const place of ["/w/s/workspace", "/w/repos", "/w/agent/MEMORY.md"]) assert.ok(plain.includes(place), place);
   assert.ok(!plain.includes("Project directory"));
   const project = ts.sessionInstructions("/w/s/workspace", "/p", "/w/repos", "/w/agent/MEMORY.md");
-  assert.ok(project.includes("- Project directory: /p. This session began outside still.fail"));
+  assert.ok(project.includes("- Project directory: /p. This session began outside Comma"));
   assert.equal(project.replace(/- Project directory: [^\n]*\n/, ""), plain);
 });
 
 test("the fixed prompts", () => {
   for (const name of ["NUDGE", "RESUME_AFTER_RESTART", "GO_ON_AFTER_AUTH", "GO_ON_AFTER_SPENT", "RESUME_LOST"] as const) assert.ok(ts[name].length > 20, name);
   assert.ok(ts.waitOver(90).includes("(90 seconds)"));
-  assert.ok(ts.continuedHere("X").endsWith("<stillfail-instructions>\nX\n</stillfail-instructions>"));
+  assert.ok(ts.continuedHere("X").endsWith("<comma-instructions>\nX\n</comma-instructions>"));
 });
 
 test("the migration notes are numbered 1, 2, 3…, and told once", () => {
@@ -24,7 +24,7 @@ test("the migration notes are numbered 1, 2, 3…, and told once", () => {
   assert.ok(NOTES.every(([, note]) => note.length > 0 && !note.includes("\n")));
   assert.equal(untold(latest(), "/w/i.md"), "");
   const all = untold(0, "/w/i.md");
-  assert.ok(all.startsWith("[still.fail changed how you work") && all.includes("need_human") && all.includes("/w/i.md"));
+  assert.ok(all.startsWith("[Comma changed how you work") && all.includes("need_human") && all.includes("/w/i.md"));
   assert.ok(!untold(latest() - 1, "/w/i.md").includes(NOTES[0]![1]));
 });
 

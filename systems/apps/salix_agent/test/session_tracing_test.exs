@@ -8,7 +8,7 @@ defmodule SalixAgent.SessionTracingTest do
   Record.defrecordp(:span, Record.extract(:span, from_lib: "opentelemetry/include/otel_span.hrl"))
 
   alias SalixAgent.InternalSessionStore
-  alias SalixStore.{Codec, Keys, S3}
+  alias SalixStore.S3
   alias SystemsObservability.Context
 
   @agent "private-agent-do-not-export"
@@ -30,60 +30,76 @@ defmodule SalixAgent.SessionTracingTest do
     :ok
   end
 
-  test "real session read exports nested decode span without identifiers or snapshot content" do
-    state = %{
-      SalixAgent.InternalSession.export(SalixAgent.InternalSession.new(@agent, @session))
-      | summary: "private-result-do-not-export"
-    }
+  test "the real PG read uses bound SQL parameters and returns the private Session state" do
+    assert {:ok, _} =
+             SalixStore.Agent.create(@agent, "owner", SalixAgent.State,
+               config: %{
+                 "agent_id" => @agent,
+                 "tenant_id" => "private-tenant",
+                 "group_id" => "private-group",
+                 "role" => "worker"
+               }
+             )
 
-    key = Keys.agent_internal_runtime_session(@agent, @session)
+    SalixAgent.TestSupport.SessionFixture.cleanup_on_exit(@agent)
+    private = "private-result-do-not-export"
 
-    {:ok, _} =
-      S3.put(key, Codec.encode_session_snapshot(state))
+    assert {:ok, _} =
+             SalixAgent.TestSupport.SessionFixture.commit(@agent, @session, [
+               %{"type" => "compaction", "summary" => private, "compacted_through" => 0}
+             ])
 
-    trace_id =
-      Context.with_surface("bft", fn ->
-        Tracer.with_span "test.session.parent" do
-          trace_id = OpenTelemetry.Span.trace_id(OpenTelemetry.Tracer.current_span_ctx())
-          assert {:ok, loaded} = InternalSessionStore.read(@agent, @session)
-          assert SalixAgent.InternalSession.get(loaded, :summary) == state.summary
-          trace_id
-        end
-      end)
+    {result, queries} = observe_queries(fn -> InternalSessionStore.read(@agent, @session) end)
+    assert {:ok, loaded} = result
+    assert SalixAgent.InternalSession.get(loaded, :summary) == private
+    assert queries != []
 
-    :ok = :otel_tracer_provider.force_flush()
-    read = receive_span(trace_id, "salix.session.read")
-    get = receive_span(trace_id, "salix.session.get")
-    assert span(get, :parent_span_id) == span(read, :span_id)
-    decode = receive_span(trace_id, "salix.session.decode")
-    assert span(decode, :parent_span_id) == span(read, :span_id)
-    assert span(decode, :start_time) >= span(read, :start_time)
-    assert span(decode, :end_time) <= span(read, :end_time)
-
-    assert span(get, :end_time) <= span(decode, :start_time)
-
-    for exported <- [read, get, decode] do
-      attrs = exported |> span(:attributes) |> :otel_attributes.map()
-      assert attrs["component"] == "salix_agent"
-      assert attrs["surface"] == "bft"
-      refute inspect(exported) =~ @agent
-      refute inspect(exported) =~ @session
-      refute inspect(exported) =~ state.summary
+    for metadata <- queries do
+      refute metadata.query =~ @agent
+      refute metadata.query =~ @session
+      refute metadata.query =~ private
     end
   end
 
-  test "read failures retain their business result and do not expose the object key" do
-    trace_id =
-      Tracer.with_span "test.session.parent" do
-        trace_id = OpenTelemetry.Span.trace_id(OpenTelemetry.Tracer.current_span_ctx())
-        assert {:error, :not_found} = InternalSessionStore.read(@agent, @session)
-        trace_id
-      end
+  test "a missing PG Session retains its not-found result and parameterized lookup" do
+    {result, queries} = observe_queries(fn -> InternalSessionStore.read(@agent, @session) end)
+    assert result == {:error, :not_found}
+    assert Enum.any?(queries, &(@agent in &1.params and @session in &1.params))
 
-    :ok = :otel_tracer_provider.force_flush()
-    exported = receive_span(trace_id, "salix.session.read")
-    refute inspect(exported) =~ @agent
-    refute inspect(exported) =~ @session
+    for metadata <- queries do
+      refute metadata.query =~ @agent
+      refute metadata.query =~ @session
+    end
+  end
+
+  defp observe_queries(fun) do
+    owner = self()
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:salix_store, :repo, :query],
+        fn _, _, metadata, _ ->
+          if self() == owner, do: send(owner, {:pg_read, metadata})
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+      {result, query_messages([])}
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp query_messages(acc) do
+    receive do
+      {:pg_read, metadata} -> query_messages([metadata | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
   test "direct background configuration build exports under its captured parent" do

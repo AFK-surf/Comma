@@ -21,15 +21,20 @@ defmodule SalixIM.StationTaskWatch do
   the Router is woken the same way. It logs one `station_task_stalled` event
   per delegation and stage, counted by
   `salix.station_tasks.stalled.total{phase, kind}` (the stage, and the kind of
-  station: `cloud_vm` or `device`), and one `station_task_recovered` when a
-  reported delegation is answered after all. Every answered delegation
+  station: `cloud_vm`, `sandbox` or `device`), and one `station_task_recovered`
+  when a reported delegation is answered after all. Every answered delegation
   records `salix.station_tasks.first_reply.seconds{kind}`. The log-based alert
-  `comma_alerting:station_task_stalled` fires for the Group's Cloud VM on the
-  stages that are failures; a desktop station that goes away is its owner
-  closing a laptop, logged and counted only. A Task of a Group named in
-  `canary_group_ids` is the Cloud VM canary (docs/observability.md): its
-  events and metrics carry `canary: true`, and its own alerts fire on every
-  stage and on two hours without an answered delegation.
+  `comma_alerting:station_task_stalled` fires for the Group's Cloud VM and for
+  a Task's sandbox on the stages that are failures; a desktop station that
+  goes away is its owner closing a laptop, logged and counted only.
+
+  It also covers the opposite gap for such a Task: a Worker that published a
+  result, after which the Router ended its turn and left the Task `active`.
+  `SalixIM.TaskWorkerWatch` tells the Router of that for a Worker inside
+  Salix, from its Session's activity; a station's Session reports none there.
+  Here, once the station's Session is no longer running after the result and
+  the Router's Session has stopped after it, the Router gets the same one
+  `task_status_pending` Message per Worker result.
 
   ## Protocol assumptions (no formal model; see systems/AGENTS.md)
 
@@ -113,6 +118,20 @@ defmodule SalixIM.StationTaskWatch do
       is not done until its Message is durably appended: a failed append is
       retried on a short timer, at most `@max_attempts` times, then checked
       again after `recheck_ms`. Never reminded: a Session that is `running`.
+    * A Worker result is the latest Worker reply above the latest
+      delegation (a sandbox notice is none). While the Router decides the
+      Task's status (`SalixIM.TaskWorkerWatch.router_decides_status?/1`, and
+      no Loop runs), it is checked a grace (`task_worker_watch_grace_ms`)
+      after it was published: the Task still `active`, the result still the
+      latest, the station's Session not running and holding nothing, and the
+      Router's Session `stopped` at or after the result's second. Then the
+      Router is told once (`task_status_pending`, keyed to the result's seq,
+      as `SalixIM.TaskWorkerWatch` keys it). A station that cannot say
+      counts as idle once the result is `idle_no_reply_ms` old. A Router that
+      is busy is checked again a grace later, a Session that runs after
+      `recheck_ms`; a new delegation, another result or a Task that leaves
+      `active` ends the check. One timer per active station Task with such a
+      result; whether the Router was told is read from the Messages.
     * A failure inside this actor is logged and the check is made again; it
       never stops the Task's owner.
   """
@@ -121,7 +140,7 @@ defmodule SalixIM.StationTaskWatch do
 
   use SystemsRuntime.Server
 
-  alias SalixIM.Ports.TaskStations
+  alias SalixIM.Ports.{SessionActivity, TaskStations}
 
   alias SalixIM.{
     ConversationActor,
@@ -142,8 +161,7 @@ defmodule SalixIM.StationTaskWatch do
     idle_no_reply_ms: :timer.minutes(10),
     cannot_start_ms: :timer.minutes(10),
     recheck_ms: :timer.minutes(10),
-    stale_ms: :timer.hours(24),
-    canary_group_ids: []
+    stale_ms: :timer.hours(24)
   ]
   @thresholds %{
     vm_not_ready: :vm_not_ready_ms,
@@ -186,7 +204,11 @@ defmodule SalixIM.StationTaskWatch do
             # `vm_status` of the last report, its `timer` and `token`, failed
             # `attempts` at the watch Message due, and whether it was already
             # `stale` when found.
-            pending: nil
+            pending: nil,
+            # A Worker result the Router has not decided the Task's status
+            # on: its `result_seq`, `at` (ms), `timer`, `token` and
+            # failed `attempts` at the Message.
+            review: nil
 
   def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
@@ -213,23 +235,18 @@ defmodule SalixIM.StationTaskWatch do
   def nudged_event, do: @nudged_event
 
   @doc false
-  # The stage thresholds and `canary_group_ids`, the Groups whose station
-  # Tasks are the Cloud VM canary; a value of another shape keeps the default.
+  # The stage thresholds; a value of another shape keeps the default.
   def config do
     configured =
       :salix_im
       |> SystemsRuntime.get_env(:station_task_watch, [])
       |> Enum.filter(fn
-        {:canary_group_ids, ids} -> is_list(ids) and Enum.all?(ids, &is_binary/1)
         {key, ms} -> Keyword.has_key?(@defaults, key) and is_integer(ms) and ms >= 0
         _other -> false
       end)
 
     Keyword.merge(@defaults, configured)
   end
-
-  @doc "Whether the Group's station Tasks are the Cloud VM canary."
-  def canary?(group_id), do: group_id in config()[:canary_group_ids]
 
   @impl true
   def init(opts) do
@@ -266,6 +283,14 @@ defmodule SalixIM.StationTaskWatch do
       ) do
     state = %{state | pending: %{pending | timer: nil, token: nil}}
     {:noreply, guarded(state, fn -> check(state) end)}
+  end
+
+  def handle_info(
+        {:station_task_review, result_seq, token},
+        %{review: %{result_seq: result_seq, token: token} = review} = state
+      ) do
+    state = %{state | review: %{review | timer: nil, token: nil}}
+    {:noreply, guarded_review(state, fn -> review_check(state) end)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -334,7 +359,7 @@ defmodule SalixIM.StationTaskWatch do
 
   defp unwatch(state),
     do: %{
-      cancel(state)
+      cancel(end_review(state))
       | worker_agent_id: nil,
         worker_participant_id: nil,
         delegator_agent_id: nil,
@@ -357,6 +382,15 @@ defmodule SalixIM.StationTaskWatch do
   # A Message as the owner appended it: a Worker reply answers the delegation
   # waited for; a Message given to the Worker is a newer delegation.
   defp apply_message(state, %{"seq" => seq} = message) when is_integer(seq) do
+    state
+    |> apply_to_pending(message, seq)
+    |> apply_to_review(message, seq)
+  end
+
+  # Without the record (an owner that notified with less), the Task is read.
+  defp apply_message(state, _message), do: observe(state)
+
+  defp apply_to_pending(state, message, seq) do
     cond do
       worker_reply?(message, state) ->
         case state.pending do
@@ -375,12 +409,23 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
-  # Without the record (an owner that notified with less), the Task is read.
-  defp apply_message(state, _message), do: observe(state)
+  # A Worker result is checked on; a newer delegation asks for a new one.
+  defp apply_to_review(state, message, seq) do
+    cond do
+      result?(message, state) ->
+        begin_review(state, seq, timestamp_ms(message["created_at"]) || now())
+
+      delegation?(message, state) ->
+        end_review(state)
+
+      true ->
+        state
+    end
+  end
 
   defp observe(state) do
     case read_messages(state) do
-      {:ok, messages} -> settle(state, messages)
+      {:ok, messages} -> state |> settle(messages) |> review_from(messages)
       {:error, _reason} -> state
     end
   end
@@ -485,25 +530,29 @@ defmodule SalixIM.StationTaskWatch do
 
   # The delegation this actor waited for was answered: the wait is recorded,
   # and a reported stall is said to be over. One it did not wait for (a stale
-  # one, a restarted actor's, an older delegation) is not measured.
+  # one, a restarted actor's, an older delegation) is not measured. Salix's
+  # notice that the sandbox failed or was lost tells the Task and ends the
+  # wait, but it is no reply and no recovery.
+  defp answered(state, _epoch, _at, %{"metadata" => %{"kind" => "sandbox_notice"}}),
+    do: %{cancel(state) | pending: nil}
+
   defp answered(%{pending: %{epoch: epoch, stale: true}} = state, epoch, _at, _reply),
     do: %{state | pending: nil}
 
   defp answered(%{pending: %{epoch: epoch} = pending} = state, epoch, at, reply) do
     waited = max((timestamp_ms(reply["created_at"]) || now()) - at, 0)
     place = reply_place(state, reply)
-    canary = canary?(state.group_id)
 
     SystemsRuntime.Telemetry.execute(
       [:salix_im, :station_task, :answered],
       %{duration: waited},
-      %{kind: place, canary: canary}
+      %{kind: place}
     )
 
     case Enum.reject(pending.reported, &(&1 == :running)) do
       [stage | _] ->
         Logger.info(
-          "station Task delegation answered after a stall: stage=#{stage} place=#{place} epoch=#{epoch} age_ms=#{waited} canary=#{canary}",
+          "station Task delegation answered after a stall: stage=#{stage} place=#{place} epoch=#{epoch} age_ms=#{waited}",
           event: @recovered_event,
           component: "salix_im",
           group_id: state.group_id,
@@ -513,8 +562,7 @@ defmodule SalixIM.StationTaskWatch do
           place: Atom.to_string(place),
           vm_status: pending.vm_status,
           epoch_seq: epoch,
-          age_ms: waited,
-          canary: canary
+          age_ms: waited
         )
 
       [] ->
@@ -570,8 +618,7 @@ defmodule SalixIM.StationTaskWatch do
         conversation_id: state.conversation_id,
         worker_agent_id: state.worker_agent_id,
         epoch_seq: epoch,
-        age_ms: age,
-        canary: canary?(state.group_id)
+        age_ms: age
       )
 
       %{state | pending: %{pending | stale: true}}
@@ -728,7 +775,8 @@ defmodule SalixIM.StationTaskWatch do
   # was made or given the delegation did not bring it within the threshold.
   # The Router is told once, and the delegation checked on: the VM may still
   # come up, and its station answer. A coding sandbox that is not ready is
-  # waited out below: its own notices say what became of it.
+  # waited out below: its own notices say what became of it, and one of them
+  # ends this wait (`SalixWeb.CodingSandboxes`, `failed` and `lost`).
   defp act(state, :vm_not_ready, %{place: :cloud_vm} = standing, session, messages, age) do
     cond do
       sent?(messages, state.pending.epoch, TaskWorkerWatch.notify_type()) ->
@@ -815,15 +863,14 @@ defmodule SalixIM.StationTaskWatch do
     case result do
       :ok ->
         Logger.info(
-          "station Task Worker reminded: its Session is #{session.state} without a reply: epoch=#{epoch} canary=#{canary?(state.group_id)}",
+          "station Task Worker reminded: its Session is #{session.state} without a reply: epoch=#{epoch}",
           event: @nudged_event,
           component: "salix_im",
           group_id: state.group_id,
           conversation_id: state.conversation_id,
           worker_agent_id: state.worker_agent_id,
           station_state: Atom.to_string(session.state),
-          epoch_seq: epoch,
-          canary: canary?(state.group_id)
+          epoch_seq: epoch
         )
 
         recheck(%{state | pending: %{pending | attempts: 0}})
@@ -883,7 +930,7 @@ defmodule SalixIM.StationTaskWatch do
         router["participant_id"],
         "task-worker-watch:notify:#{epoch}",
         TaskWorkerWatch.notify_type(),
-        notify_content(reason, session, vm_status),
+        notify_content(reason, session, vm_status, state.group_id),
         %{
           "epoch_seq" => epoch,
           "issue" => if(reason == "cannot_start", do: reason),
@@ -904,7 +951,25 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
-  defp notify_content("vm_not_ready", _session, vm_status) do
+  # Where the Group's VM is a retired Cloud VM (`SalixIM.Sandboxes.group_vm_retired?/1`)
+  # Salix does not start it again, and `cloud_vm.start` is not offered: the
+  # work moves to a sandbox Task. A Group VM on its Agent VMM Host is not
+  # retired.
+  defp notify_content("vm_not_ready", _session, vm_status, group_id) do
+    if SalixIM.Sandboxes.group_vm_retired?(group_id),
+      do:
+        "The Worker for this Task runs on the Workspace's Cloud VM, and the Cloud VM is " <>
+          "retired here (vm_not_ready, cloud_vm_retired): sandboxes have taken its place, and " <>
+          "Salix does not start it again. Mark this Task failed with " <>
+          "im_api.internal.update_conversation, then create a new Task with runs_on " <>
+          "{kind: sandbox} for the work and tell the requester; files on the Cloud VM do not " <>
+          "move with it. Do not wait_for this Task again.",
+      else: cloud_vm_not_ready(vm_status)
+  end
+
+  defp notify_content(reason, session, _vm_status, _group_id), do: notify_content(reason, session)
+
+  defp cloud_vm_not_ready(vm_status) do
     status =
       case vm_status do
         text when is_binary(text) and text != "" -> text
@@ -919,8 +984,6 @@ defmodule SalixIM.StationTaskWatch do
       "im_api.internal.update_conversation or create a new Task at another place. " <>
       "The Task has not completed. Do not wait_for it again until the VM is up."
   end
-
-  defp notify_content(reason, session, _vm_status), do: notify_content(reason, session)
 
   defp notify_content("cannot_start", session) do
     why =
@@ -968,6 +1031,204 @@ defmodule SalixIM.StationTaskWatch do
     end
   end
 
+  # -- the Task's status after a Worker result ------------------------------------
+
+  @doc false
+  # `{result_seq, epoch, at_ms}` of the Worker's latest result above the
+  # latest delegation (epoch 0 for none), unless the Router was told of it;
+  # else `nil`.
+  def pending_result(messages, state) when is_list(messages) do
+    epoch =
+      messages
+      |> Enum.filter(&delegation?(&1, state))
+      |> Enum.map(&seq/1)
+      |> Enum.max(fn -> 0 end)
+
+    result =
+      messages
+      |> Enum.filter(&(seq(&1) > epoch and result?(&1, state)))
+      |> Enum.max_by(&seq/1, fn -> nil end)
+
+    case result do
+      nil ->
+        nil
+
+      result ->
+        result_seq = seq(result)
+
+        if status_sent?(messages, result_seq),
+          do: nil,
+          else: {result_seq, epoch, timestamp_ms(result["created_at"]) || now()}
+    end
+  end
+
+  defp result?(message, state),
+    do: worker_reply?(message, state) and not sandbox_notice?(message)
+
+  defp sandbox_notice?(message), do: get_in(message, ["metadata", "kind"]) == "sandbox_notice"
+
+  defp status_sent?(messages, result_seq),
+    do:
+      Enum.any?(
+        messages,
+        &(message_type(&1) == TaskWorkerWatch.status_type() and
+            get_in(&1, ["metadata", "task_worker_watch", "result_seq"]) == result_seq)
+      )
+
+  defp review_from(state, messages) do
+    case pending_result(messages, state) do
+      {result_seq, _epoch, at} -> begin_review(state, result_seq, at)
+      nil -> end_review(state)
+    end
+  end
+
+  defp begin_review(%{review: %{result_seq: result_seq}} = state, result_seq, _at), do: state
+
+  defp begin_review(state, result_seq, at) do
+    review = %{result_seq: result_seq, at: at, timer: nil, token: nil, attempts: 0}
+    arm_review(%{end_review(state) | review: review}, TaskWorkerWatch.grace_ms())
+  end
+
+  defp end_review(%{review: %{timer: timer}} = state) when is_reference(timer) do
+    SystemsClock.cancel_timer(timer)
+    %{state | review: nil}
+  end
+
+  defp end_review(state), do: %{state | review: nil}
+
+  defp arm_review(%{review: review} = state, delay) do
+    token = Proc.make_ref()
+
+    timer =
+      SystemsClock.send_after(
+        Proc.self(),
+        {:station_task_review, review.result_seq, token},
+        delay
+      )
+
+    %{state | review: %{review | timer: timer, token: token}}
+  end
+
+  defp guarded_review(state, fun) do
+    fun.()
+  rescue
+    error -> review_failed(state, Exception.message(error))
+  catch
+    kind, reason -> review_failed(state, Exception.format_banner(kind, reason))
+  end
+
+  defp review_failed(state, what) do
+    Logger.warning(
+      "station task watch #{state.conversation_id}: status check failed and runs again: #{what}"
+    )
+
+    case state.review do
+      %{timer: nil} -> arm_review(state, config()[:recheck_ms])
+      _ -> state
+    end
+  end
+
+  # The grace after the result is over: the Router is told when the Task is
+  # still active with this result its latest, the station's Session is done
+  # with it and the Router's turn ended after it.
+  defp review_check(%{review: review} = state) do
+    with {:ok, %{"kind" => "agent_task", "status" => "active"} = conversation} <-
+           ConversationActor.get_conversation(state.owner),
+         true <- conversation["task_worker_agent_id"] == state.worker_agent_id,
+         true <- TaskWorkerWatch.router_decides_status?(conversation),
+         false <- SalixIM.TaskLoop.loop_runs?(conversation),
+         {:ok, messages} <- read_messages(state),
+         {result_seq, epoch, _at} when result_seq == review.result_seq <-
+           pending_result(messages, state) do
+      with :idle <- worker_settled(state, review),
+           {:ok, router_pid} <- router_settled(state, review) do
+        tell_status(state, router_pid, epoch)
+      else
+        :running -> arm_review(state, config()[:recheck_ms])
+        :busy -> arm_review(state, TaskWorkerWatch.grace_ms())
+      end
+    else
+      {:ok, %{"status" => status}} when status != "active" ->
+        unwatch(state)
+
+      {:error, :not_found} ->
+        unwatch(state)
+
+      {:error, reason} ->
+        Logger.warning(
+          "station task watch #{state.conversation_id}: status check not read, checked again: #{inspect(reason)}"
+        )
+
+        arm_review(state, config()[:recheck_ms])
+
+      # Another result, a new delegation, a running Loop, or told already.
+      _changed ->
+        end_review(state)
+    end
+  end
+
+  # `:idle` once the station's Session is not running and holds nothing for
+  # the Worker; a station that cannot say, once the result is old enough.
+  defp worker_settled(state, review) do
+    case TaskStations.session_status(state.group_id, state.conversation_id) do
+      {:ok, %{state: session_state}} when session_state in [:running, :waiting] ->
+        :running
+
+      {:ok, %{state: :idle, pending: pending}} when is_integer(pending) and pending > 0 ->
+        :running
+
+      {:ok, %{state: session_state}} when session_state in [:idle, :gone, :cannot_start] ->
+        :idle
+
+      _cannot_say ->
+        if now() - review.at >= config()[:idle_no_reply_ms], do: :idle, else: :running
+    end
+  end
+
+  # The Router's Session stopped no earlier than the result's second, so its
+  # last turn had the result to act on: its participant id, or `:busy`.
+  defp router_settled(state, review) do
+    with delegator when is_binary(delegator) and delegator != "" <- state.delegator_agent_id,
+         {:ok, router} <- ConversationActor.get_agent_participant(state.owner, delegator),
+         session_id when is_binary(session_id) and session_id != "" <-
+           get_in(router, ["payload", "session_id"]),
+         {:ok, %{"state" => "stopped"} = activity} <- SessionActivity.get(delegator, session_id),
+         at when is_integer(at) <- timestamp_ms(activity["updated_at"]),
+         true <- at >= div(review.at, 1_000) * 1_000 do
+      {:ok, router["participant_id"]}
+    else
+      _ -> :busy
+    end
+  end
+
+  defp tell_status(%{review: review} = state, router_pid, epoch) do
+    result =
+      TaskWorkerWatch.send_watch_message(
+        state,
+        router_pid,
+        "task-worker-watch:status:#{review.result_seq}",
+        TaskWorkerWatch.status_type(),
+        TaskWorkerWatch.status_pending_content(),
+        %{"epoch_seq" => epoch, "result_seq" => review.result_seq}
+      )
+
+    case result do
+      :ok ->
+        end_review(state)
+
+      :error when review.attempts < @max_attempts ->
+        review = %{review | attempts: review.attempts + 1}
+        arm_review(%{state | review: review}, @retry_base_ms * review.attempts)
+
+      :error ->
+        Logger.warning(
+          "station task watch #{state.conversation_id}: giving up on status notice for result #{review.result_seq}"
+        )
+
+        end_review(state)
+    end
+  end
+
   defp threshold(stage), do: Keyword.fetch!(config(), Map.fetch!(@thresholds, stage))
 
   defp report_past_threshold(state, stage, standing, session, age) do
@@ -985,7 +1246,6 @@ defmodule SalixIM.StationTaskWatch do
   defp report(%{pending: pending} = state, stage, standing, session, age) do
     place = standing.place
     vm_status = standing[:vm_status]
-    canary = canary?(state.group_id)
     session_state = if session, do: Atom.to_string(session.state)
 
     facts = [
@@ -1001,18 +1261,17 @@ defmodule SalixIM.StationTaskWatch do
       pending_messages: if(session, do: session.pending),
       last_failure: if(session, do: session.last_failure),
       epoch_seq: pending.epoch,
-      age_ms: age,
-      canary: canary
+      age_ms: age
     ]
 
     if stage == :running do
       Logger.info(
-        "station Task delegation still being worked on: stage=running place=#{place} station_state=#{session_state} epoch=#{pending.epoch} age_ms=#{age} canary=#{canary}",
+        "station Task delegation still being worked on: stage=running place=#{place} station_state=#{session_state} epoch=#{pending.epoch} age_ms=#{age}",
         facts
       )
     else
       Logger.warning(
-        "station Task delegation unanswered: stage=#{stage} place=#{place} vm_status=#{vm_status || "-"} epoch=#{pending.epoch} age_ms=#{age} canary=#{canary}" <>
+        "station Task delegation unanswered: stage=#{stage} place=#{place} vm_status=#{vm_status || "-"} epoch=#{pending.epoch} age_ms=#{age}" <>
           if(session_state, do: " station_state=#{session_state}", else: ""),
         facts
       )
@@ -1020,7 +1279,7 @@ defmodule SalixIM.StationTaskWatch do
       SystemsRuntime.Telemetry.execute(
         [:salix_im, :station_task, :stalled],
         %{count: 1},
-        %{phase: stage, kind: place, canary: canary}
+        %{phase: stage, kind: place}
       )
     end
 

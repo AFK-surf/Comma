@@ -257,7 +257,7 @@ export function makeMeeting(host: MeetingHost) {
           seq++;
           sent += n;
           hash.update(buffer.subarray(0, n));
-          const frame: Message = { id, type: "stream", stream: { channel: "data", data: buffer.subarray(0, n).toString("base64"), eof: false, seq } };
+          const frame: Message = { id, type: "stream", stream: { channel: "data", data: buffer.subarray(0, n), eof: false, seq } };
           yield* session.sendReadStreamFrame(id, seq, frame);
         }
         const extra = readSync(fd, Buffer.alloc(1), 0, 1, null);
@@ -271,7 +271,7 @@ export function makeMeeting(host: MeetingHost) {
 
   const requireArtifactTransport = (carrier: ReturnType<RuntimeTransport["active"]>): Effect.Effect<void, Error> =>
     Effect.gen(function* () {
-      if (!carrier) return yield* Effect.fail(new Error("connector transport unavailable"));
+      if (!carrier) return yield* Effect.fail(new Error("station transport unavailable"));
       const reply = yield* host.transport.request(
         carrier,
         { id: `meetcap_${randomBytes(16).toString("hex")}`, type: "request", method: "meeting_runtime_capabilities", params: { artifact_transport: MEETING_ARTIFACT_TRANSPORT } },
@@ -285,7 +285,7 @@ export function makeMeeting(host: MeetingHost) {
 
   const forwardEvent = (carrier: ReturnType<RuntimeTransport["active"]>, meetingId: string, runtimeToken: string, source: Record<string, unknown>, timeoutMs: number): Effect.Effect<void, Error> =>
     Effect.gen(function* () {
-      if (!carrier) return yield* Effect.fail(new Error("no active connector connection"));
+      if (!carrier) return yield* Effect.fail(new Error("no active station connection"));
       const event: Record<string, unknown> = { meeting_id: meetingId, ...source };
       if (runtimeToken) event.runtime_token = runtimeToken;
       if (!text(event.type)) event.type = "joiner_event";

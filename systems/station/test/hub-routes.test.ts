@@ -29,7 +29,7 @@ function rig(withAgents = true) {
   const data = mkdtempSync(join(tmpdir(), "hr-"));
   const raw = { profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", models: ["opus"] }, { id: "cx", runtime: "codex", home: "homes/cx" }] };
   const config = hubConfig(raw, data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const claude = new FakeDriver("claude");
   const codex = new FakeDriver("codex");
   const hub = new Hub({
@@ -101,7 +101,7 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.equal(joined, 200);
     assert.deepEqual(view.sessions.map((m: any) => m.session), [a.key, b.key]);
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
-    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/sessions`, { session: b.key }), [400, { error: `no still.fail chat ${slack.id}` }]);
+    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/sessions`, { session: b.key }), [400, { error: `no Comma chat ${slack.id}` }]);
   } finally {
     await r.close();
   }
@@ -156,7 +156,7 @@ test("uploads wait in the station's uploads, a message takes them into its chat 
     assert.deepEqual(r.store.messagesBefore(id, null, 10).find((m) => m.n === named.n)!.attachments, [{ name: basename(moved), path: moved, size: 0 }]);
 
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
-    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/messages`, { text: "hi" }), [400, { error: en("station.admin.postOnlyStillfail") }]);
+    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/messages`, { text: "hi" }), [400, { error: en("station.admin.postOnlyComma") }]);
     assert.deepEqual(await r.ask("POST", "/threads/x/messages", { text: "hi" }), [404, { error: "unknown thread x" }]);
     assert.equal((await r.ask("POST", "/uploads", Buffer.alloc(50 * 1024 * 1024 + 1)))[0], 413);
   } finally {
@@ -242,7 +242,7 @@ test("archiving a session and a chat, and deleting a session", async () => {
     assert.equal(home.id, made.thread.id);
     assert.notEqual(r.store.getSession(made.key)!.archivedAt, null, "a session's own chat goes with it");
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
-    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/archive`), [400, { error: `no still.fail chat ${slack.id}` }]);
+    assert.deepEqual(await r.ask("POST", `/threads/${slack.id}/archive`), [400, { error: `no Comma chat ${slack.id}` }]);
 
     const workspace = r.store.getSession(made.key)!.workspace;
     assert.deepEqual(await r.ask("DELETE", `/sessions/${encodeURIComponent(made.key)}`), [200, { ok: true }]);

@@ -10,7 +10,14 @@
 // Bounds: per shown workspace, one event stream per station and one read of its chats and jobs per stream opened; job
 // events read the jobs at most once a second per station. Ages and day names are worked out again once a minute while
 // shown.
-import { CoreError, type Scoped, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  LastMade,
+  topicKey,
+  type Scoped,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Effect, Result } from "effect";
 import type { Account } from "../account.ts";
 import { route } from "../api.ts";
@@ -21,6 +28,7 @@ import type {
   StationDecisionsValue,
   StationJobsValue,
 } from "../contract.ts";
+import { TOPIC_SPECS } from "../contract.ts";
 import { type Ctx, Live } from "../ctx.ts";
 import { readEvents } from "../sse.ts";
 import type { Stations } from "./index.ts";
@@ -45,8 +53,12 @@ import {
 } from "./views.ts";
 
 const RETRY_MS = [1_000, 5_000, 30_000];
+/** A station's answer to a stream it went on with from `since` (its api/events.ts): nothing need be read again. */
+const RESUMED = ["comma-station-resumed", "stillfail-resumed"];
 const TICK_MS = 60_000;
 const JOBS_EVERY_MS = 1_000;
+/** A station's rows are written to the device once they rested this long: its events change them many times a second. */
+const WRITE_MS = 1_000;
 const DEFERRED = "stations.deferred";
 const MAX_DEFERRED = 200;
 const rowsDoc = (station: string) => `stations.chats.${station}`;
@@ -59,6 +71,8 @@ type Followed = {
   rows: Map<string, StationChatRow> | null;
   jobs: StationJob[];
   jobsDue: boolean;
+  /** The last event id its stream gave (`<run>.<n>`): where the next stream goes on from. */
+  since: string | null;
 };
 
 /** A message of a chat on a station, and its workspace: where a card is. */
@@ -104,8 +118,16 @@ export class StationActivity {
   readonly #shown = new Map<string, Set<string>>();
   /** Stations followed, by id. */
   readonly #followed = new Map<string, Followed>();
+  /** Each topic's value as last made, its lists matched as the topic keys them. */
+  readonly #made = new Map<
+    string,
+    LastMade<string, StationChatsValue | StationDecisionsValue | StationJobsValue>
+  >([...TOPICS].map((name) => [name, new LastMade(TOPIC_SPECS[name] ?? null)]));
   /** Cards answered from here, until their station's row no longer has them. */
   readonly #answered = new Set<string>();
+  /** Stations whose rows changed since they were last written to the device, with those rows. */
+  readonly #unwritten = new Map<string, StationChatRow[]>();
+  #writeDue = false;
 
   constructor(ctx: Ctx, stations: Stations) {
     this.#ctx = ctx;
@@ -115,8 +137,14 @@ export class StationActivity {
     for (const name of TOPICS)
       kernel.source(name, {
         start: (topic) => this.#show(topic),
-        stop: (topic) => this.#hide(topic),
-        compute: (topic): Value => ({ ok: this.#compute(topic) }),
+        stop: (topic) => {
+          this.#hide(topic);
+          this.#made.get(topic.topic)?.delete(topicKey(topic));
+        },
+        // Made again from every station's rows at each of their events: what did not change stays as it was.
+        compute: (topic): Value => ({
+          ok: this.#made.get(topic.topic)!.of(topicKey(topic), this.#compute(topic)),
+        }),
       });
     stations.onChange((workspace) => {
       if (!this.#shown.has(workspace)) return;
@@ -127,6 +155,8 @@ export class StationActivity {
       for (const followed of this.#followed.values()) ctx.runner.close(followed.scoped);
       this.#followed.clear();
       this.#answered.clear();
+      // What the account before had not written goes with it.
+      this.#unwritten.clear();
     });
 
     kernel.calls({
@@ -370,9 +400,13 @@ export class StationActivity {
   #rowsOf(station: string): Map<string, StationChatRow> | null {
     const followed = this.#followed.get(station);
     if (followed?.rows) return followed.rows;
-    const kept = this.#ctx.session
-      .current()
-      ?.doc<StationChatRow[]>(rowsDoc(station))?.value;
+    const unwritten = this.#unwritten.get(station);
+    if (unwritten) return new Map(unwritten.map((row) => [row.id, row]));
+    const account = this.#ctx.session.current();
+    // Kept row by row; as one document by an earlier core.
+    const kept =
+      account?.items<StationChatRow>(rowsDoc(station)) ??
+      account?.doc<StationChatRow[]>(rowsDoc(station))?.value;
     return kept ? new Map(kept.map((row) => [row.id, row])) : null;
   }
 
@@ -431,6 +465,7 @@ export class StationActivity {
         rows: null,
         jobs: [],
         jobsDue: false,
+        since: null,
       };
       this.#followed.set(id, followed);
       this.#ctx.runner.fork(this.#keepFollowing(id, followed), followed.scoped);
@@ -448,13 +483,29 @@ export class StationActivity {
         const ran = yield* Effect.result(
           Effect.scoped(
             Effect.gen({ self: this }, function* () {
-              const body = yield* stations.stream(workspace, station, "/events");
-              yield* this.#readRows(followed, station);
-              yield* this.#readJobs(followed, station);
+              // From the last event heard: the station tells what came after it first (RESUMED), and nothing is read
+              // again; else (the first stream, one it cannot go on from, a station from before) it is read now.
+              const path = followed.since
+                ? `/events?since=${encodeURIComponent(followed.since)}`
+                : "/events";
+              const { body, headers } = yield* stations.stream(
+                workspace,
+                station,
+                path
+              );
+              const resumed = headers.some(
+                ([name, value]) => RESUMED.includes(name.toLowerCase()) && value === "1"
+              );
+              if (!resumed || followed.rows === null) {
+                yield* this.#readRows(followed, station);
+                yield* this.#readJobs(followed, station);
+              }
               backoff = 0;
               for (const listener of this.#openListeners) listener(station);
-              yield* readEvents(body, (value, event) =>
-                this.#event(followed, station, event, value)
+              yield* readEvents(
+                body,
+                (value, event) => this.#event(followed, station, event, value),
+                (id) => (followed.since = id)
               );
             })
           )
@@ -509,9 +560,13 @@ export class StationActivity {
   /** The rows changed: kept on this device, answered cards the station no longer has forgotten, and shown. */
   #keep(followed: Followed, station: string): void {
     const rows = [...(followed.rows?.values() ?? [])];
-    const account = this.#ctx.session.current();
-    if (account && !account.closed)
-      account.putDoc(rowsDoc(station), rows, this.#ctx.now());
+    this.#unwritten.set(station, rows);
+    if (!this.#writeDue) {
+      this.#writeDue = true;
+      this.#ctx.runner.fork(
+        Effect.sleep(WRITE_MS).pipe(Effect.andThen(Effect.sync(() => this.#write())))
+      );
+    }
     for (const key of this.#answered) {
       const [at, thread, seq] = key.split("\t");
       if (at !== station) continue;
@@ -520,6 +575,19 @@ export class StationActivity {
       if (!asked || String(asked.seq) !== seq) this.#answered.delete(key);
     }
     this.#changed(followed.workspace);
+  }
+
+  /** Writes the rows that changed to the device, as the next run shows them at once. */
+  #write(): void {
+    this.#writeDue = false;
+    const account = this.#ctx.session.current();
+    if (account && !account.closed)
+      for (const [station, rows] of this.#unwritten) {
+        // Row by row: a chat that changed writes that chat alone.
+        account.putItems(rowsDoc(station), rows, (row) => row.id);
+        if (account.doc(rowsDoc(station))) account.deleteDoc(rowsDoc(station));
+      }
+    this.#unwritten.clear();
   }
 
   #event(

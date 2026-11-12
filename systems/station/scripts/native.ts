@@ -1,21 +1,21 @@
 // The native parts the TypeScript station and clients use, prebuilt (docs/development.md, "Native parts"): each one
 // is named by a key, the hash of all that goes into it (its sources, as git has them, not its tests, and every vendored
 // crate it uses; its Cargo.lock; the Rust toolchain; the target; how it is built), and found, in this order, in
-//   1. the cache on this machine, which every worktree shares: ~/Library/Caches/stillfail-native (macOS),
-//      $XDG_CACHE_HOME/stillfail-native or ~/.cache/stillfail-native (Linux), %LOCALAPPDATA%\stillfail-native
-//      (Windows), or $STILLFAIL_NATIVE_CACHE;
-//   2. $STILLFAIL_NATIVE_INBOX, a directory of artifacts (CI: those a branch's natives job built, as a run artifact);
-//   3. R2: the bucket cue-release under station-native/, read over public HTTPS (no login) at $STILLFAIL_NATIVE_URL
+//   1. the cache on this machine, which every worktree shares: ~/Library/Caches/comma-station-native (macOS),
+//      $XDG_CACHE_HOME/comma-station-native or ~/.cache/comma-station-native (Linux), %LOCALAPPDATA%\comma-station-native
+//      (Windows), or $COMMA_STATION_NATIVE_CACHE;
+//   2. $COMMA_STATION_NATIVE_INBOX, a directory of artifacts (CI: those a branch's natives job built, as a run artifact);
+//   3. R2: the bucket cue-release under station-native/, read over public HTTPS (no login) at $COMMA_STATION_NATIVE_URL
 //      (default https://cue-release.afk.surf/station-native), which CI publishes to from main;
 //   4. built here, from the checkout (and said so).
 // So an everyday build or test compiles no Rust; only a change to a part's own sources builds it, once per machine.
 //
 //   node scripts/native.ts path <part> [target]        where it is (a directory), getting or building it first
-//   node scripts/native.ts file <part> [target]        its main file (mesh.node, stillfail-runner, …)
+//   node scripts/native.ts file <part> [target]        its main file (mesh.node, comma-runner, …)
 //   node scripts/native.ts key <part> [target]         its key
 //   node scripts/native.ts fetch <part> [target]       into the cache, never building (fails when not prebuilt)
 //   node scripts/native.ts build <part> [target]       built here, into the cache, whatever is there
-//   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
+//   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (COMMA_STATION_MESH_NATIVE, …)
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
 //   node scripts/native.ts missing [part[:target]…]    those (default: all of ours) R2 lacks, one a line
 //   node scripts/native.ts ensure [--publish] [--outbox DIR] [part[:target]…]
@@ -23,7 +23,7 @@
 //        CLOUDFLARE_R2_*; main only); --outbox copies the artifacts R2 lacks there (a branch's run artifact)
 //   node scripts/native.ts prune [N]                   R2 keeps the newest N (20) of each part and target
 //
-// STILLFAIL_NATIVE=build never downloads (builds what the cache lacks); STILLFAIL_NATIVE=offline neither downloads nor
+// COMMA_STATION_NATIVE=build never downloads (builds what the cache lacks); COMMA_STATION_NATIVE=offline neither downloads nor
 // builds. Builds go to $CARGO_TARGET_DIR/native/<part> when it is set, else the crate's own target/ (a worktree's own:
 // a vendored crate built from two checkouts in one target confuses rustc, docs/operations.md).
 import { execFileSync, spawnSync, type SpawnSyncOptions } from "node:child_process";
@@ -42,7 +42,7 @@ const TOOLCHAIN = "1.95.0";
 /// zig, for the Linux builds from a Mac (cargo-zigbuild): only its own version builds what gets published.
 const ZIG = "0.16.0";
 /// The prebuilt parts, read: R2's public address of the bucket cue-release, under station-native/.
-const STORE = (process.env.STILLFAIL_NATIVE_URL ?? "https://cue-release.afk.surf/station-native").replace(/\/$/, "");
+const STORE = (process.env.COMMA_STATION_NATIVE_URL ?? "https://cue-release.afk.surf/station-native").replace(/\/$/, "");
 /// …and written (CI, with CLOUDFLARE_R2_*): that prefix of the bucket.
 const PREFIX = "station-native/";
 const VENDORED = ["vendor/iroh", "vendor/iroh-mdns-address-lookup", "vendor/noq-udp", "vendor/swarm-discovery"];
@@ -61,6 +61,8 @@ type Part = {
   recipe: (target: Target) => unknown;
   /// Built into `out` (a fresh directory).
   build: (target: Target, out: string) => void;
+  /// Its Mac files are Mach-O binaries of ours, which `verify` checks (a crate's; not scrcpy's server).
+  machO?: boolean;
 };
 
 const host = (): Target => {
@@ -86,6 +88,7 @@ function fail(message: string): never {
   throw new Error(message);
 }
 const STATION: Target[] = ["darwin-arm64", "linux-x64", "linux-arm64"];
+const APPLE_STRIP = ["/usr/bin/strip", "-S", "-x"];
 /// The station's own parts: Windows' too (systems/station/docs/station-ts-native.md, "Windows"), named as it names them.
 const STATION_BINS: Target[] = [...STATION, "win32-x64"];
 const exe = (name: string) => (t: Target) => (t === "win32-x64" ? `${name}.exe` : name);
@@ -93,17 +96,29 @@ const exe = (name: string) => (t: Target) => (t === "win32-x64" ? `${name}.exe` 
 /// A Rust crate of its own (station/native/*), for a station platform: Linux from a Mac with cargo-zigbuild, for
 /// glibc 2.28 and later (Debian 10, Ubuntu 20.04, RHEL 8 on); Windows with it too, as MinGW's (napi-rs finds Node's
 /// symbols in the process at run time, so no MSVC import library is needed). `name`: the file kept, by target.
+///
+/// On a Mac, Apple's strip takes the symbols off, not the one Rust's release profile runs. Rust 1.95.0's rust-objcopy drops
+/// the padding ld puts after the indirect symbols, so an odd number of them leaves the string table 4 off an 8-byte
+/// boundary. dyld does not load such an addon when it is linked with the macOS 27 SDK or later: "mis-aligned LINKEDIT
+/// string pool". `verify` checks each file.
 function stationCrate(dir: string, artifact: (t: Target) => string, name: string | ((t: Target) => string), extra: string[] = []): Part {
   const named = (t: Target) => (typeof name === "string" ? name : name(t));
+  const mac = (t: Target) => t === "darwin-arm64";
   return {
     files: (t) => [named(t)],
     targets: STATION,
+    machO: true,
     inputs: [dir, ...extra],
-    recipe: (t) => ({ cargo: cargoCommand(t), artifact: artifact(t), name: named(t) }),
+    recipe: (t) => ({ cargo: cargoCommand(t), artifact: artifact(t), name: named(t), ...(mac(t) ? { strip: APPLE_STRIP } : {}) }),
     build(t, out) {
       const target = targetDir(join(ROOT, dir, "target"), basename(dir));
-      cargo(cargoCommand(t), join(ROOT, dir), { CARGO_TARGET_DIR: target, ...(t === "win32-x64" ? noLibnode(target) : {}) });
+      cargo(cargoCommand(t), join(ROOT, dir), {
+        CARGO_TARGET_DIR: target,
+        ...(t === "win32-x64" ? noLibnode(target) : {}),
+        ...(mac(t) ? { CARGO_PROFILE_RELEASE_STRIP: "false" } : {}),
+      });
       copyFileSync(join(target, TRIPLE(t), "release", artifact(t)), join(out, named(t)));
+      if (mac(t)) run(APPLE_STRIP[0]!, [...APPLE_STRIP.slice(1), join(out, named(t))]);
     },
   };
 }
@@ -191,11 +206,11 @@ const cargoCommand = (t: Target, more: string[] = []) =>
 
 /// The launcher's part: Windows' has its windowless start beside it (native/launcher/src/hidden.rs).
 function withHidden(part: Part): Part {
-  const hidden = "stillfail-station-w.exe";
+  const hidden = "comma-station-w.exe";
   return {
     ...part,
     targets: STATION_BINS,
-    env: "STILLFAIL_LAUNCHER",
+    env: "COMMA_STATION_LAUNCHER",
     files: (t) => (t === "win32-x64" ? [...part.files(t), hidden] : part.files(t)),
     build(t, out) {
       part.build(t, out);
@@ -204,12 +219,41 @@ function withHidden(part: Part): Part {
   };
 }
 
+/// scrcpy's server, the unmodified file of its release: it is not ours to build, so `build` gets it from there. It runs
+/// on a device a person views (docs/android-screen.md), so a changed release file must not reach one: the hash is the
+/// digest GitHub gave for the release asset when this was pinned, and a file with another makes this build fail, so
+/// nothing is published or bundled. The version goes up with SERVER_VERSION in src/screens/android.ts.
+const SCRCPY = {
+  url: "https://github.com/Genymobile/scrcpy/releases/download/v5.0.1/scrcpy-server-v5.0.1",
+  sha256: "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536",
+};
+
 const PARTS: Record<string, Part> = {
+  // Not a crate: the same file for every station platform (SCRCPY above).
+  "scrcpy-server": {
+    files: () => ["scrcpy-server"],
+    targets: STATION_BINS,
+    env: "STILLFAIL_SCRCPY_SERVER",
+    recipe: () => SCRCPY,
+    build(_t, out) {
+      const file = join(out, "scrcpy-server");
+      run("curl", ["--fail", "--location", "--silent", "--show-error", "--retry", "3", "--max-time", "120", "--output", file, SCRCPY.url]);
+      const got = createHash("sha256").update(readFileSync(file)).digest("hex");
+      if (got !== SCRCPY.sha256) throw new Error(`${SCRCPY.url}: sha256 ${got}, expected ${SCRCPY.sha256}`);
+    },
+  },
   // The station's iroh and image codecs, a Node addon (docs/station-ts-native.md §3); the desktop's core uses it too.
   mesh: {
-    ...stationCrate("native/mesh", (t) => (t === "darwin-arm64" ? "libstillfail_mesh.dylib" : t === "win32-x64" ? "stillfail_mesh.dll" : "libstillfail_mesh.so"), "mesh.node", [...VENDORED, "../profiles"]),
+    ...stationCrate("native/mesh", (t) => (t === "darwin-arm64" ? "libcomma_station_mesh.dylib" : t === "win32-x64" ? "comma_station_mesh.dll" : "libcomma_station_mesh.so"), "mesh.node", [...VENDORED, "../profiles"]),
     targets: STATION_BINS,
-    env: "STILLFAIL_MESH_NATIVE",
+    env: "COMMA_STATION_MESH_NATIVE",
+  },
+  // Windows' main display as a screen (native/desktop-screen, still.fail's stillfail-screen ported): an executable the
+  // station starts for each view (src/screens/win-desktop.ts, docs/desktop-screen.md). Windows only.
+  "desktop-screen": {
+    ...stationCrate("native/desktop-screen", () => "comma-desktop-screen.exe", "comma-desktop-screen.exe"),
+    targets: ["win32-x64"],
+    env: "COMMA_STATION_DESKTOP_SCREEN",
   },
   // Salix's copy of the Profiles' logic (systems/profiles/nif): the NIF SalixAgent.Profiles.Native loads (`.so` on every
   // platform, as the BEAM looks for it). Published for every platform, so Salix's CI and a dev container take it
@@ -219,9 +263,9 @@ const PARTS: Record<string, Part> = {
     env: "PROFILES_NIF",
   },
   // The TypeScript station's launcher (§2) and an agent's runner (§1).
-  // On Windows with stillfail-station-w.exe beside it: the launcher as a logon task runs it, with no window.
-  launcher: withHidden(stationCrate("native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
-  runner: { ...stationCrate("native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" },
+  // On Windows with comma-station-w.exe beside it: the launcher as a logon task runs it, with no window.
+  launcher: withHidden(stationCrate("native/launcher", exe("comma-station"), exe("comma-station"))),
+  runner: { ...stationCrate("native/runner", exe("comma-runner"), exe("comma-runner")), targets: STATION_BINS, env: "COMMA_STATION_RUNNER" },
   // For the station's tests: the Rust station's cold storage as a command (test/cold-compat.test.ts), and a member's
   // client asking a station over iroh (tools/load: test/e2e.sh, compare.sh). This machine's only.
   "archive-rs": {
@@ -275,10 +319,10 @@ const asset = (part: string, target: Target, k: string) => `${part}-${target}-${
 
 // ── the cache ──
 
-const CACHE = process.env.STILLFAIL_NATIVE_CACHE ??
-  (osPlatform() === "darwin" ? join(homedir(), "Library/Caches/stillfail-native")
-    : osPlatform() === "win32" ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData/Local"), "stillfail-native")
-    : join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "stillfail-native"));
+const CACHE = process.env.COMMA_STATION_NATIVE_CACHE ??
+  (osPlatform() === "darwin" ? join(homedir(), "Library/Caches/comma-station-native")
+    : osPlatform() === "win32" ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData/Local"), "comma-station-native")
+    : join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "comma-station-native"));
 const cached = (part: string, target: Target, k: string) => join(CACHE, part, `${target}-${k}`);
 const log = (msg: string) => process.stderr.write(`native: ${msg}\n`);
 
@@ -335,11 +379,35 @@ const complete = (dir: string, part: string, target: Target) =>
 /// archive's path as a host to connect to.
 const TAR = process.platform === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
 
+/// The string table's offset in a 64-bit Mach-O, from its LC_SYMTAB.
+function stringTableOffset(file: string): number | undefined {
+  const bytes = readFileSync(file);
+  if (bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf) throw new Error(`${file} is not a 64-bit Mach-O`);
+  for (let i = 0, at = 32; i < bytes.readUInt32LE(16); i++, at += bytes.readUInt32LE(at + 4)) {
+    if (bytes.readUInt32LE(at) === 2) return bytes.readUInt32LE(at + 16);
+  }
+  return undefined;
+}
+/// Fails unless each of a Mac part's Mach-O files is one dyld takes. The offset is checked first and on every Mac: an older
+/// macOS or SDK loads a bad file, and a newer one refuses it. On a Mac, a signature must hold and an addon must load.
+function verify(part: string, target: Target, dir: string) {
+  if (target !== "darwin-arm64" || !P(part).machO) return;
+  for (const name of P(part).files(target)) {
+    const file = join(dir, name);
+    const offset = stringTableOffset(file);
+    if (offset === undefined || offset % 8 !== 0) throw new Error(`${part} ${target}: ${name} has its string table at ${offset} (not 8-byte aligned)`);
+    if (osPlatform() !== "darwin") continue;
+    run("/usr/bin/codesign", ["--verify", file]);
+    if (name.endsWith(".node")) run(process.execPath, ["-e", "process.dlopen({ exports: {} }, process.argv[1])", file]);
+  }
+}
+
 function unpack(tgz: string, part: string, target: Target, k: string, from: string): string {
   const tmp = fresh(part);
   run(TAR, ["-xzf", tgz, "-C", tmp]);
   if (!P(part).files(target).every((f) => existsSync(join(tmp, f)))) throw new Error(`${basename(tgz)} lacks ${P(part).files(target).join(", ")}`);
   const manifest = existsSync(join(tmp, "manifest.json")) ? JSON.parse(readFileSync(join(tmp, "manifest.json"), "utf8")) : {};
+  verify(part, target, tmp);
   const final = cached(part, target, k);
   install(tmp, final, { ...manifest, part, target, key: k, from });
   return final;
@@ -347,18 +415,23 @@ function unpack(tgz: string, part: string, target: Target, k: string, from: stri
 
 async function download(part: string, target: Target, k: string): Promise<string | null> {
   const name = asset(part, target, k);
-  const inbox = process.env.STILLFAIL_NATIVE_INBOX;
+  const inbox = process.env.COMMA_STATION_NATIVE_INBOX;
   if (inbox && existsSync(join(inbox, name))) {
     log(`${part} ${target} ${k}: from ${inbox}`);
     return unpack(join(inbox, name), part, target, k, "inbox");
+  }
+  const kept = keptDownload(name);
+  if (kept && existsSync(kept)) {
+    log(`${part} ${target} ${k}: from ${dirname(kept)}`);
+    return unpack(kept, part, target, k, `${STORE}/${name}`);
   }
   const url = `${STORE}/${name}`;
   const started = Date.now();
   let response: Response;
   try {
-    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+    response = await fetchRetrying(url, 300_000);
   } catch (e) {
-    log(`${part} ${target}: could not reach GitHub (${(e as Error).message})`);
+    log(`${part} ${target}: could not reach ${STORE} (${(e as Error).message})`);
     return null;
   }
   if (response.status === 404) return null;
@@ -369,8 +442,35 @@ async function download(part: string, target: Target, k: string): Promise<string
   try {
     const dir = unpack(tgz, part, target, k, url);
     log(`${part} ${target} ${k}: downloaded (${(bytes.length / 1e6).toFixed(1)} MB, ${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (kept) {
+      mkdirSync(dirname(kept), { recursive: true });
+      copyFileSync(tgz, `${kept}.${process.pid}`);
+      renameSync(`${kept}.${process.pid}`, kept);
+    }
     return dir;
   } finally { rmSync(tgz, { force: true }); }
+}
+
+/// Where a CI host keeps a downloaded artifact between jobs (COMMA_TOOL_CACHE). The name holds the part's key, so a
+/// kept file is the one R2 serves under that name.
+function keptDownload(name: string): string | undefined {
+  const cache = process.env.COMMA_TOOL_CACHE;
+  return cache ? join(cache, "station-native", name) : undefined;
+}
+
+/// fetch, again after a dropped connection or a 5xx (up to 3 tries, 2 s apart).
+async function fetchRetrying(url: string, timeoutMs: number, method = "GET"): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const response = await fetch(url, { method, redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+      if (response.status < 500 || attempt === 3) return response;
+      log(`${url} answered ${response.status}; trying again`);
+    } catch (e) {
+      if (attempt === 3) throw e;
+      log(`${url}: ${(e as Error).message}; trying again`);
+    }
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
 }
 
 function buildHere(part: string, target: Target, k: string): string {
@@ -379,6 +479,7 @@ function buildHere(part: string, target: Target, k: string): string {
   const tmp = fresh(part);
   try {
     P(part).build(target, tmp);
+    verify(part, target, tmp);
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
     throw e;
@@ -394,14 +495,14 @@ async function get(part: string, target: Target, mode: "any" | "fetch" | "build"
   const k = key(part, target);
   const dir = cached(part, target, k);
   if (mode !== "build" && complete(dir, part, target)) return dir;
-  const policy = process.env.STILLFAIL_NATIVE ?? "";
+  const policy = process.env.COMMA_STATION_NATIVE ?? "";
   return await lockedAsync(dir, async () => {
     if (mode !== "build" && complete(dir, part, target)) return dir;
     if (mode !== "build" && policy !== "build" && policy !== "offline") {
       const got = await download(part, target, k);
       if (got) return got;
     }
-    if (mode === "fetch" || policy === "offline") throw new Error(`${part} ${target} ${k} is not prebuilt (STILLFAIL_NATIVE=${policy || "-"}, ${mode})`);
+    if (mode === "fetch" || policy === "offline") throw new Error(`${part} ${target} ${k} is not prebuilt (COMMA_STATION_NATIVE=${policy || "-"}, ${mode})`);
     // n0's relay is downloaded from n0 whatever the policy: "building" it is that.
     return buildHere(part, target, k);
   });
@@ -479,7 +580,9 @@ function listed(): Map<string, string> {
 }
 /// Whether R2 has NAME, over the public address (no credentials).
 async function exists(name: string): Promise<boolean> {
-  const r = await fetch(`${STORE}/${name}`, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(30_000) });
+  const kept = keptDownload(name);
+  if (kept && existsSync(kept)) return true;
+  const r = await fetchRetrying(`${STORE}/${name}`, 30_000, "HEAD");
   return r.ok;
 }
 function pack(dir: string, name: string, into: string): string {
@@ -548,7 +651,7 @@ async function main(argv: string[]) {
       }
       // Default: all of ours (n0's relay is not ours to publish).
       if (wanted.length === 0) for (const [p, part] of Object.entries(PARTS)) if (p !== "iroh-relay") for (const t of part.publish ?? part.targets) wanted.push([p, t]);
-      const work = join(tmpdir(), `stillfail-native-${process.pid}`);
+      const work = join(tmpdir(), `comma-station-native-${process.pid}`);
       mkdirSync(work, { recursive: true });
       if (outbox) mkdirSync(outbox, { recursive: true });
       const summary: string[] = [];
@@ -561,6 +664,7 @@ async function main(argv: string[]) {
         const before = complete(cached(p, t, k), p, t);
         const started = Date.now();
         const dir = await get(p, t);
+        verify(p, t, dir);
         const took = ((Date.now() - started) / 1000).toFixed(0);
         const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";
         let note = "";

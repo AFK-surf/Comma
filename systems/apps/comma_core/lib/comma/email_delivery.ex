@@ -21,6 +21,27 @@ defmodule Comma.EmailDelivery do
        "Enter it only in the SSH connection you started. This grants future account access to that key."}
   end
 
+  def message("account_deletion", code) do
+    {"Confirm deleting your Comma account",
+     "Your Comma account deletion code is #{code}.\n\n" <>
+       "Enter it only if you asked to delete your Comma account. Deletion cannot be undone. " <>
+       "This code expires soon."}
+  end
+
+  def message("email_change_current", code) do
+    {"Confirm changing your Comma email",
+     "Your Comma email change code is #{code}.\n\n" <>
+       "Enter it only if you asked to change the email you sign in to Comma with. " <>
+       "This code expires soon."}
+  end
+
+  def message("email_change_new", code) do
+    {"Confirm your new Comma email",
+     "Your Comma email confirmation code is #{code}.\n\n" <>
+       "Enter it only if you asked to sign in to Comma with this email. " <>
+       "This code expires soon."}
+  end
+
   def message(_purpose, code) do
     {
       "Your Comma login code",
@@ -47,6 +68,15 @@ defmodule Comma.EmailDelivery do
 
         "ssh_enrollment" ->
           "Enter this code only in the SSH connection you started. This grants future account access to that key."
+
+        "account_deletion" ->
+          "Enter this code only if you asked to delete your Comma account. Deletion cannot be undone."
+
+        "email_change_current" ->
+          "Enter this code only if you asked to change the email you sign in to Comma with."
+
+        "email_change_new" ->
+          "Enter this code only if you asked to sign in to Comma with this email."
 
         _ ->
           "You're signing in to Comma. Please use the code below to validate your email."

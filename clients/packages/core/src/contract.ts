@@ -13,7 +13,6 @@ import type {
   ComputeLocalWorkloadTarget,
   ComputeLocalWorkloads,
   ComputeRecoveredBinding,
-  ComputeRecoveryChallenge,
 } from "./comma/api-schemas.ts";
 import type {
   ChatCommandReceipt,
@@ -65,6 +64,12 @@ export const TOPICS = {
   plugins: { workspace: ["string", "def"], prefer: ["string", "def"] },
   /** An installed plugin's connections for this person, and an account confirmation under way. */
   pluginSources: { workspace: ["string", "req"], plugin: ["string", "req"] },
+  /** An installed plugin's tool groups (the families of its MCP's tools) and which the workspace has on. */
+  pluginToolGroups: { workspace: ["string", "req"], plugin: ["string", "req"] },
+  /** The still.fail stations a plugin connected (`Plugin.stations`), each to disconnect on its own. */
+  pluginStations: { workspace: ["string", "req"], plugin: ["string", "req"] },
+  /** The MCP servers a workspace connected by address. */
+  mcpServers: { workspace: ["string", "req"] },
   /** What went wrong with an install the person started, to be said once, by one window (`plugin.notice.claim`). */
   pluginNotices: {},
   /**
@@ -102,10 +107,14 @@ export const TOPICS = {
   signal: { workspace: ["string", "req"] },
   /** A workspace's iMessage over Photon shared lines and the attempt under way (read every 3 s while it waits on the person). */
   imessage: { workspace: ["string", "req"] },
+  /** A workspace's LINE link to Comma's LINE account and the attempt under way (read every 3 s while it waits on the person). */
+  line: { workspace: ["string", "req"] },
   /** A workspace's Linear link, its organization's installation and the connect under way (read every 1.5 s while it waits on Linear). */
   linear: { workspace: ["string", "req"] },
   /** Settings › Inbound API: the workspace's Router API keys (`prefer`, else the first workspace). */
   routerKeys: { prefer: ["string", "def"] },
+  /** Settings › Task requests: requests to the workspace (`prefer`, else the first) and the person's own sends. */
+  taskRequests: { prefer: ["string", "def"] },
   /** Settings › Tailscale: a workspace's tailnet node (`prefer`, else the first workspace; read every 3 s while it waits). */
   tailnet: { prefer: ["string", "def"] },
   /**
@@ -124,6 +133,11 @@ export const TOPICS = {
    * surface shows the Conversation.
    */
   agentRequests: { group: ["string", "req"], conversation: ["string", "req"] },
+  /**
+   * The pending location requests the person's own messages led to, in every Group. A phone follows it while the app
+   * is open and answers them with `agentRequests.shareLocation` when the system allows it to read its position.
+   */
+  agentLocationRequests: {},
   /** Settings › Condensed Workspace: the shared facts of the Group of the workspace `prefer` (else the first). */
   condensedWorkspace: { prefer: ["string", "def"] },
   /** Settings › Voice: the verified caller numbers and voice API keys of the workspace `prefer` (else the first). */
@@ -186,6 +200,8 @@ export const TOPICS = {
   },
   /** The reader's marks of one `kind` on this device (seen needs-review Tasks, deleted and unread Inbox rows). */
   marks: { kind: ["string", "req"] },
+  /** The 画质 the account chose for its views of computers' screens on this device (`devices.chooseScreenQuality`). */
+  screenQuality: {},
   /**
    * The workspace a surface works in: `prefer` when the account has it, else the one the app works in
    * (`workspace.select`), else its first (read again when shown).
@@ -232,6 +248,13 @@ export const TOPICS = {
    * Read when first shown and kept a minute; each new read of the list in focus reads the shown ones again.
    */
   mentionTasks: { group: ["string", "req"] },
+  /**
+   * The Slack channels and people the composer's @ menu lists for a workspace: channels the person joined first, then
+   * by name; people by name. Null until the first answer, empty without a Slack grant of theirs.
+   */
+  slackDirectory: { workspace: ["string", "req"] },
+  /** Who is in a Slack channel, by Slack user id: null until the first page, then as the pages come. */
+  slackChannelMembers: { workspace: ["string", "req"], channel: ["string", "req"] },
   /**
    * Follow-ups the server suggests for the settled turn ending in assistant message `message` of conversation
    * `conversation` (Group `group`), written in `locale` unless the conversation's own language decides: at most four,
@@ -381,9 +404,9 @@ export const TOPICS = {
     read: ["string", "def"],
   },
   /**
-   * An app's `icon_url` or `cover_url` as an image the page can show, read with the account's session and the access
-   * path (`workspace`, or a link's `link` token) while shown. A URL names one Version's image, which never changes, so
-   * a read is kept for the account's session.
+   * An app's `icon_url`, `cover_url` or one of its `screenshot_urls` as an image the page can show, read with the
+   * account's session and the access path (`workspace`, or a link's `link` token) while shown. A URL names one
+   * Version's image, which never changes, so a read is kept for the account's session.
    */
   miniAppImage: {
     url: ["string", "req"],
@@ -443,6 +466,10 @@ export interface Plugin {
   installed: boolean;
   locked: boolean;
   credentialSetup?: PluginCredentialSetup | null | undefined;
+  /** Its MCP has tool groups to switch on and off (`pluginToolGroups`). */
+  toolGroups?: boolean | undefined;
+  /** It connects still.fail stations, listed and disconnected one by one (`pluginStations`). */
+  stations?: boolean | undefined;
   mcps: { id: string; name: string }[];
   skills: { id: string; name: string }[];
 }
@@ -451,6 +478,9 @@ export interface PluginCredentialSetup {
   key: string;
   label: string;
   helpUrl: string;
+  /** `show`: nothing is asked; `value` is shown for the member to copy (still.fail's line for its station). */
+  format?: "show" | undefined;
+  value?: string | undefined;
 }
 
 export interface PluginInstallAnswer {
@@ -469,6 +499,8 @@ export type PluginInstallOrigin = "plugins" | "onboarding";
 export type PluginActivity =
   | "idle"
   | "installing"
+  /** An install waits on its owner to confirm in Lark the app the code makes (`scan`). */
+  | "scanning"
   | "authorizing"
   | "verifying"
   | "reauthorizing"
@@ -476,6 +508,8 @@ export type PluginActivity =
 
 export type PluginRow = Plugin & {
   activity: PluginActivity;
+  /** While `scanning`: the link to show as a QR code; step `member` is the member's own sign-in after the scan. */
+  scan?: { url: string; step?: "member" };
   /** The connection whose reconnect request is in flight. */
   reauthorizing?: string;
 };
@@ -504,12 +538,25 @@ export type SessionValue = (
   emailCooldown?: SessionEmailCooldown | null;
   /** Guest chats imported into a registered account since the core started (the core's web lifecycle only). */
   guestImports?: number;
+  /**
+   * The other accounts signed in on this device, set aside while another is in use (`session.switchAccount` makes
+   * one the account in use). Absent where a device keeps only one (the web).
+   */
+  accounts?: SessionAccount[];
 };
+
+/** An account signed in on this device besides the one in use. */
+export interface SessionAccount {
+  userId: string;
+  email: string;
+}
 
 /** A sign-in under way: its ref (fencing every call that continues it), and the code it waits for, if one. */
 export interface SessionAttempt {
   ref: SessionAuthAttemptRef;
   method: "email" | "google" | "apple" | "guest";
+  /** Only public presentation data. Attempt credentials stay inside the core. */
+  captcha?: { challengeId: string; url: string };
   /**
    * The emailed code's challenge (`email_login`), or a Google account's or Apple ID's link to an existing one
    * (`google_link`, `apple_link`).
@@ -578,6 +625,8 @@ export interface OnboardingPluginRow {
   summary: string;
   brand: string | null | undefined;
   connection: OnboardingPluginConnection;
+  /** An install by a scan (Lark, Feishu) waiting on the member: the link they confirm. */
+  scan?: { url: string; step?: "member" };
 }
 
 export type OnboardingPluginList =
@@ -614,7 +663,7 @@ export type PluginsValue =
 export interface PluginSource {
   connectionId: string;
   toolkit: string;
-  kind: "composio" | "managed_oauth" | "native_mcp_oauth";
+  kind: "composio" | "managed_oauth" | "native_mcp_oauth" | "im_connect";
   state:
     | "ready"
     | "needs_confirmation"
@@ -624,6 +673,8 @@ export interface PluginSource {
   candidates: { id: string }[];
   /** MCP OAuth grants name the plugin MCPs they authorize. */
   mcpIds?: string[];
+  /** The scopes a member's own Lark or Feishu bot lacks; Reconnect scans again to update the app. */
+  missingScopes?: string[];
 }
 
 export interface PluginAccountConfirmation {
@@ -642,6 +693,58 @@ export interface PluginSourcesValue {
   pending: { type: "prepare"; accountId: string } | { type: "confirm" } | null;
 }
 
+export interface PluginToolGroup {
+  id: string;
+  name: string;
+  /** The heading it is listed under; groups of one category come together. */
+  category?: string | undefined;
+  enabled: boolean;
+}
+
+/** A still.fail station a plugin connected: its device. */
+export interface PluginStation {
+  id: string;
+  /** What the station called itself as it connected (its still.fail workspace and name); null before it did. */
+  name: string | null;
+  connected: boolean;
+  /** When it last connected (ISO time); null when it never did. */
+  connectedAt: string | null;
+}
+
+export interface PluginStationsValue {
+  /** Null until the first read. */
+  stations: PluginStation[] | null;
+  /** Why the last read or disconnect failed. */
+  error: "load_failed" | "disconnect_failed" | null;
+  /** The station being disconnected now; one at a time per plugin. */
+  pending: string | null;
+}
+
+export interface PluginToolGroupsValue {
+  /** Every group the plugin's MCP offers, in its order (none for most plugins); null until the first read. */
+  groups: PluginToolGroup[] | null;
+  /** Why the last read or change failed. */
+  error: "load_failed" | "save_failed" | null;
+  /** The group being turned on or off now; one change at a time per plugin. */
+  pending: string | null;
+}
+
+export interface McpServer {
+  id: string;
+  name: string;
+  url?: string | undefined;
+  status: "connected" | "needs_authorization" | "failed";
+  /** How many tools it was last seen to offer. */
+  tools: number;
+}
+
+export interface McpServersValue {
+  /** Null until the first read. */
+  servers: McpServer[] | null;
+  /** The last read failed. */
+  error: "load_failed" | null;
+}
+
 /** Why an install or reconnect failed, as the UI words it. */
 export type PluginFailureReason =
   | "busy"
@@ -654,6 +757,8 @@ export type PluginFailureReason =
 
 export interface PluginNotice {
   id: number;
+  /** The Workspace of the core-owned operation, even when another Workspace is now in focus. */
+  workspace: string;
   /** `authorize`: the next step of an install needs its owner in the browser again (`url`), for one window to open. */
   kind:
     | "install_failed"
@@ -663,14 +768,19 @@ export interface PluginNotice {
     | "uninstall_failed"
     | "not_personal"
     | "authorize"
-    | "configure";
+    | "configure"
+    | "scan_failed";
   origin: PluginInstallOrigin;
   plugin: string;
   reason?: PluginFailureReason;
-  /** What the server said, for an uninstall that failed. */
+  /** What the server said, for an uninstall or a scan that failed. */
   message?: string;
   /** Where to authorize, for `authorize`. */
   url?: string;
+  /** Why a scan ended without an app, for `scan_failed`. */
+  scan?: "denied" | "expired" | "failed";
+  /** `member`: the scan that failed was the member's own sign-in; the plugin itself is installed. */
+  scanStep?: "member";
   /** A credential form's metadata only. Never contains the submitted values. */
   configuration?: { workspace: string; plugin: Plugin; setup: PluginCredentialSetup };
 }
@@ -784,6 +894,8 @@ export interface ProductInboxItem {
     | { number: number; state: "open" | "draft" | "merged" | "closed"; url: string }
     | undefined;
   clientPlatform?: string | undefined;
+  /** Who sent the Task Request this Task was accepted from (`origin` is `task_request`). */
+  requestedBy?: TaskRequester | undefined;
   /**
    * The Message the Task was created from, such as the person's Home request the Router answered with this Task.
    * Quick Chat reads it to show its sent words becoming the Task in the Notch.
@@ -797,6 +909,8 @@ export interface ProductInboxItem {
   loop?: TaskLoop | undefined;
   /** When the Task's latest run started (Unix milliseconds); absent for a Task from before it was kept. */
   runStartedAt?: number | undefined;
+  /** When the Task was created (Unix milliseconds); absent where its server did not say. */
+  createdAt?: number | undefined;
   title: string;
   status: string;
   /** The section `status` folds into on every client (`taskStatusBucket`), and whether it failed. Said by the topic. */
@@ -895,7 +1009,11 @@ export interface BillingSubscription {
 /** A workspace's balance and subscription. */
 export interface BillingSummary {
   billing_account_id: string;
+  /** The credits that pay for everything, hosted models included. */
   current_credits: number;
+  /** The credits that pay only for cloud sandboxes and storage. An older server does not send them. */
+  non_llm_credits?: number | undefined;
+  non_llm_credits_expires_at?: string | null | undefined;
   active_subscription?: BillingSubscription | null | undefined;
   active_grants: BillingGrant[];
 }
@@ -1138,6 +1256,37 @@ export interface IMessageValue {
   busy: boolean;
 }
 
+export interface LineAttempt {
+  code: string;
+  /** Unix seconds; the server drops the attempt after ten minutes. */
+  expires_at: number;
+  /** Opens a chat with Comma's LINE account with `link <code>` typed in. */
+  message_url: string;
+}
+
+export interface LineIntegration {
+  /** Comma's LINE account is set up on this deployment. */
+  configured: boolean;
+  basic_id?: string | null | undefined;
+  add_friend_url?: string | null | undefined;
+  connection_active: boolean;
+  pending_claim: LineAttempt | null;
+  link: {
+    line_user_id: string;
+    line_display_name?: string | null | undefined;
+    connection_id: string;
+    /** Unix seconds. */
+    connected_at: number;
+  } | null;
+}
+
+/** `state` is null until the first read; `error`: the last read failed (`line.refresh` reads again). */
+export interface LineValue {
+  state: LineIntegration | null;
+  error: boolean;
+  busy: boolean;
+}
+
 /** A Router API key as listed: never its plaintext. */
 export interface RouterKey {
   key_id: string;
@@ -1208,6 +1357,127 @@ export interface TailnetValue {
   busy: boolean;
 }
 
+export interface TaskRequestPerson {
+  id: string;
+  name: string | null;
+  email: string | null;
+  /** Their avatar's revision, when they have one. */
+  avatar_id?: string | null | undefined;
+}
+
+export type TaskRequestMode = "review" | "auto_accept";
+export type TaskRequestStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "withdrawn"
+  | "expired";
+
+/**
+ * Where an accepted request's Task runs, as the New task window chooses it: Comma's cloud on a catalog model, a coding
+ * sandbox with a GitHub repository, or one of the workspace's stations on one of its runtimes.
+ */
+export type TaskRequestRun =
+  | { kind: "cloud"; model: string }
+  | {
+      kind: "sandbox";
+      repo: { owner: string; name: string; baseRef?: string };
+      provider: string;
+      model?: string;
+      accountId?: string;
+    }
+  | { kind: "station"; station: string; provider: string; model?: string };
+
+/** Who may send requests to the workspace: an open invite (`invited`, with its link) or a person's grant. */
+export interface TaskRequestGrant {
+  id: string;
+  status: "invited" | "active" | "revoked";
+  mode: TaskRequestMode;
+  daily_limit: number;
+  pending_limit: number;
+  grantee: TaskRequestPerson | null;
+  invite_url?: string | undefined;
+  invite_expires_at?: number | null | undefined;
+  created_at: number | null;
+}
+
+/** A request someone sent to the workspace. */
+export interface TaskRequestIncoming {
+  id: string;
+  sender: TaskRequestPerson | null;
+  title: string;
+  content: string;
+  status: TaskRequestStatus;
+  /** How an accepted request went on: as a Task, or to the Router's chat. */
+  accepted_as?: "task" | "router" | null | undefined;
+  decline_reason: string | null;
+  task: { group_id: string | null; id: string } | null;
+  created_at: number | null;
+  expires_at: number | null;
+}
+
+/** A workspace whose invite the person accepted: where they may send. */
+export interface TaskRequestTarget {
+  grant_id: string;
+  workspace: {
+    id: string;
+    name: string | null;
+    owner: TaskRequestPerson | null;
+  };
+  mode: TaskRequestMode;
+  daily_limit: number;
+  pending_limit: number;
+  sent_today: number;
+  pending: number;
+}
+
+/** A request the person sent; once accepted, its Task's status. */
+export interface TaskRequestSent {
+  id: string;
+  workspace: TaskRequestTarget["workspace"] | null;
+  title: string;
+  content: string;
+  status: TaskRequestStatus;
+  decline_reason: string | null;
+  /** Once accepted: its Task's status as the Task last reported it. */
+  task_status: string | null;
+  /** The words of the Task's latest Agent Message, once it has a result. */
+  reply: string | null;
+  created_at: number | null;
+  /** When the owner decided (accepted or declined). */
+  decided_at: number | null;
+  /** When its Task last reported. */
+  task_updated_at: number | null;
+}
+
+/** A chat app's account (a Slack user) linked to the person's Comma account: Routers serving it act as them. */
+export interface ProviderUserLink {
+  id: string;
+  provider: string;
+  name: string | null;
+  /** The chat account's email, as the chat app says it. */
+  email: string | null;
+  /** The organization it is in: a Slack workspace, or a Lark or Feishu tenant, else the Comma for Teams organization. */
+  workspace: string | null;
+  /** The bot it is linked through. */
+  bot: string | null;
+  linked_at: number | null;
+}
+
+/** Each list is null until its first read; `error`: the last read of one failed (`taskRequests.refresh`). */
+export interface TaskRequestsValue {
+  workspace: string | null;
+  incoming: TaskRequestIncoming[] | null;
+  grants: TaskRequestGrant[] | null;
+  targets: TaskRequestTarget[] | null;
+  sent: TaskRequestSent[] | null;
+  /** The person's linked chat accounts. */
+  links: ProviderUserLink[] | null;
+  /** How the workspace takes its owner's own requests, sent from a linked chat account. */
+  own: TaskRequestMode | null;
+  error: boolean;
+}
+
 /** `keys` is null until the first read; `error`: the last read failed (`routerKeys.refresh`). */
 export interface RouterKeysValue {
   workspace: string | null;
@@ -1274,21 +1544,73 @@ export interface TaskLabelsValue {
 
 /**
  * An Agent's request to a person in a Conversation (a Capability Request), as its card shows it. The server owns its
- * status and outcome; the first decision wins, and every device sees it. Only the connect-account kind
- * (`oauth_authorization`) has a card so far.
+ * status and outcome; the first decision wins, and every device sees it. Connecting an account
+ * (`oauth_authorization`), sharing a location (`location`) and using a phone (`computer_use_start`) have cards.
  */
-export interface AgentRequest {
+export type AgentRequest =
+  | AgentOAuthRequest
+  | AgentLocationRequest
+  | AgentPhoneRequest
+  | AgentPluginRequest;
+
+interface AgentRequestBase {
   id: string;
-  type: "oauth_authorization";
   /** `expired`: its deadline passed with no decision. `cancelled`: the Agent withdrew it. */
   status: "pending" | "completed" | "expired" | "cancelled" | "failed";
-  /** How a completed request ended. */
-  outcome: "connected" | "declined" | null;
   /** Unix milliseconds. */
   expiresAt: number | null;
   createdAt: number | null;
   /** The person's message the Agent's turn served: the card sits under the reply to it. */
   sourceMessageId: string | null;
+}
+
+/** The Agent asks for this device's position, once. Neither the card nor the stream carries the coordinates. */
+export interface AgentLocationRequest extends AgentRequestBase {
+  type: "location";
+  /** How a completed request ended. */
+  outcome: "shared" | "declined" | null;
+  location: {
+    /** Why the Agent asks, in its words. */
+    reason: string;
+  };
+}
+
+export interface AgentLocationRequestsValue {
+  requests: { id: string; group: string; conversation: string }[];
+}
+
+/**
+ * An Agent asks to use a person's phone in this Conversation (Salix's `env.android` on a computer's own phone). Only
+ * the owner of the computer the phone is on allows or denies it (`agentRequests.decide`).
+ */
+export interface AgentPhoneRequest extends AgentRequestBase {
+  type: "computer_use_start";
+  outcome: "allowed" | "denied" | null;
+  phone: { title: string; target: string; deviceId: string };
+}
+
+/**
+ * A Router asks to install a plugin in the Workspace (`plugin.request_install`). The card installs it as the Plugins
+ * page does (`plugin.install`); any install of it ends the request on the server.
+ */
+export interface AgentPluginRequest extends AgentRequestBase {
+  type: "plugin_install";
+  outcome: "installed" | "declined" | null;
+  plugin: {
+    id: string;
+    name: string;
+    /** Why the Agent asks, in its words. */
+    reason: string;
+    brand: string | null;
+    /** The Workspace it goes into. */
+    workspace: string;
+  };
+}
+
+export interface AgentOAuthRequest extends AgentRequestBase {
+  type: "oauth_authorization";
+  /** How a completed request ended. */
+  outcome: "connected" | "declined" | null;
   oauth: {
     provider: string;
     alias: string;
@@ -1299,8 +1621,24 @@ export interface AgentRequest {
     authorizationUrl?: string;
     /** The account it connected. */
     account?: string;
+    /** What a secret is called, in the Agent's words. */
+    label?: string;
+    /** What the person fills in on the card first, while the request waits. */
+    input?: AgentRequestInput;
   };
 }
+
+/**
+ * `secret`: a value such as an API key, which ends the request. `app`: the Workspace's own app, after which the
+ * request waits on the provider's page as any other.
+ */
+export type AgentRequestInput =
+  | { kind: "secret"; label?: string; helpUrl?: string }
+  | { kind: "app"; helpUrl?: string; redirectUri?: string }
+  /** A CLI login in a Task's sandbox: a device code to confirm on the page, a page alone, or a page's code to paste. */
+  | { kind: "device"; code: string }
+  | { kind: "open" }
+  | { kind: "paste" };
 
 export interface AgentRequestsValue {
   requests: AgentRequest[];
@@ -1356,12 +1694,24 @@ export interface VoiceIntegration {
     pin_locked_until?: number | null | undefined;
     status: "verified" | "locked";
   }[];
+  /** Phone calls: needs a platform line. */
   readiness: { ready: boolean; reason?: string | null | undefined };
+  /** Calls over the voice API (the desktop's, voice clients'): no line needed. Absent from older servers. */
+  call_readiness?:
+    | { ready: boolean; reason?: string | null | undefined }
+    | null
+    | undefined;
   sessions_url?: string | null | undefined;
   readiness_url?: string | null | undefined;
   preferences: VoicePreferences;
   /** The preset voice names. */
   voices: string[];
+}
+
+/** A short spoken sample of a call voice: base64 audio of `contentType`. */
+export interface VoicePreview {
+  contentType: string;
+  audio: string;
 }
 
 /** A call voice: a preset by name, or the workspace's custom voice. */
@@ -1370,7 +1720,12 @@ export type VoiceChoice = { kind: "preset"; name: string } | { kind: "custom" };
 /** What a workspace's calls speak with (null voice: the platform's), and whether they speak as the Router. */
 export interface VoicePreferences {
   voice: VoiceChoice | null;
-  custom_voice: { name: string; description: string } | null;
+  custom_voice: {
+    name: string;
+    description: string;
+    /** Names this voice's samples a client keeps; a new voice has a new one. Absent from older servers. */
+    sample_key?: string | null | undefined;
+  } | null;
   router_calls: boolean;
 }
 
@@ -1421,10 +1776,13 @@ export interface Device {
         hostname?: string | undefined;
         cpu_model?: string | undefined;
         memory_total?: number | undefined;
+        os_type?: string | undefined;
         os_version?: string | undefined;
       }
     | undefined;
   device_id: string;
+  /** What it was set up as: absent for a computer, `stillfail` for a still.fail station. */
+  device_kind?: string | null | undefined;
   name: string;
   alias?: string | null | undefined;
   status: "connected" | "disconnected";
@@ -1433,6 +1791,11 @@ export interface Device {
   access?: DeviceAccess | undefined;
   /** The station its Connector proved it runs; absent until one did. */
   station_id?: string | null | undefined;
+  /**
+   * Whether that station serves the computer's display on the mesh. When an older server leaves it out, the core infers
+   * it from the platform (`screenSaid`: `darwin` or no OS true, another OS false); such a true only lets the client try.
+   */
+  screen_view?: boolean | undefined;
   /** Whether it takes Tasks: `ready`, `offline`, `device_needs_station`, `station_outdated` (or a later reason). */
   tasks_readiness?: string | undefined;
   /** The models its station's profiles enable, by runtime. */
@@ -1455,6 +1818,11 @@ export type DeviceAccess = "off" | "read" | "full";
 /** A computer as shown: each runtime says whether its readiness still holds now (`fresh`). */
 export type ShownDevice = Omit<Device, "device_runtimes"> & {
   isCommaDevice?: boolean;
+  /**
+   * A still.fail station (`device_kind` `stillfail`): it takes Tasks with the models it reports (`task_models`), has no
+   * access value and answers no coding-agent check, so the core never checks it.
+   */
+  isStillfailStation?: boolean;
   device_runtimes: (DeviceRuntime & { fresh: boolean })[];
 };
 
@@ -1511,6 +1879,8 @@ export interface StationRow {
 export interface StationsValue {
   workspace: string;
   stations: StationRow[];
+  /** This device's connections to the stations of the person's own computers, when the host keeps them. */
+  ownComputers?: { id: string; link: StationRow["link"] }[];
   /** The first read is under way with nothing kept. */
   loading: boolean;
   /** Why the last read failed. */
@@ -1780,18 +2150,47 @@ export interface ComputeValue {
     name?: string | undefined;
   } | null;
   accepted: ComputeWorkload | null;
+  /** A creation receipt or recovered creation detail could not be read; the list may still be current. */
+  creationReadError?: boolean | undefined;
+  /** The current visit exhausted its read budget while an observation is still unresolved. */
+  observationPaused?: boolean | undefined;
+  /** The one outgoing deletion currently observed; per-target request metadata remains authoritative. */
+  deletion?:
+    | {
+        workloadId: string;
+        requestId: string;
+        generation?: number | undefined;
+        uncertain: boolean;
+        canContinue?: boolean | undefined;
+        terminal?: { phase: string; proof?: unknown } | undefined;
+        workload?: ComputeWorkload | undefined;
+      }
+    | null
+    | undefined;
 }
 
+/** `message_id`: the Message whose text matched, when the server names it. */
 export interface TaskSearchResult {
   content_match?:
-    | { highlights: { end: number; start: number }[]; snippet: string }
+    | {
+        highlights: { end: number; start: number }[];
+        message_id?: string | undefined;
+        snippet: string;
+      }
     | undefined;
   conversation_id: string;
   highlights: { end: number; start: number }[];
   matched_field: "title" | "content";
+  message_id?: string | undefined;
   snippet: string;
   title: string;
   updated_at?: number | undefined;
+}
+
+/** The Messages of one Task that match a query, oldest first. `invalid`: the query is too short or refused (400). */
+export interface TaskMessageSearchValue {
+  status: "ready" | "error" | "invalid";
+  messageIds: string[];
 }
 
 /** A search's answer. `invalid`: the query is too short, or the server refused it (400). */
@@ -1799,6 +2198,38 @@ export interface TaskSearchValue {
   status: "ready" | "error" | "invalid";
   scope: { groupId: string; workspaceId: string } | null;
   results: TaskSearchResult[];
+}
+
+/** A file or image an Agent attached to a Task Message (`taskFiles.list`): its bytes are attachment `index` of `message_id`. */
+export interface TaskFile {
+  conversation_id: string;
+  task_title: string;
+  message_id: string;
+  seq: number;
+  index: number;
+  type: "file" | "image";
+  file_name: string;
+  mime_type: string | null;
+  size: number;
+  /** When the Message was sent, in ms. */
+  created_at: number;
+}
+
+/**
+ * A page of Task files, newest first. `indexing`: the server is still indexing the files of older Messages after a
+ * release; `error`: it could not answer.
+ */
+export interface TaskFilesValue {
+  status: "ready" | "indexing" | "error";
+  files: TaskFile[];
+  nextCursor: string | null;
+}
+
+/** A Task file search's answer, as `TaskSearchValue`; `indexing` as in `TaskFilesValue`. */
+export interface TaskFileSearchValue {
+  status: "ready" | "error" | "invalid" | "indexing";
+  scope: { groupId: string; workspaceId: string } | null;
+  files: TaskFile[];
 }
 
 export type Skill = {
@@ -1814,6 +2245,8 @@ export type Skill = {
 export type SkillDetail = Skill & { content: string; files: string[] };
 
 interface LinkPerson {
+  /** Their avatar, read as a `link-preview-avatar` file; none from an older server, or for a host Comma does not read. */
+  avatarRef?: string | null;
   avatarUrl: string | null;
   name: string;
 }
@@ -1832,7 +2265,11 @@ export type LinkPreview =
       kind: "github_pull_request";
       href: string;
       additions: number | null;
-      author: { avatarUrl: string | null; login: string } | null;
+      author: {
+        avatarRef?: string | null;
+        avatarUrl: string | null;
+        login: string;
+      } | null;
       changedFiles: number | null;
       deletions: number | null;
       number: number;
@@ -1907,9 +2344,13 @@ export type LinkPreview =
       title: string;
     };
 
-/** The app's update: `downloading` while one found is downloaded; `ready` once one waits for a restart. */
+/**
+ * The app's update: `downloading` while one found is downloaded, with how far it got in percent (`progress`, null
+ * until the host first says); `ready` once one waits for a restart.
+ */
 export type AppUpdateValue = {
   downloading: boolean;
+  progress: number | null;
   ready: { productName: string; version: string } | null;
 };
 
@@ -1937,8 +2378,8 @@ export interface TaskWorker {
 export type TaskWorkersValue = Record<string, TaskWorker | null>;
 
 /**
- * Where a chat file's bytes are (`files.read`): a message's attachment (its position `index`), an agent's blob, or an
- * image uploaded to the group (`/uploads/…`).
+ * Where a chat file's bytes are (`files.read`): a message's attachment (its position `index`), an agent's blob, or a
+ * file uploaded to the group (`/uploads/…`).
  */
 export type FileSource =
   | {
@@ -1956,7 +2397,15 @@ export type FileSource =
     }
   | { source: "group-file"; group: string; path: string }
   /** The signed-in person's avatar at a revision of their profile. */
-  | { source: "avatar"; revision: string };
+  | { source: "avatar"; revision: string }
+  /** The avatar of the person who sent a Task request to the workspace, for its owner. */
+  | { source: "sender-avatar"; workspace: string; request: string; revision: string }
+  /** The avatar of the person a request the signed-in person sent went to. */
+  | { source: "recipient-avatar"; request: string; revision: string }
+  /** The avatar of a person the signed-in person may send requests to, through their grant. */
+  | { source: "target-avatar"; grant: string; revision: string }
+  /** The avatar of a person on a link preview, by the reference the preview carries (`avatarRef`). */
+  | { source: "link-preview-avatar"; ref: string };
 
 /** A chat file's bytes, and the type the server gave them ("" when none). */
 export interface FileBytes {
@@ -1983,6 +2432,27 @@ export interface DynamicUiStateValue {
   state: string | null;
   cards: string | null;
 }
+
+/** A Slack channel the composer's @ menu lists (`slackDirectory`). */
+export type SlackChannel = {
+  id: string;
+  name: string;
+  /** The person joined it. */
+  member: boolean;
+  teamId: string;
+};
+
+/** A person in Slack the composer's @ menu lists (`slackDirectory`). */
+export type SlackPerson = {
+  id: string;
+  name: string;
+  handle: string;
+  /** Reads their avatar through `link-preview-avatar`; none without one. */
+  avatarRef: string | null;
+  teamId: string;
+};
+
+export type SlackDirectory = { channels: SlackChannel[]; people: SlackPerson[] };
 
 /** A follow-up the person can send next (`chatSuggestions`): `label` names it, `prompt` is the message itself. */
 export interface ChatSuggestion {
@@ -2011,20 +2481,12 @@ export interface SessionBrowserBinding {
   updated_at: string;
 }
 
-/** A compute node's install operation as the workspace keeps it (`computeNode.*`). */
-export type ComputeNodeOperationValue = {
-  authorizationStatus:
-    | "requested"
-    | "exchange_committed"
-    | "handed_off"
-    | "action_required"
-    | "revoked";
+/** Current cloud Registration facts; local request execution belongs to native. */
+export type ComputeNodeRegistrationValue = {
+  hostBound?: boolean;
   status: "processing" | "ready" | "stopped" | "action_required" | "removed";
   workActivity: "idle" | "active" | "unknown";
-  /** The server's failure code for an action-required operation, such as `material_handoff_expired`. */
   errorCode?: string;
-  /** Why the server revoked the registration: expiry may be replaced automatically, an explicit revocation may not. */
-  registrationRevocationReason?: "authorization_expired" | "revoked";
   shellPhase?:
     | "not_initialized"
     | "preparing"
@@ -2034,10 +2496,8 @@ export type ComputeNodeOperationValue = {
     | "deleted";
 };
 
-/** A compute node's install authorization: its one-time descriptor (JSON, as the server wrote it) and the operation. */
 export type ComputeNodeAuthorizationValue = {
-  descriptor: string;
-  operationId: string;
+  descriptor: string | undefined;
   registrationId: string;
 };
 
@@ -2066,8 +2526,17 @@ export type BrowserViewStatus =
   | "waiting"
   | "disconnected";
 
-/** Why a browser viewer stopped or refused: its tabs, stream, a control command or input failed, or input piled up. */
-export type BrowserViewError = "tabs" | "stream" | "control" | "queueFull" | "input";
+/**
+ * Why a browser viewer stopped or refused: its tabs, stream, a control command or input failed, input piled up, or
+ * the browser still runs an earlier operation (`busy`).
+ */
+export type BrowserViewError =
+  | "tabs"
+  | "stream"
+  | "control"
+  | "queueFull"
+  | "input"
+  | "busy";
 
 /** One of a browser's tabs. */
 export interface BrowserViewTab {
@@ -2384,11 +2853,13 @@ export type AgentSelection =
 export type TaskModelSelection = Exclude<AgentSelection, { kind: "runtime" }>;
 
 /**
- * Where a Task runs when the Router names no place: inside Comma's cloud (`salix`, the default), the workspace's Cloud
- * VM, or one of the workspace's computers (a station).
+ * Where a Task runs when the Router names no place: inside Comma's cloud (`salix`, the default), a sandbox of the
+ * Task's own (where sandboxes are set up), the workspace's Cloud VM (where they are not), or one of the workspace's
+ * computers (a station).
  */
 export type TaskPlace =
   | { kind: "salix" }
+  | { kind: "sandbox" }
   | { kind: "cloud_vm" }
   | { kind: "station"; device_id: string };
 
@@ -2561,8 +3032,17 @@ export interface AgentModels {
   agents: { router: SettingsAgent };
   /** The workspace's default Task model. */
   task_model: { selection: TaskModelSelection };
-  /** The workspace's default place to run Tasks; Comma's cloud when a server does not say. */
-  task_place: { place: TaskPlace };
+  /**
+   * The workspace's default place to run Tasks; Comma's cloud when a server does not say. `sandboxes` is true where
+   * the deployment has Task sandboxes: a sandbox is then a place to offer, and the Cloud VM is retired.
+   * `cloud_vm_station` is the Cloud VM's device id where it is on an Agent VMM Host: a place names it as that station.
+   */
+  task_place: {
+    place: TaskPlace;
+    sandboxes?: boolean;
+    cloud_vm_retired?: boolean;
+    cloud_vm_station?: string;
+  };
 }
 
 /** A profile: one credential the system may route model requests through, a signed-in subscription or an API key. */
@@ -2582,12 +3062,14 @@ export interface ModelProfile {
   models?: string[] | null | undefined;
   /** Model ids turned off for this profile; it serves none of them. */
   disabled_models?: string[] | undefined;
+  /** A ChatGPT plan goes on with its credits once a window is used up. */
+  use_credits?: boolean | undefined;
   /** An API key's endpoint; `protocol` is its wire name, such as `openai_responses`. */
   connection?:
     | { endpoint?: string | undefined; protocol?: string | undefined }
     | null
     | undefined;
-  /** A Codex quota reset whose result is not confirmed yet. */
+  /** A quota reset whose result is not confirmed yet. */
   reset_attempt?: { request_id: string; outcome: string } | null | undefined;
   quota?:
     | {
@@ -2595,6 +3077,17 @@ export interface ModelProfile {
         /** When the server last read the quota from the provider. */
         observed_at?: string | null | undefined;
         reset_credits?: { available_count: number } | null | undefined;
+        /** The resets the plan holds, a kind each (`QuotaResetKind`). */
+        resets?: QuotaResetOffer[] | undefined;
+        /** Credits a ChatGPT plan has beyond its windows, as the provider last said. */
+        credits?:
+          | {
+              has_credits: boolean;
+              unlimited: boolean;
+              balance?: string | null | undefined;
+            }
+          | null
+          | undefined;
         windows?:
           | {
               period: string;
@@ -2609,11 +3102,35 @@ export interface ModelProfile {
     | undefined;
 }
 
-/** One of a plan's two windows the profile row meters: what is left (0–100). */
+/**
+ * What one reset gives back: the 5-hour limit, the week, all limits, what one model used of the week (Claude's Fable
+ * reset), or a ChatGPT reset credit.
+ */
+export type QuotaResetKind = "session" | "weekly" | "model" | "full" | "credit";
+
+/** One kind of reset a plan holds. */
+export interface QuotaResetOffer {
+  kind: QuotaResetKind;
+  /** The model a `model` reset gives back to. */
+  model?: string | null | undefined;
+  /** How many are left. */
+  left: number;
+  /** When each ends (ISO), where the provider says. */
+  expiries?: string[] | undefined;
+  /** One can be used now; else only once its limit is reached. */
+  usable: boolean;
+}
+
+/**
+ * A plan window the profile row meters: what is left (0–100). `model`: a week one model has to itself under the
+ * account's (Claude's Fable), named by `model`.
+ */
 export interface QuotaMeter {
-  window: "5h" | "week";
+  window: "5h" | "week" | "model";
   percent: number;
   resetAt?: string;
+  /** The model a `model` window is of, as the provider names it (Fable). */
+  model?: string;
 }
 
 /** A profile as Settings shows it, with what the core works out from it and the catalog. */
@@ -2696,6 +3213,20 @@ export interface LocalFileRegistrationFailure {
   remediation?: "reissue_connector_token";
 }
 
+/**
+ * Which step a recording's transcription failed at (`detail.kind` of `transcription_failed`), to report it without its
+ * text: the audio is over 30 MiB, two are already in flight, no answer in time, the request could not be made, an
+ * answer that is not one, a stream that ended without one, or the server's own failure.
+ */
+export type TranscriptionFailureKind =
+  | "too_large"
+  | "busy"
+  | "timeout"
+  | "unavailable"
+  | "unexpected"
+  | "interrupted"
+  | "server";
+
 /** A meeting recording's transcript (`recordings.transcribe`): the whole text, and each chunk's from where it starts. */
 export interface RecordingTranscript {
   transcript: string;
@@ -2725,7 +3256,13 @@ export interface QuickChatMessage {
 }
 
 export interface QuotaReset {
-  outcome: "reset" | "already_redeemed" | "nothing_to_reset" | "no_credit";
+  /** `unavailable`: the provider refused one for now (a cooldown). */
+  outcome:
+    | "reset"
+    | "already_redeemed"
+    | "nothing_to_reset"
+    | "no_credit"
+    | "unavailable";
   /** Whether the quota was read again after it. */
   quota_refreshed: boolean;
 }
@@ -2751,10 +3288,27 @@ export interface TaskSummary {
   labels?: string[] | undefined;
   origin?: string | undefined;
   client_platform?: string | undefined;
+  /** Who sent the Task Request this Task was accepted from (`origin` is `task_request`). */
+  requested_by?: string | undefined;
+  /** The sender's User id, to tell apart two senders with one name. */
+  requested_by_id?: string | undefined;
+  /** Their avatar, read as a `sender-avatar` file of this request at this revision. */
+  requested_by_avatar?:
+    | { workspace: string; request: string; revision: string }
+    | undefined;
   /** For a Loop Task only: the same value as a list item's `loop` (so camelCase inside). */
   loop?: TaskLoop | undefined;
   /** When the Task's latest run started (Unix milliseconds); absent for a Task from before it was kept. */
   run_started_at?: number | undefined;
+}
+
+/** The sender of the Task Request a Task was accepted from, as the Task's owner sees them. */
+export interface TaskRequester {
+  name: string;
+  /** Their User id; absent on a Task from before it was kept. */
+  id?: string | undefined;
+  /** Their avatar, read as a `sender-avatar` file of this request at this revision. */
+  avatar?: { workspace: string; request: string; revision: string } | undefined;
 }
 
 export interface TaskSummariesValue {
@@ -2843,12 +3397,15 @@ export interface MiniApp {
   icon_url: string | null;
   /** The shown Version's cover: a small screenshot of its first screen, for the Apps gallery. */
   cover_url: string | null;
+  /** The shown Version's screenshots, in order, for its details page. */
+  screenshot_urls: string[];
   repo: { owner: string; name: string } | null;
   visibility: MiniAppVisibility;
   status: "active" | "disabled";
   live_version: number | null;
   latest_version: number | null;
-  author: { name: string };
+  /** Who made the app: its creating User, or who asked the Router for it. `avatar_url` reads as `miniAppImage`. */
+  author: { name: string; avatar_url: string | null };
   capabilities: string[];
   egress: string[];
   secrets: string[];
@@ -2910,7 +3467,7 @@ export interface MiniAppImageValue {
 export type MiniAppVia = { workspace: string } | { token: string };
 
 /** The platform a host runs apps on. */
-export type MiniAppPlatform = "mac" | "web";
+export type MiniAppPlatform = "mac" | "web" | "ios" | "android";
 
 /** An opened app: what its host needs to start the frame, bound to one session id the core checks on every call. */
 export interface MiniAppSessionInfo {
@@ -2919,7 +3476,8 @@ export interface MiniAppSessionInfo {
   version: number;
   digest: string;
   guest: boolean;
-  viewer: { id: string; name: string; avatarUrl: string | null; guest: boolean };
+  /** iOS does not disclose the viewer to the app. */
+  viewer: { id: string; name: string; avatarUrl: string | null; guest: boolean } | null;
   /** The manifest's capabilities this platform and viewer can use. */
   capabilities: string[];
   grants: string[];
@@ -2972,6 +3530,9 @@ export interface TopicValues {
   onboardingApps: OnboardingPluginList;
   plugins: PluginsValue;
   pluginSources: PluginSourcesValue;
+  pluginToolGroups: PluginToolGroupsValue;
+  pluginStations: PluginStationsValue;
+  mcpServers: McpServersValue;
   pluginNotices: { notices: PluginNotice[] };
   /** Null until the first read settles when the device kept nothing: loading, not an empty list. */
   tasks: ProductInboxListResult | null;
@@ -2982,12 +3543,15 @@ export interface TopicValues {
   wechat: WeChatValue;
   signal: SignalValue;
   imessage: IMessageValue;
+  line: LineValue;
   linear: LinearValue;
   routerKeys: RouterKeysValue;
+  taskRequests: TaskRequestsValue;
   tailnet: TailnetValue;
   taskLabels: TaskLabelsValue;
   taskLabelCounts: Record<string, number> | null;
   agentRequests: AgentRequestsValue;
+  agentLocationRequests: AgentLocationRequestsValue;
   condensedWorkspace: CondensedWorkspaceValue;
   voice: VoiceValue;
   voiceCall: VoiceCallValue;
@@ -3006,6 +3570,8 @@ export interface TopicValues {
   appUpdate: AppUpdateValue;
   mentionTasks: MentionTask[] | null;
   chatSuggestions: ChatSuggestion[] | null;
+  slackDirectory: SlackDirectory | null;
+  slackChannelMembers: string[] | null;
   taskWorkers: TaskWorkersValue;
   sessionBrowser: SessionBrowserValue;
   browserView: BrowserViewValue;
@@ -3022,6 +3588,8 @@ export interface TopicValues {
   fileStream: FileStreamValue;
   workspace: ResolvedWorkspace;
   marks: MarksValue;
+  /** None: 自动. */
+  screenQuality: { quality: ScreenQuality | null };
   proactive: ProactiveValue;
   models: ModelsValue;
   /** Null until read (and while a read fails). */
@@ -3051,15 +3619,262 @@ export type TopicOf<N extends TopicName> = { topic: N } & {
   [P in keyof (typeof TOPICS)[N]]?: string;
 };
 
-/** One WebRTC ICE server, as `RTCIceServer` takes it. */
-export type ScreenStreamIceServer = {
-  urls: string[];
-  username?: string;
-  credential?: string;
+/** A screen's clipboard as a view carries it: text, or a PNG picture (its bytes beside the JSON). */
+export type ScreenClip =
+  | { type: "text"; text: string }
+  | { type: "png"; data: Uint8Array };
+
+/**
+ * What a screen's view says as it goes (`devices.openScreenView`'s progress): `open` first, with the view's id for
+ * `devices.sendToScreenView` and the clipboard's types a view that drives it carries (none: no clipboard); a `config`
+ * before the frames it describes (`description`: the avcC, base64); each frame (`data`: AVCC, its bytes beside the
+ * JSON); the station's `state`; the screen's `clipboard` as a copy is made on it (only while the view drives); and its
+ * system output, asked with `audio`: `audioConfig` once (48 kHz stereo; `codec` PCM16, or Opus to a view that asked
+ * it from a computer that encodes it), then each 20 ms `audio` packet (`data`: PCM's 3840 bytes, interleaved
+ * little-endian, or one Opus packet; `ts` its capture time, µs).
+ */
+export type ScreenViewEvent =
+  | { type: "open"; view: number; clipboard?: readonly ("text" | "png")[] }
+  | { type: "clipboard"; clip: ScreenClip }
+  | { type: "audioConfig"; codec: ScreenAudioCodec }
+  | { type: "audio"; ts: number; data: Uint8Array }
+  | {
+      type: "config";
+      codec: string;
+      width: number;
+      height: number;
+      description: string;
+    }
+  | { type: "video"; key: boolean; ts: number; data: Uint8Array }
+  | {
+      type: "state";
+      state: {
+        /** Whether the view drives now: its first state, and the answer to each switch. */
+        control?: boolean;
+        /** Why Control asked of the open view was not let. */
+        refused?: string;
+        /** In the first state: Watch and Control switch on the open view (`devices.sendToScreenView`'s `control`). */
+        switches?: boolean;
+        /** How late its frames are, in ms: capture to drawn, and capture to sent (each second while frames come). */
+        latency?: { frame: number; before: number };
+        /** How its pictures are made: what captures them, the encoder's name, whether it is the hardware's. */
+        video?: { capture: string; encoder?: string; hardware?: boolean };
+        /**
+         * The screen's pointer, from a source whose pictures leave it out (the desktop's): 0..1 of the picture, its
+         * shape a CSS cursor's name (`none`: hidden).
+         */
+        cursor?: { x: number; y: number; shape: string };
+        /** Who else looks, and who drives: a later station's, optional. */
+        viewers?: readonly unknown[];
+        controlledBy?: unknown;
+        /** It ended: `finished`, or what went wrong. */
+        ended?: string;
+        /** An explicit capture refusal waits for a person to retry. A lost connection has no code here. */
+        endedCode?: "screen_refused";
+        /** The apps it really shows, and how many of their windows are on screen. */
+        apps?: readonly string[];
+        windows?: number;
+        /** Said every so often: a still screen sends nothing else. */
+        alive?: boolean;
+        /** How a device stands: which way it is turned, a foldable's pose. */
+        orientation?: 0 | 90 | 180 | 270;
+        pose?: "closed" | "book" | "open";
+        /** In the first state: the station logs its frames' times; each `ack` says the page's (`sendToScreenView`). */
+        timing?: boolean;
+        /**
+         * Whether an agent's lease on the device lasts: said after the first state, and as one starts or ends. A
+         * station from before says nothing of it.
+         */
+        agent?: boolean;
+        /** Where that agent's finger is as it presses, moves and lifts: 0..1 of the picture. */
+        agentPointer?: { x: number; y: number; down: boolean };
+      };
+    };
+
+/**
+ * A view's 画质 besides 自动 (still.fail's `quality`): 流畅, 高清 or 原画. It sets the picture's bounds the view asks
+ * and, at the station, how high its bit rate goes (流畅 lower) and whether its picture is made smaller for a slow link
+ * (原画 never). A station from before lets it be, as 自动.
+ */
+export type ScreenQuality = "smooth" | "hd" | "original";
+/** The codec a view's sound comes in (`ScreenViewEvent` `audioConfig`). */
+export type ScreenAudioCodec = "pcm_s16le" | "opus";
+
+/** What a station can do to debug an app on a device. */
+export const SCREEN_DEBUG_ACTIONS = [
+  "restart",
+  "screenshot",
+  "record",
+  "install",
+  "appearance",
+] as const;
+export type ScreenDebugAction = (typeof SCREEN_DEBUG_ACTIONS)[number];
+/** What a station says of a debug action: only what each says. */
+export type ScreenDebugAnswer = {
+  recording?: boolean | undefined;
+  appearance?: "light" | "dark" | undefined;
+  app?: string | undefined;
+  name?: string | undefined;
 };
+
+/**
+ * One line of a device's running app's log (the station's screens/app-logs.ts): `seq` counts from the first its station
+ * read; `level` as the device says it (`Info`, `Error`, `Fault`; logcat's `Warning`…); `app` its process or tag; `crash`
+ * where it says the app crashed or ended on a signal.
+ */
+export type ScreenLogLine = {
+  seq: number;
+  at: string;
+  level: string;
+  app: string;
+  pid?: number;
+  text: string;
+  crash?: true;
+};
+
+/**
+ * What a device's app log says as it goes (`devices.openScreenLogs`'s progress): its `filter` first, then its `lines`
+ * as they come, with how many the station `dropped` before them (past its rate, or while the page read slowly).
+ */
+export type ScreenLogEvent =
+  | { type: "filter"; mode: "app" | "all"; app?: string }
+  | { type: "lines"; lines: ScreenLogLine[]; dropped?: number };
+
+/** A device's screen id: an Android device's serial, or an iOS Simulator's UDID. */
+export type ScreenDeviceId = `android:${string}` | `simulator:${string}`;
+
+/**
+ * An Android device or an iOS Simulator a computer's station lists (`devices.listScreens`): its id for
+ * `devices.openScreenView`, and what it can do.
+ */
+export type ListedScreen = {
+  /** Hardware model from the simulator device type, independent of its instance name. */
+  model?: string | undefined;
+  /** Its place: another device may take it once this one goes (an emulator's port), or the device across its boots (a simulator's UDID). */
+  id: ScreenDeviceId;
+  /** This running device, which what views and closes it names: `id` alone may be another's by then. */
+  instance: string;
+  /** What its computer calls it (an AVD's name, a simulator's). */
+  name: string;
+  title: string;
+  width: number;
+  height: number;
+  /** It can be previewed (a card's `peek`). */
+  peek: boolean;
+  capabilities: {
+    input: "touch";
+    buttons: string[];
+    /**
+     * Its screen's panels, each corner's radius a share of its width. `curves`, where the station knows them closer (a
+     * simulator's mask): each corner as CSS's `superellipse(k)` on a radius of `reach`, a share of the width.
+     */
+    panels: {
+      width: number;
+      height: number;
+      corners: [number, number, number, number];
+      curves?: ScreenCornerCurves | undefined;
+    }[];
+    /**
+     * An iOS Simulator's case and buttons as Xcode has them on its Mac, one for each panel; none where it has none (an
+     * Android device, a Mac without Xcode's DeviceKit): `panels` then. Their pictures: `devices.screenDeviceChrome`.
+     */
+    chrome?: ScreenChromePanel[] | undefined;
+    /** The ways a foldable can stand. */
+    poses?: ("closed" | "book" | "open")[] | undefined;
+    /** A person may close it for good (`devices.closeScreenDevice`). */
+    closable?: boolean | undefined;
+    /** Its running app's logs can be read (`devices.openScreenLogs`); none from a station before. */
+    logs?: boolean | undefined;
+    /**
+     * What debugs an app on it from this client (`devices.screenDebug` and those by it), and the ends of the files it
+     * installs; none from a station before, or for a computer's own screen or a phone.
+     */
+    debug?: { actions: ScreenDebugAction[]; install: string[] } | undefined;
+  };
+  /** A real phone, a person's (an emulator is not). */
+  phone?: boolean;
+  /** An agent's lease on it lasts now. */
+  agent?: boolean;
+};
+
+/**
+ * One panel of an iOS Simulator's case (the station's `sim-chrome.ts`), upright as its framebuffer is, in the case's own
+ * points: `key` names its pictures (the same where panels have the same case), `width`×`height` its framebuffer in pixels,
+ * `screen` where the picture goes in `frame`, `corners` the panel's (shares of its width; empty where not known).
+ */
+export type ScreenChromePanel = {
+  key: string;
+  width: number;
+  height: number;
+  frame: { width: number; height: number };
+  screen: { x: number; y: number; width: number; height: number };
+  corners: number[];
+  /** Its corners as superellipses, where its mask says them (as a panel's `curves`). */
+  curves?: ScreenCornerCurves | undefined;
+  buttons: ScreenChromeButton[];
+};
+
+/** A panel's corners, top left and then round it, each as CSS's `superellipse(k)` on a radius of `reach` (a share of its width). */
+export type ScreenCornerCurves = [
+  ScreenCornerCurve,
+  ScreenCornerCurve,
+  ScreenCornerCurve,
+  ScreenCornerCurve,
+];
+export type ScreenCornerCurve = { reach: number; k: number };
+
+/**
+ * A button of the case, where it rests in its panel's frame and the way it goes in when pressed (`dx`, `dy`); `front`: on
+ * the case's face (a home button), not behind it; `page` and `usage`: its HID usage (none: it is only drawn).
+ */
+export type ScreenChromeButton = {
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dx: number;
+  dy: number;
+  front?: boolean | undefined;
+  page?: number | undefined;
+  usage?: number | undefined;
+};
+
+/** A panel's case pictures turned as asked, PNGs in base64: the case with the panel cut out, and each button up and down. */
+export type ScreenChromePictures = {
+  body: string;
+  buttons: Record<string, { up: string; down?: string | undefined }>;
+};
+
+/**
+ * A phone on a computer's station's adb, as its owner chooses (`devices.chooseScreenPhones`): what adb says of it
+ * (nothing is asked of the phone before it is shown), whether it is shown, whether agents may use it, and its screen's
+ * id once it is one.
+ */
+export type ListedPhone = {
+  serial: string;
+  /** adb's word: `device`, `unauthorized`, `offline`; `absent` for one chosen that is not there now. */
+  state: string;
+  model: string | null;
+  transport: "usb" | "wifi";
+  shown: boolean;
+  agents: boolean;
+  screen?: string;
+};
+
+/** A computer's phones: whether its station takes USB phones, and each one. */
+export type ListedPhones = { usb: boolean; list: ListedPhone[] };
 
 /** Each call's params and answer. */
 export interface Calls {
+  "session.captcha.answer": {
+    params: {
+      attempt: SessionAuthAttemptRef;
+      challengeId: string;
+      token: string | null;
+    };
+    result: boolean;
+  };
   "deviceSetup.start": { params: { workspace: string }; result: null };
   "deviceSetup.event": {
     params: import("./device-setup/controller.ts").SetupInput;
@@ -3151,6 +3966,27 @@ export interface Calls {
     result: SessionOperationResult<SignedOutSessionSnapshot, "sign_out">;
   };
   /**
+   * Adds another account (bearer hosts): the account in use stays signed in, set aside (`session` `accounts`), and the
+   * session is signed out for the next sign-in.
+   */
+  "session.addAccount": {
+    params: { expected: SessionLifecycleExpectation };
+    result: SessionOperationResult<SignedOutSessionSnapshot, "add_account">;
+  };
+  /**
+   * Makes a kept account (`session` `accounts`) the one in use, without signing in again; the one in use before is
+   * kept. A sign-in under way is given up.
+   */
+  "session.switchAccount": {
+    params: { userId: string };
+    result: SessionOperationResult<SignedInSessionSnapshot, "switch_account">;
+  };
+  /** Signs a kept account (`session` `accounts`) out of this device; its data on the device is deleted. */
+  "session.signOutAccount": {
+    params: { userId: string };
+    result: SessionOperationResult<null, "sign_out_account">;
+  };
+  /**
    * The server refused one of the page's own product requests (401: no session; 409: another one), made for the
    * session `sessionId` at `generation`: as for one of the core's, when that is the lease given now.
    */
@@ -3197,6 +4033,27 @@ export interface Calls {
   "plugin.authorization.check": { params: Record<string, never>; result: null };
   /** Takes a notice to say: true for the one window that gets it. */
   "plugin.notice.claim": { params: { id: number }; result: boolean };
+  /** Connects an MCP server by its address; `authorizationUrl` is where to sign in, when it asks for that (the UI opens it). */
+  "mcpServer.add": {
+    params: { workspace: string; url: string; name?: string };
+    result: { authorizationUrl?: string };
+  };
+  /** Connects a listed MCP server again; `authorizationUrl` as for `mcpServer.add`. */
+  "mcpServer.connect": {
+    params: { workspace: string; server: string };
+    result: { authorizationUrl?: string };
+  };
+  "mcpServer.remove": { params: { workspace: string; server: string }; result: null };
+  /** Turns one tool group of an installed plugin on or off for the workspace (`pluginToolGroups`). */
+  "plugin.toolGroup.set": {
+    params: { workspace: string; plugin: string; group: string; enabled: boolean };
+    result: null;
+  };
+  /** Disconnects one still.fail station the plugin connected; the plugin and its other stations stay (`pluginStations`). */
+  "plugin.station.disconnect": {
+    params: { workspace: string; plugin: string; station: string };
+    result: null;
+  };
   "plugin.sources.refresh": {
     params: { workspace: string; plugin: string };
     result: null;
@@ -3269,6 +4126,21 @@ export interface Calls {
   "quickChat.sendMessage": {
     params: { client_request_id: string; text: string; workspace?: string };
     result: QuickChatMessage;
+  };
+  /**
+   * Shows `text` in the Home of `workspace`, when a window has it open, as a message being sent while Quick Chat
+   * prepares its final words; again, it replaces them. It makes no request. `quickChat.sendMessage` with the same
+   * `client_request_id` sends that message with the words it gives, and `quickChat.failPreparation` ends it as a
+   * failed one. The caller ends each message it showed.
+   */
+  "quickChat.prepareMessage": {
+    params: { client_request_id: string; text: string; workspace: string };
+    result: null;
+  };
+  /** Ends a message `quickChat.prepareMessage` showed as a failed one, which keeps its words for a retry. */
+  "quickChat.failPreparation": {
+    params: { client_request_id: string; workspace: string };
+    result: null;
   };
   /**
    * A one-minute, single-use ticket for live dictation's socket (`url`): the words as they are spoken. Fails
@@ -3521,6 +4393,21 @@ export interface Calls {
     params: { query: string; group?: string; prefer?: string };
     result: TaskSearchValue;
   };
+  /** The Messages of the Task `conversation` that match `query`, oldest first: a Task opened from a hit steps through them. */
+  "search.taskMessages": {
+    params: { query: string; group: string; conversation: string };
+    result: TaskMessageSearchValue;
+  };
+  /** The command palette's Task file search: file names containing `query`, scoped as `search.tasks`. */
+  "search.taskFiles": {
+    params: { query: string; group?: string; prefer?: string };
+    result: TaskFileSearchValue;
+  };
+  /** One page of the files Agents attached to the Group's Tasks, newest first; `conversation` keeps one Task's. */
+  "taskFiles.list": {
+    params: { group: string; conversation?: string; cursor?: string };
+    result: TaskFilesValue;
+  };
   /** A window came back: briefings last read a minute or more ago are read again. */
   "recommendations.revisit": { params: Record<string, never>; result: null };
   /** Home shown again: discovery checks start over and the briefing is read at once. */
@@ -3528,6 +4415,8 @@ export interface Calls {
    * Enrolls this device's Drive node (`nk`, its public key) in the Workspace's network: the zone to bind, or null while
    * the network is not ready.
    */
+  /** Reads a shown `slackDirectory` again when what is kept ran out (the @ menu opened or typed in). */
+  "slackDirectory.reread": { params: { workspace: string }; result: null };
   /** Reads the Drive index again now (after a failure the person retries). */
   "driveSearch.retry": { params: Record<string, never>; result: null };
   /** Reads a shown `sessionBrowser` now (the browser panel's refresh), and every 10 s from then. */
@@ -3547,43 +4436,37 @@ export interface Calls {
   };
   /** Authorizes the operation's install again: a new descriptor. Main's only. */
   "computeNode.retry": {
-    params: { workspaceId: string; operationId: string; lease: HostSessionLease };
+    params: { workspaceId: string; registrationId: string; lease: HostSessionLease };
     result: ComputeNodeAuthorizationValue;
   };
   /** Reads the install operation once. Main's only. */
   "computeNode.inspect": {
-    params: { workspaceId: string; operationId: string; lease: HostSessionLease };
-    result: ComputeNodeOperationValue;
+    params: { workspaceId: string; registrationId: string; lease: HostSessionLease };
+    result: ComputeNodeRegistrationValue;
   };
   /** Enables or disables the node. Main's only. */
   "computeNode.configure": {
     params: {
       workspaceId: string;
-      operationId: string;
+      registrationId: string;
       enabled: boolean;
       lease: HostSessionLease;
     };
-    result: ComputeNodeOperationValue;
+    result: ComputeNodeRegistrationValue;
   };
   /** Revokes the node's registration. Main's only. */
   "computeNode.revoke": {
-    params: { workspaceId: string; operationId: string; lease: HostSessionLease };
-    result: ComputeNodeOperationValue;
+    params: { workspaceId: string; registrationId: string; lease: HostSessionLease };
+    result: ComputeNodeRegistrationValue;
   };
-  /** The operation as a recovered binding (handed off, with its environment). Main's only. */
-  "computeNode.recoveredBinding": {
-    params: { workspaceId: string; operationId: string; lease: HostSessionLease };
-    result: ComputeRecoveredBinding;
-  };
-  /** The operation an install request made before its descriptor was exchanged. Main's only. */
-  "computeNode.unexchangedRequest": {
+  /** The Registration bound to the original client request. Main's only. */
+  "computeNode.requestRegistration": {
     params: { workspaceId: string; requestId: string; lease: HostSessionLease };
-    result: { operationId: string; registrationId: string };
+    result: { registrationId: string };
   };
-  /** Abandons an unexchanged operation (revoking it). Main's only. */
-  "computeNode.abandon": {
-    params: { workspaceId: string; operationId: string; lease: HostSessionLease };
-    result: null;
+  "computeNode.cancelRequest": {
+    params: { workspaceId: string; requestId: string; lease: HostSessionLease };
+    result: { registrationId: string; hostBound: boolean };
   };
   /** What this account may do with the local workloads `targets` name. Main's only. */
   "computeNode.localMappings": {
@@ -3607,18 +4490,7 @@ export interface Calls {
   /** The recovery challenges for local registrations. Main's only. */
   "computeNode.recoveryCandidates": {
     params: { workspaceId: string; registrationIds: string[]; lease: HostSessionLease };
-    result: ComputeRecoveryChallenge[];
-  };
-  /** Previews or consumes a recovered binding with its proof. Main's only. */
-  "computeNode.recoverBinding": {
-    params: {
-      workspaceId: string;
-      operationId: string;
-      proof: unknown;
-      consume: boolean;
-      lease: HostSessionLease;
-    };
-    result: ComputeRecoveredBinding;
+    result: ComputeRecoveredBinding[];
   };
   /**
    * A Connector credential for the workspace: for a device `name`d, which must first connect within
@@ -3824,6 +4696,45 @@ export interface Calls {
   /** Signs out every session but this one; answers how many. */
   "accountSessions.revokeOthers": { params: Record<string, never>; result: number };
   /**
+   * Mails the account's email a code that confirms deleting the account. Refused (`subscription_active`) while a
+   * subscription still renews.
+   */
+  "accountDeletion.requestCode": {
+    params: Record<string, never>;
+    result: { challengeId: string };
+  };
+  /**
+   * Confirms deletion with the mailed code; every session, this one too, then ends, and the server deletes the
+   * account after seven days unless the person signs in again before then. Refused with
+   * `invalid_verification_code` (the session stays) or `subscription_active`.
+   */
+  "accountDeletion.delete": {
+    params: { challengeId: string; code: string };
+    result: null;
+  };
+  /** Mails the account's email a code that starts changing the email the person signs in with. */
+  "emailChange.requestCode": {
+    params: Record<string, never>;
+    result: { challengeId: string };
+  };
+  /**
+   * Checks the account email's code and mails a code to the new `email`. Refused with `invalid_verification_code`,
+   * `invalid_email`, `same_email`, `email_taken` (another account has it) or `email_pending_deletion` (the account
+   * that has it is waiting to be deleted; `detail.deletion_scheduled_at` says when).
+   */
+  "emailChange.requestNewCode": {
+    params: { email: string; challengeId: string; code: string };
+    result: { challengeId: string };
+  };
+  /**
+   * Changes the account's email with the new email's code; the session stays and is checked again. Refused with
+   * `invalid_verification_code` or `email_changed` (the email changed meanwhile).
+   */
+  "emailChange.confirm": {
+    params: { challengeId: string; code: string };
+    result: { email: string };
+  };
+  /**
    * Registers the device's APNs token (`token`, of `environment`) for the session `session`, to be told of
    * `workspace`'s Tasks (its `group`). Refused (`session_changed`) when another session is signed in now.
    */
@@ -4017,6 +4928,8 @@ export interface Calls {
       id: string;
       generation: number;
       request?: string;
+      /** A fresh Delete confirmation for an ID-only legacy request, at the displayed generation. */
+      confirmLegacy?: boolean;
     };
     result: ComputeWorkload;
   };
@@ -4128,33 +5041,230 @@ export interface Calls {
     result: DeviceAccess;
   };
   /**
-   * Starts a live view of a computer's screen: the viewer's WebRTC offer goes to the computer's Connector and its
-   * answer comes back. Video and input then travel between the two peers, outside the core.
+   * A view of a computer's screen over the mesh, for as long as the call runs (`signal` ends it); it says how it goes
+   * as progress (`ScreenViewEvent`). Fails `unsupported` where this app or the computer has no such views, and
+   * `unreachable` where the computer's station cannot be reached.
    */
-  /** The ICE servers both peers of a screen stream use: STUN, and a TURN relay when the Server has one. */
-  "devices.screenStreamIce": {
-    params: { workspace: string; device: string };
-    result: { servers: ScreenStreamIceServer[] };
-  };
-  "devices.startScreenStream": {
+  "devices.openScreenView": {
     params: {
       workspace: string;
       device: string;
-      sdp: string;
-      /** The servers `devices.screenStreamIce` answered, for the computer's side. */
-      servers: ScreenStreamIceServer[];
-      /** One app's windows (`apps` empty: the frontmost app), or a whole display. */
-      target: "app" | "display";
+      /** What it shows: an app's windows, the display, or a device the station lists (`devices.listScreens`). */
+      target: "app" | "display" | ScreenDeviceId;
+      /** What the page decodes, the one it would rather have first: `h265`, `h264`, and `jpeg` for a preview. None: H.264. */
+      codecs?: string[];
       apps?: string[];
-      /** Whether the viewer's pointer and keyboard reach the computer. */
       control: boolean;
-      /** `#rrggbb` shown where the picture has no window, so an app's round corners meet the card. */
       background?: string | undefined;
+      /** A preview: it only looks, small and about twice a second. Only of a screen that says `peek`. */
+      peek?: boolean;
+      /** The picture's greatest width and height. */
+      maxWidth?: number;
+      maxHeight?: number;
+      /** A device's: the running one it means (`ListedScreen.instance`). */
+      instance?: string;
+      /**
+       * The screen's system output too, where the computer captures it: `opus` where the app decodes Opus (it takes
+       * PCM too, from a computer that encodes none). Never of a preview.
+       */
+      audio?: boolean | "opus";
+      /** The 画质 chosen (none: 自动). Never of a preview. */
+      quality?: ScreenQuality;
+      /**
+       * The app's own decoder for this view (the phones'): its configs and frames go to the host's `screenFrames` under
+       * this number, not as progress. None: they come as progress.
+       */
+      sink?: number;
     };
-    result: { sdp: string; stream: string };
+    result: null;
   };
-  "devices.stopScreenStream": {
-    params: { workspace: string; device: string; stream: string };
+  /** Keeps the 画质 for the account's views of computers' screens on this device (null: 自动; `screenQuality`). */
+  "devices.chooseScreenQuality": {
+    params: { quality: ScreenQuality | null };
+    result: null;
+  };
+  /**
+   * What a computer shows besides its own screen, where the host reaches own computers (`StationMeshPorts.ownComputers`), read when a person looks: its
+   * Android devices and iOS Simulators, the virtual devices and simulators that could start, and why it cannot say where it cannot. Fails `unsupported` where
+   * this app has no such views, `unreachable` where the station cannot be reached now.
+   */
+  "devices.listScreens": {
+    params: { workspace: string; device: string };
+    result: {
+      screens: ListedScreen[];
+      avds: string[];
+      /** The simulators shut down that could boot. */
+      simulators: { udid: string; title: string; model?: string }[];
+      unavailable?: string;
+      phones?: ListedPhones;
+    };
+  };
+  /**
+   * The computer's owner changes its phones: USB on or off (its station's adb then contends with Android Studio's for
+   * USB phones), one phone shown or not and whether agents may use it, one over Wi-Fi connected (`host:port`) or let go.
+   */
+  "devices.chooseScreenPhones": {
+    params: {
+      workspace: string;
+      device: string;
+      change:
+        | { usb: boolean }
+        | { serial: string; shown: boolean; agents?: boolean }
+        | { connect: string }
+        | { disconnect: string };
+    };
+    result: ListedPhones & { said?: string };
+  };
+  /**
+   * Starts an Android Virtual Device, or boots an iOS Simulator, on a computer for the person. The id its screen will
+   * have, once it has booted: the device listed there under that AVD's or simulator's `name` is the one it started.
+   */
+  "devices.startScreenDevice": {
+    params: { workspace: string; device: string } & (
+      | { avd: string }
+      | { simulator: string }
+    );
+    result: { id: string };
+  };
+  /**
+   * One panel's case pictures of an iOS Simulator, turned `turn` quarters clockwise (0..3): the station makes them of what
+   * Xcode has on its Mac, and they go only to those who may see the screen.
+   */
+  "devices.screenDeviceChrome": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      panel: number;
+      turn: number;
+    };
+    result: ScreenChromePictures;
+  };
+  /**
+   * A device's running app's logs, for as long as the call runs (`signal` ends it): its station's `simctl … log stream`
+   * or `adb -s <serial> logcat`, which runs only while someone reads it. `mode`: the app's (installed apps on a simulator,
+   * the foreground app on Android, or `app`, a bundle id or package) or `all` of the device's. Its lines are progress
+   * (`ScreenLogEvent`). Fails `unsupported` where the computer's station has no app logs (one from before, or a computer's
+   * own screen), and `screen_ended` with why it ended.
+   */
+  "devices.openScreenLogs": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: ScreenDeviceId;
+      instance: string;
+      mode?: "app" | "all";
+      app?: string;
+    };
+    result: null;
+  };
+  /**
+   * The newest `lines` (at most 500; default 100) of a device's app log this app has kept, oldest first, as they stand at
+   * this call: what an agent is sent with the screen. Of the filter (`mode`, `app`) named, else of the one read last,
+   * which may be All. Kept after the pane closes, so they can be old. None where nothing was read or kept since
+   * `devices.clearScreenLogTail`.
+   */
+  "devices.screenLogTail": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      lines?: number;
+      mode?: "app" | "all";
+      app?: string;
+    };
+    result: { lines: ScreenLogLine[] };
+  };
+  /** The person cleared the logs pane: what is kept of the device's app log, for every filter, goes (it is not sent). */
+  "devices.clearScreenLogTail": {
+    params: { workspace: string; device: string; screen: string };
+    result: null;
+  };
+  /**
+   * What debugs an app on a device, each only while this client has a view of it in Control (else `forbidden`): how it
+   * stands (`state`: light or dark, whether it records), the running app started again, light or dark set, a recording
+   * begun (`panel`: a foldable's). Fails with the station's words.
+   */
+  "devices.screenDebug": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      instance: string;
+      action: "state" | "restart" | "appearance" | "record";
+      value?: "light" | "dark";
+      panel?: "inner" | "cover";
+    };
+    result: ScreenDebugAnswer;
+  };
+  /** The device's screen as a PNG, in its own pixels, saved into Downloads as `name` (null: not saved) and its bytes. */
+  "devices.saveScreenPicture": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      instance: string;
+      name: string;
+    };
+    result: {
+      png: Uint8Array;
+      saved: { downloadRef: string; fileName: string } | null;
+    };
+  };
+  /** Ends the device's recording and saves its movie into Downloads as `name`, written as it comes. */
+  "devices.saveScreenRecording": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      instance: string;
+      name: string;
+    };
+    result: { downloadRef: string; fileName: string } | null;
+  };
+  /** Puts the app in the file (`name`, of the types the device lists) on the device and starts it where it can. */
+  "devices.installScreenApp": {
+    params: {
+      workspace: string;
+      device: string;
+      screen: string;
+      instance: string;
+      name: string;
+      bytes: Uint8Array;
+    };
+    result: ScreenDebugAnswer;
+  };
+  /** Closes a device for good, at the person's word: the running one it names, and no other in its place. */
+  "devices.closeScreenDevice": {
+    params: { workspace: string; device: string; screen: string; instance: string };
+    result: null;
+  };
+  /**
+   * What a view's page says: the last frame it showed, that its decoder needs a key frame, one input event, or Watch
+   * (`control: false`) or Control on the open view. The station answers a switch with a `state` of `control` (and
+   * `refused` when it does not let Control); the picture goes on as it was.
+   */
+  "devices.sendToScreenView": {
+    params: {
+      view: number;
+      ack?: number;
+      /**
+       * With `ack`, where the view's state said `timing`: ms from the page having that frame to its decoder taking it,
+       * giving it out, it handed to what shows it, and the `ack`; one not known left out.
+       */
+      timing?: { decodeIn?: number; decodeOut?: number; shown?: number; ack?: number };
+      keyframe?: boolean;
+      input?: Record<string, unknown>;
+      control?: boolean;
+      /**
+       * Set the screen's clipboard (a type its `open` named), and with `paste` paste it where its focus is: only a view
+       * that drives it, the station checks. Text at most 1 MB, a PNG 8 MB.
+       */
+      clipboard?: ScreenClip;
+      paste?: boolean;
+      /** The view's sound off (muted: the computer sends none) or on again; on as a view that asked `audio` opens. */
+      sound?: boolean;
+    };
     result: null;
   };
   "devices.rename": {
@@ -4232,6 +5342,11 @@ export interface Calls {
     params: { workspace: string; voice?: VoiceChoice | null; routerCalls?: boolean };
     result: null;
   };
+  /** A short sample of `voice` (null: the platform's) speaking `language` (a BCP 47 tag). */
+  "voice.preview": {
+    params: { workspace: string; voice: VoiceChoice | null; language?: string };
+    result: VoicePreview;
+  };
   /** Calls the Router of `workspace` from this app (the desktop's): answers once the call is dialled. */
   "voiceCall.start": { params: { workspace: string }; result: null };
   /** Hangs up the call, if any. */
@@ -4246,6 +5361,33 @@ export interface Calls {
   /** Declines an Agent's request; the Agent's waiting call returns that the person declined. */
   "agentRequests.decline": {
     params: { group: string; conversation: string; request: string };
+    result: null;
+  };
+  /** The computer's owner allows or denies an Agent's use of their phone; the Agent's waiting call returns it. */
+  "agentRequests.decide": {
+    params: { group: string; conversation: string; request: string; approved: boolean };
+    result: null;
+  };
+  /** What the person filled in on a request's card, passed straight to the server and kept nowhere here. */
+  "agentRequests.fill": {
+    params: {
+      group: string;
+      conversation: string;
+      request: string;
+      values: { value: string } | { client_id: string; client_secret: string };
+    };
+    result: null;
+  };
+  /** This device's position, shared once for a location request, passed straight to the server and kept nowhere here. */
+  "agentRequests.shareLocation": {
+    params: {
+      group: string;
+      conversation: string;
+      request: string;
+      latitude: number;
+      longitude: number;
+      accuracy?: number;
+    };
     result: null;
   };
   "taskLabels.refresh": { params: { group: string }; result: null };
@@ -4307,6 +5449,93 @@ export interface Calls {
     result: null;
   };
   "routerKeys.delete": { params: { workspace: string; key: string }; result: null };
+  "taskRequests.refresh": { params: Record<string, never>; result: null };
+  /** A new invite link for the workspace; it works once, for seven days. */
+  "taskRequests.createInvite": {
+    params: { workspace: string; mode: TaskRequestMode };
+    result: { inviteUrl: string };
+  };
+  "taskRequests.setMode": {
+    params: { workspace: string; grant: string; mode: TaskRequestMode };
+    result: null;
+  };
+  /** How the workspace takes its owner's own requests, sent from a linked chat account. */
+  "taskRequests.setOwnMode": {
+    params: { workspace: string; mode: TaskRequestMode };
+    result: null;
+  };
+  /** Revokes a grant or an open invite; its waiting requests are declined. */
+  "taskRequests.revokeGrant": {
+    params: { workspace: string; grant: string };
+    result: null;
+  };
+  /**
+   * Accepts a request: `to` "task" (the default) creates its Task in the workspace, with the owner's `title` when
+   * given; "router" sends it to the owner's Router chat as their own message.
+   */
+  "taskRequests.accept": {
+    params: {
+      workspace: string;
+      request: string;
+      title?: string;
+      /** The owner's edit of the request's words. */
+      content?: string;
+      to?: "task" | "router";
+      /** Where the Task runs and on what; without it, the workspace's defaults. */
+      run?: TaskRequestRun;
+    };
+    result: { task: { group_id: string | null; id: string } | null };
+  };
+  "taskRequests.decline": {
+    params: { workspace: string; request: string; reason?: string };
+    result: null;
+  };
+  /**
+   * Whose invite a link (or its token) is, before the person accepts it; `own` when it is the person's own. With
+   * `workspace`, `back` is what accepting there gives the inviter: that workspace and the mode their requests run in,
+   * or null when they could not send back.
+   */
+  "taskRequests.invitePreview": {
+    params: { invite: string; workspace?: string };
+    result: {
+      workspace: { id: string; name: string | null; owner: TaskRequestPerson | null };
+      own: boolean;
+      back: {
+        workspace: { id: string; name: string | null };
+        mode: "review" | "auto_accept";
+      } | null;
+      expiresAt: number | null;
+    };
+  };
+  /**
+   * Accepts an invite link (or its token) as the signed-in person. With `workspace`, one they own, the inviter may
+   * send requests back to it (`reciprocal`), as `taskRequests.invitePreview` says.
+   */
+  "taskRequests.acceptInvite": {
+    params: { invite: string; workspace?: string };
+    result: { reciprocal: boolean };
+  };
+  /** Sends a request through a grant; `key` makes a retry answer the first send. */
+  /** `workspace`: the sender's own one it was written in, whose Router hears how it went. */
+  "taskRequests.send": {
+    params: {
+      grant: string;
+      content: string;
+      title?: string;
+      key: string;
+      workspace?: string;
+    };
+    result: { status: TaskRequestStatus };
+  };
+  "taskRequests.withdraw": { params: { request: string }; result: null };
+  /** Which chat account a link (or its token) names, before the person confirms it. */
+  "taskRequests.linkPreview": {
+    params: { link: string };
+    result: { provider: string; name: string | null };
+  };
+  /** Links the chat account a link names to the signed-in person. */
+  "taskRequests.acceptLink": { params: { link: string }; result: null };
+  "taskRequests.removeLink": { params: { id: string }; result: null };
   /** Reads WeChat again, and finishes an attempt the server holds as prepared. */
   "wechat.refresh": { params: { workspace: string }; result: null };
   /** A new QR code (replacing one under way). */
@@ -4324,10 +5553,16 @@ export interface Calls {
   "signal.setNumber": { params: { workspace: string; number: string }; result: null };
   "imessage.refresh": { params: { workspace: string }; result: null };
   /** Starts a Photon attempt for a phone number (E.164) or Apple Account email; refusals keep the server's code. */
-  "imessage.start": { params: { workspace: string; handle: string }; result: null };
+  "imessage.start": { params: { workspace: string; handle?: string }; result: null };
   /** Cancels the attempt under way. */
   "imessage.cancel": { params: { workspace: string }; result: null };
   "imessage.disconnect": { params: { workspace: string }; result: null };
+  "line.refresh": { params: { workspace: string }; result: null };
+  /** Starts an attempt; the UI opens its `message_url`. */
+  "line.start": { params: { workspace: string }; result: null };
+  /** Cancels the attempt under way. */
+  "line.cancel": { params: { workspace: string }; result: null };
+  "line.disconnect": { params: { workspace: string }; result: null };
   /** Reads the workspace's Linear link again. */
   "linear.refresh": { params: { workspace: string }; result: null };
   /** Starts the Linear connect; the UI opens `authorizationUrl`, and the core follows the connect from there. */
@@ -4355,6 +5590,8 @@ export interface Calls {
    * the profiles.
    */
   "models.refresh": { params: { only?: "profiles" }; result: null };
+  /** Reads the Router's settings alone. Catalog and profile availability do not gate this read. */
+  "router.refresh": { params: { workspace: string }; result: SettingsAgent };
   /** Reads the next page of profiles. */
   "models.moreProfiles": { params: { workspace: string }; result: null };
   /**
@@ -4366,6 +5603,8 @@ export interface Calls {
       workspace: string;
       profile: string;
       disabled?: boolean;
+      /** A ChatGPT plan: go on with its credits once a window is used up. */
+      use_credits?: boolean;
       name?: string;
       api_key?: string;
     };
@@ -4389,11 +5628,12 @@ export interface Calls {
     result: null;
   };
   /**
-   * Spends a Codex quota reset. Its request id is kept on the device before it is sent and reused until the provider's
-   * outcome is known, so it redeems one credit at most. A 409 reads the profiles again.
+   * Spends a quota reset (Codex, or Claude of the chosen `kind`; none: any). Its request id is kept on the device before
+   * it is sent and reused until the provider's outcome is known, so it redeems one credit at most. A 409 reads the
+   * profiles again.
    */
   "models.resetQuota": {
-    params: { workspace: string; profile: string };
+    params: { workspace: string; profile: string; kind?: QuotaResetKind };
     result: QuotaReset;
   };
   /**
@@ -4427,7 +5667,7 @@ export interface Calls {
   };
   /**
    * Sets where a workspace's Tasks run when the Router names no place: shown at once, saved in order per workspace; a
-   * failure (such as the Cloud VM switched off, or a computer not in the workspace) reads the Agents again.
+   * failure (such as the Cloud VM switched off or retired, or a computer not in the workspace) reads the Agents again.
    */
   "models.setTaskPlace": {
     params: { workspace: string; place: TaskPlace };
@@ -4504,7 +5744,8 @@ export interface Calls {
   };
   /**
    * A meeting recording's transcript (Main, with the saved audio). At most two at once; fails `transcription_failed`
-   * with why (the message Main writes beside the audio). `dictation`: Quick Chat's words as plain text, within 10 s.
+   * with why (the message Main writes beside the audio) and its `detail.kind` (`TranscriptionFailureKind`).
+   * `dictation`: Quick Chat's words as plain text, within 10 s.
    */
   "recordings.transcribe": {
     params: { audio: Uint8Array; purpose?: "dictation" };
@@ -4593,6 +5834,28 @@ export interface Calls {
     params: ChatViewTarget & {
       files: { name: string; size: number; bytes: Uint8Array }[];
       questionMessageId?: string;
+    };
+    result: ChatCommandReceipt;
+  };
+  /**
+   * Puts what a screen shows into the draft: `picture`, the frame the window showed (made to fit what the server reads
+   * back as an image, so a PNG, a JPEG or a WebP, as `pictureType` says and its bytes must agree), as an image named
+   * `screen-<HHMMSS>.<png|jpg|webp>` (`screen-<HHMMSS>-marked.…` when `marked`: the person drew boxes on it), and a line that names the screen by its link (`comma:screen/<device>/<screen>`,
+   * labelled with `name` and the time it was put into the draft), unless the draft names it already. `files` go with
+   * them, such as the app's recent logs. With `message` (what the person wrote beside the screen) nothing goes into the
+   * draft: the message is sent at once, the line under it, with the picture and `files` as its own files, and `accepted`
+   * is reported as `chatView.send` does. Fails when the chat cannot load or the picture is not of its type.
+   */
+  "chatView.attachScreen": {
+    params: ChatViewTarget & {
+      device: string;
+      screen: string;
+      name?: string;
+      picture: Uint8Array;
+      pictureType: "image/png" | "image/jpeg" | "image/webp";
+      marked?: boolean;
+      message?: string;
+      files?: { name: string; size: number; bytes: Uint8Array }[];
     };
     result: ChatCommandReceipt;
   };
@@ -4742,8 +6005,8 @@ export interface Calls {
   /** A reply sent with no view of the conversation (Electron Main's notification banner). */
   "chat.sendDetached": { params: ChatTarget & { text: string }; result: null };
   /**
-   * Puts a file in the workspace's Router chat for a cloud Task to carry (`chat.startTask`), checked as the composer's
-   * attachments are: its workspace file.
+   * Puts a file in the workspace's Router chat for a cloud or coding Task to carry (`chat.startTask`, `coding.start`),
+   * checked as the composer's attachments are: its workspace file.
    */
   "chat.uploadTaskFile": {
     params: { workspaceId: string; name: string; bytes: Uint8Array };
@@ -4770,6 +6033,29 @@ export interface Calls {
     params: { workspaceId: string; page?: number };
     result: CodingRepo[];
   };
+  /** The connected account and one page of its GitHub organizations. */
+  "coding.repoOwners": {
+    params: { workspaceId: string; page?: number };
+    result: {
+      owners: {
+        login: string;
+        kind: "user" | "organization";
+        avatarUrl: string | null;
+      }[];
+      hasMore: boolean;
+    };
+  };
+  /** Repositories in one owner, with a server-side name search and explicit pagination. */
+  "coding.repoSearch": {
+    params: {
+      workspaceId: string;
+      owner: string;
+      kind: "user" | "organization";
+      query?: string;
+      page?: number;
+    };
+    result: { repos: CodingRepo[]; hasMore: boolean; limited: boolean };
+  };
   /** One page (100) of a repository's branch names. */
   "coding.branches": {
     params: { workspaceId: string; owner: string; name: string; page?: number };
@@ -4779,14 +6065,17 @@ export interface Calls {
    * A coding session: a Task, owned by the person, that runs on a cloud sandbox of its own with `repo` checked out
    * (from `baseRef`, else its default branch) and works on a session branch it pushes. `model` names the runtime
    * (`claude` or `codex`, and optionally its model); without one, Codex. The runtime's own default model runs
-   * when it names none. Made once per `key`.
+   * when it names none. `uploads` (`chat.uploadTaskFile`) go with its first message, which may be them alone, and reach
+   * the sandbox's session as its uploads. Made once per `key`.
    */
   "coding.start": {
     params: {
       workspaceId: string;
       key: string;
       text: string;
-      repo: { owner: string; name: string; baseRef?: string };
+      uploads?: { name: string; path: string }[];
+      /** The repository checked out in the sandbox; none for a plain sandbox Task. */
+      repo?: { owner: string; name: string; baseRef?: string };
       model?: { provider: "claude" | "codex"; model?: string; effort?: string };
       /** The subscription the sandbox runs on, lent alone (a profile id of the `models` topic). */
       accountId?: string;
@@ -4947,12 +6236,43 @@ export interface Calls {
 
 export type CallName = keyof Calls;
 
-/** Where each topic's keyed lists are: a change to one item goes out as that item's change. */
-/** Where a value's keyed lists are (the kernel's spec): `key` for a list, `item` within its items, `fields` within an object. */
+/**
+ * How a value's lists are known (the kernel's spec): `key` for a list whose items are known by those fields, `byIndex`
+ * for one whose items are known by their place (a part of a message, a list that only grows), `item` within its items,
+ * `fields` within an object, `each` within every field of a record by ids. A list of objects in a topic's value is the
+ * one or the other: a core test fails on one that changed with neither (core-kernel meter.ts).
+ */
 export type KeyedSpec = {
   key?: string[];
+  byIndex?: true;
   item?: KeyedSpec;
   fields?: Record<string, KeyedSpec>;
+  each?: KeyedSpec;
+};
+
+const byIndex = { byIndex: true } as const;
+const byId = { key: ["id"] };
+/** A chat message's own lists: its parts and attachments, in their order. */
+const MESSAGE: KeyedSpec = {
+  fields: {
+    attachments: byIndex,
+    refs: byIndex,
+    parts: { byIndex: true, item: { fields: { choices: byIndex } } },
+    display: { fields: { files: byIndex, texts: byIndex } },
+  },
+};
+/** A conversation's state, as `chat` and `chatView` give it. */
+const CHAT_STATE: KeyedSpec = {
+  fields: {
+    messages: { key: ["messageId"], item: MESSAGE },
+    serverMessages: { key: ["messageId"], item: MESSAGE },
+    pending: { key: ["clientRequestId"], item: { fields: { uploads: byIndex } } },
+    draftAttachments: byId,
+    questionAttachments: { each: byIndex },
+    taskActivity: {
+      fields: { groups: { byIndex: true, item: { fields: { entries: byIndex } } } },
+    },
+  },
 };
 
 /** The Tasks pinned in a Group, in the order the server keeps them. `error`: the last read failed (the ids kept). */
@@ -5009,61 +6329,135 @@ export type ChatViewTarget = {
   session?: { sessionId: string; audience: string };
 };
 
+/** Where each topic's keyed lists are: a change to one item goes out as that item's change. */
 export const TOPIC_SPECS: Record<string, KeyedSpec> = {
-  plugins: { fields: { plugins: { key: ["id"] } } },
-  onboardingApps: { fields: { rows: { key: ["id"] } } },
-  tasks: { fields: { items: { key: ["id"] } } },
-  pluginNotices: { fields: { notices: { key: ["id"] } } },
-  taskSummaries: { fields: { summaries: { key: ["id"] } } },
-  stationTasks: { fields: { tasks: { key: ["id"] } } },
-  archivedTasks: { fields: { tasks: { key: ["id"] } } },
-  taskShares: { fields: { shares: { key: ["id"] } } },
-  miniApps: { fields: { apps: { key: ["id"] } } },
-  agentRequests: { fields: { requests: { key: ["id"] } } },
-  miniApp: { fields: { versions: { key: ["number"] } } },
-  stations: { fields: { stations: { key: ["id"] } } },
-  stationDecisions: { fields: { items: { key: ["station", "thread", "seq"] } } },
-  chat: {
+  plugins: { fields: { plugins: byId, categories: byId } },
+  onboardingApps: { fields: { rows: byId } },
+  tasks: { fields: { items: byId, workspaces: byId } },
+  pluginNotices: { fields: { notices: byId } },
+  pluginSources: {
     fields: {
-      snapshot: {
-        fields: {
-          sessions: {
-            key: ["key"],
-            item: {
-              fields: {
-                state: {
-                  fields: {
-                    messages: { key: ["messageId"] },
-                    serverMessages: { key: ["messageId"] },
-                    pending: { key: ["clientRequestId"] },
-                  },
-                },
-              },
-            },
+      sources: { key: ["connectionId"], item: { fields: { candidates: byId } } },
+    },
+  },
+  pluginToolGroups: { fields: { groups: byId } },
+  pluginStations: { fields: { stations: byId } },
+  mcpServers: { fields: { servers: byId } },
+  taskSummaries: { fields: { summaries: byId } },
+  stationTasks: { fields: { tasks: byId } },
+  archivedTasks: { fields: { tasks: byId } },
+  taskShares: { fields: { shares: byId } },
+  miniApps: { fields: { apps: byId } },
+  agentRequests: { fields: { requests: byId } },
+  agentLocationRequests: { fields: { requests: byId } },
+  miniApp: { fields: { versions: { key: ["number"] } } },
+  stations: { fields: { stations: byId, ownComputers: byId } },
+  stationChats: {
+    fields: {
+      days: {
+        key: ["daysAgo"],
+        item: { fields: { items: { key: ["station", "id"] } } },
+      },
+    },
+  },
+  stationDecisions: {
+    fields: {
+      items: {
+        key: ["station", "thread", "seq"],
+        item: { fields: { before: byIndex, card: { fields: { options: byIndex } } } },
+      },
+    },
+  },
+  stationJobs: {
+    fields: { groups: { key: ["kind"], item: { fields: { jobs: byId } } } },
+  },
+  drive: {
+    fields: {
+      spaces: byId,
+      files: { key: ["spaceId", "id"], item: { fields: { versions: byId } } },
+      devices: byId,
+      syncHistory: byId,
+      transfers: byId,
+    },
+  },
+  driveSearch: { fields: { items: byIndex } },
+  models: {
+    fields: {
+      presets: byId,
+      profiles: {
+        key: ["id"],
+        item: {
+          fields: {
+            meters: { key: ["window"] },
+            servable: byIndex,
+            quota: { fields: { windows: byIndex } },
           },
         },
       },
+      models: byId,
     },
   },
-  chatView: {
+  compute: {
     fields: {
-      state: {
-        fields: {
-          messages: { key: ["messageId"] },
-          serverMessages: { key: ["messageId"] },
-          pending: { key: ["clientRequestId"] },
-          draftAttachments: { key: ["id"] },
-        },
+      projection: { fields: { environments: byId, workloads: byId } },
+    },
+  },
+  devices: {
+    fields: {
+      devices: {
+        key: ["device_id"],
+        item: { fields: { device_runtimes: { key: ["device_runtime_id"] } } },
+      },
+      cloud: { fields: { device_runtimes: { key: ["device_runtime_id"] } } },
+    },
+  },
+  deviceSetup: { fields: { state: { fields: { devices: byIndex } } } },
+  taskOrder: { fields: { sections: { key: ["bucket"] } } },
+  taskRequests: {
+    fields: { incoming: byId, targets: { key: ["grant_id"] }, links: byId },
+  },
+  taskLabels: { fields: { catalog: { fields: { labels: byId } } } },
+  recommendations: {
+    fields: { envelope: { fields: { settings: { fields: { sources: byIndex } } } } },
+  },
+  slackDirectory: { fields: { channels: byId, people: byId } },
+  routerKeys: { fields: { keys: { key: ["key_id"] } } },
+  voice: {
+    fields: {
+      integration: { fields: { numbers: { key: ["e164"] } } },
+      keys: { key: ["key_id"] },
+    },
+  },
+  signal: {
+    fields: {
+      integration: {
+        fields: { bindings: { key: ["binding_id"] }, pending_claims: byIndex },
       },
     },
   },
+  browserView: { fields: { tabs: { key: ["tab_id"] } } },
+  billing: { fields: { summary: { fields: { active_grants: byIndex } } } },
+  taskConversation: { fields: { messages: { key: ["messageId"], item: MESSAGE } } },
+  groupTasks: { fields: { tasks: byId } },
+  skills: { fields: { skills: { key: ["skill_id"] } } },
+  accountSessions: { fields: { sessions: byId } },
+  mentionTasks: byId,
+  condensedWorkspace: { fields: { state: { fields: { statements: byIndex } } } },
+  chat: {
+    fields: {
+      snapshot: {
+        fields: { sessions: { key: ["key"], item: { fields: { state: CHAT_STATE } } } },
+      },
+    },
+  },
+  chatView: { fields: { state: CHAT_STATE } },
   chatAppended: { fields: { appended: { key: ["seq"] } } },
   chatCommittedFiles: { fields: { committed: { key: ["seq"] } } },
   history: {
     fields: {
-      records: { key: ["id"] },
-      recentRecords: { key: ["id"] },
-      liveRecords: { key: ["id"] },
+      records: byId,
+      recentRecords: byId,
+      liveRecords: byId,
     },
   },
 };
@@ -5086,6 +6480,7 @@ export interface SessionHistoryRecord {
           | "imessage"
           | "voice"
           | "signal"
+          | "line"
           | undefined;
         actor_type?: "user" | "agent" | "system" | undefined;
         conversation_kind?: "user_chat" | "agent_task" | undefined;
@@ -5226,7 +6621,15 @@ export type DriveSystemRef =
   /** `hash`: the content last read, which a save or delete names as its precondition. */
   | { kind: "vfs"; group: string; path: string; hash?: string | undefined }
   | { kind: "skill"; skill: string; workspace: string }
-  | { kind: "instructions"; group: string; hash?: string | undefined };
+  | { kind: "instructions"; group: string; hash?: string | undefined }
+  /** A Task file: attachment `index` of a Task Message, read-only. */
+  | {
+      kind: "task_file";
+      group: string;
+      conversation: string;
+      message: string;
+      index: number;
+    };
 
 export interface DriveFile {
   id: string;
@@ -5246,7 +6649,7 @@ export interface DriveFile {
   versions?: DriveFileVersion[] | undefined;
   /** How many copies the listing reported, before `versions` were read. */
   versionCount?: number | undefined;
-  /** A System Files entry. */
+  /** A System Files or Task Files entry, which Comma serves. */
   system?: DriveSystemRef | undefined;
   /** Whether it can be changed or deleted; absent follows its space. */
   writable?: boolean | undefined;

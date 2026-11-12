@@ -67,6 +67,21 @@ describe("the workspace a surface works in", () => {
     });
   });
 
+  it("is read once for the surfaces that ask while a read of it is under way", async () => {
+    const t = setup();
+    t.api.on("GET", LIST, { data: [ws("a"), ws("b")] });
+    const answer = t.api.hold("GET", LIST);
+    const first = t.watch({ topic: "workspace" });
+    await t.time.pass(100);
+    const second = t.watch({ topic: "workspace", prefer: "b" });
+    await t.time.pass(100);
+    answer();
+    await t.time.pass(100);
+    expect(first().workspace?.id).toBe("a");
+    expect(second().workspace?.id).toBe("b");
+    expect(t.api.seen("GET", LIST)).toHaveLength(1);
+  });
+
   it("is none when the account has no workspace, and says when the list could not be read", async () => {
     const t = setup();
     t.api.on("GET", LIST, { data: [] });

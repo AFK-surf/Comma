@@ -313,6 +313,36 @@ describe("NotchService presentation settings", () => {
     }
   });
 
+  it("stays up when a going host does not take a command, and brings the scene back", async () => {
+    const { hosts, service } = createService();
+    try {
+      const update = service.update({ hasActivity: true, notify: true, tasks: [task] });
+      const first = hosts[0]!;
+      await expect(first.nextRequest()).resolves.toMatchObject({ method: "configure" });
+      const request = await first.nextRequest();
+      first.respond({ id: request.id, payload: { running: true }, type: "ack" });
+      await update;
+
+      // The host's input fails before its exit arrives, as a write to a host
+      // that is going does. The pipe raises it in the tick after.
+      first.stdin.destroy(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      await new Promise<void>((raised) => process.nextTick(raised));
+      first.emit("exit", 1);
+
+      expect(hosts).toHaveLength(2);
+      const second = hosts[1]!;
+      await expect(second.nextRequest()).resolves.toMatchObject({
+        method: "configure",
+      });
+      await expect(second.nextRequest()).resolves.toMatchObject({
+        method: "update",
+        payload: { hasActivity: true, tasks: [{ id: "task-1" }] },
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("resizes a running Notch in place and ends its host when it is turned off", async () => {
     const { hosts, service } = createService();
     try {

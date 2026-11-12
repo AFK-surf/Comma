@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export LEAN_NUM_THREADS=1
 bash scripts/build.sh "$@"
+python3 scripts/test-audit-recursion.py
+python3 scripts/audit-recursion.py
 mix format --check-formatted mix.exs 'lib/*.ex' 'test/*.exs'
 mix test
 case "$(uname -s)" in

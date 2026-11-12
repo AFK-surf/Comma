@@ -23,12 +23,16 @@ const offerSchema = z.object({
     )
     .max(50),
   linkCount: z.number().int().min(0).max(50),
+  /** The offered links, read before the offer is answered. */
+  links: z.array(z.string().max(8192)).max(50).default([]),
 });
 const eventSchema = z.discriminatedUnion("type", [
   z.object({
     version: z.literal(1),
     type: z.literal("listening"),
     port: z.number().int().min(1).max(65535),
+    /** The advertised Bonjour name, which senders' scans report as the peer id. */
+    service: z.string().min(1).max(64).optional(),
   }),
   offerSchema,
   z.object({
@@ -75,6 +79,8 @@ const eventSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type AirDropOffer = z.infer<typeof offerSchema>;
+/** The model Comma's receiver answers AirDrop discovery with. */
+export const airDropReceiverModel = "Comma";
 export interface AirDropTransferProgress {
   fraction?: number;
   totalBytes?: number;
@@ -130,6 +136,7 @@ export class AirDropService {
   #directory: string | undefined;
   #name = "Comma";
   #port: number | undefined;
+  #service: string | undefined;
   #error: string | undefined;
   #files: AirDropFile[] = [];
   #sequence = 0;
@@ -153,6 +160,8 @@ export class AirDropService {
       receiverId: this.#receiverId,
       directory: this.#directory,
       port: this.#port,
+      /** The running receiver's id as AirDrop scans report it. */
+      service: this.#service,
       receivedCount: this.#sequence,
       error: this.#error,
       reason: !supported
@@ -196,6 +205,9 @@ export class AirDropService {
           "receive",
           "--name",
           name,
+          // Senders tell Comma receivers from other devices by this model.
+          "--model",
+          airDropReceiverModel,
           "--directory",
           this.#directory,
           "--identity-directory",
@@ -245,6 +257,7 @@ export class AirDropService {
             const event = eventSchema.parse(JSON.parse(line));
             if (event.type === "listening" && this.#phase === "starting") {
               this.#port = event.port;
+              this.#service = event.service;
               this.#phase = "receiving";
               ready();
             } else if (event.type === "approval_requested") {
@@ -290,6 +303,7 @@ export class AirDropService {
         child.once("close", () => {
           cancelStartupTimer();
           this.#port = undefined;
+          this.#service = undefined;
           this.#child = undefined;
           this.#cancelAll("AirDrop receiver stopped before the transfer completed.");
           if (this.#phase !== "stopping") {

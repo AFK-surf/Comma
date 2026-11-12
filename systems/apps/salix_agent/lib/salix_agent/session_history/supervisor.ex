@@ -16,11 +16,7 @@ defmodule SalixAgent.SessionHistory.Supervisor do
         {SalixStore.SessionHistoryRepo, opts},
         {Finch, name: SalixAgent.SessionHistory.HTTP, pools: %{default: [size: 2, count: 1]}},
         SalixAgent.SessionHistory.Scheduler,
-        SalixAgent.SessionHistory.Worker,
-        Supervisor.child_spec({SalixAgent.SessionHistory.Recent, []}, id: :recent_history_a),
-        Supervisor.child_spec({SalixAgent.SessionHistory.Recent, []}, id: :recent_history_b),
-        Supervisor.child_spec({SalixAgent.SessionHistory.Recent, []}, id: :recent_history_c),
-        Supervisor.child_spec({SalixAgent.SessionHistory.Recent, []}, id: :recent_history_d)
+        SalixAgent.SessionHistory.Worker
       ],
       strategy: :rest_for_one
     )

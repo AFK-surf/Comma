@@ -11,40 +11,6 @@ import { AdminSession, type SessionLease } from "../src/adminSession";
 import { fakeFetchLayer, flush, jsonResponse } from "./http";
 
 describe("AdminApi", () => {
-  it("updates the exact Workspace VM through the audited Admin transport", async () => {
-    const result = {
-      workspace_id: "wsp_one",
-      enabled: false,
-      convergence_status: "pending",
-    };
-    const fetchMock = vi.fn(async () => jsonResponse(result));
-    const api = createAdminApi({
-      baseUrl: "https://comma.test",
-      fetch: fetchMock,
-      sessionTransport: sessionTransport(),
-    });
-    await expect(
-      api.updateUserWorkspaceVm("usr_one", "wsp_one", {
-        enabled: false,
-        reason: "Disable VM",
-        confirmation: "workspace-vm:wsp_one:disable",
-        idempotencyKey: "vm-change-1",
-      })
-    ).resolves.toEqual(result);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://comma.test/v1/comma/admin/users/usr_one/workspaces/wsp_one/vm",
-      expect.objectContaining({
-        method: "PUT",
-        body: JSON.stringify({
-          confirmation: "workspace-vm:wsp_one:disable",
-          idempotency_key: "vm-change-1",
-          reason: "Disable VM",
-          enabled: false,
-        }),
-      })
-    );
-  });
-
   it("uses the active SessionLifecycle transport for the paginated user query", async () => {
     const transport = sessionTransport();
     const fetchMock = vi.fn(async () =>
@@ -488,6 +454,7 @@ describe("AdminApi", () => {
       if (init?.method === "PUT") {
         return jsonResponse({
           agent_id: "agent_worker",
+          scope: "tenant",
           role: "worker",
           source: "pinned",
           model: body.model.model,
@@ -507,14 +474,16 @@ describe("AdminApi", () => {
         agents: {
           router: {
             agent_id: "agent_router",
+            scope: "platform",
             role: "router",
             source: "platform_default",
-            model: "gpt-5.6-luna",
-            provider: "openai",
+            model: "Comma Fast",
+            provider: "comma",
             selection: { kind: "builtin" },
           },
           worker: {
             agent_id: "agent_worker",
+            scope: "global",
             role: "worker",
             source: "pinned",
             model: "gpt-5.6-sol",
@@ -560,7 +529,7 @@ describe("AdminApi", () => {
     await expect(api.getUserWorkspaceAgentModels("usr_1")).resolves.toMatchObject({
       workspace_id: "workspace_1",
       agents: {
-        router: { model: "gpt-5.6-luna", source: "platform_default" },
+        router: { model: "Comma Fast", source: "platform_default", scope: "platform" },
         worker: {
           model: "gpt-5.6-sol",
           reasoning_effort: "high",
@@ -580,6 +549,7 @@ describe("AdminApi", () => {
       })
     ).resolves.toMatchObject({
       role: "worker",
+      scope: "tenant",
       model: "gpt-5.6-terra",
       reasoning_effort: "high",
     });

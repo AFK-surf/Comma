@@ -1,12 +1,12 @@
-# 运行 still.fail
+# 运行 Comma
 
 Comma 怎么运行 station 见 [README](../README.md)。
 
 ## 安装与启动
 
-在 [still.fail web](https://app.still.fail) 的 workspace 设置里添加 station，按页面生成的一次性命令安装并加入 workspace。安装器把发布包放到 `~/.stillfail/app`，把 `stillfail` 链接进 `~/.local/bin`，并注册用户服务（macOS 用 launchd，Linux 用 systemd）。`stillfail update` 更新发布包，`stillfail status` 查看绑定与连接状态。这样装的 station 默认在空闲时自动更新到所在通道的新版本。`config.json` 里 `"autoUpdate": false`（或 Updates 页面关掉）即不再自动更新。桌面应用自带的 station 随应用更新。
+在 [Comma web](https://app.still.fail) 的 workspace 设置里添加 station，按页面生成的一次性命令安装并加入 workspace。安装器把发布包放到 `~/.comma-station/app`，把 `stillfail` 链接进 `~/.local/bin`，并注册用户服务（macOS 用 launchd，Linux 用 systemd）。`comma-station update` 更新发布包，`comma-station status` 查看绑定与连接状态。这样装的 station 默认在空闲时自动更新到所在通道的新版本。`config.json` 里 `"autoUpdate": false`（或 Updates 页面关掉）即不再自动更新。桌面应用自带的 station 随应用更新。
 
-station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/.stillfail`（`STILLFAIL_DATA` 可改，兼容 `EMBER_DATA`）。开发测试使用独立数据目录，不使用已有真实会话的 station。
+station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/.comma-station`（`COMMA_STATION_DATA` 可改，兼容 `EMBER_DATA`）。开发测试使用独立数据目录，不使用已有真实会话的 station。
 
 更新支持原地交接：启动器（`native/launcher`，pid 不变）收到 SIGUSR2，起新版本的 Node 进程，新的就绪后放掉旧的。轮次、运行时和 job 不断（`native/launcher/src/run.rs`、`src/ops/launcher.ts`）。
 
@@ -18,7 +18,7 @@ station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/
 
 ## config.json
 
-也可以直接编辑，格式如下（改完需要重启 still.fail）：
+也可以直接编辑，格式如下（改完需要重启 Comma）：
 
 ```json
 {
@@ -52,7 +52,7 @@ station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/
   - `api-provider`：用 `provider` 指定服务商（如 `openai`、`deepseek`、`openrouter`、`azure-openai`、`custom`），再加 `key`。Azure OpenAI、Cloudflare、`custom` 还要 `endpoint`，`custom` 的 key 可省。服务商有 Anthropic 接口的跑 Claude Code，有 Responses 接口的跑 Codex，有 Chat Completions 接口的可用于自动决策。只有 Chat Completions 的服务商不跑任何运行时。
   - `env`：只用 `env` 里手写的变量。
 - `mesh.port`（可选，默认不设）：station 的 IPv4 QUIC（iroh）socket 固定绑定 `0.0.0.0:<port>`，重启和更新后端口不变，防火墙可以只放行这一个 UDP 端口。不设时每次启动用任意空闲端口。IPv6 socket 总是用任意空闲端口。值必须是 1–65535 的整数。端口被占用或值不对时，station 不上 mesh，日志写 `mesh stopped`，不换用别的端口。设了这个端口时，更新交接中新进程先等旧进程退出（最多 40 秒）再绑定，这段时间 mesh 连不上。
-- `telemetry.errors` 打开后，这台 station 的错误（不带内容）上报到 still.fail 的 PostHog 项目，默认关闭，见 [telemetry.md](telemetry.md)。
+- `telemetry.errors` 打开后，这台 station 的错误（不带内容）上报到 Comma 的 PostHog 项目，默认关闭，见 [telemetry.md](telemetry.md)。
 - 共享的记忆和 skills 在 `<数据目录>/agent/`（`MEMORY.md` 和 `skills/`），启动时链接进每个账号的配置目录。
 
 ## 会话方式

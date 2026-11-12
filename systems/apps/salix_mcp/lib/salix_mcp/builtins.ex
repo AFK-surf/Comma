@@ -18,9 +18,77 @@ defmodule SalixMCP.Builtins do
   @x_mcp_id "mcp1_0000000000000000009"
   @lark_mcp_id "mcp1_0000000000000000010"
   @mac_apps_mcp_id "mcp1_0000000000000000011"
+  @posthog_mcp_id "mcp1_0000000000000000012"
+  @stripe_mcp_id "mcp1_0000000000000000013"
+  @blender_mcp_id "mcp1_0000000000000000025"
+
+  # The PostHog MCP tool families (its `features` query) Comma offers: those
+  # PostHog's own MCP installer offers (`@posthog/wizard` AVAILABLE_FEATURES),
+  # with its names and categories, in its order. `workspace` (organization and
+  # project switching) is always on; families it does not offer stay off.
+  @posthog_tool_groups [
+    {"dashboards", "Dashboards", "Data & Analytics"},
+    {"insights", "Insights", "Data & Analytics"},
+    {"product_analytics", "Product Analytics", "Data & Analytics"},
+    {"experiments", "Experiments", "Data & Analytics"},
+    {"surveys", "Surveys", "Data & Analytics"},
+    {"annotations", "Annotations", "Data & Analytics"},
+    {"replay", "Session Replay", "Data & Analytics"},
+    {"sql", "SQL", "Data & Analytics"},
+    {"web_analytics", "Web Analytics", "Data & Analytics"},
+    {"customer_analytics", "Usage metrics", "Data & Analytics"},
+    {"signals", "Signals", "Data & Analytics"},
+    {"llm_analytics", "AI Observability", "AI Engineering"},
+    {"error_tracking", "Error Tracking", "Development Tools"},
+    {"logs", "Logs", "Development Tools"},
+    {"flags", "Feature Flags", "Development Tools"},
+    {"early_access_features", "Early Access Features", "Development Tools"},
+    {"cohorts", "Cohorts", "Development Tools"},
+    {"tracing", "APM Tracing", "Development Tools"},
+    {"events", "Events", "Data Management"},
+    {"persons", "Persons", "Data Management"},
+    {"actions", "Actions", "Data Management"},
+    {"data_warehouse", "Data Warehouse", "Data Management"},
+    {"endpoints", "Endpoints", "Data Management"},
+    {"data_schema", "Data Schema", "Data Management"},
+    {"batch_exports", "Batch Exports", "Data Management"},
+    {"hog_functions", "Hog Functions", "CDP & Automation"},
+    {"hog_function_templates", "Hog Function Templates", "CDP & Automation"},
+    {"workflows", "Workflows", "CDP & Automation"},
+    {"docs", "Documentation", "Platform & Management"},
+    {"notebooks", "Notebooks", "Platform & Management"},
+    {"alerts", "Alerts", "Platform & Management"},
+    {"platform_features", "Platform Features", "Platform & Management"},
+    {"integrations", "Integrations", "Platform & Management"},
+    {"conversations", "Conversations", "Platform & Management"},
+    {"core", "Core", "Platform & Management"},
+    {"reverse_proxy", "Reverse Proxy", "Platform & Management"},
+    {"debug", "Debug", "Platform & Management"}
+  ]
+  @posthog_all_features Enum.map_join(
+                          [{"workspace", nil, nil} | @posthog_tool_groups],
+                          ",",
+                          &elem(&1, 0)
+                        )
+
+  @doc """
+  The PostHog MCP's tool groups, each a family of its `features` query, for the
+  `posthog` plugin's switches. `workspace` is not among them: it is always on.
+  """
+  def posthog_tool_groups,
+    do:
+      Enum.map(@posthog_tool_groups, fn {id, name, category} ->
+        %{"id" => id, "name" => name, "category" => category}
+      end)
 
   @doc "The Mac apps MCP served by the Comma desktop app (see SalixMCP.Connection client_mcp)."
   def mac_apps_mcp_id, do: @mac_apps_mcp_id
+
+  @doc "The Blender MCP served by the Comma desktop app (see SalixMCP.Connection client_mcp)."
+  def blender_mcp_id, do: @blender_mcp_id
+
+  @doc "Whether an MCP is one the Comma desktop app serves itself, over `client_mcp`."
+  def client_mcp_id?(mcp_id), do: mcp_id in [@mac_apps_mcp_id, @blender_mcp_id]
 
   def child_spec(opts) do
     %{
@@ -98,6 +166,33 @@ defmodule SalixMCP.Builtins do
         "supported_placements" => ["device"],
         "declared_capabilities" => %{"tools" => true},
         "environment_requirements" => %{"device" => ["comma_desktop_macos"]},
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
+      %{
+        "mcp_id" => @blender_mcp_id,
+        "tenant_id" => "",
+        "name" => "Blender",
+        "description" =>
+          "Look at, change, render and export the scenes of Blender on the user's own computer, served by the Comma desktop app.",
+        "server_metadata" => %{
+          "name" => "Blender",
+          "description" =>
+            "The Comma desktop app's MCP server for Blender on that computer. It reaches only the Blender windows with Comma's add-on connected.",
+          "remotes" => [
+            %{
+              "target_ref" => "client:blender",
+              "transport" => "comma-client",
+              "url" => "comma-client://blender",
+              "headers_schema" => %{}
+            }
+          ]
+        },
+        "supports_server" => false,
+        "recommended_placement" => "device",
+        "supported_placements" => ["device"],
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"device" => ["comma_desktop"]},
         "trust" => %{"source" => "system_builtin"},
         "created_by" => "system"
       },
@@ -433,6 +528,71 @@ defmodule SalixMCP.Builtins do
         "created_by" => "system"
       },
       %{
+        "mcp_id" => @posthog_mcp_id,
+        "tenant_id" => "",
+        "name" => "PostHog",
+        "description" =>
+          "Official hosted PostHog MCP for product analytics, feature flags, experiments, and errors.",
+        "server_metadata" => %{
+          "name" => "PostHog",
+          "description" =>
+            "Official hosted PostHog MCP for product analytics, feature flags, experiments, and errors.",
+          "remotes" => [
+            %{
+              "target_ref" => "remote:posthog",
+              "transport" => "streamable-http",
+              "url" => "https://mcp.posthog.com/mcp?features={POSTHOG_FEATURES}",
+              "variables_schema" => %{
+                "POSTHOG_FEATURES" => %{
+                  "description" => "Comma-separated PostHog tool families.",
+                  "isRequired" => false,
+                  "default" => @posthog_all_features
+                }
+              },
+              "headers_schema" => %{}
+            }
+          ]
+        },
+        "supports_server" => true,
+        "recommended_placement" => "server",
+        "supported_placements" => ["server"],
+        "auth_requirements" => %{"posthog" => ["oauth"]},
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"server" => ["public_network"]},
+        "server_support_note" =>
+          "Uses PostHog's official hosted MCP with OAuth discovery, PKCE, and dynamic client registration.",
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
+      %{
+        "mcp_id" => @stripe_mcp_id,
+        "tenant_id" => "",
+        "name" => "Stripe",
+        "description" => "Official hosted Stripe MCP for payments, customers, and billing.",
+        "server_metadata" => %{
+          "name" => "Stripe",
+          "description" => "Official hosted Stripe MCP for payments, customers, and billing.",
+          "remotes" => [
+            %{
+              "target_ref" => "remote:stripe",
+              "transport" => "streamable-http",
+              "url" => "https://mcp.stripe.com",
+              "headers_schema" => %{}
+            }
+          ]
+        },
+        "supports_server" => true,
+        "recommended_placement" => "server",
+        "supported_placements" => ["server"],
+        "auth_requirements" => %{"stripe" => ["oauth"]},
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"server" => ["public_network"]},
+        "server_support_note" =>
+          "Uses Stripe's official hosted MCP with OAuth discovery, PKCE, and dynamic client registration.",
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
+      %{
         "mcp_id" => @slack_mcp_id,
         "tenant_id" => "",
         "name" => "Slack",
@@ -467,6 +627,6 @@ defmodule SalixMCP.Builtins do
         "trust" => %{"source" => "system_builtin"},
         "created_by" => "system"
       }
-    ]
+    ] ++ SalixMCP.ChinaServices.mcp_definitions()
   end
 end

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dynamic_ui_title">Interactive content</string>
+    <string name="dynamic_ui_add_to_draft">Add to draft</string>
+    <string name="dynamic_ui_open_link_title">Open this link?</string>
+    <string name="dynamic_ui_open_link">Open link</string>
+    <string name="dynamic_ui_load_failed">Couldn’t load interactive content</string>
+    <string name="dynamic_ui_failed">Interactive content failed</string>
+    <string name="dynamic_ui_runtime_missing">The interactive runtime is missing.</string>
+    <string name="dynamic_ui_copy_recommended">Recommended</string>
+    <string name="dynamic_ui_copy_alternatives">Other options</string>
+    <string name="dynamic_ui_copy_high">High</string>
+    <string name="dynamic_ui_copy_low">Low</string>
+    <string name="dynamic_ui_copy_feels_like">Feels like</string>
+    <string name="dynamic_ui_copy_humidity">Humidity</string>
+    <string name="dynamic_ui_copy_ongoing">Now</string>
+    <string name="dynamic_ui_copy_directions">Directions</string>
+    <string name="dynamic_ui_copy_range">Range</string>
+    <string name="dynamic_ui_copy_days">days</string>
+    <string name="dynamic_ui_copy_attribute">Attribute</string>
+    <string name="dynamic_ui_copy_option">Option</string>
+    <string name="dynamic_ui_copy_checklist_progress">{done} of {total} done</string>
+    <string name="dynamic_ui_copy_focus">Focus</string>
+    <string name="dynamic_ui_copy_rest">Break</string>
+    <string name="dynamic_ui_copy_paused">Paused</string>
+    <string name="dynamic_ui_copy_time_up">Time’s up</string>
+    <string name="dynamic_ui_copy_timer_cycle">Session {current} of {total}</string>
+    <string name="dynamic_ui_copy_arrives_by">Arrives by {time}</string>
+    <string name="dynamic_ui_copy_order_headline">{status}, {arrival}</string>
+    <string name="dynamic_ui_copy_offline">Offline</string>
+    <string name="dynamic_ui_copy_up_next">Up next</string>
+    <string name="dynamic_ui_copy_part_failed">This part couldn’t be shown</string>
+</resources>

@@ -154,7 +154,8 @@ export function readSystemFile(
   CoreError
 > {
   const ref = file.system;
-  if (!ref) return Effect.fail(CoreError.invalid("not a System Files entry"));
+  if (!ref || ref.kind === "task_file")
+    return Effect.fail(CoreError.invalid("not a System Files entry"));
   if (ref.kind === "vfs")
     return ctx.api
       .request(

@@ -169,6 +169,85 @@ defmodule SalixAnalytics.SlackMirrorReaderClickHouseTest do
     assert parent["reply_count"] == 0
   end
 
+  test "thread_participation names the given threads the actor wrote in", %{
+    database: database
+  } do
+    root = message_row(thread_ts: "1700000000.000001")
+
+    reply =
+      message_row(
+        message_ts_us: 1_700_000_001_000_002,
+        message_ts: "1700000001.000002",
+        thread_ts: "1699999000.000001"
+      )
+
+    other = %{
+      message_row(message_ts_us: 1_700_000_002_000_003, message_ts: "1700000002.000003")
+      | "actor_id" => "U_OTHER"
+    }
+
+    deleted =
+      message_row(
+        message_ts_us: 1_700_000_003_000_004,
+        message_ts: "1700000003.000004",
+        thread_ts: "1699999500.000001"
+      )
+      |> Map.put("deleted", true)
+
+    insert_rows!(database, "slack_messages", [root, reply, other, deleted])
+    scope = %{"tenant_id" => "tenant-atlas", "workspace_id" => "T_ATLAS"}
+
+    asked = [
+      {"C_ATLAS", "1700000000.000001"},
+      {"C_ATLAS", "1699999000.000001"},
+      {"C_ATLAS", "1700000002.000003"},
+      {"C_ATLAS", "1699999500.000001"},
+      {"C_ELSEWHERE", "1699999000.000001"}
+    ]
+
+    assert {:ok, wrote} = Reader.thread_participation(scope, "U_HUMAN", asked)
+
+    assert Enum.sort(wrote) == [
+             {"C_ATLAS", "1699999000.000001"},
+             {"C_ATLAS", "1700000000.000001"}
+           ]
+
+    assert Reader.thread_participation(scope, "U_HUMAN", [{"C'X", "1.000001"}]) ==
+             {:error, :invalid_slack_mirror_read}
+  end
+
+  test "actor_channel_counts counts each actor's live messages per channel", %{
+    database: database
+  } do
+    rows =
+      for {ts_us, channel, actor} <- [
+            {1_700_000_000_000_001, "C_ATLAS", "U_HUMAN"},
+            {1_700_000_001_000_001, "C_ATLAS", "U_HUMAN"},
+            {1_700_000_002_000_001, "C_OTHER", "U_HUMAN"},
+            {1_700_000_003_000_001, "C_ATLAS", "U_OTHER"},
+            {1_600_000_000_000_001, "C_ATLAS", "U_HUMAN"}
+          ] do
+        message_row(message_ts_us: ts_us, message_ts: "#{div(ts_us, 1_000_000)}.000001")
+        |> Map.merge(%{"channel_id" => channel, "actor_id" => actor})
+      end
+
+    insert_rows!(database, "slack_messages", rows)
+    scope = %{"tenant_id" => "tenant-atlas", "workspace_id" => "T_ATLAS"}
+
+    assert {:ok, counts} =
+             Reader.actor_channel_counts(
+               scope,
+               ["U_HUMAN"],
+               ["C_ATLAS", "C_OTHER"],
+               1_699_000_000_000_000
+             )
+
+    assert Enum.sort(counts) == [{"C_ATLAS", "U_HUMAN", 2}, {"C_OTHER", "U_HUMAN", 1}]
+
+    assert Reader.actor_channel_counts(scope, ["U'X"], ["C_ATLAS"], 0) ==
+             {:error, :invalid_slack_mirror_read}
+  end
+
   test "list_changes omits backfill while tail, history, and search still see it", %{
     database: database
   } do

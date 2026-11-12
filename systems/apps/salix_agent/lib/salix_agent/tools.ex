@@ -173,6 +173,7 @@ defmodule SalixAgent.Tools do
     env.process_tail
     device.list
     device.get
+    device.screens
     agent.list
     agent.get
     agent.models
@@ -230,6 +231,7 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.Calendar.defs() ++
       SalixAgent.Tools.MeetingPreparation.defs() ++
       SalixAgent.Tools.DailyBrief.defs() ++
+      SalixAgent.Tools.MeetingSettings.defs() ++
       SalixAgent.Tools.ImRouter.defs() ++
       SalixAgent.Tools.MCP.defs() ++
       SalixAgent.Tools.Schedules.defs() ++
@@ -243,6 +245,9 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.ComposioTriggers.defs() ++
       SalixAgent.Tools.Proactive.defs() ++
       SalixAgent.Tools.Recommendations.defs() ++
+      SalixAgent.Tools.TaskRequests.defs() ++
+      SalixAgent.Tools.ChannelLink.defs() ++
+      SalixAgent.Tools.PluginInstall.defs() ++
       SalixAgent.Tools.OwnerEmail.defs() ++
       SalixAgent.Tools.Meeting.defs() ++
       SalixAgent.Tools.IFC.defs() ++
@@ -256,8 +261,7 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.Stations.defs() ++
       SalixAgent.Tools.CloudVM.defs() ++
       SalixAgent.Tools.LanGateway.defs() ++
-      SalixAgent.Tools.Miio.defs() ++
-      SalixAgent.Tools.Gree.defs() ++
+      SalixAgent.Tools.LanScript.defs() ++
       SalixAgent.Tools.DeviceSecrets.defs() ++
       SalixAgent.Tools.Tailnet.defs()
   end
@@ -499,6 +503,18 @@ defmodule SalixAgent.Tools do
       {:ok, call_ctx} ->
         {call, call_ctx, start_tool_dependency(call, call_ctx, observability_context)}
 
+      {:error, "proactive_handoff_not_delegation" = reason} ->
+        {call, ctx,
+         {:inline,
+          error_result(
+            call,
+            "A background reminder is evidence, not delegated work. Do not create a Task for it. " <>
+              "Record your decision with proactive.act and, if the user should act, offer the step in your reminder; " <>
+              "create the Task after the user accepts it, with that message as source_message_id: " <>
+              reason,
+            reason
+          )}}
+
       {:error, reason} ->
         {call, ctx,
          {:inline,
@@ -736,6 +752,9 @@ defmodule SalixAgent.Tools do
     end
   end
 
+  # A station's call waits here for the person (`SalixAgent.Tools.OAuth`); a round's returns at once.
+  defp call_tool_timeout_ms("oauth.request_authorization", _args), do: 19 * 60 * 1000
+
   defp call_tool_timeout_ms("env.exec", args) do
     execution_ms = exec_arg_timeout_ms(args) || 120_000
 
@@ -810,8 +829,13 @@ defmodule SalixAgent.Tools do
   defp default_tool_timeout_ms("device.lan_request"),
     do: SalixAgent.Tools.LanGateway.max_timeout_seconds() * 1_000 + 15_000
 
-  # Up to two hello and command round trips through the gateway.
-  defp default_tool_timeout_ms("device.miio_request"), do: 65_000
+  # The tunnel's dial, the call's own timeout and connector slack.
+  defp default_tool_timeout_ms("device.lan_tcp_send"),
+    do: SalixAgent.Tools.LanGateway.tcp_send_timeout_ms()
+
+  # The script's 30 s ceiling plus a gateway queue wait and connector slack.
+  defp default_tool_timeout_ms("device.lan_script"),
+    do: SalixAgent.Tools.LanScript.max_timeout_ms() + 30_000
 
   # A build (15 s deadline in spinfoam) plus the run's wall limit and slack.
   defp default_tool_timeout_ms("script." <> _),
@@ -827,6 +851,9 @@ defmodule SalixAgent.Tools do
   # Above the station gateway's 60 s request deadline, so its timeout answer
   # (outcome unknown) reaches the model instead of a dispatcher kill.
   defp default_tool_timeout_ms("station." <> _), do: @station_tool_timeout_ms
+  # Above Photon's 120 s upload bound of a 100 MiB file plus its 15 s sends,
+  # so a slow upload returns its own outcome instead of a dispatcher kill.
+  defp default_tool_timeout_ms("im_api.imessage.send_file"), do: 180_000
   defp default_tool_timeout_ms(_name), do: @default_tool_timeout_ms
 
   defp configured_tool_timeout_ms(overrides, name) when is_map(overrides) do
@@ -932,11 +959,15 @@ defmodule SalixAgent.Tools do
             # The information-flow evidence rides alongside it so a tool that
             # creates a durable resource can record the provenance the
             # dispatcher established (docs/verification.md).
+            declaration = SalixAgent.IFC.Declaration.from_call(call)
+
             ctx =
               ctx
+              |> SalixAgent.IFC.Context.with_request(declaration.request)
               |> Map.put(:tool_call_id, to_string(id || ""))
-              |> Map.put(:ifc_declaration, SalixAgent.IFC.Declaration.from_call(call))
+              |> Map.put(:ifc_declaration, declaration)
               |> put_present(:ifc_evidence, call[:ifc_evidence] || call["ifc_evidence"])
+              |> put_present(:ifc_requester, call[:ifc_requester] || call["ifc_requester"])
 
             try do
               SalixAgent.MeetingSummaryScope.authorize_tool!(name, ctx)
@@ -1301,12 +1332,55 @@ defmodule SalixAgent.Tools do
     |> call_envelopes(ctx[:llm_tool_envelope] == true)
     |> Enum.map(&normalize_tool_input/1)
     |> Enum.map(&enforce_disclosed_tool(&1, ctx))
+    |> Enum.map(&enforce_queue_yield(&1, ctx))
   end
+
+  # An answered Router activation with people queued behind it only answers,
+  # delegates or ends (`SalixAgent.QueueYieldGuard`).
+  defp enforce_queue_yield(call, %{queued_people_after_answer: count} = ctx)
+       when is_integer(count) and count > 0 do
+    name = to_string(call[:name] || call["name"] || "")
+
+    if guidance_call?(call) or SalixAgent.QueueYieldGuard.allowed?(name),
+      do: call,
+      else:
+        guidance_call(
+          call,
+          SalixAgent.QueueYieldGuard.guidance(count),
+          name,
+          ctx,
+          SalixAgent.QueueYieldGuard.reason()
+        )
+  end
+
+  defp enforce_queue_yield(call, _ctx), do: call
 
   @doc false
   @spec prepare_for_dispatch([call()], ctx()) :: [call()]
   def prepare_for_dispatch(calls, ctx) when is_list(calls) and is_map(ctx),
     do: prepare_calls(calls, ctx)
+
+  @doc false
+  @spec observe_results([result()], ctx()) :: [result()]
+  def observe_results(results, ctx) when is_list(results) and is_map(ctx),
+    do: collect_tool_observations(results, ctx, async: false)
+
+  @doc false
+  @spec prepared_guidance_result(call()) :: {:ok, result()} | :not_guidance
+  def prepared_guidance_result(call) when is_map(call) do
+    if guidance_call?(call) do
+      result =
+        call
+        |> guidance_tool_result(guidance_error(call), guidance_target(call))
+        |> Map.delete(:status_hint)
+        |> Map.put(:status, "guidance")
+        |> Map.put(:call_index, call[:call_index] || call["call_index"])
+
+      {:ok, result}
+    else
+      :not_guidance
+    end
+  end
 
   @doc false
   @spec recoverable_envelope_guidance(call()) :: {:ok, result()} | :not_recoverable
@@ -1471,7 +1545,8 @@ defmodule SalixAgent.Tools do
   end
 
   defp maybe_put_guidance_reason(call, reason)
-       when reason in ~w(not_callable not_disclosed invalid_params envelope_misuse),
+       when reason in ~w(not_callable not_disclosed invalid_params envelope_misuse queued_person
+                         unanswered_person),
        do: Map.put(call, :guidance_reason, reason)
 
   defp maybe_put_guidance_reason(call, _reason), do: call
@@ -2086,7 +2161,7 @@ defmodule SalixAgent.Tools do
         "tool" => tool,
         "guidance_reason" => guidance_reason
       }
-      |> Map.merge(guidance_next_step(tool))
+      |> Map.merge(guidance_next_step(tool, guidance_reason))
       |> Jason.encode!()
 
     %{
@@ -2109,9 +2184,12 @@ defmodule SalixAgent.Tools do
   # (`VerifiedKernel.Provider.Messages.runtimeToolName`). It has no manual, so
   # its guidance carries no help call; the kernel's error text names wait_for
   # and end_turn instead.
-  defp guidance_next_step(@runtime_message_name), do: %{}
+  defp guidance_next_step(@runtime_message_name, _reason), do: %{}
 
-  defp guidance_next_step(tool) do
+  # A refused `end_turn` names its next steps itself (`UnansweredPersonGuard`).
+  defp guidance_next_step(_tool, "unanswered_person"), do: %{}
+
+  defp guidance_next_step(tool, _reason) do
     %{
       "help_tool" => "help",
       "help_params" => %{"tool" => tool},
@@ -3026,7 +3104,7 @@ defmodule SalixAgent.Tools do
   defp vision_configured?(_), do: false
 
   defp image_path?(path) do
-    String.downcase(Path.extname(path)) in [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+    String.downcase(Path.extname(path)) in ~w(.jpg .jpeg .png .gif .webp .heic .heif .bmp .tif .tiff .avif)
   end
 
   defp image_mime(path) do
@@ -3034,6 +3112,12 @@ defmodule SalixAgent.Tools do
       ".png" -> "image/png"
       ".gif" -> "image/gif"
       ".webp" -> "image/webp"
+      ".heic" -> "image/heic"
+      ".heif" -> "image/heif"
+      ".bmp" -> "image/bmp"
+      ".tif" -> "image/tiff"
+      ".tiff" -> "image/tiff"
+      ".avif" -> "image/avif"
       _ -> "image/jpeg"
     end
   end

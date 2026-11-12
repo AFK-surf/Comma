@@ -23,6 +23,6 @@ internal object SettingsMessages {
         SettingsAction.LOAD_DEVICES -> R.string.settings_devices_failed
         SettingsAction.REMOVE_DEVICE -> R.string.settings_devices_remove_failed
         SettingsAction.REMOVE_OTHER_DEVICES -> R.string.settings_devices_sign_out_others_failed
-        SettingsAction.THEME, SettingsAction.TEXT_SIZE, SettingsAction.LANGUAGE -> R.string.settings_error_local
+        SettingsAction.THEME, SettingsAction.TEXT_SIZE, SettingsAction.LANGUAGE, SettingsAction.GLASS -> R.string.settings_error_local
     }
 }

@@ -47,7 +47,7 @@ defmodule SalixAgent.Decide do
 
   def contract do
     "Supply state and 1-8 independent typed questions, within 12 KiB. " <>
-      "Results contain model and answers. choice returns choice, probabilities_bp and confidence_bp. " <>
+      "Results contain model, answers and provider-reported usage (input_tokens and output_tokens). choice returns choice, probabilities_bp and confidence_bp. " <>
       "noul returns probability_bp. score returns score_milli, probabilities_bp and confidence_bp. " <>
       "Probabilities and confidence use floor(value * 10000); scores use floor(level mean * 1000). " <>
       "Confidence is not correctness or the winning probability. Include a none option when needed. " <>
@@ -171,6 +171,15 @@ defmodule SalixAgent.Decide do
     )
   end
 
+  @doc "A server-owned Task decision, with at most 64 KiB of policy and complete Task content."
+  def task_model_selection_call(args, ctx) do
+    run(args, ctx, nil,
+      entrypoint: "task_model_selection",
+      actor_type: "system",
+      profile: :task_model_selection
+    )
+  end
+
   @doc false
   def miniskill_call(args, ctx, deadline) do
     run(args, ctx, deadline,
@@ -245,6 +254,7 @@ defmodule SalixAgent.Decide do
   defp error_code(code)
        when code in [
               :invalid_request,
+              :input_too_large,
               :not_configured,
               :context_unavailable,
               :rate_limited,
@@ -291,13 +301,11 @@ defmodule SalixAgent.Decide do
           {:ok, ctx}
 
         _ ->
-          case SalixAgent.InternalSessionStore.read(ctx.agent_id, ctx.session_id) do
-            {:ok, session} ->
-              billing = SalixAgent.InternalSession.get(session, :billing_context) || %{}
-              {:ok, Map.put(ctx, :billing_context, billing)}
-
-            _ ->
-              {:error, :context_unavailable}
+          case SalixAgent.InternalSessionStore.with_session(ctx.agent_id, ctx.session_id, fn s ->
+                 {:ok, SalixAgent.InternalSession.get(s, :billing_context) || %{}}
+               end) do
+            {:ok, billing} -> {:ok, Map.put(ctx, :billing_context, billing)}
+            _ -> {:error, :context_unavailable}
           end
       end
     else
@@ -315,6 +323,7 @@ defmodule SalixAgent.Decide do
     max_args =
       case profile do
         :miniskill -> 64 * 1024
+        :task_model_selection -> 64 * 1024
         :condensed_workspace -> 32 * 1024
         _ -> @max_args
       end
@@ -325,17 +334,26 @@ defmodule SalixAgent.Decide do
     with true <- Enum.sort(Map.keys(args)) == ["questions", "state"],
          true <- is_binary(args["state"]) or is_map(args["state"]) or is_list(args["state"]),
          {:ok, encoded} <- Jason.encode(args),
-         true <- byte_size(encoded) <= max_args,
+         :ok <- validate_size(encoded, max_args, profile),
          questions when is_map(questions) and map_size(questions) in 1..max_questions//1 <-
            args["questions"],
          true <- Enum.all?(questions, fn {key, q} -> valid_key?(key) and question?(q) end) do
       :ok
     else
+      {:error, :input_too_large} = error -> error
       _ -> {:error, :invalid_request}
     end
   end
 
   def validate(_, _), do: {:error, :invalid_request}
+
+  defp validate_size(encoded, max_args, profile) do
+    cond do
+      byte_size(encoded) <= max_args -> :ok
+      profile == :task_model_selection -> {:error, :input_too_large}
+      true -> {:error, :invalid_request}
+    end
+  end
 
   defp question?(q) when is_map(q) do
     Enum.all?(Map.keys(q), &(&1 in ["type", "instructions", "criteria"])) and
@@ -363,7 +381,12 @@ defmodule SalixAgent.Decide do
          true <- MapSet.new(Map.keys(answers)) == MapSet.new(Map.keys(questions)),
          true <- valid_usage?(usage),
          {:ok, normalized} <- normalize_answers(questions, answers) do
-      result = %{"model" => model, "answers" => normalized}
+      result = %{
+        "model" => model,
+        "answers" => normalized,
+        "usage" => Map.take(usage, ["input_tokens", "output_tokens"])
+      }
+
       encoded = Jason.encode!(result)
       # Loops carry JSON text inside a JSON envelope. Check the escaped form too.
       envelope =

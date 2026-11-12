@@ -259,20 +259,18 @@ defmodule SalixIM.IFCTest do
       assert row.display_name == "私聊"
     end
 
-    test "a stale observation reads as unknown rather than as an answer" do
+    test "a decision answers from the store alone, however old the observation" do
       Store.observe_scope(@tenant, @group, @connect, "C1", %{kind: "room"})
       Store.replace_scope_members(@tenant, @group, @connect, "C1", ["U_A"])
-
-      assert {"C1", fresh} = Projection.facts(@scope, "C1")
-      assert fresh.members == ["U_A"]
 
       SalixStore.Repo.query!(
         "UPDATE ifc_scope_facts SET observed_at = now() - interval '1 day' WHERE scope_id = 'C1'"
       )
 
-      assert {"C1", stale} = Projection.facts(@scope, "C1")
-      assert stale.members == :unknown
-      assert stale.kind == nil
+      # The test provider endpoint refuses every connection: these answers
+      # come from Postgres.
+      assert {"C1", %{kind: "room", members: ["U_A"]}} = Projection.facts(@scope, "C1")
+      assert {"C2", %{kind: nil, members: :unknown}} = Projection.facts(@scope, "C2")
     end
 
     test "join and leave events move the member set" do

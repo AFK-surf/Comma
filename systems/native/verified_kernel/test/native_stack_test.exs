@@ -46,6 +46,26 @@ defmodule SalixVerifiedKernel.NativeStackTest do
     assert Enum.map(projected, & &1["content"]) == Enum.map(1..12_000, &Integer.to_string/1)
   end
 
+  test "compaction preserves a long settled prefix before unfinished input" do
+    original = Session.new("agent", "session") |> Session.export()
+    settled = for id <- 1..12_000, do: %{id: id, seq: id, role: "user", content: "#{id}"}
+    unfinished = %{id: 12_001, seq: 12_001, role: "user", content: "new input"}
+
+    session =
+      Session.open(%{
+        original
+        | messages: settled ++ [unfinished],
+          last_seq: 12_001,
+          next_message_id: 12_002,
+          last_ack_message_id: 12_000
+      })
+
+    assert {:summarize, plan} = Session.query(session, :compaction_prepare, {:compact, %{}})
+    assert plan["last_id"] == 12_000
+    assert plan["live"] == settled
+    assert List.last(Session.get(session, :messages)) == unfinished
+  end
+
   test "deep JSON is rejected before recursive parsing exhausts the scheduler stack" do
     for {left, right} <- [{"[", "]"}, {"{\"x\":", "}"}] do
       raw = String.duplicate(left, 20_000) <> "0" <> String.duplicate(right, 20_000)

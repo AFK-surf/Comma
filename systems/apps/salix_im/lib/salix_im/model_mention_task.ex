@@ -120,7 +120,7 @@ defmodule SalixIM.ModelMentionTask do
            nil}
       end
 
-    answer(group_id, conversation_id, router, message_id, reply)
+    answer(group_id, conversation_id, router, "model-task:" <> message_id, reply)
     if context, do: tell_router(group_id, "model-task:" <> message_id, context)
     :ok
   end
@@ -314,13 +314,16 @@ defmodule SalixIM.ModelMentionTask do
   defp put_present(map, _key, nil), do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
 
-  # The Router's line in Home, delivered to no one.
-  defp answer(group_id, conversation_id, router, message_id, content) do
+  @doc """
+  The Router's line in Home, delivered to no one, made once per
+  `client_request_id` (also `SalixIM.RequestMention`'s).
+  """
+  def answer(group_id, conversation_id, router, client_request_id, content) do
     case ConversationServer.append_group_conversation_agent_message(
            group_id,
            conversation_id,
            router,
-           %{"content" => content, "client_request_id" => "model-task:" <> message_id}
+           %{"content" => content, "client_request_id" => client_request_id}
          ) do
       {:ok, _message} ->
         :ok
@@ -344,13 +347,13 @@ defmodule SalixIM.ModelMentionTask do
     end
   end
 
-  # What happened, for the Router's next round: staged without waking it.
-  defp tell_router(group_id, source_id, context) do
+  @doc "What happened, for the Router's next round: staged without waking it."
+  def tell_router(group_id, source_id, context, event_type \\ "model_task") do
     case RouterConversationInput.append_provider_input(
            group_id,
            source_id,
            %{content: context, name: "Comma", role: "user", no_wake: true},
-           %{"provider" => "comma", "event_type" => "model_task"}
+           %{"provider" => "comma", "event_type" => event_type}
          ) do
       {:ok, _result} ->
         :ok

@@ -18,17 +18,17 @@ defmodule BridgeForTeamsWeb.MeetingPreparationFixture do
     {:ok, _} = S3.put(Keys.ctl_group(group_id), Jason.encode!(group))
 
     {:ok, _} =
-      S3.put(
-        Keys.ctl_agent(router_id),
-        Jason.encode!(%{
+      SalixStore.Agent.create(router_id, to_string(node()), SalixAgent.State,
+        config: %{
           "agent_id" => router_id,
           "group_id" => group_id,
           "tenant_id" => org.salix_tenant_id,
           "role" => "router",
+          "runtime_config" => %{"kind" => "internal"},
           "heartbeat_schedule_id" => Ids.new_schedule_id(),
           "router_session_id" => Ids.new_session_id(),
           "name" => "Local preview Router"
-        })
+        }
       )
 
     {:ok, _} =

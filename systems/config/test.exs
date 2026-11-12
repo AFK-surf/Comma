@@ -65,6 +65,7 @@ config :alert_router,
   start_oban: true,
   start_http: false,
   mode: :shadow,
+  environment: "staging",
   delivery_lease_seconds: 3,
   max_delivery_attempts: 5,
   max_reconcile_attempts: 3,
@@ -141,7 +142,6 @@ live_llm_s3_backend =
 config :salix_store,
   agent_vmm_settlement_sweep_interval_ms: 3_600_000,
   conversation_search_writer_generation: "test-search-generation",
-  agent_vmm_environment_scoped_bindings_enabled: true,
   compute_workload_credential_secret: String.duplicate("test-compute-workload-secret-", 2),
   compute_runtime_base_url: "https://salix.test",
   runtime_active_revision_override: "test-runtime-revision",
@@ -187,6 +187,22 @@ config :systems_observability, port: 0
 # Projection tests claim jobs explicitly; a background poller would race their
 # assertions against the node-global Salix test database.
 config :salix_im, :conversation_search_worker, false
+config :salix_im, :conversation_archive_worker, false
+# Tests run the station Task owner sweep themselves (`SalixIM.StationTaskWatchRecovery.sweep/1`).
+config :salix_im, :station_task_watch_recovery, false
+config :salix_im, :task_files_backfill, false
+# Its sampler's timer would run beside every test; a test starts its own.
+config :salix_im, :mention_reply_latency, false
+# IFC member listings run in the background in production; tests list a
+# conversation explicitly (SalixIM.IFC.Projection.refresh/2).
+config :salix_im, :ifc_member_refresh, false
+# Feishu and Lark directory syncs run in the background in production; tests
+# sync a connect explicitly (DirectorySnapshot.sync/2).
+config :salix_im, :directory_sync, false
+# The meeting projection's drift audit lists the shared S3 fake every 5 minutes
+# beside every test, and a SystemsSim world that hosts the fake fails on a call
+# from outside it. A test starts its own auditor (salix_meet_test.exs).
+config :salix_meet, meeting_group_projection_auditor: false
 
 config :comma_web,
   port: 0,
@@ -234,6 +250,7 @@ config :comma_core, :google_auth,
   adapter: Comma.Auth.GoogleAdapter.Fake,
   issuer: "https://accounts.google.com",
   web_client_id: "comma-web-test.apps.googleusercontent.com",
+  ios_client_id: "comma-ios-test.apps.googleusercontent.com",
   electron_client_id: "comma-electron-test.apps.googleusercontent.com",
   electron_client_secret: "comma-electron-test-client-secret",
   android_client_ids: ["comma-android-test.apps.googleusercontent.com"],
@@ -377,6 +394,8 @@ config :salix_web,
 
 config :salix_agent,
   subscription_quota_worker: false,
+  platform_balance_worker: false,
+  delivery_telemetry_worker: false,
   prepared_blob_cleanup: false,
   # The Loops host and reconciler serve the Loops of the tests, so they
   # start; their periodic passes do not run.
@@ -439,6 +458,7 @@ end
 
 config :salix_im,
   provider_runtime: false,
+  lark_socket_runtime: false,
   slack_router_status: false,
   private_chat_status: false
 
@@ -479,6 +499,7 @@ config :salix_agent,
   # use the same control-plane binding as production and seed groups normally.
   plugin_store_mod: Salix.Bindings.AgentPluginStore,
   meeting_preparation_mod: nil,
+  meeting_settings_mod: nil,
   meeting_mod: nil,
   calendar_mod: nil,
   # Site tests opt in via Application.put_env; a default domain here would
@@ -516,6 +537,8 @@ config :salix_signal, service_host: "signal-service.localhost"
 # that does not stand in for them sees a name that does not exist.
 config :salix_mcp, resolver: SystemsRuntime.Test.NoDNS
 config :salix_agent, resolver: SystemsRuntime.Test.NoDNS
+# Email domains' MX records (Comma.Auth.EmailRestriction) are not looked up either.
+config :comma_core, mx_resolver: SystemsRuntime.Test.NoDNS
 
 config :salix_agent, session_memory_budget_bytes: 8 * 1024 * 1024 * 1024
 
@@ -539,7 +562,11 @@ config :salix_im, :conversation_log_recovery, false
 config :salix_im,
   telegram_api_base_url: "http://127.0.0.1:1",
   slack_api_base_url: "http://127.0.0.1:1/api",
-  slack_files_base_url: "http://127.0.0.1:1"
+  slack_files_base_url: "http://127.0.0.1:1",
+  lark_api_base_url: "http://127.0.0.1:1/open-apis",
+  lark_socket_base_url: "http://127.0.0.1:1",
+  feishu_api_base_url: "http://127.0.0.1:1/open-apis",
+  feishu_socket_base_url: "http://127.0.0.1:1"
 
 config :comma_web, :telegram, api_base_url: "http://127.0.0.1:1"
 

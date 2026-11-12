@@ -134,7 +134,9 @@ export function ModelPicker({
   }
 
   // A new model waits for its effort before anything is saved; an effort,
-  // or an account for the model in effect, is saved at once.
+  // or an account for the model in effect, is saved at once. Closing the
+  // panel before an effort is chosen saves the new model at its default
+  // effort, so the choice the panel showed is the one that holds.
   const [awaitingEffort, setAwaitingEffort] = useState(false);
   const choose = (patch: Partial<ModelPickerValue>) => {
     const next = { ...draft, ...patch };
@@ -173,6 +175,10 @@ export function ModelPicker({
       isOpen={open}
       onOpenChange={(next) => {
         setOpen(next);
+        if (!next && awaitingEffort) {
+          setAwaitingEffort(false);
+          onChange(draft);
+        }
         if (next) {
           setDraft(value);
           setAwaitingEffort(false);

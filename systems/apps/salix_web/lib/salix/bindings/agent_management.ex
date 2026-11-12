@@ -45,7 +45,7 @@ defmodule Salix.Bindings.AgentManagement do
 
   def user_context(_scope), do: {:ok, SalixAgent.AgentManagement.Ports.no_user_context()}
 
-  # A BridgeForTeams Task's Worker Session may take its own model: a catalog
+  # A Task's Worker Session may take its own model: a catalog
   # or platform model inside Salix, or a model of the station's runtime when
   # the Task runs on a station (a Worker bound to one, or a Task that names one).
   # A catalog model must be one the org allows.
@@ -61,19 +61,41 @@ defmodule Salix.Bindings.AgentManagement do
     end
   end
 
-  defp session_choice(scope, %{"kind" => "catalog"} = choice), do: org_choice(scope, choice)
+  # Standalone Salix Tasks can use the tenant's models. A Bridge Group keeps
+  # its organization's choice policy, including refusal when that owner is
+  # unavailable. ModelChoice still validates the choice below; dispatch
+  # resolves the tenant's Profile with the choice's existing payment policy.
+  defp session_choice(scope, %{"kind" => "catalog"} = choice) do
+    with {:ok, group} <- Groups.get(scope.group_id, scope.tenant_id) do
+      case group["billing_owner"] do
+        %{"surface" => "bridge"} -> org_choice(scope, choice)
+        nil -> {:ok, choice}
+        _ -> {:error, :model_selection_unsupported}
+      end
+    end
+  end
+
   defp session_choice(_scope, choice), do: {:ok, choice}
 
   # A BridgeForTeams Router lists only the models the org lets it choose,
   # checked as `org_choice/2` checks them. Other groups list every model.
   def model_filter(scope) do
-    with {:ok, project_id} <- project_id(scope),
-         true <- SystemsRuntime.Proc.ensure_loaded?(@bft_models) do
-      @bft_models.router_model_filter(project_id)
-    else
-      {:error, :target_not_found} -> SalixAgent.AgentManagement.Ports.no_model_filter()
-      false -> SalixAgent.AgentManagement.Ports.no_model_filter()
-      error -> error
+    with {:ok, group} <- Groups.get(scope.group_id, scope.tenant_id) do
+      case group["billing_owner"] do
+        %{"surface" => "bridge", "project_id" => id} when is_binary(id) ->
+          if SystemsRuntime.Proc.ensure_loaded?(@bft_models),
+            do: @bft_models.router_model_filter(id, profile_id: scope[:model_profile_id]),
+            else: {:error, :model_selection_unsupported}
+
+        %{"surface" => "bridge"} ->
+          {:error, :target_not_found}
+
+        nil ->
+          SalixAgent.AgentManagement.Ports.no_model_filter()
+
+        _ ->
+          {:error, :model_selection_unsupported}
+      end
     end
   end
 

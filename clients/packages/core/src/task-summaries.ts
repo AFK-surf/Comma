@@ -10,7 +10,7 @@
 // Bounds: at most 1,000 Tasks per account, none evicted (a Task beyond them shows what its reference says); one
 // summary request at a time, at most 50 Tasks of one Group each.
 import { taskStatusBucket, taskStatusFailed } from "@comma/i18n";
-import { type Topic, type Value, type Watch } from "@comma/core-kernel";
+import { madeOnce, type Topic, type Value, type Watch } from "@comma/core-kernel";
 import { Effect, Option } from "effect";
 import { route } from "./api.ts";
 import { taskPageSchema, taskSummarySchema } from "./comma/schemas.ts";
@@ -60,10 +60,37 @@ function fromItem(item: ProductInboxItem): TaskSummary {
     ...(item.clientPlatform === undefined
       ? {}
       : { client_platform: item.clientPlatform }),
+    ...(item.requestedBy === undefined
+      ? {}
+      : {
+          requested_by: item.requestedBy.name,
+          ...(item.requestedBy.id === undefined
+            ? {}
+            : { requested_by_id: item.requestedBy.id }),
+          ...(item.requestedBy.avatar === undefined
+            ? {}
+            : { requested_by_avatar: item.requestedBy.avatar }),
+        }),
     ...(item.loop === undefined ? {} : { loop: item.loop }),
     ...(item.runStartedAt === undefined ? {} : { run_started_at: item.runStartedAt }),
   };
 }
+
+/** A cached summary whose archive permission is not confirmed yet, without it; made once per summary. */
+const unconfirmed = madeOnce((summary: TaskSummary): TaskSummary => {
+  const { archive_availability: _, ...rest } = summary;
+  return rest;
+});
+
+/** A list item's summary, made once per item. */
+const listedSummary = madeOnce(fromItem);
+
+/** A Task's summary with its status's bucket, made once per summary. */
+const shownSummary = madeOnce((summary: TaskSummary) => ({
+  ...summary,
+  status_bucket: taskStatusBucket(summary.status),
+  status_failed: taskStatusFailed(summary.status),
+}));
 
 export class TaskSummaries {
   readonly #ctx: Ctx;
@@ -135,9 +162,23 @@ export class TaskSummaries {
     this.#queued.clear();
   }
 
-  /** A fact the server answered elsewhere (an archive): kept unless the cache has a newer one. */
+  /**
+   * A fact the server answered elsewhere (an archive; a Task's own conversation, as a chat read it): kept unless the
+   * cache has a newer one, with what the cache knew that the fact leaves out (the Task's Loop, its requester). A fact
+   * without the Task's archive permission is read again where shown, so the server confirms it and says that too.
+   */
   record(value: TaskSummary): void {
-    if (this.#put(value)) this.#changed();
+    const key = keyFor(value.group_id, value.id);
+    const { archive_availability: _, ...known } =
+      this.#entries.get(key)?.value ?? ({} as Partial<TaskSummary>);
+    if (!this.#put({ ...known, ...value })) return;
+    if (!value.archive_availability) {
+      this.#entries.set(key, { ...this.#entries.get(key), stale: true });
+      for (const topic of this.#topics())
+        if (String(topic.group) === value.group_id && idsOf(topic).includes(value.id))
+          this.#ask(topic);
+    }
+    this.#changed();
   }
 
   #put(value: TaskSummary): boolean {
@@ -200,14 +241,20 @@ export class TaskSummaries {
     for (const topic of this.#topics()) this.#ask(topic);
   }
 
-  /** Asks for the shown Tasks the list does not have with a version. */
+  /** Asks for the shown Tasks the list does not have with a version as new as the cache's. */
   #ask(topic: Topic): void {
     if (topic.peek === "1") return;
     const group = String(topic.group);
     if (!group) return;
-    for (const id of idsOf(topic))
-      if (!this.hosted?.owns(id) && !this.#item(group, id)?.archiveVersion)
-        this.#request(group, id);
+    for (const id of idsOf(topic)) {
+      if (this.hosted?.owns(id)) continue;
+      const listed = this.#item(group, id)?.archiveVersion;
+      const cached = this.#entries.get(keyFor(group, id))?.value?.updated_at ?? 0;
+      // The list's fact is the server's own; an older one than the cache's (a Task's conversation read since) is not the
+      // last word, so the server is asked for it.
+      if (listed && listed >= cached) continue;
+      this.#request(group, id);
+    }
   }
 
   #request(group: string, id: string): void {
@@ -278,12 +325,10 @@ export class TaskSummaries {
   #summary(group: string, id: string): TaskSummary | undefined {
     const entry = this.#entries.get(keyFor(group, id));
     let cached = entry?.value;
-    if (cached && (entry?.stale || entry?.pending || entry?.failed)) {
-      const { archive_availability: _, ...unconfirmed } = cached;
-      cached = unconfirmed;
-    }
+    if (cached && (entry?.stale || entry?.pending || entry?.failed))
+      cached = unconfirmed(cached);
     const item = this.#item(group, id);
-    const listed = item ? fromItem(item) : undefined;
+    const listed = item ? listedSummary(item) : undefined;
     return listed && (!cached || (listed.updated_at ?? 0) >= (cached.updated_at ?? 0))
       ? listed
       : cached;
@@ -311,15 +356,7 @@ export class TaskSummaries {
     return {
       summaries: idsOf(topic).flatMap((id) => {
         const summary = this.#hosted(group, id) ?? this.#summary(group, id);
-        return summary
-          ? [
-              {
-                ...summary,
-                status_bucket: taskStatusBucket(summary.status),
-                status_failed: taskStatusFailed(summary.status),
-              },
-            ]
-          : [];
+        return summary ? [shownSummary(summary)] : [];
       }),
     };
   }

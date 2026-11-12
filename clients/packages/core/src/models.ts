@@ -13,7 +13,14 @@
 // Bounds: one read in flight per page shown (three requests; a `models.refresh` asked while it runs waits for it); one
 // save in flight per profile, per Agent, per workspace's Task model, Task place and reply style; one device-code
 // request per sign-in waited on, at most every 5 s; at most 16 sign-ins remembered.
-import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  LastMade,
+  madeOnce,
+  Priority,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Deferred, Effect, Option, Result, Semaphore } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -51,6 +58,9 @@ import { type Ctx, Live } from "./ctx.ts";
 import { DEVICE_SIGN_IN, modelsView } from "./model-view.ts";
 import type { Workspaces } from "./workspaces.ts";
 
+/** The models view of a catalog and profiles, made once while both are the same. */
+const shownModels = madeOnce(modelsView);
+
 const CATALOG = "/v1/comma/model-catalog";
 const profilesPath = (ws: string) =>
   route`/v1/comma/workspaces/${ws}/subscription-accounts`;
@@ -63,8 +73,9 @@ const taskModelPath = (ws: string) => route`/v1/comma/workspaces/${ws}/task-mode
 const taskPlacePath = (ws: string) => route`/v1/comma/workspaces/${ws}/task-place`;
 const replyStylePath = (ws: string) => route`/v1/comma/workspaces/${ws}/reply-style`;
 const signInPath = (ws: string) => `${profilesPath(ws)}/oauth`;
-const resetKey = (ws: string, id: string, version: string) =>
-  `modelsReset:${ws}:${id}:${version}`;
+const resetKey = (ws: string, id: string, version: string, kind: string | undefined) =>
+  `modelsReset:${ws}:${id}:${version}${kind ? `:${kind}` : ""}`;
+const RESET_KINDS = ["session", "weekly", "model", "full", "credit"] as const;
 const MAX_SIGN_INS = 16;
 
 type Raw = {
@@ -141,6 +152,7 @@ export class Models {
   readonly #workspaces: Workspaces;
   readonly #live: Live;
   readonly #shown = new Map<string, Shown>();
+  readonly #views = new LastMade<string, ReturnType<typeof modelsView>>();
   /** What was last read for each workspace a page preferred: a page shown again starts from it. */
   readonly #held = new Map<string, Raw>();
   readonly #saves = new Map<string, Save>();
@@ -176,6 +188,7 @@ export class Models {
       stop: (topic) => {
         this.#live.stop(topic);
         this.#shown.delete(keyOf(topic));
+        this.#views.delete(keyOf(topic));
       },
       compute: (topic): Value => ({ ok: this.#value(topic) }),
     });
@@ -216,6 +229,9 @@ export class Models {
     });
 
     kernel.calls({
+      "router.refresh": {
+        run: (p) => this.#refreshRouter(params.string(p, "workspace")),
+      },
       "models.refresh": {
         run: (p) => {
           const only = (p as { only?: unknown } | null)?.only;
@@ -266,12 +282,14 @@ export class Models {
           const workspace = params.string(p, "workspace");
           const profile = params.string(p, "profile");
           const disabled = params.boolean(p, "disabled");
+          const useCredits = params.boolean(p, "use_credits");
           const name = params.optional(p, "name", 200)?.trim();
           const apiKey = params.optional(p, "api_key")?.trim();
-          if (disabled === undefined && !name && !apiKey)
+          if (disabled === undefined && useCredits === undefined && !name && !apiKey)
             throw CoreError.invalid("nothing to change");
           return this.#save(workspace, profile, false, () => ({
             ...(disabled !== undefined ? { disabled } : {}),
+            ...(useCredits !== undefined ? { use_credits: useCredits } : {}),
             ...(name ? { name } : {}),
             ...(apiKey ? { api_key: apiKey } : {}),
           }));
@@ -363,7 +381,10 @@ export class Models {
         run: (p) => {
           const workspace = params.string(p, "workspace");
           const profile = params.string(p, "profile");
-          return this.#resetQuota(workspace, profile);
+          const kind = params.optional(p, "kind", 16);
+          if (kind !== undefined && !(RESET_KINDS as readonly string[]).includes(kind))
+            throw CoreError.invalid("kind is not a kind of reset");
+          return this.#resetQuota(workspace, profile, kind);
         },
       },
       "models.createProfile": {
@@ -554,7 +575,9 @@ export class Models {
     return {
       workspace: shown.workspace,
       catalog: shown.catalog,
-      ...modelsView(shown.catalog, shown.profiles),
+      // Presets, models and profiles relate to one another: a view made again for a changed profile shares with the
+      // last what did not change.
+      ...this.#views.of(keyOf(topic), shownModels(shown.catalog, shown.profiles)),
       moreProfiles: !!shown.next,
       agents: shown.agents,
       error: shown.error,
@@ -769,14 +792,18 @@ export class Models {
     });
   }
 
-  #resetQuota(workspace: string, id: string): Effect.Effect<QuotaReset, CoreError> {
+  #resetQuota(
+    workspace: string,
+    id: string,
+    kind: string | undefined
+  ): Effect.Effect<QuotaReset, CoreError> {
     return Effect.suspend(() => {
       const account = this.#ctx.session.current();
       if (!account)
         return Effect.fail(new CoreError("signed_out", "No one is signed in."));
       const profile = this.#profile(workspace, id);
       if (!profile) return Effect.fail(new CoreError("not_found", "No such profile."));
-      const slot = resetKey(workspace, id, profile.version);
+      const slot = resetKey(workspace, id, profile.version, kind);
       // A reset whose outcome is not known yet is asked again with the same id: the provider redeems one credit at most.
       const requestId =
         profile.reset_attempt?.outcome === "pending"
@@ -787,7 +814,7 @@ export class Models {
         "POST",
         `${profilePath(workspace, id)}/quota/reset`,
         quotaResetSchema,
-        { version: profile.version, request_id: requestId }
+        { version: profile.version, request_id: requestId, ...(kind ? { kind } : {}) }
       ).pipe(
         Effect.tap((answer) =>
           Effect.sync(() => {
@@ -887,9 +914,11 @@ export class Models {
     });
   }
 
+  // The place changes; whether sandboxes are set up is the deployment's, kept from the read.
   #showTaskPlace(workspace: string, place: TaskPlace): void {
     this.#each(workspace, (s) => {
-      if (s.agents) s.agents = { ...s.agents, task_place: { place } };
+      if (s.agents)
+        s.agents = { ...s.agents, task_place: { ...s.agents.task_place, place } };
     });
   }
 
@@ -1113,7 +1142,6 @@ export class Models {
   }
 
   #readRouter(topic: Topic): Effect.Effect<void> {
-    const key = routerKey(topic);
     const workspace = String(topic.workspace ?? "");
     return Effect.gen({ self: this }, function* () {
       const account = yield* this.#ctx.session.account().pipe(Effect.option);
@@ -1125,15 +1153,33 @@ export class Models {
       // A failed read leaves the label the UI had.
       if (Option.isNone(agents) || (this.#renames.get(workspace) ?? 0) !== renames)
         return;
-      const { router } = agents.value.agents;
-      this.#router.set(key, {
-        agent: router.agent_id,
-        name: router.name,
-        // Left out when a server older than the setting does not say.
-        ...(router.reply_style ? { reply_style: router.reply_style } : {}),
-      });
-      this.#ctx.kernel.store.invalidate(topic);
+      this.#showRouter(topic, agents.value.agents.router);
     });
+  }
+
+  /** The Router read for every shown Router of the workspace; a read that started before a rename reads again. */
+  #refreshRouter(workspace: string): Effect.Effect<SettingsAgent, CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      const account = yield* this.#ctx.session.account();
+      const renames = this.#renames.get(workspace) ?? 0;
+      const { router } = (yield* this.#readAgents(account, workspace)).agents;
+      if ((this.#renames.get(workspace) ?? 0) !== renames)
+        return yield* this.#refreshRouter(workspace);
+      for (const topic of this.#ctx.kernel.store.liveTopics())
+        if (topic.topic === "router" && topic.workspace === workspace)
+          this.#showRouter(topic, router);
+      return router as SettingsAgent;
+    });
+  }
+
+  #showRouter(topic: Topic, router: AgentModels["agents"]["router"]) {
+    this.#router.set(routerKey(topic), {
+      agent: router.agent_id,
+      name: router.name,
+      // Left out when a server older than the setting does not say.
+      ...(router.reply_style ? { reply_style: router.reply_style } : {}),
+    });
+    this.#ctx.kernel.store.invalidate(topic);
   }
 }
 

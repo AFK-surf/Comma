@@ -30,7 +30,7 @@ theorem evidence_authorized {sources entries : List Term}
     (h : DecisionContract.EvidenceSources rawEffect rawActivation p facts sources entries) :
     ∀ entry ∈ admissions sources entries,
       System.SourceAuthorized w (policy (f facts "policy")) (activation rawActivation)
-        (effect rawEffect) entry.item.label receipts clock.toNat entry.clause := by
+        (effect rawEffect) entry.item receipts clock.toNat entry.clause := by
   induction h with
   | nil => simp [admissions]
   | @cons source entry sources entries head tail ih =>
@@ -57,6 +57,7 @@ theorem evidence_receipt {sources entries : List Term} {id : System.ReceiptId}
     · subst entry
       cases authorized with
       | flow => simp [evidenceClause, clause, a] at used
+      | authored => simp [evidenceClause, clause, a] at used
       | inPlace => simp [evidenceClause, clause, a] at used
       | instruction => simp [evidenceClause, clause, a] at used
       | receipt r _ _ _ member _ _ =>

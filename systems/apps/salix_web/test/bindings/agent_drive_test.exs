@@ -56,9 +56,17 @@ defmodule Salix.Bindings.AgentDriveTest do
       assert get_req_header(conn, "authorization") == ["Bearer synch_agent-token"]
       assert String.starts_with?(conn.request_path, "/api/orgs/comma-abc/networks/default/browse")
       params = URI.decode_query(conn.query_string)
-      assert params["space"] == "comma-drive"
+
+      if conn.request_path != "/api/orgs/comma-abc/networks/default/browse",
+        do: assert(params["space"] == "comma-drive")
 
       case {conn.method, conn.request_path} do
+        {"GET", "/api/orgs/comma-abc/networks/default/browse"} ->
+          Req.Test.json(conn, %{
+            "devices" => [],
+            "writes" => %{"enabled" => true, "attached" => true, "device" => "cloud-1"}
+          })
+
         {"GET", "/api/orgs/comma-abc/networks/default/browse/ls"} ->
           assert params["path"] == "docs"
 

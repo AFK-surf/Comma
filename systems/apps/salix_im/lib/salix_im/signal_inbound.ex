@@ -67,7 +67,9 @@ defmodule SalixIM.SignalInbound do
     }
 
     case SignalConnects.redeem_claim(event["account_id"], code, peer) do
-      {:ok, _bound} ->
+      {:ok, bound} ->
+        # A Router that started this claim from the chat is waiting for it.
+        SalixIM.Ports.ChannelLinks.signal_bound(bound)
         reply(event, "Signal is connected to Comma. Send a message here to get started.")
 
       {:error, :signal_peer_in_use} ->

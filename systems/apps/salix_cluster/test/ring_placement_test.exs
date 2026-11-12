@@ -41,6 +41,149 @@ defmodule SalixCluster.RingPlacementTest do
   end
 
   describe "Ring GenServer (single node)" do
+    # Rolling-release regression: a pod connects to the mesh before its
+    # applications have started. Keys placed on it then went to owners that
+    # could not answer (a live conversation's events answered 404).
+    test "a connected peer owns keys only after it says it is ready" do
+      remote = :"salix-starting@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+      on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      assert Ring.nodes() == [Node.self()]
+
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+
+      # A node that comes back starts again: it is out until it says so again.
+      SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      assert Ring.nodes() == [Node.self()]
+    end
+
+    test "a peer's word that it is ready counts once it connects" do
+      remote = :"salix-ready-first@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+      on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
+
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Ring.nodes() == [Node.self()]
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+    end
+
+    test "a readiness read from an earlier connection does not count" do
+      remote = :"salix-reconnected@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+      on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      stale = SystemsRuntime.Proc.make_ref()
+      SystemsRuntime.Proc.send(ring, {:ring_ready_read, remote, stale, true})
+      assert Ring.nodes() == [Node.self()]
+    end
+
+    test "ready/0 keeps this node in its own ring" do
+      assert :ok = Ring.ready()
+      assert Node.self() in Ring.nodes()
+    end
+
+    # Rolling-release regression: a draining pod stayed in the ring, so the
+    # agents that hashed to it got no hand-off and restarted on it until the
+    # pod was killed.
+    test "a draining node leaves its own ring while a peer is ready and rejoins when cleared" do
+      remote = :"salix-draining-self-peer@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+
+      on_exit(fn ->
+        SalixCluster.NodeLifecycle.reset()
+        SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}})
+      end)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+
+      :ok = SalixCluster.NodeLifecycle.mark_draining()
+      assert Ring.nodes() == [remote]
+      assert Ring.owner("any-agent") == remote
+      # A peer that connects from now on reads this and leaves us out.
+      assert SystemsRuntime.get_env(:salix_cluster, :placement_ready) == false
+
+      :ok = SalixCluster.NodeLifecycle.clear_draining()
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+      assert SystemsRuntime.get_env(:salix_cluster, :placement_ready) == true
+    end
+
+    test "a draining node alone in its ring keeps itself as owner" do
+      on_exit(fn -> SalixCluster.NodeLifecycle.reset() end)
+
+      :ok = SalixCluster.NodeLifecycle.mark_draining()
+      assert Ring.nodes() == [Node.self()]
+      assert Ring.owner("any-agent") == Node.self()
+    end
+
+    test "a draining node stays out after the ring restarts and when the launcher says ready" do
+      remote = :"salix-draining-ring-restart@127.0.0.1"
+
+      on_exit(fn ->
+        SalixCluster.NodeLifecycle.reset()
+        SystemsRuntime.Proc.send(SystemsRuntime.Proc.whereis(Ring), {:nodedown, remote, %{}})
+      end)
+
+      :ok = SalixCluster.NodeLifecycle.mark_draining()
+      :ok = Supervisor.terminate_child(SalixCluster.Supervisor, Ring)
+      {:ok, _pid} = Supervisor.restart_child(SalixCluster.Supervisor, Ring)
+      ring = SystemsRuntime.Proc.whereis(Ring)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Ring.nodes() == [remote]
+
+      # preStop during startup: the launcher's join must not undo leave.
+      SystemsRuntime.put_env(:salix_cluster, :placement_ready, true)
+      assert :ok = Ring.ready()
+      assert Ring.nodes() == [remote]
+      assert SystemsRuntime.get_env(:salix_cluster, :placement_ready) == false
+    end
+
+    test "marking draining survives a ring that does not answer" do
+      on_exit(fn ->
+        SalixCluster.NodeLifecycle.reset()
+        Supervisor.restart_child(SalixCluster.Supervisor, Ring)
+      end)
+
+      :ok = Supervisor.terminate_child(SalixCluster.Supervisor, Ring)
+      # A process under the ring's name that dies on the first call.
+      impostor =
+        SystemsRuntime.Proc.spawn(fn ->
+          receive do
+            _call -> exit(:boom)
+          end
+        end)
+
+      SystemsRuntime.Proc.register(impostor, Ring)
+
+      assert :ok = SalixCluster.NodeLifecycle.mark_draining()
+      assert SalixCluster.NodeLifecycle.draining?()
+    end
+
+    test "a peer that says it is draining leaves the ring until it says it is ready again" do
+      remote = :"salix-draining-peer@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+      on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+
+      SystemsRuntime.Proc.send(ring, {:ring_draining, remote})
+      assert Ring.nodes() == [Node.self()]
+
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      assert Enum.sort(Ring.nodes()) == Enum.sort([Node.self(), remote])
+    end
   end
 
   describe "placement routing (local)" do
@@ -73,6 +216,7 @@ defmodule SalixCluster.RingPlacementTest do
       remote = :"salix-owner-down@127.0.0.1"
       ring = SystemsRuntime.Proc.whereis(Ring)
       SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
 
       on_exit(fn ->
         SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}})
@@ -91,6 +235,7 @@ defmodule SalixCluster.RingPlacementTest do
       remote = :"salix-session-owner-down@127.0.0.1"
       ring = SystemsRuntime.Proc.whereis(Ring)
       SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
 
       on_exit(fn ->
         SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}})
@@ -111,10 +256,42 @@ defmodule SalixCluster.RingPlacementTest do
              ) == []
     end
 
+    # Rolling-release regression: between Drain's stop and its releases an
+    # event could start a new Server here through the lease this node still
+    # held, and the new claim fenced the release. The node refuses new
+    # Servers once the ring places keys elsewhere; running ones are returned.
+    test "a draining node that places keys elsewhere starts no new agent Server" do
+      remote = :"salix-draining-no-start@127.0.0.1"
+      ring = SystemsRuntime.Proc.whereis(Ring)
+
+      on_exit(fn ->
+        SalixCluster.NodeLifecycle.reset()
+        SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}})
+      end)
+
+      running = SalixAgent.TestSupport.new_agent_id()
+      SalixAgent.TestSupport.create_control_agent!(running)
+      assert {:ok, pid} = SalixAgent.Fleet.ensure_started(running, create: false)
+
+      SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
+      :ok = SalixCluster.NodeLifecycle.mark_draining()
+
+      fresh = SalixAgent.TestSupport.new_agent_id()
+      SalixAgent.TestSupport.create_control_agent!(fresh)
+      assert {:error, :draining} = SalixAgent.Fleet.ensure_started(fresh, create: false)
+      refute SalixAgent.Fleet.running?(fresh)
+      assert {:ok, ^pid} = SalixAgent.Fleet.ensure_started(running, create: false)
+
+      :ok = SalixCluster.NodeLifecycle.clear_draining()
+      assert {:ok, _pid} = SalixAgent.Fleet.ensure_started(fresh, create: false)
+    end
+
     test "a live lease holder wins after the ring remaps the agent" do
       remote = :"salix-replacement@127.0.0.1"
       ring = SystemsRuntime.Proc.whereis(Ring)
       SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
       on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, remote, %{}}) end)
 
       agent_id = agent_owned_by(remote)
@@ -186,6 +363,7 @@ defmodule SalixCluster.RingPlacementTest do
       # confirms that monitor was installed before the Keeper can release it.
       Enum.each(moved, &SystemsRuntime.Server.get_state(&1, :infinity))
       SystemsRuntime.Proc.send(ring, {:nodeup, remote, %{}})
+      SystemsRuntime.Proc.send(ring, {:ring_ready, remote})
 
       for _pid <- moved do
         settle_receive({:DOWN, ref, :process, pid, :normal})

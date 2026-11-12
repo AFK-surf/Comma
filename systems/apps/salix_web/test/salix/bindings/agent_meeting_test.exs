@@ -56,6 +56,78 @@ defmodule Salix.Bindings.AgentMeetingTest do
     {:ok, tenant_id: tenant_id, group_id: group_id, router_id: router_id}
   end
 
+  test "a Worker reads its own Group's meeting with its label and never another Group's", %{
+    tenant_id: tenant_id,
+    group_id: group_id
+  } do
+    for {key, value} <- [
+          meeting_mod: Salix.Bindings.AgentMeeting,
+          oauth_store_mod: Salix.Bindings.AgentOAuthStore
+        ] do
+      previous = SystemsRuntime.fetch_env(:salix_agent, key)
+      SystemsRuntime.put_env(:salix_agent, key, value)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, old} -> SystemsRuntime.put_env(:salix_agent, key, old)
+          :error -> SystemsRuntime.delete_env(:salix_agent, key)
+        end
+      end)
+    end
+
+    :ok = SalixStore.MeetingGroupProjections.mark_ready(%{"mode" => "test"})
+    :ok = SalixStore.MeetingGroupProjectionReadiness.refresh()
+
+    assert {:ok, _group} =
+             Control.update_group(group_id, %{"ifc" => %{"mode" => "enforce"}}, tenant_id)
+
+    assert {:ok, %{"group_id" => other_group}} =
+             Control.create_group(%{"name" => "Another group"}, tenant_id)
+
+    assert {:ok, %{"agent_id" => worker_id}} =
+             AgentControl.create(
+               %{"group_id" => group_id, "name" => "Worker", "role" => "worker"},
+               tenant_id
+             )
+
+    own = "mtg-worker-own-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    foreign = "mtg-worker-foreign-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    for {id, group} <- [{own, group_id}, {foreign, other_group}] do
+      {:ok, _doc, _etag} =
+        SalixMeet.Store.create_once(id,
+          state: %{
+            "tenant_id" => tenant_id,
+            "group_id" => group,
+            "provider" => "slack",
+            "status" => "done"
+          }
+        )
+    end
+
+    ctx =
+      %{agent_id: worker_id, group_id: group_id, role: "worker", runtime_kind: :internal}
+      |> SalixAgent.TestSupport.with_plugin_projection()
+      |> Map.put(:ifc, %{"items" => []})
+
+    ctx =
+      Map.put(
+        ctx,
+        :tool_disclosure,
+        SalixAgent.ToolDisclosure.materialize("worker", :internal, ctx)
+      )
+
+    call = fn id -> %{id: "t-#{id}", name: "meeting.get", args: %{"meeting_id" => id}} end
+
+    assert [%{error: false, content: content, ifc: %{"label" => [_ | _]}}] =
+             SalixAgent.Tools.execute([call.(own)], ctx)
+
+    assert Jason.decode!(content)["meeting_id"] == own
+
+    assert [%{error: true, content: refused}] = SalixAgent.Tools.execute([call.(foreign)], ctx)
+    assert refused =~ "not_found"
+  end
+
   test "direct Feishu human origin reaches the provider meeting boundary", %{
     tenant_id: tenant_id,
     group_id: group_id,

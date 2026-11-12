@@ -18,6 +18,12 @@ const attachmentPath =
   "/v1/comma/groups/g%201/conversations/c/messages/m/attachments/2";
 const blobPath = "/v1/comma/groups/g%201/agents/a/resources";
 const filesPath = "/v1/comma/groups/g%201/files";
+const uploaded: FileSource = {
+  source: "group-file",
+  group: "g 1",
+  path: "/uploads/AAAAAAAAAAAAAAAAAAAAAA-clip.mp4",
+};
+const uploadPath = "/v1/comma/groups/g%201/uploads/AAAAAAAAAAAAAAAAAAAAAA-clip.mp4";
 const blobRef = {
   hash: "a".repeat(64),
   kind: "blob" as const,
@@ -236,6 +242,26 @@ describe("a span of a chat file", () => {
     ]);
   });
 
+  it("asks an uploaded file other than an image for just the span, at its own path", async () => {
+    const { seen, result } = await span(uploaded, 4, 3, (t) =>
+      t.api.on("GET", uploadPath, () => ({
+        status: 206,
+        headers: [
+          ["content-type", "video/mp4"],
+          ["content-range", "bytes 4-6/40000000"],
+        ],
+        body: new Uint8Array([5, 6, 7]),
+      }))
+    );
+    expect(result).toEqual({
+      value: { bytes: new Uint8Array([5, 6, 7]), type: "video/mp4", size: 40_000_000 },
+    });
+    expect(seen.seen("GET", uploadPath)[0]?.headers).toContainEqual([
+      "range",
+      "bytes=4-6",
+    ]);
+  });
+
   it("cuts the span from a whole answer, and is empty past the end", async () => {
     const blob: FileSource = {
       source: "agent-blob",
@@ -312,6 +338,14 @@ describe("a chat file a browser downloads itself", () => {
         expires_at: 4_102_444_800,
       })
     );
+    host.api.on(
+      "POST",
+      `${uploadPath}/media`,
+      json(200, {
+        url: "https://blobs.example.test/b/upload?X-Amz-Signature=t2",
+        expires_at: 4_102_444_800,
+      })
+    );
     const asked = client.call("files.link", source).then(
       (value) => ({ value }),
       (error: { code: string }) => ({ error })
@@ -326,6 +360,14 @@ describe("a chat file a browser downloads itself", () => {
       value: { url: "https://blobs.example.test/b/clip?X-Amz-Signature=t1" },
     });
     expect(api.seen("POST", `${attachmentPath}/media`)).toHaveLength(1);
+  });
+
+  it("is an uploaded file's media URL too", async () => {
+    const { api, result } = await link(uploaded);
+    expect(result).toEqual({
+      value: { url: "https://blobs.example.test/b/upload?X-Amz-Signature=t2" },
+    });
+    expect(api.seen("POST", `${uploadPath}/media`)).toHaveLength(1);
   });
 
   it("is unsupported on the desktop, which saves through Main, and for other sources", async () => {

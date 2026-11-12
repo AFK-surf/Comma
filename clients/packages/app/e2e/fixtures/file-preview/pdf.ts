@@ -1,11 +1,21 @@
 export function twoPagePdf() {
+  return pdfWithPages(["Page One", "Page Two"]);
+}
+
+/** A PDF of 240 x 180 pt pages, each with its label at x 20 on baseline 100. */
+export function pdfWithPages(labels: string[]) {
+  // Objects 1 and 2 are the catalog and the page tree; each page and its contents follow, then the font.
+  const font = 3 + labels.length * 2;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 180] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>",
-    "<< /Length 39 >>\nstream\nBT /F1 20 Tf 20 100 Td (Page One) Tj ET\nendstream",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 180] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>",
-    "<< /Length 39 >>\nstream\nBT /F1 20 Tf 20 100 Td (Page Two) Tj ET\nendstream",
+    `<< /Type /Pages /Kids [${labels.map((_, index) => `${3 + index * 2} 0 R`).join(" ")}] /Count ${labels.length} >>`,
+    ...labels.flatMap((label, index) => {
+      const stream = `BT /F1 20 Tf 20 100 Td (${label}) Tj ET`;
+      return [
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 180] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + index * 2} 0 R >>`,
+        `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+      ];
+    }),
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   ];
   let pdf = "%PDF-1.4\n";

@@ -122,6 +122,12 @@ type State = {
   taskModel?: TaskModelSelection;
   /** Where the workspace's Tasks run; Comma's cloud when unset. */
   taskPlace?: TaskPlace;
+  /** Whether the deployment has Task sandboxes: a sandbox is then a place. */
+  sandboxes?: boolean;
+  /** Whether the deployment retired the Cloud VM: no place to offer any more. */
+  cloudVmRetired?: boolean;
+  /** The Cloud VM's device id where it is on an Agent VMM Host: a place names it as that station. */
+  cloudVmStation?: string;
   /** The person's computers and the workspace's Cloud VM, as the core lists them. */
   computers?: { devices: ShownDevice[]; cloud: ShownDevice | null };
 };
@@ -159,7 +165,16 @@ async function openModels(state: State, answers: Record<string, Answer> = {}) {
           workspace_id: workspace,
           agents: { router: state.router! },
           task_model: { selection: state.taskModel ?? { kind: "builtin" } },
-          task_place: { place: state.taskPlace ?? { kind: "salix" } },
+          task_place: {
+            place: state.taskPlace ?? { kind: "salix" },
+            ...(state.sandboxes === undefined ? {} : { sandboxes: state.sandboxes }),
+            ...(state.cloudVmRetired === undefined
+              ? {}
+              : { cloud_vm_retired: state.cloudVmRetired }),
+            ...(state.cloudVmStation === undefined
+              ? {}
+              : { cloud_vm_station: state.cloudVmStation }),
+          },
         },
         error: false,
       };
@@ -254,7 +269,7 @@ it("asks the core to read the page as it opens", async () => {
   expect(t.called("models.refresh")).toEqual([{}]);
 });
 
-const ROUTER_MAY_USE = /the Router can choose its models for Tasks on its own/;
+const ROUTER_MAY_USE = /the Router may run some Tasks on a profile that is on/;
 
 it("warns that the Router may use a profile once one is turned on", async () => {
   await openModels({ profiles: [structuredClone(codex)] });
@@ -369,13 +384,20 @@ async function resettable(answer: Answer = () => null) {
     },
     { "models.resetQuota": answer }
   );
-  // The row's own fix, beside the meter running low.
-  await t.user.click(
-    within(row("profile-codex")).getByRole("button", {
-      name: "Reset quota for member@example.com",
-    })
-  );
+  // Reset is in the row's menu.
+  await openResetFromMenu(t.user, "profile-codex", "member@example.com");
   return { ...t, member, reset: panel(/^Reset quota for /) };
+}
+
+async function openResetFromMenu(
+  user: ReturnType<typeof userEvent.setup>,
+  id: string,
+  name: string
+) {
+  await user.click(
+    within(row(id)).getByRole("button", { name: `Actions for ${name}` })
+  );
+  await user.click(await screen.findByRole("menuitem", { name: /^Reset quota/ }));
 }
 
 it("offers a Codex quota reset on a signed-in plan, and renewal on an expired one", async () => {
@@ -395,6 +417,31 @@ it("offers a Codex quota reset on a signed-in plan, and renewal on an expired on
       name: "Re-authorize expired@example.com",
     })
   ).toBeInTheDocument();
+});
+
+it("shows an expired plan's switch off and locked, on or off, with renewal beside it", async () => {
+  const expired = (id: string, email: string, disabled: boolean): ModelProfile => ({
+    ...structuredClone(codex),
+    id,
+    name: email,
+    email,
+    disabled,
+    status: "expired",
+  });
+  await openModels({
+    profiles: [
+      expired("profile-on", "on@example.com", false),
+      expired("profile-off", "off@example.com", true),
+    ],
+  });
+  for (const email of ["on@example.com", "off@example.com"]) {
+    const toggle = screen.getByLabelText(`Use ${email}`);
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: `Re-authorize ${email}` })
+    ).toBeInTheDocument();
+  }
 });
 
 it("retries an unconfirmed quota reset until it is confirmed", async () => {
@@ -430,6 +477,51 @@ it("retries an unconfirmed quota reset until it is confirmed", async () => {
   expect(
     await screen.findByRole("menuitem", { name: "Reset quota (1 reset left)" })
   ).toBeInTheDocument();
+});
+
+it("meters a Claude plan's Fable week and resets the kind picked", async () => {
+  const claude: ModelProfile = {
+    ...structuredClone(codex),
+    id: "profile-claude",
+    source: "claude",
+    provider: "claude",
+    name: "claude@example.com",
+    email: "claude@example.com",
+    quota: {
+      plan_type: "ultra",
+      windows: [
+        { period: "short", remaining_percent: 5 },
+        { period: "week", remaining_percent: 61 },
+        { period: "week", remaining_percent: 46, model: "fable" },
+      ],
+      resets: [
+        { kind: "session", left: 1, usable: true },
+        {
+          kind: "model",
+          model: "Fable",
+          left: 2,
+          expiries: ["2027-01-09T00:00:00Z"],
+          usable: true,
+        },
+        { kind: "full", left: 1, usable: false },
+      ],
+    },
+  };
+  const t = await openModels(
+    { profiles: [claude] },
+    { "models.resetQuota": () => ({ outcome: "reset", quota_refreshed: true }) }
+  );
+  expect(within(row("profile-claude")).getByText("Fable")).toBeInTheDocument();
+  await openResetFromMenu(t.user, "profile-claude", "claude@example.com");
+  const dialog = panel(/^Reset quota for /);
+  expect(dialog.getByRole("radio", { name: /5-hour limit/ })).toBeChecked();
+  expect(dialog.getByText(/usable once the limit is reached/)).toBeInTheDocument();
+  await t.user.click(dialog.getByRole("radio", { name: /Fable weekly use/ }));
+  await t.user.click(dialog.getByRole("button", { name: "Reset quota" }));
+  expect(await dialog.findByText(/Quota reset confirmed\./)).toBeInTheDocument();
+  expect(t.called("models.resetQuota")).toEqual([
+    { workspace, profile: "profile-claude", kind: "model" },
+  ]);
 });
 
 it("says a quota reset was refused for a profile changed elsewhere, and tries again", async () => {
@@ -533,6 +625,14 @@ const ollama: ModelProfile = {
   version: "v1",
 };
 
+it("lists Local & custom first in the provider picker", async () => {
+  const t = await openModels({ profiles: [] });
+  await t.user.click(screen.getByRole("button", { name: "Add profile" }));
+  expect(screen.getAllByRole("heading", { level: 3 })[0]).toHaveTextContent(
+    "Local & custom"
+  );
+});
+
 it("connects Ollama as an endpoint whose models are listed, and says the first profile is added", async () => {
   const state: State = { profiles: [] };
   const t = await openModels(state, {
@@ -556,7 +656,9 @@ it("connects Ollama as an endpoint whose models are listed, and says the first p
   await t.user.paste("https://ollama.example.com/v1");
   await t.user.click(form.getByRole("button", { name: "Connect" }));
   expect(
-    await screen.findByText("Profile added. Agents use it automatically.")
+    await screen.findByText(
+      "Profile added. The Router can choose its models for Tasks."
+    )
   ).toBeInTheDocument();
   // The core lists the endpoint's models before it saves the profile.
   expect(t.called("models.createProfile")).toEqual([
@@ -804,7 +906,9 @@ it("chooses the default Task model by family, waits for its effort, and gates pa
   // Only an API key serves Opus 5 here, so subscriptions-only cannot run it.
   await flush();
   expect(
-    within(row("task-model")).getByText(/No enabled subscription serves this model/)
+    within(row("task-model")).getByText(
+      /Only your own API keys serve this model \(Team router\)/
+    )
   ).toBeInTheDocument();
 
   // The account: automatic with pay-per-use allowed, then kept to one key.
@@ -815,7 +919,9 @@ it("chooses the default Task model by family, waits for its effort, and gates pa
   expect(lastSelection(t.called)).toMatchObject({ allow_paid: true, profile_id: null });
   await flush();
   expect(
-    within(row("task-model")).queryByText(/No enabled subscription serves this model/)
+    within(row("task-model")).queryByText(
+      /Only your own API keys serve this model \(Team router\)/
+    )
   ).toBeNull();
   await t.user.click(panel("Account").getByRole("button", { name: /Team router/ }));
   expect(lastSelection(t.called)).toEqual({
@@ -837,6 +943,33 @@ it("chooses the default Task model by family, waits for its effort, and gates pa
     panel(TASK_MODEL).getByRole("button", { name: /Comma built-in \(recommended\)/ })
   );
   expect(lastSelection(t.called)).toEqual({ kind: "builtin" });
+});
+
+it("saves a new model at its default effort when the picker closes before an effort is chosen", async () => {
+  const t = await openModels(familyState());
+  await t.user.click(picker("router", "Router"));
+  await t.user.click(panel("Router").getByRole("button", { name: "Opus 5" }));
+  expect(t.called("models.setAgentModel")).toEqual([]);
+  await closePicker(t.user, "Router");
+  expect(t.called("models.setAgentModel")).toEqual([
+    {
+      workspace,
+      agent: "router",
+      selection: {
+        kind: "catalog",
+        model: "claude-opus-5",
+        reasoning_effort: null,
+        allow_paid: false,
+        profile_id: null,
+      },
+    },
+  ]);
+  await flush();
+  expect(picker("router", "Router")).toHaveAccessibleDescription(/Opus 5/);
+  // Only an API key serves Opus 5 here: the warning names it and the switch.
+  expect(row("router")).toHaveTextContent(
+    "Only your own API keys serve this model (Team router). To use one, open Account and turn on Allow pay-per-use (API keys), or choose the key there."
+  );
 });
 
 it("keeps the default Task model on what the core holds when a choice is refused, and shows a later one", async () => {
@@ -958,6 +1091,97 @@ it("chooses where Tasks run, and shows a held computer the list no longer has", 
   });
   // The Task model stays as it was.
   expect(t.called("models.setTaskModel")).toEqual([]);
+});
+
+it("offers a sandbox where sandboxes are set up, beside the Cloud VM until it is retired", async () => {
+  const beside = await openModels({
+    profiles: [],
+    sandboxes: true,
+    computers: { devices: [studio], cloud: cloudVm },
+  });
+  await beside.user.click(placePicker());
+  for (const name of ["Comma (in the cloud)", "Sandbox", "Cloud VM", "Studio Mac"])
+    expect(placeOptions().getByRole("option", { name })).toBeInTheDocument();
+});
+
+it("offers no Cloud VM where it is retired, and runs Tasks in a sandbox on request", async () => {
+  const t = await openModels({
+    profiles: [],
+    sandboxes: true,
+    cloudVmRetired: true,
+    computers: { devices: [studio], cloud: cloudVm },
+  });
+  await t.user.click(placePicker());
+  // A Cloudflare VM is no station either: only the server names the Cloud VM's station.
+  expect(
+    placeOptions()
+      .getAllByRole("option")
+      .map((o) => o.textContent)
+  ).toEqual(["Comma (in the cloud)", "Sandbox", "Studio Mac"]);
+  await t.user.click(placeOptions().getByRole("option", { name: "Sandbox" }));
+  expect(t.called("models.setTaskPlace")).toEqual([
+    { workspace, place: { kind: "sandbox" } },
+  ]);
+  expect(placePicker()).toHaveTextContent("Sandbox");
+});
+
+it("shows a held Cloud VM where it is retired, and says why a save is refused there", async () => {
+  const held = await openModels(
+    {
+      profiles: [],
+      sandboxes: true,
+      cloudVmRetired: true,
+      taskPlace: { kind: "cloud_vm" },
+    },
+    {
+      "models.setTaskPlace": () => {
+        throw Object.assign(new Error("cloud_vm_retired"), {
+          code: "cloud_vm_retired",
+          status: 400,
+        });
+      },
+    }
+  );
+  expect(placePicker()).toHaveTextContent("Cloud VM");
+  await held.user.click(placePicker());
+  await held.user.click(placeOptions().getByRole("option", { name: "Sandbox" }));
+  expect(
+    await within(row("task-place")).findByText(
+      "The Cloud VM is retired here: a sandbox takes its place."
+    )
+  ).toBeInTheDocument();
+});
+
+it("offers the Cloud VM on an Agent VMM Host as its station, and shows it held so", async () => {
+  const onHost = { kind: "station", device_id: "dev-cloudvm-abc" } as const;
+  const t = await openModels({
+    profiles: [],
+    sandboxes: true,
+    cloudVmRetired: true,
+    cloudVmStation: onHost.device_id,
+    taskPlace: onHost,
+    computers: {
+      devices: [studio],
+      cloud: { ...cloudVm, device_id: onHost.device_id },
+    },
+  });
+  // The held station is the Cloud VM, by that name, not its device id.
+  expect(placePicker()).toHaveTextContent("Cloud VM");
+  await t.user.click(placePicker());
+  expect(
+    placeOptions()
+      .getAllByRole("option")
+      .map((o) => o.textContent)
+  ).toEqual(["Comma (in the cloud)", "Sandbox", "Cloud VM", "Studio Mac"]);
+  await t.user.click(placeOptions().getByRole("option", { name: "Studio Mac" }));
+  // Chosen again, it is saved as the Host's station.
+  await t.user.click(placePicker());
+  await t.user.click(placeOptions().getByRole("option", { name: "Cloud VM" }));
+  expect(t.called("models.setTaskPlace")).toEqual([
+    { workspace, place: { kind: "station", device_id: "dev-studio" } },
+    { workspace, place: onHost },
+  ]);
+  expect(placePicker()).toHaveTextContent("Cloud VM");
 });
 
 it("offers the Cloud VM only when the workspace has one, and says why a place is refused", async () => {

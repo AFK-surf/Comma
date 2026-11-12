@@ -14,6 +14,8 @@ struct PlatformCard: View {
     @ScaledMetric(relativeTo: .body) private var minHeight: CGFloat = 104
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    static let width: CGFloat = 160
+    static let accessibilityWidth: CGFloat = 280
     static let radius: CGFloat = 20
     private static let tallestFloor: CGFloat = 140
 
@@ -52,6 +54,7 @@ struct PlatformCard: View {
             .overlay(shape.strokeBorder(CommaTheme.borderPrimary, lineWidth: 1))
             .contentShape(shape)
         }
+        .frame(width: typeSize.isAccessibilitySize ? Self.accessibilityWidth : Self.width)
         .buttonStyle(TactileButtonStyle(scale: 0.96))
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(needsReconnect ? Text("Needs reconnecting") : Text(verbatim: ""))

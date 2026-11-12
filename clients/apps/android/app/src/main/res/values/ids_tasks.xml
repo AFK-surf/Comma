@@ -2,4 +2,7 @@
 <resources>
     <item name="task_action_hide" type="id" />
     <item name="task_ref_directory" type="id" />
+    <item name="task_details_files" type="id" />
+    <item name="home_new_task" type="id" />
+    <item name="chat_browser_button" type="id" />
 </resources>

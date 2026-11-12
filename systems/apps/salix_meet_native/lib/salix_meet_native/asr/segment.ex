@@ -4,6 +4,10 @@ defmodule SalixMeetNative.ASR.Segment do
   transient failure. The owner gets `{:final, segment, result}` once the
   segment is recognized. With `interim: true` it also gets each better guess
   meanwhile, `{:interim, segment, result}` (a retry starts its guesses over).
+
+  It stops with `:normal` once the provider has recognized all the audio; a
+  segment that then sent no final held no words. It stops with
+  `{:shutdown, :failed}` when the provider failed for good.
   """
   use GenServer
 
@@ -109,7 +113,7 @@ defmodule SalixMeetNative.ASR.Segment do
       {:noreply, if(state.sealed?, do: schedule_retry(state), else: state)}
     else
       Logger.warning("meet asr: segment failed #{inspect(reason)}")
-      {:stop, :normal, state}
+      {:stop, {:shutdown, :failed}, state}
     end
   end
 

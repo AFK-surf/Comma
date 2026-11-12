@@ -31,7 +31,7 @@ defmodule SalixAgent.Tools.Proactive do
       ),
       tool(
         "watch",
-        "Follow one matter the user asked about, such as a pull request, issue, page or thread, with the bundled proactive Loop. Slack, GitHub, Linear and Notion reads use the connected plugin MCP tool (mcp.slack.*, mcp.github.*, mcp.linear.*, mcp.notion.*) with a poll interval. Confirm the follow only after success. Comma already checks connected sources for new work; do not watch them again.\n\nDiscover read schemas with existing tools. Supply a stable key, source_ref, exact read recipe with a pinned account (or internal conversation), and either a provider trigger or a bounded poll interval of 5 minutes to 24 hours. Plugin MCP, internal and Routine reads have no provider trigger. Optional related read binds a field from the primary result for a thread/context read. This is enrollment, not another Task or permission to write to a source.",
+        "Follow one matter the user asked about, such as a pull request, issue, page or thread, with the bundled proactive Loop. Slack, GitHub, Linear and Notion reads use the connected plugin MCP tool (mcp.slack.*, mcp.github.*, mcp.linear.*, mcp.notion.*) with a poll interval. Confirm the follow only after success. Comma already checks connected sources for new work; do not watch them again.\n\nDiscover read schemas with existing tools. Supply a stable key, source_ref, exact read recipe with a pinned account (or internal conversation), and either a provider trigger or a bounded poll interval of 1 minute to 24 hours. Plugin MCP, internal and Routine reads have no provider trigger. Optional related read binds a field from the primary result for a thread/context read. This is enrollment, not another Task or permission to write to a source.",
         %{
           "key" => string(),
           "intent" => string(),
@@ -40,7 +40,7 @@ defmodule SalixAgent.Tools.Proactive do
           "related" => read,
           "poll_interval_ms" => %{
             "type" => "integer",
-            "minimum" => 300_000,
+            "minimum" => 60_000,
             "maximum" => 86_400_000
           },
           "trigger" => %{
@@ -56,7 +56,7 @@ defmodule SalixAgent.Tools.Proactive do
       ),
       tool(
         "act",
-        "Update proactive matter and reminder state: track, remind, notify, quiet, snooze, draft, handled, link_task, resume or source. Send replies through normal authorized reply tools, never through this state tool.\n\nUse track to record a freshly read source and observation without sending any message. Use remind with source_ref, observation_id, title, exact read recipe and future run_at to create an explicit reminder at a time the user chose. After a background handoff, record your decision on its key before replying: notify spends the user's notification budget for an automatic matter and fails when it is closed, quiet records why you stay quiet, and snooze with a reason rechecks the matter at run_at. Apply the user's reply to the same canonical reminder across App/Telegram/WeChat: draft starts the offered work in a Task, snooze reminds later, handled ends it, and link_task or resume repair state. Supply its exact key from state and a stable request_id; snooze takes future Unix milliseconds run_at. Use source to inspect its fresh source. If an unquoted reply has several possible subjects, ask which one: omitting key only resolves a single active reminder. Handled does not close an external issue or complete a Task. Confirm only after success.",
+        "Update proactive matter and reminder state: track, remind, notify, quiet, snooze, draft, handled, link_task, resume or source. Send replies through normal authorized reply tools, never through this state tool.\n\nUse track to record a freshly read source and observation without sending any message. Use remind with source_ref, observation_id, title, exact read recipe and future run_at to create an explicit reminder at a time the user chose. After a background handoff, record your decision on its key before replying: notify spends the user's notification budget for an automatic matter and fails when it is closed, quiet records why you stay quiet (with reason_kind new_evidence when you withhold a matter Comma's screening decided to interrupt with, because of evidence it did not have), and snooze with a reason rechecks the matter at run_at. Apply the user's reply to the same canonical reminder across App/Telegram/WeChat: draft starts the offered work in a Task, snooze reminds later, handled ends it, and link_task or resume repair state. Supply its exact key from state and a stable request_id; snooze takes future Unix milliseconds run_at. Use source to inspect its fresh source. If an unquoted reply has several possible subjects, ask which one: omitting key only resolves a single active reminder. Handled does not close an external issue or complete a Task. Confirm only after success.",
         %{
           "action" => %{
             "type" => "string",
@@ -72,10 +72,22 @@ defmodule SalixAgent.Tools.Proactive do
           "generation" => %{"type" => "integer", "minimum" => 1},
           "run_at" => %{"type" => "integer"},
           "task_id" => string(),
-          "reason" => string()
+          "reason" => string(),
+          "reason_kind" => %{"type" => "string", "enum" => ~w(new_evidence)}
         },
         ~w(action request_id),
         :act,
+        "write"
+      ),
+      tool(
+        "thread",
+        "Correct one thread the user may have left open, as proactive.state lists it in open_threads and the notebook shows it: resolved when the user says it is done, dismissed when it is not theirs or not worth following (it does not come back), open to list it again. Use its exact id. Confirm only after success.",
+        %{
+          "id" => string(),
+          "status" => %{"type" => "string", "enum" => ~w(open resolved dismissed)}
+        },
+        ~w(id status),
+        :thread,
         "write"
       )
     ]
@@ -84,6 +96,7 @@ defmodule SalixAgent.Tools.Proactive do
   def state(args, ctx), do: call(:state, args, ctx)
   def watch(args, ctx), do: call(:watch, args, ctx)
   def act(args, ctx), do: call(:act, args, ctx)
+  def thread(args, ctx), do: call(:thread, args, ctx)
 
   defp call(operation, args, ctx) do
     module = SystemsRuntime.get_env(:salix_agent, :proactive_adapter)
@@ -115,7 +128,7 @@ defmodule SalixAgent.Tools.Proactive do
 
   defp hint(:invalid_proactive_watch),
     do:
-      ". Check key (a-z, 0-9, _ or -), source_ref, intent, and either poll_interval_ms (300000-86400000) or a trigger."
+      ". Check key (a-z, 0-9, _ or -), source_ref, intent, and either poll_interval_ms (60000-86400000) or a trigger."
 
   defp hint(_reason), do: ""
 

@@ -21,6 +21,32 @@ afterEach(async () => {
 });
 
 describe("AppPreferencesService", () => {
+  it("defaults older settings to Home and retains the chosen home view across restarts", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const { defaultHomeView: _home, ...legacy } = defaultCommaClientSettings;
+    await writeFile(
+      filePath,
+      JSON.stringify({ ...defaultAppPreferences, clientSettings: legacy })
+    );
+    const service = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    expect(service.state().clientSettings?.defaultHomeView).toBe("home");
+    await service.update({ clientSettings: { defaultHomeView: "inbox" } });
+    await service.update({ clientSettings: { localePreference: "zh-CN" } });
+    await service.close();
+    const reopened = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    expect(reopened.state().clientSettings).toMatchObject({
+      defaultHomeView: "inbox",
+      localePreference: "zh-CN",
+    });
+    await reopened.close();
+  });
+
   it("loads Meeting defaults from legacy settings and persists each independent preference", async () => {
     const filePath = await temporaryPreferencesPath();
     const {
@@ -87,7 +113,7 @@ describe("AppPreferencesService", () => {
     expect(service.state().clientSettings?.openCommaShortcut).toEqual(optionComma);
     expect(JSON.parse(await readFile(untouched, "utf8"))).toMatchObject({
       clientSettings: { openCommaShortcut: optionComma },
-      defaultsRevision: 1,
+      defaultsRevision: 2,
     });
     // Option-Space chosen again afterwards stays.
     await service.update({ clientSettings: { openCommaShortcut: optionSpace } });
@@ -105,6 +131,47 @@ describe("AppPreferencesService", () => {
       const kept = await AppPreferencesService.open({ filePath, platform });
       expect(kept.state().clientSettings?.openCommaShortcut).toEqual(chosen);
       await kept.close();
+    }
+  });
+
+  it("turns Computers over the mesh on in a file saved while off was the default, once", async () => {
+    const { revision: _revision, ...preferences } = defaultAppPreferences;
+    const fileAt = async (defaultsRevision: number | undefined) => {
+      const filePath = await temporaryPreferencesPath();
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          ...preferences,
+          clientSettings: { ...defaultCommaClientSettings, computerMesh: "off" },
+          ...(defaultsRevision === undefined ? {} : { defaultsRevision }),
+        })
+      );
+      return filePath;
+    };
+    for (const before of [undefined, 1]) {
+      const filePath = await fileAt(before);
+      const service = await AppPreferencesService.open({
+        filePath,
+        platform: createPlatform(),
+      });
+      // The core and the station start with it on, as a new install does.
+      expect(service.state()).toMatchObject({
+        computerMeshAtLaunch: "on",
+        clientSettings: { computerMesh: "on" },
+      });
+      expect(JSON.parse(await readFile(filePath, "utf8"))).toMatchObject({
+        clientSettings: { computerMesh: "on" },
+        defaultsRevision: 2,
+      });
+      // Off chosen in Settings › Debug afterwards stays off.
+      await service.update({ clientSettings: { computerMesh: "off" } });
+      await service.close();
+      const reopened = await AppPreferencesService.open({
+        filePath,
+        platform: createPlatform(),
+      });
+      expect(reopened.state().clientSettings?.computerMesh).toBe("off");
+      await reopened.close();
     }
   });
 
@@ -598,7 +665,7 @@ describe("AppPreferencesService", () => {
     expect(service.state().launchAtLogin).toBe(false);
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
-      defaultsRevision: 1,
+      defaultsRevision: 2,
       keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
@@ -726,11 +793,64 @@ describe("AppPreferencesService", () => {
     });
   });
 
-  it("merges unrelated updates onto current external login-item truth", async () => {
+  // The login-item read is a synchronous query to macOS on Main's thread
+  // (6-18 ms), and every window open and preference update reads the state.
+  it("reads the login item at most once per 30 s, and fresh for Settings and a toggle", async () => {
     const filePath = await temporaryPreferencesPath();
     const platform = createPlatform();
     const onStateChanged = vi.fn();
+    let nowMs = 1_700_000_000_000;
     const service = await AppPreferencesService.open({
+      clock: { now: () => nowMs, setTimer: () => () => undefined },
+      filePath,
+      onStateChanged,
+      platform,
+    });
+    const reads = platform.getLaunchAtLogin.mock.calls.length;
+
+    // Focus re-reads, window opens and the readbacks they start share one read.
+    for (let read = 0; read < 5; read += 1) service.state();
+    await service.refreshSystemNotificationsStatus();
+    await service.update({ showInDock: false });
+    expect(platform.getLaunchAtLogin).toHaveBeenCalledTimes(reads);
+
+    // The user allows the login item in System Settings. Settings shows it, so
+    // Settings reads it fresh when it opens, and every window hears the change.
+    platform.getLaunchAtLogin.mockReturnValue({ enabled: true });
+    expect(service.state().launchAtLogin).toBe(false);
+    await expect(service.refreshLaunchAtLogin()).resolves.toMatchObject({
+      launchAtLogin: true,
+    });
+    expect(onStateChanged).toHaveBeenLastCalledWith(
+      expect.objectContaining({ launchAtLogin: true })
+    );
+    expect(platform.getLaunchAtLogin).toHaveBeenCalledTimes(reads + 1);
+
+    // Once the readback is 30 s old, the next read asks macOS again.
+    nowMs += 29_999;
+    service.state();
+    expect(platform.getLaunchAtLogin).toHaveBeenCalledTimes(reads + 1);
+    nowMs += 1;
+    service.state();
+    service.state();
+    expect(platform.getLaunchAtLogin).toHaveBeenCalledTimes(reads + 2);
+
+    // A toggle applies against the current truth, not the cached readback:
+    // turned off in System Settings, turning it on registers it again.
+    platform.getLaunchAtLogin.mockReturnValue({ enabled: false });
+    await expect(service.update({ launchAtLogin: true })).resolves.toMatchObject({
+      launchAtLogin: true,
+    });
+    expect(platform.setLaunchAtLogin).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("merges unrelated updates onto external login-item truth once the readback is 30 s old", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const platform = createPlatform();
+    const onStateChanged = vi.fn();
+    let nowMs = 1_700_000_000_000;
+    const service = await AppPreferencesService.open({
+      clock: { now: () => nowMs, setTimer: () => () => undefined },
       filePath,
       onStateChanged,
       platform,
@@ -739,6 +859,7 @@ describe("AppPreferencesService", () => {
       enabled: true,
       status: "enabled",
     });
+    nowMs += 30_000;
 
     await expect(service.update({ showInDock: false })).resolves.toEqual({
       airDropName: null,
@@ -759,7 +880,7 @@ describe("AppPreferencesService", () => {
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
-      defaultsRevision: 1,
+      defaultsRevision: 2,
       keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
@@ -971,7 +1092,7 @@ describe("AppPreferencesService", () => {
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
-      defaultsRevision: 1,
+      defaultsRevision: 2,
       keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
@@ -1116,7 +1237,7 @@ describe("AppPreferencesService", () => {
     });
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
-      defaultsRevision: 1,
+      defaultsRevision: 2,
       keepAwakeWhenLidClosed: false,
       launchAtLogin: true,
       notchSideWidth: 156,
@@ -1188,7 +1309,7 @@ describe("AppPreferencesService", () => {
     );
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       airDropName: null,
-      defaultsRevision: 1,
+      defaultsRevision: 2,
       keepAwakeWhenLidClosed: false,
       launchAtLogin: false,
       notchSideWidth: 156,
@@ -1202,6 +1323,36 @@ describe("AppPreferencesService", () => {
       sideChatEnabled: false,
       systemNotifications: false,
     });
+  });
+
+  it("keeps the mesh choice the app started with while a new one waits for a restart", async () => {
+    const filePath = await temporaryPreferencesPath();
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        ...defaultAppPreferences,
+        clientSettings: { ...defaultCommaClientSettings, computerMesh: "on" },
+      })
+    );
+    const service = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    await service.update({ clientSettings: { computerMesh: "off" } });
+    expect(service.state()).toMatchObject({
+      computerMeshAtLaunch: "on",
+      clientSettings: { computerMesh: "off" },
+    });
+    await service.close();
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty(
+      "computerMeshAtLaunch"
+    );
+    const restarted = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    expect(restarted.state().computerMeshAtLaunch).toBe("off");
+    await restarted.close();
   });
 
   it("publishes whether Quick Chat runs, for Settings, without persisting it", async () => {

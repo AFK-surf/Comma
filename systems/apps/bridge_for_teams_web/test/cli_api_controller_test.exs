@@ -983,6 +983,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
         "status" => "connected",
         "app_secret_configured" => true,
         "verification_token_configured" => is_binary(attrs["verification_token"]),
+        "events" => attrs["events"] || "webhook",
         "webhook_url" => "https://salix.example.test/v1/im/lark/events?app_id=#{attrs["app_id"]}"
       }
 
@@ -992,6 +993,32 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     def lark_callback_preflight_for_connect(%{"connect_id" => "imc1_lark"}),
       do: {:error, :token_mismatch}
+
+    def begin_lark_registration(name, _opts),
+      do:
+        {:ok,
+         %{
+           device_code: "device-code-1",
+           url:
+             "https://open.larksuite.com/page/cli?" <>
+               URI.encode_query(%{"user_code" => "ABCD", "name" => name}),
+           interval_s: 5,
+           expires_in_s: 600,
+           domain: "feishu"
+         }}
+
+    # Pending on Feishu until the tenant says Lark; then the app is made.
+    def poll_lark_registration("feishu", "device-code-1"), do: {:pending, "lark"}
+
+    def poll_lark_registration("lark", "device-code-1"),
+      do:
+        {:ok,
+         %{
+           app_id: "cli_scanned",
+           app_secret: "fake-scanned-secret",
+           open_id: "ou_ada",
+           domain: "lark"
+         }}
 
     def lark_bot_identity(%{"connect_id" => "imc1_lark"}),
       do: {:ok, %{"open_id_fingerprint" => "0123456789ab"}}
@@ -1042,6 +1069,136 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert status["mode"] == "lark_status"
     assert [%{"connect_id" => "imc1_lark", "callback_url" => url}] = status["connects"]
     assert url =~ "/v1/im/lark/events?app_id=cli_acme"
+  end
+
+  test "a project admin makes a Lark app by a scan; the device code never reaches the page", %{
+    user: user,
+    project: project
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, LarkSalixClient)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_lark_connects) end)
+    base = "/dashboard/api/v1/orgs/acme/projects/#{project.id}/connections/lark/registration"
+
+    begun = :post |> dashboard_api(base, user, %{}) |> json_data()
+    assert begun["url"] =~ "https://open.larksuite.com/page/cli?"
+    assert begun["url"] =~ "user_code=ABCD"
+    assert begun["interval_s"] == 5
+    refute begun["registration"] =~ "device-code-1"
+
+    pending =
+      :post
+      |> dashboard_api(base <> "/poll", user, %{"registration" => begun["registration"]})
+      |> json_data()
+
+    assert %{"state" => "pending", "registration" => next} = pending
+    assert next != begun["registration"]
+
+    tampered =
+      :post
+      |> dashboard_api(base <> "/poll", user, %{"registration" => next <> "x"})
+      |> json_data()
+
+    assert tampered == %{"state" => "expired"}
+
+    connected =
+      :post
+      |> dashboard_api(base <> "/poll", user, %{"registration" => next})
+      |> json_data()
+
+    assert %{"state" => "connected", "app_id" => "cli_scanned"} = connected
+    refute inspect(connected) =~ "fake-scanned-secret"
+
+    assert [%{"app_id" => "cli_scanned", "events" => "socket"}] =
+             SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_lark_connects)
+  end
+
+  defmodule FeishuScanSalixClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+    @moduledoc false
+
+    def list_group_im_connects(_group_id, _provider),
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_feishu_connects, [])}
+
+    def create_feishu_im_connect(tenant_id, group_id, attrs) do
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_feishu_create, attrs)
+
+      connect = %{
+        "connect_id" => "imc1_feishu_scan",
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "provider" => "feishu",
+        "app_id" => attrs["app_id"],
+        "status" => "connected",
+        "app_secret_configured" => true,
+        "events" => attrs["events"] || "webhook"
+      }
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_feishu_connects, [connect])
+      {:ok, connect}
+    end
+
+    def begin_feishu_registration(name, _opts),
+      do:
+        {:ok,
+         %{
+           device_code: "device-code-1",
+           url:
+             "https://open.feishu.cn/page/cli?" <>
+               URI.encode_query(%{"user_code" => "ABCD", "name" => name}),
+           interval_s: 5,
+           expires_in_s: 600,
+           domain: "feishu"
+         }}
+
+    def poll_feishu_registration("feishu", "device-code-1"),
+      do:
+        {:ok,
+         %{
+           app_id: "cli_scanned",
+           app_secret: "fake-scanned-secret",
+           open_id: "ou_ada",
+           domain: "feishu"
+         }}
+  end
+
+  test "a project admin makes a Feishu app by a scan; the connect owns the app's secret", %{
+    user: user,
+    project: project
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, FeishuScanSalixClient)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_feishu_connects)
+      SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_feishu_create)
+    end)
+
+    base = "/dashboard/api/v1/orgs/acme/projects/#{project.id}/connections/feishu/registration"
+    lark = "/dashboard/api/v1/orgs/acme/projects/#{project.id}/connections/lark/registration"
+
+    begun = :post |> dashboard_api(base, user, %{}) |> json_data()
+    assert begun["url"] =~ "https://open.feishu.cn/page/cli?"
+    refute begun["registration"] =~ "device-code-1"
+
+    # A Feishu registration is never finished as a Lark one.
+    assert %{"state" => "expired"} =
+             :post
+             |> dashboard_api(lark <> "/poll", user, %{"registration" => begun["registration"]})
+             |> json_data()
+
+    connected =
+      :post
+      |> dashboard_api(base <> "/poll", user, %{"registration" => begun["registration"]})
+      |> json_data()
+
+    assert %{"state" => "connected", "app_id" => "cli_scanned"} = connected
+    refute inspect(connected) =~ "fake-scanned-secret"
+
+    assert %{
+             "app_id" => "cli_scanned",
+             "app_secret" => "fake-scanned-secret",
+             "events" => "socket"
+           } =
+             SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_feishu_create)
   end
 
   test "Lark checks run for a project member and name the failed gate", %{
@@ -1100,6 +1257,38 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert data["import_path"] =~ "Permissions & Scopes"
   end
 
+  defmodule TelegramSalixClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+
+    @moduledoc false
+
+    def list_group_im_connects(_group_id, _provider),
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_telegram_connects, [])}
+
+    def create_telegram_im_connect(tenant_id, group_id, attrs) do
+      connect = %{
+        "connect_id" => "imc1_tg",
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "provider" => "telegram",
+        "bot_username" => "acme_bot",
+        "status" => "connected",
+        "allowed_chat_ids" => attrs["allowed_chat_ids"]
+      }
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_telegram_connects, [connect])
+      {:ok, connect}
+    end
+
+    def update_telegram_im_connect(_tenant_id, _group_id, _connect_id, attrs) do
+      [connect] = SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_telegram_connects, [])
+      {:ok, Map.put(connect, "allowed_chat_ids", attrs["allowed_chat_ids"])}
+    end
+
+    def list_telegram_observed_chats(_tenant_id, _group_id, _connect_id),
+      do: {:ok, [%{"chat_id" => "-1001", "chat_type" => "supergroup", "title" => "Acme support"}]}
+  end
+
   defmodule QQSalixClient do
     use BridgeForTeams.TestSupport.CanonicalAgentClient
 
@@ -1146,6 +1335,64 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
       SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_qq_connects, [connect])
       {:ok, connect}
     end
+  end
+
+  test "a project admin connects a Telegram bot and allows a group, without the token", %{
+    org: org,
+    project: project,
+    token: token
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, TelegramSalixClient)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_telegram_connects)
+    end)
+
+    scope = %{"org" => org.slug, "project" => project.slug}
+
+    missing = api(:post, "/v1/cli/telegram/connect", token, scope)
+    assert missing.status == 400
+    assert %{"error" => %{"code" => "missing_telegram_token"}} = Jason.decode!(missing.resp_body)
+
+    conn =
+      api(
+        :post,
+        "/v1/cli/telegram/connect",
+        token,
+        Map.put(scope, "bot_token", "123:fake-telegram-token")
+      )
+
+    assert conn.status == 200
+    refute conn.resp_body =~ "fake-telegram-token"
+    data = json_data(conn)
+    assert data["mode"] == "telegram_connect"
+    assert data["connect"]["bot_username"] == "acme_bot"
+    assert data["connect"]["allowed_chat_ids"] == []
+
+    status =
+      :get
+      |> api("/v1/cli/telegram/status?org=#{org.slug}&project=#{project.slug}", token)
+      |> json_data()
+
+    assert [%{"observed_chats" => [%{"id" => "-1001", "title" => "Acme support"}]}] =
+             status["connects"]
+
+    allowed =
+      api(
+        :post,
+        "/v1/cli/telegram/chats",
+        token,
+        Map.put(scope, "allowed_chat_ids", ["-1001"])
+      )
+      |> json_data()
+
+    assert allowed["connect"]["allowed_chat_ids"] == ["-1001"]
+
+    invalid =
+      api(:post, "/v1/cli/telegram/chats", token, Map.put(scope, "allowed_chat_ids", "-1001"))
+
+    assert invalid.status == 400
+    assert %{"error" => %{"code" => "invalid_telegram_chats"}} = Jason.decode!(invalid.resp_body)
   end
 
   test "a project admin connects a QQ bot and reads it back, without the secret", %{
@@ -1896,7 +2143,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
         "last_seen_at" => SystemsClock.utc_now(),
         "version" => "worker-0.1.0",
         "capabilities" => %{
-          "component_versions" => %{"salix-connect" => "2026.06"}
+          "component_versions" => %{"agent-vmm-host" => "2026.06"}
         }
       })
 
@@ -1909,12 +2156,12 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert data["summary"]["update_available"] == false
     assert data["summary"]["update_available_count"] == 0
     assert data["release"]["error"] == "server_release_unavailable"
-    assert data["next_action"] =~ "continue to project device creation"
+    assert data["next_action"] =~ "continue to group onboarding"
     [provisioner] = data["runners"]
     assert provisioner["name"] == "Office Mac mini"
     assert provisioner["effective_status"] == "online"
     assert provisioner["version"] == "worker-0.1.0"
-    assert provisioner["component_versions"] == "salix-connect=2026.06"
+    assert provisioner["component_versions"] == "agent-vmm-host=2026.06"
     assert provisioner["update_available"] == false
   end
 

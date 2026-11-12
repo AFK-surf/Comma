@@ -104,6 +104,8 @@ export interface StationHost {
 export interface WorkspaceConnectorRuntimeOptions {
   /** The machine's station. Undefined means none: every target resolution fails closed. */
   station: StationHost | undefined;
+  /** Settings › Debug: the station serves this computer's owner on the mesh. */
+  computerMesh?: boolean | undefined;
   /** Main's client control endpoint, for the agents' `comma`; given once it listens. */
   clientControl?: (() => { endpoint: string; token: string } | undefined) | undefined;
   /** Filesystem root the connector serves; the user's home in production. */
@@ -421,7 +423,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
     if (!credential) throw new Error("Sign in before adding a device.");
     const api = this.#api(credential);
     const install = await api.createDeviceInstall(workspaceId, {
-      name: "Comma Connector",
+      name: "Comma Station",
       alias: "device",
     });
     if ("kind" in install) {
@@ -433,7 +435,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
     try {
       credential.signal.throwIfAborted();
       if (!token.install_command)
-        throw new Error("Connector installation is unavailable.");
+        throw new Error("Station installation is unavailable.");
       await copy(token.install_command);
     } catch (error) {
       await api
@@ -972,6 +974,7 @@ export class WorkspaceConnectorRuntimeService implements WorkspaceConnectorRunti
         device_state_root: entry.workspaceDir,
         workspace_id: entry.workspaceId,
         server: entry.minted.server,
+        ...(this.#options.computerMesh ? { mesh: true } : {}),
       },
       electron: {
         local_file_index_root: this.#options.localFileIndexRoot,
@@ -1075,7 +1078,7 @@ function requireCompleteToken<
   },
 >(token: T): T {
   if (!token.token || !token.server) {
-    throw new Error("The workspace connector token response was incomplete.");
+    throw new Error("The workspace station token response was incomplete.");
   }
   return token;
 }

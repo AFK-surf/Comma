@@ -84,6 +84,49 @@ final class CommaStoreTests: XCTestCase {
         XCTAssertEqual(call["version"] as? Int, 7)
     }
 
+    /// Marking a Task in review as done tells the app a result was accepted; a refused one does not.
+    func testMarkingATaskAsDoneCountsAsAnAcceptedResult() async throws {
+        let harness = try StoreHarness()
+        let store = harness.store
+        await harness.start()
+        var accepted = 0
+        store.onWorkAccepted = { accepted += 1 }
+        let task = TaskSummary.withStatus("a", "ready_for_review", extra: ["reviewVersion": 3])
+
+        let done = await store.acceptTaskReview(task)
+        XCTAssertTrue(done)
+        XCTAssertEqual(accepted, 1)
+
+        harness.core.on("tasks.accept") { _ in throw URLError(.notConnectedToInternet) }
+        let refused = await store.acceptTaskReview(task)
+        XCTAssertFalse(refused)
+        XCTAssertEqual(accepted, 1)
+    }
+
+    /// Ending the open Task as Done counts as an accepted result; ending one as Cancelled does not.
+    func testEndingTheOpenTaskAsDoneCountsAsAnAcceptedResult() async throws {
+        let harness = try StoreHarness()
+        harness.core.serve("chatView") { topic in
+            let id = topic["conversation"] as? String ?? ""
+            let conversation: [String: Any] = ["id": id, "group_id": "g1", "title": "Task \(id)", "status": "active",
+                                               "kind": id == "router" ? "user_chat" : "agent_task", "updated_at": 7]
+            return ["revision": 1, "state": ["status": "ready", "loaded": true, "draft": "", "conversation": conversation]]
+        }
+        let store = harness.store
+        await harness.start()
+        var accepted = 0
+        store.onWorkAccepted = { accepted += 1 }
+        await store.openTask(id: "a")
+        let pane = try XCTUnwrap(store.task)
+        await until { pane.conversation?.canSetStatus == true }
+
+        await pane.setStatus(.cancelled)
+        XCTAssertEqual(accepted, 0)
+        await pane.setStatus(.completed)
+        XCTAssertEqual(accepted, 1)
+        XCTAssertEqual(harness.core.calls("chatView.setTaskStatus").map { $0["status"] as? String }, ["cancelled", "completed"])
+    }
+
     /// Signing out drops what the account had: the open Task, the list and the Workspace.
     func testSigningOutClearsTheAccountsProduct() async throws {
         let harness = try StoreHarness()

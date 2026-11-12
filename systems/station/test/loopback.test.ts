@@ -37,7 +37,7 @@ test("the loopback port serves no admin API nor page", () => {
 test("in no workspace it says so and how to join one", () => {
   const never = answer("/admin/chats/k", null, true, null, "zh");
   assert.equal(never.status, 404);
-  assert.ok(never.body.includes("还没有加入 workspace") && never.body.includes("stillfail station enroll"), never.body);
+  assert.ok(never.body.includes("还没有加入 workspace") && never.body.includes("comma-station station enroll"), never.body);
   const removed = answer("/admin/chats/k", null, true, { ...place, removed_at: 1_790_000_000 }, "zh");
   assert.equal(removed.headers.location, undefined);
   assert.ok(removed.body.includes("已被移出 workspace「Dev」") && removed.body.includes("2026-09-21T"), removed.body);

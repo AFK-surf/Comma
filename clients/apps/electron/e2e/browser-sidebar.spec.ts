@@ -66,15 +66,24 @@ test(
               .e2eBrowserVisibility
         );
       await expect.poll(lastNativeVisibility).toBe(true);
+      // The stand-in needs a frame Main can copy. Chromium can drop the first
+      // copy of a page that has just navigated (`UnknownVizError`) and later
+      // ones too, until the page's frame is settled on screen; after one copy
+      // succeeds, later ones do. Wait for that copy, so Cmd-K below meets a
+      // page on screen, not one that is still arriving.
       await expect
         .poll(() =>
-          app.evaluate(
-            ({ webContents }, url) =>
-              webContents
-                .getAllWebContents()
-                .some((contents) => contents.getURL() === url && !contents.isLoading()),
-            `${browserStub.baseUrl}/a1`
-          )
+          app.evaluate(async ({ webContents }, url) => {
+            const page = webContents
+              .getAllWebContents()
+              .find((contents) => contents.getURL() === url && !contents.isLoading());
+            if (!page) return false;
+            try {
+              return !(await page.capturePage()).isEmpty();
+            } catch {
+              return false;
+            }
+          }, `${browserStub.baseUrl}/a1`)
         )
         .toBe(true);
       // Cmd+K uses the same native suppression path. Hold PNG decoding past
@@ -277,13 +286,16 @@ test(
         .poll(async () => (await sidebar.boundingBox())?.width ?? 0)
         .toBe(440);
 
+      // The native view takes the whole pixels inside the viewport's edges.
       const viewportBounds = await viewport.evaluate((element) => {
         const rect = element.getBoundingClientRect();
+        const x = Math.ceil(rect.left);
+        const y = Math.ceil(rect.top);
         return {
-          height: Math.round(rect.height),
-          width: Math.round(rect.width),
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
+          height: Math.floor(rect.bottom) - y,
+          width: Math.floor(rect.right) - x,
+          x,
+          y,
         };
       });
       const activePageSessionId = async (hostSessionId: string) => {
@@ -709,6 +721,26 @@ test(
       const inspectedUserMessage = content
         .locator('[data-slot="chat-user-output"]')
         .filter({ hasText: "Explain this selected element" });
+      // The element waits in the chat's composer with what was written about
+      // it: nothing is sent yet, and the page goes on taking selections until
+      // the person leaves the mode.
+      await expect(composer.locator('[data-slot="selection-attachment"]')).toHaveText(
+        "Explain this selected element"
+      );
+      await expect(inspectedUserMessage).toHaveCount(0);
+      const leaveSelection = sidebar.getByRole("button", {
+        name: "Cancel element selection",
+      });
+      await expect(leaveSelection).toHaveAttribute("aria-pressed", "true");
+      await leaveSelection.click();
+      await expect(
+        sidebar.getByRole("button", { name: "Select element" })
+      ).toHaveAttribute("aria-pressed", "false");
+      // The chat's own composer sends it.
+      await composer.getByRole("button", { name: "Send" }).click();
+      await expect(composer.locator('[data-slot="selection-attachment"]')).toHaveCount(
+        0
+      );
       await expect(inspectedUserMessage).toHaveCount(1);
       // The chat shows the element's screenshot; the agent reads that file
       // beside the DOM context in the message text.

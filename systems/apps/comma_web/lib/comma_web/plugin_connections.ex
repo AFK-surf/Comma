@@ -87,8 +87,8 @@ defmodule CommaWeb.PluginConnections do
 
   defp personal_source(
          %{"kind" => "composio", "toolkit" => toolkit} = connection,
-         _workspace,
-         _user_id,
+         workspace,
+         user_id,
          accounts,
          bindings,
          _resolved,
@@ -101,14 +101,20 @@ defmodule CommaWeb.PluginConnections do
       |> Enum.map(&%{"id" => &1["id"]})
       |> Enum.filter(&(is_binary(&1["id"]) and byte_size(&1["id"]) in 1..256))
 
-    selected = bindings[toolkit]
+    # Every consented account is read; the source is ready while one of them
+    # is still active. A sole owner's active accounts are all adopted, so
+    # there is nothing to choose. In a shared Workspace the accounts left to
+    # choose are the unconsented ones.
+    selected = bindings[toolkit] || []
+    active = Enum.filter(selected, fn id -> Enum.any?(candidates, &(&1["id"] == id)) end)
+    adopted? = CommaWeb.MemberSourceAdoption.adopts?(workspace, user_id, toolkit)
+    choices = if adopted?, do: [], else: Enum.reject(candidates, &(&1["id"] in selected))
 
     state =
       cond do
-        selected && Enum.any?(candidates, &(&1["id"] == selected)) -> "ready"
-        selected && candidates != [] -> "needs_confirmation"
-        selected -> "needs_authorization"
-        candidates != [] -> "needs_confirmation"
+        active != [] -> "ready"
+        adopted? and candidates != [] -> "ready"
+        choices != [] -> "needs_confirmation"
         true -> "needs_authorization"
       end
 
@@ -118,8 +124,9 @@ defmodule CommaWeb.PluginConnections do
         "toolkit" => toolkit,
         "kind" => "composio",
         "state" => state,
-        "selectedAccountId" => selected,
-        "candidates" => candidates
+        "selectedAccountId" => List.first(active) || List.first(selected),
+        "selectedAccountIds" => selected,
+        "candidates" => choices
       }
     ]
   end
@@ -203,7 +210,95 @@ defmodule CommaWeb.PluginConnections do
     ]
   end
 
+  # A member's own Lark or Feishu bot is a source only while its app lacks a
+  # scope a connect needs now: Reconnect is a new scan that updates the app.
+  # Beside it, the owner's own sign-in with that app (`<plugin>-member`) is
+  # what their Routine reads; Connect is its code to confirm.
+  defp personal_source(
+         %{"kind" => "im_connect", "provider" => provider} = connection,
+         workspace,
+         user_id,
+         _accounts,
+         _bindings,
+         _resolved,
+         _mcps
+       )
+       when provider in ~w(lark feishu) do
+    case owner_connect(workspace, provider) do
+      {:ok, %{"missing_scopes" => [_ | _] = scopes}} ->
+        [
+          %{
+            "connectionId" => connection["id"],
+            "toolkit" => provider,
+            "kind" => "im_connect",
+            "state" => "needs_reauthorization",
+            "missingScopes" => scopes,
+            "candidates" => []
+          }
+        ] ++ member_sign_in_source(workspace, user_id, provider)
+
+      {:ok, %{}} ->
+        member_sign_in_source(workspace, user_id, provider)
+
+      _none ->
+        []
+    end
+  end
+
   defp personal_source(_, _, _, _, _, _, _), do: []
+
+  defp member_sign_in_source(workspace, user_id, provider) do
+    if workspace["owner_user_id"] == user_id do
+      [
+        %{
+          "connectionId" => member_connection_id(provider),
+          "toolkit" => provider,
+          "kind" => "managed_oauth",
+          "state" => member_sign_in_state(workspace, user_id, provider),
+          "candidates" => []
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  @doc """
+  Whether the Workspace owner's own Feishu or Lark sign-in can serve their
+  Routine: `"ready"`, `"needs_authorization"` (none yet) or
+  `"needs_reauthorization"` (expired, revoked, another member's, or without
+  a scope the Routine reads now).
+  """
+  def member_sign_in_state(workspace, user_id, provider) when provider in ~w(lark feishu) do
+    binding =
+      workspace["default_group_id"]
+      |> OAuthBindings.list()
+      |> Enum.find(
+        &(&1["provider"] == provider and
+            &1["alias"] == CommaWeb.RecommendationPreviewCatalog.binding_alias(provider))
+      )
+
+    source = %{
+      "kind" => "managed_oauth",
+      "appId" => provider,
+      "connectionId" => binding && binding["binding_id"]
+    }
+
+    with %{} <- binding,
+         {:ok, _identity} <-
+           CommaWeb.RecommendationMemberIdentity.resolve(workspace, user_id, source),
+         {:ok, connection} <- SalixStore.OAuth.get(binding["connection_id"]),
+         true <-
+           SalixIM.Provider.Lark.Registration.member_scopes() -- List.wrap(connection["scopes"]) ==
+             [] do
+      "ready"
+    else
+      nil -> "needs_authorization"
+      _ -> "needs_reauthorization"
+    end
+  end
+
+  defp member_connection_id(provider), do: provider <> "-member"
 
   # The initial request reserves a durable generation before the remote self
   # identity read. A later uninstall, authorization, or prepare supersedes it.
@@ -220,7 +315,8 @@ defmodule CommaWeb.PluginConnections do
              account["id"] == connection_id and account_toolkit(account) == toolkit and
                active_account?(account)
            end),
-         prior = Comma.MemberSourceConsents.binding(workspace_id, user["id"], toolkit),
+         prior =
+           Comma.MemberSourceConsents.binding(workspace_id, user["id"], toolkit, connection_id),
          {:ok, reserved} <-
            PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn attempt ->
              PluginInstallAttempts.reserve_confirmation_locked(
@@ -292,12 +388,35 @@ defmodule CommaWeb.PluginConnections do
         with true <- confirmation_active?(locked, user["id"], state),
              :ok <- lock_current_owner(user, session, workspace_id, workspace),
              true <- locked.operation_data == attempt.operation_data,
-             current = Comma.MemberSourceConsents.binding(workspace_id, user["id"], toolkit),
+             current =
+               Comma.MemberSourceConsents.binding(workspace_id, user["id"], toolkit, id),
              true <-
                (current && current["consent_revision"]) ==
                  locked.operation_data["prior_revision"],
+             # In a shared Workspace the owner's choice switches the toolkit
+             # to this account. A sole owner's accounts are all read, so the
+             # confirmation only adds this one.
              {:ok, :ok} <-
-               Comma.MemberSourceConsents.record(user, session, workspace_id, toolkit, id),
+               if(CommaWeb.MemberSourceAdoption.adopts?(workspace, user["id"], toolkit),
+                 do:
+                   Comma.MemberSourceConsents.record(
+                     user,
+                     session,
+                     workspace_id,
+                     toolkit,
+                     id,
+                     expected["subject"]
+                   ),
+                 else:
+                   Comma.MemberSourceConsents.switch(
+                     user,
+                     session,
+                     workspace_id,
+                     toolkit,
+                     id,
+                     expected["subject"]
+                   )
+               ),
              {:ok, _} <- PluginInstallAttempts.complete_locked(locked),
              :ok <-
                enqueue_recommendation_discovery(
@@ -369,24 +488,52 @@ defmodule CommaWeb.PluginConnections do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
          :ok <- require_installed(user, session, workspace_id, plugin_id),
          {:ok, definition} <- plugin_definition(workspace, plugin_id) do
-      if opts["verify_only"] == true do
-        verify_reauthorization(
-          user,
-          session,
-          workspace,
-          plugin_id,
-          definition,
-          opts["authorization_state"]
-        )
-      else
-        begin_reauthorization(
-          user,
-          session,
-          workspace,
-          plugin_id,
-          definition,
-          opts["connection_id"]
-        )
+      cond do
+        plugin_id in ["lark", "feishu"] and is_binary(opts["registration"]) and
+            match?({:ok, ^plugin_id, _, _}, unseal_member_sign_in(opts["registration"])) ->
+          {:ok, ^plugin_id, connect_id, code} = unseal_member_sign_in(opts["registration"])
+          ask_member_sign_in(user, session, workspace, plugin_id, connect_id, code)
+
+        plugin_id in ["lark", "feishu"] and opts["connection_id"] == "#{plugin_id}-im" ->
+          rescan(user, session, workspace, plugin_id, opts["registration"])
+
+        # A sign-in the app refused goes through a scan that updates the app
+        # first; asked again with that scan's registration, it is the scan.
+        plugin_id in ["lark", "feishu"] and
+          opts["connection_id"] == member_connection_id(plugin_id) and
+            is_binary(opts["registration"]) ->
+          rescan(user, session, workspace, plugin_id, opts["registration"])
+
+        plugin_id in ["lark", "feishu"] and
+            opts["connection_id"] == member_connection_id(plugin_id) ->
+          with {:ok, plugin} <- installed_plugin(user, session, workspace["id"], plugin_id) do
+            # Asked for by the member, it signs in again even when the grant
+            # looks ready here: the platform may refuse it all the same.
+            member_sign_in(user, workspace, plugin_id, plugin,
+              rescan_on_refusal: true,
+              again: true
+            )
+          end
+
+        opts["verify_only"] == true ->
+          verify_reauthorization(
+            user,
+            session,
+            workspace,
+            plugin_id,
+            definition,
+            opts["authorization_state"]
+          )
+
+        true ->
+          begin_reauthorization(
+            user,
+            session,
+            workspace,
+            plugin_id,
+            definition,
+            opts["connection_id"]
+          )
       end
     end
   end
@@ -463,12 +610,16 @@ defmodule CommaWeb.PluginConnections do
 
       case result do
         {:completed, account} ->
-          with {:ok, _identity} <-
+          with {:ok, identity} <-
                  CommaWeb.RecommendationComposioMemberSource.identify(
                    workspace,
                    account_toolkit(account),
                    account["id"]
                  ) do
+            # Provider reads happen before the lock: the consented account of
+            # the same provider identity is the one this reconnection replaces.
+            replaced = same_identity_account(user, workspace, account, identity)
+
             finish_reauthorization(
               user,
               session,
@@ -476,12 +627,22 @@ defmodule CommaWeb.PluginConnections do
               plugin_id,
               definition,
               attempt,
-              account
+              account,
+              replaced
             )
           end
 
         :completed ->
-          finish_reauthorization(user, session, workspace, plugin_id, definition, attempt, nil)
+          finish_reauthorization(
+            user,
+            session,
+            workspace,
+            plugin_id,
+            definition,
+            attempt,
+            nil,
+            nil
+          )
 
         _ ->
           with {:ok, plugin} <- installed_plugin(user, session, workspace["id"], plugin_id) do
@@ -496,18 +657,28 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
-  defp finish_reauthorization(user, session, workspace, plugin_id, definition, snapshot, account) do
+  defp finish_reauthorization(
+         user,
+         session,
+         workspace,
+         plugin_id,
+         definition,
+         snapshot,
+         account,
+         replaced
+       ) do
     result =
       PluginInstallAttempts.with_lock_rollback(workspace["id"], plugin_id, fn attempt ->
         # Read under the lock that writes the new receipt: the account it
-        # replaces is the only one this reconnection may retire.
-        replaced = replaced_account_id(user, workspace, account)
+        # replaces is the only one this reconnection may retire, and only
+        # while its receipt still exists.
+        replaced = still_consented(user, workspace, account, replaced)
 
         with true <-
                reauthorization_active?(attempt, user["id"], snapshot.authorization_state),
              true <- attempt.generation == snapshot.generation,
              :ok <- lock_current_owner(user, session, workspace["id"], workspace),
-             :ok <- record_reauthorized_account(user, session, workspace, account),
+             :ok <- record_reauthorized_account(user, session, workspace, account, replaced),
              {:ok, _} <- PluginInstallAttempts.complete_locked(attempt),
              :ok <-
                enqueue_recommendation_discovery(
@@ -535,28 +706,51 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
-  defp replaced_account_id(_user, _workspace, nil), do: nil
+  # The other consented account of the toolkit whose provider identity is the
+  # reconnected account's, or nil when the owner connected another account.
+  defp same_identity_account(user, workspace, account, %{"subject" => subject})
+       when is_map(subject) and map_size(subject) > 0 do
+    toolkit = account_toolkit(account)
 
-  defp replaced_account_id(user, workspace, account),
-    do:
-      Comma.MemberSourceConsents.connection_id(
-        workspace["id"],
-        user["id"],
-        account_toolkit(account)
+    workspace["id"]
+    |> Comma.MemberSourceConsents.toolkit_bindings(user["id"], toolkit)
+    |> Enum.map(& &1["connection_id"])
+    |> Enum.reject(&(&1 == account["id"]))
+    |> Enum.find(fn id ->
+      match?(
+        {:ok, %{"subject" => ^subject}},
+        CommaWeb.RecommendationComposioMemberSource.identify(workspace, toolkit, id)
       )
+    end)
+  end
 
-  defp record_reauthorized_account(_user, _session, _workspace, nil), do: :ok
+  defp same_identity_account(_user, _workspace, _account, _identity), do: nil
 
-  defp record_reauthorized_account(user, session, workspace, account) do
+  defp still_consented(_user, _workspace, _account, nil), do: nil
+
+  defp still_consented(user, workspace, account, replaced) do
+    if Comma.MemberSourceConsents.binding(
+         workspace["id"],
+         user["id"],
+         account_toolkit(account),
+         replaced
+       ),
+       do: replaced
+  end
+
+  defp record_reauthorized_account(_user, _session, _workspace, nil, _replaced), do: :ok
+
+  defp record_reauthorized_account(user, session, workspace, account, replaced) do
     toolkit = account_toolkit(account)
 
     if toolkit in @member_toolkits do
       with {:ok, :ok} <-
-             Comma.MemberSourceConsents.record(
+             Comma.MemberSourceConsents.replace(
                user,
                session,
                workspace["id"],
                toolkit,
+               replaced,
                account["id"]
              ),
            do: :ok
@@ -628,10 +822,20 @@ defmodule CommaWeb.PluginConnections do
   # domain fact: Comma only enables after observing that the selected data source
   # is connected (or that the plugin has no data source to authorize).
   def install(user, session, workspace_id, plugin_id, opts \\ %{}) do
-    with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id) do
-      PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn attempt ->
-        install_locked(user, session, workspace_id, plugin_id, opts, attempt)
-      end)
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      if plugin_id in ["lark", "feishu"] and is_binary(opts["registration"]) do
+        case unseal_member_sign_in(opts["registration"]) do
+          {:ok, ^plugin_id, connect_id, code} ->
+            ask_member_sign_in(user, session, workspace, plugin_id, connect_id, code)
+
+          _scan ->
+            finish_by_scan(user, session, workspace, plugin_id, opts["registration"])
+        end
+      else
+        PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn attempt ->
+          install_locked(user, session, workspace_id, plugin_id, opts, attempt)
+        end)
+      end
     end
   end
 
@@ -644,6 +848,11 @@ defmodule CommaWeb.PluginConnections do
             install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
           end
 
+        plugin_id in ["lark", "feishu"] and installed["installed"] != true ->
+          with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt) do
+            begin_scan(user, session, workspace_id, plugin_id, installed)
+          end
+
         device_client_plugin?(user, session, workspace_id, plugin_id) ->
           with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt) do
             install_on_device(user, session, workspace_id, plugin_id, opts["device_id"])
@@ -651,6 +860,9 @@ defmodule CommaWeb.PluginConnections do
 
         get_in(status, ["connection", "kind"]) == "mcp_api_key" ->
           install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
+
+        get_in(status, ["connection", "kind"]) == "stillfail_connect" ->
+          install_stillfail(user, session, workspace_id, plugin_id)
 
         installed["installed"] == true and
             (status["connection"] == nil or
@@ -700,6 +912,328 @@ defmodule CommaWeb.PluginConnections do
       end
     end
   end
+
+  # still.fail: a station of it is a computer of the Group (a device with a
+  # connector credential) whose agents take Tasks. Each install makes one and
+  # answers the line its station connects with, `comma <server> <token>`,
+  # which the member pastes into the station's connects; the token is shown
+  # this once and is never kept here.
+  defp install_stillfail(user, session, workspace_id, plugin_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id),
+         {:ok, line} <-
+           SalixEnv.StillfailDevices.connect_line(
+             workspace["default_group_id"],
+             workspace["salix_tenant_id"],
+             %{"owner_user_id" => user["id"], "workspace_id" => workspace["id"]}
+           ),
+         {:ok, installed} <- Plugins.install(user, session, workspace_id, plugin_id) do
+      {:ok,
+       installed
+       |> install_result(nil)
+       |> Map.put(
+         "configuration",
+         Map.put(PluginSetup.credential_setup(definition), "value", line)
+       )}
+    end
+  end
+
+  @registration_salt "comma/lark/registration/v1"
+  @registration_max_age_s 3_600
+
+  # Lark and Feishu: the member scans a code with Lark or Feishu, which makes
+  # a bot app in their tenant (`SalixIM.Provider.Lark.Registration`). Each install call
+  # without `registration` begins one and answers the link to show; a call
+  # with it asks once whether the app was made, and installs the plugin when
+  # it was. The app's bot is the member's own: only their messages reach the
+  # Router. The device code goes to the client sealed. A scan that connected
+  # its bot but did not get to install the plugin is finished here, not made
+  # again.
+  defp begin_scan(user, session, workspace_id, plugin_id, plugin) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, connected?} <- owner_bot?(workspace, plugin_id) do
+      if connected? do
+        with {:ok, installed} <- Plugins.install(user, session, workspace_id, plugin_id) do
+          member_sign_in(user, workspace, plugin_id, installed)
+        end
+      else
+        scan_link(plugin, plugin_id, user, [])
+      end
+    end
+  end
+
+  defp scan_link(plugin, plugin_id, user, opts) do
+    case begin_registration(plugin_id, user["name"] || "Comma", opts) do
+      {:ok, begun} ->
+        {:ok,
+         registration_result(plugin, %{
+           "state" => "waiting",
+           "url" => begun.url,
+           "intervalS" => begun.interval_s,
+           "expiresInS" => begun.expires_in_s,
+           "token" => seal_registration(begun.domain, begun.device_code)
+         })}
+
+      {:error, _reason} ->
+        {:error, :plugins_unavailable}
+    end
+  end
+
+  defp owner_bot?(workspace, plugin_id) do
+    with {:ok, connect} <- owner_connect(workspace, plugin_id), do: {:ok, connect != nil}
+  end
+
+  defp owner_connect(workspace, plugin_id) do
+    case SalixIM.ProviderConnects.list_group_im_connects(
+           workspace["default_group_id"],
+           plugin_id
+         ) do
+      {:ok, connects} -> {:ok, Enum.find(connects, &(&1["owner_only"] == true))}
+      {:error, _reason} -> {:error, :plugins_unavailable}
+    end
+  end
+
+  # Reconnecting a member's own bot whose app lacks a scope: a scan that
+  # updates the same app (`SalixIM.Provider.Lark.Registration`), asked as
+  # an install by a scan is. Its finish refreshes the connect.
+  defp rescan(user, session, workspace, plugin_id, sealed) do
+    with {:ok, plugin} <- installed_plugin(user, session, workspace["id"], plugin_id) do
+      if is_binary(sealed) do
+        ask_scan(workspace, plugin_id, plugin, sealed, fn ->
+          member_sign_in(user, workspace, plugin_id, plugin)
+        end)
+      else
+        case owner_connect(workspace, plugin_id) do
+          {:ok, %{"app_id" => app_id}} -> scan_link(plugin, plugin_id, user, app_id: app_id)
+          {:ok, nil} -> {:error, :not_found}
+          error -> error
+        end
+      end
+    end
+  end
+
+  # Runs outside the install lock: asking the platform and checking the app
+  # against every connect can outlast the database transaction the lock is,
+  # and a transaction killed there leaves a connected bot with no installed
+  # plugin. Only the install takes the lock.
+  defp finish_by_scan(user, session, workspace, plugin_id, sealed) do
+    with {:ok, plugin} <- installed_plugin(user, session, workspace["id"], plugin_id) do
+      if plugin["installed"] == true,
+        do: {:ok, install_result(plugin, nil)},
+        else:
+          ask_scan(workspace, plugin_id, plugin, sealed, fn ->
+            install_scanned(user, session, workspace["id"], plugin_id)
+          end)
+    end
+  end
+
+  defp install_scanned(user, session, workspace_id, plugin_id) do
+    with {:ok, %{"plugin" => installed}} <-
+           PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn attempt ->
+             with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt),
+                  {:ok, installed} <- Plugins.install(user, session, workspace_id, plugin_id) do
+               {:ok, install_result(installed, nil)}
+             end
+           end),
+         {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
+      member_sign_in(user, workspace, plugin_id, installed)
+    end
+  end
+
+  @member_salt "comma/lark/member-sign-in/v1"
+
+  # After the scan that made the member's bot, the same dialog asks for their
+  # own sign-in with that app: a device code they confirm in Lark or Feishu
+  # (`SalixWeb.OAuthFlow.begin_member_device/4`), sent as a registration of
+  # step `member`. Their Routine reads with it. The plugin is installed
+  # already; a sign-in left unconfirmed only leaves Lark or Feishu out of the
+  # Routine. Only the Workspace owner signs in: the Routine reads for them.
+  # With `rescan_on_refusal`, an app made before it asked for the user scopes
+  # is updated by a new scan first, which then asks for the sign-in.
+  defp member_sign_in(user, workspace, plugin_id, plugin, opts \\ []) do
+    with true <- workspace["owner_user_id"] == user["id"],
+         true <-
+           opts[:again] == true or
+             member_sign_in_state(workspace, user["id"], plugin_id) != "ready",
+         {:ok, %{"connect_id" => connect_id} = connect} <- owner_connect(workspace, plugin_id) do
+      case SalixWeb.OAuthFlow.begin_member_device(
+             workspace["salix_tenant_id"],
+             plugin_id,
+             SalixIM.Provider.Lark.Registration.member_scopes(),
+             member_app_source(workspace, connect_id)
+           ) do
+        {:ok, begun} ->
+          {:ok,
+           registration_result(plugin, %{
+             "state" => "waiting",
+             "step" => "member",
+             "url" => begun.url,
+             "intervalS" => begun.interval_s,
+             "expiresInS" => begun.expires_in_s,
+             "token" => seal_member_sign_in(plugin_id, connect_id, begun.device_code)
+           })}
+
+        {:error, reason} ->
+          if match?({:device_refused, _}, reason) and opts[:rescan_on_refusal] do
+            scan_link(plugin, plugin_id, user, app_id: connect["app_id"])
+          else
+            Logger.warning("#{plugin_id} member sign-in not begun: #{inspect(reason)}")
+            {:ok, install_result(plugin, nil)}
+          end
+      end
+    else
+      _not_asked -> {:ok, install_result(plugin, nil)}
+    end
+  end
+
+  defp ask_member_sign_in(user, session, workspace, plugin_id, connect_id, code) do
+    with {:ok, plugin} <- installed_plugin(user, session, workspace["id"], plugin_id),
+         true <- workspace["owner_user_id"] == user["id"] || {:error, :not_found} do
+      answer =
+        SalixWeb.OAuthFlow.poll_member_device(
+          workspace["salix_tenant_id"],
+          workspace["default_group_id"],
+          plugin_id,
+          code,
+          member_app_source(workspace, connect_id),
+          %{"user_id" => user["id"], "workspace_id" => workspace["id"]},
+          CommaWeb.RecommendationPreviewCatalog.binding_alias(plugin_id)
+        )
+
+      case answer do
+        # The Routine finds the new source by its discovery, as after an install.
+        {:ok, _completion} ->
+          with :ok <- enqueue_recommendation_discovery(user, workspace["id"]),
+               do: {:ok, install_result(plugin, nil)}
+
+        kind when kind in [:pending, :slow_down] ->
+          {:ok,
+           registration_result(plugin, %{
+             "state" => "waiting",
+             "step" => "member",
+             "slowDown" => kind == :slow_down,
+             "token" => seal_member_sign_in(plugin_id, connect_id, code)
+           })}
+
+        {:error, state} when state in [:denied, :expired] ->
+          {:ok,
+           registration_result(plugin, %{"state" => Atom.to_string(state), "step" => "member"})}
+
+        {:error, reason} ->
+          Logger.warning("#{plugin_id} member sign-in failed: #{inspect(reason)}")
+
+          {:ok,
+           registration_result(plugin, %{
+             "state" => "failed",
+             "step" => "member",
+             "error" => member_sign_in_error(reason)
+           })}
+      end
+    end
+  end
+
+  defp member_sign_in_error({:device_refused, code}), do: code
+  defp member_sign_in_error({_kind, message}) when is_binary(message), do: message
+  defp member_sign_in_error(message) when is_binary(message), do: message
+
+  defp member_app_source(workspace, connect_id),
+    do: %{
+      "kind" => "lark_im_connect",
+      "group_id" => workspace["default_group_id"],
+      "connect_id" => connect_id
+    }
+
+  defp seal_member_sign_in(plugin_id, connect_id, code),
+    do: Plug.Crypto.encrypt(registration_secret(), @member_salt, [plugin_id, connect_id, code])
+
+  defp unseal_member_sign_in(sealed) when is_binary(sealed) do
+    case Plug.Crypto.decrypt(registration_secret(), @member_salt, sealed,
+           max_age: @registration_max_age_s
+         ) do
+      {:ok, [plugin_id, connect_id, code]}
+      when is_binary(plugin_id) and is_binary(connect_id) and is_binary(code) ->
+        {:ok, plugin_id, connect_id, code}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp ask_scan(workspace, plugin_id, plugin, sealed, connected) do
+    with {:ok, domain, code} <- unseal_registration(sealed),
+         answer =
+           finish_registration(
+             plugin_id,
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             domain,
+             code,
+             owner: true
+           ) do
+      case answer do
+        {:ok, _connect} ->
+          connected.()
+
+        {kind, next} when kind in [:pending, :slow_down] ->
+          {:ok,
+           registration_result(plugin, %{
+             "state" => "waiting",
+             "slowDown" => kind == :slow_down,
+             "token" => seal_registration(next, code)
+           })}
+
+        {:error, :denied} ->
+          {:ok, registration_result(plugin, %{"state" => "denied"})}
+
+        {:error, :expired} ->
+          {:ok, registration_result(plugin, %{"state" => "expired"})}
+
+        {:error, reason} when is_binary(reason) ->
+          {:ok, registration_result(plugin, %{"state" => "failed", "error" => reason})}
+
+        {:error, {:bad_request, reason}} ->
+          {:ok, registration_result(plugin, %{"state" => "failed", "error" => reason})}
+
+        {:error, _reason} ->
+          {:error, :plugins_unavailable}
+      end
+    else
+      :error -> {:ok, registration_result(plugin, %{"state" => "expired"})}
+    end
+  end
+
+  defp begin_registration("feishu", name, opts),
+    do: SalixIM.ProviderConnects.begin_feishu_registration(name, opts)
+
+  defp begin_registration("lark", name, opts),
+    do: SalixIM.ProviderConnects.begin_lark_registration(name, opts)
+
+  defp finish_registration("feishu", tenant_id, group_id, domain, code, opts),
+    do:
+      SalixIM.ProviderConnects.finish_feishu_registration(tenant_id, group_id, domain, code, opts)
+
+  defp finish_registration("lark", tenant_id, group_id, domain, code, opts),
+    do: SalixIM.ProviderConnects.finish_lark_registration(tenant_id, group_id, domain, code, opts)
+
+  defp registration_result(plugin, registration),
+    do: plugin |> install_result(nil) |> Map.put("registration", registration)
+
+  defp seal_registration(domain, code),
+    do: Plug.Crypto.encrypt(registration_secret(), @registration_salt, [domain, code])
+
+  defp unseal_registration(sealed) when is_binary(sealed) do
+    case Plug.Crypto.decrypt(registration_secret(), @registration_salt, sealed,
+           max_age: @registration_max_age_s
+         ) do
+      {:ok, [domain, code]} when is_binary(domain) and is_binary(code) -> {:ok, domain, code}
+      _ -> :error
+    end
+  end
+
+  defp unseal_registration(_sealed), do: :error
+
+  defp registration_secret,
+    do: Keyword.fetch!(SystemsRuntime.get_env(:comma_core, :auth, []), :secret)
 
   defp verify_install_attempt(
          user,
@@ -865,8 +1399,28 @@ defmodule CommaWeb.PluginConnections do
   # are active. Google's Gmail-first order keeps already-active googlecalendar
   # accounts out of that fallback. Preserve this ordering: Meet pins those
   # accounts by id.
-  defp retire_superseded_composio_accounts(workspace, definition, completed_id),
-    do: retire_composio_accounts(workspace, definition, completed_id, fn _account -> true end)
+  # An installation replaces the older connections of the same provider
+  # account. Another account of the toolkit, such as a second mailbox, is its
+  # own member source and stays.
+  defp retire_superseded_composio_accounts(workspace, definition, completed_id) do
+    retire_composio_accounts(workspace, definition, completed_id, fn account ->
+      toolkit = account_toolkit(account)
+
+      if toolkit in @member_toolkits do
+        subject = provider_subject(workspace, toolkit, completed_id)
+        subject != nil and provider_subject(workspace, toolkit, account["id"]) == subject
+      else
+        true
+      end
+    end)
+  end
+
+  defp provider_subject(workspace, toolkit, id) do
+    case CommaWeb.RecommendationComposioMemberSource.identify(workspace, toolkit, id) do
+      {:ok, %{"subject" => subject}} when is_map(subject) and map_size(subject) > 0 -> subject
+      _ -> nil
+    end
+  end
 
   # Reconnecting a personal source replaces the one account its receipt named.
   # The toolkit's other active accounts can serve meeting detection (several
@@ -901,7 +1455,8 @@ defmodule CommaWeb.PluginConnections do
           |> Enum.each(fn account ->
             case Salix.Composio.delete_group_connected_account(tenant_id, group_id, account["id"]) do
               :ok ->
-                :ok
+                # A retired connection no longer authorizes its items.
+                Comma.MemberSourceConsents.forget_connection(workspace["id"], account["id"])
 
               {:error, reason} ->
                 Logger.warning(
@@ -1079,6 +1634,77 @@ defmodule CommaWeb.PluginConnections do
           {:ok, plugin}
         end
       end)
+    end
+  end
+
+  @doc """
+  The still.fail stations the still.fail plugin connected (one each time it
+  was installed and its line pasted into a station's connects): id, name,
+  whether connected now, when last connected.
+  """
+  def stillfail_stations(user, session, workspace_id, plugin_id) do
+    with {:ok, workspace} <- stillfail_workspace(user, session, workspace_id, plugin_id),
+         {:ok, stations} <- SalixEnv.StillfailDevices.list(workspace["default_group_id"]) do
+      {:ok, %{"stations" => stations}}
+    end
+  end
+
+  @doc """
+  Disconnects one still.fail station: its device and credential go, the
+  plugin and the Workspace's other stations stay. Answers those left.
+  """
+  def disconnect_stillfail_station(user, session, workspace_id, plugin_id, device_id) do
+    with {:ok, workspace} <- stillfail_workspace(user, session, workspace_id, plugin_id),
+         :ok <- SalixEnv.StillfailDevices.remove(workspace["default_group_id"], device_id) do
+      stillfail_stations(user, session, workspace_id, plugin_id)
+    end
+  end
+
+  defp stillfail_workspace(user, session, workspace_id, plugin_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- require_installed(user, session, workspace_id, plugin_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id) do
+      if Enum.any?(
+           get_in(definition, ["setup", "connections"]) || [],
+           &(&1["kind"] == "stillfail_connect")
+         ),
+         do: {:ok, workspace},
+         else: {:error, :not_found}
+    end
+  end
+
+  @doc "An installed plugin's tool groups, each with whether the workspace has it on."
+  def tool_groups(user, session, workspace_id, plugin_id) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- require_installed(user, session, workspace_id, plugin_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id),
+         {:ok, groups} <-
+           PluginSetup.tool_groups(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             definition
+           ) do
+      {:ok, %{"pluginId" => plugin_id, "groups" => groups}}
+    end
+  end
+
+  @doc """
+  Turns one tool group of an installed plugin on or off for the workspace. One
+  change at a time per plugin; the MCP's tools are then discovered again.
+  """
+  def set_tool_group(user, session, workspace_id, plugin_id, tool_group, enabled) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         :ok <- require_installed(user, session, workspace_id, plugin_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id),
+         tenant_id = workspace["salix_tenant_id"],
+         group_id = workspace["default_group_id"],
+         {:ok, binding_id} <-
+           PluginInstallAttempts.with_lock(workspace_id, plugin_id, fn _attempt ->
+             PluginSetup.set_tool_group(tenant_id, group_id, definition, tool_group, enabled)
+           end) do
+      # A failed discovery is the binding's own status; the choice is kept.
+      _ = SalixMCP.Gateway.refresh_binding(tenant_id, group_id, binding_id)
+      tool_groups(user, session, workspace_id, plugin_id)
     end
   end
 
@@ -1318,9 +1944,11 @@ defmodule CommaWeb.PluginConnections do
   defp disconnect_plugin_connections(workspace, definition) do
     connections = get_in(definition, ["setup", "connections"]) |> List.wrap()
 
-    with :ok <- disconnect_composio_connections(workspace, connections),
+    with :ok <- disconnect_lark_connects(workspace, definition),
+         :ok <- disconnect_composio_connections(workspace, connections),
          :ok <- disconnect_managed_oauth_connections(workspace, connections),
          :ok <- disconnect_api_key_connections(workspace, definition, connections),
+         :ok <- disconnect_stillfail(workspace, connections),
          :ok <- disconnect_device_client_connections(workspace, definition, connections),
          :ok <- disconnect_native_mcp_connections(workspace, definition, connections) do
       # A disconnected grant keeps no pooled member items: Composio accounts by
@@ -1334,11 +1962,83 @@ defmodule CommaWeb.PluginConnections do
           %{"kind" => "managed_oauth", "provider" => provider} when is_binary(provider) ->
             [provider]
 
+          # The member's own Lark or Feishu sign-in goes with its bot.
+          %{"kind" => "im_connect", "provider" => provider} when provider in ~w(lark feishu) ->
+            [provider]
+
           _ ->
             []
         end)
       )
     end
+  end
+
+  # Removing Lark or Feishu retires the bots its scans connected to the
+  # Workspace. The apps stay in the member's tenant for them to delete there.
+  # A scanned Feishu connect owns its App Secret; one made before that kept it
+  # as the Workspace's tenant Feishu app, which goes with its connect.
+  defp disconnect_lark_connects(workspace, %{"plugin_id" => provider})
+       when provider in ["lark", "feishu"] do
+    with {:ok, connects} <-
+           SalixIM.ProviderConnects.list_group_im_connects(
+             workspace["default_group_id"],
+             provider
+           ),
+         :ok <- retire_connects(workspace, connects),
+         :ok <- delete_member_sign_ins(workspace, provider) do
+      if provider == "feishu",
+        do: delete_scanned_tenant_app(workspace["salix_tenant_id"], connects),
+        else: :ok
+    end
+  end
+
+  defp disconnect_lark_connects(_workspace, _definition), do: :ok
+
+  # The member's sign-in made with the bot's app ends with the app's connect.
+  defp delete_member_sign_ins(workspace, provider) do
+    alias_name = CommaWeb.RecommendationPreviewCatalog.binding_alias(provider)
+
+    workspace["default_group_id"]
+    |> OAuthBindings.list()
+    |> Enum.filter(&(&1["provider"] == provider and &1["alias"] == alias_name))
+    |> Enum.reduce_while(:ok, fn binding, :ok ->
+      case SalixWeb.OAuthFlow.delete_binding(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             binding["binding_id"]
+           ) do
+        result when result in [:ok, {:error, :not_found}] -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, :plugins_unavailable}}
+      end
+    end)
+  end
+
+  defp delete_scanned_tenant_app(tenant_id, connects) do
+    app_ids = Enum.map(connects, & &1["app_id"])
+
+    case SalixIM.Ports.ProviderAppStore.get_feishu_tenant_app(tenant_id) do
+      {:ok, %{"app_id" => app_id}} when is_binary(app_id) ->
+        if app_id in app_ids,
+          do: SalixIM.Ports.ProviderAppStore.delete_feishu_tenant_app(tenant_id),
+          else: :ok
+
+      _none ->
+        :ok
+    end
+  end
+
+  defp retire_connects(workspace, connects) do
+    Enum.reduce_while(connects, :ok, fn connect, :ok ->
+      case SalixIM.ProviderConnects.delete_im_connect(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             connect["connect_id"]
+           ) do
+        result when result in [:ok, {:error, :not_found}] -> {:cont, :ok}
+        {:ok, _retired} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   # Removing a device_client plugin disconnects the Mac: its binding goes. The
@@ -1372,6 +2072,14 @@ defmodule CommaWeb.PluginConnections do
           {:cont, :ok}
       end
     end)
+  end
+
+  # Uninstalling still.fail removes the Group's still.fail stations (the
+  # devices its installs made), and with them their credentials.
+  defp disconnect_stillfail(workspace, connections) do
+    if Enum.any?(connections, &(&1["kind"] == "stillfail_connect")),
+      do: SalixEnv.StillfailDevices.remove_all(workspace["default_group_id"]),
+      else: :ok
   end
 
   defp disconnect_api_key_connections(workspace, definition, connections) do
@@ -1666,6 +2374,18 @@ defmodule CommaWeb.PluginConnections do
 
   defp preferred_connection(%{"plugin_id" => "x-twitter"} = definition, _group_id),
     do: {:ok, Enum.find(get_in(definition, ["setup", "connections"]), &(&1["id"] == "x-api-key"))}
+
+  # A plugin whose default connection is a user key connects with that key.
+  defp preferred_connection(%{"setup" => %{"default_connection" => id} = setup}, _group_id)
+       when is_binary(id) and id != "" do
+    case Enum.find(setup["connections"] || [], &(&1["id"] == id)) do
+      %{"kind" => kind} = connection when kind in ~w(mcp_api_key stillfail_connect) ->
+        {:ok, connection}
+
+      _other ->
+        preferred_connection(%{"setup" => setup})
+    end
+  end
 
   defp preferred_connection(definition, _group_id), do: preferred_connection(definition)
 

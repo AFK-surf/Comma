@@ -8,18 +8,23 @@ defmodule SalixAgent.Release do
   """
 
   @spec backfill_session_work(keyword()) :: map()
-  def backfill_session_work(opts \\ []) do
-    unless Keyword.get(opts, :confirm_no_writers, false) do
-      raise "refusing Session work backfill without confirm_no_writers: true"
-    end
+  # Published release migrations retain this call. The retired discovery
+  # projection has no writer and this no-op does not mint a completion marker.
+  def backfill_session_work(_opts \\ []), do: %{retired: true}
 
-    ensure_started = Keyword.get(opts, :ensure_started, &Application.ensure_all_started/1)
-    {:ok, _} = ensure_started.(:salix_store)
+  @doc "Inspect one bounded S source page. No import progress or data is written."
+  def inventory_pg_authority(cursor \\ nil, opts \\ []) do
+    SalixStore.PGAuthorityImport.with_dependencies(fn ->
+      SalixAgent.PGImport.inventory(cursor, opts)
+    end)
+  end
 
-    case SalixAgent.SessionWorkBackfill.run(opts) do
-      {:ok, result} -> result
-      {:error, reason} -> raise "Session work backfill failed: #{inspect(reason)}"
-    end
+  @doc "Import bounded S pages after the release runner has stopped all old S writers."
+  def import_pg_authority(opts \\ []) do
+    unless Keyword.get(opts, :confirm_no_writers, false),
+      do: raise(ArgumentError, "PG authority import requires confirm_no_writers: true")
+
+    SalixStore.PGAuthorityImport.with_dependencies(fn -> SalixAgent.PGImport.run(opts) end)
   end
 
   @doc "Print a complete system prompt built from the offline emulated configuration."

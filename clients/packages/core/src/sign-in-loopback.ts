@@ -7,6 +7,7 @@
 //
 // Bounds: one sign-in of each kind at a time per device; a subscription waits 15 minutes for the browser, TokenDance
 // 10; one request per step (begin, finish; TokenDance: the key's exchange, the model list, the profile).
+import { lazySchema } from "@comma/chat-contract";
 import { CoreError, fromUtf8, utf8 } from "@comma/core-kernel";
 import { Effect, Option, Semaphore, Stream, type Scope } from "effect";
 import { z } from "zod";
@@ -35,18 +36,20 @@ const subscriptionCallbacks = {
   claude: { port: 54545, path: "/callback", origin: "https://claude.ai" },
 } as const;
 
-const keySchema = z.object({ key: z.string().min(1).max(8192) });
+const keySchema = lazySchema(() => z.object({ key: z.string().min(1).max(8192) }));
 /** The models TokenDance's gateway lists, with the protocols each speaks. */
-const listedSchema = z.object({
-  data: z
-    .array(
-      z.object({
-        id: z.string(),
-        supported_protocols: z.array(z.string()).optional(),
-      })
-    )
-    .max(1000),
-});
+const listedSchema = lazySchema(() =>
+  z.object({
+    data: z
+      .array(
+        z.object({
+          id: z.string(),
+          supported_protocols: z.array(z.string()).optional(),
+        })
+      )
+      .max(1000),
+  })
+);
 
 const failed = (code: string, message: string) => () => new CoreError(code, message);
 

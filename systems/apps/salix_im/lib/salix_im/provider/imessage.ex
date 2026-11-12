@@ -2,7 +2,7 @@ defmodule SalixIM.Provider.IMessage do
   @moduledoc """
   Private iMessage operations scoped to the immutable Comma-managed DM.
   The connect's `runtime_mode` selects the transport: the Willow relay
-  (`product_relay`) or Photon shared lines (`photon`).
+  (`product_relay`) or Photon lines (`photon`).
   """
 
   alias SalixIM.{IMessageRelay, PhotonIMessage, ProviderConnects, ProviderRecipientIdentity}
@@ -153,8 +153,52 @@ defmodule SalixIM.Provider.IMessage do
     end
   end
 
+  defp send_message(agent_id, connect, "imessage.send_file", params, parent_id) do
+    case transport(connect) do
+      "photon" ->
+        with {:ok, file} <- read_file(agent_id, params["path"]) do
+          PhotonIMessage.send_file(
+            connect["bot_user_id"],
+            connect["managed_chat_id"],
+            file,
+            params["caption"] || "",
+            parent_id
+          )
+        end
+
+      "relay" ->
+        {:error,
+         "This iMessage connection can send only text and images. Nothing was sent. " <>
+           "Send an image with imessage.send_image, or send a link to the file."}
+    end
+  end
+
   defp send_message(_agent_id, _connect, _api, _params, _parent_id),
     do: {:error, "Unsupported iMessage operation or invalid message"}
+
+  # The size comes from the workspace before any byte is read, so an oversized
+  # file is refused without an upload.
+  defp read_file(agent_id, path) do
+    path = Util.str(path)
+
+    if path == "" do
+      {:error, "path is required"}
+    else
+      case SalixIM.Ports.AgentWorkspace.read_stream(agent_id, path) do
+        {:ok, stream, size, filename} when is_integer(size) and filename not in ["", ".", "/"] ->
+          {:ok, %{stream: stream, size: size, filename: filename}}
+
+        {:ok, _stream, _size, _filename} ->
+          {:error, "path must point to a file"}
+
+        {:error, reason} when is_binary(reason) ->
+          {:error, reason}
+
+        _other ->
+          {:error, "file not found in agent-visible files: #{path}"}
+      end
+    end
+  end
 
   def inbound(connect, %{"message" => message} = event) do
     with {:ok, current} <-
@@ -184,15 +228,17 @@ defmodule SalixIM.Provider.IMessage do
           current
         )
 
+      files = attachments(current, message)
+
       # The Session actor owns permanent input dedupe. A relay replay carries
       # exactly the same stable source id, including after receiver restart.
       ProviderConnects.enqueue_group_router_im_provider_message(
         current["group_id"],
-        content(current, message),
+        content(current, message, files),
         metadata,
         "im_provider:imessage:#{current["connect_id"]}:#{message["receipt_id"] || message["message_id"]}",
         trusted_source_text: message["text"] || "",
-        attachments: attachments(current, message)
+        attachments: files
       )
     else
       false -> {:error, :imessage_link_inconsistent}
@@ -209,8 +255,8 @@ defmodule SalixIM.Provider.IMessage do
 
   # Resolve a supplied parent only within the bound Space. Photon can omit
   # the parent of a native reply. Do not replace it with a recent Message.
-  defp content(connect, message) do
-    body = message["text"] || "[iMessage image]"
+  defp content(connect, message, files) do
+    body = message["text"] || placeholder(files)
 
     case quote_line(connect, message["reply_to_message_id"]) do
       nil ->
@@ -222,6 +268,20 @@ defmodule SalixIM.Provider.IMessage do
         line <> "\n" <> body
     end
   end
+
+  # A Message without text names the kind of its attachments.
+  defp placeholder(files) do
+    case files |> Enum.map(&kind(&1["mime"])) |> Enum.uniq() do
+      [kind] -> "[iMessage #{kind}]"
+      [] -> "[iMessage attachment]"
+      _kinds -> "[iMessage attachments]"
+    end
+  end
+
+  defp kind("image/" <> _), do: "image"
+  defp kind("video/" <> _), do: "video"
+  defp kind("audio/" <> _), do: "audio"
+  defp kind(_mime), do: "attachment"
 
   defp quote_line(%{"runtime_mode" => "photon"} = connect, id) when is_binary(id) and id != "" do
     chat = connect["managed_chat_id"]
@@ -254,6 +314,8 @@ defmodule SalixIM.Provider.IMessage do
 
   defp quote_line(_connect, _id), do: nil
 
+  # Photon delivers images, videos, audio (voice memos too) and documents.
+  # The relay delivers only images.
   defp attachments(connect, message) do
     message
     |> Map.get("attachments", [])
@@ -261,14 +323,14 @@ defmodule SalixIM.Provider.IMessage do
     |> Enum.take(10)
     |> Enum.flat_map(&attachment_metadata(connect, &1))
     |> Enum.filter(fn
-      %{"attachment_id" => id, "content_type" => "image/" <> _} when is_binary(id) and id != "" ->
-        true
+      %{"attachment_id" => id, "content_type" => type} when is_binary(id) and id != "" ->
+        accepted_type?(connect, type)
 
       _ ->
         false
     end)
     |> Enum.map(fn file ->
-      name = file["name"] || "image"
+      name = file["name"] || default_name(file["content_type"])
 
       safe_name =
         name
@@ -285,9 +347,22 @@ defmodule SalixIM.Provider.IMessage do
         "file_name" => safe_name,
         "mime" => file["content_type"],
         "size" => file["size"],
-        "to_blob" => fn agent_id -> download_image(connect, agent_id, file["attachment_id"]) end
+        "to_blob" => fn agent_id -> download(connect, agent_id, file) end
       }
     end)
+  end
+
+  defp accepted_type?(connect, type) when is_binary(type) do
+    transport(connect) == "photon" or String.starts_with?(type, "image/")
+  end
+
+  defp accepted_type?(_connect, _type), do: false
+
+  defp default_name(type) do
+    case PhotonIMessage.extension(type) do
+      nil -> kind(type)
+      ext -> kind(type) <> "." <> ext
+    end
   end
 
   # A Photon event names only the attachment ID. Its type and name come from
@@ -305,10 +380,19 @@ defmodule SalixIM.Provider.IMessage do
   defp attachment_metadata(_connect, file) when is_map(file), do: [file]
   defp attachment_metadata(_connect, _file), do: []
 
-  defp download_image(connect, agent_id, attachment_id) do
+  # A file whose known size exceeds the cap is not downloaded. The stage
+  # failure tells the Agent that the attachment was too large.
+  defp download(connect, agent_id, %{"attachment_id" => attachment_id} = file) do
     case transport(connect) do
-      "photon" -> PhotonIMessage.download_image(agent_id, attachment_id)
-      "relay" -> IMessageRelay.download_image(agent_id, attachment_id)
+      "photon" ->
+        max = PhotonIMessage.max_file_bytes()
+
+        if is_integer(file["size"]) and file["size"] > max,
+          do: {:error, {:size_limit, file["size"], max}},
+          else: PhotonIMessage.download_attachment(agent_id, attachment_id, max)
+
+      "relay" ->
+        IMessageRelay.download_image(agent_id, attachment_id)
     end
   end
 end

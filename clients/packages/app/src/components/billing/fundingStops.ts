@@ -134,6 +134,18 @@ export function fundingStopActions(
         : messages.settings_models_title(undefined, { locale }),
     run: () => openFundingSettings("models", detail?.profileId),
   };
+  // A plan at its limit with credits its owner has not let it spend: letting
+  // it is the fix at hand, on the plan's own page.
+  if (kind === "subscription" && detail?.credits && detail.profileId) {
+    const profile = detail.profileId;
+    return [
+      {
+        label: messages.billing_use_credits(undefined, { locale }),
+        run: () => openFundingSettings("models", profile),
+      },
+      models,
+    ];
+  }
   const provider = fundingSourceName(detail?.source);
   const billingUrl =
     kind === "provider" ? fundingBillingUrl(detail?.source) : undefined;
@@ -206,16 +218,18 @@ export function stopNotice(
       actions,
     };
   }
+  const time = detail?.resetAt ? formatFundingReset(detail.resetAt, locale) : undefined;
   return {
     title: provider
       ? messages.billing_subscription_limit_title_source({ provider }, { locale })
       : messages.billing_subscription_limit_title(undefined, { locale }),
-    detail: detail?.resetAt
-      ? messages.billing_subscription_limit_detail_reset(
-          { time: formatFundingReset(detail.resetAt, locale) },
-          { locale }
-        )
-      : messages.billing_subscription_limit_detail(undefined, { locale }),
+    detail: detail?.credits
+      ? time
+        ? messages.billing_subscription_limit_credits_reset({ time }, { locale })
+        : messages.billing_subscription_limit_credits(undefined, { locale })
+      : time
+        ? messages.billing_subscription_limit_detail_reset({ time }, { locale })
+        : messages.billing_subscription_limit_detail(undefined, { locale }),
     actions,
   };
 }

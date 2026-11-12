@@ -46,6 +46,34 @@ defmodule BillingCore.ChargesTest do
     assert length(same_state.credit_ledger) == 1
   end
 
+  test "a grant with resource kinds pays only for those kinds" do
+    state =
+      State.new(
+        pricing_catalog: [%{provider: "openai", sku: "tokens", credits_per_unit: 10}],
+        grants: [
+          %{
+            id: "grant_1",
+            billing_account_id: "acct_1",
+            remaining_credits: 100,
+            expires_at: ~U[2026-06-18 00:00:00Z],
+            policy_snapshot: %{
+              "usage_credits" => %{"mode" => "metered", "resource_kinds" => ["vm", "storage"]}
+            }
+          }
+        ]
+      )
+
+    assert {:ok, llm, state} = Charges.charge_meter_event(event(state, resource_kind: :llm))
+    assert llm.status == :grace and llm.grant_debits == [] and llm.balance_after == 0
+    assert [%{remaining_credits: 100}] = state.grants
+
+    assert {:ok, vm, state} =
+             Charges.charge_meter_event(event(state, resource_kind: :vm, source_key: "usage_2"))
+
+    assert vm.status == :charged and vm.balance_after == 90
+    assert [%{remaining_credits: 90}] = state.grants
+  end
+
   test "consumes grants before balance" do
     state =
       State.new(

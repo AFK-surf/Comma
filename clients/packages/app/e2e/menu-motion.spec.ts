@@ -338,7 +338,8 @@ test("submenu motion preserves targets and keyboard return focus", async ({
   const parentBox = await parent.boundingBox();
   const childBox = await child.boundingBox();
   expect(childBox!.x).toBeGreaterThanOrEqual(parentBox!.x + parentBox!.width);
-  const surface = child.locator("..");
+  // The submenu's popover surface, outside the scroll area it wraps the menu in.
+  const surface = child.locator('xpath=ancestor::*[@data-slot="menu-popover"][1]');
   const motion = await surface.evaluate((element) => {
     const style = getComputedStyle(element);
     return {

@@ -32,10 +32,7 @@ export class ChatPublisher {
   }
 
   state(): ChatRuntimeSnapshot {
-    const sessions = this.#current().flatMap(([key, entry]) => {
-      const session = projectEntry(key, entry);
-      return session ? [session] : [];
-    });
+    const sessions = this.#current().map(([key, entry]) => projectEntry(key, entry));
     return {
       protocolVersion: chatProtocolVersion,
       revision: this.#revision,

@@ -1,9 +1,9 @@
-/** Provider groups in the Add profile grid, most used first. */
+/** Provider groups in the Add profile grid, local and custom first. */
 export const presetGroups = [
+  "local",
   "labs",
   "china",
   "gateways",
   "cloud",
   "inference",
-  "local",
 ] as const;

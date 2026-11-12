@@ -8,7 +8,7 @@ import { webBaseURL } from "./e2e/p0/smoke-env";
 // accessory activation policy while retaining a real, painted native window.
 process.env.COMMA_ELECTRON_E2E_BACKGROUND_WINDOWS ??= "1";
 
-// Most Electron E2E scenarios do not need a real salix-connect child. Keep
+// Most Electron E2E scenarios do not need a real station child. Keep
 // that fixture choice explicit and independently overridable by tests that
 // exercise production Connector supervision.
 process.env.COMMA_ELECTRON_E2E_CONNECTOR_MODE ??= "static";

@@ -32,7 +32,11 @@ export {
   ChatPanelVideoSurfaceProvider,
 } from "./ChatPanelVideoPictureInPicture";
 export type { ChatPanelVideoSurface } from "./ChatPanelVideoPictureInPicture";
-export { ChatPanelFileOpenInMenu } from "./ChatPanelFileOpenInMenu";
+export {
+  ChatPanelFileApplicationItems,
+  ChatPanelFileOpenInMenu,
+  useChatPanelFileOpenIn,
+} from "./ChatPanelFileOpenInMenu";
 export { useChatPanelMediaDownloadController } from "./ChatPanelMediaDownloadControl";
 export type {
   ChatPanelAudioProps,

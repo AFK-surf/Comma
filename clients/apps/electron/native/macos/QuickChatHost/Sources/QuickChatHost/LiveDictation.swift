@@ -190,10 +190,13 @@ final class LiveDictation: TranscriptSource {
         guard !cancelled, live != .off else { return }
         switch event {
         case let .partial(segment, words), let .final(segment, words):
-            // Live words came: what the recording kept meanwhile is not needed.
+            // Live dictation answered: what the recording kept meanwhile is not needed.
             live = .on
+            let shown = text
             segments[segment] = words
-            onText?(text)
+            // A segment the server heard no words in (noise) is no new text,
+            // so it does not start the wait for words over.
+            if text != shown { onText?(text) }
         case .done:
             resumeSettled()
         case .unavailable:

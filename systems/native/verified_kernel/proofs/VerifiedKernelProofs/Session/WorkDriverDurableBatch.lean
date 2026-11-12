@@ -65,7 +65,7 @@ theorem issued_write_preserves {cursor : PendingRevision.Cursor}
     ∃ etag snapshot bytes,
       confirmed = .tuple [a "session_command_driver_confirmed", (Revision.Cursor.committed stamped etag).pack, continuation] ∧
       (.tuple [a "cas", requestedKey, requestedBytes, requestedBase] : Term) =
-        .tuple [a "cas", key, .binary bytes, cursor.etag] ∧
+        .tuple [a "cas", key, .binary bytes, cursor.revision] ∧
       durable key etag snapshot ∧ QueueReady snapshot ∧ snapshot.get (a "storage_format") = i 3 ∧
       ∀ sealed item, ValueSemantics.Represented cursor.working sealed item →
         ValueSemantics.Represented snapshot sealed item := by

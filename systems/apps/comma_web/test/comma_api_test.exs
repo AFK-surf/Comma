@@ -146,7 +146,7 @@ defmodule CommaWeb.CommaApiTest do
 
     ensure_fake_s3!()
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
 
     prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
     prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
@@ -264,13 +264,19 @@ defmodule CommaWeb.CommaApiTest do
             "created_at" => 1000 + id
           }
 
-    # Fixture writes use the same explicit owner registration as the Session
-    # storage suite; the read-only HTTP path never activates the agent loop.
+    # The stream routes to a passive Agent owner. Pin the fixture writer to
+    # that claim before opening the stream, without starting the agent loop.
+    assert {:ok, _} =
+             SalixAgent.Fleet.ensure_started(agent_id, create: false, startup_mode: :passive)
+
+    :ok = SalixAgent.Fleet.await_ownership_installed(agent_id)
+    assert {:ok, epoch} = SalixAgent.OwnershipCell.fetch(agent_id)
+
     assert {:ok, _} =
              Registry.register(
                SalixAgent.Registry,
                SalixAgent.InternalSessionActor.key(agent_id, sid),
-               nil
+               %{runtime_epoch: epoch}
              )
 
     path =
@@ -1119,10 +1125,6 @@ defmodule CommaWeb.CommaApiTest do
 
     on_exit(fn -> SystemsRuntime.delete_env(:comma_web, :task_search_test_pid) end)
 
-    eventually(fn ->
-      if SalixIM.ConversationSearchEnqueuer.pending_count() == 0, do: true
-    end)
-
     reset_search_projection!()
 
     user =
@@ -1186,11 +1188,7 @@ defmodule CommaWeb.CommaApiTest do
                }
              )
 
-    eventually(fn ->
-      if SalixIM.ConversationSearchEnqueuer.pending_count() == 0 and
-           search_projection_job_count(group_id) == 3,
-         do: true
-    end)
+    assert search_projection_job_count(group_id) == 3
 
     drain_search_projection!()
     path = "/v1/comma/groups/#{group_id}/conversations/search?q=needle&limit=1"
@@ -1213,6 +1211,8 @@ defmodule CommaWeb.CommaApiTest do
 
     assert [boundary_hit] = boundary_response["data"]
     assert boundary_hit["conversation_id"] == boundary_task["conversation_id"]
+    # The hit names the Message it matched, and its `seq` reads that Message's page.
+    assert_search_message_position(session["token"], group_id, boundary_hit)
     assert byte_size(boundary_hit["snippet"]) == SearchDocumentEnvelope.max_bytes(:message)
     assert [%{"start" => start, "end" => finish}] = boundary_hit["highlights"]
     assert utf16_slice(boundary_hit["snippet"], start, finish) == matched_grapheme
@@ -1244,6 +1244,37 @@ defmodule CommaWeb.CommaApiTest do
            ] = restricted_response["data"]
 
     assert target_id == target["conversation_id"]
+
+    assert_search_message_position(
+      restricted["token"],
+      group_id,
+      Map.put(hd(restricted_response["data"])["content_match"], "conversation_id", target_id)
+    )
+
+    # One Task's matching Messages, by id and `seq`; a session scoped to another Task finds none.
+    task_matches_path = fn conversation_id ->
+      "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}/search?q=needle"
+    end
+
+    assert %{"data" => [%{"message_id" => _id, "message_seq" => seq} = target_match]} =
+             user_req(restricted["token"], :get, task_matches_path.(target_id))
+             |> expect_status(200)
+             |> Map.fetch!(:body)
+
+    assert map_size(target_match) == 2 and is_integer(seq)
+
+    boundary_matches_path =
+      "/v1/comma/groups/#{group_id}/conversations/#{boundary_task["conversation_id"]}/search?q=e%CC%81%CC%81"
+
+    assert %{"data" => [_boundary_match]} =
+             user_req(session["token"], :get, boundary_matches_path)
+             |> expect_status(200)
+             |> Map.fetch!(:body)
+
+    assert %{"data" => []} =
+             user_req(restricted["token"], :get, boundary_matches_path)
+             |> expect_status(200)
+             |> Map.fetch!(:body)
 
     assert {:ok, canonical_target} =
              SalixIM.Conversations.get_group_conversation_record(group_id, target_id)
@@ -1294,6 +1325,135 @@ defmodule CommaWeb.CommaApiTest do
     timed_out = user_req(session["token"], :get, path, retry: false) |> expect_status(503)
     assert timed_out.body == %{"error" => "conversation_unavailable"}
     assert_receive {:task_search_backend_called, _opts}
+  end
+
+  test "Task files list a Group's attached files, keep a Task session to its Task and wait for the index" do
+    user =
+      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "task-files@example.com"})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    group_id = workspace["default_group_id"]
+    worker = workspace["default_worker_agent_id"]
+
+    [report, export] =
+      for {title, name, n} <- [{"Report", "report.pdf", 1}, {"Export", "rows.csv", 2}] do
+        assert {:ok, task} =
+                 SalixCluster.TaskSchedules.create_task_conversation(
+                   group_id,
+                   workspace["router_agent_id"],
+                   worker,
+                   %{"title" => title, "content" => "Make it", "client_request_id" => name}
+                 )
+
+        assert {:ok, _message} =
+                 SalixIM.ConversationServer.append_group_conversation_message(
+                   group_id,
+                   task["conversation_id"],
+                   %{
+                     "actor_type" => "agent",
+                     "agent_id" => worker,
+                     "content" => [
+                       %{
+                         "type" => "file",
+                         "file_name" => name,
+                         "blob_ref" => %{
+                           "uuid" => String.duplicate("#{n}", 32),
+                           "hash" => String.duplicate("a", 64),
+                           "size" => n * 1_000
+                         }
+                       }
+                     ]
+                   }
+                 )
+
+        task
+      end
+
+    path = "/v1/comma/groups/#{group_id}/task-files"
+    listed = user_req(session["token"], :get, path) |> expect_status(200) |> Map.fetch!(:body)
+
+    assert listed["data"] |> Enum.map(& &1["file_name"]) |> Enum.sort() == [
+             "report.pdf",
+             "rows.csv"
+           ]
+
+    assert listed["next_cursor"] == nil
+
+    found =
+      user_req(session["token"], :get, path <> "?q=REPORT")
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert [%{"file_name" => "report.pdf", "task_title" => "Report", "index" => 0} = file] =
+             found["data"]
+
+    assert file["conversation_id"] == report["conversation_id"]
+
+    # A session scoped to one Task reads only that Task's files.
+    restricted =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions",
+        json: %{
+          "workspace_id" => workspace["id"],
+          "group_id" => group_id,
+          "conversation_id" => export["conversation_id"],
+          "restricted" => true
+        }
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    assert [%{"file_name" => "rows.csv"}] =
+             user_req(restricted["token"], :get, path)
+             |> expect_status(200)
+             |> Map.fetch!(:body)
+             |> Map.fetch!("data")
+
+    assert user_req(
+             restricted["token"],
+             :get,
+             path <> "?conversation_id=#{report["conversation_id"]}"
+           ).status == 403
+
+    user_req(session["token"], :get, path <> "?limit=0") |> expect_status(400)
+    user_req(session["token"], :get, path <> "?conversation_id=not-a-task") |> expect_status(400)
+    assert Req.get!(base() <> path).status == 401
+
+    other_user =
+      admin_req(:post, "/v1/comma/admin/users",
+        json: %{"email" => "task-files-other@example.com"}
+      )
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    other_workspace = create_ready_workspace!(other_user["id"])
+
+    assert user_req(
+             session["token"],
+             :get,
+             "/v1/comma/groups/#{other_workspace["default_group_id"]}/task-files"
+           ).status == 404
+
+    Repo.query!("DELETE FROM salix_cutover_markers WHERE name = 'task_files_v1'")
+
+    try do
+      indexing = user_req(session["token"], :get, path, retry: false) |> expect_status(503)
+      assert indexing.body == %{"error" => "task_files_indexing"}
+    after
+      Repo.query!(
+        "INSERT INTO salix_cutover_markers (name, completed_at, evidence) " <>
+          "VALUES ('task_files_v1', now(), '{\"phase\":\"complete\"}') ON CONFLICT (name) DO NOTHING"
+      )
+    end
   end
 
   test "Task-list SSE invalidates the collection when a canonical Task is created" do
@@ -2243,13 +2403,10 @@ defmodule CommaWeb.CommaApiTest do
     assert ensured_user_participant["participant_id"] == canonical_id
     identity_key = Jason.encode!(["user", canonical["user_id"]])
 
-    assert {:ok, %{"_participant_identity_slots" => identity_slots}} =
-             SalixStore.CasRecord.get(
-               SalixStore.Keys.ctl_group_conversation(
-                 workspace["default_group_id"],
-                 chat_salix_id
-               )
-             )
+    scope = SalixIM.ConversationPGStore.new(workspace["default_group_id"], chat_salix_id)
+
+    assert {:ok, %{"_participant_identity_slots" => identity_slots}, _revision} =
+             SalixIM.ConversationPGStore.read(scope)
 
     assert identity_slots[identity_key] == canonical_id
 
@@ -2263,16 +2420,12 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.put("created_at", now)
       |> Map.put("updated_at", now)
 
-    assert {:ok, _stored} =
-             SalixStore.S3.put(
-               SalixStore.Keys.ctl_group_conversation_participant_state(
-                 workspace["default_group_id"],
-                 chat_salix_id,
-                 legacy_id
-               ),
-               Jason.encode!(inactive_legacy),
-               if_none_match: "*"
-             )
+    assert {:ok, :ok} =
+             SalixStore.Repo.transaction(fn ->
+               SalixIM.ConversationParticipantPGStore.import_participants!(scope, [
+                 %{record: inactive_legacy, revision: 1}
+               ])
+             end)
 
     assert {:ok, chat_owner} =
              SalixIM.ConversationPlacement.ensure_started(
@@ -2291,18 +2444,15 @@ defmodule CommaWeb.CommaApiTest do
       "message" => %{"content" => request}
     }
 
-    first_segment_key =
-      SalixStore.Keys.ctl_group_conversation_message_segment(
+    unblock =
+      CommaWeb.TestConversationFaults.block_append!(
         workspace["default_group_id"],
-        chat_salix_id,
-        "000000000000000001"
+        chat_salix_id
       )
-
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, first_segment_key})
 
     failed = user_req(session["token"], :post, path, json: body) |> expect_status(503)
     assert failed.body["error"] == "conversation_unavailable"
-    assert :sys.get_state(SalixStore.S3.Fake).faults == []
+    :ok = unblock.()
 
     assert {:ok, messages_after_failure} =
              SalixIM.Conversations.list_group_conversation_messages(
@@ -3171,7 +3321,7 @@ defmodule CommaWeb.CommaApiTest do
   defp reset_search_projection! do
     Repo.query!(
       "TRUNCATE conversation_search_gc_runs, conversation_search_jobs, " <>
-        "conversation_search_states, conversation_search_discovery_cursors, " <>
+        "conversation_search_states, " <>
         "conversation_search_backfill_runs CASCADE"
     )
 
@@ -3183,16 +3333,9 @@ defmodule CommaWeb.CommaApiTest do
     Repo.query!("""
     INSERT INTO conversation_search_backfill_runs
       (writer_generation, writer_barrier_authority, writer_barrier_at,
-       required_discovery_cycle, sealed_at, inserted_at, updated_at)
+       scan_completed_at, sealed_at, inserted_at, updated_at)
     VALUES ('test-search-generation', 'comma-api-test-fixture', now(),
-            1, now(), now(), now())
-    """)
-
-    Repo.query!("""
-    INSERT INTO conversation_search_discovery_cursors
-      (id, writer_generation, completed_cycles, cycle_started_at,
-       last_cycle_completed_at, inserted_at, updated_at)
-    VALUES ('main', 'test-search-generation', 1, now(), now(), now(), now())
+            now(), now(), now(), now())
     """)
 
     seed_search_ready_marker!()
@@ -3600,5 +3743,24 @@ defmodule CommaWeb.CommaApiTest do
       value ->
         value
     end
+  end
+
+  # The page a client reads around the hit, through the same user's API.
+  defp assert_search_message_position(token, group_id, %{
+         "conversation_id" => conversation_id,
+         "message_id" => message_id,
+         "message_seq" => seq
+       })
+       when is_integer(seq) do
+    page =
+      user_req(
+        token,
+        :get,
+        "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}/messages?around=#{seq}&limit=1"
+      )
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert [%{"message_id" => ^message_id, "seq" => ^seq}] = page["data"]
   end
 end

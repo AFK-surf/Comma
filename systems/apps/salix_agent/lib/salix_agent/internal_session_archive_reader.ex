@@ -17,7 +17,30 @@ defmodule SalixAgent.InternalSessionArchiveReader do
       for [first, last, messages, uncomp] <- InternalSession.get(session, :segment_catalog) || [],
           do: %{first: first, last: last, messages: messages, uncomp: uncomp}
 
-    Enum.sort_by(legacy ++ segments, & &1.first)
+    directory = InternalSession.get(session, :archive_refs)
+    refs = directory || %{}
+
+    (legacy ++ segments)
+    |> Enum.map(fn span ->
+      case refs[span.first] do
+        nil when is_map(directory) ->
+          Map.put(span, :missing_locator, true)
+
+        nil ->
+          span
+
+        row ->
+          span =
+            Map.merge(span, %{
+              object_key: row["object_key"],
+              encoding: row["encoding"],
+              source_session: row["source_session"]
+            })
+
+          if is_binary(row["object_key"]), do: span, else: Map.put(span, :missing_locator, true)
+      end
+    end)
+    |> Enum.sort_by(& &1.first)
   end
 
   def committed_spans(state) do
@@ -53,7 +76,7 @@ defmodule SalixAgent.InternalSessionArchiveReader do
   def read(agent_id, session, spans) do
     spans
     |> Enum.sort_by(& &1.first)
-    |> Enum.chunk_by(&Map.has_key?(&1, :offset))
+    |> Enum.chunk_by(&{encoding(&1), &1[:object_key]})
     |> Enum.reduce_while({:ok, []}, fn group, {:ok, acc} ->
       case read_group(agent_id, session, group) do
         {:ok, records} -> {:cont, {:ok, [records | acc]}}
@@ -63,41 +86,68 @@ defmodule SalixAgent.InternalSessionArchiveReader do
     |> flatten_result()
   end
 
-  defp read_group(agent_id, session, [%{offset: _} | _] = spans) do
-    key =
-      Keys.agent_internal_runtime_session_archive(agent_id, InternalSession.session_id(session))
+  defp read_group(agent_id, session, [first | _] = spans) do
+    case encoding(first) do
+      "jsonl" ->
+        spans
+        |> contiguous_runs()
+        |> Enum.reduce_while({:ok, []}, fn run, {:ok, acc} ->
+          case read_jsonl(agent_id, session, run) do
+            {:ok, records} -> {:cont, {:ok, [records | acc]}}
+            error -> {:halt, error}
+          end
+        end)
+        |> flatten_result()
 
-    spans
-    |> contiguous_runs()
-    |> Enum.reduce_while({:ok, []}, fn run, {:ok, acc} ->
-      case read_run(key, run) do
-        {:ok, records} -> {:cont, {:ok, [records | acc]}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> flatten_result()
+      "etf.zst" ->
+        Enum.reduce_while(spans, {:ok, []}, fn span, {:ok, acc} ->
+          case read_segment(agent_id, session, span) do
+            {:ok, records} -> {:cont, {:ok, [records | acc]}}
+            error -> {:halt, error}
+          end
+        end)
+        |> flatten_result()
+
+      other ->
+        {:error, {:unsupported_archive_encoding, other}}
+    end
   end
 
-  defp read_group(agent_id, session, spans) do
-    Enum.reduce_while(spans, {:ok, []}, fn span, {:ok, acc} ->
-      case read_segment(agent_id, session, span) do
-        {:ok, records} -> {:cont, {:ok, [records | acc]}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> flatten_result()
+  defp encoding(span),
+    do: span[:encoding] || if(Map.has_key?(span, :offset), do: "jsonl", else: "etf.zst")
+
+  defp read_jsonl(_agent_id, _session, [%{missing_locator: true} = span | _]),
+    do: {:error, {:archive_incomplete, %{missing_locator: {span.first, span.last}}}}
+
+  defp read_jsonl(_agent_id, _session, [%{offset: offset, length: length} = span | _])
+       when not is_integer(offset) or not is_integer(length),
+       do: {:error, {:archive_incomplete, %{missing_locator: {span.first, span.last}}}}
+
+  defp read_jsonl(agent_id, session, [first | _] = run) do
+    key =
+      first[:object_key] ||
+        Keys.agent_internal_runtime_session_archive(agent_id, InternalSession.session_id(session))
+
+    read_run(key, run)
   end
 
   defp flatten_result({:ok, runs}), do: {:ok, runs |> Enum.reverse() |> List.flatten()}
   defp flatten_result(error), do: error
 
+  defp read_segment(_agent_id, _session, %{missing_locator: true} = span),
+    do: {:error, {:archive_incomplete, %{missing_locator: {span.first, span.last}}}}
+
+  defp read_segment(_agent_id, _session, %{encoding: encoding}) when encoding != "etf.zst",
+    do: {:error, {:unsupported_archive_encoding, encoding}}
+
   defp read_segment(agent_id, session, span) do
     key =
-      Keys.agent_internal_runtime_session_segment(
-        agent_id,
-        InternalSession.session_id(session),
-        span.first
-      )
+      span[:object_key] ||
+        Keys.agent_internal_runtime_session_segment(
+          agent_id,
+          InternalSession.session_id(session),
+          span.first
+        )
 
     expected = {span.first, span.last}
 
@@ -119,6 +169,28 @@ defmodule SalixAgent.InternalSessionArchiveReader do
     end
   end
 
+  def read_descriptors(spans) do
+    spans
+    |> Enum.map(fn row ->
+      span = %{
+        first: row["first_seq"],
+        last: row["last_seq"],
+        messages: row["message_count"],
+        object_key: row["object_key"],
+        encoding: row["encoding"],
+        source_session: row["source_session"]
+      }
+
+      span =
+        if row["encoding"] == "jsonl",
+          do: Map.merge(span, %{offset: row["byte_offset"], length: row["byte_length"]}),
+          else: span
+
+      if is_binary(row["object_key"]), do: span, else: Map.put(span, :missing_locator, true)
+    end)
+    |> then(&read(nil, nil, &1))
+  end
+
   defp segment_records(body, span) do
     with {:ok, records} <- SealedSegments.decode_safe(body) do
       if hd(records).seq == span.first and List.last(records).seq == span.last and
@@ -133,9 +205,12 @@ defmodule SalixAgent.InternalSessionArchiveReader do
   defp contiguous_runs([first | rest]) do
     {runs, current} =
       Enum.reduce(rest, {[], [first]}, fn span, {runs, [previous | _] = current} ->
-        if span.first == previous.last + 1 and span.offset == previous.offset + previous.length,
-          do: {runs, [span | current]},
-          else: {[Enum.reverse(current) | runs], [span]}
+        if is_integer(previous.offset) and is_integer(previous.length) and
+             span.first == previous.last + 1 and span.offset == previous.offset + previous.length and
+             span[:object_key] == previous[:object_key] and encoding(span) == encoding(previous) and
+             not Map.get(span, :missing_locator, false),
+           do: {runs, [span | current]},
+           else: {[Enum.reverse(current) | runs], [span]}
       end)
 
     [Enum.reverse(current) | runs] |> Enum.reverse()

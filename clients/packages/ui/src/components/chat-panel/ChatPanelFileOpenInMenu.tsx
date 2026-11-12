@@ -9,8 +9,7 @@ import {
   MenuSeparator,
   menuSurfaceClasses,
 } from "../menu";
-import { ScrollArea } from "../scroll-area";
-import { secondaryActionFrame, secondaryActionTreatment } from "../toast/styles";
+import { secondaryActionTreatment } from "../toast/styles";
 import { cx } from "../utils";
 
 export interface ChatPanelFileApplication {
@@ -37,18 +36,15 @@ type ApplicationList =
   | { status: "error" }
   | { status: "ready"; applications: readonly ChatPanelFileApplication[] };
 
-export const ChatPanelFileOpenInMenu = ({
-  action,
-  presentation = "menu",
-}: {
-  action: ChatPanelFileOpenInAction;
-  /** Only the active preview preloads its first application; message cards stay lazy. */
-  presentation?: "menu" | "split";
-}) => {
-  const messages = useCommaMessages();
-  const feedbackId = useId();
-  const applicationDescriptionId = useId();
-  const [open, setOpen] = useState(false);
+/**
+ * The applications that open a file, found while `discover` holds, and the one
+ * operation run on them. A new source drops the old one's list and cancels its
+ * operation; dismissing a menu leaves a chosen operation running.
+ */
+export function useChatPanelFileOpenIn(
+  action: ChatPanelFileOpenInAction,
+  discover: boolean
+) {
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<{
     owner: ChatPanelFileOpenInAction;
@@ -60,7 +56,6 @@ export const ChatPanelFileOpenInMenu = ({
   const operationRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    setOpen(false);
     setOperation("idle");
     return () => {
       operationRef.current?.abort();
@@ -68,7 +63,6 @@ export const ChatPanelFileOpenInMenu = ({
     };
   }, [action]);
 
-  const discover = presentation === "split" || open;
   useEffect(() => {
     if (!discover) return;
     const controller = new AbortController();
@@ -92,10 +86,7 @@ export const ChatPanelFileOpenInMenu = ({
     if (operationRef.current) return;
     const controller = new AbortController();
     operationRef.current = controller;
-    setOpen(false);
     setOperation("pending");
-    // Dismissal leaves the selected operation running; preview discovery stays
-    // with its active owner.
     void Promise.resolve()
       .then(() => {
         if (!controller.signal.aborted) return execute(controller.signal);
@@ -113,154 +104,122 @@ export const ChatPanelFileOpenInMenu = ({
       });
   };
 
+  return {
+    list,
+    operation,
+    run,
+    retry: () => setAttempt((value) => value + 1),
+  };
+}
+
+/** The application choices of an Open in list, with its loading, failure and empty states. */
+export function ChatPanelFileApplicationItems({
+  action,
+  openIn,
+}: {
+  action: ChatPanelFileOpenInAction;
+  openIn: ReturnType<typeof useChatPanelFileOpenIn>;
+}) {
+  const messages = useCommaMessages();
+  const { list, run, retry } = openIn;
+  if (list.status === "loading")
+    return (
+      <MenuItem id="loading" key="loading" isDisabled>
+        {messages.ui_file_open_in_loading()}
+      </MenuItem>
+    );
+  if (list.status === "error")
+    return (
+      <>
+        <MenuItem id="error" key="error" isDisabled>
+          {messages.ui_file_open_in_failed()}
+        </MenuItem>
+        <MenuItem id="retry" key="retry" onAction={retry} shouldCloseOnSelect={false}>
+          {messages.ui_file_download_retry()}
+        </MenuItem>
+      </>
+    );
+  if (list.applications.length === 0)
+    return (
+      <MenuItem id="empty" key="empty" isDisabled>
+        {messages.ui_file_open_in_unavailable()}
+      </MenuItem>
+    );
+  return list.applications.map((application) => (
+    <MenuItem
+      id={application.id}
+      key={application.id}
+      icon={
+        application.iconDataUrl ? (
+          <img
+            alt=""
+            className="chat-panel-file-app-icon"
+            src={application.iconDataUrl}
+          />
+        ) : (
+          <FileTextIcon />
+        )
+      }
+      onAction={() => run((signal) => action.openApplication(application.id, signal))}
+      textValue={application.name}
+    >
+      {application.name}
+    </MenuItem>
+  ));
+}
+
+export const ChatPanelFileOpenInMenu = ({
+  action,
+}: {
+  action: ChatPanelFileOpenInAction;
+}) => {
+  const messages = useCommaMessages();
+  const feedbackId = useId();
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [action]);
+  const openIn = useChatPanelFileOpenIn(action, open);
+  const { operation } = openIn;
   const pending = operation === "pending";
-  const firstApplication = list.status === "ready" ? list.applications[0] : undefined;
-  const split = presentation === "split";
-  const primaryDescription = [
-    firstApplication ? applicationDescriptionId : "",
-    operation === "error" ? feedbackId : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
   return (
     <div className="chat-panel-file-open-in">
-      <div
-        className={
-          split
-            ? cx(secondaryActionFrame, "chat-panel-file-open-control gap-xxs text-xs")
-            : undefined
-        }
-      >
-        {split ? (
-          <Button
-            aria-label={messages.ui_file_open()}
-            aria-busy={pending}
-            {...(primaryDescription ? { "aria-describedby": primaryDescription } : {})}
-            className="chat-panel-file-open-primary"
-            isDisabled={pending || !firstApplication}
-            onPress={() => {
-              if (firstApplication)
-                run((signal) => action.openApplication(firstApplication.id, signal));
-            }}
+      <MenuTrigger isOpen={open} onOpenChange={setOpen}>
+        <Button
+          aria-busy={pending}
+          {...(operation === "error" ? { "aria-describedby": feedbackId } : {})}
+          className={cx(secondaryActionTreatment, "px-lg")}
+          isDisabled={pending}
+        >
+          {pending ? messages.ui_file_open_in_opening() : messages.ui_file_open_in()}
+          <ChevronDownSmallIcon aria-hidden className="size-xl" />
+        </Button>
+        <MenuPopover
+          placement="bottom end"
+          className={cx(
+            "chat-panel-file-applications w-60 overflow-hidden",
+            menuSurfaceClasses
+          )}
+        >
+          <Menu
+            aria-label={messages.ui_file_open_in()}
+            className="py-sm"
+            variant="embedded"
           >
-            {firstApplication ? (
-              firstApplication.iconDataUrl ? (
-                <img
-                  alt=""
-                  className="size-4 object-contain"
-                  src={firstApplication.iconDataUrl}
-                />
-              ) : (
-                <FileTextIcon aria-hidden className="size-4" />
-              )
+            <ChatPanelFileApplicationItems action={action} openIn={openIn} />
+            {action.reveal ? (
+              <>
+                <MenuSeparator />
+                <MenuItem
+                  id="reveal"
+                  key="reveal"
+                  onAction={() => openIn.run(action.reveal!.run)}
+                >
+                  {action.reveal.label}
+                </MenuItem>
+              </>
             ) : null}
-            <span className="pl-xxs whitespace-nowrap">
-              {pending ? messages.ui_file_open_in_opening() : messages.ui_file_open()}
-            </span>
-          </Button>
-        ) : null}
-        <MenuTrigger isOpen={open} onOpenChange={setOpen}>
-          <Button
-            {...(split ? { "aria-label": messages.ui_file_choose_application() } : {})}
-            aria-busy={pending}
-            {...(operation === "error" ? { "aria-describedby": feedbackId } : {})}
-            className={
-              split
-                ? "chat-panel-file-open-chevron"
-                : cx(secondaryActionTreatment, "px-lg")
-            }
-            isDisabled={pending}
-          >
-            {!split &&
-              (pending
-                ? messages.ui_file_open_in_opening()
-                : messages.ui_file_open_in())}
-            <ChevronDownSmallIcon aria-hidden className="size-xl" />
-          </Button>
-          {/* Long application lists scroll inside the popover's own
-              viewport-derived max-height instead of running off the window. */}
-          <MenuPopover
-            placement="bottom end"
-            className={cx(
-              "chat-panel-file-applications w-60 overflow-hidden",
-              menuSurfaceClasses
-            )}
-          >
-            <ScrollArea className="max-h-[inherit]" viewportClassName="max-h-[inherit]">
-              <Menu
-                aria-label={messages.ui_file_open_in()}
-                className="py-sm"
-                variant="embedded"
-              >
-                {list.status === "loading" ? (
-                  <MenuItem id="loading" key="loading" isDisabled>
-                    {messages.ui_file_open_in_loading()}
-                  </MenuItem>
-                ) : list.status === "error" ? (
-                  <>
-                    <MenuItem id="error" key="error" isDisabled>
-                      {messages.ui_file_open_in_failed()}
-                    </MenuItem>
-                    <MenuItem
-                      id="retry"
-                      key="retry"
-                      onAction={() => setAttempt((value) => value + 1)}
-                      shouldCloseOnSelect={false}
-                    >
-                      {messages.ui_file_download_retry()}
-                    </MenuItem>
-                  </>
-                ) : list.applications.length === 0 ? (
-                  <MenuItem id="empty" key="empty" isDisabled>
-                    {messages.ui_file_open_in_unavailable()}
-                  </MenuItem>
-                ) : (
-                  list.applications.map((application) => (
-                    <MenuItem
-                      id={application.id}
-                      key={application.id}
-                      icon={
-                        application.iconDataUrl ? (
-                          <img
-                            alt=""
-                            className="chat-panel-file-app-icon"
-                            src={application.iconDataUrl}
-                          />
-                        ) : (
-                          <FileTextIcon />
-                        )
-                      }
-                      onAction={() =>
-                        run((signal) => action.openApplication(application.id, signal))
-                      }
-                      textValue={application.name}
-                    >
-                      {application.name}
-                    </MenuItem>
-                  ))
-                )}
-                {action.reveal ? (
-                  <>
-                    <MenuSeparator />
-                    <MenuItem
-                      id="reveal"
-                      key="reveal"
-                      onAction={() => run(action.reveal!.run)}
-                    >
-                      {split ? messages.ui_file_open_in_folder() : action.reveal.label}
-                    </MenuItem>
-                  </>
-                ) : null}
-              </Menu>
-            </ScrollArea>
-          </MenuPopover>
-        </MenuTrigger>
-      </div>
-      {split && firstApplication ? (
-        <span className="sr-only" id={applicationDescriptionId}>
-          {messages.ui_file_open_with({ application: firstApplication.name })}
-        </span>
-      ) : null}
+          </Menu>
+        </MenuPopover>
+      </MenuTrigger>
       <output
         aria-live="polite"
         className={operation === "error" ? "chat-panel-file-action-error" : "sr-only"}

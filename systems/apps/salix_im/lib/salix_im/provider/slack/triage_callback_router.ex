@@ -100,16 +100,20 @@ defmodule SalixIM.Provider.Slack.TriageCallbackRouter do
   # never manufacture a Triage subscription from an inbound bot message.
   defp continue_owned_thread(connect, envelope, continuation, ambient, legacy_lane) do
     scope = command_scope(connect, envelope)
+    participation = router_participation(connect, scope)
     owner = ThreadRouteOwner.lookup(scope)
 
     cond do
+      participation == :left ->
+        {:ok, :ignored}
+
       owner == :unavailable ->
         {:error, :slack_route_unavailable}
 
       owner == {:ok, :legacy} ->
         legacy_lane.(scope, continuation)
 
-      router_participating?(connect, scope) ->
+      participation == :participating ->
         continue_command(scope, owner, continuation)
 
       owner in [{:ok, :triage}, {:owned_elsewhere, :triage}] ->
@@ -120,7 +124,7 @@ defmodule SalixIM.Provider.Slack.TriageCallbackRouter do
     end
   end
 
-  defp router_participating?(connect, scope) do
+  defp router_participation(connect, scope) do
     SlackRouterThreadParticipations.status(
       scope["group_id"],
       scope["connect_id"],
@@ -128,7 +132,7 @@ defmodule SalixIM.Provider.Slack.TriageCallbackRouter do
       connect["bot_user_id"],
       scope["channel_id"],
       scope["root_thread_ts"]
-    ) == :participating
+    )
   end
 
   # Triage subscriptions use the channel's authority generation, not the

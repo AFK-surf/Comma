@@ -28,6 +28,31 @@ defmodule SalixAgent.SessionKernelStorageQueryTest do
   defp call(overrides),
     do: Map.merge(%{"tool_call_id" => "c", "status" => "completed"}, overrides)
 
+  test "archive planning skips cold resident context and uses the committed last seq" do
+    session =
+      InternalSession.new("agent", @session)
+      |> InternalSession.apply_events(
+        for id <- 1..3 do
+          %{
+            "type" => "delivery",
+            "from_queue" => true,
+            "message_id" => id,
+            "role" => "user",
+            "content" => "body #{id}"
+          }
+        end
+      )
+      |> InternalSession.apply_event(%{
+        "type" => "archive_advance",
+        "archived_through" => 2,
+        "segments" => [[1, 2, 2, 100]]
+      })
+
+    assert InternalSession.get(session, :compacted_seq) == 0
+    assert Enum.map(InternalSession.get(session, :messages), & &1.seq) == [1, 2, 3]
+    assert {:ok, [%{seq: 3}], 3} = InternalSession.query(session, :archive_window)
+  end
+
   test "only terminal statuses are certified, and running ones are skipped" do
     state =
       base(%{

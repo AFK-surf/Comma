@@ -157,7 +157,7 @@ export class CoreClient {
   ): () => void {
     const id = this.#nextId++;
     this.#subs.set(id, { topic, onValue, onError });
-    if (this.#channel) this.#post({ id, subscribe: topic, keyed: true });
+    if (this.#channel) this.#post({ id, subscribe: topic });
     return () => {
       if (this.#subs.delete(id) && this.#channel) this.#post({ id, unsubscribe: true });
     };
@@ -173,8 +173,7 @@ export class CoreClient {
   resume(): void {
     this.#rejectCalls("core_restarted", "The core started again.");
     if (this.#channel)
-      for (const [id, sub] of this.#subs)
-        this.#post({ id, subscribe: sub.topic, keyed: true });
+      for (const [id, sub] of this.#subs) this.#post({ id, subscribe: sub.topic });
     this.#rejoined();
   }
 
@@ -224,8 +223,7 @@ export class CoreClient {
       return;
     }
     this.#channel = channel;
-    for (const [id, sub] of this.#subs)
-      this.#post({ id, subscribe: sub.topic, keyed: true });
+    for (const [id, sub] of this.#subs) this.#post({ id, subscribe: sub.topic });
     // A core that forgot this UI hears first what the UI held there (the rejoin listeners ask for it again), then
     // what was asked while it was away: a command queued during a restart then finds the lease it acts on.
     const rejoin = this.#connected;

@@ -73,7 +73,7 @@ describe("native release paths", () => {
       resolve(appDir, "dist/native/darwin/arm64")
     );
     expect(stationLauncherDistPath(appDir)).toBe(
-      resolve(appDir, "dist/native/station/mesh/target/release/stillfail-station")
+      resolve(appDir, "dist/native/station/mesh/target/release/comma-station")
     );
   });
 });

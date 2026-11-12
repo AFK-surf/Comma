@@ -148,17 +148,20 @@ def capabilityObservation (state record : Term) : KernelM Term := do
 
 /-- Erlang flat-map key order, so JSON text matches the host encoder. Maps
 with more than 32 keys keep their order. -/
-private def flatOrder : Nat → Term → KernelM Term
-  | 0, _ => fail "invalid_term_depth"
-  | fuel + 1, value => do
+private def flatOrderDeferred : Nat → Term → KernelEval Term
+  | 0, _ => monadLift (fail "invalid_term_depth")
+  | fuel + 1, value => KernelEval.defer fun _ => do
     match value with
-    | .list xs => return .list (← xs.mapM (flatOrder fuel))
+    | .list xs => return .list (← xs.mapM (flatOrderDeferred fuel))
     | .map xs =>
-      let xs ← xs.mapM (fun pair => return (pair.1, ← flatOrder fuel pair.2))
+      let xs ← xs.mapM (fun pair => return (pair.1, ← flatOrderDeferred fuel pair.2))
       if xs.length > 32 then return .map xs
       let keys ← sortedKeys (xs.map Prod.fst)
       return .map (keys.map (fun key => (key, (Term.map xs).get key)))
     | _ => return value
+
+private def flatOrder (fuel : Nat) (value : Term) : KernelM Term :=
+  KernelEval.run (flatOrderDeferred fuel value)
 
 private def json (value : Term) : KernelM Term := do
   let some bytes ← Json.encode (← flatOrder (value.depth + 1) value) | fail "badarg"

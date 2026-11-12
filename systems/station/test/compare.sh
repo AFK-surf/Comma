@@ -12,7 +12,7 @@ stop() { pkill -f "data $work/" 2>/dev/null; sleep 2; }
 udp_port() { lsof -nP -iUDP -a -p "$1" | awk 'NR>1 && $9 ~ /^\*:/ {sub("\\*:","",$9); print $9}' | grep -v 5353 | head -1; }
 stop
 (cd "$work" && nohup "$rust" run --app "$(dirname "$(dirname "$(dirname "$(dirname "$rust")")")")" --data "$work/rust" > rust.log 2>&1 &)
-(cd "$work" && STILLFAIL_NO_DISCOVERY=1 nohup "$node" "$here/src/main.ts" run --app "$here" --data "$work/ts" > ts.log 2>&1 &)
+(cd "$work" && COMMA_STATION_NO_DISCOVERY=1 nohup "$node" "$here/src/main.ts" run --app "$here" --data "$work/ts" > ts.log 2>&1 &)
 sleep 12
 rpid=$(pgrep -f "data $work/rust" | head -1)
 tpid=$(pgrep -f "data $work/ts" | head -1)
@@ -21,15 +21,15 @@ tpid=$(pgrep -f "data $work/ts" | head -1)
 rport=$(udp_port "$rpid")
 tport=$(udp_port "$tpid")
 ask() { perl -e 'alarm 30; exec @ARGV' "$load" ask "$work/$1" "$id" "127.0.0.1:$2" "$3" > "$4" 2> "$4.head"; }
-threads=$(sqlite3 "$work/ts/stillfail.db" "select id from threads order by id desc limit 8" | tr '\n' ' ')
+threads=$(sqlite3 "$work/ts/station.db" "select id from threads order by id desc limit 8" | tr '\n' ' ')
 paths="/admin/api/chats /admin/api/chats?archived=1 /admin/api/threads/99999/entries /admin/api/threads/x/entries /admin/api/nothing"
 for t in $threads 1 50 100; do
   paths="$paths /admin/api/threads/$t/entries /admin/api/threads/$t/entries?limit=5 /admin/api/threads/$t/entries?after=3 /admin/api/threads/$t/entries?before=10&limit=3 /admin/api/threads/$t/entries?from=2&to=4 /admin/api/threads/$t/entries?from=2"
 done
 # More from test/paths/*.txt: a path a line, `$THREAD`, `$SESSION` and `$JOB` filled in with ones of the data.
-session=$(sqlite3 "$work/ts/stillfail.db" "select key from sessions order by last_active_at desc limit 1")
-job=$(sqlite3 "$work/ts/stillfail.db" "select id from jobs order by started_at desc limit 1")
-thread=$(sqlite3 "$work/ts/stillfail.db" "select id from threads order by id desc limit 1")
+session=$(sqlite3 "$work/ts/station.db" "select key from sessions order by last_active_at desc limit 1")
+job=$(sqlite3 "$work/ts/station.db" "select id from jobs order by started_at desc limit 1")
+thread=$(sqlite3 "$work/ts/station.db" "select id from threads order by id desc limit 1")
 for f in "$here"/test/paths/*.txt; do
   [ -f "$f" ] || continue
   while IFS= read -r line; do

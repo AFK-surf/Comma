@@ -75,7 +75,7 @@ defmodule SalixAgent.CatalogRoundE2ETest do
     })
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session, [
         %{"type" => "session_created", "session_id" => @session, "platform" => "raft"},
         %{
           "type" => "delivery",
@@ -130,7 +130,7 @@ defmodule SalixAgent.CatalogRoundE2ETest do
     providers = capture(:refuse)
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session, [
         %{
           "type" => "session_update",
           "session_id" => @session,

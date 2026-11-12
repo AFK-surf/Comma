@@ -481,29 +481,23 @@ defmodule BridgeForTeamsWeb.ProjectAgentControllerTest do
         |> Map.put("db_namespace", "salix:" <> id)
         |> Map.put("heartbeat_schedule_id", SalixStore.Ids.new_schedule_id())
 
-      assert {:ok, _} = SalixStore.S3.put(SalixStore.Keys.ctl_agent(id), Jason.encode!(record))
+      assert {:ok, _} =
+               SalixStore.Agent.create(id, "inventory-fixture", SalixAgent.State, config: record)
     end
 
     SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, ProviderCallForbiddenClient)
-    SalixStore.S3.Fake.reset_read_log()
 
-    data =
-      :get |> api(project_agents_path(org.slug, project.slug) <> "?limit=1", token) |> json_data()
+    {data, reads} =
+      agent_page_reads(fn ->
+        :get
+        |> api(project_agents_path(org.slug, project.slug) <> "?limit=1", token)
+        |> json_data()
+      end)
 
     assert [_one] = data["agents"]
     assert data["limit"] == 1
     assert is_binary(data["next_cursor"])
-    prefix = SalixStore.Keys.ctl_agents_prefix_for_group(project.salix_group_id)
-
-    reads =
-      Enum.filter(SalixStore.S3.Fake.read_log(), fn
-        {:get, key} -> String.starts_with?(key, prefix)
-        {:list, key, _opts} -> key == prefix
-        _ -> false
-      end)
-
-    assert Enum.count(reads, &match?({:list, _, _}, &1)) == 1
-    assert Enum.count(reads, &match?({:get, _}, &1)) <= 1
+    assert length(reads) == 1
 
     next =
       :get
@@ -517,6 +511,37 @@ defmodule BridgeForTeamsWeb.ProjectAgentControllerTest do
 
     assert [_next] = next["agents"]
     refute next["agents"] == data["agents"]
+  end
+
+  defp agent_page_reads(fun) do
+    owner = self()
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:salix_store, :repo, :query],
+        fn _, _, metadata, _ ->
+          if String.contains?(metadata.query, "FROM salix_agents"),
+            do: send(owner, {:agent_page_read, metadata.params})
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+      {result, drain_agent_page_reads([])}
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp drain_agent_page_reads(acc) do
+    receive do
+      {:agent_page_read, params} -> drain_agent_page_reads([params | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
   test "project agents API creates, moves or changes no Worker: 410 workers_retired", %{

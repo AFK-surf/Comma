@@ -75,13 +75,13 @@ export function CommaAppShortcutsProvider({
   platform?: AppShortcutPlatform;
 }) {
   const clientSettings = useCommaClientSettings();
-  const openCommaShortcut =
-    getNativeBridge().platform === "electron"
-      ? clientSettings.settings.openCommaShortcut
-      : undefined;
+  const desktop = getNativeBridge().platform === "electron";
+  const openCommaShortcut = desktop
+    ? clientSettings.settings.openCommaShortcut
+    : undefined;
   const defaults = useMemo(
-    () => createDefaultAppShortcutBindings(platform),
-    [platform]
+    () => createDefaultAppShortcutBindings(platform, { browser: !desktop }),
+    [desktop, platform]
   );
   const bindings = useMemo(
     () =>

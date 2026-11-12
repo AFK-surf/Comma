@@ -14,6 +14,9 @@
     <string name="media_video_unavailable">Video no longer available</string>
     <string name="media_video_progress">Downloading %1$d%%</string>
     <string name="media_video_cannot_play">Can\'t play this video</string>
+    <string name="media_tile_unavailable">Image unavailable</string>
+    <string name="media_tile_retry">Retry</string>
+    <string name="media_tile_open_file">Open file</string>
     <string name="media_file_meta">%1$s · %2$s</string>
     <string name="media_file_downloading">Downloading %1$d%%</string>
     <string name="media_file_downloading_unknown">Downloading…</string>
@@ -28,4 +31,9 @@
     <string name="media_file_kind_code">Code</string>
     <string name="media_file_kind_archive">Archive</string>
     <string name="media_file_kind_other">File</string>
+    <string name="media_file_open">Open</string>
+    <string name="media_file_save_as">Save as…</string>
+    <string name="media_file_share">Share…</string>
+    <string name="media_file_saved">Saved</string>
+    <string name="media_file_save_failed">Could not save</string>
 </resources>

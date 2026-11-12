@@ -12,8 +12,15 @@
 //
 // Bounds: one archive request per Task in flight; a list read per page asked, the newest one's answer kept; each other
 // change is one request, then one read of the Task; one pins read per change or surface shown (at most 100 pins).
+import { lazySchema } from "@comma/chat-contract";
 import { taskStatusBucket } from "@comma/i18n";
-import { CoreError, Priority, type Topic, type Value } from "@comma/core-kernel";
+import {
+  CoreError,
+  madeOnce,
+  Priority,
+  type Topic,
+  type Value,
+} from "@comma/core-kernel";
 import { Effect, Option, Result } from "effect";
 import { z } from "zod";
 import type { Account } from "./account.ts";
@@ -32,17 +39,19 @@ import type { Tasks } from "./tasks.ts";
 import type { Workspaces } from "./workspaces.ts";
 
 const PAGE = 50;
-const pinsSchema = z.object({
-  data: z
-    .array(
-      z
-        .object({
-          conversation: z.object({ id: z.string(), group_id: z.string() }).strip(),
-        })
-        .strip()
-    )
-    .max(100),
-});
+const pinsSchema = lazySchema(() =>
+  z.object({
+    data: z
+      .array(
+        z
+          .object({
+            conversation: z.object({ id: z.string(), group_id: z.string() }).strip(),
+          })
+          .strip()
+      )
+      .max(100),
+  })
+);
 
 type Shown = {
   workspace: TaskWorkspace | null;
@@ -78,6 +87,12 @@ function among(tasks: TaskSummary[], hosted: TaskSummary[]): TaskSummary[] {
   }
   return [...out, ...hosted.slice(next)];
 }
+
+/** An archived Task with the bucket it was archived from, made once per Task. */
+const archivedRow = madeOnce((task: TaskSummary) => ({
+  ...task,
+  archived_from_bucket: taskStatusBucket(task.archived_from_status ?? task.status),
+}));
 
 export class TasksArchive {
   readonly #ctx: Ctx;
@@ -524,12 +539,7 @@ export class TasksArchive {
     const tasks = among(shown.tasks, hosted);
     return {
       workspace: shown.workspace,
-      tasks: tasks.map((task) => ({
-        ...task,
-        archived_from_bucket: taskStatusBucket(
-          task.archived_from_status ?? task.status
-        ),
-      })),
+      tasks: tasks.map(archivedRow),
       hasMore: shown.cursor !== null,
       loading: shown.loading,
       error: shown.error,

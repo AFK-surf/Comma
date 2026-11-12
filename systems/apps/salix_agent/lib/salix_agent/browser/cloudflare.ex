@@ -1,6 +1,14 @@
 defmodule SalixAgent.Browser.Cloudflare do
-  @moduledoc "Cloudflare HTTP lifecycle and authenticated CDP connection options."
+  @moduledoc "Cloudflare HTTP lifecycle, authenticated CDP connection options and page capture."
   @base "https://api.cloudflare.com/client/v4/accounts/"
+
+  # `networkidle2` tolerates a page that keeps a socket or a poll open, which
+  # `networkidle0` would wait out until the timeout. Quality 80 keeps the image
+  # under WhatsApp's 600 KB preview limit.
+  @capture_options %{
+    gotoOptions: %{waitUntil: "networkidle2", timeout: 15_000},
+    screenshotOptions: %{type: "jpeg", quality: 80}
+  }
 
   def create(row, token),
     do: request(row, token, :post, "?keep_alive=#{row.options["idle_timeout_ms"] || 60000}")
@@ -32,6 +40,22 @@ defmodule SalixAgent.Browser.Cloudflare do
         "wss://api.cloudflare.com/client/v4/accounts/#{row.account_id}/browser-run/devtools/browser/#{row.provider_id}",
       headers: [{"authorization", "Bearer " <> token}]
     ]
+  end
+
+  # A Quick Action: its own short-lived browser, outside every Runtime Session,
+  # with no saved storage.
+  def screenshot(settings, token, url, {width, height}) do
+    case Req.post(@base <> settings.account_id <> "/browser-run/screenshot",
+           json:
+             Map.merge(@capture_options, %{url: url, viewport: %{width: width, height: height}}),
+           headers: [{"authorization", "Bearer " <> token}],
+           retry: false,
+           receive_timeout: 30_000,
+           connect_options: [timeout: 10_000]
+         ) do
+      {:ok, %{status: 200, body: image}} when is_binary(image) -> {:ok, image}
+      _ -> {:error, :browser_provider_unavailable}
+    end
   end
 
   defp request(row, token, method, suffix, resource \\ "browser") do

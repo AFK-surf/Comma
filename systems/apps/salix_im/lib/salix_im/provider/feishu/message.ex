@@ -35,6 +35,17 @@ defmodule SalixIM.Provider.Feishu.Message do
   def text(message) when is_map(message), do: message |> decoded_content() |> content_text()
   def text(_message), do: ""
 
+  @doc """
+  Whether `text` shows anything once empty paragraph markup is removed. Some
+  Feishu clients send `<p>@_user_1 </p>`, so a message that only mentions the
+  bot leaves `<p> </p>` behind.
+  """
+  @spec visible_text?(String.t()) :: boolean()
+  def visible_text?(text) when is_binary(text),
+    do: ~r{</?(?:p|br|div|span)\s*/?>}i |> Regex.replace(text, "") |> String.trim() != ""
+
+  def visible_text?(_text), do: false
+
   @spec attachments(map()) :: [map()]
   def attachments(message) when is_map(message),
     do: content_attachments(message, decoded_content(message))

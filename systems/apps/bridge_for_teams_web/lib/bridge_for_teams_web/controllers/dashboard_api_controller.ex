@@ -44,6 +44,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     DashboardSwarmPlugins,
     DashboardSwarmSettings,
     DashboardSwarmSkills,
+    DashboardSwarmStillfail,
     DashboardSwarmTaskDetail,
     DashboardSwarmTasks,
     DashboardTriage,
@@ -315,23 +316,20 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def project_devices(conn, %{"org" => slug, "id" => id}),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.page/4)
 
-  def project_device_provisioning(conn, %{"org" => slug, "id" => id}),
-    do:
-      swarm_action(conn, slug, id, fn _org, _user, project, _role ->
-        DashboardSwarmDevices.provisioning(project)
-      end)
+  def project_stillfail(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.page/4)
+
+  def connect_project_stillfail(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.connect(&1, &2, &3, &4, params))
+
+  def disconnect_project_stillfail(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmStillfail.disconnect/4)
 
   def project_device_runners(conn, %{"org" => slug, "id" => id}),
     do:
       swarm_action(conn, slug, id, fn org, _user, _project, role ->
         DashboardSwarmDevices.runners(org, role)
       end)
-
-  def create_project_device(conn, %{"org" => slug, "id" => id} = params),
-    do: swarm_action(conn, slug, id, 201, &DashboardSwarmDevices.create(&1, &2, &3, &4, params))
-
-  def set_project_cloud_computer(conn, %{"org" => slug, "id" => id} = params),
-    do: swarm_action(conn, slug, id, &DashboardSwarmDevices.set_cloud(&1, &2, &3, &4, params))
 
   def set_project_cloud_vm_runner(conn, %{"org" => slug, "id" => id} = params),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.choose_runner(&1, &2, &3, &4, params))
@@ -342,8 +340,43 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def disconnect_project_device(conn, %{"org" => slug, "id" => id, "device_id" => device}),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.disconnect(&1, &2, &3, &4, device))
 
+  def refresh_project_devices(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmDevices.refresh/4)
+
   def delete_project_device(conn, %{"org" => slug, "id" => id, "device_id" => device}),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.delete(&1, &2, &3, &4, device))
+
+  def create_project_station_install(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmDevices.create_station_install(&1, &2, &3, &4, params)
+      )
+
+  def provision_project_hardware_device(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmDevices.provision_hardware(&1, &2, &3, &4, params)
+      )
+
+  def set_project_device_operations(
+        conn,
+        %{"org" => slug, "id" => id, "device_id" => device} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmDevices.set_operations(&1, &2, &3, &4, device, params)
+        )
 
   def create_project_shell_workload(
         conn,
@@ -462,6 +495,46 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         &DashboardSwarmConnections.create_lark(&1, &2, &3, &4, params)
       )
 
+  def begin_project_feishu_registration(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        200,
+        &DashboardSwarmConnections.begin_feishu_registration(&1, &2, &3, &4, params)
+      )
+
+  def poll_project_feishu_registration(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        200,
+        &DashboardSwarmConnections.poll_feishu_registration(&1, &2, &3, &4, params)
+      )
+
+  def begin_project_lark_registration(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        200,
+        &DashboardSwarmConnections.begin_lark_registration(&1, &2, &3, &4, params)
+      )
+
+  def poll_project_lark_registration(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        200,
+        &DashboardSwarmConnections.poll_lark_registration(&1, &2, &3, &4, params)
+      )
+
   def create_project_qq_connect(conn, %{"org" => slug, "id" => id} = params),
     do:
       swarm_action(
@@ -471,6 +544,28 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         201,
         &DashboardSwarmConnections.create_qq(&1, &2, &3, &4, params)
       )
+
+  def create_project_telegram_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_telegram(&1, &2, &3, &4, params)
+      )
+
+  def update_project_telegram_chats(
+        conn,
+        %{"org" => slug, "id" => id, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.update_telegram_chats(&1, &2, &3, &4, connect, params)
+        )
 
   def update_project_qq_command_menu(
         conn,
@@ -482,6 +577,18 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
           slug,
           id,
           &DashboardSwarmConnections.update_qq_menu(&1, &2, &3, &4, connect, params)
+        )
+
+  def update_project_slack_auto_join(
+        conn,
+        %{"org" => slug, "id" => id, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.update_slack_auto_join(&1, &2, &3, &4, connect, params)
         )
 
   def create_project_slack_connect(conn, %{"org" => slug, "id" => id} = params),
@@ -819,8 +926,20 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def save_meetings(conn, %{"org" => slug, "project_id" => id} = params),
     do: admin_action(conn, slug, &DashboardMeetings.save(&1, &2, id, params))
 
+  def subscribe_meeting_calendar(conn, %{"org" => slug, "project_id" => id} = params),
+    do: admin_action(conn, slug, &DashboardMeetings.subscribe_calendar(&1, &2, id, params))
+
   def data_policy(conn, %{"org" => slug, "project_id" => id}),
     do: admin_action(conn, slug, fn org, _user -> DashboardDataPolicy.overview(org, id) end)
+
+  def data_policy_people(
+        conn,
+        %{"org" => slug, "project_id" => id, "connect_id" => connect_id} = params
+      ),
+      do:
+        admin_action(conn, slug, fn org, _user ->
+          DashboardDataPolicy.people(org, id, connect_id, params)
+        end)
 
   def update_data_policy(conn, params), do: data_policy_change(conn, params, :group)
   def classify_data_policy_scope(conn, params), do: data_policy_change(conn, params, :classify)
@@ -831,6 +950,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     do: data_policy_change(conn, params, :withdraw)
 
   def place_data_policy_principal(conn, params), do: data_policy_change(conn, params, :place)
+
+  def restrict_data_policy_ssh_host(conn, params),
+    do: data_policy_change(conn, params, :ssh_host)
 
   defp data_policy_change(conn, %{"org" => slug, "project_id" => id} = params, change) do
     admin_action(conn, slug, fn org, _user ->
@@ -973,21 +1095,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     user = conn.assigns.current_user
 
     with {:ok, org, role} <- member_org(slug, user) do
-      send_ok(conn, DashboardRunners.page(org, user, role in @admin_roles, params["cursor"]))
+      send_ok(conn, DashboardRunners.page(org, role in @admin_roles, params["cursor"]))
     else
       :not_found -> org_not_found(conn)
-    end
-  end
-
-  def runner_connectors(conn, %{"org" => slug, "id" => runner_id} = params) do
-    user = conn.assigns.current_user
-
-    with {:ok, org, _role} <- member_org(slug, user),
-         {:ok, data} <- DashboardRunners.connectors(org, user, runner_id, params["cursor"]) do
-      send_ok(conn, data)
-    else
-      :not_found -> org_not_found(conn)
-      {:error, status, code, message, details} -> send_error(conn, status, code, message, details)
     end
   end
 

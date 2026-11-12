@@ -6,6 +6,8 @@ defmodule SalixIM.ProviderConnects do
   identity, receipt, and observation records have separate domain owners.
   """
 
+  require Logger
+
   alias SalixIM.Ports.ProviderAppStore
   alias SalixIM.Provider.Slack
   alias SalixIM.Provider.Slack.API, as: SlackAPI
@@ -32,6 +34,8 @@ defmodule SalixIM.ProviderConnects do
   }
 
   @connect_scan_max_records 1_000
+  @socket_index_grace_ms 10 * 60_000
+  @telegram_allowed_chats_max 200
   @active_connect_lookup_max_keys 1_000
   @slack_triage_recovery_batch_max 25
   @slack_triage_channel_page_max 200
@@ -104,6 +108,16 @@ defmodule SalixIM.ProviderConnects do
       other -> other
     end
   end
+
+  @doc """
+  The App Secret of a Lark or Feishu connect's app. A scanned connect owns its
+  secret; a Feishu connect made before that uses the Workspace's tenant app.
+  """
+  def app_secret(%{"provider" => "feishu"} = rec),
+    do: trim(feishu_tenant_app_for_connect(rec)["app_secret"])
+
+  def app_secret(%{"provider" => "lark"} = rec), do: trim(rec["app_secret"])
+  def app_secret(_rec), do: ""
 
   @doc "Resolve one current Router-owned connection for a validated Task grant."
   def get_delegatable_connect_by_id(group_id, connect_id, provider) do
@@ -1087,6 +1101,108 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
+  @doc """
+  The Lark and Feishu connects that get their events through a long
+  connection (`SalixIM.LarkSocketRuntime`), each with the App Secret its
+  socket opens with: a Feishu connect's is the tenant Feishu app's.
+
+  They are read through their index (`index_socket_connect/1`), so the cost
+  is that of the socket connects alone. An entry whose connect is deleted or
+  no longer a socket connect is removed. An entry whose connect is not there
+  yet is removed only after `@socket_index_grace_ms`: the entry is written
+  before the connect.
+  """
+  def list_socket_connects do
+    with {:ok, %{objects: objects, next: nil}}
+         when length(objects) <= @connect_scan_max_records <-
+           S3.list(Keys.ctl_im_socket_connects_prefix(), max_keys: @connect_scan_max_records) do
+      {:ok,
+       objects
+       |> Enum.flat_map(&indexed_socket_connect/1)
+       |> Enum.reject(& &1["disabled_at"])
+       |> Enum.filter(&tool_visible_connect?/1)
+       |> Enum.sort_by(&{&1["provider"] || "", &1["created_at"] || 0, &1["connect_id"] || ""})
+       |> Enum.map(&with_socket_secret/1)
+       |> Enum.filter(&(trim(&1["app_secret"]) != ""))}
+    else
+      {:ok, %{next: _continuation}} -> {:error, :connect_scan_limit_exceeded}
+      {:error, _reason} = error -> error
+      other -> {:error, {:connect_scan_failed, other}}
+    end
+  end
+
+  defp indexed_socket_connect(%{key: key}) do
+    with {:ok, %{"group_id" => group_id, "connect_id" => connect_id}} <- CasRecord.get(key),
+         {:ok, rec} <- CasRecord.get(Keys.ctl_im_connect(group_id, connect_id)) do
+      if socket_connect?(rec) and is_nil(rec["deleted_at"]) do
+        [rec]
+      else
+        _ = S3.delete(key)
+        []
+      end
+    else
+      {:error, :not_found} ->
+        with {:ok, entry} <- CasRecord.get(key),
+             true <- now() - num(entry["created_at"]) > @socket_index_grace_ms do
+          _ = S3.delete(key)
+        end
+
+        []
+
+      _unreadable ->
+        []
+    end
+  end
+
+  defp socket_connect?(rec),
+    do: rec["provider"] in ["lark", "feishu"] and lark_events(rec) == "socket"
+
+  @doc """
+  Indexes a Lark or Feishu connect whose events come through a long
+  connection, for `list_socket_connects/0`. Any other connect is left out.
+  """
+  def index_socket_connect(rec) do
+    if socket_connect?(rec) do
+      connect_id = trim(rec["connect_id"])
+
+      case CasRecord.ensure(Keys.ctl_im_socket_connect(connect_id), fn ->
+             %{
+               "group_id" => trim(rec["group_id"]),
+               "connect_id" => connect_id,
+               "created_at" => now()
+             }
+           end) do
+        {:ok, _entry} -> :ok
+        other -> other
+      end
+    else
+      :ok
+    end
+  end
+
+  @doc """
+  Indexes every socket connect stored before the index existed: one bounded
+  scan of all connects. `SalixIM.LarkSocketRuntime` runs it once when it
+  starts, never in its passes.
+  """
+  def index_socket_connects do
+    with {:ok, records} <- scan_connect_records(Keys.ctl_im_connects_all_prefix()) do
+      records
+      |> Enum.filter(&(socket_connect?(&1) and is_nil(&1["deleted_at"])))
+      |> Enum.reduce_while(:ok, fn rec, :ok ->
+        case index_socket_connect(rec) do
+          :ok -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp with_socket_secret(%{"provider" => "feishu"} = connect),
+    do: Map.put(connect, "app_secret", trim(feishu_tenant_app_for_connect(connect)["app_secret"]))
+
+  defp with_socket_secret(connect), do: connect
+
   def list_runtime_provider_connects(providers \\ ["telegram", "wechat"]) do
     providers = providers |> List.wrap() |> Enum.map(&trim/1)
 
@@ -1153,6 +1269,7 @@ defmodule SalixIM.ProviderConnects do
         with :ok <-
                ProviderIdentity.reserve_provider("slack", app_id, tenant_id, group_id, connect_id),
              {:ok, rec} <- CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), rec) do
+          observe_search_connect(rec)
           {:ok, im_connect_public(rec)}
         else
           other ->
@@ -1209,6 +1326,7 @@ defmodule SalixIM.ProviderConnects do
               |> Map.put("inbound_agent_id", inbound_agent["agent_id"])
               |> put_inbound_tasks(inbound_tasks)
               |> maybe_reset_slack_oauth(attrs["reset_oauth"] == true)
+              |> maybe_put_slack_auto_join(attrs["auto_join_public_channels"])
               |> Map.put("updated_at", now())
             end)
           end
@@ -1222,7 +1340,8 @@ defmodule SalixIM.ProviderConnects do
   end
 
   def create_telegram_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
-    with {:ok, bot} <- validate_telegram_bot_token(attrs["bot_token"]) do
+    with {:ok, bot} <- validate_telegram_bot_token(attrs["bot_token"]),
+         {:ok, allowed} <- telegram_allowed_chats(attrs) do
       create_secret_connect(
         tenant_id,
         group_id,
@@ -1231,16 +1350,55 @@ defmodule SalixIM.ProviderConnects do
         ["bot_token"],
         fn rec ->
           rec
-          |> Map.put("bot_token", trim(attrs["bot_token"]))
-          |> Map.put("bot_user_id", trim(bot["id"]))
-          |> Map.put("bot_username", trim(bot["username"]))
-          |> Map.put("bot_display_name", trim(bot["first_name"]))
-          |> Map.put("updates_offset", 0)
-          |> Map.put("status", "connected")
-          |> Map.put("last_error", "")
-          |> Map.put("connected_at", now())
-        end
+          |> put_telegram_bot_fields(attrs, bot)
+          |> put_telegram_allowed_chats(allowed)
+        end,
+        identity: {"telegram", trim(bot["id"])}
       )
+    end
+  end
+
+  defp put_telegram_bot_fields(rec, attrs, bot) do
+    rec
+    |> Map.put("bot_token", trim(attrs["bot_token"]))
+    |> Map.put("bot_user_id", trim(bot["id"]))
+    |> Map.put("bot_username", trim(bot["username"]))
+    |> Map.put("bot_display_name", trim(bot["first_name"]))
+    |> Map.put("can_read_all_group_messages", bot["can_read_all_group_messages"] == true)
+    |> Map.put("updates_offset", 0)
+    |> Map.put("status", "connected")
+    |> Map.put("last_error", "")
+    |> Map.put("connected_at", now())
+  end
+
+  # `allowed_chat_ids` names the chats a connect serves (`SalixIM.Provider.Telegram`).
+  # A connect created without one serves every chat that reaches its bot.
+  defp telegram_allowed_chats(%{"allowed_chat_ids" => ids}) when is_list(ids) do
+    allowed = ids |> Enum.map(&trim/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+    if length(allowed) <= @telegram_allowed_chats_max,
+      do: {:ok, allowed},
+      else:
+        {:error,
+         {:bad_request, "allowed_chat_ids has more than #{@telegram_allowed_chats_max} chats"}}
+  end
+
+  defp telegram_allowed_chats(%{"allowed_chat_ids" => _ids}),
+    do: {:error, {:bad_request, "allowed_chat_ids must be a list"}}
+
+  defp telegram_allowed_chats(_attrs), do: {:ok, nil}
+
+  defp put_telegram_allowed_chats(rec, nil), do: rec
+  defp put_telegram_allowed_chats(rec, allowed), do: Map.put(rec, "allowed_chat_ids", allowed)
+
+  @doc "The chats noted on a connect, allowed or not, so an admin can pick the ones it serves."
+  def list_telegram_observed_chats(tenant_id, group_id, connect_id) do
+    with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "telegram" do
+      SalixIM.ProviderObservations.list_telegram_chats(connect_id, nil, 100)
+    else
+      false -> {:error, :not_found}
+      other -> other
     end
   end
 
@@ -1373,36 +1531,85 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
-  def update_telegram_im_connect(tenant_id, group_id, connect_id, attrs) when is_map(attrs) do
-    with :ok <- reject_managed_telegram_mutation(group_id, connect_id),
-         {:ok, bot} <- validate_telegram_bot_token(attrs["bot_token"]) do
-      update_secret_connect(
+  # A request with `allowed_chat_ids` and no token changes which chats the bot
+  # serves and nothing else: the token path below also rewinds the update offset.
+  def update_telegram_im_connect(
         tenant_id,
         group_id,
         connect_id,
-        "telegram",
-        attrs,
-        ["bot_token"],
-        fn rec ->
-          rec
-          |> Map.put("bot_token", trim(attrs["bot_token"]))
-          |> Map.put("bot_user_id", trim(bot["id"]))
-          |> Map.put("bot_username", trim(bot["username"]))
-          |> Map.put("bot_display_name", trim(bot["first_name"]))
-          |> Map.put("updates_offset", 0)
-          |> Map.put("status", "connected")
-          |> Map.put("last_error", "")
-          |> Map.put("connected_at", now())
-        end
+        %{"allowed_chat_ids" => _ids} = attrs
       )
+      when not is_map_key(attrs, "bot_token") do
+    with :ok <- reject_managed_telegram_mutation(group_id, connect_id),
+         {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "telegram",
+         {:ok, allowed} <- telegram_allowed_chats(attrs) do
+      update_existing(Keys.ctl_im_connect(group_id, connect_id), fn rec ->
+        rec
+        |> put_telegram_allowed_chats(allowed)
+        |> Map.put("updated_at", now())
+      end)
+      |> public_result()
+    else
+      false -> {:error, :not_found}
+      other -> other
     end
   end
 
+  def update_telegram_im_connect(tenant_id, group_id, connect_id, attrs) when is_map(attrs) do
+    with :ok <- reject_managed_telegram_mutation(group_id, connect_id),
+         {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "telegram",
+         {:ok, bot} <- validate_telegram_bot_token(attrs["bot_token"]),
+         {:ok, allowed} <- telegram_allowed_chats(attrs) do
+      ProviderIdentity.update(
+        "telegram",
+        tenant_id,
+        group_id,
+        connect_id,
+        current["bot_user_id"],
+        bot["id"],
+        fn ->
+          update_secret_connect(
+            tenant_id,
+            group_id,
+            connect_id,
+            "telegram",
+            attrs,
+            ["bot_token"],
+            fn rec ->
+              rec
+              |> put_telegram_bot_fields(attrs, bot)
+              |> put_telegram_allowed_chats(allowed)
+            end
+          )
+        end
+      )
+    else
+      false -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  @feishu_event_fields ["events", "owner_only", "owner_open_id"]
+
+  @doc """
+  Connects the tenant's Feishu app to a Group. The app's secrets live in the
+  tenant Feishu-app store (`SalixIM.Ports.ProviderAppStore`); Feishu delivers
+  events to `webhook_url`.
+
+  With `"events" => "socket"` the events come through the app's long
+  connection (`SalixIM.LarkSocket`) instead, as for a Lark connect: an app
+  made by a scan has no request URL. `"owner_only" => true` makes it one
+  person's bot (Comma): only `"owner_open_id"`'s messages and card presses
+  reach the Router, and nobody's when it is missing.
+  """
   def create_feishu_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
     app_id = trim(attrs["app_id"])
 
-    with :ok <- reject_feishu_connect_secrets(attrs),
-         {:ok, attrs} <- resolve_feishu_bot_secrets(tenant_id, attrs),
+    with :ok <- validate_lark_choice(attrs, "events", ["webhook", "socket"]),
+         :ok <- validate_lark_owner(attrs),
+         {:ok, attrs, own_secret} <- feishu_connect_secrets(tenant_id, %{}, attrs),
          {:ok, token} <- validate_feishu_credentials(app_id, attrs["app_secret"]),
          :ok <- ProviderIdentity.ensure_available("feishu", app_id) do
       bot_open_id = fetch_feishu_bot_open_id(token)
@@ -1417,14 +1624,16 @@ defmodule SalixIM.ProviderConnects do
           rec
           |> Map.put("app_name", nonblank(attrs["app_name"], "Bridge"))
           |> Map.put("app_id", app_id)
+          |> put_own_feishu_secret(own_secret)
           |> Map.put("bot_open_id", bot_open_id)
-          |> Map.put("webhook_url", public_base_url() <> "/v1/im/feishu/events")
+          |> put_feishu_events(attrs)
           |> Map.put("status", "connected")
           |> Map.put("last_error", "")
           |> Map.put("connected_at", now())
         end,
         identity: {"feishu", app_id}
       )
+      |> sync_directory()
     end
   end
 
@@ -1433,8 +1642,7 @@ defmodule SalixIM.ProviderConnects do
 
     with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
          true <- current["tenant_id"] == tenant_id and current["provider"] == "feishu",
-         :ok <- reject_feishu_connect_secrets(attrs),
-         {:ok, attrs} <- resolve_feishu_bot_secrets(tenant_id, attrs),
+         {:ok, attrs, own_secret} <- feishu_connect_secrets(tenant_id, current, attrs),
          {:ok, token} <- validate_feishu_credentials(app_id, attrs["app_secret"]),
          :ok <- ProviderIdentity.ensure_available("feishu", app_id, connect_id) do
       bot_open_id = fetch_feishu_bot_open_id(token)
@@ -1458,18 +1666,108 @@ defmodule SalixIM.ProviderConnects do
               rec
               |> Map.put("app_name", nonblank(attrs["app_name"], "Bridge"))
               |> Map.put("app_id", app_id)
+              |> put_own_feishu_secret(own_secret)
               |> Map.put("bot_open_id", bot_open_id)
-              |> Map.put("webhook_url", public_base_url() <> "/v1/im/feishu/events")
+              |> put_feishu_events(Map.merge(Map.take(current, @feishu_event_fields), attrs))
               |> Map.put("status", "connected")
               |> Map.put("last_error", "")
               |> Map.put("connected_at", now())
+              |> Map.delete("missing_scopes")
             end
           )
         end
       )
+      |> sync_directory()
     else
       false -> {:error, :not_found}
       other -> other
+    end
+  end
+
+  # A Feishu or Lark connect whose app was set up or changed reads its
+  # Contacts data range into the stored copy, in the background.
+  defp sync_directory({:ok, %{"provider" => "feishu"} = connect} = result) do
+    SalixIM.Provider.Feishu.DirectorySnapshot.schedule(connect)
+    result
+  end
+
+  defp sync_directory({:ok, %{"provider" => "lark"} = connect} = result) do
+    SalixIM.Provider.Lark.DirectorySnapshot.schedule(connect)
+    result
+  end
+
+  defp sync_directory(result), do: result
+
+  # How a Feishu connect gets its events, and whose messages it takes.
+  defp put_feishu_events(rec, attrs) do
+    events = lark_events(attrs)
+
+    rec
+    |> Map.put("events", events)
+    |> Map.put("owner_only", attrs["owner_only"] == true)
+    |> Map.put("owner_open_id", trim(attrs["owner_open_id"]))
+    |> Map.put(
+      "webhook_url",
+      if(events == "webhook", do: public_base_url() <> "/v1/im/feishu/events", else: "")
+    )
+  end
+
+  @doc """
+  Begins making a Feishu app by a scan (`SalixIM.Provider.Lark.Registration`):
+  the link a person opens in Feishu and the device code to finish it with.
+  """
+  def begin_feishu_registration(name, opts \\ []),
+    do: SalixIM.Provider.Lark.Registration.begin("feishu", nonblank(name, "Comma"), opts)
+
+  @doc """
+  Asks once whether the scan made the app
+  (`SalixIM.Provider.Lark.Registration.poll/2`). A Lark account's app is
+  refused: its socket only opens on Lark's hosts.
+  """
+  def poll_feishu_registration(domain, device_code) do
+    case SalixIM.Provider.Lark.Registration.poll(domain, device_code) do
+      {:ok, %{domain: "lark"}} -> {:error, "This is a Lark account. Connect it to Lark."}
+      other -> other
+    end
+  end
+
+  @doc """
+  Asks once whether the scan made the Feishu app, and connects its bot to the
+  Group when it did. The connect owns the app's App Secret, as a Lark connect
+  does, so a tenant can connect several scanned apps; its events come through
+  the long connection. With `owner: true` the person who made the app is the
+  one person whose messages reach the Router.
+
+  A Lark account's app is refused. Returns `{:ok, connect}`,
+  `{:pending, domain}` or `{:slow_down, domain}` (ask again on `domain`), or
+  `{:error, reason}`. Asked again after it connected, it answers the same
+  connect.
+  """
+  def finish_feishu_registration(tenant_id, group_id, domain, device_code, opts \\ []) do
+    owner? = Keyword.get(opts, :owner, false)
+
+    case poll_feishu_registration(domain, device_code) do
+      # An owner's bot without its owner would answer everyone of the tenant.
+      {:ok, %{open_id: nil}} when owner? ->
+        {:error, "Feishu did not say who made the app"}
+
+      {:ok, app} ->
+        with {:ok, nil} <- scanned_connect(group_id, "feishu", app.app_id),
+             {:error, _reason} = error <-
+               create_feishu_im_connect(tenant_id, group_id, %{
+                 "app_id" => app.app_id,
+                 "app_secret" => app.app_secret,
+                 "events" => "socket",
+                 "owner_only" => owner?,
+                 "owner_open_id" => if(owner?, do: app.open_id, else: "")
+               }),
+             {:ok, nil} <- scanned_connect(group_id, "feishu", app.app_id) do
+          error
+        end
+        |> refresh_scanned(app)
+
+      other ->
+        other
     end
   end
 
@@ -1558,6 +1856,75 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
+  @doc """
+  Prepares a fresh, disabled Comma product LINE connect for one Group.
+
+  The channel secret and access token are the product's one LINE Official
+  Account, and `managed_peer_id` is the only LINE user this Group serves: the
+  user's private chat, and the groups where that user mentions the account.
+  Comma activates it only after its binding commits, as for Telegram
+  (CommaTelegramBinding.tla's prepare transition).
+  """
+  def ensure_managed_line_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
+    with :ok <-
+           validate_required_attrs(attrs, [
+             "channel_secret",
+             "channel_access_token",
+             "line_user_id"
+           ]),
+         {:ok, bot} <- validate_line_credentials(attrs["channel_access_token"]) do
+      create_secret_connect(
+        tenant_id,
+        group_id,
+        "line",
+        attrs,
+        ["channel_secret", "channel_access_token", "line_user_id"],
+        fn rec ->
+          rec
+          |> Map.put("app_id", trim(bot["userId"]))
+          |> Map.put("channel_secret", trim(attrs["channel_secret"]))
+          |> Map.put("channel_access_token", trim(attrs["channel_access_token"]))
+          |> Map.put("bot_user_id", trim(bot["userId"]))
+          |> Map.put("bot_username", trim(bot["basicId"]))
+          |> Map.put("bot_display_name", trim(bot["displayName"]))
+          |> Map.put("managed_by", "comma_product")
+          |> Map.put("managed_peer_id", trim(attrs["line_user_id"]))
+          |> Map.put("runtime_mode", "webhook")
+          |> Map.put("status", "connected")
+          |> Map.put("last_error", "")
+          |> Map.put("connected_at", now())
+          |> Map.put("disabled_at", now())
+        end
+      )
+    end
+  end
+
+  @doc "Comma lifecycle coordinator only; the binding must already be committed."
+  def activate_managed_line_im_connect(tenant_id, group_id, connect_id) do
+    with {:ok, rec} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- rec["managed_by"] == "comma_product" and rec["provider"] == "line" do
+      set_im_connect_disabled(tenant_id, group_id, connect_id, false)
+    else
+      false -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  defp validate_line_credentials(token) do
+    case SalixIM.Provider.Line.bot_info(trim(token)) do
+      {:ok, %{"userId" => user_id} = bot} when is_binary(user_id) and user_id != "" ->
+        {:ok, bot}
+
+      {:ok, _body} ->
+        {:error, {:bad_request, "LINE did not return the bot for this channel access token"}}
+
+      {:error, reason} ->
+        {:error,
+         {:bad_request,
+          "LINE credential check failed: " <> SalixIM.Provider.Line.error_text(reason)}}
+    end
+  end
+
   # Best effort: a bot connects whether or not QQ takes its menu, and the
   # outcome is kept for the page that shows the connect.
   defp sync_qq_command_panels(
@@ -1608,12 +1975,20 @@ defmodule SalixIM.ProviderConnects do
   values that verify a callback (Verification Token, Encrypt Key) belong to
   the connect. Lark delivers events to `webhook_url`, which the app's owner
   saves as the request URL of the app's event subscription.
+
+  With `"events" => "socket"` the events come through the app's long
+  connection (`SalixIM.LarkSocket`) instead: an app made by a scan
+  (`SalixIM.Provider.Lark.Registration`) has no request URL. Such a connect
+  needs no Verification Token or Encrypt Key and has no `webhook_url`.
+  `"owner_only" => true` makes it one person's bot (Comma): only
+  `"owner_open_id"`'s messages reach the Router, and nobody's when it is
+  missing. A shared bot (no `owner_only`) takes everyone the app hears.
   """
   def create_lark_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
     app_id = trim(attrs["app_id"])
 
     with :ok <- validate_lark_attrs(attrs),
-         {:ok, bot} <- validate_lark_credentials(app_id, attrs["app_secret"]),
+         {:ok, bot} <- validate_lark_credentials(attrs),
          :ok <- ProviderIdentity.ensure_available("lark", app_id) do
       create_secret_connect(
         tenant_id,
@@ -1624,6 +1999,96 @@ defmodule SalixIM.ProviderConnects do
         &put_lark_connect_fields(&1, attrs, bot),
         identity: {"lark", app_id}
       )
+      |> sync_directory()
+    end
+  end
+
+  @doc """
+  Begins making a Lark app by a scan (`SalixIM.Provider.Lark.Registration`):
+  the link a person opens in Lark and the device code to finish it with.
+  With `app_id:` the scan updates that app to the scopes a connect needs now
+  instead of making one.
+  """
+  def begin_lark_registration(name, opts \\ []),
+    do: SalixIM.Provider.Lark.Registration.begin("lark", nonblank(name, "Comma"), opts)
+
+  @doc """
+  Asks once whether the scan made the app
+  (`SalixIM.Provider.Lark.Registration.poll/2`). A Feishu account's app is
+  refused: Lark's hosts answer its credentials, but its socket only opens on
+  Feishu's.
+  """
+  def poll_lark_registration(domain, device_code) do
+    case SalixIM.Provider.Lark.Registration.poll(domain, device_code) do
+      {:ok, %{brand: "feishu"}} -> {:error, "This is a Feishu account. Connect it to Feishu."}
+      other -> other
+    end
+  end
+
+  @doc """
+  Asks once whether the scan made the app, and connects the app's bot to the
+  Group when it did. The connect gets its events through the long connection.
+  With `owner: true` the person who made the app is the one person whose
+  messages reach the Router (a person's own bot in Comma).
+
+  Returns `{:ok, connect}`, `{:pending, domain}` or `{:slow_down, domain}`
+  (ask again on `domain`), or `{:error, reason}`. Asked again after it
+  connected, it answers the same connect.
+  """
+  def finish_lark_registration(tenant_id, group_id, domain, device_code, opts \\ []) do
+    owner? = Keyword.get(opts, :owner, false)
+
+    case poll_lark_registration(domain, device_code) do
+      # An owner's bot without its owner would answer everyone of the tenant.
+      {:ok, %{open_id: nil}} when owner? ->
+        {:error, "Lark did not say who made the app"}
+
+      {:ok, app} ->
+        with {:ok, nil} <- scanned_connect(group_id, "lark", app.app_id),
+             {:error, _reason} = error <-
+               create_lark_im_connect(tenant_id, group_id, %{
+                 "app_id" => app.app_id,
+                 "app_secret" => app.app_secret,
+                 "events" => "socket",
+                 "owner_only" => owner?,
+                 "owner_open_id" => if(owner?, do: app.open_id, else: "")
+               }),
+             {:ok, nil} <- scanned_connect(group_id, "lark", app.app_id) do
+          error
+        end
+        |> refresh_scanned(app)
+
+      other ->
+        other
+    end
+  end
+
+  # A scan of an app the Group already has updated the app (`begin/3` with
+  # its `app_id`): it has the scopes asked for now, and its secret.
+  defp refresh_scanned({:ok, %{"events" => "socket", "missing_scopes" => [_ | _]} = connect}, app) do
+    update_existing(Keys.ctl_im_connect(connect["group_id"], connect["connect_id"]), fn rec ->
+      rec
+      |> Map.delete("missing_scopes")
+      |> then(
+        &if(trim(&1["app_secret"]) != "", do: Map.put(&1, "app_secret", app.app_secret), else: &1)
+      )
+      |> Map.put("updated_at", now())
+    end)
+    |> public_result()
+    |> sync_directory()
+  end
+
+  defp refresh_scanned(result, _app), do: result
+
+  # The connect a scan's app already has in the Group: a later step of the
+  # first attempt can fail, the same device code answers the same app, and
+  # two asks can overlap, so a refused connect looks again before it fails.
+  defp scanned_connect(group_id, provider, app_id) do
+    with {:ok, connects} <- list_group_im_connects(group_id, provider) do
+      case Enum.find(connects, &(&1["app_id"] == app_id)) do
+        nil -> {:ok, nil}
+        connect -> {:ok, connect}
+      end
     end
   end
 
@@ -1633,7 +2098,7 @@ defmodule SalixIM.ProviderConnects do
     with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
          true <- current["tenant_id"] == tenant_id and current["provider"] == "lark",
          :ok <- validate_lark_attrs(attrs),
-         {:ok, bot} <- validate_lark_credentials(app_id, attrs["app_secret"]),
+         {:ok, bot} <- validate_lark_credentials(attrs),
          :ok <- ProviderIdentity.ensure_available("lark", app_id, connect_id) do
       ProviderIdentity.update(
         "lark",
@@ -1654,6 +2119,7 @@ defmodule SalixIM.ProviderConnects do
           )
         end
       )
+      |> sync_directory()
     else
       false -> {:error, :not_found}
       other -> other
@@ -1661,39 +2127,76 @@ defmodule SalixIM.ProviderConnects do
   end
 
   # A callback is accepted only against one of these two values
-  # (`SalixIM.LarkInbound`), so a connect without both could receive nothing.
+  # (`SalixIM.LarkInbound`), so a webhook connect without both could receive
+  # nothing. A socket connect is proven by the long connection itself.
   defp validate_lark_attrs(attrs) do
-    with :ok <- validate_required_attrs(attrs, ["app_id", "app_secret"]) do
-      if trim(attrs["verification_token"]) == "" and trim(attrs["encrypt_key"]) == "",
-        do: {:error, {:bad_request, "verification_token or encrypt_key is required"}},
-        else: :ok
+    with :ok <- validate_required_attrs(attrs, ["app_id", "app_secret"]),
+         :ok <- validate_lark_choice(attrs, "events", ["webhook", "socket"]),
+         :ok <- validate_lark_owner(attrs) do
+      if lark_events(attrs) == "webhook" and trim(attrs["verification_token"]) == "" and
+           trim(attrs["encrypt_key"]) == "",
+         do: {:error, {:bad_request, "verification_token or encrypt_key is required"}},
+         else: :ok
+    end
+  end
+
+  defp validate_lark_owner(%{"owner_only" => true} = attrs) do
+    if trim(attrs["owner_open_id"]) == "",
+      do: {:error, {:bad_request, "owner_open_id is required for an owner's bot"}},
+      else: :ok
+  end
+
+  defp validate_lark_owner(_attrs), do: :ok
+
+  defp validate_lark_choice(attrs, key, allowed) do
+    case trim(attrs[key]) do
+      "" -> :ok
+      value -> if value in allowed, do: :ok, else: {:error, {:bad_request, "invalid #{key}"}}
+    end
+  end
+
+  @doc "How a Lark connect gets its events: `\"webhook\"` or `\"socket\"`."
+  def lark_events(rec) do
+    case trim(rec["events"]) do
+      "socket" -> "socket"
+      _ -> "webhook"
     end
   end
 
   defp put_lark_connect_fields(rec, attrs, bot) do
     app_id = trim(attrs["app_id"])
+    events = lark_events(attrs)
+
+    webhook_url =
+      if events == "webhook",
+        do: public_base_url() <> "/v1/im/lark/events?app_id=" <> URI.encode_www_form(app_id),
+        else: ""
 
     rec
     |> Map.put("app_id", app_id)
     |> Map.put("app_secret", trim(attrs["app_secret"]))
     |> Map.put("verification_token", trim(attrs["verification_token"]))
     |> Map.put("encrypt_key", trim(attrs["encrypt_key"]))
+    |> Map.put("events", events)
+    |> Map.put("owner_only", attrs["owner_only"] == true)
+    |> Map.put("owner_open_id", trim(attrs["owner_open_id"]))
     |> Map.put("app_name", trim(bot["app_name"]))
     |> Map.put("bot_open_id", trim(bot["open_id"]))
-    |> Map.put(
-      "webhook_url",
-      public_base_url() <> "/v1/im/lark/events?app_id=" <> URI.encode_www_form(app_id)
-    )
+    |> Map.put("webhook_url", webhook_url)
     |> Map.put("status", "connected")
     |> Map.put("last_error", "")
     |> Map.put("connected_at", now())
+    |> Map.delete("missing_scopes")
   end
 
   # The bot's own identity proves the credentials and gives the open_id a
   # group mention names the bot by.
-  defp validate_lark_credentials(app_id, app_secret) do
+  defp validate_lark_credentials(attrs) do
     case SalixIM.Provider.Lark.API.get(
-           %{"app_id" => app_id, "app_secret" => trim(app_secret)},
+           %{
+             "app_id" => trim(attrs["app_id"]),
+             "app_secret" => trim(attrs["app_secret"])
+           },
            "/bot/v3/info"
          ) do
       {:ok, %{"bot" => %{"open_id" => open_id} = bot}}
@@ -1777,6 +2280,9 @@ defmodule SalixIM.ProviderConnects do
 
       {:ok, %{"managed_by" => "comma_product", "provider" => "telegram"}} ->
         {:error, {:bad_request, "Manage this Telegram connection in Comma Settings"}}
+
+      {:ok, %{"managed_by" => "comma_product", "provider" => "line"}} ->
+        {:error, {:bad_request, "Manage this LINE connection in Comma Settings"}}
 
       {:ok, _connect} ->
         :ok
@@ -1869,11 +2375,23 @@ defmodule SalixIM.ProviderConnects do
       |> case do
         # Retry release even after the tombstone landed: a failed release must
         # not strand the provider reservation permanently.
-        {:ok, deleted} -> ProviderIdentity.release(deleted)
-        error -> error
+        {:ok, deleted} ->
+          drop_directory_copy(deleted)
+          ProviderIdentity.release(deleted)
+
+        error ->
+          error
       end
     end)
   end
+
+  defp drop_directory_copy(%{"provider" => "feishu", "connect_id" => connect_id}),
+    do: SalixIM.Provider.Feishu.DirectorySnapshot.delete(connect_id)
+
+  defp drop_directory_copy(%{"provider" => "lark", "connect_id" => connect_id}),
+    do: SalixIM.Provider.Lark.DirectorySnapshot.delete(connect_id)
+
+  defp drop_directory_copy(_connect), do: :ok
 
   def find_slack_im_connect_by_oauth_state(state) do
     state = trim(state)
@@ -1974,6 +2492,7 @@ defmodule SalixIM.ProviderConnects do
     with {:ok, start_after} <- decode_slack_bot_identity_backfill_cursor(cursor, prefix),
          {:ok, page} <- list_slack_bot_identity_backfill_page(prefix, limit, start_after),
          {:ok, records} <- hydrate_slack_bot_identity_backfill_page(page.objects, prefix) do
+      observe_search_connects(records)
       candidates = Enum.filter(records, candidate?)
       scan_complete = not continuation?(page.next)
 
@@ -2975,7 +3494,8 @@ defmodule SalixIM.ProviderConnects do
 
   defp context_only_router_input?(metadata) do
     metadata["router_activation_mode"] == "context_only" and
-      (metadata["event_type"] == "meeting.completed" or metadata["provider"] == "api")
+      (metadata["event_type"] == "meeting.completed" or
+         metadata["provider"] in ["api", "telegram"])
   end
 
   defp resolve_group_router_agent(group) do
@@ -3296,6 +3816,37 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
+  @doc """
+  Records that Lark or Feishu refused a Lark or Feishu connect's app for want
+  of `scope` (`SalixIM.Provider.Lark.API.missing_scope/1`), so the member
+  sees which scope to give the app. A new scan that updates the app
+  (`finish_lark_registration/5`) or new credentials clear it.
+  """
+  def note_missing_scope(%{"group_id" => group_id, "connect_id" => connect_id} = connect, scope)
+      when is_binary(scope) and scope != "" do
+    if scope in List.wrap(connect["missing_scopes"]) do
+      :ok
+    else
+      update_existing(Keys.ctl_im_connect(group_id, connect_id), fn rec ->
+        scopes = List.wrap(rec["missing_scopes"])
+
+        if scope in scopes or length(scopes) >= 20 do
+          {:unchanged, rec}
+        else
+          rec
+          |> Map.put("missing_scopes", scopes ++ [scope])
+          |> Map.put("updated_at", now())
+        end
+      end)
+      |> case do
+        {:ok, _} -> :ok
+        other -> other
+      end
+    end
+  end
+
+  def note_missing_scope(_connect, _scope), do: :ok
+
   def mark_im_connect_error(group_id, connect_id, message) do
     update_existing(Keys.ctl_im_connect(group_id, connect_id), fn rec ->
       rec
@@ -3309,7 +3860,43 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
-  defp update_existing(key, fun), do: CasRecord.update(key, fun, create: false)
+  defp update_existing(key, fun) do
+    case CasRecord.update(key, fun, create: false) do
+      {:ok, rec} = result ->
+        observe_search_connect(rec)
+
+        # A connect that became a socket connect. One whose index entry is
+        # not written is found by the next start of the socket runtime.
+        with {:error, reason} <- index_socket_connect(rec) do
+          Logger.warning("socket connect not indexed",
+            connect_id: rec["connect_id"],
+            reason: inspect(reason)
+          )
+        end
+
+        result
+
+      error ->
+        error
+    end
+  end
+
+  # The owner repairs this projection during its existing mirror-discovery page.
+  defp observe_search_connect(connect), do: observe_search_connects([connect])
+
+  defp observe_search_connects(connects) do
+    connects
+    |> Enum.filter(&(&1["provider"] == "slack"))
+    |> Enum.map(fn connect ->
+      connect
+      |> Map.take(~w(tenant_id group_id connect_id connect_generation workspace_id))
+      |> Map.put("active", message_search_connect_active?(connect))
+    end)
+    |> Enum.chunk_every(200)
+    |> Enum.each(&SalixStore.SlackSearchCatalog.remember_connects/1)
+
+    :ok
+  end
 
   # ---- projection helpers ----
 
@@ -3340,6 +3927,11 @@ defmodule SalixIM.ProviderConnects do
     do:
       rec["status"] == "connected" and trim(rec["app_id"]) != "" and
         trim(rec["app_secret"]) != ""
+
+  defp tool_visible_connect?(%{"provider" => "line"} = rec),
+    do:
+      rec["status"] == "connected" and trim(rec["app_id"]) != "" and
+        trim(rec["channel_access_token"]) != ""
 
   defp tool_visible_connect?(%{"provider" => "lark"} = rec),
     do:
@@ -3457,6 +4049,15 @@ defmodule SalixIM.ProviderConnects do
     |> put_optional_nonblank("bot_username", rec["bot_username"])
   end
 
+  defp tool_connect_summary(%{"provider" => "line"} = rec) do
+    %{
+      "connect_id" => rec["connect_id"],
+      "provider" => "line"
+    }
+    |> put_optional_nonblank("bot_display_name", rec["bot_display_name"])
+    |> put_optional_nonblank("bot_username", rec["bot_username"])
+  end
+
   defp tool_connect_summary(%{"provider" => "lark"} = rec) do
     %{
       "connect_id" => rec["connect_id"],
@@ -3472,6 +4073,7 @@ defmodule SalixIM.ProviderConnects do
   defp im_connect_public(%{"provider" => "feishu"} = rec), do: feishu_connect_public(rec)
   defp im_connect_public(%{"provider" => "qq"} = rec), do: qq_connect_public(rec)
   defp im_connect_public(%{"provider" => "lark"} = rec), do: lark_connect_public(rec)
+  defp im_connect_public(%{"provider" => "line"} = rec), do: line_connect_public(rec)
   defp im_connect_public(%{"provider" => "voice"} = rec), do: SalixIM.VoiceConnects.public(rec)
   defp im_connect_public(%{"provider" => "signal"} = rec), do: SalixIM.SignalConnects.public(rec)
 
@@ -3493,6 +4095,8 @@ defmodule SalixIM.ProviderConnects do
       "bot_user_id",
       "bot_username",
       "bot_display_name",
+      "allowed_chat_ids",
+      "can_read_all_group_messages",
       "webhook_url",
       "status",
       "last_error",
@@ -3527,6 +4131,30 @@ defmodule SalixIM.ProviderConnects do
     |> Map.put("command_menu_sync", rec["command_menu_sync"] || %{})
   end
 
+  defp line_connect_public(rec) do
+    rec
+    |> Map.take([
+      "connect_id",
+      "tenant_id",
+      "group_id",
+      "provider",
+      "bot_user_id",
+      "bot_username",
+      "bot_display_name",
+      "managed_by",
+      "managed_peer_id",
+      "runtime_mode",
+      "status",
+      "last_error",
+      "connected_at",
+      "disabled_at",
+      "created_at",
+      "updated_at"
+    ])
+    |> Map.put("channel_secret_configured", trim(rec["channel_secret"]) != "")
+    |> Map.put("channel_access_token_configured", trim(rec["channel_access_token"]) != "")
+  end
+
   defp lark_connect_public(rec) do
     rec
     |> Map.take([
@@ -3538,6 +4166,8 @@ defmodule SalixIM.ProviderConnects do
       "app_name",
       "bot_open_id",
       "webhook_url",
+      "owner_only",
+      "owner_open_id",
       "status",
       "last_error",
       "connected_at",
@@ -3545,6 +4175,8 @@ defmodule SalixIM.ProviderConnects do
       "created_at",
       "updated_at"
     ])
+    |> Map.put("events", lark_events(rec))
+    |> Map.put("missing_scopes", List.wrap(rec["missing_scopes"]))
     |> Map.put("app_secret_configured", trim(rec["app_secret"]) != "")
     |> Map.put("verification_token_configured", trim(rec["verification_token"]) != "")
     |> Map.put("encrypt_key_configured", trim(rec["encrypt_key"]) != "")
@@ -3564,6 +4196,8 @@ defmodule SalixIM.ProviderConnects do
       "tenant_key",
       "bot_open_id",
       "webhook_url",
+      "owner_only",
+      "owner_open_id",
       "status",
       "last_error",
       "connected_at",
@@ -3571,6 +4205,8 @@ defmodule SalixIM.ProviderConnects do
       "created_at",
       "updated_at"
     ])
+    |> Map.put("events", lark_events(rec))
+    |> Map.put("missing_scopes", List.wrap(rec["missing_scopes"]))
     |> Map.put("app_secret_configured", trim(app["app_secret"]) != "")
     |> Map.put("verification_token_configured", trim(app["verification_token"]) != "")
     |> Map.put("encrypt_key_configured", trim(app["encrypt_key"]) != "")
@@ -3604,6 +4240,7 @@ defmodule SalixIM.ProviderConnects do
     ])
     |> Map.put("oauth_bot_scopes", slack_scope_projection(rec))
     |> Map.put("triage_enabled", rec["triage_enabled"] == true)
+    |> Map.put("auto_join_public_channels", slack_auto_join_public_channels?(rec))
     |> Map.put("client_secret_configured", trim(rec["client_secret"]) != "")
     |> Map.put("signing_secret_configured", trim(rec["signing_secret"]) != "")
     |> Map.put("oauth_url", slack_oauth_url(rec))
@@ -3903,9 +4540,40 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
-  # Feishu bot secrets live only in the tenant Feishu-app store. Connect records
-  # carry app identity and webhook status; they never own app_secret,
-  # verification_token, or encrypt_key.
+  # Where a Feishu connect's App Secret is: an app made by a scan owns it, as a
+  # Lark connect does, so a tenant can scan several. Its events come through
+  # the long connection, so it has no token or key. Any other connect takes
+  # its secrets from the tenant Feishu-app store (`resolve_feishu_bot_secrets/2`).
+  # Returns the attrs with the secret to use, and the secret the connect owns
+  # ("" for none).
+  defp feishu_connect_secrets(tenant_id, current, attrs) do
+    given = trim(attrs["app_secret"])
+    owned = trim(current["app_secret"])
+    socket? = lark_events(Map.merge(Map.take(current, ["events"]), attrs)) == "socket"
+
+    cond do
+      given != "" and socket? ->
+        with :ok <- reject_feishu_connect_secrets(Map.delete(attrs, "app_secret")),
+             do: {:ok, attrs, given}
+
+      owned != "" ->
+        with :ok <- reject_feishu_connect_secrets(attrs),
+             do: {:ok, Map.put(attrs, "app_secret", owned), owned}
+
+      true ->
+        with :ok <- reject_feishu_connect_secrets(attrs),
+             {:ok, attrs} <- resolve_feishu_bot_secrets(tenant_id, attrs),
+             do: {:ok, attrs, ""}
+    end
+  end
+
+  defp put_own_feishu_secret(rec, ""), do: Map.delete(rec, "app_secret")
+  defp put_own_feishu_secret(rec, secret), do: Map.put(rec, "app_secret", secret)
+
+  # Feishu bot secrets of any connect but one made by a scan live only in the
+  # tenant Feishu-app store. Those connect records carry app identity and
+  # webhook status; they never own app_secret, verification_token, or
+  # encrypt_key.
   defp reject_feishu_connect_secrets(attrs) do
     case Enum.find(["app_secret", "verification_token", "encrypt_key"], &(trim(attrs[&1]) != "")) do
       nil ->
@@ -3976,6 +4644,11 @@ defmodule SalixIM.ProviderConnects do
     |> trim()
     |> Kernel.!=("")
   end
+
+  # A connect made by a scan is its own app (`feishu_connect_secrets/3`).
+  defp feishu_tenant_app_for_connect(%{"app_secret" => secret} = rec)
+       when is_binary(secret) and secret != "",
+       do: %{"app_id" => trim(rec["app_id"]), "app_secret" => secret}
 
   defp feishu_tenant_app_for_connect(rec) do
     app = feishu_tenant_app(rec["tenant_id"])
@@ -4081,6 +4754,7 @@ defmodule SalixIM.ProviderConnects do
         |> put_fields.()
 
       with :ok <- ProviderIdentity.reserve(identity, tenant_id, group_id, connect_id),
+           :ok <- index_socket_connect(rec),
            {:ok, rec} <- CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), rec) do
         {:ok, im_connect_public(rec)}
       else
@@ -4370,6 +5044,16 @@ defmodule SalixIM.ProviderConnects do
       rec
     end
   end
+
+  # Whether the connect joins each new public channel Slack reports
+  # (`channel_created`). Connects saved before the switch existed have no
+  # field and keep joining.
+  def slack_auto_join_public_channels?(rec), do: rec["auto_join_public_channels"] != false
+
+  defp maybe_put_slack_auto_join(rec, enabled) when is_boolean(enabled),
+    do: Map.put(rec, "auto_join_public_channels", enabled)
+
+  defp maybe_put_slack_auto_join(rec, _absent), do: rec
 
   defp slack_attr_changed?(rec, attrs, field) do
     case trim(attrs[field]) do

@@ -3,7 +3,13 @@ defmodule SalixMeet.CalendarEnrollmentCache do
 
   alias SalixStore.{Crypto, Ids, Keys, S3}
 
-  @version 5
+  # A version change invalidates every cached enrollment, so the next pass
+  # resolves each one again. Bump it together with a calendar adapter's
+  # normalization contract (`adapter_contract_id/0`): resolution then
+  # ensures and bootstraps the new contract's source, so stored events are
+  # normalized again without anyone saving settings again. Version 7 adds the
+  # bots that join Feishu/Lark meetings (`lark_join`).
+  @version 7
   @source_activation_proof %{"status" => "ready", "version" => 1}
   @write_attempts 3
 
@@ -88,26 +94,57 @@ defmodule SalixMeet.CalendarEnrollmentCache do
       identity["provider"] in ["slack", "feishu", "lark"]
   end
 
+  defp valid_group?(%{"calendar_scope" => "members"} = group, identity) do
+    units = group["units"]
+
+    same_scope?(group, identity) and valid_target?(group) and is_list(units) and
+      Enum.all?(units, &valid_unit?/1)
+  end
+
   defp valid_group?(group, identity) when is_map(group) do
     calendars = group["calendars"]
 
-    group["connect_id"] == identity["connect_id"] and group["provider"] == identity["provider"] and
-      group["tenant_id"] == identity["tenant_id"] and
-      group["group_id"] == identity["group_id"] and valid_target?(group) and
+    same_scope?(group, identity) and valid_target?(group) and
       Ids.valid_calendar_id?(group["calendar_id"]) and is_list(calendars) and calendars != [] and
       Enum.all?(calendars, &valid_calendar?/1)
   end
 
   defp valid_group?(_group, _identity), do: false
 
+  defp same_scope?(group, identity),
+    do:
+      group["connect_id"] == identity["connect_id"] and group["provider"] == identity["provider"] and
+        group["tenant_id"] == identity["tenant_id"] and group["group_id"] == identity["group_id"]
+
+  # A member whose calendars could not be listed yet keeps an empty unit.
+  defp valid_unit?(%{"account_id" => account_id, "calendars" => []} = unit),
+    do: trim(account_id) != "" and is_integer(unit["listed_at"])
+
+  defp valid_unit?(%{"account_id" => account_id, "calendars" => calendars} = unit)
+       when is_list(calendars),
+       do:
+         trim(account_id) != "" and is_integer(unit["listed_at"]) and
+           Ids.valid_calendar_id?(unit["calendar_id"]) and
+           Enum.all?(calendars, &valid_calendar?/1)
+
+  defp valid_unit?(_unit), do: false
+
   defp valid_target?(%{"provider" => "slack", "mode" => mode} = group)
        when mode in ["join", "prepare"],
-       do: trim(group["channel_id"]) != ""
+       do:
+         trim(group["channel_id"]) != "" or
+           SalixMeet.CalendarConfiguration.team_channel_optional?(group)
 
   defp valid_target?(%{"provider" => "feishu", "mode" => "notify"} = group) do
     trim(group["chat_id"]) != "" and valid_calendar?(group["create_calendar"]) and
       valid_mentions?(group["mentions"])
   end
+
+  # Team preparation saved for a Feishu/Lark connect posts its shared notice
+  # to one chat, or only sends personal notices when that notice is off.
+  defp valid_target?(%{"provider" => provider, "mode" => mode} = group)
+       when provider in ["feishu", "lark"] and mode in ["prepare", "join"],
+       do: trim(group["chat_id"]) != "" or group["channel_notice"] == false
 
   defp valid_target?(%{"provider" => "lark", "mode" => "notify"} = group) do
     trim(group["chat_id"]) != "" and valid_calendar?(group["create_calendar"]) and
@@ -162,10 +199,12 @@ defmodule SalixMeet.CalendarEnrollmentCache do
       }
       |> put_nonblank("calendar_id", group["calendar_id"])
       |> put_writeback(group)
+      |> put_members(group)
+      |> put_lark_join(group["lark_join"])
       |> Map.merge(
         Map.take(
           group,
-          ~w(preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
+          ~w(preparation_lead_minutes research_enabled series personal_preparation channel_notice delivery settings_revision calendar_source)
         )
       )
 
@@ -180,6 +219,60 @@ defmodule SalixMeet.CalendarEnrollmentCache do
   end
 
   defp persistable_group(_group), do: %{}
+
+  defp put_members(map, %{"calendar_scope" => "members", "units" => units}) when is_list(units) do
+    map
+    |> Map.put("calendar_scope", "members")
+    |> Map.put(
+      "units",
+      Enum.map(units, fn unit ->
+        %{
+          "account_id" => trim(unit["account_id"]),
+          "account_email" => trim(unit["account_email"]),
+          "calendars" => Enum.map(List.wrap(unit["calendars"]), &persistable_calendar/1),
+          "listed_at" => unit["listed_at"]
+        }
+        |> put_nonblank("calendar_id", unit["calendar_id"])
+        |> put_listing(unit["listing"])
+      end)
+    )
+  end
+
+  defp put_members(map, _group), do: map
+
+  # The bots that join a Feishu/Lark meeting link, by platform.
+  defp put_lark_join(map, %{} = bots) do
+    case for(
+           {platform, connect_id} <- bots,
+           platform in ["feishu", "lark"] and trim(connect_id) != "",
+           into: %{},
+           do: {platform, trim(connect_id)}
+         ) do
+      empty when empty == %{} -> map
+      bots -> Map.put(map, "lark_join", bots)
+    end
+  end
+
+  defp put_lark_join(map, _bots), do: map
+
+  # An enrollment that continues on later passes keeps where it stopped.
+  defp put_listing(unit, %{} = listing) do
+    Map.put(unit, "listing", %{
+      "page_token" => listing["page_token"],
+      "listed" => listing["listed"] == true,
+      "failed" => listing["failed"] == true,
+      "account_email" => listing["account_email"],
+      "pending" =>
+        for(
+          pair <- List.wrap(listing["pending"]),
+          is_map(pair),
+          do: Map.take(pair, ["account_id", "calendar_id", "time_zone"])
+        ),
+      "enrolled" => Enum.map(List.wrap(listing["enrolled"]), &persistable_calendar/1)
+    })
+  end
+
+  defp put_listing(unit, _listing), do: unit
 
   defp persistable_calendar(calendar) when is_map(calendar) do
     %{
@@ -241,7 +334,7 @@ defmodule SalixMeet.CalendarEnrollmentCache do
       |> Map.merge(
         Map.take(
           entry,
-          ~w(channel_id preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
+          ~w(channel_id calendar_scope calendar_source delivery preparation_lead_minutes research_enabled series personal_preparation channel_notice settings_revision)
         )
       )
 
@@ -260,14 +353,22 @@ defmodule SalixMeet.CalendarEnrollmentCache do
         base
       end
 
-    if trim(entry["mode"]) == "notify" do
-      base
-      |> Map.put("mode", "notify")
-      |> Map.put("chat_id", trim(entry["chat_id"]))
-      |> Map.put("create_calendar", normalize(entry["create_calendar"]))
-      |> Map.put("mentions", persistable_mentions(entry["mentions"]))
-    else
-      Map.put(base, "channel", entry["channel"] |> normalize() |> String.trim_leading("#"))
+    cond do
+      trim(entry["mode"]) == "notify" ->
+        base
+        |> Map.put("mode", "notify")
+        |> Map.put("chat_id", trim(entry["chat_id"]))
+        |> Map.put("create_calendar", normalize(entry["create_calendar"]))
+        |> Map.put("mentions", persistable_mentions(entry["mentions"]))
+
+      # A Feishu/Lark team preparation names its chat by id, if it has one.
+      trim(entry["provider"]) in ["feishu", "lark"] ->
+        base
+        |> Map.put("chat_id", trim(entry["chat_id"]))
+        |> Map.put("provider", trim(entry["provider"]))
+
+      true ->
+        Map.put(base, "channel", entry["channel"] |> normalize() |> String.trim_leading("#"))
     end
   end
 

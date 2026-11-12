@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+height=
+width=
+input=
+output=
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -z | --resampleHeightWidth) height=$2; width=$3; shift 3 ;;
+    --out | -o) output=$2; shift 2 ;;
+    -*) echo "sips (ImageMagick shim): unsupported option $1" >&2; exit 1 ;;
+    *) input=$1; shift ;;
+  esac
+done
+
+[ -n "$input" ] && [ -n "$height" ] || { echo "usage: sips -z HEIGHT WIDTH INPUT --out OUTPUT" >&2; exit 1; }
+convert "$input" -resize "${width}x${height}!" "PNG32:${output:-$input}"

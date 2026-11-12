@@ -18,7 +18,13 @@ import {
 import { messages, type CommaLocale } from "@comma/i18n";
 import type { CommaNativeBridge } from "@comma/native-bridge";
 import type { SessionProductLease } from "@comma/session-contract";
-import type { ChatChannel, ChatSendOptions, QuestionCardAnswer } from "./ChatChannel";
+import type {
+  ChatChannel,
+  ChatScreenShare,
+  ChatSendOptions,
+  QuestionCardAnswer,
+} from "./ChatChannel";
+import { fitImageAttachment } from "./fitImageAttachment";
 import { LocalFilePreviews } from "./LocalFilePreviews";
 import { OptimisticDraft } from "./optimisticDraft";
 
@@ -244,6 +250,10 @@ export class CoreConversationChannel implements ChatChannel {
     return this.#call("chatView.refresh", {});
   }
 
+  older() {
+    return this.#call("chatView.older", {});
+  }
+
   readTaskActivity() {
     return this.#call("chatView.readTaskActivity", {});
   }
@@ -251,7 +261,8 @@ export class CoreConversationChannel implements ChatChannel {
   /**
    * Files dropped or pasted on the composer. On Electron, files from disk go to Main, which reads them and attaches
    * what the draft has room for; otherwise this window reads each and attaches its bytes. A question card's images
-   * (`questionMessageId`) are read here and attached as bytes to the card, apart from the draft.
+   * (`questionMessageId`) are read here and attached as bytes to the card, apart from the draft. An image too large
+   * for the server is made to fit first (`fitImageAttachment`).
    */
   attachFiles(files: AttachmentUploadInput[], questionMessageId?: string) {
     if (!this.#unsubscribe || files.length === 0) return undefined;
@@ -266,6 +277,48 @@ export class CoreConversationChannel implements ChatChannel {
     }
     for (const file of files) this.#upload(file);
     return undefined;
+  }
+
+  /**
+   * A screen's picture, made to fit what the server reads back as an image first (`fitImageAttachment`): a PNG that is
+   * too large comes as a JPEG or a WebP, and the core names it by the type it is now.
+   */
+  attachScreen({
+    device,
+    screen,
+    name,
+    picture,
+    marked,
+    message,
+    files = [],
+  }: ChatScreenShare) {
+    return this.#call("chatView.attachScreen", async () => {
+      const fitted = await fitImageAttachment({
+        data: picture,
+        name: "screen.png",
+        size: picture.size,
+      });
+      return {
+        device,
+        screen,
+        ...(name ? { name } : {}),
+        picture: await bytes(fitted),
+        pictureType: pictureTypeOf(fitted.name),
+        ...(marked ? { marked } : {}),
+        ...(message ? { message } : {}),
+        ...(files.length > 0
+          ? {
+              files: await Promise.all(
+                files.map(async (file) => ({
+                  name: file.name,
+                  size: file.size,
+                  bytes: await bytes(file),
+                }))
+              ),
+            }
+          : {}),
+      };
+    });
   }
 
   attachConversationFiles(files: ChatConversationFile[]) {
@@ -314,13 +367,14 @@ export class CoreConversationChannel implements ChatChannel {
 
   #attachToCard(questionMessageId: string, files: AttachmentUploadInput[]) {
     const read = Promise.all(
-      files.map((file) =>
-        file.data.arrayBuffer().then((buffer) => ({
-          name: file.name,
-          size: file.size,
-          bytes: new Uint8Array(buffer),
-        }))
-      )
+      files.map(async (file) => {
+        const fitted = await fitImageAttachment(file);
+        return {
+          name: fitted.name,
+          size: fitted.size,
+          bytes: new Uint8Array(await fitted.data.arrayBuffer()),
+        };
+      })
     );
     const attached = this.#call(
       "chatView.attach",
@@ -346,13 +400,14 @@ export class CoreConversationChannel implements ChatChannel {
     };
     this.#local = [...this.#local, local];
     this.#show();
-    const read = file.data.arrayBuffer();
+    const read = fitImageAttachment(file).then(async (fitted) => ({
+      name: fitted.name,
+      size: fitted.size,
+      bytes: new Uint8Array(await fitted.data.arrayBuffer()),
+    }));
     this.#call<Receipt>(
       "chatView.attach",
-      () =>
-        read.then((buffer) => ({
-          files: [{ name: file.name, size: file.size, bytes: new Uint8Array(buffer) }],
-        })),
+      () => read.then((bytes) => ({ files: [bytes] })),
       undefined
     ).then(
       (receipt) => this.#settleLocal(local, { shownFrom: receipt.revision }),
@@ -364,12 +419,12 @@ export class CoreConversationChannel implements ChatChannel {
   // The drop holds the line until Main attached the files: a send made meanwhile carries them.
   #drop(files: AttachmentUploadInput[]) {
     void this.#inLine(
-      () => {
+      async () => {
+        const fitted = await Promise.all(files.map(fitImageAttachment));
         const lease = this.#value?.lease;
-        if (!lease)
-          return Promise.reject(new Error("Chat is not available in this window."));
+        if (!lease) throw new Error("Chat is not available in this window.");
         const quota = pickQuota(this.#state.draftAttachments);
-        if (!quota) return Promise.resolve(undefined);
+        if (!quota) return undefined;
         return this.#bridge.chat.pickAttachments({
           workspaceId: this.#topic.workspace,
           groupId: this.#topic.group,
@@ -378,24 +433,35 @@ export class CoreConversationChannel implements ChatChannel {
           surfaceId: this.#topic.surface,
           session: this.#session,
           ...quota,
-          files: files.map((file) => file.data as File),
+          files: fitted.map((file) => file.data as File),
         });
       },
       { until: "done", before: this.#leased }
-    ).catch((error: unknown) => {
-      const local: LocalRow = {
-        row: {
-          error: undefined,
-          id: `local-drop:${++this.#localIds}`,
-          isImage: false,
-          name: files[0]!.name,
-          path: undefined,
-          size: 0,
-          status: "uploading",
-        },
-      };
-      this.#failLocal(local, error, files);
-    });
+    ).then(
+      (picked) => this.#writeFolderPaths(picked?.folderPaths),
+      (error: unknown) => {
+        const local: LocalRow = {
+          row: {
+            error: undefined,
+            id: `local-drop:${++this.#localIds}`,
+            isImage: false,
+            name: files[0]!.name,
+            path: undefined,
+            size: 0,
+            status: "uploading",
+          },
+        };
+        this.#failLocal(local, error, files);
+      }
+    );
+  }
+
+  /** Folders dropped or pasted are no attachment: their paths go in the draft's text, after what is written there. */
+  #writeFolderPaths(paths: readonly string[] | undefined) {
+    if (!paths?.length || !this.#unsubscribe) return;
+    const draft = this.#state.draft;
+    const gap = draft === "" || /\s$/.test(draft) ? "" : " ";
+    void this.setDraft(`${draft}${gap}${paths.join(" ")}`).catch(() => undefined);
   }
 
   #settleLocal(local: LocalRow, change: Partial<LocalRow>) {
@@ -621,3 +687,15 @@ export function overlaySeededTranscript(
 }
 
 function noop() {}
+
+/** A file's bytes, as a core call carries them. */
+const bytes = async (file: AttachmentUploadInput) =>
+  new Uint8Array(await file.data.arrayBuffer());
+
+/** The type of an image `fitImageAttachment` gave, by the extension it named it with. */
+const pictureTypeOf = (name: string) =>
+  /\.jpe?g$/i.test(name)
+    ? ("image/jpeg" as const)
+    : /\.webp$/i.test(name)
+      ? ("image/webp" as const)
+      : ("image/png" as const);

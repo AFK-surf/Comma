@@ -50,6 +50,20 @@ defmodule SalixStore.StationDeviceLookup do
     _ -> {:error, :station_lookup_unavailable}
   end
 
+  @doc "The device `owner` runs `station` as, when it connected before."
+  def device_of(tenant, group, station, owner) do
+    Repo.one(
+      from(d in __MODULE__,
+        where:
+          d.tenant_id == ^tenant and d.group_id == ^group and d.station_id == ^station and
+            d.owner_user_id == ^owner,
+        order_by: d.device_id,
+        limit: 1,
+        select: d.device_id
+      )
+    )
+  end
+
   def remove(tenant, group, device) do
     Repo.delete_all(
       from(d in __MODULE__,

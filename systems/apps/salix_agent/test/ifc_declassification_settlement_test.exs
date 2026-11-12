@@ -14,7 +14,7 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
 
   use SalixAgent.TestSupport.Settle
   alias SalixAgent.CapabilityRequests
-  alias SalixStore.{Ids, Keys, S3}
+  alias SalixStore.Ids
 
   @source "scope|cnx1|@U_A"
   @destination "space|cnx1"
@@ -176,11 +176,10 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
   end
 
   describe "deadline reconciliation" do
-
     test "a completion whose session delivery fails remains replayable", ctx do
       request = request!(ctx, %{"request_type" => "location"})
       # No source session was created: the owner result must survive failed delivery.
-      assert {:error, _} =
+      assert {:ok, %{"status" => "completed"}} =
                CapabilityRequests.share_location(
                  ctx.group,
                  request["request_id"],

@@ -2,15 +2,14 @@ defmodule Comma.GoogleAuthTest do
   require SystemsRuntime.Proc
 
   use Comma.DataCase, async: false
+  setup {Comma.AuthAbuseTestSupport, :setup}
 
   @moduletag database_isolation: "SERIALIZABLE"
-  @serializable_statement "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
   @desktop_code_verifier String.duplicate("v", 43)
   @desktop_redirect_uri "http://127.0.0.1:43123/oauth2/callback"
   @android_client_id "comma-android-test.apps.googleusercontent.com"
 
   alias Comma.Accounts.{AuthSession, Identity, Repository, User}
-  alias Comma.Auth.GoogleClaims
   alias Comma.{Accounts, AuthChallenges, GoogleAuth}
 
   setup context do
@@ -37,7 +36,9 @@ defmodule Comma.GoogleAuthTest do
     on_exit(fn -> with_unboxed_repo(fn -> delete_account_by_email(email) end) end)
 
     assert {:ok, %{"challenge_id" => challenge_id, "code" => code}} =
-             with_unboxed_repo(fn -> AuthChallenges.request_email_login(%{"email" => email}) end)
+             with_unboxed_repo(fn ->
+               Comma.AuthAbuseTestSupport.request_email_login(%{"email" => email})
+             end)
 
     assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "web"})
     credential = "concurrent-google-credential"
@@ -102,7 +103,7 @@ defmodule Comma.GoogleAuthTest do
         with_unboxed_repo(fn ->
           [[backend_pid]] = Ecto.Adapters.SQL.query!(Repo, "SELECT pg_backend_pid()", []).rows
           SystemsRuntime.Proc.send(parent, {:google_backend_pid, backend_pid})
-          GoogleAuth.complete(complete_attrs(attempt, credential))
+          Comma.AuthAbuseTestSupport.complete_google(complete_attrs(attempt, credential))
         end)
       end)
 
@@ -123,15 +124,11 @@ defmodule Comma.GoogleAuthTest do
     assert {:ok, google_session} = google_result
     assert otp_session["user"]["id"] == google_session["user"]["id"]
 
-    assert_receive :google_serializable_transaction_started
-    assert_receive {:google_serialization_failure, failed_query}
-    assert failed_query =~ ~s(INSERT INTO "comma_users")
-    assert_receive :google_serializable_transaction_started
-    refute_receive :google_serializable_transaction_started, 100
-    refute_receive {:google_serialization_failure, _query}, 100
+    # The accepted continuation adds a classification transaction. The regression is recovery and one identity, not a query count.
+    assert_receive {:google_serialization_failure, _failed_query}
 
     assert {:error, :invalid_google_attempt} =
-             GoogleAuth.complete(complete_attrs(attempt, credential))
+             Comma.AuthAbuseTestSupport.complete_google(complete_attrs(attempt, credential))
 
     with_unboxed_repo(fn ->
       user_id = otp_session["user"]["id"]
@@ -177,6 +174,14 @@ defmodule Comma.GoogleAuthTest do
     identity = Repo.one!(from(identity in Identity, where: identity.user_id == ^user_id))
     assert identity.subject == "new-subject"
     assert identity.email_snapshot == "renamed@example.com"
+  end
+
+  test "verified dotted Gmail creates a signup claim without aliasing the login email" do
+    assert {:ok, session} = google_login("dotted-subject", "new.person@gmail.com", true, nil)
+    user = Repo.get!(User, session["user"]["id"])
+    assert user.email == "new.person@gmail.com"
+    assert user.signup_credit_eligible
+    assert user.signup_credit_gmail_claimed
   end
 
   test "exact verified Gmail and Workspace claims auto-link an existing OTP user" do
@@ -256,9 +261,10 @@ defmodule Comma.GoogleAuthTest do
            ) == 0
   end
 
-  test "web and Electron audience, nonce, and attempt replay fail closed" do
+  test "web, Electron, and iOS audience, nonce, and attempt replay fail closed" do
     for {platform, expected_client_id} <- [
           {"web", "comma-web-test.apps.googleusercontent.com"},
+          {"ios", "comma-ios-test.apps.googleusercontent.com"},
           {"electron", "comma-electron-test.apps.googleusercontent.com"}
         ] do
       assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => platform})
@@ -271,12 +277,14 @@ defmodule Comma.GoogleAuthTest do
       put_credentials(%{"bad-audience" => Map.put(claims, "aud", "other-client")})
 
       assert {:error, :invalid_google_credential} =
-               GoogleAuth.complete(complete_attrs(attempt, "bad-audience"))
+               Comma.AuthAbuseTestSupport.complete_google(complete_attrs(attempt, "bad-audience"))
 
       put_credentials(%{"valid-after-consume" => claims})
 
       assert {:error, :invalid_google_attempt} =
-               GoogleAuth.complete(complete_attrs(attempt, "valid-after-consume"))
+               Comma.AuthAbuseTestSupport.complete_google(
+                 complete_attrs(attempt, "valid-after-consume")
+               )
 
       assert {:ok, nonce_attempt} = GoogleAuth.start_attempt(%{"platform" => platform})
 
@@ -293,8 +301,42 @@ defmodule Comma.GoogleAuthTest do
       put_credentials(%{"bad-nonce" => nonce_claims})
 
       assert {:error, :invalid_google_credential} =
-               GoogleAuth.complete(complete_attrs(nonce_attempt, "bad-nonce"))
+               Comma.AuthAbuseTestSupport.complete_google(
+                 complete_attrs(nonce_attempt, "bad-nonce")
+               )
     end
+  end
+
+  test "iOS reuses a web Google identity and records an ordinary iOS session" do
+    assert {:ok, web_session} =
+             google_login("shared-ios-subject", "shared-ios@gmail.com", true, nil)
+
+    assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "ios"})
+    assert "gla_ios_" <> _ = attempt["attempt_id"]
+
+    put_credentials(%{
+      "ios-token" => claims("shared-ios-subject", "shared-ios@gmail.com", true, nil, attempt)
+    })
+
+    attrs =
+      Map.merge(complete_attrs(attempt, "ios-token"), %{
+        "client_kind" => "ios",
+        "client_platform" => "ios"
+      })
+
+    assert {:ok, session} = Comma.AuthAbuseTestSupport.complete_google(attrs)
+    assert session["user"]["id"] == web_session["user"]["id"]
+    stored = Repo.get!(AuthSession, session["session_id"])
+    assert stored.auth_method == "google"
+    assert stored.client_kind == "ios"
+    assert stored.client_platform == "ios"
+    assert {:error, :invalid_google_attempt} = Comma.AuthAbuseTestSupport.complete_google(attrs)
+  end
+
+  test "iOS Google login fails closed when its OAuth client is not configured" do
+    config = SystemsRuntime.get_env(:comma_core, :google_auth)
+    SystemsRuntime.Test.put_env(:comma_core, :google_auth, Keyword.delete(config, :ios_client_id))
+    assert {:error, :google_not_configured} = GoogleAuth.start_attempt(%{"platform" => "ios"})
   end
 
   test "Android ID tokens use the web audience and require an authorized Android party" do
@@ -316,7 +358,9 @@ defmodule Comma.GoogleAuthTest do
     })
 
     assert {:error, :invalid_google_credential} =
-             GoogleAuth.complete(complete_attrs(attempt, "android-unauthorized-party"))
+             Comma.AuthAbuseTestSupport.complete_google(
+               complete_attrs(attempt, "android-unauthorized-party")
+             )
 
     assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "android"})
 
@@ -326,7 +370,9 @@ defmodule Comma.GoogleAuthTest do
     })
 
     assert {:error, :invalid_google_credential} =
-             GoogleAuth.complete(complete_attrs(attempt, "android-missing-party"))
+             Comma.AuthAbuseTestSupport.complete_google(
+               complete_attrs(attempt, "android-missing-party")
+             )
 
     assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "android"})
 
@@ -335,7 +381,7 @@ defmodule Comma.GoogleAuthTest do
     })
 
     assert {:ok, session} =
-             GoogleAuth.complete(
+             Comma.AuthAbuseTestSupport.complete_google(
                attempt
                |> complete_attrs("android-credential")
                |> Map.merge(%{"client_kind" => "android", "client_platform" => "android"})
@@ -365,14 +411,45 @@ defmodule Comma.GoogleAuthTest do
     })
 
     assert {:error, :invalid_google_attempt} =
-             GoogleAuth.complete(%{
+             Comma.AuthAbuseTestSupport.complete_google(%{
                "attempt_id" => attempt["attempt_id"],
                "nonce" => attempt["nonce"],
                "credential" => authorization_code
              })
 
-    assert {:ok, session} = GoogleAuth.complete(complete_attrs(attempt, authorization_code))
+    assert {:ok, session} =
+             Comma.AuthAbuseTestSupport.complete_google(
+               complete_attrs(attempt, authorization_code)
+             )
+
     assert session["user"]["email"] == "electron-shape-bound@example.com"
+  end
+
+  @tag :analytics
+  test "a desktop signup's registration names the desktop client", ctx do
+    assert {:ok, attempt} = GoogleAuth.start_attempt(%{"platform" => "electron"})
+
+    put_credentials(%{
+      "desktop-signup-code" =>
+        claims("desktop-signup", "desktop-signup@example.com", true, nil, attempt)
+    })
+
+    attrs =
+      Map.merge(complete_attrs(attempt, "desktop-signup-code"), %{
+        "client_kind" => "electron",
+        "client_platform" => "macos"
+      })
+
+    assert {:ok, session} = Comma.AuthAbuseTestSupport.complete_google(attrs)
+
+    assert [registration] =
+             ctx.analytics_worker
+             |> Comma.AnalyticsTestSupport.collect()
+             |> Enum.filter(&(&1["event"] == "comma_user_registered"))
+
+    assert registration["distinct_id"] == session["user"]["id"]
+    assert registration["properties"]["client_kind"] == "electron"
+    assert registration["properties"]["client_platform"] == "macos"
   end
 
   test "Google sessions are revocable ordinary sessions without admin capability" do
@@ -396,7 +473,7 @@ defmodule Comma.GoogleAuthTest do
       credential => claims(subject, email, email_verified, hosted_domain, attempt)
     })
 
-    GoogleAuth.complete(complete_attrs(attempt, credential))
+    Comma.AuthAbuseTestSupport.complete_google(complete_attrs(attempt, credential))
   end
 
   defp claims(subject, email, email_verified, hosted_domain, attempt) do
@@ -492,6 +569,8 @@ defmodule Comma.GoogleAuthTest do
   end
 
   defp delete_account_by_email(email) do
+    {:ok, hash} = Comma.Billing.SignupCredits.gmail_registration_hash(email)
+    Repo.delete_all(from(r in "comma_released_emails", where: r.email_hash == ^hash))
     user_ids = Repo.all(from(user in User, where: user.email == ^email, select: user.id))
     Repo.delete_all(from(session in AuthSession, where: session.user_id in ^user_ids))
     Repo.delete_all(from(identity in Identity, where: identity.user_id in ^user_ids))
@@ -501,9 +580,6 @@ defmodule Comma.GoogleAuthTest do
 
   def capture_serializable_query(_event, _measurements, metadata, test_pid) do
     case metadata do
-      %{query: @serializable_statement} ->
-        SystemsRuntime.Proc.send(test_pid, :google_serializable_transaction_started)
-
       %{
         query: query,
         result: {:error, %Postgrex.Error{postgres: %{code: :serialization_failure}}}

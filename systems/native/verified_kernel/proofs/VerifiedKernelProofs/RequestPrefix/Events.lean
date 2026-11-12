@@ -451,17 +451,17 @@ theorem runs_share_prefix {s s' delta delta' cfg tools mode body body' : Term} {
     let pr := String.fromUTF8! name
     let md := String.fromUTF8! (Provider.bytes mode)
     ∃ D Y tools' b₁ b₂, tools = list tools' ∧
-      (∃ X j k, Provider.Request.body pr cfg (wire pr (D ++ X)) (wire pr tools') md j = .ok (b₁, k)) ∧
+      (∃ X j k, Provider.Request.body pr cfg (wireMessages pr (D ++ X)) (wire pr tools') md j = .ok (b₁, k)) ∧
       (∃ j k, Provider.encode (Provider.scrub b₁) j = .ok (body, k)) ∧
-      (∃ X j k, Provider.Request.body pr cfg (wire pr (D ++ (Y ++ X))) (wire pr tools') md j = .ok (b₂, k)) ∧
+      (∃ X j k, Provider.Request.body pr cfg (wireMessages pr (D ++ (Y ++ X))) (wire pr tools') md j = .ok (b₂, k)) ∧
       (∃ j k, Provider.encode (Provider.scrub b₂) j = .ok (body', k)) ∧
       (∃ C C', (∃ j k, Session.Request.context s j = .ok (list C, k)) ∧
         (∃ j k, Session.Request.context s' j = .ok (list (C ++ C'), k)) ∧
         D = (promptHead (Session.ReplyQuery.presentTerm (s.get (a "system_prompt"))) ++ C).map
           (inlineOne host (watermark s)) ∧
         Y = C'.map (inlineOne host (watermark s'))) ∧
-      ∀ b₀ j k, Provider.Request.body pr cfg (wire pr D) (wire pr tools') md j = .ok (b₀, k) →
-        ProviderLoop.ClosedHistory (wire pr D) →
+      ∀ b₀ j k, Provider.Request.body pr cfg (wireMessages pr D) (wire pr tools') md j = .ok (b₀, k) →
+        ProviderLoop.ClosedHistory (wireMessages pr D) →
         ProviderLoop.headOf pr b₁ = ProviderLoop.headOf pr b₀ ∧ ProviderLoop.headOf pr b₂ = ProviderLoop.headOf pr b₀ ∧
           ProviderLoop.messagesOf pr b₀ <+: ProviderLoop.messagesOf pr b₁ ∧
           ProviderLoop.messagesOf pr b₀ <+: ProviderLoop.messagesOf pr b₂ :=

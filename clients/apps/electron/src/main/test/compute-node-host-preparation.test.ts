@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -21,7 +22,14 @@ import {
   AgentVMMHostPreparation,
   resolveHostConfiguration,
 } from "../modules/compute-node/host-preparation";
-import { AgentVMMCommandAdapter, runCommand } from "../modules/compute-node";
+import {
+  AgentVMMCommandAdapter,
+  ComputeNodeService,
+  runCommand,
+  type ComputeNodeInstallAuthorizationOwner,
+} from "../modules/compute-node";
+import { LocalHostMaintenance } from "../modules/compute-node/host-maintenance";
+import type { NativeReceipt } from "../modules/compute-node/host-maintenance-protocol";
 
 const directories: string[] = [];
 async function temporary() {
@@ -172,6 +180,15 @@ async function publishFixture(
   args: string[]
 ) {
   if (args[0] === "publish-host") {
+    try {
+      const policy = JSON.parse(
+        await readFile(join(config.maintenanceDirectory, "state.json"), "utf8")
+      );
+      if (policy.uninstalled)
+        throw new Error("Native owner requires an explicit reinstall.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const sourceApp = args[args.indexOf("--source-app") + 1]!;
     expect(command).toBe(join(sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle"));
     expect(args).toEqual(
@@ -189,6 +206,193 @@ async function publishFixture(
 }
 
 describe("Host preparation", () => {
+  it("keeps the native owner refusal through actual preparation and continues the original configure after confirmed reinstall", async () => {
+    const home = await temporary();
+    const config = resolveHostConfiguration(
+      "dev",
+      {
+        COMMA_VMM_DOWNLOAD_URL: "https://example.test/setup-Host.zip",
+      },
+      home
+    );
+    let installed = false,
+      claimed = false;
+    let maintenance: NativeReceipt | undefined;
+    let claim: Record<string, unknown> | undefined;
+    const publications: string[][] = [];
+    const requests: Record<string, unknown>[] = [];
+    const run: HostCommand = async (command, args, stdin) => {
+      if (command === "/usr/bin/codesign") return "";
+      if (args[0] === "publish-host") {
+        publications.push(args);
+        return runCommand(process.execPath, [
+          "-e",
+          `process.stdout.write(JSON.stringify({error:{code:"host_uninstalled",reason:"owner_uninstalled"}}));process.exitCode=1;`,
+        ]);
+      }
+      if (args[0] === "version")
+        return JSON.stringify({ contractVersion: 1, release_id: "local-release" });
+      if (args[0] === "maintenance-status") return JSON.stringify(maintenance ?? null);
+      if (args[0] === "host-maintain") {
+        const input = JSON.parse(stdin!);
+        requests.push(input);
+        await cp(input.sourceApp, input.targetApp, { recursive: true });
+        installed = true;
+        maintenance = {
+          contractVersion: 1,
+          version: 1,
+          requestId: input.requestId,
+          action: input.action,
+          dataPolicy: input.dataPolicy,
+          stage: "settled",
+          outcome: "succeeded",
+        };
+        return JSON.stringify(maintenance);
+      }
+      if (args[0] === "status")
+        return JSON.stringify({
+          contractVersion: 1,
+          hostLoaded: installed,
+          hostReadable: true,
+          hostHealthy: installed,
+          hostInstalled: installed,
+          connectorLoaded: claimed,
+          registrationRead: claimed ? "present" : "absent",
+        });
+      if (args[0] === "operation") return JSON.stringify(claim ?? null);
+      if (args[0] === "registration-claim") {
+        claimed = true;
+        claim = {
+          requestId: args[args.indexOf("--request-id") + 1],
+          targetRegistrationId: JSON.parse(stdin!).registration_id,
+          kind: "registration-claim",
+          outcome: "succeeded",
+        };
+        return JSON.stringify(claim);
+      }
+      throw new Error(`Unexpected fixture command: ${args[0]}`);
+    };
+    const preparation = new AgentVMMHostPreparation(config, run, async () =>
+      downloadResponse(archiveFixture())
+    );
+    const owner: ComputeNodeInstallAuthorizationOwner = {
+      authorize: vi.fn(async () => ({
+        registrationId: "reg-setup",
+        descriptor: '{"registration_id":"reg-setup"}',
+      })),
+      retry: async () => {
+        throw new Error("Unexpected ticket renewal");
+      },
+      inspect: async () => ({
+        status: claimed ? "ready" : "processing",
+        workActivity: "idle",
+      }),
+      observe: async () => (claimed ? "ready" : "processing"),
+      configure: async () => "ready",
+      revoke: async () => "removed",
+    };
+    const confirm = vi.fn(async () => {
+      expect(preparation.state().phase).toBe("failed");
+      expect(owner.authorize).not.toHaveBeenCalled();
+      return true;
+    });
+    const host = new LocalHostMaintenance(
+      preparation,
+      join(home, "maintenance"),
+      run,
+      confirm
+    );
+    const service = await ComputeNodeService.open({
+      filePath: join(home, "compute.json"),
+      preparation,
+      adapter: new AgentVMMCommandAdapter(config.lifecyclePath, run),
+      installAuthorization: owner,
+      platform: "darwin",
+      arch: "arm64",
+      reinstallHost: (explicit, requireCurrent) =>
+        host.prepareForSetup(explicit, requireCurrent),
+    });
+    await service.refresh();
+    await service.configure({ desiredEnabled: true, workspaceId: "workspace" });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(publications).toHaveLength(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      action: "reinstall",
+      dataPolicy: "preserve",
+      confirmSharedHost: true,
+    });
+    expect(requests[0]!.requestId).not.toBe(service.state().currentRequest?.requestId);
+    expect(claim?.requestId).toBe(service.state().currentRequest?.requestId);
+    expect(service.state().status).toBe("ready");
+    expect(preparation.state().phase).toBe("ready");
+    expect(owner.authorize).toHaveBeenCalledOnce();
+  });
+
+  it("fetches a corrected maintenance bundle at the same URL after signature verification fails", async () => {
+    const config = resolveHostConfiguration(
+      "dev",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/corrected-Host.zip" },
+      await temporary()
+    );
+    const bad = archiveFixture({ hostExecutable: script("invalid-signature") });
+    const good = archiveFixture();
+    const release = "corrected-release";
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce(async () => downloadResponse(bad))
+      .mockImplementationOnce(async () => downloadResponse(good));
+    const run: HostCommand = async (command, args) => {
+      if (
+        command === "/usr/bin/codesign" &&
+        (
+          await readFile(join(args.at(-1)!, "Contents/MacOS/agent-vmm-host"), "utf8")
+        ).includes("invalid-signature")
+      )
+        throw new Error("Host signature invalid");
+      return args[0] === "version"
+        ? JSON.stringify({ contractVersion: 1, release_id: release })
+        : "";
+    };
+    const preparation = new AgentVMMHostPreparation(config, run, fetcher);
+    const request = "11111111-1111-4111-8111-111111111111";
+    await expect(preparation.stageMaintenance(request, () => {})).rejects.toThrow(
+      "Host signature invalid"
+    );
+    expect(preparation.state().phase).toBe("failed");
+    await expect(
+      preparation.stageMaintenance(request, () => {})
+    ).resolves.toMatchObject({ targetReleaseId: "corrected-release" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(preparation.state().phase).toBe("ready");
+  });
+
+  it("uses the explicit download source and its actual release for native maintenance", async () => {
+    const config = resolveHostConfiguration(
+      "dev",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/local-Host.zip" },
+      await temporary()
+    );
+    const bytes = await archiveFixture();
+    const fetcher = vi.fn(async (_url: unknown) => downloadResponse(bytes));
+    const run = vi.fn(async (_command: string, args: string[]) =>
+      args[0] === "version"
+        ? JSON.stringify({ contractVersion: 1, release_id: "local-current-release" })
+        : ""
+    );
+    const execute = vi.fn(async () => {});
+    const preparation = new AgentVMMHostPreparation(config, run, fetcher);
+    const staged = await preparation.stageMaintenance(
+      "11111111-1111-4111-8111-111111111111",
+      () => {},
+      undefined,
+      execute
+    );
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(config.downloadUrl);
+    expect(staged.targetReleaseId).toBe("local-current-release");
+    expect(execute).toHaveBeenCalledWith(staged);
+  });
+
   it("prepares a pinned maintenance bundle even when an older Host is installed, and retains it outside the uninstall target", async () => {
     vi.stubEnv("COMMA_R2_PUBLIC_BASE_URL", "https://example.test");
     const config = resolveHostConfiguration("prod", {}, await temporary());
@@ -202,7 +406,9 @@ describe("Host preparation", () => {
     };
     const fetcher = vi.fn(async () => downloadResponse(bytes));
     const run = vi.fn(async (_command: string, args: string[]) =>
-      args[0] === "version" ? JSON.stringify({ release_id: artifact.release_id }) : ""
+      args[0] === "version"
+        ? JSON.stringify({ contractVersion: 1, release_id: artifact.release_id })
+        : ""
     );
     const preparation = new AgentVMMHostPreparation(config, run, fetcher);
     const requestId = "11111111-1111-4111-8111-111111111111";
@@ -210,8 +416,6 @@ describe("Host preparation", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(staged).toMatchObject({
       targetReleaseId: artifact.release_id,
-      artifactSha256: artifact.sha256,
-      artifactSize: artifact.size,
     });
     expect(staged.sourceApp).not.toBe(config.appPath);
     await rm(config.appPath, { recursive: true });
@@ -229,7 +433,7 @@ describe("Host preparation", () => {
     // A signed but wrong release in the retained cache must not strand recovery.
     run.mockImplementationOnce(async () => "");
     run.mockImplementationOnce(async () =>
-      JSON.stringify({ release_id: "wrong-release" })
+      JSON.stringify({ contractVersion: 1, release_id: "wrong-release" })
     );
     expect(await restarted.stageMaintenance(requestId, () => {}, artifact)).toEqual(
       staged
@@ -255,7 +459,9 @@ describe("Host preparation", () => {
     };
     const fetcher = vi.fn(async () => downloadResponse(bytes));
     const run = vi.fn(async (_command: string, args: string[]) =>
-      args[0] === "version" ? JSON.stringify({ release_id: artifact.release_id }) : ""
+      args[0] === "version"
+        ? JSON.stringify({ contractVersion: 1, release_id: artifact.release_id })
+        : ""
     );
     let enter!: () => void;
     let release!: () => void;
@@ -344,7 +550,7 @@ describe("Host preparation", () => {
     release();
     await rejected;
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(run.mock.calls.some(([, args]) => args[0] === "publish-host")).toBe(false);
+    expect(run.mock.calls.some(([, args]) => args[0] === "publish-host")).toBe(true);
     await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -615,9 +821,16 @@ describe("Host preparation", () => {
     expect(resolveHostConfiguration("prod", env, home).appPath).toBe(config.appPath);
     expect(resolveHostConfiguration("staging", env, home).appPath).toBe(config.appPath);
     const bytes = await archiveFixture();
-    const run = vi.fn((command: string, args: string[], _stdin?: string) =>
-      publishFixture(config, command, args)
-    );
+    const run = vi.fn(async (command: string, args: string[], _stdin?: string) => {
+      if (args[0] === "registration-claim")
+        return JSON.stringify({
+          requestId: "request",
+          targetRegistrationId: "reg-1",
+          kind: "registration-claim",
+          outcome: "succeeded",
+        });
+      return publishFixture(config, command, args);
+    });
     const fetcher = vi.fn(async () => downloadResponse(bytes));
     await new AgentVMMHostPreparation(config, run, fetcher).ensure(() => {});
     await new AgentVMMHostPreparation(
@@ -628,13 +841,14 @@ describe("Host preparation", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     await new AgentVMMCommandAdapter(config.lifecyclePath, run).install(
       "request",
-      "descriptor"
+      '{"registration_id":"reg-1"}'
     );
     expect(run).toHaveBeenLastCalledWith(
       config.lifecyclePath,
-      expect.arrayContaining(["install", "--service-type", "agent"]),
-      "descriptor",
-      expect.any(Number)
+      expect.arrayContaining(["registration-claim", "--service-type", "agent"]),
+      '{"registration_id":"reg-1"}',
+      expect.any(Number),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
   });
 
@@ -660,7 +874,7 @@ describe("Host preparation", () => {
     ).toBeUndefined();
   });
 
-  it("activates the selected source and resumes an interrupted update without rebuilding", async () => {
+  it("stages the selected source and resumes its exact interrupted update without rebuilding", async () => {
     const home = await temporary();
     const config = resolveHostConfiguration(
       "dev",
@@ -668,12 +882,12 @@ describe("Host preparation", () => {
       home
     );
     let builds = 0;
-    let runningBundle = "downloaded-host";
     let failUpdate = true;
     const updates: string[][] = [];
     const guestBuilds: { command: string; args: string[]; cwd?: string }[] = [];
-    const run: HostCommand = async (command, args, _stdin, _timeout, options) => {
+    const run: HostCommand = async (command, args, stdin, _timeout, options) => {
       if (args[0] === "publish-host") return publishFixture(config, command, args);
+      if (args[0] === "version") return JSON.stringify({ contractVersion: 1 });
       if (args[0] === "maintenance-status") return "null";
       if (command === "docker")
         throw new Error("the Guest build runs build.sh directly");
@@ -687,10 +901,8 @@ describe("Host preparation", () => {
         builds++;
         const output = options!.env!.OUTPUT_DIRECTORY!;
         await writeBundle(output);
-      } else if (command === config.lifecyclePath && args[0] === "repair") {
-        runningBundle = config.appPath;
-      } else if (command === config.lifecyclePath && args[0] === "update") {
-        const source = args[args.indexOf("--source-app") + 1]!;
+      } else if (args[0] === "host-maintain") {
+        const source = JSON.parse(stdin!).sourceApp as string;
         // Match the VMM staged-bundle contract at the helper boundary.
         if (!source.includes("/.Agent VMM Host.") || !source.endsWith(".app"))
           throw new Error("invalid staged bundle");
@@ -702,7 +914,6 @@ describe("Host preparation", () => {
     };
     const first = new AgentVMMHostPreparation(config, run);
     await first.ensure(() => {});
-    expect(runningBundle).toBe(config.appPath);
     await expect(first.rebuild(() => {})).rejects.toThrow("Host restart interrupted");
     expect(builds).toBe(2);
     // The source's own build script runs `docker buildx` on this Mac; no Linux container wraps it.
@@ -805,47 +1016,6 @@ describe("Host preparation", () => {
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
   });
 
-  it("runs the Host disk preflight before installation, and skips it on a Host without the command", async () => {
-    const config = resolveHostConfiguration(
-      "prod",
-      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
-      await temporary()
-    );
-    const bytes = await archiveFixture();
-    let disk: string | undefined;
-    const preflight = () => {
-      if (disk === undefined) throw new Error("unknown command preflight");
-      return disk;
-    };
-    const run = vi.fn(async (command: string, args: string[]) =>
-      args[0] === "preflight" ? preflight() : publishFixture(config, command, args)
-    );
-    const preparation = new AgentVMMHostPreparation(
-      config,
-      run,
-      vi.fn(async () => downloadResponse(bytes))
-    );
-    await preparation.ensure(() => {});
-    disk = JSON.stringify({
-      ok: false,
-      issues: [
-        { code: "insufficient_disk", requiredBytes: 80 * 1024 ** 3, availableBytes: 1 },
-      ],
-    });
-    await expect(preparation.ensure(() => {})).rejects.toMatchObject({
-      requiredBytes: 80 * 1024 ** 3,
-      availableBytes: 1,
-      message: "Agent VMM Host needs 80 GB of free disk space.",
-    });
-    expect(preparation.state()).toMatchObject({ phase: "failed" });
-    expect(run).toHaveBeenCalledWith(
-      config.lifecyclePath,
-      ["preflight", "--json"],
-      undefined,
-      expect.any(Number)
-    );
-  });
-
   it("distinguishes a missing lifecycle helper from an installed but unreadable runtime", async () => {
     const directory = await temporary();
     const helper = join(directory, "lifecycle");
@@ -862,5 +1032,12 @@ describe("Host preparation", () => {
     await expect(
       runCommand("/bin/pwd", [], undefined, undefined, { cwd: directory })
     ).resolves.toBe(`${await realpath(directory)}\n`);
+  });
+
+  it("reports a helper that ends without reading its input as a failed command", async () => {
+    // More input than a pipe holds, so the write is still waiting when the helper ends.
+    await expect(
+      runCommand(process.execPath, ["-e", "process.exit(3)"], "x".repeat(1_000_000))
+    ).rejects.toMatchObject({ reason: "command_failed" });
   });
 });

@@ -23,21 +23,16 @@ type rejectedRuntime struct {
 	err error
 }
 
-func (r *rejectedRuntime) StartContainer(context.Context, *hostv1.ContainerMutationRequest) (*hostv1.ContainerResponse, error) {
+func (r *rejectedRuntime) StartContainer(context.Context, *hostv1.StartContainerRequest) (*hostv1.StartContainerResponse, error) {
 	return nil, r.err
 }
 
 func TestTypedStartPreservesLifecycleConflictWithoutPrivateDetails(t *testing.T) {
-	value, err := status.New(codes.FailedPrecondition, "/private/state.raw secret-token").WithDetails(&errdetails.ErrorInfo{
-		Reason: "LIFECYCLE_CONFLICT", Domain: "agent-vmm",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	value := hostv1.NewError(codes.FailedPrecondition, hostv1.ErrorReason_ERROR_REASON_LIFECYCLE_CONFLICT, "/private/state.raw secret-token")
 	gateway := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	clientSide, hostSide := net.Pipe()
 	grpcServer := grpc.NewServer()
-	hostv1.RegisterAgentRuntimeServiceServer(grpcServer, &rejectedRuntime{err: value.Err()})
+	hostv1.RegisterAgentRuntimeServiceServer(grpcServer, &rejectedRuntime{err: value})
 	go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
 	defer grpcServer.Stop()
 	key := sessionKey{registrationID: "registration", allocationID: "allocation", allocationGeneration: 7, connectionEpoch: 3}
@@ -94,6 +89,43 @@ func TestRuntimeRecoveryReasonsRemainFiniteAndPrivate(t *testing.T) {
 			}
 			if bytes.Contains(response.Body.Bytes(), []byte("secret-token")) {
 				t.Fatalf("private Host error leaked: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestRuntimeErrorCatalogMapping(t *testing.T) {
+	special := map[hostv1.ErrorReason]struct {
+		code codes.Code
+		name string
+	}{
+		hostv1.ErrorReason_ERROR_REASON_STALE_CONTAINER_INSTANCE: {codes.Aborted, "stale_container_instance"},
+		hostv1.ErrorReason_ERROR_REASON_STALE_EXECUTION:          {codes.Aborted, "stale_execution"},
+		hostv1.ErrorReason_ERROR_REASON_WORKLOAD_EXECUTION_BUSY:  {codes.ResourceExhausted, "workload_execution_busy"},
+		hostv1.ErrorReason_ERROR_REASON_LIFECYCLE_CONFLICT:       {codes.FailedPrecondition, "lifecycle_conflict"},
+		hostv1.ErrorReason_ERROR_REASON_WORKLOAD_STOP_UNRESOLVED: {codes.FailedPrecondition, "workload_stop_unresolved"},
+	}
+	for name, number := range hostv1.ErrorReason_value {
+		if number == 0 {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			reason := hostv1.ErrorReason(number)
+			code, want := codes.Aborted, "aborted"
+			if expected, ok := special[reason]; ok {
+				code, want = expected.code, expected.name
+			}
+			response := httptest.NewRecorder()
+			writeRuntimeError(response, "compute.container.quiesce", hostv1.NewError(code, reason, "/private/secret-token"))
+			var body map[string]string
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["code"] != want {
+				t.Fatalf("response = %v", body)
+			}
+			if bytes.Contains(response.Body.Bytes(), []byte("secret-token")) {
+				t.Fatal("private error leaked")
 			}
 		})
 	}

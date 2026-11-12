@@ -1,10 +1,6 @@
 import type { BrowserSidebarInspectResult } from "@comma/native-bridge";
 import { describe, expect, it } from "vitest";
-import { stripBrowserElementInspectionContext } from "@comma/core/chat";
-import {
-  browserElementInspectionFiles,
-  buildBrowserElementInspectionMessage,
-} from "../browserElementInspection";
+import { browserElementSelection } from "../browserElementInspection";
 
 const inspection = {
   element: {
@@ -18,41 +14,27 @@ const inspection = {
   inspectionId: "inspection-1",
   page: { title: "Example", url: "https://example.com/docs" },
   status: "selected",
-  userMessage: "Explain this control",
+  userMessage: "  Explain this control ",
 } satisfies Extract<BrowserSidebarInspectResult, { status: "selected" }>;
 
-describe("browser element inspection context", () => {
-  it("builds bounded model context while preserving the user's prompt", () => {
-    const message = buildBrowserElementInspectionMessage(inspection);
-
-    expect(message).toContain("Explain this control");
-    expect(message).toContain('<browser-element-inspection id="inspection-1" />');
-    expect(message).toContain("Page URL: https://example.com/docs");
-    expect(message).toContain("Selector: main > button");
-    expect(message).toContain("Attributes: aria-label=Save, role=button");
-    expect(message).toContain("Bounding rect: x=20, y=40.1, width=80, height=32");
+describe("a picked element as a selection for the chat's next message", () => {
+  it("keeps the person's note, the element and its page", () => {
+    expect(browserElementSelection(inspection)).toEqual({
+      note: "Explain this control",
+      about: {
+        kind: "element",
+        inspectionId: "inspection-1",
+        page: inspection.page,
+        element: inspection.element,
+      },
+    });
   });
 
-  it("sends the element's screenshot as the message's image and names it in the context", () => {
+  it("carries the element's screenshot as its picture, and shows it in its tile", () => {
     const screenshot = new Uint8Array([137, 80, 78, 71]);
-    const withScreenshot = { ...inspection, screenshot };
+    const selection = browserElementSelection({ ...inspection, screenshot });
 
-    expect(browserElementInspectionFiles(withScreenshot)).toEqual([
-      { bytes: screenshot, name: "inspected-element.png", size: 4 },
-    ]);
-    expect(buildBrowserElementInspectionMessage(withScreenshot)).toContain(
-      "Screenshot: attached as inspected-element.png"
-    );
-    // An element that was not on screen goes with its DOM context alone.
-    expect(browserElementInspectionFiles(inspection)).toEqual([]);
-    expect(buildBrowserElementInspectionMessage(inspection)).not.toContain(
-      "Screenshot:"
-    );
-  });
-
-  it("separates the visible prompt from structured inspection context", () => {
-    const message = buildBrowserElementInspectionMessage(inspection);
-
-    expect(stripBrowserElementInspectionContext(message)).toBe("Explain this control");
+    expect(selection.picture).toEqual({ bytes: screenshot, type: "image/png" });
+    expect(selection.thumbnail).toBe("data:image/png;base64,iVBORw==");
   });
 });

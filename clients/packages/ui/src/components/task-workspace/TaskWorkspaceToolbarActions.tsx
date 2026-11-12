@@ -3,9 +3,13 @@ import { useInteractOutside } from "react-aria";
 import {
   Button as AriaButton,
   Dialog as AriaDialog,
+  Collection,
   DialogTrigger,
+  Header,
   ListLayout,
+  MenuSection,
   Virtualizer,
+  type Selection,
 } from "react-aria-components";
 import { formatNumber as formatLocalizedNumber, type CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
@@ -22,7 +26,14 @@ import {
 } from "../icons";
 import { InputField } from "../input";
 import { ScrollArea } from "../scroll-area";
-import { Menu, MenuItem, MenuPopover, MenuTrigger, SubmenuTrigger } from "../menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopover,
+  MenuSeparator,
+  MenuTrigger,
+  SubmenuTrigger,
+} from "../menu";
 import { menuFilterFieldClasses, menuSurfaceClasses } from "../menu/styles";
 import { cx } from "../utils";
 import type { TaskView } from "../task-board";
@@ -44,6 +55,33 @@ export interface TaskFilterOption {
   label: string;
   /** Hover text that says more than the label, for example a zone's full name. */
   title?: string | undefined;
+  /**
+   * The heading of the group the option sits under, such as the people who sent requests. Consecutive options with
+   * one heading form a group; an option without one sits ungrouped.
+   */
+  group?: string | undefined;
+}
+
+/** Consecutive options under one heading, in their order. */
+function groupFilterOptions(
+  options: readonly TaskFilterOption[]
+): { id: string; label: string | undefined; options: TaskFilterOption[] }[] {
+  const groups: {
+    id: string;
+    label: string | undefined;
+    options: TaskFilterOption[];
+  }[] = [];
+  for (const option of options) {
+    const last = groups.at(-1);
+    if (last && last.label === option.group) last.options.push(option);
+    else
+      groups.push({
+        id: `group-${groups.length}`,
+        label: option.group,
+        options: [option],
+      });
+  }
+  return groups;
 }
 
 interface TaskFilterSectionBase {
@@ -81,7 +119,21 @@ export type TaskFilterSection =
       selectionMode: "single";
     });
 
-export function isTaskFilterSectionNarrowed(section: TaskFilterSection): boolean {
+/**
+ * Filter dimensions that belong together, such as Dates: the Tasks filter
+ * shows them as one submenu, and each section opens one level further.
+ */
+export interface TaskFilterSectionGroup {
+  icon: ReactNode;
+  id: string;
+  label: string;
+  sections: readonly TaskFilterSection[];
+}
+
+export function isTaskFilterSectionNarrowed(
+  section: TaskFilterSection | TaskFilterSectionGroup
+): boolean {
+  if ("sections" in section) return section.sections.some(isTaskFilterSectionNarrowed);
   return (
     section.narrowed ??
     (section.options.length > 0 && section.selected.size < section.options.length)
@@ -89,7 +141,7 @@ export function isTaskFilterSectionNarrowed(section: TaskFilterSection): boolean
 }
 
 export interface TaskWorkspaceToolbarActionsProps {
-  filterSections?: readonly TaskFilterSection[] | undefined;
+  filterSections?: readonly (TaskFilterSection | TaskFilterSectionGroup)[] | undefined;
   onSelectedStatusesChange: (statuses: ReadonlySet<TaskStatusBucket>) => void;
   onSelectedWorkersChange: (workers: ReadonlySet<TaskWorker>) => void;
   onViewChange: (view: TaskView) => void;
@@ -263,7 +315,7 @@ function TaskStatusFilter({
   workerCounts,
 }: {
   counts: TaskStatusCounts;
-  filterSections: readonly TaskFilterSection[];
+  filterSections: readonly (TaskFilterSection | TaskFilterSectionGroup)[];
   onChange: (statuses: ReadonlySet<TaskStatusBucket>) => void;
   onWorkersChange: (workers: ReadonlySet<TaskWorker>) => void;
   selectedStatuses: ReadonlySet<TaskStatusBucket>;
@@ -310,10 +362,7 @@ function TaskStatusFilter({
         offset={spacing.xs}
         placement="bottom end"
       >
-        <Menu
-          aria-label={messages.tasks_filter()}
-          className="w-[var(--task-workspace-filter-menu-width)] bg-popup-secondary px-sm py-sm shadow-2xl"
-        >
+        <Menu aria-label={messages.tasks_filter()} className={filterMenuClassName}>
           <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
             <MenuItem
               activeClassName="bg-secondary-hover text-sidebar-text-highlight"
@@ -359,28 +408,55 @@ function TaskStatusFilter({
               </MenuPopover>
             </SubmenuTrigger>
           ) : null}
-          {filterSections.map((section) => (
-            <SubmenuTrigger delay={motionDuration.submenuOpenDelay} key={section.id}>
-              <MenuItem
-                activeClassName="bg-secondary-hover text-sidebar-text-highlight"
-                appearance="sidebar"
-                className={connectedSubmenuTriggerClasses}
-                contentClassName="h-8"
-                gutter="none"
-                icon={section.icon}
-                id={section.id}
-                shortcut={<ChevronRightSmallIcon className="size-4" />}
-              >
-                {section.label}
-              </MenuItem>
-              <MenuPopover isNonModal offset={0} placement="left top">
-                <TaskSectionFilterPanel panelClassName="w-64" section={section} />
-              </MenuPopover>
-            </SubmenuTrigger>
-          ))}
+          {filterSections.map((section) =>
+            "sections" in section ? (
+              <SubmenuTrigger delay={motionDuration.submenuOpenDelay} key={section.id}>
+                {filterSubmenuItem(section)}
+                <MenuPopover isNonModal offset={0} placement="left top">
+                  <Menu aria-label={section.label} className={filterMenuClassName}>
+                    {section.sections.map(sectionSubmenu)}
+                  </Menu>
+                </MenuPopover>
+              </SubmenuTrigger>
+            ) : (
+              sectionSubmenu(section)
+            )
+          )}
         </Menu>
       </MenuPopover>
     </MenuTrigger>
+  );
+}
+
+const filterMenuClassName =
+  "w-[var(--task-workspace-filter-menu-width)] bg-popup-secondary px-sm py-sm shadow-2xl";
+
+/** A row of the Tasks filter that opens a submenu. */
+function filterSubmenuItem(section: TaskFilterSection | TaskFilterSectionGroup) {
+  return (
+    <MenuItem
+      activeClassName="bg-secondary-hover text-sidebar-text-highlight"
+      appearance="sidebar"
+      className={connectedSubmenuTriggerClasses}
+      contentClassName="h-8"
+      gutter="none"
+      icon={section.icon}
+      id={section.id}
+      shortcut={<ChevronRightSmallIcon className="size-4" />}
+    >
+      {section.label}
+    </MenuItem>
+  );
+}
+
+function sectionSubmenu(section: TaskFilterSection) {
+  return (
+    <SubmenuTrigger delay={motionDuration.submenuOpenDelay} key={section.id}>
+      {filterSubmenuItem(section)}
+      <MenuPopover isNonModal offset={0} placement="left top">
+        <TaskSectionFilterPanel panelClassName="w-64" section={section} />
+      </MenuPopover>
+    </SubmenuTrigger>
   );
 }
 
@@ -569,52 +645,69 @@ export function TaskSectionFilterPanel({
   );
 
   const single = section.selectionMode === "single";
-  const menu = (
-    <Menu
-      aria-label={section.label}
-      className="flex min-w-0 flex-col gap-xxs"
-      items={visibleOptions}
-      onSelectionChange={(keys) =>
-        section.onChange(
-          keys === "all"
-            ? new Set(section.options.map((option) => option.id))
-            : new Set(Array.from(keys, String))
+  const renderOption = (option: TaskFilterOption) => (
+    <MenuItem
+      activeClassName="bg-secondary-hover"
+      contentClassName={single ? "min-h-8" : "h-8"}
+      gutter="none"
+      id={option.id}
+      {...(option.icon ? { icon: option.icon } : {})}
+      selectionIndicator={single ? "check" : "checkbox"}
+      shortcut={
+        renderCount ? (
+          renderCount(option.count)
+        ) : single ? (
+          formatLocalizedNumber(option.count, locale)
+        ) : (
+          <TaskCount count={option.count} locale={locale} />
         )
       }
-      selectedKeys={section.selected}
-      selectionMode={section.selectionMode ?? "multiple"}
-      disallowEmptySelection={single}
-      shouldCloseOnSelect={false}
-      variant="embedded"
+      textValue={option.label}
     >
-      {(option) => (
-        <MenuItem
-          activeClassName="bg-secondary-hover"
-          contentClassName={single ? "min-h-8" : "h-8"}
-          gutter="none"
-          id={option.id}
-          {...(option.icon ? { icon: option.icon } : {})}
-          selectionIndicator={single ? "check" : "checkbox"}
-          shortcut={
-            renderCount ? (
-              renderCount(option.count)
-            ) : single ? (
-              formatLocalizedNumber(option.count, locale)
-            ) : (
-              <TaskCount count={option.count} locale={locale} />
-            )
-          }
-          textValue={option.label}
-        >
-          {/* A rule shows in full and wraps. */}
-          <span
-            className={cx("text-primary", single && "whitespace-normal break-words")}
-            title={single ? option.title : undefined}
-          >
-            {option.label}
-          </span>
-        </MenuItem>
+      {/* A rule shows in full and wraps. */}
+      <span
+        className={cx("text-primary", single && "whitespace-normal break-words")}
+        title={single ? option.title : undefined}
+      >
+        {option.label}
+      </span>
+    </MenuItem>
+  );
+  const grouped = visibleOptions.some((option) => option.group !== undefined);
+  const menuProps = {
+    "aria-label": section.label,
+    className: "flex min-w-0 flex-col gap-xxs",
+    onSelectionChange: (keys: Selection) =>
+      section.onChange(
+        keys === "all"
+          ? new Set(section.options.map((option) => option.id))
+          : new Set(Array.from(keys, String))
+      ),
+    selectedKeys: section.selected,
+    selectionMode: section.selectionMode ?? "multiple",
+    disallowEmptySelection: single,
+    shouldCloseOnSelect: false,
+    variant: "embedded",
+  } as const;
+  const menu = grouped ? (
+    <Menu {...menuProps} items={groupFilterOptions(visibleOptions)}>
+      {(group) => (
+        <MenuSection className="flex flex-col gap-xxs" id={group.id}>
+          {/* Options under no heading after a group, such as "Not from a request", stand apart by a line. */}
+          {group.label !== undefined ? (
+            <Header className="px-sm pb-xs pt-sm text-xs font-medium text-quaternary">
+              {group.label}
+            </Header>
+          ) : group.id === "group-0" ? null : (
+            <MenuSeparator />
+          )}
+          <Collection items={group.options}>{renderOption}</Collection>
+        </MenuSection>
       )}
+    </Menu>
+  ) : (
+    <Menu {...menuProps} items={visibleOptions}>
+      {renderOption}
     </Menu>
   );
   return (

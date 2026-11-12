@@ -5,9 +5,9 @@ import {
   SlackProviderLogo,
   TelegramProviderLogo,
 } from "@comma/ui/components/provider-brand-logos";
-import { WechatBrandIcon } from "@comma/ui/components/icons";
+import { InboxIcon, WechatBrandIcon } from "@comma/ui/components/icons";
 
-/** Where a Task was asked for: a chat provider, or Comma itself. */
+/** Where a Task was asked for: a chat provider, Comma itself, or another person's Task request. */
 export const TASK_ORIGIN_KEYS = [
   "slack",
   "telegram",
@@ -16,6 +16,7 @@ export const TASK_ORIGIN_KEYS = [
   "wechat",
   "signal",
   "comma",
+  "task_request",
 ] as const;
 export type TaskOriginKey = (typeof TASK_ORIGIN_KEYS)[number];
 
@@ -39,6 +40,8 @@ export function taskOriginLabel(messages: CommaMessages, key: TaskOriginKey): st
       return messages.task_panel_origin_wechat();
     case "signal":
       return messages.task_panel_origin_signal();
+    case "task_request":
+      return messages.task_panel_origin_task_request();
     default:
       return messages.task_panel_origin_comma();
   }
@@ -71,6 +74,8 @@ export function TaskOriginIcon({
       return <SignalProviderMark className={className} />;
     case "comma":
       return <CommaMark className={`${className} text-primary`} />;
+    case "task_request":
+      return <InboxIcon className={className} />;
     default:
       return null;
   }

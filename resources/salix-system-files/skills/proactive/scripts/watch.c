@@ -271,8 +271,8 @@ SF_MAIN sf_i64 main(void) {
   if (state < 0 || sf_json_kind(state) != SF_OBJECT) { sf_drop(state); state = sf_json_object(); }
   sf_handle interval = sf_json_get(config, "poll_interval_ms");
   sf_i64 poll_ms = 0; sf_json_i64(interval, &poll_ms); sf_drop(interval);
-  /* Product-configured polling is at most once per five minutes per Loop. */
-  if (poll_ms != 0 && (poll_ms < 300000 || poll_ms > 86400000)) return 3;
+  /* Product-configured polling is at most once per minute per Loop. */
+  if (poll_ms != 0 && (poll_ms < 60000 || poll_ms > 86400000)) return 3;
   sf_u64 next_poll = sf_now_mono_ms();
   for (;;) {
     sf_handle pending = sf_json_get(state, "pending_poll");

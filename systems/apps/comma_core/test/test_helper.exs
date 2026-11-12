@@ -4,8 +4,15 @@
 # integration stage.
 ExUnit.start(exclude: [:multinode, :live_llm])
 
+# Seed the migrated Salix baseline (cutover markers, the search writer's
+# backfill run) in this VM's partition database. CI can run Comma's files in
+# a VM whose earlier suites seeded nothing, and a conversation written before
+# a test called `ensure!/0` itself then fails as search-unavailable.
+SalixStore.RepoTestSetup.ensure!()
+
 # Match the completed online-release state the CommaWeb and BFT helpers set:
 # whether it holds must not depend on which app's tests the shard ran first.
+SalixStore.RepoTestSetup.ensure!()
 :ok = SalixStore.AgentConfigurationRollout.open()
 :ok = SalixStore.AgentConfigurationRollout.complete()
 

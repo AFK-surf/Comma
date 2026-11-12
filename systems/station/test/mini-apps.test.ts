@@ -90,7 +90,7 @@ function listTar(bytes: Buffer, gz = false): string[] {
 }
 
 test("app_deploy saves and pushes the worktree, then packs what was built and serves it to Salix under the deploy's key", async () => {
-  const manifest = { name: "Habit tracker", capabilities: [], storage: ["app"], backend: { entry: "worker/index.ts" } };
+  const manifest = { name: "Habit tracker", cover: "cover.jpg", capabilities: [], storage: ["app"], backend: { entry: "worker/index.ts" } };
   let pushedAtAsk: string | null = null;
   const asked: Json[] = [];
   let read: Record<string, Buffer> = {};
@@ -143,6 +143,24 @@ test("app_deploy saves and pushes the worktree, then packs what was built and se
   assert.deepEqual(await r.tasks.handle("salix", { method: "task.posted_file", task: "cnv_1", key: request.key, index: 0, offset: 0 }), { missing: "no such post" });
   assert.equal(existsSync(join(dirname(workspace), "app-deploys", request.key)), false);
   await r.b.close();
+});
+
+test("a Version whose manifest names no cover comes with how to add one; a Version with a cover does not", async () => {
+  const deploy = async (manifest: Json, task: string, branch: string) => {
+    const r = await rig(manifest, async (request) => ({ app_id: request.app_id, version: 1, state: "ready", name: "A", summary: "A" }));
+    const { session, workspace } = await r.join(task, branch, true);
+    mkdirSync(join(workspace, "dist"));
+    writeFileSync(join(workspace, "dist", "index.html"), "<p>x</p>");
+    const result = JSON.parse(await run(r.tools, "app_deploy", session, {}));
+    await r.b.close();
+    return result;
+  };
+  const version = { app_id: APP, version: 1, state: "ready", name: "A", summary: "A" };
+  // A repository from before the template's cover step: the Version is made, and the agent is told the manifest field.
+  const { note, ...made } = await deploy({ name: "A" }, "cnv_8", "comma/app8");
+  assert.deepEqual(made, version);
+  assert.match(note, /"cover": "cover\.jpg" in comma-app\.json/);
+  assert.deepEqual(await deploy({ name: "A", cover: "cover.jpg" }, "cnv_9", "comma/app9"), version);
 });
 
 test("a push that fails deploys nothing: Salix is not asked and nothing is packed", async () => {

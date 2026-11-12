@@ -18,7 +18,7 @@ defmodule SalixIM.ProviderRecipientIdentity do
   @owner_field "owner_recipient_im_identity_v1"
   @field_limit 256
   @identity_fields ~w(provider display_name username user_id bot_id app_id status)
-  @providers ~w(slack telegram feishu wechat imessage voice signal qq lark)
+  @providers ~w(slack telegram feishu wechat imessage voice signal qq lark line)
 
   @spec put(map(), map()) :: map()
   def put(metadata, connect) when is_map(metadata) and is_map(connect) do
@@ -249,6 +249,15 @@ defmodule SalixIM.ProviderRecipientIdentity do
       "display_name" => connect["bot_username"],
       "user_id" => connect["bot_user_id"],
       "app_id" => connect["app_id"]
+    }
+  end
+
+  defp identity_fields("line", connect) do
+    %{
+      "provider" => "line",
+      "display_name" => connect["bot_display_name"],
+      "username" => connect["bot_username"],
+      "user_id" => connect["bot_user_id"]
     }
   end
 

@@ -6,7 +6,7 @@ defmodule SalixCluster.SchedulesTest do
   the Fake backend. Since plan §3.2 step 4, rpc is the only delivery protocol:
   a fire stages straight into the owner-routed role actor, so the real
   placement starts the owner and firings are observed at the durable layers —
-  run objects plus the internal session ledger (`input_dedupe` /
+  run objects plus the PostgreSQL Session ledger (`salix_session_input_dedupe` /
   `input_queue`); the staged inbox protocol is never touched.
   """
   use SystemsClock.Case, async: false
@@ -150,7 +150,13 @@ defmodule SalixCluster.SchedulesTest do
       # rpc delivery: the durable exactly-once record is the session ledger's
       # dedupe entry, not a staged inbox object.
       {:ok, state} = SalixAgent.TestSupport.SessionData.read(a, "ses1_1200000000000000001")
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{run_at}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 "ses1_1200000000000000001",
+                 "schedule:#{id}:#{run_at}"
+               )
     end
   end
 
@@ -179,7 +185,13 @@ defmodule SalixCluster.SchedulesTest do
       # either still queued or already consumed into the transcript by the
       # woken round — exactly one copy across both, never two.
       {:ok, state} = SalixAgent.TestSupport.SessionData.read(a, "ses1_1200000000000000001")
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{scheduled_for}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 "ses1_1200000000000000001",
+                 "schedule:#{id}:#{scheduled_for}"
+               )
 
       queued = Enum.count(state.input_queue, &(&1["payload"]["content"] == "do the thing"))
       absorbed = Enum.count(state.messages, &(&1.content == "do the thing"))
@@ -230,7 +242,14 @@ defmodule SalixCluster.SchedulesTest do
       refute Map.has_key?(resumed, "paused_by")
       assert {:ok, %{fired: [^id], blocked: [], failed: []}} = Schedules.run_once(now: t1 + 1)
       {:ok, state} = SalixAgent.TestSupport.SessionData.read(a, "ses1_1200000000000000001")
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{t1}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 "ses1_1200000000000000001",
+                 "schedule:#{id}:#{t1}"
+               )
+
       assert {:ok, %{fired: [], blocked: [], failed: []}} = Schedules.run_once(now: t1 + 1)
 
       # Hygiene: schedules are node-global Postgres rows; do not leak an
@@ -280,7 +299,13 @@ defmodule SalixCluster.SchedulesTest do
                ScheduleRuns.claim_state(id, t1)
 
       {:ok, state_a} = SalixAgent.TestSupport.SessionData.read(a, session_a)
-      assert MapSet.member?(state_a.input_dedupe, "schedule:#{id}:#{t1}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 session_a,
+                 "schedule:#{id}:#{t1}"
+               )
 
       # Retarget the definition to B, then re-fire the same window from a
       # STALE session-less snapshot: it follows the CLAIM's frozen target A,
@@ -292,7 +317,13 @@ defmodule SalixCluster.SchedulesTest do
       assert {:error, :not_found} = SalixAgent.TestSupport.SessionData.read(a, session_b)
 
       {:ok, after_stale} = SalixAgent.TestSupport.SessionData.read(a, session_a)
-      assert MapSet.member?(after_stale.input_dedupe, "schedule:#{id}:#{t1}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 session_a,
+                 "schedule:#{id}:#{t1}"
+               )
 
       # Public run history never says undeliverable for a committed run, and
       # it reports the FROZEN target A — not the retargeted definition's B.
@@ -392,7 +423,13 @@ defmodule SalixCluster.SchedulesTest do
       t_next = at(~D[2026-06-19], ~T[09:00:00])
       assert {:ok, %{fired: [^id], skipped: []}} = Schedules.run_once(now: t_next)
       {:ok, state} = SalixAgent.TestSupport.SessionData.read(a, "ses1_1200000000000000001")
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{t_next}")
+
+      assert {:ok, true} =
+               SalixAgent.InternalSessionStore.input_committed?(
+                 a,
+                 "ses1_1200000000000000001",
+                 "schedule:#{id}:#{t_next}"
+               )
     end
   end
 end

@@ -17,7 +17,10 @@ inductive BatchTrace : Output → Output → Prop where
 def inputBatchCursor (context : Context) (events : List Term)
     (cursor : PendingRevision.Cursor) (batch : Term) : Term :=
   .tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events,
-    .tuple [a "session_pending_batch", cursor.pack, batch]]
+    .tuple [a "session_delta_batch", cursor.pack, batch]]
+
+def inputObserveCursor (context : Context) (events : List Term) (cursor : PendingRevision.Cursor) (before event batch : Term) : Term :=
+  .tuple [a "session_command_driver_batch", context.pack, inputWriteContinuation events, .tuple [a "session_delta_observe", cursor.pack, before, event, batch]]
 
 inductive InputBatchOutput (context : Context) (events : List Term) : Output → Prop where
   | done (cursor : PendingRevision.Cursor) : InputBatchOutput context events (inputFenced cursor events)
@@ -25,9 +28,9 @@ inductive InputBatchOutput (context : Context) (events : List Term) : Output →
       InputBatchOutput context events
         (some (inputBatchCursor context events cursor (BatchExecution.pending state (event :: remaining))),
           .tuple [a "next"])
-  | resume (cursor : PendingRevision.Cursor) (token request : Term) (remaining : List Term) :
+  | resume (cursor : PendingRevision.Cursor) (before event token request : Term) (remaining : List Term) :
       InputBatchOutput context events
-        (some (inputBatchCursor context events cursor (BatchExecution.observing token remaining)),
+        (some (inputObserveCursor context events cursor before event (BatchExecution.observing token remaining)),
           .tuple [a "observe", request])
   | failed (response : Term) : InputBatchOutput context events (none, response)
 
@@ -40,31 +43,48 @@ theorem input_batch_next_valid (context : Context) (events : List Term)
   | nil => exact .done { cursor with working := state }
   | cons event remaining => exact .run cursor state event remaining
 
-theorem input_batch_accept_valid (context : Context) (events : List Term)
-    (cursor : PendingRevision.Cursor) (remaining : List Term) (result : Term) :
+theorem input_capture_next_valid (context : Context) (events : List Term) (cursor : PendingRevision.Cursor)
+    (before state event : Term) (remaining : List Term) :
     InputBatchOutput context events
-      (acceptWrite context (inputWriteContinuation events)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining result))) := by
+      (acceptWrite context (inputWriteContinuation events) (PendingRevision.captureDelta cursor before state event (BatchExecution.next state remaining))) := by
+  cases captured : StorageDelta.captureDedupe before state event [] with
+  | ok result =>
+    obtain ⟨added, rest⟩ := result
+    cases rest with
+    | nil =>
+      simp only [PendingRevision.captureDelta, captured]
+      exact input_batch_next_valid context events _ _ _
+    | cons head tail => simp only [PendingRevision.captureDelta, captured]; exact .failed _
+  | error signal =>
+    cases signal <;> simp only [PendingRevision.captureDelta, captured] <;> exact .failed _
+
+theorem input_batch_accept_valid (context : Context) (events : List Term) (cursor : PendingRevision.Cursor)
+    (before event : Term) (remaining : List Term) (result : Term) :
+    InputBatchOutput context events
+      (acceptWrite context (inputWriteContinuation events) (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining result))) := by
   unfold BatchExecution.accept
   split
-  · exact input_batch_next_valid _ _ _ _ _
-  · exact .resume cursor _ _ remaining
+  · rename_i state
+    cases remaining with
+    | nil => exact input_capture_next_valid context events cursor before state event []
+    | cons head tail => exact input_capture_next_valid context events cursor before state event (head :: tail)
+  · exact .resume cursor before event _ _ remaining
   · exact .failed _
 
-theorem input_batch_run_captured (context : Context) (events : List Term)
-    (cursor : PendingRevision.Cursor) (state event : Term) (remaining observations : List Term) :
+theorem input_batch_run_captured (context : Context) (events : List Term) (cursor : PendingRevision.Cursor)
+    (state event : Term) (remaining observations : List Term) :
     resident (some (inputBatchCursor context events cursor (BatchExecution.pending state (event :: remaining))))
       (a "run") (list observations) =
       acceptWrite context (inputWriteContinuation events)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (runTrusted state event observations))) := by
+        (PendingRevision.acceptCaptured cursor state event (BatchExecution.accept remaining (runTrusted state event observations))) := by
   cases context <;> rfl
 
-theorem input_batch_resume_captured (context : Context) (events : List Term)
-    (cursor : PendingRevision.Cursor) (token observation : Term) (remaining : List Term) :
-    resident (some (inputBatchCursor context events cursor (BatchExecution.observing token remaining)))
+theorem input_batch_resume_captured (context : Context) (events : List Term) (cursor : PendingRevision.Cursor)
+    (before event token observation : Term) (remaining : List Term) :
+    resident (some (inputObserveCursor context events cursor before event (BatchExecution.observing token remaining)))
       (a "resume") observation =
       acceptWrite context (inputWriteContinuation events)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (resumeTrusted token observation))) := by
+        (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining (resumeTrusted token observation))) := by
   cases context <;> rfl
 
 theorem input_batch_start_valid (context : Context) (events : List Term) :
@@ -93,13 +113,13 @@ theorem input_batch_next_shape {context : Context} {events : List Term} {saved :
 
 theorem input_batch_observation_shape {context : Context} {events : List Term} {saved request : Term}
     (valid : InputBatchOutput context events (some saved, .tuple [a "observe", request])) :
-    ∃ cursor token remaining,
-      saved = inputBatchCursor context events cursor (BatchExecution.observing token remaining) := by
+    ∃ cursor before event token remaining,
+      saved = inputObserveCursor context events cursor before event (BatchExecution.observing token remaining) := by
   generalize same : (some saved, Term.tuple [a "observe", request]) = output at valid
   cases valid with
   | done => simp [inputFenced, a] at same
   | run => simp [a] at same
-  | resume cursor token request remaining => exact ⟨cursor, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
+  | resume cursor before event token request remaining => exact ⟨cursor, before, event, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
   | failed => cases congrArg Prod.fst same
 
 theorem input_batch_trace_reflect {context : Context} {events : List Term} {initial : Output}
@@ -117,14 +137,14 @@ theorem input_batch_trace_reflect {context : Context} {events : List Term} {init
     apply InputBatchTrace.run (observations := observations)
     apply ih
     · rw [input_batch_run_captured]
-      exact input_batch_accept_valid _ _ _ _ _
+      apply input_batch_accept_valid
     · exact ending
   | @resume saved request observation output tail ih =>
-    obtain ⟨cursor, token, remaining, rfl⟩ := input_batch_observation_shape valid
+    obtain ⟨cursor, before, event, token, remaining, rfl⟩ := input_batch_observation_shape valid
     apply InputBatchTrace.resume (observation := observation)
     apply ih
     · rw [input_batch_resume_captured]
-      exact input_batch_accept_valid _ _ _ _ _
+      apply input_batch_accept_valid
     · exact ending
 
 theorem input_raw_admission_applied {context : Context} {args checkpoint saved : Term}

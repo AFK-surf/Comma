@@ -45,7 +45,7 @@ defmodule SalixAgent.ServerRuntimeOwnershipTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
+    SalixAgent.TestSupport.reset_session_work!()
     prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
     SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)

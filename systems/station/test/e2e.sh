@@ -15,18 +15,18 @@ rm -rf "$work" && mkdir -p "$work/data/homes/cc"
 if [ -n "${E2E_APP:-}" ]; then
   app=$E2E_APP
   # A release names its Node (NODE_VERSION) rather than carrying it (cloud/src/install.ts links it at node/): this one's.
-  export PATH="$here/test/fake:$PATH" STILLFAIL_NO_DISCOVERY=1 STILLFAIL_NODE=${STILLFAIL_NODE:-$(command -v node)}
+  export PATH="$here/test/fake:$PATH" COMMA_STATION_NO_DISCOVERY=1 COMMA_STATION_NODE=${COMMA_STATION_NODE:-$(command -v node)}
 else
   app=$work/app
   mkdir -p "$app/node/bin"
   ln -s "$here/dist" "$app/station"
   ln -s "$(command -v node)" "$app/node/bin/node"
-  export PATH="$here/test/fake:$PATH" STILLFAIL_NO_DISCOVERY=1
-  export STILLFAIL_MESH_NATIVE=${STILLFAIL_MESH_NATIVE:-$(native mesh)}
-  export STILLFAIL_RUNNER=${STILLFAIL_RUNNER:-$(native runner)}
+  export PATH="$here/test/fake:$PATH" COMMA_STATION_NO_DISCOVERY=1
+  export COMMA_STATION_MESH_NATIVE=${COMMA_STATION_MESH_NATIVE:-$(native mesh)}
+  export COMMA_STATION_RUNNER=${COMMA_STATION_RUNNER:-$(native runner)}
 fi
-launch=${E2E_APP:+$app/mesh/target/release/stillfail-station}
-launch=${launch:-${STILLFAIL_LAUNCHER:-$(native launcher)}}
+launch=${E2E_APP:+$app/mesh/target/release/comma-station}
+launch=${launch:-${COMMA_STATION_LAUNCHER:-$(native launcher)}}
 id=$("$load" setup "$work/data")
 echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc"}],"autoUpdate":false}' > "$work/data/config.json"
 echo '{}' > "$work/data/homes/cc/.credentials.json"
@@ -45,7 +45,7 @@ thread=$(echo "$made" | python3 -c 'import json,sys; print(json.load(sys.stdin)[
 echo "made $key in thread $thread"
 ask POST "/admin/api/threads/$thread/messages" '{"text":"slow:60 post:said after the handover"}'
 sleep 2
-echo "turn running: $(sqlite3 "$work/data/stillfail.db" "select running from sessions where key='$key'")"
+echo "turn running: $(sqlite3 "$work/data/station.db" "select running from sessions where key='$key'")"
 kill -USR2 $launcher
 for i in $(seq 1 100); do
   second=$(node_pid)
@@ -54,7 +54,7 @@ for i in $(seq 1 100); do
 done
 echo "handed over: node $first -> $second, launcher $launcher alive: $(kill -0 $launcher && echo yes)"
 for i in $(seq 1 150); do
-  ended=$(sqlite3 "$work/data/stillfail.db" "select count(*) from turns where session_key='$key' and ended_at is not null")
+  ended=$(sqlite3 "$work/data/station.db" "select count(*) from turns where session_key='$key' and ended_at is not null")
   [ "$ended" -ge 1 ] && break
   sleep 0.2
 done
@@ -70,11 +70,11 @@ for i in $(seq 1 100); do
 done
 echo "crashed: node $second -> $third, launcher $launcher alive: $(kill -0 $launcher && echo yes)"
 for i in $(seq 1 200); do
-  ended=$(sqlite3 "$work/data/stillfail.db" "select count(*) from turns where session_key='$key' and ended_at is not null")
+  ended=$(sqlite3 "$work/data/station.db" "select count(*) from turns where session_key='$key' and ended_at is not null")
   [ "$ended" -ge 2 ] && break
   sleep 0.2
 done
-echo "turns: $(sqlite3 "$work/data/stillfail.db" "select outcome || '/' || coalesce(declared,'-') from turns where session_key='$key'" | tr '\n' ' ')"
+echo "turns: $(sqlite3 "$work/data/station.db" "select outcome || '/' || coalesce(declared,'-') from turns where session_key='$key'" | tr '\n' ' ')"
 echo "chat:"
-sqlite3 "$work/data/stillfail.db" "select '  ' || author_kind || ': ' || text from entries where thread=$thread order by n"
+sqlite3 "$work/data/station.db" "select '  ' || author_kind || ': ' || text from entries where thread=$thread order by n"
 grep -E "ERROR|WARN" "$work/station.log" | grep -v presence || true

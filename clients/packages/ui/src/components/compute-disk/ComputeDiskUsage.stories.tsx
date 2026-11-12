@@ -1,9 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useState } from "react";
 import { ComputeDiskUsage } from "./ComputeDiskUsage";
 
 const labels = {
   used: "Used",
+  imageRuntime: "Images & runtime",
+  buildCache: "Build cache",
+  privateData: "Private data",
   remaining: "Remaining",
   otherUsed: "Other used",
   detailUnavailable: "Environment detail unavailable",
@@ -18,51 +20,22 @@ const meta = {
     usedBytes: "4294967296",
     capacityBytes: "17179869184",
     collectedAt,
-    environments: [
-      {
-        key: "local",
-        label: "Local environment",
-        bytes: "1073741824",
-        sampledAt: collectedAt,
-      },
-      {
-        key: "remote",
-        label: "Remote environment",
-        bytes: "536870912",
-        sampledAt: collectedAt,
-      },
-    ],
+    breakdown: {
+      imageRuntimeBytes: "3220176896",
+      buildCacheBytes: "1073741824",
+      privateBytes: "1048576",
+      otherBytes: "0",
+      breakdownSampledAt: collectedAt,
+    },
     labels,
-    onSelect: () => {},
   },
 } satisfies Meta<typeof ComputeDiskUsage>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const PartialDetail: Story = {
-  render: (args) => {
-    const [selected, setSelected] = useState<string>();
-    return (
-      <div style={{ maxWidth: 680 }}>
-        <ComputeDiskUsage {...args} onSelect={setSelected} />
-        <output>
-          {selected
-            ? `Selected ${selected}`
-            : "Select an environment to view its local summary"}
-        </output>
-      </div>
-    );
-  },
-};
-export const TotalOnly: Story = { args: { environments: [] } };
+export const Categories: Story = {};
+export const TotalOnly: Story = { args: { breakdown: undefined } };
 export const StaleDetail: Story = {
   args: {
-    environments: [
-      {
-        key: "old",
-        label: "Old environment",
-        bytes: "1073741824",
-        sampledAt: "2026-10-01T09:59:00Z",
-      },
-    ],
+    breakdown: { ...meta.args.breakdown, breakdownSampledAt: "2026-10-01T09:59:00Z" },
   },
 };

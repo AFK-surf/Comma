@@ -44,6 +44,11 @@ def Unsealed (source policy : Term) : Prop :=
 inductive SourceAuthorized (source effect activation p facts : Term) : Term → Prop where
   | flow : readersSubset (f effect "destination") (f source "label") facts = .yes →
       SourceAuthorized source effect activation p facts (a "flow")
+  | authored : Unsealed (f source "label") (f facts "policy") →
+      reader p (f source "label") facts = .yes →
+      (f source "integrity" == a "command") = true → (f source "principal" != nil) = true →
+      (authority (f source "principal") == authority p) = true → person p = true →
+      SourceAuthorized source effect activation p facts (a "authored")
   | inPlace : Unsealed (f source "label") (f facts "policy") →
       reader p (f source "label") facts = .yes → inPlaceAllowed (f facts "policy") = true →
       labelEqual (f effect "destination") (f activation "source_scope") = true →

@@ -41,9 +41,9 @@ const conversation = (messages: unknown[], extra: Record<string, unknown> = {}) 
   ...extra,
 });
 
-function setup(host = new FakeHost(), surface = "win_main") {
+function setup(host = new FakeHost(), surface = "win_main", replays = true) {
   host.api.onStream(events).onStream(feed);
-  const core = startTestCore(host);
+  const core = startTestCore(host, { replays });
   const client = new CoreClient(inProcessOpener(core, host, surface), {
     schedule: () => undefined,
   });
@@ -124,6 +124,137 @@ describe("a conversation kept on the device", () => {
     });
   });
 
+  it("shows messages the server gave no seq in the order they were made, after the core starts again", async () => {
+    const host = new FakeHost();
+    const made = (id: string, text: string, at: number) => ({
+      ...message(id, "user", text),
+      created_at: at,
+    });
+    host.api.on(
+      "GET",
+      base,
+      conversation([
+        made("wechat-user", "First", 1),
+        made("wechat-reply", "Second", 2),
+        made("telegram-user", "Third", 3),
+      ])
+    );
+    const first = setup(host);
+    first.core.observeSession(signedIn());
+    await first.client.call("chat.retain", first.lease);
+    await first.time.pass(1_500);
+    expect(texts(first.shown())).toEqual(["First", "Second", "Third"]);
+    first.client.close();
+    first.core.close();
+
+    host.api.on("GET", base, offline());
+    const again = setup(host);
+    again.core.observeSession(signedIn());
+    await again.client.call("chat.retain", again.lease);
+    await again.time.pass(100);
+    expect(texts(again.shown())).toEqual(["First", "Second", "Third"]);
+  });
+
+  it("shows nothing of a kept conversation the chat contract no longer takes, and reads it from the server", async () => {
+    const host = new FakeHost();
+    host.api.on("GET", base, conversation([message("m1", "user", "Hi")]));
+    const first = setup(host);
+    first.core.observeSession(signedIn());
+    await first.client.call("chat.retain", first.lease);
+    await first.time.pass(1_500);
+    // As an earlier core could have written it: a message without the attachments the contract asks for.
+    const account = first.core.session.current()!;
+    const kept = structuredClone(
+      account.items<Record<string, unknown>>("chatMessages:grp_1/cnv_1")!
+    );
+    delete kept[0]!.attachments;
+    account.putItems("chatMessages:grp_1/cnv_1", kept, (m) => String(m.messageId));
+    first.client.close();
+    first.core.runner.shutdown();
+
+    host.api.on("GET", base, offline());
+    // Its run starts from what was written outside a core (as an earlier one wrote it): it is not played again.
+    const again = setup(host, "win_main", false);
+    again.core.observeSession(signedIn());
+    await again.client.call("chat.retain", again.lease);
+    await again.time.pass(100);
+    expect(texts(again.shown()) ?? []).toEqual([]);
+
+    host.api.on("GET", base, conversation([message("m1", "user", "Hi again")]));
+    await again.time.pass(30_000);
+    expect(texts(again.shown())).toEqual(["Hi again"]);
+  });
+
+  it("keeps the draft on the device: the core started again shows it, offline too", async () => {
+    const host = new FakeHost();
+    host.api.on("GET", base, conversation([message("m1", "user", "Hi")]));
+    const first = setup(host);
+    first.core.observeSession(signedIn());
+    first.show();
+    await first.time.pass(100);
+    await first.act("setDraft", { draft: "Ask [Notes](comma:task/tsk_1) later" });
+    // A draft is written once it has rested; the device stops after that, with no orderly close.
+    await first.time.pass(1_500);
+    first.client.close();
+    first.core.runner.shutdown();
+
+    host.api.on("GET", base, offline());
+    const again = setup(host);
+    again.core.observeSession(signedIn());
+    const view = again.show();
+    await again.time.pass(100);
+    expect(view()?.state?.draft).toBe("Ask [Notes](comma:task/tsk_1) later");
+  });
+
+  it("writes nothing while a reply streams in, and the reply once it is a message", async () => {
+    const host = new FakeHost();
+    host.api.on("GET", base, conversation([message("m1", "user", "Hi")]));
+    const t = setup(host);
+    t.core.observeSession(signedIn());
+    t.show();
+    await t.time.pass(1_500);
+    const writtenAt = () =>
+      [...host.dbs.values()]
+        .map(
+          (sql) =>
+            sql.db
+              .prepare("SELECT read_at FROM doc WHERE name = ?")
+              .get("chat:grp_1/cnv_1") as { read_at: number } | undefined
+        )
+        .find(Boolean)?.read_at;
+    const kept = writtenAt();
+    expect(kept).toBeDefined();
+
+    const stream = host.api.open(events)!;
+    let text = "";
+    for (let i = 0; i < 30; i++) {
+      text += "word ";
+      stream.named("message_draft_delta", {
+        type: "message_draft_delta",
+        conversation_id: "cnv_1",
+        draft_id: "d1",
+        response_key: "r1",
+        source_message_ids: ["m1"],
+        status: "delta",
+        revision: i,
+        text,
+      });
+      await t.time.pass(100);
+    }
+    await t.time.pass(1_500);
+    expect(writtenAt()).toBe(kept);
+
+    stream.named(
+      "snapshot",
+      conversation([message("m1", "user", "Hi"), message("m2", "assistant", text)], {
+        type: "snapshot",
+        conversation_id: "cnv_1",
+      })
+    );
+    await t.time.pass(1_500);
+    expect(writtenAt()).toBeGreaterThan(kept!);
+  });
+
   it("sends a message that was under way again, with the same request id, once the core starts again", async () => {
     const host = new FakeHost();
     host.api.on("GET", base, conversation([]));
@@ -189,6 +320,52 @@ describe("a conversation kept on the device", () => {
         .slice(sent.length)
         .map((r) => (r.body as { client_request_id: string }).client_request_id)
     ).toContain(requestId);
+  });
+
+  it("sends again a message an earlier version kept inside the conversation's own doc", async () => {
+    const host = new FakeHost();
+    host.api.on("GET", base, conversation([message("m1", "user", "Hi")]));
+    const hold = host.api.hold("POST", `${base}/messages`);
+    host.api.on("POST", `${base}/messages`, offline());
+    const first = setup(host);
+    first.core.observeSession(signedIn());
+    first.show();
+    await first.time.pass(1_500);
+    void first.act("send", { text: "Kept the old way" }).catch(() => undefined);
+    await first.time.pass(10);
+    const sent = host.api.seen("POST", `${base}/messages`);
+    const requestId = (sent[0]!.body as { client_request_id: string })
+      .client_request_id;
+    // The device holds what an earlier version wrote: the unsent message inside the conversation's doc.
+    const account = first.core.session.current()!;
+    const pending = account.doc<unknown[]>("chatPending:grp_1/cnv_1")!.value;
+    const kept = account.doc<Record<string, unknown>>("chat:grp_1/cnv_1")!.value;
+    account.putDoc("chat:grp_1/cnv_1", { ...kept, pending }, 0);
+    account.deleteDoc("chatPending:grp_1/cnv_1");
+    first.client.close();
+    first.core.runner.shutdown();
+    hold();
+
+    host.api.on("POST", `${base}/messages`, () =>
+      json(
+        200,
+        conversation([
+          message("m1", "user", "Hi"),
+          message("m2", "user", "Kept the old way", requestId),
+        ])
+      )
+    );
+    const again = setup(host);
+    again.core.observeSession(signedIn());
+    await again.client.call("chat.retain", again.lease);
+    await again.time.pass(1_500);
+    expect(
+      host.api
+        .seen("POST", `${base}/messages`)
+        .slice(sent.length)
+        .map((r) => (r.body as { client_request_id: string }).client_request_id)
+    ).toContain(requestId);
+    expect(texts(again.shown())).toEqual(["Hi", "Kept the old way"]);
   });
 
   it("ends a group's feed when the group is refused (403), keeping nothing of it", async () => {
@@ -268,6 +445,57 @@ describe("a conversation kept on the device", () => {
     // Offline now: opening it shows what the background read kept.
     host.api.on("GET", base, offline());
     await t.client.call("chat.retain", { ...t.lease, leaseId: crypto.randomUUID() });
+    await t.time.pass(100);
+    expect(texts(t.shown())).toEqual(["Hi", "Answered while away"]);
+  });
+});
+
+describe("a conversation kept on the device, read again", () => {
+  it("asks only for the messages after the newest one kept, and keeps both", async () => {
+    const host = new FakeHost();
+    const at = (seq: number, text: string) => ({
+      ...message(`m${seq}`, "assistant", text),
+      seq,
+    });
+    host.api.on("GET", base, (request) =>
+      new URLSearchParams(request.path.split("?")[1]).get("after_seq") === "1"
+        ? json(200, conversation([at(2, "Answered while away")], { after_seq: 1 }))
+        : json(200, conversation([at(1, "Hi")]))
+    );
+    const t = setup(host);
+    t.core.observeSession(signedIn());
+    await t.client.call("chat.retain", t.lease);
+    await t.time.pass(1_500);
+    host.api.open(events)!.named("snapshot", {
+      type: "snapshot",
+      group_id: "grp_1",
+      conversation_id: "cnv_1",
+      messages: [at(1, "Hi")],
+    });
+    await t.time.pass(1_500);
+    await t.client.call("chat.release", t.lease);
+    await t.time.pass(31_000, 1_000);
+
+    host.api.open(`${feed}`)!.event({
+      type: "conversation_changed",
+      group_id: "grp_1",
+      conversation_id: "cnv_1",
+      kind: "user_chat",
+      change: "message",
+      seq: 2,
+      version: "v.1",
+    });
+    await t.time.pass(1_500);
+    const read = new URLSearchParams(
+      host.api.seen("GET", base).at(-1)!.path.split("?")[1]
+    );
+    expect(read.get("after_seq")).toBe("1");
+
+    host.api.on("GET", base, offline());
+    await t.client.call("chat.retain", {
+      ...t.lease,
+      leaseId: "00000000-0000-4000-8000-000000000002",
+    });
     await t.time.pass(100);
     expect(texts(t.shown())).toEqual(["Hi", "Answered while away"]);
   });
@@ -518,6 +746,38 @@ describe("a task's conversation", () => {
       lastBackoffMs: 0,
       status: "ready",
     });
+    expect(t.shown()?.syncWarning).toBeUndefined();
+  });
+});
+
+describe("a task's conversation, read again", () => {
+  it("asks only for the messages after the newest one held, and keeps them when none came", async () => {
+    const host = new FakeHost();
+    const at = (seq: number) => ({
+      ...message(`m${seq}`, "assistant", `step ${seq}`),
+      seq,
+    });
+    const task = { kind: "agent_task", title: "Running task" };
+    host.api.on("GET", base, (request) => {
+      const after = new URLSearchParams(request.path.split("?")[1]).get("after_seq");
+      if (after === null) return json(200, conversation([at(1), at(2)], task));
+      const next = after === "2" ? [at(3)] : [];
+      return json(200, conversation(next, { ...task, after_seq: Number(after) }));
+    });
+    const t = setup(host);
+    t.core.observeSession(signedIn());
+    t.show();
+    await t.time.pass(100);
+    await t.act("refresh");
+    await t.time.pass(100);
+    await t.act("refresh");
+    await t.time.pass(100);
+
+    const asked = host.api
+      .seen("GET", base)
+      .map((r) => new URLSearchParams(r.path.split("?")[1]).get("after_seq"));
+    expect(asked).toEqual([null, "2", "3"]);
+    expect(texts(t.shown())).toEqual(["step 1", "step 2", "step 3"]);
     expect(t.shown()?.syncWarning).toBeUndefined();
   });
 });

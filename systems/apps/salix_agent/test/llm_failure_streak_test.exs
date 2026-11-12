@@ -155,7 +155,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
     # Incident transcript shape: a delivered user message, an assistant
     # tool-use turn, and the (failed) tool result at the tail.
     {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{"type" => "session_created", "session_id" => @session_id},
         %{
           "type" => "delivery",
@@ -202,7 +202,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
     end)
 
     {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [
         %{
           "type" => "runtime_message",
           "from_queue" => true,
@@ -225,25 +225,21 @@ defmodule SalixAgent.LLMFailureStreakTest do
     assert InternalSession.activity_status(failed) == :waiting
     assert InternalSession.monitored_activity_signature(failed) == :active
     assert is_integer(InternalSession.llm_retry_at_ms(failed))
-    assert is_binary(InternalSession.work_index_token(failed))
-    assert SalixAgent.SessionWorkIndex.discoverable_reasons?(["llm_retry"])
-    refute SalixAgent.SessionWorkIndex.immediate_recovery_reasons?(["llm_retry"])
+    refute SalixAgent.SessionWorkRecovery.immediate_recovery_reasons?(["llm_retry"])
 
-    assert SalixAgent.SessionWorkIndex.recover_after_ms(
+    assert SalixAgent.SessionWorkRecovery.recover_after_ms(
              ["llm_retry"],
              InternalSession.recovery_wait(failed)
            ) == InternalSession.llm_retry_at_ms(failed)
 
-    due = InternalSession.llm_retry_at_ms(failed)
-    {:ok, before_due} = SalixAgent.SessionWorkIndex.list_due_discovery(due - 1)
+    %{rows: [[deadline, reasons]]} =
+      SalixStore.Repo.query!(
+        "SELECT next_run_at,work_reasons FROM salix_sessions WHERE agent_id=$1 AND session_id=$2",
+        [agent, @session_id]
+      )
 
-    refute Enum.any?(
-             before_due.records,
-             &(&1["token"] == InternalSession.work_index_token(failed))
-           )
-
-    {:ok, at_due} = SalixAgent.SessionWorkIndex.list_due_discovery(due)
-    assert Enum.any?(at_due.records, &(&1["token"] == InternalSession.work_index_token(failed)))
+    assert DateTime.to_unix(deadline, :millisecond) == InternalSession.llm_retry_at_ms(failed)
+    assert reasons == ["llm_retry"]
 
     # The worker is available again, but no new user/runtime message arrives.
     # Only the durable retry deadline can restart this exact transcript.
@@ -289,16 +285,10 @@ defmodule SalixAgent.LLMFailureStreakTest do
     # New session input advances the transcript position; the streak no longer
     # matches and exactly one fresh attempt runs (its failure acks the input,
     # so a user-tail transcript does not re-arm the loop).
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "queue_append",
-          "session_id" => @session_id,
-          "kind" => "user_message",
-          "dedupe_key" => "retry-input-1",
-          "payload" => %{"content" => "try again"}
-        }
-      ])
+    assert {:ok, :created} =
+             SalixAgent.deliver(agent, %{session_id: @session_id, content: "try again"},
+               source_message_id: "retry-input-1"
+             )
 
     :ok = InternalSessionActor.wake(agent, @session_id)
 
@@ -321,7 +311,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
   # streak, so the cap was never reached and the surface stayed quiet forever.
   test "one non-retryable failure reports a model connection error", %{agent: agent} do
     {:ok, session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [terminal_failure(false)])
+      SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, [terminal_failure(false)])
 
     assert InternalSession.consecutive_llm_failures(session) == 1
     assert InternalSession.llm_failure_terminal?(session)
@@ -392,7 +382,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
         }
       end)
 
-    {:ok, session} = InternalSessionStore.prepare_commit(agent, @session_id, legacy)
+    {:ok, session} = SalixAgent.TestSupport.SessionFixture.commit(agent, @session_id, legacy)
 
     assert InternalSession.consecutive_llm_failures(session) == 0
     refute InternalSession.llm_failures_exhausted?(session)

@@ -5,9 +5,10 @@ defmodule Comma.MiniApps.Manifest do
   reads.
   """
 
-  @capabilities ~w(identity.basic ai.chat web.search chat.draft tasks.create files.pick drive.app_folder calendar.read notifications clipboard.write links.open)
+  @capabilities ~w(identity.basic ai.chat web.search chat.draft tasks.create files.pick drive.app_folder calendar.read notifications clipboard.write links.open
+                   microphone camera location screen.wake fullscreen clipboard.read share haptics midi usb bluetooth)
   @storage ~w(app user device)
-  @keys ~w(name description icon cover capabilities storage backend)
+  @keys ~w(name description icon cover screenshots capabilities storage backend)
   @backend_keys ~w(entry egress secrets)
   @icon_types %{".png" => "image/png", ".svg" => "image/svg+xml", ".webp" => "image/webp"}
   @cover_types %{
@@ -43,6 +44,7 @@ defmodule Comma.MiniApps.Manifest do
       |> field(manifest, "description", &description/1)
       |> field(manifest, "icon", &icon/1)
       |> field(manifest, "cover", &cover/1)
+      |> field(manifest, "screenshots", &screenshots/1)
       |> field(manifest, "capabilities", &subset(&1, @capabilities, "capabilities"))
       |> field(manifest, "storage", &subset(&1, @storage, "storage"))
       |> field(manifest, "backend", &backend/1)
@@ -56,7 +58,7 @@ defmodule Comma.MiniApps.Manifest do
 
   def icon_type(_path), do: nil
 
-  @doc "The MIME type of a cover path, by extension."
+  @doc "The MIME type of a cover or screenshot path, by extension."
   def cover_type(path) when is_binary(path),
     do: Map.get(@cover_types, path |> Path.extname() |> String.downcase())
 
@@ -122,6 +124,17 @@ defmodule Comma.MiniApps.Manifest do
   end
 
   defp cover(_path), do: {:error, "cover must be a path"}
+
+  defp screenshots(nil), do: :skip
+
+  defp screenshots(paths) when is_list(paths) and length(paths) <= 6 do
+    if Enum.all?(paths, &(safe_path?(&1) and cover_type(&1) != nil)) and
+         length(Enum.uniq(paths)) == length(paths),
+       do: {:ok, paths},
+       else: {:error, "screenshots must list unique PNG, JPEG or WebP paths inside the bundle"}
+  end
+
+  defp screenshots(_), do: {:error, "screenshots must list at most 6 paths"}
 
   defp subset(nil, _allowed, _label), do: {:ok, []}
 

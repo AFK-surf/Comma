@@ -18,9 +18,10 @@ import {
   signedOutSessionSnapshot,
 } from "./sessionHostHarness";
 
-const nothing: AppUpdateValue = { downloading: false, ready: null };
+const nothing: AppUpdateValue = { downloading: false, progress: null, ready: null };
 const ready: AppUpdateValue = {
   downloading: false,
+  progress: null,
   ready: { productName: "Comma Staging", version: "0.0.2-staging.abc123" },
 };
 
@@ -126,7 +127,9 @@ describe("AutomaticUpdates", () => {
     await flush();
     expect(screen.queryByText("You’re up to date")).not.toBeInTheDocument();
 
-    await act(async () => core.emit("appUpdate", { downloading: true, ready: null }));
+    await act(async () =>
+      core.emit("appUpdate", { downloading: true, progress: null, ready: null })
+    );
     expect(screen.queryByText("Downloading update…")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Restart now" })
@@ -205,21 +208,27 @@ describe("AutomaticUpdates", () => {
 
   it("says when Check for Updates waits on a download, and offers it again each time", async () => {
     let answer!: () => void;
-    const core = scriptedUpdates({ downloading: true, ready: null }, (name) =>
-      name === "appUpdate.check"
-        ? new Promise((resolve) => (answer = () => resolve({ outcome: "ready" })))
-        : null
+    const core = scriptedUpdates(
+      { downloading: true, progress: null, ready: null },
+      (name) =>
+        name === "appUpdate.check"
+          ? new Promise((resolve) => (answer = () => resolve({ outcome: "ready" })))
+          : null
     );
     const desktop = installDesktop();
     renderAutomaticUpdates(core);
     await desktop.checkForUpdates();
     expect(await screen.findByText("Downloading update…")).toBeInTheDocument();
+    await act(async () =>
+      core.emit("appUpdate", { downloading: true, progress: 42, ready: null })
+    );
+    expect(await screen.findByText("Downloading update… 42%")).toBeInTheDocument();
 
     core.emit("appUpdate", ready);
     await act(async () => answer());
     expect(await screen.findByText("Update ready")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.queryByText("Downloading update…")).not.toBeInTheDocument()
+      expect(screen.queryByText("Downloading update… 42%")).not.toBeInTheDocument()
     );
     fireEvent.click(screen.getByRole("button", { name: "Dismiss notification" }));
     await waitFor(() =>

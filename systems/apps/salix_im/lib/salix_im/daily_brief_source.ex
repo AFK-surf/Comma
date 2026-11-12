@@ -18,9 +18,7 @@ defmodule SalixIM.DailyBriefSource do
   @max_channel_pages 10
   @max_members 50
   @max_window_limit 200
-  @max_thread_channels 2_000
-  # Enough for a month of an active person's messages.
-  @max_thread_pages 15
+  @max_member_threads 500
   @max_emails 50
 
   @type error ::
@@ -158,61 +156,54 @@ defmodule SalixIM.DailyBriefSource do
   def messages(_request), do: {:error, :invalid_request}
 
   @doc """
-  Thread coordinates (channel and thread ts, no text) where the member wrote
-  since `after_us`, limited to the channels the caller names. The caller
-  passes the readable channels from `channels/1` of the same run. `complete?`
-  is false when the bounded pages ran out.
+  Of the `threads` the caller read in this run's readable channels (channel
+  and thread ts, at most 500), the ones the member wrote in: the root or a
+  reply. One bounded read, whatever the member's history; no text returns.
   """
   @spec member_threads(map()) :: {:ok, map()} | {:error, error()}
-  def member_threads(
-        %{slack_user_id: user_id, channel_ids: channel_ids, after_us: after_us} = request
-      )
-      when is_binary(user_id) and is_list(channel_ids) and
-             length(channel_ids) <= @max_thread_channels and is_integer(after_us) do
+  def member_threads(%{slack_user_id: user_id, threads: threads} = request)
+      when is_binary(user_id) and is_list(threads) and length(threads) <= @max_member_threads do
+    pairs =
+      for %{channel_id: channel, thread_ts: ts} <- threads,
+          is_binary(channel) and is_binary(ts),
+          uniq: true,
+          do: {channel, ts}
+
     with {:ok, connect} <- fetch_connect(request),
-         {:ok, messages, complete?} <- own_messages(scope(connect), user_id, after_us, nil, 1, []) do
-      allowed = MapSet.new(channel_ids)
-
-      threads =
-        messages
-        |> Enum.filter(&MapSet.member?(allowed, &1["channel"]))
-        |> Enum.map(fn message ->
-          {message["channel"], present(message["thread_ts"]) || message["ts"]}
-        end)
-        |> Enum.uniq()
-        |> Enum.map(fn {channel_id, thread_ts} ->
-          %{channel_id: channel_id, thread_ts: thread_ts}
-        end)
-
-      {:ok, %{threads: threads, complete?: complete?}}
+         {:ok, wrote} <- thread_participation(scope(connect), user_id, pairs) do
+      {:ok,
+       %{
+         threads: for({channel, ts} <- wrote, do: %{channel_id: channel, thread_ts: ts}),
+         complete?: true
+       }}
     end
   end
 
   def member_threads(_request), do: {:error, :invalid_request}
 
-  # The member's own messages, newest first, a page at a time up to
-  # `@max_thread_pages` pages.
-  defp own_messages(scope, user_id, after_us, cursor, page_number, acc) do
-    with {:ok, page} <-
-           search(
-             scope,
-             [
-               actor_id: user_id,
-               after_us: after_us,
-               after_date: date(after_us),
-               sort_dir: :desc,
-               limit: @max_window_limit
-             ] ++ cursor_opts(cursor_view(cursor))
-           ) do
-      acc = acc ++ page.messages
-
-      cond do
-        not page.has_more? or is_nil(page.next_cursor) -> {:ok, acc, true}
-        page_number >= @max_thread_pages -> {:ok, acc, false}
-        true -> own_messages(scope, user_id, after_us, page.next_cursor, page_number + 1, acc)
-      end
+  @doc """
+  How many messages each member (at most 500) wrote in each of the caller's
+  readable channels (at most 2000) since `after_us`: `%{user_id => [%{channel_id,
+  count}]}`, most first. Counts only; no text returns.
+  """
+  @spec active_channels(map()) :: {:ok, map()} | {:error, error()}
+  def active_channels(
+        %{slack_user_ids: user_ids, channel_ids: channel_ids, after_us: after_us} = request
+      )
+      when is_list(user_ids) and length(user_ids) <= 500 and is_list(channel_ids) and
+             length(channel_ids) <= 2_000 and is_integer(after_us) and after_us >= 0 do
+    with {:ok, connect} <- fetch_connect(request),
+         {:ok, rows} <- actor_channel_counts(scope(connect), user_ids, channel_ids, after_us) do
+      {:ok,
+       rows
+       |> Enum.group_by(&elem(&1, 1), fn {channel, _user, n} ->
+         %{channel_id: channel, count: n}
+       end)
+       |> Map.new(fn {user, counts} -> {user, Enum.sort_by(counts, &(-&1.count))} end)}
     end
   end
+
+  def active_channels(_request), do: {:error, :invalid_request}
 
   @doc """
   Resolves BFT emails to Slack members of the connect's workspace. Deleted,
@@ -384,6 +375,39 @@ defmodule SalixIM.DailyBriefSource do
     end
   end
 
+  defp actor_channel_counts(_scope, [], _channel_ids, _after_us), do: {:ok, []}
+  defp actor_channel_counts(_scope, _user_ids, [], _after_us), do: {:ok, []}
+
+  defp actor_channel_counts(scope, user_ids, channel_ids, after_us) do
+    reader = ClickHouseReader.impl()
+
+    if is_atom(reader) and not is_nil(reader) and SystemsRuntime.Proc.ensure_loaded?(reader) and
+         function_exported?(reader, :actor_channel_counts, 4) do
+      case reader.actor_channel_counts(scope, user_ids, channel_ids, after_us) do
+        {:ok, rows} -> {:ok, rows}
+        {:error, _reason} -> {:error, :source_unavailable}
+      end
+    else
+      {:error, :source_unavailable}
+    end
+  end
+
+  defp thread_participation(_scope, _user_id, []), do: {:ok, []}
+
+  defp thread_participation(scope, user_id, pairs) do
+    reader = ClickHouseReader.impl()
+
+    if is_atom(reader) and not is_nil(reader) and SystemsRuntime.Proc.ensure_loaded?(reader) and
+         function_exported?(reader, :thread_participation, 3) do
+      case reader.thread_participation(scope, user_id, pairs) do
+        {:ok, wrote} -> {:ok, wrote}
+        {:error, _reason} -> {:error, :source_unavailable}
+      end
+    else
+      {:error, :source_unavailable}
+    end
+  end
+
   defp latest_states(scope, keys) do
     reader = ClickHouseReader.impl()
 
@@ -472,9 +496,21 @@ defmodule SalixIM.DailyBriefSource do
       actor_kind: if(bot?, do: "bot", else: "user"),
       actor_id: present(message["user"]) || present(message["bot_id"]),
       subtype: present(message["subtype"]),
-      text: message["text"] || ""
+      text: message["text"] || "",
+      reactions: reactions(message["reactions"])
     }
   end
+
+  # Who reacted with what: a reaction is often the whole answer.
+  defp reactions(list) when is_list(list) do
+    for %{"name" => name} = reaction <- list,
+        is_binary(name),
+        users = Enum.filter(List.wrap(reaction["users"]), &is_binary/1),
+        users != [],
+        do: %{name: name, users: Enum.take(users, 10)}
+  end
+
+  defp reactions(_none), do: []
 
   # A mirror row, in the same shape as `message_view/1`.
   defp row_view(row) do

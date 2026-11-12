@@ -23,7 +23,7 @@ const viewer = { sub: "u", email: "a@x", name: "A", role: "member", workspace: "
 test("an archived workspace's uploads: shown from its archive, and sent again from it", async () => {
   const data = mkdtempSync(join(tmpdir(), "cold-routes-"));
   const config = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", models: ["opus"] }] }, data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [new FakeDriver("claude")], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat(), runners: () => [] });
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });
   hub.setJobs(jobs);
@@ -75,7 +75,7 @@ test("an archived workspace's uploads: shown from its archive, and sent again fr
 test("a big file in parts, a whole one streamed, a video's poster or none", async () => {
   const data = mkdtempSync(join(tmpdir(), "file-parts-"));
   const config = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", models: ["opus"] }] }, data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [new FakeDriver("claude")], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat(), runners: () => [] });
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });
   hub.setJobs(jobs);

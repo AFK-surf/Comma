@@ -143,6 +143,7 @@ class TestFlightCommands(unittest.TestCase):
 
     def test_default_keeps_numeric_latest_version_and_increments_build(self):
         self.environment.pop("IOS_VERSION_BUMP")
+        self.environment.pop("IOS_BACKEND")
         self.scenario(
             self.route("testflight groups list", {"data": [GROUP]}),
             self.route("testflight pre-release list", {"data": [
@@ -151,6 +152,8 @@ class TestFlightCommands(unittest.TestCase):
             self.route("builds next-build-number", {"nextBuildNumber": "42"}))
         self.run_command("resolve")
         self.assertEqual((self.context()["version"], self.context()["build_number"]), ("1.10.2", "42"))
+        self.assertEqual(self.context()["backend"], "production")
+        self.assertEqual(self.context()["api_base_url"], "https://salix.comma.surf")
         self.assertIn("needs_build=true", self.outputs_file.read_text())
 
     def test_selected_bump_resets_lower_components_and_is_frozen_on_retry(self):

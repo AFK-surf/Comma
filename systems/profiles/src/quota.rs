@@ -1,7 +1,9 @@
 //! A provider's answer about an account's allowance, as a Profile's quota: Salix's account-proxy fetches it for the
 //! plans it holds, a station for the logins it has; both read the answer here.
 //!
-//! - claude: `api/oauth/usage` (`five_hour`, `seven_day`, `seven_day_<model>`: utilization and refill);
+//! - claude: `api/oauth/usage` (`five_hour`, `seven_day`, `seven_day_<model>`: utilization and refill; a model's own
+//!   week in `limits`, as Fable's; the limit resets Claude Code's /limit-reset offers, in `juniper_tide` and
+//!   `cedar_ember`);
 //! - codex: ChatGPT's `wham/usage` (`rate_limit.primary_window`/`secondary_window`) or the Codex app-server's
 //!   `account/rateLimits/read` (`rateLimits.primary`/`secondary`), with the reset credits either reports;
 //! - opencode-go: `zen/go/v1/usage` (`rolling`, `weekly`, `monthly`);
@@ -25,6 +27,107 @@ const MONTH: i64 = 30 * DAY;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResetCredits {
     pub available_count: i64,
+}
+
+/// What one reset gives back: the 5-hour limit, the week, all limits, what one model used of the week, or a provider's
+/// own reset that says no more (ChatGPT's: `credit`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetKind {
+    Session,
+    Weekly,
+    Model,
+    Full,
+    Credit,
+}
+
+/// One kind of reset an account holds: how many are left, when each ends (ms since the epoch, where known), and whether
+/// one can be used now (else only once its limit is reached). `model`: the model a `model` reset gives back to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Reset {
+    pub kind: ResetKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub left: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expiries: Vec<i64>,
+    pub usable: bool,
+}
+
+/// A Claude reset grant's kind, as Claude Code names it: one that gives back to the week what a model used (Fable's
+/// launch) is that model's; else the kind the provider says; else by the limits it clears.
+pub fn claude_grant_kind(grant: &Value) -> ResetKind {
+    if grant["gives_back_weekly"].as_bool() == Some(true) || grant["type"] == "fable" {
+        return ResetKind::Model;
+    }
+    match grant["type"].as_str() {
+        Some("session") => return ResetKind::Session,
+        Some("weekly") => return ResetKind::Weekly,
+        Some("full") => return ResetKind::Full,
+        _ => {}
+    }
+    let clears: Vec<&str> = grant["clears"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let session = clears.contains(&"five_hour");
+    let other = clears.iter().any(|c| *c != "five_hour");
+    match (session, other) {
+        (true, false) => ResetKind::Session,
+        (false, true) => ResetKind::Weekly,
+        _ => ResetKind::Full,
+    }
+}
+
+/// The resets a Claude usage answer says the account holds, one entry a kind, in Claude Code's order: the weekly
+/// 5-hour reset (`juniper_tide`, there to use once a week at the 5-hour limit) among the 5-hour ones, and the grants
+/// (`cedar_ember`). `model`: the model a model's reset gives back to (Fable when the answer names none).
+fn claude_resets(body: &Value, model: Option<&str>) -> Vec<Reset> {
+    let mut kinds: Vec<Reset> = Vec::new();
+    let mut add = |kind: ResetKind, left: i64, usable: bool, ends: Option<i64>| {
+        let i = match kinds.iter().position(|r| r.kind == kind) {
+            Some(i) => i,
+            None => {
+                kinds.push(Reset {
+                    kind,
+                    model: (kind == ResetKind::Model).then(|| model.unwrap_or("Fable").to_string()),
+                    left: 0,
+                    expiries: Vec::new(),
+                    usable: false,
+                });
+                kinds.len() - 1
+            }
+        };
+        let r = &mut kinds[i];
+        r.left += left;
+        r.usable |= usable;
+        if let Some(ends) = ends {
+            r.expiries.extend(std::iter::repeat_n(ends, left as usize));
+            r.expiries.sort_unstable();
+        }
+    };
+    let tide = &body["juniper_tide"];
+    if tide["eligible"] == true && tide["arm"] == "reset" && tide["available"] == true {
+        add(ResetKind::Session, 1, true, None);
+    }
+    let ember = &body["cedar_ember"];
+    if ember["eligible"] == true {
+        for g in ember["grants"].as_array().into_iter().flatten().take(50) {
+            let left = g["resets_left"].as_i64().filter(|n| (1..=1000).contains(n));
+            if let (Some(left), true, false) = (left, g["id"].is_string(), g["paused"] == true) {
+                add(
+                    claude_grant_kind(g),
+                    left,
+                    g["usable_now"] == true,
+                    time_ms(&g["ends_at"]),
+                );
+            }
+        }
+    }
+    kinds.sort_by_key(|r| r.kind);
+    kinds
 }
 
 /// Credits of a plan beyond its windows (ChatGPT, as the app-server says).
@@ -161,6 +264,30 @@ fn window(
     })
 }
 
+/// A Claude plan as its OAuth profile says it (account-proxy puts it beside the usage answer, as `plan`): its
+/// organization type without `claude_` (pro, max, team, enterprise), and Max 20x, which Claude now calls Ultra, ultra.
+fn claude_plan(plan: &Value) -> Option<String> {
+    let kind = plan["organization_type"].as_str()?.trim().to_lowercase();
+    let kind = kind.strip_prefix("claude_").unwrap_or(&kind);
+    let tier = plan["rate_limit_tier"].as_str().unwrap_or_default().to_lowercase();
+    if kind.is_empty() {
+        return None;
+    }
+    let ultra = ["default_claude_max_20x", "claude_max_20x", "max_20x"];
+    Some(
+        if ultra.contains(&kind) || (kind == "max" && ultra.contains(&tier.as_str())) {
+            "ultra".into()
+        } else {
+            kind.to_string()
+        },
+    )
+}
+
+/// A model window's model as its label names it (`每周 · Fable`: Fable).
+fn name_of(w: &Window) -> String {
+    w.label.rsplit(" · ").next().unwrap_or_default().to_string()
+}
+
 /// The minutes of a window `seconds` long, as a plan's: a week, a month, else short (five hours).
 fn period_minutes(seconds: f64) -> i64 {
     if (6.0 * 86_400.0..=8.0 * 86_400.0).contains(&seconds) {
@@ -200,6 +327,27 @@ pub fn parse(provider: &str, body: &Value, now: i64) -> Quota {
                     windows.extend(window(used, resets, Some(minutes), "", model));
                 }
             }
+            // The weeks one model has to itself (Fable's), which no `seven_day_*` field says.
+            let mut scoped = Vec::new();
+            for l in body["limits"].as_array().into_iter().flatten().take(50) {
+                let name = l["scope"]["model"]["display_name"]
+                    .as_str()
+                    .map(str::trim)
+                    .unwrap_or("");
+                let Some(used) = number(&l["percent"]) else { continue };
+                if l["group"] != "weekly" || name.is_empty() {
+                    continue;
+                }
+                let model = name.to_lowercase();
+                if windows.iter().any(|w| w.model.as_deref() == Some(model.as_str())) {
+                    continue;
+                }
+                scoped.extend(window(used, time_ms(&l["resets_at"]), Some(WEEK), "", Some(&model)));
+            }
+            let own = (scoped.len() == 1).then(|| name_of(&scoped[0]));
+            quota.plan_type = claude_plan(&body["plan"]);
+            windows.extend(scoped);
+            quota.resets = claude_resets(body, own.as_deref());
         }
         "codex" => {
             // The app-server's (camelCase, under rateLimits) or ChatGPT's own (snake_case, under rate_limit).
@@ -230,6 +378,15 @@ pub fn parse(provider: &str, body: &Value, now: i64) -> Quota {
             let whole = |v: &Value| v.as_i64().filter(|n| *n >= 0);
             if let Some(n) = resets.and_then(|r| whole(&r["available_count"]).or_else(|| whole(&r["availableCount"]))) {
                 quota.reset_credits = Some(ResetCredits { available_count: n });
+                if n > 0 {
+                    quota.resets = vec![Reset {
+                        kind: ResetKind::Credit,
+                        model: None,
+                        left: n,
+                        expiries: Vec::new(),
+                        usable: true,
+                    }];
+                }
             }
             if let Some(c) = app.get("credits").filter(|c| c.is_object()) {
                 quota.credits = Some(Credits {
@@ -420,6 +577,81 @@ mod tests {
     }
 
     #[test]
+    fn claude_says_fables_week_and_its_resets_by_kind() {
+        let q = parse(
+            "claude",
+            &json!({"five_hour": {"utilization": 100, "resets_at": "2026-10-07T15:00:00Z"},
+                    "seven_day": {"utilization": 40, "resets_at": "2026-10-10T00:00:00Z"},
+                    "limits": [{"group": "weekly", "percent": 54, "resets_at": "2026-10-12T00:00:00Z",
+                                "scope": {"model": {"display_name": "Fable"}}},
+                               {"group": "session", "percent": 5, "scope": {"model": {"display_name": "Fable"}}}],
+                    "juniper_tide": {"eligible": true, "arm": "reset", "available": true},
+                    "cedar_ember": {"eligible": true, "grants": [
+                        {"id": "g1", "type": "fable", "resets_left": 2, "usable_now": true, "ends_at": "2026-10-20T00:00:00Z"},
+                        {"id": "g2", "clears": ["five_hour", "seven_day"], "resets_left": 1, "usable_now": false, "ends_at": "2026-10-15T00:00:00Z"},
+                        {"id": "g3", "type": "full", "resets_left": 1, "paused": true},
+                        {"id": "g4", "clears": ["five_hour"], "resets_left": 0}]}}),
+            NOW,
+        );
+        let fable = q.windows.iter().find(|w| w.model.as_deref() == Some("fable")).unwrap();
+        assert_eq!(
+            (fable.label.as_str(), fable.used_percent, fable.minutes),
+            ("每周 · Fable", 54.0, Some(WEEK))
+        );
+        assert_eq!(
+            q.resets,
+            [
+                Reset {
+                    kind: ResetKind::Session,
+                    model: None,
+                    left: 1,
+                    expiries: vec![],
+                    usable: true
+                },
+                Reset {
+                    kind: ResetKind::Model,
+                    model: Some("Fable".into()),
+                    left: 2,
+                    expiries: vec![time_ms(&json!("2026-10-20T00:00:00Z")).unwrap(); 2],
+                    usable: true
+                },
+                Reset {
+                    kind: ResetKind::Full,
+                    model: None,
+                    left: 1,
+                    expiries: vec![time_ms(&json!("2026-10-15T00:00:00Z")).unwrap()],
+                    usable: false
+                },
+            ]
+        );
+        assert_eq!(q.plan_type, None);
+        for (plan, expected) in [
+            (
+                json!({"organization_type": "claude_max", "rate_limit_tier": "default_claude_max_20x"}),
+                Some("ultra"),
+            ),
+            (
+                json!({"organization_type": "claude_max", "rate_limit_tier": "default_claude_max_5x"}),
+                Some("max"),
+            ),
+            (json!({"organization_type": "claude_pro"}), Some("pro")),
+            (json!({"organization_type": ""}), None),
+        ] {
+            assert_eq!(
+                parse("claude", &json!({"plan": plan}), NOW).plan_type.as_deref(),
+                expected
+            );
+        }
+        // Not offered (another surface, or no resets): none listed.
+        let none = parse(
+            "claude",
+            &json!({"juniper_tide": {"eligible": false}, "cedar_ember": {"eligible": false}}),
+            NOW,
+        );
+        assert!(none.resets.is_empty());
+    }
+
+    #[test]
     fn codex_is_read_from_chatgpt_or_from_the_app_server() {
         let wham = parse(
             "codex",
@@ -456,6 +688,10 @@ mod tests {
             })
         );
         assert_eq!(app.reset_credits, Some(ResetCredits { available_count: 1 }));
+        assert_eq!(
+            app.resets.iter().map(|r| (r.kind, r.left)).collect::<Vec<_>>(),
+            [(ResetKind::Credit, 1)]
+        );
     }
 
     #[test]

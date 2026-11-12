@@ -9,8 +9,10 @@ defmodule SalixWeb.L4ES do
   which is also the assertions' audience), `image_manifest` (the manifest of
   the release's own sandbox image, `ensure_image/1`), else `image` (an
   operator image, default `comma-coding`), `size` (an operator size name, or
-  nil for L4ES's default), `max_sandboxes` (a Workspace's live sandboxes,
-  default 5) and `req_options` (tests). Without `url` the service is off.
+  nil for L4ES's default), `labels` (the node labels every sandbox requires,
+  l4h-sandbox DESIGN.md §20; `[]` for any node), `max_sandboxes` (a
+  Workspace's live sandboxes, default 5) and `req_options` (tests). Without
+  `url` the service is off.
 
   A Comma admin may override `max_sandboxes` for one Workspace: the tenant
   config `coding_sandboxes` (`max_sandboxes`, `sandbox_limit/1`). The
@@ -47,6 +49,7 @@ defmodule SalixWeb.L4ES do
               image: Keyword.get(config, :image) || "comma-coding",
               image_manifest: present(Keyword.get(config, :image_manifest)),
               size: Keyword.get(config, :size),
+              labels: labels(Keyword.get(config, :labels)),
               max_sandboxes: Keyword.get(config, :max_sandboxes) || 5,
               req_options: Keyword.get(config, :req_options, [])
             }
@@ -372,9 +375,14 @@ defmodule SalixWeb.L4ES do
   semi-persistent: L4ES keeps a stopped sandbox's data disk on its node until
   it needs the space. A request the sandbox cannot take (another disk size,
   a sandbox still stopping, a running one asked to change) is refused (409).
+  An image the workspace no longer has is `{:error, {:image_gone, why}}`.
   `opts`: `env`, `secrets`, `metadata`, `size`, `image`, and `github` (a
   GitHub ACL) with `github_token`: the sandbox reaches GitHub through its
   node's proxy, which alone holds the token (l4h-sandbox DESIGN.md §31).
+  Every create carries the configured node labels, `[]` included, so a
+  stopped sandbox takes the current ones when it starts: one whose node
+  lacks a label starts on another node, with a new disk, after L4ES's
+  failover grace.
   """
   def create(workspace_id, name, opts) do
     body =
@@ -385,7 +393,8 @@ defmodule SalixWeb.L4ES do
         "image" => opts[:image] || config_value(:image),
         "env" => opts[:env] || %{},
         "secrets" => opts[:secrets] || %{},
-        "metadata" => opts[:metadata] || %{}
+        "metadata" => opts[:metadata] || %{},
+        "labels" => config_value(:labels) || []
       }
       |> put_present("size", opts[:size] || config_value(:size))
       |> put_present("github", opts[:github])
@@ -394,6 +403,9 @@ defmodule SalixWeb.L4ES do
     case request(workspace_id, :post, "/sandboxes", body) do
       {:ok, status, sandbox} when status in [200, 201] -> {:ok, sandbox}
       {:ok, 409, %{"sandboxes" => _} = body} -> {:error, {:quota, body["error"]}}
+      # The image was removed after this node last saw it (another release's
+      # `ensure_image/1` replaced it).
+      {:ok, 400, %{"error" => "There is no image " <> _ = why}} -> {:error, {:image_gone, why}}
       {:ok, status, body} when status in 400..499 -> {:error, {:refused, status, error(body)}}
       {:ok, status, body} -> {:error, {:unavailable, status, error(body)}}
       {:error, _} = error -> error
@@ -499,6 +511,9 @@ defmodule SalixWeb.L4ES do
 
   defp present(value) when is_binary(value) and value != "", do: value
   defp present(_value), do: nil
+
+  defp labels(labels) when is_list(labels), do: Enum.uniq(labels)
+  defp labels(_labels), do: []
 
   # The image's dm-verity descriptor, which L4ES boots it with (l4h-sandbox
   # README "Custom system images"); an image published without one cannot boot.

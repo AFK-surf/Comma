@@ -56,7 +56,7 @@ defmodule SalixAgent.LoopsRuntimeTest do
     session_id =
       if tags[:router], do: agent["router_session_id"], else: SalixStore.Ids.new_session_id()
 
-    {:ok, _} = InternalSessionStore.prepare_commit(agent_id, session_id, [])
+    {:ok, _} = SalixAgent.TestSupport.SessionFixture.commit(agent_id, session_id, [])
     {:ok, _server} = Fleet.ensure_started(agent_id, create: false)
     :ok = Fleet.await_ownership_installed(agent_id)
 
@@ -123,6 +123,38 @@ defmodule SalixAgent.LoopsRuntimeTest do
     assert {:ok, settled} = Store.get(id)
     assert settled["pending_events"] == %{}
     assert {:ok, %{"duplicate" => true}} = Loops.send_event(ctx.agent_id, id, event)
+  end
+
+  test "stopping the Agents ends their adoptions and releases what those loaded", %{ctx: ctx} do
+    loop = create_loop!(ctx, SpinfoamFixture.event_program())
+    assert is_binary(await(fn -> Host.object_for_loop(loop["loop_id"]) end, &is_binary/1))
+    :ok = SalixAgent.Loops.Reconciler.release_loop(ctx.agent_id, loop["loop_id"])
+
+    # One adoption running and one waiting for it, as the Agents stop.
+    SalixAgent.Loops.Reconciler.adopt(ctx.agent_id)
+    SalixAgent.Loops.Reconciler.adopt(ctx.agent_id)
+    SalixAgent.TestSupport.stop_all_agents()
+
+    state = :sys.get_state(SalixAgent.Loops.Reconciler)
+    assert state.inflight == %{}
+    assert MapSet.size(state.pending) == 0
+    assert Host.loop_objects() == %{}
+  end
+
+  test "an adoption that outlasts the budget fails the cleanup" do
+    reconciler = SalixAgent.Loops.Reconciler
+    # No Agent of this id exists: the adoption the test's own Agent may have in
+    # flight would otherwise take its pending mark when it ends.
+    agent_id = "agt-never-adopted-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    :sys.replace_state(reconciler, &%{&1 | pending: MapSet.put(&1.pending, agent_id)})
+
+    try do
+      assert_raise RuntimeError, ~r/#{agent_id}/, fn ->
+        SalixAgent.TestSupport.await_adoptions(1)
+      end
+    after
+      :sys.replace_state(reconciler, &%{&1 | pending: MapSet.delete(&1.pending, agent_id)})
+    end
   end
 
   defp create_loop!(ctx, program, config \\ %{}) do
@@ -276,6 +308,66 @@ defmodule SalixAgent.LoopsRuntimeTest do
              Loops.send_event(ctx.agent_id, loop_id, %{"payload" => %{}})
   end
 
+  test "a release that arrives during an adoption unloads what the adoption loads", %{ctx: ctx} do
+    alias SalixAgent.Loops.Reconciler
+
+    loop_id = create_loop!(ctx, SpinfoamFixture.event_program())["loop_id"]
+    assert is_binary(await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1))
+    :ok = Reconciler.release_loop(ctx.agent_id, loop_id)
+
+    # The Reconciler starts the adoption task before it takes the release.
+    Reconciler.adopt(ctx.agent_id)
+    :ok = Reconciler.release(ctx.agent_id)
+
+    assert await(fn -> :sys.get_state(Reconciler).inflight end, &(&1 == %{})) == %{}
+    assert is_nil(Host.object_for_loop(loop_id))
+  end
+
+  test "a replaced Server keeps the object an adoption loads while the old one goes down", %{
+    ctx: ctx
+  } do
+    alias SalixAgent.Loops.Reconciler
+
+    loop_id = create_loop!(ctx, SpinfoamFixture.idle_program())["loop_id"]
+    assert is_binary(await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1))
+    :ok = Reconciler.release_loop(ctx.agent_id, loop_id)
+    {:ok, released} = Store.get(loop_id)
+
+    # The Reconciler takes, in order: an adoption, the old Server's exit and
+    # the new Server's adoption.
+    :ok = :sys.suspend(Reconciler)
+    Reconciler.adopt(ctx.agent_id)
+    :ok = Fleet.stop_existing(ctx.agent_id)
+    {:ok, _server} = Fleet.ensure_started(ctx.agent_id, create: false)
+    :ok = :sys.resume(Reconciler)
+    :ok = Fleet.await_ownership_installed(ctx.agent_id)
+
+    assert await(fn -> :sys.get_state(Reconciler).inflight end, &(&1 == %{})) == %{}
+    object_id = Host.object_for_loop(loop_id)
+    assert is_binary(object_id)
+    {:ok, record} = Store.get(loop_id)
+    assert record["object_id"] == object_id
+    assert record["incarnation"] == released["incarnation"] + 1
+  end
+
+  test "an adoption after the Server stopped loads nothing", %{ctx: ctx} do
+    alias SalixAgent.Loops.Reconciler
+
+    loop_id = create_loop!(ctx, SpinfoamFixture.idle_program())["loop_id"]
+    assert is_binary(await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1))
+    :ok = Reconciler.release_loop(ctx.agent_id, loop_id)
+
+    # The Reconciler takes the adoption after the Server is gone; the
+    # ownership cell still names this node.
+    :ok = :sys.suspend(Reconciler)
+    Reconciler.adopt(ctx.agent_id)
+    :ok = Fleet.stop_existing(ctx.agent_id)
+    :ok = :sys.resume(Reconciler)
+
+    assert await(fn -> :sys.get_state(Reconciler).inflight end, &(&1 == %{})) == %{}
+    assert is_nil(Host.object_for_loop(loop_id))
+  end
+
   test "pause unloads the object, resume reloads it at a new incarnation", %{ctx: ctx} do
     loop =
       create_loop!(ctx, SpinfoamFixture.notify_once_program("p"))
@@ -310,8 +402,17 @@ defmodule SalixAgent.LoopsRuntimeTest do
     {:ok, server} = Fleet.ensure_started(ctx.agent_id, create: false, park_ms: 300)
     :ok = Fleet.await_ownership_installed(ctx.agent_id)
 
+    # An adoption from before the restart can load an object that the release
+    # of the old Server then replaces: take the object once adoption settled.
+    {object_id, _inflight} =
+      await(
+        fn ->
+          {Host.object_for_loop(loop_id), :sys.get_state(SalixAgent.Loops.Reconciler).inflight}
+        end,
+        &match?({object, inflight} when is_binary(object) and inflight == %{}, &1)
+      )
+
     # Without Loop retention, this Server stops before the guest's timer fires.
-    object_id = await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1)
     assert is_binary(object_id)
 
     message = await(fn -> message_with_source(ctx, "loop:#{loop_id}:late") end, &(&1 != nil))
@@ -375,6 +476,77 @@ defmodule SalixAgent.LoopsRuntimeTest do
       assert Map.take(retained, ~w(status incarnation object_id)) ==
                Map.take(record, ~w(status incarnation object_id))
     end
+  end
+
+  # The clock-driven span of the outage is in `loops_agent_outage_test.exs`.
+  test "a Loop whose Agent read misses reloads when the Agent is back and reaches the Worker", %{
+    ctx: ctx
+  } do
+    loop_id = stranded_event_loop!(ctx)
+    before = hide_agent!(ctx.agent_id)
+
+    assert {:error, :not_found} = Fleet.ensure_started(ctx.agent_id, create: false)
+
+    sweep()
+    assert %{"status" => "active", "paused_by" => nil} = elem(Store.get(loop_id), 1)
+
+    restore_agent!(ctx.agent_id)
+    sweep()
+
+    assert is_binary(await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1))
+    assert %{"status" => "active", "incarnation" => incarnation} = elem(Store.get(loop_id), 1)
+    assert incarnation > before["incarnation"]
+
+    event = %{"topic" => "deploy", "payload" => %{"kind" => "deploy"}, "event_id" => "after"}
+
+    assert {:ok, %{"accepted" => true}} = Loops.send_event(ctx.agent_id, loop_id, event)
+    assert await(fn -> message_with_source(ctx, "loop:#{loop_id}:evt") end, &(&1 != nil))
+    refute message_with_source(ctx, "loop:#{loop_id}:lifecycle:undeliverable")
+  end
+
+  # An Agent Server gone with its node, as during a Pod replacement.
+  defp stranded_event_loop!(ctx) do
+    loop_id = create_loop!(ctx, SpinfoamFixture.event_program())["loop_id"]
+    object = await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1)
+    :ok = Fleet.stop_existing(ctx.agent_id)
+    assert_object_unloaded(object)
+    loop_id
+  end
+
+  # The Agent row absent from the online store, while its Sessions remain.
+  defp hide_agent!(agent_id) do
+    {:ok, loop} =
+      SalixStore.Repo.transaction(fn ->
+        SalixStore.Repo.query!("SET LOCAL session_replication_role = replica")
+
+        SalixStore.Repo.query!(
+          "CREATE TABLE IF NOT EXISTS hidden_salix_agents (LIKE salix_agents)"
+        )
+
+        SalixStore.Repo.query!(
+          "INSERT INTO hidden_salix_agents SELECT * FROM salix_agents WHERE agent_id = $1",
+          [agent_id]
+        )
+
+        SalixStore.Repo.query!("DELETE FROM salix_agents WHERE agent_id = $1", [agent_id])
+        {:ok, [record]} = Store.list_active_stranded([], 1)
+        record
+      end)
+
+    on_exit(fn -> SalixStore.Repo.query!("DROP TABLE IF EXISTS hidden_salix_agents") end)
+    loop
+  end
+
+  defp restore_agent!(agent_id) do
+    SalixStore.Repo.query!(
+      "INSERT INTO salix_agents SELECT * FROM hidden_salix_agents WHERE agent_id = $1",
+      [agent_id]
+    )
+  end
+
+  defp sweep do
+    SystemsRuntime.Proc.send(SalixAgent.Loops.Reconciler, :sweep)
+    :sys.get_state(SalixAgent.Loops.Reconciler)
   end
 
   defp assert_object_unloaded(object_id) do

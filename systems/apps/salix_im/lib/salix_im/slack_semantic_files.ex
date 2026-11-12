@@ -47,11 +47,8 @@ defmodule SalixIM.SlackSemanticFiles do
     if cancelled.(), do: {:error, :preempted}, else: result
   rescue
     error in API.Error ->
-      # The existing Slack adapter raises API-level failures. They do not
-      # reach the `with` response-pattern branches above. Definite revoked
-      # access/deletion is terminal for this observation; a later canonical
-      # sweep may rediscover it after access is restored. Transport/rate-limit
-      # failures remain retryable and never authorize content access.
+      # Access can recover without another source event. The existing Oban
+      # job retains this observation and retries after a bounded delay.
       if error.message in ~w(file_not_found channel_not_found not_in_channel invalid_auth token_revoked account_inactive),
         do: {:error, :attachment_inaccessible},
         else: {:error, :semantic_attachment_unavailable}

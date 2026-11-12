@@ -20,6 +20,9 @@ defmodule CommaWeb.ProactiveRoutine do
         when reason in [:routine_source_not_current, :routine_result_not_fresh] ->
           pooled(args, workspace, owner, reason)
 
+        {:ok, overview} when args == %{} ->
+          {:ok, Map.put(overview, "added_items", added_items(workspace, owner))}
+
         result ->
           result
       end
@@ -43,6 +46,39 @@ defmodule CommaWeb.ProactiveRoutine do
   end
 
   def dismiss(_args, _ctx), do: {:error, :invalid_recommendation_dismissal}
+
+  @doc "The owner's Router adds a matter the owner asked for to their Routine."
+  def add(args, ctx) when is_map(args) do
+    with {:ok, workspace, owner} <- router_scope(ctx),
+         {:ok, %{"item" => item, "envelope" => envelope}} <-
+           Comma.Recommendations.add_item(%{"id" => owner}, %{}, workspace["id"], args) do
+      {:ok, %{"added" => Map.take(item, ~w(id title)), "shown" => is_map(envelope["snapshot"])}}
+    end
+  end
+
+  @doc "The owner's Router removes a matter the owner added, by its id."
+  def remove_added(%{"id" => id}, ctx) when is_binary(id) do
+    with {:ok, workspace, owner} <- router_scope(ctx),
+         {:ok, _envelope} <-
+           Comma.Recommendations.remove_added(%{"id" => owner}, %{}, workspace["id"], id) do
+      {:ok, %{"removed" => true}}
+    end
+  end
+
+  def remove_added(_args, _ctx), do: {:error, :invalid_routine_item}
+
+  defp added_items(workspace, owner) do
+    case Comma.Recommendations.get_runtime_profile(workspace["id"], owner) do
+      {:ok, profile} ->
+        Enum.map(
+          Comma.Recommendations.added_items(profile),
+          &Map.take(&1, ~w(id title detail url))
+        )
+
+      {:error, :not_found} ->
+        []
+    end
+  end
 
   defp router_scope(ctx) do
     with {:ok, workspace, owner} <- CommaWeb.Proactive.scope(ctx),

@@ -60,4 +60,6 @@
     <string name="auth_google_unavailable">Google sign-in needs Google Play services, which this device doesn\'t have. Continue with email instead.</string>
     <string name="auth_google_rejected">Couldn\'t verify your Google account. Try again, or continue with email.</string>
     <string name="auth_google_conflict">This Google account can\'t be used to sign in. Continue with email instead.</string>
+    <string name="auth_signed_in_accounts">Signed in on this device</string>
+    <string name="auth_continue_as">Continue as %1$s</string>
 </resources>

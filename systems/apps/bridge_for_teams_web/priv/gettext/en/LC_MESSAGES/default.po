@@ -43,7 +43,7 @@ msgid "Android admission status is unavailable. Try again shortly."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
-msgid "Android connector access is not enabled for this organization."
+msgid "Android device access is not enabled for this organization."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
@@ -1382,6 +1382,11 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_meetings.ex
 #, elixir-autogen, elixir-format
+msgid "Feishu/Lark calendars can send notices only to a Feishu or Lark bot. Choose that bot, or Google Calendar."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_meetings.ex
+#, elixir-autogen, elixir-format
 msgid "Check the selected calendars, meeting and channel, then save again."
 msgstr ""
 
@@ -1507,6 +1512,11 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
 #, elixir-autogen, elixir-format
 msgid "A tag cannot be empty or contain the | character."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
+#, elixir-autogen, elixir-format
+msgid "Choose a host from the list."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
@@ -1793,11 +1803,6 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 #, elixir-autogen, elixir-format
-msgid "This device's Connector cannot check runtimes on demand. Update the Connector."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-#, elixir-autogen, elixir-format
 msgid "The device did not answer in time. Check again shortly."
 msgstr ""
 
@@ -1819,11 +1824,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 #, elixir-autogen, elixir-format
 msgid "The Worker's device is not connected. Connect it and detect again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-#, elixir-autogen, elixir-format
-msgid "Update the connector on the Worker's device to detect its models."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
@@ -1856,11 +1856,11 @@ msgid "Couldn't update the runner."
 msgstr ""
 
 #: lib/bridge_for_teams_web/station_notice.ex
-msgid "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma."
+msgid "This device has no station, so it cannot take tasks. Install the station on it with the command from Add computer."
 msgstr ""
 
 #: lib/bridge_for_teams_web/station_notice.ex
-msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page."
+msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `comma-station update` or use its Updates page."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
@@ -1985,12 +1985,25 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
 #, elixir-autogen, elixir-format
-msgid "The Cloud VM is turned off for this swarm."
+msgid "No Cloud VM is set up for this swarm."
+msgstr ""
+
+msgid "Sandboxes are not set up here."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
 #, elixir-autogen, elixir-format
-msgid "Choose Salix, the Cloud VM or a station that takes Tasks."
+msgid "The Cloud VM is retired here: a sandbox takes its place."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "A sandbox"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, a sandbox, the Cloud VM or a station that takes Tasks."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
@@ -2005,7 +2018,7 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
 #, elixir-autogen, elixir-format
-msgid "Choose Salix, the Cloud VM or a station of this swarm."
+msgid "Choose Salix, a sandbox, the Cloud VM or a station of this swarm."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
@@ -2051,4 +2064,113 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
 #, elixir-autogen, elixir-format
 msgid "Swarm default"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "The Slack app joins new public channels by itself."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "The Slack app no longer joins new public channels by itself. Invite it to a channel to add it."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send enabled as true or false."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+msgid "Salix cannot answer this yet."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+msgid "Salix did not answer: %{reason}"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Enter a device name of at most 63 bytes."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't create the device credentials."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't create the install command."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device can now run operations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device is now read-only."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The device is offline. Turn it on and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't refresh the devices."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't change the device's access."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Choose whether to allow operations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram bot connected. Add it to a group, then allow that group on this page."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This Telegram bot is already connected. One bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram rejected this token. Copy it again from BotFather and retry."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Telegram chats saved."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send the chats as a list of ids."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm no longer has still.fail stations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_stillfail.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change this."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Give the key a name."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Check the field names: letters, numbers and _, starting with a letter, up to 32 characters, each name once, up to 8 fields."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "A member already keeps a key under this name. Choose another name."
 msgstr ""

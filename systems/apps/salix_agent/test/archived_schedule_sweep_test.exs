@@ -4,13 +4,13 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
 
   use SalixAgent.TestSupport.Settle
   alias SalixAgent.{AgentControl, ArchivedScheduleSweep, ArchivedSchedules}
-  alias SalixStore.{Keys, S3, Schedules}
+  alias SalixStore.{AgentPGStore, Repo, S3, Schedules}
 
   setup do
     prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
     SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
-    SalixStore.Repo.query!("TRUNCATE schedules, schedule_runs")
+    SalixStore.Repo.query!("TRUNCATE schedules, schedule_runs, salix_agents CASCADE")
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -30,10 +30,8 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
     # Archive by writing the record directly: the pre-#849 shape the sweep
     # exists for (archived, no epoch, schedules never paused).
     if archived? do
-      key = Keys.ctl_agent(agent_id)
-      {:ok, %{body: body, etag: etag}} = S3.get(key)
-      rec = body |> Jason.decode!() |> Map.put("archived_at", 1)
-      {:ok, _} = S3.put(key, Jason.encode!(rec), if_match: etag)
+      {:ok, %{record: record, revision: revision}} = AgentPGStore.read_config(agent_id)
+      {:ok, _} = AgentPGStore.put_config(agent_id, Map.put(record, "archived_at", 1), revision)
     end
 
     agent_id
@@ -54,20 +52,6 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
         ),
         301_000
       )
-  end
-
-  defp wait_until(fun, attempts \\ 3000) do
-    cond do
-      fun.() ->
-        :ok
-
-      attempts == 0 ->
-        flunk("condition never held")
-
-      true ->
-        SystemsClock.sleep(10)
-        wait_until(fun, attempts - 1)
-    end
   end
 
   test "reconciles both directions, once: archived agents' rows paused, stale pauses on live agents resumed" do
@@ -145,27 +129,41 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
     agent_id = agent!(false)
     {:ok, rec} = AgentControl.get_record(agent_id)
     tenant_id = rec["tenant_id"]
-    key = Keys.ctl_agent(agent_id)
     schedule!("s1", agent_id)
-
+    parent = SystemsRuntime.Proc.self()
     assert {:ok, _} = AgentControl.delete(agent_id)
     assert {:ok, %{"status" => "paused", "archive_epoch" => 1}} = Schedules.get("s1")
 
-    # U1 reads epoch 1, resumes and stamps, and its clear PUT is parked.
-    :ok = S3.Fake.set_fault({:pause, :put, key})
-    u1 = SystemsRuntime.Task.async(fn -> AgentControl.unarchive(agent_id, tenant_id) end)
-    wait_until(fn -> S3.Fake.paused?() end)
-    assert {:ok, %{"status" => "active", "unarchived_epoch" => 1}} = Schedules.get("s1")
+    assert {:ok, u1} =
+             Repo.transaction(fn ->
+               Repo.query!("SELECT agent_id FROM salix_agents WHERE agent_id = $1 FOR UPDATE", [
+                 agent_id
+               ])
 
-    # U2 completes epoch 1's unarchive; the agent is archived again at epoch
-    # 2 and its schedule is paused for epoch 2.
-    assert {:ok, _} = AgentControl.unarchive(agent_id, tenant_id)
-    assert {:ok, again} = AgentControl.delete(agent_id)
-    assert ArchivedSchedules.archive_epoch(again) == 2
-    assert {:ok, %{"status" => "paused", "archive_epoch" => 2}} = Schedules.get("s1")
+               delayed =
+                 SystemsRuntime.Task.async(fn ->
+                   Repo.checkout(fn ->
+                     %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
+                     SystemsRuntime.Proc.send(parent, {:unarchive_backend, backend_pid})
+                     AgentControl.unarchive(agent_id, tenant_id)
+                   end)
+                 end)
 
-    # U1's parked PUT takes a 412; the retry finds epoch 2 and must refuse.
-    :ok = S3.Fake.release_pause()
+               settle_receive({:unarchive_backend, backend_pid})
+               assert wait_for_lock(backend_pid)
+
+               assert {:ok, %{"status" => "active", "unarchived_epoch" => 1}} =
+                        Schedules.get("s1")
+
+               # The holder of the Agent lock completes the old unarchive and archives
+               # again before the delayed conditional clear can acquire that lock.
+               assert {:ok, _} = AgentControl.unarchive(agent_id, tenant_id)
+               assert {:ok, again} = AgentControl.delete(agent_id)
+               assert ArchivedSchedules.archive_epoch(again) == 2
+               assert {:ok, %{"status" => "paused", "archive_epoch" => 2}} = Schedules.get("s1")
+               delayed
+             end)
+
     assert {:error, :conflict} = settled_await(u1)
 
     {:ok, current} = AgentControl.get_record(agent_id)
@@ -176,5 +174,12 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
     # The epoch-2 unarchive still works and resumes the row.
     assert {:ok, _} = AgentControl.unarchive(agent_id, tenant_id)
     assert {:ok, %{"status" => "active", "unarchived_epoch" => 2}} = Schedules.get("s1")
+  end
+
+  defp wait_for_lock(backend_pid) do
+    settle_until(fn ->
+      Repo.query!("SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1", [backend_pid]).rows ==
+        [["Lock"]]
+    end)
   end
 end

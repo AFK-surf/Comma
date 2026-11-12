@@ -246,6 +246,31 @@ def charData : Term → Option ByteArray
     return parts.foldl (· ++ ·) ByteArray.empty
   | _ => none
 
+private def charDataDeferred (value : Term) : Stackless.OptionEval ByteArray := Stackless.deferOption fun _ =>
+  match value with
+  | .binary raw => Stackless.liftOption (if (String.fromUTF8? raw).isSome then some raw else none)
+  | .integer n => Stackless.liftOption
+      (if n ≥ 0 && n ≤ 0x10FFFF && !(0xD800 ≤ n && n ≤ 0xDFFF) then
+        some (String.singleton (Char.ofNat n.toNat)).toUTF8 else none)
+  | .list xs => do
+    let parts ← xs.attach.mapM (fun x => charDataDeferred x.val)
+    return parts.foldl (· ++ ·) ByteArray.empty
+  | _ => Stackless.liftOption none
+termination_by sizeOf value
+decreasing_by
+  simp_wf
+  have := List.sizeOf_lt_of_mem x.property
+  omega
+
+private theorem charDataDeferred_eq (value : Term) : Stackless.runOption (charDataDeferred value) = charData value := by
+  fun_induction charData value <;> simp_all [charDataDeferred]
+
+def charDataImpl (value : Term) : Option ByteArray := Stackless.runOption (charDataDeferred value)
+
+@[csimp] theorem charData_eq_charDataImpl : @charData = @charDataImpl := by
+  funext value
+  exact (charDataDeferred_eq value).symm
+
 def stringChars (value : Term) : KernelM Term :=
   match value with
   | .binary _ => pure value
@@ -258,7 +283,7 @@ def stringChars (value : Term) : KernelM Term :=
     | none => fail "schema" [b "expected Unicode character data"]
   | _ => fail "schema" [b "value has no schema-defined string conversion"]
 
-def enumListLoop (step : α → Term → KernelM (Bool × α)) :
+@[specialize] def enumListLoop (step : α → Term → KernelM (Bool × α)) :
     List Term → α → KernelM α
   | [], acc => pure acc
   | item :: rest, acc => do
@@ -266,7 +291,7 @@ def enumListLoop (step : α → Term → KernelM (Bool × α)) :
     if more then enumListLoop step rest next else pure next
 
 /-- Traversal is defined only for lists, plain maps, and the MapSet data record. -/
-def enumUntil (value : Term) (initial : α) (step : α → Term → KernelM (Bool × α)) : KernelM α := do
+@[inline] def enumUntil (value : Term) (initial : α) (step : α → Term → KernelM (Bool × α)) : KernelM α := do
   match value with
   | .list xs => return ← enumListLoop step xs initial
   | .map xs =>
@@ -279,12 +304,60 @@ def enumUntil (value : Term) (initial : α) (step : α → Term → KernelM (Boo
   | _ => pure ()
   fail "schema" [b "expected an enumerable data container"]
 
-def enumFold (value : Term) (initial : α) (step : α → Term → KernelM α) : KernelM α :=
+@[inline] def enumFold (value : Term) (initial : α) (step : α → Term → KernelM α) : KernelM α :=
   match value with
   | .improper heads _ => do
     let _ ← heads.foldlM step initial
     fail "enum_reduce_tail"
   | _ => enumUntil value initial (fun acc item => return (true, ← step acc item))
+
+def enumListEval (step : α → Term → KernelEval (Bool × α)) : List Term → α → KernelEval α
+  | [], acc => pure acc
+  | item :: rest, acc => do
+    let (more, next) ← step acc item
+    if more then enumListEval step rest next else pure next
+
+@[simp] theorem run_enumListEval (step : α → Term → KernelEval (Bool × α)) (items : List Term) (acc : α) :
+    KernelEval.run (enumListEval step items acc) = enumListLoop (fun acc item => KernelEval.run (step acc item)) items acc := by
+  induction items generalizing acc with
+  | nil => rfl
+  | cons item rest ih =>
+    simp only [enumListEval, enumListLoop, KernelEval.run_bind]
+    congr 1
+    funext pair
+    cases pair with
+    | mk more next => cases more <;> simp [ih]
+
+def enumUntilEval (value : Term) (initial : α) (step : α → Term → KernelEval (Bool × α)) : KernelEval α := do
+  match value with
+  | .list xs => return ← enumListEval step xs initial
+  | .map xs =>
+    if !value.has (a "__struct__") then
+      return ← enumListEval step (xs.map (fun p => .tuple [p.1, p.2])) initial
+    if value.get (a "__struct__") == a "Elixir.MapSet" then
+      match value.get (a "map") with
+      | .map members => return ← enumListEval step (members.map Prod.fst) initial
+      | _ => fail "schema" [b "invalid MapSet data"]
+  | _ => pure ()
+  fail "schema" [b "expected an enumerable data container"]
+
+@[simp] theorem run_enumUntilEval (value : Term) (initial : α) (step : α → Term → KernelEval (Bool × α)) :
+    KernelEval.run (enumUntilEval value initial step) = enumUntil value initial (fun acc item => KernelEval.run (step acc item)) := by
+  cases value <;> simp [enumUntilEval, enumUntil]
+  all_goals split <;> try simp_all
+  all_goals split <;> try simp_all
+  all_goals split <;> try simp_all
+
+def enumFoldEval (value : Term) (initial : α) (step : α → Term → KernelEval α) : KernelEval α :=
+  match value with
+  | .improper heads _ => do
+    let _ ← heads.foldlM step initial
+    fail "enum_reduce_tail"
+  | _ => enumUntilEval value initial (fun acc item => return (true, ← step acc item))
+
+@[simp] theorem run_enumFoldEval (value : Term) (initial : α) (step : α → Term → KernelEval α) :
+    KernelEval.run (enumFoldEval value initial step) = enumFold value initial (fun acc item => KernelEval.run (step acc item)) := by
+  cases value <;> simp [enumFoldEval, enumFold]
 
 def enumMap (value : Term) (f : Term → KernelM Term) : KernelM (List Term) := do
   return (← enumFold value [] (fun acc item => return (← f item) :: acc)).reverse
@@ -314,6 +387,42 @@ def stringifyFuel : Nat → Term → KernelM Term
       let _ ← heads.mapM (stringifyFuel fuel)
       fail "enum_map_tail"
     | value => pure value
+
+private def stringifyDeferred : Nat → Term → KernelEval Term
+  | 0, _ => monadLift (fail "invalid_observation")
+  | fuel + 1, value => KernelEval.defer fun _ =>
+    match value with
+    | .map _ => enumFoldEval value empty (fun acc pair => do
+      let .tuple [key, item] := pair | fail "function_clause"
+      let key ← stringChars key
+      put acc key (← stringifyDeferred fuel item))
+    | .list xs => return .list (← xs.mapM (stringifyDeferred fuel))
+    | .improper heads _ => do
+      let _ ← heads.mapM (stringifyDeferred fuel)
+      fail "enum_map_tail"
+    | value => pure value
+
+private theorem stringifyDeferred_eq (fuel : Nat) (value : Term) :
+    KernelEval.run (stringifyDeferred fuel value) = stringifyFuel fuel value := by
+  induction fuel generalizing value with
+  | zero => rfl
+  | succ fuel ih =>
+    cases value <;> simp [stringifyDeferred, stringifyFuel, ih]
+    congr 1
+    funext acc pair
+    cases pair <;> try simp_all
+    rename_i values
+    cases values <;> try simp_all
+    rename_i key rest
+    cases rest <;> try simp_all
+    rename_i item tail
+    cases tail <;> simp_all
+
+def stringifyFuelImpl (fuel : Nat) (value : Term) : KernelM Term := KernelEval.run (stringifyDeferred fuel value)
+
+@[csimp] theorem stringifyFuel_eq_stringifyFuelImpl : @stringifyFuel = @stringifyFuelImpl := by
+  funext fuel value
+  exact (stringifyDeferred_eq fuel value).symm
 
 def stringify (value : Term) : KernelM Term := do
   let observations ← get

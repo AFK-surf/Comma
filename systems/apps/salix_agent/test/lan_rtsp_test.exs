@@ -78,8 +78,7 @@ defmodule SalixAgent.LanRtspTest do
 
     defp loop(state) do
       SystemsRuntime.Proc.receive do
-        {:env_tunnel_send, _relay, _id, %{"channel" => "tcp", "data" => data}} ->
-          bytes = Base.decode64!(data)
+        {:env_tunnel_send, _relay, _id, %{"channel" => "tcp", "bytes" => bytes}} ->
           SystemsRuntime.Proc.send(state.test, {:relay_frame, byte_size(bytes)})
           :gen_tcp.send(state.camera, bytes)
           received = state.received + byte_size(bytes)
@@ -112,7 +111,7 @@ defmodule SalixAgent.LanRtspTest do
       case min(min(@max_frame, @window - (state.sent - state.acked)), byte_size(pending)) do
         size when size > 0 ->
           <<chunk::binary-size(^size), rest::binary>> = pending
-          frame = %{"channel" => "tcp", "data" => Base.encode64(chunk)}
+          frame = %{"channel" => "tcp", "bytes" => chunk}
           SystemsRuntime.Proc.send(state.relay, {:env_tunnel_frame, state.id, frame})
           flush(%{state | pending: rest, sent: state.sent + size})
 

@@ -115,6 +115,51 @@ describe("Settings › Devices", () => {
     expect(shown().devices[0]?.system_info?.client_source).toBe("t-circle");
   });
 
+  it("says whether each computer serves its screen; a server from before says nothing, so a Mac's does and a PC's does not", async () => {
+    const t = setup();
+    const said = (
+      id: string,
+      os: string | undefined,
+      fields: Record<string, unknown> = {}
+    ) =>
+      device(id, null, { ...(os ? { system_info: { os_type: os } } : {}), ...fields });
+    t.api.on("GET", list, () =>
+      json(200, {
+        devices: [
+          said("pc-yes", "windows", { screen_view: true }),
+          said("mac-no", "darwin", { screen_view: false }),
+          said("old-mac", "darwin"),
+          said("old-pc", "windows"),
+          said("old-linux", "linux"),
+          // A server's top-level `os` speaks as well as the station's own.
+          device("old-os", null, { os: "linux" }),
+          said("old-unknown", undefined),
+        ],
+        next_cursor: null,
+      })
+    );
+    t.api.on("GET", `${list}/old-mac`, () => json(200, said("old-mac", "darwin")));
+    const shown = t.watch<DevicesValue>({ topic: "devices", visit: "1" });
+    await t.time.pass(100);
+    expect(
+      Object.fromEntries(shown().devices.map((d) => [d.device_id, d.screen_view]))
+    ).toEqual({
+      "pc-yes": true,
+      "mac-no": false,
+      "old-mac": true,
+      "old-pc": false,
+      "old-linux": false,
+      "old-os": false,
+      "old-unknown": true,
+    });
+    // One computer read alone says the same.
+    const one = (await t.client.call("devices.get", {
+      workspace: WS,
+      device: "old-mac",
+    })) as { screen_view: boolean };
+    expect(one.screen_view).toBe(true);
+  });
+
   it("checks stale runtimes once per visit, two at a time; a check's answer stands over an older read; a list without a visit checks none", async () => {
     const t = setup();
     const expired = t.seconds() - 1;
@@ -158,6 +203,36 @@ describe("Settings › Devices", () => {
     t.watch<DevicesValue>({ topic: "devices", visit: "2" });
     await t.time.pass(100);
     expect(probes()).toBeGreaterThan(3);
+  });
+
+  it("says a still.fail station is one, and never checks it for coding agents", async () => {
+    const t = setup();
+    const expired = t.seconds() - 1;
+    t.api.on("GET", list, () =>
+      json(200, {
+        devices: [
+          device("station", expired, {
+            device_kind: "stillfail",
+            task_models: { codex: ["gpt-5.5"] },
+          }),
+          device("mac", null),
+        ],
+        next_cursor: null,
+      })
+    );
+    const shown = t.watch<DevicesValue>({ topic: "devices", visit: "1" });
+    await t.time.pass(100);
+    expect(
+      shown().devices.map((d) => [d.device_id, d.device_kind, d.isStillfailStation])
+    ).toEqual([
+      ["station", "stillfail", true],
+      ["mac", undefined, false],
+    ]);
+    expect(shown().devices[0]?.task_models).toEqual({ codex: ["gpt-5.5"] });
+    await t.client.call("devices.check", { device: "station" });
+    await t.time.pass(100);
+    expect(t.api.requests.filter((r) => r.path.endsWith("/probe"))).toHaveLength(0);
+    expect(shown().checks).toEqual({});
   });
 
   it("says a failed check, checks again on request, and lands a page asked for during a check without undoing it", async () => {

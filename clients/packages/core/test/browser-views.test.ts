@@ -220,6 +220,26 @@ describe("an agent's browser in its panel", () => {
     expect(value()).toMatchObject({ error: null, pending: false });
   });
 
+  it("stops when its tabs cannot be read, says when the browser is still busy, and reads them again on reconnect", async () => {
+    const t = setup();
+    let answer = json(409, { error: "browser_outcome_pending" });
+    t.api.on("POST", path, () => answer);
+    const value = t.watch(view);
+    await t.time.pass(100);
+    expect(value()).toMatchObject({ status: "disconnected", error: "busy" });
+    expect(t.api.seen("GET", events)).toHaveLength(0);
+
+    answer = json(403, { error: "browser_forbidden" });
+    await t.client.call("browserView.reconnect", ref);
+    await t.time.pass(100);
+    expect(value()).toMatchObject({ status: "disconnected", error: "tabs" });
+
+    answer = json(200, { ...binding(), tabs });
+    await t.client.call("browserView.reconnect", ref);
+    await t.time.pass(100);
+    expect(value()).toMatchObject({ tabs, status: "connecting", error: null });
+  });
+
   it("streams another tab once it is selected, letting go of control", async () => {
     const t = setup();
     t.api.on("POST", path, { ...binding(), tabs });

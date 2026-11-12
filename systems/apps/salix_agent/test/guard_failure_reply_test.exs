@@ -291,6 +291,18 @@ defmodule SalixAgent.GuardFailureReplyTest do
 
     assert call["args"]["reply_mode"] == "progress"
     assert call["args"]["params"]["text"] =~ "Choose another model in Settings > Model & API"
+
+    # The notice is the runtime's own text. Declaring no sources keeps IFC from
+    # checking it against the whole transcript, which in a long Router session
+    # holds other chats' and private records and refused every notice.
+    [dispatched] =
+      SalixVerifiedKernel.Session.query(
+        SalixVerifiedKernel.Session.open(%{__struct__: State}),
+        :call_envelopes,
+        {[call], true}
+      )
+
+    assert SalixAgent.IFC.Declaration.from_call(dispatched).sources == []
   end
 
   test "own subscriptions at their limit stop the input with a notice that says they reset" do

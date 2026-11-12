@@ -54,6 +54,14 @@ function signedIn(generation = 1): SignedInSessionSnapshot {
   };
 }
 
+/** The same snapshot from a desktop's authority (Electron's Main keeps the bearer). */
+function electron(snapshot: SessionLifecycleSnapshot): SessionLifecycleSnapshot {
+  return {
+    ...snapshot,
+    authority: { authorityInstanceId: "core-authority", kind: "electron_main" },
+  } as SessionLifecycleSnapshot;
+}
+
 /** The `session` topic's value for a lifecycle snapshot. */
 function topic(
   lifecycle: SessionLifecycleSnapshot,
@@ -71,7 +79,7 @@ function topic(
   return { ...account, lifecycle, attempt: null, guestImports: 0, ...extra };
 }
 
-function renderPage(initial: unknown) {
+function renderPage(initial: unknown, host: "electron" | "web" = "web") {
   const calls: [string, unknown][] = [];
   const scripted = createScriptedCore({
     owns: (name) => name === "session" || name.startsWith("session."),
@@ -91,12 +99,16 @@ function renderPage(initial: unknown) {
         };
       if (name === "session.email.verify") return { ok: true, value: signedIn() };
       if (name === "session.signOut") return { ok: true, value: signedOut() };
+      if (name === "session.addAccount") return { ok: true, value: signedOut() };
+      if (name === "session.switchAccount") return { ok: true, value: signedIn() };
+      if (name === "session.signOutAccount") return { ok: true, value: null };
       return null;
     },
   });
   const controller = createCoreSessionHostController({
     apiBaseUrl: "https://api.example",
     core: scripted.client,
+    host,
   });
   const view = render(
     scripted.wrap(
@@ -134,6 +146,20 @@ function Product() {
       <button type="button" onClick={auth.signOut}>
         Sign out
       </button>
+      {auth.otherAccounts && (
+        <button type="button" onClick={() => void auth.otherAccounts?.add()}>
+          Add account
+        </button>
+      )}
+      {auth.otherAccounts?.list.map((account) => (
+        <button
+          key={account.userId}
+          type="button"
+          onClick={() => void auth.otherAccounts?.switchTo(account.userId)}
+        >
+          {`Switch to ${account.email}`}
+        </button>
+      ))}
     </>
   );
 }
@@ -265,5 +291,43 @@ describe("the web page on the core's session", () => {
       expect(success).toHaveBeenCalledWith("Imported your guest chat.")
     );
     expect(success).toHaveBeenCalledOnce();
+  });
+
+  it("offers the other accounts kept signed in on a desktop, and switches without signing in again", async () => {
+    const kept = { accounts: [{ userId: "user-2", email: "two@example.com" }] };
+    const page = renderPage(topic(electron(signedIn()), kept), "electron");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Switch to two@example.com" })
+    );
+    await waitFor(() =>
+      expect(page.named("session.switchAccount")).toEqual([{ userId: "user-2" }])
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+    await waitFor(() =>
+      expect(page.named("session.addAccount")).toEqual([
+        {
+          expected: {
+            authorityInstanceId: "core-authority",
+            expectedAudience: "https://api.example",
+            expectedSessionId: "11111111-1111-4111-8111-111111111111",
+            generation: 1,
+          },
+        },
+      ])
+    );
+
+    // Signed out to add another: the sign-in offers the one set aside.
+    page.send(topic(electron(signedOut()), kept));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Continue as two@example.com" })
+    );
+    await waitFor(() => expect(page.named("session.switchAccount")).toHaveLength(2));
+  });
+
+  it("offers no other accounts on the web, where the device keeps one", async () => {
+    renderPage(topic(signedIn()));
+    expect(await screen.findByLabelText("account")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Add account" })).toBeNull();
   });
 });

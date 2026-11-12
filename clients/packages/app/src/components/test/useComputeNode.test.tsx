@@ -95,3 +95,29 @@ it("shows a safe cloud failure and retains the existing connection request", asy
   expect(result.current.error).not.toContain("private transport token");
   expect(result.current.state?.bindingWorkspaceId).toBe("workspace");
 });
+
+it("shows a bounded localized sentence for a generic native failure and a refused close", async () => {
+  mock.configure.mockReset();
+  mock.get.mockResolvedValue(state("A:1", 1, "workspace"));
+  const { result } = renderHook(() => useComputeNode());
+  act(() => mock.listener?.(state("A:1", 1, "workspace")));
+  mock.configure.mockRejectedValueOnce(
+    Object.assign(new Error("Native command failed."), {
+      bridgeError: { code: "INTERNAL_ERROR", message: "Native command failed." },
+    })
+  );
+  await act(async () => {
+    await result.current.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  });
+  expect(result.current.error).toMatch(/did not finish|没有完成/);
+  expect(result.current.error).not.toContain("Native command failed");
+  mock.configure.mockRejectedValueOnce(
+    Object.assign(new Error("private refusal"), {
+      bridgeError: { code: "COMPUTE_REQUEST_HANDED_OFF" },
+    })
+  );
+  await act(async () => {
+    await result.current.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  });
+  expect(result.current.error).toMatch(/cannot be closed|不能关闭/);
+});

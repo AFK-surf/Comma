@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+
+	"github.com/AFK-surf/comma/systems/cli/bft/internal/config"
 	"path/filepath"
 	"strings"
 	"time"
@@ -400,16 +403,17 @@ func cloneVMMFacts(facts map[string]any) map[string]any {
 
 func computeNodeOperations() map[string]bool {
 	return map[string]bool{
-		"install": true,
-		"status":  true,
-		"repair":  true,
-		"stop":    true,
-		"remove":  true,
+		"install":     true,
+		"status":      true,
+		"repair":      true,
+		"stop":        true,
+		"remove":      true,
+		"reauthorize": true,
 	}
 }
 
 func computeNodeOperationNames() []string {
-	return []string{"install", "status", "repair", "stop", "remove"}
+	return []string{"install", "status", "repair", "stop", "remove", "reauthorize"}
 }
 
 func computeNodeHelperAction(operation string) string {
@@ -434,4 +438,49 @@ func boundedVMMOutput(value []byte) string {
 		return trimmed[:maxOutput] + "..."
 	}
 	return trimmed
+}
+
+// Native owns the candidate credential and proof. Only the current login token
+// crosses protected stdin; it is neither an argument nor a persisted plan field.
+func (rt runtime) reauthorizeVMM(opts *commonOptions, org, project, registration, requestID string) int {
+	if strings.TrimSpace(org) == "" || strings.TrimSpace(project) == "" || strings.TrimSpace(registration) == "" {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_registration_target", "Pass --org, --project and --registration.", nil))
+	}
+	cfg, err := config.Load(opts.configPath, config.Env(rt.env))
+	if err != nil {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("invalid_config", "Could not read local BFT CLI config.", nil))
+	}
+	base, baseErr := resolveBase(opts, cfg, rt.env)
+	if baseErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), baseErr)
+	}
+	token, _ := config.ResolveToken(config.Options{TokenEnv: opts.tokenEnv}, cfg, config.Env(rt.env))
+	if strings.TrimSpace(token) == "" {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_api_token", "Run bft auth login first.", nil))
+	}
+	helper := resolveVMMLifecyclePath(rt.env)
+	if helperErr := validateVMMLifecycleHelper(helper); helperErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), helperErr)
+	}
+	recoveryURL := strings.TrimRight(base, "/") + "/v1/orgs/" + url.PathEscape(org) + "/projects/" + url.PathEscape(project) + "/compute-nodes/agent-vmm/registrations/" + url.PathEscape(registration) + "/recovery"
+	descriptor, err := json.Marshal(map[string]any{"version": 1, "registration_id": registration, "recovery_url": recoveryURL, "authorization": token})
+	if err != nil {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("invalid_recovery_request", "Could not prepare credential recovery.", nil))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), vmmInstallTimeout)
+	defer cancel()
+	args := []string{"registration-recover", "--request-id", requestID, "--descriptor-stdin"}
+	if filepath.Base(helper) == "agent-vmm" {
+		args = append([]string{"lifecycle"}, args...)
+	}
+	command := exec.CommandContext(ctx, helper, args...)
+	command.Stdin = bytes.NewReader(descriptor)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		safeError := newLifecycleCommandError("reauthorize", helper, []byte(strings.ReplaceAll(stderr.String(), token, "[redacted]")), err)
+		return output.RenderError(rt.stderr, opts.outputOptions(), vmmLifecycleOperationError("reauthorize", helper, safeError))
+	}
+	data := map[string]any{"mode": "compute_node_operation", "operation": "reauthorize", "registration_id": registration, "request_id": requestID}
+	return rt.render(opts.outputOptions(), data, func() string { return "Registration credential reauthorized.\n" }, output.ExitOK)
 }

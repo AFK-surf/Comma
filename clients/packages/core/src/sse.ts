@@ -1,13 +1,21 @@
 // Server-sent events as the core reads them: each event's `data` lines joined and parsed as JSON, with its `event`
-// name when it has one. Comments, `id` and `retry` lines are not used by any stream the core reads.
+// name when it has one, and its `id` to a stream that goes on from the last one heard (a station's). Comments and
+// `retry` lines are not used by any stream the core reads.
 import { CoreError } from "@comma/core-kernel";
 import { Effect } from "effect";
 import type { Pull } from "./host.ts";
 
-/** Reads `body` to its end, calling `onEvent` with each event's data; a frame that is no JSON fails the stream. */
+/**
+ * Reads `body` to its end, calling `onEvent` with each event's data; a frame that is no JSON fails the stream. `onId`:
+ * each frame's `id`, once what it says is handled (a frame may say only an id).
+ */
 export function readEvents(
   body: Pull<Uint8Array>,
-  onEvent: (value: unknown, event: string | undefined) => Effect.Effect<void, CoreError>
+  onEvent: (
+    value: unknown,
+    event: string | undefined
+  ) => Effect.Effect<void, CoreError>,
+  onId?: (id: string) => void
 ): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
     const decoder = new TextDecoder();
@@ -31,12 +39,20 @@ export function readEvents(
           .findLast((line) => line.startsWith("event:"))
           ?.slice(6)
           .trim();
-        if (data.length === 0) continue;
+        const id = lines
+          .findLast((line) => line.startsWith("id:"))
+          ?.slice(3)
+          .trim();
+        if (data.length === 0) {
+          if (id) onId?.(id);
+          continue;
+        }
         const value = yield* Effect.try({
           try: (): unknown => JSON.parse(data.join("\n")),
           catch: () => new CoreError("bad_response", "an event was not JSON"),
         });
         yield* onEvent(value, event || undefined);
+        if (id) onId?.(id);
       }
       if (piece === null) return;
     }

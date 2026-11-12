@@ -61,8 +61,7 @@ class HistoryGapDeviceTest {
     private fun rowOf(seq: Long) = mapped!!.entryRows.getValue(if (seq % 2 == 1L) "r:req-fixture-$seq" else "m:msg_fixture_$seq")
 
     private fun submit(state: ConversationState) {
-        val next = mapConversation(state, LiveLabels(historyGap = instrumentation.targetContext.getString(R.string.chat_history_gap)),
-            replyActions = true)
+        val next = mapConversation(state, LiveLabels(historyGap = instrumentation.targetContext.getString(R.string.chat_history_gap)))
         var width = 0
         main { width = timeline.width }
         val prepared = runBlocking {

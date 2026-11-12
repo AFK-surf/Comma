@@ -118,14 +118,14 @@ async function turn(text) {
     });
     result({ result: all });
   } else if (text.includes("post:")) {
-    const server = JSON.parse(flag("--mcp-config")).mcpServers.stillfail;
+    const server = JSON.parse(flag("--mcp-config")).mcpServers.comma;
     const to = /thread="([^"]+)"/.exec(text)?.[1] ?? "";
     const said = text.slice(text.indexOf("post:") + 5).split("\n")[0];
     // `slow:<n>` before it: n deltas, 50 ms apart, first (a turn long enough to hand over in the middle of).
     const slow = /slow:(\d+)/.exec(text.slice(0, text.indexOf("post:")));
     if (slow) await message(Array.from({ length: Number(slow[1]) }, (_, i) => `d${i} `), 50);
     const call = (id, method, params) =>
-      fetch(server.url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${process.env.STILLFAIL_MCP_TOKEN}` }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) }).then((r) => r.json());
+      fetch(server.url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${process.env.COMMA_STATION_MCP_TOKEN}` }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) }).then((r) => r.json());
     await call(1, "initialize", { protocolVersion: "2025-06-18" });
     const answer = await call(2, "tools/call", { name: "chat_post", arguments: { to, text: said, kind: "all_done", done: "answered the question that was asked" } });
     result({ result: await message([answer.result.content[0].text], 0) });

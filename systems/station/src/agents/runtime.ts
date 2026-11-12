@@ -79,6 +79,10 @@ export interface AgentDriver {
   /// Takes up a session whose process a runner kept: `snapshot` as the previous station left it, or null after a crash
   /// (then what the runner kept unread says where the turn is). What it does comes to `events` from now on.
   adopt(options: OpenOptions, snapshot: unknown | null, events: (event: RuntimeEvent) => void): Promise<AgentSession>;
+  /// Whether `session` runs in a process started for another version of `profile` (an edit, a lent key renewed) and
+  /// no turn runs there now: its next turn should not use it, so its owner lets it go and opens it again (`resume`)
+  /// first. A driver without it never says so.
+  stale?(session: AgentSession, profile: Profile): boolean;
   /// Ends every process this driver started.
   shutdown(): Promise<void>;
   /// Lets go of every process without ending them (handover).

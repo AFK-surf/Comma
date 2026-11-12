@@ -224,11 +224,12 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
   @doc "GET /auth/email/verify — redeem a one-time emailed sign-in link."
   def verify_login_link(conn, params) do
     with token when is_binary(token) and token != "" <- params["token"],
-         {:ok, %{token: session_token}} <-
+         {:ok, %{token: session_token, org: org}} <-
            LoginLinks.redeem_login_token_for_session(token, request_id: request_id(conn)) do
+      # Land in the org the link was issued for; "/" opens the user's first org.
       conn
       |> DashAuth.put_token_in_session(session_token)
-      |> redirect(to: "/")
+      |> redirect(to: "/orgs/" <> URI.encode(org.slug, &URI.char_unreserved?/1))
     else
       _ ->
         conn

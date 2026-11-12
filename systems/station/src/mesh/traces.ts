@@ -137,8 +137,8 @@ export function otlpBody(station: string, spans: unknown[]): string {
   return JSON.stringify({
     resourceSpans: [
       {
-        resource: { attributes: [attribute("service.name", "stillfail-mesh"), attribute("stillfail.station", station)] },
-        scopeSpans: [{ scope: { name: "stillfail-mesh" }, spans }],
+        resource: { attributes: [attribute("service.name", "comma-station-mesh"), attribute("station.id", station)] },
+        scopeSpans: [{ scope: { name: "comma-station-mesh" }, spans }],
       },
     ],
   });

@@ -314,7 +314,11 @@
 		if (!connectorToken) return '';
 		return [
 			`SALIX_CONNECTOR_TOKEN=${shellQuote(connectorToken.token)}`,
-			'salix-connect',
+			'comma-station',
+			'run',
+			'--app',
+			'<station release>',
+			'--',
 			'--server',
 			shellQuote(connectorToken.server),
 			'--name',
@@ -492,7 +496,7 @@
 		<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
 			<div>
 				<h2 class="text-sm font-medium text-gray-200">Connector Token</h2>
-				<p class="text-xs text-gray-500 mt-1">Agent-scoped credential for <span class="font-mono">salix-connect</span>.</p>
+				<p class="text-xs text-gray-500 mt-1">Agent-scoped credential for the <span class="font-mono">station</span>.</p>
 			</div>
 			<span class="text-[11px] uppercase text-gray-500">agent-scoped</span>
 		</div>

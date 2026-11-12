@@ -11,18 +11,26 @@ defmodule SalixAgent.QueuePressure do
   staging on 2026-09-14: two requests waited 33 minutes behind one Router
   activation of 54 model calls and 24 `env.exec` steps.
 
-  This provider emits one runtime message per activation round while such
-  requests wait: how many, from which providers, and for how long. It is a
-  signal, not a guard; the Router prompt already says to transfer remaining
-  work to a Task. The message refreshes when the queued set changes or every
-  `@refresh_seconds`, so a long activation keeps seeing the growing wait
-  without a copy per round.
+  This provider emits a runtime message while such requests wait: how many,
+  from which providers, and for how long. It is a signal, not a guard; the
+  Router prompt already says to transfer remaining work to a Task. The message
+  refreshes at most every `@refresh_seconds`, also when the queued set changes:
+  on Chat runtimes each copy is a `get_runtime_message` call in the model's
+  history, and a model that sees one per round imitates them instead of ending
+  its turn.
 
-  Which queue items count mirrors the kernel's `human_source_wakeable_queue_item?`
-  (`VerifiedKernel.Session.Query.StateCore`): a wakeable `user_message` whose
-  trusted origin is an external provider, an internal Comma user, or that carries
-  an external reply obligation. Runtime notifications and no-wake context never
-  count, so a Router waiting on its own Workers sees nothing.
+  Only people count (`people/1`): a wakeable `user_message` whose trusted
+  origin names a person as its sender (`source_actor_type` `provider_user` or
+  `user`). The kernel queues every human-source input behind the open
+  activation (`human_source_wakeable_queue_item?` in
+  `VerifiedKernel.Session.Query.StateCore`), and that set also holds schedule
+  and Loop runs that act with their creator's authority (`provider: schedule`
+  or `loop`, no sender). Nobody waits on such a run, so it alone sends no
+  message. In production a Router read a queued schedule run as "1 human
+  request", ended its person's request with nothing sent, and that person
+  waited two hours. Runtime notifications and no-wake context never count
+  either, so a Router waiting on its own Workers sees nothing.
+  `SalixAgent.QueueYieldGuard` uses the same set.
   """
 
   alias SalixAgent.InternalSession
@@ -41,26 +49,35 @@ defmodule SalixAgent.QueuePressure do
 
     if router?(session_config) do
       now_ms = DateTime.to_unix(now, :millisecond)
-      waiting = session |> unacked_items() |> Enum.filter(&human_source_wakeable?/1)
-      ids = waiting |> Enum.map(&queue_item_id/1) |> Enum.sort()
+      waiting = people(session)
 
       cond do
         waiting == [] ->
           {[], previous}
 
-        ids == previous["queued"] and
-          is_integer(previous["emitted_at_ms"]) and
+        is_integer(previous["emitted_at_ms"]) and
             now_ms - previous["emitted_at_ms"] < @refresh_seconds * 1000 ->
           {[], previous}
 
         true ->
-          state = %{"queued" => ids, "emitted_at_ms" => now_ms}
-          {[payload(waiting, now_ms)], state}
+          {[payload(waiting, now_ms)], %{"emitted_at_ms" => now_ms}}
       end
     else
       {[], previous}
     end
   end
+
+  @doc "The people's requests queued behind the open activation, oldest first."
+  def people(session),
+    do: session |> unacked_items() |> Enum.filter(&(human_source_wakeable?(&1) and person?(&1)))
+
+  @doc "Whether a trusted origin names a person as its sender: a provider user or a Comma user."
+  def person_origin?(origin) when is_map(origin),
+    do: value(origin, :source_actor_type) in ["provider_user", "user"]
+
+  def person_origin?(_origin), do: false
+
+  defp person?(item), do: item |> origin() |> person_origin?()
 
   defp router?(session_config) do
     role = value(session_config, :role)
@@ -88,7 +105,7 @@ defmodule SalixAgent.QueuePressure do
         listed ++
         if(omitted > 0, do: ["- #{omitted} more"], else: []) ++
         [
-          "Finish the current request without further direct execution or investigation steps. Transfer remaining work to a Task with task.create and wait_for that result. If the current request is complete, call end_turn with outcome=done and reply={tool,params} for its unsent final answer. Include its IFC declaration in reply when needed. If the answer was already sent, omit reply. Queued requests have separate activations and do not prevent the current request from ending. Do not answer them here."
+          "Finish the current request without further direct execution or investigation steps. Ending the turn does not continue this request later: nothing wakes you for it again unless its person writes. Before you end, give remaining work to a Task with task.create and wait_for that result, or tell the person what is done and what is blocked. If the current request is complete, call end_turn with outcome=done and reply={tool,params} for its unsent final answer or status note. Include its IFC declaration in reply when needed. If the answer was already sent, omit reply. Queued requests have separate activations and do not prevent the current request from ending. Do not answer them here."
         ]
 
     content = Enum.join(lines, "\n")

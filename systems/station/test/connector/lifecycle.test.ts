@@ -45,7 +45,7 @@ test("a Workload's station parks, refuses work while parked, resumes and release
 
 test("a device's station has no managed lifecycle", async () => {
   const c = makeConnector({ root: tempDir(), env: { HOME: tempDir() } });
-  await fails(c.dispatchForTest("q", "cloud_runtime_quiesce", { token: "t" }), /not a managed runtime connector/);
+  await fails(c.dispatchForTest("q", "cloud_runtime_quiesce", { token: "t" }), /not a managed runtime station/);
   await run(c.close());
 });
 
@@ -57,7 +57,7 @@ test("a Workload's station and a desktop app's connection take the profiles Sali
   assert.deepEqual(received, [[{ id: "sh-0123456789" }]]);
   await run(c.close());
   const device = makeConnector({ root: tempDir(), env: { HOME: tempDir() } }, undefined, { profiles });
-  await fails(device.dispatchForTest("p", "station_profiles", { profiles: [] }), /not a managed runtime connector/);
+  await fails(device.dispatchForTest("p", "station_profiles", { profiles: [] }), /not a managed runtime station/);
   await run(device.close());
   // A desktop instance: its Workspace's accounts, an empty list included.
   const desktop = makeConnector({ root: tempDir(), env: { HOME: tempDir() } }, undefined, { profiles: { ...profiles, device: true } });

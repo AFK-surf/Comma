@@ -1,23 +1,15 @@
 import SwiftUI
 import UIKit
 
-/// The system tab bar over `ShellTabs`' pages. Home, Inbox and Settings are its tabs, each with an empty stand-in
-/// controller: the pages themselves stay on screen under the bar (`ShellTabsController`), so a switch swaps only the
-/// stand-in. Task search's button sits beside Inbox; tapping it opens search over the tabs (`TaskSearchLayer`) and
-/// leaves the bar's selection where it is. The router's circle is a search tab, which the bar shows apart from the
-/// others; selecting it opens the router layer. Neither changes the selected tab.
-final class ShellTabBarController: UITabBarController, UITabBarControllerDelegate,
-    UILargeContentViewerInteractionDelegate, UIPointerInteractionDelegate {
+/// The system tab bar over the four main pages. The separate router circle opens the chat layer.
+final class ShellTabBarController: UITabBarController, UITabBarControllerDelegate {
     private let store: CommaStore
     private let navigation: AppNavigation
     private var items: [AppTab: UITab] = [:]
-    private let router = UISearchTab { _ in UIViewController() }
-    private let search = UITab(title: "", image: ShellTabArt.search, identifier: "search") { _ in UIViewController() }
+    private let router = UISearchTab { _ in ShellTabStandInController() }
     private var bar: ShellTabBar
-    /// Over Task search's button, taking its touches from the bar. Pressed, the bar would slide its selection toward
-    /// the button and back, as search never takes the selection, and the keyboard rising for search would cover that
-    /// slide halfway. VoiceOver still reaches the button itself, whose selection opens search all the same.
-    private let searchTouch = SearchTouch()
+    /// The page owner follows the system bar's settled safe area, including its first layout.
+    var contentLayoutChanged: (() -> Void)?
     /// Drawn over the router's circle: its reply animation and its count (`RouterCircleOverlay`).
     private let routerOverlay = UIHostingController(rootView: RouterCircleOverlay())
     /// The Inbox's and Settings' dots, drawn over the bar: the bar's own badge would be a large dot, where the app's
@@ -40,15 +32,12 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
             let image = tab.showsAvatar ? bar.avatar.flatMap(avatarImage)
                 : ShellTabArt.glyph(tab, selected: tab == bar.selection)
             // Glyphs only, as the bar was drawn before; VoiceOver still reads each tab's name.
-            let item = UITab(title: "", image: image, identifier: tab.identifier) { _ in UIViewController() }
+            let item = UITab(title: "", image: image, identifier: tab.identifier) { _ in ShellTabStandInController() }
             item.accessibilityLabel = tab.title
             item.accessibilityIdentifier = tab.identifier
             items[tab] = item
             return item
         }
-        search.accessibilityLabel = String(localized: "Search tasks")
-        search.accessibilityIdentifier = "openTaskSearch"
-        tabs.insert(search, at: (tabs.firstIndex { $0 === items[.inbox] } ?? 0) + 1)
         // The mark alone, as on the other tabs: before iOS 26 the bar sets a title under it. VoiceOver reads the name.
         router.title = ""
         router.accessibilityLabel = String(localized: "Comma")
@@ -78,18 +67,6 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
             dots[tab] = dot
         }
         if #available(iOS 26.0, *) { tabBarMinimizeBehavior = .never }
-        searchTouch.accessibilityElementsHidden = true
-        searchTouch.pressed = { [weak self] down in self?.pressSearchGlyph(down) }
-        searchTouch.lifted = { [weak self] point in self?.searchLifted(at: point) }
-        // What the bar gives its other buttons and no longer reaches this one: the enlarged glyph a long press shows at
-        // accessibility text sizes, and the pointer's hover.
-        searchTouch.showsLargeContentViewer = true
-        searchTouch.largeContentTitle = String(localized: "Search tasks")
-        searchTouch.largeContentImage = ShellTabArt.search
-        searchTouch.scalesLargeContentImage = true
-        searchTouch.addInteraction(UILargeContentViewerInteraction(delegate: self))
-        searchTouch.addInteraction(UIPointerInteraction(delegate: self))
-        view.addSubview(searchTouch)
         routerOverlay.view.backgroundColor = .clear
         routerOverlay.view.isUserInteractionEnabled = false
         // Laid out on the circle, part of which lies in the bottom safe area.
@@ -145,7 +122,6 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
         super.viewDidLayoutSubviews()
         tabBar.layoutIfNeeded()
         placeDots()
-        placeSearchTouch()
         guard let circle = router.frame(in: view), !circle.isEmpty else { return }
         // Where the router chat zooms out of and back into.
         navigation.routerButtonFrame = view.convert(circle, to: nil)
@@ -195,50 +171,11 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
         }
     }
 
-    /// Over the search button wherever the bar shows it; out of the way while the bar is hidden.
-    private func placeSearchTouch() {
-        let button = tabBar.isHidden ? nil : search.frame(in: view)
-        searchTouch.isHidden = button?.isEmpty ?? true
-        if let button { searchTouch.frame = button }
-        view.bringSubviewToFront(searchTouch)
-    }
-
-    /// The button's glyph gives under the finger and springs back on release, as the app's icon buttons do
-    /// (`TactileButtonStyle`), where the bar would have lifted its selection.
-    private func pressSearchGlyph(_ down: Bool) {
-        guard let glyph = searchGlyph else { return }
-        if down {
-            UIView.animate(.easeOut(duration: 0.05)) { glyph.transform = CGAffineTransform(scaleX: 0.9, y: 0.9) }
-        } else {
-            UIView.animate(CommaMotion.release) { glyph.transform = .identity }
-        }
-    }
-
-    /// Lifted on the button, search opens. Lifted on another tab, as a finger slides along the bar, that tab is chosen,
-    /// as the bar chooses the tab a slide ends on.
-    private func searchLifted(at point: CGPoint) {
-        if searchTouch.bounds.contains(point) { return navigation.openSearch() }
-        let lift = searchTouch.convert(point, to: view)
-        if let tab = AppTab.allCases.first(where: { items[$0]?.frame(in: view)?.contains(lift) == true }) {
-            navigation.select(tab)
-        }
-    }
-
-    /// The bar's view drawing the search button's glyph: the one a touch on the button lands on.
-    private var searchGlyph: UIView? {
-        let centre = view.convert(CGPoint(x: searchTouch.frame.midX, y: searchTouch.frame.midY), to: tabBar)
-        return tabBar.hitTest(centre, with: nil).flatMap { $0 === tabBar ? nil : $0 }
-    }
-
     // MARK: UITabBarControllerDelegate
 
     func tabBarController(_ controller: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
         if tab === router {
             navigation.openRouter()
-            return false
-        }
-        if tab === search {
-            navigation.openSearch()
             return false
         }
         // Tapping the selected tab again returns it to its root; the page does that itself.
@@ -251,17 +188,6 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
 
     func tabBarController(_ controller: UITabBarController, didSelectTab selected: UITab, previousTab: UITab?) {
         if let tab = appTab(selected), tab != navigation.tab { navigation.select(tab) }
-    }
-
-    // MARK: Search button
-
-    func largeContentViewerInteraction(_ interaction: UILargeContentViewerInteraction,
-                                       didEndOn item: (any UILargeContentViewerItem)?, at point: CGPoint) {
-        if item === searchTouch { navigation.openSearch() }
-    }
-
-    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
-        interaction.view.map { UIPointerStyle(effect: .highlight(UITargetedPreview(view: $0))) }
     }
 
     // MARK: Drawing
@@ -281,7 +207,7 @@ final class ShellTabBarController: UITabBarController, UITabBarControllerDelegat
 private enum ShellTabArt {
     /// A tab's glyph, filled while the tab is selected.
     static func glyph(_ tab: AppTab, selected: Bool) -> UIImage? {
-        UIImage(named: selected ? "\(tab.icon)-fill" : tab.icon)
+        UIImage(named: selected && tab != .apps ? "\(tab.icon)-fill" : tab.icon)
     }
 
     /// The Comma mark at the router circle's size, tinted by the bar like the tabs' glyphs.
@@ -293,45 +219,22 @@ private enum ShellTabArt {
         }.withRenderingMode(.alwaysTemplate)
     }()
 
-    /// Task search's glyph, tinted by the bar like the tabs' glyphs.
-    @MainActor static let search = UIImage(named: "icon-search")
-
     /// Keeps the circle's layout while the overlay's animation stands in for the mark.
     @MainActor static let blankMark = UIGraphicsImageRenderer(
         size: CGSize(width: RouterCircleOverlay.markSide, height: RouterCircleOverlay.markSide)
     ).image { _ in }.withRenderingMode(.alwaysTemplate)
 }
 
-/// Task search's button over the bar's own (`ShellTabBarController`): the press shows only while the finger is on the
-/// button, and the lift is decided exactly where the finger leaves, not with a control's usual slack around it, which
-/// reached the next tab.
-private final class SearchTouch: UIControl {
-    /// The press shows on the glyph, or no longer does.
-    var pressed: (Bool) -> Void = { _ in }
-    /// The finger left the screen here, in the control's space.
-    var lifted: (CGPoint) -> Void = { _ in }
-    private var down = false
-
-    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        press(true)
-        return true
+/// UIKit updates the selected content safe area independently of the container's layout.
+private final class ShellTabStandInController: UIViewController {
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        view.setNeedsLayout()
     }
 
-    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        press(bounds.contains(touch.location(in: self)))
-        return true
-    }
-
-    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
-        press(false)
-        if let touch { lifted(touch.location(in: self)) }
-    }
-
-    override func cancelTracking(with event: UIEvent?) { press(false) }
-
-    private func press(_ next: Bool) {
-        guard next != down else { return }
-        down = next
-        pressed(next)
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let bar = tabBarController as? ShellTabBarController, bar.selectedViewController === self else { return }
+        bar.contentLayoutChanged?()
     }
 }

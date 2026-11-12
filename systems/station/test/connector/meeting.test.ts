@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Effect, Exit, Layer } from "effect";
 import { type Connector, MAX_CONCURRENT_REQUESTS, type Message, makeConnector } from "../../src/connector/connector.ts";
+import { streamBytes } from "../../src/connector/message.ts";
 import {
   MAX_ARTIFACTS_PER_EVENT,
   MAX_MEETING_ARTIFACT_SIZE,
@@ -153,7 +154,7 @@ async function readArtifact(c: Connector, params: Record<string, unknown>, onChu
       if (!frame.stream) return;
       if (frame.stream.eof) sawEof = true;
       if (frame.stream.data) {
-        chunks.push(Buffer.from(frame.stream.data, "base64"));
+        chunks.push(streamBytes(frame.stream));
         onChunk();
         queueMicrotask(() => session.completePendingAck(frame.id!, frame.stream!.seq ?? 0, ""));
       }

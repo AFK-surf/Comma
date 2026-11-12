@@ -1,6 +1,7 @@
 import { waitForSettledMotion } from "../../../e2e/helpers/motion";
 import { expect, test, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const session = {
@@ -85,9 +86,10 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await page.goto("/#/settings");
 
   const settingsDialog = page.getByRole("dialog", { name: "Settings sections" });
-  const settingsButton = page
+  const accountButton = page
     .locator(".comma-sidebar-body")
-    .getByRole("button", { name: "Settings", exact: true });
+    .getByRole("button", { name: "Account", exact: true });
+  const settingsItem = page.getByRole("menuitem", { name: "Settings", exact: true });
   const sidebarAvatar = page.locator(".comma-sidebar-body .comma-user-avatar");
 
   await expect(settingsDialog).toBeVisible();
@@ -98,7 +100,8 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await expect(sidebarAvatar).toHaveCSS("width", "32px");
   await expect(sidebarAvatar).toHaveCSS("height", "32px");
 
-  await settingsButton.click();
+  await accountButton.click();
+  await settingsItem.click();
   await expect(settingsDialog).toBeVisible();
   await page.getByRole("button", { name: "Profile" }).click();
   await expect(
@@ -137,23 +140,18 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     path: test.info().outputPath("sidebar-profile-client-light.png"),
   });
 
-  await settingsButton.focus();
+  // From the keyboard: Enter opens the account menu, and Enter again takes its first item, Settings.
+  await accountButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(settingsItem).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(settingsDialog).toBeVisible();
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
-  await page.getByRole("button", { name: /Select theme/ }).click();
-  // Chosen from the keyboard: the list may still move as it settles over the
-  // button, and a pointer aimed at a row can land between two.
-  await expect(
-    page.getByRole("option", { name: "Default", exact: true })
-  ).toBeFocused();
-  for (const theme of ["Soft Light", "Signal Light", "Dark"]) {
-    await page.keyboard.press("ArrowDown");
-    await expect(page.getByRole("option", { name: theme, exact: true })).toBeFocused();
-  }
-  await page.keyboard.press("Enter");
+  await chooseDropdownOption(
+    page.getByRole("button", { name: /Select theme/ }),
+    "Dark"
+  );
   await expect(page.locator("html")).toHaveAttribute("data-theme", "Dark mode");
-  await expect(page.getByRole("listbox")).toBeHidden();
   await expect(page.getByRole("button", { name: /Select theme/ })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(settingsDialog).toBeHidden();
@@ -165,7 +163,8 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     path: test.info().outputPath("sidebar-profile-client-dark.png"),
   });
 
-  await settingsButton.click();
+  await accountButton.click();
+  await settingsItem.click();
   await page.getByRole("button", { name: "Profile", exact: true }).click();
   const avatarRow = page.locator('[data-setting-id="account.avatar"]');
   await page.locator('input[type="file"]').setInputFiles({
@@ -174,7 +173,7 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
     name: "oversized.png",
   });
   const avatarError = avatarRow.locator(".text-error-primary");
-  await expect(avatarError).toHaveText("JPEG, PNG, or WebP. Maximum 10 MB.");
+  await expect(avatarError).toHaveText("JPEG, PNG, WebP, or GIF. Maximum 10 MB.");
   const rowBox = (await avatarRow.boundingBox())!;
   const errorBox = (await avatarError.boundingBox())!;
   const buttonBox = (await avatarRow

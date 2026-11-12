@@ -92,7 +92,7 @@ test("Comma: enrollment, presence with gateways, notices, no traces, releases un
   await until(() => state.peersCurrent);
   const connected = fake.asked.find((a) => a.path === "/v1/comma/stations/connect")!;
   assert.deepEqual(connected.verified, ["comma"]);
-  assert.equal(connected.headers["x-ember-signature"], undefined, "Comma is sent the still.fail headers only");
+  assert.equal(connected.headers["x-ember-signature"], undefined, "Comma is sent the Comma headers only");
   assert.equal(state.state!.workspace, "ws1");
 
   // The gateways as the presence socket says them, kept in cloud.json.

@@ -140,15 +140,8 @@ defmodule AlertRouter.Slack.Renderer do
                 "text" =>
                   mrkdwn(
                     if(escalation?, do: "<!channel> *#{priority} 升级，需要处理*\n", else: "") <>
-                      "*最新状态*\n#{escape(latest)}"
+                      escape(latest)
                   )
-              },
-              %{
-                "type" => "context",
-                "block_id" => block_id(id, revision, "timeline-context"),
-                "elements" => [
-                  mrkdwn("生命周期事件 · `#{id}` · 修订 #{revision}")
-                ]
               },
               if(opts[:root_url],
                 do: %{
@@ -202,12 +195,11 @@ defmodule AlertRouter.Slack.Renderer do
     child_blocks =
       [
         channel_mention(channel_mention?, incident.priority, revision, id),
-        incident_source_context(incident, revision, id),
-        progress_section(incident, revision, id),
-        feedback_section(incident, revision, id),
         status_section(incident, revision, id),
         diagnostic_context(incident, revision, id),
-        metric_table(incident, revision, id),
+        first_checks_section(incident, revision, id),
+        progress_section(incident, revision, id),
+        feedback_section(incident, revision, id),
         actions(incident, revision, id),
         ownership_actions(incident, revision, id, progress_enabled?),
         context(incident, revision, id, progress_enabled?)
@@ -235,30 +227,6 @@ defmodule AlertRouter.Slack.Renderer do
 
   defp channel_mention(false, _priority, _revision, _id), do: nil
 
-  defp incident_source_context(%Incident{} = incident, revision, id) do
-    icon = Map.fetch!(@provider_icons, incident.source)
-
-    owner =
-      case incident.owner do
-        nil ->
-          "未指派"
-
-        user ->
-          if Regex.match?(~r/\A[UW][A-Z0-9]{1,32}\z/, user), do: "<@#{user}>", else: escape(user)
-      end
-
-    %{
-      "type" => "context",
-      "block_id" => block_id(id, revision, "source"),
-      "elements" => [
-        %{"type" => "image", "image_url" => icon.url, "alt_text" => icon.alt},
-        mrkdwn(
-          "*#{source_label(incident.source)}* · #{format_time(incident.started_at)} · 负责人 #{owner}"
-        )
-      ]
-    }
-  end
-
   defp diagnostic_context(%Incident{} = incident, revision, id) do
     evidence = incident.evidence_values || %{}
 
@@ -285,37 +253,8 @@ defmodule AlertRouter.Slack.Renderer do
       }
   end
 
-  defp metric_table(incident, revision, id) do
-    evidence = incident.evidence_values || %{}
-
-    headers = ["最新值", "触发阈值", "窗口"]
-
-    %{
-      "type" => "table",
-      "block_id" => block_id(id, revision, "metrics"),
-      "column_settings" => [
-        %{"align" => "left"},
-        %{"align" => "left"},
-        %{"align" => "left"}
-      ],
-      "rows" => [
-        Enum.map(headers, &raw_text/1),
-        Enum.map(
-          [
-            evidence["observed"] || "—",
-            evidence["threshold"] || "—",
-            evidence["duration"] || "—"
-          ],
-          &raw_text/1
-        )
-      ]
-    }
-  end
-
   defp status_section(%Incident{} = incident, revision, id) do
     error = (incident.evidence_values || %{})["trigger_error"]
-    latest = display_latest(incident.state, incident.recovery_status, incident.latest)
-
     error_line = if present?(error), do: "*触发错误*  #{display_detail(error)}\n", else: ""
 
     %{
@@ -324,41 +263,73 @@ defmodule AlertRouter.Slack.Renderer do
       "text" =>
         mrkdwn(
           error_line <>
-            "*影响*  #{escape(incident.impact)}\n" <>
-            "*告警状态*  #{escape(latest)}\n" <>
-            "*已知范围*  #{escape(affected_scope(incident))}"
+            "*现在*  #{now_line(incident)}\n" <>
+            "*影响*  #{escape(incident.impact)}"
         )
     }
   end
 
-  defp affected_scope(incident) do
+  # What is happening now: the reviewed firing text, where it fires, and the
+  # measured value against its threshold; once the source closes, its end,
+  # which is not a recovery claim; the verified recovery only with positive
+  # evidence.
+  defp now_line(%Incident{state: "firing"} = incident) do
     evidence = incident.evidence_values || %{}
 
-    cond do
-      present?(evidence["session"]) -> "已定位 1 个会话；整体影响范围尚未确认。"
-      true -> "受影响的用户和任务数量尚未确认。"
+    head = incident.latest
+
+    details =
+      [
+        evidence["scope"],
+        if(present?(evidence["observed"]), do: "当前 #{evidence["observed"]}"),
+        if(present?(evidence["threshold"]), do: "阈值 #{evidence["threshold"]}"),
+        evidence["duration"]
+      ]
+      |> Enum.filter(&present?/1)
+      |> Enum.join("，")
+
+    if details == "", do: escape(head), else: "#{escape(head)}（#{escape(details)}）"
+  end
+
+  defp now_line(%Incident{} = incident),
+    do: escape(display_latest(incident.state, incident.recovery_status, incident.latest))
+
+  defp first_checks_section(%Incident{state: "firing"} = incident, revision, id) do
+    case AlertRouter.Catalog.first_checks(incident.policy_identity) do
+      [] ->
+        nil
+
+      checks ->
+        lines =
+          checks
+          |> Enum.with_index(1)
+          |> Enum.map(fn {check, index} -> "#{index}. #{check}" end)
+
+        %{
+          "type" => "section",
+          "block_id" => block_id(id, revision, "first-checks"),
+          "text" => mrkdwn("*先看*\n" <> Enum.join(lines, "\n"))
+        }
     end
   end
 
+  defp first_checks_section(_incident, _revision, _id), do: nil
+
   defp progress_section(incident, revision, id) do
-    progress = incident.progress || %{}
+    case incident.progress || %{} do
+      %{"text" => text, "author" => author, "timestamp" => timestamp} = progress ->
+        time = timestamp |> DateTime.from_unix!(:microsecond) |> format_time()
+        source = if progress["source"] == "investigator", do: "调查机器人", else: "线程回报"
 
-    text =
-      case progress do
-        %{"text" => text, "author" => author, "timestamp" => timestamp} ->
-          time = timestamp |> DateTime.from_unix!(:microsecond) |> format_time()
-          source = if progress["source"] == "investigator", do: "调查机器人回报", else: "线程回报"
-          "最新处理进展（#{source}）\n#{text}\n回报人 #{author} · #{time}\n回报不替代恢复验证。"
+        %{
+          "type" => "section",
+          "block_id" => block_id(id, revision, "progress"),
+          "text" => plain_text("处理进展（#{source} · #{author} · #{time}）\n#{text}")
+        }
 
-        _ ->
-          "最新处理进展：尚无调查回报。"
-      end
-
-    %{
-      "type" => "section",
-      "block_id" => block_id(id, revision, "progress"),
-      "text" => plain_text(text)
-    }
+      _ ->
+        nil
+    end
   end
 
   defp actions(incident, revision, id) do
@@ -429,17 +400,37 @@ defmodule AlertRouter.Slack.Renderer do
   defp feedback_section(_, _, _), do: nil
 
   defp context(incident, revision, id, progress_enabled?) do
-    label =
-      escape(policy_label(incident.policy_identity))
+    icon = Map.fetch!(@provider_icons, incident.source)
+
+    owner =
+      case incident.owner do
+        nil ->
+          nil
+
+        user ->
+          if Regex.match?(~r/\A[UW][A-Z0-9]{1,32}\z/, user),
+            do: "负责人 <@#{user}>",
+            else: "负责人 #{escape(user)}"
+      end
+
+    line =
+      [
+        "*#{source_label(incident.source)}*",
+        owner,
+        "`#{escape(policy_label(incident.policy_identity))}`"
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" · ")
 
     %{
       "type" => "context",
-      "block_id" => block_id(id, revision, "context"),
+      "block_id" => block_id(id, revision, "footer"),
       "elements" =>
         [
-          mrkdwn("#{label} · `#{id}` · r#{revision} · 时间线见 thread"),
+          %{"type" => "image", "image_url" => icon.url, "alt_text" => icon.alt},
+          mrkdwn(line),
           if(progress_enabled?,
-            do: plain_text("更新主卡：在线程回复，以“告警进展”独占首行，随后写已确认、影响、下一步。")
+            do: plain_text("在线程回复、首行写“告警进展”，主卡会显示这条进展。")
           )
         ]
         |> Enum.reject(&is_nil/1)
@@ -504,21 +495,23 @@ defmodule AlertRouter.Slack.Renderer do
   end
 
   defp lifecycle_title(event, recovery_status) do
-    title =
-      [
-        state_label(event.state, recovery_status),
-        event.source_state,
-        format_time(event.observed_at)
-      ]
-      |> Enum.reject(&(&1 in [nil, ""]))
-      |> Enum.join(" · ")
-
-    if event.state == "resolved" and recovery_status != "verified" do
-      title <> " · 服务恢复待确认"
-    else
-      title
-    end
+    [
+      state_label(event.state, recovery_status),
+      source_state_label(event.source_state),
+      format_time(event.observed_at)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
   end
+
+  # open and closed only repeat the state label; anything else the source
+  # reports (GCP "acknowledged") is news.
+  defp source_state_label(source_state)
+       when source_state in ["open", "closed", "firing", "resolved"],
+       do: nil
+
+  defp source_state_label("acknowledged"), do: "来源已确认收到"
+  defp source_state_label(source_state), do: source_state
 
   defp lifecycle_signature(event) do
     {event.state, event.source_state, event_recovery_status(event)}
@@ -577,11 +570,10 @@ defmodule AlertRouter.Slack.Renderer do
   end
 
   defp container_subtitle(%Incident{} = incident) do
-    evidence = incident.evidence_values || %{}
+    started = if incident.started_at, do: "#{format_time(incident.started_at)} 开始"
 
-    [incident.environment, incident.service, evidence["cluster"], incident.region]
+    [incident.environment, started]
     |> Enum.filter(&present?/1)
-    |> Enum.map(&String.trim/1)
     |> Enum.join(" · ")
   end
 
@@ -611,7 +603,7 @@ defmodule AlertRouter.Slack.Renderer do
 
   defp state_label("firing", _recovery_status), do: "告警中"
   defp state_label("resolved", "verified"), do: "已确认恢复"
-  defp state_label("resolved", _recovery_status), do: "来源已结束告警"
+  defp state_label("resolved", _recovery_status), do: "指标已回落"
   defp state_label(state, _recovery_status), do: state
 
   defp status_marker("firing", _recovery_status), do: "🔴"
@@ -645,7 +637,6 @@ defmodule AlertRouter.Slack.Renderer do
 
   defp plain_text(text), do: %{"type" => "plain_text", "text" => text, "emoji" => false}
   defp mrkdwn(text), do: %{"type" => "mrkdwn", "text" => text}
-  defp raw_text(text), do: %{"type" => "raw_text", "text" => to_string(text)}
 
   defp block_id(id, revision, suffix), do: "ar-#{id}-r#{revision}-#{suffix}"
 
@@ -657,8 +648,15 @@ defmodule AlertRouter.Slack.Renderer do
     |> String.downcase()
   end
 
-  defp format_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
-  defp format_time(_datetime), do: "Time unavailable"
+  # The team reads UTC+8. China has no daylight saving time, so a fixed offset
+  # is exact.
+  defp format_time(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.add(8 * 3600, :second)
+    |> Calendar.strftime("%m-%d %H:%M (UTC+8)")
+  end
+
+  defp format_time(_datetime), do: "时间未知"
 
   defp escape(value) do
     value

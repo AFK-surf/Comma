@@ -10,26 +10,34 @@ defmodule SalixIM.Provider.Feishu do
 
   alias SalixIM.Provider.Feishu.{
     API,
+    Directory,
     Docs,
     Meetings,
     Message,
     MessageRenderer,
     MessageSearch,
     Minutes,
-    ResourceRef
+    ResourceRef,
+    Tables
   }
 
-  alias SalixIM.Provider.OperationRegistry
+  alias SalixIM.Provider.{DocAccess, OperationRegistry}
   alias SalixIM.{Diagnostics, FeishuFiles, ProviderConnects, ProviderObservations}
 
   @max_page_size 50
+  @chat_search_types ~w(private external public_joined public_not_joined)
+  @direct_id_types ~w(open_id user_id union_id email)
   @max_reaction_pages 10
   @max_image_upload_bytes 10 * 1024 * 1024
   @max_file_upload_bytes 30 * 1024 * 1024
   @minutes_apis OperationRegistry.feishu_minutes_api_names()
   @meeting_apis OperationRegistry.feishu_meeting_api_names()
   @account_apis OperationRegistry.feishu_account_api_names()
-  @document_apis OperationRegistry.worker_api_names("feishu") -- (@minutes_apis ++ @meeting_apis)
+  # Feishu takes these only from a person, so `account` names who.
+  @person_apis ~w(feishu.request_doc_access)
+  @table_apis OperationRegistry.feishu_table_api_names()
+  @document_apis OperationRegistry.worker_api_names("feishu") --
+                   (@minutes_apis ++ @meeting_apis ++ @table_apis)
 
   @doc """
   Post one runtime-owned interactive card into a person's own direct
@@ -99,6 +107,33 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  @doc """
+  Who one person of this app's tenant is, for a person to recognise the
+  account: `"name"`, `"email"` and `"workspace"` (the tenant's name). A read
+  the app has no scope for leaves its field out, so this never fails. The
+  app's `open_id` means nothing to another app.
+  """
+  @spec account(map(), String.t()) :: map()
+  def account(connect, open_id) when is_binary(open_id) do
+    user =
+      case call(nil, connect, "feishu.get_user", %{"user_id" => open_id}) do
+        {:ok, %{"user" => %{} = user}} -> user
+        _other -> %{}
+      end
+
+    workspace =
+      case API.get(connect, "/tenant/v2/tenant/query") do
+        {:ok, %{"tenant" => %{"name" => name}}} -> name
+        _other -> nil
+      end
+
+    %{
+      "name" => user["name"],
+      "email" => Enum.find([user["email"], user["enterprise_email"]], &(&1 not in [nil, ""])),
+      "workspace" => workspace
+    }
+  end
+
   def call(agent_id, connect, api, params, scope \\ %{}) do
     params =
       params
@@ -107,23 +142,46 @@ defmodule SalixIM.Provider.Feishu do
       |> Map.put("__tool_call_id", scope[:tool_call_id])
 
     with :ok <- ensure_connected(connect),
-         {:ok, connect} <- acting_connect(agent_id, connect, api, params) do
-      do_call(agent_id, connect, api, params)
+         {:ok, acting} <- acting_connect(agent_id, connect, api, params) do
+      agent_id
+      |> do_call(acting, api, params)
+      |> DocAccess.next_step(api, acting)
     end
   end
 
-  # A document or Minutes read that names a signed-in account runs as that
-  # person; everything else runs as the bot.
+  # A document, table or Minutes read, a document content write, or an
+  # access request that names a signed-in account runs as that person. A
+  # meeting operation reads `account` itself. Every other operation runs as
+  # the bot and refuses an account rather than ignore it.
   defp acting_connect(agent_id, connect, api, %{"account" => account})
-       when api in @account_apis and is_binary(account) and account != "",
-       do: Meetings.as_account(agent_id, connect, String.trim(account))
+       when is_binary(account) do
+    case String.trim(account) do
+      "" ->
+        {:ok, connect}
+
+      account when api in @account_apis or api in @person_apis ->
+        Meetings.as_account(agent_id, connect, account)
+
+      _account when api in @meeting_apis ->
+        {:ok, connect}
+
+      "app" ->
+        {:ok, connect}
+
+      _account ->
+        {:error, "#{api} runs as the app only; it takes no account"}
+    end
+  end
 
   defp acting_connect(_agent_id, connect, _api, _params), do: {:ok, connect}
 
-  # ---- cloud documents and Minutes ----
+  # ---- cloud documents, tables and Minutes ----
 
   defp do_call(agent_id, connect, api, params) when api in @document_apis,
     do: Docs.call(agent_id, connect, api, params)
+
+  defp do_call(agent_id, connect, api, params) when api in @table_apis,
+    do: Tables.call(agent_id, connect, api, params)
 
   defp do_call(agent_id, connect, api, params) when api in @minutes_apis,
     do: Minutes.call(agent_id, connect, api, params)
@@ -166,7 +224,7 @@ defmodule SalixIM.Provider.Feishu do
       end
 
     emit_outbound_diagnostic(connect, api, params, result)
-    result
+    without_body(result)
   end
 
   defp do_call(agent_id, connect, api, params)
@@ -208,6 +266,65 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  # The send of `lark.send_message`: Markdown, and optionally one file, to a
+  # chat (the source chat by default) or to one person. A reply names a
+  # message of that chat, so what the bot writes reaches the people of
+  # `chat_id` and nobody else.
+  defp do_call(agent_id, connect, "feishu.send_message", params) do
+    result =
+      with {:ok, {_id_type, receive_id} = target} <- send_target(connect, params),
+           {:ok, upload} <- send_upload_stream(agent_id, params),
+           :ok <- ensure_content(params, upload),
+           :ok <- ensure_reply_in_chat(connect, receive_id, params) do
+        with {:ok, sent} <- send_message_text(connect, target, params),
+             {:ok, file} <- send_message_upload(connect, target, params, upload) do
+          {:ok,
+           target
+           |> sent_to(sent || file)
+           |> maybe_put("message", strip_body(sent))
+           |> maybe_put("file_message", strip_body(file))}
+        end
+      else
+        {:error, reason} -> {:error, control_error(reason)}
+      end
+
+    emit_outbound_diagnostic(connect, "feishu.send_message", params, result)
+    result
+  end
+
+  # Feishu copies the message on its side, so a file of any size goes as it
+  # is, without a download and an upload here. The forward names its target
+  # always: the current chat is not a default.
+  defp do_call(_agent_id, connect, "feishu.forward_message", params) do
+    result =
+      with :ok <- require_param(params, "message_id"),
+           :ok <- require_forward_target(params),
+           {:ok, {id_type, receive_id} = target} <- send_target(connect, params) do
+        query =
+          URI.encode_query(
+            maybe_put(
+              %{"receive_id_type" => id_type},
+              "uuid",
+              message_uuid("feishu.forward_message", Map.put(params, "receive_id", receive_id))
+            )
+          )
+
+        with {:ok, sent} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages/#{segment(params["message_id"])}/forward?#{query}",
+                 %{"receive_id" => receive_id}
+               ) do
+          {:ok, target |> sent_to(sent) |> Map.put("message", strip_body(sent))}
+        end
+      else
+        {:error, reason} -> {:error, control_error(reason)}
+      end
+
+    emit_outbound_diagnostic(connect, "feishu.forward_message", params, result)
+    result
+  end
+
   defp do_call(_agent_id, connect, "feishu.get_chat_history", params),
     do: labelled_messages(connect, "chat", params["chat_id"], params)
 
@@ -220,14 +337,29 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  # A merged forward (msg_type merge_forward) holds the messages it carries:
+  # Feishu answers with the forward and then each of them, naming its parent
+  # in upper_message_id.
   defp do_call(_agent_id, connect, "feishu.get_message", params) do
-    with {:ok, message} <- raw_message(connect, params["message_id"]),
+    with {:ok, [message | carried]} <- raw_message_items(connect, params["message_id"]),
          {:ok, signing_key} <- API.resource_ref_signing_key(connect) do
       normalized = normalize_message(connect, signing_key, message)
 
+      forwarded =
+        for %{"upper_message_id" => upper} = item <- carried,
+            str(upper) != "",
+            do:
+              connect
+              |> normalize_message(signing_key, item)
+              |> Map.put("upper_message_id", str(upper))
+
       {:ok,
        put_ifc(
-         %{"message" => normalized},
+         maybe_put(
+           %{"message" => normalized},
+           "forwarded_messages",
+           if(forwarded != [], do: forwarded)
+         ),
          ReadLabels.for_scope(connect, normalized["chat_id"])
        )}
     end
@@ -295,7 +427,9 @@ defmodule SalixIM.Provider.Feishu do
     with {:ok, body} <- outbound_content(Map.take(params, ["text", "format"])),
          :ok <- MessageRenderer.validate_request(body),
          :ok <- ensure_bot_authored(connect, params["message_id"]) do
-      API.put(connect, "/im/v1/messages/#{segment(params["message_id"])}", body)
+      connect
+      |> API.put("/im/v1/messages/#{segment(params["message_id"])}", body)
+      |> without_body()
     end
   end
 
@@ -382,7 +516,7 @@ defmodule SalixIM.Provider.Feishu do
              params["query"],
              params["limit"]
            ) do
-      {:ok, %{"chats" => chats}}
+      {:ok, put_ifc(%{"chats" => chats}, ReadLabels.for_messages(connect, chats, "chat_id"))}
     end
   end
 
@@ -393,7 +527,39 @@ defmodule SalixIM.Provider.Feishu do
              params["query"],
              params["limit"]
            ) do
-      {:ok, %{"users" => users}}
+      {:ok, put_ifc(%{"users" => users}, ReadLabels.for_space(connect))}
+    end
+  end
+
+  defp do_call(_agent_id, connect, "feishu.search_chats", params) do
+    with {:ok, page_token} <- page_token(params),
+         {:ok, search_types} <- chat_search_types(params),
+         query =
+           %{"page_size" => page_size(params)}
+           |> maybe_put("page_token", page_token)
+           |> URI.encode_query(),
+         {:ok, data} <-
+           API.post_read(
+             connect,
+             "/im/v2/chats/search?" <> query,
+             chat_search_body(params, search_types)
+           ),
+         {:ok, page} <- paged_result(data, "chats", page_token) do
+      chats = Enum.flat_map(page["chats"], &chat_search_item/1)
+
+      {:ok,
+       page
+       |> Map.put("chats", chats)
+       |> maybe_put("total", data["total"])
+       |> maybe_put("notice", data["notice"])
+       |> put_ifc(ReadLabels.for_messages(connect, chats, "chat_id"))}
+    end
+  end
+
+  defp do_call(_agent_id, connect, "feishu.join_chat", params) do
+    with :ok <- require_param(params, "chat_id"),
+         {:ok, chat_id} <- chat_id(connect, params) do
+      API.patch(connect, "/im/v1/chats/#{segment(chat_id)}/members/me_join", %{})
     end
   end
 
@@ -405,13 +571,44 @@ defmodule SalixIM.Provider.Feishu do
              page_token: page_token
            }),
          {:ok, result} <- paged_result(data, "chats", page_token) do
-      {:ok, result}
+      {:ok, put_ifc(result, ReadLabels.for_messages(connect, result["chats"], "chat_id"))}
     end
   end
 
   defp do_call(_agent_id, connect, "feishu.get_chat", params) do
-    with :ok <- require_param(params, "chat_id") do
-      API.get(connect, "/im/v1/chats/#{segment(params["chat_id"])}")
+    with :ok <- require_param(params, "chat_id"),
+         {:ok, chat} <- API.get(connect, "/im/v1/chats/#{segment(params["chat_id"])}") do
+      {:ok, put_ifc(chat, ReadLabels.for_scope(connect, params["chat_id"]))}
+    end
+  end
+
+  defp do_call(_agent_id, connect, "feishu.create_chat", params) do
+    with :ok <- require_param(params, "name"),
+         {:ok, user_ids} <- chat_user_ids(params) do
+      query =
+        %{"user_id_type" => "open_id"}
+        |> maybe_put("uuid", message_uuid("feishu.create_chat", params))
+        |> URI.encode_query()
+
+      API.post(connect, "/im/v1/chats?" <> query, %{
+        "name" => str(params["name"]),
+        "user_id_list" => user_ids,
+        "chat_mode" => "group",
+        "chat_type" => "private"
+      })
+    end
+  end
+
+  defp do_call(_agent_id, connect, "feishu.add_chat_members", params) do
+    with :ok <- require_param(params, "chat_id"),
+         {:ok, chat_id} <- chat_id(connect, params),
+         {:ok, user_ids} <- chat_user_ids(params) do
+      # Reject the whole request if any member is unavailable.
+      API.post(
+        connect,
+        "/im/v1/chats/#{segment(chat_id)}/members?member_id_type=open_id&succeed_type=2",
+        %{"id_list" => user_ids}
+      )
     end
   end
 
@@ -425,16 +622,19 @@ defmodule SalixIM.Provider.Feishu do
              page_token: page_token
            }),
          {:ok, result} <- paged_result(data, "members", page_token) do
-      {:ok, result}
+      # Who is in a chat is what its members see.
+      {:ok, put_ifc(result, ReadLabels.for_scope(connect, params["chat_id"]))}
     end
   end
 
   defp do_call(_agent_id, connect, "feishu.get_user", params) do
-    with :ok <- require_param(params, "user_id") do
-      API.get(connect, "/contact/v3/users/#{segment(params["user_id"])}", %{
-        user_id_type: blank_default(params["user_id_type"], "open_id"),
-        department_id_type: "open_department_id"
-      })
+    with :ok <- require_param(params, "user_id"),
+         {:ok, user} <-
+           API.get(connect, "/contact/v3/users/#{segment(params["user_id"])}", %{
+             user_id_type: blank_default(params["user_id_type"], "open_id"),
+             department_id_type: "open_department_id"
+           }) do
+      {:ok, user |> hide_user_mobile() |> put_ifc(ReadLabels.for_space(connect))}
     end
   end
 
@@ -456,7 +656,7 @@ defmodule SalixIM.Provider.Feishu do
              }
            ),
          {:ok, result} <- paged_result(data, "departments", page_token) do
-      {:ok, result}
+      {:ok, put_ifc(result, ReadLabels.for_space(connect))}
     end
   end
 
@@ -473,7 +673,10 @@ defmodule SalixIM.Provider.Feishu do
              page_token: page_token
            }),
          {:ok, result} <- paged_result(data, "users", page_token) do
-      {:ok, result}
+      {:ok,
+       result
+       |> Map.update("users", [], fn users -> Enum.map(users, &hide_mobile/1) end)
+       |> put_ifc(ReadLabels.for_space(connect))}
     end
   end
 
@@ -498,22 +701,33 @@ defmodule SalixIM.Provider.Feishu do
              "These are authorization roots, not a complete directory listing. Expand returned departments deliberately with feishu.list_departments and feishu.list_department_users."
          },
          pagination
-       )}
+       )
+       |> put_ifc(ReadLabels.for_space(connect))}
     end
   end
 
-  # Bot tenant tokens cannot use Feishu's keyword user-search API. Keep this
-  # compatibility operation explicitly local/observed instead of pretending it
-  # is a tenant-wide directory search.
+  # Bot tenant tokens cannot use Feishu's keyword user-search API: a query
+  # reads the people the bot has seen, then walks the app's directory data
+  # range (`Directory`).
   defp do_call(_agent_id, connect, "feishu.lookup_users", params) do
-    with {:ok, users} <-
+    with {:ok, observed} <-
            ProviderObservations.list_feishu_users(
              connect["connect_id"],
              params["query"],
              params["limit"]
            ) do
-      {:ok, %{"users" => users, "source" => "observed_inbound_users"}}
+      {:ok,
+       connect
+       |> Directory.lookup(observed, params["query"], params["limit"])
+       |> put_ifc(ReadLabels.for_space(connect))}
     end
+  end
+
+  # Everyone in the data range, whole departments within one call's request
+  # budget, resumed from `continue_from` (`Directory`).
+  defp do_call(_agent_id, connect, "feishu.list_directory_users", params) do
+    with {:ok, result} <- Directory.list(connect, params["continue_from"]),
+         do: {:ok, put_ifc(result, ReadLabels.for_space(connect))}
   end
 
   defp do_call(_agent_id, _connect, _api, _params),
@@ -555,17 +769,61 @@ defmodule SalixIM.Provider.Feishu do
   # own chat, so the audience is read off the page rather than off the argument:
   # a thread is addressed by thread id and never says which chat it is in.
   defp labelled_messages(connect, container_type, container_id, params) do
-    with {:ok, page} <- list_messages(connect, container_type, container_id, params) do
+    with {:ok, page} <- read_messages(connect, container_type, container_id, params) do
       {:ok, put_ifc(page, ReadLabels.for_messages(connect, page["messages"], "chat_id"))}
+    end
+  end
+
+  # Feishu can refuse the history of an external chat while it still delivers
+  # the chat's messages to the bot. Those are in the local index.
+  defp read_messages(connect, container_type, container_id, params) do
+    case list_messages(connect, container_type, container_id, params) do
+      {:error, reason} = refused ->
+        # A read as a person who is not let in stays that person's refusal.
+        if API.external_chat_rejected?(reason) and not is_binary(connect["user_access_token"]),
+          do: indexed_messages(connect, container_type, container_id, params, refused),
+          else: refused
+
+      page ->
+        page
+    end
+  end
+
+  defp indexed_messages(connect, container_type, container_id, params, refused) do
+    with {:ok, signing_key} <- API.resource_ref_signing_key(connect),
+         {:ok, page} <-
+           MessageSearch.container_page(
+             connect,
+             container_type,
+             container_id,
+             params,
+             &normalize_message(connect, signing_key, &1)
+           ) do
+      {:ok, page}
+    else
+      _unavailable -> refused
     end
   end
 
   # The block rides out under a reserved key that `SalixAgent.Tools.IMRouter`
   # pops before the result is encoded, so it never reaches the model as content.
+  # A person can hide their mobile number in the directory
+  # (`mobile_visible: false`); a read does not return a hidden number.
+  defp hide_user_mobile(%{"user" => user} = data), do: Map.put(data, "user", hide_mobile(user))
+  defp hide_user_mobile(data), do: data
+
+  defp hide_mobile(%{"mobile_visible" => false} = user), do: Map.delete(user, "mobile")
+  defp hide_mobile(user), do: user
+
   defp put_ifc(result, nil), do: result
   defp put_ifc(result, ifc), do: Map.put(result, "__ifc__", ifc)
 
   defp raw_message(connect, message_id) do
+    with {:ok, [message | _carried]} <- raw_message_items(connect, message_id),
+         do: {:ok, message}
+  end
+
+  defp raw_message_items(connect, message_id) do
     with :ok <- require_value(message_id, "message_id"),
          {:ok, data} <-
            API.get(connect, "/im/v1/messages/#{segment(message_id)}", %{
@@ -573,9 +831,14 @@ defmodule SalixIM.Provider.Feishu do
              with_sender_name: true
            }) do
       case data do
-        %{"items" => [message | _]} when is_map(message) -> {:ok, message}
-        %{"message_id" => _} = message -> {:ok, message}
-        _ -> {:error, "Feishu get-message response did not contain a message"}
+        %{"items" => [message | _] = items} when is_map(message) ->
+          {:ok, Enum.filter(items, &is_map/1)}
+
+        %{"message_id" => _} = message ->
+          {:ok, [message]}
+
+        _ ->
+          {:error, "Feishu get-message response did not contain a message"}
       end
     end
   end
@@ -812,6 +1075,258 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  # ---- feishu.send_message and feishu.forward_message ----
+
+  defp send_target(connect, params) do
+    case str(params["user_id"]) do
+      "" ->
+        with {:ok, chat_id} <- chat_id(connect, params), do: {:ok, {"chat_id", chat_id}}
+
+      user_id ->
+        id_type = blank_default(params["user_id_type"], "open_id")
+
+        cond do
+          str(params["chat_id"]) != "" ->
+            {:error, "pass chat_id or user_id, not both"}
+
+          str(params["reply_to"]) != "" ->
+            {:error, "reply_to is not allowed with user_id"}
+
+          id_type not in @direct_id_types ->
+            {:error, "user_id_type must be open_id, user_id, union_id or email"}
+
+          true ->
+            {:ok, {id_type, user_id}}
+        end
+    end
+  end
+
+  defp require_forward_target(params) do
+    if str(params["chat_id"]) == "" and str(params["user_id"]) == "",
+      do: {:error, "chat_id or user_id is required"},
+      else: :ok
+  end
+
+  defp chat_search_types(params) do
+    case params["search_types"] do
+      nil ->
+        {:ok, []}
+
+      types when is_list(types) ->
+        if Enum.all?(types, &(&1 in @chat_search_types)),
+          do: {:ok, Enum.uniq(types)},
+          else: {:error, "search_types must be among #{Enum.join(@chat_search_types, ", ")}"}
+
+      _other ->
+        {:error, "search_types must be a list"}
+    end
+  end
+
+  defp chat_search_body(params, search_types) do
+    body = maybe_put(%{}, "query", str(params["query"]))
+
+    if search_types == [],
+      do: body,
+      else: Map.put(body, "filter", %{"search_types" => search_types})
+  end
+
+  # The chat itself is in `meta_data`; the rest of an item is the search's
+  # highlighted snippet.
+  defp chat_search_item(%{"meta_data" => %{} = chat}), do: [chat]
+  defp chat_search_item(_item), do: []
+
+  defp chat_id(connect, params) do
+    case str(params["chat_id"]) do
+      "" ->
+        case str(origin_context(connect)["chat_id"]) do
+          "" -> {:error, "chat_id is required outside a Feishu source"}
+          chat_id -> {:ok, chat_id}
+        end
+
+      chat_id ->
+        if Regex.match?(~r/\A[A-Za-z0-9_-]{1,128}\z/, chat_id),
+          do: {:ok, chat_id},
+          else: {:error, "chat_id must be a Feishu chat ID (oc_...)"}
+    end
+  end
+
+  defp chat_user_ids(%{"user_ids" => ids}) when is_list(ids) and length(ids) in 1..50 do
+    if Enum.all?(ids, &(is_binary(&1) and Regex.match?(~r/\Aou_[A-Za-z0-9_-]{1,125}\z/, &1))),
+      do: {:ok, Enum.uniq(ids)},
+      else: {:error, "user_ids must contain Feishu open_ids (ou_...), not names"}
+  end
+
+  defp chat_user_ids(_params),
+    do: {:error, "user_ids must be a list of 1 to 50 Feishu open_ids"}
+
+  # The chat and message of the Feishu message this turn answers.
+  defp origin_context(connect) do
+    case SalixIM.Provider.current_tool_context()["trusted_origin"] do
+      %{"provider" => "feishu", "provider_context" => %{} = context} ->
+        if context["connect_id"] == connect["connect_id"], do: context, else: %{}
+
+      _other ->
+        %{}
+    end
+  end
+
+  defp send_upload_stream(agent_id, params) do
+    case str(params["path"]) do
+      "" ->
+        {:ok, nil}
+
+      path ->
+        with {:ok, upload} <- read_agent_upload_stream(agent_id, path, params["blob_ref"]),
+             api = if(image?(upload.filename), do: "feishu.send_image", else: "feishu.send_file"),
+             :ok <- validate_upload_size(api, upload.size) do
+          {:ok, Map.put(upload, :api, api)}
+        end
+    end
+  end
+
+  defp image?(filename),
+    do: String.downcase(Path.extname(filename)) in ~w(.png .jpg .jpeg .gif .webp .bmp)
+
+  defp ensure_content(params, upload) do
+    if str(params["text"]) == "" and is_nil(upload),
+      do: {:error, "text or path is required"},
+      else: :ok
+  end
+
+  # A reply goes wherever the replied message is. The message must be of the
+  # chat the send names; the source message of this turn is known to be.
+  defp ensure_reply_in_chat(connect, chat_id, params) do
+    origin = origin_context(connect)
+
+    case str(params["reply_to"]) do
+      "" ->
+        :ok
+
+      message_id ->
+        if message_id == str(origin["message_id"]) and chat_id == str(origin["chat_id"]) do
+          :ok
+        else
+          with {:ok, message} <- raw_message(connect, message_id) do
+            if str(message["chat_id"]) == chat_id,
+              do: :ok,
+              else: {:error, "reply_to is not a message of this chat"}
+          end
+        end
+    end
+  end
+
+  defp send_message_text(connect, {id_type, receive_id} = target, params) do
+    if str(params["text"]) == "" do
+      {:ok, nil}
+    else
+      origin = origin_context(connect)
+      source_chat? = id_type == "chat_id" and receive_id == str(origin["chat_id"])
+
+      # A question card says where it is: the chat type, and the thread of the
+      # source when it answers there.
+      card_params =
+        params
+        |> Map.put(
+          "chat_type",
+          if(id_type == "chat_id", do: chat_type(connect, receive_id), else: "p2p")
+        )
+        |> Map.put("thread_id", if(source_chat?, do: str(origin["message_thread_id"]), else: ""))
+
+      with {:ok, rendered} <- outbound_content(card_params),
+           body =
+             maybe_put(
+               rendered,
+               "uuid",
+               message_uuid("feishu.send_message", uuid_params(target, params))
+             ),
+           :ok <- MessageRenderer.validate_request(body) do
+        post_message(connect, target, params, body)
+      end
+    end
+  end
+
+  defp send_message_upload(_connect, _target, _params, nil), do: {:ok, nil}
+
+  defp send_message_upload(connect, target, params, upload) do
+    with {:ok, key} <-
+           upload_media(connect, upload.api, upload.filename, upload.stream, upload.size) do
+      {msg_type, content_key} =
+        if upload.api == "feishu.send_image",
+          do: {"image", "image_key"},
+          else: {"file", "file_key"}
+
+      body =
+        %{"msg_type" => msg_type, "content" => Jason.encode!(%{content_key => key})}
+        |> maybe_put(
+          "uuid",
+          message_uuid("feishu.send_message.file", uuid_params(target, params))
+        )
+
+      post_message(connect, target, params, body)
+    end
+  end
+
+  defp uuid_params({_id_type, receive_id}, params),
+    do:
+      params
+      |> Map.put("receive_id", receive_id)
+      |> Map.put("message_id", str(params["reply_to"]))
+
+  defp post_message(connect, {id_type, receive_id}, params, body) do
+    case str(params["reply_to"]) do
+      "" ->
+        API.post(
+          connect,
+          "/im/v1/messages?receive_id_type=#{id_type}",
+          Map.put(body, "receive_id", receive_id)
+        )
+
+      # A reply is always of a chat: `send_target/2` refuses it for a person.
+      message_id ->
+        with {:ok, sent} <-
+               API.post(
+                 connect,
+                 "/im/v1/messages/#{segment(message_id)}/reply",
+                 Map.put(
+                   body,
+                   "reply_in_thread",
+                   send_reply_in_thread?(connect, receive_id, params)
+                 )
+               ),
+             :ok <- maybe_record_thread_participation(connect, %{"chat_id" => receive_id}, sent) do
+          {:ok, sent}
+        end
+    end
+  end
+
+  # A reply in a group opens a thread under the message, or goes on in its
+  # thread, so the people of the group can continue there without mentioning
+  # the bot again. A private chat needs no thread: every message of it is for
+  # the bot.
+  defp send_reply_in_thread?(connect, chat_id, params) do
+    if Map.has_key?(params, "reply_in_thread"),
+      do: truthy?(params["reply_in_thread"]),
+      else: chat_type(connect, chat_id) != "p2p"
+  end
+
+  defp chat_type(connect, chat_id) do
+    origin = origin_context(connect)
+    if chat_id == str(origin["chat_id"]), do: str(origin["chat_type"]), else: "group"
+  end
+
+  defp sent_to({"chat_id", chat_id}, _sent), do: %{"chat_id" => chat_id}
+
+  defp sent_to({id_type, user_id}, sent),
+    do:
+      maybe_put(
+        %{"user_id" => user_id, "user_id_type" => id_type},
+        "chat_id",
+        str((sent || %{})["chat_id"])
+      )
+
+  defp strip_body(%{} = message), do: Map.delete(message, "body")
+  defp strip_body(message), do: message
+
   defp upload_media(connect, "feishu.send_image", filename, stream, size),
     do: API.upload_image(connect, filename, stream, size)
 
@@ -902,6 +1417,12 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
+  # A source message lists who it mentions as structured_mentions; a send
+  # takes mentions. Without this, the misnamed list is ignored and nobody is
+  # mentioned.
+  defp outbound_content(%{"structured_mentions" => _}),
+    do: {:error, "structured_mentions is not a send parameter: pass mentions=[{user_id, name}]"}
+
   defp outbound_content(%{"question" => question} = params) when not is_nil(question) do
     with {:ok, question} <- SalixIM.QuestionCard.normalize(question),
          {:ok, mentioned} <-
@@ -927,6 +1448,12 @@ defmodule SalixIM.Provider.Feishu do
       mention_all: truthy?(params["mention_all"])
     )
   end
+
+  # Feishu answers a send with the stored message: its body holds both a
+  # plain text copy and the Markdown source, and reads like the message shown
+  # twice. The chat shows it once; the caller needs only the message's ids.
+  defp without_body({:ok, %{} = message}), do: {:ok, Map.delete(message, "body")}
+  defp without_body(result), do: result
 
   # A send to a person is a private chat; a reply says its chat type.
   defp card_chat_type(%{"receive_id" => _} = params) do
@@ -993,7 +1520,14 @@ defmodule SalixIM.Provider.Feishu do
   defp outbound_diagnostic(connect, api, params, result) do
     {status, severity, event_type, reason_class, summary} = outbound_outcome(api, result)
     request_id = request_id(params)
-    source_message_id = if(api == "feishu.reply_text", do: str(params["message_id"]), else: nil)
+
+    source_message_id =
+      case api do
+        "feishu.reply_text" -> str(params["message_id"])
+        "feishu.send_message" -> presence(str(params["reply_to"]))
+        _other -> nil
+      end
+
     reply_message_id = reply_message_id(result)
 
     %{
@@ -1029,6 +1563,16 @@ defmodule SalixIM.Provider.Feishu do
       {"reply_failed", "error", "feishu.reply.failed", reason_class(reason),
        "Feishu reply failed"}
 
+  defp outbound_outcome(api, {:ok, _result})
+       when api in ["feishu.send_message", "feishu.forward_message"],
+       do: {"sent", "info", "feishu.message.sent", nil, "Feishu message sent"}
+
+  defp outbound_outcome(api, {:error, reason})
+       when api in ["feishu.send_message", "feishu.forward_message"],
+       do:
+         {"send_failed", "error", "feishu.message.failed", reason_class(reason),
+          "Feishu message failed"}
+
   defp outbound_outcome("feishu.send_text", {:ok, _result}),
     do: {"sent", "info", "feishu.message.sent", nil, "Feishu message sent"}
 
@@ -1038,6 +1582,13 @@ defmodule SalixIM.Provider.Feishu do
        "Feishu message failed"}
 
   defp reply_message_id({:ok, %{"message_id" => message_id}}), do: str(message_id)
+
+  defp reply_message_id({:ok, %{"message" => %{"message_id" => message_id}}}),
+    do: str(message_id)
+
+  defp reply_message_id({:ok, %{"file_message" => %{"message_id" => message_id}}}),
+    do: str(message_id)
+
   defp reply_message_id(_result), do: nil
 
   defp request_id(params),

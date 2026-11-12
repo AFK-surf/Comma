@@ -15,9 +15,9 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
   alias BridgeForTeams.MeetingPreparation
 
   @personal_scopes ~w(users:read.email im:write chat:write)
-  @settings_keys ~w(enabled mode connect_id channel channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback series personal_preparation channel_notice)
-  @save_keys ~w(enabled connect_id channel_id calendar_selections preparation_lead_minutes research_enabled calendar_writeback autojoin personal_preparation channel_notice series)
-  @invalid ~w(meeting_personal_scopes_missing meeting_personal_scopes_unknown calendar_enrollment_no_active_account meeting_calendar_connect_unavailable invalid_meeting_preparation_settings invalid_meeting_preparation_request meeting_calendar_capacity_exceeded meeting_preparation_not_configured invalid)a
+  @settings_keys ~w(enabled provider mode connect_id channel channel_id calendar_scope calendar_source destination_confirmed_at delivery calendar_selections preparation_lead_minutes research_enabled calendar_writeback series personal_preparation channel_notice)
+  @save_keys ~w(enabled connect_id channel_id calendar_scope calendar_source delivery calendar_selections preparation_lead_minutes research_enabled calendar_writeback autojoin personal_preparation channel_notice series)
+  @invalid ~w(meeting_personal_scopes_missing meeting_personal_scopes_unknown calendar_enrollment_no_active_account meeting_calendar_connect_unavailable invalid_meeting_preparation_settings invalid_meeting_preparation_request meeting_calendar_capacity_exceeded meeting_preparation_not_configured meeting_destination_unsupported invalid)a
 
   @doc "Saved settings, Slack bots and the next 24 hours of meetings."
   def overview(org, user, project_id) do
@@ -31,6 +31,7 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
          "connects" => Enum.map(overview["connects"] || [], &public_connect(&1, settings)),
          "events" => Enum.map(calendar["events"] || [], &public_event(&1, settings)),
          "calendar_health" => calendar["health"],
+         "member_calendars" => calendar["member_calendars"],
          "truncated" => get_in(calendar, ["projection", "truncated"]) == true,
          "runtime_enabled" => overview["runtime_enabled"] == true
        }}
@@ -59,7 +60,14 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
   end
 
   def read(org, user, project_id, "catalog", params) do
-    with {:ok, catalog} <- run(org, user, project_id, "catalog", Map.take(params, ["connect_id"])) do
+    with {:ok, catalog} <-
+           run(
+             org,
+             user,
+             project_id,
+             "catalog",
+             Map.take(params, ~w(connect_id calendar_scope calendar_source))
+           ) do
       {:ok,
        %{
          "calendars" =>
@@ -68,7 +76,8 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
              &Map.take(&1, ~w(account_id calendar_id name account_name))
            ),
          "channels" => catalog["channels"] || [],
-         "next_cursor" => catalog["next_cursor"]
+         "next_cursor" => catalog["next_cursor"],
+         "member_accounts" => catalog["member_accounts"]
        }}
     end
   end
@@ -76,8 +85,23 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
   def read(org, user, project_id, "channels", params),
     do: run(org, user, project_id, "channels", Map.take(params, ~w(connect_id cursor)))
 
+  # A Feishu/Lark bot finds a team calendar by name for its picker.
+  def read(org, user, project_id, "search_calendars", params) do
+    with {:ok, result} <-
+           run(org, user, project_id, "search_calendars", Map.take(params, ~w(connect_id query))) do
+      {:ok,
+       %{
+         "calendars" =>
+           Enum.map(
+             result["calendars"] || [],
+             &Map.take(&1, ~w(account_id calendar_id name account_name))
+           )
+       }}
+    end
+  end
+
   def read(org, user, project_id, "series", params) do
-    attrs = Map.take(params, ~w(account_id calendar_id cursor))
+    attrs = Map.take(params, ~w(account_id calendar_id cursor connect_id calendar_source))
 
     with {:ok, page} <- run(org, user, project_id, "series", attrs) do
       {:ok,
@@ -118,6 +142,28 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
   def read(_org, _user, _project_id, _read, _params), do: error(:invalid)
 
   @doc """
+  The Feishu/Lark app subscribes to a team calendar by its id, so the picker
+  can offer it. Lark accepts a public or free/busy-visible calendar; only a
+  public one shows its meetings.
+  """
+  def subscribe_calendar(org, user, project_id, params) do
+    with {:ok, result} <-
+           run(
+             org,
+             user,
+             project_id,
+             "subscribe_calendar",
+             Map.take(params, ~w(connect_id calendar_id))
+           ) do
+      {:ok,
+       %{
+         "calendar" =>
+           Map.take(result["calendar"] || %{}, ~w(account_id calendar_id name account_name))
+       }}
+    end
+  end
+
+  @doc """
   Save and enable the team preparation, or pause it with `enabled: false`.
   Salix validates every field against the live calendar and Slack catalogs.
   """
@@ -142,7 +188,7 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
 
   defp public_connect(connect, settings) do
     connect
-    |> Map.take(~w(connect_id app_name bot_username workspace_name))
+    |> Map.take(~w(connect_id provider app_name bot_username workspace_name))
     |> Map.merge(%{
       "state" => connect_state(connect),
       "preparation" =>
@@ -154,6 +200,9 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
       "missing_scopes" => missing_scopes(connect["oauth_bot_scopes"])
     })
   end
+
+  defp connect_state(%{"provider" => provider} = connect) when provider in ["feishu", "lark"],
+    do: if(connect["status"] == "connected", do: "connected", else: "unconnected")
 
   defp connect_state(connect) do
     cond do
@@ -239,6 +288,20 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
       {:error, 422, "invalid_meeting_settings", gettext("Choose a channel the bot has joined."),
        %{"fields" => %{"channel_id" => [gettext("Choose a channel the bot has joined.")]}}}
 
+  defp error(:meeting_calendar_details_hidden),
+    do:
+      {:error, 422, "calendar_details_hidden",
+       gettext(
+         "This calendar shows only free/busy to the bot. Ask its owner to make it public or add the bot as a member."
+       ), %{}}
+
+  defp error({:lark_calendar, _reason}),
+    do:
+      {:error, 422, "calendar_unavailable",
+       gettext(
+         "The bot cannot read this calendar. Check the calendar ID and the app's calendar permissions."
+       ), %{}}
+
   defp error(reason) when reason in @invalid,
     do: {:error, 422, "invalid_meeting_settings", invalid_message(reason), %{}}
 
@@ -266,6 +329,12 @@ defmodule BridgeForTeamsWeb.DashboardMeetings do
 
   defp invalid_message(:meeting_calendar_connect_unavailable),
     do: gettext("Reconnect Slack, then try again.")
+
+  defp invalid_message(:meeting_destination_unsupported),
+    do:
+      gettext(
+        "Feishu/Lark calendars can send notices only to a Feishu or Lark bot. Choose that bot, or Google Calendar."
+      )
 
   defp invalid_message(:meeting_calendar_capacity_exceeded),
     do:

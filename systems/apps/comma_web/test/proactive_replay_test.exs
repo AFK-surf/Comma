@@ -14,10 +14,10 @@ defmodule CommaWeb.ProactiveReplayTest do
     test = self()
 
     judge = fn messages ->
-      %{"candidates" => candidates} = user_input(messages)
-      send(test, {:judged, candidates})
-      alert = Enum.find(candidates, &(Jason.encode!(&1) =~ "PATROL_CREDIT_TOKEN"))
-      {:ok, "Answer: " <> Jason.encode!(%{"most_urgent" => urgent(alert["id"], "ask")})}
+      %{"candidates" => [candidate]} = user_input(messages)
+      send(test, {:judged, candidate})
+      alert? = Jason.encode!(candidate) =~ "PATROL_CREDIT_TOKEN"
+      {:ok, "Answer: " <> Jason.encode!(screened(candidate["id"], if(alert?, do: "ask")))}
     end
 
     [first, injected] =
@@ -37,7 +37,9 @@ defmodule CommaWeb.ProactiveReplayTest do
     assert ["owner_ask_1305z", "alert_1304z"] in injected["matters"]
     assert %{"outcome" => "routed", "url" => "owner_ask_1305z"} = injected["judgment"]
 
-    # A handoff carries what the matter's links say now.
+    # The screening reads what the matter's links say now, and the handoff
+    # carries it.
+    assert_received {:judged, %{"linked" => [_ | _]}}
     linked = injected["judgment"]["linked"]
 
     assert %{"kind" => "slack_thread", "replies" => 2} =
@@ -71,10 +73,10 @@ defmodule CommaWeb.ProactiveReplayTest do
              ]
            })}
 
-        %{"candidates" => candidates} = input ->
+        %{"candidates" => [candidate]} = input ->
           send(test, {:member, input["member"]})
-          alert = Enum.find(candidates, &(Jason.encode!(&1) =~ "patrol failed"))
-          {:ok, Jason.encode!(%{"most_urgent" => urgent(alert["id"], "critical")})}
+          alert? = Jason.encode!(candidate) =~ "patrol failed"
+          {:ok, Jason.encode!(screened(candidate["id"], if(alert?, do: "interrupt")))}
       end
     end
 
@@ -97,7 +99,7 @@ defmodule CommaWeb.ProactiveReplayTest do
                        "Prefers short replies in Chinese."
                      ]}
 
-    assert %{"outcome" => "routed", "urgency" => "critical"} = scenario["judgment"]
+    assert %{"outcome" => "routed", "decision" => "interrupt"} = scenario["judgment"]
   end
 
   test "the portrait's targets read where the owner's work is reported, filtered by rules",
@@ -121,9 +123,9 @@ defmodule CommaWeb.ProactiveReplayTest do
              ]
            })}
 
-        %{"candidates" => candidates} ->
-          send(test, {:candidates, candidates})
-          {:ok, ~s({"most_urgent": null})}
+        %{"candidates" => [candidate]} ->
+          send(test, {:candidates, [candidate]})
+          {:ok, Jason.encode!(screened(candidate["id"], nil))}
       end
     end
 
@@ -198,41 +200,38 @@ defmodule CommaWeb.ProactiveReplayTest do
              ]
   end
 
-  test "personal mail is judged from its text, and a loss that cannot be undone soon is critical" do
+  test "personal mail is judged from its text, and the server keeps the screening's decision" do
     kase =
       "fixtures/proactive_replay/personal_mail_2026_10_13.json"
       |> Path.expand(__DIR__)
       |> ProactiveReplay.load!()
 
-    # The judge answers low, as staging did, but states what the mail says.
     # The deadline and the loss are past the 255-character preview.
     judge = fn messages ->
-      %{"candidates" => candidates} = user_input(messages)
+      %{"candidates" => [candidate]} = user_input(messages)
 
       answer =
-        case Enum.find(candidates, &(Jason.encode!(&1) =~ "within the next 3 days")) do
-          %{"id" => id} ->
-            %{
-              "id" => id,
-              "cost" => "LastPass deletes the account and its vault",
-              "due" => "2026-10-16T02:00:44Z",
-              "reversible" => false,
-              "urgency" => "low",
-              "message" => "LastPass 3 天后会永久删除你的账号。要我提醒你登录吗？"
-            }
-
-          nil ->
-            %{
-              "id" => hd(candidates)["id"],
-              "cost" => "",
-              "due" => nil,
-              "reversible" => true,
-              "urgency" => "low",
-              "message" => "没有需要你处理的。"
-            }
+        if Jason.encode!(candidate) =~ "within the next 3 days" do
+          %{
+            "id" => candidate["id"],
+            "role" => "act",
+            "link" => "account",
+            "cost" => "LastPass deletes the account and its vault",
+            "due" => "2026-10-16T02:00:44Z",
+            "reversible" => false,
+            "decision" => "interrupt",
+            "reason" => "The account is deleted in three days unless you sign in.",
+            "message" => "LastPass 3 天后会永久删除你的账号。要我提醒你登录吗？"
+          }
+        else
+          # A cost the server would once have raised to high stays briefing.
+          Map.merge(screened(candidate["id"], nil), %{
+            "cost" => "A coupon expires",
+            "due" => "2026-10-14T00:00:00Z"
+          })
         end
 
-      {:ok, Jason.encode!(%{"most_urgent" => answer})}
+      {:ok, Jason.encode!(answer)}
     end
 
     [lastpass, nothing] =
@@ -241,15 +240,13 @@ defmodule CommaWeb.ProactiveReplayTest do
     assert %{
              "outcome" => "routed",
              "url" => "lastpass_final",
-             "urgency" => "critical",
+             "decision" => "interrupt",
              "assessment" => %{"reversible" => false, "due" => "2026-10-16T02:00:44Z"}
            } = lastpass["judgment"]
 
     assert Enum.all?(lastpass["checks"], & &1["pass"])
-
-    assert %{"outcome" => "quiet", "urgency" => "low", "assessment" => %{"cost" => ""}} =
-             nothing["judgment"]
-
+    assert %{"outcome" => "quiet", "decision" => "briefing"} = nothing["judgment"]
+    assert Enum.all?(nothing["judgment"]["screened"], &(&1["outcome"] == "quiet"))
     assert Enum.all?(nothing["checks"], & &1["pass"])
   end
 
@@ -287,6 +284,30 @@ defmodule CommaWeb.ProactiveReplayTest do
     Jason.decode!(content)
   end
 
-  defp urgent(id, urgency),
-    do: %{"id" => id, "urgency" => urgency, "message" => "巡检挂了。要我看看吗？"}
+  # One screened matter: the given decision with a message, or briefing.
+  defp screened(id, nil),
+    do: %{
+      "id" => id,
+      "role" => "reference",
+      "link" => "named",
+      "cost" => "",
+      "due" => nil,
+      "reversible" => true,
+      "decision" => "briefing",
+      "reason" => "Nothing to do now.",
+      "message" => nil
+    }
+
+  defp screened(id, decision),
+    do: %{
+      "id" => id,
+      "role" => "act",
+      "link" => "named",
+      "cost" => "巡检一直失败",
+      "due" => nil,
+      "reversible" => true,
+      "decision" => decision,
+      "reason" => "The patrol keeps failing.",
+      "message" => "巡检挂了。要我看看吗？"
+    }
 end

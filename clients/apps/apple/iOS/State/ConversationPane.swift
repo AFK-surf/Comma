@@ -62,6 +62,12 @@ final class ConversationPane {
     private(set) var requests: [AgentRequest] = []
     /// The requests whose page was opened on this phone: their cards wait for the browser.
     var openedRequests: Set<String> = []
+    private(set) var suggestions: [ChatSuggestion] = []
+    @ObservationIgnored private var suggestionWatch: Task<Void, Never>?
+    @ObservationIgnored private var suggestionKey: String?
+    @ObservationIgnored private var dismissedSuggestionKey: String?
+    @ObservationIgnored private var suggestionLocale = ConversationPane.suggestionLanguage(Bundle.main.preferredLocalizations.first ?? "en")
+    @ObservationIgnored private var suggestionsVisible = false
 
     @ObservationIgnored weak var store: CommaStore?
     @ObservationIgnored private(set) var closed = false
@@ -133,6 +139,74 @@ final class ConversationPane {
     /// Thinking about or streaming a reply: the Comma mark plays its animation instead of standing still.
     var isReplying: Bool { replyActivity != nil || streamingReply }
 
+    var suggestionPlaceholder: String? { replyThread == nil ? suggestions.first?.prompt : nil }
+
+    func setSuggestionLocale(_ locale: String) {
+        let locale = Self.suggestionLanguage(locale)
+        guard locale != suggestionLocale else { return }
+        suggestionLocale = locale
+        updateSuggestions()
+    }
+
+    private static func suggestionLanguage(_ locale: String) -> String {
+        Locale(identifier: locale).language.languageCode?.identifier == "zh" ? "zh-CN" : "en"
+    }
+
+    func setSuggestionsVisible(_ visible: Bool) {
+        suggestionsVisible = visible
+        updateSuggestions()
+    }
+
+    /// Hardware Tab accepts only into an empty draft. It never sends a message.
+    func acceptSuggestion() -> Bool {
+        guard draftText.isEmpty, replyThread == nil, let prompt = suggestions.first?.prompt else { return false }
+        draftText = prompt
+        dismissSuggestions()
+        return true
+    }
+
+    /// A capsule sends only its own prompt; text, files, Routine tiles, and mention picks stay in the draft.
+    func enqueueSuggestion(_ suggestion: ChatSuggestion) -> PendingSend? {
+        guard canSend, replyThread == nil, suggestions.contains(suggestion) else { return nil }
+        var attempt = PendingSend(text: suggestion.prompt, files: [], skills: [], attachedTexts: [], replyToMessageID: nil)
+        attempt.consumeDraft = false
+        pendingSends.append(attempt)
+        dismissSuggestions()
+        return attempt
+    }
+
+    private func dismissSuggestions() {
+        dismissedSuggestionKey = suggestionKey
+        suggestionWatch?.cancel(); suggestionWatch = nil
+        suggestions = []
+    }
+
+    private func updateSuggestions() {
+        let busy = !state.loaded || streamingReply || state.reply.pending || state.activity != nil ||
+            state.participant?.state == "active" || !pendingSends.isEmpty || state.timeline.contains {
+                if case .pending = $0 { return true }; return false
+            }
+        let message = !busy && suggestionsVisible && foreground && !closed && showing != nil && conversation?.status != "archived"
+            ? messages.last(where: { $0.actorType == "agent" })?.id : nil
+        let key = message.map { "\($0) \(suggestionLocale)" }
+        guard key != suggestionKey else { return }
+        suggestionWatch?.cancel(); suggestionWatch = nil
+        suggestionKey = key; suggestions = []
+        guard let key, key != dismissedSuggestionKey, let message, let store else { return }
+        let boundary = store.boundaryToken
+        let updates = store.core.subscribe(["topic": "chatSuggestions", "group": workspace.groupID,
+            "conversation": conversationID, "message": message, "locale": suggestionLocale]) { value in
+                (value as? [NSDictionary] ?? []).compactMap(ChatSuggestion.init).prefix(4).map { $0 }
+            }
+        suggestionWatch = Task { [weak self] in
+            for await update in updates {
+                guard let self, !self.closed, self.suggestionKey == key, self.dismissedSuggestionKey != key,
+                      self.store?.isCurrent(boundary) == true else { return }
+                if case .value(let next) = update { self.suggestions = next }
+            }
+        }
+    }
+
     // MARK: Lifecycle
 
     /// Shows the conversation to the core: it opens its stream and history, and keeps them while the pane is shown.
@@ -168,6 +242,8 @@ final class ConversationPane {
         requestWatch?.cancel(); requestWatch = nil
         labelWatch?.cancel(); labelWatch = nil
         summaryWatch?.cancel(); summaryWatch = nil
+        suggestionWatch?.cancel(); suggestionWatch = nil
+        suggestionKey = nil; suggestionsVisible = false; suggestions = []
         replyRows = ReplyRowIdentity()
     }
 
@@ -175,6 +251,7 @@ final class ConversationPane {
     func setForeground(_ visible: Bool) {
         foreground = visible
         show()
+        updateSuggestions()
     }
 
     private func show() {
@@ -226,6 +303,35 @@ final class ConversationPane {
         }
     }
 
+    /// Sends what the person filled in on request `id`'s card to the server, through the core, which keeps none of it.
+    /// False when it was refused; the card goes on as the core reads the request's answer.
+    func fillRequest(_ id: String, values: [String: String]) async -> Bool {
+        guard let store, !closed else { return false }
+        do {
+            _ = try await store.core.call("agentRequests.fill",
+                                          ["group": workspace.groupID, "conversation": conversationID, "request": id,
+                                           "values": values])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Sends this device's position for request `id` to the server, through the core, which keeps none of it. False
+    /// when it was refused; the card closes as the core reads the request's answer.
+    func shareLocation(_ id: String, position: DeviceLocation.Position) async -> Bool {
+        guard let store, !closed else { return false }
+        var params: [String: Any] = ["group": workspace.groupID, "conversation": conversationID, "request": id,
+                                     "latitude": position.latitude, "longitude": position.longitude]
+        if let accuracy = position.accuracy { params["accuracy"] = accuracy }
+        do {
+            _ = try await store.core.call("agentRequests.shareLocation", params)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func install(_ next: ChatViewState) {
         if let shown = assistantDraft, !next.timeline.contains(where: { if case .draft(_, let draft) = $0 { draft == shown } else { false } }) {
             var rows = replyRows
@@ -262,6 +368,7 @@ final class ConversationPane {
             problemReported = true
             report(problem)
         }
+        updateSuggestions()
     }
 
     private func report(_ problem: ChatProblem) {
@@ -407,6 +514,7 @@ final class ConversationPane {
         let attempt = PendingSend(text: text, files: drafts.map(\.file.filename), skills: skills, attachedTexts: draftTexts,
                                   replyToMessageID: replyTargetID)
         pendingSends.append(attempt)
+        dismissSuggestions()
         draftTexts = []
         // The first reply answers the chosen message; later ones answer the thread's newest message.
         if replyThread?.targetID != nil { replyThread?.targetID = nil }
@@ -423,6 +531,7 @@ final class ConversationPane {
     /// Sends `attempt` with the draft's files: the core shows it as being sent, then sent.
     func deliver(_ attempt: PendingSend) async {
         var params: [String: Any] = ["text": attempt.text, "clientRequestId": attempt.id]
+        if !attempt.consumeDraft { params["consumeDraft"] = false }
         if let reply = attempt.replyToMessageID { params["replyToMessageId"] = reply }
         if !attempt.skills.isEmpty { params["skills"] = attempt.skills.map { ["location": $0] } }
         if !attempt.attachedTexts.isEmpty {
@@ -595,8 +704,10 @@ final class ConversationPane {
     /// Ends the Task by hand as Done or Cancelled, against the version the member saw.
     func setStatus(_ status: ManualTaskStatus) async {
         guard let detail = conversation, detail.canSetStatus, let version = detail.archiveVersion else { return }
-        do { try await call("setTaskStatus", ["status": status.rawValue, "expectedUpdatedAt": version]) }
-        catch { present(error) }
+        do {
+            try await call("setTaskStatus", ["status": status.rawValue, "expectedUpdatedAt": version])
+            if status == .completed { store?.onWorkAccepted?() }
+        } catch { present(error) }
     }
 
     /// Accepts the Task's review: it is done.
@@ -675,6 +786,7 @@ struct PendingSend: Identifiable, Equatable {
     let attachedTexts: [DraftText]
     /// The message this send answers.
     let replyToMessageID: String?
+    var consumeDraft = true
 }
 
 /// The thread a member chose to reply in. `targetID` is the message they picked; once their first reply is sent it

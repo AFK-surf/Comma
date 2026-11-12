@@ -1,13 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { recordOnboardingCompleted } from "../../../e2e/helpers/browser-auth";
 import { emptyRoutineEnvelope } from "../../../e2e/helpers/routine-fixture";
+import { startE2eTestServer } from "./test-server";
 
 const accountA = {
   conversationId: "cnv-public-chat-a",
@@ -56,7 +51,7 @@ test("startup retries a briefly unavailable session service without an error scr
   try {
     await page.addInitScript((apiBaseUrl) => {
       localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-      const errorTitles = ["Comma can’t continue", "Comma is temporarily unavailable"];
+      const errorTitles = ["Comma can’t continue", "Cannot connect to Comma"];
       const record = () => {
         const text = document.body?.textContent ?? "";
         if (errorTitles.some((title) => text.includes(title))) {
@@ -362,10 +357,11 @@ async function signIn(page: Page, email: string) {
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 }
 
-// The rail carries no account menu; Settings → Profile is where the signed-in
+// The rail's account menu opens Settings; Settings → Profile is where the signed-in
 // identity shows (the name row falls back to the account's email).
 async function openProfileSettings(page: Page, email: string) {
-  await page.getByRole("button", { exact: true, name: "Settings" }).click();
+  await page.getByRole("button", { exact: true, name: "Account" }).click();
+  await page.getByRole("menuitem", { exact: true, name: "Settings" }).click();
   await expect(page.getByRole("dialog", { name: "Settings sections" })).toBeVisible();
   await page.getByRole("button", { name: "Profile" }).click();
   await expect(page.getByRole("button", { name: `Edit name: ${email}` })).toBeVisible();
@@ -489,7 +485,7 @@ async function startSessionIsolationStub({
   let failedSessionProbeCount = 0;
   let bMessages: ReturnType<typeof messageRows> = [];
 
-  const server = createServer(async (request, response) => {
+  const server = await startE2eTestServer(async (request, response) => {
     setCorsHeaders(request, response);
     if (request.method === "OPTIONS") {
       response.writeHead(204).end();
@@ -712,12 +708,9 @@ async function startSessionIsolationStub({
     writeJson(response, { error: `unhandled ${request.method} ${path}` }, 404);
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-
   return {
-    baseUrl: `http://127.0.0.1:${port}`,
-    close: () => closeServer(server),
+    baseUrl: server.origin,
+    close: server.close,
     emailVerifications,
     failNextSessionProbes(count: number) {
       failingSessionProbes = count;
@@ -862,11 +855,4 @@ function deferred<T>() {
     resolve = nextResolve;
   });
   return { promise, resolve };
-}
-
-function closeServer(server: Server) {
-  return new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-    server.closeAllConnections();
-  });
 }

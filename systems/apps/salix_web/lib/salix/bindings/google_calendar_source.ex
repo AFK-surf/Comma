@@ -3,9 +3,11 @@ defmodule Salix.Bindings.GoogleCalendarSource do
 
   @behaviour SalixCalendar.SourceAdapter
 
+  require Logger
+
   alias Salix.Bindings.GoogleCalendarError
   alias Salix.Control.ComposioSettings
-  alias SalixCalendar.Recurrence
+  alias SalixCalendar.{OccurrenceQualification, Recurrence}
   alias SalixStore.{Composio, Crypto, JSON}
 
   @max_page_size 200
@@ -25,7 +27,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   @google_calendar_api "https://www.googleapis.com/calendar/v3"
 
   @impl true
-  def adapter_contract_id, do: "google_calendar.events.v3"
+  def adapter_contract_id, do: "google_calendar.events.v4"
 
   @impl true
   def capabilities do
@@ -99,7 +101,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
       meetings =
         (data["items"] || [])
         |> Enum.filter(
-          &(SalixCalendar.OccurrenceQualification.google_meet_url?(meet_url(&1)) and
+          &(OccurrenceQualification.meeting_url?(meet_url(&1)) and
               &1["status"] != "cancelled")
         )
         |> Enum.map(fn event ->
@@ -877,18 +879,68 @@ defmodule Salix.Bindings.GoogleCalendarSource do
     default_time_zone = default_time_zone(source)
     access_profile = source["access_profile"]
 
-    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, records} ->
-      case normalize(event,
-             default_time_zone: default_time_zone,
-             access_profile: access_profile
-           ) do
-        {:ok, record} -> {:cont, {:ok, [record | records]}}
-        {:error, reason} -> {:halt, {:error, {trim(event["id"]), reason}}}
-      end
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      error -> error
+    records =
+      Enum.reduce(events, [], fn event, records ->
+        case normalize(event,
+               default_time_zone: default_time_zone,
+               access_profile: access_profile
+             ) do
+          {:ok, record} ->
+            [record | records]
+
+          {:error, reason} ->
+            Logger.warning(
+              "google calendar event not importable: source=#{source["source_id"]} " <>
+                "event=#{trim(event["id"])} reason=#{inspect(reason)}"
+            )
+
+            case unimportable_record(event, default_time_zone) do
+              nil -> records
+              record -> [record | records]
+            end
+        end
+      end)
+
+    {:ok, Enum.reverse(records)}
+  end
+
+  # One event Google accepts but this adapter cannot represent must not stop
+  # the whole calendar. A master or standalone event becomes a tombstone, so a
+  # copy imported earlier stops qualifying and an unseen one is ignored. An
+  # instance override excludes its occurrence, so the series does not keep it
+  # at a time the provider no longer states. An override whose original start
+  # cannot be read names no occurrence and is dropped.
+  defp unimportable_record(event, default_time_zone) do
+    event_id = trim(event["id"])
+    master_id = trim(event["recurringEventId"])
+
+    cond do
+      event_id == "" ->
+        nil
+
+      master_id == "" ->
+        %{
+          "external_locator" => %{"event_id" => event_id},
+          "tombstone" => true,
+          "source_version" => source_version(event),
+          "source_revision" => source_revision(event)
+        }
+
+      true ->
+        case original_start(event, default_time_zone) do
+          {:ok, original} ->
+            %{
+              "external_locator" => %{"event_id" => master_id},
+              "object_patch" => %{
+                "recurrenceOverrides" => %{original.key => %{"excluded" => true}}
+              },
+              "source_version_patch" => %{"recurrence_instances" => %{original.key => event_id}},
+              "source_revision_patch" => %{original.key => source_revision(event)}
+            }
+
+          _ ->
+            nil
+        end
     end
   end
 
@@ -971,7 +1023,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
        "meeting_qualification" => %{
          "item_eligible" => item_eligible?,
          "item_reason" => item_reason,
-         "authorized" => item_eligible? and google_meet_url?(meet_url),
+         "authorized" => item_eligible? and OccurrenceQualification.meeting_url?(meet_url),
          "reason" =>
            if(item_eligible?, do: conference_qualification_reason(meet_url), else: item_reason)
        }
@@ -1009,7 +1061,13 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   defp item_qualification_reason(false, _normalization_state, false), do: "eligible"
 
   defp conference_qualification_reason(meet_url) do
-    if google_meet_url?(meet_url), do: "google_meet", else: "no_supported_conference"
+    case OccurrenceQualification.canonical_meeting_url(meet_url) do
+      {:google_meet, _url} -> "google_meet"
+      {:lark, _url} -> "lark_meeting"
+      {:zoom, _url} -> "zoom_meeting"
+      {:teams, _url} -> "teams_meeting"
+      nil -> "no_supported_conference"
+    end
   end
 
   defp normalize_override(event, master_id, instance_id, default_time_zone) do
@@ -1448,8 +1506,30 @@ defmodule Salix.Bindings.GoogleCalendarSource do
     host == "google.com" or String.ends_with?(host, ".google.com")
   end
 
+  # The event's conference: Google's own conference fields (`hangoutLink`, the
+  # video entry point, which a Zoom or Teams add-on also fills) when they hold
+  # a recognized meeting link; otherwise the first recognized link other than
+  # a Google Meet in the location, then in the description (outside Comma's
+  # own preparation block); otherwise whatever Google's fields hold. A Meet
+  # link only in text never becomes the conference: the bot joins only what
+  # Google itself attached.
   defp meet_url(event) do
-    trim(event["hangoutLink"] || conference_url(event["conferenceData"]))
+    conference = trim(event["hangoutLink"] || conference_url(event["conferenceData"]))
+
+    if OccurrenceQualification.meeting_url?(conference) do
+      conference
+    else
+      OccurrenceQualification.text_meeting_url(event["location"]) ||
+        OccurrenceQualification.text_meeting_url(human_description(event["description"])) ||
+        conference
+    end
+  end
+
+  defp human_description(description) do
+    case SalixMeet.CalendarPreparation.human_description(description) do
+      {:ok, text} -> text
+      {:error, _} -> nil
+    end
   end
 
   defp conference_url(conference) when is_map(conference) do
@@ -1460,15 +1540,6 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   end
 
   defp conference_url(_conference), do: nil
-
-  defp google_meet_url?(url) when is_binary(url) do
-    case URI.parse(url) do
-      %URI{scheme: "https", host: host} -> String.downcase(host || "") == "meet.google.com"
-      _ -> false
-    end
-  end
-
-  defp google_meet_url?(_url), do: false
 
   defp cancelled?(event), do: String.downcase(trim(event["status"])) == "cancelled"
 

@@ -12,12 +12,17 @@ struct CommaDeviceRow: Identifiable, Sendable {
     let online: Bool
     let comma: Bool
     let allowsOperations: Bool
+    /// Its station serves its screen and devices on the mesh (`screen_view`), the way this app views them.
+    let screenView: Bool
     init?(_ row: NSDictionary) {
         guard let id = row.string("device_id") else { return nil }
         self.id = id; name = row.string("name") ?? id
         online = row.string("status") == "connected"; comma = row.bool("isCommaDevice")
         allowsOperations = row.bool("allows_operations")
+        screenView = row.bool("screen_view")
     }
+    /// "View screen", and its simulators and devices, are offered: online, and its station serves them on the mesh.
+    var showsScreen: Bool { online && screenView }
 }
 
 struct CommaDevicesView: View {
@@ -46,6 +51,16 @@ struct CommaDevicesView: View {
                     VStack(alignment: .leading) {
                         SettingsRow(Text(device.name), icon: device.comma ? "central-circle-dashed" : "icon-devices",
                                     value: Text(deviceText(device.online ? "devices_online" : "devices_offline")))
+                        if device.showsScreen, let workspace = store.workspace {
+                            NavigationLink {
+                                PhoneScreenView(scope: WorkspaceSettingsScope(store: store, workspace: workspace), device: device.id)
+                            } label: { SettingsRow(Text("View screen")) { SettingsChevron() } }.buttonStyle(SurfaceRowButtonStyle())
+                        }
+                        if device.showsScreen, let workspace = store.workspace {
+                            NavigationLink {
+                                PhoneScreenDevicesView(scope: WorkspaceSettingsScope(store: store, workspace: workspace), device: device.id)
+                            } label: { SettingsRow(Text("Simulators and devices")) { SettingsChevron() } }.buttonStyle(SurfaceRowButtonStyle())
+                        }
                         if device.comma {
                             SettingsToggle(title: Text(deviceText("devices_access")), isOn: Binding(get: { device.allowsOperations }, set: { changeAccess(device, $0) }))
                                 .disabled(action.busy || !device.online)

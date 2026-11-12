@@ -8,8 +8,8 @@ defmodule CommaWeb.ProactiveMail do
 
   def read(%{"message_id" => message_id} = args, ctx) do
     with {:ok, workspace, user_id} <- scope(ctx),
-         {:ok, toolkit} <- toolkit_for(workspace, user_id, args["connection_id"]),
-         {:ok, consent, settings} <- consent(workspace, user_id, toolkit),
+         {:ok, toolkit, id} <- toolkit_for(workspace, user_id, args["connection_id"]),
+         {:ok, consent, settings} <- consent(workspace, user_id, toolkit, id),
          :ok <- loop_consent(ctx, workspace, consent),
          {:ok, result} <-
            source_module(toolkit).read(
@@ -18,7 +18,7 @@ defmodule CommaWeb.ProactiveMail do
              consent["connection_id"],
              message_id
            ),
-         ^consent <- MemberSourceConsents.binding(workspace["id"], user_id, toolkit),
+         ^consent <- MemberSourceConsents.binding(workspace["id"], user_id, toolkit, id),
          {:ok, current_workspace, ^user_id} <- scope(ctx),
          true <- current_workspace["id"] == workspace["id"],
          :ok <- loop_consent(ctx, workspace, consent) do
@@ -130,21 +130,21 @@ defmodule CommaWeb.ProactiveMail do
   def scope(ctx), do: CommaWeb.Proactive.scope(ctx)
 
   defp toolkit_for(workspace, user_id, nil) do
-    # Preserve the existing Gmail-only direct read contract. Outlook reads must
-    # pin the account so a colliding provider message ID cannot select a source.
-    if MemberSourceConsents.binding(workspace["id"], user_id, "gmail"),
-      do: {:ok, "gmail"},
-      else: {:error, :consented_gmail_account_required}
+    # Preserve the existing Gmail-only direct read contract: without an account,
+    # the first consented Gmail account reads. Outlook reads must pin the
+    # account so a colliding provider message ID cannot select a source.
+    case MemberSourceConsents.toolkit_bindings(workspace["id"], user_id, "gmail") do
+      [%{"connection_id" => id} | _] -> {:ok, "gmail", id}
+      [] -> {:error, :consented_gmail_account_required}
+    end
   end
 
   defp toolkit_for(workspace, user_id, id) when is_binary(id) do
-    case Enum.filter(~w(gmail outlook), fn toolkit ->
-           match?(
-             %{"connection_id" => ^id},
-             MemberSourceConsents.binding(workspace["id"], user_id, toolkit)
-           )
-         end) do
-      [toolkit] -> {:ok, toolkit}
+    case Enum.filter(
+           ~w(gmail outlook),
+           &MemberSourceConsents.binding(workspace["id"], user_id, &1, id)
+         ) do
+      [toolkit] -> {:ok, toolkit, id}
       _ -> {:error, :consented_mail_account_required}
     end
   end
@@ -154,9 +154,9 @@ defmodule CommaWeb.ProactiveMail do
   defp source_module("gmail"), do: CommaWeb.ProactiveMailSource
   defp source_module("outlook"), do: CommaWeb.ProactiveOutlookMailSource
 
-  defp consent(workspace, user_id, toolkit) do
-    with %{"connection_id" => id} = receipt <-
-           MemberSourceConsents.binding(workspace["id"], user_id, toolkit),
+  defp consent(workspace, user_id, toolkit, id) do
+    with %{"connection_id" => ^id} = receipt <-
+           MemberSourceConsents.binding(workspace["id"], user_id, toolkit, id),
          {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
          {:ok, account} <- client().get_connected_account(settings, id, error_mode: :structured),
          true <-

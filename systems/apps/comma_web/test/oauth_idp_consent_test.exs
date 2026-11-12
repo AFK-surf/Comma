@@ -350,6 +350,21 @@ defmodule CommaWeb.OauthIdpConsentTest do
       assert hijack.status == 403
       assert get_resp_header(hijack, "location") == []
     end
+
+    test "an account with a restricted email signs in to no other app", %{client: client} do
+      {_verifier, challenge} = pkce_pair()
+      Comma.TestSupport.MxRecords.put(%{"catchall.test" => ["route1.mx.cloudflare.net"]})
+
+      for email <- ["idp-consent@catchall.test", "idp-consent@0r9.org"] do
+        {:ok, user} = Comma.Accounts.get_or_create_user_by_email(email)
+        {:ok, session} = Comma.Accounts.create_session(user["id"])
+
+        response = get_consent(session["token"], client, challenge)
+        assert response.status == 403
+        assert response.resp_body =~ "restricted_email"
+        assert get_resp_header(response, "location") == []
+      end
+    end
   end
 
   describe "POST /oauth2/authorize" do

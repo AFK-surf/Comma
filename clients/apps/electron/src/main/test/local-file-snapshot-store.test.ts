@@ -92,6 +92,34 @@ describe("LocalFilePickerService", () => {
     expect(JSON.stringify(result)).not.toContain(sourcePath);
   });
 
+  it("hands a dropped or pasted folder back by its path, whatever its name, and attaches nothing for it", async () => {
+    const root = tempDirectory();
+    const folder = join(root, "project.png");
+    await mkdir(folder);
+    await writeFile(join(folder, "notes.txt"), "abc");
+    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
+    const picker = new LocalFilePickerService({
+      registrar: { register: vi.fn(async () => undefined) },
+      store,
+    });
+
+    const result = await createAdmittedPicker(picker).pickForChat({
+      assertLocalFileRegistrationAllowed: () => {},
+      maxFiles: 50,
+      maxTotalSize: 1024 * 1024 * 1024,
+      maxUploadFiles: 8,
+      workspaceId: "workspace-1",
+      sources: [{ kind: "path", sourcePath: folder }],
+    });
+
+    expect(result).toEqual({
+      cancelled: false,
+      errors: [],
+      folderPaths: [folder],
+      items: [],
+    });
+  });
+
   it("takes a dropped screenshot from the system temporary folder, under macOS's /var link", async () => {
     // Not realpath'd: on macOS tmpdir() is /var/folders/…, where screenshot thumbnails and capture tools drag from.
     const root = mkdtempSync(join(tmpdir(), "comma-dropped-screenshot-"));
@@ -839,7 +867,7 @@ describe("LocalFilePickerService", () => {
       rejectedRef = (params as { localFileRef: string }).localFileRef;
       throw Object.assign(
         new Error(
-          "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again."
+          "Reconnect this workspace's Comma station with a newly issued token, then select the file again."
         ),
         {
           code: "local_file_unavailable",
@@ -900,7 +928,7 @@ describe("LocalFilePickerService", () => {
       {
         errorClass: "connector_reconfiguration_required",
         message:
-          "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again.",
+          "Reconnect this workspace's Comma station with a newly issued token, then select the file again.",
         retryable: true,
       },
     ]);

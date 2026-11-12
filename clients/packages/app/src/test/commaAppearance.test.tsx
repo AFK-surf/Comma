@@ -15,6 +15,7 @@ import {
   defaultCommaAppearancePreferences,
   resolveCommaThemeSeed,
   useCommaAppearance,
+  useCommaWindowTransparencyTarget,
 } from "../components/commaAppearance";
 import {
   CommaWebClientSettingsProvider,
@@ -90,6 +91,24 @@ const AppearanceProbe = () => {
       </button>
       <button onClick={() => appearance.setWindowTransparency(80)} type="button">
         Transparency 80
+      </button>
+    </>
+  );
+};
+
+const shownWindowTransparency = () =>
+  screen
+    .getByTestId("window-shell")
+    .style.getPropertyValue("--comma-window-transparency");
+
+/** The app shell: it shows the window transparency, and the slider previews there. */
+const WindowShellProbe = () => {
+  const { preview, ref } = useCommaWindowTransparencyTarget();
+  return (
+    <>
+      <div data-testid="window-shell" ref={ref} />
+      <button onClick={() => preview(37)} type="button">
+        Preview 37
       </button>
     </>
   );
@@ -264,21 +283,25 @@ describe("CommaAppearanceProvider", () => {
     );
   });
 
-  it("applies and persists the window ground's translucency and transparency", async () => {
+  it("applies and persists the window ground's translucency, and shows its transparency on the shell", async () => {
     const view = renderWithClientSettings(
       <CommaAppearanceProvider>
         <AppearanceProbe />
+        <WindowShellProbe />
       </CommaAppearanceProvider>
     );
     const root = document.documentElement;
     expect(root.dataset.commaWindowTranslucency).toBe("on");
-    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("50%");
+    expect(shownWindowTransparency()).toBe("50%");
 
+    // A preview shows until the saved value changes.
+    await userEvent.click(screen.getByRole("button", { name: "Preview 37" }));
+    expect(shownWindowTransparency()).toBe("37%");
     await userEvent.click(screen.getByRole("button", { name: "Transparency 80" }));
     await userEvent.click(screen.getByRole("button", { name: "Opaque window" }));
 
     expect(root.dataset.commaWindowTranslucency).toBe("off");
-    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("80%");
+    expect(shownWindowTransparency()).toBe("80%");
     await waitFor(() =>
       expect(readStoredClientSettings().appearance).toMatchObject({
         windowTranslucency: false,
@@ -288,7 +311,6 @@ describe("CommaAppearanceProvider", () => {
 
     view.unmount();
     expect(root).not.toHaveAttribute("data-comma-window-translucency");
-    expect(root.style.getPropertyValue("--comma-window-transparency")).toBe("");
   });
 
   it("keeps Default on Light mode when the system color scheme changes", async () => {
@@ -345,7 +367,7 @@ describe("CommaAppearanceProvider", () => {
       </CommaAppearanceProvider>
     );
 
-    expect(document.documentElement.dataset.commaReducedMotion).toBe("false");
+    expect(document.documentElement.dataset.commaReducedMotion).toBeUndefined();
 
     act(() => {
       systemReducedMotionListener?.({ matches: true } as MediaQueryListEvent);
@@ -360,7 +382,7 @@ describe("CommaAppearanceProvider", () => {
     act(() => {
       systemReducedMotionListener?.({ matches: false } as MediaQueryListEvent);
     });
-    expect(document.documentElement.dataset.commaReducedMotion).toBe("false");
+    expect(document.documentElement.dataset.commaReducedMotion).toBeUndefined();
   });
 
   it("syncs only reduced motion for standalone renderers", () => {
@@ -405,7 +427,7 @@ describe("CommaAppearanceProvider", () => {
         })
       );
     });
-    expect(document.documentElement.dataset.commaReducedMotion).toBe("false");
+    expect(document.documentElement.dataset.commaReducedMotion).toBeUndefined();
 
     act(() => {
       systemReducedMotionListener?.({ matches: true } as MediaQueryListEvent);

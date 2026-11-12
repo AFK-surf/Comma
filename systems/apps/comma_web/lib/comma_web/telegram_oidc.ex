@@ -23,7 +23,7 @@ defmodule CommaWeb.TelegramOIDC do
       nonce = random_url_token()
       verifier = random_url_token()
 
-      with {:ok, workspace, _attempt} <-
+      with {:ok, workspace, attempt} <-
              TelegramLinks.create_oidc_attempt(user, session, workspace_id, %{
                "state" => state,
                "nonce" => nonce,
@@ -31,6 +31,7 @@ defmodule CommaWeb.TelegramOIDC do
              }) do
         {:ok,
          %{
+           "attempt_id" => attempt.state_hash,
            "authorization_url" => authorization_url(state, nonce, verifier),
            "expires_in_seconds" => 600,
            "workspace_id" => workspace["id"]
@@ -48,6 +49,7 @@ defmodule CommaWeb.TelegramOIDC do
          true <- nonblank?(code) and nonblank?(state),
          {:ok, %{attempt: attempt, user: user, workspace: workspace}} <-
            TelegramLinks.take_oidc_attempt(state),
+         _ = Logger.metadata(user_id: attempt.owner_user_id, workspace_id: attempt.workspace_id),
          {:ok, claims} <-
            adapter().exchange_authorization_code(code,
              client_id: config[:client_id],

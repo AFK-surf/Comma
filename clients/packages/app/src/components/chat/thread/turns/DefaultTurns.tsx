@@ -24,6 +24,7 @@ export function DefaultTurns({
   lastTurnKey,
   locale,
   newTimestampId,
+  newTimestampReplyLine,
   outgoing: { outgoingPresentationByTurnKey, outgoingTurnKeys },
   registerLatestTurnBody,
   registerLatestTurnShell,
@@ -112,14 +113,16 @@ export function DefaultTurns({
           entry.kind === "message"
             ? entry.message.messageId
             : (entry.message?.messageId ?? entry.draft?.draftId);
+        const isNew = timedId !== undefined && timedId === newTimestampId;
         precedingRows.push(
           <ConversationTimestamp
             animate={isUser && outgoingTurnKeys.has(turn.key)}
             createdAt={entry.timestamp.createdAt}
-            isNew={timedId !== undefined && timedId === newTimestampId}
+            isNew={isNew}
             key={`timestamp:${entry.key}`}
             locale={locale}
             messageId={timedId ?? entry.key}
+            replyLine={isNew ? newTimestampReplyLine : undefined}
           />
         );
       }
@@ -132,6 +135,7 @@ export function DefaultTurns({
       locale,
       messagesApi,
       newTimestampId,
+      newTimestampReplyLine,
       onAnchorOutgoingTurn,
       onDiscard,
       onOpenConversationRef,

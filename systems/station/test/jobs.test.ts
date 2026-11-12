@@ -173,18 +173,18 @@ describe("jobs", { concurrency: true }, () => {
     const r = new Rig();
     const job = r.jobs.start(
       "s1", "names",
-      `stillfail-job 2>&1; ember-job 2>&1; [ "$STILLFAIL_JOB_ID" = "$EMBER_JOB_ID" ] && [ "$STILLFAIL_JOB_TOKEN" = "$EMBER_JOB_TOKEN" ] && echo same`,
+      `comma-job 2>&1; ember-job 2>&1; [ "$COMMA_STATION_JOB_ID" = "$EMBER_JOB_ID" ] && [ "$COMMA_STATION_JOB_TOKEN" = "$EMBER_JOB_TOKEN" ] && echo same`,
       r.work, null, false,
     );
     await until("it ends", () => r.state(job.id) !== "running");
     const ended = r.store.getJob(job.id)!;
     assert.equal(ended.state, "exited");
-    assert.equal(tail(ended.log, 10), "usage: stillfail-job notify <words>\nusage: stillfail-job notify <words>\nsame");
+    assert.equal(tail(ended.log, 10), "usage: comma-job notify <words>\nusage: comma-job notify <words>\nsame");
     // Made again (a station starting over the same directory), the link stays one.
     const bin = join(r.dir, "jobs", "bin");
     jobsOn(r.dir, r.store, [], () => null);
-    assert.equal(readlinkSync(join(bin, "ember-job")), "stillfail-job");
-    // On Windows, stillfail-job.cmd beside them (for cmd and PowerShell).
+    assert.equal(readlinkSync(join(bin, "ember-job")), "comma-job");
+    // On Windows, comma-job.cmd beside them (for cmd and PowerShell).
     assert.equal(readdirSync(bin).length, WINDOWS ? 3 : 2);
   });
 
@@ -237,7 +237,7 @@ describe("jobs", { concurrency: true }, () => {
     const job = r.jobs.start("s1", "watch", FOREVER, r.work, null, false);
     const stopped = await r.jobs.stopFor(job.id, "ann@example.com");
     assert.equal(stopped.state, "stopped");
-    assert.deepEqual(r.said(), [`Job "watch" (${job.id}) was stopped by ann@example.com from still.fail's page.`]);
+    assert.deepEqual(r.said(), [`Job "watch" (${job.id}) was stopped by ann@example.com from Comma's page.`]);
   });
 
   test("a job stopped from the pages does not wake an idle agent", async () => {
@@ -249,7 +249,7 @@ describe("jobs", { concurrency: true }, () => {
     const other = r.jobs.start("s1", "again", FOREVER, r.work, null, false);
     r.store.setRunning("s1", true);
     await r.jobs.stopFor(other.id, "ann@example.com");
-    assert.deepEqual(r.said(), [`Job "again" (${other.id}) was stopped by ann@example.com from still.fail's page.`]);
+    assert.deepEqual(r.said(), [`Job "again" (${other.id}) was stopped by ann@example.com from Comma's page.`]);
   });
 
   test("clearing a session's ended jobs takes them and their logs away and leaves the rest", async () => {
@@ -371,7 +371,7 @@ describe("jobs", { concurrency: true }, () => {
     await until("both are stopped", () => r.state(job.id) === "stopped" && r.state(service.id) === "stopped");
     assert.equal(r.state(done.id), "exited", "what was over stays as it was");
     const log = readFileSync(r.store.getJob(job.id)!.log, "utf8");
-    assert.ok(log.endsWith("[still.fail] stopped: the station was removed from its workspace\n"), log);
+    assert.ok(log.endsWith("[Comma] stopped: the station was removed from its workspace\n"), log);
     assert.ok(!r.said().some((t) => t.includes("was stopped")), "agents are not woken for it");
   });
 
@@ -387,7 +387,7 @@ describe("jobs", { concurrency: true }, () => {
     assert.ok(!groupAlive(pgid), "its group is ended, not only marked");
     assert.deepEqual(after.store.listProcesses(), [], "and off the record");
     const log = readFileSync(after.store.getJob(job.id)!.log, "utf8");
-    assert.ok(log.endsWith("[still.fail] stopped: the station was removed from its workspace\n"), log);
+    assert.ok(log.endsWith("[Comma] stopped: the station was removed from its workspace\n"), log);
     assert.deepEqual(after.said(), []);
   });
 

@@ -36,7 +36,9 @@ defmodule SalixIFC.LeanBoundaryTest do
   test "an expired receipt and an unreadable source cannot declassify" do
     {effect, activation, [request], facts} = input()
     destination = Label.new([{:tag, "destination"}])
-    effect = %{effect | destination: destination, sources: ["req"]}
+    effect = %{effect | destination: destination, sources: ["data"]}
+    data = %Item{ref: "data", label: request.label, integrity: :data}
+    items = [request, data]
 
     receipt = %Receipt{
       id: "r",
@@ -54,13 +56,13 @@ defmodule SalixIFC.LeanBoundaryTest do
         membership: %{{:tag, "private"} => {:members, MapSet.new([activation.requester]), 1}}
     }
 
-    assert {:deny, _} = SalixIFC.decide(effect, activation, [request], facts)
+    assert {:deny, _} = SalixIFC.decide(effect, activation, items, facts)
 
-    assert {:allow, %{sources: [{"req", {:receipt, "r"}}]}} =
-             SalixIFC.decide(effect, activation, [request], %{facts | now: 9})
+    assert {:allow, %{sources: [{"data", {:receipt, "r"}}]}} =
+             SalixIFC.decide(effect, activation, items, %{facts | now: 9})
 
     assert {:deny, _} =
-             SalixIFC.decide(effect, activation, [request], %{facts | now: 9, membership: %{}})
+             SalixIFC.decide(effect, activation, items, %{facts | now: 9, membership: %{}})
   end
 
   test "the IFC domain crosses the same ETF entry point as Session" do

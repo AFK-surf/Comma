@@ -9,11 +9,17 @@ import { checkConfig } from "../src/accounts/check.ts";
 import { MeshLive } from "../src/mesh/mesh.ts";
 import { loadMesh, meshPort, type Mesh } from "../src/mesh/native.ts";
 import { SalixRelay } from "../src/mesh/salix-relay.ts";
+import { ScreenHelpersService } from "../src/screens/helper.ts";
+import { AndroidDevicesService } from "../src/screens/devices.ts";
+import { SimulatorsService } from "../src/screens/simulator-agent.ts";
+import { makeScreens } from "../src/screens/source.ts";
 import { hearErrors } from "../src/ops/log.ts";
 import { Agents, type AgentsParts } from "../src/sessions/agents.ts";
-import { AdbShares, AdminApi, ControlPlane, Key, MeshNative, Store, Up } from "../src/services.ts";
+import { AdbShares, AdminApi, ControlPlane, Key, MeshNative, Paths, Store, Up } from "../src/services.ts";
 import { settle } from "./hub-fakes.ts";
 import { memoryMesh } from "./memory-mesh.ts";
+import { COMMA_ALPN } from "../src/mesh/comma.ts";
+import { DeviceMeshAdmissions, deviceMeshFacts } from "../src/mesh/device-mesh.ts";
 
 /// A port as config.json names it. No socket is bound on it but in the last test, which takes one the system gives.
 const NAMED = 4770;
@@ -56,6 +62,11 @@ function startup(t: TestContext, mesh: unknown, bind: (options: Parameters<Mesh[
     Layer.succeed(AdminApi)(null!),
     Layer.succeed(Up)(null!),
     Layer.succeed(AdbShares)(null!),
+    // (where a Linux desktop would keep the screen tools it prepares: nothing is written by building the layer)
+    Layer.succeed(Paths)({ data: "/nonexistent", app: "" }),
+    ScreenHelpersService.layer,
+    Layer.succeed(AndroidDevicesService)({ screens: makeScreens(), androids: { refresh: async () => {}, unavailable: () => null } } as never),
+    Layer.succeed(SimulatorsService)({ screens: makeScreens(), simulators: { refresh: async () => {}, bootable: () => [] } } as never),
   );
   const running = Effect.runFork(
     Effect.scoped(
@@ -147,4 +158,57 @@ test("the addon binds the named port on 127.0.0.1 once it is free, and a peer re
   } finally {
     await Promise.all([station.close(), peer.close()]);
   }
+});
+
+test("a desktop's station binds comma/mesh/1 alone while its Salix says whom it admits, and closes when none does", async (t) => {
+  const admissions = new DeviceMeshAdmissions();
+  const binds: Array<Parameters<Mesh["bind"]>[0]> = [];
+  const closed = Promise.withResolvers<void>();
+  const inputs = Layer.mergeAll(
+    Layer.succeed(Agents)({ config: { raw: () => ({}) } } as unknown as AgentsParts),
+    Layer.succeed(ControlPlane)({ state: { state: null, relays: () => [] }, changes: Stream.never, spec: () => ({ name: "test" }) } as never),
+    Layer.succeed(Key)({ seed: Buffer.alloc(32) } as never),
+    Layer.succeed(MeshNative)({
+      bind: async (options: Parameters<Mesh["bind"]>[0]) => {
+        binds.push(options);
+        const endpoint = await memoryMesh().bind(options);
+        const close = endpoint.close.bind(endpoint);
+        endpoint.close = async () => {
+          await close();
+          closed.resolve();
+        };
+        return endpoint;
+      },
+    } as unknown as Mesh),
+    Layer.succeed(SalixRelay)({ pump: async () => {}, admissions } as never),
+    Layer.succeed(Store)(null!),
+    Layer.succeed(AdminApi)(null!),
+    Layer.succeed(Up)(null!),
+    Layer.succeed(AdbShares)(null!),
+    // (where a Linux desktop would keep the screen tools it prepares: nothing is written by building the layer)
+    Layer.succeed(Paths)({ data: "/nonexistent", app: "" }),
+    ScreenHelpersService.layer,
+    Layer.succeed(AndroidDevicesService)({ screens: makeScreens(), androids: { refresh: async () => {}, unavailable: () => null } } as never),
+    Layer.succeed(SimulatorsService)({ screens: makeScreens(), simulators: { refresh: async () => {}, bootable: () => [] } } as never),
+  );
+  const running = Effect.runFork(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Layer.build(MeshLive.pipe(Layer.provide(inputs)));
+        yield* Effect.never;
+      }),
+    ),
+  );
+  t.after(() => Effect.runPromise(Fiber.interrupt(running)));
+  await settle();
+  // Default: no workspace, no one told. No endpoint, so no port and nothing announced.
+  assert.equal(binds.length, 0);
+  const run = {};
+  admissions.set(run, deviceMeshFacts({ workspace: "wsA", owner: "u_owner", relay_urls: ["https://relay.test"] }));
+  while (binds.length === 0) await settle();
+  assert.deepEqual(binds[0]!.alpns, [COMMA_ALPN]);
+  assert.deepEqual(binds[0]!.relayUrls, ["https://relay.test"]);
+  assert.equal(binds[0]!.salixRelay, true);
+  admissions.set(run, null);
+  await closed.promise;
 });

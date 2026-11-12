@@ -109,7 +109,8 @@ defmodule CommaWeb.MemberIdentityBackfill do
     with {:ok, workspace} <- Comma.Workspaces.get(profile.workspace_id),
          true <- workspace["owner_user_id"] == profile.user_id,
          true <- sole_member?(workspace["id"], profile.user_id),
-         nil <- Comma.MemberSourceConsents.binding(workspace["id"], profile.user_id, toolkit),
+         [] <-
+           Comma.MemberSourceConsents.toolkit_bindings(workspace["id"], profile.user_id, toolkit),
          {:ok, [%{"id" => id}]} <-
            CommaWeb.PluginConnections.active_member_accounts(workspace, toolkit),
          true <- id == source["connectionId"] do
@@ -152,12 +153,12 @@ defmodule CommaWeb.MemberIdentityBackfill do
 
     with {:ok, _identity} <-
            CommaWeb.RecommendationComposioMemberSource.identify(workspace, toolkit, id),
-         nil <- Comma.MemberSourceConsents.binding(workspace["id"], user["id"], toolkit),
+         [] <- Comma.MemberSourceConsents.toolkit_bindings(workspace["id"], user["id"], toolkit),
          {:ok, :ok} <- Comma.MemberSourceConsents.record(user, %{}, workspace["id"], toolkit, id) do
       _ = Comma.Recommendations.enqueue_source_sync(candidate["profile_id"])
       :stamped
     else
-      %{} ->
+      [_ | _] ->
         :unchanged
 
       # A bot account is not the member's own; the owner chooses another.

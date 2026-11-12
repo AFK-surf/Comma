@@ -11,8 +11,6 @@ import surf.comma.android.chat.live.AgentRequestCardView
 import surf.comma.android.chat.live.AttachmentView
 import surf.comma.android.chat.live.QuestionCardHost
 import surf.comma.android.chat.live.QuestionCardView
-import surf.comma.android.chat.live.ReplyAction
-import surf.comma.android.chat.live.ReplyActionsRow
 import surf.comma.android.chat.model.TimelineBlockKinds
 
 class ChatTimelineAdapter :
@@ -25,11 +23,16 @@ class ChatTimelineAdapter :
     var onLongPress: ((View, PreparedChatMessage) -> Unit)? = null
     var onCopyCode: ((String) -> Unit)? = null
     var onToggleBrief: ((Long) -> Unit)? = null
-    internal var onReplyAction: ((ReplyAction, PreparedChatMessage) -> Boolean)? = null
     /** What question cards do on this page; null shows each card as its receipt. */
     internal var questionHost: QuestionCardHost? = null
     /** What an Agent's request cards do on this page; null leaves an open card without its actions. */
     internal var requestHost: AgentRequestCardHost? = null
+    /** What a suggested-reply chip does on this page. */
+    internal var onSuggestion: ((surf.comma.android.chat.live.ChatSuggestion) -> Unit)? = null
+    /** What a generated UI card does on this page. */
+    internal var onOpenDynamicUi: ((surf.comma.android.dynamicui.DynamicUiTarget) -> Unit)? = null
+    /** What a media tile does when it opens: the page's viewer over all its media. */
+    internal var onOpenMedia: ((PreparedChatMessage) -> Unit)? = null
     /** Rows mid-reveal; cells read their caret from it, card rows their opacity. */
     internal var reveals: TextRevealBook? = null
     /** Rows drawn by the send flight instead of by themselves; kept invisible through rebinds. */
@@ -60,10 +63,14 @@ class ChatTimelineAdapter :
             if (view is PhotoGridCell) {
                 view.onImageClick = { source -> onImageClick?.invoke(source) }
             }
-            if (view is AttachmentView) view.onSendFailed = { onSendFailed?.invoke(it) }
-            if (view is ReplyActionsRow) view.onAction = { action, item -> onReplyAction?.invoke(action, item) == true }
+            if (view is AttachmentView) {
+                view.onSendFailed = { onSendFailed?.invoke(it) }
+                view.onOpenMedia = { item -> onOpenMedia?.invoke(item) != null }
+            }
             if (view is QuestionCardView) view.hostOf = { questionHost }
             if (view is AgentRequestCardView) view.hostOf = { requestHost }
+            if (view is surf.comma.android.chat.live.ChatSuggestionsRow) view.hostOf = { onSuggestion }
+            if (view is surf.comma.android.dynamicui.DynamicUiChatRow) view.hostOf = { onOpenDynamicUi }
             cardViews[view] = renderer
             CardHolder(view, renderer)
         } else {

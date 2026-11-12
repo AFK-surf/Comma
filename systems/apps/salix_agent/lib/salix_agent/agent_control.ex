@@ -19,11 +19,10 @@ defmodule SalixAgent.AgentControl do
     InternalSessionStore,
     Placement,
     Repair,
-    StorageAuthorization,
-    Waits
+    StorageAuthorization
   }
 
-  alias SalixStore.{Agent, Ids, Keys, S3}
+  alias SalixStore.{AgentPGStore, Ids, Keys}
 
   require InternalSession
   require Logger
@@ -31,7 +30,6 @@ defmodule SalixAgent.AgentControl do
   @lifecycle_stop_timeout_ms 5_000
   @generated_id_retries 5
   @router_session_switch_retries 5
-  @list_read_concurrency 8
   @station_runtime_providers ~w(codex claude)
 
   @doc "One bounded native storage page of visible group Workers; filters never scan ahead."
@@ -65,13 +63,11 @@ defmodule SalixAgent.AgentControl do
          true <- is_nil(provider) or provider in @station_runtime_providers,
          true <- source != "internal" or is_nil(provider),
          {:ok, token} <- decode_worker_cursor(Keyword.get(opts, :cursor), scope),
-         {:ok, %{objects: objects, next: next}} <-
-           S3.list(Keys.ctl_agents_prefix_for_group(group_id),
-             max_keys: limit,
-             continuation_token: token
+         {:ok, %{items: records, next: next}} <-
+           AgentPGStore.page_configs(%{tenant_id: tenant_id, group_id: group_id},
+             limit: limit,
+             cursor: token
            ),
-         true <- length(objects) <= limit,
-         {:ok, records} <- read_worker_page(objects, tenant_id, group_id),
          {:ok, task_agent} <- page_task_agent(group_id, records, opts) do
       items =
         Enum.filter(records, fn record ->
@@ -134,36 +130,6 @@ defmodule SalixAgent.AgentControl do
   defp encode_worker_cursor(token, scope),
     do: [scope, token] |> Jason.encode!() |> Base.url_encode64(padding: false)
 
-  defp read_worker_page(objects, tenant_id, group_id) do
-    objects
-    |> SystemsClock.async_stream(
-      fn %{key: key} ->
-        with {:ok, %{"agent_id" => id} = record} <- get_json(key),
-             true <-
-               key == Keys.ctl_agent(id) and valid_record?(id, record) and
-                 record["tenant_id"] == tenant_id and record["group_id"] == group_id do
-          {:ok, record}
-        else
-          {:error, :not_found} -> {:ok, nil}
-          _ -> {:error, :read_unavailable}
-        end
-      end,
-      max_concurrency: @list_read_concurrency,
-      ordered: true,
-      timeout: 5_000,
-      on_timeout: :kill_task
-    )
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, {:ok, nil}}, acc -> {:cont, acc}
-      {:ok, {:ok, record}}, {:ok, records} -> {:cont, {:ok, [record | records]}}
-      _, _ -> {:halt, {:error, :read_unavailable}}
-    end)
-    |> case do
-      {:ok, records} -> {:ok, Enum.reverse(records)}
-      error -> error
-    end
-  end
-
   @doc "Patch visible Worker metadata at the canonical CAS. Modeled in tla/salix/AgentConfigurationPatch.tla."
   def configure_worker_metadata(id, tenant_id, patch) do
     management_change(id, tenant_id, fn record ->
@@ -189,7 +155,12 @@ defmodule SalixAgent.AgentControl do
       with :ok <- writable_authority(record, :salix),
            true <- StationBinding.bound?(record) || {:error, :unsupported_agent_kind},
            {:ok, binding} <-
-             StationBinding.normalize(request, record["tenant_id"], expected + 1) do
+             StationBinding.normalize(
+               request,
+               record["tenant_id"],
+               record["group_id"],
+               expected + 1
+             ) do
         cond do
           current == binding ->
             {:ok, :unchanged, record}
@@ -245,17 +216,17 @@ defmodule SalixAgent.AgentControl do
     do: {:error, :mutation_outcome_unknown}
 
   defp management_change(agent_id, tenant_id, change, attempts) do
-    key = Keys.ctl_agent(agent_id)
+    key = agent_id
 
-    with {:ok, %{body: body, etag: etag}} <- S3.get(key),
-         {:ok, %{"tenant_id" => ^tenant_id} = record} <- Jason.decode(body),
+    with {:ok, %{record: %{"tenant_id" => ^tenant_id} = record, revision: revision}} <-
+           AgentPGStore.read_config(key),
          true <- valid_record?(agent_id, record) and record["hidden"] != true,
          true <- record["role"] == "worker",
          {:ok, result, updated} <- change.(record) do
       if updated == record do
         {:ok, %{result: result, record: record}}
       else
-        case put_control_record(key, updated, if_match: etag) do
+        case put_control_record(key, updated, if_match: revision) do
           {:ok, _} ->
             {:ok, %{result: result, record: updated}}
 
@@ -306,7 +277,7 @@ defmodule SalixAgent.AgentControl do
 
   def get_record(agent_id) do
     if Ids.valid_agent_id?(agent_id) do
-      case get_json(Keys.ctl_agent(agent_id)) do
+      case get_config_record(agent_id) do
         {:ok, rec} -> if valid_record?(agent_id, rec), do: {:ok, rec}, else: {:error, :not_found}
         {:error, _} = error -> error
       end
@@ -526,7 +497,7 @@ defmodule SalixAgent.AgentControl do
          {:ok, id} <- resolve_agent_id(requested_id, group["group_id"], generated?),
          {:ok, fork_source} <- load_fork_source(attrs["fork_from"], tenant_id, group_id),
          {:ok, runtime_updates} <- validate_runtime_config(attrs, %{}),
-         {:ok, station_binding} <- creation_station_binding(attrs, role, tenant_id),
+         {:ok, station_binding} <- creation_station_binding(attrs, role, tenant_id, group_id),
          attrs = put_optional(attrs, "station_binding", station_binding),
          {:ok, disabled_tools} <- validate_disabled_tools(attrs["disabled_tools"]),
          {:ok, runtime_updates} <-
@@ -549,15 +520,16 @@ defmodule SalixAgent.AgentControl do
 
   # A Worker bound to a station (`SalixAgent.StationBinding`) is an internal
   # Worker whose Tasks run on that station.
-  defp creation_station_binding(%{"station_binding" => nil}, _role, _tenant_id), do: {:ok, nil}
+  defp creation_station_binding(%{"station_binding" => nil}, _role, _tenant_id, _group_id),
+    do: {:ok, nil}
 
-  defp creation_station_binding(%{"station_binding" => request}, role, tenant_id) do
+  defp creation_station_binding(%{"station_binding" => request}, role, tenant_id, group_id) do
     if role == "worker",
-      do: StationBinding.normalize(request, tenant_id, 1),
+      do: StationBinding.normalize(request, tenant_id, group_id, 1),
       else: {:error, {:bad_request, "only a Worker can be bound to a station"}}
   end
 
-  defp creation_station_binding(_attrs, _role, _tenant_id), do: {:ok, nil}
+  defp creation_station_binding(_attrs, _role, _tenant_id, _group_id), do: {:ok, nil}
 
   # Legacy wire entry point. Its final CAS rejects transferred configuration.
   def update(agent_id, attrs), do: configure_record(agent_id, attrs, :legacy)
@@ -590,7 +562,7 @@ defmodule SalixAgent.AgentControl do
          {:ok, updates} <- validate_updates(current, attrs),
          stored_updates <- configuration_updates(current, updates, authority),
          {:ok, updated} <-
-           update_record(Keys.ctl_agent(agent_id), fn record ->
+           update_record(agent_id, fn record ->
              merged = Map.merge(record, stored_updates)
 
              with :ok <- writable_authority(record, authority),
@@ -662,7 +634,7 @@ defmodule SalixAgent.AgentControl do
   end
 
   defp claim_configuration_record(agent_id, tenant_id, archived_at) do
-    update_record(Keys.ctl_agent(agent_id), fn
+    update_record(agent_id, fn
       %{"tenant_id" => ^tenant_id, "configuration_authority" => "salix"} = record ->
         record
 
@@ -741,7 +713,7 @@ defmodule SalixAgent.AgentControl do
     with {:ok, current} <- get_record(agent_id),
          :ok <- ensure_configuration_owner(current),
          {:ok, agent} <-
-           update_record(Keys.ctl_agent(agent_id), fn rec ->
+           update_record(agent_id, fn rec ->
              rec
              |> Map.put("archive_epoch", ArchivedSchedules.archive_epoch_on_archive(rec))
              |> Map.put("archived_at", now())
@@ -759,7 +731,7 @@ defmodule SalixAgent.AgentControl do
   """
   def archive_retired_runtime(agent_id, reason) when is_binary(reason) do
     with {:ok, agent} <-
-           update_record(Keys.ctl_agent(agent_id), fn
+           update_record(agent_id, fn
              %{"archived_at" => _} = rec ->
                {:unchanged, rec}
 
@@ -773,6 +745,30 @@ defmodule SalixAgent.AgentControl do
       pause_schedules_for_archive(agent_id, ArchivedSchedules.archive_epoch(agent))
       {:ok, agent}
     end
+  end
+
+  @doc """
+  Bind a Worker bound to its Group's Cloud VM to `runs_on` instead (the Cloud
+  VM cutover, `SalixWeb.Migrations.CloudVMCutover`): a sandbox of each Task's
+  own, or the station of the Group's VM on its Agent VMM Host. Its model
+  stays; the binding takes the next revision. A Worker bound elsewhere is left
+  as it is, so a pass run again changes nothing.
+  """
+  def rebind_cloud_vm(agent_id, runs_on) when is_map(runs_on) do
+    update_record(agent_id, fn
+      %{"station_binding" => %{"runs_on" => %{"kind" => "cloud_vm"}} = binding} = rec ->
+        Map.put(
+          rec,
+          "station_binding",
+          Map.merge(binding, %{
+            "runs_on" => runs_on,
+            "binding_revision" => (binding["binding_revision"] || 0) + 1
+          })
+        )
+
+      rec ->
+        {:unchanged, rec}
+    end)
   end
 
   defp settle_archive_schedules({:ok, record} = result) do
@@ -880,7 +876,7 @@ defmodule SalixAgent.AgentControl do
   #   * not archived            -> already done (a duplicate request of this
   #                                epoch won the write); nothing to write.
   defp clear_archive_record(agent_id, epoch) do
-    update_record(Keys.ctl_agent(agent_id), fn rec ->
+    update_record(agent_id, fn rec ->
       cond do
         archived?(rec) and ArchivedSchedules.archive_epoch(rec) == epoch ->
           rec
@@ -902,7 +898,7 @@ defmodule SalixAgent.AgentControl do
     with {:ok, _current} <- get_record(agent_id) do
       _ = stop_existing_runtime(agent_id)
 
-      update_record(Keys.ctl_agent(agent_id), fn rec ->
+      update_record(agent_id, fn rec ->
         rec
         |> Map.put("status", "cancelled")
         |> Map.put("completed_at", now())
@@ -937,37 +933,53 @@ defmodule SalixAgent.AgentControl do
     with :ok <- ensure_not_stopped(agent_id),
          {:ok, _rec} <- get_record(agent_id),
          {:ok, wake?} <- force_recover_wake(opts),
-         {:ok, sessions} <- force_recover_sessions(agent_id, opts) do
+         {:ok, target} <- force_recover_target(opts) do
       timeout = Keyword.get(opts, :timeout, 5_000)
 
-      # Stop the Server before the session actors, as Fleet.stop_existing
-      # does: a running Server can wake sessions until it stops. A missing
-      # Server starts passive: it takes the lease without the startup cycle
-      # that wakes indexed sessions.
-      stop_server_result =
-        stop_running_server(agent_id,
-          reason: :normal,
-          timeout: timeout,
-          force: true,
-          start_if_missing: true
-        )
+      with :ok <-
+             stop_running_server(agent_id,
+               reason: :normal,
+               timeout: timeout,
+               force: true,
+               start_if_missing: false
+             ),
+           :ok <- safe_stop_existing(agent_id, reason: :normal, timeout: timeout, force: true),
+           {:ok, owned} <-
+             settle_recovery_owner(
+               SalixStore.Agent.claim(agent_id, local_node_id(), SalixAgent.State),
+               5
+             ) do
+        release_key = {__MODULE__, :force_recover_release, SystemsRuntime.Proc.make_ref()}
 
-      stop_runtime_result =
-        safe_stop_existing(agent_id, reason: :normal, timeout: timeout, force: true)
+        try do
+          {recovered, stopped} =
+            try do
+              force_recover_sessions(owned, target, wake?)
+            after
+              Process.put(release_key, settle_recovery_owner(SalixStore.Agent.release(owned), 5))
+            end
 
-      recovered =
-        Enum.map(sessions, fn session ->
-          force_recover_session(agent_id, session, wake?, timeout)
-        end)
+          release = Process.get(release_key)
 
-      {:ok,
-       %{
-         "agent_id" => agent_id,
-         "wake_requested" => wake?,
-         "stop_runtime" => inspect(stop_runtime_result),
-         "stop_server" => inspect(stop_server_result),
-         "sessions" => recovered
-       }}
+          recovered =
+            recovered
+            |> Enum.reverse()
+            |> Enum.map(&finish_force_recovery(agent_id, &1, wake?, timeout, release))
+
+          {:ok,
+           %{
+             "agent_id" => agent_id,
+             "wake_requested" => wake?,
+             "stop_runtime" => ":ok",
+             "stop_server" => ":ok",
+             "release" => release,
+             "stopped" => stopped,
+             "sessions" => recovered
+           }}
+        after
+          Process.delete(release_key)
+        end
+      end
     end
   end
 
@@ -1014,61 +1026,113 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp force_recover_sessions(agent_id, opts) do
+  defp force_recover_target(opts) do
     case Keyword.get(opts, :session_id) do
       sid when is_binary(sid) and sid != "" ->
-        with {:ok, session} <- InternalSessionStore.read(agent_id, sid), do: {:ok, [session]}
+        {:ok, sid}
 
       nil ->
-        with {:ok, sessions} <- InternalSessionStore.list(agent_id) do
-          {:ok, Enum.filter(sessions, &(InternalSession.work_reasons(&1) != []))}
-        end
+        {:ok, nil}
 
       other ->
         {:error, {:bad_request, "session_id must be a non-empty string, got #{inspect(other)}"}}
     end
   end
 
-  defp force_recover_session(agent_id, session, wake?, timeout)
-       when InternalSession.is_session(session) do
-    sid = InternalSession.session_id(session)
+  defp force_recover_sessions(owned, sid, wake?) when is_binary(sid),
+    do: recover_session_ids(owned, [sid], wake?, [])
 
-    with {repair_events, next_message_id} when is_list(repair_events) <-
-           Repair.plan_session(session),
-         events = repair_events ++ force_recover_events(agent_id, session, wake?, next_message_id),
-         {:ok, updated} <- InternalSessionStore.prepare_commit(agent_id, sid, events) do
-      timer_result = Waits.register_timers_from_events(agent_id, events)
+  defp force_recover_sessions(owned, nil, wake?), do: recover_session_pages(owned, nil, wake?, [])
 
-      wake_result =
-        if wake? do
-          wake_internal_session(agent_id, sid, timeout)
-        else
-          :ok
+  defp recover_session_pages(owned, cursor, wake?, recovered) do
+    case InternalSessionStore.PG.repair_session_ids(owned.agent_id, cursor) do
+      {:ok, ids, next} ->
+        case recover_session_ids(owned, ids, wake?, recovered) do
+          {recovered, nil} when not is_nil(next) ->
+            recover_session_pages(owned, next, wake?, recovered)
+
+          result ->
+            result
         end
 
-      %{
-        "session_id" => sid,
-        "status" => Atom.to_string(InternalSession.status(updated)),
-        "wake_requested" => wake?,
-        "events" => length(events),
-        "timer_registration" => inspect(timer_result),
-        "wake" => inspect(wake_result),
-        "recovery" => force_recover_observation(agent_id, sid, updated, wake_result)
-      }
-    else
       {:error, reason} ->
-        %{
-          "session_id" => sid,
-          "error" => inspect(reason)
-        }
+        {recovered, reason}
     end
   end
+
+  defp recover_session_ids(_owned, [], _wake?, recovered), do: {recovered, nil}
+
+  defp recover_session_ids(owned, [sid | rest], wake?, recovered) do
+    result = force_recover_session(owned, sid, wake?)
+    recovered = [{sid, result} | recovered]
+
+    case result do
+      {:error, {:fenced, _} = reason} -> {recovered, reason}
+      {:error, :fenced} -> {recovered, :fenced}
+      {:error, :commit_indeterminate, pending} -> {recovered, {:commit_indeterminate, pending}}
+      _ -> recover_session_ids(owned, rest, wake?, recovered)
+    end
+  end
+
+  defp force_recover_session(owned, sid, wake?) do
+    with {:ok, revision} <- InternalSessionStore.PG.read(owned.agent_id, sid),
+         {repair_events, next_message_id} when is_list(repair_events) <-
+           Repair.plan_session(revision.state),
+         events =
+           repair_events ++
+             force_recover_events(owned.agent_id, revision.state, wake?, next_message_id),
+         {:ok, committed} <-
+           settle_session_repair(
+             InternalSessionStore.PG.commit_revision(revision, owned.epoch, events),
+             5
+           ) do
+      {:ok, committed.state, events}
+    end
+  end
+
+  defp settle_session_repair({:error, :commit_indeterminate, pending}, remaining)
+       when remaining > 0,
+       do: settle_session_repair(InternalSessionStore.PG.settle(pending), remaining - 1)
+
+  defp settle_session_repair(result, _remaining), do: result
+
+  defp settle_recovery_owner({:error, {:commit_indeterminate, pending}}, remaining)
+       when remaining > 0,
+       do: settle_recovery_owner(SalixStore.Agent.settle(pending), remaining - 1)
+
+  defp settle_recovery_owner(result, _remaining), do: result
+
+  defp finish_force_recovery(agent_id, {sid, {:ok, session, events}}, wake?, timeout, release) do
+    released? = release == :ok or match?({:ok, _}, release)
+
+    wake_result =
+      cond do
+        wake? and released? -> wake_internal_session(agent_id, sid, timeout)
+        wake? -> {:error, :release_unconfirmed}
+        true -> :ok
+      end
+
+    %{
+      "session_id" => sid,
+      "status" => Atom.to_string(InternalSession.status(session)),
+      "wake_requested" => wake?,
+      "events" => length(events),
+      "wake" => inspect(wake_result),
+      "recovery" => force_recover_observation(agent_id, sid, session, wake_result)
+    }
+  end
+
+  defp finish_force_recovery(_agent_id, {sid, error}, _wake?, _timeout, _release),
+    do: %{"session_id" => sid, "error" => inspect(error_reason(error))}
+
+  defp error_reason({:error, reason}), do: reason
+  defp error_reason(error), do: error
 
   # A wake receipt proves dispatch only. Report progress only when a subsequent
   # model response exists; an idle/active flag alone cannot prove recovery.
   defp force_recover_observation(agent_id, sid, committed, wake_result) do
-    case InternalSessionStore.read(agent_id, sid) do
-      {:ok, current} ->
+    case InternalSessionStore.PG.read(agent_id, sid) do
+      {:ok, %{state: current}} ->
         response =
           Enum.find(InternalSession.get(current, :messages), fn message ->
             message.role == "assistant" and
@@ -1210,71 +1274,64 @@ defmodule SalixAgent.AgentControl do
          fork_source,
          now
        ) do
-    with :ok <- ensure_agent_record_absent(id),
-         {:ok, owned} <- Agent.create(id, local_node_id(), SalixAgent.State) do
-      rec =
-        %{
-          "agent_id" => id,
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "role" => role,
-          "name" => name,
-          "system_prompt" => attrs["system_prompt"] || "",
-          "router_system_prompt" => attrs["router_system_prompt"] || "",
-          "provider" => model_record["provider"],
-          "db_namespace" => "salix:" <> id,
-          "forked_from" => attrs["fork_from"],
-          "status" => "idle",
-          "purpose" => attrs["purpose"] || "",
-          "hidden" => attrs["hidden"] == true,
-          "created_at" => now,
-          "heartbeat_schedule_id" => Ids.new_schedule_id(),
-          "tool_router_enabled" => false,
-          "disabled_tools" => disabled_tools
-        }
-        |> put_optional("model", attrs["model"])
-        |> put_optional("station_binding", attrs["station_binding"])
-        |> put_optional("source_initial_agent_slot", attrs["source_initial_agent_slot"])
-        |> put_optional("configuration_authority", attrs["configuration_authority"])
-        |> put_optional("management_purpose", attrs["management_purpose"])
-        |> put_optional("management_creation_audit", attrs["management_creation_audit"])
-        |> put_optional("inspector_policy", runtime_updates["inspector_policy"])
-        |> put_optional("source_initial_agent_revision", attrs["source_initial_agent_revision"])
-        |> put_optional(
-          "source_worker_tool_idempotency_hash",
-          attrs["source_worker_tool_idempotency_hash"]
-        )
-        |> put_optional(
-          "router_session_id",
-          if(role == "router", do: Ids.new_session_id())
-        )
-        |> Map.put("runtime_config", %{"kind" => "internal"})
-        |> Enum.reject(fn {_k, value} -> is_nil(value) end)
-        |> Map.new()
+    rec =
+      %{
+        "agent_id" => id,
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "role" => role,
+        "name" => name,
+        "system_prompt" => attrs["system_prompt"] || "",
+        "router_system_prompt" => attrs["router_system_prompt"] || "",
+        "provider" => model_record["provider"],
+        "db_namespace" => "salix:" <> id,
+        "forked_from" => attrs["fork_from"],
+        "status" => "idle",
+        "purpose" => attrs["purpose"] || "",
+        "hidden" => attrs["hidden"] == true,
+        "created_at" => now,
+        "heartbeat_schedule_id" => Ids.new_schedule_id(),
+        "tool_router_enabled" => false,
+        "disabled_tools" => disabled_tools
+      }
+      |> put_optional("model", attrs["model"])
+      |> put_optional("station_binding", attrs["station_binding"])
+      |> put_optional("source_initial_agent_slot", attrs["source_initial_agent_slot"])
+      |> put_optional("configuration_authority", attrs["configuration_authority"])
+      |> put_optional("management_purpose", attrs["management_purpose"])
+      |> put_optional("management_creation_audit", attrs["management_creation_audit"])
+      |> put_optional("inspector_policy", runtime_updates["inspector_policy"])
+      |> put_optional("source_initial_agent_revision", attrs["source_initial_agent_revision"])
+      |> put_optional(
+        "source_worker_tool_idempotency_hash",
+        attrs["source_worker_tool_idempotency_hash"]
+      )
+      |> put_optional(
+        "router_session_id",
+        if(role == "router", do: Ids.new_session_id())
+      )
+      |> Map.put("runtime_config", %{"kind" => "internal"})
+      |> Enum.reject(fn {_k, value} -> is_nil(value) end)
+      |> Map.new()
 
-      materialize_result =
+    with {:ok, owned} <-
+           settle_mutation(AgentPGStore.begin_create(id, local_node_id(), SalixAgent.State, rec)) do
+      materialize =
         with :ok <- maybe_copy_fork_workspace(id, attrs["fork_from"]),
-             :ok <- seed_initial_internal_sessions(id, fork_source, runtime_updates) do
-          :ok
-        end
+             do: seed_initial_internal_sessions(owned, fork_source, runtime_updates)
 
-      case materialize_result do
+      case materialize do
         :ok ->
-          with :ok <- Agent.release(owned) do
-            case put_control_record(Keys.ctl_agent(id), rec, if_none_match: "*") do
-              {:ok, _} ->
-                {:ok, rec}
-
-              {:error, :precondition_failed} ->
-                {:error, :exists}
-
-              {:error, reason} ->
-                {:error, reason}
-            end
-          end
+          with :ok <- settle_mutation(AgentPGStore.publish_created(owned)), do: {:ok, rec}
 
         {:error, _} = error ->
-          case Agent.discard_created(owned) do
+          case cleanup_creation(
+                 AgentPGStore.discard_created(
+                   owned,
+                   &InternalSessionStore.PG.delete_created_session!/2
+                 ),
+                 5
+               ) do
             :ok -> error
             {:error, reason} -> {:error, {:create_rollback_failed, reason, error}}
           end
@@ -1282,18 +1339,41 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp ensure_agent_record_absent(agent_id) do
-    case S3.head(Keys.ctl_agent(agent_id)) do
-      {:ok, _object} -> {:error, :exists}
-      {:error, :not_found} -> :ok
-      {:error, _} = err -> err
-    end
+  defp cleanup_creation({:error, {:commit_indeterminate, pending}}, attempts) when attempts > 0 do
+    result =
+      case AgentPGStore.settle(pending) do
+        {:ok, cleanup} ->
+          AgentPGStore.cleanup_created(
+            cleanup,
+            &InternalSessionStore.PG.delete_created_session!/2
+          )
+
+        result ->
+          result
+      end
+
+    cleanup_creation(result, attempts - 1)
   end
 
-  defp seed_initial_internal_sessions(_agent_id, nil, _runtime_updates), do: :ok
+  defp cleanup_creation({:error, :commit_indeterminate, cleanup}, attempts) when attempts > 0 do
+    cleanup_creation(
+      AgentPGStore.cleanup_created(cleanup, &InternalSessionStore.PG.delete_created_session!/2),
+      attempts - 1
+    )
+  end
+
+  defp cleanup_creation({:error, {:commit_indeterminate, _}}, _),
+    do: {:error, :mutation_outcome_unknown}
+
+  defp cleanup_creation({:error, :commit_indeterminate, _}, _),
+    do: {:error, :mutation_outcome_unknown}
+
+  defp cleanup_creation(result, _), do: result
+
+  defp seed_initial_internal_sessions(_owned, nil, _runtime_updates), do: :ok
 
   defp seed_initial_internal_sessions(
-         agent_id,
+         owned,
          {_source_agent, source_sessions},
          _runtime_updates
        ) do
@@ -1302,7 +1382,7 @@ defmodule SalixAgent.AgentControl do
       &{InternalSession.get(&1, :created_at) || 0, InternalSession.session_id(&1) || ""}
     )
     |> Enum.reduce_while(:ok, fn session, :ok ->
-      case seed_forked_internal_session(agent_id, session) do
+      case seed_forked_internal_session(owned, session) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -1315,7 +1395,8 @@ defmodule SalixAgent.AgentControl do
   # recognized as our own write instead of minting a second session (the
   # random-id retry loop this replaces did exactly that). A genuine
   # collision on the derived address is a hard error, not a silent re-roll.
-  defp seed_forked_internal_session(agent_id, source) do
+  defp seed_forked_internal_session(owned, source) do
+    agent_id = owned.agent_id
     source_session_id = InternalSession.session_id(source)
     clone_key = "clone-" <> agent_id <> "-" <> source_session_id
 
@@ -1329,12 +1410,22 @@ defmodule SalixAgent.AgentControl do
         agent_fork_session_attrs(source, clone_key)
       )
 
-    case InternalSessionStore.prepare_seed(agent_id, target) do
-      :ok -> :ok
-      {:error, :exists} -> {:error, {:clone_target_collision, target_id}}
-      {:error, reason} -> {:error, reason}
+    with {:ok, seed} <- InternalSessionStore.PG.prepare_created_seed(owned, target) do
+      case settle_creation_seed(InternalSessionStore.PG.seed_created(seed), 5) do
+        {:ok, _version} -> :ok
+        {:error, :exists} -> {:error, {:clone_target_collision, target_id}}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
+
+  defp settle_creation_seed({:error, :commit_indeterminate, seed}, attempts) when attempts > 0,
+    do: settle_creation_seed(InternalSessionStore.PG.settle_created(seed), attempts - 1)
+
+  defp settle_creation_seed({:error, :commit_indeterminate, _seed}, _),
+    do: {:error, :commit_indeterminate}
+
+  defp settle_creation_seed(result, _), do: result
 
   defp agent_fork_session_attrs(session, clone_key) do
     %{
@@ -1483,7 +1574,12 @@ defmodule SalixAgent.AgentControl do
         revision = (get_in(current, ["station_binding", "binding_revision"]) || 0) + 1
 
         with {:ok, binding} <-
-               StationBinding.normalize(request, current["tenant_id"], revision) do
+               StationBinding.normalize(
+                 request,
+                 current["tenant_id"],
+                 current["group_id"],
+                 revision
+               ) do
           {:ok, Map.put(updates, "station_binding", binding)}
         end
     end
@@ -1679,68 +1775,37 @@ defmodule SalixAgent.AgentControl do
 
   defp validate_role(_role), do: {:error, {:bad_request, "invalid role"}}
 
-  defp list_records(prefix) do
-    with {:ok, objects} <- S3.list_all(prefix) do
-      context = SystemsObservability.Context.capture()
+  defp list_records(scope), do: list_records(scope, nil, [])
 
-      objects
-      |> SystemsClock.async_stream(
-        fn %{key: key} ->
-          SystemsObservability.Context.run(context, fn -> read_listed_record(key) end)
-        end,
-        max_concurrency: @list_read_concurrency,
-        ordered: true,
-        timeout: :infinity
-      )
-      |> Enum.reduce_while({:ok, []}, fn
-        {:ok, {:ok, records}}, {:ok, acc} -> {:cont, {:ok, [records | acc]}}
-        {:ok, {:error, reason}}, _acc -> {:halt, {:error, reason}}
-      end)
-      |> case do
-        {:ok, batches} -> {:ok, batches |> Enum.reverse() |> List.flatten()}
-        {:error, _} = error -> error
-      end
+  defp list_records(scope, cursor, pages) do
+    with {:ok, %{items: items, next: next}} <-
+           AgentPGStore.page_configs(scope, limit: 500, cursor: cursor) do
+      pages = [items | pages]
+
+      if is_nil(next),
+        do: {:ok, pages |> Enum.reverse() |> List.flatten()},
+        else: list_records(scope, next, pages)
     end
   end
 
-  # An object may legitimately vanish between LIST and GET, and a record
-  # that no longer parses is dropped like any other invalid record; only
-  # transport failures abort the listing, so callers can't mistake an
-  # outage for an empty tenant.
-  defp read_listed_record(key) do
-    case get_json(key) do
-      {:ok, %{"agent_id" => agent_id} = rec} ->
-        if key == Keys.ctl_agent(agent_id), do: {:ok, [rec]}, else: {:ok, []}
-
-      {:ok, _} ->
-        {:ok, []}
-
-      {:error, :not_found} ->
-        {:ok, []}
-
-      {:error, %Jason.DecodeError{}} ->
-        {:ok, []}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  # A delivery chain or one activation reads the same control record at
-  # several seams. Inside a `SalixStore.ReadScope` the first read answers the
-  # rest of that unit of work; every write below forgets the memo first.
-  defp get_json(key) do
-    SalixStore.ReadScope.fetch({:record, key}, fn ->
-      case S3.get(key) do
-        {:ok, %{body: body}} -> Jason.decode(body)
-        {:error, _} = err -> err
-      end
+  defp get_config_record(agent_id) do
+    SalixStore.ReadScope.fetch({:record, Keys.ctl_agent(agent_id)}, fn ->
+      with {:ok, %{record: record}} <- AgentPGStore.read_config(agent_id), do: {:ok, record}
     end)
   end
 
-  defp put_control_record(key, record, opts) do
-    SalixStore.ReadScope.invalidate({:record, key})
-    S3.put(key, Jason.encode!(record), opts)
+  defp put_control_record(agent_id, record, opts) do
+    SalixStore.ReadScope.invalidate({:record, Keys.ctl_agent(agent_id)})
+
+    AgentPGStore.put_config(agent_id, record, Keyword.fetch!(opts, :if_match))
+    |> settle_mutation()
+  end
+
+  defp settle_mutation(result) do
+    case AgentPGStore.settle_result(result) do
+      {:error, :commit_indeterminate} -> {:error, :mutation_outcome_unknown}
+      result -> result
+    end
   end
 
   defp list_prefix(tenant_id, group_id) do
@@ -1749,10 +1814,10 @@ defmodule SalixAgent.AgentControl do
         {:error, :invalid_scope}
 
       blank?(group_id) ->
-        {:ok, Keys.ctl_agents_prefix_for_tenant(tenant_id)}
+        {:ok, %{tenant_id: tenant_id}}
 
       Ids.valid_group_id_for_tenant?(group_id, tenant_id) ->
-        {:ok, Keys.ctl_agents_prefix_for_group(group_id)}
+        {:ok, %{tenant_id: tenant_id, group_id: group_id}}
 
       true ->
         {:error, :invalid_scope}
@@ -1774,15 +1839,14 @@ defmodule SalixAgent.AgentControl do
   defp update_record(key, fun), do: update_record(key, fun, 5)
   defp update_record(_key, _fun, 0), do: {:error, :precondition_failed}
 
-  # `fun` is re-applied to a FRESH read after every 412, so it must derive
+  # `fun` is re-applied to a FRESH read after every revision conflict, so it must derive
   # everything from the record it is given. It may answer `{:error, reason}`
   # to abort without writing (the record it found is not the one the caller
   # can act on) or `{:unchanged, rec}` to succeed without writing.
   defp update_record(key, fun, attempts) do
-    with {:ok, %{body: body, etag: etag}} <- S3.get(key),
-         {:ok, rec} <- Jason.decode(body),
+    with {:ok, %{record: rec, revision: revision}} <- AgentPGStore.read_config(key),
          {:ok, updated} <- apply_record_update(fun, rec),
-         {:ok, _} <- put_control_record(key, updated, if_match: etag) do
+         {:ok, _} <- put_control_record(key, updated, if_match: revision) do
       {:ok, updated}
     else
       {:unchanged, rec} -> {:ok, rec}
@@ -1804,8 +1868,8 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  # Canonical Router rotation is expected-value fenced separately from the S3
-  # ETag. A stale dashboard retry therefore observes the already-landed target
+  # Canonical Router rotation is expected-value fenced separately from the PG
+  # configuration revision. A stale dashboard retry therefore observes the already-landed target
   # instead of rotating a second time. Modeled in
   # tla/salix/RouterCanonicalSessionSwitch.tla.
   defp do_switch_router_session_record(
@@ -1822,14 +1886,13 @@ defmodule SalixAgent.AgentControl do
          new_session_id,
          attempts
        ) do
-    key = Keys.ctl_agent(agent_id)
+    key = agent_id
 
-    with {:ok, %{body: body, etag: etag}} <- S3.get(key),
-         {:ok, record} <- Jason.decode(body),
+    with {:ok, %{record: record, revision: revision}} <- AgentPGStore.read_config(key),
          :ok <- validate_router_session_switch(record, expected_session_id) do
       updated = Map.put(record, "router_session_id", new_session_id)
 
-      case put_control_record(key, updated, if_match: etag) do
+      case put_control_record(key, updated, if_match: revision) do
         {:ok, _} ->
           {:ok, updated}
 
@@ -1841,125 +1904,11 @@ defmodule SalixAgent.AgentControl do
             attempts - 1
           )
 
-        {:error, {:ambiguous, _reason}} ->
-          settle_router_session_switch(
-            key,
-            expected_session_id,
-            new_session_id,
-            attempts
-          )
-
         {:error, _} = error ->
           error
       end
     end
   end
-
-  # A conditional PUT can land while its acknowledgement is lost (including
-  # an SDK retry that observes 412). The generated target id is operation
-  # identity: reading it back proves this switch landed. Reading the expected
-  # id means retry the same logical replacement; any third id is a stale loss.
-  defp settle_router_session_switch(_key, _expected_session_id, _new_session_id, 0),
-    do: {:error, :settlement_indeterminate}
-
-  defp settle_router_session_switch(key, expected_session_id, new_session_id, attempts) do
-    case S3.get(key) do
-      {:ok, %{body: body, etag: etag}} ->
-        with {:ok, record} <- Jason.decode(body) do
-          settle_router_session_switch_record(
-            key,
-            record,
-            etag,
-            expected_session_id,
-            new_session_id,
-            attempts
-          )
-        end
-
-      {:error, _transient} ->
-        settle_router_session_switch(
-          key,
-          expected_session_id,
-          new_session_id,
-          attempts - 1
-        )
-    end
-  end
-
-  defp settle_router_session_switch_record(
-         _key,
-         %{"role" => "router", "router_session_id" => new_session_id} = record,
-         _etag,
-         _expected_session_id,
-         new_session_id,
-         _attempts
-       ),
-       do: {:ok, record}
-
-  defp settle_router_session_switch_record(
-         key,
-         %{"role" => "router", "router_session_id" => expected_session_id} = record,
-         etag,
-         expected_session_id,
-         new_session_id,
-         attempts
-       ) do
-    updated = Map.put(record, "router_session_id", new_session_id)
-
-    case put_control_record(key, updated, if_match: etag) do
-      {:ok, _} ->
-        {:ok, updated}
-
-      {:error, :precondition_failed} ->
-        settle_router_session_switch(
-          key,
-          expected_session_id,
-          new_session_id,
-          attempts - 1
-        )
-
-      {:error, {:ambiguous, _reason}} ->
-        settle_router_session_switch(
-          key,
-          expected_session_id,
-          new_session_id,
-          attempts - 1
-        )
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp settle_router_session_switch_record(
-         _key,
-         %{"role" => "router", "router_session_id" => current_session_id},
-         _etag,
-         _expected_session_id,
-         _new_session_id,
-         _attempts
-       ),
-       do: {:error, {:stale_router_session, current_session_id}}
-
-  defp settle_router_session_switch_record(
-         _key,
-         %{"role" => role},
-         _etag,
-         _expected_session_id,
-         _new_session_id,
-         _attempts
-       ),
-       do: {:error, {:unsupported_agent_role, role}}
-
-  defp settle_router_session_switch_record(
-         _key,
-         _record,
-         _etag,
-         _expected_session_id,
-         _new_session_id,
-         _attempts
-       ),
-       do: {:error, {:unsupported_agent_role, nil}}
 
   defp validate_router_session_switch(%{"role" => "router"} = record, expected_session_id) do
     case record["router_session_id"] do

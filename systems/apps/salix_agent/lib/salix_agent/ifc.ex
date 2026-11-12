@@ -157,9 +157,11 @@ defmodule SalixAgent.IFC do
   schedule acted.
 
   `creator` and `label` are what `SalixAgent.IFC.Check` established while
-  deciding the `schedule.create` that made it. Both are absent for a schedule
-  made before this existed, or while its Group was `off`; such a fire delivers
-  unsealed and authorizes nothing, which is the fail-closed reading.
+  deciding the `schedule.create` that made it; without an allow verdict the
+  creator is the person who asked and there is no label
+  (`unchecked_creator/1`). A schedule nobody asked for, or one made before
+  creators were recorded this way, has no creator: its fire delivers unsealed
+  and authorizes nothing, which is the fail-closed reading.
   """
   @spec schedule_origin(term(), term(), term()) :: map() | nil
   def schedule_origin(schedule_id, creator, label) do
@@ -191,9 +193,10 @@ defmodule SalixAgent.IFC do
   principal kind is introduced.
 
   `creator` and `label` are what `SalixAgent.IFC.Check` established while
-  deciding the `loop.create` that made it. Both are absent for a Loop made
-  while its Group was `off`; such a Loop delivers unsealed and authorizes
-  nothing, which is the fail-closed reading.
+  deciding the `loop.create` that made it, or the person who asked with no
+  label when there was no allow verdict (`unchecked_creator/1`). A Loop with no
+  creator delivers unsealed and authorizes nothing, which is the fail-closed
+  reading.
   """
   @spec loop_origin(term(), term(), term()) :: map() | nil
   def loop_origin(loop_id, creator, label) do
@@ -212,6 +215,95 @@ defmodule SalixAgent.IFC do
       _no_authority -> nil
     end
   end
+
+  @doc """
+  The sealed origin of a registry tool call a Task's own station makes
+  (`SalixAgent.StationToolCalls`).
+
+  The station acts with the authority of the person whose Task it is, as a
+  schedule fire acts with its creator's (§8): the principal is the kernel's
+  delegated-principal wrapper `{:schedule, "station:" <> device_id, person}`,
+  keyed by the requester (a Comma user id, or the person's principal), so every effect is
+  decided against that person's *current* membership, and the `station:` id
+  says which station acted. The origin says `provider: "schedule"`, the one
+  form the kernel reads a sealed principal from with no Session item behind
+  it (`originPrincipal`); no new provider or principal kind is introduced. A
+  Worker is never the principal: an agent's id does not command effects
+  (§3.1). `label` is the Task conversation's own audience, so what the call
+  produces is labelled as the Task's. Nothing without a device and a
+  requester, which the fail-closed reading authorizes nothing.
+  """
+  @spec station_origin(term(), term(), term()) :: map() | nil
+  def station_origin(device_id, requester, label) do
+    device = text(device_id)
+    id = "station:" <> device
+
+    with false <- device == "",
+         {:ok, person} <- station_person(requester),
+         {:ok, principal} <- SalixIFC.Codec.encode_principal({:schedule, id, person}) do
+      block =
+        %{"integrity" => "command", "principal" => principal}
+        |> then(&if(is_list(label) and label != [], do: Map.put(&1, "label", label), else: &1))
+
+      %{"provider" => "schedule", "schedule_id" => id, "device_id" => device, "ifc" => block}
+    else
+      _no_authority -> nil
+    end
+  end
+
+  # A Comma user id, or a person's principal: a provider user is the requester
+  # of a Task asked for in a provider chat (`ifc_requester`).
+  defp station_person({:comma_user, user} = person) when is_binary(user) and user != "",
+    do: {:ok, person}
+
+  defp station_person({:provider_user, connect, user} = person)
+       when is_binary(connect) and connect != "" and is_binary(user) and user != "",
+       do: {:ok, person}
+
+  defp station_person(user) when is_binary(user) do
+    case text(user) do
+      "" -> :error
+      user -> {:ok, {:comma_user, user}}
+    end
+  end
+
+  defp station_person(_requester), do: :error
+
+  @doc """
+  Who a schedule or Loop made without an allow verdict acts for, encoded, or
+  `nil` when nobody asked.
+
+  Under `audit` a denied effect still runs and keeps its activation's
+  requester (`ifc_requester`); with the check `off` the sealed origin still
+  names the person who asked. Either is the creator, as an allow verdict's
+  requester would be, so the schedule keeps working when its Group later
+  enforces (§8). No label comes with it: a fire without one reads as
+  `agent_private`, so the creator's authority never makes the prompt itself
+  readable to anyone.
+  """
+  @spec unchecked_creator(term()) :: String.t() | nil
+  def unchecked_creator(%{} = ctx) do
+    case text(value(ctx, "ifc_requester")) do
+      "" -> origin_person(value(ctx, "trusted_origin"))
+      requester -> requester
+    end
+  end
+
+  def unchecked_creator(_ctx), do: nil
+
+  defp origin_person(%{} = origin) do
+    case origin |> principal() |> origin_person_principal() do
+      nil -> nil
+      person -> SalixIFC.Codec.encode_principal!(person)
+    end
+  end
+
+  defp origin_person(_origin), do: nil
+
+  defp origin_person_principal({:comma_user, _user} = person), do: person
+  defp origin_person_principal({:provider_user, _connect, _user} = person), do: person
+  defp origin_person_principal({:schedule, _id, inner}), do: origin_person_principal(inner)
+  defp origin_person_principal(_principal), do: nil
 
   @doc false
   def facts_mod, do: SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)

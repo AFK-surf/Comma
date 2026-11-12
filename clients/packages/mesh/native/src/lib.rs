@@ -2,7 +2,7 @@
 //! engine calls (clients/packages/core/native/engine.cpp, the `mesh.*` operations). It is the endpoint the station's
 //! addon binds for a client (systems/station/native/mesh, which the desktop app's core uses through Node): the same
 //! vendored iroh, BBR with a 256 KiB first window, stations looked up in the DHT without being announced, and Salix as
-//! the relay of last resort (the station's own salix.rs, and the sockets that carry its packets: carry.rs). Unlike the
+//! a relay (the station's own salix.rs, and the sockets that carry its packets: carry.rs). Unlike the
 //! desktop's, it does not look stations up by mDNS: a phone dials the LAN addresses the control plane says a station
 //! is at (`addr.ips`), and a multicast socket on a phone needs a permission (iOS: an entitlement) for nothing more.
 //!
@@ -15,7 +15,8 @@
 //!     alpn → {id, remote}; mesh.networkChange {id}; mesh.endpointClose {id}
 //!   mesh.openBi / mesh.acceptBi {id} → {id} (acceptBi: {end} once the connection is gone); mesh.closed {id} →
 //!     {reason}; mesh.close {id, code, reason}; mesh.nextVia {id, last} → {via, closed}
-//!   mesh.read {id} → bytes, or {end}; mesh.write {id} + bytes; mesh.finish {id}; mesh.reset {id, code}
+//!   mesh.read {id} → bytes, or {end}; mesh.write {id} + bytes; mesh.finish {id}; mesh.stop {id, code} (its reading
+//!     half); mesh.reset {id, code}
 //!   mesh.carry {id, url, ticket} → {id} once Salix registered the endpoint on that socket; mesh.carried {id} → {}
 //!     once it closed; mesh.uncarry {id}
 //! `comma_mesh_abort` gives an operation up: it is never answered.
@@ -34,6 +35,18 @@ use futures_core::Stream as _;
 use iroh::endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, presets::Minimal};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
 use serde_json::{Value, json};
+
+/// How often a path that carries nothing is asked whether it is still there, and how long one may say nothing before
+/// it is given up (packets go on on another path meanwhile: the relay, or a direct one): iroh's own 5 s and 15 s held a
+/// connection on a direct path whose peer had gone (a station restarted on another port) that long, every stream on
+/// it waiting. As still.fail's mesh (station/native/mesh/src/lib.rs `PATH_KEEP_ALIVE`, `PATH_IDLE`).
+const PATH_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(1);
+const PATH_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a connection may hear nothing before it is given up: iroh's 30 s gave up every connection of a phone app
+/// frozen in the background that long, each dialled anew on its return (still.fail's `CONNECTION_IDLE_MS`). A peer
+/// gone with a connection open is told by the core's ping (`PING_EVERY_MS`), not by this. The peers take the lower of
+/// theirs.
+const CONNECTION_IDLE_MS: u32 = 10 * 60_000;
 
 /// `complete(ctx, id, json, json_len, error, error_len, bytes, bytes_len, has_bytes)`: an operation's answer, its JSON
 /// (when it succeeded) or its error, and its bytes if it has any. Called on any thread.
@@ -331,6 +344,17 @@ impl Inner {
                 self.stream_done(id, &halves);
                 Ok(Answer::json(json!({})))
             }
+            "mesh.stop" => {
+                let id = id_of(&a)?;
+                let code = a.get("code").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let halves = self.stream(id)?;
+                // A read waiting gives up first: it holds the receiving half meanwhile.
+                let _ = halves.reset.send(true);
+                let _ = halves.recv.lock().await.stop(code.into());
+                halves.ended.store(true, Ordering::Relaxed);
+                self.stream_done(id, &halves);
+                Ok(Answer::json(json!({})))
+            }
             "mesh.reset" => {
                 let code = a.get("code").and_then(Value::as_u64).unwrap_or(0) as u32;
                 if let Some(Handle::Stream(halves)) = self.drop_handle(id_of(&a)?) {
@@ -375,7 +399,11 @@ impl Inner {
         let mut builder = Endpoint::builder(Minimal)
             .secret_key(key.clone())
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(iroh::RelayMap::from_iter(relays.clone())) })
-            .transport_config(QuicTransportConfig::builder().congestion_controller_factory(Arc::new(bbr)).build());
+            .transport_config(QuicTransportConfig::builder().congestion_controller_factory(Arc::new(bbr)).default_path_keep_alive_interval(PATH_KEEP_ALIVE).default_path_max_idle_timeout(PATH_IDLE).max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(CONNECTION_IDLE_MS).into())).build());
+        // `relay-first`: direct, then an iroh relay, then Salix. Else Salix ranks with direct, an iroh relay as backup.
+        if a.get("routePolicy").and_then(Value::as_str) == Some("relay-first") {
+            builder = builder.custom_transports_last();
+        }
         let mut relay = None;
         if a.get("salixRelay").and_then(Value::as_bool).unwrap_or(false) {
             let (transport, queues) = salix::transport(key.public());

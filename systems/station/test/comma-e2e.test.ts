@@ -1,6 +1,6 @@
 // A station in Comma end to end, over the mesh (its endpoints connected in memory, memory-mesh.ts) and a fake Comma
 // control plane (test/fake-control-plane.ts): enrolled with `--provider comma`, online on Comma's presence socket (its
-// gateways named there), a member's credential Comma signed taken on `stillfail/admin/1` and on Comma's own
+// gateways named there), a member's credential Comma signed taken on `comma-station/admin/1` and on Comma's own
 // `comma/mesh/1` (the @comma/mesh client), a viewer's write refused, and the gateway's `comma/tools/1` admitted — exec
 // refused under the default `read`, done once an owner sets `full`, a chat started and driven — while another iroh id
 // is turned away.
@@ -94,7 +94,7 @@ test("a station in Comma: enrolled, online, a member admitted, a viewer read-onl
   const config = new ConfigFile(data);
   config.check = checkConfig;
   const hubSettings = hubConfig({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }] }, data);
-  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const store = Store.open(join(data, "station.db"), join(data, "archive"));
   const claude = new FakeDriver("claude");
   const hub = new Hub({ config: () => hubSettings, store, chats: () => undefined, drivers: [claude, new FakeDriver("codex")], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat(), runners: () => [] });
   const jobs = new Jobs({ store, data, notify: () => {}, link: () => null });
@@ -208,7 +208,7 @@ test("a station in Comma: enrolled, online, a member admitted, a viewer read-onl
   assert.deepEqual(await tool(tools, "fs.write", { path: join(work, "big.bin"), content_base64: big.toString("base64") }), { ok: true, result: { size: big.length } });
   assert.ok(readFileSync(join(work, "big.bin")).equals(big));
   const ran = await tool(tools, "exec", { command: "echo hi" });
-  assert.deepEqual(ran, { ok: true, result: { exit_code: 0, stdout: "hi\n", stderr: "", truncated: false } });
+  assert.deepEqual(ran, { ok: true, result: { cwd: work, exit_code: 0, stdout: "hi\n", stderr: "", truncated: false } });
 
   // The same tools over the presence socket: Comma pushes a request, the station answers on the socket.
   comma.tool("p1", { op: "exec", id: "p1", context: { workspace: "ws1", user_email: "owner@x", agent: "salix" }, args: { command: "echo presence" } });
@@ -216,7 +216,7 @@ test("a station in Comma: enrolled, online, a member admitted, a viewer read-onl
   assert.deepEqual(comma.heard.find((m) => m.id === "p1"), {
     type: "tool_result",
     id: "p1",
-    response: { ok: true, result: { exit_code: 0, stdout: "presence\n", stderr: "", truncated: false } },
+    response: { ok: true, result: { cwd: work, exit_code: 0, stdout: "presence\n", stderr: "", truncated: false } },
   });
   comma.tool("p2", { op: "fs.read", id: "p2", context: { workspace: "ws1" }, args: { path: join(data, "mesh", "secret.key") } });
   await until(() => comma.heard.some((m) => m.id === "p2"));

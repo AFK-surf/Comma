@@ -106,7 +106,7 @@ export class Workspaces {
           .liveTopics()
           .find((topic) => topic.topic === "workspace");
         if (lease && shown)
-          this.#live.run(shown, this.refresh(Priority.shown).pipe(Effect.ignore));
+          this.#live.run(shown, this.refresh(Priority.shown, true).pipe(Effect.ignore));
       }
       this.#changed();
     });
@@ -161,8 +161,14 @@ export class Workspaces {
     return this.#listFailure;
   }
 
-  /** Reads the list again (one read at a time; asked again while it runs, it runs once more after). */
-  refresh(priority: number = Priority.shown): Effect.Effect<void, CoreError> {
+  /**
+   * Reads the list again, one read at a time: asked while one runs, it waits for that one, and with `again` (a new
+   * lease, which the read under way may have gone out without) it reads once more after.
+   */
+  refresh(
+    priority: number = Priority.shown,
+    again = false
+  ): Effect.Effect<void, CoreError> {
     const ctx = this.#ctx;
     return ctx.session.account().pipe(
       Effect.flatMap((account) =>
@@ -194,7 +200,8 @@ export class Workspaces {
                 })
               ),
               Effect.asVoid
-            )
+            ),
+          again
         )
       )
     );
@@ -211,18 +218,22 @@ export class Workspaces {
 
   #startBootstrap(): void {
     const ctx = this.#ctx;
-    // A workspace found ready before is ready now: shown at once, and asked again.
-    const known = ctx.session.current()?.meta<string>("onboardingWorkspace");
-    if (known && this.#bootstrap.status === "preparing" && !this.#bootstrap.unreachable)
-      this.#bootstrap = { status: "ready", workspaceId: known };
     this.#live.run(
       ONBOARDING_WORKSPACE,
       Effect.gen({ self: this }, function* () {
+        let restoreSaved = true;
         for (;;) {
           let delayS = MAX_RETRY_S;
           // With no one signed in it waits: a session that comes starts it again.
           const account = yield* ctx.session.account().pipe(Effect.option);
           if (Option.isNone(account)) return;
+          // Read the saved workspace after the account database opens, including a cold offline launch.
+          if (restoreSaved) {
+            restoreSaved = false;
+            const known = account.value.meta<string>("onboardingWorkspace");
+            if (known && this.#bootstrap.status === "preparing")
+              this.#setBootstrap({ status: "ready", workspaceId: known });
+          }
           const answer = yield* Effect.result(
             ctx.api.request(
               account.value,
@@ -249,7 +260,7 @@ export class Workspaces {
               return;
             }
             // No answer at all: say so, and keep trying until the network is back.
-            if (error.status === undefined)
+            if (error.status === undefined && this.#bootstrap.status !== "ready")
               this.#setBootstrap({ status: "preparing", unreachable: true });
           }
           yield* Effect.sleep(delayS * 1000);

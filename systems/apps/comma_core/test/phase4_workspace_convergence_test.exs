@@ -91,6 +91,11 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
       :ok
     end
 
+    def resolve_workspace_scope(workspace), do: {:ok, workspace}
+
+    def list_group_conversations(_workspace, _opts),
+      do: {:ok, %{"data" => [], "has_more" => false, "next_cursor" => nil}}
+
     defp outcome(call) do
       [{:outcomes, outcomes}] = :ets.lookup(@table, :outcomes)
       Enum.at(outcomes, call - 1, List.last(outcomes))
@@ -116,6 +121,11 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     @behaviour Comma.Synchronicity.Client
     @impl true
     def provision_workspace(workspace_id, _name, _owner) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:comma_core, :test_synch_pid),
+        {:synch_provision, workspace_id}
+      )
+
       case SystemsRuntime.get_env(:comma_core, :test_synch_result, :ok) do
         :ok ->
           {:ok,
@@ -163,11 +173,13 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     SystemsRuntime.put_env(:comma_core, :synchronicity_client, SynchStub)
     SystemsRuntime.put_env(:comma_core, :test_synch_result, result)
+    SystemsRuntime.put_env(:comma_core, :test_synch_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       SystemsRuntime.delete_env(:comma_core, :synchronicity)
       SystemsRuntime.delete_env(:comma_core, :synchronicity_client)
       SystemsRuntime.delete_env(:comma_core, :test_synch_result)
+      SystemsRuntime.delete_env(:comma_core, :test_synch_pid)
     end)
   end
 
@@ -221,7 +233,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
       )
 
     assert [[1]] = result.rows
-    assert workspace.vm == %{"enabled" => false}
+    assert is_nil(workspace.vm)
 
     assert {:ok, decision} =
              BillingCore.FeeControl.authorize(%{
@@ -290,7 +302,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     assert {:ok, recreated} =
              Comma.Workspaces.update(user, %{}, workspace["id"], %{
-               "vm" => %{"enabled" => true, "provider" => "cloudflare", "recreate" => true}
+               "vm" => %{"provider" => "cloudflare", "recreate" => true}
              })
 
     row = Comma.Repo.get!(Workspace, workspace["id"])
@@ -302,16 +314,14 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     assert {:ok, _updated} =
              Comma.Workspaces.update(user, %{}, workspace["id"], %{
-               "vm" => %{"enabled" => false, "provider" => "cloudflare"}
+               "vm" => %{"provider" => "cloudflare"}
              })
 
     row = Comma.Repo.get!(Workspace, workspace["id"])
     assert is_nil(row.vm_recreate_generation)
-    previous_vm = Provider.last_vm()
-    assert previous_vm["enabled"] == true
+    assert Provider.last_vm()["recreate"] == true
     assert {:ok, _} = run_workspace_generation(workspace["id"], row.lock_version)
     refute Map.has_key?(Provider.last_vm(), "recreate")
-    assert Provider.last_vm()["enabled"] == false
   end
 
   test "a newer desired VM generation supersedes an older retryable operation" do
@@ -323,7 +333,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     assert {:ok, accepted} =
              Comma.Workspaces.update(user, %{}, workspace["id"], %{
-               "vm" => %{"enabled" => true, "provider" => "cloudflare"}
+               "vm" => %{"provider" => "cloudflare", "recreate" => true}
              })
 
     assert accepted["status"] == "active"
@@ -338,7 +348,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     assert {:ok, _workspace} =
              Comma.Workspaces.update(user, %{}, workspace["id"], %{
-               "vm" => %{"enabled" => false, "provider" => "cloudflare"}
+               "vm" => %{"provider" => "cloudflare"}
              })
 
     assert Comma.Repo.get!(ExternalOperation, stale.operation_id).status == "superseded"
@@ -347,7 +357,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     assert superseded.status == "superseded"
     assert Provider.calls() == calls_before
     assert {:ok, _} = run_workspace_generation(workspace["id"], 3)
-    assert Provider.last_vm()["enabled"] == false
+    assert Provider.last_vm() == %{"provider" => "cloudflare"}
   end
 
   test "external success followed by worker death recovers from the orphan without duplicate effect" do
@@ -571,7 +581,38 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
            end) == 1
   end
 
-  test "convergence provisions Synchronicity and stores the org/network ids" do
+  test "Synchronicity failure leaves bootstrap and tasks ready while Drive is unavailable" do
+    with_synchronicity({:error, {:retryable, :timeout}})
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("drive-outage")}@comma.test"})
+    {:ok, pending} = Comma.WorkspaceBootstrap.ensure_default(user["id"])
+    workspace_id = pending["workspace"]["id"]
+    operation = operation_for!(workspace_id, 1)
+
+    assert {:ok, succeeded} = Comma.Workers.WorkspaceConvergence.run(operation.operation_id)
+    assert succeeded.status == "succeeded"
+    refute_received {:synch_provision, ^workspace_id}
+    assert %{failure: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    assert {:ok, %{"status" => "ready"}} = Comma.WorkspaceBootstrap.ensure_default(user["id"])
+    workspace = Comma.Repo.get!(Workspace, workspace_id)
+    assert {:ok, []} = Comma.Conversations.list(user, %{}, workspace.salix_group_id)
+
+    assert {:ok, %{provisioned: false, agent_access: false}} =
+             Comma.Synchronicity.status(user["id"])
+
+    assert {:error, :not_provisioned} =
+             Comma.Synchronicity.enroll_device(user["id"], "node", "Device")
+
+    SystemsRuntime.put_env(:comma_core, :test_synch_result, :ok)
+    assert %{success: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive, with_scheduled: true)
+
+    assert {:ok, %{provisioned: true, agent_access: true}} =
+             Comma.Synchronicity.status(user["id"])
+
+    assert {:ok, %{"workspace" => %{"id" => ^workspace_id}, "status" => "ready"}} =
+             Comma.WorkspaceBootstrap.ensure_default(user["id"])
+  end
+
+  test "core convergence commits a separate Drive job that stores the org/network ids" do
     with_synchronicity(:ok)
     {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("synch")}@comma.test"})
     workspace_id = unique("wsp")
@@ -585,8 +626,171 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
 
     workspace = Comma.Repo.get!(Workspace, workspace_id)
     assert workspace.status == "active"
+    assert is_nil(workspace.sync_org_id)
+    assert is_nil(workspace.sync_network_id)
+    refute_received {:synch_provision, ^workspace_id}
+
+    assert %{success: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    workspace = Comma.Repo.get!(Workspace, workspace_id)
     assert workspace.sync_org_id == "org-" <> workspace_id
     assert workspace.sync_network_id == "net-" <> workspace_id
+  end
+
+  test "a rejected Drive job can be retried without changing Workspace readiness" do
+    with_synchronicity({:error, :auth})
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("drive-auth")}@comma.test"})
+    {:ok, pending} = Comma.WorkspaceBootstrap.ensure_default(user["id"])
+    workspace_id = pending["workspace"]["id"]
+    assert {:ok, _} = run_workspace_generation(workspace_id, 1)
+    assert %{cancelled: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    assert {:ok, %{"status" => "ready"}} = Comma.WorkspaceBootstrap.ensure_default(user["id"])
+
+    SystemsRuntime.put_env(:comma_core, :test_synch_result, :ok)
+    assert {:ok, first} = Comma.Synchronicity.enqueue(workspace_id)
+    assert {:ok, same} = Comma.Synchronicity.enqueue(workspace_id)
+    assert same.id == first.id
+    assert %{success: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    assert {:ok, %{agent_access: true}} = Comma.Synchronicity.status(user["id"])
+  end
+
+  test "Drive jobs skip a Workspace deleted before execution" do
+    with_synchronicity(:ok)
+
+    {:ok, user} =
+      Comma.Accounts.create_user(%{"email" => "#{unique("drive-deleted")}@comma.test"})
+
+    {:ok, workspace} = Comma.Workspaces.create_for_user(user["id"])
+    workspace_id = workspace["id"]
+    assert {:ok, _} = run_workspace_generation(workspace_id, 1)
+
+    Comma.Repo.get!(Workspace, workspace_id)
+    |> Ecto.Changeset.change(status: "deleted")
+    |> Comma.Repo.update!()
+
+    assert %{success: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    refute_received {:synch_provision, ^workspace_id}
+  end
+
+  test "release recovery preserves failed operations and identities and rechecks core provisioning" do
+    with_synchronicity({:error, {:retryable, :timeout}})
+    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("recover")}@comma.test"})
+    {:ok, workspace} = Comma.Workspaces.create_for_user(user["id"])
+    workspace_id = workspace["id"]
+    original = Comma.Repo.get!(Workspace, workspace_id)
+    failed = operation_for!(workspace_id, 1)
+
+    original |> Ecto.Changeset.change(status: "provisioning_failed") |> Comma.Repo.update!()
+
+    assert {:ok, {:execute, _}} = Comma.Operations.claim(failed.operation_id, 1)
+
+    assert {:ok, {:updated, failed}} =
+             Comma.Operations.terminal_failed(failed.operation_id, 1, "retry_exhausted")
+
+    assert {:ok, %{processed: 1, next_cursor: nil}} =
+             Comma.Workspaces.retry_failed_provisioning_page(nil)
+
+    assert {:ok, %{processed: 0, next_cursor: nil}} =
+             Comma.Workspaces.retry_failed_provisioning_page(nil)
+
+    assert Comma.Repo.get!(ExternalOperation, failed.operation_id) == failed
+
+    Provider.plan([:terminal])
+    assert {:error, :invalid_workspace_configuration} = run_workspace_generation(workspace_id, 2)
+
+    assert {:error, :workspace_provisioning_failed} =
+             Comma.WorkspaceBootstrap.ensure_default(user["id"])
+
+    Provider.plan([:ok])
+    assert {:ok, %{processed: 1}} = Comma.Workspaces.retry_failed_provisioning_page(nil)
+    assert {:ok, _} = run_workspace_generation(workspace_id, 3)
+    assert {:ok, %{"status" => "ready"}} = Comma.WorkspaceBootstrap.ensure_default(user["id"])
+    recovered = Comma.Repo.get!(Workspace, workspace_id)
+
+    fields = [
+      :id,
+      :owner_user_id,
+      :salix_tenant_id,
+      :salix_group_id,
+      :salix_router_agent_id,
+      :billing_owner_id
+    ]
+
+    assert Map.take(recovered, fields) == Map.take(original, fields)
+    assert {:ok, []} = Comma.Conversations.list(user, %{}, recovered.salix_group_id)
+    assert %{failure: 1} = Oban.drain_queue(Comma.Oban, queue: :comma_drive)
+    assert Comma.Repo.get!(Workspace, workspace_id).status == "active"
+  end
+
+  test "release recovery bounds each page and resumes after its cursor without provider calls" do
+    ids =
+      for _ <- 1..101 do
+        {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("page")}@comma.test"})
+        {:ok, workspace} = Comma.Workspaces.create_for_user(user["id"])
+        workspace["id"]
+      end
+
+    Comma.Repo.update_all(from(w in Workspace, where: w.id in ^ids),
+      set: [status: "provisioning_failed"]
+    )
+
+    assert {:ok, %{processed: 100, next_cursor: cursor}} =
+             Comma.Workspaces.retry_failed_provisioning_page(nil)
+
+    assert is_binary(cursor)
+
+    assert Comma.Repo.aggregate(
+             from(w in Workspace, where: w.id in ^ids and w.status == "provisioning_failed"),
+             :count
+           ) == 1
+
+    assert {:ok, %{processed: 1, next_cursor: nil}} =
+             Comma.Workspaces.retry_failed_provisioning_page(cursor)
+
+    assert Comma.Repo.aggregate(
+             from(op in ExternalOperation, where: op.owner_id in ^ids and op.generation == 2),
+             :count
+           ) == 101
+
+    assert Provider.calls() == 0
+  end
+
+  test "release recovery leaves suspended Workspaces and inactive owners unchanged" do
+    workspaces =
+      for exclusion <- [:suspended, :disabled_user, :inactive_membership] do
+        {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("skip")}@comma.test"})
+        {:ok, workspace} = Comma.Workspaces.create_for_user(user["id"])
+        status = if exclusion == :suspended, do: "suspended", else: "provisioning_failed"
+
+        stored =
+          Comma.Repo.get!(Workspace, workspace["id"])
+          |> Ecto.Changeset.change(status: status)
+          |> Comma.Repo.update!()
+
+        case exclusion do
+          :disabled_user ->
+            Comma.Repo.get!(Comma.Accounts.User, user["id"])
+            |> Ecto.Changeset.change(status: "disabled")
+            |> Comma.Repo.update!()
+
+          :inactive_membership ->
+            Comma.Repo.get_by!(WorkspaceMembership, workspace_id: stored.id)
+            |> Ecto.Changeset.change(status: "removed")
+            |> Comma.Repo.update!()
+
+          :suspended ->
+            :ok
+        end
+
+        stored
+      end
+
+    assert {:ok, %{processed: 2, next_cursor: nil}} =
+             Comma.Workspaces.retry_failed_provisioning_page(nil)
+
+    for workspace <- workspaces do
+      assert Comma.Repo.get!(Workspace, workspace.id) == workspace
+      assert operation_for!(workspace.id, 1).status == "pending"
+    end
   end
 
   defp run_workspace_generation(workspace_id, generation) do

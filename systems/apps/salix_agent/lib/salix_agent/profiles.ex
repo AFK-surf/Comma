@@ -74,7 +74,7 @@ defmodule SalixAgent.Profiles do
 
   # The Profile's fields: an AccountPool record is stored as the Profile, with
   # the server's own fields beside it (sealed credentials, versions, email).
-  @profile_fields ~w(id name source credential runtime endpoint protocol auth models disabled_models model env disabled status quota cooldown_until)
+  @profile_fields ~w(id name source credential runtime endpoint protocol auth models disabled_models model env disabled status quota use_credits cooldown_until)
 
   @doc "An AccountPool record as the Profile the shared logic takes."
   def profile(record) do

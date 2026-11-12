@@ -26,7 +26,9 @@
     <!-- The chat composer: a raised card on the page. Eight-digit values use AARRGGBB. -->
     <color name="token_composer_bg">#FFFFFF</color>
     <color name="token_composer_border">#0A000000</color>
-    <!-- Elevation shadow colours; the alpha scales the theme's shadow alphas. -->
+    <!-- Six percent black for the drawn composer shadow. -->
+    <color name="token_composer_shadow">#0F000000</color>
+    <!-- Elevation shadow colors for other raised surfaces. -->
     <color name="token_composer_shadow_ambient">#99000000</color>
     <color name="token_composer_shadow_spot">#33000000</color>
 
@@ -78,6 +80,19 @@
     <color name="token_glass_over_page">#EBFAFAFA</color>
     <!-- Glass over a frosted backdrop (the tab bar, the status switcher): the blur shows through it. -->
     <color name="token_glass_frosted">#A6FAFAFA</color>
+    <!-- The experimental glass: its shader's veil over the backdrop, on chrome and on a menu, its lit line and its hairline. Measured from the iOS glass. -->
+    <color name="token_glass_tint">#99F6F6F6</color>
+    <color name="token_glass_tint_brand">@color/token_bg_brand_solid</color>
+    <color name="token_glass_tint_off">#BFBFBF</color>
+    <color name="token_glass_icon_off">#767676</color>
+    <color name="token_glass_tint_frosted">#E0FAFAFA</color>
+    <color name="token_glass_tint_menu">#D6FCFCFC</color>
+    <color name="token_glass_rim">#FFFFFFFF</color>
+    <color name="token_glass_line">#52000000</color>
+    <color name="token_glass_fall">#26FFFFFF</color>
+    <color name="token_glass_tint_lens">#00FFFFFF</color>
+    <color name="token_glass_lens_bar">#FFFFFFFF</color>
+    <color name="token_glass_lens_band">#29000000</color>
     <!-- The selected segment inside glass: the tab bar's and the status switcher's pill. -->
     <color name="token_glass_selection">#14000000</color>
     <!-- A glass control's hairline edge. -->

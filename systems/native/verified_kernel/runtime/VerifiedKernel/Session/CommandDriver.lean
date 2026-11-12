@@ -1,14 +1,15 @@
 import VerifiedKernel.Session.RevisionFence
+import VerifiedKernel.Session.Revision
 import VerifiedKernel.Session.Command
 
 namespace VerifiedKernel.Session.CommandDriver
 open Data
-abbrev Output := RevisionFence.Output
+abbrev Output := BatchExecution.Output
 
 abbrev Context := Revision.Cursor
 abbrev unpack := Revision.unpack
 
-def invalid : Output := RevisionFence.invalid
+def invalid : Output := Revision.invalid
 
 def rejected (context : Context) (continuation reason candidate : Term) : Output :=
   let baseline := context.baseline
@@ -62,6 +63,8 @@ def issue (context : Context) : Term → Output
   | .tuple [.atom "perform", request@(.tuple [.atom "random", _]), continuation]
   | .tuple [.atom "perform", request@(.tuple [.atom "draft_clear", _]), continuation] =>
     (some (.tuple [a "session_command_driver_effect", context.pack, continuation, request]), .tuple [a "effect", request])
+  | .tuple [.atom "perform", request@(.tuple [.atom "input_dedupe", _]), continuation] =>
+    (some (.tuple [a "session_command_driver_effect", context.pack, continuation, request]), .tuple [a "effect", request])
   | _ => invalid
 
 def query (context : Context) (operation args : Term) (observations : List Term) : Output :=
@@ -103,6 +106,25 @@ def acceptCAS (context : Context) (continuation : Term) : Output → Output
   | (none, response) => (none, response)
   | _ => invalid
 
+def acceptPG (continuation : Term) : Output → Output
+  | (some saved, .tuple [.atom "done"]) =>
+    (some (.tuple [a "session_command_driver_pg", saved, continuation]), .tuple [a "prepared"])
+  | (some batch, response) =>
+    (some (.tuple [a "session_command_driver_pg_batch", continuation, batch]), response)
+  | (none, response) => (none, response)
+
+def preparePG (context : Context) (continuation storageRevision epoch node activity : Term) : Output :=
+  let stamp := .map [(b "type", b "session_stamp"), (b "storage_revision", storageRevision),
+    (b "runtime_epoch", epoch), (b "runtime_node", node), (b "activity_revision", activity)]
+  acceptPG continuation (Revision.resident (some context.pack) (a "write")
+    (.tuple [list [stamp], nil]))
+
+def committedPG (context : Context) (continuation revision : Term) : Output :=
+  match Revision.resident (some context.pack) (a "commit_delta") revision with
+  | (some saved, .tuple [.atom "done"]) =>
+    (some (.tuple [a "session_command_driver_confirmed", saved, continuation]), .tuple [a "committed"])
+  | other => other
+
 def contextOf (current : Term) : Option Context :=
   match unpack current with
   | some context => some context
@@ -117,6 +139,7 @@ def contextOf (current : Term) : Option Context :=
     | .tuple [.atom "session_command_driver_confirmed", saved, _]
     | .tuple [.atom "session_command_driver_rejected", saved, _, _, _]
     | .tuple [.atom "session_command_driver_query", saved, _, _, _] => unpack saved
+    | .tuple [.atom "session_command_driver_pg", saved, _] => unpack saved
     | _ => none
 
 def resident (current : Option Term) (operation args : Term) : Output :=
@@ -128,7 +151,7 @@ def resident (current : Option Term) (operation args : Term) : Output :=
   | .atom "view", some value, _ =>
     match contextOf value with
     | some context => (some context.candidate.working,
-      .tuple [a "view", context.candidate.etag, Term.bool context.isPending])
+      .tuple [a "view", context.candidate.revision, Term.bool context.isPending])
     | none => invalid
   | .atom "revision", some value, _ =>
     match contextOf value with
@@ -150,10 +173,30 @@ def resident (current : Option Term) (operation args : Term) : Output :=
       (Revision.resident (some context.pack) (a "write") (.tuple [list events, hwm]))
     | some context, .tuple [.atom "error", _] => query context (a "resume") (.tuple [continuation, result]) []
     | _, _ => invalid
+  | .atom "write_hits", some (.tuple [.atom "session_command_driver_write", saved, continuation, events, hwm]), .list hits =>
+    match unpack saved with
+    | some context =>
+      match Revision.withInputHits context hits [] with
+      | .ok (next, []) => (some (.tuple [a "session_command_driver_write", next.pack, continuation, events, hwm]),
+          .tuple [a "validate_write", events])
+      | .error (.raised reason) => (none, .tuple [a "raised", reason])
+      | _ => invalid
+    | none => invalid
   | .atom "effect_result", some (.tuple [.atom "session_command_driver_effect", saved, continuation, request]), result =>
     match unpack saved with
     | some context =>
-      if effectResultValid request result then query context (a "resume") (.tuple [continuation, result]) [] else invalid
+      if effectResultValid request result then query context (a "resume") (.tuple [continuation, result]) []
+      else invalid
+    | none => invalid
+  | .atom "identity_result", some (.tuple [.atom "session_command_driver_effect", saved, continuation,
+        .tuple [.atom "input_dedupe", _]]),
+      .list hits =>
+    match unpack saved with
+    | some context =>
+        match Revision.withInputHits context hits [] with
+        | .ok (context, []) => query context (a "resume") (.tuple [continuation, list hits]) []
+        | .error (.raised reason) => (none, .tuple [a "raised", reason])
+        | _ => invalid
     | none => invalid
   | _, some (.tuple [.atom "session_command_driver_batch", saved, continuation, batch]), _ =>
     if operation == a "run" || operation == a "resume" then
@@ -165,6 +208,20 @@ def resident (current : Option Term) (operation args : Term) : Output :=
     match unpack saved with
     | some context => acceptFence context continuation
       (RevisionFence.resident (some context.candidate.pack) (a "start") (.tuple [key, list observations]))
+    | none => invalid
+  | .atom "pg_prepare", some (.tuple [.atom "session_command_driver_fence", saved, continuation]),
+      .tuple [storageRevision, epoch, node, activity] =>
+    match unpack saved with
+    | some context => preparePG context continuation storageRevision epoch node activity
+    | none => invalid
+  | _, some (.tuple [.atom "session_command_driver_pg_batch", continuation, batch]), _ =>
+    if operation == a "run" || operation == a "resume" then
+      acceptPG continuation (PendingRevision.resident (some batch) operation args)
+    else invalid
+  | .atom "pg_committed", some (.tuple [.atom "session_command_driver_pg", saved, continuation]), revision
+  | .atom "pg_committed", some (.tuple [.atom "session_command_driver_fence", saved, continuation]), revision =>
+    match unpack saved with
+    | some context => committedPG context continuation revision
     | none => invalid
   | .atom "fence_clean", some (.tuple [.atom "session_command_driver_fence", saved, continuation]), _ =>
     match unpack saved with

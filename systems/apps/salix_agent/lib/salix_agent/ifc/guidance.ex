@@ -240,6 +240,10 @@ defmodule SalixAgent.IFC.Guidance do
   defp model_sentence(%Reason{clause: :invalid_input, detail: :activation}),
     do: "the current activation has no authenticated requester and cannot authorize an effect."
 
+  defp model_sentence(%Reason{clause: :invalid_input, detail: :request_required}),
+    do:
+      "This activation holds requests from several senders. Name the one this effect acts on in ifc.request."
+
   defp model_sentence(%Reason{clause: :invalid_input, detail: detail}),
     do: "the information-flow inputs were malformed (#{inspect(detail)})."
 
@@ -249,7 +253,7 @@ defmodule SalixAgent.IFC.Guidance do
 
   defp next_action(%Reason{clause: clause}) when clause in @model_only,
     do:
-      "Check whether there is a real citation mistake to correct; help(tool=\"ifc\") returns the ref and declaration rules. With a valid request, you can instead send a generic explanation with sources: [] if it uses no source content, choose another authorized response, or finish without sending through standalone end_turn. Changing refs alone does not create authority."
+      "Check whether there is a real citation mistake to correct; help(tool=\"ifc\") returns the ref and declaration rules. With a valid request, you can instead send a generic explanation with sources: [] if it uses no source content, or choose another authorized response. A person waiting for an answer gets one of these unless they told you not to reply. Changing refs alone does not create authority."
 
   defp next_action(%Reason{clause: :external_principal_denied}),
     do: "Reply in the requester's own conversation instead."
@@ -257,11 +261,11 @@ defmodule SalixAgent.IFC.Guidance do
   defp next_action(%Reason{clause: clause})
        when clause in [:flow_denied, :membership_unknown, :sealed, :public_egress_denied],
        do:
-         "Retry with an answer that excludes all restricted information from the listed source_failures. Remove that information from the content, then declare only the sources the revised answer actually uses. Removing refs alone does not authorize restricted content. Keep the valid request.\n\nWhere policy permits, request confirmation through ifc.request_declassification. If no safe answer remains, send a generic explanation with sources: [] and no restricted details, or finish without sending. Do not retry the unchanged refusal. help(tool=\"ifc\") explains the rules."
+         "Retry with an answer that excludes all restricted information from the listed source_failures. Remove that information from the content, then declare only the sources the revised answer actually uses. Removing refs alone does not authorize restricted content. Keep the valid request.\n\nWhere policy permits, request confirmation through ifc.request_declassification. If no safe answer remains, send a generic explanation with sources: [] and no restricted details. A person waiting for an answer gets it unless they told you not to reply, and a refused explanation ends the attempt. Do not retry the unchanged refusal. help(tool=\"ifc\") explains the rules."
 
   defp next_action(_reason),
     do:
-      "Choose what fits: an authorized narrower answer, confirmation through ifc.request_declassification, or a generic explanation with sources: [] that includes no source content or restricted details. Keep the valid request. You may also continue other work or finish without sending through standalone end_turn; an unchanged refusal is not a reason to retry indefinitely. help(tool=\"ifc\") returns the label rules and declaration examples."
+      "Choose what fits: an authorized narrower answer, confirmation through ifc.request_declassification, or a generic explanation with sources: [] that includes no source content or restricted details. Keep the valid request. A person waiting for an answer gets one of these unless they told you not to reply. You may also continue other work; an unchanged refusal is not a reason to retry indefinitely. help(tool=\"ifc\") returns the label rules and declaration examples."
 
   # A refusal is where the declaration rules matter most, so the result carries
   # the same `help_tool`/`help_params` pointer the envelope guidance in

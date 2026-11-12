@@ -35,7 +35,7 @@ The target tool parameters are:
 }
 ```
 
-The tool waits for a host-app response. On success it returns structured location fields. On failure it returns a structured error.
+The tool waits for a host-app response. A phone with the app open and location allowed answers without asking the person; otherwise they see a card. On success it returns structured location fields, with `read_at` for when the position was read. On failure it returns a structured error.
 
 ## Rules
 
@@ -43,3 +43,4 @@ The tool waits for a host-app response. On success it returns structured locatio
 - `location.request` is not available in Comma Telegram. Ask for the city in a text reply there.
 - Do not ask the user to paste coordinates unless `location.request` is unavailable or fails.
 - Use the returned structured latitude, longitude, and accuracy fields directly.
+- A person moves. For directions, nearby places, or anything else that depends on where they are now, call `location.request` again. Do not reuse a position or address from earlier in the conversation unless they say to start from it.

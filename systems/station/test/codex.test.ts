@@ -1,6 +1,6 @@
 // The Codex driver (src/agents/codex.ts) against a fake app-server (test/fake/codex: JSON-RPC as codex speaks it) under
 // the real runner: turns, failures by their code, abort, steer, a turn of its own, the app-server exiting, one
-// app-server per profile and its restart once a profile edit leaves it idle, what it is started with, and threads taken
+// app-server per profile and its replacement once a profile edit's turns end, what it is started with, and threads taken
 // up by a next driver (with a snapshot, and after a crash) with the turn's end told once and no live event twice.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -83,7 +83,8 @@ describe("the Codex driver", { concurrency: true }, () => {
     const d = driver();
     const p = profile();
     const { events, push, until } = listen();
-    const session = await d.open(options(p, { model: "gpt-x", effort: "high" }), push);
+    const o = options(p, { model: "gpt-x", effort: "high" });
+    const session = await d.open(o, push);
     assert.match(session.id(), /^th-/);
     await session.prompt("cmd");
     await until(ended(1));
@@ -121,7 +122,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(started.env.OPENCODE_SESSION, `ember-${p.id}`, "a codex route is its profile");
 
     const sent = stdin(p.dump);
-    assert.deepEqual(sent[0], { id: 1, method: "initialize", params: { clientInfo: { name: "stillfail", version: "0" }, capabilities: { experimentalApi: true } } });
+    assert.deepEqual(sent[0], { id: 1, method: "initialize", params: { clientInfo: { name: "comma-station", version: "0" }, capabilities: { experimentalApi: true } } });
     assert.deepEqual(sent[1], { method: "initialized", params: {} });
     assert.deepEqual(sent[2], {
       id: 2,
@@ -132,8 +133,10 @@ describe("the Codex driver", { concurrency: true }, () => {
         sandbox: "danger-full-access",
         developerInstructions: "be brief",
         config: {
-          "mcp_servers.stillfail.url": "http://127.0.0.1:4750/mcp",
-          "mcp_servers.stillfail.http_headers": { Authorization: "Bearer tok" },
+          "mcp_servers.comma-station.url": "http://127.0.0.1:4750/mcp",
+          "mcp_servers.comma-station.http_headers": { Authorization: "Bearer tok" },
+          "mcp_servers.comma-station.tool_timeout_sec": 1230,
+          "shell_environment_policy.set": { COMMA_STATION_MCP_URL: o.mcpUrl, COMMA_STATION_MCP_TOKEN: o.mcpToken },
           model_reasoning_effort: "high",
           "skills.config": [{ path: join(skills, "mine", "SKILL.md"), enabled: false }],
         },
@@ -241,21 +244,45 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.deepEqual(deltas(events), ["connected"]);
   });
 
-  test("a profile edit restarts its app-server only once no thread uses it", async () => {
+  test("a profile edit replaces its app-server once the turns on it end; sessions opened meanwhile wait, and its loaded threads go on by resume", async () => {
     const d = driver();
     const p = profile();
-    const one = await d.open(options(p), () => {});
+    const a = listen();
+    const one = await d.open(options(p), a.push);
+    const idle = await d.open(options(p), () => {});
     const edited = { ...p, env: { ...(p.env as object), EXTRA: "1" } };
-    const two = await d.open(options(edited), () => {});
-    assert.equal(starts(p.dump).length, 1, "in use: it keeps serving");
-    await one.dispose();
-    await two.dispose();
-    const { push, until } = listen();
-    const three = await d.open(options(edited), push);
+    assert.equal(d.stale(one, p), false);
+    assert.equal(d.stale(one, edited), true, "its process was started for the profile as it was");
+    // A turn runs on `one`: it goes on to its end. The process's other threads are stale meanwhile, and a session
+    // opened on the edited profile waits for that end rather than start a turn on the old process.
+    const g = gates(p.dump, "edit");
+    await one.prompt("gate:2:1:edit");
+    await a.until((e) => deltas(e).length >= 1);
+    assert.equal(d.stale(one, edited), false, "under a turn");
+    assert.equal(d.stale(idle, edited), true, "idle, on a process another thread's turn keeps");
+    const b = listen();
+    let opened = false;
+    const two = d.open(options(edited), b.push).then((s) => ((opened = true), s));
+    await g.open("a");
+    await eventually(g.said);
+    assert.equal(opened, false, "waits for the turn to end");
+    assert.equal(starts(p.dump).length, 1, "nothing started under it");
+    await g.open("b");
+    await a.until(ended(1));
+    const second = await two;
     assert.equal(starts(p.dump).length, 2);
     assert.equal(starts(p.dump)[1].env.EXTRA, "1");
-    await three.prompt("say:x");
-    await until(ended(1));
+    // The old process is gone with its threads: closed, and taken up again (resume) on the new one.
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    await assert.rejects(one.prompt("x"), /closed/);
+    const c = listen();
+    const again = await d.open(options(edited, { resume: one.id() }), c.push);
+    assert.equal(again.id(), one.id());
+    await again.prompt("say:back");
+    await c.until(ended(1));
+    await second.prompt("say:x");
+    await b.until(ended(1));
+    assert.equal(starts(p.dump).length, 2, "both go on in the one restarted app-server");
   });
 
   test("a subscription's turns say their service tier; models and rate limits come from the app-server", async () => {

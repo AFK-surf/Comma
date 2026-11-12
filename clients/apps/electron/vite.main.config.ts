@@ -29,6 +29,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@comma/config": resolve("../../packages/config/src/index.ts"),
+      "@comma/i18n/messages": resolve("../../packages/i18n/src/paraglide/messages.js"),
       "@comma/i18n": resolve("../../packages/i18n/src/index.ts"),
       "@comma/session-contract": resolve(
         "../../packages/session-contract/src/index.ts"

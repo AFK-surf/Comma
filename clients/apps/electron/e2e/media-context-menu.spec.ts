@@ -99,6 +99,12 @@ test(
           .getByTestId("file-preview-panel")
           .getByRole("button", { name: /^Download / })
           .click();
+        // On the desktop the download button is a menu: the file itself comes first, then the apps that open it.
+        await page
+          .getByRole("menu", { name: /^Download / })
+          .getByRole("menuitem")
+          .first()
+          .click();
         const notification = page.getByTestId("file-download");
         await expect(
           notification.getByText("Download complete", { exact: true })

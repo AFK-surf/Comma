@@ -742,6 +742,106 @@ test("conversation timestamps mark minute intervals above their first user messa
   await expect(column).toBeVisible();
 });
 
+test("New spans the column between rules, the left one starting clear of a reply line", async ({
+  page,
+}) => {
+  for (const as of ["router", "router-reply", "worker-reply"] as const) {
+    await page.goto(`${fixtureUrl}?fixture=conversation-new-timestamp-fixture`);
+    const fixture = page.getByTestId("conversation-new-timestamp-fixture");
+    const reminder = fixture.locator('[data-message-id="new-timestamp-reminder"]');
+    await expect(
+      fixture.locator('[data-message-id="new-timestamp-answer"]')
+    ).toBeVisible();
+
+    // The reminder lands while another app has focus; it reads New once the
+    // window is back.
+    await page.evaluate((reminderAs) => {
+      document.hasFocus = () => false;
+      window.dispatchEvent(new Event("blur"));
+      window.newTimestampFixture!.arrive(reminderAs);
+    }, as);
+    await expect(reminder).toBeVisible();
+    await page.evaluate(() => {
+      document.hasFocus = () => true;
+      window.dispatchEvent(new Event("focus"));
+    });
+    await expect(
+      fixture.getByTestId("chat-conversation-time-new-timestamp-reminder")
+    ).toHaveText("New");
+    const line = fixture.locator(
+      'svg.comma-chat-reply-lines path[data-reply-source="new-timestamp-reminder"]'
+    );
+    await expect(line).toHaveCount(as === "router" ? 0 : 1);
+
+    const geometry = await fixture.evaluate((root) => {
+      const column = root.querySelector<HTMLElement>(".comma-chat-column")!;
+      const time = root.querySelector<HTMLElement>(
+        '[data-testid="chat-conversation-time-new-timestamp-reminder"]'
+      )!;
+      const label = time.querySelector<HTMLElement>(
+        ".comma-chat-conversation-timestamp-new"
+      )!;
+      const bubble = root.querySelector<HTMLElement>(
+        '[data-message-id="new-timestamp-reminder"] .markdown-stream-bubble'
+      )!;
+      const path = root.querySelector<SVGPathElement>(
+        'svg.comma-chat-reply-lines path[data-reply-source="new-timestamp-reminder"]'
+      );
+      const timeBox = time.getBoundingClientRect();
+      const labelBox = label.getBoundingClientRect();
+      const columnBox = column.getBoundingClientRect();
+      const before = getComputedStyle(time, "::before");
+      const after = getComputedStyle(time, "::after");
+      const pathBox = path?.getBoundingClientRect();
+      return {
+        afterHeight: parseFloat(after.height),
+        afterStart: labelBox.right + parseFloat(getComputedStyle(time).columnGap),
+        beforeEnd: labelBox.left - parseFloat(getComputedStyle(time).columnGap),
+        beforeHeight: parseFloat(before.height),
+        beforeStart: timeBox.left + parseFloat(before.marginInlineStart),
+        bubbleLeft: bubble.getBoundingClientRect().left,
+        columnCenter: columnBox.left + columnBox.width / 2,
+        columnRight: columnBox.right,
+        labelCenter: labelBox.left + labelBox.width / 2,
+        line: pathBox && {
+          x: pathBox.left + pathBox.width / 2,
+          spansRow: pathBox.top < timeBox.top && pathBox.bottom > timeBox.bottom,
+        },
+        timeRight: timeBox.right,
+      };
+    });
+
+    // The text stays where every timestamp's is; the rules run out to the
+    // column's edges, beside it.
+    expect(Math.abs(geometry.labelCenter - geometry.columnCenter)).toBeLessThanOrEqual(
+      1
+    );
+    expect(geometry.timeRight).toBeCloseTo(geometry.columnRight, 0);
+    expect(geometry.beforeHeight).toBe(1);
+    expect(geometry.afterHeight).toBe(1);
+    expect(geometry.beforeEnd).toBeGreaterThan(geometry.beforeStart);
+    expect(geometry.columnRight).toBeGreaterThan(geometry.afterStart);
+    if (as === "router") {
+      // Nothing runs through the row: the rule starts where the bubbles do.
+      expect(geometry.line).toBeUndefined();
+      expect(geometry.beforeStart).toBeCloseTo(geometry.bubbleLeft, 0);
+      continue;
+    }
+    expect(geometry.line?.spansRow).toBe(true);
+    if (as === "worker-reply") {
+      // A Worker's line runs down its avatar in the gutter, before the rule,
+      // which still starts where the bubbles do.
+      expect(geometry.line!.x).toBeLessThan(geometry.bubbleLeft);
+      expect(geometry.beforeStart).toBeCloseTo(geometry.bubbleLeft, 0);
+      continue;
+    }
+    // The Router's line runs down through the row at the bubbles' text inset;
+    // the rule starts a 12px gap past it instead of crossing it.
+    expect(geometry.line!.x).toBeGreaterThan(geometry.bubbleLeft);
+    expect(geometry.beforeStart - geometry.line!.x).toBeCloseTo(12, 0);
+  }
+});
+
 test("a sent user bubble keeps one morph owner and survives an immediate ACK", async ({
   page,
 }) => {
@@ -4208,6 +4308,10 @@ test("the send failure and the model failure print the same notice card", async 
             ? {
                 bottomInset: cardRect.bottom - actionsRect.bottom,
                 copyGap: actionsRect.top - copyRect.bottom,
+                firstActionInset:
+                  (actions.querySelector("button")?.getBoundingClientRect().left ??
+                    Number.NaN) - copyRect.left,
+                iconToCopy: iconRect.top - copyRect.top,
                 labels: Array.from(actions.querySelectorAll("button"), (button) =>
                   button.textContent?.trim()
                 ),
@@ -4266,9 +4370,13 @@ test("the send failure and the model failure print the same notice card", async 
   expect(sendFailure.height).toBeCloseTo(68, 1);
   expect(sendFailure.height).toBeGreaterThan(modelFailure.height);
   expect(modelFailure.actions).toBeNull();
-  expect(sendFailure.actions).toMatchObject({ labels: ["Discard", "Retry"] });
+  expect(sendFailure.actions).toMatchObject({ labels: ["Retry", "Discard"] });
   expect(sendFailure.actions?.copyGap).toBeCloseTo(2, 1);
   expect(sendFailure.actions?.bottomInset).toBeCloseTo(9, 1);
+  // The icon pins to the copy's line instead of centring on the two rows, and
+  // the leading Retry button starts where the copy does.
+  expect(sendFailure.actions?.iconToCopy).toBeCloseTo(0, 1);
+  expect(sendFailure.actions?.firstActionInset).toBeCloseTo(0, 1);
 
   // Avatars communicate active participants. Once the row becomes a failure
   // notice, the notice owns the full column and its slot owns the full card.

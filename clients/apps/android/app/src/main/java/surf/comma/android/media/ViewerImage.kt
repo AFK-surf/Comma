@@ -3,7 +3,7 @@ package surf.comma.android.media
 import android.net.Uri
 import android.os.Bundle
 
-/** A picture the full-screen viewer can show and save. */
+/** A picture (or a message's video) the full-screen viewer can show; pictures it can also save. */
 sealed interface ViewerImage {
     val fileName: String?
     val mime: String
@@ -23,6 +23,19 @@ sealed interface ViewerImage {
         override val fileName: String? = null,
         override val dimensions: ImageDimensions? = null,
     ) : ViewerImage
+
+    /**
+     * A message's video, downloaded whole through the signed-in session when its page is current and played there.
+     * It has no picture of its own to decode.
+     */
+    data class Video(
+        val source: MediaSource,
+        override val fileName: String?,
+        override val mime: String,
+        override val dimensions: ImageDimensions? = null,
+    ) : ViewerImage {
+        val attachment: MediaAttachment get() = MediaAttachment(fileName, mime, null, source)
+    }
 }
 
 /**
@@ -42,26 +55,44 @@ object ViewerImageBundles {
             is ViewerImage.Remote -> {
                 putString("kind", "remote")
                 putString("mime", image.image.mimeType)
-                when (val source = image.image.source) {
-                    is MediaSource.AgentResource -> {
-                        putString("source", "agent")
-                        putString("agent_id", source.agentId)
-                        putRef(source.ref)
-                    }
-                    is MediaSource.MessageAttachment -> {
-                        putString("source", "attachment")
-                        putString("conversation_id", source.conversationId)
-                        putString("message_id", source.messageId)
-                        putInt("index", source.index)
-                        source.ref?.let { putRef(it) }
-                    }
-                    is MediaSource.UploadedFile -> {
-                        putString("source", "upload")
-                        putString("path", source.path)
-                    }
-                }
+                putSource(image.image.source)
+            }
+            is ViewerImage.Video -> {
+                putString("kind", "video")
+                putString("mime", image.mime)
+                putSource(image.source)
             }
         }
+    }
+
+    private fun Bundle.putSource(source: MediaSource) {
+        when (source) {
+            is MediaSource.AgentResource -> {
+                putString("source", "agent")
+                putString("agent_id", source.agentId)
+                putRef(source.ref)
+            }
+            is MediaSource.MessageAttachment -> {
+                putString("source", "attachment")
+                putString("conversation_id", source.conversationId)
+                putString("message_id", source.messageId)
+                putInt("index", source.index)
+                source.ref?.let { putRef(it) }
+            }
+            is MediaSource.UploadedFile -> {
+                putString("source", "upload")
+                putString("path", source.path)
+            }
+        }
+    }
+
+    private fun Bundle.source(): MediaSource? = when (getString("source")) {
+        "agent" -> MediaSource.AgentResource(getString("agent_id")!!, ref())
+        "attachment" -> MediaSource.MessageAttachment(getString("conversation_id")!!,
+            getString("message_id")!!, getInt("index", -1),
+            takeIf { it.containsKey("ref_uuid") }?.ref())
+        "upload" -> MediaSource.UploadedFile(getString("path")!!)
+        else -> null
     }
 
     fun read(bundle: Bundle): ViewerImage? = runCatching {
@@ -70,15 +101,14 @@ object ViewerImageBundles {
         when (bundle.getString("kind")) {
             "local" -> ViewerImage.Local(Uri.parse(bundle.getString("uri")!!), bundle.getString("mime")!!, name, dimensions)
             "remote" -> {
-                val source = when (bundle.getString("source")) {
-                    "agent" -> MediaSource.AgentResource(bundle.getString("agent_id")!!, bundle.ref())
-                    "attachment" -> MediaSource.MessageAttachment(bundle.getString("conversation_id")!!,
-                        bundle.getString("message_id")!!, bundle.getInt("index", -1),
-                        bundle.takeIf { it.containsKey("ref_uuid") }?.ref())
-                    "upload" -> MediaSource.UploadedFile(bundle.getString("path")!!)
-                    else -> return@runCatching null
-                }
+                val source = bundle.source() ?: return@runCatching null
                 ViewerImage.Remote(MediaImage(source, name, bundle.getString("mime"), dimensions))
+            }
+            "video" -> {
+                val source = bundle.source() ?: return@runCatching null
+                val mime = bundle.getString("mime")!!
+                if (InlineMediaPolicy.classify(name, mime) != InlineMediaKind.VIDEO) return@runCatching null
+                ViewerImage.Video(source, name, mime, dimensions)
             }
             else -> null
         }

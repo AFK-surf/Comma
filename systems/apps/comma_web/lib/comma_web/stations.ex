@@ -5,10 +5,19 @@ defmodule CommaWeb.Stations do
   For each call it resolves, from the tool ctx only:
 
     * the agent's Salix Group, which is the workspace of its stations;
-    * the requester: the sealed principal of the current turn
-      (`SalixAgent.IFC.principal/1`), mapped to a Comma user for provider
-      senders, who must have a role in that Group
-      (`SalixStore.StationMembers`);
+    * the requester: the current turn's sealed principal, or the human
+      request behind an ordinary Task's first Worker command. Provider
+      senders map to a Comma user. The requester must have a role in that Group
+      (`SalixStore.StationMembers`). In a Group whose product gives a role to
+      the people its chat app is available to
+      (`SalixStore.StationMembers.app_member_role/2`, a CFT Project), a Feishu
+      or Lark sender with no such role still has it when the connect's app is
+      available to them, as Feishu or Lark answers on this call
+      (`SalixIM.ProviderAccounts.app_member/2`), and they have an
+      organization email; their `user_id` is `<provider>:<connect>:<open_id>`.
+      Otherwise the call is refused with `{:requester_refused, reason}`
+      (`:not_available`, `:no_email`, `{:missing_scope, scope}`,
+      `:check_failed`);
     * the station, which must be listed for that Group by
       `CommaWeb.Stations.Directory`.
 
@@ -47,6 +56,11 @@ defmodule CommaWeb.Stations do
   end
 
   @impl true
+  def member(ctx) do
+    with {:ok, scope} <- scope(ctx), do: {:ok, %{email: scope.user["email"], role: scope.role}}
+  end
+
+  @impl true
   def list(ctx) do
     with :ok <- ensure_configured(),
          {:ok, scope} <- scope(ctx),
@@ -55,9 +69,18 @@ defmodule CommaWeb.Stations do
     end
   end
 
+  # One bounded read of the Group's devices, for the member who asked;
+  # still.fail stations need no station gateway.
+  @impl true
+  def stillfail_stations(ctx) do
+    with {:ok, scope} <- scope(ctx),
+         {:ok, stations, _more?} <- SalixEnv.StillfailDevices.first_page(scope.group_id),
+         do: {:ok, stations}
+  end
+
   @impl true
   def call(ctx, station_id, op, args) when is_binary(station_id) and is_binary(op),
-    do: call_in_scope(ctx, &requester/1, station_id, op, args)
+    do: call_in_scope(ctx, :turn, station_id, op, args)
 
   def call(_ctx, _station_id, _op, _args), do: {:error, :station_not_found}
 
@@ -68,7 +91,7 @@ defmodule CommaWeb.Stations do
   """
   def call_as(ctx, user_id, station_id, op, args)
       when is_binary(user_id) and is_binary(station_id) and is_binary(op),
-      do: call_in_scope(ctx, fn _ctx -> {:ok, user_id} end, station_id, op, args)
+      do: call_in_scope(ctx, {:member, user_id}, station_id, op, args)
 
   def call_as(_ctx, _user_id, _station_id, _op, _args), do: {:error, :requester_required}
 
@@ -96,20 +119,80 @@ defmodule CommaWeb.Stations do
 
   defp ensure_configured, do: if(configured?(), do: :ok, else: {:error, :not_configured})
 
-  defp scope(ctx, requester \\ &requester/1) do
+  # `requester` is `:turn`, the person who asked for the turn, or
+  # `{:member, user_id}`, a member `call_as/5` names. Only the turn's
+  # requester may be a chat app's user without a member's account
+  # (`app_member_scope/3`).
+  defp scope(ctx, requester \\ :turn) do
     with {:ok, ctx} <- SalixAgent.AgentRuntimeConfig.complete_context(ctx),
-         {:ok, {tenant_id, group_id}} <- group(ctx),
-         {:ok, user_id} <- requester.(ctx),
+         {:ok, {tenant_id, group_id}} <- group(ctx) do
+      case member_scope(ctx, tenant_id, group_id, requester) do
+        {:error, :requester_required} when requester == :turn ->
+          app_member_scope(ctx, tenant_id, group_id)
+
+        result ->
+          result
+      end
+    else
+      {:error, :missing_agent_runtime_context} -> {:error, :requester_required}
+      {:error, :not_found} -> {:error, :requester_required}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp member_scope(ctx, tenant_id, group_id, requester) do
+    with {:ok, user_id} <- requester_id(ctx, requester),
          {:ok, role} <- member_role(tenant_id, group_id, user_id),
          {:ok, user} <- Comma.Accounts.get_user(user_id) do
       {:ok, %{tenant_id: tenant_id, group_id: group_id, user: user, role: role}}
     else
-      {:error, :missing_agent_runtime_context} -> {:error, :requester_required}
       {:error, :requester_required} = error -> error
       {:error, :not_found} -> {:error, :requester_required}
       {:error, _reason} = error -> error
     end
   end
+
+  defp requester_id(ctx, :turn), do: requester(ctx)
+  defp requester_id(_ctx, {:member, user_id}), do: {:ok, user_id}
+
+  # A Feishu or Lark sender with no member's account, in a Group whose product
+  # gives a role to the people its chat app is available to (a CFT Project):
+  # the app's availability range, asked on every call, decides. They act
+  # under their organization email; any failure refuses (fail closed).
+  defp app_member_scope(ctx, tenant_id, group_id) do
+    with {:provider_user, connect_id, subject} <-
+           SalixAgent.IFC.principal(ctx[:trusted_origin]),
+         {:ok, role} <- SalixStore.StationMembers.app_member_role(tenant_id, group_id),
+         {:ok, %{"provider" => provider} = connect} when provider in ~w(feishu lark) <-
+           SalixIM.ProviderConnects.get_active_connect_by_id(group_id, connect_id) do
+      case SalixIM.ProviderAccounts.app_member(connect, subject) do
+        {:ok, %{"email" => email} = person} when is_binary(email) and email != "" ->
+          {:ok,
+           %{
+             tenant_id: tenant_id,
+             group_id: group_id,
+             role: role,
+             user: %{
+               "id" => "#{provider}:#{connect_id}:#{subject}",
+               "email" => email,
+               "name" => person["name"]
+             }
+           }}
+
+        {:error, reason} ->
+          {:error, {:requester_refused, refusal(reason)}}
+
+        _other ->
+          {:error, {:requester_refused, :check_failed}}
+      end
+    else
+      _not_an_app_member -> {:error, :requester_required}
+    end
+  end
+
+  defp refusal(reason) when reason in [:not_available, :no_email], do: reason
+  defp refusal({:missing_scope, scope}) when is_binary(scope), do: {:missing_scope, scope}
+  defp refusal(_reason), do: :check_failed
 
   defp group(ctx) do
     case {ctx[:tenant_id], ctx[:group_id]} do
@@ -128,14 +211,17 @@ defmodule CommaWeb.Stations do
       {:comma_user, user_id} ->
         {:ok, user_id}
 
+      # A bound personal chat is its owner; another chat user (Slack) is the
+      # Comma user they linked (`Comma.ProviderUserLinks`).
       {:provider_user, connect_id, subject} ->
-        case CommaWeb.ProactiveDelivery.principal_owner(ctx[:group_id], connect_id, subject) do
-          {:ok, user_id} -> {:ok, user_id}
-          _ -> {:error, :requester_required}
+        with {:error, _} <-
+               CommaWeb.ProactiveDelivery.principal_owner(ctx[:group_id], connect_id, subject),
+             :none <- Comma.ProviderUserLinks.resolve(connect_id, subject) do
+          {:error, :requester_required}
         end
 
       _ ->
-        {:error, :requester_required}
+        SalixIM.TaskExecution.task_requester(ctx)
     end
   end
 

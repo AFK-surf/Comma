@@ -141,7 +141,6 @@ defmodule SalixAgent do
       if not Keyword.get(opts, :no_wake, false) and not resident_session?(agent_id, payload),
         do: SalixAgent.RoundConfigPrewarm.start(agent_id)
 
-      prefetch_session_birth_probe(agent_id, payload)
       deliver_via_rpc(agent_id, source_id, payload, opts)
     end
   end
@@ -151,25 +150,6 @@ defmodule SalixAgent do
 
     is_binary(session_id) and SalixStore.Ids.valid_session_id?(session_id) and
       SalixAgent.InternalSessionActor.resident_durable?(agent_id, session_id)
-  end
-
-  # The stage routes a delivery by the session's birth store; that probe is
-  # a store round trip the stage otherwise pays after placement and the
-  # claim. A session already resident here with a durable revision is known
-  # internal; any other target's probe starts now and is joined at the stage.
-  defp prefetch_session_birth_probe(agent_id, payload) do
-    session_id = payload[:session_id] || payload["session_id"]
-
-    if is_binary(session_id) and SalixStore.Ids.valid_session_id?(session_id) and
-         not SalixAgent.InternalSessionActor.resident_durable?(agent_id, session_id) do
-      key = SalixStore.Keys.agent_internal_runtime_session(agent_id, session_id)
-
-      SalixStore.ReadScope.prefetch({:probe, key}, fn ->
-        SalixAgent.InternalSessionStore.probe_key(key)
-      end)
-    end
-
-    :ok
   end
 
   # A session-less payload is only deliverable when the target role can
@@ -295,12 +275,9 @@ defmodule SalixAgent do
   state rather than a delivery failure? The target is archived, or it has no
   control record at all.
 
-  Callers use it to decide whether re-attempting can ever pay off:
   `SalixCluster.Schedules` keeps a blocked occurrence armed because unarchive
-  is a live route and the claim outlives the outage, while
-  `SalixCluster.Timers` cannot make that promise — its lookback window closes
-  first — and settles the marker instead. `activation_outcome/1` uses it to
-  keep both out of the delivery error counter.
+  remains possible. `activation_outcome/1` excludes this refusal from delivery
+  failure counts.
   """
   @spec target_state_refusal?(term()) :: boolean()
   def target_state_refusal?({:error, @archived_delivery_error}), do: true

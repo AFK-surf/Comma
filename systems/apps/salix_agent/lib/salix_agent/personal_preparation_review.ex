@@ -154,6 +154,12 @@ defmodule SalixAgent.PersonalPreparationReview do
       message["bot_id"] in [nil, ""] and message["subtype"] != "bot_message"
   end
 
+  # A Feishu/Lark message names its sender; an app's message is generated.
+  defp human_message?(
+         %{"sender" => %{"sender_type" => "user", "id" => id}, "text" => text} = message
+       ),
+       do: nonempty_text?(id) and nonempty_text?(text) and message["deleted"] != true
+
   defp human_message?(_message), do: false
   defp nonempty_text?(text), do: is_binary(text) and String.trim(text) != ""
 

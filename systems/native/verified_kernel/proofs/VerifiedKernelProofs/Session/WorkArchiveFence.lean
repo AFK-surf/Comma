@@ -1,5 +1,5 @@
 import VerifiedKernelProofs.Session.WorkRevisionFence
-
+import VerifiedKernelProofs.Session.WorkPendingInput
 namespace VerifiedKernel.Session.ArchivePublication
 open Data WorkConservation
 set_option Elab.async false
@@ -61,7 +61,7 @@ theorem published_pending_fence_input
       saved request result restored etag : Term} {staged : PendingRevision.Cursor}
     {records live : List Term} {archiveBase ceiling line : Int}
     {before after : Objects} {durable : HotSnapshots} {final : Output} {observations : List Term}
-    (framing : CodecFraming) (sorted : SeqSorted state)
+    (framing : CodecFraming) (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (format : state.get (a "storage_format") = i 3)
     (numeric : (state.get (a "archived_through")).default (i 0) = i archiveBase) (nonnegative : archiveBase ≥ 0)
     (initial : StateCatalogBacked before state)
@@ -72,7 +72,7 @@ theorem published_pending_fence_input
     (emitted : final.2 = .tuple [a "advance", event])
     (read : state.get (a "messages") = list live)
     (write : PendingRevision.Execution
-      (PendingRevision.resident (some (PendingRevision.Cursor.mk state state base [] nil).pack)
+      (PendingRevision.resident (some (PendingRevision.Cursor.mk state state base [] nil []).pack)
         (a "write") (.tuple [list [event], nil])) staged)
     (preparation : RevisionFence.Preparation staged key
       (RevisionFence.resident (some staged.pack) (a "start") (.tuple [key, list observations])) preparedState)
@@ -83,7 +83,7 @@ theorem published_pending_fence_input
       (a "encode") nil = (some saved, request))
     (primitive : SnapshotCASMeaning request result durable)
     (resumed : RevisionFence.resident (some saved) (a "cas_result") result = (some restored, .tuple [a "ok", etag])) :
-    staged.etag = base ∧ (staged.working.get (a "messages") = state.get (a "messages") ∨
+    staged.revision = base ∧ (staged.working.get (a "messages") = state.get (a "messages") ∨
       ∃ (snapshot : Term) (dropped kept : List Term),
         durable key etag snapshot ∧ live = dropped ++ kept ∧ staged.working.get (a "messages") = list kept ∧
         ∀ item record, record ∈ dropped → ValueSemantics.Recorded item record →
@@ -101,7 +101,7 @@ theorem published_pending_fence_input
   refine ⟨etagEq, ?_⟩
   rcases resident_archive_call canonical kind applied with unchanged | ⟨next, journal, rest, reduced, framed⟩
   · exact Or.inl (unchanged "messages" (by decide) (by decide))
-  · rcases published_archive_catalog_input framing sorted numeric nonnegative initial catalog window positive
+  · rcases published_archive_catalog_input framing sorted physical numeric nonnegative initial catalog window positive
         publication emitted read reduced with unchanged | ⟨dropped, kept, partition, nextMessages, storedInputs⟩
     · rw [unchanged] at framed
       exact Or.inl (framed "messages" (by decide) (by decide))

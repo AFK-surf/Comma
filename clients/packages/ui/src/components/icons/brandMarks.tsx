@@ -62,6 +62,26 @@ export const brandMarks = {
       (m) => m.IconNvidia
     )
   ),
+  microsoft: lazyBrandMark(() =>
+    import("@central-icons-react/round-outlined-radius-2-stroke-2/IconMicrosoft").then(
+      (m) => m.IconMicrosoft
+    )
+  ),
+  windows: lazyBrandMark(() =>
+    import("@central-icons-react/round-outlined-radius-2-stroke-2/IconWindows").then(
+      (m) => m.IconWindows
+    )
+  ),
+  android: lazyBrandMark(() =>
+    import("@central-icons-react/round-outlined-radius-2-stroke-2/IconAndroid").then(
+      (m) => m.IconAndroid
+    )
+  ),
+  linux: lazyBrandMark(() =>
+    import("@central-icons-react/round-outlined-radius-2-stroke-2/IconLinux").then(
+      (m) => m.IconLinux
+    )
+  ),
   bitcoin: lazyBrandMark(() =>
     import("@central-icons-react/round-outlined-radius-2-stroke-2/IconBitcoin").then(
       (m) => m.IconBitcoin
@@ -355,6 +375,16 @@ export const brandMarks = {
   "microsoft-copilot": lazyBrandMark(() =>
     import("@central-icons-react/round-filled-radius-2-stroke-2/IconMicrosoftCopilot").then(
       (m) => m.IconMicrosoftCopilot
+    )
+  ),
+  cursor: lazyBrandMark(() =>
+    import("@central-icons-react/round-filled-radius-2-stroke-2/IconCursor").then(
+      (m) => m.IconCursor
+    )
+  ),
+  windsurf: lazyBrandMark(() =>
+    import("@central-icons-react/round-filled-radius-2-stroke-2/IconWindsurf").then(
+      (m) => m.IconWindsurf
     )
   ),
 };

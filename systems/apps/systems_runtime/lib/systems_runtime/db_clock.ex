@@ -181,10 +181,14 @@ defmodule SystemsRuntime.DbClock do
   @doc """
   A `SystemsClock` check (`config :systems_clock, outside_blocked: [...]`):
   whether every query this node's connections have under way, in any
-  database of the server, waits for a lock. A query that waits for a lock an
-  idle transaction of the test holds does not go on until the system under
-  test moves, so the clock may move. The node's connections are told from
-  other nodes' by the application name `after_connect/1` gives them.
+  database of the server, waits for a lock that only idle transactions hold.
+  A query that waits for a lock an idle transaction of the test holds does
+  not go on until the system under test moves, so the clock may move. A lock
+  held by a backend that is working (autovacuum truncating the table, say) is
+  let go without the system under test, so that query is still running. A
+  blocker that itself waits for a lock counts through the query it waits for.
+  The node's connections are told from other nodes' by the application name
+  `after_connect/1` gives them.
   """
   @spec waiting_on_locks?() :: boolean()
   def waiting_on_locks? do
@@ -194,10 +198,18 @@ defmodule SystemsRuntime.DbClock do
           Postgrex.query!(
             conn,
             """
-            SELECT count(*) FILTER (WHERE state = 'active'),
-                   count(*) FILTER (WHERE state = 'active' AND wait_event_type = 'Lock')
-            FROM pg_stat_activity
-            WHERE application_name = $1 AND pid <> pg_backend_pid()
+            SELECT count(*) FILTER (WHERE a.state = 'active'),
+                   count(*) FILTER (
+                     WHERE a.state = 'active' AND a.wait_event_type = 'Lock'
+                       AND NOT EXISTS (
+                         SELECT 1 FROM pg_stat_activity b
+                         WHERE b.pid = ANY(pg_blocking_pids(a.pid))
+                           AND b.state <> 'idle in transaction'
+                           AND NOT (b.state = 'active' AND b.wait_event_type = 'Lock')
+                       )
+                   )
+            FROM pg_stat_activity a
+            WHERE a.application_name = $1 AND a.pid <> pg_backend_pid()
             """,
             [node_name()]
           )

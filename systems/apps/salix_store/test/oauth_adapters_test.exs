@@ -139,6 +139,9 @@ defmodule SalixStore.OAuthAdaptersTest do
 
       assert {:ok, url} = Lark.authorization_url(@app, req)
       {uri, params} = query(url)
+      on_demand = Lark.on_demand_scopes() |> Map.values() |> List.flatten()
+      assert String.split(params["scope"], " ") == Lark.default_scopes()
+      assert Enum.filter(on_demand, &(&1 in Lark.default_scopes())) == []
       assert uri.host == "accounts.larksuite.com"
       assert params["client_id"] == "cid"
       assert params["state"] == "state"
@@ -148,6 +151,34 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert "vc:note:read" in scopes
       assert "offline_access" in scopes
       assert {:error, _} = Lark.authorization_url(@app, Map.delete(req, "code_challenge"))
+    end
+
+    test "a sign-in with its own scopes asks for exactly them and a refresh token" do
+      {:ok, url} =
+        Lark.authorization_url(@app, %{
+          "redirect_uri" => "https://x/cb",
+          "state" => "state",
+          "code_challenge" => "c",
+          "scopes" => ["im:message.send_as_user", "bitable:app:readonly"]
+        })
+
+      {_uri, params} = query(url)
+      assert params["scope"] == "im:message.send_as_user bitable:app:readonly offline_access"
+    end
+
+    test "a sign-in for table reads asks for them on top of the default sign-in" do
+      tables = Lark.on_demand_scopes()["tables"]
+
+      {:ok, url} =
+        Lark.authorization_url(@app, %{
+          "redirect_uri" => "https://x/cb",
+          "state" => "state",
+          "code_challenge" => "c",
+          "scopes" => tables
+        })
+
+      {_uri, params} = query(url)
+      assert String.split(params["scope"], " ") == Lark.default_scopes() ++ tables
     end
 
     test "exchange names the person by open_id; refresh rotates the refresh token" do
@@ -219,6 +250,9 @@ defmodule SalixStore.OAuthAdaptersTest do
 
       assert {:ok, url} = Feishu.authorization_url(@app, req)
       {uri, params} = query(url)
+      on_demand = Feishu.on_demand_scopes() |> Map.values() |> List.flatten()
+      assert String.split(params["scope"], " ") == Feishu.default_scopes()
+      assert Enum.filter(on_demand, &(&1 in Feishu.default_scopes())) == []
       assert uri.host == "accounts.feishu.cn"
       assert params["client_id"] == "cid"
       assert params["code_challenge_method"] == "S256"
@@ -227,6 +261,34 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert "minutes:minutes:readonly" in scopes
       assert "offline_access" in scopes
       assert {:error, _} = Feishu.authorization_url(@app, Map.delete(req, "code_challenge"))
+    end
+
+    test "a sign-in with its own scopes asks for exactly them and a refresh token" do
+      {:ok, url} =
+        Feishu.authorization_url(@app, %{
+          "redirect_uri" => "https://x/cb",
+          "state" => "state",
+          "code_challenge" => "c",
+          "scopes" => ["im:message.send_as_user", "bitable:app:readonly"]
+        })
+
+      {_uri, params} = query(url)
+      assert params["scope"] == "im:message.send_as_user bitable:app:readonly offline_access"
+    end
+
+    test "a sign-in for table reads asks for them on top of the default sign-in" do
+      tables = Feishu.on_demand_scopes()["tables"]
+
+      {:ok, url} =
+        Feishu.authorization_url(@app, %{
+          "redirect_uri" => "https://x/cb",
+          "state" => "state",
+          "code_challenge" => "c",
+          "scopes" => tables
+        })
+
+      {_uri, params} = query(url)
+      assert String.split(params["scope"], " ") == Feishu.default_scopes() ++ tables
     end
 
     test "exchange names the person by open_id and keeps the tenant; refresh rotates" do

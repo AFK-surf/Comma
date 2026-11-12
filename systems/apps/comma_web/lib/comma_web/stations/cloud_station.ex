@@ -21,6 +21,10 @@ defmodule CommaWeb.Stations.CloudStation do
   @impl true
   def publish(admission), do: Comma.Stations.publish_cloud_station(admission)
 
+  @impl true
+  def device_mesh(tenant_id, group_id, owner_user_id),
+    do: Comma.Stations.device_mesh(tenant_id, group_id, owner_user_id)
+
   # The Cloud VM's station reaches this server at its public URL, as an
   # enrolled station reaches the host its install command named.
   defp public_origin do

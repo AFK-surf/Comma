@@ -9,6 +9,11 @@ packages="$apple/../../packages"
 out="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/core.hbc"
 sources=("$packages"/{core,core-kernel,chat-contract,session-contract,recommendation-contract,mesh,i18n}/src
   "$packages/core/scripts" "$packages/i18n/messages" "$apple/../android/gradle/libs.versions.toml")
+mini_app_out="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/mini-app-host.js"
+mkdir -p "$(dirname "$mini_app_out")"
+cd "$packages/core"
+node scripts/mini-app-ios-bundle.mjs "$mini_app_out"
+node scripts/dynamic-ui-ios-bundle.mjs "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/dynamic-ui-host.js"
 if [[ -f "$out" ]] && [[ -z "$(find "${sources[@]}" -newer "$out" -print -quit 2>/dev/null)" ]]; then exit 0; fi
 mkdir -p "$DERIVED_FILE_DIR" "$(dirname "$out")"
 # Babel finds its plugins from the working directory: the core's, wherever the project was generated.

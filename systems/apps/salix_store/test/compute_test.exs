@@ -449,12 +449,12 @@ defmodule SalixStore.ComputeTest do
     group = SalixStore.Ids.new_group_id(tenant)
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "group-host",
         tenant_id: tenant,
         group_id: group,
         device_id: "host-device",
-        enrollment_token: String.duplicate("h", 32)
+        credential: String.duplicate("h", 32)
       })
 
     facts = %{
@@ -475,7 +475,7 @@ defmodule SalixStore.ComputeTest do
     assert {:error, :provider_unavailable} = Compute.ensure_group_workload(facts)
     refute Repo.exists?(from(w in Compute.Workload, where: w.template_key == "station.default"))
 
-    # The Host connects: its hello made its Project's binding available.
+    # The Host connects and makes its Project eligible for placement.
     connection = %{"connection_epoch" => "41", "gateway_instance_id" => "gateway-a"}
     connect_host!(tenant, registration.id, connection)
 
@@ -494,8 +494,9 @@ defmodule SalixStore.ComputeTest do
     allocation = Repo.get!(Compute.Allocation, workload.allocation_id)
     binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
     assert {binding.provider, binding.provider_ref} == {"agent_vmm", registration.id}
-    assert binding.status == "available"
-    assert binding.observation == connection
+
+    assert {:ok, %{connection_epoch: "41", gateway_instance_id: "gateway-a"}} =
+             AgentVMM.current_connection(registration.id)
 
     # The station connects only while the Group still names this Host and profile.
     resource = %{"name" => "cloud-vm-resource", "profile_key" => "vmm-station-1"}
@@ -631,7 +632,7 @@ defmodule SalixStore.ComputeTest do
         pool_id: pool.id
       })
 
-    {:ok, binding} =
+    {:ok, _binding} =
       Compute.create_provider_binding(%{
         id: "host-binding-" <> registration_id,
         pool_id: pool.id,
@@ -644,9 +645,12 @@ defmodule SalixStore.ComputeTest do
       set: [status: "ready", desired_enabled: true]
     )
 
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [status: "available", observation: observation]
-    )
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration(registration_id, observation["gateway_instance_id"], %{
+               "connectionEpoch" => observation["connection_epoch"],
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
   end
 
   test "Gateway release waits for tracked calls, fences new calls, and fails closed on storage errors" do
@@ -660,6 +664,8 @@ defmodule SalixStore.ComputeTest do
                "group_id" => group,
                "provider" => "cloudflare",
                "provider_resource_id" => "container",
+               "provider_resource_name" => "container",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
                "status" => "ready",
                "created_at" => 1234
              })
@@ -695,6 +701,26 @@ defmodule SalixStore.ComputeTest do
 
     assert {:ok, %{"phase" => "deploying"}} =
              Compute.mark_cloudflare_gateway_release_deploying("release-two")
+
+    target = "cf-standard-2:container"
+
+    assert {:error, :archive_commit_recovery_required} =
+             Compute.prepare_cloudflare_control(group, target, :resume)
+
+    assert {:ok, _, _} =
+             Compute.update_group_workload(group, fn record ->
+               Map.merge(record, %{
+                 "status" => "archiving",
+                 "archive_reason" => "idle",
+                 "archive_operation_id" => "idle-archive"
+               })
+             end)
+
+    assert {:ok, %{"sealed" => true}} =
+             Compute.prepare_cloudflare_control(group, target, :seal)
+
+    assert {:ok, %{"sealed" => false}} =
+             Compute.prepare_cloudflare_control(group, target, :resume)
 
     assert {:error, :vm_maintenance_phase_mismatch} =
              Compute.clear_cloudflare_gateway_release("release-two", "prepared")
@@ -756,12 +782,12 @@ defmodule SalixStore.ComputeTest do
     end
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "scoped-registration",
         tenant_id: "tenant",
         group_id: "group-a",
         device_id: "device-a",
-        enrollment_token: String.duplicate("s", 32)
+        credential: String.duplicate("s", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])
@@ -1153,12 +1179,12 @@ defmodule SalixStore.ComputeTest do
     suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "cross-tenant-registration-#{suffix}",
         tenant_id: "tenant-b",
         group_id: "group-b",
         device_id: "device-b-#{suffix}",
-        enrollment_token: String.duplicate("b", 32)
+        credential: String.duplicate("b", 32)
       })
 
     {:ok, pool} =
@@ -2013,10 +2039,7 @@ defmodule SalixStore.ComputeTest do
       observation_sequence: 1,
       observed_at: now,
       received_at: now,
-      protocol_version: "1",
-      host_api_version: "1",
       health_status: "healthy",
-      supported_features: ["allocation-disposal-v1"],
       capacity: %{},
       usage: %{},
       health_components: %{},
@@ -2046,10 +2069,7 @@ defmodule SalixStore.ComputeTest do
 
     assert replay.deletion == deleting.deletion
 
-    Repo.update_all(
-      from(o in AgentVMM.RegistrationObservation, where: o.registration_id == "registration"),
-      set: [disconnected_at: SystemsClock.utc_now()]
-    )
+    assert {:ok, _} = AgentVMM.mark_connection_lost("registration", "gateway", "1")
 
     assert {:ok, %{command: pending}} = Deletion.advance(fixture.allocation, deleting)
     waiting = Repo.get!(Compute.Workload, workload.id)
@@ -2057,15 +2077,17 @@ defmodule SalixStore.ComputeTest do
     assert waiting.deletion["registration_id"] == "registration"
     assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
 
-    Repo.update_all(
-      from(o in AgentVMM.RegistrationObservation, where: o.registration_id == "registration"),
-      set: [disconnected_at: nil]
-    )
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration("registration", "gateway", %{
+               "connectionEpoch" => "2",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
 
     assert {:ok, %{command: command}} = Deletion.advance(fixture.allocation, waiting)
     assert command.id == pending.id
     assert Repo.get!(Compute.Workload, workload.id).deletion["error"] == nil
-    assert {:ok, claimed} = AgentVMM.claim_registration_command("registration", "gateway", "1")
+    assert {:ok, claimed} = AgentVMM.claim_registration_command("registration", "gateway", "2")
     assert claimed.id == command.id
     assert claimed.kind == "allocation.dispose"
     assert claimed.payload["command_json"]["disposeAllocation"]["expectedGeneration"] == 1
@@ -2085,7 +2107,7 @@ defmodule SalixStore.ComputeTest do
              AgentVMM.commit_registration_result(
                "registration",
                "gateway",
-               "1",
+               "2",
                command.id,
                "succeeded",
                evidence
@@ -2098,7 +2120,7 @@ defmodule SalixStore.ComputeTest do
              AgentVMM.commit_registration_result(
                "registration",
                "gateway",
-               "1",
+               "2",
                command.id,
                "succeeded",
                evidence
@@ -2140,6 +2162,50 @@ defmodule SalixStore.ComputeTest do
     assert Repo.get!(Compute.Workload, shell.id).desired_state == "ready"
   end
 
+  test "Retry reopens the Group's own Station Workload and refuses other business owners" do
+    fixture = ready_fixture()
+    alias SalixStore.ComputeWorkloadManagement, as: Management
+    now = SystemsClock.utc_now()
+
+    assert {:error, :business_owner_required} =
+             Management.retry("tenant", "project", fixture.workload.id, 1, fn -> :ok end)
+
+    {:ok, station} =
+      Compute.create_workload(%{
+        id: "station",
+        environment_id: fixture.environment.id,
+        allocation_id: fixture.allocation.id,
+        kind: "service",
+        generation: 1
+      })
+
+    # The Group Station's identity, as `ComputeGroupStation` places it.
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^station.id),
+      set: [template_key: "station.default", owner_ref: %{"kind" => "group", "id" => "group"}]
+    )
+
+    station = Repo.get!(Compute.Workload, station.id)
+
+    Repo.insert!(%Compute.ReconcilerClaim{
+      id: "station-claim",
+      provider: "agent_vmm",
+      workload_id: station.id,
+      generation: 1,
+      claim_token: "parked",
+      attempt_count: 1,
+      last_error: %{"kind" => "action_required", "code" => "provider_command_outcome_unknown"},
+      created_at: now,
+      updated_at: now
+    })
+
+    assert {:ok, retried} = Management.retry("tenant", "project", station.id, 1, fn -> :ok end)
+    assert retried.observed_state == "pending"
+    assert retried.revision == station.revision + 1
+    claim = Repo.get!(Compute.ReconcilerClaim, "station-claim")
+    assert claim.last_error == %{}
+    assert claim.next_retry_at
+  end
+
   defp ready_fixture do
     fixture = compute_fixture()
 
@@ -2177,7 +2243,7 @@ defmodule SalixStore.ComputeTest do
     assert {:error, :unauthorized} =
              AgentVMM.claim_registration_command(registration.id, "gateway", "1")
 
-    assert {:error, :revision_conflict} =
+    assert {:ok, _} =
              AgentVMM.configure_registration(registration.id, registration.revision, true)
 
     late_hello = %{"connectionEpoch" => "2", "inventoryWatermark" => 0, "inventory" => []}
@@ -2193,16 +2259,8 @@ defmodule SalixStore.ComputeTest do
                generation: 1
              })
 
-    assert {:ok, %{retired: 1}} = AgentVMM.expire_authorizations()
-    expired = Repo.get!(AgentVMM.Registration, registration.id)
-    assert expired.status == "revoked"
-
-    # The sweep keeps the cause, so late contact still reports expiry.
-    assert {:error, :authorization_expired} =
-             AgentVMM.observe_registration(registration.id, "gateway", late_hello)
-
-    assert {:error, :revision_conflict} =
-             AgentVMM.configure_registration(expired.id, expired.revision, true)
+    assert Repo.get!(AgentVMM.Registration, registration.id).status != "revoked"
+    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status != "released"
   end
 
   test "authenticated contact renews seven days without depending on the disposable health projection" do
@@ -2224,11 +2282,12 @@ defmodule SalixStore.ComputeTest do
     assert DateTime.diff(registration.authorization_expires_at, now) >= 7 * 86_400
     assert is_nil(Repo.get(AgentVMM.RegistrationObservation, registration.id))
 
-    assert {:ok, %{retired: 0}} =
-             AgentVMM.expire_authorizations(32, DateTime.add(now, 7 * 86_400 - 1, :second))
+    assert AgentVMM.authorization_expired?(
+             registration,
+             DateTime.add(now, 7 * 86_400 + 1, :second)
+           )
 
-    assert {:ok, %{retired: 1}} =
-             AgentVMM.expire_authorizations(32, DateTime.add(now, 7 * 86_400 + 1, :second))
+    assert Repo.get!(AgentVMM.Registration, registration.id).status != "revoked"
   end
 
   test "cloud retirement preserves unknown work, business owners and physical evidence across bounded pages" do
@@ -2366,12 +2425,12 @@ defmodule SalixStore.ComputeTest do
       })
 
     {:ok, registration} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("a", 32)
+        credential: String.duplicate("a", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])

@@ -15,7 +15,8 @@
 // `{type: "gate", snapshot, lease}`, `{type: "abort", id}`, `{type: "session-dropped", id}`, `{type: "meeting", id, op,
 // input}`, and `{type: "reset"}` once the core cleared what it keeps (`app.reset`: Main resets the app and starts a new
 // core). When Main runs the Drive node: `{type: "drive", id, op, input}` from the core, `{type: "drive-done", id,
-// value | error}` and `{type: "drive-changed"}` from Main.
+// value | error}` and `{type: "drive-changed"}` from Main. While Main downloads the app's update: `{type:
+// "update-progress", percent}`.
 //
 // The desktop ports (`DesktopPorts`): the person's presence, the system browser, the app's return and the chat file
 // picker are Main's (`session` ops `presence`, `openExternal`, `returnToApp`, `chatPick`); the loopback listener a browser returns to
@@ -266,10 +267,11 @@ class UtilityHost implements Host {
     localDrive = false,
     legacyMeetingTasksPath?: string,
     stationPeers: Record<string, string[]> = {},
-    meshAddon?: string
+    meshAddon?: string,
+    computerMesh?: "on" | "salix"
   ) {
     this.#parent = parent;
-    this.stationMesh = nativeStations(meshAddon, stationPeers);
+    this.stationMesh = nativeStations(meshAddon, stationPeers, computerMesh);
     if (localDrive)
       this.localDrive = {
         state: this.#drive<LocalDriveState>({ op: "state" }),
@@ -384,6 +386,10 @@ class UtilityHost implements Host {
                 download: (release) =>
                   this.#call({ op: "updateDownload", input: release }),
                 apply: (release) => this.#call({ op: "updateApply", input: release }),
+                onProgress: (listener) => {
+                  this.#updateListeners.add(listener);
+                  return () => void this.#updateListeners.delete(listener);
+                },
               },
             }
           : {}),
@@ -508,6 +514,7 @@ class UtilityHost implements Host {
     (value: unknown, error: string | undefined) => void
   >();
   readonly #driveListeners = new Set<() => void>();
+  readonly #updateListeners = new Set<(percent: number) => void>();
 
   #drive<A>(
     call:
@@ -535,6 +542,11 @@ class UtilityHost implements Host {
   /** The Drive node's files changed. */
   driveChanged(): void {
     for (const listener of this.#driveListeners) listener();
+  }
+
+  /** How far Main's download of the app's update got. */
+  updateProgress(percent: number): void {
+    for (const listener of this.#updateListeners) listener(percent);
   }
 
   /** What the voice call socket did (none before the core listens: there is no call then). */
@@ -801,15 +813,20 @@ class UtilityHost implements Host {
  * This device's endpoint on the station's native addon (`@comma/mesh/station-native`), loaded from `meshAddon` (the
  * station the app carries, as Main says) when Stations first needs it, with the relays the control plane named (none:
  * direct addresses only), and Salix as the relay of last resort when the addon has it. `peers`: where stations are, when Main knows (an Electron e2e's loopback station).
+ * `computerMesh` (Settings › Debug): the person's own computers' stations are linked too, and `salix` reaches every
+ * station through Salix alone.
  */
 function nativeStations(
   meshAddon: string | undefined,
-  peers: Record<string, string[]>
+  peers: Record<string, string[]>,
+  computerMesh?: "on" | "salix"
 ): StationMeshPorts {
   return {
     // The desktop app keeps its stations linked while it carries a station to reach them with.
     alwaysLinked: meshAddon !== undefined,
-    open: ({ secretKey, relays }) =>
+    ...(computerMesh ? { ownComputers: true } : {}),
+    ...(computerMesh === "salix" ? { salixOnly: true } : {}),
+    open: ({ secretKey, relays, routePolicy }) =>
       Effect.acquireRelease(
         Effect.tryPromise({
           try: async () => {
@@ -823,6 +840,8 @@ function nativeStations(
               secretKey,
               relays,
               salixRelay: true,
+              ...(computerMesh === "salix" ? { salixOnly: true } : {}),
+              routePolicy,
             });
           },
           catch: (e) => new HostError(e instanceof Error ? e.message : String(e)),
@@ -911,7 +930,8 @@ export function startCoreUtility(parent: ParentPort): void {
         message.localDrive === true,
         message.legacyMeetingTasksPath,
         message.stationPeers,
-        message.meshAddon
+        message.meshAddon,
+        message.computerMesh
       );
       if (message.testClock) {
         const settling = host;
@@ -936,6 +956,9 @@ export function startCoreUtility(parent: ParentPort): void {
         return;
       case "drive-changed":
         host.driveChanged();
+        return;
+      case "update-progress":
+        host.updateProgress(message.percent);
         return;
       case "meeting-event":
         host.meetingEvent(message.event);

@@ -6,7 +6,7 @@ import {
   type CommaNativeBridge,
   type FilesSaveDownloadResult,
 } from "@comma/native-bridge";
-import { toast } from "@comma/ui/components/toast";
+import { toast, type ToastAction } from "@comma/ui/components/toast";
 import {
   type ChatPanelMediaDownloadCapability,
   type ChatPanelMediaDownloadResult,
@@ -170,6 +170,43 @@ const showOpenFailed = (fileName: string, locale: CommaLocale) => {
   });
 };
 
+/** What the toast of a file saved in Downloads offers: to show it in its folder, and to open it. */
+export const savedDownloadActions = (
+  bridge: FileDownloadBridge,
+  locale: CommaLocale,
+  saved: Pick<
+    Extract<FilesSaveDownloadResult, { status: "saved" }>,
+    "downloadRef" | "fileName"
+  >
+): ToastAction[] => [
+  {
+    hierarchy: "secondary-gray",
+    label: revealLabel(bridge.os, locale),
+    onPress: () => {
+      void bridge.files
+        .revealDownload({ downloadRef: saved.downloadRef })
+        .then((result) => {
+          if (result.status !== "revealed") {
+            showRevealFailed(saved.fileName, locale);
+          }
+        });
+    },
+  },
+  {
+    hierarchy: "tertiary-gray",
+    label: messages.file_download_open(undefined, { locale }),
+    onPress: () => {
+      void bridge.files
+        .openDownload({ downloadRef: saved.downloadRef })
+        .then((result) => {
+          if (result.status !== "opened") {
+            showOpenFailed(saved.fileName, locale);
+          }
+        });
+    },
+  },
+];
+
 const showSavedInDownloads = ({
   bridge,
   locale,
@@ -180,34 +217,7 @@ const showSavedInDownloads = ({
   saved: Extract<FilesSaveDownloadResult, { status: "saved" }>;
 }) => {
   toast.success(messages.file_download_complete_title(undefined, { locale }), {
-    actions: [
-      {
-        hierarchy: "secondary-gray",
-        label: revealLabel(bridge.os, locale),
-        onPress: () => {
-          void bridge.files
-            .revealDownload({ downloadRef: saved.downloadRef })
-            .then((result) => {
-              if (result.status !== "revealed") {
-                showRevealFailed(saved.fileName, locale);
-              }
-            });
-        },
-      },
-      {
-        hierarchy: "tertiary-gray",
-        label: messages.file_download_open(undefined, { locale }),
-        onPress: () => {
-          void bridge.files
-            .openDownload({ downloadRef: saved.downloadRef })
-            .then((result) => {
-              if (result.status !== "opened") {
-                showOpenFailed(saved.fileName, locale);
-              }
-            });
-        },
-      },
-    ],
+    actions: savedDownloadActions(bridge, locale, saved),
     description: messages.file_download_complete_description(
       { fileName: saved.fileName },
       { locale }

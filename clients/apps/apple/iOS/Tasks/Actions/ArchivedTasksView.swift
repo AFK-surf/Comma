@@ -7,6 +7,7 @@ struct ArchivedTasksView: View {
     let store: CommaStore
     let openTask: (TaskSummary) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var detent: PresentationDetent = .large
     @State private var tasks: [TaskSummary] = []
     @State private var hasMore = false
     @State private var loading = false
@@ -42,13 +43,14 @@ struct ArchivedTasksView: View {
             .listStyle(.plain)
             .environment(\.defaultMinListRowHeight, 44)
             .scrollContentBackground(.hidden)
-            .background(CommaTheme.bgPrimary)
+            .background(GroupedSurface.sheet)
             .overlay { if loaded, !hasMore, tasks.isEmpty, error == nil { empty } }
             .refreshable { _ = try? await store.core.call("archivedTasks.refresh", workspace) }
             .pageTitle("Archived tasks")
             .sheetCloseButton(id: "closeArchivedTasks") { dismiss() }
             .taskActionSheets(store: store, renaming: $renaming, sharing: $sharing)
         }
+        .commaSheet(selection: $detent)
         .tint(CommaTheme.brandSolid)
         .task { await follow() }
     }

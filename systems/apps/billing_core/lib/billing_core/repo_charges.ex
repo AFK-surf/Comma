@@ -331,8 +331,9 @@ defmodule BillingCore.RepoCharges do
           AND status = 'active'
           AND valid_from <= $2
           AND (expires_at IS NULL OR expires_at > $2)
+          AND #{BillingCore.Credits.pays_for_sql("$3")}
         """,
-        [event.billing_account_id, event.metered_at]
+        [event.billing_account_id, event.metered_at, to_string(event.resource_kind)]
       )
 
     {balance, policies} =
@@ -364,7 +365,7 @@ defmodule BillingCore.RepoCharges do
 
         {expires_at, priority, id} ->
           {
-            "AND (COALESCE(expires_at, 'infinity'::timestamptz), priority, id) > (COALESCE($3::timestamptz, 'infinity'::timestamptz), $4, $5)",
+            "AND (COALESCE(expires_at, 'infinity'::timestamptz), priority, id) > (COALESCE($4::timestamptz, 'infinity'::timestamptz), $5, $6)",
             [expires_at, priority, id]
           }
       end
@@ -380,12 +381,14 @@ defmodule BillingCore.RepoCharges do
           AND status = 'active'
           AND valid_from <= $2
           AND (expires_at IS NULL OR expires_at > $2)
+          AND #{BillingCore.Credits.pays_for_sql("$3")}
           #{cursor_clause}
         ORDER BY expires_at NULLS LAST, priority, id
         LIMIT 512
         FOR UPDATE
         """,
-        [event.billing_account_id, event.metered_at] ++ cursor_params
+        [event.billing_account_id, event.metered_at, to_string(event.resource_kind)] ++
+          cursor_params
       )
 
     page =

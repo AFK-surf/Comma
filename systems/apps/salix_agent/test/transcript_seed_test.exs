@@ -2,7 +2,7 @@ defmodule SalixAgent.TranscriptSeedTest do
   use SystemsClock.Case, async: false
 
   use SalixAgent.TestSupport.Settle
-  alias SalixAgent.{Compaction, InternalSessionStore, Runtime, SessionWorkIndex}
+  alias SalixAgent.{Compaction, InternalSessionStore, Runtime}
 
   @seeded_session "ses1_0000000000000000201"
   @compact_session "ses1_0000000000000000202"
@@ -62,7 +62,7 @@ defmodule SalixAgent.TranscriptSeedTest do
           @forged_trace_session,
           @malformed_trace_session
         ] do
-      {:ok, _session} = InternalSessionStore.prepare_create(agent_id, session_id)
+      {:ok, _session} = SalixAgent.TestSupport.SessionFixture.create(agent_id, session_id)
     end
 
     {:ok, agent_id: agent_id}
@@ -107,7 +107,7 @@ defmodule SalixAgent.TranscriptSeedTest do
 
     assert Enum.all?(session.messages, &(&1.no_wake == true))
     assert SalixAgent.InternalSession.work_reasons(handle(session)) == []
-    assert {:ok, []} = SessionWorkIndex.list(agent_id)
+    assert {:ok, [], nil} = SalixAgent.SessionWorkRecovery.local_work_page(agent_id, nil, 100)
 
     settle_refute_receive({:llm_called, _messages, _tools}, 200)
 

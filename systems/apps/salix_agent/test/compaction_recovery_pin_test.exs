@@ -35,22 +35,13 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
       {agent_id, session_id} = SystemsRuntime.PersistentTerm.get({__MODULE__, :target})
 
       {:ok, _} =
-        SalixAgent.InternalSessionStore.prepare_commit(agent_id, session_id, [
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => "call-late",
-            "status" => "running",
-            "started_at" => 5_000
-          },
-          %{
-            "type" => "async_tool_call_completed",
-            "session_id" => session_id,
-            "tool_call_id" => "call-late",
-            "result" => %{"answer" => 42},
-            "completed_at" => 5_001
-          }
-        ])
+        SalixAgent.InternalSessionFleet.complete_async_tool_call(
+          agent_id,
+          session_id,
+          "call-late",
+          %{"answer" => 42},
+          %{}
+        )
 
       # The assistant shape the summarizer expects, but with no
       # `<compacted-context>` tags — `missing_compaction_summary_tags`, which
@@ -75,8 +66,6 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
-
     SystemsRuntime.put_env(:salix_agent, :llm, LateWriterLLM)
     SystemsRuntime.put_env(:salix_agent, :llm_resolver, ControlTemplateResolver)
     SystemsRuntime.delete_env(:salix_agent, :summarizer)
@@ -92,6 +81,8 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
 
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
+    {:ok, _} = SalixAgent.Placement.ensure_started(agent_id, process_on_init: false)
+    assert {:parked, _} = SalixAgent.Server.info(agent_id)
 
     {:ok, _} =
       InternalSessionStore.prepare_commit(agent_id, @session, [
@@ -115,7 +106,14 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
           "content" => String.duplicate("x", 400),
           "created_at" => 1_002
         },
-        %{"type" => "ack", "session_id" => @session, "last_ack_message_id" => 2}
+        %{"type" => "ack", "session_id" => @session, "last_ack_message_id" => 2},
+        %{
+          "type" => "async_tool_call_started",
+          "session_id" => @session,
+          "tool_call_id" => "call-late",
+          "status" => "running",
+          "started_at" => 5_000
+        }
       ])
 
     # The session actor compacts, and the model call runs in its dependency
@@ -183,7 +181,7 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
       fn state ->
         SystemsRuntime.Proc.send(
           test,
-          {:archived, InternalSessionStore.archive_compacted(agent_id, @session)}
+          {:archived, InternalSessionStore.archive_pending(agent_id, @session)}
         )
 
         state
@@ -196,7 +194,7 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
     assert {:ok, record} =
              InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-late")
 
-    assert record["result"] == %{"answer" => 42}
+    assert %{"answer" => 42} = record["result"]
   end
 
   # The store hands back an opaque handle; these fixtures assert over the

@@ -4,14 +4,15 @@ defmodule SalixAgent.Tools.Peers do
   Funs follow the SalixAgent.Tools contract: (args, ctx), returning content or
   a tool failure. Context carries the owning Agent and Session identities.
 
-  A target whose device_id is `station:<id>` is a still.fail station and
+  A target whose device_id is `station:<id>` is a Comma station and
   routes through `SalixAgent.Stations.Env` (exec, process and copy only).
   Other environment tools route through the `SalixAgent.EnvDispatch` seam
   (configured via `SystemsRuntime.get_env(:salix_agent, :env_dispatch, ...)`,
   default `SalixAgent.EnvDispatch.None`). When the seam reports
   `{:error, :no_environment}`, tools raise willow's ToolUnavailable-shaped
   message: `tool "<name>" unavailable (not_installed): no environment
-  connected`.
+  connected`, unless a read of the target device then shows that the device
+  is unknown or has no environment of that id (the message says which).
 
   ## Simplifications vs willow (per HARD-RULE doc requirement)
 
@@ -61,6 +62,7 @@ defmodule SalixAgent.Tools.Peers do
     OAuthStore
   }
 
+  alias SalixAgent.IFC.ConnectorLabels
   alias SalixStore.{Blob, Ids}
 
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
@@ -88,29 +90,35 @@ defmodule SalixAgent.Tools.Peers do
          "Do not resubmit a running command. On cancellation, do not retry without renewed user authorization. " <>
          "completed means the process exited. Check exit_code and verify the requested outcome before reporting success.",
        &__MODULE__.exec/2, @normal_auto_wait_seconds},
-      {"env.process_list", "List long-lived processes running in a connector-backed environment.",
+      {"env.process_list", "List long-lived processes running in a station environment.",
        &__MODULE__.process_list/2, @normal_auto_wait_seconds},
       {"env.process_write",
-       "Write text to stdin of a long-lived process in a connector-backed environment.",
+       "Write text to stdin of a long-lived process in a station environment.",
        &__MODULE__.process_write/2, @normal_auto_wait_seconds},
       {"env.process_tail",
-       "Read recent output from a long-lived process in a connector-backed environment, optionally waiting for new output.",
+       "Read recent output from a long-lived process in a station environment, optionally waiting for new output.",
        &__MODULE__.process_tail/2, @normal_auto_wait_seconds},
       {"env.copy",
        "Copy a file between any two environments (VFS or remote).\n\nUse src_environment and dst_environment, with src_device_id/dst_device_id for each remote side; pass vfs for agent-owned files. Set src_agent_id or dst_agent_id (vfs only) to copy from or to a group-local peer agent's vfs; use known Agent ids supplied by the Router or Task context.",
        &__MODULE__.copy/2, @normal_auto_wait_seconds},
       {"device.list",
-       "Discover one bounded page of devices in the current workspace. Use device.get with a device_id for its environments, permissions and runtime details. Known device and environment ids can be used directly without discovery.",
+       "Discover one bounded page of devices in the current workspace. A page can be short or empty while next_cursor is set: pass it to read the rest before concluding a device is absent. Use device.get with a device_id for its environments, permissions and runtime details. Known device and environment ids can be used directly without discovery.",
        &__MODULE__.list_devices/2, @normal_auto_wait_seconds},
       {"device.get",
-       "Read one known device by device_id, including its current command environments, permissions, capabilities, connector health and runtime availability. Only after a successful lookup, for a permission_required environment, explain permission_message and ask the user to enable access before retrying. On a lookup error, follow its recovery guidance instead of treating previous device state as current. This query does not probe, reconnect, wake, rebind or repair.",
+       "Read one known device by device_id, including its current command environments, permissions, capabilities, station health and runtime availability. Only after a successful lookup, for a permission_required environment, explain permission_message and ask the user to enable access before retrying. On a lookup error, follow its recovery guidance instead of treating previous device state as current. This query does not probe, reconnect, wake, rebind or repair.",
        &__MODULE__.get_device/2, @normal_auto_wait_seconds},
       {"env.computer_use",
-       "Desktop automation for a connector-backed environment. Use a known environment with computer_use_tool capability directly; use device.get for a known device, or device.list when the device is unknown. action=help is optional guidance for the available modes, not a prerequisite.",
+       "Desktop automation for a station environment. Use a known environment with computer_use_tool capability directly; use device.get for a known device, or device.list when the device is unknown. action=help is optional guidance for the available modes, not a prerequisite.",
        &__MODULE__.computer_use/2, @normal_auto_wait_seconds},
+      {"device.screens",
+       "List the screens of the user's computer that can be opened live in this conversation: its display, its booted iOS Simulators and its Android emulators and phones, each with its comma:screen link. When a person asks to see an app, a simulator or a screen, that link is the answer, not a screenshot. A message line that is only that link, with a blank line before and after it, shows the screen as a live card in Comma, which the computer's user opens and drives. Also lists simulators and Android Virtual Devices that could start. Requires device_id and environment from device.get.",
+       &__MODULE__.screens/2, @normal_auto_wait_seconds},
       {"env.android",
-       "Lease and operate one authorized connector-backed Android emulator. Use start, then alternate observe and bounded actions, and always end the lease.",
-       &__MODULE__.android/2, @normal_auto_wait_seconds, @worker_role_opts}
+       "Lease and operate one authorized Android device: a station-hosted emulator, or a computer's own emulator or phone (status lists them). Use start, then alternate observe and bounded actions, and always end the lease. A phone is a person's: it takes no input while locked (ask its owner to unlock it) and is used only for what they asked.",
+       &__MODULE__.android/2, @normal_auto_wait_seconds, @worker_role_opts},
+      {"env.screen",
+       "Lease and operate one booted iOS Simulator of a computer (status lists them, as simulator:<udid>, the screen id of a comma:screen link). Use start, then alternate observe and bounded actions in the latest screenshot's pixels, and always end the lease. The computer's owner allows this chat on a card the first time; a person driving the simulator in Comma comes first.",
+       &__MODULE__.screen/2, @normal_auto_wait_seconds, @worker_role_opts}
     ]
   end
 
@@ -386,7 +394,7 @@ defmodule SalixAgent.Tools.Peers do
         {stream, size}
 
       {:error, :no_environment} ->
-        unavailable!("env.copy")
+        unavailable!("env.copy", ctx, env)
 
       {:error, %{"error_class" => _} = error} ->
         vm_copy_error!(error)
@@ -415,7 +423,7 @@ defmodule SalixAgent.Tools.Peers do
         {[], write_stream_result_size(result)}
 
       {:error, :no_environment} ->
-        unavailable!("env.copy")
+        unavailable!("env.copy", ctx, env)
 
       {:error, %{"error_class" => _} = error} ->
         vm_copy_error!(error)
@@ -526,7 +534,7 @@ defmodule SalixAgent.Tools.Peers do
     opts = if cursor == "", do: [limit: limit], else: [limit: limit, cursor: cursor]
 
     case EnvDispatch.list_devices(ctx.agent_id, opts) do
-      {:ok, page} -> Jason.encode!(page)
+      {:ok, page} -> page |> Jason.encode!() |> ConnectorLabels.group_audience(ctx)
       {:error, reason} -> raise "device.list failed: #{inspect(reason)}"
     end
   end
@@ -537,7 +545,7 @@ defmodule SalixAgent.Tools.Peers do
 
     case EnvDispatch.get_device(ctx.agent_id, device_id) do
       {:ok, entry} ->
-        Jason.encode!(entry)
+        entry |> Jason.encode!() |> ConnectorLabels.group_audience(ctx)
 
       {:error, :not_found} ->
         device_lookup_failure(
@@ -607,9 +615,9 @@ defmodule SalixAgent.Tools.Peers do
 
     if environment == "" or environment == "vfs", do: raise("exec requires a remote environment")
     if command == "", do: raise("'command' is required")
-    target = environment_target!(args, environment)
+    target = exec_target!(args, environment, ctx)
 
-    opts =
+    {opts, credentials} =
       %{
         "description" => description,
         "timeout" => raw(args, "timeout") || 120,
@@ -627,10 +635,10 @@ defmodule SalixAgent.Tools.Peers do
 
     case env_dispatch(ctx, target, :exec, [command, opts]) do
       {:ok, result} when is_map(result) ->
-        Jason.encode!(result)
+        result |> SalixAgent.OAuthCredentials.redact(credentials) |> Jason.encode!()
 
       {:ok, result} when is_binary(result) ->
-        result
+        SalixAgent.OAuthCredentials.redact(result, credentials)
 
       {:error, %{"error_class" => _} = error} ->
         Jason.encode!(vm_error_result(error))
@@ -639,7 +647,7 @@ defmodule SalixAgent.Tools.Peers do
         Jason.encode!(vm_error_result(vm_lifecycle_error(class, metadata)))
 
       {:error, :no_environment} ->
-        unavailable!("env.exec")
+        unavailable!("env.exec", ctx, target)
 
       {:error, {:permission_required, message}} when is_binary(message) ->
         raise message
@@ -669,7 +677,7 @@ defmodule SalixAgent.Tools.Peers do
         Jason.encode!(vm_error_result(vm_lifecycle_error(class, metadata)))
 
       {:error, :no_environment} ->
-        unavailable!("env.process_list")
+        unavailable!("env.process_list", ctx, environment_target!(args, environment))
 
       {:error, reason} ->
         raise "process_list failed: #{inspect(reason)}"
@@ -706,7 +714,7 @@ defmodule SalixAgent.Tools.Peers do
         Jason.encode!(vm_error_result(vm_lifecycle_error(class, metadata)))
 
       {:error, :no_environment} ->
-        unavailable!("env.process_write")
+        unavailable!("env.process_write", ctx, environment_target!(args, environment))
 
       {:error, reason} ->
         raise "process_write failed: #{inspect(reason)}"
@@ -744,7 +752,7 @@ defmodule SalixAgent.Tools.Peers do
         Jason.encode!(vm_error_result(vm_lifecycle_error(class, metadata)))
 
       {:error, :no_environment} ->
-        unavailable!("env.process_tail")
+        unavailable!("env.process_tail", ctx, environment_target!(args, environment))
 
       {:error, reason} ->
         raise "process_tail failed: #{inspect(reason)}"
@@ -780,18 +788,20 @@ defmodule SalixAgent.Tools.Peers do
   # forwarded params (the connector never sees the references). Absent
   # credential_env → params pass through unchanged; an explicitly empty array
   # is a no-op. Resolved values win over any caller-supplied env entries.
+  # Also returns the resolved values that are secrets, which the result must
+  # not show.
   defp merge_credential_env(opts, args, ctx) do
     case raw(args, "credential_env") do
       nil ->
-        opts
+        {opts, []}
 
       entries ->
-        case SalixAgent.OAuthCredentials.resolve(ctx.agent_id, entries) do
-          {:ok, resolved} when map_size(resolved) == 0 ->
-            opts
+        case SalixAgent.OAuthCredentials.resolve_for_command(ctx, ctx.agent_id, entries) do
+          {:ok, resolved, _secrets} when map_size(resolved) == 0 ->
+            {opts, []}
 
-          {:ok, resolved} ->
-            Map.put(opts, "env", Map.merge(base_env(args), resolved))
+          {:ok, resolved, secrets} ->
+            {Map.put(opts, "env", Map.merge(base_env(args), resolved)), secrets}
 
           {:error, message} ->
             raise message
@@ -846,7 +856,7 @@ defmodule SalixAgent.Tools.Peers do
           computer_use_result(action, response, environment_target!(args, environment), ctx)
 
         {:error, :no_environment} ->
-          unavailable!("env.computer_use")
+          unavailable!("env.computer_use", ctx, environment_target!(args, environment))
 
         {:error, reason} ->
           raise "computer_use failed: #{inspect(reason)}"
@@ -892,7 +902,7 @@ defmodule SalixAgent.Tools.Peers do
           else: Jason.encode!([image])
 
       present?(payload["image_data_url"]) ->
-        raise "computer_use connector requires an update for device screenshot references"
+        raise "computer_use station requires an update for device screenshot references"
 
       present?(payload["result"]) ->
         Jason.encode!(%{"result" => String.trim(payload["result"])})
@@ -914,7 +924,47 @@ defmodule SalixAgent.Tools.Peers do
     end
   end
 
+  # ---- device.screens ----
+
+  # The station answers `screen_links` (systems/station/src/screens/links.ts):
+  # what its owner's app could open now, each with its ready link. A station
+  # from before it answers "unknown method".
+  @doc false
+  def screens(args, ctx) do
+    environment = required_arg(args, "environment")
+    target = environment_target!(args, environment)
+
+    if SalixAgent.Stations.station_id(target),
+      do:
+        raise(
+          "screens_unsupported: a station of the Workspace serves no screens to this conversation"
+        )
+
+    case EnvDispatch.request(ctx.agent_id, target, "screen_links", %{}) do
+      {:ok, %{} = listed} ->
+        Jason.encode!(%{"result" => listed})
+
+      {:error, reason} ->
+        raise screens_error(reason)
+    end
+  end
+
+  defp screens_error(reason) do
+    if String.contains?(inspect(reason), "unknown method"),
+      do:
+        "screens_unsupported: this computer's Comma app is too old to list its screens. " <>
+          "Ask its owner to update Comma, and do not send screenshots in place of the screen.",
+      else: "screens_unavailable: #{inspect(reason)}"
+  end
+
   # ---- env.android ----
+
+  # A computer's own phone (the `device` mode, systems/station/docs/android-screen.md) is
+  # leased only once its owner allowed this Conversation: a `computer_use_start`
+  # Capability Request with its card there. The station is told `consent` only
+  # from that record; an Agent's own `consent` argument is dropped.
+  @android_consent_capability "android_phone"
+  @android_consent_ttl_seconds 600
 
   @doc false
   def android(args, ctx) do
@@ -922,16 +972,28 @@ defmodule SalixAgent.Tools.Peers do
     action = String.trim(arg(args, "action"))
     if environment == "", do: raise("android requires a remote environment")
     if action == "", do: raise("'action' is required")
+    target = environment_target!(args, environment)
 
     payload =
       args
       |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> Map.delete("consent")
+      |> then(fn p ->
+        if is_map(p["args"]), do: Map.update!(p, "args", &drop_consent/1), else: p
+      end)
       |> Map.put("environment", environment)
       |> Map.put("action", action)
+      |> put_android_consent(action, target, ctx)
 
-    case env_dispatch(ctx, environment_target!(args, environment), :android, [payload]) do
+    case env_dispatch(ctx, target, :android, [payload]) do
+      {:ok, %{"ok" => false, "error_code" => "android_consent_required"} = response} ->
+        await_android_consent(response, target, ctx)
+
       {:ok, %{"ok" => false} = response} ->
         raise android_error(response)
+
+      {:ok, %{"image_path" => path} = response} when is_binary(path) and path != "" ->
+        android_image_result(response, target, ctx)
 
       {:ok, response} when is_map(response) ->
         response
@@ -942,6 +1004,233 @@ defmodule SalixAgent.Tools.Peers do
         raise android_dispatch_error(reason)
     end
   end
+
+  # ---- env.screen ----
+
+  # A computer's own iOS Simulator (systems/station/docs/simulator-screen.md) is
+  # leased only once the computer's owner allowed this Conversation, on the same
+  # `computer_use_start` card a phone has (capability `ios_simulator`), which
+  # only that owner answers. The station is told `consent` only from that
+  # record; an Agent's own `consent` argument is dropped.
+  @screen_consent_capability "ios_simulator"
+
+  @doc false
+  def screen(args, ctx) do
+    environment = String.trim(arg(args, "environment"))
+    action = String.trim(arg(args, "action"))
+    if environment == "", do: raise("screen requires a remote environment")
+    if action == "", do: raise("'action' is required")
+    target = environment_target!(args, environment)
+
+    payload =
+      args
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> Map.delete("consent")
+      |> then(fn p ->
+        if is_map(p["args"]), do: Map.update!(p, "args", &drop_consent/1), else: p
+      end)
+      |> Map.put("environment", environment)
+      |> Map.put("action", action)
+      |> put_screen_consent(action, target, ctx)
+
+    case env_dispatch(ctx, target, :screen, [payload]) do
+      {:ok, %{"ok" => false, "error_code" => "screen_consent_required"} = response} ->
+        await_consent(response, target, ctx, %{
+          capability: @screen_consent_capability,
+          tool: "env.screen",
+          wait: "simulator consent",
+          unavailable:
+            "screen_consent_unavailable: a simulator is used only from a Comma conversation, where the computer's owner allows it",
+          instructions:
+            "This simulator runs on a person's computer. The Comma app shows its owner a card in this conversation to allow it. " <>
+              "This call returns approved or denied; once approved, call env.screen start again."
+        })
+
+      {:ok, %{"ok" => false} = response} ->
+        raise "#{response["error_code"] || "screen_action_failed"}: #{response["error"] || "the simulator action failed"}"
+
+      {:ok, %{"image_path" => path} = response} when is_binary(path) and path != "" ->
+        android_image_result(response, target, ctx)
+
+      {:ok, response} when is_map(response) ->
+        response
+        |> Map.drop(["image_data"])
+        |> then(&Jason.encode!(%{"result" => &1}))
+
+      {:error, reason} ->
+        raise screen_dispatch_error(reason)
+    end
+  end
+
+  defp put_screen_consent(payload, "start", target, ctx) do
+    device = payload["target"] || get_in(payload, ["args", "target"])
+
+    if is_binary(device) and consented?(ctx, @screen_consent_capability, target.device_id, device),
+      do: Map.put(payload, "consent", true),
+      else: payload
+  end
+
+  defp put_screen_consent(payload, _action, _target, _ctx), do: payload
+
+  defp screen_dispatch_error(:screen_capability_missing),
+    do:
+      "screen_capability_missing: Comma on this computer is from before agents could use its simulators; ask its owner to update Comma there"
+
+  defp screen_dispatch_error(reason) when reason in [:screen_not_authorized],
+    do: Atom.to_string(reason)
+
+  defp screen_dispatch_error(:timeout), do: "screen_transport_ambiguous: timeout"
+  defp screen_dispatch_error(:disconnected), do: "screen_transport_ambiguous: disconnected"
+  defp screen_dispatch_error(_reason), do: "screen_environment_unavailable"
+
+  defp drop_consent(%{} = inner), do: Map.delete(inner, "consent")
+  defp drop_consent(other), do: other
+
+  # Only a start names a device to lease; the station asks consent of a phone alone.
+  defp put_android_consent(payload, "start", target, ctx) do
+    device = payload["target"] || get_in(payload, ["args", "target"])
+
+    if is_binary(device) and
+         consented?(ctx, @android_consent_capability, target.device_id, device),
+       do: Map.put(payload, "consent", true),
+       else: payload
+  end
+
+  defp put_android_consent(payload, _action, _target, _ctx), do: payload
+
+  # The newest requests of this Conversation (at most a listing's 100): a consent
+  # older than those is asked again.
+  defp consented?(ctx, capability, device_id, device) do
+    with %{"surface_ref" => %{"conversation_id" => conversation}} <-
+           SalixAgent.Tools.OAuth.conversation_surface(ctx),
+         {:ok, %{tenant: tenant, group_id: group_id}} <-
+           OAuthStore.agent_oauth_context(ctx.agent_id),
+         {:ok, requests} <-
+           SalixAgent.CapabilityRequests.list_conversation(group_id, tenant, conversation) do
+      Enum.any?(requests, fn request ->
+        consent = get_in(request, ["request_payload", "computer_use_start"]) || %{}
+
+        request["request_type"] == "computer_use_start" and request["status"] == "completed" and
+          get_in(request, ["response_payload", "approved"]) == true and
+          consent["capability"] == capability and
+          consent["device_id"] == device_id and consent["target"] == device
+      end)
+    else
+      _ -> false
+    end
+  end
+
+  # The phone's owner allows this Conversation on its card; the call stays open
+  # until they decide or the card expires. Approved, the Agent starts again.
+  defp await_android_consent(response, target, ctx) do
+    await_consent(response, target, ctx, %{
+      capability: @android_consent_capability,
+      tool: "env.android",
+      wait: "phone consent",
+      unavailable:
+        "android_consent_unavailable: a phone is used only from a Comma conversation, where its owner allows it",
+      instructions:
+        "This is a person's phone. The Comma app shows its owner a card in this conversation to allow it. " <>
+          "This call returns approved or denied; once approved, call env.android start again."
+    })
+  end
+
+  defp await_consent(response, target, ctx, kind) do
+    surface = SalixAgent.Tools.OAuth.conversation_surface(ctx) || raise kind.unavailable
+
+    {:ok, %{tenant: tenant, group_id: group_id}} = OAuthStore.agent_oauth_context(ctx.agent_id)
+    session_id = ctx.session_id
+    tool_call_id = ctx[:tool_call_id] || random_hex()
+
+    {:ok, request} =
+      SalixAgent.CapabilityRequestStore.create_capability_request(
+        Map.merge(surface, %{
+          "tenant_id" => tenant,
+          "group_id" => group_id,
+          "source_agent_id" => ctx.agent_id,
+          "source_session_id" => session_id,
+          "tool_call_id" => tool_call_id,
+          "request_type" => "computer_use_start",
+          "request_payload" => %{
+            "computer_use_start" => %{
+              "capability" => kind.capability,
+              "tool_name" => kind.tool,
+              "device_id" => target.device_id,
+              "environment_id" => target.environment_id,
+              "target" => response["target"],
+              "title" => response["title"]
+            }
+          },
+          "expires_at" => SystemsClock.system_time(:second) + @android_consent_ttl_seconds
+        })
+      )
+
+    content =
+      Jason.encode!(%{
+        "status" => "consent_required",
+        "tool_call_id" => tool_call_id,
+        "request_id" => request["request_id"],
+        "instructions" => kind.instructions
+      })
+
+    auto_wait = SalixAgent.Tools.AsyncPolicy.user_interaction_tool_auto_wait_seconds()
+
+    wait =
+      SalixAgent.Waits.build(kind.wait, auto_wait, "auto_wait", %{
+        "tool_call_id" => tool_call_id,
+        "tool_name" => kind.tool
+      })
+
+    {content,
+     [
+       %{
+         "type" => "async_tool_call_started",
+         "session_id" => session_id,
+         "tool_call_id" => tool_call_id,
+         "tool_name" => kind.tool,
+         "input" => "{}",
+         "status" => "running",
+         "completion_mode" => "external_callback",
+         "started_at" => SystemsClock.system_time(:millisecond),
+         "auto_wait_seconds" => auto_wait
+       }
+       |> Map.merge(SalixAgent.CapabilityRequestStore.execution_fields(request)),
+       SalixAgent.Waits.event(session_id, wait)
+     ]}
+  end
+
+  # A device's screenshot, as env.computer_use gives one: a temporary device
+  # reference beside the rest of the observation.
+  defp android_image_result(response, target, ctx) do
+    rest =
+      Map.drop(
+        response,
+        ~w(image_path image_content_type image_size_bytes image_width image_height image_data)
+      )
+
+    text = Jason.encode!(%{"result" => rest})
+
+    if SalixAgent.MediaResolver.supports_images?(ctx.agent_id, ctx) do
+      image = %{
+        "type" => "image",
+        "file_ref" => %{
+          "device_id" => target.device_id,
+          "environment_id" => target.environment_id,
+          "path" => response["image_path"]
+        },
+        "mime_type" => response["image_content_type"],
+        "size_bytes" => response["image_size_bytes"],
+        "width" => response["image_width"],
+        "height" => response["image_height"]
+      }
+
+      Jason.encode!([%{"type" => "text", "text" => text}, image])
+    else
+      text
+    end
+  end
+
+  defp random_hex, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 
   defp android_error(response) do
     code = response["error_code"] || "android_action_failed"
@@ -958,7 +1247,9 @@ defmodule SalixAgent.Tools.Peers do
               :android_capability_missing,
               :android_profile_required,
               :android_profile_not_allowed,
-              :android_profile_unavailable
+              :android_profile_unavailable,
+              :android_mode_not_allowed,
+              :android_target_required
             ],
        do: Atom.to_string(reason)
 
@@ -1019,6 +1310,27 @@ defmodule SalixAgent.Tools.Peers do
     %{device_id: required_arg(args, "device_id"), environment_id: environment}
   end
 
+  # A sandbox's own command line (`comma exec`) names itself: `self` is the
+  # device of the station the call came through, in its one environment.
+  defp exec_target!(args, "self", %{station_device_id: device_id, agent_id: agent_id})
+       when is_binary(device_id) do
+    if arg(args, "device_id") not in ["", "self"],
+      do: raise("environment self takes no other device_id")
+
+    case EnvDispatch.get_device(agent_id, device_id) do
+      {:ok, %{"environments" => [%{"environment_id" => environment} | _]}} ->
+        %{device_id: device_id, environment_id: environment}
+
+      _ ->
+        unavailable!("env.exec")
+    end
+  end
+
+  defp exec_target!(_args, "self", _ctx),
+    do: raise("environment self is for a call from a Task's own sandbox")
+
+  defp exec_target!(args, environment, _ctx), do: environment_target!(args, environment)
+
   defp copy_target!(args, side) do
     environment = required_arg(args, side <> "_environment")
     device_id = arg(args, side <> "_device_id")
@@ -1050,6 +1362,43 @@ defmodule SalixAgent.Tools.Peers do
   defp unavailable!(tool) do
     raise ~s|tool "#{tool}" unavailable (not_installed): no environment connected|
   end
+
+  # The seam says :no_environment both for a device that is not connected and
+  # for a target it cannot resolve. Only on that failure is the device read once,
+  # so a wrong device id or an environment the device does not have says so
+  # instead of reading as an offline machine.
+  @spec unavailable!(String.t(), map(), term()) :: no_return()
+  defp unavailable!(tool, ctx, %{device_id: device_id, environment_id: environment} = target) do
+    lookup =
+      if SalixAgent.Stations.station_id(target),
+        do: :station,
+        else: EnvDispatch.get_device(ctx.agent_id, device_id)
+
+    case lookup do
+      {:ok, device} ->
+        ids =
+          for %{"environment_id" => id} when is_binary(id) <- device["environments"] || [], do: id
+
+        cond do
+          environment in ids ->
+            unavailable!(tool)
+
+          ids == [] ->
+            raise ~s|tool "#{tool}": device #{device_id} has no environment "#{environment}"; it has no environment connected right now|
+
+          true ->
+            raise ~s|tool "#{tool}": device #{device_id} has no environment "#{environment}"; its environments: #{Enum.join(ids, ", ")}|
+        end
+
+      {:error, :not_found} ->
+        raise ~s|tool "#{tool}": device #{device_id} is not in this workspace; device.list shows its devices|
+
+      _station_or_failed_lookup ->
+        unavailable!(tool)
+    end
+  end
+
+  defp unavailable!(tool, _ctx, _target), do: unavailable!(tool)
 
   defp present?(v), do: is_binary(v) and String.trim(v) != ""
   defp trimmed(v), do: if(present?(v), do: String.trim(v))

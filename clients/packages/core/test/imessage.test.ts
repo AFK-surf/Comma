@@ -97,6 +97,13 @@ describe("iMessage over Photon", () => {
       busy: false,
     });
 
+    const direct = t.client.call("imessage.start", { workspace: WS });
+    await t.time.pass(100);
+    await direct;
+    expect(t.api.seen("POST", `${path}/connect`).at(-1)!.body).toEqual({
+      transport: "photon",
+    });
+
     const started = t.client.call("imessage.start", { workspace: WS, handle: phone });
     await t.time.pass(100);
     await started;
@@ -162,6 +169,28 @@ describe("iMessage over Photon", () => {
       code: "CODE123",
     });
     expect(shown().state?.pending_claim).toBeNull();
+  });
+
+  it("reads again when a page comes back", async () => {
+    const t = setup();
+    const s = server(t);
+    const topic = { topic: "imessage", workspace: WS } as const;
+    const off = t.client.subscribe(
+      topic,
+      () => undefined,
+      () => undefined
+    );
+    await t.time.pass(100);
+    expect(t.api.seen("GET", path)).toHaveLength(1);
+
+    off();
+    await t.time.pass(100);
+    s.reply();
+
+    const shown = t.watch<IMessageValue>(topic);
+    await t.time.pass(100);
+    expect(t.api.seen("GET", path)).toHaveLength(2);
+    expect(shown().state?.link).toMatchObject({ sender_handle: phone });
   });
 
   it("a failed read stops the reads until a refresh", async () => {

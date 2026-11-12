@@ -12,8 +12,12 @@ defmodule SalixWeb.StationLLM do
   against the workspace's billing owner from the usage the provider reports,
   and refused (402) when billing is unavailable.
 
-  A token opens this route only while the connection it was made for is the
-  device's current one: it ends when the station disconnects.
+  A token is of the station's Workload generation, not of one connection: a
+  reconnect of the same station keeps it, so a turn that runs across a
+  reconnect keeps reaching its model. It ends when that generation is no
+  longer the device's authorized one (the Workload advanced, stopped, ended
+  or is gone). A station with no Workload proof is admitted only while its
+  device is connected.
   """
 
   import Plug.Conn
@@ -44,41 +48,74 @@ defmodule SalixWeb.StationLLM do
     end
   end
 
-  @doc "A key for the station of connection `run` (device `device` of `group`)."
-  def token(tenant, group, device, run) do
+  @doc "A key for the station of `connection` (its device and the Workload generation it proved)."
+  def token(%{tenant_id: tenant} = connection) do
     with {:ok, sealed} <-
            SubscriptionStore.seal(tenant, @seal_id, %{
-             "group" => group,
-             "device" => device,
-             "run" => run
+             "group" => connection.group_id,
+             "device" => connection.device_id,
+             "workload" => connection[:workload_id],
+             "generation" => connection[:workload_generation]
            }) do
       {:ok, @prefix <> tenant <> "." <> Base.url_encode64(sealed, padding: false)}
     end
   end
 
-  @doc "Lets the request in when its key is a token of a connection that is still the device's own."
+  @doc "Lets the request in when its key is a token of the device's authorized Workload generation."
   def admit(conn, @prefix <> rest) do
     with [tenant, encoded] <- String.split(rest, ".", parts: 2),
          {:ok, sealed} <- Base.url_decode64(encoded, padding: false),
-         {:ok, %{"group" => group, "device" => device, "run" => run}} <-
+         {:ok, %{"group" => group, "device" => device} = claims} <-
            SubscriptionStore.open(tenant, @seal_id, sealed),
-         {:ok, %{"status" => "connected", "connector_run_id" => ^run} = current} <-
-           SalixEnv.Registry.get_device(tenant, group, device),
-         {:ok, _owner} <-
-           SalixEnv.StationConnection.authorize(
-             SalixStore.ComputeStation.connection(tenant, group, current)
-           ) do
+         :ok <- authorize(tenant, group, device, claims) do
       conn
       |> assign(:auth_role, :station_llm)
       |> assign(:station_llm, %{tenant_id: tenant, group_id: group, device_id: device})
     else
-      _ -> deny(conn)
+      {:error, reason} -> deny(conn, reason)
+      _ -> deny(conn, :invalid_token)
     end
   end
 
-  def admit(conn, _token), do: deny(conn)
+  def admit(conn, _token), do: deny(conn, :not_a_station_llm_token)
 
-  defp deny(conn) do
+  # The Workload generation owns the station's authority (`SalixStore.ComputeStation`);
+  # the connector connection does not, so a reconnect does not end the key.
+  defp authorize(tenant, group, device, %{"workload" => workload, "generation" => generation})
+       when is_binary(workload) and is_integer(generation) do
+    case SalixStore.ComputeStation.authorize(%{
+           tenant_id: tenant,
+           group_id: group,
+           device_id: device,
+           workload_id: workload,
+           workload_generation: generation
+         }) do
+      {:ok, _owner} -> :ok
+      {:error, reason} -> {:error, {:workload_not_authorized, reason}}
+    end
+  end
+
+  defp authorize(tenant, group, device, _claims) do
+    case SalixEnv.Registry.get_device(tenant, group, device) do
+      {:ok, %{"status" => "connected"} = current} ->
+        case SalixEnv.StationConnection.authorize(
+               SalixStore.ComputeStation.connection(tenant, group, current)
+             ) do
+          {:ok, _owner} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _not_connected} ->
+        {:error, :device_not_connected}
+
+      _ ->
+        {:error, :device_unknown}
+    end
+  end
+
+  defp deny(conn, reason) do
+    Logger.warning("station llm refused: #{inspect(reason)}")
+
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(401, Jason.encode!(%{error: "unauthorized"}))

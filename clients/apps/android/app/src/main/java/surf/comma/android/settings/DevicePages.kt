@@ -365,12 +365,25 @@ internal class HomeDevicePage(private val ctx: SettingsContext, private val devi
     }
     private var seen = false
     private var rendered = false
+    /** An online device's screen, over the mesh. */
+    private val screen = SettingsRow(activity, null, activity.getString(R.string.ds_screen_view)).value(null, chevron = true)
+        .onClick { ctx.open(surf.comma.android.settings.desktop.ScreenPage(ctx, device.id)) }
+    /** Its iOS Simulators and Android devices, as its station lists them over the mesh. */
+    private val screenDevices = SettingsRow(activity, null, activity.getString(R.string.ds_screen_devices)).value(null, chevron = true)
+        .onClick { ctx.open(surf.comma.android.settings.desktop.ScreenDevicesPage(ctx, device.id)) }
+    private val screenSection = SettingsSection(activity, null).add(screen).add(screenDevices)
 
     init {
         val kind = SettingsRow(activity, null, activity.getString(R.string.devices_kind)).value(activity.getString(
-            if (device.isCommaDevice) R.string.devices_kind_comma else R.string.devices_kind_computer))
+            when {
+                device.isCommaDevice -> R.string.devices_kind_comma
+                device.isStillfailStation -> R.string.devices_kind_stillfail
+                else -> R.string.devices_kind_computer
+            }))
         layout.section(SettingsSection(activity, null).add(status).add(kind), top = 0)
-        layout.section(LinearLayout(activity).apply {
+        layout.section(screenSection)
+        // A still.fail station has no access value: it takes Tasks only.
+        if (!device.isStillfailStation) layout.section(LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             addView(SettingsSection(activity, null).add(access))
             addView(accessNotice)
@@ -422,6 +435,7 @@ internal class HomeDevicePage(private val ctx: SettingsContext, private val devi
         val shown = current ?: device
         status.value(activity.getString(if (shown.online) R.string.devices_online else R.string.devices_offline))
         status.detail(if (shown.online) null else lastSeen(shown))
+        screenSection.isVisible = shown.showsScreen
         remove.isEnabled = device.id !in state.removing
         accessSwitch.set(state.allowsOperations(shown), animate = rendered)
         rendered = true

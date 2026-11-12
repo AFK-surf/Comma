@@ -2,8 +2,8 @@ defmodule SalixWeb.CloudVM.Start do
   @moduledoc """
   Starts the Group's existing Cloud VM, or creates its Cloudflare VM.
   `cloud_vm.start` and automatic runtime Task placement share this bounded
-  startup path. The Group's Cloud VM switch authorizes it. A named Worker
-  must belong to the same Group (`SalixAgent.CloudVM.allowed?/1`).
+  startup path. The Group's Cloud VM authorizes it, and a named Worker must
+  belong to the same Group (`SalixAgent.CloudVM.allowed?/1`).
   Accepted Tasks retain their existing device when it wakes.
   A Task for the VM's station wakes it by itself (`SalixWeb.StationTasks`),
   made or given a Message while it sleeps.

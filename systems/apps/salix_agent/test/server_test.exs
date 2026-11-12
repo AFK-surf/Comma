@@ -10,14 +10,13 @@ defmodule SalixAgent.ServerTest do
   use SystemsClock.Case, async: false
 
   use SalixAgent.TestSupport.Settle
-  alias SalixStore.{Agent, Keys}
+  alias SalixStore.Agent
   alias SalixAgent.{InternalAgentRuntime, Server, Fleet, State, Waits}
   alias SalixAgent.LLM.Mock
   alias SalixAgent.VisibleReplyPolicy, as: Policy
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
     prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
     prev_summarizer = SystemsRuntime.get_env(:salix_agent, :summarizer)
@@ -913,12 +912,13 @@ defmodule SalixAgent.ServerTest do
   test "server wakes indexed non-stable sessions", %{agent: a} do
     Mock.script([{:final, "indexed wake handled"}])
     SalixAgent.TestSupport.create_control_agent!(a)
+    start_fixture_owner!(a)
 
     {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_create(a, "ses1_0000000000000000920", %{})
+      SalixAgent.TestSupport.SessionFixture.create(a, "ses1_0000000000000000920", %{})
 
     {:ok, session} =
-      SalixAgent.InternalSessionStore.prepare_commit(a, "ses1_0000000000000000920", [
+      SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000920", [
         %{
           "type" => "queue_append",
           "session_id" => "ses1_0000000000000000920",
@@ -948,9 +948,10 @@ defmodule SalixAgent.ServerTest do
     session_id = "ses1_0000000000000000929"
 
     SalixAgent.TestSupport.create_control_agent!(a)
+    start_fixture_owner!(a)
 
     assert {:ok, pending} =
-             SalixAgent.InternalSessionStore.prepare_commit(a, session_id, [
+             SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
                %{"type" => "session_created", "session_id" => session_id},
                %{
                  "type" => "assistant",
@@ -971,7 +972,7 @@ defmodule SalixAgent.ServerTest do
              ])
 
     assert SalixAgent.InternalSession.pending_visible_reply?(pending)
-    assert "visible_reply_commit" in SalixAgent.InternalSession.get(pending, :work_index_reasons)
+    assert "visible_reply_commit" in work_reasons(a, session_id)
 
     {:ok, server} = Fleet.ensure_started(a, create: false)
     Server.wake(server)
@@ -981,27 +982,22 @@ defmodule SalixAgent.ServerTest do
 
              SalixAgent.InternalSession.status(settled) == :idle and
                SalixAgent.InternalSession.last_ack_message_id(settled) == 1 and
-               SalixAgent.InternalSession.get(settled, :work_index_reasons) == []
+               work_reasons(a, session_id) == []
            end)
   end
 
   test "future callback deadlines preserve work across server incarnations",
        %{agent: a} do
     SalixAgent.TestSupport.create_control_agent!(a)
-    now = SystemsClock.system_time(:second)
-
-    {kept_session_ids, orphan_session_ids} =
-      1..6
-      |> Enum.map(fn _ -> SalixStore.Ids.new_session_id() end)
-      |> Enum.sort_by(&Keys.agent_session_work_index(a, "internal", &1))
-      |> Enum.split(3)
+    start_fixture_owner!(a)
+    kept_session_ids = for _ <- 1..3, do: SalixStore.Ids.new_session_id()
 
     for session_id <- kept_session_ids do
       capability =
         SalixAgent.TestSupport.pending_capability_fields!(a, session_id, "callback-#{session_id}")
 
       assert {:ok, _session} =
-               SalixAgent.InternalSessionStore.prepare_commit(a, session_id, [
+               SalixAgent.TestSupport.SessionFixture.commit(a, session_id, [
                  %{"type" => "session_created", "session_id" => session_id},
                  %{
                    "type" => "async_tool_call_started",
@@ -1016,16 +1012,7 @@ defmodule SalixAgent.ServerTest do
                ])
     end
 
-    for session_id <- orphan_session_ids do
-      assert {:ok, _record} =
-               SalixAgent.SessionWorkIndex.mark(
-                 a,
-                 :internal,
-                 session_id,
-                 ["external_callback_tool_call"],
-                 updated_at: now - 600
-               )
-    end
+    :ok = Fleet.stop(a)
 
     for _incarnation <- 1..2 do
       {:ok, pid} =
@@ -1040,29 +1027,21 @@ defmodule SalixAgent.ServerTest do
       assert eventually(fn -> not Fleet.running?(a) end)
     end
 
-    # These callbacks are not due yet. Recovery must also retain candidates
-    # whose missing Session generation does not prove safe deletion.
-    assert {:ok, six_records} = SalixAgent.SessionWorkIndex.list(a)
-    assert length(six_records) == 6
+    assert %{rewoken: rewoken} = SalixAgent.SessionWorkRecovery.sweep(session_work_max_keys: 3)
+    refute a in rewoken
 
-    assert %{
-             rewoken: [],
-             cleaned: 0
-           } =
-             SalixAgent.SessionWorkRecovery.sweep(session_work_max_keys: 3)
+    %{rows: rows} =
+      SalixStore.Repo.query!(
+        "SELECT session_id,work_reasons,next_run_at FROM salix_sessions WHERE agent_id=$1 ORDER BY session_id",
+        [a]
+      )
 
-    assert {:ok, records} = SalixAgent.SessionWorkIndex.list(a)
+    assert Enum.map(rows, &hd/1) == Enum.sort(kept_session_ids)
 
-    assert Enum.sort(Enum.map(records, & &1["session_id"])) ==
-             Enum.sort(kept_session_ids ++ orphan_session_ids)
-
-    assert {:ok, %{records: [], next: nil}} =
-             SalixAgent.SessionWorkIndex.list_discovery()
-
-    assert {:ok, %{records: [], next: nil}} =
-             SalixAgent.SessionWorkIndex.list_due_discovery(
-               SystemsClock.system_time(:millisecond)
-             )
+    assert Enum.all?(rows, fn [_, reasons, due] ->
+             "external_callback_tool_call" in reasons and
+               DateTime.to_unix(due, :millisecond) > SystemsClock.system_time(:millisecond)
+           end)
   end
 
   test "rpc delivery commits delivery workspace events through the role agent actor", %{agent: a} do
@@ -1798,6 +1777,7 @@ defmodule SalixAgent.ServerTest do
       AsyncCompletionWhilePendingLLM.set_owner(SystemsRuntime.Proc.self())
 
       SalixAgent.TestSupport.create_control_agent!(a)
+      start_fixture_owner!(a)
 
       capability =
         SalixAgent.TestSupport.pending_capability_fields!(
@@ -1807,7 +1787,7 @@ defmodule SalixAgent.ServerTest do
         )
 
       {:ok, _session} =
-        SalixAgent.InternalSessionStore.prepare_commit(a, "ses1_0000000000000000920", [
+        SalixAgent.TestSupport.SessionFixture.commit(a, "ses1_0000000000000000920", [
           %{"type" => "session_created", "session_id" => "ses1_0000000000000000920"},
           %{
             "type" => "async_tool_call_started",
@@ -2344,6 +2324,22 @@ defmodule SalixAgent.ServerTest do
     pid
   end
 
+  defp start_fixture_owner!(agent_id) do
+    {:ok, pid} = Fleet.ensure_started(agent_id, create: false, startup_mode: :passive)
+    assert {:parked, _} = Server.info(pid)
+    pid
+  end
+
+  defp work_reasons(agent_id, session_id) do
+    %{rows: [[reasons]]} =
+      SalixStore.Repo.query!(
+        "SELECT work_reasons FROM salix_sessions WHERE agent_id=$1 AND session_id=$2",
+        [agent_id, session_id]
+      )
+
+    reasons
+  end
+
   defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
   defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
@@ -2373,7 +2369,6 @@ defmodule SalixAgent.ServerTest do
            )
 
     assert SalixAgent.InternalSession.status(session) == :idle
-    assert {:ok, _} = SalixStore.S3.head(Keys.agent_state(a))
   end
 
   # The staged Delivery engine is retired (docs/salix/conversation-owner-actor.md

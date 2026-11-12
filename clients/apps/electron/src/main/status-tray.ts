@@ -252,6 +252,7 @@ export function createCommaStatusTray({
   content,
   createHost,
   locale = baseLocale,
+  onCheckForUpdates,
   onOpenMainApp,
   onOpenSettings,
   onOpenTask,
@@ -263,6 +264,7 @@ export function createCommaStatusTray({
   clock = realMainClock,
   platform = process.platform,
   productName,
+  version,
 }: {
   content: StatusTrayContent;
   /**
@@ -271,6 +273,8 @@ export function createCommaStatusTray({
    */
   createHost(toolTip: string, reinstall: () => void): StatusTrayHost;
   locale?: CommaLocale;
+  /** Check for Updates...: Settings › About checks, as the application menu's command does. */
+  onCheckForUpdates(): void;
   onOpenMainApp(): void;
   onOpenSettings(): void;
   onOpenTask(task: StatusTrayTask): void;
@@ -287,6 +291,8 @@ export function createCommaStatusTray({
   clock?: MainClock;
   platform?: NodeJS.Platform;
   productName: string;
+  /** The version the app runs, shown above Check for Updates. */
+  version: string;
 }) {
   const host = createHost(productName, () => {
     installedKey = undefined;
@@ -361,6 +367,18 @@ export function createCommaStatusTray({
         id: "settings",
         label: messages.electron_tray_settings({}, language),
         ...shortcut(next.settingsAccelerator),
+      },
+      { type: "separator" },
+      // Windows has no application menu: its About and Check for Updates are here and in Settings.
+      {
+        enabled: false,
+        label: messages.electron_tray_version({ productName, version }, language),
+        type: "header",
+      },
+      {
+        click: onCheckForUpdates,
+        id: "check-updates",
+        label: messages.electron_tray_check_updates({}, language),
       },
       { type: "separator" },
       {
@@ -570,10 +588,12 @@ function usageRows(
     ),
     ...account.meters.map((window) =>
       usedMeter(
-        `usage:${account.id}:${window.window}`,
+        `usage:${account.id}:${window.window}${window.model ? `:${window.model}` : ""}`,
         window.window === "5h"
           ? messages.electron_tray_usage_5h({}, language)
-          : messages.electron_tray_usage_week({}, language),
+          : window.window === "model" && window.model
+            ? `${window.model} · ${messages.electron_tray_usage_week({}, language)}`
+            : messages.electron_tray_usage_week({}, language),
         percent(100 - window.percent),
         window.resetAt
       )

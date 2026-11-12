@@ -67,6 +67,9 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
       {:ok, %{text: "客户在等报价，#{label(ask)} 在跟。[原消息](#{ask["ref"]})", usage: usage()}}
     end
 
+    def compose(%{view: :mine}),
+      do: {:ok, %{text: ~s({"items": []}), usage: usage()}}
+
     def compose(%{input: input}) do
       report({:personal_input, input})
 
@@ -228,6 +231,7 @@ defmodule BridgeForTeams.DailyBriefAcceptanceTest do
     assert alice_input["team_brief"] =~ "客户在等报价"
     alice_text = Jason.encode!(alice_blocks)
     assert alice_text =~ "先回客户的报价，<@UBOB1> 在等。"
+    assert alice_text =~ "slack://channel?team=T1&id=CMAIN1&message=#{@ask_ts}"
     assert alice_text =~ "https://acme.slack.com/archives/CMAIN1/p#{@ask_ts}"
 
     # Bob wrote the ask, so his brief reads it too.

@@ -17,7 +17,6 @@
     <string name="chat_send_failed_icon">发送失败，查看选项</string>
     <string name="chat_session_retry">连接失败 · 点此重试</string>
     <string name="chat_scroll_to_latest">回到最新消息</string>
-    <string name="chat_reply_copy">复制</string>
     <!-- An Agent's question card under its message, and the receipt it closes into. -->
     <string name="chat_question_recommended">推荐</string>
     <string name="chat_question_multi">可多选</string>
@@ -44,10 +43,39 @@
     <string name="chat_request_reopen">重新打开</string>
     <string name="chat_request_decline">拒绝</string>
     <string name="chat_request_waiting_browser">等你在浏览器里完成授权…</string>
+    <string name="chat_request_open_form">打开表单</string>
+    <string name="chat_request_waiting_form">等你在表单里填完…</string>
     <string name="chat_request_connected">已连接 %1$s</string>
     <string name="chat_request_declined">你没有连接 %1$s</string>
     <string name="chat_request_expired">请求已过期</string>
     <string name="chat_request_cancelled">Agent 撤回了这次请求</string>
     <string name="chat_request_failed">这次请求没有完成</string>
     <string name="chat_request_decline_failed">没能拒绝，请重试。</string>
+    <string name="chat_request_fill">填写</string>
+    <string name="chat_request_fill_title">填写 %1$s</string>
+    <string name="chat_request_save">保存</string>
+    <string name="chat_request_saved">已保存</string>
+    <string name="chat_request_next">下一步</string>
+    <string name="chat_request_app_id">App ID</string>
+    <string name="chat_request_app_secret">App Secret</string>
+    <string name="chat_request_app_help">去 %1$s 开放平台查看</string>
+    <string name="chat_request_value_help">去哪里获取</string>
+    <string name="chat_request_redirect_url">重定向 URL</string>
+    <string name="chat_request_fill_hint">直接保存给 Comma，不进聊天记录，也不发给模型。</string>
+    <string name="chat_request_fill_failed">没能保存，请重试。</string>
+    <string name="chat_request_location_title">分享你的位置</string>
+    <string name="chat_request_location_share">分享位置</string>
+    <string name="chat_request_location_locating">正在获取你的位置…</string>
+    <string name="chat_request_location_denied">Comma 的定位权限已关闭。请在设置中打开后重试。</string>
+    <string name="chat_request_location_unavailable">暂时无法获取你的位置，请重试。</string>
+    <string name="chat_request_location_failed">没能分享，请重试。</string>
+    <string name="chat_request_location_shared">已分享位置</string>
+    <string name="chat_request_location_declined">你没有分享位置</string>
+    <string name="chat_request_login_title">登录 %1$s CLI</string>
+    <string name="chat_request_logged_in">已登录</string>
+    <string name="chat_request_login_copy_open">复制验证码并打开</string>
+    <string name="chat_request_login_code">网页显示的验证码</string>
+    <string name="chat_request_login_open">打开登录页</string>
+    <string name="chat_request_login_submit">提交</string>
+    <string name="chat_suggestions">建议回复</string>
 </resources>

@@ -20,7 +20,9 @@ defmodule SalixAgent.RoundBudgetNoticeTest do
       restore(:salix_agent, :input_round_cap, prev_cap)
     end)
 
-    {:ok, agent_id: SalixAgent.TestSupport.new_agent_id()}
+    agent_id = SalixAgent.TestSupport.new_agent_id()
+    SalixAgent.TestSupport.create_control_agent!(agent_id)
+    {:ok, agent_id: agent_id}
   end
 
   defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
@@ -47,7 +49,7 @@ defmodule SalixAgent.RoundBudgetNoticeTest do
     }
 
   defp commit!(agent_id, events) do
-    {:ok, _} = InternalSessionStore.prepare_commit(agent_id, @session_id, events)
+    {:ok, _} = SalixAgent.TestSupport.SessionFixture.commit(agent_id, @session_id, events)
     {:ok, session} = InternalSessionStore.read(agent_id, @session_id)
     session
   end

@@ -268,14 +268,17 @@ defmodule SalixAgent.Tools.MCP do
     case String.split(rest, ".", parts: 2) do
       [binding_alias, tool_alias] when binding_alias != "" and tool_alias != "" ->
         case seam!().call_tool(ctx_agent_id(ctx), binding_alias, tool_alias, args, ctx) do
-          {:ok, %{"content" => content, "status" => "completed"}} ->
-            content
+          {:ok, %{"content" => content, "status" => "completed"} = result} ->
+            present(result, content, ctx)
 
           {:ok, %{"content" => content, "status" => "cancelled"}} ->
             {:tool_status, "cancelled", content, []}
 
-          {:ok, %{"content" => content, "status" => status}} when is_binary(status) ->
-            {:tool_status, "error", content, []}
+          {:ok, %{"content" => content, "status" => status} = result} when is_binary(status) ->
+            case present(result, content, ctx) do
+              {content, events} -> {:tool_status, "error", content, events}
+              content -> {:tool_status, "error", content, []}
+            end
 
           {:ok, result} ->
             Jason.encode!(result)
@@ -288,6 +291,93 @@ defmodule SalixAgent.Tools.MCP do
         raise "invalid MCP operation id"
     end
   end
+
+  # An MCP image part reaches the model the way every tool image does: stored
+  # as a workspace file and returned as an image block, which the request
+  # builder inlines for a model that sees images. Its base64 never becomes
+  # text the model has to read. The file carries the Group's audience, as the
+  # result does.
+  #
+  # The verified kernel inlines the image blocks of an `mcp.*` result, so the
+  # server's own text must never read as blocks: a text that starts like a JSON
+  # list is handed over inside a text block, and a block it names is never
+  # read.
+  defp present(%{"raw" => %{"content" => parts}}, content, ctx) when is_list(parts) do
+    if Enum.any?(parts, &image_part?/1) do
+      present_parts(parts, ctx, [], [])
+    else
+      plain(content)
+    end
+  end
+
+  defp present(_result, content, _ctx), do: plain(content)
+
+  defp plain("[" <> _ = content), do: Jason.encode!([text_block(content)])
+  defp plain(content), do: content
+
+  defp present_parts([], _ctx, blocks, events),
+    do: {Jason.encode!(Enum.reverse(blocks)), Enum.reverse(events)}
+
+  defp present_parts([part | rest], ctx, blocks, events) do
+    if image_part?(part) do
+      case store_image(part, ctx) do
+        {:ok, block, event} -> present_parts(rest, ctx, [block | blocks], [event | events])
+        {:error, note} -> present_parts(rest, ctx, [text_block(note) | blocks], events)
+      end
+    else
+      present_parts(rest, ctx, [text_block(part_text(part)) | blocks], events)
+    end
+  end
+
+  defp image_part?(%{"type" => "image", "data" => data}) when is_binary(data), do: true
+  defp image_part?(_part), do: false
+
+  defp store_image(%{"data" => data} = part, ctx) do
+    mime = image_mime(part)
+
+    with {:ok, body} <- Base.decode64(data, ignore: :whitespace),
+         path = "/artifacts/mcp-" <> SystemsRuntime.Proc.uuid() <> image_extension(mime),
+         {:ok, event} <-
+           SalixAgent.FileBackend.prepare_write(
+             ctx
+             |> ConnectorLabels.file_ctx()
+             |> SalixAgent.StorageAuthorization.replacing_content(),
+             path,
+             body
+           ) do
+      {:ok,
+       %{
+         "type" => "image",
+         "file_ref" => %{"environment_id" => "vfs", "path" => path},
+         "file_name" => Path.basename(path),
+         "mime_type" => mime,
+         "size_bytes" => byte_size(body)
+       }, event}
+    else
+      _ -> {:error, "[MCP image (#{mime}) could not be stored]"}
+    end
+  end
+
+  defp image_mime(part) do
+    (part["mimeType"] || "application/octet-stream")
+    |> to_string()
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp image_extension("image/png"), do: ".png"
+  defp image_extension("image/jpeg"), do: ".jpg"
+  defp image_extension("image/webp"), do: ".webp"
+  defp image_extension("image/gif"), do: ".gif"
+  defp image_extension(_mime), do: ".bin"
+
+  defp part_text(%{"text" => text}), do: to_string(text)
+  defp part_text(part) when is_map(part), do: Jason.encode!(part)
+  defp part_text(part), do: to_string(part)
+
+  defp text_block(text), do: %{"type" => "text", "text" => text}
 
   def cancel_dynamic_operation("mcp." <> _ = operation_id, ctx, tool_call_id, reason)
       when is_binary(tool_call_id) do

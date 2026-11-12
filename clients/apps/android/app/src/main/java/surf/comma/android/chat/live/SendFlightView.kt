@@ -64,7 +64,6 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         val padV: Float,
         val surfaceAlpha: Float,
         val sourceBitmap: Bitmap?,
-        val fromBubble: Boolean = false,
     ) {
         var target: View? = null
         var image: SendImagePresentation? = null
@@ -358,12 +357,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         val byId = turn.associateBy { it.message.id }
         transition.pieces = paired.map { spec ->
             val row = byId.getValue(spec.targetRowId)
-            val piece = if (spec.isText && sent.fromVoice) {
-                // A voice message starts as the brand bubble it was spoken into.
-                val bubble = sent.surfaceBounds
-                Piece(spec, FlightBox(bubble.left, bubble.top, bubble.right, bubble.bottom),
-                    sent.textOrigin.x - bubble.left, sent.textOrigin.y - bubble.top, row.contentAlpha, null, fromBubble = true)
-            } else if (spec.isText) {
+            val piece = if (spec.isText) {
                 val layout = sent.textLayout!!
                 Piece(spec, SendFlightGeometry.textSource(sent.textOrigin.x, sent.textOrigin.y, widest(layout),
                     layout.height.toFloat(), row.horizontalPaddingPx.toFloat(), row.verticalPaddingPx.toFloat()),
@@ -562,7 +556,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         // The field's fill stays over its hint while the text is still leaving it, then fades.
         val sent = transition.snapshot
         val text = (transition.pieces + transition.orphans).firstOrNull { it.spec.isText }
-        if (text != null && sent.textLayout != null && !sent.fromVoice) {
+        if (text != null && sent.textLayout != null) {
             val cover = if (text.departedAt < 0) 1f else 1f - DesignMotion.softInOut.getInterpolation(
                 ((frameTime - text.departedAt).toFloat() / DesignMotion.feedbackOut).coerceIn(0f, 1f))
             if (cover > 0f) {
@@ -606,22 +600,14 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
 
     /** Before the rows arrive: the frozen text and thumbnails exactly where they were. */
     private fun drawHeld(canvas: Canvas, sent: ComposerSendSnapshot, originX: Float, originY: Float) {
-        if (sent.fromVoice) {
-            surfacePaint.alpha = 255
-            val bubble = sent.surfaceBounds
-            drawRect.set(bubble.left - originX, bubble.top - originY, bubble.right - originX, bubble.bottom - originY)
-            canvas.drawRoundRect(drawRect, sent.surfaceCornerRadius, sent.surfaceCornerRadius, surfacePaint)
-        }
         if (sent.textLayout != null) {
             canvas.save()
             canvas.clipRect(sent.surfaceBounds.left - originX, sent.surfaceBounds.top - originY,
                 sent.surfaceBounds.right - originX, sent.surfaceBounds.bottom - originY)
             canvas.translate(sent.textOrigin.x - originX, sent.textOrigin.y - originY)
             // The cleared field already shows its hint here; the copy stands on the field's own fill.
-            if (!sent.fromVoice) {
-                inputFillPaint.alpha = 255
-                canvas.drawRect(0f, 0f, hintCoverWidth(sent), sent.textLayout.height.toFloat(), inputFillPaint)
-            }
+            inputFillPaint.alpha = 255
+            canvas.drawRect(0f, 0f, hintCoverWidth(sent), sent.textLayout.height.toFloat(), inputFillPaint)
             canvas.drawRenderNode(textNode(sent).apply { alpha = 1f; setUseCompositingLayer(false, null) })
             canvas.restore()
         }
@@ -658,12 +644,8 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         val radius = (target as? FlightTarget)?.flightCornerRadius ?: 0f
         val elapsed = if (piece.launched) frameTime - piece.launchedAt else 0L
         val mix = crossfade(elapsed)
-        // The colour arrives early; a voice bubble starts opaque and settles to the row's opacity.
-        val surface = if (piece.fromBubble) {
-            1f + (piece.surfaceAlpha - 1f) * DesignMotion.softInOut.getInterpolation(timeFraction(elapsed, DesignMotion.stateChange))
-        } else {
-            DesignMotion.smoothOut.getInterpolation(timeFraction(elapsed, DesignMotion.feedbackIn)) * piece.surfaceAlpha
-        }
+        // The colour arrives early.
+        val surface = DesignMotion.smoothOut.getInterpolation(timeFraction(elapsed, DesignMotion.feedbackIn)) * piece.surfaceAlpha
         // A true crossfade: source at (1 - mix) and the row's own pixels at mix, summed in one
         // layer, so the bubble keeps its opacity throughout instead of thinning in the middle.
         layerBounds.set(drawRect)
@@ -676,8 +658,7 @@ internal class SendFlightView(context: Context, private val timeline: ChatTimeli
         canvas.clipRect(drawRect)
         // The typed text takes the bubble's text colour as the bubble's colour arrives, so the
         // crossfade blends two labels of one colour instead of dimming through a dark/light mix.
-        val toBubble = if (piece.fromBubble) 0f
-            else DesignMotion.smoothOut.getInterpolation(timeFraction(elapsed, DesignMotion.feedbackIn))
+        val toBubble = DesignMotion.smoothOut.getInterpolation(timeFraction(elapsed, DesignMotion.feedbackIn))
         val tint = if (toBubble > 0f) ColorUtils.blendARGB(sent.textPaint.color, bubbleTextColor, toBubble) else null
         drawSourceText(canvas, sent, piece, 1f, tint)
         canvas.restore()

@@ -343,8 +343,8 @@ func (n *node) dial(ctx context.Context, host string, port int) (net.Conn, Targe
 	conn, err := srv.Sys().Dialer.Get().NetstackDialTCP(ctx, netip.AddrPortFrom(target.Addr, uint16(port)))
 	if err != nil {
 		return nil, Target{}, "", fail("tailnet_connect_failed",
-			"%s (%s) did not accept a connection on port %d. The device is offline, the tailnet policy denies this port, or nothing listens on it.",
-			target.Peer, target.Addr, port)
+			"%s (%s) did not accept a connection on port %d (%v). The device is offline, the tailnet policy denies this port, or nothing listens on it.",
+			target.Peer, target.Addr, port, err)
 	}
 	return conn, target, tailnetName(st), nil
 }

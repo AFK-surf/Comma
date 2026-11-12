@@ -100,7 +100,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.deepEqual(deltas(events), ["hello"]);
 
     const started = JSON.parse(readFileSync(o.dump, "utf8").trim());
-    const mcp = JSON.stringify({ mcpServers: { stillfail: { type: "http", url: o.mcpUrl, headers: { Authorization: "Bearer ${STILLFAIL_MCP_TOKEN}" } } } });
+    const mcp = JSON.stringify({ mcpServers: { comma: { type: "http", url: o.mcpUrl, headers: { Authorization: "Bearer ${COMMA_STATION_MCP_TOKEN}" } } } });
     assert.deepEqual(started.argv, [
       "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       "--dangerously-skip-permissions", "--session-id", session.id(), "--model", "m1", "--effort", "high",
@@ -108,8 +108,9 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     ]);
     const env = started.env;
     assert.equal(env.CLAUDE_CONFIG_DIR, o.profile.home);
-    assert.equal(env.STILLFAIL_MCP_TOKEN, "tok");
-    assert.equal(env.STILLFAIL_RUNTIME_SESSION_ID, session.id());
+    assert.equal(env.COMMA_STATION_MCP_TOKEN, "tok");
+    assert.equal(env.COMMA_STATION_MCP_URL, o.mcpUrl, "the comma command's way to the station");
+    assert.equal(env.COMMA_STATION_RUNTIME_SESSION_ID, session.id());
     assert.equal(env.EMBER_RUNTIME_SESSION_ID, session.id());
     assert.equal(env.CLAUDE_CODE_CERT_STORE, "bundled");
     assert.equal(env.CLAUDE_CODE_SILENT_TURN_REMINDER, "0");
@@ -120,7 +121,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(env.ANTHROPIC_API_KEY, "k1");
     assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, `x-opencode-session: ${o.route}`);
     assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, "deepseek-flash");
-    if (process.platform === "darwin") assert.match(env.PATH.split(":")[0], /stillfail-no-keychain-\d+$/, "a security that holds nothing of Claude Code's");
+    if (process.platform === "darwin") assert.match(env.PATH.split(":")[0], /comma-station-no-keychain-\d+$/, "a security that holds nothing of Claude Code's");
 
     // The user's message, as stream-json input.
     assert.deepEqual(stdin(o.dump)[0], { type: "user", message: { role: "user", content: [{ type: "text", text: "say:hello" }] } });
@@ -253,7 +254,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     await until(ended(1));
     const env = JSON.parse(readFileSync(o.dump, "utf8").trim()).env;
     assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "machine-token");
-    if (process.platform === "darwin") assert.doesNotMatch(env.PATH.split(":")[0], /stillfail-no-keychain/);
+    if (process.platform === "darwin") assert.doesNotMatch(env.PATH.split(":")[0], /comma-station-no-keychain/);
     await session.dispose();
     expiresAt = Date.now() + 60_000;
     const soon = await d.open(options({ machine: true }), () => {});

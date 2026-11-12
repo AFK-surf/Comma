@@ -17,6 +17,7 @@ import {
 } from "@comma/ui/components/settings-panel";
 import { toast } from "@comma/ui/components/toast";
 import { useState } from "react";
+import { MiniAppScreenshots } from "./MiniAppScreenshots";
 import { MiniAppLinkField } from "./MiniAppLinkField";
 
 type Messages = ReturnType<typeof useCommaMessages>;
@@ -104,13 +105,20 @@ export function MiniAppSettingsDialog({
               : messages.mini_apps_load_failed()}
           </p>
         ) : (
-          <AppSettings
-            app={app}
-            onClose={onClose}
-            onRemoved={onRemoved}
-            value={value}
-            workspaceId={workspaceId}
-          />
+          <>
+            <MiniAppScreenshots
+              urls={app.screenshot_urls}
+              via={{ workspace: workspaceId }}
+              name={app.name}
+            />
+            <AppSettings
+              app={app}
+              onClose={onClose}
+              onRemoved={onRemoved}
+              value={value}
+              workspaceId={workspaceId}
+            />
+          </>
         )}
       </div>
     </Dialog>

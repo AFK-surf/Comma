@@ -32,8 +32,7 @@ const noWorkspace = { status: "ready", workspace: null } as const;
 type Subscriber = {
   id: number;
   topic: Record<string, unknown>;
-  keyed: boolean;
-  /** What it was sent last: a keyed subscriber gets what changed since. */
+  /** What it was sent last: a topic with keyed lists goes out as what changed since. */
   sent?: unknown;
 };
 
@@ -91,7 +90,7 @@ export function createScriptedCore({
       });
     } else if (value !== undefined) {
       const spec = specs[String(subscriber.topic.topic)];
-      if (subscriber.keyed && spec && subscriber.sent !== undefined) {
+      if (spec && subscriber.sent !== undefined) {
         const delta = diffKeyed(subscriber.sent, value, spec);
         // Nothing changed: the core sends nothing.
         if (delta.length === 0) return;
@@ -110,7 +109,6 @@ export function createScriptedCore({
             call?: string;
             params?: unknown;
             subscribe?: Record<string, unknown>;
-            keyed?: boolean;
             unsubscribe?: boolean;
             cancel?: boolean;
           };
@@ -139,7 +137,6 @@ export function createScriptedCore({
             const subscriber: Subscriber = {
               id: message.id,
               topic: message.subscribe,
-              keyed: message.keyed === true,
             };
             subscribers.add(subscriber);
             onSubscribe?.(subscriber.topic);

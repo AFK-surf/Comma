@@ -19,7 +19,7 @@ const (
 	mediaTypeImageManifest = "application/vnd.oci.image.manifest.v1+json"
 )
 
-var requiredClasses = []string{"meeting", "shell", "station"}
+var requiredClasses = []string{"shell", "station"}
 
 type Manifest struct {
 	SchemaVersion  int     `json:"schemaVersion"`

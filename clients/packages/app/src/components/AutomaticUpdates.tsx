@@ -122,15 +122,17 @@ export function AutomaticUpdates() {
     },
   ]);
 
-  // A manual check that waits on a download says so.
+  // A manual check that waits on a download says so, and how far it got.
   const downloading = update?.downloading === true;
+  const progress = update?.progress ?? null;
   useEffect(() => {
     if (!checking || !downloading) return;
-    toast.info(locale === "zh-CN" ? "正在下载更新…" : "Downloading update…", {
+    const title = locale === "zh-CN" ? "正在下载更新…" : "Downloading update…";
+    toast.info(progress === null ? title : `${title} ${progress}%`, {
       id: manualUpdateProgressToastId,
       duration: Number.POSITIVE_INFINITY,
     });
-  }, [checking, downloading, locale]);
+  }, [checking, downloading, locale, progress]);
 
   // The core checks on its own clock; a window coming back (focus, the network)
   // lets it catch up a check the computer slept through.

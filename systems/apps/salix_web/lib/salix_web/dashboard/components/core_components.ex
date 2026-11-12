@@ -175,11 +175,13 @@ defmodule SalixWeb.Dashboard.CoreComponents do
     ~H"""
     <div class={@class}>
       <.field_label :if={@label} for={@id}>{@label}</.field_label>
+      <div class="relative">
       <select
         id={@id}
         name={@name}
         class={[
-          "block w-full h-8 rounded-md border bg-white px-2.5 text-sm focus:outline-none focus:ring-1",
+          "block w-full h-8 rounded-md border bg-white pl-2.5 text-sm focus:outline-none focus:ring-1 disabled:cursor-not-allowed disabled:bg-neutral-50 disabled:text-neutral-400",
+          if(@rest[:multiple], do: "pr-2.5", else: "appearance-none pr-9 truncate"),
           @errors == [] && "border-neutral-300 focus:border-brand-500 focus:ring-brand-500",
           @errors != [] && "border-red-400 focus:border-red-500 focus:ring-red-500"
         ]}
@@ -188,6 +190,10 @@ defmodule SalixWeb.Dashboard.CoreComponents do
         <option :if={@prompt} value="">{@prompt}</option>
         {Phoenix.HTML.Form.options_for_select(@options, @value)}
       </select>
+      <span :if={!@rest[:multiple]} aria-hidden="true" class={["pointer-events-none absolute inset-y-0 right-2.5 flex items-center", if(@rest[:disabled], do: "text-neutral-300", else: "text-neutral-500")]}>
+        <.icon name="chevron-down" class="h-4 w-4" />
+      </span>
+      </div>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
     """
@@ -202,6 +208,7 @@ defmodule SalixWeb.Dashboard.CoreComponents do
   attr(:errors, :list, default: [])
   attr(:hint, :string, default: nil)
   attr(:class, :string, default: nil)
+  attr(:monospace, :boolean, default: true)
   attr(:rest, :global, include: ~w(autofocus disabled placeholder readonly required rows))
 
   def textarea(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
@@ -221,7 +228,8 @@ defmodule SalixWeb.Dashboard.CoreComponents do
         id={@id}
         name={@name}
         class={[
-          "block w-full rounded-md border px-2.5 py-1.5 text-sm font-mono placeholder:text-neutral-400 focus:outline-none focus:ring-1",
+          "block w-full rounded-md border px-2.5 py-1.5 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-1",
+          if(@monospace, do: "font-mono", else: "font-sans"),
           @errors == [] && "border-neutral-300 focus:border-brand-500 focus:ring-brand-500",
           @errors != [] && "border-red-400 focus:border-red-500 focus:ring-red-500"
         ]}

@@ -49,10 +49,10 @@ defmodule Salix.Bindings.IMAgentControlTest do
       end)
 
     old_session_id = agent["router_session_id"]
-    {:ok, _} = SalixAgent.InternalSessionStore.prepare_create(agent_id, old_session_id)
+    {:ok, _} = SalixAgent.TestSupport.SessionFixture.create(agent_id, old_session_id)
 
     {:ok, _} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, old_session_id, [
+      SalixAgent.TestSupport.SessionFixture.commit(agent_id, old_session_id, [
         %{
           "type" => "assistant",
           "session_id" => old_session_id,

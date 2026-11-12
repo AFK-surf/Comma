@@ -32,6 +32,35 @@ import {
 } from "../protocol";
 import type { AttachmentTranscoder } from "../conversationChannel";
 
+describe("the runtime's note to a Task's Router", () => {
+  it("is not a message a person sees; a Worker's report beside it is", () => {
+    const shown = normalizeServerMessages(
+      [
+        {
+          message_id: "report",
+          actor_type: "agent",
+          agent_id: "agt_worker",
+          role_label: "worker",
+          kind: "message",
+          content: [{ type: "text", text: "Done" }],
+        },
+        {
+          message_id: "note",
+          actor_type: "system",
+          role_label: "runtime",
+          kind: "message",
+          metadata: { message_type: "task_status_pending" },
+          content: [{ type: "text", text: "Decide its status now" }],
+        },
+      ] as SalixMessage[],
+      [],
+      "agent_task",
+      "task"
+    );
+    expect(shown.map((row) => row.messageId)).toEqual(["report"]);
+  });
+});
+
 function sentFromClient(id: string, metadata: Record<string, unknown>): SalixMessage {
   return {
     message_id: id,
@@ -5600,6 +5629,62 @@ describe("ConversationChannel", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(api.streams).toHaveLength(9);
     vi.useRealTimers();
+  });
+
+  it("asks again once when an open conversation is refused, and stops on a second refusal in a row", async () => {
+    vi.useFakeTimers();
+    const api = createConversationApi();
+    const channel = createChannel(api);
+    try {
+      channel.start();
+      api.emit(
+        0,
+        { type: "snapshot", messages: [], title: "Open" } as CommaConversationEvent,
+        "snapshot"
+      );
+      api.resolveStream(0);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      // A server still starting during a rolling release answers 404 once.
+      api.rejectStream(1, new CommaApiError(404, "not_found"));
+      await flushMicrotasks();
+      expect(channel.getSnapshot()).toMatchObject({
+        connection: "reconnecting",
+        status: "ready",
+        lastBackoffMs: 1_000,
+      });
+      expect(channel.getSnapshot().errorKind).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      api.emit(2, { type: "snapshot", messages: [] }, "snapshot");
+      api.resolveStream(2);
+      await flushMicrotasks();
+      expect(channel.getSnapshot()).toMatchObject({
+        connection: "live",
+        lastBackoffMs: 0,
+      });
+
+      // After an answer, a refusal is again asked once more.
+      await vi.advanceTimersByTimeAsync(3_000);
+      api.rejectStream(3, new CommaApiError(403, "forbidden"));
+      await flushMicrotasks();
+      expect(channel.getSnapshot().status).toBe("ready");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      api.rejectStream(4, new CommaApiError(403, "forbidden"));
+      await flushMicrotasks();
+      expect(channel.getSnapshot()).toMatchObject({
+        status: "error",
+        errorKind: "forbidden",
+        connection: "paused",
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(api.streams).toHaveLength(5);
+    } finally {
+      channel.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("warns that the transcript is stale only after the short reconnect retries fail", async () => {

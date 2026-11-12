@@ -6,7 +6,7 @@ set -eu
 # kind of file a Task receives: a phone video, a PDF with Chinese text, an
 # archive, and Office documents.
 image="${1:?usage: file-tools.sh IMAGE}"
-docker run --rm --network none --entrypoint sh "$image" -eu -c '
+docker run --rm --network none --read-only --tmpfs /workspace:exec,mode=1777 --tmpfs /tmp:exec,mode=1777 --entrypoint sh "$image" -eu -c '
 cd "$(mktemp -d)"
 
 # A 2 s HEVC video with an AAC track, as a phone records it.

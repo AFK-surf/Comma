@@ -334,13 +334,21 @@ function TaskPlaceForm({
     chosen?.kind === current.kind &&
     (chosen.kind !== "station" ||
       (current.kind === "station" && chosen.device_id === current.device_id));
+  // A sandbox where sandboxes are set up; the Cloud VM where it is not retired. The place held is always listed.
+  const { sandbox, cloud_vm: cloud } = targets.data;
+  const locations: PlaceLocation[] = [
+    "salix",
+    ...(sandbox.selectable || current.kind === "sandbox" ? (["sandbox"] as const) : []),
+    "station",
+    ...(!cloud.retired || current.kind === "cloud_vm" ? (["cloud_vm"] as const) : []),
+  ];
   return (
     <>
       <PlaceFields
         deviceId={deviceId}
         disabled={write.busy}
         location={location}
-        locations={["salix", "station", "cloud_vm"]}
+        locations={locations}
         onLocation={setLocation}
         onStation={setDeviceId}
         targets={targets.data}

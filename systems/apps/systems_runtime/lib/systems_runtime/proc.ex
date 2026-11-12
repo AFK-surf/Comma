@@ -52,6 +52,12 @@ defmodule SystemsRuntime.Proc do
   @doc "Sends `msg` to `dest`; returns `msg`."
   def send(dest, msg), do: Kernel.send(dest, msg)
 
+  @doc """
+  Sends `msg` to `dest` on another node unless that would wait: `:ok`, or what stopped it (`:nosuspend`, the connection
+  between the nodes is busy; `:noconnect`, there is none). For what may be lost, so its sender never stalls on the link.
+  """
+  def send_nosuspend(dest, msg), do: :erlang.send(dest, msg, [:nosuspend, :noconnect])
+
   @doc "The process's queued messages or their count, as `Process.info/2`."
   def info(pid, item) when item in [:messages, :message_queue_len], do: Process.info(pid, item)
 

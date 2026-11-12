@@ -27,6 +27,14 @@ defmodule SalixAgent.ToolCallProvenance do
         Enum.any?(origins, &triage_origin?/1) or not is_nil(ref) ->
           select_triage(context, origins, ref)
 
+        Enum.any?(origins, &proactive_handoff?/1) ->
+          # Comma handed the Router evidence about a matter. Importance does
+          # not delegate work: the Router offers the step, and the owner's
+          # answer may create the Task by naming that message as its
+          # `source_message_id`. A person's message in the same activation
+          # does not admit a Task that names none.
+          {:error, "proactive_handoff_not_delegation"}
+
         true ->
           {:ok, context}
       end
@@ -118,6 +126,16 @@ defmodule SalixAgent.ToolCallProvenance do
   end
 
   defp triage_origin?(origin), do: Map.has_key?(origin, "triage_delegation")
+
+  @doc """
+  Whether the activation's only admitted origins are automatic proactive
+  handoffs, with no person's message among them.
+  """
+  def proactive_handoff_only?(origins) when is_list(origins),
+    do: origins != [] and Enum.all?(origins, &proactive_handoff?/1)
+
+  defp proactive_handoff?(origin),
+    do: origin["proactive_handoff"] == true and not SalixAgent.IFC.human_authored?(origin)
 
   def origins(context) do
     case value(context, :trusted_origins) do

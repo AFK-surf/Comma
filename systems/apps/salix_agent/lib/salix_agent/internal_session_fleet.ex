@@ -227,9 +227,18 @@ defmodule SalixAgent.InternalSessionFleet do
         [{pid, _}] when pid == systems_self ->
           InternalSessionActor.stage_delivery_in_owner(agent_id, session_id, entry)
 
-        # A resident actor passed the canonical-session check when its Router
-        # owner started it, and a canonical switch stops it before retiring
-        # the session; staging into it needs no second durable read.
+        _ ->
+          stage_delivery_after_startup(agent_id, session_id, entry, start_opts, timeout)
+      end
+    end
+  end
+
+  defp stage_delivery_after_startup(agent_id, session_id, entry, start_opts, timeout) do
+    with :ok <- SalixAgent.Fleet.await_ownership_installed(agent_id) do
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
         [{pid, _}] ->
           InternalSessionActor.stage_delivery(pid, entry, timeout)
 

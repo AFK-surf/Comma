@@ -126,6 +126,88 @@ defmodule SalixWeb.GitHub do
     end
   end
 
+  @doc "The connected account and one page of its organizations; at most two GitHub reads."
+  def repo_owners(token, page) do
+    with {:ok, orgs} when is_list(orgs) <- get(token, "/user/orgs", per_page: @page, page: page),
+         {:ok, personal} <- personal_owner(token, page) do
+      owners =
+        for %{"login" => login} = org <- orgs,
+            do: %{login: login, kind: "organization", avatar_url: org["avatar_url"]}
+
+      {:ok, %{owners: personal ++ owners, has_more: length(orgs) == @page}}
+    else
+      {:ok, _} -> {:error, :github_unexpected}
+      error -> error
+    end
+  end
+
+  defp personal_owner(token, 1) do
+    with {:ok, %{"login" => login} = account} <- get(token, "/user", []),
+         do: {:ok, [%{login: login, kind: "user", avatar_url: account["avatar_url"]}]}
+  end
+
+  defp personal_owner(_token, _page), do: {:ok, []}
+
+  @doc "One page within an owner. Name queries use GitHub search, including forks and private repositories."
+  def repo_search(token, owner, kind, query, page) do
+    if query == "" do
+      {path, params} =
+        if kind == "organization",
+          do: {"/orgs/#{seg(owner)}/repos", [sort: "pushed"]},
+          else: {"/user/repos", [sort: "pushed", affiliation: "owner"]}
+
+      with {:ok, repos} when is_list(repos) <-
+             get(token, path, params ++ [per_page: @page, page: page]) do
+        {:ok, %{repos: repo_rows(repos, owner), has_more: length(repos) == @page, limited: false}}
+      else
+        {:ok, _} -> {:error, :github_unexpected}
+        error -> error
+      end
+    else
+      # Accept repository-name words, never user-supplied GitHub qualifiers that could escape the selected owner.
+      words = Regex.scan(~r/[\p{L}\p{N}_.-]+/u, query) |> List.flatten() |> Enum.join(" ")
+
+      if words == "" do
+        {:ok, %{repos: [], has_more: false, limited: false}}
+      else
+        q = "user:#{owner} in:name fork:true " <> words
+
+        case get(token, "/search/repositories",
+               q: q,
+               sort: "updated",
+               per_page: @page,
+               page: page
+             ) do
+          {:ok, %{"items" => repos, "total_count" => total} = result} when is_list(repos) ->
+            {:ok,
+             %{
+               repos: repo_rows(repos, owner),
+               has_more: page * @page < min(total, 1000),
+               limited: total > 1000 or result["incomplete_results"] == true
+             }}
+
+          {:ok, _} ->
+            {:error, :github_unexpected}
+
+          error ->
+            error
+        end
+      end
+    end
+  end
+
+  defp repo_rows(repos, owner) do
+    for %{"owner" => %{"login" => login}, "name" => name} = repo <- repos,
+        String.downcase(login) == String.downcase(owner) do
+      %{
+        owner: login,
+        name: name,
+        default_branch: repo["default_branch"],
+        private: repo["private"] == true
+      }
+    end
+  end
+
   @doc "One page (100) of a repository's branch names."
   def branches(token, owner, name, page \\ 1) do
     case get(token, "/repos/#{seg(owner)}/#{seg(name)}/branches",

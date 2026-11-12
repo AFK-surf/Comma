@@ -3,10 +3,12 @@
 // holds no credential: it knows which session and account it works for, and each request names that session, so the
 // host refuses one made for a session that is gone.
 //
-// When the session changes to another account, or signs out, what the core kept for the account it had is closed and
-// deleted from this device, and work under way for it finds it closed (its late answers are not kept). A new
-// generation of the same session (Main renewed it) keeps the account.
-import { CoreError, type Runner, type Scoped } from "@comma/core-kernel";
+// When the session changes to another account, or signs out, what the core kept for the account it had is closed, and
+// work under way for it finds it closed (its late answers are not kept). It is deleted from this device unless the
+// account stays signed in here, set aside (`SessionView.kept`, a bearer host's other accounts); a kept account's is
+// deleted once it is no longer kept and not in use. A new generation of the same session (Main renewed it) keeps the
+// account.
+import { CoreError, type Meter, type Runner, type Scoped } from "@comma/core-kernel";
 import {
   sessionLifecycleSnapshotSchema,
   type SessionLifecycleSnapshot,
@@ -25,15 +27,27 @@ type Opened = {
   ready: Account | null;
 };
 
-/** What the core's lifecycle shows besides the session: the sign-in under way, an address told to wait, imports. */
+/** An account signed in on this device besides the one in use: its API and who. */
+export type KeptAccount = { audience: string; userId: string; email: string };
+
+/**
+ * What the core's lifecycle shows besides the session: the sign-in under way, an address told to wait, imports, and
+ * the accounts kept signed in besides the one in use (null where a device keeps only one).
+ */
 export type SessionView = {
   attempt: SessionAttempt | null;
   emailCooldown: SessionEmailCooldown | null;
   guestImports: number;
+  kept: KeptAccount[] | null;
 };
+
+function keptKey(account: Pick<KeptAccount, "audience" | "userId">): string {
+  return `${account.audience}\n${account.userId}`;
+}
 
 export class Session {
   readonly #host: Host;
+  readonly #meter: Meter | undefined;
   readonly #runner: Runner;
   #value: SessionValue = { phase: "unknown" };
   #lease: SessionLease | null = null;
@@ -43,8 +57,6 @@ export class Session {
   /** What the lease was given for (the core's lifecycle: its gate and Cookie): another key, another lease. */
   #leaseKey: string | null = null;
   #view: SessionView | undefined;
-  /** The account open now was opened from a stored credential the server has not confirmed yet (`keep`). */
-  #provisional = false;
   readonly #listeners = new Set<() => void>();
   #withheld = false;
   readonly #rejections = new Set<(lease: SessionLease, status: 401 | 409) => void>();
@@ -53,7 +65,8 @@ export class Session {
 
   readonly #now: () => number;
 
-  constructor(host: Host, runner: Runner, now: () => number) {
+  constructor(host: Host, runner: Runner, now: () => number, meter?: Meter) {
+    this.#meter = meter;
     this.#host = host;
     this.#runner = runner;
     this.#now = now;
@@ -61,11 +74,15 @@ export class Session {
 
   /** The `session` topic's value. */
   value(): SessionValue {
+    const { kept, ...view } = this.#view ?? { kept: null };
     return {
       ...this.#value,
       ...(this.#rejected ? { rejected: this.#rejected } : {}),
       ...(this.#snapshot ? { lifecycle: this.#snapshot } : {}),
-      ...this.#view,
+      ...view,
+      ...(kept
+        ? { accounts: kept.map(({ userId, email }) => ({ userId, email })) }
+        : {}),
     };
   }
 
@@ -110,9 +127,18 @@ export class Session {
     gate: string | null,
     view: SessionView
   ): void {
+    const keptBefore = this.#view?.kept ?? [];
     this.#view = view;
     const before = this.#lease;
     this.#apply(snapshot, gate);
+    // An account no longer kept and not the one in use signed out of this device: what it kept here goes.
+    for (const gone of keptBefore) {
+      const key = keptKey(gone);
+      if (this.#keeps(key) || this.#opened?.key === key) continue;
+      this.#runner.fork(
+        Effect.ignore(this.#host.deleteDb(accountDbName(gone.audience, gone.userId)))
+      );
+    }
     // The lifecycle closed the lease (or gave another): what is under way with it stops, as the adapter's lease signal
     // aborted it.
     if (before !== null && before !== this.#lease)
@@ -144,29 +170,9 @@ export class Session {
     return () => this.#rejections.delete(listener);
   }
 
-  /**
-   * The account a stored credential names, before the server confirmed its session (a host that shows what it kept
-   * while the session is checked, and offline: `BearerSessionPorts.showsKeptAccount`). What the device keeps for it is
-   * opened and shown; no lease is given, so no request goes out. The check that follows confirms it (the account
-   * stays, with its lease), ends it (closed and deleted), or cannot reach the server (it stays shown, without a lease).
-   */
-  keep(identity: { audience: string; sessionId: string; userId: string }): void {
-    if (this.#opened !== null || this.#value.phase !== "unknown") return;
-    this.#provisional = true;
-    this.#value = { phase: "signed_in", ...identity };
-    this.#open(`${identity.audience}\n${identity.userId}`, identity.userId, {
-      audience: identity.audience,
-      authorityInstanceId: "",
-      generation: 0,
-      sessionId: identity.sessionId,
-    });
-    this.#changed();
-  }
-
   #apply(snapshot: SessionLifecycleSnapshot, gate: string | null): void {
     this.#snapshot = snapshot;
     if (snapshot.phase === "signed_in") {
-      this.#provisional = false;
       const fresh: SessionLease = {
         audience: snapshot.session.audience,
         authorityInstanceId: snapshot.authority.authorityInstanceId,
@@ -186,7 +192,10 @@ export class Session {
             ? kept
             : fresh;
       this.#leaseKey = gate;
-      const key = `${fresh.audience}\n${snapshot.principal.userId}`;
+      const key = keptKey({
+        audience: fresh.audience,
+        userId: snapshot.principal.userId,
+      });
       const sameAccount = this.#opened?.key === key;
       if (!sameAccount) this.#close();
       this.#lease = lease;
@@ -205,7 +214,6 @@ export class Session {
     }
     this.#leaseKey = null;
     if (snapshot.phase === "signed_out") {
-      this.#provisional = false;
       this.#close();
       this.#lease = null;
       this.#withheld = false;
@@ -217,15 +225,8 @@ export class Session {
     // While signing out, or when a sign-out ended undecided, it is not shown either (`withheld`). The lifecycle's
     // snapshot changed even when these did not, so the `session` topic is told.
     this.#lease = null;
-    // A kept account whose check could not reach the server stays shown: nothing ended it.
-    const keptOffline =
-      this.#provisional &&
-      snapshot.phase === "indeterminate" &&
-      snapshot.problem.code === "session_probe_unavailable";
     this.#withheld =
-      snapshot.phase !== "initializing" &&
-      snapshot.phase !== "authenticating" &&
-      !keptOffline;
+      snapshot.phase !== "initializing" && snapshot.phase !== "authenticating";
     this.#changed();
   }
 
@@ -248,10 +249,11 @@ export class Session {
     const opened: Opened = { key, name, scoped, account, ready: null };
     this.#opened = opened;
     const host = this.#host;
+    const meter = this.#meter;
     const open = Effect.gen(function* () {
       const file = yield* Effect.result(host.openDb(name));
       if (Result.isSuccess(file))
-        return new Account(userId, lease, name, file.success, false);
+        return new Account(userId, lease, name, file.success, false, meter);
       console.error(
         "comma core: the account's database did not open; keeping this run's data in memory",
         file.failure
@@ -261,7 +263,8 @@ export class Session {
         lease,
         name,
         yield* host.memoryDb.pipe(Effect.mapError((e) => CoreError.host(e.message))),
-        true
+        true,
+        meter
       );
     });
     Effect.runSync(
@@ -287,21 +290,29 @@ export class Session {
     );
   }
 
+  /** Whether the account `key` names stays signed in on this device, set aside. */
+  #keeps(key: string): boolean {
+    return this.#view?.kept?.some((account) => keptKey(account) === key) ?? false;
+  }
+
   /**
-   * Lets the account go (another account, or none): closed, and deleted from this device once closed when it was open.
-   * One still opening is not deleted: another may open the same file by then.
+   * Lets the account go (another account, or none): closed, and deleted from this device once closed when it was open
+   * and is not kept signed in here. One still opening is not deleted: another may open the same file by then.
    */
   #close(): void {
     const opened = this.#opened;
     if (!opened) return;
     this.#opened = null;
+    const kept = this.#keeps(opened.key);
     const host = this.#host;
     this.#runner.fork(
       Scope.close(opened.scoped.scope, Exit.void).pipe(
         Effect.andThen(
           Effect.suspend(() => {
             const ready = opened.ready;
-            return ready && !ready.inMemory ? host.deleteDb(ready.dbName) : Effect.void;
+            return ready && !ready.inMemory && !kept
+              ? host.deleteDb(ready.dbName)
+              : Effect.void;
           })
         ),
         Effect.ignore

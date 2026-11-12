@@ -1,4 +1,4 @@
-// The still.fail station, in TypeScript (docs/station-ts.md). This file is the composition root: every part is a layer
+// The Comma station, in TypeScript (docs/station-ts.md). This file is the composition root: every part is a layer
 // made here and given what it needs (src/services.ts); nothing registers itself anywhere. Stopping the station is
 // interrupting it: every part's scope closes, and with it what it opened. Commands as the Rust station takes them:
 //
@@ -12,6 +12,9 @@ import { join } from "node:path";
 import { Effect, Fiber, Layer, SubscriptionRef } from "effect";
 import { enroll, id, status } from "./cli.ts";
 import { MeshLive } from "./mesh/mesh.ts";
+import { ScreenHelpersService } from "./screens/helper.ts";
+import { AndroidDevicesService } from "./screens/devices.ts";
+import { SimulatorsService } from "./screens/simulator-agent.ts";
 import { AgentsLive } from "./sessions/agents.ts";
 import { dataDir, flag } from "./ops/files.ts";
 import { setStationLang } from "./ops/i18n.ts";
@@ -45,12 +48,12 @@ const VALUED = ["--data", "--provider"];
 
 // What it says on this machine is in the station's language (config.json `language`).
 try {
-  const config = process.env.STILLFAIL_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
+  const config = process.env.COMMA_STATION_CONFIG || process.env.EMBER_CONFIG || join(data, "config.json");
   setStationLang(JSON.parse(readFileSync(config, "utf8")).language);
 } catch {}
 
 function usage(): never {
-  console.error("usage: stillfail-station run --app DIR [--port N] [--data DIR] [-- CONNECTOR FLAGS] | comma-client ... | computer-use ACTION [--config PATH] [--json OBJECT] | enroll <cloud> <token> [--provider stillfail|comma] | status | id");
+  console.error("usage: comma-station run --app DIR [--port N] [--data DIR] [-- CONNECTOR FLAGS] | comma-client ... | computer-use ACTION [--config PATH] [--json OBJECT] | enroll <cloud> <token> [--provider stillfail|comma] | status | id");
   process.exit(2);
 }
 
@@ -107,7 +110,7 @@ function run() {
   delete process.env.SALIX_WORKLOAD_CREDENTIAL;
   // Runners (agents', jobs') from copies under the data directory on Windows, out of reach of the app's updater.
   keepRunnerIn(join(data, "run", "bin"));
-  // Error lines to still.fail's error tracking, while config.json says so (telemetry.errors) and the build has a key.
+  // Error lines to Comma's error tracking, while config.json says so (telemetry.errors) and the build has a key.
   const settings = new ConfigFile(data);
   const reports = new ErrorReports({
     key: builtKey(join(app, "dist", "admin")),
@@ -123,9 +126,11 @@ function run() {
   hearErrors((line, error) => reports.report(line, error));
   const paths = Layer.succeed(Paths)({ data, app });
   const base = Layer.mergeAll(Key.layer, Readers.layer, Store.layer, MeshNative.layer, Up.layer).pipe(Layer.provideMerge(paths));
-  const parts = Layer.mergeAll(ControlPlane.layer, SalixRelay.layer).pipe(Layer.provideMerge(base));
+  const parts = Layer.mergeAll(ControlPlane.layer, SalixRelay.layer, ScreenHelpersService.layer).pipe(Layer.provideMerge(base));
   const station = Layer.mergeAll(MeshLive, Loopback(control), ConnectorLive(args, workloadCredential), LocalAdminLive).pipe(
     Layer.provideMerge(AdminApi.layer),
+    Layer.provideMerge(AndroidDevicesService.layer),
+    Layer.provideMerge(SimulatorsService.layer),
     Layer.provideMerge(AgentsLive(control, workloadCredential !== "")),
     Layer.provideMerge(Events.layer),
     Layer.provideMerge(AdminHost.layer),
@@ -136,8 +141,8 @@ function run() {
     yield* SubscriptionRef.set(yield* Up, true);
     control.ready(version());
     log.info("station", "station up", { version: version(), data });
-    // STILLFAIL_MEMLOG: where the memory goes, now and then (for measuring).
-    if (process.env.STILLFAIL_MEMLOG) {
+    // COMMA_STATION_MEMLOG: where the memory goes, now and then (for measuring).
+    if (process.env.COMMA_STATION_MEMLOG) {
       wall.every(10_000, () => {
         const m = process.memoryUsage();
         log.info("memory", "now", Object.fromEntries(Object.entries(m).map(([k, v]) => [k, Math.round(v / 1048576)])));
@@ -181,7 +186,7 @@ switch (command) {
   case "id":
     id(data);
     break;
-  // The channel the station is updated on (`stillfail update`): set when one is named, then said.
+  // The channel the station is updated on (`comma-station update`): set when one is named, then said.
   case "channel": {
     const { channelCommand } = await import("./updates/channel.ts");
     const code = await channelCommand(args, data);

@@ -1,7 +1,8 @@
 import { CoreClient, topicKey, type Topic } from "@comma/core-kernel/client";
 import { sessionExpectation } from "@comma/session-contract";
 import { describe, expect, it } from "vitest";
-import type { ProductInboxListResult } from "../src/contract.ts";
+import type { ChatRuntimeSnapshot } from "@comma/chat-contract";
+import type { ProductInboxListResult, WorkspaceChatValue } from "../src/contract.ts";
 import { FakeMain } from "../src/testing/fake-main.ts";
 import {
   FakeHost,
@@ -114,7 +115,7 @@ describe("a Quick Chat message", () => {
     expect(tasks()?.items).toEqual([]);
     expect(
       t.api.requests.filter((r) => r.method === "POST").map((r) => r.path)
-    ).toEqual([`${ensureHome}?message_limit=1`, `${messages}?message_limit=1`]);
+    ).toEqual([`${ensureHome}?message_limit=1`, messages]);
     expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body]);
     expect(t.api.seen("GET", "/v1/comma/groups/g/task-summaries")).toEqual([]);
   });
@@ -149,7 +150,16 @@ describe("a Quick Chat message", () => {
     const otherMessages = "/v1/comma/groups/g2/conversations/home2/messages";
     t.api.on("GET", "/v1/comma/workspaces", { data: [workspace, otherWorkspace] });
     t.api.on("POST", otherHome, { ...home, group_id: "g2", id: "home2" });
-    t.api.on("POST", otherMessages, json(202, { accepted_message_id: "m-other" }));
+    t.api.on(
+      "POST",
+      otherMessages,
+      json(202, {
+        ...home,
+        group_id: "g2",
+        id: "home2",
+        accepted_message_id: "m-other",
+      })
+    );
 
     const named = t.send(request, words, "wsp2");
     await t.time.pass(100);
@@ -184,7 +194,15 @@ describe("a Quick Chat message", () => {
       return json(202, {
         ...home,
         accepted_message_id: `m-${id}`,
-        messages: [{ id: "m-someone-else", sender_id: "someone-else" }],
+        messages: [
+          {
+            message_id: "m-someone-else",
+            kind: "message",
+            actor_type: "user",
+            user_id: "someone-else",
+            content: [{ type: "text", text: "Someone else's words" }],
+          },
+        ],
       });
     });
     const releaseFirst = t.api.hold("POST", messages);
@@ -324,9 +342,212 @@ describe("a Quick Chat message", () => {
     }
   );
 
+  /** Opens Home as a window does: its chat resolved for the workspace, its conversation retained. */
+  const openHome = async (t: ReturnType<typeof setup>) => {
+    t.api.on("GET", "/v1/comma/groups/g/conversations/home", { ...home, messages: [] });
+    t.api.onStream("/v1/comma/groups/g/conversations/home/events");
+    const resolved = t.watch<WorkspaceChatValue>({
+      topic: "workspaceChat",
+      workspace: "wsp",
+    });
+    const chat = t.watch<{ snapshot: ChatRuntimeSnapshot }>({
+      topic: "chat",
+      surface: "win",
+    });
+    await t.time.pass(100);
+    expect(resolved()?.chat?.conversationId).toBe("home");
+    await t.client.call("chat.retain", {
+      workspaceId: "wsp",
+      groupId: "g",
+      conversationId: "home",
+      subscriberId: "win:g/home",
+      leaseId: "00000000-0000-4000-8000-000000000001",
+    });
+    await t.time.pass(100);
+    return () =>
+      chat()
+        ?.snapshot.sessions.find((session) => session.conversationId === "home")
+        ?.state?.messages.map(({ text }) => text);
+  };
+
+  it("shows the words in an open Home at once, before the server answers, without asking for Home again", async () => {
+    const t = setup();
+    const shown = await openHome(t);
+    const ensured = t.api.seen("POST", ensureHome).length;
+    const release = t.api.hold("POST", messages);
+    const answer = t.send();
+    await t.time.pass(10);
+    expect(shown()).toEqual([words]);
+    expect(t.api.seen("POST", ensureHome)).toHaveLength(ensured);
+    release();
+    await t.time.pass(100);
+    expect(await answer).toEqual({
+      value: {
+        workspace_id: "wsp",
+        group_id: "g",
+        conversation_id: "home",
+        message_id: "m-new",
+      },
+    });
+    expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body]);
+  });
+
+  it("sends the shown words again after a server error, as the same one message", async () => {
+    const t = setup();
+    const shown = await openHome(t);
+    t.api.on("POST", messages, json(502, { error: "bad_gateway" }));
+    const answer = t.send();
+    await t.time.pass(100);
+    t.api.on("POST", messages, json(202, receipt));
+    const release = t.api.hold("POST", messages);
+    await t.time.pass(1_000);
+    expect(shown()).toEqual([words]);
+    release();
+    await t.time.pass(100);
+    expect(await answer).toMatchObject({ value: { message_id: "m-new" } });
+    expect(shown()).toEqual([words]);
+    expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body, body]);
+  });
+
+  it("shows words still being prepared in an open Home from Return, and sends that message with the final words", async () => {
+    const t = setup();
+    const shown = await openHome(t);
+    const prepare = (text: string) =>
+      t.client.call("quickChat.prepareMessage", {
+        client_request_id: request,
+        text,
+        workspace: "wsp",
+      });
+    await prepare("Book a table for for");
+    await t.time.pass(10);
+    expect(shown()).toEqual(["Book a table for for"]);
+    await prepare("Book a table for fore");
+    await t.time.pass(10);
+    expect(shown()).toEqual(["Book a table for fore"]);
+    await t.time.pass(5_000);
+    expect(t.api.seen("POST", messages)).toEqual([]);
+
+    const release = t.api.hold("POST", messages);
+    const answer = t.send();
+    await t.time.pass(10);
+    expect(shown()).toEqual([words]);
+    release();
+    await t.time.pass(100);
+    expect(await answer).toMatchObject({ value: { message_id: "m-new" } });
+    expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body]);
+  });
+
+  it("keeps a message typed in Home behind the words Quick Chat still prepares", async () => {
+    const t = setup();
+    await openHome(t);
+    await t.client.call("quickChat.prepareMessage", {
+      client_request_id: request,
+      text: "Book a table",
+      workspace: "wsp",
+    });
+    const typed = t.client.call("chat.sendDetached", {
+      workspaceId: "wsp",
+      groupId: "g",
+      conversationId: "home",
+      text: "And a taxi",
+    });
+    await t.time.pass(1_000);
+    expect(t.api.seen("POST", messages)).toEqual([]);
+
+    const answer = t.send();
+    await t.time.pass(100);
+    await typed;
+    expect(await answer).toMatchObject({ value: { message_id: "m-new" } });
+    expect(
+      t.api
+        .seen("POST", messages)
+        .map((r) => (r.body as { message: { text: string } }).message.text)
+    ).toEqual([words, "And a taxi"]);
+  });
+
+  it("ends a failed preparation as a failed message that keeps its words, and lets later messages go", async () => {
+    const t = setup();
+    await openHome(t);
+    const chat = t.watch<{ snapshot: ChatRuntimeSnapshot }>({
+      topic: "chat",
+      surface: "win",
+    });
+    const delivered = () =>
+      chat()
+        ?.snapshot.sessions.find((session) => session.conversationId === "home")
+        ?.state?.messages.map(({ text, delivery }) => ({ text, delivery }));
+    await t.client.call("quickChat.prepareMessage", {
+      client_request_id: request,
+      text: "Book a table",
+      workspace: "wsp",
+    });
+    await t.time.pass(10);
+    expect(delivered()).toEqual([{ text: "Book a table", delivery: "sending" }]);
+    const typed = t.client.call("chat.sendDetached", {
+      workspaceId: "wsp",
+      groupId: "g",
+      conversationId: "home",
+      text: "And a taxi",
+    });
+    await t.client.call("quickChat.failPreparation", {
+      client_request_id: request,
+      workspace: "wsp",
+    });
+    await t.time.pass(100);
+    await typed;
+    expect(delivered()?.[0]).toEqual({ text: "Book a table", delivery: "failed" });
+    expect(
+      t.api
+        .seen("POST", messages)
+        .map((r) => (r.body as { message: { text: string } }).message.text)
+    ).toEqual(["And a taxi"]);
+
+    // The Notch's retry sends the kept words as the same request.
+    const answer = t.send(request, "Book a table");
+    await t.time.pass(100);
+    expect(await answer).toMatchObject({ value: { message_id: "m-new" } });
+    expect(t.api.seen("POST", messages).at(-1)?.body).toMatchObject({
+      client_request_id: request,
+      message: { type: "text", text: "Book a table" },
+    });
+  });
+
+  it("shows nothing and asks nothing for words being prepared while no window has Home open", async () => {
+    const t = setup();
+    await t.time.pass(100);
+    const before = t.api.requests.length;
+    expect(
+      await t.client.call("quickChat.prepareMessage", {
+        client_request_id: request,
+        text: "Book a table",
+        workspace: "wsp",
+      })
+    ).toBeNull();
+    await t.time.pass(100);
+    expect(t.api.requests).toHaveLength(before);
+    const answer = t.send();
+    await t.time.pass(100);
+    expect(await answer).toMatchObject({ value: { message_id: "m-new" } });
+    expect(t.api.seen("POST", messages).map((r) => r.body)).toEqual([body]);
+  });
+
   it("fails an answer without an explicit receipt instead of treating the latest message as its own", async () => {
     const t = setup();
-    t.api.on("POST", messages, json(202, { ...home, messages: [{ id: "m-tail" }] }));
+    t.api.on(
+      "POST",
+      messages,
+      json(202, {
+        ...home,
+        messages: [
+          {
+            message_id: "m-tail",
+            kind: "message",
+            actor_type: "user",
+            content: [{ type: "text", text: "Earlier words" }],
+          },
+        ],
+      })
+    );
     const answer = t.send();
     await t.time.pass(1_100);
     expect(await answer).toMatchObject({ error: { code: "bad_response" } });

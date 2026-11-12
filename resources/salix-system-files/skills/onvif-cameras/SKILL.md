@@ -56,19 +56,21 @@ Every body is this Envelope with one operation inside `Body`:
 - Camera clock, no `auth` needed:
   `<GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/>`
 - Media profiles: `<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>`.
-  Use the `token` attribute of a `Profiles` element (TP-LINK: `profile_1`) as
-  `ProfileToken` below.
+  Use the `token` attribute of a `Profiles` element as `ProfileToken` below
+  (`<token>`). Each profile also gives its video encoding and resolution.
+- Stream URI:
+  `<GetStreamUri xmlns="http://www.onvif.org/ver10/media/wsdl"><StreamSetup><Stream xmlns="http://www.onvif.org/ver10/schema">RTP-Unicast</Stream><Transport xmlns="http://www.onvif.org/ver10/schema"><Protocol>RTSP</Protocol></Transport></StreamSetup><ProfileToken><token></ProfileToken></GetStreamUri>`
 - Snapshot URI (then see Take a Look):
-  `<GetSnapshotUri xmlns="http://www.onvif.org/ver10/media/wsdl"><ProfileToken>profile_1</ProfileToken></GetSnapshotUri>`
+  `<GetSnapshotUri xmlns="http://www.onvif.org/ver10/media/wsdl"><ProfileToken><token></ProfileToken></GetSnapshotUri>`
 - Start moving (speeds from -1 to 1; positive x pans right, positive y tilts
   up, positive zoom zooms in):
 
   ```xml
-  <ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema"><ProfileToken>profile_1</ProfileToken><Velocity><tt:PanTilt x="0.5" y="0"/></Velocity><Timeout>PT1S</Timeout></ContinuousMove>
+  <ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema"><ProfileToken><token></ProfileToken><Velocity><tt:PanTilt x="0.5" y="0"/></Velocity><Timeout>PT1S</Timeout></ContinuousMove>
   ```
 
 - Stop moving:
-  `<Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl"><ProfileToken>profile_1</ProfileToken><PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>`
+  `<Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl"><ProfileToken><token></ProfileToken><PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>`
 
 Always send `Stop` after `ContinuousMove`, even when the move had a
 `Timeout`. Move only when the user asks, and in short steps.
@@ -78,13 +80,13 @@ Always send `Stop` after `ContinuousMove`, even when the move had a
 When the user asks what the camera sees ("看看办公室现在有没有人"), take one
 frame of its video stream:
 
-1. `device.lan_request` with `url: "rtsp://<ip>:554/stream2"` and
+1. Pick a stream from `GetProfiles`: an H.264 profile (H.265 is not read),
+   the smallest resolution that answers the question, since a large stream
+   can fill a small gateway's tunnel. Read its path with `GetStreamUri`
+   (many TP-LINK cameras answer `/stream2` for the sub stream).
+   `device.lan_request` with that `url` (`rtsp://<ip>:554/<path>`) and
    `auth: {"type": "http_digest", "username": "admin", "secret_ref": "<name>"}`
-   (the same saved password). On TP-LINK cameras use the sub stream,
-   `/stream2` (H.264, 640×360, a frame in well under a second). The main
-   stream, `/stream1`, is H.265, which is not read, and its bit rate fills a
-   T-Circle's tunnel: do not use it. For another brand, read the path from
-   ONVIF `GetStreamUri`.
+   (the same saved password).
    The result gives the picture's workspace `path`, and you see the picture.
 2. Answer from what you see. Say only what the picture shows, and that it is
    one moment.
@@ -94,7 +96,7 @@ frame of its video stream:
 
 An rtsp:// url needs a gateway whose `lan_gateway` methods include
 `lan_tcp_dial`. On `not_a_lan_gateway`, tell the user the gateway firmware or
-connector needs an update, and stop.
+station needs an update, and stop.
 
 A camera that answers `GetSnapshotUri` (many TP-LINK models do not) also
 serves an HTTP snapshot: `device.lan_request` with that URI as `url`,

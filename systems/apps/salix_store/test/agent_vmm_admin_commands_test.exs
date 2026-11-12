@@ -3,12 +3,12 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
 
   import Ecto.Query
 
-  alias SalixStore.{AgentVMMAdminCommands, AgentVMMInstallations, Compute, Repo}
-  alias SalixStore.AgentVMMInstallations.Operation
+  alias SalixStore.{AgentVMM, AgentVMMAdminCommands, AgentVMMRegistrations, Compute, Repo}
+  alias SalixStore.AgentVMM.Registration
 
   setup do
     Repo.query!(
-      "TRUNCATE agent_vmm_admin_command_receipts, agent_vmm_install_operations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
+      "TRUNCATE agent_vmm_admin_command_receipts, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
     )
 
     {:ok, pool} =
@@ -43,35 +43,31 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     )
 
     on_exit(fn -> SystemsRuntime.put_env(:salix_store, :runtime_bundle_root, previous) end)
-    now = SystemsClock.utc_now()
 
-    Repo.insert!(%SalixStore.AgentVMM.Registration{
-      id: "initial-host",
-      credential_hash: "test-credential",
-      tenant_id: "tenant",
-      group_id: "group",
-      device_id: "device",
-      status: "ready",
-      desired_enabled: true,
-      revision: 1,
-      policy_revision: 1,
-      next_controller_sequence: 1,
-      created_at: now,
-      updated_at: now
-    })
+    {:ok, _registration} =
+      SalixStore.AgentVMMFixtures.registration(%{
+        id: "initial-host",
+        tenant_id: "tenant",
+        group_id: "group",
+        device_id: "device",
+        credential: String.duplicate("s", 32),
+        desired_enabled: true
+      })
 
-    Repo.insert!(%Compute.ProviderBinding{
-      id: "initial-binding",
-      pool_id: "pool",
-      environment_id: "environment",
-      provider: "agent_vmm",
-      provider_ref: "initial-host",
-      status: "available",
-      generation: 1,
-      revision: 1,
-      observation: %{},
-      updated_at: now
-    })
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == "initial-host"),
+      set: [status: "ready", credential_hash: "test-credential"]
+    )
+
+    connect_host!("initial-host", "1")
+
+    {:ok, _binding} =
+      Compute.create_provider_binding(%{
+        id: "initial-binding",
+        pool_id: "pool",
+        environment_id: "environment",
+        provider: "agent_vmm",
+        provider_ref: "initial-host"
+      })
 
     assert {:error, :not_found} =
              Compute.ensure_node_workload("other", "environment", "initial-host")
@@ -123,11 +119,6 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     assert {:ok, _enabled} =
              SalixStore.AgentVMM.configure_registration(disabled.id, disabled.revision, true)
 
-    # Model the provider observation after the connector reconnects.
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == "initial-binding"),
-      set: [status: "available"]
-    )
-
     assert {:ok, replacement} =
              Compute.ensure_node_workload("tenant", "environment", "initial-host")
 
@@ -138,9 +129,7 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     assert Repo.get!(Compute.Workload, reused.id).desired_state == "draining"
     assert Repo.get!(Compute.Allocation, reused.allocation_id).status == "draining"
 
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == "initial-binding"),
-      set: [status: "unavailable"]
-    )
+    assert {:ok, _} = AgentVMM.mark_connection_lost("initial-host", "gateway", "1")
 
     assert {:error, :compute_node_not_ready} =
              Compute.ensure_node_workload("tenant", "environment", "initial-host")
@@ -163,28 +152,30 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
         else: SystemsRuntime.delete_env(:salix_store, :runtime_bundle_root)
     end)
 
-    # A provider projection cannot grant authority without its live registration.
+    # Shell placement uses the enrolled Host and its current connection.
     assert {:ok, _} =
-             SalixStore.AgentVMM.create_registration(%{
+             SalixStore.AgentVMMFixtures.registration(%{
                id: "shell-host",
                tenant_id: "tenant",
                group_id: "group",
                device_id: "shell-device",
-               enrollment_token: String.duplicate("s", 32)
+               credential: String.duplicate("s", 32)
              })
 
-    Repo.insert!(%Compute.ProviderBinding{
-      id: "shell-binding",
-      pool_id: "pool",
-      environment_id: "environment",
-      provider: "agent_vmm",
-      provider_ref: "shell-host",
-      status: "available",
-      generation: 1,
-      revision: 1,
-      observation: %{},
-      updated_at: SystemsClock.utc_now()
-    })
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == "shell-host"),
+      set: [status: "ready", desired_enabled: true]
+    )
+
+    connect_host!("shell-host", "1")
+
+    {:ok, _binding} =
+      Compute.create_provider_binding(%{
+        id: "shell-binding",
+        pool_id: "pool",
+        environment_id: "environment",
+        provider: "agent_vmm",
+        provider_ref: "shell-host"
+      })
 
     command = %{
       action: "create_shell_workload",
@@ -229,27 +220,35 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
                SystemsRuntime.Proc.uuid(),
                retry_command(%{operation | revision: operation.revision + 1})
              )
+
+    command_id = SystemsRuntime.Proc.uuid()
+    assert {:ok, result} = AgentVMMAdminCommands.execute(command_id, retry_command(operation))
+    assert result.target == "registration:" <> operation.id
+
+    assert {:already_applied, ^result} =
+             AgentVMMAdminCommands.execute(command_id, retry_command(operation))
+  end
+
+  defp connect_host!(registration_id, epoch) do
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration(registration_id, "gateway", %{
+               "connectionEpoch" => epoch,
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
   end
 
   defp retryable_install! do
-    {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-    make_action_required!(descriptor.operation)
+    {:ok, descriptor} = AgentVMMRegistrations.request(request_attrs())
+    make_action_required!(descriptor.registration)
   end
 
-  defp make_action_required!(operation) do
-    operation_id = operation.id
+  defp make_action_required!(registration) do
+    Repo.update_all(from(r in Registration, where: r.id == ^registration.id),
+      set: [error_code: "local.install_failed"]
+    )
 
-    {1, _} =
-      Repo.update_all(
-        from(o in Operation, where: o.id == ^operation_id),
-        set: [
-          authorization_status: "action_required",
-          ticket_status: "revoked",
-          error_code: "ticket_retry_exhausted"
-        ]
-      )
-
-    Repo.get!(Operation, operation.id)
+    Repo.get!(Registration, registration.id)
   end
 
   defp retry_command(operation) do
@@ -266,7 +265,7 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
       tenant_id: "tenant",
       group_id: "group",
       surface: "bft",
-      scope_key: "project",
+      owner_id: "project",
       client_request_id: "request",
       provider: "agent-vmm",
       environment_id: "environment",

@@ -1,4 +1,7 @@
-import { MaintenanceCapabilityProbe } from "./host-maintenance-protocol";
+import {
+  assertHelperContract,
+  HostMaintenanceIncompatibleError,
+} from "./host-maintenance-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, realpathSync } from "node:fs";
 import {
@@ -52,12 +55,13 @@ export type HostCommand = (
   args: string[],
   stdin?: string,
   timeoutMs?: number,
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
 ) => Promise<string>;
 
 export interface HostConfiguration {
   sourcePath?: string;
   downloadUrl: string;
+  downloadUrlOverride?: boolean;
   instance: string;
   directory: string;
   maintenanceDirectory: string;
@@ -99,14 +103,10 @@ export function resolveHostConfiguration(
     ...(sourcePath ? { sourcePath } : {}),
     downloadUrl:
       env.COMMA_VMM_DOWNLOAD_URL?.trim() || getPublishedAssetUrl(publishedHost.path),
+    downloadUrlOverride: Boolean(env.COMMA_VMM_DOWNLOAD_URL?.trim()),
     instance,
     directory,
-    maintenanceDirectory: join(
-      home,
-      "Library",
-      "Application Support",
-      "Agent VMM Maintenance"
-    ),
+    maintenanceDirectory: join(home, "Library", "Application Support", "AgentVMM"),
     appPath,
     lifecyclePath: join(appPath, "Contents", "Helpers", "agent-vmm-lifecycle"),
     serviceArgs: ["--service-type", "agent"],
@@ -126,7 +126,7 @@ export interface HostPreparationOptions {
 
 export interface HostPreparation {
   state(): HostPreparationState;
-  /** Prepares the Host, then runs its disk preflight (`HostPreflightError`) before any installation. */
+  /** Prepare shared software. Native enforces resource bounds where it creates backing storage. */
   ensure(
     report: (state: HostPreparationState) => void,
     options?: HostPreparationOptions
@@ -142,8 +142,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
     readonly config: HostConfiguration,
     private readonly run: HostCommand,
     private readonly fetcher: typeof fetch = fetch,
-    private readonly clock: MainClock = realMainClock,
-    readonly probe = new MaintenanceCapabilityProbe(run)
+    private readonly clock: MainClock = realMainClock
   ) {}
 
   state(): HostPreparationState {
@@ -178,53 +177,12 @@ export class AgentVMMHostPreparation implements HostPreparation {
   ) {
     const deadline = options.deadline ?? this.clock.now() + DEFAULT_PREPARATION_MS;
     await this.prepare(false, report, deadline);
-    try {
-      await this.preflight(deadline);
-    } catch (error) {
-      this.setPhase("failed", report, error);
-      throw error;
-    }
   }
 
   rebuild(report: (state: HostPreparationState) => void) {
     if (!this.config.sourcePath)
       throw new Error("Rebuild requires COMMA_VMM_SOURCE_PATH.");
     return this.prepare(true, report, this.clock.now() + DEFAULT_PREPARATION_MS);
-  }
-
-  /**
-   * The Host's own resource preflight, before a managed installation creates its VM disk. An older Host without the
-   * command, or an answer Main cannot read, skips the check: the installation then reports its own failure.
-   */
-  private async preflight(deadline: number) {
-    let value: unknown;
-    try {
-      value = JSON.parse(
-        await this.run(
-          this.config.lifecyclePath,
-          ["preflight", "--json"],
-          undefined,
-          this.remaining(deadline, 30_000)
-        )
-      );
-    } catch {
-      return;
-    }
-    const answer = value as {
-      ok?: unknown;
-      issues?: { code?: unknown; requiredBytes?: unknown; availableBytes?: unknown }[];
-    } | null;
-    if (answer?.ok !== false || !Array.isArray(answer.issues)) return;
-    const disk = answer.issues.find((issue) => issue?.code === "insufficient_disk");
-    if (
-      disk &&
-      Number.isSafeInteger(disk.requiredBytes) &&
-      Number.isSafeInteger(disk.availableBytes)
-    )
-      throw new HostPreflightError(
-        disk.requiredBytes as number,
-        disk.availableBytes as number
-      );
   }
 
   /** The command timeout: its own bound, or less when the overall deadline is nearer. */
@@ -241,17 +199,10 @@ export class AgentVMMHostPreparation implements HostPreparation {
     requestId: string,
     report: (state: HostPreparationState) => void,
     artifact = publishedHost,
-    execute?: (bundle: {
-      sourceApp: string;
-      targetReleaseId: string;
-      artifactSha256?: string;
-      artifactSize?: number;
-    }) => Promise<void>
+    execute?: (bundle: { sourceApp: string; targetReleaseId: string }) => Promise<void>
   ): Promise<{
     sourceApp: string;
     targetReleaseId: string;
-    artifactSha256?: string;
-    artifactSize?: number;
   }> {
     if (!/^[a-f0-9-]{36}$/.test(requestId))
       throw new Error("Invalid maintenance request.");
@@ -276,7 +227,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
         try {
           await this.verifyBundle(sourceApp);
           version = await this.bundleVersion(sourceApp);
-        } catch {
+        } catch (error) {
+          if (error instanceof HostMaintenanceIncompatibleError) throw error;
           version = undefined;
           await rm(sourceApp, { recursive: true, force: true });
         }
@@ -292,19 +244,24 @@ export class AgentVMMHostPreparation implements HostPreparation {
               this.clock.now() + DEFAULT_PREPARATION_MS,
               artifact
             );
-        await this.verifyBundle(staged);
+        try {
+          await this.verifyBundle(staged);
+        } catch (error) {
+          if (!this.config.sourcePath)
+            await rm(join(prepared, "download.json"), { force: true });
+          throw error;
+        }
         await rename(staged, sourceApp);
         version = await this.bundleVersion(sourceApp);
       }
       // The download was checked against the pinned digest when it landed; its release is the bundle's own.
       const targetReleaseId = this.config.sourcePath
         ? (this.buildReleaseId ?? version.release_id)
-        : artifact.release_id;
-      const digest = this.config.sourcePath
-        ? {}
-        : { artifactSha256: artifact.sha256, artifactSize: artifact.size };
+        : this.config.downloadUrlOverride
+          ? version.release_id
+          : artifact.release_id;
       phase("ready");
-      const bundle = { sourceApp, targetReleaseId, ...digest };
+      const bundle = { sourceApp, targetReleaseId };
       // Keep Comma's preparation lock through native maintenance. Native owns
       // the cross-application lock and policy at the actual mutation boundary.
       await execute?.(bundle);
@@ -318,12 +275,14 @@ export class AgentVMMHostPreparation implements HostPreparation {
   }
 
   private async bundleVersion(appPath: string): Promise<{ release_id: string }> {
-    return JSON.parse(
+    const value = JSON.parse(
       await this.run(join(appPath, "Contents", "Helpers", "agent-vmm-lifecycle"), [
         "version",
         "--json",
       ])
     );
+    assertHelperContract(value);
+    return value;
   }
 
   /** SQLite releases the cross-process lock on process exit, so no stale lock deletion is needed.
@@ -379,7 +338,6 @@ export class AgentVMMHostPreparation implements HostPreparation {
       throw error;
     }
     try {
-      await this.assertSetupAllowed();
       const pendingFile = join(this.config.directory, ".pending-update.json");
       if (await pathExists(pendingFile)) {
         phase("installing");
@@ -413,7 +371,6 @@ export class AgentVMMHostPreparation implements HostPreparation {
         throw error;
       }
       if (!installed) {
-        await this.assertSetupAllowed();
         if (this.config.sourcePath) await rename(stagedApp, this.config.appPath);
         else
           await this.run(
@@ -447,58 +404,14 @@ export class AgentVMMHostPreparation implements HostPreparation {
       }
       phase("ready");
     } catch (error) {
-      const failedPhase = this.phase;
       this.setPhase("failed", report, error);
-      throw new Error(
-        `${failedPhase}: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error }
-      );
+      throw error;
     } finally {
       lock.close();
     }
   }
 
-  private async assertSetupAllowed() {
-    if (this.config.sourcePath) return;
-    let policy: unknown;
-    try {
-      policy = JSON.parse(
-        await readFile(join(this.config.maintenanceDirectory, "state.json"), "utf8")
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw new Error(
-        "Local Host maintenance policy is unreadable; automatic setup is paused.",
-        { cause: error }
-      );
-    }
-    // Read only the fields this version knows; a newer owner may add others. Main never writes this file.
-    if (
-      !policy ||
-      typeof policy !== "object" ||
-      !("version" in policy) ||
-      !Number.isSafeInteger(policy.version) ||
-      ("activeRequest" in policy && policy.activeRequest) ||
-      ("uninstalled" in policy && policy.uninstalled === true)
-    )
-      throw new Error(
-        "Continue local Host maintenance or explicitly reinstall Agent VMM before automatic setup."
-      );
-  }
-
-  private async activateSource() {
-    if (this.config.sourcePath) {
-      await this.probe.assert(this.config.lifecyclePath, this.config.serviceArgs);
-      // Managed enrollment reuses any healthy shared Host. Repair first so an
-      // explicit source selection also selects the running service binary.
-      await this.run(
-        this.config.lifecyclePath,
-        ["repair", ...this.config.serviceArgs],
-        undefined,
-        10 * 60_000
-      );
-    }
-  }
+  private async activateSource() {}
 
   private async applyUpdate(pending: PendingHostUpdate) {
     if (
@@ -513,20 +426,19 @@ export class AgentVMMHostPreparation implements HostPreparation {
     ) {
       throw new Error("The pending Host update record is invalid.");
     }
-    await this.probe.assert(this.config.lifecyclePath, this.config.serviceArgs);
     await this.run(
-      this.config.lifecyclePath,
-      [
-        "update",
-        ...this.config.serviceArgs,
-        "--source-app",
-        pending.sourceApp,
-        "--target-release-id",
-        pending.targetReleaseId,
-        "--request-id",
-        pending.requestId,
-      ],
-      undefined,
+      join(pending.sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle"),
+      ["host-maintain", "--service-type", "auto"],
+      JSON.stringify({
+        version: 1,
+        requestId: pending.requestId,
+        action: "update",
+        dataPolicy: "preserve",
+        sourceApp: pending.sourceApp,
+        targetApp: this.config.appPath,
+        targetReleaseId: pending.targetReleaseId,
+        confirmSharedHost: true,
+      }),
       10 * 60_000
     );
   }
@@ -539,7 +451,9 @@ export class AgentVMMHostPreparation implements HostPreparation {
   ) {
     const selected = artifact ?? publishedHost;
     const url = new URL(
-      artifact ? getPublishedAssetUrl(artifact.path) : this.config.downloadUrl
+      artifact && !this.config.downloadUrlOverride
+        ? getPublishedAssetUrl(artifact.path)
+        : this.config.downloadUrl
     );
     if (url.protocol !== "https:" || url.username || url.password) {
       throw new Error(

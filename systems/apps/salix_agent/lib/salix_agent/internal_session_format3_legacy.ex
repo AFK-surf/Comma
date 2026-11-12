@@ -1,17 +1,9 @@
 defmodule SalixAgent.InternalSessionFormat3Legacy do
   @moduledoc """
-  Pure format-1 normalization for the online format-3 migration.
+  Pure format-1 normalization for historical backup verification.
 
-  Unlike the historical exclusive cutover, online stock can contain both
-  unstamped legacy history and newly stamped generic/async results. Preserve
-  every record and remap owned seq references before the same business hot CAS fixes
-  the current immutable coordinate system. No archive objects are published
-  while these coordinates can still change.
-
-  The rule itself lives in the Lean kernel
-  (`VerifiedKernel.Session.Legacy.migrateFormat1`, reached through the
-  `prepare_write` lifecycle operation); this module is only the name the
-  migration tools call it by.
+  The Lean kernel preserves records and remaps their owned seq references.
+  This module does not write a Session or publish archive objects.
   """
   alias SalixAgent.InternalSession
   require SalixAgent.InternalSession

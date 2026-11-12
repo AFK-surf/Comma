@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 import { spacing } from "../src/tokens/spacing";
 
+type ReducedMotionResult = {
+  firstCheckedAfter: string | null;
+  firstWidthAfter: number;
+  firstWidthBefore: number;
+  lastCheckedAfter: string | null;
+  lastWidthAfter: number;
+  lastWidthBefore: number;
+  reducedStyleText: string | null;
+};
+
 test("status indicator snaps Shadow DOM motion with reduced motion", async ({
   page,
 }) => {
@@ -18,7 +28,9 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
   const indicator = preview.locator("status-indicator");
   await expect(indicator).toBeVisible();
 
-  const resultPromise = indicator.evaluate((element) => {
+  // The observer is in place before the value changes: a change it misses
+  // would never resolve the result.
+  await indicator.evaluate((element) => {
     const root = element.shadowRoot;
     const items = root?.querySelectorAll<HTMLElement>('[role="radio"]');
     const reducedStyle = root?.querySelector<HTMLStyleElement>(
@@ -33,15 +45,7 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
     const firstWidthBefore = Number.parseFloat(first.style.width);
     const lastWidthBefore = Number.parseFloat(last.style.width);
 
-    return new Promise<{
-      firstCheckedAfter: string | null;
-      firstWidthAfter: number;
-      firstWidthBefore: number;
-      lastCheckedAfter: string | null;
-      lastWidthAfter: number;
-      lastWidthBefore: number;
-      reducedStyleText: string | null;
-    }>((resolve) => {
+    const result = new Promise<ReducedMotionResult>((resolve) => {
       const observer = new MutationObserver(() => {
         if (last.getAttribute("aria-checked") !== "true") {
           return;
@@ -63,12 +67,16 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
         subtree: true,
       });
     });
+    Reflect.set(element, "__reducedMotionResult", result);
   });
 
   const valueControl = page.getByLabel("value");
   await expect(valueControl).toHaveValue("in-progress");
   await valueControl.selectOption("cancel");
-  const result = await resultPromise;
+  const result = await indicator.evaluate(
+    (element) =>
+      Reflect.get(element, "__reducedMotionResult") as Promise<ReducedMotionResult>
+  );
 
   expect(result.reducedStyleText).toContain("animation: none");
   expect(result.firstCheckedAfter).toBe("false");

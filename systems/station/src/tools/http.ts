@@ -1,5 +1,5 @@
 // The agents' door (server.rs `serve_mcp`): loopback only. /mcp is the MCP endpoint, /jobs/notify what a job says
-// (`stillfail-job notify`), /health that the station answers. Its socket is the launcher's (fd 3), so a handover has
+// (`comma-job notify`), /health that the station answers. Its socket is the launcher's (fd 3), so a handover has
 // no gap: the old station stops taking connections and finishes the calls it has; the new one takes the next.
 import { type IncomingMessage, type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";

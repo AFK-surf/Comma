@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
+import { chooseDropdownOption } from "../../../e2e/helpers/dropdown";
 
 const session = {
   apiBaseUrl: "http://127.0.0.1:65535",
@@ -27,7 +28,7 @@ test.describe("client locale resolution", () => {
       ).toHaveAttribute("aria-current", "page");
       await expect(page.getByRole("link", { name: "收件箱" })).toBeVisible();
       await expect(
-        page.getByRole("button", { exact: true, name: "设置" })
+        page.getByRole("button", { exact: true, name: "账号" })
       ).toBeVisible();
       await expect(page.getByTestId("comma-window-bar-search")).toHaveText(
         /^按 .+ 搜索$/
@@ -60,15 +61,17 @@ test.describe("client locale resolution", () => {
       await installBrowserTestSession(page, session);
       await page.goto("/#/settings");
 
-      await page.getByRole("button", { name: /选择语言/ }).click();
-      await page.getByRole("option", { name: "English" }).click();
+      await chooseDropdownOption(
+        page.getByRole("button", { name: /选择语言/ }),
+        /English/
+      );
       await expect(page.locator("html")).toHaveAttribute("lang", "en");
       await expect(
         page.getByRole("heading", { level: 1, name: "General" })
       ).toBeVisible();
       // Settings renders inside the shell, so the rail relabels with it.
       await expect(
-        page.getByRole("button", { exact: true, name: "Settings" })
+        page.getByRole("button", { exact: true, name: "Account" })
       ).toHaveAttribute("aria-current", "page");
       await expect(page.getByRole("link", { exact: true, name: "Home" })).toBeVisible();
 

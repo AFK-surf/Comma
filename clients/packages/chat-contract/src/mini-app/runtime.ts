@@ -4,6 +4,8 @@ import { createFrameComma } from "@comma/miniapp-sdk/frame";
 import { miniAppCapabilityOps } from "@comma/miniapp-sdk";
 
 export type {
+  MiniAppAudioInput,
+  MiniAppMicrophoneChannelsOptions,
   MiniAppCapability,
   MiniAppErrorCode,
   MiniAppFile,
@@ -36,6 +38,14 @@ export {
  */
 export const miniAppRuntimeUrl = "comma-app://runtime/";
 export const miniAppWebRuntimePath = "/app-runtime/";
+
+/** Native device APIs delegated to an opaque frame. The browser still owns device selection and consent. */
+export function miniAppFrameAllow(capabilities: readonly string[]): string {
+  return ["usb", "bluetooth"]
+    .filter((capability) => capabilities.includes(capability))
+    .map((capability) => `${capability} *`)
+    .join("; ");
+}
 
 /** Runtime-side limits (design §5.4, §7.2). */
 export const miniAppRuntimeLimits = {
@@ -91,9 +101,7 @@ function runtimeBootstrap(
     let loading = false;
     let started = false;
     let startTimer: number | undefined;
-    let setTheme:
-      | ((change: { theme: "light" | "dark"; tokens: Record<string, string> }) => void)
-      | undefined;
+    let sdk: ReturnType<CreateFrameComma> | undefined;
 
     // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized frame bootstrap.
     const applyTheme = (theme: unknown, tokens: unknown) => {
@@ -224,13 +232,12 @@ function runtimeBootstrap(
         );
       const decoder = new TextDecoder();
 
-      const sdk = createComma({
+      sdk = createComma({
         init: init as never,
         call,
         assetUrl: (path) => urls.get(path),
         capabilityOps,
       });
-      setTheme = sdk.setTheme;
       Object.defineProperty(window, "comma", {
         value: sdk.comma,
         writable: false,
@@ -380,9 +387,20 @@ function runtimeBootstrap(
         }
         case "theme": {
           const tokens = applyTheme(message.theme, message.tokens);
-          setTheme?.({ theme: message.theme === "dark" ? "dark" : "light", tokens });
+          sdk?.setTheme({ theme: message.theme === "dark" ? "dark" : "light", tokens });
           return;
         }
+        case "stream":
+          if (!stopped && typeof message.stream === "number")
+            sdk?.streamData(message.stream, message.data);
+          return;
+        case "stream-end":
+          if (!stopped && typeof message.stream === "number")
+            sdk?.streamEnd(
+              message.stream,
+              typeof message.reason === "string" ? message.reason : "ended"
+            );
+          return;
         case "stop":
           stop(typeof message.reason === "string" ? message.reason : "stopped", false);
           return;

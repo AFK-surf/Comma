@@ -1960,6 +1960,8 @@ for (const phase of ["waiting", "after-reply", "task-participants"] as const) {
         messages,
         ...(phase === "task-participants"
           ? {
+              // A Worker on another maker's model shows its own disc.
+              taskRun: { place: { kind: "cloud_vm" }, vendor: "anthropic" },
               participantStatuses: active
                 ? [
                     owner,

@@ -16,6 +16,10 @@ enum PerfSignal: String, CaseIterable, Sendable {
     case releaseSave
     /// Lets the reads of earlier router messages `--hold-earlier` holds answer.
     case releaseEarlier
+    /// Lets the recorder starts `--hold-microphone` holds finish.
+    case releaseMicrophone
+    /// Captures the fixture window without the simulator compositor's landscape crop.
+    case captureMiniApp
 
     var name: String { "surf.comma.perf." + rawValue }
 

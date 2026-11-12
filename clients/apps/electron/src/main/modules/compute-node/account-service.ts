@@ -1,13 +1,10 @@
 import { NativeOperationError } from "../ipc/operation-error";
 import { ComputeNodeCommandError } from "./command";
-import { readIntentFile } from "./intent-file";
 import type { LocalComputeOperator } from "./local-operator";
 import type { LocalHostMaintenance } from "./host-maintenance";
 import { createHash, randomUUID } from "node:crypto";
-import { rename } from "node:fs/promises";
 import {
   ComputeNodeInstallAuthorization,
-  type ComputeRecoveryChallenge,
   type RecoveredComputeBinding,
 } from "./install-authorization";
 import { join } from "node:path";
@@ -15,6 +12,7 @@ import type {
   ComputeNodeConfigureInput,
   ComputeNodeExpectedBinding,
   ComputeNodeState,
+  HostMaintenanceState,
 } from "@comma/native-bridge";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
 import { canonicalizeSessionAudience } from "../session/credential";
@@ -45,8 +43,7 @@ export class AccountComputeNodeService {
     {
       workspaceId: string;
       generation: string;
-      candidate: ComputeRecoveryChallenge;
-      proof: Awaited<ReturnType<LocalComputeOperator["recoveryProof"]>>;
+      registrationId: string;
       binding: RecoveredComputeBinding;
     }
   >();
@@ -106,6 +103,12 @@ export class AccountComputeNodeService {
   refresh() {
     return this.call((service) => service.refresh());
   }
+  reauthorize(expected: ComputeNodeExpectedBinding) {
+    return this.call((service) => service.reauthorize(expected));
+  }
+  continue() {
+    return this.call((service) => service.continue());
+  }
   configure(input: ComputeNodeConfigureInput) {
     const generation = this.generation;
     return this.call(async (service) => {
@@ -117,7 +120,7 @@ export class AccountComputeNodeService {
         if (error instanceof ComputeNodeCommandError) {
           const connectionFailed =
             ["install-managed", "register"].includes(error.native?.reason ?? "") &&
-            service.state().setup?.components === "ready";
+            service.state().observed.host === "ready";
           throw new NativeOperationError(
             error.native?.code === "cloud_unavailable"
               ? "The workspace service could not be reached. Check its status before continuing the same setup."
@@ -142,42 +145,12 @@ export class AccountComputeNodeService {
   drain(expected?: ComputeNodeExpectedBinding) {
     return this.call((service) => service.drain(expected));
   }
-  abandon(expected: ComputeNodeExpectedBinding) {
-    return this.call((service) => service.abandon(expected));
-  }
   remove(expected?: ComputeNodeExpectedBinding) {
     return this.call((service) => service.remove(expected));
   }
   /** The server reports running work for the current account's node. */
   private workActive() {
     return this.snapshot.facets.workActivity === "active";
-  }
-  /** Repair and rebuild first let Main finish or recover local Host maintenance. */
-  private async settleMaintenance() {
-    await this.maintenance?.continuePending(() => this.workActive());
-    await this.maintenance?.assertInstallationAllowed();
-  }
-  repair() {
-    const generation = this.generation;
-    return this.call(async (service) => {
-      await this.settleMaintenance();
-      if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
-      return service.repair();
-    });
-  }
-  rebuild() {
-    const generation = this.generation;
-    return this.call(async (service) => {
-      await this.settleMaintenance();
-      if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
-      return service.rebuild();
-    });
-  }
-
-  /** Archives Main's unreadable local compute records (intent, maintenance receipt) and starts them clean. */
-  async resetLocalRecord() {
-    await this.maintenance?.resetRecord();
-    return this.call((service) => service.resetLocalRecord());
   }
   /** The network came back: the current account's continuation runs its next step now. */
   networkRecovered() {
@@ -195,166 +168,70 @@ export class AccountComputeNodeService {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
     return this.maintenance.state();
   }
-  maintainHost(input: import("@comma/native-bridge").HostMaintenanceInput) {
+  async maintainHost(input: import("@comma/native-bridge").HostMaintenanceInput) {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
-    return this.maintenance.maintain(input);
+    return this.afterMaintenance(await this.maintenance.maintain(input));
   }
-  resumeHostMaintenance(input: { requestId: string }) {
+  async resumeHostMaintenance(input: { requestId: string }) {
     if (!this.maintenance) throw new Error("Local Host maintenance is unavailable.");
-    return this.maintenance.resume(input.requestId, () => this.workActive());
+    return this.afterMaintenance(
+      await this.maintenance.resume(input.requestId, () => this.workActive())
+    );
+  }
+  /** A reinstall, first try or continued, brings back a Host the person uninstalled: setup that waited goes on. */
+  private afterMaintenance(state: HostMaintenanceState) {
+    if (
+      state.operation?.action === "reinstall" &&
+      state.operation.outcome === "succeeded" &&
+      this.key
+    )
+      void this.call((service) => service.hostReinstalled()).catch(() => undefined);
+    return state;
   }
 
   async recoveryCandidates(input: { workspaceId: string; cursor?: string }) {
     const generation = this.generation,
-      key = this.key;
-    const owner = this.options.installAuthorization;
-    const local = this.local;
-    if (!key || !local || !(owner instanceof ComputeNodeInstallAuthorization))
-      throw new Error("Recovery management is unavailable.");
-    const discovery = ++this.discoveryEpoch;
-    const current = () => {
-      if (
-        key !== this.key ||
-        generation !== this.generation ||
-        discovery !== this.discoveryEpoch
-      )
-        throw new ComputeNodeSessionChangedError();
-    };
-    const page = await local.registrationPage(input.cursor);
-    current();
+      owner = this.options.installAuthorization;
+    if (!this.key || !this.local || !(owner instanceof ComputeNodeInstallAuthorization))
+      throw new Error("Recovery is unavailable.");
+    const page = await this.local.registrationPage(input.cursor);
     const candidates = await owner.recoveryCandidates(
       input.workspaceId,
       page.registrations.map((row) => row.id)
     );
-    current();
-    const verified: typeof this.recoveryTargets = new Map();
-    const verify = async (candidate: ComputeRecoveryChallenge) => {
-      current();
-      const [audience, subject] = JSON.parse(key) as [string, string];
-      if (
-        candidate.challenge.audience !== audience ||
-        candidate.challenge.subject !== subject ||
-        candidate.challenge.scope_key !== input.workspaceId ||
-        candidate.challenge.operation_id !== candidate.operation_id ||
-        candidate.challenge.registration_id !== candidate.registration_id ||
-        !page.registrations.some((row) => row.id === candidate.registration_id)
-      )
-        return;
-      try {
-        const proof = await local.recoveryProof(candidate.challenge);
-        current();
-        const binding = await owner.recoverBinding(
-          input.workspaceId,
-          candidate.operation_id,
-          proof,
-          false
-        );
-        current();
-        if (
-          binding.registration_id !== candidate.registration_id ||
-          binding.environment_id !== candidate.challenge.environment_id
-        )
-          return;
-        verified.set(randomUUID(), {
-          workspaceId: input.workspaceId,
-          generation,
-          candidate,
-          proof,
-          binding,
-        });
-      } catch {
-        current(); /* Unverified cloud identities never reach the renderer. */
-      }
-    };
-    // Four bounded proof workers for at most 32 IDs from this user-requested page.
-    let index = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(4, candidates.length) }, async () => {
-        while (index < candidates.length) {
-          const candidate = candidates[index++];
-          if (candidate) await verify(candidate);
-        }
-      })
-    );
-    current();
-    this.recoveryTargets = verified;
-    if (candidates.length > 0 && verified.size === 0 && !page.nextCursor)
-      throw new NativeOperationError(
-        "The previous connection could not be verified. Check the local components and connection, then try again.",
-        "COMPUTE_RECOVERY_UNVERIFIED"
-      );
+    if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
+    this.recoveryTargets.clear();
+    for (const binding of candidates) {
+      if (!page.registrations.some((row) => row.id === binding.id)) continue;
+      this.recoveryTargets.set(randomUUID(), {
+        workspaceId: input.workspaceId,
+        generation,
+        registrationId: binding.id,
+        binding,
+      });
+    }
     return {
       confirmationId: generation,
-      candidates: [...verified].map(([candidateKey, value]) => ({
-        key: candidateKey,
-        label:
-          page.registrations
-            .find((row) => row.id === value.binding.registration_id)
-            ?.displayName?.slice(0, 80) || value.binding.id.slice(-8),
-        workspaceId: value.workspaceId,
-        endpoint: (() => {
-          try {
-            return new URL(
-              page.registrations.find((row) => row.id === value.binding.registration_id)
-                ?.endpoint ?? ""
-            ).origin.slice(0, 512);
-          } catch {
-            return undefined;
-          }
-        })(),
+      candidates: [...this.recoveryTargets].map(([key, row]) => ({
+        key,
+        label: row.registrationId.slice(-8),
+        workspaceId: row.workspaceId,
       })),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     };
   }
-
   async recover(input: { key: string; confirmationId: string }) {
     const target = this.recoveryTargets.get(input.key),
-      generation = this.generation,
-      key = this.key;
+      generation = this.generation;
     const owner = this.options.installAuthorization;
     if (
       !target ||
-      !key ||
       target.generation !== generation ||
       input.confirmationId !== generation ||
       !(owner instanceof ComputeNodeInstallAuthorization)
     )
       throw new ComputeNodeSessionChangedError();
-    // Open the original account owner before the cloud effect. A late accepted result is saved only there.
-    await this.call(async (service) => service.state());
-    const service = await this.services.get(key)!;
-    if (this.generation !== generation || this.key !== key)
-      throw new ComputeNodeSessionChangedError();
-    const result = await service.recoverBinding(target.binding, () =>
-      owner.recoverBinding(
-        target.workspaceId,
-        target.candidate.operation_id,
-        target.proof,
-        true
-      )
-    );
-    const binding = target.binding;
-    // Migrate only the exact unscoped record whose original subject/scope and Host have now been proved.
-    try {
-      const legacy = JSON.parse(await readIntentFile(this.options.filePath)) as {
-        installOperationId?: string;
-        workspaceId?: string;
-        registrationId?: string;
-      };
-      if (
-        legacy.installOperationId === binding.id &&
-        legacy.workspaceId === binding.scope_key &&
-        (!legacy.registrationId || legacy.registrationId === binding.registration_id)
-      ) {
-        await rename(this.options.filePath, `${this.options.filePath}.migrated`);
-      }
-    } catch {
-      /* An unreadable or unrelated legacy record remains unowned and unchanged. */
-    }
-    if (this.generation !== generation || this.key !== key)
-      throw new ComputeNodeSessionChangedError();
-    this.recoveryTargets.clear();
-    return result;
+    return this.call((service) => service.recoverBinding(target.binding));
   }
 
   async localOverview(input: { cursor?: string; workspaceId?: string }) {
@@ -458,13 +335,21 @@ export class AccountComputeNodeService {
       ...(result.next_cursor ? { nextCursor: result.next_cursor } : {}),
     };
   }
-  disposeLocal(input: { key: string }) {
+  async disposeLocal(input: { key: string }) {
     if (!this.local) throw new Error("Local Host management is unavailable.");
-    return this.local.dispose(input);
+    try {
+      return await this.local.dispose(input);
+    } finally {
+      await this.refresh().catch(() => undefined);
+    }
   }
-  resumeLocalDisposal(input: { requestId: string }) {
+  async resumeLocalDisposal(input: { requestId: string }) {
     if (!this.local) throw new Error("Local Host management is unavailable.");
-    return this.local.resume(input.requestId);
+    try {
+      return await this.local.resume(input.requestId);
+    } finally {
+      await this.refresh().catch(() => undefined);
+    }
   }
 
   private emptyState(): ComputeNodeState {
@@ -509,13 +394,9 @@ export class AccountComputeNodeService {
         ...this.options,
         ...(this.maintenance
           ? {
-              installationBlocked: (id: string) =>
-                this.maintenance!.installationBlocked(id),
-              assertInstallationAllowed: () =>
-                this.maintenance!.assertInstallationAllowed(),
               updateHost: () => this.maintenance!.automaticUpdate(),
-              resumeMaintenance: (workActive: () => boolean) =>
-                this.maintenance!.continuePending(workActive),
+              reinstallHost: (explicit: boolean, requireCurrent: () => void) =>
+                this.maintenance!.prepareForSetup(explicit, requireCurrent),
             }
           : {}),
         filePath: join(

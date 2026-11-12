@@ -1,6 +1,4 @@
 defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
-  require SystemsRuntime.Proc
-
   @moduledoc """
   The scheduler around backfill passes: discovery records installations, a
   work tick claims the one due the longest, and the pass's answer decides when
@@ -181,7 +179,7 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   end
 
   describe "the scheduler process" do
-    test "a crashing pass does not take the scheduler down and backs off" do
+    test "a crashing claim does not take the scheduler down and backs off" do
       defmodule CrashingLedger do
         def claim_due_connect(_ttl) do
           SystemsRuntime.Proc.send(
@@ -213,31 +211,57 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
       SystemsClock.sleep(200)
       assert SystemsRuntime.Proc.alive?(runner)
       assert_received :backfill_claimed
-      # The passes the start and the first discovery began have all crashed;
-      # each waits out the backoff, so nothing claims again before it ends.
+      # Claim failures back off without stopping the scheduler.
       drain_claims()
       SystemsClock.sleep(200)
       refute_received :backfill_claimed
     end
 
-    test "one tick fills every free slot and does not tick again" do
+    test "empty claims stay at one per idle interval after repeated wakeups" do
       defmodule EmptyLedger do
-        def claim_due_connect(_ttl), do: :empty
+        def claim_due_connect(_ttl) do
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:salix_im, :runner_test_parent),
+            :backfill_claimed
+          )
+
+          :empty
+        end
+
+        def upsert_connects(_connects), do: :ok
       end
 
+      SystemsRuntime.put_env(:salix_im, :runner_test_parent, SystemsRuntime.Proc.self())
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :runner_test_parent) end)
       supervisor = start_supervised!({SystemsRuntime.TaskSupervisor, name: __MODULE__.Tasks})
 
-      state = %{
-        opts: [ledger: EmptyLedger, task_supervisor: supervisor, max_concurrent_passes: 3],
-        passes: %{},
-        discover_task: nil,
-        discover_cursor: nil
-      }
+      runner =
+        start_supervised!(
+          {BackfillRunner,
+           name: nil,
+           ledger: EmptyLedger,
+           connects: FakeConnects,
+           task_supervisor: supervisor,
+           max_concurrent_passes: 4,
+           work_idle_ms: 1_000,
+           discover_interval_ms: 1_000_000,
+           start_delay_ms: 0}
+        )
 
-      assert {:noreply, %{passes: passes}} = BackfillRunner.handle_info(:work_tick, state)
-      assert map_size(passes) == 3
-      # A tick it sent itself would start another pass whenever one had ended.
-      refute_received :work_tick
+      settle()
+      drain_claims()
+
+      for _ <- 1..5 do
+        for _ <- 1..20, do: SystemsRuntime.Proc.send(runner, :work_tick)
+        settle()
+        drain_claims()
+
+        for _ <- 1..5 do
+          settle_after(1_000)
+          assert_received :backfill_claimed
+          refute_received :backfill_claimed
+        end
+      end
     end
 
     test "runs no more passes at once than it is allowed" do
@@ -250,6 +274,8 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
       # A reader that parks every pass until told to continue, so the number
       # in flight can be observed.
       defmodule ParkingReader do
+        require SystemsRuntime.Proc
+
         def conversations(_credential, _opts) do
           SystemsRuntime.Proc.send(
             SystemsRuntime.fetch_env!(:salix_im, :runner_test_parent),

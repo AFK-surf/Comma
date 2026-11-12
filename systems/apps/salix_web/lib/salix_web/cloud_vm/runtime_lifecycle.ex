@@ -31,8 +31,19 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
     end
   end
 
+  # Where the Group's Cloud VM is retired (`SalixAgent.Sandboxes.cloud_vm_retired?/1`),
+  # a Cloudflare VM that is not running is not started again: whoever asked
+  # is told so once, and nothing waits for it. One still running serves until
+  # the cutover stops it (`SalixWeb.Migrations.CloudVMCutover`). The Agent
+  # VMM Host's container is the Group's own machine and wakes as before.
   def wake(group) do
     case GroupCompute.group_workload(group) do
+      {:ok, %{"provider" => "cloudflare", "status" => status} = rec}
+      when status != "ready" ->
+        if SalixAgent.Sandboxes.cloud_vm_retired?(group),
+          do: {:error, retired_error(rec["env_id"])},
+          else: wake_cloudflare(rec)
+
       {:ok, %{"provider" => "cloudflare"} = rec} ->
         wake_cloudflare(rec)
 
@@ -44,6 +55,21 @@ defmodule SalixWeb.CloudVM.RuntimeLifecycle do
       _ ->
         :ok
     end
+  end
+
+  @doc """
+  What a command or Task told the Group's retired Cloud VM is not started
+  answers: not retryable, with what to do instead.
+  """
+  def retired_error(env_id \\ nil) do
+    %{
+      "error_class" => "cloud_vm_retired",
+      "retryable" => false,
+      "message" =>
+        "the Group's Cloud VM is retired here: sandboxes have taken its place, and it is not " <>
+          "started again. Run the work in a sandbox Task: task.create with runs_on {kind: sandbox}.",
+      "env_id" => env_id
+    }
   end
 
   defp wake_cloudflare(%{"status" => status, "group_id" => group})

@@ -57,6 +57,11 @@
 (*   at the next epoch; release_transition/active_binding? refuse a stale  *)
 (*   run (README "Triage run fence release")                               *)
 (***************************************************************************)
+(* PG mapping: InternalSessionStore.PG keeps the caller's captured epoch  *)
+(* and checks it under Agent FOR SHARE before Session FOR UPDATE. The    *)
+(* Session revision replaces the object ETag. This is stronger than the  *)
+(* local object monotonicity checked here; RpcDeliver.PgSpec covers the  *)
+(* atomic owner-check/write boundary. No runtime epoch is adopted on retry.*)
 EXTENDS Naturals, Sequences, TLC
 
 CONSTANTS Runners,                 \* runner processes, e.g. {r1, r2}

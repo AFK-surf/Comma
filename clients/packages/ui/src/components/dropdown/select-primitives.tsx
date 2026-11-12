@@ -126,10 +126,22 @@ export const selectItemHeight = {
 } as const;
 
 const selectPopoverMaxHeight = {
-  xs: { className: "max-h-56", rem: 14 },
-  sm: { className: "max-h-56", rem: 14 },
-  md: { className: "max-h-64", rem: 16 },
+  xs: { className: "max-h-80", rem: 20 },
+  sm: { className: "max-h-80", rem: 20 },
+  md: { className: "max-h-96", rem: 24 },
 } as const;
+
+/** The tallest a selection popover of `size` grows, in pixels. */
+const readSelectPopoverMaxHeightPx = (size: "xs" | "sm" | "md") => {
+  const rootFontSize =
+    typeof document === "undefined"
+      ? Number.NaN
+      : Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+  return (
+    selectPopoverMaxHeight[size].rem *
+    (Number.isFinite(rootFontSize) ? rootFontSize : 16)
+  );
+};
 
 export const selectSeparatorHeight = spacing.xs * 2 + borderWidth["0-5"];
 
@@ -512,12 +524,7 @@ export const useSelectionAlignedPopover = ({
       0,
       popoverRect.top - viewportTop - resolvedTopInsetPx
     );
-    const rootFontSize = Number.parseFloat(
-      window.getComputedStyle(document.documentElement).fontSize
-    );
-    const maxPopoverHeight =
-      selectPopoverMaxHeight[size].rem *
-      (Number.isFinite(rootFontSize) ? rootFontSize : 16);
+    const maxPopoverHeight = readSelectPopoverMaxHeightPx(size);
     const availableHeightGrowth = Math.max(0, maxPopoverHeight - popoverRect.height);
     const expansion = Math.min(
       overflowHeight,
@@ -555,6 +562,32 @@ export const useSelectionAlignedPopover = ({
     }
   }, [isOpen]);
 
+  // The popover stops at its size's height. When the rows above the checked
+  // one do not fit under that height, the list scrolls to put the checked row
+  // in the middle, and the popover moves down by the same distance so the row
+  // stays over the trigger.
+  const maxPopoverHeight = triggerRect ? readSelectPopoverMaxHeightPx(size) : undefined;
+  const contentHeight =
+    renderedRowHeight * items.length +
+    selectSeparatorHeight * separatorCount +
+    spacing.xs * 2;
+  const maxViewportHeight =
+    maxPopoverHeight === undefined
+      ? undefined
+      : maxPopoverHeight - chromeBorderWidth * 2;
+  const capShift =
+    offset !== undefined || maxViewportHeight === undefined
+      ? 0
+      : Math.min(
+          Math.max(0, contentHeight - maxViewportHeight),
+          Math.max(
+            0,
+            spacing.xs +
+              renderedRowHeight * (anchorIndex + 0.5) +
+              selectSeparatorHeight * separatorCountThroughAnchor -
+              maxViewportHeight / 2
+          )
+        );
   const selectionAlignedOffset =
     (offset ??
       getAnchoredPopoverOffset({
@@ -563,7 +596,9 @@ export const useSelectionAlignedPopover = ({
         rowHeight: renderedRowHeight,
         separatorCount: separatorCountThroughAnchor,
         triggerHeight,
-      })) - contentExpansion;
+      })) +
+    capShift -
+    contentExpansion;
   const resolvedOffset = triggerRect
     ? constrainSelectPopoverOffsetToViewportTop({
         offset: selectionAlignedOffset,
@@ -588,14 +623,16 @@ export const useSelectionAlignedPopover = ({
         resolvedTopInsetPx -
         spacing.xs -
         chromeBorderWidth;
-  const anchorScrollTop = scrollsToAnchor ? clampShift : 0;
-  // Scrolled by the shift, the popover shows the rows from there to the end.
-  const anchorScrollMaxHeight = scrollsToAnchor
-    ? renderedRowHeight * items.length +
-      selectSeparatorHeight * separatorCount +
-      (spacing.xs + chromeBorderWidth) * 2 -
-      clampShift
-    : undefined;
+  const anchorScrollTop = capShift + (scrollsToAnchor ? clampShift : 0);
+  // Scrolled by the shift, the popover shows the rows from there to the end,
+  // up to its size's height.
+  const anchorScrollMaxHeight =
+    maxPopoverHeight !== undefined && anchorScrollTop > 0
+      ? Math.min(
+          maxPopoverHeight,
+          contentHeight + chromeBorderWidth * 2 - anchorScrollTop
+        )
+      : maxPopoverHeight;
   const readAnchorScrollTop = useEffectEvent(() => anchorScrollTop);
 
   useEffect(() => {

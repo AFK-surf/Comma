@@ -120,7 +120,7 @@ theorem archiveAdvance_keeps_published_catalog {s e t : Term} {j r : List Term}
 /-- Removed input facts are reachable through the actual post-reduction catalog, not merely orphan objects. -/
 theorem published_archive_catalog_input {state event next : Term} {records live : List Term}
     {base ceiling line : Int} {before after : Objects} {final : Output} {j r : List Term}
-    (framing : CodecFraming) (sorted : SeqSorted state)
+    (framing : CodecFraming) (sorted : SeqSorted state) (physical : ArchiveProjection.UnarchivedWindow state)
     (numeric : (state.get (a "archived_through")).default (i 0) = i base) (nonnegative : base ≥ 0)
     (initial : StateCatalogBacked before state)
     (catalog : ∀ value ∈ wrap ((state.get (a "segment_catalog")).default (list [])), validSegment value = true)
@@ -143,7 +143,7 @@ theorem published_archive_catalog_input {state event next : Term} {records live 
   rcases archiveAdvance_keeps_published_catalog exactFilter reduced with unchanged | included
   · exact Or.inl unchanged
   · obtain ⟨dropped, kept, partition, afterRead, projections⟩ :=
-      published_archive_removed_projections sorted numeric nonnegative initial window positive execution emitted read reduced
+      published_archive_removed_projections sorted physical numeric nonnegative initial window positive execution emitted read reduced
     refine Or.inr ⟨dropped, kept, partition, afterRead, ?_⟩
     intro item record member recorded
     obtain ⟨projected, projection, backed⟩ := projections record member

@@ -18,6 +18,7 @@ defmodule SalixConversationVisibleReplyE2E do
     Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
     {:ok, _} = Application.ensure_all_started(:salix_web)
+    :ok = SalixStore.RepoTestSetup.seed!()
     {:ok, _} = SalixAgent.LLM.Mock.start_link()
 
     run_id = System.unique_integer([:positive])

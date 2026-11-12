@@ -55,7 +55,7 @@ describe("CommaAuthGate with an injected Session host", () => {
       expect(controller.recover).not.toHaveBeenCalled();
 
       act(() => controller.sayRecovery("exhausted"));
-      expect(screen.getByText("Comma is temporarily unavailable")).toBeVisible();
+      expect(screen.getByText("Cannot connect to Comma")).toBeVisible();
       expect(screen.queryByText("Product")).toBeNull();
 
       controller.recover.mockImplementation(async () => {

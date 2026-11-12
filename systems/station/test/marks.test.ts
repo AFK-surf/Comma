@@ -65,7 +65,7 @@ test("a Task marked done or cancelled, and left to its chat again; not by a read
   for (const status of ["needs_review", "archived", "toString", 1, undefined]) {
     assert.deepEqual(await ask("PUT", `/threads/${chat.id}/status`, { status }), [400, { error: "status must be done, cancelled or in_progress" }]);
   }
-  assert.deepEqual(await ask("PUT", `/threads/${slack.id}/status`, { status: "done" }), [400, { error: "Only still.fail's own chats have a Task status" }]);
+  assert.deepEqual(await ask("PUT", `/threads/${slack.id}/status`, { status: "done" }), [400, { error: "Only Comma's own chats have a Task status" }]);
   assert.deepEqual(await ask("PUT", "/threads/999/status", { status: "done" }), [404, { error: "unknown thread 999" }]);
   const viewer = rig("viewer");
   assert.deepEqual(await viewer.ask("PUT", `/threads/${viewer.chat.id}/status`, { status: "done" }), [403, { error: "read-only members cannot change this station" }]);

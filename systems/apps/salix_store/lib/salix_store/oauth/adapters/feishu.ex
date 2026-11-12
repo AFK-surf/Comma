@@ -7,16 +7,27 @@ defmodule SalixStore.OAuth.Adapters.Feishu do
 
   A sign-in lets the bot of a Feishu connect find and read as that person what
   they may see: documents, wiki pages, meetings, meeting notes and Minutes
-  recordings (`SalixIM.Provider.Feishu.Meetings`). `offline_access` makes
-  Feishu return a refresh token. Feishu has no revocation endpoint.
+  recordings (`SalixIM.Provider.Feishu.Meetings`). A command a sandbox runs
+  with the sign-in (`comma exec --credential`) also sends messages as that
+  person (`im:message.send_as_user`). It asks a document's owner for access as
+  that person (`docs:permission.member:apply`). `offline_access` makes Feishu
+  return a refresh token. Feishu has no revocation endpoint.
+
+  A sign-in that names only on-demand scopes (`on_demand_scopes/0`: table
+  reads, document edits) asks for them on top of the default sign-in. Feishu
+  keeps what a person granted before, so the new token holds both. Any other
+  list of scopes replaces the defaults.
   """
   @behaviour SalixStore.OAuth.Adapter
 
   alias SalixStore.OAuth.Adapter
 
   # The names follow the official larksuite/cli (`vc +search`, `vc +notes`,
-  # `note`, `minutes`, `doc`, `drive`, `wiki`); a scope the app does not offer as a user scope
-  # makes the sign-in page refuse the whole request.
+  # `note`, `minutes`, `doc`, `drive`, `wiki`, `im`, `contact`, `calendar`);
+  # a scope the app does not offer as a user scope makes the sign-in page
+  # refuse the whole request. Each name is checked
+  # against the platform's scope catalog for the user identity. The
+  # sign-in asks for no private chat scope and no administration.
   @default_scopes ~w(
     vc:meeting.search:read
     vc:meeting.meetingevent:read
@@ -45,13 +56,157 @@ defmodule SalixStore.OAuth.Adapters.Feishu do
     docs:document.comment:read
     docs:document.media:download
     docs:permission.member:retrieve
+    docs:permission.member:apply
     docs:permission.setting:read
+    im:message.group_msg:get_as_user
+    im:message.send_as_user
+    calendar:calendar
+    calendar:calendar.event:create
+    calendar:calendar.event:delete
+    calendar:calendar.event:join
+    calendar:calendar.event:read
+    calendar:calendar.event:reply
+    calendar:calendar.event:transfer
+    calendar:calendar.event:update
+    calendar:calendar.free_busy:read
+    calendar:calendar:create
+    calendar:calendar:delete
+    calendar:calendar:read
+    calendar:calendar:readonly
+    calendar:calendar:update
+    calendar:room:readonly
+    contact:contact.base:readonly
+    contact:department.base:readonly
+    contact:department.organize:readonly
+    contact:job_title:readonly
+    contact:user.base:readonly
+    contact:user.basic_profile:readonly
+    contact:user.department:readonly
+    contact:user.department_path:readonly
+    contact:user.dotted_line_leader_info.read
+    contact:user.email:readonly
+    contact:user.employee:readonly
+    contact:user.employee_id:readonly
+    contact:user.id:readonly
+    contact:user.phone:readonly
+    contact:user:search
+    contact:work_city:readonly
+    directory:department.base:read
+    directory:department.count:read
+    directory:department.department_path:read
+    directory:department.has_child:read
+    directory:department.leader:read
+    directory:department.name:read
+    directory:department.organization:read
+    directory:department.parent_id:read
+    directory:department:list
+    directory:department:read
+    directory:department:search
+    directory:employee.base.avatar:read
+    directory:employee.base.base:read
+    directory:employee.base.department:read
+    directory:employee.base.department_path:read
+    directory:employee.base.description:read
+    directory:employee.base.dotted_line_leaders:read
+    directory:employee.base.email:read
+    directory:employee.base.enterprise_email:read
+    directory:employee.base.leader:read
+    directory:employee.base.leader_id:read
+    directory:employee.base.mobile:read
+    directory:employee.base.name.another_name:read
+    directory:employee.base.name.first_name:read
+    directory:employee.base.name.last_name:read
+    directory:employee.base.name.name:read
+    directory:employee.work.base_work:read
+    directory:employee.work.extension_number:read
+    directory:employee.work.job_number:read
+    directory:employee.work.job_title:read
+    directory:employee.work.join_date:read
+    directory:employee.work.positions:read
+    directory:employee.work.work_country_or_region:read
+    directory:employee.work.work_place:read
+    directory:employee.work.work_station:read
+    directory:employee:list
+    directory:employee:read
+    directory:employee:search
+    directory:job_title.base:read
+    directory:place.base:read
+    im:chat.announcement:read
+    im:chat.chat_pins:read
+    im:chat.members:read
+    im:chat.members:write_only
+    im:chat.nickname:read
+    im:chat.user_setting:read
+    im:chat:create_by_user
+    im:chat:read
+    im:chat:readonly
+    im:feed.flag:read
+    im:feed.flag:write
+    im:feed.shortcut:read
+    im:feed.shortcut:write
+    im:feed_group_v1:read
+    im:feed_group_v1:write
+    im:message.pins:read
+    im:message.pins:write_only
+    im:message.reactions:read
+    im:message.reactions:write_only
+    im:message:recall
+    im:message:update
+    im:resource
+    minutes:minutes
+    minutes:minutes.upload:write
+    minutes:minutes:update
+    minutes:permission:apply
+    search:bot
+    search:message
+    vc:meeting.bot.join:write
+    vc:meeting.bot.manage:write
+    vc:meeting.interaction:write
+    vc:meeting.message:write
+    vc:recording:read
+    vc:room:readonly
     offline_access
   )
 
   @doc "The scopes a sign-in asks for. The app needs each as a user scope."
   @spec default_scopes() :: [String.t()]
   def default_scopes, do: @default_scopes
+
+  # Scopes a sign-in does not ask for by default, by the need that asks for
+  # them: reading spreadsheets and Base, and editing documents and their
+  # comments, as the person. A default sign-in asks for none of them, so an
+  # app that does not offer them as user scopes still lets people sign in.
+  # The names are the ones the app's own document scopes use.
+  @on_demand_scopes %{
+    "tables" => ~w(sheets:spreadsheet:readonly bitable:app:readonly),
+    "document_writes" => ~w(docx:document docx:document:write_only
+                            docs:document.comment:create docs:document.comment:write_only
+                            docs:document.media:upload)
+  }
+
+  @doc """
+  The user scopes one need asks for beyond the default sign-in: `tables`
+  (spreadsheet and Base reads) or `document_writes` (document and comment
+  edits). The permission import offers all of them as user scopes.
+  """
+  @spec on_demand_scopes() :: %{String.t() => [String.t()]}
+  def on_demand_scopes, do: @on_demand_scopes
+
+  @on_demand_scope_names @on_demand_scopes |> Map.values() |> List.flatten()
+
+  # No scopes asks for the default sign-in. Scopes that are all on-demand
+  # ones are added to the default sign-in: the platform keeps what a person
+  # granted before, and a first sign-in for a table read also reads
+  # documents. Only such a request fails when the app does not offer the
+  # scope. Any other list replaces the defaults, for an app that offers
+  # fewer scopes.
+  defp requested_scopes(scopes) when scopes in [nil, []], do: @default_scopes
+
+  defp requested_scopes(scopes) do
+    if Enum.all?(scopes, &(&1 in @on_demand_scope_names)),
+      do: Enum.uniq(@default_scopes ++ scopes),
+      else: Enum.uniq(scopes ++ ["offline_access"])
+  end
 
   @impl true
   def default_env_var, do: "FEISHU_USER_ACCESS_TOKEN"
@@ -64,7 +219,9 @@ defmodule SalixStore.OAuth.Adapters.Feishu do
        ) do
       {:error, "feishu oauth: client_id, redirect_uri, and PKCE challenge are required"}
     else
-      scopes = if req["scopes"] in [nil, []], do: @default_scopes, else: req["scopes"]
+      # Without offline_access the sign-in gives no refresh token and ends with
+      # its access token, about two hours later.
+      scopes = requested_scopes(req["scopes"])
 
       query =
         Adapter.encode_query([

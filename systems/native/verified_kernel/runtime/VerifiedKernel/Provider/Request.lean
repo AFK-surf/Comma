@@ -161,6 +161,7 @@ def endpoint (protocol : String) (cfg : Term) (mode : String) (extra : List Term
   return .tuple [b (base ++ path), list headers]
 
 def encodedBody (protocol : String) (cfg : Term) (messages tools : List Term) (mode : String) : KernelM Term := do
+  let messages := Messages.settledTurns (protocol == "responses") messages
   let messages := if protocol == "anthropic" then messages else messages.map scrub
   let tools := if protocol == "anthropic" then tools else tools.map scrub
   encode (scrub (← body protocol cfg messages tools mode))

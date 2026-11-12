@@ -1,0 +1,25 @@
+/* A paused surface (commaSurfacePause.ts) is Home kept mounted under another
+   page and skipped by content-visibility. A loop inside it cannot run on the
+   compositor: once its style is recalculated there (a caret left in the
+   composer, a measure), it ticks on the main thread at every display frame
+   and draws nothing. Each looping class holds still on a paused surface and
+   resumes its phase when the surface shows again. The rule names the loop
+   classes, not every descendant, so showing the surface restyles only them.
+   A loop that can mount in Home joins this list. animation-play-state is not
+   inherited, so a band drawn by a pseudo-element is named with that element;
+   the doubled shine classes match their own rules in @comma/ui/styles.css.
+   Each selector ends in its loop class, so only those elements try it. */
+[data-comma-surface-paused="true"] .animate-pulse,
+[data-comma-surface-paused="true"] .motion-safe\:animate-pulse,
+[data-comma-surface-paused="true"] .animate-spin,
+[data-comma-surface-paused="true"] .motion-safe\:animate-spin,
+[data-comma-surface-paused="true"] .comma-task-status-spin,
+[data-comma-surface-paused="true"] .comma-logo-animation__scene,
+[data-comma-surface-paused="true"] .comma-logo-animation__nested-comma,
+[data-comma-surface-paused="true"] .comma-logo-animation__aperture,
+[data-comma-surface-paused="true"] .comma-shine.comma-shine::after,
+[data-comma-surface-paused="true"] .comma-shiny-text.comma-shiny-text::after,
+[data-comma-surface-paused="true"] .comma-recommendation-link-card-bar::after,
+[data-comma-surface-paused="true"] .comma-chat-thinking-bubble::before {
+  animation-play-state: paused;
+}

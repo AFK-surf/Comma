@@ -13,8 +13,13 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
       one `Backfill` pass. `:more` makes it due again at once, `:idle` defers it
       by `pass_interval_ms`, a failure by a fixed backoff.
 
-  Bound per Pod: one discovery Task and at most `max_concurrent_passes` pass
-  Tasks, each making one Lark request per `pace_ms` on its own app.
+  Bound per Pod: one discovery Task, one claim Task, and at most
+  `max_concurrent_passes` pass Tasks. Empty claims arm one work timer for
+  `work_idle_ms`. Discovery and pass completion share that timer. Stale timer
+  deliveries cannot start claims. Work that wakes while a claim runs makes
+  one more claim if that one comes back empty. Discovery keeps its separate page cadence.
+
+  Each pass makes one Lark request per `pace_ms` on its own app.
   """
 
   use SystemsRuntime.Server
@@ -53,35 +58,29 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
 
   @impl true
   def init(opts) do
+    state = %{
+      opts: opts,
+      passes: %{},
+      claim_task: nil,
+      claim_again: false,
+      work_timer: nil,
+      discover_task: nil,
+      discover_cursor: nil
+    }
+
     delay = setting(opts, :start_delay_ms, 0)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, delay)
-    {:ok, %{opts: opts, passes: %{}, discover_task: nil, discover_cursor: nil}}
+    {:ok, schedule_work(state, delay)}
   end
 
-  # `async_nolink`: a crashed pass must reschedule, not take the scheduler with
-  # it. The lease a crashed pass held expires on its own.
+  # One pump owns claims and wakeups. Empty claims never start pass tasks.
   @impl true
+  def handle_info({:timeout, ref, :work_tick}, %{work_timer: {ref, _}} = state) do
+    {:noreply, pump(%{state | work_timer: nil})}
+  end
+
   def handle_info(:work_tick, state) do
-    slots = setting(state.opts, :max_concurrent_passes, @default_max_concurrent_passes)
-
-    if map_size(state.passes) < slots do
-      opts = state.opts
-
-      task =
-        SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
-          run_once(opts)
-        end)
-
-      passes = Map.put(state.passes, task.ref, task)
-
-      if map_size(passes) < slots,
-        do: SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :work_tick)
-
-      {:noreply, %{state | passes: passes}}
-    else
-      {:noreply, state}
-    end
+    {:noreply, state |> cancel_work() |> pump()}
   end
 
   def handle_info(:discover_tick, %{discover_task: nil} = state) do
@@ -102,14 +101,42 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
     {cursor, delay} = discover_next(state, result)
     SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
-    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :work_tick)
-    {:noreply, %{state | discover_task: nil, discover_cursor: cursor}}
+    {:noreply, schedule_work(%{state | discover_task: nil, discover_cursor: cursor}, 0)}
   end
 
-  def handle_info({ref, result}, state) when is_map_key(state.passes, ref) do
+  def handle_info({ref, result}, %{claim_task: %Task{ref: ref}} = state) do
     SystemsRuntime.Proc.demonitor(ref, [:flush])
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, work_delay(state, result))
-    {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
+    state = %{state | claim_task: nil}
+
+    case result do
+      {:ok, claimed} ->
+        task =
+          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+            run_claimed(claimed, state.opts)
+          end)
+
+        state = %{state | passes: Map.put(state.passes, task.ref, task)}
+        {:noreply, pump(state)}
+
+      # Work woke while this claim ran (a discovery that recorded new
+      # installations, a pass that finished): the claim may have read the
+      # ledger before that, so claim once more.
+      :empty when state.claim_again ->
+        {:noreply, pump(state)}
+
+      :empty ->
+        {:noreply,
+         schedule_work(state, setting(state.opts, :work_idle_ms, @default_work_idle_ms))}
+
+      {:error, _reason} ->
+        {:noreply, schedule_work(state, @failure_backoff_ms)}
+    end
+  end
+
+  def handle_info({ref, _result}, state) when is_map_key(state.passes, ref) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    # Each installation's durable due time includes its error backoff.
+    {:noreply, schedule_work(%{state | passes: Map.delete(state.passes, ref)}, 0)}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{discover_task: %Task{ref: ref}} = state) do
@@ -118,11 +145,15 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
     {:noreply, %{state | discover_task: nil, discover_cursor: nil}}
   end
 
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{claim_task: %Task{ref: ref}} = state) do
+    Logger.warning("lark record backfill claim crashed: #{inspect(reason)}")
+    {:noreply, schedule_work(%{state | claim_task: nil}, @failure_backoff_ms)}
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
       when is_map_key(state.passes, ref) do
     Logger.warning("lark record backfill pass crashed: #{inspect(reason)}")
-    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, @failure_backoff_ms)
-    {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
+    {:noreply, schedule_work(%{state | passes: Map.delete(state.passes, ref)}, 0)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -130,17 +161,57 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
   @doc "Leases one due installation and runs one pass over it."
   @spec run_once(keyword()) :: :empty | {:ok, Backfill.outcome()} | {:error, term()}
   def run_once(opts \\ []) do
-    if not LarkMessageRecord.enabled?() do
-      :empty
-    else
-      ledger = ledger(opts)
-
-      case ledger.claim_due_connect(setting(opts, :lease_ttl_ms, @default_lease_ttl_ms)) do
-        {:ok, claimed} -> run_claimed(claimed, opts)
-        :empty -> :empty
-        {:error, reason} -> {:error, reason}
-      end
+    case claim_once(opts) do
+      {:ok, claimed} -> run_claimed(claimed, opts)
+      result -> result
     end
+  end
+
+  defp claim_once(opts) do
+    if LarkMessageRecord.enabled?(),
+      do: ledger(opts).claim_due_connect(setting(opts, :lease_ttl_ms, @default_lease_ttl_ms)),
+      else: :empty
+  end
+
+  defp pump(state) do
+    slots = setting(state.opts, :max_concurrent_passes, @default_max_concurrent_passes)
+
+    cond do
+      state.claim_task != nil ->
+        %{state | claim_again: true}
+
+      map_size(state.passes) < slots ->
+        task =
+          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+            claim_once(state.opts)
+          end)
+
+        %{state | claim_task: task, claim_again: false}
+
+      true ->
+        state
+    end
+  end
+
+  defp schedule_work(state, delay) do
+    due = SystemsClock.monotonic_time(:millisecond) + delay
+
+    case state.work_timer do
+      {_ref, earlier} when earlier <= due ->
+        state
+
+      _ ->
+        state = cancel_work(state)
+        ref = SystemsClock.start_timer(delay, SystemsRuntime.Proc.self(), :work_tick)
+        %{state | work_timer: {ref, due}}
+    end
+  end
+
+  defp cancel_work(%{work_timer: nil} = state), do: state
+
+  defp cancel_work(%{work_timer: {ref, _}} = state) do
+    SystemsClock.cancel_timer(ref)
+    %{state | work_timer: nil}
   end
 
   defp run_claimed(claimed, opts) do
@@ -232,10 +303,6 @@ defmodule SalixIM.LarkMessageRecord.BackfillRunner do
       end
     end
   end
-
-  defp work_delay(state, :empty), do: setting(state.opts, :work_idle_ms, @default_work_idle_ms)
-  defp work_delay(_state, {:ok, _outcome}), do: 0
-  defp work_delay(_state, _error), do: @failure_backoff_ms
 
   defp discover_next(state, {:ok, %{scan_complete: true}}),
     do: {nil, setting(state.opts, :discover_interval_ms, @default_discover_interval_ms)}

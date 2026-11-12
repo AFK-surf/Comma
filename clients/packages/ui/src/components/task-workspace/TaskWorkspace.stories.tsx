@@ -1,9 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { ResizeContainer } from "../../dev";
 import type { TaskStatusBucket } from "../task-workspace";
-import { TaskWorkspace, type TaskWorkspaceProps, type TaskWorkspaceTask } from ".";
+import { CalendarEditIcon, CalendarIcon, CalendarRepeatIcon } from "../icons";
+import {
+  TaskWorkspace,
+  type TaskFilterSection,
+  type TaskWorkspaceProps,
+  type TaskWorkspaceTask,
+} from ".";
 
 const storyTasks: TaskWorkspaceTask[] = [
   {
@@ -150,6 +156,56 @@ export const Complete: Story = {
         name: /Prepare the onboarding implementation brief/,
       })[0]
     ).toBeVisible();
+  },
+};
+
+const dateOptions = [
+  { id: "all", label: "All tasks", count: 315 },
+  { id: "1d", label: "1 day ago", count: 0 },
+  { id: "3d", label: "3 days ago", count: 0 },
+  { id: "1w", label: "1 week ago", count: 3 },
+  { id: "1m", label: "1 month ago", count: 10 },
+  { id: "3m", label: "3 months ago", count: 155 },
+  { id: "6m", label: "6 months ago", count: 315 },
+  { id: "1y", label: "1 year ago", count: 315 },
+];
+const dateSection = (
+  id: string,
+  label: string,
+  icon: ReactNode
+): TaskFilterSection => ({
+  icon,
+  id,
+  label,
+  narrowed: false,
+  onChange: fn(),
+  options: dateOptions,
+  selected: new Set(["all"]),
+  selectionMode: "single",
+});
+
+/** A group of sections opens one level further: Dates, then each date's windows. */
+export const DateFilter: Story = {
+  args: {
+    filterSections: [
+      {
+        icon: <CalendarIcon />,
+        id: "dates",
+        label: "Dates",
+        sections: [
+          dateSection("date:created", "Created date", <CalendarEditIcon />),
+          dateSection("date:updated", "Updated date", <CalendarRepeatIcon />),
+        ],
+      },
+    ],
+  },
+  name: "Date filter",
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(page.getByRole("button", { name: "Filter tasks" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "Dates" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "Updated date" }));
+    await expect(page.getByRole("menuitemradio", { name: /1 week ago/ })).toBeVisible();
   },
 };
 

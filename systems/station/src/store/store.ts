@@ -23,7 +23,7 @@ import {
   type MessageRow, type NewMessage, type NewSession, type PendingMessage, type ProcessRow, type ProfileStatus,
   type Quote, type RanIn, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type TaskIndexRow, type TaskMark,
   type TaskStatus, type ThreadRow, type ThreadSummary,
-  type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, AUTO, I64_MAX, MANUAL, STILLFAIL_SURFACE, attachment,
+  type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, AUTO, I64_MAX, MANUAL, COMMA_STATION_SURFACE, attachment,
   byBytes, cardOf, jsonList, mergeEntries, onlyMilestones, optionsCard, parsed, quote, takeChars, toEntry, toJob, toMembership,
   toMessage, toSession, toSessionThread, toThread, toTurnSummary,
 } from "./rows.ts";
@@ -107,7 +107,7 @@ export class Store {
     let store: Store;
     if (archive !== null) store = new Store(db, archive, null, clock);
     else if (memory) {
-      const dir = join(tmpdir(), `stillfail-archive-${randomBytes(8).toString("hex")}`);
+      const dir = join(tmpdir(), `comma-station-archive-${randomBytes(8).toString("hex")}`);
       mkdirSync(dir, { recursive: true });
       store = new Store(db, dir, dir, clock);
     } else store = new Store(db, join(dirname(path), "archive"), null, clock);
@@ -446,7 +446,7 @@ export class Store {
 
   /// Chats of their own on the page (no session's home) still in lists.
   chatsOfTheirOwn(): ThreadRow[] {
-    return this.#all("SELECT * FROM threads WHERE surface = ? AND home IS NULL AND hidden_at IS NULL", STILLFAIL_SURFACE).map(toThread);
+    return this.#all("SELECT * FROM threads WHERE surface = ? AND home IS NULL AND hidden_at IS NULL", COMMA_STATION_SURFACE).map(toThread);
   }
 
   /// Forgets a session: its row, turns, deliveries, memberships and bindings, and the threads only it took part in,
@@ -551,7 +551,7 @@ export class Store {
     const thread = this.threadAt(surface, channel, threadTs);
     if (thread === null) throw new Error(`thread ${surface} ${channel}/${threadTs} not made`);
     // A new chat on the page is a new Task (one there already was reads the same: no new rev).
-    if (surface === STILLFAIL_SURFACE) this.#indexTasks([{ type: "thread", id: thread.id, entries: [] }]);
+    if (surface === COMMA_STATION_SURFACE) this.#indexTasks([{ type: "thread", id: thread.id, entries: [] }]);
     return thread;
   }
 
@@ -922,7 +922,7 @@ export class Store {
       const refs = firsts.get(r.session) ?? new Map<string, number>();
       firsts.set(r.session, refs);
       for (const [author, at] of authors) {
-        const reference = r.surface === STILLFAIL_SURFACE ? author : `slack:${r.connect}:${author}`;
+        const reference = r.surface === COMMA_STATION_SURFACE ? author : `slack:${r.connect}:${author}`;
         const first = refs.get(reference);
         if (first === undefined || at < first) refs.set(reference, at);
       }
@@ -1363,7 +1363,7 @@ export class Store {
     return this.#all("SELECT * FROM jobs WHERE ?1 IS NULL OR session_key = ?1 ORDER BY started_at DESC", session).map(toJob);
   }
 
-  /// What a job said (`stillfail-job notify`), kept for the pages: a job's latest words are how people see what it is up to.
+  /// What a job said (`comma-job notify`), kept for the pages: a job's latest words are how people see what it is up to.
   addJobNotice(id: string, text: string): void {
     this.#with((changes) => {
       this.#run("INSERT INTO job_notices (job_id, at, text) VALUES (?, ?, ?)", id, this.now(), text);
@@ -1512,7 +1512,7 @@ export class Store {
 
   // ── the Task index ──
   //
-  // A Task of this station is a chat on its page (surface STILLFAIL_SURFACE); a Slack thread or a Task of another
+  // A Task of this station is a chat on its page (surface COMMA_STATION_SURFACE); a Slack thread or a Task of another
   // station taken part in here (surface `task`) is not, and has no row. Each Task's row is made again after every write
   // that may change it (Store::with, by what it says changed) and takes the index's next rev only when it reads
   // differently. Its status: archived while the chat is in the archive; else done or cancelled as a person marked it
@@ -1551,7 +1551,7 @@ export class Store {
   /// A person marks a Task done or cancelled, or (null) takes the mark away: its status is what its chat shows again.
   /// The status it has then; null for a thread that is not a Task of this station.
   setTaskStatus(thread: number, mark: TaskMark | null): TaskStatus | null {
-    if (this.getThread(thread)?.surface !== STILLFAIL_SURFACE) return null;
+    if (this.getThread(thread)?.surface !== COMMA_STATION_SURFACE) return null;
     this.#with((changes) => {
       this.#atomically(() => {
         this.#indexTask(thread);
@@ -1566,7 +1566,7 @@ export class Store {
   /// A person sets a Task's labels (the Group's label ids, as the app has them; at most TASK_LABELS_MAX). The labels it
   /// has then; null for a thread that is not a Task of this station.
   setTaskLabels(thread: number, labels: readonly string[]): string[] | null {
-    if (this.getThread(thread)?.surface !== STILLFAIL_SURFACE) return null;
+    if (this.getThread(thread)?.surface !== COMMA_STATION_SURFACE) return null;
     const kept = [...new Set(labels)].sort();
     this.#with((changes) => {
       this.#atomically(() => {
@@ -1612,7 +1612,7 @@ export class Store {
   #reconcileTasks(): void {
     this.#atomically(() => {
       this.#ensureEpoch();
-      for (const { id } of this.#all("SELECT id FROM threads WHERE surface = ? ORDER BY id", STILLFAIL_SURFACE)) {
+      for (const { id } of this.#all("SELECT id FROM threads WHERE surface = ? ORDER BY id", COMMA_STATION_SURFACE)) {
         try {
           this.#indexTask(id);
         } catch (e) {
@@ -1636,7 +1636,7 @@ export class Store {
         if (c.type === "thread") threads.add(c.id);
         else if (c.type === "threadRemoved") removed.add(c.id);
         else if (c.type === "session") {
-          const ofSession = this.#all("SELECT ts.thread FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ?", c.key, STILLFAIL_SURFACE);
+          const ofSession = this.#all("SELECT ts.thread FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ?", c.key, COMMA_STATION_SURFACE);
           for (const r of ofSession) threads.add(r.thread);
         }
       }
@@ -1653,7 +1653,7 @@ export class Store {
   /// that is not a Task.
   #indexTask(id: number): void {
     const t = this.#one("SELECT * FROM threads WHERE id = ?", id);
-    if (t === undefined || t.surface !== STILLFAIL_SURFACE) return;
+    if (t === undefined || t.surface !== COMMA_STATION_SURFACE) return;
     const prev = this.#one("SELECT rev, json, removed, marked, labels FROM task_index WHERE thread = ?", id);
     const was: Json | undefined = prev !== undefined && prev.removed === 0 ? parsed(prev.json) : undefined;
     const archived = t.archived_at !== null;
@@ -1762,7 +1762,7 @@ export class Store {
 
   #unreadCount(viewer: string, thread: number, read: number): number {
     const t = this.getThread(thread);
-    const slack = t ? t.surface !== STILLFAIL_SURFACE : true;
+    const slack = t ? t.surface !== COMMA_STATION_SURFACE : true;
     const selves = [viewer];
     if (slack) selves.push(...this.slackIdentities(viewer));
     if (this.#isArchived(thread)) {
@@ -1791,7 +1791,7 @@ export class Store {
         thread,
       ).map((r) => r.author);
     }
-    if (surface === STILLFAIL_SURFACE) return authors;
+    if (surface === COMMA_STATION_SURFACE) return authors;
     return connect === null ? [] : authors.map((a) => `slack:${connect}:${a}`);
   }
 

@@ -8,9 +8,27 @@ defmodule Salix.Control.PluginSetup do
   @setup_type "integration"
   # device_client: the MCP runs in the Comma desktop app on one member's Mac; that
   # Mac, not an OAuth grant, is what connects it (connect_device/5).
-  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key device_client)
+  # Binding and tool-call statuses that mean the server refused the credential.
+  @rejected_credential_statuses ~w(auth_failed not_authorized reauthorization_required)
+  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key device_client stillfail_connect)
 
-  def credential_setup(definition, connection_id \\ nil) do
+  def credential_setup(definition, connection_id \\ nil)
+
+  # still.fail's line is shown, not asked for: the member pastes it into a
+  # still.fail station's connects (`CommaWeb.PluginConnections`).
+  def credential_setup(
+        %{"setup" => %{"connections" => [%{"kind" => "stillfail_connect"} = connection]}},
+        _connection_id
+      ) do
+    %{
+      "key" => "STILLFAIL_CONNECT_LINE",
+      "label" => connection["credential_label"],
+      "helpUrl" => connection["help_url"],
+      "format" => "show"
+    }
+  end
+
+  def credential_setup(definition, connection_id) do
     with {:ok, setup} <- contract(definition),
          %{"kind" => "mcp_api_key"} = connection <-
            Enum.find(
@@ -54,15 +72,21 @@ defmodule Salix.Control.PluginSetup do
              "enabled" => true
            }),
          {:ok, connection} <- Gateway.refresh_binding(tenant_id, group_id, binding["binding_id"]) do
+      check = credential_check(definition, connection_id)
+
       case connection["status"] do
         "running" ->
-          :ok
+          if credential_rejected_by_tool?(tenant_id, group_id, binding["binding_id"], check),
+            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            else: :ok
 
-        status when status in ~w(auth_failed not_authorized reauthorization_required) ->
+        status when status in @rejected_credential_statuses ->
           {:error, :plugin_credential_rejected}
 
         _ ->
-          {:error, :plugin_connection_unavailable}
+          if rejected_credential?(connection["last_error"], check),
+            do: reject_credential(tenant_id, group_id, binding["binding_id"]),
+            else: {:error, :plugin_connection_unavailable}
       end
     else
       nil -> {:error, {:bad_request, "plugin does not accept credentials"}}
@@ -70,6 +94,57 @@ defmodule Salix.Control.PluginSetup do
       _ -> {:error, {:bad_request, "plugin credential setup is invalid"}}
     end
   end
+
+  # A server may accept any key when it connects and reject it only in its
+  # own words, or only when a tool runs. A key connection's `credential_check`
+  # names that server's rejection texts (`rejections`) and, optionally, a
+  # read-only tool to run once with the new key (`tool`, `arguments`). A key is
+  # rejected when the tool call is refused as unauthorized (HTTP 401/403) or
+  # fails with one of those texts. Any other tool failure (rate limit, quota,
+  # outage) installs the plugin; later calls show that failure.
+  defp credential_check(definition, connection_id) do
+    with {:ok, setup} <- contract(definition),
+         %{"credential_check" => %{} = check} <-
+           Enum.find(
+             setup.connections,
+             &(&1["id"] == (connection_id || credential_connection_id(setup)))
+           ) do
+      check
+    else
+      _ -> %{}
+    end
+  end
+
+  defp credential_rejected_by_tool?(tenant_id, group_id, binding_id, %{"tool" => tool} = check)
+       when is_binary(tool) do
+    case Gateway.call_tool(tenant_id, group_id, binding_id, tool, check["arguments"] || %{}) do
+      {:ok, %{"status" => status}} when status in @rejected_credential_statuses -> true
+      {:ok, %{"status" => "error"} = result} -> rejected_credential?(result, check)
+      _result -> false
+    end
+  end
+
+  defp credential_rejected_by_tool?(_tenant_id, _group_id, _binding_id, _check), do: false
+
+  # A rejected key must not stay behind as a connected binding.
+  defp reject_credential(tenant_id, group_id, binding_id) do
+    _ = Gateway.delete_binding(tenant_id, group_id, binding_id)
+    {:error, :plugin_credential_rejected}
+  end
+
+  defp rejected_credential?(failure, %{"rejections" => [_ | _] = rejections})
+       when not is_nil(failure) do
+    text =
+      case {failure, Jason.encode(failure)} do
+        {text, _json} when is_binary(text) -> text
+        {_failure, {:ok, json}} -> json
+        {failure, {:error, _reason}} -> inspect(failure, limit: :infinity)
+      end
+
+    Enum.any?(rejections, &String.contains?(text, &1))
+  end
+
+  defp rejected_credential?(_failure, _check), do: false
 
   defp credential_config(%{"plugin_id" => "x-twitter"}, key, value, opts) do
     if Keyword.get(opts, :app_only, false),
@@ -122,6 +197,93 @@ defmodule Salix.Control.PluginSetup do
 
   defp credential_value(_, _),
     do: {:error, {:bad_request, "enter the required plugin credential"}}
+
+  @doc """
+  The tool groups of a plugin's MCP (`setup.mcps[].tool_groups`), each with
+  its category (when it has one) and whether it is on for the group's
+  binding. Every group is on until one is turned off; [] when the plugin has
+  none.
+  """
+  def tool_groups(tenant_id, group_id, definition) do
+    case tool_group_mcp(definition) do
+      nil ->
+        {:ok, []}
+
+      mcp ->
+        enabled = enabled_tool_groups(mcp, tool_group_binding(tenant_id, group_id, mcp))
+
+        {:ok,
+         Enum.map(mcp["tool_groups"]["groups"], fn group ->
+           group
+           |> Map.take(~w(id name category))
+           |> Map.put("enabled", group["id"] in enabled)
+         end)}
+    end
+  end
+
+  @doc """
+  Turns one tool group of the plugin's MCP on or off and answers the binding's
+  id. The binding keeps the groups that are on in its `config_key` value, after
+  the `always` ones, so a family the plugin does not list stays off. Its tools
+  are discovered again by refreshing it.
+  """
+  def set_tool_group(tenant_id, group_id, definition, tool_group, enabled)
+      when is_boolean(enabled) do
+    with %{} = mcp <- tool_group_mcp(definition) || {:error, :not_found},
+         groups = mcp["tool_groups"]["groups"],
+         true <- Enum.any?(groups, &(&1["id"] == tool_group)) || {:error, :not_found},
+         %{} = binding <-
+           tool_group_binding(tenant_id, group_id, mcp) ||
+             {:error, {:bad_request, "install the plugin before choosing its tools"}} do
+      current = enabled_tool_groups(mcp, binding)
+
+      on =
+        for %{"id" => id} <- groups,
+            if(id == tool_group, do: enabled, else: id in current),
+            do: id
+
+      value = Enum.join(List.wrap(mcp["tool_groups"]["always"]) ++ on, ",")
+
+      config =
+        Map.put(binding["config_values"] || %{}, mcp["tool_groups"]["config_key"], value)
+
+      with {:ok, _binding} <-
+             Gateway.update_binding(tenant_id, group_id, binding["binding_id"], %{
+               "config_values" => config
+             }),
+           do: {:ok, binding["binding_id"]}
+    end
+  end
+
+  def set_tool_group(_tenant_id, _group_id, _definition, _tool_group, _enabled),
+    do: {:error, {:bad_request, "enabled must be true or false"}}
+
+  defp tool_group_mcp(definition) do
+    definition
+    |> get_in(["setup", "mcps"])
+    |> List.wrap()
+    |> Enum.find(&match?(%{"tool_groups" => %{"config_key" => _, "groups" => [_ | _]}}, &1))
+  end
+
+  # The binding with its config values (a listed binding has none).
+  defp tool_group_binding(tenant_id, group_id, mcp) do
+    with %{} = listed <-
+           tenant_id
+           |> Store.list_group_bindings(group_id, include_disabled: true)
+           |> Enum.find(&(&1["alias"] == mcp["alias"] and &1["mcp_id"] == mcp["mcp_id"])),
+         {:ok, binding} <- Store.get_binding(tenant_id, group_id, listed["binding_id"]) do
+      binding
+    else
+      _ -> nil
+    end
+  end
+
+  defp enabled_tool_groups(mcp, binding) do
+    case get_in(binding || %{}, ["config_values", mcp["tool_groups"]["config_key"]]) do
+      value when is_binary(value) and value != "" -> String.split(value, ",", trim: true)
+      _ -> Enum.map(mcp["tool_groups"]["groups"], & &1["id"])
+    end
+  end
 
   def resolve_statuses(definitions, tenant_id, group_id) do
     if Enum.any?(definitions, &match?({:ok, _setup}, contract(&1))) do
@@ -484,6 +646,11 @@ defmodule Salix.Control.PluginSetup do
     end
   end
 
+  # A still.fail station connects with the line shown at install: the plugin
+  # being installed is all there is to it.
+  defp connection_state(%{"kind" => "stillfail_connect"}, _mcps, _oauth, _bindings, _),
+    do: "connected"
+
   defp connection_state(%{"id" => id, "kind" => "device_client"}, mcps, _oauth, bindings, _) do
     mcp = Enum.find(mcps, &(id in mcp_auth_refs(&1)))
     binding = mcp && Enum.find(bindings, &same_mcp?(&1, mcp))
@@ -630,6 +797,7 @@ defmodule Salix.Control.PluginSetup do
     do: present?(c["config_key"]) and present?(c["credential_label"]) and present?(c["help_url"])
 
   defp connection_fields_valid?(%{"kind" => "device_client"}), do: true
+  defp connection_fields_valid?(%{"kind" => "stillfail_connect"}), do: true
 
   defp validate_mcps([], _connections), do: :ok
 

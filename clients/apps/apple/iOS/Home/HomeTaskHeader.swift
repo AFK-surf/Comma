@@ -9,6 +9,8 @@ struct HomeTaskHeader: View {
     let pager: HomeTaskPager
     let openFilters: () -> Void
     let openArchive: () -> Void
+    var openNewTask: (() -> Void)? = nil
+    var showsActions = true
 
     var body: some View {
         HStack {
@@ -18,36 +20,61 @@ struct HomeTaskHeader: View {
                 .contentTransition(.identity)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 12)
-            HStack(spacing: 0) {
-                Button(action: openFilters) {
-                    HStack(spacing: 4) {
-                        CentralIcon("icon-filter")
-                        if query.appliedCount > 0 {
-                            Text(query.appliedCount, format: .number).font(.body.weight(.medium).monospacedDigit())
-                                .contentTransition(.numericText())
-                        }
-                    }
-                    .padding(.leading, 12).padding(.trailing, 8).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            if showsActions {
+                HStack(spacing: 0) {
+                    HomeTaskActions(query: query, openFilters: openFilters, openArchive: openArchive, openNewTask: openNewTask)
                 }
-                .accessibilityLabel("Filters")
-                .accessibilityValue(query.appliedCount > 0 ? Text("\(query.appliedCount) applied") : Text(verbatim: ""))
-                .accessibilityShowsLargeContentViewer { Label("Filters", image: "icon-filter") }
-                .accessibilityIdentifier("openTaskFilters")
-                Button(action: openArchive) {
-                    CentralIcon("icon-archive")
-                        .padding(.leading, 8).padding(.trailing, 12).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Archived tasks")
-                .accessibilityShowsLargeContentViewer { Label("Archived tasks", image: "icon-archive") }
-                .accessibilityIdentifier("openArchivedTasks")
+                // Each button answers its own touch. Plain glass, as the status switcher's: the interactive kind would
+                // light the whole capsule under either button.
+                .buttonStyle(TactileButtonStyle(scale: 0.92))
+                .foregroundStyle(CommaTheme.textPrimary)
+                .commaGlass(in: Capsule())
+                .animation(CommaMotion.stateChange, value: query.appliedCount)
             }
-            // Each button answers its own touch. Plain glass, as the status switcher's: the interactive kind would
-            // light the whole capsule under either button.
-            .buttonStyle(TactileButtonStyle(scale: 0.92))
-            .foregroundStyle(CommaTheme.textPrimary)
-            .commaGlass(in: Capsule())
-            .animation(CommaMotion.stateChange, value: query.appliedCount)
         }
         .padding(.leading, 20).padding(.trailing, 16).padding(.top, 12).padding(.bottom, 4)
+    }
+}
+
+/// The compact list's glass-capsule actions. System toolbars use native image buttons.
+struct HomeTaskActions: View {
+    let query: HomeTaskQuery
+    let openFilters: () -> Void
+    let openArchive: () -> Void
+    var openNewTask: (() -> Void)? = nil
+
+    var body: some View {
+        Group {
+            if let openNewTask {
+                Button(action: openNewTask) {
+                    CentralIcon("central-plus-small")
+                        .padding(.leading, 12).padding(.trailing, 8).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel("New task")
+                .accessibilityShowsLargeContentViewer { Label("New task", image: "central-plus-small") }
+                .accessibilityIdentifier("newTask")
+            }
+            Button(action: openFilters) {
+                HStack(spacing: 4) {
+                    CentralIcon("icon-filter")
+                    if query.appliedCount > 0 {
+                        Text(query.appliedCount, format: .number).font(.body.weight(.medium).monospacedDigit())
+                            .contentTransition(.numericText())
+                    }
+                }
+                .padding(.leading, 12).padding(.trailing, 8).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Filters")
+            .accessibilityValue(query.appliedCount > 0 ? Text("\(query.appliedCount) applied") : Text(verbatim: ""))
+            .accessibilityShowsLargeContentViewer { Label("Filters", image: "icon-filter") }
+            .accessibilityIdentifier("openTaskFilters")
+            Button(action: openArchive) {
+                CentralIcon("icon-archive")
+                    .padding(.leading, 8).padding(.trailing, 12).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Archived tasks")
+            .accessibilityShowsLargeContentViewer { Label("Archived tasks", image: "icon-archive") }
+            .accessibilityIdentifier("openArchivedTasks")
+        }
     }
 }

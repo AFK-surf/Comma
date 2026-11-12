@@ -4,9 +4,16 @@
 <dict>
 	<key>aps-environment</key>
 	<string>$(COMMA_PUSH_ENVIRONMENT)</string>
+	<key>com.apple.developer.devicecheck.appattest-environment</key>
+	<string>$(COMMA_PUSH_ENVIRONMENT)</string>
 	<key>com.apple.developer.applesignin</key>
 	<array>
 		<string>Default</string>
+	</array>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:app.comma.surf</string>
+		<string>applinks:app-staging.comma.surf</string>
 	</array>
 </dict>
 </plist>

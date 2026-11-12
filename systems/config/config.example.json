@@ -64,13 +64,8 @@
     "k8s_headless_service": "salix-headless"
   },
   "agent_vmm": {
-    "multi_scope_registration_enabled": false,
-    "environment_scoped_bindings_enabled": false,
-    "managed_trust_signing": {
-      "private_key": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
-    },
-    "install_material": {
-      "remote_enrollment": {
+    "connection_config": {
+      "remote_connection": {
         "gateway_endpoint": "vmm.example.com:7443",
         "trust_bundle": "base64-pem-ca-bundle"
       }
@@ -142,9 +137,6 @@
       }
     }
   },
-  "station_task_watch": {
-    "canary_group_ids": []
-  },
   "meetings": {
     "runtime_url": "http://meeting-runtime:8080",
     "agent_template": "__internal_meeting_agent",
@@ -162,42 +154,7 @@
       "secret": "replace-with-token-factory-secret"
     },
     "feishu_action_activation_enabled": false,
-    "lark_action_activation_enabled": false,
-    "calendar_autojoin": {
-      "enabled": true,
-      "channels": {
-        "replace-with-slack-connect-id": {
-          "channel": "#your-channel",
-          "calendars": [
-            "Your Team Calendar"
-          ]
-        },
-        "replace-with-feishu-connect-id": {
-          "mode": "notify",
-          "chat_id": "oc_replace_with_target_group",
-          "calendars": [
-            "Your Team Calendar"
-          ],
-          "create_calendar": "Your Team Calendar",
-          "mentions": {
-            "mode": "none",
-            "users": []
-          }
-        },
-        "replace-with-lark-connect-id": {
-          "mode": "notify",
-          "chat_id": "oc_replace_with_target_lark_group",
-          "calendars": [
-            "Your Team Calendar"
-          ],
-          "create_calendar": "Your Team Calendar",
-          "mentions": {
-            "mode": "none",
-            "users": []
-          }
-        }
-      }
-    }
+    "lark_action_activation_enabled": false
   },
   "vm": {
     "default_provider": "cloudflare",
@@ -251,7 +208,23 @@
     "auth": {
       "secret": "replace-with-at-least-32-random-bytes",
       "rate_limit_secret": "replace-with-a-different-32-byte-random-secret",
-      "redis_url": "rediss://user:password@redis.example.com:6379/0"
+      "redis_url": "rediss://user:password@redis.example.com:6379/0",
+      "abuse": {
+        "enabled": false,
+        "turnstile": {
+          "site_key": "replace-with-managed-widget-site-key",
+          "secret": "replace-with-secret-stored-siteverify-key"
+        },
+        "apple": {
+          "app_id": "TEAMID.surf.comma.ios",
+          "environment": "production"
+        },
+        "play": {
+          "project_number": "123456789012",
+          "decoder_service_account": "decoder@example-project.iam.gserviceaccount.com",
+          "certificate_digests": ["replace-with-base64url-sha256-play-signing-certificate"]
+        }
+      }
     },
     "email": {
       "from": "login@comma.surf",
@@ -268,6 +241,7 @@
     "google_auth": {
       "web_client_id": "replace-with-web-client-id.apps.googleusercontent.com",
       "electron_client_id": "replace-with-desktop-client-id.apps.googleusercontent.com",
+      "ios_client_id": "",
       "android_client_ids": [],
       "electron_client_secret": "replace-with-desktop-client-secret"
     },

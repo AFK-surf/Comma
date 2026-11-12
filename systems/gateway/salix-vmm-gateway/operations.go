@@ -544,7 +544,7 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 	case "process.list", "process.write", "process.tail", "process.stop":
 		return nil, errors.New("process operations require a runtime session")
 	case "environment_get":
-		value, err := client.GetEnvironment(ctx, &hostv1.GetOwnEnvironmentRequest{})
+		value, err := client.GetEnvironment(ctx, &hostv1.GetEnvironmentRequest{})
 		return protoJSON(value, err)
 	case "image_list":
 		value, err := client.ListImages(ctx, &hostv1.ListImagesRequest{})
@@ -566,7 +566,7 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		value, err := client.CreateVolume(ctx, request)
 		return protoJSON(value, err)
 	case "volume_get":
-		value, err := client.GetVolume(ctx, &hostv1.VolumeRequest{VolumeId: stringArg(input.Args, "volume_id")})
+		value, err := client.GetVolume(ctx, &hostv1.GetVolumeRequest{VolumeId: stringArg(input.Args, "volume_id")})
 		return protoJSON(value, err)
 	case "volume_list":
 		value, err := client.ListVolumes(ctx, &hostv1.ListVolumesRequest{})
@@ -579,7 +579,7 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		value, err := client.CreateContainer(ctx, request)
 		return protoJSON(value, err)
 	case "container_start":
-		value, err := client.StartContainer(ctx, &hostv1.ContainerMutationRequest{RequestId: stringArg(input.Args, "request_id"), ContainerId: stringArg(input.Args, "container_id"), ExpectedGenerationId: stringArg(input.Args, "expected_generation_id")})
+		value, err := client.StartContainer(ctx, &hostv1.StartContainerRequest{RequestId: stringArg(input.Args, "request_id"), ContainerId: stringArg(input.Args, "container_id"), ExpectedGenerationId: stringArg(input.Args, "expected_generation_id")})
 		return protoJSON(value, err)
 	case "container_stop":
 		request := &hostv1.StopContainerRequest{
@@ -592,14 +592,14 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		value, err := client.StopContainer(ctx, request)
 		return protoJSON(value, err)
 	case "execution_acquire":
-		value, err := client.AcquireExecution(ctx, &hostv1.ExecutionRequest{
+		value, err := client.AcquireExecution(ctx, &hostv1.AcquireExecutionRequest{
 			ExecutionId: stringArg(input.Args, "execution_id"), ContainerId: stringArg(input.Args, "container_id"),
 			ExpectedInstanceId: stringArg(input.Args, "expected_instance_id"), DeadlineUnixNano: int64(uint64Arg(input.Args, "deadline_unix_nano", 0)),
 			HolderId: stringArg(input.Args, "holder_id"), Kind: executionKindArg(input.Args),
 		})
 		return protoJSON(value, err)
 	case "execution_release":
-		_, err := client.ReleaseExecution(ctx, &hostv1.ExecutionRequest{
+		_, err := client.ReleaseExecution(ctx, &hostv1.ReleaseExecutionRequest{
 			ExecutionId: stringArg(input.Args, "execution_id"), ContainerId: stringArg(input.Args, "container_id"),
 			ExpectedInstanceId: stringArg(input.Args, "expected_instance_id"), HolderId: stringArg(input.Args, "holder_id"),
 		})
@@ -617,13 +617,13 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		})
 		return protoJSON(value, err)
 	case "container_get":
-		value, err := client.GetContainer(ctx, &hostv1.ContainerRequest{ContainerId: stringArg(input.Args, "container_id")})
+		value, err := client.GetContainer(ctx, &hostv1.GetContainerRequest{ContainerId: stringArg(input.Args, "container_id")})
 		return protoJSON(value, err)
 	case "container_list":
 		value, err := client.ListContainers(ctx, &hostv1.ListContainersRequest{})
 		return protoJSON(value, err)
 	case "container_delete":
-		value, err := client.DeleteContainer(ctx, &hostv1.ContainerMutationRequest{RequestId: stringArg(input.Args, "request_id"), ContainerId: stringArg(input.Args, "container_id"), ExpectedGenerationId: stringArg(input.Args, "expected_generation_id")})
+		value, err := client.DeleteContainer(ctx, &hostv1.DeleteContainerRequest{RequestId: stringArg(input.Args, "request_id"), ContainerId: stringArg(input.Args, "container_id"), ExpectedGenerationId: stringArg(input.Args, "expected_generation_id")})
 		return protoJSON(value, err)
 	case "container_logs":
 		stream, err := client.Logs(ctx, &hostv1.LogsRequest{ContainerId: stringArg(input.Args, "container_id"), TailRecords: uint64Arg(input.Args, "tail_records", 100), AfterCursor: stringArg(input.Args, "after_cursor"), Follow: false})
@@ -743,8 +743,8 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 		}
 		return map[string]any{"data_base64": base64.StdEncoding.EncodeToString(received)}, nil
 	case "workspace_stat":
-		value, err := client.StatWorkspace(ctx, &hostv1.WorkspacePathRequest{Path: stringArg(input.Args, "path")})
-		return protoJSON(value, err)
+		value, err := client.StatWorkspace(ctx, &hostv1.StatWorkspaceRequest{Path: stringArg(input.Args, "path")})
+		return protoJSON(value.GetEntry(), err)
 	case "workspace_list":
 		value, err := client.ListWorkspace(ctx, &hostv1.ListWorkspaceRequest{Path: stringArg(input.Args, "path"), Limit: uint32Arg(input.Args, "limit", 256), VolumeId: stringArg(input.Args, "volume_id")})
 		return protoJSON(value, err)
@@ -838,10 +838,10 @@ func executeHostOperation(ctx context.Context, client hostv1.AgentRuntimeService
 	case "service_export":
 		protocol := servicev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
 		value, err := client.CreateServiceExport(ctx, &hostv1.CreateServiceExportRequest{RequestId: stringArg(input.Args, "request_id"), ContainerId: stringArg(input.Args, "container_id"), ContainerInstanceId: stringArg(input.Args, "container_instance_id"), Port: uint32Arg(input.Args, "port", 0), Protocol: protocol})
-		return protoJSON(value, err)
+		return protoJSON(value.GetExport(), err)
 	case "service_import":
 		value, err := client.CreatePersonalServiceImport(ctx, &hostv1.CreatePersonalServiceImportRequest{RequestId: stringArg(input.Args, "request_id"), MeshId: stringArg(input.Args, "mesh_id"), SourceContainerId: stringArg(input.Args, "source_container_id"), SourceContainerInstanceId: stringArg(input.Args, "source_container_instance_id"), DestinationDeviceId: stringArg(input.Args, "destination_device_id"), DestinationExportId: stringArg(input.Args, "destination_export_id"), VirtualServiceName: stringArg(input.Args, "virtual_service_name"), Budget: &trustv1.RouteBudget{ConnectionLimit: uint32Arg(input.Args, "connection_limit", 1), ConcurrencyLimit: uint32Arg(input.Args, "concurrency_limit", 1), ByteLimit: uint64Arg(input.Args, "byte_limit", 1<<20)}})
-		return protoJSON(value, err)
+		return protoJSON(value.GetImport(), err)
 	case "route_revoke":
 		_, err := client.RevokeServiceImport(ctx, &hostv1.RevokeServiceImportRequest{RequestId: stringArg(input.Args, "request_id"), ImportId: stringArg(input.Args, "import_id"), ExpectedRevision: uint64Arg(input.Args, "expected_revision", 0)})
 		return map[string]any{"revoked": err == nil}, err
@@ -882,7 +882,7 @@ func cloneArgs(args map[string]any) map[string]any {
 }
 
 func runtimeContainerTarget(ctx context.Context, client hostv1.AgentRuntimeServiceClient) (string, string, error) {
-	environment, err := client.GetEnvironment(ctx, &hostv1.GetOwnEnvironmentRequest{})
+	environment, err := client.GetEnvironment(ctx, &hostv1.GetEnvironmentRequest{})
 	if err != nil {
 		return "", "", err
 	}

@@ -23,8 +23,6 @@ export function useHostMaintenanceCategory(
   const [readingError, setReadingError] = useState(false);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  /** The last "Continue maintenance" ran the request again and it failed again. */
-  const [retryFailed, setRetryFailed] = useState(false);
   const reading = useRef(false);
   const mutating = useRef(false);
   const generation = useRef(0);
@@ -54,22 +52,17 @@ export function useHostMaintenanceCategory(
     },
     []
   );
-  const mutate = async (
-    operation: () => Promise<HostMaintenanceState>,
-    retry = false
-  ) => {
+  const mutate = async (operation: () => Promise<HostMaintenanceState>) => {
     if (mutating.current) return;
     mutating.current = true;
     generation.current++;
     setPending(true);
     setError("");
-    setRetryFailed(false);
     try {
       const next = await operation();
       generation.current++;
       setState(next);
       setReadingError(false);
-      setRetryFailed(retry && next.operation?.outcome === "failed");
       return next;
     } catch {
       generation.current++;
@@ -81,21 +74,7 @@ export function useHostMaintenanceCategory(
       setPending(false);
     }
   };
-  // While Main runs a failed request again, the person sees its preparation, not the old failure.
-  const shown =
-    pending && state?.operation?.outcome === "failed"
-      ? {
-          ...state,
-          operation: {
-            requestId: state.operation.requestId,
-            action: state.operation.action,
-            dataPolicy: state.operation.dataPolicy,
-            phase: "preparing" as const,
-            outcome: "pending" as const,
-          },
-        }
-      : state;
-  const operation = shown?.operation;
+  const operation = state?.operation;
   const unfinished = !!operation && operation.outcome !== "succeeded";
   const failed = operation?.outcome === "failed";
   const running = operation?.outcome === "pending";
@@ -166,14 +145,12 @@ export function useHostMaintenanceCategory(
   const resume = () => {
     if (!operation || pending) return;
     if (readingError) return void refresh();
-    void mutate(
-      () =>
-        bridge.computeNode.resumeHostMaintenance({ requestId: operation.requestId }),
-      true
+    void mutate(() =>
+      bridge.computeNode.resumeHostMaintenance({ requestId: operation.requestId })
     );
   };
   return {
-    state: shown,
+    state,
     title,
     phaseLabel,
     refresh,
@@ -187,7 +164,6 @@ export function useHostMaintenanceCategory(
     uninstallBlocked,
     error,
     readingError,
-    retryFailed,
     submit,
     resume,
   };

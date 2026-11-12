@@ -24,6 +24,7 @@ defmodule SalixIM.IFC.Admin do
   and the rest of the page still renders.
   """
 
+  alias SalixIM.IFC.People
   alias SalixIM.ProviderConnects
   alias SalixStore.IFC, as: Store
 
@@ -54,11 +55,37 @@ defmodule SalixIM.IFC.Admin do
          "modes" => @modes,
          "language" => language_of(group),
          "languages" => @languages,
+         "supervisors" => supervisors_of(group),
          "audience_modes" => @audience_modes,
          "connects" => connects
        }}
     end
   end
+
+  @doc """
+  People of one connect whose name, email or id matches `query`, for the
+  page's person picker (`SalixIM.IFC.People`).
+  """
+  @spec people(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, [map()]} | {:error, term()}
+  def people(tenant_id, group_id, connect_id, query) do
+    with {:ok, _group} <- group(group_id, tenant_id),
+         do: People.search(tenant_id, group_id, connect_id, query)
+  end
+
+  @doc """
+  Names and emails of up to 50 ids of one connect, asking the provider for
+  those the bot has not seen. The page calls it after the overview.
+  """
+  @spec describe_people(String.t(), String.t(), String.t(), [String.t()]) ::
+          {:ok, map()} | {:error, term()}
+  def describe_people(tenant_id, group_id, connect_id, ids) when is_list(ids) do
+    with {:ok, _group} <- group(group_id, tenant_id),
+         {:ok, connect} <- People.connect(tenant_id, group_id, connect_id),
+         do: {:ok, People.describe(connect, ids)}
+  end
+
+  def describe_people(_tenant_id, _group_id, _connect_id, _ids), do: {:error, :invalid_query}
 
   @doc "Classifies one conversation: tags, audience mode, sealed."
   @spec put_scope_label(String.t(), String.t(), String.t(), String.t(), map()) ::
@@ -155,13 +182,16 @@ defmodule SalixIM.IFC.Admin do
       rows = Store.dashboard_rows()
       {scopes, scopes_truncated} = merge_scopes(facts, labels, rows)
 
+      clearances = Enum.take(clearances, rows)
+      principals = Enum.take(principals, rows)
+
       Map.merge(base, %{
         "available" => true,
         "truncated" =>
           scopes_truncated or Enum.any?([clearances, principals], &(length(&1) > rows)),
         "scopes" => scopes,
-        "clearances" => group_clearances(Enum.take(clearances, rows)),
-        "principals" => Enum.take(principals, rows)
+        "clearances" => group_clearances(clearances),
+        "principals" => principals
       })
     else
       _unavailable ->
@@ -263,6 +293,15 @@ defmodule SalixIM.IFC.Admin do
 
       _absent ->
         "zh"
+    end
+  end
+
+  # Principal keys of the people who read everything in the Group, sealed
+  # conversations included. Written through the group control API.
+  defp supervisors_of(group) do
+    case Map.get(group, "ifc") do
+      %{"supervisors" => keys} when is_list(keys) -> Enum.filter(keys, &is_binary/1)
+      _absent -> []
     end
   end
 

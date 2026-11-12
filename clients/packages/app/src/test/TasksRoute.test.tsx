@@ -1,7 +1,7 @@
 import type { CoreClient } from "@comma/core-client";
 import { CoreProvider } from "@comma/core-client";
 import { delegateScriptedCore } from "@comma/test-utils/scripted-core";
-import { flush } from "@comma/test-utils/fake-clock";
+import { advance, flush } from "@comma/test-utils/fake-clock";
 import { labelCatalog, labelsCore } from "./labelsCore";
 import userEvent from "@testing-library/user-event";
 import {
@@ -29,6 +29,7 @@ import {
   TasksRoute,
   type TaskViewModel,
 } from "../components/tasks/TasksRoute";
+import { NewTaskDialogProvider } from "../components/tasks/station/NewTaskDialogContext";
 import { validateTasksSearch } from "../components/tasks/tasksSearch";
 import {
   createProductInboxProjectionHarness,
@@ -655,6 +656,99 @@ describe("TasksRoute", () => {
     );
   });
 
+  it("narrows to Tasks from requests through a Request filter of their own", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          { ...taskInboxItem("task-asked", "Asked task"), origin: "task_request" },
+          { ...taskInboxItem("task-comma", "Comma task"), origin: "comma" },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    // An older platform link to requests selects the Request filter.
+    renderTasksRoute(
+      projection.controller,
+      "/tasks?platform=task_request",
+      workLabels()
+    );
+    await flush();
+    expect(screen.getByText("Asked task")).toBeInTheDocument();
+    expect(screen.queryByText("Comma task")).toBeNull();
+
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    expect(screen.getByRole("menuitem", { name: /Request/ })).toBeInTheDocument();
+    await user().click(screen.getByRole("menuitem", { name: /Platform/ }));
+    // Requests are no Platform of their own any more.
+    expect(screen.queryByRole("checkbox", { name: /Request/ })).toBeNull();
+  });
+
+  it("lists each person whose request a Task came from in the Request filter", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("task-sam", "Sam task"),
+            origin: "task_request",
+            requestedBy: { id: "u_sam", name: "Sam" },
+          },
+          {
+            ...taskInboxItem("task-sam-2", "Sam second task"),
+            origin: "task_request",
+            requestedBy: { id: "u_sam", name: "Sam" },
+          },
+          {
+            ...taskInboxItem("task-rex", "Rex task"),
+            origin: "task_request",
+            requestedBy: { id: "u_rex", name: "Rex" },
+          },
+          { ...taskInboxItem("task-comma", "Comma task"), origin: "comma" },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    const { router } = renderTasksRoute(projection.controller, "/tasks", workLabels());
+    await flush();
+    // A card names whom its request came from by avatar and name, in place of the Request chip.
+    const rexCard = screen.getByRole("button", { name: /Rex task/ });
+    expect(within(rexCard).getByTestId("task-card-request")).toHaveTextContent(
+      "From Rex"
+    );
+    expect(within(rexCard).queryByTestId("task-card-platform")).toBeNull();
+
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: /Request/ }));
+    await flush();
+    const people = screen
+      .getAllByRole("menuitemcheckbox")
+      .map((row) => row.textContent ?? "");
+    // The senders by name under one heading, each with an avatar's initials, then the rest.
+    expect(people).toEqual([
+      expect.stringMatching(/^R.*Rex.*1/),
+      expect.stringMatching(/^S.*Sam.*2/),
+      expect.stringMatching(/Not from a request.*1/),
+    ]);
+    expect(screen.getByText("From a request")).toBeInTheDocument();
+
+    await user().click(screen.getByRole("menuitemcheckbox", { name: /Rex/ }));
+    await flush();
+    expect(screen.queryByText("Rex task")).toBeNull();
+    expect(screen.getByText("Sam task")).toBeInTheDocument();
+    expect(screen.getByText("Comma task")).toBeInTheDocument();
+
+    // A card's chip links to the Tasks its sender asked for.
+    await act(() =>
+      router.navigate({ search: { request: "from:u_rex" }, to: "/tasks" })
+    );
+    await flush();
+    expect(screen.getByText("Rex task")).toBeInTheDocument();
+    expect(screen.queryByText("Sam task")).toBeNull();
+  });
+
   it("opens the Tasks page narrowed to a label from a card chip", async () => {
     const projection = createProductInboxProjectionHarness({
       initial: {
@@ -1086,6 +1180,95 @@ describe("TasksRoute", () => {
     expect(screen.queryByText("Morning digest")).toBeNull();
     expect(screen.getByText("PR updates")).toBeInTheDocument();
   });
+
+  it("narrows by how recently Tasks were created and updated through the Dates menu", async () => {
+    const day = 24 * 60 * 60 * 1_000;
+    const now = Date.UTC(2026, 0, 15, 12);
+    vi.setSystemTime(now);
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("fresh", "Fresh task"),
+            createdAt: now - 2 * day,
+            updatedAt: now - 2 * 60 * 60 * 1_000,
+          },
+          {
+            ...taskInboxItem("week", "Last week's task"),
+            createdAt: now - 40 * day,
+            updatedAt: now - 5 * day,
+          },
+          // From a server that did not say when it was created.
+          { ...taskInboxItem("old", "Old task"), updatedAt: now - 100 * day },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(projection.controller);
+    await flush();
+    const reads = projection.refresh.mock.calls.length;
+
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Dates" }));
+    await user().click(screen.getByRole("menuitem", { name: "Updated date" }));
+    const updated = screen.getByRole("dialog", { name: "Updated date" });
+    expect(
+      within(updated)
+        .getAllByRole("menuitemradio")
+        .map((option) => option.textContent)
+    ).toEqual([
+      "All tasks3",
+      "1 day ago1",
+      "3 days ago1",
+      "1 week ago2",
+      "1 month ago2",
+      "3 months ago2",
+      "6 months ago3",
+      "1 year ago3",
+    ]);
+    await user().click(
+      within(updated).getByRole("menuitemradio", { name: /1 week ago/ })
+    );
+    await flush();
+    expect(screen.getByText("Fresh task")).toBeInTheDocument();
+    expect(screen.getByText("Last week's task")).toBeInTheDocument();
+    expect(screen.queryByText("Old task")).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+
+    // Both dates must hold; a Task with no creation date is outside every window.
+    await user().click(screen.getByRole("menuitem", { name: "Created date" }));
+    const created = screen.getByRole("dialog", { name: "Created date" });
+    await user().click(
+      within(created).getByRole("menuitemradio", { name: /1 month ago/ })
+    );
+    await flush();
+    expect(screen.getByText("Fresh task")).toBeInTheDocument();
+    expect(screen.queryByText("Last week's task")).toBeNull();
+    await user().click(
+      within(created).getByRole("menuitemradio", { name: /All tasks/ })
+    );
+    // The pointer rests: React Aria stops guarding the way into the Created date panel.
+    await advance(1_000);
+    await user().click(screen.getByRole("menuitem", { name: "Updated date" }));
+    await user().click(
+      within(screen.getByRole("dialog", { name: "Updated date" })).getByRole(
+        "menuitemradio",
+        { name: /All tasks/ }
+      )
+    );
+    await flush();
+    expect(screen.getByText("Old task")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
+      "data-filtered",
+      "false"
+    );
+    expect(projection.refresh.mock.calls.length).toBe(reads);
+  });
 });
 
 /** The core's catalog of the test Group: one label, Work. */
@@ -1116,7 +1299,9 @@ function renderTasksRoute(
       <CommaAuthContext.Provider value={auth}>
         <CoreProvider client={productInboxController}>
           <ChatProvider productLease={auth.productLease}>
-            <Outlet />
+            <NewTaskDialogProvider>
+              <Outlet />
+            </NewTaskDialogProvider>
           </ChatProvider>
         </CoreProvider>
       </CommaAuthContext.Provider>

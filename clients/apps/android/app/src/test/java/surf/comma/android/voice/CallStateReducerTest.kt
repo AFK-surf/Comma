@@ -16,6 +16,26 @@ class CallStateReducerTest {
         assertEquals(CallPhase.Connected, CallStateReducer.reduce(onlyAudio, CallSignal.Started(1, info)).phase)
     }
 
+    @Test fun localHangUpEndsConnectedCallsRegardlessOfServerResult() {
+        val connected = CallStateReducer.reduce(CallStateReducer.reduce(calling(), CallSignal.Started(1, info)), CallSignal.Audio(1))
+        val ending = CallStateReducer.reduce(connected, CallSignal.HangUp(1))
+        listOf(CallResult.Unavailable, CallResult.Busy).forEach { result ->
+            val ended = CallStateReducer.reduce(ending, CallSignal.Finished(1, result))
+            assertEquals(CallPhase.Ended, ended.phase)
+            assertEquals(CallResult.Ended, ended.result)
+        }
+    }
+
+    @Test fun localHangUpEndsDialingCallsButRemoteBusyStillFails() {
+        val ending = CallStateReducer.reduce(calling(), CallSignal.HangUp(1))
+        val ended = CallStateReducer.reduce(ending, CallSignal.Finished(1, CallResult.Busy))
+        assertEquals(CallPhase.Ended, ended.phase)
+        assertEquals(CallResult.Ended, ended.result)
+        val failed = CallStateReducer.reduce(calling(), CallSignal.Finished(1, CallResult.Busy))
+        assertEquals(CallPhase.Failed, failed.phase)
+        assertEquals(CallResult.Busy, failed.result)
+    }
+
     @Test fun normalLifecycleAndTerminalCallbacks() {
         var state = CallStateReducer.reduce(CallState(), CallSignal.Begin(1))
         assertEquals(CallPhase.Preparing, state.phase)

@@ -38,4 +38,3 @@ clients/apps/electron/test/release-storage.test.ts
 clients/apps/web/test/vite-config.test.ts
 clients/packages/core/test/image-transcoder.test.ts
 clients/packages/native-bridge/src/test/native-partner-contracts.test.ts
-clients/scripts/prepare-typecheck-cache.test.ts

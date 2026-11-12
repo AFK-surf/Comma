@@ -10,25 +10,34 @@ defmodule SalixEnv.ControlLanGatewayTest do
     "max_total_answer_bytes" => 4096
   }
   @chunks %{"max_total_bytes" => 4_194_304, "chunk_bytes" => 8192}
+  @script %{
+    "api" => 1,
+    "max_source_bytes" => 8192,
+    "max_result_bytes" => 4096,
+    "max_timeout_ms" => 30_000,
+    "heap_bytes" => 40_960
+  }
 
-  test "a gateway's probe and chunk limits reach the device and its environment" do
+  test "a gateway's probe, chunk and script limits reach the device and its environment" do
     projected =
       device(%{
-        "methods" => ["lan_http_request", "lan_discover", "unknown"],
+        "methods" => ["lan_http_request", "lan_discover", "lan_script", "unknown"],
         "max_bytes" => 65_536,
         "max_timeout_seconds" => 30,
         "discover_probes" => Map.put(@probes, "other", 1),
         "response_chunks" => @chunks,
+        "script" => Map.put(@script, "other", 1),
         "other" => true
       })
       |> Control.environment_json()
 
     expected = %{
-      "methods" => ["lan_http_request", "lan_discover"],
+      "methods" => ["lan_http_request", "lan_discover", "lan_script"],
       "max_bytes" => 65_536,
       "max_timeout_seconds" => 30,
       "discover_probes" => @probes,
-      "response_chunks" => @chunks
+      "response_chunks" => @chunks,
+      "script" => @script
     }
 
     assert projected["capabilities"]["lan_gateway"] == expected

@@ -25,6 +25,7 @@ import type {
 } from "../modules/native/index";
 import type { LocalStationProvider } from "../modules/local-station/index";
 import type { MacAppsProvider } from "../modules/mac-apps/index";
+import type { BlenderProvider } from "../modules/blender/index";
 import type { OnboardingWindowProvider } from "../onboarding-window";
 import type { FilesProvider } from "../modules/files/downloads";
 import type { RecommendationMediaProvider } from "../modules/recommendation-media/index";
@@ -35,6 +36,7 @@ import type { AudioCaptureProvider } from "../modules/audio-capture/index";
 import type { MeetingPresenceProvider } from "../modules/meeting-presence/index";
 import type { MeetingRecorderWindowProvider } from "../modules/meeting-recorder/index";
 import type { AirDropReceptionProvider } from "../modules/airdrop/reception";
+import type { NearbyProvider } from "../modules/airdrop/nearby";
 import type { SynchronicityProvider } from "../modules/synchronicity/index";
 
 interface NativeGatewayLike {
@@ -60,6 +62,7 @@ export type NativeCapabilityProviderMap = {
   connectorRuntime: ConnectorRuntimeProvider;
   localStation: LocalStationProvider;
   macApps: MacAppsProvider;
+  blender: BlenderProvider;
   windowAppearance: WindowAppearanceProvider;
   notch: NotchProvider;
   surfaces: SurfaceListProvider;
@@ -83,6 +86,7 @@ export type NativeCapabilityProviderMap = {
   meetingPresence: MeetingPresenceProvider;
   meetingRecorder: MeetingRecorderWindowProvider;
   airDrop: AirDropReceptionProvider;
+  nearby: NearbyProvider;
   synchronicity: SynchronicityProvider;
 };
 
@@ -94,7 +98,9 @@ export type NativeCapabilityHandlerTypeMap = {
   "appPreferences.state": AppPreferencesProvider["state"];
   "appPreferences.initializeClientSettings": AppPreferencesProvider["initializeClientSettings"];
   "appPreferences.openLoginItemsSettings": AppPreferencesProvider["openLoginItemsSettings"];
+  "appPreferences.relaunch": AppPreferencesProvider["relaunch"];
   "appPreferences.openNotificationSettings": AppPreferencesProvider["openNotificationSettings"];
+  "appPreferences.refreshLaunchAtLogin": AppPreferencesProvider["refreshLaunchAtLogin"];
   "appPreferences.requestNotificationAuthorization": AppPreferencesProvider["requestNotificationAuthorization"];
   "appPreferences.update": AppPreferencesProvider["update"];
   "connectorRuntime.state": ConnectorRuntimeProvider["state"];
@@ -111,6 +117,10 @@ export type NativeCapabilityHandlerTypeMap = {
   "macApps.openItem": MacAppsProvider["openItem"];
   "macApps.icons": MacAppsProvider["icons"];
   "macApps.calendarEvents": MacAppsProvider["calendarEvents"];
+  "blender.state": BlenderProvider["state"];
+  "blender.setEnabled": BlenderProvider["setEnabled"];
+  "blender.open": BlenderProvider["open"];
+  "blender.chooseApp": BlenderProvider["chooseApp"];
   "appearance.setResolvedTheme": WindowAppearanceProvider["setResolvedTheme"];
   "appearance.fontFamilies": NativeInfoProvider["fontFamilies"];
   "notch.status": NotchProvider["status"];
@@ -129,6 +139,7 @@ export type NativeCapabilityHandlerTypeMap = {
   "surfaces.windowControl": SurfaceListProvider["windowControl"];
   "windows.create": WindowsProvider["create"];
   "windows.focus": WindowsProvider["focus"];
+  "windows.focusScreen": WindowsProvider["focusScreen"];
   "windows.close": WindowsProvider["close"];
   "onboarding.presentWindow": OnboardingWindowProvider["presentWindow"];
   "onboarding.closeWindow": OnboardingWindowProvider["closeWindow"];
@@ -166,8 +177,8 @@ export type NativeCapabilityHandlerTypeMap = {
   "computeNode.state": ComputeNodeProvider["state"];
   "computeNode.configure": ComputeNodeProvider["configure"];
   "computeNode.refresh": ComputeNodeProvider["refresh"];
-  "computeNode.repair": ComputeNodeProvider["repair"];
-  "computeNode.rebuild": ComputeNodeProvider["rebuild"];
+  "computeNode.continue": ComputeNodeProvider["continue"];
+  "computeNode.reauthorize": ComputeNodeProvider["reauthorize"];
   "computeNode.localOverview": ComputeNodeProvider["localOverview"];
   "computeNode.disposeLocal": ComputeNodeProvider["disposeLocal"];
   "computeNode.resumeLocalDisposal": ComputeNodeProvider["resumeLocalDisposal"];
@@ -179,8 +190,6 @@ export type NativeCapabilityHandlerTypeMap = {
   "computeNode.localWorkloads": ComputeNodeProvider["localWorkloads"];
   "computeNode.drain": ComputeNodeProvider["drain"];
   "computeNode.remove": ComputeNodeProvider["remove"];
-  "computeNode.abandon": ComputeNodeProvider["abandon"];
-  "computeNode.resetLocalRecord": ComputeNodeProvider["resetLocalRecord"];
   "chat.pickAttachments": NativeChatProvider["pickAttachments"];
   "audioCapture.state": AudioCaptureProvider["state"];
   "voiceCall.microphone": VoiceCallProvider["microphone"];
@@ -203,6 +212,10 @@ export type NativeCapabilityHandlerTypeMap = {
   "airDrop.state": AirDropReceptionProvider["state"];
   "airDrop.act": AirDropReceptionProvider["act"];
   "airDrop.preview": AirDropReceptionProvider["preview"];
+  "nearby.state": NearbyProvider["state"];
+  "nearby.find": NearbyProvider["find"];
+  "nearby.ask": NearbyProvider["ask"];
+  "nearby.answer": NearbyProvider["answer"];
   "synchronicity.state": SynchronicityProvider["state"];
   "synchronicity.list": SynchronicityProvider["list"];
   "synchronicity.read": SynchronicityProvider["read"];
@@ -254,8 +267,12 @@ export function registerGeneratedNativeMainBindings({
       providers.appPreferences.initializeClientSettings(input),
     "appPreferences.openLoginItemsSettings": async (input) =>
       providers.appPreferences.openLoginItemsSettings(input),
+    "appPreferences.relaunch": async (input) =>
+      providers.appPreferences.relaunch(input),
     "appPreferences.openNotificationSettings": async (input) =>
       providers.appPreferences.openNotificationSettings(input),
+    "appPreferences.refreshLaunchAtLogin": async (input) =>
+      providers.appPreferences.refreshLaunchAtLogin(input),
     "appPreferences.requestNotificationAuthorization": async (input) =>
       providers.appPreferences.requestNotificationAuthorization(input),
     "appPreferences.update": async (input) => providers.appPreferences.update(input),
@@ -278,6 +295,10 @@ export function registerGeneratedNativeMainBindings({
     "macApps.openItem": async (input) => providers.macApps.openItem(input),
     "macApps.icons": async (input) => providers.macApps.icons(input),
     "macApps.calendarEvents": async (input) => providers.macApps.calendarEvents(input),
+    "blender.state": async (input) => providers.blender.state(input),
+    "blender.setEnabled": async (input) => providers.blender.setEnabled(input),
+    "blender.open": async (input) => providers.blender.open(input),
+    "blender.chooseApp": async (input) => providers.blender.chooseApp(input),
     "appearance.setResolvedTheme": async (input) =>
       providers.windowAppearance.setResolvedTheme(input),
     "appearance.fontFamilies": async (input) =>
@@ -300,6 +321,7 @@ export function registerGeneratedNativeMainBindings({
     "surfaces.windowControl": async (input) => providers.surfaces.windowControl(input),
     "windows.create": async (input) => providers.windows.create(input),
     "windows.focus": async (input) => providers.windows.focus(input),
+    "windows.focusScreen": async (input) => providers.windows.focusScreen(input),
     "windows.close": async (input) => providers.windows.close(input),
     "onboarding.presentWindow": async (input) =>
       providers.onboardingWindow.presentWindow(input),
@@ -348,8 +370,9 @@ export function registerGeneratedNativeMainBindings({
     "computeNode.state": async (input) => providers.computeNode.state(input),
     "computeNode.configure": async (input) => providers.computeNode.configure(input),
     "computeNode.refresh": async (input) => providers.computeNode.refresh(input),
-    "computeNode.repair": async (input) => providers.computeNode.repair(input),
-    "computeNode.rebuild": async (input) => providers.computeNode.rebuild(input),
+    "computeNode.continue": async (input) => providers.computeNode.continue(input),
+    "computeNode.reauthorize": async (input) =>
+      providers.computeNode.reauthorize(input),
     "computeNode.localOverview": async (input) =>
       providers.computeNode.localOverview(input),
     "computeNode.disposeLocal": async (input) =>
@@ -369,9 +392,6 @@ export function registerGeneratedNativeMainBindings({
       providers.computeNode.localWorkloads(input),
     "computeNode.drain": async (input) => providers.computeNode.drain(input),
     "computeNode.remove": async (input) => providers.computeNode.remove(input),
-    "computeNode.abandon": async (input) => providers.computeNode.abandon(input),
-    "computeNode.resetLocalRecord": async (input) =>
-      providers.computeNode.resetLocalRecord(input),
     "chat.pickAttachments": async (input) => providers.chat.pickAttachments(input),
     "audioCapture.state": async (input) => providers.audioCapture.state(input),
     "voiceCall.microphone": async (input) => providers.voiceCall.microphone(input),
@@ -400,6 +420,10 @@ export function registerGeneratedNativeMainBindings({
     "airDrop.state": async (input) => providers.airDrop.state(input),
     "airDrop.act": async (input) => providers.airDrop.act(input),
     "airDrop.preview": async (input) => providers.airDrop.preview(input),
+    "nearby.state": async (input) => providers.nearby.state(input),
+    "nearby.find": async (input) => providers.nearby.find(input),
+    "nearby.ask": async (input) => providers.nearby.ask(input),
+    "nearby.answer": async (input) => providers.nearby.answer(input),
     "synchronicity.state": async (input) => providers.synchronicity.state(input),
     "synchronicity.list": async (input) => providers.synchronicity.list(input),
     "synchronicity.read": async (input) => providers.synchronicity.read(input),

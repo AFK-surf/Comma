@@ -24,7 +24,7 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
   alias SalixIM.IFC.ReadLabels
   alias SalixIM.Ports.{AgentWorkspace, FeishuUserAccounts}
-  alias SalixIM.Provider.Feishu.{API, Minutes}
+  alias SalixIM.Provider.Feishu.{API, Message, Minutes}
 
   @max_page_size 30
   # The app's own identity, as an account of a read.
@@ -38,6 +38,9 @@ defmodule SalixIM.Provider.Feishu.Meetings do
   @recording_missing 121_004
   @recording_generating 124_002
   @max_transcript_pages 500
+  # Feishu gives message links only to apps it has opened them to, so a refused
+  # read is common; the link's own text names the chat it came from.
+  @message_link_fallback ". The text of a shared message link names the chat it came from (\"message link from <chat>\"): if the bot is in that chat, find the messages with feishu.search_chats and feishu.get_chat_history around the time the link was shared and quote what you found; otherwise ask the person to forward the messages to this chat (a merged forward is read whole with feishu.get_message)."
   @inline_transcript_bytes 60_000
   @transcript_head_chars 12_000
 
@@ -46,7 +49,13 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
   defp do_call(_agent_id, connect, "feishu.list_accounts", _params) do
     with {:ok, accounts} <- accounts(connect) do
-      {:ok, %{"accounts" => Enum.map(accounts, &Map.put(&1, "account", account_ref(&1)))}}
+      result = %{"accounts" => Enum.map(accounts, &Map.put(&1, "account", account_ref(&1)))}
+
+      # Which people signed in to the Group is the Group's own setting.
+      case ReadLabels.for_group(connect) do
+        %{} = ifc -> {:ok, Map.put(result, "__ifc__", ifc)}
+        nil -> {:ok, result}
+      end
     end
   end
 
@@ -170,6 +179,29 @@ defmodule SalixIM.Provider.Feishu.Meetings do
           end
         end
       end)
+    end
+  end
+
+  # A message link (`/client/message/link/open?token=...`, "copy message
+  # link" in the client) is a snapshot of messages copied when the link was
+  # made; its token is not a message ID. Lark resolves it whole: the request
+  # takes the full URL unchanged (`im message_links query` of the official
+  # CLI). The app may not see a link a person may, so each identity is tried
+  # in turn.
+  defp do_call(agent_id, connect, "feishu.read_message_link", params) do
+    with {:ok, url} <- message_link(params["url"]),
+         {:ok, accounts} <- chosen_accounts(connect, params) do
+      first_readable(accounts, params, fn account ->
+        with {:ok, as_user} <- as_user(agent_id, connect, account),
+             {:ok, data} <-
+               API.post_read(as_user, "/im/v1/message_links/query", %{"message_link_url" => url}) do
+          {:ok, message_link_result(connect, account, url, data)}
+        end
+      end)
+      |> case do
+        {:ok, _} = ok -> ok
+        {:error, reason} -> {:error, reason_text(reason) <> @message_link_fallback}
+      end
     end
   end
 
@@ -340,7 +372,7 @@ defmodule SalixIM.Provider.Feishu.Meetings do
 
       {:error, reason} ->
         {:error,
-         "the Feishu account #{account["name"] || account["alias"]} cannot be used: #{reason_text(reason)}"}
+         "the Feishu account #{account["name"] || account["alias"]} cannot be used: #{reason_text(reason)}. If it expired or needs authorization again, ask that person to sign in again: call oauth.request_authorization with provider feishu and alias #{account["alias"]}, and send its authorization_url in the chat the request came from"}
     end
   end
 
@@ -393,6 +425,52 @@ defmodule SalixIM.Provider.Feishu.Meetings do
     batch = Enum.slice(identities, from, @identity_batch)
     next = from + @identity_batch
     {batch, if(next < length(identities), do: next)}
+  end
+
+  # ---------------------------------------------------------------------------
+  # message links
+  # ---------------------------------------------------------------------------
+
+  defp message_link(url) do
+    url = str(url)
+    uri = URI.parse(url)
+    query = URI.decode_query(uri.query || "")
+
+    if uri.scheme == "https" and String.starts_with?(uri.host || "", "applink.") and
+         uri.path == "/client/message/link/open" and str(query["token"]) != "",
+       do: {:ok, url},
+       else:
+         {:error,
+          "url must be a Feishu message link (https://applink.feishu.cn/client/message/link/open?token=...), passed whole"}
+  end
+
+  # The copied messages as `feishu.get_message` gives a message. The chat
+  # they came from is named only when Feishu lets this identity see it. The
+  # result carries the label of that chat when Feishu names it, else of the
+  # identity that read it.
+  defp message_link_result(connect, account, url, data) do
+    messages =
+      for %{} = wrapper <- List.wrap(data["messages"]),
+          %{} = message <- [wrapper["message"] || wrapper],
+          do: Message.normalize(message)
+
+    chat = if is_map(data["chat_info"]), do: data["chat_info"], else: %{}
+    chat_id = blank_nil(chat["chat_id"])
+
+    result =
+      %{
+        "account" => account_ref(account),
+        "url" => url,
+        "messages" => messages,
+        "chat_id" => chat_id,
+        "chat" => if(chat["is_authorized"] == true, do: Map.drop(chat, ["is_authorized"]))
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    case chat_id && ReadLabels.for_scope(connect, chat_id) do
+      %{} = ifc -> Map.put(result, "__ifc__", ifc)
+      _unnamed -> labelled(result, connect, [account["open_id"]])
+    end
   end
 
   # ---------------------------------------------------------------------------

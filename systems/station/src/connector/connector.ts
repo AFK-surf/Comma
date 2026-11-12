@@ -3,37 +3,47 @@
 // on its clock (live, or a TestClock with `testClock: true`).
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 
 import { join as joinPath } from "node:path";
-import { readFile as readFileAsync } from "node:fs/promises";
+import { opendir, readFile as readFileAsync } from "node:fs/promises";
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Semaphore } from "effect";
 import { type ConnectorClock, liveClock, testClock } from "./clock.ts";
 import { type ArchiveState, archiveStateDir, makeDurableArchive, signedStorageUrl } from "./durable-archive.ts";
 import { type DaemonResponse, makeComputerUse } from "./computer-use.ts";
+import type { ScreenHelpers } from "../screens/helper.ts";
+import { screenLinksOf } from "../screens/links.ts";
+import { windowsScreenBinary } from "../screens/win-desktop.ts";
+import { hasLinuxDesktop } from "../screens/linux-desktop.ts";
 import { MeetHttp, liveMeetHttp, makeMeeting, meetingArtifactRequestTimeoutMs } from "./meeting.ts";
-import { type FsMethods, MAX_OUTPUT_BYTES, makeFsMethods, resolvePath } from "./fs-methods.ts";
+import { type FsMethods, MAX_OUTPUT_BYTES, grantedWorkingDir, makeFsMethods, resolvePath } from "./fs-methods.ts";
 import { type Closer, toCloser } from "./io.ts";
-import { type Message, encodeMessage, intParam, stringParam } from "./message.ts";
+import { type Message, STREAM_FRAMES_HEADER, encodeMessage, intParam, streamBytes, stringParam } from "./message.ts";
 import { type ProcessStdin, ManagedProcess, execEnv, makeProcessTable, processStartEnv, signalGroup, spawnManaged } from "./processes.ts";
 import { type RequestBinding, makeRequestOperations, recoverableRequest, requestFingerprint } from "./request-operations.ts";
 import { Session, type SessionHost, type SessionOptions } from "./session.ts";
 import { type Sockets, liveSockets } from "./sockets.ts";
 import { Net, liveNet } from "./net.ts";
 import { httpRequest, lanHttpRequest, udpRequest } from "./lan-gateway.ts";
-import { type ConnectorConfig, MAX_CONCURRENT_REQUESTS, REQUEST_EXECUTION_TIMEOUT, SCOPE_LOCAL_FILE_READ, defaultConfig } from "./config.ts";
+import { type ConnectorConfig, MAX_CONCURRENT_REQUESTS, REQUEST_EXECUTION_TIMEOUT, SALIX_TOOL_CALL_TIMEOUT, SCOPE_LOCAL_FILE_READ, defaultConfig } from "./config.ts";
 import { clientSource, goArch, goOs, systemInfo } from "./system-info.ts";
 import { type LocalFileReadRequest, readRefFrames } from "./local-file-index.ts";
 import { LAN_TUNNEL_MAX_FRAME, LAN_TUNNEL_WINDOW } from "./lan-tunnel.ts";
 import { currentBuildInfo, COMPONENT_NAME } from "./build-info.ts";
 import { type FrameSocket, ConnectionWorkersStuck, serveConnection, socketWriter } from "./connection.ts";
 import { type RuntimeCarrier, makeRuntimeTransport } from "./runtime-transport.ts";
-import { type HeldIndex, type StationTaskIndex, heldFrom, nextPage, probePage } from "./task-index.ts";
+import { type MeshStep, meshConnected, meshEnded, meshHeard, noMeshTurn } from "./mesh-turn.ts";
+import { type HeldIndex, type PagedIndex, type StationTaskIndex, heldFrom, nextPage, probePage, statsWireRow, wireRow } from "./task-index.ts";
+import type { StationStats } from "../stats/module.ts";
 import { Refused } from "../jobs/remote.ts";
 import { type Access, type AccessStore, memoryAccess, requestedAccess } from "../device/access.ts";
+import { type FileErrorPlace, fileErrorMessage, inPromptedFolder, promptedFoldersWithin, slowFolderReadMessage, withFolderDenialHint } from "../ops/files.ts";
+import { stationLang } from "../ops/i18n.ts";
 import { startCommand } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
 import { AuthError, WebSocketHandshakeError, makeStatusWriter } from "./status.ts";
 import { lanGatewayCapability } from "./lan-gateway.ts";
+import { lanScript } from "./lan-script.ts";
 import { LOCAL_FILE_INDEX_VERSION } from "./local-file-index.ts";
 import { makeWebSocketWriter } from "./websocket-writer.ts";
 import { Sockets as SocketsService } from "./sockets.ts";
@@ -50,7 +60,7 @@ export { ClientControl } from "./comma-client-cli.ts";
 
 export const REQUEST_EXECUTION_SLOP_MS = 5_000;
 export const WEBSOCKET_WRITE_TIMEOUT = Duration.seconds(20);
-export { CLEANUP_QUEUE_SIZE, MAX_CONCURRENT_REQUESTS, REQUEST_EXECUTION_TIMEOUT, SCOPE_LOCAL_FILE_READ, validateConfig } from "./config.ts";
+export { CLEANUP_QUEUE_SIZE, MAX_CONCURRENT_REQUESTS, REQUEST_EXECUTION_TIMEOUT, SALIX_TOOL_CALL_TIMEOUT, SCOPE_LOCAL_FILE_READ, validateConfig } from "./config.ts";
 export type { ConnectorConfig } from "./config.ts";
 
 export class ConnectorFatal extends Error {
@@ -74,8 +84,8 @@ export const MAX_RECONNECT_BACKOFF_MS = 30_000;
 export const RUNTIME_NOT_QUIET = "runtime is not quiet";
 /** What a parked station still serves: the archive of its quiet state. */
 const PARKED_METHODS = new Set(["archive_export", "archive_status", "archive_cancel"]);
-/** MCP servers the desktop app's Main serves to Salix through `client_mcp`. */
-const CLIENT_MCP_SERVERS = new Set(["mac-apps"]);
+/** MCP servers the desktop app's Main serves to Salix through `client_mcp` (SalixMCP.Builtins.client_mcp_id?). */
+const CLIENT_MCP_SERVERS = new Set(["mac-apps", "blender"]);
 /** Main answers a Mac apps call within its own deadline (25 seconds); past this, Main is not answering. */
 export const CLIENT_MCP_TIMEOUT = Duration.seconds(30);
 export const SALIX_REQUEST_TIMEOUT = Duration.seconds(30);
@@ -86,6 +96,11 @@ export const SALIX_FILE_POST_TIMEOUT = Duration.minutes(30);
  * has not noticed (the computer slept, its network changed): it is closed and dialed again.
  */
 export const WEBSOCKET_READ_TIMEOUT = Duration.seconds(45);
+/**
+ * A dial to Salix (TCP, TLS and the WebSocket handshake) completes within this, or is abandoned and dialed again. A
+ * computer that slept before Salix's answer came wakes with a half-open socket that would otherwise wait forever.
+ */
+export const WEBSOCKET_DIAL_TIMEOUT = Duration.seconds(30);
 export const CONNECTOR_INSTANCE_HEADER = "X-Salix-Connector-Instance-ID";
 /** Says which kind of credential the bearer is: absent for a device's connector token, `workload` for a Workload's. */
 export const CREDENTIAL_KIND_HEADER = "X-Salix-Credential-Kind";
@@ -106,6 +121,10 @@ export function requestTimeoutMs(msg: Message, generalMs = Duration.toMillis(REQ
 }
 
 /** File methods block in the kernel and ignore their deadline, as they did in Go: they reply when the I/O returns. */
+/** The reads that wait no longer than FOLDER_PROMPT_WAIT in a folder macOS asks about (`requestReply`). */
+const FOLDER_PROMPT_METHODS = new Set(["read", "list", "stat", "glob", "grep"]);
+/** Long enough for a read of a local file; shorter than an agent waits before giving up on its tool. */
+export const FOLDER_PROMPT_WAIT = Duration.seconds(5);
 const DEADLINE_EXEMPT = new Set(["read", "write", "delete", "stat", "list", "glob", "grep", "read_stream", "write_stream"]);
 export const requestDeadlineApplies = (method: string) => !DEADLINE_EXEMPT.has(method);
 
@@ -115,7 +134,28 @@ export type ConnectionIdentity = { runId: string; deviceId: string; connectorId:
  * What the station gives its connector: its Tasks, for Salix's, whether its agents are all idle, the computer's one
  * access value a device's connection follows (device/access.ts), and its own Tasks' index (task-index.ts).
  */
-export type StationParts = { tasks?: StationTasks; agentsIdle?: () => boolean; archive?: ArchiveState; relay?: StationRelay; profiles?: StationProfiles; place?: StationPlace; access?: AccessStore; index?: StationTaskIndex };
+/**
+ * The computer's Android devices an agent leases through Salix's `env.android` in its `device` mode
+ * (screens/android-agent.ts): one request, a screenshot kept by `images`.
+ */
+export type StationAndroid = { call(params: Record<string, unknown>, images: ((png: Buffer) => Promise<Record<string, unknown>>) | null): Promise<Record<string, unknown>> };
+
+export type StationParts = { android?: StationAndroid; simulators?: StationSimulators; tasks?: StationTasks; agentsIdle?: () => boolean; archive?: ArchiveState; relay?: StationRelay; profiles?: StationProfiles; place?: StationPlace; access?: AccessStore; index?: StationTaskIndex; stats?: StationStats; screens?: Pick<ScreenHelpers, "attach"> & Partial<Pick<ScreenHelpers, "catalog">>; accounts?: StationAccounts };
+
+/**
+ * A desktop Workspace's connection: Salix sets its Workspace's account source of a runtime to this machine's own login
+ * (`account_source`), after the computer's owner confirmed it in a Comma conversation. Salix checks the owner; only
+ * `local` is set this way (src/accounts/sources.ts).
+ */
+export type StationAccounts = {
+  chooseLocal(runtime: unknown, by: string): Promise<unknown>;
+};
+
+/**
+ * The computer's iOS Simulators an agent leases through Salix's `env.screen` (screens/simulator-agent.ts): whether this
+ * Mac can have them, and one request, a screenshot kept by `images`.
+ */
+export type StationSimulators = { here(): boolean; call(params: Record<string, unknown>, images: ((png: Buffer) => Promise<Record<string, unknown>>) | null): Promise<Record<string, unknown>> };
 
 /**
  * A Workload's station is one Salix, its control plane, made: Salix asks which station it is (`station_identity`) and
@@ -154,7 +194,7 @@ export type StationProfiles = {
 };
 
 /**
- * The station's side of Salix as the relay of last resort: its iroh endpoint id, a signature by its key (proving the
+ * The station's side of Salix as a relay: its iroh endpoint id, a signature by its key (proving the
  * id to Salix), what came through Salix on a connection, and where a connection sends what goes out (null once it no
  * longer carries it). A station has a connection per Workspace it is in, each keyed by its socket.
  */
@@ -163,10 +203,14 @@ export type StationRelay = {
   sign(message: Buffer): Buffer;
   incoming(from: string, data: Buffer, via: object): void;
   attach(via: object, send: ((to: string, data: Buffer) => void) | null): void;
+  /** What Salix told the connection `via` of its Group for the mesh (mesh/device-mesh.ts); null: it admits no one. Asked only by a device connection whose file says to. */
+  meshTold?(via: object, facts: unknown): void;
 };
 
 /** A packet through Salix in a binary frame: kind 1, the peer's 32-byte endpoint id, the packet. */
 export const RELAY_FRAME = 1;
+/** The most of them a connection holds that its socket has not written yet. */
+export const RELAY_UNWRITTEN_BYTES = 128 * 1024;
 export const relayChallengeMessage = (runId: string, challenge: string) => Buffer.from(`comma-salix-relay-v1:${runId}:${challenge}`);
 
 export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: Layer.Layer<any>, station: StationParts = {}) {
@@ -216,6 +260,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     afterRequestFinished?: (msg: Message) => Effect.Effect<void>;
     afterConnectionPublished?: (previous: Session) => Effect.Effect<void>;
     beforeManagedProcessStart?: Effect.Effect<void>;
+    /** Opens a folder to wait for its answer (`wideSearchOpened`); a test holds it as macOS holds a prompted one. */
+    openFolder?: (folder: string) => Promise<unknown>;
   } = {};
 
   // Cleanup and fatal errors.
@@ -297,13 +343,18 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         return { exit_code: -1, stdout: "", stderr: `timed out after ${timeoutSeconds}s`, truncated: false, status: "timeout" };
       }
       if (outcome.value.error) return yield* Effect.fail(outcome.value.error);
-      return {
-        exit_code: outcome.value.code ?? -1,
-        stdout: out.stdout.toString(),
-        stderr: out.stderr.toString(),
-        truncated: out.stdout.length >= MAX_OUTPUT_BYTES || out.stderr.length >= MAX_OUTPUT_BYTES,
-        status: "completed",
-      };
+      return withFolderDenialHint(
+        stationLang(),
+        {
+          exit_code: outcome.value.code ?? -1,
+          stdout: out.stdout.toString(),
+          stderr: out.stderr.toString(),
+          truncated: out.stdout.length >= MAX_OUTPUT_BYTES || out.stderr.length >= MAX_OUTPUT_BYTES,
+          status: "completed",
+        },
+        cwd,
+        filePlace(),
+      );
     });
 
   const processStart = (params: Record<string, unknown>) =>
@@ -313,14 +364,18 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       if (!command) return yield* Effect.fail(new Error("'command' is required"));
       const existing = processes.processes.get(name);
       if (existing?.isRunning()) return yield* Effect.fail(new Error(`process "${name}" is already running`));
-      const cwd = resolvePath(cfg.root, stringParam(params, "working_dir") || ".");
+      let cwd = resolvePath(cfg.root, stringParam(params, "working_dir") || ".");
+      // A device MCP server starts only inside the roots its binding was granted (the gateway sends them).
+      const rootGrants = Array.isArray(params.root_grants) ? params.root_grants.map(String) : [];
+      if (params.enforce_root === true || rootGrants.length > 0)
+        cwd = yield* Effect.try({ try: () => grantedWorkingDir(cfg.root, cwd, rootGrants), catch: (e) => e as Error });
       const args = Array.isArray(params.args) ? params.args.map(String) : [];
       // Registration and start are fenced against a scope downgrade: it either refuses this start or sees the
       // process and stops it before acknowledging.
       return yield* Semaphore.withPermits(processFence, 1)(
         Effect.gen(function* () {
           if (hooks.beforeManagedProcessStart) yield* hooks.beforeManagedProcessStart;
-          if (scope === SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`process start is not permitted for a ${SCOPE_LOCAL_FILE_READ} connector`));
+          if (scope === SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`process start is not permitted for a ${SCOPE_LOCAL_FILE_READ} station`));
           const proc = yield* spawnManaged(name, command, args, cwd, processStartEnv(cfg.env, params.env), clock.nowMs());
           processes.register(proc);
           return proc.summary();
@@ -338,7 +393,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       if (port < 1 || port > 65535) return yield* Effect.fail(new Error("'port' must be between 1 and 65535"));
       let timeoutSeconds = intParam(params, "timeout_seconds", 0);
       if (timeoutSeconds <= 0 || timeoutSeconds > 15) timeoutSeconds = 15;
-      if (scope === SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`method "lan_tcp_dial" is not permitted for a ${SCOPE_LOCAL_FILE_READ} connector`));
+      if (scope === SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`method "lan_tcp_dial" is not permitted for a ${SCOPE_LOCAL_FILE_READ} station`));
       const tunnel = yield* Effect.try({ try: () => session.reserveTunnel(id), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
       const net = yield* Net;
       const dialed = yield* Effect.exit(net.dial(host, port).pipe(Effect.timeoutOption(Duration.seconds(timeoutSeconds))));
@@ -356,8 +411,12 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     });
 
   // Requests to Salix on the live connection (meeting callbacks and the LLM route share its bounded slots).
+  /** The app's Debug setting, in this connection's own file. */
+  const meshAsked = () => cfg.deviceMode && cfg.deviceMesh;
   const transport = makeRuntimeTransport({ proxySlots: MAX_CONCURRENT_REQUESTS });
   const computerUse = makeComputerUse(cfg, (effect) => void fork(effect));
+  // The mesh's views of the screen, on the helper; a device's only.
+  const detachScreens = cfg.deviceMode && platform.hasComputerUse ? station.screens?.attach({ ensure: () => Effect.runPromise(provide(computerUse.ensureDaemon)), authToken: computerUse.authToken, socketPath: cfg.computerUseSocketPath }) : undefined;
   const meeting = makeMeeting({ meetUrl: cfg.meetUrl, callbackHost: cfg.meetCallbackHost, callbackPort: cfg.meetCallbackPort, transport, nowMs: clock.nowMs, run: (effect) => Effect.runPromiseExit(provide(effect)) });
   fork(computerUse.sweepAtStart);
 
@@ -374,18 +433,18 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const profilesCall = (params: Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend(() => {
       if (!station.profiles) return Effect.fail(new Error("this station takes no profiles"));
-      if (!takesProfiles()) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!takesProfiles()) return Effect.fail(new Error("not a managed runtime station"));
       return Effect.try({ try: () => (station.profiles!.received(params.profiles), { received: true }), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
     });
   // Only a Workload's station is placed by Salix: a device joins its workspace by enrolling.
   const placeCall = (call: (place: StationPlace) => Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend(() => {
-      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime station"));
       if (!station.place) return Effect.fail(new Error("this station is not placed by Salix"));
       return Effect.try({ try: () => call(station.place!), catch: (e) => (e instanceof Error ? e : new Error(String(e))) });
     });
   const runtimesOnly = <A>(effect: Effect.Effect<A, Error, any>) =>
-    Effect.suspend(() => (externalRuntimesEnabled() ? effect : Effect.fail(new Error("external runtimes are disabled for this Connector process"))));
+    Effect.suspend(() => (externalRuntimesEnabled() ? effect : Effect.fail(new Error("external runtimes are disabled for this station process"))));
 
   // The managed lifecycle (a Workload's station only): Salix parks an idle runtime before it archives or stops it.
   // Quiesce holds while no request, process or agent is busy, under a token, for a bounded time; resume ends it,
@@ -397,7 +456,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const busy = () => requestSlots > 1 || [...processes.processes.values()].some((p) => p.isRunning()) || station.agentsIdle?.() === false;
   const lifecycle = (method: string, params: Record<string, unknown>): Effect.Effect<Record<string, unknown>, Error> =>
     Effect.suspend((): Effect.Effect<Record<string, unknown>, Error> => {
-      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime station"));
       parkExpired();
       const token = stringParam(params, "token");
       if (!token || token.length > 128) return Effect.fail(new Error("invalid idle request"));
@@ -441,7 +500,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     : null;
   const archiveCall = (call: (archive: NonNullable<typeof durable>) => Effect.Effect<Record<string, unknown>, Error>) =>
     Effect.suspend(() => {
-      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime connector"));
+      if (!cfg.workloadCredential) return Effect.fail(new Error("not a managed runtime station"));
       return durable ? call(durable) : Effect.fail(new Error("this station keeps no durable archive"));
     });
 
@@ -464,8 +523,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     delete: (_s, _id, p) => fs.delete(p),
     stat: (_s, _id, p) => fs.stat(p),
     list: (_s, _id, p) => fs.list(p),
-    glob: (_s, _id, p) => fs.glob(p),
-    grep: (_s, _id, p) => fs.grep(p),
+    glob: (_s, _id, p) => Effect.andThen(wideSearchOpened(p), fs.glob(p)),
+    grep: (_s, _id, p) => Effect.andThen(wideSearchOpened(p), fs.grep(p)),
     read_stream: (s, id, p) => fs.readStream(s, id, p),
     write_stream: (s, id, p) => fs.prepareWriteStream(s, id, p),
     process_start: (_s, _id, p) => processStart(p),
@@ -476,8 +535,28 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     http_request: (_s, _id, p) => httpRequest(p),
     lan_http_request: (_s, _id, p) => lanHttpRequest(p),
     udp_request: (_s, _id, p) => udpRequest(p),
+    lan_script: (_s, _id, p) => lanScript(p),
     lan_tcp_dial: (s, id, p) => lanTcpDial(s, id, p),
     computer_use: (_s, _id, p) => computerUse.call(p),
+    // A device's own Android devices, for its agents (a device connection only).
+    android: (_s, _id, p) => {
+      const android = cfg.deviceMode ? station.android : undefined;
+      if (!android) return Effect.fail(new Error("this computer offers no Android devices"));
+      const images = (png: Buffer) => Effect.runPromise(provide(computerUse.storeImage({ imageData: png, imageContentType: "image/png" } as DaemonResponse)) as Effect.Effect<Record<string, unknown>, Error>);
+      return Effect.promise(() => android.call(p, images));
+    },
+    // The computer's screens its owner could open now, each with its `comma:screen/...` link (a device connection only).
+    screen_links: () => {
+      if (!cfg.deviceMode) return Effect.fail(new Error("this connection is not a computer's own: it has no screens to link"));
+      return Effect.promise(() => screenLinksOf(identity.deviceId, station.screens?.catalog?.() ?? null));
+    },
+    // A device's own iOS Simulators, for its agents (a device connection only).
+    screen: (_s, _id, p) => {
+      const simulators = cfg.deviceMode && station.simulators?.here() ? station.simulators : undefined;
+      if (!simulators) return Effect.fail(new Error("this computer offers no simulators"));
+      const images = (png: Buffer) => Effect.runPromise(provide(computerUse.storeImage({ imageData: png, imageContentType: "image/png" } as DaemonResponse)) as Effect.Effect<Record<string, unknown>, Error>);
+      return Effect.promise(() => simulators.call(p, images));
+    },
     cloud_runtime_quiesce: (_s, _id, p) => lifecycle("cloud_runtime_quiesce", p),
     cloud_runtime_resume: (_s, _id, p) => lifecycle("cloud_runtime_resume", p),
     cloud_runtime_release: (_s, _id, p) => lifecycle("cloud_runtime_release", p),
@@ -487,18 +566,24 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     station_profiles: (_s, _id, p) => profilesCall(p),
     station_identity: () => placeCall((place) => place.identity()),
     station_place: (_s, _id, p) => placeCall((place) => (place.placed(p), { placed: true })),
+    station_mesh: (_s, _id, p) =>
+      Effect.sync(() => {
+        if (relaySocket && typeof p.seq === "number") meshWord(relaySocket, p.mesh ?? null, p.seq);
+        return { ok: true };
+      }),
     "task.invite": (_s, _id, p) => tasksCall("task.invite", p),
+    "task.login_answer": (_s, _id, p) => tasksCall("task.login_answer", p),
     "task.put": (_s, _id, p) => tasksCall("task.put", p),
     "task.read": (_s, _id, p) => tasksCall("task.read", p),
     "task.say": (_s, _id, p) => tasksCall("task.say", p),
     "task.status": (_s, _id, p) => tasksCall("task.status", p),
     "task.diff": (_s, _id, p) => tasksCall("task.diff", p),
-    "task.save": (_s, _id, p) => tasksCall("task.save", p),
     "task.pull_request": (_s, _id, p) => tasksCall("task.pull_request", p),
     "task.history": (_s, _id, p) => tasksCall("task.history", p),
     "task.leave": (_s, _id, p) => tasksCall("task.leave", p),
     "task.posted_file": (_s, _id, p) => tasksCall("task.posted_file", p),
     device_access: (_s, _id, p) => deviceAccess(p),
+    account_source: (_s, _id, p) => accountSource(p),
     client_mcp: (_s, _id, p) => clientMcp(p),
     runtime_probe: (s, _id, p) => runtimesOnly(probeRuntimes(s, p)),
     meeting_join: (_s, _id, p) => runtimesOnly(meeting.join(p)),
@@ -512,10 +597,11 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     Effect.suspend(() => {
       // The scope gate precedes every method: a read-only connector serves read_ref, a read-only device also reads
       // its files unless its access is off, and access itself stays manageable. client_mcp reaches only Main,
-      // which allows the Mac apps the user turned on in Plugins; like a read, it stops when access is off.
-      const deviceRead = cfg.deviceMode && (method === "device_access" || (["read", "list", "stat", "read_stream", "client_mcp"].includes(method) && deviceAccessLevel() !== "off"));
+      // which allows the Mac apps the user turned on in Plugins; like a read, it stops when access is off. What Salix says
+      // for the mesh (station_mesh) reaches a device that asked for it, whatever its access: a revocation must get there.
+      const deviceRead = cfg.deviceMode && (method === "device_access" || (method === "station_mesh" && meshAsked()) || (["read", "list", "stat", "read_stream", "client_mcp"].includes(method) && deviceAccessLevel() !== "off"));
       if (method !== "read_ref" && !deviceRead && scope === SCOPE_LOCAL_FILE_READ) {
-        return Effect.fail(new Error(`method "${method}" is not permitted for a ${SCOPE_LOCAL_FILE_READ} connector`));
+        return Effect.fail(new Error(`method "${method}" is not permitted for a ${SCOPE_LOCAL_FILE_READ} station`));
       }
       parkExpired();
       if (parked && !method.startsWith("cloud_runtime_") && !PARKED_METHODS.has(method)) {
@@ -526,13 +612,67 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       return provide(handler(session, id, params));
     });
 
-  const requestReply = (session: Session, msg: Message): Effect.Effect<Message> =>
-    dispatchSession(session, msg.id ?? "", msg.method ?? "", msg.params ?? {}).pipe(
-      Effect.match({
-        onSuccess: (result): Message => ({ id: msg.id, type: "response", result }),
-        onFailure: (error): Message => ({ id: msg.id, type: "error", error: `${msg.method}: ${error.message}` }),
+  /**
+   * A read in a folder macOS asks about (Desktop, Documents, Downloads) that has not finished within FOLDER_PROMPT_WAIT
+   * is answered with that, and its possible causes: for the app's station, macOS's prompt on this computer, which the
+   * user on another device does not see, or slow I/O. The read goes on; an answer to a prompt is kept.
+   */
+  const home = () => cfg.env.HOME || homedir();
+  const filePlace = (): FileErrorPlace => ({ deviceId: identity.deviceId || undefined, home: home() });
+  const promptedRead = (method: string, params: Record<string, unknown>): string | undefined => {
+    if (!FOLDER_PROMPT_METHODS.has(method)) return undefined;
+    const path = resolvePath(cfg.root, typeof params.path === "string" ? params.path : "");
+    return inPromptedFolder(path, home()) ? path : undefined;
+  };
+
+  /**
+   * A glob or grep from above the home (`~`, `/Users`, `/`) opens every folder macOS asks about, and waits as long as its prompt does. Those
+   * opens come first, one at a time, all within one FOLDER_PROMPT_WAIT; a search that merely takes long is left alone. A method's handler
+   * runs this, so a request the station refuses opens nothing.
+   */
+  const wideSearchOpened = (params: Record<string, unknown>): Effect.Effect<void, Error> => {
+    const base = resolvePath(cfg.root, typeof params.path === "string" ? params.path : ".");
+    const folders = promptedFoldersWithin(base, home());
+    if (folders.length === 0) return Effect.void;
+    const open = hooks.openFolder ?? ((folder: string) => opendir(folder).then((dir) => dir.close()));
+    let opening = folders[0]!;
+    return Effect.forEach(
+      folders,
+      (folder) =>
+        Effect.suspend(() => {
+          opening = folder;
+          // A denied or missing folder is the search's to skip, as ever.
+          return Effect.promise(() => open(folder).catch(() => undefined));
+        }),
+      { discard: true },
+    ).pipe(
+      Effect.timeoutOrElse({
+        duration: FOLDER_PROMPT_WAIT,
+        orElse: () => Effect.fail(new Error(slowFolderReadMessage(stationLang(), opening, Duration.toSeconds(FOLDER_PROMPT_WAIT), filePlace()))),
       }),
     );
+  };
+
+  const requestReply = (session: Session, msg: Message): Effect.Effect<Message> => {
+    const method = msg.method ?? "";
+    const params = msg.params ?? {};
+    const work = dispatchSession(session, msg.id ?? "", method, params);
+    const prompted = promptedRead(method, params);
+    const bounded = prompted
+      ? work.pipe(
+          Effect.timeoutOrElse({
+            duration: FOLDER_PROMPT_WAIT,
+            orElse: () => Effect.fail(new Error(slowFolderReadMessage(stationLang(), prompted, Duration.toSeconds(FOLDER_PROMPT_WAIT), filePlace()))),
+          }),
+        )
+      : work;
+    return bounded.pipe(
+      Effect.match({
+        onSuccess: (result): Message => ({ id: msg.id, type: "response", result }),
+        onFailure: (error): Message => ({ id: msg.id, type: "error", error: `${method}: ${fileErrorMessage(stationLang(), error, filePlace())}` }),
+      }),
+    );
+  };
 
   const handleStream = (session: Session, msg: Message): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -550,7 +690,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       if (!pending) return;
       const done = (error: string) => session.send({ id: msg.id, type: "stream", error, stream: { channel: "done", eof: true } }).pipe(Effect.ignore);
       if (msg.stream.data) {
-        const raw = Buffer.from(msg.stream.data, "base64");
+        const raw = streamBytes(msg.stream);
         const written = yield* Effect.exit(pending.write(raw));
         if (Exit.isFailure(written)) {
           session.finishPendingWrite(msg.id);
@@ -738,7 +878,11 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       scope,
       persistent_processes: true,
       computer_use_tool: extensions.computerUseAvailable(),
-      android_device_tool: false,
+      // A desktop's own emulators and the phones its owner chose (`device` mode: Salix names the device, no profile).
+      android_device_tool: cfg.deviceMode && station.android !== undefined,
+      ...(cfg.deviceMode && station.android !== undefined ? { android: { protocol_version: 3, mode: "device" } } : {}),
+      // Its iOS Simulators (`env.screen`): a station from before has no such method, and Salix refuses it there.
+      screen_device_tool: cfg.deviceMode && station.simulators?.here() === true,
       host_access_required: false,
       execution_boundary: "connector-direct",
       runtime_probe: externalRuntimesEnabled() && !dynamicallyWidened,
@@ -756,11 +900,19 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     }
     // 1: `task.index` pages once Salix has the station's endpoint id.
     if (station.index) capabilities.task_index = 1;
+    // 1: `stats.index` pages, as the Task index's.
+    if (station.stats) capabilities.stats_index = 1;
     if (cfg.deviceMode) {
       capabilities.device_access = true;
       capabilities.client_mcp = clientMcpServers();
       // Salix sends `device_access {access}` (off | read | full) to a device that says its access.
       capabilities.access = deviceAccessLevel();
+      // Whether its station serves the computer's display on the mesh (`/screens/display/view`): a Mac's through the
+      // Computer Use helper, Windows' through comma-desktop-screen, Linux's X11 desktop through ffmpeg and xdotool.
+      // Clients offer "View screen" only where it says so.
+      capabilities.screen_view = platform.hasComputerUse || windowsScreenBinary() !== null || hasLinuxDesktop();
+      // 1: Salix may set this Workspace's account source of a runtime to the local sign-in (`account_source`).
+      if (station.accounts) capabilities.account_source = 1;
     }
     capabilities.lan_gateway = lanGatewayCapability();
     extensions.capabilities(capabilities);
@@ -774,7 +926,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const publishCachedMetadata = (): Effect.Effect<void, Error> =>
     Effect.suspend(() => {
       const session = activeConnection;
-      if (!session) return Effect.fail(new Error("connector metadata transport is unavailable"));
+      if (!session) return Effect.fail(new Error("station metadata transport is unavailable"));
       return session.send(metadataMessage());
     });
   // What a Task may choose to run here changed: Salix hears it now, not at the next connection.
@@ -826,12 +978,12 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const setCurrentScope = (next: string): Effect.Effect<void, Error> =>
     Effect.gen(function* () {
       const wanted = next.trim();
-      if (wanted !== "" && wanted !== SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`unsupported connector scope "${wanted}"`));
+      if (wanted !== "" && wanted !== SCOPE_LOCAL_FILE_READ) return yield* Effect.fail(new Error(`unsupported station scope "${wanted}"`));
       if (scope === wanted) return;
       if (wanted === SCOPE_LOCAL_FILE_READ) {
         scope = SCOPE_LOCAL_FILE_READ;
-        activeConnection?.abortPendingWritesForScope("write_stream cancelled: connector scope restricted");
-        activeConnection?.finishTunnels("connector scope restricted", true);
+        activeConnection?.abortPendingWritesForScope("write_stream cancelled: station scope restricted");
+        activeConnection?.finishTunnels("station scope restricted", true);
         // Wait for an admitted process start to finish (it then sees the scope and refuses), then stop what runs.
         yield* Semaphore.withPermits(processFence, 1)(Effect.void);
         yield* processes.killAll();
@@ -861,11 +1013,27 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
    */
   const deviceAccess = (params: Record<string, unknown>): Effect.Effect<unknown, Error> =>
     Effect.gen(function* () {
-      if (!accessStore) return yield* Effect.fail(new Error("restart this Connector with --device to manage its access"));
+      if (!accessStore) return yield* Effect.fail(new Error("restart this station with --device to manage its access"));
       const next = yield* Effect.try({ try: () => requestedAccess(params, deviceAccessLevel()), catch: (e) => e as Error });
       yield* Effect.try({ try: () => accessStore.set(next), catch: (e) => e as Error });
       yield* applyAccess();
       return { access: next, allows_operations: next === "full" };
+    });
+
+  /**
+   * `account_source`: `{runtime, source: "local", by}`, this connection's Workspace's source of `runtime` set to the
+   * machine's own login, as its owner confirmed in a Comma conversation (Salix checks the owner). Answers once Salix has
+   * the metadata with the Workspace's new `task_models`.
+   */
+  const accountSource = (params: Record<string, unknown>): Effect.Effect<unknown, Error> =>
+    Effect.gen(function* () {
+      const accounts = station.accounts;
+      if (!cfg.deviceMode || !accounts) return yield* Effect.fail(new Error("this connection has no Workspace whose account source Salix may set"));
+      if (params.source !== "local") return yield* Effect.fail(new Error("only the local sign-in can be chosen from Salix"));
+      const by = typeof params.by === "string" ? params.by.slice(0, 256) : "";
+      const result = yield* Effect.tryPromise({ try: () => accounts.chooseLocal(params.runtime, by), catch: (e) => e as Error });
+      if (activeConnection) yield* publishCachedMetadata().pipe(Effect.ignore);
+      return result;
     });
 
   /** A desktop's Main serves MCP servers (the Mac apps); a standalone device has no Main. */
@@ -977,12 +1145,20 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
           }
           if (live !== current) return;
           // This connection ends, and its socket with it: the next dial presents the new credential.
-          if (activeConnection) activeConnection.close(new Error("connector credential renewed"));
+          if (activeConnection) activeConnection.close(new Error("station credential renewed"));
           else yield* current.close;
         }),
       );
     });
-  // Salix as the relay of last resort: the station proves its endpoint id, then its packets go in binary frames.
+  // What this connection's Salix says for the mesh, heard only where the app's own setting asked for it (mesh-turn.ts).
+  // A word's number is the order Salix read its facts in, one read at a time on a connection.
+  let meshTurn = noMeshTurn<object>();
+  const meshStep = (step: MeshStep<object>) => {
+    meshTurn = step.state;
+    for (const { via, facts } of step.tell) station.relay?.meshTold?.(via, facts);
+  };
+  const meshWord = (socket: object, facts: unknown, seq: number) => meshStep(meshHeard(meshTurn, { socket, seq, facts }, !!meshAsked()));
+  // Salix as a relay: the station proves its endpoint id, then its packets go in binary frames.
   let relaySocket: { sendBinary?(data: Buffer): Effect.Effect<void, Error> } | null = null;
   const registerRelay = (carrier: RuntimeCarrier, challenge: string): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -990,14 +1166,25 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       const socket = relaySocket;
       if (!relay || !socket?.sendBinary) return;
       const signature = relay.sign(relayChallengeMessage(identity.runId, challenge)).toString("base64");
-      const reply = yield* Effect.exit(transport.request(carrier, { id: transport.nextRequestId("relay_"), type: "request", method: "relay_register", params: { endpoint_id: relay.endpointId, signature } }, SALIX_REQUEST_TIMEOUT));
+      const reply = yield* Effect.exit(transport.request(carrier, { id: transport.nextRequestId("relay_"), type: "request", method: "relay_register", params: { endpoint_id: relay.endpointId, signature, ...(meshAsked() ? { mesh: true } : {}) } }, SALIX_REQUEST_TIMEOUT));
       if (Exit.isFailure(reply) || reply.value.type === "error" || carrier.closed || relaySocket !== socket) return;
+      // A Salix from before says nothing of it: this station then stays off the mesh. One that says so unasked is not heard.
+      const told = reply.value.result as { mesh?: unknown; mesh_seq?: unknown } | undefined;
+      meshWord(socket, told?.mesh ?? null, typeof told?.mesh_seq === "number" ? told.mesh_seq : 0);
+      // Packets are the link's to lose (QUIC sends them again). Beyond the budget not yet written to the socket, a packet
+      // is dropped. That bounds how much heartbeats and answers can find ahead of them here; it does not put them first,
+      // as they share this socket, and what TCP already holds goes before them.
+      let unwritten = 0;
       relay.attach(socket, (to, data) => {
         if (relaySocket !== socket || !/^[0-9a-f]{64}$/.test(to)) return;
+        const size = 33 + data.length;
+        if (unwritten + size > RELAY_UNWRITTEN_BYTES) return;
+        unwritten += size;
         const frame = Buffer.concat([Buffer.from([RELAY_FRAME]), Buffer.from(to, "hex"), data]);
-        fork(socket.sendBinary!(frame).pipe(Effect.ignore));
+        fork(socket.sendBinary!(frame).pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => (unwritten -= size)))));
       });
-      fork(syncTaskIndex(carrier));
+      if (station.index) fork(syncIndex(carrier, station.index, "task.index", wireRow));
+      if (station.stats) fork(syncIndex(carrier, station.stats, "stats.index", statsWireRow));
     });
 
   /**
@@ -1005,16 +1192,14 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
    * sends what it lacks a page at a time, and again after the station's writes. Salix answers `rate_limited` to more than
    * a few pages a second; any other refusal (`not_this_group`, a Salix from before) ends it until the next connection.
    */
-  const syncTaskIndex = (carrier: RuntimeCarrier): Effect.Effect<void> =>
+  const syncIndex = <R extends { rev: number }>(carrier: RuntimeCarrier, index: PagedIndex<R>, method: string, wire: (row: R) => Record<string, unknown> | null): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const index = station.index;
-      if (!index) return;
       let changed = yield* Deferred.make<void>();
       const stop = index.listen(() => void Effect.runSync(Deferred.succeed(changed, undefined)));
       yield* Effect.addFinalizer(() => Effect.sync(stop));
       const send = (page: ReturnType<typeof probePage>): Effect.Effect<HeldIndex | "rate_limited" | null> =>
         Effect.gen(function* () {
-          const reply = yield* Effect.exit(transport.request(carrier, { id: transport.nextRequestId("index_"), type: "request", method: "task.index", params: page }, SALIX_REQUEST_TIMEOUT));
+          const reply = yield* Effect.exit(transport.request(carrier, { id: transport.nextRequestId("index_"), type: "request", method, params: page }, SALIX_REQUEST_TIMEOUT));
           if (Exit.isFailure(reply)) return null;
           if (reply.value.type === "error") return reply.value.error === "rate_limited" ? "rate_limited" : null;
           return heldFrom(reply.value.result);
@@ -1028,7 +1213,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
           changed = yield* Deferred.make<void>();
           if (held !== null && index.rev() === held.through && index.epoch() === held.epoch) continue;
           yield* Effect.sleep(Duration.seconds(1));
-          page = held === null ? probePage(index) : nextPage(index, held);
+          page = held === null ? probePage(index) : nextPage(index, held, wire);
           continue;
         }
         const answer: HeldIndex | "rate_limited" | null = yield* send(page);
@@ -1038,7 +1223,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
           continue;
         }
         held = answer;
-        page = nextPage(index, answer);
+        page = nextPage(index, answer, wire);
         if (page === null) index.prune(answer.through);
         else yield* Effect.sleep(Duration.millis(300));
       }
@@ -1085,7 +1270,12 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
         if (station.tasks && externalRuntimesEnabled() && scope !== SCOPE_LOCAL_FILE_READ) {
           station.tasks.attach(async (request) => {
             if (carrier.closed) throw new Error("not connected to Salix");
-            const timeout = Array.isArray(request.files) && request.files.length > 0 ? SALIX_FILE_POST_TIMEOUT : SALIX_REQUEST_TIMEOUT;
+            const timeout =
+              Array.isArray(request.files) && request.files.length > 0
+                ? SALIX_FILE_POST_TIMEOUT
+                : request.method === "task.tool_call"
+                  ? SALIX_TOOL_CALL_TIMEOUT
+                  : SALIX_REQUEST_TIMEOUT;
             const reply = await Effect.runPromise(provide(transport.request(carrier, { id: transport.nextRequestId("task_"), type: "request", method: String(request.method), params: request }, timeout)));
             if (reply.type === "error") throw new Refused(String(reply.error ?? "Salix refused"));
             return reply.result;
@@ -1119,8 +1309,18 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
   const serve = (socket: FrameSocket) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const writer = yield* makeWebSocketWriter(socketWriter(socket, writeBounded));
-        return yield* serveConnection(connectionHost(), { ...socket, receive: readBounded(socket.receive) }, writer);
+        // Stream bytes go in binary frames once Salix's `connected` frame says it takes them.
+        let binaryStreams = false;
+        const receive = readBounded(socket.receive).pipe(
+          Effect.tap((frame) =>
+            Effect.sync(() => {
+              const m = frame as Message;
+              if (m?.type === "connected") binaryStreams = m.binary_streams === true;
+            }),
+          ),
+        );
+        const writer = yield* makeWebSocketWriter(socketWriter(socket, writeBounded, () => binaryStreams));
+        return yield* serveConnection(connectionHost(), { ...socket, receive }, writer);
       }),
     );
 
@@ -1131,7 +1331,16 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     status.writeStatus("connecting", cfg.server, null);
     const url = connectUrl(cfg.server);
     const sockets = yield* SocketsService;
-    const socket = yield* sockets.dial(url, { ...credentialHeaders(), [CONNECTOR_INSTANCE_HEADER]: processInstanceId });
+    // A sticky fatal error gives up a pending dial at once rather than at the dial timeout.
+    const socket = yield* Effect.raceFirst(
+      sockets.dial(url, { ...credentialHeaders(), [CONNECTOR_INSTANCE_HEADER]: processInstanceId, [STREAM_FRAMES_HEADER]: "binary" }).pipe(
+        Effect.timeoutOrElse({
+          duration: WEBSOCKET_DIAL_TIMEOUT,
+          orElse: () => Effect.fail(new Error(`websocket dial deadline exceeded: no connection to Salix in ${Duration.toSeconds(WEBSOCKET_DIAL_TIMEOUT)} seconds`)),
+        }),
+      ),
+      Deferred.await(fatalSignal).pipe(Effect.flatMap((error) => Effect.fail(error))),
+    );
     const current: NonNullable<typeof live> = { close: socket.close, carrier: null, renewal: false };
     live = current;
     const fatalWatch = fork(Deferred.await(fatalSignal).pipe(Effect.andThen(socket.close)));
@@ -1144,7 +1353,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
       });
     }
     relaySocket = relay && socket.sendBinary ? socket : null;
-    const outcome = yield* Effect.exit(serve({ send: (f) => socket.send(f), receive: socket.receive, close: socket.close }));
+    if (relaySocket) meshStep(meshConnected(meshTurn, relaySocket));
+    const outcome = yield* Effect.exit(serve({ send: (f) => socket.send(f), sendBinary: socket.sendBinary && ((data) => socket.sendBinary!(data)), receive: socket.receive, close: socket.close }));
     yield* Fiber.interrupt(fatalWatch);
     if (live === current) live = null;
     relaySocket = null;
@@ -1185,7 +1395,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
           // A scoped connector is supervised by the app, which re-mints and respawns: a rejected credential ends it.
           if (scope === SCOPE_LOCAL_FILE_READ) {
             status.writeStatus("auth_required", "", error);
-            return yield* Effect.fail(new Error(`connector credential rejected for ${SCOPE_LOCAL_FILE_READ} scope: ${error.message}`));
+            return yield* Effect.fail(new Error(`station credential rejected for ${SCOPE_LOCAL_FILE_READ} scope: ${error.message}`));
           }
           status.writeStatus("auth_required", "", error, sleepMs);
           backoff = MIN_RECONNECT_BACKOFF_MS;
@@ -1321,7 +1531,7 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     deviceAccess: (params: Record<string, unknown>) => provide(deviceAccess(params)),
     clientMcp: (params: Record<string, unknown>) => provide(clientMcp(params)),
     computerUse: (params: Record<string, unknown>) => provide(computerUse.call(params)),
-    shutdownComputerUseDaemon: provide(computerUse.shutdown),
+    shutdownComputerUseDaemon: provide(Effect.sync(() => detachScreens?.()).pipe(Effect.andThen(computerUse.shutdown))),
     computerUseHelperCommand: (token: string) => provide(computerUse.helperCommand(token)),
     storeComputerUseImage: (response: DaemonResponse) => provide(computerUse.storeImage(response)),
     readComputerUseImage: (name: string) => provide(computerUse.readImage(name)),
@@ -1346,6 +1556,8 @@ export function makeConnector(input: Partial<ConnectorConfig> = {}, services?: L
     close: () =>
       provide(
         Effect.gen(function* () {
+          // Ended on purpose (signed out, the setting turned off): nothing outlives it, as it does a blip to Salix.
+          meshStep(meshEnded(meshTurn));
           stopTaskModels();
           stopAccess();
           yield* processes.killAll();

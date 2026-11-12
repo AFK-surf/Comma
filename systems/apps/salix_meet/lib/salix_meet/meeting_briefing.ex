@@ -29,7 +29,7 @@ defmodule SalixMeet.MeetingBriefing do
   end
 
   @doc """
-  The deterministic base card: title, time, event link, Meet link — the
+  The deterministic base card: title, time, event link, meeting link — the
   non-LLM header of the full briefing, and nothing else. Rendered by the
   system publication track, so it must stay a pure function of the stored
   occurrence facts: no research content, no clocks, no randomness (the
@@ -41,7 +41,7 @@ defmodule SalixMeet.MeetingBriefing do
 
   @doc """
   Card completeness for the deterministic track. The card's promise is time +
-  event link + Meet link; a card missing either link — including an event
+  event link + meeting link; a card missing either link — including an event
   link removed by the HTTPS safety validation — must never be sent.
   """
   @spec card_completeness(map()) :: :complete | :missing_meet_link | :missing_event_link
@@ -59,7 +59,7 @@ defmodule SalixMeet.MeetingBriefing do
     links =
       [
         link_line("Open event", event_url(context)),
-        link_line("Join Meet", conference_url(context))
+        link_line(conference_label(conference_url(context)), conference_url(context))
       ]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" · ")
@@ -146,15 +146,25 @@ defmodule SalixMeet.MeetingBriefing do
       end
 
     case locations do
-      %{"conference" => %{"uri" => uri}} -> safe_google_meet_url(uri)
+      %{"conference" => %{"uri" => uri}} -> safe_meeting_url(uri)
       _ -> nil
     end
   end
 
-  defp safe_google_meet_url(url) do
+  defp conference_label(url) do
+    case SalixCalendar.OccurrenceQualification.canonical_meeting_url(url) do
+      {:google_meet, _url} -> "Join Meet"
+      _ -> "Join meeting"
+    end
+  end
+
+  # Only a recognized video-meeting link (`SalixCalendar.OccurrenceQualification`)
+  # reaches attendees; the plan qualified on the same rule.
+  defp safe_meeting_url(url) do
     with canonical when is_binary(canonical) <- safe_https_url(url),
-         {:ok, %URI{host: "meet.google.com"}} <- URI.new(canonical) do
-      canonical
+         {_provider, meeting_url} <-
+           SalixCalendar.OccurrenceQualification.canonical_meeting_url(canonical) do
+      meeting_url
     else
       _ -> nil
     end

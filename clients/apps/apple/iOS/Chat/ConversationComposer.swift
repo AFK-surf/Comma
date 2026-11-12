@@ -14,20 +14,26 @@ struct ConversationComposer: View {
     /// The + button's card. Its surface lives on the model rather than in the conversation view, so opening and
     /// closing the card updates only the composer and the overlay.
     let button: AttachmentModel
+    var taskActions: TaskDockActions? = nil
     @State private var fieldHeight: CGFloat = 0
     /// A pre-task's prompt is playing its fill wave over the field, which hides its own text meanwhile.
     @State private var fillHidesText = false
     @State private var menu = TriggerMenuModel()
+    @State private var dictation = DictationModel()
+    /// The hardware Return now pressed holds Shift or Option, which breaks the line rather than sending.
+    @State private var returnBreaksLine = false
     /// VoiceOver returns here after a menu pick, instead of jumping from the row that went away.
     @AccessibilityFocusState private var fieldA11yFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     private var canAttach: Bool { !preparing && pane.target != nil && pane.attachmentRoom > 0 }
 
     /// Send waits for every attachment to upload; a failed one is retried or removed first.
+    /// A dictation still on its way holds Send, so its words are not left behind.
     private var canSubmit: Bool {
-        pane.canSend && !preparing && !pane.attachmentsBlockSend &&
+        pane.canSend && !preparing && !pane.attachmentsBlockSend && !dictation.busy &&
             !(pane.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !hasDrafts)
     }
 
@@ -36,12 +42,26 @@ struct ConversationComposer: View {
         VStack(alignment: .leading, spacing: 8) {
             // Collapsed, the + sits beside a one-line field. Typing, the field grows into one card around it, as in
             // ChatGPT: the text takes a row of its own above the + and Send, which stay where they were.
-            ZStack(alignment: .bottomLeading) {
-                field
-                plus
+            HStack(alignment: .bottom, spacing: 8) {
+                ZStack(alignment: .bottomLeading) {
+                    field
+                    plus
+                }
+                .commaGlassGroup(spacing: 8)
+                // The microphone, and while it records the waveform over the collapsed field, which it covers end to
+                // end (the field starts 52pt in, past the +). It lies over the glass group, outside it: over one shape
+                // inside the group it is drawn under its glass. Idle, only the microphone takes touches; the rest of
+                // the row passes them through.
+                .overlay(alignment: .bottomTrailing) {
+                    DictationControl(model: dictation, phase: dictation.phase, toggle: dictate)
+                        .frame(height: 44)
+                        .padding(.leading, 52)
+                }
+                .animation(CommaMotion.composerExpand, value: expanded)
+                if let taskActions, let task = store.taskSummary(id: pane.taskID ?? "") {
+                    TaskDockMenu(store: store, task: task, actions: taskActions)
+                }
             }
-            .commaGlassGroup(spacing: 8)
-            .animation(CommaMotion.composerExpand, value: expanded)
         }
         .triggerMenu(store: store, pane: pane, model: menu, enabled: expanded && button.surface == nil,
                      returnFocus: { fieldA11yFocused = true })
@@ -55,17 +75,29 @@ struct ConversationComposer: View {
             if surface == .camera || surface == .photos { focus.wrappedValue = false }
         }
         // The router keeps this composer across conversations; a caret from the last one never fits the next.
-        .onChange(of: ObjectIdentifier(pane)) { _, _ in menu.reset() }
+        .onChange(of: ObjectIdentifier(pane)) { _, _ in
+            menu.reset()
+            dictation.cancel()
+        }
+        // Leaving the app ends a recording, and its words still arrive; leaving the conversation drops it.
+        .onChange(of: scenePhase) { _, phase in if phase != .active, dictation.phase == .recording { dictate() } }
+        .onDisappear { dictation.cancel() }
         // Skills are read as the keyboard comes up, so the / menu opens on a loaded list.
         .onChange(of: expanded) { _, now in if now { Task { await store.skills.loadIfStale(store: store) } } }
     }
 
-    /// Held, the + shows its press, and the menu grows out of it on release, as from any button.
+    /// Held, the + shows its press, and the menu grows out of it on release, as from any button. While dictating it
+    /// turns into an ×, which drops the recording, or the transcription, and leaves the draft as it was.
     private var plus: some View {
-        Button(action: openAttachments) {
+        Button(action: plusTapped) {
             Group {
-                if preparing { ProgressView().controlSize(.small) }
-                else { CentralIcon("icon-plus", size: 22) }
+                if preparing && !dictation.busy { ProgressView().controlSize(.small) }
+                else {
+                    // The same glyph turned an eighth: the button keeps its identity, so its glass does not re-lay out.
+                    CentralIcon("icon-plus", size: 22)
+                        .rotationEffect(.degrees(dictation.busy ? 45 : 0))
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: dictation.busy)
+                }
             }
             .foregroundStyle(CommaTheme.textPrimary)
             .frame(width: 44, height: 44)
@@ -76,9 +108,9 @@ struct ConversationComposer: View {
             .contentShape(Circle())
         }
         .buttonStyle(PlusButtonStyle(onGlass: !expanded))
-        .disabled(!canAttach)
+        .disabled(!canAttach && !dictation.busy)
         .onChange(of: canAttach, initial: true) { _, now in button.canAttach = now }
-        .opacity(canAttach ? 1 : 0.5)
+        .opacity(canAttach || dictation.busy ? 1 : 0.5)
         // While the card is out it is this button's glass grown into the menu; the two cross-fade on one spring.
         .opacity(button.surface == nil ? 1 : 0)
         .animation(reduceMotion ? AttachmentMotion.reduced : AttachmentMotion.morph, value: button.surface == nil)
@@ -86,7 +118,11 @@ struct ConversationComposer: View {
             button.liveFrame = frame
             if button.surface != nil { button.pinAnchor() }
         }
-        .accessibilityLabel("Add attachment")
+        .accessibilityLabel(dictation.busy ? Text("Cancel dictation") : Text("Add attachment"))
+    }
+
+    private func plusTapped() {
+        if dictation.busy { dictation.cancel() } else { openAttachments() }
     }
 
     private func openAttachments() {
@@ -96,7 +132,8 @@ struct ConversationComposer: View {
 
     /// The composer is expanded while the keyboard is up, and while attachments or Routine items wait in it, which
     /// it holds above the text as ChatGPT's does.
-    private var expanded: Bool { focus.wrappedValue || hasDrafts }
+    /// Dictating, it holds its collapsed one-row capsule whatever else is true, and the waveform fills it.
+    private var expanded: Bool { !dictation.busy && (focus.wrappedValue || hasDrafts) }
     private var hasDrafts: Bool { !pane.drafts.isEmpty || !pane.draftTexts.isEmpty }
     /// Expanded in a compact height (an iPhone in landscape, where the keyboard leaves about 200pt), the card keeps
     /// to one row, as Messages does there: the text runs between the + and Send, at most two lines, and the
@@ -112,59 +149,77 @@ struct ConversationComposer: View {
     private var field: some View {
         ZStack(alignment: .bottomTrailing) {
             VStack(alignment: .leading, spacing: 0) {
-                if hasDrafts {
+                if hasDrafts && !dictation.busy {
                     AttachmentTray(pane: pane)
                         .padding(.top, 10)
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9, anchor: .topLeading)))
                 }
                 TextField("", text: menu.textBinding(for: pane), selection: menu.selectionBinding(for: pane),
-                          prompt: Text(pane.replyThread != nil ? "Reply in thread"
-                                       : pane.isTask ? "Reply to this task" : "Message Comma")
+                          prompt: Text(pane.suggestionPlaceholder ?? String(localized: pane.replyThread != nil ? "Reply in thread"
+                                       : pane.isTask ? "Reply to this task" : "Message Comma"))
                             .foregroundStyle(CommaTheme.textPlaceholder),
                           axis: .vertical)
                     .font(.body).foregroundStyle(fillHidesText ? Color.clear : CommaTheme.textPrimary)
+                    // Dictating, the waveform takes the text's place, one row high.
+                    .opacity(dictation.busy ? 0 : 1)
                     .autocorrectionDisabled()
-                    .lineLimit(inline ? 1...2 : 1...6).focused(focus)
+                    .lineLimit(dictation.busy ? 1...1 : inline ? 1...2 : 1...6).focused(focus)
+                    // A hardware keyboard's Return submits a vertical field and takes its focus; the software
+                    // keyboard's still types a line break. Return sends, as Messages does on the iPad, and Shift- or
+                    // Option-Return breaks the line. The key press comes before the submit and reads its modifiers.
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        returnBreaksLine = !press.modifiers.isDisjoint(with: [.shift, .option])
+                        return .ignored
+                    }
+                    .onSubmit(submitFromKeyboard)
                     .accessibilityFocused($fieldA11yFocused)
+                    .onKeyPress(.tab) { pane.acceptSuggestion() ? .handled : .ignored }
                     .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGPoint.self) { $0.frame(in: .chat).origin } action: { flight.composerTextOrigin = $0 }
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                        // The field follows each added or removed line on a short spring instead of jumping.
+                        // Measure for the fill overlay. Keep the field at its native height: feeding this
+                        // measurement back as its frame can loop layout when a restored draft wraps.
                         if fieldHeight == 0 { fieldHeight = height }
                         else if abs(height - fieldHeight) > 0.5 { withAnimation(CommaMotion.composerLines) { fieldHeight = height } }
                     }
-                    .frame(height: fieldHeight > 0 ? fieldHeight : nil, alignment: .top)
                     .clipped()
                     .draftFillReveal(pane: pane, active: expanded, visibleHeight: fieldHeight, hidesText: $fillHidesText,
                                      landed: { menu.placeCaretAtEnd(of: pane) })
                     .padding(.top, stacked ? (hasDrafts ? 12 : 16) : 11).padding(.bottom, stacked ? 54 : 11)
-                    .padding(.leading, inline ? 44 : stacked ? 14 : 16).padding(.trailing, stacked ? 14 : 44)
+                    .padding(.leading, inline ? 44 : stacked ? 14 : 16).padding(.trailing, stacked ? 14 : 88)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("chatComposer")
             }
             // A picked Task, command or skill reads in the brand colour, as what goes as a pick.
-            .pickTint(text: pane.draftText, ranges: pane.pickRanges(in: pane.draftText), hidden: fillHidesText,
+            .pickTint(text: pane.draftText, ranges: pane.pickRanges(in: pane.draftText), hidden: fillHidesText || dictation.busy,
                       rangesIn: { pane.pickRanges(in: $0) })
-            Button(action: send) {
-                CentralIcon("central-arrow-up", size: 18)
-                    .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(canSubmit ? CommaTheme.brandSolid : CommaTheme.textPlaceholder, in: Circle())
-                    .scaleEffect(canSubmit ? 1 : 0.92)
-                    .animation(CommaMotion.stateChange, value: canSubmit)
-                    // The visible circle is 32pt; the touch target is the full 44pt corner.
-                    .padding(6)
-                    .contentShape(Rectangle())
+            // The microphone (`DictationControl`, over the glass group) takes the 44pt just before Send.
+            HStack(spacing: 0) {
+                Color.clear.frame(width: 44, height: 44)
+                Button(action: send) {
+                    CentralIcon("central-arrow-up", size: 18)
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(canSubmit ? CommaTheme.brandSolid : CommaTheme.textPlaceholder, in: Circle())
+                        .scaleEffect(canSubmit ? 1 : 0.92)
+                        .animation(CommaMotion.stateChange, value: canSubmit)
+                        // The visible circle is 32pt; the touch target is the full 44pt corner.
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(TactileButtonStyle(scale: 0.9))
+                .disabled(!canSubmit)
+                .accessibilityLabel("Send message").accessibilityIdentifier("sendMessage")
+                // Dictating, the capsule is the waveform's from end to end.
+                .opacity(dictation.busy ? 0 : 1)
+                .allowsHitTesting(!dictation.busy)
             }
-            .buttonStyle(TactileButtonStyle(scale: 0.9))
-            .disabled(!canSubmit)
-            .accessibilityLabel("Send message").accessibilityIdentifier("sendMessage")
         }
         .frame(minHeight: 44)
         // Typing, @ and / join the + in the bottom row: glyphs on the card's glass, like Send, so the glass draws
         // under them rather than over them.
         .overlay(alignment: .bottomLeading) {
-            if stacked {
+            if stacked && !dictation.busy {
                 TriggerButtons(pane: pane, menu: menu, cardOpen: button.surface != nil)
                     .padding(.leading, 44)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.85, anchor: .leading)))
@@ -177,6 +232,20 @@ struct ConversationComposer: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .chat) } action: { flight.composerFrame = $0 }
         // Collapsed, the + stands outside the glass: its 44pt and the 8pt between them.
         .padding(.leading, expanded ? 0 : 52)
+    }
+
+    /// The microphone: the words go into the draft of the conversation the recording started in.
+    private func dictate() {
+        // Dictating, the composer is its one-row capsule, with no keyboard under it.
+        if dictation.phase == .idle { focus.wrappedValue = false }
+        dictation.toggle(store: store) { [pane, menu] words in menu.insertDictation(words, pane: pane) }
+    }
+
+    /// A hardware Return: sends, or breaks the line, and the field keeps the keyboard either way.
+    private func submitFromKeyboard() {
+        if returnBreaksLine { menu.insertLineBreak(pane: pane) } else { send() }
+        returnBreaksLine = false
+        focus.wrappedValue = true
     }
 
     /// The composer surface lifts off as the sent bubble; delivery runs underneath it.

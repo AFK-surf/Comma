@@ -11,18 +11,25 @@ defmodule Salix.Bindings.IMFeishuUserAccounts do
 
   @impl true
   def list(group_id) do
-    {:ok,
-     for %{"provider" => "feishu"} = binding <- OAuthBindings.list(group_id) do
-       %{
-         "alias" => binding["alias"],
-         "open_id" => binding["provider_account_id"],
-         "name" => binding["provider_account_name"],
-         "status" => binding["status"]
-       }
-     end}
+    {
+      :ok,
+      # A member's sign-in for their Routine (alias `feishu-member`) belongs to
+      # them alone: no read of the connect's own uses it.
+      for %{"provider" => "feishu"} = binding <- OAuthBindings.list(group_id),
+          binding["alias"] != "feishu-member" do
+        %{
+          "alias" => binding["alias"],
+          "open_id" => binding["provider_account_id"],
+          "name" => binding["provider_account_name"],
+          "status" => binding["status"]
+        }
+      end
+    }
   end
 
   @impl true
+  def access_token(_agent_id, "feishu-member"), do: {:error, :not_found}
+
   def access_token(agent_id, alias_name) do
     entry = %{
       "env_var" => "FEISHU_USER_ACCESS_TOKEN",

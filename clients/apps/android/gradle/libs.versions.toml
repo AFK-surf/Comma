@@ -37,6 +37,10 @@ androidx-test-runner = { module = "androidx.test:runner", version = "1.7.0" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { module = "org.robolectric:robolectric", version = "4.17" }
+# The Android framework jars Robolectric 4.17 runs the tests on: SDK 35 (every
+# test's @Config) and SDK 37 (the default, for tests without one).
+robolectric-androidAll-sdk35 = { module = "org.robolectric:android-all-instrumented", version = "15-robolectric-13954326-i7" }
+robolectric-androidAll-sdk37 = { module = "org.robolectric:android-all-instrumented", version = "17-robolectric-15733970-i7" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }

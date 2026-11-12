@@ -139,6 +139,36 @@ defmodule SalixAgent.MemoryToolsTest do
       # the .txt file never matches
       refute Enum.any?(out["matches"], &(&1["path"] == "/memory/raw.txt"))
     end
+
+    test "a multi-word query matches each word, lines with more words first", %{agent: a} do
+      state =
+        state_with(a, [
+          {"/memory/episodes/2026-11-05.md", "GitLab token saved\nunrelated"},
+          {"/memory/semantic/environments/acme.md", "代码在 GitLab\n账号 Abby 的 GitLab token 在跳板机"}
+        ])
+
+      {out, _} =
+        run_json("memory.search", %{"query" => "gitlab 账号 token 仓库"}, ctx(a, state))
+
+      assert out["truncated"] == false
+
+      assert Enum.map(out["matches"], &{&1["path"], &1["line_start"]}) == [
+               # 3 words: gitlab, 账号, token
+               {"/memory/semantic/environments/acme.md", 1},
+               # 2 words: gitlab, token
+               {"/memory/episodes/2026-11-05.md", 1},
+               # 1 word: gitlab
+               {"/memory/semantic/environments/acme.md", 1}
+             ]
+
+      assert hd(out["matches"])["snippet"] =~ "账号 Abby 的 GitLab token 在跳板机"
+
+      {out, _} =
+        run_json("memory.search", %{"query" => "gitlab", "limit" => 2}, ctx(a, state))
+
+      assert length(out["matches"]) == 2
+      assert out["truncated"] == true
+    end
   end
 
   describe "memory.write — write mode" do
@@ -165,6 +195,21 @@ defmodule SalixAgent.MemoryToolsTest do
       # committing the event makes the content readable
       commit_workspace!(a, "semantic-write", res.events)
       assert {:ok, "# U"} = AgentWorkspace.read(a, "/memory/semantic/user.md")
+    end
+
+    # Meeting transcripts and notes spell names from it, and a person's
+    # correction is kept there.
+    test "writes the meeting glossary", %{agent: a} do
+      res =
+        run(
+          "memory.write",
+          %{"path" => "/memory/semantic/glossary.md", "content" => "- 金飞 → Jimmfly\n"},
+          ctx(a, state_with(a, []))
+        )
+
+      refute res.error
+      commit_workspace!(a, "glossary-write", res.events)
+      assert {:ok, "- 金飞 → Jimmfly\n"} = AgentWorkspace.read(a, "/memory/semantic/glossary.md")
     end
   end
 
@@ -219,7 +264,8 @@ defmodule SalixAgent.MemoryToolsTest do
           {"unsupported paths get willow's full guidance wording",
            %{"path" => "/memory/foo.md", "content" => "x"},
            "error: Unsupported memory path. Use /memory/semantic/user.md, /memory/semantic/agent.md, " <>
-             "/memory/semantic/people.md, /memory/semantic/environments/<alias>.md, " <>
+             "/memory/semantic/people.md, /memory/semantic/glossary.md, " <>
+             "/memory/semantic/environments/<alias>.md, " <>
              "/memory/index.md, /memory/scoped/<name>.md, or /memory/episodes/YYYY-MM-DD.md."},
           {"write mode is rejected for daily memory files",
            %{"path" => "/memory/episodes/2030-01-05.md", "content" => "x", "mode" => "write"},

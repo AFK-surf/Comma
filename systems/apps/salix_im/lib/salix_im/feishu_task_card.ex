@@ -84,6 +84,8 @@ defmodule SalixIM.FeishuTaskCard do
                "content" => attrs["payload"]["task_id"]
              }
            ) do
+      SalixIM.MentionReplyLatency.card_requested(conversation_id)
+
       {:ok,
        %{
          "conversation_id" => conversation_id,
@@ -181,13 +183,15 @@ defmodule SalixIM.FeishuTaskCard do
            @replay_window_ms do
       quarantine(desired, :task_card_post_outcome_unknown)
     else
-      case Feishu.reply_card(
-             connect,
-             desired["reply_message_id"],
-             card,
-             post_uuid(desired),
-             desired["chat_type"] != "p2p"
-           ) do
+      case SalixIM.MentionReplyLatency.with_card(rec["conversation_id"], fn ->
+             Feishu.reply_card(
+               connect,
+               desired["reply_message_id"],
+               card,
+               post_uuid(desired),
+               desired["chat_type"] != "p2p"
+             )
+           end) do
         {:ok, response} ->
           with {:ok, receipt} <- written(desired, response) do
             if replay?, do: refresh_replayed_card(connect, receipt, card), else: {:ok, receipt}

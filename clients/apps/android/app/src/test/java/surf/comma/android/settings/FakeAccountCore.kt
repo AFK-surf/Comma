@@ -67,6 +67,10 @@ internal class FakeAccountCore : CoreApi {
                 }
             }
             "devices.remove" -> null.also { devices.value = devices.value.filterNot { it.getString("device_id") == params.getString("device") } }
+            "accountDeletion.requestCode" -> JSONObject().put("challengeId", "chl-1")
+            "emailChange.requestCode" -> JSONObject().put("challengeId", "current-1")
+            "emailChange.requestNewCode" -> JSONObject().put("challengeId", "new-1")
+            "emailChange.confirm" -> JSONObject().put("email", "ada@home.example")
             "voice.deleteKey" -> null.also { keys.value = keys.value.filterNot { it.getString("key_id") == params.getString("key") } }
             else -> null
         }

@@ -60,6 +60,7 @@ defmodule SalixAgent.DecideTest do
     [result] = SessionToolDispatch.execute([%{id: "decide-1", name: "decide", args: args}], ctx)
     refute result[:error]
     out = Jason.decode!(result.content)
+    assert out["usage"] == %{"input_tokens" => 123, "output_tokens" => 7}
     assert out["answers"]["source"]["choice"] == "meetings"
     assert out["answers"]["source"]["confidence_bp"] == 8123
     assert out["answers"]["relevant"]["probability_bp"] == 9234
@@ -111,6 +112,25 @@ defmodule SalixAgent.DecideTest do
                ctx
              )
            ) == "invalid_request"
+
+    settle_refute_receive({:decision_request, _, _, _})
+  end
+
+  test "Task routing accepts its bounded configuration and full command without expanding the public tool",
+       %{ctx: ctx} do
+    args = DecideFixture.args(String.duplicate("x", 16_000))
+    assert {:error, :invalid_request} = Decide.validate(args)
+    assert {:ok, _} = Decide.task_model_selection_call(args, ctx)
+    settle_receive({:decision_request, _, _, request})
+    assert request["state"] == args["state"]
+    settle_receive({:decision_meter_before, before})
+    assert before.entrypoint == "task_model_selection"
+
+    assert {:error, "input_too_large"} =
+             Decide.task_model_selection_call(
+               DecideFixture.args(String.duplicate("x", 65_536)),
+               ctx
+             )
 
     settle_refute_receive({:decision_request, _, _, _})
   end

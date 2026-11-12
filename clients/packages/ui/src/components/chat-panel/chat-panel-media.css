@@ -601,43 +601,13 @@
     max-width: min(320px, calc(100vw - 32px));
   }
 
-  .chat-panel-file-open-primary,
-  .chat-panel-file-open-chevron {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    justify-content: center;
-    align-self: stretch;
-    gap: var(--spacing-xs);
-    border: 0;
-    background: transparent;
-    padding-block: var(--spacing-xs);
-    cursor: pointer;
-  }
-
-  .chat-panel-file-open-primary {
-    padding-inline: var(--spacing-md) var(--spacing-none);
-  }
-
-  .chat-panel-file-open-chevron {
-    padding-inline: var(--spacing-none) var(--spacing-md);
-  }
-
-  .chat-panel-file-open-primary:focus-visible,
-  .chat-panel-file-open-chevron:focus-visible {
-    outline: 2px solid var(--color-border-brand);
-    outline-offset: -2px;
-  }
-
-  .chat-panel-file-open-primary:disabled,
-  .chat-panel-file-open-chevron:disabled {
-    cursor: default;
-    opacity: 0.5;
-  }
-
+  /* An app icon's artwork sits inside its own transparent margin, so it is drawn larger than the 16px glyph slot
+     and centred on it: it reads at a glyph's size and its name stays in the column of the glyph rows. */
   .chat-panel-file-app-icon {
-    width: var(--spacing-2xl);
-    height: var(--spacing-2xl);
+    flex: none;
+    width: var(--spacing-3xl);
+    height: var(--spacing-3xl);
+    max-width: none;
     object-fit: contain;
   }
 
@@ -904,7 +874,7 @@
     border: 0;
     border-radius: var(--radius-xl);
     background: transparent;
-    box-shadow: none;
+    box-shadow: var(--shadow-xs);
   }
 
   .chat-panel-video-stage {
@@ -913,6 +883,12 @@
     height: 100%;
     overflow: hidden;
     border-radius: var(--radius-xl);
+    background: transparent;
+  }
+
+  /* The placeholder left behind by picture-in-picture uses the player's light
+     text, so it keeps the player's dark backdrop. */
+  .chat-panel-video-stage[data-picture-in-picture="true"] {
     background: var(--color-markdown-sound-video-bg-preview);
   }
 

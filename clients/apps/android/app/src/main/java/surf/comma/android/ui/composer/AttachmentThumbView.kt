@@ -34,7 +34,8 @@ import surf.comma.android.ui.theme.DesignTypography
 /**
  * One attachment above the text: a rounded thumbnail (an image itself, a video's first frame, or
  * another file's glyph and name), its upload state drawn on top, and a remove button in the
- * corner. A failed upload is retried by tapping the thumbnail.
+ * corner. A failed upload is retried by tapping the thumbnail. A file the device does not have at
+ * hand draws the server's copy of an uploaded image, or else its glyph and name.
  */
 internal class AttachmentThumbView(
     context: Context,
@@ -46,6 +47,13 @@ internal class AttachmentThumbView(
     val attachmentId: String = attachment.id
     val uri: Uri = attachment.uri
     private val kind = attachment.file.kind
+    private val name = attachment.file.name
+    private val local = attachment.local
+    private val video = local && kind == FileKind.VIDEO
+    /** The picture drawn; null for a video, drawn from its frame, and for a file with no picture. */
+    private val picture: ViewerImage? =
+        if (!local) attachment.uploaded else ViewerImage.Local(uri, "image/*", null).takeIf { kind == FileKind.IMAGE }
+    private var label: View? = null
 
     private val image = ImageView(context)
     private val overlay = UploadOverlay(context, style)
@@ -77,11 +85,11 @@ internal class AttachmentThumbView(
             }
         }
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        when (kind) {
-            FileKind.IMAGE -> Unit
-            FileKind.VIDEO -> addView(playBadge(), LayoutParams(style.dp(20), style.dp(20), Gravity.BOTTOM or Gravity.START)
+        when {
+            picture != null -> Unit
+            video -> addView(playBadge(), LayoutParams(style.dp(20), style.dp(20), Gravity.BOTTOM or Gravity.START)
                 .apply { bottomMargin = style.dp(4); marginStart = style.dp(4) })
-            else -> addView(fileLabel(attachment.file.name), LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            else -> showLabel()
         }
         addView(overlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
@@ -117,24 +125,33 @@ internal class AttachmentThumbView(
     }
 
     private fun load() {
-        if (kind != FileKind.IMAGE && kind != FileKind.VIDEO) return
+        val picture = picture
+        if (picture == null && !video) return
         if (!isAttachedToWindow || owner != null || bitmap != null) return
         owner = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { scope ->
             scope.launch {
                 try {
-                    bitmap = if (kind == FileKind.VIDEO) withContext(Background.files) { videoFrame() } else {
+                    bitmap = if (picture == null) withContext(Background.files) { videoFrame() } else {
                         // Providers may return pre-cropped loadThumbnail pixels. Ask the shared loader
                         // for the original URI, oriented by its decoder, with bounded full-image size.
-                        val decoded = MediaGraph.get(context).images().load(
-                            ViewerImage.Local(uri, "image/*", null), PREVIEW_EDGE, PREVIEW_EDGE)
+                        val decoded = MediaGraph.get(context).images().load(picture, PREVIEW_EDGE, PREVIEW_EDGE)
                         (decoded as? BitmapDrawable)?.bitmap
                     }
                     ensureActive()
                     image.setImageBitmap(bitmap)
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { AppLog.debug(TAG, error, "Thumbnail failed") }
+                catch (error: Exception) {
+                    AppLog.debug(TAG, error, "Thumbnail failed")
+                    // The server's copy did not load: the file's name, not an empty tile.
+                    if (!local) showLabel()
+                }
             }
         }
+    }
+
+    private fun showLabel() {
+        if (label != null) return
+        label = fileLabel(name).also { addView(it, 1, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)) }
     }
 
     /** The video's own thumbnail from its provider, else its first frame. */

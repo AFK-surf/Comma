@@ -29,9 +29,7 @@ defmodule SalixAnalytics.SlackMirror do
 
     with :ok <- write_kind(canonical, &Sink.readiness/0, &Sink.write/1),
          :ok <- write_kind(payload_rows(rows), &Sink.payloads_readiness/0, &Sink.write_payloads/1) do
-      # Optional local metadata only. A dead/full semantic queue cannot change
-      # the durable mirror acknowledgment or make this caller wait for GPU IO.
-      SalixAnalytics.SlackSemanticQueue.offer_live(rows)
+      SalixAnalytics.SlackSemanticQueue.wake()
       :ok
     end
   end

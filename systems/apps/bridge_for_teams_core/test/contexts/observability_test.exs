@@ -310,6 +310,34 @@ defmodule BridgeForTeams.ObservabilityTest do
     assert Observability.list_events(other_org.id) == []
   end
 
+  test "a Slack callback diagnostic keeps Slack's retry number and reason", %{project: project} do
+    assert :ok =
+             SalixIMSink.record(%{
+               provider: "slack",
+               source: "salix.im",
+               domain: "integration",
+               event_type: "slack.callback.accepted",
+               severity: "info",
+               status: "accepted",
+               summary: "Slack callback accepted",
+               group_id: project.salix_group_id,
+               connect_id: "conn_slack",
+               provider_event_id: "Ev1",
+               retry_num: "1",
+               retry_reason: "http_timeout"
+             })
+
+    assert [event] =
+             Repo.all(
+               from(e in ObservabilityEvent,
+                 where: e.project_id == ^project.id and e.source == "salix.im"
+               )
+             )
+
+    assert %{"provider_event_id" => "Ev1", "retry_num" => "1", "retry_reason" => "http_timeout"} =
+             event.evidence
+  end
+
   test "a Lark diagnostic of a project's Swarm becomes an Operations event", %{
     org: org,
     project: project

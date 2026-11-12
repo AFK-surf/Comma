@@ -125,9 +125,9 @@ const definitions: readonly AlertRuleDefinition[] = [
       "这些会议的参会者收到的是「记录不完整」说明而不是总结；即使真实总结随后抵达也不会再发布。",
     evidence:
       "总结 watchdog 在超过拖堂 cutoff 后仍拿不到确定的活会话答案，将会议置为 failed(runtime_lost)。",
-    unknown: "尚未确认是运行时进程失联、连接器掉线，还是会议确实超长。",
+    unknown: "尚未确认是运行时进程失联、station 掉线，还是会议确实超长。",
     action:
-      "先看该会议的 join_dispatch 与最后一次运行时事件时间，再确认对应连接器是否在线。",
+      "先看该会议的 join_dispatch 与最后一次运行时事件时间，再确认对应 station 是否在线。",
     criteria:
       "30 分钟内出现至少一次 runtime_lost 终态化，条件连续成立 15 分钟。",
   },

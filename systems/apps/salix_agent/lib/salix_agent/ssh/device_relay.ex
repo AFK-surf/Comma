@@ -15,16 +15,27 @@ defmodule SalixAgent.SSH.DeviceRelay do
     * `{:env_tunnel_send, relay, id, frame}` to the owner;
     * `{:env_tunnel_frame, id, frame}` from the owner.
 
-  A frame is `%{"channel" => "tcp", "data" => base64}`, `%{"channel" =>
+  A frame is `%{"channel" => "tcp", "bytes" => bytes}` (from the owner
+  also `"data" => base64`, as a connector without binary frames sends it), `%{"channel" =>
   "tcp", "eof" => true}` or `%{"channel" => "tcp_ack", "seq" => n}`, where
   `n` counts the bytes written so far. Each side keeps at most one window of
   unacknowledged bytes in flight, so neither the owner nor the connector
   buffers more than that. The relay stops reading its socket while a full
   window is unacknowledged. Frames and window follow the dial result's
-  `max_frame` and `window` (a T-Circle has smaller ones than salix-connect).
+  `max_frame` and `window` (a T-Circle has smaller ones than the station).
 
   The tunnel ends when the SSH connection closes its socket, the connector
   sends eof, or the socket owner exits. The relay keeps no durable state.
+
+  When the caller closes its socket, the relay sends what is left and its eof
+  only after the connector acknowledged every byte. It exits `:normal` when
+  every byte it sent was acknowledged, and `{:shutdown, :unacknowledged}`
+  when the tunnel ended with bytes not sent or not acknowledged. A caller
+  that must know its bytes arrived dials with `monitor: true` and waits on
+  the result's `:monitor`, and ends a tunnel it stops waiting for with
+  `abort/1`. That monitor is set before the relay can end: a monitor made
+  after `dial/6` returns can reach a relay that already ended and report
+  `:noproc` instead of its exit.
   """
 
   use SystemsRuntime.Server
@@ -37,13 +48,25 @@ defmodule SalixAgent.SSH.DeviceRelay do
 
   @doc """
   Dial `host`:`port` from the gateway `target`. Returns a connected socket
-  owned by the caller and the gateway's dial result.
+  owned by the caller and the gateway's dial result, with the relay's pid
+  under `:relay`; with `monitor: true`, also the caller's monitor of the
+  relay under `:monitor`.
   """
-  @spec dial(String.t(), EnvDispatch.target(), String.t(), pos_integer(), pos_integer()) ::
+  @spec dial(
+          String.t(),
+          EnvDispatch.target(),
+          String.t(),
+          pos_integer(),
+          pos_integer(),
+          keyword()
+        ) ::
           {:ok, :gen_tcp.socket(), map()} | {:error, term()}
-  def dial(agent_id, target, host, port, timeout_ms) do
+  def dial(agent_id, target, host, port, timeout_ms, opts \\ []) do
     with {:ok, client, local} <- socket_pair() do
       {:ok, relay} = SystemsRuntime.Server.start(__MODULE__, :ok)
+      # Before the open call: the relay takes this caller's signals in order,
+      # so it is monitored before it can end.
+      monitor = if Keyword.get(opts, :monitor, false), do: SystemsRuntime.Proc.monitor(relay)
       :ok = :gen_tcp.controlling_process(local, relay)
       open = {:open, agent_id, target, %{host: host, port: port, timeout_ms: timeout_ms}, local}
 
@@ -54,13 +77,25 @@ defmodule SalixAgent.SSH.DeviceRelay do
       end
       |> case do
         {:ok, result} ->
-          {:ok, client, result}
+          result = Map.put(result, :relay, relay)
+          {:ok, client, if(monitor, do: Map.put(result, :monitor, monitor), else: result)}
 
         {:error, reason} ->
+          if monitor, do: SystemsRuntime.Proc.demonitor(monitor, [:flush])
           :gen_tcp.close(client)
           {:error, reason}
       end
     end
+  end
+
+  @doc """
+  End the tunnel of `relay` now: the connector gets eof, and what was not
+  acknowledged is dropped. Does nothing when the relay has already ended.
+  """
+  @spec abort(pid()) :: :ok
+  def abort(relay) do
+    SystemsRuntime.Proc.send(relay, :abort)
+    :ok
   end
 
   # A loopback pair: OTP ssh needs a gen_tcp socket, and the relay needs the
@@ -166,7 +201,7 @@ defmodule SalixAgent.SSH.DeviceRelay do
   def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state) do
     send_frame(state, %{"channel" => "tcp", "eof" => true})
     :gen_tcp.close(socket)
-    {:stop, :normal, state}
+    {:stop, ended(state), state}
   end
 
   def handle_info({:env_tunnel_frame, id, frame}, %{id: id} = state) do
@@ -177,10 +212,11 @@ defmodule SalixAgent.SSH.DeviceRelay do
 
       %{"channel" => "tcp", "eof" => true} ->
         :gen_tcp.close(state.socket)
-        {:stop, :normal, state}
+        {:stop, ended(state), state}
 
-      %{"channel" => "tcp", "data" => data} when is_binary(data) ->
-        write(state, data)
+      %{"channel" => "tcp"} = frame
+      when is_map_key(frame, "bytes") or is_map_key(frame, "data") ->
+        write(state, frame)
 
       _other ->
         {:noreply, state}
@@ -189,15 +225,21 @@ defmodule SalixAgent.SSH.DeviceRelay do
 
   def handle_info({:DOWN, _ref, :process, owner, _reason}, %{owner: owner} = state) do
     :gen_tcp.close(state.socket)
-    {:stop, :normal, state}
+    {:stop, ended(state), state}
+  end
+
+  def handle_info(:abort, %{socket: socket} = state) do
+    send_frame(state, %{"channel" => "tcp", "eof" => true})
+    :gen_tcp.close(socket)
+    {:stop, ended(state), state}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
   # The connector keeps its own window, so a write never queues more than
   # one window here.
-  defp write(state, data) do
-    with {:ok, bytes} <- Base.decode64(data),
+  defp write(state, frame) do
+    with {:ok, bytes} <- frame_bytes(frame),
          :ok <- :gen_tcp.send(state.socket, bytes) do
       received = state.received + byte_size(bytes)
       send_frame(state, %{"channel" => "tcp_ack", "seq" => received})
@@ -206,9 +248,15 @@ defmodule SalixAgent.SSH.DeviceRelay do
       _error ->
         send_frame(state, %{"channel" => "tcp", "eof" => true})
         :gen_tcp.close(state.socket)
-        {:stop, :normal, state}
+        {:stop, ended(state), state}
     end
   end
+
+  # The socket owner hands over a binary frame's raw `bytes`, a JSON frame's
+  # base64 `data`.
+  defp frame_bytes(%{"bytes" => bytes}) when is_binary(bytes), do: {:ok, bytes}
+  defp frame_bytes(%{"data" => data}) when is_binary(data), do: Base.decode64(data)
+  defp frame_bytes(_frame), do: :error
 
   # Send pending bytes while the window allows, never more than one window
   # unacknowledged; read the socket again only when nothing is pending.
@@ -216,13 +264,17 @@ defmodule SalixAgent.SSH.DeviceRelay do
     case min(min(state.max_frame, state.window - (state.sent - state.acked)), byte_size(pending)) do
       size when size > 0 ->
         <<chunk::binary-size(^size), rest::binary>> = pending
-        send_frame(state, %{"channel" => "tcp", "data" => Base.encode64(chunk)})
+        send_frame(state, %{"channel" => "tcp", "bytes" => chunk})
         flush(%{state | pending: rest, sent: state.sent + size})
 
       _full ->
         {:noreply, state}
     end
   end
+
+  # The last bytes are acknowledged before the eof, so the exit tells the
+  # caller they arrived.
+  defp flush(%{closing: true} = state) when state.acked < state.sent, do: {:noreply, state}
 
   defp flush(%{closing: true} = state) do
     send_frame(state, %{"channel" => "tcp", "eof" => true})
@@ -233,6 +285,9 @@ defmodule SalixAgent.SSH.DeviceRelay do
     :inet.setopts(state.socket, active: :once)
     {:noreply, state}
   end
+
+  defp ended(%{pending: <<>>, acked: same, sent: same}), do: :normal
+  defp ended(_state), do: {:shutdown, :unacknowledged}
 
   defp send_frame(state, frame),
     do:

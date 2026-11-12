@@ -2,16 +2,19 @@ defmodule CommaWeb.RecommendationSourceCatalog do
   @moduledoc false
 
   @app_names %{
+    "feishu" => "飞书",
     "github" => "GitHub",
     "gmail" => "Gmail",
     "googlecalendar" => "Google Calendar",
     "googledrive" => "Google Drive",
+    "lark" => "Lark",
     "linear" => "Linear",
     "notion" => "Notion",
     "outlook" => "Microsoft Outlook",
     "slack" => "Slack"
   }
-  @supported_toolkits Map.keys(@app_names)
+  # Feishu and Lark have names only: they are member sources, never Composio.
+  @supported_toolkits Map.keys(@app_names) -- ~w(feishu lark)
   @linear_issues_query """
   query CommaRecommendationIssues($first: Int!) {
     issues(first: $first) {

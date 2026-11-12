@@ -46,6 +46,9 @@ defmodule SalixAnalytics.ClickHouseRead do
   # amount, exactly as the contract intends.
   @over_budget_codes ~w(158 159 160 241 307)
 
+  # How ClickHouse words the error a failed query ends its 200 response with.
+  @stream_exception ~r/\ACode: \d+\. DB::Exception/
+
   @doc """
   Run `sql_fn.(database)` with the given binds.
 
@@ -161,13 +164,47 @@ defmodule SalixAnalytics.ClickHouseRead do
 
   defp trim(text), do: text |> String.slice(0, 300) |> String.trim()
 
+  # A query that fails after its 200 response started ends the body with one
+  # last line in the output format: `{"exception": "Code: ..."}`, or
+  # `["Code: ..."]` in the compact format (seen on 25.3; 26.9 closes the
+  # connection instead, which Req already returns as an error). The lines before
+  # it are a partial result, so the read fails like a non-2xx response. Only the
+  # exact shape on the last line counts, and a query that selects a lone
+  # `exception` column whose last value is ClickHouse's own error text fails
+  # with it: a false error is the safe side of that ambiguity.
+  defp stream_exception(lines, format) do
+    with line when is_binary(line) <- List.last(lines),
+         {:ok, decoded} <- Jason.decode(line),
+         text when is_binary(text) <- exception_text(decoded, format),
+         true <- Regex.match?(@stream_exception, text) do
+      text
+    else
+      _ -> nil
+    end
+  end
+
+  defp exception_text(%{"exception" => text} = row, :json_each_row) when map_size(row) == 1,
+    do: text
+
+  defp exception_text([text], :compact_with_names), do: text
+  defp exception_text(_decoded, _format), do: nil
+
   @doc false
   # `JSONCompactEachRowWithNames`: the first line is the array of column
   # names, every later line one array of values in that order. Rows come out
   # as the same maps `JSONEachRow` would give, so callers cannot tell the
   # formats apart.
-  def decode_rows(body, :compact_with_names) do
-    case body |> to_string() |> String.split("\n", trim: true) do
+  def decode_rows(body, format) do
+    lines = body |> to_string() |> String.split("\n", trim: true)
+
+    case stream_exception(lines, format) do
+      nil -> decode_lines(lines, format)
+      text -> classify_error(trim(text))
+    end
+  end
+
+  defp decode_lines(lines, :compact_with_names) do
+    case lines do
       [] ->
         {:ok, []}
 
@@ -197,10 +234,8 @@ defmodule SalixAnalytics.ClickHouseRead do
     end
   end
 
-  def decode_rows(body, _json_each_row) do
-    body
-    |> to_string()
-    |> String.split("\n", trim: true)
+  defp decode_lines(lines, _json_each_row) do
+    lines
     |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
       case Jason.decode(line) do
         {:ok, row} -> {:cont, {:ok, [row | acc]}}

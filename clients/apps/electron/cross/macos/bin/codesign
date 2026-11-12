@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+verify=0
+identity=
+entitlements=
+identifier=
+flags=()
+paths=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --verify | -v) verify=1 ;;
+    --sign | -s) identity=$2; shift ;;
+    --entitlements) entitlements=$2; shift ;;
+    --identifier | -i) identifier=$2; shift ;;
+    --options | -o) flags+=(--code-signature-flags "$2"); shift ;;
+    --options=*) flags+=(--code-signature-flags "${1#--options=}") ;;
+    --keychain | --prefix | --requirements | -r) shift ;;
+    --force | -f | --deep | --strict | --timestamp | --timestamp=* | --verbose | --verbose=* \
+      | --preserve-metadata=* | --generate-entitlement-der | --all-architectures) ;;
+    -*) echo "codesign (rcodesign shim): ignoring $1" >&2 ;;
+    *) paths+=("$1") ;;
+  esac
+  shift
+done
+
+main_executable() {
+  local path=$1
+  if [ -d "$path" ]; then
+    local name
+    name=$(sed -n '/<key>CFBundleExecutable<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' "$path/Contents/Info.plist")
+    echo "$path/Contents/MacOS/$name"
+  else
+    echo "$path"
+  fi
+}
+
+# rcodesign verify rejects valid ad hoc signatures (no CMS blob), so check that the signature and the bundle seal exist.
+if [ "$verify" = 1 ]; then
+  for path in "${paths[@]}"; do
+    rcodesign print-signature-info "$(main_executable "$path")" | grep -q 'flags:' \
+      || { echo "codesign (rcodesign shim): $path is not signed" >&2; exit 1; }
+    if [ -d "$path" ] && [ ! -f "$path/Contents/_CodeSignature/CodeResources" ]; then
+      echo "codesign (rcodesign shim): $path has no sealed resources" >&2
+      exit 1
+    fi
+  done
+  exit 0
+fi
+
+if [ -n "$identity" ] && [ "$identity" != "-" ] && [ -z "${COMMA_MACOS_P12_FILE:-}" ]; then
+  echo "codesign (rcodesign shim): identity '$identity' needs COMMA_MACOS_P12_FILE; signing ad hoc instead" >&2
+fi
+
+args=(sign)
+if [ -n "${COMMA_MACOS_P12_FILE:-}" ] && [ "$identity" != "-" ]; then
+  args+=(--p12-file "$COMMA_MACOS_P12_FILE")
+  [ -n "${COMMA_MACOS_P12_PASSWORD_FILE:-}" ] && args+=(--p12-password-file "$COMMA_MACOS_P12_PASSWORD_FILE")
+fi
+[ -n "$entitlements" ] && args+=(--entitlements-xml-file "$entitlements")
+[ -n "$identifier" ] && args+=(--binary-identifier "$identifier")
+args+=("${flags[@]}")
+
+for path in "${paths[@]}"; do
+  rcodesign "${args[@]}" "$path"
+done

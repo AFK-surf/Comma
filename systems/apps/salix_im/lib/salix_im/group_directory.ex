@@ -7,7 +7,7 @@ defmodule SalixIM.GroupDirectory do
   """
 
   alias SalixStore.ReadScope
-  alias SalixStore.{CasRecord, Ids, Keys, S3}
+  alias SalixStore.{AgentPGStore, CasRecord, Ids, Keys}
 
   def scope_for_agent(agent_id) do
     agent_id = trim(agent_id)
@@ -35,16 +35,17 @@ defmodule SalixIM.GroupDirectory do
 
   def get_agent(agent_id) do
     if Ids.valid_agent_id?(agent_id) do
-      case read_record(Keys.ctl_agent(agent_id)) do
+      case ReadScope.fetch({:agent_config, agent_id}, fn ->
+             case AgentPGStore.read_config(agent_id) do
+               {:ok, %{record: record}} -> {:ok, record}
+               error -> error
+             end
+           end) do
         {:ok,
          %{"agent_id" => ^agent_id, "tenant_id" => tenant_id, "group_id" => group_id} = agent} ->
-          if Ids.valid_group_id_for_tenant?(group_id, tenant_id) and
-               Ids.valid_agent_id_for_group?(agent_id, group_id) and
-               not archived?(agent) and
-               not blank?(agent["heartbeat_schedule_id"]) and
-               (agent["role"] != "router" or not blank?(agent["router_session_id"])),
-             do: {:ok, agent},
-             else: {:error, :not_found}
+          if visible_agent?(agent, agent_id, tenant_id, group_id),
+            do: {:ok, agent},
+            else: {:error, :not_found}
 
         {:ok, _record} ->
           {:error, :not_found}
@@ -84,27 +85,30 @@ defmodule SalixIM.GroupDirectory do
   defp read_record(key), do: ReadScope.fetch({:record, key}, fn -> CasRecord.get(key) end)
 
   def list_group_agents(group_id) do
-    with {:ok, _group} <- get_group(group_id),
-         {:ok, objects} <- S3.list_all(Keys.ctl_agents_prefix_for_group(group_id)) do
-      agents =
-        Enum.flat_map(objects, fn %{key: key} ->
-          agent_id =
-            key
-            |> String.replace_prefix(Keys.ctl_agents_prefix(), "")
-            |> String.replace_suffix(".json", "")
+    with {:ok, _group} <- get_group(group_id) do
+      list_agent_pages(group_id, nil, [])
+    end
+  end
 
-          if key == Keys.ctl_agent(agent_id) do
-            case get_agent(agent_id) do
-              {:ok, %{"group_id" => ^group_id} = agent} -> [agent]
-              _ -> []
-            end
-          else
-            []
-          end
+  defp list_agent_pages(group_id, cursor, pages) do
+    with {:ok, %{items: records, next: next}} <-
+           AgentPGStore.page_configs(%{group_id: group_id}, cursor: cursor, limit: 500) do
+      agents =
+        Enum.filter(records, fn agent ->
+          visible_agent?(agent, agent["agent_id"], agent["tenant_id"], group_id)
         end)
 
-      {:ok, agents}
+      if is_nil(next),
+        do: {:ok, pages |> Enum.reverse() |> List.flatten() |> Kernel.++(agents)},
+        else: list_agent_pages(group_id, next, [agents | pages])
     end
+  end
+
+  defp visible_agent?(agent, agent_id, tenant_id, group_id) do
+    Ids.valid_group_id_for_tenant?(group_id, tenant_id) and
+      Ids.valid_agent_id_for_group?(agent_id, group_id) and
+      not archived?(agent) and not blank?(agent["heartbeat_schedule_id"]) and
+      (agent["role"] != "router" or not blank?(agent["router_session_id"]))
   end
 
   defp blank?(value), do: trim(value) == ""

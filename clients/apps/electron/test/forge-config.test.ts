@@ -72,3 +72,15 @@ describe.runIf(process.platform === "darwin" && process.arch === "arm64")(
     });
   }
 );
+
+describe("the packaged Info.plist", () => {
+  it("says why the Agent asks for Documents, Desktop and Downloads, so macOS asks for Comma when the station first opens them", () => {
+    const info = config.packagerConfig?.extendInfo as Record<string, unknown>;
+    for (const key of [
+      "NSDocumentsFolderUsageDescription",
+      "NSDesktopFolderUsageDescription",
+      "NSDownloadsFolderUsageDescription",
+    ])
+      expect(info[key], key).toEqual(expect.stringMatching(/\S/));
+  });
+});

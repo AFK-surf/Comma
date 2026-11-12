@@ -2,6 +2,7 @@ import type { ChatViewValue } from "@comma/core/contract";
 import {
   draftUploadPreviewRef,
   idleConversationChannelState,
+  MAX_ATTACHMENT_BYTES,
   type ChatMessage,
   type ConversationChannelState,
   type DraftAttachment,
@@ -9,13 +10,18 @@ import {
 import { getNativeBridge } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { createScriptedCore } from "@comma/test-utils/scripted-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testProductLease } from "../../../../test/productInboxProjectionHarness";
 import { CoreConversationChannel } from "../CoreConversationChannel";
 
 const session = {
   sessionId: testProductLease.sessionId,
   audience: testProductLease.audience,
+};
+
+const pastedImage = () => {
+  const data = new File([new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1)], "shot.png");
+  return { data, name: "shot.png", size: data.size };
 };
 
 const message = (messageId: string, text: string): ChatMessage => ({
@@ -483,5 +489,113 @@ describe("a window's channel on a conversation", () => {
     attached();
     await flush();
     expect(view.core.sentTo("chatView.send")).toMatchObject([{ text: "Here it is" }]);
+  });
+
+  describe("an image too large for the server", () => {
+    const fitted = new File(["small"], "shot.jpg", { type: "image/jpeg" });
+    beforeEach(() => {
+      vi.stubGlobal(
+        "createImageBitmap",
+        vi.fn(async () => ({ close: () => undefined, height: 10, width: 10 }))
+      );
+      vi.stubGlobal(
+        "OffscreenCanvas",
+        class {
+          constructor(
+            readonly width: number,
+            readonly height: number
+          ) {}
+          getContext() {
+            return {
+              drawImage: () => undefined,
+              getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) }),
+            };
+          }
+          async convertToBlob({ type }: { type: string }) {
+            return type === "image/png"
+              ? new Blob([new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1)], { type })
+              : fitted;
+          }
+        }
+      );
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("goes to Main made to fit, ahead of a send", async () => {
+      const picked = Promise.withResolvers<{ files: File[] }>();
+      const pickAttachments = vi.fn(async (input: { files: File[] }) => {
+        picked.resolve(input);
+        return { cancelled: false, errors: [], intakeId: "intake_1", revision: 2 };
+      });
+      installNativeBridgeMock({
+        chat: { pickAttachments } as never,
+        platform: "electron",
+        self: { role: "main-window", windowId: "win_main" },
+      });
+      const view = scriptView();
+      const channel = open(view.core);
+      view.show({});
+      await flush();
+
+      channel.attachFiles([pastedImage()]);
+      channel.send("Here it is");
+      const { files } = await picked.promise;
+      expect(files[0]).toMatchObject({ name: "shot.jpg", size: fitted.size });
+      await flush();
+      expect(view.core.sentTo("chatView.send")).toMatchObject([{ text: "Here it is" }]);
+    });
+
+    it("is read here made to fit", async () => {
+      installNativeBridgeMock({
+        platform: "web",
+        self: { role: "main-window", windowId: "win_main" },
+      });
+      const attached = Promise.withResolvers<void>();
+      const view = scriptView((name) => {
+        if (name !== "chatView.attach") return null;
+        attached.resolve();
+        return { revision: 2 };
+      });
+      const channel = open(view.core);
+      view.show({});
+      await flush();
+
+      channel.attachFiles([pastedImage()]);
+      await attached.promise;
+      expect(view.core.sentTo("chatView.attach")).toMatchObject([
+        { files: [{ name: "shot.jpg", size: fitted.size }] },
+      ]);
+    });
+  });
+
+  it("writes the paths of dropped folders into the draft after its text, attaching nothing for them", async () => {
+    const pickAttachments = vi.fn(async () => ({
+      cancelled: false,
+      errors: [],
+      folderPaths: ["/Users/me/SiriStudy", "/Users/me/Other"],
+      intakeId: "intake_1",
+      revision: 2,
+    }));
+    installNativeBridgeMock({
+      chat: { pickAttachments } as never,
+      platform: "electron",
+      self: { role: "main-window", windowId: "win_main" },
+    });
+    const view = scriptView();
+    const channel = open(view.core);
+    view.show({ draft: "Look at" });
+    await flush();
+
+    const folder = new File([], "SiriStudy");
+    channel.attachFiles([{ data: folder, name: "SiriStudy", size: 0 }]);
+    await flush();
+
+    expect(view.core.sentTo("chatView.setDraft")).toMatchObject([
+      { draft: "Look at /Users/me/SiriStudy /Users/me/Other" },
+    ]);
+    expect(channel.getSnapshot().draft).toBe(
+      "Look at /Users/me/SiriStudy /Users/me/Other"
+    );
+    expect(channel.getSnapshot().draftAttachments).toEqual([]);
   });
 });

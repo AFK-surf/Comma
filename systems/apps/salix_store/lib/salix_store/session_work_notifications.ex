@@ -1,27 +1,20 @@
 defmodule SalixStore.SessionWorkNotifications do
   @moduledoc """
-  Versioned Postgres invalidation payload for durable Session work candidates.
+  Postgres address hints for committed Session revisions.
 
-  `SessionWorkCandidates.insert/1` publishes this payload with `pg_notify` in
-  the same Postgres transaction as the immutable candidate row. The signal is
-  an address-only hint: it may be lost, duplicated, reordered, or observed
-  before the authoritative Session S3 CAS. Consumers must never delete a
-  candidate or infer Session state from it.
-
-  Implementation tests cover publication and recovery; the notification TLA+
-  model is retired.
+  A hint can be lost, duplicated, or reordered. The committed Session due
+  index supplies catch-up. A hint never grants execution authority.
   """
 
   @channel "salix_session_work_v1"
   @version 1
   @max_payload_bytes 7_900
-  @max_token_bytes 512
   @max_agent_id_bytes 256
   @max_session_id_bytes 256
 
   @type notification :: %{
           version: 1,
-          candidate_token: String.t(),
+          revision: non_neg_integer(),
           agent_id: String.t(),
           runtime: :internal,
           session_id: String.t()
@@ -31,7 +24,7 @@ defmodule SalixStore.SessionWorkNotifications do
   @spec channel() :: String.t()
   def channel, do: @channel
 
-  @doc "Encode the exact candidate identity into one bounded v1 JSON payload."
+  @doc "Encode the committed Session address into one bounded v1 JSON payload."
   @spec encode(map()) :: {:ok, String.t()} | {:error, :invalid}
   def encode(%{} = record) do
     with {:ok, identity} <- identity(record),
@@ -52,6 +45,26 @@ defmodule SalixStore.SessionWorkNotifications do
       {:ok, payload} -> payload
       {:error, :invalid} -> raise ArgumentError, "invalid session-work notification"
     end
+  end
+
+  @doc "Send a lossy hint after the Session transaction commits."
+  def publish(agent_id, session_id, revision) do
+    with {:ok, payload} <-
+           encode(%{
+             agent_id: agent_id,
+             runtime_kind: "internal",
+             session_id: session_id,
+             revision: revision
+           }),
+         {:ok, _} <- SalixStore.Repo.query("SELECT pg_notify($1, $2)", [@channel, payload]) do
+      expect_delivery(payload)
+    else
+      {:error, _} -> :ok
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   @listener :"Elixir.SalixCluster.SessionWorkNotificationListener"
@@ -78,20 +91,20 @@ defmodule SalixStore.SessionWorkNotifications do
     with {:ok,
           %{
             "v" => @version,
-            "token" => token,
+            "revision" => revision,
             "agent_id" => agent_id,
             "runtime_kind" => runtime_kind,
             "session_id" => session_id
           } = decoded} <- Jason.decode(payload),
          true <- map_size(decoded) == 5,
-         true <- bounded_binary?(token, @max_token_bytes),
+         true <- is_integer(revision) and revision >= 0,
          true <- bounded_binary?(agent_id, @max_agent_id_bytes),
          true <- runtime_kind == "internal",
          true <- bounded_binary?(session_id, @max_session_id_bytes) do
       {:ok,
        %{
          version: @version,
-         candidate_token: token,
+         revision: revision,
          agent_id: agent_id,
          runtime: :internal,
          session_id: session_id
@@ -104,20 +117,20 @@ defmodule SalixStore.SessionWorkNotifications do
   def decode(_payload), do: {:error, :invalid}
 
   defp identity(record) do
-    token = record["token"] || record[:token]
+    revision = record["revision"] || record[:revision]
     agent_id = record["agent_id"] || record[:agent_id]
     runtime_kind = record["runtime_kind"] || record[:runtime_kind]
     session_id = record["session_id"] || record[:session_id]
     runtime_kind = if is_atom(runtime_kind), do: Atom.to_string(runtime_kind), else: runtime_kind
 
-    with true <- bounded_binary?(token, @max_token_bytes),
+    with true <- is_integer(revision) and revision >= 0,
          true <- bounded_binary?(agent_id, @max_agent_id_bytes),
          true <- runtime_kind == "internal",
          true <- bounded_binary?(session_id, @max_session_id_bytes) do
       {:ok,
        %{
          "v" => @version,
-         "token" => token,
+         "revision" => revision,
          "agent_id" => agent_id,
          "runtime_kind" => runtime_kind,
          "session_id" => session_id

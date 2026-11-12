@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_AGENT_COMMAND_TIMEOUT_MS,
   BrowserAgentSession,
   parseChord,
+  type BrowserAgentPoint,
   type BrowserAgentRefs,
 } from "../modules/browser-sidebar/agent";
 import { ManualMainClock } from "../test-clock";
@@ -96,12 +98,14 @@ function session(page: FakePage, refs?: BrowserAgentRefs) {
   const tab = {
     cdp: page.cdp,
     clock: new ManualMainClock(),
+    cursor: undefined as BrowserAgentPoint | undefined,
     navigate: async () => undefined,
     platform: "darwin" as const,
     refs,
     tabId: "tab-a",
     title: () => "Shop",
     url: () => "https://shop.test/",
+    visible: () => true,
   };
   return { session: new BrowserAgentSession(tab), tab };
 }
@@ -284,6 +288,89 @@ describe("in-app browser agent session", () => {
     expect(page.calls("Page.handleJavaScriptDialog")).toEqual([]);
   });
 
+  it("points the cursor at the target before clicking, gliding only where the person can see", async () => {
+    for (const visible of [true, false]) {
+      const page = new FakePage({
+        helpers: { resolve: { ref: "e1", next: 2 }, clickPoint: { x: 40, y: 20 } },
+      });
+      const { tab } = session(page, { document: "doc-1", next: 2 });
+      const agent = new BrowserAgentSession({ ...tab, visible: () => visible });
+
+      await agent.command("click", { tabId: "tab-a", ref: "e1" });
+
+      const steps = page.sent
+        .filter(
+          (entry) =>
+            entry.method === "Input.dispatchMouseEvent" ||
+            String(entry.params.expression)
+              .split("\n")
+              .at(-1)!
+              .startsWith("__commaAgentCursor.moveTo(")
+        )
+        .map((entry) =>
+          entry.method === "Runtime.evaluate"
+            ? String(entry.params.expression).split("\n").at(-1)
+            : entry.params.type
+        );
+      expect(steps).toEqual([
+        `__commaAgentCursor.moveTo(40, 20, {"animate":${visible},"press":true}, null)`,
+        "mouseMoved",
+        "mousePressed",
+        "mouseReleased",
+      ]);
+    }
+  });
+
+  it("points the cursor at the element it scrolled to", async () => {
+    const page = new FakePage({ helpers: { resolve: { ref: "e1", next: 2 } } });
+    const { session: agent } = session(page, { document: "doc-1", next: 2 });
+
+    await agent.command("scroll", { tabId: "tab-a", ref: "e1" });
+
+    const calls = page.helperCalls();
+    const scrolled = calls.findIndex((call) =>
+      call?.includes("__commaAgent.scrollTo(el)")
+    );
+    const pointed = calls.findIndex((call) =>
+      call?.includes(
+        '__commaAgentCursor.moveToElement(el, {"animate":true,"press":false}, null)'
+      )
+    );
+    expect(scrolled).toBeGreaterThanOrEqual(0);
+    expect(pointed).toBe(scrolled + 1);
+  });
+
+  it("starts the cursor of the tab's next document where the last one left it", async () => {
+    const page = new FakePage({
+      answers: {
+        "Runtime.evaluate": (params) => {
+          const call = String(params.expression).split("\n").at(-1)!;
+          // The cursor stays where Main says it was, or enters a new tab.
+          const activate = /^__commaAgentCursor\.activate\([^,]+, (.+)\)$/.exec(call);
+          if (activate) {
+            return {
+              result: { value: JSON.parse(activate[1]!) ?? { x: 300, y: 200 } },
+            };
+          }
+          if (call.startsWith("__commaAgentCursor.moveTo(")) {
+            return { result: { value: { x: 40, y: 20 } } };
+          }
+          return { result: { value: undefined } };
+        },
+      },
+    });
+    const { session: agent, tab } = session(page);
+
+    await agent.command("click", { tabId: "tab-a", x: 40, y: 20 });
+    expect(tab.cursor).toEqual({ x: 40, y: 20 });
+
+    // Main makes a session per call; the click may have loaded a new page.
+    await new BrowserAgentSession(tab).command("snapshot", { tabId: "tab-a" });
+    expect(page.helperCalls()).toContain(
+      `__commaAgentCursor.activate(${BROWSER_AGENT_COMMAND_TIMEOUT_MS}, {"x":40,"y":20})`
+    );
+  });
+
   it("counts a key that opened a dialog as pressed", async () => {
     const page = new FakePage({
       answers: {
@@ -391,11 +478,15 @@ describe("in-app browser agent session", () => {
       error: "stale_element",
       tabId: "tab-a",
     });
-    expect(page.calls("Runtime.evaluate")).toEqual([]);
+    // Only the page's "agent at work" edge was drawn: no element was looked up.
+    expect(page.helperCalls()).toEqual([
+      `__commaAgentCursor.activate(${BROWSER_AGENT_COMMAND_TIMEOUT_MS}, null)`,
+      "__commaAgentCursor.activate(undefined, null)",
+    ]);
 
     // A snapshot of the new document issues refs after the old ones.
     await agent.command("snapshot", { tabId: "tab-a" });
-    expect(page.helperCalls()).toEqual([
+    expect(page.helperCalls().filter((call) => !call?.includes("activate("))).toEqual([
       expect.stringContaining('"next":9,"reset":true'),
     ]);
     expect(tab.refs).toEqual({ document: "doc-1", next: 2 });

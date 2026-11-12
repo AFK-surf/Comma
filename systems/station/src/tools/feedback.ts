@@ -1,4 +1,4 @@
-// feedback_send (the Rust station's feedback.rs): a bug report about still.fail itself, sent to the still.fail team, for a
+// feedback_send (the Rust station's feedback.rs): a bug report about Comma itself, sent to the Comma team, for a
 // station on the stable channel. The report is made here as the Rust makes it; sending it is still.fail cloud's
 // (`send`, the cloud module's signed /v1/stations/feedback, not ported yet): until it is given, the agent is told the
 // report cannot be sent, as the Rust station says when it is not connected to cloud.
@@ -12,7 +12,7 @@ type Json = any;
 export const FEEDBACK_SEND = {
   name: "feedback_send",
   description:
-    "Send a bug report about still.fail itself (the station, its tools, the still.fail apps, web or cloud, its Slack side) to the still.fail team. Only after the person you work for agreed to it and saw what is sent; the stillfail-feedback skill says when and how. Not for bugs in their own code or other services.",
+    "Send a bug report about Comma itself (the station, its tools, the Comma apps, web or cloud, its Slack side) to the Comma team. Only after the person you work for agreed to it and saw what is sent; the comma-feedback skill says when and how. Not for bugs in their own code or other services.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -39,7 +39,7 @@ export const FEEDBACK_SEND = {
           "cloud",
           "unknown"
         ],
-        "description": "The part of still.fail it is in, as far as you can tell."
+        "description": "The part of Comma it is in, as far as you can tell."
       },
       "reporter": {
         "type": "string",
@@ -108,7 +108,7 @@ export function feedbackTools(store: Store, link: (key: string) => string | null
         }
         const number = answer?.number;
         if (typeof number !== "number" || !Number.isInteger(number) || number < 0) throw new Error(`still.fail cloud answered without a number: ${JSON.stringify(answer)}`);
-        return answer?.duplicate === true ? `This report was already sent as FB-${number}.` : `Sent to the still.fail team as FB-${number}.`;
+        return answer?.duplicate === true ? `This report was already sent as FB-${number}.` : `Sent to the Comma team as FB-${number}.`;
       },
     },
   ];
@@ -132,14 +132,14 @@ export function fixedNotice(report: Json, station: string | null): string {
   const title = typeof report?.title === "string" ? report.title : "";
   const version = u64(report?.version) ?? 0;
   const parts: string[] = Array.isArray(report?.parts) ? report.parts.filter((p: Json) => typeof p === "string") : [];
-  let text = `The still.fail team fixed a bug reported from this session: FB-${number} "${title}". `;
+  let text = `The Comma team fixed a bug reported from this session: FB-${number} "${title}". `;
   if (parts.length === 0 || (parts.length === 1 && parts[0] === "cloud")) text += "The fix is live now.";
   else text += `The fix is released in ${parts.map((p) => (p === "cloud" ? partName(p) : `${partName(p)} 0.1.${version}`)).join(", ")} and later.`;
   if (parts.includes("station") && station !== null) {
     const tail = station.slice(station.lastIndexOf(".") + 1);
     const own = /^\d+$/.test(tail) ? Number(tail) : null;
     if (own !== null && own >= version) text += ` This station runs ${station}: it has the fix.`;
-    else if (own !== null) text += ` This station runs ${station}: the fix applies once it is updated (in still.fail, the station's page).`;
+    else if (own !== null) text += ` This station runs ${station}: the fix applies once it is updated (in Comma, the station's page).`;
   }
   if (parts.some((p) => p === "web" || p === "android" || p === "desktop")) text += " An app gets it once it is updated to that version or later.";
   if (typeof report?.thread === "string") text += ` Tell the person who reported it, in the thread it was reported in (${report.thread}), briefly and in their language; nothing else needs doing.`;

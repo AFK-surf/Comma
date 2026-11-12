@@ -34,6 +34,7 @@ import surf.comma.android.tasks.TaskLabel
 import surf.comma.android.tasks.TaskSummary
 import surf.comma.android.tasks.data.ServerTaskRepository
 import surf.comma.android.tasks.data.TaskDetailState
+import surf.comma.android.tasks.ui.KnownTasks
 import surf.comma.android.tasks.ui.TaskDetailView
 import surf.comma.android.tasks.ui.TaskRefCardLayout
 import surf.comma.android.tasks.ui.TaskTheme
@@ -76,11 +77,15 @@ internal class TaskDetailPane(
     )
     private val refs = TaskRefDirectory(sessions, repository.state) { ids -> repository.setConversationTaskIds(refsKey(), ids) }
     private val labels = LiveLabels(
+        task = activity.getString(R.string.chat_task_ref),
+        taskUnavailable = activity.getString(R.string.chat_task_unavailable),
         interactiveUnavailable = activity.getString(R.string.chat_interactive_unavailable),
         file = activity.getString(R.string.chat_file),
         replyErrorTitle = activity.getString(R.string.chat_reply_error_title),
         replyErrorDetail = activity.getString(R.string.chat_reply_error_detail),
     )
+    /** What the directory knows of the messages' tasks; tasks in their running text take their titles from it. */
+    private val knownTasks = refs.knownChanges()
     /** Briefs the reader has opened, by row id. */
     private val expandedBriefs = MutableStateFlow<Set<Long>>(emptySet())
     private var prepared: List<PreparedChatMessage> = emptyList()
@@ -132,7 +137,8 @@ internal class TaskDetailPane(
             repository.observeTask(taskId).onEach { task -> task?.let { view.setTitle(strings.title(it)) } },
             repository.state.map { it.snapshot.labels }.distinctUntilChanged(),
             expandedBriefs,
-        ) { detail, task, labels, expanded -> Shown(detail, task, labels, expanded) }
+            knownTasks,
+        ) { detail, task, labels, expanded, known -> Shown(detail, task, labels, expanded, known) }
             .collect(::render)
     }
 
@@ -164,13 +170,16 @@ internal class TaskDetailPane(
         }
     }
 
-    private class Shown(val detail: TaskDetailState, val task: TaskSummary?, val labels: List<TaskLabel>, val expanded: Set<Long>)
+    private class Shown(
+        val detail: TaskDetailState, val task: TaskSummary?, val labels: List<TaskLabel>, val expanded: Set<Long>, val known: KnownTasks,
+    )
 
     private suspend fun render(shown: Shown) {
         val detail = shown.detail
         val state = ConversationState(conversationId = taskId, timeline = detail.timeline, hasOlder = detail.hasOlder)
         val rows = withContext(Background.compute) {
-            taskDetailRows(mapConversation(state, labels), detail.timeline, shown.task, shown.labels, strings, shown.expanded)
+            taskDetailRows(mapConversation(state, labels, tasks = shown.known), detail.timeline, shown.task, shown.labels, strings,
+                shown.expanded)
         }
         refs.track(referencedTaskIds(detail.timeline.map { it.message }))
         val next = precomputer.prepareChanged(

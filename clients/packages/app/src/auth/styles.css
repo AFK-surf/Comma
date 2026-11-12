@@ -210,3 +210,93 @@
   line-height: 1.45;
   text-align: center;
 }
+
+/* The accounts still signed in on this device, under the sign-in form: one list,
+   each row its avatar and address, a press going back to it. */
+.app-login-kept {
+  display: grid;
+  width: 100%;
+  gap: var(--spacing-sm);
+}
+
+.app-login-kept-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.app-login-kept-divider::before,
+.app-login-kept-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border-secondary);
+}
+
+.app-login-kept-title {
+  margin: 0;
+  color: var(--color-text-quaternary);
+  font-size: var(--text-xs);
+}
+
+.app-login-kept-list {
+  display: grid;
+  gap: var(--spacing-xxs);
+}
+
+.app-login-kept-account {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-height: 40px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  text-align: start;
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--motion-duration-state-change) ease;
+}
+
+.app-login-kept-account[data-hovered],
+.app-login-kept-account[data-focus-visible] {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.app-login-kept-account[data-disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.app-login-kept-email {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-login-kept-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-quaternary);
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change) ease;
+}
+
+/* The arrow shows only on the row under the pointer or the keyboard focus. */
+.app-login-kept-account[data-hovered] .app-login-kept-chevron,
+.app-login-kept-account[data-focus-visible] .app-login-kept-chevron {
+  opacity: 1;
+}
+
+/* With accounts listed under it, the sign-in stage keeps only the room its email step takes (the code step is
+   shorter): the list follows the form instead of the height kept for the tallest step on other hosts. */
+.app-login-stage[data-kept-accounts] {
+  --login-stage-height: 19rem;
+}

@@ -96,11 +96,12 @@ export function useSelectMenuItem(
       );
       // The pill reuses the glyph the reader just picked: capture the
       // option's rendered icon so the token stays recognizable in prose.
-      const iconMarkup = document
-        .getElementById(menuOptionId(item.id) ?? "")
-        ?.querySelector(
-          '[data-slot="ai-input-menu-item-icon"] > :first-child'
-        )?.outerHTML;
+      const iconMarkup =
+        item.tokenIconMarkup ??
+        document
+          .getElementById(menuOptionId(item.id) ?? "")
+          ?.querySelector('[data-slot="ai-input-menu-item-icon"] > :first-child')
+          ?.outerHTML;
       const token: AiInputRichTokenSegment = {
         type: "token",
         instanceId,

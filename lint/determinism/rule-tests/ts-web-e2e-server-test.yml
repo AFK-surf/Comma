@@ -1,0 +1,9 @@
+id: ts-web-e2e-server
+valid:
+  - |
+    const server = await startE2eTestServer((request, response) => response.end("ok"));
+invalid:
+  - |
+    const server = createServer((request, response) => response.end("ok"));
+  - |
+    const host = http.createServer(handler);

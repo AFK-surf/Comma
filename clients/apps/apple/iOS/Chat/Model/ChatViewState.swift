@@ -17,6 +17,7 @@ struct ChatViewState: Sendable {
     var boundWorker: ChatBoundWorker?
     /// The maker of the model the Task runs (the core's `taskRun.vendor`), whose logo stands for its Worker.
     var workerVendor: String?
+    var codingSandbox = false
     var activity: ChatActivity?
     var connection: ChatConnection = .idle
     var problem: ChatProblem?
@@ -112,15 +113,20 @@ struct ChatItem: Sendable, Equatable {
         for part in parts { if case .question(let question) = part { return question } }
         return nil
     }
+
+    var dynamicUIs: [PhoneDynamicUI] { parts.compactMap { if case .interactive(let ui) = $0 { ui } else { nil } } }
+
+    var miniApps: [MiniAppCardValue] { parts.compactMap { if case .miniApp(let app) = $0 { app } else { nil } } }
 }
 
 enum ChatPart: Sendable, Equatable {
+    case miniApp(MiniAppCardValue)
     case markdown(String)
     /// An inline Task chip; `conversationID` is nil when it is unavailable.
     /// `section` is the core's `statusBucket`.
     case task(conversationID: String?, title: String?, section: String?, unavailable: Bool)
     /// Interactive content, shown as its summary.
-    case interactive(summary: String?)
+    case interactive(PhoneDynamicUI)
     /// An Agent's question card. Its Markdown tree leaves it out: the card follows the message's bubbles.
     case question(ChatQuestion)
     /// Shows nothing, as a person's answer to a question card does (their message's words are its bubble).
@@ -213,7 +219,10 @@ struct ChatAttachment: Sendable, Equatable {
 
     static func == (left: ChatAttachment, right: ChatAttachment) -> Bool {
         left.blockType == right.blockType && left.index == right.index && left.fileName == right.fileName &&
-            left.title == right.title && left.size == right.size && left.workspacePath == right.workspacePath
+            left.title == right.title && left.size == right.size && left.workspacePath == right.workspacePath &&
+            left.mimeType == right.mimeType && left.width == right.width && left.height == right.height &&
+            left.agentID == right.agentID && NSDictionary(dictionary: left.blob?.value as? [String: Any] ?? [:])
+                .isEqual(to: right.blob?.value as? [String: Any] ?? [:])
     }
 }
 
@@ -353,6 +362,7 @@ final class ChatViewReader: @unchecked Sendable {
             worker.string("participantId").map { ChatBoundWorker(participantID: $0, actorID: worker.string("actorId"), name: worker.text("name") ?? "") }
         }
         state.workerVendor = json.object("taskRun")?.string("vendor")
+        state.codingSandbox = json.object("taskRun")?.object("place")?.string("kind") == "sandbox" && json.object("taskRun")?.object("place")?.object("repo") != nil
         state.activity = json.object("activity").map { activity in
             ChatActivity(phase: activity.text("phase") ?? "", status: activity.text("status") ?? "",
                          summaryClass: activity.text("summaryClass") ?? "none", summary: activity.string("summary"),
@@ -453,7 +463,8 @@ final class ChatViewReader: @unchecked Sendable {
                 let unavailable = task?.bool("unavailable") == true || task?.string("conversationId") == nil
                 return .task(conversationID: unavailable ? nil : task?.string("conversationId"), title: task?.string("title"),
                              section: task?.string("statusBucket"), unavailable: unavailable)
-            case "dynamic-ui": return .interactive(summary: part.string("summary"))
+            case "dynamic-ui": return PhoneDynamicUI(part).map { .interactive($0) } ?? .other
+            case "mini-app": return MiniAppCardValue(part).map { .miniApp($0) } ?? .other
             case "question": return ChatQuestion(part).map { .question($0) } ?? .other
             // A person's answer to a question card: their message's words say it.
             default: return .other
@@ -520,5 +531,18 @@ final class ChatViewReader: @unchecked Sendable {
         return ChatPending(clientRequestID: id, text: text, attachedTexts: attachedTexts(display), files: files(display), replyToMessageID: json.string("replyToMessageId"),
                            failed: json.string("status") == "failed", error: json.string("error"),
                            billing: json.string("failureAction") == "billing")
+    }
+}
+
+struct PhoneDynamicUI: Identifiable, Equatable, Sendable {
+    let id: String
+    let conversation: String
+    let message: String
+    let index: Int
+    let summary: String
+    init?(_ json: NSDictionary) {
+        guard let id = json.string("contentId"), let conversation = json.string("conversationId"),
+              let message = json.string("messageId"), let index = json.int("attachmentIndex"), index >= 0 else { return nil }
+        self.id = id; self.conversation = conversation; self.message = message; self.index = index; summary = json.string("summary") ?? String(localized: "Interactive content")
     }
 }

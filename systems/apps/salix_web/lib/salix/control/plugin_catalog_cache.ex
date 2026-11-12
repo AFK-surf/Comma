@@ -20,8 +20,6 @@ defmodule Salix.Control.PluginCatalogCache do
 
   use SystemsRuntime.Server
 
-  alias SalixCluster.Ring
-
   @table __MODULE__
   @ttl_ms 60_000
   @invalidate_timeout_ms 5_000
@@ -114,9 +112,7 @@ defmodule Salix.Control.PluginCatalogCache do
     :ok
   end
 
-  defp remote_nodes do
-    Ring.nodes() -- [node()]
-  catch
-    :exit, _reason -> []
-  end
+  # Every connected node, not the ring: a draining node has left the ring
+  # but still runs agents that read this cache until the pod stops.
+  defp remote_nodes, do: Node.list(:visible)
 end

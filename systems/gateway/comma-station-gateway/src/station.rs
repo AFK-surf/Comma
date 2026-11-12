@@ -1,7 +1,7 @@
 //! Station connections: one iroh endpoint, one cached QUIC connection per
 //! station, one bidirectional stream per tool request (`comma/tools/1`).
 //!
-//! Wire format (contract §8, framed like still.fail's `stillfail/admin/1`):
+//! Wire format (contract §8, framed like still.fail's `comma-station/admin/1`):
 //! the request is one JSON header line followed by a body (empty in v1), the
 //! response one JSON header line followed by a body that v1 does not use.
 

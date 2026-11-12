@@ -3,9 +3,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  airDropNameMaxLength,
+  airDropNameSchema,
   appPreferencesPatchSchema,
   commaClientSettingsPatchSchema,
   defaultCommaClientSettings,
+  notchSideWidthRange,
   type AppPreferences,
 } from "@comma/native-bridge";
 import { z } from "zod";
@@ -144,16 +147,46 @@ const invokeSchema = z
   .strict();
 
 const emptyInputSchema = z.object({}).strict();
+// The global settings an agent may change. systemNotifications stays the
+// user's: it needs a macOS grant only they can give. The comma-settings
+// product skill names who changes each setting; update it with this list,
+// the client settings list below and the devices module.
 const globalSettingsPatchSchema = z
   .object({
+    airDropName: airDropNameSchema.nullable().optional(),
     keepAwakeWhenLidClosed: z.boolean().optional(),
     launchAtLogin: z.boolean().optional(),
+    notchSideWidth: z
+      .number()
+      .int()
+      .min(notchSideWidthRange.min)
+      .max(notchSideWidthRange.max)
+      .optional(),
+    notificationSound: z.boolean().optional(),
+    notifyRouterMessages: z.boolean().optional(),
+    quickChatEnabled: z.boolean().optional(),
+    showInAirDrop: z.boolean().optional(),
     showInDock: z.boolean().optional(),
     showInMenuBar: z.boolean().optional(),
+    showInNotch: z.boolean().optional(),
   })
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, {
     message: "At least one global setting must be provided.",
+  });
+// The client settings an agent may change: what the user could ask for in
+// words. onboardingCompletedUserIds and routerProfileNoticeSeen record what
+// the user has already seen; nothing an agent should rewrite.
+const {
+  onboardingCompletedUserIds: _onboardingCompletedUserIds,
+  routerProfileNoticeSeen: _routerProfileNoticeSeen,
+  ...agentClientSettingsShape
+} = commaClientSettingsPatchSchema.shape;
+const clientSettingsPatchSchema = z
+  .object(agentClientSettingsShape)
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: "At least one client setting must be provided.",
   });
 const browserTabInputSchema = z
   .object({
@@ -352,11 +385,11 @@ export function createCommaClientControlRegistry({
       ? [
           {
             id: "devices",
-            description: "Manage access through the local Connector owner.",
+            description: "Manage access through the local station.",
             apis: [
               {
                 id: "set-access",
-                description: "Set access for a locally supervised workspace Connector.",
+                description: "Set access for a locally supervised workspace station.",
                 input: z
                   .object({
                     workspaceId: z.string().min(1).max(256),
@@ -398,7 +431,17 @@ export function createCommaClientControlRegistry({
             "only when the user asks, and turn it off when that work ends. macOS runs " +
             "it only after the user allows Comma in System Settings › General › Login " +
             'Items. If the result has keepAwakeWhenLidClosedStatus "requires-approval", ' +
-            "tell the user to allow Comma there. Only the user can give that approval.",
+            "tell the user to allow Comma there. Only the user can give that approval. " +
+            "showInNotch shows running Tasks and AirDrop around the Mac's notch; " +
+            `notchSideWidth (${notchSideWidthRange.min} to ${notchSideWidthRange.max} points, ` +
+            `default ${notchSideWidthRange.default}) is how far it reaches past each side. ` +
+            "notifyRouterMessages and notificationSound control the notifications the " +
+            "user's Router sends them; both apply only while systemNotifications is on, " +
+            "which only the user changes. showInAirDrop lets nearby devices see Comma as " +
+            "an AirDrop receiver, and airDropName is the name they see (at most " +
+            `${airDropNameMaxLength} characters; null returns to the default, the user's ` +
+            "name followed by ’s Comma). quickChatEnabled turns Quick Chat and its " +
+            "shortcut on or off.",
           handler: (input) =>
             appPreferences.update(input as z.output<typeof appPreferencesPatchSchema>),
           id: "update",
@@ -424,17 +467,15 @@ export function createCommaClientControlRegistry({
         },
         {
           description:
-            "Update language, appearance, the Open Comma shortcut, or the complete application shortcut override map.",
+            "Update language, appearance, the default home view, the Open Comma and Quick Chat shortcuts, the complete application shortcut override map, the sidebar order, meeting recording choices, or the session history, computer-use screen, Condensed Workspace and Voice Labs switches.",
           handler: async (input) =>
             (
               await appPreferences.update({
-                clientSettings: input as z.output<
-                  typeof commaClientSettingsPatchSchema
-                >,
+                clientSettings: input as z.output<typeof clientSettingsPatchSchema>,
               })
             ).clientSettings ?? structuredClone(defaultCommaClientSettings),
           id: "update",
-          input: commaClientSettingsPatchSchema,
+          input: clientSettingsPatchSchema,
           usage: `comma call client-settings update --json '{"appearance":{"theme":"dark"}}'`,
         },
       ],
@@ -447,11 +488,22 @@ export function createCommaClientControlRegistry({
         {
           description:
             "Open a real Comma in-app browser tab and return its stable tab id once its native page is ready.",
-          handler: async (input) => ({
-            target: await browser.openClientTab(
-              input as z.output<typeof browserOpenTabInputSchema>
-            ),
-          }),
+          // A failure is a result, as for the agent commands below: the comma
+          // CLI shows no HTTP error body.
+          handler: async (input) => {
+            try {
+              return {
+                target: await browser.openClientTab(
+                  input as z.output<typeof browserOpenTabInputSchema>
+                ),
+              };
+            } catch (error) {
+              return {
+                error: "browser_operation_failed",
+                message: error instanceof Error ? error.message : String(error),
+              };
+            }
+          },
           id: "open-tab",
           input: browserOpenTabInputSchema,
           usage: `comma call in-app-browser open-tab --json '{"url":"https://example.com/"}'`,

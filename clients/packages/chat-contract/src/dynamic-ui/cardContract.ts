@@ -1,3 +1,5 @@
+import { lazySchema } from "../lazy-schema.ts";
+import { dynamicUiBaseLevel, dynamicUiFeatureLevels, dynamicUiLevel } from "./level.ts";
 import { z } from "zod";
 
 /**
@@ -17,11 +19,11 @@ import { z } from "zod";
 
 // Display text. The templates add units, formatting and color, so numbers stay
 // JSON numbers.
-const text = z.string().regex(/\S/);
+const text = lazySchema(() => z.string().regex(/\S/));
 // Text that may be blank, such as an unlabeled bar.
-const caption = z.string();
-const number = z.number();
-const brand = z.string();
+const caption = lazySchema(() => z.string());
+const number = lazySchema(() => z.number());
+const brand = lazySchema(() => z.string());
 // Card text never holds a clock time or a time zone: the Agent cannot know
 // who reads the card or where. Moments travel as ISO times, which the
 // template shows in the viewer's own time zone.
@@ -41,14 +43,20 @@ const condition = z
   .enum(["clear", "clear-night", "partly-cloudy", "cloudy", "rain", "snow"])
   .meta({ title: "condition" });
 const state = z.enum(["done", "current", "upcoming"]).meta({ title: "state" });
+// A status is its label alone, or a label with the tone that colors it.
 const status = z
-  .object({ label: text, tone: tone.optional() })
+  .union([text, z.object({ label: text, tone: tone.optional() })])
   .meta({ title: "status" });
 const delta = z
   .object({
-    value: text,
+    value: text.describe('the change as shown, with its unit and no sign: "37.6%"'),
     direction: z.enum(["up", "down", "flat"]).optional(),
-    good: z.boolean().optional().describe("true when the change is good"),
+    good: z
+      .boolean()
+      .optional()
+      .describe(
+        "whether the change is good; without it a rise is good and a fall is not"
+      ),
   })
   .meta({ title: "delta" });
 
@@ -151,7 +159,7 @@ const metric = z
           series: z.array(number).meta({ limit: 64 }).optional(),
         })
       )
-      .meta({ limit: 4 })
+      .meta({ limit: 6 })
       .optional(),
     goal: z
       .object({
@@ -163,10 +171,10 @@ const metric = z
       })
       .optional(),
   })
-  .describe("one to four key numbers, or progress toward a goal")
+  .describe("one to six key numbers, or progress toward a goal")
   .meta({
     needs: ["metrics", "goal"],
-    layouts: "single (1 metric), grid (2 to 4), goal",
+    layouts: "single (1 metric), grid (2 to 6), goal (with any metrics under it)",
   });
 
 const trend = z
@@ -191,9 +199,14 @@ const trend = z
         labels: z.array(caption).min(1).meta({ limit: 31 }),
         values: z.array(number).min(1).meta({ limit: 31 }),
         valueLabels: z.array(caption).meta({ limit: 31 }).optional(),
-        averageLabel: text.optional(),
+        averageLabel: text
+          .optional()
+          .describe(
+            'names the dashed line at the mean of the bars, such as "日均 217"'
+          ),
       })
-      .optional(),
+      .optional()
+      .describe("one bar per period, oldest first; the last bar is the current one"),
     series: z
       .array(
         z.object({
@@ -207,7 +220,9 @@ const trend = z
       .meta({ limit: 6 })
       .optional(),
   })
-  .describe("how numbers change over time, or a watchlist of prices")
+  .describe(
+    "how numbers change over time, or a watchlist of prices; a number per category is bars"
+  )
   .meta({
     needs: ["ranges", "bars", "series"],
     sameLength: [["bars.labels", "bars.values"]],
@@ -254,14 +269,24 @@ const comparison = z
     layouts: "columns, table (<= 4 rows), versus (2 subjects, scores on every row)",
   });
 
+const zone = z
+  .string()
+  .regex(/^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*$/)
+  .meta({
+    title: "zone",
+    description:
+      "an IANA time zone such as Asia/Tokyo; the card shows a moment beside it in that zone",
+  });
+
 const schedule = z
   .object({
     ...cardFrame,
+    zone: zone.optional(),
     now: text.optional(),
     events: z
       .array(
         z.object({
-          start: text,
+          start: text.describe('a clock time such as "09:30", or an ISO time'),
           title: text,
           end: text.optional(),
           detail: text.optional(),
@@ -278,7 +303,9 @@ const schedule = z
       .optional(),
     summary: text.optional(),
   })
-  .describe("a day's events, an itinerary, or the stages of a process")
+  .describe(
+    "a day's events, an itinerary of one or several days, or the stages of a process; ISO event times show in zone, where the events happen, or on the viewer's clock without it"
+  )
   .meta({
     needs: ["events", "stages"],
     layouts: "agenda and timeline (events), stages",
@@ -298,6 +325,13 @@ const checklist = z
                 id: text.optional(),
                 detail: text.optional(),
                 done: z.boolean().optional(),
+                actions: z
+                  .array(z.object({ label: text, prompt: text }))
+                  .meta({ limit: 3 })
+                  .optional()
+                  .describe(
+                    "this item's follow-ups, such as adding it to the calendar, reminders or Routine; a click proposes the prompt like comma.request"
+                  ),
               })
             )
             .min(1),
@@ -305,7 +339,7 @@ const checklist = z
       )
       .min(1)
       .meta({ limit: 4 })
-      .describe("at most 12 items in total"),
+      .describe("at most 20 items in total"),
   })
   .describe("things to do, pack or check off")
   .meta({ layouts: "progress, grouped (2 or more groups)" });
@@ -313,7 +347,7 @@ const checklist = z
 const composition = z
   .object({
     ...cardFrame,
-    total: text,
+    total: z.union([text, number]),
     totalLabel: text.optional(),
     segments: z
       .array(
@@ -327,7 +361,7 @@ const composition = z
       .min(1)
       .meta({ limit: 6 }),
   })
-  .describe("how a total splits into parts")
+  .describe("how a total splits into parts that add up to it")
   .meta({ layouts: "stacked, donut" });
 
 const place = z
@@ -426,6 +460,285 @@ const timer = z
     layouts: "countdown, event (daysLeft)",
   });
 
+const order = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    orderId: text.optional(),
+    status: text.describe('where the order is, such as "正在出库"'),
+    arrival: untimed
+      .optional()
+      .describe(
+        'the expected arrival without a clock time, such as "预计 10月29日 周四 送达"'
+      ),
+    arrivesBy: moment
+      .optional()
+      .describe("the latest arrival moment, shown on the viewer's clock"),
+    items: z
+      .array(
+        z.object({
+          name: text,
+          quantity: z.number().int().min(1).optional(),
+          detail: text.optional().describe("a variant such as size or color"),
+          price: text.optional(),
+        })
+      )
+      .meta({ limit: 6 })
+      .optional(),
+    total: text.optional(),
+    totalLabel: text.optional().describe('such as "实付"'),
+    address: text.optional(),
+    stages: z
+      .array(z.object({ label: text, state }))
+      .min(2)
+      .meta({ limit: 5 })
+      .optional(),
+  })
+  .describe(
+    "one order and where it is: a purchase, a takeout or a parcel; title names the merchant or carrier"
+  )
+  .meta({
+    layouts: "tracking (stages), receipt (an item with a price, or a total), compact",
+  });
+
+const fact = z.object({ label: text, value: text }).meta({ title: "fact" });
+const control = z.object({ label: text, prompt: text }).meta({
+  title: "control",
+  description: "a click proposes the prompt like an action",
+});
+
+const endpoint = z.object({
+  place: text.describe("station, airport or stop"),
+  code: text.optional().describe("such as PVG"),
+  at: moment,
+  zone: zone.optional(),
+  terminal: text.optional(),
+});
+const ticket = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    mode: z.enum(["train", "flight"]).optional(),
+    number: text.describe("train or flight number"),
+    depart: endpoint,
+    arrive: endpoint,
+    duration: untimed.optional(),
+    details: z
+      .array(fact)
+      .meta({ limit: 4 })
+      .optional()
+      .describe("such as seat, gate, cabin or boarding time"),
+    passenger: text.optional(),
+    status: status.optional(),
+    reference: text.optional().describe("booking reference or e-ticket number"),
+  })
+  .describe("one train or flight ticket, or a boarding pass; title names the carrier")
+  .meta({ layouts: "ticket, pass" });
+
+const ride = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    status: text.describe('such as "司机正在赶来"'),
+    eta: untimed.optional().describe('such as "3 分钟"'),
+    plate: text.optional(),
+    car: text.optional().describe("color and model"),
+    driver: z
+      .object({ name: text, rating: number.optional(), trips: text.optional() })
+      .optional(),
+    pickup: text.optional(),
+    dropoff: text.optional(),
+    fare: text.optional(),
+  })
+  .describe("a ride on its way or under way; title names the service")
+  .meta({ layouts: "pickup (plate), trip (pickup and dropoff)" });
+
+const product = z
+  .object({
+    ...cardFrame,
+    products: z
+      .array(
+        z.object({
+          name: text,
+          image: url.optional(),
+          price: text,
+          originalPrice: text.optional(),
+          badge: text.optional().describe('such as "券后" or "包邮"'),
+          shop: text.optional(),
+          rating: number.optional(),
+          sales: text.optional().describe('such as "月销 2万+"'),
+          href: url.optional(),
+        })
+      )
+      .min(1)
+      .meta({ limit: 6 }),
+  })
+  .describe("products to buy, with images and prices")
+  .meta({ layouts: "hero (1 product), grid (2 to 6), list" });
+
+const booking = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    status: status.optional(),
+    at: moment.describe("when the booking starts"),
+    zone: zone.optional(),
+    details: z
+      .array(fact)
+      .meta({ limit: 6 })
+      .optional()
+      .describe("such as party size, room or department"),
+    confirmation: text.optional(),
+    address: text.optional(),
+  })
+  .describe(
+    "a reservation or appointment: a table, a room, a doctor; title names the venue"
+  )
+  .meta({ layouts: "confirmation, compact" });
+
+const device = z
+  .object({
+    ...cardFrame,
+    devices: z
+      .array(
+        z.object({
+          name: text,
+          on: z.boolean().optional(),
+          online: z.boolean().optional().describe("false shows it offline"),
+          value: text.optional().describe('the main reading, such as "26"'),
+          unit: text.optional().describe('such as "°C" or "%"'),
+          mode: text.optional(),
+          detail: text.optional(),
+          controls: z.array(control).meta({ limit: 4 }).optional(),
+        })
+      )
+      .min(1)
+      .meta({ limit: 6 }),
+  })
+  .describe("smart home devices, their state and controls")
+  .meta({ layouts: "single (1 device), grid (2 to 6)" });
+
+const payment = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    amount: text,
+    status: status,
+    counterparty: text.optional().describe("who was paid, or who paid"),
+    at: moment.optional(),
+    details: z
+      .array(fact)
+      .meta({ limit: 5 })
+      .optional()
+      .describe("such as payment method, fee or reference"),
+  })
+  .describe("a payment, transfer or refund and its result; title names the provider")
+  .meta({ layouts: "receipt, compact" });
+
+const media = z
+  .object({
+    ...cardFrame,
+    brand: brand.optional(),
+    track: text.describe("song, episode or video"),
+    artist: text.optional(),
+    album: text.optional(),
+    cover: url.optional(),
+    playing: z.boolean().optional(),
+    position: z.number().min(0).optional().describe("seconds"),
+    duration: z.number().min(0).optional().describe("seconds"),
+    controls: z
+      .object({
+        previous: text.optional(),
+        toggle: text.optional(),
+        next: text.optional(),
+      })
+      .optional()
+      .describe("a prompt per button, proposed like an action"),
+    queue: z
+      .array(z.object({ track: text, artist: text.optional() }))
+      .meta({ limit: 5 })
+      .optional(),
+  })
+  .describe("what is playing, or a song or video to play; title names the service")
+  .meta({ layouts: "player, queue (needs queue)" });
+
+const bars = z
+  .object({
+    ...cardFrame,
+    items: z
+      .array(
+        z.object({
+          label: text,
+          value: number,
+          valueLabel: text
+            .optional()
+            .describe('how the value reads, such as "¥4,500" or "72%"'),
+          compare: number
+            .optional()
+            .describe(
+              "the same measure in the other series: the previous period, a budget, a target"
+            ),
+          compareLabel: text.optional(),
+          delta: delta.optional(),
+          caption: text
+            .optional()
+            .describe('a short second line, such as "转化 25% · 中位 38 秒"'),
+          status: status.optional(),
+          tone: tone
+            .optional()
+            .describe("colors the bar; warning or error marks a value to act on"),
+          brand: brand.optional(),
+          href: url.optional(),
+        })
+      )
+      .min(1)
+      .meta({ limit: 12 }),
+    max: number
+      .optional()
+      .describe(
+        "what a full bar stands for, such as 100 for percentages or a goal; without it, the largest value"
+      ),
+    legend: z
+      .object({ value: text, compare: text })
+      .optional()
+      .describe(
+        'names the two bars of each item, such as {value: "昨日", compare: "前天"}'
+      ),
+  })
+  .describe(
+    "a number per category, each a labelled bar: rankings such as top sources, pages or products, survey answers, rating distributions, funnel steps, budget against actual, progress per goal"
+  )
+  .meta({
+    layouts:
+      "rows, compact (short labels, no captions or statuses), columns (2 to 7 items with short labels, values only and no max)",
+  });
+
+const cell = z
+  .union([caption, number, z.null(), z.object({ text: text, tone: tone.optional() })])
+  .meta({
+    title: "cell",
+    description:
+      'text, a number, {text, tone?} to color the text, or null or "" for an empty cell',
+  });
+const table = z
+  .object({
+    ...cardFrame,
+    columns: z
+      .array(caption)
+      .min(2)
+      .meta({ limit: 8 })
+      .describe('a heading per column; "" leaves one without'),
+    rows: z
+      .array(z.array(cell).meta({ limit: 8 }))
+      .min(1)
+      .meta({ limit: 24 })
+      .describe("the first cell names the row"),
+  })
+  .describe(
+    "rows and columns of facts that no other kind shows: a leaderboard with several numbers, orders, hosts and their readings, more than three subjects compared, a cohort grid"
+  )
+  .meta({ sameLength: [["rows[]", "columns"]], layouts: "grid" });
+
 /** Card data per kind, in the order the manual lists them. */
 export const cardDataSchemas = {
   forecast,
@@ -439,4 +752,58 @@ export const cardDataSchemas = {
   place,
   feed,
   timer,
+  order,
+  ticket,
+  ride,
+  product,
+  booking,
+  device,
+  payment,
+  media,
+  bars,
+  table,
+};
+
+/**
+ * The first runtime level (level.ts) that shows all the data this contract
+ * accepts for the kind. A new kind takes the level of the change that adds it.
+ * So does a kind whose contract now accepts data that an older runtime rejects,
+ * drops or shows differently. ui.create gives a widget the highest level among
+ * the kinds it uses.
+ */
+export const cardKindLevels: Record<keyof typeof cardDataSchemas, number> = {
+  forecast: 1,
+  // Level 2: a status may be plain text.
+  options: 2,
+  // Level 2: six metrics, and metrics under a goal.
+  metric: 2,
+  // Level 2: a change without `good` is good only when it rises.
+  trend: 2,
+  comparison: 1,
+  // Level 2: ISO event times, shown in zone.
+  schedule: 2,
+  checklist: 1,
+  // Level 2: total may be a number.
+  composition: 2,
+  place: 2,
+  feed: 2,
+  timer: 1,
+  order: 1,
+  ticket: 2,
+  ride: 1,
+  product: 1,
+  booking: 2,
+  device: 1,
+  payment: 2,
+  media: 1,
+  bars: 2,
+  table: 2,
+};
+
+/** The levels as ui.create reads them from the generated contract. */
+export const cardContractLevels = {
+  level: dynamicUiLevel,
+  base: dynamicUiBaseLevel,
+  kinds: cardKindLevels,
+  features: dynamicUiFeatureLevels,
 };

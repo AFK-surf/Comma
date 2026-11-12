@@ -22,6 +22,10 @@ defmodule SystemsRuntime.Registry do
   @doc "As `Registry.unregister/2`."
   def unregister(registry, key), do: Registry.unregister(registry, key)
 
+  @doc "As `Registry.unregister_match/4`."
+  def unregister_match(registry, key, pattern, guards \\ []),
+    do: Registry.unregister_match(registry, key, pattern, guards)
+
   @doc "As `Registry.lookup/2`."
   def lookup(registry, key), do: Registry.lookup(registry, key)
 

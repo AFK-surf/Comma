@@ -17,9 +17,10 @@ and `fs.move_file` move files between the Drive and the workspace.
 `fs.delete_file` withdraws. `drive.status` says whether the Drive is reachable
 right now and whether it accepts writes.
 
-Reads and writes go through the Drive's hosted copy in the cloud, not through
-the user's computer. That has consequences worth knowing before you promise
-anything.
+Writes go through the Drive's hosted copy in the cloud, not through the user's
+computer. Reads return the newest version from the user's computer, when it is
+online, or the hosted copy. That has consequences worth knowing before you
+promise anything.
 
 ## Rules
 
@@ -28,9 +29,9 @@ anything.
 - `fs.glob` and `fs.grep` over the whole tree do not include the Drive. Name
   `/drive/...` as the prefix to search it. A listing stops at the first 2,000
   files. Ask the user for a folder when the Drive is larger.
-- A file the user just saved on their computer may not be in the hosted copy
-  yet. If a read misses a file they say exists, tell them it has not synced
-  yet rather than that it does not exist.
+- A file the user just saved on a computer that is now offline may not be in
+  the hosted copy yet. If a read misses a file they say exists, tell them it has
+  not synced yet rather than that it does not exist.
 - A write publishes the hosted copy's version of the path. If the user's
   computer already has its own version of that path, their Drive keeps both
   versions and shows them side by side. The write never overwrites theirs.

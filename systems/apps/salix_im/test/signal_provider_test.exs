@@ -346,7 +346,7 @@ defmodule SalixIM.SignalProviderTest do
 
       source_id = "im_provider:signal:#{connect["connect_id"]}:#{@alice}:1700000000123"
       assert [message] = router_inputs(ctx.group_id, source_id)
-      origin = message["agent_input"]["trusted_origin"]
+      origin = message["agent_input"][:trusted_origin]
 
       assert origin["provider"] == "signal"
       assert origin["source_text"] == "What is on my calendar?"
@@ -484,7 +484,7 @@ defmodule SalixIM.SignalProviderTest do
 
     found =
       Enum.filter(messages, fn message ->
-        get_in(message, ["agent_input", "trusted_origin", "source_message_id"]) == source_id
+        get_in(message, ["agent_input", :trusted_origin, "source_message_id"]) == source_id
       end)
 
     cond do

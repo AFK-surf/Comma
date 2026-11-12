@@ -2,13 +2,18 @@ defmodule CommaWeb.Coding.Endpoints do
   @moduledoc """
   Coding sessions (Tasks that run `{kind: sandbox}`) for a Workspace's members:
 
+    * `GET …/coding/repo-owners?page=`: the connected account and one page of its organizations;
+    * `GET …/coding/repo-search?owner=&kind=&q=&page=`: one page within an owner, with server-side name search;
     * `GET  /v1/comma/workspaces/:ws/coding/repos?page=` and
       `GET  …/coding/repos/:owner/:name/branches?page=`: one page (100) of what
       the Workspace's connected GitHub account reaches;
     * `POST …/coding/sessions` `{text, repo: {owner, name, base_ref?},
       model?: {provider, model?, effort?}, account_id?, client_request_id}`:
       starts a coding Task, owned by the caller, through the Workspace's Task
-      placement (`SalixIM.TaskPlacement`);
+      placement (`SalixIM.TaskPlacement`). `text` is the caller's first
+      Message: the composer uploads it names (`(workspace file: /uploads/…)`)
+      are bound to it (`SalixIM.ConversationAttachments`) and reach the
+      sandbox's session as its uploads;
     * `GET  …/coding/sessions/:task`: its repository, branch and sandbox state;
     * `GET  …/coding/sessions/:task/changes?commit=&uncommitted=`: the
       session branch's changes and its commits past the base, from its
@@ -65,6 +70,34 @@ defmodule CommaWeb.Coding.Endpoints do
       with {:ok, %{token: token}} <- github(workspace),
            {:ok, repos} <- github_client().repos(token, page(conn)) do
         json(conn, 200, %{repos: repos})
+      end
+    end)
+  end
+
+  def repo_owners(conn, workspace_id) do
+    with_workspace(conn, workspace_id, :read, fn workspace, _user ->
+      with {:ok, %{token: token}} <- github(workspace),
+           {:ok, result} <- github_client().repo_owners(token, browse_page(conn)) do
+        json(conn, 200, result)
+      end
+    end)
+  end
+
+  def repo_search(conn, workspace_id) do
+    with_workspace(conn, workspace_id, :read, fn workspace, _user ->
+      owner = conn.query_params["owner"] || ""
+      kind = conn.query_params["kind"]
+      query = String.trim(conn.query_params["q"] || "")
+
+      if Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9-]{0,99}\z/, owner) and
+           kind in ["user", "organization"] and String.length(query) <= 100 do
+        with {:ok, %{token: token}} <- github(workspace),
+             {:ok, result} <-
+               github_client().repo_search(token, owner, kind, query, browse_page(conn)) do
+          json(conn, 200, result)
+        end
+      else
+        {:error, {:bad_request, "invalid repository search"}}
       end
     end)
   end
@@ -702,6 +735,13 @@ defmodule CommaWeb.Coding.Endpoints do
   defp title(text) do
     line = text |> String.split("\n", parts: 2) |> hd() |> String.trim()
     if String.length(line) <= 80, do: line, else: String.slice(line, 0, 79) <> "…"
+  end
+
+  defp browse_page(conn) do
+    case Integer.parse(conn.query_params["page"] || "1") do
+      {n, ""} when n >= 1 -> n
+      _ -> 1
+    end
   end
 
   defp page(conn) do

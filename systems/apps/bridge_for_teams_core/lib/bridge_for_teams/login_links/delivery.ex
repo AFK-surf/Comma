@@ -16,9 +16,19 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
   @doc "Whether magic-link email can be sent at all (token + From configured)."
   @callback configured?() :: boolean()
 
-  @doc "Deliver the sign-in link to one recipient."
+  @doc """
+  Deliver the sign-in link to one recipient. On acceptance return the
+  provider's message reference, which `message_events/1` looks up later.
+  """
   @callback deliver_login_link(email :: String.t(), org_name :: String.t(), url :: String.t()) ::
-              :ok | {:error, term()}
+              {:ok, %{provider_message_id: String.t() | nil}} | {:error, term()}
+
+  @doc "Provider delivery status and events (delivered, bounced, ...) of one accepted message."
+  @callback message_events(provider_message_id :: String.t()) ::
+              {:ok, %{status: String.t() | nil, events: [map()]}} | {:error, term()}
+
+  @doc "The provider's suppression of a recipient (`nil` when not suppressed)."
+  @callback recipient_suppression(email :: String.t()) :: {:ok, map() | nil} | {:error, term()}
 
   @spec impl() :: module()
   def impl do
@@ -48,8 +58,18 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
       in without the link above.
       """
 
-      SalixStore.Postmark.send_email(from_email(), [email], subject, body)
+      case SalixStore.Postmark.send_message(from_email(), email, subject, body) do
+        {:ok, %{message_id: message_id}} -> {:ok, %{provider_message_id: message_id}}
+        {:error, _reason} = error -> error
+      end
     end
+
+    @impl true
+    def message_events(provider_message_id),
+      do: SalixStore.Postmark.message_events(provider_message_id)
+
+    @impl true
+    def recipient_suppression(email), do: SalixStore.Postmark.suppression(email)
 
     defp from_email do
       :bridge_for_teams_core

@@ -10,6 +10,9 @@ import { Duration, Effect, Exit, Layer, Queue, Scope } from "effect";
 import { log } from "../ops/log.ts";
 import { Agents } from "../sessions/agents.ts";
 import { SalixRelay } from "../mesh/salix-relay.ts";
+import { ScreenHelpersService } from "../screens/helper.ts";
+import { AndroidDevicesService } from "../screens/devices.ts";
+import { SimulatorsService } from "../screens/simulator-agent.ts";
 import { Paths, Store } from "../services.ts";
 import type { Store as StationStore } from "../store/store.ts";
 import { placedState } from "../cli.ts";
@@ -22,7 +25,8 @@ import { type ArchiveState, archiveName } from "./durable-archive.ts";
 import type { StationTaskIndex } from "./task-index.ts";
 import { runtimeDir } from "../ops/files.ts";
 import { computerAccess } from "../device/access.ts";
-import { INSTANCES_DIR, instanceHost } from "../accounts/sources.ts";
+import { statsLayer } from "../stats/module.ts";
+import { INSTANCE_HOST, INSTANCES_DIR, instanceHost } from "../accounts/sources.ts";
 
 /** The host the profiles Salix lends are borrowed from, and the Station its Tasks are kept on (an instance's Salix is
  * `salix:<id>`). */
@@ -118,10 +122,15 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
       const store = yield* Store;
       const agents = yield* Agents;
       const relay = yield* SalixRelay;
+      const screens = yield* ScreenHelpersService;
+      const android = yield* AndroidDevicesService;
+      const simulators = yield* SimulatorsService;
       mkdirSync(join(data, "connector"), { recursive: true, mode: 0o700 });
       // The computer's one access value, which every device connection of the station follows.
       const access = computerAccess(agents.config);
       const index = stationTaskIndex(store);
+      // The station's statistics, its own and those of outside sources brought in here (stats/module.ts).
+      const stats = yield* statsLayer(store, data);
       /** The profiles a host's Salix lends, kept as borrowed from that host. */
       const lentBy = (host: string): StationProfiles => ({
         received: (profiles) => agents.sharing.hostProfiles(host, profiles),
@@ -148,6 +157,12 @@ export const ConnectorLive = (argv: string[], workloadCredential: string) =>
                 place: place ? stationPlace(data) : undefined,
                 access,
                 index: index(host),
+                stats: stats.forHost(host),
+                screens,
+                android: android.agents,
+                // A desktop Workspace's connection: its owner may choose the local sign-in from a Comma conversation.
+                accounts: host.startsWith(INSTANCE_HOST) ? { chooseLocal: (runtime, by) => agents.accounts.chooseLocalForHost(host, runtime, by) } : undefined,
+                simulators: { here: () => simulators.simulators.here(), call: (params, images) => simulators.agents.call(params, images) },
               }),
             ),
             (c) => c.close().pipe(Effect.andThen(c.shutdownComputerUseDaemon)),
@@ -298,7 +313,7 @@ function homeTemps(data: string): string[] {
 }
 
 /** The station's databases, relative to its data directory: never archived live, snapshotted instead. */
-const DATABASES = ["stillfail.db"];
+const DATABASES = ["station.db", "stillfail.db"];
 
 /**
  * The station's own state in a Workload archive (its data directory must lie under the root to travel): the

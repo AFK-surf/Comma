@@ -183,7 +183,7 @@ test("a previewed file becomes a tab of the shell's one right sidebar", async ({
   await expect(previewTab).toBeVisible();
   await expect(previewTab).toHaveAttribute("aria-selected", "true");
   await expect(
-    page.getByTestId("drive-preview-panel").getByText("Page 1 of 2", { exact: true })
+    page.getByTestId("drive-preview-panel").getByRole("img", { name: "PDF page 1" })
   ).toBeVisible();
 
   const screenshot = screenshotRow(page);
@@ -788,9 +788,12 @@ test("Drive opens PDF, Markdown, HTML and media through the same file reader as 
   const panel = page.getByTestId("drive-preview-panel");
   await select("shared-reader.pdf");
   await expectCompactPreviewToolbar(panel, "shared-reader.pdf");
-  await expect(panel.getByText("Page 1 of 2", { exact: true })).toBeVisible();
-  await panel.getByRole("button", { name: "Next page", exact: true }).click();
-  await expect(panel.getByText("Page 2 of 2", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("img", { name: "PDF page 1" })).toBeVisible();
+  // A Drive file has no conversation to send an edit request to.
+  await expect(panel.getByRole("button", { name: "Request edits" })).toHaveCount(0);
+  await panel.getByRole("region", { name: "PDF pages" }).focus();
+  await page.keyboard.press("End");
+  await expect(panel.getByRole("img", { name: "PDF page 2" })).toBeInViewport();
   await select("shared-reader.md");
   await expect(
     panel.getByRole("heading", { name: "Shared Markdown reader" })

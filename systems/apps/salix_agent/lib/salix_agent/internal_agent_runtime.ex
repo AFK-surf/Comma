@@ -53,10 +53,10 @@ defmodule SalixAgent.InternalAgentRuntime do
   @spec get_session_summary(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_session_summary(agent_id, session_id)
       when is_binary(agent_id) and is_binary(session_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
+    InternalSessionStore.with_session(agent_id, session_id, fn session ->
       {:ok,
        session_json(agent_id, session) |> put_optional("wait", InternalSession.wait(session))}
-    end
+    end)
   end
 
   @doc """
@@ -78,7 +78,7 @@ defmodule SalixAgent.InternalAgentRuntime do
   @spec session_status(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def session_status(agent_id, session_id)
       when is_binary(agent_id) and is_binary(session_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
+    InternalSessionStore.with_session(agent_id, session_id, fn session ->
       status =
         %{
           "agent_id" => agent_id,
@@ -94,7 +94,7 @@ defmodule SalixAgent.InternalAgentRuntime do
         |> Map.merge(session_status_llm(agent_id, session))
 
       {:ok, status}
-    end
+    end)
   end
 
   # The window is reported ONLY alongside the model it belongs to. An agent
@@ -137,9 +137,9 @@ defmodule SalixAgent.InternalAgentRuntime do
       when is_binary(agent_id) and is_binary(session_id) do
     case SalixAgent.InternalSessionActor.activity_snapshot(agent_id, session_id) do
       :not_resident ->
-        with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
+        InternalSessionStore.with_session(agent_id, session_id, fn session ->
           {:ok, project_session_activity(agent_id, session)}
-        end
+        end)
 
       result ->
         result
@@ -244,22 +244,23 @@ defmodule SalixAgent.InternalAgentRuntime do
       when is_binary(agent_id) and is_binary(session_id) do
     scope = Keyword.get(opts, :history, :window)
 
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id),
-         {:ok, transcript} <- InternalSessionStore.transcript(agent_id, session, scope) do
-      {:ok,
-       %{
-         "session_id" => session_id,
-         "status" => to_string(InternalSession.status(session)),
-         "activity_status" => to_string(InternalSession.activity_status(session)),
-         "activity_status_updated_at" =>
-           InternalSession.get(session, :activity_status_updated_at),
-         "last_ack_message_id" => InternalSession.last_ack_message_id(session),
-         "messages" => Enum.map(transcript.messages, &session_message_json/1),
-         "archived_through" => transcript.archived_through,
-         "history_truncated" => transcript.truncated?
-       }
-       |> compact()}
-    end
+    InternalSessionStore.with_session(agent_id, session_id, fn session ->
+      with {:ok, transcript} <- InternalSessionStore.transcript(agent_id, session, scope) do
+        {:ok,
+         %{
+           "session_id" => session_id,
+           "status" => to_string(InternalSession.status(session)),
+           "activity_status" => to_string(InternalSession.activity_status(session)),
+           "activity_status_updated_at" =>
+             InternalSession.get(session, :activity_status_updated_at),
+           "last_ack_message_id" => InternalSession.last_ack_message_id(session),
+           "messages" => Enum.map(transcript.messages, &session_message_json/1),
+           "archived_through" => transcript.archived_through,
+           "history_truncated" => transcript.truncated?
+         }
+         |> compact()}
+      end
+    end)
   end
 
   @doc """
@@ -310,12 +311,12 @@ defmodule SalixAgent.InternalAgentRuntime do
         {[], 0, true, false},
         fn session, {uses, scanned, complete, truncated} ->
           scanned = scanned + 1
-          session_truncated = (InternalSession.archived_through(session) || 0) > 0
+          {:ok, window} = InternalSessionStore.transcript(agent_id, session, :window)
+          session_truncated = window.truncated?
           remaining = max(limit - length(uses), 0)
 
           session_uses =
-            session
-            |> InternalSession.get(:messages)
+            window.messages
             |> project_knowledge_uses(InternalSession.session_id(session), assertion_ids)
             |> Enum.take(remaining)
 
@@ -358,48 +359,50 @@ defmodule SalixAgent.InternalAgentRuntime do
     scope = Keyword.get(opts, :history, :window)
 
     with {:ok, limit} <- parse_session_trace_limit(Keyword.get(opts, :limit)),
-         {:ok, before} <- parse_session_trace_before(Keyword.get(opts, :before)),
-         {:ok, session} <- InternalSessionStore.read(agent_id, session_id),
-         {:ok, transcript} <- InternalSessionStore.transcript(agent_id, session, scope) do
-      eligible =
-        transcript.messages
-        |> Enum.sort_by(&message_sort_key/1)
-        |> Enum.filter(&(is_nil(before) or message_sort_key(&1) < before))
+         {:ok, before} <- parse_session_trace_before(Keyword.get(opts, :before)) do
+      InternalSessionStore.with_session(agent_id, session_id, fn session ->
+        with {:ok, transcript} <- InternalSessionStore.transcript(agent_id, session, scope) do
+          eligible =
+            transcript.messages
+            |> Enum.sort_by(&message_sort_key/1)
+            |> Enum.filter(&(is_nil(before) or message_sort_key(&1) < before))
 
-      has_more = length(eligible) > limit
-      page = Enum.take(eligible, -limit)
+          has_more = length(eligible) > limit
+          page = Enum.take(eligible, -limit)
 
-      {:ok,
-       %{
-         "runtime_kind" => "internal",
-         "session_id" => session_id,
-         "status" => to_string(InternalSession.status(session)),
-         "activity_status" => to_string(InternalSession.activity_status(session)),
-         "activity_status_updated_at" =>
-           InternalSession.get(session, :activity_status_updated_at),
-         "records" => Enum.map(page, &session_message_json/1),
-         "has_more" => has_more,
-         "archived_through" => transcript.archived_through,
-         "history_truncated" => transcript.truncated?
-       }
-       |> compact()
-       |> put_optional("next_before", if(has_more, do: session_trace_cursor(hd(page))))}
+          {:ok,
+           %{
+             "runtime_kind" => "internal",
+             "session_id" => session_id,
+             "status" => to_string(InternalSession.status(session)),
+             "activity_status" => to_string(InternalSession.activity_status(session)),
+             "activity_status_updated_at" =>
+               InternalSession.get(session, :activity_status_updated_at),
+             "records" => Enum.map(page, &session_message_json/1),
+             "has_more" => has_more,
+             "archived_through" => transcript.archived_through,
+             "history_truncated" => transcript.truncated?
+           }
+           |> compact()
+           |> put_optional("next_before", if(has_more, do: session_trace_cursor(hd(page))))}
+        end
+      end)
     end
   end
 
   @spec session_billing_context(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def session_billing_context(agent_id, session_id)
       when is_binary(agent_id) and is_binary(session_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
+    InternalSessionStore.with_session(agent_id, session_id, fn session ->
       {:ok, InternalSession.get(session, :billing_context) || %{}}
-    end
+    end)
   end
 
   @spec get_async_tool_call(String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, :not_found | term()}
   def get_async_tool_call(agent_id, session_id, tool_call_id)
       when is_binary(agent_id) and is_binary(session_id) and is_binary(tool_call_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
+    InternalSessionStore.with_session(agent_id, session_id, fn session ->
       case InternalSession.lookup_async_call(session, tool_call_id) do
         {:ok, record} ->
           {:ok, record}
@@ -413,7 +416,7 @@ defmodule SalixAgent.InternalAgentRuntime do
           # seq-addressable in the archive.
           {:error, :not_found}
       end
-    end
+    end)
   end
 
   @spec search_messages(String.t(), term(), term()) :: {:ok, map()} | {:error, term()}
@@ -430,7 +433,8 @@ defmodule SalixAgent.InternalAgentRuntime do
       InternalSessionStore.reduce_sessions(agent_id, {[], 0, false}, fn session,
                                                                         {results, count,
                                                                          archived?} ->
-        archived? = archived? or (InternalSession.archived_through(session) || 0) > 0
+        {:ok, window} = InternalSessionStore.transcript(agent_id, session, :window)
+        archived? = archived? or window.truncated?
         hit_session_id = InternalSession.session_id(session)
 
         hit_created_at =
@@ -438,7 +442,7 @@ defmodule SalixAgent.InternalAgentRuntime do
             InternalSession.get(session, :created_at) || 0
 
         hits =
-          Enum.flat_map(InternalSession.get(session, :messages), fn msg ->
+          Enum.flat_map(window.messages, fn msg ->
             content = stringify_content(msg[:content])
 
             if q != "" and String.contains?(String.downcase(content), q) do
@@ -559,7 +563,7 @@ defmodule SalixAgent.InternalAgentRuntime do
   # identity: a different source colliding on the same explicit target and
   # request key must NOT adopt the existing fork's transcript.
   defp settle_existing_fork(agent_id, source_session_id, target_id, request_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, target_id) do
+    InternalSessionStore.with_session(agent_id, target_id, fn session ->
       cond do
         is_binary(request_id) and
           InternalSession.get(session, :fork_request_id) == request_id and
@@ -570,7 +574,7 @@ defmodule SalixAgent.InternalAgentRuntime do
         true ->
           {:error, :fork_target_conflict}
       end
-    end
+    end)
   end
 
   @spec compact_session(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -585,16 +589,9 @@ defmodule SalixAgent.InternalAgentRuntime do
                payload,
                source_id
              ),
-           {:ok, session} <-
-             wait_for_session_match(
-               agent_id,
-               session_id,
-               &(compact_result_for(&1, source_id) != nil)
-             ) do
-        case compact_result_for(session, source_id) do
-          %{} = result -> compact_api_result(result)
-          nil -> {:error, :compact_result_missing}
-        end
+           {:ok, result} <-
+             wait_for_session_match(agent_id, session_id, &compact_result_for(&1, source_id)) do
+        compact_api_result(result)
       end
     end
   end
@@ -643,13 +640,8 @@ defmodule SalixAgent.InternalAgentRuntime do
             # Trace is a diagnostic surface: an unreadable archive degrades
             # that lineage member to its window rather than failing the trace.
             {:error, _reason} ->
-              archived_through = InternalSession.archived_through(lineage_session) || 0
-
-              %{
-                messages: InternalSession.get(lineage_session, :messages),
-                archived_through: archived_through,
-                truncated?: archived_through > 0
-              }
+              {:ok, window} = InternalSessionStore.transcript(agent_id, lineage_session, :window)
+              window
           end
         end)
 
@@ -1220,38 +1212,36 @@ defmodule SalixAgent.InternalAgentRuntime do
     {:ok, body}
   end
 
-  defp wait_for_session_match(agent_id, session_id, predicate) do
+  # Polls the stored session until `pick` returns a value. Each poll reads
+  # and releases the state; the value is data, never the session.
+  defp wait_for_session_match(agent_id, session_id, pick) do
     # Use the same configured budget as the actor-owned dependency. Allow
     # bounded time for dispatch and durable result settlement around that job.
     deadline_ms =
       monotonic_ms() + SalixAgent.DependencyJob.timeout_ms(:compaction) +
         @compact_result_settlement_allowance_ms
 
-    wait_for_session_match(agent_id, session_id, predicate, deadline_ms)
+    wait_for_session_match(agent_id, session_id, pick, deadline_ms)
   end
 
-  defp wait_for_session_match(agent_id, session_id, predicate, deadline_ms) do
-    case InternalSessionStore.read(agent_id, session_id) do
-      {:ok, session} ->
-        if predicate.(session) do
-          {:ok, session}
-        else
-          continue_waiting_for_session_match(agent_id, session_id, predicate, deadline_ms)
-        end
+  defp wait_for_session_match(agent_id, session_id, pick, deadline_ms) do
+    case InternalSessionStore.with_session(agent_id, session_id, &{:ok, pick.(&1)}) do
+      {:ok, value} when not is_nil(value) ->
+        {:ok, value}
 
-      {:error, _} ->
-        continue_waiting_for_session_match(agent_id, session_id, predicate, deadline_ms)
+      _ ->
+        continue_waiting_for_session_match(agent_id, session_id, pick, deadline_ms)
     end
   end
 
-  defp continue_waiting_for_session_match(agent_id, session_id, predicate, deadline_ms) do
+  defp continue_waiting_for_session_match(agent_id, session_id, pick, deadline_ms) do
     remaining_ms = deadline_ms - monotonic_ms()
 
     if remaining_ms <= 0 do
       {:error, :compact_result_wait_timeout}
     else
       SystemsClock.sleep(min(@compact_result_poll_sleep_ms, remaining_ms))
-      wait_for_session_match(agent_id, session_id, predicate, deadline_ms)
+      wait_for_session_match(agent_id, session_id, pick, deadline_ms)
     end
   end
 

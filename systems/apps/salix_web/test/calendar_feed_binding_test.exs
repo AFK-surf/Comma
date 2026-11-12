@@ -5,7 +5,13 @@ defmodule Salix.Bindings.CalendarFeedTest do
   alias SalixCalendar.Server
   alias SalixStore.{CalendarFeedSubscriptions, Ids, Keys, Repo, S3}
 
+  # The feed serves Events from 30 days back; the Events are on a fixed day,
+  # so the clock stands two weeks before it rather than at the machine's date.
+  @now ~U[2026-09-01 00:00:00.000000Z]
+
   setup do
+    :ok = SystemsClock.manual(epoch: @now)
+    on_exit(&SystemsClock.reset/0)
     S3.Fake.reset()
     Repo.query!("TRUNCATE calendar_feed_subscriptions")
 

@@ -19,6 +19,10 @@ defmodule SalixWeb.OAuthCallbackPageTest do
     assert OAuthCallbackPage.render_mcp("analytics", nil, "https://MCP-EU.PostHog.com/sse") =~
              "posthog-p6"
 
+    stripe = OAuthCallbackPage.render_mcp("stripe", nil, "https://mcp.stripe.com")
+    assert stripe =~ "#635BFF"
+    refute stripe =~ ~s(aria-label="MCP")
+
     for url <- [
           nil,
           "https://mcp.example.com/mcp",

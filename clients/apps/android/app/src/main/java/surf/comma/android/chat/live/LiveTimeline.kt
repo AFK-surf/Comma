@@ -9,10 +9,10 @@ import surf.comma.android.chat.model.ChatRole
 import surf.comma.android.chat.model.MessageStatus
 import surf.comma.android.chat.model.TimelineBlockKinds
 import org.json.JSONArray
+import org.json.JSONObject
 import surf.comma.android.chat.render.MarkdownText
 import surf.comma.android.chat.render.MarkdownTree
 import surf.comma.android.chat.render.MessageContent
-import surf.comma.android.chat.render.MessageCopy
 import surf.comma.android.conversation.AgentRequest
 import surf.comma.android.conversation.AgentRequestStatus
 import surf.comma.android.conversation.Connection
@@ -22,25 +22,14 @@ import surf.comma.android.conversation.MessagePart
 import surf.comma.android.conversation.PendingMessage
 import surf.comma.android.conversation.PendingStatus
 import surf.comma.android.conversation.TimelineEntry
+import surf.comma.android.tasks.ui.KnownTasks
 
 /** Row kinds the live chat adds to the timeline. Payloads are plain delimited fields. */
 object LiveRowKinds {
     const val TASK_REF = "task.ref"
     const val ATTACHMENT = "attachment"
+    /** A message's generated UI: its summary, opened by a tap. The payload is its [surf.comma.android.dynamicui.DynamicUiTarget]'s JSON, if any. */
     const val INTERACTIVE_SUMMARY = "ui.summary"
-
-    /**
-     * The buttons under a finished reply. The payload is the reply's turn key, which
-     * [replyText] turns back into the reply's text.
-     */
-    const val REPLY_ACTIONS = "reply.actions"
-
-    /**
-     * The same measured space, blank, while the reply is on its way. The timeline compensates
-     * this hidden tail in its bottom inset, then releases the compensation with the size spring
-     * as the buttons appear. It has its own row id so the buttons retain their reveal fade.
-     */
-    const val REPLY_ACTIONS_RESERVED = "reply.actions.reserved"
 
     /**
      * A finished voice call, on the user's side: the row's text is what it says ("2:13 · Call
@@ -59,6 +48,9 @@ object LiveRowKinds {
      * after the Agent's reply to the message its turn served. The payload is the [AgentRequest]'s JSON.
      */
     const val AGENT_REQUEST = "agent.request"
+
+    /** A Mini App Version's launch card, after the message that names it. The payload is the card's JSON. */
+    const val MINI_APP = "mini.app"
 
     private const val SEPARATOR = '\u001F'
 
@@ -92,6 +84,10 @@ data class LiveLabels(
     val replyErrorDetail: String = "请稍后再试。",
     val interactiveUnavailable: String = "交互内容暂不可用",
     val file: String = "文件",
+    /** A task in running text whose title is not known yet. */
+    val task: String = "任务",
+    /** A task in running text that cannot be opened. */
+    val taskUnavailable: String = "任务不可用",
     val historyGap: String = "正在加载错过的消息…",
 )
 
@@ -125,22 +121,19 @@ class LiveTimeline(
  * The typing bubble shows while the agent works on a message, a send waits for its reply or a
  * draft streams; not while the conversation is cut off (the connection notice says so instead),
  * and never next to a reply error.
- *
- * With [replyActions], each reply that has text ends with a [LiveRowKinds.REPLY_ACTIONS] row;
- * while the latest reply is on its way, a [LiveRowKinds.REPLY_ACTIONS_RESERVED] row holds its
- * place.
  */
 fun mapConversation(
     state: ConversationState,
     labels: LiveLabels = LiveLabels(),
-    replyActions: Boolean = false,
     /** What this device knows of the question cards' images beyond the core's rows: previews and images being made ready. */
     questionImages: QuestionImagesShown = QuestionImagesShown(),
     /** The Agent's requests in this conversation (the core's `agentRequests`), for their cards. */
     requests: List<AgentRequest> = emptyList(),
+    /** What the page's task directory knows: the titles of tasks in running text, and IDs that are not tasks. */
+    tasks: KnownTasks = KnownTasks(),
     resolveMedia: (ChatAttachment) -> ChatAttachment = { it },
 ): LiveTimeline {
-    val builder = RowBuilder(state.conversationId.orEmpty(), resolveMedia) { question ->
+    val builder = RowBuilder(state.conversationId.orEmpty(), tasks, resolveMedia) { question ->
         QuestionCardPayload.of(question, state.questionAttachments[question.messageId].orEmpty(), questionImages)
     }
     val placed = placeRequests(state.timeline, requests)
@@ -165,9 +158,7 @@ fun mapConversation(
         // Waiting for a reply is shown as the typing bubble alone; the status text is not used.
         reply.pending -> builder.typing()
     }
-    // A failed reply is over, whatever its draft says: no room is kept for its buttons.
-    val rows = if (replyActions) builder.rowsWithReplyActions(reply.pending) else builder.rows
-    return LiveTimeline(rows, builder.retryTargets, builder.entryRows, builder.rowEntries)
+    return LiveTimeline(builder.rows, builder.retryTargets, builder.entryRows, builder.rowEntries)
 }
 
 /** Where the request cards go: after the entry of the reply that owns each, or on the newest turn. */
@@ -207,6 +198,7 @@ internal fun placeRequests(timeline: List<TimelineEntry>, requests: List<AgentRe
 
 private class RowBuilder(
     private val conversationId: String,
+    private val tasks: KnownTasks,
     private val resolveMedia: (ChatAttachment) -> ChatAttachment,
     private val questionPayload: (surf.comma.android.conversation.AgentQuestion) -> QuestionCardPayload,
 ) {
@@ -214,8 +206,6 @@ private class RowBuilder(
     val retryTargets = HashMap<Long, String>()
     val entryRows = HashMap<String, Long>()
     val rowEntries = HashMap<Long, String>()
-    /** Turns whose reply has text to copy. */
-    private val repliedTurns = HashSet<String>()
     private var turn = ""
 
     fun message(key: String, message: LiveMessage, labels: LiveLabels) {
@@ -223,12 +213,7 @@ private class RowBuilder(
         messageRows(key, message, labels)
         if (rows.size > start) entryRows[key] = rows[start].id
         for (index in start until rows.size) rowEntries[rows[index].id] = key
-        if (message.role != surf.comma.android.conversation.ChatRole.USER && message.actorType != SYSTEM_ACTOR &&
-            message.parts.any { it is MessagePart.Text && it.text.isNotBlank() }) repliedTurns += turn
     }
-
-    fun rowsWithReplyActions(generating: Boolean): List<ChatMessage> =
-        withReplyActions(rows, generating) { it in repliedTurns }
 
     private fun messageRows(key: String, message: LiveMessage, labels: LiveLabels) {
         val user = message.role == surf.comma.android.conversation.ChatRole.USER
@@ -243,61 +228,13 @@ private class RowBuilder(
         message.markdown?.let { markdown ->
             treeRows(key, message, JSONArray(markdown), role, createdAt, labels)
             mediaAndRefRows(key, message, role, createdAt, labels)
+            miniAppRows(key, message, role, createdAt)
             questionRows(key, message, role, createdAt)
             return
         }
-        val text = StringBuilder()
-        var textStart = -1
-        var afterSplit = false
-        // Punctuation right after a task chip belongs to the chip's line, not the next row.
-        var chipAwaitingText = -1
-        // A run cut off by a card becomes its own row, so whitespace at the cut is row edge.
-        fun flush(split: Boolean) {
-            var run = text.toString()
-            if (afterSplit) run = run.trimStart()
-            if (split) run = run.trimEnd()
-            if (textStart >= 0 && run.isNotBlank()) add("$key#p$textStart", role, run, createdAt)
-            text.clear()
-            textStart = -1
-            afterSplit = split
-        }
-        message.parts.forEachIndexed { index, part ->
-            when (part) {
-                is MessagePart.SetupOffer -> {
-                    chipAwaitingText = -1
-                    flush(split = true)
-                    add("$key#p$index", role, "", createdAt,
-                        surf.comma.android.settings.devices.DeviceSetupOffer.TYPE, part.offer.json().toString())
-                }
-                is MessagePart.Text -> {
-                    var body = part.text
-                    if (chipAwaitingText >= 0) {
-                        val stop = attachedPunctuationLength(body)
-                        if (stop > 0) attachSuffix(chipAwaitingText, body.substring(0, stop))
-                        body = body.substring(stop)
-                        chipAwaitingText = -1
-                    }
-                    if (textStart < 0) textStart = index
-                    text.append(body)
-                }
-                is MessagePart.TaskChip -> {
-                    flush(split = true)
-                    add("$key#p$index", role, "", createdAt, LiveRowKinds.TASK_REF, LiveRowKinds.encode(
-                        LiveRowKinds.TaskRef(part.conversationId, part.title, part.status, part.unavailable)))
-                    chipAwaitingText = rows.lastIndex
-                }
-                is MessagePart.InteractiveSummary -> {
-                    chipAwaitingText = -1
-                    flush(split = true)
-                    add("$key#p$index", role, part.summary ?: labels.interactiveUnavailable, createdAt,
-                        LiveRowKinds.INTERACTIVE_SUMMARY, part.uiRef)
-                }
-                // Drawn after everything the message says; see [questionRows].
-                is MessagePart.Question -> Unit
-            }
-        }
-        flush(split = false)
+        treeRows(key, message, partsTree(message.parts), role, createdAt, labels)
         mediaAndRefRows(key, message, role, createdAt, labels)
+        miniAppRows(key, message, role, createdAt)
         questionRows(key, message, role, createdAt)
     }
 
@@ -306,6 +243,14 @@ private class RowBuilder(
         for (request in requests)
             add("request:${request.id}", ChatRole.AGENT, request.reason, request.createdAt ?: 0L, LiveRowKinds.AGENT_REQUEST,
                 request.json().toString())
+    }
+
+    /** The Mini App Versions a message names, each a launch card after its text, files and task cards. */
+    private fun miniAppRows(key: String, message: LiveMessage, role: ChatRole, createdAt: Long) {
+        message.parts.forEachIndexed { index, part ->
+            if (part is MessagePart.MiniApp)
+                add("$key#m$index", role, part.app.name, createdAt, LiveRowKinds.MINI_APP, part.app.json().toString())
+        }
     }
 
     /** The questions a message asks, each a card of its own after its text, files and task cards. */
@@ -321,17 +266,16 @@ private class RowBuilder(
         key: String, message: LiveMessage, tree: JSONArray, role: ChatRole, createdAt: Long, labels: LiveLabels,
     ) {
         val parts = message.parts
-        // A part deeper in the text than a paragraph of its own (a chip in a list item) is read as its words.
+        // A part deeper in the text than a paragraph of its own (interactive content in a list item) is read as its words.
         fun words(element: String): String? = MarkdownTree.partIndex(element)?.let(parts::getOrNull)?.let { part ->
             when (part) {
-                is MessagePart.TaskChip -> part.title
                 is MessagePart.InteractiveSummary -> part.summary ?: labels.interactiveUnavailable
                 else -> null
             }
         }
         // Punctuation right after a task chip belongs to the chip's line, not the next row.
         var chipAwaitingText = -1
-        MarkdownTree.pieces(tree).forEachIndexed { index, piece ->
+        MarkdownTree.pieces(inlineTasks(tree, parts, labels, tasks)).forEachIndexed { index, piece ->
             when (piece) {
                 is MarkdownTree.Piece.Tree -> {
                     var nodes = MarkdownTree.withElements(piece.nodes, ::words)
@@ -356,7 +300,8 @@ private class RowBuilder(
                             chipAwaitingText = rows.lastIndex
                         }
                         is MessagePart.InteractiveSummary -> add("$key#p$at", role,
-                            part.summary ?: labels.interactiveUnavailable, createdAt, LiveRowKinds.INTERACTIVE_SUMMARY, part.uiRef)
+                            part.summary ?: labels.interactiveUnavailable, createdAt, LiveRowKinds.INTERACTIVE_SUMMARY,
+                            part.target?.json()?.toString())
                         is MessagePart.SetupOffer -> add("$key#p$at", role, "", createdAt,
                             surf.comma.android.settings.devices.DeviceSetupOffer.TYPE, part.offer.json().toString())
                         else -> Unit
@@ -402,7 +347,7 @@ private class RowBuilder(
 
     /**
      * Unread messages between two shown ranges: a status line that starts a turn of its own, so
-     * replies after it never join the turn before it (their buttons, their copied text).
+     * replies after it never join the turn before it.
      */
     fun gap(key: String, text: String) {
         turn = key
@@ -477,63 +422,116 @@ private fun isCutOff(state: ConversationState): Boolean =
     state.problem != null && state.problem != surf.comma.android.conversation.ConversationProblem.STORAGE &&
         state.connection != Connection.LIVE
 
-/**
- * [rows] with the buttons after the last agent row of each reply whose turn is [replied]. The
- * latest reply gets reserved space instead while [generating].
- *
- * A reply is every agent row of one turn. A system notice inside it (a status line) does not end
- * it: the agent rows on both sides are one reply, with one set of buttons after its last row,
- * copying all of it. A gap or a user message does start a new turn, and with it a new reply.
- */
-internal fun withReplyActions(rows: List<ChatMessage>, generating: Boolean, replied: (String) -> Boolean): List<ChatMessage> {
-    // Turns are contiguous: only user messages, pending sends and gaps start one.
-    val lastAgent = HashMap<String, Int>()
-    rows.forEachIndexed { index, row -> if (row.role == ChatRole.AGENT) lastAgent[row.turnId] = index }
-    val latestTurn = rows.lastOrNull()?.turnId
-    val out = ArrayList<ChatMessage>(rows.size + rows.size / 2)
-    rows.forEachIndexed { index, row ->
-        out += row
-        if (row.role != ChatRole.AGENT || lastAgent[row.turnId] != index) return@forEachIndexed
-        val reserved = generating && row.turnId == latestTurn
-        if (!reserved && !replied(row.turnId)) return@forEachIndexed
-        val kind = if (reserved) LiveRowKinds.REPLY_ACTIONS_RESERVED else LiveRowKinds.REPLY_ACTIONS
-        // Rows without a turn (agent messages before the first user message) key off the row.
-        val key = row.turnId.ifEmpty { "row:${row.id}" }
-        out += ChatMessage(id = rowId("$key#$kind"), conversationId = row.conversationId, turnId = row.turnId,
-            role = ChatRole.AGENT, text = "", createdAt = row.createdAt, cardKind = kind,
-            cardPayload = if (reserved) null else row.turnId)
+private fun partsTree(parts: List<MessagePart>): JSONArray {
+    val tree = JSONArray()
+    var paragraph = JSONArray()
+    fun flushParagraph() {
+        if (paragraph.length() > 0) tree.put(JSONArray().put("p").put(paragraph))
+        paragraph = JSONArray()
     }
-    return out
+    parts.forEachIndexed { index, part ->
+        when (part) {
+            is MessagePart.Text -> {
+                val runs = part.text.split(PARAGRAPH_BREAK)
+                runs.forEachIndexed { at, run ->
+                    if (at > 0) flushParagraph()
+                    // Blank space at a paragraph break is the paragraph's edge.
+                    var text = run
+                    if (at > 0) text = text.trimStart()
+                    if (at < runs.lastIndex) text = text.trimEnd()
+                    if (text.isNotEmpty()) paragraph.put(text)
+                }
+            }
+            // Cards drawn after the message; see [miniAppRows] and [questionRows].
+            is MessagePart.Question, is MessagePart.MiniApp -> Unit
+            else -> paragraph.put(JSONArray().put("comma-inline")
+                .put(JSONObject().put("key", "element-${index.toString(36)}")))
+        }
+    }
+    flushParagraph()
+    return tree
 }
 
 /**
- * Reply buttons for rows that did not come from [mapConversation] (the local fixtures): a turn
- * counts as replied when one of its agent message rows has text.
+ * Keeps a task alone in a top-level paragraph (closing punctuation may follow it) as a card. Every other task, in a
+ * sentence, a list item, a heading or a quote, becomes words in its text before pieces would split the paragraph
+ * around it ([inlineTask]).
  */
-fun withReplyActions(rows: List<ChatMessage>): List<ChatMessage> {
-    val replied = rows.filter { it.role == ChatRole.AGENT && it.cardKind == null && it.text.isNotBlank() }
-        .mapTo(HashSet()) { it.turnId }
-    return withReplyActions(rows, generating = rows.lastOrNull()?.status?.isActive == true) { it in replied }
+private fun inlineTasks(
+    tree: JSONArray, parts: List<MessagePart>, labels: LiveLabels, tasks: KnownTasks,
+    words: MutableMap<Int, String>? = null,
+): JSONArray {
+    fun chipIndex(node: Any?): Int? {
+        val array = node as? JSONArray ?: return null
+        if (array.optString(0) != "comma-inline") return null
+        return MarkdownTree.partIndex(array.optJSONObject(1)?.optString("key").orEmpty())
+    }
+    fun chip(node: Any?) = chipIndex(node)?.let(parts::getOrNull) as? MessagePart.TaskChip
+    fun transform(node: Any?, root: Boolean): Any? {
+        val array = node as? JSONArray ?: return node
+        val kids = array.opt(1) as? JSONArray ?: return node
+        val values = (0 until kids.length()).map { kids.opt(it) }
+        val before = values.takeWhile { chip(it) == null }
+        val card = root && array.optString(0) == "p" && values.count { chip(it) != null } == 1 &&
+            before.all { it is String && it.isBlank() } &&
+            values.filter { chip(it) == null }.all { it is String && it.drop(attachedPunctuationLength(it)).isBlank() }
+        if (card) return node
+        val out = JSONArray().put(array.opt(0)).put(JSONArray().apply {
+            values.forEach { child ->
+                val part = chip(child)
+                if (part == null) put(transform(child, root = false)) else {
+                    val replacement = inlineTask(part, labels, tasks)
+                    chipIndex(child)?.let { words?.put(it, MarkdownTree.text(listOf(replacement)).text) }
+                    put(replacement)
+                }
+            }
+        })
+        for (at in 2 until array.length()) out.put(array.opt(at))
+        return out
+    }
+    return JSONArray().apply { for (at in 0 until tree.length()) put(transform(tree.opt(at), root = true)) }
 }
+
+/**
+ * A task in running text: a link titled as the directory names the task, else as the chip does, else [LiveLabels.task].
+ * A task that cannot be opened, by the card's own rule ([taskRefDisplay]), is plain words.
+ */
+private fun inlineTask(chip: MessagePart.TaskChip, labels: LiveLabels, tasks: KnownTasks): Any {
+    val ref = LiveRowKinds.TaskRef(chip.conversationId, chip.title, chip.status, chip.unavailable)
+    val (id, title) = when (val display = taskRefDisplay(ref, tasks)) {
+        TaskRefDisplay.Unavailable -> return labels.taskUnavailable
+        is TaskRefDisplay.Ready -> display.task.id to
+            (display.task.title.takeIf { it.isNotBlank() } ?: chip.title?.takeIf { it.isNotBlank() })
+        is TaskRefDisplay.Loading -> display.taskId to display.title
+    }
+    return JSONArray().put("a").put(JSONArray().put(title ?: labels.task)).put(JSONObject().put("href", "comma:task/$id"))
+}
+
+private fun taskCopyText(chip: MessagePart.TaskChip, labels: LiveLabels, tasks: KnownTasks): String =
+    MarkdownTree.text(listOf(inlineTask(chip, labels, tasks))).text
 
 /**
  * The markdown source of one timeline entry, as the user would copy it: text parts in order, a
  * task reference as its title, interactive content as its summary. Null when there is no entry
  * [key].
  */
-fun entryText(state: ConversationState, key: String): String? =
-    state.timeline.firstOrNull { it.key == key }?.let(::entryText)
+fun entryText(
+    state: ConversationState, key: String, tasks: KnownTasks = KnownTasks(), labels: LiveLabels = LiveLabels(),
+): String? = state.timeline.firstOrNull { it.key == key }?.let { entryText(it, tasks, labels) }
 
-private fun entryText(entry: TimelineEntry): String = when (entry) {
+private fun entryText(entry: TimelineEntry, tasks: KnownTasks, labels: LiveLabels): String = when (entry) {
     is TimelineEntry.Message -> buildString {
-        entry.message.parts.forEach { part ->
+        val words = HashMap<Int, String>()
+        val message = entry.message
+        inlineTasks(message.markdown?.let(::JSONArray) ?: partsTree(message.parts), message.parts, labels, tasks, words)
+        message.parts.forEachIndexed { index, part ->
             when (part) {
                 is MessagePart.Text -> append(part.text)
-                is MessagePart.TaskChip -> append(part.title.orEmpty())
+                is MessagePart.TaskChip -> append(words[index] ?: taskCopyText(part, labels, tasks))
                 is MessagePart.InteractiveSummary -> part.summary?.let(::append)
                 is MessagePart.SetupOffer -> Unit
                 // The card is not part of the message's words.
-                is MessagePart.Question -> Unit
+                is MessagePart.Question, is MessagePart.MiniApp -> Unit
             }
         }
     }.trim()
@@ -546,42 +544,22 @@ private fun entryText(entry: TimelineEntry): String = when (entry) {
  * The blocks of one timeline entry for text selection: an agent's message as the core parsed it,
  * a task reference as its title; anything else as written. Null when there is no entry [key].
  */
-fun entryBlocks(state: ConversationState, key: String): List<MessageContent>? {
+fun entryBlocks(
+    state: ConversationState, key: String, tasks: KnownTasks = KnownTasks(), labels: LiveLabels = LiveLabels(),
+): List<MessageContent>? {
     val entry = state.timeline.firstOrNull { it.key == key } ?: return null
     val message = (entry as? TimelineEntry.Message)?.message
     val markdown = message?.markdown
-        ?: return listOf(MessageContent.Paragraph(MarkdownText.plain(entryText(entry))))
-    return MarkdownTree.blocks(JSONArray(markdown)) { element ->
+        ?: return listOf(MessageContent.Paragraph(MarkdownText.plain(entryText(entry, tasks, labels))))
+    return MarkdownTree.blocks(inlineTasks(JSONArray(markdown), message.parts, labels, tasks)) { element ->
         MarkdownTree.partIndex(element)?.let(message.parts::getOrNull)?.let { part ->
             when (part) {
-                is MessagePart.TaskChip -> part.title
+                is MessagePart.TaskChip -> taskCopyText(part, labels, tasks)
                 is MessagePart.InteractiveSummary -> part.summary
                 else -> null
             }
         }
     }
-}
-
-/**
- * The whole reply of turn [turnKey] (the key a [LiveRowKinds.REPLY_ACTIONS] row carries): every
- * agent message after that turn's user message (or its gap), up to the next user message or gap,
- * each as [entryText]. A streamed draft is not shown, so it is not copied either.
- */
-fun replyText(state: ConversationState, turnKey: String): String {
-    var turn = ""
-    val parts = ArrayList<String>()
-    for (entry in state.timeline) {
-        when (entry) {
-            is TimelineEntry.Message ->
-                if (entry.message.role == surf.comma.android.conversation.ChatRole.USER) turn = entry.key
-                else if (turn == turnKey && entry.message.actorType != SYSTEM_ACTOR) parts += entryText(entry)
-            is TimelineEntry.Pending -> turn = entry.key
-            is TimelineEntry.Draft -> Unit
-            // Messages past an unread gap are not known to answer the turn before it.
-            is TimelineEntry.Gap -> turn = entry.key
-        }
-    }
-    return MessageCopy.reply(parts)
 }
 
 /**
@@ -593,6 +571,9 @@ internal fun attachedPunctuationLength(text: String): Int {
     while (end < text.length && text[end] in ATTACHED_PUNCTUATION) end++
     return end
 }
+
+/** A blank line between paragraphs, in text the core did not parse. */
+private val PARAGRAPH_BREAK = Regex("\n{2,}")
 
 private const val ATTACHED_PUNCTUATION = ".,;:!?…)]}’”»›%。，、；：！？）】」』》〉〕］｝"
 
@@ -610,7 +591,7 @@ internal fun MessageAttachment.toChatAttachment(conversationId: String, messageI
     val source = when {
         ref != null && !agentId.isNullOrBlank() -> MediaSource.AgentResource(agentId, ref)
         downloadable -> MediaSource.MessageAttachment(conversationId, messageId, blockIndex, ref)
-        workspacePath != null && validUploadedImagePath(workspacePath) -> MediaSource.UploadedFile(workspacePath)
+        workspacePath != null && validUploadedPath(workspacePath) -> MediaSource.UploadedFile(workspacePath)
         else -> null
     }
     val dimensions = if (widthPx != null && heightPx != null && widthPx > 0 && heightPx > 0) ImageDimensions(widthPx, heightPx) else null
@@ -618,7 +599,7 @@ internal fun MessageAttachment.toChatAttachment(conversationId: String, messageI
 }
 
 internal fun WorkspaceFile.toChatAttachment(): ChatAttachment {
-    val source = path.takeIf(::validUploadedImagePath)?.let(MediaSource::UploadedFile)
+    val source = path.takeIf(::validUploadedPath)?.let(MediaSource::UploadedFile)
     val dimensions = if (width != null && height != null && width > 0 && height > 0) ImageDimensions(width, height) else null
     return ChatAttachment(MediaAttachment(name, mimeType, size, source), dimensions)
 }
@@ -632,6 +613,3 @@ fun rowId(key: String): Long {
     }
     return hash
 }
-
-/** A reply is being produced: it streams in, or the agent works on it. */
-fun isGenerating(state: ConversationState): Boolean = state.reply.streaming || state.reply.working

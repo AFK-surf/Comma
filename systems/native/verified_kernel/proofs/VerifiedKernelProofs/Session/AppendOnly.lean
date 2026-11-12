@@ -1,7 +1,7 @@
-import VerifiedKernelProofs.Order
 import VerifiedKernelProofs.Session.AppendOnly.Runtime
 import VerifiedKernelProofs.Session.AppendOnly.Archive
 import VerifiedKernelProofs.Session.AppendOnly.Bookkeeping
+import VerifiedKernelProofs.Order
 
 /-!
 The Session transcript is the `messages` field of the state envelope.

@@ -1,6 +1,7 @@
 // Stations at Comma's control plane (`/v1/comma/stations/*`, `/v1/comma/workspaces/:id/stations*`): who the account
 // is to its stations and in which workspaces, each workspace's stations and their presence, the enrollment of a new
 // one, and the member credential a station takes on its direct connection.
+import { lazySchema } from "@comma/chat-contract";
 import { z } from "zod";
 import { route } from "../api.ts";
 
@@ -17,19 +18,23 @@ export const credentialPath = (ws: string) =>
 export const relayPath = (ws: string) =>
   route`/v1/comma/workspaces/${ws}/station-relay`;
 
-const text = z.string().max(4_096);
+const text = lazySchema(() => z.string().max(4_096));
 
-export const meSchema = z.object({
-  user: z.object({
-    id: z.string().min(1),
-    email: text.default(""),
-    name: text.nullish().transform((name) => name ?? ""),
-  }),
-  workspaces: z
-    .array(z.object({ id: z.string().min(1), name: text.default(""), role: text }))
-    .max(500),
-  relay_urls: z.array(z.string().url()).max(32).default([]),
-});
+export const meSchema = lazySchema(() =>
+  z.object({
+    user: z.object({
+      id: z.string().min(1),
+      email: text.default(""),
+      name: text.nullish().transform((name) => name ?? ""),
+    }),
+    workspaces: z
+      .array(z.object({ id: z.string().min(1), name: text.default(""), role: text }))
+      .max(500),
+    relay_urls: z.array(z.string().url()).max(32).default([]),
+    /** Which way goes first; a control plane from before says nothing. */
+    route_policy: z.string().max(32).optional(),
+  })
+);
 export type Me = z.output<typeof meSchema>;
 
 /**
@@ -41,44 +46,56 @@ const reach = {
   addrs: z.array(z.string().max(64)).max(16).nullish().catch(null),
 };
 
-export const stationSchema = z.object({
-  id: z.string().min(1).max(256),
-  name: text.default(""),
-  version: text.nullish().transform((v) => v ?? null),
-  online: z.boolean().default(false),
-  enrolled_at: z.number().int().nullish(),
-  enrolled_by: text.nullish(),
-  ...reach,
-});
+export const stationSchema = lazySchema(() =>
+  z.object({
+    id: z.string().min(1).max(256),
+    name: text.default(""),
+    version: text.nullish().transform((v) => v ?? null),
+    online: z.boolean().default(false),
+    enrolled_at: z.number().int().nullish(),
+    enrolled_by: text.nullish(),
+    ...reach,
+  })
+);
 export type ListedStation = z.output<typeof stationSchema>;
 
-export const listSchema = z.object({ stations: z.array(stationSchema).max(1_000) });
+export const listSchema = lazySchema(() =>
+  z.object({ stations: z.array(stationSchema).max(1_000) })
+);
 
 /** A station's presence changed (`event: station`); `event: stations` says the list changed. */
-export const presenceEventSchema = z.object({
-  id: z.string().min(1).max(256),
-  online: z.boolean(),
-  name: text.optional(),
-  version: text.nullish(),
-  ...reach,
-});
+export const presenceEventSchema = lazySchema(() =>
+  z.object({
+    id: z.string().min(1).max(256),
+    online: z.boolean(),
+    name: text.optional(),
+    version: text.nullish(),
+    ...reach,
+  })
+);
 
-export const enrollmentSchema = z.object({
-  token: z.string().min(1).max(4_096),
-  command: z.string().min(1).max(8_192),
-  expires_at: z.number().int(),
-});
+export const enrollmentSchema = lazySchema(() =>
+  z.object({
+    token: z.string().min(1).max(4_096),
+    command: z.string().min(1).max(8_192),
+    expires_at: z.number().int(),
+  })
+);
 
-export const credentialSchema = z.object({
-  credential: z.string().min(1).max(16_384),
-  issued_at: z.number().int().optional(),
-  expires_at: z.number().int(),
-  relay_urls: z.array(text).max(32).optional(),
-});
+export const credentialSchema = lazySchema(() =>
+  z.object({
+    credential: z.string().min(1).max(16_384),
+    issued_at: z.number().int().optional(),
+    expires_at: z.number().int(),
+    relay_urls: z.array(text).max(32).optional(),
+  })
+);
 export type IssuedCredential = z.output<typeof credentialSchema>;
 
 /** A single-use ticket for the client relay socket, and where that socket is. */
-export const relayTicketSchema = z.object({
-  ticket: z.string().min(1).max(1_024),
-  url: z.string().url().max(2_048),
-});
+export const relayTicketSchema = lazySchema(() =>
+  z.object({
+    ticket: z.string().min(1).max(1_024),
+    url: z.string().url().max(2_048),
+  })
+);

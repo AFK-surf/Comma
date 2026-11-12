@@ -1,5 +1,5 @@
 // Commands the station starts as a group of their own: the command and everything it starts, ended together. How a
-// machine makes a group is the platform's (platform.grouped: spawned detached on Unix, under `stillfail-runner --job`
+// machine makes a group is the platform's (platform.grouped: spawned detached on Unix, under `comma-runner --job`
 // on Windows); what is done with one is said here, once, of two kinds:
 // - a command (startCommand): the station's while it runs (a device command, a runtime's update), its output read; on
 //   a timeout or a cancel it is ended whole (endCommand);

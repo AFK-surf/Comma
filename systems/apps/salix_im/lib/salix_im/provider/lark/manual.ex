@@ -14,21 +14,39 @@ defmodule SalixIM.Provider.Lark.Manual do
   @page "Optional page_token of the page before. An empty next_page_token means the last page."
   @doc_param "Lark document URL (/docx/ or /wiki/) or token. A bare wiki token needs doc_type=wiki."
   @doc_type_param "Optional. docx (default) or wiki; only needed when doc is a bare wiki node token."
+  @base_param "Required Lark Base URL (/base/<app_token>?table=...&view=...), a wiki URL of a Base, or a bare app_token. The URL's table and view become the defaults."
+  @sheet_param "Required Lark spreadsheet URL (/sheets/<token>?sheet=...), a wiki URL of a spreadsheet, or a bare spreadsheet token. The URL's sheet becomes the default."
   @minute_param "Lark Minutes link (/minutes/<token>) or minute token."
   @account_param "Optional signed-in Lark account (alias or open_id from lark.list_accounts) to read as that person instead of as the bot."
   @meeting_account_param "Optional: app for the app's own identity, or a signed-in Lark account (alias or open_id from lark.list_accounts). Omit to use the app and then every signed-in account."
 
   @accounts_from_param "Optional: the accounts_from of the result before. A call reads as at most 10 identities; more_accounts names where the next call starts."
 
+  @write_account_param "Optional signed-in Lark account (alias or open_id from lark.list_accounts) of the person who asked, to write as that person when the app may not edit the document. Only after that person agrees: the edit history shows them as the author. Never another person's account."
+
   # Reads that can run as a signed-in person when the request names an
   # `account` (`SalixIM.Provider.Lark.Meetings.as_account/3`).
-  @account_apis ~w(lark.fetch_doc lark.list_doc_comments lark.fetch_doc_media lark.get_minute
-                   lark.list_minutes lark.fetch_minute_media lark.list_wiki_spaces
-                   lark.list_wiki_nodes)
+  # The bot cannot read an external chat; a member who signed in can.
+  @account_reads ~w(lark.fetch_doc lark.list_doc_comments lark.fetch_doc_media
+                    lark.get_base lark.list_base_fields lark.list_base_records
+                    lark.get_sheet lark.get_sheet_range lark.get_minute
+                    lark.list_minutes lark.fetch_minute_media lark.list_wiki_spaces
+                    lark.list_wiki_nodes lark.get_chat_history lark.get_thread_replies lark.get_message)
+
+  # Content writes that can run as the person who asked, when the app may
+  # not edit the document. Sharing, link and delete operations stay the app's.
+  @account_writes ~w(lark.update_doc lark.insert_doc_media lark.add_doc_comment
+                     lark.reply_doc_comment lark.resolve_doc_comment)
+
+  @account_apis @account_reads ++ @account_writes
 
   @doc "The names of the cloud document operations."
   @spec document_api_names() :: [String.t()]
   def document_api_names, do: Enum.map(document_apis(), & &1["name"])
+
+  @doc "The names of the Base and spreadsheet operations."
+  @spec table_api_names() :: [String.t()]
+  def table_api_names, do: Enum.map(table_apis(), & &1["name"])
 
   @doc "The names of the Minutes operations."
   @spec minutes_api_names() :: [String.t()]
@@ -38,13 +56,14 @@ defmodule SalixIM.Provider.Lark.Manual do
   @spec meeting_api_names() :: [String.t()]
   def meeting_api_names, do: Enum.map(meeting_apis(), & &1["name"])
 
-  @doc "The reads that take an optional `account` to run as a signed-in person."
+  @doc "The reads and content writes that take an optional `account` to run as a signed-in person."
   @spec account_api_names() :: [String.t()]
   def account_api_names, do: @account_apis
 
   @doc "The operations a Worker holds besides the reads, whatever their safety class."
   @spec worker_api_names() :: [String.t()]
-  def worker_api_names, do: document_api_names() ++ minutes_api_names() ++ meeting_api_names()
+  def worker_api_names,
+    do: document_api_names() ++ table_api_names() ++ minutes_api_names() ++ meeting_api_names()
 
   @doc "The safety class of one operation, in the shape of `OperationRegistry.metadata/2`."
   @spec metadata(String.t()) :: {:ok, map()} | {:error, :unsupported}
@@ -55,6 +74,10 @@ defmodule SalixIM.Provider.Lark.Manual do
     end
   end
 
+  # The user scopes one need asks for beyond the default sign-in.
+  defp lark_sign_in_scopes(need),
+    do: Enum.join(SalixStore.OAuth.Adapters.Lark.on_demand_scopes()[need], ", ")
+
   @spec manual() :: map()
   def manual do
     chat_id = "Optional Lark chat ID (oc_...). Defaults to the chat of the current Lark source."
@@ -62,7 +85,7 @@ defmodule SalixIM.Provider.Lark.Manual do
     %{
       "provider" => "lark",
       "overview" =>
-        "Act as this Group's Lark bot: a custom app of the Lark open platform. The bot answers in private chats with people who wrote to it and in groups it was added to, where a message reaches you when it mentions the bot. It reads and writes only in chats it is in.",
+        "Act as this Group's Lark bot: a custom app of the Lark open platform. The bot answers in private chats with people who wrote to it and in groups it was added to, where a message reaches you when it mentions the bot. It reads and writes only in chats it is in. It can also create private groups and add people when the app has the required permissions.",
       "source_context_mapping" => %{
         "connect_id" => "Use as the top-level connect_id argument.",
         "chat_id" => "The Lark chat. Omit chat_id to act in the current chat.",
@@ -80,18 +103,21 @@ defmodule SalixIM.Provider.Lark.Manual do
         "A message of a thread you answered in reaches you without a mention. Answer it in the same way, with its message_id as reply_to, so the talk stays in its thread. Such a message carries only its own text; read the thread with lark.get_thread_replies when it depends on what was said before.",
         "A group mention carries only its own text. When it depends on the conversation before it, read that with lark.get_chat_history, a thread with lark.get_thread_replies, and search the chats the bot is in by keyword with lark.search_messages. The search reads a local record: check incomplete and stale before you take no hit to mean that nothing was said.",
         "To write to one person in private, pass user_id (an open_id) to lark.send_message instead of chat_id. Use it only when the request asks for a private message: an answer belongs in the chat the request came from.",
-        "To find a person or a chat, start with what the bot has seen: lark.list_observed_users, lark.lookup_users and lark.list_observed_chats read the people and chats whose messages reached the bot. For the organization's directory, lark.list_contact_scopes gives the departments and people the app may read; walk down with lark.list_departments and lark.list_department_users, and read one person with lark.get_user. Do not say a person does not exist before the departments were expanded.",
-        "To mention a person, pass mentions=[{user_id, name}] with the person's open_id: the sender_open_id of a message, or a member_id of lark.list_chat_members. An @name in the text is plain text.",
+        "To find a person by name, call lark.lookup_users with the name: it reads the people the bot has seen and the whole contact data range, from its stored copy when anyone there matches. For everyone, the whole directory or all members, call lark.list_directory_users yourself in this session, with no Task and no machine, and call it again with the continue_from it returns until complete is true. lark.list_observed_users and lark.list_observed_chats read the people and chats whose messages reached the bot. lark.list_contact_scopes gives the departments and people the app may read; lark.list_department_users lists only a department's direct members, so walk sub-departments with lark.list_departments. Read one person with lark.get_user. An empty department or search is not a missing permission: only a Lark error says that.",
+        "To join a public group a person asked for, find it with lark.search_chats and call lark.join_chat. Neither Lark nor an administrator can put the bot into private groups in bulk: a member of each one adds it.",
+        "To mention a person, pass mentions=[{user_id, name}] with the person's open_id: the sender_open_id of a message, or a member_id of lark.list_chat_members. To mention one at a place in the text, such as after each owner in a list, also write <at user_id=\"ID\">name</at> there; the others show at the start. An @name in the text is plain text.",
         "An image of the current message is in your input already. Any other file of it is in your workspace at the path the message names. For a file of an earlier message, copy the exact resource_ref of its attachment from a history, thread, message, file-list or search result into lark.fetch_message_resource. Never build or shorten a resource_ref.",
+        "To give a file or a message of a chat to another chat or person, forward it with lark.forward_message. Do not fetch the file and send it again: a send takes at most 30 MB, and a fetch fails above 100 MB.",
         "lark.update_message and lark.delete_message work only on the bot's own messages: use the message_id a send returned, never the message of a person.",
-        "Lark cloud documents (Docx and Docx pages in a wiki) are read and written as this app, by the Router and by Workers. The app opens a document only when it is shared with a chat that includes the bot, shared with the app, or open by link inside the tenant; on a permission error, ask the person to share the document with the source chat, and never say a document is empty or missing. Read with lark.fetch_doc (the outline first for a long document), then edit with lark.update_doc using block IDs from a detail=with-ids fetch, and fetch again after every write because block IDs change. Create with lark.create_doc and share_chat_id set to the source chat unless the person names another audience, then answer with the returned URL. Comments, collaborators, link sharing, embedded media and wiki discovery have their own lark.*doc* and lark.list_wiki_* operations. Sharing a document opens all of its content to that audience. Spreadsheets, Base, legacy /doc/ documents and Feishu (feishu.cn) links are not supported.",
+        "Lark cloud documents (Docx and Docx pages in a wiki), spreadsheets and Base are read in one order of identities, by the Router and by Workers. 1. Read as this app. The app opens a document only when it is shared with a chat that includes the bot, shared with the app, or open by link inside the tenant. 2. When the app is denied, read again with account set to the signed-in account of the person who asked (lark.list_accounts), never another person's account. 3. When that person has no signed-in account, or it is expired or needs authorization again, call oauth.request_authorization with provider lark, send its authorization_url in the chat the request came from, and read with their account when it completes. The default sign-in reads documents only: for a spreadsheet or Base read, pass scopes [#{lark_sign_in_scopes("tables")}] to oauth.request_authorization, also when their account exists but lacks them. Such a sign-in keeps the default scopes, and a person who signed in before grants only the new ones. 4. When their account is denied too, offer to ask the owner for access as them with lark.request_doc_access; call it only after they agree, once per document, and after the owner approves read it with their account. The person may prefer to share the document with the source chat instead; that is their choice, not your first answer. A missing app scope (Lark error 99991672) is not a sharing problem: tell the person that a tenant admin must enable the scopes the error names in the Lark developer console and publish a new app version. When a sign-in lacks a scope (error 99991679), call oauth.request_authorization again with those scopes; if the authorization page refuses them (error 20027), a tenant admin must enable them as user scopes there first. Never say a document is empty or missing. Writes follow the same order: write as this app; when the app may not edit the document, ask the person who asked whether you may write as them, because the edit history shows them as the author, and only after they agree pass their account to lark.update_doc, lark.insert_doc_media or the comment operations; with no signed-in account, an expired one, or one without the write scopes, call oauth.request_authorization with scopes [#{lark_sign_in_scopes("document_writes")}]; when their account may not edit either, offer lark.request_doc_access with perm edit. Creating, sharing, link settings and deleting run as the app only and take no account. Read with lark.fetch_doc (the outline first for a long document), then edit with lark.update_doc using block IDs from a detail=with-ids fetch, and fetch again after every write because block IDs change. Create with lark.create_doc and share_chat_id set to the source chat unless the person names another audience, then answer with the returned URL. Comments, collaborators, link sharing, embedded media and wiki discovery have their own lark.*doc* and lark.list_wiki_* operations. Sharing a document opens all of its content to that audience. Legacy /doc/ documents and Feishu (feishu.cn) links are not supported.",
+        "Lark Base (/base/ links) and spreadsheets (/sheets/ links) are read in the same order of identities as documents, by the Router and by Workers, and every table read takes account; a wiki page that holds one is read the same way. With filter or sort the search runs over the whole table and the view does not apply, so pass the bare app_token and table_id then, without a view. For a Base, call lark.get_base for its tables, lark.list_base_fields for the columns and views of the table the link names (?table= and ?view=), then lark.list_base_records page by page until has_more is false, with the link's view_id so the person's filter applies. For a spreadsheet, call lark.get_sheet for its sheets and their row counts, then lark.get_sheet_range in ranges of at most 500 rows. Never ask a person to export a Base or spreadsheet to Excel or CSV: when a read is denied, take the next step of that order. These reads are read-only: writing cells or records is not supported here.",
         "Lark Minutes recordings are read as this app, by the Router and by Workers: lark.get_minute with include for the AI summary, todos, chapters, keywords or transcript; lark.list_minutes to find recordings; lark.fetch_minute_media for the audio or video. The same sharing rule applies as for documents. Minutes cannot be edited here. Ask before you call lark.request_minute_access, because Lark notifies the owner.",
-        "Find Lark content yourself; never ask a person to paste a link. The app and every person who signed in for the Agent Swarm (lark.list_accounts) each see their own documents, wiki, meetings, AI meeting notes and Minutes, lark.search_docs (documents and wiki pages by keyword), lark.list_drive_files (a cloud space) and lark.search_meetings run as the app and then as each signed-in person unless you name one account (account=app for the app alone); lark.list_wiki_spaces, lark.list_wiki_nodes and lark.list_minutes run as the app, so call them again with each signed-in account to see what that person sees. Read what you found with the same account: documents and wiki pages with lark.fetch_doc, a meeting with lark.get_meeting and then its notes with lark.get_note and lark.fetch_doc, a recording with lark.get_minute. A person sees far more than the app. When the person who asks has no signed-in account (or theirs expired) and the app finds nothing, let them sign in from the chat: call oauth.request_authorization with provider lark, an alias such as lark-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
+        "Find Lark content yourself; never ask a person to paste a link. The app and every person who signed in for the Agent Swarm (lark.list_accounts) each see their own documents, wiki, meetings, AI meeting notes and Minutes, lark.search_docs (documents and wiki pages by keyword), lark.list_drive_files (a cloud space) and lark.search_meetings run as the app and then as each signed-in person unless you name one account (account=app for the app alone); lark.list_wiki_spaces, lark.list_wiki_nodes and lark.list_minutes run as the app, so call them again with each signed-in account to see what that person sees. Read what you found with the same account: documents and wiki pages with lark.fetch_doc, a meeting with lark.get_meeting and then its notes with lark.get_note and lark.fetch_doc, a recording with lark.get_minute, a message link someone shared (/client/message/link/open?token=...) with lark.read_message_link. A person sees far more than the app. When the person who asks has no signed-in account (or theirs expired) and the app finds nothing, let them sign in from the chat: call oauth.request_authorization with provider lark, an alias such as lark-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
         "The runtime publishes the Task card after im_api.internal.task.create for a request a person made in Lark. Do not publish again when task_card.status is queued. When that publication failed, call lark.post_task_card once for the existing conversation_id. The card answers the source message and follows the Task by itself; never create another Task to repair the card.",
-        "When Lark refuses for a missing permission, do not retry. Tell the person that the app's owner must add the scope in the Lark Developer Console and publish a new version of the app.",
+        "When Lark refuses the app for a missing permission, do not retry. Tell the person that the app's owner must add the scope in the Lark Developer Console and publish a new version of the app. A person's sign-in that lacks a scope is renewed with oauth.request_authorization and that scope, as the document rules say.",
         SalixIM.Provider.Lark.RouterGuidance.meeting_instruction() <>
           " meeting.join is a Router tool: a Worker cannot join. A finished meeting reaches you later as a meeting.completed message: it is context only and asks for no answer.",
-        "Keep a reminder or another message of your own to Lark owned by the current Router/session. Use schedule.create with run_at for one time, cron plus timezone for calendar recurrence, or interval_minutes for duration recurrence. Put the exact im_api.lark.send_message call, connect_id, chat_id, text and mentions in the schedule prompt. Find the named people in the chat members or the directory first and pass mentions=[{user_id, name}]; use mention_all=true only when the chat lets the bot mention everyone. A Worker that computes the content returns it to the Router and does not send to Lark.",
+        "Use schedule.create for a Lark reminder: a message whose text is known now, sent by the current Router/session at a time or on a cadence. Use run_at for one time, cron plus timezone for calendar recurrence, or interval_minutes for duration recurrence. Put the exact im_api.lark.send_message call, connect_id, chat_id, text and mentions in the schedule prompt. Find the named people in the chat members or the directory first and pass mentions=[{user_id, name}]; use mention_all=true only when the chat lets the bot mention everyone. Work that repeats or keeps watching something (a recurring check, digest or monitor that must look something up or decide at each run) is a Loop Task, im_api.internal.task.create with loop: its Worker runs it and reports each run as the Task says, and when that Worker or Loop fails you continue in that Task, never on schedule.create. A worker that computes a reminder's content returns it to the Router and does not send to Lark.",
         LarkCalendarContract.instruction(),
         "Google Calendar is the source of truth for meeting time and invitations. A notice in Lark when a Calendar meeting starts is a separate setting of the operator: never say one will be sent because the event was created. Create a schedule.create reminder for a Calendar meeting only when the person asks for a separate reminder, and do not repeat a configured Calendar notice. schedule.create is the normal path for a reminder that is not a Calendar meeting."
       ],
@@ -110,17 +136,35 @@ defmodule SalixIM.Provider.Lark.Manual do
               "Optional, with user_id. open_id (default), user_id, union_id or email.",
             "text" =>
               "Standard Markdown. May be empty when path is given. An external image becomes a labelled link.",
-            "format" => "Optional. \"text\" sends the text literally, without Markdown.",
+            "format" =>
+              "Optional. Leave it out to send Markdown. \"text\" sends plain text: Markdown marks such as ** and ` show as typed.",
             "reply_to" =>
               "Optional message_id of a message of this chat to answer under. Not allowed with user_id.",
             "reply_in_thread" =>
               "Optional boolean, with reply_to. A reply goes into the thread of the message (and opens one when it has none) unless the chat is private; false makes it a plain quoting reply in the chat.",
-            "mentions" => "Optional list of {user_id, name} to mention, by open_id.",
+            "mentions" =>
+              "Optional list of {user_id, name} to mention, by open_id. Each shows at the start, unless the text places it with <at user_id=\"ID\">name</at>.",
             "mention_all" =>
               "Optional boolean. Mentions everyone; the chat must allow the bot to do so.",
             "path" =>
               "Optional workspace path of one file to send after the text. An image of at most 10 MB shows inline; any other file of at most 30 MB shows as a file.",
             "question" => SalixIM.QuestionCard.parameter()
+          }
+        },
+        %{
+          "name" => "lark.forward_message",
+          "safety" => "write",
+          "description" =>
+            "Forward one message, as it is, to a Lark chat or to one person. Lark copies the message on its side, so a file of any size goes without a download. Returns the new message.",
+          "required_params" => ["message_id"],
+          "parameters" => %{
+            "message_id" =>
+              "The message to forward: a message_id from a history, thread, message, file-list or search result.",
+            "chat_id" =>
+              "The Lark chat ID (oc_...) to forward to. Pass chat_id or user_id, never both.",
+            "user_id" => "The person to forward to in private, instead of chat_id.",
+            "user_id_type" =>
+              "Optional, with user_id. open_id (default), user_id, union_id or email."
           }
         },
         %{
@@ -147,7 +191,8 @@ defmodule SalixIM.Provider.Lark.Manual do
             "chat_id" => chat_id,
             "message_id" => "The message_id a send of this bot returned.",
             "text" => "The new standard Markdown text.",
-            "format" => "Optional. \"text\" sends the text literally, without Markdown."
+            "format" =>
+              "Optional. Leave it out to send Markdown. \"text\" sends plain text: Markdown marks such as ** and ` show as typed."
           }
         },
         %{
@@ -189,7 +234,7 @@ defmodule SalixIM.Provider.Lark.Manual do
           "name" => "lark.get_message",
           "safety" => "read",
           "description" =>
-            "Read one message by its message_id. Each attachment has the resource_ref that lark.fetch_message_resource takes.",
+            "Read one message by its message_id. Each attachment has the resource_ref that lark.fetch_message_resource takes. A merged forward (message_type merge_forward) comes with the messages it carries in forwarded_messages, each naming the forward that holds it in upper_message_id.",
           "required_params" => ["message_id"],
           "parameters" => %{"message_id" => "The Lark message ID (om_...)."}
         },
@@ -294,6 +339,55 @@ defmodule SalixIM.Provider.Lark.Manual do
           }
         },
         %{
+          "name" => "lark.search_chats",
+          "safety" => "read",
+          "description" =>
+            "Search the groups this app can see by keyword, including public groups it has not joined (search_types with public_not_joined). Private groups the bot is not in are never returned. Returns chat_id, name, description and owner of each. Check has_more and notice before treating a result as complete; Lark can stop a deep result with an error asking for a more specific keyword.",
+          "required_params" => [],
+          "parameters" => %{
+            "query" => "Optional keyword, at most 50 characters. Matches group and member names.",
+            "search_types" =>
+              "Optional list among private, external, public_joined, public_not_joined.",
+            "page_size" => "Optional, at most 50.",
+            "page_token" => @page
+          }
+        },
+        %{
+          "name" => "lark.join_chat",
+          "safety" => "admin",
+          "description" =>
+            "Make this bot join one public group of the organization, which puts it in the group for its messages from then on. Only for a group the person asked for: the members see the bot join. Public groups only: a private group needs a member to add the bot, and a public group with join verification refuses (232075). Needs the published im:chat.members:write_only permission. Find the chat_id with lark.search_chats.",
+          "required_params" => ["chat_id"],
+          "parameters" => %{
+            "chat_id" =>
+              "The public group ID (oc_...). Required. Never inferred from the current chat."
+          }
+        },
+        %{
+          "name" => "lark.create_chat",
+          "safety" => "admin",
+          "description" =>
+            "Create a private group with the requested name and people. The bot joins as the owner. Resolve people with lark.list_chat_members or lark.get_user first. Needs the published im:chat:create permission, and the people must be in the app's availability range. Returns chat_id. Check members with lark.list_chat_members before reporting that everyone joined. Do not repeat after an unknown result: a new call can create another group.",
+          "required_params" => ["name", "user_ids"],
+          "parameters" => %{
+            "name" => "The group name the person requested.",
+            "user_ids" =>
+              "List of 1 to 50 person open_ids (ou_...). Include the requester when they want to join."
+          }
+        },
+        %{
+          "name" => "lark.add_chat_members",
+          "safety" => "admin",
+          "description" =>
+            "Add the requested people to an existing group. They may gain access to its history and shared content. Needs the published im:chat.members:write_only permission and permission to add members in this group. The people must be in the app's availability range. Lark rejects the request if any person is unavailable.",
+          "required_params" => ["chat_id", "user_ids"],
+          "parameters" => %{
+            "chat_id" =>
+              "The target group ID (oc_...). Required. Never inferred from the current chat.",
+            "user_ids" => "List of 1 to 50 person open_ids (ou_...) from Lark, not names."
+          }
+        },
+        %{
           "name" => "lark.list_chats",
           "safety" => "read",
           "description" => "List the groups this bot is in: chat_id, name and owner.",
@@ -359,11 +453,22 @@ defmodule SalixIM.Provider.Lark.Manual do
           "name" => "lark.lookup_users",
           "safety" => "read",
           "description" =>
-            "Search the people whose messages reached this bot. This is not a search of the organization's directory: use lark.list_chat_members for the people of a chat, or lark.get_user for a known ID.",
+            "Find people by name, English name, nickname or email: first the people whose messages reached this bot, then the app's contact data range: its stored copy when anyone there matches (directory.stored is true, directory.synced_at says when it was read), else every department of the live range. Each user has source observed or directory; directory.complete says whether the whole data range was read, and directory.error gives a Lark refusal. When several people match, ask the requester which one they mean before you act.",
           "required_params" => [],
           "parameters" => %{
-            "query" => "Optional. Only people with this text in one of their IDs.",
+            "query" => "Text to find. Without it only the people the bot has seen are listed.",
             "limit" => "Optional, default 50, at most 100."
+          }
+        },
+        %{
+          "name" => "lark.list_directory_users",
+          "safety" => "read",
+          "description" =>
+            "List everyone in the app's Contacts data range, for a request about the whole directory or all members: each person once with name, en_name, email, enterprise_email, employee_no, job_title, open_id and the paths of their departments, no phone numbers. One call reads whole departments with at most 120 Lark requests; while complete is false, call it again with the returned continue_from until complete is true, and merge the calls' users by open_id. data_range says how many of the range's roots the walk reached. To find one person by name, use lark.lookup_users.",
+          "required_params" => [],
+          "parameters" => %{
+            "continue_from" =>
+              "Optional. The continue_from of the previous call, exactly as returned. Omit it to start at the beginning."
           }
         },
         %{
@@ -410,23 +515,23 @@ defmodule SalixIM.Provider.Lark.Manual do
     }
     |> Map.update!(
       "apis",
-      &(&1 ++ account_reads(document_apis() ++ minutes_apis()) ++ meeting_apis())
+      &(account_reads(&1) ++
+          account_reads(document_apis() ++ table_apis() ++ minutes_apis()) ++ meeting_apis())
     )
   end
 
   defp account_reads(apis) do
     Enum.map(apis, fn api ->
-      if api["name"] in @account_apis,
-        do:
-          Map.update(
-            api,
-            "parameters",
-            %{"account" => @account_param},
-            &Map.put(&1, "account", @account_param)
-          ),
-        else: api
+      cond do
+        api["name"] in @account_reads -> put_account(api, @account_param)
+        api["name"] in @account_writes -> put_account(api, @write_account_param)
+        true -> api
+      end
     end)
   end
+
+  defp put_account(api, param),
+    do: Map.update(api, "parameters", %{"account" => param}, &Map.put(&1, "account", param))
 
   # Discovery and meetings, as the app or a person who signed in for the
   # Group (`SalixIM.Provider.Lark.Meetings`).
@@ -494,6 +599,18 @@ defmodule SalixIM.Provider.Lark.Manual do
         "parameters" => %{
           "meeting_id" =>
             "The meeting id from lark.search_meetings (a long number, not the 9-digit meeting number).",
+          "account" => @meeting_account_param,
+          "accounts_from" => @accounts_from_param
+        }
+      },
+      %{
+        "name" => "lark.read_message_link",
+        "safety" => "read",
+        "description" =>
+          "Read a Lark message link (https://applink.../client/message/link/open?token=..., what \"copy message link\" makes; a shared one shows as a link such as \"message link from <chat>\"): the messages it holds, each in the shape of lark.get_message, as copied when the link was made, as the app or a signed-in account (each in turn until one may read it). chat names the chat they came from when that identity may see it. The token is not a message ID.",
+        "required_params" => ["url"],
+        "parameters" => %{
+          "url" => "The whole message link, unchanged.",
           "account" => @meeting_account_param,
           "accounts_from" => @accounts_from_param
         }
@@ -718,6 +835,24 @@ defmodule SalixIM.Provider.Lark.Manual do
         }
       },
       %{
+        "name" => "lark.request_doc_access",
+        "safety" => "write",
+        "description" =>
+          "Ask the owner of a Lark document, spreadsheet or Base, as the person who asked you, to give that person access. Lark sends the owner a card to approve; once approved, read it (or edit it, with perm edit) with the same account. Lark takes the request only from a signed-in person, never from the app. Call it only after that person agrees, and only once per document.",
+        "required_params" => ["doc", "account"],
+        "parameters" => %{
+          "doc" =>
+            "Lark document, spreadsheet or Base URL (/docx/, /wiki/, /sheets/ or /base/) or token. A bare token other than a Docx needs doc_type.",
+          "doc_type" =>
+            "Optional. docx (default), wiki, sheet or bitable; only needed when doc is a bare token.",
+          "account" =>
+            "Required signed-in Lark account (alias or open_id from lark.list_accounts) of the person who asked. Never another person's account.",
+          "perm" => "Optional. view (default) or edit.",
+          "remark" =>
+            "Optional note on the owner's card: why the person needs the document. The owner reads it."
+        }
+      },
+      %{
         "name" => "lark.remove_doc_member",
         "safety" => "admin",
         "description" => "Remove one collaborator from a Lark document.",
@@ -748,6 +883,89 @@ defmodule SalixIM.Provider.Lark.Manual do
           "Move a Lark Docx document to the trash. Only for documents the person asked to delete; this app must own the document or have full access. Wiki pages are not deleted here.",
         "required_params" => ["doc"],
         "parameters" => %{"doc" => "The Docx document URL or token."}
+      }
+    ]
+  end
+
+  # Base (多维表格) and spreadsheets, read as the connect's app or, with
+  # `account`, as a signed-in person (`SalixIM.Provider.Lark.Tables`).
+  # Workers hold every one of these.
+  defp table_apis do
+    [
+      %{
+        "name" => "lark.get_base",
+        "safety" => "read",
+        "description" =>
+          "Read a Lark Base (多维表格) that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant: its name and one page of its tables (table_id and name). Then read a table's fields with lark.list_base_fields and its rows with lark.list_base_records.",
+        "required_params" => ["base"],
+        "parameters" => %{
+          "base" => @base_param,
+          "page_size" => "Optional, at most 100.",
+          "page_token" => @page
+        },
+        "example_params" => %{
+          "base" =>
+            "https://example.larksuite.com/base/AbCdEfGhIjKlMnOpQrStUvWx?table=tblXXXX&view=vewXXXX"
+        }
+      },
+      %{
+        "name" => "lark.list_base_fields",
+        "safety" => "read",
+        "description" =>
+          "List the fields (name, field_id, type, options) of one table of a Lark Base, and the table's views. Read this before lark.list_base_records to know the column names and which view holds the rows the person means. Views come with the first page (views_has_more and views_next_page_token page them with views_page_token). A Base with advanced permissions (is_advanced in lark.get_base) restricts rows and fields per collaborator, so its reads stay private to you.",
+        "required_params" => ["base"],
+        "parameters" => %{
+          "base" => @base_param,
+          "table_id" => "Table ID (tbl...). Optional when base is a URL with ?table=.",
+          "view_id" => "Optional view ID (vew...); fields are listed in that view's order.",
+          "page_size" => "Optional, at most 100.",
+          "page_token" => @page,
+          "views_page_token" =>
+            "Optional views_next_page_token of the result before: pages the views alone, with no fields."
+        }
+      },
+      %{
+        "name" => "lark.list_base_records",
+        "safety" => "read",
+        "description" =>
+          "Read one page of the records of one table of a Lark Base, each as record_id and fields keyed by field name. Pass the view_id the person's link names so hidden rows and the view's filter apply. A page holds at most 500 records (100 by default); continue with next_page_token until has_more is false, and never guess that a table ends at one page. With filter or sort the search runs over the whole table and the view does not apply, so pass the bare app_token and table_id then. A page larger than one tool result is put in your workspace as JSON.",
+        "required_params" => ["base"],
+        "parameters" => %{
+          "base" => @base_param,
+          "table_id" => "Table ID (tbl...). Optional when base is a URL with ?table=.",
+          "view_id" => "Optional view ID (vew...). Defaults to the URL's ?view=.",
+          "field_names" => "Optional JSON array of field names to return; omit for every field.",
+          "filter" =>
+            "Optional Base search filter object: {\"conjunction\":\"and\",\"conditions\":[{\"field_name\":\"状态\",\"operator\":\"is\",\"value\":[\"已审核\"]}]}.",
+          "sort" => "Optional JSON array of {field_name, desc}.",
+          "automatic_fields" => "Optional true to include created/modified time and people.",
+          "page_size" => "Optional, at most 500; default 100.",
+          "page_token" => @page
+        }
+      },
+      %{
+        "name" => "lark.get_sheet",
+        "safety" => "read",
+        "description" =>
+          "Read a Lark spreadsheet that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant: its title and its sheets (sheet_id, title, row and column counts). Then read cells with lark.get_sheet_range.",
+        "required_params" => ["sheet"],
+        "parameters" => %{"sheet" => @sheet_param},
+        "example_params" => %{
+          "sheet" => "https://example.larksuite.com/sheets/AbCdEfGhIjKlMnOpQrStUvWx?sheet=0a1b2c"
+        }
+      },
+      %{
+        "name" => "lark.get_sheet_range",
+        "safety" => "read",
+        "description" =>
+          "Read the cell values of one A1 range of one sheet of a Lark spreadsheet, as rows of strings. A call reads at most 500 rows and 100 columns; without range it reads the sheet's first block (every column up to 100, 500 rows). has_more says whether the sheet holds more: follow next_range, one cursor that visits each cell once (rows below, then the next columns), until has_more is false, and never total a sheet from one range. A range larger than one tool result is put in your workspace as JSON.",
+        "required_params" => ["sheet"],
+        "parameters" => %{
+          "sheet" => @sheet_param,
+          "sheet_id" =>
+            "Sheet ID from lark.get_sheet. Optional when sheet is a URL with ?sheet=.",
+          "range" => "Optional A1 range inside the sheet, such as A1:H300. Default A1:Z500."
+        }
       }
     ]
   end

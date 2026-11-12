@@ -9,7 +9,10 @@ defmodule SalixAgent.Fleet do
 
   This module owns the node-local start. `SalixCluster.Placement` synchronously
   routes cluster-wide `ensure_started` calls to the ring-owner node before
-  invoking it.
+  invoking it. `config :salix_agent, :start_admission` (a zero-arity function
+  returning `:ok` or `{:error, reason}`) lets the cluster layer refuse a new
+  Server on a node that is draining; a Server already running here is
+  returned regardless.
   """
 
   alias SalixAgent.{Control, Server}
@@ -18,7 +21,8 @@ defmodule SalixAgent.Fleet do
   def ensure_started(agent_id, opts \\ []), do: ensure_started(agent_id, opts, 5)
 
   defp ensure_started(agent_id, opts, attempts) do
-    with :ok <- Control.ensure_not_stopped(agent_id) do
+    with :ok <- Control.ensure_not_stopped(agent_id),
+         :ok <- admit_start(agent_id) do
       opts = Keyword.put(opts, :agent_id, agent_id)
 
       case start_child(opts) do
@@ -34,6 +38,13 @@ defmodule SalixAgent.Fleet do
     SystemsRuntime.DynamicSupervisor.start_child(SalixAgent.FleetSup, {Server, opts})
   catch
     :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp admit_start(agent_id) do
+    case SystemsRuntime.get_env(:salix_agent, :start_admission) do
+      fun when is_function(fun, 0) -> if server_running?(agent_id), do: :ok, else: fun.()
+      _none -> :ok
+    end
   end
 
   defp maybe_retry_start(agent_id, opts, attempts, reason) do
@@ -74,92 +85,57 @@ defmodule SalixAgent.Fleet do
     do: SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) != []
 
   @doc """
-  Best-effort wait for the local Server's claim to reach the ownership cell,
-  so a session actor started behind it binds its immutable generation to the
-  installed claim instead of racing the claim and being pinned as legacy.
-  Pure cell reads — never a call into the Server (which may itself be blocked
-  in a call chain that started this actor). Zero-cost once the cell exists;
-  bounded when a registered Server is still mid-claim; a Server that fails
-  its claim stops and ends the wait. The store's first-resolution pin stays
-  the safety net when the wait gives up.
+  Wait for the registered Server to finish its claim and retire old session
+  actors. Its Registry value records startup completion. The ownership cell
+  can retain an earlier Server's claim and cannot prove this startup finished.
+  No call enters the Server mailbox, which can depend on this actor's startup.
+  A call made without a registered Server keeps the existing no-Server path.
   """
-  @spec await_ownership_installed(String.t(), non_neg_integer()) :: :ok
+  @spec await_ownership_installed(String.t(), non_neg_integer()) :: :ok | {:error, :unavailable}
   def await_ownership_installed(agent_id, timeout_ms \\ 500) when is_binary(agent_id) do
-    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
-    await_ownership_loop(agent_id, deadline)
-  end
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
+      [{root, _value}] ->
+        deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
+        await_ownership_loop(agent_id, root, deadline)
 
-  defp await_ownership_loop(agent_id, deadline) do
-    case SalixAgent.OwnershipCell.fetch(agent_id) do
-      :absent ->
-        if SystemsClock.monotonic_time(:millisecond) < deadline and server_running?(agent_id) do
-          SystemsClock.sleep(10)
-          await_ownership_loop(agent_id, deadline)
-        else
-          :ok
-        end
-
-      _ ->
+      [] ->
         :ok
     end
   end
 
-  @doc """
-  THE start boundary for session actors. Every creation path — the
-  internal session fleet, the Router owner's canonical start —
-  creates its actor through this function, never through a bare
-  `DynamicSupervisor.start_child`, so the generation contract holds on all
-  of them: a NEW actor binds its immutable generation at init by reading
-  the ownership cell, so its start first waits out a registered Server's
-  in-flight claim (`await_ownership_installed/2`) — otherwise the actor
-  would race the claim and be pinned as legacy epoch 0 forever, fencing
-  valid work. Only an actor with an integer FROZEN generation skips the
-  wait (the per-command hot path): an actor that is registered but still
-  unbound — a replacement restarted while no root Server existed — waits
-  like a fresh start, because its generation resolves at its next
-  ownership resolution and must see the installed claim, not race it.
+  defp await_ownership_loop(agent_id, root, deadline) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
+      [{^root, :ready}] ->
+        :ok
 
-  This funnel is the CALLER-side boundary; the binding itself is also the
-  actor's own first act (init → `handle_continue`, before any queued
-  command), which is what covers the one creation path no call site can:
-  a supervisor-driven restart of a crashed `:transient` actor, which
-  re-runs the retained child_spec directly.
+      [{^root, _pending}] ->
+        if SystemsClock.monotonic_time(:millisecond) < deadline do
+          SystemsClock.sleep(10)
+          await_ownership_loop(agent_id, root, deadline)
+        else
+          {:error, :unavailable}
+        end
+
+      _ ->
+        {:error, :unavailable}
+    end
+  end
+
+  @doc """
+  Start or reuse a session actor after the registered Server finishes startup.
+  This applies to frozen resident actors too. A new claim retires them before
+  it admits commands to its replacement actors.
+
+  The actor also binds its generation before it handles queued commands.
+  That boundary covers supervisor restarts, which bypass this caller-side path.
   """
   @spec start_session_actor(module(), keyword()) :: {:ok, pid()} | {:error, term()}
   def start_session_actor(module, opts) when is_atom(module) and is_list(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
     key = module.key(agent_id, Keyword.fetch!(opts, :session_id))
 
-    # Three lifecycle states, not two: absent, registered-but-UNBOUND, and
-    # frozen. A replacement restarted while NO root Server existed binds
-    # nothing (its continue finds the cell absent and no claim to wait
-    # for) and legitimately idles unbound — its generation resolves lazily
-    # at its first commit. So "registered" must not be mistaken for
-    # "already frozen": a command routed to an unbound actor while a NEW
-    # Server's claim is in flight would freeze it at legacy 0 and fence
-    # valid work. Only an integer frozen epoch skips the wait (the
-    # per-command hot path); absent and unbound both wait out a registered
-    # Server's in-flight claim so the eventual binding sees the installed
-    # claim.
-    needs_await =
-      case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
-        [{_pid, %{runtime_epoch: frozen}}] when is_integer(frozen) -> false
-        _absent_or_unbound -> true
-      end
-
-    if needs_await do
-      :ok = await_ownership_installed(agent_id)
-    end
-
-    # Existing actors and supervisor-driven recovery are not new admission.
-    # Resource pressure must not restart-loop a crashed transient child.
-    admission =
-      if module == SalixAgent.InternalSessionActor and
-           SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) == [],
-         do: SalixAgent.SessionResidency.admission(),
-         else: :ok
-
-    with :ok <- admission do
+    with :ok <- await_ownership_installed(agent_id),
+         :ok <- session_actor_admission(module, key) do
       case SystemsRuntime.DynamicSupervisor.start_child(SalixAgent.FleetSup, {module, opts}) do
         {:ok, pid} -> {:ok, pid}
         {:error, {:already_started, pid}} -> {:ok, pid}
@@ -168,6 +144,15 @@ defmodule SalixAgent.Fleet do
     end
   catch
     :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  # Existing actors and supervisor-driven recovery are not new admission.
+  # Resource pressure must not restart-loop a crashed transient child.
+  defp session_actor_admission(module, key) do
+    if module == SalixAgent.InternalSessionActor and
+         SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) == [],
+       do: SalixAgent.SessionResidency.admission(),
+       else: :ok
   end
 
   @doc "True while any session actor for the agent is registered on this node."
@@ -315,6 +300,14 @@ defmodule SalixAgent.Fleet do
   defp owned_entry?({:ok, _epoch, :owned}), do: true
   defp owned_entry?(_entry), do: false
 
+  @doc false
+  def retire_superseded_session_actors(agent_id, claimed_epoch)
+      when is_binary(agent_id) and is_integer(claimed_epoch) and claimed_epoch > 0 do
+    stop_session_actors_matching(agent_id, fn frozen ->
+      is_integer(frozen) and frozen < claimed_epoch
+    end)
+  end
+
   # Stop only session actors whose FROZEN epoch (their Registry value,
   # bound at the actor's first ownership resolution) is at or below the
   # superseding bound. An actor with no frozen value yet has done no
@@ -324,17 +317,26 @@ defmodule SalixAgent.Fleet do
   defp stop_session_actors_at_or_below(agent_id, bound) do
     bound = if is_integer(bound), do: bound, else: 0
 
+    stop_session_actors_matching(agent_id, fn frozen -> (frozen || 0) <= bound end)
+  end
+
+  defp stop_session_actors_matching(agent_id, predicate) do
     agent_id
     |> session_actor_keys()
     |> Enum.each(fn key ->
-      frozen =
-        case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
-          [{_pid, %{runtime_epoch: frozen}}] when is_integer(frozen) -> frozen
-          [{_pid, _}] -> 0
-          [] -> nil
-        end
+      case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
+        [{pid, value}] ->
+          frozen =
+            case value do
+              %{runtime_epoch: epoch} when is_integer(epoch) -> epoch
+              _ -> nil
+            end
 
-      if is_integer(frozen) and frozen <= bound, do: stop(key)
+          if predicate.(frozen), do: terminate_child(pid)
+
+        [] ->
+          :ok
+      end
     end)
 
     :ok

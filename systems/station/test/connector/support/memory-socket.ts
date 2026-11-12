@@ -4,6 +4,7 @@
 // frames wait unread: a further send blocks until Salix reads, as a slow peer's TCP window makes it. With
 // `windowBytes`, the bound is in encoded bytes: a frame that does not fit beside what is unread waits.
 import { Deferred, Effect, Exit, Layer, Queue, Semaphore } from "effect";
+import { readBinaryStreamFrame } from "../../../src/connector/message.ts";
 import { type JsonSocket, Sockets } from "../../../src/connector/sockets.ts";
 
 export type Peer = {
@@ -18,9 +19,11 @@ export type Peer = {
   pings(): number;
   /** Resolves when the connector closed its side. */
   readonly closed: Effect.Effect<void>;
-  /** Binary frames the connector sent so far (packets through Salix). */
+  /** Resolves once a send of the connector waits for room in the window. */
+  readonly sendBlocked: Effect.Effect<void>;
+  /** Binary frames the connector sent so far (packets through Salix, stream frames with their bytes). */
   binaries(): Buffer[];
-  /** A binary frame to the connector. */
+  /** A binary frame to the connector: a stream frame comes in order with the JSON ones, as on a real socket. */
   sendBinary(data: Buffer): void;
 };
 
@@ -39,6 +42,7 @@ export function memorySockets(options: { window?: number; windowBytes?: number }
           let drained = yield* Deferred.make<void>();
           const clientClosed = yield* Deferred.make<void>();
           const peerClosed = yield* Deferred.make<void>();
+          const sendBlocked = yield* Deferred.make<void>();
           let pings = 0;
           const binaries: Buffer[] = [];
           let onBinary: ((data: Buffer) => void) | null = null;
@@ -63,8 +67,13 @@ export function memorySockets(options: { window?: number; windowBytes?: number }
             close: Deferred.succeed(peerClosed, undefined).pipe(Effect.andThen(Queue.offer(toClient, end)), Effect.asVoid),
             pings: () => pings,
             closed: Deferred.await(clientClosed),
+            sendBlocked: Deferred.await(sendBlocked),
             binaries: () => binaries,
-            sendBinary: (data) => onBinary?.(Buffer.from(data)),
+            sendBinary: (data) => {
+              const message = readBinaryStreamFrame(Buffer.from(data));
+              if (message) Queue.offerUnsafe(toClient, message);
+              else onBinary?.(Buffer.from(data));
+            },
           };
           const socket: JsonSocket = {
             send: (frame) =>
@@ -73,11 +82,15 @@ export function memorySockets(options: { window?: number; windowBytes?: number }
                 if (credit) yield* Effect.raceFirst(Semaphore.take(credit, 1), Deferred.await(peerClosed).pipe(Effect.andThen(Effect.fail(new Error("socket closed")))));
                 const size = JSON.stringify(frame).length;
                 while (options.windowBytes !== undefined && unreadBytes > 0 && unreadBytes + size > options.windowBytes) {
+                  Deferred.doneUnsafe(sendBlocked, Exit.void);
                   yield* Effect.raceFirst(Deferred.await(drained), Deferred.await(peerClosed));
                   if (Deferred.isDoneUnsafe(peerClosed)) break;
                 }
                 // A frame bigger than the whole window never fits: it waits for a reader that takes it in parts.
-                if (options.windowBytes !== undefined && size > options.windowBytes) yield* Effect.raceFirst(Effect.never, Deferred.await(peerClosed));
+                if (options.windowBytes !== undefined && size > options.windowBytes) {
+                  Deferred.doneUnsafe(sendBlocked, Exit.void);
+                  yield* Effect.raceFirst(Effect.never, Deferred.await(peerClosed));
+                }
                 if (Deferred.isDoneUnsafe(peerClosed)) return yield* Effect.fail(new Error("socket closed"));
                 unreadBytes += size;
                 yield* Queue.offer(toPeer, JSON.parse(JSON.stringify(frame)));

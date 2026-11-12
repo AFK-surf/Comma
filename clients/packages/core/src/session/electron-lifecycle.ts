@@ -14,6 +14,7 @@
 // on that generation, and refuses a request made for another. A 401 Main sees closes Main's gate at once and comes
 // here as a refusal of the lease. When the core restarts, it continues the authority Main's gate holds
 // (`BearerSessionPorts.resumed`): a startup probe that finds the same session keeps the lease Main kept serving.
+import { lazySchema } from "@comma/chat-contract";
 import {
   sessionExpectation,
   sessionOperationErrorRule,
@@ -35,12 +36,14 @@ import type { SessionEmailChallenge, SessionGoogleSignIn } from "../contract.ts"
 import type {
   ApiResponse,
   AuthRequest,
+  BearerCredential,
   BearerSessionPorts,
   BearerVault,
   CredentialRef,
   GoogleGrant,
   SessionLease,
 } from "../host.ts";
+import { MAX_KEPT_CREDENTIALS } from "../hosts/utility-protocol.ts";
 import {
   type LifecycleAttempt,
   type LifecycleDeps,
@@ -56,6 +59,8 @@ import {
   signedOutAnswer,
   type SessionProjection,
 } from "./web-auth.ts";
+import { AbuseError } from "./abuse.ts";
+import type { AuthResponse } from "./web-auth.ts";
 
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_REVOCATION_DRAIN_PASSES = 4;
@@ -65,29 +70,39 @@ const MAX_REVOCATION_RECORDS_PER_DRAIN =
 const MAX_SUPERSEDED_AUTH_ATTEMPTS = 32;
 
 /** A session answer that issued a credential: Main kept the bearer and answers its reference. */
-const issuedSession = sessionProjection.extend({
-  credential: z.string().min(1).max(256),
-});
+const issuedSession = lazySchema(() =>
+  sessionProjection.extend({
+    credential: z.string().min(1).max(256),
+  })
+);
 /** A probe's answer: it must never carry a credential (a reflected bearer is a protocol mismatch). */
-const currentSession = sessionProjection.extend({ credential: z.never().optional() });
-const emailChallenge = z.object({
-  challenge_id: z.string().min(1).max(256),
-  code: z.string().min(1).max(32).optional(),
-  expires_in: z.number().int().nonnegative().optional(),
-  resend_after: z.number().int().nonnegative().optional(),
-});
-const googleAttempt = z.object({
-  attempt_id: z.string().min(1).max(256),
-  client_id: z.string().min(1).max(2_048),
-  nonce: z.string().min(1).max(2_048),
-  platform: z.enum(["android", "electron"]),
-});
-const googleResult = z.union([issuedSession, googleLinkChallenge]);
-const appleAttempt = z.object({
-  attempt_id: z.string().min(1).max(256),
-  client_id: z.string().min(1).max(2_048),
-  nonce: z.string().min(1).max(2_048),
-});
+const currentSession = lazySchema(() =>
+  sessionProjection.extend({ credential: z.never().optional() })
+);
+const emailChallenge = lazySchema(() =>
+  z.object({
+    challenge_id: z.string().min(1).max(256),
+    code: z.string().min(1).max(32).optional(),
+    expires_in: z.number().int().nonnegative().optional(),
+    resend_after: z.number().int().nonnegative().optional(),
+  })
+);
+const googleAttempt = lazySchema(() =>
+  z.object({
+    attempt_id: z.string().min(1).max(256),
+    client_id: z.string().min(1).max(2_048),
+    nonce: z.string().min(1).max(2_048),
+    platform: z.enum(["android", "electron", "ios"]),
+  })
+);
+const googleResult = lazySchema(() => z.union([issuedSession, googleLinkChallenge]));
+const appleAttempt = lazySchema(() =>
+  z.object({
+    attempt_id: z.string().min(1).max(256),
+    client_id: z.string().min(1).max(2_048),
+    nonce: z.string().min(1).max(2_048),
+  })
+);
 
 /** Why a request did not give the answer wanted, as the session contract names it. */
 class RemoteError {
@@ -128,6 +143,8 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
   readonly #unresolved = new Set<CredentialRef>();
   /** The active credential the signed-in snapshot was opened with (its reference in Main's store). */
   #activeRef: CredentialRef | null = null;
+  /** The credentials of the accounts kept signed in besides the one in use, as the store last said. */
+  #keptRefs: BearerCredential[] = [];
   #drain: Deferred.Deferred<void> | null = null;
   /** What Main was last told (`gate`): told again only when it changes. */
   #told: string | null = null;
@@ -149,6 +166,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         "the Electron session lifecycle needs the host's authFetch and bearerSession"
       );
     this.#authFetch = host.authFetch.bind(host);
+    this.kept = [];
     this.#ports = host.bearerSession;
     this.origin = this.#ports.apiOrigin;
     if (this.#ports.resumed) this.resumeFrom(this.#ports.resumed);
@@ -216,12 +234,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         return Effect.succeed(this.failure(operation, "conflict"));
       this.#startupReconcileAvailable = false;
       const epoch = this.nextEpoch();
-      // A focus or a peer's refusal keeps a signed-in session through a probe that cannot reach the server.
-      const keepSignedIn =
-        (input.reason === "focus" || input.reason === "peer_mutation") &&
-        current.phase === "signed_in" &&
-        this.productOpen();
-      return this.#reconcile(epoch, keepSignedIn);
+      return this.#reconcile(epoch);
     });
   }
 
@@ -240,7 +253,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
     });
   }
 
-  #reconcile(epoch: number, keepSignedIn: boolean): Effect.Effect<ReconcileResult> {
+  #reconcile(epoch: number): Effect.Effect<ReconcileResult> {
     const operation = "reconcile" as const;
     const stale = () => !this.isCurrentEpoch(epoch) || this.closed;
     return Effect.gen({ self: this }, function* () {
@@ -308,28 +321,44 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
       }
       const active = vault.active;
       if (!active) {
-        const cleanup = vault.cleanup;
+        const empty = vault;
         return yield* this.#fenced(
           Effect.sync(() => {
             if (stale()) return this.failure(operation, "conflict");
-            this.cleanup = cleanup;
+            this.#took(empty);
             this.#activeRef = null;
             return { ok: true as const, value: this.publishSignedOut("no_session") };
           })
         );
       }
-      if (this.#ports.showsKeptAccount && !stale())
-        this.session.keep({
-          audience: active.audience,
-          sessionId: active.sessionId,
-          userId: active.userId,
-        });
+      // The host already kept this session after a successful sign-in. Restore it before the network check.
+      // Server requests still carry its credential and the server can reject it. A temporary outage does not end it.
+      yield* this.#fenced(
+        Effect.sync(() => {
+          // A host that already closed a lease must wait for the server before it can reopen it.
+          const resumed = this.#ports.resumed;
+          if (
+            stale() ||
+            this.current.phase !== "initializing" ||
+            (resumed && resumed.generation > 0 && resumed.sessionId === null)
+          )
+            return;
+          this.#took(vault);
+          this.#activeRef = active.ref;
+          this.publishSignedIn({
+            expires_at: active.expiresAtEpochSeconds,
+            session_id: active.sessionId,
+            user: { id: active.userId, email: active.email },
+          });
+        })
+      );
+      if (stale()) return this.failure(operation, "conflict");
       const probe = yield* this.#probe(active.ref);
       return yield* this.#fenced(
         Effect.gen({ self: this }, function* () {
           if (stale()) return this.failure(operation, "conflict");
           if (probe.kind === "error") {
-            if (keepSignedIn && this.productOpen()) {
+            if (probe.code === "session_probe_unavailable" && this.productOpen()) {
               this.scheduleBackgroundReconcile();
               return this.failure(operation, probe.code);
             }
@@ -346,8 +375,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
                 "credential_mutation_uncertain",
                 "reconcile"
               );
-            if (isVault(removed.success) && removed.success.status === "readable")
-              this.cleanup = removed.success.cleanup;
+            this.#took(removed.success);
             this.#activeRef = null;
             return { ok: true as const, value: this.publishSignedOut("unauthorized") };
           }
@@ -372,8 +400,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
               "reconcile"
             );
           if (!isVault(adopted.success)) return this.failure(operation, "conflict");
-          if (adopted.success.status === "readable")
-            this.cleanup = adopted.success.cleanup;
+          this.#took(adopted.success);
           this.#activeRef = active.ref;
           const snapshot = this.publishSignedIn(projection);
           this.fork(this.retryPendingRevocations());
@@ -442,7 +469,8 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         yield* wake;
         const answer = yield* Effect.result(
           this.#request("POST", "/v1/comma/auth/email/login", emailChallenge, {
-            body: { email },
+            body: { email, platform: this.#ports.clientKind ?? "electron" },
+            protect: true,
           })
         );
         if (Result.isFailure(answer))
@@ -582,7 +610,12 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         const window = yield* Effect.result(
           Effect.raceFirst(
             google({ clientId: remote.client_id, nonce: remote.nonce }).pipe(
-              Effect.mapError(() => new RemoteError("unknown"))
+              Effect.mapError(
+                (error) =>
+                  new RemoteError(
+                    error.message === "cancelled" ? "cancelled" : "unknown"
+                  )
+              )
             ),
             Deferred.await(attempt.retired).pipe(
               Effect.andThen(Effect.fail(new RemoteError("cancelled")))
@@ -596,6 +629,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         grant = window.success;
         const result = yield* Effect.result(
           this.#request("POST", "/v1/comma/auth/google", googleResult, {
+            protect: true,
             body: {
               attempt_id: remote.attempt_id,
               nonce: remote.nonce,
@@ -670,6 +704,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
           });
         const result = yield* Effect.result(
           this.#request("POST", "/v1/comma/auth/apple", googleResult, {
+            protect: true,
             body: {
               attempt_id: remote.attempt_id,
               identity_token: sheet.success.identityToken,
@@ -734,24 +769,11 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
   }): Effect.Effect<SessionOperationResult<SignedOutSessionSnapshot, "sign_out">> {
     return Effect.suspend(() => {
       const current = this.current;
-      // A kept account whose check cannot reach the server (a phone offline) can still be signed out of: its
-      // credential is queued for revocation like any other. The snapshot has no session to expect, so the call is
-      // fenced by its authority and generation alone.
-      const keptOffline =
-        this.#ports.showsKeptAccount === true &&
-        current.phase === "indeterminate" &&
-        current.problem.code === "session_probe_unavailable" &&
-        input.expected.authorityInstanceId === this.authorityInstanceId &&
-        input.expected.generation === current.generation;
-      if (!keptOffline && !this.#matches(input.expected))
+      if (!this.#matches(input.expected))
         return Effect.succeed(this.failure("sign_out", "conflict"));
       if (current.phase === "signed_out")
         return Effect.succeed({ ok: true as const, value: current });
-      if (
-        current.phase !== "signed_in" &&
-        current.phase !== "authenticating" &&
-        !keptOffline
-      )
+      if (current.phase !== "signed_in" && current.phase !== "authenticating")
         return Effect.succeed(this.failure("sign_out", "conflict"));
       return this.#signOut("sign_out", "user_signed_out");
     });
@@ -793,14 +815,164 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
               "credential_mutation_uncertain",
               "sign_out"
             );
-          if (isVault(changed.success) && changed.success.status === "readable")
-            this.cleanup = changed.success.cleanup;
+          this.#took(changed.success);
           const signedOut = this.publishSignedOut(reason);
           this.fork(this.retryPendingRevocations());
           return { ok: true as const, value: signedOut };
         })
       );
     });
+  }
+
+  // --- Accounts kept signed in -----------------------------------------------------------------------------------
+
+  /**
+   * Another account is to be added: the one in use is set aside, still signed in (kept in the store), and the session
+   * is signed out for the next sign-in. At most `MAX_KEPT_CREDENTIALS` are kept.
+   */
+  addAccount(input: {
+    expected: SessionLifecycleExpectation;
+  }): Effect.Effect<SessionOperationResult<SignedOutSessionSnapshot, "add_account">> {
+    const operation = "add_account" as const;
+    return Effect.suspend(() => {
+      if (
+        !this.#matches(input.expected) ||
+        this.current.phase !== "signed_in" ||
+        this.#keptRefs.length >= MAX_KEPT_CREDENTIALS
+      )
+        return Effect.succeed(this.failure(operation, "conflict"));
+      const epoch = this.nextEpoch();
+      const stale = () => !this.isCurrentEpoch(epoch) || this.closed;
+      return this.#fenced(
+        Effect.gen({ self: this }, function* () {
+          if (stale()) return this.failure(operation, "conflict");
+          const changed = yield* Effect.result(this.#ports.change({ kind: "keep" }));
+          if (stale()) return this.failure(operation, "conflict");
+          if (Result.isFailure(changed))
+            return this.#problem(
+              operation,
+              "credential_mutation_uncertain",
+              "reconcile"
+            );
+          if (!isVault(changed.success) || changed.success.status !== "readable")
+            return this.failure(operation, "conflict");
+          this.#took(changed.success);
+          this.#activeRef = null;
+          return { ok: true as const, value: this.publishSignedOut("no_session") };
+        })
+      );
+    });
+  }
+
+  /**
+   * Makes a kept account the one in use, without signing in again: the store swaps it with the one in use (kept in
+   * turn), the session is shown signed in as its stored identity at once, and the server confirms it after (as a
+   * startup does). A sign-in under way is given up.
+   */
+  switchAccount(input: {
+    userId: string;
+  }): Effect.Effect<SessionOperationResult<SignedInSessionSnapshot, "switch_account">> {
+    const operation = "switch_account" as const;
+    return Effect.suspend(() => {
+      const phase = this.current.phase;
+      if (
+        (phase !== "signed_in" &&
+          phase !== "signed_out" &&
+          phase !== "authenticating") ||
+        !this.#keptRefs.some((kept) => kept.userId === input.userId)
+      )
+        return Effect.succeed(this.failure(operation, "conflict"));
+      const retiring = this.attempt;
+      const retired = retiring ? [retiring, ...retiring.supersededAttempts] : [];
+      const inFlight = retired.flatMap((candidate) =>
+        candidate.inFlight ? [candidate.inFlight] : []
+      );
+      const { epoch, wake } = this.#retireAttempt();
+      const stale = () => !this.isCurrentEpoch(epoch) || this.closed;
+      return Effect.gen({ self: this }, function* () {
+        yield* wake;
+        yield* Effect.forEach(inFlight, (deferred) => Deferred.await(deferred), {
+          discard: true,
+        });
+        const switched = yield* this.#fenced(
+          Effect.gen({ self: this }, function* () {
+            if (stale()) return this.failure(operation, "conflict");
+            if (!(yield* this.#retryUnsettled(retired)))
+              return this.#problem(
+                operation,
+                "credential_mutation_uncertain",
+                "authenticate"
+              );
+            const kept = this.#keptRefs.find(
+              (candidate) => candidate.userId === input.userId
+            );
+            if (!kept) return this.failure(operation, "conflict");
+            const changed = yield* Effect.result(
+              this.#ports.change({ kind: "activate", kept: kept.ref })
+            );
+            if (stale()) return this.failure(operation, "conflict");
+            if (Result.isFailure(changed))
+              return this.#problem(
+                operation,
+                "credential_mutation_uncertain",
+                "reconcile"
+              );
+            const vault = changed.success;
+            if (!isVault(vault) || vault.status !== "readable" || !vault.active)
+              return this.failure(operation, "conflict");
+            const active = vault.active;
+            this.#took(vault);
+            this.#activeRef = active.ref;
+            const snapshot = this.publishSignedIn({
+              expires_at: active.expiresAtEpochSeconds,
+              session_id: active.sessionId,
+              user: { id: active.userId, email: active.email },
+            });
+            return { ok: true as const, value: snapshot };
+          })
+        );
+        // The server confirms the session (or refuses it: signed out, the other accounts still kept).
+        if (switched.ok) this.fork(this.#reconcile(this.nextEpoch()));
+        // A sign-in given up for a switch that did not happen: back at the sign-in.
+        else
+          yield* this.#fenced(
+            Effect.sync(() => {
+              if (!stale() && this.current.phase === "authenticating" && !this.attempt)
+                this.publishSignedOut("no_session");
+            })
+          );
+        return switched;
+      });
+    });
+  }
+
+  /** Signs a kept account out of this device: its credential is queued for revocation (and revoked). */
+  signOutAccount(input: {
+    userId: string;
+  }): Effect.Effect<SessionOperationResult<null, "sign_out_account">> {
+    const operation = "sign_out_account" as const;
+    return this.#fenced(
+      Effect.gen({ self: this }, function* () {
+        if (this.closed) return this.failure(operation, "conflict");
+        const kept = this.#keptRefs.find(
+          (candidate) => candidate.userId === input.userId
+        );
+        if (!kept) return this.failure(operation, "conflict");
+        const changed = yield* Effect.result(
+          this.#ports.change({ kind: "forget", kept: kept.ref })
+        );
+        if (this.closed) return this.failure(operation, "conflict");
+        if (Result.isFailure(changed))
+          return this.failureOrUnknown(operation, "credential_mutation_uncertain");
+        if (!isVault(changed.success) || changed.success.status !== "readable")
+          return this.failure(operation, "conflict");
+        this.#keep(changed.success);
+        this.publishCleanup(changed.success.cleanup);
+        this.sync();
+        this.fork(this.retryPendingRevocations());
+        return { ok: true as const, value: null };
+      })
+    );
   }
 
   // --- A product request refused ---------------------------------------------------------------------------------
@@ -835,8 +1007,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
             this.publishIndeterminate("credential_mutation_uncertain", "invalidate");
             return;
           }
-          if (removed.success.status === "readable")
-            this.cleanup = removed.success.cleanup;
+          this.#took(removed.success);
           this.publishSignedOut("unauthorized");
         })
       )
@@ -910,8 +1081,10 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
         Effect.gen({ self: this }, function* () {
           if (this.closed) return;
           const read = yield* Effect.result(this.#ports.vault);
-          if (Result.isSuccess(read) && read.success.status === "readable")
+          if (Result.isSuccess(read) && read.success.status === "readable") {
+            this.#keep(read.success);
             this.publishCleanup(read.success.cleanup);
+          }
         })
       );
     });
@@ -992,8 +1165,7 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
           attempt.cleanupSettled = true;
           this.#unresolved.delete(ref);
           this.attempt = undefined;
-          if (committed.success.status === "readable")
-            this.cleanup = committed.success.cleanup;
+          this.#took(committed.success);
           this.#activeRef = ref;
           const snapshot = this.publishSignedIn(issued);
           return {
@@ -1196,6 +1368,28 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
     });
   }
 
+  // --- The store as last read ------------------------------------------------------------------------------------
+
+  /** What a read or change of the store says: the credentials still to revoke, and the accounts kept. */
+  #took(vault: BearerVault | boolean | null): void {
+    if (!isVault(vault) || vault.status !== "readable") return;
+    this.cleanup = vault.cleanup;
+    this.#keep(vault);
+  }
+
+  /** The accounts the store keeps signed in besides the one in use (this audience's; one per account). */
+  #keep(vault: Extract<BearerVault, { status: "readable" }>): void {
+    const kept = (vault.kept ?? []).filter(
+      (credential) => credential.audience === this.origin
+    );
+    this.#keptRefs = kept;
+    this.kept = kept.map(({ audience, userId, email }) => ({
+      audience,
+      userId,
+      email,
+    }));
+  }
+
   // --- Fencing ---------------------------------------------------------------------------------------------------
 
   /** `effect` once every earlier change of the credential store and its publication has ended. */
@@ -1244,38 +1438,77 @@ export class ElectronSessionLifecycle extends SessionLifecycle<ElectronAttempt> 
     method: "GET" | "POST",
     path: string,
     schema: S,
-    options: { body?: Record<string, unknown>; credential?: CredentialRef } = {}
+    options: {
+      body?: Record<string, unknown>;
+      credential?: CredentialRef;
+      protect?: true;
+    } = {}
   ): Effect.Effect<z.output<S>, RemoteError> {
-    return Effect.suspend(() =>
-      this.#authFetch({
-        method,
-        path,
-        headers: options.body
-          ? [
-              ["accept", "application/json"],
-              ["content-type", "application/json"],
-            ]
-          : [["accept", "application/json"]],
-        body: options.body ? utf8(JSON.stringify(options.body)) : null,
-        ...(options.credential ? { credential: options.credential } : {}),
-      })
-    ).pipe(
-      Effect.timeoutOrElse({
-        duration: REQUEST_TIMEOUT_MS,
-        orElse: () => Effect.fail(new HostError("the request took too long")),
-      }),
-      Effect.mapError(() => new RemoteError("network_unavailable")),
+    const send = (
+      route: string,
+      payload?: Record<string, unknown>
+    ): Effect.Effect<AuthResponse, RemoteError> =>
+      Effect.suspend(() =>
+        this.#authFetch({
+          method,
+          path: route,
+          headers: payload
+            ? [
+                ["accept", "application/json"],
+                ["content-type", "application/json"],
+              ]
+            : [["accept", "application/json"]],
+          body: payload ? utf8(JSON.stringify(payload)) : null,
+          ...(options.credential ? { credential: options.credential } : {}),
+        })
+      ).pipe(
+        Effect.timeoutOrElse({
+          duration: REQUEST_TIMEOUT_MS,
+          orElse: () => Effect.fail(new HostError("the request took too long")),
+        }),
+        Effect.mapError(() => new RemoteError("network_unavailable")),
+        Effect.map((response) => ({
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          headers: response.headers,
+          body: jsonBody(response.body),
+        }))
+      );
+    const retired = this.attempt?.retired;
+    const request =
+      options.protect && options.body
+        ? this.protectedAuthRequest(path, options.body, send).pipe(
+            Effect.mapError((error) =>
+              error instanceof AbuseError ? new RemoteError(error.code) : error
+            )
+          )
+        : send(path, options.body);
+    const active =
+      options.protect && retired
+        ? Effect.raceFirst(
+            request,
+            Deferred.await(retired).pipe(
+              Effect.andThen(Effect.fail(new RemoteError("cancelled")))
+            )
+          )
+        : request;
+    return active.pipe(
       Effect.flatMap((response) => {
+        if (!response) return Effect.fail(new RemoteError("network_unavailable"));
         if (response.status >= 300 && response.status < 400)
           return Effect.fail(new RemoteError("protocol_mismatch"));
-        const body = jsonBody(response.body);
-        if (response.status < 200 || response.status >= 300)
-          return Effect.fail(remoteError(response, body));
+        const body = response.body;
+        if (!response.ok)
+          return Effect.fail(
+            remoteError(
+              { status: response.status, headers: response.headers ?? [] },
+              body
+            )
+          );
         if (body === undefined)
           return Effect.fail(new RemoteError("protocol_mismatch"));
         const out = schema.safeParse(body);
         if (out.success) return Effect.succeed(out.data as z.output<S>);
-        // A credential Main kept from an answer that was not wanted (a probe that reflected a bearer) is let go.
         const ref = (body as { credential?: unknown } | null)?.credential;
         return (
           typeof ref === "string" ? Effect.asVoid(this.#quarantine(ref)) : Effect.void
@@ -1299,7 +1532,10 @@ function jsonBody(body: Uint8Array): unknown {
   }
 }
 
-function remoteError(response: ApiResponse, body: unknown): RemoteError {
+function remoteError(
+  response: Pick<ApiResponse, "status" | "headers">,
+  body: unknown
+): RemoteError {
   const retryAfter = response.headers.find(
     ([name]) => name.toLowerCase() === "retry-after"
   )?.[1];

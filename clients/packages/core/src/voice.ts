@@ -1,6 +1,7 @@
 // Settings › Voice: the caller numbers verified for a workspace's voice line (each proved by an SMS code, optionally
 // guarded by a PIN), the voice agent API keys that custom voice clients connect with, whether voice calls are
-// available now, and the call preferences (the voice, a custom voice made from a description, Router calls). Read
+// available now, and the call preferences (the voice, a custom voice made from a description, Router calls) with a
+// spoken sample of a voice (answered to the caller only, not kept). Read
 // while the page shows them; the two halves are read and fail independently. A number or preference change answers
 // the new integration; a key change reads the keys again. A new key's plaintext is answered to the caller only.
 //
@@ -13,12 +14,14 @@ import {
   voiceIntegrationSchema,
   voiceKeyCreatedSchema,
   voiceKeySchema,
+  voicePreviewSchema,
   voiceVerificationSchema,
 } from "./comma/schemas.ts";
 import type {
   VoiceChoice,
   VoiceIntegration,
   VoiceKeyCreated,
+  VoicePreview,
   VoiceValue,
 } from "./contract.ts";
 import { type Ctx, Live } from "./ctx.ts";
@@ -250,6 +253,29 @@ export class Voice {
             description,
             ...(name ? { name } : {}),
           });
+        },
+      },
+      "voice.preview": {
+        run: (p) => {
+          const workspace = params.string(p, "workspace");
+          const voice = voiceChoice((p as { voice?: unknown } | null)?.voice ?? null);
+          const language = params.optional(p, "language");
+          return this.#send(
+            "POST",
+            `${linePath(workspace)}/preview`,
+            voicePreviewSchema,
+            {
+              voice,
+              ...(language ? { language } : {}),
+            }
+          ).pipe(
+            Effect.map(
+              (sample): VoicePreview => ({
+                contentType: sample.content_type,
+                audio: sample.audio,
+              })
+            )
+          );
         },
       },
       "voice.deleteKey": {

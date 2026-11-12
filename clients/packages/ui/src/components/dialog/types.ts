@@ -37,7 +37,8 @@ export type DialogInputProps = Pick<
 >;
 
 export interface DialogPanelProps {
-  title: string;
+  /** Text; compose's may be a menu that switches what the window makes. */
+  title: ReactNode;
   /** Plain text, or marked-up text when part of it must not wrap (a path). */
   description?: ReactNode;
   /** Show the top-right close button. Defaults to false. */

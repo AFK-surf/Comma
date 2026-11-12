@@ -64,8 +64,15 @@ sealed interface AuthState {
         val googleProblem: AuthProblem? = null,
         /** [challengeId] links a Google account to an existing one; the code goes to the link endpoint. */
         val linkingGoogle: Boolean = false,
+        /** The accounts still signed in on this device: each continues without signing in again. */
+        val keptAccounts: List<Account> = emptyList(),
     ) : AuthState
     data class Connecting(val step: ConnectionStep, val retryAtMillis: Long = 0) : AuthState
     data class Retry(val problem: AuthProblem) : AuthState
-    data class Connected(val account: Account, val selection: WorkspaceSelection) : AuthState
+    data class Connected(
+        val account: Account,
+        val selection: WorkspaceSelection,
+        /** The other accounts signed in on this device, set aside: switching to one needs no sign-in. */
+        val otherAccounts: List<Account> = emptyList(),
+    ) : AuthState
 }

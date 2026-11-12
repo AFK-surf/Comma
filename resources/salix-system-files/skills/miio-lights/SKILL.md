@@ -7,20 +7,26 @@ activation: per-message
 # Xiaomi miIO Lights
 
 These lamps speak miIO: encrypted UDP on port 54321, not HTTP. Send every
-command with `device.miio_request` through a gateway whose
-`capabilities.lan_gateway.methods` include `udp_request`. Follow the
+command with `device.lan_script`, `script:
+"/.runtime/skills/miio-lights/miio.js"`, through a gateway whose
+`capabilities.lan_gateway.methods` include `lan_script`. Follow the
 `/.runtime/skills/home-gateway/SKILL.md` instructions to find the gateway.
-If no gateway advertises `udp_request`, tell the user the gateway needs a
-firmware or connector update and stop. Do not fall back to a script on the
-user's computer.
+When Home Assistant already controls the unit, use the home-assistant skill
+instead. Otherwise, if no gateway advertises `lan_script`, tell the user the
+gateway needs a firmware or station update and stop. Do not write your own
+miIO script.
+
+`args` is `{"method": …, "params": […]}`, plus `host` when the saved token has
+none. The result is `{host, result}`.
 
 ## Token
 
-Every lamp needs its 32-hex-character miIO token. `device.miio_request`
-takes `token_ref`, the name of a saved token, never the token itself.
+Every lamp needs its 32-hex-character miIO token. Give it as `secrets:
+{"token": "<name>"}`, the name of a saved token, never the token itself. The
+platform puts the token, and its saved host, into `args`.
 
 1. Call `device.secret_list` first. A `miio_token` whose name or host matches
-   the lamp is its token: use its name as `token_ref`.
+   the lamp is its token: use its name in `secrets`.
 2. If none matches, ask the user once for the token. Save it with
    `device.secret_save` (`kind: "miio_token"`, a short `name` such as
    `bedside-lamp`, and the lamp's `host` and `model`), then use the name.
@@ -32,8 +38,8 @@ takes `token_ref`, the name of a saved token, never the token itself.
 
 ## Identify the Lamp
 
-- Use the host saved with the token when there is one. `device.miio_request`
-  uses it when you omit `host`.
+- Use the host saved with the token when there is one. The script uses it
+  when you omit `host` from `args`.
 - Otherwise call `device.lan_discover` with the gateway. A miIO lamp shows an
   mDNS service `_miio._udp` (name such as `yeelink-light-bslamp2_miio<id>`)
   or `_hap._tcp` (HomeKit), or only an ARP entry. Confirm the IP address with
@@ -70,6 +76,8 @@ After every change, call `get_prop` again and report what the lamp returns,
 not what you requested.
 
 ## Errors
+
+Each error is the failure code, or for `script_failed` the start of its message:
 
 - `device_not_answering`: the lamp did not answer on UDP 54321. Check the
   address with `device.lan_discover` and that the lamp has power.

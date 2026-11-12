@@ -28,14 +28,15 @@ export function assertNotSent(entry: ChatEntry, sendIntentId: string) {
     entry.inFlightSendIntents.has(sendIntentId) ||
     entry.committedSendIntents.has(sendIntentId)
   ) {
-    throw new ChatError("This message was already sent.");
+    throw new ChatError("This message was already sent.", { code: "already_sent" });
   }
 }
 
 export function assertNoAttachmentIntakeFailure(entry: ChatEntry) {
   if (entry.attachmentIntakeFailures.size > 0) {
     throw new ChatError(
-      "Some selected files could not be attached. Review the attachments, then send again."
+      "Some selected files could not be attached. Review the attachments, then send again.",
+      { code: "attachment_not_ready" }
     );
   }
 }
@@ -55,7 +56,8 @@ export function drainAttachmentIntake(
     if (intake.dialogOpen) {
       return Effect.fail(
         new ChatError(
-          "Files are still being selected for this message. Close the file dialog, then send again."
+          "Files are still being selected for this message. Close the file dialog, then send again.",
+          { code: "attachment_not_ready" }
         )
       );
     }
@@ -70,7 +72,8 @@ export function drainAttachmentIntake(
         Effect.andThen(
           Effect.fail(
             new ChatError(
-              "Selected files are still being attached. Try sending again in a moment."
+              "Selected files are still being attached. Try sending again in a moment.",
+              { code: "attachment_not_ready" }
             )
           )
         )

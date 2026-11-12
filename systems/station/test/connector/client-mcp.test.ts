@@ -29,7 +29,7 @@ test("TestReadOnlyDesktopForwardsClientMcpToMain", async () => {
       }),
   });
   const c = makeConnector(desktop, control);
-  assert.deepEqual(c.metadata().capabilities!.client_mcp, ["mac-apps"]);
+  assert.deepEqual(c.metadata().capabilities!.client_mcp, ["mac-apps", "blender"]);
   const exit = await Effect.runPromiseExit(c.dispatchForTest("mcp", "client_mcp", { server: "mac-apps", message: listTools }));
   assert.ok(Exit.isSuccess(exit), "a read-only desktop refused client_mcp");
   assert.deepEqual(exit.value, { message: { jsonrpc: "2.0", id: 7, result: { tools: [] } } });

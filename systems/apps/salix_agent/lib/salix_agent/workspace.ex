@@ -40,6 +40,18 @@ defmodule SalixAgent.Workspace do
     AgentWorkspace.stream(agent_id, path)
   end
 
+  @doc "The blob ref the file at `path` is stored as."
+  def ref(agent_id, raw_path) do
+    path = normalize_path(raw_path)
+
+    with {:ok, vfs} <- AgentWorkspace.manifest(agent_id) do
+      case Map.get(vfs, path) do
+        %{"ref" => ref} when is_map(ref) -> {:ok, ref}
+        _other -> {:error, :not_found}
+      end
+    end
+  end
+
   def write(agent_id, raw_path, body, opts \\ []) when is_binary(body) and is_list(opts) do
     path = normalize_path(raw_path)
 
@@ -86,6 +98,36 @@ defmodule SalixAgent.Workspace do
              "storage_write"
            ),
          {:ok, event} <- AgentWorkspace.prepare_managed_write_stream(agent_id, path, stream),
+         event = put_ifc_label(event, Keyword.get(opts, :ifc_label)),
+         file = file_json(path, event) do
+      SalixAgent.AgentActor.commit_workspace_operation(
+        agent_id,
+        operation_id("vfs:put", agent_id, path, opts, [event["hash"], event["size"]]),
+        file,
+        [event],
+        storage_auth_opts(opts, "storage_write")
+      )
+    end
+  end
+
+  @doc """
+  Write `path` as `ref`, a body prepared with durable cleanup ownership
+  (`SalixStore.Blob.finish_parts/3`): the commit adopts it, and a failed
+  commit leaves it to the prepared-blob sweeper.
+  """
+  def write_prepared(agent_id, raw_path, ref, opts \\ []) when is_list(opts) do
+    path = normalize_path(raw_path)
+
+    with {:ok, _agent} <- Control.get(agent_id),
+         :ok <- validate_mutable_path(path),
+         {:ok, opts} <-
+           authorize_storage_write(
+             agent_id,
+             [%{"type" => "vfs_write", "path" => path}],
+             opts,
+             "storage_write"
+           ),
+         {:ok, event} <- AgentWorkspace.managed_write_ref(path, ref),
          event = put_ifc_label(event, Keyword.get(opts, :ifc_label)),
          file = file_json(path, event) do
       SalixAgent.AgentActor.commit_workspace_operation(

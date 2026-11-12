@@ -61,21 +61,21 @@ inductive FencedBatchTrace (context : Context) (continuationAfter : Term) : Outp
       {final : PendingRevision.Cursor}
       (tail : FencedBatchTrace context continuationAfter
         (resident (some (.tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]))
           (a "run") (list observations)) final) :
       FencedBatchTrace context continuationAfter
         (some (.tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
+          .tuple [a "session_delta_batch", cursor.pack, BatchExecution.pending state (event :: remaining)]]),
           .tuple [a "next"]) final
-  | resume {cursor : PendingRevision.Cursor} {token request observation : Term} {remaining : List Term}
+  | resume {cursor : PendingRevision.Cursor} {before event token request observation : Term} {remaining : List Term}
       {final : PendingRevision.Cursor}
       (tail : FencedBatchTrace context continuationAfter
         (resident (some (.tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]))
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]))
           (a "resume") observation) final) :
       FencedBatchTrace context continuationAfter
         (some (.tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter,
-          .tuple [a "session_pending_batch", cursor.pack, BatchExecution.observing token remaining]]),
+          .tuple [a "session_delta_observe", cursor.pack, before, event, BatchExecution.observing token remaining]]),
           .tuple [a "observe", request]) final
 
 theorem fenced_batch_reflect {context : Context} {continuationAfter : Term} {inner : Output}
@@ -89,19 +89,22 @@ theorem fenced_batch_reflect {context : Context} {continuationAfter : Term} {inn
     exact .done cursor
   | @run cursor state event remaining observations final tail ih =>
     rw [accept_fenced_batch origin]
-    apply Revision.Execution.run (observations := observations)
+    apply PendingRevision.Execution.run (observations := observations)
     apply ih
     cases context <;> rfl
-  | @resume cursor token request observation remaining final tail ih =>
+  | @resume cursor before event token request observation remaining final tail ih =>
     rw [accept_fenced_batch origin]
-    apply Revision.Execution.resume (observation := observation)
+    apply PendingRevision.Execution.resume (observation := observation)
     apply ih
     cases context <;> rfl
 
 def fencedBatchCursor (context : Context) (continuationAfter : Term)
     (cursor : PendingRevision.Cursor) (batch : Term) : Term :=
   .tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter,
-    .tuple [a "session_pending_batch", cursor.pack, batch]]
+    .tuple [a "session_delta_batch", cursor.pack, batch]]
+
+def fencedObserveCursor (context : Context) (continuationAfter : Term) (cursor : PendingRevision.Cursor) (before event batch : Term) : Term :=
+  .tuple [a "session_command_driver_batch", context.pack, writeContinuation continuationAfter, .tuple [a "session_delta_observe", cursor.pack, before, event, batch]]
 
 inductive FencedBatchOutput (context : Context) (continuationAfter : Term) : Output → Prop where
   | done (cursor : PendingRevision.Cursor) : FencedBatchOutput context continuationAfter (writeFenced cursor continuationAfter)
@@ -109,9 +112,9 @@ inductive FencedBatchOutput (context : Context) (continuationAfter : Term) : Out
       FencedBatchOutput context continuationAfter
         (some (fencedBatchCursor context continuationAfter cursor (BatchExecution.pending state (event :: remaining))),
           .tuple [a "next"])
-  | resume (cursor : PendingRevision.Cursor) (token request : Term) (remaining : List Term) :
+  | resume (cursor : PendingRevision.Cursor) (before event token request : Term) (remaining : List Term) :
       FencedBatchOutput context continuationAfter
-        (some (fencedBatchCursor context continuationAfter cursor (BatchExecution.observing token remaining)),
+        (some (fencedObserveCursor context continuationAfter cursor before event (BatchExecution.observing token remaining)),
           .tuple [a "observe", request])
   | failed (response : Term) : FencedBatchOutput context continuationAfter (none, response)
 
@@ -124,31 +127,48 @@ theorem fenced_batch_next_valid (context : Context) (continuationAfter : Term)
   | nil => exact .done { cursor with working := state }
   | cons event remaining => exact .run cursor state event remaining
 
-theorem fenced_batch_accept_valid (context : Context) (continuationAfter : Term)
-    (cursor : PendingRevision.Cursor) (remaining : List Term) (result : Term) :
+theorem fenced_capture_next_valid (context : Context) (continuationAfter : Term) (cursor : PendingRevision.Cursor)
+    (before state event : Term) (remaining : List Term) :
     FencedBatchOutput context continuationAfter
-      (acceptWrite context (writeContinuation continuationAfter)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining result))) := by
+      (acceptWrite context (writeContinuation continuationAfter) (PendingRevision.captureDelta cursor before state event (BatchExecution.next state remaining))) := by
+  cases captured : StorageDelta.captureDedupe before state event [] with
+  | ok result =>
+    obtain ⟨added, rest⟩ := result
+    cases rest with
+    | nil =>
+      simp only [PendingRevision.captureDelta, captured]
+      exact fenced_batch_next_valid context continuationAfter _ _ _
+    | cons head tail => simp only [PendingRevision.captureDelta, captured]; exact .failed _
+  | error signal =>
+    cases signal <;> simp only [PendingRevision.captureDelta, captured] <;> exact .failed _
+
+theorem fenced_batch_accept_valid (context : Context) (continuationAfter : Term) (cursor : PendingRevision.Cursor)
+    (before event : Term) (remaining : List Term) (result : Term) :
+    FencedBatchOutput context continuationAfter
+      (acceptWrite context (writeContinuation continuationAfter) (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining result))) := by
   unfold BatchExecution.accept
   split
-  · exact fenced_batch_next_valid _ _ _ _ _
-  · exact .resume cursor _ _ remaining
+  · rename_i state
+    cases remaining with
+    | nil => exact fenced_capture_next_valid context continuationAfter cursor before state event []
+    | cons head tail => exact fenced_capture_next_valid context continuationAfter cursor before state event (head :: tail)
+  · exact .resume cursor before event _ _ remaining
   · exact .failed _
 
-theorem fenced_batch_run_captured (context : Context) (continuationAfter : Term)
-    (cursor : PendingRevision.Cursor) (state event : Term) (remaining observations : List Term) :
+theorem fenced_batch_run_captured (context : Context) (continuationAfter : Term) (cursor : PendingRevision.Cursor)
+    (state event : Term) (remaining observations : List Term) :
     resident (some (fencedBatchCursor context continuationAfter cursor (BatchExecution.pending state (event :: remaining))))
       (a "run") (list observations) =
       acceptWrite context (writeContinuation continuationAfter)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (runTrusted state event observations))) := by
+        (PendingRevision.acceptCaptured cursor state event (BatchExecution.accept remaining (runTrusted state event observations))) := by
   cases context <;> rfl
 
-theorem fenced_batch_resume_captured (context : Context) (continuationAfter : Term)
-    (cursor : PendingRevision.Cursor) (token observation : Term) (remaining : List Term) :
-    resident (some (fencedBatchCursor context continuationAfter cursor (BatchExecution.observing token remaining)))
+theorem fenced_batch_resume_captured (context : Context) (continuationAfter : Term) (cursor : PendingRevision.Cursor)
+    (before event token observation : Term) (remaining : List Term) :
+    resident (some (fencedObserveCursor context continuationAfter cursor before event (BatchExecution.observing token remaining)))
       (a "resume") observation =
       acceptWrite context (writeContinuation continuationAfter)
-        (PendingRevision.accept cursor (BatchExecution.accept remaining (resumeTrusted token observation))) := by
+        (PendingRevision.acceptCaptured cursor before event (BatchExecution.accept remaining (resumeTrusted token observation))) := by
   cases context <;> rfl
 
 theorem fenced_batch_start_valid (context : Context) (continuationAfter : Term) (events : List Term) (hwm : Term) :
@@ -177,13 +197,13 @@ theorem fenced_batch_next_shape {context : Context} {continuationAfter : Term} {
 
 theorem fenced_batch_observation_shape {context : Context} {continuationAfter : Term} {saved request : Term}
     (valid : FencedBatchOutput context continuationAfter (some saved, .tuple [a "observe", request])) :
-    ∃ cursor token remaining,
-      saved = fencedBatchCursor context continuationAfter cursor (BatchExecution.observing token remaining) := by
+    ∃ cursor before event token remaining,
+      saved = fencedObserveCursor context continuationAfter cursor before event (BatchExecution.observing token remaining) := by
   generalize same : (some saved, Term.tuple [a "observe", request]) = output at valid
   cases valid with
   | done => simp [writeFenced, a] at same
   | run => simp [a] at same
-  | resume cursor token request remaining => exact ⟨cursor, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
+  | resume cursor before event token request remaining => exact ⟨cursor, before, event, token, remaining, Option.some.inj (congrArg Prod.fst same)⟩
   | failed => cases congrArg Prod.fst same
 
 theorem fenced_batch_trace_reflect {context : Context} {continuationAfter : Term} {initial : Output}
@@ -201,14 +221,14 @@ theorem fenced_batch_trace_reflect {context : Context} {continuationAfter : Term
     apply FencedBatchTrace.run (observations := observations)
     apply ih
     · rw [fenced_batch_run_captured]
-      exact fenced_batch_accept_valid _ _ _ _ _
+      apply fenced_batch_accept_valid
     · exact ending
   | @resume saved request observation output tail ih =>
-    obtain ⟨cursor, token, remaining, rfl⟩ := fenced_batch_observation_shape valid
+    obtain ⟨cursor, before, event, token, remaining, rfl⟩ := fenced_batch_observation_shape valid
     apply FencedBatchTrace.resume (observation := observation)
     apply ih
     · rw [fenced_batch_resume_captured]
-      exact fenced_batch_accept_valid _ _ _ _ _
+      apply fenced_batch_accept_valid
     · exact ending
 
 theorem fenced_batch_output_preserved {context : Context} {continuationAfter : Term} {initial final : Output}
@@ -220,12 +240,12 @@ theorem fenced_batch_output_preserved {context : Context} {continuationAfter : T
     obtain ⟨cursor, state, event, remaining, rfl⟩ := fenced_batch_next_shape valid
     apply ih
     rw [fenced_batch_run_captured]
-    exact fenced_batch_accept_valid _ _ _ _ _
+    apply fenced_batch_accept_valid
   | resume tail ih =>
-    obtain ⟨cursor, token, remaining, rfl⟩ := fenced_batch_observation_shape valid
+    obtain ⟨cursor, before, event, token, remaining, rfl⟩ := fenced_batch_observation_shape valid
     apply ih
     rw [fenced_batch_resume_captured]
-    exact fenced_batch_accept_valid _ _ _ _ _
+    apply fenced_batch_accept_valid
 
 theorem fenced_batch_continuation {context : Context} {expected actual : Term} {cursor : PendingRevision.Cursor}
     (valid : FencedBatchOutput context expected (writeFenced cursor actual)) : actual = expected := by

@@ -12,6 +12,7 @@ defmodule SalixIM.RouterConversationInput do
     ControlCommand,
     ConversationIds,
     ModelMentionTask,
+    RequestMention,
     ConversationInput,
     ConversationServer,
     Conversations,
@@ -23,7 +24,8 @@ defmodule SalixIM.RouterConversationInput do
     SalixStore.ReadScope.run(fn ->
       if agent_id = SalixIM.ConversationGroupActor.router_read_hint(group_id) do
         SalixStore.ReadScope.prefetch({:record, SalixStore.Keys.ctl_agent(agent_id)}, fn ->
-          SalixStore.CasRecord.get(SalixStore.Keys.ctl_agent(agent_id))
+          with {:ok, %{record: record}} <- SalixStore.AgentPGStore.read_config(agent_id),
+               do: {:ok, record}
         end)
       end
 
@@ -86,17 +88,23 @@ defmodule SalixIM.RouterConversationInput do
         attrs = stringify(attrs)
         command_text = command_text(attrs["content"])
         command? = ControlCommand.parse(command_text) != :none
-        # A message naming a model starts a Task with it instead of the Router's turn.
+        # A message naming a model starts a Task with it instead of the Router's turn;
+        # one naming a person (and no model) sends them a Task request.
         model_task =
           if command?,
             do: :none,
             else: ModelMentionTask.parse(said_text(attrs["content"]), attrs["content"])
 
+        request =
+          if command? or model_task != :none,
+            do: :none,
+            else: RequestMention.parse(said_text(attrs["content"]), attrs["content"])
+
         message =
           user_message(
             conversation,
             attrs,
-            if(command? or model_task != :none,
+            if(command? or model_task != :none or request != :none,
               do: [],
               else: [conversation["router_participant_id"]]
             )
@@ -108,6 +116,8 @@ defmodule SalixIM.RouterConversationInput do
                  conversation["conversation_id"],
                  message
                ) do
+          observe_append(conversation, message["source_message_id"], message["metadata"], result)
+
           if command? and result["inserted"] do
             metadata = %{
               "provider" => "internal",
@@ -142,11 +152,27 @@ defmodule SalixIM.RouterConversationInput do
             )
           end
 
+          with {:ok, mention} <- request,
+               true <- result["inserted"] == true do
+            RequestMention.send_request(
+              group_id,
+              conversation,
+              result["message_id"],
+              requester(attrs),
+              mention
+            )
+          end
+
           {:ok, result}
         end
       end
     end)
   end
+
+  # Only a full session's author sends a Task request: Comma marks a
+  # restricted one's message, which then has no requester.
+  defp requester(%{"metadata" => %{"restricted_session" => true}}), do: nil
+  defp requester(attrs), do: attrs["user_id"]
 
   defp user_message(conversation, attrs, participant_ids) do
     attrs
@@ -164,17 +190,52 @@ defmodule SalixIM.RouterConversationInput do
   def append_provider_input(group_id, source_message_id, payload, metadata \\ %{}) do
     with {:ok, conversation} <-
            SalixIM.QQTiming.measure("conversation_ensure", fn -> ensure(group_id) end) do
-      SalixIM.QQTiming.measure("conversation_append", fn ->
-        ConversationServer.append_provider_input(
-          group_id,
-          conversation["conversation_id"],
-          conversation["router_participant_id"],
-          source_message_id,
-          payload,
-          metadata
-        )
-      end)
+      result =
+        SalixIM.QQTiming.measure("conversation_append", fn ->
+          ConversationServer.append_provider_input(
+            group_id,
+            conversation["conversation_id"],
+            conversation["router_participant_id"],
+            source_message_id,
+            payload,
+            metadata
+          )
+        end)
+
+      case result do
+        {:ok, message} -> observe_append(conversation, source_message_id, metadata, message)
+        _ -> :ok
+      end
+
+      result
     end
+  end
+
+  defp observe_append(conversation, source, metadata, message) do
+    source_sent_at =
+      case SalixIM.SlackMessageMirror.Row.slack_ts_micros((metadata || %{})["message_ts"]) do
+        {:ok, micros} -> div(micros, 1_000)
+        _ -> nil
+      end
+
+    fields =
+      SalixAgent.DeliveryTelemetry.identity(
+        conversation["router_agent_id"],
+        conversation["router_session_id"],
+        source
+      )
+      |> Map.merge(%{
+        conversation_seq: message["seq"],
+        source_created_at_ms: message["created_at"],
+        source_sent_at_ms: source_sent_at,
+        thread_key: SalixAgent.DeliveryTelemetry.source_key((metadata || %{})["thread_ts"])
+      })
+
+    SalixAgent.DeliveryTelemetry.emit(:conversation_committed, :ok, 0, fields)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   # Only sender-authored text blocks grant authority; attachment names and

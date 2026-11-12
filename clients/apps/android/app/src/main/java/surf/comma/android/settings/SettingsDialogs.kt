@@ -4,7 +4,6 @@ import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.Dialog
 import android.content.Context
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.text.InputType
@@ -16,9 +15,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupWindow
 import android.widget.TextView
 import androidx.annotation.ColorRes
 import androidx.core.view.ViewCompat
@@ -214,12 +211,21 @@ internal class ConfirmDialog(
     message: CharSequence,
     confirm: CharSequence,
     destructive: Boolean,
+    private val onCancel: (() -> Unit)? = null,
     onConfirm: () -> Unit,
 ) : SettingsDialog(activity) {
+    private var confirmed = false
+
     init {
         card.addView(title(title))
         card.addView(message(message), LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(8) })
-        card.addView(buttons(confirm, destructive, onConfirm), LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
+        card.addView(buttons(confirm, destructive) { confirmed = true; onConfirm() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
+    }
+
+    /** Cancel, Back and a tap outside all close without confirming. */
+    override fun onClosing() {
+        if (!confirmed) onCancel?.invoke()
     }
 }
 
@@ -242,6 +248,7 @@ internal open class FieldDialog(
     keyboard: Boolean = false,
     refused: (String) -> Boolean = { it.isBlank() },
     problem: (String) -> CharSequence? = { null },
+    destructive: Boolean = false,
 ) : SettingsDialog(activity, keyboard) {
     private val input = EditText(activity).apply {
         id = inputId
@@ -268,7 +275,7 @@ internal open class FieldDialog(
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(6) })
         card.addView(input, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(16) })
         card.addView(error, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(6) })
-        val row = buttons(saveLabel, destructive = false) { onSave(input.text.toString().trim()) }
+        val row = buttons(saveLabel, destructive) { onSave(input.text.toString().trim()) }
         save = row.findViewById(R.id.settings_dialog_confirm)
         card.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = activity.dp(20) })
         val original = current.trim()
@@ -316,67 +323,13 @@ internal class NameDialog(activity: Activity, current: String, onSave: (String) 
     },
 )
 
-/**
- * The options of a setting, anchored under its row like a menu, with the current one checked.
- * Opacity uses the menu timings; the scale uses the scale spring.
- */
+/** The options of a setting, anchored under its row as the app's menu, with the current one checked. */
 internal object ChoiceMenu {
     fun show(anchor: View, options: List<CharSequence>, selected: Int, onPick: (Int) -> Unit) {
-        val context = anchor.context
-        val list = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            val radius = context.dp(12).toFloat()
-            background = android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = radius
-                setColor(context.color(R.color.token_bg_secondary))
-                setStroke(1, context.color(R.color.token_border_primary))
-            }
-            clipToRoundedBackground(radius)
-            setPadding(0, context.dp(4), 0, context.dp(4))
-            alpha = 0f
-        }
-        val popup = PopupWindow(list, context.dp(220), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
-            animationStyle = 0
-            isOutsideTouchable = true
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            elevation = 0f
-        }
+        val menu = surf.comma.android.ui.ActionMenu(anchor.context)
         options.forEachIndexed { index, label ->
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = context.dp(44)
-                setPadding(context.dp(14), 0, context.dp(12), 0)
-                addView(context.text(Level.REGULAR, R.color.token_text_primary).apply { text = label },
-                    LinearLayout.LayoutParams(0, -2, 1f))
-                addView(ImageView(context).apply {
-                    setImageResource(R.drawable.ic_composer_check)
-                    imageTintList = ColorStateList.valueOf(context.color(R.color.token_fg_primary))
-                    visibility = if (index == selected) View.VISIBLE else View.INVISIBLE
-                }, LinearLayout.LayoutParams(context.dp(18), context.dp(18)))
-                isSelected = index == selected
-                contentDescription = label
-                PressFeedback(this, R.color.token_bg_quaternary, scale = false)
-                setOnClickListener {
-                    popup.dismiss()
-                    if (index != selected) onPick(index)
-                }
-            }
-            list.addView(row, LinearLayout.LayoutParams(-1, -2))
+            menu.item(label, checked = index == selected) { if (index != selected) onPick(index) }
         }
-        list.measure(View.MeasureSpec.makeMeasureSpec(context.dp(220), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
-        popup.showAsDropDown(anchor, anchor.width - context.dp(220) - context.dp(8), -context.dp(4), Gravity.NO_GRAVITY)
-        list.pivotX = context.dp(220).toFloat()
-        list.pivotY = 0f
-        list.scaleX = 0.96f
-        list.scaleY = 0.96f
-        DesignSpring(list, DynamicAnimation.SCALE_X, DesignMotion.springScale).animateTo(1f)
-        DesignSpring(list, DynamicAnimation.SCALE_Y, DesignMotion.springScale).animateTo(1f)
-        ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = DesignMotion.durationMillis(DesignMotion.menuEnter)
-            interpolator = DesignMotion.smoothOut
-            addUpdateListener { list.alpha = it.animatedValue as Float }
-            start()
-        }
+        menu.show(anchor)
     }
 }

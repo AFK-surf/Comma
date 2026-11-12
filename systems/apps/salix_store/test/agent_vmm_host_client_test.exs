@@ -120,6 +120,38 @@ defmodule SalixStore.AgentVMMHostClientTest do
     :ok
   end
 
+  test "one dispatch resolves current authority once and the next dispatch observes revocation" do
+    %{workload: workload} = ready_host_workload!("meeting_runtime")
+    caller = self()
+    handler = "vmm-current-target"
+
+    :telemetry.attach(
+      handler,
+      [:salix_store, :repo, :query],
+      fn _event, _measurements, _metadata, _ ->
+        if self() == caller, do: send(caller, :vmm_target_query)
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert {:ok, _} = AgentVMMHostClient.exec_workload(%{"command" => ["true"]}, workload.id)
+    settle_receive({:host_request, _, %{"command" => ["true"]}})
+    assert_received :vmm_target_query
+    refute_received :vmm_target_query
+
+    Repo.update_all(AgentVMM.Registration, set: [status: "revoked"])
+    assert_received :vmm_target_query
+
+    assert {:error, :not_found} =
+             AgentVMMHostClient.exec_workload(%{"command" => ["false"]}, workload.id)
+
+    assert_received :vmm_target_query
+    refute_received :vmm_target_query
+    settle_refute_receive({:host_request, _, _})
+  end
+
   test "dispatches through the current workload, allocation, runtime, and gateway fence" do
     %{
       workload: workload,
@@ -364,10 +396,8 @@ defmodule SalixStore.AgentVMMHostClientTest do
 
     Repo.update_all(AgentVMM.Session, set: [gateway_instance_id: "salix-vmm-gateway-1"])
 
-    Repo.update_all(Compute.ProviderBinding,
-      set: [
-        observation: %{"connection_epoch" => "4", "gateway_instance_id" => "salix-vmm-gateway-1"}
-      ]
+    Repo.update_all(AgentVMM.Registration,
+      set: [current_gateway_instance_id: "salix-vmm-gateway-1"]
     )
 
     SystemsRuntime.put_env(:salix_store, :agent_vmm_gateway_instances, %{})
@@ -429,12 +459,11 @@ defmodule SalixStore.AgentVMMHostClientTest do
              AgentVMMHostClient.call(:workspace_stat, %{"path" => "."}, "other")
 
     assert {:error, :revision_conflict} =
-             Compute.update_environment_intent(environment.id, environment.revision, %{
+             Compute.update_environment_intent(environment.id, environment.revision - 1, %{
                desired_state: "revoked"
              })
 
-    # Gateway observations can advance revision without changing generation.
-    # Lock the current row so this lifecycle assertion cannot race an observation.
+    # Lock the current row for the lifecycle mutation.
     assert {:ok, {:ok, revoked}} =
              Repo.transaction(fn ->
                current =
@@ -512,12 +541,12 @@ defmodule SalixStore.AgentVMMHostClientTest do
 
   defp ready_host_workload!(kind) do
     {:ok, _} =
-      AgentVMM.create_registration(%{
+      SalixStore.AgentVMMFixtures.registration(%{
         id: "registration",
         tenant_id: "tenant",
         group_id: "group",
         device_id: "device",
-        enrollment_token: String.duplicate("e", 32)
+        credential: String.duplicate("e", 32)
       })
 
     Repo.update_all(AgentVMM.Registration, set: [status: "ready", desired_enabled: true])

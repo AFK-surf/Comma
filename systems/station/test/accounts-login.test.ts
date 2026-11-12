@@ -2,11 +2,12 @@
 // temp homes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deviceCode, LoginManager, type LoginState, stripAnsi } from "../src/accounts/login.ts";
 import { MachineLogins } from "../src/accounts/machine.ts";
 import { linkCodexAuth } from "../src/agents/machine-logins.ts";
+import { platform } from "../src/platform/index.ts";
 import { approval, exe, fakeLogin, idToken, machine, sameAs, script, temp, upon } from "./accounts-fakes.ts";
 
 test("a subscription sign-in relays the link, the code and the result", async () => {
@@ -53,6 +54,29 @@ test("a subscription sign-in relays the link, the code and the result", async ()
     assert.equal(failed.state, "failed");
     assert.ok(failed.error!.startsWith("无法运行登录命令"), failed.error!);
     await none.close();
+  } finally {
+    await logins.close();
+  }
+});
+
+test("the machine's Claude sign-in keeps its login where Claude Code reads it first", async () => {
+  const dir = temp("machine-sign-in");
+  const seen = join(dir, "seen");
+  // Says where its `security` comes from, and signs in at once.
+  const fake = join(dir, "fake-claude");
+  script(fake, `#!/bin/sh\ncommand -v security >> "${seen}"\nexit 0\n`);
+  // A PATH of its own: the one this test runs with may already lead to the stand-in.
+  const path = platform.hasKeychain ? "/usr/bin:/bin" : (process.env.PATH ?? "");
+  const logins = new LoginManager(dir, { claude: exe(fake), codex: exe(fake) }, () => ({ ...process.env, PATH: path }) as Record<string, string>);
+  const done = (id: string) => upon((wake) => logins.changes(wake), () => logins.get(id)?.state === "done", `${id} done`);
+  try {
+    await logins.start({ id: "machine-login-claude", runtime: "claude", home: join(dir, "home"), machine: true }, "en");
+    await done("machine-login-claude");
+    await logins.start({ id: "sub", runtime: "claude", home: join(dir, "homes", "sub") }, "en");
+    await done("sub");
+    const [machineSecurity, profileSecurity] = readFileSync(seen, "utf8").trim().split("\n");
+    assert.ok(!machineSecurity!.includes("comma-station-no-keychain"), machineSecurity);
+    if (platform.hasKeychain) assert.ok(profileSecurity!.includes("comma-station-no-keychain"), profileSecurity);
   } finally {
     await logins.close();
   }

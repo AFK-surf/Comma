@@ -1,13 +1,25 @@
 import { z } from "zod";
 
 /** Titled shapes the manual names inline and defines once. */
-const legend = ["tone", "condition", "state", "status", "delta", "url"];
+const legend = [
+  "tone",
+  "condition",
+  "state",
+  "status",
+  "delta",
+  "url",
+  "zone",
+  "fact",
+  "control",
+  "cell",
+];
 
 /**
  * The card contract ui.create embeds: one JSON Schema per kind for its data
- * check, and the manual lines that show the Agent the same fields.
+ * check, the manual lines that show the Agent the same fields, and the runtime
+ * levels (level.ts) from which ui.create works out the level a widget needs.
  */
-export function renderCardContract(schemas, frame) {
+export function renderCardContract(schemas, frame, levels) {
   const kinds = Object.fromEntries(
     Object.entries(schemas).map(([kind, schema]) => [
       kind,
@@ -15,7 +27,20 @@ export function renderCardContract(schemas, frame) {
     ])
   );
   const manual = manualLines(kinds, Object.keys(frame));
-  return `${JSON.stringify({ kinds, manual }, null, 2)}\n`;
+  const stated = [
+    levels.base,
+    ...Object.values(levels.kinds),
+    ...Object.values(levels.features),
+  ];
+  if (
+    Object.keys(kinds).some((kind) => !Number.isInteger(levels.kinds[kind])) ||
+    stated.some((level) => level < 1) ||
+    Math.max(...stated) !== levels.level
+  )
+    throw Error(
+      "Each card kind needs a level, and the runtime level is the highest level stated"
+    );
+  return `${JSON.stringify({ kinds, manual, levels }, null, 2)}\n`;
 }
 
 function manualLines(kinds, frameKeys) {
@@ -58,6 +83,11 @@ function collectTitled(schema, titled) {
 
 function definition(schema) {
   if (schema.enum) return schema.enum.join(" | ");
+  if (schema.anyOf)
+    return (
+      schema.description ??
+      schema.anyOf.map((option) => describe(option).type || "text").join(" or ")
+    );
   if (schema.type === "object") return object(schema);
   return schema.description;
 }

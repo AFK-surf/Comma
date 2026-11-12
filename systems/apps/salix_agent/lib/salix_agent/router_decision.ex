@@ -75,42 +75,53 @@ defmodule SalixAgent.RouterDecision do
   @doc """
   The Group's Router Agent record and its canonical session, for callers that
   speak as the Router (`SalixVoice.RouterPersona`). Returns
-  `{:ok, agent, session}` or `{:error, "router_unavailable"}`.
+  `{:ok, agent, session_id}` or `{:error, "router_unavailable"}`. The session is
+  not read: a Router's window can take longer to load than a call waits.
   """
-  @spec router(String.t()) :: {:ok, map(), term()} | {:error, String.t()}
+  @spec router(String.t()) :: {:ok, map(), String.t()} | {:error, String.t()}
   def router(group_id) do
     with {:ok, group} <- read(Keys.ctl_group(group_id)),
-         {:ok, _agent_id, _session_id, session, agent} <- router_session(group, group_id) do
-      {:ok, agent, session}
+         {:ok, _agent_id, session_id, agent} <- router_identity(group, group_id) do
+      {:ok, agent, session_id}
     end
   end
 
   @doc """
-  The newest user and assistant messages with text of `session`, newest
-  first, at most `limit`, each cut like the `decide` evidence. With
-  `labels: true` each also carries `"label"`: the message's IFC label as
-  stored (the record's own `ifc` block, else the one ingress sealed onto its
-  origin), or nil when it has none.
+  The newest user and assistant messages with text of the Router's session,
+  newest first, at most `limit`, each cut like the `decide` evidence and each
+  with `"label"`: the message's IFC label as stored (the record's own `ifc`
+  block, else the one ingress sealed onto its origin), or nil when it has none.
+  Reads only the end of the session (`InternalSessionStore.recent_messages/4`).
   """
-  @spec recent_texts(term(), pos_integer(), keyword()) :: [map()]
-  def recent_texts(session, limit, opts \\ []) do
-    labels? = Keyword.get(opts, :labels, false)
+  @spec recent_labelled_texts(map(), String.t(), pos_integer()) ::
+          {:ok, [map()]} | {:error, term()}
+  def recent_labelled_texts(%{"agent_id" => agent_id}, session_id, limit),
+    do: InternalSessionStore.recent_messages(agent_id, session_id, limit, &entry(&1, true))
 
+  defp recent_texts(session, limit) do
     session
     |> InternalSession.get(:messages)
     |> List.wrap()
     |> Enum.reverse()
-    |> Stream.flat_map(&entry(&1, labels?))
+    |> Stream.flat_map(&entry(&1, false))
     |> Enum.take(limit)
   end
 
   defp router_session(group, group_id) do
-    with agent_id when is_binary(agent_id) and agent_id != "" <- group["router_agent_id"],
-         {:ok, %{"role" => "router", "group_id" => ^group_id} = agent} <-
-           read(Keys.ctl_agent(agent_id)),
-         {:ok, session_id} <- RuntimeIds.persisted_router_session_id(agent),
+    with {:ok, agent_id, session_id, agent} <- router_identity(group, group_id),
          {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
       {:ok, agent_id, session_id, session, agent}
+    else
+      _ -> {:error, "router_unavailable"}
+    end
+  end
+
+  defp router_identity(group, group_id) do
+    with agent_id when is_binary(agent_id) and agent_id != "" <- group["router_agent_id"],
+         {:ok, %{"role" => "router", "group_id" => ^group_id} = agent} <-
+           SalixAgent.AgentControl.get_record(agent_id),
+         {:ok, session_id} <- RuntimeIds.persisted_router_session_id(agent) do
+      {:ok, agent_id, session_id, agent}
     else
       _ -> {:error, "router_unavailable"}
     end

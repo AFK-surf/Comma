@@ -6,6 +6,12 @@
   padding: var(--spacing-lg) var(--spacing-md) 0;
 }
 
+/* The choices read a step under the conversation's text (text-xs), on the list's own 20px line: the rows keep their
+   height, and the control stays on the first line. */
+.comma-question-card-list .comma-choice-list-option {
+  font-size: var(--text-xs);
+}
+
 /* The other answer: a label, a field that grows with its text, an image button, the images under it. */
 .comma-question-card-other-label {
   grid-area: label;

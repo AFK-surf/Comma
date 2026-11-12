@@ -9,11 +9,12 @@ defmodule BridgeForTeams.ProjectIMConnects do
   by Salix's tenant Feishu app store, so project connects forward only app
   identity.
 
-  Supported providers: Slack, Feishu and QQ. A Slack connect returns an
-  `oauth_url` to finish the workspace install; a Feishu or QQ connect returns a
-  `webhook_url` to paste into the app's or bot's callback settings. A QQ bot's
-  AppSecret is connect-owned. Connect lifecycle (disable/enable/delete) is
-  provider-neutral.
+  Supported providers: Slack, Feishu, QQ, Lark and Telegram. A Slack connect
+  returns an `oauth_url` to finish the workspace install; a Feishu or QQ connect
+  returns a `webhook_url` to paste into the app's or bot's callback settings. A
+  QQ bot's AppSecret is connect-owned. A Telegram bot needs only its token, since
+  Salix polls it, and serves no chat until an admin allows one. Connect lifecycle
+  (disable/enable/delete) is provider-neutral.
   """
   require Logger
 
@@ -21,7 +22,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
   alias BridgeForTeams.Salix.{Client, Reconciler}
   alias BridgeForTeams.Schema.{Organization, Project}
 
-  @providers ~w(slack feishu qq lark)
+  @providers ~w(slack feishu qq lark telegram)
   @transient [:unavailable, :timeout]
   # `list_connects_for_projects/2` budgets: per Salix call, and for the whole
   # lookup before it starts another call.
@@ -30,12 +31,14 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   # Feishu requires only `app_id`: the project card selects an org Feishu app
   # binding and forwards the chosen app identity. Bot secrets are resolved by
-  # Salix from the tenant Feishu-app store.
+  # Salix from the tenant Feishu-app store, except for an app made by a scan,
+  # whose connect owns its App Secret (`finish_feishu_registration/5`).
   @required_fields %{
     "slack" => ~w(app_id client_id client_secret signing_secret),
     "feishu" => ~w(app_id),
     "qq" => ~w(app_id app_secret),
-    "lark" => ~w(app_id app_secret)
+    "lark" => ~w(app_id app_secret),
+    "telegram" => ~w(bot_token)
   }
 
   @type result :: {:ok, term()} | {:error, term()}
@@ -321,6 +324,88 @@ defmodule BridgeForTeams.ProjectIMConnects do
   defp mark_action(connect, _action), do: connect
 
   @doc """
+  Begins making a Feishu app by a scan for a swarm: the link the admin opens
+  in Feishu (or shows as a QR code) and the device code that finishes it
+  (`finish_feishu_registration/5`). The swarm's name names the app. With a
+  `connect_id` the scan updates that connect's app instead.
+  """
+  @spec begin_feishu_registration(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) :: result()
+  def begin_feishu_registration(org_id, project_id, connect_id \\ nil) do
+    with {:ok, _org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- ensure_group_ready(project),
+         {:ok, opts} <- scan_target(project, "feishu", connect_id) do
+      client().begin_feishu_registration(nonblank(project.name, "Comma"), opts)
+    end
+  end
+
+  @doc """
+  Asks once whether the scan made the Feishu app, and connects it to the swarm
+  when it did, as `create_project_connect/5` connects an app given by hand. The
+  connect owns the app's App Secret, so a swarm's org needs no Feishu app
+  binding for it, and its events come through the long connection. Returns
+  `{:ok, connect}`, `{:pending, domain}` or `{:slow_down, domain}`, or
+  `{:error, reason}`.
+  """
+  def finish_feishu_registration(org_id, project_id, domain, device_code, opts \\ []) do
+    with {:ok, _org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- ensure_group_ready(project) do
+      case client().poll_feishu_registration(domain, device_code) do
+        {:ok, app} ->
+          create_project_connect(
+            org_id,
+            project_id,
+            "feishu",
+            %{"app_id" => app.app_id, "app_secret" => app.app_secret, "events" => "socket"},
+            opts
+          )
+
+        other ->
+          other
+      end
+    end
+  end
+
+  @doc """
+  Begins making a Lark app by a scan for a swarm: the link the admin opens in
+  Lark (or shows as a QR code) and the device code that finishes it
+  (`finish_lark_registration/5`). The swarm's name names the app. With a
+  `connect_id` the scan updates that connect's app instead.
+  """
+  @spec begin_lark_registration(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) :: result()
+  def begin_lark_registration(org_id, project_id, connect_id \\ nil) do
+    with {:ok, _org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- ensure_group_ready(project),
+         {:ok, opts} <- scan_target(project, "lark", connect_id) do
+      client().begin_lark_registration(nonblank(project.name, "Comma"), opts)
+    end
+  end
+
+  @doc """
+  Asks once whether the scan made the app, and connects it to the swarm when
+  it did, as `create_project_connect/5` connects an app given by hand. Its
+  events come through the long connection. Returns `{:ok, connect}`,
+  `{:pending, domain}` or `{:slow_down, domain}`, or `{:error, reason}`.
+  """
+  def finish_lark_registration(org_id, project_id, domain, device_code, opts \\ []) do
+    with {:ok, _org, project} <- fetch_org_project(org_id, project_id),
+         :ok <- ensure_group_ready(project) do
+      case client().poll_lark_registration(domain, device_code) do
+        {:ok, app} ->
+          create_project_connect(
+            org_id,
+            project_id,
+            "lark",
+            %{"app_id" => app.app_id, "app_secret" => app.app_secret, "events" => "socket"},
+            opts
+          )
+
+        other ->
+          other
+      end
+    end
+  end
+
+  @doc """
   Update (resync) an existing project IM connect with fresh credentials. `attrs`
   carries the same credential fields as `create_project_connect/4`.
   """
@@ -480,6 +565,67 @@ defmodule BridgeForTeams.ProjectIMConnects do
   defp inbound_tasks(_none), do: nil
 
   @doc """
+  Turns on or off whether a Slack connect joins each new public channel of
+  its workspace by itself. Turned off, Salix ignores the app's
+  `channel_created` events; inviting the app to a channel still works, and
+  the Slack app's scopes and event subscriptions stay as they are.
+  """
+  @spec update_project_slack_auto_join(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          boolean(),
+          keyword()
+        ) :: result()
+  def update_project_slack_auto_join(org_id, project_id, connect_id, enabled, opts \\ [])
+      when is_boolean(enabled) do
+    attrs = %{"auto_join_public_channels" => enabled}
+
+    result =
+      with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+           :ok <- ensure_group_ready(project) do
+        result =
+          :update_slack_im_connect
+          |> call_salix([org.salix_tenant_id, project.salix_group_id, connect_id, attrs])
+          |> case do
+            {:error, :not_found} -> {:error, :connect_not_found}
+            other -> other
+          end
+
+        case result do
+          {:ok, connect} ->
+            maybe_record_project_im_audit(
+              project_im_action("slack", "updated"),
+              org,
+              project,
+              "slack",
+              connect,
+              attrs,
+              opts,
+              resource_id: connect_id
+            )
+
+          _other ->
+            :ok
+        end
+
+        result
+      end
+
+    maybe_record_project_im_write_attempt(
+      result,
+      project_im_action("slack", "updated"),
+      org_id,
+      project_id,
+      "slack",
+      Map.put(attrs, "connect_id", connect_id),
+      opts
+    )
+
+    result
+  end
+
+  @doc """
   Replaces the shortcuts of a QQ bot's command menu. Salix checks them, writes
   the menu to QQ and returns the connect with the menu it stored.
   """
@@ -545,6 +691,80 @@ defmodule BridgeForTeams.ProjectIMConnects do
     )
 
     result
+  end
+
+  @doc """
+  Replaces the chats a Telegram bot serves. Everything else in those chats stays
+  out of the Router, and the bot sends nowhere else.
+  """
+  @spec update_project_telegram_chats(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          [String.t()],
+          keyword()
+        ) :: result()
+  def update_project_telegram_chats(org_id, project_id, connect_id, chat_ids, opts \\ []) do
+    attrs = %{"connect_id" => connect_id}
+
+    result =
+      with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+           :ok <- ensure_group_ready(project) do
+        result =
+          case call_salix(:update_telegram_im_connect, [
+                 org.salix_tenant_id,
+                 project.salix_group_id,
+                 connect_id,
+                 %{"allowed_chat_ids" => chat_ids}
+               ]) do
+            {:error, :not_found} -> {:error, :connect_not_found}
+            other -> other
+          end
+
+        case result do
+          {:ok, connect} ->
+            maybe_record_project_im_audit(
+              project_im_action("telegram", "updated"),
+              org,
+              project,
+              "telegram",
+              connect,
+              attrs,
+              opts,
+              resource_id: connect_id
+            )
+
+          _other ->
+            :ok
+        end
+
+        result
+      end
+
+    maybe_record_project_im_write_attempt(
+      result,
+      project_im_action("telegram", "updated"),
+      org_id,
+      project_id,
+      "telegram",
+      attrs,
+      opts
+    )
+
+    result
+  end
+
+  @doc """
+  The chats noted on a Telegram connect, for the admin to pick from: a group
+  shows up here once the bot has been added to it.
+  """
+  @spec list_project_telegram_chats(Organization.t(), Project.t(), String.t()) :: result()
+  def list_project_telegram_chats(%Organization{} = org, %Project{} = project, connect_id) do
+    client().list_telegram_observed_chats(
+      org.salix_tenant_id,
+      project.salix_group_id,
+      connect_id
+    )
   end
 
   @spec disable_project_connect(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) :: result()
@@ -748,7 +968,8 @@ defmodule BridgeForTeams.ProjectIMConnects do
           "verification_token"
         ),
       "encrypt_key_configured" =>
-        configured_from_connect?(connect, attrs, "encrypt_key_configured", "encrypt_key")
+        configured_from_connect?(connect, attrs, "encrypt_key_configured", "encrypt_key"),
+      "auto_join_public_channels" => Map.get(attrs, "auto_join_public_channels")
     }
     |> compact_audit_metadata()
   end
@@ -814,6 +1035,24 @@ defmodule BridgeForTeams.ProjectIMConnects do
   defp lifecycle_name(:enable_im_connect), do: "enabled"
   defp lifecycle_name(:delete_im_connect), do: "deleted"
   defp lifecycle_name(fun), do: fun |> to_string() |> String.trim()
+
+  # A scan with a connect updates that connect's app to the scopes a connect
+  # needs now (`SalixIM.Provider.Lark.Registration`); its finish resyncs the
+  # connect as for the same app given again.
+  defp scan_target(_project, _provider, nil), do: {:ok, []}
+
+  defp scan_target(project, provider, connect_id) do
+    case get_project_connect(project, connect_id) do
+      {:ok, %{"provider" => ^provider, "app_id" => app_id}} when is_binary(app_id) ->
+        {:ok, [app_id: app_id]}
+
+      {:ok, _other} ->
+        {:error, :connect_not_found}
+
+      error ->
+        error
+    end
+  end
 
   defp get_project_connect(%Project{} = project, connect_id) do
     case list_from_salix(project, nil) do
@@ -913,11 +1152,14 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   # The project's Salix group is created asynchronously via the reconcile outbox.
   # If it isn't there yet, drain the outbox once and retry so a freshly created
-  # project can be configured immediately (mirrors `Environments`).
+  # project can be configured immediately (mirrors `Environments`). The
+  # project's own rows are settled too: a drain skips the rows another drainer
+  # (the periodic one) is applying, and the read waits for those instead.
   defp list_from_salix(%Project{} = project, provider) do
     case do_list(project, provider) do
       {:error, :group_not_ready} ->
         _ = Reconciler.drain_once()
+        _ = Reconciler.settle_aggregate("project", project.id)
         do_list(project, provider)
 
       other ->
@@ -931,6 +1173,11 @@ defmodule BridgeForTeams.ProjectIMConnects do
       other -> other
     end
   end
+
+  # A Telegram bot's identity is known only after Salix asks Telegram, so it
+  # has no app id here and every connect is a new one; Salix refuses a bot that
+  # is already connected.
+  defp existing_connect(_connects, nil), do: nil
 
   defp existing_connect(connects, app_id) do
     app_id = trim(app_id)
@@ -953,10 +1200,14 @@ defmodule BridgeForTeams.ProjectIMConnects do
     |> drop_blank()
   end
 
+  # An app made by a scan sends its App Secret, which its connect owns; any
+  # other Feishu app is the org's binding, whose secrets Salix holds.
   defp payload(_org, _project, "feishu", credentials) do
     %{
       "app_name" => nonblank(credentials["app_name"], "Bridge"),
-      "app_id" => credentials["app_id"]
+      "app_id" => credentials["app_id"],
+      "events" => credentials["events"],
+      "app_secret" => if(credentials["events"] == "socket", do: credentials["app_secret"])
     }
     |> drop_blank()
   end
@@ -968,22 +1219,31 @@ defmodule BridgeForTeams.ProjectIMConnects do
   end
 
   # A Lark app's secrets belong to its connect. Lark verifies a callback by
-  # the Verification Token or the Encrypt Key; Salix requires one of them.
+  # the Verification Token or the Encrypt Key; Salix requires one of them,
+  # unless the app was made by a scan and its events come through the long
+  # connection (`"events" => "socket"`).
   defp payload(_org, _project, "lark", credentials) do
     credentials
-    |> Map.take(~w(app_id app_secret verification_token encrypt_key))
+    |> Map.take(~w(app_id app_secret verification_token encrypt_key events))
     |> drop_blank()
+  end
+
+  # A new bot serves no chat until an admin allows one.
+  defp payload(_org, _project, "telegram", credentials) do
+    %{"bot_token" => credentials["bot_token"], "allowed_chat_ids" => []}
   end
 
   defp create_fun("slack"), do: :create_slack_im_connect
   defp create_fun("feishu"), do: :create_feishu_im_connect
   defp create_fun("qq"), do: :create_qq_im_connect
   defp create_fun("lark"), do: :create_lark_im_connect
+  defp create_fun("telegram"), do: :create_telegram_im_connect
 
   defp update_fun("slack"), do: :update_slack_im_connect
   defp update_fun("feishu"), do: :update_feishu_im_connect
   defp update_fun("qq"), do: :update_qq_im_connect
   defp update_fun("lark"), do: :update_lark_im_connect
+  defp update_fun("telegram"), do: :update_telegram_im_connect
 
   defp active?(connect), do: is_nil(connect["disabled_at"])
 

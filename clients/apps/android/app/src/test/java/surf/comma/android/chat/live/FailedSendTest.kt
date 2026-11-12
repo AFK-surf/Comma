@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.core.view.descendants
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -107,7 +108,8 @@ class FailedSendTest {
         activity.setContentView(view)
         var tapped: Long? = null
         view.onSendFailed = { tapped = it }
-        val note = view.getChildAt(1) as android.widget.TextView
+        val note = view.descendants.filterIsInstance<android.widget.TextView>()
+            .single { it.text == activity.getString(R.string.chat_send_failed_note) }
         assertEquals(activity.getString(R.string.chat_send_failed_note), note.text)
         assertEquals(View.VISIBLE, note.visibility)
         tap(view, note.right - 4f, note.top + note.height / 2f)

@@ -430,7 +430,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmPlugins do
 
       {:ok, _not_entitled} ->
         {:error, 409, "android_not_entitled",
-         gettext("Android connector access is not enabled for this organization."), %{}}
+         gettext("Android device access is not enabled for this organization."), %{}}
 
       {:error, _reason} ->
         {:error, 503, "android_unavailable",

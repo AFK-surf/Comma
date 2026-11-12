@@ -55,7 +55,7 @@ config.json
 # Electron / native client outputs
 clients/apps/electron/.dev-electron/
 clients/apps/electron/native/**/.build/
-systems/connector/salix-connect/native/**/.build/
+systems/station/computer-use/native/**/.build/
 clients/apps/electron/native/**/.swiftpm/
 
 # Backend systems (Elixir/Mix umbrella). See systems/.gitignore for the

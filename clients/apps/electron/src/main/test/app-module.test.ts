@@ -115,7 +115,9 @@ describe("Electron main composition root", () => {
     }
   );
 
-  it("persists a startup Session before the core's one startup probe", async () => {
+  it("restores a persisted startup Session before reconciling its one startup probe", async () => {
+    const probe = Promise.withResolvers<void>();
+    const reconciled = Promise.withResolvers<SessionLifecycleSnapshot>();
     const observedPhases: string[] = [];
     const secureSessionFilePath = tempSecureSessionPath();
     const previousStore = await SecureSessionStore.open(secureSessionFilePath);
@@ -137,6 +139,7 @@ describe("Electron main composition root", () => {
       expect(new Headers(init?.headers).get("authorization")).toBe(
         "Bearer startup-secret"
       );
+      await probe.promise;
       return jsonResponse({
         expires_at: 1_900_000_100,
         session_id: "verified-session",
@@ -152,6 +155,9 @@ describe("Electron main composition root", () => {
       fetch,
       onSessionStateChanged: (snapshot) => {
         observedPhases.push(snapshot.phase);
+        if (snapshot.session?.sessionId === "verified-session") {
+          reconciled.resolve(snapshot);
+        }
       },
       secureSessionFilePath,
       startupSession: {
@@ -167,6 +173,15 @@ describe("Electron main composition root", () => {
     try {
       await startedCore(app, "signed_in");
       expect(app.session.state()).toMatchObject({
+        phase: "signed_in",
+        principal: {
+          email: "startup@comma.test",
+          userId: "startup-user:startup@comma.test",
+        },
+        session: { sessionId: "startup-session:startup@comma.test" },
+      });
+      probe.resolve();
+      expect(await reconciled.promise).toMatchObject({
         phase: "signed_in",
         principal: {
           email: "startup@comma.test",
@@ -292,6 +307,8 @@ describe("Electron main composition root", () => {
         openNotificationSettings: (input) => provider.openNotificationSettings(input),
         requestNotificationAuthorization: (input) =>
           provider.requestNotificationAuthorization(input),
+        refreshLaunchAtLogin: (input) => provider.refreshLaunchAtLogin(input),
+        relaunch: (input) => provider.relaunch(input),
         state: (input) => provider.state(input),
         update: (input) => provider.update(input),
       }),
@@ -570,6 +587,7 @@ describe("Electron main composition root", () => {
       close: vi.fn(async () => surfaceList),
       create: vi.fn(async () => surfaceList),
       focus: vi.fn(async () => surfaceList),
+      focusScreen: vi.fn(() => ({ focused: false })),
     };
     const createWindowCommands = vi.fn(() => windows);
     const app = await createTestElectronMainContext({

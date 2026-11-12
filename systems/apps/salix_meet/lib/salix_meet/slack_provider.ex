@@ -227,6 +227,9 @@ defmodule SalixMeet.SlackProvider do
   defp status_notice_text(%{"type" => "status", "status" => "left"}),
     do: ":wave: Left the meeting."
 
+  defp status_notice_text(%{"type" => "status", "status" => "lark_join_blocked"} = event),
+    do: ":warning: " <> SalixMeet.LarkBot.blocked_text(trim(event["lark_reason"]), "en")
+
   defp status_notice_text(_event), do: nil
 
   @doc "Meeting provider boundary used by `SalixMeet.Runtime.publish/2`."
@@ -5119,11 +5122,12 @@ defmodule SalixMeet.SlackProvider do
     end
   end
 
-  # UTC "YYYY-MM-DD HH:MM" stamp appended to the canvas title from the meeting
-  # start time.
+  # "YYYY-MM-DD HH:MM UTC" stamp appended to the canvas title from the meeting
+  # start time. A canvas title cannot show each reader's own time zone, so it
+  # names the zone it uses.
   defp canvas_date(ts) when is_integer(ts) and ts > 0 do
     dt = DateTime.from_unix!(ts)
-    "#{dt.year}-#{pad2(dt.month)}-#{pad2(dt.day)} #{pad2(dt.hour)}:#{pad2(dt.minute)}"
+    "#{dt.year}-#{pad2(dt.month)}-#{pad2(dt.day)} #{pad2(dt.hour)}:#{pad2(dt.minute)} UTC"
   end
 
   defp canvas_date(_ts), do: ""
@@ -5199,6 +5203,9 @@ defmodule SalixMeet.SlackProvider do
       markdown_link("Recording", get_in(uploads, ["audio", "permalink"])),
       markdown_link("Canvas", canvas_url)
     ]
+    |> Kernel.++(
+      for({label, url} <- SalixMeet.LarkBot.links(state, "en"), do: markdown_link(label, url))
+    )
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n\n")
   end
@@ -5413,6 +5420,9 @@ defmodule SalixMeet.SlackProvider do
         _ ->
           lines
       end
+
+    # A Feishu/Lark meeting's own Minutes and AI notes, also without a Canvas.
+    lines = lines ++ SalixMeet.LarkBot.link_lines(state, "en")
 
     lines =
       case linear_follow_up_hint(action_item_count, bot_user_id) do

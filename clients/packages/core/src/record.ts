@@ -32,6 +32,7 @@ import {
   type LoopbackVisit,
   type MeetingEvent,
   type MeetingPorts,
+  type ScreenFramePorts,
   type VoiceCallPorts,
   type VoiceCallSocketEvent,
   type VoiceCallSocketOp,
@@ -105,6 +106,8 @@ export type Input =
       meeting?: boolean;
       /** Main's voice call socket (`VoiceCallPorts`). */
       voiceCall?: boolean;
+      /** The app's own decoder for screen views (`ScreenFramePorts`): each picture handed to it is an output. */
+      screenFrames?: boolean;
       localFiles?: boolean;
       /** The app reads parts of its picks (`Host.readLocalFile`): each part read is an answer (`HOST localFile:…`). */
       readsLocalFiles?: boolean;
@@ -132,7 +135,9 @@ export type Input =
       apiOrigin: string;
       clientPlatform: BearerSessionPorts["clientPlatform"];
       clientKind?: BearerSessionPorts["clientKind"];
-      showsKeptAccount?: true;
+      abuseProof?: boolean;
+      sha256?: boolean;
+      captcha?: boolean;
       resumed?: SessionAuthorityResume;
     }
   /** The web session ports' fixed values, as the core was made (the API's origin and the browser's user agent). */
@@ -158,11 +163,13 @@ export type Input =
   /** The host downloads files to its storage (their answers are noted as requests' answers, `HOST downloads.*`). */
   | { kind: "downloads" }
   /** The host reaches stations (its answers are noted as requests' answers, `MESH` requests). */
-  | { kind: "stationMesh"; alwaysLinked?: true }
+  | { kind: "stationMesh"; alwaysLinked?: true; ownComputers?: true; salixOnly?: true }
   /** The host can reset the app (its answers are noted as requests' answers, `HOST reset.*`). */
   | { kind: "reset" }
   /** The local Drive node said its files changed. */
   | { kind: "localDriveChanged" }
+  /** The app's update feed said how far a download got (`update.*`). */
+  | { kind: "updateProgress"; percent: number }
   /** Device storage answered: a read's value (base64; null: none), or a write's or read's failure. */
   | {
       kind: "storage";
@@ -186,7 +193,17 @@ export type Output =
   /** The core let go of the Web Lock it was granted (its request `LOCK <name>`). */
   | { kind: "unlock"; request: RequestRef }
   /** What the core asked of Main's voice call socket (`VoiceCallPorts.command`). */
-  | { kind: "voiceCall"; op: VoiceCallSocketOp };
+  | { kind: "voiceCall"; op: VoiceCallSocketOp }
+  /** A screen view's picture handed to the app's own decoder (`ScreenFramePorts.frame`; `bytes` as base64). */
+  | {
+      kind: "screenFrame";
+      sink: number;
+      frame: number;
+      ts: number;
+      width: number;
+      height: number;
+      bytes: string;
+    };
 
 export type Entry<T> = T & { seq: number; at: number };
 
@@ -485,6 +502,7 @@ export class Recorder {
       transcode: Boolean(host.transcodeImage),
       ...(host.meeting ? { meeting: true } : {}),
       ...(host.voiceCall ? { voiceCall: true } : {}),
+      ...(host.screenFrames ? { screenFrames: true } : {}),
       ...(host.uploadsLocalFiles ? { localFiles: true } : {}),
       ...(host.readLocalFile ? { readsLocalFiles: true } : {}),
       ...(host.client ? { client: host.client } : {}),
@@ -526,6 +544,22 @@ export class Recorder {
             this.input({ kind: "voiceCall", event: structuredClone(event) });
             listener(event);
           }),
+      };
+    const screenFrames = host.screenFrames;
+    if (screenFrames)
+      (recorded as { screenFrames?: ScreenFramePorts }).screenFrames = {
+        frame: (sink, kind, ts, width, height, bytes) => {
+          this.output({
+            kind: "screenFrame",
+            sink,
+            frame: kind,
+            ts,
+            width,
+            height,
+            bytes: base64(bytes),
+          });
+          screenFrames.frame(sink, kind, ts, width, height, bytes);
+        },
       };
     const preview = host.renderImagePreview?.bind(host);
     if (preview)
@@ -647,8 +681,10 @@ export class Recorder {
         apiOrigin: bearer.apiOrigin,
         clientPlatform: bearer.clientPlatform,
         ...(bearer.clientKind ? { clientKind: bearer.clientKind } : {}),
-        ...(bearer.showsKeptAccount ? { showsKeptAccount: true as const } : {}),
         ...(bearer.resumed ? { resumed: structuredClone(bearer.resumed) } : {}),
+        ...(bearer.abuseProof ? { abuseProof: true } : {}),
+        ...(bearer.sha256 ? { sha256: true } : {}),
+        ...(bearer.captcha ? { captcha: true } : {}),
       });
       // Main's answers are JSON: each is noted as a request's answer (`HOST <port>`), and read back as one.
       const main = <A>(path: string, send: Effect.Effect<A, HostError>) =>
@@ -657,7 +693,6 @@ export class Recorder {
         apiOrigin: bearer.apiOrigin,
         clientPlatform: bearer.clientPlatform,
         ...(bearer.clientKind ? { clientKind: bearer.clientKind } : {}),
-        ...(bearer.showsKeptAccount ? { showsKeptAccount: true } : {}),
         ...(bearer.resumed ? { resumed: bearer.resumed } : {}),
         vault: Effect.suspend(() => main("vault", bearer.vault)),
         change: (change) => main(`change:${change.kind}`, bearer.change(change)),
@@ -672,6 +707,20 @@ export class Recorder {
           : {}),
         ...(bearer.apple
           ? { apple: (input) => main("apple", bearer.apple!(input)) }
+          : {}),
+        ...(bearer.abuseProof
+          ? { abuseProof: (input) => main("abuseProof", bearer.abuseProof!(input)) }
+          : {}),
+        ...(bearer.sha256
+          ? {
+              sha256: (inputs) =>
+                port("HOST", "sha256", bearer.sha256!(inputs), (digests) =>
+                  digests.map(base64)
+                ),
+            }
+          : {}),
+        ...(bearer.captcha
+          ? { captcha: (input) => main("captcha", bearer.captcha!(input)) }
           : {}),
         gate: (snapshot, lease) => {
           this.output({
@@ -734,13 +783,16 @@ export class Recorder {
     }
     const mesh = host.stationMesh;
     if (mesh) {
-      this.input(
-        mesh.alwaysLinked
-          ? { kind: "stationMesh", alwaysLinked: true }
-          : { kind: "stationMesh" }
-      );
+      this.input({
+        kind: "stationMesh",
+        ...(mesh.alwaysLinked ? { alwaysLinked: true as const } : {}),
+        ...(mesh.ownComputers ? { ownComputers: true as const } : {}),
+        ...(mesh.salixOnly ? { salixOnly: true as const } : {}),
+      });
       (recorded as { stationMesh?: StationMeshPorts }).stationMesh = {
         ...(mesh.alwaysLinked ? { alwaysLinked: true } : {}),
+        ...(mesh.ownComputers ? { ownComputers: true } : {}),
+        ...(mesh.salixOnly ? { salixOnly: true } : {}),
         // The endpoint's id (and whether it is reached through Salix), each connection and relay socket opened and
         // closed, and each request's answer are noted as `MESH` requests'.
         open: (input) => {
@@ -784,6 +836,49 @@ export class Recorder {
                     )
                   );
                 },
+                ...(links.refresh
+                  ? {
+                      refresh: (station: string, wanted: () => boolean) =>
+                        port(
+                          "MESH",
+                          `refresh:${station}`,
+                          links.refresh!(station, wanted)
+                        ),
+                    }
+                  : {}),
+                ...(links.ping
+                  ? {
+                      ping: (station: string) => {
+                        let answer: Effect.Effect<boolean>;
+                        return port(
+                          "MESH",
+                          `ping:${station}`,
+                          links.ping!(station).pipe(
+                            Effect.map((waits) => {
+                              answer = waits;
+                              return null;
+                            })
+                          )
+                        ).pipe(
+                          Effect.map(() =>
+                            Effect.suspend(() =>
+                              port("MESH", `pinged:${station}`, answer)
+                            ).pipe(Effect.orElseSucceed(() => false))
+                          )
+                        );
+                      },
+                    }
+                  : {}),
+                ...(links.drop
+                  ? {
+                      drop: (station: string) =>
+                        port(
+                          "MESH",
+                          `drop:${station}`,
+                          links.drop!(station).pipe(Effect.as(null))
+                        ).pipe(Effect.asVoid, Effect.orDie),
+                    }
+                  : {}),
                 request: (station, request) =>
                   streamed(
                     {
@@ -917,6 +1012,11 @@ export class Recorder {
                   port("HOST", "update.download", updates.download(release)),
                 apply: (release) =>
                   port("HOST", "update.apply", updates.apply(release)),
+                onProgress: (listener) =>
+                  updates.onProgress((percent) => {
+                    this.input({ kind: "updateProgress", percent });
+                    listener(percent);
+                  }),
               },
             }
           : {}),
